@@ -606,9 +606,6 @@ st_context_flush(struct st_context_iface *stctxi, unsigned flags,
                                      PIPE_TIMEOUT_INFINITE);
       st->pipe->screen->fence_reference(st->pipe->screen, fence, NULL);
    }
-
-   if (flags & ST_FLUSH_FRONT)
-      st_manager_flush_frontbuffer(st);
 }
 
 static boolean
