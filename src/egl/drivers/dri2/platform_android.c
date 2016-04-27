@@ -43,6 +43,8 @@
 #include "gralloc_drm.h"
 #endif
 
+#define ALIGN(val, align)	(((val) + (align) - 1) & ~((align) - 1))
+
 static int
 get_format_bpp(int native)
 {
@@ -60,6 +62,9 @@ get_format_bpp(int native)
    case HAL_PIXEL_FORMAT_RGB_565:
       bpp = 2;
       break;
+   case HAL_PIXEL_FORMAT_YV12:
+      bpp = 1;
+      break;
    default:
       bpp = 0;
       break;
@@ -76,6 +81,7 @@ static int get_fourcc(int native)
    case HAL_PIXEL_FORMAT_BGRA_8888: return __DRI_IMAGE_FOURCC_ARGB8888;
    case HAL_PIXEL_FORMAT_RGBA_8888: return __DRI_IMAGE_FOURCC_ABGR8888;
    case HAL_PIXEL_FORMAT_RGBX_8888: return __DRI_IMAGE_FOURCC_XBGR8888;
+   case HAL_PIXEL_FORMAT_YV12:      return __DRI_IMAGE_FOURCC_YVU420;
    default:
       _eglLog(_EGL_WARNING, "unsupported native buffer format 0x%x", native);
    }
@@ -525,6 +531,10 @@ static _EGLImage *
 droid_create_image_from_prime_fd(_EGLDisplay *disp, _EGLContext *ctx,
                                  struct ANativeWindowBuffer *buf)
 {
+   unsigned int offsets[3] = { 0, 0, 0 };
+   unsigned int pitches[3] = { 0, 0, 0 };
+   unsigned int total_planes = 1;
+   int p, index;
    int fd;
 
    fd = get_native_buffer_fd(buf);
@@ -532,20 +542,68 @@ droid_create_image_from_prime_fd(_EGLDisplay *disp, _EGLContext *ctx,
 	   return NULL;
 
    const int fourcc = get_fourcc(buf->format);
-   const int pitch = buf->stride * get_format_bpp(buf->format);
+   pitches[0] = buf->stride * get_format_bpp(buf->format);
 
-   const EGLint attr_list[14] = {
-      EGL_WIDTH, buf->width,
-      EGL_HEIGHT, buf->height,
-      EGL_LINUX_DRM_FOURCC_EXT, fourcc,
-      EGL_DMA_BUF_PLANE0_FD_EXT, fd,
-      EGL_DMA_BUF_PLANE0_PITCH_EXT, pitch,
-      EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-      EGL_NONE, 0
+   if (fourcc == -1 || pitches[0] == 0)
+      return NULL;
+
+   switch (buf->format) {
+   case HAL_PIXEL_FORMAT_YV12:
+      /* Y plane is at offset 0 and fds[0] is already set. */
+      /* Cr plane is located after Y plane */
+      offsets[1] = offsets[0] + pitches[0] * buf->height;
+      pitches[1] = ALIGN(pitches[0] / 2, 16);
+      /* Cb plane is located after Cr plane */
+      offsets[2] = offsets[1] + pitches[1] * buf->height / 2;
+      pitches[2] = pitches[1];
+      total_planes = 3;
+      break;
+   default:
+      break;
+   }
+
+   /* TODO: Do we need to pass in the following or defaults suffice:
+    * EGL_YUV_COLOR_SPACE_HINT_EXT,
+    * EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT,
+    * EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT
+    */
+   EGLint plane_fd_attr[] = {
+      EGL_DMA_BUF_PLANE0_FD_EXT,
+      EGL_DMA_BUF_PLANE1_FD_EXT,
+      EGL_DMA_BUF_PLANE2_FD_EXT,
    };
 
-   if (fourcc == -1 || pitch == 0)
-      return NULL;
+   EGLint plane_pitch_attr[] = {
+      EGL_DMA_BUF_PLANE0_PITCH_EXT,
+      EGL_DMA_BUF_PLANE1_PITCH_EXT,
+      EGL_DMA_BUF_PLANE2_PITCH_EXT,
+   };
+
+   EGLint plane_offset_attr[] = {
+      EGL_DMA_BUF_PLANE0_OFFSET_EXT,
+      EGL_DMA_BUF_PLANE1_OFFSET_EXT,
+      EGL_DMA_BUF_PLANE2_OFFSET_EXT,
+   };
+
+   EGLint attr_list[25];
+   attr_list[0] = EGL_WIDTH;
+   attr_list[1] = buf->width;
+   attr_list[2] = EGL_HEIGHT;
+   attr_list[3] = buf->height;
+   attr_list[4] = EGL_LINUX_DRM_FOURCC_EXT;
+   attr_list[5] = fourcc;
+   index = 5;
+
+   for (p = 0; p < total_planes; ++p) {
+      attr_list[++index] = plane_fd_attr[p];
+      attr_list[++index] = fd;
+      attr_list[++index] = plane_pitch_attr[p];
+      attr_list[++index] = pitches[p];
+      attr_list[++index] = plane_offset_attr[p];
+      attr_list[++index] = offsets[p];
+   }
+
+   attr_list[++index] = EGL_NONE;
 
    return dri2_create_image_dma_buf(disp, ctx, NULL, attr_list);
 }
