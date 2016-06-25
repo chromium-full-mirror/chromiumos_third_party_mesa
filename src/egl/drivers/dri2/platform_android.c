@@ -434,16 +434,23 @@ droid_image_get_buffers(__DRIdrawable *driDrawable,
 {
    struct dri2_egl_surface *dri2_surf = loaderPrivate;
 
+   images->image_mask = 0;
+
    if (update_buffers(dri2_surf) < 0)
       return 0;
 
-   if (get_back_bo(dri2_surf) < 0) {
-      _eglError(EGL_BAD_PARAMETER, "get_back_bo");
+   if (buffer_mask & __DRI_IMAGE_BUFFER_FRONT) {
+      _eglLog(_EGL_WARNING, "Front buffer is not supported for window surfaces");
       return 0;
    }
 
-   images->image_mask = __DRI_IMAGE_BUFFER_BACK;
-   images->back = dri2_surf->dri_image;
+   if (buffer_mask & __DRI_IMAGE_BUFFER_BACK) {
+      if (get_back_bo(dri2_surf) < 0)
+         return 0;
+
+      images->back = dri2_surf->dri_image;
+      images->image_mask |= __DRI_IMAGE_BUFFER_BACK;
+   }
 
    return 1;
 }
