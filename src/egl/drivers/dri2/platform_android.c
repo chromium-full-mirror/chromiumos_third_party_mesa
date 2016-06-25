@@ -286,7 +286,7 @@ droid_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
       window->query(window, NATIVE_WINDOW_HEIGHT, &dri2_surf->base.Height);
    }
 
-   config = dri2_get_dri_config(dri2_conf, EGL_WINDOW_BIT,
+   config = dri2_get_dri_config(dri2_conf, type,
                                 dri2_surf->base.GLColorspace);
    if (!config)
       goto cleanup_surface;
@@ -347,6 +347,9 @@ droid_destroy_surface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf)
       dri2_surf->window->common.decRef(&dri2_surf->window->common);
    }
 
+   if (dri2_surf->dri_front_image)
+      dri2_dpy->image->destroyImage(dri2_surf->dri_front_image);
+
    (*dri2_dpy->core->destroyDrawable)(dri2_surf->dri_drawable);
 
    free(dri2_surf);
@@ -378,12 +381,40 @@ update_buffers(struct dri2_egl_surface *dri2_surf)
 }
 
 static int
+get_front_bo(struct dri2_egl_surface *dri2_surf, unsigned int format)
+{
+   struct dri2_egl_display *dri2_dpy =
+      dri2_egl_display(dri2_surf->base.Resource.Display);
+
+   if (dri2_surf->base.Type == EGL_WINDOW_BIT) {
+      _eglLog(_EGL_WARNING, "Front buffer is not supported for window surfaces");
+      return -1;
+   }
+
+   if (dri2_surf->dri_front_image)
+      return 0;
+
+   dri2_surf->dri_front_image =
+      dri2_dpy->image->createImage(dri2_dpy->dri_screen,
+                                   dri2_surf->base.Width,
+                                   dri2_surf->base.Height,
+                                   format, 0, dri2_surf);
+
+   return dri2_surf->dri_front_image ? 0 : -1;
+}
+
+static int
 get_back_bo(struct dri2_egl_surface *dri2_surf)
 {
    struct dri2_egl_display *dri2_dpy =
       dri2_egl_display(dri2_surf->base.Resource.Display);
    int fourcc, pitch;
    int offset = 0, fd;
+
+   if (dri2_surf->base.Type != EGL_WINDOW_BIT) {
+      _eglLog(_EGL_WARNING, "Back buffer is not supported for pbuffer surfaces");
+      return -1;
+   }
 
    if (dri2_surf->dri_image)
 	   return 0;
@@ -440,8 +471,11 @@ droid_image_get_buffers(__DRIdrawable *driDrawable,
       return 0;
 
    if (buffer_mask & __DRI_IMAGE_BUFFER_FRONT) {
-      _eglLog(_EGL_WARNING, "Front buffer is not supported for window surfaces");
-      return 0;
+      if (get_front_bo(dri2_surf, format) < 0)
+         return 0;
+
+      images->front = dri2_surf->dri_front_image;
+      images->image_mask |= __DRI_IMAGE_BUFFER_FRONT;
    }
 
    if (buffer_mask & __DRI_IMAGE_BUFFER_BACK) {
@@ -700,14 +734,6 @@ droid_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *dpy)
       for (j = 0; dri2_dpy->driver_configs[j]; j++) {
          const EGLint surface_type = EGL_WINDOW_BIT | EGL_PBUFFER_BIT;
          struct dri2_egl_config *dri2_conf;
-         unsigned int double_buffered = 0;
-
-         dri2_dpy->core->getConfigAttrib(dri2_dpy->driver_configs[j],
-            __DRI_ATTRIB_DOUBLE_BUFFER, &double_buffered);
-
-         /* support only double buffered configs */
-         if (!double_buffered)
-            continue;
 
          dri2_conf = dri2_add_config(dpy, dri2_dpy->driver_configs[j],
                count + 1, surface_type, config_attrs, visuals[i].rgba_masks);
@@ -730,6 +756,19 @@ droid_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *dpy)
       /* there is no front buffer so no OpenGL */
       dri2_conf->base.RenderableType &= ~EGL_OPENGL_BIT;
       dri2_conf->base.Conformant &= ~EGL_OPENGL_BIT;
+
+      for (j = 0; j < 2; j++) {
+         /* Unsupported color space variants should not affect surface type. */
+         if (!dri2_conf->dri_single_config[j] && !dri2_conf->dri_double_config[j])
+            continue;
+
+         /* Pbuffers support only single buffering. */
+         if (!dri2_conf->dri_single_config[j])
+            dri2_conf->base.SurfaceType &= ~EGL_PBUFFER_BIT;
+         /* Windows support only double buffering. */
+         else if (!dri2_conf->dri_double_config[j])
+            dri2_conf->base.SurfaceType &= ~EGL_WINDOW_BIT;
+      }
    }
 
    return (count != 0);
