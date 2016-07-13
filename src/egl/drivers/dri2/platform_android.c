@@ -872,11 +872,14 @@ droid_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *dpy)
 }
 
 static int
-droid_probe_device(_EGLDisplay *dpy, int fd)
+droid_probe_device(_EGLDisplay *dpy, int fd, int swrast)
 {
    struct dri2_egl_display *dri2_dpy = dpy->DriverData;
 
-   dri2_dpy->driver_name = loader_get_driver_for_fd(fd, 0);
+   if (swrast)
+      dri2_dpy->driver_name = strdup("kms_swrast");
+   else
+      dri2_dpy->driver_name = loader_get_driver_for_fd(fd, 0);
    if (!dri2_dpy->driver_name)
       return -1;
 
@@ -893,7 +896,7 @@ droid_probe_device(_EGLDisplay *dpy, int fd)
 
 #ifdef HAS_GRALLOC_DRM_HEADERS
 static int
-droid_open_device(_EGLDisplay *dpy)
+droid_open_device(_EGLDisplay *dpy, int swrast)
 {
    const hw_module_t *mod;
    int fd = -1, err;
@@ -911,13 +914,13 @@ droid_open_device(_EGLDisplay *dpy)
       return -1;
    }
 
-   return droid_probe_device(dpy, fd);
+   return droid_probe_device(dpy, fd, swrast);
 }
 #else
 #define DRM_RENDER_DEV_NAME  "%s/renderD%d"
 
 static int
-droid_open_device(_EGLDisplay *dpy)
+droid_open_device(_EGLDisplay *dpy, int swrast)
 {
    struct dri2_egl_display *dri2_dpy = dpy->DriverData;
    const int limit = 64;
@@ -935,7 +938,7 @@ droid_open_device(_EGLDisplay *dpy)
       if (fd < 0)
          continue;
 
-      if (!droid_probe_device(dpy, fd))
+      if (!droid_probe_device(dpy, fd, swrast))
          return 0;
    }
 
@@ -1017,9 +1020,11 @@ dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *dpy)
 
    dpy->DriverData = (void *) dri2_dpy;
 
-   if (droid_open_device(dpy) < 0) {
-      err = "DRI2: failed to open device";
-      goto cleanup_display;
+   if (droid_open_device(dpy, 0) < 0) {
+      if (droid_open_device(dpy, 1) < 0) {
+         err = "DRI2: failed to open device";
+         goto cleanup_display;
+      }
    }
 
    dri2_dpy->is_render_node = drmGetNodeTypeFromFd(dri2_dpy->fd) == DRM_NODE_RENDER;
