@@ -38,7 +38,10 @@
 #include "loader.h"
 #include "egl_dri2.h"
 #include "egl_dri2_fallbacks.h"
+
+#ifdef HAS_GRALLOC_DRM_HEADERS
 #include "gralloc_drm.h"
+#endif
 
 static int
 get_format_bpp(int native)
@@ -104,11 +107,13 @@ get_native_buffer_fd(struct ANativeWindowBuffer *buf)
    return (handle && handle->numFds) ? handle->data[0] : -1;
 }
 
+#ifdef HAS_GRALLOC_DRM_HEADERS
 static int
 get_native_buffer_name(struct ANativeWindowBuffer *buf)
 {
    return gralloc_drm_get_gem_handle(buf->handle);
 }
+#endif
 
 static EGLBoolean
 droid_window_dequeue_buffer(struct dri2_egl_surface *dri2_surf)
@@ -210,6 +215,7 @@ droid_window_cancel_buffer(_EGLDisplay *disp, struct dri2_egl_surface *dri2_surf
    droid_window_enqueue_buffer(disp, dri2_surf);
 }
 
+#ifdef HAS_GRALLOC_DRM_HEADERS
 static __DRIbuffer *
 droid_alloc_local_buffer(struct dri2_egl_surface *dri2_surf,
                          unsigned int att, unsigned int format)
@@ -228,6 +234,7 @@ droid_alloc_local_buffer(struct dri2_egl_surface *dri2_surf,
 
    return dri2_surf->local_buffers[att];
 }
+#endif
 
 static void
 droid_free_local_buffers(struct dri2_egl_surface *dri2_surf)
@@ -511,53 +518,43 @@ droid_swap_buffers(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *draw)
 }
 
 static _EGLImage *
-dri2_create_image_android_native_buffer(_EGLDisplay *disp,
-                                        _EGLContext *ctx,
-                                        struct ANativeWindowBuffer *buf)
+droid_create_image_from_prime_fd(_EGLDisplay *disp, _EGLContext *ctx,
+                                 struct ANativeWindowBuffer *buf)
 {
-   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
-   struct dri2_egl_image *dri2_img;
-   int name, fd;
-   int format;
-
-   if (ctx != NULL) {
-      /* From the EGL_ANDROID_image_native_buffer spec:
-       *
-       *     * If <target> is EGL_NATIVE_BUFFER_ANDROID and <ctx> is not
-       *       EGL_NO_CONTEXT, the error EGL_BAD_CONTEXT is generated.
-       */
-      _eglError(EGL_BAD_CONTEXT, "eglCreateEGLImageKHR: for "
-                "EGL_NATIVE_BUFFER_ANDROID, the context must be "
-                "EGL_NO_CONTEXT");
-      return NULL;
-   }
-
-   if (!buf || buf->common.magic != ANDROID_NATIVE_BUFFER_MAGIC ||
-       buf->common.version != sizeof(*buf)) {
-      _eglError(EGL_BAD_PARAMETER, "eglCreateEGLImageKHR");
-      return NULL;
-   }
+   int fd;
 
    fd = get_native_buffer_fd(buf);
-   if (fd >= 0) {
-      const int fourcc = get_fourcc(get_format(buf->format));
-      const int pitch = buf->stride * get_format_bpp(buf->format);
+   if (fd < 0)
+	   return NULL;
 
-      const EGLint attr_list[14] = {
-         EGL_WIDTH, buf->width,
-         EGL_HEIGHT, buf->height,
-         EGL_LINUX_DRM_FOURCC_EXT, fourcc,
-         EGL_DMA_BUF_PLANE0_FD_EXT, fd,
-         EGL_DMA_BUF_PLANE0_PITCH_EXT, pitch,
-         EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-         EGL_NONE, 0
-      };
+   const int fourcc = get_fourcc(get_format(buf->format));
+   const int pitch = buf->stride * get_format_bpp(buf->format);
 
-      if (fourcc == -1 || pitch == 0)
-         return NULL;
+   const EGLint attr_list[14] = {
+      EGL_WIDTH, buf->width,
+      EGL_HEIGHT, buf->height,
+      EGL_LINUX_DRM_FOURCC_EXT, fourcc,
+      EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+      EGL_DMA_BUF_PLANE0_PITCH_EXT, pitch,
+      EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+      EGL_NONE, 0
+   };
 
-      return dri2_create_image_dma_buf(disp, ctx, NULL, attr_list);
-   }
+   if (fourcc == -1 || pitch == 0)
+      return NULL;
+
+   return dri2_create_image_dma_buf(disp, ctx, NULL, attr_list);
+}
+
+static _EGLImage *
+droid_create_image_from_name(_EGLDisplay *disp, _EGLContext *ctx,
+                             struct ANativeWindowBuffer *buf)
+{
+#ifdef HAS_GRALLOC_DRM_HEADERS
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   struct dri2_egl_image *dri2_img;
+   int name;
+   int format;
 
    name = get_native_buffer_name(buf);
    if (!name) {
@@ -595,6 +592,42 @@ dri2_create_image_android_native_buffer(_EGLDisplay *disp,
    }
 
    return &dri2_img->base;
+#else
+   _eglError(EGL_BAD_PARAMETER, "eglCreateEGLImageKHR: Only PRIME buffers are supported");
+   return NULL;
+#endif
+}
+
+static _EGLImage *
+dri2_create_image_android_native_buffer(_EGLDisplay *disp,
+                                        _EGLContext *ctx,
+                                        struct ANativeWindowBuffer *buf)
+{
+   _EGLImage *image;
+
+   if (ctx != NULL) {
+      /* From the EGL_ANDROID_image_native_buffer spec:
+       *
+       *     * If <target> is EGL_NATIVE_BUFFER_ANDROID and <ctx> is not
+       *       EGL_NO_CONTEXT, the error EGL_BAD_CONTEXT is generated.
+       */
+      _eglError(EGL_BAD_CONTEXT, "eglCreateEGLImageKHR: for "
+                "EGL_NATIVE_BUFFER_ANDROID, the context must be "
+                "EGL_NO_CONTEXT");
+      return NULL;
+   }
+
+   if (!buf || buf->common.magic != ANDROID_NATIVE_BUFFER_MAGIC ||
+       buf->common.version != sizeof(*buf)) {
+      _eglError(EGL_BAD_PARAMETER, "eglCreateEGLImageKHR");
+      return NULL;
+   }
+
+   image = droid_create_image_from_prime_fd(disp, ctx, buf);
+   if (image)
+      return image;
+
+   return droid_create_image_from_name(disp, ctx, buf);
 }
 
 static _EGLImage *
@@ -616,6 +649,7 @@ droid_flush_front_buffer(__DRIdrawable * driDrawable, void *loaderPrivate)
 {
 }
 
+#ifdef HAS_GRALLOC_DRM_HEADERS
 static int
 droid_get_buffers_parse_attachments(struct dri2_egl_surface *dri2_surf,
                                     unsigned int *attachments, int count)
@@ -697,6 +731,7 @@ droid_get_buffers_with_format(__DRIdrawable * driDrawable,
 
    return dri2_surf->buffers;
 }
+#endif
 
 static EGLBoolean
 droid_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *dpy)
@@ -775,7 +810,28 @@ droid_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *dpy)
 }
 
 static int
-droid_open_device(void)
+droid_probe_device(_EGLDisplay *dpy, int fd)
+{
+   struct dri2_egl_display *dri2_dpy = dpy->DriverData;
+
+   dri2_dpy->driver_name = loader_get_driver_for_fd(fd, 0);
+   if (!dri2_dpy->driver_name)
+      return -1;
+
+   dri2_dpy->fd = fd;
+   if (!dri2_load_driver(dpy)) {
+      dri2_dpy->fd = -1;
+      free(dri2_dpy->driver_name);
+      dri2_dpy->driver_name = NULL;
+      return -1;
+   }
+
+   return 0;
+}
+
+#ifdef HAS_GRALLOC_DRM_HEADERS
+static int
+droid_open_device(_EGLDisplay *dpy)
 {
    const hw_module_t *mod;
    int fd = -1, err;
@@ -790,11 +846,40 @@ droid_open_device(void)
    }
    if (err || fd < 0) {
       _eglLog(_EGL_WARNING, "fail to get drm fd");
-      fd = -1;
+      return -1;
    }
 
-   return (fd >= 0) ? dup(fd) : -1;
+   return droid_probe_device(dpy, fd);
 }
+#else
+#define DRM_RENDER_DEV_NAME  "%s/renderD%d"
+
+static int
+droid_open_device(_EGLDisplay *dpy)
+{
+   struct dri2_egl_display *dri2_dpy = dpy->DriverData;
+   const int limit = 64;
+   const int base = 128;
+   int fd;
+   int i;
+
+   for (i = 0; i < limit; ++i) {
+      char *card_path;
+      if (asprintf(&card_path, DRM_RENDER_DEV_NAME, DRM_DIR_NAME, base + i) < 0)
+         continue;
+
+      fd = loader_open_device(card_path);
+      free(card_path);
+      if (fd < 0)
+         continue;
+
+      if (!droid_probe_device(dpy, fd))
+         return 0;
+   }
+
+   return -1;
+}
+#endif
 
 /* support versions < JellyBean */
 #ifndef ALOGW
@@ -870,21 +955,9 @@ dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *dpy)
 
    dpy->DriverData = (void *) dri2_dpy;
 
-   dri2_dpy->fd = droid_open_device();
-   if (dri2_dpy->fd < 0) {
+   if (droid_open_device(dpy) < 0) {
       err = "DRI2: failed to open device";
       goto cleanup_display;
-   }
-
-   dri2_dpy->driver_name = loader_get_driver_for_fd(dri2_dpy->fd, 0);
-   if (dri2_dpy->driver_name == NULL) {
-      err = "DRI2: failed to get driver name";
-      goto cleanup_device;
-   }
-
-   if (!dri2_load_driver(dpy)) {
-      err = "DRI2: failed to load driver";
-      goto cleanup_driver_name;
    }
 
    dri2_dpy->is_render_node = drmGetNodeTypeFromFd(dri2_dpy->fd) == DRM_NODE_RENDER;
@@ -892,6 +965,7 @@ dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *dpy)
    /* render nodes cannot use Gem names, and thus do not support
     * the __DRI_DRI2_LOADER extension */
    if (!dri2_dpy->is_render_node) {
+#ifdef HAS_GRALLOC_DRM_HEADERS
       dri2_dpy->dri2_loader_extension.base.name = __DRI_DRI2_LOADER;
       dri2_dpy->dri2_loader_extension.base.version = 3;
       dri2_dpy->dri2_loader_extension.getBuffers = NULL;
@@ -899,6 +973,10 @@ dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *dpy)
       dri2_dpy->dri2_loader_extension.getBuffersWithFormat =
         droid_get_buffers_with_format;
       dri2_dpy->extensions[0] = &dri2_dpy->dri2_loader_extension.base;
+#else
+      err = "DRI2: only render nodes are supported";
+      goto cleanup_driver;
+#endif
    } else {
       dri2_dpy->extensions[0] = &droid_image_loader_extension.base;
    }
@@ -933,9 +1011,7 @@ cleanup_screen:
    dri2_dpy->core->destroyScreen(dri2_dpy->dri_screen);
 cleanup_driver:
    dlclose(dri2_dpy->driver);
-cleanup_driver_name:
    free(dri2_dpy->driver_name);
-cleanup_device:
    close(dri2_dpy->fd);
 cleanup_display:
    free(dri2_dpy);

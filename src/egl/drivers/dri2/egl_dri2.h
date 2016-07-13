@@ -65,7 +65,9 @@
 #endif
 
 #include <hardware/gralloc.h>
+#ifdef HAS_GRALLOC_DRM_HEADERS
 #include <gralloc_drm_handle.h>
+#endif
 #include <cutils/log.h>
 
 #endif /* HAVE_ANDROID_PLATFORM */
