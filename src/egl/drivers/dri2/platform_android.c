@@ -1153,6 +1153,37 @@ static const __DRIextension *droid_image_loader_extensions[] = {
    NULL,
 };
 
+static bool
+droid_load_driver(_EGLDisplay *dpy, bool swrast, bool dri3)
+{
+   struct dri2_egl_display *dri2_dpy = dpy->DriverData;
+   bool loaded;
+
+   if (swrast)
+      dri2_dpy->driver_name = strdup("kms_swrast");
+   else
+      dri2_dpy->driver_name = loader_get_driver_for_fd(dri2_dpy->fd);
+
+   if (dri2_dpy->driver_name == NULL) {
+      _eglLog(_EGL_WARNING, "DRI2: failed to get driver name");
+      return false;
+   }
+
+   if (dri3)
+      loaded = dri2_load_driver_dri3(dpy);
+   else
+	   loaded = dri2_load_driver(dpy);
+
+   if (!loaded) {
+      _eglLog(_EGL_WARNING, "DRI2: failed to load driver");
+      free(dri2_dpy->driver_name);
+      dri2_dpy->driver_name = NULL;
+      return false;
+   }
+
+   return true;
+}
+
 EGLBoolean
 dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *dpy)
 {
@@ -1182,26 +1213,19 @@ dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *dpy)
       goto cleanup;
    }
 
-   dri2_dpy->driver_name = loader_get_driver_for_fd(dri2_dpy->fd);
-   if (dri2_dpy->driver_name == NULL) {
-      err = "DRI2: failed to get driver name";
-      goto cleanup;
-   }
-
    dri2_dpy->is_render_node = drmGetNodeTypeFromFd(dri2_dpy->fd) == DRM_NODE_RENDER;
 
    /* render nodes cannot use Gem names, and thus do not support
     * the __DRI_DRI2_LOADER extension */
-   if (!dri2_dpy->is_render_node) {
+   if (!dri2_dpy->is_render_node)
       dri2_dpy->loader_extensions = droid_dri2_loader_extensions;
-      if (!dri2_load_driver(dpy)) {
-         err = "DRI2: failed to load driver";
-         goto cleanup;
-      }
-   } else {
+   else
       dri2_dpy->loader_extensions = droid_image_loader_extensions;
-      if (!dri2_load_driver_dri3(dpy)) {
-         err = "DRI3: failed to load driver";
+
+   if (!droid_load_driver(dpy, false, dri2_dpy->is_render_node)) {
+      _eglLog(_EGL_WARNING, "DRI2: Failed to load hardware driver, trying software...");
+      if (!droid_load_driver(dpy, true, dri2_dpy->is_render_node)) {
+         err = "DRI2: failed to load driver";
          goto cleanup;
       }
    }
