@@ -37,7 +37,7 @@
 #include "loader.h"
 #include "egl_dri2.h"
 #include "egl_dri2_fallbacks.h"
-#include "gralloc_drm.h"
+#include "platform_android_gralloc_drm.h"
 
 #define ALIGN(val, align)	(((val) + (align) - 1) & ~((align) - 1))
 
@@ -1214,6 +1214,10 @@ dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *dpy)
    }
 
    dri2_dpy->is_render_node = drmGetNodeTypeFromFd(dri2_dpy->fd) == DRM_NODE_RENDER;
+   if (!dri2_dpy->is_render_node && !gralloc_supports_gem_names()) {
+      _eglLog(_EGL_WARNING, "DRI2: control nodes not supported without GEM name suport in gralloc\n");
+      goto cleanup;
+   }
 
    /* render nodes cannot use Gem names, and thus do not support
     * the __DRI_DRI2_LOADER extension */
