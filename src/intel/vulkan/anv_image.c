@@ -32,6 +32,7 @@
 #include "util/debug.h"
 
 #include "vk_format_info.h"
+#include "vk_util.h"
 
 static void
 add_fast_clear_state_buffer(struct anv_image *image,
@@ -43,9 +44,10 @@ add_fast_clear_state_buffer(struct anv_image *image,
 static isl_surf_usage_flags_t
 choose_isl_surf_usage(VkImageCreateFlags vk_create_flags,
                       VkImageUsageFlags vk_usage,
+                      isl_surf_usage_flags_t isl_extra_usage,
                       VkImageAspectFlags aspect)
 {
-   isl_surf_usage_flags_t isl_usage = 0;
+   isl_surf_usage_flags_t isl_usage = isl_extra_usage;
 
    if (vk_usage & VK_IMAGE_USAGE_SAMPLED_BIT)
       isl_usage |= ISL_SURF_USAGE_TEXTURE_BIT;
@@ -366,6 +368,10 @@ make_main_surface(const struct anv_device *dev,
 
    struct anv_surface *anv_surf = get_surface(image, aspect);
 
+   const isl_surf_usage_flags_t usage =
+      choose_isl_surf_usage(base_info->flags, image->usage,
+                            anv_info->isl_extra_usage_flags, aspect);
+
    image->extent = anv_sanitize_image_extent(base_info->imageType,
                                              base_info->extent);
 
@@ -384,7 +390,7 @@ make_main_surface(const struct anv_device *dev,
       .samples = base_info->samples,
       .min_alignment = 0,
       .row_pitch = anv_info->stride,
-      .usage = choose_isl_surf_usage(base_info->flags, image->usage, aspect),
+      .usage = usage,
       .tiling_flags = tiling_flags);
 
    /* isl_surf_init() will fail only if provided invalid input. Invalid input
@@ -466,6 +472,15 @@ anv_CreateImage(VkDevice device,
                 const VkAllocationCallbacks *pAllocator,
                 VkImage *pImage)
 {
+#ifdef ANDROID
+   const VkNativeBufferANDROID *gralloc_info =
+      vk_find_struct_const(pCreateInfo->pNext, NATIVE_BUFFER_ANDROID);
+
+   if (gralloc_info)
+      return anv_image_from_gralloc(device, pCreateInfo, gralloc_info,
+                                    pAllocator, pImage);
+#endif
+
    return anv_image_create(device,
       &(struct anv_image_create_info) {
          .vk_info = pCreateInfo,
