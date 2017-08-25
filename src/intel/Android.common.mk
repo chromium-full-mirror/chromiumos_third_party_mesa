@@ -31,6 +31,8 @@ LOCAL_MODULE_CLASS := STATIC_LIBRARIES
 
 LOCAL_SRC_FILES := $(COMMON_FILES)
 
+LOCAL_CFLAGS := -DLOG_TAG=\"INTEL-MESA\"
+
 LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/src/gallium/include \
 	$(MESA_TOP)/src/gallium/auxiliary \
