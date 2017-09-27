@@ -1128,10 +1128,34 @@ cross_validate_globals(struct gl_shader_program *prog,
          if (prog->IsES && (prog->data->Version != 310 ||
                             !var->get_interface_type()) &&
              existing->data.precision != var->data.precision) {
-            linker_error(prog, "declarations for %s `%s` have "
-                         "mismatching precision qualifiers\n",
-                         mode_string(var), var->name);
-            return;
+            /*
+             * GLSL ES 3.00 is the first version that explicitly requires
+             * that uniform declarations have matching precision qualifiers.
+             *
+             * The only relevant part of GLSL ES 1.00 spec,
+             *
+             *  "If uniforms are used in both the vertex and fragment shaders,
+             *   developers should be warned if the precisions are different.
+             *   Conversion of precision should never be implicit."
+             *
+             * leaves too wide field for intepretation. However, judging by
+             * applications and implementations existing in the wild, it seems
+             * to be widely assumed that declarations alone are not enough to
+             * fail the link.
+             *
+             * Thus, in case of GLSL ES < 3.00, trigger an error only if the
+             * uniform is actually referenced in the code of both shaders.
+             */
+            if ((existing->data.used && var->data.used) || prog->data->Version >= 300) {
+               linker_error(prog, "declarations for %s `%s` have "
+                            "mismatching precision qualifiers\n",
+                            mode_string(var), var->name);
+               return;
+            } else {
+               linker_warning(prog, "declarations for %s `%s` have "
+                              "mismatching precision qualifiers\n",
+                              mode_string(var), var->name);
+            }
          }
       } else
          variables->add_variable(var);
