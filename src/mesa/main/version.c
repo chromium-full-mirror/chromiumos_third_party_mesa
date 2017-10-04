@@ -594,11 +594,10 @@ _mesa_compute_version(struct gl_context *ctx)
 
    ctx->Version = _mesa_get_version(&ctx->Extensions, &ctx->Const, ctx->API);
 
-   /* HACK: Downgrade GLES2 version to 3.0 since advertising 3.1 triggers
-    * a number of test failures.
+   /* HACK: Downgrade GLES2 version to 3.1 since 3.2 is not validated yet.
     * (See: crbug.com/30202361, b/30202361, b/31041422) */
-   if (ctx->API == API_OPENGLES2 && ctx->Version > 30)
-      ctx->Version = 30;
+   if (ctx->API == API_OPENGLES2 && ctx->Version > 31)
+      ctx->Version = 31;
 
    ctx->Extensions.Version = ctx->Version;
 
