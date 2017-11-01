@@ -468,10 +468,10 @@ _eglParseContextAttribList(_EGLContext *ctx, _EGLDisplay *dpy,
          break;
 
       case 3:
-         /* HACK: Disallow creating contexts newer than 3.1, since 3.2 is not
-          * validated yet.
+         /* HACK: Disallow creating contexts newer than 3.0, since 3.1 triggers
+          * a number of test failures.
           * (See: crbug.com/30202361, b/30202361, b/31041422) */
-         if (ctx->ClientMinorVersion > 1)
+         if (ctx->ClientMinorVersion > 0)
             err = EGL_BAD_MATCH;
 
          /* Don't put additional version checks here.  We don't know that
