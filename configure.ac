@@ -1500,13 +1500,29 @@ AC_ARG_WITH([gl-lib-name],
     [specify GL library name @<:@default=GL@:>@])],
   [GL_LIB=$withval],
   [GL_LIB="$DEFAULT_GL_LIB_NAME"])
+AC_ARG_WITH([egl-lib-suffix],
+  [AS_HELP_STRING([--with-egl-lib-suffix@<:@=NAME@:>@],
+    [specify EGL library suffix @<:@default=none@:>@])],
+  [EGL_LIB_SUFFIX=$withval],
+  [EGL_LIB_SUFFIX=""])
+AC_ARG_WITH([gles-lib-suffix],
+  [AS_HELP_STRING([--with-gles-lib-suffix@<:@=NAME@:>@],
+    [specify GLES library suffix @<:@default=none@:>@])],
+  [GLES_LIB_SUFFIX=$withval],
+  [GLES_LIB_SUFFIX=""])
 AC_ARG_WITH([osmesa-lib-name],
   [AS_HELP_STRING([--with-osmesa-lib-name@<:@=NAME@:>@],
     [specify OSMesa library name @<:@default=OSMesa@:>@])],
   [OSMESA_LIB=$withval],
   [OSMESA_LIB=OSMesa])
 AS_IF([test "x$GL_LIB" = xyes], [GL_LIB="$DEFAULT_GL_LIB_NAME"])
+AS_IF([test "x$EGL_LIB_SUFFIX" = xyes], [EGL_LIB_SUFFIX=""])
+AS_IF([test "x$GLES_LIB_SUFFIX" = xyes], [GLES_LIB_SUFFIX=""])
 AS_IF([test "x$OSMESA_LIB" = xyes], [OSMESA_LIB=OSMesa])
+
+if test "x$enable_libglvnd" = xyes -a "x$EGL_LIB_SUFFIX" != x; then
+    AC_MSG_ERROR([EGL lib suffix can't be used with libglvnd])
+fi
 
 dnl
 dnl Mangled Mesa support
@@ -1523,6 +1539,8 @@ if test "x${enable_mangling}" = "xyes" ; then
   OSMESA_LIB="Mangled${OSMESA_LIB}"
 fi
 AC_SUBST([GL_LIB])
+AC_SUBST([EGL_LIB_SUFFIX])
+AC_SUBST([GLES_LIB_SUFFIX])
 AC_SUBST([OSMESA_LIB])
 
 # Check for libdrm

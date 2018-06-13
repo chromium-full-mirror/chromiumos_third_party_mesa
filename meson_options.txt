@@ -305,3 +305,15 @@ option(
   choices : ['auto', 'true', 'false'],
   description : 'Enable power8 optimizations.',
 )
+option(
+  'egl-lib-suffix',
+  type : 'string',
+  value : '',
+  description : 'Suffix to append to EGL library name.  Default: none.'
+)
+option(
+  'gles-lib-suffix',
+  type : 'string',
+  value : '',
+  description : 'Suffix to append to GLES library names.  Default: none.'
+)
