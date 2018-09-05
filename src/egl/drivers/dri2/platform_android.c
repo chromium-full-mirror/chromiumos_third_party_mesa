@@ -1466,7 +1466,12 @@ dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *disp)
    disp->Extensions.ANDROID_recordable = EGL_TRUE;
    disp->Extensions.EXT_buffer_age = EGL_TRUE;
 #if ANDROID_API_LEVEL >= 23
+#if 0
+   /* TODO(chadversary): Re-enable EGL_KHR_partial_update after we diagnose
+    * why it fails the Android CTS on Chrome OS.
+    */
    disp->Extensions.KHR_partial_update = EGL_TRUE;
+#endif
 #endif
    disp->Extensions.KHR_image = EGL_TRUE;
 #if ANDROID_API_LEVEL >= 24
