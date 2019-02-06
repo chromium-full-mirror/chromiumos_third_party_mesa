@@ -1,8 +1,11 @@
 mesa (19.1.0~pre1-1) UNRELEASED; urgency=medium
 
   * Update to upstream master.
+  * debian: switch to llvm 7
+  * debian: add gbm_format_get_name to libgbm1.symbols
+  * debian/rules: configure with --enable-autotools
 
- -- David Riley <davidriley@chromium.org>  Thu, 28 Feb 2019 16:58:49 -0800
+ -- David Riley <davidriley@google.com>  Fri, 08 Mar 2019 15:31:33 -0800
 
 mesa (19.0.0~rc5-2) UNRELEASED; urgency=medium
 
