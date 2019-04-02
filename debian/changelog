@@ -1,3 +1,9 @@
+mesa (19.1.0~pre1-4) UNRELEASED; urgency=medium
+
+  * Fix build issues with new upstream and GLVND.
+
+ -- David Riley <davidriley@google.com>  Mon, 01 Apr 2019 23:19:29 -0700
+
 mesa (19.1.0~pre1-3) unstable; urgency=medium
 
   * Update to upstream master (edc7deec42b) for GL 4.1.
