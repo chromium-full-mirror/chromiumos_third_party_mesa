@@ -236,6 +236,7 @@ enum virgl_formats {
 #define VIRGL_CAP_QBO                  (1 << 16)
 #define VIRGL_CAP_TRANSFER             (1 << 17)
 #define VIRGL_CAP_FBO_MIXED_COLOR_FORMATS (1 << 18)
+#define VIRGL_CAP_FAKE_FP64            (1 << 19)
 
 /* virgl bind flags - these are compatible with mesa 10.5 gallium.
  * but are fixed, no other should be passed to virgl either.
@@ -362,6 +363,7 @@ struct virgl_caps_v2 {
         uint32_t max_atomic_counter_buffers[6];
         uint32_t max_combined_atomic_counters;
         uint32_t max_combined_atomic_counter_buffers;
+        uint32_t host_feature_check_version;
 };
 
 union virgl_caps {

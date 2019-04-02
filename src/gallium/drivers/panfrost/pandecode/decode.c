@@ -209,6 +209,15 @@ static const struct pandecode_flag_info mfbd_fmt_flag_info[] = {
 };
 #undef FLAG_INFO
 
+#define FLAG_INFO(flag) { MALI_EXTRA_##flag, "MALI_EXTRA_" #flag }
+static const struct pandecode_flag_info mfbd_extra_flag_info[] = {
+        FLAG_INFO(PRESENT),
+        FLAG_INFO(AFBC),
+        FLAG_INFO(ZS),
+        {}
+};
+#undef FLAG_INFO
+
 extern char *replace_fragment;
 extern char *replace_vertex;
 
@@ -604,12 +613,11 @@ pandecode_replay_mfbd_bfr(uint64_t gpu_va, int job_no)
                 if (fbx->checksum_stride)
                         pandecode_prop("checksum_stride = %d", fbx->checksum_stride);
 
-                pandecode_prop("unk = 0x%x", fbx->unk);
+                pandecode_log(".flags = ");
+                pandecode_log_decoded_flags(mfbd_extra_flag_info, fbx->flags);
+                pandecode_log_cont(",\n");
 
-                /* TODO figure out if this is actually the right way to
-                 * determine whether AFBC is enabled
-                 */
-                if (fbx->unk & 0x10) {
+                if (fbx->flags & MALI_EXTRA_AFBC_ZS) {
                         pandecode_log(".ds_afbc = {\n");
                         pandecode_indent++;
 
@@ -976,6 +984,8 @@ pandecode_replay_vertex_tiler_prefix(struct mali_vertex_tiler_prefix *p, int job
 
         if (p->index_count)
                 pandecode_prop("index_count = MALI_POSITIVE(%" PRId32 ")", p->index_count + 1);
+
+        pandecode_prop("negative_start = %d", p->negative_start);
 
         DYN_MEMORY_PROP(p, job_no, indices);
 
@@ -1349,7 +1359,7 @@ pandecode_replay_vertex_tiler_postfix_pre(const struct mali_vertex_tiler_postfix
                 /* Number of descriptors depends on whether there are
                  * non-internal varyings */
 
-                pandecode_replay_attributes(attr_mem, p->varyings, job_no, suffix, varying_count > 1 ? 2 : 1, true);
+                pandecode_replay_attributes(attr_mem, p->varyings, job_no, suffix, varying_count > 1 ? 4 : 1, true);
         }
 
         if (p->varying_meta) {
@@ -1455,7 +1465,13 @@ pandecode_replay_vertex_tiler_postfix_pre(const struct mali_vertex_tiler_postfix
                                         pandecode_log(".swizzled_bitmaps = {\n");
                                         pandecode_indent++;
 
-                                        int bitmap_count = 1 + t->nr_mipmap_levels + t->unknown3A;
+                                        int bitmap_count = MALI_NEGATIVE(t->nr_mipmap_levels);
+
+                                        if (!f.is_not_cubemap) {
+                                                /* Miptree for each face */
+                                                bitmap_count *= 6;
+                                        }
+
                                         int max_count = sizeof(t->swizzled_bitmaps) / sizeof(t->swizzled_bitmaps[0]);
 
                                         if (bitmap_count > max_count) {
@@ -1684,7 +1700,11 @@ pandecode_replay_primitive_size(union midgard_primitive_size u, bool constant)
         pandecode_log(".primitive_size = {\n");
         pandecode_indent++;
 
-        pandecode_prop("constant = %f", u.constant);
+        if (constant) {
+                pandecode_prop("constant = %f", u.constant);
+        } else {
+                MEMORY_PROP((&u), pointer);
+        }
 
         pandecode_indent--;
         pandecode_log("},\n");
@@ -1794,8 +1814,8 @@ pandecode_replay_vertex_or_tiler_job_mdg(const struct mali_job_descriptor_header
         pandecode_log("struct midgard_payload_vertex_tiler payload_%d = {\n", job_no);
         pandecode_indent++;
 
-        /* TODO: gl_PointSize */
-        pandecode_replay_primitive_size(v->primitive_size, true);
+        bool has_primitive_pointer = v->prefix.unknown_draw & MALI_DRAW_VARYING_SIZE;
+        pandecode_replay_primitive_size(v->primitive_size, !has_primitive_pointer);
 
         pandecode_log(".prefix = ");
         pandecode_replay_vertex_tiler_prefix(&v->prefix, job_no);

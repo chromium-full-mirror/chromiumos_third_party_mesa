@@ -28,6 +28,7 @@
  **************************************************************************/
 
 
+#include "util/u_debug.h"
 #include "util/u_memory.h"
 #include "util/u_format.h"
 #include "util/u_format_s3tc.h"
@@ -46,9 +47,20 @@
 #include "pan_screen.h"
 #include "pan_resource.h"
 #include "pan_public.h"
+#include "pan_util.h"
 
 #include "pan_context.h"
 #include "midgard/midgard_compile.h"
+
+static const struct debug_named_value debug_options[] = {
+	{"msgs",      PAN_DBG_MSGS,	"Print debug messages"},
+	{"shaders",   PAN_DBG_SHADERS,	"Dump shaders in NIR"},
+	DEBUG_NAMED_VALUE_END
+};
+
+DEBUG_GET_ONCE_FLAGS_OPTION(pan_debug, "PAN_MESA_DEBUG", debug_options, 0)
+
+int pan_debug = 0;
 
 struct panfrost_driver *panfrost_create_drm_driver(int fd);
 struct panfrost_driver *panfrost_create_nondrm_driver(int fd);
@@ -97,6 +109,14 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
         case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
         case PIPE_CAP_TEXTURE_SWIZZLE:
+                return 1;
+
+        /* TODO: ES3. We expose these caps so we can access higher dEQP
+         * tests; in actuality they are nonfunctional */
+        case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
+                return 4;
+        case PIPE_CAP_TGSI_INSTANCEID:
+        case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
                 return 1;
 
         case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
@@ -182,9 +202,6 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
         case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
                 return 0;
-
-        case PIPE_CAP_TGSI_TEXCOORD:
-                return 1; /* XXX: What should this me exactly? */
 
         case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
                 return 0;
@@ -276,6 +293,7 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                 return 0;
 
         case PIPE_SHADER_CAP_MAX_INSTRUCTIONS:
+                return 0;
         case PIPE_SHADER_CAP_MAX_ALU_INSTRUCTIONS:
         case PIPE_SHADER_CAP_MAX_TEX_INSTRUCTIONS:
         case PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS:
@@ -297,7 +315,7 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                 return 16 * 1024 * sizeof(float);
 
         case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
-                return 1;
+                return 4;
 
         case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
                 return 0;
@@ -422,6 +440,9 @@ panfrost_is_format_supported( struct pipe_screen *screen,
         if (format == PIPE_FORMAT_Z24X8_UNORM || format == PIPE_FORMAT_X8Z24_UNORM)
                 return FALSE;
 
+        if (format == PIPE_FORMAT_A1B5G5R5_UNORM || format == PIPE_FORMAT_X1B5G5R5_UNORM)
+                return FALSE;
+
         if (bind & PIPE_BIND_RENDER_TARGET) {
                 /* We don't support rendering into anything but RGBA8 yet. We
                  * need more formats for spec compliance, but for now, honesty
@@ -449,7 +470,8 @@ panfrost_is_format_supported( struct pipe_screen *screen,
         }
 
         if (format_desc->layout == UTIL_FORMAT_LAYOUT_BPTC ||
-                        format_desc->layout == UTIL_FORMAT_LAYOUT_ASTC) {
+                        format_desc->layout == UTIL_FORMAT_LAYOUT_ASTC ||
+                        format_desc->layout == UTIL_FORMAT_LAYOUT_ETC) {
                 /* Compressed formats not yet hooked up. */
                 return FALSE;
         }
@@ -500,21 +522,22 @@ panfrost_get_timestamp(struct pipe_screen *_screen)
 }
 
 static void
-panfrost_fence_reference(struct pipe_screen *screen,
+panfrost_fence_reference(struct pipe_screen *pscreen,
                          struct pipe_fence_handle **ptr,
                          struct pipe_fence_handle *fence)
 {
-        *ptr = fence;
+        struct panfrost_screen *screen = pan_screen(pscreen);
+        screen->driver->fence_reference(pscreen, ptr, fence);
 }
 
 static boolean
-panfrost_fence_finish(struct pipe_screen *screen,
+panfrost_fence_finish(struct pipe_screen *pscreen,
                       struct pipe_context *ctx,
                       struct pipe_fence_handle *fence,
                       uint64_t timeout)
 {
-        assert(fence);
-        return TRUE;
+        struct panfrost_screen *screen = pan_screen(pscreen);
+        return screen->driver->fence_finish(pscreen, ctx, fence, timeout);
 }
 
 static const void *
@@ -529,6 +552,8 @@ struct pipe_screen *
 panfrost_create_screen(int fd, struct renderonly *ro, bool is_drm)
 {
         struct panfrost_screen *screen = CALLOC_STRUCT(panfrost_screen);
+
+	pan_debug = debug_get_option_pan_debug();
 
         if (!screen)
                 return NULL;

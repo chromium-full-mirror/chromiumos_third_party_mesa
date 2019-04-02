@@ -144,7 +144,8 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_VERTEX_COLOR_CLAMPED:
       return vscreen->caps.caps.v1.bset.color_clamping;
    case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
-      return vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_FBO_MIXED_COLOR_FORMATS;
+      return (vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_FBO_MIXED_COLOR_FORMATS) ||
+            (vscreen->caps.caps.v2.host_feature_check_version < 1);
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
       return vscreen->caps.caps.v1.glsl_level;
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
@@ -228,7 +229,8 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
       return vscreen->caps.caps.v2.shader_buffer_offset_alignment;
    case PIPE_CAP_DOUBLES:
-      return vscreen->caps.caps.v1.bset.has_fp64;
+      return vscreen->caps.caps.v1.bset.has_fp64 ||
+            (vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_FAKE_FP64);
    case PIPE_CAP_MAX_SHADER_PATCH_VARYINGS:
       return vscreen->caps.caps.v2.max_shader_patch_varyings;
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
@@ -264,9 +266,12 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
       if (vscreen->caps.caps.v1.glsl_level < 150)
          return vscreen->caps.caps.v2.max_vertex_attribs;
       return 32;
+   case PIPE_CAP_FAKE_SW_MSAA:
+      /* If the host supports only one sample (e.g., if it is using softpipe),
+       * fake multisampling to able to advertise higher GL versions. */
+      return (vscreen->caps.caps.v1.max_samples == 1) ? 1 : 0;
    case PIPE_CAP_TEXTURE_GATHER_SM5:
    case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
-   case PIPE_CAP_FAKE_SW_MSAA:
    case PIPE_CAP_TEXTURE_GATHER_OFFSETS:
    case PIPE_CAP_TGSI_VS_WINDOW_SPACE_POSITION:
    case PIPE_CAP_MULTI_DRAW_INDIRECT:

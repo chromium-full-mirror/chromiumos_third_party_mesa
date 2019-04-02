@@ -31,44 +31,56 @@
 #include "pan_allocate.h"
 #include "drm-uapi/drm.h"
 
+/* Describes the memory layout of a BO */
+
+enum panfrost_memory_layout {
+        PAN_LINEAR,
+        PAN_TILED,
+        PAN_AFBC
+};
+
+struct panfrost_slice {
+        unsigned offset;
+        unsigned stride;
+};
+
 struct panfrost_bo {
-        /* Address to the BO in question */
+        struct panfrost_slice slices[MAX_MIP_LEVELS];
 
-        uint8_t *cpu[MAX_MIP_LEVELS];
+        /* Mapping for the entire object (all levels) */
+        uint8_t *cpu;
 
-        /* Not necessarily a GPU mapping of cpu! In case of texture tiling, gpu
-         * points to the GPU-side, tiled texture, while cpu points to the
-         * CPU-side, untiled texture from mesa */
+        /* GPU address for the object */
+        mali_ptr gpu;
 
-        mali_ptr gpu[MAX_MIP_LEVELS];
+        /* Size of all entire trees */
+        size_t size;
 
-        /* Memory entry corresponding to gpu above */
-        struct panfrost_memory_entry *entry[MAX_MIP_LEVELS];
+        /* Distance from tree to tree */
+        unsigned cubemap_stride;
 
         /* Set if this bo was imported rather than allocated */
         bool imported;
 
-        /* Number of bytes of the imported allocation */
-        size_t imported_size;
-
-        /* Set for tiled, clear for linear. */
-        bool tiled;
-
-        /* Is something other than level 0 ever written? */
-        bool is_mipmap;
+        /* Internal layout (tiled?) */
+        enum panfrost_memory_layout layout;
 
         /* If AFBC is enabled for this resource, we lug around an AFBC
          * metadata buffer as well. The actual AFBC resource is also in
-         * afbc_slab (only defined for AFBC) at position afbc_main_offset */
+         * afbc_slab (only defined for AFBC) at position afbc_main_offset
+         */
 
-        bool has_afbc;
         struct panfrost_memory afbc_slab;
         int afbc_metadata_size;
 
-        /* Similarly for TE */
+        /* If transaciton elimination is enabled, we have a dedicated
+         * buffer for that as well. */
+
         bool has_checksum;
         struct panfrost_memory checksum_slab;
         int checksum_stride;
+
+        int gem_handle;
 };
 
 struct panfrost_resource {
@@ -84,6 +96,17 @@ static inline struct panfrost_resource *
 pan_resource(struct pipe_resource *p)
 {
    return (struct panfrost_resource *)p;
+}
+
+struct panfrost_gtransfer {
+        struct pipe_transfer base;
+        void *map;
+};
+
+static inline struct panfrost_gtransfer *
+pan_transfer(struct pipe_transfer *p)
+{
+   return (struct panfrost_gtransfer *)p;
 }
 
 void panfrost_resource_screen_init(struct panfrost_screen *screen);

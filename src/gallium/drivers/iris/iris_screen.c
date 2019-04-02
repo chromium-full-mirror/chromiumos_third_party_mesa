@@ -146,7 +146,6 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_DOUBLES:
    case PIPE_CAP_INT64:
    case PIPE_CAP_INT64_DIVMOD:
-   case PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY:
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
@@ -173,6 +172,7 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_LOAD_CONSTBUF:
    case PIPE_CAP_NIR_COMPACT_ARRAYS:
    case PIPE_CAP_DRAW_PARAMETERS:
+   case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
       return true;
    case PIPE_CAP_TGSI_FS_FBFETCH:
    case PIPE_CAP_POST_DEPTH_COVERAGE:
@@ -202,6 +202,8 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
       /* 3DSTATE_CONSTANT_XS requires the start of UBOs to be 32B aligned */
       return 32;
+   case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
+      return IRIS_MAP_BUFFER_ALIGNMENT;
    case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
       /* Choose a cacheline (64 bytes) so that we can safely have the CPU and
        * GPU writing the same SSBO on non-coherent systems (Atom CPUs).  With
@@ -254,6 +256,11 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
        */
       return devinfo->has_llc;
 
+   case PIPE_CAP_CONTEXT_PRIORITY_MASK:
+      return PIPE_CONTEXT_PRIORITY_LOW |
+             PIPE_CONTEXT_PRIORITY_MEDIUM |
+             PIPE_CONTEXT_PRIORITY_HIGH;
+
    // XXX: don't hardcode 00:00:02.0 PCI here
    case PIPE_CAP_PCI_GROUP:
       return 0;
@@ -300,8 +307,6 @@ iris_get_shader_param(struct pipe_screen *pscreen,
                       enum pipe_shader_type p_stage,
                       enum pipe_shader_cap param)
 {
-   struct iris_screen *screen = (struct iris_screen *)pscreen;
-   struct brw_compiler *compiler = screen->compiler;
    gl_shader_stage stage = stage_from_pipe(p_stage);
 
    /* this is probably not totally correct.. but it's a start: */
@@ -381,7 +386,6 @@ iris_get_compute_param(struct pipe_screen *pscreen,
                        void *ret)
 {
    struct iris_screen *screen = (struct iris_screen *)pscreen;
-   struct brw_compiler *compiler = screen->compiler;
    const struct gen_device_info *devinfo = &screen->devinfo;
 
    const unsigned max_threads = MIN2(64, devinfo->max_cs_threads);
@@ -493,13 +497,6 @@ iris_getparam(struct iris_screen *screen, int param, int *value)
       return -errno;
 
    return 0;
-}
-
-static bool
-iris_getparam_boolean(struct iris_screen *screen, int param)
-{
-   int value = 0;
-   return (iris_getparam(screen, param, &value) == 0) && value;
 }
 
 static int

@@ -33,6 +33,8 @@
    .lower_sub = true,                                                         \
    .lower_fdiv = true,                                                        \
    .lower_scmp = true,                                                        \
+   .lower_flrp16 = true,                                                      \
+   .lower_fmod16 = true,                                                      \
    .lower_fmod32 = true,                                                      \
    .lower_fmod64 = false,                                                     \
    .lower_bitfield_extract = true,                                            \
@@ -159,7 +161,7 @@ brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo)
       nir_lower_dround_even |
       nir_lower_dmod;
 
-   if (!devinfo->has_64bit_types) {
+   if (!devinfo->has_64bit_types || (INTEL_DEBUG & DEBUG_SOFT64)) {
       int64_options |= nir_lower_mov64 |
                        nir_lower_icmp64 |
                        nir_lower_iadd64 |
@@ -170,6 +172,13 @@ brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo)
                        nir_lower_shift64;
       fp64_options |= nir_lower_fp64_full_software;
    }
+
+   /* The Bspec's section tittled "Instruction_multiply[DevBDW+]" claims that
+    * destination type can be Quadword and source type Doubleword for Gen8 and
+    * Gen9. So, lower 64 bit multiply instruction on rest of the platforms.
+    */
+   if (devinfo->gen < 8 || devinfo->gen > 9)
+      int64_options |= nir_lower_imul_2x32_64;
 
    /* We want the GLSL compiler to emit code that uses condition codes */
    for (int i = 0; i < MESA_SHADER_STAGES; i++) {
@@ -199,7 +208,6 @@ brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo)
       nir_options->lower_doubles_options = fp64_options;
       compiler->glsl_compiler_options[i].NirOptions = nir_options;
 
-      compiler->glsl_compiler_options[i].LowerBufferInterfaceBlocks = true;
       compiler->glsl_compiler_options[i].ClampBlockIndicesToArrayBounds = true;
    }
 
