@@ -184,13 +184,6 @@ BUILT_SOURCES += es1api/glapi_mapi_tmp.h
 
 pkgconfig_DATA += es1api/glesv1_cm.pc
 
-GLES_includedir = $(includedir)/GLES
-GLES_include_HEADERS = \
-	$(top_srcdir)/include/GLES/egl.h \
-	$(top_srcdir)/include/GLES/gl.h \
-	$(top_srcdir)/include/GLES/glext.h \
-	$(top_srcdir)/include/GLES/glplatform.h
-
 lib_LTLIBRARIES += es1api/libGLESv1_CM@GLES_LIB_SUFFIX@.la
 
 es1api_libGLESv1_CM@GLES_LIB_SUFFIX@_la_SOURCES = entry.c es1api/glapi_mapi_tmp.h
@@ -212,6 +205,15 @@ es1api_libGLESv1_CM@GLES_LIB_SUFFIX@_la_LIBADD += shared-glapi/libglapi.la
 endif # HAVE_OPENGL_ES1
 endif # USE_LIBGLVND
 
+if HAVE_OPENGL_ES1
+GLES_includedir = $(includedir)/GLES
+GLES_include_HEADERS = \
+	$(top_srcdir)/include/GLES/egl.h \
+	$(top_srcdir)/include/GLES/gl.h \
+	$(top_srcdir)/include/GLES/glext.h \
+	$(top_srcdir)/include/GLES/glplatform.h
+endif # HAVE_OPENGL_ES1
+
 es1api/glapi_mapi_tmp.h: $(glapi_gen_mapi_deps)
 	$(MKDIR_GEN)
 	$(glapi_gen_mapi) glesv1 $(glapi_gen_gl_xml) > $@
@@ -222,21 +224,6 @@ if HAVE_OPENGL_ES2
 TESTS += es2api/ABI-check
 
 BUILT_SOURCES += es2api/glapi_mapi_tmp.h
-
-pkgconfig_DATA += es2api/glesv2.pc
-
-GLES2_includedir = $(includedir)/GLES2
-GLES2_include_HEADERS = \
-	$(top_srcdir)/include/GLES2/gl2.h \
-	$(top_srcdir)/include/GLES2/gl2ext.h \
-	$(top_srcdir)/include/GLES2/gl2platform.h
-GLES3_includedir = $(includedir)/GLES3
-GLES3_include_HEADERS = \
-	$(top_srcdir)/include/GLES3/gl3.h \
-	$(top_srcdir)/include/GLES3/gl31.h \
-	$(top_srcdir)/include/GLES3/gl32.h \
-	$(top_srcdir)/include/GLES3/gl3ext.h \
-	$(top_srcdir)/include/GLES3/gl3platform.h
 
 lib_LTLIBRARIES += es2api/libGLESv2@GLES_LIB_SUFFIX@.la
 
@@ -258,6 +245,23 @@ es2api_libGLESv2@GLES_LIB_SUFFIX@_la_LDFLAGS = \
 es2api_libGLESv2@GLES_LIB_SUFFIX@_la_LIBADD += shared-glapi/libglapi.la
 endif # HAVE_OPENGL_ES2
 endif # USE_LIBGLVND
+
+if HAVE_OPENGL_ES2
+pkgconfig_DATA += es2api/glesv2.pc
+
+GLES2_includedir = $(includedir)/GLES2
+GLES2_include_HEADERS = \
+	$(top_srcdir)/include/GLES2/gl2.h \
+	$(top_srcdir)/include/GLES2/gl2ext.h \
+	$(top_srcdir)/include/GLES2/gl2platform.h
+GLES3_includedir = $(includedir)/GLES3
+GLES3_include_HEADERS = \
+	$(top_srcdir)/include/GLES3/gl3.h \
+	$(top_srcdir)/include/GLES3/gl31.h \
+	$(top_srcdir)/include/GLES3/gl32.h \
+	$(top_srcdir)/include/GLES3/gl3ext.h \
+	$(top_srcdir)/include/GLES3/gl3platform.h
+endif # HAVE_OPENGL_ES2
 
 es2api/glapi_mapi_tmp.h: $(glapi_gen_mapi_deps)
 	$(MKDIR_GEN)
