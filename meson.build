@@ -132,7 +132,7 @@ if _drivers.contains('auto')
     elif ['arm', 'aarch64'].contains(host_machine.cpu_family())
       _drivers = [
         'kmsro', 'v3d', 'vc4', 'freedreno', 'etnaviv', 'nouveau',
-        'tegra', 'virgl', 'swrast',
+        'tegra', 'virgl', 'lima', 'swrast'
       ]
     else
       error('Unknown architecture @0@. Please pass -Dgallium-drivers to set driver options. Patches gladly accepted to fix this.'.format(
@@ -154,12 +154,15 @@ with_gallium_freedreno = _drivers.contains('freedreno')
 with_gallium_softpipe = _drivers.contains('swrast')
 with_gallium_vc4 = _drivers.contains('vc4')
 with_gallium_v3d = _drivers.contains('v3d')
+with_gallium_panfrost = _drivers.contains('panfrost')
 with_gallium_etnaviv = _drivers.contains('etnaviv')
 with_gallium_tegra = _drivers.contains('tegra')
+with_gallium_iris = _drivers.contains('iris')
 with_gallium_i915 = _drivers.contains('i915')
 with_gallium_svga = _drivers.contains('svga')
 with_gallium_virgl = _drivers.contains('virgl')
 with_gallium_swr = _drivers.contains('swr')
+with_gallium_lima = _drivers.contains('lima')
 
 if cc.get_id() == 'intel'
   if meson.version().version_compare('< 0.49.0')
@@ -201,7 +204,12 @@ endif
 
 with_intel_vk = _vulkan_drivers.contains('intel')
 with_amd_vk = _vulkan_drivers.contains('amd')
+with_freedreno_vk = _vulkan_drivers.contains('freedreno')
 with_any_vk = _vulkan_drivers.length() != 0 and _vulkan_drivers != ['']
+
+if with_freedreno_vk and get_option('I-love-half-baked-turnips') != true
+  error('Cannot enable freedreno vulkan driver')
+endif
 
 if with_dri_swrast and (with_gallium_softpipe or with_gallium_swr)
   error('Only one swrast provider can be built')
@@ -209,8 +217,8 @@ endif
 if with_dri_i915 and with_gallium_i915
   error('Only one i915 provider can be built')
 endif
-if with_gallium_kmsro and not (with_gallium_vc4 or with_gallium_etnaviv or with_gallium_freedreno)
-  error('kmsro driver requires one or more renderonly drivers (vc4, etnaviv, freedreno)')
+if with_gallium_kmsro and not (with_gallium_v3d or with_gallium_vc4 or with_gallium_etnaviv or with_gallium_freedreno or with_gallium_panfrost or with_gallium_lima)
+  error('kmsro driver requires one or more renderonly drivers (vc4, etnaviv, freedreno, panfrost, lima)')
 endif
 if with_gallium_tegra and not with_gallium_nouveau
   error('tegra driver requires nouveau driver')
@@ -368,13 +376,17 @@ if with_glvnd
   elif with_glx == 'disabled' and not with_egl
     error('glvnd requires DRI based GLX and/or EGL')
   endif
+  if get_option('egl-lib-suffix') != ''
+    error('''EGL lib suffix can't be used with libglvnd''')
+  endif
 endif
 
 if with_vulkan_icd_dir == ''
   with_vulkan_icd_dir = join_paths(get_option('datadir'), 'vulkan/icd.d')
 endif
 
-with_dri2 = (with_dri or with_any_vk) and with_dri_platform == 'drm'
+with_dri2 = (with_dri or with_any_vk) and (with_dri_platform == 'drm' or
+  host_machine.system() == 'gnu')
 _dri3 = get_option('dri3')
 if _dri3 == 'auto'
   with_dri3 = system_has_kms_drm and with_dri2
@@ -616,7 +628,8 @@ if with_gallium_st_nine
   if not with_gallium_softpipe
     error('The nine state tracker requires gallium softpipe/llvmpipe.')
   elif not (with_gallium_radeonsi or with_gallium_nouveau or with_gallium_r600
-            or with_gallium_r300 or with_gallium_svga or with_gallium_i915)
+            or with_gallium_r300 or with_gallium_svga or with_gallium_i915
+            or with_gallium_iris)
     error('The nine state tracker requires at least one non-swrast gallium driver.')
   endif
   if not with_dri3
@@ -714,6 +727,9 @@ if with_platform_android
     dependency('hardware'),
     dependency('sync'),
   ]
+  if get_option('platform-sdk-version') >= 26
+    dep_android += dependency('nativewindow')
+  endif
   pre_args += '-DHAVE_ANDROID_PLATFORM'
 endif
 if with_platform_haiku
@@ -800,6 +816,7 @@ endif
 c_args = []
 foreach a : ['-Werror=implicit-function-declaration',
              '-Werror=missing-prototypes', '-Werror=return-type',
+             '-Werror=incompatible-pointer-types',
              '-fno-math-errno',
              '-fno-trapping-math', '-Qunused-arguments']
   if cc.has_argument(a)
@@ -1218,17 +1235,9 @@ if _llvm != 'false'
 endif
 if with_llvm
   _llvm_version = dep_llvm.version().split('.')
-
-  # 3 digits versions in LLVM only started from 3.4.1 on
-  if dep_llvm.version().version_compare('>= 3.4.1')
-    _llvm_patch = _llvm_version[2]
-  else
-    _llvm_patch = '0'
-  endif
-
   pre_args += [
     '-DHAVE_LLVM=0x0@0@0@1@'.format(_llvm_version[0], _llvm_version[1]),
-    '-DMESA_LLVM_VERSION_PATCH=@0@'.format(_llvm_patch),
+    '-DMESA_LLVM_VERSION_STRING="@0@"'.format(dep_llvm.version()),
   ]
 
   # LLVM can be built without rtti, turning off rtti changes the ABI of C++
@@ -1237,11 +1246,15 @@ if with_llvm
   if dep_llvm.get_configtool_variable('has-rtti') == 'NO'
     if with_gallium_nouveau
       error('The Nouveau driver requires rtti. You either need to turn off nouveau or use an LLVM built with LLVM_ENABLE_RTTI.')
+    elif with_gallium_opencl
+      error('The Clover OpenCL state tracker requires rtti, you need to turn off clover or use an LLVM built with LLVM_ENABLE_RTTI.')
     endif
     cpp_args += '-fno-rtti'
   endif
 elif with_amd_vk or with_gallium_radeonsi or with_gallium_swr
   error('The following drivers require LLVM: Radv, RadeonSI, SWR. One of these is enabled, but LLVM is disabled.')
+elif with_gallium_opencl
+  error('The OpenCL "Clover" state tracker requires LLVM, but LLVM is disabled.')
 endif
 
 if (with_amd_vk or with_gallium_radeonsi or with_gallium_opencl or
@@ -1429,8 +1442,6 @@ foreach a : cpp_args
   add_project_arguments(a, language : ['cpp'])
 endforeach
 
-inc_include = include_directories('include')
-
 gl_priv_reqs = []
 
 if with_glx == 'xlib' or with_glx == 'gallium-xlib'
@@ -1463,6 +1474,10 @@ pkg = import('pkgconfig')
 
 env_test = environment()
 env_test.set('NM', find_program('nm').path())
+
+# This quirk needs to be applied to sources with functions defined in assembly
+# as GCC LTO drops them. See: https://bugs.freedesktop.org/show_bug.cgi?id=109391
+gcc_lto_quirk = (cc.get_id() == 'gcc') ? ['-fno-lto'] : []
 
 subdir('include')
 subdir('bin')

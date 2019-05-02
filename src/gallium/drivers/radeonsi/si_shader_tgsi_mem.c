@@ -1042,6 +1042,7 @@ static void resq_emit(
 	args.opcode = ac_image_get_resinfo;
 	args.dim = ac_texture_dim_from_tgsi_target(ctx->screen, target);
 	args.dmask = 0xf;
+	args.attributes = AC_FUNC_ATTR_READNONE;
 
 	if (inst->Instruction.Opcode == TGSI_OPCODE_TXQ) {
 		tex_fetch_ptrs(bld_base, emit_data, &args.resource, NULL, NULL);
@@ -1088,6 +1089,13 @@ LLVMValueRef si_load_sampler_desc(struct si_shader_context *ctx,
 		list = LLVMBuildPointerCast(builder, list,
 					    ac_array_in_const32_addr_space(ctx->v4i32), "");
 		break;
+	case AC_DESC_PLANE_0:
+	case AC_DESC_PLANE_1:
+	case AC_DESC_PLANE_2:
+		/* Only used for the multiplane image support for Vulkan. Should
+		 * never be reached in radeonsi.
+		 */
+		unreachable("Plane descriptor requested in radeonsi.");
 	}
 
 	return ac_build_load_to_sgpr(&ctx->ac, list, index);
@@ -1272,6 +1280,7 @@ si_lower_gather4_integer(struct si_shader_context *ctx,
 		resinfo.sampler = args->sampler;
 		resinfo.lod = ctx->ac.i32_0;
 		resinfo.dmask = 0xf;
+		resinfo.attributes = AC_FUNC_ATTR_READNONE;
 
 		LLVMValueRef texsize =
 			fix_resinfo(ctx, target,
@@ -1776,6 +1785,8 @@ static void si_llvm_emit_fbfetch(const struct lp_build_tgsi_action *action,
 	args.opcode = ac_image_load;
 	args.resource = image;
 	args.dmask = 0xf;
+	args.attributes = AC_FUNC_ATTR_READNONE;
+
 	if (ctx->shader->key.mono.u.ps.fbfetch_msaa)
 		args.dim = ctx->shader->key.mono.u.ps.fbfetch_layered ?
 			ac_image_2darraymsaa : ac_image_2dmsaa;

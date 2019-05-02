@@ -31,6 +31,7 @@ files_mesa_util = files(
   'build_id.h',
   'crc32.c',
   'crc32.h',
+  'dag.c',
   'debug.c',
   'debug.h',
   'disk_cache.c',
@@ -51,6 +52,7 @@ files_mesa_util = files(
   'mesa-sha1.h',
   'os_time.c',
   'os_time.h',
+  'os_file.c',
   'os_misc.c',
   'os_misc.h',
   'u_process.c',
@@ -100,7 +102,21 @@ files_mesa_util = files(
   'vma.h',
 )
 
-install_data('00-mesa-defaults.conf', install_dir : join_paths(get_option('datadir'), 'drirc.d'))
+files_drirc = files('00-mesa-defaults.conf')
+
+install_data(files_drirc, install_dir : join_paths(get_option('datadir'), 'drirc.d'))
+
+if with_tests
+  prog_xmllint = find_program('xmllint', required : false, native : true)
+  if prog_xmllint.found()
+    test(
+      'drirc xml validation',
+      prog_xmllint,
+      args : ['--noout', '--valid', files_drirc],
+      suite : ['util'],
+    )
+  endif
+endif
 
 files_xmlconfig = files(
   'xmlconfig.c',

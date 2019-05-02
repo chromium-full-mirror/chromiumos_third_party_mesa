@@ -53,7 +53,7 @@
 #define ETIME ETIMEDOUT
 #endif
 #include "common/gen_clflush.h"
-#include "common/gen_debug.h"
+#include "dev/gen_debug.h"
 #include "common/gen_gem.h"
 #include "dev/gen_device_info.h"
 #include "libdrm_macros.h"
@@ -67,7 +67,7 @@
 #include "brw_context.h"
 #include "string.h"
 
-#include "i915_drm.h"
+#include "drm-uapi/i915_drm.h"
 
 #ifdef HAVE_VALGRIND
 #include <valgrind.h>

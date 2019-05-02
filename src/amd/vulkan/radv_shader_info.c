@@ -59,9 +59,7 @@ get_deref_offset(nir_deref_instr *instr,
 
 	if (var->data.compact) {
 		assert(instr->deref_type == nir_deref_type_array);
-		nir_const_value *v = nir_src_as_const_value(instr->arr.index);
-		assert(v);
-		*const_out = v->u32[0];
+		*const_out = nir_src_as_uint(instr->arr.index);
 		return;
 	}
 
@@ -80,9 +78,8 @@ get_deref_offset(nir_deref_instr *instr,
 			}
 		} else if(path.path[idx_lvl]->deref_type == nir_deref_type_array) {
 			unsigned size = glsl_count_attribute_slots(path.path[idx_lvl]->type, false);
-			nir_const_value *v = nir_src_as_const_value(path.path[idx_lvl]->arr.index);
-			if (v)
-				const_offset += v->u32[0] * size;
+			if (nir_src_is_const(path.path[idx_lvl]->arr.index))
+				const_offset += nir_src_as_uint(path.path[idx_lvl]->arr.index) * size;
 		} else
 			unreachable("Uhandled deref type in get_deref_instr_offset");
 	}
@@ -185,6 +182,31 @@ gather_intrinsic_store_deref_info(const nir_shader *nir,
 }
 
 static void
+gather_push_constant_info(const nir_shader *nir,
+			  const nir_intrinsic_instr *instr,
+			  struct radv_shader_info *info)
+{
+	int base = nir_intrinsic_base(instr);
+
+	if (!nir_src_is_const(instr->src[0])) {
+		info->has_indirect_push_constants = true;
+	} else {
+		uint32_t min = base + nir_src_as_uint(instr->src[0]);
+		uint32_t max = min + instr->num_components * 4;
+
+		info->max_push_constant_used =
+			MAX2(max, info->max_push_constant_used);
+		info->min_push_constant_used =
+			MIN2(min, info->min_push_constant_used);
+	}
+
+	if (instr->dest.ssa.bit_size != 32)
+		info->has_only_32bit_push_constants = false;
+
+	info->loads_push_constants = true;
+}
+
+static void
 gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
 		      struct radv_shader_info *info)
 {
@@ -237,7 +259,7 @@ gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
 		info->uses_prim_id = true;
 		break;
 	case nir_intrinsic_load_push_constant:
-		info->loads_push_constants = true;
+		gather_push_constant_info(nir, instr, info);
 		break;
 	case nir_intrinsic_vulkan_resource_index:
 		info->desc_set_used_mask |= (1 << nir_intrinsic_desc_set(instr));
@@ -493,10 +515,18 @@ gather_xfb_info(const nir_shader *nir, struct radv_shader_info *info)
 	}
 
 	for (unsigned i = 0; i < NIR_MAX_XFB_BUFFERS; i++) {
-		so->strides[i] = xfb->strides[i] / 4;
+		so->strides[i] = xfb->buffers[i].stride / 4;
 	}
 
 	ralloc_free(xfb);
+}
+
+void
+radv_nir_shader_info_init(struct radv_shader_info *info)
+{
+	/* Assume that shaders only have 32-bit push constants by default. */
+	info->min_push_constant_used = UINT8_MAX;
+	info->has_only_32bit_push_constants = true;
 }
 
 void
@@ -510,6 +540,7 @@ radv_nir_shader_info_pass(const struct nir_shader *nir,
 	if (options->layout && options->layout->dynamic_offset_count &&
 	    (options->layout->dynamic_shader_stages & mesa_to_vk_shader_stage(nir->info.stage))) {
 		info->loads_push_constants = true;
+		info->loads_dynamic_offsets = true;
 	}
 
 	nir_foreach_variable(variable, &nir->inputs)
