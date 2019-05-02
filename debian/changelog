@@ -1,8 +1,9 @@
-mesa (19.0.2-1ubuntu1) UNRELEASED; urgency=medium
+mesa (19.0.2~cros-1) experimental; urgency=medium
 
   * Downgrade to llvm/clang-7.
+  * Changes to build with stretch-backports. 
 
- -- David Riley <davidriley@chromium.org>  Thu, 02 May 2019 18:57:52 +0000
+ -- David Riley <davidriley@google.com>  Thu, 02 May 2019 14:39:48 -0700
 
 mesa (19.0.2-1) experimental; urgency=medium
 
