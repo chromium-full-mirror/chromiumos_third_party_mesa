@@ -41,7 +41,7 @@ Build-Depends:
  libwayland-dev (>= 1.15.0) [linux-any],
  libwayland-egl-backend-dev (>= 1.15.0) [linux-any],
  libclang-7-dev (>= 1:7~) [amd64 arm64 armel armhf i386 kfreebsd-amd64 kfreebsd-i386 mips mips64el mipsel powerpc ppc64 ppc64el s390x sparc64],
- libclc-dev (>= 0.2.0+git20180917-1~) [amd64 arm64 armel armhf i386 kfreebsd-amd64 kfreebsd-i386 mips mips64el mipsel powerpc ppc64 ppc64el s390x sparc64],
+ libclc-dev,
  wayland-protocols (>= 1.9),
  zlib1g-dev,
  libglvnd-core-dev,
