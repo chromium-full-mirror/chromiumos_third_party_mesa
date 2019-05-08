@@ -90,7 +90,6 @@ private:
    nir_alu_instr *emit(nir_op op, unsigned dest_size, nir_ssa_def *src1,
                        nir_ssa_def *src2, nir_ssa_def *src3);
 
-   bool supports_ints;
    bool supports_std430;
 
    nir_shader *shader;
@@ -263,7 +262,6 @@ glsl_to_nir(struct gl_context *ctx,
 
 nir_visitor::nir_visitor(gl_context *ctx, nir_shader *shader)
 {
-   this->supports_ints = shader->options->native_integers;
    this->supports_std430 = ctx->Const.UseSTD430AsDefaultPacking;
    this->shader = shader;
    this->is_global = true;
@@ -307,10 +305,7 @@ nir_visitor::constant_copy(ir_constant *ir, void *mem_ctx)
       assert(cols == 1);
 
       for (unsigned r = 0; r < rows; r++)
-         if (supports_ints)
-            ret->values[0].u32[r] = ir->value.u[r];
-         else
-            ret->values[0].f32[r] = ir->value.u[r];
+         ret->values[0][r].u32 = ir->value.u[r];
 
       break;
 
@@ -319,24 +314,21 @@ nir_visitor::constant_copy(ir_constant *ir, void *mem_ctx)
       assert(cols == 1);
 
       for (unsigned r = 0; r < rows; r++)
-         if (supports_ints)
-            ret->values[0].i32[r] = ir->value.i[r];
-         else
-            ret->values[0].f32[r] = ir->value.i[r];
+         ret->values[0][r].i32 = ir->value.i[r];
 
       break;
 
    case GLSL_TYPE_FLOAT:
       for (unsigned c = 0; c < cols; c++) {
          for (unsigned r = 0; r < rows; r++)
-            ret->values[c].f32[r] = ir->value.f[c * rows + r];
+            ret->values[c][r].f32 = ir->value.f[c * rows + r];
       }
       break;
 
    case GLSL_TYPE_DOUBLE:
       for (unsigned c = 0; c < cols; c++) {
          for (unsigned r = 0; r < rows; r++)
-            ret->values[c].f64[r] = ir->value.d[c * rows + r];
+            ret->values[c][r].f64 = ir->value.d[c * rows + r];
       }
       break;
 
@@ -345,7 +337,7 @@ nir_visitor::constant_copy(ir_constant *ir, void *mem_ctx)
       assert(cols == 1);
 
       for (unsigned r = 0; r < rows; r++)
-         ret->values[0].u64[r] = ir->value.u64[r];
+         ret->values[0][r].u64 = ir->value.u64[r];
       break;
 
    case GLSL_TYPE_INT64:
@@ -353,7 +345,7 @@ nir_visitor::constant_copy(ir_constant *ir, void *mem_ctx)
       assert(cols == 1);
 
       for (unsigned r = 0; r < rows; r++)
-         ret->values[0].i64[r] = ir->value.i64[r];
+         ret->values[0][r].i64 = ir->value.i64[r];
       break;
 
    case GLSL_TYPE_BOOL:
@@ -361,7 +353,7 @@ nir_visitor::constant_copy(ir_constant *ir, void *mem_ctx)
       assert(cols == 1);
 
       for (unsigned r = 0; r < rows; r++)
-         ret->values[0].b[r] = ir->value.b[r];
+         ret->values[0][r].b = ir->value.b[r];
 
       break;
 
@@ -523,7 +515,7 @@ nir_visitor::visit(ir_variable *ir)
          var->type = wrap_type_in_array(explicit_ifc_type, ir->type);
       } else {
          /* Otherwise, this variable is one entry in the interface */
-         UNUSED bool found;
+         UNUSED bool found = false;
          for (unsigned i = 0; i < explicit_ifc_type->length; i++) {
             const glsl_struct_field *field =
                &explicit_ifc_type->fields.structure[i];
@@ -1208,10 +1200,10 @@ nir_visitor::visit(ir_call *ir)
          /* Set the image variable dereference. */
          exec_node *param = ir->actual_parameters.get_head();
          ir_dereference *image = (ir_dereference *)param;
-         const glsl_type *type =
-            image->variable_referenced()->type->without_array();
+         nir_deref_instr *deref = evaluate_deref(image);
+         const glsl_type *type = deref->type;
 
-         instr->src[0] = nir_src_for_ssa(&evaluate_deref(image)->dest.ssa);
+         instr->src[0] = nir_src_for_ssa(&deref->dest.ssa);
          param = param->get_next();
 
          /* Set the intrinsic destination. */
@@ -1736,15 +1728,6 @@ type_is_signed(glsl_base_type type)
       type == GLSL_TYPE_INT16;
 }
 
-static bool
-type_is_int(glsl_base_type type)
-{
-   return type == GLSL_TYPE_UINT || type == GLSL_TYPE_INT ||
-      type == GLSL_TYPE_UINT8 || type == GLSL_TYPE_INT8 ||
-      type == GLSL_TYPE_UINT16 || type == GLSL_TYPE_INT16 ||
-      type == GLSL_TYPE_UINT64 || type == GLSL_TYPE_INT64;
-}
-
 void
 nir_visitor::visit(ir_expression *ir)
 {
@@ -1860,16 +1843,9 @@ nir_visitor::visit(ir_expression *ir)
 
    glsl_base_type types[4];
    for (unsigned i = 0; i < ir->num_operands; i++)
-      if (supports_ints || !type_is_int(ir->operands[i]->type->base_type))
-         types[i] = ir->operands[i]->type->base_type;
-      else
-         types[i] = GLSL_TYPE_FLOAT;
+      types[i] = ir->operands[i]->type->base_type;
 
-   glsl_base_type out_type;
-   if (supports_ints || !type_is_int(ir->type->base_type))
-      out_type = ir->type->base_type;
-   else
-      out_type = GLSL_TYPE_FLOAT;
+   glsl_base_type out_type = ir->type->base_type;
 
    switch (ir->operation) {
    case ir_unop_bit_not: result = nir_inot(&b, srcs[0]); break;
@@ -1900,19 +1876,19 @@ nir_visitor::visit(ir_expression *ir)
    case ir_unop_exp2: result = nir_fexp2(&b, srcs[0]); break;
    case ir_unop_log2: result = nir_flog2(&b, srcs[0]); break;
    case ir_unop_i2f:
-      result = supports_ints ? nir_i2f32(&b, srcs[0]) : nir_fmov(&b, srcs[0]);
+      result = nir_i2f32(&b, srcs[0]);
       break;
    case ir_unop_u2f:
-      result = supports_ints ? nir_u2f32(&b, srcs[0]) : nir_fmov(&b, srcs[0]);
+      result = nir_u2f32(&b, srcs[0]);
       break;
    case ir_unop_b2f:
       result = nir_b2f32(&b, srcs[0]);
       break;
    case ir_unop_f2i:
-      result = supports_ints ? nir_f2i32(&b, srcs[0]) : nir_ftrunc(&b, srcs[0]);
+      result = nir_f2i32(&b, srcs[0]);
       break;
    case ir_unop_f2u:
-      result = supports_ints ? nir_f2u32(&b, srcs[0]) : nir_ftrunc(&b, srcs[0]);
+      result = nir_f2u32(&b, srcs[0]);
       break;
    case ir_unop_f2b:
    case ir_unop_i2b:
@@ -2410,10 +2386,21 @@ nir_visitor::visit(ir_texture *ir)
    }
 
    nir_deref_instr *sampler_deref = evaluate_deref(ir->sampler);
-   instr->src[0].src = nir_src_for_ssa(&sampler_deref->dest.ssa);
-   instr->src[0].src_type = nir_tex_src_texture_deref;
-   instr->src[1].src = nir_src_for_ssa(&sampler_deref->dest.ssa);
-   instr->src[1].src_type = nir_tex_src_sampler_deref;
+
+   /* check for bindless handles */
+   if (sampler_deref->mode != nir_var_uniform ||
+       nir_deref_instr_get_variable(sampler_deref)->data.bindless) {
+      nir_ssa_def *load = nir_load_deref(&b, sampler_deref);
+      instr->src[0].src = nir_src_for_ssa(load);
+      instr->src[0].src_type = nir_tex_src_texture_handle;
+      instr->src[1].src = nir_src_for_ssa(load);
+      instr->src[1].src_type = nir_tex_src_sampler_handle;
+   } else {
+      instr->src[0].src = nir_src_for_ssa(&sampler_deref->dest.ssa);
+      instr->src[0].src_type = nir_tex_src_texture_deref;
+      instr->src[1].src = nir_src_for_ssa(&sampler_deref->dest.ssa);
+      instr->src[1].src_type = nir_tex_src_sampler_deref;
+   }
 
    unsigned src_number = 2;
 

@@ -124,6 +124,10 @@ radv_optimize_nir(struct nir_shader *shader, bool optimize_conservatively,
                   bool allow_copies)
 {
         bool progress;
+        unsigned lower_flrp =
+                (shader->options->lower_flrp16 ? 16 : 0) |
+                (shader->options->lower_flrp32 ? 32 : 0) |
+                (shader->options->lower_flrp64 ? 64 : 0);
 
         do {
                 progress = false;
@@ -158,12 +162,33 @@ radv_optimize_nir(struct nir_shader *shader, bool optimize_conservatively,
 			NIR_PASS(progress, shader, nir_opt_remove_phis);
                         NIR_PASS(progress, shader, nir_opt_dce);
                 }
-                NIR_PASS(progress, shader, nir_opt_if);
+                NIR_PASS(progress, shader, nir_opt_if, true);
                 NIR_PASS(progress, shader, nir_opt_dead_cf);
                 NIR_PASS(progress, shader, nir_opt_cse);
                 NIR_PASS(progress, shader, nir_opt_peephole_select, 8, true, true);
                 NIR_PASS(progress, shader, nir_opt_algebraic);
                 NIR_PASS(progress, shader, nir_opt_constant_folding);
+
+                if (lower_flrp != 0) {
+                        bool lower_flrp_progress;
+                        NIR_PASS(lower_flrp_progress,
+                                 shader,
+                                 nir_lower_flrp,
+                                 lower_flrp,
+                                 false /* always_precise */,
+                                 shader->options->lower_ffma);
+                        if (lower_flrp_progress) {
+                                NIR_PASS(progress, shader,
+                                         nir_opt_constant_folding);
+                                progress = true;
+                        }
+
+                        /* Nothing should rematerialize any flrps, so we only
+                         * need to do this lowering once.
+                         */
+                        lower_flrp = 0;
+                }
+
                 NIR_PASS(progress, shader, nir_opt_undef);
                 NIR_PASS(progress, shader, nir_opt_conditional_discard);
                 if (shader->options->max_unroll_iterations) {
@@ -181,7 +206,8 @@ radv_shader_compile_to_nir(struct radv_device *device,
 			   const char *entrypoint_name,
 			   gl_shader_stage stage,
 			   const VkSpecializationInfo *spec_info,
-			   const VkPipelineCreateFlags flags)
+			   const VkPipelineCreateFlags flags,
+			   const struct radv_pipeline_layout *layout)
 {
 	nir_shader *nir;
 	nir_function *entry_point;
@@ -223,21 +249,28 @@ radv_shader_compile_to_nir(struct radv_device *device,
 		const struct spirv_to_nir_options spirv_options = {
 			.lower_ubo_ssbo_access_to_offsets = true,
 			.caps = {
+				.derivative_group = true,
 				.descriptor_array_dynamic_indexing = true,
+				.descriptor_array_non_uniform_indexing = true,
+				.descriptor_indexing = true,
 				.device_group = true,
 				.draw_parameters = true,
+				.float16 = true,
 				.float64 = true,
 				.gcn_shader = true,
 				.geometry_streams = true,
 				.image_read_without_format = true,
 				.image_write_without_format = true,
+				.int8 = true,
 				.int16 = true,
 				.int64 = true,
+				.int64_atomics = true,
 				.multiview = true,
 				.physical_storage_buffer_address = true,
 				.runtime_descriptor_array = true,
 				.shader_viewport_index_layer = true,
 				.stencil_export = true,
+				.storage_8bit = true,
 				.storage_16bit = true,
 				.storage_image_ms = true,
 				.subgroup_arithmetic = true,
@@ -250,8 +283,6 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				.transform_feedback = true,
 				.trinary_minmax = true,
 				.variable_pointers = true,
-				.storage_8bit = true,
-				.int8 = true,
 			},
 			.ubo_ptr_type = glsl_vector_type(GLSL_TYPE_UINT, 2),
 			.ssbo_ptr_type = glsl_vector_type(GLSL_TYPE_UINT, 2),
@@ -307,6 +338,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 
 		NIR_PASS_V(nir, nir_lower_system_values);
 		NIR_PASS_V(nir, nir_lower_clip_cull_distance_arrays);
+		NIR_PASS_V(nir, radv_nir_lower_ycbcr_textures, layout);
 	}
 
 	/* Vulkan uses the separate-shader linking model */

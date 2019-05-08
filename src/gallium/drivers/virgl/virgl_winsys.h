@@ -41,8 +41,6 @@ struct virgl_drm_caps {
 struct virgl_cmd_buf {
    unsigned cdw;
    uint32_t *buf;
-   int in_fence_fd;
-   bool needs_out_fence_fd;
 };
 
 struct virgl_winsys {
@@ -76,6 +74,8 @@ struct virgl_winsys {
 
    void *(*resource_map)(struct virgl_winsys *vws, struct virgl_hw_res *res);
    void (*resource_wait)(struct virgl_winsys *vws, struct virgl_hw_res *res);
+   boolean (*resource_is_busy)(struct virgl_winsys *vws,
+                               struct virgl_hw_res *res);
 
    struct virgl_hw_res *(*resource_create_from_handle)(struct virgl_winsys *vws,
                                                        struct winsys_handle *whandle);
@@ -89,7 +89,7 @@ struct virgl_winsys {
 
    void (*emit_res)(struct virgl_winsys *vws, struct virgl_cmd_buf *buf, struct virgl_hw_res *res, boolean write_buffer);
    int (*submit_cmd)(struct virgl_winsys *vws, struct virgl_cmd_buf *buf,
-                     int32_t in_fence_fd, int32_t *out_fence_fd);
+                     struct pipe_fence_handle **fence);
 
    boolean (*res_is_referenced)(struct virgl_winsys *vws,
                                 struct virgl_cmd_buf *buf,

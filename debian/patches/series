@@ -1,5 +1,2 @@
-07_gallium-fix-build-failure-on-powerpcspe.diff
-
-# Backports patches.
-dont-enable-10bpc-by-default.diff
-disable-intel-ccs-compression.diff
+# meson fixes
+meson-fix-with-dri2-def-for-hurd.diff

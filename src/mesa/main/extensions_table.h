@@ -8,6 +8,7 @@
 
 EXT(3DFX_texture_compression_FXT1           , TDFX_texture_compression_FXT1          , GLL, GLC,  x ,  x , 1999)
 
+EXT(AMD_compressed_ATC_texture              , AMD_compressed_ATC_texture             ,  x ,  x , ES1, ES2, 2008)
 EXT(AMD_conservative_depth                  , ARB_conservative_depth                 , GLL, GLC,  x ,  x , 2009)
 EXT(AMD_depth_clamp_separate                , AMD_depth_clamp_separate               , GLL, GLC,  x ,  x , 2009)
 EXT(AMD_draw_buffers_blend                  , ARB_draw_buffers_blend                 , GLL, GLC,  x ,  x , 2009)
@@ -239,7 +240,9 @@ EXT(EXT_framebuffer_sRGB                    , EXT_framebuffer_sRGB              
 EXT(EXT_geometry_point_size                 , OES_geometry_shader                    ,  x ,  x ,  x ,  31, 2015)
 EXT(EXT_geometry_shader                     , OES_geometry_shader                    ,  x ,  x ,  x ,  31, 2015)
 EXT(EXT_gpu_program_parameters              , EXT_gpu_program_parameters             , GLL,  x ,  x ,  x , 2006)
-EXT(EXT_gpu_shader4                         , EXT_gpu_shader4                        , GLL, GLC,  x ,  x , 2006)
+/* Since all of EXT_gpu_shader4 features were rolled into GLSL 1.40, it shouldn't be exposed in a core context.
+ * Additionally, EXT_gpu_shader4 would reintroduce functions that were removed in GLSL 1.40. */
+EXT(EXT_gpu_shader4                         , EXT_gpu_shader4                        , GLL,  x ,  x ,  x , 2006)
 EXT(EXT_gpu_shader5                         , ARB_gpu_shader5                        ,  x ,  x ,  x ,  31, 2014)
 EXT(EXT_map_buffer_range                    , ARB_map_buffer_range                   ,  x ,  x , ES1, ES2, 2012)
 EXT(EXT_memory_object                       , EXT_memory_object                      , GLL, GLC,  x , ES2, 2017)
@@ -268,6 +271,7 @@ EXT(EXT_separate_shader_objects             , dummy_true                        
 EXT(EXT_separate_specular_color             , dummy_true                             , GLL,  x ,  x ,  x , 1997)
 EXT(EXT_shader_framebuffer_fetch            , EXT_shader_framebuffer_fetch           , GLL, GLC,  x , ES2, 2013)
 EXT(EXT_shader_framebuffer_fetch_non_coherent, EXT_shader_framebuffer_fetch_non_coherent, GLL, GLC,  x, ES2, 2018)
+EXT(EXT_shader_image_load_formatted         , EXT_shader_image_load_formatted        , GLL, GLC,  x ,  x , 2014)
 EXT(EXT_shader_implicit_conversions         , dummy_true                             ,  x ,  x ,  x ,  31, 2013)
 EXT(EXT_shader_integer_mix                  , EXT_shader_integer_mix                 , GLL, GLC,  x ,  30, 2013)
 EXT(EXT_shader_io_blocks                    , dummy_true                             ,  x ,  x ,  x ,  31, 2014)
@@ -283,6 +287,7 @@ EXT(EXT_texture3D                           , dummy_true                        
 EXT(EXT_texture_array                       , EXT_texture_array                      , GLL, GLC,  x ,  x , 2006)
 EXT(EXT_texture_border_clamp                , ARB_texture_border_clamp               ,  x ,  x ,  x , ES2, 2014)
 EXT(EXT_texture_buffer                      , OES_texture_buffer                     ,  x ,  x ,  x ,  31, 2014)
+EXT(EXT_texture_buffer_object               , EXT_texture_buffer_object              , GLL,  x ,  x ,  x , 2007)
 EXT(EXT_texture_compression_bptc            , ARB_texture_compression_bptc           ,  x ,  x ,  x ,  30, 2017)
 EXT(EXT_texture_compression_dxt1            , ANGLE_texture_compression_dxt          , GLL, GLC, ES1, ES2, 2004)
 EXT(EXT_texture_compression_latc            , EXT_texture_compression_latc           , GLL,  x ,  x ,  x , 2006)
@@ -356,6 +361,7 @@ EXT(MESA_ycbcr_texture                      , MESA_ycbcr_texture                
 EXT(NVX_gpu_memory_info                     , NVX_gpu_memory_info                    , GLL, GLC,  x ,  x , 2013)
 
 EXT(NV_blend_square                         , dummy_true                             , GLL,  x ,  x ,  x , 1999)
+EXT(NV_compute_shader_derivatives           , NV_compute_shader_derivatives          , GLL, GLC,  x ,  32, 2018)
 EXT(NV_conditional_render                   , NV_conditional_render                  , GLL, GLC,  x , ES2, 2008)
 EXT(NV_conservative_raster                  , NV_conservative_raster                 , GLL, GLC, ES1, ES2, 2015)
 EXT(NV_conservative_raster_dilate           , NV_conservative_raster_dilate          , GLL, GLC, ES1, ES2, 2015)

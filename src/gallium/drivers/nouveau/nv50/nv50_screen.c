@@ -318,6 +318,7 @@ nv50_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_GLSL_TESS_LEVELS_AS_INPUTS:
    case PIPE_CAP_NIR_COMPACT_ARRAYS:
    case PIPE_CAP_COMPUTE:
+   case PIPE_CAP_IMAGE_LOAD_FORMATTED:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:
@@ -898,7 +899,6 @@ static const nir_shader_compiler_options nir_options = {
    .lower_extract_byte = true,
    .lower_extract_word = true,
    .lower_all_io_to_temps = false,
-   .native_integers = true,
    .lower_cs_local_index_from_id = true,
    .use_interpolated_input_intrinsics = true,
    .max_unroll_iterations = 32,
