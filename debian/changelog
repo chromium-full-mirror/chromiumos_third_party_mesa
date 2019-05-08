@@ -1,10 +1,10 @@
-mesa (19.1.0~cros-3) UNRELEASED; urgency=medium
+mesa (19.1.0~cros-4) UNRELEASED; urgency=medium
 
-  * New upstream release. 
+  * New upstream release (4fd8161773a839e5cac75854964dd16670bf7173).
   * Removed old patches. 
-  * Remove old targets no longer build with GLVND.
+  * Remove old targets no longer build with GLVND. 
 
- -- David Riley <davidriley@google.com>  Thu, 02 May 2019 14:54:02 -0700
+ -- David Riley <davidriley@google.com>  Tue, 07 May 2019 23:22:38 -0700
 
 mesa (19.0.2~cros-1) experimental; urgency=medium
 
