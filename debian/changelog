@@ -1,3 +1,9 @@
+mesa (19.2.0~cros1-0) experimental; urgency=medium
+
+  * New upstream release (0daeb1d127987c8e70afe22cb30f676fb4631813).
+
+ -- David Riley <davidriley@google.com>  Mon, 24 Jun 2019 11:10:27 -0700
+
 mesa (19.2.0~cros0-0) experimental; urgency=medium
 
   * New upstream release (4fd8161773a839e5cac75854964dd16670bf7173).
