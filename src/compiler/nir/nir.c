@@ -1333,6 +1333,19 @@ nir_src_is_dynamically_uniform(nir_src src)
          return true;
    }
 
+   /* Operating together dynamically uniform expressions produces a
+    * dynamically uniform result
+    */
+   if (src.ssa->parent_instr->type == nir_instr_type_alu) {
+      nir_alu_instr *alu = nir_instr_as_alu(src.ssa->parent_instr);
+      for (int i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+         if (!nir_src_is_dynamically_uniform(alu->src[i].src))
+            return false;
+      }
+
+      return true;
+   }
+
    /* XXX: this could have many more tests, such as when a sampler function is
     * called with dynamically uniform arguments.
     */
@@ -2028,7 +2041,6 @@ nir_rewrite_image_intrinsic(nir_intrinsic_instr *intrin, nir_ssa_def *src,
 
    nir_intrinsic_set_image_dim(intrin, glsl_get_sampler_dim(deref->type));
    nir_intrinsic_set_image_array(intrin, glsl_sampler_type_is_array(deref->type));
-   nir_intrinsic_set_access(intrin, var->data.image.access);
    nir_intrinsic_set_format(intrin, var->data.image.format);
 
    nir_instr_rewrite_src(&intrin->instr, &intrin->src[0],

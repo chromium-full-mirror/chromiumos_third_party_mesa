@@ -74,26 +74,11 @@
 #define MI_ALU_STORE     0x180
 #define MI_ALU_STOREINV  0x580
 
-#define MI_ALU_R0        0x00
-#define MI_ALU_R1        0x01
-#define MI_ALU_R2        0x02
-#define MI_ALU_R3        0x03
-#define MI_ALU_R4        0x04
 #define MI_ALU_SRCA      0x20
 #define MI_ALU_SRCB      0x21
 #define MI_ALU_ACCU      0x31
 #define MI_ALU_ZF        0x32
 #define MI_ALU_CF        0x33
-
-#define _MI_ALU(op, x, y)  (((op) << 20) | ((x) << 10) | (y))
-
-#define _MI_ALU0(op)       _MI_ALU(MI_ALU_##op, 0, 0)
-#define _MI_ALU1(op, x)    _MI_ALU(MI_ALU_##op, x, 0)
-#define _MI_ALU2(op, x, y) _MI_ALU(MI_ALU_##op, x, y)
-
-#define MI_ALU0(op)        _MI_ALU0(op)
-#define MI_ALU1(op, x)     _MI_ALU1(op, MI_ALU_##x)
-#define MI_ALU2(op, x, y)  _MI_ALU2(op, MI_ALU_##x, MI_ALU_##y)
 
 #define emit_lri32 ice->vtbl.load_register_imm32
 #define emit_lri64 ice->vtbl.load_register_imm64
@@ -172,7 +157,8 @@ mark_available(struct iris_context *ice, struct iris_query *q)
    } else {
       /* Order available *after* the query results. */
       flags |= PIPE_CONTROL_FLUSH_ENABLE;
-      iris_emit_pipe_control_write(batch, flags, bo, offset, true);
+      iris_emit_pipe_control_write(batch, "query: mark available",
+                                   flags, bo, offset, true);
    }
 }
 
@@ -190,7 +176,8 @@ iris_pipelined_write(struct iris_batch *batch,
       devinfo->gen == 9 && devinfo->gt == 4 ?  PIPE_CONTROL_CS_STALL : 0;
    struct iris_bo *bo = iris_resource_bo(q->query_state_ref.res);
 
-   iris_emit_pipe_control_write(batch, flags | optional_cs_stall,
+   iris_emit_pipe_control_write(batch, "query: pipelined snapshot write",
+                                flags | optional_cs_stall,
                                 bo, offset, 0ull);
 }
 
@@ -203,6 +190,7 @@ write_value(struct iris_context *ice, struct iris_query *q, unsigned offset)
 
    if (!iris_is_query_pipelined(q)) {
       iris_emit_pipe_control_flush(batch,
+                                   "query: non-pipelined snapshot write",
                                    PIPE_CONTROL_CS_STALL |
                                    PIPE_CONTROL_STALL_AT_SCOREBOARD);
       q->stalled = true;
@@ -217,7 +205,10 @@ write_value(struct iris_context *ice, struct iris_query *q, unsigned offset)
           *  bit set prior to programming a PIPE_CONTROL with Write PS Depth
           *  Count sync operation."
           */
-         iris_emit_pipe_control_flush(batch, PIPE_CONTROL_DEPTH_STALL);
+         iris_emit_pipe_control_flush(batch,
+                                      "workaround: depth stall before writing "
+                                      "PS_DEPTH_COUNT",
+                                      PIPE_CONTROL_DEPTH_STALL);
       }
       iris_pipelined_write(&ice->batches[IRIS_BATCH_RENDER], q,
                            PIPE_CONTROL_WRITE_DEPTH_COUNT |
@@ -275,6 +266,7 @@ write_overflow_values(struct iris_context *ice, struct iris_query *q, bool end)
    uint32_t offset = q->query_state_ref.offset;
 
    iris_emit_pipe_control_flush(batch,
+                                "query: write SO overflow snapshots",
                                 PIPE_CONTROL_CS_STALL |
                                 PIPE_CONTROL_STALL_AT_SCOREBOARD);
    for (uint32_t i = 0; i < count; i++) {
@@ -874,6 +866,11 @@ iris_get_query_result(struct pipe_context *ctx,
    const struct gen_device_info *devinfo = &screen->devinfo;
    struct iris_bo *bo = iris_resource_bo(q->query_state_ref.res);
 
+   if (unlikely(screen->no_hw)) {
+      result->u64 = 0;
+      return true;
+   }
+
    if (!q->ready) {
       if (iris_batch_references(&ice->batches[q->batch_idx], bo))
          iris_batch_flush(&ice->batches[q->batch_idx]);
@@ -952,7 +949,9 @@ iris_get_query_result_resource(struct pipe_context *ctx,
        * and use the result.
        */
       // XXX: Why?  i965 doesn't do this.
-      iris_emit_pipe_control_flush(batch, PIPE_CONTROL_CS_STALL);
+      iris_emit_pipe_control_flush(batch,
+                                   "query: unknown QBO flushing hack",
+                                   PIPE_CONTROL_CS_STALL);
       return;
    }
 
@@ -1025,7 +1024,9 @@ set_predicate_for_result(struct iris_context *ice,
    ice->state.predicate = IRIS_PREDICATE_STATE_USE_BIT;
 
    /* Ensure the memory is coherent for MI_LOAD_REGISTER_* commands. */
-   iris_emit_pipe_control_flush(batch, PIPE_CONTROL_FLUSH_ENABLE);
+   iris_emit_pipe_control_flush(batch,
+                                "conditional rendering: set predicate",
+                                PIPE_CONTROL_FLUSH_ENABLE);
    q->stalled = true;
 
    switch (q->type) {

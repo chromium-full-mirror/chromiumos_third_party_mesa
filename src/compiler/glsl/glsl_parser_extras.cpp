@@ -197,6 +197,8 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
    this->current_function = NULL;
    this->toplevel_ir = NULL;
    this->found_return = false;
+   this->found_begin_interlock = false;
+   this->found_end_interlock = false;
    this->all_invariant = false;
    this->user_structures = NULL;
    this->num_user_structures = 0;
@@ -2226,7 +2228,7 @@ do_common_optimization(exec_list *ir, bool linked,
                        bool native_integers)
 {
    const bool debug = false;
-   GLboolean progress = GL_FALSE;
+   bool progress = false;
 
 #define OPT(PASS, ...) do {                                             \
       if (debug) {                                                      \

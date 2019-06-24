@@ -50,7 +50,7 @@ glsl_type::glsl_type(GLenum gl_type,
    gl_type(gl_type),
    base_type(base_type), sampled_type(GLSL_TYPE_VOID),
    sampler_dimensionality(0), sampler_shadow(0), sampler_array(0),
-   interface_packing(0), interface_row_major(row_major),
+   interface_packing(0), interface_row_major(row_major), packed(0),
    vector_elements(vector_elements), matrix_columns(matrix_columns),
    length(0), explicit_stride(explicit_stride)
 {
@@ -85,7 +85,7 @@ glsl_type::glsl_type(GLenum gl_type, glsl_base_type base_type,
    base_type(base_type), sampled_type(type),
    sampler_dimensionality(dim), sampler_shadow(shadow),
    sampler_array(array), interface_packing(0),
-   interface_row_major(0),
+   interface_row_major(0), packed(0),
    length(0), explicit_stride(0)
 {
    this->mem_ctx = ralloc_context(NULL);
@@ -134,7 +134,7 @@ glsl_type::glsl_type(const glsl_struct_field *fields, unsigned num_fields,
    base_type(GLSL_TYPE_INTERFACE), sampled_type(GLSL_TYPE_VOID),
    sampler_dimensionality(0), sampler_shadow(0), sampler_array(0),
    interface_packing((unsigned) packing),
-   interface_row_major((unsigned) row_major),
+   interface_row_major((unsigned) row_major), packed(0),
    vector_elements(0), matrix_columns(0),
    length(num_fields), explicit_stride(0)
 {
@@ -159,7 +159,7 @@ glsl_type::glsl_type(const glsl_type *return_type,
    gl_type(0),
    base_type(GLSL_TYPE_FUNCTION), sampled_type(GLSL_TYPE_VOID),
    sampler_dimensionality(0), sampler_shadow(0), sampler_array(0),
-   interface_packing(0), interface_row_major(0),
+   interface_packing(0), interface_row_major(0), packed(0),
    vector_elements(0), matrix_columns(0),
    length(num_params), explicit_stride(0)
 {
@@ -188,7 +188,7 @@ glsl_type::glsl_type(const char *subroutine_name) :
    gl_type(0),
    base_type(GLSL_TYPE_SUBROUTINE), sampled_type(GLSL_TYPE_VOID),
    sampler_dimensionality(0), sampler_shadow(0), sampler_array(0),
-   interface_packing(0), interface_row_major(0),
+   interface_packing(0), interface_row_major(0), packed(0),
    vector_elements(1), matrix_columns(1),
    length(0), explicit_stride(0)
 {
@@ -534,7 +534,7 @@ glsl_type::glsl_type(const glsl_type *array, unsigned length,
                      unsigned explicit_stride) :
    base_type(GLSL_TYPE_ARRAY), sampled_type(GLSL_TYPE_VOID),
    sampler_dimensionality(0), sampler_shadow(0), sampler_array(0),
-   interface_packing(0), interface_row_major(0),
+   interface_packing(0), interface_row_major(0), packed(0),
    vector_elements(0), matrix_columns(0),
    length(length), name(NULL), explicit_stride(explicit_stride)
 {
@@ -1028,10 +1028,40 @@ glsl_type::get_array_instance(const glsl_type *base,
    return (glsl_type *) entry->data;
 }
 
+bool
+glsl_type::compare_no_precision(const glsl_type *b) const
+{
+   if (this == b)
+      return true;
+
+   if (this->is_array()) {
+      if (!b->is_array() || this->length != b->length)
+         return false;
+
+      const glsl_type *b_no_array = b->fields.array;
+
+      return this->fields.array->compare_no_precision(b_no_array);
+   }
+
+   if (this->is_struct()) {
+      if (!b->is_struct())
+         return false;
+   } else if (this->is_interface()) {
+      if (!b->is_interface())
+         return false;
+   } else {
+      return false;
+   }
+
+   return record_compare(b,
+                         true, /* match_name */
+                         true, /* match_locations */
+                         false /* match_precision */);
+}
 
 bool
 glsl_type::record_compare(const glsl_type *b, bool match_name,
-                          bool match_locations) const
+                          bool match_locations, bool match_precision) const
 {
    if (this->length != b->length)
       return false;
@@ -1060,8 +1090,15 @@ glsl_type::record_compare(const glsl_type *b, bool match_name,
          return false;
 
    for (unsigned i = 0; i < this->length; i++) {
-      if (this->fields.structure[i].type != b->fields.structure[i].type)
-         return false;
+      if (match_precision) {
+         if (this->fields.structure[i].type != b->fields.structure[i].type)
+            return false;
+      } else {
+         const glsl_type *ta = this->fields.structure[i].type;
+         const glsl_type *tb = b->fields.structure[i].type;
+         if (!ta->compare_no_precision(tb))
+            return false;
+      }
       if (strcmp(this->fields.structure[i].name,
                  b->fields.structure[i].name) != 0)
          return false;
@@ -1104,7 +1141,8 @@ glsl_type::record_compare(const glsl_type *b, bool match_name,
       if (this->fields.structure[i].image_format
           != b->fields.structure[i].image_format)
          return false;
-      if (this->fields.structure[i].precision
+      if (match_precision &&
+          this->fields.structure[i].precision
           != b->fields.structure[i].precision)
          return false;
       if (this->fields.structure[i].explicit_xfb_buffer
@@ -1595,7 +1633,7 @@ glsl_type::can_implicitly_convert_to(const glsl_type *desired,
       return false;
 
    /* int and uint can be converted to float. */
-   if (desired->is_float() && this->is_integer())
+   if (desired->is_float() && this->is_integer_32())
       return true;
 
    /* With GLSL 4.0, ARB_gpu_shader5, or MESA_shader_integer_functions, int
@@ -1616,7 +1654,7 @@ glsl_type::can_implicitly_convert_to(const glsl_type *desired,
    if ((!state || state->has_double()) && desired->is_double()) {
       if (this->is_float())
          return true;
-      if (this->is_integer())
+      if (this->is_integer_32())
          return true;
    }
 

@@ -827,8 +827,7 @@ ntq_emit_alu(struct v3d_compile *c, nir_alu_instr *instr)
         struct qreg result;
 
         switch (instr->op) {
-        case nir_op_fmov:
-        case nir_op_imov:
+        case nir_op_mov:
                 result = vir_MOV(c, src[0]);
                 break;
 
@@ -1310,7 +1309,7 @@ v3d_optimize_nir(struct nir_shader *s)
                 progress = false;
 
                 NIR_PASS_V(s, nir_lower_vars_to_ssa);
-                NIR_PASS(progress, s, nir_lower_alu_to_scalar);
+                NIR_PASS(progress, s, nir_lower_alu_to_scalar, NULL);
                 NIR_PASS(progress, s, nir_lower_phis_to_scalar);
                 NIR_PASS(progress, s, nir_copy_prop);
                 NIR_PASS(progress, s, nir_opt_remove_phis);
@@ -1322,7 +1321,7 @@ v3d_optimize_nir(struct nir_shader *s)
                 NIR_PASS(progress, s, nir_opt_constant_folding);
 
                 if (lower_flrp != 0) {
-                        bool lower_flrp_progress;
+                        bool lower_flrp_progress = false;
 
                         NIR_PASS(lower_flrp_progress, s, nir_lower_flrp,
                                  lower_flrp,
@@ -1454,6 +1453,26 @@ ntq_setup_vpm_inputs(struct v3d_compile *c)
         }
 }
 
+static bool
+var_needs_point_coord(struct v3d_compile *c, nir_variable *var)
+{
+        return (var->data.location == VARYING_SLOT_PNTC ||
+                (var->data.location >= VARYING_SLOT_VAR0 &&
+                 (c->fs_key->point_sprite_mask &
+                  (1 << (var->data.location - VARYING_SLOT_VAR0)))));
+}
+
+static bool
+program_reads_point_coord(struct v3d_compile *c)
+{
+        nir_foreach_variable(var, &c->s->inputs) {
+                if (var_needs_point_coord(c, var))
+                        return true;
+        }
+
+        return false;
+}
+
 static void
 ntq_setup_fs_inputs(struct v3d_compile *c)
 {
@@ -1487,11 +1506,7 @@ ntq_setup_fs_inputs(struct v3d_compile *c)
 
                 if (var->data.location == VARYING_SLOT_POS) {
                         emit_fragcoord_input(c, loc);
-                } else if (var->data.location == VARYING_SLOT_PNTC ||
-                           (var->data.location >= VARYING_SLOT_VAR0 &&
-                            (c->fs_key->point_sprite_mask &
-                             (1 << (var->data.location -
-                                    VARYING_SLOT_VAR0))))) {
+                } else if (var_needs_point_coord(c, var)) {
                         c->inputs[loc * 4 + 0] = c->point_x;
                         c->inputs[loc * 4 + 1] = c->point_y;
                 } else {
@@ -2000,7 +2015,6 @@ ntq_emit_uniform_if(struct v3d_compile *c, nir_if *if_stmt)
 
                 /* Emit the else block. */
                 vir_set_emit_block(c, else_block);
-                ntq_activate_execute_for_block(c);
                 ntq_emit_cf_list(c, &if_stmt->else_list);
         }
 
@@ -2296,15 +2310,17 @@ nir_to_vir(struct v3d_compile *c)
                 c->payload_w_centroid = vir_MOV(c, vir_reg(QFILE_REG, 1));
                 c->payload_z = vir_MOV(c, vir_reg(QFILE_REG, 2));
 
-                /* XXX perf: We could set the "disable implicit point/line
-                 * varyings" field in the shader record and not emit these, if
-                 * they're not going to be used.
+                /* V3D 4.x can disable implicit point coordinate varyings if
+                 * they are not used.
                  */
-                if (c->fs_key->is_points) {
+                if (c->fs_key->is_points &&
+                    (c->devinfo->ver < 40 || program_reads_point_coord(c))) {
                         c->point_x = emit_fragment_varying(c, NULL, 0, 0);
                         c->point_y = emit_fragment_varying(c, NULL, 0, 0);
-                } else if (c->fs_key->is_lines) {
+                        c->uses_implicit_point_line_varyings = true;
+                } else if (c->fs_key->is_lines && c->devinfo->ver < 40) {
                         c->line_x = emit_fragment_varying(c, NULL, 0, 0);
+                        c->uses_implicit_point_line_varyings = true;
                 }
                 break;
         case MESA_SHADER_COMPUTE:
@@ -2376,13 +2392,13 @@ const nir_shader_compiler_options v3d_nir_options = {
         .lower_all_io_to_temps = true,
         .lower_extract_byte = true,
         .lower_extract_word = true,
-        .lower_bfm = true,
         .lower_bitfield_insert_to_shifts = true,
         .lower_bitfield_extract_to_shifts = true,
         .lower_bitfield_reverse = true,
         .lower_bit_count = true,
         .lower_cs_local_id_from_index = true,
         .lower_ffract = true,
+        .lower_fmod = true,
         .lower_pack_unorm_2x16 = true,
         .lower_pack_snorm_2x16 = true,
         .lower_pack_unorm_4x8 = true,

@@ -40,8 +40,7 @@ static const nir_shader_compiler_options options = {
 		.lower_flrp32 = true,
 		.lower_flrp64 = true,
 		.lower_ffract = true,
-		.lower_fmod32 = true,
-		.lower_fmod64 = true,
+		.lower_fmod = true,
 		.lower_fdiv = true,
 		.lower_isign = true,
 		.lower_ldexp = true,
@@ -55,7 +54,6 @@ static const nir_shader_compiler_options options = {
 		.lower_helper_invocation = true,
 		.lower_bitfield_insert_to_shifts = true,
 		.lower_bitfield_extract_to_shifts = true,
-		.lower_bfm = true,
 		.use_interpolated_input_intrinsics = true,
 };
 
@@ -66,8 +64,7 @@ static const nir_shader_compiler_options options_a6xx = {
 		.lower_flrp32 = true,
 		.lower_flrp64 = true,
 		.lower_ffract = true,
-		.lower_fmod32 = true,
-		.lower_fmod64 = true,
+		.lower_fmod = true,
 		.lower_fdiv = true,
 		.lower_isign = true,
 		.lower_ldexp = true,
@@ -81,7 +78,6 @@ static const nir_shader_compiler_options options_a6xx = {
 		.lower_helper_invocation = true,
 		.lower_bitfield_insert_to_shifts = true,
 		.lower_bitfield_extract_to_shifts = true,
-		.lower_bfm = true,
 		.use_interpolated_input_intrinsics = true,
 };
 
@@ -126,7 +122,7 @@ ir3_optimize_loop(nir_shader *s)
 		OPT_V(s, nir_lower_vars_to_ssa);
 		progress |= OPT(s, nir_opt_copy_prop_vars);
 		progress |= OPT(s, nir_opt_dead_write_vars);
-		progress |= OPT(s, nir_lower_alu_to_scalar);
+		progress |= OPT(s, nir_lower_alu_to_scalar, NULL);
 		progress |= OPT(s, nir_lower_phis_to_scalar);
 
 		progress |= OPT(s, nir_copy_prop);
@@ -176,7 +172,7 @@ ir3_optimize_loop(nir_shader *s)
 	} while (progress);
 }
 
-struct nir_shader *
+void
 ir3_optimize_nir(struct ir3_shader *shader, nir_shader *s,
 		const struct ir3_shader_key *key)
 {
@@ -283,8 +279,6 @@ ir3_optimize_nir(struct ir3_shader *shader, nir_shader *s,
 	if (!key) {
 		ir3_setup_const_state(shader, s);
 	}
-
-	return s;
 }
 
 static void
@@ -332,6 +326,13 @@ ir3_nir_scan_driver_consts(nir_shader *shader,
 						layout->image_dims.count;
 					layout->image_dims.count += 3; /* three const per */
 					break;
+				case nir_intrinsic_load_ubo:
+					if (nir_src_is_const(intr->src[0])) {
+						layout->num_ubos = MAX2(layout->num_ubos,
+								nir_src_as_uint(intr->src[0]) + 1);
+					} else {
+						layout->num_ubos = shader->info.num_ubos;
+					}
 				default:
 					break;
 				}
@@ -351,7 +352,6 @@ ir3_setup_const_state(struct ir3_shader *shader, nir_shader *nir)
 	ir3_nir_scan_driver_consts(nir, const_state);
 
 	const_state->num_uniforms = nir->num_uniforms;
-	const_state->num_ubos = nir->info.num_ubos;
 
 	debug_assert((shader->ubo_state.size % 16) == 0);
 	unsigned constoff = align(shader->ubo_state.size / 16, 4);

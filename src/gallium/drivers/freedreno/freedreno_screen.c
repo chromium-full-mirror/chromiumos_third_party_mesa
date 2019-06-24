@@ -87,8 +87,7 @@ static const struct debug_named_value debug_options[] = {
 		{"hiprio",    FD_DBG_HIPRIO, "Force high-priority context"},
 		{"ttile",     FD_DBG_TTILE,  "Enable texture tiling (a5xx)"},
 		{"perfcntrs", FD_DBG_PERFC,  "Expose performance counters"},
-		{"softpin",   FD_DBG_SOFTPIN,"Enable softpin command submission (experimental)"},
-		{"ubwc",      FD_DBG_UBWC,   "Enable UBWC for all internal buffers (experimental)"},
+		{"noubwc",    FD_DBG_NOUBWC, "Disable UBWC for all internal buffers"},
 		DEBUG_NAMED_VALUE_END
 };
 
@@ -307,7 +306,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
 		return 0;
 
-	case PIPE_CAP_TGSI_FS_FBFETCH:
+	case PIPE_CAP_FBFETCH:
 		if (fd_device_version(screen->dev) >= FD_VERSION_GMEM_BASE &&
 				is_a6xx(screen))
 			return 1;
@@ -371,7 +370,8 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return 0;
 
 	/* Texturing. */
-	case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
+	case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
+		return 1 << (MAX_MIP_LEVELS - 1);
 	case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
 		return MAX_MIP_LEVELS;
 	case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
@@ -606,7 +606,7 @@ fd_get_compute_param(struct pipe_screen *pscreen, enum pipe_shader_ir ir_type,
 
 	case PIPE_COMPUTE_CAP_IR_TARGET:
 		if (ret)
-			sprintf(ret, ir);
+			sprintf(ret, "%s", ir);
 		return strlen(ir) * sizeof(char);
 
 	case PIPE_COMPUTE_CAP_GRID_DIMENSION:
@@ -880,6 +880,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 		fd4_screen_init(pscreen);
 		break;
 	case 530:
+	case 540:
 		fd5_screen_init(pscreen);
 		break;
 	case 630:

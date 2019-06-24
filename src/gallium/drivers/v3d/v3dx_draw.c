@@ -177,6 +177,35 @@ v3d_predraw_check_stage_inputs(struct pipe_context *pctx,
 
                 v3d_flush_jobs_writing_resource(v3d, view->base.resource);
         }
+
+        /* Flush writes to our vertex buffers (i.e. from transform feedback) */
+        if (s == PIPE_SHADER_VERTEX) {
+                foreach_bit(i, v3d->vertexbuf.enabled_mask) {
+                        struct pipe_vertex_buffer *vb = &v3d->vertexbuf.vb[i];
+
+                        v3d_flush_jobs_writing_resource(v3d, vb->buffer.resource);
+                }
+        }
+}
+
+static void
+v3d_predraw_check_outputs(struct pipe_context *pctx)
+{
+        struct v3d_context *v3d = v3d_context(pctx);
+
+        /* Flush jobs reading from TF buffers that we are about to write. */
+        if (v3d_transform_feedback_enabled(v3d)) {
+                struct v3d_streamout_stateobj *so = &v3d->streamout;
+
+                for (int i = 0; i < so->num_targets; i++) {
+                        if (!so->targets[i])
+                                continue;
+
+                        const struct pipe_stream_output_target *target =
+                                so->targets[i];
+                        v3d_flush_jobs_reading_resource(v3d, target->buffer);
+                }
+        }
 }
 
 static void
@@ -235,6 +264,11 @@ v3d_emit_gl_shader_state(struct v3d_context *v3d,
 
                 shader.fragment_shader_uses_real_pixel_centre_w_in_addition_to_centroid_w2 =
                         v3d->prog.fs->prog_data.fs->uses_center_w;
+
+#if V3D_VERSION >= 40
+               shader.disable_implicit_point_line_varyings =
+                        !v3d->prog.fs->prog_data.fs->uses_implicit_point_line_varyings;
+#endif
 
                 shader.number_of_varyings_in_fragment_shader =
                         v3d->prog.fs->prog_data.fs->num_inputs;
@@ -504,14 +538,16 @@ v3d_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
                 return;
         }
 
-        /* Before setting up the draw, flush anything writing to the textures
-         * that we read from.
+        /* Before setting up the draw, flush anything writing to the resources
+         * that we read from or reading from resources we write to.
          */
         for (int s = 0; s < PIPE_SHADER_COMPUTE; s++)
                 v3d_predraw_check_stage_inputs(pctx, s);
 
         if (info->indirect)
                 v3d_flush_jobs_writing_resource(v3d, info->indirect->buffer);
+
+        v3d_predraw_check_outputs(pctx);
 
         struct v3d_job *job = v3d_get_job_for_fbo(v3d);
 

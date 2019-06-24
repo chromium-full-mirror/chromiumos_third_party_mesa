@@ -31,7 +31,6 @@
 
 #include "util/mesa-sha1.h"
 #include "sid.h"
-#include "gfx9d.h"
 #include "ac_debug.h"
 #include "radv_debug.h"
 #include "radv_shader.h"
@@ -112,14 +111,11 @@ radv_dump_debug_registers(struct radv_device *device, FILE *f)
 {
 	struct radeon_info *info = &device->physical_device->rad_info;
 
-	if (info->drm_major == 2 && info->drm_minor < 42)
-		return; /* no radeon support */
-
 	fprintf(f, "Memory-mapped registers:\n");
 	radv_dump_mmapped_reg(device, f, R_008010_GRBM_STATUS);
 
 	/* No other registers can be read on DRM < 3.1.0. */
-	if (info->drm_major < 3 || info->drm_minor < 1) {
+	if (info->drm_minor < 1) {
 		fprintf(f, "\n");
 		return;
 	}
@@ -131,7 +127,7 @@ radv_dump_debug_registers(struct radv_device *device, FILE *f)
 	radv_dump_mmapped_reg(device, f, R_00803C_GRBM_STATUS_SE3);
 	radv_dump_mmapped_reg(device, f, R_00D034_SDMA0_STATUS_REG);
 	radv_dump_mmapped_reg(device, f, R_00D834_SDMA1_STATUS_REG);
-	if (info->chip_class <= VI) {
+	if (info->chip_class <= GFX8) {
 		radv_dump_mmapped_reg(device, f, R_000E50_SRBM_STATUS);
 		radv_dump_mmapped_reg(device, f, R_000E4C_SRBM_STATUS2);
 		radv_dump_mmapped_reg(device, f, R_000E54_SRBM_STATUS3);

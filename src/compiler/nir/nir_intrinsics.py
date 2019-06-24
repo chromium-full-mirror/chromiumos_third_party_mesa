@@ -111,6 +111,8 @@ IMAGE_DIM = "NIR_INTRINSIC_IMAGE_DIM"
 IMAGE_ARRAY = "NIR_INTRINSIC_IMAGE_ARRAY"
 # Access qualifiers for image and memory access intrinsics
 ACCESS = "NIR_INTRINSIC_ACCESS"
+DST_ACCESS = "NIR_INTRINSIC_DST_ACCESS"
+SRC_ACCESS = "NIR_INTRINSIC_SRC_ACCESS"
 # Image format for image intrinsics
 FORMAT = "NIR_INTRINSIC_FORMAT"
 # Offset or address alignment
@@ -118,6 +120,10 @@ ALIGN_MUL = "NIR_INTRINSIC_ALIGN_MUL"
 ALIGN_OFFSET = "NIR_INTRINSIC_ALIGN_OFFSET"
 # The vulkan descriptor type for vulkan_resource_index
 DESC_TYPE = "NIR_INTRINSIC_DESC_TYPE"
+# The nir_alu_type of a uniform/input/output
+TYPE = "NIR_INTRINSIC_TYPE"
+# The swizzle mask for quad_swizzle_amd & masked_swizzle_amd
+SWIZZLE_MASK = "NIR_INTRINSIC_SWIZZLE_MASK"
 
 #
 # Possible flags:
@@ -152,7 +158,7 @@ intrinsic("load_param", dest_comp=0, indices=[PARAM_IDX], flags=[CAN_ELIMINATE])
 intrinsic("load_deref", dest_comp=0, src_comp=[-1],
           indices=[ACCESS], flags=[CAN_ELIMINATE])
 intrinsic("store_deref", src_comp=[-1, 0], indices=[WRMASK, ACCESS])
-intrinsic("copy_deref", src_comp=[-1, -1])
+intrinsic("copy_deref", src_comp=[-1, -1], indices=[DST_ACCESS, SRC_ACCESS])
 
 # Interpolation of input.  The interp_deref_at* intrinsics are similar to the
 # load_var intrinsic acting on a shader input except that they interpolate the
@@ -265,6 +271,14 @@ intrinsic("inclusive_scan", src_comp=[0], dest_comp=0, indices=[REDUCTION_OP],
 intrinsic("exclusive_scan", src_comp=[0], dest_comp=0, indices=[REDUCTION_OP],
           flags=[CAN_ELIMINATE])
 
+# AMD shader ballot operations
+intrinsic("quad_swizzle_amd", src_comp=[0], dest_comp=0, indices=[SWIZZLE_MASK],
+          flags=[CAN_ELIMINATE])
+intrinsic("masked_swizzle_amd", src_comp=[0], dest_comp=0, indices=[SWIZZLE_MASK],
+          flags=[CAN_ELIMINATE])
+intrinsic("write_invocation_amd", src_comp=[0, 0, 1], dest_comp=0, flags=[CAN_ELIMINATE])
+intrinsic("mbcnt_amd", src_comp=[1], dest_comp=1, flags=[CAN_ELIMINATE])
+
 # Basic Geometry Shader intrinsics.
 #
 # emit_vertex implements GLSL's EmitStreamVertex() built-in.  It takes a single
@@ -333,7 +347,8 @@ atomic3("atomic_counter_comp_swap")
 # either one or two additional scalar arguments with the same meaning as in
 # the ARB_shader_image_load_store specification.
 def image(name, src_comp=[], **kwargs):
-    intrinsic("image_deref_" + name, src_comp=[1] + src_comp, **kwargs)
+    intrinsic("image_deref_" + name, src_comp=[1] + src_comp,
+              indices=[ACCESS], **kwargs)
     intrinsic("image_" + name, src_comp=[1] + src_comp,
               indices=[IMAGE_DIM, IMAGE_ARRAY, FORMAT, ACCESS], **kwargs)
     intrinsic("bindless_image_" + name, src_comp=[1] + src_comp,
@@ -568,11 +583,14 @@ system_value("viewport_z_offset", 1)
 system_value("viewport_scale", 3)
 system_value("viewport_offset", 3)
 
-# Blend constant color values.  Float values are clamped.#
+# Blend constant color values.  Float values are clamped. Vectored versions are
+# provided as well for driver convenience
+
 system_value("blend_const_color_r_float", 1)
 system_value("blend_const_color_g_float", 1)
 system_value("blend_const_color_b_float", 1)
 system_value("blend_const_color_a_float", 1)
+system_value("blend_const_color_rgba", 4)
 system_value("blend_const_color_rgba8888_unorm", 1)
 system_value("blend_const_color_aaaa8888_unorm", 1)
 
@@ -637,11 +655,11 @@ def load(name, num_srcs, indices=[], flags=[]):
               flags=flags)
 
 # src[] = { offset }.
-load("uniform", 1, [BASE, RANGE], [CAN_ELIMINATE, CAN_REORDER])
+load("uniform", 1, [BASE, RANGE, TYPE], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { buffer_index, offset }.
 load("ubo", 2, [ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=[CAN_ELIMINATE, CAN_REORDER])
 # src[] = { offset }.
-load("input", 1, [BASE, COMPONENT], [CAN_ELIMINATE, CAN_REORDER])
+load("input", 1, [BASE, COMPONENT, TYPE], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { vertex, offset }.
 load("per_vertex_input", 2, [BASE, COMPONENT], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { barycoord, offset }.
@@ -676,7 +694,7 @@ def store(name, num_srcs, indices=[], flags=[]):
     intrinsic("store_" + name, [0] + ([1] * (num_srcs - 1)), indices=indices, flags=flags)
 
 # src[] = { value, offset }.
-store("output", 2, [BASE, WRMASK, COMPONENT])
+store("output", 2, [BASE, WRMASK, COMPONENT, TYPE])
 # src[] = { value, vertex, offset }.
 store("per_vertex_output", 3, [BASE, WRMASK, COMPONENT])
 # src[] = { value, block_index, offset }

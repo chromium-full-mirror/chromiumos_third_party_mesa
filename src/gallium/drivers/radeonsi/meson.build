@@ -26,6 +26,7 @@ files_libradeonsi = files(
   'si_build_pm4.h',
   'si_clear.c',
   'si_compute.c',
+  'si_compute_prim_discard.c',
   'si_compute.h',
   'si_compute_blit.c',
   'si_cp_dma.c',
@@ -106,7 +107,7 @@ libradeonsi = static_library(
   ],
   c_args : ['-Wstrict-overflow=0', c_vis_args],
   cpp_args : [cpp_vis_args],
-  dependencies : [dep_llvm, dep_clock, dep_libdrm_radeon, idep_nir_headers],
+  dependencies : [dep_llvm, dep_clock, dep_libdrm_radeon, idep_nir_headers, idep_amdgfxregs_h],
 )
 
 driver_radeonsi = declare_dependency(

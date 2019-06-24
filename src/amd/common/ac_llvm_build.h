@@ -71,6 +71,7 @@ struct ac_llvm_context {
 	LLVMTypeRef v3i32;
 	LLVMTypeRef v4i32;
 	LLVMTypeRef v2f32;
+	LLVMTypeRef v3f32;
 	LLVMTypeRef v4f32;
 	LLVMTypeRef v8i32;
 
@@ -270,7 +271,6 @@ ac_build_buffer_store_dword(struct ac_llvm_context *ctx,
 			    unsigned inst_offset,
 		            bool glc,
 		            bool slc,
-			    bool writeonly_memory,
 			    bool swizzle_enable_hint);
 
 void
@@ -281,7 +281,7 @@ ac_build_buffer_store_format(struct ac_llvm_context *ctx,
 			     LLVMValueRef voffset,
 			     unsigned num_channels,
 			     bool glc,
-			     bool writeonly_memory);
+			     bool slc);
 
 LLVMValueRef
 ac_build_buffer_load(struct ac_llvm_context *ctx,
@@ -357,14 +357,43 @@ ac_build_raw_tbuffer_load(struct ac_llvm_context *ctx,
 			  bool slc,
 		          bool can_speculate);
 
+/* For ac_build_fetch_format.
+ *
+ * Note: FLOAT must be 0 (used for convenience of encoding in radeonsi).
+ */
+enum {
+	AC_FETCH_FORMAT_FLOAT = 0,
+	AC_FETCH_FORMAT_FIXED,
+	AC_FETCH_FORMAT_UNORM,
+	AC_FETCH_FORMAT_SNORM,
+	AC_FETCH_FORMAT_USCALED,
+	AC_FETCH_FORMAT_SSCALED,
+	AC_FETCH_FORMAT_UINT,
+	AC_FETCH_FORMAT_SINT,
+};
+
+LLVMValueRef
+ac_build_opencoded_load_format(struct ac_llvm_context *ctx,
+			       unsigned log_size,
+			       unsigned num_channels,
+			       unsigned format,
+			       bool reverse,
+			       bool known_aligned,
+			       LLVMValueRef rsrc,
+			       LLVMValueRef vindex,
+			       LLVMValueRef voffset,
+			       LLVMValueRef soffset,
+			       bool glc,
+			       bool slc,
+			       bool can_speculate);
+
 void
 ac_build_tbuffer_store_short(struct ac_llvm_context *ctx,
 			     LLVMValueRef rsrc,
 			     LLVMValueRef vdata,
 			     LLVMValueRef voffset,
 			     LLVMValueRef soffset,
-			     bool glc,
-			     bool writeonly_memory);
+			     bool glc);
 
 void
 ac_build_tbuffer_store_byte(struct ac_llvm_context *ctx,
@@ -372,8 +401,7 @@ ac_build_tbuffer_store_byte(struct ac_llvm_context *ctx,
 			    LLVMValueRef vdata,
 			    LLVMValueRef voffset,
 			    LLVMValueRef soffset,
-			    bool glc,
-			    bool writeonly_memory);
+			    bool glc);
 
 void
 ac_build_struct_tbuffer_store(struct ac_llvm_context *ctx,
@@ -387,8 +415,7 @@ ac_build_struct_tbuffer_store(struct ac_llvm_context *ctx,
 			      unsigned dfmt,
 			      unsigned nfmt,
 			      bool glc,
-			      bool slc,
-			      bool writeonly_memory);
+			      bool slc);
 
 void
 ac_build_raw_tbuffer_store(struct ac_llvm_context *ctx,
@@ -401,8 +428,7 @@ ac_build_raw_tbuffer_store(struct ac_llvm_context *ctx,
 			   unsigned dfmt,
 			   unsigned nfmt,
 			   bool glc,
-			   bool slc,
-			   bool writeonly_memory);
+			   bool slc);
 
 LLVMValueRef
 ac_get_thread_id(struct ac_llvm_context *ctx);

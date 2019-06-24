@@ -47,7 +47,6 @@
 /* Forward declare to avoid extra header dep */
 struct prim_convert_context;
 
-#define MAX_DRAW_CALLS 4096
 #define MAX_VARYINGS   4096
 
 //#define PAN_DIRTY_CLEAR	     (1 << 0)
@@ -133,8 +132,8 @@ struct panfrost_context {
         struct panfrost_memory scratchpad;
         struct panfrost_memory tiler_heap;
         struct panfrost_memory varying_mem;
-        struct panfrost_memory misc_0;
-        struct panfrost_memory misc_1;
+        struct panfrost_memory tiler_polygon_list;
+        struct panfrost_memory tiler_dummy;
         struct panfrost_memory depth_stencil_buffer;
 
         struct panfrost_query *occlusion_query;
@@ -148,23 +147,6 @@ struct panfrost_context {
          * stencil/depth tests, etc. Refer to the presentations. */
 
         struct mali_shader_meta fragment_shader_core;
-
-        /* A frame is composed of a starting set value job, a number of vertex
-         * and tiler jobs, linked to the fragment job at the end. See the
-         * presentations for more information how this works */
-
-        unsigned draw_count;
-
-        mali_ptr set_value_job;
-        mali_ptr vertex_jobs[MAX_DRAW_CALLS];
-        mali_ptr tiler_jobs[MAX_DRAW_CALLS];
-
-        struct mali_job_descriptor_header *u_set_value_job;
-        struct mali_job_descriptor_header *u_vertex_jobs[MAX_DRAW_CALLS];
-        struct mali_job_descriptor_header *u_tiler_jobs[MAX_DRAW_CALLS];
-
-        unsigned vertex_job_count;
-        unsigned tiler_job_count;
 
         /* Per-draw Dirty flags are setup like any other driver */
         int dirty;
@@ -201,6 +183,7 @@ struct panfrost_context {
 
         struct primconvert_context *primconvert;
         struct blitter_context *blitter;
+        struct panfrost_job *wallpaper_batch;
 
         struct panfrost_blend_state *blend;
 
@@ -240,6 +223,7 @@ struct panfrost_blend_state {
 
         /* Compiled fixed function command */
         struct mali_blend_equation equation;
+        float constant;
 
         /* Compiled blend shader */
         mali_ptr blend_shader;
@@ -266,8 +250,8 @@ struct panfrost_shader_state {
         bool writes_point_size;
         bool reads_point_coord;
 
-        unsigned general_varying_stride;
         struct mali_attr_meta varyings[PIPE_MAX_ATTRIBS];
+        gl_varying_slot varyings_loc[PIPE_MAX_ATTRIBS];
 
         unsigned sysval_count;
         unsigned sysval[MAX_SYSVAL_COUNT];
@@ -312,12 +296,6 @@ pan_context(struct pipe_context *pcontext)
         return (struct panfrost_context *) pcontext;
 }
 
-static inline struct panfrost_screen *
-pan_screen(struct pipe_screen *p)
-{
-   return (struct panfrost_screen *)p;
-}
-
 struct pipe_context *
 panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags);
 
@@ -325,7 +303,7 @@ void
 panfrost_emit_for_draw(struct panfrost_context *ctx, bool with_vertex_data);
 
 struct panfrost_transfer
-panfrost_vertex_tiler_job(struct panfrost_context *ctx, bool is_tiler, bool is_elided_tiler);
+panfrost_vertex_tiler_job(struct panfrost_context *ctx, bool is_tiler);
 
 unsigned
 panfrost_get_default_swizzle(unsigned components);
@@ -339,20 +317,17 @@ panfrost_flush(
 bool
 panfrost_is_scanout(struct panfrost_context *ctx);
 
-mali_ptr
-panfrost_sfbd_fragment(struct panfrost_context *ctx, bool flip_y);
-
-mali_ptr
-panfrost_mfbd_fragment(struct panfrost_context *ctx, bool flip_y);
+mali_ptr panfrost_sfbd_fragment(struct panfrost_context *ctx, bool has_draws);
+mali_ptr panfrost_mfbd_fragment(struct panfrost_context *ctx, bool has_draws);
 
 struct bifrost_framebuffer
-panfrost_emit_mfbd(struct panfrost_context *ctx);
+panfrost_emit_mfbd(struct panfrost_context *ctx, unsigned vertex_count);
 
 struct mali_single_framebuffer
-panfrost_emit_sfbd(struct panfrost_context *ctx);
+panfrost_emit_sfbd(struct panfrost_context *ctx, unsigned vertex_count);
 
 mali_ptr
-panfrost_fragment_job(struct panfrost_context *ctx);
+panfrost_fragment_job(struct panfrost_context *ctx, bool has_draws);
 
 void
 panfrost_shader_compile(struct panfrost_context *ctx, struct mali_shader_meta *meta, const char *src, int type, struct panfrost_shader_state *state);

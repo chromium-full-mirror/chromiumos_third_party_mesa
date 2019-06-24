@@ -278,6 +278,10 @@ with_platform_surfaceless = _platforms.contains('surfaceless')
 
 with_platforms = false
 if _platforms.length() != 0 and _platforms != ['']
+  # sanity check that list contains no empty strings
+  if _platforms.contains('')
+    error('Invalid argument list given to -Dplatforms, please fix.')
+  endif
   with_platforms = true
   egl_native_platform = _platforms[0]
 endif
@@ -353,12 +357,12 @@ else
   with_egl = false
 endif
 
-if with_egl and not (with_platform_drm or with_platform_surfaceless)
+if with_egl and not (with_platform_drm or with_platform_surfaceless or with_platform_android)
   if with_gallium_radeonsi
-    error('RadeonSI requires drm or surfaceless platform when using EGL')
+    error('RadeonSI requires the drm, surfaceless or android platform when using EGL')
   endif
   if with_gallium_virgl
-    error('Virgl requires drm or surfaceless platform when using EGL')
+    error('Virgl requires the drm, surfaceless or android platform when using EGL')
   endif
 endif
 
@@ -503,12 +507,6 @@ if not system_has_kms_drm
   else
     error('OMX state tracker can only be built on unix-like OSes.')
   endif
-elif not (with_platform_x11 or with_platform_drm)
-  if ['auto', 'disabled'].contains(_omx)
-    _omx = 'disabled'
-  else
-    error('OMX state tracker requires X11 or drm platform support.')
-  endif
 elif not (with_gallium_r600 or with_gallium_radeonsi or with_gallium_nouveau)
   if ['auto', 'disabled'].contains(_omx)
     _omx = 'disabled'
@@ -589,12 +587,6 @@ if not system_has_kms_drm
   else
     _va = 'false'
   endif
-elif not (with_platform_x11 or with_platform_drm)
-  if _va == 'true'
-    error('VA state tracker requires X11 or drm or wayland platform support.')
-  else
-    _va = 'false'
-  endif
 elif not (with_gallium_r600 or with_gallium_radeonsi or with_gallium_nouveau)
   if _va == 'true'
     error('VA state tracker requires at least one of the following gallium drivers: r600, radeonsi, nouveau.')
@@ -658,7 +650,7 @@ endif
 if get_option('power8') != 'false'
   # on old versions of meson the cpu family would return as ppc64le on little
   # endian power8, this was changed in 0.48 such that the family would always
-  # be ppc64 regardless of endianness, and the the machine.endian() value
+  # be ppc64 regardless of endianness, and then the machine.endian() value
   # should be checked. Since we support versions < 0.48 we need to use
   # startswith.
   if host_machine.cpu_family().startswith('ppc64') and host_machine.endian() == 'little'
@@ -834,6 +826,10 @@ if cc.compiles('int foo(void) __attribute__((__noreturn__));',
                name : '__attribute__((__noreturn__))')
   pre_args += '-DHAVE_FUNC_ATTRIBUTE_NORETURN'
 endif
+if cc.compiles('__uint128_t foo(void) { return 0; }',
+               name : '__uint128_t')
+  pre_args += '-DHAVE_UINT128'
+endif
 
 # TODO: this is very incomplete
 if ['linux', 'cygwin', 'gnu'].contains(host_machine.system())
@@ -845,6 +841,8 @@ c_args = []
 foreach a : ['-Werror=implicit-function-declaration',
              '-Werror=missing-prototypes', '-Werror=return-type',
              '-Werror=incompatible-pointer-types',
+             '-Werror=format',
+             '-Wformat-security',
              '-fno-math-errno',
              '-fno-trapping-math', '-Qunused-arguments']
   if cc.has_argument(a)
@@ -866,6 +864,8 @@ endif
 # Check for generic C++ arguments
 cpp_args = []
 foreach a : ['-Werror=return-type',
+             '-Werror=format',
+             '-Wformat-security',
              '-fno-math-errno', '-fno-trapping-math',
              '-Qunused-arguments']
   if cpp.has_argument(a)
@@ -1040,7 +1040,7 @@ elif cc.has_header_symbol('sys/mkdev.h', 'major')
   pre_args += '-DMAJOR_IN_MKDEV'
 endif
 
-foreach h : ['xlocale.h', 'sys/sysctl.h', 'linux/futex.h', 'endian.h', 'dlfcn.h']
+foreach h : ['xlocale.h', 'sys/sysctl.h', 'linux/futex.h', 'endian.h', 'dlfcn.h', 'execinfo.h', 'sys/shm.h']
   if cc.compiles('#include <@0@>'.format(h), name : '@0@'.format(h))
     pre_args += '-DHAVE_@0@'.format(h.to_upper().underscorify())
   endif
@@ -1145,23 +1145,21 @@ if dep_thread.found() and host_machine.system() != 'windows'
 endif
 dep_expat = dependency('expat')
 # this only exists on linux so either this is linux and it will be found, or
-# its not linux and and wont
+# it's not linux and wont
 dep_m = cc.find_library('m', required : false)
 
-# Check for libdrm. various drivers have different libdrm version requirements,
+# Check for libdrm. Various drivers have different libdrm version requirements,
 # but we always want to use the same version for all libdrm modules. That means
 # even if driver foo requires 2.4.0 and driver bar requires 2.4.3, if foo and
 # bar are both on use 2.4.3 for both of them
 dep_libdrm_amdgpu = null_dep
 dep_libdrm_radeon = null_dep
 dep_libdrm_nouveau = null_dep
-dep_libdrm_etnaviv = null_dep
 dep_libdrm_intel = null_dep
 
 _drm_amdgpu_ver = '2.4.97'
 _drm_radeon_ver = '2.4.71'
 _drm_nouveau_ver = '2.4.66'
-_drm_etnaviv_ver = '2.4.89'
 _drm_intel_ver = '2.4.75'
 _drm_ver = '2.4.75'
 
@@ -1171,12 +1169,16 @@ _libdrm_checks = [
   ['radeon', (with_gallium_radeonsi or with_dri_r100 or with_dri_r200 or
               with_gallium_r300 or with_gallium_r600)],
   ['nouveau', (with_gallium_nouveau or with_dri_nouveau)],
-  ['etnaviv', with_gallium_etnaviv],
 ]
 
 # VC4 only needs core libdrm support of this version, not a libdrm_vc4
 # library.
 if with_gallium_vc4
+  _drm_ver = '2.4.89'
+endif
+
+# etnaviv only needs core libdrm
+if with_gallium_etnaviv
   _drm_ver = '2.4.89'
 endif
 
@@ -1258,6 +1260,7 @@ if _llvm != 'false'
       with_gallium_opencl or _llvm == 'true'
     ),
     static : not _shared_llvm,
+    method : 'config-tool',
   )
   with_llvm = dep_llvm.found()
 endif

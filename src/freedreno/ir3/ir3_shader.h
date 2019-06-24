@@ -379,6 +379,9 @@ struct ir3_ibo_mapping {
 	uint8_t tex_base;   /* the number of real textures, ie. image/ssbo start here */
 };
 
+/* Represents half register in regid */
+#define HALF_REG_ID    0x100
+
 struct ir3_shader_variant {
 	struct fd_bo *bo;
 
@@ -401,6 +404,7 @@ struct ir3_shader_variant {
 	unsigned branchstack;
 
 	unsigned max_sun;
+	unsigned loops;
 
 	/* the instructions length is in units of instruction groups
 	 * (4 instructions for a3xx, 16 instructions for a4xx.. each
@@ -459,6 +463,7 @@ struct ir3_shader_variant {
 		/* fragment shader specific: */
 		bool    bary       : 1;   /* fetched varying (vs one loaded into reg) */
 		bool    rasterflat : 1;   /* special handling for emit->rasterflat */
+		bool    use_ldlv   : 1;   /* internal to ir3_compiler_nir */
 		bool    half       : 1;
 		enum glsl_interp_mode interpolate;
 	} inputs[16 + 2];  /* +POSITION +FACE */
@@ -562,6 +567,9 @@ ir3_shader_stage(struct ir3_shader *shader)
 {
 	switch (shader->type) {
 	case MESA_SHADER_VERTEX:     return "VERT";
+	case MESA_SHADER_TESS_CTRL:  return "TCS";
+	case MESA_SHADER_TESS_EVAL:  return "TES";
+	case MESA_SHADER_GEOMETRY:   return "GEOM";
 	case MESA_SHADER_FRAGMENT:   return "FRAG";
 	case MESA_SHADER_COMPUTE:    return "CL";
 	default:
@@ -671,8 +679,12 @@ ir3_find_output_regid(const struct ir3_shader_variant *so, unsigned slot)
 {
 	int j;
 	for (j = 0; j < so->outputs_count; j++)
-		if (so->outputs[j].slot == slot)
-			return so->outputs[j].regid;
+		if (so->outputs[j].slot == slot) {
+			uint32_t regid = so->outputs[j].regid;
+			if (so->outputs[j].half)
+				regid |= HALF_REG_ID;
+			return regid;
+		}
 	return regid(63, 0);
 }
 

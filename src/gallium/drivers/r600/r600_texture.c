@@ -366,7 +366,7 @@ static void r600_reallocate_texture_inplace(struct r600_common_context *rctx,
 	templ.bind |= new_bind_flag;
 
 	/* r600g doesn't react to dirty_tex_descriptor_counter */
-	if (rctx->chip_class < SI)
+	if (rctx->chip_class < GFX6)
 		return;
 
 	if (rtex->resource.b.is_shared)
@@ -762,7 +762,7 @@ static void r600_texture_get_htile_size(struct r600_common_screen *rscreen,
 	rtex->surface.htile_size = 0;
 
 	if (rscreen->chip_class <= EVERGREEN &&
-	    rscreen->info.drm_major == 2 && rscreen->info.drm_minor < 26)
+	    rscreen->info.drm_minor < 26)
 		return;
 
 	/* HW bug on R6xx. */
@@ -1264,7 +1264,7 @@ static bool r600_can_invalidate_texture(struct r600_common_screen *rscreen,
 					const struct pipe_box *box)
 {
 	/* r600g doesn't react to dirty_tex_descriptor_counter */
-	return rscreen->chip_class >= SI &&
+	return rscreen->chip_class >= GFX6 &&
 		!rtex->resource.b.is_shared &&
 		!(transfer_usage & PIPE_TRANSFER_READ) &&
 		rtex->resource.b.b.last_level == 0 &&

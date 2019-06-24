@@ -109,7 +109,11 @@ static inline bool glsl_base_type_is_64bit(enum glsl_base_type type)
 
 static inline bool glsl_base_type_is_integer(enum glsl_base_type type)
 {
-   return type == GLSL_TYPE_UINT ||
+   return type == GLSL_TYPE_UINT8 ||
+          type == GLSL_TYPE_INT8 ||
+          type == GLSL_TYPE_UINT16 ||
+          type == GLSL_TYPE_INT16 ||
+          type == GLSL_TYPE_UINT ||
           type == GLSL_TYPE_INT ||
           type == GLSL_TYPE_UINT64 ||
           type == GLSL_TYPE_INT64 ||
@@ -582,9 +586,17 @@ public:
    }
 
    /**
-    * Query whether or not a type is an integral type
+    * Query whether or not a type is an integer.
     */
    bool is_integer() const
+   {
+      return glsl_base_type_is_integer(base_type);
+   }
+
+   /**
+    * Query whether or not a type is an 32-bit integer.
+    */
+   bool is_integer_32() const
    {
       return (base_type == GLSL_TYPE_UINT) || (base_type == GLSL_TYPE_INT);
    }
@@ -602,7 +614,7 @@ public:
     */
    bool is_integer_32_64() const
    {
-      return is_integer() || is_integer_64();
+      return is_integer_32() || is_integer_64();
    }
 
    /**
@@ -935,6 +947,15 @@ public:
    int coordinate_components() const;
 
    /**
+    * Compares whether this type matches another type without taking into
+    * account the precision in structures.
+    *
+    * This is applied recursively so that structures containing structure
+    * members can also ignore the precision.
+    */
+   bool compare_no_precision(const glsl_type *b) const;
+
+   /**
     * Compare a record type against another record type.
     *
     * This is useful for matching record types declared on the same shader
@@ -945,7 +966,8 @@ public:
     * same struct is defined in a block which has a location set on it.
     */
    bool record_compare(const glsl_type *b, bool match_name,
-                       bool match_locations = true) const;
+                       bool match_locations = true,
+                       bool match_precision = true) const;
 
    /**
     * Get the type interface packing.

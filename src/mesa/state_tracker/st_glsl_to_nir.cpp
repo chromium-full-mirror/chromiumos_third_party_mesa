@@ -314,8 +314,11 @@ st_nir_opts(nir_shader *nir, bool scalar)
 
       NIR_PASS_V(nir, nir_lower_vars_to_ssa);
 
+      NIR_PASS(progress, nir, nir_opt_copy_prop_vars);
+      NIR_PASS(progress, nir, nir_opt_dead_write_vars);
+
       if (scalar) {
-         NIR_PASS_V(nir, nir_lower_alu_to_scalar);
+         NIR_PASS_V(nir, nir_lower_alu_to_scalar, NULL);
          NIR_PASS_V(nir, nir_lower_phis_to_scalar);
       }
 
@@ -338,7 +341,7 @@ st_nir_opts(nir_shader *nir, bool scalar)
       NIR_PASS(progress, nir, nir_opt_constant_folding);
 
       if (lower_flrp != 0) {
-         bool lower_flrp_progress;
+         bool lower_flrp_progress = false;
 
          NIR_PASS(lower_flrp_progress, nir, nir_lower_flrp,
                   lower_flrp,
@@ -355,6 +358,8 @@ st_nir_opts(nir_shader *nir, bool scalar)
           */
          lower_flrp = 0;
       }
+
+      NIR_PASS(progress, nir, gl_nir_opt_access);
 
       NIR_PASS(progress, nir, nir_opt_undef);
       NIR_PASS(progress, nir, nir_opt_conditional_discard);
@@ -431,7 +436,7 @@ st_glsl_to_nir(struct st_context *st, struct gl_program *prog,
    NIR_PASS_V(nir, nir_lower_var_copies);
 
    if (is_scalar) {
-     NIR_PASS_V(nir, nir_lower_alu_to_scalar);
+     NIR_PASS_V(nir, nir_lower_alu_to_scalar, NULL);
    }
 
    /* before buffers and vars_to_ssa */
@@ -524,7 +529,7 @@ st_glsl_to_nir_post_opts(struct st_context *st, struct gl_program *prog,
     * prog->ParameterValues to get reallocated (e.g., anything that adds a
     * program constant) has to happen before creating this linkage.
     */
-   _mesa_associate_uniform_storage(st->ctx, shader_program, prog, true);
+   _mesa_associate_uniform_storage(st->ctx, shader_program, prog);
 
    st_set_prog_affected_state_flags(prog);
 
@@ -652,6 +657,28 @@ st_nir_get_mesa_program(struct gl_context *ctx,
 
    set_st_program(prog, shader_program, nir);
    prog->nir = nir;
+}
+
+static void
+st_nir_vectorize_io(nir_shader *producer, nir_shader *consumer)
+{
+   NIR_PASS_V(producer, nir_lower_io_to_vector, nir_var_shader_out);
+   NIR_PASS_V(producer, nir_opt_combine_stores, nir_var_shader_out);
+   NIR_PASS_V(consumer, nir_lower_io_to_vector, nir_var_shader_in);
+
+   if ((producer)->info.stage != MESA_SHADER_TESS_CTRL) {
+      /* Calling lower_io_to_vector creates output variable writes with
+       * write-masks.  We only support these for TCS outputs, so for other
+       * stages, we need to call nir_lower_io_to_temporaries to get rid of
+       * them.  This, in turn, creates temporary variables and extra
+       * copy_deref intrinsics that we need to clean up.
+       */
+      NIR_PASS_V(producer, nir_lower_io_to_temporaries,
+                 nir_shader_get_entrypoint(producer), true, false);
+      NIR_PASS_V(producer, nir_lower_global_vars_to_local);
+      NIR_PASS_V(producer, nir_split_var_copies);
+      NIR_PASS_V(producer, nir_lower_var_copies);
+   }
 }
 
 static void
@@ -844,6 +871,9 @@ st_link_nir(struct gl_context *ctx,
                prev_shader->sh.LinkedTransformFeedback->NumVarying > 0))
             nir_compact_varyings(shader_program->_LinkedShaders[prev]->Program->nir,
                               nir, ctx->API != API_OPENGL_COMPAT);
+
+         if (ctx->Const.ShaderCompilerOptions[i].NirOptions->vectorize_io)
+            st_nir_vectorize_io(prev_shader->nir, nir);
       }
       prev = i;
    }

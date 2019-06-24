@@ -1,7 +1,4 @@
-/* Author(s):
- *  Alyssa Rosenzweig
- *
- * Copyright (c) 2018 Alyssa Rosenzweig (alyssa@rosenzweig.io)
+/* Copyright (c) 2018-2019 Alyssa Rosenzweig (alyssa@rosenzweig.io)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,14 +19,20 @@
  * THE SOFTWARE.
  */
 
+#ifndef __MDG_HELPERS_H
+#define __MDG_HELPERS_H
+
+#include "util/macros.h"
+#include <string.h>
+
 #define OP_IS_STORE_VARY(op) (\
-		op == midgard_op_store_vary_16 || \
-		op == midgard_op_store_vary_32 \
+		op == midgard_op_st_vary_16 || \
+		op == midgard_op_st_vary_32 \
 	)
 
 #define OP_IS_STORE(op) (\
                 OP_IS_STORE_VARY(op) || \
-                op == midgard_op_store_cubemap_coords \
+                op == midgard_op_st_cubemap_coords \
 	)
 
 #define OP_IS_MOVE(op) ( \
@@ -71,6 +74,9 @@
 /* Is the op commutative? */
 #define OP_COMMUTES (1 << 3)
 
+/* Does the op convert types between int- and float- space (i2f/f2u/etc) */
+#define OP_TYPE_CONVERT (1 << 4)
+
 /* Vector-independant shorthands for the above; these numbers are arbitrary and
  * not from the ISA. Convert to the above with unit_enum_to_midgard */
 
@@ -80,12 +86,36 @@
 
 /* 4-bit type tags */
 
+#define TAG_TEXTURE_4_VTX 0x2
 #define TAG_TEXTURE_4 0x3
 #define TAG_LOAD_STORE_4 0x5
 #define TAG_ALU_4 0x8
 #define TAG_ALU_8 0x9
 #define TAG_ALU_12 0xA
 #define TAG_ALU_16 0xB
+
+static inline int
+quadword_size(int tag)
+{
+        switch (tag) {
+        case TAG_ALU_4:
+        case TAG_LOAD_STORE_4:
+        case TAG_TEXTURE_4:
+        case TAG_TEXTURE_4_VTX:
+                return 1;
+        case TAG_ALU_8:
+                return 2;
+        case TAG_ALU_12:
+                return 3;
+        case TAG_ALU_16:
+                return 4;
+        default:
+                unreachable("Unknown tag");
+        }
+}
+
+#define IS_ALU(tag) (tag == TAG_ALU_4 || tag == TAG_ALU_8 ||  \
+		     tag == TAG_ALU_12 || tag == TAG_ALU_16)
 
 /* Special register aliases */
 
@@ -147,127 +177,60 @@
 #define UNITS_VECTOR (UNIT_VMUL | UNIT_VADD)
 #define UNITS_ANY_VECTOR (UNITS_VECTOR | UNIT_VLUT)
 
-/* Table of mapping opcodes to accompanying properties relevant to
- * scheduling/emission/etc */
-
-static struct {
+struct mir_op_props {
         const char *name;
         unsigned props;
-} alu_opcode_props[256] = {
-        [midgard_alu_op_fadd]		 = {"fadd", UNITS_ADD | OP_COMMUTES},
-        [midgard_alu_op_fmul]		 = {"fmul", UNITS_MUL | UNIT_VLUT | OP_COMMUTES},
-        [midgard_alu_op_fmin]		 = {"fmin", UNITS_MUL | UNITS_ADD | OP_COMMUTES},
-        [midgard_alu_op_fmax]		 = {"fmax", UNITS_MUL | UNITS_ADD | OP_COMMUTES},
-        [midgard_alu_op_imin]		 = {"imin", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_imax]		 = {"imax", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_umin]		 = {"umin", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_umax]		 = {"umax", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_fmov]		 = {"fmov", UNITS_ALL | QUIRK_FLIPPED_R24},
-        [midgard_alu_op_fround]          = {"fround", UNITS_ADD},
-        [midgard_alu_op_froundeven]      = {"froundeven", UNITS_ADD},
-        [midgard_alu_op_ftrunc]          = {"ftrunc", UNITS_ADD},
-        [midgard_alu_op_ffloor]		 = {"ffloor", UNITS_ADD},
-        [midgard_alu_op_fceil]		 = {"fceil", UNITS_ADD},
-        [midgard_alu_op_ffma]		 = {"ffma", UNIT_VLUT},
-
-        /* Though they output a scalar, they need to run on a vector unit
-         * since they process vectors */
-        [midgard_alu_op_fdot3]		 = {"fdot3", UNIT_VMUL | OP_CHANNEL_COUNT(3) | OP_COMMUTES},
-        [midgard_alu_op_fdot3r]		 = {"fdot3r", UNIT_VMUL | OP_CHANNEL_COUNT(3) | OP_COMMUTES},
-        [midgard_alu_op_fdot4]		 = {"fdot4", UNIT_VMUL | OP_CHANNEL_COUNT(4) | OP_COMMUTES},
-
-        /* Incredibly, iadd can run on vmul, etc */
-        [midgard_alu_op_iadd]		 = {"iadd", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_iabs]		 = {"iabs", UNITS_ADD},
-        [midgard_alu_op_isub]		 = {"isub", UNITS_MOST},
-        [midgard_alu_op_imul]		 = {"imul", UNITS_MUL | OP_COMMUTES},
-        [midgard_alu_op_imov]		 = {"imov", UNITS_MOST | QUIRK_FLIPPED_R24},
-
-        /* For vector comparisons, use ball etc */
-        [midgard_alu_op_feq]		 = {"feq", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_fne]		 = {"fne", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_fle]		 = {"fle", UNITS_MOST},
-        [midgard_alu_op_flt]		 = {"flt", UNITS_MOST},
-        [midgard_alu_op_ieq]		 = {"ieq", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_ine]		 = {"ine", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_ilt]		 = {"ilt", UNITS_MOST},
-        [midgard_alu_op_ile]		 = {"ile", UNITS_MOST},
-        [midgard_alu_op_ult]		 = {"ult", UNITS_MOST},
-        [midgard_alu_op_ule]		 = {"ule", UNITS_MOST},
-
-        [midgard_alu_op_icsel]		 = {"icsel", UNITS_ADD},
-        [midgard_alu_op_fcsel_i]	 = {"fcsel_i", UNITS_ADD},
-        [midgard_alu_op_fcsel]		 = {"fcsel", UNITS_ADD | UNIT_SMUL},
-
-        [midgard_alu_op_frcp]		 = {"frcp", UNIT_VLUT},
-        [midgard_alu_op_frsqrt]		 = {"frsqrt", UNIT_VLUT},
-        [midgard_alu_op_fsqrt]		 = {"fsqrt", UNIT_VLUT},
-        [midgard_alu_op_fpow_pt1]	 = {"fpow_pt1", UNIT_VLUT},
-        [midgard_alu_op_fexp2]		 = {"fexp2", UNIT_VLUT},
-        [midgard_alu_op_flog2]		 = {"flog2", UNIT_VLUT},
-
-        [midgard_alu_op_f2i]		 = {"f2i", UNITS_ADD},
-        [midgard_alu_op_f2u]		 = {"f2u", UNITS_ADD},
-        [midgard_alu_op_f2u8]		 = {"f2u8", UNITS_ADD},
-        [midgard_alu_op_i2f]		 = {"i2f", UNITS_ADD},
-        [midgard_alu_op_u2f]		 = {"u2f", UNITS_ADD},
-
-        [midgard_alu_op_fsin]		 = {"fsin", UNIT_VLUT},
-        [midgard_alu_op_fcos]		 = {"fcos", UNIT_VLUT},
-
-        /* XXX: Test case where it's right on smul but not sadd */
-        [midgard_alu_op_iand]		 = {"iand", UNITS_MOST | OP_COMMUTES}, 
-        [midgard_alu_op_iandnot]         = {"iandnot", UNITS_MOST},
-
-        [midgard_alu_op_ior]		 = {"ior", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_iornot]		 = {"iornot", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_inor]		 = {"inor", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_ixor]		 = {"ixor", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_inxor]		 = {"inxor", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_iclz]		 = {"iclz", UNITS_ADD},
-        [midgard_alu_op_ibitcount8]	 = {"ibitcount8", UNITS_ADD},
-        [midgard_alu_op_inand]		 = {"inand", UNITS_MOST},
-        [midgard_alu_op_ishl]		 = {"ishl", UNITS_ADD},
-        [midgard_alu_op_iasr]		 = {"iasr", UNITS_ADD},
-        [midgard_alu_op_ilsr]		 = {"ilsr", UNITS_ADD},
-
-        [midgard_alu_op_fball_eq]	 = {"fball_eq", UNITS_VECTOR | OP_COMMUTES},
-        [midgard_alu_op_fbany_neq]	 = {"fbany_neq", UNITS_VECTOR | OP_COMMUTES},
-        [midgard_alu_op_iball_eq]	 = {"iball_eq", UNITS_VECTOR | OP_COMMUTES},
-        [midgard_alu_op_iball_neq]	 = {"iball_neq", UNITS_VECTOR | OP_COMMUTES},
-        [midgard_alu_op_ibany_eq]	 = {"ibany_eq", UNITS_VECTOR | OP_COMMUTES},
-        [midgard_alu_op_ibany_neq]	 = {"ibany_neq", UNITS_VECTOR | OP_COMMUTES},
-
-        /* These instructions are not yet emitted by the compiler, so
-         * don't speculate about units yet */ 
-        [midgard_alu_op_ishladd]        = {"ishladd", 0},
-
-        [midgard_alu_op_uball_lt]       = {"uball_lt", 0},
-        [midgard_alu_op_uball_lte]      = {"uball_lte", 0},
-        [midgard_alu_op_iball_lt]       = {"iball_lt", 0},
-        [midgard_alu_op_iball_lte]      = {"iball_lte", 0},
-        [midgard_alu_op_ubany_lt]       = {"ubany_lt", 0},
-        [midgard_alu_op_ubany_lte]      = {"ubany_lte", 0},
-        [midgard_alu_op_ibany_lt]       = {"ibany_lt", 0},
-        [midgard_alu_op_ibany_lte]      = {"ibany_lte", 0},
-
-        [midgard_alu_op_freduce]        = {"freduce", 0},
-        [midgard_alu_op_bball_eq]       = {"bball_eq", 0 | OP_COMMUTES},
-        [midgard_alu_op_bbany_neq]      = {"bball_eq", 0 | OP_COMMUTES},
-        [midgard_alu_op_fatan2_pt1]     = {"fatan2_pt1", 0},
-        [midgard_alu_op_fatan_pt2]      = {"fatan_pt2", 0},
 };
 
-/* Is this opcode that of an integer (regardless of signedness)? Instruction
- * names authoritatively determine types */
+/* This file is common, so don't define the tables themselves. #include
+ * midgard_op.h if you need that, or edit midgard_ops.c directly */
 
-static bool
-midgard_is_integer_op(int op)
+/* Duplicate bits to convert standard 4-bit writemask to duplicated 8-bit
+ * format (or do the inverse). The 8-bit format only really matters for
+ * int8, as far as I know, where performance can be improved by using a
+ * vec8 output */
+
+static inline unsigned
+expand_writemask(unsigned mask)
 {
-        const char *name = alu_opcode_props[op].name;
+        unsigned o = 0;
 
-        if (!name)
-                return false;
+        for (int i = 0; i < 4; ++i)
+                if (mask & (1 << i))
+                        o |= (3 << (2 * i));
 
-        return (name[0] == 'i') || (name[0] == 'u');
+        return o;
 }
+
+static inline unsigned
+squeeze_writemask(unsigned mask)
+{
+        unsigned o = 0;
+
+        for (int i = 0; i < 4; ++i)
+                if (mask & (3 << (2 * i)))
+                        o |= (1 << i);
+
+        return o;
+
+}
+
+/* Coerce structs to integer */
+
+static inline unsigned
+vector_alu_srco_unsigned(midgard_vector_alu_src src)
+{
+        unsigned u;
+        memcpy(&u, &src, sizeof(src));
+        return u;
+}
+
+static inline midgard_vector_alu_src
+vector_alu_from_unsigned(unsigned u)
+{
+        midgard_vector_alu_src s;
+        memcpy(&s, &u, sizeof(s));
+        return s;
+}
+
+#endif

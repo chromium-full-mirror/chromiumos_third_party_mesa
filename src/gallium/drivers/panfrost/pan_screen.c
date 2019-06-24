@@ -3,6 +3,7 @@
  * Copyright 2008 VMware, Inc.
  * Copyright 2014 Broadcom
  * Copyright 2018 Alyssa Rosenzweig
+ * Copyright 2019 Collabora
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -48,12 +49,14 @@
 #include "pan_resource.h"
 #include "pan_public.h"
 #include "pan_util.h"
+#include "pandecode/decode.h"
 
 #include "pan_context.h"
 #include "midgard/midgard_compile.h"
 
 static const struct debug_named_value debug_options[] = {
 	{"msgs",      PAN_DBG_MSGS,	"Print debug messages"},
+	{"trace",     PAN_DBG_TRACE,    "Trace the command stream"},
 	DEBUG_NAMED_VALUE_END
 };
 
@@ -62,8 +65,6 @@ DEBUG_GET_ONCE_FLAGS_OPTION(pan_debug, "PAN_MESA_DEBUG", debug_options, 0)
 int pan_debug = 0;
 
 struct panfrost_driver *panfrost_create_drm_driver(int fd);
-
-const char *pan_counters_base = NULL;
 
 static const char *
 panfrost_get_name(struct pipe_screen *screen)
@@ -117,7 +118,8 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
                 return 1;
 
-        case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
+        case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
+                return 4096;
         case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
         case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
                 return 13;
@@ -131,8 +133,12 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_INDEP_BLEND_FUNC:
                 return 1;
 
-        case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
         case PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT:
+                /* Hardware is natively upper left */
+                return 0;
+
+        case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
+                return 1;
         case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
         case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
                 return 1;
@@ -398,6 +404,11 @@ panfrost_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
         case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
                 return 16.0; /* arbitrary */
 
+        case PIPE_CAPF_MIN_CONSERVATIVE_RASTER_DILATE:
+        case PIPE_CAPF_MAX_CONSERVATIVE_RASTER_DILATE:
+        case PIPE_CAPF_CONSERVATIVE_RASTER_DILATE_GRANULARITY:
+                return 0.0f;
+
         default:
                 debug_printf("Unexpected PIPE_CAPF %d query\n", param);
                 return 0.0;
@@ -501,9 +512,11 @@ panfrost_is_format_supported( struct pipe_screen *screen,
 
 
 static void
-panfrost_destroy_screen( struct pipe_screen *screen )
+panfrost_destroy_screen(struct pipe_screen *pscreen)
 {
-        FREE(screen);
+        struct panfrost_screen *screen = pan_screen(pscreen);
+        panfrost_resource_screen_deinit(screen);
+        ralloc_free(screen);
 }
 
 static void
@@ -527,8 +540,7 @@ panfrost_fence_reference(struct pipe_screen *pscreen,
                          struct pipe_fence_handle **ptr,
                          struct pipe_fence_handle *fence)
 {
-        struct panfrost_screen *screen = pan_screen(pscreen);
-        screen->driver->fence_reference(pscreen, ptr, fence);
+        panfrost_drm_fence_reference(pscreen, ptr, fence);
 }
 
 static boolean
@@ -537,8 +549,7 @@ panfrost_fence_finish(struct pipe_screen *pscreen,
                       struct pipe_fence_handle *fence,
                       uint64_t timeout)
 {
-        struct panfrost_screen *screen = pan_screen(pscreen);
-        return screen->driver->fence_finish(pscreen, ctx, fence, timeout);
+        return panfrost_drm_fence_finish(pscreen, ctx, fence, timeout);
 }
 
 static const void *
@@ -552,7 +563,7 @@ panfrost_screen_get_compiler_options(struct pipe_screen *pscreen,
 struct pipe_screen *
 panfrost_create_screen(int fd, struct renderonly *ro)
 {
-        struct panfrost_screen *screen = CALLOC_STRUCT(panfrost_screen);
+        struct panfrost_screen *screen = rzalloc(NULL, struct panfrost_screen);
 
 	pan_debug = debug_get_option_pan_debug();
 
@@ -568,20 +579,10 @@ panfrost_create_screen(int fd, struct renderonly *ro)
                 }
         }
 
-        screen->driver = panfrost_create_drm_driver(fd);
+        screen->fd = fd;
 
-        /* Dump memory and/or performance counters iff asked for in the environment */
-        const char *pantrace_base = getenv("PANTRACE_BASE");
-        pan_counters_base = getenv("PANCOUNTERS_BASE");
-
-        if (pantrace_base) {
-                pantrace_initialize(pantrace_base);
-        }
-
-        if (pan_counters_base) {
-                screen->driver->allocate_slab(screen, &screen->perf_counters, 64, true, 0, 0, 0);
-                screen->driver->enable_counters(screen);
-        }
+        if (pan_debug & PAN_DBG_TRACE)
+                pandecode_initialize();
 
         screen->base.destroy = panfrost_destroy_screen;
 

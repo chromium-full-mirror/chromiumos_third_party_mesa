@@ -34,9 +34,7 @@
    .lower_fdiv = true,                                                        \
    .lower_scmp = true,                                                        \
    .lower_flrp16 = true,                                                      \
-   .lower_fmod16 = true,                                                      \
-   .lower_fmod32 = true,                                                      \
-   .lower_fmod64 = false,                                                     \
+   .lower_fmod = true,                                                        \
    .lower_bitfield_extract = true,                                            \
    .lower_bitfield_insert = true,                                             \
    .lower_uadd_carry = true,                                                  \
@@ -46,6 +44,7 @@
    .lower_isign = true,                                                       \
    .lower_ldexp = true,                                                       \
    .lower_device_index_to_zero = true,                                        \
+   .vectorize_io = true,                                                      \
    .use_interpolated_input_intrinsics = true,                                 \
    .vertex_id_zero_based = true,                                              \
    .lower_base_vertex = true
@@ -98,6 +97,9 @@ brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo)
    brw_init_compaction_tables(devinfo);
 
    compiler->precise_trig = env_var_as_boolean("INTEL_PRECISE_TRIG", false);
+
+   compiler->use_tcs_8_patch =
+      devinfo->gen >= 9 && (INTEL_DEBUG & DEBUG_TCS_EIGHT_PATCH);
 
    if (devinfo->gen >= 10) {
       /* We don't support vec4 mode on Cannonlake. */
@@ -258,4 +260,21 @@ brw_prog_key_size(gl_shader_stage stage)
    };
    assert((int)stage >= 0 && stage < ARRAY_SIZE(stage_sizes));
    return stage_sizes[stage];
+}
+
+void
+brw_prog_key_set_id(union brw_any_prog_key *key,
+                    gl_shader_stage stage,
+                    unsigned id)
+{
+   static const unsigned stage_offsets[] = {
+      offsetof(struct brw_vs_prog_key, program_string_id),
+      offsetof(struct brw_tcs_prog_key, program_string_id),
+      offsetof(struct brw_tes_prog_key, program_string_id),
+      offsetof(struct brw_gs_prog_key, program_string_id),
+      offsetof(struct brw_wm_prog_key, program_string_id),
+      offsetof(struct brw_cs_prog_key, program_string_id),
+   };
+   assert((int)stage >= 0 && stage < ARRAY_SIZE(stage_offsets));
+   *(unsigned*)((uint8_t*)key + stage_offsets[stage]) = id;
 }

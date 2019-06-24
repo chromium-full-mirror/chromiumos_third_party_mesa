@@ -107,14 +107,17 @@ static const struct drm_driver_descriptor driver_descriptors[] = {
     {
         .driver_name = "virtio_gpu",
         .create_screen = pipe_virgl_create_screen,
+        .driconf_xml = &virgl_driconf_xml,
     },
     {
         .driver_name = "v3d",
         .create_screen = pipe_v3d_create_screen,
+        .driconf_xml = &v3d_driconf_xml,
     },
     {
         .driver_name = "vc4",
         .create_screen = pipe_vc4_create_screen,
+        .driconf_xml = &v3d_driconf_xml,
     },
     {
         .driver_name = "panfrost",
@@ -137,6 +140,7 @@ static const struct drm_driver_descriptor driver_descriptors[] = {
 static const struct drm_driver_descriptor default_driver_descriptor = {
         .driver_name = "kmsro",
         .create_screen = pipe_kmsro_create_screen,
+        .driconf_xml = &v3d_driconf_xml,
 };
 
 #endif

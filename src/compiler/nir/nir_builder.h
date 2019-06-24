@@ -492,27 +492,11 @@ nir_vec(nir_builder *build, nir_ssa_def **comp, unsigned num_components)
    return nir_build_alu_src_arr(build, nir_op_vec(num_components), comp);
 }
 
-/**
- * Similar to nir_fmov, but takes a nir_alu_src instead of a nir_ssa_def.
- */
 static inline nir_ssa_def *
-nir_fmov_alu(nir_builder *build, nir_alu_src src, unsigned num_components)
+nir_mov_alu(nir_builder *build, nir_alu_src src, unsigned num_components)
 {
-   nir_alu_instr *mov = nir_alu_instr_create(build->shader, nir_op_fmov);
-   nir_ssa_dest_init(&mov->instr, &mov->dest.dest, num_components,
-                     nir_src_bit_size(src.src), NULL);
-   mov->exact = build->exact;
-   mov->dest.write_mask = (1 << num_components) - 1;
-   mov->src[0] = src;
-   nir_builder_instr_insert(build, &mov->instr);
-
-   return &mov->dest.dest.ssa;
-}
-
-static inline nir_ssa_def *
-nir_imov_alu(nir_builder *build, nir_alu_src src, unsigned num_components)
-{
-   nir_alu_instr *mov = nir_alu_instr_create(build->shader, nir_op_imov);
+   assert(!src.abs && !src.negate);
+   nir_alu_instr *mov = nir_alu_instr_create(build->shader, nir_op_mov);
    nir_ssa_dest_init(&mov->instr, &mov->dest.dest, num_components,
                      nir_src_bit_size(src.src), NULL);
    mov->exact = build->exact;
@@ -528,7 +512,7 @@ nir_imov_alu(nir_builder *build, nir_alu_src src, unsigned num_components)
  */
 static inline nir_ssa_def *
 nir_swizzle(nir_builder *build, nir_ssa_def *src, const unsigned *swiz,
-            unsigned num_components, bool use_fmov)
+            unsigned num_components)
 {
    assert(num_components <= NIR_MAX_VEC_COMPONENTS);
    nir_alu_src alu_src = { NIR_SRC_INIT };
@@ -544,8 +528,7 @@ nir_swizzle(nir_builder *build, nir_ssa_def *src, const unsigned *swiz,
    if (num_components == src->num_components && is_identity_swizzle)
       return src;
 
-   return use_fmov ? nir_fmov_alu(build, alu_src, num_components) :
-                     nir_imov_alu(build, alu_src, num_components);
+   return nir_mov_alu(build, alu_src, num_components);
 }
 
 /* Selects the right fdot given the number of components in each source. */
@@ -563,6 +546,19 @@ nir_fdot(nir_builder *build, nir_ssa_def *src0, nir_ssa_def *src1)
    }
 
    return NULL;
+}
+
+static inline nir_ssa_def *
+nir_ball_iequal(nir_builder *b, nir_ssa_def *src0, nir_ssa_def *src1)
+{
+   switch (src0->num_components) {
+   case 1: return nir_ieq(b, src0, src1);
+   case 2: return nir_ball_iequal2(b, src0, src1);
+   case 3: return nir_ball_iequal3(b, src0, src1);
+   case 4: return nir_ball_iequal4(b, src0, src1);
+   default:
+      unreachable("bad component size");
+   }
 }
 
 static inline nir_ssa_def *
@@ -587,7 +583,7 @@ nir_bany(nir_builder *b, nir_ssa_def *src)
 static inline nir_ssa_def *
 nir_channel(nir_builder *b, nir_ssa_def *def, unsigned c)
 {
-   return nir_swizzle(b, def, &c, 1, false);
+   return nir_swizzle(b, def, &c, 1);
 }
 
 static inline nir_ssa_def *
@@ -601,7 +597,7 @@ nir_channels(nir_builder *b, nir_ssa_def *def, nir_component_mask_t mask)
       swizzle[num_channels++] = i;
    }
 
-   return nir_swizzle(b, def, swizzle, num_channels, false);
+   return nir_swizzle(b, def, swizzle, num_channels);
 }
 
 static inline nir_ssa_def *
@@ -839,7 +835,7 @@ nir_ssa_for_src(nir_builder *build, nir_src src, int num_components)
    for (int j = 0; j < 4; j++)
       alu.swizzle[j] = j;
 
-   return nir_imov_alu(build, alu, num_components);
+   return nir_mov_alu(build, alu, num_components);
 }
 
 /**
@@ -860,7 +856,7 @@ nir_ssa_for_alu_src(nir_builder *build, nir_alu_instr *instr, unsigned srcn)
        (memcmp(src->swizzle, trivial_swizzle, num_components) == 0))
       return src->src.ssa;
 
-   return nir_imov_alu(build, *src, num_components);
+   return nir_mov_alu(build, *src, num_components);
 }
 
 static inline unsigned
@@ -1124,13 +1120,26 @@ nir_store_deref(nir_builder *build, nir_deref_instr *deref,
 }
 
 static inline void
-nir_copy_deref(nir_builder *build, nir_deref_instr *dest, nir_deref_instr *src)
+nir_copy_deref_with_access(nir_builder *build, nir_deref_instr *dest,
+                           nir_deref_instr *src,
+                           enum gl_access_qualifier dest_access,
+                           enum gl_access_qualifier src_access)
 {
    nir_intrinsic_instr *copy =
       nir_intrinsic_instr_create(build->shader, nir_intrinsic_copy_deref);
    copy->src[0] = nir_src_for_ssa(&dest->dest.ssa);
    copy->src[1] = nir_src_for_ssa(&src->dest.ssa);
+   nir_intrinsic_set_dst_access(copy, dest_access);
+   nir_intrinsic_set_src_access(copy, src_access);
    nir_builder_instr_insert(build, &copy->instr);
+}
+
+static inline void
+nir_copy_deref(nir_builder *build, nir_deref_instr *dest, nir_deref_instr *src)
+{
+   nir_copy_deref_with_access(build, dest, src,
+                              (enum gl_access_qualifier) 0,
+                              (enum gl_access_qualifier) 0);
 }
 
 static inline nir_ssa_def *

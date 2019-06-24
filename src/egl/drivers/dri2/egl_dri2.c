@@ -874,6 +874,9 @@ dri2_initialize(_EGLDriver *drv, _EGLDisplay *disp)
    case _EGL_PLATFORM_SURFACELESS:
       ret = dri2_initialize_surfaceless(drv, disp);
       break;
+   case _EGL_PLATFORM_DEVICE:
+      ret = dri2_initialize_device(drv, disp);
+      break;
    case _EGL_PLATFORM_X11:
       ret = dri2_initialize_x11(drv, disp);
       break;
@@ -1354,7 +1357,8 @@ dri2_destroy_context(_EGLDriver *drv, _EGLDisplay *disp, _EGLContext *ctx)
 
 EGLBoolean
 dri2_init_surface(_EGLSurface *surf, _EGLDisplay *disp, EGLint type,
-        _EGLConfig *conf, const EGLint *attrib_list, EGLBoolean enable_out_fence)
+        _EGLConfig *conf, const EGLint *attrib_list,
+        EGLBoolean enable_out_fence, void *native_surface)
 {
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
@@ -1368,7 +1372,7 @@ dri2_init_surface(_EGLSurface *surf, _EGLDisplay *disp, EGLint type,
       dri2_surf->enable_out_fence = enable_out_fence;
    }
 
-   return _eglInitSurface(surf, disp, type, conf, attrib_list);
+   return _eglInitSurface(surf, disp, type, conf, attrib_list, native_surface);
 }
 
 static void
@@ -1422,6 +1426,31 @@ dri2_surf_update_fence_fd(_EGLContext *ctx,
       dri2_dpy->fence->destroy_fence(dri2_dpy->dri_screen, fence);
    }
    dri2_surface_set_out_fence_fd(surf, fence_fd);
+}
+
+EGLBoolean
+dri2_create_drawable(struct dri2_egl_display *dri2_dpy,
+                     const __DRIconfig *config,
+                     struct dri2_egl_surface *dri2_surf,
+                     void *loaderPrivate)
+{
+   __DRIcreateNewDrawableFunc createNewDrawable;
+
+   if (dri2_dpy->image_driver)
+      createNewDrawable = dri2_dpy->image_driver->createNewDrawable;
+   else if (dri2_dpy->dri2)
+      createNewDrawable = dri2_dpy->dri2->createNewDrawable;
+   else if (dri2_dpy->swrast)
+      createNewDrawable = dri2_dpy->swrast->createNewDrawable;
+   else
+      return _eglError(EGL_BAD_ALLOC, "no createNewDrawable");
+
+   dri2_surf->dri_drawable = (*createNewDrawable)(dri2_dpy->dri_screen,
+                                                  config, loaderPrivate);
+   if (dri2_surf->dri_drawable == NULL)
+      return _eglError(EGL_BAD_ALLOC, "createNewDrawable");
+
+   return EGL_TRUE;
 }
 
 /**

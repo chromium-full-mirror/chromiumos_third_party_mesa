@@ -52,7 +52,7 @@
  * XXX Check max texture size values against core and sampler.
  */
 #define SWR_MAX_TEXTURE_SIZE (2 * 1024 * 1024 * 1024ULL) /* 2GB */
-#define SWR_MAX_TEXTURE_2D_LEVELS 14  /* 8K x 8K for now */
+#define SWR_MAX_TEXTURE_2D_SIZE 8192
 #define SWR_MAX_TEXTURE_3D_LEVELS 12  /* 2K x 2K x 2K for now */
 #define SWR_MAX_TEXTURE_CUBE_LEVELS 14  /* 8K x 8K for now */
 #define SWR_MAX_TEXTURE_ARRAY_LAYERS 512 /* 8K x 512 / 8K x 8K x 512 */
@@ -152,6 +152,21 @@ swr_is_format_supported(struct pipe_screen *_screen,
       return FALSE;
    }
 
+   if ((bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW)) &&
+       ((bind & PIPE_BIND_DISPLAY_TARGET) == 0)) {
+      /* Disable all 3-channel formats, where channel size != 32 bits.
+       * In some cases we run into crashes (in generate_unswizzled_blend()),
+       * for 3-channel RGB16 variants, there was an apparent LLVM bug.
+       * In any case, disabling the shallower 3-channel formats avoids a
+       * number of issues with GL_ARB_copy_image support.
+       */
+      if (format_desc->is_array &&
+          format_desc->nr_channels == 3 &&
+          format_desc->block.bits != 96) {
+         return FALSE;
+      }
+   }
+
    return TRUE;
 }
 
@@ -162,8 +177,8 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
       /* limits */
    case PIPE_CAP_MAX_RENDER_TARGETS:
       return PIPE_MAX_COLOR_BUFS;
-   case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
-      return SWR_MAX_TEXTURE_2D_LEVELS;
+   case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
+      return SWR_MAX_TEXTURE_2D_SIZE;
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
       return SWR_MAX_TEXTURE_3D_LEVELS;
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
@@ -182,10 +197,14 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 2048;
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
       return SWR_MAX_TEXTURE_ARRAY_LAYERS;
+   case PIPE_CAP_MIN_TEXTURE_GATHER_OFFSET:
    case PIPE_CAP_MIN_TEXEL_OFFSET:
       return -8;
+   case PIPE_CAP_MAX_TEXTURE_GATHER_OFFSET:
    case PIPE_CAP_MAX_TEXEL_OFFSET:
       return 7;
+   case PIPE_CAP_MAX_TEXTURE_GATHER_COMPONENTS:
+      return 4;
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
       return 330;
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
@@ -197,13 +216,11 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
       return 65536;
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
-      return 0;
+      return 1;
    case PIPE_CAP_MAX_VIEWPORTS:
       return 1;
    case PIPE_CAP_ENDIANNESS:
       return PIPE_ENDIAN_NATIVE;
-   case PIPE_CAP_MIN_TEXTURE_GATHER_OFFSET:
-   case PIPE_CAP_MAX_TEXTURE_GATHER_OFFSET:
    case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
       return 0;
 
@@ -254,6 +271,8 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_CULL_DISTANCE:
    case PIPE_CAP_CUBE_MAP_ARRAY:
    case PIPE_CAP_DOUBLES:
+   case PIPE_CAP_TEXTURE_QUERY_LOD:
+   case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
       return 1;
 
    /* MSAA support
@@ -284,9 +303,7 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS:
    case PIPE_CAP_TGSI_TEXCOORD:
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
-   case PIPE_CAP_MAX_TEXTURE_GATHER_COMPONENTS:
    case PIPE_CAP_TEXTURE_GATHER_SM5:
-   case PIPE_CAP_TEXTURE_QUERY_LOD:
    case PIPE_CAP_SAMPLE_SHADING:
    case PIPE_CAP_TEXTURE_GATHER_OFFSETS:
    case PIPE_CAP_TGSI_VS_WINDOW_SPACE_POSITION:
@@ -299,7 +316,6 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_TXQS:
    case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
    case PIPE_CAP_SHAREABLE_SHADERS:
-   case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
    case PIPE_CAP_DRAW_PARAMETERS:
    case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
    case PIPE_CAP_MULTI_DRAW_INDIRECT:
@@ -330,7 +346,7 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
    case PIPE_CAP_NATIVE_FENCE_FD:
    case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
-   case PIPE_CAP_TGSI_FS_FBFETCH:
+   case PIPE_CAP_FBFETCH:
    case PIPE_CAP_TGSI_MUL_ZERO_WINS:
    case PIPE_CAP_INT64:
    case PIPE_CAP_INT64_DIVMOD:

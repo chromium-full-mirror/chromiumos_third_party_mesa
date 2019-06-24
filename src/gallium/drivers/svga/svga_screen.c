@@ -221,18 +221,18 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
       return 256;
 
-   case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
+   case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
       {
-         unsigned levels = SVGA_MAX_TEXTURE_LEVELS;
+         unsigned size = 1 << (SVGA_MAX_TEXTURE_LEVELS - 1);
          if (sws->get_cap(sws, SVGA3D_DEVCAP_MAX_TEXTURE_WIDTH, &result))
-            levels = MIN2(util_logbase2(result.u) + 1, levels);
+            size = MIN2(result.u, size);
          else
-            levels = 12 /* 2048x2048 */;
+            size = 2048;
          if (sws->get_cap(sws, SVGA3D_DEVCAP_MAX_TEXTURE_HEIGHT, &result))
-            levels = MIN2(util_logbase2(result.u) + 1, levels);
+            size = MIN2(result.u, size);
          else
-            levels = 12 /* 2048x2048 */;
-         return levels;
+            size = 2048;
+         return size;
       }
 
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
@@ -245,7 +245,7 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
        * No mechanism to query the host, and at least limited to 2048x2048 on
        * certain hardware.
        */
-      return MIN2(screen->get_param(screen, PIPE_CAP_MAX_TEXTURE_2D_LEVELS),
+      return MIN2(util_last_bit(screen->get_param(screen, PIPE_CAP_MAX_TEXTURE_2D_SIZE)),
                   12 /* 2048x2048 */);
 
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
@@ -351,6 +351,8 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return sws->have_sm4_1 ? 1 : 0; /* only single-channel textures */
    case PIPE_CAP_MAX_VARYINGS:
       return sws->have_vgpu10 ? VGPU10_MAX_FS_INPUTS : 10;
+   case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
+      return sws->have_coherent;
 
    /* Unsupported features */
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
@@ -366,7 +368,6 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_QUERY_PIPELINE_STATISTICS:
    case PIPE_CAP_TGSI_VS_LAYER_VIEWPORT:
    case PIPE_CAP_TEXTURE_GATHER_SM5:
-   case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
    case PIPE_CAP_TEXTURE_GATHER_OFFSETS:
    case PIPE_CAP_TGSI_VS_WINDOW_SPACE_POSITION:
    case PIPE_CAP_DRAW_INDIRECT:
@@ -448,7 +449,7 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
    case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
    case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
-   case PIPE_CAP_TGSI_FS_FBFETCH:
+   case PIPE_CAP_FBFETCH:
    case PIPE_CAP_TGSI_MUL_ZERO_WINS:
    case PIPE_CAP_DOUBLES:
    case PIPE_CAP_INT64:
@@ -1079,7 +1080,8 @@ svga_screen_create(struct svga_winsys_screen *sws)
       /* Maximum number of constant buffers */
       svgascreen->max_const_buffers =
          get_uint_cap(sws, SVGA3D_DEVCAP_DX_MAX_CONSTANT_BUFFERS, 1);
-      assert(svgascreen->max_const_buffers <= SVGA_MAX_CONST_BUFS);
+      svgascreen->max_const_buffers = MIN2(svgascreen->max_const_buffers,
+                                           SVGA_MAX_CONST_BUFS);
 
       screen->is_format_supported = svga_is_dx_format_supported;
    }

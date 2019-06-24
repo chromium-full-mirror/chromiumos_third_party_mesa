@@ -152,7 +152,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_SIGNED_VERTEX_BUFFER_OFFSET:
 	case PIPE_CAP_TGSI_BALLOT:
 	case PIPE_CAP_TGSI_VOTE:
-	case PIPE_CAP_TGSI_FS_FBFETCH:
+	case PIPE_CAP_FBFETCH:
 	case PIPE_CAP_COMPUTE_GRID_INFO_LAST_BLOCK:
 	case PIPE_CAP_IMAGE_LOAD_FORMATTED:
 	case PIPE_CAP_PREFER_COMPUTE_BLIT_FOR_MULTIMEDIA:
@@ -162,8 +162,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return !SI_BIG_ENDIAN && sscreen->info.has_userptr;
 
 	case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
-		return sscreen->info.has_gpu_reset_status_query ||
-		       sscreen->info.has_gpu_reset_counter_query;
+		return sscreen->info.has_gpu_reset_status_query;
 
 	case PIPE_CAP_TEXTURE_MULTISAMPLE:
 		return sscreen->info.has_2d_tiling;
@@ -197,7 +196,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
 	case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
 	case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
-		return !sscreen->info.has_unaligned_shader_loads;
+		return HAVE_LLVM < 0x0900 && !sscreen->info.has_unaligned_shader_loads;
 
 	case PIPE_CAP_SPARSE_BUFFER_PAGE_SIZE:
 		return sscreen->info.has_sparse_vm_mappings ?
@@ -254,7 +253,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return 32;
 
 	case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
-		return sscreen->info.chip_class <= VI ?
+		return sscreen->info.chip_class <= GFX8 ?
 			PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_R600 : 0;
 
 	/* Stream output. */
@@ -264,7 +263,10 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
 	/* Geometry shader output. */
 	case PIPE_CAP_MAX_GEOMETRY_OUTPUT_VERTICES:
-		return 1024;
+		/* gfx9 has to report 256 to make piglit/gs-max-output pass.
+		 * gfx8 and earlier can do 1024.
+		 */
+		return 256;
 	case PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS:
 		return 4095;
 	case PIPE_CAP_MAX_GS_INVOCATIONS:
@@ -276,7 +278,8 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return 2048;
 
 	/* Texturing. */
-	case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
+	case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
+		return 16384;
 	case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
 		return 15; /* 16384 */
 	case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
@@ -484,8 +487,11 @@ static const struct nir_shader_compiler_options nir_options = {
 	.lower_flrp64 = true,
 	.lower_fsat = true,
 	.lower_fdiv = true,
+	.lower_bitfield_insert_to_bitfield_select = true,
+	.lower_bitfield_extract = true,
 	.lower_sub = true,
 	.lower_ffma = true,
+	.lower_fmod = true,
 	.lower_pack_snorm_2x16 = true,
 	.lower_pack_snorm_4x8 = true,
 	.lower_pack_unorm_2x16 = true,
@@ -627,7 +633,7 @@ static int si_get_video_param(struct pipe_screen *screen,
 				return true;
 			if (sscreen->info.family < CHIP_CARRIZO || sscreen->info.family >= CHIP_VEGA10)
 				return false;
-			if (!(sscreen->info.drm_major == 3 && sscreen->info.drm_minor >= 19)) {
+			if (!(sscreen->info.is_amdgpu && sscreen->info.drm_minor >= 19)) {
 				RVID_ERR("No MJPEG support for the kernel version\n");
 				return false;
 			}
@@ -919,7 +925,7 @@ static void si_query_memory_info(struct pipe_screen *screen,
 	info->device_memory_evicted =
 		ws->query_value(ws, RADEON_NUM_BYTES_MOVED) / 1024;
 
-	if (sscreen->info.drm_major == 3 && sscreen->info.drm_minor >= 4)
+	if (sscreen->info.is_amdgpu && sscreen->info.drm_minor >= 4)
 		info->nr_device_memory_evictions =
 			ws->query_value(ws, RADEON_NUM_EVICTIONS);
 	else

@@ -2,6 +2,7 @@
  * © Copyright 2017-2018 Alyssa Rosenzweig
  * © Copyright 2017-2018 Connor Abbott
  * © Copyright 2017-2018 Lyude Paul
+ * © Copyright2019 Collabora
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -73,9 +74,11 @@ enum mali_draw_mode {
 #define MALI_OCCLUSION_QUERY    (1 << 3)
 #define MALI_OCCLUSION_PRECISE  (1 << 4)
 
-#define MALI_FRONT_FACE(v)      (v << 5)
-#define MALI_CCW (0)
-#define MALI_CW  (1)
+/* Set for a glFrontFace(GL_CCW) in a Y=0=TOP coordinate system (like Gallium).
+ * In OpenGL, this would corresponds to glFrontFace(GL_CW). Mesa and the blob
+ * disagree about how to do viewport flipping, so the blob actually sets this
+ * for GL_CW but then has a negative viewport stride */
+#define MALI_FRONT_CCW_TOP      (1 << 5)
 
 #define MALI_CULL_FACE_FRONT    (1 << 6)
 #define MALI_CULL_FACE_BACK     (1 << 7)
@@ -165,9 +168,6 @@ struct mali_stencil_test {
         unsigned zero			: 4;
 } __attribute__((packed));
 
-/* Blending is a mess, since anything fancy triggers a blend shader, and
- * -those- are not understood whatsover yet */
-
 #define MALI_MASK_R (1 << 0)
 #define MALI_MASK_G (1 << 1)
 #define MALI_MASK_B (1 << 2)
@@ -228,12 +228,6 @@ struct mali_blend_equation {
         /* Corresponds to MALI_MASK_* above and glColorMask arguments */
 
         unsigned color_mask : 4;
-
-        /* Attached constant for CONSTANT_ALPHA, etc */
-
-#ifndef BIFROST
-        float constant;
-#endif
 } __attribute__((packed));
 
 /* Used with channel swizzling */
@@ -406,7 +400,19 @@ enum mali_format {
 #define MALI_GET_ALPHA_COVERAGE(nibble) ((float) nibble / 15.0f)
 
 /* Applies to unknown1 */
-#define MALI_NO_ALPHA_TO_COVERAGE (1 << 10)
+
+/* Should the hardware perform early-Z testing? Normally should be set
+ * for performance reasons. Clear if you use: discard,
+ * alpha-to-coverage... * It's also possible this disables
+ * forward-pixel kill; we're not quite sure which bit is which yet.
+ * TODO: How does this interact with blending?*/
+
+#define MALI_EARLY_Z (1 << 10)
+
+/* Should the hardware calculate derivatives (via helper invocations)? Set in a
+ * fragment shader that uses texturing or derivative functions */
+
+#define MALI_HELPER_INVOCATIONS (1 << 11)
 
 /* Flags denoting the fragment shader's use of tilebuffer readback. If the
  * shader might read any part of the tilebuffer, set MALI_READS_TILEBUFFER. If
@@ -420,17 +426,24 @@ enum mali_format {
 
 union midgard_blend {
         mali_ptr shader;
-        struct mali_blend_equation equation;
+
+        struct {
+                struct mali_blend_equation equation;
+                float constant;
+        };
 };
 
 /* On MRT Midgard systems (using an MFBD), each render target gets its own
  * blend descriptor */
+
+#define MALI_BLEND_SRGB (0x400)
 
 struct midgard_blend_rt {
         /* Flags base value of 0x200 to enable the render target.
          * OR with 0x1 for blending (anything other than REPLACE).
          * OR with 0x2 for programmable blending with 0-2 registers
          * OR with 0x3 for programmable blending with 2+ registers
+         * OR with MALI_BLEND_SRGB for implicit sRGB
          */
 
         u64 flags;
@@ -444,7 +457,21 @@ struct bifrost_blend_rt {
         /* This is likely an analogue of the flags on
          * midgard_blend_rt */
 
-        u32 unk1; // = 0x200
+        u16 flags; // = 0x200
+
+        /* Single-channel blend constants are encoded in a sort of
+         * fixed-point. Basically, the float is mapped to a byte, becoming
+         * a high byte, and then the lower-byte is added for precision.
+         * For the original float f:
+         *
+         * f = (constant_hi / 255) + (constant_lo / 65535)
+         *
+         * constant_hi = int(f / 255)
+         * constant_lo = 65535*f - (65535/255) * constant_hi
+         */
+
+        u16 constant;
+
         struct mali_blend_equation equation;
         /*
          * - 0x19 normally
@@ -948,7 +975,8 @@ struct bifrost_tiler_heap_meta {
 
 struct bifrost_tiler_meta {
         u64 zero0;
-        u32 unk; // = 0xf0
+        u16 hierarchy_mask;
+        u16 flags;
         u16 width;
         u16 height;
         u64 zero1;
@@ -1020,13 +1048,6 @@ struct mali_vertex_tiler_postfix {
          * in vertex and tiler jobs.
          */
         mali_ptr framebuffer;
-
-#ifdef __LP64__
-#ifdef BIFROST
-        /* most likely padding to make this a multiple of 64 bytes */
-        u64 zero7;
-#endif
-#endif
 } __attribute__((packed));
 
 struct midgard_payload_vertex_tiler {
@@ -1070,6 +1091,7 @@ struct bifrost_payload_fused {
         struct mali_vertex_tiler_prefix prefix;
         struct bifrost_tiler_only tiler;
         struct mali_vertex_tiler_postfix tiler_postfix;
+        u64 padding; /* zero */
         struct bifrost_vertex_only vertex;
         struct mali_vertex_tiler_postfix vertex_postfix;
 } __attribute__((packed));
@@ -1098,20 +1120,38 @@ enum mali_wrap_mode {
         MALI_WRAP_MIRRORED_REPEAT = 0xC
 };
 
+/* Shared across both command stream and Midgard, and even with Bifrost */
+
+enum mali_texture_type {
+        MALI_TEX_CUBE = 0x0,
+        MALI_TEX_1D = 0x1,
+        MALI_TEX_2D = 0x2,
+        MALI_TEX_3D = 0x3
+};
+
 /* 8192x8192 */
 #define MAX_MIP_LEVELS (13)
 
 /* Cubemap bloats everything up */
-#define MAX_FACES (6)
+#define MAX_CUBE_FACES (6)
+
+/* For each pointer, there is an address and optionally also a stride */
+#define MAX_ELEMENTS (2)
 
 /* Corresponds to the type passed to glTexImage2D and so forth */
+
+/* Flags for usage2 */
+#define MALI_TEX_MANUAL_STRIDE (0x20)
 
 struct mali_texture_format {
         unsigned swizzle : 12;
         enum mali_format format : 8;
 
-        unsigned usage1 : 3;
-        unsigned is_not_cubemap : 1;
+        unsigned srgb : 1;
+        unsigned unknown1 : 1;
+
+        enum mali_texture_type type : 2;
+
         unsigned usage2 : 8;
 } __attribute__((packed));
 
@@ -1119,8 +1159,7 @@ struct mali_texture_descriptor {
         uint16_t width;
         uint16_t height;
         uint16_t depth;
-
-        uint16_t unknown1;
+        uint16_t array_size;
 
         struct mali_texture_format format;
 
@@ -1144,7 +1183,7 @@ struct mali_texture_descriptor {
         uint32_t unknown6;
         uint32_t unknown7;
 
-        mali_ptr swizzled_bitmaps[MAX_MIP_LEVELS * MAX_FACES];
+        mali_ptr payload[MAX_MIP_LEVELS * MAX_CUBE_FACES * MAX_ELEMENTS];
 } __attribute__((packed));
 
 /* Used as part of filter_mode */
@@ -1205,11 +1244,8 @@ struct mali_sampler_descriptor {
         float border_color[4];
 } __attribute__((packed));
 
-/* TODO: What are the floats? Apparently always { -inf, -inf, inf, inf },
- * unless the scissor test is enabled.
- *
- * viewport0/viewport1 form the arguments to glViewport. viewport1 is modified
- * by MALI_POSITIVE; viewport0 is as-is.
+/* viewport0/viewport1 form the arguments to glViewport. viewport1 is
+ * modified by MALI_POSITIVE; viewport0 is as-is.
  */
 
 struct mali_viewport {
@@ -1275,7 +1311,7 @@ struct mali_payload_fragment {
         mali_ptr framebuffer;
 } __attribute__((packed));
 
-/* (Single?) Framebuffer Descriptor */
+/* Single Framebuffer Descriptor */
 
 /* Flags apply to format. With just MSAA_A and MSAA_B, the framebuffer is
  * configured for 4x. With MSAA_8, it is configured for 8x. */
@@ -1350,25 +1386,44 @@ struct mali_single_framebuffer {
 
         u32 zero6[7];
 
-        /* Very weird format, see generation code in trans_builder.c */
-        u32 resolution_check;
+        /* Logically, by symmetry to the MFBD, this ought to be the size of the
+         * polygon list. But this doesn't quite compute up. More investigation
+         * is needed. */
 
-        u32 tiler_flags;
+        u32 tiler_resolution_check;
 
-        u64 unknown_address_1; /* Pointing towards... a zero buffer? */
-        u64 unknown_address_2;
+        u16 tiler_hierarchy_mask;
+        u16 tiler_flags;
+
+        /* See pan_tiler.c */
+        mali_ptr tiler_polygon_list; 
+        mali_ptr tiler_polygon_list_body;
 
         /* See mali_kbase_replay.c */
-        u64 tiler_heap_free;
-        u64 tiler_heap_end;
+        mali_ptr tiler_heap_free;
+        mali_ptr tiler_heap_end;
 
         /* More below this, maybe */
 } __attribute__((packed));
 
+/* On Midgard, this "framebuffer descriptor" is used for the framebuffer field
+ * of compute jobs. Superficially resembles a single framebuffer descriptor */
+
+struct mali_compute_fbd {
+        u32 unknown1[16];
+} __attribute__((packed));
+
 /* Format bits for the render target flags */
 
-#define MALI_MFBD_FORMAT_AFBC 	  (1 << 5)
-#define MALI_MFBD_FORMAT_MSAA 	  (1 << 7)
+#define MALI_MFBD_FORMAT_MSAA 	  (1 << 1)
+#define MALI_MFBD_FORMAT_SRGB 	  (1 << 2)
+
+enum mali_mfbd_block_format {
+        MALI_MFBD_BLOCK_TILED   = 0x0,
+        MALI_MFBD_BLOCK_UNKNOWN = 0x1,
+        MALI_MFBD_BLOCK_LINEAR  = 0x2,
+        MALI_MFBD_BLOCK_AFBC    = 0x3,
+};
 
 struct mali_rt_format {
         unsigned unk1 : 32;
@@ -1376,7 +1431,9 @@ struct mali_rt_format {
 
         unsigned nr_channels : 2; /* MALI_POSITIVE */
 
-        unsigned flags : 11;
+        unsigned unk3 : 5;
+        enum mali_mfbd_block_format block : 2;
+        unsigned flags : 4;
 
         unsigned swizzle : 12;
 
@@ -1475,7 +1532,7 @@ struct bifrost_fb_extra {
         u64 zero3, zero4;
 } __attribute__((packed));
 
-/* flags for unk3 */
+/* Flags for mfbd_flags */
 
 /* Enables writing depth results back to main memory (rather than keeping them
  * on-chip in the tile buffer and then discarding) */
@@ -1506,20 +1563,33 @@ struct bifrost_framebuffer {
         u32 zero4 : 5;
         /* 0x30 */
         u32 clear_stencil : 8;
-        u32 unk3 : 24; // = 0x100
+        u32 mfbd_flags : 24; // = 0x100
         float clear_depth;
-        mali_ptr tiler_meta;
-        /* 0x40 */
 
-        /* Note: these are guesses! */
-        mali_ptr tiler_scratch_start;
-        mali_ptr tiler_scratch_middle;
 
-        /* These are not, since we see symmetry with replay jobs which name these explicitly */
-        mali_ptr tiler_heap_start;
+        /* Tiler section begins here */
+        u32 tiler_polygon_list_size;
+
+        /* Name known from the replay workaround in the kernel. What exactly is
+         * flagged here is less known. We do that (tiler_hierarchy_mask & 0x1ff)
+         * specifies a mask of hierarchy weights, which explains some of the
+         * performance mysteries around setting it. We also see the bottom bit
+         * of tiler_flags set in the kernel, but no comment why. */
+
+        u16 tiler_hierarchy_mask;
+        u16 tiler_flags;
+
+        /* See mali_tiler.c for an explanation */
+        mali_ptr tiler_polygon_list;
+        mali_ptr tiler_polygon_list_body;
+
+        /* Names based on we see symmetry with replay jobs which name these
+         * explicitly */
+
+        mali_ptr tiler_heap_start; /* tiler heap_free_address */
         mali_ptr tiler_heap_end;
         
-        u64 zero9, zero10, zero11, zero12;
+        u32 tiler_weights[8];
 
         /* optional: struct bifrost_fb_extra extra */
         /* struct bifrost_render_target rts[] */

@@ -94,8 +94,8 @@ nv50_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    switch (param) {
    /* non-boolean caps */
-   case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
-      return 14;
+   case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
+      return 8192;
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
       return 12;
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
@@ -278,7 +278,7 @@ nv50_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
    case PIPE_CAP_NATIVE_FENCE_FD:
    case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
-   case PIPE_CAP_TGSI_FS_FBFETCH:
+   case PIPE_CAP_FBFETCH:
    case PIPE_CAP_DOUBLES:
    case PIPE_CAP_INT64:
    case PIPE_CAP_INT64_DIVMOD:
@@ -882,7 +882,6 @@ static const nir_shader_compiler_options nir_options = {
    .lower_flrp32 = true,
    .lower_flrp64 = true,
    .lower_fpow = false,
-   .lower_fmod64 = true,
    .lower_uadd_carry = true,
    .lower_usub_borrow = true,
    .lower_ffract = true,

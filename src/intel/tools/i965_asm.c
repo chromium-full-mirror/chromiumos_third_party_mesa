@@ -82,6 +82,7 @@ i965_disasm_init(uint16_t pci_id)
    if (!gen_get_device_info(pci_id, devinfo)) {
       fprintf(stderr, "can't find device information: pci_id=0x%x\n",
               pci_id);
+      free(devinfo);
       return NULL;
    }
 
@@ -101,7 +102,7 @@ int main(int argc, char **argv)
    int offset = 0, err;
    int start_offset = 0;
    struct disasm_info *disasm_info;
-   struct gen_device_info *devinfo;
+   struct gen_device_info *devinfo = NULL;
    int result = EXIT_FAILURE;
 
    const struct option i965_asm_opts[] = {

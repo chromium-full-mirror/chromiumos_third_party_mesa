@@ -27,34 +27,49 @@ files_panfrost = files(
   'pan_resource.h',
 
   'midgard/midgard_compile.c',
+  'midgard/mir.c',
+  'midgard/midgard_print.c',
+  'midgard/midgard_schedule.c',
+  'midgard/midgard_emit.c',
+  'midgard/midgard_ra.c',
+  'midgard/midgard_ra_pipeline.c',
+  'midgard/midgard_liveness.c',
+  'midgard/midgard_ops.c',
+
+  'midgard/nir_lower_blend.c',
   'midgard/cppwrap.cpp',
   'midgard/disassemble.c',
 
   'bifrost/disassemble.c',
 
+  'pandecode/common.c',
+  'pandecode/decode.c',
+
   'pan_context.c',
+  'pan_afbc.c',
+  'pan_blit.c',
   'pan_job.c',
-  'pan_trace.c',
   'pan_drm.c',
   'pan_allocate.c',
   'pan_assemble.c',
   'pan_format.c',
-  'pan_swizzle.c',
   'pan_blending.c',
   'pan_blend_shaders.c',
-  'pan_wallpaper.c',
   'pan_pretty_print.c',
   'pan_fragment.c',
+  'pan_scoreboard.c',
   'pan_sfbd.c',
-  'pan_mfbd.c'
+  'pan_mfbd.c',
+  'pan_tiler.c',
 )
 
-inc_panfrost = [
+panfrost_includes = [
   inc_common,
   inc_gallium,
   inc_gallium_aux,
   inc_include,
   inc_src,
+  inc_panfrost,
   include_directories('include'),
   include_directories('midgard'),
   include_directories('bifrost'),
@@ -85,41 +100,18 @@ libpanfrost = static_library(
     dep_libdrm,
     idep_nir
   ],
-  include_directories : inc_panfrost,
+  include_directories : panfrost_includes,
   c_args : [c_vis_args, c_msvc_compat_args, compile_args_panfrost],
 )
 
 driver_panfrost = declare_dependency(
   compile_args : compile_args_panfrost,
-  link_with : [libpanfrost, libpanfrostwinsys],
-)
-
-files_midgard = files(
-  'midgard/midgard_compile.c',
-  'midgard/cppwrap.cpp',
-  'midgard/disassemble.c',
-  'midgard/cmdline.c',
+  link_with : [libpanfrost, libpanfrostwinsys, libpanfrost_shared],
 )
 
 files_bifrost = files(
   'bifrost/disassemble.c',
   'bifrost/cmdline.c',
-)
-
-midgard_compiler = executable(
-  'midgard_compiler',
-  [files_midgard, midgard_nir_algebraic_c],
-  include_directories : inc_panfrost,
-  dependencies : [
-    dep_thread,
-    idep_nir
-  ],
-  link_with : [
-    libgallium,
-    libglsl_standalone,
-    libmesa_util
-  ],
-  build_by_default : true
 )
 
 bifrost_compiler = executable(
@@ -147,17 +139,20 @@ bifrost_compiler = executable(
 
 files_pandecode = files(
   'pandecode/cmdline.c',
+  'pandecode/common.c',
   'pandecode/decode.c',
 
   'pan_pretty_print.c',
 
-  'midgard/disassemble.c'
+  'midgard/disassemble.c',
+  'midgard/midgard_ops.c',
+  'bifrost/disassemble.c',
 )
 
 pandecode = executable(
   'pandecode',
   files_pandecode,
-  include_directories : inc_panfrost,
+  include_directories : panfrost_includes,
   dependencies : [
     dep_thread,
   ],

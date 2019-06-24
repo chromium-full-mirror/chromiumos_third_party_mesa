@@ -143,6 +143,10 @@
 
 #include <stdio.h>
 
+// Use LDS symbols when supported by LLVM. Can be disabled for testing the old
+// path on newer LLVM for now. Should be removed in the long term.
+#define USE_LDS_SYMBOLS (true)
+
 struct nir_shader;
 struct si_shader;
 struct si_context;
@@ -247,7 +251,7 @@ enum {
 #define S_VS_STATE_LS_OUT_VERTEX_SIZE(x)	(((unsigned)(x) & 0xFF) << 24)
 #define C_VS_STATE_LS_OUT_VERTEX_SIZE		0x00FFFFFF
 
-/* SI-specific system values. */
+/* Driver-specific system values. */
 enum {
 	/* Values from set_tess_state. */
 	TGSI_SEMANTIC_DEFAULT_TESSOUTER_SI = TGSI_SEMANTIC_COUNT,
@@ -273,27 +277,24 @@ enum {
 	SI_VS_BLIT_SGPRS_POS_TEXCOORD = 9,
 };
 
-/* For VS shader key fix_fetch. */
-enum {
-	SI_FIX_FETCH_NONE = 0,
-	SI_FIX_FETCH_A2_SNORM,
-	SI_FIX_FETCH_A2_SSCALED,
-	SI_FIX_FETCH_A2_SINT,
-	SI_FIX_FETCH_RGBA_32_UNORM,
-	SI_FIX_FETCH_RGBX_32_UNORM,
-	SI_FIX_FETCH_RGBA_32_SNORM,
-	SI_FIX_FETCH_RGBX_32_SNORM,
-	SI_FIX_FETCH_RGBA_32_USCALED,
-	SI_FIX_FETCH_RGBA_32_SSCALED,
-	SI_FIX_FETCH_RGBA_32_FIXED,
-	SI_FIX_FETCH_RGBX_32_FIXED,
-	SI_FIX_FETCH_RG_64_FLOAT,
-	SI_FIX_FETCH_RGB_64_FLOAT,
-	SI_FIX_FETCH_RGBA_64_FLOAT,
-	SI_FIX_FETCH_RGB_8,	/* A = 1.0 */
-	SI_FIX_FETCH_RGB_8_INT,	/* A = 1 */
-	SI_FIX_FETCH_RGB_16,
-	SI_FIX_FETCH_RGB_16_INT,
+/**
+ * For VS shader keys, describe any fixups required for vertex fetch.
+ *
+ * \ref log_size, \ref format, and the number of channels are interpreted as
+ * by \ref ac_build_opencoded_load_format.
+ *
+ * Note: all bits 0 (size = 1 byte, num channels = 1, format = float) is an
+ * impossible format and indicates that no fixup is needed (just use
+ * buffer_load_format_xyzw).
+ */
+union si_vs_fix_fetch {
+	struct {
+		uint8_t log_size : 2; /* 1, 2, 4, 8 or bytes per channel */
+		uint8_t num_channels_m1 : 2; /* number of channels minus 1 */
+		uint8_t format : 3; /* AC_FETCH_FORMAT_xxx */
+		uint8_t reverse : 1; /* reverse XYZ channels */
+	} u;
+	uint8_t bits;
 };
 
 struct si_shader;
@@ -343,6 +344,7 @@ struct si_shader_selector {
 	unsigned	type;
 	bool		vs_needs_prolog;
 	bool		force_correct_derivs_after_kill;
+	bool		prim_discard_cs_allowed;
 	unsigned	pa_cl_vs_out_cntl;
 	ubyte		clipdist_mask;
 	ubyte		culldist_mask;
@@ -412,6 +414,7 @@ struct si_vs_prolog_bits {
 	uint16_t	instance_divisor_is_one;     /* bitmask of inputs */
 	uint16_t	instance_divisor_is_fetched; /* bitmask of inputs */
 	unsigned	ls_vgpr_fix:1;
+	unsigned	unpack_instance_id_from_vertex_id:1;
 };
 
 /* Common TCS bits between the shader key and the epilog key. */
@@ -524,8 +527,11 @@ struct si_shader_key {
 
 	/* Flags for monolithic compilation only. */
 	struct {
-		/* One byte for every input: SI_FIX_FETCH_* enums. */
-		uint8_t		vs_fix_fetch[SI_MAX_ATTRIBS];
+		/* Whether fetch should be opencoded according to vs_fix_fetch.
+		 * Otherwise, if vs_fix_fetch is non-zero, buffer_load_format_xyzw
+		 * with minimal fixups is used. */
+		uint16_t vs_fetch_opencode;
+		union si_vs_fix_fetch vs_fix_fetch[SI_MAX_ATTRIBS];
 
 		union {
 			uint64_t	ff_tcs_inputs_to_copy; /* for fixed-func TCS */
@@ -553,27 +559,24 @@ struct si_shader_key {
 		 * possible, because it's in the "opt" group.
 		 */
 		unsigned	prefer_mono:1;
+
+		/* Primitive discard compute shader. */
+		unsigned	vs_as_prim_discard_cs:1;
+		unsigned	cs_prim_type:4;
+		unsigned	cs_indexed:1;
+		unsigned	cs_instancing:1;
+		unsigned	cs_primitive_restart:1;
+		unsigned	cs_provoking_vertex_first:1;
+		unsigned	cs_need_correct_orientation:1;
+		unsigned	cs_cull_front:1;
+		unsigned	cs_cull_back:1;
+		unsigned	cs_cull_z:1;
+		unsigned	cs_halfz_clip_space:1;
 	} opt;
 };
 
 /* Restore the pack alignment to default. */
 #pragma pack(pop)
-
-struct si_shader_config {
-	unsigned			num_sgprs;
-	unsigned			num_vgprs;
-	unsigned			spilled_sgprs;
-	unsigned			spilled_vgprs;
-	unsigned			private_mem_vgprs;
-	unsigned			lds_size;
-	unsigned			max_simd_waves;
-	unsigned			spi_ps_input_ena;
-	unsigned			spi_ps_input_addr;
-	unsigned			float_mode;
-	unsigned			scratch_bytes_per_wave;
-	unsigned			rsrc1;
-	unsigned			rsrc2;
-};
 
 /* GCN-specific shader info. */
 struct si_shader_info {
@@ -585,6 +588,23 @@ struct si_shader_info {
 	bool			uses_instanceid;
 	ubyte			nr_pos_exports;
 	ubyte			nr_param_exports;
+	unsigned		private_mem_vgprs;
+	unsigned		max_simd_waves;
+};
+
+struct si_shader_binary {
+	const char *elf_buffer;
+	size_t elf_size;
+
+	char *llvm_ir_string;
+};
+
+struct gfx9_gs_info {
+	unsigned es_verts_per_subgroup;
+	unsigned gs_prims_per_subgroup;
+	unsigned gs_inst_prims_in_subgroup;
+	unsigned max_prims_per_subgroup;
+	unsigned esgs_ring_size; /* in bytes */
 };
 
 struct si_shader {
@@ -611,8 +631,8 @@ struct si_shader {
 	bool				is_gs_copy_shader;
 
 	/* The following data is all that's needed for binary shaders. */
-	struct ac_shader_binary	binary;
-	struct si_shader_config		config;
+	struct si_shader_binary		binary;
+	struct ac_shader_config		config;
 	struct si_shader_info		info;
 
 	/* Shader key + LLVM IR + disassembly + statistics.
@@ -620,6 +640,8 @@ struct si_shader {
 	 */
 	char				*shader_log;
 	size_t				shader_log_size;
+
+	struct gfx9_gs_info gs_info;
 
 	/* For save precompute context registers values. */
 	union {
@@ -668,8 +690,8 @@ struct si_shader {
 struct si_shader_part {
 	struct si_shader_part *next;
 	union si_shader_part_key key;
-	struct ac_shader_binary binary;
-	struct si_shader_config config;
+	struct si_shader_binary binary;
+	struct ac_shader_config config;
 };
 
 /* si_shader.c */
@@ -682,27 +704,25 @@ int si_compile_tgsi_shader(struct si_screen *sscreen,
 			   struct ac_llvm_compiler *compiler,
 			   struct si_shader *shader,
 			   struct pipe_debug_callback *debug);
-int si_shader_create(struct si_screen *sscreen, struct ac_llvm_compiler *compiler,
+bool si_shader_create(struct si_screen *sscreen, struct ac_llvm_compiler *compiler,
 		     struct si_shader *shader,
 		     struct pipe_debug_callback *debug);
 void si_shader_destroy(struct si_shader *shader);
 unsigned si_shader_io_get_unique_index_patch(unsigned semantic_name, unsigned index);
 unsigned si_shader_io_get_unique_index(unsigned semantic_name, unsigned index,
 				       unsigned is_varying);
-int si_shader_binary_upload(struct si_screen *sscreen, struct si_shader *shader);
-void si_shader_dump(struct si_screen *sscreen, const struct si_shader *shader,
+bool si_shader_binary_upload(struct si_screen *sscreen, struct si_shader *shader,
+			     uint64_t scratch_va);
+void si_shader_dump(struct si_screen *sscreen, struct si_shader *shader,
 		    struct pipe_debug_callback *debug, unsigned processor,
 		    FILE *f, bool check_debug_option);
-void si_shader_dump_stats_for_shader_db(const struct si_shader *shader,
+void si_shader_dump_stats_for_shader_db(struct si_screen *screen,
+					struct si_shader *shader,
 					struct pipe_debug_callback *debug);
 void si_multiwave_lds_size_workaround(struct si_screen *sscreen,
 				      unsigned *lds_size);
-void si_shader_apply_scratch_relocs(struct si_shader *shader,
-				    uint64_t scratch_va);
-void si_shader_binary_read_config(struct ac_shader_binary *binary,
-				  struct si_shader_config *conf,
-				  unsigned symbol_offset);
 const char *si_get_shader_name(const struct si_shader *shader, unsigned processor);
+void si_shader_binary_clean(struct si_shader_binary *binary);
 
 /* si_shader_nir.c */
 void si_nir_scan_shader(const struct nir_shader *nir,
@@ -711,6 +731,11 @@ void si_nir_scan_tess_ctrl(const struct nir_shader *nir,
 			   struct tgsi_tessctrl_info *out);
 void si_lower_nir(struct si_shader_selector *sel);
 void si_nir_opts(struct nir_shader *nir);
+
+/* si_state_shaders.c */
+void gfx9_get_gs_info(struct si_shader_selector *es,
+		      struct si_shader_selector *gs,
+		      struct gfx9_gs_info *out);
 
 /* Inline helpers. */
 
