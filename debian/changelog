@@ -1,3 +1,9 @@
+mesa (19.2.0~cros1-1) UNRELEASED; urgency=medium
+
+  * Fix meson invocation to strip trailing comma from platform list.
+
+ -- David Riley <davidriley@google.com>  Mon, 24 Jun 2019 12:05:51 -0700
+
 mesa (19.2.0~cros1-0) experimental; urgency=medium
 
   * New upstream release (0daeb1d127987c8e70afe22cb30f676fb4631813).
