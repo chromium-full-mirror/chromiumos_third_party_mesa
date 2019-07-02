@@ -125,13 +125,13 @@ endif
 
 confflags_EGL = -Dplatforms="$(EGL_PLATFORMS)"
 confflags_GLES = -Dgles1=false -Dgles2=true
-confflags_GALLIUM += -Dgallium-drivers="$(GALLIUM_DRIVERS:,=)"
+confflags_GALLIUM += -Dgallium-drivers="$(GALLIUM_DRIVERS)"
 
 confflags += \
-	-Ddri-drivers="$(DRI_DRIVERS:,=)" \
+	-Ddri-drivers="$(DRI_DRIVERS)" \
 	-Ddri-drivers-path=/usr/lib/$(DEB_HOST_MULTIARCH)/dri \
 	-Ddri-search-path='/usr/lib/$(DEB_HOST_MULTIARCH)/dri:\$$$${ORIGIN}/dri:/usr/lib/dri' \
-	-Dvulkan-drivers="$(VULKAN_DRIVERS:,=)" \
+	-Dvulkan-drivers="$(VULKAN_DRIVERS)" \
 	-Dglvnd=true \
 	-Dshared-glapi=true \
 	-Dgallium-xvmc=false \

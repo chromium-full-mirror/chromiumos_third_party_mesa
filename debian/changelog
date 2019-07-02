@@ -1,3 +1,9 @@
+mesa (19.2.0~cros1-2) UNRELEASED; urgency=medium
+
+  * Undo all comma striping from meson config flags.
+
+ -- David Riley <davidriley@google.com>  Tue, 02 Jul 2019 15:58:12 -0700
+
 mesa (19.2.0~cros1-1) experimental; urgency=medium
 
   * Fix meson invocation to strip trailing comma from platform list.
