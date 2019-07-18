@@ -37,6 +37,15 @@ const ppir_op_info ppir_op_infos[] = {
          PPIR_INSTR_SLOT_END
       },
    },
+   [ppir_op_abs] = {
+      .name = "abs",
+   },
+   [ppir_op_neg] = {
+      .name = "neg",
+   },
+   [ppir_op_sat] = {
+      .name = "sat",
+   },
    [ppir_op_mul] = {
       .name = "mul",
       .slots = (int []) {
@@ -245,6 +254,13 @@ const ppir_op_info ppir_op_infos[] = {
          PPIR_INSTR_SLOT_VARYING, PPIR_INSTR_SLOT_END
       },
    },
+   [ppir_op_load_pointcoord] = {
+      .name = "ld_pointcoord",
+      .type = ppir_node_type_load,
+      .slots = (int []) {
+         PPIR_INSTR_SLOT_VARYING, PPIR_INSTR_SLOT_END
+      },
+   },
    [ppir_op_load_uniform] = {
       .name = "ld_uni",
       .type = ppir_node_type_load,
@@ -281,6 +297,20 @@ const ppir_op_info ppir_op_infos[] = {
          PPIR_INSTR_SLOT_STORE_TEMP, PPIR_INSTR_SLOT_END
       },
    },
+   [ppir_op_discard] = {
+      .name = "discard",
+      .type = ppir_node_type_discard,
+      .slots = (int []) {
+         PPIR_INSTR_SLOT_BRANCH, PPIR_INSTR_SLOT_END
+      },
+   },
+   [ppir_op_branch] = {
+      .name = "branch",
+      .type = ppir_node_type_branch,
+      .slots = (int []) {
+         PPIR_INSTR_SLOT_BRANCH, PPIR_INSTR_SLOT_END
+      },
+   },
 };
 
 void *ppir_node_create(ppir_block *block, ppir_op op, int index, unsigned mask)
@@ -292,6 +322,8 @@ void *ppir_node_create(ppir_block *block, ppir_op op, int index, unsigned mask)
       [ppir_node_type_load] = sizeof(ppir_load_node),
       [ppir_node_type_store] = sizeof(ppir_store_node),
       [ppir_node_type_load_texture] = sizeof(ppir_load_texture_node),
+      [ppir_node_type_discard] = sizeof(ppir_discard_node),
+      [ppir_node_type_branch] = sizeof(ppir_branch_node),
    };
 
    ppir_node_type type = ppir_op_infos[op].type;

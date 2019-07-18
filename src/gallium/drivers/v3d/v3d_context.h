@@ -297,6 +297,7 @@ struct v3d_job {
         uint32_t referenced_size;
 
         struct set *write_prscs;
+        struct set *tf_write_prscs;
 
         /* Size of the submit.bo_handles array. */
         uint32_t bo_handles_size;
@@ -569,6 +570,13 @@ v3d_ioctl(int fd, unsigned long request, void *arg)
                 return drmIoctl(fd, request, arg);
 }
 
+static inline bool
+v3d_transform_feedback_enabled(struct v3d_context *v3d)
+{
+        return v3d->prog.bind_vs->num_tf_specs != 0 &&
+               v3d->active_queries;
+}
+
 void v3d_set_shader_uniform_dirty_flags(struct v3d_compiled_shader *shader);
 struct v3d_cl_reloc v3d_write_uniforms(struct v3d_context *v3d,
                                        struct v3d_compiled_shader *shader,
@@ -582,9 +590,12 @@ struct v3d_job *v3d_get_job(struct v3d_context *v3d,
 struct v3d_job *v3d_get_job_for_fbo(struct v3d_context *v3d);
 void v3d_job_add_bo(struct v3d_job *job, struct v3d_bo *bo);
 void v3d_job_add_write_resource(struct v3d_job *job, struct pipe_resource *prsc);
+void v3d_job_add_tf_write_resource(struct v3d_job *job, struct pipe_resource *prsc);
 void v3d_job_submit(struct v3d_context *v3d, struct v3d_job *job);
+void v3d_flush_jobs_using_bo(struct v3d_context *v3d, struct v3d_bo *bo);
 void v3d_flush_jobs_writing_resource(struct v3d_context *v3d,
-                                     struct pipe_resource *prsc);
+                                     struct pipe_resource *prsc,
+                                     bool always_flush);
 void v3d_flush_jobs_reading_resource(struct v3d_context *v3d,
                                      struct pipe_resource *prsc);
 void v3d_update_compiled_shaders(struct v3d_context *v3d, uint8_t prim_mode);

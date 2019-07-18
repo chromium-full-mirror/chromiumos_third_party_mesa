@@ -44,6 +44,7 @@
 #include "gallivm/lp_bld_tgsi.h"
 
 #include "swr_context.h"
+#include "gen_surf_state_llvm.h"
 #include "gen_swr_context_llvm.h"
 #include "swr_resource.h"
 #include "swr_state.h"
@@ -424,6 +425,9 @@ BuilderSWR::swr_gs_llvm_emit_vertex(const struct lp_build_tgsi_gs_iface *gs_base
        } else if (iface->info->output_semantic_name[attrib] == TGSI_SEMANTIC_LAYER) {
           attribSlot = VERTEX_SGV_SLOT;
           sgvChannel = VERTEX_SGV_RTAI_COMP;
+       } else if (iface->info->output_semantic_name[attrib] == TGSI_SEMANTIC_VIEWPORT_INDEX) {
+          attribSlot = VERTEX_SGV_SLOT;
+          sgvChannel = VERTEX_SGV_VAI_COMP;
        } else if (iface->info->output_semantic_name[attrib] == TGSI_SEMANTIC_POSITION) {
           attribSlot = VERTEX_POSITION_SLOT;
        } else {
@@ -690,7 +694,8 @@ BuilderSWR::CompileGS(struct swr_context *ctx, swr_jit_gs_key &key)
                      NULL, // thread data
                      sampler,
                      &gs->info.base,
-                     &gs_iface.base);
+                     &gs_iface.base,
+                     NULL, NULL); // ssbos
 
    lp_build_mask_end(&mask);
 
@@ -841,7 +846,8 @@ BuilderSWR::CompileVS(struct swr_context *ctx, swr_jit_vs_key &key)
                      NULL, // thread data
                      sampler, // sampler
                      &swr_vs->info.base,
-                     NULL); // geometry shader face
+                     NULL, // geometry shader face
+                     NULL, NULL); // ssbos
 
    sampler->destroy(sampler);
 
@@ -1331,7 +1337,8 @@ BuilderSWR::CompileFS(struct swr_context *ctx, swr_jit_fs_key &key)
                      NULL, // thread data
                      sampler, // sampler
                      &swr_fs->info.base,
-                     NULL); // geometry shader face
+                     NULL, // geometry shader face
+                     NULL, NULL); //ssbos
 
    sampler->destroy(sampler);
 

@@ -531,6 +531,12 @@ etna_emit_state(struct etna_context *ctx)
          /*014A8*/ EMIT_STATE(PE_DITHER(x), blend->PE_DITHER[x]);
       }
    }
+   if (unlikely(dirty & (ETNA_DIRTY_BLEND_COLOR))) {
+         /*014B0*/ EMIT_STATE(PE_ALPHA_COLOR_EXT0, ctx->blend_color.PE_ALPHA_COLOR_EXT0);
+         /*014B4*/ EMIT_STATE(PE_ALPHA_COLOR_EXT1, ctx->blend_color.PE_ALPHA_COLOR_EXT1);
+   }
+   if (unlikely(dirty & (ETNA_DIRTY_FRAMEBUFFER)) && ctx->specs.halti >= 3)
+      /*014BC*/ EMIT_STATE(PE_MEM_CONFIG, ctx->framebuffer.PE_MEM_CONFIG);
    if (unlikely(dirty & (ETNA_DIRTY_FRAMEBUFFER | ETNA_DIRTY_TS))) {
       /*01654*/ EMIT_STATE(TS_MEM_CONFIG, ctx->framebuffer.TS_MEM_CONFIG);
       /*01658*/ EMIT_STATE_RELOC(TS_COLOR_STATUS_BASE, &ctx->framebuffer.TS_COLOR_STATUS_BASE);
@@ -577,12 +583,12 @@ etna_emit_state(struct etna_context *ctx)
    static const uint32_t uniform_dirty_bits =
       ETNA_DIRTY_SHADER | ETNA_DIRTY_CONSTBUF;
 
-   if (dirty & (uniform_dirty_bits | ctx->shader.fs->uniforms_dirty_bits))
+   if (dirty & (uniform_dirty_bits | ctx->shader.vs->uniforms_dirty_bits))
       etna_uniforms_write(
          ctx, ctx->shader.vs, &ctx->constant_buffer[PIPE_SHADER_VERTEX],
          ctx->shader_state.VS_UNIFORMS, &ctx->shader_state.vs_uniforms_size);
 
-   if (dirty & (uniform_dirty_bits | ctx->shader.vs->uniforms_dirty_bits))
+   if (dirty & (uniform_dirty_bits | ctx->shader.fs->uniforms_dirty_bits))
       etna_uniforms_write(
          ctx, ctx->shader.fs, &ctx->constant_buffer[PIPE_SHADER_FRAGMENT],
          ctx->shader_state.PS_UNIFORMS, &ctx->shader_state.ps_uniforms_size);

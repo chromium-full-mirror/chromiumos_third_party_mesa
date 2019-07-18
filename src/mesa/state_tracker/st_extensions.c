@@ -76,8 +76,7 @@ static int _clamp(int a, int min, int max)
  * Note that we have to limit/clamp against Mesa's internal limits too.
  */
 void st_init_limits(struct pipe_screen *screen,
-                    struct gl_constants *c, struct gl_extensions *extensions,
-                    gl_api api)
+                    struct gl_constants *c, struct gl_extensions *extensions)
 {
    int supported_irs;
    unsigned sh;
@@ -349,7 +348,8 @@ void st_init_limits(struct pipe_screen *screen,
       screen->get_param(screen, PIPE_CAP_GLSL_TESS_LEVELS_AS_INPUTS);
    c->LowerTessLevel =
       !screen->get_param(screen, PIPE_CAP_NIR_COMPACT_ARRAYS);
-   c->LowerCsDerivedVariables = true;
+   c->LowerCsDerivedVariables =
+      !screen->get_param(screen, PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED);
    c->PrimitiveRestartForPatches =
       screen->get_param(screen, PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES);
 
@@ -444,17 +444,13 @@ void st_init_limits(struct pipe_screen *screen,
 
    c->GLSLFragCoordIsSysVal =
       screen->get_param(screen, PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL);
+   c->GLSLPointCoordIsSysVal =
+      screen->get_param(screen, PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL);
    c->GLSLFrontFacingIsSysVal =
       screen->get_param(screen, PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL);
 
-   /* GL_ARB_get_program_binary
-    *
-    * The QT framework has a bug in their shader program cache, which is built
-    * on GL_ARB_get_program_binary. In an effort to allow them to fix the bug
-    * we don't enable more than 1 binary format for compatibility profiles.
-    */
-   if (api != API_OPENGL_COMPAT &&
-       screen->get_disk_shader_cache && screen->get_disk_shader_cache(screen))
+   /* GL_ARB_get_program_binary */
+   if (screen->get_disk_shader_cache && screen->get_disk_shader_cache(screen))
       c->NumProgramBinaryFormats = 1;
 
    c->MaxAtomicBufferBindings =
@@ -731,7 +727,7 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(EXT_shader_image_load_formatted),  PIPE_CAP_IMAGE_LOAD_FORMATTED             },
       { o(ARB_shader_stencil_export),        PIPE_CAP_SHADER_STENCIL_EXPORT            },
       { o(ARB_shader_texture_image_samples), PIPE_CAP_TGSI_TXQS                        },
-      { o(ARB_shader_texture_lod),           PIPE_CAP_SM3                              },
+      { o(ARB_shader_texture_lod),           PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD      },
       { o(ARB_sparse_buffer),                PIPE_CAP_SPARSE_BUFFER_PAGE_SIZE          },
       { o(ARB_texture_buffer_object),        PIPE_CAP_TEXTURE_BUFFER_OBJECTS           },
       { o(ARB_texture_cube_map_array),       PIPE_CAP_CUBE_MAP_ARRAY                   },
@@ -745,8 +741,7 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(ARB_transform_feedback2),          PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME       },
       { o(ARB_transform_feedback3),          PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS },
       { o(ARB_transform_feedback_overflow_query), PIPE_CAP_QUERY_SO_OVERFLOW           },
-
-      { o(KHR_blend_equation_advanced),      PIPE_CAP_TGSI_FS_FBFETCH                  },
+      { o(ARB_fragment_shader_interlock),    PIPE_CAP_FRAGMENT_SHADER_INTERLOCK        },
 
       { o(EXT_blend_equation_separate),      PIPE_CAP_BLEND_EQUATION_SEPARATE          },
       { o(EXT_depth_bounds_test),            PIPE_CAP_DEPTH_BOUNDS_TEST                },
@@ -771,6 +766,7 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(AMD_seamless_cubemap_per_texture), PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE    },
       { o(ATI_texture_mirror_once),          PIPE_CAP_TEXTURE_MIRROR_CLAMP             },
       { o(INTEL_conservative_rasterization), PIPE_CAP_CONSERVATIVE_RASTER_INNER_COVERAGE },
+      { o(INTEL_shader_atomic_float_minmax), PIPE_CAP_ATOMIC_FLOAT_MINMAX              },
       { o(MESA_tile_raster_order),           PIPE_CAP_TILE_RASTER_ORDER                },
       { o(NV_compute_shader_derivatives),    PIPE_CAP_COMPUTE_SHADER_DERIVATIVES       },
       { o(NV_conditional_render),            PIPE_CAP_CONDITIONAL_RENDER               },
@@ -782,7 +778,7 @@ void st_init_extensions(struct pipe_screen *screen,
       /* GL_NV_point_sprite is not supported by gallium because we don't
        * support the GL_POINT_SPRITE_R_MODE_NV option. */
 
-      { o(OES_standard_derivatives),         PIPE_CAP_SM3                              },
+      { o(OES_standard_derivatives),         PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES      },
       { o(OES_texture_float_linear),         PIPE_CAP_TEXTURE_FLOAT_LINEAR             },
       { o(OES_texture_half_float_linear),    PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR        },
       { o(OES_texture_view),                 PIPE_CAP_SAMPLER_VIEW_TARGET              },
@@ -1393,6 +1389,21 @@ void st_init_extensions(struct pipe_screen *screen,
        */
       if (!extensions->EXT_transform_feedback)
          consts->DisableVaryingPacking = GL_TRUE;
+   }
+
+   unsigned max_fb_fetch_rts = screen->get_param(screen, PIPE_CAP_FBFETCH);
+   bool coherent_fb_fetch =
+      screen->get_param(screen, PIPE_CAP_FBFETCH_COHERENT);
+
+   if (max_fb_fetch_rts > 0) {
+      extensions->KHR_blend_equation_advanced = true;
+      extensions->KHR_blend_equation_advanced_coherent = coherent_fb_fetch;
+
+      if (max_fb_fetch_rts >=
+          screen->get_param(screen, PIPE_CAP_MAX_RENDER_TARGETS)) {
+         extensions->EXT_shader_framebuffer_fetch_non_coherent = true;
+         extensions->EXT_shader_framebuffer_fetch = coherent_fb_fetch;
+      }
    }
 
    consts->MaxViewports = screen->get_param(screen, PIPE_CAP_MAX_VIEWPORTS);

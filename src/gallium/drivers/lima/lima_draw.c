@@ -123,7 +123,7 @@ struct lima_render_state {
 /* plbu commands */
 #define PLBU_CMD_BEGIN(max) { \
    int i = 0, max_n = max; \
-   uint32_t *plbu_cmd = util_dynarray_grow_cap(&ctx->plbu_cmd_array, max_n * 4);
+   uint32_t *plbu_cmd = util_dynarray_ensure_cap(&ctx->plbu_cmd_array, ctx->plbu_cmd_array.size + max_n * 4);
 
 #define PLBU_CMD_END() \
    assert(i <= max_n); \
@@ -172,7 +172,7 @@ struct lima_render_state {
 /* vs commands */
 #define VS_CMD_BEGIN(max) { \
    int i = 0, max_n = max; \
-   uint32_t *vs_cmd = util_dynarray_grow_cap(&ctx->vs_cmd_array, max_n * 4);
+   uint32_t *vs_cmd = util_dynarray_ensure_cap(&ctx->vs_cmd_array, ctx->vs_cmd_array.size + max_n * 4);
 
 #define VS_CMD_END() \
    assert(i <= max_n); \
@@ -1009,6 +1009,7 @@ lima_calculate_alpha_blend(enum pipe_blend_func rgb_func, enum pipe_blend_func a
       0x0C000000; /* need check if this GLESv1 glAlphaFunc */
 }
 
+#if 0
 static int
 lima_stencil_op(enum pipe_stencil_op pipe)
 {
@@ -1032,6 +1033,7 @@ lima_stencil_op(enum pipe_stencil_op pipe)
    }
    return -1;
 }
+#endif
 
 static int
 lima_calculate_depth_test(struct pipe_depth_state *depth, struct pipe_rasterizer_state *rst)
@@ -1425,7 +1427,7 @@ static void
 lima_finish_plbu_cmd(struct lima_context *ctx)
 {
    int i = 0;
-   uint32_t *plbu_cmd = util_dynarray_grow_cap(&ctx->plbu_cmd_array, 2 * 4);
+   uint32_t *plbu_cmd = util_dynarray_ensure_cap(&ctx->plbu_cmd_array, ctx->plbu_cmd_array.size + 2 * 4);
 
    plbu_cmd[i++] = 0x00000000;
    plbu_cmd[i++] = 0x50000000; /* END */
@@ -1438,6 +1440,7 @@ lima_pack_wb_zsbuf_reg(struct lima_context *ctx, uint32_t *wb_reg, int wb_idx)
 {
    struct lima_context_framebuffer *fb = &ctx->framebuffer;
    struct lima_resource *res = lima_resource(fb->base.zsbuf->texture);
+   int level = fb->base.zsbuf->u.tex.level;
 
    uint32_t format;
 
@@ -1455,14 +1458,14 @@ lima_pack_wb_zsbuf_reg(struct lima_context *ctx, uint32_t *wb_reg, int wb_idx)
 
    struct lima_pp_wb_reg *wb = (void *)wb_reg;
    wb[wb_idx].type = 0x01; /* 1 for depth, stencil */
-   wb[wb_idx].address = res->bo->va;
+   wb[wb_idx].address = res->bo->va + res->levels[level].offset;
    wb[wb_idx].pixel_format = format;
    if (res->tiled) {
       wb[wb_idx].pixel_layout = 0x2;
       wb[wb_idx].pitch = fb->tiled_w;
    } else {
       wb[wb_idx].pixel_layout = 0x0;
-      wb[wb_idx].pitch = res->levels[0].stride / 8;
+      wb[wb_idx].pitch = res->levels[level].stride / 8;
    }
    wb[wb_idx].mrt_bits = 0;
 }
@@ -1472,6 +1475,7 @@ lima_pack_wb_cbuf_reg(struct lima_context *ctx, uint32_t *wb_reg, int wb_idx)
 {
    struct lima_context_framebuffer *fb = &ctx->framebuffer;
    struct lima_resource *res = lima_resource(fb->base.cbufs[0]->texture);
+   int level = fb->base.cbufs[0]->u.tex.level;
 
    bool swap_channels = false;
    switch (fb->base.cbufs[0]->format) {
@@ -1485,14 +1489,14 @@ lima_pack_wb_cbuf_reg(struct lima_context *ctx, uint32_t *wb_reg, int wb_idx)
 
    struct lima_pp_wb_reg *wb = (void *)wb_reg;
    wb[wb_idx].type = 0x02; /* 2 for color buffer */
-   wb[wb_idx].address = res->bo->va;
+   wb[wb_idx].address = res->bo->va + res->levels[level].offset;
    wb[wb_idx].pixel_format = LIMA_PIXEL_FORMAT_B8G8R8A8;
    if (res->tiled) {
       wb[wb_idx].pixel_layout = 0x2;
       wb[wb_idx].pitch = fb->tiled_w;
    } else {
       wb[wb_idx].pixel_layout = 0x0;
-      wb[wb_idx].pitch = res->levels[0].stride / 8;
+      wb[wb_idx].pitch = res->levels[level].stride / 8;
    }
    wb[wb_idx].mrt_bits = swap_channels ? 0x4 : 0x0;
 }

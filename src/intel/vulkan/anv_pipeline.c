@@ -95,6 +95,33 @@ static const uint64_t stage_to_debug[] = {
    [MESA_SHADER_COMPUTE] = DEBUG_CS,
 };
 
+struct anv_spirv_debug_data {
+   struct anv_device *device;
+   const struct anv_shader_module *module;
+};
+
+static void anv_spirv_nir_debug(void *private_data,
+                                enum nir_spirv_debug_level level,
+                                size_t spirv_offset,
+                                const char *message)
+{
+   struct anv_spirv_debug_data *debug_data = private_data;
+   static const VkDebugReportFlagsEXT vk_flags[] = {
+      [NIR_SPIRV_DEBUG_LEVEL_INFO] = VK_DEBUG_REPORT_INFORMATION_BIT_EXT,
+      [NIR_SPIRV_DEBUG_LEVEL_WARNING] = VK_DEBUG_REPORT_WARNING_BIT_EXT,
+      [NIR_SPIRV_DEBUG_LEVEL_ERROR] = VK_DEBUG_REPORT_ERROR_BIT_EXT,
+   };
+   char buffer[256];
+
+   snprintf(buffer, sizeof(buffer), "SPIR-V offset %lu: %s", (unsigned long) spirv_offset, message);
+
+   vk_debug_report(&debug_data->device->instance->debug_report_callbacks,
+                   vk_flags[level],
+                   VK_DEBUG_REPORT_OBJECT_TYPE_SHADER_MODULE_EXT,
+                   (uint64_t) (uintptr_t) debug_data->module,
+                   0, 0, "anv", buffer);
+}
+
 /* Eventually, this will become part of anv_CreateShader.  Unfortunately,
  * we can't do that yet because we don't have the ability to copy nir.
  */
@@ -134,11 +161,14 @@ anv_shader_compile_to_nir(struct anv_device *device,
       }
    }
 
-   nir_address_format ssbo_addr_format =
-      anv_nir_ssbo_addr_format(pdevice, device->robust_buffer_access);
+   struct anv_spirv_debug_data spirv_debug_data = {
+      .device = device,
+      .module = module,
+   };
    struct spirv_to_nir_options spirv_options = {
       .lower_workgroup_access_to_offsets = true,
       .caps = {
+         .demote_to_helper_invocation = true,
          .derivative_group = true,
          .descriptor_array_dynamic_indexing = true,
          .descriptor_array_non_uniform_indexing = true,
@@ -147,6 +177,8 @@ anv_shader_compile_to_nir(struct anv_device *device,
          .draw_parameters = true,
          .float16 = pdevice->info.gen >= 8,
          .float64 = pdevice->info.gen >= 8,
+         .fragment_shader_sample_interlock = pdevice->info.gen >= 9,
+         .fragment_shader_pixel_interlock = pdevice->info.gen >= 9,
          .geometry_streams = true,
          .image_write_without_format = true,
          .int8 = pdevice->info.gen >= 8,
@@ -172,19 +204,28 @@ anv_shader_compile_to_nir(struct anv_device *device,
          .transform_feedback = pdevice->info.gen >= 8,
          .variable_pointers = true,
       },
-      .ubo_ptr_type = glsl_vector_type(GLSL_TYPE_UINT, 2),
-      .ssbo_ptr_type = nir_address_format_to_glsl_type(ssbo_addr_format),
-      .phys_ssbo_ptr_type = glsl_vector_type(GLSL_TYPE_UINT64, 1),
-      .push_const_ptr_type = glsl_uint_type(),
-      .shared_ptr_type = glsl_uint_type(),
+      .ubo_addr_format = nir_address_format_32bit_index_offset,
+      .ssbo_addr_format =
+          anv_nir_ssbo_addr_format(pdevice, device->robust_buffer_access),
+      .phys_ssbo_addr_format = nir_address_format_64bit_global,
+      .push_const_addr_format = nir_address_format_logical,
+
+      /* TODO: Consider changing this to an address format that has the NULL
+       * pointer equals to 0.  That might be a better format to play nice
+       * with certain code / code generators.
+       */
+      .shared_addr_format = nir_address_format_32bit_offset,
+      .debug = {
+         .func = anv_spirv_nir_debug,
+         .private_data = &spirv_debug_data,
+      },
    };
 
 
-   nir_function *entry_point =
+   nir_shader *nir =
       spirv_to_nir(spirv, module->size / 4,
                    spec_entries, num_spec_entries,
                    stage, entrypoint_name, &spirv_options, nir_options);
-   nir_shader *nir = entry_point->shader;
    assert(nir->info.stage == stage);
    nir_validate_shader(nir, "after spirv_to_nir");
    ralloc_steal(mem_ctx, nir);
@@ -208,7 +249,7 @@ anv_shader_compile_to_nir(struct anv_device *device,
 
    /* Pick off the single entrypoint that we want */
    foreach_list_typed_safe(nir_function, func, node, &nir->functions) {
-      if (func != entry_point)
+      if (!func->is_entrypoint)
          exec_node_remove(&func->node);
    }
    assert(exec_list_length(&nir->functions) == 1);
@@ -229,19 +270,16 @@ anv_shader_compile_to_nir(struct anv_device *device,
    NIR_PASS_V(nir, nir_remove_dead_variables,
               nir_var_shader_in | nir_var_shader_out | nir_var_system_value);
 
-   NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_global,
-              nir_address_format_64bit_global);
-
    NIR_PASS_V(nir, nir_propagate_invariant);
    NIR_PASS_V(nir, nir_lower_io_to_temporaries,
-              entry_point->impl, true, false);
+              nir_shader_get_entrypoint(nir), true, false);
 
    NIR_PASS_V(nir, nir_lower_frexp);
 
    /* Vulkan uses the separate-shader linking model */
    nir->info.separate_shader = true;
 
-   nir = brw_preprocess_nir(compiler, nir, NULL);
+   brw_preprocess_nir(compiler, nir, NULL);
 
    return nir;
 }
@@ -314,12 +352,19 @@ populate_sampler_prog_key(const struct gen_device_info *devinfo,
 }
 
 static void
+populate_base_prog_key(const struct gen_device_info *devinfo,
+                       struct brw_base_prog_key *key)
+{
+   populate_sampler_prog_key(devinfo, &key->tex);
+}
+
+static void
 populate_vs_prog_key(const struct gen_device_info *devinfo,
                      struct brw_vs_prog_key *key)
 {
    memset(key, 0, sizeof(*key));
 
-   populate_sampler_prog_key(devinfo, &key->tex);
+   populate_base_prog_key(devinfo, &key->base);
 
    /* XXX: Handle vertex input work-arounds */
 
@@ -333,7 +378,7 @@ populate_tcs_prog_key(const struct gen_device_info *devinfo,
 {
    memset(key, 0, sizeof(*key));
 
-   populate_sampler_prog_key(devinfo, &key->tex);
+   populate_base_prog_key(devinfo, &key->base);
 
    key->input_vertices = input_vertices;
 }
@@ -344,7 +389,7 @@ populate_tes_prog_key(const struct gen_device_info *devinfo,
 {
    memset(key, 0, sizeof(*key));
 
-   populate_sampler_prog_key(devinfo, &key->tex);
+   populate_base_prog_key(devinfo, &key->base);
 }
 
 static void
@@ -353,7 +398,7 @@ populate_gs_prog_key(const struct gen_device_info *devinfo,
 {
    memset(key, 0, sizeof(*key));
 
-   populate_sampler_prog_key(devinfo, &key->tex);
+   populate_base_prog_key(devinfo, &key->base);
 }
 
 static void
@@ -364,7 +409,7 @@ populate_wm_prog_key(const struct gen_device_info *devinfo,
 {
    memset(key, 0, sizeof(*key));
 
-   populate_sampler_prog_key(devinfo, &key->tex);
+   populate_base_prog_key(devinfo, &key->base);
 
    /* We set this to 0 here and set to the actual value before we call
     * brw_compile_fs.
@@ -400,12 +445,12 @@ populate_wm_prog_key(const struct gen_device_info *devinfo,
        * harmless to compute it and then let dead-code take care of it.
        */
       if (ms_info->rasterizationSamples > 1) {
-         key->persample_interp =
+         key->persample_interp = ms_info->sampleShadingEnable &&
             (ms_info->minSampleShading * ms_info->rasterizationSamples) > 1;
          key->multisample_fbo = true;
       }
 
-      key->frag_coord_adds_sample_pos = ms_info->sampleShadingEnable;
+      key->frag_coord_adds_sample_pos = key->persample_interp;
    }
 }
 
@@ -415,7 +460,7 @@ populate_cs_prog_key(const struct gen_device_info *devinfo,
 {
    memset(key, 0, sizeof(*key));
 
-   populate_sampler_prog_key(devinfo, &key->tex);
+   populate_base_prog_key(devinfo, &key->base);
 }
 
 struct anv_pipeline_stage {
@@ -570,7 +615,7 @@ anv_pipeline_lower_nir(struct anv_pipeline *pipeline,
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       NIR_PASS_V(nir, nir_lower_wpos_center, pipeline->sample_shading_enable);
-      NIR_PASS_V(nir, anv_nir_lower_input_attachments);
+      NIR_PASS_V(nir, nir_lower_input_attachments, false);
    }
 
    NIR_PASS_V(nir, anv_nir_lower_ycbcr_textures, layout);
@@ -614,6 +659,9 @@ anv_pipeline_lower_nir(struct anv_pipeline *pipeline,
 
    NIR_PASS_V(nir, brw_nir_lower_image_load_store, compiler->devinfo);
 
+   NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_global,
+              nir_address_format_64bit_global);
+
    /* Apply the actual pipeline layout to UBOs, SSBOs, and textures */
    if (layout) {
       anv_nir_apply_pipeline_layout(pdevice,
@@ -651,7 +699,7 @@ anv_pipeline_link_vs(const struct brw_compiler *compiler,
                      struct anv_pipeline_stage *next_stage)
 {
    if (next_stage)
-      brw_nir_link_shaders(compiler, &vs_stage->nir, &next_stage->nir);
+      brw_nir_link_shaders(compiler, vs_stage->nir, next_stage->nir);
 }
 
 static const unsigned *
@@ -715,7 +763,7 @@ anv_pipeline_link_tcs(const struct brw_compiler *compiler,
 {
    assert(tes_stage && tes_stage->stage == MESA_SHADER_TESS_EVAL);
 
-   brw_nir_link_shaders(compiler, &tcs_stage->nir, &tes_stage->nir);
+   brw_nir_link_shaders(compiler, tcs_stage->nir, tes_stage->nir);
 
    nir_lower_patch_vertices(tes_stage->nir,
                             tcs_stage->nir->info.tess.tcs_vertices_out,
@@ -759,7 +807,7 @@ anv_pipeline_link_tes(const struct brw_compiler *compiler,
                       struct anv_pipeline_stage *next_stage)
 {
    if (next_stage)
-      brw_nir_link_shaders(compiler, &tes_stage->nir, &next_stage->nir);
+      brw_nir_link_shaders(compiler, tes_stage->nir, next_stage->nir);
 }
 
 static const unsigned *
@@ -786,7 +834,7 @@ anv_pipeline_link_gs(const struct brw_compiler *compiler,
                      struct anv_pipeline_stage *next_stage)
 {
    if (next_stage)
-      brw_nir_link_shaders(compiler, &gs_stage->nir, &next_stage->nir);
+      brw_nir_link_shaders(compiler, gs_stage->nir, next_stage->nir);
 }
 
 static const unsigned *

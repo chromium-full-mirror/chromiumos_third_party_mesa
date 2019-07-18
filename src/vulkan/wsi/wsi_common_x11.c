@@ -501,13 +501,25 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
                                       VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
    }
 
-   /* For true mailbox mode, we need at least 4 images:
-    *  1) One to scan out from
-    *  2) One to have queued for scan-out
-    *  3) One to be currently held by the X server
-    *  4) One to render to
+   /* For IMMEDIATE and FIFO, most games work in a pipelined manner where the
+    * can produce frames at a rate of 1/MAX(CPU duration, GPU duration), but
+    * the render latency is CPU duration + GPU duration.
+    *
+    * This means that with scanout from pageflipping we need 3 frames to run
+    * full speed:
+    * 1) CPU rendering work
+    * 2) GPU rendering work
+    * 3) scanout
+    *
+    * Once we have a nonblocking acquire that returns a semaphore we can merge
+    * 1 and 3. Hence the ideal implementation needs only 2 images, but games
+    * cannot tellwe currently do not have an ideal implementation and that
+    * hence they need to allocate 3 images. So let us do it for them.
+    *
+    * This is a tradeoff as it uses more memory than needed for non-fullscreen
+    * and non-performance intensive applications.
     */
-   caps->minImageCount = 2;
+   caps->minImageCount = 3;
    /* There is no real maximum */
    caps->maxImageCount = 0;
 
@@ -974,6 +986,19 @@ x11_present_to_x11(struct x11_swapchain *chain, uint32_t image_index,
       options |= XCB_PRESENT_OPTION_SUBOPTIMAL;
 #endif
 
+   /* Poll for any available event and update the swapchain status. This could
+    * update the status of the swapchain to SUBOPTIMAL or OUT_OF_DATE if the
+    * associated X11 surface has been resized.
+    */
+   xcb_generic_event_t *event;
+   while ((event = xcb_poll_for_special_event(chain->conn, chain->special_event))) {
+      VkResult result = x11_handle_dri3_present_event(chain, (void *)event);
+      free(event);
+      if (result < 0)
+         return x11_swapchain_result(chain, result);
+      x11_swapchain_result(chain, result);
+   }
+
    xshmfence_reset(image->shm_fence);
 
    ++chain->send_sbc;
@@ -1009,6 +1034,10 @@ x11_acquire_next_image(struct wsi_swapchain *anv_chain,
    struct x11_swapchain *chain = (struct x11_swapchain *)anv_chain;
    uint64_t timeout = info->timeout;
 
+   /* If the swapchain is in an error state, don't go any further. */
+   if (chain->status < 0)
+      return chain->status;
+
    if (chain->threaded) {
       return x11_acquire_next_image_from_queue(chain, image_index, timeout);
    } else {
@@ -1022,6 +1051,10 @@ x11_queue_present(struct wsi_swapchain *anv_chain,
                   const VkPresentRegionKHR *damage)
 {
    struct x11_swapchain *chain = (struct x11_swapchain *)anv_chain;
+
+   /* If the swapchain is in an error state, don't go any further. */
+   if (chain->status < 0)
+      return chain->status;
 
    if (chain->threaded) {
       wsi_queue_push(&chain->present_queue, image_index);

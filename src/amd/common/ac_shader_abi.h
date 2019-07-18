@@ -63,6 +63,8 @@ struct ac_shader_abi {
 	LLVMValueRef ancillary;
 	LLVMValueRef sample_coverage;
 	LLVMValueRef prim_mask;
+	LLVMValueRef color0;
+	LLVMValueRef color1;
 	/* CS */
 	LLVMValueRef local_invocation_ids;
 	LLVMValueRef num_work_groups;
@@ -196,7 +198,7 @@ struct ac_shader_abi {
 
 	LLVMValueRef (*load_base_vertex)(struct ac_shader_abi *abi);
 
-	/* Whether to clamp the shadow reference value to [0,1]on VI. Radeonsi currently
+	/* Whether to clamp the shadow reference value to [0,1]on GFX8. Radeonsi currently
 	 * uses it due to promoting D16 to D32, but radv needs it off. */
 	bool clamp_shadow_reference;
 

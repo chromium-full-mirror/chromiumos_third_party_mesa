@@ -315,6 +315,16 @@ iris_isl_format_for_pipe_format(enum pipe_format pf)
       [PIPE_FORMAT_ASTC_12x12_SRGB]         = ISL_FORMAT_ASTC_LDR_2D_12X12_U8SRGB,
 
       [PIPE_FORMAT_A1B5G5R5_UNORM]          = ISL_FORMAT_A1B5G5R5_UNORM,
+
+      /* We support these so that we know the API expects no alpha channel.
+       * Otherwise, the state tracker would just give us a format with alpha
+       * and we wouldn't know to override the swizzle to 1.
+       */
+      [PIPE_FORMAT_R16G16B16X16_UINT]       = ISL_FORMAT_R16G16B16A16_UINT,
+      [PIPE_FORMAT_R16G16B16X16_SINT]       = ISL_FORMAT_R16G16B16A16_SINT,
+      [PIPE_FORMAT_R32G32B32X32_UINT]       = ISL_FORMAT_R32G32B32A32_UINT,
+      [PIPE_FORMAT_R32G32B32X32_SINT]       = ISL_FORMAT_R32G32B32A32_SINT,
+      [PIPE_FORMAT_R10G10B10X2_SNORM]       = ISL_FORMAT_R10G10B10A2_SNORM,
    };
    assert(pf < PIPE_FORMAT_COUNT);
    return table[pf];
@@ -326,6 +336,7 @@ iris_format_for_usage(const struct gen_device_info *devinfo,
                       isl_surf_usage_flags_t usage)
 {
    enum isl_format format = iris_isl_format_for_pipe_format(pformat);
+   const struct isl_format_layout *fmtl = isl_format_get_layout(format);
    struct isl_swizzle swizzle = ISL_SWIZZLE_IDENTITY;
 
    if (!util_format_is_srgb(pformat)) {
@@ -340,8 +351,8 @@ iris_format_for_usage(const struct gen_device_info *devinfo,
       }
    }
 
-   if (pformat == PIPE_FORMAT_DXT1_RGB ||
-       pformat == PIPE_FORMAT_DXT1_SRGB) {
+   /* When faking RGBX pipe formats with RGBA ISL formats, override alpha. */
+   if (!util_format_has_alpha(pformat) && fmtl->channels.a.type != ISL_VOID) {
       swizzle = ISL_SWIZZLE(RED, GREEN, BLUE, ONE);
    }
 
@@ -395,8 +406,8 @@ iris_is_format_supported(struct pipe_screen *pscreen,
    const struct gen_device_info *devinfo = &screen->devinfo;
    uint32_t max_samples = devinfo->gen == 8 ? 8 : 16;
 
-   // XXX: msaa max
-   if (sample_count > max_samples || !util_is_power_of_two_or_zero(sample_count))
+   if (sample_count > max_samples ||
+       !util_is_power_of_two_or_zero(sample_count))
       return false;
 
    if (pformat == PIPE_FORMAT_NONE)
@@ -459,7 +470,7 @@ iris_is_format_supported(struct pipe_screen *pscreen,
        */
       supported &= sample_count <= 1;
 
-      // XXX: allow untyped reads
+      /* TODO: allow formats that only support untyped reads? */
       supported &= isl_format_supports_typed_reads(devinfo, format) &&
                    isl_format_supports_typed_writes(devinfo, format);
    }
@@ -487,38 +498,6 @@ iris_is_format_supported(struct pipe_screen *pscreen,
       supported &= format == ISL_FORMAT_R8_UINT ||
                    format == ISL_FORMAT_R16_UINT ||
                    format == ISL_FORMAT_R32_UINT;
-   }
-
-   if (usage & PIPE_BIND_CONSTANT_BUFFER) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_STREAM_OUTPUT) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_CURSOR) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_CUSTOM) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_SHADER_BUFFER) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_COMPUTE_RESOURCE) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_COMMAND_ARGS_BUFFER) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_QUERY_BUFFER) {
-      // XXX:
    }
 
    return supported;

@@ -63,6 +63,9 @@ static void
 iris_update_draw_info(struct iris_context *ice,
                       const struct pipe_draw_info *info)
 {
+   struct iris_screen *screen = (struct iris_screen *)ice->ctx.screen;
+   const struct brw_compiler *compiler = screen->compiler;
+
    if (ice->state.prim_mode != info->mode) {
       ice->state.prim_mode = info->mode;
       ice->state.dirty |= IRIS_DIRTY_VF_TOPOLOGY;
@@ -81,13 +84,17 @@ iris_update_draw_info(struct iris_context *ice,
       ice->state.vertices_per_patch = info->vertices_per_patch;
       ice->state.dirty |= IRIS_DIRTY_VF_TOPOLOGY;
 
+      /* 8_PATCH TCS needs this for key->input_vertices */
+      if (compiler->use_tcs_8_patch)
+         ice->state.dirty |= IRIS_DIRTY_UNCOMPILED_TCS;
+
       /* Flag constants dirty for gl_PatchVerticesIn if needed. */
       const struct shader_info *tcs_info =
          iris_get_shader_info(ice, MESA_SHADER_TESS_CTRL);
       if (tcs_info &&
           tcs_info->system_values_read & (1ull << SYSTEM_VALUE_VERTICES_IN)) {
          ice->state.dirty |= IRIS_DIRTY_CONSTANTS_TCS;
-         ice->state.shaders[MESA_SHADER_TESS_CTRL].cbuf0_needs_upload = true;
+         ice->state.shaders[MESA_SHADER_TESS_CTRL].sysvals_need_upload = true;
       }
    }
 
@@ -253,8 +260,9 @@ iris_update_grid_size_resource(struct iris_context *ice,
    struct iris_state_ref *grid_ref = &ice->state.grid_size;
    struct iris_state_ref *state_ref = &ice->state.grid_surf_state;
 
-   // XXX: if the shader doesn't actually care about the grid info,
-   // don't bother uploading the surface?
+   const struct iris_compiled_shader *shader = ice->shaders.prog[MESA_SHADER_COMPUTE];
+   bool grid_needs_surface = shader->bt.used_mask[IRIS_SURFACE_GROUP_CS_WORK_GROUPS];
+   bool grid_updated = false;
 
    if (grid->indirect) {
       pipe_resource_reference(&grid_ref->res, grid->indirect);
@@ -264,16 +272,23 @@ iris_update_grid_size_resource(struct iris_context *ice,
        * re-upload it properly.
        */
       memset(ice->state.last_grid, 0, sizeof(ice->state.last_grid));
-   } else {
-      /* If the size is the same, we don't need to upload anything. */
-      if (memcmp(ice->state.last_grid, grid->grid, sizeof(grid->grid)) == 0)
-         return;
-
+      grid_updated = true;
+   } else if (memcmp(ice->state.last_grid, grid->grid, sizeof(grid->grid)) != 0) {
       memcpy(ice->state.last_grid, grid->grid, sizeof(grid->grid));
-
       u_upload_data(ice->state.dynamic_uploader, 0, sizeof(grid->grid), 4,
                     grid->grid, &grid_ref->offset, &grid_ref->res);
+      grid_updated = true;
    }
+
+   /* If we changed the grid, the old surface state is invalid. */
+   if (grid_updated)
+      pipe_resource_reference(&state_ref->res, NULL);
+
+   /* Skip surface upload if we don't need it or we already have one */
+   if (!grid_needs_surface || state_ref->res)
+      return;
+
+   struct iris_bo *grid_bo = iris_resource_bo(grid_ref->res);
 
    void *surf_map = NULL;
    u_upload_alloc(ice->state.surface_uploader, 0, isl_dev->ss.size,
@@ -282,12 +297,11 @@ iris_update_grid_size_resource(struct iris_context *ice,
    state_ref->offset +=
       iris_bo_offset_from_base_address(iris_resource_bo(state_ref->res));
    isl_buffer_fill_state(&screen->isl_dev, surf_map,
-                         .address = grid_ref->offset +
-                            iris_resource_bo(grid_ref->res)->gtt_offset,
+                         .address = grid_ref->offset + grid_bo->gtt_offset,
                          .size_B = sizeof(grid->grid),
                          .format = ISL_FORMAT_RAW,
                          .stride_B = 1,
-                         .mocs = 4); // XXX: MOCS
+                         .mocs = ice->vtbl.mocs(grid_bo));
 
    ice->state.dirty |= IRIS_DIRTY_BINDINGS_CS;
 }
@@ -314,7 +328,7 @@ iris_launch_grid(struct pipe_context *ctx, const struct pipe_grid_info *grid)
 
    iris_batch_maybe_flush(batch, 1500);
 
-   //if (dirty & IRIS_DIRTY_UNCOMPILED_CS)
+   if (ice->state.dirty & IRIS_DIRTY_UNCOMPILED_CS)
       iris_update_compiled_compute_shader(ice);
 
    iris_update_grid_size_resource(ice, grid);

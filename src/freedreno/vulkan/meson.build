@@ -86,16 +86,14 @@ endif
 
 libvulkan_freedreno = shared_library(
   'vulkan_freedreno',
-  [libtu_files, tu_entrypoints, tu_extensions_c, tu_format_table_c],
+  [libtu_files, tu_entrypoints, tu_extensions_c, tu_format_table_c, freedreno_xml_header_files],
   include_directories : [
     inc_common,
     inc_compiler,
-    inc_vulkan_util,
     inc_vulkan_wsi,
     inc_freedreno,
   ],
   link_with : [
-    libvulkan_util,
     libvulkan_wsi,
     libmesa_util,
     libfreedreno_drm, # required by ir3_shader_get_variant, which we don't use
@@ -111,11 +109,25 @@ libvulkan_freedreno = shared_library(
     dep_valgrind,
     idep_nir,
     tu_deps,
+    idep_vulkan_util,
   ],
   c_args : [c_vis_args, no_override_init_args, tu_flags],
   link_args : [ld_args_bsymbolic, ld_args_gc_sections],
   install : true,
 )
+
+if with_tests and prog_nm.found()
+  test(
+    'tu symbols check',
+    symbols_check,
+    args : [
+      '--lib', libvulkan_freedreno,
+      '--symbols-file', vulkan_icd_symbols,
+      '--nm', prog_nm.path(),
+    ],
+    suite : ['freedreno'],
+  )
+endif
 
 freedreno_icd = custom_target(
   'freedreno_icd',

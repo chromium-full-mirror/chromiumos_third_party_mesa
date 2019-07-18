@@ -729,7 +729,7 @@ struct anv_fixed_size_state_pool {
 };
 
 #define ANV_MIN_STATE_SIZE_LOG2 6
-#define ANV_MAX_STATE_SIZE_LOG2 20
+#define ANV_MAX_STATE_SIZE_LOG2 21
 
 #define ANV_STATE_BUCKETS (ANV_MAX_STATE_SIZE_LOG2 - ANV_MIN_STATE_SIZE_LOG2 + 1)
 
@@ -1548,6 +1548,17 @@ struct anv_sampled_image_descriptor {
    uint32_t sampler;
 };
 
+struct anv_texture_swizzle_descriptor {
+   /** Texture swizzle
+    *
+    * See also nir_intrinsic_channel_select_intel
+    */
+   uint8_t swizzle[4];
+
+   /** Unused padding to ensure the struct is a multiple of 64 bits */
+   uint32_t _pad;
+};
+
 /** Struct representing a storage image descriptor */
 struct anv_storage_image_descriptor {
    /** Bindless image handles
@@ -1589,6 +1600,8 @@ enum anv_descriptor_data {
    ANV_DESCRIPTOR_SAMPLED_IMAGE  = (1 << 6),
    /** Storage image handles */
    ANV_DESCRIPTOR_STORAGE_IMAGE  = (1 << 7),
+   /** Storage image handles */
+   ANV_DESCRIPTOR_TEXTURE_SWIZZLE  = (1 << 8),
 };
 
 struct anv_descriptor_set_binding_layout {
@@ -2965,7 +2978,8 @@ struct anv_image {
    uint32_t array_size;
    uint32_t samples; /**< VkImageCreateInfo::samples */
    uint32_t n_planes;
-   VkImageUsageFlags usage; /**< Superset of VkImageCreateInfo::usage. */
+   VkImageUsageFlags usage; /**< VkImageCreateInfo::usage. */
+   VkImageUsageFlags stencil_usage;
    VkImageCreateFlags create_flags; /* Flags used when creating image. */
    VkImageTiling tiling; /** VkImageCreateInfo::tiling */
 
@@ -3187,7 +3201,13 @@ anv_can_sample_with_hiz(const struct gen_device_info * const devinfo,
    if (!(image->aspects & VK_IMAGE_ASPECT_DEPTH_BIT))
       return false;
 
-   if (devinfo->gen < 8)
+   /* Allow this feature on BDW even though it is disabled in the BDW devinfo
+    * struct. There's documentation which suggests that this feature actually
+    * reduces performance on BDW, but it has only been observed to help so
+    * far. Sampling fast-cleared blocks on BDW must also be handled with care
+    * (see depth_stencil_attachment_compute_aux_usage() for more info).
+    */
+   if (devinfo->gen != 8 && !devinfo->has_sample_with_hiz)
       return false;
 
    return image->samples == 1;
@@ -3266,6 +3286,7 @@ anv_image_ccs_op(struct anv_cmd_buffer *cmd_buffer,
 void
 anv_image_copy_to_shadow(struct anv_cmd_buffer *cmd_buffer,
                          const struct anv_image *image,
+                         VkImageAspectFlagBits aspect,
                          uint32_t base_level, uint32_t level_count,
                          uint32_t base_layer, uint32_t layer_count);
 

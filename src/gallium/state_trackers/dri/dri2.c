@@ -30,6 +30,7 @@
 
 #include <xf86drm.h>
 #include "GL/mesa_glinterop.h"
+#include "util/disk_cache.h"
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
 #include "util/u_format.h"
@@ -100,7 +101,7 @@ static const struct dri2_format_mapping dri2_format_table[] = {
         __DRI_IMAGE_COMPONENTS_R,         PIPE_FORMAT_R16_UNORM },
       { __DRI_IMAGE_FOURCC_GR88,          __DRI_IMAGE_FORMAT_GR88,
         __DRI_IMAGE_COMPONENTS_RG,        PIPE_FORMAT_RG88_UNORM },
-      { __DRI_IMAGE_FOURCC_GR1616,        __DRI_IMAGE_FORMAT_GR88,
+      { __DRI_IMAGE_FOURCC_GR1616,        __DRI_IMAGE_FORMAT_GR1616,
         __DRI_IMAGE_COMPONENTS_RG,        PIPE_FORMAT_RG1616_UNORM },
       { __DRI_IMAGE_FOURCC_YUV420,        __DRI_IMAGE_FORMAT_NONE,
         __DRI_IMAGE_COMPONENTS_Y_U_V,     PIPE_FORMAT_IYUV },
@@ -115,20 +116,22 @@ static const struct dri2_format_mapping dri2_format_table[] = {
 };
 
 static const struct dri2_format_mapping *
-dri2_get_mapping_by_fourcc(int fourcc) {
+dri2_get_mapping_by_fourcc(int fourcc)
+{
    for (unsigned i = 0; i < ARRAY_SIZE(dri2_format_table); i++) {
       if (dri2_format_table[i].dri_fourcc == fourcc)
-               return &dri2_format_table[i];
+         return &dri2_format_table[i];
    }
 
    return NULL;
 }
 
 static const struct dri2_format_mapping *
-dri2_get_mapping_by_format(int format) {
+dri2_get_mapping_by_format(int format)
+{
    for (unsigned i = 0; i < ARRAY_SIZE(dri2_format_table); i++) {
       if (dri2_format_table[i].dri_format == format)
-               return &dri2_format_table[i];
+         return &dri2_format_table[i];
    }
 
    return NULL;
@@ -778,7 +781,7 @@ dri2_update_tex_buffer(struct dri_drawable *drawable,
 
 static __DRIimage *
 dri2_create_image_from_winsys(__DRIscreen *_screen,
-                              int width, int height, enum pipe_format pf,
+                              int width, int height, const struct dri2_format_mapping *map,
                               int num_handles, struct winsys_handle *whandle,
                               void *loaderPrivate)
 {
@@ -788,6 +791,7 @@ dri2_create_image_from_winsys(__DRIscreen *_screen,
    struct pipe_resource templ;
    unsigned tex_usage = 0;
    int i;
+   enum pipe_format pf = map->pipe_format;
 
    if (pscreen->is_format_supported(pscreen, pf, screen->target, 0, 0,
                                     PIPE_BIND_RENDER_TARGET))
@@ -886,7 +890,7 @@ dri2_create_image_from_name(__DRIscreen *_screen,
 
    whandle.stride = pitch * util_format_get_blocksize(map->pipe_format);
 
-   img = dri2_create_image_from_winsys(_screen, width, height, map->pipe_format,
+   img = dri2_create_image_from_winsys(_screen, width, height, map,
                                        1, &whandle, loaderPrivate);
 
    if (!img)
@@ -959,7 +963,7 @@ dri2_create_image_from_fd(__DRIscreen *_screen,
       map = dri2_get_mapping_by_fourcc(fourcc);
    }
 
-   img = dri2_create_image_from_winsys(_screen, width, height, map->pipe_format,
+   img = dri2_create_image_from_winsys(_screen, width, height, map,
                                        num_fds, whandles, loaderPrivate);
    if(img == NULL) {
       err = __DRI_IMAGE_ERROR_BAD_ALLOC;
@@ -1246,7 +1250,7 @@ dri2_from_names(__DRIscreen *screen, int width, int height, int format,
    whandle.offset = offsets[0];
    whandle.modifier = DRM_FORMAT_MOD_INVALID;
 
-   img = dri2_create_image_from_winsys(screen, width, height, map->pipe_format,
+   img = dri2_create_image_from_winsys(screen, width, height, map,
                                        1, &whandle, loaderPrivate);
    if (img == NULL)
       return NULL;
@@ -1866,6 +1870,32 @@ static const __DRI2configQueryExtension dri2GalliumConfigQueryExtension = {
    .configQueryf        = dri2GalliumConfigQueryf,
 };
 
+/**
+ * \brief the DRI2blobExtension set_cache_funcs method
+ */
+static void
+set_blob_cache_funcs(__DRIscreen *sPriv, __DRIblobCacheSet set,
+                     __DRIblobCacheGet get)
+{
+   struct dri_screen *screen = dri_screen(sPriv);
+   struct pipe_screen *pscreen = screen->base.screen;
+
+   if (!pscreen->get_disk_shader_cache)
+      return;
+
+   struct disk_cache *cache = pscreen->get_disk_shader_cache(pscreen);
+
+   if (!cache)
+      return;
+
+   disk_cache_set_callbacks(cache, set, get);
+}
+
+static const __DRI2blobExtension driBlobExtension = {
+   .base = { __DRI2_BLOB, 1 },
+   .set_cache_funcs = set_blob_cache_funcs
+};
+
 /*
  * Backend function init_screen.
  */
@@ -1880,6 +1910,7 @@ static const __DRIextension *dri_screen_extensions[] = {
    &dri2FenceExtension.base,
    &dri2InteropExtension.base,
    &dri2NoErrorExtension.base,
+   &driBlobExtension.base,
    NULL
 };
 
@@ -1894,6 +1925,7 @@ static const __DRIextension *dri_robust_screen_extensions[] = {
    &dri2InteropExtension.base,
    &dri2Robustness.base,
    &dri2NoErrorExtension.base,
+   &driBlobExtension.base,
    NULL
 };
 

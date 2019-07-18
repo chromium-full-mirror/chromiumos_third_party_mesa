@@ -1128,8 +1128,7 @@ ntq_emit_alu(struct vc4_compile *c, nir_alu_instr *instr)
         struct qreg result;
 
         switch (instr->op) {
-        case nir_op_fmov:
-        case nir_op_imov:
+        case nir_op_mov:
                 result = qir_MOV(c, src[0]);
                 break;
         case nir_op_fmul:
@@ -2190,11 +2189,13 @@ static const nir_shader_compiler_options nir_options = {
         .lower_fdiv = true,
         .lower_ffma = true,
         .lower_flrp32 = true,
+        .lower_fmod = true,
         .lower_fpow = true,
         .lower_fsat = true,
         .lower_fsqrt = true,
         .lower_ldexp = true,
         .lower_negate = true,
+        .lower_rotate = true,
         .max_unroll_iterations = 32,
 };
 

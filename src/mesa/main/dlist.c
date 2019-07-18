@@ -557,6 +557,22 @@ typedef enum
    /* NV_conservative_raster_pre_snap_triangles */
    OPCODE_CONSERVATIVE_RASTER_PARAMETER_I,
 
+   /* EXT_direct_state_access */
+   OPCODE_MATRIX_LOAD,
+   OPCODE_MATRIX_MULT,
+   OPCODE_MATRIX_ROTATE,
+   OPCODE_MATRIX_SCALE,
+   OPCODE_MATRIX_TRANSLATE,
+   OPCODE_MATRIX_LOAD_IDENTITY,
+   OPCODE_MATRIX_ORTHO,
+   OPCODE_MATRIX_FRUSTUM,
+   OPCODE_MATRIX_PUSH,
+   OPCODE_MATRIX_POP,
+   OPCODE_TEXTUREPARAMETER_F,
+   OPCODE_TEXTUREPARAMETER_I,
+   OPCODE_TEXTURE_SUB_IMAGE2D,
+   OPCODE_COMPRESSED_TEXTURE_SUB_IMAGE_2D,
+
    /* The following three are meta instructions */
    OPCODE_ERROR,                /* raise compiled-in error */
    OPCODE_CONTINUE,
@@ -1188,6 +1204,10 @@ _mesa_delete_list(struct gl_context *ctx, struct gl_display_list *dlist)
          case OPCODE_UNIFORM_SUBROUTINES:
          case OPCODE_WINDOW_RECTANGLES:
             free(get_pointer(&n[3]));
+            break;
+         case OPCODE_TEXTURE_SUB_IMAGE2D:
+         case OPCODE_COMPRESSED_TEXTURE_SUB_IMAGE_2D:
+            free(get_pointer(&n[10]));
             break;
          case OPCODE_CONTINUE:
             n = (Node *) get_pointer(&n[1]);
@@ -9196,6 +9216,385 @@ save_ConservativeRasterParameteriNV(GLenum pname, GLint param)
    }
 }
 
+/** GL_EXT_direct_state_access */
+
+static void GLAPIENTRY
+save_MatrixLoadfEXT(GLenum matrixMode, const GLfloat *m)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_MATRIX_LOAD, 17);
+   if (n) {
+      n[1].e = matrixMode;
+      for (unsigned i = 0; i < 16; i++) {
+         n[2 + i].f = m[i];
+      }
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_MatrixLoadfEXT(ctx->Exec, (matrixMode, m));
+   }
+}
+
+static void GLAPIENTRY
+save_MatrixLoaddEXT(GLenum matrixMode, const GLdouble *m)
+{
+   GLfloat f[16];
+   for (unsigned i = 0; i < 16; i++) {
+      f[i] = (GLfloat) m[i];
+   }
+   save_MatrixLoadfEXT(matrixMode, f);
+}
+
+static void GLAPIENTRY
+save_MatrixMultfEXT(GLenum matrixMode, const GLfloat * m)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_MATRIX_MULT, 17);
+   if (n) {
+      n[1].e = matrixMode;
+      for (unsigned i = 0; i < 16; i++) {
+         n[2 + i].f = m[i];
+      }
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_MatrixMultfEXT(ctx->Exec, (matrixMode, m));
+   }
+}
+
+static void GLAPIENTRY
+save_MatrixMultdEXT(GLenum matrixMode, const GLdouble * m)
+{
+   GLfloat f[16];
+   for (unsigned i = 0; i < 16; i++) {
+      f[i] = (GLfloat) m[i];
+   }
+   save_MatrixMultfEXT(matrixMode, f);
+}
+
+static void GLAPIENTRY
+save_MatrixRotatefEXT(GLenum matrixMode, GLfloat angle, GLfloat x, GLfloat y, GLfloat z)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_MATRIX_ROTATE, 5);
+   if (n) {
+      n[1].e = matrixMode;
+      n[2].f = angle;
+      n[3].f = x;
+      n[4].f = y;
+      n[5].f = z;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_MatrixRotatefEXT(ctx->Exec, (matrixMode, angle, x, y, z));
+   }
+}
+
+static void GLAPIENTRY
+save_MatrixRotatedEXT(GLenum matrixMode, GLdouble angle, GLdouble x, GLdouble y, GLdouble z)
+{
+   save_MatrixRotatefEXT(matrixMode, (GLfloat) angle, (GLfloat) x, (GLfloat) y, (GLfloat) z);
+}
+
+static void GLAPIENTRY
+save_MatrixScalefEXT(GLenum matrixMode, GLfloat x, GLfloat y, GLfloat z)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_MATRIX_SCALE, 4);
+   if (n) {
+      n[1].e = matrixMode;
+      n[2].f = x;
+      n[3].f = y;
+      n[4].f = z;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_MatrixScalefEXT(ctx->Exec, (matrixMode, x, y, z));
+   }
+}
+
+static void GLAPIENTRY
+save_MatrixScaledEXT(GLenum matrixMode, GLdouble x, GLdouble y, GLdouble z)
+{
+   save_MatrixScalefEXT(matrixMode, (GLfloat) x, (GLfloat) y, (GLfloat) z);
+}
+
+static void GLAPIENTRY
+save_MatrixTranslatefEXT(GLenum matrixMode, GLfloat x, GLfloat y, GLfloat z)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_MATRIX_TRANSLATE, 4);
+   if (n) {
+      n[1].e = matrixMode;
+      n[2].f = x;
+      n[3].f = y;
+      n[4].f = z;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_MatrixTranslatefEXT(ctx->Exec, (matrixMode, x, y, z));
+   }
+}
+
+static void GLAPIENTRY
+save_MatrixTranslatedEXT(GLenum matrixMode, GLdouble x, GLdouble y, GLdouble z)
+{
+   save_MatrixTranslatefEXT(matrixMode, (GLfloat) x, (GLfloat) y, (GLfloat) z);
+}
+
+static void GLAPIENTRY
+save_MatrixLoadIdentityEXT(GLenum matrixMode)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_MATRIX_LOAD_IDENTITY, 1);
+   if (n) {
+      n[1].e = matrixMode;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_MatrixLoadIdentityEXT(ctx->Exec, (matrixMode));
+   }
+}
+
+static void GLAPIENTRY
+save_MatrixOrthoEXT(GLenum matrixMode, GLdouble left, GLdouble right,
+                    GLdouble bottom, GLdouble top, GLdouble nearval, GLdouble farval)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_MATRIX_ORTHO, 7);
+   if (n) {
+      n[1].e = matrixMode;
+      n[2].f = (GLfloat) left;
+      n[3].f = (GLfloat) right;
+      n[4].f = (GLfloat) bottom;
+      n[5].f = (GLfloat) top;
+      n[6].f = (GLfloat) nearval;
+      n[7].f = (GLfloat) farval;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_MatrixOrthoEXT(ctx->Exec, (matrixMode, left, right, bottom, top, nearval, farval));
+   }
+}
+
+
+static void GLAPIENTRY
+save_MatrixFrustumEXT(GLenum matrixMode, GLdouble left, GLdouble right,
+                      GLdouble bottom, GLdouble top, GLdouble nearval, GLdouble farval)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_MATRIX_FRUSTUM, 7);
+   if (n) {
+      n[1].e = matrixMode;
+      n[2].f = (GLfloat) left;
+      n[3].f = (GLfloat) right;
+      n[4].f = (GLfloat) bottom;
+      n[5].f = (GLfloat) top;
+      n[6].f = (GLfloat) nearval;
+      n[7].f = (GLfloat) farval;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_MatrixFrustumEXT(ctx->Exec, (matrixMode, left, right, bottom, top, nearval, farval));
+   }
+}
+
+static void GLAPIENTRY
+save_MatrixPushEXT(GLenum matrixMode)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node* n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_MATRIX_PUSH, 1);
+   if (n) {
+      n[1].e = matrixMode;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_MatrixPushEXT(ctx->Exec, (matrixMode));
+   }
+}
+
+static void GLAPIENTRY
+save_MatrixPopEXT(GLenum matrixMode)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node* n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_MATRIX_POP, 1);
+   if (n) {
+      n[1].e = matrixMode;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_MatrixPopEXT(ctx->Exec, (matrixMode));
+   }
+}
+
+static void GLAPIENTRY
+save_MatrixLoadTransposefEXT(GLenum matrixMode, const GLfloat m[16])
+{
+   GLfloat tm[16];
+   _math_transposef(tm, m);
+   save_MatrixLoadfEXT(matrixMode, tm);
+}
+
+static void GLAPIENTRY
+save_MatrixLoadTransposedEXT(GLenum matrixMode, const GLdouble m[16])
+{
+   GLfloat tm[16];
+   _math_transposefd(tm, m);
+   save_MatrixLoadfEXT(matrixMode, tm);
+}
+
+static void GLAPIENTRY
+save_MatrixMultTransposefEXT(GLenum matrixMode, const GLfloat m[16])
+{
+   GLfloat tm[16];
+   _math_transposef(tm, m);
+   save_MatrixMultfEXT(matrixMode, tm);
+}
+
+static void GLAPIENTRY
+save_MatrixMultTransposedEXT(GLenum matrixMode, const GLdouble m[16])
+{
+   GLfloat tm[16];
+   _math_transposefd(tm, m);
+   save_MatrixMultfEXT(matrixMode, tm);
+}
+
+static void GLAPIENTRY
+save_TextureParameterfvEXT(GLuint texture, GLenum target, GLenum pname,
+                           const GLfloat *params)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_TEXTUREPARAMETER_F, 7);
+   if (n) {
+      n[1].ui = texture;
+      n[2].e = target;
+      n[3].e = pname;
+      n[4].f = params[0];
+      n[5].f = params[1];
+      n[6].f = params[2];
+      n[7].f = params[3];
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_TextureParameterfvEXT(ctx->Exec, (texture, target, pname, params));
+   }
+}
+
+
+static void GLAPIENTRY
+save_TextureParameterfEXT(GLuint texture, GLenum target, GLenum pname, GLfloat param)
+{
+   GLfloat parray[4];
+   parray[0] = param;
+   parray[1] = parray[2] = parray[3] = 0.0F;
+   save_TextureParameterfvEXT(texture, target, pname, parray);
+}
+
+static void GLAPIENTRY
+save_TextureParameterivEXT(GLuint texture, GLenum target, GLenum pname, const GLint *params)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_TEXTUREPARAMETER_I, 7);
+   if (n) {
+      n[1].ui = texture;
+      n[2].e = target;
+      n[3].e = pname;
+      n[4].i = params[0];
+      n[5].i = params[1];
+      n[6].i = params[2];
+      n[7].i = params[3];
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_TextureParameterivEXT(ctx->Exec, (texture, target, pname, params));
+   }
+}
+
+static void GLAPIENTRY
+save_TextureParameteriEXT(GLuint texture, GLenum target, GLenum pname, GLint param)
+{
+   GLint fparam[4];
+   fparam[0] = param;
+   fparam[1] = fparam[2] = fparam[3] = 0;
+   save_TextureParameterivEXT(texture, target, pname, fparam);
+}
+
+static void GLAPIENTRY
+save_TextureSubImage2DEXT(GLuint texture, GLenum target, GLint level,
+                          GLint xoffset, GLint yoffset,
+                          GLsizei width, GLsizei height,
+                          GLenum format, GLenum type, const GLvoid * pixels)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+
+   n = alloc_instruction(ctx, OPCODE_TEXTURE_SUB_IMAGE2D, 9 + POINTER_DWORDS);
+   if (n) {
+      n[1].ui = texture;
+      n[2].e = target;
+      n[3].i = level;
+      n[4].i = xoffset;
+      n[5].i = yoffset;
+      n[6].i = (GLint) width;
+      n[7].i = (GLint) height;
+      n[8].e = format;
+      n[9].e = type;
+      save_pointer(&n[10],
+                   unpack_image(ctx, 2, width, height, 1, format, type,
+                                pixels, &ctx->Unpack));
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_TextureSubImage2DEXT(ctx->Exec, (texture, target, level, xoffset, yoffset,
+                                            width, height, format, type, pixels));
+   }
+}
+
+static void GLAPIENTRY
+save_CompressedTextureSubImage2DEXT(GLuint texture, GLenum target, GLint level, GLint xoffset,
+                                    GLint yoffset, GLsizei width, GLsizei height,
+                                    GLenum format, GLsizei imageSize,
+                                    const GLvoid * data)
+{
+   Node *n;
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+
+   n = alloc_instruction(ctx, OPCODE_COMPRESSED_TEXTURE_SUB_IMAGE_2D,
+                         9 + POINTER_DWORDS);
+   if (n) {
+      n[1].ui = texture;
+      n[2].e = target;
+      n[3].i = level;
+      n[4].i = xoffset;
+      n[5].i = yoffset;
+      n[6].i = (GLint) width;
+      n[7].i = (GLint) height;
+      n[8].e = format;
+      n[9].i = imageSize;
+      save_pointer(&n[10],
+                   copy_data(data, imageSize, "glCompressedTextureSubImage2DEXT"));
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_CompressedTextureSubImage2DEXT(ctx->Exec,
+                                          (texture, target, level, xoffset, yoffset,
+                                           width, height, format, imageSize, data));
+   }
+}
+
 
 /**
  * Save an error-generating command into display list.
@@ -10727,6 +11126,79 @@ execute_list(struct gl_context *ctx, GLuint list)
             CALL_ConservativeRasterParameteriNV(ctx->Exec, (n[1].e, n[2].i));
             break;
 
+         /* GL_EXT_direct_state_access */
+         case OPCODE_MATRIX_LOAD:
+            CALL_MatrixLoadfEXT(ctx->Exec, (n[1].e, &n[2].f));
+            break;
+         case OPCODE_MATRIX_MULT:
+            CALL_MatrixMultfEXT(ctx->Exec, (n[1].e, &n[2].f));
+            break;
+         case OPCODE_MATRIX_ROTATE:
+            CALL_MatrixRotatefEXT(ctx->Exec, (n[1].e, n[2].f, n[3].f, n[4].f, n[5].f));
+            break;
+         case OPCODE_MATRIX_SCALE:
+            CALL_MatrixScalefEXT(ctx->Exec, (n[1].e, n[2].f, n[3].f, n[4].f));
+            break;
+         case OPCODE_MATRIX_TRANSLATE:
+            CALL_MatrixTranslatefEXT(ctx->Exec, (n[1].e, n[2].f, n[3].f, n[4].f));
+            break;
+         case OPCODE_MATRIX_LOAD_IDENTITY:
+            CALL_MatrixLoadIdentityEXT(ctx->Exec, (n[1].e));
+            break;
+         case OPCODE_MATRIX_ORTHO:
+            CALL_MatrixOrthoEXT(ctx->Exec, (n[1].e,
+                                            n[2].f, n[3].f, n[4].f,
+                                            n[5].f, n[6].f, n[7].f));
+            break;
+         case OPCODE_MATRIX_FRUSTUM:
+            CALL_MatrixFrustumEXT(ctx->Exec, (n[1].e,
+                                              n[2].f, n[3].f, n[4].f,
+                                              n[5].f, n[6].f, n[7].f));
+            break;
+         case OPCODE_MATRIX_PUSH:
+            CALL_MatrixPushEXT(ctx->Exec, (n[1].e));
+            break;
+         case OPCODE_MATRIX_POP:
+            CALL_MatrixPopEXT(ctx->Exec, (n[1].e));
+            break;
+         case OPCODE_TEXTUREPARAMETER_F:
+            {
+               GLfloat params[4];
+               params[0] = n[4].f;
+               params[1] = n[5].f;
+               params[2] = n[6].f;
+               params[3] = n[7].f;
+               CALL_TextureParameterfvEXT(ctx->Exec, (n[1].ui, n[2].e, n[3].e, params));
+            }
+            break;
+         case OPCODE_TEXTUREPARAMETER_I:
+            {
+               GLint params[4];
+               params[0] = n[4].i;
+               params[1] = n[5].i;
+               params[2] = n[6].i;
+               params[3] = n[7].i;
+               CALL_TextureParameterivEXT(ctx->Exec, (n[1].ui, n[2].e, n[3].e, params));
+            }
+            break;
+         case OPCODE_TEXTURE_SUB_IMAGE2D:
+            {
+               const struct gl_pixelstore_attrib save = ctx->Unpack;
+               ctx->Unpack = ctx->DefaultPacking;
+               CALL_TextureSubImage2DEXT(ctx->Exec, (n[1].ui, n[2].e, n[3].i,
+                                                     n[4].i, n[5].i, n[6].e,
+                                                     n[7].i, n[8].e, n[9].e,
+                                                     get_pointer(&n[10])));
+               ctx->Unpack = save;
+            }
+            break;
+         case OPCODE_COMPRESSED_TEXTURE_SUB_IMAGE_2D:
+            CALL_CompressedTextureSubImage2DEXT(ctx->Exec,
+                                                (n[1].ui, n[2].e, n[3].i, n[4].i,
+                                                 n[5].i, n[6].i, n[7].i, n[8].e,
+                                                 n[9].i, get_pointer(&n[10])));
+            break;
+
          case OPCODE_CONTINUE:
             n = (Node *) get_pointer(&n[1]);
             break;
@@ -11697,6 +12169,33 @@ _mesa_initialize_save_table(const struct gl_context *ctx)
 
    /* GL_NV_conservative_raster_pre_snap_triangles */
    SET_ConservativeRasterParameteriNV(table, save_ConservativeRasterParameteriNV);
+
+   /* GL_EXT_direct_state_access */
+   SET_MatrixLoadfEXT(table, save_MatrixLoadfEXT);
+   SET_MatrixLoaddEXT(table, save_MatrixLoaddEXT);
+   SET_MatrixMultfEXT(table, save_MatrixMultfEXT);
+   SET_MatrixMultdEXT(table, save_MatrixMultdEXT);
+   SET_MatrixRotatefEXT(table, save_MatrixRotatefEXT);
+   SET_MatrixRotatedEXT(table, save_MatrixRotatedEXT);
+   SET_MatrixScalefEXT(table, save_MatrixScalefEXT);
+   SET_MatrixScaledEXT(table, save_MatrixScaledEXT);
+   SET_MatrixTranslatefEXT(table, save_MatrixTranslatefEXT);
+   SET_MatrixTranslatedEXT(table, save_MatrixTranslatedEXT);
+   SET_MatrixLoadIdentityEXT(table, save_MatrixLoadIdentityEXT);
+   SET_MatrixOrthoEXT(table, save_MatrixOrthoEXT);
+   SET_MatrixFrustumEXT(table, save_MatrixFrustumEXT);
+   SET_MatrixPushEXT(table, save_MatrixPushEXT);
+   SET_MatrixPopEXT(table, save_MatrixPopEXT);
+   SET_MatrixLoadTransposefEXT(table, save_MatrixLoadTransposefEXT);
+   SET_MatrixLoadTransposedEXT(table, save_MatrixLoadTransposedEXT);
+   SET_MatrixMultTransposefEXT(table, save_MatrixMultTransposefEXT);
+   SET_MatrixMultTransposedEXT(table, save_MatrixMultTransposedEXT);
+   SET_TextureParameteriEXT(table, save_TextureParameteriEXT);
+   SET_TextureParameterivEXT(table, save_TextureParameterivEXT);
+   SET_TextureParameterfEXT(table, save_TextureParameterfEXT);
+   SET_TextureParameterfvEXT(table, save_TextureParameterfvEXT);
+   SET_TextureSubImage2DEXT(table, save_TextureSubImage2DEXT);
+   SET_CompressedTextureSubImage2DEXT(table, save_CompressedTextureSubImage2DEXT);
 }
 
 

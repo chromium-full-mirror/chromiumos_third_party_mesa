@@ -42,7 +42,7 @@
 #include "vk_format.h"
 #include "vk_util.h"
 
-#include "drm/msm_drm.h"
+#include "drm-uapi/msm_drm.h"
 
 static int
 tu_device_get_cache_uuid(uint16_t family, void *uuid)
@@ -897,7 +897,7 @@ static const VkQueueFamilyProperties tu_queue_family_properties = {
       VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT,
    .queueCount = 1,
    .timestampValidBits = 64,
-   .minImageTransferGranularity = (VkExtent3D) { 1, 1, 1 },
+   .minImageTransferGranularity = { 1, 1, 1 },
 };
 
 void

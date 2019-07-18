@@ -204,6 +204,8 @@ ALU2(SHR)
 ALU2(SHL)
 ALU1(DIM)
 ALU2(ASR)
+ALU2(ROL)
+ALU2(ROR)
 ALU3(CSEL)
 ALU1(F32TO16)
 ALU1(F16TO32)
@@ -1113,7 +1115,10 @@ brw_untyped_surface_write(struct brw_codegen *p,
 void
 brw_memory_fence(struct brw_codegen *p,
                  struct brw_reg dst,
-                 enum opcode send_op);
+                 struct brw_reg src,
+                 enum opcode send_op,
+                 bool stall,
+                 unsigned bti);
 
 void
 brw_pixel_interpolator_query(struct brw_codegen *p,

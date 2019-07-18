@@ -37,16 +37,16 @@ panfrost_sfbd_format(struct pipe_surface *surf)
 
 static void
 panfrost_sfbd_clear(
-                struct panfrost_job *job,
-                struct mali_single_framebuffer *sfbd)
+        struct panfrost_job *job,
+        struct mali_single_framebuffer *sfbd)
 {
         struct panfrost_context *ctx = job->ctx;
 
         if (job->clear & PIPE_CLEAR_COLOR) {
-                sfbd->clear_color_1 = job->clear_color;
-                sfbd->clear_color_2 = job->clear_color;
-                sfbd->clear_color_3 = job->clear_color;
-                sfbd->clear_color_4 = job->clear_color;
+                sfbd->clear_color_1 = job->clear_color[0][0];
+                sfbd->clear_color_2 = job->clear_color[0][1];
+                sfbd->clear_color_3 = job->clear_color[0][2];
+                sfbd->clear_color_4 = job->clear_color[0][3];
         }
 
         if (job->clear & PIPE_CLEAR_DEPTH) {
@@ -55,14 +55,14 @@ panfrost_sfbd_clear(
                 sfbd->clear_depth_3 = job->clear_depth;
                 sfbd->clear_depth_4 = job->clear_depth;
 
-                sfbd->depth_buffer = ctx->depth_stencil_buffer.gpu;
+                sfbd->depth_buffer = ctx->depth_stencil_buffer.bo->gpu;
                 sfbd->depth_buffer_enable = MALI_DEPTH_STENCIL_ENABLE;
         }
 
         if (job->clear & PIPE_CLEAR_STENCIL) {
                 sfbd->clear_stencil = job->clear_stencil;
 
-                sfbd->stencil_buffer = ctx->depth_stencil_buffer.gpu;
+                sfbd->stencil_buffer = ctx->depth_stencil_buffer.bo->gpu;
                 sfbd->stencil_buffer_enable = MALI_DEPTH_STENCIL_ENABLE;
         }
 
@@ -86,26 +86,17 @@ panfrost_sfbd_clear(
 
 static void
 panfrost_sfbd_set_cbuf(
-                struct mali_single_framebuffer *fb,
-                struct pipe_surface *surf,
-                bool flip_y)
+        struct mali_single_framebuffer *fb,
+        struct pipe_surface *surf)
 {
         struct panfrost_resource *rsrc = pan_resource(surf->texture);
 
-        signed stride = rsrc->bo->slices[0].stride;
+        signed stride = rsrc->slices[0].stride;
 
         fb->format = panfrost_sfbd_format(surf);
 
-        if (rsrc->bo->layout == PAN_LINEAR) {
-                mali_ptr framebuffer = rsrc->bo->gpu;
-
-                /* The default is upside down from OpenGL's perspective. */
-                if (flip_y) {
-                        framebuffer += stride * (surf->texture->height0 - 1);
-                        stride = -stride;
-                }
-
-                fb->framebuffer = framebuffer;
+        if (rsrc->layout == PAN_LINEAR) {
+                fb->framebuffer = rsrc->bo->gpu;
                 fb->stride = stride;
         } else {
                 fprintf(stderr, "Invalid render layout\n");
@@ -116,16 +107,16 @@ panfrost_sfbd_set_cbuf(
 /* Creates an SFBD for the FRAGMENT section of the bound framebuffer */
 
 mali_ptr
-panfrost_sfbd_fragment(struct panfrost_context *ctx, bool flip_y)
+panfrost_sfbd_fragment(struct panfrost_context *ctx, bool has_draws)
 {
         struct panfrost_job *job = panfrost_get_job_for_fbo(ctx);
-        struct mali_single_framebuffer fb = panfrost_emit_sfbd(ctx);
+        struct mali_single_framebuffer fb = panfrost_emit_sfbd(ctx, has_draws);
 
         panfrost_sfbd_clear(job, &fb);
 
         /* SFBD does not support MRT natively; sanity check */
         assert(ctx->pipe_framebuffer.nr_cbufs == 1);
-        panfrost_sfbd_set_cbuf(&fb, ctx->pipe_framebuffer.cbufs[0], flip_y);
+        panfrost_sfbd_set_cbuf(&fb, ctx->pipe_framebuffer.cbufs[0]);
 
         if (ctx->pipe_framebuffer.zsbuf) {
                 /* TODO */

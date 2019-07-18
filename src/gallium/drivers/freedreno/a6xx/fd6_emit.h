@@ -43,6 +43,7 @@ struct fd_ringbuffer;
  * need to be emit'd.
  */
 enum fd6_state_id {
+	FD6_GROUP_PROG_CONFIG,
 	FD6_GROUP_PROG,
 	FD6_GROUP_PROG_BINNING,
 	FD6_GROUP_LRZ,
@@ -61,6 +62,9 @@ enum fd6_state_id {
 struct fd6_state_group {
 	struct fd_ringbuffer *stateobj;
 	enum fd6_state_id group_id;
+	/* enable_mask controls which states the stateobj is evaluated in,
+	 * b0 is binning pass b1 and/or b2 is draw pass
+	 */
 	uint8_t enable_mask;
 };
 
@@ -181,6 +185,24 @@ fd6_emit_lrz_flush(struct fd_ringbuffer *ring)
 {
 	OUT_PKT7(ring, CP_EVENT_WRITE, 1);
 	OUT_RING(ring, LRZ_FLUSH);
+}
+
+static inline uint32_t
+fd6_stage2opcode(gl_shader_stage type)
+{
+	switch (type) {
+	case MESA_SHADER_VERTEX:
+	case MESA_SHADER_TESS_CTRL:
+	case MESA_SHADER_TESS_EVAL:
+	case MESA_SHADER_GEOMETRY:
+		return CP_LOAD_STATE6_GEOM;
+	case MESA_SHADER_FRAGMENT:
+	case MESA_SHADER_COMPUTE:
+	case MESA_SHADER_KERNEL:
+		return CP_LOAD_STATE6_FRAG;
+	default:
+		unreachable("bad shader type");
+	}
 }
 
 static inline enum a6xx_state_block

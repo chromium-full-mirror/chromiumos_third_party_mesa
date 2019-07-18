@@ -343,8 +343,6 @@ nvc0_tcp_gen_header(struct nvc0_program *tcp, struct nv50_ir_prog_info *info)
 {
    unsigned opcs = 6; /* output patch constants (at least the TessFactors) */
 
-   tcp->tp.input_patch_size = info->prop.tp.inputPatchSize;
-
    if (info->numPatchConstants)
       opcs = 8 + info->numPatchConstants * 4;
 
@@ -374,8 +372,6 @@ nvc0_tcp_gen_header(struct nvc0_program *tcp, struct nv50_ir_prog_info *info)
 static int
 nvc0_tep_gen_header(struct nvc0_program *tep, struct nv50_ir_prog_info *info)
 {
-   tep->tp.input_patch_size = ~0;
-
    tep->hdr[0] = 0x20061 | (3 << 10);
    tep->hdr[4] = 0xff000;
 
@@ -594,6 +590,7 @@ nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
       break;
    default:
       assert(!"unsupported IR!");
+      free(info);
       return false;
    }
 
