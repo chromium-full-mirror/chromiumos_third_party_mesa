@@ -1,4 +1,4 @@
-mesa (19.2.0~cros1-3) UNRELEASED; urgency=medium
+mesa (19.2.0~cros1-4) experimental; urgency=medium
 
   [ David Riley ]
   * Undo all comma striping from meson config flags.
@@ -6,7 +6,7 @@ mesa (19.2.0~cros1-3) UNRELEASED; urgency=medium
   [ Nicholas Verne ]
   * Relax rules for override_dh_makeshlibs to c3 instead of c4
 
- -- Nicholas Verne <nverne@google.com>  Thu, 25 Jul 2019 08:02:19 +1000
+ -- David Riley <davidriley@google.com>  Thu, 26 Sep 2019 19:54:05 -0700
 
 mesa (19.2.0~cros1-1) experimental; urgency=medium
 
