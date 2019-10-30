@@ -210,6 +210,10 @@ vmw_ioctl_gb_surface_create(struct vmw_winsys_screen *vws,
                             SVGA3dMSQualityLevel qualityLevel,
                             struct vmw_region **p_region)
 {
+   union {
+      union drm_vmw_gb_surface_create_ext_arg ext_arg;
+      union drm_vmw_gb_surface_create_arg arg;
+   } s_arg;
    struct drm_vmw_gb_surface_create_rep *rep;
    struct vmw_region *region = NULL;
    int ret;
@@ -222,12 +226,11 @@ vmw_ioctl_gb_surface_create(struct vmw_winsys_screen *vws,
          return SVGA3D_INVALID_ID;
    }
 
-   if (vws->ioctl.have_drm_2_15) {
-      union drm_vmw_gb_surface_create_ext_arg s_arg;
-      struct drm_vmw_gb_surface_create_ext_req *req = &s_arg.req;
-      rep = &s_arg.rep;
+   memset(&s_arg, 0, sizeof(s_arg));
 
-      memset(&s_arg, 0, sizeof(s_arg));
+   if (vws->ioctl.have_drm_2_15) {
+      struct drm_vmw_gb_surface_create_ext_req *req = &s_arg.ext_arg.req;
+      rep = &s_arg.ext_arg.rep;
 
       req->version = drm_vmw_gb_surface_v1;
       req->multisample_pattern = multisamplePattern;
@@ -242,6 +245,9 @@ vmw_ioctl_gb_surface_create(struct vmw_winsys_screen *vws,
 
       if (usage & SVGA_SURFACE_USAGE_SHARED)
          req->base.drm_surface_flags |= drm_vmw_surface_flag_shareable;
+
+      if ((usage & SVGA_SURFACE_USAGE_COHERENT) || vws->force_coherent)
+         req->base.drm_surface_flags |= drm_vmw_surface_flag_coherent;
 
       req->base.drm_surface_flags |= drm_vmw_surface_flag_create_buffer;
       req->base.base_size.width = size.width;
@@ -264,17 +270,15 @@ vmw_ioctl_gb_surface_create(struct vmw_winsys_screen *vws,
          buffer_handle : SVGA3D_INVALID_ID;
 
       ret = drmCommandWriteRead(vws->ioctl.drm_fd,
-                                DRM_VMW_GB_SURFACE_CREATE_EXT, &s_arg,
-                                sizeof(s_arg));
+                                DRM_VMW_GB_SURFACE_CREATE_EXT, &s_arg.ext_arg,
+                                sizeof(s_arg.ext_arg));
 
       if (ret)
          goto out_fail_create;
    } else {
-      union drm_vmw_gb_surface_create_arg s_arg;
-      struct drm_vmw_gb_surface_create_req *req = &s_arg.req;
-      rep = &s_arg.rep;
+      struct drm_vmw_gb_surface_create_req *req = &s_arg.arg.req;
+      rep = &s_arg.arg.rep;
 
-      memset(&s_arg, 0, sizeof(s_arg));
       req->svga3d_flags = (uint32_t) flags;
       req->format = (uint32_t) format;
 
@@ -305,7 +309,7 @@ vmw_ioctl_gb_surface_create(struct vmw_winsys_screen *vws,
          buffer_handle : SVGA3D_INVALID_ID;
 
       ret = drmCommandWriteRead(vws->ioctl.drm_fd, DRM_VMW_GB_SURFACE_CREATE,
-			        &s_arg, sizeof(s_arg));
+			        &s_arg.arg, sizeof(s_arg.arg));
 
       if (ret)
          goto out_fail_create;
@@ -969,6 +973,7 @@ vmw_ioctl_init(struct vmw_winsys_screen *vws)
    drmVersionPtr version;
    boolean drm_gb_capable;
    boolean have_drm_2_5;
+   boolean have_drm_2_16;
    const char *getenv_val;
 
    VMW_FUNC;
@@ -985,6 +990,8 @@ vmw_ioctl_init(struct vmw_winsys_screen *vws)
       (version->version_major == 2 && version->version_minor > 8);
    vws->ioctl.have_drm_2_15 = version->version_major > 2 ||
       (version->version_major == 2 && version->version_minor > 14);
+   have_drm_2_16 = version->version_major > 2 ||
+      (version->version_major == 2 && version->version_minor > 15);
 
    vws->ioctl.drm_execbuf_version = vws->ioctl.have_drm_2_9 ? 2 : 1;
 
@@ -1108,6 +1115,13 @@ vmw_ioctl_init(struct vmw_winsys_screen *vws)
          vws->ioctl.num_cap_3d = size / sizeof(uint32_t);
       else
          vws->ioctl.num_cap_3d = SVGA3D_DEVCAP_MAX;
+
+      if (have_drm_2_16) {
+         vws->base.have_coherent = TRUE;
+         getenv_val = getenv("SVGA_FORCE_COHERENT");
+         if (getenv_val && strcmp(getenv_val, "0") != 0)
+            vws->force_coherent = TRUE;
+      }
    } else {
       vws->ioctl.num_cap_3d = SVGA3D_DEVCAP_MAX;
 

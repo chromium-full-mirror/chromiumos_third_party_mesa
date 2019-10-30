@@ -76,6 +76,10 @@ struct ir3_context {
 	/* For fragment shaders: */
 	struct ir3_instruction *samp_id, *samp_mask_in;
 
+	/* For geometry shaders: */
+	struct ir3_instruction *primitive_id;
+	struct ir3_instruction *gs_header;
+
 	/* Compute shader inputs: */
 	struct ir3_instruction *local_invocation_id, *work_group_id;
 
@@ -163,7 +167,8 @@ struct ir3_instruction * ir3_get_predicate(struct ir3_context *ctx,
 void ir3_declare_array(struct ir3_context *ctx, nir_register *reg);
 struct ir3_array * ir3_get_array(struct ir3_context *ctx, nir_register *reg);
 struct ir3_instruction *ir3_create_array_load(struct ir3_context *ctx,
-		struct ir3_array *arr, int n, struct ir3_instruction *address);
+		struct ir3_array *arr, int n, struct ir3_instruction *address,
+		unsigned bitsize);
 void ir3_create_array_store(struct ir3_context *ctx, struct ir3_array *arr, int n,
 		struct ir3_instruction *src, struct ir3_instruction *address);
 

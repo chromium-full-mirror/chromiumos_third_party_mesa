@@ -185,7 +185,7 @@ ntq_store_dest(struct vc4_compile *c, nir_dest *dest, int chan,
                struct qreg result)
 {
         struct qinst *last_inst = NULL;
-        if (!list_empty(&c->cur_block->instructions))
+        if (!list_is_empty(&c->cur_block->instructions))
                 last_inst = (struct qinst *)c->cur_block->instructions.prev;
 
         assert(result.file == QFILE_UNIF ||
@@ -832,7 +832,7 @@ ntq_src_is_only_ssa_def_user(nir_src *src)
         if (!src->is_ssa)
                 return false;
 
-        if (!list_empty(&src->ssa->if_uses))
+        if (!list_is_empty(&src->ssa->if_uses))
                 return false;
 
         return (src->ssa->uses.next == &src->use_link &&
@@ -1128,8 +1128,7 @@ ntq_emit_alu(struct vc4_compile *c, nir_alu_instr *instr)
         struct qreg result;
 
         switch (instr->op) {
-        case nir_op_fmov:
-        case nir_op_imov:
+        case nir_op_mov:
                 result = qir_MOV(c, src[0]);
                 break;
         case nir_op_fmul:
@@ -1442,11 +1441,6 @@ emit_point_size_write(struct vc4_compile *c)
         else
                 point_size = qir_uniform_f(c, 1.0);
 
-        /* Workaround: HW-2726 PTB does not handle zero-size points (BCM2835,
-         * BCM21553).
-         */
-        point_size = qir_FMAX(c, point_size, qir_uniform_f(c, .125));
-
         qir_VPM_WRITE(c, point_size);
 }
 
@@ -1536,7 +1530,7 @@ vc4_optimize_nir(struct nir_shader *s)
                 progress = false;
 
                 NIR_PASS_V(s, nir_lower_vars_to_ssa);
-                NIR_PASS(progress, s, nir_lower_alu_to_scalar, NULL);
+                NIR_PASS(progress, s, nir_lower_alu_to_scalar, NULL, NULL);
                 NIR_PASS(progress, s, nir_lower_phis_to_scalar);
                 NIR_PASS(progress, s, nir_copy_prop);
                 NIR_PASS(progress, s, nir_opt_remove_phis);
@@ -2190,11 +2184,14 @@ static const nir_shader_compiler_options nir_options = {
         .lower_fdiv = true,
         .lower_ffma = true,
         .lower_flrp32 = true,
+        .lower_fmod = true,
         .lower_fpow = true,
         .lower_fsat = true,
         .lower_fsqrt = true,
         .lower_ldexp = true,
         .lower_negate = true,
+        .lower_rotate = true,
+        .lower_to_scalar = true,
         .max_unroll_iterations = 32,
 };
 
@@ -2261,7 +2258,8 @@ vc4_shader_ntq(struct vc4_context *vc4, enum qstage stage,
                         NIR_PASS_V(c->s, nir_lower_alpha_test,
                                    c->fs_key->alpha_test_func,
                                    c->fs_key->sample_alpha_to_one &&
-                                   c->fs_key->msaa);
+                                   c->fs_key->msaa,
+                                   NULL);
                 }
                 NIR_PASS_V(c->s, vc4_nir_lower_blend, c);
         }
@@ -2315,10 +2313,11 @@ vc4_shader_ntq(struct vc4_context *vc4, enum qstage stage,
 
         if (c->key->ucp_enables) {
                 if (stage == QSTAGE_FRAG) {
-                        NIR_PASS_V(c->s, nir_lower_clip_fs, c->key->ucp_enables);
+                        NIR_PASS_V(c->s, nir_lower_clip_fs,
+                                   c->key->ucp_enables, false);
                 } else {
                         NIR_PASS_V(c->s, nir_lower_clip_vs,
-				   c->key->ucp_enables, false);
+                                   c->key->ucp_enables, false, false, NULL);
                         NIR_PASS_V(c->s, nir_lower_io_to_scalar,
                                    nir_var_shader_out);
                 }
@@ -2335,9 +2334,24 @@ vc4_shader_ntq(struct vc4_context *vc4, enum qstage stage,
 
         NIR_PASS_V(c->s, vc4_nir_lower_io, c);
         NIR_PASS_V(c->s, vc4_nir_lower_txf_ms, c);
-        NIR_PASS_V(c->s, nir_lower_idiv);
+        NIR_PASS_V(c->s, nir_lower_idiv, nir_lower_idiv_fast);
 
         vc4_optimize_nir(c->s);
+
+        /* Do late algebraic optimization to turn add(a, neg(b)) back into
+         * subs, then the mandatory cleanup after algebraic.  Note that it may
+         * produce fnegs, and if so then we need to keep running to squash
+         * fneg(fneg(a)).
+         */
+        bool more_late_algebraic = true;
+        while (more_late_algebraic) {
+                more_late_algebraic = false;
+                NIR_PASS(more_late_algebraic, c->s, nir_opt_algebraic_late);
+                NIR_PASS_V(c->s, nir_opt_constant_folding);
+                NIR_PASS_V(c->s, nir_copy_prop);
+                NIR_PASS_V(c->s, nir_opt_dce);
+                NIR_PASS_V(c->s, nir_opt_cse);
+        }
 
         NIR_PASS_V(c->s, nir_lower_bool_to_int32);
 
@@ -2454,6 +2468,9 @@ vc4_shader_state_create(struct pipe_context *pctx,
                 }
                 s = tgsi_to_nir(cso->tokens, pctx->screen);
         }
+
+        if (s->info.stage == MESA_SHADER_VERTEX)
+                NIR_PASS_V(s, nir_lower_point_size, 1.0f, 0.0f);
 
         NIR_PASS_V(s, nir_lower_io, nir_var_all, type_size,
                    (nir_lower_io_options)0);

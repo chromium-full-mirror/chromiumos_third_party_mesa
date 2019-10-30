@@ -252,6 +252,7 @@ public:
    virtual void visit(ir_call *);
    virtual void visit(ir_return *);
    virtual void visit(ir_discard *);
+   virtual void visit(ir_demote *);
    virtual void visit(ir_texture *);
    virtual void visit(ir_if *);
    virtual void visit(ir_emit_vertex *);
@@ -1128,7 +1129,7 @@ ir_to_mesa_visitor::visit(ir_expression *ir)
       break;
    case ir_binop_mod:
       /* Floating point should be lowered by MOD_TO_FLOOR in the compiler. */
-      assert(ir->type->is_integer());
+      assert(ir->type->is_integer_32());
       emit(ir, OPCODE_MUL, result_dst, op[0], op[1]);
       break;
 
@@ -1411,6 +1412,8 @@ ir_to_mesa_visitor::visit(ir_expression *ir)
    case ir_unop_unpack_sampler_2x32:
    case ir_unop_pack_image_2x32:
    case ir_unop_unpack_image_2x32:
+   case ir_unop_atan:
+   case ir_binop_atan2:
       assert(!"not supported");
       break;
 
@@ -2202,6 +2205,12 @@ ir_to_mesa_visitor::visit(ir_discard *ir)
 }
 
 void
+ir_to_mesa_visitor::visit(ir_demote *ir)
+{
+   assert(!"demote statement unsupported");
+}
+
+void
 ir_to_mesa_visitor::visit(ir_if *ir)
 {
    ir_to_mesa_instruction *if_inst;
@@ -2390,7 +2399,7 @@ public:
    add_uniform_to_shader(struct gl_context *ctx,
                          struct gl_shader_program *shader_program,
 			 struct gl_program_parameter_list *params)
-      : ctx(ctx), params(params), idx(-1)
+      : ctx(ctx), shader_program(shader_program), params(params), idx(-1)
    {
       /* empty */
    }
@@ -2411,6 +2420,7 @@ private:
                             bool last_field);
 
    struct gl_context *ctx;
+   struct gl_shader_program *shader_program;
    struct gl_program_parameter_list *params;
    int idx;
    ir_variable *var;
@@ -2472,6 +2482,21 @@ add_uniform_to_shader::visit_field(const glsl_type *type, const char *name,
     */
    if (this->idx < 0)
       this->idx = index;
+
+   /* Each Parameter will hold the index to the backing uniform storage.
+    * This avoids relying on names to match parameters and uniform
+    * storages later when associating uniform storage.
+    */
+   unsigned location;
+   const bool found =
+      shader_program->UniformHash->get(location, params->Parameters[index].Name);
+   assert(found);
+
+   for (unsigned i = 0; i < num_params; i++) {
+      struct gl_program_parameter *param = &params->Parameters[index + i];
+      param->UniformStorageIndex = location;
+      param->MainUniformStorageIndex = params->Parameters[this->idx].UniformStorageIndex;
+   }
 }
 
 /**
@@ -2506,8 +2531,7 @@ _mesa_generate_parameters_list_for_uniforms(struct gl_context *ctx,
 void
 _mesa_associate_uniform_storage(struct gl_context *ctx,
                                 struct gl_shader_program *shader_program,
-                                struct gl_program *prog,
-                                bool propagate_to_storage)
+                                struct gl_program *prog)
 {
    struct gl_program_parameter_list *params = prog->Parameters;
    gl_shader_stage shader_type = prog->info.stage;
@@ -2521,13 +2545,7 @@ _mesa_associate_uniform_storage(struct gl_context *ctx,
       if (params->Parameters[i].Type != PROGRAM_UNIFORM)
          continue;
 
-      unsigned location;
-      const bool found =
-         shader_program->UniformHash->get(location, params->Parameters[i].Name);
-      assert(found);
-
-      if (!found)
-         continue;
+      unsigned location = params->Parameters[i].UniformStorageIndex;
 
       struct gl_uniform_storage *storage =
          &shader_program->data->UniformStorage[location];
@@ -2633,26 +2651,24 @@ _mesa_associate_uniform_storage(struct gl_context *ctx,
           * data from the linker's backing store.  This will cause values from
           * initializers in the source code to be copied over.
           */
-         if (propagate_to_storage) {
-            unsigned array_elements = MAX2(1, storage->array_elements);
-            if (ctx->Const.PackedDriverUniformStorage && !prog->is_arb_asm &&
-                (storage->is_bindless || !storage->type->contains_opaque())) {
-               const int dmul = storage->type->is_64bit() ? 2 : 1;
-               const unsigned components =
-                  storage->type->vector_elements *
-                  storage->type->matrix_columns;
+         unsigned array_elements = MAX2(1, storage->array_elements);
+         if (ctx->Const.PackedDriverUniformStorage && !prog->is_arb_asm &&
+             (storage->is_bindless || !storage->type->contains_opaque())) {
+            const int dmul = storage->type->is_64bit() ? 2 : 1;
+            const unsigned components =
+               storage->type->vector_elements *
+               storage->type->matrix_columns;
 
-               for (unsigned s = 0; s < storage->num_driver_storage; s++) {
-                  gl_constant_value *uni_storage = (gl_constant_value *)
-                     storage->driver_storage[s].data;
-                  memcpy(uni_storage, storage->storage,
-                         sizeof(storage->storage[0]) * components *
-                         array_elements * dmul);
-               }
-            } else {
-               _mesa_propagate_uniforms_to_driver_storage(storage, 0,
-                                                          array_elements);
+            for (unsigned s = 0; s < storage->num_driver_storage; s++) {
+               gl_constant_value *uni_storage = (gl_constant_value *)
+                  storage->driver_storage[s].data;
+               memcpy(uni_storage, storage->storage,
+                      sizeof(storage->storage[0]) * components *
+                      array_elements * dmul);
             }
+         } else {
+            _mesa_propagate_uniforms_to_driver_storage(storage, 0,
+                                                       array_elements);
          }
 
 	      last_location = location;
@@ -3011,7 +3027,7 @@ get_mesa_program(struct gl_context *ctx,
     * prog->ParameterValues to get reallocated (e.g., anything that adds a
     * program constant) has to happen before creating this linkage.
     */
-   _mesa_associate_uniform_storage(ctx, shader_program, prog, true);
+   _mesa_associate_uniform_storage(ctx, shader_program, prog);
    if (!shader_program->data->LinkStatus) {
       goto fail_exit;
    }

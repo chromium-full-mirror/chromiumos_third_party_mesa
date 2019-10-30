@@ -34,6 +34,8 @@
 #include "vk_util.h"
 #include "util/u_math.h"
 
+#include "common/gen_aux_map.h"
+
 #include "vk_format_info.h"
 
 static isl_surf_usage_flags_t
@@ -328,12 +330,23 @@ make_surface(const struct anv_device *dev,
     * just use RENDER_SURFACE_STATE::X/Y Offset.
     */
    bool needs_shadow = false;
+   isl_surf_usage_flags_t shadow_usage = 0;
    if (dev->info.gen <= 8 &&
        (image->create_flags & VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT) &&
        image->tiling == VK_IMAGE_TILING_OPTIMAL) {
       assert(isl_format_is_compressed(plane_format.isl_format));
       tiling_flags = ISL_TILING_LINEAR_BIT;
       needs_shadow = true;
+      shadow_usage = ISL_SURF_USAGE_TEXTURE_BIT |
+                     (usage & ISL_SURF_USAGE_CUBE_BIT);
+   }
+
+   if (dev->info.gen <= 7 &&
+       aspect == VK_IMAGE_ASPECT_STENCIL_BIT &&
+       (image->stencil_usage & VK_IMAGE_USAGE_SAMPLED_BIT)) {
+      needs_shadow = true;
+      shadow_usage = ISL_SURF_USAGE_TEXTURE_BIT |
+                     (usage & ISL_SURF_USAGE_CUBE_BIT);
    }
 
    ok = isl_surf_init(&dev->isl_dev, &anv_surf->isl,
@@ -359,12 +372,11 @@ make_surface(const struct anv_device *dev,
 
    /* If an image is created as BLOCK_TEXEL_VIEW_COMPATIBLE, then we need to
     * create an identical tiled shadow surface for use while texturing so we
-    * don't get garbage performance.
+    * don't get garbage performance.  If we're on gen7 and the image contains
+    * stencil, then we need to maintain a shadow because we can't texture from
+    * W-tiled images.
     */
    if (needs_shadow) {
-      assert(aspect == VK_IMAGE_ASPECT_COLOR_BIT);
-      assert(tiling_flags == ISL_TILING_LINEAR_BIT);
-
       ok = isl_surf_init(&dev->isl_dev, &image->planes[plane].shadow_surface.isl,
          .dim = vk_to_isl_surf_dim[image->type],
          .format = plane_format.isl_format,
@@ -376,7 +388,7 @@ make_surface(const struct anv_device *dev,
          .samples = image->samples,
          .min_alignment_B = 0,
          .row_pitch_B = stride,
-         .usage = usage,
+         .usage = shadow_usage,
          .tiling_flags = ISL_TILING_ANY_MASK);
 
       /* isl_surf_init() will fail only if provided invalid input. Invalid input
@@ -439,7 +451,8 @@ make_surface(const struct anv_device *dev,
          assert(image->planes[plane].aux_surface.isl.size_B == 0);
          ok = isl_surf_get_ccs_surf(&dev->isl_dev,
                                     &image->planes[plane].surface.isl,
-                                    &image->planes[plane].aux_surface.isl, 0);
+                                    &image->planes[plane].aux_surface.isl,
+                                    NULL, 0);
          if (ok) {
 
             /* Disable CCS when it is not useful (i.e., when you can't render
@@ -458,9 +471,6 @@ make_surface(const struct anv_device *dev,
                return VK_SUCCESS;
             }
 
-            add_surface(image, &image->planes[plane].aux_surface, plane);
-            add_aux_state_tracking_buffer(image, plane, dev);
-
             /* For images created without MUTABLE_FORMAT_BIT set, we know that
              * they will always be used with the original format.  In
              * particular, they will always be used with a format that
@@ -472,7 +482,16 @@ make_surface(const struct anv_device *dev,
             if (!(image->usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
                 image->ccs_e_compatible) {
                image->planes[plane].aux_usage = ISL_AUX_USAGE_CCS_E;
+            } else if (dev->info.gen >= 12) {
+               anv_perf_warn(dev->instance, image,
+                             "The CCS_D aux mode is not yet handled on "
+                             "Gen12+. Not allocating a CCS buffer.");
+               image->planes[plane].aux_surface.isl.size_B = 0;
+               return VK_SUCCESS;
             }
+
+            add_surface(image, &image->planes[plane].aux_surface, plane);
+            add_aux_state_tracking_buffer(image, plane, dev);
          }
       }
    } else if ((aspect & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) && image->samples > 1) {
@@ -593,6 +612,15 @@ anv_image_create(VkDevice _device,
    image->needs_set_tiling = wsi_info && wsi_info->scanout;
    image->drm_format_mod = isl_mod_info ? isl_mod_info->modifier :
                                           DRM_FORMAT_MOD_INVALID;
+
+   if (image->aspects & VK_IMAGE_ASPECT_STENCIL_BIT) {
+      image->stencil_usage = pCreateInfo->usage;
+      const VkImageStencilUsageCreateInfoEXT *stencil_usage_info =
+         vk_find_struct_const(pCreateInfo->pNext,
+                              IMAGE_STENCIL_USAGE_CREATE_INFO_EXT);
+      if (stencil_usage_info)
+         image->stencil_usage = stencil_usage_info->stencilUsage;
+   }
 
    /* In case of external format, We don't know format yet,
     * so skip the rest for now.
@@ -716,6 +744,17 @@ anv_CreateImage(VkDevice device,
       return anv_image_from_external(device, pCreateInfo, create_info,
                                      pAllocator, pImage);
 
+   bool use_external_format = false;
+   const struct VkExternalFormatANDROID *ext_format =
+      vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_FORMAT_ANDROID);
+
+   /* "If externalFormat is zero, the effect is as if the
+    * VkExternalFormatANDROID structure was not present. Otherwise, the image
+    * will have the specified external format."
+    */
+   if (ext_format && ext_format->externalFormat != 0)
+      use_external_format = true;
+
    const VkNativeBufferANDROID *gralloc_info =
       vk_find_struct_const(pCreateInfo->pNext, NATIVE_BUFFER_ANDROID);
    if (gralloc_info)
@@ -731,6 +770,7 @@ anv_CreateImage(VkDevice device,
    return anv_image_create(device,
       &(struct anv_image_create_info) {
          .vk_info = pCreateInfo,
+         .external_format = use_external_format,
       },
       pAllocator,
       pImage);
@@ -747,6 +787,12 @@ anv_DestroyImage(VkDevice _device, VkImage _image,
       return;
 
    for (uint32_t p = 0; p < image->n_planes; ++p) {
+      if (anv_image_plane_uses_aux_map(device, image, p) &&
+          image->planes[p].address.bo) {
+         gen_aux_map_unmap_range(device->aux_map_ctx,
+                                 image->planes[p].aux_map_surface_address,
+                                 image->planes[p].surface.isl.size_B);
+      }
       if (image->planes[p].bo_is_owned) {
          assert(image->planes[p].address.bo != NULL);
          anv_bo_cache_release(device, &device->bo_cache,
@@ -766,6 +812,12 @@ static void anv_image_bind_memory_plane(struct anv_device *device,
    assert(!image->planes[plane].bo_is_owned);
 
    if (!memory) {
+      if (anv_image_plane_uses_aux_map(device, image, plane) &&
+          image->planes[plane].address.bo) {
+         gen_aux_map_unmap_range(device->aux_map_ctx,
+                                 image->planes[plane].aux_map_surface_address,
+                                 image->planes[plane].surface.isl.size_B);
+      }
       image->planes[plane].address = ANV_NULL_ADDRESS;
       return;
    }
@@ -774,6 +826,20 @@ static void anv_image_bind_memory_plane(struct anv_device *device,
       .bo = memory->bo,
       .offset = memory_offset,
    };
+
+   if (anv_image_plane_uses_aux_map(device, image, plane)) {
+      image->planes[plane].aux_map_surface_address =
+         anv_address_physical(
+            anv_address_add(image->planes[plane].address,
+                            image->planes[plane].surface.offset));
+
+      gen_aux_map_add_image(device->aux_map_ctx,
+                            &image->planes[plane].surface.isl,
+                            image->planes[plane].aux_map_surface_address,
+                            anv_address_physical(
+                               anv_address_add(image->planes[plane].address,
+                                               image->planes[plane].aux_surface.offset)));
+   }
 }
 
 /* We are binding AHardwareBuffer. Get a description, resolve the
@@ -816,12 +882,12 @@ resolve_ahw_image(struct anv_device *device,
           vk_tiling == VK_IMAGE_TILING_OPTIMAL);
 
    /* Check format. */
-   VkFormat vk_format = vk_format_from_android(desc.format);
+   VkFormat vk_format = vk_format_from_android(desc.format, desc.usage);
    enum isl_format isl_fmt = anv_get_isl_format(&device->info,
                                                 vk_format,
                                                 VK_IMAGE_ASPECT_COLOR_BIT,
                                                 vk_tiling);
-   assert(format != ISL_FORMAT_UNSUPPORTED);
+   assert(isl_fmt != ISL_FORMAT_UNSUPPORTED);
 
    /* Handle RGB(X)->RGBA fallback. */
    switch (desc.format) {
@@ -1150,6 +1216,9 @@ anv_layout_to_fast_clear_type(const struct gen_device_info * const devinfo,
                               const VkImageAspectFlagBits aspect,
                               const VkImageLayout layout)
 {
+   if (INTEL_DEBUG & DEBUG_NO_FAST_CLEAR)
+      return ANV_FAST_CLEAR_NONE;
+
    /* The aspect must be exactly one of the image aspects. */
    assert(util_bitcount(aspect) == 1 && (aspect & image->aspects));
 
@@ -1275,8 +1344,22 @@ anv_image_fill_surface_state(struct anv_device *device,
       surface = &image->planes[plane].shadow_surface;
    }
 
+   /* For texturing from stencil on gen7, we have to sample from a shadow
+    * surface because we don't support W-tiling in the sampler.
+    */
+   if (image->planes[plane].shadow_surface.isl.size_B > 0 &&
+       aspect == VK_IMAGE_ASPECT_STENCIL_BIT) {
+      assert(device->info.gen == 7);
+      assert(view_usage & ISL_SURF_USAGE_TEXTURE_BIT);
+      surface = &image->planes[plane].shadow_surface;
+   }
+
    if (view_usage == ISL_SURF_USAGE_RENDER_TARGET_BIT)
       view.swizzle = anv_swizzle_for_render(view.swizzle);
+
+   /* On Ivy Bridge and Bay Trail we do the swizzle in the shader */
+   if (device->info.gen == 7 && !device->info.is_haswell)
+      view.swizzle = ISL_SWIZZLE_IDENTITY;
 
    /* If this is a HiZ buffer we can sample from with a programmable clear
     * value (SKL+), define the clear value to the optimal constant.
@@ -1355,13 +1438,10 @@ anv_image_fill_surface_state(struct anv_device *device,
           */
          const struct isl_format_layout *fmtl =
             isl_format_get_layout(surface->isl.format);
+         tmp_surf.logical_level0_px =
+            isl_surf_get_logical_level0_el(&tmp_surf);
+         tmp_surf.phys_level0_sa = isl_surf_get_phys_level0_el(&tmp_surf);
          tmp_surf.format = view.format;
-         tmp_surf.logical_level0_px.width =
-            DIV_ROUND_UP(tmp_surf.logical_level0_px.width, fmtl->bw);
-         tmp_surf.logical_level0_px.height =
-            DIV_ROUND_UP(tmp_surf.logical_level0_px.height, fmtl->bh);
-         tmp_surf.phys_level0_sa.width /= fmtl->bw;
-         tmp_surf.phys_level0_sa.height /= fmtl->bh;
          tile_x_sa /= fmtl->bw;
          tile_y_sa /= fmtl->bh;
 
@@ -1509,11 +1589,18 @@ anv_CreateImageView(VkDevice _device,
       conv_format = conversion->format;
    }
 
+   VkImageUsageFlags image_usage = 0;
+   if (range->aspectMask & ~VK_IMAGE_ASPECT_STENCIL_BIT)
+      image_usage |= image->usage;
+   if (range->aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT)
+      image_usage |= image->stencil_usage;
+
    const VkImageViewUsageCreateInfo *usage_info =
       vk_find_struct_const(pCreateInfo, IMAGE_VIEW_USAGE_CREATE_INFO);
-   VkImageUsageFlags view_usage = usage_info ? usage_info->usage : image->usage;
+   VkImageUsageFlags view_usage = usage_info ? usage_info->usage : image_usage;
+
    /* View usage should be a subset of image usage */
-   assert((view_usage & ~image->usage) == 0);
+   assert((view_usage & ~image_usage) == 0);
    assert(view_usage & (VK_IMAGE_USAGE_SAMPLED_BIT |
                         VK_IMAGE_USAGE_STORAGE_BIT |
                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |

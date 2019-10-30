@@ -86,7 +86,7 @@ static struct fd6_format formats[PIPE_FORMAT_COUNT] = {
 	VT(R8_UINT,    8_UINT,  R8_UINT,  WZYX),
 	VT(R8_SINT,    8_SINT,  R8_SINT,  WZYX),
 	V_(R8_USCALED, 8_UINT,  NONE,     WZYX),
-	V_(R8_SSCALED, 8_UINT,  NONE,     WZYX),
+	V_(R8_SSCALED, 8_SINT,  NONE,     WZYX),
 
 	_T(A8_UNORM,   8_UNORM, A8_UNORM, WZYX),
 	_T(L8_UNORM,   8_UNORM, R8_UNORM, WZYX),
@@ -107,7 +107,7 @@ static struct fd6_format formats[PIPE_FORMAT_COUNT] = {
 	VT(R16_UINT,    16_UINT,  R16_UINT,  WZYX),
 	VT(R16_SINT,    16_SINT,  R16_SINT,  WZYX),
 	V_(R16_USCALED, 16_UINT,  NONE,      WZYX),
-	V_(R16_SSCALED, 16_UINT,  NONE,      WZYX),
+	V_(R16_SSCALED, 16_SINT,  NONE,      WZYX),
 	VT(R16_FLOAT,   16_FLOAT, R16_FLOAT, WZYX),
 	_T(Z16_UNORM,   16_UNORM, R16_UNORM, WZYX),
 
@@ -151,7 +151,7 @@ static struct fd6_format formats[PIPE_FORMAT_COUNT] = {
 	VT(R32_UINT,    32_UINT,  R32_UINT, WZYX),
 	VT(R32_SINT,    32_SINT,  R32_SINT, WZYX),
 	V_(R32_USCALED, 32_UINT,  NONE,     WZYX),
-	V_(R32_SSCALED, 32_UINT,  NONE,     WZYX),
+	V_(R32_SSCALED, 32_SINT,  NONE,     WZYX),
 	VT(R32_FLOAT,   32_FLOAT, R32_FLOAT,WZYX),
 	V_(R32_FIXED,   32_FIXED, NONE,     WZYX),
 
@@ -216,11 +216,14 @@ static struct fd6_format formats[PIPE_FORMAT_COUNT] = {
 	_T(R9G9B9E5_FLOAT,  9_9_9_E5_FLOAT, NONE,            WZYX),
 
 	_T(Z24X8_UNORM,       X8Z24_UNORM,  X8Z24_UNORM,   WZYX),
-	_T(X24S8_UINT,        8_8_8_8_UINT, X8Z24_UNORM,   XYZW),  // XXX
+	_T(X24S8_UINT,        8_8_8_8_UINT, X8Z24_UNORM,   WZYX),
 	_T(Z24_UNORM_S8_UINT, X8Z24_UNORM,  X8Z24_UNORM,   WZYX),
 	_T(Z32_FLOAT,         32_FLOAT,     R32_FLOAT,     WZYX),
 	_T(Z32_FLOAT_S8X24_UINT, 32_FLOAT,  R32_FLOAT,     WZYX),
 	_T(X32_S8X24_UINT,    8_UINT,      R8_UINT,        WZYX),
+
+	/* special format for blits: */
+	_T(Z24_UNORM_S8_UINT_AS_R8G8B8A8, Z24_UNORM_S8_UINT,  Z24_UNORM_S8_UINT,   WZYX),
 
 	/* 48-bit */
 	V_(R16G16B16_UNORM,   16_16_16_UNORM, NONE, WZYX),
@@ -450,7 +453,7 @@ fd6_tex_swiz(enum pipe_format format, unsigned char *swiz,
 	 */
 	if (format == PIPE_FORMAT_X24S8_UINT) {
 		const unsigned char stencil_swiz[4] = {
-			PIPE_SWIZZLE_X, PIPE_SWIZZLE_X, PIPE_SWIZZLE_X, PIPE_SWIZZLE_X
+			PIPE_SWIZZLE_W, PIPE_SWIZZLE_W, PIPE_SWIZZLE_W, PIPE_SWIZZLE_W
 		};
 		util_format_compose_swizzles(stencil_swiz, uswiz, swiz);
 	} else if (fd6_pipe2swap(format) != WZYX) {

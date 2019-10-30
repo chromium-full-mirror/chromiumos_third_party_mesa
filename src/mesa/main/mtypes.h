@@ -159,19 +159,14 @@ _mesa_varying_slot_in_fs(gl_varying_slot slot)
  */
 struct gl_config
 {
-   GLboolean rgbMode;
    GLboolean floatMode;
    GLuint doubleBufferMode;
    GLuint stereoMode;
 
-   GLboolean haveAccumBuffer;
-   GLboolean haveDepthBuffer;
-   GLboolean haveStencilBuffer;
-
    GLint redBits, greenBits, blueBits, alphaBits;	/* bits per comp */
    GLuint redMask, greenMask, blueMask, alphaMask;
+   GLint redShift, greenShift, blueShift, alphaShift;
    GLint rgbBits;		/* total bits for rgb */
-   GLint indexBits;		/* total bits for colorindex */
 
    GLint accumRedBits, accumGreenBits, accumBlueBits, accumAlphaBits;
    GLint depthBits;
@@ -3912,8 +3907,12 @@ struct gl_constants
     */
    GLboolean GLSLSkipStrictMaxUniformLimitCheck;
 
-   /** Whether gl_FragCoord and gl_FrontFacing are system values. */
+   /**
+    * Whether gl_FragCoord, gl_PointCoord and gl_FrontFacing
+    * are system values.
+    **/
    bool GLSLFragCoordIsSysVal;
+   bool GLSLPointCoordIsSysVal;
    bool GLSLFrontFacingIsSysVal;
 
    /**
@@ -3922,6 +3921,11 @@ struct gl_constants
     * all the necessary lowering.
     */
    bool GLSLOptimizeConservatively;
+
+   /**
+    * Whether to call lower_const_arrays_to_uniforms() during linking.
+    */
+   bool GLSLLowerConstArrays;
 
    /**
     * True if gl_TessLevelInner/Outer[] in the TES should be inputs
@@ -4126,8 +4130,16 @@ struct gl_constants
    /** Is the drivers uniform storage packed or padded to 16 bytes. */
    bool PackedDriverUniformStorage;
 
+   /** Wether or not glBitmap uses red textures rather than alpha */
+   bool BitmapUsesRed;
+
    /** GL_ARB_gl_spirv */
    struct spirv_supported_capabilities SpirVCapabilities;
+
+   /** GL_ARB_spirv_extensions */
+   struct spirv_supported_extensions *SpirVExtensions;
+
+   char *VendorOverride;
 };
 
 
@@ -4220,6 +4232,7 @@ struct gl_extensions
    GLboolean ARB_shadow;
    GLboolean ARB_sparse_buffer;
    GLboolean ARB_stencil_texturing;
+   GLboolean ARB_spirv_extensions;
    GLboolean ARB_sync;
    GLboolean ARB_tessellation_shader;
    GLboolean ARB_texture_border_clamp;
@@ -4261,6 +4274,7 @@ struct gl_extensions
    GLboolean EXT_blend_equation_separate;
    GLboolean EXT_blend_func_separate;
    GLboolean EXT_blend_minmax;
+   GLboolean EXT_demote_to_helper_invocation;
    GLboolean EXT_depth_bounds_test;
    GLboolean EXT_disjoint_timer_query;
    GLboolean EXT_draw_buffers2;
@@ -4281,6 +4295,7 @@ struct gl_extensions
    GLboolean EXT_semaphore;
    GLboolean EXT_semaphore_fd;
    GLboolean EXT_shader_image_load_formatted;
+   GLboolean EXT_shader_image_load_store;
    GLboolean EXT_shader_integer_mix;
    GLboolean EXT_shader_samples_identical;
    GLboolean EXT_sRGB;
@@ -4294,6 +4309,7 @@ struct gl_extensions
    GLboolean EXT_texture_filter_anisotropic;
    GLboolean EXT_texture_integer;
    GLboolean EXT_texture_mirror_clamp;
+   GLboolean EXT_texture_shadow_lod;
    GLboolean EXT_texture_shared_exponent;
    GLboolean EXT_texture_snorm;
    GLboolean EXT_texture_sRGB;
@@ -4970,6 +4986,11 @@ struct gl_context
     */
    struct gl_pipeline_object *_Shader;
 
+   /**
+    * NIR containing the functions that implement software fp64 support.
+    */
+   struct nir_shader *SoftFP64;
+
    struct gl_query_state Query;  /**< occlusion, timer queries */
 
    struct gl_transform_feedback_state TransformFeedback;
@@ -5157,6 +5178,8 @@ struct gl_context
    struct hash_table_u64 *ResidentTextureHandles;
    struct hash_table_u64 *ResidentImageHandles;
    /*@}*/
+
+   bool shader_builtin_ref;
 };
 
 /**
@@ -5172,7 +5195,7 @@ struct gl_memory_info
    unsigned nr_device_memory_evictions; /**< # of evictions (monotonic counter) */
 };
 
-#ifdef DEBUG
+#ifndef NDEBUG
 extern int MESA_VERBOSE;
 extern int MESA_DEBUG_FLAGS;
 #else

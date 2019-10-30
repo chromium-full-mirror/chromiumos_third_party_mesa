@@ -44,6 +44,8 @@
 
 #include "drm-uapi/i915_drm.h"
 
+#include "common/gen_aux_map.h"
+#include "intel/common/gen_gem.h"
 #include "util/hash_table.h"
 #include "util/set.h"
 #include "main/macros.h"
@@ -147,6 +149,25 @@ decode_get_bo(void *v_batch, bool ppgtt, uint64_t address)
    return (struct gen_batch_decode_bo) { };
 }
 
+static unsigned
+decode_get_state_size(void *v_batch, uint32_t offset_from_base)
+{
+   struct iris_batch *batch = v_batch;
+
+   /* The decoder gives us offsets from a base address, which is not great.
+    * Binding tables are relative to surface state base address, and other
+    * state is relative to dynamic state base address.  These could alias,
+    * but in practice it's unlikely because surface offsets are always in
+    * the [0, 64K) range, and we assign dynamic state addresses starting at
+    * the top of the 4GB range.  We should fix this but it's likely good
+    * enough for now.
+    */
+   unsigned size = (uintptr_t)
+      _mesa_hash_table_u64_search(batch->state_sizes, offset_from_base);
+
+   return size;
+}
+
 /**
  * Decode the current batch.
  */
@@ -164,6 +185,7 @@ iris_init_batch(struct iris_batch *batch,
                 struct iris_vtable *vtbl,
                 struct pipe_debug_callback *dbg,
                 struct pipe_device_reset_callback *reset,
+                struct hash_table_u64 *state_sizes,
                 struct iris_batch *all_batches,
                 enum iris_batch_name name,
                 uint8_t engine,
@@ -173,6 +195,7 @@ iris_init_batch(struct iris_batch *batch,
    batch->vtbl = vtbl;
    batch->dbg = dbg;
    batch->reset = reset;
+   batch->state_sizes = state_sizes;
    batch->name = name;
 
    /* engine should be one of I915_EXEC_RENDER, I915_EXEC_BLT, etc. */
@@ -214,10 +237,11 @@ iris_init_batch(struct iris_batch *batch,
          GEN_BATCH_DECODE_OFFSETS |
          GEN_BATCH_DECODE_FLOATS;
 
-      /* TODO: track state size so we can print the right # of entries */
       gen_batch_decode_ctx_init(&batch->decoder, &screen->devinfo,
                                 stderr, decode_flags, NULL,
-                                decode_get_bo, NULL, batch);
+                                decode_get_bo, decode_get_state_size, batch);
+      batch->decoder.dynamic_base = IRIS_MEMZONE_DYNAMIC_START;
+      batch->decoder.instruction_base = IRIS_MEMZONE_SHADER_START;
       batch->decoder.max_vbo_decoded_lines = 32;
    }
 
@@ -239,6 +263,20 @@ find_validation_entry(struct iris_batch *batch, struct iris_bo *bo)
    }
 
    return NULL;
+}
+
+static void
+ensure_exec_obj_space(struct iris_batch *batch, uint32_t count)
+{
+   while (batch->exec_count + count > batch->exec_array_size) {
+      batch->exec_array_size *= 2;
+      batch->exec_bos =
+         realloc(batch->exec_bos,
+                 batch->exec_array_size * sizeof(batch->exec_bos[0]));
+      batch->validation_list =
+         realloc(batch->validation_list,
+                 batch->exec_array_size * sizeof(batch->validation_list[0]));
+   }
 }
 
 /**
@@ -307,15 +345,7 @@ iris_use_pinned_bo(struct iris_batch *batch,
    /* Now, take a reference and add it to the validation list. */
    iris_bo_reference(bo);
 
-   if (batch->exec_count == batch->exec_array_size) {
-      batch->exec_array_size *= 2;
-      batch->exec_bos =
-         realloc(batch->exec_bos,
-                 batch->exec_array_size * sizeof(batch->exec_bos[0]));
-      batch->validation_list =
-         realloc(batch->validation_list,
-                 batch->exec_array_size * sizeof(batch->validation_list[0]));
-   }
+   ensure_exec_obj_space(batch, 1);
 
    batch->validation_list[batch->exec_count] =
       (struct drm_i915_gem_exec_object2) {
@@ -354,6 +384,7 @@ iris_batch_reset(struct iris_batch *batch)
    iris_bo_unreference(batch->bo);
    batch->primary_batch_size = 0;
    batch->contains_draw = false;
+   batch->decoder.surface_base = batch->last_surface_base_address;
 
    create_batch(batch);
    assert(batch->bo->index == 0);
@@ -435,12 +466,40 @@ iris_chain_to_new_batch(struct iris_batch *batch)
    VG(VALGRIND_CHECK_MEM_IS_DEFINED(map, batch->primary_batch_size));
 }
 
+
+static void
+add_aux_map_bos_to_batch(struct iris_batch *batch)
+{
+   void *aux_map_ctx = iris_bufmgr_get_aux_map_context(batch->screen->bufmgr);
+   if (!aux_map_ctx)
+      return;
+
+   uint32_t count = gen_aux_map_get_num_buffers(aux_map_ctx);
+   ensure_exec_obj_space(batch, count);
+   gen_aux_map_fill_bos(aux_map_ctx,
+                        (void**)&batch->exec_bos[batch->exec_count], count);
+   for (uint32_t i = 0; i < count; i++) {
+      struct iris_bo *bo = batch->exec_bos[batch->exec_count];
+      iris_bo_reference(bo);
+      batch->validation_list[batch->exec_count] =
+         (struct drm_i915_gem_exec_object2) {
+            .handle = bo->gem_handle,
+            .offset = bo->gtt_offset,
+            .flags = bo->kflags,
+         };
+      batch->aperture_space += bo->size;
+      batch->exec_count++;
+   }
+}
+
 /**
  * Terminate a batch with MI_BATCH_BUFFER_END.
  */
 static void
 iris_finish_batch(struct iris_batch *batch)
 {
+   add_aux_map_bos_to_batch(batch);
+
    /* Emit MI_BATCH_BUFFER_END to finish our batch. */
    uint32_t *map = batch->map_next;
 
@@ -551,7 +610,7 @@ submit_batch(struct iris_batch *batch)
 
    int ret = 0;
    if (!batch->screen->no_hw &&
-       drm_ioctl(batch->screen->fd, DRM_IOCTL_I915_GEM_EXECBUFFER2, &execbuf))
+       gen_ioctl(batch->screen->fd, DRM_IOCTL_I915_GEM_EXECBUFFER2, &execbuf))
       ret = -errno;
 
    for (int i = 0; i < batch->exec_count; i++) {
@@ -596,7 +655,8 @@ _iris_batch_flush(struct iris_batch *batch, const char *file, int line)
 
    iris_finish_batch(batch);
 
-   if (unlikely(INTEL_DEBUG & (DEBUG_BATCH | DEBUG_SUBMIT))) {
+   if (unlikely(INTEL_DEBUG &
+                (DEBUG_BATCH | DEBUG_SUBMIT | DEBUG_PIPE_CONTROL))) {
       int bytes_for_commands = iris_batch_bytes_used(batch);
       int second_bytes = 0;
       if (batch->bo != batch->exec_bos[0]) {
@@ -610,12 +670,15 @@ _iris_batch_flush(struct iris_batch *batch, const char *file, int line)
               100.0f * bytes_for_commands / BATCH_SZ,
               batch->exec_count,
               (float) batch->aperture_space / (1024 * 1024));
-      dump_fence_list(batch);
-      dump_validation_list(batch);
-   }
 
-   if (unlikely(INTEL_DEBUG & DEBUG_BATCH)) {
-      decode_batch(batch);
+      if (INTEL_DEBUG & (DEBUG_BATCH | DEBUG_SUBMIT)) {
+         dump_fence_list(batch);
+         dump_validation_list(batch);
+      }
+
+      if (INTEL_DEBUG & DEBUG_BATCH) {
+         decode_batch(batch);
+      }
    }
 
    int ret = submit_batch(batch);
@@ -655,10 +718,7 @@ _iris_batch_flush(struct iris_batch *batch, const char *file, int line)
       ret = 0;
    }
 
-   if (ret >= 0) {
-      //if (iris->ctx.Const.ResetStrategy == GL_LOSE_CONTEXT_ON_RESET_ARB)
-         //iris_check_for_reset(ice);
-   } else {
+   if (ret < 0) {
 #ifdef DEBUG
       const bool color = INTEL_DEBUG & DEBUG_COLOR;
       fprintf(stderr, "%siris: Failed to submit batchbuffer: %-80s%s\n",

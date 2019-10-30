@@ -103,6 +103,16 @@ anv_descriptor_data_for_type(const struct anv_physical_device *device,
         type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC))
       data |= ANV_DESCRIPTOR_ADDRESS_RANGE;
 
+   /* On Ivy Bridge and Bay Trail, we need swizzles textures in the shader
+    * Do not handle VK_DESCRIPTOR_TYPE_STORAGE_IMAGE and
+    * VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT because they already must
+    * have identity swizzle.
+    */
+   if (device->info.gen == 7 && !device->info.is_haswell &&
+       (type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+        type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER))
+      data |= ANV_DESCRIPTOR_TEXTURE_SWIZZLE;
+
    return data;
 }
 
@@ -123,7 +133,20 @@ anv_descriptor_data_size(enum anv_descriptor_data data)
    if (data & ANV_DESCRIPTOR_ADDRESS_RANGE)
       size += sizeof(struct anv_address_range_descriptor);
 
+   if (data & ANV_DESCRIPTOR_TEXTURE_SWIZZLE)
+      size += sizeof(struct anv_texture_swizzle_descriptor);
+
    return size;
+}
+
+static bool
+anv_needs_descriptor_buffer(VkDescriptorType desc_type,
+                            enum anv_descriptor_data desc_data)
+{
+   if (desc_type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT ||
+       anv_descriptor_data_size(desc_data) > 0)
+      return true;
+   return false;
 }
 
 /** Returns the size in bytes of each descriptor with the given layout */
@@ -226,6 +249,7 @@ void anv_GetDescriptorSetLayoutSupport(
       &device->instance->physicalDevice;
 
    uint32_t surface_count[MESA_SHADER_STAGES] = { 0, };
+   bool needs_descriptor_buffer = false;
 
    for (uint32_t b = 0; b < pCreateInfo->bindingCount; b++) {
       const VkDescriptorSetLayoutBinding *binding = &pCreateInfo->pBindings[b];
@@ -233,9 +257,16 @@ void anv_GetDescriptorSetLayoutSupport(
       enum anv_descriptor_data desc_data =
          anv_descriptor_data_for_type(pdevice, binding->descriptorType);
 
+      if (anv_needs_descriptor_buffer(binding->descriptorType, desc_data))
+         needs_descriptor_buffer = true;
+
       switch (binding->descriptorType) {
       case VK_DESCRIPTOR_TYPE_SAMPLER:
          /* There is no real limit on samplers */
+         break;
+
+      case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
+         /* Inline uniforms don't use a binding */
          break;
 
       case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
@@ -265,12 +296,17 @@ void anv_GetDescriptorSetLayoutSupport(
       }
    }
 
+   for (unsigned s = 0; s < MESA_SHADER_STAGES; s++) {
+      if (needs_descriptor_buffer)
+         surface_count[s] += 1;
+   }
+
    bool supported = true;
    for (unsigned s = 0; s < MESA_SHADER_STAGES; s++) {
       /* Our maximum binding table size is 240 and we need to reserve 8 for
        * render targets.
        */
-      if (surface_count[s] >= MAX_BINDING_TABLE_SIZE - MAX_RTS)
+      if (surface_count[s] > MAX_BINDING_TABLE_SIZE - MAX_RTS)
          supported = false;
    }
 
@@ -1184,6 +1220,26 @@ anv_descriptor_set_write_image_view(struct anv_device *device,
 
       anv_descriptor_set_write_image_param(desc_map, image_param);
    }
+
+   if (image_view && (bind_layout->data & ANV_DESCRIPTOR_TEXTURE_SWIZZLE)) {
+      assert(!(bind_layout->data & ANV_DESCRIPTOR_SAMPLED_IMAGE));
+      assert(image_view);
+      struct anv_texture_swizzle_descriptor desc_data[3];
+      memset(desc_data, 0, sizeof(desc_data));
+
+      for (unsigned p = 0; p < image_view->n_planes; p++) {
+         desc_data[p] = (struct anv_texture_swizzle_descriptor) {
+            .swizzle = {
+               (uint8_t)image_view->planes[p].isl.swizzle.r,
+               (uint8_t)image_view->planes[p].isl.swizzle.g,
+               (uint8_t)image_view->planes[p].isl.swizzle.b,
+               (uint8_t)image_view->planes[p].isl.swizzle.a,
+            },
+         };
+      }
+      memcpy(desc_map, desc_data,
+             MAX2(1, bind_layout->max_plane_count) * sizeof(desc_data[0]));
+   }
 }
 
 void
@@ -1414,9 +1470,6 @@ void anv_UpdateDescriptorSets(
          &dst->descriptors[dst_layout->descriptor_index];
       dst_desc += copy->dstArrayElement;
 
-      for (uint32_t j = 0; j < copy->descriptorCount; j++)
-         dst_desc[j] = src_desc[j];
-
       if (src_layout->data & ANV_DESCRIPTOR_INLINE_UNIFORM) {
          assert(src_layout->data == ANV_DESCRIPTOR_INLINE_UNIFORM);
          memcpy(dst->desc_mem.map + dst_layout->descriptor_offset +
@@ -1425,6 +1478,9 @@ void anv_UpdateDescriptorSets(
                                     copy->srcArrayElement,
                 copy->descriptorCount);
       } else {
+         for (uint32_t j = 0; j < copy->descriptorCount; j++)
+            dst_desc[j] = src_desc[j];
+
          unsigned desc_size = anv_descriptor_size(src_layout);
          if (desc_size > 0) {
             assert(desc_size == anv_descriptor_size(dst_layout));

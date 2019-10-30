@@ -50,6 +50,7 @@ enum _egl_platform_type {
    _EGL_PLATFORM_ANDROID,
    _EGL_PLATFORM_HAIKU,
    _EGL_PLATFORM_SURFACELESS,
+   _EGL_PLATFORM_DEVICE,
 
    _EGL_NUM_PLATFORMS,
    _EGL_INVALID_PLATFORM = -1
@@ -104,6 +105,7 @@ struct _egl_extensions
    EGLBoolean EXT_create_context_robustness;
    EGLBoolean EXT_image_dma_buf_import;
    EGLBoolean EXT_image_dma_buf_import_modifiers;
+   EGLBoolean EXT_image_flush_external;
    EGLBoolean EXT_pixel_format_float;
    EGLBoolean EXT_surface_CTA861_3_metadata;
    EGLBoolean EXT_surface_SMPTE2086_metadata;
@@ -149,7 +151,6 @@ struct _egl_extensions
    EGLBoolean WL_create_wayland_buffer_from_image;
 };
 
-
 struct _egl_display
 {
    /* used to link displays */
@@ -167,7 +168,8 @@ struct _egl_display
    /* options that affect how the driver initializes the display */
    struct {
       EGLBoolean ForceSoftware; /**< Use software path only */
-      void *Platform;         /**< Platform-specific options */
+      EGLAttrib *Attribs;     /**< Platform-specific options */
+      int fd; /**< plaform device specific, local fd */
    } Options;
 
    /* these fields are set by the driver during init */
@@ -202,7 +204,7 @@ _eglFiniDisplay(void);
 
 
 extern _EGLDisplay *
-_eglFindDisplay(_EGLPlatformType plat, void *plat_dpy);
+_eglFindDisplay(_EGLPlatformType plat, void *plat_dpy, const EGLAttrib *attr);
 
 
 extern void
@@ -274,6 +276,19 @@ _eglIsResourceLinked(_EGLResource *res)
    return res->IsLinked;
 }
 
+static inline size_t
+_eglNumAttribs(const EGLAttrib *attribs)
+{
+   size_t len = 0;
+
+   if (attribs) {
+      while (attribs[len] != EGL_NONE)
+         len += 2;
+      len++;
+   }
+   return len;
+}
+
 #ifdef HAVE_X11_PLATFORM
 _EGLDisplay*
 _eglGetX11Display(Display *native_display, const EGLAttrib *attrib_list);
@@ -300,6 +315,16 @@ _EGLDisplay*
 _eglGetSurfacelessDisplay(void *native_display,
                           const EGLAttrib *attrib_list);
 #endif
+
+#ifdef HAVE_ANDROID_PLATFORM
+_EGLDisplay*
+_eglGetAndroidDisplay(void *native_display,
+                         const EGLAttrib *attrib_list);
+#endif
+
+_EGLDisplay*
+_eglGetDeviceDisplay(void *native_display,
+                     const EGLAttrib *attrib_list);
 
 #ifdef __cplusplus
 }

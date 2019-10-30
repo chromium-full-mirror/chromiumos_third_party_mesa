@@ -81,7 +81,7 @@ static inline struct virgl_query *virgl_query(struct pipe_query *q)
 
 static void virgl_render_condition(struct pipe_context *ctx,
                                   struct pipe_query *q,
-                                  boolean condition,
+                                  bool condition,
                                   enum pipe_render_cond_flag mode)
 {
    struct virgl_context *vctx = virgl_context(ctx);
@@ -114,6 +114,10 @@ static struct pipe_query *virgl_create_query(struct pipe_context *ctx,
    query->result_size = (query_type == PIPE_QUERY_TIMESTAMP ||
                          query_type == PIPE_QUERY_TIME_ELAPSED) ? 8 : 4;
 
+   util_range_add(&query->buf->u.b, &query->buf->valid_buffer_range, 0,
+                  sizeof(struct virgl_host_query_state));
+   virgl_resource_dirty(query->buf, 0);
+
    virgl_encoder_create_query(vctx, query->handle,
          pipe_to_virgl_query(query_type), index, query->buf, 0);
 
@@ -132,7 +136,7 @@ static void virgl_destroy_query(struct pipe_context *ctx,
    FREE(query);
 }
 
-static boolean virgl_begin_query(struct pipe_context *ctx,
+static bool virgl_begin_query(struct pipe_context *ctx,
                              struct pipe_query *q)
 {
    struct virgl_context *vctx = virgl_context(ctx);
@@ -156,7 +160,6 @@ static bool virgl_end_query(struct pipe_context *ctx,
       return false;
 
    host_state->query_state = VIRGL_QUERY_STATE_WAIT_HOST;
-   virgl_resource_dirty(query->buf, 0);
    query->ready = false;
 
    virgl_encoder_end_query(vctx, query->handle);
@@ -168,10 +171,10 @@ static bool virgl_end_query(struct pipe_context *ctx,
    return true;
 }
 
-static boolean virgl_get_query_result(struct pipe_context *ctx,
-                                     struct pipe_query *q,
-                                     boolean wait,
-                                     union pipe_query_result *result)
+static bool virgl_get_query_result(struct pipe_context *ctx,
+                                   struct pipe_query *q,
+                                   bool wait,
+                                   union pipe_query_result *result)
 {
    struct virgl_query *query = virgl_query(q);
 
@@ -227,14 +230,14 @@ static boolean virgl_get_query_result(struct pipe_context *ctx,
 }
 
 static void
-virgl_set_active_query_state(struct pipe_context *pipe, boolean enable)
+virgl_set_active_query_state(struct pipe_context *pipe, bool enable)
 {
 }
 
 static void
 virgl_get_query_result_resource(struct pipe_context *ctx,
                                 struct pipe_query *q,
-                                boolean wait,
+                                bool wait,
                                 enum pipe_query_value_type result_type,
                                 int index,
                                 struct pipe_resource *resource,

@@ -189,6 +189,12 @@ i965_asm_binary_instruction(int opcode,
 	case BRW_OPCODE_PLN:
 		brw_PLN(p, dest, src0, src1);
 		break;
+	case BRW_OPCODE_ROL:
+		brw_ROL(p, dest, src0, src1);
+		break;
+	case BRW_OPCODE_ROR:
+		brw_ROR(p, dest, src0, src1);
+		break;
 	case BRW_OPCODE_SAD2:
 		fprintf(stderr, "Opcode BRW_OPCODE_SAD2 unhandled\n");
 		break;
@@ -720,6 +726,8 @@ binaryopcodes:
 	| MACH
 	| MUL
 	| PLN
+	| ROL
+	| ROR
 	| SAD2
 	| SADA2
 	| SUBB
@@ -954,7 +962,7 @@ sendinstruction:
 		if (brw_inst_send_sel_reg32_ex_desc(p->devinfo, brw_last_inst)) {
 			brw_inst_set_send_ex_desc_ia_subreg_nr(p->devinfo, brw_last_inst, $5.subnr);
 		} else {
-			brw_inst_set_send_ex_desc(p->devinfo, brw_last_inst, $8);
+			brw_inst_set_sends_ex_desc(p->devinfo, brw_last_inst, $8);
 		}
 
 		brw_inst_set_bits(brw_last_inst, 127, 96, $7);
@@ -980,7 +988,7 @@ sendinstruction:
 		brw_set_src1(p, brw_last_inst, $6);
 
 		brw_inst_set_send_sel_reg32_desc(p->devinfo, brw_last_inst, 1);
-		brw_inst_set_send_ex_desc(p->devinfo, brw_last_inst, $8);
+		brw_inst_set_sends_ex_desc(p->devinfo, brw_last_inst, $8);
 
 		brw_inst_set_sfid(p->devinfo, brw_last_inst, $9);
 		brw_inst_set_eot(p->devinfo, brw_last_inst, $10.end_of_thread);

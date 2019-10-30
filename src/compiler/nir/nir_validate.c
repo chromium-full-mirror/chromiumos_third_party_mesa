@@ -217,6 +217,9 @@ validate_alu_src(nir_alu_instr *instr, unsigned index, validate_state *state)
 {
    nir_alu_src *src = &instr->src[index];
 
+   if (instr->op == nir_op_mov)
+      assert(!src->abs && !src->negate);
+
    unsigned num_components = nir_src_num_components(src->src);
    for (unsigned i = 0; i < NIR_MAX_VEC_COMPONENTS; i++) {
       validate_assert(state, src->swizzle[i] < NIR_MAX_VEC_COMPONENTS);
@@ -319,6 +322,9 @@ validate_alu_dest(nir_alu_instr *instr, validate_state *state)
 {
    nir_alu_dest *dest = &instr->dest;
 
+   if (instr->op == nir_op_mov)
+      assert(!dest->saturate);
+
    unsigned dest_size = nir_dest_num_components(dest->dest);
    /*
     * validate that the instruction doesn't write to components not in the
@@ -388,7 +394,7 @@ validate_var_use(nir_variable *var, validate_state *state)
 {
    struct hash_entry *entry = _mesa_hash_table_search(state->var_defs, var);
    validate_assert(state, entry);
-   if (var->data.mode == nir_var_function_temp)
+   if (entry && var->data.mode == nir_var_function_temp)
       validate_assert(state, (nir_function_impl *) entry->data == state->impl);
 }
 
@@ -492,7 +498,17 @@ validate_deref_instr(nir_deref_instr *instr, validate_state *state)
     * conditions expect well-formed Booleans.  If you want to compare with
     * NULL, an explicit comparison operation should be used.
     */
-   validate_assert(state, list_empty(&instr->dest.ssa.if_uses));
+   validate_assert(state, list_is_empty(&instr->dest.ssa.if_uses));
+
+   /* Only certain modes can be used as sources for phi instructions. */
+   nir_foreach_use(use, &instr->dest.ssa) {
+      if (use->parent_instr->type == nir_instr_type_phi) {
+         validate_assert(state, instr->mode == nir_var_mem_ubo ||
+                                instr->mode == nir_var_mem_ssbo ||
+                                instr->mode == nir_var_mem_shared ||
+                                instr->mode == nir_var_mem_global);
+      }
+   }
 }
 
 static void
