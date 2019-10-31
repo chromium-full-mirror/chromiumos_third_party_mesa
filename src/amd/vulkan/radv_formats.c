@@ -1114,6 +1114,7 @@ static VkResult radv_get_image_format_properties(struct radv_physical_device *ph
 	uint32_t maxArraySize;
 	VkSampleCountFlags sampleCounts = VK_SAMPLE_COUNT_1_BIT;
 	const struct vk_format_description *desc = vk_format_description(info->format);
+	enum chip_class chip_class = physical_device->rad_info.chip_class;
 
 	radv_physical_device_get_format_properties(physical_device, info->format,
 						   &format_props);
@@ -1139,20 +1140,26 @@ static VkResult radv_get_image_format_properties(struct radv_physical_device *ph
 		maxExtent.height = 1;
 		maxExtent.depth = 1;
 		maxMipLevels = 15; /* log2(maxWidth) + 1 */
-		maxArraySize = 2048;
+		maxArraySize = chip_class >= GFX10 ? 8192 : 2048;
 		break;
 	case VK_IMAGE_TYPE_2D:
 		maxExtent.width = 16384;
 		maxExtent.height = 16384;
 		maxExtent.depth = 1;
 		maxMipLevels = 15; /* log2(maxWidth) + 1 */
-		maxArraySize = 2048;
+		maxArraySize = chip_class >= GFX10 ? 8192 : 2048;
 		break;
 	case VK_IMAGE_TYPE_3D:
-		maxExtent.width = 2048;
-		maxExtent.height = 2048;
-		maxExtent.depth = 2048;
-		maxMipLevels = 12; /* log2(maxWidth) + 1 */
+		if (chip_class >= GFX10) {
+			maxExtent.width = 8192;
+			maxExtent.height = 8192;
+			maxExtent.depth = 8192;
+		} else {
+			maxExtent.width = 2048;
+			maxExtent.height = 2048;
+			maxExtent.depth = 2048;
+		}
+		maxMipLevels = util_logbase2(maxExtent.width) + 1;
 		maxArraySize = 1;
 		break;
 	}
@@ -1298,6 +1305,10 @@ get_external_image_format_properties(const VkPhysicalDeviceImageFormatInfo2 *pIm
 	VkExternalMemoryFeatureFlagBits flags = 0;
 	VkExternalMemoryHandleTypeFlags export_flags = 0;
 	VkExternalMemoryHandleTypeFlags compat_flags = 0;
+
+	if (pImageFormatInfo->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT)
+		return;
+
 	switch (handleType) {
 	case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
 	case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
@@ -1374,14 +1385,9 @@ VkResult radv_GetPhysicalDeviceImageFormatProperties2(
 	 *    present and VkExternalImageFormatProperties will be ignored.
 	 */
 	if (external_info && external_info->handleType != 0) {
-		switch (external_info->handleType) {
-		case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
-		case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
-		case VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT:
-			get_external_image_format_properties(base_info, external_info->handleType,
-			                                     &external_props->externalMemoryProperties);
-			break;
-		default:
+		get_external_image_format_properties(base_info, external_info->handleType,
+		                                     &external_props->externalMemoryProperties);
+		if (!external_props->externalMemoryProperties.externalMemoryFeatures) {
 			/* From the Vulkan 1.0.97 spec:
 			 *
 			 *    If handleType is not compatible with the [parameters] specified

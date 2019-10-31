@@ -52,6 +52,8 @@
 #include "iris_resource.h"
 #include "iris_screen.h"
 #include "intel/compiler/brw_compiler.h"
+#include "intel/common/gen_gem.h"
+#include "iris_monitor.h"
 
 static void
 iris_flush_frontbuffer(struct pipe_screen *_screen,
@@ -97,7 +99,7 @@ static uint64_t
 get_aperture_size(int fd)
 {
    struct drm_i915_gem_get_aperture aperture = {};
-   drm_ioctl(fd, DRM_IOCTL_I915_GEM_GET_APERTURE, &aperture);
+   gen_ioctl(fd, DRM_IOCTL_I915_GEM_GET_APERTURE, &aperture);
    return aperture.aper_size;
 }
 
@@ -116,7 +118,9 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_SWIZZLE:
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
    case PIPE_CAP_BLEND_EQUATION_SEPARATE:
-   case PIPE_CAP_SM3:
+   case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
+   case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
+   case PIPE_CAP_VERTEX_SHADER_SATURATE:
    case PIPE_CAP_PRIMITIVE_RESTART:
    case PIPE_CAP_INDEP_BLEND_ENABLE:
    case PIPE_CAP_INDEP_BLEND_FUNC:
@@ -188,15 +192,17 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_LOAD_CONSTBUF:
    case PIPE_CAP_NIR_COMPACT_ARRAYS:
    case PIPE_CAP_DRAW_PARAMETERS:
+   case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
    case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
    case PIPE_CAP_COMPUTE_SHADER_DERIVATIVES:
    case PIPE_CAP_INVALIDATE_BUFFER:
    case PIPE_CAP_SURFACE_REINTERPRET_BLOCKS:
    case PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED:
+   case PIPE_CAP_TEXTURE_SHADOW_LOD:
+   case PIPE_CAP_SHADER_SAMPLES_IDENTICAL:
       return true;
    case PIPE_CAP_FBFETCH:
-      /* TODO: Support non-coherent FB fetch on Broadwell */
-      return devinfo->gen >= 9 ? BRW_MAX_DRAW_BUFFERS : 0;
+      return BRW_MAX_DRAW_BUFFERS;
    case PIPE_CAP_FBFETCH_COHERENT:
    case PIPE_CAP_CONSERVATIVE_RASTER_INNER_COVERAGE:
    case PIPE_CAP_POST_DEPTH_COVERAGE:
@@ -224,9 +230,8 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
       return BRW_MAX_SOL_BINDINGS;
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
-      return 460;
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
-      return 140;
+      return 460;
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
       /* 3DSTATE_CONSTANT_XS requires the start of UBOs to be 32B aligned */
       return 32;
@@ -246,7 +251,7 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
       return 16; // XXX: u_screen says 256 is the minimum value...
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
-      return true; // XXX: ?????
+      return true;
    case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
       return IRIS_MAX_TEXTURE_BUFFER_SIZE;
    case PIPE_CAP_MAX_VIEWPORTS:
@@ -411,8 +416,6 @@ iris_get_shader_param(struct pipe_screen *pscreen,
       return PIPE_SHADER_IR_NIR;
    case PIPE_SHADER_CAP_SUPPORTED_IRS:
       return 1 << PIPE_SHADER_IR_NIR;
-   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-      return 32;
    case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
       return 1;
@@ -422,6 +425,7 @@ iris_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
    case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
+   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
       return 0;
    default:
       unreachable("unknown shader param");
@@ -503,7 +507,7 @@ iris_get_timestamp(struct pipe_screen *pscreen)
 
    iris_reg_read(screen->bufmgr, TIMESTAMP | 1, &result);
 
-   result = iris_timebase_scale(&screen->devinfo, result);
+   result = gen_device_info_timebase_scale(&screen->devinfo, result);
    result &= (1ull << TIMESTAMP_BITS) - 1;
 
    return result;
@@ -517,6 +521,7 @@ iris_destroy_screen(struct pipe_screen *pscreen)
    u_transfer_helper_destroy(pscreen->transfer_helper);
    iris_bufmgr_destroy(screen->bufmgr);
    disk_cache_destroy(screen->disk_cache);
+   close(screen->fd);
    ralloc_free(screen);
 }
 
@@ -612,16 +617,14 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
       return NULL;
 
    screen->fd = fd;
-   screen->pci_id = iris_getparam_integer(screen, I915_PARAM_CHIPSET_ID);
 
-   if (!gen_get_device_info(screen->pci_id, &screen->devinfo))
+   if (!gen_get_device_info_from_fd(fd, &screen->devinfo))
       return NULL;
+   screen->pci_id = screen->devinfo.chipset_id;
+   screen->no_hw = screen->devinfo.no_hw;
 
    if (screen->devinfo.gen < 8 || screen->devinfo.is_cherryview)
       return NULL;
-
-   screen->devinfo.timestamp_frequency =
-      iris_getparam_integer(screen, I915_PARAM_CS_TIMESTAMP_FREQUENCY);
 
    screen->aperture_bytes = get_aperture_size(fd);
 
@@ -681,6 +684,8 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
    pscreen->flush_frontbuffer = iris_flush_frontbuffer;
    pscreen->get_timestamp = iris_get_timestamp;
    pscreen->query_memory_info = iris_query_memory_info;
+   pscreen->get_driver_query_group_info = iris_get_monitor_group_info;
+   pscreen->get_driver_query_info = iris_get_monitor_info;
 
    return pscreen;
 }

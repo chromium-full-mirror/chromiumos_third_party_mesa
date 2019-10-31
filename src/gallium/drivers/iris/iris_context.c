@@ -98,8 +98,10 @@ iris_lost_context_state(struct iris_batch *batch)
    }
 
    ice->state.dirty = ~0ull;
+   ice->state.current_hash_scale = 0;
    memset(ice->state.last_grid, 0, sizeof(ice->state.last_grid));
    batch->last_surface_base_address = ~0ull;
+   ice->vtbl.lost_genx_state(ice, batch);
 }
 
 static enum pipe_reset_status
@@ -268,7 +270,6 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
    iris_init_clear_functions(ctx);
    iris_init_program_functions(ctx);
    iris_init_resource_functions(ctx);
-   iris_init_query_functions(ctx);
    iris_init_flush_functions(ctx);
 
    iris_init_program_cache(ice);
@@ -290,6 +291,7 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
    genX_call(devinfo, init_state, ice);
    genX_call(devinfo, init_blorp, ice);
+   genX_call(devinfo, init_query, ice);
 
    int priority = 0;
    if (flags & PIPE_CONTEXT_HIGH_PRIORITY)

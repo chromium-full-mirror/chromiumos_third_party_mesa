@@ -63,6 +63,9 @@ static void
 iris_update_draw_info(struct iris_context *ice,
                       const struct pipe_draw_info *info)
 {
+   struct iris_screen *screen = (struct iris_screen *)ice->ctx.screen;
+   const struct brw_compiler *compiler = screen->compiler;
+
    if (ice->state.prim_mode != info->mode) {
       ice->state.prim_mode = info->mode;
       ice->state.dirty |= IRIS_DIRTY_VF_TOPOLOGY;
@@ -80,6 +83,10 @@ iris_update_draw_info(struct iris_context *ice,
        ice->state.vertices_per_patch != info->vertices_per_patch) {
       ice->state.vertices_per_patch = info->vertices_per_patch;
       ice->state.dirty |= IRIS_DIRTY_VF_TOPOLOGY;
+
+      /* 8_PATCH TCS needs this for key->input_vertices */
+      if (compiler->use_tcs_8_patch)
+         ice->state.dirty |= IRIS_DIRTY_UNCOMPILED_TCS;
 
       /* Flag constants dirty for gl_PatchVerticesIn if needed. */
       const struct shader_info *tcs_info =
@@ -150,8 +157,8 @@ iris_indirect_draw_vbo(struct iris_context *ice,
 
    if (info.indirect->indirect_draw_count &&
        ice->state.predicate == IRIS_PREDICATE_STATE_USE_BIT) {
-      /* Upload MI_PREDICATE_RESULT to GPR2.*/
-      ice->vtbl.load_register_reg64(batch, CS_GPR(2), MI_PREDICATE_RESULT);
+      /* Upload MI_PREDICATE_RESULT to GPR15.*/
+      ice->vtbl.load_register_reg64(batch, CS_GPR(15), MI_PREDICATE_RESULT);
    }
 
    uint64_t orig_dirty = ice->state.dirty;
@@ -173,7 +180,7 @@ iris_indirect_draw_vbo(struct iris_context *ice,
    if (info.indirect->indirect_draw_count &&
        ice->state.predicate == IRIS_PREDICATE_STATE_USE_BIT) {
       /* Restore MI_PREDICATE_RESULT. */
-      ice->vtbl.load_register_reg64(batch, MI_PREDICATE_RESULT, CS_GPR(2));
+      ice->vtbl.load_register_reg64(batch, MI_PREDICATE_RESULT, CS_GPR(15));
    }
 
    /* Put this back for post-draw resolves, we'll clear it again after. */
@@ -281,6 +288,8 @@ iris_update_grid_size_resource(struct iris_context *ice,
    if (!grid_needs_surface || state_ref->res)
       return;
 
+   struct iris_bo *grid_bo = iris_resource_bo(grid_ref->res);
+
    void *surf_map = NULL;
    u_upload_alloc(ice->state.surface_uploader, 0, isl_dev->ss.size,
                   isl_dev->ss.align, &state_ref->offset, &state_ref->res,
@@ -288,12 +297,11 @@ iris_update_grid_size_resource(struct iris_context *ice,
    state_ref->offset +=
       iris_bo_offset_from_base_address(iris_resource_bo(state_ref->res));
    isl_buffer_fill_state(&screen->isl_dev, surf_map,
-                         .address = grid_ref->offset +
-                            iris_resource_bo(grid_ref->res)->gtt_offset,
+                         .address = grid_ref->offset + grid_bo->gtt_offset,
                          .size_B = sizeof(grid->grid),
                          .format = ISL_FORMAT_RAW,
                          .stride_B = 1,
-                         .mocs = 4); // XXX: MOCS
+                         .mocs = ice->vtbl.mocs(grid_bo));
 
    ice->state.dirty |= IRIS_DIRTY_BINDINGS_CS;
 }

@@ -39,8 +39,7 @@ static void si_set_scissor_states(struct pipe_context *pctx,
 	for (i = 0; i < num_scissors; i++)
 		ctx->scissors[start_slot + i] = state[i];
 
-	if (!ctx->queued.named.rasterizer ||
-	    !ctx->queued.named.rasterizer->scissor_enable)
+	if (!ctx->queued.named.rasterizer->scissor_enable)
 		return;
 
 	si_mark_atom_dirty(ctx, &ctx->atoms.s.scissors);
@@ -583,7 +582,7 @@ static void si_emit_window_rectangles(struct si_context *sctx)
 }
 
 static void si_set_window_rectangles(struct pipe_context *ctx,
-				     boolean include,
+				     bool include,
 				     unsigned num_rectangles,
 				     const struct pipe_scissor_state *rects)
 {

@@ -107,8 +107,10 @@ push_block(struct block_queue *bq)
 
    if (!u_vector_init(&bi->instructions,
                       sizeof(nir_alu_instr *),
-                      8 * sizeof(nir_alu_instr *)))
+                      8 * sizeof(nir_alu_instr *))) {
+      free(bi);
       return NULL;
+   }
 
    exec_list_push_tail(&bq->blocks, &bi->node);
 
@@ -346,7 +348,7 @@ comparison_pre_block(nir_block *block, struct block_queue *bq, nir_builder *bld)
    return progress;
 }
 
-static bool
+bool
 nir_opt_comparison_pre_impl(nir_function_impl *impl)
 {
    struct block_queue bq;

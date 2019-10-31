@@ -1,17 +1,24 @@
-# Both of these were already merged with different shas
-da48cba61ef6fefb799bf96e6364b70dbf4ec712
-c812c740e60c14060eb89db66039111881a0f42f
+# warnings that are not useful
+da5ebe30105f70e3520ce3ae145793b755552569
+6b8cb087568699ca9a6e9e8b7bf49179e622b59f
 
-# The commit these fix was reverted from 19.0, but fixed for 19.1 due
-# to the number of fixes required to make that commit work
-8d8f80af3a17354508f2ec9d6559c915d5be351d
-0c0c69729b6d72a5297122856c8fe48510e90764
-0881e90c09965818b02e359474a6f7446b41d647
-b031c643491a92a5574c7a4bd659df33f2d89bb6
+# Jason doesn't want this applied to 19.2 (it's a revert)
+d15fe8ca8262d502435c4f83985ac414f950bc5f
 
-# These were manually rebased by Jason, thanks!
-8ab95b849e66f3221d80a67eef2ec6e3730901a8
-5c30fffeec1732c21d600c036f95f8cdb1bb5487
+# This doesn't apply to 19.2
+f833b4cada07b746a10ffa4d93fcd821920c3cb1
+d2db43fcad6a2ea2070ff5f7884411f4b7d3925c
+66f2aa6ccd0b226eebe2c1a46281160b0a54d522
 
-# This doesn't actually appliy to 19.0
-29179f58c6ba8099859ea25900214dbbd3814a92
+# The author requested that this not be applied to 19.2
+dcc0e23438f3e5929c2ef74d57e8207be25ecb41
+
+# This doesn't apply cleanly, and no one really cares about this file on stable
+# branches anyway.
+bcd9224728dcb8d8fe4bcddc4bd9b2c36fcfe9dd
+
+# De-nominated by its author due to alternate fix not being backported
+43041627445540afda1a05d11861935963660344
+
+# This is immediately reverted, so just don't apply
+19546108d3dd5541a189e36df4ea83b3f519e48f

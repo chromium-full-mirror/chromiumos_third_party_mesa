@@ -56,6 +56,7 @@ struct si_state_blend {
 	unsigned		blend_enable_4bit;
 	unsigned		need_src_alpha_4bit;
 	unsigned		commutative_4bit;
+	unsigned		dcc_msaa_corruption_4bit;
 	bool			alpha_to_coverage:1;
 	bool			alpha_to_one:1;
 	bool			dual_src_blend:1;
@@ -74,6 +75,7 @@ struct si_state_rasterizer {
 	unsigned		clip_plane_enable:8;
 	unsigned		half_pixel_center:1;
 	unsigned		flatshade:1;
+	unsigned		flatshade_first:1;
 	unsigned		two_side:1;
 	unsigned		multisample_enable:1;
 	unsigned		force_persample_interp:1;
@@ -228,6 +230,7 @@ union si_state_atoms {
 		struct si_atom spi_map;
 		struct si_atom scratch_state;
 		struct si_atom window_rectangles;
+		struct si_atom shader_query;
 	} s;
 	struct si_atom array[0];
 };
@@ -256,6 +259,14 @@ struct si_shader_data {
 	uint32_t		sh_base[SI_NUM_SHADERS];
 };
 
+#define SI_TRACKED_PA_CL_VS_OUT_CNTL__VS_MASK \
+	(S_02881C_USE_VTX_POINT_SIZE(1) | \
+	 S_02881C_USE_VTX_EDGE_FLAG(1) | \
+	 S_02881C_USE_VTX_RENDER_TARGET_INDX(1) | \
+	 S_02881C_USE_VTX_VIEWPORT_INDX(1) | \
+	 S_02881C_VS_OUT_MISC_VEC_ENA(1) | \
+	 S_02881C_VS_OUT_MISC_SIDE_BUS_ENA(1))
+
 /* The list of registers whose emitted values are remembered by si_context. */
 enum si_tracked_reg {
 	SI_TRACKED_DB_RENDER_CONTROL, /* 2 consecutive registers */
@@ -280,7 +291,8 @@ enum si_tracked_reg {
 	SI_TRACKED_PA_SU_PRIM_FILTER_CNTL,
 	SI_TRACKED_PA_SU_SMALL_PRIM_FILTER_CNTL,
 
-	SI_TRACKED_PA_CL_VS_OUT_CNTL,
+	SI_TRACKED_PA_CL_VS_OUT_CNTL__VS, /* set with SI_TRACKED_PA_CL_VS_OUT_CNTL__VS_MASK*/
+	SI_TRACKED_PA_CL_VS_OUT_CNTL__CL, /* set with ~SI_TRACKED_PA_CL_VS_OUT_CNTL__VS_MASK */
 	SI_TRACKED_PA_CL_CLIP_CNTL,
 
 	SI_TRACKED_PA_SC_BINNER_CNTL_0,
@@ -298,10 +310,9 @@ enum si_tracked_reg {
 
 	SI_TRACKED_VGT_ESGS_RING_ITEMSIZE,
 
-	SI_TRACKED_VGT_GSVS_RING_OFFSET_1, /* 4 consecutive registers */
+	SI_TRACKED_VGT_GSVS_RING_OFFSET_1, /* 3 consecutive registers */
 	SI_TRACKED_VGT_GSVS_RING_OFFSET_2,
 	SI_TRACKED_VGT_GSVS_RING_OFFSET_3,
-	SI_TRACKED_VGT_GS_OUT_PRIM_TYPE,
 
 	SI_TRACKED_VGT_GSVS_RING_ITEMSIZE,
 	SI_TRACKED_VGT_GS_MAX_VERT_OUT,
@@ -318,8 +329,13 @@ enum si_tracked_reg {
 	SI_TRACKED_VGT_PRIMITIVEID_EN,
 	SI_TRACKED_VGT_REUSE_OFF,
 	SI_TRACKED_SPI_VS_OUT_CONFIG,
-	SI_TRACKED_SPI_SHADER_POS_FORMAT,
 	SI_TRACKED_PA_CL_VTE_CNTL,
+	SI_TRACKED_PA_CL_NGG_CNTL,
+	SI_TRACKED_GE_MAX_OUTPUT_PER_SUBGROUP,
+	SI_TRACKED_GE_NGG_SUBGRP_CNTL,
+
+	SI_TRACKED_SPI_SHADER_IDX_FORMAT, /* 2 consecutive registers */
+	SI_TRACKED_SPI_SHADER_POS_FORMAT,
 
 	SI_TRACKED_SPI_PS_INPUT_ENA, /* 2 consecutive registers */
 	SI_TRACKED_SPI_PS_INPUT_ADDR,
@@ -366,6 +382,8 @@ enum {
 	SI_PS_IMAGE_COLORBUF0_HI,
 	SI_PS_IMAGE_COLORBUF0_FMASK,
 	SI_PS_IMAGE_COLORBUF0_FMASK_HI,
+
+	GFX10_GS_QUERY_BUF,
 
 	SI_NUM_RW_BUFFERS,
 };
@@ -536,18 +554,6 @@ si_make_buffer_descriptor(struct si_screen *screen, struct si_resource *buf,
 			  enum pipe_format format,
 			  unsigned offset, unsigned size,
 			  uint32_t *state);
-void
-si_make_texture_descriptor(struct si_screen *screen,
-			   struct si_texture *tex,
-			   bool sampler,
-			   enum pipe_texture_target target,
-			   enum pipe_format pipe_format,
-			   const unsigned char state_swizzle[4],
-			   unsigned first_level, unsigned last_level,
-			   unsigned first_layer, unsigned last_layer,
-			   unsigned width, unsigned height, unsigned depth,
-			   uint32_t *state,
-			   uint32_t *fmask_state);
 struct pipe_sampler_view *
 si_create_sampler_view_custom(struct pipe_context *ctx,
 			      struct pipe_resource *texture,
@@ -557,6 +563,7 @@ si_create_sampler_view_custom(struct pipe_context *ctx,
 void si_update_fb_dirtiness_after_rendering(struct si_context *sctx);
 void si_update_ps_iter_samples(struct si_context *sctx);
 void si_save_qbo_state(struct si_context *sctx, struct si_qbo_state *st);
+void si_restore_qbo_state(struct si_context *sctx, struct si_qbo_state *st);
 void si_set_occlusion_query_state(struct si_context *sctx,
 				  bool old_perfect_enable);
 
@@ -575,7 +582,7 @@ si_compute_fast_udiv_info32(uint32_t D, unsigned num_bits);
 void si_emit_dpbb_state(struct si_context *sctx);
 
 /* si_state_shaders.c */
-void *si_get_ir_binary(struct si_shader_selector *sel);
+void *si_get_ir_binary(struct si_shader_selector *sel, bool ngg, bool es);
 bool si_shader_cache_load_shader(struct si_screen *sscreen, void *ir_binary,
 				 struct si_shader *shader);
 bool si_shader_cache_insert_shader(struct si_screen *sscreen, void *ir_binary,
@@ -602,11 +609,14 @@ void si_shader_selector_key_vs(struct si_context *sctx,
 			       struct si_shader_selector *vs,
 			       struct si_shader_key *key,
 			       struct si_vs_prolog_bits *prolog_key);
+unsigned si_get_input_prim(const struct si_shader_selector *gs);
+bool si_update_ngg(struct si_context *sctx);
 
 /* si_state_draw.c */
 void si_emit_surface_sync(struct si_context *sctx, struct radeon_cmdbuf *cs,
 			  unsigned cp_coher_cntl);
 void si_prim_discard_signal_next_compute_ib_start(struct si_context *sctx);
+void gfx10_emit_cache_flush(struct si_context *sctx);
 void si_emit_cache_flush(struct si_context *sctx);
 void si_trace_emit(struct si_context *sctx);
 void si_init_draw_functions(struct si_context *sctx);

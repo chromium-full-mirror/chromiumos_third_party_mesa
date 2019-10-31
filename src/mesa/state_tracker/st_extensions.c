@@ -444,6 +444,8 @@ void st_init_limits(struct pipe_screen *screen,
 
    c->GLSLFragCoordIsSysVal =
       screen->get_param(screen, PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL);
+   c->GLSLPointCoordIsSysVal =
+      screen->get_param(screen, PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL);
    c->GLSLFrontFacingIsSysVal =
       screen->get_param(screen, PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL);
 
@@ -723,9 +725,10 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(ARB_shader_draw_parameters),       PIPE_CAP_DRAW_PARAMETERS                  },
       { o(ARB_shader_group_vote),            PIPE_CAP_TGSI_VOTE                        },
       { o(EXT_shader_image_load_formatted),  PIPE_CAP_IMAGE_LOAD_FORMATTED             },
+      { o(EXT_shader_image_load_store),      PIPE_CAP_TGSI_ATOMINC_WRAP                },
       { o(ARB_shader_stencil_export),        PIPE_CAP_SHADER_STENCIL_EXPORT            },
       { o(ARB_shader_texture_image_samples), PIPE_CAP_TGSI_TXQS                        },
-      { o(ARB_shader_texture_lod),           PIPE_CAP_SM3                              },
+      { o(ARB_shader_texture_lod),           PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD      },
       { o(ARB_sparse_buffer),                PIPE_CAP_SPARSE_BUFFER_PAGE_SIZE          },
       { o(ARB_texture_buffer_object),        PIPE_CAP_TEXTURE_BUFFER_OBJECTS           },
       { o(ARB_texture_cube_map_array),       PIPE_CAP_CUBE_MAP_ARRAY                   },
@@ -750,9 +753,11 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(EXT_multisampled_render_to_texture), PIPE_CAP_SURFACE_SAMPLE_COUNT           },
       { o(EXT_semaphore),                    PIPE_CAP_FENCE_SIGNAL                     },
       { o(EXT_semaphore_fd),                 PIPE_CAP_FENCE_SIGNAL                     },
+      { o(EXT_shader_samples_identical),     PIPE_CAP_SHADER_SAMPLES_IDENTICAL         },
       { o(EXT_texture_array),                PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS         },
       { o(EXT_texture_filter_anisotropic),   PIPE_CAP_ANISOTROPIC_FILTER               },
       { o(EXT_texture_mirror_clamp),         PIPE_CAP_TEXTURE_MIRROR_CLAMP             },
+      { o(EXT_texture_shadow_lod),           PIPE_CAP_TEXTURE_SHADOW_LOD               },
       { o(EXT_texture_swizzle),              PIPE_CAP_TEXTURE_SWIZZLE                  },
       { o(EXT_transform_feedback),           PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS        },
       { o(EXT_window_rectangles),            PIPE_CAP_MAX_WINDOW_RECTANGLES            },
@@ -776,7 +781,7 @@ void st_init_extensions(struct pipe_screen *screen,
       /* GL_NV_point_sprite is not supported by gallium because we don't
        * support the GL_POINT_SPRITE_R_MODE_NV option. */
 
-      { o(OES_standard_derivatives),         PIPE_CAP_SM3                              },
+      { o(OES_standard_derivatives),         PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES      },
       { o(OES_texture_float_linear),         PIPE_CAP_TEXTURE_FLOAT_LINEAR             },
       { o(OES_texture_half_float_linear),    PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR        },
       { o(OES_texture_view),                 PIPE_CAP_SAMPLER_VIEW_TARGET              },
@@ -1147,6 +1152,8 @@ void st_init_extensions(struct pipe_screen *screen,
    }
 
    consts->GLSLZeroInit = options->glsl_zero_init;
+
+   consts->VendorOverride = options->force_gl_vendor;
 
    consts->UniformBooleanTrue = consts->NativeIntegers ? ~0U : fui(1.0f);
 

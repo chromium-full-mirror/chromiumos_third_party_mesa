@@ -51,7 +51,9 @@ static const nir_shader_compiler_options vs_nir_options = {
    .lower_ftrunc = true,
    /* could be implemented by clamp */
    .lower_fsat = true,
-   .lower_bitshift = true,
+   .lower_bitops = true,
+   .lower_rotate = true,
+   .lower_sincos = true,
 };
 
 static const nir_shader_compiler_options fs_nir_options = {
@@ -63,6 +65,14 @@ static const nir_shader_compiler_options fs_nir_options = {
    .lower_flrp32 = true,
    .lower_flrp64 = true,
    .lower_fsign = true,
+   .lower_rotate = true,
+   .lower_fdot = true,
+   .lower_bitops = true,
+   .lower_vector_cmp = true,
+};
+
+static const struct nir_lower_tex_options tex_options = {
+   .lower_txp = ~0u,
 };
 
 const void *
@@ -84,19 +94,17 @@ type_size(const struct glsl_type *type, bool bindless)
    return glsl_count_attribute_slots(type, false);
 }
 
-static void
+void
 lima_program_optimize_vs_nir(struct nir_shader *s)
 {
    bool progress;
 
    NIR_PASS_V(s, nir_lower_viewport_transform);
    NIR_PASS_V(s, nir_lower_io, nir_var_all, type_size, 0);
-   NIR_PASS_V(s, nir_lower_regs_to_ssa);
    NIR_PASS_V(s, nir_lower_load_const_to_scalar);
    NIR_PASS_V(s, lima_nir_lower_uniform_to_scalar);
    NIR_PASS_V(s, nir_lower_io_to_scalar,
               nir_var_shader_in|nir_var_shader_out);
-   NIR_PASS_V(s, nir_lower_sincos);
 
    do {
       progress = false;
@@ -121,27 +129,46 @@ lima_program_optimize_vs_nir(struct nir_shader *s)
 
    NIR_PASS_V(s, nir_lower_int_to_float);
    NIR_PASS_V(s, nir_lower_bool_to_float);
+
+   /* Some ops must be lowered after being converted from int ops,
+    * so re-run nir_opt_algebraic after int lowering. */
+   do {
+      progress = false;
+      NIR_PASS(progress, s, nir_opt_algebraic);
+   } while (progress);
+
    NIR_PASS_V(s, nir_copy_prop);
+   NIR_PASS_V(s, nir_opt_dce);
    NIR_PASS_V(s, nir_lower_locals_to_regs);
    NIR_PASS_V(s, nir_convert_from_ssa, true);
    NIR_PASS_V(s, nir_remove_dead_variables, nir_var_function_temp);
    nir_sweep(s);
 }
 
-static void
+void
 lima_program_optimize_fs_nir(struct nir_shader *s)
 {
+   BITSET_DECLARE(alu_lower, nir_num_opcodes) = {0};
    bool progress;
+
+   BITSET_SET(alu_lower, nir_op_frcp);
+   BITSET_SET(alu_lower, nir_op_frsq);
+   BITSET_SET(alu_lower, nir_op_flog2);
+   BITSET_SET(alu_lower, nir_op_fexp2);
+   BITSET_SET(alu_lower, nir_op_fsqrt);
+   BITSET_SET(alu_lower, nir_op_fsin);
+   BITSET_SET(alu_lower, nir_op_fcos);
 
    NIR_PASS_V(s, nir_lower_fragcoord_wtrans);
    NIR_PASS_V(s, nir_lower_io, nir_var_all, type_size, 0);
    NIR_PASS_V(s, nir_lower_regs_to_ssa);
+   NIR_PASS_V(s, nir_lower_tex, &tex_options);
 
    do {
       progress = false;
 
       NIR_PASS_V(s, nir_lower_vars_to_ssa);
-      //NIR_PASS(progress, s, nir_lower_alu_to_scalar, NULL);
+      NIR_PASS(progress, s, nir_lower_alu_to_scalar, alu_lower);
       NIR_PASS(progress, s, nir_lower_phis_to_scalar);
       NIR_PASS(progress, s, nir_copy_prop);
       NIR_PASS(progress, s, nir_opt_remove_phis);
@@ -160,6 +187,16 @@ lima_program_optimize_fs_nir(struct nir_shader *s)
 
    NIR_PASS_V(s, nir_lower_int_to_float);
    NIR_PASS_V(s, nir_lower_bool_to_float);
+
+   /* Some ops must be lowered after being converted from int ops,
+    * so re-run nir_opt_algebraic after int lowering. */
+   do {
+      progress = false;
+      NIR_PASS(progress, s, nir_opt_algebraic);
+   } while (progress);
+
+   /* Must be run after optimization loop */
+   NIR_PASS_V(s, lima_nir_scale_trig);
 
    /* Lower modifiers */
    NIR_PASS_V(s, nir_lower_to_source_mods, nir_lower_all_source_mods);
@@ -180,6 +217,7 @@ static void *
 lima_create_fs_state(struct pipe_context *pctx,
                      const struct pipe_shader_state *cso)
 {
+   struct lima_context *ctx = lima_context(pctx);
    struct lima_screen *screen = lima_screen(pctx->screen);
    struct lima_fs_shader_state *so = rzalloc(NULL, struct lima_fs_shader_state);
 
@@ -200,7 +238,7 @@ lima_create_fs_state(struct pipe_context *pctx,
    if (lima_debug & LIMA_DEBUG_PP)
       nir_print_shader(nir, stdout);
 
-   if (!ppir_compile_nir(so, nir, screen->pp_ra)) {
+   if (!ppir_compile_nir(so, nir, screen->pp_ra, &ctx->debug)) {
       ralloc_free(so);
       return NULL;
    }
@@ -272,6 +310,7 @@ static void *
 lima_create_vs_state(struct pipe_context *pctx,
                      const struct pipe_shader_state *cso)
 {
+   struct lima_context *ctx = lima_context(pctx);
    struct lima_vs_shader_state *so = rzalloc(NULL, struct lima_vs_shader_state);
 
    if (!so)
@@ -291,7 +330,7 @@ lima_create_vs_state(struct pipe_context *pctx,
    if (lima_debug & LIMA_DEBUG_GP)
       nir_print_shader(nir, stdout);
 
-   if (!gpir_compile_nir(so, nir)) {
+   if (!gpir_compile_nir(so, nir, &ctx->debug)) {
       ralloc_free(so);
       return NULL;
    }

@@ -261,6 +261,8 @@ enum pipe_transfer_usage
     * E.g. the state tracker could have a simpler path which maps textures and
     * does read/modify/write cycles on them directly, and a more complicated
     * path which uses minimal read and write transfers.
+    *
+    * This flag supresses implicit "DISCARD" for buffer_subdata.
     */
    PIPE_TRANSFER_MAP_DIRECTLY = (1 << 2),
 
@@ -683,6 +685,7 @@ enum pipe_conservative_raster_mode
  */
 enum pipe_cap
 {
+   PIPE_CAP_GRAPHICS,
    PIPE_CAP_NPOT_TEXTURES,
    PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS,
    PIPE_CAP_ANISOTROPIC_FILTER,
@@ -696,7 +699,6 @@ enum pipe_cap
    PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS,
    PIPE_CAP_TEXTURE_MIRROR_CLAMP,
    PIPE_CAP_BLEND_EQUATION_SEPARATE,
-   PIPE_CAP_SM3,
    PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS,
    PIPE_CAP_PRIMITIVE_RESTART,
    /** blend enables and write masks per rendertarget */
@@ -797,6 +799,7 @@ enum pipe_cap
    PIPE_CAP_MULTI_DRAW_INDIRECT,
    PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS,
    PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL,
+   PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL,
    PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL,
    PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT,
    PIPE_CAP_INVALIDATE_BUFFER,
@@ -882,11 +885,18 @@ enum pipe_cap
    PIPE_CAP_IMAGE_LOAD_FORMATTED,
    PIPE_CAP_MAX_FRAMES_IN_FLIGHT,
    PIPE_CAP_DMABUF,
-   PIPE_CAP_PREFER_COMPUTE_BLIT_FOR_MULTIMEDIA,
+   PIPE_CAP_PREFER_COMPUTE_FOR_MULTIMEDIA,
    PIPE_CAP_FRAGMENT_SHADER_INTERLOCK,
    PIPE_CAP_FBFETCH_COHERENT,
    PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED,
    PIPE_CAP_ATOMIC_FLOAT_MINMAX,
+   PIPE_CAP_TGSI_DIV,
+   PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD,
+   PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES,
+   PIPE_CAP_VERTEX_SHADER_SATURATE,
+   PIPE_CAP_TEXTURE_SHADOW_LOD,
+   PIPE_CAP_SHADER_SAMPLES_IDENTICAL,
+   PIPE_CAP_TGSI_ATOMINC_WRAP,
 };
 
 /**
@@ -1017,6 +1027,21 @@ enum pipe_compute_cap
 };
 
 /**
+ * Resource parameters. They can be queried using
+ * pipe_screen::get_resource_param.
+ */
+enum pipe_resource_param
+{
+   PIPE_RESOURCE_PARAM_NPLANES,
+   PIPE_RESOURCE_PARAM_STRIDE,
+   PIPE_RESOURCE_PARAM_OFFSET,
+   PIPE_RESOURCE_PARAM_MODIFIER,
+   PIPE_RESOURCE_PARAM_HANDLE_TYPE_SHARED,
+   PIPE_RESOURCE_PARAM_HANDLE_TYPE_KMS,
+   PIPE_RESOURCE_PARAM_HANDLE_TYPE_FD,
+};
+
+/**
  * Types of parameters for pipe_context::set_context_param.
  */
 enum pipe_context_param
@@ -1049,7 +1074,7 @@ struct pipe_query_data_so_statistics
 struct pipe_query_data_timestamp_disjoint
 {
    uint64_t frequency;
-   boolean  disjoint;
+   bool     disjoint;
 };
 
 /**
@@ -1090,7 +1115,7 @@ union pipe_query_result
    /* PIPE_QUERY_SO_OVERFLOW_PREDICATE */
    /* PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE */
    /* PIPE_QUERY_GPU_FINISHED */
-   boolean b;
+   bool b;
 
    /* PIPE_QUERY_OCCLUSION_COUNTER */
    /* PIPE_QUERY_TIMESTAMP */

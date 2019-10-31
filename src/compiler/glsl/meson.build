@@ -79,6 +79,7 @@ files_libglsl = files(
   'gl_nir_lower_samplers.c',
   'gl_nir_lower_samplers_as_deref.c',
   'gl_nir_link_atomics.c',
+  'gl_nir_link_uniform_blocks.c',
   'gl_nir_link_uniform_initializers.c',
   'gl_nir_link_uniforms.c',
   'gl_nir_link_xfb.c',
@@ -239,8 +240,8 @@ libglsl_standalone = static_library(
   c_args : [c_vis_args, c_msvc_compat_args, no_override_init_args],
   cpp_args : [cpp_vis_args, cpp_msvc_compat_args],
   include_directories : [inc_common],
-  link_with : [libglsl, libglsl_util, libmesa_util],
-  dependencies : [dep_thread],
+  link_with : [libglsl, libglsl_util],
+  dependencies : idep_mesautil,
   build_by_default : false,
 )
 

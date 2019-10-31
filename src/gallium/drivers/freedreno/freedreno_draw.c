@@ -93,7 +93,7 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
 		return;
 	}
 
-	fd_fence_ref(pctx->screen, &ctx->last_fence, NULL);
+	fd_fence_ref(&ctx->last_fence, NULL);
 
 	/* Upload a user index buffer. */
 	struct pipe_resource *indexbuf = NULL;
@@ -311,7 +311,7 @@ fd_clear(struct pipe_context *pctx, unsigned buffers,
 	if (!fd_render_condition_check(pctx))
 		return;
 
-	fd_fence_ref(pctx->screen, &ctx->last_fence, NULL);
+	fd_fence_ref(&ctx->last_fence, NULL);
 
 	if (ctx->in_blit) {
 		fd_batch_reset(batch);
@@ -457,7 +457,7 @@ fd_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
 	batch->needs_flush = true;
 	ctx->launch_grid(ctx, info);
 
-	fd_batch_flush(batch, false, false);
+	fd_batch_flush(batch, false);
 
 	fd_batch_reference(&ctx->batch, save_batch);
 	fd_context_all_dirty(ctx);

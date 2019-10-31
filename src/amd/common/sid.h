@@ -181,6 +181,7 @@
 /* fix CP DMA before uncommenting: */
 /*#define PKT3_EVENT_WRITE_EOS                   0x48*/ /* not on GFX9 */
 #define PKT3_RELEASE_MEM                       0x49 /* GFX9+ [any ring] or GFX8 [compute ring only] */
+#define PKT3_CONTEXT_REG_RMW                   0x51 /* older firmware versions on older chips don't have this */
 #define PKT3_ONE_REG_WRITE                     0x57 /* not on CIK */
 #define PKT3_ACQUIRE_MEM                       0x58 /* new for CIK */
 #define PKT3_REWIND                            0x59 /* VI+ [any ring] or CIK [compute ring only] */
@@ -196,6 +197,7 @@
 #define PKT3_INCREMENT_CE_COUNTER              0x84
 #define PKT3_INCREMENT_DE_COUNTER              0x85
 #define PKT3_WAIT_ON_CE_COUNTER                0x86
+#define PKT3_SET_SH_REG_INDEX                  0x9B
 #define PKT3_LOAD_CONTEXT_REG                  0x9F /* new for VI */
 
 #define PKT_TYPE_S(x)                   (((unsigned)(x) & 0x3) << 30)

@@ -29,6 +29,7 @@
 
 #include <stdio.h>
 
+#include "c11/threads.h"
 #include "compiler/shader_enums.h"
 #include "compiler/nir/nir.h"
 #include "util/bitscan.h"
@@ -110,12 +111,8 @@ enum ir3_driver_param {
  * Note UBO size in bytes should be aligned to vec4
  */
 struct ir3_const_state {
-	/* number of uniforms (in vec4), not including built-in compiler
-	 * constants, etc.
-	 */
-	unsigned num_uniforms;
-
 	unsigned num_ubos;
+	unsigned num_driver_params;   /* scalar */
 
 	struct {
 		/* user const start at zero */
@@ -394,7 +391,10 @@ struct ir3_shader_variant {
 	 * which is pointed to by so->binning:
 	 */
 	bool binning_pass;
-	struct ir3_shader_variant *binning;
+//	union {
+		struct ir3_shader_variant *binning;
+		struct ir3_shader_variant *nonbinning;
+//	};
 
 	struct ir3_info info;
 	struct ir3 *ir;
@@ -549,6 +549,7 @@ struct ir3_shader {
 	struct ir3_stream_output_info stream_output;
 
 	struct ir3_shader_variant *variants;
+	mtx_t variants_lock;
 };
 
 void * ir3_shader_assemble(struct ir3_shader_variant *v, uint32_t gpu_id);

@@ -55,7 +55,6 @@ build_resolve_fragment_shader(struct radv_device *dev, bool is_integer, int samp
 {
 	nir_builder b;
 	char name[64];
-	const struct glsl_type *vec2 = glsl_vector_type(GLSL_TYPE_FLOAT, 2);
 	const struct glsl_type *vec4 = glsl_vec4_type();
 	const struct glsl_type *sampler_type = glsl_sampler_type(GLSL_SAMPLER_DIM_MS,
 								 false,
@@ -71,14 +70,11 @@ build_resolve_fragment_shader(struct radv_device *dev, bool is_integer, int samp
 	input_img->data.descriptor_set = 0;
 	input_img->data.binding = 0;
 
-	nir_variable *fs_pos_in = nir_variable_create(b.shader, nir_var_shader_in, vec2, "fs_pos_in");
-	fs_pos_in->data.location = VARYING_SLOT_POS;
-
 	nir_variable *color_out = nir_variable_create(b.shader, nir_var_shader_out,
 						      vec4, "f_color");
 	color_out->data.location = FRAG_RESULT_DATA0;
 
-	nir_ssa_def *pos_in = nir_load_var(&b, fs_pos_in);
+	nir_ssa_def *pos_in = nir_channels(&b, nir_load_frag_coord(&b), 0x3);
 	nir_intrinsic_instr *src_offset = nir_intrinsic_instr_create(b.shader, nir_intrinsic_load_push_constant);
 	nir_intrinsic_set_base(src_offset, 0);
 	nir_intrinsic_set_range(src_offset, 8);
@@ -345,7 +341,6 @@ build_depth_stencil_resolve_fragment_shader(struct radv_device *dev, int samples
 {
 	nir_builder b;
 	char name[64];
-	const struct glsl_type *vec2 = glsl_vector_type(GLSL_TYPE_FLOAT, 2);
 	const struct glsl_type *vec4 = glsl_vec4_type();
 	const struct glsl_type *sampler_type = glsl_sampler_type(GLSL_SAMPLER_DIM_2D,
 								 false,
@@ -364,16 +359,13 @@ build_depth_stencil_resolve_fragment_shader(struct radv_device *dev, int samples
 	input_img->data.descriptor_set = 0;
 	input_img->data.binding = 0;
 
-	nir_variable *fs_pos_in = nir_variable_create(b.shader, nir_var_shader_in, vec2, "fs_pos_in");
-	fs_pos_in->data.location = VARYING_SLOT_POS;
-
 	nir_variable *fs_out = nir_variable_create(b.shader,
 						   nir_var_shader_out, vec4,
 						   "f_out");
 	fs_out->data.location =
 		index == DEPTH_RESOLVE ? FRAG_RESULT_DEPTH : FRAG_RESULT_STENCIL;
 
-	nir_ssa_def *pos_in = nir_load_var(&b, fs_pos_in);
+	nir_ssa_def *pos_in = nir_channels(&b, nir_load_frag_coord(&b), 0x3);
 
 	nir_intrinsic_instr *src_offset = nir_intrinsic_instr_create(b.shader, nir_intrinsic_load_push_constant);
 	nir_intrinsic_set_base(src_offset, 0);
@@ -543,7 +535,7 @@ create_depth_stencil_resolve_pipeline(struct radv_device *device,
 							.pAttachments = &(VkAttachmentDescription) {
 								.format = src_format,
 								.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-								.storeOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+								.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
 								.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
 								.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE,
 								.initialLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -1058,7 +1050,7 @@ void radv_meta_resolve_fragment_image(struct radv_cmd_buffer *cmd_buffer,
 							     .baseArrayLayer = src_base_layer + layer,
 							     .layerCount = 1,
 						     },
-					     });
+					     }, NULL);
 
 			struct radv_image_view dest_iview;
 			radv_image_view_init(&dest_iview, cmd_buffer->device,
@@ -1074,7 +1066,7 @@ void radv_meta_resolve_fragment_image(struct radv_cmd_buffer *cmd_buffer,
 							     .baseArrayLayer = dest_base_layer + layer,
 							     .layerCount = 1,
 						     },
-					     });
+					     }, NULL);
 
 
 			VkFramebuffer fb;
@@ -1154,8 +1146,8 @@ radv_cmd_buffer_resolve_subpass_fs(struct radv_cmd_buffer *cmd_buffer)
 		if (dest_att.attachment == VK_ATTACHMENT_UNUSED)
 			continue;
 
-		struct radv_image_view *dest_iview = cmd_buffer->state.framebuffer->attachments[dest_att.attachment].attachment;
-		struct radv_image_view *src_iview = cmd_buffer->state.framebuffer->attachments[src_att.attachment].attachment;
+		struct radv_image_view *dest_iview = cmd_buffer->state.attachments[dest_att.attachment].iview;
+		struct radv_image_view *src_iview = cmd_buffer->state.attachments[src_att.attachment].iview;
 
 		struct radv_subpass resolve_subpass = {
 			.color_count = 1,
@@ -1209,10 +1201,10 @@ radv_depth_stencil_resolve_subpass_fs(struct radv_cmd_buffer *cmd_buffer,
 	struct radv_subpass_attachment dst_att = *subpass->ds_resolve_attachment;
 
 	struct radv_image_view *src_iview =
-		cmd_buffer->state.framebuffer->attachments[src_att.attachment].attachment;
+		cmd_buffer->state.attachments[src_att.attachment].iview;
 	struct radv_image *src_image = src_iview->image;
 	struct radv_image_view *dst_iview =
-		cmd_buffer->state.framebuffer->attachments[dst_att.attachment].attachment;
+		cmd_buffer->state.attachments[dst_att.attachment].iview;
 
 	struct radv_subpass resolve_subpass = {
 		.color_count = 0,
@@ -1236,7 +1228,7 @@ radv_depth_stencil_resolve_subpass_fs(struct radv_cmd_buffer *cmd_buffer,
 					.baseArrayLayer = 0,
 					.layerCount = 1,
 				},
-			      });
+			      }, NULL);
 
 	emit_depth_stencil_resolve(cmd_buffer, &tsrc_iview, dst_iview,
 				   &(VkOffset2D) { 0, 0 },

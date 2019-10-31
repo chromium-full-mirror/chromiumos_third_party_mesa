@@ -74,7 +74,7 @@ KSP(UNUSED struct brw_context *brw, uint32_t offset)
 #endif
 
 #if GEN_GEN >= 7
-MAYBE_UNUSED static void
+static void
 emit_lrm(struct brw_context *brw, uint32_t reg, struct brw_address addr)
 {
    brw_batch_emit(brw, GENX(MI_LOAD_REGISTER_MEM), lrm) {
@@ -84,22 +84,13 @@ emit_lrm(struct brw_context *brw, uint32_t reg, struct brw_address addr)
 }
 #endif
 
-MAYBE_UNUSED static void
+#if GEN_GEN == 7
+static void
 emit_lri(struct brw_context *brw, uint32_t reg, uint32_t imm)
 {
    brw_batch_emit(brw, GENX(MI_LOAD_REGISTER_IMM), lri) {
       lri.RegisterOffset   = reg;
       lri.DataDWord        = imm;
-   }
-}
-
-#if GEN_IS_HASWELL || GEN_GEN >= 8
-MAYBE_UNUSED static void
-emit_lrr(struct brw_context *brw, uint32_t dst, uint32_t src)
-{
-   brw_batch_emit(brw, GENX(MI_LOAD_REGISTER_REG), lrr) {
-      lrr.SourceRegisterAddress        = src;
-      lrr.DestinationRegisterAddress   = dst;
    }
 }
 #endif
@@ -237,9 +228,9 @@ genX(emit_vertex_buffer_state)(struct brw_context *brw,
                                unsigned buffer_nr,
                                struct brw_bo *bo,
                                unsigned start_offset,
-                               MAYBE_UNUSED unsigned end_offset,
+                               UNUSED unsigned end_offset,
                                unsigned stride,
-                               MAYBE_UNUSED unsigned step_rate)
+                               UNUSED unsigned step_rate)
 {
    struct GENX(VERTEX_BUFFER_STATE) buf_state = {
       .VertexBufferIndex = buffer_nr,
@@ -1660,7 +1651,7 @@ genX(upload_sf)(struct brw_context *brw)
       if (ctx->Line.SmoothFlag) {
          sf.LineEndCapAntialiasingRegionWidth = _10pixels;
 #if GEN_GEN <= 7
-         sf.AntiAliasingEnable = true;
+         sf.AntialiasingEnable = true;
 #endif
       }
 
@@ -1943,8 +1934,7 @@ genX(upload_wm)(struct brw_context *brw)
       if (wm_prog_data->base.use_alt_mode)
          wm.FloatingPointMode = FLOATING_POINT_MODE_Alternate;
 
-      /* WA_1606682166 */
-      wm.SamplerCount = (GEN_GEN == 5 || GEN_GEN == 11) ?
+      wm.SamplerCount = GEN_GEN == 5 ?
          0 : DIV_ROUND_UP(stage_state->sampler_count, 4);
 
       wm.BindingTableEntryCount =
@@ -4367,7 +4357,9 @@ genX(upload_cs_state)(struct brw_context *brw)
    const struct GENX(INTERFACE_DESCRIPTOR_DATA) idd = {
       .KernelStartPointer = brw->cs.base.prog_offset,
       .SamplerStatePointer = stage_state->sampler_offset,
-      .SamplerCount = DIV_ROUND_UP(CLAMP(stage_state->sampler_count, 0, 16), 4),
+      /* WA_1606682166 */
+      .SamplerCount = GEN_GEN == 11 ? 0 :
+                      DIV_ROUND_UP(CLAMP(stage_state->sampler_count, 0, 16), 4),
       .BindingTablePointer = stage_state->bind_bo_offset,
       .ConstantURBEntryReadLength = cs_prog_data->push.per_thread.regs,
       .NumberofThreadsinGPGPUThreadGroup = cs_prog_data->threads,
@@ -4899,8 +4891,8 @@ genX(emit_mi_report_perf_count)(struct brw_context *brw,
  * Emit a 3DSTATE_SAMPLER_STATE_POINTERS_{VS,HS,GS,DS,PS} packet.
  */
 static void
-genX(emit_sampler_state_pointers_xs)(MAYBE_UNUSED struct brw_context *brw,
-                                     MAYBE_UNUSED struct brw_stage_state *stage_state)
+genX(emit_sampler_state_pointers_xs)(UNUSED struct brw_context *brw,
+                                     UNUSED struct brw_stage_state *stage_state)
 {
 #if GEN_GEN >= 7
    static const uint16_t packet_headers[] = {
@@ -4940,7 +4932,7 @@ has_component(mesa_format format, int i)
 static void
 genX(upload_default_color)(struct brw_context *brw,
                            const struct gl_sampler_object *sampler,
-                           MAYBE_UNUSED mesa_format format, GLenum base_format,
+                           mesa_format format, GLenum base_format,
                            bool is_integer_format, bool is_stencil_sampling,
                            uint32_t *sdc_offset)
 {
@@ -5116,7 +5108,7 @@ genX(upload_default_color)(struct brw_context *brw,
 }
 
 static uint32_t
-translate_wrap_mode(GLenum wrap, MAYBE_UNUSED bool using_nearest)
+translate_wrap_mode(GLenum wrap, UNUSED bool using_nearest)
 {
    switch (wrap) {
    case GL_REPEAT:

@@ -24,6 +24,8 @@
 
 #include "util/ralloc.h"
 #include "compiler/nir/nir.h"
+#include "pipe/p_state.h"
+
 
 #include "gpir.h"
 #include "lima_context.h"
@@ -114,11 +116,12 @@ static int nir_to_gpir_opcodes[nir_num_opcodes] = {
    [nir_op_fmul] = gpir_op_mul,
    [nir_op_fadd] = gpir_op_add,
    [nir_op_fneg] = gpir_op_neg,
-   [nir_op_fnot] = gpir_op_not,
    [nir_op_fmin] = gpir_op_min,
    [nir_op_fmax] = gpir_op_max,
    [nir_op_frcp] = gpir_op_rcp,
    [nir_op_frsq] = gpir_op_rsqrt,
+   [nir_op_fexp2] = gpir_op_exp2,
+   [nir_op_flog2] = gpir_op_log2,
    [nir_op_slt] = gpir_op_lt,
    [nir_op_sge] = gpir_op_ge,
    [nir_op_fcsel] = gpir_op_select,
@@ -126,8 +129,6 @@ static int nir_to_gpir_opcodes[nir_num_opcodes] = {
    [nir_op_fsign] = gpir_op_sign,
    [nir_op_seq] = gpir_op_eq,
    [nir_op_sne] = gpir_op_ne,
-   [nir_op_fand] = gpir_op_min,
-   [nir_op_for] = gpir_op_max,
    [nir_op_fabs] = gpir_op_abs,
    [nir_op_mov] = gpir_op_mov,
 };
@@ -397,7 +398,29 @@ static int gpir_glsl_type_size(enum glsl_base_type type)
    return 4;
 }
 
-bool gpir_compile_nir(struct lima_vs_shader_state *prog, struct nir_shader *nir)
+static void gpir_print_shader_db(struct nir_shader *nir, gpir_compiler *comp,
+                                 struct pipe_debug_callback *debug)
+{
+   const struct shader_info *info = &nir->info;
+   char *shaderdb;
+   int ret = asprintf(&shaderdb,
+                      "%s shader: %d inst, %d loops, %d:%d spills:fills\n",
+                      gl_shader_stage_name(info->stage),
+                      comp->num_instr,
+                      comp->num_loops,
+                      comp->num_spills,
+                      comp->num_fills);
+   assert(ret >= 0);
+
+   if (lima_debug & LIMA_DEBUG_SHADERDB)
+      fprintf(stderr, "SHADER-DB: %s\n", shaderdb);
+
+   pipe_debug_message(debug, SHADER_INFO, "%s", shaderdb);
+   free(shaderdb);
+}
+
+bool gpir_compile_nir(struct lima_vs_shader_state *prog, struct nir_shader *nir,
+                      struct pipe_debug_callback *debug)
 {
    nir_function_impl *func = nir_shader_get_entrypoint(nir);
    gpir_compiler *comp = gpir_compiler_create(prog, func->reg_alloc, func->ssa_alloc);
@@ -425,10 +448,7 @@ bool gpir_compile_nir(struct lima_vs_shader_state *prog, struct nir_shader *nir)
    if (!gpir_post_rsched_lower_prog(comp))
       goto err_out0;
 
-   if (!gpir_value_regalloc_prog(comp))
-      goto err_out0;
-
-   if (!gpir_physical_regalloc_prog(comp))
+   if (!gpir_regalloc_prog(comp))
       goto err_out0;
 
    if (!gpir_schedule_prog(comp))
@@ -449,6 +469,8 @@ bool gpir_compile_nir(struct lima_vs_shader_state *prog, struct nir_shader *nir)
 
       v->components += glsl_get_components(var->type);
    }
+
+   gpir_print_shader_db(nir, comp, debug);
 
    ralloc_free(comp);
    return true;

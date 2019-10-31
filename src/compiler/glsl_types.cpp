@@ -557,7 +557,7 @@ glsl_type::glsl_type(const glsl_type *array, unsigned length,
    char *const n = (char *) ralloc_size(this->mem_ctx, name_length);
 
    if (length == 0)
-      util_snprintf(n, name_length, "%s[]", array->name);
+      snprintf(n, name_length, "%s[]", array->name);
    else {
       /* insert outermost dimensions in the correct spot
        * otherwise the dimension order will be backwards
@@ -565,11 +565,11 @@ glsl_type::glsl_type(const glsl_type *array, unsigned length,
       const char *pos = strchr(array->name, '[');
       if (pos) {
          int idx = pos - array->name;
-         util_snprintf(n, idx+1, "%s", array->name);
-         util_snprintf(n + idx, name_length - idx, "[%u]%s",
+         snprintf(n, idx+1, "%s", array->name);
+         snprintf(n + idx, name_length - idx, "[%u]%s",
                        length, array->name + idx);
       } else {
-         util_snprintf(n, name_length, "%s[%u]", array->name, length);
+         snprintf(n, name_length, "%s[%u]", array->name, length);
       }
    }
 
@@ -635,8 +635,8 @@ glsl_type::get_instance(unsigned base_type, unsigned rows, unsigned columns,
       assert(columns > 1 || !row_major);
 
       char name[128];
-      util_snprintf(name, sizeof(name), "%sx%uB%s", bare_type->name,
-                    explicit_stride, row_major ? "RM" : "");
+      snprintf(name, sizeof(name), "%sx%uB%s", bare_type->name,
+               explicit_stride, row_major ? "RM" : "");
 
       mtx_lock(&glsl_type::hash_mutex);
 
@@ -1000,8 +1000,8 @@ glsl_type::get_array_instance(const glsl_type *base,
     * named 'foo'.
     */
    char key[128];
-   util_snprintf(key, sizeof(key), "%p[%u]x%uB", (void *) base, array_size,
-                 explicit_stride);
+   snprintf(key, sizeof(key), "%p[%u]x%uB", (void *) base, array_size,
+            explicit_stride);
 
    mtx_lock(&glsl_type::hash_mutex);
 
@@ -1349,9 +1349,7 @@ glsl_type::get_function_instance(const glsl_type *return_type,
 const glsl_type *
 glsl_type::get_mul_type(const glsl_type *type_a, const glsl_type *type_b)
 {
-   if (type_a == type_b) {
-      return type_a;
-   } else if (type_a->is_matrix() && type_b->is_matrix()) {
+   if (type_a->is_matrix() && type_b->is_matrix()) {
       /* Matrix multiply.  The columns of A must match the rows of B.  Given
        * the other previously tested constraints, this means the vector type
        * of a row from A must be the same as the vector type of a column from
@@ -1371,6 +1369,8 @@ glsl_type::get_mul_type(const glsl_type *type_a, const glsl_type *type_b)
 
          return type;
       }
+   } else if (type_a == type_b) {
+      return type_a;
    } else if (type_a->is_matrix()) {
       /* A is a matrix and B is a column vector.  Columns of A must match
        * rows of B.  Given the other previously tested constraints, this
@@ -2124,6 +2124,74 @@ glsl_type::std430_array_stride(bool row_major) const
    return stride;
 }
 
+/* Note that the value returned by this method is only correct if the
+ * explit offset, and stride values are set, so only with SPIR-V shaders.
+ * Should not be used with GLSL shaders.
+ */
+
+unsigned
+glsl_type::explicit_size(bool align_to_stride) const
+{
+   if (this->is_struct() || this->is_interface()) {
+      if (this->length > 0) {
+         unsigned size = 0;
+
+         for (unsigned i = 0; i < this->length; i++) {
+            assert(this->fields.structure[i].offset >= 0);
+            unsigned last_byte = this->fields.structure[i].offset +
+               this->fields.structure[i].type->explicit_size();
+            size = MAX2(size, last_byte);
+         }
+
+         return size;
+      } else {
+         return 0;
+      }
+   } else if (this->is_array()) {
+      /* From ARB_program_interface_query spec:
+       *
+       *   "For the property of BUFFER_DATA_SIZE, then the implementation-dependent
+       *   minimum total buffer object size, in basic machine units, required to
+       *   hold all active variables associated with an active uniform block, shader
+       *   storage block, or atomic counter buffer is written to <params>.  If the
+       *   final member of an active shader storage block is array with no declared
+       *   size, the minimum buffer size is computed assuming the array was declared
+       *   as an array with one element."
+       *
+       */
+      if (this->is_unsized_array())
+         return this->explicit_stride;
+
+      assert(this->length > 0);
+      unsigned elem_size = align_to_stride ? this->explicit_stride : this->fields.array->explicit_size();
+      assert(this->explicit_stride >= elem_size);
+
+      return this->explicit_stride * (this->length - 1) + elem_size;
+   } else if (this->is_matrix()) {
+      const struct glsl_type *elem_type;
+      unsigned length;
+
+      if (this->interface_row_major) {
+         elem_type = get_instance(this->base_type,
+                                  this->matrix_columns, 1);
+         length = this->vector_elements;
+      } else {
+         elem_type = get_instance(this->base_type,
+                                  this->vector_elements, 1);
+         length = this->matrix_columns;
+      }
+
+      unsigned elem_size = align_to_stride ? this->explicit_stride : elem_type->explicit_size();
+
+      assert(this->explicit_stride);
+      return this->explicit_stride * (length - 1) + elem_size;
+   }
+
+   unsigned N = this->bit_size() / 8;
+
+   return this->vector_elements * N;
+}
+
 unsigned
 glsl_type::std430_size(bool row_major) const
 {
@@ -2294,6 +2362,67 @@ glsl_type::get_explicit_interface_type(bool supports_std430) const
    } else {
       assert(packing == GLSL_INTERFACE_PACKING_STD430);
       return this->get_explicit_std430_type(this->interface_row_major);
+   }
+}
+
+/* This differs from get_explicit_std430_type() in that it:
+ * - can size arrays slightly smaller ("stride * (len - 1) + elem_size" instead
+ *   of "stride * len")
+ * - consumes a glsl_type_size_align_func which allows 8 and 16-bit values to be
+ *   packed more tightly
+ * - overrides any struct field offsets but get_explicit_std430_type() tries to
+ *   respect any existing ones
+ */
+const glsl_type *
+glsl_type::get_explicit_type_for_size_align(glsl_type_size_align_func type_info,
+                                            unsigned *size, unsigned *alignment) const
+{
+   if (this->is_scalar() || this->is_vector()) {
+      type_info(this, size, alignment);
+      return this;
+   } else if (this->is_array()) {
+      unsigned elem_size, elem_align;
+      const struct glsl_type *explicit_element =
+         this->fields.array->get_explicit_type_for_size_align(type_info, &elem_size, &elem_align);
+
+      unsigned stride = align(elem_size, elem_align);
+
+      *size = stride * (this->length - 1) + elem_size;
+      *alignment = elem_align;
+      return glsl_type::get_array_instance(explicit_element, this->length, stride);
+   } else if (this->is_struct()) {
+      struct glsl_struct_field *fields = (struct glsl_struct_field *)
+         malloc(sizeof(struct glsl_struct_field) * this->length);
+
+      *size = 0;
+      *alignment = 0;
+      for (unsigned i = 0; i < this->length; i++) {
+         fields[i] = this->fields.structure[i];
+         assert(fields[i].matrix_layout != GLSL_MATRIX_LAYOUT_ROW_MAJOR);
+
+         unsigned field_size, field_align;
+         fields[i].type =
+            fields[i].type->get_explicit_type_for_size_align(type_info, &field_size, &field_align);
+         fields[i].offset = align(*size, field_align);
+
+         *size = fields[i].offset + field_size;
+         *alignment = MAX2(*alignment, field_align);
+      }
+
+      const glsl_type *type = glsl_type::get_struct_instance(fields, this->length, this->name, false);
+      free(fields);
+      return type;
+   } else if (this->is_matrix()) {
+      unsigned col_size, col_align;
+      type_info(this->column_type(), &col_size, &col_align);
+      unsigned stride = align(col_size, col_align);
+
+      *size = this->matrix_columns * stride;
+      *alignment = col_align;
+      return glsl_type::get_instance(this->base_type, this->vector_elements,
+                                     this->matrix_columns, stride, false);
+   } else {
+      unreachable("Unhandled type.");
    }
 }
 

@@ -38,6 +38,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "c11/threads.h"
+#include "util/macros.h"
 #include "util/u_atomic.h"
 
 #include "eglcontext.h"
@@ -66,13 +67,14 @@
 static const struct {
    _EGLPlatformType platform;
    const char *name;
-} egl_platforms[_EGL_NUM_PLATFORMS] = {
+} egl_platforms[] = {
    { _EGL_PLATFORM_X11, "x11" },
    { _EGL_PLATFORM_WAYLAND, "wayland" },
    { _EGL_PLATFORM_DRM, "drm" },
    { _EGL_PLATFORM_ANDROID, "android" },
    { _EGL_PLATFORM_HAIKU, "haiku" },
    { _EGL_PLATFORM_SURFACELESS, "surfaceless" },
+   { _EGL_PLATFORM_DEVICE, "device" },
 };
 
 
@@ -86,6 +88,9 @@ _eglGetNativePlatformFromEnv(void)
    const char *plat_name;
    EGLint i;
 
+   static_assert(ARRAY_SIZE(egl_platforms) == _EGL_NUM_PLATFORMS,
+                 "Missing platform");
+
    plat_name = getenv("EGL_PLATFORM");
    /* try deprecated env variable */
    if (!plat_name || !plat_name[0])
@@ -93,7 +98,7 @@ _eglGetNativePlatformFromEnv(void)
    if (!plat_name || !plat_name[0])
       return _EGL_INVALID_PLATFORM;
 
-   for (i = 0; i < _EGL_NUM_PLATFORMS; i++) {
+   for (i = 0; i < ARRAY_SIZE(egl_platforms); i++) {
       if (strcmp(egl_platforms[i].name, plat_name) == 0) {
          plat = egl_platforms[i].platform;
          break;
@@ -262,12 +267,10 @@ _eglFindDisplay(_EGLPlatformType plat, void *plat_dpy,
    mtx_lock(_eglGlobal.Mutex);
 
    /* search the display list first */
-   disp = _eglGlobal.DisplayList;
-   while (disp) {
+   for (disp = _eglGlobal.DisplayList; disp; disp = disp->Next) {
       if (disp->Platform == plat && disp->PlatformDisplay == plat_dpy &&
           _eglSameAttribs(disp->Options.Attribs, attrib_list))
          break;
-      disp = disp->Next;
    }
 
    /* create a new display */
@@ -568,6 +571,22 @@ _eglGetSurfacelessDisplay(void *native_display,
 }
 #endif /* HAVE_SURFACELESS_PLATFORM */
 
+#ifdef HAVE_ANDROID_PLATFORM
+_EGLDisplay*
+_eglGetAndroidDisplay(void *native_display,
+                          const EGLAttrib *attrib_list)
+{
+
+   /* This platform recognizes no display attributes. */
+   if (attrib_list != NULL && attrib_list[0] != EGL_NONE) {
+      _eglError(EGL_BAD_ATTRIBUTE, "eglGetPlatformDisplay");
+      return NULL;
+   }
+
+   return _eglFindDisplay(_EGL_PLATFORM_ANDROID, native_display,
+                          attrib_list);
+}
+#endif /* HAVE_ANDROID_PLATFORM */
 
 _EGLDisplay*
 _eglGetDeviceDisplay(void *native_display,

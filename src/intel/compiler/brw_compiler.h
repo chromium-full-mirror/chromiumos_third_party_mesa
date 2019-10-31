@@ -203,6 +203,30 @@ struct brw_sampler_prog_key_data {
    float scale_factors[32];
 };
 
+/** An enum representing what kind of input gl_SubgroupSize is. */
+enum PACKED brw_subgroup_size_type
+{
+   BRW_SUBGROUP_SIZE_API_CONSTANT,     /**< Default Vulkan behavior */
+   BRW_SUBGROUP_SIZE_UNIFORM,          /**< OpenGL behavior */
+   BRW_SUBGROUP_SIZE_VARYING,          /**< VK_EXT_subgroup_size_control */
+
+   /* These enums are specifically chosen so that the value of the enum is
+    * also the subgroup size.  If any new values are added, they must respect
+    * this invariant.
+    */
+   BRW_SUBGROUP_SIZE_REQUIRE_8   = 8,  /**< VK_EXT_subgroup_size_control */
+   BRW_SUBGROUP_SIZE_REQUIRE_16  = 16, /**< VK_EXT_subgroup_size_control */
+   BRW_SUBGROUP_SIZE_REQUIRE_32  = 32, /**< VK_EXT_subgroup_size_control */
+};
+
+struct brw_base_prog_key {
+   unsigned program_string_id;
+
+   enum brw_subgroup_size_type subgroup_size_type;
+
+   struct brw_sampler_prog_key_data tex;
+};
+
 /**
  * The VF can't natively handle certain types of attributes, such as GL_FIXED
  * or most 10_10_10_2 types.  These flags enable various VS workarounds to
@@ -225,7 +249,7 @@ struct brw_sampler_prog_key_data {
 
 /** The program key for Vertex Shaders. */
 struct brw_vs_prog_key {
-   unsigned program_string_id;
+   struct brw_base_prog_key base;
 
    /**
     * Per-attribute workaround flags
@@ -263,14 +287,12 @@ struct brw_vs_prog_key {
     * the VUE, even if they aren't written by the vertex shader.
     */
    uint8_t point_coord_replace;
-
-   struct brw_sampler_prog_key_data tex;
 };
 
 /** The program key for Tessellation Control Shaders. */
 struct brw_tcs_prog_key
 {
-   unsigned program_string_id;
+   struct brw_base_prog_key base;
 
    GLenum tes_primitive_mode;
 
@@ -283,14 +305,12 @@ struct brw_tcs_prog_key
    uint64_t outputs_written;
 
    bool quads_workaround;
-
-   struct brw_sampler_prog_key_data tex;
 };
 
 /** The program key for Tessellation Evaluation Shaders. */
 struct brw_tes_prog_key
 {
-   unsigned program_string_id;
+   struct brw_base_prog_key base;
 
    /** A bitfield of per-patch inputs read. */
    uint32_t patch_inputs_read;
@@ -298,15 +318,29 @@ struct brw_tes_prog_key
    /** A bitfield of per-vertex inputs read. */
    uint64_t inputs_read;
 
-   struct brw_sampler_prog_key_data tex;
+   /**
+    * How many user clipping planes are being uploaded to the tessellation
+    * evaluation shader as push constants.
+    *
+    * These are used for lowering legacy gl_ClipVertex/gl_Position clipping to
+    * clip distances.
+    */
+   unsigned nr_userclip_plane_consts:4;
 };
 
 /** The program key for Geometry Shaders. */
 struct brw_gs_prog_key
 {
-   unsigned program_string_id;
+   struct brw_base_prog_key base;
 
-   struct brw_sampler_prog_key_data tex;
+   /**
+    * How many user clipping planes are being uploaded to the geometry shader
+    * as push constants.
+    *
+    * These are used for lowering legacy gl_ClipVertex/gl_Position clipping to
+    * clip distances.
+    */
+   unsigned nr_userclip_plane_consts:4;
 };
 
 enum brw_sf_primitive {
@@ -394,6 +428,8 @@ enum brw_wm_aa_enable {
 
 /** The program key for Fragment/Pixel Shaders. */
 struct brw_wm_prog_key {
+   struct brw_base_prog_key base;
+
    /* Some collection of BRW_WM_IZ_* */
    uint8_t iz_lookup;
    bool stats_wm:1;
@@ -412,20 +448,17 @@ struct brw_wm_prog_key {
 
    uint8_t color_outputs_valid;
    uint64_t input_slots_valid;
-   unsigned program_string_id;
    GLenum alpha_test_func;          /* < For Gen4/5 MRT alpha test */
    float alpha_test_ref;
-
-   struct brw_sampler_prog_key_data tex;
 };
 
 struct brw_cs_prog_key {
-   uint32_t program_string_id;
-   struct brw_sampler_prog_key_data tex;
+   struct brw_base_prog_key base;
 };
 
 /* brw_any_prog_key is any of the keys that map to an API stage */
 union brw_any_prog_key {
+   struct brw_base_prog_key base;
    struct brw_vs_prog_key vs;
    struct brw_tcs_prog_key tcs;
    struct brw_tes_prog_key tes;
@@ -846,6 +879,7 @@ struct brw_cs_prog_data {
    unsigned local_size[3];
    unsigned simd_size;
    unsigned threads;
+   unsigned slm_size;
    bool uses_barrier;
    bool uses_num_work_groups;
 
@@ -1207,6 +1241,15 @@ DEFINE_PROG_DATA_DOWNCAST(clip)
 DEFINE_PROG_DATA_DOWNCAST(sf)
 #undef DEFINE_PROG_DATA_DOWNCAST
 
+struct brw_compile_stats {
+   uint32_t dispatch_width; /**< 0 for vec4 */
+   uint32_t instructions;
+   uint32_t loops;
+   uint32_t cycles;
+   uint32_t spills;
+   uint32_t fills;
+};
+
 /** @} */
 
 struct brw_compiler *
@@ -1245,6 +1288,7 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
                struct brw_vs_prog_data *prog_data,
                struct nir_shader *shader,
                int shader_time_index,
+               struct brw_compile_stats *stats,
                char **error_str);
 
 /**
@@ -1260,6 +1304,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
                 struct brw_tcs_prog_data *prog_data,
                 struct nir_shader *nir,
                 int shader_time_index,
+                struct brw_compile_stats *stats,
                 char **error_str);
 
 /**
@@ -1276,6 +1321,7 @@ brw_compile_tes(const struct brw_compiler *compiler, void *log_data,
                 struct nir_shader *shader,
                 struct gl_program *prog,
                 int shader_time_index,
+                struct brw_compile_stats *stats,
                 char **error_str);
 
 /**
@@ -1291,6 +1337,7 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
                struct nir_shader *shader,
                struct gl_program *prog,
                int shader_time_index,
+               struct brw_compile_stats *stats,
                char **error_str);
 
 /**
@@ -1342,6 +1389,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
                int shader_time_index32,
                bool allow_spilling,
                bool use_rep_send, struct brw_vue_map *vue_map,
+               struct brw_compile_stats *stats, /**< Array of three stats */
                char **error_str);
 
 /**
@@ -1356,11 +1404,13 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
                struct brw_cs_prog_data *prog_data,
                const struct nir_shader *shader,
                int shader_time_index,
+               struct brw_compile_stats *stats,
                char **error_str);
 
 void brw_debug_key_recompile(const struct brw_compiler *c, void *log,
                              gl_shader_stage stage,
-                             const void *old_key, const void *key);
+                             const struct brw_base_prog_key *old_key,
+                             const struct brw_base_prog_key *key);
 
 static inline uint32_t
 encode_slm_size(unsigned gen, uint32_t bytes)
@@ -1401,7 +1451,7 @@ encode_slm_size(unsigned gen, uint32_t bytes)
  * '2^n - 1' for some n.
  */
 static inline bool
-brw_stage_has_packed_dispatch(MAYBE_UNUSED const struct gen_device_info *devinfo,
+brw_stage_has_packed_dispatch(ASSERTED const struct gen_device_info *devinfo,
                               gl_shader_stage stage,
                               const struct brw_stage_prog_data *prog_data)
 {

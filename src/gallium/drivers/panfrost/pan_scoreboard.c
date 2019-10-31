@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Collabora
+ * Copyright (C) 2019 Collabora, Ltd.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -121,8 +121,8 @@ job_descriptor_header(struct panfrost_transfer t)
 
 static void
 panfrost_assign_index(
-                struct panfrost_job *job,
-                struct panfrost_transfer transfer)
+        struct panfrost_job *job,
+        struct panfrost_transfer transfer)
 {
         /* Assign the index */
         unsigned index = ++job->job_index;
@@ -133,8 +133,8 @@ panfrost_assign_index(
 
 static void
 panfrost_add_dependency(
-                struct panfrost_transfer depender,
-                struct panfrost_transfer dependent)
+        struct panfrost_transfer depender,
+        struct panfrost_transfer dependent)
 {
 
         struct mali_job_descriptor_header *first =
@@ -142,10 +142,6 @@ panfrost_add_dependency(
 
         struct mali_job_descriptor_header *second =
                 job_descriptor_header(depender);
-
-        /* Ensure we're ready for dependencies */
-        assert(second->job_index);
-        assert(first->job_index);
 
         /* Look for an open slot */
 
@@ -161,8 +157,8 @@ panfrost_add_dependency(
 
 static void
 panfrost_scoreboard_queue_job_internal(
-                struct panfrost_job *batch,
-                struct panfrost_transfer job)
+        struct panfrost_job *batch,
+        struct panfrost_transfer job)
 {
         panfrost_assign_index(batch, job);
 
@@ -178,8 +174,8 @@ panfrost_scoreboard_queue_job_internal(
 
 void
 panfrost_scoreboard_queue_compute_job(
-                struct panfrost_job *batch,
-                struct panfrost_transfer job)
+        struct panfrost_job *batch,
+        struct panfrost_transfer job)
 {
         panfrost_scoreboard_queue_job_internal(batch, job);
 
@@ -196,9 +192,9 @@ panfrost_scoreboard_queue_compute_job(
 
 void
 panfrost_scoreboard_queue_vertex_job(
-                struct panfrost_job *batch,
-                struct panfrost_transfer vertex,
-                bool requires_tiling)
+        struct panfrost_job *batch,
+        struct panfrost_transfer vertex,
+        bool requires_tiling)
 {
         panfrost_scoreboard_queue_compute_job(batch, vertex);
 
@@ -211,8 +207,8 @@ panfrost_scoreboard_queue_vertex_job(
 
 void
 panfrost_scoreboard_queue_tiler_job(
-                struct panfrost_job *batch,
-                struct panfrost_transfer tiler)
+        struct panfrost_job *batch,
+        struct panfrost_transfer tiler)
 {
         panfrost_scoreboard_queue_compute_job(batch, tiler);
 
@@ -230,9 +226,9 @@ panfrost_scoreboard_queue_tiler_job(
 
 void
 panfrost_scoreboard_queue_fused_job(
-                struct panfrost_job *batch,
-                struct panfrost_transfer vertex,
-                struct panfrost_transfer tiler)
+        struct panfrost_job *batch,
+        struct panfrost_transfer vertex,
+        struct panfrost_transfer tiler)
 {
         panfrost_scoreboard_queue_vertex_job(batch, vertex, true);
         panfrost_scoreboard_queue_tiler_job(batch, tiler);
@@ -244,9 +240,9 @@ panfrost_scoreboard_queue_fused_job(
 
 void
 panfrost_scoreboard_queue_fused_job_prepend(
-                struct panfrost_job *batch,
-                struct panfrost_transfer vertex,
-                struct panfrost_transfer tiler)
+        struct panfrost_job *batch,
+        struct panfrost_transfer vertex,
+        struct panfrost_transfer tiler)
 {
         /* Sanity check */
         assert(batch->last_tiler.gpu);
@@ -303,10 +299,11 @@ panfrost_scoreboard_set_value(struct panfrost_job *batch)
         if (!batch->last_tiler.gpu)
                 return;
 
-        /* Okay, we do. Let's generate it */
+        /* Okay, we do. Let's generate it. We'll need the job's polygon list
+         * regardless of size. */
 
         struct panfrost_context *ctx = batch->ctx;
-        mali_ptr polygon_list = ctx->tiler_polygon_list.gpu;
+        mali_ptr polygon_list = panfrost_job_get_polygon_list(batch, 0);
 
         struct panfrost_transfer job =
                 panfrost_set_value_job(ctx, polygon_list);
@@ -366,7 +363,40 @@ panfrost_scoreboard_link_batch(struct panfrost_job *batch)
         BITSET_WORD *edge_removal_1 = calloc(sz, 1);
         BITSET_WORD *edge_removal_2 = calloc(sz, 1);
 
-        /* We compute no_incoming by traversing the batch. */
+        /* We compute no_incoming by traversing the batch. Simultaneously, we
+         * would like to keep track of a parity-reversed version of the
+         * dependency graph. Dependency indices are 16-bit and in practice (for
+         * ES3.0, at least), we can guarantee a given node will be depended on
+         * by no more than one other nodes. P.f:
+         *
+         * Proposition: Given a node N of type T, no more than one other node
+         * depends on N.
+         *
+         * If type is SET_VALUE: The only dependency added against us is from
+         * the first tiler job, so there is 1 dependent.
+         *
+         * If type is VERTEX: If there is a tiler node, that tiler node depends
+         * on us; if there is not (transform feedback), nothing depends on us.
+         * Therefore there is at most 1 dependent.
+         *
+         * If type is TILER: If there is another TILER job in succession, that
+         * node depends on us. No other job type depends on us. Therefore there
+         * is at most 1 dependent.
+         *
+         * If type is FRAGMENT: This type cannot be in a primary chain, so it
+         * is irrelevant. Just for kicks, nobody would depend on us, so there
+         * are zero dependents, so it holds anyway.
+         *
+         * TODO: Revise this logic for ES3.1 and above. This result may not
+         * hold for COMPUTE/FUSED/GEOMETRY jobs; we might need to special case
+         * those. Can FBO dependencies be expressed within a chain?
+         * ---
+         *
+         * Point is, we only need to hold a single dependent, which is a pretty
+         * helpful result.
+         */
+
+        unsigned *dependents = calloc(node_count, sizeof(unsigned));
 
         for (unsigned i = 0; i < node_count; ++i) {
                 struct mali_job_descriptor_header *node = DESCRIPTOR_FOR_NODE(i);
@@ -374,8 +404,23 @@ panfrost_scoreboard_link_batch(struct panfrost_job *batch)
                 unsigned dep_1 = node->job_dependency_index_1;
                 unsigned dep_2 = node->job_dependency_index_2;
 
+                /* Record no_incoming info for this node */
+
                 if (!(dep_1 || dep_2))
                         BITSET_SET(no_incoming, i);
+
+                /* Record this node as the dependent of each of its
+                 * dependencies */
+
+                if (dep_1) {
+                        assert(!dependents[dep_1 - 1]);
+                        dependents[dep_1 - 1] = i;
+                }
+
+                if (dep_2) {
+                        assert(!dependents[dep_2 - 1]);
+                        dependents[dep_2 - 1] = i;
+                }
         }
 
         /* No next_job fields are set at the beginning, so L is implciitly the
@@ -390,8 +435,8 @@ panfrost_scoreboard_link_batch(struct panfrost_job *batch)
         unsigned arr_size = BITSET_WORDS(node_count);
 
         for (unsigned node_n_1 = __bitset_ffs(no_incoming, arr_size);
-                        (node_n_1 != 0);
-                        node_n_1 = __bitset_ffs(no_incoming, arr_size)) {
+             (node_n_1 != 0);
+             node_n_1 = __bitset_ffs(no_incoming, arr_size)) {
 
                 unsigned node_n = node_n_1 - 1;
 
@@ -415,8 +460,10 @@ panfrost_scoreboard_link_batch(struct panfrost_job *batch)
 
                 tail = n;
 
-                /* Scan dependencies */
-                for (unsigned node_m = 0; node_m < node_count; ++node_m) {
+                /* Grab the dependent, if there is one */
+                unsigned node_m = dependents[node_n];
+
+                if (node_m) {
                         struct mali_job_descriptor_header *m =
                                 DESCRIPTOR_FOR_NODE(node_m);
 
@@ -439,7 +486,7 @@ panfrost_scoreboard_link_batch(struct panfrost_job *batch)
                                 dep_2 = 0;
                         } else {
                                 /* This node has no relevant dependencies */
-                                continue;
+                                assert(0);
                         }
 
                         /* Are there edges left? If not, add us to S */
@@ -449,5 +496,11 @@ panfrost_scoreboard_link_batch(struct panfrost_job *batch)
                                 BITSET_SET(no_incoming, node_m);
                 }
         }
+
+        /* Cleanup */
+        free(no_incoming);
+        free(dependents);
+        free(edge_removal_1);
+        free(edge_removal_2);
 
 }

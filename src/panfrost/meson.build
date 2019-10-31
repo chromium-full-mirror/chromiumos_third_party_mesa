@@ -19,6 +19,39 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-inc_panfrost = include_directories(['.', 'shared'])
+inc_panfrost_hw = include_directories([
+   'include'
+])
+
+inc_panfrost = include_directories([
+   '.', 'include', 'shared', 'midgard', 'bifrost'
+])
 
 subdir('shared')
+subdir('midgard')
+subdir('bifrost')
+subdir('pandecode')
+
+files_bifrost = files(
+  'bifrost/cmdline.c',
+)
+
+bifrost_compiler = executable(
+  'bifrost_compiler',
+  [files_bifrost],
+  include_directories : [
+    inc_common,
+    inc_include,
+    inc_src,
+    inc_panfrost,
+ ],
+  dependencies : [
+    idep_nir,
+    idep_mesautil,
+  ],
+  link_with : [
+    libglsl_standalone,
+    libpanfrost_bifrost
+  ],
+  build_by_default : true
+)

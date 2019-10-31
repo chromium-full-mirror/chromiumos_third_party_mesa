@@ -44,6 +44,7 @@
 
 #include "drm-uapi/i915_drm.h"
 
+#include "intel/common/gen_gem.h"
 #include "util/hash_table.h"
 #include "util/set.h"
 #include "main/macros.h"
@@ -238,6 +239,8 @@ iris_init_batch(struct iris_batch *batch,
       gen_batch_decode_ctx_init(&batch->decoder, &screen->devinfo,
                                 stderr, decode_flags, NULL,
                                 decode_get_bo, decode_get_state_size, batch);
+      batch->decoder.dynamic_base = IRIS_MEMZONE_DYNAMIC_START;
+      batch->decoder.instruction_base = IRIS_MEMZONE_SHADER_START;
       batch->decoder.max_vbo_decoded_lines = 32;
    }
 
@@ -374,6 +377,7 @@ iris_batch_reset(struct iris_batch *batch)
    iris_bo_unreference(batch->bo);
    batch->primary_batch_size = 0;
    batch->contains_draw = false;
+   batch->decoder.surface_base = batch->last_surface_base_address;
 
    create_batch(batch);
    assert(batch->bo->index == 0);
@@ -571,7 +575,7 @@ submit_batch(struct iris_batch *batch)
 
    int ret = 0;
    if (!batch->screen->no_hw &&
-       drm_ioctl(batch->screen->fd, DRM_IOCTL_I915_GEM_EXECBUFFER2, &execbuf))
+       gen_ioctl(batch->screen->fd, DRM_IOCTL_I915_GEM_EXECBUFFER2, &execbuf))
       ret = -errno;
 
    for (int i = 0; i < batch->exec_count; i++) {
@@ -679,10 +683,7 @@ _iris_batch_flush(struct iris_batch *batch, const char *file, int line)
       ret = 0;
    }
 
-   if (ret >= 0) {
-      //if (iris->ctx.Const.ResetStrategy == GL_LOSE_CONTEXT_ON_RESET_ARB)
-         //iris_check_for_reset(ice);
-   } else {
+   if (ret < 0) {
 #ifdef DEBUG
       const bool color = INTEL_DEBUG & DEBUG_COLOR;
       fprintf(stderr, "%siris: Failed to submit batchbuffer: %-80s%s\n",

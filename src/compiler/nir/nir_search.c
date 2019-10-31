@@ -30,7 +30,8 @@
 #include "nir_builder.h"
 #include "util/half_float.h"
 
-#define NIR_SEARCH_MAX_COMM_OPS 4
+/* This should be the same as nir_search_max_comm_ops in nir_algebraic.py. */
+#define NIR_SEARCH_MAX_COMM_OPS 8
 
 struct match_state {
    bool inexact_match;
@@ -505,6 +506,9 @@ construct_value(nir_builder *build,
                        (void *)build->shader);
       assert(!var->is_constant);
 
+      for (unsigned i = 0; i < NIR_MAX_VEC_COMPONENTS; i++)
+         val.swizzle[i] = state->variables[var->variable].swizzle[var->swizzle[i]];
+
       return val;
    }
 
@@ -545,7 +549,7 @@ construct_value(nir_builder *build,
    }
 }
 
-MAYBE_UNUSED static void dump_value(const nir_search_value *val)
+UNUSED static void dump_value(const nir_search_value *val)
 {
    switch (val->type) {
    case nir_search_value_constant: {
@@ -559,6 +563,9 @@ MAYBE_UNUSED static void dump_value(const nir_search_value *val)
          break;
       case nir_type_uint:
          printf("0x%"PRIx64, sconst->data.u);
+         break;
+      case nir_type_bool:
+         printf("%s", sconst->data.u != 0 ? "True" : "False");
          break;
       default:
          unreachable("bad const type");
@@ -627,6 +634,8 @@ nir_replace_instr(nir_builder *build, nir_alu_instr *instr,
    struct match_state state;
    state.inexact_match = false;
    state.has_exact_alu = false;
+
+   STATIC_ASSERT(sizeof(state.comm_op_direction) * 8 >= NIR_SEARCH_MAX_COMM_OPS);
 
    unsigned comm_expr_combinations =
       1 << MIN2(search->comm_exprs, NIR_SEARCH_MAX_COMM_OPS);

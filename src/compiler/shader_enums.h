@@ -575,11 +575,14 @@ typedef enum
     */
    /*@{*/
    SYSTEM_VALUE_FRAG_COORD,
+   SYSTEM_VALUE_POINT_COORD,
    SYSTEM_VALUE_FRONT_FACE,
    SYSTEM_VALUE_SAMPLE_ID,
    SYSTEM_VALUE_SAMPLE_POS,
    SYSTEM_VALUE_SAMPLE_MASK_IN,
    SYSTEM_VALUE_HELPER_INVOCATION,
+   SYSTEM_VALUE_COLOR0,
+   SYSTEM_VALUE_COLOR1,
    /*@}*/
 
    /**
@@ -591,6 +594,8 @@ typedef enum
    SYSTEM_VALUE_PRIMITIVE_ID,
    SYSTEM_VALUE_TESS_LEVEL_OUTER, /**< TES input */
    SYSTEM_VALUE_TESS_LEVEL_INNER, /**< TES input */
+   SYSTEM_VALUE_TESS_LEVEL_OUTER_DEFAULT, /**< TCS input for passthru TCS */
+   SYSTEM_VALUE_TESS_LEVEL_INNER_DEFAULT, /**< TCS input for passthru TCS */
    /*@}*/
 
    /**
@@ -606,6 +611,7 @@ typedef enum
    SYSTEM_VALUE_LOCAL_GROUP_SIZE,
    SYSTEM_VALUE_GLOBAL_GROUP_SIZE,
    SYSTEM_VALUE_WORK_DIM,
+   SYSTEM_VALUE_USER_DATA_AMD,
    /*@}*/
 
    /** Required for VK_KHR_device_group */
@@ -733,6 +739,9 @@ enum gl_access_qualifier
     * a lack of ACCESS_COHERENT and ACCESS_VOLATILE.
     */
    ACCESS_CAN_REORDER = (1 << 6),
+
+   /** Use as little cache space as possible. */
+   ACCESS_STREAM_CACHE_POLICY = (1 << 7),
 };
 
 /**

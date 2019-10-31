@@ -754,18 +754,6 @@ dri2_x11_authenticate(_EGLDisplay *disp, uint32_t id)
    return dri2_x11_do_authenticate(dri2_dpy, id);
 }
 
-static bool
-dri2_x11_config_match_attrib(struct dri2_egl_display *dri2_dpy,
-                             const __DRIconfig *config,
-                             unsigned int attrib,
-                             unsigned int value)
-{
-   uint32_t config_val;
-   if (!dri2_dpy->core->getConfigAttrib(config, attrib, &config_val))
-      return false;
-   return config_val == value;
-}
-
 static EGLBoolean
 dri2_x11_add_configs_for_visuals(struct dri2_egl_display *dri2_dpy,
                                  _EGLDisplay *disp, bool supports_preserved)
@@ -842,41 +830,6 @@ dri2_x11_add_configs_for_visuals(struct dri2_egl_display *dri2_dpy,
       }
 
       xcb_depth_next(&d);
-   }
-
-   /* Add a 565-no-depth-no-stencil pbuffer-only config.  If X11 is depth 24,
-    * we wouldn't have 565 available, which the CTS demands.
-    */
-   for (int j = 0; dri2_dpy->driver_configs[j]; j++) {
-      const __DRIconfig *config = dri2_dpy->driver_configs[j];
-      const EGLint config_attrs[] = {
-         EGL_NATIVE_VISUAL_ID,    0,
-         EGL_NATIVE_VISUAL_TYPE,  EGL_NONE,
-         EGL_NONE
-      };
-      EGLint surface_type = EGL_PBUFFER_BIT;
-      unsigned int rgba_masks[4] = {
-         0x1f << 11,
-         0x3f << 5,
-         0x1f << 0,
-         0,
-      };
-
-      /* Check that we've found single-sample, no depth, no stencil. */
-      if (!dri2_x11_config_match_attrib(dri2_dpy, config,
-                                        __DRI_ATTRIB_DEPTH_SIZE, 0) ||
-          !dri2_x11_config_match_attrib(dri2_dpy, config,
-                                        __DRI_ATTRIB_STENCIL_SIZE, 0) ||
-          !dri2_x11_config_match_attrib(dri2_dpy, config,
-                                        __DRI_ATTRIB_SAMPLES, 0)) {
-         continue;
-      }
-
-      if (dri2_add_config(disp, config, config_count + 1, surface_type,
-                          config_attrs, rgba_masks)) {
-         config_count++;
-         break;
-      }
    }
 
    if (!config_count) {
@@ -1217,7 +1170,6 @@ static const struct dri2_egl_display_vtbl dri2_x11_swrast_display_vtbl = {
    .destroy_surface = dri2_x11_destroy_surface,
    .create_image = dri2_create_image_khr,
    .swap_buffers = dri2_x11_swap_buffers,
-   .set_damage_region = dri2_fallback_set_damage_region,
    .swap_buffers_region = dri2_fallback_swap_buffers_region,
    .post_sub_buffer = dri2_fallback_post_sub_buffer,
    /* XXX: should really implement this since X11 has pixmaps */
@@ -1240,7 +1192,6 @@ static const struct dri2_egl_display_vtbl dri2_x11_display_vtbl = {
    .swap_buffers = dri2_x11_swap_buffers,
    .swap_buffers_with_damage = dri2_fallback_swap_buffers_with_damage,
    .swap_buffers_region = dri2_x11_swap_buffers_region,
-   .set_damage_region = dri2_fallback_set_damage_region,
    .post_sub_buffer = dri2_x11_post_sub_buffer,
    .copy_buffers = dri2_x11_copy_buffers,
    .query_buffer_age = dri2_fallback_query_buffer_age,

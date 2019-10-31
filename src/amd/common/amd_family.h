@@ -97,6 +97,11 @@ enum radeon_family {
     CHIP_VEGA20,
     CHIP_RAVEN,
     CHIP_RAVEN2,
+    CHIP_RENOIR,
+    CHIP_ARCTURUS,
+    CHIP_NAVI10,
+    CHIP_NAVI12,
+    CHIP_NAVI14,
     CHIP_LAST,
 };
 
@@ -113,6 +118,7 @@ enum chip_class {
     GFX7,
     GFX8,
     GFX9,
+    GFX10,
 };
 
 #endif

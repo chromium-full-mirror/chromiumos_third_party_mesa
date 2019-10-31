@@ -1012,8 +1012,8 @@ static void radv_query_shader(struct radv_cmd_buffer *cmd_buffer,
 				      VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_constants),
 				      &push_constants);
 
-	cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_INV_GLOBAL_L2 |
-	                                RADV_CMD_FLAG_INV_VMEM_L1;
+	cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_INV_L2 |
+	                                RADV_CMD_FLAG_INV_VCACHE;
 
 	if (flags & VK_QUERY_RESULT_WAIT_BIT)
 		cmd_buffer->state.flush_bits |= RADV_CMD_FLUSH_AND_INV_FRAMEBUFFER;
@@ -1124,12 +1124,13 @@ VkResult radv_GetQueryPoolResults(
 
 		switch (pool->type) {
 		case VK_QUERY_TYPE_TIMESTAMP: {
-			available = *(uint64_t *)src != TIMESTAMP_NOT_READY;
+			volatile uint64_t const *src64 = (volatile uint64_t const *)src;
+			available = *src64 != TIMESTAMP_NOT_READY;
 
 			if (flags & VK_QUERY_RESULT_WAIT_BIT) {
-				while (*(volatile uint64_t *)src == TIMESTAMP_NOT_READY)
+				while (*src64 == TIMESTAMP_NOT_READY)
 					;
-				available = *(uint64_t *)src != TIMESTAMP_NOT_READY;
+				available = true;
 			}
 
 			if (!available && !(flags & VK_QUERY_RESULT_PARTIAL_BIT))
@@ -1137,11 +1138,11 @@ VkResult radv_GetQueryPoolResults(
 
 			if (flags & VK_QUERY_RESULT_64_BIT) {
 				if (available || (flags & VK_QUERY_RESULT_PARTIAL_BIT))
-					*(uint64_t*)dest = *(uint64_t*)src;
+					*(uint64_t*)dest = *src64;
 				dest += 8;
 			} else {
 				if (available || (flags & VK_QUERY_RESULT_PARTIAL_BIT))
-					*(uint32_t*)dest = *(uint32_t*)src;
+					*(uint32_t*)dest = *(volatile uint32_t*)src;
 				dest += 4;
 			}
 			break;
@@ -1189,13 +1190,13 @@ VkResult radv_GetQueryPoolResults(
 			if (flags & VK_QUERY_RESULT_WAIT_BIT)
 				while(!*(volatile uint32_t*)(pool->ptr + pool->availability_offset + 4 * query))
 					;
-			available = *(uint32_t*)(pool->ptr + pool->availability_offset + 4 * query);
+			available = *(volatile uint32_t*)(pool->ptr + pool->availability_offset + 4 * query);
 
 			if (!available && !(flags & VK_QUERY_RESULT_PARTIAL_BIT))
 				result = VK_NOT_READY;
 
-			const uint64_t *start = (uint64_t*)src;
-			const uint64_t *stop = (uint64_t*)(src + pipelinestat_block_size);
+			const volatile uint64_t *start = (uint64_t*)src;
+			const volatile uint64_t *stop = (uint64_t*)(src + pipelinestat_block_size);
 			if (flags & VK_QUERY_RESULT_64_BIT) {
 				uint64_t *dst = (uint64_t*)dest;
 				dest += util_bitcount(pool->pipeline_stats_mask) * 8;
@@ -1371,7 +1372,7 @@ void radv_CmdCopyQueryPoolResults(
 			unsigned query = firstQuery + i;
 			uint64_t local_src_va = va  + query * pool->stride;
 
-			MAYBE_UNUSED unsigned cdw_max = radeon_check_space(cmd_buffer->device->ws, cs, 19);
+			ASSERTED unsigned cdw_max = radeon_check_space(cmd_buffer->device->ws, cs, 19);
 
 
 			if (flags & VK_QUERY_RESULT_WAIT_BIT) {
@@ -1619,6 +1620,7 @@ static void emit_end_query(struct radv_cmd_buffer *cmd_buffer,
 					   cmd_buffer->device->physical_device->rad_info.chip_class,
 					   radv_cmd_buffer_uses_mec(cmd_buffer),
 					   V_028A90_BOTTOM_OF_PIPE_TS, 0,
+					   EOP_DST_SEL_MEM,
 					   EOP_DATA_SEL_VALUE_32BIT,
 					   avail_va, 1,
 					   cmd_buffer->gfx9_eop_bug_va);
@@ -1639,8 +1641,8 @@ static void emit_end_query(struct radv_cmd_buffer *cmd_buffer,
 
 	cmd_buffer->active_query_flush_bits |= RADV_CMD_FLAG_PS_PARTIAL_FLUSH |
 					       RADV_CMD_FLAG_CS_PARTIAL_FLUSH |
-					       RADV_CMD_FLAG_INV_GLOBAL_L2 |
-					       RADV_CMD_FLAG_INV_VMEM_L1;
+					       RADV_CMD_FLAG_INV_L2 |
+					       RADV_CMD_FLAG_INV_VCACHE;
 	if (cmd_buffer->device->physical_device->rad_info.chip_class >= GFX9) {
 		cmd_buffer->active_query_flush_bits |= RADV_CMD_FLAG_FLUSH_AND_INV_CB |
 						       RADV_CMD_FLAG_FLUSH_AND_INV_DB;
@@ -1744,7 +1746,7 @@ void radv_CmdWriteTimestamp(
 	if (cmd_buffer->state.subpass && cmd_buffer->state.subpass->view_mask)
 		num_queries = util_bitcount(cmd_buffer->state.subpass->view_mask);
 
-	MAYBE_UNUSED unsigned cdw_max = radeon_check_space(cmd_buffer->device->ws, cs, 28 * num_queries);
+	ASSERTED unsigned cdw_max = radeon_check_space(cmd_buffer->device->ws, cs, 28 * num_queries);
 
 	for (unsigned i = 0; i < num_queries; i++) {
 		switch(pipelineStage) {
@@ -1763,6 +1765,7 @@ void radv_CmdWriteTimestamp(
 						   cmd_buffer->device->physical_device->rad_info.chip_class,
 						   mec,
 						   V_028A90_BOTTOM_OF_PIPE_TS, 0,
+						   EOP_DST_SEL_MEM,
 						   EOP_DATA_SEL_TIMESTAMP,
 						   query_va, 0,
 						   cmd_buffer->gfx9_eop_bug_va);

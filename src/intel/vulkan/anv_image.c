@@ -735,6 +735,17 @@ anv_CreateImage(VkDevice device,
       return anv_image_from_external(device, pCreateInfo, create_info,
                                      pAllocator, pImage);
 
+   bool use_external_format = false;
+   const struct VkExternalFormatANDROID *ext_format =
+      vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_FORMAT_ANDROID);
+
+   /* "If externalFormat is zero, the effect is as if the
+    * VkExternalFormatANDROID structure was not present. Otherwise, the image
+    * will have the specified external format."
+    */
+   if (ext_format && ext_format->externalFormat != 0)
+      use_external_format = true;
+
    const VkNativeBufferANDROID *gralloc_info =
       vk_find_struct_const(pCreateInfo->pNext, NATIVE_BUFFER_ANDROID);
    if (gralloc_info)
@@ -750,6 +761,7 @@ anv_CreateImage(VkDevice device,
    return anv_image_create(device,
       &(struct anv_image_create_info) {
          .vk_info = pCreateInfo,
+         .external_format = use_external_format,
       },
       pAllocator,
       pImage);
@@ -1388,13 +1400,10 @@ anv_image_fill_surface_state(struct anv_device *device,
           */
          const struct isl_format_layout *fmtl =
             isl_format_get_layout(surface->isl.format);
+         tmp_surf.logical_level0_px =
+            isl_surf_get_logical_level0_el(&tmp_surf);
+         tmp_surf.phys_level0_sa = isl_surf_get_phys_level0_el(&tmp_surf);
          tmp_surf.format = view.format;
-         tmp_surf.logical_level0_px.width =
-            DIV_ROUND_UP(tmp_surf.logical_level0_px.width, fmtl->bw);
-         tmp_surf.logical_level0_px.height =
-            DIV_ROUND_UP(tmp_surf.logical_level0_px.height, fmtl->bh);
-         tmp_surf.phys_level0_sa.width /= fmtl->bw;
-         tmp_surf.phys_level0_sa.height /= fmtl->bh;
          tile_x_sa /= fmtl->bw;
          tile_y_sa /= fmtl->bh;
 
@@ -1542,11 +1551,18 @@ anv_CreateImageView(VkDevice _device,
       conv_format = conversion->format;
    }
 
+   VkImageUsageFlags image_usage = 0;
+   if (range->aspectMask & ~VK_IMAGE_ASPECT_STENCIL_BIT)
+      image_usage |= image->usage;
+   if (range->aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT)
+      image_usage |= image->stencil_usage;
+
    const VkImageViewUsageCreateInfo *usage_info =
       vk_find_struct_const(pCreateInfo, IMAGE_VIEW_USAGE_CREATE_INFO);
-   VkImageUsageFlags view_usage = usage_info ? usage_info->usage : image->usage;
+   VkImageUsageFlags view_usage = usage_info ? usage_info->usage : image_usage;
+
    /* View usage should be a subset of image usage */
-   assert((view_usage & ~image->usage) == 0);
+   assert((view_usage & ~image_usage) == 0);
    assert(view_usage & (VK_IMAGE_USAGE_SAMPLED_BIT |
                         VK_IMAGE_USAGE_STORAGE_BIT |
                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |

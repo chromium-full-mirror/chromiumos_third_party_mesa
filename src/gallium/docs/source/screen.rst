@@ -22,6 +22,8 @@ or integer values, use :ref:`get_param`.
 
 The integer capabilities:
 
+* ``PIPE_CAP_GRAPHICS``: Whether graphics is supported. If not, contexts can
+  only be created with PIPE_CONTEXT_COMPUTE_ONLY.
 * ``PIPE_CAP_NPOT_TEXTURES``: Whether :term:`NPOT` textures may have repeat modes,
   normalized coordinates, and mipmaps.
 * ``PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS``: How many dual-source blend RTs are support.
@@ -45,8 +47,6 @@ The integer capabilities:
   with clamp or clamp-to-border wrap modes.
 * ``PIPE_CAP_BLEND_EQUATION_SEPARATE``: Whether alpha blend equations may be different
   from color blend equations, in :ref:`Blend` state.
-* ``PIPE_CAP_SM3``: Whether the vertex shader and fragment shader support equivalent
-  opcodes to the Shader Model 3 specification. XXX oh god this is horrible
 * ``PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS``: The maximum number of stream buffers.
 * ``PIPE_CAP_PRIMITIVE_RESTART``: Whether primitive restart is supported.
 * ``PIPE_CAP_INDEP_BLEND_ENABLE``: Whether per-rendertarget blend enabling and channel
@@ -67,7 +67,9 @@ The integer capabilities:
 * ``PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER``: Whether the TGSI
   property FS_COORD_PIXEL_CENTER with value INTEGER is supported.
 * ``PIPE_CAP_DEPTH_CLIP_DISABLE``: Whether the driver is capable of disabling
-  depth clipping (through pipe_rasterizer_state)
+  depth clipping (=1) (through pipe_rasterizer_state) or supports lowering
+  depth_clamp in the client shader code (=2), for this the driver must
+  currently use TGSI.
 * ``PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE``: Whether the driver is capable of
   disabling depth clipping (through pipe_rasterizer_state) separately for
   the near and far plane. If not, depth_clip_near and depth_clip_far will be
@@ -305,6 +307,8 @@ The integer capabilities:
   TGSI opcodes are supported.
 * ``PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL``: If state trackers should use
   a system value for the POSITION fragment shader input.
+* ``PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL``: If state trackers should use
+  a system value for the POINT fragment shader input.
 * ``PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL``: If state trackers should use
   a system value for the FACE fragment shader input.
   Also, the FACE system value is integer, not float.
@@ -524,8 +528,8 @@ The integer capabilities:
   execution. 0 = throttling is disabled.
 * ``PIPE_CAP_DMABUF``: Whether Linux DMABUF handles are supported by
   resource_from_handle and resource_get_handle.
-* ``PIPE_CAP_PREFER_COMPUTE_BLIT_FOR_MULTIMEDIA``: Whether VDPAU, VAAPI, and
-  OpenMAX should use a compute-based blit instead of pipe_context::blit.
+* ``PIPE_CAP_PREFER_COMPUTE_FOR_MULTIMEDIA``: Whether VDPAU, VAAPI, and
+  OpenMAX should use a compute-based blit instead of pipe_context::blit and compute pipeline for compositing images.
 * ``PIPE_CAP_FRAGMENT_SHADER_INTERLOCK``: True if fragment shader interlock
   functionality is supported.
 * ``PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED``: True if driver handles
@@ -533,6 +537,17 @@ The integer capabilities:
   lower those system values.
 * ``PIPE_CAP_ATOMIC_FLOAT_MINMAX``: Atomic float point minimum,
   maximum, exchange and compare-and-swap support to buffer and shared variables.
+* ``PIPE_CAP_TGSI_DIV``: Whether opcode DIV is supported
+* ``PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD``: Whether texture lookups with
+  explicit LOD is supported in the fragment shader.
+* ``PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES``: True if the driver supports
+  derivatives in fragment shaders.
+* ``PIPE_CAP_VERTEX_SHADER_SATURATE``: True if the driver supports saturate
+  modifiers in the vertex shader.
+* ``PIPE_CAP_TEXTURE_SHADOW_LOD``: True if the driver supports shadow sampler
+  types with texture functions having interaction with LOD of texture lookup.
+* ``PIPE_CAP_SHADER_SAMPLES_IDENTICAL``: True if the driver supports a shader query to tell whether all samples of a multisampled surface are definitely identical.
+* ``PIPE_CAP_TGSI_ATOMINC_WRAP``: Atomic increment/decrement + wrap around are supported.
 
 .. _pipe_capf:
 

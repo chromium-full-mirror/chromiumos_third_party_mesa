@@ -35,8 +35,8 @@
  * all the translations. The result (options.h) is included by
  * xmlpool.h which in turn can be included by drivers.
  *
- * The macros used to describe otions in this file are defined in
- * ../xmlpool.h.
+ * The macros used to describe options in this file are defined in
+ * src/util/xmlpool.h.
  */
 
 /* This is needed for xgettext to extract translatable strings.
@@ -140,6 +140,11 @@ DRI_CONF_OPT_BEGIN_B(allow_glsl_layout_qualifier_on_function_parameters, def) \
         DRI_CONF_DESC(en,gettext("Allow layout qualifiers on function parameters.")) \
 DRI_CONF_OPT_END
 
+#define DRI_CONF_FORCE_GL_VENDOR(def) \
+DRI_CONF_OPT_BEGIN(force_gl_vendor, string, def) \
+        DRI_CONF_DESC(en,gettext("Allow GPU vendor to be overridden.")) \
+DRI_CONF_OPT_END
+
 #define DRI_CONF_FORCE_COMPAT_PROFILE(def) \
 DRI_CONF_OPT_BEGIN_B(force_compat_profile, def) \
         DRI_CONF_DESC(en,gettext("Force an OpenGL compatibility context")) \
@@ -213,6 +218,16 @@ DRI_CONF_OPT_END
 #define DRI_CONF_ADAPTIVE_SYNC(def) \
 DRI_CONF_OPT_BEGIN_B(adaptive_sync,def) \
         DRI_CONF_DESC(en,gettext("Adapt the monitor sync to the application performance (when possible)")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(def) \
+DRI_CONF_OPT_BEGIN_V(vk_x11_override_min_image_count, int, def, "0:999") \
+        DRI_CONF_DESC(en,gettext("Override the VkSurfaceCapabilitiesKHR::minImageCount (0 = no override)")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(def) \
+DRI_CONF_OPT_BEGIN_B(vk_x11_strict_image_count, def) \
+        DRI_CONF_DESC(en,gettext("Force the X11 WSI to create exactly the number of image specified by the application in VkSwapchainCreateInfoKHR::minImageCount")) \
 DRI_CONF_OPT_END
 
 #define DRI_CONF_MESA_GLTHREAD(def) \

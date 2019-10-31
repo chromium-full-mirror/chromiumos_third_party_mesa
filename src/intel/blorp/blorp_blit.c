@@ -60,9 +60,6 @@ struct brw_blorp_blit_vars {
    nir_variable *v_dst_offset;
    nir_variable *v_src_inv_size;
 
-   /* gl_FragCoord */
-   nir_variable *frag_coord;
-
    /* gl_FragColor */
    nir_variable *color_out;
 };
@@ -84,10 +81,6 @@ brw_blorp_blit_vars_init(nir_builder *b, struct brw_blorp_blit_vars *v,
 
 #undef LOAD_INPUT
 
-   v->frag_coord = nir_variable_create(b->shader, nir_var_shader_in,
-                                       glsl_vec4_type(), "gl_FragCoord");
-   v->frag_coord->data.location = VARYING_SLOT_POS;
-
    v->color_out = nir_variable_create(b->shader, nir_var_shader_out,
                                       glsl_vec4_type(), "gl_FragColor");
    v->color_out->data.location = FRAG_RESULT_COLOR;
@@ -98,7 +91,7 @@ blorp_blit_get_frag_coords(nir_builder *b,
                            const struct brw_blorp_blit_prog_key *key,
                            struct brw_blorp_blit_vars *v)
 {
-   nir_ssa_def *coord = nir_f2i32(b, nir_load_var(b, v->frag_coord));
+   nir_ssa_def *coord = nir_f2i32(b, nir_load_frag_coord(b));
 
    /* Account for destination surface intratile offset
     *
@@ -1496,9 +1489,9 @@ brw_blorp_get_blit_kernel(struct blorp_batch *batch,
 
    struct brw_wm_prog_key wm_key;
    brw_blorp_init_wm_prog_key(&wm_key);
-   wm_key.tex.compressed_multisample_layout_mask =
+   wm_key.base.tex.compressed_multisample_layout_mask =
       prog_key->tex_aux_usage == ISL_AUX_USAGE_MCS;
-   wm_key.tex.msaa_16 = prog_key->tex_samples == 16;
+   wm_key.base.tex.msaa_16 = prog_key->tex_samples == 16;
    wm_key.multisample_fbo = prog_key->rt_samples > 1;
 
    program = blorp_compile_fs(blorp, mem_ctx, nir, &wm_key, false,
@@ -2538,15 +2531,8 @@ blorp_surf_convert_to_uncompressed(const struct isl_device *isl_dev,
       *y /= fmtl->bh;
    }
 
-   info->surf.logical_level0_px.width =
-      DIV_ROUND_UP(info->surf.logical_level0_px.width, fmtl->bw);
-   info->surf.logical_level0_px.height =
-      DIV_ROUND_UP(info->surf.logical_level0_px.height, fmtl->bh);
-
-   assert(info->surf.phys_level0_sa.width % fmtl->bw == 0);
-   assert(info->surf.phys_level0_sa.height % fmtl->bh == 0);
-   info->surf.phys_level0_sa.width /= fmtl->bw;
-   info->surf.phys_level0_sa.height /= fmtl->bh;
+   info->surf.logical_level0_px = isl_surf_get_logical_level0_el(&info->surf);
+   info->surf.phys_level0_sa = isl_surf_get_phys_level0_el(&info->surf);
 
    assert(info->tile_x_sa % fmtl->bw == 0);
    assert(info->tile_y_sa % fmtl->bh == 0);

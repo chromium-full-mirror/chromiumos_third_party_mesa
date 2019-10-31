@@ -1235,6 +1235,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
                 nir_shader *nir,
                 struct gl_program *prog,
                 int shader_time_index,
+                struct brw_compile_stats *stats,
                 char **error_str)
 {
    const struct gen_device_info *devinfo = compiler->devinfo;
@@ -1244,7 +1245,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
    nir->info.inputs_read = key->inputs_read;
    nir->info.patch_inputs_read = key->patch_inputs_read;
 
-   brw_nir_apply_sampler_key(nir, compiler, &key->tex, is_scalar);
+   brw_nir_apply_key(nir, compiler, &key->base, 8, is_scalar);
    brw_nir_lower_tes_inputs(nir, input_vue_map);
    brw_nir_lower_vue_outputs(nir);
    brw_postprocess_nir(nir, compiler, is_scalar);
@@ -1322,7 +1323,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
    }
 
    if (is_scalar) {
-      fs_visitor v(compiler, log_data, mem_ctx, (void *) key,
+      fs_visitor v(compiler, log_data, mem_ctx, &key->base,
                    &prog_data->base.base, NULL, nir, 8,
                    shader_time_index, input_vue_map);
       if (!v.run_tes()) {
@@ -1335,7 +1336,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
       prog_data->base.dispatch_mode = DISPATCH_MODE_SIMD8;
 
       fs_generator g(compiler, log_data, mem_ctx,
-                     &prog_data->base.base, v.promoted_constants, false,
+                     &prog_data->base.base, v.shader_stats, false,
                      MESA_SHADER_TESS_EVAL);
       if (unlikely(INTEL_DEBUG & DEBUG_TES)) {
          g.enable_debug(ralloc_asprintf(mem_ctx,
@@ -1345,7 +1346,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
                                         nir->info.name));
       }
 
-      g.generate_code(v.cfg, 8);
+      g.generate_code(v.cfg, 8, stats);
 
       assembly = g.get_assembly();
    } else {
@@ -1361,7 +1362,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
 	 v.dump_instructions();
 
       assembly = brw_vec4_generate_assembly(compiler, log_data, mem_ctx, nir,
-                                            &prog_data->base, v.cfg);
+                                            &prog_data->base, v.cfg, stats);
    }
 
    return assembly;

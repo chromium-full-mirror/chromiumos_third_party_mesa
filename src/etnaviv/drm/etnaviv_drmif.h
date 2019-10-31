@@ -56,6 +56,7 @@ enum etna_param_id {
 	ETNA_GPU_FEATURES_4                = 0x7,
 	ETNA_GPU_FEATURES_5                = 0x8,
 	ETNA_GPU_FEATURES_6                = 0x9,
+	ETNA_GPU_FEATURES_7                = 0xa,
 
 	ETNA_GPU_STREAM_COUNT              = 0x10,
 	ETNA_GPU_REGISTER_MAX              = 0x11,
@@ -115,8 +116,6 @@ int etna_pipe_wait_ns(struct etna_pipe *pipe, uint32_t timestamp, uint64_t ns);
 
 struct etna_bo *etna_bo_new(struct etna_device *dev,
 		uint32_t size, uint32_t flags);
-struct etna_bo *etna_bo_from_handle(struct etna_device *dev,
-		uint32_t handle, uint32_t size);
 struct etna_bo *etna_bo_from_name(struct etna_device *dev, uint32_t name);
 struct etna_bo *etna_bo_from_dmabuf(struct etna_device *dev, int fd);
 struct etna_bo *etna_bo_ref(struct etna_bo *bo);

@@ -93,7 +93,7 @@ ac_texture_dim_from_tgsi_target(struct si_screen *screen, enum tgsi_texture_type
 	switch (target) {
 	case TGSI_TEXTURE_1D:
 	case TGSI_TEXTURE_SHADOW1D:
-		if (screen->info.chip_class >= GFX9)
+		if (screen->info.chip_class == GFX9)
 			return ac_image_2d;
 		return ac_image_1d;
 	case TGSI_TEXTURE_2D:
@@ -110,7 +110,7 @@ ac_texture_dim_from_tgsi_target(struct si_screen *screen, enum tgsi_texture_type
 		return ac_image_cube;
 	case TGSI_TEXTURE_1D_ARRAY:
 	case TGSI_TEXTURE_SHADOW1D_ARRAY:
-		if (screen->info.chip_class >= GFX9)
+		if (screen->info.chip_class == GFX9)
 			return ac_image_2darray;
 		return ac_image_1darray;
 	case TGSI_TEXTURE_2D_ARRAY:
@@ -134,7 +134,7 @@ ac_image_dim_from_tgsi_target(struct si_screen *screen, enum tgsi_texture_type t
 	if (dim == ac_image_cube ||
 	    (screen->info.chip_class <= GFX8 && dim == ac_image_3d))
 		dim = ac_image_2darray;
-	else if (target == TGSI_TEXTURE_2D && screen->info.chip_class >= GFX9) {
+	else if (target == TGSI_TEXTURE_2D && screen->info.chip_class == GFX9) {
 		/* When a single layer of a 3D texture is bound, the shader
 		 * will refer to a 2D target, but the descriptor has a 3D type.
 		 * Since the HW ignores BASE_ARRAY in this case, we need to
@@ -176,8 +176,8 @@ static LLVMValueRef force_dcc_off(struct si_shader_context *ctx,
 
 LLVMValueRef si_load_image_desc(struct si_shader_context *ctx,
 				LLVMValueRef list, LLVMValueRef index,
-				enum ac_descriptor_type desc_type, bool dcc_off,
-				bool bindless)
+				enum ac_descriptor_type desc_type,
+				bool uses_store, bool bindless)
 {
 	LLVMBuilderRef builder = ctx->ac.builder;
 	LLVMValueRef rsrc;
@@ -196,7 +196,7 @@ LLVMValueRef si_load_image_desc(struct si_shader_context *ctx,
 	else
 		rsrc = ac_build_load_to_sgpr(&ctx->ac, list, index);
 
-	if (desc_type == AC_DESC_IMAGE && dcc_off)
+	if (desc_type == AC_DESC_IMAGE && uses_store)
 		rsrc = force_dcc_off(ctx, rsrc);
 	return rsrc;
 }
@@ -215,7 +215,6 @@ image_fetch_rsrc(
 	LLVMValueRef rsrc_ptr = LLVMGetParam(ctx->main_fn,
 					     ctx->param_samplers_and_images);
 	LLVMValueRef index;
-	bool dcc_off = is_store;
 
 	if (!image->Register.Indirect) {
 		index = LLVMConstInt(ctx->i32,
@@ -259,7 +258,7 @@ image_fetch_rsrc(
 
 	*rsrc = si_load_image_desc(ctx, rsrc_ptr, index,
 				   target == TGSI_TEXTURE_BUFFER ? AC_DESC_BUFFER : AC_DESC_IMAGE,
-				   dcc_off, bindless);
+				   is_store, bindless);
 }
 
 static void image_fetch_coords(
@@ -287,7 +286,7 @@ static void image_fetch_coords(
 		coords[chan] = tmp;
 	}
 
-	if (ctx->screen->info.chip_class >= GFX9) {
+	if (ctx->screen->info.chip_class == GFX9) {
 		/* 1D textures are allocated and used as 2D on GFX9. */
 		if (target == TGSI_TEXTURE_1D) {
 			coords[1] = ctx->i32_0;
@@ -329,8 +328,9 @@ static unsigned get_cache_policy(struct si_shader_context *ctx,
 	      * evicting L1 cache lines that may be needed by other
 	      * instructions. */
 	     writeonly_memory ||
-	     inst->Memory.Qualifier & (TGSI_MEMORY_COHERENT | TGSI_MEMORY_VOLATILE)))
+	     inst->Memory.Qualifier & (TGSI_MEMORY_COHERENT | TGSI_MEMORY_VOLATILE))) {
 		cache_policy |= ac_glc;
+	}
 
 	if (inst->Memory.Qualifier & TGSI_MEMORY_STREAM_CACHE_POLICY)
 		cache_policy |= ac_slc;
@@ -512,12 +512,12 @@ static void load_emit(
 		emit_data->output[emit_data->chan] =
 			ac_build_buffer_load(&ctx->ac, args.resource,
 					     util_last_bit(inst->Dst[0].Register.WriteMask),
-					     NULL, voffset, NULL, 0, 0, 0, true, true);
+					     NULL, voffset, NULL, 0, 0, true, true);
 		return;
 	}
 
 	if (inst->Memory.Qualifier & TGSI_MEMORY_VOLATILE)
-		ac_build_waitcnt(&ctx->ac, VM_CNT);
+		ac_build_waitcnt(&ctx->ac, AC_WAIT_VLOAD | AC_WAIT_VSTORE);
 
 	can_speculate = !(inst->Memory.Qualifier & TGSI_MEMORY_VOLATILE) &&
 			  is_oneway_access_only(inst, info,
@@ -549,9 +549,7 @@ static void load_emit(
 			ac_build_buffer_load(&ctx->ac, args.resource,
 					     util_last_bit(inst->Dst[0].Register.WriteMask),
 					     NULL, voffset, NULL, 0,
-					     !!(args.cache_policy & ac_glc),
-					     !!(args.cache_policy & ac_slc),
-					     can_speculate, false);
+					     args.cache_policy, can_speculate, false);
 		return;
 	}
 
@@ -563,7 +561,7 @@ static void load_emit(
 						    vindex,
 						    ctx->i32_0,
 						    num_channels,
-						    !!(args.cache_policy & ac_glc),
+						    args.cache_policy,
 						    can_speculate);
 		emit_data->output[emit_data->chan] =
 			ac_build_expand_to_vec4(&ctx->ac, result, num_channels);
@@ -632,9 +630,7 @@ static void store_emit_buffer(struct si_shader_context *ctx,
 		}
 
 		ac_build_buffer_store_dword(&ctx->ac, resource, data, count,
-					    voff, ctx->i32_0, 0,
-					    !!(cache_policy & ac_glc),
-					    !!(cache_policy & ac_slc),
+					    voff, ctx->i32_0, 0, cache_policy,
 					    false);
 	}
 }
@@ -706,7 +702,7 @@ static void store_emit(
 	}
 
 	if (inst->Memory.Qualifier & TGSI_MEMORY_VOLATILE)
-		ac_build_waitcnt(&ctx->ac, VM_CNT);
+		ac_build_waitcnt(&ctx->ac, AC_WAIT_VLOAD | AC_WAIT_VSTORE);
 
 	bool is_image = inst->Dst[0].Register.File != TGSI_FILE_BUFFER;
 	args.cache_policy = get_cache_policy(ctx, inst,
@@ -728,8 +724,7 @@ static void store_emit(
 					     ac_build_gather_values(&ctx->ac, chans, num_channels),
 					     vindex, ctx->i32_0 /* voffset */,
 					     num_channels,
-					     !!(args.cache_policy & ac_glc),
-					     false);
+					     args.cache_policy);
 	} else {
 		args.opcode = ac_image_store;
 		args.data[0] = ac_build_gather_values(&ctx->ac, chans, 4);
@@ -832,6 +827,7 @@ static void atomic_emit(
 
 	args.data[num_data++] =
 		ac_to_integer(&ctx->ac, lp_build_emit_fetch(bld_base, inst, 2, 0));
+
 	args.cache_policy = get_cache_policy(ctx, inst, true, false, false);
 
 	if (inst->Src[0].Register.File == TGSI_FILE_BUFFER) {
@@ -907,6 +903,12 @@ static void atomic_emit(
 			case TGSI_OPCODE_ATOMUMAX: args.atomic = ac_atomic_umax; break;
 			case TGSI_OPCODE_ATOMIMIN: args.atomic = ac_atomic_smin; break;
 			case TGSI_OPCODE_ATOMIMAX: args.atomic = ac_atomic_smax; break;
+			case TGSI_OPCODE_ATOMINC_WRAP:
+				args.atomic = ac_atomic_inc_wrap;
+				break;
+			case TGSI_OPCODE_ATOMDEC_WRAP:
+				args.atomic = ac_atomic_dec_wrap;
+				break;
 			default: unreachable("unhandled image atomic");
 			}
 		}
@@ -923,7 +925,7 @@ static LLVMValueRef fix_resinfo(struct si_shader_context *ctx,
 	LLVMBuilderRef builder = ctx->ac.builder;
 
 	/* 1D textures are allocated and used as 2D on GFX9. */
-        if (ctx->screen->info.chip_class >= GFX9 &&
+        if (ctx->screen->info.chip_class == GFX9 &&
 	    (target == TGSI_TEXTURE_1D_ARRAY ||
 	     target == TGSI_TEXTURE_SHADOW1D_ARRAY)) {
 		LLVMValueRef layers =
@@ -1339,7 +1341,7 @@ static void build_tex_intrinsic(const struct lp_build_tgsi_action *action,
 						    args.resource,
 						    vindex,
 						    ctx->i32_0,
-						    num_channels, false, true);
+						    num_channels, 0, true);
 		emit_data->output[emit_data->chan] =
 			ac_build_expand_to_vec4(&ctx->ac, result, num_channels);
 		return;
@@ -1408,9 +1410,11 @@ static void build_tex_intrinsic(const struct lp_build_tgsi_action *action,
 		 *
 		 * TC-compatible HTILE promotes Z16 and Z24 to Z32_FLOAT,
 		 * so the depth comparison value isn't clamped for Z16 and
-		 * Z24 anymore. Do it manually here.
+		 * Z24 anymore. Do it manually here for GFX8-9; GFX10 has
+		 * an explicitly clamped 32-bit float format.
 		 */
-		if (ctx->screen->info.chip_class >= GFX8) {
+		if (ctx->screen->info.chip_class >= GFX8 &&
+		    ctx->screen->info.chip_class <= GFX9) {
 			LLVMValueRef upgraded;
 			LLVMValueRef clamped;
 			upgraded = LLVMBuildExtractElement(ctx->ac.builder, args.sampler,
@@ -1458,7 +1462,7 @@ static void build_tex_intrinsic(const struct lp_build_tgsi_action *action,
 			num_src_deriv_channels = 1;
 
 			/* 1D textures are allocated and used as 2D on GFX9. */
-			if (ctx->screen->info.chip_class >= GFX9) {
+			if (ctx->screen->info.chip_class == GFX9) {
 				num_dst_deriv_channels = 2;
 			} else {
 				num_dst_deriv_channels = 1;
@@ -1500,7 +1504,7 @@ static void build_tex_intrinsic(const struct lp_build_tgsi_action *action,
 	}
 
 	/* 1D textures are allocated and used as 2D on GFX9. */
-	if (ctx->screen->info.chip_class >= GFX9) {
+	if (ctx->screen->info.chip_class == GFX9) {
 		LLVMValueRef filler;
 
 		/* Use 0.5, so that we don't sample the border color. */
@@ -1534,8 +1538,9 @@ static void build_tex_intrinsic(const struct lp_build_tgsi_action *action,
 		}
 	}
 
-	if (target == TGSI_TEXTURE_2D_MSAA ||
-	    target == TGSI_TEXTURE_2D_ARRAY_MSAA) {
+	if ((target == TGSI_TEXTURE_2D_MSAA ||
+	     target == TGSI_TEXTURE_2D_ARRAY_MSAA) &&
+	    !(ctx->screen->debug_flags & DBG(NO_FMASK))) {
 		ac_apply_fmask_to_sample(&ctx->ac, fmask_ptr, args.coords,
 					 target == TGSI_TEXTURE_2D_ARRAY_MSAA);
 	}
@@ -1700,11 +1705,8 @@ static void si_llvm_emit_txqs(
 	emit_data->output[emit_data->chan] = samples;
 }
 
-static void si_llvm_emit_fbfetch(const struct lp_build_tgsi_action *action,
-				 struct lp_build_tgsi_context *bld_base,
-				 struct lp_build_emit_data *emit_data)
+static LLVMValueRef si_llvm_emit_fbfetch(struct si_shader_context *ctx)
 {
-	struct si_shader_context *ctx = si_shader_context(bld_base);
 	struct ac_image_args args = {};
 	LLVMValueRef ptr, image, fmask;
 
@@ -1734,7 +1736,8 @@ static void si_llvm_emit_fbfetch(const struct lp_build_tgsi_action *action,
 	if (ctx->shader->key.mono.u.ps.fbfetch_msaa)
 		args.coords[chan++] = si_get_sample_id(ctx);
 
-	if (ctx->shader->key.mono.u.ps.fbfetch_msaa) {
+	if (ctx->shader->key.mono.u.ps.fbfetch_msaa &&
+	    !(ctx->screen->debug_flags & DBG(NO_FMASK))) {
 		fmask = ac_build_load_to_sgpr(&ctx->ac, ptr,
 			LLVMConstInt(ctx->i32, SI_PS_IMAGE_COLORBUF0_FMASK / 2, 0));
 
@@ -1757,8 +1760,23 @@ static void si_llvm_emit_fbfetch(const struct lp_build_tgsi_action *action,
 		args.dim = ctx->shader->key.mono.u.ps.fbfetch_layered ?
 			ac_image_2darray : ac_image_2d;
 
-	emit_data->output[emit_data->chan] =
-		ac_build_image_opcode(&ctx->ac, &args);
+	return ac_build_image_opcode(&ctx->ac, &args);
+}
+
+static void si_tgsi_emit_fbfetch(const struct lp_build_tgsi_action *action,
+				 struct lp_build_tgsi_context *bld_base,
+				 struct lp_build_emit_data *emit_data)
+{
+	struct si_shader_context *ctx = si_shader_context(bld_base);
+
+	emit_data->output[emit_data->chan] = si_llvm_emit_fbfetch(ctx);
+}
+
+LLVMValueRef si_nir_emit_fbfetch(struct ac_shader_abi *abi)
+{
+	struct si_shader_context *ctx = si_shader_context_from_abi(abi);
+
+	return si_llvm_emit_fbfetch(ctx);
 }
 
 /**
@@ -1784,7 +1802,7 @@ void si_shader_context_init_mem(struct si_shader_context *ctx)
 	bld_base->op_actions[TGSI_OPCODE_LODQ].emit = build_tex_intrinsic;
 	bld_base->op_actions[TGSI_OPCODE_TXQS].emit = si_llvm_emit_txqs;
 
-	bld_base->op_actions[TGSI_OPCODE_FBFETCH].emit = si_llvm_emit_fbfetch;
+	bld_base->op_actions[TGSI_OPCODE_FBFETCH].emit = si_tgsi_emit_fbfetch;
 
 	bld_base->op_actions[TGSI_OPCODE_LOAD].emit = load_emit;
 	bld_base->op_actions[TGSI_OPCODE_STORE].emit = store_emit;
@@ -1810,4 +1828,8 @@ void si_shader_context_init_mem(struct si_shader_context *ctx)
 	bld_base->op_actions[TGSI_OPCODE_ATOMIMIN].intr_name = "smin";
 	bld_base->op_actions[TGSI_OPCODE_ATOMIMAX].emit = atomic_emit;
 	bld_base->op_actions[TGSI_OPCODE_ATOMIMAX].intr_name = "smax";
+	bld_base->op_actions[TGSI_OPCODE_ATOMINC_WRAP].emit = atomic_emit;
+	bld_base->op_actions[TGSI_OPCODE_ATOMINC_WRAP].intr_name = "inc";
+	bld_base->op_actions[TGSI_OPCODE_ATOMDEC_WRAP].emit = atomic_emit;
+	bld_base->op_actions[TGSI_OPCODE_ATOMDEC_WRAP].intr_name = "dec";
 }

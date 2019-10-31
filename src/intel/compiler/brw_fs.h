@@ -52,6 +52,11 @@ offset(const fs_reg &reg, const brw::fs_builder &bld, unsigned delta)
 
 #define UBO_START ((1 << 16) - 4)
 
+struct shader_stats {
+   const char *scheduler_mode;
+   unsigned promoted_constants;
+};
+
 /**
  * The fragment shader front-end.
  *
@@ -62,7 +67,7 @@ class fs_visitor : public backend_shader
 public:
    fs_visitor(const struct brw_compiler *compiler, void *log_data,
               void *mem_ctx,
-              const void *key,
+              const brw_base_prog_key *key,
               struct brw_stage_prog_data *prog_data,
               struct gl_program *prog,
               const nir_shader *shader,
@@ -80,8 +85,6 @@ public:
 
    fs_reg vgrf(const glsl_type *const type);
    void import_uniforms(fs_visitor *v);
-   void setup_uniform_clipplane_values();
-   void compute_clip_distance();
 
    void VARYING_PULL_CONSTANT_LOAD(const brw::fs_builder &bld,
                                    const fs_reg &dst,
@@ -106,7 +109,6 @@ public:
    bool fixup_sends_duplicate_payload();
    void fixup_3src_null_dest();
    void assign_curb_setup();
-   void calculate_urb_setup();
    void assign_urb_setup();
    void convert_attr_sources_to_hw_regs(fs_inst *inst);
    void assign_vs_urb_setup();
@@ -163,7 +165,6 @@ public:
    bool lower_pack();
    bool lower_regioning();
    bool lower_logical_sends();
-   bool lower_linterp();
    bool lower_integer_multiplication();
    bool lower_minmax();
    bool lower_simd_width();
@@ -305,7 +306,7 @@ public:
    void dump_instruction(backend_instruction *inst);
    void dump_instruction(backend_instruction *inst, FILE *file);
 
-   const void *const key;
+   const brw_base_prog_key *const key;
    const struct brw_sampler_prog_key_data *key_tex;
 
    struct brw_gs_compile *gs_compile;
@@ -381,7 +382,6 @@ public:
    fs_reg pixel_w;
    fs_reg delta_xy[BRW_BARYCENTRIC_MODE_COUNT];
    fs_reg shader_start_time;
-   fs_reg userplane[MAX_CLIP_PLANES];
    fs_reg final_gs_vertex_count;
    fs_reg control_data_bits;
    fs_reg invocation_id;
@@ -394,7 +394,8 @@ public:
 
    int shader_time_index;
 
-   unsigned promoted_constants;
+   struct shader_stats shader_stats;
+
    brw::fs_builder bld;
 
 private:
@@ -405,6 +406,9 @@ private:
 
    void resolve_inot_sources(const brw::fs_builder &bld, nir_alu_instr *instr,
                              fs_reg *op);
+   void lower_mul_dword_inst(fs_inst *inst, bblock_t *block);
+   void lower_mul_qword_inst(fs_inst *inst, bblock_t *block);
+   void lower_mulh_inst(fs_inst *inst, bblock_t *block);
 };
 
 /**
@@ -418,13 +422,14 @@ public:
    fs_generator(const struct brw_compiler *compiler, void *log_data,
                 void *mem_ctx,
                 struct brw_stage_prog_data *prog_data,
-                unsigned promoted_constants,
+                struct shader_stats shader_stats,
                 bool runtime_check_aads_emit,
                 gl_shader_stage stage);
    ~fs_generator();
 
    void enable_debug(const char *shader_name);
-   int generate_code(const cfg_t *cfg, int dispatch_width);
+   int generate_code(const cfg_t *cfg, int dispatch_width,
+                     struct brw_compile_stats *stats);
    const unsigned *get_assembly();
 
 private:
@@ -522,7 +527,7 @@ private:
    unsigned dispatch_width; /**< 8, 16 or 32 */
 
    exec_list discard_halt_patches;
-   unsigned promoted_constants;
+   struct shader_stats shader_stats;
    bool runtime_check_aads_emit;
    bool debug_flag;
    const char *shader_name;
@@ -570,11 +575,6 @@ void shuffle_from_32bit_read(const brw::fs_builder &bld,
                              const fs_reg &src,
                              uint32_t first_component,
                              uint32_t components);
-
-fs_reg shuffle_for_32bit_write(const brw::fs_builder &bld,
-                               const fs_reg &src,
-                               uint32_t first_component,
-                               uint32_t components);
 
 fs_reg setup_imm_df(const brw::fs_builder &bld,
                     double v);

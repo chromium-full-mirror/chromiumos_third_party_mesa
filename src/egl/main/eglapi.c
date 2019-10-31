@@ -406,6 +406,11 @@ _eglGetPlatformDisplayCommon(EGLenum platform, void *native_display,
       disp = _eglGetSurfacelessDisplay(native_display, attrib_list);
       break;
 #endif
+#ifdef HAVE_ANDROID_PLATFORM
+   case EGL_PLATFORM_ANDROID_KHR:
+      disp = _eglGetAndroidDisplay(native_display, attrib_list);
+      break;
+#endif
    case EGL_PLATFORM_DEVICE_EXT:
       disp = _eglGetDeviceDisplay(native_display, attrib_list);
       break;
@@ -671,6 +676,10 @@ eglTerminate(EGLDisplay dpy)
       /* do not reset disp->Driver */
       disp->ClientAPIsString[0] = 0;
       disp->Initialized = EGL_FALSE;
+
+      /* Reset blob cache funcs on terminate. */
+      disp->BlobCacheSet = NULL;
+      disp->BlobCacheGet = NULL;
    }
 
    RETURN_EGL_SUCCESS(disp, EGL_TRUE);
@@ -725,7 +734,7 @@ eglGetConfigs(EGLDisplay dpy, EGLConfig *configs,
    if (!num_config)
       RETURN_EGL_ERROR(disp, EGL_BAD_PARAMETER, EGL_FALSE);
 
-   ret = drv->API.GetConfigs(drv, disp, configs, config_size, num_config);
+   ret = _eglGetConfigs(drv, disp, configs, config_size, num_config);
 
    RETURN_EGL_EVAL(disp, ret);
 }
@@ -746,8 +755,8 @@ eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list, EGLConfig *configs,
    if (!num_config)
       RETURN_EGL_ERROR(disp, EGL_BAD_PARAMETER, EGL_FALSE);
 
-   ret = drv->API.ChooseConfig(drv, disp, attrib_list, configs,
-                               config_size, num_config);
+   ret = _eglChooseConfig(drv, disp, attrib_list, configs,
+                          config_size, num_config);
 
    RETURN_EGL_EVAL(disp, ret);
 }
@@ -765,7 +774,8 @@ eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
    _EGL_FUNC_START(disp, EGL_OBJECT_DISPLAY_KHR, NULL, EGL_FALSE);
 
    _EGL_CHECK_CONFIG(disp, conf, EGL_FALSE, drv);
-   ret = drv->API.GetConfigAttrib(drv, disp, conf, attribute, value);
+
+   ret = _eglGetConfigAttrib(drv, disp, conf, attribute, value);
 
    RETURN_EGL_EVAL(disp, ret);
 }
@@ -889,7 +899,8 @@ eglQueryContext(EGLDisplay dpy, EGLContext ctx,
    _EGL_FUNC_START(disp, EGL_OBJECT_CONTEXT_KHR, context, EGL_FALSE);
 
    _EGL_CHECK_CONTEXT(disp, context, EGL_FALSE, drv);
-   ret = drv->API.QueryContext(drv, disp, context, attribute, value);
+
+   ret = _eglQueryContext(drv, disp, context, attribute, value);
 
    RETURN_EGL_EVAL(disp, ret);
 }
@@ -1193,7 +1204,11 @@ eglQuerySurface(EGLDisplay dpy, EGLSurface surface,
 
    _EGL_FUNC_START(disp, EGL_OBJECT_SURFACE_KHR, surf, EGL_FALSE);
    _EGL_CHECK_SURFACE(disp, surf, EGL_FALSE, drv);
-   ret = drv->API.QuerySurface(drv, disp, surf, attribute, value);
+
+   if (drv->API.QuerySurface)
+      ret = drv->API.QuerySurface(drv, disp, surf, attribute, value);
+   else
+      ret = _eglQuerySurface(drv, disp, surf, attribute, value);
 
    RETURN_EGL_EVAL(disp, ret);
 }
@@ -1209,7 +1224,8 @@ eglSurfaceAttrib(EGLDisplay dpy, EGLSurface surface,
 
    _EGL_FUNC_START(disp, EGL_OBJECT_SURFACE_KHR, surf, EGL_FALSE);
    _EGL_CHECK_SURFACE(disp, surf, EGL_FALSE, drv);
-   ret = drv->API.SurfaceAttrib(drv, disp, surf, attribute, value);
+
+   ret = _eglSurfaceAttrib(drv, disp, surf, attribute, value);
 
    RETURN_EGL_EVAL(disp, ret);
 }
@@ -1273,10 +1289,15 @@ eglSwapInterval(EGLDisplay dpy, EGLint interval)
                     surf->Config->MinSwapInterval,
                     surf->Config->MaxSwapInterval);
 
-   if (surf->SwapInterval != interval)
-      ret = drv->API.SwapInterval(drv, disp, surf, interval);
-   else
+   if (surf->SwapInterval != interval) {
+      if (drv->API.SwapInterval)
+         ret = drv->API.SwapInterval(drv, disp, surf, interval);
+      else
+         ret = _eglSwapInterval(drv, disp, surf, interval);
+   }
+   else {
       ret = EGL_TRUE;
+   }
 
    if (ret)
       surf->SwapInterval = interval;
@@ -1666,18 +1687,13 @@ eglCreatePbufferFromClientBuffer(EGLDisplay dpy, EGLenum buftype,
    _EGLDisplay *disp = _eglLockDisplay(dpy);
    _EGLConfig *conf = _eglLookupConfig(config, disp);
    _EGLDriver *drv;
-   _EGLSurface *surf;
-   EGLSurface ret;
 
    _EGL_FUNC_START(disp, EGL_OBJECT_DISPLAY_KHR, NULL, EGL_NO_SURFACE);
 
    _EGL_CHECK_CONFIG(disp, conf, EGL_NO_SURFACE, drv);
 
-   surf = drv->API.CreatePbufferFromClientBuffer(drv, disp, buftype, buffer,
-                                                 conf, attrib_list);
-   ret = (surf) ? _eglLinkSurface(surf) : EGL_NO_SURFACE;
-
-   RETURN_EGL_EVAL(disp, ret);
+   /* OpenVG is not supported */
+   RETURN_EGL_ERROR(disp, EGL_BAD_ALLOC, EGL_NO_SURFACE);
 }
 
 
@@ -2084,7 +2100,8 @@ _eglGetSyncAttribCommon(_EGLDisplay *disp, _EGLSync *s, EGLint attribute, EGLAtt
    assert(disp->Extensions.KHR_reusable_sync ||
           disp->Extensions.KHR_fence_sync ||
           disp->Extensions.ANDROID_native_fence_sync);
-   ret = drv->API.GetSyncAttrib(drv, disp, s, attribute, value);
+
+   ret = _eglGetSyncAttrib(drv, disp, s, attribute, value);
 
    RETURN_EGL_EVAL(disp, ret);
 }
@@ -2095,6 +2112,10 @@ eglGetSyncAttrib(EGLDisplay dpy, EGLSync sync, EGLint attribute, EGLAttrib *valu
    _EGLDisplay *disp = _eglLockDisplay(dpy);
    _EGLSync *s = _eglLookupSync(sync, disp);
    _EGL_FUNC_START(disp, EGL_OBJECT_SYNC_KHR, s, EGL_FALSE);
+
+   if (!value)
+      RETURN_EGL_ERROR(disp, EGL_BAD_PARAMETER, EGL_FALSE);
+
    return _eglGetSyncAttribCommon(disp, s, attribute, value);
 }
 
