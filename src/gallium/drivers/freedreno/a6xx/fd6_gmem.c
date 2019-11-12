@@ -37,6 +37,7 @@
 #include "freedreno_state.h"
 #include "freedreno_resource.h"
 
+#include "fd6_blitter.h"
 #include "fd6_gmem.h"
 #include "fd6_context.h"
 #include "fd6_draw.h"
@@ -108,13 +109,13 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
 		if (psurf->u.tex.first_layer < psurf->u.tex.last_layer) {
 			layered = true;
 			if (psurf->texture->target == PIPE_TEXTURE_2D_ARRAY && psurf->texture->nr_samples > 0)
-				type = MULTISAMPLE_ARRAY;
+				type = LAYER_MULTISAMPLE_ARRAY;
 			else if (psurf->texture->target == PIPE_TEXTURE_2D_ARRAY)
-				type = ARRAY;
+				type = LAYER_2D_ARRAY;
 			else if (psurf->texture->target == PIPE_TEXTURE_CUBE)
-				type = CUBEMAP;
+				type = LAYER_CUBEMAP;
 			else if (psurf->texture->target == PIPE_TEXTURE_3D)
-				type = ARRAY;
+				type = LAYER_3D;
 
 			stride /= pfb->samples;
 		}
@@ -648,6 +649,8 @@ emit_binning_pass(struct fd_batch *batch)
 	uint32_t y1 = gmem->miny;
 	uint32_t x2 = gmem->minx + gmem->width - 1;
 	uint32_t y2 = gmem->miny + gmem->height - 1;
+
+	debug_assert(!batch->tessellation);
 
 	set_scissor(ring, x1, y1, x2, y2);
 
@@ -1446,6 +1449,79 @@ fd6_emit_tile_fini(struct fd_batch *batch)
 }
 
 static void
+emit_sysmem_clears(struct fd_batch *batch, struct fd_ringbuffer *ring)
+{
+	struct fd_context *ctx = batch->ctx;
+	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
+
+	uint32_t buffers = batch->fast_cleared;
+
+	if (buffers & PIPE_CLEAR_COLOR) {
+		for (int i = 0; i < pfb->nr_cbufs; i++) {
+			union pipe_color_union *color = &batch->clear_color[i];
+
+			if (!pfb->cbufs[i])
+				continue;
+
+			if (!(buffers & (PIPE_CLEAR_COLOR0 << i)))
+				continue;
+
+			fd6_clear_surface(ctx, ring,
+					pfb->cbufs[i], pfb->width, pfb->height, color);
+		}
+	}
+	if (buffers & (PIPE_CLEAR_DEPTH | PIPE_CLEAR_STENCIL)) {
+		union pipe_color_union value = {};
+
+		const bool has_depth = pfb->zsbuf;
+		struct pipe_resource *separate_stencil =
+			has_depth && fd_resource(pfb->zsbuf->texture)->stencil ?
+			&fd_resource(pfb->zsbuf->texture)->stencil->base : NULL;
+
+		if ((has_depth && (buffers & PIPE_CLEAR_DEPTH)) ||
+				(!separate_stencil && (buffers & PIPE_CLEAR_STENCIL))) {
+			value.f[0] = batch->clear_depth;
+			value.ui[1] = batch->clear_stencil;
+			fd6_clear_surface(ctx, ring,
+					pfb->zsbuf, pfb->width, pfb->height, &value);
+		}
+
+		if (separate_stencil && (buffers & PIPE_CLEAR_STENCIL)) {
+			value.ui[0] = batch->clear_stencil;
+
+			struct pipe_surface stencil_surf = *pfb->zsbuf;
+			stencil_surf.texture = separate_stencil;
+
+			fd6_clear_surface(ctx, ring,
+					&stencil_surf, pfb->width, pfb->height, &value);
+		}
+	}
+
+	fd6_event_write(batch, ring, 0x1d, true);
+}
+
+static void
+setup_tess_buffers(struct fd_batch *batch, struct fd_ringbuffer *ring)
+{
+	struct fd_context *ctx = batch->ctx;
+
+	batch->tessfactor_bo = fd_bo_new(ctx->screen->dev,
+			batch->tessfactor_size,
+			DRM_FREEDRENO_GEM_TYPE_KMEM, "tessfactor");
+
+	batch->tessparam_bo = fd_bo_new(ctx->screen->dev,
+			batch->tessparam_size,
+			DRM_FREEDRENO_GEM_TYPE_KMEM, "tessparam");
+
+	OUT_PKT4(ring, REG_A6XX_PC_TESSFACTOR_ADDR_LO, 2);
+	OUT_RELOCW(ring, batch->tessfactor_bo, 0, 0, 0);
+
+	batch->tess_addrs_constobj->cur = batch->tess_addrs_constobj->start;
+	OUT_RELOCW(batch->tess_addrs_constobj, batch->tessparam_bo, 0, 0, 0);
+	OUT_RELOCW(batch->tess_addrs_constobj, batch->tessfactor_bo, 0, 0, 0);
+}
+
+static void
 fd6_emit_sysmem_prep(struct fd_batch *batch)
 {
 	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
@@ -1453,12 +1529,23 @@ fd6_emit_sysmem_prep(struct fd_batch *batch)
 
 	fd6_emit_restore(batch, ring);
 
+	set_scissor(ring, 0, 0, pfb->width - 1, pfb->height - 1);
+
+	set_window_offset(ring, 0, 0);
+
+	set_bin_size(ring, 0, 0, 0xc00000); /* 0xc00000 = BYPASS? */
+
+	emit_sysmem_clears(batch, ring);
+
 	fd6_emit_lrz_flush(ring);
 
 	emit_marker6(ring, 7);
 	OUT_PKT7(ring, CP_SET_MARKER, 1);
 	OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_BYPASS) | 0x10); /* | 0x10 ? */
 	emit_marker6(ring, 7);
+
+	if (batch->tessellation)
+		setup_tess_buffers(batch, ring);
 
 	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
 	OUT_RING(ring, 0x0);
@@ -1473,12 +1560,6 @@ fd6_emit_sysmem_prep(struct fd_batch *batch)
 	/* enable stream-out, with sysmem there is only one pass: */
 	OUT_PKT4(ring, REG_A6XX_VPC_SO_OVERRIDE, 1);
 	OUT_RING(ring, 0);
-
-	set_scissor(ring, 0, 0, pfb->width - 1, pfb->height - 1);
-
-	set_window_offset(ring, 0, 0);
-
-	set_bin_size(ring, 0, 0, 0xc00000); /* 0xc00000 = BYPASS? */
 
 	OUT_PKT7(ring, CP_SET_VISIBILITY_OVERRIDE, 1);
 	OUT_RING(ring, 0x1);

@@ -587,11 +587,10 @@ static void
 analyze_clip_cull_usage(struct gl_shader_program *prog,
                         struct gl_linked_shader *shader,
                         struct gl_context *ctx,
-                        GLuint *clip_distance_array_size,
-                        GLuint *cull_distance_array_size)
+                        struct shader_info *info)
 {
-   *clip_distance_array_size = 0;
-   *cull_distance_array_size = 0;
+   info->clip_distance_array_size = 0;
+   info->cull_distance_array_size = 0;
 
    if (prog->data->Version >= (prog->IsES ? 300 : 130)) {
       /* From section 7.1 (Vertex Shader Special Variables) of the
@@ -643,13 +642,13 @@ analyze_clip_cull_usage(struct gl_shader_program *prog,
          ir_variable *clip_distance_var =
                 shader->symbols->get_variable("gl_ClipDistance");
          assert(clip_distance_var);
-         *clip_distance_array_size = clip_distance_var->type->length;
+         info->clip_distance_array_size = clip_distance_var->type->length;
       }
       if (gl_CullDistance.found) {
          ir_variable *cull_distance_var =
                 shader->symbols->get_variable("gl_CullDistance");
          assert(cull_distance_var);
-         *cull_distance_array_size = cull_distance_var->type->length;
+         info->cull_distance_array_size = cull_distance_var->type->length;
       }
       /* From the ARB_cull_distance spec:
        *
@@ -658,7 +657,7 @@ analyze_clip_cull_usage(struct gl_shader_program *prog,
        * gl_CullDistance arrays to be larger than
        * gl_MaxCombinedClipAndCullDistances.
        */
-      if ((*clip_distance_array_size + *cull_distance_array_size) >
+      if ((uint32_t)(info->clip_distance_array_size + info->cull_distance_array_size) >
           ctx->Const.MaxClipPlanes) {
           linker_error(prog, "%s shader: the combined size of "
                        "'gl_ClipDistance' and 'gl_CullDistance' size cannot "
@@ -729,9 +728,7 @@ validate_vertex_shader_executable(struct gl_shader_program *prog,
       }
    }
 
-   analyze_clip_cull_usage(prog, shader, ctx,
-                           &shader->Program->info.clip_distance_array_size,
-                           &shader->Program->info.cull_distance_array_size);
+   analyze_clip_cull_usage(prog, shader, ctx, &shader->Program->info);
 }
 
 static void
@@ -742,9 +739,7 @@ validate_tess_eval_shader_executable(struct gl_shader_program *prog,
    if (shader == NULL)
       return;
 
-   analyze_clip_cull_usage(prog, shader, ctx,
-                           &shader->Program->info.clip_distance_array_size,
-                           &shader->Program->info.cull_distance_array_size);
+   analyze_clip_cull_usage(prog, shader, ctx, &shader->Program->info);
 }
 
 
@@ -791,9 +786,7 @@ validate_geometry_shader_executable(struct gl_shader_program *prog,
       vertices_per_prim(shader->Program->info.gs.input_primitive);
    prog->Geom.VerticesIn = num_vertices;
 
-   analyze_clip_cull_usage(prog, shader, ctx,
-                           &shader->Program->info.clip_distance_array_size,
-                           &shader->Program->info.cull_distance_array_size);
+   analyze_clip_cull_usage(prog, shader, ctx, &shader->Program->info);
 }
 
 /**
@@ -2509,6 +2502,22 @@ link_intrastage_shaders(void *mem_ctx,
    link_uniform_blocks(mem_ctx, ctx, prog, linked, &ubo_blocks,
                        &num_ubo_blocks, &ssbo_blocks, &num_ssbo_blocks);
 
+   const unsigned max_uniform_blocks =
+      ctx->Const.Program[linked->Stage].MaxUniformBlocks;
+   if (num_ubo_blocks > max_uniform_blocks) {
+      linker_error(prog, "Too many %s uniform blocks (%d/%d)\n",
+                   _mesa_shader_stage_to_string(linked->Stage),
+                   num_ubo_blocks, max_uniform_blocks);
+   }
+
+   const unsigned max_shader_storage_blocks =
+      ctx->Const.Program[linked->Stage].MaxShaderStorageBlocks;
+   if (num_ssbo_blocks > max_shader_storage_blocks) {
+      linker_error(prog, "Too many %s shader storage blocks (%d/%d)\n",
+                   _mesa_shader_stage_to_string(linked->Stage),
+                   num_ssbo_blocks, max_shader_storage_blocks);
+   }
+
    if (!prog->data->LinkStatus) {
       _mesa_delete_linked_shader(ctx, linked);
       return NULL;
@@ -3327,12 +3336,6 @@ check_resources(struct gl_context *ctx, struct gl_shader_program *prog)
       if (sh == NULL)
          continue;
 
-      if (sh->Program->info.num_textures >
-          ctx->Const.Program[i].MaxTextureImageUnits) {
-         linker_error(prog, "Too many %s shader texture samplers\n",
-                      _mesa_shader_stage_to_string(i));
-      }
-
       if (sh->num_uniform_components >
           ctx->Const.Program[i].MaxUniformComponents) {
          if (ctx->Const.GLSLSkipStrictMaxUniformLimitCheck) {
@@ -3363,22 +3366,6 @@ check_resources(struct gl_context *ctx, struct gl_shader_program *prog)
 
       total_shader_storage_blocks += sh->Program->info.num_ssbos;
       total_uniform_blocks += sh->Program->info.num_ubos;
-
-      const unsigned max_uniform_blocks =
-         ctx->Const.Program[i].MaxUniformBlocks;
-      if (max_uniform_blocks < sh->Program->info.num_ubos) {
-         linker_error(prog, "Too many %s uniform blocks (%d/%d)\n",
-                      _mesa_shader_stage_to_string(i),
-                      sh->Program->info.num_ubos, max_uniform_blocks);
-      }
-
-      const unsigned max_shader_storage_blocks =
-         ctx->Const.Program[i].MaxShaderStorageBlocks;
-      if (max_shader_storage_blocks < sh->Program->info.num_ssbos) {
-         linker_error(prog, "Too many %s shader storage blocks (%d/%d)\n",
-                      _mesa_shader_stage_to_string(i),
-                      sh->Program->info.num_ssbos, max_shader_storage_blocks);
-      }
    }
 
    if (total_uniform_blocks > ctx->Const.MaxCombinedUniformBlocks) {
@@ -3480,12 +3467,6 @@ check_image_resources(struct gl_context *ctx, struct gl_shader_program *prog)
       struct gl_linked_shader *sh = prog->_LinkedShaders[i];
 
       if (sh) {
-         if (sh->Program->info.num_images > ctx->Const.Program[i].MaxImageUniforms)
-            linker_error(prog, "Too many %s shader image uniforms (%u > %u)\n",
-                         _mesa_shader_stage_to_string(i),
-                         sh->Program->info.num_images,
-                         ctx->Const.Program[i].MaxImageUniforms);
-
          total_image_units += sh->Program->info.num_images;
          total_shader_storage_blocks += sh->Program->info.num_ssbos;
 
@@ -4771,6 +4752,9 @@ link_and_validate_uniforms(struct gl_context *ctx,
 {
    update_array_sizes(prog);
    link_assign_uniform_locations(prog, ctx);
+
+   if (prog->data->LinkStatus == LINKING_FAILURE)
+      return;
 
    link_assign_atomic_counter_resources(ctx, prog);
    link_calculate_subroutine_compat(prog);

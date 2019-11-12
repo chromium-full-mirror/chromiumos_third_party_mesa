@@ -39,7 +39,6 @@
 #include "compiler/glsl_types.h"
 #include "util/debug.h"
 #include "util/disk_cache.h"
-#include "util/strtod.h"
 #include "vk_format.h"
 #include "vk_util.h"
 
@@ -258,6 +257,7 @@ tu_physical_device_init(struct tu_physical_device *device,
 
    switch (device->gpu_id) {
    case 630:
+   case 640:
       device->tile_align_w = 32;
       device->tile_align_h = 32;
       break;
@@ -431,7 +431,6 @@ tu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       return vk_error(instance, result);
    }
 
-   _mesa_locale_init();
    glsl_type_singleton_init_or_ref();
 
    VG(VALGRIND_CREATE_MEMPOOL(instance, 0, false));
@@ -457,7 +456,6 @@ tu_DestroyInstance(VkInstance _instance,
    VG(VALGRIND_DESTROY_MEMPOOL(instance));
 
    glsl_type_singleton_decref();
-   _mesa_locale_fini();
 
    vk_debug_report_instance_destroy(&instance->debug_report_callbacks);
 

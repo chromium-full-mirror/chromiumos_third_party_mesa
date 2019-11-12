@@ -57,17 +57,17 @@ blorp_surface_reloc(struct blorp_batch *batch, uint32_t ss_offset,
                     struct blorp_address address, uint32_t delta)
 {
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
+   uint64_t address_u64 = 0;
    VkResult result =
       anv_reloc_list_add(&cmd_buffer->surface_relocs, &cmd_buffer->pool->alloc,
-                         ss_offset, address.buffer, address.offset + delta);
+                         ss_offset, address.buffer, address.offset + delta,
+                         &address_u64);
    if (result != VK_SUCCESS)
       anv_batch_set_error(&cmd_buffer->batch, result);
 
    void *dest = anv_block_pool_map(
       &cmd_buffer->device->surface_state_pool.block_pool, ss_offset);
-   uint64_t val = ((struct anv_bo*)address.buffer)->offset + address.offset +
-      delta;
-   write_reloc(cmd_buffer->device, dest, val, false);
+   write_reloc(cmd_buffer->device, dest, address_u64, false);
 }
 
 static uint64_t
@@ -158,7 +158,7 @@ blorp_alloc_vertex_buffer(struct blorp_batch *batch, uint32_t size,
    *addr = (struct blorp_address) {
       .buffer = cmd_buffer->device->dynamic_state_pool.block_pool.bo,
       .offset = vb_state.offset,
-      .mocs = cmd_buffer->device->default_mocs,
+      .mocs = cmd_buffer->device->isl_dev.mocs.internal,
    };
 
    return vb_state.map;
@@ -181,7 +181,7 @@ blorp_get_workaround_page(struct blorp_batch *batch)
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
 
    return (struct blorp_address) {
-      .buffer = &cmd_buffer->device->workaround_bo,
+      .buffer = cmd_buffer->device->workaround_bo,
    };
 }
 #endif

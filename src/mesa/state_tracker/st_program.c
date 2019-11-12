@@ -390,6 +390,8 @@ st_release_common_variants(struct st_context *st, struct st_common_program *p)
 void
 st_finalize_nir_before_variants(struct nir_shader *nir)
 {
+   NIR_PASS_V(nir, nir_opt_access);
+
    NIR_PASS_V(nir, nir_split_var_copies);
    NIR_PASS_V(nir, nir_lower_var_copies);
    if (nir->options->lower_all_io_to_temps ||
@@ -739,6 +741,9 @@ st_create_vp_variant(struct st_context *st,
                                 nir_shader_get_entrypoint(state.ir.nir));
       }
 
+      if (ST_DEBUG & DEBUG_PRINT_IR)
+         nir_print_shader(state.ir.nir, stderr);
+
       vpv->driver_shader = pipe->create_vs_state(pipe, &state);
 
       /* When generating a NIR program, we usually don't have TGSI tokens.
@@ -789,10 +794,8 @@ st_create_vp_variant(struct st_context *st,
       state.tokens = tokens;
    }
 
-   if (ST_DEBUG & DEBUG_TGSI) {
+   if (ST_DEBUG & DEBUG_PRINT_IR)
       tgsi_dump(state.tokens, 0);
-      debug_printf("\n");
-   }
 
    vpv->driver_shader = pipe->create_vs_state(pipe, &state);
    /* Save this for selection/feedback/rasterpos. */
@@ -1359,6 +1362,9 @@ st_create_fp_variant(struct st_context *st,
             screen->finalize_nir(screen, state.ir.nir, false);
       }
 
+      if (ST_DEBUG & DEBUG_PRINT_IR)
+         nir_print_shader(state.ir.nir, stderr);
+
       variant->driver_shader = pipe->create_fs_state(pipe, &state);
       variant->key = *key;
 
@@ -1487,10 +1493,8 @@ st_create_fp_variant(struct st_context *st,
       state.tokens = tokens;
    }
 
-   if (ST_DEBUG & DEBUG_TGSI) {
+   if (ST_DEBUG & DEBUG_PRINT_IR)
       tgsi_dump(state.tokens, 0);
-      debug_printf("\n");
-   }
 
    /* fill in variant */
    variant->driver_shader = pipe->create_fs_state(pipe, &state);
@@ -1727,15 +1731,8 @@ st_translate_common_program(struct st_context *st,
 
    st_store_ir_in_disk_cache(st, prog, false);
 
-   if ((ST_DEBUG & DEBUG_TGSI) && (ST_DEBUG & DEBUG_MESA)) {
+   if (ST_DEBUG & DEBUG_PRINT_IR && ST_DEBUG & DEBUG_MESA)
       _mesa_print_program(prog);
-      debug_printf("\n");
-   }
-
-   if (ST_DEBUG & DEBUG_TGSI) {
-      tgsi_dump(stcp->state.tokens, 0);
-      debug_printf("\n");
-   }
 
    free_glsl_to_tgsi_visitor(stcp->glsl_to_tgsi);
    stcp->glsl_to_tgsi = NULL;
@@ -1783,7 +1780,10 @@ st_get_common_variant(struct st_context *st,
                st_finalize_nir(st, &prog->Base, prog->shader_program,
                                state.ir.nir, true);
             }
-	 } else {
+
+            if (ST_DEBUG & DEBUG_PRINT_IR)
+               nir_print_shader(state.ir.nir, stderr);
+         } else {
             if (key->lower_depth_clamp) {
                struct gl_program_parameter_list *params = prog->Base.Parameters;
 
@@ -1801,7 +1801,10 @@ st_get_common_variant(struct st_context *st,
 
                prog->state.tokens = tokens;
             }
-	    state = prog->state;
+            state = prog->state;
+
+            if (ST_DEBUG & DEBUG_PRINT_IR)
+               tgsi_dump(state.tokens, 0);
          }
          /* fill in new variant */
          switch (prog->Base.info.stage) {
@@ -1996,29 +1999,6 @@ st_destroy_program_variants(struct st_context *st)
    /* GLSL vert/frag/geom shaders */
    _mesa_HashWalk(st->ctx->Shared->ShaderObjects,
                   destroy_shader_program_variants_cb, st);
-}
-
-
-/**
- * For debugging, print/dump the current vertex program.
- */
-void
-st_print_current_vertex_program(void)
-{
-   GET_CURRENT_CONTEXT(ctx);
-
-   if (ctx->VertexProgram._Current) {
-      struct st_vertex_program *stvp =
-         (struct st_vertex_program *) ctx->VertexProgram._Current;
-      struct st_vp_variant *stv;
-
-      debug_printf("Vertex program %u\n", stvp->Base.Id);
-
-      for (stv = stvp->variants; stv; stv = stv->next) {
-         debug_printf("variant %p\n", stv);
-         tgsi_dump(stv->tokens, 0);
-      }
-   }
 }
 
 

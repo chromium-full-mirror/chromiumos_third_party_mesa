@@ -670,11 +670,18 @@ panfrost_batch_get_tiler_heap(struct panfrost_batch *batch)
 struct panfrost_bo *
 panfrost_batch_get_tiler_dummy(struct panfrost_batch *batch)
 {
+        struct panfrost_screen *screen = pan_screen(batch->ctx->base.screen);
+
+        uint32_t create_flags = 0;
+
         if (batch->tiler_dummy)
                 return batch->tiler_dummy;
 
+        if (!screen->require_sfbd)
+                create_flags = PAN_BO_INVISIBLE;
+
         batch->tiler_dummy = panfrost_batch_create_bo(batch, 4096,
-                                                      PAN_BO_INVISIBLE,
+                                                      create_flags,
                                                       PAN_BO_ACCESS_PRIVATE |
                                                       PAN_BO_ACCESS_RW |
                                                       PAN_BO_ACCESS_VERTEX_TILER |
@@ -874,7 +881,7 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
                 /* Wait so we can get errors reported back */
                 drmSyncobjWait(screen->fd, &batch->out_sync->syncobj, 1,
                                INT64_MAX, 0, NULL);
-                pandecode_jc(submit.jc, FALSE);
+                pandecode_jc(submit.jc, FALSE, screen->gpu_id);
         }
 
         return 0;

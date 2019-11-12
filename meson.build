@@ -1149,7 +1149,7 @@ foreach h : ['xlocale.h', 'sys/sysctl.h', 'linux/futex.h', 'endian.h', 'dlfcn.h'
   endif
 endforeach
 
-foreach f : ['strtof', 'mkostemp', 'timespec_get', 'memfd_create', 'random_r', 'flock']
+foreach f : ['strtof', 'mkostemp', 'timespec_get', 'memfd_create', 'random_r', 'flock', 'strtok_r']
   if cc.has_function(f)
     pre_args += '-DHAVE_@0@'.format(f.to_upper())
   endif
@@ -1251,6 +1251,17 @@ endif
 # TODO: some of these may be conditional
 dep_zlib = dependency('zlib', version : '>= 1.2.3', fallback : ['zlib', 'zlib_dep'])
 pre_args += '-DHAVE_ZLIB'
+
+_zstd = get_option('zstd')
+if _zstd != 'false'
+  dep_zstd = dependency('libzstd', required : _zstd == 'true')
+  if dep_zstd.found()
+    pre_args += '-DHAVE_ZSTD'
+  endif
+else
+  dep_zstd = null_dep
+endif
+
 dep_thread = dependency('threads')
 if dep_thread.found() and host_machine.system() != 'windows'
   pre_args += '-DHAVE_PTHREAD'
@@ -1447,12 +1458,8 @@ else
 endif
 
 dep_glvnd = null_dep
-glvnd_has_headers_and_pc_files = false
 if with_glvnd
-  dep_glvnd = dependency('libglvnd', version : '>= 0.2.0')
-  # GLVND before 1.2 was missing its pkg-config and header files, forcing every
-  # vendor to provide them and the distro maintainers to resolve the conflict.
-  glvnd_has_headers_and_pc_files = dep_glvnd.version().version_compare('>= 1.2.0')
+  dep_glvnd = dependency('libglvnd', version : '>= 1.2.0')
   pre_args += '-DUSE_LIBGLVND=1'
 endif
 
@@ -1684,7 +1691,15 @@ endif
 
 pkg = import('pkgconfig')
 
-prog_nm = find_program('nm', required : false)
+if host_machine.system() == 'windows'
+  prog_dumpbin = find_program('dumpbin', required : false)
+  with_symbols_check = prog_dumpbin.found() and with_tests
+  symbols_check_args = ['--dumpbin', prog_dumpbin.path()]
+else
+  prog_nm = find_program('nm')
+  with_symbols_check = with_tests
+  symbols_check_args = ['--nm', prog_nm.path()]
+endif
 
 # This quirk needs to be applied to sources with functions defined in assembly
 # as GCC LTO drops them. See: https://bugs.freedesktop.org/show_bug.cgi?id=109391

@@ -125,6 +125,8 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 1;
 
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
+      return 0; /* TODO: re-enable after implementing nir_texop_txd */
+
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
    case PIPE_CAP_VERTEX_SHADER_SATURATE:
       return 1;
@@ -284,7 +286,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 0;
 
    case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
-      return 1;
+      return 0;
 
    case PIPE_CAP_NIR_COMPACT_ARRAYS:
       return 1;
@@ -298,6 +300,9 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_POINT_SIZE_FIXED:
    case PIPE_CAP_TWO_SIDED_COLOR:
       return 0;
+
+   case PIPE_CAP_DMABUF:
+      return screen->have_KHR_external_memory_fd;
 
    default:
       return u_pipe_screen_get_param_defaults(pscreen, param);
@@ -390,12 +395,14 @@ zink_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_MAX_TEMPS:
       return INT_MAX;
 
+   case PIPE_SHADER_CAP_INTEGERS:
+      return 1;
+
    case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
    case PIPE_SHADER_CAP_SUBROUTINES:
-   case PIPE_SHADER_CAP_INTEGERS:
    case PIPE_SHADER_CAP_INT64_ATOMICS:
    case PIPE_SHADER_CAP_FP16:
       return 0; /* not implemented */
@@ -546,7 +553,7 @@ static const VkFormat formats[PIPE_FORMAT_COUNT] = {
    [PIPE_FORMAT_Z32_FLOAT] = VK_FORMAT_D32_SFLOAT,
    [PIPE_FORMAT_Z32_FLOAT_S8X24_UINT] = VK_FORMAT_D32_SFLOAT_S8_UINT,
    [PIPE_FORMAT_Z16_UNORM] = VK_FORMAT_D16_UNORM,
-   [PIPE_FORMAT_X8Z24_UNORM] = VK_FORMAT_X8_D24_UNORM_PACK32,
+   [PIPE_FORMAT_Z24X8_UNORM] = VK_FORMAT_X8_D24_UNORM_PACK32,
    [PIPE_FORMAT_Z24_UNORM_S8_UINT] = VK_FORMAT_D24_UNORM_S8_UINT,
 
    // compressed formats
@@ -869,8 +876,11 @@ zink_internal_create_screen(struct sw_winsys *winsys, int fd)
 
          for (uint32_t  i = 0; i < num_extensions; ++i) {
             if (!strcmp(extensions[i].extensionName,
-                VK_KHR_MAINTENANCE1_EXTENSION_NAME))
+                        VK_KHR_MAINTENANCE1_EXTENSION_NAME))
                screen->have_KHR_maintenance1 = true;
+            if (!strcmp(extensions[i].extensionName,
+                        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME))
+               screen->have_KHR_external_memory_fd = true;
          }
          FREE(extensions);
       }
@@ -893,13 +903,24 @@ zink_internal_create_screen(struct sw_winsys *winsys, int fd)
    dci.queueCreateInfoCount = 1;
    dci.pQueueCreateInfos = &qci;
    dci.pEnabledFeatures = &screen->feats;
-   const char *extensions[] = {
+   const char *extensions[3] = {
       VK_KHR_MAINTENANCE1_EXTENSION_NAME,
-      VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
-      VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
    };
+   num_extensions = 1;
+
+   if (fd >= 0 && !screen->have_KHR_external_memory_fd) {
+      debug_printf("ZINK: KHR_external_memory_fd required!\n");
+      goto fail;
+   }
+
+   if (screen->have_KHR_external_memory_fd) {
+      extensions[num_extensions++] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME;
+      extensions[num_extensions++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+   }
+   assert(num_extensions <= ARRAY_SIZE(extensions));
+
    dci.ppEnabledExtensionNames = extensions;
-   dci.enabledExtensionCount = ARRAY_SIZE(extensions);
+   dci.enabledExtensionCount = num_extensions;
    if (vkCreateDevice(screen->pdev, &dci, NULL, &screen->dev) != VK_SUCCESS)
       goto fail;
 

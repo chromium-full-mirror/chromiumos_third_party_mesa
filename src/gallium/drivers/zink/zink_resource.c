@@ -104,7 +104,8 @@ resource_create(struct pipe_screen *pscreen,
       bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
       bci.size = templ->width0;
 
-      bci.usage = 0;
+      bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                  VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
       if (templ->bind & PIPE_BIND_VERTEX_BUFFER)
          bci.usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
@@ -121,9 +122,6 @@ resource_create(struct pipe_screen *pscreen,
       if (templ->bind & PIPE_BIND_COMMAND_ARGS_BUFFER)
          bci.usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 
-      if (templ->usage == PIPE_USAGE_STAGING)
-         bci.usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
       if (vkCreateBuffer(screen->dev, &bci, NULL, &res->buffer) !=
           VK_SUCCESS) {
          FREE(res);
@@ -137,6 +135,7 @@ resource_create(struct pipe_screen *pscreen,
 
       VkImageCreateInfo ici = {};
       ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+      ici.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
 
       switch (templ->target) {
       case PIPE_TEXTURE_1D:
@@ -146,7 +145,7 @@ resource_create(struct pipe_screen *pscreen,
 
       case PIPE_TEXTURE_CUBE:
       case PIPE_TEXTURE_CUBE_ARRAY:
-         ici.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+         ici.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
          /* fall-through */
       case PIPE_TEXTURE_2D:
       case PIPE_TEXTURE_2D_ARRAY:
@@ -157,7 +156,7 @@ resource_create(struct pipe_screen *pscreen,
       case PIPE_TEXTURE_3D:
          ici.imageType = VK_IMAGE_TYPE_3D;
          if (templ->bind & PIPE_BIND_RENDER_TARGET)
-            ici.flags = VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
+            ici.flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
          break;
 
       case PIPE_BUFFER:
@@ -191,10 +190,9 @@ resource_create(struct pipe_screen *pscreen,
          ici.tiling = VK_IMAGE_TILING_LINEAR;
 
       /* sadly, gallium doesn't let us know if it'll ever need this, so we have to assume */
-      ici.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-
-      if (templ->bind & PIPE_BIND_SAMPLER_VIEW)
-         ici.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+      ici.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                  VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                  VK_IMAGE_USAGE_SAMPLED_BIT;
 
       if (templ->bind & PIPE_BIND_SHADER_IMAGE)
          ici.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
@@ -355,8 +353,11 @@ zink_screen_resource_init(struct pipe_screen *pscreen)
 {
    pscreen->resource_create = zink_resource_create;
    pscreen->resource_destroy = zink_resource_destroy;
-   pscreen->resource_get_handle = zink_resource_get_handle;
-   pscreen->resource_from_handle = zink_resource_from_handle;
+
+   if (zink_screen(pscreen)->have_KHR_external_memory_fd) {
+      pscreen->resource_get_handle = zink_resource_get_handle;
+      pscreen->resource_from_handle = zink_resource_from_handle;
+   }
 }
 
 static bool
@@ -368,11 +369,16 @@ zink_transfer_copy_bufimage(struct zink_context *ctx,
 {
    struct zink_batch *batch = zink_batch_no_rp(ctx);
 
-   if (res->layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
-       res->layout != VK_IMAGE_LAYOUT_GENERAL) {
-      zink_resource_barrier(batch->cmdbuf, res, res->aspect,
-                            VK_IMAGE_LAYOUT_GENERAL);
-      res->layout = VK_IMAGE_LAYOUT_GENERAL;
+   if (buf2img) {
+      if (res->layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+         zink_resource_barrier(batch->cmdbuf, res, res->aspect,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+      }
+   } else {
+      if (res->layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+         zink_resource_barrier(batch->cmdbuf, res, res->aspect,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+      }
    }
 
    VkBufferImageCopy copyRegion = {};

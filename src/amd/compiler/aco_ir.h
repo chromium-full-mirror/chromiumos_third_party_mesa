@@ -614,6 +614,8 @@ struct Instruction {
    {
       return format == Format::FLAT || format == Format::GLOBAL;
    }
+
+   constexpr bool usesModifiers() const noexcept;
 };
 
 struct SOPK_instruction : public Instruction {
@@ -877,6 +879,20 @@ T* create_instruction(aco_opcode opcode, Format format, uint32_t num_operands, u
    return inst;
 }
 
+constexpr bool Instruction::usesModifiers() const noexcept
+{
+   if (isDPP() || isSDWA())
+      return true;
+   if (!isVOP3())
+      return false;
+   const VOP3A_instruction *vop3 = static_cast<const VOP3A_instruction*>(this);
+   for (unsigned i = 0; i < operands.size(); i++) {
+      if (vop3->abs[i] || vop3->opsel[i] || vop3->neg[i])
+         return true;
+   }
+   return vop3->opsel[3] || vop3->clamp || vop3->omod;
+}
+
 constexpr bool is_phi(Instruction* instr)
 {
    return instr->opcode == aco_opcode::p_phi || instr->opcode == aco_opcode::p_linear_phi;
@@ -1076,15 +1092,16 @@ public:
    bool wb_smem_l1_on_end = false;
 
    std::vector<uint8_t> constant_data;
+   Temp private_segment_buffer;
+   Temp scratch_offset;
 
    uint16_t lds_alloc_granule;
    uint32_t lds_limit; /* in bytes */
-
    uint16_t vgpr_limit;
-
+   uint16_t sgpr_limit;
    uint16_t physical_sgprs;
    uint16_t sgpr_alloc_granule; /* minus one. must be power of two */
-   uint16_t sgpr_limit;
+
    bool needs_vcc = false;
    bool needs_xnack_mask = false;
    bool needs_flat_scr = false;

@@ -60,7 +60,9 @@ extern "C" {
 #define NIR_TRUE (~0u)
 #define NIR_MAX_VEC_COMPONENTS 4
 #define NIR_MAX_MATRIX_COLUMNS 4
+#define NIR_STREAM_PACKED (1 << 8)
 typedef uint8_t nir_component_mask_t;
+typedef unsigned short GLenum16;
 
 /** Defines a cast function
  *
@@ -92,7 +94,7 @@ struct nir_builder;
  */
 typedef struct {
    gl_state_index16 tokens[STATE_LENGTH];
-   int swizzle;
+   uint16_t swizzle;
 } nir_state_slot;
 
 typedef enum {
@@ -106,7 +108,7 @@ typedef enum {
    nir_var_mem_ssbo        = (1 << 7),
    nir_var_mem_shared      = (1 << 8),
    nir_var_mem_global      = (1 << 9),
-   nir_var_all             = ~0,
+   nir_var_all             = (1 << 10) - 1,
 } nir_variable_mode;
 
 /**
@@ -313,7 +315,7 @@ typedef struct nir_variable {
        *
        * \sa nir_variable_mode
        */
-      nir_variable_mode mode;
+      nir_variable_mode mode:10;
 
       /**
        * Is the variable read-only?
@@ -418,7 +420,32 @@ typedef struct nir_variable {
        * This is not equal to \c ir_depth_layout_none if and only if this
        * variable is \c gl_FragDepth and a layout qualifier is specified.
        */
-      nir_depth_layout depth_layout;
+      nir_depth_layout depth_layout:3;
+
+      /**
+       * Vertex stream output identifier.
+       *
+       * For packed outputs, NIR_STREAM_PACKED is set and bits [2*i+1,2*i]
+       * indicate the stream of the i-th component.
+       */
+      unsigned stream:9;
+
+      /**
+       * output index for dual source blending.
+       */
+      unsigned index;
+
+      /**
+       * Descriptor set binding for sampler or UBO.
+       */
+      unsigned descriptor_set:5;
+
+      /**
+       * Initial binding point for a sampler or UBO.
+       *
+       * For array types, this represents the binding point for the first element.
+       */
+      unsigned binding;
 
       /**
        * Storage location of the base of this variable
@@ -442,60 +469,39 @@ typedef struct nir_variable {
       int location;
 
       /**
-       * The actual location of the variable in the IR. Only valid for inputs
-       * and outputs.
+       * The actual location of the variable in the IR. Only valid for inputs,
+       * outputs, and uniforms (including samplers and images).
        */
-      unsigned int driver_location;
-
-      /**
-       * Vertex stream output identifier.
-       *
-       * For packed outputs, bit 31 is set and bits [2*i+1,2*i] indicate the
-       * stream of the i-th component.
-       */
-      unsigned stream;
-
-      /**
-       * output index for dual source blending.
-       */
-      int index;
-
-      /**
-       * Descriptor set binding for sampler or UBO.
-       */
-      int descriptor_set;
-
-      /**
-       * Initial binding point for a sampler or UBO.
-       *
-       * For array types, this represents the binding point for the first element.
-       */
-      int binding;
+      unsigned driver_location;
 
       /**
        * Location an atomic counter or transform feedback is stored at.
        */
       unsigned offset;
 
-      /**
-       * Transform feedback buffer.
-       */
-      unsigned xfb_buffer;
+      union {
+         /**
+          * ARB_shader_image_load_store qualifiers.
+          */
+         struct {
+            enum gl_access_qualifier access:8;
 
-      /**
-       * Transform feedback stride.
-       */
-      unsigned xfb_stride;
+            /** Image internal format if specified explicitly, otherwise GL_NONE. */
+            GLenum16 format;
+         } image;
 
-      /**
-       * ARB_shader_image_load_store qualifiers.
-       */
-      struct {
-         enum gl_access_qualifier access;
+         struct {
+            /**
+             * Transform feedback buffer.
+             */
+            uint16_t buffer:2;
 
-         /** Image internal format if specified explicitly, otherwise GL_NONE. */
-         GLenum format;
-      } image;
+            /**
+             * Transform feedback stride.
+             */
+            uint16_t stride;
+         } xfb;
+      };
    } data;
 
    /* Number of nir_variable_data members */

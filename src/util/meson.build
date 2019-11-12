@@ -84,6 +84,8 @@ files_mesa_util = files(
   'slab.h',
   'softfloat.c',
   'softfloat.h',
+  'sparse_array.c',
+  'sparse_array.h',
   'string_buffer.c',
   'string_buffer.h',
   'strndup.h',
@@ -147,6 +149,7 @@ deps_for_libmesa_util = [
   dep_atomic,
   dep_m,
   dep_valgrind,
+  dep_zstd,
 ]
 
 if with_platform_android
@@ -186,10 +189,8 @@ _libxmlconfig = static_library(
 )
 
 idep_xmlconfig = declare_dependency(
-  sources : xmlpool_options_h,
-  include_directories : inc_util,
+  dependencies : [idep_xmlconfig_headers, dep_expat],
   link_with : _libxmlconfig,
-  dependencies : dep_expat,
 )
 
 if with_tests
@@ -279,4 +280,5 @@ if with_tests
   endif
   subdir('tests/vma')
   subdir('tests/set')
+  subdir('tests/sparse_array')
 endif

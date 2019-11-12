@@ -93,7 +93,8 @@ st_get_external_sampler_key(struct st_context *st, struct gl_program *prog)
          key.lower_xyuv |= (1 << unit);
          break;
       default:
-         printf("unhandled %u\n", st_get_view_format(stObj));
+         printf("mesa: st_get_external_sampler_key: unhandled pipe format %u\n",
+               st_get_view_format(stObj));
          break;
       }
    }
@@ -375,9 +376,6 @@ st_translate_fragment_program(struct st_context *st,
 extern bool
 st_translate_common_program(struct st_context *st,
                             struct st_common_program *stcp);
-
-extern void
-st_print_current_vertex_program(void);
 
 extern void
 st_precompile_shader_variant(struct st_context *st,

@@ -287,7 +287,6 @@ void
 iris_resource_disable_aux(struct iris_resource *res)
 {
    iris_bo_unreference(res->aux.bo);
-   iris_bo_unreference(res->aux.extra_aux.bo);
    iris_bo_unreference(res->aux.clear_color_bo);
    free(res->aux.state);
 
@@ -298,7 +297,6 @@ iris_resource_disable_aux(struct iris_resource *res)
    res->aux.surf.size_B = 0;
    res->aux.bo = NULL;
    res->aux.extra_aux.surf.size_B = 0;
-   res->aux.extra_aux.bo = NULL;
    res->aux.clear_color_bo = NULL;
    res->aux.state = NULL;
 }
@@ -351,6 +349,8 @@ iris_get_num_logical_layers(const struct iris_resource *res, unsigned level)
 static enum isl_aux_state **
 create_aux_state_map(struct iris_resource *res, enum isl_aux_state initial)
 {
+   assert(res->aux.state == NULL);
+
    uint32_t total_slices = 0;
    for (uint32_t level = 0; level < res->surf.levels; level++)
       total_slices += iris_get_num_logical_layers(res, level);
@@ -396,14 +396,11 @@ map_aux_addresses(struct iris_screen *screen, struct iris_resource *res)
    if (devinfo->gen >= 12 && isl_aux_usage_has_ccs(res->aux.usage)) {
       void *aux_map_ctx = iris_bufmgr_get_aux_map_context(screen->bufmgr);
       assert(aux_map_ctx);
-      const bool has_extra_ccs = res->aux.extra_aux.surf.size_B > 0;
-      struct iris_bo *aux_bo = has_extra_ccs ?
-         res->aux.extra_aux.bo : res->aux.bo;
-      const unsigned aux_offset = has_extra_ccs ?
+      const unsigned aux_offset = res->aux.extra_aux.surf.size_B > 0 ?
          res->aux.extra_aux.offset : res->aux.offset;
       gen_aux_map_add_image(aux_map_ctx, &res->surf, res->bo->gtt_offset,
-                            aux_bo->gtt_offset + aux_offset);
-      res->bo->aux_map_address = aux_bo->gtt_offset;
+                            res->aux.bo->gtt_offset + aux_offset);
+      res->bo->aux_map_address = res->aux.bo->gtt_offset;
    }
 }
 
@@ -433,6 +430,9 @@ want_ccs_e_for_format(const struct gen_device_info *devinfo,
  * Configure aux for the resource, but don't allocate it. For images which
  * might be shared with modifiers, we must allocate the image and aux data in
  * a single bo.
+ *
+ * Returns false on unexpected error (e.g. allocation failed, or invalid
+ * configuration result).
  */
 static bool
 iris_resource_configure_aux(struct iris_screen *screen,
@@ -555,20 +555,23 @@ iris_resource_configure_aux(struct iris_screen *screen,
       break;
    }
 
-   if (!res->aux.state) {
-      /* Create the aux_state for the auxiliary buffer. */
-      res->aux.state = create_aux_state_map(res, initial_state);
-      if (!res->aux.state)
-         return false;
-   }
+   /* Create the aux_state for the auxiliary buffer. */
+   res->aux.state = create_aux_state_map(res, initial_state);
+   if (!res->aux.state)
+      return false;
 
+   /* Increase the aux offset if the main and aux surfaces will share a BO. */
+   res->aux.offset =
+      !res->mod_info || res->mod_info->aux_usage == res->aux.usage ?
+      ALIGN(res->surf.size_B, res->aux.surf.alignment_B) : 0;
    uint64_t size = res->aux.surf.size_B;
 
    /* Allocate space in the buffer for storing the CCS. */
    if (res->aux.extra_aux.surf.size_B > 0) {
-      res->aux.extra_aux.offset =
+      const uint64_t padded_aux_size =
          ALIGN(size, res->aux.extra_aux.surf.alignment_B);
-      size = res->aux.extra_aux.offset + res->aux.extra_aux.surf.size_B;
+      res->aux.extra_aux.offset = res->aux.offset + padded_aux_size;
+      size = padded_aux_size + res->aux.extra_aux.surf.size_B;
    }
 
    /* Allocate space in the buffer for storing the clear color. On modern
@@ -576,8 +579,13 @@ iris_resource_configure_aux(struct iris_screen *screen,
     *
     * On gen <= 9, we are going to store the clear color on the buffer
     * anyways, and copy it back to the surface state during state emission.
+    *
+    * Also add some padding to make sure the fast clear color state buffer
+    * starts at a 4K alignment. We believe that 256B might be enough, but due
+    * to lack of testing we will leave this as 4K for now.
     */
-   res->aux.clear_color_offset = size;
+   size = ALIGN(size, 4096);
+   res->aux.clear_color_offset = res->aux.offset + size;
    size += iris_get_aux_clear_color_state_size(screen);
    *aux_size_B = size;
 
@@ -599,6 +607,8 @@ iris_resource_configure_aux(struct iris_screen *screen,
 
 /**
  * Initialize the aux buffer contents.
+ *
+ * Returns false on unexpected error (e.g. mapping a BO failed).
  */
 static bool
 iris_resource_init_aux_buf(struct iris_resource *res, uint32_t alloc_flags,
@@ -607,10 +617,8 @@ iris_resource_init_aux_buf(struct iris_resource *res, uint32_t alloc_flags,
    if (!(alloc_flags & BO_ALLOC_ZEROED)) {
       void *map = iris_bo_map(NULL, res->aux.bo, MAP_WRITE | MAP_RAW);
 
-      if (!map) {
-         iris_resource_disable_aux(res);
+      if (!map)
          return false;
-      }
 
       if (iris_resource_get_aux_state(res, 0, 0) != ISL_AUX_STATE_AUX_INVALID) {
          uint8_t memset_value = isl_aux_usage_has_mcs(res->aux.usage) ? 0xFF : 0;
@@ -640,11 +648,6 @@ iris_resource_init_aux_buf(struct iris_resource *res, uint32_t alloc_flags,
       iris_bo_unmap(res->aux.bo);
    }
 
-   if (res->aux.extra_aux.surf.size_B > 0) {
-      res->aux.extra_aux.bo = res->aux.bo;
-      iris_bo_reference(res->aux.extra_aux.bo);
-   }
-
    if (clear_color_state_size > 0) {
       res->aux.clear_color_bo = res->aux.bo;
       iris_bo_reference(res->aux.clear_color_bo);
@@ -655,6 +658,9 @@ iris_resource_init_aux_buf(struct iris_resource *res, uint32_t alloc_flags,
 
 /**
  * Allocate the initial aux surface for a resource based on aux.usage
+ *
+ * Returns false on unexpected error (e.g. allocation failed, or invalid
+ * configuration result).
  */
 static bool
 iris_resource_alloc_separate_aux(struct iris_screen *screen,
@@ -855,25 +861,16 @@ iris_resource_create_with_modifiers(struct pipe_screen *pscreen,
 
    uint32_t aux_preferred_alloc_flags;
    uint64_t aux_size = 0;
-   bool aux_enabled =
-      iris_resource_configure_aux(screen, res, false, &aux_size,
-                                  &aux_preferred_alloc_flags);
-   aux_enabled = aux_enabled && res->aux.surf.size_B > 0;
-   const bool separate_aux = aux_enabled && !res->mod_info;
-   uint64_t aux_offset;
-   uint64_t bo_size;
-
-   if (aux_enabled && !separate_aux) {
-      /* Allocate aux data with main surface. This is required for modifiers
-       * with aux data (ccs).
-       */
-      aux_offset = ALIGN(res->surf.size_B, res->aux.surf.alignment_B);
-      bo_size = aux_offset + aux_size;
-   } else {
-      aux_offset = 0;
-      bo_size = res->surf.size_B;
+   if (!iris_resource_configure_aux(screen, res, false, &aux_size,
+                                    &aux_preferred_alloc_flags)) {
+      goto fail;
    }
 
+   /* Modifiers require the aux data to be in the same buffer as the main
+    * surface, but we combine them even when a modifiers is not being used.
+    */
+   const uint64_t bo_size =
+      MAX2(res->surf.size_B, res->aux.offset + aux_size);
    uint32_t alignment = MAX2(4096, res->surf.alignment_B);
    res->bo = iris_bo_alloc_tiled(screen->bufmgr, name, bo_size, alignment,
                                  memzone,
@@ -883,29 +880,14 @@ iris_resource_create_with_modifiers(struct pipe_screen *pscreen,
    if (!res->bo)
       goto fail;
 
-   if (aux_enabled) {
-      if (separate_aux) {
-         if (!iris_resource_alloc_separate_aux(screen, res))
-            aux_enabled = false;
-      } else {
-         res->aux.bo = res->bo;
-         iris_bo_reference(res->aux.bo);
-         res->aux.offset += aux_offset;
-         unsigned clear_color_state_size =
-            iris_get_aux_clear_color_state_size(screen);
-         if (clear_color_state_size > 0)
-            res->aux.clear_color_offset += aux_offset;
-         if (!iris_resource_init_aux_buf(res, flags, clear_color_state_size))
-            aux_enabled = false;
-         map_aux_addresses(screen, res);
-      }
-   }
-
-   if (!aux_enabled) {
-      if (res->mod_info && res->mod_info->aux_usage != ISL_AUX_USAGE_NONE)
+   if (aux_size > 0) {
+      res->aux.bo = res->bo;
+      iris_bo_reference(res->aux.bo);
+      unsigned clear_color_state_size =
+         iris_get_aux_clear_color_state_size(screen);
+      if (!iris_resource_init_aux_buf(res, flags, clear_color_state_size))
          goto fail;
-      else
-         iris_resource_disable_aux(res);
+      map_aux_addresses(screen, res);
    }
 
    return &res->base;
@@ -978,12 +960,21 @@ iris_resource_from_handle(struct pipe_screen *pscreen,
    struct gen_device_info *devinfo = &screen->devinfo;
    struct iris_bufmgr *bufmgr = screen->bufmgr;
    struct iris_resource *res = iris_alloc_resource(pscreen, templ);
+   const struct isl_drm_modifier_info *mod_inf =
+	   isl_drm_modifier_get_info(whandle->modifier);
+   uint32_t tiling;
+
    if (!res)
       return NULL;
 
    switch (whandle->type) {
    case WINSYS_HANDLE_TYPE_FD:
-      res->bo = iris_bo_import_dmabuf(bufmgr, whandle->handle);
+      if (mod_inf)
+         tiling = isl_tiling_to_i915_tiling(mod_inf->tiling);
+      else
+         tiling = I915_TILING_LAST + 1;
+      res->bo = iris_bo_import_dmabuf(bufmgr, whandle->handle,
+                                      tiling, whandle->stride);
       break;
    case WINSYS_HANDLE_TYPE_SHARED:
       res->bo = iris_bo_gem_create_from_name(bufmgr, "winsys image",
@@ -997,12 +988,13 @@ iris_resource_from_handle(struct pipe_screen *pscreen,
 
    res->offset = whandle->offset;
 
-   uint64_t modifier = whandle->modifier;
-   if (modifier == DRM_FORMAT_MOD_INVALID) {
-      modifier = tiling_to_modifier(res->bo->tiling_mode);
+   if (mod_inf == NULL) {
+      mod_inf =
+         isl_drm_modifier_get_info(tiling_to_modifier(res->bo->tiling_mode));
    }
-   res->mod_info = isl_drm_modifier_get_info(modifier);
-   assert(res->mod_info);
+   assert(mod_inf);
+
+   res->mod_info = mod_inf;
 
    isl_surf_usage_flags_t isl_usage = pipe_bind_to_isl_usage(templ->bind);
 

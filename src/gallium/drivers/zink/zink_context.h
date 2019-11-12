@@ -57,8 +57,6 @@ zink_sampler_view(struct pipe_sampler_view *pview)
    return (struct zink_sampler_view *)pview;
 }
 
-#define ZINK_DIRTY_PROGRAM (1 << 0)
-
 struct zink_context {
    struct pipe_context base;
    struct slab_child_pool transfer_pool;
@@ -80,7 +78,8 @@ struct zink_context {
    struct zink_gfx_pipeline_state gfx_pipeline_state;
    struct hash_table *program_cache;
    struct zink_gfx_program *curr_program;
-   unsigned dirty;
+
+   unsigned dirty_program : 1;
 
    struct hash_table *render_pass_cache;
    struct hash_table *framebuffer_cache;
@@ -103,6 +102,7 @@ struct zink_context {
    struct pipe_sampler_view *image_views[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_SAMPLER_VIEWS];
    unsigned num_image_views[PIPE_SHADER_TYPES];
 
+   float line_width;
    float blend_constants[4];
 
    struct pipe_stencil_ref stencil_ref;

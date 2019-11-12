@@ -14,13 +14,17 @@
 # repository's registry will be used there as well.
 variables:
   UPSTREAM_REPO: mesa/mesa
-  DEBIAN_TAG: "2019-10-29"
-  DEBIAN_ARM64_TAG: "arm64v8-2019-10-23"
+  DEBIAN_TAG: "amd64-2019-11-13-2"
+  DEBIAN_TEST_TAG: "amd64-test-2019-11-12-2"
+  DEBIAN_ARM64_TAG: "arm64v8-2019-11-06"
+  DEBIAN_ARM64_TEST_TAG: "arm64v8-test-2019-11-12-2"
   STRETCH_TAG: "2019-09-18"
   DEBIAN_VERSION: buster-slim
   STRETCH_VERSION: stretch-slim
   DEBIAN_IMAGE: "$CI_REGISTRY_IMAGE/debian/$DEBIAN_VERSION:$DEBIAN_TAG"
+  DEBIAN_TEST_IMAGE: "$CI_REGISTRY_IMAGE/debian/$DEBIAN_VERSION:$DEBIAN_TEST_TAG"
   DEBIAN_ARM64_IMAGE: "$CI_REGISTRY_IMAGE/debian/$DEBIAN_VERSION:$DEBIAN_ARM64_TAG"
+  DEBIAN_ARM64_TEST_IMAGE: "$CI_REGISTRY_IMAGE/debian/$DEBIAN_VERSION:$DEBIAN_ARM64_TEST_TAG"
   STRETCH_IMAGE: "$CI_REGISTRY_IMAGE/debian/$STRETCH_VERSION:$STRETCH_TAG"
 
 include:
@@ -97,6 +101,12 @@ debian-10:amd64:
   needs:
     - debian-10:amd64
 
+debian-10-test:amd64:
+  extends: debian-10:amd64
+  variables:
+    DEBIAN_TAG: "$DEBIAN_TEST_TAG"
+    DEBIAN_EXEC: 'bash .gitlab-ci/debian-test-install.sh'
+
 debian-9:amd64:
   extends: debian-10:amd64
   variables:
@@ -117,6 +127,14 @@ debian-10:arm64:
   variables:
     DEBIAN_TAG: "$DEBIAN_ARM64_TAG"
     DEBIAN_EXEC: 'bash .gitlab-ci/debian-arm64-install.sh'
+
+debian-10-test:arm64:
+  extends:
+    - .debian@container-ifnot-exists@arm64v8
+    - .container
+  variables:
+    DEBIAN_TAG: "$DEBIAN_ARM64_TEST_TAG"
+    DEBIAN_EXEC: 'bash .gitlab-ci/debian-arm64-test-install.sh'
 
 
 # BUILD
@@ -151,12 +169,6 @@ debian-10:arm64:
     - ccache --zero-stats || true
     - ccache --show-stats || true
   after_script:
-    # In case the install dir is being saved as artifacts, tar it up
-    # so that symlinks and hardlinks aren't each packed separately in
-    # the zip file.
-    - if [ -d install ]; then
-        tar -cf artifacts/install.tar install;
-      fi
     - export CCACHE_DIR="$PWD/ccache"
     - ccache --show-stats
 
@@ -212,8 +224,11 @@ meson-main:
     EXTRA_OPTION: >
       -D osmesa=gallium
       -D tools=all
-    MESON_SHADERDB: "true"
     BUILDTYPE: "debugoptimized"
+  script:
+    - .gitlab-ci/meson-build.sh
+    - .gitlab-ci/run-shader-db.sh
+    - .gitlab-ci/prepare-artifacts.sh
 
 .meson-cross:
   extends:
@@ -260,6 +275,9 @@ meson-arm64:
     - .ci-deqp-artifacts
   variables:
     BUILDTYPE: "debugoptimized"
+  script:
+    - .gitlab-ci/meson-build.sh
+    - .gitlab-ci/prepare-artifacts.sh
 
 # NOTE: Building SWR is 2x (yes two) times slower than all the other
 # gallium drivers combined.
@@ -296,7 +314,7 @@ meson-clang:
     CC: "ccache clang-8"
     CXX: "ccache clang++-8"
 
-meson-windows:
+.meson-windows:
   extends:
     - .build-windows
   before_script:
@@ -435,22 +453,17 @@ scons-old-llvm:
     - LLVM_VERSION=5.0 .gitlab-ci/scons-build.sh
 
 .test:
-  extends: .ci-run-policy
+  extends:
+    - .ci-run-policy
+  image: $DEBIAN_TEST_IMAGE
   stage: test
   variables:
     GIT_STRATEGY: none # testing doesn't build anything from source
-
-.deqp-test:
-  extends:
-    - .test
-    - .use-debian-10:amd64
-  variables:
-    DEQP_SKIPS: deqp-default-skips.txt
-  script:
+  before_script:
     # Note: Build dir (and thus install) may be dirty due to GIT_STRATEGY
     - rm -rf install
     - tar -xf artifacts/install.tar
-    - ./artifacts/deqp-runner.sh
+    - LD_LIBRARY_PATH=install/lib ldd install/lib/{*,dri/swrast_dri}.so
   artifacts:
     when: on_failure
     name: "$CI_JOB_NAME-$CI_COMMIT_REF_NAME"
@@ -460,44 +473,87 @@ scons-old-llvm:
     - meson-main
   needs:
     - meson-main
-    - debian-10:amd64
+    - debian-10-test:amd64
+
+.piglit-test:
+  extends: .test
+  artifacts:
+    reports:
+      junit: results/results.xml
+  variables:
+    LIBGL_ALWAYS_SOFTWARE: 1
+    PIGLIT_NO_WINDOW: 1
+  script:
+    - artifacts/piglit/run.sh
+
+piglit-quick_gl:
+  extends: .piglit-test
+  variables:
+    LP_NUM_THREADS: 0
+    PIGLIT_OPTIONS: >
+      -x arb_gpu_shader5
+      -x glx-multithread-clearbuffer
+      -x glx-multithread-shader-compile
+      -x max-texture-size
+      -x maxsize
+    PIGLIT_PROFILES: quick_gl
+
+piglit-glslparser+quick_shader:
+  extends: .piglit-test
+  variables:
+    LP_NUM_THREADS: 1
+    PIGLIT_OPTIONS: >
+      -x spec@arb_arrays_of_arrays@execution@ubo
+      -x spec@arb_gpu_shader_int64@execution$$
+      -x spec@arb_separate_shader_objects@execution
+      -x spec@arb_separate_shader_objects@linker
+      -x spec@arb_shader_storage_buffer_object@execution
+      -x spec@glsl-1.50@execution@built-in-functions
+    PIGLIT_PROFILES: "glslparser quick_shader"
+    PIGLIT_RESULTS: "glslparser+quick_shader"
+
+.deqp-test:
+  extends: .test
+  variables:
+    DEQP_SKIPS: deqp-default-skips.txt
+  script:
+    - ./artifacts/deqp-runner.sh
 
 test-llvmpipe-gles2:
-  parallel: 4
   variables:
     DEQP_VER: gles2
+    DEQP_PARALLEL: 4
+    # Don't use threads inside llvmpipe, we've already got all 4 cores
+    # busy with DEQP_PARALLEL.
+    LP_NUM_THREADS: 0
     DEQP_EXPECTED_FAILS: deqp-llvmpipe-fails.txt
     LIBGL_ALWAYS_SOFTWARE: "true"
-    DEQP_RENDERER_MATCH: "llvmpipe"
   extends: .deqp-test
 
 test-softpipe-gles2:
   extends: test-llvmpipe-gles2
   variables:
     DEQP_EXPECTED_FAILS: deqp-softpipe-fails.txt
-    DEQP_RENDERER_MATCH: "softpipe"
+    DEQP_SKIPS: deqp-softpipe-skips.txt
     GALLIUM_DRIVER: "softpipe"
 
-# The GLES2 CTS run takes about 8 minutes of CPU time, while GLES3 is
-# 25 minutes.  Until we can get its runtime down, just do a partial
-# (every 10 tests) run.
-test-softpipe-gles3-limited:
+test-softpipe-gles3:
+  parallel: 2
   variables:
     DEQP_VER: gles3
-    DEQP_EXPECTED_FAILS: deqp-softpipe-fails.txt
-    LIBGL_ALWAYS_SOFTWARE: "true"
-    DEQP_RENDERER_MATCH: "softpipe"
-    GALLIUM_DRIVER: "softpipe"
-    CI_NODE_INDEX: 1
-    CI_NODE_TOTAL: 10
-  extends: .deqp-test
+  extends: test-softpipe-gles2
+
+test-softpipe-gles31:
+  parallel: 4
+  variables:
+    DEQP_VER: gles31
+  extends: test-softpipe-gles2
 
 arm64_a630_gles2:
   extends: .deqp-test
-  image: $DEBIAN_ARM64_IMAGE
+  image: $DEBIAN_ARM64_TEST_IMAGE
   variables:
     DEQP_VER: gles2
-    DEQP_RENDERER_MATCH: "FD630"
     DEQP_EXPECTED_FAILS: deqp-freedreno-a630-fails.txt
     DEQP_SKIPS: deqp-freedreno-a630-skips.txt
     NIR_VALIDATE: 0
@@ -507,7 +563,7 @@ arm64_a630_gles2:
     - meson-arm64
   needs:
     - meson-arm64
-    - debian-10:arm64
+    - debian-10-test:arm64
 
 arm64_a630_gles31:
   extends: arm64_a630_gles2
@@ -527,6 +583,5 @@ arm64_a306_gles2:
   variables:
     DEQP_EXPECTED_FAILS: deqp-freedreno-a307-fails.txt
     DEQP_SKIPS: deqp-default-skips.txt
-    DEQP_RENDERER_MATCH: "FD307"
   tags:
     - db410c

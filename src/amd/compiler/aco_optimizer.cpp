@@ -474,6 +474,13 @@ bool valu_can_accept_literal(opt_ctx& ctx, aco_ptr<Instruction>& instr, unsigned
           operand == 0 && can_accept_constant(instr, operand);
 }
 
+bool valu_can_accept_vgpr(aco_ptr<Instruction>& instr, unsigned operand)
+{
+   if (instr->opcode == aco_opcode::v_readlane_b32 || instr->opcode == aco_opcode::v_writelane_b32)
+      return operand != 1;
+   return true;
+}
+
 bool parse_base_offset(opt_ctx &ctx, Instruction* instr, unsigned op_index, Temp *base, uint32_t *offset)
 {
    Operand op = instr->operands[op_index];
@@ -495,6 +502,9 @@ bool parse_base_offset(opt_ctx &ctx, Instruction* instr, unsigned op_index, Temp
    default:
       return false;
    }
+
+   if (add_instr->usesModifiers())
+      return false;
 
    for (unsigned i = 0; i < 2; i++) {
       if (add_instr->operands[i].isConstant()) {
@@ -576,7 +586,7 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
 
       /* VALU: propagate neg, abs & inline constants */
       else if (instr->isVALU()) {
-         if (info.is_temp() && info.temp.type() == RegType::vgpr) {
+         if (info.is_temp() && info.temp.type() == RegType::vgpr && valu_can_accept_vgpr(instr, i)) {
             instr->operands[i].setTemp(info.temp);
             info = ctx.info[info.temp.id()];
          }
@@ -799,13 +809,13 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
    case aco_opcode::p_as_uniform:
       if (instr->definitions[0].isFixed()) {
          /* don't copy-propagate copies into fixed registers */
+      } else if (instr->usesModifiers()) {
+         // TODO
       } else if (instr->operands[0].isConstant()) {
          if (instr->operands[0].isLiteral())
             ctx.info[instr->definitions[0].tempId()].set_literal(instr->operands[0].constantValue());
          else
             ctx.info[instr->definitions[0].tempId()].set_constant(instr->operands[0].constantValue());
-      } else if (instr->isDPP()) {
-         // TODO
       } else if (instr->operands[0].isTemp()) {
          ctx.info[instr->definitions[0].tempId()].set_temp(instr->operands[0].getTemp());
       } else {
@@ -849,11 +859,8 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
    }
    case aco_opcode::v_mul_f32: { /* omod */
       /* TODO: try to move the negate/abs modifier to the consumer instead */
-      if (instr->isVOP3()) {
-         VOP3A_instruction *vop3 = static_cast<VOP3A_instruction*>(instr.get());
-         if (vop3->abs[0] || vop3->abs[1] || vop3->neg[0] || vop3->neg[1] || vop3->omod || vop3->clamp)
-            break;
-      }
+      if (instr->usesModifiers())
+         break;
 
       for (unsigned i = 0; i < 2; i++) {
          if (instr->operands[!i].isConstant() && instr->operands[i].isTemp()) {

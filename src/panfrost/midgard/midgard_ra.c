@@ -72,38 +72,38 @@ struct phys_reg {
         unsigned size;
 };
 
-/* Shift each component up by reg_offset and shift all components horizontally
- * by dst_offset. TODO: Generalize to !32-bit */
+/* Shift up by reg_offset and horizontally by dst_offset. */
 
-static unsigned
-offset_swizzle(unsigned swizzle, unsigned reg_offset, unsigned srcsize, unsigned dst_offset, unsigned dstsize)
+static void
+offset_swizzle(unsigned *swizzle, unsigned reg_offset, unsigned srcsize, unsigned dst_offset)
 {
-        unsigned out = 0;
+        unsigned out[MIR_VEC_COMPONENTS];
 
         signed reg_comp = reg_offset / srcsize;
-        signed dst_comp = dst_offset / dstsize;
+        signed dst_comp = dst_offset / srcsize;
+
+        unsigned max_component = (16 / srcsize) - 1;
 
         assert(reg_comp * srcsize == reg_offset);
-        assert(dst_comp * dstsize == dst_offset);
+        assert(dst_comp * srcsize == dst_offset);
 
-        for (signed c = 0; c < 4; ++c) {
+        for (signed c = 0; c < MIR_VEC_COMPONENTS; ++c) {
                 signed comp = MAX2(c - dst_comp, 0);
-                signed s = (swizzle >> (2*comp)) & 0x3;
-                out |= (MIN2(s + reg_comp, 3) << (2*c));
+                out[c] = MIN2(swizzle[comp] + reg_comp, max_component);
         }
 
-        return out;
+        memcpy(swizzle, out, sizeof(out));
 }
 
 /* Helper to return the default phys_reg for a given register */
 
 static struct phys_reg
-default_phys_reg(int reg)
+default_phys_reg(int reg, midgard_reg_mode size)
 {
         struct phys_reg r = {
                 .reg = reg,
                 .offset = 0,
-                .size = 4
+                .size = mir_bytes_for_mode(size)
         };
 
         return r;
@@ -117,11 +117,11 @@ index_to_reg(compiler_context *ctx, struct ra_graph *g, unsigned reg, midgard_re
 {
         /* Check for special cases */
         if (reg == ~0)
-                return default_phys_reg(REGISTER_UNUSED);
+                return default_phys_reg(REGISTER_UNUSED, size);
         else if (reg >= SSA_FIXED_MINIMUM)
-                return default_phys_reg(SSA_REG_FROM_FIXED(reg));
+                return default_phys_reg(SSA_REG_FROM_FIXED(reg), size);
         else if (!g)
-                return default_phys_reg(REGISTER_UNUSED);
+                return default_phys_reg(REGISTER_UNUSED, size);
 
         /* Special cases aside, we pick the underlying register */
         int virt = ra_get_node_reg(g, reg);
@@ -475,8 +475,7 @@ mir_lower_special_reads(compiler_context *ctx)
                         unsigned idx = spill_idx++;
 
                         midgard_instruction m = hazard_write ?
-                                v_mov(idx, blank_alu_src, i) :
-                                v_mov(i, blank_alu_src, idx);
+                                v_mov(idx, i) : v_mov(i, idx);
 
                         /* Insert move before each read/write, depending on the
                          * hazard we're trying to account for */
@@ -500,7 +499,7 @@ mir_lower_special_reads(compiler_context *ctx)
                                         mir_rewrite_index_dst_single(pre_use, i, idx);
                                 } else {
                                         idx = spill_idx++;
-                                        m = v_mov(i, blank_alu_src, idx);
+                                        m = v_mov(i, idx);
                                         m.mask = mir_from_bytemask(mir_bytemask_of_read_components(pre_use, i), midgard_reg_mode_32);
                                         mir_insert_instruction_before(ctx, pre_use, m);
                                         mir_rewrite_index_src_single(pre_use, i, idx);
@@ -515,6 +514,67 @@ mir_lower_special_reads(compiler_context *ctx)
         free(ldst);
         free(texr);
         free(texw);
+}
+
+/* We register allocate after scheduling, so we need to ensure instructions
+ * executing in parallel within a segment of a bundle don't clobber each
+ * other's registers. This is mostly a non-issue thanks to scheduling, but
+ * there are edge cases. In particular, after a register is written in a
+ * segment, it interferes with anything reading. */
+
+static void
+mir_compute_segment_interference(
+                compiler_context *ctx,
+                struct ra_graph *l,
+                midgard_bundle *bun,
+                unsigned pivot,
+                unsigned i)
+{
+        for (unsigned j = pivot; j < i; ++j) {
+                mir_foreach_src(bun->instructions[j], s) {
+                        if (bun->instructions[j]->src[s] >= ctx->temp_count)
+                                continue;
+
+                        for (unsigned q = pivot; q < i; ++q) {
+                                if (bun->instructions[q]->dest >= ctx->temp_count)
+                                        continue;
+
+                                /* See dEQP-GLES2.functional.shaders.return.output_write_in_func_dynamic_fragment */
+
+                                if (q >= j) {
+                                        if (!(bun->instructions[j]->unit == UNIT_SMUL && bun->instructions[q]->unit == UNIT_VLUT))
+                                                continue;
+                                }
+
+                                ra_add_node_interference(l, bun->instructions[q]->dest, bun->instructions[j]->src[s]);
+                        }
+                }
+        }
+}
+
+static void
+mir_compute_bundle_interference(
+                compiler_context *ctx,
+                struct ra_graph *l,
+                midgard_bundle *bun)
+{
+        if (!IS_ALU(bun->tag))
+                return;
+
+        bool old = bun->instructions[0]->unit >= UNIT_VADD;
+        unsigned pivot = 0;
+
+        for (unsigned i = 1; i < bun->instruction_count; ++i) {
+                bool new = bun->instructions[i]->unit >= UNIT_VADD;
+
+                if (old != new) {
+                        mir_compute_segment_interference(ctx, l, bun, 0, i);
+                        pivot = i;
+                        break;
+                }
+        }
+
+        mir_compute_segment_interference(ctx, l, bun, pivot, bun->instruction_count);
 }
 
 static void
@@ -547,6 +607,9 @@ mir_compute_interference(
                         /* Update live_in */
                         mir_liveness_ins_update(live, ins, ctx->temp_count);
                 }
+
+                mir_foreach_bundle_in_block(blk, bun)
+                        mir_compute_bundle_interference(ctx, g, bun);
 
                 free(live);
         }
@@ -688,10 +751,7 @@ install_registers_instr(
                         GET_CHANNEL_COUNT(alu_opcode_props[ins->alu.op].props) ? 0 :
                         dest.offset;
 
-                midgard_vector_alu_src mod1 =
-                        vector_alu_from_unsigned(ins->alu.src1);
-                mod1.swizzle = offset_swizzle(mod1.swizzle, src1.offset, src1.size, dest_offset, dest.size);
-                ins->alu.src1 = vector_alu_srco_unsigned(mod1);
+                offset_swizzle(ins->swizzle[0], src1.offset, src1.size, dest_offset);
 
                 ins->registers.src1_reg = src1.reg;
 
@@ -711,7 +771,7 @@ install_registers_instr(
                 } else {
                         midgard_vector_alu_src mod2 =
                                 vector_alu_from_unsigned(ins->alu.src2);
-                        mod2.swizzle = offset_swizzle(mod2.swizzle, src2.offset, src2.size, dest_offset, dest.size);
+                        offset_swizzle(ins->swizzle[1], src2.offset, src2.size, dest_offset);
                         ins->alu.src2 = vector_alu_srco_unsigned(mod2);
 
                         ins->registers.src2_reg = src2.reg;
@@ -733,32 +793,29 @@ install_registers_instr(
                         assert(src.reg == 26 || src.reg == 27);
 
                         ins->load_store.reg = src.reg - 26;
-                        ins->load_store.swizzle = offset_swizzle(ins->load_store.swizzle, src.offset, src.size, 0, 4);
+                        offset_swizzle(ins->swizzle[0], src.offset, src.size, 0);
                } else {
                         struct phys_reg dst = index_to_reg(ctx, g, ins->dest, mir_typesize(ins));
 
                         ins->load_store.reg = dst.reg;
-                        ins->load_store.swizzle = offset_swizzle(ins->load_store.swizzle, 0, 4, dst.offset, dst.size);
+                        offset_swizzle(ins->swizzle[0], 0, 4, dst.offset);
                         mir_set_bytemask(ins, mir_bytemask(ins) << dst.offset);
                 }
 
                 /* We also follow up by actual arguments */
 
-                unsigned src2_idx = encodes_src ? 1 : 0;
-                unsigned src3_idx = encodes_src ? 2 : 1;
-
-                unsigned src2 = ins->src[src2_idx];
-                unsigned src3 = ins->src[src3_idx];
+                unsigned src2 = ins->src[1];
+                unsigned src3 = ins->src[2];
 
                 if (src2 != ~0) {
-                        struct phys_reg src = index_to_reg(ctx, g, src2, mir_srcsize(ins, src2_idx));
+                        struct phys_reg src = index_to_reg(ctx, g, src2, mir_srcsize(ins, 1));
                         unsigned component = src.offset / src.size;
                         assert(component * src.size == src.offset);
                         ins->load_store.arg_1 |= midgard_ldst_reg(src.reg, component);
                 }
 
                 if (src3 != ~0) {
-                        struct phys_reg src = index_to_reg(ctx, g, src3, mir_srcsize(ins, src3_idx));
+                        struct phys_reg src = index_to_reg(ctx, g, src3, mir_srcsize(ins, 2));
                         unsigned component = src.offset / src.size;
                         assert(component * src.size == src.offset);
                         ins->load_store.arg_2 |= midgard_ldst_reg(src.reg, component);
@@ -770,8 +827,8 @@ install_registers_instr(
         case TAG_TEXTURE_4: {
                 /* Grab RA results */
                 struct phys_reg dest = index_to_reg(ctx, g, ins->dest, mir_typesize(ins));
-                struct phys_reg coord = index_to_reg(ctx, g, ins->src[0], mir_srcsize(ins, 0));
-                struct phys_reg lod = index_to_reg(ctx, g, ins->src[1], mir_srcsize(ins, 1));
+                struct phys_reg coord = index_to_reg(ctx, g, ins->src[1], mir_srcsize(ins, 1));
+                struct phys_reg lod = index_to_reg(ctx, g, ins->src[2], mir_srcsize(ins, 2));
 
                 assert(dest.reg == 28 || dest.reg == 29);
                 assert(coord.reg == 28 || coord.reg == 29);
@@ -780,19 +837,17 @@ install_registers_instr(
                 ins->texture.in_reg_full = 1;
                 ins->texture.in_reg_upper = 0;
                 ins->texture.in_reg_select = coord.reg - 28;
-                ins->texture.in_reg_swizzle =
-                        offset_swizzle(ins->texture.in_reg_swizzle, coord.offset, coord.size, 0, 4);
+                offset_swizzle(ins->swizzle[1], coord.offset, coord.size, 0);
 
                 /* Next, install the destination */
                 ins->texture.out_full = 1;
                 ins->texture.out_upper = 0;
                 ins->texture.out_reg_select = dest.reg - 28;
-                ins->texture.swizzle =
-                        offset_swizzle(ins->texture.swizzle, 0, 4, dest.offset, coord.size);
+                offset_swizzle(ins->swizzle[0], 0, 4, dest.offset);
                 mir_set_bytemask(ins, mir_bytemask(ins) << dest.offset);
 
                 /* If there is a register LOD/bias, use it */
-                if (ins->src[1] != ~0) {
+                if (ins->src[2] != ~0) {
                         assert(!(lod.offset & 3));
                         midgard_tex_register_select sel = {
                                 .select = lod.reg,

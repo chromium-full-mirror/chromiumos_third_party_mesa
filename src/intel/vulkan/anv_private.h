@@ -49,10 +49,11 @@
 #include "dev/gen_device_info.h"
 #include "blorp/blorp.h"
 #include "compiler/brw_compiler.h"
+#include "util/bitset.h"
 #include "util/macros.h"
 #include "util/hash_table.h"
 #include "util/list.h"
-#include "util/set.h"
+#include "util/sparse_array.h"
 #include "util/u_atomic.h"
 #include "util/u_vector.h"
 #include "util/u_math.h"
@@ -68,6 +69,7 @@ typedef struct xcb_connection_t xcb_connection_t;
 typedef uint32_t xcb_visualid_t;
 typedef uint32_t xcb_window_t;
 
+struct anv_batch;
 struct anv_buffer;
 struct anv_buffer_view;
 struct anv_image_view;
@@ -89,6 +91,8 @@ struct gen_perf_config;
 #include "dev/gen_debug.h"
 #include "common/intel_log.h"
 #include "wsi_common.h"
+
+#define NSEC_PER_SEC 1000000000ull
 
 /* anv Virtual Memory Layout
  * =========================
@@ -204,6 +208,15 @@ struct gen_perf_config;
  */
 #define ANV_PREDICATE_RESULT_REG 0x2678 /* MI_ALU_REG15 */
 
+/* For gen12 we set the streamout buffers using 4 separate commands
+ * (3DSTATE_SO_BUFFER_INDEX_*) instead of 3DSTATE_SO_BUFFER. However the layout
+ * of the 3DSTATE_SO_BUFFER_INDEX_* commands is identical to that of
+ * 3DSTATE_SO_BUFFER apart from the SOBufferIndex field, so for now we use the
+ * 3DSTATE_SO_BUFFER command, but change the 3DCommandSubOpcode.
+ * SO_BUFFER_INDEX_0_CMD is actually the 3DCommandSubOpcode for
+ * 3DSTATE_SO_BUFFER_INDEX_0.
+ */
+#define SO_BUFFER_INDEX_0_CMD 0x60
 #define anv_printflike(a, b) __attribute__((__format__(__printf__, a, b)))
 
 static inline uint32_t
@@ -285,6 +298,20 @@ vk_to_isl_color(VkClearColorValue color)
          color.uint32[3],
       },
    };
+}
+
+static inline void *anv_unpack_ptr(uintptr_t ptr, int bits, int *flags)
+{
+   uintptr_t mask = (1ull << bits) - 1;
+   *flags = ptr & mask;
+   return (void *) (ptr & ~mask);
+}
+
+static inline uintptr_t anv_pack_ptr(void *ptr, int bits, int flags)
+{
+   uintptr_t value = (uintptr_t) ptr;
+   uintptr_t mask = (1ull << bits) - 1;
+   return value | (mask & flags);
 }
 
 #define for_each_bit(b, dword)                          \
@@ -587,18 +614,19 @@ anv_multialloc_alloc2(struct anv_multialloc *ma,
    return anv_multialloc_alloc(ma, alloc ? alloc : parent_alloc, scope);
 }
 
-/* Extra ANV-defined BO flags which won't be passed to the kernel */
-#define ANV_BO_EXTERNAL    (1ull << 31)
-#define ANV_BO_FLAG_MASK   (1ull << 31)
-
 struct anv_bo {
    uint32_t gem_handle;
+
+   uint32_t refcount;
 
    /* Index into the current validation list.  This is used by the
     * validation list building alrogithm to track which buffers are already
     * in the validation list so that we can ensure uniqueness.
     */
    uint32_t index;
+
+   /* Index for use with util_sparse_array_free_list */
+   uint32_t free_index;
 
    /* Last known offset.  This value is provided by the kernel when we
     * execbuf and is used as the presumed offset for the next bunch of
@@ -607,21 +635,41 @@ struct anv_bo {
    uint64_t offset;
 
    uint64_t size;
+
+   /* Map for internally mapped BOs.
+    *
+    * If ANV_BO_WRAPPER is set in flags, map points to the wrapped BO.
+    */
    void *map;
 
    /** Flags to pass to the kernel through drm_i915_exec_object2::flags */
    uint32_t flags;
+
+   /** True if this BO may be shared with other processes */
+   bool is_external:1;
+
+   /** True if this BO is a wrapper
+    *
+    * When set to true, none of the fields in this BO are meaningful except
+    * for anv_bo::is_wrapper and anv_bo::map which points to the actual BO.
+    * See also anv_bo_unwrap().  Wrapper BOs are not allowed when use_softpin
+    * is set in the physical device.
+    */
+   bool is_wrapper:1;
+
+   /** See also ANV_BO_ALLOC_FIXED_ADDRESS */
+   bool has_fixed_address:1;
+
+   /** True if this BO wraps a host pointer */
+   bool from_host_ptr:1;
 };
 
-static inline void
-anv_bo_init(struct anv_bo *bo, uint32_t gem_handle, uint64_t size)
+static inline struct anv_bo *
+anv_bo_unwrap(struct anv_bo *bo)
 {
-   bo->gem_handle = gem_handle;
-   bo->index = 0;
-   bo->offset = -1;
-   bo->size = size;
-   bo->map = NULL;
-   bo->flags = 0;
+   while (bo->is_wrapper)
+      bo = bo->map;
+   return bo;
 }
 
 /* Represents a lock-free linked list of "free" things.  This is used by
@@ -657,16 +705,24 @@ struct anv_block_state {
 };
 
 #define anv_block_pool_foreach_bo(bo, pool)  \
-   for (bo = (pool)->bos; bo != &(pool)->bos[(pool)->nbos]; bo++)
+   for (struct anv_bo **_pp_bo = (pool)->bos, *bo; \
+        _pp_bo != &(pool)->bos[(pool)->nbos] && (bo = *_pp_bo, true); \
+        _pp_bo++)
 
 #define ANV_MAX_BLOCK_POOL_BOS 20
 
 struct anv_block_pool {
    struct anv_device *device;
+   bool use_softpin;
 
-   uint64_t bo_flags;
+   /* Wrapper BO for use in relocation lists.  This BO is simply a wrapper
+    * around the actual BO so that we grow the pool after the wrapper BO has
+    * been put in a relocation list.  This is only used in the non-softpin
+    * case.
+    */
+   struct anv_bo wrapper_bo;
 
-   struct anv_bo bos[ANV_MAX_BLOCK_POOL_BOS];
+   struct anv_bo *bos[ANV_MAX_BLOCK_POOL_BOS];
    struct anv_bo *bo;
    uint32_t nbos;
 
@@ -795,8 +851,7 @@ struct anv_state_stream {
 VkResult anv_block_pool_init(struct anv_block_pool *pool,
                              struct anv_device *device,
                              uint64_t start_address,
-                             uint32_t initial_size,
-                             uint64_t bo_flags);
+                             uint32_t initial_size);
 void anv_block_pool_finish(struct anv_block_pool *pool);
 int32_t anv_block_pool_alloc(struct anv_block_pool *pool,
                              uint32_t block_size, uint32_t *padding);
@@ -807,8 +862,7 @@ void* anv_block_pool_map(struct anv_block_pool *pool, int32_t offset);
 VkResult anv_state_pool_init(struct anv_state_pool *pool,
                              struct anv_device *device,
                              uint64_t start_address,
-                             uint32_t block_size,
-                             uint64_t bo_flags);
+                             uint32_t block_size);
 void anv_state_pool_finish(struct anv_state_pool *pool);
 struct anv_state anv_state_pool_alloc(struct anv_state_pool *pool,
                                       uint32_t state_size, uint32_t alignment);
@@ -848,24 +902,19 @@ struct anv_bo_pool {
 
    uint64_t bo_flags;
 
-   void *free_list[16];
+   struct util_sparse_array_free_list free_list[16];
 };
 
 void anv_bo_pool_init(struct anv_bo_pool *pool, struct anv_device *device,
                       uint64_t bo_flags);
 void anv_bo_pool_finish(struct anv_bo_pool *pool);
-VkResult anv_bo_pool_alloc(struct anv_bo_pool *pool, struct anv_bo *bo,
-                           uint32_t size);
-void anv_bo_pool_free(struct anv_bo_pool *pool, const struct anv_bo *bo);
-
-struct anv_scratch_bo {
-   bool exists;
-   struct anv_bo bo;
-};
+VkResult anv_bo_pool_alloc(struct anv_bo_pool *pool, uint32_t size,
+                           struct anv_bo **bo_out);
+void anv_bo_pool_free(struct anv_bo_pool *pool, struct anv_bo *bo);
 
 struct anv_scratch_pool {
    /* Indexed by Per-Thread Scratch Space number (the hardware value) and stage */
-   struct anv_scratch_bo bos[16][MESA_SHADER_STAGES];
+   struct anv_bo *bos[16][MESA_SHADER_STAGES];
 };
 
 void anv_scratch_pool_init(struct anv_device *device,
@@ -879,30 +928,12 @@ struct anv_bo *anv_scratch_pool_alloc(struct anv_device *device,
 
 /** Implements a BO cache that ensures a 1-1 mapping of GEM BOs to anv_bos */
 struct anv_bo_cache {
-   struct hash_table *bo_map;
+   struct util_sparse_array bo_map;
    pthread_mutex_t mutex;
 };
 
 VkResult anv_bo_cache_init(struct anv_bo_cache *cache);
 void anv_bo_cache_finish(struct anv_bo_cache *cache);
-VkResult anv_bo_cache_alloc(struct anv_device *device,
-                            struct anv_bo_cache *cache,
-                            uint64_t size, uint64_t bo_flags,
-                            struct anv_bo **bo);
-VkResult anv_bo_cache_import_host_ptr(struct anv_device *device,
-                                      struct anv_bo_cache *cache,
-                                      void *host_ptr, uint32_t size,
-                                      uint64_t bo_flags, struct anv_bo **bo_out);
-VkResult anv_bo_cache_import(struct anv_device *device,
-                             struct anv_bo_cache *cache,
-                             int fd, uint64_t bo_flags,
-                             struct anv_bo **bo);
-VkResult anv_bo_cache_export(struct anv_device *device,
-                             struct anv_bo_cache *cache,
-                             struct anv_bo *bo_in, int *fd_out);
-void anv_bo_cache_release(struct anv_device *device,
-                          struct anv_bo_cache *cache,
-                          struct anv_bo *bo);
 
 struct anv_memory_type {
    /* Standard bits passed on to the client */
@@ -1033,10 +1064,62 @@ uint32_t anv_physical_device_api_version(struct anv_physical_device *dev);
 bool anv_physical_device_extension_supported(struct anv_physical_device *dev,
                                              const char *name);
 
+struct anv_queue_submit {
+   struct anv_cmd_buffer *                   cmd_buffer;
+
+   uint32_t                                  fence_count;
+   uint32_t                                  fence_array_length;
+   struct drm_i915_gem_exec_fence *          fences;
+
+   uint32_t                                  temporary_semaphore_count;
+   uint32_t                                  temporary_semaphore_array_length;
+   struct anv_semaphore_impl *               temporary_semaphores;
+
+   /* Semaphores to be signaled with a SYNC_FD. */
+   struct anv_semaphore **                   sync_fd_semaphores;
+   uint32_t                                  sync_fd_semaphore_count;
+   uint32_t                                  sync_fd_semaphore_array_length;
+
+   /* Allocated only with non shareable timelines. */
+   struct anv_timeline **                    wait_timelines;
+   uint32_t                                  wait_timeline_count;
+   uint32_t                                  wait_timeline_array_length;
+   uint64_t *                                wait_timeline_values;
+
+   struct anv_timeline **                    signal_timelines;
+   uint32_t                                  signal_timeline_count;
+   uint32_t                                  signal_timeline_array_length;
+   uint64_t *                                signal_timeline_values;
+
+   int                                       in_fence;
+   bool                                      need_out_fence;
+   int                                       out_fence;
+
+   uint32_t                                  fence_bo_count;
+   uint32_t                                  fence_bo_array_length;
+   /* An array of struct anv_bo pointers with lower bit used as a flag to
+    * signal we will wait on that BO (see anv_(un)pack_ptr).
+    */
+   uintptr_t *                               fence_bos;
+
+   const VkAllocationCallbacks *             alloc;
+   VkSystemAllocationScope                   alloc_scope;
+
+   struct anv_bo *                           simple_bo;
+   uint32_t                                  simple_bo_size;
+
+   struct list_head                          link;
+};
+
 struct anv_queue {
     VK_LOADER_DATA                              _loader_data;
 
     struct anv_device *                         device;
+
+    /*
+     * A list of struct anv_queue_submit to be submitted to i915.
+     */
+    struct list_head                            queued_submits;
 
     VkDeviceQueueCreateFlags                    flags;
 };
@@ -1145,9 +1228,9 @@ struct anv_device {
     struct anv_state_pool                       binding_table_pool;
     struct anv_state_pool                       surface_state_pool;
 
-    struct anv_bo                               workaround_bo;
-    struct anv_bo                               trivial_batch_bo;
-    struct anv_bo                               hiz_clear_bo;
+    struct anv_bo *                             workaround_bo;
+    struct anv_bo *                             trivial_batch_bo;
+    struct anv_bo *                             hiz_clear_bo;
 
     struct anv_pipeline_cache                   default_pipeline_cache;
     struct blorp_context                        blorp;
@@ -1160,12 +1243,9 @@ struct anv_device {
 
     struct anv_scratch_pool                     scratch_pool;
 
-    uint32_t                                    default_mocs;
-    uint32_t                                    external_mocs;
-
     pthread_mutex_t                             mutex;
     pthread_cond_t                              queue_submit;
-    bool                                        _lost;
+    int                                         _lost;
 
     struct gen_batch_decode_ctx                 decoder_ctx;
     /*
@@ -1206,35 +1286,107 @@ anv_binding_table_pool_free(struct anv_device *device, struct anv_state state) {
 static inline uint32_t
 anv_mocs_for_bo(const struct anv_device *device, const struct anv_bo *bo)
 {
-   if (bo->flags & ANV_BO_EXTERNAL)
-      return device->external_mocs;
+   if (bo->is_external)
+      return device->isl_dev.mocs.external;
    else
-      return device->default_mocs;
+      return device->isl_dev.mocs.internal;
 }
 
 void anv_device_init_blorp(struct anv_device *device);
 void anv_device_finish_blorp(struct anv_device *device);
 
+void _anv_device_set_all_queue_lost(struct anv_device *device);
 VkResult _anv_device_set_lost(struct anv_device *device,
+                              const char *file, int line,
+                              const char *msg, ...)
+   anv_printflike(4, 5);
+VkResult _anv_queue_set_lost(struct anv_queue *queue,
                               const char *file, int line,
                               const char *msg, ...)
    anv_printflike(4, 5);
 #define anv_device_set_lost(dev, ...) \
    _anv_device_set_lost(dev, __FILE__, __LINE__, __VA_ARGS__)
+#define anv_queue_set_lost(queue, ...) \
+   _anv_queue_set_lost(queue, __FILE__, __LINE__, __VA_ARGS__)
 
 static inline bool
 anv_device_is_lost(struct anv_device *device)
 {
-   return unlikely(device->_lost);
+   return unlikely(p_atomic_read(&device->_lost));
 }
 
-VkResult anv_device_execbuf(struct anv_device *device,
-                            struct drm_i915_gem_execbuffer2 *execbuf,
-                            struct anv_bo **execbuf_bos);
 VkResult anv_device_query_status(struct anv_device *device);
+
+
+enum anv_bo_alloc_flags {
+   /** Specifies that the BO must have a 32-bit address
+    *
+    * This is the opposite of EXEC_OBJECT_SUPPORTS_48B_ADDRESS.
+    */
+   ANV_BO_ALLOC_32BIT_ADDRESS =  (1 << 0),
+
+   /** Specifies that the BO may be shared externally */
+   ANV_BO_ALLOC_EXTERNAL =       (1 << 1),
+
+   /** Specifies that the BO should be mapped */
+   ANV_BO_ALLOC_MAPPED =         (1 << 2),
+
+   /** Specifies that the BO should be snooped so we get coherency */
+   ANV_BO_ALLOC_SNOOPED =        (1 << 3),
+
+   /** Specifies that the BO should be captured in error states */
+   ANV_BO_ALLOC_CAPTURE =        (1 << 4),
+
+   /** Specifies that the BO will have an address assigned by the caller */
+   ANV_BO_ALLOC_FIXED_ADDRESS = (1 << 5),
+
+   /** Enables implicit synchronization on the BO
+    *
+    * This is the opposite of EXEC_OBJECT_ASYNC.
+    */
+   ANV_BO_ALLOC_IMPLICIT_SYNC =  (1 << 6),
+
+   /** Enables implicit synchronization on the BO
+    *
+    * This is equivalent to EXEC_OBJECT_WRITE.
+    */
+   ANV_BO_ALLOC_IMPLICIT_WRITE = (1 << 7),
+};
+
+VkResult anv_device_alloc_bo(struct anv_device *device, uint64_t size,
+                             enum anv_bo_alloc_flags alloc_flags,
+                             struct anv_bo **bo);
+VkResult anv_device_import_bo_from_host_ptr(struct anv_device *device,
+                                            void *host_ptr, uint32_t size,
+                                            enum anv_bo_alloc_flags alloc_flags,
+                                            struct anv_bo **bo_out);
+VkResult anv_device_import_bo(struct anv_device *device, int fd,
+                              enum anv_bo_alloc_flags alloc_flags,
+                              struct anv_bo **bo);
+VkResult anv_device_export_bo(struct anv_device *device,
+                              struct anv_bo *bo, int *fd_out);
+void anv_device_release_bo(struct anv_device *device,
+                           struct anv_bo *bo);
+
+static inline struct anv_bo *
+anv_device_lookup_bo(struct anv_device *device, uint32_t gem_handle)
+{
+   return util_sparse_array_get(&device->bo_cache.bo_map, gem_handle);
+}
+
 VkResult anv_device_bo_busy(struct anv_device *device, struct anv_bo *bo);
 VkResult anv_device_wait(struct anv_device *device, struct anv_bo *bo,
                          int64_t timeout);
+
+VkResult anv_queue_init(struct anv_device *device, struct anv_queue *queue);
+void anv_queue_finish(struct anv_queue *queue);
+
+VkResult anv_queue_execbuf_locked(struct anv_queue *queue, struct anv_queue_submit *submit);
+VkResult anv_queue_submit_simple_batch(struct anv_queue *queue,
+                                       struct anv_batch *batch);
+
+uint64_t anv_gettime_ns(void);
+uint64_t anv_get_absolute_timeout(uint64_t timeout);
 
 void* anv_gem_mmap(struct anv_device *device,
                    uint32_t gem_handle, uint64_t offset, uint64_t size, uint32_t flags);
@@ -1286,14 +1438,13 @@ int anv_gem_syncobj_wait(struct anv_device *device,
 bool anv_vma_alloc(struct anv_device *device, struct anv_bo *bo);
 void anv_vma_free(struct anv_device *device, struct anv_bo *bo);
 
-VkResult anv_bo_init_new(struct anv_bo *bo, struct anv_device *device, uint64_t size);
-
 struct anv_reloc_list {
    uint32_t                                     num_relocs;
    uint32_t                                     array_length;
    struct drm_i915_gem_relocation_entry *       relocs;
    struct anv_bo **                             reloc_bos;
-   struct set *                                 deps;
+   uint32_t                                     dep_words;
+   BITSET_WORD *                                deps;
 };
 
 VkResult anv_reloc_list_init(struct anv_reloc_list *list,
@@ -1304,13 +1455,13 @@ void anv_reloc_list_finish(struct anv_reloc_list *list,
 VkResult anv_reloc_list_add(struct anv_reloc_list *list,
                             const VkAllocationCallbacks *alloc,
                             uint32_t offset, struct anv_bo *target_bo,
-                            uint32_t delta);
+                            uint32_t delta, uint64_t *address_u64_out);
 
 struct anv_batch_bo {
    /* Link in the anv_cmd_buffer.owned_batch_bos list */
    struct list_head                             link;
 
-   struct anv_bo                                bo;
+   struct anv_bo *                              bo;
 
    /* Bytes actually consumed in this batch BO */
    uint32_t                                     length;
@@ -1347,8 +1498,6 @@ void *anv_batch_emit_dwords(struct anv_batch *batch, int num_dwords);
 void anv_batch_emit_batch(struct anv_batch *batch, struct anv_batch *other);
 uint64_t anv_batch_emit_reloc(struct anv_batch *batch,
                               void *location, struct anv_bo *bo, uint32_t offset);
-VkResult anv_device_submit_simple_batch(struct anv_device *device,
-                                        struct anv_batch *batch);
 
 static inline VkResult
 anv_batch_set_error(struct anv_batch *batch, VkResult error)
@@ -1481,56 +1630,6 @@ _anv_combine_address(struct anv_batch *batch, void *location,
            VG(VALGRIND_CHECK_MEM_IS_DEFINED(_dst, __anv_cmd_length(cmd) * 4)); \
            _dst = NULL;                                                 \
          }))
-
-/* MEMORY_OBJECT_CONTROL_STATE:
- * .GraphicsDataTypeGFDT                        = 0,
- * .LLCCacheabilityControlLLCCC                 = 0,
- * .L3CacheabilityControlL3CC                   = 1,
- */
-#define GEN7_MOCS 1
-
-/* MEMORY_OBJECT_CONTROL_STATE:
- * .LLCeLLCCacheabilityControlLLCCC             = 0,
- * .L3CacheabilityControlL3CC                   = 1,
- */
-#define GEN75_MOCS 1
-
-/* MEMORY_OBJECT_CONTROL_STATE:
- * .MemoryTypeLLCeLLCCacheabilityControl = WB,
- * .TargetCache = L3DefertoPATforLLCeLLCselection,
- * .AgeforQUADLRU = 0
- */
-#define GEN8_MOCS 0x78
-
-/* MEMORY_OBJECT_CONTROL_STATE:
- * .MemoryTypeLLCeLLCCacheabilityControl = UCwithFenceifcoherentcycle,
- * .TargetCache = L3DefertoPATforLLCeLLCselection,
- * .AgeforQUADLRU = 0
- */
-#define GEN8_EXTERNAL_MOCS 0x18
-
-/* Skylake: MOCS is now an index into an array of 62 different caching
- * configurations programmed by the kernel.
- */
-
-/* TC=LLC/eLLC, LeCC=WB, LRUM=3, L3CC=WB */
-#define GEN9_MOCS (2 << 1)
-
-/* TC=LLC/eLLC, LeCC=WB, LRUM=3, L3CC=WB */
-#define GEN9_EXTERNAL_MOCS (1 << 1)
-
-/* Cannonlake MOCS defines are duplicates of Skylake MOCS defines. */
-#define GEN10_MOCS GEN9_MOCS
-#define GEN10_EXTERNAL_MOCS GEN9_EXTERNAL_MOCS
-
-/* Ice Lake MOCS defines are duplicates of Skylake MOCS defines. */
-#define GEN11_MOCS GEN9_MOCS
-#define GEN11_EXTERNAL_MOCS GEN9_EXTERNAL_MOCS
-
-/* TigerLake MOCS */
-#define GEN12_MOCS GEN9_MOCS
-/* TC=1/LLC Only, LeCC=1/Uncacheable, LRUM=0, L3CC=1/Uncacheable */
-#define GEN12_EXTERNAL_MOCS (3 << 1)
 
 struct anv_device_memory {
    struct list_head                             link;
@@ -1799,7 +1898,7 @@ struct anv_descriptor_pool {
    uint32_t next;
    uint32_t free_list;
 
-   struct anv_bo bo;
+   struct anv_bo *bo;
    struct util_vma_heap bo_heap;
 
    struct anv_state_stream surface_state_stream;
@@ -2037,6 +2136,7 @@ enum anv_pipe_bits {
    ANV_PIPE_CONSTANT_CACHE_INVALIDATE_BIT    = (1 << 3),
    ANV_PIPE_VF_CACHE_INVALIDATE_BIT          = (1 << 4),
    ANV_PIPE_DATA_CACHE_FLUSH_BIT             = (1 << 5),
+   ANV_PIPE_TILE_CACHE_FLUSH_BIT             = (1 << 6),
    ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT     = (1 << 10),
    ANV_PIPE_INSTRUCTION_CACHE_INVALIDATE_BIT = (1 << 11),
    ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT    = (1 << 12),
@@ -2062,7 +2162,8 @@ enum anv_pipe_bits {
 #define ANV_PIPE_FLUSH_BITS ( \
    ANV_PIPE_DEPTH_CACHE_FLUSH_BIT | \
    ANV_PIPE_DATA_CACHE_FLUSH_BIT | \
-   ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT)
+   ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT | \
+   ANV_PIPE_TILE_CACHE_FLUSH_BIT)
 
 #define ANV_PIPE_STALL_BITS ( \
    ANV_PIPE_STALL_AT_SCOREBOARD_BIT | \
@@ -2339,6 +2440,7 @@ struct anv_attachment_state {
    struct anv_surface_state                     input;
 
    VkImageLayout                                current_layout;
+   VkImageLayout                                current_stencil_layout;
    VkImageAspectFlags                           pending_clear_aspects;
    VkImageAspectFlags                           pending_load_aspects;
    bool                                         fast_clear;
@@ -2553,11 +2655,13 @@ void anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd_buffer);
 void anv_cmd_buffer_add_secondary(struct anv_cmd_buffer *primary,
                                   struct anv_cmd_buffer *secondary);
 void anv_cmd_buffer_prepare_execbuf(struct anv_cmd_buffer *cmd_buffer);
-VkResult anv_cmd_buffer_execbuf(struct anv_device *device,
+VkResult anv_cmd_buffer_execbuf(struct anv_queue *queue,
                                 struct anv_cmd_buffer *cmd_buffer,
                                 const VkSemaphore *in_semaphores,
+                                const uint64_t *in_wait_values,
                                 uint32_t num_in_semaphores,
                                 const VkSemaphore *out_semaphores,
+                                const uint64_t *out_signal_values,
                                 uint32_t num_out_semaphores,
                                 VkFence fence);
 
@@ -2647,7 +2751,7 @@ struct anv_fence_impl {
        * will say it's idle in this case.
        */
       struct {
-         struct anv_bo bo;
+         struct anv_bo *bo;
          enum anv_bo_fence_state state;
       } bo;
 
@@ -2687,6 +2791,32 @@ enum anv_semaphore_type {
    ANV_SEMAPHORE_TYPE_BO,
    ANV_SEMAPHORE_TYPE_SYNC_FILE,
    ANV_SEMAPHORE_TYPE_DRM_SYNCOBJ,
+   ANV_SEMAPHORE_TYPE_TIMELINE,
+};
+
+struct anv_timeline_point {
+   struct list_head link;
+
+   uint64_t serial;
+
+   /* Number of waiter on this point, when > 0 the point should not be garbage
+    * collected.
+    */
+   int waiting;
+
+   /* BO used for synchronization. */
+   struct anv_bo *bo;
+};
+
+struct anv_timeline {
+   pthread_mutex_t mutex;
+   pthread_cond_t  cond;
+
+   uint64_t highest_past;
+   uint64_t highest_pending;
+
+   struct list_head points;
+   struct list_head free_points;
 };
 
 struct anv_semaphore_impl {
@@ -2711,10 +2841,18 @@ struct anv_semaphore_impl {
        * import so we don't need to bother with a userspace cache.
        */
       uint32_t syncobj;
+
+      /* Non shareable timeline semaphore
+       *
+       * Used when kernel don't have support for timeline semaphores.
+       */
+      struct anv_timeline timeline;
    };
 };
 
 struct anv_semaphore {
+   uint32_t refcount;
+
    /* Permanent semaphore state.  Every semaphore has some form of permanent
     * state (type != ANV_SEMAPHORE_TYPE_NONE).  This may be a BO to fence on
     * (for cross-process semaphores0 or it could just be a dummy for use
@@ -3671,6 +3809,9 @@ struct anv_subpass_attachment {
    VkImageUsageFlagBits usage;
    uint32_t attachment;
    VkImageLayout layout;
+
+   /* Used only with attachment containing stencil data. */
+   VkImageLayout stencil_layout;
 };
 
 struct anv_subpass {
@@ -3721,6 +3862,9 @@ struct anv_render_pass_attachment {
    VkImageLayout                                final_layout;
    VkImageLayout                                first_subpass_layout;
 
+   VkImageLayout                                stencil_initial_layout;
+   VkImageLayout                                stencil_final_layout;
+
    /* The subpass id in which the attachment will be used last. */
    uint32_t                                     last_subpass_idx;
 };
@@ -3743,7 +3887,7 @@ struct anv_query_pool {
    uint32_t                                     stride;
    /** Number of slots in this query pool */
    uint32_t                                     slots;
-   struct anv_bo                                bo;
+   struct anv_bo *                              bo;
 };
 
 int anv_get_instance_entrypoint_index(const char *name);

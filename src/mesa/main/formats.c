@@ -85,6 +85,13 @@ _mesa_get_format_info(mesa_format format)
 {
    const struct mesa_format_info *info = &format_info[format];
    STATIC_ASSERT(ARRAY_SIZE(format_info) == MESA_FORMAT_COUNT);
+
+   /* The MESA_FORMAT_* enums are sparse, don't return a format info
+    * for empty entries.
+    */
+   if (info->Name == MESA_FORMAT_NONE && format != MESA_FORMAT_NONE)
+      return NULL;
+
    assert(info->Name == format);
    return info;
 }
@@ -95,6 +102,8 @@ const char *
 _mesa_get_format_name(mesa_format format)
 {
    const struct mesa_format_info *info = _mesa_get_format_info(format);
+   if (!info)
+      return NULL;
    return info->StrName;
 }
 
@@ -425,10 +434,11 @@ uint32_t
 _mesa_format_to_array_format(mesa_format format)
 {
    const struct mesa_format_info *info = _mesa_get_format_info(format);
-   if (info->ArrayFormat && !_mesa_little_endian() &&
-       info->Layout == MESA_FORMAT_LAYOUT_PACKED)
+#if UTIL_ARCH_BIG_ENDIAN
+   if (info->ArrayFormat && info->Layout == MESA_FORMAT_LAYOUT_PACKED)
       return _mesa_array_format_flip_channels(info->ArrayFormat);
    else
+#endif
       return info->ArrayFormat;
 }
 
@@ -464,14 +474,14 @@ format_array_format_table_init(void)
 
    for (f = 1; f < MESA_FORMAT_COUNT; ++f) {
       info = _mesa_get_format_info(f);
-      if (!info->ArrayFormat)
+      if (!info || !info->ArrayFormat)
          continue;
 
-      if (_mesa_little_endian()) {
+#if UTIL_ARCH_LITTLE_ENDIAN
          array_format = info->ArrayFormat;
-      } else {
+#else
          array_format = _mesa_array_format_flip_channels(info->ArrayFormat);
-      }
+#endif
 
       /* This can happen and does for some of the BGR formats.  Let's take
        * the first one in the list.
@@ -1294,10 +1304,6 @@ _mesa_uncompressed_format_to_type_and_comps(mesa_format format,
       *datatype = GL_UNSIGNED_BYTE;
       *comps = 3;
       return;
-   case MESA_FORMAT_RGBA_UINT8:
-      *datatype = GL_UNSIGNED_BYTE;
-      *comps = 4;
-      return;
    case MESA_FORMAT_R_UINT16:
       *datatype = GL_UNSIGNED_SHORT;
       *comps = 1;
@@ -1412,14 +1418,16 @@ _mesa_uncompressed_format_to_type_and_comps(mesa_format format,
    case MESA_FORMAT_COUNT:
       assert(0);
       return;
-   default:
+   default: {
+      const char *name = _mesa_get_format_name(format);
       /* Warn if any formats are not handled */
       _mesa_problem(NULL, "bad format %s in _mesa_uncompressed_format_to_type_and_comps",
-                    _mesa_get_format_name(format));
+                    name ? name : "???");
       assert(format == MESA_FORMAT_NONE ||
              _mesa_is_format_compressed(format));
       *datatype = 0;
       *comps = 1;
+   }
    }
 }
 

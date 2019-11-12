@@ -1779,9 +1779,18 @@ gfx10_get_ngg_info(const struct radv_pipeline_key *key,
 
 	/* Round up towards full wave sizes for better ALU utilization. */
 	if (!max_vert_out_per_gs_instance) {
-		const unsigned wavesize = pipeline->device->physical_device->ge_wave_size;
 		unsigned orig_max_esverts;
 		unsigned orig_max_gsprims;
+		unsigned wavesize;
+
+		if (gs_type == MESA_SHADER_GEOMETRY) {
+			wavesize = gs_info->wave_size;
+		} else {
+			wavesize = nir[MESA_SHADER_TESS_CTRL]
+				? infos[MESA_SHADER_TESS_EVAL].wave_size
+				: infos[MESA_SHADER_VERTEX].wave_size;
+		}
+
 		do {
 			orig_max_esverts = max_esverts;
 			orig_max_gsprims = max_gsprims;
@@ -2338,8 +2347,6 @@ radv_fill_shader_keys(struct radv_device *device,
 		 * issues still:
 		 *   * GS primitives in pipeline statistic queries do not get
 		 *     updates. See dEQP-VK.query_pool.statistics_query.geometry_shader_primitives
-		 *   * General issues with the last primitive missing/corrupt:
-		 *     https://bugs.freedesktop.org/show_bug.cgi?id=111248
 		 *
 		 * Furthermore, XGL/AMDVLK also disables this as of 9b632ef.
 		 */
@@ -2376,10 +2383,36 @@ radv_fill_shader_keys(struct radv_device *device,
 	keys[MESA_SHADER_FRAGMENT].fs.is_int10 = key->is_int10;
 	keys[MESA_SHADER_FRAGMENT].fs.log2_ps_iter_samples = key->log2_ps_iter_samples;
 	keys[MESA_SHADER_FRAGMENT].fs.num_samples = key->num_samples;
+
+	if (nir[MESA_SHADER_COMPUTE]) {
+		keys[MESA_SHADER_COMPUTE].cs.subgroup_size = key->compute_subgroup_size;
+	}
+}
+
+static uint8_t
+radv_get_wave_size(struct radv_device *device,
+		   const VkPipelineShaderStageCreateInfo *pStage,
+		   gl_shader_stage stage,
+		   const struct radv_shader_variant_key *key)
+{
+	if (stage == MESA_SHADER_GEOMETRY && !key->vs_common_out.as_ngg)
+		return 64;
+	else if (stage == MESA_SHADER_COMPUTE) {
+		if (key->cs.subgroup_size) {
+			/* Return the required subgroup size if specified. */
+			return key->cs.subgroup_size;
+		}
+		return device->physical_device->cs_wave_size;
+	}
+	else if (stage == MESA_SHADER_FRAGMENT)
+		return device->physical_device->ps_wave_size;
+	else
+		return device->physical_device->ge_wave_size;
 }
 
 static void
 radv_fill_shader_info(struct radv_pipeline *pipeline,
+		      const VkPipelineShaderStageCreateInfo **pStages,
 		      struct radv_shader_variant_key *keys,
                       struct radv_shader_info *infos,
                       nir_shader **nir)
@@ -2476,6 +2509,13 @@ radv_fill_shader_info(struct radv_pipeline *pipeline,
 		radv_nir_shader_info_init(&infos[i]);
 		radv_nir_shader_info_pass(nir[i], pipeline->layout,
 					  &keys[i], &infos[i]);
+	}
+
+	for (int i = 0; i < MESA_SHADER_STAGES; i++) {
+		if (nir[i])
+			infos[i].wave_size =
+				radv_get_wave_size(pipeline->device, pStages[i],
+						   i, &keys[i]);
 	}
 }
 
@@ -2682,7 +2722,7 @@ void radv_create_shaders(struct radv_pipeline *pipeline,
 
 	radv_fill_shader_keys(device, keys, key, nir);
 
-	radv_fill_shader_info(pipeline, keys, infos, nir);
+	radv_fill_shader_info(pipeline, pStages, keys, infos, nir);
 
 	if ((nir[MESA_SHADER_VERTEX] &&
 	     keys[MESA_SHADER_VERTEX].vs_common_out.as_ngg) ||
@@ -2807,6 +2847,7 @@ void radv_create_shaders(struct radv_pipeline *pipeline,
 			radv_nir_shader_info_pass(nir[MESA_SHADER_GEOMETRY],
 						  pipeline->layout, &key,
 						  &info);
+			info.wave_size = 64; /* Wave32 not supported. */
 
 			pipeline->gs_copy_shader = radv_create_gs_copy_shader(
 					device, nir[MESA_SHADER_GEOMETRY], &info,
@@ -4621,7 +4662,7 @@ radv_pipeline_get_streamout_shader(struct radv_pipeline *pipeline)
 	return NULL;
 }
 
-static void
+static VkResult
 radv_secure_compile(struct radv_pipeline *pipeline,
 		    struct radv_device *device,
 		    const struct radv_pipeline_key *key,
@@ -4629,6 +4670,35 @@ radv_secure_compile(struct radv_pipeline *pipeline,
 		    const VkPipelineCreateFlags flags,
 		    unsigned num_stages)
 {
+	uint8_t allowed_pipeline_hashes[2][20];
+	radv_hash_shaders(allowed_pipeline_hashes[0], pStages,
+	                  pipeline->layout, key, get_hash_flags(device));
+
+	/* Generate the GC copy hash */
+	memcpy(allowed_pipeline_hashes[1], allowed_pipeline_hashes[0], 20);
+	allowed_pipeline_hashes[1][0] ^= 1;
+
+	uint8_t allowed_hashes[2][20];
+	for (unsigned i = 0; i < 2; ++i) {
+		disk_cache_compute_key(device->physical_device->disk_cache,
+		                       allowed_pipeline_hashes[i], 20,
+		                       allowed_hashes[i]);
+	}
+
+	/* Do an early exit if all cache entries are already there. */
+	bool may_need_copy_shader = pStages[MESA_SHADER_GEOMETRY];
+	void *main_entry = disk_cache_get(device->physical_device->disk_cache, allowed_hashes[0], NULL);
+	void *copy_entry = NULL;
+	if (may_need_copy_shader)
+		copy_entry = disk_cache_get(device->physical_device->disk_cache, allowed_hashes[1], NULL);
+
+	bool has_all_cache_entries = main_entry && (!may_need_copy_shader || copy_entry);
+	free(main_entry);
+	free(copy_entry);
+
+	if(has_all_cache_entries)
+		return VK_SUCCESS;
+
 	unsigned process = 0;
 	uint8_t sc_threads = device->instance->num_sc_threads;
 	while (true) {
@@ -4708,19 +4778,27 @@ radv_secure_compile(struct radv_pipeline *pipeline,
 
 	/* Read the data returned from the secure process */
 	while (sc_type != RADV_SC_TYPE_COMPILE_PIPELINE_FINISHED) {
-		read(fd_secure_output, &sc_type, sizeof(sc_type));
+		if (!radv_sc_read(fd_secure_output, &sc_type, sizeof(sc_type), true))
+			return VK_ERROR_DEVICE_LOST;
 
 		if (sc_type == RADV_SC_TYPE_WRITE_DISK_CACHE) {
 			assert(device->physical_device->disk_cache);
 
 			uint8_t disk_sha1[20];
-			read(fd_secure_output, disk_sha1, sizeof(uint8_t) * 20);
+			if (!radv_sc_read(fd_secure_output, disk_sha1, sizeof(uint8_t) * 20, true))
+				return VK_ERROR_DEVICE_LOST;
+
+			if (memcmp(disk_sha1, allowed_hashes[0], 20) &&
+			    memcmp(disk_sha1, allowed_hashes[1], 20))
+				return VK_ERROR_DEVICE_LOST;
 
 			uint32_t entry_size;
-			read(fd_secure_output, &entry_size, sizeof(uint32_t));
+			if (!radv_sc_read(fd_secure_output, &entry_size, sizeof(uint32_t), true))
+				return VK_ERROR_DEVICE_LOST;
 
 			struct cache_entry *entry = malloc(entry_size);
-			read(fd_secure_output, entry, entry_size);
+			if (!radv_sc_read(fd_secure_output, entry, entry_size, true))
+				return VK_ERROR_DEVICE_LOST;
 
 			disk_cache_put(device->physical_device->disk_cache,
 				       disk_sha1, entry, entry_size,
@@ -4729,7 +4807,12 @@ radv_secure_compile(struct radv_pipeline *pipeline,
 			free(entry);
 		} else if (sc_type == RADV_SC_TYPE_READ_DISK_CACHE) {
 			uint8_t disk_sha1[20];
-			read(fd_secure_output, disk_sha1, sizeof(uint8_t) * 20);
+			if (!radv_sc_read(fd_secure_output, disk_sha1, sizeof(uint8_t) * 20, true))
+				return VK_ERROR_DEVICE_LOST;
+
+			if (memcmp(disk_sha1, allowed_hashes[0], 20) &&
+			    memcmp(disk_sha1, allowed_hashes[1], 20))
+				return VK_ERROR_DEVICE_LOST;
 
 			size_t size;
 			struct cache_entry *entry = (struct cache_entry *)
@@ -4752,6 +4835,8 @@ radv_secure_compile(struct radv_pipeline *pipeline,
 	device->sc_state->secure_compile_thread_counter--;
 	device->sc_state->secure_compile_processes[process].in_use = false;
 	mtx_unlock(&device->sc_state->secure_compile_mutex);
+
+	return VK_SUCCESS;
 }
 
 static VkResult
@@ -4792,9 +4877,7 @@ radv_pipeline_init(struct radv_pipeline *pipeline,
 
 	struct radv_pipeline_key key = radv_generate_graphics_pipeline_key(pipeline, pCreateInfo, &blend, has_view_index);
 	if (radv_device_use_secure_compile(device->instance)) {
-		radv_secure_compile(pipeline, device, &key, pStages, pCreateInfo->flags, pCreateInfo->stageCount);
-		/* TODO: should we actualy return failure ??? */
-		return VK_SUCCESS;
+		return radv_secure_compile(pipeline, device, &key, pStages, pCreateInfo->flags, pCreateInfo->stageCount);
 	} else {
 		radv_create_shaders(pipeline, device, cache, &key, pStages, pCreateInfo->flags, pipeline_feedback, stage_feedbacks);
 	}
@@ -5000,7 +5083,7 @@ radv_compute_generate_pm4(struct radv_pipeline *pipeline)
 				  compute_shader->info.cs.block_size[1] *
 				  compute_shader->info.cs.block_size[2];
 	waves_per_threadgroup = DIV_ROUND_UP(threads_per_threadgroup,
-					     device->physical_device->cs_wave_size);
+					     compute_shader->info.wave_size);
 
 	if (device->physical_device->rad_info.chip_class >= GFX10 &&
 	    waves_per_threadgroup == 1)
@@ -5021,6 +5104,30 @@ radv_compute_generate_pm4(struct radv_pipeline *pipeline)
 		    S_00B81C_NUM_THREAD_FULL(compute_shader->info.cs.block_size[2]));
 
 	assert(pipeline->cs.cdw <= pipeline->cs.max_dw);
+}
+
+static struct radv_pipeline_key
+radv_generate_compute_pipeline_key(struct radv_pipeline *pipeline,
+				   const VkComputePipelineCreateInfo *pCreateInfo)
+{
+	const VkPipelineShaderStageCreateInfo *stage = &pCreateInfo->stage;
+	struct radv_pipeline_key key;
+	memset(&key, 0, sizeof(key));
+
+	if (pCreateInfo->flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT)
+		key.optimisations_disabled = 1;
+
+	const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT *subgroup_size =
+		vk_find_struct_const(stage->pNext,
+				     PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT);
+
+	if (subgroup_size) {
+		assert(subgroup_size->requiredSubgroupSize == 32 ||
+		       subgroup_size->requiredSubgroupSize == 64);
+		key.compute_subgroup_size = subgroup_size->requiredSubgroupSize;
+	}
+
+	return key;
 }
 
 static VkResult radv_compute_pipeline_create(
@@ -5056,13 +5163,16 @@ static VkResult radv_compute_pipeline_create(
 
 	pStages[MESA_SHADER_COMPUTE] = &pCreateInfo->stage;
 
+	struct radv_pipeline_key key =
+		radv_generate_compute_pipeline_key(pipeline, pCreateInfo);
+
 	if (radv_device_use_secure_compile(device->instance)) {
-		radv_secure_compile(pipeline, device, &(struct radv_pipeline_key) {0}, pStages, pCreateInfo->flags, 1);
+		result = radv_secure_compile(pipeline, device, &key, pStages, pCreateInfo->flags, 1);
 		*pPipeline = radv_pipeline_to_handle(pipeline);
-		/* TODO: should we actualy return failure ??? */
-		return VK_SUCCESS;
+
+		return result;
 	} else {
-		radv_create_shaders(pipeline, device, cache, &(struct radv_pipeline_key) {0}, pStages, pCreateInfo->flags, pipeline_feedback, stage_feedbacks);
+		radv_create_shaders(pipeline, device, cache, &key, pStages, pCreateInfo->flags, pipeline_feedback, stage_feedbacks);
 	}
 
 	pipeline->user_data_0[MESA_SHADER_COMPUTE] = radv_pipeline_stage_to_user_data_0(pipeline, MESA_SHADER_COMPUTE, device->physical_device->rad_info.chip_class);

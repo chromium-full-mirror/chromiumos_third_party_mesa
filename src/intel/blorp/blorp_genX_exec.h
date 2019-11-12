@@ -1519,6 +1519,9 @@ blorp_emit_surface_states(struct blorp_batch *batch,
        */
       blorp_emit(batch, GENX(PIPE_CONTROL), pipe) {
          pipe.StateCacheInvalidationEnable = true;
+#if GEN_GEN >= 12
+         pipe.TileCacheFlushEnable = true;
+#endif
       }
    }
 #endif
@@ -1600,6 +1603,7 @@ blorp_emit_depth_stencil_config(struct blorp_batch *batch,
    if (params->stencil.enabled) {
       info.stencil_surf = &params->stencil.surf;
 
+      info.stencil_aux_usage = params->stencil.aux_usage;
       struct blorp_address stencil_address = params->stencil.addr;
 #if GEN_GEN == 6
       /* Sandy bridge hardware does not technically support mipmapped stencil.
@@ -1635,11 +1639,18 @@ blorp_emit_gen8_hiz_op(struct blorp_batch *batch,
     */
    assert(params->depth.enabled || params->stencil.enabled);
 
-   /* The stencil buffer should only be enabled if a fast clear operation is
-    * requested.
+   /* The stencil buffer should only be enabled on GEN == 12, if a fast clear
+    * or full resolve operation is requested. On rest of the GEN, if a fast
+    * clear operation is requested.
     */
-   if (params->stencil.enabled)
+   if (params->stencil.enabled) {
+#if GEN_GEN >= 12
+      assert(params->hiz_op == ISL_AUX_OP_FAST_CLEAR ||
+             params->hiz_op == ISL_AUX_OP_FULL_RESOLVE);
+#else
       assert(params->hiz_op == ISL_AUX_OP_FAST_CLEAR);
+#endif
+   }
 
    /* From the BDW PRM Volume 2, 3DSTATE_WM_HZ_OP:
     *
@@ -1695,7 +1706,13 @@ blorp_emit_gen8_hiz_op(struct blorp_batch *batch,
          break;
       case ISL_AUX_OP_FULL_RESOLVE:
          assert(params->full_surface_hiz_op);
-         hzp.DepthBufferResolveEnable = true;
+         hzp.DepthBufferResolveEnable = params->depth.enabled;
+#if GEN_GEN >= 12
+         if (params->stencil.enabled) {
+            assert(params->stencil.aux_usage == ISL_AUX_USAGE_CCS_E);
+            hzp.StencilBufferResolveEnable = true;
+         }
+#endif
          break;
       case ISL_AUX_OP_AMBIGUATE:
          assert(params->full_surface_hiz_op);

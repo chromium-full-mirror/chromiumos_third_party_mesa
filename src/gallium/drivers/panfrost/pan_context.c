@@ -57,6 +57,7 @@
 static struct midgard_tiler_descriptor
 panfrost_emit_midg_tiler(struct panfrost_batch *batch, unsigned vertex_count)
 {
+        struct panfrost_screen *screen = pan_screen(batch->ctx->base.screen);
         struct midgard_tiler_descriptor t = {};
         unsigned height = batch->key.height;
         unsigned width = batch->key.width;
@@ -100,6 +101,15 @@ panfrost_emit_midg_tiler(struct panfrost_batch *batch, unsigned vertex_count)
 
                 /* Disable the tiler */
                 t.hierarchy_mask |= MALI_TILER_DISABLED;
+
+                if (screen->require_sfbd) {
+                        t.hierarchy_mask = 0xFFF; /* TODO: What's this? */
+                        t.polygon_list_size = 0x200;
+
+                        /* We don't have a SET_VALUE job, so write the polygon list manually */
+                        uint32_t *polygon_list_body = (uint32_t *) (tiler_dummy->cpu + header_size);
+                        polygon_list_body[0] = 0xa0000000; /* TODO: Just that? */
+                }
         }
 
         t.polygon_list_body =
@@ -118,7 +128,9 @@ panfrost_emit_sfbd(struct panfrost_batch *batch, unsigned vertex_count)
                 .width = MALI_POSITIVE(width),
                 .height = MALI_POSITIVE(height),
                 .unknown2 = 0x1f,
-                .format = 0x30000000,
+                .format = {
+                        .unk3 = 0x3,
+                },
                 .clear_flags = 0x1000,
                 .unknown_address_0 = panfrost_batch_get_scratchpad(batch)->gpu,
                 .tiler = panfrost_emit_midg_tiler(batch, vertex_count),
@@ -400,6 +412,7 @@ panfrost_make_stencil_state(const struct pipe_stencil_state *in, struct mali_ste
 static void
 panfrost_default_shader_backend(struct panfrost_context *ctx)
 {
+        struct panfrost_screen *screen = pan_screen(ctx->base.screen);
         struct mali_shader_meta shader = {
                 .alpha_coverage = ~MALI_ALPHA_COVERAGE(0.000000),
 
@@ -407,13 +420,13 @@ panfrost_default_shader_backend(struct panfrost_context *ctx)
                 .unknown2_4 = MALI_NO_MSAA | 0x4e0,
         };
 
-        /* unknown2_4 has 0x10 bit set on T6XX. We don't know why this is
+        /* unknown2_4 has 0x10 bit set on T6XX and T720. We don't know why this is
          * required (independent of 32-bit/64-bit descriptors), or why it's not
          * used on later GPU revisions. Otherwise, all shader jobs fault on
          * these earlier chips (perhaps this is a chicken bit of some kind).
          * More investigation is needed. */
 
-	if (ctx->is_t6xx) {
+	if (screen->require_sfbd) {
 		shader.unknown2_4 |= 0x10;
 	}
 
@@ -1044,7 +1057,9 @@ panfrost_emit_for_draw(struct panfrost_context *ctx, bool with_vertex_data)
                          * additionally need to signal CAN_DISCARD for nontrivial blend
                          * modes (so we're able to read back the destination buffer) */
 
-                        if (!blend[0].is_shader) {
+                        if (blend[0].is_shader) {
+                                ctx->fragment_shader_core.unknown2_3 |= MALI_HAS_BLEND_SHADER;
+                        } else {
                                 ctx->fragment_shader_core.blend.equation =
                                         *blend[0].equation.equation;
                                 ctx->fragment_shader_core.blend.constant =
@@ -2346,7 +2361,8 @@ panfrost_bind_depth_stencil_state(struct pipe_context *pipe,
         ctx->fragment_shader_core.stencil_mask_back = depth_stencil->stencil[back_index].writemask;
 
         /* Depth state (TODO: Refactor) */
-        SET_BIT(ctx->fragment_shader_core.unknown2_3, MALI_DEPTH_TEST, depth_stencil->depth.enabled);
+        SET_BIT(ctx->fragment_shader_core.unknown2_3, MALI_DEPTH_WRITEMASK,
+                depth_stencil->depth.writemask);
 
         int func = depth_stencil->depth.enabled ? depth_stencil->depth.func : PIPE_FUNC_ALWAYS;
 
@@ -2431,6 +2447,9 @@ panfrost_destroy(struct pipe_context *pipe)
 
         if (panfrost->blitter_wallpaper)
                 util_blitter_destroy(panfrost->blitter_wallpaper);
+
+        util_unreference_framebuffer_state(&panfrost->pipe_framebuffer);
+        u_upload_destroy(pipe->stream_uploader);
 
         ralloc_free(pipe);
 }
@@ -2628,8 +2647,6 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
         struct panfrost_context *ctx = rzalloc(screen, struct panfrost_context);
         struct panfrost_screen *pscreen = pan_screen(screen);
         struct pipe_context *gallium = (struct pipe_context *) ctx;
-
-        ctx->is_t6xx = pscreen->gpu_id < 0x0700; /* Literally, "earlier than T700" */
 
         gallium->screen = screen;
 

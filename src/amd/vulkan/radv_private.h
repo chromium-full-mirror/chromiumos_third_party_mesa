@@ -411,6 +411,11 @@ struct radv_pipeline_key {
 	uint32_t has_multiview_view_index : 1;
 	uint32_t optimisations_disabled : 1;
 	uint8_t topology;
+
+	/* Non-zero if a required subgroup size is specified via
+	 * VK_EXT_subgroup_size_control.
+	 */
+	uint8_t compute_subgroup_size;
 };
 
 struct radv_shader_binary;
@@ -722,6 +727,9 @@ struct radv_queue {
 	struct radeon_cmdbuf *initial_preamble_cs;
 	struct radeon_cmdbuf *initial_full_flush_preamble_cs;
 	struct radeon_cmdbuf *continue_preamble_cs;
+
+	struct list_head pending_submissions;
+	pthread_mutex_t pending_mutex;
 };
 
 struct radv_bo_list {
@@ -820,6 +828,10 @@ struct radv_device {
 	int force_aniso;
 
 	struct radv_secure_compile_state *sc_state;
+
+	/* Condition variable for legacy timelines, to notify waiters when a
+	 * new point gets submitted. */
+	pthread_cond_t timeline_cond;
 };
 
 struct radv_device_memory {
@@ -1150,6 +1162,9 @@ void
 radv_initialise_ds_surface(struct radv_device *device,
 			   struct radv_ds_buffer_info *ds,
 			   struct radv_image_view *iview);
+
+bool
+radv_sc_read(int fd, void *buf, size_t size, bool timeout);
 
 /**
  * Attachment state when recording a renderpass instance.
@@ -2160,11 +2175,62 @@ struct radv_query_pool {
 	uint32_t pipeline_stats_mask;
 };
 
-struct radv_semaphore {
-	/* use a winsys sem for non-exportable */
-	struct radeon_winsys_sem *sem;
+typedef enum {
+	RADV_SEMAPHORE_NONE,
+	RADV_SEMAPHORE_WINSYS,
+	RADV_SEMAPHORE_SYNCOBJ,
+	RADV_SEMAPHORE_TIMELINE,
+} radv_semaphore_kind;
+
+struct radv_deferred_queue_submission;
+
+struct radv_timeline_waiter {
+	struct list_head list;
+	struct radv_deferred_queue_submission *submission;
+	uint64_t value;
+};
+
+struct radv_timeline_point {
+	struct list_head list;
+
+	uint64_t value;
 	uint32_t syncobj;
-	uint32_t temp_syncobj;
+
+	/* Separate from the list to accomodate CPU wait being async, as well
+	 * as prevent point deletion during submission. */
+	unsigned wait_count;
+};
+
+struct radv_timeline {
+	/* Using a pthread mutex to be compatible with condition variables. */
+	pthread_mutex_t mutex;
+
+	uint64_t highest_signaled;
+	uint64_t highest_submitted;
+
+	struct list_head points;
+
+	/* Keep free points on hand so we do not have to recreate syncobjs all
+	 * the time. */
+	struct list_head free_points;
+
+	/* Submissions that are deferred waiting for a specific value to be
+	 * submitted. */
+	struct list_head waiters;
+};
+
+struct radv_semaphore_part {
+	radv_semaphore_kind kind;
+	union {
+		uint32_t syncobj;
+		struct radeon_winsys_sem *ws_sem;
+		struct radv_timeline timeline;
+	};
+};
+
+struct radv_semaphore {
+	struct radv_semaphore_part permanent;
+	struct radv_semaphore_part temporary;
 };
 
 void radv_set_descriptor_set(struct radv_cmd_buffer *cmd_buffer,

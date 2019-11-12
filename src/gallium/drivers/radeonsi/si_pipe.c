@@ -483,7 +483,13 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 	if (!sctx->ctx)
 		goto fail;
 
-	if (sscreen->info.num_sdma_rings && !(sscreen->debug_flags & DBG(NO_ASYNC_DMA))) {
+	if (sscreen->info.num_sdma_rings &&
+	    !(sscreen->debug_flags & DBG(NO_ASYNC_DMA)) &&
+	    /* SDMA timeouts sometimes on gfx10 so disable it for now. See:
+	     *    https://bugs.freedesktop.org/show_bug.cgi?id=111481
+	     *    https://gitlab.freedesktop.org/mesa/mesa/issues/1907
+	     */
+	    (sctx->chip_class != GFX10 || sscreen->debug_flags & DBG(FORCE_DMA))) {
 		sctx->dma_cs = sctx->ws->cs_create(sctx->ctx, RING_DMA,
 						   (void*)si_flush_dma_cs,
 						   sctx, stop_exec_on_failure);
@@ -897,6 +903,10 @@ static void si_disk_cache_create(struct si_screen *sscreen)
 	/* These flags affect shader compilation. */
 	#define ALL_FLAGS (DBG(SI_SCHED) | DBG(GISEL))
 	uint64_t shader_debug_flags = sscreen->debug_flags & ALL_FLAGS;
+	/* Reserve left-most bit for tgsi/nir selector */
+	assert(!(shader_debug_flags & (1u << 31)));
+	shader_debug_flags |= (uint32_t)
+		((sscreen->options.enable_nir & 0x1) << 31);
 
 	/* Add the high bits of 32-bit addresses, which affects
 	 * how 32-bit addresses are expanded to 64 bits.
@@ -1020,6 +1030,13 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 		return NULL;
 	}
 
+	{
+#define OPT_BOOL(name, dflt, description) \
+		sscreen->options.name = \
+			driQueryOptionb(config->options, "radeonsi_"#name);
+#include "si_debug_options.h"
+	}
+
 	si_disk_cache_create(sscreen);
 
 	/* Determine the number of shader compiler threads. */
@@ -1139,13 +1156,6 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 		driQueryOptionb(config->options, "radeonsi_assume_no_z_fights");
 	sscreen->commutative_blend_add =
 		driQueryOptionb(config->options, "radeonsi_commutative_blend_add");
-
-	{
-#define OPT_BOOL(name, dflt, description) \
-		sscreen->options.name = \
-			driQueryOptionb(config->options, "radeonsi_"#name);
-#include "si_debug_options.h"
-	}
 
 	sscreen->use_ngg = sscreen->info.chip_class >= GFX10 &&
 			   sscreen->info.family != CHIP_NAVI14 &&

@@ -134,10 +134,7 @@ Temp emit_wqm(isel_context *ctx, Temp src, Temp dst=Temp(0, s1), bool program_ne
       if (!dst.id())
          return src;
 
-      if (src.type() == RegType::vgpr || src.size() > 1)
-         bld.copy(Definition(dst), src);
-      else
-         bld.sop1(aco_opcode::s_mov_b32, Definition(dst), src);
+      bld.copy(Definition(dst), src);
       return dst;
    }
 
@@ -148,12 +145,15 @@ Temp emit_wqm(isel_context *ctx, Temp src, Temp dst=Temp(0, s1), bool program_ne
 
 static Temp emit_bpermute(isel_context *ctx, Builder &bld, Temp index, Temp data)
 {
+   if (index.regClass() == s1)
+      return bld.vop3(aco_opcode::v_readlane_b32, bld.def(s1), data, index);
+
    Temp index_x4 = bld.vop2(aco_opcode::v_lshlrev_b32, bld.def(v1), Operand(2u), index);
 
    /* Currently not implemented on GFX6-7 */
    assert(ctx->options->chip_class >= GFX8);
 
-   if (ctx->options->chip_class <= GFX9 || ctx->options->wave_size == 32) {
+   if (ctx->options->chip_class <= GFX9 || ctx->program->wave_size == 32) {
       return bld.ds(aco_opcode::ds_bpermute_b32, bld.def(v1), index_x4, data);
    }
 
@@ -3271,7 +3271,8 @@ void visit_load_resource(isel_context *ctx, nir_intrinsic_instr *instr)
    bld.copy(Definition(get_ssa_temp(ctx, &instr->dest.ssa)), index);
 }
 
-void load_buffer(isel_context *ctx, unsigned num_components, Temp dst, Temp rsrc, Temp offset, bool glc=false)
+void load_buffer(isel_context *ctx, unsigned num_components, Temp dst,
+                 Temp rsrc, Temp offset, bool glc=false, bool readonly=true)
 {
    Builder bld(ctx->program, ctx->block);
 
@@ -3300,7 +3301,8 @@ void load_buffer(isel_context *ctx, unsigned num_components, Temp dst, Temp rsrc
          mubuf->offen = (offset.type() == RegType::vgpr);
          mubuf->glc = glc;
          mubuf->dlc = dlc;
-         mubuf->barrier = barrier_buffer;
+         mubuf->barrier = readonly ? barrier_none : barrier_buffer;
+         mubuf->can_reorder = readonly;
          bld.insert(std::move(mubuf));
          emit_split_vector(ctx, lower, 2);
          num_bytes -= 16;
@@ -3330,7 +3332,8 @@ void load_buffer(isel_context *ctx, unsigned num_components, Temp dst, Temp rsrc
       mubuf->offen = (offset.type() == RegType::vgpr);
       mubuf->glc = glc;
       mubuf->dlc = dlc;
-      mubuf->barrier = barrier_buffer;
+      mubuf->barrier = readonly ? barrier_none : barrier_buffer;
+      mubuf->can_reorder = readonly;
       mubuf->offset = const_offset;
       aco_ptr<Instruction> instr = std::move(mubuf);
 
@@ -3384,7 +3387,8 @@ void load_buffer(isel_context *ctx, unsigned num_components, Temp dst, Temp rsrc
       load->definitions[0] = Definition(dst);
       load->glc = glc;
       load->dlc = dlc;
-      load->barrier = barrier_buffer;
+      load->barrier = readonly ? barrier_none : barrier_buffer;
+      load->can_reorder = false; // FIXME: currently, it doesn't seem beneficial due to how our scheduler works
       assert(ctx->options->chip_class >= GFX8 || !glc);
 
       /* trim vector */
@@ -4358,7 +4362,7 @@ void visit_load_ssbo(isel_context *ctx, nir_intrinsic_instr *instr)
    rsrc = bld.smem(aco_opcode::s_load_dwordx4, bld.def(s4), rsrc, Operand(0u));
 
    bool glc = nir_intrinsic_access(instr) & (ACCESS_VOLATILE | ACCESS_COHERENT);
-   load_buffer(ctx, num_components, dst, rsrc, get_ssa_temp(ctx, instr->src[1].ssa), glc);
+   load_buffer(ctx, num_components, dst, rsrc, get_ssa_temp(ctx, instr->src[1].ssa), glc, false);
 }
 
 void visit_store_ssbo(isel_context *ctx, nir_intrinsic_instr *instr)
@@ -4918,12 +4922,12 @@ void visit_shared_atomic(isel_context *ctx, nir_intrinsic_instr *instr)
 Temp get_scratch_resource(isel_context *ctx)
 {
    Builder bld(ctx->program, ctx->block);
-   Temp scratch_addr = ctx->private_segment_buffer;
+   Temp scratch_addr = ctx->program->private_segment_buffer;
    if (ctx->stage != compute_cs)
-      scratch_addr = bld.smem(aco_opcode::s_load_dwordx2, bld.def(s2), ctx->private_segment_buffer, Operand(0u));
+      scratch_addr = bld.smem(aco_opcode::s_load_dwordx2, bld.def(s2), scratch_addr, Operand(0u));
 
    uint32_t rsrc_conf = S_008F0C_ADD_TID_ENABLE(1) |
-                        S_008F0C_INDEX_STRIDE(ctx->options->wave_size == 64 ? 3 : 2);;
+                        S_008F0C_INDEX_STRIDE(ctx->program->wave_size == 64 ? 3 : 2);;
 
    if (ctx->program->chip_class >= GFX10) {
       rsrc_conf |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
@@ -4967,11 +4971,11 @@ void visit_load_scratch(isel_context *ctx, nir_intrinsic_instr *instr) {
          std::array<Temp,NIR_MAX_VEC_COMPONENTS> elems;
          Temp lower = bld.mubuf(aco_opcode::buffer_load_dwordx4,
                                 bld.def(v4), offset, rsrc,
-                                ctx->scratch_offset, 0, true);
+                                ctx->program->scratch_offset, 0, true);
          Temp upper = bld.mubuf(dst.size() == 6 ? aco_opcode::buffer_load_dwordx2 :
                                                   aco_opcode::buffer_load_dwordx4,
                                 dst.size() == 6 ? bld.def(v2) : bld.def(v4),
-                                offset, rsrc, ctx->scratch_offset, 16, true);
+                                offset, rsrc, ctx->program->scratch_offset, 16, true);
          emit_split_vector(ctx, lower, 2);
          elems[0] = emit_extract_vector(ctx, lower, 0, v2);
          elems[1] = emit_extract_vector(ctx, lower, 1, v2);
@@ -4996,7 +5000,7 @@ void visit_load_scratch(isel_context *ctx, nir_intrinsic_instr *instr) {
          unreachable("Wrong dst size for nir_intrinsic_load_scratch");
    }
 
-   bld.mubuf(op, Definition(dst), offset, rsrc, ctx->scratch_offset, 0, true);
+   bld.mubuf(op, Definition(dst), offset, rsrc, ctx->program->scratch_offset, 0, true);
    emit_split_vector(ctx, dst, instr->num_components);
 }
 
@@ -5057,7 +5061,7 @@ void visit_store_scratch(isel_context *ctx, nir_intrinsic_instr *instr) {
             unreachable("Invalid data size for nir_intrinsic_store_scratch.");
       }
 
-      bld.mubuf(op, offset, rsrc, ctx->scratch_offset, write_data, start * elem_size_bytes, true);
+      bld.mubuf(op, offset, rsrc, ctx->program->scratch_offset, write_data, start * elem_size_bytes, true);
    }
 }
 
@@ -5288,6 +5292,7 @@ void visit_intrinsic(isel_context *ctx, nir_intrinsic_instr *instr)
       Temp sample_pos;
       Temp addr = get_ssa_temp(ctx, instr->src[0].ssa);
       nir_const_value* const_addr = nir_src_as_const_value(instr->src[0]);
+      Temp private_segment_buffer = ctx->program->private_segment_buffer;
       if (addr.type() == RegType::sgpr) {
          Operand offset;
          if (const_addr) {
@@ -5299,17 +5304,16 @@ void visit_intrinsic(isel_context *ctx, nir_intrinsic_instr *instr)
             offset = bld.sop2(aco_opcode::s_lshl_b32, bld.def(s1), bld.def(s1, scc), addr, Operand(3u));
             offset = bld.sop2(aco_opcode::s_add_u32, bld.def(s1), bld.def(s1, scc), addr, Operand(sample_pos_offset));
          }
-         addr = ctx->private_segment_buffer;
-         sample_pos = bld.smem(aco_opcode::s_load_dwordx2, bld.def(s2), addr, Operand(offset));
+         sample_pos = bld.smem(aco_opcode::s_load_dwordx2, bld.def(s2), private_segment_buffer, Operand(offset));
 
       } else if (ctx->options->chip_class >= GFX9) {
          addr = bld.vop2(aco_opcode::v_lshlrev_b32, bld.def(v1), Operand(3u), addr);
-         sample_pos = bld.global(aco_opcode::global_load_dwordx2, bld.def(v2), addr, ctx->private_segment_buffer, sample_pos_offset);
+         sample_pos = bld.global(aco_opcode::global_load_dwordx2, bld.def(v2), addr, private_segment_buffer, sample_pos_offset);
       } else {
-         /* addr += ctx->private_segment_buffer + sample_pos_offset */
+         /* addr += private_segment_buffer + sample_pos_offset */
          Temp tmp0 = bld.tmp(s1);
          Temp tmp1 = bld.tmp(s1);
-         bld.pseudo(aco_opcode::p_split_vector, Definition(tmp0), Definition(tmp1), ctx->private_segment_buffer);
+         bld.pseudo(aco_opcode::p_split_vector, Definition(tmp0), Definition(tmp1), private_segment_buffer);
          Definition scc_tmp = bld.def(s1, scc);
          tmp0 = bld.sop2(aco_opcode::s_add_u32, bld.def(s1), scc_tmp, tmp0, Operand(sample_pos_offset));
          tmp1 = bld.sop2(aco_opcode::s_addc_u32, bld.def(s1), bld.def(s1, scc), tmp1, Operand(0u), bld.scc(scc_tmp.getTemp()));
@@ -5551,13 +5555,15 @@ void visit_intrinsic(isel_context *ctx, nir_intrinsic_instr *instr)
       emit_wqm(ctx, tmp.getTemp(), get_ssa_temp(ctx, &instr->dest.ssa));
       break;
    }
-   case nir_intrinsic_shuffle: {
+   case nir_intrinsic_shuffle:
+   case nir_intrinsic_read_invocation: {
       Temp src = get_ssa_temp(ctx, instr->src[0].ssa);
-      if (!ctx->divergent_vals[instr->dest.ssa.index]) {
+      if (!ctx->divergent_vals[instr->src[0].ssa->index]) {
          emit_uniform_subgroup(ctx, instr, src);
       } else {
          Temp tid = get_ssa_temp(ctx, instr->src[1].ssa);
-         assert(tid.regClass() == v1);
+         if (instr->intrinsic == nir_intrinsic_read_invocation || !ctx->divergent_vals[instr->src[1].ssa->index])
+            tid = bld.as_uniform(tid);
          Temp dst = get_ssa_temp(ctx, &instr->dest.ssa);
          if (src.regClass() == v1) {
             emit_wqm(ctx, emit_bpermute(ctx, bld, tid, src), dst);
@@ -5568,6 +5574,8 @@ void visit_intrinsic(isel_context *ctx, nir_intrinsic_instr *instr)
             hi = emit_wqm(ctx, emit_bpermute(ctx, bld, tid, hi));
             bld.pseudo(aco_opcode::p_create_vector, Definition(dst), lo, hi);
             emit_split_vector(ctx, dst, 2);
+         } else if (instr->dest.ssa.bit_size == 1 && src.regClass() == s2 && tid.regClass() == s1) {
+            emit_wqm(ctx, bld.sopc(aco_opcode::s_bitcmp1_b64, bld.def(s1, scc), src, tid), dst);
          } else if (instr->dest.ssa.bit_size == 1 && src.regClass() == s2) {
             Temp tmp = bld.vop3(aco_opcode::v_lshrrev_b64, bld.def(v2), tid, src);
             tmp = emit_extract_vector(ctx, tmp, 0, v1);
@@ -5609,33 +5617,6 @@ void visit_intrinsic(isel_context *ctx, nir_intrinsic_instr *instr)
                   bld.sopc(aco_opcode::s_bitcmp1_b64, bld.def(s1, scc), src,
                            bld.sop1(aco_opcode::s_ff1_i32_b64, bld.def(s1), Operand(exec, s2))),
                   dst);
-      } else if (src.regClass() == s1) {
-         bld.sop1(aco_opcode::s_mov_b32, Definition(dst), src);
-      } else if (src.regClass() == s2) {
-         bld.pseudo(aco_opcode::p_create_vector, Definition(dst), src);
-      } else {
-         fprintf(stderr, "Unimplemented NIR instr bit size: ");
-         nir_print_instr(&instr->instr, stderr);
-         fprintf(stderr, "\n");
-      }
-      break;
-   }
-   case nir_intrinsic_read_invocation: {
-      Temp src = get_ssa_temp(ctx, instr->src[0].ssa);
-      Temp lane = get_ssa_temp(ctx, instr->src[1].ssa);
-      Temp dst = get_ssa_temp(ctx, &instr->dest.ssa);
-      assert(lane.regClass() == s1);
-      if (src.regClass() == v1) {
-         emit_wqm(ctx, bld.vop3(aco_opcode::v_readlane_b32, bld.def(s1), src, lane), dst);
-      } else if (src.regClass() == v2) {
-         Temp lo = bld.tmp(v1), hi = bld.tmp(v1);
-         bld.pseudo(aco_opcode::p_split_vector, Definition(lo), Definition(hi), src);
-         lo = emit_wqm(ctx, bld.vop3(aco_opcode::v_readlane_b32, bld.def(s1), lo, lane));
-         hi = emit_wqm(ctx, bld.vop3(aco_opcode::v_readlane_b32, bld.def(s1), hi, lane));
-         bld.pseudo(aco_opcode::p_create_vector, Definition(dst), lo, hi);
-         emit_split_vector(ctx, dst, 2);
-      } else if (instr->dest.ssa.bit_size == 1 && src.regClass() == s2) {
-         emit_wqm(ctx, bld.sopc(aco_opcode::s_bitcmp1_b64, bld.def(s1, scc), src, lane), dst);
       } else if (src.regClass() == s1) {
          bld.sop1(aco_opcode::s_mov_b32, Definition(dst), src);
       } else if (src.regClass() == s2) {
@@ -7053,26 +7034,35 @@ static void visit_loop(isel_context *ctx, nir_loop *loop)
           * workaround, break the loop when the loop mask is empty instead of
           * always continuing. */
          ctx->block->kind |= (block_kind_continue_or_break | block_kind_uniform);
-
-         /* create "loop_almost_exit" to avoid critical edges */
          unsigned block_idx = ctx->block->index;
-         Block *loop_almost_exit = ctx->program->create_and_insert_block();
-         loop_almost_exit->loop_nest_depth = ctx->cf_info.loop_nest_depth;
-         loop_almost_exit->kind = block_kind_uniform;
-         bld.reset(loop_almost_exit);
+
+         /* create helper blocks to avoid critical edges */
+         Block *break_block = ctx->program->create_and_insert_block();
+         break_block->loop_nest_depth = ctx->cf_info.loop_nest_depth;
+         break_block->kind = block_kind_uniform;
+         bld.reset(break_block);
          bld.branch(aco_opcode::p_branch);
+         add_linear_edge(block_idx, break_block);
+         add_linear_edge(break_block->index, &loop_exit);
 
-         add_linear_edge(block_idx, loop_almost_exit);
-         add_linear_edge(loop_almost_exit->index, &loop_exit);
+         Block *continue_block = ctx->program->create_and_insert_block();
+         continue_block->loop_nest_depth = ctx->cf_info.loop_nest_depth;
+         continue_block->kind = block_kind_uniform;
+         bld.reset(continue_block);
+         bld.branch(aco_opcode::p_branch);
+         add_linear_edge(block_idx, continue_block);
+         add_linear_edge(continue_block->index, &ctx->program->blocks[loop_header_idx]);
 
+         add_logical_edge(block_idx, &ctx->program->blocks[loop_header_idx]);
          ctx->block = &ctx->program->blocks[block_idx];
       } else {
          ctx->block->kind |= (block_kind_continue | block_kind_uniform);
+         if (!ctx->cf_info.parent_loop.has_divergent_branch)
+            add_edge(ctx->block->index, &ctx->program->blocks[loop_header_idx]);
+         else
+            add_linear_edge(ctx->block->index, &ctx->program->blocks[loop_header_idx]);
       }
-      if (!ctx->cf_info.parent_loop.has_divergent_branch)
-         add_edge(ctx->block->index, &ctx->program->blocks[loop_header_idx]);
-      else
-         add_linear_edge(ctx->block->index, &ctx->program->blocks[loop_header_idx]);
+
       bld.reset(ctx->block);
       bld.branch(aco_opcode::p_branch);
    }

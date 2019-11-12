@@ -81,6 +81,14 @@ static const struct nir_shader_compiler_options nir_options_llvm = {
 	.lower_rotate = true,
 	.max_unroll_iterations = 32,
 	.use_interpolated_input_intrinsics = true,
+	/* nir_lower_int64() isn't actually called for the LLVM backend, but
+	 * this helps the loop unrolling heuristics. */
+	.lower_int64_options = nir_lower_imul64 |
+                               nir_lower_imul_high64 |
+                               nir_lower_imul_2x32_64 |
+                               nir_lower_divmod64 |
+                               nir_lower_minmax64 |
+                               nir_lower_iabs64,
 };
 
 static const struct nir_shader_compiler_options nir_options_aco = {
@@ -111,6 +119,13 @@ static const struct nir_shader_compiler_options nir_options_aco = {
 	.lower_rotate = true,
 	.max_unroll_iterations = 32,
 	.use_interpolated_input_intrinsics = true,
+	.lower_int64_options = nir_lower_imul64 |
+                               nir_lower_imul_high64 |
+                               nir_lower_imul_2x32_64 |
+                               nir_lower_divmod64 |
+                               nir_lower_logic64 |
+                               nir_lower_minmax64 |
+                               nir_lower_iabs64,
 };
 
 bool
@@ -312,7 +327,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 		assert(module->size % 4 == 0);
 
 		if (device->instance->debug_flags & RADV_DEBUG_DUMP_SPIRV)
-			radv_print_spirv(spirv, module->size, stderr);
+			radv_print_spirv(module->data, module->size, stderr);
 
 		uint32_t num_spec_entries = 0;
 		struct nir_spirv_specialization *spec_entries = NULL;
@@ -1080,16 +1095,6 @@ shader_variant_compile(struct radv_device *device,
 	options->has_ls_vgpr_init_bug = device->physical_device->rad_info.has_ls_vgpr_init_bug;
 	options->use_ngg_streamout = device->physical_device->use_ngg_streamout;
 
-	if ((stage == MESA_SHADER_GEOMETRY && !options->key.vs_common_out.as_ngg) ||
-	    gs_copy_shader)
-		options->wave_size = 64;
-	else if (stage == MESA_SHADER_COMPUTE)
-		options->wave_size = device->physical_device->cs_wave_size;
-	else if (stage == MESA_SHADER_FRAGMENT)
-		options->wave_size = device->physical_device->ps_wave_size;
-	else
-		options->wave_size = device->physical_device->ge_wave_size;
-
 	if (!use_aco || options->dump_shader || options->record_ir)
 		ac_init_llvm_once();
 
@@ -1114,7 +1119,7 @@ shader_variant_compile(struct radv_device *device,
 		radv_init_llvm_compiler(&ac_llvm,
 					thread_compiler,
 					chip_family, tm_options,
-					options->wave_size);
+					info->wave_size);
 
 		if (gs_copy_shader) {
 			assert(shader_count == 1);
@@ -1145,7 +1150,14 @@ shader_variant_compile(struct radv_device *device,
 	if (keep_shader_info) {
 		variant->nir_string = radv_dump_nir_shaders(shaders, shader_count);
 		if (!gs_copy_shader && !module->nir) {
-			variant->spirv = (uint32_t *)module->data;
+			variant->spirv = malloc(module->size);
+			if (!variant->spirv) {
+				free(variant);
+				free(binary);
+				return NULL;
+			}
+
+			memcpy(variant->spirv, module->data, module->size);
 			variant->spirv_size = module->size;
 		}
 	}
@@ -1211,6 +1223,7 @@ radv_shader_variant_destroy(struct radv_device *device,
 	list_del(&variant->slab_list);
 	mtx_unlock(&device->shader_slab_mutex);
 
+	free(variant->spirv);
 	free(variant->nir_string);
 	free(variant->disasm_string);
 	free(variant->ir_string);

@@ -12,8 +12,8 @@ done
 
 apt-get install -y \
       ca-certificates \
-      wget \
-      unzip
+      unzip \
+      wget
 
 sed -i -e 's/http:\/\/deb/https:\/\/deb/g' /etc/apt/sources.list
 echo 'deb https://deb.debian.org/debian buster-backports main' >/etc/apt/sources.list.d/backports.list
@@ -30,62 +30,69 @@ EOF
 apt-get dist-upgrade -y
 
 apt-get install -y --no-remove \
-      llvm-6.0-dev \
-      libclang-6.0-dev \
-      llvm-7-dev \
-      libclang-7-dev \
-      llvm-8-dev \
-      libclang-8-dev \
-      g++ \
+      autoconf \
+      automake \
+      autotools-dev \
+      bison \
       clang-8 \
-      git \
-      bzip2 \
-      zlib1g-dev \
-      pkg-config \
-      libxrender-dev \
-      libxdamage-dev \
-      libxxf86vm-dev \
+      cmake \
+      flex \
+      g++ \
       gcc \
+      gettext \
       git \
-      libepoxy-dev \
-      libegl1-mesa-dev \
-      libgbm-dev \
+      libclang-6.0-dev \
+      libclang-7-dev \
+      libclang-8-dev \
       libclc-dev \
-      libxvmc-dev \
-      libomxil-bellagio-dev \
-      xz-utils \
-      libexpat1-dev \
-      libx11-xcb-dev \
       libelf-dev \
-      libunwind-dev \
-      libglvnd-dev \
-      libgtk-3-dev \
-      libpng-dev \
+      libepoxy-dev \
+      libexpat1-dev \
       libgbm-dev \
-      libgles2-mesa-dev \
+      libgtk-3-dev \
+      libomxil-bellagio-dev \
+      libpciaccess-dev \
+      libtool \
+      libunwind-dev \
+      libva-dev \
+      libvdpau-dev \
       libvulkan-dev \
+      libx11-dev \
+      libx11-xcb-dev \
+      libxdamage-dev \
+      libxext-dev \
+      libxrandr-dev \
+      libxrender-dev \
+      libxshmfence-dev \
+      libxvmc-dev \
+      libxxf86vm-dev \
+      llvm-6.0-dev \
+      llvm-7-dev \
+      llvm-8-dev \
+      meson \
+      pkg-config \
       python-mako \
       python3-mako \
-      bison \
-      flex \
-      gettext \
-      cmake \
-      meson \
-      scons
+      scons \
+      x11proto-dri2-dev \
+      x11proto-gl-dev \
+      x11proto-randr-dev \
+      xz-utils \
+      zlib1g-dev
 
 # Cross-build Mesa deps
 for arch in $CROSS_ARCHITECTURES; do
     apt-get install -y --no-remove \
+            crossbuild-essential-${arch} \
             libdrm-dev:${arch} \
-            libexpat1-dev:${arch} \
             libelf-dev:${arch} \
-            crossbuild-essential-${arch}
+            libexpat1-dev:${arch}
 done
 
 # for 64bit windows cross-builds
 apt-get install -y --no-remove \
-    mingw-w64 \
     libz-mingw-w64-dev \
+    mingw-w64 \
     wine \
     wine32 \
     wine64
@@ -113,17 +120,9 @@ export               XCB_RELEASES=https://xcb.freedesktop.org/dist
 export           WAYLAND_RELEASES=https://wayland.freedesktop.org/releases
 
 export         XORGMACROS_VERSION=util-macros-1.19.0
-export            GLPROTO_VERSION=glproto-1.4.17
-export          DRI2PROTO_VERSION=dri2proto-2.8
-export       LIBPCIACCESS_VERSION=libpciaccess-0.13.4
 export             LIBDRM_VERSION=libdrm-2.4.100
 export           XCBPROTO_VERSION=xcb-proto-1.13
-export         RANDRPROTO_VERSION=randrproto-1.5.0
-export          LIBXRANDR_VERSION=libXrandr-1.5.0
 export             LIBXCB_VERSION=libxcb-1.13
-export       LIBXSHMFENCE_VERSION=libxshmfence-1.3
-export           LIBVDPAU_VERSION=libvdpau-1.1
-export              LIBVA_VERSION=libva-1.7.0
 export         LIBWAYLAND_VERSION=wayland-1.15.0
 export  WAYLAND_PROTOCOLS_VERSION=wayland-protocols-1.12
 
@@ -131,16 +130,6 @@ wget $XORG_RELEASES/util/$XORGMACROS_VERSION.tar.bz2
 tar -xvf $XORGMACROS_VERSION.tar.bz2 && rm $XORGMACROS_VERSION.tar.bz2
 cd $XORGMACROS_VERSION; ./configure; make install; cd ..
 rm -rf $XORGMACROS_VERSION
-
-wget $XORG_RELEASES/proto/$GLPROTO_VERSION.tar.bz2
-tar -xvf $GLPROTO_VERSION.tar.bz2 && rm $GLPROTO_VERSION.tar.bz2
-cd $GLPROTO_VERSION; ./configure; make install; cd ..
-rm -rf $GLPROTO_VERSION
-
-wget $XORG_RELEASES/proto/$DRI2PROTO_VERSION.tar.bz2
-tar -xvf $DRI2PROTO_VERSION.tar.bz2 && rm $DRI2PROTO_VERSION.tar.bz2
-cd $DRI2PROTO_VERSION; ./configure; make install; cd ..
-rm -rf $DRI2PROTO_VERSION
 
 wget $XCB_RELEASES/$XCBPROTO_VERSION.tar.bz2
 tar -xvf $XCBPROTO_VERSION.tar.bz2 && rm $XCBPROTO_VERSION.tar.bz2
@@ -152,40 +141,10 @@ tar -xvf $LIBXCB_VERSION.tar.bz2 && rm $LIBXCB_VERSION.tar.bz2
 cd $LIBXCB_VERSION; ./configure; make install; cd ..
 rm -rf $LIBXCB_VERSION
 
-wget $XORG_RELEASES/lib/$LIBPCIACCESS_VERSION.tar.bz2
-tar -xvf $LIBPCIACCESS_VERSION.tar.bz2 && rm $LIBPCIACCESS_VERSION.tar.bz2
-cd $LIBPCIACCESS_VERSION; ./configure; make install; cd ..
-rm -rf $LIBPCIACCESS_VERSION
-
 wget https://dri.freedesktop.org/libdrm/$LIBDRM_VERSION.tar.bz2
 tar -xvf $LIBDRM_VERSION.tar.bz2 && rm $LIBDRM_VERSION.tar.bz2
-cd $LIBDRM_VERSION; ./configure --enable-vc4 --enable-freedreno --enable-etnaviv-experimental-api; make install; cd ..
+cd $LIBDRM_VERSION; meson build -D vc4=true -D freedreno=true -D etnaviv=true; ninja -j4 -C build install; cd ..
 rm -rf $LIBDRM_VERSION
-
-wget $XORG_RELEASES/proto/$RANDRPROTO_VERSION.tar.bz2
-tar -xvf $RANDRPROTO_VERSION.tar.bz2 && rm $RANDRPROTO_VERSION.tar.bz2
-cd $RANDRPROTO_VERSION; ./configure; make install; cd ..
-rm -rf $RANDRPROTO_VERSION
-
-wget $XORG_RELEASES/lib/$LIBXRANDR_VERSION.tar.bz2
-tar -xvf $LIBXRANDR_VERSION.tar.bz2 && rm $LIBXRANDR_VERSION.tar.bz2
-cd $LIBXRANDR_VERSION; ./configure; make install; cd ..
-rm -rf $LIBXRANDR_VERSION
-
-wget $XORG_RELEASES/lib/$LIBXSHMFENCE_VERSION.tar.bz2
-tar -xvf $LIBXSHMFENCE_VERSION.tar.bz2 && rm $LIBXSHMFENCE_VERSION.tar.bz2
-cd $LIBXSHMFENCE_VERSION; ./configure; make install; cd ..
-rm -rf $LIBXSHMFENCE_VERSION
-
-wget https://people.freedesktop.org/~aplattner/vdpau/$LIBVDPAU_VERSION.tar.bz2
-tar -xvf $LIBVDPAU_VERSION.tar.bz2 && rm $LIBVDPAU_VERSION.tar.bz2
-cd $LIBVDPAU_VERSION; ./configure; make install; cd ..
-rm -rf $LIBVDPAU_VERSION
-
-wget https://www.freedesktop.org/software/vaapi/releases/libva/$LIBVA_VERSION.tar.bz2
-tar -xvf $LIBVA_VERSION.tar.bz2 && rm $LIBVA_VERSION.tar.bz2
-cd $LIBVA_VERSION; ./configure --disable-wayland --disable-dummy-driver; make install; cd ..
-rm -rf $LIBVA_VERSION
 
 wget $WAYLAND_RELEASES/$LIBWAYLAND_VERSION.tar.xz
 tar -xvf $LIBWAYLAND_VERSION.tar.xz && rm $LIBWAYLAND_VERSION.tar.xz
@@ -196,6 +155,17 @@ wget $WAYLAND_RELEASES/$WAYLAND_PROTOCOLS_VERSION.tar.xz
 tar -xvf $WAYLAND_PROTOCOLS_VERSION.tar.xz && rm $WAYLAND_PROTOCOLS_VERSION.tar.xz
 cd $WAYLAND_PROTOCOLS_VERSION; ./configure; make install; cd ..
 rm -rf $WAYLAND_PROTOCOLS_VERSION
+
+
+# The version of libglvnd-dev in debian is too old
+# Check this page to see when this local compilation can be dropped in favour of the package:
+# https://packages.debian.org/libglvnd-dev
+GLVND_VERSION=1.2.0
+wget https://gitlab.freedesktop.org/glvnd/libglvnd/-/archive/v$GLVND_VERSION/libglvnd-v$GLVND_VERSION.tar.gz
+tar -xvf libglvnd-v$GLVND_VERSION.tar.gz && rm libglvnd-v$GLVND_VERSION.tar.gz
+pushd libglvnd-v$GLVND_VERSION; ./autogen.sh; ./configure; make install; popd
+rm -rf libglvnd-v$GLVND_VERSION
+
 
 pushd /usr/local
 git clone https://gitlab.freedesktop.org/mesa/shader-db.git --depth 1
@@ -226,60 +196,17 @@ for arch in $CROSS_ARCHITECTURES; do
 done
 
 
-############### Build dEQP
-git config --global user.email "mesa@example.com"
-git config --global user.name "Mesa CI"
-# XXX: Use --depth 1 once we can drop the cherry-picks.
-git clone \
-    https://github.com/KhronosGroup/VK-GL-CTS.git \
-    -b opengl-es-cts-3.2.5.1 \
-    /VK-GL-CTS
-cd /VK-GL-CTS
-# Fix surfaceless build
-git cherry-pick -x 22f41e5e321c6dcd8569c4dad91bce89f06b3670
-git cherry-pick -x 1daa8dff73161ea60ead965bd6c9f2a0a2165648
-
-# surfaceless links against libkms and such despite not using it.
-sed -i '/gbm/d' targets/surfaceless/surfaceless.cmake
-sed -i '/libkms/d' targets/surfaceless/surfaceless.cmake
-sed -i '/libgbm/d' targets/surfaceless/surfaceless.cmake
-
-python3 external/fetch_sources.py
-
-mkdir -p /deqp
-cd /deqp
-cmake -G Ninja \
-      -DDEQP_TARGET=surfaceless               \
-      -DCMAKE_BUILD_TYPE=Release              \
-      /VK-GL-CTS
-ninja
-
-# Copy out the mustpass lists we want from a bunch of other junk.
-mkdir /deqp/mustpass
-for gles in gles2 gles3 gles31; do
-    cp \
-        /deqp/external/openglcts/modules/gl_cts/data/mustpass/gles/aosp_mustpass/3.2.5.x/$gles-master.txt \
-        /deqp/mustpass/$gles-master.txt
-done
-
-# Remove the rest of the build products that we don't need.
-rm -rf /deqp/external
-rm -rf /deqp/modules/internal
-rm -rf /deqp/executor
-rm -rf /deqp/execserver
-rm -rf /deqp/modules/egl
-rm -rf /deqp/framework
-du -sh *
-rm -rf /VK-GL-CTS
-
 ############### Uninstall the build software
 
 apt-get purge -y \
-      wget \
-      unzip \
+      autoconf \
+      automake \
+      autotools-dev \
       cmake \
       git \
-      libgles2-mesa-dev \
-      libgbm-dev
+      libgbm-dev \
+      libtool \
+      unzip \
+      wget
 
 apt-get autoremove -y --purge

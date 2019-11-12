@@ -305,8 +305,8 @@ fast_clear_color(struct iris_context *ice,
    blorp_batch_init(&ice->blorp, &blorp_batch, batch, blorp_flags);
 
    struct blorp_surf surf;
-   iris_blorp_surf_for_resource(&ice->vtbl, &surf, p_res, res->aux.usage,
-                                level, true);
+   iris_blorp_surf_for_resource(&ice->vtbl, &batch->screen->isl_dev, &surf,
+                                p_res, res->aux.usage, level, true);
 
    /* In newer gens (> 9), the hardware will do a linear -> sRGB conversion of
     * the clear color during the fast clear, if the surface format is of sRGB
@@ -375,8 +375,8 @@ clear_color(struct iris_context *ice,
                                 box->z, box->depth, aux_usage);
 
    struct blorp_surf surf;
-   iris_blorp_surf_for_resource(&ice->vtbl, &surf, p_res, aux_usage, level,
-                                true);
+   iris_blorp_surf_for_resource(&ice->vtbl, &batch->screen->isl_dev, &surf,
+                                p_res, aux_usage, level, true);
 
    struct blorp_batch blorp_batch;
    blorp_batch_init(&ice->blorp, &blorp_batch, batch, blorp_flags);
@@ -581,19 +581,23 @@ clear_depth_stencil(struct iris_context *ice,
       return;
    }
 
-   if (z_res) {
+   if (clear_depth && z_res) {
       iris_resource_prepare_depth(ice, batch, z_res, level, box->z, box->depth);
-      iris_blorp_surf_for_resource(&ice->vtbl, &z_surf, &z_res->base,
-                                   z_res->aux.usage, level, true);
+      iris_blorp_surf_for_resource(&ice->vtbl, &batch->screen->isl_dev,
+                                   &z_surf, &z_res->base, z_res->aux.usage,
+                                   level, true);
    }
 
    struct blorp_batch blorp_batch;
    blorp_batch_init(&ice->blorp, &blorp_batch, batch, blorp_flags);
 
-   if (stencil_res) {
-      iris_blorp_surf_for_resource(&ice->vtbl, &stencil_surf,
-                                   &stencil_res->base, stencil_res->aux.usage,
-                                   level, true);
+   uint8_t stencil_mask = clear_stencil && stencil_res ? 0xff : 0;
+   if (stencil_mask) {
+      iris_resource_prepare_access(ice, batch, stencil_res, level, 1, box->z,
+                                   box->depth, stencil_res->aux.usage, false);
+      iris_blorp_surf_for_resource(&ice->vtbl, &batch->screen->isl_dev,
+                                   &stencil_surf, &stencil_res->base,
+                                   stencil_res->aux.usage, level, true);
    }
 
    blorp_clear_depth_stencil(&blorp_batch, &z_surf, &stencil_surf,
@@ -602,15 +606,20 @@ clear_depth_stencil(struct iris_context *ice,
                              box->x + box->width,
                              box->y + box->height,
                              clear_depth && z_res, depth,
-                             clear_stencil && stencil_res ? 0xff : 0, stencil);
+                             stencil_mask, stencil);
 
    blorp_batch_finish(&blorp_batch);
    iris_flush_and_dirty_for_history(ice, batch, res, 0,
                                     "cache history: post slow ZS clear");
 
-   if (z_res) {
+   if (clear_depth && z_res) {
       iris_resource_finish_depth(ice, z_res, level,
                                  box->z, box->depth, true);
+   }
+
+   if (stencil_mask) {
+      iris_resource_finish_write(ice, stencil_res, level, box->z, box->depth,
+                                 stencil_res->aux.usage);
    }
 }
 
