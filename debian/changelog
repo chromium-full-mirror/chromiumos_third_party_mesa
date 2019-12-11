@@ -1,9 +1,10 @@
-mesa (19.2.2~cros1) UNRELEASED; urgency=medium
+mesa (19.2.7~cros1) UNRELEASED; urgency=medium
 
   * New upstream release (19.2.2)
   * Remove mangled headers.
+  * New upstream release (19.2.7) 
 
- -- David Riley <davidriley@google.com>  Thu, 31 Oct 2019 13:51:11 -0700
+ -- David Riley <davidriley@google.com>  Wed, 11 Dec 2019 13:32:05 -0800
 
 mesa (19.2.0~cros1-4) experimental; urgency=medium
 
