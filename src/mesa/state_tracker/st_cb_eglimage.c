@@ -216,6 +216,7 @@ st_bind_egl_image(struct gl_context *ctx,
                   struct gl_texture_object *texObj,
                   struct gl_texture_image *texImage,
                   struct st_egl_image *stimg,
+                  bool tex_storage,
                   bool native_supported)
 {
    struct st_context *st = st_context(ctx);
@@ -314,7 +315,7 @@ st_egl_image_target_texture_2d(struct gl_context *ctx, GLenum target,
                          &native_supported))
       return;
 
-   st_bind_egl_image(ctx, texObj, texImage, &stimg, native_supported);
+   st_bind_egl_image(ctx, texObj, texImage, &stimg, false, native_supported);
    pipe_resource_reference(&stimg.texture, NULL);
 }
 
