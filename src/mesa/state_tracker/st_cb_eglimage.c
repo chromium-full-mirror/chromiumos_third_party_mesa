@@ -278,8 +278,20 @@ st_bind_egl_image(struct gl_context *ctx,
       }
    } else {
       texFormat = st_pipe_format_to_mesa_format(stimg->format);
+      /* Use previously derived internalformat as specified by
+       * EXT_EGL_image_storage.
+       */
+      if (tex_storage && texObj->Target == GL_TEXTURE_2D
+          && stimg->internalformat) {
+         internalFormat = stimg->internalformat;
+         if (internalFormat == GL_NONE) {
+            _mesa_error(ctx, GL_INVALID_OPERATION, __func__);
+            return;
+         }
+      }
    }
    assert(texFormat != MESA_FORMAT_NONE);
+
 
    /* Minify texture size based on level set on the EGLImage. */
    uint32_t width = u_minify(stimg->texture->width0, stimg->level);
