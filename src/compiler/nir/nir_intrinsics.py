@@ -195,7 +195,6 @@ intrinsic("get_buffer_size", src_comp=[-1], dest_comp=1,
 def barrier(name):
     intrinsic(name)
 
-barrier("barrier")
 barrier("discard")
 
 # Demote fragment shader invocation to a helper invocation.  Any stores to
@@ -207,6 +206,12 @@ barrier("discard")
 barrier("demote")
 intrinsic("is_helper_invocation", dest_comp=1, flags=[CAN_ELIMINATE])
 
+# A workgroup-level control barrier.  Any thread which hits this barrier will
+# pause until all threads within the current workgroup have also hit the
+# barrier.  For compute shaders, the workgroup is defined as the local group.
+# For tessellation control shaders, the workgroup is defined as the current
+# patch.  This intrinsic does not imply any sort of memory barrier.
+barrier("control_barrier")
 
 # Memory barrier with semantics analogous to the memoryBarrier() GLSL
 # intrinsic.
@@ -254,6 +259,9 @@ barrier("memory_barrier_image")
 barrier("memory_barrier_shared")
 barrier("begin_invocation_interlock")
 barrier("end_invocation_interlock")
+
+# Memory barrier for synchronizing TCS patch outputs
+barrier("memory_barrier_tcs_patch")
 
 # A conditional discard/demote, with a single boolean source.
 intrinsic("discard_if", src_comp=[1])
@@ -379,8 +387,8 @@ def image(name, src_comp=[], **kwargs):
     intrinsic("bindless_image_" + name, src_comp=[1] + src_comp,
               indices=[IMAGE_DIM, IMAGE_ARRAY, FORMAT, ACCESS], **kwargs)
 
-image("load", src_comp=[4, 1], dest_comp=0, flags=[CAN_ELIMINATE])
-image("store", src_comp=[4, 1, 0])
+image("load", src_comp=[4, 1, 1], dest_comp=0, flags=[CAN_ELIMINATE])
+image("store", src_comp=[4, 1, 0, 1])
 image("atomic_add",  src_comp=[4, 1, 1], dest_comp=1)
 image("atomic_imin",  src_comp=[4, 1, 1], dest_comp=1)
 image("atomic_umin",  src_comp=[4, 1, 1], dest_comp=1)
@@ -847,6 +855,10 @@ store("raw_output_pan", 1, [])
 load("raw_output_pan", 0, [], [CAN_ELIMINATE, CAN_REORDER])
 load("output_u8_as_fp16_pan", 0, [], [CAN_ELIMINATE, CAN_REORDER])
 
+# Loads the sampler paramaters <min_lod, max_lod, lod_bias>
+# src[] = { sampler_index }
+load("sampler_lod_parameters_pan", 1, [CAN_ELIMINATE, CAN_REORDER])
+
 # V3D-specific instrinc for tile buffer color reads.
 #
 # The hardware requires that we read the samples and components of a pixel
@@ -864,3 +876,7 @@ load("tlb_color_v3d", 1, [BASE, COMPONENT], [])
 # src[] = { value, render_target }
 # BASE = sample index
 store("tlb_sample_color_v3d", 2, [BASE, COMPONENT, TYPE], [])
+
+# V3D-specific intrinsic to load the number of layers attached to
+# the target framebuffer
+intrinsic("load_fb_layers_v3d", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])

@@ -191,7 +191,7 @@ lower_vs_block(nir_block *block, nir_builder *b, struct state *state)
 		case nir_intrinsic_store_output: {
 			// src[] = { value, offset }.
 
-			b->cursor = nir_before_instr(&intr->instr);
+			b->cursor = nir_instr_remove(&intr->instr);
 
 			nir_ssa_def *vertex_id = build_vertex_id(b, state);
 			nir_ssa_def *offset = build_local_offset(b, state, vertex_id, nir_intrinsic_base(intr),
@@ -348,7 +348,8 @@ lower_tess_ctrl_block(nir_block *block, nir_builder *b, struct state *state)
 			nir_instr_remove(&intr->instr);
 			break;
 
-		case nir_intrinsic_barrier:
+		case nir_intrinsic_control_barrier:
+		case nir_intrinsic_memory_barrier_tcs_patch:
 			/* Hull shaders dispatch 32 wide so an entire patch will always
 			 * fit in a single warp and execute in lock-step.  Consequently,
 			 * we don't need to do anything for TCS barriers so just remove

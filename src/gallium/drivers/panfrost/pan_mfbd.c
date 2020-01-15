@@ -27,7 +27,7 @@
 #include "pan_util.h"
 #include "pan_format.h"
 
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 
 static struct mali_rt_format
 panfrost_mfbd_format(struct pipe_surface *surf)
@@ -235,16 +235,16 @@ panfrost_mfbd_set_zsbuf(
         struct panfrost_resource *rsrc = pan_resource(surf->texture);
 
         unsigned level = surf->u.tex.level;
-        assert(surf->u.tex.first_layer == 0);
+        unsigned first_layer = surf->u.tex.first_layer;
+        assert(surf->u.tex.last_layer == first_layer);
 
-        unsigned offset = rsrc->slices[level].offset;
+        mali_ptr base = panfrost_get_texture_address(rsrc, level, first_layer);
 
         if (rsrc->layout == PAN_AFBC) {
                 /* The only Z/S format we can compress is Z24S8 or variants
                  * thereof (handled by the state tracker) */
                 assert(panfrost_is_z24s8_variant(surf->format));
 
-                mali_ptr base = rsrc->bo->gpu + offset;
                 unsigned header_size = rsrc->slices[level].header_size;
 
                 fb->mfbd_flags |= MALI_MFBD_EXTRA;
@@ -270,7 +270,7 @@ panfrost_mfbd_set_zsbuf(
                 fb->mfbd_flags |= MALI_MFBD_EXTRA;
                 fbx->flags |= MALI_EXTRA_PRESENT | MALI_EXTRA_ZS;
 
-                fbx->ds_linear.depth = rsrc->bo->gpu + offset;
+                fbx->ds_linear.depth = base;
                 fbx->ds_linear.depth_stride = stride;
 
                 if (panfrost_is_z24s8_variant(surf->format)) {
@@ -289,7 +289,7 @@ panfrost_mfbd_set_zsbuf(
                         struct panfrost_resource *stencil = rsrc->separate_stencil;
                         struct panfrost_slice stencil_slice = stencil->slices[level];
 
-                        fbx->ds_linear.stencil = stencil->bo->gpu + stencil_slice.offset;
+                        fbx->ds_linear.stencil = panfrost_get_texture_address(stencil, level, first_layer);
                         fbx->ds_linear.stencil_stride = stencil_slice.stride;
                 }
 
@@ -351,14 +351,57 @@ panfrost_mfbd_upload(struct panfrost_batch *batch,
 
 #undef UPLOAD
 
+static struct bifrost_framebuffer
+panfrost_emit_mfbd(struct panfrost_batch *batch, unsigned vertex_count)
+{
+        struct panfrost_context *ctx = batch->ctx;
+        struct pipe_context *gallium = (struct pipe_context *) ctx;
+        struct panfrost_screen *screen = pan_screen(gallium->screen);
+
+        unsigned width = batch->key.width;
+        unsigned height = batch->key.height;
+
+        unsigned shift = panfrost_get_stack_shift(batch->stack_size);
+
+        struct bifrost_framebuffer framebuffer = {
+                .width1 = MALI_POSITIVE(width),
+                .height1 = MALI_POSITIVE(height),
+                .width2 = MALI_POSITIVE(width),
+                .height2 = MALI_POSITIVE(height),
+
+                .unk1 = 0x1080,
+
+                .rt_count_1 = MALI_POSITIVE(batch->key.nr_cbufs),
+                .rt_count_2 = 4,
+
+                .unknown2 = 0x1f,
+                .tiler = panfrost_emit_midg_tiler(batch, vertex_count),
+                
+                .stack_shift = shift,
+                .unk0 = 0x1e,
+                .scratchpad = panfrost_batch_get_scratchpad(batch, shift, screen->thread_tls_alloc, screen->core_count)->gpu
+        };
+
+        return framebuffer;
+}
+
+void
+panfrost_attach_mfbd(struct panfrost_batch *batch, unsigned vertex_count)
+{
+        struct bifrost_framebuffer mfbd =
+                panfrost_emit_mfbd(batch, vertex_count);
+
+        memcpy(batch->framebuffer.cpu, &mfbd, sizeof(mfbd));
+}
+
 /* Creates an MFBD for the FRAGMENT section of the bound framebuffer */
 
 mali_ptr
 panfrost_mfbd_fragment(struct panfrost_batch *batch, bool has_draws)
 {
         struct bifrost_framebuffer fb = panfrost_emit_mfbd(batch, has_draws);
-        struct bifrost_fb_extra fbx = {};
-        struct bifrost_render_target rts[4] = {};
+        struct bifrost_fb_extra fbx = {0};
+        struct bifrost_render_target rts[4] = {0};
 
         /* We always upload at least one dummy GL_NONE render target */
 

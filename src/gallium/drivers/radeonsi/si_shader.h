@@ -212,6 +212,11 @@ enum {
 	/* PS only */
 	SI_SGPR_ALPHA_REF	= SI_NUM_RESOURCE_SGPRS,
 	SI_PS_NUM_USER_SGPR,
+
+	/* The value has to be 12, because the hw requires that descriptors
+	 * are aligned to 4 SGPRs.
+	 */
+	SI_SGPR_VS_VB_DESCRIPTOR_FIRST = 12,
 };
 
 /* LLVM function parameter indices */
@@ -326,7 +331,6 @@ struct si_shader_selector {
 
 	struct si_shader	*gs_copy_shader;
 
-	struct tgsi_token       *tokens;
 	struct nir_shader       *nir;
 	void			*nir_binary;
 	unsigned		nir_size;
@@ -340,6 +344,8 @@ struct si_shader_selector {
 	bool		vs_needs_prolog;
 	bool		force_correct_derivs_after_kill;
 	bool		prim_discard_cs_allowed;
+	unsigned	num_vs_inputs;
+	unsigned	num_vbos_in_user_sgprs;
 	unsigned	pa_cl_vs_out_cntl;
 	ubyte		clipdist_mask;
 	ubyte		culldist_mask;
@@ -463,7 +469,7 @@ union si_shader_part_key {
 		unsigned	num_input_sgprs:6;
 		/* For merged stages such as LS-HS, HS input VGPRs are first. */
 		unsigned	num_merged_next_stage_vgprs:3;
-		unsigned	last_input:4;
+		unsigned	num_inputs:5;
 		unsigned	as_ls:1;
 		unsigned	as_es:1;
 		unsigned	as_ngg:1;
@@ -730,10 +736,10 @@ si_generate_gs_copy_shader(struct si_screen *sscreen,
 			   struct ac_llvm_compiler *compiler,
 			   struct si_shader_selector *gs_selector,
 			   struct pipe_debug_callback *debug);
-int si_compile_tgsi_shader(struct si_screen *sscreen,
-			   struct ac_llvm_compiler *compiler,
-			   struct si_shader *shader,
-			   struct pipe_debug_callback *debug);
+int si_compile_shader(struct si_screen *sscreen,
+		      struct ac_llvm_compiler *compiler,
+		      struct si_shader *shader,
+		      struct pipe_debug_callback *debug);
 bool si_shader_create(struct si_screen *sscreen, struct ac_llvm_compiler *compiler,
 		     struct si_shader *shader,
 		     struct pipe_debug_callback *debug);
@@ -783,6 +789,18 @@ si_get_main_shader_part(struct si_shader_selector *sel,
 	if (key->as_ngg)
 		return &sel->main_shader_part_ngg;
 	return &sel->main_shader_part;
+}
+
+static inline bool
+gfx10_is_ngg_passthrough(struct si_shader *shader)
+{
+	struct si_shader_selector *sel = shader->selector;
+
+	return sel->type != PIPE_SHADER_GEOMETRY &&
+	       !sel->so.num_outputs &&
+	       !sel->info.writes_edgeflag &&
+	       (sel->type != PIPE_SHADER_VERTEX ||
+		!shader->key.mono.u.vs_export_prim_id);
 }
 
 static inline bool

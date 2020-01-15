@@ -43,7 +43,7 @@
 #include "core/state_funcs.h"
 
 #include "gallivm/lp_bld_tgsi.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
@@ -1307,20 +1307,12 @@ swr_update_derived(struct pipe_context *pipe,
             partial_inbounds = 0;
             min_vertex_index = info.min_index + info.index_bias;
 
-            size = AlignUp(size, 4);
-            /* If size of client memory copy is too large, don't copy. The
-             * draw will access user-buffer directly and then block.  This is
-             * faster than queuing many large client draws. */
-            if (size >= screen->client_copy_limit) {
-               post_update_dirty_flags |= SWR_LARGE_CLIENT_DRAW;
-               p_data = (const uint8_t *) vb->buffer.user;
-            } else {
-               /* Copy only needed vertices to scratch space */
-               const void *ptr = (const uint8_t *) vb->buffer.user + base;
-               ptr = (uint8_t *)swr_copy_to_scratch_space(
-                     ctx, &ctx->scratch->vertex_buffer, ptr, size);
-               p_data = (const uint8_t *)ptr - base;
-            }
+            /* Use user memory directly. The draw will access user-buffer
+             * directly and then block. It's easier and usually
+             * faster than copying.
+             */
+            post_update_dirty_flags |= SWR_BLOCK_CLIENT_DRAW;
+            p_data = (const uint8_t *) vb->buffer.user;
          } else if (vb->buffer.resource) {
             /* VBO */
             if (!pitch) {
@@ -1380,20 +1372,13 @@ swr_update_derived(struct pipe_context *pipe,
             post_update_dirty_flags |= SWR_NEW_VERTEX;
 
             size = info.count * pitch;
-            size = AlignUp(size, 4);
-            /* If size of client memory copy is too large, don't copy. The
-             * draw will access user-buffer directly and then block.  This is
-             * faster than queuing many large client draws. */
-            if (size >= screen->client_copy_limit) {
-               post_update_dirty_flags |= SWR_LARGE_CLIENT_DRAW;
-               p_data = (const uint8_t *) info.index.user;
-            } else {
-               /* Copy indices to scratch space */
-               const void *ptr = info.index.user;
-               ptr = swr_copy_to_scratch_space(
-                     ctx, &ctx->scratch->index_buffer, ptr, size);
-               p_data = (const uint8_t *)ptr;
-            }
+
+            /* Use user memory directly. The draw will access user-buffer
+             * directly and then block. It's easier and usually
+             * faster than copying.
+             */
+            post_update_dirty_flags |= SWR_BLOCK_CLIENT_DRAW;
+            p_data = (const uint8_t *) info.index.user;
          }
 
          SWR_INDEX_BUFFER_STATE swrIndexBuffer;
@@ -1763,21 +1748,22 @@ swr_update_derived(struct pipe_context *pipe,
 
       pipe_stream_output_info *stream_output = &ctx->vs->pipe.stream_output;
 
-      for (uint32_t i = 0; i < ctx->num_so_targets; i++) {
+      for (uint32_t i = 0; i < MAX_SO_STREAMS; i++) {
          SWR_STREAMOUT_BUFFER buffer = {0};
-         if (!ctx->so_targets[i])
-            continue;
-         buffer.enable = true;
-         buffer.pBuffer =
-            (gfxptr_t)(swr_resource_data(ctx->so_targets[i]->buffer) +
-                         ctx->so_targets[i]->buffer_offset);
-         buffer.bufferSize = ctx->so_targets[i]->buffer_size >> 2;
-         buffer.pitch = stream_output->stride[i];
-         buffer.streamOffset = 0;
+         if (ctx->so_targets[i]) {
+             buffer.enable = true;
+             buffer.pBuffer =
+                (gfxptr_t)(swr_resource_data(ctx->so_targets[i]->buffer) +
+                             ctx->so_targets[i]->buffer_offset);
+             buffer.bufferSize = ctx->so_targets[i]->buffer_size >> 2;
+             buffer.pitch = stream_output->stride[i];
+             buffer.streamOffset = 0;
+	 }
 
          ctx->api.pfnSwrSetSoBuffers(ctx->swrContext, &buffer, i);
       }
    }
+
 
    if (ctx->dirty & (SWR_NEW_CLIP | SWR_NEW_RASTERIZER | SWR_NEW_VS)) {
       // shader exporting clip distances overrides all user clip planes
@@ -1902,6 +1888,7 @@ swr_set_so_targets(struct pipe_context *pipe,
    }
 
    swr->num_so_targets = num_targets;
+   swr->swrDC.soPrims = &swr->so_primCounter;
 
    swr->dirty |= SWR_NEW_SO;
 }

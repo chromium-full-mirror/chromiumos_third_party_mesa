@@ -3127,7 +3127,7 @@ _mesa_ir_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
       }
    }
 
-   build_program_resource_list(ctx, prog);
+   build_program_resource_list(ctx, prog, false);
    return prog->data->LinkStatus;
 }
 
@@ -3186,6 +3186,9 @@ _mesa_glsl_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
    if (prog->data->LinkStatus && !ctx->Driver.LinkShader(ctx, prog)) {
       prog->data->LinkStatus = LINKING_FAILURE;
    }
+
+   if (prog->data->LinkStatus != LINKING_FAILURE)
+      _mesa_create_program_resource_hash(prog);
 
    /* Return early if we are loading the shader from on-disk cache */
    if (prog->data->LinkStatus == LINKING_SKIPPED)

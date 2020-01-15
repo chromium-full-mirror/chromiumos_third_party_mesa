@@ -32,7 +32,7 @@
 #include "state_tracker/st_context.h"
 #include "state_tracker/st_format.h"
 #include "state_tracker/st_texture.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include <stdbool.h>
 
 static bool
@@ -59,6 +59,7 @@ int main(int argc, char **argv)
       .has_etc1 = true,
       .has_etc2 = true,
       .has_astc_2d_ldr = true,
+      .has_astc_5x5_ldr = true,
    };
    struct st_context *st = &local_st;
 

@@ -494,7 +494,7 @@ get_used_mrfs(fs_visitor *v, bool *mrf_used)
       }
 
       if (inst->mlen > 0) {
-	 for (int i = 0; i < v->implied_mrf_writes(inst); i++) {
+	 for (unsigned i = 0; i < inst->implied_mrf_writes(); i++) {
             mrf_used[inst->base_mrf + i] = true;
          }
       }
@@ -683,12 +683,18 @@ fs_reg_alloc::setup_inst_interference(fs_inst *inst)
       int size = fs->alloc.sizes[vgrf];
       int reg = compiler->fs_reg_sets[rsi].class_to_ra_reg_range[size] - 1;
 
-      /* If something happened to spill, we want to push the EOT send
-       * register early enough in the register file that we don't
-       * conflict with any used MRF hack registers.
-       */
-      if (first_mrf_hack_node >= 0)
+      if (first_mrf_hack_node >= 0) {
+         /* If something happened to spill, we want to push the EOT send
+          * register early enough in the register file that we don't
+          * conflict with any used MRF hack registers.
+          */
          reg -= BRW_MAX_MRF(devinfo->gen) - spill_base_mrf(fs);
+      } else if (grf127_send_hack_node >= 0) {
+         /* Avoid r127 which might be unusable if the node was previously
+          * written by a SIMD8 SEND message with source/destination overlap.
+          */
+         reg--;
+      }
 
       ra_set_node_reg(g, first_vgrf_node + vgrf, reg);
    }

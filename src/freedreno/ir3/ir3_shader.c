@@ -27,7 +27,7 @@
 #include "util/u_atomic.h"
 #include "util/u_string.h"
 #include "util/u_memory.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 
 #include "drm/freedreno_drmif.h"
 
@@ -429,8 +429,9 @@ ir3_shader_disasm(struct ir3_shader_variant *so, uint32_t *bin, FILE *out)
 	fprintf(out, "; %s: outputs:", type);
 	for (i = 0; i < so->outputs_count; i++) {
 		uint8_t regid = so->outputs[i].regid;
-		fprintf(out, " r%d.%c (%s)",
-				(regid >> 2), "xyzw"[regid & 0x3],
+		const char *reg_type = so->outputs[i].half ? "hr" : "r";
+		fprintf(out, " %s%d.%c (%s)",
+				reg_type, (regid >> 2), "xyzw"[regid & 0x3],
 				output_name(so, i));
 	}
 	fprintf(out, "\n");

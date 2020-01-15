@@ -672,36 +672,10 @@ anv_pipeline_lower_nir(struct anv_pipeline *pipeline,
 
    NIR_PASS_V(nir, anv_nir_lower_ycbcr_textures, layout);
 
-   NIR_PASS_V(nir, anv_nir_lower_push_constants);
-
    if (nir->info.stage != MESA_SHADER_COMPUTE)
       NIR_PASS_V(nir, anv_nir_lower_multiview, pipeline->subpass->view_mask);
 
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
-
-   if (nir->num_uniforms > 0) {
-      assert(prog_data->nr_params == 0);
-
-      /* If the shader uses any push constants at all, we'll just give
-       * them the maximum possible number
-       */
-      assert(nir->num_uniforms <= MAX_PUSH_CONSTANTS_SIZE);
-      nir->num_uniforms = MAX_PUSH_CONSTANTS_SIZE;
-      prog_data->nr_params += MAX_PUSH_CONSTANTS_SIZE / sizeof(float);
-      prog_data->param = ralloc_array(mem_ctx, uint32_t, prog_data->nr_params);
-
-      /* We now set the param values to be offsets into a
-       * anv_push_constant_data structure.  Since the compiler doesn't
-       * actually dereference any of the gl_constant_value pointers in the
-       * params array, it doesn't really matter what we put here.
-       */
-      struct anv_push_constants *null_data = NULL;
-      /* Fill out the push constants section of the param array */
-      for (unsigned i = 0; i < MAX_PUSH_CONSTANTS_SIZE / sizeof(float); i++) {
-         prog_data->param[i] = ANV_PARAM_PUSH(
-            (uintptr_t)&null_data->client_data[i * sizeof(float)]);
-      }
-   }
 
    if (nir->info.num_ssbos > 0 || nir->info.num_images > 0)
       pipeline->needs_data_cache = true;
@@ -712,32 +686,27 @@ anv_pipeline_lower_nir(struct anv_pipeline *pipeline,
               nir_address_format_64bit_global);
 
    /* Apply the actual pipeline layout to UBOs, SSBOs, and textures */
-   if (layout) {
-      anv_nir_apply_pipeline_layout(pdevice,
-                                    pipeline->device->robust_buffer_access,
-                                    layout, nir, prog_data,
-                                    &stage->bind_map);
+   anv_nir_apply_pipeline_layout(pdevice,
+                                 pipeline->device->robust_buffer_access,
+                                 layout, nir, &stage->bind_map);
 
-      NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_ubo,
-                 nir_address_format_32bit_index_offset);
-      NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_ssbo,
-                 anv_nir_ssbo_addr_format(pdevice,
-                    pipeline->device->robust_buffer_access));
+   NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_ubo,
+              nir_address_format_32bit_index_offset);
+   NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_ssbo,
+              anv_nir_ssbo_addr_format(pdevice,
+                 pipeline->device->robust_buffer_access));
 
-      NIR_PASS_V(nir, nir_opt_constant_folding);
+   NIR_PASS_V(nir, nir_opt_constant_folding);
 
-      /* We don't support non-uniform UBOs and non-uniform SSBO access is
-       * handled naturally by falling back to A64 messages.
-       */
-      NIR_PASS_V(nir, nir_lower_non_uniform_access,
-                 nir_lower_non_uniform_texture_access |
-                 nir_lower_non_uniform_image_access);
-   }
+   /* We don't support non-uniform UBOs and non-uniform SSBO access is
+    * handled naturally by falling back to A64 messages.
+    */
+   NIR_PASS_V(nir, nir_lower_non_uniform_access,
+              nir_lower_non_uniform_texture_access |
+              nir_lower_non_uniform_image_access);
 
-   if (nir->info.stage != MESA_SHADER_COMPUTE)
-      brw_nir_analyze_ubo_ranges(compiler, nir, NULL, prog_data->ubo_ranges);
-
-   assert(nir->num_uniforms == prog_data->nr_params * 4);
+   anv_nir_compute_push_layout(pdevice, nir, prog_data,
+                               &stage->bind_map, mem_ctx);
 
    stage->nir = nir;
 }
@@ -928,14 +897,12 @@ anv_pipeline_link_fs(const struct brw_compiler *compiler,
          if (stage->key.wm.color_outputs_valid & BITFIELD_BIT(rt)) {
             rt_bindings[rt] = (struct anv_pipeline_binding) {
                .set = ANV_DESCRIPTOR_SET_COLOR_ATTACHMENTS,
-               .binding = 0,
                .index = rt,
             };
          } else {
             /* Setup a null render target */
             rt_bindings[rt] = (struct anv_pipeline_binding) {
                .set = ANV_DESCRIPTOR_SET_COLOR_ATTACHMENTS,
-               .binding = 0,
                .index = UINT32_MAX,
             };
          }
@@ -945,7 +912,6 @@ anv_pipeline_link_fs(const struct brw_compiler *compiler,
       /* Setup a null render target */
       rt_bindings[0] = (struct anv_pipeline_binding) {
          .set = ANV_DESCRIPTOR_SET_COLOR_ATTACHMENTS,
-         .binding = 0,
          .index = UINT32_MAX,
       };
       num_rt_bindings = 1;
@@ -1189,12 +1155,15 @@ anv_pipeline_compile_graphics(struct anv_pipeline *pipeline,
       case MESA_SHADER_GEOMETRY:
          populate_gs_prog_key(devinfo, sinfo->flags, &stages[stage].key.gs);
          break;
-      case MESA_SHADER_FRAGMENT:
+      case MESA_SHADER_FRAGMENT: {
+         const bool raster_enabled =
+            !info->pRasterizationState->rasterizerDiscardEnable;
          populate_wm_prog_key(devinfo, sinfo->flags,
                               pipeline->subpass,
-                              info->pMultisampleState,
+                              raster_enabled ? info->pMultisampleState : NULL,
                               &stages[stage].key.wm);
          break;
+      }
       default:
          unreachable("Invalid graphics shader stage");
       }
@@ -1399,6 +1368,9 @@ anv_pipeline_compile_graphics(struct anv_pipeline *pipeline,
          goto fail;
       }
 
+      anv_nir_validate_push_layout(&stages[s].prog_data.base,
+                                   &stages[s].bind_map);
+
       struct anv_shader_bin *bin =
          anv_device_upload_kernel(pipeline->device, cache,
                                   &stages[s].cache_key,
@@ -1560,10 +1532,9 @@ anv_pipeline_compile_cs(struct anv_pipeline *pipeline,
          return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
       }
 
-      anv_pipeline_lower_nir(pipeline, mem_ctx, &stage, layout);
+      NIR_PASS_V(stage.nir, anv_nir_add_base_work_group_id);
 
-      NIR_PASS_V(stage.nir, anv_nir_add_base_work_group_id,
-                 &stage.prog_data.cs);
+      anv_pipeline_lower_nir(pipeline, mem_ctx, &stage, layout);
 
       NIR_PASS_V(stage.nir, nir_lower_vars_to_explicit_types,
                  nir_var_mem_shared, shared_type_info);
@@ -1577,6 +1548,14 @@ anv_pipeline_compile_cs(struct anv_pipeline *pipeline,
       if (stage.code == NULL) {
          ralloc_free(mem_ctx);
          return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+
+      anv_nir_validate_push_layout(&stage.prog_data.base, &stage.bind_map);
+
+      if (!stage.prog_data.cs.uses_num_work_groups) {
+         assert(stage.bind_map.surface_to_descriptor[0].set ==
+                ANV_DESCRIPTOR_SET_NUM_WORK_GROUPS);
+         stage.bind_map.surface_to_descriptor[0].set = ANV_DESCRIPTOR_SET_NULL;
       }
 
       const unsigned code_size = stage.prog_data.base.program_size;
@@ -1885,9 +1864,10 @@ anv_pipeline_init(struct anv_pipeline *pipeline,
    pipeline->mem_ctx = ralloc_context(NULL);
    pipeline->flags = pCreateInfo->flags;
 
+   assert(pCreateInfo->pRasterizationState);
+
    copy_non_dynamic_state(pipeline, pCreateInfo);
-   pipeline->depth_clamp_enable = pCreateInfo->pRasterizationState &&
-                                  pCreateInfo->pRasterizationState->depthClampEnable;
+   pipeline->depth_clamp_enable = pCreateInfo->pRasterizationState->depthClampEnable;
 
    /* Previously we enabled depth clipping when !depthClampEnable.
     * DepthClipStateCreateInfo now makes depth clipping explicit so if the
@@ -1899,8 +1879,10 @@ anv_pipeline_init(struct anv_pipeline *pipeline,
                            PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT);
    pipeline->depth_clip_enable = clip_info ? clip_info->depthClipEnable : !pipeline->depth_clamp_enable;
 
-   pipeline->sample_shading_enable = pCreateInfo->pMultisampleState &&
-                                     pCreateInfo->pMultisampleState->sampleShadingEnable;
+   pipeline->sample_shading_enable =
+      !pCreateInfo->pRasterizationState->rasterizerDiscardEnable &&
+      pCreateInfo->pMultisampleState &&
+      pCreateInfo->pMultisampleState->sampleShadingEnable;
 
    pipeline->needs_data_cache = false;
 

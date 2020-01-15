@@ -307,7 +307,9 @@ anv_import_ahw_memory(VkDevice device_h,
    if (dma_buf < 0)
       return VK_ERROR_INVALID_EXTERNAL_HANDLE;
 
-   VkResult result = anv_device_import_bo(device, dma_buf, 0, &mem->bo);
+   VkResult result = anv_device_import_bo(device, dma_buf, 0,
+                                          0 /* client_address */,
+                                          &mem->bo);
    assert(VK_SUCCESS);
 
    /* "If the vkAllocateMemory command succeeds, the implementation must
@@ -387,14 +389,14 @@ VkResult
 anv_image_from_external(
    VkDevice device_h,
    const VkImageCreateInfo *base_info,
-   const struct VkExternalMemoryImageCreateInfo *create_info,
+   const VkExternalMemoryImageCreateInfo *create_info,
    const VkAllocationCallbacks *alloc,
    VkImage *out_image_h)
 {
 #if ANDROID_API_LEVEL >= 26
    ANV_FROM_HANDLE(anv_device, device, device_h);
 
-   const struct VkExternalFormatANDROID *ext_info =
+   const VkExternalFormatANDROID *ext_info =
       vk_find_struct_const(base_info->pNext, EXTERNAL_FORMAT_ANDROID);
 
    if (ext_info && ext_info->externalFormat != 0) {
@@ -468,6 +470,7 @@ anv_image_from_gralloc(VkDevice device_h,
    result = anv_device_import_bo(device, dma_buf,
                                  ANV_BO_ALLOC_IMPLICIT_SYNC |
                                  ANV_BO_ALLOC_IMPLICIT_WRITE,
+                                 0 /* client_address */,
                                  &bo);
    if (result != VK_SUCCESS) {
       return vk_errorf(device->instance, device, result,

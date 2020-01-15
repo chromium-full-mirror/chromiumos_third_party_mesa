@@ -131,7 +131,7 @@ public:
    bool opt_algebraic();
    bool opt_redundant_discard_jumps();
    bool opt_cse();
-   bool opt_cse_local(bblock_t *block);
+   bool opt_cse_local(bblock_t *block, int &ip);
    bool opt_copy_propagation();
    bool try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry);
    bool try_constant_propagate(fs_inst *inst, acp_entry *entry);
@@ -190,7 +190,6 @@ public:
                    fs_reg result, fs_reg *op, unsigned fsign_src);
    void emit_shader_float_controls_execution_mode();
    bool opt_peephole_sel();
-   bool opt_peephole_csel();
    bool opt_peephole_predicated_break();
    bool opt_saturate_propagation();
    bool opt_cmod_propagation();
@@ -302,8 +301,6 @@ public:
    fs_reg get_timestamp(const brw::fs_builder &bld);
 
    fs_reg interp_reg(int location, int channel);
-
-   int implied_mrf_writes(const fs_inst *inst) const;
 
    virtual void dump_instructions();
    virtual void dump_instructions(const char *name);

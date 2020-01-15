@@ -94,6 +94,8 @@ struct si_state_rasterizer {
 	unsigned		cull_back:1;
 	unsigned		depth_clamp_any:1;
 	unsigned		provoking_vertex_first:1;
+	unsigned		polygon_mode_enabled:1;
+	unsigned		polygon_mode_is_lines:1;
 };
 
 struct si_dsa_stencil_ref_part {
@@ -171,7 +173,7 @@ struct si_vertex_elements
 
 	uint16_t			first_vb_use_mask;
 	/* Vertex buffer descriptor list size aligned for optimal prefetch. */
-	uint16_t			desc_list_byte_size;
+	uint16_t			vb_desc_list_alloc_size;
 	uint16_t			instance_divisor_is_one; /* bitmask of inputs */
 	uint16_t			instance_divisor_is_fetched;  /* bitmask of inputs */
 };
@@ -308,6 +310,8 @@ enum si_tracked_reg {
 	SI_TRACKED_PA_SU_VTX_CNTL,
 
 	SI_TRACKED_PA_SC_CLIPRECT_RULE,
+
+	SI_TRACKED_PA_SC_LINE_STIPPLE,
 
 	SI_TRACKED_VGT_ESGS_RING_ITEMSIZE,
 

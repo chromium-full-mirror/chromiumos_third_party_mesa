@@ -20,6 +20,7 @@
 
 inc_util = include_directories('.')
 
+subdir('format')
 subdir('xmlpool')
 
 files_mesa_util = files(
@@ -61,6 +62,8 @@ files_mesa_util = files(
   'os_file.c',
   'os_misc.c',
   'os_misc.h',
+  'os_socket.c',
+  'os_socket.h',
   'u_process.c',
   'u_process.h',
   'sha1/sha1.c',
@@ -105,6 +108,8 @@ files_mesa_util = files(
   'u_vector.h',
   'u_math.c',
   'u_math.h',
+  'u_mm.c',
+  'u_mm.h',
   'u_debug.c',
   'u_debug.h',
   'u_cpu_detect.c',
@@ -161,6 +166,7 @@ _libmesa_util = static_library(
   [files_mesa_util, format_srgb],
   include_directories : inc_common,
   dependencies : deps_for_libmesa_util,
+  link_with: libmesa_format,
   c_args : [c_msvc_compat_args, c_vis_args],
   build_by_default : false
 )
@@ -281,4 +287,5 @@ if with_tests
   subdir('tests/vma')
   subdir('tests/set')
   subdir('tests/sparse_array')
+  subdir('tests/format')
 endif

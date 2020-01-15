@@ -82,10 +82,11 @@ enum Label {
    label_bitwise = 1 << 18,
    label_minmax = 1 << 19,
    label_fcmp = 1 << 20,
+   label_uniform_bool = 1 << 21,
 };
 
 static constexpr uint32_t instr_labels = label_vec | label_mul | label_mad | label_omod_success | label_clamp_success | label_add_sub | label_bitwise | label_minmax | label_fcmp;
-static constexpr uint32_t temp_labels = label_abs | label_neg | label_temp | label_vcc | label_b2f;
+static constexpr uint32_t temp_labels = label_abs | label_neg | label_temp | label_vcc | label_b2f | label_uniform_bool | label_omod2 | label_omod4 | label_omod5 | label_clamp;
 static constexpr uint32_t val_labels = label_constant | label_literal | label_mad;
 
 struct ssa_info {
@@ -210,9 +211,10 @@ struct ssa_info {
       return label & label_mad;
    }
 
-   void set_omod2()
+   void set_omod2(Temp def)
    {
       add_label(label_omod2);
+      temp = def;
    }
 
    bool is_omod2()
@@ -220,9 +222,10 @@ struct ssa_info {
       return label & label_omod2;
    }
 
-   void set_omod4()
+   void set_omod4(Temp def)
    {
       add_label(label_omod4);
+      temp = def;
    }
 
    bool is_omod4()
@@ -230,9 +233,10 @@ struct ssa_info {
       return label & label_omod4;
    }
 
-   void set_omod5()
+   void set_omod5(Temp def)
    {
       add_label(label_omod5);
+      temp = def;
    }
 
    bool is_omod5()
@@ -251,9 +255,10 @@ struct ssa_info {
       return label & label_omod_success;
    }
 
-   void set_clamp()
+   void set_clamp(Temp def)
    {
       add_label(label_clamp);
+      temp = def;
    }
 
    bool is_clamp()
@@ -353,6 +358,17 @@ struct ssa_info {
       return label & label_fcmp;
    }
 
+   void set_uniform_bool(Temp uniform_bool)
+   {
+      add_label(label_uniform_bool);
+      temp = uniform_bool;
+   }
+
+   bool is_uniform_bool()
+   {
+      return label & label_uniform_bool;
+   }
+
 };
 
 struct opt_ctx {
@@ -409,14 +425,19 @@ bool can_use_VOP3(aco_ptr<Instruction>& instr)
    return instr->opcode != aco_opcode::v_madmk_f32 &&
           instr->opcode != aco_opcode::v_madak_f32 &&
           instr->opcode != aco_opcode::v_madmk_f16 &&
-          instr->opcode != aco_opcode::v_madak_f16;
+          instr->opcode != aco_opcode::v_madak_f16 &&
+          instr->opcode != aco_opcode::v_readlane_b32 &&
+          instr->opcode != aco_opcode::v_writelane_b32 &&
+          instr->opcode != aco_opcode::v_readfirstlane_b32;
 }
 
 bool can_apply_sgprs(aco_ptr<Instruction>& instr)
 {
    return instr->opcode != aco_opcode::v_readfirstlane_b32 &&
           instr->opcode != aco_opcode::v_readlane_b32 &&
-          instr->opcode != aco_opcode::v_writelane_b32;
+          instr->opcode != aco_opcode::v_readlane_b32_e64 &&
+          instr->opcode != aco_opcode::v_writelane_b32 &&
+          instr->opcode != aco_opcode::v_writelane_b32_e64;
 }
 
 void to_VOP3(opt_ctx& ctx, aco_ptr<Instruction>& instr)
@@ -446,6 +467,7 @@ bool can_accept_constant(aco_ptr<Instruction>& instr, unsigned operand)
    case aco_opcode::v_interp_p2_f32:
    case aco_opcode::v_mac_f32:
    case aco_opcode::v_writelane_b32:
+   case aco_opcode::v_writelane_b32_e64:
    case aco_opcode::v_cndmask_b32:
       return operand != 2;
    case aco_opcode::s_addk_i32:
@@ -454,6 +476,7 @@ bool can_accept_constant(aco_ptr<Instruction>& instr, unsigned operand)
    case aco_opcode::p_extract_vector:
    case aco_opcode::p_split_vector:
    case aco_opcode::v_readlane_b32:
+   case aco_opcode::v_readlane_b32_e64:
    case aco_opcode::v_readfirstlane_b32:
       return operand != 0;
    default:
@@ -469,6 +492,12 @@ bool can_accept_constant(aco_ptr<Instruction>& instr, unsigned operand)
 
 bool valu_can_accept_literal(opt_ctx& ctx, aco_ptr<Instruction>& instr, unsigned operand)
 {
+   /* instructions like v_cndmask_b32 can't take a literal because they always
+    * read SGPRs */
+   if (instr->operands.size() >= 3 &&
+       instr->operands[2].isTemp() && instr->operands[2].regClass().type() == RegType::sgpr)
+      return false;
+
    // TODO: VOP3 can take a literal on GFX10
    return !instr->isSDWA() && !instr->isDPP() && !instr->isVOP3() &&
           operand == 0 && can_accept_constant(instr, operand);
@@ -476,7 +505,8 @@ bool valu_can_accept_literal(opt_ctx& ctx, aco_ptr<Instruction>& instr, unsigned
 
 bool valu_can_accept_vgpr(aco_ptr<Instruction>& instr, unsigned operand)
 {
-   if (instr->opcode == aco_opcode::v_readlane_b32 || instr->opcode == aco_opcode::v_writelane_b32)
+   if (instr->opcode == aco_opcode::v_readlane_b32 || instr->opcode == aco_opcode::v_readlane_b32_e64 ||
+       instr->opcode == aco_opcode::v_writelane_b32 || instr->opcode == aco_opcode::v_writelane_b32_e64)
       return operand != 1;
    return true;
 }
@@ -530,7 +560,16 @@ bool parse_base_offset(opt_ctx &ctx, Instruction* instr, unsigned op_index, Temp
    return false;
 }
 
-void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
+Operand get_constant_op(opt_ctx &ctx, uint32_t val)
+{
+   // TODO: this functions shouldn't be needed if we store Operand instead of value.
+   Operand op(val);
+   if (val == 0x3e22f983 && ctx.program->chip_class >= GFX8)
+      op.setFixed(PhysReg{248}); /* 1/2 PI can be an inline constant on GFX8+ */
+   return op;
+}
+
+void label_instruction(opt_ctx &ctx, Block& block, aco_ptr<Instruction>& instr)
 {
    if (instr->isSALU() || instr->isVALU() || instr->format == Format::PSEUDO) {
       ASSERTED bool all_const = false;
@@ -579,7 +618,7 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
             }
          }
          if ((info.is_constant() || (info.is_literal() && instr->format == Format::PSEUDO)) && !instr->operands[i].isFixed() && can_accept_constant(instr, i)) {
-            instr->operands[i] = Operand(info.val);
+            instr->operands[i] = get_constant_op(ctx, info.val);
             continue;
          }
       }
@@ -615,16 +654,16 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
          }
          if (info.is_constant() && can_accept_constant(instr, i)) {
             perfwarn(instr->opcode == aco_opcode::v_cndmask_b32 && i == 2, "v_cndmask_b32 with a constant selector", instr.get());
-            if (i == 0) {
-               instr->operands[i] = Operand(info.val);
+            if (i == 0 || instr->opcode == aco_opcode::v_readlane_b32 || instr->opcode == aco_opcode::v_writelane_b32) {
+               instr->operands[i] = get_constant_op(ctx, info.val);
                continue;
             } else if (!instr->isVOP3() && can_swap_operands(instr)) {
                instr->operands[i] = instr->operands[0];
-               instr->operands[0] = Operand(info.val);
+               instr->operands[0] = get_constant_op(ctx, info.val);
                continue;
             } else if (can_use_VOP3(instr)) {
                to_VOP3(ctx, instr);
-               instr->operands[i] = Operand(info.val);
+               instr->operands[i] = get_constant_op(ctx, info.val);
                continue;
             }
          }
@@ -666,7 +705,7 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
          DS_instruction *ds = static_cast<DS_instruction *>(instr.get());
          Temp base;
          uint32_t offset;
-         if (i == 0 && parse_base_offset(ctx, instr.get(), i, &base, &offset) && base.regClass() == instr->operands[i].regClass()) {
+         if (i == 0 && parse_base_offset(ctx, instr.get(), i, &base, &offset) && base.regClass() == instr->operands[i].regClass() && instr->opcode != aco_opcode::ds_swizzle_b32) {
             if (instr->opcode == aco_opcode::ds_write2_b32 || instr->opcode == aco_opcode::ds_read2_b32 ||
                 instr->opcode == aco_opcode::ds_write2_b64 || instr->opcode == aco_opcode::ds_read2_b64) {
                if (offset % 4 == 0 &&
@@ -691,7 +730,8 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
          SMEM_instruction *smem = static_cast<SMEM_instruction *>(instr.get());
          Temp base;
          uint32_t offset;
-         if (i == 1 && info.is_constant_or_literal() && info.val <= 0xFFFFF) {
+         if (i == 1 && info.is_constant_or_literal() &&
+             (ctx.program->chip_class < GFX8 || info.val <= 0xFFFFF)) {
             instr->operands[i] = Operand(info.val);
             continue;
          } else if (i == 1 && parse_base_offset(ctx, instr.get(), i, &base, &offset) && base.regClass() == s1 && offset <= 0xFFFFF && ctx.program->chip_class >= GFX9) {
@@ -741,8 +781,13 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
          unsigned k = 0;
          for (Operand& old_op : old_vec->operands) {
             if (old_op.isTemp() && ctx.info[old_op.tempId()].is_vec()) {
-               for (unsigned j = 0; j < ctx.info[old_op.tempId()].instr->operands.size(); j++)
-                  instr->operands[k++] = ctx.info[old_op.tempId()].instr->operands[j];
+               for (unsigned j = 0; j < ctx.info[old_op.tempId()].instr->operands.size(); j++) {
+                  Operand op = ctx.info[old_op.tempId()].instr->operands[j];
+                  if (op.isTemp() && ctx.info[op.tempId()].is_temp() &&
+                      ctx.info[op.tempId()].temp.type() == instr->definitions[0].regClass().type())
+                     op.setTemp(ctx.info[op.tempId()].temp);
+                  instr->operands[k++] = op;
+               }
             } else {
                instr->operands[k++] = old_op;
             }
@@ -765,7 +810,7 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
          if (vec_op.isConstant()) {
             if (vec_op.isLiteral())
                ctx.info[instr->definitions[i].tempId()].set_literal(vec_op.constantValue());
-            else
+            else if (vec_op.size() == 1)
                ctx.info[instr->definitions[i].tempId()].set_constant(vec_op.constantValue());
          } else {
             assert(vec_op.isTemp());
@@ -788,13 +833,14 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
          Format format = is_vgpr ? Format::VOP1 : Format::SOP1;
          instr->opcode = opcode;
          instr->format = format;
-         instr->operands = {instr->operands.begin(), 1 };
+         while (instr->operands.size() > 1)
+            instr->operands.pop_back();
          instr->operands[0] = vec_op;
 
          if (vec_op.isConstant()) {
             if (vec_op.isLiteral())
                ctx.info[instr->definitions[0].tempId()].set_literal(vec_op.constantValue());
-            else
+            else if (vec_op.size() == 1)
                ctx.info[instr->definitions[0].tempId()].set_constant(vec_op.constantValue());
          } else {
             assert(vec_op.isTemp());
@@ -814,7 +860,7 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
       } else if (instr->operands[0].isConstant()) {
          if (instr->operands[0].isLiteral())
             ctx.info[instr->definitions[0].tempId()].set_literal(instr->operands[0].constantValue());
-         else
+         else if (instr->operands[0].size() == 1)
             ctx.info[instr->definitions[0].tempId()].set_constant(instr->operands[0].constantValue());
       } else if (instr->operands[0].isTemp()) {
          ctx.info[instr->definitions[0].tempId()].set_temp(instr->operands[0].getTemp());
@@ -865,12 +911,13 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
       for (unsigned i = 0; i < 2; i++) {
          if (instr->operands[!i].isConstant() && instr->operands[i].isTemp()) {
             if (instr->operands[!i].constantValue() == 0x40000000) { /* 2.0 */
-               ctx.info[instr->operands[i].tempId()].set_omod2();
+               ctx.info[instr->operands[i].tempId()].set_omod2(instr->definitions[0].getTemp());
             } else if (instr->operands[!i].constantValue() == 0x40800000) { /* 4.0 */
-               ctx.info[instr->operands[i].tempId()].set_omod4();
+               ctx.info[instr->operands[i].tempId()].set_omod4(instr->definitions[0].getTemp());
             } else if (instr->operands[!i].constantValue() == 0x3f000000) { /* 0.5 */
-               ctx.info[instr->operands[i].tempId()].set_omod5();
-            } else if (instr->operands[!i].constantValue() == 0x3f800000) { /* 1.0 */
+               ctx.info[instr->operands[i].tempId()].set_omod5(instr->definitions[0].getTemp());
+            } else if (instr->operands[!i].constantValue() == 0x3f800000 &&
+                       !block.fp_mode.must_flush_denorms32) { /* 1.0 */
                ctx.info[instr->definitions[0].tempId()].set_temp(instr->operands[i].getTemp());
             } else {
                continue;
@@ -881,16 +928,17 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
       break;
    }
    case aco_opcode::v_and_b32: /* abs */
-      if (instr->operands[0].constantEquals(0x7FFFFFFF) && instr->operands[1].isTemp())
+      if (!instr->usesModifiers() && instr->operands[0].constantEquals(0x7FFFFFFF) &&
+          instr->operands[1].isTemp() && instr->operands[1].getTemp().type() == RegType::vgpr)
          ctx.info[instr->definitions[0].tempId()].set_abs(instr->operands[1].getTemp());
       else
          ctx.info[instr->definitions[0].tempId()].set_bitwise(instr.get());
       break;
    case aco_opcode::v_xor_b32: { /* neg */
-      if (instr->operands[0].constantEquals(0x80000000u) && instr->operands[1].isTemp()) {
+      if (!instr->usesModifiers() && instr->operands[0].constantEquals(0x80000000u) && instr->operands[1].isTemp()) {
          if (ctx.info[instr->operands[1].tempId()].is_neg()) {
             ctx.info[instr->definitions[0].tempId()].set_temp(ctx.info[instr->operands[1].tempId()].temp);
-         } else {
+         } else if (instr->operands[1].getTemp().type() == RegType::vgpr) {
             if (ctx.info[instr->operands[1].tempId()].is_abs()) { /* neg(abs(x)) */
                instr->operands[1].setTemp(ctx.info[instr->operands[1].tempId()].temp);
                instr->opcode = aco_opcode::v_or_b32;
@@ -906,10 +954,9 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
    }
    case aco_opcode::v_med3_f32: { /* clamp */
       VOP3A_instruction* vop3 = static_cast<VOP3A_instruction*>(instr.get());
-      if (vop3->abs[0] || vop3->neg[0] || vop3->opsel[0] ||
-          vop3->abs[1] || vop3->neg[1] || vop3->opsel[1] ||
-          vop3->abs[2] || vop3->neg[2] || vop3->opsel[2] ||
-          vop3->omod != 0)
+      if (vop3->abs[0] || vop3->abs[1] || vop3->abs[2] ||
+          vop3->neg[0] || vop3->neg[1] || vop3->neg[2] ||
+          vop3->omod != 0 || vop3->opsel != 0)
          break;
 
       unsigned idx = 0;
@@ -924,7 +971,7 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
             idx = i;
       }
       if (found_zero && found_one && instr->operands[idx].isTemp()) {
-         ctx.info[instr->operands[idx].tempId()].set_clamp();
+         ctx.info[instr->operands[idx].tempId()].set_clamp(instr->definitions[0].getTemp());
       }
       break;
    }
@@ -974,10 +1021,15 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
    case aco_opcode::s_add_u32:
       ctx.info[instr->definitions[0].tempId()].set_add_sub(instr.get());
       break;
-   case aco_opcode::s_not_b32:
-   case aco_opcode::s_not_b64:
    case aco_opcode::s_and_b32:
    case aco_opcode::s_and_b64:
+      if (instr->operands[1].isFixed() && instr->operands[1].physReg() == exec &&
+          instr->operands[0].isTemp() && ctx.info[instr->operands[0].tempId()].is_uniform_bool()) {
+         ctx.info[instr->definitions[1].tempId()].set_temp(ctx.info[instr->operands[0].tempId()].temp);
+      }
+      /* fallthrough */
+   case aco_opcode::s_not_b32:
+   case aco_opcode::s_not_b64:
    case aco_opcode::s_or_b32:
    case aco_opcode::s_or_b64:
    case aco_opcode::s_xor_b32:
@@ -1016,6 +1068,14 @@ void label_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
    case aco_opcode::v_cmp_neq_f32:
    case aco_opcode::v_cmp_nlt_f32:
       ctx.info[instr->definitions[0].tempId()].set_fcmp(instr.get());
+      break;
+   case aco_opcode::s_cselect_b64:
+   case aco_opcode::s_cselect_b32:
+      if (instr->operands[0].constantEquals((unsigned) -1) &&
+          instr->operands[1].constantEquals(0)) {
+         /* Found a cselect that operates on a uniform bool that comes from eg. s_cmp */
+         ctx.info[instr->definitions[0].tempId()].set_uniform_bool(instr->operands[2].getTemp());
+      }
       break;
    default:
       break;
@@ -1109,14 +1169,16 @@ Instruction *follow_operand(opt_ctx &ctx, Operand op, bool ignore_uses=false)
  * s_and_b64(eq(a, a), eq(b, b)) -> v_cmp_o_f32(a, b) */
 bool combine_ordering_test(opt_ctx &ctx, aco_ptr<Instruction>& instr)
 {
-   if (instr->opcode != aco_opcode::s_or_b64 && instr->opcode != aco_opcode::s_and_b64)
+   if (instr->definitions[0].regClass() != ctx.program->lane_mask)
       return false;
    if (instr->definitions[1].isTemp() && ctx.uses[instr->definitions[1].tempId()])
       return false;
 
+   bool is_or = instr->opcode == aco_opcode::s_or_b64 || instr->opcode == aco_opcode::s_or_b32;
+
    bool neg[2] = {false, false};
    bool abs[2] = {false, false};
-   bool opsel[2] = {false, false};
+   uint8_t opsel = 0;
    Instruction *op_instr[2];
    Temp op[2];
 
@@ -1125,8 +1187,7 @@ bool combine_ordering_test(opt_ctx &ctx, aco_ptr<Instruction>& instr)
       if (!op_instr[i])
          return false;
 
-      aco_opcode expected_cmp = instr->opcode == aco_opcode::s_or_b64 ?
-                                aco_opcode::v_cmp_neq_f32 : aco_opcode::v_cmp_eq_f32;
+      aco_opcode expected_cmp = is_or ? aco_opcode::v_cmp_neq_f32 : aco_opcode::v_cmp_eq_f32;
 
       if (op_instr[i]->opcode != expected_cmp)
          return false;
@@ -1135,11 +1196,11 @@ bool combine_ordering_test(opt_ctx &ctx, aco_ptr<Instruction>& instr)
 
       if (op_instr[i]->isVOP3()) {
          VOP3A_instruction *vop3 = static_cast<VOP3A_instruction*>(op_instr[i]);
-         if (vop3->neg[0] != vop3->neg[1] || vop3->abs[0] != vop3->abs[1] || vop3->opsel[0] != vop3->opsel[1])
+         if (vop3->neg[0] != vop3->neg[1] || vop3->abs[0] != vop3->abs[1] || vop3->opsel == 1 || vop3->opsel == 2)
             return false;
          neg[i] = vop3->neg[0];
          abs[i] = vop3->abs[0];
-         opsel[i] = vop3->opsel[0];
+         opsel |= (vop3->opsel & 1) << i;
       }
 
       Temp op0 = op_instr[i]->operands[0].getTemp();
@@ -1158,16 +1219,15 @@ bool combine_ordering_test(opt_ctx &ctx, aco_ptr<Instruction>& instr)
    decrease_uses(ctx, op_instr[0]);
    decrease_uses(ctx, op_instr[1]);
 
-   aco_opcode new_op = instr->opcode == aco_opcode::s_or_b64 ?
-                       aco_opcode::v_cmp_u_f32 : aco_opcode::v_cmp_o_f32;
+   aco_opcode new_op = is_or ? aco_opcode::v_cmp_u_f32 : aco_opcode::v_cmp_o_f32;
    Instruction *new_instr;
-   if (neg[0] || neg[1] || abs[0] || abs[1] || opsel[0] || opsel[1]) {
+   if (neg[0] || neg[1] || abs[0] || abs[1] || opsel) {
       VOP3A_instruction *vop3 = create_instruction<VOP3A_instruction>(new_op, asVOP3(Format::VOPC), 2, 1);
       for (unsigned i = 0; i < 2; i++) {
          vop3->neg[i] = neg[i];
          vop3->abs[i] = abs[i];
-         vop3->opsel[i] = opsel[i];
       }
+      vop3->opsel = opsel;
       new_instr = static_cast<Instruction *>(vop3);
    } else {
       new_instr = create_instruction<VOPC_instruction>(new_op, Format::VOPC, 2, 1);
@@ -1188,13 +1248,13 @@ bool combine_ordering_test(opt_ctx &ctx, aco_ptr<Instruction>& instr)
  * s_and_b64(v_cmp_o_f32(a, b), cmp(a, b)) -> get_ordered(cmp)(a, b) */
 bool combine_comparison_ordering(opt_ctx &ctx, aco_ptr<Instruction>& instr)
 {
-   if (instr->opcode != aco_opcode::s_or_b64 && instr->opcode != aco_opcode::s_and_b64)
+   if (instr->definitions[0].regClass() != ctx.program->lane_mask)
       return false;
    if (instr->definitions[1].isTemp() && ctx.uses[instr->definitions[1].tempId()])
       return false;
 
-   aco_opcode expected_nan_test = instr->opcode == aco_opcode::s_or_b64 ?
-                                  aco_opcode::v_cmp_u_f32 : aco_opcode::v_cmp_o_f32;
+   bool is_or = instr->opcode == aco_opcode::s_or_b64 || instr->opcode == aco_opcode::s_or_b32;
+   aco_opcode expected_nan_test = is_or ? aco_opcode::v_cmp_u_f32 : aco_opcode::v_cmp_o_f32;
 
    Instruction *nan_test = follow_operand(ctx, instr->operands[0], true);
    Instruction *cmp = follow_operand(ctx, instr->operands[1], true);
@@ -1228,17 +1288,16 @@ bool combine_comparison_ordering(opt_ctx &ctx, aco_ptr<Instruction>& instr)
    decrease_uses(ctx, nan_test);
    decrease_uses(ctx, cmp);
 
-   aco_opcode new_op = instr->opcode == aco_opcode::s_or_b64 ?
-                       get_unordered(cmp->opcode) : get_ordered(cmp->opcode);
+   aco_opcode new_op = is_or ? get_unordered(cmp->opcode) : get_ordered(cmp->opcode);
    Instruction *new_instr;
    if (cmp->isVOP3()) {
       VOP3A_instruction *new_vop3 = create_instruction<VOP3A_instruction>(new_op, asVOP3(Format::VOPC), 2, 1);
       VOP3A_instruction *cmp_vop3 = static_cast<VOP3A_instruction*>(cmp);
       memcpy(new_vop3->abs, cmp_vop3->abs, sizeof(new_vop3->abs));
-      memcpy(new_vop3->opsel, cmp_vop3->opsel, sizeof(new_vop3->opsel));
       memcpy(new_vop3->neg, cmp_vop3->neg, sizeof(new_vop3->neg));
       new_vop3->clamp = cmp_vop3->clamp;
       new_vop3->omod = cmp_vop3->omod;
+      new_vop3->opsel = cmp_vop3->opsel;
       new_instr = new_vop3;
    } else {
       new_instr = create_instruction<VOPC_instruction>(new_op, Format::VOPC, 2, 1);
@@ -1259,10 +1318,12 @@ bool combine_comparison_ordering(opt_ctx &ctx, aco_ptr<Instruction>& instr)
  * s_and_b64(v_cmp_eq_f32(a, a), cmp(a, #b)) and b is not NaN -> get_ordered(cmp)(a, b) */
 bool combine_constant_comparison_ordering(opt_ctx &ctx, aco_ptr<Instruction>& instr)
 {
-   if (instr->opcode != aco_opcode::s_or_b64 && instr->opcode != aco_opcode::s_and_b64)
+   if (instr->definitions[0].regClass() != ctx.program->lane_mask)
       return false;
    if (instr->definitions[1].isTemp() && ctx.uses[instr->definitions[1].tempId()])
       return false;
+
+   bool is_or = instr->opcode == aco_opcode::s_or_b64 || instr->opcode == aco_opcode::s_or_b32;
 
    Instruction *nan_test = follow_operand(ctx, instr->operands[0], true);
    Instruction *cmp = follow_operand(ctx, instr->operands[1], true);
@@ -1270,8 +1331,7 @@ bool combine_constant_comparison_ordering(opt_ctx &ctx, aco_ptr<Instruction>& in
    if (!nan_test || !cmp)
       return false;
 
-   aco_opcode expected_nan_test = instr->opcode == aco_opcode::s_or_b64 ?
-                                  aco_opcode::v_cmp_neq_f32 : aco_opcode::v_cmp_eq_f32;
+   aco_opcode expected_nan_test = is_or ? aco_opcode::v_cmp_neq_f32 : aco_opcode::v_cmp_eq_f32;
    if (cmp->opcode == expected_nan_test)
       std::swap(nan_test, cmp);
    else if (nan_test->opcode != expected_nan_test)
@@ -1289,6 +1349,12 @@ bool combine_constant_comparison_ordering(opt_ctx &ctx, aco_ptr<Instruction>& in
    unsigned prop_nan1 = original_temp_id(ctx, nan_test->operands[1].getTemp());
    if (prop_nan0 != prop_nan1)
       return false;
+
+   if (nan_test->isVOP3()) {
+      VOP3A_instruction *vop3 = static_cast<VOP3A_instruction*>(nan_test);
+      if (vop3->neg[0] != vop3->neg[1] || vop3->abs[0] != vop3->abs[1] || vop3->opsel == 1 || vop3->opsel == 2)
+         return false;
+   }
 
    int constant_operand = -1;
    for (unsigned i = 0; i < 2; i++) {
@@ -1324,17 +1390,16 @@ bool combine_constant_comparison_ordering(opt_ctx &ctx, aco_ptr<Instruction>& in
    decrease_uses(ctx, nan_test);
    decrease_uses(ctx, cmp);
 
-   aco_opcode new_op = instr->opcode == aco_opcode::s_or_b64 ?
-                       get_unordered(cmp->opcode) : get_ordered(cmp->opcode);
+   aco_opcode new_op = is_or ? get_unordered(cmp->opcode) : get_ordered(cmp->opcode);
    Instruction *new_instr;
    if (cmp->isVOP3()) {
       VOP3A_instruction *new_vop3 = create_instruction<VOP3A_instruction>(new_op, asVOP3(Format::VOPC), 2, 1);
       VOP3A_instruction *cmp_vop3 = static_cast<VOP3A_instruction*>(cmp);
       memcpy(new_vop3->abs, cmp_vop3->abs, sizeof(new_vop3->abs));
-      memcpy(new_vop3->opsel, cmp_vop3->opsel, sizeof(new_vop3->opsel));
       memcpy(new_vop3->neg, cmp_vop3->neg, sizeof(new_vop3->neg));
       new_vop3->clamp = cmp_vop3->clamp;
       new_vop3->omod = cmp_vop3->omod;
+      new_vop3->opsel = cmp_vop3->opsel;
       new_instr = new_vop3;
    } else {
       new_instr = create_instruction<VOPC_instruction>(new_op, Format::VOPC, 2, 1);
@@ -1380,10 +1445,10 @@ bool combine_inverse_comparison(opt_ctx &ctx, aco_ptr<Instruction>& instr)
       VOP3A_instruction *new_vop3 = create_instruction<VOP3A_instruction>(new_opcode, asVOP3(Format::VOPC), 2, 1);
       VOP3A_instruction *cmp_vop3 = static_cast<VOP3A_instruction*>(cmp);
       memcpy(new_vop3->abs, cmp_vop3->abs, sizeof(new_vop3->abs));
-      memcpy(new_vop3->opsel, cmp_vop3->opsel, sizeof(new_vop3->opsel));
       memcpy(new_vop3->neg, cmp_vop3->neg, sizeof(new_vop3->neg));
       new_vop3->clamp = cmp_vop3->clamp;
       new_vop3->omod = cmp_vop3->omod;
+      new_vop3->opsel = cmp_vop3->opsel;
       new_instr = new_vop3;
    } else {
       new_instr = create_instruction<VOPC_instruction>(new_opcode, Format::VOPC, 2, 1);
@@ -1404,8 +1469,8 @@ bool combine_inverse_comparison(opt_ctx &ctx, aco_ptr<Instruction>& instr)
  * op1(0, op2(1, 2)) if swap = true */
 bool match_op3_for_vop3(opt_ctx &ctx, aco_opcode op1, aco_opcode op2,
                         Instruction* op1_instr, bool swap, const char *shuffle_str,
-                        Operand operands[3], bool neg[3], bool abs[3], bool opsel[3],
-                        bool *op1_clamp, unsigned *op1_omod,
+                        Operand operands[3], bool neg[3], bool abs[3], uint8_t *opsel,
+                        bool *op1_clamp, uint8_t *op1_omod,
                         bool *inbetween_neg, bool *inbetween_abs, bool *inbetween_opsel)
 {
    /* checks */
@@ -1438,8 +1503,8 @@ bool match_op3_for_vop3(opt_ctx &ctx, aco_opcode op1, aco_opcode op2,
       return false;
 
    if (inbetween_opsel)
-      *inbetween_opsel = op1_vop3 ? op1_vop3->opsel[swap] : false;
-   else if (op1_vop3 && op1_vop3->opsel[swap])
+      *inbetween_opsel = op1_vop3 ? op1_vop3->opsel & (1 << swap) : false;
+   else if (op1_vop3 && op1_vop3->opsel & (1 << swap))
       return false;
 
    int shuffle[3];
@@ -1450,13 +1515,15 @@ bool match_op3_for_vop3(opt_ctx &ctx, aco_opcode op1, aco_opcode op2,
    operands[shuffle[0]] = op1_instr->operands[!swap];
    neg[shuffle[0]] = op1_vop3 ? op1_vop3->neg[!swap] : false;
    abs[shuffle[0]] = op1_vop3 ? op1_vop3->abs[!swap] : false;
-   opsel[shuffle[0]] = op1_vop3 ? op1_vop3->opsel[!swap] : false;
+   if (op1_vop3 && op1_vop3->opsel & (1 << !swap))
+      *opsel |= 1 << shuffle[0];
 
    for (unsigned i = 0; i < 2; i++) {
       operands[shuffle[i + 1]] = op2_instr->operands[i];
       neg[shuffle[i + 1]] = op2_vop3 ? op2_vop3->neg[i] : false;
       abs[shuffle[i + 1]] = op2_vop3 ? op2_vop3->abs[i] : false;
-      opsel[shuffle[i + 1]] = op2_vop3 ? op2_vop3->opsel[i] : false;
+      if (op2_vop3 && op2_vop3->opsel & (1 << i))
+         *opsel |= 1 << shuffle[i + 1];
    }
 
    /* check operands */
@@ -1476,15 +1543,15 @@ bool match_op3_for_vop3(opt_ctx &ctx, aco_opcode op1, aco_opcode op2,
 }
 
 void create_vop3_for_op3(opt_ctx& ctx, aco_opcode opcode, aco_ptr<Instruction>& instr,
-                         Operand operands[3], bool neg[3], bool abs[3], bool opsel[3],
+                         Operand operands[3], bool neg[3], bool abs[3], uint8_t opsel,
                          bool clamp, unsigned omod)
 {
    VOP3A_instruction *new_instr = create_instruction<VOP3A_instruction>(opcode, Format::VOP3A, 3, 1);
    memcpy(new_instr->abs, abs, sizeof(bool[3]));
-   memcpy(new_instr->opsel, opsel, sizeof(bool[3]));
    memcpy(new_instr->neg, neg, sizeof(bool[3]));
    new_instr->clamp = clamp;
    new_instr->omod = omod;
+   new_instr->opsel = opsel;
    new_instr->operands[0] = operands[0];
    new_instr->operands[1] = operands[1];
    new_instr->operands[2] = operands[2];
@@ -1504,11 +1571,11 @@ bool combine_three_valu_op(opt_ctx& ctx, aco_ptr<Instruction>& instr, aco_opcode
          continue;
 
       Operand operands[3];
-      bool neg[3], abs[3], opsel[3], clamp;
-      unsigned omod;
+      bool neg[3], abs[3], clamp;
+      uint8_t opsel = 0, omod = 0;
       if (match_op3_for_vop3(ctx, instr->opcode, op2,
                              instr.get(), swap, shuffle,
-                             operands, neg, abs, opsel,
+                             operands, neg, abs, &opsel,
                              &clamp, &omod, NULL, NULL, NULL)) {
          ctx.uses[instr->operands[swap].tempId()]--;
          create_vop3_for_op3(ctx, new_op, instr, operands, neg, abs, opsel, clamp, omod);
@@ -1697,10 +1764,10 @@ bool combine_clamp(opt_ctx& ctx, aco_ptr<Instruction>& instr,
 
    for (unsigned swap = 0; swap < 2; swap++) {
       Operand operands[3];
-      bool neg[3], abs[3], opsel[3], clamp, inbetween_neg, inbetween_abs;
-      unsigned omod;
+      bool neg[3], abs[3], clamp, inbetween_neg, inbetween_abs;
+      uint8_t opsel = 0, omod = 0;
       if (match_op3_for_vop3(ctx, instr->opcode, other_op, instr.get(), swap,
-                             "012", operands, neg, abs, opsel,
+                             "012", operands, neg, abs, &opsel,
                              &clamp, &omod, &inbetween_neg, &inbetween_abs, NULL)) {
          int const0_idx = -1, const1_idx = -1;
          uint32_t const0 = 0, const1 = 0;
@@ -1725,9 +1792,9 @@ bool combine_clamp(opt_ctx& ctx, aco_ptr<Instruction>& instr,
          if (const0_idx < 0 || const1_idx < 0)
             continue;
 
-         if (opsel[const0_idx])
+         if (opsel & (1 << const0_idx))
             const0 >>= 16;
-         if (opsel[const1_idx])
+         if (opsel & (1 << const1_idx))
             const1 >>= 16;
 
          int lower_idx = const0_idx;
@@ -1862,24 +1929,27 @@ void apply_sgprs(opt_ctx &ctx, aco_ptr<Instruction>& instr)
    }
 }
 
-bool apply_omod_clamp(opt_ctx &ctx, aco_ptr<Instruction>& instr)
+bool apply_omod_clamp(opt_ctx &ctx, Block& block, aco_ptr<Instruction>& instr)
 {
    /* check if we could apply omod on predecessor */
    if (instr->opcode == aco_opcode::v_mul_f32) {
-      if (instr->operands[1].isTemp() && ctx.info[instr->operands[1].tempId()].is_omod_success()) {
-
+      bool op0 = instr->operands[0].isTemp() && ctx.info[instr->operands[0].tempId()].is_omod_success();
+      bool op1 = instr->operands[1].isTemp() && ctx.info[instr->operands[1].tempId()].is_omod_success();
+      if (op0 || op1) {
+         unsigned idx = op0 ? 0 : 1;
          /* omod was successfully applied */
          /* if the omod instruction is v_mad, we also have to change the original add */
-         if (ctx.info[instr->operands[1].tempId()].is_mad()) {
-            Instruction* add_instr = ctx.mad_infos[ctx.info[instr->operands[1].tempId()].val].add_instr.get();
+         if (ctx.info[instr->operands[idx].tempId()].is_mad()) {
+            Instruction* add_instr = ctx.mad_infos[ctx.info[instr->operands[idx].tempId()].val].add_instr.get();
             if (ctx.info[instr->definitions[0].tempId()].is_clamp())
                static_cast<VOP3A_instruction*>(add_instr)->clamp = true;
             add_instr->definitions[0] = instr->definitions[0];
          }
 
-         Instruction* omod_instr = ctx.info[instr->operands[1].tempId()].instr;
+         Instruction* omod_instr = ctx.info[instr->operands[idx].tempId()].instr;
          /* check if we have an additional clamp modifier */
-         if (ctx.info[instr->definitions[0].tempId()].is_clamp() && ctx.uses[instr->definitions[0].tempId()] == 1) {
+         if (ctx.info[instr->definitions[0].tempId()].is_clamp() && ctx.uses[instr->definitions[0].tempId()] == 1 &&
+             ctx.uses[ctx.info[instr->definitions[0].tempId()].temp.id()]) {
             static_cast<VOP3A_instruction*>(omod_instr)->clamp = true;
             ctx.info[instr->definitions[0].tempId()].set_clamp_success(omod_instr);
          }
@@ -1887,7 +1957,7 @@ bool apply_omod_clamp(opt_ctx &ctx, aco_ptr<Instruction>& instr)
          omod_instr->definitions[0] = instr->definitions[0];
 
          /* change the definition of instr to something unused, e.g. the original omod def */
-         instr->definitions[0] = Definition(instr->operands[1].getTemp());
+         instr->definitions[0] = Definition(instr->operands[idx].getTemp());
          ctx.uses[instr->definitions[0].tempId()] = 0;
          return true;
       }
@@ -1929,25 +1999,29 @@ bool apply_omod_clamp(opt_ctx &ctx, aco_ptr<Instruction>& instr)
       }
    }
 
+   /* omod has no effect if denormals are enabled */
+   bool can_use_omod = block.fp_mode.denorm32 == 0;
+
    /* apply omod / clamp modifiers if the def is used only once and the instruction can have modifiers */
    if (!instr->definitions.empty() && ctx.uses[instr->definitions[0].tempId()] == 1 &&
        can_use_VOP3(instr) && instr_info.can_use_output_modifiers[(int)instr->opcode]) {
-      if(ctx.info[instr->definitions[0].tempId()].is_omod2()) {
+      ssa_info& def_info = ctx.info[instr->definitions[0].tempId()];
+      if (can_use_omod && def_info.is_omod2() && ctx.uses[def_info.temp.id()]) {
          to_VOP3(ctx, instr);
          static_cast<VOP3A_instruction*>(instr.get())->omod = 1;
-         ctx.info[instr->definitions[0].tempId()].set_omod_success(instr.get());
-      } else if (ctx.info[instr->definitions[0].tempId()].is_omod4()) {
+         def_info.set_omod_success(instr.get());
+      } else if (can_use_omod && def_info.is_omod4() && ctx.uses[def_info.temp.id()]) {
          to_VOP3(ctx, instr);
          static_cast<VOP3A_instruction*>(instr.get())->omod = 2;
-         ctx.info[instr->definitions[0].tempId()].set_omod_success(instr.get());
-      } else if (ctx.info[instr->definitions[0].tempId()].is_omod5()) {
+         def_info.set_omod_success(instr.get());
+      } else if (can_use_omod && def_info.is_omod5() && ctx.uses[def_info.temp.id()]) {
          to_VOP3(ctx, instr);
          static_cast<VOP3A_instruction*>(instr.get())->omod = 3;
-         ctx.info[instr->definitions[0].tempId()].set_omod_success(instr.get());
-      } else if (ctx.info[instr->definitions[0].tempId()].is_clamp()) {
+         def_info.set_omod_success(instr.get());
+      } else if (def_info.is_clamp() && ctx.uses[def_info.temp.id()]) {
          to_VOP3(ctx, instr);
          static_cast<VOP3A_instruction*>(instr.get())->clamp = true;
-         ctx.info[instr->definitions[0].tempId()].set_clamp_success(instr.get());
+         def_info.set_clamp_success(instr.get());
       }
    }
 
@@ -1957,7 +2031,7 @@ bool apply_omod_clamp(opt_ctx &ctx, aco_ptr<Instruction>& instr)
 // TODO: we could possibly move the whole label_instruction pass to combine_instruction:
 // this would mean that we'd have to fix the instruction uses while value propagation
 
-void combine_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
+void combine_instruction(opt_ctx &ctx, Block& block, aco_ptr<Instruction>& instr)
 {
    if (instr->definitions.empty() || !ctx.uses[instr->definitions[0].tempId()])
       return;
@@ -1965,7 +2039,7 @@ void combine_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
    if (instr->isVALU()) {
       if (can_apply_sgprs(instr))
          apply_sgprs(ctx, instr);
-      if (apply_omod_clamp(ctx, instr))
+      if (apply_omod_clamp(ctx, block, instr))
          return;
    }
 
@@ -2018,9 +2092,11 @@ void combine_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
       return;
    }
    /* combine mul+add -> mad */
-   else if (instr->opcode == aco_opcode::v_add_f32 ||
-       instr->opcode == aco_opcode::v_sub_f32 ||
-       instr->opcode == aco_opcode::v_subrev_f32) {
+   else if ((instr->opcode == aco_opcode::v_add_f32 ||
+             instr->opcode == aco_opcode::v_sub_f32 ||
+             instr->opcode == aco_opcode::v_subrev_f32) &&
+            block.fp_mode.denorm32 == 0 && !block.fp_mode.preserve_signed_zero_inf_nan32) {
+      //TODO: we could use fma instead when denormals are enabled if the NIR isn't marked as precise
 
       uint32_t uses_src0 = UINT32_MAX;
       uint32_t uses_src1 = UINT32_MAX;
@@ -2173,9 +2249,8 @@ void combine_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
    } else if (instr->opcode == aco_opcode::s_not_b64) {
       if (combine_inverse_comparison(ctx, instr)) ;
       else combine_salu_not_bitwise(ctx, instr);
-   } else if (instr->opcode == aco_opcode::s_and_b32 || instr->opcode == aco_opcode::s_or_b32) {
-      combine_salu_n2(ctx, instr);
-   } else if (instr->opcode == aco_opcode::s_and_b64 || instr->opcode == aco_opcode::s_or_b64) {
+   } else if (instr->opcode == aco_opcode::s_and_b32 || instr->opcode == aco_opcode::s_or_b32 ||
+              instr->opcode == aco_opcode::s_and_b64 || instr->opcode == aco_opcode::s_or_b64) {
       if (combine_ordering_test(ctx, instr)) ;
       else if (combine_comparison_ordering(ctx, instr)) ;
       else if (combine_constant_comparison_ordering(ctx, instr)) ;
@@ -2196,12 +2271,7 @@ void select_instruction(opt_ctx &ctx, aco_ptr<Instruction>& instr)
 {
    const uint32_t threshold = 4;
 
-   /* Dead Code Elimination:
-    * We remove instructions if they define temporaries which all are unused */
-   const bool is_used = instr->definitions.empty() ||
-                        std::any_of(instr->definitions.begin(), instr->definitions.end(),
-                                    [&ctx](const Definition& def) { return ctx.uses[def.tempId()]; });
-   if (!is_used) {
+   if (is_dead(ctx.uses, instr.get())) {
       instr.reset();
       return;
    }
@@ -2364,7 +2434,7 @@ void optimize(Program* program)
    /* 1. Bottom-Up DAG pass (forward) to label all ssa-defs */
    for (Block& block : program->blocks) {
       for (aco_ptr<Instruction>& instr : block.instructions)
-         label_instruction(ctx, instr);
+         label_instruction(ctx, block, instr);
    }
 
    ctx.uses = std::move(dead_code_analysis(program));
@@ -2372,7 +2442,7 @@ void optimize(Program* program)
    /* 2. Combine v_mad, omod, clamp and propagate sgpr on VALU instructions */
    for (Block& block : program->blocks) {
       for (aco_ptr<Instruction>& instr : block.instructions)
-         combine_instruction(ctx, instr);
+         combine_instruction(ctx, block, instr);
    }
 
    /* 3. Top-Down DAG pass (backward) to select instructions (includes DCE) */

@@ -29,12 +29,13 @@
 #define __PANFROST_JOB_H__
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <panfrost-misc.h>
 
 enum mali_job_type {
         JOB_NOT_STARTED	= 0,
         JOB_TYPE_NULL = 1,
-        JOB_TYPE_SET_VALUE = 2,
+        JOB_TYPE_WRITE_VALUE = 2,
         JOB_TYPE_CACHE_FLUSH = 3,
         JOB_TYPE_COMPUTE = 4,
         JOB_TYPE_VERTEX = 5,
@@ -86,19 +87,6 @@ enum mali_func {
         MALI_FUNC_NOTEQUAL = 5,
         MALI_FUNC_GEQUAL   = 6,
         MALI_FUNC_ALWAYS   = 7
-};
-
-/* Same OpenGL, but mixed up. Why? Because forget me, that's why! */
-
-enum mali_alt_func {
-        MALI_ALT_FUNC_NEVER    = 0,
-        MALI_ALT_FUNC_GREATER  = 1,
-        MALI_ALT_FUNC_EQUAL    = 2,
-        MALI_ALT_FUNC_GEQUAL   = 3,
-        MALI_ALT_FUNC_LESS     = 4,
-        MALI_ALT_FUNC_NOTEQUAL = 5,
-        MALI_ALT_FUNC_LEQUAL   = 6,
-        MALI_ALT_FUNC_ALWAYS   = 7
 };
 
 /* Flags apply to unknown2_3? */
@@ -417,6 +405,14 @@ union midgard_blend {
         };
 };
 
+/* We need to load the tilebuffer to blend (i.e. the destination factor is not
+ * ZERO) */
+
+#define MALI_BLEND_LOAD_TIB (0x1)
+
+/* A blend shader is used to blend this render target */
+#define MALI_BLEND_MRT_SHADER (0x2)
+
 /* On MRT Midgard systems (using an MFBD), each render target gets its own
  * blend descriptor */
 
@@ -428,8 +424,7 @@ union midgard_blend {
 struct midgard_blend_rt {
         /* Flags base value of 0x200 to enable the render target.
          * OR with 0x1 for blending (anything other than REPLACE).
-         * OR with 0x2 for programmable blending with 0-2 registers
-         * OR with 0x3 for programmable blending with 2+ registers
+         * OR with 0x2 for programmable blending
          * OR with MALI_BLEND_SRGB for implicit sRGB
          */
 
@@ -528,9 +523,7 @@ struct mali_shader_meta {
                         unsigned uniform_buffer_count : 4;
                         unsigned flags : 12;
 
-                        /* Whole number of uniform registers used, times two;
-                         * whole number of work registers used (no scale).
-                         */
+                        /* vec4 units */
                         unsigned work_count : 5;
                         unsigned uniform_count : 5;
                         unsigned unknown2 : 6;
@@ -628,11 +621,7 @@ struct mali_job_descriptor_header {
         u16 job_index;
         u16 job_dependency_index_1;
         u16 job_dependency_index_2;
-
-        union {
-                u64 next_job_64;
-                u32 next_job_32;
-        };
+        u64 next_job;
 } __attribute__((packed));
 
 /* These concern exception_status */
@@ -650,15 +639,17 @@ enum mali_exception_access {
         MALI_EXCEPTION_ACCESS_WRITE   = 3
 };
 
-struct mali_payload_set_value {
-        u64 out;
-        u64 unknown;
-} __attribute__((packed));
+/* Details about write_value from panfrost igt tests which use it as a generic
+ * dword write primitive */
 
-/* Special attributes have a fixed index */
-#define MALI_SPECIAL_ATTRIBUTE_BASE 16
-#define MALI_VERTEX_ID   (MALI_SPECIAL_ATTRIBUTE_BASE + 0)
-#define MALI_INSTANCE_ID (MALI_SPECIAL_ATTRIBUTE_BASE + 1)
+#define MALI_WRITE_VALUE_ZERO 3
+
+struct mali_payload_write_value {
+        u64 address;
+        u32 value_descriptor;
+        u32 reserved;
+        u64 immediate;
+} __attribute__((packed));
 
 /*
  * Mali Attributes
@@ -787,9 +778,8 @@ struct mali_payload_set_value {
  * let shift=extra_flags=0. Stride is set to the image format's bytes-per-pixel
  * (*NOT the row stride*). Size is set to the size of the image itself.
  *
- * Special internal varyings (including gl_FrontFacing) could be seen as
- * IMAGE/INTERNAL as well as LINEAR, setting all fields set to zero and using a
- * special elements pseudo-pointer.
+ * Special internal attribtues and varyings (gl_VertexID, gl_FrontFacing, etc)
+ * use particular fixed addresses with modified structures.
  */
 
 enum mali_attr_mode {
@@ -799,12 +789,12 @@ enum mali_attr_mode {
 	MALI_ATTR_MODULO = 3,
 	MALI_ATTR_NPOT_DIVIDE = 4,
         MALI_ATTR_IMAGE = 5,
-        MALI_ATTR_INTERNAL = 6
 };
 
-/* Pseudo-address for gl_FrontFacing, used with INTERNAL. Same addres is used
- * for gl_FragCoord with IMAGE, needing a coordinate flip. Who knows. */
+/* Pseudo-address for gl_VertexID, gl_FragCoord, gl_FrontFacing */
 
+#define MALI_ATTR_VERTEXID (0x22)
+#define MALI_ATTR_INSTANCEID (0x24)
 #define MALI_VARYING_FRAG_COORD (0x25)
 #define MALI_VARYING_FRONT_FACING (0x26)
 
@@ -818,7 +808,7 @@ enum mali_attr_mode {
 /* Used for comparison to check if an address is special. Mostly a guess, but
  * it doesn't really matter. */
 
-#define MALI_VARYING_SPECIAL (0x100)
+#define MALI_RECORD_SPECIAL (0x100)
 
 union mali_attr {
 	/* This is used for actual attributes. */
@@ -858,13 +848,10 @@ struct mali_attr_meta {
         int32_t src_offset;
 } __attribute__((packed));
 
-enum mali_fbd_type {
-        MALI_SFBD = 0,
-        MALI_MFBD = 1,
-};
-
-#define FBD_TYPE (1)
 #define FBD_MASK (~0x3f)
+
+/* MFBD, rather than SFBD */
+#define MALI_MFBD (0x1)
 
 /* ORed into an MFBD address to specify the fbx section is included */
 #define MALI_MFBD_TAG_EXTRA (0x2)
@@ -898,6 +885,12 @@ struct mali_uniform_buffer_meta {
 #define MALI_DRAW_INDEXED_SHIFT  (4)
 
 #define MALI_DRAW_VARYING_SIZE   (0x100)
+
+/* Set to use first vertex as the provoking vertex for flatshading. Clear to
+ * use the last vertex. This is the default in DX and VK, but not in GL. */
+
+#define MALI_DRAW_FLATSHADE_FIRST (0x800)
+
 #define MALI_DRAW_PRIMITIVE_RESTART_FIXED_INDEX (0x10000)
 
 struct mali_vertex_tiler_prefix {
@@ -926,13 +919,16 @@ struct mali_vertex_tiler_prefix {
          */
         u32 invocation_count;
 
-        u32 size_y_shift : 5;
-        u32 size_z_shift : 5;
-        u32 workgroups_x_shift : 6;
-        u32 workgroups_y_shift : 6;
-        u32 workgroups_z_shift : 6;
-        /* This is max(workgroups_x_shift, 2) in all the cases I've seen. */
-        u32 workgroups_x_shift_2 : 4;
+        /* Bitfield for shifts:
+         *
+         * size_y_shift : 5
+         * size_z_shift : 5
+         * workgroups_x_shift : 6
+         * workgroups_y_shift : 6
+         * workgroups_z_shift : 6
+         * workgroups_x_shift_2 : 4
+         */
+        u32 invocation_shifts;
 
         u32 draw_mode : 4;
         u32 unknown_draw : 22;
@@ -1143,17 +1139,17 @@ struct bifrost_payload_fused {
 
 #define MALI_POSITIVE(dim) (dim - 1)
 
-/* Opposite of MALI_POSITIVE, found in the depth_units field */
-
-#define MALI_NEGATIVE(dim) (dim + 1)
-
-/* Used with wrapping. Incomplete (this is a 4-bit field...) */
+/* Used with wrapping. Unclear what top bit conveys */
 
 enum mali_wrap_mode {
-        MALI_WRAP_REPEAT = 0x8,
-        MALI_WRAP_CLAMP_TO_EDGE = 0x9,
-        MALI_WRAP_CLAMP_TO_BORDER = 0xB,
-        MALI_WRAP_MIRRORED_REPEAT = 0xC
+        MALI_WRAP_REPEAT                   = 0x8 |       0x0,
+        MALI_WRAP_CLAMP_TO_EDGE            = 0x8 |       0x1,
+        MALI_WRAP_CLAMP                    = 0x8 |       0x2,
+        MALI_WRAP_CLAMP_TO_BORDER          = 0x8 |       0x3,
+        MALI_WRAP_MIRRORED_REPEAT          = 0x8 | 0x4 | 0x0,
+        MALI_WRAP_MIRRORED_CLAMP_TO_EDGE   = 0x8 | 0x4 | 0x1,
+        MALI_WRAP_MIRRORED_CLAMP           = 0x8 | 0x4 | 0x2,
+        MALI_WRAP_MIRRORED_CLAMP_TO_BORDER = 0x8 | 0x4 | 0x3,
 };
 
 /* Shared across both command stream and Midgard, and even with Bifrost */
@@ -1236,8 +1232,6 @@ struct mali_texture_descriptor {
         uint32_t unknown5;
         uint32_t unknown6;
         uint32_t unknown7;
-
-        mali_ptr payload[MAX_MIP_LEVELS * MAX_CUBE_FACES * MAX_ELEMENTS];
 } __attribute__((packed));
 
 /* filter_mode */
@@ -1260,33 +1254,36 @@ struct mali_texture_descriptor {
 
 #define DECODE_FIXED_16(x) ((float) (x / 256.0))
 
-static inline uint16_t
-FIXED_16(float x)
+static inline int16_t
+FIXED_16(float x, bool allow_negative)
 {
         /* Clamp inputs, accounting for float error */
         float max_lod = (32.0 - (1.0 / 512.0));
+        float min_lod = allow_negative ? -max_lod : 0.0;
 
-        x = ((x > max_lod) ? max_lod : ((x < 0.0) ? 0.0 : x));
+        x = ((x > max_lod) ? max_lod : ((x < min_lod) ? min_lod : x));
 
         return (int) (x * 256.0);
 }
 
 struct mali_sampler_descriptor {
-        uint32_t filter_mode;
+        uint16_t filter_mode;
 
-        /* Fixed point. Upper 8-bits is before the decimal point, although it
-         * caps [0-31]. Lower 8-bits is after the decimal point: int(round(x *
-         * 256)) */
+        /* Fixed point, signed.
+         * Upper 7 bits before the decimal point, although it caps [0-31].
+         * Lower 8 bits after the decimal point: int(round(x * 256)) */
 
-        uint16_t min_lod;
-        uint16_t max_lod;
+        int16_t lod_bias;
+        int16_t min_lod;
+        int16_t max_lod;
 
-        /* All one word in reality, but packed a bit */
+        /* All one word in reality, but packed a bit. Comparisons are flipped
+         * from OpenGL. */
 
         enum mali_wrap_mode wrap_s : 4;
         enum mali_wrap_mode wrap_t : 4;
         enum mali_wrap_mode wrap_r : 4;
-        enum mali_alt_func compare_func : 3;
+        enum mali_func compare_func : 3;
 
         /* No effect on 2D textures. For cubemaps, set for ES3 and clear for
          * ES2, controlling seamless cubemapping */
@@ -1383,8 +1380,16 @@ struct mali_payload_fragment {
 /* See pan_tiler.c for derivation */
 #define MALI_HIERARCHY_MASK ((1 << 9) - 1)
 
-/* Flag disabling the tiler for clear-only jobs */
+/* Flag disabling the tiler for clear-only jobs, with
+   hierarchical tiling */
 #define MALI_TILER_DISABLED (1 << 12)
+
+/* Flag selecting userspace-generated polygon list, for clear-only jobs without
+ * hierarhical tiling. */
+#define MALI_TILER_USER 0xFFF
+
+/* Absent any geometry, the minimum size of the polygon list header */
+#define MALI_TILER_MINIMUM_HEADER_SIZE 0x200
 
 struct midgard_tiler_descriptor {
         /* Size of the entire polygon list; see pan_tiler.c for the
@@ -1447,7 +1452,8 @@ struct mali_sfbd_format {
 struct mali_single_framebuffer {
         u32 unknown1;
         u32 unknown2;
-        u64 unknown_address_0;
+        mali_ptr scratchpad;
+
         u64 zero1;
         u64 zero0;
 
@@ -1647,7 +1653,8 @@ struct bifrost_fb_extra {
 #define MALI_MFBD_EXTRA (1 << 13)
 
 struct bifrost_framebuffer {
-        u32 unk0; // = 0x10
+        u32 stack_shift : 4;
+        u32 unk0 : 28;
 
         u32 unknown2; // = 0x1f, same as SFBD
         mali_ptr scratchpad;

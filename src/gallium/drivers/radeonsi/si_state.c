@@ -27,8 +27,8 @@
 #include "si_query.h"
 
 #include "util/u_dual_blend.h"
-#include "util/u_format.h"
-#include "util/u_format_s3tc.h"
+#include "util/format/u_format.h"
+#include "util/format/u_format_s3tc.h"
 #include "util/u_memory.h"
 #include "util/u_resource.h"
 #include "util/u_upload_mgr.h"
@@ -919,6 +919,14 @@ static void *si_create_rs_state(struct pipe_context *ctx,
 	rs->flatshade_first = state->flatshade_first;
 	rs->sprite_coord_enable = state->sprite_coord_enable;
 	rs->rasterizer_discard = state->rasterizer_discard;
+	rs->polygon_mode_enabled = (state->fill_front != PIPE_POLYGON_MODE_FILL &&
+				    !(state->cull_face & PIPE_FACE_FRONT)) ||
+				   (state->fill_back != PIPE_POLYGON_MODE_FILL &&
+				    !(state->cull_face & PIPE_FACE_BACK));
+	rs->polygon_mode_is_lines = (state->fill_front == PIPE_POLYGON_MODE_LINE &&
+				     !(state->cull_face & PIPE_FACE_FRONT)) ||
+				    (state->fill_back == PIPE_POLYGON_MODE_LINE &&
+				     !(state->cull_face & PIPE_FACE_BACK));
 	rs->pa_sc_line_stipple = state->line_stipple_enable ?
 				S_028A0C_LINE_PATTERN(state->line_stipple_pattern) |
 				S_028A0C_REPEAT_COUNT(state->line_stipple_factor) : 0;
@@ -976,8 +984,7 @@ static void *si_create_rs_state(struct pipe_context *ctx,
 		S_028814_POLY_OFFSET_FRONT_ENABLE(util_get_offset(state, state->fill_front)) |
 		S_028814_POLY_OFFSET_BACK_ENABLE(util_get_offset(state, state->fill_back)) |
 		S_028814_POLY_OFFSET_PARA_ENABLE(state->offset_point || state->offset_line) |
-		S_028814_POLY_MODE(state->fill_front != PIPE_POLYGON_MODE_FILL ||
-				   state->fill_back != PIPE_POLYGON_MODE_FILL) |
+		S_028814_POLY_MODE(rs->polygon_mode_enabled) |
 		S_028814_POLYMODE_FRONT_PTYPE(si_translate_fill(state->fill_front)) |
 		S_028814_POLYMODE_BACK_PTYPE(si_translate_fill(state->fill_back)));
 
@@ -1071,9 +1078,6 @@ static void si_bind_rs_state(struct pipe_context *ctx, void *state)
 	if (old_rs->clip_plane_enable != rs->clip_plane_enable ||
 	    old_rs->pa_cl_clip_cntl != rs->pa_cl_clip_cntl)
 		si_mark_atom_dirty(sctx, &sctx->atoms.s.clip_regs);
-
-	sctx->ia_multi_vgt_param_key.u.line_stipple_enabled =
-		rs->line_stipple_enable;
 
 	if (old_rs->clip_plane_enable != rs->clip_plane_enable ||
 	    old_rs->rasterizer_discard != rs->rasterizer_discard ||
@@ -2984,6 +2988,7 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 
 	sctx->framebuffer.compressed_cb_mask = 0;
 	sctx->framebuffer.uncompressed_cb_mask = 0;
+	sctx->framebuffer.displayable_dcc_cb_mask = 0;
 	sctx->framebuffer.nr_samples = util_framebuffer_get_num_samples(state);
 	sctx->framebuffer.nr_color_samples = sctx->framebuffer.nr_samples;
 	sctx->framebuffer.log_samples = util_logbase2(sctx->framebuffer.nr_samples);
@@ -3023,6 +3028,9 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 			sctx->framebuffer.compressed_cb_mask |= 1 << i;
 		else
 			sctx->framebuffer.uncompressed_cb_mask |= 1 << i;
+
+		if (tex->surface.dcc_offset)
+			sctx->framebuffer.displayable_dcc_cb_mask |= 1 << i;
 
 		/* Don't update nr_color_samples for non-AA buffers.
 		 * (e.g. destination of MSAA resolve)
@@ -3845,7 +3853,7 @@ si_make_buffer_descriptor(struct si_screen *screen, struct si_resource *buf,
 		 *       else: swizzle_address >= NUM_RECORDS
 		 */
 		state[7] |= S_008F0C_FORMAT(fmt->img_format) |
-			    S_008F0C_OOB_SELECT(0) |
+			    S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_STRUCTURED_WITH_OFFSET) |
 			    S_008F0C_RESOURCE_LEVEL(1);
 	} else {
 		int first_non_void;
@@ -4865,7 +4873,10 @@ static void *si_create_vertex_elements(struct pipe_context *ctx,
 		return NULL;
 
 	v->count = count;
-	v->desc_list_byte_size = align(count * 16, SI_CPDMA_ALIGNMENT);
+
+	unsigned alloc_count = count > sscreen->num_vbos_in_user_sgprs ?
+			       count - sscreen->num_vbos_in_user_sgprs : 0;
+	v->vb_desc_list_alloc_size = align(alloc_count * 16, SI_CPDMA_ALIGNMENT);
 
 	for (i = 0; i < count; ++i) {
 		const struct util_format_description *desc;
@@ -5066,7 +5077,14 @@ static void si_bind_vertex_elements(struct pipe_context *ctx, void *state)
 	struct si_vertex_elements *v = (struct si_vertex_elements*)state;
 
 	sctx->vertex_elements = v;
-	sctx->vertex_buffers_dirty = true;
+	sctx->num_vertex_elements = v ? v->count : 0;
+
+	if (sctx->num_vertex_elements) {
+		sctx->vertex_buffers_dirty = true;
+	} else {
+		sctx->vertex_buffer_pointer_dirty = false;
+		sctx->vertex_buffer_user_sgprs_dirty = false;
+	}
 
 	if (v &&
 	    (!old ||
@@ -5102,8 +5120,10 @@ static void si_delete_vertex_element(struct pipe_context *ctx, void *state)
 	struct si_context *sctx = (struct si_context *)ctx;
 	struct si_vertex_elements *v = (struct si_vertex_elements*)state;
 
-	if (sctx->vertex_elements == state)
+	if (sctx->vertex_elements == state) {
 		sctx->vertex_elements = NULL;
+		sctx->num_vertex_elements = 0;
+	}
 	si_resource_reference(&v->instance_divisor_factor_buffer, NULL);
 	FREE(state);
 }
@@ -5114,8 +5134,9 @@ static void si_set_vertex_buffers(struct pipe_context *ctx,
 {
 	struct si_context *sctx = (struct si_context *)ctx;
 	struct pipe_vertex_buffer *dst = sctx->vertex_buffer + start_slot;
+	unsigned updated_mask = u_bit_consecutive(start_slot, count);
 	uint32_t orig_unaligned = sctx->vertex_buffer_unaligned;
-	uint32_t unaligned = orig_unaligned;
+	uint32_t unaligned = 0;
 	int i;
 
 	assert(start_slot + count <= ARRAY_SIZE(sctx->vertex_buffer));
@@ -5125,14 +5146,14 @@ static void si_set_vertex_buffers(struct pipe_context *ctx,
 			const struct pipe_vertex_buffer *src = buffers + i;
 			struct pipe_vertex_buffer *dsti = dst + i;
 			struct pipe_resource *buf = src->buffer.resource;
+			unsigned slot_bit = 1 << (start_slot + i);
 
 			pipe_resource_reference(&dsti->buffer.resource, buf);
 			dsti->buffer_offset = src->buffer_offset;
 			dsti->stride = src->stride;
+
 			if (dsti->buffer_offset & 3 || dsti->stride & 3)
-				unaligned |= 1 << (start_slot + i);
-			else
-				unaligned &= ~(1 << (start_slot + i));
+				unaligned |= slot_bit;
 
 			si_context_add_resource_size(sctx, buf);
 			if (buf)
@@ -5142,10 +5163,10 @@ static void si_set_vertex_buffers(struct pipe_context *ctx,
 		for (i = 0; i < count; i++) {
 			pipe_resource_reference(&dst[i].buffer.resource, NULL);
 		}
-		unaligned &= ~u_bit_consecutive(start_slot, count);
+		unaligned &= ~updated_mask;
 	}
 	sctx->vertex_buffers_dirty = true;
-	sctx->vertex_buffer_unaligned = unaligned;
+	sctx->vertex_buffer_unaligned = (orig_unaligned & ~updated_mask) | unaligned;
 
 	/* Check whether alignment may have changed in a way that requires
 	 * shader changes. This check is conservative: a vertex buffer can only
@@ -5156,7 +5177,7 @@ static void si_set_vertex_buffers(struct pipe_context *ctx,
 	 */
 	if (sctx->vertex_elements &&
 	    (sctx->vertex_elements->vb_alignment_check_mask &
-	     (unaligned | orig_unaligned) & u_bit_consecutive(start_slot, count)))
+	     (unaligned | orig_unaligned) & updated_mask))
 		sctx->do_update_shaders = true;
 }
 
@@ -5456,15 +5477,17 @@ static void si_init_config(struct si_context *sctx)
 		si_pm4_set_reg(pm4, R_008A14_PA_CL_ENHANCE, S_008A14_NUM_CLIP_SEQ(3) |
 			       S_008A14_CLIP_VTX_REORDER_ENA(1));
 
+	/* CLEAR_STATE doesn't restore these correctly. */
+	si_pm4_set_reg(pm4, R_028240_PA_SC_GENERIC_SCISSOR_TL, S_028240_WINDOW_OFFSET_DISABLE(1));
+	si_pm4_set_reg(pm4, R_028244_PA_SC_GENERIC_SCISSOR_BR,
+		       S_028244_BR_X(16384) | S_028244_BR_Y(16384));
+
 	/* CLEAR_STATE doesn't clear these correctly on certain generations.
 	 * I don't know why. Deduced by trial and error.
 	 */
 	if (sctx->chip_class <= GFX7 || !has_clear_state) {
 		si_pm4_set_reg(pm4, R_028B28_VGT_STRMOUT_DRAW_OPAQUE_OFFSET, 0);
 		si_pm4_set_reg(pm4, R_028204_PA_SC_WINDOW_SCISSOR_TL, S_028204_WINDOW_OFFSET_DISABLE(1));
-		si_pm4_set_reg(pm4, R_028240_PA_SC_GENERIC_SCISSOR_TL, S_028240_WINDOW_OFFSET_DISABLE(1));
-		si_pm4_set_reg(pm4, R_028244_PA_SC_GENERIC_SCISSOR_BR,
-			       S_028244_BR_X(16384) | S_028244_BR_Y(16384));
 		si_pm4_set_reg(pm4, R_028030_PA_SC_SCREEN_SCISSOR_TL, 0);
 		si_pm4_set_reg(pm4, R_028034_PA_SC_SCREEN_SCISSOR_BR,
 			       S_028034_BR_X(16384) | S_028034_BR_Y(16384));
@@ -5658,7 +5681,7 @@ static void si_init_config(struct si_context *sctx)
 		/* TODO: For culling, replace 128 with 256. */
 		si_pm4_set_reg(pm4, R_030980_GE_PC_ALLOC,
 			       S_030980_OVERSUB_EN(1) |
-			       S_030980_NUM_PC_LINES(128 * sscreen->info.max_se - 1));
+			       S_030980_NUM_PC_LINES(sscreen->info.pc_lines / 4 - 1));
 	}
 
 	if (sctx->chip_class >= GFX8) {

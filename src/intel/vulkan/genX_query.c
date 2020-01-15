@@ -125,6 +125,7 @@ VkResult genX(CreateQueryPool)(
    result = anv_device_alloc_bo(device, size,
                                 ANV_BO_ALLOC_MAPPED |
                                 ANV_BO_ALLOC_SNOOPED,
+                                0 /* explicit_address */,
                                 &pool->bo);
    if (result != VK_SUCCESS)
       goto fail;
@@ -490,9 +491,8 @@ emit_zero_queries(struct anv_cmd_buffer *cmd_buffer,
       for (uint32_t i = 0; i < num_queries; i++) {
          struct anv_address slot_addr =
             anv_query_address(pool, first_index + i);
-         gen_mi_memset(b, slot_addr, 0, pool->stride - 8);
-         emit_query_mi_availability(b, anv_address_add(slot_addr,
-                                                       pool->stride - 8), true);
+         gen_mi_memset(b, anv_address_add(slot_addr, 8), 0, pool->stride - 8);
+         emit_query_mi_availability(b, slot_addr, true);
       }
       break;
 
@@ -534,14 +534,8 @@ void genX(CmdResetQueryPool)(
       struct gen_mi_builder b;
       gen_mi_builder_init(&b, &cmd_buffer->batch);
 
-      for (uint32_t i = 0; i < queryCount; i++) {
-         emit_query_mi_availability(
-            &b,
-            anv_address_add(
-               anv_query_address(pool, firstQuery + i),
-               pool->stride - 8),
-            false);
-      }
+      for (uint32_t i = 0; i < queryCount; i++)
+         emit_query_mi_availability(&b, anv_query_address(pool, firstQuery + i), false);
       break;
    }
 
@@ -780,9 +774,7 @@ void genX(CmdEndQueryIndexedEXT)(
                                              intel_perf_mi_rpc_offset(true));
          rpc.ReportID = 0xdeadbeef; /* This goes in the first dword */
       }
-      emit_query_mi_availability(&b,
-                                 anv_address_add(query_addr, pool->stride - 8),
-                                 true);
+      emit_query_mi_availability(&b, query_addr, true);
       break;
    }
 

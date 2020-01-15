@@ -123,6 +123,7 @@ files_libnir = files(
   'nir_lower_clamp_color_outputs.c',
   'nir_lower_clip.c',
   'nir_lower_clip_cull_distance_arrays.c',
+  'nir_lower_clip_halfz.c',
   'nir_lower_constant_initializers.c',
   'nir_lower_double_ops.c',
   'nir_lower_drawpixels.c',
@@ -190,6 +191,7 @@ files_libnir = files(
   'nir_opt_if.c',
   'nir_opt_intrinsics.c',
   'nir_opt_large_constants.c',
+  'nir_opt_load_store_vectorize.c',
   'nir_opt_loop_unroll.c',
   'nir_opt_move.c',
   'nir_opt_peephole_select.c',
@@ -208,12 +210,12 @@ files_libnir = files(
   'nir_range_analysis.h',
   'nir_remove_dead_variables.c',
   'nir_repair_ssa.c',
+  'nir_schedule.c',
   'nir_search.c',
   'nir_search.h',
   'nir_search_helpers.h',
   'nir_serialize.c',
   'nir_serialize.h',
-  'nir_strip.c',
   'nir_split_per_member_structs.c',
   'nir_split_var_copies.c',
   'nir_split_vars.c',
@@ -331,6 +333,30 @@ if with_tests
       'comparison_pre',
       files('tests/comparison_pre_tests.cpp'),
       c_args : [c_vis_args, c_msvc_compat_args, no_override_init_args],
+      include_directories : [inc_common],
+      dependencies : [dep_thread, idep_gtest, idep_nir, idep_mesautil],
+    ),
+    suite : ['compiler', 'nir'],
+  )
+
+  test(
+    'load_store_vectorizer',
+    executable(
+      'load_store_vectorizer',
+      files('tests/load_store_vectorizer_tests.cpp'),
+      cpp_args : [cpp_vis_args, cpp_msvc_compat_args],
+      include_directories : [inc_common],
+      dependencies : [dep_thread, idep_gtest, idep_nir, idep_mesautil],
+    ),
+    suite : ['compiler', 'nir'],
+  )
+
+  test(
+    'nir_serialize_test',
+    executable(
+      'nir_serialize_test',
+      files('tests/serialize_tests.cpp'),
+      cpp_args : [cpp_vis_args, cpp_msvc_compat_args],
       include_directories : [inc_common],
       dependencies : [dep_thread, idep_gtest, idep_nir, idep_mesautil],
     ),

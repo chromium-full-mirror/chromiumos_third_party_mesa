@@ -116,6 +116,11 @@
 #define SI_RESOURCE_FLAG_CLEAR		(PIPE_RESOURCE_FLAG_DRV_PRIV << 7)
 /* For const_uploader, upload data via GTT and copy to VRAM on context flush via SDMA. */
 #define SI_RESOURCE_FLAG_UPLOAD_FLUSH_EXPLICIT_VIA_SDMA  (PIPE_RESOURCE_FLAG_DRV_PRIV << 8)
+/* Set a micro tile mode: */
+#define SI_RESOURCE_FLAG_FORCE_MICRO_TILE_MODE  (PIPE_RESOURCE_FLAG_DRV_PRIV << 9)
+#define SI_RESOURCE_FLAG_MICRO_TILE_MODE_SHIFT  (util_logbase2(PIPE_RESOURCE_FLAG_DRV_PRIV) + 10)
+#define SI_RESOURCE_FLAG_MICRO_TILE_MODE_SET(x) (((x) & 0x3) << SI_RESOURCE_FLAG_MICRO_TILE_MODE_SHIFT)
+#define SI_RESOURCE_FLAG_MICRO_TILE_MODE_GET(x) (((x) >> SI_RESOURCE_FLAG_MICRO_TILE_MODE_SHIFT) & 0x3)
 
 enum si_clear_code
 {
@@ -166,8 +171,10 @@ enum {
 	DBG_VM,
 
 	/* Driver options: */
-	DBG_FORCE_DMA,
-	DBG_NO_ASYNC_DMA,
+	DBG_FORCE_SDMA,
+	DBG_NO_SDMA,
+	DBG_NO_SDMA_CLEARS,
+	DBG_NO_SDMA_COPY_IMAGE,
 	DBG_NO_WC,
 	DBG_CHECK_VM,
 	DBG_RESERVE_VMID,
@@ -332,6 +339,8 @@ struct si_texture {
 	 * for a possible future enablement.
 	 */
 	bool				separate_dcc_dirty:1;
+	bool				displayable_dcc_dirty:1;
+
 	/* Statistics gathering for the DCC enablement heuristic. */
 	bool				dcc_gather_statistics:1;
 	/* Counter that should be non-zero if the texture is bound to a
@@ -477,6 +486,7 @@ struct si_screen {
 			uint32_t *state,
 			uint32_t *fmask_state);
 
+	unsigned			num_vbos_in_user_sgprs;
 	unsigned			pa_sc_raster_config;
 	unsigned			pa_sc_raster_config_1;
 	unsigned			se_tile_repeat;
@@ -670,6 +680,7 @@ struct si_framebuffer {
 	ubyte				nr_color_samples; /* at most 8xAA */
 	ubyte				compressed_cb_mask;
 	ubyte				uncompressed_cb_mask;
+	ubyte				displayable_dcc_cb_mask;
 	ubyte				color_is_int8;
 	ubyte				color_is_int10;
 	ubyte				dirty_cbufs;
@@ -787,7 +798,7 @@ union si_vgt_param_key {
 	uint32_t index;
 };
 
-#define SI_NUM_VGT_STAGES_KEY_BITS 4
+#define SI_NUM_VGT_STAGES_KEY_BITS 5
 #define SI_NUM_VGT_STAGES_STATES (1 << SI_NUM_VGT_STAGES_KEY_BITS)
 
 /* The VGT_SHADER_STAGES key used to index the table of precomputed values.
@@ -798,6 +809,7 @@ union si_vgt_stages_key {
 #if UTIL_ARCH_LITTLE_ENDIAN
 		unsigned tess:1;
 		unsigned gs:1;
+		unsigned ngg_passthrough:1;
 		unsigned ngg:1; /* gfx10+ */
 		unsigned streamout:1; /* only used with NGG */
 		unsigned _pad:32 - SI_NUM_VGT_STAGES_KEY_BITS;
@@ -805,6 +817,7 @@ union si_vgt_stages_key {
 		unsigned _pad:32 - SI_NUM_VGT_STAGES_KEY_BITS;
 		unsigned streamout:1;
 		unsigned ngg:1;
+		unsigned ngg_passthrough:1;
 		unsigned gs:1;
 		unsigned tess:1;
 #endif
@@ -858,7 +871,7 @@ struct si_context {
 	struct radeon_winsys		*ws;
 	struct radeon_winsys_ctx	*ctx;
 	struct radeon_cmdbuf		*gfx_cs; /* compute IB if graphics is disabled */
-	struct radeon_cmdbuf		*dma_cs;
+	struct radeon_cmdbuf		*sdma_cs;
 	struct pipe_fence_handle	*last_gfx_fence;
 	struct pipe_fence_handle	*last_sdma_fence;
 	struct si_resource		*eop_bug_scratch;
@@ -894,6 +907,7 @@ struct si_context {
 	void				*cs_copy_image_1d_array;
 	void				*cs_clear_render_target;
 	void				*cs_clear_render_target_1d_array;
+	void				*cs_clear_12bytes_buffer;
 	void				*cs_dcc_retile;
 	void				*cs_fmask_expand[3][2]; /* [log2(samples)-1][is_array] */
 	struct si_screen		*screen;
@@ -987,15 +1001,11 @@ struct si_context {
 
 	/* shader information */
 	struct si_vertex_elements	*vertex_elements;
+	unsigned			num_vertex_elements;
 	unsigned			sprite_coord_enable;
 	unsigned			cs_max_waves_per_sh;
 	bool				flatshade;
 	bool				do_update_shaders;
-
-	/* vertex buffer descriptors */
-	uint32_t *vb_descriptors_gpu_list;
-	struct si_resource *vb_descriptors_buffer;
-	unsigned vb_descriptors_offset;
 
 	/* shader descriptors */
 	struct si_descriptors		descriptors[SI_NUM_DESCS];
@@ -1023,11 +1033,16 @@ struct si_context {
 	uint32_t			vs_blit_sh_data[SI_VS_BLIT_SGPRS_POS_TEXCOORD];
 	uint32_t			cs_user_data[4];
 
-	/* Vertex and index buffers. */
+	/* Vertex buffers. */
 	bool				vertex_buffers_dirty;
 	bool				vertex_buffer_pointer_dirty;
+	bool				vertex_buffer_user_sgprs_dirty;
 	struct pipe_vertex_buffer	vertex_buffer[SI_NUM_VERTEX_BUFFERS];
 	uint16_t			vertex_buffer_unaligned; /* bitmask of not dword-aligned buffers */
+	uint32_t			*vb_descriptors_gpu_list;
+	struct si_resource		*vb_descriptors_buffer;
+	unsigned			vb_descriptors_offset;
+	unsigned			vb_descriptor_user_sgprs[5*4];
 
 	/* MSAA config state. */
 	int				ps_iter_samples;
@@ -1063,10 +1078,8 @@ struct si_context {
 	int			last_restart_index;
 	int			last_prim;
 	int			last_multi_vgt_param;
-	int			last_rast_prim;
-	int			last_flatshade_first;
+	int			last_gs_out_prim;
 	int			last_binning_enabled;
-	unsigned		last_sc_line_stipple;
 	unsigned		current_vs_state;
 	unsigned		last_vs_state;
 	enum pipe_prim_type	current_rast_prim; /* primitive type after TES, GS */
@@ -1355,14 +1368,14 @@ void si_check_vm_faults(struct si_context *sctx,
 			struct radeon_saved_cs *saved, enum ring_type ring);
 bool si_replace_shader(unsigned num, struct si_shader_binary *binary);
 
-/* si_dma.c */
-void si_init_dma_functions(struct si_context *sctx);
-
 /* si_dma_cs.c */
 void si_dma_emit_timestamp(struct si_context *sctx, struct si_resource *dst,
 			   uint64_t offset);
 void si_sdma_clear_buffer(struct si_context *sctx, struct pipe_resource *dst,
 			  uint64_t offset, uint64_t size, unsigned clear_value);
+void si_sdma_copy_buffer(struct si_context *sctx, struct pipe_resource *dst,
+			 struct pipe_resource *src, uint64_t dst_offset,
+			 uint64_t src_offset, uint64_t size);
 void si_need_dma_space(struct si_context *ctx, unsigned num_dw,
 		       struct si_resource *dst, struct si_resource *src);
 void si_flush_dma_cs(struct si_context *ctx, unsigned flags,
@@ -1424,7 +1437,10 @@ void si_dispatch_prim_discard_cs_and_draw(struct si_context *sctx,
 					  unsigned base_vertex,
 					  uint64_t input_indexbuf_va,
 					  unsigned input_indexbuf_max_elements);
-void si_initialize_prim_discard_tunables(struct si_context *sctx);
+void si_initialize_prim_discard_tunables(struct si_screen *sscreen,
+					 bool is_aux_context,
+					 unsigned *prim_discard_vertex_count_threshold,
+					 unsigned *index_ring_size_per_ib);
 
 /* si_pipe.c */
 void si_init_compiler(struct si_screen *sscreen, struct ac_llvm_compiler *compiler);
@@ -1450,6 +1466,7 @@ void *si_create_copy_image_compute_shader(struct pipe_context *ctx);
 void *si_create_copy_image_compute_shader_1d_array(struct pipe_context *ctx);
 void *si_clear_render_target_shader(struct pipe_context *ctx);
 void *si_clear_render_target_shader_1d_array(struct pipe_context *ctx);
+void *si_clear_12bytes_buffer_shader(struct pipe_context *ctx);
 void *si_create_dcc_retile_cs(struct pipe_context *ctx);
 void *si_create_fmask_expand_cs(struct pipe_context *ctx, unsigned num_samples,
 				bool is_array);

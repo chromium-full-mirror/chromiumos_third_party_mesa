@@ -1401,7 +1401,7 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
       temp_op[0] = bld.fix_byte_src(op[0]);
       temp_op[1] = bld.fix_byte_src(op[1]);
 
-      const uint32_t bit_size = nir_src_bit_size(instr->src[0].src);
+      const uint32_t bit_size = type_sz(temp_op[0].type) * 8;
       if (bit_size != 32)
          dest = bld.vgrf(temp_op[0].type, 1);
 
@@ -2751,7 +2751,7 @@ fs_visitor::nir_emit_tcs_intrinsic(const fs_builder &bld,
               brw_imm_d(tcs_key->input_vertices));
       break;
 
-   case nir_intrinsic_barrier: {
+   case nir_intrinsic_control_barrier: {
       if (tcs_prog_data->instances == 1)
          break;
 
@@ -3461,7 +3461,14 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
 
          if (alu != NULL &&
              alu->op != nir_op_bcsel &&
-             alu->op != nir_op_inot) {
+             alu->op != nir_op_inot &&
+             (devinfo->gen > 5 ||
+              (alu->instr.pass_flags & BRW_NIR_BOOLEAN_MASK) != BRW_NIR_BOOLEAN_NEEDS_RESOLVE ||
+              alu->op == nir_op_fne32 || alu->op == nir_op_feq32 ||
+              alu->op == nir_op_flt32 || alu->op == nir_op_fge32 ||
+              alu->op == nir_op_ine32 || alu->op == nir_op_ieq32 ||
+              alu->op == nir_op_ilt32 || alu->op == nir_op_ige32 ||
+              alu->op == nir_op_ult32 || alu->op == nir_op_uge32)) {
             /* Re-emit the instruction that generated the Boolean value, but
              * do not store it.  Since this instruction will be conditional,
              * other instructions that want to use the real Boolean value may
@@ -3514,7 +3521,7 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
          emit_discard_jump();
       }
 
-      limit_dispatch_width(16, "Fragment discard/demote not implemented in SIMD32 mode.");
+      limit_dispatch_width(16, "Fragment discard/demote not implemented in SIMD32 mode.\n");
       break;
    }
 
@@ -3590,7 +3597,7 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
                                          FS_OPCODE_INTERPOLATE_AT_SAMPLE,
                                          tmp,
                                          fs_reg(), /* src */
-                                         msg_data,
+                                         component(msg_data, 0),
                                          interpolation);
          } else {
             /* Make a loop that sends a message to the pixel interpolater
@@ -3759,7 +3766,7 @@ fs_visitor::nir_emit_cs_intrinsic(const fs_builder &bld,
       dest = get_nir_dest(instr->dest);
 
    switch (instr->intrinsic) {
-   case nir_intrinsic_barrier:
+   case nir_intrinsic_control_barrier:
       emit_barrier();
       cs_prog_data->uses_barrier = true;
       break;
@@ -4267,7 +4274,6 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
    case nir_intrinsic_scoped_memory_barrier:
    case nir_intrinsic_group_memory_barrier:
    case nir_intrinsic_memory_barrier_shared:
-   case nir_intrinsic_memory_barrier_atomic_counter:
    case nir_intrinsic_memory_barrier_buffer:
    case nir_intrinsic_memory_barrier_image:
    case nir_intrinsic_memory_barrier: {
@@ -4324,6 +4330,9 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
 
       break;
    }
+
+   case nir_intrinsic_memory_barrier_tcs_patch:
+      break;
 
    case nir_intrinsic_shader_clock: {
       /* We cannot do anything if there is an event, so ignore it for now */
