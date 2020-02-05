@@ -776,8 +776,6 @@ vlVaCreateSurfaces2(VADriverContextP ctx, unsigned int format,
       templat.buffer_format = expected_format;
    }
 
-   templat.chroma_format = ChromaToPipe(format);
-
    templat.width = width;
    templat.height = height;
 
