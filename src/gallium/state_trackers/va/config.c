@@ -126,7 +126,7 @@ vlVaGetConfigAttributes(VADriverContextP ctx, VAProfile profile, VAEntrypoint en
            PIPE_VIDEO_ENTRYPOINT_BITSTREAM, PIPE_VIDEO_CAP_SUPPORTED))) {
          switch (attrib_list[i].type) {
          case VAConfigAttribRTFormat:
-            value = VA_RT_FORMAT_YUV420;
+            value = VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_YUV422;
 	    if (pscreen->is_video_format_supported(pscreen, PIPE_FORMAT_P016,
                                                    ProfileToPipe(profile),
                                                    PIPE_VIDEO_ENTRYPOINT_BITSTREAM))
@@ -260,7 +260,7 @@ vlVaCreateConfig(VADriverContextP ctx, VAProfile profile, VAEntrypoint entrypoin
    }
 
    config->profile = p;
-   supported_rt_formats = VA_RT_FORMAT_YUV420;
+   supported_rt_formats = VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_YUV422;
    if (pscreen->is_video_format_supported(pscreen, PIPE_FORMAT_P016, p,
 					  config->entrypoint))
       supported_rt_formats |= VA_RT_FORMAT_YUV420_10BPP;
