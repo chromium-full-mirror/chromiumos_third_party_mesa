@@ -779,6 +779,7 @@ dri2_create_image_from_winsys(__DRIscreen *_screen,
    for (i = (use_lowered ? map->nplanes : num_handles) - 1; i >= 0; i--) {
       struct pipe_resource *tex;
 
+      templ.next = img->texture;
       templ.width0 = width >> map->planes[i].width_shift;
       templ.height0 = height >> map->planes[i].height_shift;
       if (use_lowered)
@@ -796,7 +797,6 @@ dri2_create_image_from_winsys(__DRIscreen *_screen,
          return NULL;
       }
 
-      tex->next = img->texture;
       img->texture = tex;
    }
 
