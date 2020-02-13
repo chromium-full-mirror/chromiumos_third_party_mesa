@@ -28,6 +28,7 @@
 #include "util/u_debug.h"
 #include "intel/blorp/blorp.h"
 #include "intel/dev/gen_debug.h"
+#include "intel/common/gen_l3_config.h"
 #include "intel/compiler/brw_compiler.h"
 #include "iris_batch.h"
 #include "iris_binder.h"
@@ -297,6 +298,7 @@ enum pipe_control_flags
    PIPE_CONTROL_STALL_AT_SCOREBOARD             = (1 << 23),
    PIPE_CONTROL_DEPTH_CACHE_FLUSH               = (1 << 24),
    PIPE_CONTROL_TILE_CACHE_FLUSH                = (1 << 25),
+   PIPE_CONTROL_FLUSH_HDC                       = (1 << 26),
 };
 
 #define PIPE_CONTROL_CACHE_FLUSH_BITS \
@@ -666,13 +668,8 @@ struct iris_context {
       struct u_upload_mgr *uploader;
       struct hash_table *cache;
 
-      unsigned urb_size;
-
       /** Is a GS or TES outputting points or lines? */
       bool output_topology_is_points_or_lines;
-
-      /* Track last VS URB entry size */
-      unsigned last_vs_entry_size;
 
       /**
        * Scratch buffers for various sizes and stages.
@@ -734,6 +731,8 @@ struct iris_context {
        * self-dependencies from resources bound for sampling and rendering.
        */
       enum isl_aux_usage draw_aux_usage[BRW_MAX_DRAW_BUFFERS];
+
+      enum gen_urb_deref_block_size urb_deref_block_size;
 
       /** Bitfield of whether color blending is enabled for RT[i] */
       uint8_t blend_enables;

@@ -77,7 +77,6 @@ class Format(Enum):
       elif self == Format.MTBUF:
          return [('unsigned', 'dfmt', None),
                  ('unsigned', 'nfmt', None),
-                 ('unsigned', 'img_format', None),
                  ('unsigned', 'offset', None),
                  ('bool', 'offen', None),
                  ('bool', 'idxen', 'false'),
@@ -85,12 +84,12 @@ class Format(Enum):
                  ('bool', 'glc', 'false'),
                  ('bool', 'dlc', 'false'),
                  ('bool', 'slc', 'false'),
-                 ('bool', 'tfe', 'false'),
-                 ('bool', 'lds', 'false')]
+                 ('bool', 'tfe', 'false')]
       elif self == Format.MUBUF:
          return [('unsigned', 'offset', None),
                  ('bool', 'offen', None),
                  ('bool', 'idxen', 'false'),
+                 ('bool', 'addr64', 'false'),
                  ('bool', 'disable_wqm', 'false'),
                  ('bool', 'glc', 'false'),
                  ('bool', 'dlc', 'false'),
@@ -187,7 +186,7 @@ class Opcode(object):
 # global dictionary of opcodes
 opcodes = {}
 
-def opcode(name, opcode_gfx7 = -1, opcode_gfx9 = -1, opcode_gfx10 = -1, format = Format.PSEUDO, input_mod = False, output_mod = False, is_atomic = True):
+def opcode(name, opcode_gfx7 = -1, opcode_gfx9 = -1, opcode_gfx10 = -1, format = Format.PSEUDO, input_mod = False, output_mod = False, is_atomic = False):
    assert name not in opcodes
    opcodes[name] = Opcode(name, opcode_gfx7, opcode_gfx9, opcode_gfx10, format, input_mod, output_mod, is_atomic)
 
@@ -221,11 +220,13 @@ opcode("p_cbranch", format=Format.PSEUDO_BRANCH)
 opcode("p_cbranch_z", format=Format.PSEUDO_BRANCH)
 opcode("p_cbranch_nz", format=Format.PSEUDO_BRANCH)
 
-opcode("p_memory_barrier_all", format=Format.PSEUDO_BARRIER)
+opcode("p_memory_barrier_common", format=Format.PSEUDO_BARRIER) # atomic, buffer, image and shared
 opcode("p_memory_barrier_atomic", format=Format.PSEUDO_BARRIER)
 opcode("p_memory_barrier_buffer", format=Format.PSEUDO_BARRIER)
 opcode("p_memory_barrier_image", format=Format.PSEUDO_BARRIER)
 opcode("p_memory_barrier_shared", format=Format.PSEUDO_BARRIER)
+opcode("p_memory_barrier_gs_data", format=Format.PSEUDO_BARRIER)
+opcode("p_memory_barrier_gs_sendmsg", format=Format.PSEUDO_BARRIER)
 
 opcode("p_spill")
 opcode("p_reload")
@@ -585,14 +586,13 @@ SMEM = {
    (  -1,   -1,   -1, 0xac, 0xac, "s_atomic_dec_x2"),
 }
 for (gfx6, gfx7, gfx8, gfx9, gfx10, name) in SMEM:
-   opcode(name, gfx7, gfx9, gfx10, Format.SMEM, is_atomic = "atomic" not in name)
+   opcode(name, gfx7, gfx9, gfx10, Format.SMEM, is_atomic = "atomic" in name)
 
 
 # VOP2 instructions: 2 inputs, 1 output (+ optional vcc)
 # TODO: misses some GFX6_7 opcodes which were shifted to VOP3 in GFX8
 VOP2 = {
   # GFX6, GFX7, GFX8, GFX9, GFX10, name, input/output modifiers
-   (0x00, 0x00, 0x00, 0x00, 0x01, "v_cndmask_b32", False),
    (0x01, 0x01,   -1,   -1,   -1, "v_readlane_b32", False),
    (0x02, 0x02,   -1,   -1,   -1, "v_writelane_b32", False),
    (0x03, 0x03, 0x01, 0x01, 0x03, "v_add_f32", True),
@@ -666,6 +666,11 @@ VOP2 = {
 }
 for (gfx6, gfx7, gfx8, gfx9, gfx10, name, modifiers) in VOP2:
    opcode(name, gfx7, gfx9, gfx10, Format.VOP2, modifiers, modifiers)
+
+if True:
+    # v_cndmask_b32 can use input modifiers but not output modifiers
+    (gfx6, gfx7, gfx8, gfx9, gfx10, name) = (0x00, 0x00, 0x00, 0x00, 0x01, "v_cndmask_b32")
+    opcode(name, gfx7, gfx9, gfx10, Format.VOP2, True, False)
 
 
 # VOP1 instructions: instructions with 1 input and 1 output
@@ -1264,7 +1269,7 @@ MUBUF = {
    (  -1,   -1,   -1,   -1, 0x72, "buffer_gl1_inv"),
 }
 for (gfx6, gfx7, gfx8, gfx9, gfx10, name) in MUBUF:
-    opcode(name, gfx7, gfx9, gfx10, Format.MUBUF, is_atomic = "atomic" not in name)
+    opcode(name, gfx7, gfx9, gfx10, Format.MUBUF, is_atomic = "atomic" in name)
 
 MTBUF = {
    (0x00, 0x00, 0x00, 0x00, 0x00, "tbuffer_load_format_x"),
@@ -1328,7 +1333,7 @@ IMAGE_ATOMIC = {
 # (gfx6, gfx7, gfx8, gfx9, gfx10, name) = (gfx6, gfx7, gfx89, gfx89, ???, name)
 # gfx7 and gfx10 opcodes are the same here
 for (gfx6, gfx7, gfx89, name) in IMAGE_ATOMIC:
-   opcode(name, gfx7, gfx89, gfx7, Format.MIMG, is_atomic = False)
+   opcode(name, gfx7, gfx89, gfx7, Format.MIMG, is_atomic = True)
 
 IMAGE_SAMPLE = {
    (0x20, "image_sample"),
@@ -1468,7 +1473,7 @@ FLAT = {
    (0x60,   -1, 0x60, "flat_atomic_fmax_x2"),
 }
 for (gfx7, gfx8, gfx10, name) in FLAT:
-    opcode(name, gfx7, gfx8, gfx10, Format.FLAT, is_atomic = "atomic" not in name)
+    opcode(name, gfx7, gfx8, gfx10, Format.FLAT, is_atomic = "atomic" in name)
 
 GLOBAL = {
    #GFX8_9, GFX10
@@ -1528,7 +1533,7 @@ GLOBAL = {
    (  -1, 0x60, "global_atomic_fmax_x2"),
 }
 for (gfx8, gfx10, name) in GLOBAL:
-    opcode(name, -1, gfx8, gfx10, Format.GLOBAL, is_atomic = "atomic" not in name)
+    opcode(name, -1, gfx8, gfx10, Format.GLOBAL, is_atomic = "atomic" in name)
 
 SCRATCH = {
    #GFX8_9, GFX10

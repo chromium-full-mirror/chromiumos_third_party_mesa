@@ -1,8 +1,5 @@
 /*
- * Copyright (C) 2005-2007  Brian Paul   All Rights Reserved.
- * Copyright (C) 2008  VMware, Inc.   All Rights Reserved.
- * Copyright © 2010 Intel Corporation
- * Copyright © 2011 Bryan Cain
+ * Copyright © 2015 Intel Corporation
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -20,28 +17,46 @@
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
  */
 
-#ifndef __ST_GLSL_TYPES_H__
-#define __ST_GLSL_TYPES_H__
+#include "util/macros.h"
+#include "dev/gen_device_info.h"
 
-#include "compiler/glsl_types.h"
+enum gen {
+   GEN4  = (1 << 0),
+   GEN45 = (1 << 1),
+   GEN5  = (1 << 2),
+   GEN6  = (1 << 3),
+   GEN7  = (1 << 4),
+   GEN75 = (1 << 5),
+   GEN8  = (1 << 6),
+   GEN9  = (1 << 7),
+   GEN10 = (1 << 8),
+   GEN11 = (1 << 9),
+   GEN12 = (1 << 10),
+   GEN_ALL = ~0
+};
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#define GEN_LT(gen) ((gen) - 1)
+#define GEN_GE(gen) (~GEN_LT(gen))
+#define GEN_LE(gen) (GEN_LT(gen) | (gen))
 
-int st_glsl_storage_type_size(const struct glsl_type *type,
-                              bool is_bindless);
-
-int st_glsl_uniforms_type_size(const struct glsl_type *type, bool bindless);
-
-int st_glsl_type_dword_size(const struct glsl_type *type, bool bindless);
-
-#ifdef __cplusplus
+static enum gen
+gen_from_devinfo(const struct gen_device_info *devinfo)
+{
+   switch (devinfo->gen) {
+   case 4: return devinfo->is_g4x ? GEN45 : GEN4;
+   case 5: return GEN5;
+   case 6: return GEN6;
+   case 7: return devinfo->is_haswell ? GEN75 : GEN7;
+   case 8: return GEN8;
+   case 9: return GEN9;
+   case 10: return GEN10;
+   case 11: return GEN11;
+   case 12: return GEN12;
+   default:
+      unreachable("not reached");
+   }
 }
-#endif
-
-#endif /* __ST_GLSL_TYPES_H__ */

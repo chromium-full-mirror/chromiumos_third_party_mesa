@@ -47,6 +47,7 @@
 #include "pan_resource.h"
 #include "pan_util.h"
 #include "pan_tiling.h"
+#include "panfrost-quirks.h"
 
 void
 panfrost_resource_reset_damage(struct panfrost_resource *pres)
@@ -314,6 +315,9 @@ panfrost_setup_slices(struct panfrost_resource *pres, size_t *bo_size)
                 /* Compute the would-be stride */
                 unsigned stride = bytes_per_pixel * effective_width;
 
+                if (util_format_is_compressed(res->format))
+                        stride /= 4;
+
                 /* ..but cache-line align it for performance */
                 if (can_align_stride && pres->layout == PAN_LINEAR)
                         stride = ALIGN_POT(stride, 64);
@@ -395,14 +399,18 @@ panfrost_resource_create_bo(struct panfrost_screen *screen, struct panfrost_reso
          * (a combination of) one of the following */
 
         const unsigned valid_binding =
+                PIPE_BIND_DEPTH_STENCIL |
                 PIPE_BIND_RENDER_TARGET |
                 PIPE_BIND_BLENDABLE |
                 PIPE_BIND_SAMPLER_VIEW |
                 PIPE_BIND_DISPLAY_TARGET;
 
+        unsigned bpp = util_format_get_blocksizebits(res->format);
         bool is_2d = (res->target == PIPE_TEXTURE_2D);
+        bool is_sane_bpp = bpp == 8 || bpp == 16 || bpp == 32 || bpp == 64 || bpp == 128;
         bool should_tile = (res->usage != PIPE_USAGE_STREAM);
-        bool can_tile = is_2d && ((res->bind & ~valid_binding) == 0);
+        bool must_tile = (res->bind & PIPE_BIND_DEPTH_STENCIL) && (screen->quirks & MIDGARD_SFBD);
+        bool can_tile = is_2d && is_sane_bpp && ((res->bind & ~valid_binding) == 0);
 
         /* FBOs we would like to checksum, if at all possible */
         bool can_checksum = !(res->bind & ~valid_binding);
@@ -411,7 +419,8 @@ panfrost_resource_create_bo(struct panfrost_screen *screen, struct panfrost_reso
         pres->checksummed = can_checksum && should_checksum;
 
         /* Set the layout appropriately */
-        pres->layout = (can_tile && should_tile) ? PAN_TILED : PAN_LINEAR;
+        assert(!(must_tile && !can_tile)); /* must_tile => can_tile */
+        pres->layout = ((can_tile && should_tile) || must_tile) ? PAN_TILED : PAN_LINEAR;
 
         size_t bo_size;
 
@@ -546,6 +555,15 @@ panfrost_resource_destroy(struct pipe_screen *screen,
         ralloc_free(rsrc);
 }
 
+static unsigned
+panfrost_get_layer_stride(struct panfrost_resource *rsrc, unsigned level)
+{
+        if (rsrc->base.target == PIPE_TEXTURE_3D)
+                return rsrc->slices[level].size0;
+        else
+                return rsrc->cubemap_stride;
+}
+
 static void *
 panfrost_transfer_map(struct pipe_context *pctx,
                       struct pipe_resource *resource,
@@ -660,20 +678,17 @@ panfrost_transfer_map(struct pipe_context *pctx,
                                 panfrost_load_tiled_image(
                                         transfer->map,
                                         bo->cpu + rsrc->slices[level].offset,
-                                        box,
+                                        box->x, box->y, box->width, box->height,
                                         transfer->base.stride,
                                         rsrc->slices[level].stride,
-                                        util_format_get_blocksize(resource->format));
+                                        resource->format);
                         }
                 }
 
                 return transfer->map;
         } else {
                 transfer->base.stride = rsrc->slices[level].stride;
-                if (resource->target == PIPE_TEXTURE_3D)
-                        transfer->base.layer_stride = rsrc->slices[level].size0;
-                else
-                        transfer->base.layer_stride = rsrc->cubemap_stride;
+                transfer->base.layer_stride = panfrost_get_layer_stride(rsrc, level);
 
                 /* By mapping direct-write, we're implicitly already
                  * initialized (maybe), so be conservative */
@@ -714,10 +729,11 @@ panfrost_transfer_unmap(struct pipe_context *pctx,
                                 panfrost_store_tiled_image(
                                         bo->cpu + prsrc->slices[transfer->level].offset,
                                         trans->map,
-                                        &transfer->box,
+                                        transfer->box.x, transfer->box.y,
+                                        transfer->box.width, transfer->box.height,
                                         prsrc->slices[transfer->level].stride,
                                         transfer->stride,
-                                        util_format_get_blocksize(prsrc->base.format));
+                                        prsrc->base.format);
                         }
                 }
         }
@@ -820,7 +836,7 @@ panfrost_get_texture_address(
         unsigned level, unsigned face)
 {
         unsigned level_offset = rsrc->slices[level].offset;
-        unsigned face_offset = face * rsrc->cubemap_stride;
+        unsigned face_offset = face * panfrost_get_layer_stride(rsrc, level);
 
         return rsrc->bo->gpu + level_offset + face_offset;
 }

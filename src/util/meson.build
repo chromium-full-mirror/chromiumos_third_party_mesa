@@ -45,6 +45,7 @@ files_mesa_util = files(
   'double.h',
   'fast_idiv_by_const.c',
   'fast_idiv_by_const.h',
+  'fnv1a.h',
   'format_r11g11b10f.h',
   'format_rgb9e5.h',
   'format_srgb.h',
@@ -116,6 +117,7 @@ files_mesa_util = files(
   'u_cpu_detect.h',
   'vma.c',
   'vma.h',
+  'xxhash.h',
 )
 
 files_drirc = files('00-mesa-defaults.conf')
@@ -246,6 +248,7 @@ if with_tests
       dependencies : [dep_m],
     ),
     suite : ['util'],
+    should_fail : meson.get_cross_property('xfail', '').contains('roundeven'),
   )
 
   # FIXME: this test crashes on windows
@@ -288,4 +291,5 @@ if with_tests
   subdir('tests/set')
   subdir('tests/sparse_array')
   subdir('tests/format')
+  subdir('tests/vector')
 endif

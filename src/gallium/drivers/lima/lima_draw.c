@@ -680,6 +680,8 @@ lima_clear(struct pipe_context *pctx, unsigned buffers,
 
    lima_flush(ctx);
 
+   ctx->resolve |= buffers;
+
    /* no need to reload if cleared */
    if (ctx->framebuffer.base.nr_cbufs && (buffers & PIPE_CLEAR_COLOR0)) {
       struct lima_surface *surf = lima_surface(ctx->framebuffer.base.cbufs[0]);
@@ -948,44 +950,106 @@ lima_blend_func(enum pipe_blend_func pipe)
 }
 
 static int
-lima_blend_factor(enum pipe_blendfactor pipe)
+lima_blend_factor_has_alpha(enum pipe_blendfactor pipe)
 {
+   /* Bit 4 is set if the blendfactor uses alpha */
    switch (pipe) {
-   case PIPE_BLENDFACTOR_ONE:
-      return 11;
-   case PIPE_BLENDFACTOR_SRC_COLOR:
-      return 0;
    case PIPE_BLENDFACTOR_SRC_ALPHA:
-      return 16;
    case PIPE_BLENDFACTOR_DST_ALPHA:
-      return 17;
-   case PIPE_BLENDFACTOR_DST_COLOR:
-      return 1;
-   case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
-      return 7;
-   case PIPE_BLENDFACTOR_CONST_COLOR:
-      return 2;
    case PIPE_BLENDFACTOR_CONST_ALPHA:
-      return 18;
-   case PIPE_BLENDFACTOR_ZERO:
-      return 3;
-   case PIPE_BLENDFACTOR_INV_SRC_COLOR:
-      return 8;
    case PIPE_BLENDFACTOR_INV_SRC_ALPHA:
-      return 24;
    case PIPE_BLENDFACTOR_INV_DST_ALPHA:
-      return 25;
-   case PIPE_BLENDFACTOR_INV_DST_COLOR:
-      return 9;
-   case PIPE_BLENDFACTOR_INV_CONST_COLOR:
-      return 10;
    case PIPE_BLENDFACTOR_INV_CONST_ALPHA:
-      return 26;
+      return 1;
+
+   case PIPE_BLENDFACTOR_SRC_COLOR:
+   case PIPE_BLENDFACTOR_INV_SRC_COLOR:
+   case PIPE_BLENDFACTOR_DST_COLOR:
+   case PIPE_BLENDFACTOR_INV_DST_COLOR:
+   case PIPE_BLENDFACTOR_CONST_COLOR:
+   case PIPE_BLENDFACTOR_INV_CONST_COLOR:
+   case PIPE_BLENDFACTOR_ZERO:
+   case PIPE_BLENDFACTOR_ONE:
+   case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
+      return 0;
+
    case PIPE_BLENDFACTOR_SRC1_COLOR:
    case PIPE_BLENDFACTOR_SRC1_ALPHA:
    case PIPE_BLENDFACTOR_INV_SRC1_COLOR:
    case PIPE_BLENDFACTOR_INV_SRC1_ALPHA:
-      return -1; /* not support */
+      return -1; /* not supported */
+   }
+   return -1;
+}
+
+static int
+lima_blend_factor_is_inv(enum pipe_blendfactor pipe)
+{
+   /* Bit 3 is set if the blendfactor type is inverted */
+   switch (pipe) {
+   case PIPE_BLENDFACTOR_INV_SRC_COLOR:
+   case PIPE_BLENDFACTOR_INV_SRC_ALPHA:
+   case PIPE_BLENDFACTOR_INV_DST_COLOR:
+   case PIPE_BLENDFACTOR_INV_DST_ALPHA:
+   case PIPE_BLENDFACTOR_INV_CONST_COLOR:
+   case PIPE_BLENDFACTOR_INV_CONST_ALPHA:
+   case PIPE_BLENDFACTOR_ONE:
+      return 1;
+
+   case PIPE_BLENDFACTOR_SRC_COLOR:
+   case PIPE_BLENDFACTOR_SRC_ALPHA:
+   case PIPE_BLENDFACTOR_DST_COLOR:
+   case PIPE_BLENDFACTOR_DST_ALPHA:
+   case PIPE_BLENDFACTOR_CONST_COLOR:
+   case PIPE_BLENDFACTOR_CONST_ALPHA:
+   case PIPE_BLENDFACTOR_ZERO:
+   case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
+      return 0;
+
+   case PIPE_BLENDFACTOR_SRC1_COLOR:
+   case PIPE_BLENDFACTOR_SRC1_ALPHA:
+   case PIPE_BLENDFACTOR_INV_SRC1_COLOR:
+   case PIPE_BLENDFACTOR_INV_SRC1_ALPHA:
+      return -1; /* not supported */
+   }
+   return -1;
+}
+
+static int
+lima_blend_factor(enum pipe_blendfactor pipe)
+{
+   /* Bits 0-2 indicate the blendfactor type */
+   switch (pipe) {
+   case PIPE_BLENDFACTOR_SRC_COLOR:
+   case PIPE_BLENDFACTOR_SRC_ALPHA:
+   case PIPE_BLENDFACTOR_INV_SRC_COLOR:
+   case PIPE_BLENDFACTOR_INV_SRC_ALPHA:
+      return 0;
+
+   case PIPE_BLENDFACTOR_DST_COLOR:
+   case PIPE_BLENDFACTOR_DST_ALPHA:
+   case PIPE_BLENDFACTOR_INV_DST_COLOR:
+   case PIPE_BLENDFACTOR_INV_DST_ALPHA:
+      return 1;
+
+   case PIPE_BLENDFACTOR_CONST_COLOR:
+   case PIPE_BLENDFACTOR_CONST_ALPHA:
+   case PIPE_BLENDFACTOR_INV_CONST_COLOR:
+   case PIPE_BLENDFACTOR_INV_CONST_ALPHA:
+      return 2;
+
+   case PIPE_BLENDFACTOR_ZERO:
+   case PIPE_BLENDFACTOR_ONE:
+      return 3;
+
+   case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
+      return 4;
+
+   case PIPE_BLENDFACTOR_SRC1_COLOR:
+   case PIPE_BLENDFACTOR_SRC1_ALPHA:
+   case PIPE_BLENDFACTOR_INV_SRC1_COLOR:
+   case PIPE_BLENDFACTOR_INV_SRC1_ALPHA:
+      return -1; /* not supported */
    }
    return -1;
 }
@@ -995,13 +1059,29 @@ lima_calculate_alpha_blend(enum pipe_blend_func rgb_func, enum pipe_blend_func a
                            enum pipe_blendfactor rgb_src_factor, enum pipe_blendfactor rgb_dst_factor,
                            enum pipe_blendfactor alpha_src_factor, enum pipe_blendfactor alpha_dst_factor)
 {
+   /* PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE has to be changed to PIPE_BLENDFACTOR_ONE
+    * if it is set for alpha_src.
+    */
+   if (alpha_src_factor == PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE)
+      alpha_src_factor = PIPE_BLENDFACTOR_ONE;
+
    return lima_blend_func(rgb_func) |
       (lima_blend_func(alpha_func) << 3) |
+
       (lima_blend_factor(rgb_src_factor) << 6) |
+      (lima_blend_factor_is_inv(rgb_src_factor) << 9) |
+      (lima_blend_factor_has_alpha(rgb_src_factor) << 10) |
+
       (lima_blend_factor(rgb_dst_factor) << 11) |
-      ((lima_blend_factor(alpha_src_factor) & 0xF) << 16) |
-      ((lima_blend_factor(alpha_dst_factor) & 0xF) << 20) |
-      0x0C000000; /* need check if this GLESv1 glAlphaFunc */
+      (lima_blend_factor_is_inv(rgb_dst_factor) << 14) |
+      (lima_blend_factor_has_alpha(rgb_dst_factor) << 15) |
+
+      (lima_blend_factor(alpha_src_factor) << 16) |
+      (lima_blend_factor_is_inv(alpha_src_factor) << 19) |
+
+      (lima_blend_factor(alpha_dst_factor) << 20) |
+      (lima_blend_factor_is_inv(alpha_dst_factor) << 23) |
+      0x0C000000; /* need to check if this is GLESv1 glAlphaFunc */
 }
 
 static int
@@ -1052,6 +1132,7 @@ lima_calculate_depth_test(struct pipe_depth_state *depth, struct pipe_rasterizer
 static void
 lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *info)
 {
+   struct lima_fs_shader_state *fs = ctx->fs;
    struct lima_render_state *render =
       lima_ctx_buff_alloc(ctx, lima_ctx_buff_pp_plb_rsw,
                           sizeof(*render));
@@ -1090,9 +1171,17 @@ lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *in
    struct pipe_depth_state *depth = &ctx->zsa->base.depth;
    render->depth_test = lima_calculate_depth_test(depth, rst);
 
+   ushort far, near;
+
+   near = float_to_ushort(ctx->viewport.near);
+   far = float_to_ushort(ctx->viewport.far);
+
+   /* Subtract epsilon from 'near' if far == near. Make sure we don't get overflow */
+   if ((far == near) && (near != 0))
+         near--;
+
    /* overlap with plbu? any place can remove one? */
-   render->depth_range = float_to_ushort(ctx->viewport.near) |
-      (float_to_ushort(ctx->viewport.far) << 16);
+   render->depth_range = near | (far << 16);
 
    struct pipe_stencil_state *stencil = ctx->zsa->base.stencil;
    struct pipe_stencil_ref *ref = &ctx->stencil_ref;
@@ -1151,10 +1240,14 @@ lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *in
    render->textures_address = 0x00000000;
 
    /* more investigation */
-   render->aux0 = 0x00000300 | (ctx->vs->varying_stride >> 3);
+   render->aux0 = 0x00000100 | (ctx->vs->varying_stride >> 3);
    render->aux1 = 0x00001000;
    if (ctx->blend->base.dither)
       render->aux1 |= 0x00002000;
+
+   /* Enable Early-Z if shader doesn't have discard */
+   if (!fs->uses_discard)
+      render->aux0 |= 0x200;
 
    if (ctx->tex_stateobj.num_samplers) {
       render->textures_address =
@@ -1439,6 +1532,17 @@ lima_draw_vbo_update(struct pipe_context *pctx,
       ctx->gp_output = NULL;
    }
 
+   if (ctx->framebuffer.base.zsbuf) {
+      if (ctx->zsa->base.depth.enabled)
+         ctx->resolve |= PIPE_CLEAR_DEPTH;
+      if (ctx->zsa->base.stencil[0].enabled ||
+          ctx->zsa->base.stencil[1].enabled)
+         ctx->resolve |= PIPE_CLEAR_STENCIL;
+   }
+
+   if (ctx->framebuffer.base.nr_cbufs)
+      ctx->resolve |= PIPE_CLEAR_COLOR0;
+
    ctx->dirty = 0;
 }
 
@@ -1636,14 +1740,11 @@ lima_pack_pp_frame_reg(struct lima_context *ctx, uint32_t *frame_reg,
    frame->blocking = (fb->shift_min << 28) | (fb->shift_h << 16) | fb->shift_w;
    frame->foureight = 0x8888;
 
-   if (fb->base.nr_cbufs)
+   if (fb->base.nr_cbufs && (ctx->resolve & PIPE_CLEAR_COLOR0))
       lima_pack_wb_cbuf_reg(ctx, wb_reg, wb_idx++);
 
-   /* Mali4x0 can use on-tile buffer for depth/stencil, so to save some
-    * memory bandwidth don't write depth/stencil back to memory if we're
-    * rendering to scanout
-    */
-   if (!lima_is_scanout(ctx) && fb->base.zsbuf)
+   if (fb->base.zsbuf &&
+       (ctx->resolve & (PIPE_CLEAR_DEPTH | PIPE_CLEAR_STENCIL)))
       lima_pack_wb_zsbuf_reg(ctx, wb_reg, wb_idx++);
 }
 
@@ -1691,7 +1792,7 @@ _lima_flush(struct lima_context *ctx, bool end_of_frame)
    gp_frame_reg->plbu_cmd_start = plbu_cmd_va;
    gp_frame_reg->plbu_cmd_end = plbu_cmd_va + plbu_cmd_size;
    gp_frame_reg->tile_heap_start = ctx->gp_tile_heap[ctx->plb_index]->va;
-   gp_frame_reg->tile_heap_end = ctx->gp_tile_heap[ctx->plb_index]->va + gp_tile_heap_size;
+   gp_frame_reg->tile_heap_end = ctx->gp_tile_heap[ctx->plb_index]->va + ctx->gp_tile_heap_size;
 
    lima_dump_command_stream_print(
       &gp_frame, sizeof(gp_frame), false, "add gp frame\n");
@@ -1799,6 +1900,8 @@ _lima_flush(struct lima_context *ctx, bool end_of_frame)
 
    ctx->damage_rect.minx = ctx->damage_rect.miny = 0xffff;
    ctx->damage_rect.maxx = ctx->damage_rect.maxy = 0;
+
+   ctx->resolve = 0;
 
    lima_dump_file_next();
 }

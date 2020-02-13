@@ -126,7 +126,7 @@ static void si_create_compute_state_async(void *job, int thread_index)
 	assert(program->ir_type == PIPE_SHADER_IR_NIR);
 	si_nir_scan_shader(sel->nir, &sel->info);
 
-	/* Store the declared LDS size into tgsi_shader_info for the shader
+	/* Store the declared LDS size into si_shader_info for the shader
 	 * cache to include it.
 	 */
 	sel->info.properties[TGSI_PROPERTY_CS_LOCAL_SIZE] = program->local_size;
@@ -159,7 +159,7 @@ static void si_create_compute_state_async(void *job, int thread_index)
 	} else {
 		simple_mtx_unlock(&sscreen->shader_cache_mutex);
 
-		if (!si_shader_create(sscreen, compiler, &program->shader, debug)) {
+		if (!si_create_shader_variant(sscreen, compiler, &program->shader, debug)) {
 			program->shader.compilation_failed = true;
 			return;
 		}
@@ -213,7 +213,7 @@ static void *si_create_compute_state(
 	struct si_compute *program = CALLOC_STRUCT(si_compute);
 	struct si_shader_selector *sel = &program->sel;
 
-	pipe_reference_init(&sel->reference, 1);
+	pipe_reference_init(&sel->base.reference, 1);
 	sel->type = PIPE_SHADER_COMPUTE;
 	sel->screen = sscreen;
 	program->shader.selector = &program->sel;

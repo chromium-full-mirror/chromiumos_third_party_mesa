@@ -31,7 +31,7 @@ import xml.etree.cElementTree as et
 
 from mako.template import Template
 
-MAX_API_VERSION = '1.1.107'
+MAX_API_VERSION = '1.2.128'
 
 class Extension:
     def __init__(self, name, ext_version, enable):
@@ -99,6 +99,7 @@ EXTENSIONS = [
     Extension('VK_KHR_surface',                          25, 'RADV_HAS_SURFACE'),
     Extension('VK_KHR_surface_protected_capabilities',    1, 'RADV_HAS_SURFACE'),
     Extension('VK_KHR_swapchain',                        68, 'RADV_HAS_SURFACE'),
+    Extension('VK_KHR_swapchain_mutable_format',          1, 'RADV_HAS_SURFACE'),
     Extension('VK_KHR_timeline_semaphore',                2, 'device->rad_info.has_syncobj_wait_for_submit'),
     Extension('VK_KHR_uniform_buffer_standard_layout',    1, True),
     Extension('VK_KHR_variable_pointers',                 1, True),
@@ -127,13 +128,16 @@ EXTENSIONS = [
     Extension('VK_EXT_host_query_reset',                  1, True),
     Extension('VK_EXT_index_type_uint8',                  1, 'device->rad_info.chip_class >= GFX8'),
     Extension('VK_EXT_inline_uniform_block',              1, True),
+    # Disable line rasterization on GFX9 until the CTS failures have been resolved.
+    Extension('VK_EXT_line_rasterization',                1, 'device->rad_info.chip_class != GFX9'),
     Extension('VK_EXT_memory_budget',                     1, True),
     Extension('VK_EXT_memory_priority',                   1, True),
     Extension('VK_EXT_pci_bus_info',                      2, True),
     Extension('VK_EXT_pipeline_creation_feedback',        1, True),
     Extension('VK_EXT_post_depth_coverage',               1, 'device->rad_info.chip_class >= GFX10'),
     Extension('VK_EXT_queue_family_foreign',              1, True),
-    Extension('VK_EXT_sample_locations',                  1, True),
+    # Disable sample locations on GFX10 until the CTS failures have been resolved.
+    Extension('VK_EXT_sample_locations',                  1, 'device->rad_info.chip_class < GFX10'),
     Extension('VK_EXT_sampler_filter_minmax',             1, 'device->rad_info.chip_class >= GFX7'),
     Extension('VK_EXT_scalar_block_layout',               1, 'device->rad_info.chip_class >= GFX7'),
     Extension('VK_EXT_shader_demote_to_helper_invocation',1, 'device->use_aco'),
@@ -157,7 +161,9 @@ EXTENSIONS = [
     Extension('VK_AMD_shader_ballot',                     1, 'device->use_shader_ballot'),
     Extension('VK_AMD_shader_core_properties',            1, True),
     Extension('VK_AMD_shader_core_properties2',           1, True),
+    Extension('VK_AMD_shader_explicit_vertex_parameter',  1, True),
     Extension('VK_AMD_shader_image_load_store_lod',       1, True),
+    Extension('VK_AMD_shader_fragment_mask',              1, True),
     Extension('VK_AMD_shader_info',                       1, True),
     Extension('VK_AMD_shader_trinary_minmax',             1, True),
     Extension('VK_GOOGLE_decorate_string',                1, True),

@@ -658,12 +658,15 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
    }
 
    if (nir->info.stage == MESA_SHADER_GEOMETRY)
-      OPT(nir_lower_gs_intrinsics);
+      OPT(nir_lower_gs_intrinsics, false);
 
    /* See also brw_nir_trig_workarounds.py */
    if (compiler->precise_trig &&
        !(devinfo->gen >= 10 || devinfo->is_kabylake))
       OPT(brw_nir_apply_trig_workarounds);
+
+   if (devinfo->gen >= 12)
+      OPT(brw_nir_clamp_image_1d_2d_array_sizes);
 
    static const nir_lower_tex_options tex_options = {
       .lower_txp = ~0,
@@ -713,6 +716,7 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
       .lower_to_scalar = true,
       .lower_vote_trivial = !is_scalar,
       .lower_shuffle = true,
+      .lower_quad_broadcast_dynamic = true,
    };
    OPT(nir_lower_subgroups, &subgroups_options);
 

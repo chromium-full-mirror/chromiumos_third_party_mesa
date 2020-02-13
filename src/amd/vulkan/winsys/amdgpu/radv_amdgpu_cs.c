@@ -1119,6 +1119,7 @@ static int radv_amdgpu_winsys_cs_submit_sysmem(struct radeon_winsys_ctx *_ctx,
 
 				ibs[j].size = size;
 				ibs[j].ib_mc_address = radv_buffer_get_va(bos[j]);
+				ibs[j].flags = 0;
 			}
 
 			cnt++;
@@ -1163,6 +1164,7 @@ static int radv_amdgpu_winsys_cs_submit_sysmem(struct radeon_winsys_ctx *_ctx,
 
 			ibs[0].size = size;
 			ibs[0].ib_mc_address = radv_buffer_get_va(bos[0]);
+			ibs[0].flags = 0;
 		}
 
 		r = radv_amdgpu_create_bo_list(cs0->ws, &cs_array[i], cnt,
@@ -1232,6 +1234,9 @@ static int radv_amdgpu_winsys_cs_submit(struct radeon_winsys_ctx *_ctx,
 	struct radv_amdgpu_cs *cs = radv_amdgpu_cs(cs_array[0]);
 	struct radv_amdgpu_ctx *ctx = radv_amdgpu_ctx(_ctx);
 	int ret;
+
+	if (cs->ws->noop)
+		abort();
 
 	assert(sem_info);
 	if (!cs->ws->use_ib_bos) {

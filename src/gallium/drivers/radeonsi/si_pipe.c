@@ -29,7 +29,6 @@
 #include "si_compute.h"
 #include "sid.h"
 
-#include "ac_llvm_util.h"
 #include "radeon/radeon_uvd.h"
 #include "util/disk_cache.h"
 #include "util/u_log.h"
@@ -45,8 +44,6 @@
 #include "gallium/winsys/amdgpu/drm/amdgpu_public.h"
 #include <xf86drm.h>
 
-#include <llvm/Config/llvm-config.h>
-
 static struct pipe_context *si_create_context(struct pipe_screen *screen,
                                               unsigned flags);
 
@@ -59,7 +56,7 @@ static const struct debug_named_value debug_options[] = {
 	{ "tes", DBG(TES), "Print tessellation evaluation shaders" },
 	{ "cs", DBG(CS), "Print compute shaders" },
 	{ "noir", DBG(NO_IR), "Don't print the LLVM IR"},
-	{ "notgsi", DBG(NO_TGSI), "Don't print the TGSI"},
+	{ "nonir", DBG(NO_NIR), "Don't print NIR when printing shaders"},
 	{ "noasm", DBG(NO_ASM), "Don't print disassembled shaders"},
 	{ "preoptir", DBG(PREOPT_IR), "Print the LLVM IR before initial optimizations" },
 
@@ -83,6 +80,7 @@ static const struct debug_named_value debug_options[] = {
 	{ "tex", DBG(TEX), "Print texture info" },
 	{ "compute", DBG(COMPUTE), "Print compute info" },
 	{ "vm", DBG(VM), "Print virtual addresses when creating resources" },
+	{ "cache_stats", DBG(CACHE_STATS), "Print shader cache statistics." },
 
 	/* Driver options: */
 	{ "forcedma", DBG(FORCE_SDMA), "Use SDMA for all operations when possible." },
@@ -97,6 +95,8 @@ static const struct debug_named_value debug_options[] = {
 	/* 3D engine options: */
 	{ "nogfx", DBG(NO_GFX), "Disable graphics. Only multimedia compute paths can be used." },
 	{ "nongg", DBG(NO_NGG), "Disable NGG and use the legacy pipeline." },
+	{ "nggc", DBG(ALWAYS_NGG_CULLING), "Always use NGG culling even when it can hurt." },
+	{ "nonggc", DBG(NO_NGG_CULLING), "Disable NGG culling." },
 	{ "alwayspd", DBG(ALWAYS_PD), "Always enable the primitive discard compute shader." },
 	{ "pd", DBG(PD), "Enable the primitive discard compute shader for large draw calls." },
 	{ "nopd", DBG(NO_PD), "Disable the primitive discard compute shader." },
@@ -116,6 +116,10 @@ static const struct debug_named_value debug_options[] = {
 	{ "nodccmsaa", DBG(NO_DCC_MSAA), "Disable DCC for MSAA" },
 	{ "nofmask", DBG(NO_FMASK), "Disable MSAA compression" },
 
+	DEBUG_NAMED_VALUE_END /* must be last */
+};
+
+static const struct debug_named_value test_options[] = {
 	/* Tests: */
 	{ "testdma", DBG(TEST_DMA), "Invoke SDMA tests and exit." },
 	{ "testvmfaultcp", DBG(TEST_VMFAULT_CP), "Invoke a CP VM fault test and exit." },
@@ -193,6 +197,7 @@ static void si_destroy_context(struct pipe_context *context)
 	si_resource_reference(&sctx->scratch_buffer, NULL);
 	si_resource_reference(&sctx->compute_scratch_buffer, NULL);
 	si_resource_reference(&sctx->wait_mem_scratch, NULL);
+	si_resource_reference(&sctx->small_prim_cull_info_buf, NULL);
 
 	si_pm4_free_state(sctx, sctx->init_config, ~0);
 	if (sctx->init_config_gs_rings)
@@ -420,6 +425,7 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
                                               unsigned flags)
 {
 	struct si_screen* sscreen = (struct si_screen *)screen;
+	STATIC_ASSERT(DBG_COUNT <= 64);
 
 	/* Don't create a context if it's not compute-only and hw is compute-only. */
 	if (!sscreen->info.has_graphics &&
@@ -771,6 +777,18 @@ static void si_destroy_screen(struct pipe_screen* pscreen)
 	if (!sscreen->ws->unref(sscreen->ws))
 		return;
 
+	if (sscreen->debug_flags & DBG(CACHE_STATS)) {
+		printf("live shader cache:   hits = %u, misses = %u\n",
+		       sscreen->live_shader_cache.hits,
+		       sscreen->live_shader_cache.misses);
+		printf("memory shader cache: hits = %u, misses = %u\n",
+		       sscreen->num_memory_shader_cache_hits,
+		       sscreen->num_memory_shader_cache_misses);
+		printf("disk shader cache:   hits = %u, misses = %u\n",
+		       sscreen->num_disk_shader_cache_hits,
+		       sscreen->num_disk_shader_cache_misses);
+	}
+
 	simple_mtx_destroy(&sscreen->aux_context_lock);
 
 	struct u_log_context *aux_log = ((struct si_context *)sscreen->aux_context)->log;
@@ -815,6 +833,7 @@ static void si_destroy_screen(struct pipe_screen* pscreen)
 	slab_destroy_parent(&sscreen->pool_transfers);
 
 	disk_cache_destroy(sscreen->disk_shader_cache);
+	util_live_shader_cache_deinit(&sscreen->live_shader_cache);
 	sscreen->ws->destroy(sscreen->ws);
 	FREE(sscreen);
 }
@@ -825,7 +844,7 @@ static void si_init_gs_info(struct si_screen *sscreen)
 							sscreen->info.family);
 }
 
-static void si_test_vmfault(struct si_screen *sscreen)
+static void si_test_vmfault(struct si_screen *sscreen, uint64_t test_flags)
 {
 	struct pipe_context *ctx = sscreen->aux_context;
 	struct si_context *sctx = (struct si_context *)ctx;
@@ -839,18 +858,18 @@ static void si_test_vmfault(struct si_screen *sscreen)
 
 	si_resource(buf)->gpu_address = 0; /* cause a VM fault */
 
-	if (sscreen->debug_flags & DBG(TEST_VMFAULT_CP)) {
+	if (test_flags & DBG(TEST_VMFAULT_CP)) {
 		si_cp_dma_copy_buffer(sctx, buf, buf, 0, 4, 4, 0,
 				      SI_COHERENCY_NONE, L2_BYPASS);
 		ctx->flush(ctx, NULL, 0);
 		puts("VM fault test: CP - done.");
 	}
-	if (sscreen->debug_flags & DBG(TEST_VMFAULT_SDMA)) {
+	if (test_flags & DBG(TEST_VMFAULT_SDMA)) {
 		si_sdma_clear_buffer(sctx, buf, 0, 4, 0);
 		ctx->flush(ctx, NULL, 0);
 		puts("VM fault test: SDMA - done.");
 	}
-	if (sscreen->debug_flags & DBG(TEST_VMFAULT_SHADER)) {
+	if (test_flags & DBG(TEST_VMFAULT_SHADER)) {
 		util_test_constant_buffer(ctx, buf);
 		puts("VM fault test: Shader - done.");
 	}
@@ -956,6 +975,7 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 {
 	struct si_screen *sscreen = CALLOC_STRUCT(si_screen);
 	unsigned hw_threads, num_comp_hi_threads, num_comp_lo_threads;
+	uint64_t test_flags;
 
 	if (!sscreen) {
 		return NULL;
@@ -983,6 +1003,8 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 						      debug_options, 0);
 	sscreen->debug_flags |= debug_get_flags_option("AMD_DEBUG",
 						       debug_options, 0);
+	test_flags = debug_get_flags_option("AMD_TEST",
+					    test_options, 0);
 
 	if (sscreen->debug_flags & DBG(NO_GFX))
 		sscreen->info.has_graphics = false;
@@ -1002,6 +1024,7 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 	si_init_screen_state_functions(sscreen);
 	si_init_screen_texture_functions(sscreen);
 	si_init_screen_query_functions(sscreen);
+	si_init_screen_live_shader_cache(sscreen);
 
 	/* Set these flags in debug_flags early, so that the shader cache takes
 	 * them into account.
@@ -1102,7 +1125,7 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 					    &prim_discard_vertex_count_threshold,
 					    &tmp);
 	/* Compute-shader-based culling doesn't support VBOs in user SGPRs. */
-	if (prim_discard_vertex_count_threshold != UINT_MAX)
+	if (prim_discard_vertex_count_threshold == UINT_MAX)
 		sscreen->num_vbos_in_user_sgprs = sscreen->info.chip_class >= GFX9 ? 5 : 1;
 
 	/* Determine tessellation ring info. */
@@ -1176,6 +1199,10 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 	sscreen->use_ngg = sscreen->info.chip_class >= GFX10 &&
 			   sscreen->info.family != CHIP_NAVI14 &&
 			   !(sscreen->debug_flags & DBG(NO_NGG));
+	sscreen->use_ngg_culling = sscreen->use_ngg &&
+				   !(sscreen->debug_flags & DBG(NO_NGG_CULLING));
+	sscreen->always_use_ngg_culling = sscreen->use_ngg_culling &&
+					  sscreen->debug_flags & DBG(ALWAYS_NGG_CULLING);
 	sscreen->use_ngg_streamout = false;
 
 	/* Only enable primitive binning on APUs by default. */
@@ -1284,30 +1311,31 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 		sscreen->aux_context->set_log_context(sscreen->aux_context, log);
 	}
 
-	if (sscreen->debug_flags & DBG(TEST_DMA))
+	if (test_flags & DBG(TEST_DMA))
 		si_test_dma(sscreen);
 
-	if (sscreen->debug_flags & DBG(TEST_DMA_PERF)) {
+	if (test_flags & DBG(TEST_DMA_PERF)) {
 		si_test_dma_perf(sscreen);
 	}
 
-	if (sscreen->debug_flags & (DBG(TEST_VMFAULT_CP) |
+	if (test_flags & (DBG(TEST_VMFAULT_CP) |
 				      DBG(TEST_VMFAULT_SDMA) |
 				      DBG(TEST_VMFAULT_SHADER)))
-		si_test_vmfault(sscreen);
+		si_test_vmfault(sscreen, test_flags);
 
-	if (sscreen->debug_flags & DBG(TEST_GDS))
+	if (test_flags & DBG(TEST_GDS))
 		si_test_gds((struct si_context*)sscreen->aux_context);
 
-	if (sscreen->debug_flags & DBG(TEST_GDS_MM)) {
+	if (test_flags & DBG(TEST_GDS_MM)) {
 		si_test_gds_memory_management((struct si_context*)sscreen->aux_context,
 					      32 * 1024, 4, RADEON_DOMAIN_GDS);
 	}
-	if (sscreen->debug_flags & DBG(TEST_GDS_OA_MM)) {
+	if (test_flags & DBG(TEST_GDS_OA_MM)) {
 		si_test_gds_memory_management((struct si_context*)sscreen->aux_context,
 					      4, 1, RADEON_DOMAIN_OA);
 	}
 
+	STATIC_ASSERT(sizeof(union si_vgt_stages_key) == 4);
 	return &sscreen->b;
 }
 

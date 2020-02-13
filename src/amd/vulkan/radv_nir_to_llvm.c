@@ -1280,29 +1280,6 @@ adjust_vertex_fetch_alpha(struct radv_shader_context *ctx,
 	return LLVMBuildBitCast(ctx->ac.builder, alpha, ctx->ac.i32, "");
 }
 
-static const struct vertex_format_info {
-	uint8_t vertex_byte_size;
-	uint8_t num_channels;
-	uint8_t chan_byte_size;
-	uint8_t chan_format;
-} vertex_format_table[] = {
-	{  0, 4, 0, V_008F0C_BUF_DATA_FORMAT_INVALID	},	/* BUF_DATA_FORMAT_INVALID	*/
-	{  1, 1, 1, V_008F0C_BUF_DATA_FORMAT_8		},	/* BUF_DATA_FORMAT_8		*/
-	{  2, 1, 2, V_008F0C_BUF_DATA_FORMAT_16		},	/* BUF_DATA_FORMAT_16		*/
-	{  2, 2, 1, V_008F0C_BUF_DATA_FORMAT_8		},	/* BUF_DATA_FORMAT_8_8		*/
-	{  4, 1, 4, V_008F0C_BUF_DATA_FORMAT_32		},	/* BUF_DATA_FORMAT_32		*/
-	{  4, 2, 2, V_008F0C_BUF_DATA_FORMAT_16		},	/* BUF_DATA_FORMAT_16_16	*/
-	{  4, 3, 0, V_008F0C_BUF_DATA_FORMAT_10_11_11	},	/* BUF_DATA_FORMAT_10_11_11	*/
-	{  4, 3, 0, V_008F0C_BUF_DATA_FORMAT_11_11_10	},	/* BUF_DATA_FORMAT_11_11_10	*/
-	{  4, 4, 0, V_008F0C_BUF_DATA_FORMAT_10_10_10_2	},	/* BUF_DATA_FORMAT_10_10_10_2	*/
-	{  4, 4, 0, V_008F0C_BUF_DATA_FORMAT_2_10_10_10	},	/* BUF_DATA_FORMAT_2_10_10_10	*/
-	{  4, 4, 1, V_008F0C_BUF_DATA_FORMAT_8		},	/* BUF_DATA_FORMAT_8_8_8_8	*/
-	{  8, 2, 4, V_008F0C_BUF_DATA_FORMAT_32		},	/* BUF_DATA_FORMAT_32_32	*/
-	{  8, 4, 2, V_008F0C_BUF_DATA_FORMAT_16		},	/* BUF_DATA_FORMAT_16_16_16_16	*/
-	{ 12, 3, 4, V_008F0C_BUF_DATA_FORMAT_32		},	/* BUF_DATA_FORMAT_32_32_32	*/
-	{ 16, 4, 4, V_008F0C_BUF_DATA_FORMAT_32		},	/* BUF_DATA_FORMAT_32_32_32_32	*/
-};
-
 static LLVMValueRef
 radv_fixup_vertex_input_fetches(struct radv_shader_context *ctx,
 				LLVMValueRef value,
@@ -1387,8 +1364,7 @@ handle_vs_input_decl(struct radv_shader_context *ctx,
 							       ctx->args->ac.base_vertex), "");
 		}
 
-		assert(data_format < ARRAY_SIZE(vertex_format_table));
-		const struct vertex_format_info *vtx_info = &vertex_format_table[data_format];
+		const struct ac_data_format_info *vtx_info = ac_get_data_format_info(data_format);
 
 		/* Adjust the number of channels to load based on the vertex
 		 * attribute format.
@@ -1414,8 +1390,8 @@ handle_vs_input_decl(struct radv_shader_context *ctx,
 		bool unaligned_vertex_fetches = false;
 		if ((ctx->ac.chip_class == GFX6 || ctx->ac.chip_class == GFX10) &&
 		    vtx_info->chan_format != data_format &&
-		    ((attrib_offset % vtx_info->vertex_byte_size) ||
-		     (attrib_stride % vtx_info->vertex_byte_size)))
+		    ((attrib_offset % vtx_info->element_size) ||
+		     (attrib_stride % vtx_info->element_size)))
 			unaligned_vertex_fetches = true;
 
 		if (unaligned_vertex_fetches) {
@@ -2371,6 +2347,30 @@ ngg_gs_emit_vertex_ptr(struct radv_shader_context *ctx, LLVMValueRef gsthread,
 	return ngg_gs_vertex_ptr(ctx, vertexidx);
 }
 
+static LLVMValueRef
+ngg_gs_get_emit_output_ptr(struct radv_shader_context *ctx, LLVMValueRef vertexptr,
+			   unsigned out_idx)
+{
+	LLVMValueRef gep_idx[3] = {
+		ctx->ac.i32_0, /* implied C-style array */
+		ctx->ac.i32_0, /* first struct entry */
+		LLVMConstInt(ctx->ac.i32, out_idx, false),
+	};
+	return LLVMBuildGEP(ctx->ac.builder, vertexptr, gep_idx, 3, "");
+}
+
+static LLVMValueRef
+ngg_gs_get_emit_primflag_ptr(struct radv_shader_context *ctx, LLVMValueRef vertexptr,
+			     unsigned stream)
+{
+	LLVMValueRef gep_idx[3] = {
+		ctx->ac.i32_0, /* implied C-style array */
+		ctx->ac.i32_1, /* second struct entry */
+		LLVMConstInt(ctx->ac.i32, stream, false),
+	};
+	return LLVMBuildGEP(ctx->ac.builder, vertexptr, gep_idx, 3, "");
+}
+
 static struct radv_stream_output *
 radv_get_stream_output_by_loc(struct radv_streamout_info *so, unsigned location)
 {
@@ -3100,13 +3100,8 @@ static void gfx10_ngg_gs_emit_epilogue_1(struct radv_shader_context *ctx)
 		LLVMBuildStore(builder, tmp, ctx->gs_next_vertex[stream]);
 
 		tmp = ngg_gs_emit_vertex_ptr(ctx, gsthread, vertexidx);
-		LLVMValueRef gep_idx[3] = {
-			ctx->ac.i32_0, /* implied C-style array */
-			ctx->ac.i32_1, /* second entry of struct */
-			LLVMConstInt(ctx->ac.i32, stream, false),
-		};
-		tmp = LLVMBuildGEP(builder, tmp, gep_idx, 3, "");
-		LLVMBuildStore(builder, i8_0, tmp);
+		LLVMBuildStore(builder, i8_0,
+			       ngg_gs_get_emit_primflag_ptr(ctx, tmp, stream));
 
 		ac_build_endloop(&ctx->ac, 5100);
 	}
@@ -3158,13 +3153,8 @@ static void gfx10_ngg_gs_emit_epilogue_2(struct radv_shader_context *ctx)
 			if (!ctx->args->shader_info->gs.num_stream_output_components[stream])
 				continue;
 
-			LLVMValueRef gep_idx[3] = {
-				ctx->ac.i32_0, /* implicit C-style array */
-				ctx->ac.i32_1, /* second value of struct */
-				LLVMConstInt(ctx->ac.i32, stream, false),
-			};
-			tmp = LLVMBuildGEP(builder, vertexptr, gep_idx, 3, "");
-			tmp = LLVMBuildLoad(builder, tmp, "");
+			tmp = LLVMBuildLoad(builder,
+					    ngg_gs_get_emit_primflag_ptr(ctx, vertexptr, stream), "");
 			tmp = LLVMBuildTrunc(builder, tmp, ctx->ac.i1, "");
 			tmp2 = LLVMBuildICmp(builder, LLVMIntULT, tid, num_emit_threads, "");
 			nggso.prim_enable[stream] = LLVMBuildAnd(builder, tmp, tmp2, "");
@@ -3179,6 +3169,33 @@ static void gfx10_ngg_gs_emit_epilogue_2(struct radv_shader_context *ctx)
 
 		build_streamout(ctx, &nggso);
 	}
+
+	/* Write shader query data. */
+	tmp = ac_get_arg(&ctx->ac, ctx->args->ngg_gs_state);
+	tmp = LLVMBuildTrunc(builder, tmp, ctx->ac.i1, "");
+	ac_build_ifcc(&ctx->ac, tmp, 5109);
+	tmp = LLVMBuildICmp(builder, LLVMIntULT, tid,
+			    LLVMConstInt(ctx->ac.i32, 4, false), "");
+	ac_build_ifcc(&ctx->ac, tmp, 5110);
+	{
+		tmp = LLVMBuildLoad(builder, ac_build_gep0(&ctx->ac, ctx->gs_ngg_scratch, tid), "");
+
+		ac_llvm_add_target_dep_function_attr(ctx->main_function,
+						     "amdgpu-gds-size", 256);
+
+		LLVMTypeRef gdsptr = LLVMPointerType(ctx->ac.i32, AC_ADDR_SPACE_GDS);
+		LLVMValueRef gdsbase = LLVMBuildIntToPtr(builder, ctx->ac.i32_0, gdsptr, "");
+
+		const char *sync_scope = LLVM_VERSION_MAJOR >= 9 ? "workgroup-one-as" : "workgroup";
+
+		/* Use a plain GDS atomic to accumulate the number of generated
+		 * primitives.
+		 */
+		ac_build_atomic_rmw(&ctx->ac, LLVMAtomicRMWBinOpAdd, gdsbase,
+				    tmp, sync_scope);
+	}
+	ac_build_endif(&ctx->ac, 5110);
+	ac_build_endif(&ctx->ac, 5109);
 
 	/* TODO: culling */
 
@@ -3200,13 +3217,8 @@ static void gfx10_ngg_gs_emit_epilogue_2(struct radv_shader_context *ctx)
 
 			/* Load primitive liveness */
 			tmp = ngg_gs_vertex_ptr(ctx, primidx);
-			LLVMValueRef gep_idx[3] = {
-				ctx->ac.i32_0, /* implicit C-style array */
-				ctx->ac.i32_1, /* second value of struct */
-				ctx->ac.i32_0, /* stream 0 */
-			};
-			tmp = LLVMBuildGEP(builder, tmp, gep_idx, 3, "");
-			tmp = LLVMBuildLoad(builder, tmp, "");
+			tmp = LLVMBuildLoad(builder,
+					    ngg_gs_get_emit_primflag_ptr(ctx, tmp, 0), "");
 			const LLVMValueRef primlive =
 				LLVMBuildTrunc(builder, tmp, ctx->ac.i1, "");
 
@@ -3261,14 +3273,9 @@ static void gfx10_ngg_gs_emit_epilogue_2(struct radv_shader_context *ctx)
 	ac_build_ifcc(&ctx->ac, vertlive, 5130);
 	{
 		tmp = ngg_gs_vertex_ptr(ctx, vertlive_scan.result_exclusive);
-		LLVMValueRef gep_idx[3] = {
-			ctx->ac.i32_0, /* implicit C-style array */
-			ctx->ac.i32_1, /* second value of struct */
-			ctx->ac.i32_1, /* stream 1 */
-		};
-		tmp = LLVMBuildGEP(builder, tmp, gep_idx, 3, "");
 		tmp2 = LLVMBuildTrunc(builder, tid, ctx->ac.i8, "");
-		LLVMBuildStore(builder, tmp2, tmp);
+		LLVMBuildStore(builder, tmp2,
+			       ngg_gs_get_emit_primflag_ptr(ctx, tmp, 1));
 	}
 	ac_build_endif(&ctx->ac, 5130);
 
@@ -3283,13 +3290,8 @@ static void gfx10_ngg_gs_emit_epilogue_2(struct radv_shader_context *ctx)
 		prim.num_vertices = verts_per_prim;
 
 		tmp = ngg_gs_vertex_ptr(ctx, tid);
-		LLVMValueRef gep_idx[3] = {
-			ctx->ac.i32_0, /* implicit C-style array */
-			ctx->ac.i32_1, /* second value of struct */
-			ctx->ac.i32_0, /* primflag */
-		};
-		tmp = LLVMBuildGEP(builder, tmp, gep_idx, 3, "");
-		flags = LLVMBuildLoad(builder, tmp, "");
+		flags = LLVMBuildLoad(builder,
+				      ngg_gs_get_emit_primflag_ptr(ctx, tmp, 0), "");
 		prim.isnull = LLVMBuildNot(builder, LLVMBuildTrunc(builder, flags, ctx->ac.i1, ""), "");
 
 		for (unsigned i = 0; i < verts_per_prim; ++i) {
@@ -3338,18 +3340,12 @@ static void gfx10_ngg_gs_emit_epilogue_2(struct radv_shader_context *ctx)
 		outinfo->pos_exports = 0;
 
 		tmp = ngg_gs_vertex_ptr(ctx, tid);
-		LLVMValueRef gep_idx[3] = {
-			ctx->ac.i32_0, /* implicit C-style array */
-			ctx->ac.i32_1, /* second value of struct */
-			ctx->ac.i32_1, /* stream 1: source data index */
-		};
-		tmp = LLVMBuildGEP(builder, tmp, gep_idx, 3, "");
-		tmp = LLVMBuildLoad(builder, tmp, "");
+		tmp = LLVMBuildLoad(builder,
+				    ngg_gs_get_emit_primflag_ptr(ctx, tmp, 1), "");
 		tmp = LLVMBuildZExt(builder, tmp, ctx->ac.i32, "");
 		const LLVMValueRef vertexptr = ngg_gs_vertex_ptr(ctx, tmp);
 
 		unsigned out_idx = 0;
-		gep_idx[1] = ctx->ac.i32_0;
 		for (unsigned i = 0; i < AC_LLVM_MAX_OUTPUTS; ++i) {
 			unsigned output_usage_mask =
 				ctx->args->shader_info->gs.output_usage_mask[i];
@@ -3366,8 +3362,7 @@ static void gfx10_ngg_gs_emit_epilogue_2(struct radv_shader_context *ctx)
 				if (!(output_usage_mask & (1 << j)))
 					continue;
 
-				gep_idx[2] = LLVMConstInt(ctx->ac.i32, out_idx, false);
-				tmp = LLVMBuildGEP(builder, vertexptr, gep_idx, 3, "");
+				tmp = ngg_gs_get_emit_output_ptr(ctx, vertexptr, out_idx);
 				tmp = LLVMBuildLoad(builder, tmp, "");
 
 				LLVMTypeRef type = LLVMGetAllocatedType(ctx->abi.outputs[ac_llvm_reg_index_soa(i, j)]);
@@ -3447,17 +3442,11 @@ static void gfx10_ngg_gs_emit_vertex(struct radv_shader_context *ctx,
 
 			LLVMValueRef out_val = LLVMBuildLoad(ctx->ac.builder,
 							     out_ptr[j], "");
-			LLVMValueRef gep_idx[3] = {
-				ctx->ac.i32_0, /* implied C-style array */
-				ctx->ac.i32_0, /* first entry of struct */
-				LLVMConstInt(ctx->ac.i32, out_idx, false),
-			};
-			LLVMValueRef ptr = LLVMBuildGEP(builder, vertexptr, gep_idx, 3, "");
-
 			out_val = ac_to_integer(&ctx->ac, out_val);
 			out_val = LLVMBuildZExtOrBitCast(ctx->ac.builder, out_val, ctx->ac.i32, "");
 
-			LLVMBuildStore(builder, out_val, ptr);
+			LLVMBuildStore(builder, out_val,
+				       ngg_gs_get_emit_output_ptr(ctx, vertexptr, out_idx));
 		}
 	}
 	assert(out_idx * 4 <= ctx->args->shader_info->gs.gsvs_vertex_size);
@@ -3483,14 +3472,6 @@ static void gfx10_ngg_gs_emit_vertex(struct radv_shader_context *ctx,
 	tmp = LLVMBuildAdd(builder, curverts, ctx->ac.i32_1, "");
 	LLVMBuildStore(builder, tmp, ctx->gs_curprim_verts[stream]);
 
-	LLVMValueRef gep_idx[3] = {
-		ctx->ac.i32_0, /* implied C-style array */
-		ctx->ac.i32_1, /* second struct entry */
-		LLVMConstInt(ctx->ac.i32, stream, false),
-	};
-	const LLVMValueRef primflagptr =
-		LLVMBuildGEP(builder, vertexptr, gep_idx, 3, "");
-
 	/* The per-vertex primitive flag encoding:
 	 *   bit 0: whether this vertex finishes a primitive
 	 *   bit 1: whether the primitive is odd (if we are emitting triangle strips)
@@ -3500,7 +3481,8 @@ static void gfx10_ngg_gs_emit_vertex(struct radv_shader_context *ctx,
 			  LLVMBuildShl(builder,
 				       LLVMBuildZExt(builder, is_odd, ctx->ac.i8, ""),
 				       ctx->ac.i8_1, ""), "");
-	LLVMBuildStore(builder, tmp, primflagptr);
+	LLVMBuildStore(builder, tmp,
+		       ngg_gs_get_emit_primflag_ptr(ctx, vertexptr, stream));
 
 	tmp = LLVMBuildLoad(builder, ctx->gs_generated_prims[stream], "");
 	tmp = LLVMBuildAdd(builder, tmp, LLVMBuildZExt(builder, iscompleteprim, ctx->ac.i32, ""), "");

@@ -199,7 +199,6 @@ struct panfrost_rasterizer {
 /* Variants bundle together to form the backing CSO, bundling multiple
  * shaders with varying emulated features baked in (alpha test
  * parameters, etc) */
-#define MAX_SHADER_VARIANTS 8
 
 /* A shader state corresponds to the actual, current variant of the shader */
 struct panfrost_shader_state {
@@ -211,6 +210,8 @@ struct panfrost_shader_state {
         int uniform_count;
         bool can_discard;
         bool writes_point_size;
+        bool writes_depth;
+        bool writes_stencil;
         bool reads_point_coord;
         bool reads_face;
         bool reads_frag_coord;
@@ -248,7 +249,9 @@ struct panfrost_shader_variants {
                 struct pipe_compute_state cbase;
         };
 
-        struct panfrost_shader_state variants[MAX_SHADER_VARIANTS];
+        struct panfrost_shader_state *variants;
+        unsigned variant_space;
+
         unsigned variant_count;
 
         /* The current active variant */
@@ -272,6 +275,7 @@ struct panfrost_sampler_state {
 struct panfrost_sampler_view {
         struct pipe_sampler_view base;
         struct mali_texture_descriptor hw;
+        uint8_t astc_stretch;
         bool manual_stride;
 };
 

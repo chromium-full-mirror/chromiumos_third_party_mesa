@@ -144,7 +144,7 @@ enum {
 	DBG_TES = PIPE_SHADER_TESS_EVAL,
 	DBG_CS = PIPE_SHADER_COMPUTE,
 	DBG_NO_IR,
-	DBG_NO_TGSI,
+	DBG_NO_NIR,
 	DBG_NO_ASM,
 	DBG_PREOPT_IR,
 
@@ -169,6 +169,7 @@ enum {
 	DBG_TEX,
 	DBG_COMPUTE,
 	DBG_VM,
+	DBG_CACHE_STATS,
 
 	/* Driver options: */
 	DBG_FORCE_SDMA,
@@ -183,6 +184,8 @@ enum {
 	/* 3D engine options: */
 	DBG_NO_GFX,
 	DBG_NO_NGG,
+	DBG_ALWAYS_NGG_CULLING,
+	DBG_NO_NGG_CULLING,
 	DBG_ALWAYS_PD,
 	DBG_PD,
 	DBG_NO_PD,
@@ -202,6 +205,10 @@ enum {
 	DBG_NO_DCC_MSAA,
 	DBG_NO_FMASK,
 
+	DBG_COUNT
+};
+
+enum {
 	/* Tests: */
 	DBG_TEST_DMA,
 	DBG_TEST_VMFAULT_CP,
@@ -321,7 +328,7 @@ struct si_texture {
 	uint16_t			stencil_dirty_level_mask; /* each bit says if that mipmap is compressed */
 	enum pipe_format		db_render_format:16;
 	uint8_t				stencil_clear_value;
-	bool				fmask_is_not_identity:1;
+	bool				fmask_is_identity:1;
 	bool				tc_compatible_htile:1;
 	bool				htile_stencil_disabled:1;
 	bool				depth_cleared:1; /* if it was cleared at least once */
@@ -506,6 +513,8 @@ struct si_screen {
 	bool				dfsm_allowed;
 	bool				llvm_has_working_vgpr_indexing;
 	bool				use_ngg;
+	bool				use_ngg_culling;
+	bool				always_use_ngg_culling;
 	bool				use_ngg_streamout;
 
 	struct {
@@ -536,7 +545,10 @@ struct si_screen {
 	 * are loading shaders on demand. This is a monotonic counter.
 	 */
 	unsigned			num_shaders_created;
-	unsigned			num_shader_cache_hits;
+	unsigned			num_memory_shader_cache_hits;
+	unsigned			num_memory_shader_cache_misses;
+	unsigned			num_disk_shader_cache_hits;
+	unsigned			num_disk_shader_cache_misses;
 
 	/* GPU load thread. */
 	simple_mtx_t			gpu_load_mutex;
@@ -586,7 +598,7 @@ struct si_screen {
 	 *
 	 * Design & limitations:
 	 * - The shader cache is per screen (= per process), never saved to
-	 *   disk, and skips redundant shader compilations from TGSI to bytecode.
+	 *   disk, and skips redundant shader compilations from NIR to bytecode.
 	 * - It can only be used with one-variant-per-shader support, in which
 	 *   case only the main (typically middle) part of shaders is cached.
 	 * - Only VS, TCS, TES, PS are cached, out of which only the hw VS
@@ -596,6 +608,9 @@ struct si_screen {
 	 */
 	simple_mtx_t			shader_cache_mutex;
 	struct hash_table		*shader_cache;
+
+	/* Shader cache of live shaders. */
+	struct util_live_shader_cache	live_shader_cache;
 
 	/* Shader compiler queue for multithreaded compilation. */
 	struct util_queue		shader_compiler_queue;
@@ -798,7 +813,7 @@ union si_vgt_param_key {
 	uint32_t index;
 };
 
-#define SI_NUM_VGT_STAGES_KEY_BITS 5
+#define SI_NUM_VGT_STAGES_KEY_BITS 6
 #define SI_NUM_VGT_STAGES_STATES (1 << SI_NUM_VGT_STAGES_KEY_BITS)
 
 /* The VGT_SHADER_STAGES key used to index the table of precomputed values.
@@ -809,6 +824,7 @@ union si_vgt_stages_key {
 #if UTIL_ARCH_LITTLE_ENDIAN
 		unsigned tess:1;
 		unsigned gs:1;
+		unsigned ngg_gs_fast_launch:1;
 		unsigned ngg_passthrough:1;
 		unsigned ngg:1; /* gfx10+ */
 		unsigned streamout:1; /* only used with NGG */
@@ -818,6 +834,7 @@ union si_vgt_stages_key {
 		unsigned streamout:1;
 		unsigned ngg:1;
 		unsigned ngg_passthrough:1;
+		unsigned ngg_gs_fast_launch:1;
 		unsigned gs:1;
 		unsigned tess:1;
 #endif
@@ -860,6 +877,10 @@ struct si_sdma_upload {
 	unsigned		src_offset;
 	unsigned		dst_offset;
 	unsigned		size;
+};
+
+struct si_small_prim_cull_info {
+	float scale[2], translate[2];
 };
 
 struct si_context {
@@ -1068,6 +1089,7 @@ struct si_context {
 	bool			ls_vgpr_fix:1;
 	bool			prim_discard_cs_instancing:1;
 	bool			ngg:1;
+	uint8_t			ngg_culling;
 	int			last_index_size;
 	int			last_base_vertex;
 	int			last_start_instance;
@@ -1083,6 +1105,11 @@ struct si_context {
 	unsigned		current_vs_state;
 	unsigned		last_vs_state;
 	enum pipe_prim_type	current_rast_prim; /* primitive type after TES, GS */
+
+	struct si_small_prim_cull_info last_small_prim_cull_info;
+	struct si_resource	*small_prim_cull_info_buf;
+	uint64_t		small_prim_cull_info_address;
+	bool			small_prim_cull_info_dirty;
 
 	/* Scratch buffer */
 	struct si_resource	*scratch_buffer;
@@ -1253,6 +1280,10 @@ void si_blitter_begin(struct si_context *sctx, enum si_blitter_op op);
 void si_blitter_end(struct si_context *sctx);
 void si_init_blit_functions(struct si_context *sctx);
 void si_decompress_textures(struct si_context *sctx, unsigned shader_mask);
+void si_decompress_subresource(struct pipe_context *ctx,
+			       struct pipe_resource *tex,
+			       unsigned planes, unsigned level,
+			       unsigned first_layer, unsigned last_layer);
 void si_resource_copy_region(struct pipe_context *ctx,
 			     struct pipe_resource *dst,
 			     unsigned dst_level,
@@ -1491,6 +1522,9 @@ struct pipe_video_buffer *si_video_buffer_create(struct pipe_context *pipe,
 						 const struct pipe_video_buffer *tmpl);
 
 /* si_viewport.c */
+void si_update_ngg_small_prim_precision(struct si_context *ctx);
+void si_get_small_prim_cull_info(struct si_context *sctx,
+				 struct si_small_prim_cull_info *out);
 void si_update_vs_viewport_state(struct si_context *ctx);
 void si_init_viewport_functions(struct si_context *ctx);
 
@@ -1562,6 +1596,19 @@ static inline void
 si_texture_reference(struct si_texture **ptr, struct si_texture *res)
 {
 	pipe_resource_reference((struct pipe_resource **)ptr, &res->buffer.b.b);
+}
+
+static inline void
+si_shader_selector_reference(struct si_context *sctx, /* sctx can optionally be NULL */
+			     struct si_shader_selector **dst,
+			     struct si_shader_selector *src)
+{
+	if (*dst == src)
+		return;
+
+	struct si_screen *sscreen = src ? src->screen : (*dst)->screen;
+	util_shader_reference(&sctx->b, &sscreen->live_shader_cache,
+			      (void**)dst, src);
 }
 
 static inline bool
@@ -1646,7 +1693,7 @@ static inline struct si_shader_ctx_state *si_get_vs(struct si_context *sctx)
 	return &sctx->vs_shader;
 }
 
-static inline struct tgsi_shader_info *si_get_vs_info(struct si_context *sctx)
+static inline struct si_shader_info *si_get_vs_info(struct si_context *sctx)
 {
 	struct si_shader_ctx_state *vs = si_get_vs(sctx);
 

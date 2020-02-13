@@ -98,8 +98,11 @@ panfrost_translate_channel_width(unsigned size)
                 return MALI_CHANNEL_16;
         case 32:
                 return MALI_CHANNEL_32;
-        default:
-                unreachable("Invalid width");
+        default: {
+                fprintf(stderr, "Invalid width: %d\n", size);
+                assert(0);
+                return 0;
+        }
         }
 }
 
@@ -183,9 +186,17 @@ panfrost_find_format(const struct util_format_description *desc) {
                 return MALI_RGB10_A2I;
 
         case PIPE_FORMAT_Z32_UNORM:
+                return MALI_Z32_UNORM;
+
         case PIPE_FORMAT_Z24X8_UNORM:
         case PIPE_FORMAT_Z24_UNORM_S8_UINT:
-                return MALI_Z32_UNORM;
+                /* Midgard has no dedicated samplers for Z24S8 and Z24X8
+                 * formats, and the GPU expects the depth to be encoded in an
+                 * IEEE 32-bit float. Turn all Z24_UNORM variants into R32UI
+                 * and let the shader do the conversion using bfe+fmul
+                 * instructions.
+                 */
+                return MALI_R32UI;
 
         case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
                 /* Z32F = R32F to the hardware */
@@ -217,9 +228,39 @@ panfrost_find_format(const struct util_format_description *desc) {
         case PIPE_FORMAT_R9G9B9E5_FLOAT:
                 return MALI_R9F_G9F_B9F_E5F;
 
+        case PIPE_FORMAT_ETC1_RGB8:
+        case PIPE_FORMAT_ETC2_RGB8:
+        case PIPE_FORMAT_ETC2_SRGB8:
+                return MALI_ETC2_RGB8;
+
+        case PIPE_FORMAT_ETC2_RGB8A1:
+        case PIPE_FORMAT_ETC2_SRGB8A1:
+                return MALI_ETC2_RGB8A1;
+
+        case PIPE_FORMAT_ETC2_RGBA8:
+        case PIPE_FORMAT_ETC2_SRGBA8:
+                return MALI_ETC2_RGBA8;
+
+        case PIPE_FORMAT_ETC2_R11_UNORM:
+                return MALI_ETC2_R11_UNORM;
+        case PIPE_FORMAT_ETC2_R11_SNORM:
+                return MALI_ETC2_R11_SNORM;
+
+        case PIPE_FORMAT_ETC2_RG11_UNORM:
+                return MALI_ETC2_RG11_UNORM;
+        case PIPE_FORMAT_ETC2_RG11_SNORM:
+                return MALI_ETC2_RG11_SNORM;
+
         default:
                 /* Fallthrough to default */
                 break;
+        }
+
+        if (desc->layout == UTIL_FORMAT_LAYOUT_ASTC) {
+                if (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB)
+                        return MALI_ASTC_SRGB_SUPP;
+                else
+                        return MALI_ASTC_HDR_SUPP;
         }
 
         /* Formats must match in channel count */
