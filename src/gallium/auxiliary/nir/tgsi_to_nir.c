@@ -72,6 +72,10 @@ struct ttn_compile {
    nir_variable *images[PIPE_MAX_SHADER_IMAGES];
    nir_variable *ssbo[PIPE_MAX_SHADER_BUFFERS];
 
+   unsigned num_samplers;
+   unsigned num_images;
+   unsigned num_msaa_images;
+
    nir_variable *input_var_face;
    nir_variable *input_var_position;
    nir_variable *input_var_point;
@@ -642,6 +646,10 @@ ttn_src_for_file_and_index(struct ttn_compile *c, unsigned file, unsigned index,
          op = nir_intrinsic_load_work_group_id;
          load = nir_load_work_group_id(b);
          break;
+      case TGSI_SEMANTIC_BLOCK_SIZE:
+         op = nir_intrinsic_load_local_group_size;
+         load = nir_load_local_group_size(b);
+         break;
       case TGSI_SEMANTIC_CS_USER_DATA_AMD:
          op = nir_intrinsic_load_user_data_amd;
          load = nir_load_user_data_amd(b);
@@ -732,6 +740,7 @@ ttn_src_for_file_and_index(struct ttn_compile *c, unsigned file, unsigned index,
          }
          /* UBO offsets are in bytes, but TGSI gives them to us in vec4's */
          offset = nir_ishl(b, offset, nir_imm_int(b, 4));
+         nir_intrinsic_set_align(load, 16, 0);
       } else {
          nir_intrinsic_set_base(load, index);
          if (indirect) {
@@ -1103,6 +1112,14 @@ ttn_ucmp(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
 }
 
 static void
+ttn_barrier(nir_builder *b)
+{
+   nir_intrinsic_instr *barrier =
+      nir_intrinsic_instr_create(b->shader, nir_intrinsic_control_barrier);
+   nir_builder_instr_insert(b, &barrier->instr);
+}
+
+static void
 ttn_kill(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
 {
    nir_intrinsic_instr *discard =
@@ -1325,7 +1342,9 @@ get_sampler_var(struct ttn_compile *c, int binding,
                                 "sampler");
       var->data.binding = binding;
       var->data.explicit_binding = true;
+
       c->samplers[binding] = var;
+      c->num_samplers = MAX2(c->num_samplers, binding + 1);
 
       /* Record textures used */
       unsigned mask = 1 << binding;
@@ -1357,7 +1376,11 @@ get_image_var(struct ttn_compile *c, int binding,
       var->data.explicit_binding = true;
       var->data.access = access;
       var->data.image.format = format;
+
       c->images[binding] = var;
+      c->num_images = MAX2(c->num_images, binding + 1);
+      if (dim == GLSL_SAMPLER_DIM_MS)
+         c->num_msaa_images = c->num_images;
    }
 
    return var;
@@ -1475,25 +1498,8 @@ ttn_tex(struct ttn_compile *c, nir_alu_dest dest, nir_ssa_def **src)
    get_texture_info(tgsi_inst->Texture.Texture,
                     &instr->sampler_dim, &instr->is_shadow, &instr->is_array);
 
-   switch (instr->sampler_dim) {
-   case GLSL_SAMPLER_DIM_1D:
-   case GLSL_SAMPLER_DIM_BUF:
-      instr->coord_components = 1;
-      break;
-   case GLSL_SAMPLER_DIM_2D:
-   case GLSL_SAMPLER_DIM_RECT:
-   case GLSL_SAMPLER_DIM_EXTERNAL:
-   case GLSL_SAMPLER_DIM_MS:
-      instr->coord_components = 2;
-      break;
-   case GLSL_SAMPLER_DIM_3D:
-   case GLSL_SAMPLER_DIM_CUBE:
-      instr->coord_components = 3;
-      break;
-   case GLSL_SAMPLER_DIM_SUBPASS:
-   case GLSL_SAMPLER_DIM_SUBPASS_MS:
-      unreachable("invalid sampler_dim");
-   }
+   instr->coord_components =
+      glsl_get_sampler_dim_coordinate_components(instr->sampler_dim);
 
    if (instr->is_array)
       instr->coord_components++;
@@ -2227,6 +2233,10 @@ ttn_emit_instruction(struct ttn_compile *c)
       ttn_endloop(c);
       break;
 
+   case TGSI_OPCODE_BARRIER:
+      ttn_barrier(b);
+      break;
+
    default:
       if (op_trans[tgsi_op] != 0 || tgsi_op == TGSI_OPCODE_MOV) {
          ttn_alu(b, op_trans[tgsi_op], dest, dst_bitsize, src);
@@ -2309,7 +2319,7 @@ static void
 ttn_parse_tgsi(struct ttn_compile *c, const void *tgsi_tokens)
 {
    struct tgsi_parse_context parser;
-   int ret;
+   ASSERTED int ret;
 
    ret = tgsi_parse_init(&parser, tgsi_tokens);
    assert(ret == TGSI_PARSE_OK);
@@ -2559,6 +2569,10 @@ ttn_finalize_nir(struct ttn_compile *c, struct pipe_screen *screen)
       ttn_optimize_nir(nir);
       nir_shader_gather_info(nir, c->build.impl);
    }
+
+   nir->info.num_images = c->num_images;
+   nir->info.num_textures = c->num_samplers;
+   nir->info.last_msaa_image = c->num_msaa_images - 1;
 
    nir_validate_shader(nir, "TTN: after all optimizations");
 }

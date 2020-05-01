@@ -36,34 +36,22 @@
 #include "vbo/vbo_exec.h"
 #include "vbo/vbo_save.h"
 #include "main/varray.h"
+#include "main/macros.h"
 
 
 struct _glapi_table;
-struct _mesa_prim;
-
-
-struct vbo_context {
-   struct gl_vertex_buffer_binding binding;
-   struct gl_array_attributes current[VBO_ATTRIB_MAX];
-
-   struct gl_vertex_array_object *VAO;
-
-   struct vbo_exec_context exec;
-   struct vbo_save_context save;
-};
-
 
 static inline struct vbo_context *
 vbo_context(struct gl_context *ctx)
 {
-   return ctx->vbo_context;
+   return &ctx->vbo_context;
 }
 
 
 static inline const struct vbo_context *
 vbo_context_const(const struct gl_context *ctx)
 {
-   return ctx->vbo_context;
+   return &ctx->vbo_context;
 }
 
 
@@ -163,8 +151,9 @@ vbo_get_default_vals_as_union(GLenum format)
 static inline unsigned
 vbo_compute_max_verts(const struct vbo_exec_context *exec)
 {
-   unsigned n = (VBO_VERT_BUFFER_SIZE - exec->vtx.buffer_used) /
-      (exec->vtx.vertex_size * sizeof(GLfloat));
+   unsigned n = (exec->ctx->Const.glBeginEndBufferSize -
+                 exec->vtx.buffer_used) /
+                (exec->vtx.vertex_size * sizeof(GLfloat));
    if (n == 0)
       return 0;
    /* Subtract one so we're always sure to have room for an extra
@@ -179,11 +168,17 @@ void
 vbo_try_prim_conversion(struct _mesa_prim *p);
 
 bool
-vbo_can_merge_prims(const struct _mesa_prim *p0, const struct _mesa_prim *p1);
+vbo_merge_draws(struct gl_context *ctx, bool in_dlist,
+                struct _mesa_prim *p0, const struct _mesa_prim *p1);
 
-void
-vbo_merge_prims(struct _mesa_prim *p0, const struct _mesa_prim *p1);
-
+unsigned
+vbo_copy_vertices(struct gl_context *ctx,
+                  GLenum mode,
+                  struct _mesa_prim *last_prim,
+                  unsigned vertex_size,
+                  bool in_dlist,
+                  fi_type *dst,
+                  const fi_type *src);
 
 /**
  * Get the filter mask for vbo draws depending on the vertex_processing_mode.
@@ -235,12 +230,7 @@ _vbo_set_attrib_format(struct gl_context *ctx,
       size /= 2;
    _mesa_update_array_format(ctx, vao, attr, size, type, GL_RGBA,
                              GL_FALSE, integer, doubles, offset);
-   /* Ptr for userspace arrays.
-    * For updating the pointer we would need to add the vao->NewArrays flag
-    * to the VAO. But but that is done already unconditionally in
-    * _mesa_update_array_format called above.
-    */
-   assert((vao->NewArrays | ~vao->Enabled) & VERT_BIT(attr));
+   vao->NewArrays |= vao->Enabled & VERT_BIT(attr);
    vao->VertexAttrib[attr].Ptr = ADD_POINTERS(buffer_offset, offset);
 }
 

@@ -30,6 +30,7 @@
 #include "sfn_instruction_gds.h"
 #include "sfn_instruction_misc.h"
 #include "sfn_instruction_fetch.h"
+#include "sfn_instruction_lds.h"
 
 #include "../r600_shader.h"
 #include "../r600_sq.h"
@@ -64,6 +65,9 @@ private:
    bool emit_wr_scratch(const WriteScratchInstruction& instr);
    bool emit_gds(const GDSInstr& instr);
    bool emit_rat(const RatInstruction& instr);
+   bool emit_ldswrite(const LDSWriteInstruction& instr);
+   bool emit_ldsread(const LDSReadInstruction& instr);
+   bool emit_tf_write(const GDSStoreTessFactor& instr);
 
    bool emit_load_addr(PValue addr);
    bool emit_fs_pixel_export(const ExportInstruction & exi);
@@ -88,6 +92,7 @@ public:
    PValue m_last_addr;
    int m_loop_nesting;
    int m_nliterals_in_group;
+   std::set<int> vtx_fetch_results;
 };
 
 
@@ -102,7 +107,7 @@ AssemblyFromShaderLegacy::~AssemblyFromShaderLegacy()
    delete impl;
 }
 
-bool AssemblyFromShaderLegacy::do_lower(const std::vector<Instruction::Pointer>& ir)
+bool AssemblyFromShaderLegacy::do_lower(const std::vector<InstructionBlock>& ir)
 {
    if (impl->m_shader->processor_type == PIPE_SHADER_VERTEX &&
        impl->m_shader->ninput > 0)
@@ -111,11 +116,13 @@ bool AssemblyFromShaderLegacy::do_lower(const std::vector<Instruction::Pointer>&
 
    std::vector<Instruction::Pointer> exports;
 
-   for (const auto& i : ir) {
-      if (!impl->emit(i))
+   for (const auto& block : ir) {
+      for (const auto& i : block) {
+         if (!impl->emit(i))
          return false;
       if (i->type() != Instruction::alu)
          impl->reset_addr_register();
+      }
    }
    /*
    for (const auto& i : exports) {
@@ -145,6 +152,9 @@ bool AssemblyFromShaderLegacy::do_lower(const std::vector<Instruction::Pointer>&
 
 bool AssemblyFromShaderLegacyImpl::emit(const Instruction::Pointer i)
 {
+   if (i->type() != Instruction::vtx)
+       vtx_fetch_results.clear();
+
    sfn_log << SfnLog::assembly << "Emit from '" << *i << "\n";
    switch (i->type()) {
    case Instruction::alu:
@@ -183,6 +193,12 @@ bool AssemblyFromShaderLegacyImpl::emit(const Instruction::Pointer i)
       return emit_gds(static_cast<const GDSInstr&>(*i));
    case Instruction::rat:
       return emit_rat(static_cast<const RatInstruction&>(*i));
+   case Instruction::lds_write:
+      return emit_ldswrite(static_cast<const LDSWriteInstruction&>(*i));
+   case Instruction::lds_read:
+      return emit_ldsread(static_cast<const LDSReadInstruction&>(*i));
+   case Instruction::tf_write:
+      return emit_tf_write(static_cast<const GDSStoreTessFactor&>(*i));
    default:
       return false;
    }
@@ -240,7 +256,7 @@ bool AssemblyFromShaderLegacyImpl::emit_alu(const AluInstruction& ai, ECFAluOpCo
     * scheduler */
    if (m_nliterals_in_group > 4) {
       sfn_log << SfnLog::assembly << "  Have " << m_nliterals_in_group << " inject a last op (nop)\n";
-      alu.op = op0_nop;
+      alu.op = ALU_OP0_NOP;
       alu.last = 1;
       int retval = r600_bytecode_add_alu(m_bc, &alu);
       if (retval)
@@ -697,7 +713,7 @@ bool AssemblyFromShaderLegacyImpl::emit_vtx(const FetchInstruction& fetch_instr)
 
    if (addr) {
       if (addr->type() == Value::literal) {
-         const auto& boffs = dynamic_cast<const LiteralValue&>(*addr);
+         const auto& boffs = static_cast<const LiteralValue&>(*addr);
          buffer_offset = boffs.value();
       } else {
          index_mode = bim_zero;
@@ -737,6 +753,13 @@ bool AssemblyFromShaderLegacyImpl::emit_vtx(const FetchInstruction& fetch_instr)
             return false;
       }
    }
+
+   if (vtx_fetch_results.find(fetch_instr.src().sel()) !=
+       vtx_fetch_results.end()) {
+      m_bc->force_add_cf = 1;
+      vtx_fetch_results.clear();
+   }
+   vtx_fetch_results.insert(fetch_instr.dst().sel());
 
    struct r600_bytecode_vtx vtx;
    memset(&vtx, 0, sizeof(vtx));
@@ -895,7 +918,7 @@ bool AssemblyFromShaderLegacyImpl::emit_gds(const GDSInstr& instr)
          m_bc->index_loaded[1] = true;
       }
    } else {
-      const LiteralValue& addr_reg = dynamic_cast<const LiteralValue&>(*addr);
+      const LiteralValue& addr_reg = static_cast<const LiteralValue&>(*addr);
       uav_idx = addr_reg.value() >> 2;
    }
 
@@ -930,6 +953,113 @@ bool AssemblyFromShaderLegacyImpl::emit_gds(const GDSInstr& instr)
    return true;
 }
 
+bool AssemblyFromShaderLegacyImpl::emit_tf_write(const GDSStoreTessFactor& instr)
+{
+   struct r600_bytecode_gds gds;
+
+   memset(&gds, 0, sizeof(struct r600_bytecode_gds));
+   gds.src_gpr = instr.sel();
+   gds.src_sel_x = instr.chan(0);
+   gds.src_sel_y = instr.chan(1);
+   gds.src_sel_z = 4;
+   gds.dst_sel_x = 7;
+   gds.dst_sel_y = 7;
+   gds.dst_sel_z = 7;
+   gds.dst_sel_w = 7;
+   gds.op = FETCH_OP_TF_WRITE;
+
+   if (r600_bytecode_add_gds(m_bc, &gds) != 0)
+         return false;
+
+   if (instr.chan(2) != 7) {
+      memset(&gds, 0, sizeof(struct r600_bytecode_gds));
+      gds.src_gpr = instr.sel();
+      gds.src_sel_x = instr.chan(2);
+      gds.src_sel_y = instr.chan(3);
+      gds.src_sel_z = 4;
+      gds.dst_sel_x = 7;
+      gds.dst_sel_y = 7;
+      gds.dst_sel_z = 7;
+      gds.dst_sel_w = 7;
+      gds.op = FETCH_OP_TF_WRITE;
+
+      if (r600_bytecode_add_gds(m_bc, &gds))
+         return false;
+   }
+   return true;
+}
+
+bool AssemblyFromShaderLegacyImpl::emit_ldswrite(const LDSWriteInstruction& instr)
+{
+   r600_bytecode_alu alu;
+   memset(&alu, 0, sizeof(r600_bytecode_alu));
+
+   alu.last = true;
+   alu.is_lds_idx_op = true;
+   copy_src(alu.src[0], instr.address());
+   copy_src(alu.src[1], instr.value0());
+
+   if (instr.num_components() == 1) {
+      alu.op = LDS_OP2_LDS_WRITE;
+   } else {
+      alu.op = LDS_OP3_LDS_WRITE_REL;
+      alu.lds_idx = 1;
+      copy_src(alu.src[2], instr.value1());
+   }
+
+   return r600_bytecode_add_alu(m_bc, &alu) == 0;
+}
+
+bool AssemblyFromShaderLegacyImpl::emit_ldsread(const LDSReadInstruction& instr)
+{
+   int r;
+   unsigned nread = 0;
+   unsigned nfetch = 0;
+   unsigned n_values = instr.num_values();
+
+   r600_bytecode_alu alu_fetch;
+   r600_bytecode_alu alu_read;
+
+   /* We must add a new ALU clause if the fetch and read op would be split otherwise
+    * r600_asm limites at 120 slots = 240 dwords */
+   if (m_bc->cf_last->ndw > 240 - 4 * n_values)
+      m_bc->force_add_cf = 1;
+
+   while (nread < n_values) {
+      if (nfetch < n_values) {
+         memset(&alu_fetch, 0, sizeof(r600_bytecode_alu));
+         alu_fetch.is_lds_idx_op = true;
+         alu_fetch.op = LDS_OP1_LDS_READ_RET;
+
+         copy_src(alu_fetch.src[0], instr.address(nfetch));
+         alu_fetch.src[1].sel = V_SQ_ALU_SRC_0;
+         alu_fetch.src[2].sel = V_SQ_ALU_SRC_0;
+         alu_fetch.last = 1;
+         r = r600_bytecode_add_alu(m_bc, &alu_fetch);
+         m_bc->cf_last->nlds_read++;
+         if (r)
+            return false;
+      }
+
+      if (nfetch >= n_values) {
+         memset(&alu_read, 0, sizeof(r600_bytecode_alu));
+         copy_dst(alu_read.dst, instr.dest(nread));
+         alu_read.op = ALU_OP1_MOV;
+         alu_read.src[0].sel = EG_V_SQ_ALU_SRC_LDS_OQ_A_POP;
+         alu_read.last = 1;
+         alu_read.dst.write = 1;
+         r = r600_bytecode_add_alu(m_bc, &alu_read);
+         m_bc->cf_last->nqueue_read++;
+         if (r)
+            return false;
+         ++nread;
+      }
+      ++nfetch;
+   }
+   assert(m_bc->cf_last->nlds_read == m_bc->cf_last->nqueue_read);
+
+   return true;
+}
 
 bool AssemblyFromShaderLegacyImpl::emit_rat(const RatInstruction& instr)
 {
@@ -972,7 +1102,7 @@ bool AssemblyFromShaderLegacyImpl::emit_rat(const RatInstruction& instr)
 
          }
       } else {
-         const LiteralValue& addr_reg = dynamic_cast<const LiteralValue&>(*addr);
+         const LiteralValue& addr_reg = static_cast<const LiteralValue&>(*addr);
          rat_idx = addr_reg.value();
       }
    }
@@ -1044,21 +1174,31 @@ bool AssemblyFromShaderLegacyImpl::copy_src(r600_bytecode_alu_src& src, const Va
       if (v.value() == 0) {
          src.sel = ALU_SRC_0;
          src.chan = 0;
+         --m_nliterals_in_group;
          return true;
       }
       if (v.value() == 1) {
          src.sel = ALU_SRC_1_INT;
          src.chan = 0;
+         --m_nliterals_in_group;
          return true;
       }
       if (v.value_float() == 1.0f) {
          src.sel = ALU_SRC_1;
          src.chan = 0;
+         --m_nliterals_in_group;
          return true;
       }
       if (v.value_float() == 0.5f) {
          src.sel = ALU_SRC_0_5;
          src.chan = 0;
+         --m_nliterals_in_group;
+         return true;
+      }
+      if (v.value() == 0xffffffff) {
+         src.sel = ALU_SRC_M_1_INT;
+         src.chan = 0;
+         --m_nliterals_in_group;
          return true;
       }
       src.value = v.value();

@@ -71,6 +71,8 @@ st_nir_fixup_varying_slots(struct st_context *st, struct exec_list *var_list)
    nir_foreach_variable(var, var_list) {
       if (var->data.location >= VARYING_SLOT_VAR0) {
          var->data.location += 9;
+      } else if (var->data.location == VARYING_SLOT_PNTC) {
+         var->data.location = VARYING_SLOT_VAR8;
       } else if ((var->data.location >= VARYING_SLOT_TEX0) &&
                (var->data.location <= VARYING_SLOT_TEX7)) {
          var->data.location += VARYING_SLOT_VAR0 - VARYING_SLOT_TEX0;
@@ -401,7 +403,7 @@ st_nir_preprocess(struct st_context *st, struct gl_program *prog,
    }
 
    /* before buffers and vars_to_ssa */
-   NIR_PASS_V(nir, gl_nir_lower_bindless_images);
+   NIR_PASS_V(nir, gl_nir_lower_images, true);
 
    /* TODO: Change GLSL to not lower shared memory. */
    if (prog->nir->info.stage == MESA_SHADER_COMPUTE &&
@@ -661,17 +663,13 @@ st_link_nir(struct gl_context *ctx,
       stp->shader_program = shader_program;
       stp->state.type = PIPE_SHADER_IR_NIR;
 
-      if (shader_program->data->spirv) {
-         prog->Parameters = _mesa_new_parameter_list();
-         /* Parameters will be filled during NIR linking. */
+      /* Parameters will be filled during NIR linking. */
+      prog->Parameters = _mesa_new_parameter_list();
 
+      if (shader_program->data->spirv) {
          prog->nir = _mesa_spirv_to_nir(ctx, shader_program, shader->Stage, options);
       } else {
          validate_ir_tree(shader->ir);
-
-         prog->Parameters = _mesa_new_parameter_list();
-         _mesa_generate_parameters_list_for_uniforms(ctx, shader_program, shader,
-                                                     prog->Parameters);
 
          if (ctx->_Shader->Flags & GLSL_DUMP) {
             _mesa_log("\n");
@@ -681,9 +679,6 @@ st_link_nir(struct gl_context *ctx,
             _mesa_print_ir(_mesa_get_log_file(), shader->ir, NULL);
             _mesa_log("\n\n");
          }
-
-         prog->ExternalSamplersUsed = gl_external_samplers(prog);
-         _mesa_update_shader_textures_used(shader_program, prog);
 
          prog->nir = glsl_to_nir(st->ctx, shader_program, shader->Stage, options);
          st_nir_preprocess(st, prog, shader_program, shader->Stage);
@@ -737,6 +732,12 @@ st_link_nir(struct gl_context *ctx,
    if (!shader_program->data->spirv) {
       if (!gl_nir_link_glsl(ctx, shader_program))
          return GL_FALSE;
+
+      for (unsigned i = 0; i < num_shaders; i++) {
+         struct gl_program *prog = linked_shader[i]->Program;
+         prog->ExternalSamplersUsed = gl_external_samplers(prog);
+         _mesa_update_shader_textures_used(shader_program, prog);
+      }
 
       nir_build_program_resource_list(ctx, shader_program, false);
    }
@@ -793,6 +794,25 @@ st_link_nir(struct gl_context *ctx,
       }
    }
 
+   struct shader_info *prev_info = NULL;
+
+   for (unsigned i = 0; i < num_shaders; i++) {
+      struct gl_linked_shader *shader = linked_shader[i];
+      struct shader_info *info = &shader->Program->nir->info;
+
+      if (prev_info &&
+          ctx->Const.ShaderCompilerOptions[shader->Stage].NirOptions->unify_interfaces) {
+         prev_info->outputs_written |= info->inputs_read &
+            ~(VARYING_BIT_TESS_LEVEL_INNER | VARYING_BIT_TESS_LEVEL_OUTER);
+         info->inputs_read |= prev_info->outputs_written &
+            ~(VARYING_BIT_TESS_LEVEL_INNER | VARYING_BIT_TESS_LEVEL_OUTER);
+
+         prev_info->patch_outputs_written |= info->patch_inputs_read;
+         info->patch_inputs_read |= prev_info->patch_outputs_written;
+      }
+      prev_info = info;
+   }
+
    for (unsigned i = 0; i < num_shaders; i++) {
       struct gl_linked_shader *shader = linked_shader[i];
       struct gl_program *prog = shader->Program;
@@ -817,28 +837,6 @@ st_link_nir(struct gl_context *ctx,
       /* The GLSL IR won't be needed anymore. */
       ralloc_free(shader->ir);
       shader->ir = NULL;
-   }
-
-   struct shader_info *prev_info = NULL;
-
-   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
-      struct gl_linked_shader *shader = shader_program->_LinkedShaders[i];
-      if (!shader)
-         continue;
-
-      struct shader_info *info = &shader->Program->nir->info;
-
-      if (prev_info &&
-          ctx->Const.ShaderCompilerOptions[i].NirOptions->unify_interfaces) {
-         prev_info->outputs_written |= info->inputs_read &
-            ~(VARYING_BIT_TESS_LEVEL_INNER | VARYING_BIT_TESS_LEVEL_OUTER);
-         info->inputs_read |= prev_info->outputs_written &
-            ~(VARYING_BIT_TESS_LEVEL_INNER | VARYING_BIT_TESS_LEVEL_OUTER);
-
-         prev_info->patch_outputs_written |= info->patch_inputs_read;
-         info->patch_inputs_read |= prev_info->patch_outputs_written;
-      }
-      prev_info = info;
    }
 
    return true;
@@ -892,6 +890,7 @@ st_nir_lower_samplers(struct pipe_screen *screen, nir_shader *nir,
    if (prog) {
       prog->info.textures_used = nir->info.textures_used;
       prog->info.textures_used_by_txf = nir->info.textures_used_by_txf;
+      prog->info.images_used = nir->info.images_used;
    }
 }
 
@@ -944,6 +943,8 @@ st_finalize_nir(struct st_context *st, struct gl_program *prog,
 
    st_nir_lower_uniforms(st, nir);
    st_nir_lower_samplers(screen, nir, shader_program, prog);
+   if (!screen->get_param(screen, PIPE_CAP_NIR_IMAGES_AS_DEREF))
+      NIR_PASS_V(nir, gl_nir_lower_images, false);
 
    if (finalize_by_driver && screen->finalize_nir)
       screen->finalize_nir(screen, nir, false);

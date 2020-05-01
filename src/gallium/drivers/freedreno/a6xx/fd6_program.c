@@ -35,6 +35,7 @@
 #include "freedreno_program.h"
 
 #include "fd6_program.h"
+#include "fd6_const.h"
 #include "fd6_emit.h"
 #include "fd6_texture.h"
 #include "fd6_format.h"
@@ -425,24 +426,19 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 			COND(vs->need_pixlod, A6XX_SP_VS_CTRL_REG0_PIXLODENABLE));
 
 	fd6_emit_shader(ring, vs);
-	ir3_emit_immediates(screen, vs, ring);
+	fd6_emit_immediates(screen, vs, ring);
 
 	struct ir3_shader_linkage l = {0};
 	const struct ir3_shader_variant *last_shader = fd6_last_shader(state);
-	ir3_link_shaders(&l, last_shader, fs);
+	ir3_link_shaders(&l, last_shader, fs, true);
 
-	BITSET_DECLARE(varbs, 128) = {0};
-	uint32_t *varmask = (uint32_t *)varbs;
-
-	for (i = 0; i < l.cnt; i++)
-		for (j = 0; j < util_last_bit(l.var[i].compmask); j++)
-			BITSET_SET(varbs, l.var[i].loc + j);
+	bool primid_passthru = l.primid_loc != 0xff;
 
 	OUT_PKT4(ring, REG_A6XX_VPC_VAR_DISABLE(0), 4);
-	OUT_RING(ring, ~varmask[0]);  /* VPC_VAR[0].DISABLE */
-	OUT_RING(ring, ~varmask[1]);  /* VPC_VAR[1].DISABLE */
-	OUT_RING(ring, ~varmask[2]);  /* VPC_VAR[2].DISABLE */
-	OUT_RING(ring, ~varmask[3]);  /* VPC_VAR[3].DISABLE */
+	OUT_RING(ring, ~l.varmask[0]);  /* VPC_VAR[0].DISABLE */
+	OUT_RING(ring, ~l.varmask[1]);  /* VPC_VAR[1].DISABLE */
+	OUT_RING(ring, ~l.varmask[2]);  /* VPC_VAR[2].DISABLE */
+	OUT_RING(ring, ~l.varmask[3]);  /* VPC_VAR[3].DISABLE */
 
 	/* Add stream out outputs after computing the VPC_VAR_DISABLE bitmask. */
 	if (last_shader->shader->stream_output.num_outputs > 0)
@@ -515,8 +511,8 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 			COND(hs->need_pixlod, A6XX_SP_HS_CTRL_REG0_PIXLODENABLE));
 
 		fd6_emit_shader(ring, hs);
-		ir3_emit_immediates(screen, hs, ring);
-		ir3_emit_link_map(screen, vs, hs, ring);
+		fd6_emit_immediates(screen, hs, ring);
+		fd6_emit_link_map(screen, vs, hs, ring);
 
 		OUT_PKT4(ring, REG_A6XX_SP_DS_CTRL_REG0, 1);
 		OUT_RING(ring, A6XX_SP_DS_CTRL_REG0_THREADSIZE(TWO_QUADS) |
@@ -525,8 +521,8 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 			COND(ds->need_pixlod, A6XX_SP_DS_CTRL_REG0_PIXLODENABLE));
 
 		fd6_emit_shader(ring, ds);
-		ir3_emit_immediates(screen, ds, ring);
-		ir3_emit_link_map(screen, hs, ds, ring);
+		fd6_emit_immediates(screen, ds, ring);
+		fd6_emit_link_map(screen, hs, ds, ring);
 
 		shader_info *hs_info = &hs->shader->nir->info;
 		OUT_PKT4(ring, REG_A6XX_PC_TESS_NUM_VERTEX, 1);
@@ -597,7 +593,8 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	OUT_PKT4(ring, REG_A6XX_VPC_CNTL_0, 1);
 	OUT_RING(ring, A6XX_VPC_CNTL_0_NUMNONPOSVAR(fs->total_in) |
 			 COND(enable_varyings, A6XX_VPC_CNTL_0_VARYING) |
-			 0xff00ff00);
+			 A6XX_VPC_CNTL_0_PRIMIDLOC(l.primid_loc) |
+			 A6XX_VPC_CNTL_0_UNKLOC(0xff));
 
 	OUT_PKT4(ring, REG_A6XX_PC_PRIMITIVE_CNTL_1, 1);
 	OUT_RING(ring, A6XX_PC_PRIMITIVE_CNTL_1_STRIDE_IN_VPC(l.max_loc) |
@@ -627,7 +624,6 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	OUT_PKT4(ring, REG_A6XX_SP_FS_CTRL_REG0, 1);
 	OUT_RING(ring, A6XX_SP_FS_CTRL_REG0_THREADSIZE(fssz) |
 			COND(enable_varyings, A6XX_SP_FS_CTRL_REG0_VARYING) |
-			COND(fs->frag_coord, A6XX_SP_FS_CTRL_REG0_VARYING) |
 			0x1000000 |
 			A6XX_SP_FS_CTRL_REG0_FULLREGFOOTPRINT(fs->info.max_reg + 1) |
 			A6XX_SP_FS_CTRL_REG0_MERGEDREGS |
@@ -705,11 +701,11 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 			COND(gs->need_pixlod, A6XX_SP_GS_CTRL_REG0_PIXLODENABLE));
 
 		fd6_emit_shader(ring, gs);
-		ir3_emit_immediates(screen, gs, ring);
+		fd6_emit_immediates(screen, gs, ring);
 		if (ds)
-			ir3_emit_link_map(screen, ds, gs, ring);
+			fd6_emit_link_map(screen, ds, gs, ring);
 		else
-			ir3_emit_link_map(screen, vs, gs, ring);
+			fd6_emit_link_map(screen, vs, gs, ring);
 
 		OUT_PKT4(ring, REG_A6XX_VPC_PACK_GS, 1);
 		OUT_RING(ring, A6XX_VPC_PACK_GS_POSITIONLOC(pos_loc) |
@@ -775,12 +771,12 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 		OUT_PKT4(ring, REG_A6XX_PC_UNKNOWN_9B07, 1);
 		OUT_RING(ring, 0);
 
-		OUT_PKT4(ring, REG_A6XX_SP_GS_UNKNOWN_A871, 1);
+		OUT_PKT4(ring, REG_A6XX_SP_GS_PRIM_SIZE, 1);
 		OUT_RING(ring, prev->shader->output_size);
 	} else {
 		OUT_PKT4(ring, REG_A6XX_PC_PRIMITIVE_CNTL_6, 1);
 		OUT_RING(ring, 0);
-		OUT_PKT4(ring, REG_A6XX_SP_GS_UNKNOWN_A871, 1);
+		OUT_PKT4(ring, REG_A6XX_SP_GS_PRIM_SIZE, 1);
 		OUT_RING(ring, 0);
 	}
 
@@ -792,6 +788,9 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 
 	if (fs->instrlen)
 		fd6_emit_shader(ring, fs);
+
+	OUT_PKT4(ring, REG_A6XX_PC_PRIMID_CNTL, 1);
+	OUT_RING(ring, COND(primid_passthru, A6XX_PC_PRIMID_CNTL_PRIMID_PASSTHRU));
 
 	OUT_PKT4(ring, REG_A6XX_VFD_CONTROL_1, 6);
 	OUT_RING(ring, A6XX_VFD_CONTROL_1_REGID4VTX(vertex_regid) |
@@ -807,7 +806,8 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	OUT_RING(ring, 0x000000fc);   /* VFD_CONTROL_4 */
 	OUT_RING(ring, A6XX_VFD_CONTROL_5_REGID_GSHEADER(gs_header_regid) |
 			0xfc00);   /* VFD_CONTROL_5 */
-	OUT_RING(ring, 0x00000000);   /* VFD_CONTROL_6 */
+	OUT_RING(ring,
+			 COND(primid_passthru, A6XX_VFD_CONTROL_6_PRIMID_PASSTHRU));   /* VFD_CONTROL_6 */
 
 	bool fragz = fs->no_earlyz | fs->writes_pos;
 
@@ -818,7 +818,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	OUT_RING(ring, COND(fragz, A6XX_GRAS_SU_DEPTH_PLANE_CNTL_FRAG_WRITES_Z));
 
 	if (!binning_pass)
-		ir3_emit_immediates(screen, fs, ring);
+		fd6_emit_immediates(screen, fs, ring);
 }
 
 static struct fd_ringbuffer *
@@ -1026,11 +1026,11 @@ fd6_shader_state_create(struct pipe_context *pctx, const struct pipe_shader_stat
 	unsigned packets, size;
 
 	/* pre-calculate size required for userconst stateobj: */
-	ir3_user_consts_size(&shader->ubo_state, &packets, &size);
+	fd6_user_consts_size(&shader->ubo_state, &packets, &size);
 
 	/* also account for UBO addresses: */
 	packets += 1;
-	size += 2 * shader->const_state.num_ubos;
+	size += 2 * align(shader->const_state.num_ubos, 2);
 
 	unsigned sizedwords = (4 * packets) + size;
 	shader->ubo_state.cmdstream_size = sizedwords * 4;

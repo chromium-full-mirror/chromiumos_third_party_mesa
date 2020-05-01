@@ -229,6 +229,9 @@ static bool valid_flags(struct ir3_instruction *instr, unsigned n,
 			if (instr->opc == OPC_STLW && n == 0)
 				return false;
 
+			if (instr->opc == OPC_LDLW && n == 0)
+				return false;
+
 			/* disallow CP into anything but the SSBO slot argument for
 			 * atomics:
 			 */
@@ -241,10 +244,10 @@ static bool valid_flags(struct ir3_instruction *instr, unsigned n,
 			if (instr->opc == OPC_STG && (instr->flags & IR3_INSTR_G) && (n != 2))
 				return false;
 
-			/* as with atomics, ldib on a6xx can only have immediate for
-			 * SSBO slot argument
+			/* as with atomics, ldib and ldc on a6xx can only have immediate
+			 * for SSBO slot argument
 			 */
-			if ((instr->opc == OPC_LDIB) && (n != 0))
+			if ((instr->opc == OPC_LDIB || instr->opc == OPC_LDC) && (n != 0))
 				return false;
 		}
 
@@ -340,6 +343,9 @@ lower_immed(struct ir3_cp_ctx *ctx, struct ir3_register *reg, unsigned new_flags
 		const_state->immediates_size += 4;
 		const_state->immediates = realloc (const_state->immediates,
 			const_state->immediates_size * sizeof(const_state->immediates[0]));
+
+		for (int i = const_state->immediate_idx; i < const_state->immediates_size * 4; i++)
+			const_state->immediates[i / 4].val[i % 4] = 0xd0d0d0d0;
 	}
 
 	for (i = 0; i < const_state->immediate_idx; i++) {
@@ -475,8 +481,8 @@ reg_cp(struct ir3_cp_ctx *ctx, struct ir3_instruction *instr,
 		if (!valid_flags(instr, n, new_flags)) {
 			/* See if lowering an immediate to const would help. */
 			if (valid_flags(instr, n, (new_flags & ~IR3_REG_IMMED) | IR3_REG_CONST)) {
-				bool f_opcode = (ir3_cat2_float(instr->opc) ||
-						ir3_cat3_float(instr->opc)) ? true : false;
+				bool f_opcode = (is_cat2_float(instr->opc) ||
+						is_cat3_float(instr->opc)) ? true : false;
 
 				debug_assert(new_flags & IR3_REG_IMMED);
 
@@ -530,7 +536,7 @@ reg_cp(struct ir3_cp_ctx *ctx, struct ir3_instruction *instr,
 			if (src->cat1.dst_type == TYPE_F16) {
 				if (instr->opc == OPC_MOV && !type_float(instr->cat1.src_type))
 					return false;
-				if (!ir3_cat2_float(instr->opc) && !ir3_cat3_float(instr->opc))
+				if (!is_cat2_float(instr->opc) && !is_cat3_float(instr->opc))
 					return false;
 			}
 
@@ -591,8 +597,8 @@ reg_cp(struct ir3_cp_ctx *ctx, struct ir3_instruction *instr,
 
 				return true;
 			} else if (valid_flags(instr, n, (new_flags & ~IR3_REG_IMMED) | IR3_REG_CONST)) {
-				bool f_opcode = (ir3_cat2_float(instr->opc) ||
-						ir3_cat3_float(instr->opc)) ? true : false;
+				bool f_opcode = (is_cat2_float(instr->opc) ||
+						is_cat3_float(instr->opc)) ? true : false;
 
 				/* See if lowering an immediate to const would help. */
 				instr->regs[n+1] = lower_immed(ctx, src_reg, new_flags, f_opcode);
@@ -643,7 +649,7 @@ instr_cp(struct ir3_cp_ctx *ctx, struct ir3_instruction *instr)
 	bool progress;
 	do {
 		progress = false;
-		foreach_src_n(reg, n, instr) {
+		foreach_src_n (reg, n, instr) {
 			struct ir3_instruction *src = ssa(reg);
 
 			if (!src)
@@ -710,12 +716,14 @@ instr_cp(struct ir3_cp_ctx *ctx, struct ir3_instruction *instr)
 		}
 	}
 
-	/* Handle converting a sam.s2en (taking samp/tex idx params via
-	 * register) into a normal sam (encoding immediate samp/tex idx)
-	 * if they are immediate.  This saves some instructions and regs
-	 * in the common case where we know samp/tex at compile time:
+	/* Handle converting a sam.s2en (taking samp/tex idx params via register)
+	 * into a normal sam (encoding immediate samp/tex idx) if they are
+	 * immediate. This saves some instructions and regs in the common case
+	 * where we know samp/tex at compile time. This needs to be done in the
+	 * frontend for bindless tex, though, so don't replicate it here.
 	 */
 	if (is_tex(instr) && (instr->flags & IR3_INSTR_S2EN) &&
+			!(instr->flags & IR3_INSTR_B) &&
 			!(ir3_shader_debug & IR3_DBG_FORCES2EN)) {
 		/* The first src will be a collect, if both of it's
 		 * two sources are mov from imm, then we can
@@ -767,7 +775,7 @@ ir3_cp(struct ir3 *ir, struct ir3_shader_variant *so)
 			 */
 			debug_assert(instr->deps_count == 0);
 
-			foreach_ssa_src(src, instr) {
+			foreach_ssa_src (src, instr) {
 				src->use_count++;
 			}
 		}
@@ -776,7 +784,7 @@ ir3_cp(struct ir3 *ir, struct ir3_shader_variant *so)
 	ir3_clear_mark(ir);
 
 	struct ir3_instruction *out;
-	foreach_output_n(out, n, ir) {
+	foreach_output_n (out, n, ir) {
 		instr_cp(&ctx, out);
 		ir->outputs[n] = eliminate_output_mov(out);
 	}

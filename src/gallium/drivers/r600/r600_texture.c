@@ -243,8 +243,6 @@ static int r600_init_surface(struct r600_common_screen *rscreen,
 		flags |= RADEON_SURF_SHAREABLE;
 	if (is_imported)
 		flags |= RADEON_SURF_IMPORTED | RADEON_SURF_SHAREABLE;
-	if (!(ptex->flags & R600_RESOURCE_FLAG_FORCE_TILING))
-		flags |= RADEON_SURF_OPTIMIZE_FOR_SPACE;
 
 	r = rscreen->ws->surface_init(rscreen->ws, ptex,
 				      flags, bpe, array_mode, surface);
@@ -918,7 +916,6 @@ r600_texture_create_object(struct pipe_screen *screen,
 
 	resource = &rtex->resource;
 	resource->b.b = *base;
-	resource->b.b.next = NULL;
 	resource->b.vtbl = &r600_texture_vtbl;
 	pipe_reference_init(&resource->b.b.reference, 1);
 	resource->b.b.screen = screen;

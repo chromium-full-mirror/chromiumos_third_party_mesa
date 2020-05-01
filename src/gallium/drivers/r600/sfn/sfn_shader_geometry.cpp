@@ -34,8 +34,8 @@ namespace r600 {
 GeometryShaderFromNir::GeometryShaderFromNir(r600_pipe_shader *sh,
                                              r600_pipe_shader_selector &sel,
                                              const r600_shader_key &key):
-   ShaderFromNirProcessor (PIPE_SHADER_GEOMETRY, sel, sh->shader,
-                           sh->scratch_space_needed),
+   VertexStage(PIPE_SHADER_GEOMETRY, sel, sh->shader,
+               sh->scratch_space_needed),
    m_pipe_shader(sh),
    m_so_info(&sel.so),
    m_first_vertex_emitted(false),
@@ -83,8 +83,11 @@ bool GeometryShaderFromNir::do_process_inputs(nir_variable *input)
 
    if (input->data.location == VARYING_SLOT_POS ||
        input->data.location == VARYING_SLOT_PSIZ ||
+       input->data.location == VARYING_SLOT_CLIP_VERTEX ||
        input->data.location == VARYING_SLOT_CLIP_DIST0 ||
        input->data.location == VARYING_SLOT_CLIP_DIST1 ||
+       input->data.location == VARYING_SLOT_COL0 ||
+       input->data.location == VARYING_SLOT_COL1 ||
        (input->data.location >= VARYING_SLOT_VAR0 &&
        input->data.location <= VARYING_SLOT_VAR31) ||
        (input->data.location >= VARYING_SLOT_TEX0 &&

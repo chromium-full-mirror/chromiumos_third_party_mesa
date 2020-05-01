@@ -28,55 +28,26 @@
 #include "registers/adreno_common.xml.h"
 #include "registers/a6xx.xml.h"
 
-#include "util/format_r11g11b10f.h"
-#include "util/format_rgb9e5.h"
-#include "util/format_srgb.h"
-#include "util/u_half.h"
 #include "vk_format.h"
 #include "vk_util.h"
 #include "drm-uapi/drm_fourcc.h"
 
-/**
- * Declare a format table.  A format table is an array of tu_native_format.
- * It can map a consecutive range of VkFormat to the corresponding
- * tu_native_format.
- *
- * TU_FORMAT_TABLE_FIRST and TU_FORMAT_TABLE_LAST must already be defined and
- * have the values of the first and last VkFormat of the array respectively.
- */
-#define TU_FORMAT_TABLE(var)                                                 \
-   static const VkFormat var##_first = TU_FORMAT_TABLE_FIRST;                \
-   static const VkFormat var##_last = TU_FORMAT_TABLE_LAST;                  \
-   static const struct tu_native_format var[TU_FORMAT_TABLE_LAST - TU_FORMAT_TABLE_FIRST + 1]
-#undef TU_FORMAT_TABLE_FIRST
-#undef TU_FORMAT_TABLE_LAST
-
 #define FMT6_x -1
 
-#define TU6_FMT(vkfmt, vtxfmt, texfmt, rbfmt, swapfmt, valid)                \
-   [VK_FORMAT_##vkfmt - TU_FORMAT_TABLE_FIRST] = {                           \
-      .vtx = FMT6_##vtxfmt,                                                  \
-      .tex = FMT6_##texfmt,                                                  \
-      .rb = (FMT6_##rbfmt == FMT6_10_10_10_2_UNORM) ? FMT6_10_10_10_2_UNORM_DEST : FMT6_##rbfmt, \
-      .swap = swapfmt,                                                       \
-      .present = valid,                                                      \
+#define TU6_FMT(vkfmt, hwfmt, swapfmt, valid) \
+   [VK_FORMAT_##vkfmt] = {                   \
+      .fmt = FMT6_##hwfmt,                     \
+      .swap = swapfmt,                       \
+      .supported = valid,                    \
    }
 
-/**
- * fmt/alias/swap are derived from VkFormat mechanically (and might not even
- * exist).  It is the macro of choice that decides whether a VkFormat is
- * supported and how.
- */
-#define TU6_VTC(vk, fmt, swap) TU6_FMT(vk, fmt, fmt, fmt, swap, true)
-#define TU6_xTC(vk, fmt, swap) TU6_FMT(vk, x, fmt, fmt, swap, true)
-#define TU6_VTx(vk, fmt, swap) TU6_FMT(vk, fmt, fmt, x, swap, true)
-#define TU6_Vxx(vk, fmt, swap) TU6_FMT(vk, fmt, x, x, swap, true)
-#define TU6_xTx(vk, fmt, swap) TU6_FMT(vk, x, fmt, x, swap, true)
-#define TU6_xxx(vk, fmt, swap) TU6_FMT(vk, x, x, x, WZYX, false)
+#define TU6_VTC(vk, fmt, swap) TU6_FMT(vk, fmt, swap, FMT_VERTEX | FMT_TEXTURE | FMT_COLOR)
+#define TU6_xTC(vk, fmt, swap) TU6_FMT(vk, fmt, swap, FMT_TEXTURE | FMT_COLOR)
+#define TU6_Vxx(vk, fmt, swap) TU6_FMT(vk, fmt, swap, FMT_VERTEX)
+#define TU6_xTx(vk, fmt, swap) TU6_FMT(vk, fmt, swap, FMT_TEXTURE)
+#define TU6_xxx(vk, fmt, swap) TU6_FMT(vk, x, WZYX, false)
 
-#define TU_FORMAT_TABLE_FIRST VK_FORMAT_UNDEFINED
-#define TU_FORMAT_TABLE_LAST VK_FORMAT_ASTC_12x12_SRGB_BLOCK
-TU_FORMAT_TABLE(tu6_format_table0) = {
+static const struct tu_native_format tu6_format_table[] = {
    TU6_xxx(UNDEFINED,                  x,                 x),    /* 0 */
 
    /* 8-bit packed */
@@ -87,8 +58,8 @@ TU_FORMAT_TABLE(tu6_format_table0) = {
    TU6_xTC(B4G4R4A4_UNORM_PACK16,      4_4_4_4_UNORM,     ZYXW), /* 3 */
    TU6_xTC(R5G6B5_UNORM_PACK16,        5_6_5_UNORM,       WXYZ), /* 4 */
    TU6_xTC(B5G6R5_UNORM_PACK16,        5_6_5_UNORM,       WZYX), /* 5 */
-   TU6_xxx(R5G5B5A1_UNORM_PACK16,      1_5_5_5_UNORM,     XYZW), /* 6 */
-   TU6_xxx(B5G5R5A1_UNORM_PACK16,      1_5_5_5_UNORM,     XYZW), /* 7 */
+   TU6_xTC(R5G5B5A1_UNORM_PACK16,      5_5_5_1_UNORM,     XYZW), /* 6 */
+   TU6_xTC(B5G5R5A1_UNORM_PACK16,      5_5_5_1_UNORM,     ZYXW), /* 7 */
    TU6_xTC(A1R5G5B5_UNORM_PACK16,      5_5_5_1_UNORM,     WXYZ), /* 8 */
 
    /* 8-bit R */
@@ -247,13 +218,13 @@ TU_FORMAT_TABLE(tu6_format_table0) = {
    TU6_xTx(E5B9G9R9_UFLOAT_PACK32,     9_9_9_E5_FLOAT,    WZYX), /* 123 */
 
    /* depth/stencil */
-   TU6_xTC(D16_UNORM,                  16_UNORM,          WZYX), /* 124 */
-   TU6_xTC(X8_D24_UNORM_PACK32,        Z24_UNORM_S8_UINT, WZYX), /* 125 */
-   TU6_xTC(D32_SFLOAT,                 32_FLOAT,          WZYX), /* 126 */
-   TU6_xTC(S8_UINT,                    8_UINT,            WZYX), /* 127 */
-   TU6_xxx(D16_UNORM_S8_UINT,          X8Z16_UNORM,       WZYX), /* 128 */
-   TU6_xTC(D24_UNORM_S8_UINT,          Z24_UNORM_S8_UINT, WZYX), /* 129 */
-   TU6_xxx(D32_SFLOAT_S8_UINT,         x,                 WZYX), /* 130 */
+   TU6_xTC(D16_UNORM,                  16_UNORM,                      WZYX), /* 124 */
+   TU6_xTC(X8_D24_UNORM_PACK32,        Z24_UNORM_S8_UINT_AS_R8G8B8A8, WZYX), /* 125 */
+   TU6_xTC(D32_SFLOAT,                 32_FLOAT,                      WZYX), /* 126 */
+   TU6_xTC(S8_UINT,                    8_UINT,                        WZYX), /* 127 */
+   TU6_xxx(D16_UNORM_S8_UINT,          X8Z16_UNORM,                   WZYX), /* 128 */
+   TU6_xTC(D24_UNORM_S8_UINT,          Z24_UNORM_S8_UINT_AS_R8G8B8A8, WZYX), /* 129 */
+   TU6_xxx(D32_SFLOAT_S8_UINT,         x,                             WZYX), /* 130 */
 
    /* compressed */
    TU6_xTx(BC1_RGB_UNORM_BLOCK,        DXT1,              WZYX), /* 131 */
@@ -311,94 +282,66 @@ TU_FORMAT_TABLE(tu6_format_table0) = {
    TU6_xTx(ASTC_12x12_UNORM_BLOCK,     ASTC_12x12,        WZYX), /* 183 */
    TU6_xTx(ASTC_12x12_SRGB_BLOCK,      ASTC_12x12,        WZYX), /* 184 */
 };
-#undef TU_FORMAT_TABLE_FIRST
-#undef TU_FORMAT_TABLE_LAST
 
-const struct tu_native_format *
+static struct tu_native_format
 tu6_get_native_format(VkFormat format)
 {
-   const struct tu_native_format *fmt = NULL;
+   struct tu_native_format fmt = {};
 
-   if (format >= tu6_format_table0_first && format <= tu6_format_table0_last)
-      fmt = &tu6_format_table0[format - tu6_format_table0_first];
+   if (format >= ARRAY_SIZE(tu6_format_table))
+      return fmt;
 
-   if (!fmt || !fmt->present)
-      return NULL;
+   if (!tu6_format_table[format].supported)
+      return fmt;
 
    if (vk_format_to_pipe_format(format) == PIPE_FORMAT_NONE) {
       tu_finishme("vk_format %d missing matching pipe format.\n", format);
-      return NULL;
+      return fmt;
    }
 
-   return (fmt && fmt->present) ? fmt : NULL;
+   return tu6_format_table[format];
 }
 
-enum a6xx_2d_ifmt
-tu6_fmt_to_ifmt(enum a6xx_format fmt)
+struct tu_native_format
+tu6_format_vtx(VkFormat format)
 {
-   switch (fmt) {
-   case FMT6_A8_UNORM:
-   case FMT6_8_UNORM:
-   case FMT6_8_SNORM:
-   case FMT6_8_8_UNORM:
-   case FMT6_8_8_SNORM:
-   case FMT6_8_8_8_8_UNORM:
-   case FMT6_8_8_8_X8_UNORM:
-   case FMT6_8_8_8_8_SNORM:
-   case FMT6_4_4_4_4_UNORM:
-   case FMT6_5_5_5_1_UNORM:
-   case FMT6_5_6_5_UNORM:
-   case FMT6_Z24_UNORM_S8_UINT:
-   case FMT6_Z24_UNORM_S8_UINT_AS_R8G8B8A8:
-      return R2D_UNORM8;
+   struct tu_native_format fmt = tu6_get_native_format(format);
+   assert(fmt.supported & FMT_VERTEX);
+   return fmt;
+}
 
-   case FMT6_32_UINT:
-   case FMT6_32_SINT:
-   case FMT6_32_32_UINT:
-   case FMT6_32_32_SINT:
-   case FMT6_32_32_32_32_UINT:
-   case FMT6_32_32_32_32_SINT:
-      return R2D_INT32;
+struct tu_native_format
+tu6_format_color(VkFormat format, enum a6xx_tile_mode tile_mode)
+{
+   struct tu_native_format fmt = tu6_get_native_format(format);
+   assert(fmt.supported & FMT_COLOR);
 
-   case FMT6_16_UINT:
-   case FMT6_16_SINT:
-   case FMT6_16_16_UINT:
-   case FMT6_16_16_SINT:
-   case FMT6_16_16_16_16_UINT:
-   case FMT6_16_16_16_16_SINT:
-   case FMT6_10_10_10_2_UINT:
-      return R2D_INT16;
+   if (fmt.fmt == FMT6_10_10_10_2_UNORM)
+      fmt.fmt = FMT6_10_10_10_2_UNORM_DEST;
 
-   case FMT6_8_UINT:
-   case FMT6_8_SINT:
-   case FMT6_8_8_UINT:
-   case FMT6_8_8_SINT:
-   case FMT6_8_8_8_8_UINT:
-   case FMT6_8_8_8_8_SINT:
-      return R2D_INT8;
+   if (tile_mode)
+      fmt.swap = WZYX;
 
-   case FMT6_16_UNORM:
-   case FMT6_16_SNORM:
-   case FMT6_16_16_UNORM:
-   case FMT6_16_16_SNORM:
-   case FMT6_16_16_16_16_UNORM:
-   case FMT6_16_16_16_16_SNORM:
-   case FMT6_32_FLOAT:
-   case FMT6_32_32_FLOAT:
-   case FMT6_32_32_32_32_FLOAT:
-      return R2D_FLOAT32;
+   return fmt;
+}
 
-   case FMT6_16_FLOAT:
-   case FMT6_16_16_FLOAT:
-   case FMT6_16_16_16_16_FLOAT:
-   case FMT6_11_11_10_FLOAT:
-   case FMT6_10_10_10_2_UNORM_DEST:
-      return R2D_FLOAT16;
+struct tu_native_format
+tu6_format_texture(VkFormat format, enum a6xx_tile_mode tile_mode)
+{
+   struct tu_native_format fmt = tu6_get_native_format(format);
+   assert(fmt.supported & FMT_TEXTURE);
 
-   default:
-      unreachable("bad format");
-      return 0;
+   if (!tile_mode) {
+      /* different from format table when used as linear src */
+      if (format == VK_FORMAT_R5G5B5A1_UNORM_PACK16)
+         fmt.fmt = FMT6_1_5_5_5_UNORM, fmt.swap = WXYZ;
+      if (format == VK_FORMAT_B5G5R5A1_UNORM_PACK16)
+         fmt.fmt = FMT6_1_5_5_5_UNORM, fmt.swap = WZYX;
+   } else {
+      fmt.swap = WZYX;
    }
+
+   return fmt;
 }
 
 enum a6xx_depth_format
@@ -411,309 +354,10 @@ tu6_pipe2depth(VkFormat format)
    case VK_FORMAT_D24_UNORM_S8_UINT:
       return DEPTH6_24_8;
    case VK_FORMAT_D32_SFLOAT:
+   case VK_FORMAT_S8_UINT:
       return DEPTH6_32;
    default:
       return ~0;
-   }
-}
-
-static uint32_t
-tu_pack_mask(int bits)
-{
-   assert(bits <= 32);
-   return (1ull << bits) - 1;
-}
-
-static uint32_t
-tu_pack_float32_for_unorm(float val, int bits)
-{
-   const uint32_t max = tu_pack_mask(bits);
-   if (val < 0.0f)
-      return 0;
-   else if (val > 1.0f)
-      return max;
-   else
-      return _mesa_lroundevenf(val * (float) max);
-}
-
-static uint32_t
-tu_pack_float32_for_snorm(float val, int bits)
-{
-   const int32_t max = tu_pack_mask(bits - 1);
-   int32_t tmp;
-   if (val < -1.0f)
-      tmp = -max;
-   else if (val > 1.0f)
-      tmp = max;
-   else
-      tmp = _mesa_lroundevenf(val * (float) max);
-
-   return tmp & tu_pack_mask(bits);
-}
-
-static uint32_t
-tu_pack_float32_for_uscaled(float val, int bits)
-{
-   const uint32_t max = tu_pack_mask(bits);
-   if (val < 0.0f)
-      return 0;
-   else if (val > (float) max)
-      return max;
-   else
-      return (uint32_t) val;
-}
-
-static uint32_t
-tu_pack_float32_for_sscaled(float val, int bits)
-{
-   const int32_t max = tu_pack_mask(bits - 1);
-   const int32_t min = -max - 1;
-   int32_t tmp;
-   if (val < (float) min)
-      tmp = min;
-   else if (val > (float) max)
-      tmp = max;
-   else
-      tmp = (int32_t) val;
-
-   return tmp & tu_pack_mask(bits);
-}
-
-static uint32_t
-tu_pack_uint32_for_uint(uint32_t val, int bits)
-{
-   return val & tu_pack_mask(bits);
-}
-
-static uint32_t
-tu_pack_int32_for_sint(int32_t val, int bits)
-{
-   return val & tu_pack_mask(bits);
-}
-
-static uint32_t
-tu_pack_float32_for_sfloat(float val, int bits)
-{
-   assert(bits == 16 || bits == 32);
-   return bits == 16 ? util_float_to_half(val) : fui(val);
-}
-
-union tu_clear_component_value {
-   float float32;
-   int32_t int32;
-   uint32_t uint32;
-};
-
-static uint32_t
-tu_pack_clear_component_value(union tu_clear_component_value val,
-                              const struct util_format_channel_description *ch)
-{
-   uint32_t packed;
-
-   switch (ch->type) {
-   case UTIL_FORMAT_TYPE_UNSIGNED:
-      /* normalized, scaled, or pure integer */
-      if (ch->normalized)
-         packed = tu_pack_float32_for_unorm(val.float32, ch->size);
-      else if (ch->pure_integer)
-         packed = tu_pack_uint32_for_uint(val.uint32, ch->size);
-      else
-         packed = tu_pack_float32_for_uscaled(val.float32, ch->size);
-      break;
-   case UTIL_FORMAT_TYPE_SIGNED:
-      /* normalized, scaled, or pure integer */
-      if (ch->normalized)
-         packed = tu_pack_float32_for_snorm(val.float32, ch->size);
-      else if (ch->pure_integer)
-         packed = tu_pack_int32_for_sint(val.int32, ch->size);
-      else
-         packed = tu_pack_float32_for_sscaled(val.float32, ch->size);
-      break;
-   case UTIL_FORMAT_TYPE_FLOAT:
-      packed = tu_pack_float32_for_sfloat(val.float32, ch->size);
-      break;
-   default:
-      unreachable("unexpected channel type");
-      packed = 0;
-      break;
-   }
-
-   assert((packed & tu_pack_mask(ch->size)) == packed);
-   return packed;
-}
-
-static const struct util_format_channel_description *
-tu_get_format_channel_description(const struct util_format_description *desc,
-                                  int comp)
-{
-   switch (desc->swizzle[comp]) {
-   case PIPE_SWIZZLE_X:
-      return &desc->channel[0];
-   case PIPE_SWIZZLE_Y:
-      return &desc->channel[1];
-   case PIPE_SWIZZLE_Z:
-      return &desc->channel[2];
-   case PIPE_SWIZZLE_W:
-      return &desc->channel[3];
-   default:
-      return NULL;
-   }
-}
-
-static union tu_clear_component_value
-tu_get_clear_component_value(const VkClearValue *val, int comp,
-                             enum util_format_colorspace colorspace)
-{
-   assert(comp < 4);
-
-   union tu_clear_component_value tmp;
-   switch (colorspace) {
-   case UTIL_FORMAT_COLORSPACE_ZS:
-      assert(comp < 2);
-      if (comp == 0)
-         tmp.float32 = val->depthStencil.depth;
-      else
-         tmp.uint32 = val->depthStencil.stencil;
-      break;
-   case UTIL_FORMAT_COLORSPACE_SRGB:
-      if (comp < 3) {
-         tmp.float32 = util_format_linear_to_srgb_float(val->color.float32[comp]);
-         break;
-      }
-   default:
-      assert(comp < 4);
-      tmp.uint32 = val->color.uint32[comp];
-      break;
-   }
-
-   return tmp;
-}
-
-/**
- * Pack a VkClearValue into a 128-bit buffer.  \a format is respected except
- * for the component order.  The components are always packed in WZYX order
- * (i.e., msb is white and lsb is red).
- *
- * Return the number of uint32_t's used.
- */
-void
-tu_pack_clear_value(const VkClearValue *val, VkFormat format, uint32_t buf[4])
-{
-   const struct util_format_description *desc = vk_format_description(format);
-
-   switch (format) {
-   case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
-      buf[0] = float3_to_r11g11b10f(val->color.float32);
-      return;
-   case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32:
-      buf[0] = float3_to_rgb9e5(val->color.float32);
-      return;
-   default:
-      break;
-   }
-
-   assert(desc && desc->layout == UTIL_FORMAT_LAYOUT_PLAIN);
-
-   /* S8_UINT is special and has no depth */
-   const int max_components =
-      format == VK_FORMAT_S8_UINT ? 2 : desc->nr_channels;
-
-   int buf_offset = 0;
-   int bit_shift = 0;
-   for (int comp = 0; comp < max_components; comp++) {
-      const struct util_format_channel_description *ch =
-         tu_get_format_channel_description(desc, comp);
-      if (!ch) {
-         assert((format == VK_FORMAT_S8_UINT && comp == 0) ||
-                (format == VK_FORMAT_X8_D24_UNORM_PACK32 && comp == 1));
-         continue;
-      }
-
-      union tu_clear_component_value v = tu_get_clear_component_value(
-         val, comp, desc->colorspace);
-
-      /* move to the next uint32_t when there is not enough space */
-      assert(ch->size <= 32);
-      if (bit_shift + ch->size > 32) {
-         buf_offset++;
-         bit_shift = 0;
-      }
-
-      if (bit_shift == 0)
-         buf[buf_offset] = 0;
-
-      buf[buf_offset] |= tu_pack_clear_component_value(v, ch) << bit_shift;
-      bit_shift += ch->size;
-   }
-}
-
-void
-tu_2d_clear_color(const VkClearColorValue *val, VkFormat format, uint32_t buf[4])
-{
-   const struct util_format_description *desc = vk_format_description(format);
-
-   /* not supported by 2D engine, cleared as U32 */
-   if (format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32) {
-      buf[0] = float3_to_rgb9e5(val->float32);
-      return;
-   }
-
-   enum a6xx_2d_ifmt ifmt = tu6_fmt_to_ifmt(tu6_get_native_format(format)->rb);
-
-   assert(desc && (desc->layout == UTIL_FORMAT_LAYOUT_PLAIN ||
-                   format == VK_FORMAT_B10G11R11_UFLOAT_PACK32));
-
-   for (unsigned i = 0; i < desc->nr_channels; i++) {
-      const struct util_format_channel_description *ch = &desc->channel[i];
-
-      switch (ifmt) {
-      case R2D_INT32:
-      case R2D_INT16:
-      case R2D_INT8:
-      case R2D_FLOAT32:
-         buf[i] = val->uint32[i];
-         break;
-      case R2D_FLOAT16:
-         buf[i] = util_float_to_half(val->float32[i]);
-         break;
-      case R2D_UNORM8: {
-         float linear = val->float32[i];
-         if (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB && i < 3)
-            linear = util_format_linear_to_srgb_float(val->float32[i]);
-
-         if (ch->type == UTIL_FORMAT_TYPE_SIGNED)
-            buf[i] = tu_pack_float32_for_snorm(linear, 8);
-         else
-            buf[i] = tu_pack_float32_for_unorm(linear, 8);
-      } break;
-      default:
-         unreachable("unexpected ifmt");
-         break;
-      }
-   }
-}
-
-void
-tu_2d_clear_zs(const VkClearDepthStencilValue *val, VkFormat format, uint32_t buf[4])
-{
-   switch (format) {
-   case VK_FORMAT_X8_D24_UNORM_PACK32:
-   case VK_FORMAT_D24_UNORM_S8_UINT:
-      buf[0] = tu_pack_float32_for_unorm(val->depth, 24);
-      buf[1] = buf[0] >> 8;
-      buf[2] = buf[0] >> 16;
-      buf[3] = val->stencil;
-      return;
-   case VK_FORMAT_D16_UNORM:
-   case VK_FORMAT_D32_SFLOAT:
-      buf[0] = fui(val->depth);
-      return;
-   case VK_FORMAT_S8_UINT:
-      buf[0] = val->stencil;
-      return;
-   default:
-      unreachable("unexpected zs format");
-      break;
    }
 }
 
@@ -725,26 +369,33 @@ tu_physical_device_get_format_properties(
 {
    VkFormatFeatureFlags linear = 0, optimal = 0, buffer = 0;
    const struct util_format_description *desc = vk_format_description(format);
-   const struct tu_native_format *native_fmt = tu6_get_native_format(format);
-   if (!desc || !native_fmt) {
+   const struct tu_native_format native_fmt = tu6_get_native_format(format);
+   if (!desc || !native_fmt.supported) {
       goto end;
    }
 
    buffer |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
-   if (native_fmt->vtx >= 0) {
+   if (native_fmt.supported & FMT_VERTEX)
       buffer |= VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT;
-   }
 
-   if (native_fmt->tex >= 0 || native_fmt->rb >= 0)
-      optimal |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
-
-   if (native_fmt->tex >= 0) {
-      optimal |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+   if (native_fmt.supported & FMT_TEXTURE) {
+      optimal |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+                 VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+                 VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                 VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+                 VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT;
       buffer |= VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT;
+
+      if (physical_device->supported_extensions.EXT_filter_cubic)
+         optimal |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT;
    }
 
-   if (native_fmt->rb >= 0)
-      optimal |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+   if (native_fmt.supported & FMT_COLOR) {
+      assert(native_fmt.supported & FMT_TEXTURE);
+      optimal |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+                 VK_FORMAT_FEATURE_BLIT_SRC_BIT |
+                 VK_FORMAT_FEATURE_BLIT_DST_BIT;
+   }
 
    /* For the most part, we can do anything with a linear image that we could
     * do with a tiled image. However, we can't support sysmem rendering with a
@@ -810,8 +461,8 @@ static VkResult
 tu_get_image_format_properties(
    struct tu_physical_device *physical_device,
    const VkPhysicalDeviceImageFormatInfo2 *info,
-   VkImageFormatProperties *pImageFormatProperties)
-
+   VkImageFormatProperties *pImageFormatProperties,
+   VkFormatFeatureFlags *p_feature_flags)
 {
    VkFormatProperties format_props;
    VkFormatFeatureFlags format_feature_flags;
@@ -890,9 +541,10 @@ tu_get_image_format_properties(
        !(info->flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) &&
        !(info->usage & VK_IMAGE_USAGE_STORAGE_BIT)) {
       sampleCounts |= VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT;
-      /* 8x MSAA on 128bpp formats doesn't seem to work */
-      if (vk_format_get_blocksize(info->format) <= 8)
-         sampleCounts |= VK_SAMPLE_COUNT_8_BIT;
+      /* note: most operations support 8 samples (GMEM render/resolve do at least)
+       * but some do not (which ones?), just disable 8 samples completely,
+       * (no 8x msaa matches the blob driver behavior)
+       */
    }
 
    if (info->usage & VK_IMAGE_USAGE_SAMPLED_BIT) {
@@ -932,6 +584,9 @@ tu_get_image_format_properties(
       .maxResourceSize = UINT32_MAX,
    };
 
+   if (p_feature_flags)
+      *p_feature_flags = format_feature_flags;
+
    return VK_SUCCESS;
 unsupported:
    *pImageFormatProperties = (VkImageFormatProperties) {
@@ -968,7 +623,7 @@ tu_GetPhysicalDeviceImageFormatProperties(
    };
 
    return tu_get_image_format_properties(physical_device, &info,
-                                         pImageFormatProperties);
+                                         pImageFormatProperties, NULL);
 }
 
 static VkResult
@@ -1035,11 +690,14 @@ tu_GetPhysicalDeviceImageFormatProperties2(
 {
    TU_FROM_HANDLE(tu_physical_device, physical_device, physicalDevice);
    const VkPhysicalDeviceExternalImageFormatInfo *external_info = NULL;
+   const VkPhysicalDeviceImageViewImageFormatInfoEXT *image_view_info = NULL;
    VkExternalImageFormatProperties *external_props = NULL;
+   VkFilterCubicImageViewImageFormatPropertiesEXT *cubic_props = NULL;
+   VkFormatFeatureFlags format_feature_flags;
    VkResult result;
 
-   result = tu_get_image_format_properties(
-      physical_device, base_info, &base_props->imageFormatProperties);
+   result = tu_get_image_format_properties(physical_device,
+      base_info, &base_props->imageFormatProperties, &format_feature_flags);
    if (result != VK_SUCCESS)
       return result;
 
@@ -1049,6 +707,9 @@ tu_GetPhysicalDeviceImageFormatProperties2(
       switch (s->sType) {
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO:
          external_info = (const void *) s;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_IMAGE_FORMAT_INFO_EXT:
+         image_view_info = (const void *) s;
          break;
       default:
          break;
@@ -1061,6 +722,9 @@ tu_GetPhysicalDeviceImageFormatProperties2(
       switch (s->sType) {
       case VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES:
          external_props = (void *) s;
+         break;
+      case VK_STRUCTURE_TYPE_FILTER_CUBIC_IMAGE_VIEW_IMAGE_FORMAT_PROPERTIES_EXT:
+         cubic_props = (void *) s;
          break;
       default:
          break;
@@ -1079,6 +743,21 @@ tu_GetPhysicalDeviceImageFormatProperties2(
          &external_props->externalMemoryProperties);
       if (result != VK_SUCCESS)
          goto fail;
+   }
+
+   if (cubic_props) {
+      /* note: blob only allows cubic filtering for 2D and 2D array views
+       * its likely we can enable it for 1D and CUBE, needs testing however
+       */
+      if ((image_view_info->imageViewType == VK_IMAGE_VIEW_TYPE_2D ||
+           image_view_info->imageViewType == VK_IMAGE_VIEW_TYPE_2D_ARRAY) &&
+          (format_feature_flags & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT)) {
+         cubic_props->filterCubic = true;
+         cubic_props->filterCubicMinmax = true;
+      } else {
+         cubic_props->filterCubic = false;
+         cubic_props->filterCubicMinmax = false;
+      }
    }
 
    return VK_SUCCESS;

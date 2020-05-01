@@ -1229,6 +1229,9 @@ void Source::scanProperty(const struct tgsi_full_property *prop)
    case TGSI_PROPERTY_MUL_ZERO_WINS:
       info->io.mul_zero_wins = prop->u[0].Data;
       break;
+   case TGSI_PROPERTY_LAYER_VIEWPORT_RELATIVE:
+      info->io.layer_viewport_relative = prop->u[0].Data;
+      break;
    default:
       INFO("unhandled TGSI property %d\n", prop->Property.PropertyName);
       break;
@@ -1548,6 +1551,7 @@ bool Source::scanInstruction(const struct tgsi_full_instruction *inst)
              info->out[dst.getIndex(0)].sn == TGSI_SEMANTIC_PRIMID ||
              info->out[dst.getIndex(0)].sn == TGSI_SEMANTIC_LAYER ||
              info->out[dst.getIndex(0)].sn == TGSI_SEMANTIC_VIEWPORT_INDEX ||
+             info->out[dst.getIndex(0)].sn == TGSI_SEMANTIC_VIEWPORT_MASK ||
              info->out[dst.getIndex(0)].sn == TGSI_SEMANTIC_FOG)
             info->out[dst.getIndex(0)].mask &= 1;
 
@@ -2315,9 +2319,15 @@ Converter::handleTEX(Value *dst[4], int R, int S, int L, int C, int Dx, int Dy)
    if (C == 0x0f)
       C = 0x00 | MAX2(tgt.getArgCount(), 2); // guess DC src
 
-   if (tgsi.getOpcode() == TGSI_OPCODE_TG4 &&
-       tgt == TEX_TARGET_CUBE_ARRAY_SHADOW)
-      shd = fetchSrc(1, 0);
+   if (tgt == TEX_TARGET_CUBE_ARRAY_SHADOW) {
+      switch (tgsi.getOpcode()) {
+      case TGSI_OPCODE_TG4: shd = fetchSrc(1, 0); break;
+      case TGSI_OPCODE_TEX2: shd = fetchSrc(1, 0); break;
+      case TGSI_OPCODE_TXB2: shd = fetchSrc(1, 1); break;
+      case TGSI_OPCODE_TXL2: shd = fetchSrc(1, 1); break;
+      default: assert(!"unexpected opcode with cube array shadow"); break;
+      }
+   }
    else if (tgt.isShadow())
       shd = fetchSrc(C >> 4, C & 3);
 

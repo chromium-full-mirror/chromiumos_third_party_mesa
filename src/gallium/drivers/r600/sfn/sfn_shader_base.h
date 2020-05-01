@@ -33,6 +33,7 @@
 #include "compiler/nir/nir.h"
 #include "compiler/nir_types.h"
 
+#include "sfn_instruction_block.h"
 #include "sfn_instruction_export.h"
 #include "sfn_alu_defines.h"
 #include "sfn_valuepool.h"
@@ -75,15 +76,17 @@ public:
    void remap_registers();
 
    const nir_variable *get_deref_location(const nir_src& src) const;
+
+   r600_shader& sh_info() {return m_sh_info;}
+   void add_param_output_reg(int loc, const GPRVector *gpr);
+   void set_output(unsigned pos, PValue var);
+   const GPRVector *output_register(unsigned location) const;
+   void evaluate_spi_sid(r600_shader_io &io);
+
 protected:
 
    void set_var_address(nir_deref_instr *instr);
    void set_input(unsigned pos, PValue var);
-   void set_output(unsigned pos, PValue var);
-
-   void evaluate_spi_sid(r600_shader_io &io);
-
-   r600_shader& sh_info() {return m_sh_info;}
 
    bool scan_instruction(nir_instr *instr);
 
@@ -97,22 +100,34 @@ protected:
    bool emit_loop_end(int loop_id);
    bool emit_jump_instruction(nir_jump_instr *instr);
 
-   const GPRVector *output_register(unsigned location) const;
+   bool emit_load_tcs_param_base(nir_intrinsic_instr* instr, int offset);
+   bool emit_load_local_shared(nir_intrinsic_instr* instr);
+   bool emit_store_local_shared(nir_intrinsic_instr* instr);
+
+   bool emit_barrier(nir_intrinsic_instr* instr);
 
    bool load_preloaded_value(const nir_dest& dest, int chan, PValue value,
                              bool as_last = true);
-   void add_param_output_reg(int loc, const GPRVector *gpr);
+
    void inc_atomic_file_count();
-   std::bitset<8> m_sv_values;
 
    enum ESlots {
       es_face,
       es_instanceid,
+      es_invocation_id,
+      es_patch_id,
       es_pos,
+      es_rel_patch_id,
       es_sample_mask_in,
       es_sample_id,
+      es_tess_factor_base,
       es_vertexid,
+      es_tess_coord,
+      es_primitive_id,
+      es_last
    };
+
+   std::bitset<es_last> m_sv_values;
 
 private:
    virtual bool allocate_reserved_registers() = 0;
@@ -140,6 +155,8 @@ private:
    bool process_outputs(nir_variable *output);
 
    void add_array_deref(nir_deref_instr* instr);
+
+   void append_block(int nesting_change);
 
    virtual void emit_shader_start();
    virtual bool emit_deref_instruction_override(nir_deref_instr* instr);
@@ -169,8 +186,10 @@ private:
 
    pipe_shader_type m_processor_type;
 
-   std::vector<PInstruction> m_output;
-   std::vector<PInstruction> m_export_output;
+   std::vector<InstructionBlock> m_output;
+   unsigned m_nesting_depth;
+   unsigned m_block_number;
+   InstructionBlock m_export_output;
    r600_shader& m_sh_info;
 
    EmitTexInstruction m_tex_instr;

@@ -34,7 +34,7 @@
 #include "main/format_utils.h"
 #include "main/glformats.h"
 #include "main/image.h"
-#include "main/imports.h"
+
 #include "main/macros.h"
 #include "main/mipmap.h"
 #include "main/pack.h"
@@ -1487,7 +1487,7 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
 
    /* Try texture_subdata, which should be the fastest memcpy path. */
    if (pixels &&
-       !_mesa_is_bufferobj(unpack->BufferObj) &&
+       !unpack->BufferObj &&
        _mesa_texstore_can_use_memcpy(ctx, texImage->_BaseFormat,
                                      texImage->TexFormat, format, type,
                                      unpack)) {
@@ -1511,7 +1511,7 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
       }
 
       util_throttle_memory_usage(pipe, &st->throttle,
-                                 width * height * depth *
+                                 (uint64_t) width * height * depth *
                                  util_format_get_blocksize(dst->format));
 
       u_box_3d(xoffset, yoffset, zoffset + dstz, width, height, depth, &box);
@@ -1557,7 +1557,7 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
       goto fallback;
    }
 
-   if (_mesa_is_bufferobj(unpack->BufferObj)) {
+   if (unpack->BufferObj) {
       if (try_pbo_upload(ctx, dims, texImage, format, type, dst_format,
                          xoffset, yoffset, zoffset,
                          width, height, depth, pixels, unpack))
@@ -1620,7 +1620,7 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
    }
 
    util_throttle_memory_usage(pipe, &st->throttle,
-                              width * height * depth *
+                              (uint64_t) width * height * depth *
                               util_format_get_blocksize(src_templ.format));
    throttled = true;
 
@@ -1716,7 +1716,7 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
 fallback:
    if (!throttled) {
       util_throttle_memory_usage(pipe, &st->throttle,
-                                 width * height * depth *
+                                 (uint64_t) width * height * depth *
                                  _mesa_get_format_bytes(texImage->TexFormat));
    }
    _mesa_store_texsubimage(ctx, dims, texImage, xoffset, yoffset, zoffset,
@@ -1777,7 +1777,7 @@ st_CompressedTexSubImage(struct gl_context *ctx, GLuint dims,
       goto fallback;
    }
 
-   if (!_mesa_is_bufferobj(ctx->Unpack.BufferObj))
+   if (!ctx->Unpack.BufferObj)
       goto fallback;
 
    if (st_compressed_format_fallback(st, texImage->TexFormat))
@@ -2312,6 +2312,10 @@ fallback_copy_texsubimage(struct gl_context *ctx,
                            PIPE_TRANSFER_READ,
                            srcX, srcY,
                            width, height, &src_trans);
+   if (!map) {
+      _mesa_error(ctx, GL_OUT_OF_MEMORY, "glCopyTexSubImage()");
+      return;
+   }
 
    if ((baseFormat == GL_DEPTH_COMPONENT ||
         baseFormat == GL_DEPTH_STENCIL) &&
@@ -2324,6 +2328,10 @@ fallback_copy_texsubimage(struct gl_context *ctx,
                                   destX, destY, slice,
                                   dst_width, dst_height, dst_depth,
                                   &transfer);
+   if (!texDest) {
+      _mesa_error(ctx, GL_OUT_OF_MEMORY, "glCopyTexSubImage()");
+      goto err;
+   }
 
    if (baseFormat == GL_DEPTH_COMPONENT ||
        baseFormat == GL_DEPTH_STENCIL) {
@@ -2371,7 +2379,7 @@ fallback_copy_texsubimage(struct gl_context *ctx,
       GLfloat *tempSrc =
          malloc(width * height * 4 * sizeof(GLfloat));
 
-      if (tempSrc && texDest) {
+      if (tempSrc) {
          const GLint dims = 2;
          GLint dstRowStride;
          struct gl_texture_image *texImage = &stImage->base;
@@ -2419,6 +2427,7 @@ fallback_copy_texsubimage(struct gl_context *ctx,
    }
 
    st_texture_image_unmap(st, stImage, slice);
+err:
    pipe->transfer_unmap(pipe, src_trans);
 }
 
@@ -3056,7 +3065,7 @@ st_TestProxyTexImage(struct gl_context *ctx, GLenum target,
       }
       else {
          /* assume a full set of mipmaps */
-         pt.last_level = _mesa_logbase2(MAX3(width, height, depth));
+         pt.last_level = util_logbase2(MAX3(width, height, depth));
       }
 
       return pipe->screen->can_create_resource(pipe->screen, &pt);

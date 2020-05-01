@@ -39,28 +39,52 @@
 
 #define MIDGARD_SFBD (1 << 1)
 
+/* Whether fp16 is broken in the compiler. Hopefully this quirk will go away
+ * over time */
+
+#define MIDGARD_BROKEN_FP16 (1 << 2)
+
+/* What it says on the tin */
+#define IS_BIFROST (1 << 3)
+
+/* What it says on the tin */
+#define HAS_SWIZZLES (1 << 4)
+
+/* Quirk collections common to particular uarchs */
+
+#define MIDGARD_QUIRKS (MIDGARD_BROKEN_FP16 | HAS_SWIZZLES)
+
+#define BIFROST_QUIRKS (IS_BIFROST)
+
 static inline unsigned
 panfrost_get_quirks(unsigned gpu_id)
 {
         switch (gpu_id) {
         case 0x600:
         case 0x620:
-                return MIDGARD_SFBD;
+                return MIDGARD_QUIRKS | MIDGARD_SFBD;
 
         case 0x720:
-                return MIDGARD_SFBD | MIDGARD_NO_HIER_TILING;
+                return MIDGARD_QUIRKS | MIDGARD_SFBD | MIDGARD_NO_HIER_TILING;
 
         case 0x820:
         case 0x830:
-                return MIDGARD_NO_HIER_TILING;
+                return MIDGARD_QUIRKS | MIDGARD_NO_HIER_TILING;
 
         case 0x750:
         case 0x860:
         case 0x880:
-                return 0;
+                return MIDGARD_QUIRKS;
+
+        case 0x6000: /* G71 */
+                return BIFROST_QUIRKS | HAS_SWIZZLES;
+
+        case 0x7093: /* G31 */
+        case 0x7212: /* G52 */
+                return BIFROST_QUIRKS;
 
         default:
-                unreachable("Invalid Midgard GPU ID");
+                unreachable("Unknown Panfrost GPU ID");
         }
 }
 

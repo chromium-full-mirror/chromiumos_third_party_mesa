@@ -21,7 +21,7 @@
 libaub = static_library(
   'aub',
   files('aub_read.c', 'aub_mem.c'),
-  include_directories : [inc_common, inc_intel],
+  include_directories : [inc_include, inc_src, inc_intel],
   dependencies : idep_mesautil,
   link_with : [libintel_common, libintel_dev],
   c_args : [c_vis_args, no_override_init_args],
@@ -32,7 +32,7 @@ aubinator = executable(
   'aubinator',
   files('aubinator.c'),
   dependencies : [idep_mesautil, dep_expat, dep_zlib, dep_dl, dep_thread, dep_m],
-  include_directories : [inc_common, inc_intel],
+  include_directories : [inc_include, inc_src, inc_intel],
   link_with : [libintel_common, libintel_compiler, libintel_dev, libaub],
   c_args : [c_vis_args, no_override_init_args],
   install : true
@@ -42,7 +42,7 @@ aubinator_error_decode = executable(
   'aubinator_error_decode',
   files('aubinator_error_decode.c'),
   dependencies : [idep_mesautil, dep_zlib, dep_thread],
-  include_directories : [inc_common, inc_intel],
+  include_directories : [inc_include, inc_src, inc_intel],
   link_with : [libintel_common, libintel_compiler, libintel_dev],
   c_args : [c_vis_args, no_override_init_args],
   install : true
@@ -52,7 +52,7 @@ i965_disasm = executable(
   'i965_disasm',
   files('i965_disasm.c'),
   dependencies : [idep_mesautil, dep_thread],
-  include_directories : [inc_common, inc_intel],
+  include_directories : [inc_include, inc_src, inc_mesa, inc_intel],
   link_with : [libintel_common, libintel_compiler, libintel_dev],
   c_args : [c_vis_args, no_override_init_args],
   install : true
@@ -62,7 +62,7 @@ error2aub = executable(
   'intel_error2aub',
   files('aub_write.h', 'aub_write.c', 'error2aub.c'),
   dependencies : [dep_zlib, dep_dl, dep_thread, dep_m],
-  include_directories : [inc_common, inc_intel, inc_include],
+  include_directories : [inc_include, inc_src, inc_intel],
   link_with : [libintel_dev],
   c_args : [c_vis_args, no_override_init_args],
   install : true
@@ -72,6 +72,10 @@ sanitize_data = configuration_data()
 sanitize_data.set(
   'install_libexecdir',
   join_paths(get_option('prefix'), get_option('libexecdir'))
+)
+sanitize_data.set(
+  'install_libdir',
+  join_paths(get_option('prefix'), get_option('libdir'))
 )
 configure_file(
   input : 'intel_sanitize_gpu.in',
@@ -85,7 +89,7 @@ libintel_sanitize_gpu = shared_library(
   'intel_sanitize_gpu',
   files('intel_sanitize_gpu.c'),
   dependencies : [idep_mesautil, dep_dl, dep_thread],
-  include_directories : [inc_common, inc_intel, inc_include],
+  include_directories : [inc_include, inc_src, inc_intel],
   link_with : libintel_common,
   c_args : [c_vis_args, no_override_init_args, c_sse2_args],
   install_dir : get_option('libexecdir'),
@@ -107,12 +111,32 @@ libintel_dump_gpu = shared_library(
     'aub_write.h', 'aub_write.c', 'intel_dump_gpu.c',
   ),
   dependencies : dep_dl,
-  include_directories : [inc_common, inc_intel, inc_include],
+  include_directories : [inc_include, inc_src, inc_intel],
   link_with : libintel_dev,
   c_args : [c_vis_args, no_override_init_args],
   install_dir : get_option('libexecdir'),
   install : true
 )
+
+if with_tools.contains('drm-shim')
+  configure_file(
+    input : 'intel_stub_gpu.in',
+    output : '@BASENAME@',
+    install_dir : get_option('bindir'),
+    configuration : sanitize_data,
+    install : true
+  )
+
+  libintel_stub_gpu = shared_library(
+    ['intel_noop_drm_shim'],
+    'intel_noop_drm_shim.c',
+    include_directories: [inc_include, inc_src, inc_intel],
+    link_with: libintel_dev,
+    dependencies: [dep_libdrm, dep_drm_shim, idep_mesautil, idep_libintel_common],
+    c_args : c_vis_args,
+    install : true,
+  )
+endif
 
 if with_tools.contains('intel-ui')
   subdir('imgui')
@@ -121,7 +145,7 @@ if with_tools.contains('intel-ui')
     'aubinator_viewer',
     files('aubinator_viewer.cpp', 'aubinator_viewer_decoder.cpp'),
     dependencies : [idep_mesautil, dep_zlib, dep_dl, dep_thread, dep_m, libintel_imgui_gtk_dep],
-    include_directories : [inc_common, inc_intel],
+    include_directories : [inc_include, inc_src, inc_intel],
     link_with : [libintel_common, libintel_compiler, libintel_dev, libaub],
     c_args : [c_vis_args, no_override_init_args],
     cpp_args : ['-fpermissive', '-Wno-parentheses', '-Wno-class-memaccess'],
@@ -150,7 +174,7 @@ i965_asm = executable(
    'i965_asm',
    ['i965_asm.c', i965_gram_tab[0], i965_gram_tab[1], i965_lex_yy_c],
    dependencies : [idep_mesautil, dep_thread],
-   include_directories : [inc_common, inc_intel],
+   include_directories : [inc_include, inc_src, inc_mesa, inc_intel],
    link_with : [libintel_common, libintel_compiler, libintel_dev],
    c_args : [c_vis_args, no_override_init_args],
    install : true

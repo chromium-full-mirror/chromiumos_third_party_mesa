@@ -63,12 +63,6 @@
 
 #define FILE_DEBUG_FLAG DEBUG_BUFMGR
 
-/* Terminating the batch takes either 4 bytes for MI_BATCH_BUFFER_END
- * or 12 bytes for MI_BATCH_BUFFER_START (when chaining).  Plus, we may
- * need an extra 4 bytes to pad out to the nearest QWord.  So reserve 16.
- */
-#define BATCH_RESERVED 16
-
 static void
 iris_batch_reset(struct iris_batch *batch);
 
@@ -175,7 +169,6 @@ decode_batch(struct iris_batch *batch)
 void
 iris_init_batch(struct iris_batch *batch,
                 struct iris_screen *screen,
-                struct iris_vtable *vtbl,
                 struct pipe_debug_callback *dbg,
                 struct pipe_device_reset_callback *reset,
                 struct hash_table_u64 *state_sizes,
@@ -184,7 +177,6 @@ iris_init_batch(struct iris_batch *batch,
                 int priority)
 {
    batch->screen = screen;
-   batch->vtbl = vtbl;
    batch->dbg = dbg;
    batch->reset = reset;
    batch->state_sizes = state_sizes;
@@ -670,6 +662,10 @@ _iris_batch_flush(struct iris_batch *batch, const char *file, int line)
 
    if (unlikely(INTEL_DEBUG &
                 (DEBUG_BATCH | DEBUG_SUBMIT | DEBUG_PIPE_CONTROL))) {
+      const char *basefile = strstr(file, "iris/");
+      if (basefile)
+         file = basefile + 5;
+
       fprintf(stderr, "%19s:%-3d: %s batch [%u] flush with %5db (%0.1f%%) "
               "(cmds), %4d BOs (%0.1fMb aperture)\n",
               file, line, batch_name_to_string(batch->name), batch->hw_ctx_id,

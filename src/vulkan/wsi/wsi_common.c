@@ -588,8 +588,10 @@ wsi_create_native_image(const struct wsi_swapchain *chain,
       result = wsi->GetImageDrmFormatModifierPropertiesEXT(chain->device,
                                                            image->image,
                                                            &image_mod_props);
-      if (result != VK_SUCCESS)
+      if (result != VK_SUCCESS) {
+         close(fd);
          goto fail;
+      }
       image->drm_modifier = image_mod_props.drmFormatModifier;
       assert(image->drm_modifier != DRM_FORMAT_MOD_INVALID);
 
@@ -618,8 +620,9 @@ wsi_create_native_image(const struct wsi_swapchain *chain,
             image->fds[p] = dup(fd);
             if (image->fds[p] == -1) {
                for (uint32_t i = 0; i < p; i++)
-                  close(image->fds[p]);
+                  close(image->fds[i]);
 
+               result = VK_ERROR_OUT_OF_HOST_MEMORY;
                goto fail;
             }
          }
@@ -1095,6 +1098,11 @@ wsi_common_acquire_next_image2(const struct wsi_device *wsi,
    if (result != VK_SUCCESS)
       return result;
 
+   if (wsi->set_memory_ownership) {
+      VkDeviceMemory mem = swapchain->get_wsi_image(swapchain, *pImageIndex)->memory;
+      wsi->set_memory_ownership(swapchain->device, mem, true);
+   }
+
    if (pAcquireInfo->semaphore != VK_NULL_HANDLE &&
        wsi->signal_semaphore_for_memory != NULL) {
       struct wsi_image *image =
@@ -1215,6 +1223,11 @@ wsi_common_queue_present(const struct wsi_device *wsi,
       result = swapchain->queue_present(swapchain, image_index, region);
       if (result != VK_SUCCESS)
          goto fail_present;
+
+      if (wsi->set_memory_ownership) {
+         VkDeviceMemory mem = swapchain->get_wsi_image(swapchain, image_index)->memory;
+         wsi->set_memory_ownership(swapchain->device, mem, false);
+      }
 
    fail_present:
       if (pPresentInfo->pResults != NULL)

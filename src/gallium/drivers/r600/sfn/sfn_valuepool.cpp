@@ -53,8 +53,27 @@ GPRVector ValuePool::vec_from_nir(const nir_dest& dst, int num_components)
    for (int i = 0; i < 4; ++i)
       result[i] = from_nir(dst, i < num_components ? i : 7);
    return GPRVector(result);
-
 }
+
+std::vector<PValue> ValuePool::varvec_from_nir(const nir_dest& dst, int num_components)
+{
+   std::vector<PValue> result(num_components);
+   for (int i = 0; i < num_components; ++i)
+      result[i] = from_nir(dst, i);
+   return result;
+}
+
+
+std::vector<PValue> ValuePool::varvec_from_nir(const nir_src& src, int num_components)
+{
+   std::vector<PValue> result(num_components);
+   int i;
+   for (i = 0; i < num_components; ++i)
+      result[i] = from_nir(src, i);
+
+   return result;
+}
+
 
 PValue ValuePool::from_nir(const nir_src& v, unsigned component, unsigned swizzled)
 {
@@ -68,7 +87,7 @@ PValue ValuePool::from_nir(const nir_src& v, unsigned component, unsigned swizzl
          auto reg = lookup_register(idx, swizzled, false);
          if (reg) {
             if (reg->type() == Value::gpr_vector) {
-               auto& array = dynamic_cast<GPRArray&>(*reg);
+               auto& array = static_cast<GPRArray&>(*reg);
                reg = array.get_indirect(v.reg.base_offset,
                                         v.reg.indirect ?
                                            from_nir(*v.reg.indirect, 0, 0) : nullptr,
@@ -216,7 +235,7 @@ PValue ValuePool::from_nir(const nir_dest& v, unsigned component)
 
    if (retval->type() == Value::gpr_vector) {
       assert(!v.is_ssa);
-      auto& array = dynamic_cast<GPRArray&>(*retval);
+      auto& array = static_cast<GPRArray&>(*retval);
       retval = array.get_indirect(v.reg.base_offset,
                                   v.reg.indirect ?
                                   from_nir(*v.reg.indirect, 0, 0) : nullptr,
@@ -234,7 +253,7 @@ ValueMap ValuePool::get_temp_registers() const
       if (v.second->type() == Value::gpr)
          result.insert(v.second);
       else if (v.second->type() == Value::gpr_vector) {
-         auto& array = dynamic_cast<GPRArray&>(*v.second);
+         auto& array = static_cast<GPRArray&>(*v.second);
          array.collect_registers(result);
       }
    }
@@ -526,33 +545,12 @@ int ValuePool::allocate_with_mask(unsigned index, unsigned mask, bool pre_alloc)
 
 PValue ValuePool::literal(uint32_t value)
 {
-   const uint32_t float_1 = 0x3f800000;
-   const uint32_t float_05 = 0x3f000000;
-
    auto l = m_literals.find(value);
    if (l != m_literals.end())
       return l->second;
 
-   switch (value) {
-   case 0:
-      m_literals[0] = PValue(new InlineConstValue(ALU_SRC_0, 0));
-      return m_literals[0];
-   case 1:
-      m_literals[1] = PValue(new InlineConstValue(ALU_SRC_1_INT, 0));
-      return m_literals[1];
-   case float_1:
-      m_literals[float_1] = PValue(new InlineConstValue(ALU_SRC_1, 0));
-      return m_literals[float_1];
-   case float_05:
-      m_literals[float_05] = PValue(new InlineConstValue(ALU_SRC_0_5, 0));
-      return m_literals[float_05];
-   case 0xffffffff:
-      m_literals[0xffffffff] = PValue(new InlineConstValue(ALU_SRC_M_1_INT, 0));
-      return m_literals[0xffffffff];
-   default:
-      m_literals[value] = PValue(new LiteralValue(value));
-      return m_literals[value];
-   }
+   m_literals[value] = PValue(new LiteralValue(value));
+   return m_literals[value];
 }
 
 }

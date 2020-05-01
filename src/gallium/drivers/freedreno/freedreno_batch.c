@@ -39,6 +39,7 @@ static void
 batch_init(struct fd_batch *batch)
 {
 	struct fd_context *ctx = batch->ctx;
+	enum fd_ringbuffer_flags flags = 0;
 	unsigned size = 0;
 
 	/* if kernel is too old to support unlimited # of cmd buffers, we
@@ -51,21 +52,23 @@ batch_init(struct fd_batch *batch)
 	if ((fd_device_version(ctx->screen->dev) < FD_VERSION_UNLIMITED_CMDS) ||
 			(fd_mesa_debug & FD_DBG_NOGROW)){
 		size = 0x100000;
+	} else {
+		flags = FD_RINGBUFFER_GROWABLE;
 	}
 
 	batch->submit = fd_submit_new(ctx->pipe);
 	if (batch->nondraw) {
 		batch->draw = fd_submit_new_ringbuffer(batch->submit, size,
-				FD_RINGBUFFER_PRIMARY | FD_RINGBUFFER_GROWABLE);
+				FD_RINGBUFFER_PRIMARY | flags);
 	} else {
 		batch->gmem = fd_submit_new_ringbuffer(batch->submit, size,
-				FD_RINGBUFFER_PRIMARY | FD_RINGBUFFER_GROWABLE);
+				FD_RINGBUFFER_PRIMARY | flags);
 		batch->draw = fd_submit_new_ringbuffer(batch->submit, size,
-				FD_RINGBUFFER_GROWABLE);
+				flags);
 
 		if (ctx->screen->gpu_id < 600) {
 			batch->binning = fd_submit_new_ringbuffer(batch->submit,
-					size, FD_RINGBUFFER_GROWABLE);
+					size, flags);
 		}
 	}
 
@@ -81,6 +84,9 @@ batch_init(struct fd_batch *batch)
 	batch->gmem_reason = 0;
 	batch->num_draws = 0;
 	batch->num_vertices = 0;
+	batch->num_bins_per_pipe = 0;
+	batch->prim_strm_bits = 0;
+	batch->draw_strm_bits = 0;
 	batch->stage = FD_STAGE_NULL;
 
 	fd_reset_wfi(batch);
@@ -99,6 +105,8 @@ batch_init(struct fd_batch *batch)
 	assert(batch->resources->entries == 0);
 
 	util_dynarray_init(&batch->samples, NULL);
+
+	list_inithead(&batch->log_chunks);
 }
 
 struct fd_batch *
@@ -188,6 +196,8 @@ batch_fini(struct fd_batch *batch)
 		fd_hw_sample_reference(batch->ctx, &samp, NULL);
 	}
 	util_dynarray_fini(&batch->samples);
+
+	assert(list_is_empty(&batch->log_chunks));
 }
 
 static void
@@ -208,7 +218,7 @@ batch_flush_reset_dependencies(struct fd_batch *batch, bool flush)
 static void
 batch_reset_resources_locked(struct fd_batch *batch)
 {
-	pipe_mutex_assert_locked(batch->ctx->screen->lock);
+	fd_screen_assert_locked(batch->ctx->screen);
 
 	set_foreach(batch->resources, entry) {
 		struct fd_resource *rsc = (struct fd_resource *)entry->key;
@@ -223,9 +233,9 @@ batch_reset_resources_locked(struct fd_batch *batch)
 static void
 batch_reset_resources(struct fd_batch *batch)
 {
-	mtx_lock(&batch->ctx->screen->lock);
+	fd_screen_lock(batch->ctx->screen);
 	batch_reset_resources_locked(batch);
-	mtx_unlock(&batch->ctx->screen->lock);
+	fd_screen_unlock(batch->ctx->screen);
 }
 
 static void
@@ -304,9 +314,9 @@ batch_flush(struct fd_batch *batch)
 
 	debug_assert(batch->reference.count > 0);
 
-	mtx_lock(&batch->ctx->screen->lock);
+	fd_screen_lock(batch->ctx->screen);
 	fd_bc_invalidate_batch(batch, false);
-	mtx_unlock(&batch->ctx->screen->lock);
+	fd_screen_unlock(batch->ctx->screen);
 }
 
 /* NOTE: could drop the last ref to batch
@@ -354,7 +364,7 @@ recursive_dependents_mask(struct fd_batch *batch)
 void
 fd_batch_add_dep(struct fd_batch *batch, struct fd_batch *dep)
 {
-	pipe_mutex_assert_locked(batch->ctx->screen->lock);
+	fd_screen_assert_locked(batch->ctx->screen);
 
 	if (batch->dependents_mask & (1 << dep->idx))
 		return;
@@ -374,9 +384,9 @@ flush_write_batch(struct fd_resource *rsc)
 	struct fd_batch *b = NULL;
 	fd_batch_reference_locked(&b, rsc->write_batch);
 
-	mtx_unlock(&b->ctx->screen->lock);
+	fd_screen_unlock(b->ctx->screen);
 	fd_batch_flush(b);
-	mtx_lock(&b->ctx->screen->lock);
+	fd_screen_lock(b->ctx->screen);
 
 	fd_bc_invalidate_batch(b, false);
 	fd_batch_reference_locked(&b, NULL);
@@ -385,7 +395,7 @@ flush_write_batch(struct fd_resource *rsc)
 void
 fd_batch_resource_used(struct fd_batch *batch, struct fd_resource *rsc, bool write)
 {
-	pipe_mutex_assert_locked(batch->ctx->screen->lock);
+	fd_screen_assert_locked(batch->ctx->screen);
 
 	if (rsc->stencil)
 		fd_batch_resource_used(batch, rsc->stencil, write);

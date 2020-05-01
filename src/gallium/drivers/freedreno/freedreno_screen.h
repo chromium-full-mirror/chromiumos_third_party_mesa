@@ -34,7 +34,7 @@
 #include "pipe/p_screen.h"
 #include "util/u_memory.h"
 #include "util/slab.h"
-#include "os/os_thread.h"
+#include "util/simple_mtx.h"
 #include "renderonly/renderonly.h"
 
 #include "freedreno_batch_cache.h"
@@ -46,7 +46,9 @@ struct fd_bo;
 struct fd_screen {
 	struct pipe_screen base;
 
-	mtx_t lock;
+	struct list_head context_list;
+
+	simple_mtx_t lock;
 
 	/* it would be tempting to use pipe_reference here, but that
 	 * really doesn't work well if it isn't the first member of
@@ -95,14 +97,6 @@ struct fd_screen {
 	unsigned (*tile_mode)(const struct pipe_resource *prsc);
 	int (*layout_resource_for_modifier)(struct fd_resource *rsc, uint64_t modifier);
 
-	/* constant emit:  (note currently not used/needed for a2xx) */
-	void (*emit_const)(struct fd_ringbuffer *ring, gl_shader_stage type,
-			uint32_t regid, uint32_t offset, uint32_t sizedwords,
-			const uint32_t *dwords, struct pipe_resource *prsc);
-	/* emit bo addresses as constant: */
-	void (*emit_const_bo)(struct fd_ringbuffer *ring, gl_shader_stage type, boolean write,
-			uint32_t regid, uint32_t num, struct pipe_resource **prscs, uint32_t *offsets);
-
 	/* indirect-branch emit: */
 	void (*emit_ib)(struct fd_ringbuffer *ring, struct fd_ringbuffer *target);
 
@@ -130,6 +124,24 @@ static inline struct fd_screen *
 fd_screen(struct pipe_screen *pscreen)
 {
 	return (struct fd_screen *)pscreen;
+}
+
+static inline void
+fd_screen_lock(struct fd_screen *screen)
+{
+	simple_mtx_lock(&screen->lock);
+}
+
+static inline void
+fd_screen_unlock(struct fd_screen *screen)
+{
+	simple_mtx_unlock(&screen->lock);
+}
+
+static inline void
+fd_screen_assert_locked(struct fd_screen *screen)
+{
+	simple_mtx_assert_locked(&screen->lock);
 }
 
 bool fd_screen_bo_get_handle(struct pipe_screen *pscreen,

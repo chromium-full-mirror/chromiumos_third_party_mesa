@@ -36,6 +36,7 @@
 #include "sfn_nir.h"
 #include "sfn_instruction_misc.h"
 #include "sfn_instruction_fetch.h"
+#include "sfn_instruction_lds.h"
 
 #include <iostream>
 
@@ -59,6 +60,9 @@ ShaderFromNirProcessor::ShaderFromNirProcessor(pipe_shader_type ptype,
                                                r600_pipe_shader_selector& sel,
                                                r600_shader &sh_info, int scratch_size):
    m_processor_type(ptype),
+   m_nesting_depth(0),
+   m_block_number(0),
+   m_export_output(0, -1),
    m_sh_info(sh_info),
    m_tex_instr(*this),
    m_alu_instr(*this),
@@ -135,10 +139,9 @@ void ShaderFromNirProcessor::remap_registers()
       if (register_map[i].valid)
          sfn_log << SfnLog::merge << "Map:" << i << " -> " << register_map[i].new_reg << "\n";
 
-
    ValueRemapper vmap0(register_map, temp_register_map);
-   for (auto ir: m_output)
-      ir->remap_registers(vmap0);
+   for (auto& block: m_output)
+      block.remap_registers(vmap0);
 
    remap_shader_info(m_sh_info, register_map, temp_register_map);
 
@@ -159,8 +162,8 @@ void ShaderFromNirProcessor::remap_registers()
    }
 
    ValueRemapper vmap1(register_map, temp_register_map);
-   for (auto ir: m_output)
-      ir->remap_registers(vmap1);
+   for (auto& ir: m_output)
+      ir.remap_registers(vmap1);
 
    remap_shader_info(m_sh_info, register_map, temp_register_map);
 }
@@ -280,12 +283,17 @@ bool ShaderFromNirProcessor::emit_tex_instruction(nir_instr* instr)
 void ShaderFromNirProcessor::emit_instruction(Instruction *ir)
 {
    if (m_pending_else) {
-      m_output.push_back(PInstruction(m_pending_else));
+      append_block(-1);
+      m_output.back().emit(PInstruction(m_pending_else));
+      append_block(1);
       m_pending_else = nullptr;
    }
 
    r600::sfn_log << SfnLog::instr << "     as '" << *ir << "'\n";
-   m_output.push_back(Instruction::Pointer(ir));
+   if (m_output.empty())
+      append_block(0);
+
+   m_output.back().emit(Instruction::Pointer(ir));
 }
 
 void ShaderFromNirProcessor::emit_shader_start()
@@ -330,6 +338,7 @@ bool ShaderFromNirProcessor::emit_loop_start(int loop_id)
    LoopBeginInstruction *loop = new LoopBeginInstruction();
    emit_instruction(loop);
    m_loop_begin_block_map[loop_id] = loop;
+   append_block(1);
    return true;
 }
 bool ShaderFromNirProcessor::emit_loop_end(int loop_id)
@@ -340,6 +349,9 @@ bool ShaderFromNirProcessor::emit_loop_end(int loop_id)
               << loop_id << "  not found\n";
       return false;
    }
+   m_nesting_depth--;
+   m_block_number++;
+   m_output.push_back(InstructionBlock(m_nesting_depth, m_block_number));
    LoopEndInstruction *loop = new LoopEndInstruction(start->second);
    emit_instruction(loop);
 
@@ -356,6 +368,8 @@ bool ShaderFromNirProcessor::emit_if_start(int if_id, nir_if *if_stmt)
    pred->set_flag(alu_update_exec);
    pred->set_flag(alu_update_pred);
    pred->set_cf_type(cf_alu_push_before);
+
+   append_block(1);
 
    IfInstruction *ir = new IfInstruction(pred);
    emit_instruction(ir);
@@ -401,8 +415,49 @@ bool ShaderFromNirProcessor::emit_ifelse_end(int if_id)
 
    m_pending_else = nullptr;
 
+   append_block(-1);
    IfElseEndInstruction *ir = new IfElseEndInstruction();
    emit_instruction(ir);
+
+   return true;
+}
+
+bool ShaderFromNirProcessor::emit_load_tcs_param_base(nir_intrinsic_instr* instr, int offset)
+{
+   PValue src = get_temp_register();
+   emit_instruction(new AluInstruction(op1_mov, src, Value::zero, {alu_write, alu_last_instr}));
+
+   GPRVector dest = vec_from_nir(instr->dest, instr->num_components);
+   emit_instruction(new FetchTCSIOParam(dest, src, offset));
+
+   return true;
+
+}
+
+bool ShaderFromNirProcessor::emit_load_local_shared(nir_intrinsic_instr* instr)
+{
+   auto address = varvec_from_nir(instr->src[0], instr->num_components);
+   auto dest_value = varvec_from_nir(instr->dest, instr->num_components);
+
+   emit_instruction(new LDSReadInstruction(address, dest_value));
+   return true;
+}
+
+bool ShaderFromNirProcessor::emit_store_local_shared(nir_intrinsic_instr* instr)
+{
+   unsigned write_mask = nir_intrinsic_write_mask(instr);
+
+   auto address = from_nir(instr->src[1], 0);
+   int swizzle_base = (write_mask & 0x3) ? 0 : 2;
+   write_mask |= write_mask >> 2;
+
+   auto value =  from_nir(instr->src[0], swizzle_base);
+   if (!(write_mask & 2)) {
+      emit_instruction(new LDSWriteInstruction(address, 0, value));
+   } else {
+      auto value1 = from_nir(instr->src[0], swizzle_base + 1);
+      emit_instruction(new LDSWriteInstruction(address, 0, value, value1));
+   }
 
    return true;
 }
@@ -472,6 +527,18 @@ bool ShaderFromNirProcessor::emit_intrinsic_instruction(nir_intrinsic_instr* ins
    case nir_intrinsic_load_constant:
    case nir_intrinsic_load_input:
    case nir_intrinsic_store_output:
+   case nir_intrinsic_load_tcs_in_param_base_r600:
+      return emit_load_tcs_param_base(instr, 0);
+   case nir_intrinsic_load_tcs_out_param_base_r600:
+      return emit_load_tcs_param_base(instr, 16);
+   case nir_intrinsic_load_local_shared_r600:
+      return emit_load_local_shared(instr);
+   case nir_intrinsic_store_local_shared_r600:
+      return emit_store_local_shared(instr);
+   case nir_intrinsic_control_barrier:
+   case nir_intrinsic_memory_barrier_tcs_patch:
+      return emit_barrier(instr);
+
    default:
       fprintf(stderr, "r600-nir: Unsupported intrinsic %d\n", instr->intrinsic);
       return false;
@@ -489,6 +556,15 @@ ShaderFromNirProcessor::emit_load_function_temp(UNUSED const nir_variable *var, 
 {
    return false;
 }
+
+bool ShaderFromNirProcessor::emit_barrier(UNUSED nir_intrinsic_instr* instr)
+{
+   AluInstruction *ir = new AluInstruction(op0_group_barrier);
+   ir->set_flag(alu_last_instr);
+   emit_instruction(ir);
+   return true;
+}
+
 
 bool ShaderFromNirProcessor::load_preloaded_value(const nir_dest& dest, int chan, PValue value, bool as_last)
 {
@@ -517,7 +593,7 @@ bool ShaderFromNirProcessor::emit_store_scratch(nir_intrinsic_instr* instr)
 
    WriteScratchInstruction *ir = nullptr;
    if (address->type() == Value::literal) {
-      const auto& lv = dynamic_cast<const LiteralValue&>(*address);
+      const auto& lv = static_cast<const LiteralValue&>(*address);
       ir = new WriteScratchInstruction(lv.value(), value, align, align_offset, writemask);
    } else {
       address = from_nir_with_fetch_constant(instr->src[1], 0);
@@ -774,8 +850,7 @@ PValue ShaderFromNirProcessor::from_nir_with_fetch_constant(const nir_src& src, 
    if (value->type() != Value::gpr &&
        value->type() != Value::gpr_vector &&
        value->type() != Value::gpr_array_value) {
-      unsigned temp = allocate_temp_register();
-      PValue retval(new GPRValue(temp, component));
+      PValue retval = get_temp_register();
       emit_instruction(new AluInstruction(op1_mov, retval, value,
                                           EmitInstruction::last_write));
       value = retval;
@@ -860,7 +935,7 @@ void ShaderFromNirProcessor::add_param_output_reg(int loc, const GPRVector *gpr)
 void ShaderFromNirProcessor::emit_export_instruction(WriteoutInstruction *ir)
 {
    r600::sfn_log << SfnLog::instr << "     as '" << *ir << "'\n";
-   m_export_output.push_back(PInstruction(ir));
+   m_export_output.emit(PInstruction(ir));
 }
 
 const GPRVector * ShaderFromNirProcessor::output_register(unsigned location) const
@@ -884,6 +959,12 @@ void ShaderFromNirProcessor::set_output(unsigned pos, PValue var)
    m_outputs[pos] = var;
 }
 
+void ShaderFromNirProcessor::append_block(int nesting_change)
+{
+   m_nesting_depth += nesting_change;
+   m_output.push_back(InstructionBlock(m_nesting_depth, m_block_number++));
+}
+
 void ShaderFromNirProcessor::finalize()
 {
    do_finalize();
@@ -894,8 +975,7 @@ void ShaderFromNirProcessor::finalize()
    for (auto& i : m_outputs)
       m_sh_info.output[i.first].gpr = i.second->sel();
 
-   m_output.insert(m_output.end(), m_export_output.begin(), m_export_output.end());
-   m_export_output.clear();
+   m_output.push_back(m_export_output);
 }
 
 }

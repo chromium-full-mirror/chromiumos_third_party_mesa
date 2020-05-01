@@ -48,6 +48,8 @@ delete_variant(struct ir3_shader_variant *v)
 		ir3_destroy(v->ir);
 	if (v->bo)
 		fd_bo_del(v->bo);
+	if (v->binning)
+		delete_variant(v->binning);
 	free(v);
 }
 
@@ -96,6 +98,9 @@ fixup_regfootprint(struct ir3_shader_variant *v, uint32_t gpu_id)
 	}
 
 	for (i = 0; i < v->outputs_count; i++) {
+		/* for ex, VS shaders with tess don't have normal varying outs: */
+		if (!VALIDREG(v->outputs[i].regid))
+			continue;
 		int32_t regid = v->outputs[i].regid + 3;
 		if (v->outputs[i].half) {
 			if (gpu_id < 500) {
@@ -284,8 +289,65 @@ ir3_shader_destroy(struct ir3_shader *shader)
 	free(shader);
 }
 
+/**
+ * Creates a bitmask of the used bits of the shader key by this particular
+ * shader.  Used by the gallium driver to skip state-dependent recompiles when
+ * possible.
+ */
+static void
+ir3_setup_used_key(struct ir3_shader *shader)
+{
+	nir_shader *nir = shader->nir;
+	struct shader_info *info = &nir->info;
+	struct ir3_shader_key *key = &shader->key_mask;
+
+	/* This key flag is just used to make for a cheaper ir3_shader_key_equal
+	 * check in the common case.
+	 */
+	key->has_per_samp = true;
+
+	if (info->stage == MESA_SHADER_FRAGMENT) {
+		key->fsaturate_s = ~0;
+		key->fsaturate_t = ~0;
+		key->fsaturate_r = ~0;
+		key->fastc_srgb = ~0;
+		key->fsamples = ~0;
+
+		if (info->inputs_read & VARYING_BITS_COLOR) {
+			key->rasterflat = true;
+			key->color_two_side = true;
+		}
+
+		if ((info->outputs_written & ~(FRAG_RESULT_DEPTH |
+								FRAG_RESULT_STENCIL |
+								FRAG_RESULT_SAMPLE_MASK)) != 0) {
+			key->fclamp_color = true;
+		}
+
+		/* Only used for deciding on behavior of
+		 * nir_intrinsic_load_barycentric_sample
+		 */
+		key->msaa = info->fs.uses_sample_qualifier;
+	} else {
+		key->tessellation = ~0;
+		key->has_gs = true;
+
+		if (info->outputs_written & VARYING_BITS_COLOR)
+			key->vclamp_color = true;
+
+		if (info->stage == MESA_SHADER_VERTEX) {
+			key->vsaturate_s = ~0;
+			key->vsaturate_t = ~0;
+			key->vsaturate_r = ~0;
+			key->vastc_srgb = ~0;
+			key->vsamples = ~0;
+		}
+	}
+}
+
 struct ir3_shader *
-ir3_shader_from_nir(struct ir3_compiler *compiler, nir_shader *nir)
+ir3_shader_from_nir(struct ir3_compiler *compiler, nir_shader *nir,
+		struct ir3_stream_output_info *stream_output)
 {
 	struct ir3_shader *shader = CALLOC_STRUCT(ir3_shader);
 
@@ -293,9 +355,19 @@ ir3_shader_from_nir(struct ir3_compiler *compiler, nir_shader *nir)
 	shader->compiler = compiler;
 	shader->id = p_atomic_inc_return(&shader->compiler->shader_count);
 	shader->type = nir->info.stage;
+	if (stream_output)
+		memcpy(&shader->stream_output, stream_output, sizeof(shader->stream_output));
+
+	if (nir->info.stage == MESA_SHADER_GEOMETRY)
+		NIR_PASS_V(nir, ir3_nir_lower_gs);
 
 	NIR_PASS_V(nir, nir_lower_io, nir_var_all, ir3_glsl_type_size,
 			   (nir_lower_io_options)0);
+
+	if (compiler->gpu_id >= 600 &&
+			nir->info.stage == MESA_SHADER_FRAGMENT &&
+			!(ir3_shader_debug & IR3_DBG_NOFP16))
+		NIR_PASS_V(nir, nir_lower_mediump_outputs);
 
 	if (nir->info.stage == MESA_SHADER_FRAGMENT) {
 		/* NOTE: lower load_barycentric_at_sample first, since it
@@ -319,6 +391,8 @@ ir3_shader_from_nir(struct ir3_compiler *compiler, nir_shader *nir)
 		printf("dump nir%d: type=%d", shader->id, shader->type);
 		nir_print_shader(shader->nir, stdout);
 	}
+
+	ir3_setup_used_key(shader);
 
 	return shader;
 }
@@ -381,7 +455,7 @@ ir3_shader_disasm(struct ir3_shader_variant *so, uint32_t *bin, FILE *out)
 	unsigned i;
 
 	struct ir3_instruction *instr;
-	foreach_input_n(instr, i, ir) {
+	foreach_input_n (instr, i, ir) {
 		reg = instr->regs[0];
 		regid = reg->num;
 		fprintf(out, "@in(%sr%d.%c)\tin%d",
@@ -396,14 +470,14 @@ ir3_shader_disasm(struct ir3_shader_variant *so, uint32_t *bin, FILE *out)
 	/* print pre-dispatch texture fetches: */
 	for (i = 0; i < so->num_sampler_prefetch; i++) {
 		const struct ir3_sampler_prefetch *fetch = &so->sampler_prefetch[i];
-		fprintf(out, "@tex(%sr%d.%c)\tsrc=%u, samp=%u, tex=%u, wrmask=%x, cmd=%u\n",
+		fprintf(out, "@tex(%sr%d.%c)\tsrc=%u, samp=%u, tex=%u, wrmask=0x%x, cmd=%u\n",
 				fetch->half_precision ? "h" : "",
 				fetch->dst >> 2, "xyzw"[fetch->dst & 0x3],
 				fetch->src, fetch->samp_id, fetch->tex_id,
 				fetch->wrmask, fetch->cmd);
 	}
 
-	foreach_output_n(instr, i, ir) {
+	foreach_output_n (instr, i, ir) {
 		reg = instr->regs[0];
 		regid = reg->num;
 		fprintf(out, "@out(%sr%d.%c)\tout%d",
@@ -450,17 +524,28 @@ ir3_shader_disasm(struct ir3_shader_variant *so, uint32_t *bin, FILE *out)
 	fprintf(out, "\n");
 
 	/* print generic shader info: */
-	fprintf(out, "; %s prog %d/%d: %u instructions, %d half, %d full\n",
+	fprintf(out, "; %s prog %d/%d: %u instr, %u nops, %u non-nops, %u mov, %u cov, %u dwords\n",
 			type, so->shader->id, so->id,
 			so->info.instrs_count,
+			so->info.nops_count,
+			so->info.instrs_count - so->info.nops_count,
+			so->info.mov_count, so->info.cov_count,
+			so->info.sizedwords);
+
+	fprintf(out, "; %s prog %d/%d: %u last-baryf, %d half, %d full, %u constlen\n",
+			type, so->shader->id, so->id,
+			so->info.last_baryf,
 			so->info.max_half_reg + 1,
-			so->info.max_reg + 1);
+			so->info.max_reg + 1,
+			so->constlen);
 
-	fprintf(out, "; %u constlen\n", so->constlen);
-
-	fprintf(out, "; %u (ss), %u (sy)\n", so->info.ss, so->info.sy);
-
-	fprintf(out, "; max_sun=%u\n", ir->max_sun);
+	fprintf(out, "; %s prog %d/%d: %u sstall, %u (ss), %u (sy), %d max_sun, %d loops\n",
+			type, so->shader->id, so->id,
+			so->info.sstall,
+			so->info.ss,
+			so->info.sy,
+			so->max_sun,
+			so->loops);
 
 	/* print shader type specific info: */
 	switch (so->type) {

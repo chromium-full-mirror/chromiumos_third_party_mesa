@@ -308,7 +308,7 @@ anv_physical_device_free_disk_cache(struct anv_physical_device *device)
 static uint64_t
 get_available_system_memory()
 {
-   char *meminfo = os_read_file("/proc/meminfo");
+   char *meminfo = os_read_file("/proc/meminfo", NULL);
    if (!meminfo)
       return 0;
 
@@ -477,18 +477,8 @@ anv_physical_device_try_create(struct anv_instance *instance,
    device->always_flush_cache =
       driQueryOptionb(&instance->dri_options, "always_flush_cache");
 
-   /* Starting with Gen10, the timestamp frequency of the command streamer may
-    * vary from one part to another. We can query the value from the kernel.
-    */
-   if (device->info.gen >= 10) {
-      int timestamp_frequency =
-         anv_gem_get_param(fd, I915_PARAM_CS_TIMESTAMP_FREQUENCY);
-
-      if (timestamp_frequency < 0)
-         intel_logw("Kernel 4.16-rc1+ required to properly query CS timestamp frequency");
-      else
-         device->info.timestamp_frequency = timestamp_frequency;
-   }
+   device->has_mmap_offset =
+      anv_gem_get_param(fd, I915_PARAM_MMAP_GTT_VERSION) >= 4;
 
    /* GENs prior to 8 do not support EU/Subslice info */
    if (device->info.gen >= 8) {
@@ -1251,6 +1241,14 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT: {
+         VkPhysicalDeviceRobustness2FeaturesEXT *features = (void *)ext;
+         features->robustBufferAccess2 = true;
+         features->robustImageAccess2 = true;
+         features->nullDescriptor = true;
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES: {
          VkPhysicalDeviceSamplerYcbcrConversionFeatures *features =
             (VkPhysicalDeviceSamplerYcbcrConversionFeatures *) ext;
@@ -1422,7 +1420,8 @@ void anv_GetPhysicalDeviceProperties(
       pdevice->has_bindless_images && pdevice->has_a64_buffer_access
       ? UINT32_MAX : MAX_BINDING_TABLE_SIZE - MAX_RTS - 1;
 
-   const uint32_t max_workgroup_size = 32 * devinfo->max_cs_threads;
+   /* Limit max_threads to 64 for the GPGPU_WALKER command */
+   const uint32_t max_workgroup_size = 32 * MIN2(64, devinfo->max_cs_threads);
 
    VkSampleCountFlags sample_counts =
       isl_device_get_sample_counts(&pdevice->isl_dev);
@@ -1911,6 +1910,15 @@ void anv_GetPhysicalDeviceProperties2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_PROPERTIES_EXT: {
+         VkPhysicalDeviceRobustness2PropertiesEXT *properties = (void *)ext;
+         properties->robustStorageBufferAccessSizeAlignment =
+            ANV_SSBO_BOUNDS_CHECK_ALIGNMENT;
+         properties->robustUniformBufferAccessSizeAlignment =
+            ANV_UBO_BOUNDS_CHECK_ALIGNMENT;
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_FILTER_MINMAX_PROPERTIES_EXT: {
          VkPhysicalDeviceSamplerFilterMinmaxPropertiesEXT *properties =
             (VkPhysicalDeviceSamplerFilterMinmaxPropertiesEXT *)ext;
@@ -2213,6 +2221,11 @@ PFN_vkVoidFunction anv_GetInstanceProcAddr(
    LOOKUP_ANV_ENTRYPOINT(EnumerateInstanceLayerProperties);
    LOOKUP_ANV_ENTRYPOINT(EnumerateInstanceVersion);
    LOOKUP_ANV_ENTRYPOINT(CreateInstance);
+
+   /* GetInstanceProcAddr() can also be called with a NULL instance.
+    * See https://gitlab.khronos.org/vulkan/vulkan/issues/2057
+    */
+   LOOKUP_ANV_ENTRYPOINT(GetInstanceProcAddr);
 
 #undef LOOKUP_ANV_ENTRYPOINT
 
@@ -2630,6 +2643,23 @@ static struct gen_mapped_pinned_buffer_alloc aux_map_allocator = {
    .free = gen_aux_map_buffer_free,
 };
 
+static VkResult
+check_physical_device_features(VkPhysicalDevice physicalDevice,
+                               const VkPhysicalDeviceFeatures *features)
+{
+   VkPhysicalDeviceFeatures supported_features;
+   anv_GetPhysicalDeviceFeatures(physicalDevice, &supported_features);
+   VkBool32 *supported_feature = (VkBool32 *)&supported_features;
+   VkBool32 *enabled_feature = (VkBool32 *)features;
+   unsigned num_features = sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
+   for (uint32_t i = 0; i < num_features; i++) {
+      if (enabled_feature[i] && !supported_feature[i])
+         return vk_error(VK_ERROR_FEATURE_NOT_PRESENT);
+   }
+
+   return VK_SUCCESS;
+}
+
 VkResult anv_CreateDevice(
     VkPhysicalDevice                            physicalDevice,
     const VkDeviceCreateInfo*                   pCreateInfo,
@@ -2661,15 +2691,34 @@ VkResult anv_CreateDevice(
    }
 
    /* Check enabled features */
+   bool robust_buffer_access = false;
    if (pCreateInfo->pEnabledFeatures) {
-      VkPhysicalDeviceFeatures supported_features;
-      anv_GetPhysicalDeviceFeatures(physicalDevice, &supported_features);
-      VkBool32 *supported_feature = (VkBool32 *)&supported_features;
-      VkBool32 *enabled_feature = (VkBool32 *)pCreateInfo->pEnabledFeatures;
-      unsigned num_features = sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
-      for (uint32_t i = 0; i < num_features; i++) {
-         if (enabled_feature[i] && !supported_feature[i])
-            return vk_error(VK_ERROR_FEATURE_NOT_PRESENT);
+      result = check_physical_device_features(physicalDevice,
+                                              pCreateInfo->pEnabledFeatures);
+      if (result != VK_SUCCESS)
+         return result;
+
+      if (pCreateInfo->pEnabledFeatures->robustBufferAccess)
+         robust_buffer_access = true;
+   }
+
+   vk_foreach_struct_const(ext, pCreateInfo->pNext) {
+      switch (ext->sType) {
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2: {
+         const VkPhysicalDeviceFeatures2 *features = (const void *)ext;
+         result = check_physical_device_features(physicalDevice,
+                                                 &features->features);
+         if (result != VK_SUCCESS)
+            return result;
+
+         if (features->features.robustBufferAccess)
+            robust_buffer_access = true;
+         break;
+      }
+
+      default:
+         /* Don't warn */
+         break;
       }
    }
 
@@ -2786,8 +2835,7 @@ VkResult anv_CreateDevice(
     */
    device->can_chain_batches = device->info.gen >= 8;
 
-   device->robust_buffer_access = pCreateInfo->pEnabledFeatures &&
-      pCreateInfo->pEnabledFeatures->robustBufferAccess;
+   device->robust_buffer_access = robust_buffer_access;
    device->enabled_extensions = enabled_extensions;
 
    anv_device_init_dispatch(device);
@@ -2858,6 +2906,18 @@ VkResult anv_CreateDevice(
    result = anv_device_init_trivial_batch(device);
    if (result != VK_SUCCESS)
       goto fail_workaround_bo;
+
+   /* Allocate a null surface state at surface state offset 0.  This makes
+    * NULL descriptor handling trivial because we can just memset structures
+    * to zero and they have a valid descriptor.
+    */
+   device->null_surface_state =
+      anv_state_pool_alloc(&device->surface_state_pool,
+                           device->isl_dev.ss.size,
+                           device->isl_dev.ss.align);
+   isl_null_fill_state(&device->isl_dev, device->null_surface_state.map,
+                       isl_extent3d(1, 1, 1) /* This shouldn't matter */);
+   assert(device->null_surface_state.offset == 0);
 
    if (device->info.gen >= 10) {
       result = anv_device_init_hiz_clear_value_bo(device);
@@ -3675,7 +3735,11 @@ VkResult anv_MapMemory(
       gem_flags |= I915_MMAP_WC;
 
    /* GEM will fail to map if the offset isn't 4k-aligned.  Round down. */
-   uint64_t map_offset = offset & ~4095ull;
+   uint64_t map_offset;
+   if (!device->physical->has_mmap_offset)
+      map_offset = offset & ~4095ull;
+   else
+      map_offset = 0;
    assert(offset >= map_offset);
    uint64_t map_size = (offset + size) - map_offset;
 
@@ -3699,12 +3763,13 @@ void anv_UnmapMemory(
     VkDevice                                    _device,
     VkDeviceMemory                              _memory)
 {
+   ANV_FROM_HANDLE(anv_device, device, _device);
    ANV_FROM_HANDLE(anv_device_memory, mem, _memory);
 
    if (mem == NULL || mem->host_ptr)
       return;
 
-   anv_gem_munmap(mem->map, mem->map_size);
+   anv_gem_munmap(device, mem->map, mem->map_size);
 
    mem->map = NULL;
    mem->map_size = 0;
@@ -3844,12 +3909,6 @@ void anv_GetImageMemoryRequirements(
     */
    uint32_t memory_types = (1ull << device->physical->memory.type_count) - 1;
 
-   /* We must have image allocated or imported at this point. According to the
-    * specification, external images must have been bound to memory before
-    * calling GetImageMemoryRequirements.
-    */
-   assert(image->size > 0);
-
    pMemoryRequirements->size = image->size;
    pMemoryRequirements->alignment = image->alignment;
    pMemoryRequirements->memoryTypeBits = memory_types;
@@ -3888,12 +3947,6 @@ void anv_GetImageMemoryRequirements2(
           */
          pMemoryRequirements->memoryRequirements.memoryTypeBits =
                (1ull << device->physical->memory.type_count) - 1;
-
-         /* We must have image allocated or imported at this point. According to the
-          * specification, external images must have been bound to memory before
-          * calling GetImageMemoryRequirements.
-          */
-         assert(image->planes[plane].size > 0);
 
          pMemoryRequirements->memoryRequirements.size = image->planes[plane].size;
          pMemoryRequirements->memoryRequirements.alignment =
@@ -4264,7 +4317,6 @@ VkResult anv_CreateFramebuffer(
       }
       framebuffer->attachment_count = pCreateInfo->attachmentCount;
    } else {
-      assert(device->enabled_extensions.KHR_imageless_framebuffer);
       framebuffer = vk_alloc2(&device->alloc, pAllocator, size, 8,
                               VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
       if (framebuffer == NULL)

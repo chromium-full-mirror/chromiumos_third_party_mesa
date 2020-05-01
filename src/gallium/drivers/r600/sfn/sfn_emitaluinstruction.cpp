@@ -55,6 +55,7 @@ bool EmitAluInstruction::do_emit(nir_instr* ir)
    case nir_op_b2f32: return emit_alu_b2f(instr);
    case nir_op_i2b1: return emit_alu_i2orf2_b1(instr, op2_setne_int);
    case nir_op_f2b1: return emit_alu_i2orf2_b1(instr, op2_setne_dx10);
+   case nir_op_b2b1:
    case nir_op_mov:return emit_alu_op1(instr, op1_mov);
    case nir_op_ftrunc: return emit_alu_op1(instr, op1_trunc);
    case nir_op_fabs: return emit_alu_op1(instr, op1_mov, {1 << alu_src0_abs});
@@ -176,6 +177,8 @@ bool EmitAluInstruction::do_emit(nir_instr* ir)
    case nir_op_fddy_coarse:
    case nir_op_fddy: return emit_tex_fdd(instr,TexInstruction::get_gradient_v, false);
 
+   case nir_op_umad24: return emit_alu_op3(instr, op3_muladd_uint24,  {0, 1, 2});
+   case nir_op_umul24: return emit_alu_op2(instr, op2_mul_uint24);
    default:
       return false;
    }

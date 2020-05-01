@@ -61,9 +61,6 @@
 #include "ir3/ir3_nir.h"
 #include "a2xx/ir2.h"
 
-/* XXX this should go away */
-#include "state_tracker/drm_driver.h"
-
 static const struct debug_named_value debug_options[] = {
 		{"msgs",      FD_DBG_MSGS,   "Print debug messages"},
 		{"disasm",    FD_DBG_DISASM, "Dump TGSI and adreno shader disassembly (a2xx only, see IR3_SHADER_DEBUG)"},
@@ -72,10 +69,10 @@ static const struct debug_named_value debug_options[] = {
 		{"noscis",    FD_DBG_NOSCIS, "Disable scissor optimization"},
 		{"direct",    FD_DBG_DIRECT, "Force inline (SS_DIRECT) state loads"},
 		{"nobypass",  FD_DBG_NOBYPASS, "Disable GMEM bypass"},
-		{"fraghalf",  FD_DBG_FRAGHALF, "Use half-precision in fragment shader"},
+		{"log",       FD_DBG_LOG,    "Enable GPU timestamp based logging (a6xx+)"},
 		{"nobin",     FD_DBG_NOBIN,  "Disable hw binning"},
 		{"nogmem",    FD_DBG_NOGMEM,  "Disable GMEM rendering (bypass only)"},
-		{"glsl120",   FD_DBG_GLSL120,"Temporary flag to force GLSL 1.20 (rather than 1.30) on a3xx+"},
+		/* BIT(10) */
 		{"shaderdb",  FD_DBG_SHADERDB, "Enable shaderdb output"},
 		{"flush",     FD_DBG_FLUSH,  "Force flush after every draw"},
 		{"deqp",      FD_DBG_DEQP,   "Enable dEQP hacks"},
@@ -92,6 +89,7 @@ static const struct debug_named_value debug_options[] = {
 		{"nolrz",     FD_DBG_NOLRZ,  "Disable LRZ (a6xx)"},
 		{"notile",    FD_DBG_NOTILE, "Disable tiling for all internal buffers"},
 		{"layout",    FD_DBG_LAYOUT, "Dump resource layouts"},
+		{"nofp16",    FD_DBG_NOFP16, "Disable mediump precision lowering"},
 		DEBUG_NAMED_VALUE_END
 };
 
@@ -99,7 +97,6 @@ DEBUG_GET_ONCE_FLAGS_OPTION(fd_mesa_debug, "FD_MESA_DEBUG", debug_options, 0)
 
 int fd_mesa_debug = 0;
 bool fd_binning_enabled = true;
-static bool glsl120 = false;
 
 static const char *
 fd_screen_get_name(struct pipe_screen *pscreen)
@@ -159,7 +156,7 @@ fd_screen_destroy(struct pipe_screen *pscreen)
 
 	slab_destroy_parent(&screen->transfer_pool);
 
-	mtx_destroy(&screen->lock);
+	simple_mtx_destroy(&screen->lock);
 
 	ralloc_free(screen->compiler);
 
@@ -187,13 +184,9 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_TEXTURE_SWIZZLE:
 	case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
 	case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
-	case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
 	case PIPE_CAP_SEAMLESS_CUBE_MAP:
 	case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
 	case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
-	case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
-	case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
-	case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
 	case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
 	case PIPE_CAP_STRING_MARKER:
 	case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
@@ -201,6 +194,16 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_INVALIDATE_BUFFER:
 	case PIPE_CAP_RGB_OVERRIDE_DST_ALPHA_BLEND:
 		return 1;
+
+	case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
+	case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
+	case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
+		return !is_a2xx(screen);
+
+	case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
+		return is_a2xx(screen);
+	case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
+		return !is_a2xx(screen);
 
 	case PIPE_CAP_PACKED_UNIFORMS:
 		return !is_a2xx(screen);
@@ -289,8 +292,6 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
 	case PIPE_CAP_GLSL_FEATURE_LEVEL:
 	case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
-		if (glsl120)
-			return 120;
 		return is_ir3(screen) ? 140 : 120;
 
 	case PIPE_CAP_ESSL_FEATURE_LEVEL:
@@ -340,6 +341,9 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		/* name is confusing, but this turns on std430 packing */
 		if (is_ir3(screen))
 			return 1;
+		return 0;
+
+	case PIPE_CAP_NIR_IMAGES_AS_DEREF:
 		return 0;
 
 	case PIPE_CAP_MAX_VIEWPORTS:
@@ -551,13 +555,14 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
 	case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
 		return 1;
 	case PIPE_SHADER_CAP_INTEGERS:
-		if (glsl120)
-			return 0;
 		return is_ir3(screen) ? 1 : 0;
 	case PIPE_SHADER_CAP_INT64_ATOMICS:
 		return 0;
 	case PIPE_SHADER_CAP_FP16:
-		return 0;
+		return ((is_a5xx(screen) || is_a6xx(screen)) &&
+				(shader == PIPE_SHADER_COMPUTE ||
+					shader == PIPE_SHADER_FRAGMENT) &&
+				!(fd_mesa_debug & FD_DBG_NOFP16));
 	case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
 	case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
 		return 16;
@@ -796,8 +801,6 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 	if (fd_mesa_debug & FD_DBG_NOBIN)
 		fd_binning_enabled = false;
 
-	glsl120 = !!(fd_mesa_debug & FD_DBG_GLSL120);
-
 	if (!screen)
 		return NULL;
 
@@ -913,6 +916,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 	case 330:
 		fd3_screen_init(pscreen);
 		break;
+	case 405:
 	case 420:
 	case 430:
 		fd4_screen_init(pscreen);
@@ -960,7 +964,9 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 
 	fd_bc_init(&screen->batch_cache);
 
-	(void) mtx_init(&screen->lock, mtx_plain);
+	list_inithead(&screen->context_list);
+
+	(void) simple_mtx_init(&screen->lock, mtx_plain);
 
 	pscreen->destroy = fd_screen_destroy;
 	pscreen->get_param = fd_screen_get_param;

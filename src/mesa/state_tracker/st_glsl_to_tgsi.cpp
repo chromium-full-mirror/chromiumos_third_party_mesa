@@ -1572,17 +1572,6 @@ glsl_to_tgsi_visitor::visit_expression(ir_expression* ir, st_src_reg *op)
       emit_asm(ir, TGSI_OPCODE_DFRACEXP, undef_dst, result_dst, op[0]);
       break;
 
-   case ir_unop_noise: {
-      /* At some point, a motivated person could add a better
-       * implementation of noise.  Currently not even the nvidia
-       * binary drivers do anything more than this.  In any case, the
-       * place to do this is in the GL state tracker, not the poor
-       * driver.
-       */
-      emit_asm(ir, TGSI_OPCODE_MOV, result_dst, st_src_reg_for_float(0.5));
-      break;
-   }
-
    case ir_binop_add:
       emit_asm(ir, TGSI_OPCODE_ADD, result_dst, op[0], op[1]);
       break;
@@ -2395,6 +2384,11 @@ glsl_to_tgsi_visitor::visit_expression(ir_expression* ir, st_src_reg *op)
    case ir_binop_avg:
    case ir_binop_avg_round:
    case ir_binop_mul_32x16:
+   case ir_unop_f162f:
+   case ir_unop_f2f16:
+   case ir_unop_f2fmp:
+   case ir_unop_f162b:
+   case ir_unop_b2f16:
       /* This operation is not supported, or should have already been handled.
        */
       assert(!"Invalid ir opcode in glsl_to_tgsi_visitor::visit()");
@@ -2410,7 +2404,7 @@ glsl_to_tgsi_visitor::visit(ir_swizzle *ir)
 {
    st_src_reg src;
    int i;
-   int swizzle[4];
+   int swizzle[4] = {0};
 
    /* Note that this is only swizzles in expressions, not those on the left
     * hand side of an assignment, which do write masking.  See ir_assignment
@@ -4300,14 +4294,13 @@ glsl_to_tgsi_visitor::visit(ir_texture *ir)
    enum tgsi_opcode opcode = TGSI_OPCODE_NOP;
    const glsl_type *sampler_type = ir->sampler->type;
    unsigned sampler_array_size = 1, sampler_base = 0;
-   bool is_cube_array = false, is_cube_shadow = false;
+   bool is_cube_array = false;
    ir_variable *var = ir->sampler->variable_referenced();
    unsigned i;
 
    /* if we are a cube array sampler or a cube shadow */
    if (sampler_type->sampler_dimensionality == GLSL_SAMPLER_DIM_CUBE) {
       is_cube_array = sampler_type->sampler_array;
-      is_cube_shadow = sampler_type->sampler_shadow;
    }
 
    if (ir->coordinate) {
@@ -4345,7 +4338,8 @@ glsl_to_tgsi_visitor::visit(ir_texture *ir)
       }
       break;
    case ir_txb:
-      if (is_cube_array || is_cube_shadow) {
+      if (is_cube_array ||
+         (sampler_type->sampler_shadow && sampler_type->coordinate_components() >= 3)) {
          opcode = TGSI_OPCODE_TXB2;
       }
       else {
@@ -4362,7 +4356,7 @@ glsl_to_tgsi_visitor::visit(ir_texture *ir)
       if (this->has_tex_txf_lz && ir->lod_info.lod->is_zero()) {
          opcode = TGSI_OPCODE_TEX_LZ;
       } else {
-         opcode = is_cube_array ? TGSI_OPCODE_TXL2 : TGSI_OPCODE_TXL;
+         opcode = (is_cube_array || (sampler_type->sampler_shadow && sampler_type->coordinate_components() >= 3)) ? TGSI_OPCODE_TXL2 : TGSI_OPCODE_TXL;
          ir->lod_info.lod->accept(this);
          lod_info = this->result;
       }
@@ -4500,11 +4494,21 @@ glsl_to_tgsi_visitor::visit(ir_texture *ir)
       ir->shadow_comparator->accept(this);
 
       if (is_cube_array) {
-         cube_sc = get_temp(glsl_type::float_type);
-         cube_sc_dst = st_dst_reg(cube_sc);
-         cube_sc_dst.writemask = WRITEMASK_X;
+         if (lod_info.file != PROGRAM_UNDEFINED) {
+            // If we have both a cube array *and* a bias/lod, stick the
+            // comparator into the .Y of the second argument.
+            st_src_reg tmp = get_temp(glsl_type::vec2_type);
+            cube_sc_dst = st_dst_reg(tmp);
+            cube_sc_dst.writemask = WRITEMASK_X;
+            emit_asm(ir, TGSI_OPCODE_MOV, cube_sc_dst, lod_info);
+            lod_info = tmp;
+            cube_sc_dst.writemask = WRITEMASK_Y;
+         } else {
+            cube_sc = get_temp(glsl_type::float_type);
+            cube_sc_dst = st_dst_reg(cube_sc);
+            cube_sc_dst.writemask = WRITEMASK_X;
+         }
          emit_asm(ir, TGSI_OPCODE_MOV, cube_sc_dst, this->result);
-         cube_sc_dst.writemask = WRITEMASK_X;
       }
       else {
          if ((sampler_type->sampler_dimensionality == GLSL_SAMPLER_DIM_2D &&
@@ -6817,6 +6821,9 @@ st_translate_program(
       emit_compute_block_size(proginfo, ureg);
    }
 
+   if (program->shader->Program->info.layer_viewport_relative)
+      ureg_property(ureg, TGSI_PROPERTY_LAYER_VIEWPORT_RELATIVE, 1);
+
    /* Declare address register.
     */
    if (program->num_address_regs > 0) {
@@ -7329,6 +7336,14 @@ st_link_tgsi(struct gl_context *ctx, struct gl_shader_program *prog)
       st_set_prog_affected_state_flags(linked_prog);
 
       if (linked_prog) {
+         /* This is really conservative: */
+         linked_prog->info.writes_memory =
+            linked_prog->info.num_ssbos ||
+            linked_prog->info.num_images ||
+            ctx->Extensions.ARB_bindless_texture ||
+            (linked_prog->sh.LinkedTransformFeedback &&
+             linked_prog->sh.LinkedTransformFeedback->NumVarying);
+
          if (!ctx->Driver.ProgramStringNotify(ctx,
                                               _mesa_shader_stage_to_program(i),
                                               linked_prog)) {

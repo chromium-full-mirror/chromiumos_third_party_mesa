@@ -1327,9 +1327,7 @@ upload_buffer_surface(struct brw_context *brw,
                       enum isl_format format,
                       unsigned reloc_flags)
 {
-   struct gl_context *ctx = &brw->ctx;
-
-   if (binding->BufferObject == ctx->Shared->NullBufferObj) {
+   if (!binding->BufferObject) {
       emit_null_surface_state(brw, NULL, out_offset);
    } else {
       ptrdiff_t size = binding->BufferObject->Size - binding->Offset;

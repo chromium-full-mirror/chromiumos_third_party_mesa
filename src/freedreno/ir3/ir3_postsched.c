@@ -58,10 +58,10 @@ struct ir3_postsched_ctx {
 	struct dag *dag;
 
 	struct list_head unscheduled_list; /* unscheduled instructions */
-	struct ir3_instruction *scheduled; /* last scheduled instr */
-	struct ir3_instruction *pred;      /* current p0.x user, if any */
 
 	bool error;
+
+	int sfu_delay;
 };
 
 struct ir3_postsched_node {
@@ -79,36 +79,24 @@ struct ir3_postsched_node {
 #define foreach_bit(b, mask) \
 	for (uint32_t _m = ({debug_assert((mask) >= 1); (mask);}); _m && ({(b) = u_bit_scan(&_m); 1;});)
 
-// TODO deduplicate
-static bool is_sfu_or_mem(struct ir3_instruction *instr)
-{
-	return is_sfu(instr) || is_mem(instr);
-}
-
 static void
 schedule(struct ir3_postsched_ctx *ctx, struct ir3_instruction *instr)
 {
 	debug_assert(ctx->block == instr->block);
 
-	/* maybe there is a better way to handle this than just stuffing
-	 * a nop.. ideally we'd know about this constraint in the
-	 * scheduling and depth calculation..
-	 */
-	if (ctx->scheduled && is_sfu_or_mem(ctx->scheduled) && is_sfu_or_mem(instr))
-		ir3_NOP(ctx->block);
-
 	/* remove from unscheduled_list:
 	 */
 	list_delinit(&instr->node);
 
-	if (writes_pred(instr)) {
-		ctx->pred = instr;
-	}
-
 	di(instr, "schedule");
 
 	list_addtail(&instr->node, &instr->block->instr_list);
-	ctx->scheduled = instr;
+
+	if (is_sfu(instr)) {
+		ctx->sfu_delay = 8;
+	} else if (ctx->sfu_delay > 0) {
+		ctx->sfu_delay--;
+	}
 
 	struct ir3_postsched_node *n = instr->data;
 	dag_prune_head(ctx->dag, &n->dag);
@@ -130,6 +118,24 @@ dump_state(struct ir3_postsched_ctx *ctx)
 			di(child->instr, " -> (%d parents) ", child->dag.parent_count);
 		}
 	}
+}
+
+/* Determine if this is an instruction that we'd prefer not to schedule
+ * yet, in order to avoid an (ss) sync.  This is limited by the sfu_delay
+ * counter, ie. the more cycles it has been since the last SFU, the less
+ * costly a sync would be.
+ */
+static bool
+would_sync(struct ir3_postsched_ctx *ctx, struct ir3_instruction *instr)
+{
+	if (ctx->sfu_delay) {
+		struct ir3_register *reg;
+		foreach_src (reg, instr)
+			if (reg->instr && is_sfu(reg->instr))
+				return true;
+	}
+
+	return false;
 }
 
 /* find instruction to schedule: */
@@ -208,7 +214,35 @@ choose_instr(struct ir3_postsched_ctx *ctx)
 		return chosen->instr;
 	}
 
-	/* First try to find a ready leader w/ soft delay (ie. including extra
+	/*
+	 * Sometimes be better to take a nop, rather than scheduling an
+	 * instruction that would require an (ss) shortly after another
+	 * SFU..  ie. if last SFU was just one or two instr ago, and we
+	 * could choose between taking a nop and then scheduling
+	 * something else, vs scheduling the immed avail instruction that
+	 * would require (ss), we are better with the nop.
+	 */
+	for (unsigned delay = 0; delay < 4; delay++) {
+		foreach_sched_node (n, &ctx->dag->heads) {
+			if (would_sync(ctx, n->instr))
+				continue;
+
+			unsigned d = ir3_delay_calc(ctx->block, n->instr, true, false);
+
+			if (d > delay)
+				continue;
+
+			if (!chosen || (chosen->max_delay < n->max_delay))
+				chosen = n;
+		}
+
+		if (chosen) {
+			di(chosen->instr, "csp: chose (soft ready, delay=%u)", delay);
+			return chosen->instr;
+		}
+	}
+
+	/* Next try to find a ready leader w/ soft delay (ie. including extra
 	 * delay for things like tex fetch which can be synchronized w/ sync
 	 * bit (but we probably do want to schedule some other instructions
 	 * while we wait)
@@ -351,7 +385,6 @@ static void
 calculate_deps(struct ir3_postsched_deps_state *state,
 		struct ir3_postsched_node *node)
 {
-	static const struct ir3_register half_reg = { .flags = IR3_REG_HALF };
 	struct ir3_register *reg;
 	int b;
 
@@ -359,12 +392,6 @@ calculate_deps(struct ir3_postsched_deps_state *state,
 	 * in the reverse direction) wrote any of our src registers:
 	 */
 	foreach_src_n (reg, i, node->instr) {
-		/* NOTE: relative access for a src can be either const or gpr: */
-		if (reg->flags & IR3_REG_RELATIV) {
-			/* also reads a0.x: */
-			add_reg_dep(state, node, &half_reg, regid(REG_A0, 0), false);
-		}
-
 		if (reg->flags & (IR3_REG_CONST | IR3_REG_IMMED))
 			continue;
 
@@ -380,11 +407,17 @@ calculate_deps(struct ir3_postsched_deps_state *state,
 
 				struct ir3_postsched_node *dep = dep_reg(state, reg->num + b);
 				if (dep && (state->direction == F)) {
-					unsigned d = ir3_delayslots(dep->instr, node->instr, i);
+					unsigned d = ir3_delayslots(dep->instr, node->instr, i, true);
 					node->delay = MAX2(node->delay, d);
 				}
 			}
 		}
+	}
+
+	if (node->instr->address) {
+		add_reg_dep(state, node, node->instr->address->regs[0],
+					node->instr->address->regs[0]->num,
+					false);
 	}
 
 	if (dest_regs(node->instr) == 0)
@@ -400,9 +433,6 @@ calculate_deps(struct ir3_postsched_deps_state *state,
 		for (unsigned i = 0; i < arr->length; i++) {
 			add_reg_dep(state, node, reg, arr->reg + i, true);
 		}
-
-		/* also reads a0.x: */
-		add_reg_dep(state, node, &half_reg, regid(REG_A0, 0), false);
 	} else {
 		foreach_bit (b, reg->wrmask) {
 			add_reg_dep(state, node, reg, reg->num + b, true);
@@ -477,6 +507,14 @@ sched_dag_init(struct ir3_postsched_ctx *ctx)
 	calculate_reverse_deps(ctx);
 
 	/*
+	 * To avoid expensive texture fetches, etc, from being moved ahead
+	 * of kills, track the kills we've seen so far, so we can add an
+	 * extra dependency on them for tex/mem instructions
+	 */
+	struct util_dynarray kills;
+	util_dynarray_init(&kills, ctx->mem_ctx);
+
+	/*
 	 * Normal srcs won't be in SSA at this point, those are dealt with in
 	 * calculate_forward_deps() and calculate_reverse_deps().  But we still
 	 * have the false-dep information in SSA form, so go ahead and add
@@ -502,6 +540,16 @@ sched_dag_init(struct ir3_postsched_ctx *ctx)
 
 			dag_add_edge(&sn->dag, &n->dag, NULL);
 		}
+
+		if (is_kill(instr)) {
+			util_dynarray_append(&kills, struct ir3_instruction *, instr);
+		} else if (is_tex(instr) || is_mem(instr)) {
+			util_dynarray_foreach(&kills, struct ir3_instruction *, instrp) {
+				struct ir3_instruction *kill = *instrp;
+				struct ir3_postsched_node *kn = kill->data;
+				dag_add_edge(&kn->dag, &n->dag, NULL);
+			}
+		}
 	}
 
 	// TODO do we want to do this after reverse-dependencies?
@@ -520,8 +568,6 @@ static void
 sched_block(struct ir3_postsched_ctx *ctx, struct ir3_block *block)
 {
 	ctx->block = block;
-	ctx->scheduled = NULL;
-	ctx->pred = NULL;
 
 	/* move all instructions to the unscheduled list, and
 	 * empty the block's instruction list (to which we will
@@ -639,7 +685,7 @@ cleanup_self_movs(struct ir3 *ir)
 			}
 
 			for (unsigned i = 0; i < instr->deps_count; i++) {
-				if (is_self_mov(instr->deps[i])) {
+				if (instr->deps[i] && is_self_mov(instr->deps[i])) {
 					list_delinit(&instr->deps[i]->node);
 					instr->deps[i] = instr->deps[i]->regs[1]->instr;
 				}

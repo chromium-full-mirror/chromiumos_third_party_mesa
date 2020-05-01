@@ -48,12 +48,6 @@ namespace SwrJit
 {
     using namespace llvm;
 
-#if LLVM_VERSION_MAJOR > 10
-    typedef unsigned IntrinsicID;
-#else
-    typedef Intrinsic::ID IntrinsicID;
-#endif
-
     enum TargetArch
     {
         AVX    = 0,
@@ -127,7 +121,6 @@ namespace SwrJit
             {"meta.intrinsic.VGATHERDD", {{Intrinsic::not_intrinsic,            Intrinsic::not_intrinsic},  VGATHER_EMU}},
             {"meta.intrinsic.VSCATTERPS", {{Intrinsic::not_intrinsic,           Intrinsic::not_intrinsic}, VSCATTER_EMU}},
             {"meta.intrinsic.VCVTPD2PS", {{Intrinsic::x86_avx_cvt_pd2_ps_256,   Intrinsic::not_intrinsic},  NO_EMU}},
-            {"meta.intrinsic.VCVTPH2PS", {{Intrinsic::x86_vcvtph2ps_256,        Intrinsic::not_intrinsic},  NO_EMU}},
             {"meta.intrinsic.VROUND",    {{Intrinsic::x86_avx_round_ps_256,     DOUBLE},                    NO_EMU}},
             {"meta.intrinsic.VHSUBPS",   {{Intrinsic::x86_avx_hsub_ps_256,      DOUBLE},                    NO_EMU}},
         },
@@ -141,7 +134,6 @@ namespace SwrJit
             {"meta.intrinsic.VGATHERDD",    {{Intrinsic::not_intrinsic,         Intrinsic::not_intrinsic},  VGATHER_EMU}},
             {"meta.intrinsic.VSCATTERPS", {{Intrinsic::not_intrinsic,           Intrinsic::not_intrinsic}, VSCATTER_EMU}},
             {"meta.intrinsic.VCVTPD2PS",    {{Intrinsic::x86_avx_cvt_pd2_ps_256, DOUBLE},                   NO_EMU}},
-            {"meta.intrinsic.VCVTPH2PS",    {{Intrinsic::x86_vcvtph2ps_256,     Intrinsic::not_intrinsic},  NO_EMU}},
             {"meta.intrinsic.VROUND",       {{Intrinsic::x86_avx_round_ps_256,  DOUBLE},                    NO_EMU}},
             {"meta.intrinsic.VHSUBPS",      {{Intrinsic::x86_avx_hsub_ps_256,   DOUBLE},                    NO_EMU}},
         },
@@ -164,11 +156,19 @@ namespace SwrJit
 #else
             {"meta.intrinsic.VCVTPD2PS", {{Intrinsic::not_intrinsic,            Intrinsic::not_intrinsic}, VCONVERT_EMU}},
 #endif
-            {"meta.intrinsic.VCVTPH2PS", {{Intrinsic::x86_avx512_mask_vcvtph2ps_256, Intrinsic::x86_avx512_mask_vcvtph2ps_512}, NO_EMU}},
             {"meta.intrinsic.VROUND", {{Intrinsic::not_intrinsic,               Intrinsic::not_intrinsic}, VROUND_EMU}},
             {"meta.intrinsic.VHSUBPS", {{Intrinsic::not_intrinsic,              Intrinsic::not_intrinsic}, VHSUB_EMU}},
         }};
     // clang-format on
+
+    static uint32_t getBitWidth(VectorType *pVTy)
+    {
+#if LLVM_VERSION_MAJOR >= 11
+        return pVTy->getNumElements() * pVTy->getElementType()->getPrimitiveSizeInBits();
+#else
+        return pVTy->getBitWidth();
+#endif
+    }
 
     struct LowerX86 : public FunctionPass
     {
@@ -255,7 +255,7 @@ namespace SwrJit
             }
             SWR_ASSERT(pVecTy->isVectorTy(), "Couldn't determine vector size");
 
-            uint32_t width = cast<VectorType>(pVecTy)->getBitWidth();
+            uint32_t width = getBitWidth(cast<VectorType>(pVecTy));
             switch (width)
             {
             case 256:
@@ -310,7 +310,11 @@ namespace SwrJit
         // Convert <N x i1> mask to <N x i32> x86 mask
         Value* VectorMask(Value* vi1Mask)
         {
+#if LLVM_VERSION_MAJOR >= 11
+            uint32_t numElem = cast<VectorType>(vi1Mask->getType())->getNumElements();
+#else
             uint32_t numElem = vi1Mask->getType()->getVectorNumElements();
+#endif
             return B->S_EXT(vi1Mask, VectorType::get(B->mInt32Ty, numElem));
         }
 
@@ -388,7 +392,7 @@ namespace SwrJit
 
             SWR_ASSERT(intrinsicMap.find(pFunc->getName().str()) != intrinsicMap.end(),
                        "Unimplemented intrinsic %s.",
-                       pFunc->getName().str());
+                       pFunc->getName().str().c_str());
 
             Intrinsic::ID x86Intrinsic = intrinsicMap[pFunc->getName().str()];
             Function*     pX86IntrinFunc =
@@ -495,7 +499,12 @@ namespace SwrJit
         else
         {
             v32Result = UndefValue::get(v32A->getType());
-            for (uint32_t l = 0; l < v32A->getType()->getVectorNumElements(); ++l)
+#if LLVM_VERSION_MAJOR >= 11
+            uint32_t numElem = cast<VectorType>(v32A->getType())->getNumElements();
+#else
+            uint32_t numElem = v32A->getType()->getVectorNumElements();
+#endif
+            for (uint32_t l = 0; l < numElem; ++l)
             {
                 auto i32Index = B->VEXTRACT(vi32Index, B->C(l));
                 auto val      = B->VEXTRACT(v32A, i32Index);
@@ -515,10 +524,17 @@ namespace SwrJit
         auto     vi1Mask     = pCallInst->getArgOperand(3);
         auto     i8Scale     = pCallInst->getArgOperand(4);
 
-        pBase             = B->POINTER_CAST(pBase, PointerType::get(B->mInt8Ty, 0));
-        uint32_t numElem  = vSrc->getType()->getVectorNumElements();
-        auto     i32Scale = B->Z_EXT(i8Scale, B->mInt32Ty);
-        auto     srcTy    = vSrc->getType()->getVectorElementType();
+        pBase              = B->POINTER_CAST(pBase, PointerType::get(B->mInt8Ty, 0));
+#if LLVM_VERSION_MAJOR >= 11
+        VectorType* pVectorType = cast<VectorType>(vSrc->getType());
+        uint32_t    numElem     = pVectorType->getNumElements();
+        auto        srcTy       = pVectorType->getElementType();
+#else
+        uint32_t numElem   = vSrc->getType()->getVectorNumElements();
+        auto     srcTy     = vSrc->getType()->getVectorElementType();
+#endif
+        auto     i32Scale  = B->Z_EXT(i8Scale, B->mInt32Ty);
+
         Value*   v32Gather = nullptr;
         if (arch == AVX)
         {
@@ -529,7 +545,11 @@ namespace SwrJit
             B->STORE(vSrc, pTmp);
 
             v32Gather        = UndefValue::get(vSrc->getType());
+#if LLVM_VERSION_MAJOR > 10
+            auto vi32Scale   = ConstantVector::getSplat(ElementCount(numElem, false), cast<ConstantInt>(i32Scale));
+#else
             auto vi32Scale   = ConstantVector::getSplat(numElem, cast<ConstantInt>(i32Scale));
+#endif
             auto vi32Offsets = B->MUL(vi32Indices, vi32Scale);
 
             for (uint32_t i = 0; i < numElem; ++i)
@@ -577,12 +597,19 @@ namespace SwrJit
             else if (width == W512)
             {
                 // Double pump 4-wide for 64bit elements
+#if LLVM_VERSION_MAJOR >= 11
+                if (cast<VectorType>(vSrc->getType())->getElementType() == B->mDoubleTy)
+#else
                 if (vSrc->getType()->getVectorElementType() == B->mDoubleTy)
+#endif
                 {
                     auto v64Mask = pThis->VectorMask(vi1Mask);
-                    v64Mask      = B->S_EXT(
-                        v64Mask,
-                        VectorType::get(B->mInt64Ty, v64Mask->getType()->getVectorNumElements()));
+#if LLVM_VERSION_MAJOR >= 11
+                    uint32_t numElem = cast<VectorType>(v64Mask->getType())->getNumElements();
+#else
+                    uint32_t numElem = v64Mask->getType()->getVectorNumElements();
+#endif
+                    v64Mask = B->S_EXT(v64Mask, VectorType::get(B->mInt64Ty, numElem));
                     v64Mask = B->BITCAST(v64Mask, vSrc->getType());
 
                     Value* src0 = B->VSHUFFLE(vSrc, vSrc, B->C({0, 1, 2, 3}));
@@ -594,23 +621,25 @@ namespace SwrJit
                     Value* mask0 = B->VSHUFFLE(v64Mask, v64Mask, B->C({0, 1, 2, 3}));
                     Value* mask1 = B->VSHUFFLE(v64Mask, v64Mask, B->C({4, 5, 6, 7}));
 
-                    src0 = B->BITCAST(
-                        src0,
-                        VectorType::get(B->mInt64Ty, src0->getType()->getVectorNumElements()));
-                    mask0 = B->BITCAST(
-                        mask0,
-                        VectorType::get(B->mInt64Ty, mask0->getType()->getVectorNumElements()));
+#if LLVM_VERSION_MAJOR >= 11
+                    uint32_t numElemSrc0  = cast<VectorType>(src0->getType())->getNumElements();
+                    uint32_t numElemMask0 = cast<VectorType>(mask0->getType())->getNumElements();
+                    uint32_t numElemSrc1  = cast<VectorType>(src1->getType())->getNumElements();
+                    uint32_t numElemMask1 = cast<VectorType>(mask1->getType())->getNumElements();
+#else
+                    uint32_t numElemSrc0  = src0->getType()->getVectorNumElements();
+                    uint32_t numElemMask0 = mask0->getType()->getVectorNumElements();
+                    uint32_t numElemSrc1  = src1->getType()->getVectorNumElements();
+                    uint32_t numElemMask1 = mask1->getType()->getVectorNumElements();
+#endif
+                    src0 = B->BITCAST(src0, VectorType::get(B->mInt64Ty, numElemSrc0));
+                    mask0 = B->BITCAST(mask0, VectorType::get(B->mInt64Ty, numElemMask0));
                     Value* gather0 =
                         B->CALL(pX86IntrinFunc, {src0, pBase, indices0, mask0, i8Scale});
-                    src1 = B->BITCAST(
-                        src1,
-                        VectorType::get(B->mInt64Ty, src1->getType()->getVectorNumElements()));
-                    mask1 = B->BITCAST(
-                        mask1,
-                        VectorType::get(B->mInt64Ty, mask1->getType()->getVectorNumElements()));
+                    src1 = B->BITCAST(src1, VectorType::get(B->mInt64Ty, numElemSrc1));
+                    mask1 = B->BITCAST(mask1, VectorType::get(B->mInt64Ty, numElemMask1));
                     Value* gather1 =
                         B->CALL(pX86IntrinFunc, {src1, pBase, indices1, mask1, i8Scale});
-
                     v32Gather = B->VSHUFFLE(gather0, gather1, B->C({0, 1, 2, 3, 4, 5, 6, 7}));
                     v32Gather = B->BITCAST(v32Gather, vSrc->getType());
                 }
@@ -850,10 +879,15 @@ namespace SwrJit
                 auto argType = arg.get()->getType();
                 if (argType->isVectorTy())
                 {
+#if LLVM_VERSION_MAJOR >= 11
+                    uint32_t vecWidth  = cast<VectorType>(argType)->getNumElements();
+                    auto     elemTy    = cast<VectorType>(argType)->getElementType();
+#else
                     uint32_t vecWidth  = argType->getVectorNumElements();
+                    auto     elemTy    = argType->getVectorElementType();
+#endif
                     Value*   lanes     = B->CInc<int>(i * vecWidth / 2, vecWidth / 2);
-                    Value*   argToPush = B->VSHUFFLE(
-                        arg.get(), B->VUNDEF(argType->getVectorElementType(), vecWidth), lanes);
+                    Value*   argToPush = B->VSHUFFLE(arg.get(), B->VUNDEF(elemTy, vecWidth), lanes);
                     args.push_back(argToPush);
                 }
                 else
@@ -867,8 +901,13 @@ namespace SwrJit
         if (result[0]->getType()->isVectorTy())
         {
             assert(result[1]->getType()->isVectorTy());
+#if LLVM_VERSION_MAJOR >= 11
+            vecWidth = cast<VectorType>(result[0]->getType())->getNumElements() +
+                       cast<VectorType>(result[1]->getType())->getNumElements();
+#else
             vecWidth = result[0]->getType()->getVectorNumElements() +
                        result[1]->getType()->getVectorNumElements();
+#endif
         }
         else
         {

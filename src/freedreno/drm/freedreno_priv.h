@@ -138,16 +138,6 @@ struct fd_submit {
 	const struct fd_submit_funcs *funcs;
 };
 
-struct fd_ringbuffer_funcs {
-	void (*grow)(struct fd_ringbuffer *ring, uint32_t size);
-	void (*emit_reloc)(struct fd_ringbuffer *ring,
-			const struct fd_reloc *reloc);
-	uint32_t (*emit_reloc_ring)(struct fd_ringbuffer *ring,
-			struct fd_ringbuffer *target, uint32_t cmd_idx);
-	uint32_t (*cmd_count)(struct fd_ringbuffer *ring);
-	void (*destroy)(struct fd_ringbuffer *ring);
-};
-
 struct fd_bo_funcs {
 	int (*offset)(struct fd_bo *bo, uint64_t *offset);
 	int (*cpu_prep)(struct fd_bo *bo, struct fd_pipe *pipe, uint32_t op);
@@ -182,8 +172,10 @@ struct fd_bo *fd_bo_new_ring(struct fd_device *dev, uint32_t size);
 
 #define enable_debug 0  /* TODO make dynamic */
 
+bool fd_dbg(void);
+
 #define INFO_MSG(fmt, ...) \
-		do { debug_printf("[I] "fmt " (%s:%d)\n", \
+		do { if (fd_dbg()) debug_printf("[I] "fmt " (%s:%d)\n", \
 				##__VA_ARGS__, __FUNCTION__, __LINE__); } while (0)
 #define DEBUG_MSG(fmt, ...) \
 		do if (enable_debug) { debug_printf("[D] "fmt " (%s:%d)\n", \
