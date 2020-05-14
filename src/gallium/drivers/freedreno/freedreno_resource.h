@@ -145,6 +145,11 @@ fd_resource_set_usage(struct pipe_resource *prsc, enum fd_dirty_3d_state usage)
 	if (!prsc)
 		return;
 	struct fd_resource *rsc = fd_resource(prsc);
+	/* Bits are only ever ORed in, and we expect many set_usage() per
+	 * resource, so do the quick check outside of the lock.
+	 */
+	if (likely(rsc->dirty & usage))
+		return;
 	fd_resource_lock(rsc);
 	rsc->dirty |= usage;
 	fd_resource_unlock(rsc);
@@ -239,5 +244,23 @@ void fd_resource_resize(struct pipe_resource *prsc, uint32_t sz);
 void fd_resource_uncompress(struct fd_context *ctx, struct fd_resource *rsc);
 
 bool fd_render_condition_check(struct pipe_context *pctx);
+
+static inline bool
+fd_batch_references_resource(struct fd_batch *batch, struct fd_resource *rsc)
+{
+	return rsc->batch_mask & (1 << batch->idx);
+}
+
+static inline void
+fd_batch_resource_read(struct fd_batch *batch,
+		struct fd_resource *rsc)
+{
+	/* Fast path: if we hit this then we know we don't have anyone else
+	 * writing to it (since both _write and _read flush other writers), and
+	 * that we've already recursed for stencil.
+	 */
+	if (unlikely(!fd_batch_references_resource(batch, rsc)))
+		fd_batch_resource_read_slowpath(batch, rsc);
+}
 
 #endif /* FREEDRENO_RESOURCE_H_ */

@@ -102,7 +102,16 @@ report_flakes() {
         return 0
     fi
     flakes=$1
-    bot="$CI_RUNNER_DESCRIPTION-$CI_PIPELINE_ID"
+    # The nick needs to be something unique so that multiple runners
+    # connecting at the same time don't race for one nick and get blocked.
+    # freenode has a 16-char limit on nicks (9 is the IETF standard, but
+    # various servers extend that).  So, trim off the common prefixes of the
+    # runner name, and append the job ID so that software runners with more
+    # than one concurrent job (think swrast) don't collide.  For freedreno,
+    # that gives us a nick as long as db410c-N-JJJJJJJJ, and it'll be a while
+    # before we make it to 9-digit jobs (we're at 7 so far).
+    runner=`echo $CI_RUNNER_DESCRIPTION | sed 's|mesa-||' | sed 's|google-freedreno-||g'`
+    bot="$runner-$CI_JOB_ID"
     channel="$FLAKES_CHANNEL"
     (
     echo NICK $bot
@@ -111,8 +120,10 @@ report_flakes() {
     echo "JOIN $channel"
     sleep 1
     desc="Flakes detected in job: $CI_JOB_URL on $CI_RUNNER_DESCRIPTION"
-    if [ -n "CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" ]; then
+    if [ -n "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" ]; then
         desc="$desc on branch $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME ($CI_MERGE_REQUEST_TITLE)"
+    elif [ -n "$CI_COMMIT_BRANCH" ]; then
+        desc="$desc on branch $CI_COMMIT_BRANCH ($CI_COMMIT_TITLE)"
     fi
     echo "PRIVMSG $channel :$desc"
     for flake in `cat $flakes`; do

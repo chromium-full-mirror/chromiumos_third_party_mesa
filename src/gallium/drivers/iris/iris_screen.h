@@ -24,7 +24,7 @@
 #define IRIS_SCREEN_H
 
 #include "pipe/p_screen.h"
-#include "state_tracker/drm_driver.h"
+#include "frontend/drm_driver.h"
 #include "util/disk_cache.h"
 #include "util/slab.h"
 #include "util/u_screen.h"
@@ -168,6 +168,10 @@ struct iris_screen {
       bool always_flush_cache;
    } driconf;
 
+   /** Does the kernel support various features (KERNEL_HAS_* bitfield)? */
+   unsigned kernel_features;
+#define KERNEL_HAS_WAIT_FOR_SUBMIT (1<<0)
+
    unsigned subslice_total;
 
    uint64_t aperture_bytes;
@@ -222,5 +226,7 @@ iris_is_format_supported(struct pipe_screen *pscreen,
                          unsigned usage);
 
 void iris_disk_cache_init(struct iris_screen *screen);
+
+uint32_t iris_get_max_var_invocations(const struct iris_screen *screen);
 
 #endif

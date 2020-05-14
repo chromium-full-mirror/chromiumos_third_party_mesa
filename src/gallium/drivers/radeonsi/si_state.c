@@ -2528,23 +2528,6 @@ static void si_init_depth_surface(struct si_context *sctx, struct si_surface *su
       if (si_htile_enabled(tex, level, PIPE_MASK_ZS)) {
          z_info |= S_028038_TILE_SURFACE_ENABLE(1) | S_028038_ALLOW_EXPCLEAR(1);
 
-         if (tex->tc_compatible_htile) {
-            unsigned max_zplanes = 4;
-
-            if (tex->db_render_format == PIPE_FORMAT_Z16_UNORM && tex->buffer.b.b.nr_samples > 1)
-               max_zplanes = 2;
-
-            z_info |= S_028038_DECOMPRESS_ON_N_ZPLANES(max_zplanes + 1);
-
-            if (sctx->chip_class >= GFX10) {
-               z_info |= S_028040_ITERATE_FLUSH(1);
-               s_info |= S_028044_ITERATE_FLUSH(!tex->htile_stencil_disabled);
-            } else {
-               z_info |= S_028038_ITERATE_FLUSH(1);
-               s_info |= S_02803C_ITERATE_FLUSH(1);
-            }
-         }
-
          if (tex->surface.has_stencil && !tex->htile_stencil_disabled) {
             /* Stencil buffer workaround ported from the GFX6-GFX8 code.
              * See that for explanation.
@@ -2557,9 +2540,9 @@ static void si_init_depth_surface(struct si_context *sctx, struct si_surface *su
 
          surf->db_htile_data_base = (tex->buffer.gpu_address + tex->surface.htile_offset) >> 8;
          surf->db_htile_surface =
-            S_028ABC_FULL_CACHE(1) | S_028ABC_PIPE_ALIGNED(tex->surface.u.gfx9.htile.pipe_aligned);
+            S_028ABC_FULL_CACHE(1) | S_028ABC_PIPE_ALIGNED(1);
          if (sctx->chip_class == GFX9) {
-            surf->db_htile_surface |= S_028ABC_RB_ALIGNED(tex->surface.u.gfx9.htile.rb_aligned);
+            surf->db_htile_surface |= S_028ABC_RB_ALIGNED(1);
          }
       }
    } else {
@@ -2576,7 +2559,7 @@ static void si_init_depth_surface(struct si_context *sctx, struct si_surface *su
       z_info =
          S_028040_FORMAT(format) | S_028040_NUM_SAMPLES(util_logbase2(tex->buffer.b.b.nr_samples));
       s_info = S_028044_FORMAT(stencil_format);
-      surf->db_depth_info = S_02803C_ADDR5_SWIZZLE_MASK(!tex->tc_compatible_htile);
+      surf->db_depth_info = 0;
 
       if (sctx->chip_class >= GFX7) {
          struct radeon_info *info = &sctx->screen->info;
@@ -2624,28 +2607,10 @@ static void si_init_depth_surface(struct si_context *sctx, struct si_surface *su
              */
             if (tex->buffer.b.b.nr_samples <= 1)
                s_info |= S_028044_ALLOW_EXPCLEAR(1);
-         } else if (!tex->tc_compatible_htile) {
-            /* Use all of the htile_buffer for depth if there's no stencil.
-             * This must not be set when TC-compatible HTILE is enabled
-             * due to a hw bug.
-             */
-            s_info |= S_028044_TILE_STENCIL_DISABLE(1);
          }
 
          surf->db_htile_data_base = (tex->buffer.gpu_address + tex->surface.htile_offset) >> 8;
          surf->db_htile_surface = S_028ABC_FULL_CACHE(1);
-
-         if (tex->tc_compatible_htile) {
-            surf->db_htile_surface |= S_028ABC_TC_COMPATIBLE(1);
-
-            /* 0 = full compression. N = only compress up to N-1 Z planes. */
-            if (tex->buffer.b.b.nr_samples <= 1)
-               z_info |= S_028040_DECOMPRESS_ON_N_ZPLANES(5);
-            else if (tex->buffer.b.b.nr_samples <= 4)
-               z_info |= S_028040_DECOMPRESS_ON_N_ZPLANES(3);
-            else
-               z_info |= S_028040_DECOMPRESS_ON_N_ZPLANES(2);
-         }
       }
    }
 
@@ -3084,7 +3049,7 @@ static void si_emit_framebuffer_state(struct si_context *sctx)
          cb_color_attrib3 = cb->cb_color_attrib3 |
                             S_028EE0_COLOR_SW_MODE(tex->surface.u.gfx9.surf.swizzle_mode) |
                             S_028EE0_FMASK_SW_MODE(tex->surface.u.gfx9.fmask.swizzle_mode) |
-                            S_028EE0_CMASK_PIPE_ALIGNED(tex->surface.u.gfx9.cmask.pipe_aligned) |
+                            S_028EE0_CMASK_PIPE_ALIGNED(1) |
                             S_028EE0_DCC_PIPE_ALIGNED(tex->surface.u.gfx9.dcc.pipe_aligned);
 
          radeon_set_context_reg_seq(cs, R_028C60_CB_COLOR0_BASE + i * 0x3C, 14);
@@ -3112,12 +3077,13 @@ static void si_emit_framebuffer_state(struct si_context *sctx)
          radeon_set_context_reg(cs, R_028EC0_CB_COLOR0_ATTRIB2 + i * 4, cb->cb_color_attrib2);
          radeon_set_context_reg(cs, R_028EE0_CB_COLOR0_ATTRIB3 + i * 4, cb_color_attrib3);
       } else if (sctx->chip_class == GFX9) {
-         struct gfx9_surf_meta_flags meta;
+         struct gfx9_surf_meta_flags meta = {
+            .rb_aligned = 1,
+            .pipe_aligned = 1,
+         };
 
          if (tex->surface.dcc_offset)
             meta = tex->surface.u.gfx9.dcc;
-         else
-            meta = tex->surface.u.gfx9.cmask;
 
          /* Set mutable surface parameters. */
          cb_color_base += tex->surface.u.gfx9.surf_offset >> 8;
@@ -3220,10 +3186,32 @@ static void si_emit_framebuffer_state(struct si_context *sctx)
    if (state->zsbuf && sctx->framebuffer.dirty_zsbuf) {
       struct si_surface *zb = (struct si_surface *)state->zsbuf;
       struct si_texture *tex = (struct si_texture *)zb->base.texture;
+      unsigned db_z_info = zb->db_z_info;
+      unsigned db_stencil_info = zb->db_stencil_info;
+      unsigned db_htile_surface = zb->db_htile_surface;
 
       radeon_add_to_buffer_list(sctx, sctx->gfx_cs, &tex->buffer, RADEON_USAGE_READWRITE,
                                 zb->base.texture->nr_samples > 1 ? RADEON_PRIO_DEPTH_BUFFER_MSAA
                                                                  : RADEON_PRIO_DEPTH_BUFFER);
+
+      /* Set fields dependent on tc_compatile_htile. */
+      if (sctx->chip_class >= GFX9 &&
+          vi_tc_compat_htile_enabled(tex, zb->base.u.tex.level, PIPE_MASK_ZS)) {
+         unsigned max_zplanes = 4;
+
+         if (tex->db_render_format == PIPE_FORMAT_Z16_UNORM && tex->buffer.b.b.nr_samples > 1)
+            max_zplanes = 2;
+
+         db_z_info |= S_028038_DECOMPRESS_ON_N_ZPLANES(max_zplanes + 1);
+
+         if (sctx->chip_class >= GFX10) {
+            db_z_info |= S_028040_ITERATE_FLUSH(1);
+            db_stencil_info |= S_028044_ITERATE_FLUSH(!tex->htile_stencil_disabled);
+         } else {
+            db_z_info |= S_028038_ITERATE_FLUSH(1);
+            db_stencil_info |= S_02803C_ITERATE_FLUSH(1);
+         }
+      }
 
       if (sctx->chip_class >= GFX10) {
          radeon_set_context_reg(cs, R_028014_DB_HTILE_DATA_BASE, zb->db_htile_data_base);
@@ -3231,9 +3219,9 @@ static void si_emit_framebuffer_state(struct si_context *sctx)
 
          radeon_set_context_reg_seq(cs, R_02803C_DB_DEPTH_INFO, 7);
          radeon_emit(cs, S_02803C_RESOURCE_LEVEL(1)); /* DB_DEPTH_INFO */
-         radeon_emit(cs, zb->db_z_info |              /* DB_Z_INFO */
+         radeon_emit(cs, db_z_info |                  /* DB_Z_INFO */
                             S_028038_ZRANGE_PRECISION(tex->depth_clear_value != 0));
-         radeon_emit(cs, zb->db_stencil_info); /* DB_STENCIL_INFO */
+         radeon_emit(cs, db_stencil_info);     /* DB_STENCIL_INFO */
          radeon_emit(cs, zb->db_depth_base);   /* DB_Z_READ_BASE */
          radeon_emit(cs, zb->db_stencil_base); /* DB_STENCIL_READ_BASE */
          radeon_emit(cs, zb->db_depth_base);   /* DB_Z_WRITE_BASE */
@@ -3253,9 +3241,9 @@ static void si_emit_framebuffer_state(struct si_context *sctx)
          radeon_emit(cs, zb->db_depth_size);                          /* DB_DEPTH_SIZE */
 
          radeon_set_context_reg_seq(cs, R_028038_DB_Z_INFO, 10);
-         radeon_emit(cs, zb->db_z_info | /* DB_Z_INFO */
+         radeon_emit(cs, db_z_info |                                   /* DB_Z_INFO */
                             S_028038_ZRANGE_PRECISION(tex->depth_clear_value != 0));
-         radeon_emit(cs, zb->db_stencil_info);                         /* DB_STENCIL_INFO */
+         radeon_emit(cs, db_stencil_info);                             /* DB_STENCIL_INFO */
          radeon_emit(cs, zb->db_depth_base);                           /* DB_Z_READ_BASE */
          radeon_emit(cs, S_028044_BASE_HI(zb->db_depth_base >> 32));   /* DB_Z_READ_BASE_HI */
          radeon_emit(cs, zb->db_stencil_base);                         /* DB_STENCIL_READ_BASE */
@@ -3270,13 +3258,38 @@ static void si_emit_framebuffer_state(struct si_context *sctx)
          radeon_emit(cs, zb->db_z_info2);       /* DB_Z_INFO2 */
          radeon_emit(cs, zb->db_stencil_info2); /* DB_STENCIL_INFO2 */
       } else {
+         /* GFX6-GFX8 */
+         /* Set fields dependent on tc_compatile_htile. */
+         if (si_htile_enabled(tex, zb->base.u.tex.level, PIPE_MASK_ZS)) {
+            if (!tex->surface.has_stencil && !tex->tc_compatible_htile) {
+               /* Use all of the htile_buffer for depth if there's no stencil.
+                * This must not be set when TC-compatible HTILE is enabled
+                * due to a hw bug.
+                */
+               db_stencil_info |= S_028044_TILE_STENCIL_DISABLE(1);
+            }
+
+            if (tex->tc_compatible_htile) {
+               db_htile_surface |= S_028ABC_TC_COMPATIBLE(1);
+
+               /* 0 = full compression. N = only compress up to N-1 Z planes. */
+               if (tex->buffer.b.b.nr_samples <= 1)
+                  db_z_info |= S_028040_DECOMPRESS_ON_N_ZPLANES(5);
+               else if (tex->buffer.b.b.nr_samples <= 4)
+                  db_z_info |= S_028040_DECOMPRESS_ON_N_ZPLANES(3);
+               else
+                  db_z_info |= S_028040_DECOMPRESS_ON_N_ZPLANES(2);
+            }
+         }
+
          radeon_set_context_reg(cs, R_028014_DB_HTILE_DATA_BASE, zb->db_htile_data_base);
 
          radeon_set_context_reg_seq(cs, R_02803C_DB_DEPTH_INFO, 9);
-         radeon_emit(cs, zb->db_depth_info); /* DB_DEPTH_INFO */
-         radeon_emit(cs, zb->db_z_info |     /* DB_Z_INFO */
+         radeon_emit(cs, zb->db_depth_info |   /* DB_DEPTH_INFO */
+                     S_02803C_ADDR5_SWIZZLE_MASK(!tex->tc_compatible_htile));
+         radeon_emit(cs, db_z_info |           /* DB_Z_INFO */
                             S_028040_ZRANGE_PRECISION(tex->depth_clear_value != 0));
-         radeon_emit(cs, zb->db_stencil_info); /* DB_STENCIL_INFO */
+         radeon_emit(cs, db_stencil_info);     /* DB_STENCIL_INFO */
          radeon_emit(cs, zb->db_depth_base);   /* DB_Z_READ_BASE */
          radeon_emit(cs, zb->db_stencil_base); /* DB_STENCIL_READ_BASE */
          radeon_emit(cs, zb->db_depth_base);   /* DB_Z_WRITE_BASE */
@@ -3290,7 +3303,7 @@ static void si_emit_framebuffer_state(struct si_context *sctx)
       radeon_emit(cs, fui(tex->depth_clear_value)); /* R_02802C_DB_DEPTH_CLEAR */
 
       radeon_set_context_reg(cs, R_028008_DB_DEPTH_VIEW, zb->db_depth_view);
-      radeon_set_context_reg(cs, R_028ABC_DB_HTILE_SURFACE, zb->db_htile_surface);
+      radeon_set_context_reg(cs, R_028ABC_DB_HTILE_SURFACE, db_htile_surface);
    } else if (sctx->framebuffer.dirty_zsbuf) {
       if (sctx->chip_class == GFX9)
          radeon_set_context_reg_seq(cs, R_028038_DB_Z_INFO, 2);
@@ -3866,7 +3879,7 @@ static void gfx10_make_texture_descriptor(
          S_00A00C_TYPE(si_tex_dim(screen, tex, target, 0));
       fmask_state[4] = S_00A010_DEPTH(last_layer) | S_00A010_BASE_ARRAY(first_layer);
       fmask_state[5] = 0;
-      fmask_state[6] = S_00A018_META_PIPE_ALIGNED(tex->surface.u.gfx9.cmask.pipe_aligned);
+      fmask_state[6] = S_00A018_META_PIPE_ALIGNED(1);
       fmask_state[7] = 0;
    }
 }
@@ -3997,8 +4010,7 @@ static void si_make_texture_descriptor(struct si_screen *screen, struct si_textu
    }
 
    /* S8 with Z32 HTILE needs a special format. */
-   if (screen->info.chip_class == GFX9 && pipe_format == PIPE_FORMAT_S8_UINT &&
-       tex->tc_compatible_htile)
+   if (screen->info.chip_class == GFX9 && pipe_format == PIPE_FORMAT_S8_UINT)
       data_format = V_008F14_IMG_DATA_FORMAT_S8_32;
 
    if (!sampler && (res->target == PIPE_TEXTURE_CUBE || res->target == PIPE_TEXTURE_CUBE_ARRAY ||
@@ -4190,8 +4202,8 @@ static void si_make_texture_descriptor(struct si_screen *screen, struct si_textu
          fmask_state[3] |= S_008F1C_SW_MODE(tex->surface.u.gfx9.fmask.swizzle_mode);
          fmask_state[4] |=
             S_008F20_DEPTH(last_layer) | S_008F20_PITCH(tex->surface.u.gfx9.fmask.epitch);
-         fmask_state[5] |= S_008F24_META_PIPE_ALIGNED(tex->surface.u.gfx9.cmask.pipe_aligned) |
-                           S_008F24_META_RB_ALIGNED(tex->surface.u.gfx9.cmask.rb_aligned);
+         fmask_state[5] |= S_008F24_META_PIPE_ALIGNED(1) |
+                           S_008F24_META_RB_ALIGNED(1);
       } else {
          fmask_state[3] |= S_008F1C_TILING_INDEX(tex->surface.u.legacy.fmask.tiling_index);
          fmask_state[4] |= S_008F20_DEPTH(depth - 1) |
@@ -4272,7 +4284,7 @@ struct pipe_sampler_view *si_create_sampler_view_custom(struct pipe_context *ctx
       depth = u_minify(depth, force_level);
    }
 
-   /* This is not needed if state trackers set last_layer correctly. */
+   /* This is not needed if gallium frontends set last_layer correctly. */
    if (state->target == PIPE_TEXTURE_1D || state->target == PIPE_TEXTURE_2D ||
        state->target == PIPE_TEXTURE_RECT || state->target == PIPE_TEXTURE_CUBE)
       last_layer = state->u.tex.first_layer;
@@ -4542,7 +4554,7 @@ static void si_emit_sample_mask(struct si_context *sctx)
    unsigned mask = sctx->sample_mask;
 
    /* Needed for line and polygon smoothing as well as for the Polaris
-    * small primitive filter. We expect the state tracker to take care of
+	 * small primitive filter. We expect the gallium frontend to take care of
     * this for us.
     */
    assert(mask == 0xffff || sctx->framebuffer.nr_samples > 1 ||

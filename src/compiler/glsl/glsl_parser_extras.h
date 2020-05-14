@@ -359,7 +359,7 @@ struct _mesa_glsl_parse_state {
       return EXT_shader_implicit_conversions_enable || is_version(120, 0);
    }
 
-   bool has_implicit_uint_to_int_conversion() const
+   bool has_implicit_int_to_uint_conversion() const
    {
       return ARB_gpu_shader5_enable ||
              MESA_shader_integer_functions_enable ||
@@ -388,7 +388,8 @@ struct _mesa_glsl_parse_state {
    bool compat_shader;
    unsigned language_version;
    unsigned forced_language_version;
-   bool zero_init;
+   /* Bitfield of ir_variable_mode to zero init */
+   uint32_t zero_init;
    unsigned gl_version;
    gl_shader_stage stage;
 

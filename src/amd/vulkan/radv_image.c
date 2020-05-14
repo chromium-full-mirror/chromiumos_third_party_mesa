@@ -437,8 +437,11 @@ radv_init_surface(struct radv_device *device,
 		unreachable("unhandled image type");
 	}
 
-	if (is_depth)
+	if (is_depth) {
 		surface->flags |= RADEON_SURF_ZBUFFER;
+		if (radv_use_tc_compat_htile_for_image(device, pCreateInfo, image_format))
+			surface->flags |= RADEON_SURF_TC_COMPATIBLE_HTILE;
+	}
 
 	if (is_stencil)
 		surface->flags |= RADEON_SURF_SBUFFER;
@@ -516,7 +519,7 @@ radv_make_buffer_descriptor(struct radv_device *device,
 		   S_008F0C_DST_SEL_W(radv_map_swizzle(desc->swizzle[3]));
 
 	if (device->physical_device->rad_info.chip_class >= GFX10) {
-		const struct gfx10_format *fmt = &gfx10_format_table[vk_format];
+		const struct gfx10_format *fmt = gfx10_format_description(vk_format);
 
 		/* OOB_SELECT chooses the out-of-bounds check:
 		 *  - 0: (index >= NUM_RECORDS) || (offset >= STRIDE)
@@ -606,12 +609,13 @@ si_set_mutable_tex_desc_fields(struct radv_device *device,
 			    C_00A018_META_PIPE_ALIGNED;
 
 		if (meta_va) {
-			struct gfx9_surf_meta_flags meta;
+			struct gfx9_surf_meta_flags meta = {
+				.rb_aligned = 1,
+				.pipe_aligned = 1,
+			};
 
 			if (image->dcc_offset)
 				meta = plane->surface.u.gfx9.dcc;
-			else
-				meta = plane->surface.u.gfx9.htile;
 
 			state[6] |= S_00A018_META_PIPE_ALIGNED(meta.pipe_aligned) |
 				    S_00A018_META_DATA_ADDRESS_LO(meta_va >> 8);
@@ -634,12 +638,13 @@ si_set_mutable_tex_desc_fields(struct radv_device *device,
 			    C_008F24_META_PIPE_ALIGNED &
 			    C_008F24_META_RB_ALIGNED;
 		if (meta_va) {
-			struct gfx9_surf_meta_flags meta;
+			struct gfx9_surf_meta_flags meta = {
+				.rb_aligned = 1,
+				.pipe_aligned = 1,
+			};
 
 			if (image->dcc_offset)
 				meta = plane->surface.u.gfx9.dcc;
-			else
-				meta = plane->surface.u.gfx9.htile;
 
 			state[5] |= S_008F24_META_DATA_ADDRESS(meta_va >> 40) |
 				    S_008F24_META_PIPE_ALIGNED(meta.pipe_aligned) |
@@ -744,7 +749,7 @@ gfx10_make_texture_descriptor(struct radv_device *device,
 	unsigned type;
 
 	desc = vk_format_description(vk_format);
-	img_format = gfx10_format_table[vk_format].img_format;
+	img_format = gfx10_format_description(vk_format)->img_format;
 
 	if (desc->colorspace == VK_FORMAT_COLORSPACE_ZS) {
 		const unsigned char swizzle_xxxx[4] = {0, 0, 0, 0};
@@ -841,7 +846,7 @@ gfx10_make_texture_descriptor(struct radv_device *device,
 		fmask_state[4] = S_00A010_DEPTH(last_layer) |
 				 S_00A010_BASE_ARRAY(first_layer);
 		fmask_state[5] = 0;
-		fmask_state[6] = S_00A018_META_PIPE_ALIGNED(image->planes[0].surface.u.gfx9.cmask.pipe_aligned);
+		fmask_state[6] = S_00A018_META_PIPE_ALIGNED(1);
 		fmask_state[7] = 0;
 	} else if (fmask_state)
 		memset(fmask_state, 0, 8 * 4);
@@ -1029,8 +1034,8 @@ si_make_texture_descriptor(struct radv_device *device,
 			fmask_state[3] |= S_008F1C_SW_MODE(image->planes[0].surface.u.gfx9.fmask.swizzle_mode);
 			fmask_state[4] |= S_008F20_DEPTH(last_layer) |
 					  S_008F20_PITCH(image->planes[0].surface.u.gfx9.fmask.epitch);
-			fmask_state[5] |= S_008F24_META_PIPE_ALIGNED(image->planes[0].surface.u.gfx9.cmask.pipe_aligned) |
-					  S_008F24_META_RB_ALIGNED(image->planes[0].surface.u.gfx9.cmask.rb_aligned);
+			fmask_state[5] |= S_008F24_META_PIPE_ALIGNED(1) |
+					  S_008F24_META_RB_ALIGNED(1);
 
 			if (radv_image_is_tc_compat_cmask(image)) {
 				va = gpu_address + image->offset + image->cmask_offset;
@@ -1173,27 +1178,9 @@ radv_image_override_offset_stride(struct radv_device *device,
                                   struct radv_image *image,
                                   uint64_t offset, uint32_t stride)
 {
-	struct radeon_surf *surface = &image->planes[0].surface;
-	unsigned bpe = vk_format_get_blocksizebits(image->vk_format) / 8;
-
-	if (device->physical_device->rad_info.chip_class >= GFX9) {
-		if (stride) {
-			surface->u.gfx9.surf_pitch = stride;
-			surface->u.gfx9.surf_slice_size =
-				(uint64_t)stride * surface->u.gfx9.surf_height * bpe;
-		}
-		surface->u.gfx9.surf_offset = offset;
-	} else {
-		surface->u.legacy.level[0].nblk_x = stride;
-		surface->u.legacy.level[0].slice_size_dw =
-			((uint64_t)stride * surface->u.legacy.level[0].nblk_y * bpe) / 4;
-
-		if (offset) {
-			for (unsigned i = 0; i < ARRAY_SIZE(surface->u.legacy.level); ++i)
-				surface->u.legacy.level[i].offset += offset;
-		}
-
-	}
+	ac_surface_override_offset_stride(&device->physical_device->rad_info,
+					  &image->planes[0].surface,
+					  image->info.levels, offset, stride);
 }
 
 static void
@@ -1348,8 +1335,6 @@ static void radv_image_disable_htile(struct radv_image *image)
 {
 	for (unsigned i = 0; i < image->plane_count; ++i)
 		image->planes[i].surface.htile_size = 0;
-
-	image->tc_compatible_htile = false;
 }
 
 VkResult
@@ -1421,8 +1406,7 @@ radv_image_create_layout(struct radv_device *device,
 			/* Otherwise, try to enable HTILE for depth surfaces. */
 			if (radv_image_can_enable_htile(image) &&
 			    !(device->instance->debug_flags & RADV_DEBUG_NO_HIZ)) {
-				if (!image->planes[0].surface.tc_compatible_htile_allowed)
-					image->tc_compatible_htile = false;
+				image->tc_compatible_htile = image->planes[0].surface.flags & RADEON_SURF_TC_COMPATIBLE_HTILE;
 				radv_image_alloc_htile(device, image);
 			} else {
 				radv_image_disable_htile(image);
@@ -1460,10 +1444,12 @@ radv_image_create(VkDevice _device,
 	radv_assert(pCreateInfo->extent.height > 0);
 	radv_assert(pCreateInfo->extent.depth > 0);
 
-	image = vk_zalloc2(&device->alloc, alloc, image_struct_size, 8,
+	image = vk_zalloc2(&device->vk.alloc, alloc, image_struct_size, 8,
 			   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 	if (!image)
 		return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+	vk_object_base_init(&device->vk, &image->base, VK_OBJECT_TYPE_IMAGE);
 
 	image->type = pCreateInfo->imageType;
 	image->info.width = pCreateInfo->extent.width;
@@ -1500,10 +1486,6 @@ radv_image_create(VkDevice _device,
 		image->info.surf_index = &device->image_mrt_offset_counter;
 	}
 
-	image->tc_compatible_htile =
-		radv_use_tc_compat_htile_for_image(device, create_info->vk_info,
-		                                   image->vk_format);
-
 	for (unsigned plane = 0; plane < image->plane_count; ++plane) {
 		radv_init_surface(device, image, &image->planes[plane].surface, plane, pCreateInfo, format);
 	}
@@ -1528,7 +1510,7 @@ radv_image_create(VkDevice _device,
 		image->bo = device->ws->buffer_create(device->ws, image->size, image->alignment,
 		                                      0, RADEON_FLAG_VIRTUAL, RADV_BO_PRIORITY_VIRTUAL);
 		if (!image->bo) {
-			vk_free2(&device->alloc, alloc, image);
+			vk_free2(&device->vk.alloc, alloc, image);
 			return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 		}
 	}
@@ -1864,7 +1846,8 @@ radv_DestroyImage(VkDevice _device, VkImage _image,
 	if (image->owned_memory != VK_NULL_HANDLE)
 		radv_FreeMemory(_device, image->owned_memory, pAllocator);
 
-	vk_free2(&device->alloc, pAllocator, image);
+	vk_object_base_finish(&image->base);
+	vk_free2(&device->vk.alloc, pAllocator, image);
 }
 
 void radv_GetImageSubresourceLayout(
@@ -1928,10 +1911,13 @@ radv_CreateImageView(VkDevice _device,
 	RADV_FROM_HANDLE(radv_device, device, _device);
 	struct radv_image_view *view;
 
-	view = vk_alloc2(&device->alloc, pAllocator, sizeof(*view), 8,
+	view = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*view), 8,
 			   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 	if (view == NULL)
 		return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+	vk_object_base_init(&device->vk, &view->base,
+			    VK_OBJECT_TYPE_IMAGE_VIEW);
 
 	radv_image_view_init(view, device, pCreateInfo, NULL);
 
@@ -1949,7 +1935,9 @@ radv_DestroyImageView(VkDevice _device, VkImageView _iview,
 
 	if (!iview)
 		return;
-	vk_free2(&device->alloc, pAllocator, iview);
+
+	vk_object_base_finish(&iview->base);
+	vk_free2(&device->vk.alloc, pAllocator, iview);
 }
 
 void radv_buffer_view_init(struct radv_buffer_view *view,
@@ -1976,10 +1964,13 @@ radv_CreateBufferView(VkDevice _device,
 	RADV_FROM_HANDLE(radv_device, device, _device);
 	struct radv_buffer_view *view;
 
-	view = vk_alloc2(&device->alloc, pAllocator, sizeof(*view), 8,
+	view = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*view), 8,
 			   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 	if (!view)
 		return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+	vk_object_base_init(&device->vk, &view->base,
+			    VK_OBJECT_TYPE_BUFFER_VIEW);
 
 	radv_buffer_view_init(view, device, pCreateInfo);
 
@@ -1998,5 +1989,6 @@ radv_DestroyBufferView(VkDevice _device, VkBufferView bufferView,
 	if (!view)
 		return;
 
-	vk_free2(&device->alloc, pAllocator, view);
+	vk_object_base_finish(&view->base);
+	vk_free2(&device->vk.alloc, pAllocator, view);
 }

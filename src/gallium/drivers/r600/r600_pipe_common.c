@@ -356,9 +356,9 @@ static void r600_flush_from_st(struct pipe_context *ctx,
 			ws->cs_sync_flush(rctx->gfx.cs);
 	} else {
 		/* Instead of flushing, create a deferred fence. Constraints:
-		 * - The state tracker must allow a deferred flush.
-		 * - The state tracker must request a fence.
-		 * Thread safety in fence_finish must be ensured by the state tracker.
+		 * - the gallium frontend must allow a deferred flush.
+		 * - the gallium frontend must request a fence.
+		 * Thread safety in fence_finish must be ensured by the gallium frontend.
 		 */
 		if (flags & PIPE_FLUSH_DEFERRED && fence) {
 			gfx_fence = rctx->ws->cs_get_next_fence(rctx->gfx.cs);
@@ -812,8 +812,6 @@ static const char* r600_get_name(struct pipe_screen* pscreen)
 static float r600_get_paramf(struct pipe_screen* pscreen,
 			     enum pipe_capf param)
 {
-	struct r600_common_screen *rscreen = (struct r600_common_screen *)pscreen;
-
 	switch (param) {
 	case PIPE_CAPF_MAX_LINE_WIDTH:
 	case PIPE_CAPF_MAX_LINE_WIDTH_AA:
@@ -1194,8 +1192,10 @@ const struct nir_shader_compiler_options r600_nir_fs_options = {
 	.lower_extract_byte = true,
 	.lower_extract_word = true,
 	.max_unroll_iterations = 32,
-        .lower_all_io_to_temps = true,
-	.vectorize_io = true
+	.lower_all_io_to_temps = true,
+	.vectorize_io = true,
+	.has_umad24 = true,
+	.has_umul24 = true,
 };
 
 const struct nir_shader_compiler_options r600_nir_options = {
@@ -1212,10 +1212,9 @@ const struct nir_shader_compiler_options r600_nir_options = {
 	.lower_extract_byte = true,
 	.lower_extract_word = true,
 	.max_unroll_iterations = 32,
-	.lower_all_io_to_temps = true,
 	.vectorize_io = true,
-        .has_umad24 = true,
-        .has_umul24 = true,
+	.has_umad24 = true,
+	.has_umul24 = true,
 };
 
 

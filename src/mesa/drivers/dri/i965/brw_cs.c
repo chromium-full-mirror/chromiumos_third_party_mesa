@@ -114,12 +114,11 @@ brw_codegen_cs_prog(struct brw_context *brw,
     * the actual size is not known until the dispatch command is issued.
     */
    if (nir->info.cs.local_size_variable) {
-      prog_data.uses_variable_group_size = true;
       nir->info.cs.max_variable_local_size =
          gl_ctx->Const.MaxComputeVariableGroupInvocations;
-   } else {
-      prog_data.uses_variable_group_size = false;
    }
+
+   brw_nir_lower_cs_intrinsics(nir);
 
    char *error_str;
    program = brw_compile_cs(brw->screen->compiler, brw, mem_ctx, key,

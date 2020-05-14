@@ -86,15 +86,19 @@ tu_image_create(VkDevice _device,
                            EXTERNAL_MEMORY_IMAGE_CREATE_INFO) != NULL;
 
    image->layout.tile_mode = TILE6_3;
-   bool ubwc_enabled = true;
+   bool ubwc_enabled =
+      !(device->physical_device->instance->debug_flags & TU_DEBUG_NOUBWC);
 
    /* disable tiling when linear is requested and for compressed formats */
    if (pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR ||
-       modifier == DRM_FORMAT_MOD_LINEAR ||
-       vk_format_is_compressed(image->vk_format)) {
+       modifier == DRM_FORMAT_MOD_LINEAR) {
       image->layout.tile_mode = TILE6_LINEAR;
       ubwc_enabled = false;
    }
+
+   /* don't use UBWC with compressed formats */
+   if (vk_format_is_compressed(image->vk_format))
+      ubwc_enabled = false;
 
    /* UBWC can't be used with E5B9G9R9 */
    if (image->vk_format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32)
@@ -151,10 +155,7 @@ tu_image_create(VkDevice _device,
 enum a6xx_tex_fetchsize
 tu6_fetchsize(VkFormat format)
 {
-   if (vk_format_description(format)->layout == UTIL_FORMAT_LAYOUT_ASTC)
-      return TFETCH6_16_BYTE;
-
-   switch (vk_format_get_blocksize(format) / vk_format_get_blockwidth(format)) {
+   switch (vk_format_get_blocksize(format)) {
    case 1: return TFETCH6_1_BYTE;
    case 2: return TFETCH6_2_BYTE;
    case 4: return TFETCH6_4_BYTE;

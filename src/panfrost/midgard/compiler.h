@@ -104,6 +104,11 @@ typedef struct midgard_instruction {
         /* Special fields for an ALU instruction */
         midgard_reg_info registers;
 
+        /* For textures: should helpers execute this instruction (instead of
+         * just helping with derivatives)? Should helpers terminate after? */
+        bool helper_terminate;
+        bool helper_execute;
+
         /* I.e. (1 << alu_bit) */
         int unit;
 
@@ -179,6 +184,9 @@ typedef struct midgard_block {
 
         /* Indicates this is a fixed-function fragment epilogue block */
         bool epilogue;
+
+        /* Are helper invocations required by this block? */
+        bool helpers_in;
 } midgard_block;
 
 typedef struct midgard_bundle {
@@ -265,10 +273,6 @@ typedef struct compiler_context {
         /* Just the count of the max register used. Higher count => higher
          * register pressure */
         int work_registers;
-
-        /* Used for cont/last hinting. Increase when a tex op is added.
-         * Decrease when a tex op is removed. */
-        int texture_op_count;
 
         /* The number of uniforms allowable for the fast path */
         int uniform_cutoff;
@@ -625,6 +629,9 @@ void
 midgard_lower_derivatives(compiler_context *ctx, midgard_block *block);
 
 bool mir_op_computes_derivatives(gl_shader_stage stage, unsigned op);
+
+void mir_analyze_helper_terminate(compiler_context *ctx);
+void mir_analyze_helper_requirements(compiler_context *ctx);
 
 /* Final emission */
 

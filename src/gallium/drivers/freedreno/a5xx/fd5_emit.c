@@ -92,7 +92,7 @@ fd5_emit_const(struct fd_ringbuffer *ring, gl_shader_stage type,
 }
 
 static void
-fd5_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type, boolean write,
+fd5_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type,
 		uint32_t regid, uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	uint32_t anum = align(num, 2);
@@ -111,11 +111,7 @@ fd5_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type, boolean writ
 
 	for (i = 0; i < num; i++) {
 		if (prscs[i]) {
-			if (write) {
-				OUT_RELOCW(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
-			} else {
-				OUT_RELOC(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
-			}
+			OUT_RELOC(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
 		} else {
 			OUT_RING(ring, 0xbad00000 | (i << 16));
 			OUT_RING(ring, 0xbad00000 | (i << 16));
@@ -148,12 +144,12 @@ emit_const(struct fd_ringbuffer *ring,
 
 static void
 emit_const_bo(struct fd_ringbuffer *ring,
-		const struct ir3_shader_variant *v, bool write, uint32_t dst_offset,
+		const struct ir3_shader_variant *v, uint32_t dst_offset,
 		uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	/* TODO inline this */
 	assert(dst_offset + num < v->constlen * 4);
-	fd5_emit_const_bo(ring, v->type, write, dst_offset, num, prscs, offsets);
+	fd5_emit_const_bo(ring, v->type, dst_offset, num, prscs, offsets);
 }
 
 void
@@ -468,7 +464,7 @@ emit_ssbos(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
 		if (buf->buffer) {
 			struct fd_resource *rsc = fd_resource(buf->buffer);
-			OUT_RELOCW(ring, rsc->bo, buf->buffer_offset, 0, 0);
+			OUT_RELOC(ring, rsc->bo, buf->buffer_offset, 0, 0);
 		} else {
 			OUT_RING(ring, 0x00000000);
 			OUT_RING(ring, 0x00000000);
@@ -613,11 +609,13 @@ fd5_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
 		OUT_PKT4(ring, REG_A5XX_RB_DEPTH_PLANE_CNTL, 1);
 		OUT_RING(ring, COND(fragz, A5XX_RB_DEPTH_PLANE_CNTL_FRAG_WRITES_Z) |
-				COND(fragz && fp->frag_coord, A5XX_RB_DEPTH_PLANE_CNTL_UNK1));
+				COND(fragz && fp->fragcoord_compmask != 0,
+				A5XX_RB_DEPTH_PLANE_CNTL_UNK1));
 
 		OUT_PKT4(ring, REG_A5XX_GRAS_SU_DEPTH_PLANE_CNTL, 1);
 		OUT_RING(ring, COND(fragz, A5XX_GRAS_SU_DEPTH_PLANE_CNTL_FRAG_WRITES_Z) |
-				COND(fragz && fp->frag_coord, A5XX_GRAS_SU_DEPTH_PLANE_CNTL_UNK1));
+				COND(fragz && fp->fragcoord_compmask != 0,
+				A5XX_GRAS_SU_DEPTH_PLANE_CNTL_UNK1));
 	}
 
 	/* NOTE: scissor enabled bit is part of rasterizer state: */
@@ -738,7 +736,7 @@ fd5_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
 			OUT_PKT4(ring, REG_A5XX_VPC_SO_BUFFER_BASE_LO(i), 3);
 			/* VPC_SO[i].BUFFER_BASE_LO: */
-			OUT_RELOCW(ring, fd_resource(target->buffer)->bo, 0, 0, 0);
+			OUT_RELOC(ring, fd_resource(target->buffer)->bo, 0, 0, 0);
 			OUT_RING(ring, target->buffer_size + offset);
 
 			OUT_PKT4(ring, REG_A5XX_VPC_SO_BUFFER_OFFSET(i), 3);
@@ -747,7 +745,7 @@ fd5_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			// TODO just give hw a dummy addr for now.. we should
 			// be using this an then CP_MEM_TO_REG to set the
 			// VPC_SO[i].BUFFER_OFFSET for the next draw..
-			OUT_RELOCW(ring, fd5_context(ctx)->blit_mem, 0x100, 0, 0);
+			OUT_RELOC(ring, fd5_context(ctx)->blit_mem, 0x100, 0, 0);
 
 			emit->streamout_mask |= (1 << i);
 		}
@@ -1141,8 +1139,8 @@ fd5_mem_to_mem(struct fd_ringbuffer *ring, struct pipe_resource *dst,
 	for (i = 0; i < sizedwords; i++) {
 		OUT_PKT7(ring, CP_MEM_TO_MEM, 5);
 		OUT_RING(ring, 0x00000000);
-		OUT_RELOCW(ring, dst_bo, dst_off, 0, 0);
-		OUT_RELOC (ring, src_bo, src_off, 0, 0);
+		OUT_RELOC(ring, dst_bo, dst_off, 0, 0);
+		OUT_RELOC(ring, src_bo, src_off, 0, 0);
 
 		dst_off += 4;
 		src_off += 4;

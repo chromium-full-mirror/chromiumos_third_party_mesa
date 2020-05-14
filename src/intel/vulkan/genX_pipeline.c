@@ -219,6 +219,12 @@ emit_vertex_input(struct anv_graphics_pipeline *pipeline,
 #endif
       };
       GENX(VERTEX_ELEMENT_STATE_pack)(NULL, &p[1 + id_slot * 2], &element);
+
+#if GEN_GEN >= 8
+      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_VF_INSTANCING), vfi) {
+         vfi.VertexElementIndex = id_slot;
+      }
+#endif
    }
 
 #if GEN_GEN >= 8
@@ -2157,7 +2163,7 @@ genX(graphics_pipeline_create)(
    if (cache == NULL && device->physical->instance->pipeline_cache_enabled)
       cache = &device->default_pipeline_cache;
 
-   pipeline = vk_alloc2(&device->alloc, pAllocator, sizeof(*pipeline), 8,
+   pipeline = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8,
                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pipeline == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -2165,7 +2171,7 @@ genX(graphics_pipeline_create)(
    result = anv_pipeline_init(pipeline, device, cache,
                               pCreateInfo, pAllocator);
    if (result != VK_SUCCESS) {
-      vk_free2(&device->alloc, pAllocator, pipeline);
+      vk_free2(&device->vk.alloc, pAllocator, pipeline);
       return result;
    }
 
@@ -2274,20 +2280,22 @@ compute_pipeline_create(
    if (cache == NULL && device->physical->instance->pipeline_cache_enabled)
       cache = &device->default_pipeline_cache;
 
-   pipeline = vk_alloc2(&device->alloc, pAllocator, sizeof(*pipeline), 8,
+   pipeline = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8,
                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pipeline == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
+   vk_object_base_init(&device->vk, &pipeline->base.base,
+                       VK_OBJECT_TYPE_PIPELINE);
    pipeline->base.device = device;
    pipeline->base.type = ANV_PIPELINE_COMPUTE;
 
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &device->alloc;
+      pAllocator ? pAllocator : &device->vk.alloc;
 
    result = anv_reloc_list_init(&pipeline->base.batch_relocs, alloc);
    if (result != VK_SUCCESS) {
-      vk_free2(&device->alloc, pAllocator, pipeline);
+      vk_free2(&device->vk.alloc, pAllocator, pipeline);
       return result;
    }
    pipeline->base.batch.alloc = alloc;
@@ -2309,7 +2317,7 @@ compute_pipeline_create(
                                     pCreateInfo->stage.pSpecializationInfo);
    if (result != VK_SUCCESS) {
       ralloc_free(pipeline->base.mem_ctx);
-      vk_free2(&device->alloc, pAllocator, pipeline);
+      vk_free2(&device->vk.alloc, pAllocator, pipeline);
       return result;
    }
 

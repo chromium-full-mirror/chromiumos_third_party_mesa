@@ -505,19 +505,9 @@ emit_binary_bundle(compiler_context *ctx,
                 ins->texture.in_reg_full = (isz == 32);
                 ins->texture.sampler_type = midgard_sampler_type(ins->dest_type);
 
-                ctx->texture_op_count--;
-
                 if (mir_op_computes_derivatives(ctx->stage, ins->texture.op)) {
-                        bool continues = ctx->texture_op_count > 0;
-
-                        /* Control flow complicates helper invocation
-                         * lifespans, so for now just keep helper threads
-                         * around indefinitely with loops. TODO: Proper
-                         * analysis */
-                        continues |= ctx->loop_count > 0;
-
-                        ins->texture.cont = continues;
-                        ins->texture.last = !continues;
+                        ins->texture.cont = !ins->helper_terminate;
+                        ins->texture.last = ins->helper_terminate || ins->helper_execute;
                 } else {
                         ins->texture.cont = ins->texture.last = 1;
                 }

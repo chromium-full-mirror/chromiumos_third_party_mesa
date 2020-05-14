@@ -572,16 +572,19 @@ VkResult radv_CreatePipelineCache(
 	assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO);
 	assert(pCreateInfo->flags == 0);
 
-	cache = vk_alloc2(&device->alloc, pAllocator,
+	cache = vk_alloc2(&device->vk.alloc, pAllocator,
 			    sizeof(*cache), 8,
 			    VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 	if (cache == NULL)
 		return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
+	vk_object_base_init(&device->vk, &cache->base,
+			    VK_OBJECT_TYPE_PIPELINE_CACHE);
+
 	if (pAllocator)
 		cache->alloc = *pAllocator;
 	else
-		cache->alloc = device->alloc;
+		cache->alloc = device->vk.alloc;
 
 	radv_pipeline_cache_init(cache, device);
 
@@ -608,7 +611,8 @@ void radv_DestroyPipelineCache(
 		return;
 	radv_pipeline_cache_finish(cache);
 
-	vk_free2(&device->alloc, pAllocator, cache);
+	vk_object_base_finish(&cache->base);
+	vk_free2(&device->vk.alloc, pAllocator, cache);
 }
 
 VkResult radv_GetPipelineCacheData(

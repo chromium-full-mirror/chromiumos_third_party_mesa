@@ -88,7 +88,7 @@ fd4_emit_const(struct fd_ringbuffer *ring, gl_shader_stage type,
 }
 
 static void
-fd4_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type, boolean write,
+fd4_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type,
 		uint32_t regid, uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	uint32_t anum = align(num, 4);
@@ -106,11 +106,7 @@ fd4_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type, boolean writ
 
 	for (i = 0; i < num; i++) {
 		if (prscs[i]) {
-			if (write) {
-				OUT_RELOCW(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
-			} else {
-				OUT_RELOC(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
-			}
+			OUT_RELOC(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
 		} else {
 			OUT_RING(ring, 0xbad00000 | (i << 16));
 		}
@@ -140,12 +136,12 @@ emit_const(struct fd_ringbuffer *ring,
 
 static void
 emit_const_bo(struct fd_ringbuffer *ring,
-		const struct ir3_shader_variant *v, bool write, uint32_t dst_offset,
+		const struct ir3_shader_variant *v, uint32_t dst_offset,
 		uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	/* TODO inline this */
 	assert(dst_offset + num < v->constlen * 4);
-	fd4_emit_const_bo(ring, v->type, write, dst_offset, num, prscs, offsets);
+	fd4_emit_const_bo(ring, v->type, dst_offset, num, prscs, offsets);
 }
 
 static void
@@ -592,7 +588,8 @@ fd4_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		OUT_RING(ring, zsa->rb_depth_control |
 				COND(clamp, A4XX_RB_DEPTH_CONTROL_Z_CLAMP_ENABLE) |
 				COND(fragz, A4XX_RB_DEPTH_CONTROL_EARLY_Z_DISABLE) |
-				COND(fragz && fp->frag_coord, A4XX_RB_DEPTH_CONTROL_FORCE_FRAGZ_TO_FS));
+				COND(fragz && fp->fragcoord_compmask != 0,
+						A4XX_RB_DEPTH_CONTROL_FORCE_FRAGZ_TO_FS));
 
 		/* maybe this register/bitfield needs a better name.. this
 		 * appears to be just disabling early-z
@@ -600,7 +597,8 @@ fd4_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		OUT_PKT0(ring, REG_A4XX_GRAS_ALPHA_CONTROL, 1);
 		OUT_RING(ring, zsa->gras_alpha_control |
 				COND(fragz, A4XX_GRAS_ALPHA_CONTROL_ALPHA_TEST_ENABLE) |
-				COND(fragz && fp->frag_coord, A4XX_GRAS_ALPHA_CONTROL_FORCE_FRAGZ_TO_FS));
+				COND(fragz && fp->fragcoord_compmask != 0,
+						A4XX_GRAS_ALPHA_CONTROL_FORCE_FRAGZ_TO_FS));
 	}
 
 	if (dirty & FD_DIRTY_RASTERIZER) {
@@ -947,8 +945,8 @@ fd4_mem_to_mem(struct fd_ringbuffer *ring, struct pipe_resource *dst,
 	for (i = 0; i < sizedwords; i++) {
 		OUT_PKT3(ring, CP_MEM_TO_MEM, 3);
 		OUT_RING(ring, 0x00000000);
-		OUT_RELOCW(ring, dst_bo, dst_off, 0, 0);
-		OUT_RELOC (ring, src_bo, src_off, 0, 0);
+		OUT_RELOC(ring, dst_bo, dst_off, 0, 0);
+		OUT_RELOC(ring, src_bo, src_off, 0, 0);
 
 		dst_off += 4;
 		src_off += 4;

@@ -105,7 +105,8 @@ fs_visitor::nir_setup_uniforms()
       assert(uniforms == prog_data->nr_params);
 
       uint32_t *param;
-      if (brw_cs_prog_data(prog_data)->uses_variable_group_size) {
+      if (nir->info.cs.local_size_variable &&
+          compiler->lower_variable_group_size) {
          param = brw_stage_prog_data_add_params(prog_data, 3);
          for (unsigned i = 0; i < 3; i++) {
             param[i] = (BRW_PARAM_BUILTIN_WORK_GROUP_SIZE_X + i);
@@ -3732,7 +3733,7 @@ fs_visitor::nir_emit_cs_intrinsic(const fs_builder &bld,
        * invocations are already executed lock-step.  Instead of an actual
        * barrier just emit a scheduling fence, that will generate no code.
        */
-      if (!cs_prog_data->uses_variable_group_size &&
+      if (!nir->info.cs.local_size_variable &&
           workgroup_size() <= dispatch_width) {
          bld.exec_all().group(1, 0).emit(FS_OPCODE_SCHEDULING_FENCE);
          break;
@@ -3869,12 +3870,19 @@ fs_visitor::nir_emit_cs_intrinsic(const fs_builder &bld,
    }
 
    case nir_intrinsic_load_local_group_size: {
+      assert(compiler->lower_variable_group_size);
+      assert(nir->info.cs.local_size_variable);
       for (unsigned i = 0; i < 3; i++) {
          bld.MOV(retype(offset(dest, bld, i), BRW_REGISTER_TYPE_UD),
             group_size[i]);
       }
       break;
    }
+
+   case nir_intrinsic_load_simd_width_intel: {
+      bld.MOV(dest, brw_imm_ud(cs_prog_data->simd_size));
+      break;
+   };
 
    default:
       nir_emit_intrinsic(bld, instr);
@@ -4297,7 +4305,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
        *
        * TODO: Check if applies for many HW threads sharing same Data Port.
        */
-      if (!brw_cs_prog_data(prog_data)->uses_variable_group_size &&
+      if (!nir->info.cs.local_size_variable &&
           slm_fence && workgroup_size() <= dispatch_width)
          slm_fence = false;
 
@@ -4873,7 +4881,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
       assert(nir_src_num_components(instr->src[0]) == 1);
       assert(nir_src_bit_size(instr->src[0]) <= 32);
       assert(nir_intrinsic_write_mask(instr) == 1);
-      assert(nir_intrinsic_align(instr) > 1);
+      assert(nir_intrinsic_align(instr) > 0);
       if (nir_src_bit_size(instr->src[0]) == 32 &&
           nir_intrinsic_align(instr) >= 4) {
          srcs[SURFACE_LOGICAL_SRC_DATA] = data;

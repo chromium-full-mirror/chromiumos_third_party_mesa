@@ -54,7 +54,6 @@ typedef enum {
    ppir_op_normalize3,
    ppir_op_normalize4,
 
-   ppir_op_sel_cond,
    ppir_op_select,
 
    ppir_op_sin,
@@ -108,7 +107,6 @@ typedef enum {
    ppir_op_load_temp,
 
    ppir_op_store_temp,
-   ppir_op_store_color,
 
    ppir_op_const,
 
@@ -162,6 +160,7 @@ typedef struct ppir_node {
    struct ppir_instr *instr;
    int instr_pos;
    struct ppir_block *block;
+   bool is_end;
 
    /* for scheduler */
    struct list_head succ_list;
@@ -328,8 +327,12 @@ typedef struct ppir_instr {
    /* for liveness analysis */
    struct ppir_liveness *live_in;
    struct ppir_liveness *live_out;
+   /* live_internal is to mark registers only live within an
+    * instruction, without propagation */
+   struct ppir_liveness *live_internal;
    struct set *live_in_set;
    struct set *live_out_set;
+   struct set *live_internal_set;
 } ppir_instr;
 
 typedef struct ppir_block {
@@ -381,6 +384,7 @@ typedef struct ppir_compiler {
 
    struct ra_regs *ra;
    struct lima_fs_shader_state *prog;
+   bool uses_discard;
 
    /* for scheduler */
    int sched_instr_base;
@@ -407,9 +411,7 @@ void ppir_node_print_prog(ppir_compiler *comp);
 void ppir_node_replace_child(ppir_node *parent, ppir_node *old_child, ppir_node *new_child);
 void ppir_node_replace_all_succ(ppir_node *dst, ppir_node *src);
 void ppir_node_replace_pred(ppir_dep *dep, ppir_node *new_pred);
-void ppir_delete_if_orphan(ppir_block *block, ppir_node *node);
 ppir_dep *ppir_dep_for_pred(ppir_node *node, ppir_node *pred);
-ppir_node *ppir_node_clone(ppir_block *block, ppir_node *node);
 /* Assumes that node successors are in the same block */
 ppir_node *ppir_node_insert_mov(ppir_node *node);
 ppir_node *ppir_node_insert_mov_all_blocks(ppir_node *node);
@@ -546,17 +548,6 @@ static inline ppir_reg *ppir_dest_get_reg(ppir_dest *dest)
    }
 }
 
-static inline ppir_src *ppir_node_get_src_for_pred(ppir_node *node, ppir_node *pred)
-{
-   for (int i = 0; i < ppir_node_get_src_num(node); i++) {
-      ppir_src *src = ppir_node_get_src(node, i);
-      if (src && src->node == pred)
-         return src;
-   }
-
-   return NULL;
-}
-
 static inline void ppir_node_target_assign(ppir_src *src, ppir_node *node)
 {
    ppir_dest *dest = ppir_node_get_dest(node);
@@ -638,7 +629,7 @@ static inline int ppir_src_get_mask(ppir_src *src)
    return mask;
 }
 
-static inline bool ppir_target_is_scaler(ppir_dest *dest)
+static inline bool ppir_target_is_scalar(ppir_dest *dest)
 {
    switch (dest->type) {
    case ppir_target_ssa:
@@ -662,6 +653,17 @@ static inline bool ppir_target_is_scaler(ppir_dest *dest)
    default:
       return false;
    }
+}
+
+static inline bool ppir_node_schedulable_slot(ppir_node *node,
+                                              enum ppir_instr_slot slot)
+{
+   int *slots = ppir_op_infos[node->op].slots;
+   for (int i = 0; slots[i] != PPIR_INSTR_SLOT_END; i++)
+      if (slots[i] == slot)
+         return true;
+
+   return false;
 }
 
 ppir_instr *ppir_instr_create(ppir_block *block);

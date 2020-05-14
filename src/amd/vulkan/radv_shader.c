@@ -160,11 +160,14 @@ VkResult radv_CreateShaderModule(
 	assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
 	assert(pCreateInfo->flags == 0);
 
-	module = vk_alloc2(&device->alloc, pAllocator,
+	module = vk_alloc2(&device->vk.alloc, pAllocator,
 			     sizeof(*module) + pCreateInfo->codeSize, 8,
 			     VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 	if (module == NULL)
 		return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+	vk_object_base_init(&device->vk, &module->base,
+			    VK_OBJECT_TYPE_SHADER_MODULE);
 
 	module->nir = NULL;
 	module->size = pCreateInfo->codeSize;
@@ -188,7 +191,8 @@ void radv_DestroyShaderModule(
 	if (!module)
 		return;
 
-	vk_free2(&device->alloc, pAllocator, module);
+	vk_object_base_finish(&module->base);
+	vk_free2(&device->vk.alloc, pAllocator, module);
 }
 
 void

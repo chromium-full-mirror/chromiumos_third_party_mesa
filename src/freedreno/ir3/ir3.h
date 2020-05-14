@@ -846,6 +846,20 @@ static inline unsigned dest_regs(struct ir3_instruction *instr)
 	return util_last_bit(instr->regs[0]->wrmask);
 }
 
+static inline bool
+writes_gpr(struct ir3_instruction *instr)
+{
+	if (dest_regs(instr) == 0)
+		return false;
+	/* is dest a normal temp register: */
+	struct ir3_register *reg = instr->regs[0];
+	debug_assert(!(reg->flags & (IR3_REG_CONST | IR3_REG_IMMED)));
+	if ((reg_num(reg) == REG_A0) ||
+			(reg->num == regid(REG_P0, 0)))
+		return false;
+	return true;
+}
+
 static inline bool writes_addr0(struct ir3_instruction *instr)
 {
 	if (instr->regs_count > 0) {
@@ -1139,6 +1153,35 @@ static inline bool __is_false_dep(struct ir3_instruction *instr, unsigned n)
 #define foreach_array(__array, __list) \
 	list_for_each_entry(struct ir3_array, __array, __list, node)
 
+/* Check if condition is true for any src instruction.
+ */
+static inline bool
+check_src_cond(struct ir3_instruction *instr, bool (*cond)(struct ir3_instruction *))
+{
+	struct ir3_register *reg;
+
+	/* Note that this is also used post-RA so skip the ssa iterator: */
+	foreach_src (reg, instr) {
+		struct ir3_instruction *src = reg->instr;
+
+		if (!src)
+			continue;
+
+		/* meta:split/collect aren't real instructions, the thing that
+		 * we actually care about is *their* srcs
+		 */
+		if ((src->opc == OPC_META_SPLIT) || (src->opc == OPC_META_COLLECT)) {
+			if (check_src_cond(src, cond))
+				return true;
+		} else {
+			if (cond(src))
+				return true;
+		}
+	}
+
+	return false;
+}
+
 /* dump: */
 void ir3_print(struct ir3 *ir);
 void ir3_print_instr(struct ir3_instruction *instr);
@@ -1423,15 +1466,15 @@ ir3_##name(struct ir3_block *block,                                      \
 #define INSTR4(name)        __INSTR4(0, name, OPC_##name)
 
 /* cat0 instructions: */
-INSTR1(BR)
+INSTR1(B)
 INSTR0(JUMP)
 INSTR1(KILL)
 INSTR0(END)
 INSTR0(CHSH)
 INSTR0(CHMASK)
-INSTR1(IF)
-INSTR0(ELSE)
-INSTR0(ENDIF)
+INSTR1(PREDT)
+INSTR0(PREDF)
+INSTR0(PREDE)
 
 /* cat2 instructions, most 2 src but some 1 src: */
 INSTR2(ADD_F)

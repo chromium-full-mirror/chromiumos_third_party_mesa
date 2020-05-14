@@ -96,6 +96,7 @@ typedef uint32_t xcb_window_t;
 #define NUM_META_FS_KEYS 13
 #define TU_MAX_DRM_DEVICES 8
 #define MAX_VIEWS 8
+#define MAX_BIND_POINTS 2 /* compute + graphics */
 /* The Qualcomm driver exposes 0x20000058 */
 #define MAX_STORAGE_BUFFER_RANGE 0x20000000
 /* We use ldc for uniform buffer loads, just like the Qualcomm driver, so
@@ -352,6 +353,7 @@ enum tu_debug_flags
    TU_DEBUG_NOBIN = 1 << 3,
    TU_DEBUG_SYSMEM = 1 << 4,
    TU_DEBUG_FORCEBIN = 1 << 5,
+   TU_DEBUG_NOUBWC = 1 << 6,
 };
 
 struct tu_instance
@@ -508,6 +510,17 @@ struct tu_device
    uint32_t vsc_draw_strm_pitch;
    uint32_t vsc_prim_strm_pitch;
 
+#define MIN_SCRATCH_BO_SIZE_LOG2 12 /* A page */
+
+   /* Currently the kernel driver uses a 32-bit GPU address space, but it
+    * should be impossible to go beyond 48 bits.
+    */
+   struct {
+      struct tu_bo bo;
+      mtx_t construct_mtx;
+      bool initialized;
+   } scratch_bos[48 - MIN_SCRATCH_BO_SIZE_LOG2];
+
    struct tu_bo border_color;
 
    struct list_head shader_slabs;
@@ -529,6 +542,15 @@ void
 tu_bo_finish(struct tu_device *dev, struct tu_bo *bo);
 VkResult
 tu_bo_map(struct tu_device *dev, struct tu_bo *bo);
+
+/* Get a scratch bo for use inside a command buffer. This will always return
+ * the same bo given the same size or similar sizes, so only one scratch bo
+ * can be used at the same time. It's meant for short-lived things where we
+ * need to write to some piece of memory, read from it, and then immediately
+ * discard it.
+ */
+VkResult
+tu_get_scratch_bo(struct tu_device *dev, uint64_t size, struct tu_bo **bo);
 
 struct tu_cs_entry
 {
@@ -1011,7 +1033,7 @@ struct tu_cmd_buffer
    VkShaderStageFlags push_constant_stages;
    struct tu_descriptor_set meta_push_descriptors;
 
-   struct tu_descriptor_state descriptors[VK_PIPELINE_BIND_POINT_RANGE_SIZE];
+   struct tu_descriptor_state descriptors[MAX_BIND_POINTS];
 
    struct tu_cmd_buffer_upload upload;
 

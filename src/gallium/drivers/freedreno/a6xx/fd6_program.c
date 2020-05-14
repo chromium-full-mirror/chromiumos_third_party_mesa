@@ -90,7 +90,7 @@ fd6_emit_shader(struct fd_ringbuffer *ring, const struct ir3_shader_variant *so)
 			CP_LOAD_STATE6_0_STATE_SRC(SS6_INDIRECT) |
 			CP_LOAD_STATE6_0_STATE_BLOCK(sb) |
 			CP_LOAD_STATE6_0_NUM_UNIT(so->instrlen));
-	OUT_RELOCD(ring, so->bo, 0, 0, 0);
+	OUT_RELOC(ring, so->bo, 0, 0, 0);
 }
 
 /* Add any missing varyings needed for stream-out.  Otherwise varyings not
@@ -643,12 +643,8 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 			CONDREG(ij_samp_regid, A6XX_GRAS_CNTL_PERSAMP_VARYING) |
 			COND(VALIDREG(ij_size_regid) && !sample_shading, A6XX_GRAS_CNTL_SIZE) |
 			COND(VALIDREG(ij_size_regid) &&  sample_shading, A6XX_GRAS_CNTL_SIZE_PERSAMP) |
-			COND(fs->frag_coord,
-					A6XX_GRAS_CNTL_SIZE |
-					A6XX_GRAS_CNTL_XCOORD |
-					A6XX_GRAS_CNTL_YCOORD |
-					A6XX_GRAS_CNTL_ZCOORD |
-					A6XX_GRAS_CNTL_WCOORD) |
+			COND(fs->fragcoord_compmask != 0, A6XX_GRAS_CNTL_SIZE |
+								A6XX_GRAS_CNTL_COORD_MASK(fs->fragcoord_compmask)) |
 			COND(fs->frag_face, A6XX_GRAS_CNTL_SIZE));
 
 	OUT_PKT4(ring, REG_A6XX_RB_RENDER_CONTROL0, 2);
@@ -659,12 +655,8 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 			COND(enable_varyings, A6XX_RB_RENDER_CONTROL0_UNK10) |
 			COND(VALIDREG(ij_size_regid) && !sample_shading, A6XX_RB_RENDER_CONTROL0_SIZE) |
 			COND(VALIDREG(ij_size_regid) &&  sample_shading, A6XX_RB_RENDER_CONTROL0_SIZE_PERSAMP) |
-			COND(fs->frag_coord,
-					A6XX_RB_RENDER_CONTROL0_SIZE |
-					A6XX_RB_RENDER_CONTROL0_XCOORD |
-					A6XX_RB_RENDER_CONTROL0_YCOORD |
-					A6XX_RB_RENDER_CONTROL0_ZCOORD |
-					A6XX_RB_RENDER_CONTROL0_WCOORD) |
+			COND(fs->fragcoord_compmask != 0, A6XX_RB_RENDER_CONTROL0_SIZE |
+								A6XX_RB_RENDER_CONTROL0_COORD_MASK(fs->fragcoord_compmask)) |
 			COND(fs->frag_face, A6XX_RB_RENDER_CONTROL0_SIZE));
 
 	OUT_RING(ring,
@@ -1030,7 +1022,7 @@ fd6_shader_state_create(struct pipe_context *pctx, const struct pipe_shader_stat
 
 	/* also account for UBO addresses: */
 	packets += 1;
-	size += 2 * align(shader->const_state.num_ubos, 2);
+	size += 2 * shader->num_ubos;
 
 	unsigned sizedwords = (4 * packets) + size;
 	shader->ubo_state.cmdstream_size = sizedwords * 4;

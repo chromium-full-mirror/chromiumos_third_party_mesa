@@ -690,11 +690,12 @@ anv_image_create(VkDevice _device,
    anv_assert(pCreateInfo->extent.height > 0);
    anv_assert(pCreateInfo->extent.depth > 0);
 
-   image = vk_zalloc2(&device->alloc, alloc, sizeof(*image), 8,
+   image = vk_zalloc2(&device->vk.alloc, alloc, sizeof(*image), 8,
                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!image)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
+   vk_object_base_init(&device->vk, &image->base, VK_OBJECT_TYPE_IMAGE);
    image->type = pCreateInfo->imageType;
    image->extent = pCreateInfo->extent;
    image->vk_format = pCreateInfo->format;
@@ -757,7 +758,7 @@ anv_image_create(VkDevice _device,
 
 fail:
    if (image)
-      vk_free2(&device->alloc, alloc, image);
+      vk_free2(&device->vk.alloc, alloc, image);
 
    return r;
 }
@@ -889,7 +890,8 @@ anv_DestroyImage(VkDevice _device, VkImage _image,
       }
    }
 
-   vk_free2(&device->alloc, pAllocator, image);
+   vk_object_base_finish(&image->base);
+   vk_free2(&device->vk.alloc, pAllocator, image);
 }
 
 static void anv_image_bind_memory_plane(struct anv_device *device,
@@ -1248,7 +1250,6 @@ vk_image_layout_to_usage_flags(VkImageLayout layout,
       assert(aspect == VK_IMAGE_ASPECT_COLOR_BIT);
       return VK_IMAGE_USAGE_FRAGMENT_DENSITY_MAP_BIT_EXT;
 
-   case VK_IMAGE_LAYOUT_RANGE_SIZE:
    case VK_IMAGE_LAYOUT_MAX_ENUM:
       unreachable("Invalid image layout.");
    }
@@ -1292,7 +1293,6 @@ vk_image_layout_is_read_only(VkImageLayout layout,
    case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL:
       return aspect == VK_IMAGE_ASPECT_STENCIL_BIT;
 
-   case VK_IMAGE_LAYOUT_RANGE_SIZE:
    case VK_IMAGE_LAYOUT_MAX_ENUM:
       unreachable("Invalid image layout.");
    }
@@ -1346,7 +1346,6 @@ anv_layout_to_aux_state(const struct gen_device_info * const devinfo,
    /* Handle a few special cases */
    switch (layout) {
    /* Invalid layouts */
-   case VK_IMAGE_LAYOUT_RANGE_SIZE:
    case VK_IMAGE_LAYOUT_MAX_ENUM:
       unreachable("Invalid image layout.");
 
@@ -1911,10 +1910,12 @@ anv_CreateImageView(VkDevice _device,
    ANV_FROM_HANDLE(anv_image, image, pCreateInfo->image);
    struct anv_image_view *iview;
 
-   iview = vk_zalloc2(&device->alloc, pAllocator, sizeof(*iview), 8,
+   iview = vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*iview), 8,
                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (iview == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vk_object_base_init(&device->vk, &iview->base, VK_OBJECT_TYPE_IMAGE_VIEW);
 
    const VkImageSubresourceRange *range = &pCreateInfo->subresourceRange;
 
@@ -2169,7 +2170,7 @@ anv_DestroyImageView(VkDevice _device, VkImageView _iview,
       }
    }
 
-   vk_free2(&device->alloc, pAllocator, iview);
+   vk_free2(&device->vk.alloc, pAllocator, iview);
 }
 
 
@@ -2183,13 +2184,14 @@ anv_CreateBufferView(VkDevice _device,
    ANV_FROM_HANDLE(anv_buffer, buffer, pCreateInfo->buffer);
    struct anv_buffer_view *view;
 
-   view = vk_alloc2(&device->alloc, pAllocator, sizeof(*view), 8,
+   view = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*view), 8,
                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!view)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
    /* TODO: Handle the format swizzle? */
 
+   vk_object_base_init(&device->vk, &view->base, VK_OBJECT_TYPE_BUFFER_VIEW);
    view->format = anv_get_isl_format(&device->info, pCreateInfo->format,
                                      VK_IMAGE_ASPECT_COLOR_BIT,
                                      VK_IMAGE_TILING_LINEAR);
@@ -2267,5 +2269,6 @@ anv_DestroyBufferView(VkDevice _device, VkBufferView bufferView,
       anv_state_pool_free(&device->surface_state_pool,
                           view->writeonly_storage_surface_state);
 
-   vk_free2(&device->alloc, pAllocator, view);
+   vk_object_base_finish(&view->base);
+   vk_free2(&device->vk.alloc, pAllocator, view);
 }

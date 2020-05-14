@@ -1203,7 +1203,13 @@ void st_init_extensions(struct pipe_screen *screen,
       extensions->EXT_texture_integer = GL_FALSE;
    }
 
-   consts->GLSLZeroInit = options->glsl_zero_init;
+   if (options->glsl_zero_init) {
+      consts->GLSLZeroInit = 1;
+   } else {
+      consts->GLSLZeroInit = screen->get_param(screen, PIPE_CAP_GLSL_ZERO_INIT);
+   }
+
+   consts->ForceIntegerTexNearest = options->force_integer_tex_nearest;
 
    consts->VendorOverride = options->force_gl_vendor;
 

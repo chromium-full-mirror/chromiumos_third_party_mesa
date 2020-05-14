@@ -250,7 +250,7 @@ get_implicit_conversion_operation(const glsl_type *to, const glsl_type *from,
       }
 
    case GLSL_TYPE_UINT:
-      if (!state->has_implicit_uint_to_int_conversion())
+      if (!state->has_implicit_int_to_uint_conversion())
          return (ir_expression_operation)0;
       switch (from->base_type) {
          case GLSL_TYPE_INT: return ir_unop_i2u;
@@ -4630,6 +4630,7 @@ process_initializer(ir_variable *var, ast_declaration *decl,
       if (!error_emitted) {
          var->constant_initializer = rhs->constant_expression_value(mem_ctx);
          var->data.has_initializer = true;
+         var->data.is_implicit_initializer = false;
 
          /* If the declared variable is an unsized array, it must inherrit
          * its full type from the initializer.  A declaration such as
@@ -5265,12 +5266,11 @@ ast_declarator_list::hir(exec_list *instructions,
       apply_layout_qualifier_to_variable(&this->type->qualifier, var, state,
                                          &loc);
 
-      if ((var->data.mode == ir_var_auto || var->data.mode == ir_var_temporary
-           || var->data.mode == ir_var_shader_out)
-          && (var->type->is_numeric() || var->type->is_boolean())
-          && state->zero_init) {
+      if ((state->zero_init & (1u << var->data.mode)) &&
+          (var->type->is_numeric() || var->type->is_boolean())) {
          const ir_constant_data data = { { 0 } };
          var->data.has_initializer = true;
+         var->data.is_implicit_initializer = true;
          var->constant_initializer = new(var) ir_constant(var->type, &data);
       }
 
@@ -5860,6 +5860,14 @@ ast_parameter_declarator::hir(exec_list *instructions,
     */
    apply_type_qualifier_to_variable(& this->type->qualifier, var, state, & loc,
                                     true);
+
+   if (((1u << var->data.mode) & state->zero_init) &&
+       (var->type->is_numeric() || var->type->is_boolean())) {
+         const ir_constant_data data = { { 0 } };
+         var->data.has_initializer = true;
+         var->data.is_implicit_initializer = true;
+         var->constant_initializer = new(var) ir_constant(var->type, &data);
+   }
 
    /* From section 4.1.7 of the GLSL 4.40 spec:
     *
@@ -8771,6 +8779,7 @@ ast_cs_input_layout::hir(exec_list *instructions,
    var->constant_initializer =
       new(var) ir_constant(glsl_type::uvec3_type, &data);
    var->data.has_initializer = true;
+   var->data.is_implicit_initializer = false;
 
    return NULL;
 }
@@ -8797,8 +8806,15 @@ detect_conflicting_assignments(struct _mesa_glsl_parse_state *state,
       if (!var || !var->data.assigned)
          continue;
 
-      if (strcmp(var->name, "gl_FragColor") == 0)
+      if (strcmp(var->name, "gl_FragColor") == 0) {
          gl_FragColor_assigned = true;
+         if (!var->constant_initializer && state->zero_init) {
+            const ir_constant_data data = { { 0 } };
+            var->data.has_initializer = true;
+            var->data.is_implicit_initializer = true;
+            var->constant_initializer = new(var) ir_constant(var->type, &data);
+         }
+      }
       else if (strcmp(var->name, "gl_FragData") == 0)
          gl_FragData_assigned = true;
         else if (strcmp(var->name, "gl_SecondaryFragColorEXT") == 0)

@@ -277,7 +277,9 @@ static VkResult radv_create_cmd_buffer(
 	if (cmd_buffer == NULL)
 		return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-	cmd_buffer->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
+	vk_object_base_init(&device->vk, &cmd_buffer->base,
+			    VK_OBJECT_TYPE_COMMAND_BUFFER);
+
 	cmd_buffer->device = device;
 	cmd_buffer->pool = pool;
 	cmd_buffer->level = level;
@@ -325,8 +327,10 @@ radv_cmd_buffer_destroy(struct radv_cmd_buffer *cmd_buffer)
 		cmd_buffer->device->ws->buffer_destroy(cmd_buffer->upload.upload_bo);
 	cmd_buffer->device->ws->cs_destroy(cmd_buffer->cs);
 
-	for (unsigned i = 0; i < VK_PIPELINE_BIND_POINT_RANGE_SIZE; i++)
+	for (unsigned i = 0; i < MAX_BIND_POINTS; i++)
 		free(cmd_buffer->descriptors[i].push_set.set.mapped_ptr);
+
+	vk_object_base_finish(&cmd_buffer->base);
 
 	vk_free(&cmd_buffer->pool->alloc, cmd_buffer);
 }
@@ -364,7 +368,7 @@ radv_reset_cmd_buffer(struct radv_cmd_buffer *cmd_buffer)
 
 	memset(cmd_buffer->vertex_bindings, 0, sizeof(cmd_buffer->vertex_bindings));
 
-	for (unsigned i = 0; i < VK_PIPELINE_BIND_POINT_RANGE_SIZE; i++) {
+	for (unsigned i = 0; i < MAX_BIND_POINTS; i++) {
 		cmd_buffer->descriptors[i].dirty = 0;
 		cmd_buffer->descriptors[i].valid = 0;
 		cmd_buffer->descriptors[i].push_dirty = false;
@@ -3318,7 +3322,6 @@ VkResult radv_AllocateCommandBuffers(
 			list_addtail(&cmd_buffer->pool_link, &pool->cmd_buffers);
 
 			result = radv_reset_cmd_buffer(cmd_buffer);
-			cmd_buffer->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
 			cmd_buffer->level = pAllocateInfo->level;
 
 			pCommandBuffers[i] = radv_cmd_buffer_to_handle(cmd_buffer);
@@ -4256,15 +4259,18 @@ VkResult radv_CreateCommandPool(
 	RADV_FROM_HANDLE(radv_device, device, _device);
 	struct radv_cmd_pool *pool;
 
-	pool = vk_alloc2(&device->alloc, pAllocator, sizeof(*pool), 8,
+	pool = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*pool), 8,
 			   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 	if (pool == NULL)
 		return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
+	vk_object_base_init(&device->vk, &pool->base,
+			    VK_OBJECT_TYPE_COMMAND_POOL);
+
 	if (pAllocator)
 		pool->alloc = *pAllocator;
 	else
-		pool->alloc = device->alloc;
+		pool->alloc = device->vk.alloc;
 
 	list_inithead(&pool->cmd_buffers);
 	list_inithead(&pool->free_cmd_buffers);
@@ -4298,7 +4304,8 @@ void radv_DestroyCommandPool(
 		radv_cmd_buffer_destroy(cmd_buffer);
 	}
 
-	vk_free2(&device->alloc, pAllocator, pool);
+	vk_object_base_finish(&pool->base);
+	vk_free2(&device->vk.alloc, pAllocator, pool);
 }
 
 VkResult radv_ResetCommandPool(

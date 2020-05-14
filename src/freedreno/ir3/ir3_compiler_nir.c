@@ -760,11 +760,8 @@ emit_intrinsic_load_ubo(struct ir3_context *ctx, nir_intrinsic_instr *intr,
 {
 	struct ir3_block *b = ctx->block;
 	struct ir3_instruction *base_lo, *base_hi, *addr, *src0, *src1;
-	/* UBO addresses are the first driver params, but subtract 2 here to
-	 * account for nir_lower_uniforms_to_ubo rebasing the UBOs such that UBO 0
-	 * is the uniforms: */
 	struct ir3_const_state *const_state = &ctx->so->shader->const_state;
-	unsigned ubo = regid(const_state->offsets.ubo, 0) - 2;
+	unsigned ubo = regid(const_state->offsets.ubo, 0);
 	const unsigned ptrsz = ir3_pointer_size(ctx->compiler);
 
 	int off = 0;
@@ -881,40 +878,26 @@ emit_intrinsic_store_shared(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 	struct ir3_block *b = ctx->block;
 	struct ir3_instruction *stl, *offset;
 	struct ir3_instruction * const *value;
-	unsigned base, wrmask;
+	unsigned base, wrmask, ncomp;
 
 	value  = ir3_get_src(ctx, &intr->src[0]);
 	offset = ir3_get_src(ctx, &intr->src[1])[0];
 
 	base   = nir_intrinsic_base(intr);
 	wrmask = nir_intrinsic_write_mask(intr);
+	ncomp  = ffs(~wrmask) - 1;
 
-	/* Combine groups of consecutive enabled channels in one write
-	 * message. We use ffs to find the first enabled channel and then ffs on
-	 * the bit-inverse, down-shifted writemask to determine the length of
-	 * the block of enabled bits.
-	 *
-	 * (trick stolen from i965's fs_visitor::nir_emit_cs_intrinsic())
-	 */
-	while (wrmask) {
-		unsigned first_component = ffs(wrmask) - 1;
-		unsigned length = ffs(~(wrmask >> first_component)) - 1;
+	assert(wrmask == BITFIELD_MASK(intr->num_components));
 
-		stl = ir3_STL(b, offset, 0,
-			ir3_create_collect(ctx, &value[first_component], length), 0,
-			create_immed(b, length), 0);
-		stl->cat6.dst_offset = first_component + base;
-		stl->cat6.type = utype_src(intr->src[0]);
-		stl->barrier_class = IR3_BARRIER_SHARED_W;
-		stl->barrier_conflict = IR3_BARRIER_SHARED_R | IR3_BARRIER_SHARED_W;
+	stl = ir3_STL(b, offset, 0,
+		ir3_create_collect(ctx, value, ncomp), 0,
+		create_immed(b, ncomp), 0);
+	stl->cat6.dst_offset = base;
+	stl->cat6.type = utype_src(intr->src[0]);
+	stl->barrier_class = IR3_BARRIER_SHARED_W;
+	stl->barrier_conflict = IR3_BARRIER_SHARED_R | IR3_BARRIER_SHARED_W;
 
-		array_insert(b, b->keeps, stl);
-
-		/* Clear the bits in the writemask that we just wrote, then try
-		 * again to see if more channels are left.
-		 */
-		wrmask &= (15 << (first_component + length));
-	}
+	array_insert(b, b->keeps, stl);
 }
 
 /* src[] = { offset }. const_index[] = { base } */
@@ -942,48 +925,27 @@ emit_intrinsic_load_shared_ir3(struct ir3_context *ctx, nir_intrinsic_instr *int
 	ir3_split_dest(b, dst, load, 0, intr->num_components);
 }
 
-/* src[] = { value, offset }. const_index[] = { base, write_mask } */
+/* src[] = { value, offset }. const_index[] = { base } */
 static void
 emit_intrinsic_store_shared_ir3(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 {
 	struct ir3_block *b = ctx->block;
 	struct ir3_instruction *store, *offset;
 	struct ir3_instruction * const *value;
-	unsigned base, wrmask;
 
 	value  = ir3_get_src(ctx, &intr->src[0]);
 	offset = ir3_get_src(ctx, &intr->src[1])[0];
 
-	base   = nir_intrinsic_base(intr);
-	wrmask = nir_intrinsic_write_mask(intr);
+	store = ir3_STLW(b, offset, 0,
+		ir3_create_collect(ctx, value, intr->num_components), 0,
+		create_immed(b, intr->num_components), 0);
 
-	/* Combine groups of consecutive enabled channels in one write
-	 * message. We use ffs to find the first enabled channel and then ffs on
-	 * the bit-inverse, down-shifted writemask to determine the length of
-	 * the block of enabled bits.
-	 *
-	 * (trick stolen from i965's fs_visitor::nir_emit_cs_intrinsic())
-	 */
-	while (wrmask) {
-		unsigned first_component = ffs(wrmask) - 1;
-		unsigned length = ffs(~(wrmask >> first_component)) - 1;
+	store->cat6.dst_offset = nir_intrinsic_base(intr);
+	store->cat6.type = utype_src(intr->src[0]);
+	store->barrier_class = IR3_BARRIER_SHARED_W;
+	store->barrier_conflict = IR3_BARRIER_SHARED_R | IR3_BARRIER_SHARED_W;
 
-		store = ir3_STLW(b, offset, 0,
-			ir3_create_collect(ctx, &value[first_component], length), 0,
-			create_immed(b, length), 0);
-
-		store->cat6.dst_offset = first_component + base;
-		store->cat6.type = utype_src(intr->src[0]);
-		store->barrier_class = IR3_BARRIER_SHARED_W;
-		store->barrier_conflict = IR3_BARRIER_SHARED_R | IR3_BARRIER_SHARED_W;
-
-		array_insert(b, b->keeps, store);
-
-		/* Clear the bits in the writemask that we just wrote, then try
-		 * again to see if more channels are left.
-		 */
-		wrmask &= (15 << (first_component + length));
-	}
+	array_insert(b, b->keeps, store);
 }
 
 /*
@@ -1411,7 +1373,7 @@ get_barycentric_pixel(struct ir3_context *ctx)
 }
 
 static struct ir3_instruction *
-get_frag_coord(struct ir3_context *ctx)
+get_frag_coord(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 {
 	if (!ctx->frag_coord) {
 		struct ir3_block *b = ctx->in_block;
@@ -1436,8 +1398,10 @@ get_frag_coord(struct ir3_context *ctx)
 		}
 
 		ctx->frag_coord = ir3_create_collect(ctx, xyzw, 4);
-		ctx->so->frag_coord = true;
 	}
+
+	ctx->so->fragcoord_compmask |=
+			nir_ssa_def_components_read(&intr->dest.ssa);
 
 	return ctx->frag_coord;
 }
@@ -1536,7 +1500,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 
 	case nir_intrinsic_end_patch_ir3:
 		assert(ctx->so->type == MESA_SHADER_TESS_CTRL);
-		struct ir3_instruction *end = ir3_ENDIF(b);
+		struct ir3_instruction *end = ir3_PREDE(b);
 		array_insert(b, b->keeps, end);
 
 		end->barrier_class = IR3_BARRIER_EVERYTHING;
@@ -1599,7 +1563,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		emit_intrinsic_load_ubo_ldc(ctx, intr, dst);
 		break;
 	case nir_intrinsic_load_frag_coord:
-		ir3_split_dest(b, dst, get_frag_coord(ctx), 0, 4);
+		ir3_split_dest(b, dst, get_frag_coord(ctx, intr), 0, 4);
 		break;
 	case nir_intrinsic_load_sample_pos_from_id: {
 		/* NOTE: blob seems to always use TYPE_F16 and then cov.f16f32,
@@ -1933,7 +1897,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		/* condition always goes in predicate register: */
 		cond->regs[0]->num = regid(REG_P0, 0);
 
-		kill = ir3_IF(b, cond, 0);
+		kill = ir3_PREDT(b, cond, 0);
 
 		kill->barrier_class = IR3_BARRIER_EVERYTHING;
 		kill->barrier_conflict = IR3_BARRIER_EVERYTHING;
@@ -2262,7 +2226,7 @@ emit_tex(struct ir3_context *ctx, nir_tex_instr *tex)
 		compile_assert(ctx, nir_tex_instr_src_index(tex, nir_tex_src_texture_offset) < 0);
 		compile_assert(ctx, nir_tex_instr_src_index(tex, nir_tex_src_sampler_offset) < 0);
 
-		if (ctx->so->num_sampler_prefetch < IR3_MAX_SAMPLER_PREFETCH) {
+		if (ctx->so->num_sampler_prefetch < ctx->prefetch_limit) {
 			opc = OPC_META_TEX_PREFETCH;
 			ctx->so->num_sampler_prefetch++;
 			break;

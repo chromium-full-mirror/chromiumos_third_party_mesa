@@ -42,26 +42,40 @@ static bool create_new_instr(ppir_block *block, ppir_node *node)
  * successor.
  * Since it has a pipeline dest, it must have only one successor and since we
  * schedule nodes backwards, its successor must have already been scheduled.
+ * Load varyings can't output to a pipeline register but are also potentially
+ * trivial to insert and save an instruction if they have a single successor.
  */
-static bool ppir_do_node_to_instr_pipeline(ppir_block *block, ppir_node *node)
+static bool ppir_do_node_to_instr_try_insert(ppir_block *block, ppir_node *node)
 {
    ppir_dest *dest = ppir_node_get_dest(node);
 
-   if (!dest || dest->type != ppir_target_pipeline)
+   if (dest && dest->type == ppir_target_pipeline) {
+      assert(ppir_node_has_single_src_succ(node));
+      ppir_node *succ = ppir_node_first_succ(node);
+      assert(succ);
+      assert(succ->instr);
+
+      return ppir_instr_insert_node(succ->instr, node);
+   }
+
+   switch (node->type) {
+      case ppir_node_type_load:
+         break;
+      default:
+         return false;
+   }
+
+   if (!ppir_node_has_single_src_succ(node))
       return false;
 
-   assert(ppir_node_has_single_src_succ(node));
    ppir_node *succ = ppir_node_first_succ(node);
    assert(succ);
    assert(succ->instr);
 
-   if (!ppir_instr_insert_node(succ->instr, node))
-      return false;
-
-   return true;
+   return ppir_instr_insert_node(succ->instr, node);
 }
 
-static bool ppir_do_one_node_to_instr(ppir_block *block, ppir_node *node, ppir_node **next)
+static bool ppir_do_one_node_to_instr(ppir_block *block, ppir_node *node)
 {
    switch (node->type) {
    case ppir_node_type_alu:
@@ -90,9 +104,6 @@ static bool ppir_do_one_node_to_instr(ppir_block *block, ppir_node *node, ppir_n
       /* can't inserted to any existing instr, create one */
       if (!node->instr && !create_new_instr(block, node))
          return false;
-
-      if (node->op == ppir_op_store_color)
-         node->instr->is_end = true;
 
       break;
    }
@@ -123,10 +134,17 @@ static bool ppir_do_one_node_to_instr(ppir_block *block, ppir_node *node, ppir_n
 
       /* Turn dest back to SSA, so we can update predecessors */
       ppir_node *succ = ppir_node_first_succ(node);
-      ppir_src *succ_src = ppir_node_get_src_for_pred(succ, node);
-      dest->type = ppir_target_ssa;
-      dest->ssa.index = -1;
-      ppir_node_target_assign(succ_src, node);
+
+      /* Single succ can still have multiple references to this node */
+      for (int i = 0; i < ppir_node_get_src_num(succ); i++) {
+         ppir_src *src = ppir_node_get_src(succ, i);
+         if (src && src->node == node) {
+            /* Can consume uniforms directly */
+            dest->type = ppir_target_ssa;
+            dest->ssa.index = -1;
+            ppir_node_target_assign(src, node);
+         }
+      }
 
       ppir_node *move = ppir_node_insert_mov(node);
       if (unlikely(!move))
@@ -144,10 +162,34 @@ static bool ppir_do_one_node_to_instr(ppir_block *block, ppir_node *node, ppir_n
 
       break;
    }
-   case ppir_node_type_const:
-      /* Const nodes are supposed to go through do_node_to_instr_pipeline() */
-      assert(false);
+   case ppir_node_type_const: {
+      /* Const cannot be pipelined, too many consts in the instruction.
+       * Create a mov. */
+
+      ppir_node *move = ppir_node_insert_mov(node);
+      if (!create_new_instr(block, move))
+         return false;
+
+      ppir_debug("node_to_instr create move %d for const %d\n",
+                 move->index, node->index);
+
+      ppir_dest *dest = ppir_node_get_dest(node);
+      ppir_src *mov_src = ppir_node_get_src(move, 0);
+
+      /* update succ from ^const to ssa mov output */
+      ppir_dest *move_dest = ppir_node_get_dest(move);
+      move_dest->type = ppir_target_ssa;
+      ppir_node *succ = ppir_node_first_succ(move);
+      ppir_node_replace_child(succ, node, move);
+
+      mov_src->type = dest->type = ppir_target_pipeline;
+      mov_src->pipeline = dest->pipeline = ppir_pipeline_reg_const0;
+
+      if (!ppir_instr_insert_node(move->instr, node))
+         return false;
+
       break;
+   }
    case ppir_node_type_store:
    {
       if (node->op == ppir_op_store_temp) {
@@ -174,15 +216,13 @@ static bool ppir_do_one_node_to_instr(ppir_block *block, ppir_node *node, ppir_n
 
 static bool ppir_do_node_to_instr(ppir_block *block, ppir_node *node)
 {
-   ppir_node *next = node;
-
    /* first try pipeline sched, if that didn't succeed try normal scheduling */
-   if (!ppir_do_node_to_instr_pipeline(block, node))
-      if (!ppir_do_one_node_to_instr(block, node, &next))
+   if (!ppir_do_node_to_instr_try_insert(block, node))
+      if (!ppir_do_one_node_to_instr(block, node))
          return false;
 
-   /* next may have been updated in ppir_do_one_node_to_instr */
-   node = next;
+   if (node->is_end)
+      node->instr->is_end = true;
 
    /* we have to make sure the dep not be destroyed (due to
     * succ change) in ppir_do_node_to_instr, otherwise we can't

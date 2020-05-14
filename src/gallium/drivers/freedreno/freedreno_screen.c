@@ -90,6 +90,7 @@ static const struct debug_named_value debug_options[] = {
 		{"notile",    FD_DBG_NOTILE, "Disable tiling for all internal buffers"},
 		{"layout",    FD_DBG_LAYOUT, "Dump resource layouts"},
 		{"nofp16",    FD_DBG_NOFP16, "Disable mediump precision lowering"},
+		{"nohw",      FD_DBG_NOHW,   "Disable submitting commands to the HW"},
 		DEBUG_NAMED_VALUE_END
 };
 
@@ -402,9 +403,15 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
 	/* Texturing. */
 	case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
-		return 1 << (MAX_MIP_LEVELS - 1);
+		if (is_a6xx(screen) || is_a5xx(screen) || is_a4xx(screen))
+			return 16384;
+		else
+			return 8192;
 	case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
-		return MAX_MIP_LEVELS;
+		if (is_a6xx(screen) || is_a5xx(screen) || is_a4xx(screen))
+			return 15;
+		else
+			return 14;
 	case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
 		return 11;
 

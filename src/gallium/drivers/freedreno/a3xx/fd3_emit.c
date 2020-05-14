@@ -93,7 +93,7 @@ fd3_emit_const(struct fd_ringbuffer *ring, gl_shader_stage type,
 }
 
 static void
-fd3_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type, boolean write,
+fd3_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type,
 		uint32_t regid, uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	uint32_t anum = align(num, 4);
@@ -111,11 +111,7 @@ fd3_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type, boolean writ
 
 	for (i = 0; i < num; i++) {
 		if (prscs[i]) {
-			if (write) {
-				OUT_RELOCW(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
-			} else {
-				OUT_RELOC(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
-			}
+			OUT_RELOC(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
 		} else {
 			OUT_RING(ring, 0xbad00000 | (i << 16));
 		}
@@ -145,12 +141,12 @@ emit_const(struct fd_ringbuffer *ring,
 
 static void
 emit_const_bo(struct fd_ringbuffer *ring,
-		const struct ir3_shader_variant *v, bool write, uint32_t dst_offset,
+		const struct ir3_shader_variant *v, uint32_t dst_offset,
 		uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	/* TODO inline this */
 	assert(dst_offset + num < v->constlen * 4);
-	fd3_emit_const_bo(ring, v->type, write, dst_offset, num, prscs, offsets);
+	fd3_emit_const_bo(ring, v->type, dst_offset, num, prscs, offsets);
 }
 
 #define VERT_TEX_OFF    0
@@ -541,10 +537,8 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			fd3_blend_stateobj(ctx->blend)->rb_render_control;
 
 		val |= COND(fp->frag_face, A3XX_RB_RENDER_CONTROL_FACENESS);
-		val |= COND(fp->frag_coord, A3XX_RB_RENDER_CONTROL_XCOORD |
-				A3XX_RB_RENDER_CONTROL_YCOORD |
-				A3XX_RB_RENDER_CONTROL_ZCOORD |
-				A3XX_RB_RENDER_CONTROL_WCOORD);
+		val |= COND(fp->fragcoord_compmask != 0,
+				A3XX_RB_RENDER_CONTROL_COORD_MASK(fp->fragcoord_compmask));
 
 		/* I suppose if we needed to (which I don't *think* we need
 		 * to), we could emit this for binning pass too.  But we
@@ -610,7 +604,7 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 				->gras_cl_clip_cntl;
 		uint8_t planes = ctx->rasterizer->clip_plane_enable;
 		val |= COND(fp->writes_pos, A3XX_GRAS_CL_CLIP_CNTL_ZCLIP_DISABLE);
-		val |= COND(fp->frag_coord, A3XX_GRAS_CL_CLIP_CNTL_ZCOORD |
+		val |= COND(fp->fragcoord_compmask != 0, A3XX_GRAS_CL_CLIP_CNTL_ZCOORD |
 				A3XX_GRAS_CL_CLIP_CNTL_WCOORD);
 		if (!emit->key.ucp_enables)
 			val |= A3XX_GRAS_CL_CLIP_CNTL_NUM_USER_CLIP_PLANES(

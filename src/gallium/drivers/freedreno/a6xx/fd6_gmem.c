@@ -58,7 +58,7 @@ fd6_emit_flag_reference(struct fd_ringbuffer *ring, struct fd_resource *rsc,
 		int level, int layer)
 {
 	if (fd_resource_ubwc_enabled(rsc, level)) {
-		OUT_RELOCW(ring, rsc->bo, fd_resource_ubwc_offset(rsc, level, layer), 0, 0);
+		OUT_RELOC(ring, rsc->bo, fd_resource_ubwc_offset(rsc, level, layer), 0, 0);
 		OUT_RING(ring,
 				A6XX_RB_MRT_FLAG_BUFFER_PITCH_PITCH(rsc->layout.ubwc_slices[level].pitch) |
 				A6XX_RB_MRT_FLAG_BUFFER_PITCH_ARRAY_PITCH(rsc->layout.ubwc_layer_size >> 2));
@@ -421,7 +421,7 @@ emit_vsc_overflow_test(struct fd_batch *batch)
 
 	/* Clear vsc_scratch: */
 	OUT_PKT7(ring, CP_MEM_WRITE, 3);
-	OUT_RELOCW(ring, control_ptr(fd6_ctx, vsc_scratch));
+	OUT_RELOC(ring, control_ptr(fd6_ctx, vsc_scratch));
 	OUT_RING(ring, 0x0);
 
 	/* Check for overflow, write vsc_scratch if detected: */
@@ -433,7 +433,7 @@ emit_vsc_overflow_test(struct fd_batch *batch)
 		OUT_RING(ring, CP_COND_WRITE5_2_POLL_ADDR_HI(0));
 		OUT_RING(ring, CP_COND_WRITE5_3_REF(fd6_ctx->vsc_draw_strm_pitch));
 		OUT_RING(ring, CP_COND_WRITE5_4_MASK(~0));
-		OUT_RELOCW(ring, control_ptr(fd6_ctx, vsc_scratch));  /* WRITE_ADDR_LO/HI */
+		OUT_RELOC(ring, control_ptr(fd6_ctx, vsc_scratch));  /* WRITE_ADDR_LO/HI */
 		OUT_RING(ring, CP_COND_WRITE5_7_WRITE_DATA(1 + fd6_ctx->vsc_draw_strm_pitch));
 
 		OUT_PKT7(ring, CP_COND_WRITE5, 8);
@@ -443,7 +443,7 @@ emit_vsc_overflow_test(struct fd_batch *batch)
 		OUT_RING(ring, CP_COND_WRITE5_2_POLL_ADDR_HI(0));
 		OUT_RING(ring, CP_COND_WRITE5_3_REF(fd6_ctx->vsc_prim_strm_pitch));
 		OUT_RING(ring, CP_COND_WRITE5_4_MASK(~0));
-		OUT_RELOCW(ring, control_ptr(fd6_ctx, vsc_scratch));  /* WRITE_ADDR_LO/HI */
+		OUT_RELOC(ring, control_ptr(fd6_ctx, vsc_scratch));  /* WRITE_ADDR_LO/HI */
 		OUT_RING(ring, CP_COND_WRITE5_7_WRITE_DATA(3 + fd6_ctx->vsc_prim_strm_pitch));
 	}
 
@@ -487,7 +487,7 @@ emit_vsc_overflow_test(struct fd_batch *batch)
 		OUT_PKT7(ring, CP_REG_TO_MEM, 3);
 		OUT_RING(ring, CP_REG_TO_MEM_0_REG(OVERFLOW_FLAG_REG) |
 				CP_REG_TO_MEM_0_CNT(1 - 1));
-		OUT_RELOCW(ring, control_ptr(fd6_ctx, vsc_overflow));
+		OUT_RELOC(ring, control_ptr(fd6_ctx, vsc_overflow));
 
 		OUT_PKT4(ring, OVERFLOW_FLAG_REG, 1);
 		OUT_RING(ring, 0x0);
@@ -626,14 +626,9 @@ emit_binning_pass(struct fd_batch *batch)
 	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 	struct fd6_context *fd6_ctx = fd6_context(batch->ctx);
 
-	uint32_t x1 = gmem->minx;
-	uint32_t y1 = gmem->miny;
-	uint32_t x2 = gmem->minx + gmem->width - 1;
-	uint32_t y2 = gmem->miny + gmem->height - 1;
-
 	debug_assert(!batch->tessellation);
 
-	set_scissor(ring, x1, y1, x2, y2);
+	set_scissor(ring, 0, 0, gmem->width - 1, gmem->height - 1);
 
 	emit_marker6(ring, 7);
 	OUT_PKT7(ring, CP_SET_MARKER, 1);
@@ -929,13 +924,12 @@ fd6_emit_tile_prep(struct fd_batch *batch, const struct fd_tile *tile)
 static void
 set_blit_scissor(struct fd_batch *batch, struct fd_ringbuffer *ring)
 {
-	struct pipe_scissor_state blit_scissor;
-	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
+	struct pipe_scissor_state blit_scissor = batch->max_scissor;
 
-	blit_scissor.minx = 0;
-	blit_scissor.miny = 0;
-	blit_scissor.maxx = align(pfb->width, batch->ctx->screen->gmem_alignw);
-	blit_scissor.maxy = align(pfb->height, batch->ctx->screen->gmem_alignh);
+	blit_scissor.minx = ROUND_DOWN_TO(blit_scissor.minx, 16);
+	blit_scissor.miny = ROUND_DOWN_TO(blit_scissor.miny, 4);
+	blit_scissor.maxx = ALIGN(blit_scissor.maxx, 16);
+	blit_scissor.maxy = ALIGN(blit_scissor.maxy, 4);
 
 	OUT_PKT4(ring, REG_A6XX_RB_BLIT_SCISSOR_TL, 2);
 	OUT_RING(ring,
@@ -1461,11 +1455,11 @@ setup_tess_buffers(struct fd_batch *batch, struct fd_ringbuffer *ring)
 			DRM_FREEDRENO_GEM_TYPE_KMEM, "tessparam");
 
 	OUT_PKT4(ring, REG_A6XX_PC_TESSFACTOR_ADDR_LO, 2);
-	OUT_RELOCW(ring, batch->tessfactor_bo, 0, 0, 0);
+	OUT_RELOC(ring, batch->tessfactor_bo, 0, 0, 0);
 
 	batch->tess_addrs_constobj->cur = batch->tess_addrs_constobj->start;
-	OUT_RELOCW(batch->tess_addrs_constobj, batch->tessparam_bo, 0, 0, 0);
-	OUT_RELOCW(batch->tess_addrs_constobj, batch->tessfactor_bo, 0, 0, 0);
+	OUT_RELOC(batch->tess_addrs_constobj, batch->tessparam_bo, 0, 0, 0);
+	OUT_RELOC(batch->tess_addrs_constobj, batch->tessfactor_bo, 0, 0, 0);
 }
 
 static void

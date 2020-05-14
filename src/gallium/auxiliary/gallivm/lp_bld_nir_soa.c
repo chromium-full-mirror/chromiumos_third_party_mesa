@@ -1375,6 +1375,17 @@ static void emit_sysval_intrin(struct lp_build_nir_context *bld_base,
    case nir_intrinsic_load_patch_vertices_in:
       result[0] = bld->system_values.vertices_in;
       break;
+   case nir_intrinsic_load_sample_id:
+      result[0] = lp_build_broadcast_scalar(&bld_base->uint_bld, bld->system_values.sample_id);
+      break;
+   case nir_intrinsic_load_sample_pos:
+      for (unsigned i = 0; i < 2; i++) {
+         LLVMValueRef idx = LLVMBuildMul(gallivm->builder, bld->system_values.sample_id, lp_build_const_int32(gallivm, 2), "");
+         idx = LLVMBuildAdd(gallivm->builder, idx, lp_build_const_int32(gallivm, i), "");
+         LLVMValueRef val = lp_build_array_get(gallivm, bld->system_values.sample_pos, idx);
+         result[i] = lp_build_broadcast_scalar(&bld_base->base, val);
+      }
+      break;
    }
 }
 

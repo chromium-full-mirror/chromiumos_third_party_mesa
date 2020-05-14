@@ -61,6 +61,9 @@ ok_format(enum pipe_format pfmt)
 {
 	enum a6xx_format fmt = fd6_pipe2color(pfmt);
 
+	if (util_format_is_compressed(pfmt))
+		return true;
+
 	switch (pfmt) {
 	case PIPE_FORMAT_Z24_UNORM_S8_UINT:
 	case PIPE_FORMAT_Z24X8_UNORM:
@@ -284,7 +287,7 @@ emit_blit_buffer(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		OUT_RING(ring, A6XX_RB_2D_DST_INFO_COLOR_FORMAT(FMT6_8_UNORM) |
 				 A6XX_RB_2D_DST_INFO_TILE_MODE(TILE6_LINEAR) |
 				 A6XX_RB_2D_DST_INFO_COLOR_SWAP(WZYX));
-		OUT_RELOCW(ring, dst->bo, doff, 0, 0);    /* RB_2D_DST_LO/HI */
+		OUT_RELOC(ring, dst->bo, doff, 0, 0);    /* RB_2D_DST_LO/HI */
 		OUT_RING(ring, A6XX_RB_2D_DST_SIZE_PITCH(p));
 		OUT_RING(ring, 0x00000000);
 		OUT_RING(ring, 0x00000000);
@@ -525,7 +528,7 @@ emit_blit_or_clear_texture(struct fd_context *ctx, struct fd_ringbuffer *ring,
 				 A6XX_RB_2D_DST_INFO_COLOR_SWAP(dswap) |
 				 COND(util_format_is_srgb(info->dst.format), A6XX_RB_2D_DST_INFO_SRGB) |
 				 COND(dubwc_enabled, A6XX_RB_2D_DST_INFO_FLAGS));
-		OUT_RELOCW(ring, dst->bo, doff, 0, 0);    /* RB_2D_DST_LO/HI */
+		OUT_RELOC(ring, dst->bo, doff, 0, 0);    /* RB_2D_DST_LO/HI */
 		OUT_RING(ring, A6XX_RB_2D_DST_SIZE_PITCH(dslice->pitch));
 		OUT_RING(ring, 0x00000000);
 		OUT_RING(ring, 0x00000000);
@@ -640,8 +643,8 @@ handle_rgba_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
 
 	fd_screen_lock(ctx->screen);
 
-	fd_batch_resource_used(batch, fd_resource(info->src.resource), false);
-	fd_batch_resource_used(batch, fd_resource(info->dst.resource), true);
+	fd_batch_resource_read(batch, fd_resource(info->src.resource));
+	fd_batch_resource_write(batch, fd_resource(info->dst.resource));
 
 	fd_screen_unlock(ctx->screen);
 
@@ -801,15 +804,26 @@ handle_compressed_blit(struct fd_context *ctx, const struct pipe_blit_info *info
 	int bw = util_format_get_blockwidth(info->src.format);
 	int bh = util_format_get_blockheight(info->src.format);
 
+	/* NOTE: x/y *must* be aligned to block boundary (ie. in
+	 * glCompressedTexSubImage2D()) but width/height may not
+	 * be:
+	 */
+
+	debug_assert((blit.src.box.x % bw) == 0);
+	debug_assert((blit.src.box.y % bh) == 0);
+
 	blit.src.box.x /= bw;
 	blit.src.box.y /= bh;
-	blit.src.box.width /= bw;
-	blit.src.box.height /= bh;
+	blit.src.box.width  = DIV_ROUND_UP(blit.src.box.width, bw);
+	blit.src.box.height = DIV_ROUND_UP(blit.src.box.height, bh);
+
+	debug_assert((blit.dst.box.x % bw) == 0);
+	debug_assert((blit.dst.box.y % bh) == 0);
 
 	blit.dst.box.x /= bw;
 	blit.dst.box.y /= bh;
-	blit.dst.box.width /= bw;
-	blit.dst.box.height /= bh;
+	blit.dst.box.width  = DIV_ROUND_UP(blit.dst.box.width, bw);
+	blit.dst.box.height = DIV_ROUND_UP(blit.dst.box.height, bh);
 
 	return do_rewritten_blit(ctx, &blit);
 }

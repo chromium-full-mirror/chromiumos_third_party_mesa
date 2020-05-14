@@ -489,6 +489,7 @@ optimise_nir(nir_shader *nir, unsigned quirks)
         } while (progress);
 
         NIR_PASS(progress, nir, nir_opt_algebraic_late);
+        NIR_PASS(progress, nir, nir_opt_algebraic_distribute_src_mods);
 
         /* We implement booleans as 32-bit 0/~0 */
         NIR_PASS(progress, nir, nir_lower_bool_to_int32);
@@ -1758,6 +1759,10 @@ emit_texop_native(compiler_context *ctx, nir_tex_instr *instr,
                 }
         };
 
+        if (instr->is_shadow && !instr->is_new_style_shadow)
+           for (int i = 0; i < 4; ++i)
+              ins.swizzle[0][i] = COMPONENT_X;
+
         /* We may need a temporary for the coordinate */
 
         bool needs_temp_coord =
@@ -1912,9 +1917,6 @@ emit_texop_native(compiler_context *ctx, nir_tex_instr *instr,
         }
 
         emit_mir_instruction(ctx, ins);
-
-        /* Used for .cont and .last hinting */
-        ctx->texture_op_count++;
 }
 
 static void
@@ -2045,41 +2047,6 @@ inline_alu_constants(compiler_context *ctx, midgard_block *block)
         }
 }
 
-/* Being a little silly with the names, but returns the op that is the bitwise
- * inverse of the op with the argument switched. I.e. (f and g are
- * contrapositives):
- *
- * f(a, b) = ~g(b, a)
- *
- * Corollary: if g is the contrapositve of f, f is the contrapositive of g:
- *
- *      f(a, b) = ~g(b, a)
- *      ~f(a, b) = g(b, a)
- *      ~f(a, b) = ~h(a, b) where h is the contrapositive of g
- *      f(a, b) = h(a, b)
- *
- * Thus we define this function in pairs.
- */
-
-static inline midgard_alu_op
-mir_contrapositive(midgard_alu_op op)
-{
-        switch (op) {
-        case midgard_alu_op_flt:
-                return midgard_alu_op_fle;
-        case midgard_alu_op_fle:
-                return midgard_alu_op_flt;
-
-        case midgard_alu_op_ilt:
-                return midgard_alu_op_ile;
-        case midgard_alu_op_ile:
-                return midgard_alu_op_ilt;
-
-        default:
-                unreachable("No known contrapositive");
-        }
-}
-
 /* Midgard supports two types of constants, embedded constants (128-bit) and
  * inline constants (16-bit). Sometimes, especially with scalar ops, embedded
  * constants can be demoted to inline constants, for space savings and
@@ -2108,29 +2075,9 @@ embedded_to_inline_constant(compiler_context *ctx, midgard_block *block)
 
                 int op = ins->alu.op;
 
-                if (ins->src[0] == SSA_FIXED_REGISTER(REGISTER_CONSTANT)) {
-                        bool flip = alu_opcode_props[op].props & OP_COMMUTES;
-
-                        switch (op) {
-                        /* Conditionals can be inverted */
-                        case midgard_alu_op_flt:
-                        case midgard_alu_op_ilt:
-                        case midgard_alu_op_fle:
-                        case midgard_alu_op_ile:
-                                ins->alu.op = mir_contrapositive(ins->alu.op);
-                                ins->invert = true;
-                                flip = true;
-                                break;
-
-                        case midgard_alu_op_fcsel:
-                        case midgard_alu_op_icsel:
-                                DBG("Missed non-commutative flip (%s)\n", alu_opcode_props[op].name);
-                        default:
-                                break;
-                        }
-
-                        if (flip)
-                                mir_flip(ins);
+                if (ins->src[0] == SSA_FIXED_REGISTER(REGISTER_CONSTANT) &&
+                                alu_opcode_props[op].props & OP_COMMUTES) {
+                        mir_flip(ins);
                 }
 
                 if (ins->src[1] == SSA_FIXED_REGISTER(REGISTER_CONSTANT)) {
@@ -2221,7 +2168,7 @@ embedded_to_inline_constant(compiler_context *ctx, midgard_block *block)
  * per block is legal semantically */
 
 static void
-midgard_opt_cull_dead_branch(compiler_context *ctx, midgard_block *block)
+midgard_cull_dead_branch(compiler_context *ctx, midgard_block *block)
 {
         bool branched = false;
 
@@ -2666,7 +2613,7 @@ midgard_compile_shader_nir(nir_shader *nir, panfrost_program *program, bool is_b
          * them */
         mir_foreach_block(ctx, _block) {
                 midgard_block *block = (midgard_block *) _block;
-                midgard_opt_cull_dead_branch(ctx, block);
+                midgard_cull_dead_branch(ctx, block);
         }
 
         /* Ensure we were lowered */
@@ -2676,6 +2623,11 @@ midgard_compile_shader_nir(nir_shader *nir, panfrost_program *program, bool is_b
 
         if (ctx->stage == MESA_SHADER_FRAGMENT)
                 mir_add_writeout_loops(ctx);
+
+        /* Analyze now that the code is known but before scheduling creates
+         * pipeline registers which are harder to track */
+        mir_analyze_helper_terminate(ctx);
+        mir_analyze_helper_requirements(ctx);
 
         /* Schedule! */
         midgard_schedule_program(ctx);

@@ -54,6 +54,7 @@
  */
 
 #include "si_pipe.h"
+#include "si_compute.h"
 #include "sid.h"
 #include "util/format/u_format.h"
 #include "util/hash_table.h"
@@ -256,6 +257,23 @@ static void si_sampler_views_begin_new_cs(struct si_context *sctx, struct si_sam
    }
 }
 
+static bool si_sampler_views_check_encrypted(struct si_context *sctx, struct si_samplers *samplers,
+                                             unsigned samplers_declared)
+{
+   unsigned mask = samplers->enabled_mask & samplers_declared;
+
+   /* Verify if a samplers uses an encrypted resource */
+   while (mask) {
+      int i = u_bit_scan(&mask);
+      struct si_sampler_view *sview = (struct si_sampler_view *)samplers->views[i];
+
+      struct si_resource *res = si_resource(sview->base.texture);
+      if (res->flags & RADEON_FLAG_ENCRYPTED)
+         return true;
+   }
+   return false;
+}
+
 /* Set buffer descriptor fields that can be changed by reallocations. */
 static void si_set_buf_desc_address(struct si_resource *buf, uint64_t offset, uint32_t *state)
 {
@@ -349,12 +367,13 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
       state[6] &= C_00A018_META_DATA_ADDRESS_LO & C_00A018_META_PIPE_ALIGNED;
 
       if (meta_va) {
-         struct gfx9_surf_meta_flags meta;
+         struct gfx9_surf_meta_flags meta = {
+            .rb_aligned = 1,
+            .pipe_aligned = 1,
+         };
 
          if (tex->surface.dcc_offset)
             meta = tex->surface.u.gfx9.dcc;
-         else
-            meta = tex->surface.u.gfx9.htile;
 
          state[6] |= S_00A018_META_PIPE_ALIGNED(meta.pipe_aligned) |
                      S_00A018_META_DATA_ADDRESS_LO(meta_va >> 8);
@@ -376,12 +395,13 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
       state[5] &=
          C_008F24_META_DATA_ADDRESS & C_008F24_META_PIPE_ALIGNED & C_008F24_META_RB_ALIGNED;
       if (meta_va) {
-         struct gfx9_surf_meta_flags meta;
+         struct gfx9_surf_meta_flags meta = {
+            .rb_aligned = 1,
+            .pipe_aligned = 1,
+         };
 
          if (tex->surface.dcc_offset)
             meta = tex->surface.u.gfx9.dcc;
-         else
-            meta = tex->surface.u.gfx9.htile;
 
          state[5] |= S_008F24_META_DATA_ADDRESS(meta_va >> 40) |
                      S_008F24_META_PIPE_ALIGNED(meta.pipe_aligned) |
@@ -605,6 +625,24 @@ static void si_image_views_begin_new_cs(struct si_context *sctx, struct si_image
 
       si_sampler_view_add_buffer(sctx, view->resource, RADEON_USAGE_READWRITE, false, false);
    }
+}
+
+static bool si_image_views_check_encrypted(struct si_context *sctx, struct si_images *images,
+                                           unsigned images_declared)
+{
+   uint mask = images->enabled_mask & images_declared;
+
+   while (mask) {
+      int i = u_bit_scan(&mask);
+      struct pipe_image_view *view = &images->views[i];
+
+      assert(view->resource);
+
+      struct si_texture *tex = (struct si_texture *)view->resource;
+      if (tex->buffer.flags & RADEON_FLAG_ENCRYPTED)
+         return true;
+   }
+   return false;
 }
 
 static void si_disable_shader_image(struct si_context *ctx, unsigned shader, unsigned slot)
@@ -833,7 +871,7 @@ void si_update_ps_colorbuf0_slot(struct si_context *sctx)
       if (tex->buffer.b.b.nr_samples <= 1 && tex->cmask_buffer) {
          /* Disable CMASK. */
          assert(tex->cmask_buffer != &tex->buffer);
-         si_eliminate_fast_color_clear(sctx, tex);
+         si_eliminate_fast_color_clear(sctx, tex, NULL);
          si_texture_discard_cmask(sctx->screen, tex);
       }
 
@@ -951,6 +989,23 @@ static void si_buffer_resources_begin_new_cs(struct si_context *sctx,
          buffers->writable_mask & (1u << i) ? RADEON_USAGE_READWRITE : RADEON_USAGE_READ,
          i < SI_NUM_SHADER_BUFFERS ? buffers->priority : buffers->priority_constbuf);
    }
+}
+
+static bool si_buffer_resources_check_encrypted(struct si_context *sctx,
+                                                struct si_buffer_resources *buffers)
+{
+   unsigned mask = buffers->enabled_mask;
+
+   while (mask) {
+      int i = u_bit_scan(&mask);
+
+      /* only check for reads */
+      if ((buffers->writable_mask & (1u << i)) == 0 &&
+          (si_resource(buffers->buffers[i])->flags & RADEON_FLAG_ENCRYPTED))
+         return true;
+   }
+
+   return false;
 }
 
 static void si_get_buffer_from_descriptors(struct si_buffer_resources *buffers,
@@ -2653,6 +2708,52 @@ void si_release_all_descriptors(struct si_context *sctx)
    si_release_bindless_descriptors(sctx);
 }
 
+bool si_gfx_resources_check_encrypted(struct si_context *sctx)
+{
+   bool use_encrypted_bo = false;
+   struct si_shader_ctx_state *current_shader[SI_NUM_SHADERS] = {
+      [PIPE_SHADER_VERTEX] = &sctx->vs_shader,
+      [PIPE_SHADER_TESS_CTRL] = &sctx->tcs_shader,
+      [PIPE_SHADER_TESS_EVAL] = &sctx->tes_shader,
+      [PIPE_SHADER_GEOMETRY] = &sctx->gs_shader,
+      [PIPE_SHADER_FRAGMENT] = &sctx->ps_shader,
+   };
+
+   for (unsigned i = 0; i < SI_NUM_GRAPHICS_SHADERS && !use_encrypted_bo; i++) {
+      if (!current_shader[i]->cso)
+         continue;
+
+      use_encrypted_bo |=
+         si_buffer_resources_check_encrypted(sctx, &sctx->const_and_shader_buffers[i]);
+      use_encrypted_bo |=
+         si_sampler_views_check_encrypted(sctx, &sctx->samplers[i],
+                                          current_shader[i]->cso->info.samplers_declared);
+      use_encrypted_bo |= si_image_views_check_encrypted(sctx, &sctx->images[i],
+                                          current_shader[i]->cso->info.images_declared);
+   }
+   use_encrypted_bo |= si_buffer_resources_check_encrypted(sctx, &sctx->rw_buffers);
+
+   struct si_state_blend *blend = sctx->queued.named.blend;
+   for (int i = 0; i < sctx->framebuffer.state.nr_cbufs && !use_encrypted_bo; i++) {
+      struct pipe_surface *surf = sctx->framebuffer.state.cbufs[i];
+      if (surf && surf->texture) {
+         struct si_texture *tex = (struct si_texture *)surf->texture;
+         if (!(tex->buffer.flags & RADEON_FLAG_ENCRYPTED))
+            continue;
+         /* Are we reading from this framebuffer (blend) */
+         if ((blend->blend_enable_4bit >> (4 * i)) & 0xf) {
+            /* TODO: blend op */
+            use_encrypted_bo = true;
+         }
+      }
+   }
+
+   /* TODO: we should assert that either use_encrypted_bo is false,
+    * or all writable buffers are encrypted.
+    */
+   return use_encrypted_bo;
+}
+
 void si_gfx_resources_add_all_to_bo_list(struct si_context *sctx)
 {
    for (unsigned i = 0; i < SI_NUM_GRAPHICS_SHADERS; i++) {
@@ -2668,6 +2769,21 @@ void si_gfx_resources_add_all_to_bo_list(struct si_context *sctx)
 
    assert(sctx->bo_list_add_all_gfx_resources);
    sctx->bo_list_add_all_gfx_resources = false;
+}
+
+bool si_compute_resources_check_encrypted(struct si_context *sctx)
+{
+   unsigned sh = PIPE_SHADER_COMPUTE;
+
+   struct si_shader_info* info = &sctx->cs_shader_state.program->sel.info;
+
+   /* TODO: we should assert that either use_encrypted_bo is false,
+    * or all writable buffers are encrypted.
+    */
+   return si_buffer_resources_check_encrypted(sctx, &sctx->const_and_shader_buffers[sh]) ||
+          si_sampler_views_check_encrypted(sctx, &sctx->samplers[sh], info->samplers_declared) ||
+          si_image_views_check_encrypted(sctx, &sctx->images[sh], info->images_declared) ||
+          si_buffer_resources_check_encrypted(sctx, &sctx->rw_buffers);
 }
 
 void si_compute_resources_add_all_to_bo_list(struct si_context *sctx)

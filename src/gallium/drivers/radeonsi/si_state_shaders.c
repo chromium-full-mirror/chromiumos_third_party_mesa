@@ -2593,7 +2593,7 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
    sel->so = state->stream_output;
 
    if (state->type == PIPE_SHADER_IR_TGSI) {
-      sel->nir = tgsi_to_nir(state->tokens, ctx->screen);
+      sel->nir = tgsi_to_nir(state->tokens, ctx->screen, true);
    } else {
       assert(state->type == PIPE_SHADER_IR_NIR);
       sel->nir = state->ir.nir;
@@ -2841,8 +2841,6 @@ static void *si_create_shader(struct pipe_context *ctx, const struct pipe_shader
          si_shader_dump_stats_for_shader_db(sscreen, sel->main_shader_part_ngg, &sctx->debug);
       if (sel->main_shader_part_ngg_es)
          si_shader_dump_stats_for_shader_db(sscreen, sel->main_shader_part_ngg_es, &sctx->debug);
-      if (sel->gs_copy_shader)
-         si_shader_dump_stats_for_shader_db(sscreen, sel->gs_copy_shader, &sctx->debug);
    }
    return sel;
 }

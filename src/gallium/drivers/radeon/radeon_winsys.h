@@ -67,6 +67,7 @@ enum radeon_bo_flag
   RADEON_FLAG_NO_INTERPROCESS_SHARING = (1 << 4),
   RADEON_FLAG_READ_ONLY = (1 << 5),
   RADEON_FLAG_32BIT = (1 << 6),
+  RADEON_FLAG_ENCRYPTED = (1 << 7)
 };
 
 enum radeon_dependency_flag
@@ -217,22 +218,9 @@ struct radeon_bo_metadata {
          unsigned stride;
          bool scanout;
       } legacy;
-
-      struct {
-         /* surface flags */
-         unsigned swizzle_mode : 5;
-
-         /* DCC flags */
-         /* [31:8]: max offset = 4GB - 256; 0 = DCC disabled */
-         unsigned dcc_offset_256B : 24;
-         unsigned dcc_pitch_max : 14; /* (mip chain pitch - 1) for DCN */
-         unsigned dcc_independent_64B : 1;
-         unsigned dcc_independent_128B : 1;
-         unsigned dcc_max_compressed_block_size : 2;
-
-         bool scanout;
-      } gfx9;
    } u;
+
+   enum radeon_surf_mode mode;   /* Output from buffer_get_metadata */
 
    /* Additional metadata associated with the buffer, in bytes.
     * The maximum size is 64 * 4. This is opaque for the winsys & kernel.
@@ -351,7 +339,8 @@ struct radeon_winsys {
     * \param buf       A winsys buffer object to get the flags from.
     * \param md        Metadata
     */
-   void (*buffer_get_metadata)(struct pb_buffer *buf, struct radeon_bo_metadata *md);
+   void (*buffer_get_metadata)(struct pb_buffer *buf, struct radeon_bo_metadata *md,
+                               struct radeon_surf *surf);
 
    /**
     * Set buffer metadata.
@@ -360,7 +349,8 @@ struct radeon_winsys {
     * \param buf       A winsys buffer object to set the flags for.
     * \param md        Metadata
     */
-   void (*buffer_set_metadata)(struct pb_buffer *buf, struct radeon_bo_metadata *md);
+   void (*buffer_set_metadata)(struct pb_buffer *buf, struct radeon_bo_metadata *md,
+                               struct radeon_surf *surf);
 
    /**
     * Get a winsys buffer from a winsys handle. The internal structure
@@ -684,6 +674,13 @@ struct radeon_winsys {
 
    bool (*read_registers)(struct radeon_winsys *ws, unsigned reg_offset, unsigned num_registers,
                           uint32_t *out);
+
+   /**
+    * Secure context
+    */
+   bool (*ws_is_secure)(struct radeon_winsys *ws);
+   bool (*cs_is_secure)(struct radeon_cmdbuf *cs);
+   void (*cs_set_secure)(struct radeon_cmdbuf *cs, bool secure);
 };
 
 static inline bool radeon_emitted(struct radeon_cmdbuf *cs, unsigned num_dw)

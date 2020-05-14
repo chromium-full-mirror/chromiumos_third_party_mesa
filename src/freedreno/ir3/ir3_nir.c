@@ -210,6 +210,21 @@ ir3_optimize_loop(nir_shader *s)
 	} while (progress);
 }
 
+static bool
+should_split_wrmask(const nir_instr *instr, const void *data)
+{
+	nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+
+	switch (intr->intrinsic) {
+	case nir_intrinsic_store_ssbo:
+	case nir_intrinsic_store_shared:
+	case nir_intrinsic_store_global:
+		return true;
+	default:
+		return false;
+	}
+}
+
 void
 ir3_optimize_nir(struct ir3_shader *shader, nir_shader *s,
 		const struct ir3_shader_key *key)
@@ -274,7 +289,7 @@ ir3_optimize_nir(struct ir3_shader *shader, nir_shader *s,
 	}
 
 	OPT_V(s, nir_lower_regs_to_ssa);
-	OPT_V(s, ir3_nir_lower_io_offsets);
+	OPT_V(s, nir_lower_wrmasks, should_split_wrmask, s);
 
 	if (key) {
 		if (s->info.stage == MESA_SHADER_VERTEX) {
@@ -317,6 +332,9 @@ ir3_optimize_nir(struct ir3_shader *shader, nir_shader *s,
 	 */
 	const bool ubo_progress = !key && OPT(s, ir3_nir_analyze_ubo_ranges, shader);
 	const bool idiv_progress = OPT(s, nir_lower_idiv, nir_lower_idiv_fast);
+	/* UBO offset lowering has to come after we've decided what will be left as load_ubo */
+	OPT_V(s, ir3_nir_lower_io_offsets, shader->compiler->gpu_id);
+
 	if (ubo_progress || idiv_progress)
 		ir3_optimize_loop(s);
 
@@ -402,14 +420,6 @@ ir3_nir_scan_driver_consts(nir_shader *shader,
 						layout->image_dims.count;
 					layout->image_dims.count += 3; /* three const per */
 					break;
-				case nir_intrinsic_load_ubo:
-					if (nir_src_is_const(intr->src[0])) {
-						layout->num_ubos = MAX2(layout->num_ubos,
-								nir_src_as_uint(intr->src[0]) + 1);
-					} else {
-						layout->num_ubos = shader->info.num_ubos;
-					}
-					break;
 				case nir_intrinsic_load_base_vertex:
 				case nir_intrinsic_load_first_vertex:
 					layout->num_driver_params =
@@ -455,6 +465,14 @@ ir3_setup_const_state(struct ir3_shader *shader, nir_shader *nir)
 			MAX2(const_state->num_driver_params, IR3_DP_VTXCNT_MAX + 1);
 	}
 
+	/* On a6xx, we use UBO descriptors and LDC instead of UBO pointers in the
+	 * constbuf.
+	 */
+	if (compiler->gpu_id >= 600)
+		shader->num_ubos = nir->info.num_ubos;
+	else
+		const_state->num_ubos = nir->info.num_ubos;
+
 	/* num_driver_params is scalar, align to vec4: */
 	const_state->num_driver_params = align(const_state->num_driver_params, 4);
 
@@ -464,7 +482,7 @@ ir3_setup_const_state(struct ir3_shader *shader, nir_shader *nir)
 
 	if (const_state->num_ubos > 0) {
 		const_state->offsets.ubo = constoff;
-		constoff += align(nir->info.num_ubos * ptrsz, 4) / 4;
+		constoff += align(const_state->num_ubos * ptrsz, 4) / 4;
 	}
 
 	if (const_state->ssbo_size.count > 0) {

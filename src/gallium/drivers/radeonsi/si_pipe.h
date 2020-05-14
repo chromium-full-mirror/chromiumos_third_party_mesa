@@ -160,6 +160,7 @@ enum
    DBG_W64_GE,
    DBG_W64_PS,
    DBG_W64_CS,
+   DBG_KILL_PS_INF_INTERP,
 
    /* Shader compiler options (with no effect on the shader cache): */
    DBG_CHECK_IR,
@@ -238,6 +239,7 @@ enum si_coherency
    SI_COHERENCY_NONE, /* no cache flushes needed */
    SI_COHERENCY_SHADER,
    SI_COHERENCY_CB_META,
+   SI_COHERENCY_DB_META,
    SI_COHERENCY_CP,
 };
 
@@ -335,6 +337,7 @@ struct si_texture {
    uint8_t stencil_clear_value;
    bool fmask_is_identity : 1;
    bool tc_compatible_htile : 1;
+   bool enable_tc_compatible_htile_next_clear : 1;
    bool htile_stencil_disabled : 1;
    bool depth_cleared : 1;   /* if it was cleared at least once */
    bool stencil_cleared : 1; /* if it was cleared at least once */
@@ -1333,9 +1336,10 @@ void si_init_compute_blit_functions(struct si_context *sctx);
 #define SI_CPDMA_SKIP_SYNC_BEFORE    (1 << 2) /* don't wait for DMA before the copy (RAW hazards) */
 #define SI_CPDMA_SKIP_GFX_SYNC       (1 << 3) /* don't flush caches and don't wait for PS/CS */
 #define SI_CPDMA_SKIP_BO_LIST_UPDATE (1 << 4) /* don't update the BO list */
+#define SI_CPDMA_SKIP_TMZ            (1 << 5) /* don't update tmz state */
 #define SI_CPDMA_SKIP_ALL                                                                          \
    (SI_CPDMA_SKIP_CHECK_CS_SPACE | SI_CPDMA_SKIP_SYNC_AFTER | SI_CPDMA_SKIP_SYNC_BEFORE |          \
-    SI_CPDMA_SKIP_GFX_SYNC | SI_CPDMA_SKIP_BO_LIST_UPDATE)
+    SI_CPDMA_SKIP_GFX_SYNC | SI_CPDMA_SKIP_BO_LIST_UPDATE | SI_CPDMA_SKIP_TMZ)
 
 void si_cp_dma_wait_for_idle(struct si_context *sctx);
 void si_cp_dma_clear_buffer(struct si_context *sctx, struct radeon_cmdbuf *cs,
@@ -1493,7 +1497,8 @@ void si_init_viewport_functions(struct si_context *ctx);
 bool si_prepare_for_dma_blit(struct si_context *sctx, struct si_texture *dst, unsigned dst_level,
                              unsigned dstx, unsigned dsty, unsigned dstz, struct si_texture *src,
                              unsigned src_level, const struct pipe_box *src_box);
-void si_eliminate_fast_color_clear(struct si_context *sctx, struct si_texture *tex);
+void si_eliminate_fast_color_clear(struct si_context *sctx, struct si_texture *tex,
+                                   bool *ctx_flushed);
 void si_texture_discard_cmask(struct si_screen *sscreen, struct si_texture *tex);
 bool si_init_flushed_depth_texture(struct pipe_context *ctx, struct pipe_resource *texture);
 void si_print_texture_info(struct si_screen *sscreen, struct si_texture *tex,

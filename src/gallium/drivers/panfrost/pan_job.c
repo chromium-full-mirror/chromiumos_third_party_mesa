@@ -580,6 +580,18 @@ panfrost_batch_add_bo(struct panfrost_batch *batch, struct panfrost_bo *bo,
         panfrost_batch_update_bo_access(batch, bo, flags, old_flags != 0);
 }
 
+static void
+panfrost_batch_add_resource_bos(struct panfrost_batch *batch,
+                                struct panfrost_resource *rsrc,
+                                uint32_t flags)
+{
+        panfrost_batch_add_bo(batch, rsrc->bo, flags);
+
+        for (unsigned i = 0; i < MAX_MIP_LEVELS; i++)
+                if (rsrc->slices[i].checksum_bo)
+                        panfrost_batch_add_bo(batch, rsrc->slices[i].checksum_bo, flags);
+}
+
 void panfrost_batch_add_fbo_bos(struct panfrost_batch *batch)
 {
         uint32_t flags = PAN_BO_ACCESS_SHARED | PAN_BO_ACCESS_WRITE |
@@ -588,12 +600,12 @@ void panfrost_batch_add_fbo_bos(struct panfrost_batch *batch)
 
         for (unsigned i = 0; i < batch->key.nr_cbufs; ++i) {
                 struct panfrost_resource *rsrc = pan_resource(batch->key.cbufs[i]->texture);
-                panfrost_batch_add_bo(batch, rsrc->bo, flags);
+                panfrost_batch_add_resource_bos(batch, rsrc, flags);
         }
 
         if (batch->key.zsbuf) {
                 struct panfrost_resource *rsrc = pan_resource(batch->key.zsbuf->texture);
-                panfrost_batch_add_bo(batch, rsrc->bo, flags);
+                panfrost_batch_add_resource_bos(batch, rsrc, flags);
         }
 }
 
@@ -1301,7 +1313,7 @@ panfrost_batch_clear(struct panfrost_batch *batch,
 
         /* Clearing affects the entire framebuffer (by definition -- this is
          * the Gallium clear callback, which clears the whole framebuffer. If
-         * the scissor test were enabled from the GL side, the state tracker
+         * the scissor test were enabled from the GL side, the gallium frontend
          * would emit a quad instead and we wouldn't go down this code path) */
 
         panfrost_batch_union_scissor(batch, 0, 0,

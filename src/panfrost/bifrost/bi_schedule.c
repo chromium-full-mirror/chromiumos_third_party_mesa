@@ -28,6 +28,15 @@
 
 /* Finds the clause type required or return none */
 
+static bool
+bi_is_fragz(bi_instruction *ins)
+{
+        if (!(ins->src[0] & BIR_INDEX_CONSTANT))
+                return false;
+
+        return (ins->constant.u32 == BIFROST_FRAGZ);
+}
+
 static enum bifrost_clause_type
 bi_clause_type_for_ins(bi_instruction *ins)
 {
@@ -43,6 +52,9 @@ bi_clause_type_for_ins(bi_instruction *ins)
                 return BIFROST_CLAUSE_NONE;
 
         case BI_LOAD_VAR:
+                if (bi_is_fragz(ins))
+                        return BIFROST_CLAUSE_FRAGZ;
+
                 return BIFROST_CLAUSE_LOAD_VARY;
 
         case BI_LOAD_UNIFORM:
@@ -87,6 +99,22 @@ bi_ambiguous_abs(bi_instruction *ins)
         bool absy = ins->src_abs[0] && ins->src_abs[1];
 
         return classy && typey && absy;
+}
+
+/* New Bifrost (which?) don't seem to have ICMP on FMA */
+static bool
+bi_icmp(bi_instruction *ins)
+{
+        bool ic = nir_alu_type_get_base_type(ins->src_types[0]) != nir_type_float;
+        return ic && (ins->type == BI_CMP);
+}
+
+/* No 8/16-bit IADD/ISUB on FMA */
+static bool
+bi_imath_small(bi_instruction *ins)
+{
+        bool sz = nir_alu_type_get_type_size(ins->src_types[0]) < 32;
+        return sz && (ins->type == BI_IMATH);
 }
 
 /* Lowers FMOV to ADD #0, since FMOV doesn't exist on the h/w and this is the
@@ -138,6 +166,8 @@ bi_schedule(bi_context *ctx)
                         bool can_add = props & BI_SCHED_ADD;
 
                         can_fma &= !bi_ambiguous_abs(ins);
+                        can_fma &= !bi_icmp(ins);
+                        can_fma &= !bi_imath_small(ins);
 
                         assert(can_fma || can_add);
 

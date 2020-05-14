@@ -2182,6 +2182,7 @@ struct gl_program
           */
          GLenum16 ImageAccess[MAX_IMAGE_UNIFORMS];
 
+         GLuint NumUniformBlocks;
          struct gl_uniform_block **UniformBlocks;
          struct gl_uniform_block **ShaderStorageBlocks;
 
@@ -3867,9 +3868,18 @@ struct gl_constants
    GLboolean ForceGLSLAbsSqrt;
 
    /**
-    * Force uninitialized variables to default to zero.
+    * Types of variable to default initialized to zero. Supported values are:
+    *   - 0: no zero initialization
+    *   - 1: all shader variables and gl_FragColor are initialiazed to 0
+    *   - 2: same as 1, but shader out variables are *not* initialized, while
+    *        function out variables are now initialized.
     */
-   GLboolean GLSLZeroInit;
+   GLchar GLSLZeroInit;
+
+   /**
+    * Treat integer textures using GL_LINEAR filters as GL_NEAREST.
+    */
+   GLboolean ForceIntegerTexNearest;
 
    /**
     * Does the driver support real 32-bit integers?  (Otherwise, integers are

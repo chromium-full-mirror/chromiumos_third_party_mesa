@@ -63,16 +63,16 @@ emit_jump(bi_context *ctx, nir_jump_instr *instr)
 
         switch (instr->type) {
         case nir_jump_break:
-                branch->branch.target = ctx->break_block;
+                branch->branch_target = ctx->break_block;
                 break;
         case nir_jump_continue:
-                branch->branch.target = ctx->continue_block;
+                branch->branch_target = ctx->continue_block;
                 break;
         default:
                 unreachable("Unhandled jump type");
         }
 
-        pan_block_add_successor(&ctx->current_block->base, &branch->branch.target->base);
+        pan_block_add_successor(&ctx->current_block->base, &branch->branch_target->base);
 }
 
 static bi_instruction
@@ -273,6 +273,133 @@ bi_emit_sysval(bi_context *ctx, nir_instr *instr,
         bi_emit(ctx, load);
 }
 
+/* gl_FragCoord.xy = u16_to_f32(R59.xy) + 0.5
+ * gl_FragCoord.z = ld_vary(fragz)
+ * gl_FragCoord.w = ld_vary(fragw)
+ */
+
+static void
+bi_emit_ld_frag_coord(bi_context *ctx, nir_intrinsic_instr *instr)
+{
+        /* Future proofing for mediump fragcoord at some point.. */
+        nir_alu_type T = nir_type_float32;
+
+        /* First, sketch a combine */
+        bi_instruction combine = {
+                .type = BI_COMBINE,
+                .dest_type = nir_type_uint32,
+                .dest = pan_dest_index(&instr->dest),
+                .src_types = { T, T, T, T },
+        };
+
+        /* Second, handle xy */
+        for (unsigned i = 0; i < 2; ++i) {
+                bi_instruction conv = {
+                        .type = BI_CONVERT,
+                        .dest_type = T,
+                        .dest = bi_make_temp(ctx),
+                        .src = {
+                                /* TODO: RA XXX */
+                                BIR_INDEX_REGISTER | 59
+                        },
+                        .src_types = { nir_type_uint16 },
+                        .swizzle = { { i } }
+                };
+
+                bi_instruction add = {
+                        .type = BI_ADD,
+                        .dest_type = T,
+                        .dest = bi_make_temp(ctx),
+                        .src = { conv.dest, BIR_INDEX_CONSTANT },
+                        .src_types = { T, T },
+                };
+
+                float half = 0.5;
+                memcpy(&add.constant.u32, &half, sizeof(float));
+
+                bi_emit(ctx, conv);
+                bi_emit(ctx, add);
+
+                combine.src[i] = add.dest;
+        }
+
+        /* Third, zw */
+        for (unsigned i = 0; i < 2; ++i) {
+                bi_instruction load = {
+                        .type = BI_LOAD_VAR,
+                        .load_vary = {
+                                .interp_mode = BIFROST_INTERP_DEFAULT,
+                                .reuse = false,
+                                .flat = true
+                        },
+                        .vector_channels = 1,
+                        .dest_type = nir_type_float32,
+                        .dest = bi_make_temp(ctx),
+                        .src = { BIR_INDEX_CONSTANT, BIR_INDEX_ZERO },
+                        .src_types = { nir_type_uint32, nir_type_uint32 },
+                        .constant = {
+                                .u32 = (i == 0) ? BIFROST_FRAGZ : BIFROST_FRAGW
+                        }
+                };
+
+                bi_emit(ctx, load);
+
+                combine.src[i + 2] = load.dest;
+        }
+
+        /* Finally, emit the combine */
+        bi_emit(ctx, combine);
+}
+
+static void
+bi_emit_discard(bi_context *ctx, nir_intrinsic_instr *instr)
+{
+        /* Goofy lowering */
+        bi_instruction discard = {
+                .type = BI_DISCARD,
+                .cond = BI_COND_EQ,
+                .src_types = { nir_type_uint32, nir_type_uint32 },
+                .src = { BIR_INDEX_ZERO, BIR_INDEX_ZERO },
+        };
+
+        bi_emit(ctx, discard);
+}
+
+static void
+bi_fuse_cond(bi_instruction *csel, nir_alu_src cond,
+                unsigned *constants_left, unsigned *constant_shift,
+                unsigned comps, bool float_only);
+
+static void
+bi_emit_discard_if(bi_context *ctx, nir_intrinsic_instr *instr)
+{
+        nir_src cond = instr->src[0];
+        nir_alu_type T = nir_type_uint | nir_src_bit_size(cond);
+
+        bi_instruction discard = {
+                .type = BI_DISCARD,
+                .cond = BI_COND_NE,
+                .src_types = { T, T },
+                .src = {
+                        pan_src_index(&cond),
+                        BIR_INDEX_ZERO
+                },
+        };
+
+        /* Try to fuse in the condition */
+        unsigned constants_left = 1, constant_shift = 0;
+
+        /* Scalar so no swizzle */
+        nir_alu_src wrap = {
+                .src = instr->src[0]
+        };
+
+        /* May or may not succeed but we're optimistic */
+        bi_fuse_cond(&discard, wrap, &constants_left, &constant_shift, 1, true);
+
+        bi_emit(ctx, discard);
+}
+
 static void
 emit_intrinsic(bi_context *ctx, nir_intrinsic_instr *instr)
 {
@@ -305,6 +432,18 @@ emit_intrinsic(bi_context *ctx, nir_intrinsic_instr *instr)
                 bi_emit_ld_uniform(ctx, instr);
                 break;
 
+        case nir_intrinsic_load_frag_coord:
+                bi_emit_ld_frag_coord(ctx, instr);
+                break;
+
+        case nir_intrinsic_discard:
+                bi_emit_discard(ctx, instr);
+                break;
+
+        case nir_intrinsic_discard_if:
+                bi_emit_discard_if(ctx, instr);
+                break;
+
         case nir_intrinsic_load_ssbo_address:
                 bi_emit_sysval(ctx, &instr->instr, 1, 0);
                 break;
@@ -321,7 +460,7 @@ emit_intrinsic(bi_context *ctx, nir_intrinsic_instr *instr)
                 break;
 
         default:
-                /* todo */
+                unreachable("Unknown intrinsic");
                 break;
         }
 }
@@ -359,12 +498,13 @@ static enum bi_class
 bi_class_for_nir_alu(nir_op op)
 {
         switch (op) {
-        case nir_op_iadd:
         case nir_op_fadd:
         case nir_op_fsub:
                 return BI_ADD;
+
+        case nir_op_iadd:
         case nir_op_isub:
-                return BI_ISUB;
+                return BI_IMATH;
 
         case nir_op_iand:
         case nir_op_ior:
@@ -530,8 +670,9 @@ bi_copy_src(bi_instruction *alu, nir_alu_instr *instr, unsigned i, unsigned to,
 }
 
 static void
-bi_fuse_csel_cond(bi_instruction *csel, nir_alu_src cond,
-                unsigned *constants_left, unsigned *constant_shift, unsigned comps)
+bi_fuse_cond(bi_instruction *csel, nir_alu_src cond,
+                unsigned *constants_left, unsigned *constant_shift,
+                unsigned comps, bool float_only)
 {
         /* Bail for vector weirdness */
         if (cond.swizzle[0] != 0)
@@ -553,6 +694,15 @@ bi_fuse_csel_cond(bi_instruction *csel, nir_alu_src cond,
 
         if (bcond == BI_COND_ALWAYS)
                 return;
+
+        /* Some instructions can't compare ints */
+        if (float_only) {
+                nir_alu_type T = nir_op_infos[alu->op].input_types[0];
+                T = nir_alu_type_get_base_type(T);
+
+                if (T != nir_type_float)
+                        return;
+        }
 
         /* We found one, let's fuse it in */
         csel->cond = bcond;
@@ -639,6 +789,12 @@ emit_alu(bi_context *ctx, nir_alu_instr *instr)
         case nir_op_fsub:
                 alu.src_neg[1] = true; /* FADD */
                 break;
+        case nir_op_iadd:
+                alu.op.imath = BI_IMATH_ADD;
+                break;
+        case nir_op_isub:
+                alu.op.imath = BI_IMATH_SUB;
+                break;
         case nir_op_fmax:
         case nir_op_imax:
         case nir_op_umax:
@@ -691,8 +847,12 @@ emit_alu(bi_context *ctx, nir_alu_instr *instr)
                 alu.src[1] = BIR_INDEX_ZERO;
                 alu.src_types[1] = alu.src_types[0];
 
-                bi_fuse_csel_cond(&alu, instr->src[0],
-                                &constants_left, &constant_shift, comps);
+                /* TODO: Reenable cond fusing when we can split up registers
+                 * when scheduling */
+#if 0
+                bi_fuse_cond(&alu, instr->src[0],
+                                &constants_left, &constant_shift, comps, false);
+#endif
         } else if (alu.type == BI_BITWISE) {
                 /* Implicit shift argument... at some point we should fold */
                 alu.src[2] = BIR_INDEX_ZERO;
@@ -851,9 +1011,7 @@ bi_emit_branch(bi_context *ctx)
 {
         bi_instruction branch = {
                 .type = BI_BRANCH,
-                .branch = {
-                        .cond = BI_COND_ALWAYS
-                }
+                .cond = BI_COND_ALWAYS
         };
 
         return bi_emit(ctx, branch);
@@ -873,7 +1031,7 @@ bi_set_branch_cond(bi_instruction *branch, nir_src *cond, bool invert)
         branch->src[0] = pan_src_index(cond);
         branch->src[1] = BIR_INDEX_ZERO;
         branch->src_types[0] = branch->src_types[1] = nir_type_uint16;
-        branch->branch.cond = invert ? BI_COND_EQ : BI_COND_NE;
+        branch->cond = invert ? BI_COND_EQ : BI_COND_NE;
 }
 
 static void
@@ -907,16 +1065,16 @@ emit_if(bi_context *ctx, nir_if *nif)
         if (ctx->instruction_count == count_in) {
                 /* The else block is empty, so don't emit an exit jump */
                 bi_remove_instruction(then_exit);
-                then_branch->branch.target = ctx->after_block;
+                then_branch->branch_target = ctx->after_block;
         } else {
-                then_branch->branch.target = else_block;
-                then_exit->branch.target = ctx->after_block;
-                pan_block_add_successor(&end_then_block->base, &then_exit->branch.target->base);
+                then_branch->branch_target = else_block;
+                then_exit->branch_target = ctx->after_block;
+                pan_block_add_successor(&end_then_block->base, &then_exit->branch_target->base);
         }
 
         /* Wire up the successors */
 
-        pan_block_add_successor(&before_block->base, &then_branch->branch.target->base); /* then_branch */
+        pan_block_add_successor(&before_block->base, &then_branch->branch_target->base); /* then_branch */
 
         pan_block_add_successor(&before_block->base, &then_block->base); /* fallthrough */
         pan_block_add_successor(&end_else_block->base, &ctx->after_block->base); /* fallthrough */
@@ -940,7 +1098,7 @@ emit_loop(bi_context *ctx, nir_loop *nloop)
 
         /* Branch back to loop back */
         bi_instruction *br_back = bi_emit_branch(ctx);
-        br_back->branch.target = ctx->continue_block;
+        br_back->branch_target = ctx->continue_block;
         pan_block_add_successor(&start_block->base, &ctx->continue_block->base);
         pan_block_add_successor(&ctx->current_block->base, &ctx->continue_block->base);
 

@@ -60,7 +60,7 @@ enum bi_class {
         BI_FMA,
         BI_FMOV,
         BI_FREXP,
-        BI_ISUB,
+        BI_IMATH,
         BI_LOAD,
         BI_LOAD_UNIFORM,
         BI_LOAD_ATTR,
@@ -86,10 +86,8 @@ extern unsigned bi_class_props[BI_NUM_CLASSES];
 /* abs/neg/outmod valid for a float op */
 #define BI_MODS (1 << 0)
 
-/* Generic enough that little class-specific information is required. In other
- * words, it acts as a "normal" ALU op, even if the encoding ends up being
- * irregular enough to warrant a separate class */
-#define BI_GENERIC (1 << 1)
+/* Accepts a bi_cond */
+#define BI_CONDITIONAL (1 << 1)
 
 /* Accepts a bifrost_roundmode */
 #define BI_ROUNDMODE (1 << 2)
@@ -157,15 +155,6 @@ enum bi_cond {
         BI_COND_NE,
 };
 
-struct bi_branch {
-        /* Types are specified in src_types and must be compatible (either both
-         * int, or both float, 16/32, and same size or 32/16 if float. Types
-         * ignored if BI_COND_ALWAYS is set for an unconditional branch. */
-
-        enum bi_cond cond;
-        struct bi_block *target;
-};
-
 /* Opcodes within a class */
 enum bi_minmax_op {
         BI_MINMAX_MIN,
@@ -176,6 +165,11 @@ enum bi_bitwise_op {
         BI_BITWISE_AND,
         BI_BITWISE_OR,
         BI_BITWISE_XOR
+};
+
+enum bi_imath_op {
+        BI_IMATH_ADD,
+        BI_IMATH_SUB,
 };
 
 enum bi_table_op {
@@ -273,6 +267,9 @@ typedef struct {
         /* For VECTOR ops, how many channels are written? */
         unsigned vector_channels;
 
+        /* The comparison op. BI_COND_ALWAYS may not be valid. */
+        enum bi_cond cond;
+
         /* A class-specific op from which the actual opcode can be derived
          * (along with the above information) */
 
@@ -284,6 +281,7 @@ typedef struct {
                 enum bi_table_op table;
                 enum bi_frexp_op frexp;
                 enum bi_tex_op texture;
+                enum bi_imath_op imath;
 
                 /* For FMA/ADD, should we add a biased exponent? */
                 bool mscale;
@@ -293,11 +291,7 @@ typedef struct {
         union {
                 enum bifrost_minmax_mode minmax;
                 struct bi_load_vary load_vary;
-                struct bi_branch branch;
-
-                /* For CSEL, the comparison op. BI_COND_ALWAYS doesn't make
-                 * sense here but you can always just use a move for that */
-                enum bi_cond cond;
+                struct bi_block *branch_target;
 
                 /* For BLEND -- the location 0-7 */
                 unsigned blend_location;

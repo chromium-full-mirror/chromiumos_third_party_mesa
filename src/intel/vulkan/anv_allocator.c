@@ -823,14 +823,20 @@ anv_block_pool_alloc_back(struct anv_block_pool *pool,
 VkResult
 anv_state_pool_init(struct anv_state_pool *pool,
                     struct anv_device *device,
-                    uint64_t start_address,
+                    uint64_t base_address,
+                    int32_t start_offset,
                     uint32_t block_size)
 {
+   /* We don't want to ever see signed overflow */
+   assert(start_offset < INT32_MAX - (int32_t)BLOCK_POOL_MEMFD_SIZE);
+
    VkResult result = anv_block_pool_init(&pool->block_pool, device,
-                                         start_address,
+                                         base_address + start_offset,
                                          block_size * 16);
    if (result != VK_SUCCESS)
       return result;
+
+   pool->start_offset = start_offset;
 
    result = anv_state_table_init(&pool->table, device, 64);
    if (result != VK_SUCCESS) {
@@ -942,7 +948,7 @@ anv_state_pool_return_blocks(struct anv_state_pool *pool,
       struct anv_state *state_i = anv_state_table_get(&pool->table,
                                                       st_idx + i);
       state_i->alloc_size = block_size;
-      state_i->offset = chunk_offset + block_size * i;
+      state_i->offset = pool->start_offset + chunk_offset + block_size * i;
       state_i->map = anv_block_pool_map(&pool->block_pool,
                                         state_i->offset,
                                         state_i->alloc_size);
@@ -1084,7 +1090,7 @@ anv_state_pool_alloc_no_vg(struct anv_state_pool *pool,
    assert(result == VK_SUCCESS);
 
    state = anv_state_table_get(&pool->table, idx);
-   state->offset = offset;
+   state->offset = pool->start_offset + offset;
    state->alloc_size = alloc_size;
    state->map = anv_block_pool_map(&pool->block_pool, offset, alloc_size);
 
@@ -1128,7 +1134,7 @@ anv_state_pool_alloc_back(struct anv_state_pool *pool)
    assert(result == VK_SUCCESS);
 
    state = anv_state_table_get(&pool->table, idx);
-   state->offset = offset;
+   state->offset = pool->start_offset + offset;
    state->alloc_size = alloc_size;
    state->map = anv_block_pool_map(&pool->block_pool, offset, alloc_size);
 
@@ -1260,6 +1266,46 @@ anv_state_stream_alloc(struct anv_state_stream *stream,
    }
 
    return state;
+}
+
+void
+anv_state_reserved_pool_init(struct anv_state_reserved_pool *pool,
+                             struct anv_state_pool *parent,
+                             uint32_t count, uint32_t size, uint32_t alignment)
+{
+   pool->pool = parent;
+   pool->reserved_blocks = ANV_FREE_LIST_EMPTY;
+   pool->count = count;
+
+   for (unsigned i = 0; i < count; i++) {
+      struct anv_state state = anv_state_pool_alloc(pool->pool, size, alignment);
+      anv_free_list_push(&pool->reserved_blocks, &pool->pool->table, state.idx, 1);
+   }
+}
+
+void
+anv_state_reserved_pool_finish(struct anv_state_reserved_pool *pool)
+{
+   struct anv_state *state;
+
+   while ((state = anv_free_list_pop(&pool->reserved_blocks, &pool->pool->table))) {
+      anv_state_pool_free(pool->pool, *state);
+      pool->count--;
+   }
+   assert(pool->count == 0);
+}
+
+struct anv_state
+anv_state_reserved_pool_alloc(struct anv_state_reserved_pool *pool)
+{
+   return *anv_free_list_pop(&pool->reserved_blocks, &pool->pool->table);
+}
+
+void
+anv_state_reserved_pool_free(struct anv_state_reserved_pool *pool,
+                             struct anv_state state)
+{
+   anv_free_list_push(&pool->reserved_blocks, &pool->pool->table, state.idx, 1);
 }
 
 void

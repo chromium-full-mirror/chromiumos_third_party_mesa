@@ -125,6 +125,12 @@ struct brw_compiler {
     * back-end compiler.
     */
    bool compact_params;
+
+   /**
+    * Whether or not the driver wants variable group size to be lowered by the
+    * back-end compiler.
+    */
+   bool lower_variable_group_size;
 };
 
 /**
@@ -917,12 +923,10 @@ struct brw_cs_prog_data {
    struct brw_stage_prog_data base;
 
    unsigned local_size[3];
-   unsigned max_variable_local_size;
    unsigned simd_size;
    unsigned slm_size;
    bool uses_barrier;
    bool uses_num_work_groups;
-   bool uses_variable_group_size;
 
    struct {
       struct brw_push_const_block cross_thread;

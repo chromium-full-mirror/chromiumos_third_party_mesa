@@ -377,7 +377,7 @@ anv_physical_device_try_create(struct anv_instance *instance,
       goto fail_fd;
    }
 
-   device->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
+   vk_object_base_init(NULL, &device->base, VK_OBJECT_TYPE_PHYSICAL_DEVICE);
    device->instance = instance;
 
    assert(strlen(path) < ARRAY_SIZE(device->path));
@@ -595,6 +595,7 @@ anv_physical_device_destroy(struct anv_physical_device *device)
    close(device->local_fd);
    if (device->master_fd >= 0)
       close(device->master_fd);
+   vk_object_base_finish(&device->base);
    vk_free(&device->instance->alloc, device);
 }
 
@@ -676,7 +677,7 @@ VkResult anv_CreateInstance(
    if (!instance)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   instance->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
+   vk_object_base_init(NULL, &instance->base, VK_OBJECT_TYPE_INSTANCE);
 
    if (pAllocator)
       instance->alloc = *pAllocator;
@@ -796,6 +797,7 @@ void anv_DestroyInstance(
    driDestroyOptionCache(&instance->dri_options);
    driDestroyOptionInfo(&instance->available_dri_options);
 
+   vk_object_base_finish(&instance->base);
    vk_free(&instance->alloc, instance);
 }
 
@@ -1121,6 +1123,14 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT: {
+         VkPhysicalDeviceCustomBorderColorFeaturesEXT *features =
+            (VkPhysicalDeviceCustomBorderColorFeaturesEXT *)ext;
+         features->customBorderColors = pdevice->info.gen >= 8;
+         features->customBorderColorWithoutFormat = pdevice->info.gen >= 8;
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT: {
          VkPhysicalDeviceDepthClipEnableFeaturesEXT *features =
             (VkPhysicalDeviceDepthClipEnableFeaturesEXT *)ext;
@@ -1232,6 +1242,12 @@ void anv_GetPhysicalDeviceFeatures2(
          VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR *features =
             (VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR *)ext;
          features->pipelineExecutableInfo = true;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES_EXT: {
+         VkPhysicalDevicePrivateDataFeaturesEXT *features = (void *)ext;
+         features->privateData = true;
          break;
       }
 
@@ -1393,6 +1409,8 @@ void anv_GetPhysicalDeviceFeatures2(
 #define MAX_PER_STAGE_DESCRIPTOR_INPUT_ATTACHMENTS 64
 #define MAX_DESCRIPTOR_SET_INPUT_ATTACHMENTS       256
 
+#define MAX_CUSTOM_BORDER_COLORS                   4096
+
 void anv_GetPhysicalDeviceProperties(
     VkPhysicalDevice                            physicalDevice,
     VkPhysicalDeviceProperties*                 pProperties)
@@ -1503,8 +1521,7 @@ void anv_GetPhysicalDeviceProperties(
        * case of R32G32B32A32 which is 16 bytes.
        */
       .minTexelBufferOffsetAlignment            = 16,
-      /* We need 16 for UBO block reads to work and 32 for push UBOs */
-      .minUniformBufferOffsetAlignment          = 32,
+      .minUniformBufferOffsetAlignment          = ANV_UBO_ALIGNMENT,
       .minStorageBufferOffsetAlignment          = 4,
       .minTexelOffset                           = -8,
       .maxTexelOffset                           = 7,
@@ -1749,6 +1766,13 @@ void anv_GetPhysicalDeviceProperties2(
 
    vk_foreach_struct(ext, pProperties->pNext) {
       switch (ext->sType) {
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT: {
+         VkPhysicalDeviceCustomBorderColorPropertiesEXT *properties =
+            (VkPhysicalDeviceCustomBorderColorPropertiesEXT *)ext;
+         properties->maxCustomBorderColorSamplers = MAX_CUSTOM_BORDER_COLORS;
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES_KHR: {
          VkPhysicalDeviceDepthStencilResolvePropertiesKHR *properties =
             (VkPhysicalDeviceDepthStencilResolvePropertiesKHR *)ext;
@@ -1915,7 +1939,7 @@ void anv_GetPhysicalDeviceProperties2(
          properties->robustStorageBufferAccessSizeAlignment =
             ANV_SSBO_BOUNDS_CHECK_ALIGNMENT;
          properties->robustUniformBufferAccessSizeAlignment =
-            ANV_UBO_BOUNDS_CHECK_ALIGNMENT;
+            ANV_UBO_ALIGNMENT;
          break;
       }
 
@@ -2352,34 +2376,6 @@ anv_state_pool_emit_data(struct anv_state_pool *pool, size_t size, size_t align,
    return state;
 }
 
-/* Haswell border color is a bit of a disaster.  Float and unorm formats use a
- * straightforward 32-bit float color in the first 64 bytes.  Instead of using
- * a nice float/integer union like Gen8+, Haswell specifies the integer border
- * color as a separate entry /after/ the float color.  The layout of this entry
- * also depends on the format's bpp (with extra hacks for RG32), and overlaps.
- *
- * Since we don't know the format/bpp, we can't make any of the border colors
- * containing '1' work for all formats, as it would be in the wrong place for
- * some of them.  We opt to make 32-bit integers work as this seems like the
- * most common option.  Fortunately, transparent black works regardless, as
- * all zeroes is the same in every bit-size.
- */
-struct hsw_border_color {
-   float float32[4];
-   uint32_t _pad0[12];
-   uint32_t uint32[4];
-   uint32_t _pad1[108];
-};
-
-struct gen8_border_color {
-   union {
-      float float32[4];
-      uint32_t uint32[4];
-   };
-   /* Pad out to 64 bytes */
-   uint32_t _pad[12];
-};
-
 static void
 anv_device_init_border_colors(struct anv_device *device)
 {
@@ -2746,6 +2742,9 @@ VkResult anv_CreateDevice(
    if (!device)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
+   vk_device_init(&device->vk, pCreateInfo,
+                  &physical_device->instance->alloc, pAllocator);
+
    if (INTEL_DEBUG & DEBUG_BATCH) {
       const unsigned decode_flags =
          GEN_BATCH_DECODE_FULL |
@@ -2759,15 +2758,9 @@ VkResult anv_CreateDevice(
                                 decode_get_bo, NULL, device);
    }
 
-   device->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
    device->physical = physical_device;
    device->no_hw = physical_device->no_hw;
    device->_lost = false;
-
-   if (pAllocator)
-      device->alloc = *pAllocator;
-   else
-      device->alloc = physical_device->instance->alloc;
 
    /* XXX(chadv): Can we dup() physicalDevice->fd here? */
    device->fd = open(physical_device->path, O_RDWR | O_CLOEXEC);
@@ -2869,23 +2862,40 @@ VkResult anv_CreateDevice(
    anv_bo_pool_init(&device->batch_bo_pool, device);
 
    result = anv_state_pool_init(&device->dynamic_state_pool, device,
-                                DYNAMIC_STATE_POOL_MIN_ADDRESS, 16384);
+                                DYNAMIC_STATE_POOL_MIN_ADDRESS, 0, 16384);
    if (result != VK_SUCCESS)
       goto fail_batch_bo_pool;
 
+   if (device->info.gen >= 8) {
+      /* The border color pointer is limited to 24 bits, so we need to make
+       * sure that any such color used at any point in the program doesn't
+       * exceed that limit.
+       * We achieve that by reserving all the custom border colors we support
+       * right off the bat, so they are close to the base address.
+       */
+      anv_state_reserved_pool_init(&device->custom_border_colors,
+                                   &device->dynamic_state_pool,
+                                   sizeof(struct gen8_border_color),
+                                   MAX_CUSTOM_BORDER_COLORS, 64);
+   }
+
    result = anv_state_pool_init(&device->instruction_state_pool, device,
-                                INSTRUCTION_STATE_POOL_MIN_ADDRESS, 16384);
+                                INSTRUCTION_STATE_POOL_MIN_ADDRESS, 0, 16384);
    if (result != VK_SUCCESS)
       goto fail_dynamic_state_pool;
 
    result = anv_state_pool_init(&device->surface_state_pool, device,
-                                SURFACE_STATE_POOL_MIN_ADDRESS, 4096);
+                                SURFACE_STATE_POOL_MIN_ADDRESS, 0, 4096);
    if (result != VK_SUCCESS)
       goto fail_instruction_state_pool;
 
    if (physical_device->use_softpin) {
+      int64_t bt_pool_offset = (int64_t)BINDING_TABLE_POOL_MIN_ADDRESS -
+                               (int64_t)SURFACE_STATE_POOL_MIN_ADDRESS;
+      assert(INT32_MIN < bt_pool_offset && bt_pool_offset < 0);
       result = anv_state_pool_init(&device->binding_table_pool, device,
-                                   BINDING_TABLE_POOL_MIN_ADDRESS, 4096);
+                                   SURFACE_STATE_POOL_MIN_ADDRESS,
+                                   bt_pool_offset, 4096);
       if (result != VK_SUCCESS)
          goto fail_surface_state_pool;
    }
@@ -2989,6 +2999,8 @@ VkResult anv_CreateDevice(
  fail_instruction_state_pool:
    anv_state_pool_finish(&device->instruction_state_pool);
  fail_dynamic_state_pool:
+   if (device->info.gen >= 8)
+      anv_state_reserved_pool_finish(&device->custom_border_colors);
    anv_state_pool_finish(&device->dynamic_state_pool);
  fail_batch_bo_pool:
    anv_bo_pool_finish(&device->batch_bo_pool);
@@ -3010,7 +3022,7 @@ VkResult anv_CreateDevice(
  fail_fd:
    close(device->fd);
  fail_device:
-   vk_free(&device->alloc, device);
+   vk_free(&device->vk.alloc, device);
 
    return result;
 }
@@ -3034,6 +3046,8 @@ void anv_DestroyDevice(
    /* We only need to free these to prevent valgrind errors.  The backing
     * BO will go away in a couple of lines so we don't actually leak.
     */
+   if (device->info.gen >= 8)
+      anv_state_reserved_pool_finish(&device->custom_border_colors);
    anv_state_pool_free(&device->dynamic_state_pool, device->border_colors);
    anv_state_pool_free(&device->dynamic_state_pool, device->slice_hash);
 #endif
@@ -3076,7 +3090,8 @@ void anv_DestroyDevice(
 
    close(device->fd);
 
-   vk_free(&device->alloc, device);
+   vk_device_finish(&device->vk);
+   vk_free(&device->vk.alloc, device);
 }
 
 VkResult anv_EnumerateInstanceLayerProperties(
@@ -3356,12 +3371,13 @@ VkResult anv_AllocateMemory(
    if (mem_heap_used + aligned_alloc_size > mem_heap->size)
       return vk_error(VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
-   mem = vk_alloc2(&device->alloc, pAllocator, sizeof(*mem), 8,
+   mem = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*mem), 8,
                     VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (mem == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
    assert(pAllocateInfo->memoryTypeIndex < pdevice->memory.type_count);
+   vk_object_base_init(&device->vk, &mem->base, VK_OBJECT_TYPE_DEVICE_MEMORY);
    mem->type = mem_type;
    mem->map = NULL;
    mem->map_size = 0;
@@ -3585,7 +3601,7 @@ VkResult anv_AllocateMemory(
    return VK_SUCCESS;
 
  fail:
-   vk_free2(&device->alloc, pAllocator, mem);
+   vk_free2(&device->vk.alloc, pAllocator, mem);
 
    return result;
 }
@@ -3685,7 +3701,8 @@ void anv_FreeMemory(
       AHardwareBuffer_release(mem->ahw);
 #endif
 
-   vk_free2(&device->alloc, pAllocator, mem);
+   vk_object_base_finish(&mem->base);
+   vk_free2(&device->vk.alloc, pAllocator, mem);
 }
 
 VkResult anv_MapMemory(
@@ -3846,9 +3863,8 @@ void anv_GetBufferMemoryRequirements(
    /* Base alignment requirement of a cache line */
    uint32_t alignment = 16;
 
-   /* We need an alignment of 32 for pushing UBOs */
    if (buffer->usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)
-      alignment = MAX2(alignment, 32);
+      alignment = MAX2(alignment, ANV_UBO_ALIGNMENT);
 
    pMemoryRequirements->size = buffer->size;
    pMemoryRequirements->alignment = alignment;
@@ -4080,22 +4096,19 @@ VkResult anv_CreateEvent(
     VkEvent*                                    pEvent)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
-   struct anv_state state;
    struct anv_event *event;
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_EVENT_CREATE_INFO);
 
-   state = anv_state_pool_alloc(&device->dynamic_state_pool,
-                                sizeof(*event), 8);
-   event = state.map;
-   event->state = state;
-   event->semaphore = VK_EVENT_RESET;
+   event = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*event), 8,
+                     VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (event == NULL)
+      return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   if (!device->info.has_llc) {
-      /* Make sure the writes we're flushing have landed. */
-      __builtin_ia32_mfence();
-      __builtin_ia32_clflush(event);
-   }
+   vk_object_base_init(&device->vk, &event->base, VK_OBJECT_TYPE_EVENT);
+   event->state = anv_state_pool_alloc(&device->dynamic_state_pool,
+                                       sizeof(uint64_t), 8);
+   *(uint64_t *)event->state.map = VK_EVENT_RESET;
 
    *pEvent = anv_event_to_handle(event);
 
@@ -4114,6 +4127,9 @@ void anv_DestroyEvent(
       return;
 
    anv_state_pool_free(&device->dynamic_state_pool, event->state);
+
+   vk_object_base_finish(&event->base);
+   vk_free2(&device->vk.alloc, pAllocator, event);
 }
 
 VkResult anv_GetEventStatus(
@@ -4126,30 +4142,16 @@ VkResult anv_GetEventStatus(
    if (anv_device_is_lost(device))
       return VK_ERROR_DEVICE_LOST;
 
-   if (!device->info.has_llc) {
-      /* Invalidate read cache before reading event written by GPU. */
-      __builtin_ia32_clflush(event);
-      __builtin_ia32_mfence();
-
-   }
-
-   return event->semaphore;
+   return *(uint64_t *)event->state.map;
 }
 
 VkResult anv_SetEvent(
     VkDevice                                    _device,
     VkEvent                                     _event)
 {
-   ANV_FROM_HANDLE(anv_device, device, _device);
    ANV_FROM_HANDLE(anv_event, event, _event);
 
-   event->semaphore = VK_EVENT_SET;
-
-   if (!device->info.has_llc) {
-      /* Make sure the writes we're flushing have landed. */
-      __builtin_ia32_mfence();
-      __builtin_ia32_clflush(event);
-   }
+   *(uint64_t *)event->state.map = VK_EVENT_SET;
 
    return VK_SUCCESS;
 }
@@ -4158,16 +4160,9 @@ VkResult anv_ResetEvent(
     VkDevice                                    _device,
     VkEvent                                     _event)
 {
-   ANV_FROM_HANDLE(anv_device, device, _device);
    ANV_FROM_HANDLE(anv_event, event, _event);
 
-   event->semaphore = VK_EVENT_RESET;
-
-   if (!device->info.has_llc) {
-      /* Make sure the writes we're flushing have landed. */
-      __builtin_ia32_mfence();
-      __builtin_ia32_clflush(event);
-   }
+   *(uint64_t *)event->state.map = VK_EVENT_RESET;
 
    return VK_SUCCESS;
 }
@@ -4193,11 +4188,12 @@ VkResult anv_CreateBuffer(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
 
-   buffer = vk_alloc2(&device->alloc, pAllocator, sizeof(*buffer), 8,
+   buffer = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*buffer), 8,
                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (buffer == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
+   vk_object_base_init(&device->vk, &buffer->base, VK_OBJECT_TYPE_BUFFER);
    buffer->size = pCreateInfo->size;
    buffer->usage = pCreateInfo->usage;
    buffer->address = ANV_NULL_ADDRESS;
@@ -4218,7 +4214,8 @@ void anv_DestroyBuffer(
    if (!buffer)
       return;
 
-   vk_free2(&device->alloc, pAllocator, buffer);
+   vk_object_base_finish(&buffer->base);
+   vk_free2(&device->vk.alloc, pAllocator, buffer);
 }
 
 VkDeviceAddress anv_GetBufferDeviceAddress(
@@ -4283,7 +4280,13 @@ void anv_DestroySampler(
                           sampler->bindless_state);
    }
 
-   vk_free2(&device->alloc, pAllocator, sampler);
+   if (sampler->custom_border_color.map) {
+      anv_state_reserved_pool_free(&device->custom_border_colors,
+                                   sampler->custom_border_color);
+   }
+
+   vk_object_base_finish(&sampler->base);
+   vk_free2(&device->vk.alloc, pAllocator, sampler);
 }
 
 VkResult anv_CreateFramebuffer(
@@ -4306,7 +4309,7 @@ VkResult anv_CreateFramebuffer(
     */
    if (!(pCreateInfo->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT_KHR)) {
       size += sizeof(struct anv_image_view *) * pCreateInfo->attachmentCount;
-      framebuffer = vk_alloc2(&device->alloc, pAllocator, size, 8,
+      framebuffer = vk_alloc2(&device->vk.alloc, pAllocator, size, 8,
                               VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
       if (framebuffer == NULL)
          return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -4317,13 +4320,16 @@ VkResult anv_CreateFramebuffer(
       }
       framebuffer->attachment_count = pCreateInfo->attachmentCount;
    } else {
-      framebuffer = vk_alloc2(&device->alloc, pAllocator, size, 8,
+      framebuffer = vk_alloc2(&device->vk.alloc, pAllocator, size, 8,
                               VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
       if (framebuffer == NULL)
          return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
       framebuffer->attachment_count = 0;
    }
+
+   vk_object_base_init(&device->vk, &framebuffer->base,
+                       VK_OBJECT_TYPE_FRAMEBUFFER);
 
    framebuffer->width = pCreateInfo->width;
    framebuffer->height = pCreateInfo->height;
@@ -4345,7 +4351,8 @@ void anv_DestroyFramebuffer(
    if (!fb)
       return;
 
-   vk_free2(&device->alloc, pAllocator, fb);
+   vk_object_base_finish(&fb->base);
+   vk_free2(&device->vk.alloc, pAllocator, fb);
 }
 
 static const VkTimeDomainEXT anv_time_domains[] = {
@@ -4520,4 +4527,50 @@ vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t* pSupportedVersion)
     */
    *pSupportedVersion = MIN2(*pSupportedVersion, 4u);
    return VK_SUCCESS;
+}
+
+VkResult anv_CreatePrivateDataSlotEXT(
+    VkDevice                                    _device,
+    const VkPrivateDataSlotCreateInfoEXT*       pCreateInfo,
+    const VkAllocationCallbacks*                pAllocator,
+    VkPrivateDataSlotEXT*                       pPrivateDataSlot)
+{
+   ANV_FROM_HANDLE(anv_device, device, _device);
+   return vk_private_data_slot_create(&device->vk, pCreateInfo, pAllocator,
+                                      pPrivateDataSlot);
+}
+
+void anv_DestroyPrivateDataSlotEXT(
+    VkDevice                                    _device,
+    VkPrivateDataSlotEXT                        privateDataSlot,
+    const VkAllocationCallbacks*                pAllocator)
+{
+   ANV_FROM_HANDLE(anv_device, device, _device);
+   vk_private_data_slot_destroy(&device->vk, privateDataSlot, pAllocator);
+}
+
+VkResult anv_SetPrivateDataEXT(
+    VkDevice                                    _device,
+    VkObjectType                                objectType,
+    uint64_t                                    objectHandle,
+    VkPrivateDataSlotEXT                        privateDataSlot,
+    uint64_t                                    data)
+{
+   ANV_FROM_HANDLE(anv_device, device, _device);
+   return vk_object_base_set_private_data(&device->vk,
+                                          objectType, objectHandle,
+                                          privateDataSlot, data);
+}
+
+void anv_GetPrivateDataEXT(
+    VkDevice                                    _device,
+    VkObjectType                                objectType,
+    uint64_t                                    objectHandle,
+    VkPrivateDataSlotEXT                        privateDataSlot,
+    uint64_t*                                   pData)
+{
+   ANV_FROM_HANDLE(anv_device, device, _device);
+   vk_object_base_get_private_data(&device->vk,
+                                   objectType, objectHandle,
+                                   privateDataSlot, pData);
 }

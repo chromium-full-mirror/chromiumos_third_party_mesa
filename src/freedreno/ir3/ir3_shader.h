@@ -456,7 +456,8 @@ struct ir3_shader_variant {
 	 *   + From the vert shader, we only need the output regid
 	 */
 
-	bool frag_coord, frag_face, color0_mrt;
+	bool frag_face, color0_mrt;
+	uint8_t fragcoord_compmask;
 
 	/* NOTE: for input/outputs, slot is:
 	 *   gl_vert_attrib  - for VS inputs
@@ -606,6 +607,12 @@ struct ir3_shader {
 	struct ir3_compiler *compiler;
 
 	struct ir3_ubo_analysis_state ubo_state;
+
+	/* Number of UBOs loaded by LDC, as opposed to LDG through pointers in
+	 * ubo_state.
+	 */
+	unsigned num_ubos;
+
 	struct ir3_const_state const_state;
 
 	struct nir_shader *nir;

@@ -55,12 +55,14 @@ VkResult anv_CreateShaderModule(
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
    assert(pCreateInfo->flags == 0);
 
-   module = vk_alloc2(&device->alloc, pAllocator,
+   module = vk_alloc2(&device->vk.alloc, pAllocator,
                        sizeof(*module) + pCreateInfo->codeSize, 8,
                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (module == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
+   vk_object_base_init(&device->vk, &module->base,
+                       VK_OBJECT_TYPE_SHADER_MODULE);
    module->size = pCreateInfo->codeSize;
    memcpy(module->data, pCreateInfo->pCode, module->size);
 
@@ -82,7 +84,8 @@ void anv_DestroyShaderModule(
    if (!module)
       return;
 
-   vk_free2(&device->alloc, pAllocator, module);
+   vk_object_base_finish(&module->base);
+   vk_free2(&device->vk.alloc, pAllocator, module);
 }
 
 #define SPIR_V_MAGIC_NUMBER 0x07230203
@@ -307,7 +310,7 @@ void anv_DestroyPipeline(
       return;
 
    anv_reloc_list_finish(&pipeline->batch_relocs,
-                         pAllocator ? pAllocator : &device->alloc);
+                         pAllocator ? pAllocator : &device->vk.alloc);
 
    ralloc_free(pipeline->mem_ctx);
 
@@ -340,7 +343,8 @@ void anv_DestroyPipeline(
       unreachable("invalid pipeline type");
    }
 
-   vk_free2(&device->alloc, pAllocator, pipeline);
+   vk_object_base_finish(&pipeline->base);
+   vk_free2(&device->vk.alloc, pAllocator, pipeline);
 }
 
 static const uint32_t vk_to_gen_primitive_type[] = {
@@ -1660,6 +1664,7 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
                  nir_var_mem_shared, shared_type_info);
       NIR_PASS_V(stage.nir, nir_lower_explicit_io,
                  nir_var_mem_shared, nir_address_format_32bit_offset);
+      NIR_PASS_V(stage.nir, brw_nir_lower_cs_intrinsics);
 
       stage.num_stats = 1;
       stage.code = brw_compile_cs(compiler, pipeline->base.device, mem_ctx,
@@ -1978,8 +1983,10 @@ anv_pipeline_init(struct anv_graphics_pipeline *pipeline,
    anv_pipeline_validate_create_info(pCreateInfo);
 
    if (alloc == NULL)
-      alloc = &device->alloc;
+      alloc = &device->vk.alloc;
 
+   vk_object_base_init(&device->vk, &pipeline->base.base,
+                       VK_OBJECT_TYPE_PIPELINE);
    pipeline->base.device = device;
    pipeline->base.type = ANV_PIPELINE_GRAPHICS;
 

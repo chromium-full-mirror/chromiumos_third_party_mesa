@@ -740,6 +740,12 @@ typedef struct nir_ssa_def {
 
    /* The bit-size of each channel; must be one of 8, 16, 32, or 64 */
    uint8_t bit_size;
+
+   /**
+    * True if this SSA value may have different values in different SIMD
+    * invocations of the shader.  This is set by nir_divergence_analysis.
+    */
+   bool divergent;
 } nir_ssa_def;
 
 struct nir_src;
@@ -880,6 +886,13 @@ nir_src_is_const(nir_src src)
           src.ssa->parent_instr->type == nir_instr_type_load_const;
 }
 
+static inline bool
+nir_src_is_divergent(nir_src src)
+{
+   assert(src.is_ssa);
+   return src.ssa->divergent;
+}
+
 static inline unsigned
 nir_dest_bit_size(nir_dest dest)
 {
@@ -890,6 +903,13 @@ static inline unsigned
 nir_dest_num_components(nir_dest dest)
 {
    return dest.is_ssa ? dest.ssa.num_components : dest.reg.reg->num_components;
+}
+
+static inline bool
+nir_dest_is_divergent(nir_dest dest)
+{
+   assert(dest.is_ssa);
+   return dest.ssa.divergent;
 }
 
 /* Are all components the same, ie. .xxxx */
@@ -1743,6 +1763,33 @@ nir_intrinsic_dest_components(nir_intrinsic_instr *intr)
       return intr->num_components;
 }
 
+/**
+ * Helper to copy const_index[] from src to dst, without assuming they
+ * match in order.
+ */
+static inline void
+nir_intrinsic_copy_const_indices(nir_intrinsic_instr *dst, nir_intrinsic_instr *src)
+{
+   if (src->intrinsic == dst->intrinsic) {
+      memcpy(dst->const_index, src->const_index, sizeof(dst->const_index));
+      return;
+   }
+
+   const nir_intrinsic_info *src_info = &nir_intrinsic_infos[src->intrinsic];
+   const nir_intrinsic_info *dst_info = &nir_intrinsic_infos[dst->intrinsic];
+
+   for (unsigned i = 0; i < NIR_INTRINSIC_NUM_INDEX_FLAGS; i++) {
+      if (src_info->index_map[i] == 0)
+         continue;
+
+      /* require that dst instruction also uses the same const_index[]: */
+      assert(dst_info->index_map[i] > 0);
+
+      dst->const_index[dst_info->index_map[i] - 1] =
+            src->const_index[src_info->index_map[i] - 1];
+   }
+}
+
 #define INTRINSIC_IDX_ACCESSORS(name, flag, type)                             \
 static inline type                                                            \
 nir_intrinsic_##name(const nir_intrinsic_instr *instr)                        \
@@ -2569,10 +2616,61 @@ typedef struct {
  */
 typedef enum {
    nir_metadata_none = 0x0,
+
+   /** Indicates that nir_block::index values are valid.
+    *
+    * The start block has index 0 and they increase through a natural walk of
+    * the CFG.  nir_function_impl::num_blocks is the number of blocks and
+    * every block index is in the range [0, nir_function_impl::num_blocks].
+    *
+    * A pass can preserve this metadata type if it doesn't touch the CFG.
+    */
    nir_metadata_block_index = 0x1,
+
+   /** Indicates that block dominance information is valid
+    *
+    * This includes:
+    *
+    *   - nir_block::num_dom_children
+    *   - nir_block::dom_children
+    *   - nir_block::dom_frontier
+    *   - nir_block::dom_pre_index
+    *   - nir_block::dom_post_index
+    *
+    * A pass can preserve this metadata type if it doesn't touch the CFG.
+    */
    nir_metadata_dominance = 0x2,
+
+   /** Indicates that SSA def data-flow liveness information is valid
+    *
+    * This includes:
+    *
+    *   - nir_ssa_def::live_index
+    *   - nir_block::live_in
+    *   - nir_block::live_out
+    *
+    * A pass can preserve this metadata type if it never adds or removes any
+    * SSA defs (most passes shouldn't preserve this metadata type).
+    */
    nir_metadata_live_ssa_defs = 0x4,
+
+   /** A dummy metadata value to track when a pass forgot to call
+    * nir_metadata_preserve.
+    *
+    * A pass should always clear this value even if it doesn't make any
+    * progress to indicate that it thought about preserving metadata.
+    */
    nir_metadata_not_properly_reset = 0x8,
+
+   /** Indicates that loop analysis information is valid.
+    *
+    * This includes everything pointed to by nir_loop::info.
+    *
+    * A pass can preserve this metadata type if it is guaranteed to not affect
+    * any loop metadata.  However, since loop metadata includes things like
+    * loop counts which depend on arithmetic in the loop, this is very hard to
+    * determine.  Most passes shouldn't preserve this metadata type.
+    */
    nir_metadata_loop_analysis = 0x10,
 } nir_metadata;
 
@@ -3018,6 +3116,9 @@ typedef struct nir_shader_compiler_options {
     * 3-source (e.g., ffma and flrp) instructions.
     */
    bool intel_vec4;
+
+   /** Lower nir_op_ibfe and nir_op_ubfe that have two constant sources. */
+   bool lower_bfe_with_two_constants;
 
    /** Whether 8-bit ALU is supported. */
    bool support_8bit_alu;
@@ -4237,6 +4338,8 @@ bool nir_lower_wpos_ytransform(nir_shader *shader,
                                const nir_lower_wpos_ytransform_options *options);
 bool nir_lower_wpos_center(nir_shader *shader, const bool for_sample_shading);
 
+bool nir_lower_wrmasks(nir_shader *shader, nir_instr_filter_cb cb, const void *data);
+
 bool nir_lower_fb_read(nir_shader *shader);
 
 typedef struct nir_lower_drawpixels_options {
@@ -4318,7 +4421,7 @@ bool nir_repair_ssa(nir_shader *shader);
 
 void nir_convert_loop_to_lcssa(nir_loop *loop);
 bool nir_convert_to_lcssa(nir_shader *shader, bool skip_invariants, bool skip_bool_invariants);
-bool* nir_divergence_analysis(nir_shader *shader, nir_divergence_options options);
+void nir_divergence_analysis(nir_shader *shader, nir_divergence_options options);
 
 /* If phi_webs_only is true, only convert SSA values involved in phi nodes to
  * registers.  If false, convert all values (even those not involved in a phi
@@ -4426,7 +4529,8 @@ typedef bool (*nir_should_vectorize_mem_func)(unsigned align, unsigned bit_size,
                                               nir_intrinsic_instr *low, nir_intrinsic_instr *high);
 
 bool nir_opt_load_store_vectorize(nir_shader *shader, nir_variable_mode modes,
-                                  nir_should_vectorize_mem_func callback);
+                                  nir_should_vectorize_mem_func callback,
+                                  nir_variable_mode robust_modes);
 
 void nir_schedule(nir_shader *shader, int threshold);
 

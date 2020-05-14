@@ -64,6 +64,7 @@ struct ra_ctx {
    std::unordered_map<unsigned, phi_info> phi_map;
    std::unordered_map<unsigned, unsigned> affinities;
    std::unordered_map<unsigned, Instruction*> vectors;
+   std::unordered_map<unsigned, Instruction*> split_vectors;
    aco_ptr<Instruction> pseudo_dummy;
    unsigned max_used_sgpr = 0;
    unsigned max_used_vgpr = 0;
@@ -919,6 +920,21 @@ PhysReg get_reg(ra_ctx& ctx,
                 std::vector<std::pair<Operand, Definition>>& parallelcopies,
                 aco_ptr<Instruction>& instr)
 {
+   auto split_vec = ctx.split_vectors.find(temp.id());
+   if (split_vec != ctx.split_vectors.end()) {
+      unsigned offset = 0;
+      for (Definition def : split_vec->second->definitions) {
+         auto affinity_it = ctx.affinities.find(def.tempId());
+         if (affinity_it != ctx.affinities.end() && ctx.assignments[affinity_it->second].assigned) {
+            PhysReg reg = ctx.assignments[affinity_it->second].reg;
+            reg.reg_b -= offset;
+            if (get_reg_specified(ctx, reg_file, temp.regClass(), parallelcopies, instr, reg))
+               return reg;
+         }
+         offset += def.bytes();
+      }
+   }
+
    if (ctx.affinities.find(temp.id()) != ctx.affinities.end() &&
        ctx.assignments[ctx.affinities[temp.id()]].assigned) {
       PhysReg reg = ctx.assignments[ctx.affinities[temp.id()]].reg;
@@ -1410,9 +1426,10 @@ void register_allocation(Program *program, std::vector<TempSet>& live_out_per_bl
       for (rit = block.instructions.rbegin(); rit != block.instructions.rend(); ++rit) {
          aco_ptr<Instruction>& instr = *rit;
          if (is_phi(instr)) {
-            live.erase(instr->definitions[0].getTemp());
-            if (instr->definitions[0].isKill() || instr->definitions[0].isFixed())
+            if (instr->definitions[0].isKill() || instr->definitions[0].isFixed()) {
+               live.erase(instr->definitions[0].getTemp());
                continue;
+            }
             /* collect information about affinity-related temporaries */
             std::vector<Temp> affinity_related;
             /* affinity_related[0] is the last seen affinity-related temp */
@@ -1425,21 +1442,23 @@ void register_allocation(Program *program, std::vector<TempSet>& live_out_per_bl
                }
             }
             phi_ressources.emplace_back(std::move(affinity_related));
-            continue;
-         }
-
-         /* add vector affinities */
-         if (instr->opcode == aco_opcode::p_create_vector) {
-            for (const Operand& op : instr->operands) {
-               if (op.isTemp() && op.isFirstKill() && op.getTemp().type() == instr->definitions[0].getTemp().type())
-                  ctx.vectors[op.tempId()] = instr.get();
+         } else {
+            /* add vector affinities */
+            if (instr->opcode == aco_opcode::p_create_vector) {
+               for (const Operand& op : instr->operands) {
+                  if (op.isTemp() && op.isFirstKill() && op.getTemp().type() == instr->definitions[0].getTemp().type())
+                     ctx.vectors[op.tempId()] = instr.get();
+               }
             }
-         }
 
-         /* add operands to live variables */
-         for (const Operand& op : instr->operands) {
-            if (op.isTemp())
-               live.emplace(op.getTemp());
+            if (instr->opcode == aco_opcode::p_split_vector && instr->operands[0].isFirstKillBeforeDef())
+               ctx.split_vectors[instr->operands[0].tempId()] = instr.get();
+
+            /* add operands to live variables */
+            for (const Operand& op : instr->operands) {
+               if (op.isTemp())
+                  live.emplace(op.getTemp());
+            }
          }
 
          /* erase definitions from live */
@@ -1738,8 +1757,14 @@ void register_allocation(Program *program, std::vector<TempSet>& live_out_per_bl
              instr->operands[1].isTemp() &&
              instr->operands[1].getTemp().type() == RegType::vgpr &&
              !instr->usesModifiers()) {
-            instr->format = Format::VOP2;
-            instr->opcode = aco_opcode::v_mac_f32;
+            unsigned def_id = instr->definitions[0].tempId();
+            auto it = ctx.affinities.find(def_id);
+            if (it == ctx.affinities.end() || !ctx.assignments[it->second].assigned ||
+                instr->operands[2].physReg() == ctx.assignments[it->second].reg ||
+                register_file.test(ctx.assignments[it->second].reg, instr->operands[2].bytes())) {
+               instr->format = Format::VOP2;
+               instr->opcode = aco_opcode::v_mac_f32;
+            }
          }
 
          /* handle definitions which must have the same register as an operand */
@@ -1837,13 +1862,10 @@ void register_allocation(Program *program, std::vector<TempSet>& live_out_per_bl
                   reg.reg_b += instr->definitions[j].bytes();
                if (get_reg_specified(ctx, register_file, definition.regClass(), parallelcopy, instr, reg))
                   definition.setFixed(reg);
-            } else if (instr->opcode == aco_opcode::p_wqm) {
-               PhysReg reg;
-               if (instr->operands[0].isKillBeforeDef() && instr->operands[0].getTemp().type() == definition.getTemp().type()) {
-                  reg = instr->operands[0].physReg();
+            } else if (instr->opcode == aco_opcode::p_wqm || instr->opcode == aco_opcode::p_parallelcopy) {
+               PhysReg reg = instr->operands[i].physReg();
+               if (get_reg_specified(ctx, register_file, definition.regClass(), parallelcopy, instr, reg))
                   definition.setFixed(reg);
-                  assert(register_file[reg.reg()] == 0);
-               }
             } else if (instr->opcode == aco_opcode::p_extract_vector) {
                PhysReg reg;
                if (instr->operands[0].isKillBeforeDef() &&

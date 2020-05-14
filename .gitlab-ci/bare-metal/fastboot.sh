@@ -50,11 +50,29 @@ cp -Rp $BM_ROOTFS rootfs
 
 # Set up the init script that brings up the system.
 cp $BM/init.sh rootfs/init
-sed -i "s|DEQP_VER_REPLACE|$DEQP_VER|g" rootfs/init
-sed -i "s|DEQP_PARALLEL_REPLACE|$DEQP_PARALLEL|g" rootfs/init
-sed -i "s|DEQP_EXPECTED_RENDERER_REPLACE|$DEQP_EXPECTED_RENDERER|g" rootfs/init
-sed -i "s|CI_NODE_INDEX_REPLACE|$CI_NODE_INDEX|g" rootfs/init
-sed -i "s|CI_NODE_TOTAL_REPLACE|$CI_NODE_TOTAL|g" rootfs/init
+
+# Pass through relevant env vars from the gitlab job to the baremetal init script
+touch rootfs/set-job-env-vars.sh
+chmod +x rootfs/set-job-env-vars.sh
+for var in \
+    CI_COMMIT_BRANCH \
+    CI_COMMIT_TITLE \
+    CI_JOB_ID \
+    CI_JOB_URL \
+    CI_MERGE_REQUEST_SOURCE_BRANCH_NAME \
+    CI_MERGE_REQUEST_TITLE \
+    CI_NODE_INDEX \
+    CI_NODE_TOTAL \
+    CI_PIPELINE_ID \
+    CI_RUNNER_DESCRIPTION \
+    DEQP_EXPECTED_RENDERER \
+    DEQP_PARALLEL \
+    DEQP_VER \
+    FLAKES_CHANNEL \
+    ; do
+  val=`echo ${!var} | sed 's|"||g'`
+  echo "export $var=\"${val}\"" >> rootfs/set-job-env-vars.sh
+done
 
 # Add the Mesa drivers we built, and make a consistent symlink to them.
 mkdir -p rootfs/$CI_PROJECT_DIR

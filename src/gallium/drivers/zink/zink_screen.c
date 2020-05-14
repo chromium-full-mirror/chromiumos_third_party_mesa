@@ -37,7 +37,7 @@
 #include "util/u_screen.h"
 #include "util/u_string.h"
 
-#include "state_tracker/sw_winsys.h"
+#include "frontend/sw_winsys.h"
 
 static const struct debug_named_value
 debug_options[] = {
@@ -153,6 +153,9 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
       return 1;
+
+   case PIPE_CAP_CONDITIONAL_RENDER:
+     return screen->have_EXT_conditional_rendering;
 
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
@@ -704,6 +707,28 @@ zink_flush_frontbuffer(struct pipe_screen *pscreen,
       winsys->displaytarget_display(winsys, res->dt, winsys_drawable_handle, sub_box);
 }
 
+static bool
+load_device_extensions(struct zink_screen *screen)
+{
+#define GET_PROC_ADDR(x) do {                                               \
+      screen->vk_##x = (PFN_vk##x)vkGetDeviceProcAddr(screen->dev, "vk"#x); \
+      if (!screen->vk_##x)                                                  \
+         return false;                                                      \
+   } while (0)
+
+   if (screen->have_KHR_external_memory_fd)
+      GET_PROC_ADDR(GetMemoryFdKHR);
+
+   if (screen->have_EXT_conditional_rendering) {
+      GET_PROC_ADDR(CmdBeginConditionalRenderingEXT);
+      GET_PROC_ADDR(CmdEndConditionalRenderingEXT);
+   }
+
+#undef GET_PROC_ADDR
+
+   return true;
+}
+
 static struct pipe_screen *
 zink_internal_create_screen(struct sw_winsys *winsys, int fd)
 {
@@ -742,6 +767,9 @@ zink_internal_create_screen(struct sw_winsys *winsys, int fd)
             if (!strcmp(extensions[i].extensionName,
                         VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME))
                screen->have_KHR_external_memory_fd = true;
+            if (!strcmp(extensions[i].extensionName,
+                        VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME))
+               screen->have_EXT_conditional_rendering = true;
          }
          FREE(extensions);
       }
@@ -764,7 +792,7 @@ zink_internal_create_screen(struct sw_winsys *winsys, int fd)
    dci.queueCreateInfoCount = 1;
    dci.pQueueCreateInfos = &qci;
    dci.pEnabledFeatures = &screen->feats;
-   const char *extensions[3] = {
+   const char *extensions[4] = {
       VK_KHR_MAINTENANCE1_EXTENSION_NAME,
    };
    num_extensions = 1;
@@ -778,11 +806,18 @@ zink_internal_create_screen(struct sw_winsys *winsys, int fd)
       extensions[num_extensions++] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME;
       extensions[num_extensions++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
    }
+
+   if (screen->have_EXT_conditional_rendering)
+      extensions[num_extensions++] = VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME;
+
    assert(num_extensions <= ARRAY_SIZE(extensions));
 
    dci.ppEnabledExtensionNames = extensions;
    dci.enabledExtensionCount = num_extensions;
    if (vkCreateDevice(screen->pdev, &dci, NULL, &screen->dev) != VK_SUCCESS)
+      goto fail;
+
+   if (!load_device_extensions(screen))
       goto fail;
 
    screen->winsys = winsys;
