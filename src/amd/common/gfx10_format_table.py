@@ -21,7 +21,7 @@
 # USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 """
-Script that generates the mapping from Vulkan VK_FORMAT_xxx to gfx10
+Script that generates the mapping from Gallium PIPE_FORMAT_xxx to gfx10
 IMG_FORMAT_xxx enums.
 """
 
@@ -34,10 +34,11 @@ import re
 import sys
 
 AMD_REGISTERS = os.path.abspath(os.path.join(os.path.dirname(sys.argv[0]), "../registers"))
-sys.path.extend([AMD_REGISTERS])
+UTIL_FORMAT = os.path.abspath(os.path.join(os.path.dirname(sys.argv[0]), "../../util/format"))
+sys.path.extend([AMD_REGISTERS, UTIL_FORMAT])
 
 from regdb import Object, RegisterDatabase
-from vk_format_parse import *
+from u_format_parse import *
 
 # ----------------------------------------------------------------------------
 # Hard-coded mappings
@@ -46,31 +47,55 @@ def hardcoded_format(hw_enum):
     return Object(img_format=hw_enum, flags=[])
 
 HARDCODED = {
-    'VK_FORMAT_E5B9G9R9_UFLOAT_PACK32': hardcoded_format('5_9_9_9_FLOAT'),
-    'VK_FORMAT_B10G11R11_UFLOAT_PACK32': hardcoded_format('10_11_11_FLOAT'), # NOTE: full set of int/unorm/etc. exists
+    'PIPE_FORMAT_Z32_FLOAT_S8X24_UINT': hardcoded_format('X24_8_32_FLOAT'),
+    'PIPE_FORMAT_Z24_UNORM_S8_UINT': hardcoded_format('8_24_UNORM'),
+    'PIPE_FORMAT_S8_UINT_Z24_UNORM': hardcoded_format('24_8_UNORM'),
+    'PIPE_FORMAT_Z32_UNORM': None,
+    'PIPE_FORMAT_Z16_UNORM_S8_UINT': None,
 
-    # BC
-    'VK_FORMAT_BC1_RGB_UNORM_BLOCK': hardcoded_format('BC1_UNORM'),
-    'VK_FORMAT_BC1_RGBA_UNORM_BLOCK': hardcoded_format('BC1_UNORM'),
-    'VK_FORMAT_BC1_RGB_SRGB_BLOCK': hardcoded_format('BC1_SRGB'),
-    'VK_FORMAT_BC1_RGBA_SRGB_BLOCK': hardcoded_format('BC1_SRGB'),
-    'VK_FORMAT_BC2_UNORM_BLOCK': hardcoded_format('BC2_UNORM'),
-    'VK_FORMAT_BC2_SRGB_BLOCK': hardcoded_format('BC2_SRGB'),
-    'VK_FORMAT_BC3_UNORM_BLOCK': hardcoded_format('BC3_UNORM'),
-    'VK_FORMAT_BC3_SRGB_BLOCK': hardcoded_format('BC3_SRGB'),
-    'VK_FORMAT_BC4_UNORM_BLOCK': hardcoded_format('BC4_UNORM'),
-    'VK_FORMAT_BC4_SNORM_BLOCK': hardcoded_format('BC4_SNORM'),
-    'VK_FORMAT_BC5_UNORM_BLOCK': hardcoded_format('BC5_UNORM'),
-    'VK_FORMAT_BC5_SNORM_BLOCK': hardcoded_format('BC5_SNORM'),
-    'VK_FORMAT_BC6H_UFLOAT_BLOCK': hardcoded_format('BC6_UFLOAT'),
-    'VK_FORMAT_BC6H_SFLOAT_BLOCK': hardcoded_format('BC6_SFLOAT'),
-    'VK_FORMAT_BC7_UNORM_BLOCK': hardcoded_format('BC7_UNORM'),
-    'VK_FORMAT_BC7_SRGB_BLOCK': hardcoded_format('BC7_SRGB'),
+    'PIPE_FORMAT_R9G9B9E5_FLOAT': hardcoded_format('5_9_9_9_FLOAT'),
+    'PIPE_FORMAT_R11G11B10_FLOAT': hardcoded_format('10_11_11_FLOAT'), # NOTE: full set of int/unorm/etc. exists
 
-    # DS
-    'VK_FORMAT_D16_UNORM_S8_UINT': hardcoded_format('INVALID'),
-    'VK_FORMAT_D24_UNORM_S8_UINT': hardcoded_format('8_24_UNORM'),
-    'VK_FORMAT_D32_SFLOAT_S8_UINT': hardcoded_format('X24_8_32_FLOAT'),
+    'PIPE_FORMAT_R8G8_B8G8_UNORM': hardcoded_format('GB_GR_UNORM'),
+    'PIPE_FORMAT_G8R8_B8R8_UNORM': hardcoded_format('GB_GR_UNORM'),
+
+    'PIPE_FORMAT_R8G8_R8B8_UNORM': hardcoded_format('BG_RG_UNORM'),
+    'PIPE_FORMAT_G8R8_G8B8_UNORM': hardcoded_format('BG_RG_UNORM'),
+
+    # These mixed channel types are not supported natively
+    'PIPE_FORMAT_R8SG8SB8UX8U_NORM': None,
+    'PIPE_FORMAT_R10SG10SB10SA2U_NORM': None,
+    'PIPE_FORMAT_R5SG5SB6U_NORM': None,
+
+    # Only R8G8_SRGB is supported, not L8A8_SRGB
+    'PIPE_FORMAT_L8A8_SRGB': None,
+
+    # S3TC
+    'PIPE_FORMAT_DXT1_RGB': hardcoded_format('BC1_UNORM'),
+    'PIPE_FORMAT_DXT1_RGBA': hardcoded_format('BC1_UNORM'),
+    'PIPE_FORMAT_DXT1_SRGB': hardcoded_format('BC1_SRGB'),
+    'PIPE_FORMAT_DXT1_SRGBA': hardcoded_format('BC1_SRGB'),
+    'PIPE_FORMAT_DXT3_RGBA': hardcoded_format('BC2_UNORM'),
+    'PIPE_FORMAT_DXT3_SRGBA': hardcoded_format('BC2_SRGB'),
+    'PIPE_FORMAT_DXT5_RGBA': hardcoded_format('BC3_UNORM'),
+    'PIPE_FORMAT_DXT5_SRGBA': hardcoded_format('BC3_SRGB'),
+
+    # RGTC
+    'PIPE_FORMAT_RGTC1_UNORM': hardcoded_format('BC4_UNORM'),
+    'PIPE_FORMAT_RGTC1_SNORM': hardcoded_format('BC4_SNORM'),
+    'PIPE_FORMAT_RGTC2_UNORM': hardcoded_format('BC5_UNORM'),
+    'PIPE_FORMAT_RGTC2_SNORM': hardcoded_format('BC5_SNORM'),
+    'PIPE_FORMAT_LATC1_UNORM': hardcoded_format('BC4_UNORM'),
+    'PIPE_FORMAT_LATC1_SNORM': hardcoded_format('BC4_SNORM'),
+    'PIPE_FORMAT_LATC2_UNORM': hardcoded_format('BC5_UNORM'),
+    'PIPE_FORMAT_LATC2_SNORM': hardcoded_format('BC5_SNORM'),
+
+    # BPTC
+    'PIPE_FORMAT_BPTC_RGB_UFLOAT': hardcoded_format('BC6_UFLOAT'),
+    'PIPE_FORMAT_BPTC_RGB_FLOAT': hardcoded_format('BC6_SFLOAT'),
+
+    'PIPE_FORMAT_BPTC_RGBA_UNORM': hardcoded_format('BC7_UNORM'),
+    'PIPE_FORMAT_BPTC_SRGBA': hardcoded_format('BC7_SRGB'),
 }
 
 
@@ -80,32 +105,22 @@ HARDCODED = {
 header_template = mako.template.Template("""\
 // DO NOT EDIT -- AUTOMATICALLY GENERATED
 
+#include "gfx10_format_table.h"
+#include "amdgfxregs.h"
+
 #define FMT(_img_format, ...) \
    { .img_format = V_008F0C_IMG_FORMAT_##_img_format, \
      ##__VA_ARGS__ }
 
-% for vk_format, args in formats:
-    % if args is not None:
-    static const struct gfx10_format gfx10_info_${vk_format} = FMT(${args});
-    % else:
-    /* ${vk_format} is not supported */
-    % endif
+const struct gfx10_format gfx10_format_table[PIPE_FORMAT_COUNT] = {
+% for pipe_format, args in formats:
+ % if args is not None:
+  [${pipe_format}] = FMT(${args}),
+ % else:
+/* ${pipe_format} is not supported */
+ % endif
 % endfor
-
-static const struct gfx10_format gfx10_unsupported_format = { 0 };
-
-static inline const struct gfx10_format* gfx10_format_description(VkFormat format)
-{
-    switch(format)
-    {
-    % for vk_format, args in formats:
-     % if args is not None:
-        case ${vk_format}: return &gfx10_info_${vk_format};
-     % endif
-    % endfor
-        default: return &gfx10_unsupported_format;
-    }
-}
+};
 """)
 
 class Gfx10Format(object):
@@ -130,8 +145,8 @@ class Gfx10Format(object):
 
 
 class Gfx10FormatMapping(object):
-    def __init__(self, vk_formats, gfx10_formats):
-        self.vk_formats = vk_formats
+    def __init__(self, pipe_formats, gfx10_formats):
+        self.pipe_formats = pipe_formats
         self.gfx10_formats = gfx10_formats
 
         self.plain_gfx10_formats = dict(
@@ -235,17 +250,17 @@ class Gfx10FormatMapping(object):
 
 
 if __name__ == '__main__':
-    vk_formats = parse(sys.argv[1])
+    pipe_formats = parse(sys.argv[1])
 
     with open(sys.argv[2], 'r') as filp:
         db = RegisterDatabase.from_json(json.load(filp))
 
     gfx10_formats = [Gfx10Format(entry) for entry in db.enum('IMG_FORMAT').entries]
 
-    mapping = Gfx10FormatMapping(vk_formats, gfx10_formats)
+    mapping = Gfx10FormatMapping(pipe_formats, gfx10_formats)
 
     formats = []
-    for fmt in vk_formats:
+    for fmt in pipe_formats:
         if fmt.name in HARDCODED:
             obj = HARDCODED[fmt.name]
         else:

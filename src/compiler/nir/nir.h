@@ -41,6 +41,8 @@
 #include "compiler/nir_types.h"
 #include "compiler/shader_enums.h"
 #include "compiler/shader_info.h"
+#define XXH_INLINE_ALL
+#include "util/xxhash.h"
 #include <stdio.h>
 
 #ifndef NDEBUG
@@ -987,7 +989,7 @@ typedef struct {
  * The values in this enum are carefully chosen so that the sized type is
  * just the unsized type OR the number of bits.
  */
-typedef enum {
+typedef enum PACKED {
    nir_type_invalid = 0, /* Not a valid type */
    nir_type_int =       2,
    nir_type_uint =      4,
@@ -1021,10 +1023,10 @@ nir_alu_type_get_type_size(nir_alu_type type)
    return type & NIR_ALU_TYPE_SIZE_MASK;
 }
 
-static inline unsigned
+static inline nir_alu_type
 nir_alu_type_get_base_type(nir_alu_type type)
 {
-   return type & NIR_ALU_TYPE_BASE_TYPE_MASK;
+   return (nir_alu_type)(type & NIR_ALU_TYPE_BASE_TYPE_MASK);
 }
 
 static inline nir_alu_type
@@ -1217,7 +1219,7 @@ typedef enum {
 typedef struct {
    const char *name;
 
-   unsigned num_inputs;
+   uint8_t num_inputs;
 
    /**
     * The number of components in the output
@@ -1236,7 +1238,7 @@ typedef struct {
     * though output_size is zero; in that case, the inputs with a zero
     * size act per-component, while the inputs with non-zero size don't.
     */
-   unsigned output_size;
+   uint8_t output_size;
 
    /**
     * The type of vector that the instruction outputs. Note that the
@@ -1248,7 +1250,7 @@ typedef struct {
    /**
     * The number of components in each input
     */
-   unsigned input_sizes[NIR_MAX_VEC_COMPONENTS];
+   uint8_t input_sizes[NIR_MAX_VEC_COMPONENTS];
 
    /**
     * The type of vector that each input takes. Note that negate and
@@ -1523,6 +1525,7 @@ typedef enum {
 } nir_memory_semantics;
 
 typedef enum {
+   NIR_SCOPE_NONE,
    NIR_SCOPE_INVOCATION,
    NIR_SCOPE_SUBGROUP,
    NIR_SCOPE_WORKGROUP,
@@ -1694,6 +1697,11 @@ typedef enum {
     */
    NIR_INTRINSIC_MEMORY_SCOPE,
 
+   /**
+    * Value of nir_scope.
+    */
+   NIR_INTRINSIC_EXECUTION_SCOPE,
+
    NIR_INTRINSIC_NUM_INDEX_FLAGS,
 
 } nir_intrinsic_index_flag;
@@ -1703,7 +1711,7 @@ typedef enum {
 typedef struct {
    const char *name;
 
-   unsigned num_srcs; /** < number of register/SSA inputs */
+   uint8_t num_srcs; /** < number of register/SSA inputs */
 
    /** number of components of each input register
     *
@@ -1712,7 +1720,7 @@ typedef struct {
     * intrinsic consumes however many components are provided and it is not
     * validated at all.
     */
-   int src_components[NIR_INTRINSIC_MAX_INPUTS];
+   int8_t src_components[NIR_INTRINSIC_MAX_INPUTS];
 
    bool has_dest;
 
@@ -1721,16 +1729,16 @@ typedef struct {
     * If this value is 0, the number of components is given by the
     * num_components field of nir_intrinsic_instr.
     */
-   unsigned dest_components;
+   uint8_t dest_components;
 
    /** bitfield of legal bit sizes */
-   unsigned dest_bit_sizes;
+   uint8_t dest_bit_sizes;
 
    /** the number of constant indices used by the intrinsic */
-   unsigned num_indices;
+   uint8_t num_indices;
 
    /** indicates the usage of intr->const_index[n] */
-   unsigned index_map[NIR_INTRINSIC_NUM_INDEX_FLAGS];
+   uint8_t index_map[NIR_INTRINSIC_NUM_INDEX_FLAGS];
 
    /** semantic flags for calls to this intrinsic */
    nir_intrinsic_semantic_flag flags;
@@ -1739,7 +1747,7 @@ typedef struct {
 extern const nir_intrinsic_info nir_intrinsic_infos[nir_num_intrinsics];
 
 static inline unsigned
-nir_intrinsic_src_components(nir_intrinsic_instr *intr, unsigned srcn)
+nir_intrinsic_src_components(const nir_intrinsic_instr *intr, unsigned srcn)
 {
    const nir_intrinsic_info *info = &nir_intrinsic_infos[intr->intrinsic];
    assert(srcn < info->num_srcs);
@@ -1833,6 +1841,7 @@ INTRINSIC_IDX_ACCESSORS(driver_location, DRIVER_LOCATION, unsigned)
 INTRINSIC_IDX_ACCESSORS(memory_semantics, MEMORY_SEMANTICS, nir_memory_semantics)
 INTRINSIC_IDX_ACCESSORS(memory_modes, MEMORY_MODES, nir_variable_mode)
 INTRINSIC_IDX_ACCESSORS(memory_scope, MEMORY_SCOPE, nir_scope)
+INTRINSIC_IDX_ACCESSORS(execution_scope, EXECUTION_SCOPE, nir_scope)
 
 static inline void
 nir_intrinsic_set_align(nir_intrinsic_instr *intrin,
@@ -2223,8 +2232,26 @@ typedef struct {
 } nir_load_const_instr;
 
 typedef enum {
+   /** Return from a function
+    *
+    * This instruction is a classic function return.  It jumps to
+    * nir_function_impl::end_block.  No return value is provided in this
+    * instruction.  Instead, the function is expected to write any return
+    * data to a deref passed in from the caller.
+    */
    nir_jump_return,
+
+   /** Break out of the inner-most loop
+    *
+    * This has the same semantics as C's "break" statement.
+    */
    nir_jump_break,
+
+   /** Jump back to the top of the inner-most loop
+    *
+    * This has the same semantics as C's "continue" statement assuming that a
+    * NIR loop is implemented as "while (1) { body }".
+    */
    nir_jump_continue,
 } nir_jump_type;
 
@@ -3067,6 +3094,11 @@ typedef struct nir_shader_compiler_options {
    bool lower_to_scalar;
 
    /**
+    * Whether nir_opt_vectorize should only create 16-bit 2D vectors.
+    */
+   bool vectorize_vec2_16bit;
+
+   /**
     * Should the linker unify inputs_read/outputs_written between adjacent
     * shader stages which are linked into a single program?
     */
@@ -3102,10 +3134,10 @@ typedef struct nir_shader_compiler_options {
     * to imul with masked inputs and iadd */
    bool has_umad24;
 
-   /* Whether to generate only scoped_memory_barrier intrinsics instead of the
-    * set of memory barrier intrinsics based on GLSL.
+   /* Whether to generate only scoped_barrier intrinsics instead of the set of
+    * memory and control barrier intrinsics based on GLSL.
     */
-   bool use_scoped_memory_barrier;
+   bool use_scoped_barrier;
 
    /**
     * Is this the Intel vec4 backend?
@@ -3536,6 +3568,9 @@ bool nir_foreach_ssa_def(nir_instr *instr, nir_foreach_ssa_def_cb cb,
                          void *state);
 bool nir_foreach_dest(nir_instr *instr, nir_foreach_dest_cb cb, void *state);
 bool nir_foreach_src(nir_instr *instr, nir_foreach_src_cb cb, void *state);
+bool nir_foreach_phi_src_leaving_block(nir_block *instr,
+                                       nir_foreach_src_cb cb,
+                                       void *state);
 
 nir_const_value *nir_src_as_const_value(nir_src src);
 
@@ -4055,7 +4090,8 @@ bool nir_lower_vars_to_ssa(nir_shader *shader);
 
 bool nir_remove_dead_derefs(nir_shader *shader);
 bool nir_remove_dead_derefs_impl(nir_function_impl *impl);
-bool nir_remove_dead_variables(nir_shader *shader, nir_variable_mode modes);
+bool nir_remove_dead_variables(nir_shader *shader, nir_variable_mode modes,
+                               bool (*can_remove_var)(nir_variable *var));
 bool nir_lower_variable_initializers(nir_shader *shader,
                                      nir_variable_mode modes);
 

@@ -226,7 +226,8 @@ radv_optimize_nir(struct nir_shader *shader, bool optimize_conservatively,
 		NIR_PASS(progress, shader, nir_opt_copy_prop_vars);
 		NIR_PASS(progress, shader, nir_opt_dead_write_vars);
 		NIR_PASS(progress, shader, nir_remove_dead_variables,
-			 nir_var_function_temp | nir_var_shader_in | nir_var_shader_out);
+			 nir_var_function_temp | nir_var_shader_in | nir_var_shader_out,
+			 NULL);
 
                 NIR_PASS_V(shader, nir_lower_alu_to_scalar, NULL, NULL);
                 NIR_PASS_V(shader, nir_lower_phis_to_scalar);
@@ -357,6 +358,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 			.caps = {
 				.amd_fragment_mask = true,
 				.amd_gcn_shader = true,
+				.amd_image_gather_bias_lod = true,
 				.amd_image_read_write_lod = true,
 				.amd_shader_ballot = device->physical_device->use_shader_ballot,
 				.amd_shader_explicit_vertex_parameter = true,
@@ -369,7 +371,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				.device_group = true,
 				.draw_parameters = true,
 				.float_controls = true,
-				.float16 = device->physical_device->rad_info.has_double_rate_fp16 && !device->physical_device->use_aco,
+				.float16 = device->physical_device->rad_info.has_packed_math_16bit && !device->physical_device->use_aco,
 				.float64 = true,
 				.geometry_streams = true,
 				.image_ms_array = true,
@@ -379,6 +381,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				.int16 = int8_int16_enable,
 				.int64 = true,
 				.int64_atomics = true,
+				.min_lod = true,
 				.multiview = true,
 				.physical_storage_buffer_address = true,
 				.post_depth_coverage = true,
@@ -456,7 +459,8 @@ radv_shader_compile_to_nir(struct radv_device *device,
 			NIR_PASS_V(nir, nir_lower_input_attachments, true);
 
 		NIR_PASS_V(nir, nir_remove_dead_variables,
-		           nir_var_shader_in | nir_var_shader_out | nir_var_system_value | nir_var_mem_shared);
+		           nir_var_shader_in | nir_var_shader_out | nir_var_system_value | nir_var_mem_shared,
+			   NULL);
 
 		NIR_PASS_V(nir, nir_propagate_invariant);
 
@@ -497,7 +501,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 	nir_split_var_copies(nir);
 
 	nir_lower_global_vars_to_local(nir);
-	nir_remove_dead_variables(nir, nir_var_function_temp);
+	nir_remove_dead_variables(nir, nir_var_function_temp, NULL);
 	bool gfx7minus = device->physical_device->rad_info.chip_class <= GFX7;
 	nir_lower_subgroups(nir, &(struct nir_lower_subgroups_options) {
 			.subgroup_size = subgroup_size,

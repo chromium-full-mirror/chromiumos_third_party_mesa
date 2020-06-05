@@ -236,6 +236,8 @@ fd_bo_mark_for_dump(struct fd_bo *bo)
 
 uint64_t fd_bo_get_iova(struct fd_bo *bo)
 {
+	/* ancient kernels did not support this */
+	assert(bo->iova != 0);
 	return bo->iova;
 }
 
@@ -316,6 +318,7 @@ int fd_bo_get_name(struct fd_bo *bo, uint32_t *name)
 
 uint32_t fd_bo_handle(struct fd_bo *bo)
 {
+	bo->bo_reuse = NO_CACHE;
 	return bo->handle;
 }
 

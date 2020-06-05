@@ -33,6 +33,7 @@
 #include "util/ralloc.h"
 #include "util/format/u_format.h"
 #include "util/u_pack_color.h"
+#include "util/rounding.h"
 #include "pan_util.h"
 #include "pandecode/decode.h"
 #include "panfrost-quirks.h"
@@ -145,7 +146,7 @@ panfrost_freeze_batch(struct panfrost_batch *batch)
         }
 }
 
-#ifndef NDEBUG
+#ifdef PAN_BATCH_DEBUG
 static bool panfrost_batch_is_frozen(struct panfrost_batch *batch)
 {
         struct panfrost_context *ctx = batch->ctx;
@@ -168,7 +169,9 @@ panfrost_free_batch(struct panfrost_batch *batch)
         if (!batch)
                 return;
 
+#ifdef PAN_BATCH_DEBUG
         assert(panfrost_batch_is_frozen(batch));
+#endif
 
         hash_table_foreach(batch->bos, entry)
                 panfrost_bo_unreference((struct panfrost_bo *)entry->key);
@@ -191,7 +194,7 @@ panfrost_free_batch(struct panfrost_batch *batch)
         ralloc_free(batch);
 }
 
-#ifndef NDEBUG
+#ifdef PAN_BATCH_DEBUG
 static bool
 panfrost_dep_graph_contains_batch(struct panfrost_batch *root,
                                   struct panfrost_batch *batch)
@@ -227,8 +230,10 @@ panfrost_batch_add_dep(struct panfrost_batch *batch,
                         return;
         }
 
+#ifdef PAN_BATCH_DEBUG
         /* Make sure the dependency graph is acyclic. */
         assert(!panfrost_dep_graph_contains_batch(newdep->batch, batch));
+#endif
 
         panfrost_batch_fence_reference(newdep);
         util_dynarray_append(&batch->dependencies,
@@ -389,7 +394,7 @@ panfrost_gc_fences(struct panfrost_context *ctx)
         }
 }
 
-#ifndef NDEBUG
+#ifdef PAN_BATCH_DEBUG
 static bool
 panfrost_batch_in_readers(struct panfrost_batch *batch,
                           struct panfrost_bo_access *access)
@@ -510,10 +515,12 @@ panfrost_batch_update_bo_access(struct panfrost_batch *batch,
                 /* We already accessed this BO before, so we should already be
                  * in the reader array.
                  */
+#ifdef PAN_BATCH_DEBUG
                 if (already_accessed) {
                         assert(panfrost_batch_in_readers(batch, access));
                         return;
                 }
+#endif
 
                 /* Previous access was a read and we want to read this BO.
                  * Add ourselves to the readers array and add a dependency on
@@ -590,6 +597,9 @@ panfrost_batch_add_resource_bos(struct panfrost_batch *batch,
         for (unsigned i = 0; i < MAX_MIP_LEVELS; i++)
                 if (rsrc->slices[i].checksum_bo)
                         panfrost_batch_add_bo(batch, rsrc->slices[i].checksum_bo, flags);
+
+        if (rsrc->separate_stencil)
+                panfrost_batch_add_bo(batch, rsrc->separate_stencil->bo, flags);
 }
 
 void panfrost_batch_add_fbo_bos(struct panfrost_batch *batch)
@@ -1227,42 +1237,36 @@ pan_pack_color(uint32_t *packed, const union pipe_color_union *color, enum pipe_
                                   ((uint32_t) float_to_ubyte(color->f[0]) <<  0));
         } else if (format == PIPE_FORMAT_B5G6R5_UNORM) {
                 /* First, we convert the components to R5, G6, B5 separately */
-                unsigned r5 = CLAMP(color->f[0], 0.0, 1.0) * 31.0;
-                unsigned g6 = CLAMP(color->f[1], 0.0, 1.0) * 63.0;
-                unsigned b5 = CLAMP(color->f[2], 0.0, 1.0) * 31.0;
+                unsigned r5 = _mesa_roundevenf(SATURATE(color->f[0]) * 31.0);
+                unsigned g6 = _mesa_roundevenf(SATURATE(color->f[1]) * 63.0);
+                unsigned b5 = _mesa_roundevenf(SATURATE(color->f[2]) * 31.0);
 
                 /* Then we pack into a sparse u32. TODO: Why these shifts? */
                 pan_pack_color_32(packed, (b5 << 25) | (g6 << 14) | (r5 << 5));
         } else if (format == PIPE_FORMAT_B4G4R4A4_UNORM) {
-                /* We scale the components against 0xF0 (=240.0), rather than 0xFF */
-                unsigned r4 = CLAMP(color->f[0], 0.0, 1.0) * 240.0;
-                unsigned g4 = CLAMP(color->f[1], 0.0, 1.0) * 240.0;
-                unsigned b4 = CLAMP(color->f[2], 0.0, 1.0) * 240.0;
-                unsigned a4 = CLAMP(clear_alpha, 0.0, 1.0) * 240.0;
+                /* Convert to 4-bits */
+                unsigned r4 = _mesa_roundevenf(SATURATE(color->f[0]) * 15.0);
+                unsigned g4 = _mesa_roundevenf(SATURATE(color->f[1]) * 15.0);
+                unsigned b4 = _mesa_roundevenf(SATURATE(color->f[2]) * 15.0);
+                unsigned a4 = _mesa_roundevenf(SATURATE(clear_alpha) * 15.0);
 
                 /* Pack on *byte* intervals */
-                pan_pack_color_32(packed, (a4 << 24) | (b4 << 16) | (g4 << 8) | r4);
+                pan_pack_color_32(packed, (a4 << 28) | (b4 << 20) | (g4 << 12) | (r4 << 4));
         } else if (format == PIPE_FORMAT_B5G5R5A1_UNORM) {
                 /* Scale as expected but shift oddly */
-                unsigned r5 = round(CLAMP(color->f[0], 0.0, 1.0)) * 31.0;
-                unsigned g5 = round(CLAMP(color->f[1], 0.0, 1.0)) * 31.0;
-                unsigned b5 = round(CLAMP(color->f[2], 0.0, 1.0)) * 31.0;
-                unsigned a1 = round(CLAMP(clear_alpha, 0.0, 1.0)) * 1.0;
+                unsigned r5 = _mesa_roundevenf(SATURATE(color->f[0]) * 31.0);
+                unsigned g5 = _mesa_roundevenf(SATURATE(color->f[1]) * 31.0);
+                unsigned b5 = _mesa_roundevenf(SATURATE(color->f[2]) * 31.0);
+                unsigned a1 = _mesa_roundevenf(SATURATE(clear_alpha) * 1.0);
 
                 pan_pack_color_32(packed, (a1 << 31) | (b5 << 25) | (g5 << 15) | (r5 << 5));
         } else {
-                /* Try Gallium's generic default path. Doesn't work for all
-                 * formats but it's a good guess. */
+                /* Otherwise, it's generic subject to replication */
 
-                union util_color out;
-
-                if (util_format_is_pure_integer(format)) {
-                        memcpy(out.ui, color->ui, 16);
-                } else {
-                        util_pack_color(color->f, format, &out);
-                }
-
+                union util_color out = { 0 };
                 unsigned size = util_format_get_blocksize(format);
+
+                util_pack_color(color->f, format, &out);
 
                 if (size == 1) {
                         unsigned b = out.ui[0];

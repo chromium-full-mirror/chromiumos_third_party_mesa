@@ -95,18 +95,6 @@ typedef uint32_t xcb_window_t;
 #define RADV_SUPPORT_ANDROID_HARDWARE_BUFFER 0
 #endif
 
-
-struct gfx10_format {
-    unsigned img_format:9;
-
-    /* Various formats are only supported with workarounds for vertex fetch,
-     * and some 32_32_32 formats are supported natively, but only for buffers
-     * (possibly with some image support, actually, but no filtering). */
-    bool buffers_only:1;
-};
-
-#include "gfx10_format_table.h"
-
 enum radv_secure_compile_type {
 	RADV_SC_TYPE_INIT_SUCCESS,
 	RADV_SC_TYPE_INIT_FAILURE,
@@ -386,8 +374,9 @@ struct cache_entry;
 
 struct radv_pipeline_cache {
 	struct vk_object_base                        base;
-	struct radv_device *                          device;
+	struct radv_device *                         device;
 	pthread_mutex_t                              mutex;
+	VkPipelineCacheCreateFlags                   flags;
 
 	uint32_t                                     total_size;
 	uint32_t                                     table_size;
@@ -781,6 +770,20 @@ struct radv_secure_compile_state {
 	char *uid;
 };
 
+#define RADV_BORDER_COLOR_COUNT       4096
+#define RADV_BORDER_COLOR_BUFFER_SIZE (sizeof(VkClearColorValue) * RADV_BORDER_COLOR_COUNT)
+
+struct radv_device_border_color_data {
+	bool 			 used[RADV_BORDER_COLOR_COUNT];
+
+	struct radeon_winsys_bo *bo;
+	VkClearColorValue       *colors_gpu_ptr;
+
+	/* Mutex is required to guarantee vkCreateSampler thread safety
+	 * given that we are writing to a buffer and checking color occupation */
+	pthread_mutex_t          mutex;
+};
+
 struct radv_device {
 	struct vk_device vk;
 
@@ -850,6 +853,8 @@ struct radv_device {
 
 	/* Whether anisotropy is forced with RADV_TEX_ANISO (-1 is disabled). */
 	int force_aniso;
+
+	struct radv_device_border_color_data border_color_data;
 
 	struct radv_secure_compile_state *sc_state;
 
@@ -1799,13 +1804,9 @@ struct radv_image {
 	/* Set when bound */
 	struct radeon_winsys_bo *bo;
 	VkDeviceSize offset;
-	uint64_t dcc_offset;
-	uint64_t htile_offset;
 	bool tc_compatible_htile;
 	bool tc_compatible_cmask;
 
-	uint64_t cmask_offset;
-	uint64_t fmask_offset;
 	uint64_t clear_value_offset;
 	uint64_t fce_pred_offset;
 	uint64_t dcc_pred_offset;
@@ -1853,7 +1854,7 @@ bool radv_layout_dcc_compressed(const struct radv_device *device,
 static inline bool
 radv_image_has_cmask(const struct radv_image *image)
 {
-	return image->cmask_offset;
+	return image->planes[0].surface.cmask_offset;
 }
 
 /**
@@ -1862,7 +1863,7 @@ radv_image_has_cmask(const struct radv_image *image)
 static inline bool
 radv_image_has_fmask(const struct radv_image *image)
 {
-	return image->fmask_offset;
+	return image->planes[0].surface.fmask_offset;
 }
 
 /**
@@ -2162,6 +2163,7 @@ struct radv_sampler {
 	struct vk_object_base base;
 	uint32_t state[4];
 	struct radv_sampler_ycbcr_conversion *ycbcr_sampler;
+	uint32_t border_color_slot;
 };
 
 struct radv_framebuffer {

@@ -90,14 +90,6 @@ iris_get_name(struct pipe_screen *pscreen)
    return buf;
 }
 
-static uint64_t
-get_aperture_size(int fd)
-{
-   struct drm_i915_gem_get_aperture aperture = {};
-   gen_ioctl(fd, DRM_IOCTL_I915_GEM_GET_APERTURE, &aperture);
-   return aperture.aper_size;
-}
-
 static int
 iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 {
@@ -283,7 +275,7 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
        * flushing, etc.  That's the big cliff apps will care about.
        */
       const unsigned gpu_mappable_megabytes =
-         (screen->aperture_bytes * 3 / 4) / (1024 * 1024);
+         (devinfo->aperture_bytes * 3 / 4) / (1024 * 1024);
 
       const long system_memory_pages = sysconf(_SC_PHYS_PAGES);
       const long system_page_size = sysconf(_SC_PAGE_SIZE);
@@ -413,6 +405,8 @@ iris_get_shader_param(struct pipe_screen *pscreen,
       return 1;
    case PIPE_SHADER_CAP_INT64_ATOMICS:
    case PIPE_SHADER_CAP_FP16:
+   case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+   case PIPE_SHADER_CAP_INT16:
       return 0;
    case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
    case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
@@ -443,32 +437,6 @@ iris_get_shader_param(struct pipe_screen *pscreen,
    }
 }
 
-static unsigned
-get_max_threads(const struct gen_device_info *devinfo)
-{
-   /* Limit max_threads to 64 for the GPGPU_WALKER command. */
-   return MIN2(64, devinfo->max_cs_threads);
-}
-
-uint32_t
-iris_get_max_var_invocations(const struct iris_screen *screen)
-{
-   const unsigned max_threads = get_max_threads(&screen->devinfo);
-
-   /* Constants used for ARB_compute_variable_group_size.  The compiler will
-    * use the maximum to decide which SIMDs can be used.  If we top this like
-    * max_invocations, that would prevent SIMD8 / SIMD16 to be considered.
-    *
-    * TODO: To avoid the trade off above between having the lower maximum
-    * vs. always using SIMD32, keep all three shader variants (for each SIMD)
-    * and select a suitable one at dispatch time.
-    */
-   const uint32_t max_var_invocations =
-      (max_threads >= 64 ? 8 : (max_threads >= 32 ? 16 : 32)) * max_threads;
-   assert(max_var_invocations >= 512);
-   return max_var_invocations;
-}
-
 static int
 iris_get_compute_param(struct pipe_screen *pscreen,
                        enum pipe_shader_ir ir_type,
@@ -476,8 +444,10 @@ iris_get_compute_param(struct pipe_screen *pscreen,
                        void *ret)
 {
    struct iris_screen *screen = (struct iris_screen *)pscreen;
+   const struct gen_device_info *devinfo = &screen->devinfo;
 
-   const unsigned max_threads = get_max_threads(&screen->devinfo);
+   /* Limit max_threads to 64 for the GPGPU_WALKER command. */
+   const unsigned max_threads = MIN2(64, devinfo->max_cs_threads);
    const uint32_t max_invocations = 32 * max_threads;
 
 #define RET(x) do {                  \
@@ -507,6 +477,8 @@ iris_get_compute_param(struct pipe_screen *pscreen,
 
    case PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK:
       /* MaxComputeWorkGroupInvocations */
+   case PIPE_COMPUTE_CAP_MAX_VARIABLE_THREADS_PER_BLOCK:
+      /* MaxComputeVariableGroupInvocations */
       RET((uint64_t []) { max_invocations });
 
    case PIPE_COMPUTE_CAP_MAX_LOCAL_SIZE:
@@ -518,10 +490,6 @@ iris_get_compute_param(struct pipe_screen *pscreen,
 
    case PIPE_COMPUTE_CAP_SUBGROUP_SIZE:
       RET((uint32_t []) { BRW_SUBGROUP_SIZE });
-
-   case PIPE_COMPUTE_CAP_MAX_VARIABLE_THREADS_PER_BLOCK:
-      /* MaxComputeVariableGroupInvocations */
-      RET((uint64_t []) { iris_get_max_var_invocations(screen) });
 
    case PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE:
    case PIPE_COMPUTE_CAP_MAX_CLOCK_FREQUENCY:
@@ -559,6 +527,7 @@ iris_screen_destroy(struct iris_screen *screen)
    u_transfer_helper_destroy(screen->base.transfer_helper);
    iris_bufmgr_unref(screen->bufmgr);
    disk_cache_destroy(screen->disk_cache);
+   close(screen->winsys_fd);
    ralloc_free(screen);
 }
 
@@ -671,6 +640,27 @@ iris_detect_kernel_features(struct iris_screen *screen)
       screen->kernel_features |= KERNEL_HAS_WAIT_FOR_SUBMIT;
 }
 
+static bool
+iris_init_identifier_bo(struct iris_screen *screen)
+{
+   void *bo_map;
+
+   bo_map = iris_bo_map(NULL, screen->workaround_bo, MAP_READ | MAP_WRITE);
+   if (!bo_map)
+      return false;
+
+   screen->workaround_bo->kflags |= EXEC_OBJECT_CAPTURE;
+   screen->workaround_address = (struct iris_address) {
+      .bo = screen->workaround_bo,
+      .offset = ALIGN(
+         intel_debug_write_identifiers(bo_map, 4096, "Iris") + 8, 8),
+   };
+
+   iris_bo_unmap(screen->workaround_bo);
+
+   return true;
+}
+
 struct pipe_screen *
 iris_screen_create(int fd, const struct pipe_screen_config *config)
 {
@@ -717,8 +707,7 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
       return NULL;
 
    screen->fd = iris_bufmgr_get_fd(screen->bufmgr);
-
-   screen->aperture_bytes = get_aperture_size(fd);
+   screen->winsys_fd = fd;
 
    if (getenv("INTEL_NO_HW") != NULL)
       screen->no_hw = true;
@@ -726,6 +715,9 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
    screen->workaround_bo =
       iris_bo_alloc(screen->bufmgr, "workaround", 4096, IRIS_MEMZONE_OTHER);
    if (!screen->workaround_bo)
+      return NULL;
+
+   if (!iris_init_identifier_bo(screen))
       return NULL;
 
    brw_process_intel_debug_variable();

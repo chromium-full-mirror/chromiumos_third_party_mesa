@@ -71,11 +71,15 @@ bi_combine_sel16(bi_context *ctx, bi_instruction *parent, unsigned comp, unsigne
                 .dest_offset = comp >> 1,
                 .src = { parent->src[comp], parent->src[comp + 1] },
                 .src_types = { nir_type_uint16, nir_type_uint16 },
-                .swizzle = { {
-                        parent->swizzle[comp][0],
-                        parent->swizzle[comp + 1][0],
-                } }
+                .swizzle = {
+                        { parent->swizzle[comp][0] },
+                        { parent->swizzle[comp + 1][0] },
+                }
         };
+
+        /* In case we have a combine from a vec3 */
+        if (!sel.src[1])
+                sel.src[1] = BIR_INDEX_ZERO;
 
         bi_emit_before(ctx, parent, sel);
 }
@@ -197,7 +201,8 @@ bi_lower_combine(bi_context *ctx, bi_block *block)
         bi_foreach_instr_in_block_safe(block, ins) {
                 if (ins->type != BI_COMBINE) continue;
 
-                unsigned R = bi_make_temp_reg(ctx);
+                bool needs_rewrite = !(ins->dest & PAN_IS_REG);
+                unsigned R = needs_rewrite ? bi_make_temp_reg(ctx) : ins->dest;
                 unsigned sz = nir_alu_type_get_type_size(ins->dest_type);
 
                 bi_foreach_src(ins, s) {
@@ -226,8 +231,9 @@ bi_lower_combine(bi_context *ctx, bi_block *block)
                         }
                 }
 
+                if (needs_rewrite)
+                        bi_rewrite_uses(ctx, ins->dest, 0, R, 0);
 
-                bi_rewrite_uses(ctx, ins->dest, 0, R, 0);
                 bi_remove_instruction(ins);
         }
 }

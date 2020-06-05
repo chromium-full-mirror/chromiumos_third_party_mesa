@@ -140,7 +140,7 @@ emit_const_bo(struct fd_ringbuffer *ring,
 		uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	/* TODO inline this */
-	assert(dst_offset + num < v->constlen * 4);
+	assert(dst_offset + num <= v->constlen * 4);
 	fd4_emit_const_bo(ring, v->type, dst_offset, num, prscs, offsets);
 }
 
@@ -437,7 +437,7 @@ fd4_emit_vertex_bufs(struct fd_ringbuffer *ring, struct fd4_emit *emit)
 			uint32_t fs = util_format_get_blocksize(pfmt);
 			uint32_t off = vb->buffer_offset + elem->src_offset;
 			uint32_t size = fd_bo_size(rsc->bo) - off;
-			debug_assert(fmt != ~0);
+			debug_assert(fmt != VFMT4_NONE);
 
 #ifdef DEBUG
 			/* see dEQP-GLES31.stress.vertex_attribute_binding.buffer_bounds.bind_vertex_buffer_offset_near_wrap_10
@@ -581,7 +581,7 @@ fd4_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
 	if (dirty & (FD_DIRTY_ZSA | FD_DIRTY_RASTERIZER | FD_DIRTY_PROG)) {
 		struct fd4_zsa_stateobj *zsa = fd4_zsa_stateobj(ctx->zsa);
-		bool fragz = fp->no_earlyz | fp->writes_pos;
+		bool fragz = fp->no_earlyz | fp->has_kill | fp->writes_pos;
 		bool clamp = !ctx->rasterizer->depth_clip_near;
 
 		OUT_PKT0(ring, REG_A4XX_RB_DEPTH_CONTROL, 1);

@@ -532,7 +532,8 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    radeon_get_drm_value(ws->fd, RADEON_INFO_MAX_SH_PER_SE, NULL,
                         &ws->info.max_sh_per_se);
    if (ws->gen == DRV_SI) {
-      ws->info.num_good_cu_per_sh = ws->info.num_good_compute_units /
+      ws->info.max_good_cu_per_sa =
+      ws->info.min_good_cu_per_sa = ws->info.num_good_compute_units /
                                     (ws->info.max_se * ws->info.max_sh_per_se);
    }
 
@@ -569,7 +570,7 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
                                     (ws->info.family == CHIP_HAWAII &&
                                      ws->accel_working2 < 3);
    ws->info.tcc_cache_line_size = 64; /* TC L2 line size on GCN */
-   ws->info.ib_start_alignment = 4096;
+   ws->info.ib_alignment = 4096;
    ws->info.kernel_flushes_hdp_before_ib = ws->info.drm_minor >= 40;
    /* HTILE is broken with 1D tiling on old kernels and GFX7. */
    ws->info.htile_cmask_support_1d_tiling = ws->info.chip_class != GFX7 ||

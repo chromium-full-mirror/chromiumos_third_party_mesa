@@ -41,9 +41,6 @@ struct si_atom {
 };
 
 struct si_pm4_state {
-   /* optional indirect buffer */
-   struct si_resource *indirect_buffer;
-
    /* PKT3_SET_*_REG handling */
    unsigned last_opcode;
    unsigned last_reg;
@@ -71,7 +68,6 @@ void si_pm4_cmd_end(struct si_pm4_state *state, bool predicate);
 void si_pm4_set_reg(struct si_pm4_state *state, unsigned reg, uint32_t val);
 void si_pm4_add_bo(struct si_pm4_state *state, struct si_resource *bo, enum radeon_bo_usage usage,
                    enum radeon_bo_priority priority);
-void si_pm4_upload_indirect_buffer(struct si_context *sctx, struct si_pm4_state *state);
 
 void si_pm4_clear_state(struct si_pm4_state *state);
 void si_pm4_free_state(struct si_context *sctx, struct si_pm4_state *state, unsigned idx);

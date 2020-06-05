@@ -177,6 +177,11 @@ panfrost_shader_compile(struct panfrost_context *ctx,
         bool vertex_id = s->info.system_values_read & (1 << SYSTEM_VALUE_VERTEX_ID);
         bool instance_id = s->info.system_values_read & (1 << SYSTEM_VALUE_INSTANCE_ID);
 
+        /* On Bifrost it's a sysval, on Midgard it's a varying */
+        state->reads_frag_coord = s->info.system_values_read & (1 << SYSTEM_VALUE_FRAG_COORD);
+
+        state->writes_global = s->info.writes_memory;
+
         switch (stage) {
         case MESA_SHADER_VERTEX:
                 state->attribute_count = util_bitcount64(s->info.inputs_read);
@@ -196,6 +201,14 @@ panfrost_shader_compile(struct panfrost_context *ctx,
                         state->writes_depth = true;
                 if (s->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_STENCIL))
                         state->writes_stencil = true;
+
+                /* List of reasons we need to execute frag shaders when things
+                 * are masked off */
+
+                state->fs_sidefx =
+                        s->info.writes_memory ||
+                        s->info.fs.uses_discard ||
+                        s->info.fs.uses_demote;
                 break;
         case MESA_SHADER_COMPUTE:
                 /* TODO: images */

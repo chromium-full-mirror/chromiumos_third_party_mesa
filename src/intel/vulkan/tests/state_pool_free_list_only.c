@@ -21,11 +21,10 @@
  * IN THE SOFTWARE.
  */
 
-#undef NDEBUG
-
 #include <pthread.h>
 
 #include "anv_private.h"
+#include "test_common.h"
 
 #define NUM_THREADS 8
 #define STATES_PER_THREAD_LOG2 12
@@ -33,7 +32,7 @@
 
 #include "state_pool_test_helper.h"
 
-int main(int argc, char **argv)
+int main(void)
 {
    struct anv_physical_device physical_device = { };
    struct anv_device device = {
@@ -55,7 +54,7 @@ int main(int argc, char **argv)
       struct anv_state states[NUM_THREADS * STATES_PER_THREAD];
       for (unsigned i = 0; i < NUM_THREADS * STATES_PER_THREAD; i++) {
          states[i] = anv_state_pool_alloc(&state_pool, 16, 16);
-         assert(states[i].offset != 0);
+         ASSERT(states[i].offset != 0);
       }
 
       for (unsigned i = 0; i < NUM_THREADS * STATES_PER_THREAD; i++)

@@ -69,7 +69,9 @@
  * resolve.
  */
 
-#define BIN_DEBUG 0
+#ifndef BIN_DEBUG
+#  define BIN_DEBUG 0
+#endif
 
 /*
  * GMEM Cache:
@@ -169,7 +171,7 @@ static uint32_t bin_width(struct fd_screen *screen)
 static unsigned
 div_align(unsigned num, unsigned denom, unsigned al)
 {
-	return align(DIV_ROUND_UP(num, denom), al);
+	return util_align_npot(DIV_ROUND_UP(num, denom), al);
 }
 
 static bool
@@ -184,8 +186,8 @@ layout_gmem(struct gmem_key *key, uint32_t nbins_x, uint32_t nbins_y,
 		return false;
 
 	uint32_t bin_w, bin_h;
-	bin_w = div_align(key->width, nbins_x, screen->gmem_alignw);
-	bin_h = div_align(key->height, nbins_y, screen->gmem_alignh);
+	bin_w = div_align(key->width, nbins_x, screen->tile_alignw);
+	bin_h = div_align(key->height, nbins_y, screen->tile_alignh);
 
 	gmem->bin_w = bin_w;
 	gmem->bin_h = bin_h;
@@ -198,44 +200,34 @@ layout_gmem(struct gmem_key *key, uint32_t nbins_x, uint32_t nbins_y,
 
 	for (i = 0; i < MAX_RENDER_TARGETS; i++) {
 		if (key->cbuf_cpp[i]) {
-			gmem->cbuf_base[i] = align(total, gmem_align);
+			gmem->cbuf_base[i] = util_align_npot(total, gmem_align);
 			total = gmem->cbuf_base[i] + key->cbuf_cpp[i] * bin_w * bin_h;
 		}
 	}
 
 	if (key->zsbuf_cpp[0]) {
-		gmem->zsbuf_base[0] = align(total, gmem_align);
+		gmem->zsbuf_base[0] = util_align_npot(total, gmem_align);
 		total = gmem->zsbuf_base[0] + key->zsbuf_cpp[0] * bin_w * bin_h;
 	}
 
 	if (key->zsbuf_cpp[1]) {
-		gmem->zsbuf_base[1] = align(total, gmem_align);
+		gmem->zsbuf_base[1] = util_align_npot(total, gmem_align);
 		total = gmem->zsbuf_base[1] + key->zsbuf_cpp[1] * bin_w * bin_h;
 	}
 
 	return total <= screen->gmemsize_bytes;
 }
 
-static struct fd_gmem_stateobj *
-gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
+static void
+calc_nbins(struct gmem_key *key, struct fd_gmem_stateobj *gmem)
 {
-	struct fd_gmem_stateobj *gmem =
-			rzalloc(screen->gmem_cache.ht, struct fd_gmem_stateobj);
-	pipe_reference_init(&gmem->reference, 1);
-	gmem->screen = screen;
-	gmem->key = key;
-	list_inithead(&gmem->node);
-
-	const unsigned npipes = screen->num_vsc_pipes;
+	struct fd_screen *screen = gmem->screen;
 	uint32_t nbins_x = 1, nbins_y = 1;
 	uint32_t max_width = bin_width(screen);
-	uint32_t i, j, t, xoff, yoff;
-	uint32_t tpp_x, tpp_y;
-	int tile_n[npipes];
 
 	if (fd_mesa_debug & FD_DBG_MSGS) {
 		debug_printf("binning input: cbuf cpp:");
-		for (i = 0; i < key->nr_cbufs; i++)
+		for (unsigned i = 0; i < key->nr_cbufs; i++)
 			debug_printf(" %d", key->cbuf_cpp[i]);
 		debug_printf(", zsbuf cpp: %d; %dx%d\n",
 				key->zsbuf_cpp[0], key->width, key->height);
@@ -244,7 +236,7 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
 	/* first, find a bin width that satisfies the maximum width
 	 * restrictions:
 	 */
-	while (div_align(key->width, nbins_x, screen->gmem_alignw) > max_width) {
+	while (div_align(key->width, nbins_x, screen->tile_alignw) > max_width) {
 		nbins_x++;
 	}
 
@@ -273,6 +265,25 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
 	}
 
 	layout_gmem(key, nbins_x, nbins_y, gmem);
+
+}
+
+static struct fd_gmem_stateobj *
+gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
+{
+	struct fd_gmem_stateobj *gmem =
+			rzalloc(screen->gmem_cache.ht, struct fd_gmem_stateobj);
+	pipe_reference_init(&gmem->reference, 1);
+	gmem->screen = screen;
+	gmem->key = key;
+	list_inithead(&gmem->node);
+
+	const unsigned npipes = screen->num_vsc_pipes;
+	uint32_t i, j, t, xoff, yoff;
+	uint32_t tpp_x, tpp_y;
+	int tile_n[npipes];
+
+	calc_nbins(key, gmem);
 
 	DBG("using %d bins of size %dx%d", gmem->nbins_x * gmem->nbins_y,
 			gmem->bin_w, gmem->bin_h);
@@ -308,10 +319,10 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
 		tpp_y = 6;
 	} else {
 		tpp_x = tpp_y = 1;
-		while (div_round_up(nbins_y, tpp_y) > npipes)
+		while (div_round_up(gmem->nbins_y, tpp_y) > npipes)
 			tpp_y += 2;
-		while ((div_round_up(nbins_y, tpp_y) *
-				div_round_up(nbins_x, tpp_x)) > npipes)
+		while ((div_round_up(gmem->nbins_y, tpp_y) *
+				div_round_up(gmem->nbins_x, tpp_x)) > npipes)
 			tpp_x += 1;
 	}
 
@@ -323,19 +334,19 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
 	for (i = 0; i < npipes; i++) {
 		struct fd_vsc_pipe *pipe = &gmem->vsc_pipe[i];
 
-		if (xoff >= nbins_x) {
+		if (xoff >= gmem->nbins_x) {
 			xoff = 0;
 			yoff += tpp_y;
 		}
 
-		if (yoff >= nbins_y) {
+		if (yoff >= gmem->nbins_y) {
 			break;
 		}
 
 		pipe->x = xoff;
 		pipe->y = yoff;
-		pipe->w = MIN2(tpp_x, nbins_x - xoff);
-		pipe->h = MIN2(tpp_y, nbins_y - yoff);
+		pipe->w = MIN2(tpp_x, gmem->nbins_x - xoff);
+		pipe->h = MIN2(tpp_y, gmem->nbins_y - yoff);
 
 		xoff += tpp_x;
 	}
@@ -349,7 +360,7 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
 	}
 
 	if (BIN_DEBUG) {
-		printf("%dx%d ... tpp=%dx%d\n", nbins_x, nbins_y, tpp_x, tpp_y);
+		printf("%dx%d ... tpp=%dx%d\n", gmem->nbins_x, gmem->nbins_y, tpp_x, tpp_y);
 		for (i = 0; i < ARRAY_SIZE(gmem->vsc_pipe); i++) {
 			struct fd_vsc_pipe *pipe = &gmem->vsc_pipe[i];
 			printf("pipe[%d]: %ux%u @ %u,%u\n", i,
@@ -361,26 +372,29 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
 	t = 0;
 	yoff = key->miny;
 	memset(tile_n, 0, sizeof(tile_n));
-	for (i = 0; i < nbins_y; i++) {
-		uint32_t bw, bh;
+	for (i = 0; i < gmem->nbins_y; i++) {
+		int bw, bh;
 
 		xoff = key->minx;
 
 		/* clip bin height: */
 		bh = MIN2(gmem->bin_h, key->miny + key->height - yoff);
+		assert(bh > 0);
 
-		for (j = 0; j < nbins_x; j++) {
+		for (j = 0; j < gmem->nbins_x; j++) {
 			struct fd_tile *tile = &gmem->tile[t];
 			uint32_t p;
 
 			assert(t < ARRAY_SIZE(gmem->tile));
 
 			/* pipe number: */
-			p = ((i / tpp_y) * div_round_up(nbins_x, tpp_x)) + (j / tpp_x);
+			p = ((i / tpp_y) * div_round_up(gmem->nbins_x, tpp_x)) + (j / tpp_x);
 			assert(p < gmem->num_vsc_pipes);
 
 			/* clip bin width: */
 			bw = MIN2(gmem->bin_w, key->minx + key->width - xoff);
+			assert(bw > 0);
+
 			tile->n = !is_a20x(screen) ? tile_n[p]++ :
 				((i % tpp_y + 1) << 3 | (j % tpp_x + 1));
 			tile->p = p;
@@ -404,8 +418,8 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
 
 	if (BIN_DEBUG) {
 		t = 0;
-		for (i = 0; i < nbins_y; i++) {
-			for (j = 0; j < nbins_x; j++) {
+		for (i = 0; i < gmem->nbins_y; i++) {
+			for (j = 0; j < gmem->nbins_x; j++) {
 				struct fd_tile *tile = &gmem->tile[t++];
 				printf("|p:%u n:%u|", tile->p, tile->n);
 			}
@@ -463,13 +477,20 @@ gmem_key_init(struct fd_batch *batch, bool assume_zs, bool no_scis_opt)
 	/* NOTE: on a6xx, the max-scissor-rect is handled in fd6_gmem, and
 	 * we just rely on CP_COND_EXEC to skip bins with no geometry.
 	 */
-	if ((fd_mesa_debug & FD_DBG_NOSCIS) || no_scis_opt || is_a6xx(screen)) {
+	if (no_scis_opt || is_a6xx(screen)) {
 		key->minx = 0;
 		key->miny = 0;
 		key->width = pfb->width;
 		key->height = pfb->height;
 	} else {
 		struct pipe_scissor_state *scissor = &batch->max_scissor;
+
+		if (fd_mesa_debug & FD_DBG_NOSCIS) {
+			scissor->minx = 0;
+			scissor->miny = 0;
+			scissor->maxx = pfb->width;
+			scissor->maxy = pfb->height;
+		}
 
 		/* round down to multiple of alignment: */
 		key->minx = scissor->minx & ~(screen->gmem_alignw - 1);
@@ -484,7 +505,7 @@ gmem_key_init(struct fd_batch *batch, bool assume_zs, bool no_scis_opt)
 		 */
 		key->gmem_page_align = 8;
 	} else if (is_a6xx(screen)) {
-		key->gmem_page_align = 1;
+		key->gmem_page_align = is_a650(screen) ? 3 : 1;
 	} else {
 		// TODO re-check this across gens.. maybe it should only
 		// be a single page in some cases:

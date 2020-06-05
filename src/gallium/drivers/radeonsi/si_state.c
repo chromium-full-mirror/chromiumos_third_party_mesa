@@ -33,15 +33,6 @@
 #include "util/u_resource.h"
 #include "util/u_upload_mgr.h"
 
-struct gfx10_format {
-   unsigned img_format : 9;
-
-   /* Various formats are only supported with workarounds for vertex fetch,
-    * and some 32_32_32 formats are supported natively, but only for buffers
-    * (possibly with some image support, actually, but no filtering). */
-   bool buffers_only : 1;
-};
-
 #include "gfx10_format_table.h"
 
 static unsigned si_map_swizzle(unsigned swizzle)
@@ -1369,12 +1360,6 @@ static void si_emit_db_render_state(struct si_context *sctx)
       if (sctx->chip_class >= GFX7) {
          unsigned log_sample_rate = sctx->framebuffer.log_samples;
 
-         /* Stoney doesn't increment occlusion query counters
-          * if the sample rate is 16x. Use 8x sample rate instead.
-          */
-         if (sctx->family == CHIP_STONEY)
-            log_sample_rate = MIN2(log_sample_rate, 3);
-
          db_count_control = S_028004_PERFECT_ZPASS_COUNTS(perfect) |
                             S_028004_DISABLE_CONSERVATIVE_ZPASS_COUNTS(gfx10_perfect) |
                             S_028004_SAMPLE_RATE(log_sample_rate) | S_028004_ZPASS_ENABLE(1) |
@@ -2140,17 +2125,23 @@ static bool si_is_format_supported(struct pipe_screen *screen, enum pipe_format 
           !util_is_power_of_two_or_zero(storage_sample_count))
          return false;
 
+      /* Chips with 1 RB don't increment occlusion queries at 16x MSAA sample rate,
+       * so don't expose 16 samples there.
+       */
+      const unsigned max_eqaa_samples = sscreen->info.num_render_backends == 1 ? 8 : 16;
+      const unsigned max_samples = 8;
+
       /* MSAA support without framebuffer attachments. */
-      if (format == PIPE_FORMAT_NONE && sample_count <= 16)
+      if (format == PIPE_FORMAT_NONE && sample_count <= max_eqaa_samples)
          return true;
 
       if (!sscreen->info.has_eqaa_surface_allocator || util_format_is_depth_or_stencil(format)) {
          /* Color without EQAA or depth/stencil. */
-         if (sample_count > 8 || sample_count != storage_sample_count)
+         if (sample_count > max_samples || sample_count != storage_sample_count)
             return false;
       } else {
          /* Color with EQAA. */
-         if (sample_count > 16 || storage_sample_count > 8)
+         if (sample_count > max_eqaa_samples || storage_sample_count > max_samples)
             return false;
       }
    }
@@ -2830,7 +2821,7 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
       else
          sctx->framebuffer.uncompressed_cb_mask |= 1 << i;
 
-      if (tex->surface.dcc_offset)
+      if (tex->surface.display_dcc_offset)
          sctx->framebuffer.displayable_dcc_cb_mask |= 1 << i;
 
       /* Don't update nr_color_samples for non-AA buffers.
@@ -3810,7 +3801,7 @@ static void gfx10_make_texture_descriptor(
    state[6] = 0;
    state[7] = 0;
 
-   if (tex->surface.dcc_offset) {
+   if (vi_dcc_enabled(tex, first_level)) {
       state[6] |= S_00A018_MAX_UNCOMPRESSED_BLOCK_SIZE(V_028C78_MAX_BLOCK_SIZE_256B) |
                   S_00A018_MAX_COMPRESSED_BLOCK_SIZE(tex->surface.u.gfx9.dcc.max_compressed_block_size) |
                   S_00A018_ALPHA_IS_ON_MSB(vi_alpha_is_on_msb(screen, pipe_format));
@@ -4071,7 +4062,7 @@ static void si_make_texture_descriptor(struct si_screen *screen, struct si_textu
       state[5] |= S_008F24_LAST_ARRAY(last_layer);
    }
 
-   if (tex->surface.dcc_offset) {
+   if (vi_dcc_enabled(tex, first_level)) {
       state[6] = S_008F28_ALPHA_IS_ON_MSB(vi_alpha_is_on_msb(screen, pipe_format));
    } else {
       /* The last dword is unused by hw. The shader uses it to clear
@@ -4478,6 +4469,9 @@ static void *si_create_sampler_state(struct pipe_context *ctx,
    struct si_sampler_state *rstate = CALLOC_STRUCT(si_sampler_state);
    unsigned max_aniso = sscreen->force_aniso >= 0 ? sscreen->force_aniso : state->max_anisotropy;
    unsigned max_aniso_ratio = si_tex_aniso_filter(max_aniso);
+   bool trunc_coord = state->min_img_filter == PIPE_TEX_FILTER_NEAREST &&
+                      state->mag_img_filter == PIPE_TEX_FILTER_NEAREST &&
+                      state->compare_mode == PIPE_TEX_COMPARE_NONE;
    union pipe_color_union clamped_border_color;
 
    if (!rstate) {
@@ -4494,6 +4488,7 @@ static void *si_create_sampler_state(struct pipe_context *ctx,
        S_008F30_FORCE_UNNORMALIZED(!state->normalized_coords) |
        S_008F30_ANISO_THRESHOLD(max_aniso_ratio >> 1) | S_008F30_ANISO_BIAS(max_aniso_ratio) |
        S_008F30_DISABLE_CUBE_WRAP(!state->seamless_cube_map) |
+       S_008F30_TRUNC_COORD(trunc_coord) |
        S_008F30_COMPAT_MODE(sctx->chip_class == GFX8 || sctx->chip_class == GFX9));
    rstate->val[1] = (S_008F34_MIN_LOD(S_FIXED(CLAMP(state->min_lod, 0, 15), 8)) |
                      S_008F34_MAX_LOD(S_FIXED(CLAMP(state->max_lod, 0, 15), 8)) |
@@ -5152,8 +5147,8 @@ static void si_init_config(struct si_context *sctx)
       return;
 
    si_pm4_cmd_begin(pm4, PKT3_CONTEXT_CONTROL);
-   si_pm4_cmd_add(pm4, CONTEXT_CONTROL_LOAD_ENABLE(1));
-   si_pm4_cmd_add(pm4, CONTEXT_CONTROL_SHADOW_ENABLE(1));
+   si_pm4_cmd_add(pm4, CC0_UPDATE_LOAD_ENABLES(1));
+   si_pm4_cmd_add(pm4, CC1_UPDATE_SHADOW_ENABLES(1));
    si_pm4_cmd_end(pm4, false);
 
    if (has_clear_state) {
@@ -5266,8 +5261,8 @@ static void si_init_config(struct si_context *sctx)
       }
 
       /* Compute LATE_ALLOC_VS.LIMIT. */
-      unsigned num_cu_per_sh = sscreen->info.num_good_cu_per_sh;
-      unsigned late_alloc_wave64 = 0; /* The limit is per SH. */
+      unsigned num_cu_per_sh = sscreen->info.min_good_cu_per_sa;
+      unsigned late_alloc_wave64 = 0; /* The limit is per SA. */
       unsigned cu_mask_vs = 0xffff;
       unsigned cu_mask_gs = 0xffff;
 
@@ -5291,7 +5286,7 @@ static void si_init_config(struct si_context *sctx)
          if (!sscreen->info.use_late_alloc) {
             late_alloc_wave64 = 0;
          } else if (num_cu_per_sh <= 4) {
-            /* Too few available compute units per SH. Disallowing
+            /* Too few available compute units per SA. Disallowing
              * VS to run on one CU could hurt us more than late VS
              * allocation would help.
              *
@@ -5412,6 +5407,5 @@ static void si_init_config(struct si_context *sctx)
       si_pm4_set_reg(pm4, R_030968_VGT_INSTANCE_BASE_ID, 0);
    }
 
-   si_pm4_upload_indirect_buffer(sctx, pm4);
    sctx->init_config = pm4;
 }

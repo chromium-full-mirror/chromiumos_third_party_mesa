@@ -332,23 +332,31 @@ panfrost_shader_meta_init(struct panfrost_context *ctx,
                 else {
                         /* First clause ATEST |= 0x4000000.
                          * Less than 32 regs |= 0x200 */
-                        meta->bifrost1.unk1 = 0x958020;
+                        meta->bifrost1.unk1 = 0x950020;
                 }
 
                 meta->bifrost1.uniform_buffer_count = panfrost_ubo_count(ctx, st);
                 if (st == PIPE_SHADER_VERTEX)
                         meta->bifrost2.preload_regs = 0xC0;
-                else
+                else {
                         meta->bifrost2.preload_regs = 0x1;
+                        SET_BIT(meta->bifrost2.preload_regs, 0x10, ss->reads_frag_coord);
+                }
+
                 meta->bifrost2.uniform_count = MIN2(ss->uniform_count,
                                                     ss->uniform_cutoff);
         } else {
                 meta->midgard1.uniform_count = MIN2(ss->uniform_count,
                                                     ss->uniform_cutoff);
                 meta->midgard1.work_count = ss->work_reg_count;
-                meta->midgard1.flags_hi = 0x8; /* XXX */
-                meta->midgard1.flags_lo = 0x220;
+
+                /* TODO: This is not conformant on ES3 */
+                meta->midgard1.flags_hi = MALI_SUPPRESS_INF_NAN;
+
+                meta->midgard1.flags_lo = 0x20;
                 meta->midgard1.uniform_buffer_count = panfrost_ubo_count(ctx, st);
+
+                SET_BIT(meta->midgard1.flags_hi, MALI_WRITES_GLOBAL, ss->writes_global);
         }
 }
 
@@ -620,12 +628,35 @@ panfrost_frag_meta_zsa_update(struct panfrost_context *ctx,
         fragmeta->unknown2_3 |= MALI_DEPTH_FUNC(panfrost_translate_compare_func(zfunc));
 }
 
+static bool
+panfrost_fs_required(
+                struct panfrost_shader_state *fs,
+                struct panfrost_blend_final *blend,
+                unsigned rt_count)
+{
+        /* If we generally have side effects */
+        if (fs->fs_sidefx)
+                return true;
+
+        /* If colour is written we need to execute */
+        for (unsigned i = 0; i < rt_count; ++i) {
+                if (!blend[i].no_colour)
+                        return true;
+        }
+
+        /* If depth is written and not implied we need to execute.
+         * TODO: Predicate on Z/S writes being enabled */
+        return (fs->writes_depth || fs->writes_stencil);
+}
+
 static void
 panfrost_frag_meta_blend_update(struct panfrost_context *ctx,
                                 struct mali_shader_meta *fragmeta,
                                 void *rts)
 {
         const struct panfrost_device *dev = pan_device(ctx->base.screen);
+        struct panfrost_shader_state *fs;
+        fs = panfrost_get_shader_state(ctx, PIPE_SHADER_FRAGMENT);
 
         SET_BIT(fragmeta->unknown2_4, MALI_NO_DITHER,
                 (dev->quirks & MIDGARD_SFBD) && ctx->blend &&
@@ -642,12 +673,30 @@ panfrost_frag_meta_blend_update(struct panfrost_context *ctx,
                 blend[c] = panfrost_get_blend_for_context(ctx, c, &shader_bo,
                                                           &shader_offset);
 
-         /* If there is a blend shader, work registers are shared. XXX: opt */
+        /* Disable shader execution if we can */
+        if (dev->quirks & MIDGARD_SHADERLESS
+                        && !panfrost_fs_required(fs, blend, rt_count)) {
+                fragmeta->shader = 0;
+                fragmeta->attribute_count = 0;
+                fragmeta->varying_count = 0;
+                fragmeta->texture_count = 0;
+                fragmeta->sampler_count = 0;
+
+                /* This feature is not known to work on Bifrost */
+                fragmeta->midgard1.work_count = 1;
+                fragmeta->midgard1.uniform_count = 0;
+                fragmeta->midgard1.uniform_buffer_count = 0;
+        }
+
+         /* If there is a blend shader, work registers are shared. We impose 8
+          * work registers as a limit for blend shaders. Should be lower XXX */
 
         if (!(dev->quirks & IS_BIFROST)) {
                 for (unsigned c = 0; c < rt_count; ++c) {
-                        if (blend[c].is_shader)
-                                fragmeta->midgard1.work_count = 16;
+                        if (blend[c].is_shader) {
+                                fragmeta->midgard1.work_count =
+                                        MAX2(fragmeta->midgard1.work_count, 8);
+                        }
                 }
         }
 
@@ -682,19 +731,43 @@ panfrost_frag_meta_blend_update(struct panfrost_context *ctx,
                 }
 
                 SET_BIT(fragmeta->unknown2_3, MALI_CAN_DISCARD,
-                        !blend[0].no_blending);
+                        !blend[0].no_blending || fs->can_discard); 
                 return;
+        }
+
+        if (dev->quirks & IS_BIFROST) {
+                bool no_blend = true;
+
+                for (unsigned i = 0; i < rt_count; ++i)
+                        no_blend &= (blend[i].no_blending | blend[i].no_colour);
+
+                SET_BIT(fragmeta->bifrost1.unk1, MALI_BIFROST_EARLY_Z,
+                        !fs->can_discard && !fs->writes_depth && no_blend);
         }
 
         /* Additional blend descriptor tacked on for jobs using MFBD */
 
         for (unsigned i = 0; i < rt_count; ++i) {
+                unsigned flags = 0;
+
+                if (ctx->pipe_framebuffer.nr_cbufs > i && !blend[i].no_colour) {
+                        flags = 0x200;
+
+                        bool is_srgb = (ctx->pipe_framebuffer.nr_cbufs > i) &&
+                                       (ctx->pipe_framebuffer.cbufs[i]) &&
+                                       util_format_is_srgb(ctx->pipe_framebuffer.cbufs[i]->format);
+
+                        SET_BIT(flags, MALI_BLEND_MRT_SHADER, blend[i].is_shader);
+                        SET_BIT(flags, MALI_BLEND_LOAD_TIB, !blend[i].no_blending);
+                        SET_BIT(flags, MALI_BLEND_SRGB, is_srgb);
+                        SET_BIT(flags, MALI_BLEND_NO_DITHER, !ctx->blend->base.dither);
+                }
+
                 if (dev->quirks & IS_BIFROST) {
                         struct bifrost_blend_rt *brts = rts;
-                        struct panfrost_shader_state *fs;
-                        fs = panfrost_get_shader_state(ctx, PIPE_SHADER_FRAGMENT);
 
-                        brts[i].flags = 0x200;
+                        brts[i].flags = flags;
+
                         if (blend[i].is_shader) {
                                 /* The blend shader's address needs to be at
                                  * the same top 32 bit as the fragment shader.
@@ -704,7 +777,7 @@ panfrost_frag_meta_blend_update(struct panfrost_context *ctx,
                                        (fs->bo->gpu & (0xffffffffull << 32)));
                                 brts[i].shader = blend[i].shader.gpu;
                                 brts[i].unk2 = 0x0;
-                        } else {
+                        } else if (ctx->pipe_framebuffer.nr_cbufs > i) {
                                 enum pipe_format format = ctx->pipe_framebuffer.cbufs[i]->format;
                                 const struct util_format_description *format_desc;
                                 format_desc = util_format_description(format);
@@ -715,23 +788,22 @@ panfrost_frag_meta_blend_update(struct panfrost_context *ctx,
                                 brts[i].constant = blend[i].equation.constant;
 
                                 brts[i].format = panfrost_format_to_bifrost_blend(format_desc);
-                                brts[i].unk2 = 0x19;
 
+                                /* 0x19 disables blending and forces REPLACE
+                                 * mode (equivalent to rgb_mode = alpha_mode =
+                                 * x122, colour mask = 0xF). 0x1a allows
+                                 * blending. */
+                                brts[i].unk2 = blend[i].no_blending ? 0x19 : 0x1a;
+
+                                brts[i].shader_type = fs->blend_types[i];
+                        } else {
+                                /* Dummy attachment for depth-only */
+                                brts[i].unk2 = 0x3;
                                 brts[i].shader_type = fs->blend_types[i];
                         }
                 } else {
                         struct midgard_blend_rt *mrts = rts;
-
-                        mrts[i].flags = 0x200;
-
-                        bool is_srgb = (ctx->pipe_framebuffer.nr_cbufs > i) &&
-                                       (ctx->pipe_framebuffer.cbufs[i]) &&
-                                       util_format_is_srgb(ctx->pipe_framebuffer.cbufs[i]->format);
-
-                        SET_BIT(mrts[i].flags, MALI_BLEND_MRT_SHADER, blend[i].is_shader);
-                        SET_BIT(mrts[i].flags, MALI_BLEND_LOAD_TIB, !blend[i].no_blending);
-                        SET_BIT(mrts[i].flags, MALI_BLEND_SRGB, is_srgb);
-                        SET_BIT(mrts[i].flags, MALI_BLEND_NO_DITHER, !ctx->blend->base.dither);
+                        mrts[i].flags = flags;
 
                         if (blend[i].is_shader) {
                                 mrts[i].blend.shader = blend[i].shader.gpu | blend[i].shader.first_tag;
@@ -769,10 +841,10 @@ panfrost_frag_shader_meta_init(struct panfrost_context *ctx,
                 /* TODO */
         } else {
                 /* Depending on whether it's legal to in the given shader, we try to
-                 * enable early-z testing (or forward-pixel kill?) */
+                 * enable early-z testing. TODO: respect e-z force */
 
                 SET_BIT(fragmeta->midgard1.flags_lo, MALI_EARLY_Z,
-                        !fs->can_discard && !fs->writes_depth);
+                        !fs->can_discard && !fs->writes_depth && !fs->writes_global);
 
                 /* Add the writes Z/S flags if needed. */
                 SET_BIT(fragmeta->midgard1.flags_lo, MALI_WRITES_Z, fs->writes_depth);
@@ -784,17 +856,11 @@ panfrost_frag_shader_meta_init(struct panfrost_context *ctx,
                 SET_BIT(fragmeta->midgard1.flags_lo, MALI_HELPER_INVOCATIONS,
                         fs->helper_invocations);
 
-                /* CAN_DISCARD should be set if the fragment shader possibly contains a
-                 * 'discard' instruction. It is likely this is related to optimizations
-                 * related to forward-pixel kill, as per "Mali Performance 3: Is
-                 * EGL_BUFFER_PRESERVED a good thing?" by Peter Harris */
-
                 const struct pipe_depth_stencil_alpha_state *zsa = ctx->depth_stencil;
 
                 bool depth_enabled = fs->writes_depth ||
                    (zsa && zsa->depth.enabled && zsa->depth.func != PIPE_FUNC_ALWAYS);
 
-                SET_BIT(fragmeta->unknown2_3, MALI_CAN_DISCARD, fs->can_discard);
                 SET_BIT(fragmeta->midgard1.flags_lo, 0x400, !depth_enabled && fs->can_discard);
                 SET_BIT(fragmeta->midgard1.flags_lo, MALI_READS_ZS, depth_enabled && fs->can_discard);
         }
@@ -1654,19 +1720,6 @@ pan_get_so(struct pipe_stream_output_info *info, gl_varying_slot loc)
         unreachable("Varying not captured");
 }
 
-/* TODO: Integers */
-static enum mali_format
-pan_xfb_format(unsigned nr_components)
-{
-        switch (nr_components) {
-                case 1: return MALI_R32F;
-                case 2: return MALI_RG32F;
-                case 3: return MALI_RGB32F;
-                case 4: return MALI_RGBA32F;
-                default: unreachable("Invalid format");
-        }
-}
-
 void
 panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
                                  unsigned vertex_count,
@@ -1676,6 +1729,7 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
 {
         /* Load the shaders */
         struct panfrost_context *ctx = batch->ctx;
+        struct panfrost_device *device = pan_device(ctx->base.screen);
         struct panfrost_shader_state *vs, *fs;
         unsigned int num_gen_varyings = 0;
         size_t vs_size, fs_size;
@@ -1768,7 +1822,9 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
         signed gl_PointSize = vs->writes_point_size ? (idx++) : -1;
         signed gl_PointCoord = reads_point_coord ? (idx++) : -1;
         signed gl_FrontFacing = fs->reads_face ? (idx++) : -1;
-        signed gl_FragCoord = fs->reads_frag_coord ? (idx++) : -1;
+        signed gl_FragCoord = (fs->reads_frag_coord &&
+                        !(device->quirks & IS_BIFROST))
+                        ? (idx++) : -1;
 
         /* Emit the stream out buffers */
 
@@ -1812,16 +1868,15 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
                 primitive_size->pointer = varyings_p;
         }
 
-        if (reads_point_coord)
+        if (gl_PointCoord >= 0)
                 varyings[gl_PointCoord].elements = MALI_VARYING_POINT_COORD;
 
-        if (fs->reads_face)
+        if (gl_FrontFacing >= 0)
                 varyings[gl_FrontFacing].elements = MALI_VARYING_FRONT_FACING;
 
-        if (fs->reads_frag_coord)
+        if (gl_FragCoord >= 0)
                 varyings[gl_FragCoord].elements = MALI_VARYING_FRAG_COORD;
 
-        struct panfrost_device *device = pan_device(ctx->base.screen);
         assert(!(device->quirks & IS_BIFROST) || !(reads_point_coord));
 
         /* Let's go ahead and link varying meta to the buffer in question, now
@@ -1845,6 +1900,15 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
         for (unsigned i = 0; i < vs->varying_count; i++) {
                 gl_varying_slot loc = vs->varyings_loc[i];
 
+                /* If we write gl_PointSize from the vertex shader but don't
+                 * consume it, no memory will be allocated for it, so if we
+                 * attempted to write anyway we would dereference a NULL
+                 * pointer on the GPU. Midgard seems fine with this; Bifrost
+                 * faults. */
+
+                if (loc == VARYING_SLOT_PSIZ && !panfrost_writes_point_size(ctx))
+                        ovs[i].format = MALI_VARYING_DISCARD;
+
                 bool captured = ((vs->so_mask & (1ll << loc)) ? true : false);
                 if (!captured)
                         continue;
@@ -1852,9 +1916,9 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
                 struct pipe_stream_output *o = pan_get_so(so, loc);
                 ovs[i].index = o->output_buffer;
 
-                /* Set the type appropriately. TODO: Integer varyings XXX */
                 assert(o->stream == 0);
-                ovs[i].format = pan_xfb_format(o->num_components);
+                ovs[i].format = (vs->varyings[i].format & ~MALI_NR_CHANNELS(4))
+                        | MALI_NR_CHANNELS(o->num_components);
 
                 if (device->quirks & HAS_SWIZZLES)
                         ovs[i].swizzle = panfrost_get_default_swizzle(o->num_components);

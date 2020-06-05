@@ -135,6 +135,28 @@ static void print_instr_name(struct ir3_instruction *instr, bool flags)
 		}
 		if (instr->flags & IR3_INSTR_S2EN)
 			printf(".s2en");
+
+		static const char *cond[0x7] = {
+				"lt",
+				"le",
+				"gt",
+				"ge",
+				"eq",
+				"ne",
+		};
+
+		switch (instr->opc) {
+		case OPC_CMPS_F:
+		case OPC_CMPS_U:
+		case OPC_CMPS_S:
+		case OPC_CMPV_F:
+		case OPC_CMPV_U:
+		case OPC_CMPV_S:
+			printf(".%s", cond[instr->cat2.condition & 0x7]);
+			break;
+		default:
+			break;
+		}
 	}
 }
 
@@ -301,7 +323,7 @@ print_block(struct ir3_block *block, int lvl)
 		unsigned i = 0;
 		tab(lvl+1);
 		printf("pred: ");
-		set_foreach(block->predecessors, entry) {
+		set_foreach (block->predecessors, entry) {
 			struct ir3_block *pred = (struct ir3_block *)entry->key;
 			if (i++)
 				printf(", ");
@@ -342,7 +364,6 @@ ir3_print(struct ir3 *ir)
 	foreach_block (block, &ir->block_list)
 		print_block(block, 0);
 
-	struct ir3_instruction *out;
 	foreach_output_n (out, i, ir) {
 		printf("out%d: ", i);
 		print_instr(out, 0);

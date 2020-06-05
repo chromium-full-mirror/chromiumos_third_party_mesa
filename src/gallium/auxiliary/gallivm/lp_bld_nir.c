@@ -1315,6 +1315,35 @@ static void visit_global_atomic(struct lp_build_nir_context *bld_base,
    bld_base->atomic_global(bld_base, instr->intrinsic, addr_bitsize, addr, val, val2, &result[0]);
 }
 
+static void visit_interp(struct lp_build_nir_context *bld_base,
+                         nir_intrinsic_instr *instr,
+                         LLVMValueRef result[NIR_MAX_VEC_COMPONENTS])
+{
+   struct gallivm_state *gallivm = bld_base->base.gallivm;
+   LLVMBuilderRef builder = gallivm->builder;
+   nir_deref_instr *deref = nir_instr_as_deref(instr->src[0].ssa->parent_instr);
+   unsigned num_components = nir_dest_num_components(instr->dest);
+   nir_variable *var = nir_deref_instr_get_variable(deref);
+   unsigned const_index;
+   LLVMValueRef indir_index;
+   LLVMValueRef offsets[2] = { NULL, NULL };
+   get_deref_offset(bld_base, deref, false, NULL, NULL,
+                    &const_index, &indir_index);
+   bool centroid = instr->intrinsic == nir_intrinsic_interp_deref_at_centroid;
+   bool sample = false;
+   if (instr->intrinsic == nir_intrinsic_interp_deref_at_offset) {
+      for (unsigned i = 0; i < 2; i++) {
+         offsets[i] = LLVMBuildExtractValue(builder, get_src(bld_base, instr->src[1]), i, "");
+         offsets[i] = cast_type(bld_base, offsets[i], nir_type_float, 32);
+      }
+   } else if (instr->intrinsic == nir_intrinsic_interp_deref_at_sample) {
+      offsets[0] = get_src(bld_base, instr->src[1]);
+      offsets[0] = cast_type(bld_base, offsets[0], nir_type_int, 32);
+      sample = true;
+   }
+   bld_base->interp_at(bld_base, num_components, var, centroid, sample, const_index, indir_index, offsets, result);
+}
+
 static void visit_intrinsic(struct lp_build_nir_context *bld_base,
                             nir_intrinsic_instr *instr)
 {
@@ -1357,6 +1386,7 @@ static void visit_intrinsic(struct lp_build_nir_context *bld_base,
    case nir_intrinsic_load_patch_vertices_in:
    case nir_intrinsic_load_sample_id:
    case nir_intrinsic_load_sample_pos:
+   case nir_intrinsic_load_sample_mask_in:
       bld_base->sysval_intrin(bld_base, instr, result);
       break;
    case nir_intrinsic_load_helper_invocation:
@@ -1459,6 +1489,11 @@ static void visit_intrinsic(struct lp_build_nir_context *bld_base,
    case nir_intrinsic_vote_any:
    case nir_intrinsic_vote_ieq:
       bld_base->vote(bld_base, cast_type(bld_base, get_src(bld_base, instr->src[0]), nir_type_int, 32), instr, result);
+      break;
+   case nir_intrinsic_interp_deref_at_offset:
+   case nir_intrinsic_interp_deref_at_centroid:
+   case nir_intrinsic_interp_deref_at_sample:
+      visit_interp(bld_base, instr, result);
       break;
    default:
       assert(0);
@@ -1874,7 +1909,7 @@ bool lp_build_nir_llvm(
    nir_convert_from_ssa(nir, true);
    nir_lower_locals_to_regs(nir);
    nir_remove_dead_derefs(nir);
-   nir_remove_dead_variables(nir, nir_var_function_temp);
+   nir_remove_dead_variables(nir, nir_var_function_temp, NULL);
 
    nir_foreach_variable(variable, &nir->outputs)
       handle_shader_output_decl(bld_base, nir, variable);

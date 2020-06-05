@@ -402,13 +402,37 @@ bi_print_instruction(bi_instruction *ins, FILE *fp)
         }
 
         if (ins->type == BI_BRANCH) {
-                assert(ins->branch_target);
-                fprintf(fp, "-> block%u", ins->branch_target->base.name);
+                if (ins->branch_target) {
+                        fprintf(fp, "-> block%u", ins->branch_target->base.name);
+                } else {
+                        fprintf(fp, "-> void");
+                }
         } else if (ins->type == BI_TEX) {
                 bi_print_texture(&ins->texture, fp);
         }
 
         fprintf(fp, "\n");
+}
+
+void
+bi_print_ports(bi_registers *regs, FILE *fp)
+{
+        for (unsigned i = 0; i < 2; ++i) {
+                if (regs->enabled[i])
+                        fprintf(fp, "port %u: %u\n", i, regs->port[i]);
+        }
+
+        if (regs->write_fma || regs->write_add) {
+                fprintf(fp, "port 2 (%s): %u\n",
+                                regs->write_add ? "ADD" : "FMA",
+                                regs->port[2]);
+        }
+
+        if ((regs->write_fma && regs->write_add) || regs->read_port3) {
+                fprintf(fp, "port 3 (%s): %u\n",
+                                regs->read_port3 ? "read" : "FMA",
+                                regs->port[3]);
+        }
 }
 
 void
@@ -448,21 +472,15 @@ bi_print_clause(bi_clause *clause, FILE *fp)
 
         fprintf(fp, "\n");
 
-        if (clause->instruction_count) {
-                assert(!clause->bundle_count);
-
-                for (unsigned i = 0; i < clause->instruction_count; ++i)
-                        bi_print_instruction(clause->instructions[i], fp);
-        } else {
-                assert(clause->bundle_count);
-
-                for (unsigned i = 0; i < clause->bundle_count; ++i)
-                        bi_print_bundle(&clause->bundles[i], fp);
-        }
+        for (unsigned i = 0; i < clause->bundle_count; ++i)
+                bi_print_bundle(&clause->bundles[i], fp);
 
         if (clause->constant_count) {
                 for (unsigned i = 0; i < clause->constant_count; ++i)
                         fprintf(fp, "%" PRIx64 " ", clause->constants[i]);
+
+                if (clause->branch_constant)
+                        fprintf(fp, "*");
 
                 fprintf(fp, "\n");
         }

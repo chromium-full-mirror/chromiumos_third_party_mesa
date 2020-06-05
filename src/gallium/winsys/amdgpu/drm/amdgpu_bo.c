@@ -477,7 +477,7 @@ static struct amdgpu_winsys_bo *amdgpu_create_bo(struct amdgpu_winsys *ws,
    amdgpu_bo_handle buf_handle;
    uint64_t va = 0;
    struct amdgpu_winsys_bo *bo;
-   amdgpu_va_handle va_handle;
+   amdgpu_va_handle va_handle = NULL;
    int r;
 
    /* VRAM or GTT must be specified, but not both at the same time. */
@@ -553,6 +553,9 @@ static struct amdgpu_winsys_bo *amdgpu_create_bo(struct amdgpu_winsys *ws,
 
       if (!(flags & RADEON_FLAG_READ_ONLY))
          vm_flags |= AMDGPU_VM_PAGE_WRITEABLE;
+
+      if (flags & RADEON_FLAG_UNCACHED)
+         vm_flags |= AMDGPU_VM_MTYPE_UC;
 
       r = amdgpu_bo_va_op_raw(ws->dev, buf_handle, 0, size, va, vm_flags,
 			   AMDGPU_VA_OP_MAP);

@@ -106,7 +106,8 @@ brw_create_nir(struct brw_context *brw,
       }
       assert (nir);
 
-      nir_remove_dead_variables(nir, nir_var_shader_in | nir_var_shader_out);
+      nir_remove_dead_variables(nir, nir_var_shader_in | nir_var_shader_out,
+                                NULL);
       nir_validate_shader(nir, "after glsl_to_nir or spirv_to_nir");
       NIR_PASS_V(nir, nir_lower_io_to_temporaries,
                  nir_shader_get_entrypoint(nir), true, false);
@@ -160,8 +161,6 @@ brw_create_nir(struct brw_context *brw,
       }
    }
 
-   NIR_PASS_V(nir, brw_nir_lower_uniforms, is_scalar);
-
    return nir;
 }
 
@@ -182,6 +181,7 @@ brw_nir_lower_resources(nir_shader *nir, struct gl_shader_program *shader_prog,
                         struct gl_program *prog,
                         const struct gen_device_info *devinfo)
 {
+   NIR_PASS_V(nir, brw_nir_lower_uniforms, nir->options->lower_to_scalar);
    NIR_PASS_V(prog->nir, gl_nir_lower_samplers, shader_prog);
    prog->info.textures_used = prog->nir->info.textures_used;
    prog->info.textures_used_by_txf = prog->nir->info.textures_used_by_txf;

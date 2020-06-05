@@ -32,8 +32,6 @@
 #include "ir3_compiler.h"
 #include "ir3_shader.h"
 
-static void ir3_setup_const_state(struct ir3_shader *shader, nir_shader *nir);
-
 static const nir_shader_compiler_options options = {
 		.lower_fpow = true,
 		.lower_scmp = true,
@@ -352,7 +350,7 @@ ir3_optimize_nir(struct ir3_shader *shader, nir_shader *s,
 		OPT_V(s, nir_opt_cse);
 	}
 
-	OPT_V(s, nir_remove_dead_variables, nir_var_function_temp);
+	OPT_V(s, nir_remove_dead_variables, nir_var_function_temp, NULL);
 
 	OPT_V(s, nir_opt_sink, nir_move_const_undef);
 
@@ -369,7 +367,7 @@ ir3_optimize_nir(struct ir3_shader *shader, nir_shader *s,
 	 * analysis.
 	 */
 	if (!key) {
-		ir3_setup_const_state(shader, s);
+		ir3_setup_const_state(shader, s, &shader->const_state);
 	}
 }
 
@@ -449,11 +447,16 @@ ir3_nir_scan_driver_consts(nir_shader *shader,
 	}
 }
 
-static void
-ir3_setup_const_state(struct ir3_shader *shader, nir_shader *nir)
+/* Sets up the non-variant-dependent constant state for the ir3_shader.  Note
+ * that it is also used from ir3_nir_analyze_ubo_ranges() to figure out the
+ * maximum number of driver params that would eventually be used, to leave
+ * space for this function to allocate the driver params.
+ */
+void
+ir3_setup_const_state(struct ir3_shader *shader, nir_shader *nir,
+	struct ir3_const_state *const_state)
 {
 	struct ir3_compiler *compiler = shader->compiler;
-	struct ir3_const_state *const_state = &shader->const_state;
 
 	memset(&const_state->offsets, ~0, sizeof(const_state->offsets));
 
@@ -477,7 +480,7 @@ ir3_setup_const_state(struct ir3_shader *shader, nir_shader *nir)
 	const_state->num_driver_params = align(const_state->num_driver_params, 4);
 
 	debug_assert((shader->ubo_state.size % 16) == 0);
-	unsigned constoff = align(shader->ubo_state.size / 16, 8);
+	unsigned constoff = shader->ubo_state.size / 16;
 	unsigned ptrsz = ir3_pointer_size(compiler);
 
 	if (const_state->num_ubos > 0) {
@@ -530,4 +533,6 @@ ir3_setup_const_state(struct ir3_shader *shader, nir_shader *nir)
 	}
 
 	const_state->offsets.immediate = constoff;
+
+	assert(constoff <= compiler->max_const);
 }

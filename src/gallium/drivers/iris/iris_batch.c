@@ -181,10 +181,10 @@ iris_init_batch(struct iris_context *ice,
    batch->state_sizes = ice->state.sizes;
    batch->name = name;
 
-   batch->seqno.uploader =
+   batch->fine_fences.uploader =
       u_upload_create(&ice->ctx, 4096, PIPE_BIND_CUSTOM,
                       PIPE_USAGE_STAGING, 0);
-   iris_seqno_init(batch);
+   iris_fine_fence_init(batch);
 
    batch->hw_ctx_id = iris_create_hw_context(screen->bufmgr);
    assert(batch->hw_ctx_id);
@@ -203,8 +203,6 @@ iris_init_batch(struct iris_context *ice,
 
    batch->cache.render = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
                                                  _mesa_key_pointer_equal);
-   batch->cache.depth = _mesa_set_create(NULL, _mesa_hash_pointer,
-                                         _mesa_key_pointer_equal);
 
    memset(batch->other_batches, 0, sizeof(batch->other_batches));
 
@@ -271,7 +269,7 @@ ensure_exec_obj_space(struct iris_batch *batch, uint32_t count)
 void
 iris_use_pinned_bo(struct iris_batch *batch,
                    struct iris_bo *bo,
-                   bool writable)
+                   bool writable, enum iris_domain access)
 {
    assert(bo->kflags & EXEC_OBJECT_PINNED);
 
@@ -282,6 +280,11 @@ iris_use_pinned_bo(struct iris_batch *batch,
     */
    if (bo == batch->screen->workaround_bo)
       writable = false;
+
+   if (access < NUM_IRIS_DOMAINS) {
+      assert(batch->sync_region_depth);
+      iris_bo_bump_seqno(bo, batch->next_seqno, access);
+   }
 
    struct drm_i915_gem_exec_object2 *existing_entry =
       find_validation_entry(batch, bo);
@@ -320,7 +323,7 @@ iris_use_pinned_bo(struct iris_batch *batch,
              ((other_entry->flags & EXEC_OBJECT_WRITE) || writable)) {
             iris_batch_flush(batch->other_batches[b]);
             iris_batch_add_syncobj(batch,
-                                   batch->other_batches[b]->last_seqno->syncobj,
+                                   batch->other_batches[b]->last_fence->syncobj,
                                    I915_EXEC_FENCE_WAIT);
          }
       }
@@ -357,7 +360,7 @@ create_batch(struct iris_batch *batch)
    batch->map = iris_bo_map(NULL, batch->bo, MAP_READ | MAP_WRITE);
    batch->map_next = batch->map;
 
-   iris_use_pinned_bo(batch, batch->bo, false);
+   iris_use_pinned_bo(batch, batch->bo, false, IRIS_DOMAIN_NONE);
 }
 
 static void
@@ -396,7 +399,14 @@ iris_batch_reset(struct iris_batch *batch)
    iris_batch_add_syncobj(batch, syncobj, I915_EXEC_FENCE_SIGNAL);
    iris_syncobj_reference(screen, &syncobj, NULL);
 
-   iris_cache_sets_clear(batch);
+   assert(!batch->sync_region_depth);
+   iris_batch_sync_boundary(batch);
+   iris_batch_mark_reset_sync(batch);
+
+   /* Always add the workaround BO, it contains a driver identifier at the
+    * beginning quite helpful to debug error states.
+    */
+   iris_use_pinned_bo(batch, screen->workaround_bo, false, IRIS_DOMAIN_NONE);
 
    iris_batch_maybe_noop(batch);
 }
@@ -415,14 +425,14 @@ iris_batch_free(struct iris_batch *batch)
 
    ralloc_free(batch->exec_fences.mem_ctx);
 
-   pipe_resource_reference(&batch->seqno.ref.res, NULL);
+   pipe_resource_reference(&batch->fine_fences.ref.res, NULL);
 
    util_dynarray_foreach(&batch->syncobjs, struct iris_syncobj *, s)
       iris_syncobj_reference(screen, s, NULL);
    ralloc_free(batch->syncobjs.mem_ctx);
 
-   iris_seqno_reference(batch->screen, &batch->last_seqno, NULL);
-   u_upload_destroy(batch->seqno.uploader);
+   iris_fine_fence_reference(batch->screen, &batch->last_fence, NULL);
+   u_upload_destroy(batch->fine_fences.uploader);
 
    iris_bo_unreference(batch->bo);
    batch->bo = NULL;
@@ -432,7 +442,6 @@ iris_batch_free(struct iris_batch *batch)
    iris_destroy_hw_context(bufmgr, batch->hw_ctx_id);
 
    _mesa_hash_table_destroy(batch->cache.render, NULL);
-   _mesa_set_destroy(batch->cache.depth, NULL);
 
    if (unlikely(INTEL_DEBUG))
       gen_batch_decode_ctx_finish(&batch->decoder);
@@ -510,12 +519,12 @@ add_aux_map_bos_to_batch(struct iris_batch *batch)
 static void
 finish_seqno(struct iris_batch *batch)
 {
-   struct iris_seqno *sq = iris_seqno_new(batch, IRIS_SEQNO_END);
+   struct iris_fine_fence *sq = iris_fine_fence_new(batch, IRIS_FENCE_END);
    if (!sq)
       return;
 
-   iris_seqno_reference(batch->screen, &batch->last_seqno, sq);
-   iris_seqno_reference(batch->screen, &sq, NULL);
+   iris_fine_fence_reference(batch->screen, &batch->last_fence, sq);
+   iris_fine_fence_reference(batch->screen, &sq, NULL);
 }
 
 /**
@@ -760,10 +769,11 @@ iris_batch_references(struct iris_batch *batch, struct iris_bo *bo)
 }
 
 /**
- * Updates the state of the noop feature.
+ * Updates the state of the noop feature.  Returns true if there was a noop
+ * transition that led to state invalidation.
  */
-uint64_t
-iris_batch_prepare_noop(struct iris_batch *batch, bool noop_enable, uint64_t dirty_flags)
+bool
+iris_batch_prepare_noop(struct iris_batch *batch, bool noop_enable)
 {
    if (batch->noop_enabled == noop_enable)
       return 0;
@@ -779,5 +789,5 @@ iris_batch_prepare_noop(struct iris_batch *batch, bool noop_enable, uint64_t dir
    /* We only need to update the entire state if we transition from noop ->
     * not-noop.
     */
-   return !batch->noop_enabled ? dirty_flags : 0;
+   return !batch->noop_enabled;
 }

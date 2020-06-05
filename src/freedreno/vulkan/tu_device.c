@@ -45,6 +45,9 @@
 
 #include "drm-uapi/msm_drm.h"
 
+/* for fd_get_driver/device_uuid() */
+#include "freedreno/common/freedreno_uuid.h"
+
 static int
 tu_device_get_cache_uuid(uint16_t family, void *uuid)
 {
@@ -59,19 +62,6 @@ tu_device_get_cache_uuid(uint16_t family, void *uuid)
    memcpy((char *) uuid + 4, &f, 2);
    snprintf((char *) uuid + 6, VK_UUID_SIZE - 10, "tu");
    return 0;
-}
-
-static void
-tu_get_driver_uuid(void *uuid)
-{
-   memset(uuid, 0, VK_UUID_SIZE);
-   snprintf(uuid, VK_UUID_SIZE, "freedreno");
-}
-
-static void
-tu_get_device_uuid(void *uuid)
-{
-   memset(uuid, 0, VK_UUID_SIZE);
 }
 
 static VkResult
@@ -308,8 +298,8 @@ tu_physical_device_init(struct tu_physical_device *device,
    fprintf(stderr, "WARNING: tu is not a conformant vulkan implementation, "
                    "testing use only.\n");
 
-   tu_get_driver_uuid(&device->device_uuid);
-   tu_get_device_uuid(&device->device_uuid);
+   fd_get_driver_uuid(device->driver_uuid);
+   fd_get_device_uuid(device->device_uuid, device->gpu_id);
 
    tu_physical_device_get_supported_extensions(device, &device->supported_extensions);
 
@@ -608,7 +598,7 @@ tu_GetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice,
       .depthBounds = false,
       .wideLines = false,
       .largePoints = false,
-      .alphaToOne = false,
+      .alphaToOne = true,
       .multiViewport = false,
       .samplerAnisotropy = true,
       .textureCompressionETC2 = true,
@@ -684,7 +674,7 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES: {
          VkPhysicalDeviceSamplerYcbcrConversionFeatures *features =
             (VkPhysicalDeviceSamplerYcbcrConversionFeatures *) ext;
-         features->samplerYcbcrConversion = false;
+         features->samplerYcbcrConversion = true;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT: {
@@ -2175,6 +2165,14 @@ tu6_compare_func(VkCompareOp op)
    return (enum adreno_compare_func) op;
 }
 
+static inline enum a6xx_reduction_mode
+tu6_reduction_mode(VkSamplerReductionMode reduction_mode)
+{
+   /* note: vulkan enum matches hw */
+
+   return (enum a6xx_reduction_mode) reduction_mode;
+}
+
 static void
 tu_init_sampler(struct tu_device *device,
                 struct tu_sampler *sampler,
@@ -2182,6 +2180,8 @@ tu_init_sampler(struct tu_device *device,
 {
    const struct VkSamplerReductionModeCreateInfo *reduction =
       vk_find_struct_const(pCreateInfo->pNext, SAMPLER_REDUCTION_MODE_CREATE_INFO);
+   const struct VkSamplerYcbcrConversionInfo *ycbcr_conversion =
+      vk_find_struct_const(pCreateInfo->pNext,  SAMPLER_YCBCR_CONVERSION_INFO);
 
    unsigned aniso = pCreateInfo->anisotropyEnable ?
       util_last_bit(MIN2((uint32_t)pCreateInfo->maxAnisotropy >> 1, 8)) : 0;
@@ -2213,8 +2213,16 @@ tu_init_sampler(struct tu_device *device,
    sampler->descriptor[3] = 0;
 
    if (reduction) {
-      /* note: vulkan enum matches hw */
-      sampler->descriptor[2] |= A6XX_TEX_SAMP_2_REDUCTION_MODE(reduction->reductionMode);
+      sampler->descriptor[2] |= A6XX_TEX_SAMP_2_REDUCTION_MODE(
+         tu6_reduction_mode(reduction->reductionMode));
+   }
+
+   sampler->ycbcr_sampler = ycbcr_conversion ?
+      tu_sampler_ycbcr_conversion_from_handle(ycbcr_conversion->conversion) : NULL;
+
+   if (sampler->ycbcr_sampler &&
+       sampler->ycbcr_sampler->chroma_filter == VK_FILTER_LINEAR) {
+      sampler->descriptor[2] |= A6XX_TEX_SAMP_2_CHROMA_LINEAR;
    }
 
    /* TODO:

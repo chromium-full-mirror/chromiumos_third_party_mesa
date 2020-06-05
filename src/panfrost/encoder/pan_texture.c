@@ -82,8 +82,10 @@ panfrost_astc_stretch(unsigned dim)
         return MIN2(dim, 11) - 4;
 }
 
-/* Texture addresses are tagged with information about AFBC (colour AFBC?) xor
- * ASTC (stretch factor) if in use. */
+/* Texture addresses are tagged with information about compressed formats.
+ * AFBC uses a bit for whether the colorspace transform is enabled (RGB and
+ * RGBA only).
+ * For ASTC, this is a "stretch factor" encoding the block size. */
 
 static unsigned
 panfrost_compression_tag(
@@ -91,7 +93,7 @@ panfrost_compression_tag(
                 enum mali_format format, enum mali_texture_layout layout)
 {
         if (layout == MALI_TEXTURE_AFBC)
-                return util_format_has_depth(desc) ? 0x0 : 0x1;
+                return desc->nr_channels >= 3;
         else if (format == MALI_ASTC_HDR_SUPP || format == MALI_ASTC_SRGB_SUPP)
                 return (panfrost_astc_stretch(desc->block.height) << 3) |
                         panfrost_astc_stretch(desc->block.width);
@@ -178,7 +180,7 @@ panfrost_nonlinear_stride(enum mali_texture_layout layout,
                 unsigned width)
 {
         if (layout == MALI_TEXTURE_TILED) {
-                return (width < 16) ? 0 : (16 * bytes_per_pixel * width);
+                return (width < 16) ? 0 : (16 * bytes_per_pixel * ALIGN_POT(width, 16));
         } else {
                 unreachable("TODO: AFBC on Bifrost");
         }
@@ -252,7 +254,8 @@ panfrost_new_texture(
 
         unsigned bytes_per_pixel = util_format_get_blocksize(format);
 
-        enum mali_format mali_format = panfrost_find_format(desc);
+        enum mali_format mali_format = panfrost_pipe_format_table[desc->format].hw;
+        assert(mali_format);
 
         bool manual_stride = (layout == MALI_TEXTURE_LINEAR)
                 && panfrost_needs_explicit_stride(slices, width,
@@ -313,7 +316,8 @@ panfrost_new_texture_bifrost(
         const struct util_format_description *desc =
                 util_format_description(format);
 
-        enum mali_format mali_format = panfrost_find_format(desc);
+        enum mali_format mali_format = panfrost_pipe_format_table[desc->format].hw;
+        assert(mali_format);
 
         panfrost_emit_texture_payload(
                 (mali_ptr *) payload->cpu,
@@ -331,7 +335,6 @@ panfrost_new_texture_bifrost(
 
         descriptor->format_unk = 0x2;
         descriptor->type = type;
-        descriptor->format_unk2 = 0x100;
         descriptor->format = mali_format;
         descriptor->srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
         descriptor->format_unk3 = 0x0;

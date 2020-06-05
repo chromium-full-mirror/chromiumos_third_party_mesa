@@ -54,7 +54,6 @@ int bifrost_debug = 0;
 
 static bi_block *emit_cf_list(bi_context *ctx, struct exec_list *list);
 static bi_instruction *bi_emit_branch(bi_context *ctx);
-static void bi_schedule_barrier(bi_context *ctx);
 
 static void
 emit_jump(bi_context *ctx, nir_jump_instr *instr)
@@ -147,7 +146,6 @@ bi_emit_frag_out(bi_context *ctx, nir_intrinsic_instr *instr)
                 };
 
                 bi_emit(ctx, ins);
-                bi_schedule_barrier(ctx);
                 ctx->emitted_atest = true;
         }
 
@@ -177,7 +175,6 @@ bi_emit_frag_out(bi_context *ctx, nir_intrinsic_instr *instr)
         ctx->blend_types[blend.blend_location] = blend.src_types[0];
 
         bi_emit(ctx, blend);
-        bi_schedule_barrier(ctx);
 }
 
 static bi_instruction
@@ -469,20 +466,29 @@ static void
 emit_load_const(bi_context *ctx, nir_load_const_instr *instr)
 {
         /* Make sure we've been lowered */
-        assert(instr->def.num_components == 1);
+        assert(instr->def.num_components <= (32 / instr->def.bit_size));
+
+        /* Accumulate all the channels of the constant, as if we did an
+         * implicit SEL over them */
+        uint32_t acc = 0;
+
+        for (unsigned i = 0; i < instr->def.num_components; ++i) {
+                unsigned v = nir_const_value_as_uint(instr->value[i], instr->def.bit_size);
+                acc |= (v << (i * instr->def.bit_size));
+        }
 
         bi_instruction move = {
                 .type = BI_MOV,
                 .dest = pan_ssa_index(&instr->def),
-                .dest_type = instr->def.bit_size | nir_type_uint,
+                .dest_type = nir_type_uint32,
                 .src = {
                         BIR_INDEX_CONSTANT
                 },
                 .src_types = {
-                        instr->def.bit_size | nir_type_uint,
+                        nir_type_uint32,
                 },
                 .constant = {
-                        .u64 = nir_const_value_as_uint(instr->value[0], instr->def.bit_size)
+                        .u32 = acc
                 }
         };
 
@@ -837,6 +843,26 @@ emit_alu(bi_context *ctx, nir_alu_instr *instr)
         case nir_op_ixor:
                 alu.op.bitwise = BI_BITWISE_XOR;
                 break;
+
+        case nir_op_f2f16:
+        case nir_op_i2i16:
+        case nir_op_u2u16: {
+                if (nir_src_bit_size(instr->src[0].src) != 32)
+                        break;
+
+                /* Should have been const folded */
+                assert(!nir_src_is_const(instr->src[0].src));
+
+                alu.src_types[1] = alu.src_types[0];
+                alu.src[1] = alu.src[0];
+
+                unsigned last = nir_dest_num_components(instr->dest.dest) - 1;
+                assert(last <= 1);
+
+                alu.swizzle[1][0] = instr->src[0].swizzle[last];
+                break;
+        }
+
         default:
                 break;
         }
@@ -883,6 +909,11 @@ emit_tex_compact(bi_context *ctx, nir_tex_instr *instr)
 
         for (unsigned i = 0; i < instr->num_srcs; ++i) {
                 int index = pan_src_index(&instr->src[i].src);
+
+                /* We were checked ahead-of-time */
+                if (instr->src[i].src_type == nir_tex_src_lod)
+                        continue;
+
                 assert (instr->src[i].src_type == nir_tex_src_coord);
 
                 tex.src[0] = index;
@@ -900,6 +931,34 @@ emit_tex_full(bi_context *ctx, nir_tex_instr *instr)
         unreachable("stub");
 }
 
+/* Normal textures ops are tex for frag shaders and txl for vertex shaders with
+ * lod a constant 0. Anything else needs a full texture op. */
+
+static bool
+bi_is_normal_tex(gl_shader_stage stage, nir_tex_instr *instr)
+{
+        if (stage == MESA_SHADER_FRAGMENT)
+                return instr->op == nir_texop_tex;
+
+        if (instr->op != nir_texop_txl)
+                return false;
+
+        for (unsigned i = 0; i < instr->num_srcs; ++i) {
+                if (instr->src[i].src_type != nir_tex_src_lod)
+                        continue;
+
+                nir_src src = instr->src[i].src;
+
+                if (!nir_src_is_const(src))
+                        continue;
+
+                if (nir_src_as_uint(src) != 0)
+                        continue;
+        }
+
+        return true;
+}
+
 static void
 emit_tex(bi_context *ctx, nir_tex_instr *instr)
 {
@@ -907,7 +966,7 @@ emit_tex(bi_context *ctx, nir_tex_instr *instr)
         unsigned sz =  nir_dest_bit_size(instr->dest);
         instr->dest_type = base | sz;
 
-        bool is_normal = instr->op == nir_texop_tex;
+        bool is_normal = bi_is_normal_tex(ctx->stage, instr);
         bool is_2d = instr->sampler_dim == GLSL_SAMPLER_DIM_2D ||
                 instr->sampler_dim == GLSL_SAMPLER_DIM_EXTERNAL;
         bool is_f = base == nir_type_float && (sz == 16 || sz == 32);
@@ -965,21 +1024,7 @@ create_empty_block(bi_context *ctx)
                         _mesa_hash_pointer,
                         _mesa_key_pointer_equal);
 
-        blk->base.name = ctx->block_name_count++;
-
         return blk;
-}
-
-static void
-bi_schedule_barrier(bi_context *ctx)
-{
-        bi_block *temp = ctx->after_block;
-        ctx->after_block = create_empty_block(ctx);
-        list_addtail(&ctx->after_block->base.link, &ctx->blocks);
-        list_inithead(&ctx->after_block->base.instructions);
-        pan_block_add_successor(&ctx->current_block->base, &ctx->after_block->base);
-        ctx->current_block = ctx->after_block;
-        ctx->after_block = temp;
 }
 
 static bi_block *
@@ -1030,7 +1075,8 @@ bi_set_branch_cond(bi_instruction *branch, nir_src *cond, bool invert)
         /* TODO: Try to unwrap instead of always bailing */
         branch->src[0] = pan_src_index(cond);
         branch->src[1] = BIR_INDEX_ZERO;
-        branch->src_types[0] = branch->src_types[1] = nir_type_uint16;
+        branch->src_types[0] = branch->src_types[1] = nir_type_uint |
+                nir_src_bit_size(*cond);
         branch->cond = invert ? BI_COND_EQ : BI_COND_NE;
 }
 
@@ -1066,18 +1112,16 @@ emit_if(bi_context *ctx, nir_if *nif)
                 /* The else block is empty, so don't emit an exit jump */
                 bi_remove_instruction(then_exit);
                 then_branch->branch_target = ctx->after_block;
+                pan_block_add_successor(&end_then_block->base, &ctx->after_block->base); /* fallthrough */
         } else {
                 then_branch->branch_target = else_block;
                 then_exit->branch_target = ctx->after_block;
                 pan_block_add_successor(&end_then_block->base, &then_exit->branch_target->base);
+                pan_block_add_successor(&end_else_block->base, &ctx->after_block->base); /* fallthrough */
         }
 
-        /* Wire up the successors */
-
         pan_block_add_successor(&before_block->base, &then_branch->branch_target->base); /* then_branch */
-
         pan_block_add_successor(&before_block->base, &then_block->base); /* fallthrough */
-        pan_block_add_successor(&end_else_block->base, &ctx->after_block->base); /* fallthrough */
 }
 
 static void
@@ -1272,8 +1316,15 @@ bifrost_compile_shader_nir(nir_shader *nir, panfrost_program *program, unsigned 
                 break; /* TODO: Multi-function shaders */
         }
 
+        unsigned block_source_count = 0;
+
         bi_foreach_block(ctx, _block) {
                 bi_block *block = (bi_block *) _block;
+
+                /* Name blocks now that we're done emitting so the order is
+                 * consistent */
+                block->base.name = block_source_count++;
+
                 bi_lower_combine(ctx, block);
         }
 

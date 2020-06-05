@@ -215,7 +215,7 @@ bit_outmod(float raw, enum bifrost_outmod mod)
         case BIFROST_SAT_SIGNED:
                 return CLAMP(raw, -1.0, 1.0);
         case BIFROST_SAT:
-                return CLAMP(raw, 0.0, 1.0);
+                return SATURATE(raw);
         default:
                 return raw;
         }
@@ -511,10 +511,24 @@ bit_step(struct bit_state *s, bi_instruction *ins, bool FMA)
 
         case BI_CSEL: {
                 bool direct = ins->cond == BI_COND_ALWAYS;
-                bool cond = direct ? srcs[0].u32 :
-                        bit_eval_cond(ins->cond, srcs[0], srcs[1], ins->src_types[0], 0, 0);
+                unsigned sz = nir_alu_type_get_type_size(ins->src_types[0]);
 
-                dest = cond ? srcs[2] : srcs[3];
+                if (sz == 32) {
+                        bool cond = direct ? srcs[0].u32 :
+                                bit_eval_cond(ins->cond, srcs[0], srcs[1], ins->src_types[0], 0, 0);
+
+                        dest = cond ? srcs[2] : srcs[3];
+                } else if (sz == 16) {
+                        for (unsigned c = 0; c < 2; ++c) {
+                                bool cond = direct ? srcs[0].u16[c] :
+                                        bit_eval_cond(ins->cond, srcs[0], srcs[1], ins->src_types[0], c, c);
+
+                                dest.u16[c] = cond ? srcs[2].u16[c] : srcs[3].u16[c];
+                        }
+                } else {
+                        unreachable("Remaining types todo");
+                }
+
                 break;
         }
 

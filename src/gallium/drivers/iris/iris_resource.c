@@ -1108,11 +1108,10 @@ static void
 iris_flush_resource(struct pipe_context *ctx, struct pipe_resource *resource)
 {
    struct iris_context *ice = (struct iris_context *)ctx;
-   struct iris_batch *render_batch = &ice->batches[IRIS_BATCH_RENDER];
    struct iris_resource *res = (void *) resource;
    const struct isl_drm_modifier_info *mod = res->mod_info;
 
-   iris_resource_prepare_access(ice, render_batch, res,
+   iris_resource_prepare_access(ice, res,
                                 0, INTEL_REMAINING_LEVELS,
                                 0, INTEL_REMAINING_LAYERS,
                                 mod ? mod->aux_usage : ISL_AUX_USAGE_NONE,
@@ -1139,7 +1138,7 @@ iris_resource_disable_aux_on_first_query(struct pipe_resource *resource,
 }
 
 static bool
-iris_resource_get_param(struct pipe_screen *screen,
+iris_resource_get_param(struct pipe_screen *pscreen,
                         struct pipe_context *context,
                         struct pipe_resource *resource,
                         unsigned plane,
@@ -1148,6 +1147,7 @@ iris_resource_get_param(struct pipe_screen *screen,
                         unsigned handle_usage,
                         uint64_t *value)
 {
+   struct iris_screen *screen = (struct iris_screen *)pscreen;
    struct iris_resource *res = (struct iris_resource *)resource;
    bool mod_with_aux =
       res->mod_info && res->mod_info->aux_usage != ISL_AUX_USAGE_NONE;
@@ -1156,7 +1156,7 @@ iris_resource_get_param(struct pipe_screen *screen,
    unsigned handle;
 
    if (iris_resource_unfinished_aux_import(res))
-      iris_resource_finish_aux_import(screen, res);
+      iris_resource_finish_aux_import(pscreen, res);
 
    struct iris_bo *bo = wants_aux ? res->aux.bo : res->bo;
 
@@ -1188,9 +1188,19 @@ iris_resource_get_param(struct pipe_screen *screen,
       if (result)
          *value = handle;
       return result;
-   case PIPE_RESOURCE_PARAM_HANDLE_TYPE_KMS:
-      *value = iris_bo_export_gem_handle(bo);
+   case PIPE_RESOURCE_PARAM_HANDLE_TYPE_KMS: {
+      /* Because we share the same drm file across multiple iris_screen, when
+       * we export a GEM handle we must make sure it is valid in the DRM file
+       * descriptor the caller is using (this is the FD given at screen
+       * creation).
+       */
+      uint32_t handle;
+      if (iris_bo_export_gem_handle_for_device(bo, screen->winsys_fd, &handle))
+         return false;
+      *value = handle;
       return true;
+   }
+
    case PIPE_RESOURCE_PARAM_HANDLE_TYPE_FD:
       result = iris_bo_export_dmabuf(bo, (int *) &handle) == 0;
       if (result)
@@ -1208,6 +1218,7 @@ iris_resource_get_handle(struct pipe_screen *pscreen,
                          struct winsys_handle *whandle,
                          unsigned usage)
 {
+   struct iris_screen *screen = (struct iris_screen *) pscreen;
    struct iris_resource *res = (struct iris_resource *)resource;
    bool mod_with_aux =
       res->mod_info && res->mod_info->aux_usage != ISL_AUX_USAGE_NONE;
@@ -1245,9 +1256,18 @@ iris_resource_get_handle(struct pipe_screen *pscreen,
    switch (whandle->type) {
    case WINSYS_HANDLE_TYPE_SHARED:
       return iris_bo_flink(bo, &whandle->handle) == 0;
-   case WINSYS_HANDLE_TYPE_KMS:
-      whandle->handle = iris_bo_export_gem_handle(bo);
+   case WINSYS_HANDLE_TYPE_KMS: {
+      /* Because we share the same drm file across multiple iris_screen, when
+       * we export a GEM handle we must make sure it is valid in the DRM file
+       * descriptor the caller is using (this is the FD given at screen
+       * creation).
+       */
+      uint32_t handle;
+      if (iris_bo_export_gem_handle_for_device(bo, screen->winsys_fd, &handle))
+         return false;
+      whandle->handle = handle;
       return true;
+   }
    case WINSYS_HANDLE_TYPE_FD:
       return iris_bo_export_dmabuf(bo, (int *) &whandle->handle) == 0;
    }
@@ -1918,8 +1938,7 @@ iris_transfer_map(struct pipe_context *ctx,
       /* Otherwise we're free to map on the CPU. */
 
       if (need_resolve) {
-         iris_resource_access_raw(ice, &ice->batches[IRIS_BATCH_RENDER], res,
-                                  level, box->z, box->depth,
+         iris_resource_access_raw(ice, res, level, box->z, box->depth,
                                   usage & PIPE_TRANSFER_WRITE);
       }
 
@@ -2016,13 +2035,14 @@ void
 iris_dirty_for_history(struct iris_context *ice,
                        struct iris_resource *res)
 {
-   uint64_t dirty = 0ull;
+   uint64_t stage_dirty = 0ull;
 
    if (res->bind_history & PIPE_BIND_CONSTANT_BUFFER) {
-      dirty |= ((uint64_t)res->bind_stages) << IRIS_SHIFT_FOR_DIRTY_CONSTANTS;
+      stage_dirty |= ((uint64_t)res->bind_stages)
+                        << IRIS_SHIFT_FOR_STAGE_DIRTY_CONSTANTS;
    }
 
-   ice->state.dirty |= dirty;
+   ice->state.stage_dirty |= stage_dirty;
 }
 
 /**

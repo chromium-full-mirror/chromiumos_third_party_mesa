@@ -448,11 +448,6 @@ tu6_emit_mrt(struct tu_cmd_buffer *cmd,
    tu_cs_emit_regs(cs,
                    A6XX_SP_SRGB_CNTL(.dword = subpass->srgb_cntl));
 
-   tu_cs_emit_regs(cs,
-                   A6XX_RB_RENDER_COMPONENTS(.dword = subpass->render_components));
-   tu_cs_emit_regs(cs,
-                   A6XX_SP_FS_RENDER_COMPONENTS(.dword = subpass->render_components));
-
    tu_cs_emit_regs(cs, A6XX_GRAS_MAX_LAYER_INDEX(fb->layers - 1));
 }
 
@@ -1748,6 +1743,10 @@ tu_BeginCommandBuffer(VkCommandBuffer commandBuffer,
    return VK_SUCCESS;
 }
 
+/* Sets vertex buffers to HW binding points.  We emit VBs in SDS (so that bin
+ * rendering can skip over unused state), so we need to collect all the
+ * bindings together into a single state emit at draw time.
+ */
 void
 tu_CmdBindVertexBuffers(VkCommandBuffer commandBuffer,
                         uint32_t firstBinding,
@@ -1760,12 +1759,14 @@ tu_CmdBindVertexBuffers(VkCommandBuffer commandBuffer,
    assert(firstBinding + bindingCount <= MAX_VBS);
 
    for (uint32_t i = 0; i < bindingCount; i++) {
-      cmd->state.vb.buffers[firstBinding + i] =
-         tu_buffer_from_handle(pBuffers[i]);
+      struct tu_buffer *buf = tu_buffer_from_handle(pBuffers[i]);
+
+      cmd->state.vb.buffers[firstBinding + i] = buf;
       cmd->state.vb.offsets[firstBinding + i] = pOffsets[i];
+
+      tu_bo_list_add(&cmd->bo_list, buf->bo, MSM_SUBMIT_BO_READ);
    }
 
-   /* VB states depend on VkPipelineVertexInputStateCreateInfo */
    cmd->state.dirty |= TU_CMD_DIRTY_VERTEX_BUFFERS;
 }
 
@@ -2007,6 +2008,13 @@ tu_CmdBindPipeline(VkCommandBuffer commandBuffer,
       unreachable("unrecognized pipeline bind point");
       break;
    }
+
+   /* If the new pipeline requires more VBs than we had previously set up, we
+    * need to re-emit them in SDS.  If it requires the same set or fewer, we
+    * can just re-use the old SDS.
+    */
+   if (pipeline->vi.bindings_used & ~cmd->vertex_bindings_set)
+      cmd->state.dirty |= TU_CMD_DIRTY_VERTEX_BUFFERS;
 
    tu_bo_list_add(&cmd->bo_list, &pipeline->program.binary_bo,
                   MSM_SUBMIT_BO_READ | MSM_SUBMIT_BO_DUMP);
@@ -2474,6 +2482,7 @@ enum tu_draw_state_group_id
 {
    TU_DRAW_STATE_PROGRAM,
    TU_DRAW_STATE_PROGRAM_BINNING,
+   TU_DRAW_STATE_VB,
    TU_DRAW_STATE_VI,
    TU_DRAW_STATE_VI_BINNING,
    TU_DRAW_STATE_VP,
@@ -2659,6 +2668,30 @@ tu6_emit_vs_params(struct tu_cmd_buffer *cmd,
 
    *entry = tu_cs_end_sub_stream(&cmd->sub_cs, &cs);
    return VK_SUCCESS;
+}
+
+static struct tu_cs_entry
+tu6_emit_vertex_buffers(struct tu_cmd_buffer *cmd,
+                        const struct tu_pipeline *pipeline)
+{
+   struct tu_cs cs;
+   tu_cs_begin_sub_stream(&cmd->sub_cs, 4 * MAX_VBS, &cs);
+
+   int binding;
+   for_each_bit(binding, pipeline->vi.bindings_used) {
+      const struct tu_buffer *buf = cmd->state.vb.buffers[binding];
+      const VkDeviceSize offset = buf->bo_offset +
+         cmd->state.vb.offsets[binding];
+
+      tu_cs_emit_regs(&cs,
+                      A6XX_VFD_FETCH_BASE(binding, .bo = buf->bo, .bo_offset = offset),
+                      A6XX_VFD_FETCH_SIZE(binding, buf->size - offset));
+
+   }
+
+   cmd->vertex_bindings_set = pipeline->vi.bindings_used;
+
+   return tu_cs_end_sub_stream(&cmd->sub_cs, &cs);
 }
 
 static VkResult
@@ -2914,22 +2947,6 @@ tu6_bind_draw_states(struct tu_cmd_buffer *cmd,
       tu6_emit_scissor(cs, &cmd->state.dynamic.scissor.scissors[0]);
    }
 
-   if (cmd->state.dirty &
-       (TU_CMD_DIRTY_PIPELINE | TU_CMD_DIRTY_VERTEX_BUFFERS)) {
-      for (uint32_t i = 0; i < pipeline->vi.count; i++) {
-         const uint32_t binding = pipeline->vi.bindings[i];
-         const struct tu_buffer *buf = cmd->state.vb.buffers[binding];
-         const VkDeviceSize offset = buf->bo_offset +
-                                     cmd->state.vb.offsets[binding];
-         const VkDeviceSize size =
-            offset < buf->size ? buf->size - offset : 0;
-
-         tu_cs_emit_regs(cs,
-                         A6XX_VFD_FETCH_BASE(i, .bo = buf->bo, .bo_offset = offset),
-                         A6XX_VFD_FETCH_SIZE(i, size));
-      }
-   }
-
    if (cmd->state.dirty & TU_CMD_DIRTY_PIPELINE) {
       draw_state_groups[draw_state_group_count++] =
          (struct tu_draw_state_group) {
@@ -3000,6 +3017,15 @@ tu6_bind_draw_states(struct tu_cmd_buffer *cmd,
             .id = TU_DRAW_STATE_FS_CONST,
             .enable_mask = ENABLE_DRAW,
             .ib = tu6_emit_consts(cmd, pipeline, descriptors_state, MESA_SHADER_FRAGMENT)
+         };
+   }
+
+   if (cmd->state.dirty & TU_CMD_DIRTY_VERTEX_BUFFERS) {
+      draw_state_groups[draw_state_group_count++] =
+         (struct tu_draw_state_group) {
+            .id = TU_DRAW_STATE_VB,
+            .enable_mask = ENABLE_ALL,
+            .ib = tu6_emit_vertex_buffers(cmd, pipeline)
          };
    }
 
@@ -3127,13 +3153,6 @@ tu6_bind_draw_states(struct tu_cmd_buffer *cmd,
    tu_cs_sanity_check(cs);
 
    /* track BOs */
-   if (cmd->state.dirty & TU_CMD_DIRTY_VERTEX_BUFFERS) {
-      for (uint32_t i = 0; i < MAX_VBS; i++) {
-         const struct tu_buffer *buf = cmd->state.vb.buffers[i];
-         if (buf)
-            tu_bo_list_add(&cmd->bo_list, buf->bo, MSM_SUBMIT_BO_READ);
-      }
-   }
    if (cmd->state.dirty & TU_CMD_DIRTY_DESCRIPTOR_SETS) {
       unsigned i;
       for_each_bit(i, descriptors_state->valid) {

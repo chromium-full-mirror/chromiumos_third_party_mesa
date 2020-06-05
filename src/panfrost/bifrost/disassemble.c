@@ -557,6 +557,7 @@ static const struct fma_op_info FMAOpInfos[] = {
         { true,  0x02000, "SWZ.XXXX.v4i8", FMA_ONE_SRC },
         { true,  0x03e00, "SWZ.ZZZZ.v4i8", FMA_ONE_SRC },
         { true,  0x00800, "IMAD", FMA_THREE_SRC },
+        { true,  0x07818, "MUL.i32", FMA_TWO_SRC },
         { true,  0x078db, "POPCNT", FMA_ONE_SRC },
 };
 
@@ -613,6 +614,7 @@ static struct fma_op_info find_fma_op_info(unsigned op, bool extended)
 
         struct fma_op_info info;
         snprintf(info.name, sizeof(info.name), "op%04x", op);
+        info.extended = extended;
         info.op = op;
         info.src_type = FMA_THREE_SRC;
         return info;
@@ -1020,7 +1022,8 @@ static const struct add_op_info add_op_infos[] = {
         { 0x07f18, "LSHIFT_ADD_HIGH32.i32", ADD_TWO_SRC },
         { 0x08000, "LD_ATTR", ADD_LOAD_ATTR, true },
         { 0x0a000, "LD_VAR.32", ADD_VARYING_INTERP, true },
-        { 0x0b000, "TEX", ADD_TEX_COMPACT, true },
+        { 0x0b000, "TEXC", ADD_TEX_COMPACT, true },
+        { 0x0b400, "TEXC.vtx", ADD_TEX_COMPACT, true },
         { 0x0c188, "LOAD.i32", ADD_TWO_SRC, true },
         { 0x0c1a0, "LD_UBO.i32", ADD_TWO_SRC, true },
         { 0x0c1b8, "LD_SCRATCH.v2i32", ADD_TWO_SRC, true },
@@ -1127,8 +1130,10 @@ static const struct add_op_info add_op_infos[] = {
         { 0x193c0, "ST_VAR.v4", ADD_THREE_SRC, true },
         { 0x1952c, "BLEND", ADD_BLENDING, true },
         { 0x1a000, "LD_VAR.16", ADD_VARYING_INTERP, true },
+        { 0x1ae20, "TEX.vtx", ADD_TEX, true },
         { 0x1ae60, "TEX", ADD_TEX, true },
-        { 0x1b000, "TEX.f16", ADD_TEX_COMPACT, true },
+        { 0x1b000, "TEXC.f16", ADD_TEX_COMPACT, true },
+        { 0x1b400, "TEXC.vtx.f16", ADD_TEX_COMPACT, true },
         { 0x1c000, "RSHIFT_NAND.i32", ADD_SHIFT },
         { 0x1c400, "RSHIFT_AND.i32", ADD_SHIFT },
         { 0x1c800, "LSHIFT_NAND.i32", ADD_SHIFT },
@@ -1428,10 +1433,9 @@ static void dump_add(FILE *fp, uint64_t word, struct bifrost_regs regs,
                 if (info.src_type == ADD_TEX_COMPACT) {
                         tex_index = (ADD.op >> 3) & 0x7;
                         sampler_index = (ADD.op >> 7) & 0x7;
-                        bool unknown = (ADD.op & 0x40);
-                        // TODO: figure out if the unknown bit is ever 0
-                        if (!unknown)
-                                fprintf(fp, "unknown ");
+                        bool compute_lod = (ADD.op & 0x40);
+                        if (!compute_lod)
+                                fprintf(fp, "vtx lod 0 ");
                 } else {
                         uint64_t constVal = get_const(consts, regs);
                         uint32_t controlBits = (ADD.op & 0x8) ? (constVal >> 32) : constVal;
@@ -1554,7 +1558,9 @@ static void dump_add(FILE *fp, uint64_t word, struct bifrost_regs regs,
                         // direct addr
                         fprintf(fp, "%d", addr);
                 } else if (addr < 0b11000) {
-                        if (addr == 22)
+                        if (addr == 20)
+                                fprintf(fp, "pointcoord");
+                        else if (addr == 22)
                                 fprintf(fp, "fragw");
                         else if (addr == 23)
                                 fprintf(fp, "fragz");
@@ -2020,6 +2026,9 @@ bool dump_clause(FILE *fp, uint32_t *words, unsigned *size, unsigned offset, boo
                                         break;
                                 case 0xd:
                                         const_idx = 4;
+                                        break;
+                                case 0xe:
+                                        const_idx = 5;
                                         break;
                                 default:
                                         fprintf(fp, "# unknown pos 0x%x\n", pos);

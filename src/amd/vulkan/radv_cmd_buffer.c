@@ -284,17 +284,8 @@ static VkResult radv_create_cmd_buffer(
 	cmd_buffer->pool = pool;
 	cmd_buffer->level = level;
 
-	if (pool) {
-		list_addtail(&cmd_buffer->pool_link, &pool->cmd_buffers);
-		cmd_buffer->queue_family_index = pool->queue_family_index;
-
-	} else {
-		/* Init the pool_link so we can safely call list_del when we destroy
-		 * the command buffer
-		 */
-		list_inithead(&cmd_buffer->pool_link);
-		cmd_buffer->queue_family_index = RADV_QUEUE_GENERAL;
-	}
+	list_addtail(&cmd_buffer->pool_link, &pool->cmd_buffers);
+	cmd_buffer->queue_family_index = pool->queue_family_index;
 
 	ring = radv_queue_family_to_ring(cmd_buffer->queue_family_index);
 
@@ -1812,7 +1803,7 @@ radv_load_ds_clear_metadata(struct radv_cmd_buffer *cmd_buffer,
 	uint32_t reg = R_028028_DB_STENCIL_CLEAR + 4 * reg_offset;
 
 	if (cmd_buffer->device->physical_device->rad_info.has_load_ctx_reg_pkt) {
-		radeon_emit(cs, PKT3(PKT3_LOAD_CONTEXT_REG, 3, 0));
+		radeon_emit(cs, PKT3(PKT3_LOAD_CONTEXT_REG_INDEX, 3, 0));
 		radeon_emit(cs, va);
 		radeon_emit(cs, va >> 32);
 		radeon_emit(cs, (reg - SI_CONTEXT_REG_OFFSET) >> 2);
@@ -1996,7 +1987,7 @@ radv_load_color_clear_metadata(struct radv_cmd_buffer *cmd_buffer,
 	uint32_t reg = R_028C8C_CB_COLOR0_CLEAR_WORD0 + cb_idx * 0x3c;
 
 	if (cmd_buffer->device->physical_device->rad_info.has_load_ctx_reg_pkt) {
-		radeon_emit(cs, PKT3(PKT3_LOAD_CONTEXT_REG, 3, cmd_buffer->state.predicating));
+		radeon_emit(cs, PKT3(PKT3_LOAD_CONTEXT_REG_INDEX, 3, cmd_buffer->state.predicating));
 		radeon_emit(cs, va);
 		radeon_emit(cs, va >> 32);
 		radeon_emit(cs, (reg - SI_CONTEXT_REG_OFFSET) >> 2);
@@ -5474,7 +5465,7 @@ void radv_initialize_dcc(struct radv_cmd_buffer *cmd_buffer,
 		if (size != image->planes[0].surface.dcc_size) {
 			state->flush_bits |=
 				radv_fill_buffer(cmd_buffer, image->bo,
-						 image->offset + image->dcc_offset + size,
+						 image->offset + image->planes[0].surface.dcc_offset + size,
 						 image->planes[0].surface.dcc_size - size,
 						 0xffffffff);
 		}

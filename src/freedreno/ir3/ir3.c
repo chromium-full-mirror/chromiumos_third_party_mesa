@@ -535,21 +535,10 @@ static int emit_cat5(struct ir3_instruction *instr, void *ptr,
 static int emit_cat6_a6xx(struct ir3_instruction *instr, void *ptr,
 		struct ir3_info *info)
 {
-	struct ir3_register *src1, *src2, *ssbo;
+	struct ir3_register *ssbo;
 	instr_cat6_a6xx_t *cat6 = ptr;
-	bool has_dest = (instr->opc == OPC_LDIB || instr->opc == OPC_LDC);
 
 	ssbo = instr->regs[1];
-	src1 = instr->regs[2];
-
-	if (has_dest) {
-		/* the src2 field in the instruction is actually the destination
-		 * register for load instructions:
-		 */
-		src2 = instr->regs[0];
-	} else {
-		src2 = instr->regs[3];
-	}
 
 	cat6->type      = instr->cat6.type;
 	cat6->d         = instr->cat6.d - (instr->opc == OPC_LDC ? 0 : 1);
@@ -560,9 +549,26 @@ static int emit_cat6_a6xx(struct ir3_instruction *instr, void *ptr,
 	cat6->sync      = !!(instr->flags & IR3_INSTR_SY);
 	cat6->opc_cat   = 6;
 
-	cat6->src1 = reg(src1, info, instr->repeat, 0);
-	cat6->src2 = reg(src2, info, instr->repeat, 0);
 	cat6->ssbo = reg(ssbo, info, instr->repeat, IR3_REG_IMMED);
+
+	/* For unused sources in an opcode, initialize contents with the ir3 dest
+	 * reg
+	 */
+	switch (instr->opc) {
+	case OPC_RESINFO:
+		cat6->src1 = reg(instr->regs[0], info, instr->repeat, 0);
+		cat6->src2 = reg(instr->regs[0], info, instr->repeat, 0);
+		break;
+	case OPC_LDC:
+	case OPC_LDIB:
+		cat6->src1 = reg(instr->regs[2], info, instr->repeat, 0);
+		cat6->src2 = reg(instr->regs[0], info, instr->repeat, 0);
+		break;
+	default:
+		cat6->src1 = reg(instr->regs[2], info, instr->repeat, 0);
+		cat6->src2 = reg(instr->regs[3], info, instr->repeat, 0);
+		break;
+	}
 
 	if (instr->flags & IR3_INSTR_B) {
 		if (ssbo->flags & IR3_REG_IMMED) {
@@ -600,6 +606,7 @@ static int emit_cat6_a6xx(struct ir3_instruction *instr, void *ptr,
 		cat6->pad5 = 0x2;
 		break;
 	case OPC_LDIB:
+	case OPC_RESINFO:
 		cat6->pad1 = 0x1;
 		cat6->pad3 = 0xc;
 		cat6->pad5 = 0x2;
@@ -647,6 +654,7 @@ static int emit_cat6(struct ir3_instruction *instr, void *ptr,
 		case OPC_STIB:
 		case OPC_LDIB:
 		case OPC_LDC:
+		case OPC_RESINFO:
 			return emit_cat6_a6xx(instr, ptr, info);
 		default:
 			break;
@@ -734,6 +742,7 @@ static int emit_cat6(struct ir3_instruction *instr, void *ptr,
 			/* first src is src_ssbo: */
 			iassert(src1->flags & IR3_REG_IMMED);
 			ldgb->src_ssbo = src1->uim_val;
+			ldgb->src_ssbo_im = 0x1;
 
 			ldgb->src1 = reg(src2, info, instr->repeat, IR3_REG_IMMED);
 			ldgb->src1_im = !!(src2->flags & IR3_REG_IMMED);
@@ -742,14 +751,13 @@ static int emit_cat6(struct ir3_instruction *instr, void *ptr,
 
 			ldgb->src3 = reg(src4, info, instr->repeat, 0);
 			ldgb->pad0 = 0x1;
-			ldgb->pad3 = 0x1;
 		} else {
 			ldgb->src1 = reg(src1, info, instr->repeat, IR3_REG_IMMED);
 			ldgb->src1_im = !!(src1->flags & IR3_REG_IMMED);
 			ldgb->src2 = reg(src2, info, instr->repeat, IR3_REG_IMMED);
 			ldgb->src2_im = !!(src2->flags & IR3_REG_IMMED);
 			ldgb->pad0 = 0x1;
-			ldgb->pad3 = 0x0;
+			ldgb->src_ssbo_im = 0x0;
 		}
 
 		return 0;
@@ -777,7 +785,7 @@ static int emit_cat6(struct ir3_instruction *instr, void *ptr,
 		ldgb->src2_im = !!(src3->flags & IR3_REG_IMMED);
 
 		ldgb->pad0 = 0x0;
-		ldgb->pad3 = 0x1;
+		ldgb->src_ssbo_im = true;
 
 		return 0;
 	} else if (instr->opc == OPC_RESINFO) {
@@ -788,8 +796,8 @@ static int emit_cat6(struct ir3_instruction *instr, void *ptr,
 		ldgb->dst = reg(dst, info, instr->repeat, IR3_REG_R | IR3_REG_HALF);
 
 		/* first src is src_ssbo: */
-		iassert(src1->flags & IR3_REG_IMMED);
-		ldgb->src_ssbo = src1->uim_val;
+		ldgb->src_ssbo = reg(src1, info, instr->repeat, IR3_REG_IMMED);
+		ldgb->src_ssbo_im = !!(src1->flags & IR3_REG_IMMED);
 
 		return 0;
 	} else if ((instr->opc == OPC_STGB) || (instr->opc == OPC_STIB)) {
@@ -1201,8 +1209,6 @@ ir3_find_ssa_uses(struct ir3 *ir, void *mem_ctx, bool falsedeps)
 
 	foreach_block (block, &ir->block_list) {
 		foreach_instr (instr, &block->instr_list) {
-			struct ir3_instruction *src;
-
 			foreach_ssa_src_n (src, n, instr) {
 				if (__is_false_dep(instr, n) && !falsedeps)
 					continue;
@@ -1211,5 +1217,71 @@ ir3_find_ssa_uses(struct ir3 *ir, void *mem_ctx, bool falsedeps)
 				_mesa_set_add(src->uses, instr);
 			}
 		}
+	}
+}
+
+/**
+ * Set the destination type of an instruction, for example if a
+ * conversion is folded in, handling the special cases where the
+ * instruction's dest type or opcode needs to be fixed up.
+ */
+void
+ir3_set_dst_type(struct ir3_instruction *instr, bool half)
+{
+	if (half) {
+		instr->regs[0]->flags |= IR3_REG_HALF;
+	} else {
+		instr->regs[0]->flags &= ~IR3_REG_HALF;
+	}
+
+	switch (opc_cat(instr->opc)) {
+	case 1: /* move instructions */
+		if (half) {
+			instr->cat1.dst_type = half_type(instr->cat1.dst_type);
+		} else {
+			instr->cat1.dst_type = full_type(instr->cat1.dst_type);
+		}
+		break;
+	case 4:
+		if (half) {
+			instr->opc = cat4_half_opc(instr->opc);
+		} else {
+			instr->opc = cat4_full_opc(instr->opc);
+		}
+		break;
+	case 5:
+		if (half) {
+			instr->cat5.type = half_type(instr->cat5.type);
+		} else {
+			instr->cat5.type = full_type(instr->cat5.type);
+		}
+		break;
+	}
+}
+
+/**
+ * One-time fixup for instruction src-types.  Other than cov's that
+ * are folded, an instruction's src type does not change.
+ */
+void
+ir3_fixup_src_type(struct ir3_instruction *instr)
+{
+	bool half = !!(instr->regs[1]->flags & IR3_REG_HALF);
+
+	switch (opc_cat(instr->opc)) {
+	case 1: /* move instructions */
+		if (half) {
+			instr->cat1.src_type = half_type(instr->cat1.src_type);
+		} else {
+			instr->cat1.src_type = full_type(instr->cat1.src_type);
+		}
+		break;
+	case 3:
+		if (half) {
+			instr->opc = cat3_half_opc(instr->opc);
+		} else {
+			instr->opc = cat3_full_opc(instr->opc);
+		}
+		break;
 	}
 }

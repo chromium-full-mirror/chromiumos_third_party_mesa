@@ -105,7 +105,7 @@
 #define SI_MAP_BUFFER_ALIGNMENT           64
 #define SI_MAX_VARIABLE_THREADS_PER_BLOCK 1024
 
-#define SI_RESOURCE_FLAG_TRANSFER          (PIPE_RESOURCE_FLAG_DRV_PRIV << 0)
+#define SI_RESOURCE_FLAG_FORCE_LINEAR      (PIPE_RESOURCE_FLAG_DRV_PRIV << 0)
 #define SI_RESOURCE_FLAG_FLUSHED_DEPTH     (PIPE_RESOURCE_FLAG_DRV_PRIV << 1)
 #define SI_RESOURCE_FLAG_FORCE_MSAA_TILING (PIPE_RESOURCE_FLAG_DRV_PRIV << 2)
 #define SI_RESOURCE_FLAG_DISABLE_DCC       (PIPE_RESOURCE_FLAG_DRV_PRIV << 3)
@@ -122,6 +122,7 @@
    (((x)&0x3) << SI_RESOURCE_FLAG_MICRO_TILE_MODE_SHIFT)
 #define SI_RESOURCE_FLAG_MICRO_TILE_MODE_GET(x)                                                    \
    (((x) >> SI_RESOURCE_FLAG_MICRO_TILE_MODE_SHIFT) & 0x3)
+#define SI_RESOURCE_FLAG_UNCACHED          (PIPE_RESOURCE_FLAG_DRV_PRIV << 12)
 
 enum si_clear_code
 {
@@ -1029,6 +1030,8 @@ struct si_context {
    unsigned cs_max_waves_per_sh;
    bool flatshade;
    bool do_update_shaders;
+   bool compute_shaderbuf_sgprs_dirty;
+   bool compute_image_sgprs_dirty;
 
    /* shader descriptors */
    struct si_descriptors descriptors[SI_NUM_DESCS];
@@ -1406,6 +1409,7 @@ void si_init_screen_get_functions(struct si_screen *sscreen);
 /* si_gfx_cs.c */
 void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_handle **fence);
 void si_allocate_gds(struct si_context *ctx);
+void si_set_tracked_regs_to_clear_state(struct si_context *ctx);
 void si_begin_new_gfx_cs(struct si_context *ctx);
 void si_need_gfx_cs_space(struct si_context *ctx);
 void si_unref_sdma_uploads(struct si_context *sctx);

@@ -282,7 +282,8 @@ anv_shader_compile_to_nir(struct anv_device *device,
    NIR_PASS_V(nir, nir_split_per_member_structs);
 
    NIR_PASS_V(nir, nir_remove_dead_variables,
-              nir_var_shader_in | nir_var_shader_out | nir_var_system_value);
+              nir_var_shader_in | nir_var_shader_out | nir_var_system_value,
+              NULL);
 
    NIR_PASS_V(nir, nir_propagate_invariant);
    NIR_PASS_V(nir, nir_lower_io_to_temporaries,
@@ -1728,21 +1729,22 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
    return VK_SUCCESS;
 }
 
-uint32_t
-anv_cs_workgroup_size(const struct anv_compute_pipeline *pipeline)
+struct anv_cs_parameters
+anv_cs_parameters(const struct anv_compute_pipeline *pipeline)
 {
    const struct brw_cs_prog_data *cs_prog_data = get_cs_prog_data(pipeline);
-   return cs_prog_data->local_size[0] *
-          cs_prog_data->local_size[1] *
-          cs_prog_data->local_size[2];
-}
 
-uint32_t
-anv_cs_threads(const struct anv_compute_pipeline *pipeline)
-{
-   const struct brw_cs_prog_data *cs_prog_data = get_cs_prog_data(pipeline);
-   return DIV_ROUND_UP(anv_cs_workgroup_size(pipeline),
-                       cs_prog_data->simd_size);
+   struct anv_cs_parameters cs_params = {};
+
+   cs_params.group_size = cs_prog_data->local_size[0] *
+                          cs_prog_data->local_size[1] *
+                          cs_prog_data->local_size[2];
+   cs_params.simd_size =
+      brw_cs_simd_size_for_group_size(&pipeline->base.device->info,
+                                      cs_prog_data, cs_params.group_size);
+   cs_params.threads = DIV_ROUND_UP(cs_params.group_size, cs_params.simd_size);
+
+   return cs_params;
 }
 
 /**

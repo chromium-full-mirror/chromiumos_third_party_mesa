@@ -51,15 +51,13 @@
  */
 
 struct ir3_postsched_ctx {
-	struct ir3_context *ctx;
+	struct ir3 *ir;
 
 	void *mem_ctx;
 	struct ir3_block *block;           /* the current block */
 	struct dag *dag;
 
 	struct list_head unscheduled_list; /* unscheduled instructions */
-
-	bool error;
 
 	int sfu_delay;
 	int tex_delay;
@@ -317,7 +315,7 @@ choose_instr(struct ir3_postsched_ctx *ctx)
 }
 
 struct ir3_postsched_deps_state {
-	struct ir3_context *ctx;
+	struct ir3_postsched_ctx *ctx;
 
 	enum { F, R } direction;
 
@@ -402,7 +400,6 @@ static void
 calculate_deps(struct ir3_postsched_deps_state *state,
 		struct ir3_postsched_node *node)
 {
-	struct ir3_register *reg;
 	int b;
 
 	/* Add dependencies on instructions that previously (or next,
@@ -443,7 +440,7 @@ calculate_deps(struct ir3_postsched_deps_state *state,
 	/* And then after we update the state for what this instruction
 	 * wrote:
 	 */
-	reg = node->instr->regs[0];
+	struct ir3_register *reg = node->instr->regs[0];
 	if (reg->flags & IR3_REG_RELATIV) {
 		/* mark the entire array as written: */
 		struct ir3_array *arr = ir3_lookup_array(state->ctx->ir, reg->array.id);
@@ -461,9 +458,9 @@ static void
 calculate_forward_deps(struct ir3_postsched_ctx *ctx)
 {
 	struct ir3_postsched_deps_state state = {
-			.ctx = ctx->ctx,
+			.ctx = ctx,
 			.direction = F,
-			.merged = ctx->ctx->compiler->gpu_id >= 600,
+			.merged = ctx->ir->compiler->gpu_id >= 600,
 	};
 
 	foreach_instr (instr, &ctx->unscheduled_list) {
@@ -475,9 +472,9 @@ static void
 calculate_reverse_deps(struct ir3_postsched_ctx *ctx)
 {
 	struct ir3_postsched_deps_state state = {
-			.ctx = ctx->ctx,
+			.ctx = ctx,
 			.direction = R,
-			.merged = ctx->ctx->compiler->gpu_id >= 600,
+			.merged = ctx->ir->compiler->gpu_id >= 600,
 	};
 
 	foreach_instr_rev (instr, &ctx->unscheduled_list) {
@@ -539,7 +536,6 @@ sched_dag_init(struct ir3_postsched_ctx *ctx)
 	 */
 	foreach_instr (instr, &ctx->unscheduled_list) {
 		struct ir3_postsched_node *n = instr->data;
-		struct ir3_instruction *src;
 
 		foreach_ssa_src_n (src, i, instr) {
 			if (src->block != instr->block)
@@ -628,15 +624,7 @@ sched_block(struct ir3_postsched_ctx *ctx, struct ir3_block *block)
 			schedule(ctx, instr);
 
 	while (!list_is_empty(&ctx->unscheduled_list)) {
-		struct ir3_instruction *instr;
-
-		instr = choose_instr(ctx);
-
-		/* this shouldn't happen: */
-		if (!instr) {
-			ctx->error = true;
-			break;
-		}
+		struct ir3_instruction *instr = choose_instr(ctx);
 
 		unsigned delay = ir3_delay_calc(ctx->block, instr, false, false);
 		d("delay=%u", delay);
@@ -689,7 +677,6 @@ cleanup_self_movs(struct ir3 *ir)
 {
 	foreach_block (block, &ir->block_list) {
 		foreach_instr_safe (instr, &block->instr_list) {
-			struct ir3_register *reg;
 
 			foreach_src (reg, instr) {
 				if (!reg->instr)
@@ -711,22 +698,19 @@ cleanup_self_movs(struct ir3 *ir)
 	}
 }
 
-int
-ir3_postsched(struct ir3_context *cctx)
+bool
+ir3_postsched(struct ir3 *ir)
 {
 	struct ir3_postsched_ctx ctx = {
-			.ctx = cctx,
+			.ir = ir,
 	};
 
-	ir3_remove_nops(cctx->ir);
-	cleanup_self_movs(cctx->ir);
+	ir3_remove_nops(ir);
+	cleanup_self_movs(ir);
 
-	foreach_block (block, &cctx->ir->block_list) {
+	foreach_block (block, &ir->block_list) {
 		sched_block(&ctx, block);
 	}
 
-	if (ctx.error)
-		return -1;
-
-	return 0;
+	return true;
 }

@@ -301,34 +301,53 @@ typedef struct {
         };
 } bi_instruction;
 
-/* Scheduling takes place in two steps. Step 1 groups instructions within a
- * block into distinct clauses (bi_clause). Step 2 schedules instructions
- * within a clause into FMA/ADD pairs (bi_bundle).
- *
- * A bi_bundle contains two paired instruction pointers. If a slot is unfilled,
- * leave it NULL; the emitter will fill in a nop.
+/* Represents the assignment of ports for a given bi_bundle */
+
+typedef struct {
+        /* Register to assign to each port */
+        unsigned port[4];
+
+        /* Read ports can be disabled */
+        bool enabled[2];
+
+        /* Should we write FMA? what about ADD? If only a single port is
+         * enabled it is in port 2, else ADD/FMA is 2/3 respectively */
+        bool write_fma, write_add;
+
+        /* Should we read with port 3? */
+        bool read_port3;
+
+        /* Packed uniform/constant */
+        uint8_t uniform_constant;
+
+        /* Whether writes are actually for the last instruction */
+        bool first_instruction;
+} bi_registers;
+
+/* A bi_bundle contains two paired instruction pointers. If a slot is unfilled,
+ * leave it NULL; the emitter will fill in a nop. Instructions reference
+ * registers via ports which are assigned per bundle.
  */
 
 typedef struct {
+        bi_registers regs;
         bi_instruction *fma;
         bi_instruction *add;
 } bi_bundle;
 
+struct bi_block;
+
 typedef struct {
         struct list_head link;
 
+        /* Link back up for branch calculations */
+        struct bi_block *block;
+
         /* A clause can have 8 instructions in bundled FMA/ADD sense, so there
-         * can be 8 bundles. But each bundle can have both an FMA and an ADD,
-         * so a clause can have up to 16 bi_instructions. Whether bundles or
-         * instructions are used depends on where in scheduling we are. */
+         * can be 8 bundles. */
 
-        unsigned instruction_count;
         unsigned bundle_count;
-
-        union {
-                bi_instruction *instructions[16];
-                bi_bundle bundles[8];
-        };
+        bi_bundle bundles[8];
 
         /* For scoreboarding -- the clause ID (this is not globally unique!)
          * and its dependencies in terms of other clauses, computed during
@@ -352,9 +371,21 @@ typedef struct {
         /* Corresponds to the usual bit but shifted by a clause */
         bool data_register_write_barrier;
 
-        /* Constants read by this clause. ISA limit. */
+        /* Constants read by this clause. ISA limit. Must satisfy:
+         *
+         *      constant_count + bundle_count <= 13
+         *
+         * Also implicitly constant_count <= bundle_count since a bundle only
+         * reads a single constant.
+         */
         uint64_t constants[8];
         unsigned constant_count;
+
+        /* Branches encode a constant offset relative to the program counter
+         * with some magic flags. By convention, if there is a branch, its
+         * constant will be last. Set this flag to indicate this is required.
+         */
+        bool branch_constant;
 
         /* What type of high latency instruction is here, basically */
         unsigned clause_type;
@@ -378,7 +409,6 @@ typedef struct {
        /* During NIR->BIR */
        nir_function_impl *impl;
        bi_block *current_block;
-       unsigned block_name_count;
        bi_block *after_block;
        bi_block *break_block;
        bi_block *continue_block;
@@ -468,6 +498,9 @@ bi_make_temp_reg(bi_context *ctx)
 #define bi_foreach_block_from(ctx, from, v) \
         list_for_each_entry_from(pan_block, v, from, &ctx->blocks, link)
 
+#define bi_foreach_block_from_rev(ctx, from, v) \
+        list_for_each_entry_from_rev(pan_block, v, from, &ctx->blocks, link)
+
 #define bi_foreach_instr_in_block(block, v) \
         list_for_each_entry(bi_instruction, v, &(block)->base.instructions, link)
 
@@ -488,6 +521,12 @@ bi_make_temp_reg(bi_context *ctx)
 
 #define bi_foreach_clause_in_block(block, v) \
         list_for_each_entry(bi_clause, v, &(block)->clauses, link)
+
+#define bi_foreach_clause_in_block_from(block, v, from) \
+        list_for_each_entry_from(bi_clause, v, from, &(block)->clauses, link)
+
+#define bi_foreach_clause_in_block_from_rev(block, v, from) \
+        list_for_each_entry_from_rev(bi_clause, v, from, &(block)->clauses, link)
 
 #define bi_foreach_instr_global(ctx, v) \
         bi_foreach_block(ctx, v_block) \
@@ -560,6 +599,12 @@ void bi_compute_liveness(bi_context *ctx);
 void bi_liveness_ins_update(uint16_t *live, bi_instruction *ins, unsigned max);
 void bi_invalidate_liveness(bi_context *ctx);
 bool bi_is_live_after(bi_context *ctx, bi_block *block, bi_instruction *start, int src);
+
+/* Layout */
+
+bool bi_can_insert_bundle(bi_clause *clause, bool constant);
+unsigned bi_clause_quadwords(bi_clause *clause);
+signed bi_block_offset(bi_context *ctx, bi_clause *start, bi_block *target);
 
 /* Code emit */
 

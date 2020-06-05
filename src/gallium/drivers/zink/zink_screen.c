@@ -113,6 +113,9 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 1;
 #endif
 
+   case PIPE_CAP_TEXTURE_MULTISAMPLE:
+      return 1;
+
    case PIPE_CAP_TEXTURE_SWIZZLE:
       return 1;
 
@@ -196,7 +199,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return PIPE_ENDIAN_NATIVE; /* unsure */
 
    case PIPE_CAP_MAX_VIEWPORTS:
-      return screen->props.limits.maxViewports;
+      return 1; /* TODO: When GS is supported, use screen->props.limits.maxViewports */
 
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
       return 1;
@@ -418,6 +421,8 @@ zink_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_SUBROUTINES:
    case PIPE_SHADER_CAP_INT64_ATOMICS:
    case PIPE_SHADER_CAP_FP16:
+   case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+   case PIPE_SHADER_CAP_INT16:
       return 0; /* not implemented */
 
    case PIPE_SHADER_CAP_PREFERRED_IR:
@@ -449,8 +454,12 @@ zink_get_shader_param(struct pipe_screen *pscreen,
       return (1 << PIPE_SHADER_IR_NIR) | (1 << PIPE_SHADER_IR_TGSI);
 
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
+#if 0 /* TODO: needs compiler support */
       return MIN2(screen->props.limits.maxPerStageDescriptorStorageImages,
                   PIPE_MAX_SHADER_IMAGES);
+#else
+      return 0;
+#endif
 
    case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
    case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:

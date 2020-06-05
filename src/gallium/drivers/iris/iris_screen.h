@@ -136,6 +136,12 @@ struct iris_vtable {
    void (*lost_genx_state)(struct iris_context *ice, struct iris_batch *batch);
 };
 
+struct iris_address {
+   struct iris_bo *bo;
+   uint64_t offset;
+   enum iris_domain access;
+};
+
 struct iris_screen {
    struct pipe_screen base;
 
@@ -144,8 +150,14 @@ struct iris_screen {
    /** Global slab allocator for iris_transfer_map objects */
    struct slab_parent_pool transfer_pool;
 
-   /** drm device file descriptor, on shared with bufmgr, do not close. */
+   /** drm device file descriptor, shared with bufmgr, do not close. */
    int fd;
+
+   /**
+    * drm device file descriptor to used for window system integration, owned
+    * by iris_screen, can be a different DRM instance than fd.
+    */
+   int winsys_fd;
 
    /** PCI ID for our GPU device */
    int pci_id;
@@ -176,6 +188,15 @@ struct iris_screen {
 
    uint64_t aperture_bytes;
 
+   /**
+    * Last sequence number allocated by the cache tracking mechanism.
+    *
+    * These are used for synchronization and are expected to identify a single
+    * section of a batch, so they should be monotonically increasing and
+    * unique across a single pipe_screen.
+    */
+   uint64_t last_seqno;
+
    struct gen_device_info devinfo;
    struct isl_device isl_dev;
    struct iris_bufmgr *bufmgr;
@@ -186,10 +207,15 @@ struct iris_screen {
    const struct gen_l3_config *l3_config_cs;
 
    /**
-    * A buffer containing nothing useful, for hardware workarounds that
-    * require scratch writes or reads from some unimportant memory.
+    * A buffer containing a marker + description of the driver. This buffer is
+    * added to all execbufs syscalls so that we can identify the driver that
+    * generated a hang by looking at the content of the buffer in the error
+    * state. It is also used for hardware workarounds that require scratch
+    * writes or reads from some unimportant memory. To avoid overriding the
+    * debug data, use the workaround_address field for workarounds.
     */
    struct iris_bo *workaround_bo;
+   struct iris_address workaround_address;
 
    struct disk_cache *disk_cache;
 };
@@ -226,7 +252,5 @@ iris_is_format_supported(struct pipe_screen *pscreen,
                          unsigned usage);
 
 void iris_disk_cache_init(struct iris_screen *screen);
-
-uint32_t iris_get_max_var_invocations(const struct iris_screen *screen);
 
 #endif

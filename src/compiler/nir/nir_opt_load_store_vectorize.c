@@ -199,20 +199,19 @@ static uint32_t hash_entry_key(const void *key_)
     * the order of the hash table walk is deterministic */
    struct entry_key *key = (struct entry_key*)key_;
 
-   uint32_t hash = _mesa_fnv32_1a_offset_bias;
+   uint32_t hash = 0;
    if (key->resource)
-      hash = _mesa_fnv32_1a_accumulate(hash, key->resource->index);
+      hash = XXH32(&key->resource->index, sizeof(key->resource->index), hash);
    if (key->var) {
-      hash = _mesa_fnv32_1a_accumulate(hash, key->var->index);
+      hash = XXH32(&key->var->index, sizeof(key->var->index), hash);
       unsigned mode = key->var->data.mode;
-      hash = _mesa_fnv32_1a_accumulate(hash, mode);
+      hash = XXH32(&mode, sizeof(mode), hash);
    }
 
    for (unsigned i = 0; i < key->offset_def_count; i++)
-      hash = _mesa_fnv32_1a_accumulate(hash, key->offset_defs[i]->index);
+      hash = XXH32(&key->offset_defs[i]->index, sizeof(key->offset_defs[i]->index), hash);
 
-   hash = _mesa_fnv32_1a_accumulate_block(
-      hash, key->offset_defs_mul, key->offset_def_count * sizeof(uint64_t));
+   hash = XXH32(key->offset_defs_mul, key->offset_def_count * sizeof(uint64_t), hash);
 
    return hash;
 }
@@ -1226,7 +1225,10 @@ handle_barrier(struct vectorize_ctx *ctx, bool *progress, nir_function_impl *imp
       case nir_intrinsic_memory_barrier_shared:
          modes = nir_var_mem_shared;
          break;
-      case nir_intrinsic_scoped_memory_barrier:
+      case nir_intrinsic_scoped_barrier:
+	 if (nir_intrinsic_memory_scope(intrin) == NIR_SCOPE_NONE)
+            break;
+
          modes = nir_intrinsic_memory_modes(intrin);
          acquire = nir_intrinsic_memory_semantics(intrin) & NIR_MEMORY_ACQUIRE;
          release = nir_intrinsic_memory_semantics(intrin) & NIR_MEMORY_RELEASE;

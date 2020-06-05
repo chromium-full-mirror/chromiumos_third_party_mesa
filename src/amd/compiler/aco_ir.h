@@ -307,6 +307,7 @@ struct PhysReg {
    constexpr bool operator==(PhysReg other) const { return reg_b == other.reg_b; }
    constexpr bool operator!=(PhysReg other) const { return reg_b != other.reg_b; }
    constexpr bool operator <(PhysReg other) const { return reg_b < other.reg_b; }
+   constexpr PhysReg advance(unsigned bytes) const { PhysReg res = *this; res.reg_b += bytes; return res; }
 
    uint16_t reg_b = 0;
 };
@@ -747,7 +748,7 @@ private:
    };
 };
 
-class Block;
+struct Block;
 
 struct Instruction {
    aco_opcode opcode;
@@ -1124,20 +1125,19 @@ struct Pseudo_barrier_instruction : public Instruction {
 static_assert(sizeof(Pseudo_barrier_instruction) == sizeof(Instruction) + 0, "Unexpected padding");
 
 enum ReduceOp : uint16_t {
-   iadd32, iadd64,
-   imul32, imul64,
-   fadd32, fadd64,
-   fmul32, fmul64,
-   imin32, imin64,
-   imax32, imax64,
-   umin32, umin64,
-   umax32, umax64,
-   fmin32, fmin64,
-   fmax32, fmax64,
-   iand32, iand64,
-   ior32, ior64,
-   ixor32, ixor64,
-   gfx10_wave64_bpermute
+   iadd8, iadd16, iadd32, iadd64,
+   imul8, imul16, imul32, imul64,
+          fadd16, fadd32, fadd64,
+          fmul16, fmul32, fmul64,
+   imin8, imin16, imin32, imin64,
+   imax8, imax16, imax32, imax64,
+   umin8, umin16, umin32, umin64,
+   umax8, umax16, umax32, umax64,
+          fmin16, fmin32, fmin64,
+          fmax16, fmax32, fmax64,
+   iand8, iand16, iand32, iand64,
+   ior8, ior16, ior32, ior64,
+   ixor8, ixor16, ixor32, ixor64,
 };
 
 /**

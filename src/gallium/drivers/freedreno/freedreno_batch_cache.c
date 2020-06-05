@@ -28,6 +28,8 @@
 #include "util/set.h"
 #include "util/list.h"
 #include "util/u_string.h"
+#define XXH_INLINE_ALL
+#include "util/xxhash.h"
 
 #include "freedreno_batch.h"
 #include "freedreno_batch_cache.h"
@@ -98,9 +100,9 @@ static uint32_t
 key_hash(const void *_key)
 {
 	const struct key *key = _key;
-	uint32_t hash = _mesa_fnv32_1a_offset_bias;
-	hash = _mesa_fnv32_1a_accumulate_block(hash, key, offsetof(struct key, surf[0]));
-	hash = _mesa_fnv32_1a_accumulate_block(hash, key->surf, sizeof(key->surf[0]) * key->num_surfs);
+	uint32_t hash = 0;
+	hash = XXH32(key, offsetof(struct key, surf[0]), hash);
+	hash = XXH32(key->surf, sizeof(key->surf[0]) * key->num_surfs , hash);
 	return hash;
 }
 
@@ -183,6 +185,45 @@ void
 fd_bc_flush_deferred(struct fd_batch_cache *cache, struct fd_context *ctx)
 {
 	bc_flush(cache, ctx, true);
+}
+
+static bool
+batch_in_cache(struct fd_batch_cache *cache, struct fd_batch *batch)
+{
+	struct fd_batch *b;
+
+	foreach_batch (b, cache, cache->batch_mask)
+		if (b == batch)
+			return true;
+
+	return false;
+}
+
+void
+fd_bc_dump(struct fd_screen *screen, const char *fmt, ...)
+{
+	struct fd_batch_cache *cache = &screen->batch_cache;
+
+	if (!BATCH_DEBUG)
+		return;
+
+	fd_screen_lock(screen);
+
+	va_list ap;
+	va_start(ap, fmt);
+	vprintf(fmt, ap);
+	va_end(ap);
+
+	set_foreach (screen->live_batches, entry) {
+		struct fd_batch *batch = (struct fd_batch *)entry->key;
+		printf("  %p<%u>%s%s\n", batch, batch->seqno,
+				batch->needs_flush ? ", NEEDS FLUSH" : "",
+				batch_in_cache(cache, batch) ? "" : ", ORPHAN");
+	}
+
+	printf("----\n");
+
+	fd_screen_unlock(screen);
 }
 
 void

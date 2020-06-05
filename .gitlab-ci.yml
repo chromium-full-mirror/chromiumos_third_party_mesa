@@ -3,13 +3,14 @@ variables:
 
 include:
   - project: 'freedesktop/ci-templates'
-    ref: 4b2997287317808830e9cb4eb0f99b691787da88
+    ref: 59de540b620c45739871d1a073d76d5521989d11
     file: '/templates/debian.yml'
   - local: '.gitlab-ci/lava-gitlab-ci.yml'
   - local: '.gitlab-ci/test-source-dep.yml'
 
 stages:
   - container
+  - container-2
   - meson-x86_64
   - scons
   - meson-misc
@@ -30,7 +31,10 @@ stages:
     # automatically once all dependency jobs have passed
     - changes: &all_paths
       - VERSION
-      - bin/**/*
+      - bin/git_sha1_gen.py
+      - bin/install_megadrivers.py
+      - bin/meson_get_version.py
+      - bin/symbols-check.py
       # GitLab CI
       - .gitlab-ci.yml
       - .gitlab-ci/**/*
@@ -127,38 +131,119 @@ success:
     # no need to pull the whole repo to build the container image
     GIT_STRATEGY: none
 
-# Debian 10 based x86 build image
-x86_build:
+# Debian 10 based x86 build image base
+x86_build-base:
   extends:
     - .fdo.container-build@debian
     - .container
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_build "2020-04-22-winehq"
+    FDO_DISTRIBUTION_TAG: &x86_build-base "2020-06-02"
+
+.use-x86_build-base:
+  extends:
+    - x86_build-base
+    - .ci-run-policy
+  stage: container-2
+  variables:
+    BASE_TAG: *x86_build-base
+    FDO_BASE_IMAGE: "$CI_REGISTRY_IMAGE/debian/x86_build-base:$BASE_TAG"
+  needs:
+    - x86_build-base
+
+# Debian 10 based x86 main build image
+x86_build:
+  extends:
+    - .use-x86_build-base
+  variables:
+    FDO_DISTRIBUTION_TAG: &x86_build "2020-06-02"
 
 .use-x86_build:
   variables:
     TAG: *x86_build
   image: "$CI_REGISTRY_IMAGE/debian/x86_build:$TAG"
   needs:
+    - x86_build-base
     - x86_build
+
+# Debian 10 based i386 cross-build image
+i386_build:
+  extends:
+    - .use-x86_build-base
+  variables:
+    FDO_DISTRIBUTION_TAG: &i386_build "2020-06-02"
+
+.use-i386_build:
+  variables:
+    TAG: *i386_build
+  image: "$CI_REGISTRY_IMAGE/debian/i386_build:$TAG"
+  needs:
+    - x86_build-base
+    - i386_build
+
+# Debian 10 based ppc64el cross-build image
+ppc64el_build:
+  extends:
+    - .use-x86_build-base
+  variables:
+    FDO_DISTRIBUTION_TAG: &ppc64el_build "2020-06-02"
+
+.use-ppc64el_build:
+  variables:
+    TAG: *ppc64el_build
+  image: "$CI_REGISTRY_IMAGE/debian/ppc64el_build:$TAG"
+  needs:
+    - x86_build-base
+    - ppc64el_build
+
+# Debian 10 based s390x cross-build image
+s390x_build:
+  extends:
+    - .use-x86_build-base
+  variables:
+    FDO_DISTRIBUTION_TAG: &s390x_build "2020-06-02"
+
+.use-s390x_build:
+  variables:
+    TAG: *s390x_build
+  image: "$CI_REGISTRY_IMAGE/debian/s390x_build:$TAG"
+  needs:
+    - x86_build-base
+    - s390x_build
+
+# Debian 10 based x86 test image base
+x86_test-base:
+  extends: x86_build-base
+  variables:
+    FDO_DISTRIBUTION_TAG: &x86_test-base "2020-06-02"
+
+.use-x86_test-base:
+  extends:
+    - x86_build-base
+    - .ci-run-policy
+  stage: container-2
+  variables:
+    BASE_TAG: *x86_test-base
+    FDO_BASE_IMAGE: "$CI_REGISTRY_IMAGE/debian/x86_test-base:$BASE_TAG"
+  needs:
+    - x86_test-base
 
 # Debian 10 based x86 test image for GL
 x86_test-gl:
-  extends: x86_build
+  extends: .use-x86_test-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_test-gl "2020-04-21"
+    FDO_DISTRIBUTION_TAG: &x86_test-gl "2020-06-04"
 
 # Debian 10 based x86 test image for VK
 x86_test-vk:
-  extends: x86_build
+  extends: .use-x86_test-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_test-vk "2020-04-09"
+    FDO_DISTRIBUTION_TAG: &x86_test-vk "2020-06-02"
 
 # Debian 9 based x86 build image (old LLVM)
 x86_build_old:
-  extends: x86_build
+  extends: x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_build_old "2019-03-18-jflags"
+    FDO_DISTRIBUTION_TAG: &x86_build_old "2020-06-02"
     FDO_DISTRIBUTION_VERSION: stretch-slim
 
 .use-x86_build_old:
@@ -174,7 +259,7 @@ arm_build:
     - .fdo.container-build@debian@arm64v8
     - .container
   variables:
-    FDO_DISTRIBUTION_TAG: &arm_build "2020-05-01-netcat"
+    FDO_DISTRIBUTION_TAG: &arm_build "2020-06-01"
 
 .use-arm_build:
   variables:
@@ -183,22 +268,21 @@ arm_build:
   needs:
     - arm_build
 
-# Debian 10 based ARM test image
+# x86 image with ARM rootfses for baremetal testing.
 arm_test:
-  extends: arm_build
+  extends: x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &arm_test "2020-03-18-jflags"
+    FDO_DISTRIBUTION_TAG: &arm_test "2020-06-01"
 
 .use-arm_test:
   variables:
     TAG: *arm_test
   image: "$CI_REGISTRY_IMAGE/debian/arm_test:$TAG"
   needs:
-    - meson-arm64
     - arm_test
 
 # Native Windows docker builds
-# 
+#
 # Unlike the above Linux-based builds - including MinGW/SCons builds which
 # cross-compile for Windows - which use the freedesktop ci-templates, we
 # cannot use the same scheme here. As Windows lacks support for
@@ -211,7 +295,7 @@ arm_test:
 
 .windows-docker-vs2019:
   variables:
-    WINDOWS_TAG: "2020-03-24"
+    WINDOWS_TAG: "2020-05-05-llvm"
     WINDOWS_IMAGE: "$CI_REGISTRY_IMAGE/windows/x64_build:$WINDOWS_TAG"
     WINDOWS_UPSTREAM_IMAGE: "$CI_REGISTRY/$FDO_UPSTREAM_REPO/windows/x64_build:$WINDOWS_TAG"
 
@@ -222,6 +306,7 @@ windows_build_vs2019:
   stage: container
   variables:
     GIT_STRATEGY: fetch # we do actually need the full repository though
+  timeout: 4h # LLVM takes ages
   tags:
     - windows
     - shell
@@ -229,7 +314,7 @@ windows_build_vs2019:
     - mesa
   script:
     - .\.gitlab-ci\windows\mesa_container.ps1 $CI_REGISTRY $CI_REGISTRY_USER $CI_REGISTRY_PASSWORD $WINDOWS_IMAGE $WINDOWS_UPSTREAM_IMAGE
-  
+
 .use-windows_build_vs2019:
   extends: .windows-docker-vs2019
   image: "$WINDOWS_IMAGE"
@@ -302,14 +387,14 @@ meson-testing:
     - .meson-build
     - .ci-deqp-artifacts
   variables:
-    UNWIND: "true"
+    UNWIND: "enabled"
     DRI_LOADERS: >
       -D glx=dri
-      -D gbm=true
-      -D egl=true
+      -D gbm=enabled
+      -D egl=enabled
       -D platforms=x11,drm,surfaceless
     GALLIUM_ST: >
-      -D dri3=true
+      -D dri3=enabled
     GALLIUM_DRIVERS: "swrast,virgl"
     VULKAN_DRIVERS: amd
     BUILDTYPE: "debugoptimized"
@@ -322,20 +407,20 @@ meson-testing:
 meson-gallium:
   extends: .meson-build
   variables:
-    UNWIND: "true"
+    UNWIND: "enabled"
     DRI_LOADERS: >
       -D glx=dri
-      -D gbm=true
-      -D egl=true
+      -D gbm=enabled
+      -D egl=enabled
       -D platforms=x11,wayland,drm,surfaceless
     GALLIUM_ST: >
-      -D dri3=true
+      -D dri3=enabled
       -D gallium-extra-hud=true
-      -D gallium-vdpau=true
-      -D gallium-xvmc=true
+      -D gallium-vdpau=enabled
+      -D gallium-xvmc=enabled
       -D gallium-omx=bellagio
-      -D gallium-va=true
-      -D gallium-xa=true
+      -D gallium-va=enabled
+      -D gallium-xa=enabled
       -D gallium-nine=true
       -D gallium-opencl=disabled
     GALLIUM_DRIVERS: "iris,nouveau,kmsro,r300,r600,freedreno,swr,swrast,svga,v3d,vc4,virgl,etnaviv,panfrost,lima,zink"
@@ -349,11 +434,11 @@ meson-gallium:
 meson-classic:
   extends: .meson-build
   variables:
-    UNWIND: "true"
+    UNWIND: "enabled"
     DRI_LOADERS: >
       -D glx=dri
-      -D gbm=true
-      -D egl=true
+      -D gbm=enabled
+      -D egl=enabled
       -D platforms=x11,wayland,drm,surfaceless
     DRI_DRIVERS: "auto"
     EXTRA_OPTION: >
@@ -365,20 +450,20 @@ meson-classic:
     - .meson-build
   stage: meson-misc
   variables:
-    UNWIND: "false"
+    UNWIND: "disabled"
     DRI_LOADERS: >
       -D glx=disabled
-      -D gbm=false
-      -D egl=true
+      -D gbm=disabled
+      -D egl=enabled
       -D platforms=surfaceless
       -D osmesa=none
     GALLIUM_ST: >
-      -D dri3=false
-      -D gallium-vdpau=false
-      -D gallium-xvmc=false
+      -D dri3=disabled
+      -D gallium-vdpau=disabled
+      -D gallium-xvmc=disabled
       -D gallium-omx=disabled
-      -D gallium-va=false
-      -D gallium-xa=false
+      -D gallium-va=disabled
+      -D gallium-xa=disabled
       -D gallium-nine=false
     LLVM_VERSION: "8"
 
@@ -401,7 +486,7 @@ meson-armhf:
     CROSS: armhf
     LLVM_VERSION: "7"
     EXTRA_OPTION: >
-      -D llvm=false
+      -D llvm=disabled
   script:
     - .gitlab-ci/meson-build.sh
     - .gitlab-ci/prepare-artifacts.sh
@@ -413,7 +498,7 @@ meson-arm64:
   variables:
     VULKAN_DRIVERS: "freedreno"
     EXTRA_OPTION: >
-      -D llvm=false
+      -D llvm=disabled
   script:
     - .gitlab-ci/meson-build.sh
     - .gitlab-ci/prepare-artifacts.sh
@@ -430,7 +515,7 @@ meson-arm64-build-test:
 meson-clang:
   extends: .meson-build
   variables:
-    UNWIND: "true"
+    UNWIND: "enabled"
     DRI_LOADERS: >
       -D glvnd=true
     DRI_DRIVERS: "auto"
@@ -457,62 +542,61 @@ scons-win64:
 meson-clover:
   extends: .meson-build
   variables:
-    UNWIND: "true"
+    UNWIND: "enabled"
     DRI_LOADERS: >
       -D glx=disabled
-      -D egl=false
-      -D gbm=false
+      -D egl=disabled
+      -D gbm=disabled
+    GALLIUM_DRIVERS: "r600,radeonsi"
     GALLIUM_ST: >
-      -D dri3=false
-      -D gallium-vdpau=false
-      -D gallium-xvmc=false
+      -D dri3=disabled
+      -D gallium-vdpau=disabled
+      -D gallium-xvmc=disabled
       -D gallium-omx=disabled
-      -D gallium-va=false
-      -D gallium-xa=false
+      -D gallium-va=disabled
+      -D gallium-xa=disabled
       -D gallium-nine=false
       -D gallium-opencl=icd
   script:
-    - export GALLIUM_DRIVERS="r600,radeonsi"
     - .gitlab-ci/meson-build.sh
     - LLVM_VERSION=8 .gitlab-ci/meson-build.sh
-    - export GALLIUM_DRIVERS="i915,r600"
-    - LLVM_VERSION=6.0 .gitlab-ci/meson-build.sh
-    - LLVM_VERSION=7 .gitlab-ci/meson-build.sh
 
 meson-clover-old-llvm:
   extends:
     - meson-clover
     - .use-x86_build_old
   variables:
-    UNWIND: "false"
+    UNWIND: "disabled"
     DRI_LOADERS: >
       -D glx=disabled
-      -D egl=false
-      -D gbm=false
+      -D egl=disabled
+      -D gbm=disabled
       -D platforms=drm,surfaceless
     GALLIUM_DRIVERS: "i915,r600"
   script:
     - LLVM_VERSION=3.9 .gitlab-ci/meson-build.sh
     - LLVM_VERSION=4.0 .gitlab-ci/meson-build.sh
     - LLVM_VERSION=5.0 .gitlab-ci/meson-build.sh
+    - LLVM_VERSION=6.0 .gitlab-ci/meson-build.sh
+    - LLVM_VERSION=7 .gitlab-ci/meson-build.sh
 
 meson-vulkan:
   extends: .meson-build
   variables:
-    UNWIND: "false"
+    UNWIND: "disabled"
     DRI_LOADERS: >
       -D glx=disabled
-      -D gbm=false
-      -D egl=false
+      -D gbm=disabled
+      -D egl=disabled
       -D platforms=x11,wayland,drm
       -D osmesa=none
     GALLIUM_ST: >
-      -D dri3=true
-      -D gallium-vdpau=false
-      -D gallium-xvmc=false
+      -D dri3=enabled
+      -D gallium-vdpau=disabled
+      -D gallium-xvmc=disabled
       -D gallium-omx=disabled
-      -D gallium-va=false
-      -D gallium-xa=false
+      -D gallium-va=disabled
+      -D gallium-xa=disabled
       -D gallium-nine=false
       -D gallium-opencl=disabled
       -D b_sanitize=undefined
@@ -525,7 +609,9 @@ meson-vulkan:
       -D werror=true
 
 meson-i386:
-  extends: .meson-cross
+  extends:
+    - .meson-cross
+    - .use-i386_build
   variables:
     CROSS: i386
     VULKAN_DRIVERS: intel,amd
@@ -533,31 +619,26 @@ meson-i386:
     EXTRA_OPTION: >
       -D vulkan-overlay-layer=true
       -D werror=true
-  script:
-    - dpkg -i /var/cache/apt/archives/$CROSS/*.deb
-    - .gitlab-ci/meson-build.sh
 
 meson-s390x:
   extends:
     - .meson-cross
+    - .use-s390x_build
   tags:
     - kvm
   variables:
     CROSS: s390x
+    EXTRA_OPTION: >
+      -D werror=true
     GALLIUM_DRIVERS: "swrast"
-  script:
-    # For unknown reasons "too many" installed i386 libraries cause qemu to
-    # crash while executing llvm-config for s390x.
-    - apt-get purge -y winehq-stable
-    - apt-get autoremove -y --purge
-    - dpkg -i /var/cache/apt/archives/$CROSS/*.deb
-    - .gitlab-ci/meson-build.sh
 
 meson-ppc64el:
   extends:
     - meson-s390x
+    - .use-ppc64el_build
   variables:
     CROSS: ppc64el
+    EXTRA_OPTION: ""
     GALLIUM_DRIVERS: "nouveau,radeonsi,swrast,virgl"
     VULKAN_DRIVERS: "amd"
 
@@ -565,11 +646,11 @@ meson-mingw32-x86_64:
   extends: .meson-build
   stage: meson-misc
   variables:
-    UNWIND: "false"
+    UNWIND: "disabled"
     DRI_DRIVERS: ""
     GALLIUM_DRIVERS: "swrast"
     EXTRA_OPTION: >
-      -Dllvm=false
+      -Dllvm=disabled
       -Dosmesa=gallium
       --cross-file=.gitlab-ci/x86_64-w64-mingw32
 
@@ -598,7 +679,10 @@ meson-mingw32-x86_64:
     TAG: *x86_test-gl
   image: "$CI_REGISTRY_IMAGE/debian/x86_test-gl:$TAG"
   needs:
+    - x86_build-base
+    - x86_build
     - meson-testing
+    - x86_test-base
     - x86_test-gl
 
 .test-vk:
@@ -608,7 +692,10 @@ meson-mingw32-x86_64:
     TAG: *x86_test-vk
   image: "$CI_REGISTRY_IMAGE/debian/x86_test-vk:$TAG"
   needs:
+    - x86_build-base
+    - x86_build
     - meson-testing
+    - x86_test-base
     - x86_test-vk
 
 .piglit-test:
@@ -751,6 +838,7 @@ virgl-gles31:
     DEQP_RUNNER_OPTIONS: "--timeout 120"
     MESA_GLES_VERSION_OVERRIDE: "3.1"
     MESA_GLSL_VERSION_OVERRIDE: "310"
+    MESA_EXTENSION_OVERRIDE: "-GL_OES_tessellation_shader"
   extends: virgl-gles2
 
 # Rules for tests that should not be present in MRs or the main
@@ -768,21 +856,19 @@ virgl-gles31:
 
 arm64_a630_gles2:
   extends:
-    - .deqp-test-gl
-    - .use-arm_test
-    - .freedreno-rules
+    - arm64_a306_gles2
   variables:
-    DEQP_VER: gles2
+    BM_KERNEL: /lava-files/cheza-kernel
+    BM_CMDLINE: "ip=dhcp console=ttyMSM0,115200n8 root=/dev/nfs rw nfsrootdebug nfsroot=,tcp,nfsvers=4.2 init=/init"
     DEQP_EXPECTED_FAILS: deqp-freedreno-a630-fails.txt
     DEQP_SKIPS: deqp-freedreno-a630-skips.txt
     NIR_VALIDATE: 0
-    DEQP_PARALLEL: 4
-    FLAKES_CHANNEL: "#freedreno-ci"
     DEQP_EXPECTED_RENDERER: FD630
+    DEQP_NO_SAVE_RESULTS: ""
   tags:
-    - mesa-cheza
-  dependencies:
-    - meson-arm64
+    - google-freedreno-cheza
+  script:
+    - .gitlab-ci/bare-metal/cros-servo.sh
 
 arm64_a630_gles31:
   extends: arm64_a630_gles2
@@ -794,31 +880,52 @@ arm64_a630_gles3:
   variables:
     DEQP_VER: gles3
 
-arm64_a630_gles31_options:
-  extends: arm64_a630_gles2
+# We almost always manage to lower UBOs back to constant uploads in
+# the test suite, so get a little testing for it here.
+arm64_a630_noubo:
+  extends: arm64_a630_gles31
   variables:
     DEQP_VER: gles31
+    IR3_SHADER_DEBUG: nouboopt
+    DEQP_CASELIST_FILTER: "functional.*ubo"
+
+# The driver does some guessing as to whether to render using gmem
+# or bypass, and some GLES3.1 features interact with either one.
+# Do a little testing with gmem and bypass forced.
+arm64_a630_bypass:
+  extends: arm64_a630_gles31
+  variables:
     CI_NODE_INDEX: 1
     CI_NODE_TOTAL: 5
-  script:
-    # We almost always manage to lower UBOs back to constant uploads in
-    # the test suite, so get a little testing for it here.
-    - DEQP_RUN_SUFFIX=-nouboopt IR3_SHADER_DEBUG=nouboopt DEQP_CASELIST_FILTER="functional.\*ubo" ./install/deqp-runner.sh
-    # The driver does some guessing as to whether to render using gmem
-    # or bypass, and some GLES3.1 features interact with either one.
-    # Do a little testing with gmem and bypass forced.
-    - DEQP_RUN_SUFFIX=-bypass FD_MESA_DEBUG=nogmem DEQP_EXPECTED_FAILS=deqp-freedreno-a630-bypass-fails.txt ./install/deqp-runner.sh
-    - DEQP_RUN_SUFFIX=-gmem FD_MESA_DEBUG=nobypass ./install/deqp-runner.sh
+    FD_MESA_DEBUG: nogmem
+    DEQP_EXPECTED_FAILS: deqp-freedreno-a630-bypass-fails.txt
+
+# Along with checking gmem path, check that we don't get obvious nir
+# validation failures (though it's too expensive to have it on for the
+# full CTS)
+arm64_a630_gmem:
+  extends: arm64_a630_gles31
+  variables:
+    CI_NODE_INDEX: 1
+    CI_NODE_TOTAL: 5
+    FD_MESA_DEBUG: nobypass
+    NIR_VALIDATE: 1
 
 .baremetal-test:
   extends:
     - .ci-run-policy
   stage: test
+  artifacts:
+    when: always
+    name: "mesa_${CI_JOB_NAME}"
+    paths:
+      - results/
+      - serial*.txt
 
 arm64_a306_gles2:
   extends:
     - .baremetal-test
-    - .use-arm_build
+    - .use-arm_test
     - .freedreno-rules
   variables:
     BM_KERNEL: /lava-files/Image.gz
@@ -831,14 +938,19 @@ arm64_a306_gles2:
     DEQP_VER: gles2
     DEQP_PARALLEL: 4
     DEQP_EXPECTED_RENDERER: FD307
+    # Since we can't get artifacts back yet, skip making them.
+    DEQP_NO_SAVE_RESULTS: 1
+    # NIR_VALIDATE=0 left intentionally unset as a3xx is fast enough at its small testsuite.
   script:
     - .gitlab-ci/bare-metal/fastboot.sh
   needs:
+    - arm_test
+    - arm_build
     - meson-arm64
   tags:
     - google-freedreno-db410c
 
-# Disabled due to flaky results
+# Fractional run, single threaded, due to flaky results
 arm64_a306_gles3:
   extends:
     - arm64_a306_gles2
@@ -846,7 +958,18 @@ arm64_a306_gles3:
     DEQP_VER: gles3
     DEQP_PARALLEL: 1
     CI_NODE_INDEX: 1
-    CI_NODE_TOTAL: 50
+    CI_NODE_TOTAL: 25
+    NIR_VALIDATE: 0
+
+# Fractional runs with debug options.  Note that since we're not
+# hitting the iommu faults, we can run in parallel (derive from gles2, not gles3).
+arm64_a306_gles3_options:
+  extends: arm64_a306_gles2
+  variables:
+    DEQP_VER: gles3
+  script:
+    # Check that the non-constbuf UBO case works.
+    - DEQP_RUN_SUFFIX=-nouboopt IR3_SHADER_DEBUG=nouboopt DEQP_CASELIST_FILTER="functional.*ubo" .gitlab-ci/bare-metal/fastboot.sh
 
 arm64_a530_gles2:
   extends:
@@ -854,10 +977,13 @@ arm64_a530_gles2:
   variables:
     BM_KERNEL: /lava-files/db820c-kernel
     BM_DTB: /lava-files/db820c.dtb
-    BM_CMDLINE: "ip=dhcp console=ttyMSM0,115200n8"
+    # Disable SMP because only CPU 0 is at a freq higher than 19mhz on
+    # current upstream kernel.
+    BM_CMDLINE: "ip=dhcp console=ttyMSM0,115200n8 nosmp"
     DEQP_EXPECTED_FAILS: deqp-freedreno-a530-fails.txt
     DEQP_SKIPS: deqp-freedreno-a530-skips.txt
     DEQP_EXPECTED_RENDERER: FD530
+    NIR_VALIDATE: 0
   tags:
     - google-freedreno-db820c
 
@@ -868,13 +994,15 @@ arm64_a530_gles3:
     DEQP_VER: gles3
     DEQP_PARALLEL: 1
     CI_NODE_INDEX: 1
-    CI_NODE_TOTAL: 100
+    CI_NODE_TOTAL: 40
 
 arm64_a530_gles31:
   extends:
     - arm64_a530_gles3
   variables:
     DEQP_VER: gles31
+    CI_NODE_INDEX: 1
+    CI_NODE_TOTAL: 10
 
 # RADV CI
 .test-radv:

@@ -277,6 +277,13 @@ intel_batchbuffer_reset(struct brw_context *brw)
 
    if (batch->state_batch_sizes)
       _mesa_hash_table_u64_clear(batch->state_batch_sizes, NULL);
+
+   /* Always add workaround_bo which contains a driver identifier to be
+    * recorded in error states.
+    */
+   struct brw_bo *identifier_bo = brw->workaround_bo;
+   if (identifier_bo)
+      add_exec_bo(batch, identifier_bo);
 }
 
 static void
@@ -507,10 +514,16 @@ grow_buffer(struct brw_context *brw,
    new_bo->refcount = bo->refcount;
    bo->refcount = 1;
 
+   assert(list_is_empty(&bo->exports));
+   assert(list_is_empty(&new_bo->exports));
+
    struct brw_bo tmp;
    memcpy(&tmp, bo, sizeof(struct brw_bo));
    memcpy(bo, new_bo, sizeof(struct brw_bo));
    memcpy(new_bo, &tmp, sizeof(struct brw_bo));
+
+   list_inithead(&bo->exports);
+   list_inithead(&new_bo->exports);
 
    grow->partial_bo = new_bo; /* the one reference of the OLD bo */
    grow->partial_bytes = existing_bytes;

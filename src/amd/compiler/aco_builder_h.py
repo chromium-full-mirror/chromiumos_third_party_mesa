@@ -382,13 +382,17 @@ public:
       } else if (op.bytes() > 2) {
          return pseudo(aco_opcode::p_create_vector, dst, op);
       } else if (dst.regClass().is_subdword()) {
-        aco_ptr<SDWA_instruction> sdwa{create_instruction<SDWA_instruction>(aco_opcode::v_mov_b32, asSDWA(Format::VOP1), 1, 1)};
-        sdwa->operands[0] = op;
-        sdwa->definitions[0] = dst;
-        sdwa->sel[0] = op.bytes() == 1 ? sdwa_ubyte : sdwa_uword;
-        sdwa->dst_sel = dst.bytes() == 1 ? sdwa_ubyte : sdwa_uword;
-        sdwa->dst_preserve = true;
-        return insert(std::move(sdwa));
+        if (program->chip_class >= GFX8) {
+            aco_ptr<SDWA_instruction> sdwa{create_instruction<SDWA_instruction>(aco_opcode::v_mov_b32, asSDWA(Format::VOP1), 1, 1)};
+            sdwa->operands[0] = op;
+            sdwa->definitions[0] = dst;
+            sdwa->sel[0] = op.bytes() == 1 ? sdwa_ubyte : sdwa_uword;
+            sdwa->dst_sel = dst.bytes() == 1 ? sdwa_ubyte : sdwa_uword;
+            sdwa->dst_preserve = true;
+            return insert(std::move(sdwa));
+        } else {
+            return vop1(aco_opcode::v_mov_b32, dst, op);
+        }
       } else {
         unreachable("Unhandled case in bld.copy()");
       }
@@ -487,7 +491,7 @@ formats = [("pseudo", [Format.PSEUDO], 'Pseudo_instruction', list(itertools.prod
            ("exp", [Format.EXP], 'Export_instruction', [(0, 4)]),
            ("branch", [Format.PSEUDO_BRANCH], 'Pseudo_branch_instruction', itertools.product([0], [0, 1])),
            ("barrier", [Format.PSEUDO_BARRIER], 'Pseudo_barrier_instruction', [(0, 0)]),
-           ("reduction", [Format.PSEUDO_REDUCTION], 'Pseudo_reduction_instruction', [(3, 2), (3, 4)]),
+           ("reduction", [Format.PSEUDO_REDUCTION], 'Pseudo_reduction_instruction', [(3, 2)]),
            ("vop1", [Format.VOP1], 'VOP1_instruction', [(1, 1), (2, 2)]),
            ("vop2", [Format.VOP2], 'VOP2_instruction', itertools.product([1, 2], [2, 3])),
            ("vop2_sdwa", [Format.VOP2, Format.SDWA], 'SDWA_instruction', itertools.product([1, 2], [2, 3])),

@@ -343,6 +343,13 @@ static int gfx6_compute_level(ADDR_HANDLE addrlib,
 					else
 						surf_level->dcc_slice_fast_clear_size = 0;
 				}
+
+				if (surf->flags & RADEON_SURF_CONTIGUOUS_DCC_LAYERS &&
+				    surf->dcc_slice_size != surf_level->dcc_slice_fast_clear_size) {
+					surf->dcc_size = 0;
+					surf->num_dcc_levels = 0;
+					AddrDccOut->subLvlCompressible = false;
+				}
 			} else {
 				surf_level->dcc_slice_fast_clear_size = surf_level->dcc_fast_clear_size;
 			}
@@ -498,7 +505,7 @@ static void ac_compute_cmask(const struct radeon_info *info,
 	unsigned num_pipes = info->num_tile_pipes;
 	unsigned cl_width, cl_height;
 
-	if (surf->flags & RADEON_SURF_Z_OR_SBUFFER ||
+	if (surf->flags & RADEON_SURF_Z_OR_SBUFFER || surf->is_linear ||
 	    (config->info.samples >= 2 && !surf->fmask_size))
 		return;
 
@@ -1471,7 +1478,10 @@ static int gfx9_compute_miptree(ADDR_HANDLE addrlib,
 		/* CMASK -- on GFX10 only for FMASK */
 		if (in->swizzleMode != ADDR_SW_LINEAR &&
 		    in->resourceType == ADDR_RSRC_TEX_2D &&
-		    ((info->chip_class <= GFX9 && in->numSamples == 1) ||
+		    ((info->chip_class <= GFX9 &&
+		      in->numSamples == 1 &&
+		      in->flags.metaPipeUnaligned == 0 &&
+		      in->flags.metaRbUnaligned == 0) ||
 		     (surf->fmask_size && in->numSamples >= 2))) {
 			ADDR2_COMPUTE_CMASK_INFO_INPUT cin = {0};
 			ADDR2_COMPUTE_CMASK_INFO_OUTPUT cout = {0};
@@ -1861,22 +1871,26 @@ int ac_compute_surface(ADDR_HANDLE addrlib, const struct radeon_info *info,
 
 	/* Determine the memory layout of multiple allocations in one buffer. */
 	surf->total_size = surf->surf_size;
+	surf->alignment = surf->surf_alignment;
 
 	if (surf->htile_size) {
 		surf->htile_offset = align64(surf->total_size, surf->htile_alignment);
 		surf->total_size = surf->htile_offset + surf->htile_size;
+		surf->alignment = MAX2(surf->alignment, surf->htile_alignment);
 	}
 
 	if (surf->fmask_size) {
 		assert(config->info.samples >= 2);
 		surf->fmask_offset = align64(surf->total_size, surf->fmask_alignment);
 		surf->total_size = surf->fmask_offset + surf->fmask_size;
+		surf->alignment = MAX2(surf->alignment, surf->fmask_alignment);
 	}
 
 	/* Single-sample CMASK is in a separate buffer. */
 	if (surf->cmask_size && config->info.samples >= 2) {
 		surf->cmask_offset = align64(surf->total_size, surf->cmask_alignment);
 		surf->total_size = surf->cmask_offset + surf->cmask_size;
+		surf->alignment = MAX2(surf->alignment, surf->cmask_alignment);
 	}
 
 	if (surf->dcc_size &&
@@ -1908,6 +1922,7 @@ int ac_compute_surface(ADDR_HANDLE addrlib, const struct radeon_info *info,
 
 		surf->dcc_offset = align64(surf->total_size, surf->dcc_alignment);
 		surf->total_size = surf->dcc_offset + surf->dcc_size;
+		surf->alignment = MAX2(surf->alignment, surf->dcc_alignment);
 	}
 
 	return 0;

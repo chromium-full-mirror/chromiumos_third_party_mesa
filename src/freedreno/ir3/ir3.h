@@ -324,7 +324,6 @@ struct ir3_instruction {
 	 */
 	struct set *uses;
 
-	int sun;            /* Sethi–Ullman number, used by sched */
 	int use_count;      /* currently just updated/used by cp */
 
 	/* Used during CP and RA stages.  For collect and shader inputs/
@@ -482,8 +481,6 @@ struct ir3 {
 	/* List of ir3_array's: */
 	struct list_head array_list;
 
-	unsigned max_sun;   /* max Sethi–Ullman number */
-
 #ifdef DEBUG
 	unsigned block_count, instr_count;
 #endif
@@ -597,6 +594,9 @@ unsigned ir3_count_instructions(struct ir3 *ir);
 unsigned ir3_count_instructions_ra(struct ir3 *ir);
 
 void ir3_find_ssa_uses(struct ir3 *ir, void *mem_ctx, bool falsedeps);
+
+void ir3_set_dst_type(struct ir3_instruction *instr, bool half);
+void ir3_fixup_src_type(struct ir3_instruction *instr);
 
 #include "util/set.h"
 #define foreach_ssa_use(__use, __instr) \
@@ -833,6 +833,54 @@ static inline bool is_bool(struct ir3_instruction *instr)
 	}
 }
 
+static inline opc_t
+cat3_half_opc(opc_t opc)
+{
+	switch (opc) {
+	case OPC_MAD_F32: return OPC_MAD_F16;
+	case OPC_SEL_B32: return OPC_SEL_B16;
+	case OPC_SEL_S32: return OPC_SEL_S16;
+	case OPC_SEL_F32: return OPC_SEL_F16;
+	case OPC_SAD_S32: return OPC_SAD_S16;
+	default:          return opc;
+	}
+}
+
+static inline opc_t
+cat3_full_opc(opc_t opc)
+{
+	switch (opc) {
+	case OPC_MAD_F16: return OPC_MAD_F32;
+	case OPC_SEL_B16: return OPC_SEL_B32;
+	case OPC_SEL_S16: return OPC_SEL_S32;
+	case OPC_SEL_F16: return OPC_SEL_F32;
+	case OPC_SAD_S16: return OPC_SAD_S32;
+	default:          return opc;
+	}
+}
+
+static inline opc_t
+cat4_half_opc(opc_t opc)
+{
+	switch (opc) {
+	case OPC_RSQ:  return OPC_HRSQ;
+	case OPC_LOG2: return OPC_HLOG2;
+	case OPC_EXP2: return OPC_HEXP2;
+	default:       return opc;
+	}
+}
+
+static inline opc_t
+cat4_full_opc(opc_t opc)
+{
+	switch (opc) {
+	case OPC_HRSQ:  return OPC_RSQ;
+	case OPC_HLOG2: return OPC_LOG2;
+	case OPC_HEXP2: return OPC_EXP2;
+	default:        return opc;
+	}
+}
+
 static inline bool is_meta(struct ir3_instruction *instr)
 {
 	return (opc_cat(instr->opc) == -1);
@@ -921,6 +969,22 @@ static inline type_t half_type(type_t type)
 	case TYPE_F16:
 	case TYPE_U16:
 	case TYPE_S16:
+		return type;
+	default:
+		assert(0);
+		return ~0;
+	}
+}
+
+static inline type_t full_type(type_t type)
+{
+	switch (type) {
+	case TYPE_F16: return TYPE_F32;
+	case TYPE_U16: return TYPE_U32;
+	case TYPE_S16: return TYPE_S32;
+	case TYPE_F32:
+	case TYPE_U32:
+	case TYPE_S32:
 		return type;
 	default:
 		assert(0);
@@ -1066,8 +1130,9 @@ static inline unsigned ir3_cat3_absneg(opc_t opc)
 /* iterator for an instructions's sources (reg), also returns src #: */
 #define foreach_src_n(__srcreg, __n, __instr) \
 	if ((__instr)->regs_count) \
-		for (unsigned __cnt = (__instr)->regs_count - 1, __n = 0; __n < __cnt; __n++) \
-			if ((__srcreg = (__instr)->regs[__n + 1]))
+		for (struct ir3_register *__srcreg = (void *)~0; __srcreg; __srcreg = NULL) \
+			for (unsigned __cnt = (__instr)->regs_count - 1, __n = 0; __n < __cnt; __n++) \
+				if ((__srcreg = (__instr)->regs[__n + 1]))
 
 /* iterator for an instructions's sources (reg): */
 #define foreach_src(__srcreg, __instr) \
@@ -1112,8 +1177,9 @@ static inline bool __is_false_dep(struct ir3_instruction *instr, unsigned n)
 
 /* iterator for an instruction's SSA sources (instr), also returns src #: */
 #define foreach_ssa_src_n(__srcinst, __n, __instr) \
-	foreach_ssa_srcp_n(__srcp, __n, __instr) \
-		if ((__srcinst = *__srcp))
+	for (struct ir3_instruction *__srcinst = (void *)~0; __srcinst; __srcinst = NULL) \
+		foreach_ssa_srcp_n(__srcp, __n, __instr) \
+			if ((__srcinst = *__srcp))
 
 /* iterator for an instruction's SSA sources (instr): */
 #define foreach_ssa_src(__srcinst, __instr) \
@@ -1121,15 +1187,17 @@ static inline bool __is_false_dep(struct ir3_instruction *instr, unsigned n)
 
 /* iterators for shader inputs: */
 #define foreach_input_n(__ininstr, __cnt, __ir) \
-	for (unsigned __cnt = 0; __cnt < (__ir)->inputs_count; __cnt++) \
-		if ((__ininstr = (__ir)->inputs[__cnt]))
+	for (struct ir3_instruction *__ininstr = (void *)~0; __ininstr; __ininstr = NULL) \
+		for (unsigned __cnt = 0; __cnt < (__ir)->inputs_count; __cnt++) \
+			if ((__ininstr = (__ir)->inputs[__cnt]))
 #define foreach_input(__ininstr, __ir) \
 	foreach_input_n(__ininstr, __i, __ir)
 
 /* iterators for shader outputs: */
 #define foreach_output_n(__outinstr, __cnt, __ir) \
-	for (unsigned __cnt = 0; __cnt < (__ir)->outputs_count; __cnt++) \
-		if ((__outinstr = (__ir)->outputs[__cnt]))
+	for (struct ir3_instruction *__outinstr = (void *)~0; __outinstr; __outinstr = NULL) \
+		for (unsigned __cnt = 0; __cnt < (__ir)->outputs_count; __cnt++) \
+			if ((__outinstr = (__ir)->outputs[__cnt]))
 #define foreach_output(__outinstr, __ir) \
 	foreach_output_n(__outinstr, __i, __ir)
 
@@ -1158,8 +1226,6 @@ static inline bool __is_false_dep(struct ir3_instruction *instr, unsigned n)
 static inline bool
 check_src_cond(struct ir3_instruction *instr, bool (*cond)(struct ir3_instruction *))
 {
-	struct ir3_register *reg;
-
 	/* Note that this is also used post-RA so skip the ssa iterator: */
 	foreach_src (reg, instr) {
 		struct ir3_instruction *src = reg->instr;
@@ -1182,6 +1248,18 @@ check_src_cond(struct ir3_instruction *instr, bool (*cond)(struct ir3_instructio
 	return false;
 }
 
+#define IR3_PASS(ir, pass, ...) ({ \
+		bool progress = pass(ir, ##__VA_ARGS__); \
+		if (progress) { \
+			ir3_debug_print(ir, "AFTER: " #pass); \
+			ir3_validate(ir); \
+		} \
+		progress; \
+	})
+
+/* validate: */
+void ir3_validate(struct ir3 *ir);
+
 /* dump: */
 void ir3_print(struct ir3 *ir);
 void ir3_print_instr(struct ir3_instruction *instr);
@@ -1195,26 +1273,23 @@ void ir3_remove_nops(struct ir3 *ir);
 
 /* dead code elimination: */
 struct ir3_shader_variant;
-void ir3_dce(struct ir3 *ir, struct ir3_shader_variant *so);
+bool ir3_dce(struct ir3 *ir, struct ir3_shader_variant *so);
 
 /* fp16 conversion folding */
-void ir3_cf(struct ir3 *ir);
+bool ir3_cf(struct ir3 *ir);
 
 /* copy-propagate: */
-void ir3_cp(struct ir3 *ir, struct ir3_shader_variant *so);
+bool ir3_cp(struct ir3 *ir, struct ir3_shader_variant *so);
 
 /* group neighbors and insert mov's to resolve conflicts: */
-void ir3_group(struct ir3 *ir);
-
-/* Sethi–Ullman numbering: */
-void ir3_sun(struct ir3 *ir);
+bool ir3_group(struct ir3 *ir);
 
 /* scheduling: */
-void ir3_sched_add_deps(struct ir3 *ir);
+bool ir3_sched_add_deps(struct ir3 *ir);
 int ir3_sched(struct ir3 *ir);
 
 struct ir3_context;
-int ir3_postsched(struct ir3_context *ctx);
+bool ir3_postsched(struct ir3 *ir);
 
 bool ir3_a6xx_fixup_atomic_dests(struct ir3 *ir, struct ir3_shader_variant *so);
 
@@ -1223,7 +1298,7 @@ struct ir3_ra_reg_set * ir3_ra_alloc_reg_set(struct ir3_compiler *compiler);
 int ir3_ra(struct ir3_shader_variant *v, struct ir3_instruction **precolor, unsigned nprecolor);
 
 /* legalize: */
-void ir3_legalize(struct ir3 *ir, struct ir3_shader_variant *so, int *max_bary);
+bool ir3_legalize(struct ir3 *ir, struct ir3_shader_variant *so, int *max_bary);
 
 static inline bool
 ir3_has_latency_to_hide(struct ir3 *ir)
@@ -1342,7 +1417,9 @@ static inline struct ir3_instruction *
 ir3_MOV(struct ir3_block *block, struct ir3_instruction *src, type_t type)
 {
 	struct ir3_instruction *instr = ir3_instr_create(block, OPC_MOV);
-	__ssa_dst(instr);
+	unsigned flags = (type_size(type) < 32) ? IR3_REG_HALF : 0;
+
+	__ssa_dst(instr)->flags |= flags;
 	if (src->regs[0]->flags & IR3_REG_ARRAY) {
 		struct ir3_register *src_reg = __ssa_src(instr, src, IR3_REG_ARRAY);
 		src_reg->array = src->regs[0]->array;

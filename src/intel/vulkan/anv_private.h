@@ -79,6 +79,8 @@ struct anv_instance;
 
 struct gen_aux_map_context;
 struct gen_perf_config;
+struct gen_perf_counter_pass;
+struct gen_perf_query_result;
 
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_intel.h>
@@ -220,6 +222,12 @@ struct gen_perf_config;
  * Other code which uses the MI ALU should leave it alone.
  */
 #define ANV_PREDICATE_RESULT_REG 0x2678 /* MI_ALU_REG15 */
+
+/* We reserve this MI ALU register to pass around an offset computed from
+ * VkPerformanceQuerySubmitInfoKHR::counterPassIndex VK_KHR_performance_query.
+ * Other code which uses the MI ALU should leave it alone.
+ */
+#define ANV_PERF_QUERY_OFFSET_REG 0x2670 /* MI_ALU_REG14 */
 
 /* For gen12 we set the streamout buffers using 4 separate commands
  * (3DSTATE_SO_BUFFER_INDEX_*) instead of 3DSTATE_SO_BUFFER. However the layout
@@ -1084,6 +1092,13 @@ struct anv_physical_device {
     /** True if we can use bindless access for samplers */
     bool                                        has_bindless_samplers;
 
+    /** True if we can read the GPU timestamp register
+     *
+     * When running in a virtual context, the timestamp register is unreadable
+     * on Gen12+.
+     */
+    bool                                        has_reg_timestamp;
+
     /** True if this device has implicit AUX
      *
      * If true, CCS is handled as an implicit attachment to the BO rather than
@@ -1193,6 +1208,8 @@ struct anv_queue_submit {
     */
    uintptr_t *                               fence_bos;
 
+   int                                       perf_query_pass;
+
    const VkAllocationCallbacks *             alloc;
    VkSystemAllocationScope                   alloc_scope;
 
@@ -1287,6 +1304,11 @@ anv_device_upload_nir(struct anv_device *device,
                       const struct nir_shader *nir,
                       unsigned char sha1_key[20]);
 
+struct anv_address {
+   struct anv_bo *bo;
+   uint32_t offset;
+};
+
 struct anv_device {
     struct vk_device                            vk;
 
@@ -1330,6 +1352,8 @@ struct anv_device {
      * For that, we use the high bytes (>= 1024) of the workaround BO.
      */
     struct anv_bo *                             workaround_bo;
+    struct anv_address                          workaround_address;
+
     struct anv_bo *                             trivial_batch_bo;
     struct anv_bo *                             hiz_clear_bo;
     struct anv_state                            null_surface_state;
@@ -1530,12 +1554,10 @@ int anv_gem_get_context_param(int fd, int context, uint32_t param,
 int anv_gem_get_param(int fd, uint32_t param);
 int anv_gem_get_tiling(struct anv_device *device, uint32_t gem_handle);
 bool anv_gem_get_bit6_swizzle(int fd, uint32_t tiling);
-int anv_gem_get_aperture(int fd, uint64_t *size);
 int anv_gem_gpu_get_reset_stats(struct anv_device *device,
                                 uint32_t *active, uint32_t *pending);
 int anv_gem_handle_to_fd(struct anv_device *device, uint32_t gem_handle);
-int anv_gem_reg_read(struct anv_device *device,
-                     uint32_t offset, uint64_t *result);
+int anv_gem_reg_read(int fd, uint32_t offset, uint64_t *result);
 uint32_t anv_gem_fd_to_handle(struct anv_device *device, int fd);
 int anv_gem_set_caching(struct anv_device *device, uint32_t gem_handle, uint32_t caching);
 int anv_gem_set_domain(struct anv_device *device, uint32_t gem_handle,
@@ -1596,6 +1618,8 @@ struct anv_batch_bo {
 struct anv_batch {
    const VkAllocationCallbacks *                alloc;
 
+   struct anv_address                           start_addr;
+
    void *                                       start;
    void *                                       end;
    void *                                       next;
@@ -1622,6 +1646,7 @@ void *anv_batch_emit_dwords(struct anv_batch *batch, int num_dwords);
 void anv_batch_emit_batch(struct anv_batch *batch, struct anv_batch *other);
 uint64_t anv_batch_emit_reloc(struct anv_batch *batch,
                               void *location, struct anv_bo *bo, uint32_t offset);
+struct anv_address anv_batch_address(struct anv_batch *batch, void *batch_location);
 
 static inline VkResult
 anv_batch_set_error(struct anv_batch *batch, VkResult error)
@@ -1637,11 +1662,6 @@ anv_batch_has_error(struct anv_batch *batch)
 {
    return batch->status != VK_SUCCESS;
 }
-
-struct anv_address {
-   struct anv_bo *bo;
-   uint32_t offset;
-};
 
 #define ANV_NULL_ADDRESS ((struct anv_address) { NULL, 0 })
 
@@ -1754,6 +1774,11 @@ _anv_combine_address(struct anv_batch *batch, void *location,
            VG(VALGRIND_CHECK_MEM_IS_DEFINED(_dst, __anv_cmd_length(cmd) * 4)); \
            _dst = NULL;                                                 \
          }))
+
+/* #define __gen_get_batch_dwords anv_batch_emit_dwords */
+/* #define __gen_get_batch_address anv_batch_address */
+/* #define __gen_address_value anv_address_physical */
+/* #define __gen_address_offset anv_address_add */
 
 struct anv_device_memory {
    struct vk_object_base                        base;
@@ -2825,6 +2850,7 @@ enum anv_cmd_buffer_exec_mode {
    ANV_CMD_BUFFER_EXEC_MODE_GROW_AND_EMIT,
    ANV_CMD_BUFFER_EXEC_MODE_CHAIN,
    ANV_CMD_BUFFER_EXEC_MODE_COPY_AND_CHAIN,
+   ANV_CMD_BUFFER_EXEC_MODE_CALL_AND_RETURN,
 };
 
 struct anv_cmd_buffer {
@@ -2872,7 +2898,11 @@ struct anv_cmd_buffer {
    VkCommandBufferUsageFlags                    usage_flags;
    VkCommandBufferLevel                         level;
 
+   struct anv_query_pool                       *perf_query_pool;
+
    struct anv_cmd_state                         state;
+
+   struct anv_address                           return_addr;
 
    /* Set by SetPerformanceMarkerINTEL, written into queries by CmdBeginQuery */
    uint64_t                                     intel_perf_marker;
@@ -2893,7 +2923,8 @@ VkResult anv_cmd_buffer_execbuf(struct anv_queue *queue,
                                 const VkSemaphore *out_semaphores,
                                 const uint64_t *out_signal_values,
                                 uint32_t num_out_semaphores,
-                                VkFence fence);
+                                VkFence fence,
+                                int perf_query_pass);
 
 VkResult anv_cmd_buffer_reset(struct anv_cmd_buffer *cmd_buffer);
 
@@ -3382,11 +3413,14 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
                         const char *entrypoint,
                         const VkSpecializationInfo *spec_info);
 
-uint32_t
-anv_cs_workgroup_size(const struct anv_compute_pipeline *pipeline);
+struct anv_cs_parameters {
+   uint32_t group_size;
+   uint32_t simd_size;
+   uint32_t threads;
+};
 
-uint32_t
-anv_cs_threads(const struct anv_compute_pipeline *pipeline);
+struct anv_cs_parameters
+anv_cs_parameters(const struct anv_compute_pipeline *pipeline);
 
 struct anv_format_plane {
    enum isl_format isl_format:16;
@@ -3704,7 +3738,7 @@ anv_image_aux_layers(const struct anv_image * const image,
 }
 
 static inline struct anv_address
-anv_image_get_clear_color_addr(const struct anv_device *device,
+anv_image_get_clear_color_addr(UNUSED const struct anv_device *device,
                                const struct anv_image *image,
                                VkImageAspectFlagBits aspect)
 {
@@ -4222,6 +4256,9 @@ struct anv_render_pass {
 
 #define ANV_PIPELINE_STATISTICS_MASK 0x000007ff
 
+#define OA_SNAPSHOT_SIZE (256)
+#define ANV_KHR_PERF_QUERY_SIZE (ALIGN(sizeof(uint64_t), 64) + 2 * OA_SNAPSHOT_SIZE)
+
 struct anv_query_pool {
    struct vk_object_base                        base;
 
@@ -4232,7 +4269,20 @@ struct anv_query_pool {
    /** Number of slots in this query pool */
    uint32_t                                     slots;
    struct anv_bo *                              bo;
+
+   /* Perf queries : */
+   struct anv_bo                                reset_bo;
+   uint32_t                                     n_counters;
+   struct gen_perf_counter_pass                *counter_pass;
+   uint32_t                                     n_passes;
+   struct gen_perf_query_info                 **pass_query;
 };
+
+static inline uint32_t khr_perf_query_preamble_offset(struct anv_query_pool *pool,
+                                                      uint32_t pass)
+{
+   return pass * ANV_KHR_PERF_QUERY_SIZE + 8;
+}
 
 int anv_get_instance_entrypoint_index(const char *name);
 int anv_get_device_entrypoint_index(const char *name);
@@ -4287,6 +4337,10 @@ anv_get_subpass_id(const struct anv_cmd_state * const cmd_state)
 
 struct gen_perf_config *anv_get_perf(const struct gen_device_info *devinfo, int fd);
 void anv_device_perf_init(struct anv_device *device);
+void anv_perf_write_pass_results(struct gen_perf_config *perf,
+                                 struct anv_query_pool *pool, uint32_t pass,
+                                 const struct gen_perf_query_result *accumulated_results,
+                                 union VkPerformanceCounterResultKHR *results);
 
 #define ANV_FROM_HANDLE(__anv_type, __name, __handle) \
    VK_FROM_HANDLE(__anv_type, __name, __handle)

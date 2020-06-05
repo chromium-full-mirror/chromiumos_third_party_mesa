@@ -1,5 +1,5 @@
 /*
- * Copyright © 2009,2012 Intel Corporation
+ * Copyright © 2020 Google LLC
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -19,43 +19,16 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
- *
- * Authors:
- *    Eric Anholt <eric@anholt.net>
- *
  */
 
-#ifndef _FNV1A_H
-#define _FNV1A_H
+struct testcase {
+	enum pipe_format format;
 
-enum {
-   _mesa_fnv32_1a_offset_bias = 2166136261u,
+	int array_size; /* Size for array textures, or 0 otherwise. */
+	bool is_3d;
+
+    /* Partially filled layout of input parameters and expected results. */
+	struct fdl_layout layout;
 };
 
-/**
- * Quick FNV-1a hash implementation based on:
- * http://www.isthe.com/chongo/tech/comp/fnv/
- *
- * FNV-1a is not be the best hash out there -- Jenkins's lookup3 is supposed
- * to be quite good, and it probably beats FNV.  But FNV has the advantage
- * that it involves almost no code.  For an improvement on both, see Paul
- * Hsieh's http://www.azillionmonkeys.com/qed/hash.html
- */
-static inline uint32_t
-_mesa_fnv32_1a_accumulate_block(uint32_t hash, const void *data, size_t size)
-{
-   const uint8_t *bytes = (const uint8_t *)data;
-
-   while (size-- != 0) {
-      hash ^= *bytes;
-      hash = hash * 0x01000193;
-      bytes++;
-   }
-
-   return hash;
-}
-
-#define _mesa_fnv32_1a_accumulate(hash, expr) \
-   _mesa_fnv32_1a_accumulate_block(hash, &(expr), sizeof(expr))
-
-#endif
+bool fdl_test_layout(const struct testcase *testcase, int gpu_id);

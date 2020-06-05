@@ -1173,7 +1173,7 @@ radv_fixup_vertex_input_fetches(struct radv_shader_context *ctx,
 	LLVMValueRef one = is_float ? ctx->ac.f32_1 : ctx->ac.i32_1;
 	LLVMValueRef chan[4];
 
-	if (LLVMGetTypeKind(LLVMTypeOf(value)) == LLVMFixedVectorTypeKind) {
+	if (LLVMGetTypeKind(LLVMTypeOf(value)) == LLVMVectorTypeKind) {
 		unsigned vec_size = LLVMGetVectorSize(LLVMTypeOf(value));
 
 		if (num_channels == 4 && num_channels == vec_size)
@@ -2292,8 +2292,7 @@ static void build_streamout_vertex(struct radv_shader_context *ctx,
 		for (unsigned i = 0; i < AC_LLVM_MAX_OUTPUTS; ++i) {
 			unsigned output_usage_mask =
 				ctx->args->shader_info->gs.output_usage_mask[i];
-			uint8_t output_stream =
-				output_stream = ctx->args->shader_info->gs.output_streams[i];
+			uint8_t output_stream = ctx->args->shader_info->gs.output_streams[i];
 
 			if (!(ctx->output_mask & (1ull << i)) ||
 			    output_stream != stream)
@@ -3712,7 +3711,7 @@ ac_setup_rings(struct radv_shader_context *ctx)
 {
 	if (ctx->args->options->chip_class <= GFX8 &&
 	    (ctx->stage == MESA_SHADER_GEOMETRY ||
-	     ctx->args->options->key.vs_common_out.as_es || ctx->args->options->key.vs_common_out.as_es)) {
+	     ctx->args->options->key.vs_common_out.as_es)) {
 		unsigned ring = ctx->stage == MESA_SHADER_GEOMETRY ? RING_ESGS_GS
 								   : RING_ESGS_VS;
 		LLVMValueRef offset = LLVMConstInt(ctx->ac.i32, ring, false);

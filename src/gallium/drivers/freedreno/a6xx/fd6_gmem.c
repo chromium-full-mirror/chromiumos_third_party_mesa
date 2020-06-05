@@ -1377,12 +1377,15 @@ fd6_emit_tile_fini(struct fd_batch *batch)
 {
 	struct fd_ringbuffer *ring = batch->gmem;
 
+	if (batch->epilogue)
+		fd6_emit_ib(batch->gmem, batch->epilogue);
+
 	OUT_PKT4(ring, REG_A6XX_GRAS_LRZ_CNTL, 1);
-	OUT_RING(ring, A6XX_GRAS_LRZ_CNTL_ENABLE | A6XX_GRAS_LRZ_CNTL_UNK3);
+	OUT_RING(ring, A6XX_GRAS_LRZ_CNTL_ENABLE);
 
 	fd6_emit_lrz_flush(ring);
 
-	fd6_event_write(batch, ring, CACHE_FLUSH_TS, true);
+	fd6_event_write(batch, ring, PC_CCU_RESOLVE_TS, true);
 
 	if (use_hw_binning(batch)) {
 		check_vsc_overflow(batch->ctx);
@@ -1526,6 +1529,9 @@ static void
 fd6_emit_sysmem_fini(struct fd_batch *batch)
 {
 	struct fd_ringbuffer *ring = batch->gmem;
+
+	if (batch->epilogue)
+		fd6_emit_ib(batch->gmem, batch->epilogue);
 
 	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
 	OUT_RING(ring, 0x0);

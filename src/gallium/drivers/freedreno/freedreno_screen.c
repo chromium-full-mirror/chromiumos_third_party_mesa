@@ -160,6 +160,7 @@ fd_screen_destroy(struct pipe_screen *pscreen)
 	simple_mtx_destroy(&screen->lock);
 
 	ralloc_free(screen->compiler);
+	ralloc_free(screen->live_batches);
 
 	free(screen->perfcntr_queries);
 	free(screen);
@@ -564,6 +565,8 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
 	case PIPE_SHADER_CAP_INTEGERS:
 		return is_ir3(screen) ? 1 : 0;
 	case PIPE_SHADER_CAP_INT64_ATOMICS:
+        case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+        case PIPE_SHADER_CAP_INT16:
 		return 0;
 	case PIPE_SHADER_CAP_FP16:
 		return ((is_a5xx(screen) || is_a6xx(screen)) &&
@@ -885,10 +888,8 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 		screen->priority_mask = (1 << val) - 1;
 	}
 
-	if ((fd_device_version(dev) >= FD_VERSION_ROBUSTNESS) &&
-			(fd_pipe_get_param(screen->pipe, FD_PP_PGTABLE, &val) == 0)) {
-		screen->has_robustness = val;
-	}
+	if (fd_device_version(dev) >= FD_VERSION_ROBUSTNESS)
+		screen->has_robustness = true;
 
 	struct sysinfo si;
 	sysinfo(&si);
@@ -936,6 +937,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 	case 618:
 	case 630:
 	case 640:
+	case 650:
 		fd6_screen_init(pscreen);
 		break;
 	default:
@@ -944,16 +946,18 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 	}
 
 	if (screen->gpu_id >= 600) {
-		screen->gmem_alignw = 32;
-		screen->gmem_alignh = 32;
+		screen->gmem_alignw = 16;
+		screen->gmem_alignh = 4;
+		screen->tile_alignw = is_a650(screen) ? 96 : 32;
+		screen->tile_alignh = 32;
 		screen->num_vsc_pipes = 32;
 	} else if (screen->gpu_id >= 500) {
-		screen->gmem_alignw = 64;
-		screen->gmem_alignh = 32;
+		screen->gmem_alignw = screen->tile_alignw = 64;
+		screen->gmem_alignh = screen->tile_alignh = 32;
 		screen->num_vsc_pipes = 16;
 	} else {
-		screen->gmem_alignw = 32;
-		screen->gmem_alignh = 32;
+		screen->gmem_alignw = screen->tile_alignw = 32;
+		screen->gmem_alignh = screen->tile_alignh = 32;
 		screen->num_vsc_pipes = 8;
 	}
 
@@ -968,6 +972,9 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 	 */
 	if (fd_device_version(dev) >= FD_VERSION_UNLIMITED_CMDS)
 		screen->reorder = !(fd_mesa_debug & FD_DBG_INORDER);
+
+	if (BATCH_DEBUG)
+		screen->live_batches = _mesa_pointer_set_create(NULL);
 
 	fd_bc_init(&screen->batch_cache);
 

@@ -50,6 +50,7 @@ enum fd6_state_id {
 	FD6_GROUP_PROG_FB_RAST,
 	FD6_GROUP_LRZ,
 	FD6_GROUP_LRZ_BINNING,
+	FD6_GROUP_VTXSTATE,
 	FD6_GROUP_VBO,
 	FD6_GROUP_CONST,
 	FD6_GROUP_VS_DRIVER_PARAMS,
@@ -65,6 +66,7 @@ enum fd6_state_id {
 	FD6_GROUP_BLEND,
 	FD6_GROUP_SCISSOR,
 	FD6_GROUP_BLEND_COLOR,
+	FD6_GROUP_SO,
 };
 
 #define ENABLE_ALL (CP_SET_DRAW_STATE__0_BINNING | CP_SET_DRAW_STATE__0_GMEM | CP_SET_DRAW_STATE__0_SYSMEM)
@@ -92,12 +94,6 @@ struct fd6_emit {
 	bool rasterflat;
 	bool no_decode_srgb;
 	bool primitive_restart;
-
-	/* in binning pass, we don't have real frag shader, so we
-	 * don't know if real draw disqualifies lrz write.  So just
-	 * figure that out up-front and stash it in the emit.
-	 */
-	bool no_lrz_write;
 
 	/* cached to avoid repeated lookups: */
 	const struct fd6_program_state *prog;

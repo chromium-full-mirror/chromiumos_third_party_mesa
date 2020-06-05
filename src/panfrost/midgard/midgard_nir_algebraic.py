@@ -30,6 +30,10 @@ a = 'a'
 b = 'b'
 c = 'c'
 
+algebraic = [
+   (('pack_unorm_4x8', a), ('pack_32_4x8', ('f2u8', ('fround_even', ('fmul', ('fsat', a), 255.0)))))
+]
+
 algebraic_late = [
     # ineg must be lowered late, but only for integers; floats will try to
     # have modifiers attached... hence why this has to be here rather than
@@ -45,11 +49,27 @@ algebraic_late = [
 
     (('b32csel', a, 'b@32', 0), ('iand', a, b)),
     (('b32csel', a, 0, 'b@32'), ('iand', ('inot', a), b)),
+
+    # Fuse sat_signed. This should probably be shared with Bifrost
+    (('~fmin', ('fmax', a, -1.0), 1.0), ('fsat_signed', a)),
+    (('~fmax', ('fmin', a, 1.0), -1.0), ('fsat_signed', a)),
+
+    # Fuse clamp_positive. This should probably be shared with Utgard/bifrost
+    (('fmax', a, 0.0), ('fclamp_pos', a)),
+
+    (('ishl', 'a@16', b), ('u2u16', ('ishl', ('u2u32', a), b))),
+    (('ishr', 'a@16', b), ('i2i16', ('ishr', ('i2i32', a), b))),
+    (('ushr', 'a@16', b), ('u2u16', ('ushr', ('u2u32', a), b))),
+
+    (('ishl', 'a@8', b), ('u2u8', ('u2u16', ('ishl', ('u2u32', ('u2u16', a)), b)))),
+    (('ishr', 'a@8', b), ('i2i8', ('i2i16', ('ishr', ('i2i32', ('i2i16', a)), b)))),
+    (('ushr', 'a@8', b), ('u2u8', ('u2u16', ('ushr', ('u2u32', ('u2u16', a)), b)))),
 ]
 
 
 # Midgard is able to type convert down by only one "step" per instruction; if
-# NIR wants more than one step, we need to break up into multiple instructions
+# NIR wants more than one step, we need to break up into multiple instructions.
+# Nevertheless, we can do both a size step and a floating/int step at once.
 
 converts = []
 
@@ -66,8 +86,7 @@ for op in ('u2u', 'i2i', 'f2f', 'i2f', 'u2f', 'f2i', 'f2u'):
         while srcsz <= srcsz_max:
             # Size converter lowering is only needed if src and dst sizes are
             # spaced by a factor > 2.
-            # Type converter lowering is needed as soon as src_size != dst_size
-            if srcsz != dstsz and ((srcsz * 2 != dstsz and srcsz != dstsz * 2) or op[0] != op[2]):
+            if srcsz != dstsz and (srcsz * 2 != dstsz and srcsz != dstsz * 2):
                 cursz = srcsz
                 rule = a
                 # When converting down we first do the type conversion followed
@@ -86,12 +105,6 @@ for op in ('u2u', 'i2i', 'f2f', 'i2f', 'u2f', 'f2i', 'f2u'):
             srcsz *= 2
         dstsz *= 2
 
-# Midgard outputs fp32 for specials. The f2f32 will be folded in later.
-SPECIAL = ['fexp2', 'flog2', 'fsin', 'fcos', 'frcp', 'frsq']
-
-for op in SPECIAL:
-        converts += [((op + '@16', a), ('f2f16', (op, ('f2f32', a))))]
-
 # Try to force constants to the right
 constant_switch = [
         # fge gets flipped to fle, so we invert to keep the order
@@ -104,6 +117,11 @@ constant_switch = [
         (('flt32', '#a', 'b'), ('inot', ('fge32', a, b))),
         (('ilt32', '#a', 'b'), ('inot', ('ige32', a, b))),
         (('ult32', '#a', 'b'), ('inot', ('uge32', a, b)))
+]
+
+# ..since the above switching happens after algebraic stuff is done
+cancel_inot = [
+        (('inot', ('inot', a)), a)
 ]
 
 # Midgard scales fsin/fcos arguments by pi.
@@ -127,11 +145,17 @@ def run():
 
     print('#include "midgard_nir.h"')
 
+    print(nir_algebraic.AlgebraicPass("midgard_nir_lower_algebraic_early",
+                                      algebraic).render())
+
     print(nir_algebraic.AlgebraicPass("midgard_nir_lower_algebraic_late",
                                       algebraic_late + converts + constant_switch).render())
 
     print(nir_algebraic.AlgebraicPass("midgard_nir_scale_trig",
                                       scale_trig).render())
+
+    print(nir_algebraic.AlgebraicPass("midgard_nir_cancel_inot",
+                                      cancel_inot).render())
 
 
 if __name__ == '__main__':

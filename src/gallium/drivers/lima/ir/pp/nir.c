@@ -99,20 +99,6 @@ static void ppir_node_add_src(ppir_compiler *comp, ppir_node *node,
 
    if (ns->is_ssa) {
       child = comp->var_nodes[ns->ssa->index];
-      switch (child->op) {
-      case ppir_op_load_varying:
-         /* If at least one successor is load_texture, promote it to
-          * load_coords to ensure that is has exactly one successor */
-         if (node->op == ppir_op_load_texture) {
-            nir_tex_src *nts = (nir_tex_src *)ns;
-            if (nts->src_type == nir_tex_src_coord)
-               child->op = ppir_op_load_coords;
-         }
-         break;
-      default:
-         break;
-      }
-
       if (child->op != ppir_op_undef)
          ppir_node_add_dep(node, child, ppir_dep_src);
    }
@@ -363,6 +349,7 @@ static bool ppir_emit_intrinsic(ppir_block *block, nir_instr *ni)
          node = block->comp->var_nodes[instr->src->ssa->index];
          switch (node->op) {
          case ppir_op_load_uniform:
+         case ppir_op_load_texture:
          case ppir_op_const:
             break;
          default:
@@ -459,6 +446,19 @@ static bool ppir_emit_tex(ppir_block *block, nir_instr *ni)
       return false;
    }
 
+   switch (instr->sampler_dim) {
+   case GLSL_SAMPLER_DIM_2D:
+   case GLSL_SAMPLER_DIM_CUBE:
+   case GLSL_SAMPLER_DIM_RECT:
+   case GLSL_SAMPLER_DIM_EXTERNAL:
+      break;
+   default:
+      ppir_error("unsupported sampler dim: %d\n", instr->sampler_dim);
+      return false;
+   }
+
+   /* emit ld_tex node */
+
    unsigned mask = 0;
    if (!instr->dest.is_ssa)
       mask = u_bit_consecutive(0, nir_tex_instr_dest_size(instr));
@@ -468,18 +468,6 @@ static bool ppir_emit_tex(ppir_block *block, nir_instr *ni)
       return false;
 
    node->sampler = instr->texture_index;
-
-   switch (instr->sampler_dim) {
-   case GLSL_SAMPLER_DIM_2D:
-   case GLSL_SAMPLER_DIM_CUBE:
-   case GLSL_SAMPLER_DIM_RECT:
-   case GLSL_SAMPLER_DIM_EXTERNAL:
-      break;
-   default:
-      ppir_error("unsupported sampler dim: %d\n", instr->sampler_dim);
-      return NULL;
-   }
-
    node->sampler_dim = instr->sampler_dim;
 
    for (int i = 0; i < instr->coord_components; i++)
@@ -487,11 +475,25 @@ static bool ppir_emit_tex(ppir_block *block, nir_instr *ni)
 
    for (int i = 0; i < instr->num_srcs; i++) {
       switch (instr->src[i].src_type) {
-      case nir_tex_src_coord:
+      case nir_tex_src_coord: {
+         nir_src *ns = &instr->src[i].src;
+         if (ns->is_ssa) {
+            ppir_node *child = block->comp->var_nodes[ns->ssa->index];
+            if (child->op == ppir_op_load_varying) {
+               /* If the successor is load_texture, promote it to load_coords */
+               nir_tex_src *nts = (nir_tex_src *)ns;
+               if (nts->src_type == nir_tex_src_coord)
+                  child->op = ppir_op_load_coords;
+            }
+         }
+
+         /* src[0] is not used by the ld_tex instruction but ensures
+          * correct scheduling due to the pipeline dependency */
          ppir_node_add_src(block->comp, &node->node, &node->src[0], &instr->src[i].src,
                            u_bit_consecutive(0, instr->coord_components));
          node->num_src++;
          break;
+      }
       case nir_tex_src_bias:
       case nir_tex_src_lod:
          node->lod_bias_en = true;
@@ -506,6 +508,44 @@ static bool ppir_emit_tex(ppir_block *block, nir_instr *ni)
    }
 
    list_addtail(&node->node.list, &block->node_list);
+
+   /* validate load coords node */
+
+   ppir_node *src_coords = ppir_node_get_src(&node->node, 0)->node;
+   ppir_load_node *load = NULL;
+
+   if (src_coords && ppir_node_has_single_src_succ(src_coords) &&
+       (src_coords->op == ppir_op_load_coords))
+      load = ppir_node_to_load(src_coords);
+   else {
+      /* Create load_coords node */
+      load = ppir_node_create(block, ppir_op_load_coords_reg, -1, 0);
+      if (!load)
+         return false;
+      list_addtail(&load->node.list, &block->node_list);
+
+      load->src = node->src[0];
+      load->num_src = 1;
+      if (node->sampler_dim == GLSL_SAMPLER_DIM_CUBE)
+         load->num_components = 3;
+      else
+         load->num_components = 2;
+
+      ppir_debug("%s create load_coords node %d for %d\n",
+                 __FUNCTION__, load->index, node->node.index);
+
+      ppir_node_foreach_pred_safe((&node->node), dep) {
+         ppir_node *pred = dep->pred;
+         ppir_node_remove_dep(dep);
+         ppir_node_add_dep(&load->node, pred, ppir_dep_src);
+      }
+      ppir_node_add_dep(&node->node, &load->node, ppir_dep_src);
+   }
+
+   assert(load);
+   node->src[0].type = load->dest.type = ppir_target_pipeline;
+   node->src[0].pipeline = load->dest.pipeline = ppir_pipeline_reg_discard;
+
    return true;
 }
 
@@ -627,7 +667,9 @@ static bool ppir_emit_if(ppir_compiler *comp, nir_if *if_stmt)
    else_branch->negate = true;
    list_addtail(&else_branch->node.list, &block->node_list);
 
-   ppir_emit_cf_list(comp, &if_stmt->then_list);
+   if (!ppir_emit_cf_list(comp, &if_stmt->then_list))
+      return false;
+
    if (empty_else_block) {
       nir_block *nblock = nir_if_last_else_block(if_stmt);
       assert(nblock->successors[0]);
@@ -654,7 +696,8 @@ static bool ppir_emit_if(ppir_compiler *comp, nir_if *if_stmt)
    /* Target should be after_block, will fixup later */
    list_addtail(&after_branch->node.list, &block->node_list);
 
-   ppir_emit_cf_list(comp, &if_stmt->else_list);
+   if (!ppir_emit_cf_list(comp, &if_stmt->else_list))
+      return false;
 
    return true;
 }
@@ -669,7 +712,8 @@ static bool ppir_emit_loop(ppir_compiler *comp, nir_loop *nloop)
 
    comp->loop_cont_block = ppir_get_block(comp, nir_loop_first_block(nloop));
 
-   ppir_emit_cf_list(comp, &nloop->body);
+   if (!ppir_emit_cf_list(comp, &nloop->body))
+      return false;
 
    loop_last_block = nir_loop_last_block(nloop);
    block = ppir_get_block(comp, loop_last_block);

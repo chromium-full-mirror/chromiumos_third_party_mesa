@@ -70,7 +70,8 @@ struct fd_screen {
 	uint32_t max_freq;
 	uint32_t ram_size;
 	uint32_t max_rts;        /* max # of render targets */
-	uint32_t gmem_alignw, gmem_alignh;
+	uint32_t gmem_alignw, gmem_alignh; /* gmem load/store granularity */
+	uint32_t tile_alignw, tile_alignh; /* alignment for tile sizes */
 	uint32_t num_vsc_pipes;
 	uint32_t priority_mask;
 	bool has_timestamp;
@@ -118,6 +119,11 @@ struct fd_screen {
 	const uint64_t *supported_modifiers;
 
 	struct renderonly *ro;
+
+	/* when BATCH_DEBUG is enabled, tracking for fd_batch's which are not yet
+	 * freed:
+	 */
+	struct set *live_batches;
 };
 
 static inline struct fd_screen *
@@ -197,6 +203,12 @@ static inline boolean
 is_a6xx(struct fd_screen *screen)
 {
 	return (screen->gpu_id >= 600) && (screen->gpu_id < 700);
+}
+
+static inline boolean
+is_a650(struct fd_screen *screen)
+{
+	return screen->gpu_id == 650;
 }
 
 /* is it using the ir3 compiler (shader isa introduced with a3xx)? */

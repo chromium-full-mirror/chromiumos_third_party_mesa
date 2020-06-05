@@ -137,6 +137,8 @@ files_libfreedreno = files(
   'a4xx/fd4_query.h',
   'a4xx/fd4_rasterizer.c',
   'a4xx/fd4_rasterizer.h',
+  'a4xx/fd4_resource.c',
+  'a4xx/fd4_resource.h',
   'a4xx/fd4_screen.c',
   'a4xx/fd4_screen.h',
   'a4xx/fd4_texture.c',
@@ -224,7 +226,7 @@ freedreno_includes = [
   inc_freedreno, include_directories('ir3'),
 ]
 
-freedreno_c_args = [ c_vis_args, no_override_init_args ]
+freedreno_c_args = [no_override_init_args]
 if cc.has_argument('-Wpacked-bitfield-compat')
   freedreno_c_args += '-Wno-packed-bitfield-compat'
 endif
@@ -238,8 +240,9 @@ libfreedreno = static_library(
   'freedreno',
   [files_libfreedreno, freedreno_xml_header_files],
   include_directories : freedreno_includes,
-  c_args : [freedreno_c_args, c_vis_args],
-  cpp_args : [freedreno_cpp_args, cpp_vis_args],
+  c_args : [freedreno_c_args],
+  cpp_args : [freedreno_cpp_args],
+  gnu_symbol_visibility : 'hidden',
   dependencies : [dep_libdrm, idep_nir_headers],
 )
 

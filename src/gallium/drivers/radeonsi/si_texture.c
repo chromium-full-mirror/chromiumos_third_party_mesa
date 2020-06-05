@@ -995,7 +995,15 @@ static struct si_texture *si_texture_create_object(struct pipe_screen *screen,
    /* don't include stencil-only formats which we don't support for rendering */
    tex->is_depth = util_format_has_depth(util_format_description(tex->buffer.b.b.format));
    tex->surface = *surface;
-   tex->tc_compatible_htile = false; /* This will be enabled on demand. */
+
+   /* On GFX8, HTILE uses different tiling depending on the TC_COMPATIBLE_HTILE
+    * setting, so we have to enable it if we enabled it at allocation.
+    *
+    * GFX9 and later use the same tiling for both, so TC-compatible HTILE can be
+    * enabled on demand.
+    */
+   tex->tc_compatible_htile = sscreen->info.chip_class == GFX8 &&
+                              tex->surface.flags & RADEON_SURF_TC_COMPATIBLE_HTILE;
 
    /* TC-compatible HTILE:
     * - GFX8 only supports Z32_FLOAT.
@@ -1227,7 +1235,7 @@ static enum radeon_surf_mode si_choose_tiling(struct si_screen *sscreen,
       return RADEON_SURF_MODE_2D;
 
    /* Transfer resources should be linear. */
-   if (templ->flags & SI_RESOURCE_FLAG_TRANSFER)
+   if (templ->flags & SI_RESOURCE_FLAG_FORCE_LINEAR)
       return RADEON_SURF_MODE_LINEAR_ALIGNED;
 
    /* Avoid Z/S decompress blits by forcing TC-compatible HTILE on GFX8,
@@ -1295,8 +1303,8 @@ struct pipe_resource *si_texture_create(struct pipe_screen *screen,
       }
    }
 
-   bool is_flushed_depth =
-      templ->flags & SI_RESOURCE_FLAG_FLUSHED_DEPTH || templ->flags & SI_RESOURCE_FLAG_TRANSFER;
+   bool is_flushed_depth = templ->flags & SI_RESOURCE_FLAG_FLUSHED_DEPTH ||
+                           templ->flags & SI_RESOURCE_FLAG_FORCE_LINEAR;
    bool tc_compatible_htile =
       sscreen->info.chip_class >= GFX8 &&
       /* There are issues with TC-compatible HTILE on Tonga (and
@@ -1548,7 +1556,7 @@ bool si_init_flushed_depth_texture(struct pipe_context *ctx, struct pipe_resourc
  */
 static void si_init_temp_resource_from_box(struct pipe_resource *res, struct pipe_resource *orig,
                                            const struct pipe_box *box, unsigned level,
-                                           unsigned flags)
+                                           unsigned usage, unsigned flags)
 {
    memset(res, 0, sizeof(*res));
    res->format = orig->format;
@@ -1556,10 +1564,10 @@ static void si_init_temp_resource_from_box(struct pipe_resource *res, struct pip
    res->height0 = box->height;
    res->depth0 = 1;
    res->array_size = 1;
-   res->usage = flags & SI_RESOURCE_FLAG_TRANSFER ? PIPE_USAGE_STAGING : PIPE_USAGE_DEFAULT;
+   res->usage = usage;
    res->flags = flags;
 
-   if (flags & SI_RESOURCE_FLAG_TRANSFER && util_format_is_compressed(orig->format)) {
+   if (flags & SI_RESOURCE_FLAG_FORCE_LINEAR && util_format_is_compressed(orig->format)) {
       /* Transfer resources are allocated with linear tiling, which is
        * not supported for compressed formats.
        */
@@ -1625,7 +1633,7 @@ static void *si_texture_transfer_map(struct pipe_context *ctx, struct pipe_resou
    char *map;
    bool use_staging_texture = false;
 
-   assert(!(texture->flags & SI_RESOURCE_FLAG_TRANSFER));
+   assert(!(texture->flags & SI_RESOURCE_FLAG_FORCE_LINEAR));
    assert(box->width && box->height && box->depth);
 
    /* If we are uploading into FP16 or R11G11B10_FLOAT via a blit, CB clobbers NaNs,
@@ -1694,9 +1702,24 @@ static void *si_texture_transfer_map(struct pipe_context *ctx, struct pipe_resou
    if (use_staging_texture) {
       struct pipe_resource resource;
       struct si_texture *staging;
+      unsigned bo_usage = usage & PIPE_TRANSFER_READ ? PIPE_USAGE_STAGING : PIPE_USAGE_STREAM;
+      unsigned bo_flags = SI_RESOURCE_FLAG_FORCE_LINEAR;
 
-      si_init_temp_resource_from_box(&resource, texture, box, level, SI_RESOURCE_FLAG_TRANSFER);
-      resource.usage = (usage & PIPE_TRANSFER_READ) ? PIPE_USAGE_STAGING : PIPE_USAGE_STREAM;
+      /* The pixel shader has a bad access pattern for linear textures.
+       * If a pixel shader is used to blit to/from staging, don't disable caches.
+       *
+       * MSAA, depth/stencil textures, and compressed textures use the pixel shader
+       * to blit.
+       */
+      if (texture->nr_samples <= 1 &&
+          !tex->is_depth &&
+          !util_format_is_compressed(texture->format) &&
+          /* Texture uploads with DCC use the pixel shader to blit */
+          (!(usage & PIPE_TRANSFER_WRITE) || !vi_dcc_enabled(tex, level)))
+         bo_flags |= SI_RESOURCE_FLAG_UNCACHED;
+
+      si_init_temp_resource_from_box(&resource, texture, box, level, bo_usage,
+                                     bo_flags);
 
       /* Since depth-stencil textures don't support linear tiling,
        * blit from ZS to color and vice versa. u_blitter will do

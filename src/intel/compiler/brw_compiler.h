@@ -923,8 +923,20 @@ struct brw_cs_prog_data {
    struct brw_stage_prog_data base;
 
    unsigned local_size[3];
-   unsigned simd_size;
    unsigned slm_size;
+
+   /* Program offsets for the 8/16/32 SIMD variants.  Multiple variants are
+    * kept when using variable group size, and the right one can only be
+    * decided at dispatch time.
+    */
+   unsigned prog_offset[3];
+
+   /* Bitmask indicating which program offsets are valid. */
+   unsigned prog_mask;
+
+   /* Bitmask indicating which programs have spilled. */
+   unsigned prog_spilled;
+
    bool uses_barrier;
    bool uses_num_work_groups;
 
@@ -941,6 +953,18 @@ struct brw_cs_prog_data {
       /** @} */
    } binding_table;
 };
+
+static inline uint32_t
+brw_cs_prog_data_prog_offset(const struct brw_cs_prog_data *prog_data,
+                             unsigned dispatch_width)
+{
+   assert(dispatch_width == 8 ||
+          dispatch_width == 16 ||
+          dispatch_width == 32);
+   const unsigned index = dispatch_width / 16;
+   assert(prog_data->prog_mask & (1 << index));
+   return prog_data->prog_offset[index];
+}
 
 /**
  * Enum representing the i965-specific vertex results that don't correspond
@@ -1499,6 +1523,24 @@ encode_slm_size(unsigned gen, uint32_t bytes)
 unsigned
 brw_cs_push_const_total_size(const struct brw_cs_prog_data *cs_prog_data,
                              unsigned threads);
+
+unsigned
+brw_cs_simd_size_for_group_size(const struct gen_device_info *devinfo,
+                                const struct brw_cs_prog_data *cs_prog_data,
+                                unsigned group_size);
+
+/**
+ * Calculate the RightExecutionMask field used in GPGPU_WALKER.
+ */
+static inline unsigned
+brw_cs_right_mask(unsigned group_size, unsigned simd_size)
+{
+   const uint32_t remainder = group_size & (simd_size - 1);
+   if (remainder > 0)
+      return ~0u >> (32 - remainder);
+   else
+      return ~0u >> (32 - simd_size);
+}
 
 /**
  * Return true if the given shader stage is dispatched contiguously by the

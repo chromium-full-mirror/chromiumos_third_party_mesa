@@ -859,6 +859,7 @@ struct_member_decoration_cb(struct vtn_builder *b,
       break;
 
    case SpvDecorationUserSemantic:
+   case SpvDecorationUserTypeGOOGLE:
       /* User semantic decorations can safely be ignored by the driver. */
       break;
 
@@ -1038,6 +1039,10 @@ type_decoration_cb(struct vtn_builder *b,
    case SpvDecorationAlignment:
       vtn_warn("Decoration only allowed for CL-style kernels: %s",
                spirv_decoration_to_string(dec->decoration));
+      break;
+
+   case SpvDecorationUserTypeGOOGLE:
+      /* User semantic decorations can safely be ignored by the driver. */
       break;
 
    default:
@@ -1986,9 +1991,9 @@ vtn_split_barrier_semantics(struct vtn_builder *b,
       *after |= SpvMemorySemanticsMakeAvailableMask | storage_semantics;
 }
 
-static void
-vtn_emit_scoped_memory_barrier(struct vtn_builder *b, SpvScope scope,
-                               SpvMemorySemanticsMask semantics)
+static nir_memory_semantics
+vtn_mem_semantics_to_nir_mem_semantics(struct vtn_builder *b,
+                                       SpvMemorySemanticsMask semantics)
 {
    nir_memory_semantics nir_semantics = 0;
 
@@ -2045,6 +2050,13 @@ vtn_emit_scoped_memory_barrier(struct vtn_builder *b, SpvScope scope,
       nir_semantics |= NIR_MEMORY_MAKE_VISIBLE;
    }
 
+   return nir_semantics;
+}
+
+static nir_variable_mode
+vtn_mem_sematics_to_nir_var_modes(struct vtn_builder *b,
+                                  SpvMemorySemanticsMask semantics)
+{
    /* Vulkan Environment for SPIR-V says "SubgroupMemory, CrossWorkgroupMemory,
     * and AtomicCounterMemory are ignored".
     */
@@ -2070,10 +2082,12 @@ vtn_emit_scoped_memory_barrier(struct vtn_builder *b, SpvScope scope,
       modes |= nir_var_shader_out;
    }
 
-   /* No barrier to add. */
-   if (nir_semantics == 0 || modes == 0)
-      return;
+   return modes;
+}
 
+static nir_scope
+vtn_scope_to_nir_scope(struct vtn_builder *b, SpvScope scope)
+{
    nir_scope nir_scope;
    switch (scope) {
    case SpvScopeDevice:
@@ -2108,13 +2122,43 @@ vtn_emit_scoped_memory_barrier(struct vtn_builder *b, SpvScope scope,
       vtn_fail("Invalid memory scope");
    }
 
-   nir_intrinsic_instr *intrin =
-      nir_intrinsic_instr_create(b->shader, nir_intrinsic_scoped_memory_barrier);
-   nir_intrinsic_set_memory_semantics(intrin, nir_semantics);
+   return nir_scope;
+}
 
-   nir_intrinsic_set_memory_modes(intrin, modes);
-   nir_intrinsic_set_memory_scope(intrin, nir_scope);
-   nir_builder_instr_insert(&b->nb, &intrin->instr);
+static void
+vtn_emit_scoped_control_barrier(struct vtn_builder *b, SpvScope exec_scope,
+                                SpvScope mem_scope,
+                                SpvMemorySemanticsMask semantics)
+{
+   nir_memory_semantics nir_semantics;
+   nir_variable_mode modes;
+
+   nir_semantics = vtn_mem_semantics_to_nir_mem_semantics(b, semantics);
+   modes = vtn_mem_sematics_to_nir_var_modes(b, semantics);
+
+   /* No barrier to add. */
+   if (nir_semantics == 0 || modes == 0)
+      return;
+
+   nir_scope nir_exec_scope = vtn_scope_to_nir_scope(b, exec_scope);
+   nir_scope nir_mem_scope = vtn_scope_to_nir_scope(b, mem_scope);
+   nir_scoped_barrier(&b->nb, nir_exec_scope, nir_mem_scope, nir_semantics, modes);
+}
+
+static void
+vtn_emit_scoped_memory_barrier(struct vtn_builder *b, SpvScope scope,
+                               SpvMemorySemanticsMask semantics)
+{
+   nir_variable_mode modes = vtn_mem_sematics_to_nir_var_modes(b, semantics);
+   nir_memory_semantics nir_semantics =
+      vtn_mem_semantics_to_nir_mem_semantics(b, semantics);
+
+   /* No barrier to add. */
+   if (nir_semantics == 0 || modes == 0)
+      return;
+
+   nir_scope nir_mem_scope = vtn_scope_to_nir_scope(b, scope);
+   nir_scoped_barrier(&b->nb, NIR_SCOPE_NONE, nir_mem_scope, nir_semantics, modes);
 }
 
 struct vtn_ssa_value *
@@ -2445,8 +2489,10 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
       uint32_t operands = w[idx];
 
       if (operands & SpvImageOperandsBiasMask) {
-         vtn_assert(texop == nir_texop_tex);
-         texop = nir_texop_txb;
+         vtn_assert(texop == nir_texop_tex ||
+                    texop == nir_texop_tg4);
+         if (texop == nir_texop_tex)
+            texop = nir_texop_txb;
          uint32_t arg = image_operand_arg(b, w, count, idx,
                                           SpvImageOperandsBiasMask);
          (*p++) = vtn_tex_src(b, w[arg], nir_tex_src_bias);
@@ -2454,7 +2500,7 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
 
       if (operands & SpvImageOperandsLodMask) {
          vtn_assert(texop == nir_texop_txl || texop == nir_texop_txf ||
-                    texop == nir_texop_txs);
+                    texop == nir_texop_txs || texop == nir_texop_tg4);
          uint32_t arg = image_operand_arg(b, w, count, idx,
                                           SpvImageOperandsLodMask);
          (*p++) = vtn_tex_src(b, w[arg], nir_tex_src_lod);
@@ -3469,9 +3515,11 @@ vtn_handle_composite(struct vtn_builder *b, SpvOp opcode,
       break;
 
    case SpvOpCopyLogical:
-   case SpvOpCopyObject:
       ssa = vtn_composite_copy(b, vtn_ssa_value(b, w[3]));
       break;
+   case SpvOpCopyObject:
+      vtn_copy_value(b, w[3], w[2]);
+      return;
 
    default:
       vtn_fail_with_opcode("unknown composite operation", opcode);
@@ -3491,7 +3539,7 @@ void
 vtn_emit_memory_barrier(struct vtn_builder *b, SpvScope scope,
                         SpvMemorySemanticsMask semantics)
 {
-   if (b->shader->options->use_scoped_memory_barrier) {
+   if (b->shader->options->use_scoped_barrier) {
       vtn_emit_scoped_memory_barrier(b, scope, semantics);
       return;
    }
@@ -3645,10 +3693,15 @@ vtn_handle_barrier(struct vtn_builder *b, SpvOp opcode,
                              SpvMemorySemanticsOutputMemoryMask;
       }
 
-      vtn_emit_memory_barrier(b, memory_scope, memory_semantics);
+      if (b->shader->options->use_scoped_barrier) {
+         vtn_emit_scoped_control_barrier(b, execution_scope, memory_scope,
+                                         memory_semantics);
+      } else {
+         vtn_emit_memory_barrier(b, memory_scope, memory_semantics);
 
-      if (execution_scope == SpvScopeWorkgroup)
-         vtn_emit_barrier(b, nir_intrinsic_control_barrier);
+         if (execution_scope == SpvScopeWorkgroup)
+            vtn_emit_barrier(b, nir_intrinsic_control_barrier);
+      }
       break;
    }
 
@@ -4057,6 +4110,10 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
 
       case SpvCapabilityFragmentMaskAMD:
          spv_check_supported(amd_fragment_mask, cap);
+         break;
+
+      case SpvCapabilityImageGatherBiasLodAMD:
+         spv_check_supported(amd_image_gather_bias_lod, cap);
          break;
 
       default:
@@ -5010,7 +5067,19 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
    }
 
    case SpvOpReadClockKHR: {
-      assert(vtn_constant_uint(b, w[3]) == SpvScopeSubgroup);
+      SpvScope scope = vtn_constant_uint(b, w[3]);
+      nir_scope nir_scope;
+
+      switch (scope) {
+      case SpvScopeDevice:
+         nir_scope = NIR_SCOPE_DEVICE;
+         break;
+      case SpvScopeSubgroup:
+         nir_scope = NIR_SCOPE_SUBGROUP;
+         break;
+      default:
+         vtn_fail("invalid read clock scope");
+      }
 
       /* Operation supports two result types: uvec2 and uint64_t.  The NIR
        * intrinsic gives uvec2, so pack the result for the other case.
@@ -5018,6 +5087,7 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
       nir_intrinsic_instr *intrin =
          nir_intrinsic_instr_create(b->nb.shader, nir_intrinsic_shader_clock);
       nir_ssa_dest_init(&intrin->instr, &intrin->dest, 2, 32, NULL);
+      nir_intrinsic_set_memory_scope(intrin, nir_scope);
       nir_builder_instr_insert(&b->nb, &intrin->instr);
 
       struct vtn_type *type = vtn_value(b, w[1], vtn_value_type_type)->type;
@@ -5298,7 +5368,7 @@ spirv_to_nir(const uint32_t *words, size_t word_count,
     */
    nir_lower_variable_initializers(b->shader, nir_var_shader_out);
    nir_remove_dead_variables(b->shader,
-                             nir_var_shader_in | nir_var_shader_out);
+                             nir_var_shader_in | nir_var_shader_out, NULL);
 
    /* We sometimes generate bogus derefs that, while never used, give the
     * validator a bit of heartburn.  Run dead code to get rid of them.

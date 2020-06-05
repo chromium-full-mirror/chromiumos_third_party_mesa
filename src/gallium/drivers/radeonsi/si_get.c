@@ -264,9 +264,8 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS:
       return 4095;
    case PIPE_CAP_MAX_GS_INVOCATIONS:
-      /* The closed driver exposes 127, but 125 is the greatest
-       * number that works. */
-      return 125;
+      /* Even though the hw supports more, we officially wanna expose only 32. */
+      return 32;
 
    case PIPE_CAP_MAX_VERTEX_ATTRIB_STRIDE:
       return 2048;
@@ -455,6 +454,8 @@ static int si_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_typ
 
    /* Unsupported boolean features. */
    case PIPE_SHADER_CAP_FP16:
+   case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+   case PIPE_SHADER_CAP_INT16:
    case PIPE_SHADER_CAP_SUBROUTINES:
    case PIPE_SHADER_CAP_SUPPORTED_IRS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:

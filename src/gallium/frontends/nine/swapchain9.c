@@ -363,7 +363,7 @@ NineSwapChain9_Resize( struct NineSwapChain9 *This,
                                                    tmplt.bind, FALSE, FALSE);
         if (tmplt.format == PIPE_FORMAT_NONE)
             return D3DERR_INVALIDCALL;
-        resource = This->screen->resource_create(This->screen, &tmplt);
+        resource = nine_resource_create_with_retry(pDevice, This->screen, &tmplt);
         if (!resource) {
             DBG("Failed to create pipe_resource.\n");
             return D3DERR_OUTOFVIDEOMEMORY;
@@ -397,7 +397,7 @@ NineSwapChain9_Resize( struct NineSwapChain9 *This,
                 tmplt.bind |= PIPE_BIND_LINEAR;
             if (pParams->SwapEffect != D3DSWAPEFFECT_DISCARD)
                 tmplt.bind |= PIPE_BIND_RENDER_TARGET;
-            resource = This->screen->resource_create(This->screen, &tmplt);
+            resource = nine_resource_create_with_retry(pDevice, This->screen, &tmplt);
             pipe_resource_reference(&(This->present_buffers[i]), resource);
         }
         This->present_handles[i] = D3DWindowBuffer_create(This, resource, depth, false);
@@ -421,7 +421,7 @@ NineSwapChain9_Resize( struct NineSwapChain9 *This,
             return D3DERR_INVALIDCALL;
 
         if (This->zsbuf) {
-            resource = This->screen->resource_create(This->screen, &tmplt);
+            resource = nine_resource_create_with_retry(pDevice, This->screen, &tmplt);
             if (!resource) {
                 DBG("Failed to create pipe_resource for depth buffer.\n");
                 return D3DERR_OUTOFVIDEOMEMORY;
@@ -606,7 +606,7 @@ create_present_buffer( struct NineSwapChain9 *This,
     tmplt.nr_samples = 0;
     if (This->actx->linear_framebuffer)
         tmplt.bind |= PIPE_BIND_LINEAR;
-    *resource = This->screen->resource_create(This->screen, &tmplt);
+    *resource = nine_resource_create_with_retry(This->base.device, This->screen, &tmplt);
 
     *present_handle = D3DWindowBuffer_create(This, *resource, 24, true);
 
@@ -724,6 +724,8 @@ present( struct NineSwapChain9 *This,
     HRESULT hr;
     struct pipe_blit_info blit;
     int target_width, target_height, target_depth, i;
+    RECT source_rect;
+    RECT dest_rect;
 
     DBG("present: This=%p pSourceRect=%p pDestRect=%p "
         "pDirtyRegion=%p hDestWindowOverride=%p"
@@ -731,29 +733,37 @@ present( struct NineSwapChain9 *This,
         This, pSourceRect, pDestRect, pDirtyRegion,
         hDestWindowOverride, (int)dwFlags, This->buffers[0]->base.resource);
 
-    if (pSourceRect)
+    /* We can choose to only update pDirtyRegion, but the backend can choose
+     * to update everything. Let's ignore */
+    (void) pDirtyRegion;
+
+    resource = This->buffers[0]->base.resource;
+
+    if (pSourceRect) {
         DBG("pSourceRect = (%u..%u)x(%u..%u)\n",
             pSourceRect->left, pSourceRect->right,
             pSourceRect->top, pSourceRect->bottom);
-    if (pDestRect)
+        source_rect = *pSourceRect;
+        if (source_rect.top == 0 &&
+            source_rect.left == 0 &&
+            source_rect.bottom == resource->height0 &&
+            source_rect.right == resource->width0)
+            pSourceRect = NULL;
+        /* TODO: Handle more of pSourceRect.
+         * Currently we should support:
+         * . When there is no pSourceRect
+         * . When pSourceRect is the full buffer.
+         */
+    }
+    if (pDestRect) {
         DBG("pDestRect = (%u..%u)x(%u..%u)\n",
             pDestRect->left, pDestRect->right,
             pDestRect->top, pDestRect->bottom);
-
-    /* TODO: in the case the source and destination rect have different size:
-     * We need to allocate a new buffer, and do a blit to it to resize.
-     * We can't use the present_buffer for that since when we created it,
-     * we couldn't guess which size would have been needed.
-     * If pDestRect or pSourceRect is null, we have to check the sizes
-     * from the source size, and the destination window size.
-     * In this case, either resize rngdata, or pass NULL instead
-     */
-    /* Note: This->buffers[0]->level should always be 0 */
+        dest_rect = *pDestRect;
+    }
 
     if (This->rendering_done)
         goto bypass_rendering;
-
-    resource = This->buffers[0]->base.resource;
 
     if (This->params.SwapEffect == D3DSWAPEFFECT_DISCARD)
         handle_draw_cursor_and_hud(This, resource);
@@ -769,6 +779,15 @@ present( struct NineSwapChain9 *This,
         This->base.device->minor_version_num <= 2) {
         target_width = resource->width0;
         target_height = resource->height0;
+    }
+
+    if (pDestRect) {
+        dest_rect.top = MAX2(0, dest_rect.top);
+        dest_rect.left = MAX2(0, dest_rect.left);
+        dest_rect.bottom = MIN2(target_height, dest_rect.bottom);
+        dest_rect.right = MIN2(target_width, dest_rect.right);
+        target_height = dest_rect.bottom - dest_rect.top;
+        target_width = dest_rect.right - dest_rect.left;
     }
 
     /* Switch to using presentation buffers on window resize.
@@ -811,7 +830,7 @@ present( struct NineSwapChain9 *This,
     if (This->present_buffers[0]) {
         memset(&blit, 0, sizeof(blit));
         blit.src.resource = resource;
-        blit.src.level = 0;
+        blit.src.level = 0; /* Note: This->buffers[0]->level should always be 0 */
         blit.src.format = resource->format;
         blit.src.box.z = 0;
         blit.src.box.depth = 1;
@@ -906,7 +925,7 @@ bypass_rendering:
     if (!This->enable_threadpool) {
         This->tasks[0]=NULL;
 
-        hr = ID3DPresent_PresentBuffer(This->present, This->present_handles[0], hDestWindowOverride, pSourceRect, pDestRect, pDirtyRegion, dwFlags);
+        hr = ID3DPresent_PresentBuffer(This->present, This->present_handles[0], hDestWindowOverride, pSourceRect, pDestRect ? &dest_rect : NULL, NULL, dwFlags);
 
         if (FAILED(hr)) { UNTESTED(3);return hr; }
     }

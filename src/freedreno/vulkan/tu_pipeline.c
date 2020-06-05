@@ -298,9 +298,11 @@ struct tu_pipeline_builder
    /* these states are affectd by rasterizer_discard */
    VkSampleCountFlagBits samples;
    bool use_color_attachments;
+   bool use_dual_src_blend;
    uint32_t color_attachment_count;
    VkFormat color_attachment_formats[MAX_RTS];
    VkFormat depth_attachment_format;
+   uint32_t render_components;
 };
 
 static enum tu_dynamic_state_bits
@@ -381,6 +383,37 @@ tu_blend_factor_no_dst_alpha(VkBlendFactor factor)
    default:
       return factor;
    }
+}
+
+static bool tu_blend_factor_is_dual_src(VkBlendFactor factor)
+{
+   switch (factor) {
+   case VK_BLEND_FACTOR_SRC1_COLOR:
+   case VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR:
+   case VK_BLEND_FACTOR_SRC1_ALPHA:
+   case VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static bool
+tu_blend_state_is_dual_src(const VkPipelineColorBlendStateCreateInfo *info)
+{
+   if (!info)
+      return false;
+
+   for (unsigned i = 0; i < info->attachmentCount; i++) {
+      const VkPipelineColorBlendAttachmentState *blend = &info->pAttachments[i];
+      if (tu_blend_factor_is_dual_src(blend->srcColorBlendFactor) ||
+          tu_blend_factor_is_dual_src(blend->dstColorBlendFactor) ||
+          tu_blend_factor_is_dual_src(blend->srcAlphaBlendFactor) ||
+          tu_blend_factor_is_dual_src(blend->dstAlphaBlendFactor))
+         return true;
+   }
+
+   return false;
 }
 
 static enum pc_di_primtype
@@ -1305,7 +1338,8 @@ tu6_emit_fs_inputs(struct tu_cs *cs, const struct ir3_shader_variant *fs)
 static void
 tu6_emit_fs_outputs(struct tu_cs *cs,
                     const struct ir3_shader_variant *fs,
-                    uint32_t mrt_count)
+                    uint32_t mrt_count, bool dual_src_blend,
+                    uint32_t render_components)
 {
    uint32_t smask_regid, posz_regid;
 
@@ -1325,6 +1359,7 @@ tu6_emit_fs_outputs(struct tu_cs *cs,
    tu_cs_emit_pkt4(cs, REG_A6XX_SP_FS_OUTPUT_CNTL0, 2);
    tu_cs_emit(cs, A6XX_SP_FS_OUTPUT_CNTL0_DEPTH_REGID(posz_regid) |
                   A6XX_SP_FS_OUTPUT_CNTL0_SAMPMASK_REGID(smask_regid) |
+                  COND(dual_src_blend, A6XX_SP_FS_OUTPUT_CNTL0_DUAL_COLOR_IN_ENABLE) |
                   0xfc000000);
    tu_cs_emit(cs, A6XX_SP_FS_OUTPUT_CNTL1_MRT(mrt_count));
 
@@ -1336,23 +1371,31 @@ tu6_emit_fs_outputs(struct tu_cs *cs,
                         (false ? A6XX_SP_FS_OUTPUT_REG_HALF_PRECISION : 0));
    }
 
+   tu_cs_emit_regs(cs,
+                   A6XX_SP_FS_RENDER_COMPONENTS(.dword = render_components));
+
    tu_cs_emit_pkt4(cs, REG_A6XX_RB_FS_OUTPUT_CNTL0, 2);
    tu_cs_emit(cs, COND(fs->writes_pos, A6XX_RB_FS_OUTPUT_CNTL0_FRAG_WRITES_Z) |
-                  COND(fs->writes_smask, A6XX_RB_FS_OUTPUT_CNTL0_FRAG_WRITES_SAMPMASK));
+                  COND(fs->writes_smask, A6XX_RB_FS_OUTPUT_CNTL0_FRAG_WRITES_SAMPMASK) |
+                  COND(dual_src_blend, A6XX_RB_FS_OUTPUT_CNTL0_DUAL_COLOR_IN_ENABLE));
    tu_cs_emit(cs, A6XX_RB_FS_OUTPUT_CNTL1_MRT(mrt_count));
 
-   uint32_t gras_su_depth_plane_cntl = 0;
-   uint32_t rb_depth_plane_cntl = 0;
-   if (fs->no_earlyz || fs->writes_pos) {
-      gras_su_depth_plane_cntl |= A6XX_GRAS_SU_DEPTH_PLANE_CNTL_FRAG_WRITES_Z;
-      rb_depth_plane_cntl |= A6XX_RB_DEPTH_PLANE_CNTL_FRAG_WRITES_Z;
+   tu_cs_emit_regs(cs,
+                   A6XX_RB_RENDER_COMPONENTS(.dword = render_components));
+
+   enum a6xx_ztest_mode zmode;
+
+   if (fs->no_earlyz || fs->has_kill || fs->writes_pos) {
+      zmode = A6XX_LATE_Z;
+   } else {
+      zmode = A6XX_EARLY_Z;
    }
 
    tu_cs_emit_pkt4(cs, REG_A6XX_GRAS_SU_DEPTH_PLANE_CNTL, 1);
-   tu_cs_emit(cs, gras_su_depth_plane_cntl);
+   tu_cs_emit(cs, A6XX_GRAS_SU_DEPTH_PLANE_CNTL_Z_MODE(zmode));
 
    tu_cs_emit_pkt4(cs, REG_A6XX_RB_DEPTH_PLANE_CNTL, 1);
-   tu_cs_emit(cs, rb_depth_plane_cntl);
+   tu_cs_emit(cs, A6XX_RB_DEPTH_PLANE_CNTL_Z_MODE(zmode));
 }
 
 static void
@@ -1553,7 +1596,9 @@ tu6_emit_program(struct tu_cs *cs,
    tu6_emit_vpc(cs, vs, gs, fs, binning_pass, tf);
    tu6_emit_vpc_varying_modes(cs, fs, binning_pass);
    tu6_emit_fs_inputs(cs, fs);
-   tu6_emit_fs_outputs(cs, fs, builder->color_attachment_count);
+   tu6_emit_fs_outputs(cs, fs, builder->color_attachment_count,
+                       builder->use_dual_src_blend,
+                       builder->render_components);
 
    tu6_emit_shader_object(cs, MESA_SHADER_VERTEX, vs, binary_bo,
       binning_pass ? builder->binning_vs_offset : builder->shader_offsets[MESA_SHADER_VERTEX]);
@@ -1576,10 +1621,8 @@ static void
 tu6_emit_vertex_input(struct tu_cs *cs,
                       const struct ir3_shader_variant *vs,
                       const VkPipelineVertexInputStateCreateInfo *info,
-                      uint8_t bindings[MAX_VERTEX_ATTRIBS],
-                      uint32_t *count)
+                      uint32_t *bindings_used)
 {
-   uint32_t vfd_fetch_idx = 0;
    uint32_t vfd_decode_idx = 0;
    uint32_t binding_instanced = 0; /* bitmask of instanced bindings */
 
@@ -1588,13 +1631,12 @@ tu6_emit_vertex_input(struct tu_cs *cs,
          &info->pVertexBindingDescriptions[i];
 
       tu_cs_emit_regs(cs,
-                      A6XX_VFD_FETCH_STRIDE(vfd_fetch_idx, binding->stride));
+                      A6XX_VFD_FETCH_STRIDE(binding->binding, binding->stride));
 
       if (binding->inputRate == VK_VERTEX_INPUT_RATE_INSTANCE)
          binding_instanced |= 1 << binding->binding;
 
-      bindings[vfd_fetch_idx] = binding->binding;
-      vfd_fetch_idx++;
+      *bindings_used |= 1 << binding->binding;
    }
 
    /* TODO: emit all VFD_DECODE/VFD_DEST_CNTL in same (two) pkt4 */
@@ -1602,13 +1644,7 @@ tu6_emit_vertex_input(struct tu_cs *cs,
    for (uint32_t i = 0; i < info->vertexAttributeDescriptionCount; i++) {
       const VkVertexInputAttributeDescription *attr =
          &info->pVertexAttributeDescriptions[i];
-      uint32_t binding_idx, input_idx;
-
-      for (binding_idx = 0; binding_idx < vfd_fetch_idx; binding_idx++) {
-         if (bindings[binding_idx] == attr->binding)
-            break;
-      }
-      assert(binding_idx < vfd_fetch_idx);
+      uint32_t input_idx;
 
       for (input_idx = 0; input_idx < vs->inputs_count; input_idx++) {
          if ((vs->inputs[input_idx].slot - VERT_ATTRIB_GENERIC0) == attr->location)
@@ -1622,7 +1658,7 @@ tu6_emit_vertex_input(struct tu_cs *cs,
       const struct tu_native_format format = tu6_format_vtx(attr->format);
       tu_cs_emit_regs(cs,
                       A6XX_VFD_DECODE_INSTR(vfd_decode_idx,
-                        .idx = binding_idx,
+                        .idx = attr->binding,
                         .offset = attr->offset,
                         .instanced = binding_instanced & (1 << attr->binding),
                         .format = format.fmt,
@@ -1641,10 +1677,8 @@ tu6_emit_vertex_input(struct tu_cs *cs,
 
    tu_cs_emit_regs(cs,
                    A6XX_VFD_CONTROL_0(
-                     .fetch_cnt = vfd_fetch_idx,
+                     .fetch_cnt = info->vertexBindingDescriptionCount,
                      .decode_cnt = vfd_decode_idx));
-
-   *count = vfd_fetch_idx;
 }
 
 static uint32_t
@@ -2021,33 +2055,27 @@ tu6_emit_rb_mrt_controls(struct tu_cs *cs,
 static void
 tu6_emit_blend_control(struct tu_cs *cs,
                        uint32_t blend_enable_mask,
+                       bool dual_src_blend,
                        const VkPipelineMultisampleStateCreateInfo *msaa_info)
 {
-   assert(!msaa_info->alphaToOneEnable);
-
-   uint32_t sp_blend_cntl = A6XX_SP_BLEND_CNTL_UNK8;
-   if (blend_enable_mask)
-      sp_blend_cntl |= A6XX_SP_BLEND_CNTL_ENABLED;
-   if (msaa_info->alphaToCoverageEnable)
-      sp_blend_cntl |= A6XX_SP_BLEND_CNTL_ALPHA_TO_COVERAGE;
-
    const uint32_t sample_mask =
-      msaa_info->pSampleMask ? *msaa_info->pSampleMask
+      msaa_info->pSampleMask ? (*msaa_info->pSampleMask & 0xffff)
                              : ((1 << msaa_info->rasterizationSamples) - 1);
 
+   tu_cs_emit_regs(cs,
+                   A6XX_SP_BLEND_CNTL(.enabled = blend_enable_mask,
+                                      .dual_color_in_enable = dual_src_blend,
+                                      .alpha_to_coverage = msaa_info->alphaToCoverageEnable,
+                                      .unk8 = true));
+
    /* set A6XX_RB_BLEND_CNTL_INDEPENDENT_BLEND only when enabled? */
-   uint32_t rb_blend_cntl =
-      A6XX_RB_BLEND_CNTL_ENABLE_BLEND(blend_enable_mask) |
-      A6XX_RB_BLEND_CNTL_INDEPENDENT_BLEND |
-      A6XX_RB_BLEND_CNTL_SAMPLE_MASK(sample_mask);
-   if (msaa_info->alphaToCoverageEnable)
-      rb_blend_cntl |= A6XX_RB_BLEND_CNTL_ALPHA_TO_COVERAGE;
-
-   tu_cs_emit_pkt4(cs, REG_A6XX_SP_BLEND_CNTL, 1);
-   tu_cs_emit(cs, sp_blend_cntl);
-
-   tu_cs_emit_pkt4(cs, REG_A6XX_RB_BLEND_CNTL, 1);
-   tu_cs_emit(cs, rb_blend_cntl);
+   tu_cs_emit_regs(cs,
+                   A6XX_RB_BLEND_CNTL(.enable_blend = blend_enable_mask,
+                                      .independent_blend = true,
+                                      .sample_mask = sample_mask,
+                                      .dual_color_in_enable = dual_src_blend,
+                                      .alpha_to_coverage = msaa_info->alphaToCoverageEnable,
+                                      .alpha_to_one = msaa_info->alphaToOneEnable));
 }
 
 void
@@ -2267,15 +2295,14 @@ tu_pipeline_builder_parse_vertex_input(struct tu_pipeline_builder *builder,
    tu_cs_begin_sub_stream(&pipeline->cs,
                           MAX_VERTEX_ATTRIBS * 7 + 2, &vi_cs);
    tu6_emit_vertex_input(&vi_cs, &vs->variants[0], vi_info,
-                         pipeline->vi.bindings, &pipeline->vi.count);
+                         &pipeline->vi.bindings_used);
    pipeline->vi.state_ib = tu_cs_end_sub_stream(&pipeline->cs, &vi_cs);
 
    if (vs->has_binning_pass) {
       tu_cs_begin_sub_stream(&pipeline->cs,
                              MAX_VERTEX_ATTRIBS * 7 + 2, &vi_cs);
       tu6_emit_vertex_input(
-         &vi_cs, &vs->variants[1], vi_info, pipeline->vi.binning_bindings,
-         &pipeline->vi.binning_count);
+         &vi_cs, &vs->variants[1], vi_info, &pipeline->vi.bindings_used);
       pipeline->vi.binning_state_ib =
          tu_cs_end_sub_stream(&pipeline->cs, &vi_cs);
    }
@@ -2470,7 +2497,8 @@ tu_pipeline_builder_parse_multisample_and_color_blend(
       tu6_emit_sample_locations(&blend_cs, samp_loc);
    }
 
-   tu6_emit_blend_control(&blend_cs, blend_enable_mask, msaa_info);
+   tu6_emit_blend_control(&blend_cs, blend_enable_mask,
+                          builder->use_dual_src_blend, msaa_info);
 
    pipeline->blend.state_ib = tu_cs_end_sub_stream(&pipeline->cs, &blend_cs);
 }
@@ -2583,6 +2611,15 @@ tu_pipeline_builder_init_graphics(
 
          builder->color_attachment_formats[i] = pass->attachments[a].format;
          builder->use_color_attachments = true;
+         builder->render_components |= 0xf << (i * 4);
+      }
+
+      if (tu_blend_state_is_dual_src(create_info->pColorBlendState)) {
+         builder->color_attachment_count++;
+         builder->use_dual_src_blend = true;
+         /* dual source blending has an extra fs output in the 2nd slot */
+         if (subpass->color_attachments[0].attachment != VK_ATTACHMENT_UNUSED)
+            builder->render_components |= 0xf << 4;
       }
    }
 }

@@ -318,6 +318,33 @@ lp_build_sample_alpha_to_coverage(struct gallivm_state *gallivm,
       s_mask = LLVMBuildAnd(builder, s_mask, test, "");
       LLVMBuildStore(builder, s_mask, s_mask_ptr);
    }
+};
+
+struct lp_build_fs_llvm_iface {
+   struct lp_build_fs_iface base;
+   struct lp_build_interp_soa_context *interp;
+   struct lp_build_for_loop_state *loop_state;
+   LLVMValueRef mask_store;
+};
+
+static LLVMValueRef fs_interp(const struct lp_build_fs_iface *iface,
+                              struct lp_build_context *bld,
+                              unsigned attrib, unsigned chan,
+                              bool centroid, bool sample,
+                              LLVMValueRef attrib_indir,
+                              LLVMValueRef offsets[2])
+{
+   struct lp_build_fs_llvm_iface *fs_iface = (struct lp_build_fs_llvm_iface *)iface;
+   struct lp_build_interp_soa_context *interp = fs_iface->interp;
+   unsigned loc = TGSI_INTERPOLATE_LOC_CENTER;
+   if (centroid)
+      loc = TGSI_INTERPOLATE_LOC_CENTROID;
+   if (sample)
+      loc = TGSI_INTERPOLATE_LOC_SAMPLE;
+
+   return lp_build_interp_soa(interp, bld->gallivm, fs_iface->loop_state->counter,
+                              fs_iface->mask_store,
+                              attrib, chan, loc, attrib_indir, offsets);
 }
 
 /**
@@ -473,7 +500,9 @@ generate_fs_loop(struct gallivm_state *gallivm,
                            num_loop,
                            lp_build_const_int32(gallivm, 1));
 
+   LLVMValueRef sample_mask_in;
    if (key->multisample) {
+      sample_mask_in = lp_build_const_int_vec(gallivm, type, 0);
       /* create shader execution mask by combining all sample masks. */
       for (unsigned s = 0; s < key->coverage_samples; s++) {
          LLVMValueRef s_mask_idx = LLVMBuildMul(builder, num_loop, lp_build_const_int32(gallivm, s), "");
@@ -483,11 +512,18 @@ generate_fs_loop(struct gallivm_state *gallivm,
             mask_val = s_mask;
          else
             mask_val = LLVMBuildOr(builder, s_mask, mask_val, "");
+
+         LLVMValueRef mask_in = LLVMBuildAnd(builder, s_mask, lp_build_const_int_vec(gallivm, type, (1 << s)), "");
+         sample_mask_in = LLVMBuildOr(builder, sample_mask_in, mask_in, "");
       }
    } else {
+      sample_mask_in = lp_build_const_int_vec(gallivm, type, 1);
       mask_ptr = LLVMBuildGEP(builder, mask_store,
                               &loop_state.counter, 1, "mask_ptr");
       mask_val = LLVMBuildLoad(builder, mask_ptr, "");
+
+      LLVMValueRef mask_in = LLVMBuildAnd(builder, mask_val, lp_build_const_int_vec(gallivm, type, 1), "");
+      sample_mask_in = LLVMBuildOr(builder, sample_mask_in, mask_in, "");
    }
 
    /* 'mask' will control execution based on quad's pixel alive/killed state */
@@ -651,15 +687,24 @@ generate_fs_loop(struct gallivm_state *gallivm,
    } else
       system_values.sample_id = lp_build_const_int32(gallivm, 0);
 
+   system_values.sample_mask_in = sample_mask_in;
    system_values.sample_pos = sample_pos_array;
 
-   lp_build_interp_soa_update_inputs_dyn(interp, gallivm, loop_state.counter, mask_store, system_values.sample_id);
+   lp_build_interp_soa_update_inputs_dyn(interp, gallivm, loop_state.counter, mask_store, sample_loop_state.counter);
+
+   struct lp_build_fs_llvm_iface fs_iface = {
+     .base.interp_fn = fs_interp,
+     .interp = interp,
+     .loop_state = &loop_state,
+     .mask_store = mask_store,
+   };
 
    struct lp_build_tgsi_params params;
    memset(&params, 0, sizeof(params));
 
    params.type = type;
    params.mask = &mask;
+   params.fs_iface = &fs_iface.base;
    params.consts_ptr = consts_ptr;
    params.const_sizes_ptr = num_consts_ptr;
    params.system_values = &system_values;
@@ -742,15 +787,7 @@ generate_fs_loop(struct gallivm_state *gallivm,
 
       assert(smaski >= 0);
       output_smask = LLVMBuildLoad(builder, outputs[smaski][0], "smask");
-      /*
-       * Pixel is alive according to the first sample in the mask.
-       */
       output_smask = LLVMBuildBitCast(builder, output_smask, smask_bld.vec_type, "");
-      if (!key->multisample) {
-         output_smask = lp_build_and(&smask_bld, output_smask, smask_bld.one);
-         output_smask = lp_build_cmp(&smask_bld, PIPE_FUNC_NOTEQUAL, output_smask, smask_bld.zero);
-         lp_build_mask_update(&mask, output_smask);
-      }
 
       if (key->min_samples > 1) {
          /* only the bit corresponding to this sample is to be used. */

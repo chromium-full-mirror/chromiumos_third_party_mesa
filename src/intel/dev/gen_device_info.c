@@ -1031,7 +1031,7 @@ static const struct gen_device_info gen_device_info_ehl_4 = {
    .num_subslices = dual_subslices(1)
 
 #define GEN12_GT_FEATURES(_gt)                                  \
-   GEN12_FEATURES(1, 1, _gt == 1 ? 4 : 8),                      \
+   GEN12_FEATURES(_gt, 1, _gt == 1 ? 4 : 8),                    \
    .num_subslices = dual_subslices(_gt == 1 ? 2 : 6)
 
 static const struct gen_device_info gen_device_info_tgl_gt1 = {
@@ -1396,6 +1396,18 @@ query_topology(struct gen_device_info *devinfo, int fd)
 
 }
 
+int
+gen_get_aperture_size(int fd, uint64_t *size)
+{
+   struct drm_i915_gem_get_aperture aperture = { 0 };
+
+   int ret = gen_ioctl(fd, DRM_IOCTL_I915_GEM_GET_APERTURE, &aperture);
+   if (ret == 0 && size)
+      *size = aperture.aper_size;
+
+   return ret;
+}
+
 bool
 gen_get_device_info_from_fd(int fd, struct gen_device_info *devinfo)
 {
@@ -1462,6 +1474,8 @@ gen_get_device_info_from_fd(int fd, struct gen_device_info *devinfo)
        */
       getparam_topology(devinfo, fd);
    }
+
+   gen_get_aperture_size(fd, &devinfo->aperture_bytes);
 
    return true;
 }

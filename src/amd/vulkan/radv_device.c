@@ -162,24 +162,13 @@ radv_physical_device_init_mem_types(struct radv_physical_device *device)
 
 	unsigned type_count = 0;
 
-	if (device->rad_info.has_dedicated_vram) {
-		if (vram_index >= 0) {
-			device->memory_domains[type_count] = RADEON_DOMAIN_VRAM;
-			device->memory_flags[type_count] = RADEON_FLAG_NO_CPU_ACCESS;
-			device->memory_properties.memoryTypes[type_count++] = (VkMemoryType) {
-				.propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-				.heapIndex = vram_index,
-			};
-		}
-	} else {
-		if (visible_vram_index >= 0) {
-			device->memory_domains[type_count] = RADEON_DOMAIN_VRAM;
-			device->memory_flags[type_count] = RADEON_FLAG_NO_CPU_ACCESS;
-			device->memory_properties.memoryTypes[type_count++] = (VkMemoryType) {
-				.propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-				.heapIndex = visible_vram_index,
-			};
-		}
+	if (vram_index >= 0 || visible_vram_index >= 0) {
+		device->memory_domains[type_count] = RADEON_DOMAIN_VRAM;
+		device->memory_flags[type_count] = RADEON_FLAG_NO_CPU_ACCESS;
+		device->memory_properties.memoryTypes[type_count++] = (VkMemoryType) {
+			.propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			.heapIndex = vram_index >= 0 ? vram_index : visible_vram_index,
+		};
 	}
 
 	if (gart_index >= 0) {
@@ -443,7 +432,8 @@ fail_wsi:
 fail_alloc:
 	vk_free(&instance->alloc, device);
 fail_fd:
-	close(fd);
+	if (fd != -1)
+		close(fd);
 	if (master_fd != -1)
 		close(master_fd);
 	return result;
@@ -553,40 +543,52 @@ radv_handle_per_app_options(struct radv_instance *instance,
 			    const VkApplicationInfo *info)
 {
 	const char *name = info ? info->pApplicationName : NULL;
+	const char *engine_name = info ? info->pEngineName : NULL;
 
-	if (!name)
-		return;
-
-	if (!strcmp(name, "DOOM_VFR")) {
-		/* Work around a Doom VFR game bug */
-		instance->debug_flags |= RADV_DEBUG_NO_DYNAMIC_BOUNDS;
-	} else if (!strcmp(name, "MonsterHunterWorld.exe")) {
-		/* Workaround for a WaW hazard when LLVM moves/merges
-		 * load/store memory operations.
-		 * See https://reviews.llvm.org/D61313
-		 */
-		if (LLVM_VERSION_MAJOR < 9)
-			instance->debug_flags |= RADV_DEBUG_NO_LOAD_STORE_OPT;
-	} else if (!strcmp(name, "Wolfenstein: Youngblood")) {
-		if (!(instance->debug_flags & RADV_DEBUG_NO_SHADER_BALLOT) &&
-		    !(instance->perftest_flags & RADV_PERFTEST_ACO)) {
-			/* Force enable VK_AMD_shader_ballot because it looks
-			 * safe and it gives a nice boost (+20% on Vega 56 at
-			 * this time). It also prevents corruption on LLVM.
+	if (name) {
+		if (!strcmp(name, "DOOM_VFR")) {
+			/* Work around a Doom VFR game bug */
+			instance->debug_flags |= RADV_DEBUG_NO_DYNAMIC_BOUNDS;
+		} else if (!strcmp(name, "MonsterHunterWorld.exe")) {
+			/* Workaround for a WaW hazard when LLVM moves/merges
+			 * load/store memory operations.
+			 * See https://reviews.llvm.org/D61313
 			 */
-			instance->perftest_flags |= RADV_PERFTEST_SHADER_BALLOT;
+			if (LLVM_VERSION_MAJOR < 9)
+				instance->debug_flags |= RADV_DEBUG_NO_LOAD_STORE_OPT;
+		} else if (!strcmp(name, "Wolfenstein: Youngblood")) {
+			if (!(instance->debug_flags & RADV_DEBUG_NO_SHADER_BALLOT) &&
+			    !(instance->perftest_flags & RADV_PERFTEST_ACO)) {
+				/* Force enable VK_AMD_shader_ballot because it looks
+				 * safe and it gives a nice boost (+20% on Vega 56 at
+				 * this time). It also prevents corruption on LLVM.
+				 */
+				instance->perftest_flags |= RADV_PERFTEST_SHADER_BALLOT;
+			}
+		} else if (!strcmp(name, "Fledge")) {
+			/*
+			 * Zero VRAM for "The Surge 2"
+			 *
+			 * This avoid a hang when when rendering any level. Likely
+			 * uninitialized data in an indirect draw.
+			 */
+			instance->debug_flags |= RADV_DEBUG_ZERO_VRAM;
+		} else if (!strcmp(name, "No Man's Sky")) {
+			/* Work around a NMS game bug */
+			instance->debug_flags |= RADV_DEBUG_DISCARD_TO_DEMOTE;
+		} else if (!strcmp(name, "DOOMEternal")) {
+			/* Zero VRAM for Doom Eternal to fix rendering issues. */
+			instance->debug_flags |= RADV_DEBUG_ZERO_VRAM;
 		}
-	} else if (!strcmp(name, "Fledge")) {
-		/*
-		 * Zero VRAM for "The Surge 2"
-		 *
-		 * This avoid a hang when when rendering any level. Likely
-		 * uninitialized data in an indirect draw.
-		 */
-		instance->debug_flags |= RADV_DEBUG_ZERO_VRAM;
-	} else if (!strcmp(name, "No Man's Sky")) {
-		/* Work around a NMS game bug */
-		instance->debug_flags |= RADV_DEBUG_DISCARD_TO_DEMOTE;
+	}
+
+	if (engine_name) {
+		if (!strcmp(engine_name, "vkd3d")) {
+			/* Zero VRAM for all VKD3D (DX12->VK) games to fix
+			 * rendering issues.
+			 */
+			instance->debug_flags |= RADV_DEBUG_ZERO_VRAM;
+		}
 	}
 }
 
@@ -943,8 +945,86 @@ void radv_GetPhysicalDeviceFeatures(
 		.shaderInt16                              = !pdevice->use_aco || pdevice->rad_info.chip_class >= GFX8,
 		.sparseBinding                            = true,
 		.variableMultisampleRate                  = true,
+		.shaderResourceMinLod                     = true,
 		.inheritedQueries                         = true,
 	};
+}
+
+static void
+radv_get_physical_device_features_1_1(struct radv_physical_device *pdevice,
+				      VkPhysicalDeviceVulkan11Features *f)
+{
+	assert(f->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES);
+
+	f->storageBuffer16BitAccess            = !pdevice->use_aco || pdevice->rad_info.chip_class >= GFX8;
+	f->uniformAndStorageBuffer16BitAccess  = !pdevice->use_aco || pdevice->rad_info.chip_class >= GFX8;
+	f->storagePushConstant16               = !pdevice->use_aco || pdevice->rad_info.chip_class >= GFX8;
+	f->storageInputOutput16                = pdevice->rad_info.has_packed_math_16bit && (LLVM_VERSION_MAJOR >= 9 || pdevice->use_aco);
+	f->multiview                           = true;
+	f->multiviewGeometryShader             = true;
+	f->multiviewTessellationShader         = true;
+	f->variablePointersStorageBuffer       = true;
+	f->variablePointers                    = true;
+	f->protectedMemory                     = false;
+	f->samplerYcbcrConversion              = true;
+	f->shaderDrawParameters                = true;
+}
+
+static void
+radv_get_physical_device_features_1_2(struct radv_physical_device *pdevice,
+				      VkPhysicalDeviceVulkan12Features *f)
+{
+	assert(f->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES);
+
+	f->samplerMirrorClampToEdge = true;
+	f->drawIndirectCount = true;
+	f->storageBuffer8BitAccess = !pdevice->use_aco || pdevice->rad_info.chip_class >= GFX8;
+	f->uniformAndStorageBuffer8BitAccess = !pdevice->use_aco || pdevice->rad_info.chip_class >= GFX8;
+	f->storagePushConstant8 = !pdevice->use_aco || pdevice->rad_info.chip_class >= GFX8;
+	f->shaderBufferInt64Atomics = LLVM_VERSION_MAJOR >= 9 || pdevice->use_aco;
+	f->shaderSharedInt64Atomics = LLVM_VERSION_MAJOR >= 9 || pdevice->use_aco;
+	f->shaderFloat16 = pdevice->rad_info.has_packed_math_16bit && !pdevice->use_aco;
+	f->shaderInt8 = !pdevice->use_aco || pdevice->rad_info.chip_class >= GFX8;
+
+	f->descriptorIndexing = true;
+	f->shaderInputAttachmentArrayDynamicIndexing = true;
+	f->shaderUniformTexelBufferArrayDynamicIndexing = true;
+	f->shaderStorageTexelBufferArrayDynamicIndexing = true;
+	f->shaderUniformBufferArrayNonUniformIndexing = true;
+	f->shaderSampledImageArrayNonUniformIndexing = true;
+	f->shaderStorageBufferArrayNonUniformIndexing = true;
+	f->shaderStorageImageArrayNonUniformIndexing = true;
+	f->shaderInputAttachmentArrayNonUniformIndexing = true;
+	f->shaderUniformTexelBufferArrayNonUniformIndexing = true;
+	f->shaderStorageTexelBufferArrayNonUniformIndexing = true;
+	f->descriptorBindingUniformBufferUpdateAfterBind = true;
+	f->descriptorBindingSampledImageUpdateAfterBind = true;
+	f->descriptorBindingStorageImageUpdateAfterBind = true;
+	f->descriptorBindingStorageBufferUpdateAfterBind = true;
+	f->descriptorBindingUniformTexelBufferUpdateAfterBind = true;
+	f->descriptorBindingStorageTexelBufferUpdateAfterBind = true;
+	f->descriptorBindingUpdateUnusedWhilePending = true;
+	f->descriptorBindingPartiallyBound = true;
+	f->descriptorBindingVariableDescriptorCount = true;
+	f->runtimeDescriptorArray = true;
+
+	f->samplerFilterMinmax = true;
+	f->scalarBlockLayout = pdevice->rad_info.chip_class >= GFX7;
+	f->imagelessFramebuffer = true;
+	f->uniformBufferStandardLayout = true;
+	f->shaderSubgroupExtendedTypes = true;
+	f->separateDepthStencilLayouts = true;
+	f->hostQueryReset = true;
+	f->timelineSemaphore = pdevice->rad_info.has_syncobj_wait_for_submit;
+	f->bufferDeviceAddress = true;
+	f->bufferDeviceAddressCaptureReplay = false;
+	f->bufferDeviceAddressMultiDevice = false;
+	f->vulkanMemoryModel = false;
+	f->vulkanMemoryModelDeviceScope = false;
+	f->vulkanMemoryModelAvailabilityVisibilityChains = false;
+	f->shaderOutputViewportIndex = true;
+	f->shaderOutputLayer = true;
+	f->subgroupBroadcastDynamicId = true;
 }
 
 void radv_GetPhysicalDeviceFeatures2(
@@ -952,72 +1032,86 @@ void radv_GetPhysicalDeviceFeatures2(
 	VkPhysicalDeviceFeatures2                  *pFeatures)
 {
 	RADV_FROM_HANDLE(radv_physical_device, pdevice, physicalDevice);
+	radv_GetPhysicalDeviceFeatures(physicalDevice, &pFeatures->features);
+
+	VkPhysicalDeviceVulkan11Features core_1_1 = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+	};
+	radv_get_physical_device_features_1_1(pdevice, &core_1_1);
+
+	VkPhysicalDeviceVulkan12Features core_1_2 = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+	};
+	radv_get_physical_device_features_1_2(pdevice, &core_1_2);
+
+#define CORE_FEATURE(major, minor, feature) \
+   features->feature = core_##major##_##minor.feature
+
 	vk_foreach_struct(ext, pFeatures->pNext) {
 		switch (ext->sType) {
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES: {
 			VkPhysicalDeviceVariablePointersFeatures *features = (void *)ext;
-			features->variablePointersStorageBuffer = true;
-			features->variablePointers = true;
+			CORE_FEATURE(1, 1, variablePointersStorageBuffer);
+			CORE_FEATURE(1, 1, variablePointers);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES: {
 			VkPhysicalDeviceMultiviewFeatures *features = (VkPhysicalDeviceMultiviewFeatures*)ext;
-			features->multiview = true;
-			features->multiviewGeometryShader = true;
-			features->multiviewTessellationShader = true;
+			CORE_FEATURE(1, 1, multiview);
+			CORE_FEATURE(1, 1, multiviewGeometryShader);
+			CORE_FEATURE(1, 1, multiviewTessellationShader);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES: {
 			VkPhysicalDeviceShaderDrawParametersFeatures *features =
 			    (VkPhysicalDeviceShaderDrawParametersFeatures*)ext;
-			features->shaderDrawParameters = true;
+			CORE_FEATURE(1, 1, shaderDrawParameters);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROTECTED_MEMORY_FEATURES: {
 			VkPhysicalDeviceProtectedMemoryFeatures *features =
 			    (VkPhysicalDeviceProtectedMemoryFeatures*)ext;
-			features->protectedMemory = false;
+			CORE_FEATURE(1, 1, protectedMemory);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES: {
 			VkPhysicalDevice16BitStorageFeatures *features =
 			    (VkPhysicalDevice16BitStorageFeatures*)ext;
-			bool enable = !pdevice->use_aco || pdevice->rad_info.chip_class >= GFX8;
-			features->storageBuffer16BitAccess = enable;
-			features->uniformAndStorageBuffer16BitAccess = enable;
-			features->storagePushConstant16 = enable;
-			features->storageInputOutput16 = pdevice->rad_info.has_double_rate_fp16 && !pdevice->use_aco && LLVM_VERSION_MAJOR >= 9;
+			CORE_FEATURE(1, 1, storageBuffer16BitAccess);
+			CORE_FEATURE(1, 1, uniformAndStorageBuffer16BitAccess);
+			CORE_FEATURE(1, 1, storagePushConstant16);
+			CORE_FEATURE(1, 1, storageInputOutput16);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES: {
 			VkPhysicalDeviceSamplerYcbcrConversionFeatures *features =
 			    (VkPhysicalDeviceSamplerYcbcrConversionFeatures*)ext;
-			features->samplerYcbcrConversion = true;
+			CORE_FEATURE(1, 1, samplerYcbcrConversion);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES: {
 			VkPhysicalDeviceDescriptorIndexingFeatures *features =
 				(VkPhysicalDeviceDescriptorIndexingFeatures*)ext;
-			features->shaderInputAttachmentArrayDynamicIndexing = true;
-			features->shaderUniformTexelBufferArrayDynamicIndexing = true;
-			features->shaderStorageTexelBufferArrayDynamicIndexing = true;
-			features->shaderUniformBufferArrayNonUniformIndexing = true;
-			features->shaderSampledImageArrayNonUniformIndexing = true;
-			features->shaderStorageBufferArrayNonUniformIndexing = true;
-			features->shaderStorageImageArrayNonUniformIndexing = true;
-			features->shaderInputAttachmentArrayNonUniformIndexing = true;
-			features->shaderUniformTexelBufferArrayNonUniformIndexing = true;
-			features->shaderStorageTexelBufferArrayNonUniformIndexing = true;
-			features->descriptorBindingUniformBufferUpdateAfterBind = true;
-			features->descriptorBindingSampledImageUpdateAfterBind = true;
-			features->descriptorBindingStorageImageUpdateAfterBind = true;
-			features->descriptorBindingStorageBufferUpdateAfterBind = true;
-			features->descriptorBindingUniformTexelBufferUpdateAfterBind = true;
-			features->descriptorBindingStorageTexelBufferUpdateAfterBind = true;
-			features->descriptorBindingUpdateUnusedWhilePending = true;
-			features->descriptorBindingPartiallyBound = true;
-			features->descriptorBindingVariableDescriptorCount = true;
-			features->runtimeDescriptorArray = true;
+			CORE_FEATURE(1, 2, shaderInputAttachmentArrayDynamicIndexing);
+			CORE_FEATURE(1, 2, shaderUniformTexelBufferArrayDynamicIndexing);
+			CORE_FEATURE(1, 2, shaderStorageTexelBufferArrayDynamicIndexing);
+			CORE_FEATURE(1, 2, shaderUniformBufferArrayNonUniformIndexing);
+			CORE_FEATURE(1, 2, shaderSampledImageArrayNonUniformIndexing);
+			CORE_FEATURE(1, 2, shaderStorageBufferArrayNonUniformIndexing);
+			CORE_FEATURE(1, 2, shaderStorageImageArrayNonUniformIndexing);
+			CORE_FEATURE(1, 2, shaderInputAttachmentArrayNonUniformIndexing);
+			CORE_FEATURE(1, 2, shaderUniformTexelBufferArrayNonUniformIndexing);
+			CORE_FEATURE(1, 2, shaderStorageTexelBufferArrayNonUniformIndexing);
+			CORE_FEATURE(1, 2, descriptorBindingUniformBufferUpdateAfterBind);
+			CORE_FEATURE(1, 2, descriptorBindingSampledImageUpdateAfterBind);
+			CORE_FEATURE(1, 2, descriptorBindingStorageImageUpdateAfterBind);
+			CORE_FEATURE(1, 2, descriptorBindingStorageBufferUpdateAfterBind);
+			CORE_FEATURE(1, 2, descriptorBindingUniformTexelBufferUpdateAfterBind);
+			CORE_FEATURE(1, 2, descriptorBindingStorageTexelBufferUpdateAfterBind);
+			CORE_FEATURE(1, 2, descriptorBindingUpdateUnusedWhilePending);
+			CORE_FEATURE(1, 2, descriptorBindingPartiallyBound);
+			CORE_FEATURE(1, 2, descriptorBindingVariableDescriptorCount);
+			CORE_FEATURE(1, 2, runtimeDescriptorArray);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT: {
@@ -1044,7 +1138,7 @@ void radv_GetPhysicalDeviceFeatures2(
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES: {
 			VkPhysicalDeviceScalarBlockLayoutFeatures *features =
 				(VkPhysicalDeviceScalarBlockLayoutFeatures *)ext;
-			features->scalarBlockLayout = pdevice->rad_info.chip_class >= GFX7;
+			CORE_FEATURE(1, 2, scalarBlockLayout);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT: {
@@ -1064,9 +1158,9 @@ void radv_GetPhysicalDeviceFeatures2(
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES: {
 			VkPhysicalDeviceBufferDeviceAddressFeatures *features =
 				(VkPhysicalDeviceBufferDeviceAddressFeatures *)ext;
-			features->bufferDeviceAddress = true;
-			features->bufferDeviceAddressCaptureReplay = false;
-			features->bufferDeviceAddressMultiDevice = false;
+			CORE_FEATURE(1, 2, bufferDeviceAddress);
+			CORE_FEATURE(1, 2, bufferDeviceAddressCaptureReplay);
+			CORE_FEATURE(1, 2, bufferDeviceAddressMultiDevice);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT: {
@@ -1078,30 +1172,29 @@ void radv_GetPhysicalDeviceFeatures2(
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES: {
 			VkPhysicalDeviceHostQueryResetFeatures *features =
 				(VkPhysicalDeviceHostQueryResetFeatures *)ext;
-			features->hostQueryReset = true;
+			CORE_FEATURE(1, 2, hostQueryReset);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES: {
 			VkPhysicalDevice8BitStorageFeatures *features =
 			    (VkPhysicalDevice8BitStorageFeatures *)ext;
-			bool enable = !pdevice->use_aco || pdevice->rad_info.chip_class >= GFX8;
-			features->storageBuffer8BitAccess = enable;
-			features->uniformAndStorageBuffer8BitAccess = enable;
-			features->storagePushConstant8 = enable;
+			CORE_FEATURE(1, 2, storageBuffer8BitAccess);
+			CORE_FEATURE(1, 2, uniformAndStorageBuffer8BitAccess);
+			CORE_FEATURE(1, 2, storagePushConstant8);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES: {
 			VkPhysicalDeviceShaderFloat16Int8Features *features =
 				(VkPhysicalDeviceShaderFloat16Int8Features*)ext;
-			features->shaderFloat16 = pdevice->rad_info.has_double_rate_fp16 && !pdevice->use_aco;
-			features->shaderInt8 = !pdevice->use_aco || pdevice->rad_info.chip_class >= GFX8;
+			CORE_FEATURE(1, 2, shaderFloat16);
+			CORE_FEATURE(1, 2, shaderInt8);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES: {
 			VkPhysicalDeviceShaderAtomicInt64Features *features =
 				(VkPhysicalDeviceShaderAtomicInt64Features *)ext;
-			features->shaderBufferInt64Atomics = LLVM_VERSION_MAJOR >= 9;
-			features->shaderSharedInt64Atomics = LLVM_VERSION_MAJOR >= 9;
+			CORE_FEATURE(1, 2, shaderBufferInt64Atomics);
+			CORE_FEATURE(1, 2, shaderSharedInt64Atomics);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES_EXT: {
@@ -1134,7 +1227,7 @@ void radv_GetPhysicalDeviceFeatures2(
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFORM_BUFFER_STANDARD_LAYOUT_FEATURES: {
 			VkPhysicalDeviceUniformBufferStandardLayoutFeatures *features =
 				(VkPhysicalDeviceUniformBufferStandardLayoutFeatures *)ext;
-			features->uniformBufferStandardLayout = true;
+			CORE_FEATURE(1, 2, uniformBufferStandardLayout);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT: {
@@ -1146,7 +1239,7 @@ void radv_GetPhysicalDeviceFeatures2(
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES: {
 			VkPhysicalDeviceImagelessFramebufferFeatures *features =
 				(VkPhysicalDeviceImagelessFramebufferFeatures *)ext;
-			features->imagelessFramebuffer = true;
+			CORE_FEATURE(1, 2, imagelessFramebuffer);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR: {
@@ -1159,7 +1252,7 @@ void radv_GetPhysicalDeviceFeatures2(
 			VkPhysicalDeviceShaderClockFeaturesKHR *features =
 				(VkPhysicalDeviceShaderClockFeaturesKHR *)ext;
 			features->shaderSubgroupClock = true;
-			features->shaderDeviceClock = false;
+			features->shaderDeviceClock = pdevice->rad_info.chip_class >= GFX8;
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TEXEL_BUFFER_ALIGNMENT_FEATURES_EXT: {
@@ -1171,7 +1264,7 @@ void radv_GetPhysicalDeviceFeatures2(
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES: {
 			VkPhysicalDeviceTimelineSemaphoreFeatures *features =
 				(VkPhysicalDeviceTimelineSemaphoreFeatures *) ext;
-			features->timelineSemaphore = true;
+			CORE_FEATURE(1, 2, timelineSemaphore);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES_EXT: {
@@ -1190,84 +1283,21 @@ void radv_GetPhysicalDeviceFeatures2(
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES: {
 			VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures *features =
 				(VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures *)ext;
-			features->shaderSubgroupExtendedTypes = !pdevice->use_aco;
+			CORE_FEATURE(1, 2, shaderSubgroupExtendedTypes);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SEPARATE_DEPTH_STENCIL_LAYOUTS_FEATURES_KHR: {
 			VkPhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR *features =
 				(VkPhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR *)ext;
-			features->separateDepthStencilLayouts = true;
+			CORE_FEATURE(1, 2, separateDepthStencilLayouts);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES: {
-			VkPhysicalDeviceVulkan11Features *features =
-				(VkPhysicalDeviceVulkan11Features *)ext;
-			bool storage16_enable = !pdevice->use_aco || pdevice->rad_info.chip_class >= GFX8;
-			features->storageBuffer16BitAccess = storage16_enable;
-			features->uniformAndStorageBuffer16BitAccess = storage16_enable;
-			features->storagePushConstant16 = storage16_enable;
-			features->storageInputOutput16 = pdevice->rad_info.has_double_rate_fp16 && !pdevice->use_aco && LLVM_VERSION_MAJOR >= 9;
-			features->multiview = true;
-			features->multiviewGeometryShader = true;
-			features->multiviewTessellationShader = true;
-			features->variablePointersStorageBuffer = true;
-			features->variablePointers = true;
-			features->protectedMemory = false;
-			features->samplerYcbcrConversion = true;
-			features->shaderDrawParameters = true;
+			radv_get_physical_device_features_1_1(pdevice, (void *)ext);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES: {
-			VkPhysicalDeviceVulkan12Features *features =
-				(VkPhysicalDeviceVulkan12Features *)ext;
-			bool int8_enable = !pdevice->use_aco || pdevice->rad_info.chip_class >= GFX8;
-			features->samplerMirrorClampToEdge = true;
-			features->drawIndirectCount = true;
-			features->storageBuffer8BitAccess = int8_enable;
-			features->uniformAndStorageBuffer8BitAccess = int8_enable;
-			features->storagePushConstant8 = int8_enable;
-			features->shaderBufferInt64Atomics = LLVM_VERSION_MAJOR >= 9;
-			features->shaderSharedInt64Atomics = LLVM_VERSION_MAJOR >= 9;
-			features->shaderFloat16 = pdevice->rad_info.has_double_rate_fp16 && !pdevice->use_aco;
-			features->shaderInt8 = int8_enable;
-			features->descriptorIndexing = true;
-			features->shaderInputAttachmentArrayDynamicIndexing = true;
-			features->shaderUniformTexelBufferArrayDynamicIndexing = true;
-			features->shaderStorageTexelBufferArrayDynamicIndexing = true;
-			features->shaderUniformBufferArrayNonUniformIndexing = true;
-			features->shaderSampledImageArrayNonUniformIndexing = true;
-			features->shaderStorageBufferArrayNonUniformIndexing = true;
-			features->shaderStorageImageArrayNonUniformIndexing = true;
-			features->shaderInputAttachmentArrayNonUniformIndexing = true;
-			features->shaderUniformTexelBufferArrayNonUniformIndexing = true;
-			features->shaderStorageTexelBufferArrayNonUniformIndexing = true;
-			features->descriptorBindingUniformBufferUpdateAfterBind = true;
-			features->descriptorBindingSampledImageUpdateAfterBind = true;
-			features->descriptorBindingStorageImageUpdateAfterBind = true;
-			features->descriptorBindingStorageBufferUpdateAfterBind = true;
-			features->descriptorBindingUniformTexelBufferUpdateAfterBind = true;
-			features->descriptorBindingStorageTexelBufferUpdateAfterBind = true;
-			features->descriptorBindingUpdateUnusedWhilePending = true;
-			features->descriptorBindingPartiallyBound = true;
-			features->descriptorBindingVariableDescriptorCount = true;
-			features->runtimeDescriptorArray = true;
-			features->samplerFilterMinmax = true;
-			features->scalarBlockLayout = pdevice->rad_info.chip_class >= GFX7;
-			features->imagelessFramebuffer = true;
-			features->uniformBufferStandardLayout = true;
-			features->shaderSubgroupExtendedTypes = !pdevice->use_aco;
-			features->separateDepthStencilLayouts = true;
-			features->hostQueryReset = true;
-			features->timelineSemaphore = pdevice->rad_info.has_syncobj_wait_for_submit;
-			features->bufferDeviceAddress = true;
-			features->bufferDeviceAddressCaptureReplay = false;
-			features->bufferDeviceAddressMultiDevice = false;
-			features->vulkanMemoryModel = false;
-			features->vulkanMemoryModelDeviceScope = false;
-			features->vulkanMemoryModelAvailabilityVisibilityChains = false;
-			features->shaderOutputViewportIndex = true;
-			features->shaderOutputLayer = true;
-			features->subgroupBroadcastDynamicId = true;
+			radv_get_physical_device_features_1_2(pdevice, (void *)ext);
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT: {
@@ -1295,17 +1325,30 @@ void radv_GetPhysicalDeviceFeatures2(
 			features->nullDescriptor = true;
 			break;
 		}
+		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT: {
+			VkPhysicalDeviceCustomBorderColorFeaturesEXT *features =
+				(VkPhysicalDeviceCustomBorderColorFeaturesEXT *)ext;
+			features->customBorderColors = true;
+			features->customBorderColorWithoutFormat = true;
+			break;
+		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES_EXT: {
 			VkPhysicalDevicePrivateDataFeaturesEXT *features =
 				(VkPhysicalDevicePrivateDataFeaturesEXT *)ext;
 			features->privateData = true;
 			break;
 		}
+		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT: {
+			VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT *features =
+				(VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT *)ext;
+			features-> pipelineCreationCacheControl = true;
+			break;
+		}
 		default:
 			break;
 		}
 	}
-	return radv_GetPhysicalDeviceFeatures(physicalDevice, &pFeatures->features);
+#undef CORE_FEATURE
 }
 
 static size_t
@@ -1483,14 +1526,9 @@ radv_get_physical_device_properties_1_1(struct radv_physical_device *pdevice,
 					 VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
 					 VK_SUBGROUP_FEATURE_BALLOT_BIT |
 					 VK_SUBGROUP_FEATURE_CLUSTERED_BIT |
-					 VK_SUBGROUP_FEATURE_QUAD_BIT;
-
-	if (((pdevice->rad_info.chip_class == GFX6 ||
-	      pdevice->rad_info.chip_class == GFX7) && !pdevice->use_aco) ||
-	    pdevice->rad_info.chip_class >= GFX8) {
-		p->subgroupSupportedOperations |= VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
-						  VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT;
-	}
+					 VK_SUBGROUP_FEATURE_QUAD_BIT |
+					 VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
+					 VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT;
 	p->subgroupQuadOperationsInAllStages = true;
 
 	p->pointClippingBehavior = VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES;
@@ -1522,7 +1560,7 @@ radv_get_physical_device_properties_1_2(struct radv_physical_device *pdevice,
 	/* On AMD hardware, denormals and rounding modes for fp16/fp64 are
 	 * controlled by the same config register.
 	 */
-	if (pdevice->rad_info.has_double_rate_fp16) {
+	if (pdevice->rad_info.has_packed_math_16bit) {
 		p->denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY_KHR;
 		p->roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY_KHR;
 	} else {
@@ -1545,10 +1583,10 @@ radv_get_physical_device_properties_1_2(struct radv_physical_device *pdevice,
 	p->shaderSignedZeroInfNanPreserveFloat32 = true;
 
 	p->shaderDenormFlushToZeroFloat16 = false;
-	p->shaderDenormPreserveFloat16 = pdevice->rad_info.has_double_rate_fp16;
-	p->shaderRoundingModeRTEFloat16 = pdevice->rad_info.has_double_rate_fp16;
+	p->shaderDenormPreserveFloat16 = pdevice->rad_info.has_packed_math_16bit;
+	p->shaderRoundingModeRTEFloat16 = pdevice->rad_info.has_packed_math_16bit;
 	p->shaderRoundingModeRTZFloat16 = false;
-	p->shaderSignedZeroInfNanPreserveFloat16 = pdevice->rad_info.has_double_rate_fp16;
+	p->shaderSignedZeroInfNanPreserveFloat16 = pdevice->rad_info.has_packed_math_16bit;
 
 	p->shaderDenormFlushToZeroFloat64 = false;
 	p->shaderDenormPreserveFloat64 = pdevice->rad_info.chip_class >= GFX8;
@@ -1711,7 +1749,7 @@ void radv_GetPhysicalDeviceProperties2(
 			properties->shaderArraysPerEngineCount =
 				pdevice->rad_info.max_sh_per_se;
 			properties->computeUnitsPerShaderArray =
-				pdevice->rad_info.num_good_cu_per_sh;
+				pdevice->rad_info.min_good_cu_per_sa;
 			properties->simdPerComputeUnit =
 				pdevice->rad_info.num_simd_per_compute_unit;
 			properties->wavefrontsPerSimd =
@@ -1937,6 +1975,12 @@ void radv_GetPhysicalDeviceProperties2(
 				(VkPhysicalDeviceRobustness2PropertiesEXT *)ext;
 			properties->robustStorageBufferAccessSizeAlignment = 4;
 			properties->robustUniformBufferAccessSizeAlignment = 4;
+			break;
+		}
+		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT: {
+			VkPhysicalDeviceCustomBorderColorPropertiesEXT *props =
+				(VkPhysicalDeviceCustomBorderColorPropertiesEXT *)ext;
+			props->maxCustomBorderColorSamplers = RADV_BORDER_COLOR_COUNT;
 			break;
 		}
 		default:
@@ -2186,10 +2230,11 @@ radv_queue_init(struct radv_device *device, struct radv_queue *queue,
 	queue->queue_idx = idx;
 	queue->priority = radv_get_queue_global_priority(global_priority);
 	queue->flags = flags;
+	queue->hw_ctx = NULL;
 
-	queue->hw_ctx = device->ws->ctx_create(device->ws, queue->priority);
-	if (!queue->hw_ctx)
-		return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+	VkResult result = device->ws->ctx_create(device->ws, queue->priority, &queue->hw_ctx);
+	if (result != VK_SUCCESS)
+		return vk_error(device->instance, result);
 
 	list_inithead(&queue->pending_submissions);
 	pthread_mutex_init(&queue->pending_mutex, NULL);
@@ -2654,6 +2699,10 @@ static void run_secure_compile_device(struct radv_device *device, unsigned proce
 
 			/* Compile the shaders */
 			VkPipelineCreationFeedbackEXT *stage_feedbacks[MESA_SHADER_STAGES] = { 0 };
+
+			/* Not fully to spec but if we're doing sandboxed compilations already this doesn't matter. */
+			flags &= ~VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
+
 			radv_create_shaders(pipeline, device, NULL, &key, pStages, flags, NULL, stage_feedbacks);
 
 			/* free memory allocated above */
@@ -2934,6 +2983,37 @@ check_physical_device_features(VkPhysicalDevice physicalDevice,
 	return VK_SUCCESS;
 }
 
+static VkResult radv_device_init_border_color(struct radv_device *device)
+{
+	device->border_color_data.bo =
+	device->ws->buffer_create(device->ws,
+					RADV_BORDER_COLOR_BUFFER_SIZE,
+					4096,
+					RADEON_DOMAIN_VRAM,
+					RADEON_FLAG_CPU_ACCESS |
+					RADEON_FLAG_READ_ONLY |
+					RADEON_FLAG_NO_INTERPROCESS_SHARING,
+					RADV_BO_PRIORITY_SHADER);
+
+	if (device->border_color_data.bo == NULL)
+		return vk_error(device->physical_device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+
+	device->border_color_data.colors_gpu_ptr =
+		device->ws->buffer_map(device->border_color_data.bo);
+	pthread_mutex_init(&device->border_color_data.mutex, NULL);
+
+	return VK_SUCCESS;
+}
+
+static void radv_device_finish_border_color(struct radv_device *device)
+{
+	if (device->border_color_data.bo) {
+		device->ws->buffer_destroy(device->border_color_data.bo);
+
+		pthread_mutex_destroy(&device->border_color_data.mutex);
+	}
+}
+
 VkResult radv_CreateDevice(
 	VkPhysicalDevice                            physicalDevice,
 	const VkDeviceCreateInfo*                   pCreateInfo,
@@ -2947,6 +3027,7 @@ VkResult radv_CreateDevice(
 	bool keep_shader_info = false;
 	bool robust_buffer_access = false;
 	bool overallocation_disallowed = false;
+	bool custom_border_colors = false;
 
 	/* Check enabled features */
 	if (pCreateInfo->pEnabledFeatures) {
@@ -2976,6 +3057,11 @@ VkResult radv_CreateDevice(
 			const VkDeviceMemoryOverallocationCreateInfoAMD *overallocation = (const void *)ext;
 			if (overallocation->overallocationBehavior == VK_MEMORY_OVERALLOCATION_BEHAVIOR_DISALLOWED_AMD)
 				overallocation_disallowed = true;
+			break;
+		}
+		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT: {
+			const VkPhysicalDeviceCustomBorderColorFeaturesEXT *border_color_features = (const void *)ext;
+			custom_border_colors = border_color_features->customBorderColors;
 			break;
 		}
 		default:
@@ -3148,13 +3234,20 @@ VkResult radv_CreateDevice(
 
 	radv_device_init_msaa(device);
 
+ 	/* If the border color extension is enabled, let's create the buffer we need. */
+	if (custom_border_colors) {
+		result = radv_device_init_border_color(device);
+		if (result != VK_SUCCESS)
+			goto fail;
+	}
+
 	for (int family = 0; family < RADV_MAX_QUEUE_FAMILIES; ++family) {
 		device->empty_cs[family] = device->ws->cs_create(device->ws, family);
 		switch (family) {
 		case RADV_QUEUE_GENERAL:
 			radeon_emit(device->empty_cs[family], PKT3(PKT3_CONTEXT_CONTROL, 1, 0));
-			radeon_emit(device->empty_cs[family], CONTEXT_CONTROL_LOAD_ENABLE(1));
-			radeon_emit(device->empty_cs[family], CONTEXT_CONTROL_SHADOW_ENABLE(1));
+			radeon_emit(device->empty_cs[family], CC0_UPDATE_LOAD_ENABLES(1));
+			radeon_emit(device->empty_cs[family], CC1_UPDATE_SHADOW_ENABLES(1));
 			break;
 		case RADV_QUEUE_COMPUTE:
 			radeon_emit(device->empty_cs[family], PKT3(PKT3_NOP, 0, 0));
@@ -3219,6 +3312,8 @@ fail:
 	if (device->gfx_init)
 		device->ws->buffer_destroy(device->gfx_init);
 
+	radv_device_finish_border_color(device);
+
 	for (unsigned i = 0; i < RADV_MAX_QUEUE_FAMILIES; i++) {
 		for (unsigned q = 0; q < device->queue_count[i]; q++)
 			radv_queue_finish(&device->queues[i][q]);
@@ -3244,6 +3339,8 @@ void radv_DestroyDevice(
 
 	if (device->gfx_init)
 		device->ws->buffer_destroy(device->gfx_init);
+
+	radv_device_finish_border_color(device);
 
 	for (unsigned i = 0; i < RADV_MAX_QUEUE_FAMILIES; i++) {
 		for (unsigned q = 0; q < device->queue_count[i]; q++)
@@ -6525,7 +6622,7 @@ radv_initialise_color_surface(struct radv_device *device,
 				.pipe_aligned = 1,
 			};
 
-			if (iview->image->dcc_offset)
+			if (surf->dcc_offset)
 				meta = surf->u.gfx9.dcc;
 
 			cb->cb_color_attrib |= S_028C74_COLOR_SW_MODE(surf->u.gfx9.surf.swizzle_mode) |
@@ -6571,11 +6668,11 @@ radv_initialise_color_surface(struct radv_device *device,
 
 	/* CMASK variables */
 	va = radv_buffer_get_va(iview->bo) + iview->image->offset;
-	va += iview->image->cmask_offset;
+	va += surf->cmask_offset;
 	cb->cb_color_cmask = va >> 8;
 
 	va = radv_buffer_get_va(iview->bo) + iview->image->offset;
-	va += iview->image->dcc_offset;
+	va += surf->dcc_offset;
 
 	if (radv_dcc_enabled(iview->image, iview->base_mip) &&
 	    device->physical_device->rad_info.chip_class <= GFX8)
@@ -6600,7 +6697,7 @@ radv_initialise_color_surface(struct radv_device *device,
 	}
 
 	if (radv_image_has_fmask(iview->image)) {
-		va = radv_buffer_get_va(iview->bo) + iview->image->offset + iview->image->fmask_offset;
+		va = radv_buffer_get_va(iview->bo) + iview->image->offset + surf->fmask_offset;
 		cb->cb_color_fmask = va >> 8;
 		cb->cb_color_fmask |= surf->fmask_tile_swizzle;
 	} else {
@@ -6852,7 +6949,7 @@ radv_initialise_ds_surface(struct radv_device *device,
 				/* Use all of the htile_buffer for depth if there's no stencil. */
 				ds->db_stencil_info |= S_02803C_TILE_STENCIL_DISABLE(1);
 			va = radv_buffer_get_va(iview->bo) + iview->image->offset +
-				iview->image->htile_offset;
+				surf->htile_offset;
 			ds->db_htile_data_base = va >> 8;
 			ds->db_htile_surface = S_028ABC_FULL_CACHE(1) |
 				S_028ABC_PIPE_ALIGNED(1);
@@ -6920,7 +7017,7 @@ radv_initialise_ds_surface(struct radv_device *device,
 				ds->db_stencil_info |= S_028044_TILE_STENCIL_DISABLE(1);
 
 			va = radv_buffer_get_va(iview->bo) + iview->image->offset +
-				iview->image->htile_offset;
+				surf->htile_offset;
 			ds->db_htile_data_base = va >> 8;
 			ds->db_htile_surface = S_028ABC_FULL_CACHE(1);
 
@@ -7092,6 +7189,9 @@ radv_tex_bordercolor(VkBorderColor bcolor)
 	case VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE:
 	case VK_BORDER_COLOR_INT_OPAQUE_WHITE:
 		return V_008F3C_SQ_TEX_BORDER_COLOR_OPAQUE_WHITE;
+	case VK_BORDER_COLOR_FLOAT_CUSTOM_EXT:
+	case VK_BORDER_COLOR_INT_CUSTOM_EXT:
+		return V_008F3C_SQ_TEX_BORDER_COLOR_REGISTER;
 	default:
 		break;
 	}
@@ -7147,6 +7247,40 @@ static inline int S_FIXED(float value, unsigned frac_bits)
 	return value * (1 << frac_bits);
 }
 
+static uint32_t radv_register_border_color(struct radv_device *device,
+					   VkClearColorValue   value)
+{
+	uint32_t slot;
+
+	pthread_mutex_lock(&device->border_color_data.mutex);
+
+	for (slot = 0; slot < RADV_BORDER_COLOR_COUNT; slot++) {
+		if (!device->border_color_data.used[slot]) {
+			/* Copy to the GPU wrt endian-ness. */
+			util_memcpy_cpu_to_le32(&device->border_color_data.colors_gpu_ptr[slot],
+						&value,
+						sizeof(VkClearColorValue));
+
+			device->border_color_data.used[slot] = true;
+			break;
+		}
+	}
+
+	pthread_mutex_unlock(&device->border_color_data.mutex);
+
+	return slot;
+}
+
+static void radv_unregister_border_color(struct radv_device *device,
+					 uint32_t            slot)
+{
+	pthread_mutex_lock(&device->border_color_data.mutex);
+
+	device->border_color_data.used[slot] = false;
+
+	pthread_mutex_unlock(&device->border_color_data.mutex);
+}
+
 static void
 radv_init_sampler(struct radv_device *device,
 		  struct radv_sampler *sampler,
@@ -7159,6 +7293,11 @@ radv_init_sampler(struct radv_device *device,
 	unsigned filter_mode = V_008F30_SQ_IMG_FILTER_MODE_BLEND;
 	unsigned depth_compare_func = V_008F30_SQ_TEX_DEPTH_COMPARE_NEVER;
 	bool trunc_coord = pCreateInfo->minFilter == VK_FILTER_NEAREST && pCreateInfo->magFilter == VK_FILTER_NEAREST;
+	bool uses_border_color = pCreateInfo->addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
+				 pCreateInfo->addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
+				 pCreateInfo->addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+	VkBorderColor border_color = uses_border_color ? pCreateInfo->borderColor : VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+	uint32_t border_color_ptr;
 
 	const struct VkSamplerReductionModeCreateInfo *sampler_reduction =
 		vk_find_struct_const(pCreateInfo->pNext,
@@ -7168,6 +7307,30 @@ radv_init_sampler(struct radv_device *device,
 
 	if (pCreateInfo->compareEnable)
 		depth_compare_func = radv_tex_compare(pCreateInfo->compareOp);
+
+	sampler->border_color_slot = RADV_BORDER_COLOR_COUNT;
+
+	if (border_color == VK_BORDER_COLOR_FLOAT_CUSTOM_EXT || border_color == VK_BORDER_COLOR_INT_CUSTOM_EXT) {
+		const VkSamplerCustomBorderColorCreateInfoEXT *custom_border_color =
+			vk_find_struct_const(pCreateInfo->pNext,
+					     SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT);
+
+		assert(custom_border_color);
+
+		sampler->border_color_slot =
+			radv_register_border_color(device, custom_border_color->customBorderColor);
+
+		/* Did we fail to find a slot? */
+		if (sampler->border_color_slot == RADV_BORDER_COLOR_COUNT) {
+			fprintf(stderr, "WARNING: no free border color slots, defaulting to TRANS_BLACK.\n");
+			border_color = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+		}
+	}
+
+	/* If we don't have a custom color, set the ptr to 0 */
+	border_color_ptr = sampler->border_color_slot != RADV_BORDER_COLOR_COUNT
+		? sampler->border_color_slot
+		: 0;
 
 	sampler->state[0] = (S_008F30_CLAMP_X(radv_tex_wrap(pCreateInfo->addressModeU)) |
 			     S_008F30_CLAMP_Y(radv_tex_wrap(pCreateInfo->addressModeV)) |
@@ -7189,8 +7352,8 @@ radv_init_sampler(struct radv_device *device,
 			     S_008F38_XY_MIN_FILTER(radv_tex_filter(pCreateInfo->minFilter, max_aniso)) |
 			     S_008F38_MIP_FILTER(radv_tex_mipfilter(pCreateInfo->mipmapMode)) |
 			     S_008F38_MIP_POINT_PRECLAMP(0));
-	sampler->state[3] = (S_008F3C_BORDER_COLOR_PTR(0) |
-			     S_008F3C_BORDER_COLOR_TYPE(radv_tex_bordercolor(pCreateInfo->borderColor)));
+	sampler->state[3] = (S_008F3C_BORDER_COLOR_PTR(border_color_ptr) |
+			     S_008F3C_BORDER_COLOR_TYPE(radv_tex_bordercolor(border_color)));
 
 	if (device->physical_device->rad_info.chip_class >= GFX10) {
 		sampler->state[2] |= S_008F38_ANISO_OVERRIDE_GFX10(1);
@@ -7243,6 +7406,10 @@ void radv_DestroySampler(
 
 	if (!sampler)
 		return;
+
+	if (sampler->border_color_slot != RADV_BORDER_COLOR_COUNT)
+		radv_unregister_border_color(device, sampler->border_color_slot);
+
 	vk_object_base_finish(&sampler->base);
 	vk_free2(&device->vk.alloc, pAllocator, sampler);
 }

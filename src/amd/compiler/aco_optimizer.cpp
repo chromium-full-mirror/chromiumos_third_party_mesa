@@ -889,6 +889,10 @@ void label_instruction(opt_ctx &ctx, Block& block, aco_ptr<Instruction>& instr)
                   new_instr->definitions[0] = smem->definitions[0];
                new_instr->can_reorder = smem->can_reorder;
                new_instr->barrier = smem->barrier;
+               new_instr->glc = smem->glc;
+               new_instr->dlc = smem->dlc;
+               new_instr->nv = smem->nv;
+               new_instr->disable_wqm = smem->disable_wqm;
                instr.reset(new_instr);
                smem = static_cast<SMEM_instruction *>(instr.get());
             }
@@ -1073,6 +1077,7 @@ void label_instruction(opt_ctx &ctx, Block& block, aco_ptr<Instruction>& instr)
          else
             ctx.info[instr->definitions[0].tempId()].set_literal(v);
       }
+      break;
    }
    case aco_opcode::v_mul_f32: { /* omod */
       /* TODO: try to move the negate/abs modifier to the consumer instead */
@@ -2924,7 +2929,7 @@ void optimize(Program* program)
          label_instruction(ctx, block, instr);
    }
 
-   ctx.uses = std::move(dead_code_analysis(program));
+   ctx.uses = dead_code_analysis(program);
 
    /* 2. Combine v_mad, omod, clamp and propagate sgpr on VALU instructions */
    for (Block& block : program->blocks) {

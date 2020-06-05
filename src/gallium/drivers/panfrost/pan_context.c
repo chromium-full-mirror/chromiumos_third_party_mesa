@@ -520,7 +520,9 @@ panfrost_create_vertex_elements_state(
                 else
                         so->hw[i].swizzle = panfrost_bifrost_swizzle(desc->nr_channels);
 
-                so->hw[i].format = panfrost_find_format(desc);
+                enum mali_format hw_format = panfrost_pipe_format_table[desc->format].hw;
+                so->hw[i].format = hw_format;
+                assert(hw_format);
         }
 
         /* Let's also prepare vertex builtins */
@@ -639,6 +641,7 @@ panfrost_variant_matches(
         struct panfrost_shader_state *variant,
         enum pipe_shader_type type)
 {
+        struct panfrost_device *dev = pan_device(ctx->base.screen);
         struct pipe_rasterizer_state *rasterizer = &ctx->rasterizer->base;
         struct pipe_alpha_state *alpha = &ctx->depth_stencil->alpha;
 
@@ -659,8 +662,10 @@ panfrost_variant_matches(
                 }
         }
 
+        /* Point sprites TODO on bifrost, always pass */
         if (is_fragment && rasterizer && (rasterizer->sprite_coord_enable |
-                                          variant->point_sprite_mask)) {
+                                          variant->point_sprite_mask)
+                        && !(dev->quirks & IS_BIFROST)) {
                 /* Ensure the same varyings are turned to point sprites */
                 if (rasterizer->sprite_coord_enable != variant->point_sprite_mask)
                         return false;
@@ -724,6 +729,7 @@ panfrost_bind_shader_state(
         enum pipe_shader_type type)
 {
         struct panfrost_context *ctx = pan_context(pctx);
+        struct panfrost_device *dev = pan_device(ctx->base.screen);
         ctx->shader[type] = hwcso;
 
         if (!hwcso) return;
@@ -769,7 +775,8 @@ panfrost_bind_shader_state(
                 if (type == PIPE_SHADER_FRAGMENT) {
                         v->alpha_state = ctx->depth_stencil->alpha;
 
-                        if (ctx->rasterizer) {
+                        /* Point sprites are TODO on Bifrost */
+                        if (ctx->rasterizer && !(dev->quirks & IS_BIFROST)) {
                                 v->point_sprite_mask = ctx->rasterizer->base.sprite_coord_enable;
                                 v->point_sprite_upper_left =
                                         ctx->rasterizer->base.sprite_coord_mode ==
@@ -1309,7 +1316,7 @@ panfrost_get_query_result(struct pipe_context *pipe,
         case PIPE_QUERY_OCCLUSION_COUNTER:
         case PIPE_QUERY_OCCLUSION_PREDICATE:
         case PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE:
-                /* Flush first */
+                DBG("Flushing for occlusion query\n");
                 panfrost_flush_all_batches(ctx, true);
 
                 /* Read back the query results */
@@ -1326,6 +1333,7 @@ panfrost_get_query_result(struct pipe_context *pipe,
 
         case PIPE_QUERY_PRIMITIVES_GENERATED:
         case PIPE_QUERY_PRIMITIVES_EMITTED:
+                DBG("Flushing for primitive query\n");
                 panfrost_flush_all_batches(ctx, true);
                 vresult->u64 = query->end - query->start;
                 break;
@@ -1398,6 +1406,7 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
 {
         struct panfrost_context *ctx = rzalloc(screen, struct panfrost_context);
         struct pipe_context *gallium = (struct pipe_context *) ctx;
+        struct panfrost_device *dev = pan_device(screen);
 
         gallium->screen = screen;
 
@@ -1465,13 +1474,19 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
         panfrost_blend_context_init(gallium);
         panfrost_compute_context_init(gallium);
 
-        /* XXX: leaks */
         gallium->stream_uploader = u_upload_create_default(gallium);
         gallium->const_uploader = gallium->stream_uploader;
         assert(gallium->stream_uploader);
 
-        /* Midgard supports ES modes, plus QUADS/QUAD_STRIPS/POLYGON */
-        ctx->draw_modes = (1 << (PIPE_PRIM_POLYGON + 1)) - 1;
+        /* All of our GPUs support ES mode. Midgard supports additionally
+         * QUADS/QUAD_STRIPS/POLYGON. Bifrost supports just QUADS. */
+
+        ctx->draw_modes = (1 << (PIPE_PRIM_QUADS + 1)) - 1;
+
+        if (!(dev->quirks & IS_BIFROST)) {
+                ctx->draw_modes |= (1 << PIPE_PRIM_QUAD_STRIP);
+                ctx->draw_modes |= (1 << PIPE_PRIM_POLYGON);
+        }
 
         ctx->primconvert = util_primconvert_create(gallium, ctx->draw_modes);
 

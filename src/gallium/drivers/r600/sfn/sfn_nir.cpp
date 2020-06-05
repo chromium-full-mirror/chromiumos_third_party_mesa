@@ -55,34 +55,35 @@ ShaderFromNir::ShaderFromNir():sh(nullptr),
 
 bool ShaderFromNir::lower(const nir_shader *shader, r600_pipe_shader *pipe_shader,
                           r600_pipe_shader_selector *sel, r600_shader_key& key,
-                          struct r600_shader* gs_shader)
+                          struct r600_shader* gs_shader, enum chip_class _chip_class)
 {
    sh = shader;
+   chip_class = _chip_class;
    assert(sh);
 
    switch (shader->info.stage) {
    case MESA_SHADER_VERTEX:
-      impl.reset(new VertexShaderFromNir(pipe_shader, *sel, key, gs_shader));
+      impl.reset(new VertexShaderFromNir(pipe_shader, *sel, key, gs_shader, chip_class));
       break;
    case MESA_SHADER_TESS_CTRL:
       sfn_log << SfnLog::trans << "Start TCS\n";
-      impl.reset(new TcsShaderFromNir(pipe_shader, *sel, key));
+      impl.reset(new TcsShaderFromNir(pipe_shader, *sel, key, chip_class));
       break;
    case MESA_SHADER_TESS_EVAL:
       sfn_log << SfnLog::trans << "Start TESS_EVAL\n";
-      impl.reset(new TEvalShaderFromNir(pipe_shader, *sel, key, gs_shader));
+      impl.reset(new TEvalShaderFromNir(pipe_shader, *sel, key, gs_shader, chip_class));
       break;
    case MESA_SHADER_GEOMETRY:
       sfn_log << SfnLog::trans << "Start GS\n";
-      impl.reset(new GeometryShaderFromNir(pipe_shader, *sel, key));
+      impl.reset(new GeometryShaderFromNir(pipe_shader, *sel, key, chip_class));
       break;
    case MESA_SHADER_FRAGMENT:
       sfn_log << SfnLog::trans << "Start FS\n";
-      impl.reset(new FragmentShaderFromNir(*shader, pipe_shader->shader, *sel, key));
+      impl.reset(new FragmentShaderFromNir(*shader, pipe_shader->shader, *sel, key, chip_class));
       break;
    case MESA_SHADER_COMPUTE:
       sfn_log << SfnLog::trans << "Start CS\n";
-      impl.reset(new ComputeShaderFromNir(pipe_shader, *sel, key));
+      impl.reset(new ComputeShaderFromNir(pipe_shader, *sel, key, chip_class));
       break;
    default:
       return false;
@@ -634,8 +635,8 @@ int r600_shader_from_nir(struct r600_context *rctx,
    if (optimize)
       while(optimize_once(sel->nir));
 
-   NIR_PASS_V(sel->nir, nir_remove_dead_variables, nir_var_shader_in);
-   NIR_PASS_V(sel->nir, nir_remove_dead_variables,  nir_var_shader_out);
+   NIR_PASS_V(sel->nir, nir_remove_dead_variables, nir_var_shader_in, NULL);
+   NIR_PASS_V(sel->nir, nir_remove_dead_variables,  nir_var_shader_out, NULL);
 
 
    NIR_PASS_V(sel->nir, nir_lower_vars_to_scratch,
@@ -677,9 +678,9 @@ int r600_shader_from_nir(struct r600_context *rctx,
    struct r600_shader* gs_shader = nullptr;
    if (rctx->gs_shader)
       gs_shader = &rctx->gs_shader->current->shader;
+   r600_screen *rscreen = rctx->screen;
 
-   bool r = convert.lower(sel->nir, pipeshader, sel, *key, gs_shader);
-
+   bool r = convert.lower(sel->nir, pipeshader, sel, *key, gs_shader, rscreen->b.chip_class);
    if (!r || rctx->screen->b.debug_flags & DBG_ALL_SHADERS) {
       static int shnr = 0;
 
@@ -701,7 +702,6 @@ int r600_shader_from_nir(struct r600_context *rctx,
 
    auto shader = convert.shader();
 
-   r600_screen *rscreen = rctx->screen;
    r600_bytecode_init(&pipeshader->shader.bc, rscreen->b.chip_class, rscreen->b.family,
                       rscreen->has_compressed_msaa_texturing);
 

@@ -1141,7 +1141,17 @@ tu6_blit_image(struct tu_cmd_buffer *cmd,
          mask = 0x8;
    }
 
-   if (dst_image->samples > 1)
+   /* BC1_RGB_* formats need to have their last components overriden with 1
+    * when sampling, which is normally handled with the texture descriptor
+    * swizzle. The 2d path can't handle that, so use the 3d path.
+    *
+    * TODO: we could use RB_2D_BLIT_CNTL::MASK to make these formats work with
+    * the 2d path.
+    */
+
+   if (dst_image->samples > 1 ||
+       src_image->vk_format == VK_FORMAT_BC1_RGB_UNORM_BLOCK ||
+       src_image->vk_format == VK_FORMAT_BC1_RGB_SRGB_BLOCK)
       ops = &r3d_ops;
 
    /* TODO: shader path fails some of blit_image.all_formats.generate_mipmaps.* tests,
@@ -1222,8 +1232,8 @@ static void
 copy_compressed(VkFormat format,
                 VkOffset3D *offset,
                 VkExtent3D *extent,
-                uint32_t *pitch,
-                uint32_t *layer_size)
+                uint32_t *width,
+                uint32_t *height)
 {
    if (!vk_format_is_compressed(format))
       return;
@@ -1238,10 +1248,10 @@ copy_compressed(VkFormat format,
       extent->width = DIV_ROUND_UP(extent->width, block_width);
       extent->height = DIV_ROUND_UP(extent->height, block_height);
    }
-   if (pitch)
-      *pitch /= block_width;
-   if (layer_size)
-      *layer_size /= (block_width * block_height);
+   if (width)
+      *width = DIV_ROUND_UP(*width, block_width);
+   if (height)
+      *height = DIV_ROUND_UP(*height, block_height);
 }
 
 static void
@@ -1273,15 +1283,17 @@ tu_copy_buffer_to_image(struct tu_cmd_buffer *cmd,
 
    VkOffset3D offset = info->imageOffset;
    VkExtent3D extent = info->imageExtent;
-   uint32_t pitch =
-      (info->bufferRowLength ?: extent.width) * vk_format_get_blocksize(src_format);
-   uint32_t layer_size = (info->bufferImageHeight ?: extent.height) * pitch;
+   uint32_t src_width = info->bufferRowLength ?: extent.width;
+   uint32_t src_height = info->bufferImageHeight ?: extent.height;
 
    if (dst_format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 || vk_format_is_compressed(src_format)) {
       assert(src_format == dst_format);
-      copy_compressed(dst_format, &offset, &extent, &pitch, &layer_size);
+      copy_compressed(dst_format, &offset, &extent, &src_width, &src_height);
       src_format = dst_format = copy_format(dst_format);
    }
+
+   uint32_t pitch = src_width * vk_format_get_blocksize(src_format);
+   uint32_t layer_size = src_height * pitch;
 
    /* note: the src_va/pitch alignment of 64 is for 2D engine,
     * it is also valid for 1cpp format with shader path (stencil aspect path)
@@ -1354,14 +1366,17 @@ tu_copy_image_to_buffer(struct tu_cmd_buffer *cmd,
    const struct blit_ops *ops = stencil_read ? &r3d_ops : &r2d_ops;
    VkOffset3D offset = info->imageOffset;
    VkExtent3D extent = info->imageExtent;
-   uint32_t pitch = (info->bufferRowLength ?: extent.width) * vk_format_get_blocksize(dst_format);
-   uint32_t layer_size = (info->bufferImageHeight ?: extent.height) * pitch;
+   uint32_t dst_width = info->bufferRowLength ?: extent.width;
+   uint32_t dst_height = info->bufferImageHeight ?: extent.height;
 
    if (dst_format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 || vk_format_is_compressed(dst_format)) {
       assert(src_format == dst_format);
-      copy_compressed(dst_format, &offset, &extent, &pitch, &layer_size);
+      copy_compressed(dst_format, &offset, &extent, &dst_width, &dst_height);
       src_format = dst_format = copy_format(dst_format);
    }
+
+   uint32_t pitch = dst_width * vk_format_get_blocksize(dst_format);
+   uint32_t layer_size = pitch * dst_height;
 
    /* note: the dst_va/pitch alignment of 64 is for 2D engine,
     * it is also valid for 1cpp format with shader path (stencil aspect)
@@ -1565,7 +1580,8 @@ tu_copy_image_to_image(struct tu_cmd_buffer *cmd,
                   staging_image.extent.depth,
                   staging_image.level_count,
                   staging_image.layer_count,
-                  staging_image.type == VK_IMAGE_TYPE_3D);
+                  staging_image.type == VK_IMAGE_TYPE_3D,
+                  NULL);
 
       VkResult result = tu_get_scratch_bo(cmd->device,
                                           staging_image.layout.size,
@@ -1992,7 +2008,7 @@ tu_clear_sysmem_attachments(struct tu_cmd_buffer *cmd,
    uint32_t clear_value[MAX_RTS][4];
    float z_clear_val = 0.0f;
    uint8_t s_clear_val = 0;
-   uint32_t clear_rts = 0, num_rts = 0, b;
+   uint32_t clear_rts = 0, clear_components = 0, num_rts = 0, b;
    bool z_clear = false;
    bool s_clear = false;
    uint32_t max_samples = 1;
@@ -2006,6 +2022,7 @@ tu_clear_sysmem_attachments(struct tu_cmd_buffer *cmd,
             continue;
 
          clear_rts |= 1 << c;
+         clear_components |= 0xf << (c * 4);
          memcpy(clear_value[c], &attachments[i].clearValue, 4 * sizeof(uint32_t));
       } else {
          a = subpass->depth_stencil_attachment.attachment;
@@ -2053,6 +2070,11 @@ tu_clear_sysmem_attachments(struct tu_cmd_buffer *cmd,
    r3d_pipeline(cmd, cs, false, num_rts);
 
    tu_cs_emit_regs(cs,
+                   A6XX_SP_FS_RENDER_COMPONENTS(.dword = clear_components));
+   tu_cs_emit_regs(cs,
+                   A6XX_RB_RENDER_COMPONENTS(.dword = clear_components));
+
+   tu_cs_emit_regs(cs,
                    A6XX_RB_FS_OUTPUT_CNTL0(),
                    A6XX_RB_FS_OUTPUT_CNTL1(.mrt = mrt_count));
 
@@ -2073,7 +2095,7 @@ tu_clear_sysmem_attachments(struct tu_cmd_buffer *cmd,
    tu_cs_emit_regs(cs, A6XX_RB_STENCIL_CONTROL(
          .stencil_enable = s_clear,
          .func = FUNC_ALWAYS,
-         .zpass = VK_STENCIL_OP_REPLACE));
+         .zpass = STENCIL_REPLACE));
    tu_cs_emit_regs(cs, A6XX_RB_STENCILMASK(.mask = 0xff));
    tu_cs_emit_regs(cs, A6XX_RB_STENCILWRMASK(.wrmask = 0xff));
    tu_cs_emit_regs(cs, A6XX_RB_STENCILREF(.ref = s_clear_val));

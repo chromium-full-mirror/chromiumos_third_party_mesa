@@ -73,8 +73,7 @@ mir_print_mask(unsigned mask)
 static void
 mir_print_swizzle(unsigned *swizzle, nir_alu_type T)
 {
-        unsigned sz = nir_alu_type_get_type_size(T);
-        unsigned comps = 128 / sz;
+        unsigned comps = mir_components_for_type(T);
 
         printf(".");
 
@@ -222,7 +221,13 @@ mir_print_constant_component(FILE *fp, const midgard_constants *consts, unsigned
                 break;
 
         case midgard_reg_mode_8:
-                unreachable("XXX TODO: sort out how 8-bit constant encoding works");
+                fprintf(fp, "0x%X", consts->u8[c]);
+
+                if (mod)
+                        fprintf(fp, " /* %u */", mod);
+
+                assert(!half); /* No 4-bit */
+
                 break;
         }
 }
@@ -230,7 +235,6 @@ mir_print_constant_component(FILE *fp, const midgard_constants *consts, unsigned
 static void
 mir_print_embedded_constant(midgard_instruction *ins, unsigned src_idx)
 {
-        unsigned type_size = mir_bytes_for_mode(ins->alu.reg_mode);
         midgard_vector_alu_src src;
 
         assert(src_idx <= 1);
@@ -242,7 +246,7 @@ mir_print_embedded_constant(midgard_instruction *ins, unsigned src_idx)
         unsigned *swizzle = ins->swizzle[src_idx];
         unsigned comp_mask = effective_writemask(&ins->alu, ins->mask);
         unsigned num_comp = util_bitcount(comp_mask);
-        unsigned max_comp = 16 / type_size;
+        unsigned max_comp = mir_components_for_type(ins->dest_type) >> 1;
         bool first = true;
 
         printf("#");
@@ -342,13 +346,13 @@ mir_print_instruction(midgard_instruction *ins)
                 assert(0);
         }
 
-        if (ins->invert || (ins->compact_branch && ins->branch.invert_conditional))
+        if (ins->compact_branch && ins->branch.invert_conditional)
                 printf(".not");
 
         printf(" ");
         mir_print_index(ins->dest);
 
-        if (ins->dest) {
+        if (ins->dest != ~0) {
                 pan_print_alu_type(ins->dest_type, stdout);
                 mir_print_mask(ins->mask);
         }

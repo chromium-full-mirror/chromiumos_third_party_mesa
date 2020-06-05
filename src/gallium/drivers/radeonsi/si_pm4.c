@@ -98,7 +98,6 @@ void si_pm4_clear_state(struct si_pm4_state *state)
 {
    for (int i = 0; i < state->nbo; ++i)
       si_resource_reference(&state->bo[i], NULL);
-   si_resource_reference(&state->indirect_buffer, NULL);
    state->nbo = 0;
    state->ndw = 0;
 }
@@ -125,18 +124,7 @@ void si_pm4_emit(struct si_context *sctx, struct si_pm4_state *state)
                                 state->bo_priority[i]);
    }
 
-   if (!state->indirect_buffer) {
-      radeon_emit_array(cs, state->pm4, state->ndw);
-   } else {
-      struct si_resource *ib = state->indirect_buffer;
-
-      radeon_add_to_buffer_list(sctx, sctx->gfx_cs, ib, RADEON_USAGE_READ, RADEON_PRIO_IB2);
-
-      radeon_emit(cs, PKT3(PKT3_INDIRECT_BUFFER_CIK, 2, 0));
-      radeon_emit(cs, ib->gpu_address);
-      radeon_emit(cs, ib->gpu_address >> 32);
-      radeon_emit(cs, (ib->b.b.width0 >> 2) & 0xfffff);
-   }
+   radeon_emit_array(cs, state->pm4, state->ndw);
 
    if (state->atom.emit)
       state->atom.emit(sctx);
@@ -146,35 +134,4 @@ void si_pm4_reset_emitted(struct si_context *sctx)
 {
    memset(&sctx->emitted, 0, sizeof(sctx->emitted));
    sctx->dirty_states |= u_bit_consecutive(0, SI_NUM_STATES);
-}
-
-void si_pm4_upload_indirect_buffer(struct si_context *sctx, struct si_pm4_state *state)
-{
-   struct pipe_screen *screen = sctx->b.screen;
-   unsigned aligned_ndw = align(state->ndw, 8);
-
-   /* only supported on GFX7 and later */
-   if (sctx->chip_class < GFX7)
-      return;
-
-   assert(state->ndw);
-   assert(aligned_ndw <= SI_PM4_MAX_DW);
-
-   si_resource_reference(&state->indirect_buffer, NULL);
-   /* TODO: this hangs with 1024 or higher alignment on GFX9. */
-   state->indirect_buffer =
-      si_aligned_buffer_create(screen, 0, PIPE_USAGE_DEFAULT, aligned_ndw * 4, 256);
-   if (!state->indirect_buffer)
-      return;
-
-   /* Pad the IB to 8 DWs to meet CP fetch alignment requirements. */
-   if (sctx->screen->info.gfx_ib_pad_with_type2) {
-      for (int i = state->ndw; i < aligned_ndw; i++)
-         state->pm4[i] = 0x80000000; /* type2 nop packet */
-   } else {
-      for (int i = state->ndw; i < aligned_ndw; i++)
-         state->pm4[i] = 0xffff1000; /* type3 nop packet */
-   }
-
-   pipe_buffer_write(&sctx->b, &state->indirect_buffer->b.b, 0, aligned_ndw * 4, state->pm4);
 }

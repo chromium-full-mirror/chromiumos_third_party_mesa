@@ -132,6 +132,8 @@ MEMORY_SEMANTICS = "NIR_INTRINSIC_MEMORY_SEMANTICS"
 MEMORY_MODES = "NIR_INTRINSIC_MEMORY_MODES"
 # Scope of a memory operation
 MEMORY_SCOPE = "NIR_INTRINSIC_MEMORY_SCOPE"
+# Scope of a control barrier
+EXECUTION_SCOPE = "NIR_INTRINSIC_EXECUTION_SCOPE"
 
 #
 # Possible flags:
@@ -219,17 +221,19 @@ barrier("control_barrier")
 # intrinsic.
 barrier("memory_barrier")
 
-# Memory barrier with explicit scope.  Follows the semantics of SPIR-V
-# OpMemoryBarrier, used to implement Vulkan Memory Model.  Storage that the
-# barrierr applies is represented using NIR variable modes.
-intrinsic("scoped_memory_barrier",
-          indices=[MEMORY_SEMANTICS, MEMORY_MODES, MEMORY_SCOPE])
+# Control/Memory barrier with explicit scope.  Follows the semantics of SPIR-V
+# OpMemoryBarrier and OpControlBarrier, used to implement Vulkan Memory Model.
+# Storage that the barrier applies is represented using NIR variable modes.
+# For an OpMemoryBarrier, set EXECUTION_SCOPE to NIR_SCOPE_NONE.
+intrinsic("scoped_barrier",
+          indices=[EXECUTION_SCOPE, MEMORY_SEMANTICS, MEMORY_MODES, MEMORY_SCOPE])
 
 # Shader clock intrinsic with semantics analogous to the clock2x32ARB()
 # GLSL intrinsic.
 # The latter can be used as code motion barrier, which is currently not
 # feasible with NIR.
-intrinsic("shader_clock", dest_comp=2, flags=[CAN_ELIMINATE])
+intrinsic("shader_clock", dest_comp=2, flags=[CAN_ELIMINATE],
+          indices=[MEMORY_SCOPE])
 
 # Shader ballot intrinsics with semantics analogous to the
 #
@@ -401,7 +405,7 @@ image("atomic_or",   src_comp=[4, 1, 1], dest_comp=1)
 image("atomic_xor",  src_comp=[4, 1, 1], dest_comp=1)
 image("atomic_exchange",  src_comp=[4, 1, 1], dest_comp=1)
 image("atomic_comp_swap", src_comp=[4, 1, 1, 1], dest_comp=1)
-image("atomic_fadd",  src_comp=[1, 4, 1, 1], dest_comp=1)
+image("atomic_fadd",  src_comp=[4, 1, 1], dest_comp=1)
 image("size",    dest_comp=0, flags=[CAN_ELIMINATE, CAN_REORDER])
 image("samples", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
 image("atomic_inc_wrap",  src_comp=[4, 1, 1], dest_comp=1)

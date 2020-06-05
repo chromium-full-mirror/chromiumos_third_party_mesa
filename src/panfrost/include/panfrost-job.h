@@ -297,7 +297,7 @@ enum mali_format {
 	MALI_RGB332_UNORM   = MALI_FORMAT_SPECIAL | 0xb,
 	MALI_RGB233_UNORM   = MALI_FORMAT_SPECIAL | 0xc,
 
-	MALI_Z32_UNORM      = MALI_FORMAT_SPECIAL | 0xd,
+	MALI_Z24X8_UNORM    = MALI_FORMAT_SPECIAL | 0xd,
 	MALI_R32_FIXED      = MALI_FORMAT_SPECIAL | 0x11,
 	MALI_RG32_FIXED     = MALI_FORMAT_SPECIAL | 0x12,
 	MALI_RGB32_FIXED    = MALI_FORMAT_SPECIAL | 0x13,
@@ -390,11 +390,11 @@ enum mali_format {
 /* Should be set when the fragment shader updates the depth value. */
 #define MALI_WRITES_Z (1 << 4)
 
-/* Should the hardware perform early-Z testing? Normally should be set
- * for performance reasons. Clear if you use: discard,
- * alpha-to-coverage... * It's also possible this disables
- * forward-pixel kill; we're not quite sure which bit is which yet.
- * TODO: How does this interact with blending?*/
+/* Should the hardware perform early-Z testing? Set if the shader does not use
+ * discard, alpha-to-coverage, shader depth writes, and if the shader has no
+ * side effects (writes to global memory or images) unless early-z testing is
+ * forced in the shader.
+ */
 
 #define MALI_EARLY_Z (1 << 6)
 
@@ -408,12 +408,51 @@ enum mali_format {
  * it might read depth/stencil in particular, also set MALI_READS_ZS */
 
 #define MALI_READS_ZS (1 << 8)
+
+/* The shader might write to global memory (via OpenCL, SSBOs, or images).
+ * Reading is okay, as are ordinary writes to the tilebuffer/varyings. Setting
+ * incurs a performance penalty. On a fragment shader, this bit implies there
+ * are side effects, hence it interacts with early-z. */
+#define MALI_WRITES_GLOBAL (1 << 9)
+
 #define MALI_READS_TILEBUFFER (1 << 12)
 
 /* Applies to midgard1.flags_hi */
 
 /* Should be set when the fragment shader updates the stencil value. */
 #define MALI_WRITES_S (1 << 2)
+
+/* Mode to suppress generation of Infinity and NaN values by clamping inf
+ * (-inf) to MAX_FLOAT (-MIN_FLOAT) and flushing NaN to 0.0
+ *
+ * Compare suppress_inf/suppress_nan flags on the Bifrost clause header for the
+ * same functionality.
+ *
+ * This is not conformant on GLES3 or OpenCL, but is optional on GLES2, where
+ * it works around app bugs (e.g. in glmark2-es2 -bterrain with FP16).
+ */
+#define MALI_SUPPRESS_INF_NAN (1 << 3)
+
+/* Flags for bifrost1.unk1 */
+
+/* Shader uses less than 32 registers, partitioned as [R0, R15] U [R48, R63],
+ * allowing for full thread count. If clear, the full [R0, R63] register set is
+ * available at half thread count */
+#define MALI_BIFROST_FULL_THREAD (1 << 9)
+
+/* Enable early-z testing (presumably). This flag may not be set if the shader:
+ *
+ *  - Uses blending
+ *  - Uses discard
+ *  - Writes gl_FragDepth
+ *
+ * This differs from Midgard which sets the MALI_EARLY_Z flag even with
+ * blending, although I've begun to suspect that flag does not in fact enable
+ * EARLY_Z alone. */
+#define MALI_BIFROST_EARLY_Z (1 << 15)
+
+/* First clause type is ATEST */
+#define MALI_BIFROST_FIRST_ATEST (1 << 26)
 
 /* The raw Midgard blend payload can either be an equation or a shader
  * address, depending on the context */
@@ -1253,7 +1292,8 @@ struct mali_texture_descriptor {
 struct bifrost_texture_descriptor {
         unsigned format_unk : 4; /* 2 */
         enum mali_texture_type type : 2;
-        unsigned format_unk2 : 16; /* 0 */
+        unsigned zero : 4;
+        unsigned format_swizzle : 12;
         enum mali_format format : 8;
         unsigned srgb : 1;
         unsigned format_unk3 : 1; /* 0 */
@@ -1657,6 +1697,13 @@ struct mali_rt_format {
         unsigned no_preload : 1;
 } __attribute__((packed));
 
+/* Flags for afbc.flags and ds_afbc.flags */
+
+#define MALI_AFBC_FLAGS 0x10009
+
+/* Lossless RGB and RGBA colorspace transform */
+#define MALI_AFBC_YTR (1 << 17)
+
 struct mali_render_target {
         struct mali_rt_format format;
 
@@ -1675,7 +1722,7 @@ struct mali_render_target {
 
                 mali_ptr metadata;
                 u32 stride; // stride in units of tiles
-                u32 unk; // = 0x20000
+                u32 flags; // = 0x20000
         } afbc;
 
         mali_ptr framebuffer;
@@ -1719,7 +1766,7 @@ struct mali_framebuffer_extra  {
                 struct {
                         mali_ptr depth_stencil_afbc_metadata;
                         u32 depth_stencil_afbc_stride; // in units of tiles
-                        u32 zero1;
+                        u32 flags;
 
                         mali_ptr depth_stencil;
 

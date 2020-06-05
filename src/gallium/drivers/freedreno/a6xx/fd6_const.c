@@ -228,7 +228,7 @@ emit_tess_consts(struct fd6_emit *emit)
 }
 
 static void
-fd6_emit_ubos(const struct ir3_shader_variant *v,
+fd6_emit_ubos(struct fd_context *ctx, const struct ir3_shader_variant *v,
 		struct fd_ringbuffer *ring, struct fd_constbuf_stateobj *constbuf)
 {
 	if (!v->shader->num_ubos)
@@ -246,10 +246,22 @@ fd6_emit_ubos(const struct ir3_shader_variant *v,
 	OUT_RING(ring, CP_LOAD_STATE6_2_EXT_SRC_ADDR_HI(0));
 
 	for (int i = 0; i < num_ubos; i++) {
-		/* Note: gallium constbuf 0 was always lowered to hardware constbuf,
-		 * and UBO load indices decremented by one.
+		struct pipe_constant_buffer *cb = &constbuf->cb[i];
+
+		/* If we have user pointers (constbuf 0, aka GL uniforms), upload them
+		 * to a buffer now, and save it in the constbuf so that we don't have
+		 * to reupload until they get changed.
 		 */
-		struct pipe_constant_buffer *cb = &constbuf->cb[i + 1];
+		if (cb->user_buffer) {
+			struct pipe_context *pctx = &ctx->base;
+			u_upload_data(pctx->stream_uploader, 0,
+					cb->buffer_size,
+					64,
+					cb->user_buffer,
+					&cb->buffer_offset, &cb->buffer);
+			cb->user_buffer = NULL;
+		}
+
 		if (cb->buffer) {
 			int size_vec4s = DIV_ROUND_UP(cb->buffer_size, 16);
 			OUT_RELOC(ring, fd_resource(cb->buffer)->bo,
@@ -289,7 +301,7 @@ emit_user_consts(struct fd6_emit *emit)
 		if (!variants[i])
 			continue;
 		ir3_emit_user_consts(ctx->screen, variants[i], constobj, &ctx->constbuf[types[i]]);
-		fd6_emit_ubos(variants[i], constobj, &ctx->constbuf[types[i]]);
+		fd6_emit_ubos(ctx, variants[i], constobj, &ctx->constbuf[types[i]]);
 	}
 
 	fd6_emit_take_group(emit, constobj, FD6_GROUP_CONST, ENABLE_ALL);
@@ -336,7 +348,7 @@ fd6_emit_cs_consts(const struct ir3_shader_variant *v, struct fd_ringbuffer *rin
 		struct fd_context *ctx, const struct pipe_grid_info *info)
 {
 	ir3_emit_cs_consts(v, ring, ctx, info);
-	fd6_emit_ubos(v, ring, &ctx->constbuf[PIPE_SHADER_COMPUTE]);
+	fd6_emit_ubos(ctx, v, ring, &ctx->constbuf[PIPE_SHADER_COMPUTE]);
 }
 
 void

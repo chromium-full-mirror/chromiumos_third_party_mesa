@@ -34,7 +34,7 @@
 #include "common/gen_decoder.h"
 
 #include "iris_fence.h"
-#include "iris_seqno.h"
+#include "iris_fine_fence.h"
 
 struct iris_context;
 
@@ -56,12 +56,6 @@ enum iris_batch_name {
 };
 
 #define IRIS_BATCH_COUNT 2
-
-struct iris_address {
-   struct iris_bo *bo;
-   uint64_t offset;
-   bool write;
-};
 
 struct iris_batch {
    struct iris_screen *screen;
@@ -123,10 +117,10 @@ struct iris_batch {
 
       /** The sequence number to write the next time we add a fence. */
       uint32_t next;
-   } seqno;
+   } fine_fences;
 
    /** A seqno (and syncobj) for the last batch that was submitted. */
-   struct iris_seqno *last_seqno;
+   struct iris_fine_fence *last_fence;
 
    /** List of other batches which we might need to flush to use a BO */
    struct iris_batch *other_batches[IRIS_BATCH_COUNT - 1];
@@ -138,20 +132,40 @@ struct iris_batch {
        * cache domain that isn't coherent with it (i.e. the sampler).
        */
       struct hash_table *render;
-
-      /**
-       * Set of struct brw_bo * that have been used as a depth buffer within
-       * this batchbuffer and would need flushing before being used from
-       * another cache domain that isn't coherent with it (i.e. the sampler).
-       */
-      struct set *depth;
    } cache;
 
    struct gen_batch_decode_ctx decoder;
    struct hash_table_u64 *state_sizes;
 
+   /**
+    * Matrix representation of the cache coherency status of the GPU at the
+    * current end point of the batch.  For every i and j,
+    * coherent_seqnos[i][j] denotes the seqno of the most recent flush of
+    * cache domain j visible to cache domain i (which obviously implies that
+    * coherent_seqnos[i][i] is the most recent flush of cache domain i).  This
+    * can be used to efficiently determine whether synchronization is
+    * necessary before accessing data from cache domain i if it was previously
+    * accessed from another cache domain j.
+    */
+   uint64_t coherent_seqnos[NUM_IRIS_DOMAINS][NUM_IRIS_DOMAINS];
+
+   /**
+    * Sequence number used to track the completion of any subsequent memory
+    * operations in the batch until the next sync boundary.
+    */
+   uint64_t next_seqno;
+
    /** Have we emitted any draw calls to this batch? */
    bool contains_draw;
+
+   /** Have we emitted any draw calls with next_seqno? */
+   bool contains_draw_with_next_seqno;
+
+   /**
+    * Number of times iris_batch_sync_region_start() has been called without a
+    * matching iris_batch_sync_region_end() on this batch.
+    */
+   uint32_t sync_region_depth;
 
    uint32_t last_aux_map_state;
 };
@@ -168,14 +182,12 @@ void _iris_batch_flush(struct iris_batch *batch, const char *file, int line);
 
 bool iris_batch_references(struct iris_batch *batch, struct iris_bo *bo);
 
-uint64_t iris_batch_prepare_noop(struct iris_batch *batch,
-                                 bool noop_enable,
-                                 uint64_t dirty_flags);
+bool iris_batch_prepare_noop(struct iris_batch *batch, bool noop_enable);
 
 #define RELOC_WRITE EXEC_OBJECT_WRITE
 
 void iris_use_pinned_bo(struct iris_batch *batch, struct iris_bo *bo,
-                        bool writable);
+                        bool writable, enum iris_domain access);
 
 enum pipe_reset_status iris_batch_check_for_reset(struct iris_batch *batch);
 
@@ -266,6 +278,81 @@ iris_record_state_size(struct hash_table_u64 *ht,
       _mesa_hash_table_u64_insert(ht, offset_from_base,
                                   (void *)(uintptr_t) size);
    }
+}
+
+/**
+ * Mark the start of a region in the batch with stable synchronization
+ * sequence number.  Any buffer object accessed by the batch buffer only needs
+ * to be marked once (e.g. via iris_bo_bump_seqno()) within a region delimited
+ * by iris_batch_sync_region_start() and iris_batch_sync_region_end().
+ */
+static inline void
+iris_batch_sync_region_start(struct iris_batch *batch)
+{
+   batch->sync_region_depth++;
+}
+
+/**
+ * Mark the end of a region in the batch with stable synchronization sequence
+ * number.  Should be called once after each call to
+ * iris_batch_sync_region_start().
+ */
+static inline void
+iris_batch_sync_region_end(struct iris_batch *batch)
+{
+   assert(batch->sync_region_depth);
+   batch->sync_region_depth--;
+}
+
+/**
+ * Start a new synchronization section at the current point of the batch,
+ * unless disallowed by a previous iris_batch_sync_region_start().
+ */
+static inline void
+iris_batch_sync_boundary(struct iris_batch *batch)
+{
+   if (!batch->sync_region_depth) {
+      batch->contains_draw_with_next_seqno = false;
+      batch->next_seqno = p_atomic_inc_return(&batch->screen->last_seqno);
+      assert(batch->next_seqno > 0);
+   }
+}
+
+/**
+ * Update the cache coherency status of the batch to reflect a flush of the
+ * specified caching domain.
+ */
+static inline void
+iris_batch_mark_flush_sync(struct iris_batch *batch,
+                           enum iris_domain access)
+{
+   batch->coherent_seqnos[access][access] = batch->next_seqno - 1;
+}
+
+/**
+ * Update the cache coherency status of the batch to reflect an invalidation
+ * of the specified caching domain.  All prior flushes of other caches will be
+ * considered visible to the specified caching domain.
+ */
+static inline void
+iris_batch_mark_invalidate_sync(struct iris_batch *batch,
+                                enum iris_domain access)
+{
+   for (unsigned i = 0; i < NUM_IRIS_DOMAINS; i++)
+      batch->coherent_seqnos[access][i] = batch->coherent_seqnos[i][i];
+}
+
+/**
+ * Update the cache coherency status of the batch to reflect a reset.  All
+ * previously accessed data can be considered visible to every caching domain
+ * thanks to the kernel's heavyweight flushing at batch buffer boundaries.
+ */
+static inline void
+iris_batch_mark_reset_sync(struct iris_batch *batch)
+{
+   for (unsigned i = 0; i < NUM_IRIS_DOMAINS; i++)
+      for (unsigned j = 0; j < NUM_IRIS_DOMAINS; j++)
+         batch->coherent_seqnos[i][j] = batch->next_seqno - 1;
 }
 
 #endif

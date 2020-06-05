@@ -569,6 +569,11 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 	DBG("prsc=%p, level=%u, usage=%x, box=%dx%d+%d,%d", prsc, level, usage,
 		box->width, box->height, box->x, box->y);
 
+	if ((usage & PIPE_TRANSFER_MAP_DIRECTLY) && rsc->layout.tile_mode) {
+		DBG("CANNOT MAP DIRECTLY!\n");
+		return NULL;
+	}
+
 	ptrans = slab_alloc(&ctx->transfer_pool);
 	if (!ptrans)
 		return NULL;
@@ -801,104 +806,6 @@ fd_resource_get_handle(struct pipe_screen *pscreen,
 			fd_resource_slice(rsc, 0)->pitch, handle);
 }
 
-static uint32_t
-setup_slices(struct fd_resource *rsc, uint32_t alignment, enum pipe_format format)
-{
-	struct pipe_resource *prsc = &rsc->base;
-	struct fd_screen *screen = fd_screen(prsc->screen);
-	enum util_format_layout layout = util_format_description(format)->layout;
-	uint32_t pitchalign = screen->gmem_alignw;
-	uint32_t level, size = 0;
-	uint32_t width = prsc->width0;
-	uint32_t height = prsc->height0;
-	uint32_t depth = prsc->depth0;
-	/* in layer_first layout, the level (slice) contains just one
-	 * layer (since in fact the layer contains the slices)
-	 */
-	uint32_t layers_in_level = rsc->layout.layer_first ? 1 : prsc->array_size;
-
-	for (level = 0; level <= prsc->last_level; level++) {
-		struct fdl_slice *slice = fd_resource_slice(rsc, level);
-		uint32_t blocks;
-
-		if (layout == UTIL_FORMAT_LAYOUT_ASTC)
-			width = util_align_npot(width, pitchalign * util_format_get_blockwidth(format));
-		else
-			width = align(width, pitchalign);
-		slice->pitch = util_format_get_nblocksx(format, width) * rsc->layout.cpp;
-		slice->offset = size;
-		blocks = util_format_get_nblocks(format, width, height);
-		/* 1d array and 2d array textures must all have the same layer size
-		 * for each miplevel on a3xx. 3d textures can have different layer
-		 * sizes for high levels, but the hw auto-sizer is buggy (or at least
-		 * different than what this code does), so as soon as the layer size
-		 * range gets into range, we stop reducing it.
-		 */
-		if (prsc->target == PIPE_TEXTURE_3D && (
-					level == 1 ||
-					(level > 1 && fd_resource_slice(rsc, level - 1)->size0 > 0xf000)))
-			slice->size0 = align(blocks * rsc->layout.cpp, alignment);
-		else if (level == 0 || rsc->layout.layer_first || alignment == 1)
-			slice->size0 = align(blocks * rsc->layout.cpp, alignment);
-		else
-			slice->size0 = fd_resource_slice(rsc, level - 1)->size0;
-
-		size += slice->size0 * depth * layers_in_level;
-
-		width = u_minify(width, 1);
-		height = u_minify(height, 1);
-		depth = u_minify(depth, 1);
-	}
-
-	return size;
-}
-
-static uint32_t
-slice_alignment(enum pipe_texture_target target)
-{
-	/* on a3xx, 2d array and 3d textures seem to want their
-	 * layers aligned to page boundaries:
-	 */
-	switch (target) {
-	case PIPE_TEXTURE_3D:
-	case PIPE_TEXTURE_1D_ARRAY:
-	case PIPE_TEXTURE_2D_ARRAY:
-		return 4096;
-	default:
-		return 1;
-	}
-}
-
-/* cross generation texture layout to plug in to screen->setup_slices()..
- * replace with generation specific one as-needed.
- *
- * TODO for a4xx probably can extract out the a4xx specific logic int
- * a small fd4_setup_slices() wrapper that sets up layer_first, and then
- * calls this.
- */
-uint32_t
-fd_setup_slices(struct fd_resource *rsc)
-{
-	uint32_t alignment;
-
-	alignment = slice_alignment(rsc->base.target);
-
-	struct fd_screen *screen = fd_screen(rsc->base.screen);
-	if (is_a4xx(screen)) {
-		switch (rsc->base.target) {
-		case PIPE_TEXTURE_3D:
-			rsc->layout.layer_first = false;
-			break;
-		default:
-			rsc->layout.layer_first = true;
-			alignment = 1;
-			break;
-		}
-	}
-
-	return setup_slices(rsc, alignment, rsc->base.format);
-}
-
 /* special case to resize query buf after allocated.. */
 void
 fd_resource_resize(struct pipe_resource *prsc, uint32_t sz)
@@ -953,7 +860,7 @@ fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
 		struct renderonly_scanout *scanout;
 		struct winsys_handle handle;
 
-		/* apply freedreno alignment requirement */
+		/* note: alignment is wrong for a6xx */
 		scanout_templat.width0 = align(tmpl->width0, screen->gmem_alignw);
 
 		scanout = renderonly_scanout_for_resource(&scanout_templat,
@@ -1125,6 +1032,10 @@ fd_resource_from_handle(struct pipe_screen *pscreen,
 
 	uint32_t pitchalign = fd_screen(pscreen)->gmem_alignw * rsc->layout.cpp;
 
+	/* use 64 pitchalign on a6xx where gmem_alignw is not right */
+	if (is_a6xx(screen))
+		pitchalign = 64 * rsc->layout.cpp;
+
 	if ((slice->pitch < align(prsc->width0 * rsc->layout.cpp, pitchalign)) ||
 			(slice->pitch & (pitchalign - 1)))
 		goto fail;
@@ -1268,8 +1179,6 @@ fd_resource_screen_init(struct pipe_screen *pscreen)
 	pscreen->transfer_helper = u_transfer_helper_create(&transfer_vtbl,
 			true, false, fake_rgtc, true);
 
-	if (!screen->setup_slices)
-		screen->setup_slices = fd_setup_slices;
 	if (!screen->layout_resource_for_modifier)
 		screen->layout_resource_for_modifier = fd_layout_resource_for_modifier;
 	if (!screen->supported_modifiers) {

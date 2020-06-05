@@ -327,12 +327,31 @@ void si_clear_buffer(struct si_context *sctx, struct pipe_resource *dst, uint64_
 
    uint64_t aligned_size = size & ~3ull;
    if (aligned_size >= 4) {
-      /* Before GFX9, CP DMA was very slow when clearing GTT, so never
-       * use CP DMA clears on those chips, because we can't be certain
-       * about buffer placements.
+      uint64_t compute_min_size;
+
+      /* CP DMA clears are terribly slow with GTT on GFX6-8, which can always
+       * happen due to BO evictions.
        */
+      if (sctx->chip_class <= GFX8) {
+         compute_min_size = 0;
+      } else if (sctx->chip_class >= GFX10 &&
+                 sctx->screen->info.has_dedicated_vram &&
+                 si_resource(dst)->domains & RADEON_DOMAIN_VRAM) {
+         /* VRAM clears on gfx10 dGPUs */
+         if (sctx->screen->info.vram_bit_width >= 192)
+            compute_min_size = 128 * 1024;
+         else
+            compute_min_size = 1024 * 1024;
+      } else if (sctx->screen->info.has_dedicated_vram &&
+                 si_resource(dst)->domains & RADEON_DOMAIN_GTT) {
+         /* GTT clears on gfx9 and gfx10 dGPUs */
+         compute_min_size = UINT64_MAX; /* CP DMA is the best due to slow PCIe */
+      } else {
+         compute_min_size = 32 * 1024;
+      }
+
       if (clear_value_size > 4 || (!force_cpdma && clear_value_size == 4 && offset % 4 == 0 &&
-                                   (size > 32 * 1024 || sctx->chip_class <= GFX8))) {
+                                   size > compute_min_size)) {
          si_compute_do_clear_or_copy(sctx, dst, offset, NULL, 0, aligned_size, clear_value,
                                      clear_value_size, coher);
       } else {
@@ -371,11 +390,29 @@ void si_copy_buffer(struct si_context *sctx, struct pipe_resource *dst, struct p
 
    enum si_coherency coher = SI_COHERENCY_SHADER;
    enum si_cache_policy cache_policy = get_cache_policy(sctx, coher, size);
+   uint64_t compute_min_size;
+
+   if (sctx->chip_class >= GFX10 &&
+       sctx->screen->info.has_dedicated_vram &&
+       si_resource(dst)->domains & RADEON_DOMAIN_VRAM &&
+       si_resource(src)->domains & RADEON_DOMAIN_VRAM) {
+      /* VRAM copies on gfx10 dGPUs */
+      if (sctx->screen->info.vram_bit_width >= 192)
+         compute_min_size = 128 * 1024;
+      else
+         compute_min_size = 1024 * 1024;
+   } else if (sctx->chip_class >= GFX10 &&
+              sctx->screen->info.has_dedicated_vram &&
+              (si_resource(dst)->domains | si_resource(src)->domains) & RADEON_DOMAIN_GTT) {
+      compute_min_size = UINT64_MAX; /* CP DMA is the best due to slow PCIe */
+   } else {
+      compute_min_size = 32 * 1024;
+   }
 
    /* Only use compute for VRAM copies on dGPUs. */
    if (sctx->screen->info.has_dedicated_vram && si_resource(dst)->domains & RADEON_DOMAIN_VRAM &&
-       si_resource(src)->domains & RADEON_DOMAIN_VRAM && size > 32 * 1024 && dst_offset % 4 == 0 &&
-       src_offset % 4 == 0 && size % 4 == 0) {
+       si_resource(src)->domains & RADEON_DOMAIN_VRAM && size > compute_min_size &&
+       dst_offset % 4 == 0 && src_offset % 4 == 0 && size % 4 == 0) {
       si_compute_do_clear_or_copy(sctx, dst, dst_offset, src, src_offset, size, NULL, 0, coher);
    } else {
       si_cp_dma_copy_buffer(sctx, dst, src, dst_offset, src_offset, size, 0, coher, cache_policy);
@@ -393,6 +430,8 @@ void si_compute_copy_image(struct si_context *sctx, struct pipe_resource *dst, u
    unsigned depth = src_box->depth;
    enum pipe_format src_format = util_format_linear(src->format);
    enum pipe_format dst_format = util_format_linear(dst->format);
+   bool is_linear = ((struct si_texture*)src)->surface.is_linear ||
+                    ((struct si_texture*)dst)->surface.is_linear;
 
    assert(util_format_is_subsampled_422(src_format) == util_format_is_subsampled_422(dst_format));
 
@@ -519,13 +558,20 @@ void si_compute_copy_image(struct si_context *sctx, struct pipe_resource *dst, u
       if (!sctx->cs_copy_image)
          sctx->cs_copy_image = si_create_copy_image_compute_shader(ctx);
       ctx->bind_compute_state(ctx, sctx->cs_copy_image);
-      info.block[0] = 8;
-      info.last_block[0] = width % 8;
-      info.block[1] = 8;
-      info.last_block[1] = height % 8;
+
+      /* This is better for access over PCIe. */
+      if (is_linear) {
+         info.block[0] = 64;
+         info.block[1] = 1;
+      } else {
+         info.block[0] = 8;
+         info.block[1] = 8;
+      }
+      info.last_block[0] = width % info.block[0];
+      info.last_block[1] = height % info.block[1];
       info.block[2] = 1;
-      info.grid[0] = DIV_ROUND_UP(width, 8);
-      info.grid[1] = DIV_ROUND_UP(height, 8);
+      info.grid[0] = DIV_ROUND_UP(width, info.block[0]);
+      info.grid[1] = DIV_ROUND_UP(height, info.block[1]);
       info.grid[2] = depth;
    }
 
@@ -687,7 +733,8 @@ void si_compute_expand_fmask(struct pipe_context *ctx, struct pipe_resource *tex
    /* Clear FMASK to identity. */
    struct si_texture *stex = (struct si_texture *)tex;
    si_clear_buffer(sctx, tex, stex->surface.fmask_offset, stex->surface.fmask_size,
-                   (uint32_t *)&fmask_expand_values[log_fragments][log_samples - 1], 4,
+                   (uint32_t *)&fmask_expand_values[log_fragments][log_samples - 1],
+                   log_fragments >= 2 && log_samples == 4 ? 8 : 4,
                    SI_COHERENCY_SHADER, false);
 }
 

@@ -66,6 +66,9 @@ DRI_CONF_END;
  */
 #define MAX_DEBUG_MESSAGE_LENGTH    4096
 
+/* Render engine timestamp register */
+#define TIMESTAMP 0x2358
+
 static void
 compiler_debug_log(void *data, const char *fmt, ...)
 {
@@ -136,7 +139,7 @@ anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
       anv_perf_warn(NULL, NULL,
                     "Failed to get I915_CONTEXT_PARAM_GTT_SIZE: %m");
 
-      if (anv_gem_get_aperture(fd, &device->gtt_size) == -1) {
+      if (gen_get_aperture_size(fd, &device->gtt_size) == -1) {
          return vk_errorfi(device->instance, NULL,
                            VK_ERROR_INITIALIZATION_FAILED,
                            "failed to get aperture size: %m");
@@ -471,6 +474,11 @@ anv_physical_device_try_create(struct anv_instance *instance,
    device->has_bindless_samplers = device->info.gen >= 8;
 
    device->has_implicit_ccs = device->info.has_aux_map;
+
+   /* Check if we can read the GPU timestamp register from the CPU */
+   uint64_t u64_ignore;
+   device->has_reg_timestamp = anv_gem_reg_read(fd, TIMESTAMP | I915_REG_READ_8B_WA,
+                                                &u64_ignore) == 0;
 
    device->has_mem_available = get_available_system_memory() != 0;
 
@@ -1238,6 +1246,15 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PERFORMANCE_QUERY_FEATURES_KHR: {
+         VkPhysicalDevicePerformanceQueryFeaturesKHR *feature =
+            (VkPhysicalDevicePerformanceQueryFeaturesKHR *)ext;
+         feature->performanceCounterQueryPools = true;
+         /* HW only supports a single configuration at a time. */
+         feature->performanceCounterMultipleQueryPools = false;
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR: {
          VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR *features =
             (VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR *)ext;
@@ -1900,6 +1917,16 @@ void anv_GetPhysicalDeviceProperties2(
          properties->pciBus = pdevice->pci_info.bus;
          properties->pciDevice = pdevice->pci_info.device;
          properties->pciFunction = pdevice->pci_info.function;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PERFORMANCE_QUERY_PROPERTIES_KHR: {
+         VkPhysicalDevicePerformanceQueryPropertiesKHR *properties =
+            (VkPhysicalDevicePerformanceQueryPropertiesKHR *)ext;
+         /* We could support this by spawning a shader to do the equation
+          * normalization.
+          */
+         properties->allowCommandBufferQueryCopies = false;
          break;
       }
 
@@ -2907,11 +2934,25 @@ VkResult anv_CreateDevice(
          goto fail_binding_table_pool;
    }
 
-   result = anv_device_alloc_bo(device, 4096, 0 /* flags */,
+   result = anv_device_alloc_bo(device, 4096,
+                                ANV_BO_ALLOC_CAPTURE | ANV_BO_ALLOC_MAPPED /* flags */,
                                 0 /* explicit_address */,
                                 &device->workaround_bo);
    if (result != VK_SUCCESS)
       goto fail_surface_aux_map_pool;
+
+   device->workaround_address = (struct anv_address) {
+      .bo = device->workaround_bo,
+      .offset = align_u32(
+         intel_debug_write_identifiers(device->workaround_bo->map,
+                                       device->workaround_bo->size,
+                                       "Anv") + 8, 8),
+   };
+
+   if (!device->info.has_llc) {
+      gen_clflush_range(device->workaround_bo->map,
+                        device->workaround_address.offset);
+   }
 
    result = anv_device_init_trivial_batch(device);
    if (result != VK_SUCCESS)
@@ -2965,7 +3006,7 @@ VkResult anv_CreateDevice(
       unreachable("unhandled gen");
    }
    if (result != VK_SUCCESS)
-      goto fail_workaround_bo;
+      goto fail_clear_value_bo;
 
    anv_pipeline_cache_init(&device->default_pipeline_cache, device, true);
 
@@ -2979,13 +3020,14 @@ VkResult anv_CreateDevice(
 
    return VK_SUCCESS;
 
- fail_workaround_bo:
-   anv_scratch_pool_finish(device, &device->scratch_pool);
+ fail_clear_value_bo:
    if (device->info.gen >= 10)
       anv_device_release_bo(device, device->hiz_clear_bo);
-   anv_device_release_bo(device, device->workaround_bo);
+   anv_scratch_pool_finish(device, &device->scratch_pool);
  fail_trivial_batch_bo:
    anv_device_release_bo(device, device->trivial_batch_bo);
+ fail_workaround_bo:
+   anv_device_release_bo(device, device->workaround_bo);
  fail_surface_aux_map_pool:
    if (device->info.gen >= 12) {
       gen_aux_map_finish(device->aux_map_ctx);
@@ -4393,8 +4435,6 @@ anv_clock_gettime(clockid_t clock_id)
    return (uint64_t) current.tv_sec * 1000000000ULL + current.tv_nsec;
 }
 
-#define TIMESTAMP 0x2358
-
 VkResult anv_GetCalibratedTimestampsEXT(
    VkDevice                                     _device,
    uint32_t                                     timestampCount,
@@ -4414,7 +4454,7 @@ VkResult anv_GetCalibratedTimestampsEXT(
    for (d = 0; d < timestampCount; d++) {
       switch (pTimestampInfos[d].timeDomain) {
       case VK_TIME_DOMAIN_DEVICE_EXT:
-         ret = anv_gem_reg_read(device, TIMESTAMP | 1,
+         ret = anv_gem_reg_read(device->fd, TIMESTAMP | I915_REG_READ_8B_WA,
                                 &pTimestamps[d]);
 
          if (ret != 0) {

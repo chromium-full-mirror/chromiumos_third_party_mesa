@@ -901,9 +901,16 @@ intel_query_image(__DRIimage *image, int attrib, int *value)
    case __DRI_IMAGE_ATTRIB_STRIDE:
       *value = image->pitch;
       return true;
-   case __DRI_IMAGE_ATTRIB_HANDLE:
-      *value = brw_bo_export_gem_handle(image->bo);
+   case __DRI_IMAGE_ATTRIB_HANDLE: {
+      __DRIscreen *dri_screen = image->screen->driScrnPriv;
+      uint32_t handle;
+      if (brw_bo_export_gem_handle_for_device(image->bo,
+                                              dri_screen->fd,
+                                              &handle))
+         return false;
+      *value = handle;
       return true;
+   }
    case __DRI_IMAGE_ATTRIB_NAME:
       return !brw_bo_flink(image->bo, (uint32_t *) value);
    case __DRI_IMAGE_ATTRIB_FORMAT:
@@ -980,6 +987,7 @@ intel_dup_image(__DRIimage *orig_image, void *loaderPrivate)
       return NULL;
 
    brw_bo_reference(orig_image->bo);
+   image->screen          = orig_image->screen;
    image->bo              = orig_image->bo;
    image->internal_format = orig_image->internal_format;
    image->planar_format   = orig_image->planar_format;
@@ -1504,17 +1512,6 @@ static const __DRIimageExtension intelImageExtension = {
     .queryDmaBufModifiers               = intel_query_dma_buf_modifiers,
     .queryDmaBufFormatModifierAttribs   = intel_query_format_modifier_attribs,
 };
-
-static uint64_t
-get_aperture_size(int fd)
-{
-   struct drm_i915_gem_get_aperture aperture;
-
-   if (drmIoctl(fd, DRM_IOCTL_I915_GEM_GET_APERTURE, &aperture) != 0)
-      return 0;
-
-   return aperture.aper_size;
-}
 
 static int
 brw_query_renderer_integer(__DRIscreen *dri_screen,
@@ -2610,7 +2607,7 @@ __DRIconfig **intelInitScreen2(__DRIscreen *dri_screen)
       screen->max_gtt_map_object_size = gtt_size / 4;
    }
 
-   screen->aperture_threshold = get_aperture_size(screen->fd) * 3 / 4;
+   screen->aperture_threshold = devinfo->aperture_bytes * 3 / 4;
 
    screen->hw_has_swizzling = intel_detect_swizzling(screen);
    screen->hw_has_timestamp = intel_detect_timestamp(screen);

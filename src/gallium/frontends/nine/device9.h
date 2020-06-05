@@ -158,6 +158,8 @@ struct NineDevice9
 
     /* software vertex processing */
     boolean swvp;
+    /* pure device */
+    boolean pure;
 };
 static inline struct NineDevice9 *
 NineDevice9( void *data )
@@ -196,6 +198,11 @@ void
 NineDevice9_dtor( struct NineDevice9 *This );
 
 /*** Nine private ***/
+struct pipe_resource *
+nine_resource_create_with_retry( struct NineDevice9 *This,
+                                 struct pipe_screen *screen,
+                                 const struct pipe_resource *templat );
+
 void
 NineDevice9_SetDefaultState( struct NineDevice9 *This, boolean is_reset );
 
@@ -207,6 +214,9 @@ NineDevice9_GetPipe( struct NineDevice9 *This );
 
 const D3DCAPS9 *
 NineDevice9_GetCaps( struct NineDevice9 *This );
+
+void
+NineDevice9_EvictManagedResourcesInternal( struct NineDevice9 *This );
 
 /*** Direct3D public ***/
 

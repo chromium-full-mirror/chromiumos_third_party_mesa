@@ -61,7 +61,7 @@ GL 3.0, GLSL 1.30 --- all DONE: freedreno, i965, nv50, nvc0, r600, radeonsi, llv
   glGetStringi command                                  DONE
   glTexParameterI, glGetTexParameterI commands          DONE
   glVertexAttribI commands                              DONE
-  Depth format cube textures                            DONE ()
+  Depth format cube textures                            DONE (zink)
   GLX_ARB_create_context (GLX 1.4 is required)          DONE (v3d, zink)
   Multisample anti-aliasing                             DONE (freedreno/a5xx+, freedreno (*), llvmpipe (*), softpipe (*), swr (*), zink)
   8 draw buffers                                        DONE (zink)
@@ -91,7 +91,7 @@ GL 3.2, GLSL 1.50 --- all DONE: i965, nv50, nvc0, r600, radeonsi, llvmpipe, soft
   GL_ARB_fragment_coord_conventions (Frag shader coord) DONE (freedreno, v3d)
   GL_ARB_provoking_vertex (Provoking vertex)            DONE (freedreno, v3d)
   GL_ARB_seamless_cube_map (Seamless cubemaps)          DONE (freedreno, zink)
-  GL_ARB_texture_multisample (Multisample textures)     DONE (freedreno/a5xx+, v3d)
+  GL_ARB_texture_multisample (Multisample textures)     DONE (freedreno/a5xx+, v3d, zink)
   GL_ARB_depth_clamp (Frag depth clamp)                 DONE (freedreno)
   GL_ARB_sync (Fence objects)                           DONE (freedreno, v3d, zink)
   GLX_ARB_create_context_profile                        DONE
@@ -280,7 +280,7 @@ GLES3.2, GLSL ES 3.2 -- all DONE: i965/gen9+, radeonsi, virgl
   GL_OES_copy_image                                     DONE (all drivers)
   GL_OES_draw_buffers_indexed                           DONE (all drivers that support GL_ARB_draw_buffers_blend)
   GL_OES_draw_elements_base_vertex                      DONE (all drivers)
-  GL_OES_geometry_shader                                DONE (i965/hsw+, nvc0, r600, softpipe, v3d)
+  GL_OES_geometry_shader                                DONE (freedreno/a6xx, i965/hsw+, nvc0, r600, softpipe, v3d)
   GL_OES_gpu_shader5                                    DONE (freedreno/a6xx, all drivers that support GL_ARB_gpu_shader5)
   GL_OES_primitive_bounding_box                         DONE (freedreno/a5xx+, i965/gen7+, nvc0, r600, softpipe, v3d)
   GL_OES_sample_shading                                 DONE (freedreno/a6xx, i965, nvc0, r600)
@@ -288,10 +288,10 @@ GLES3.2, GLSL ES 3.2 -- all DONE: i965/gen9+, radeonsi, virgl
   GL_OES_shader_image_atomic                            DONE (all drivers that support GL_ARB_shader_image_load_store)
   GL_OES_shader_io_blocks                               DONE (All drivers that support GLES 3.1)
   GL_OES_shader_multisample_interpolation               DONE (freedreno/a6xx, i965, nvc0, r600)
-  GL_OES_tessellation_shader                            DONE (all drivers that support GL_ARB_tessellation_shader)
+  GL_OES_tessellation_shader                            DONE (freedreno/a6xx, all drivers that support GL_ARB_tessellation_shader)
   GL_OES_texture_border_clamp                           DONE (all drivers)
   GL_OES_texture_buffer                                 DONE (freedreno, i965, nvc0, r600, softpipe)
-  GL_OES_texture_cube_map_array                         DONE (i965/hsw+, nvc0, r600, softpipe)
+  GL_OES_texture_cube_map_array                         DONE (freedreno/a4xx+, i965/hsw+, nvc0, r600, softpipe)
   GL_OES_texture_stencil8                               DONE (all drivers that support GL_ARB_texture_stencil8)
   GL_OES_texture_storage_multisample_2d_array           DONE (all drivers that support GL_ARB_texture_multisample)
 

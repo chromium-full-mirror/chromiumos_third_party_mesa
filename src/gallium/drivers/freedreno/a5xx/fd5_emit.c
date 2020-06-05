@@ -148,7 +148,7 @@ emit_const_bo(struct fd_ringbuffer *ring,
 		uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	/* TODO inline this */
-	assert(dst_offset + num < v->constlen * 4);
+	assert(dst_offset + num <= v->constlen * 4);
 	fd5_emit_const_bo(ring, v->type, dst_offset, num, prscs, offsets);
 }
 
@@ -492,7 +492,7 @@ fd5_emit_vertex_bufs(struct fd_ringbuffer *ring, struct fd5_emit *emit)
 			bool isint = util_format_is_pure_integer(pfmt);
 			uint32_t off = vb->buffer_offset + elem->src_offset;
 			uint32_t size = fd_bo_size(rsc->bo) - off;
-			debug_assert(fmt != ~0);
+			debug_assert(fmt != VFMT5_NONE);
 
 #ifdef DEBUG
 			/* see dEQP-GLES31.stress.vertex_attribute_binding.buffer_bounds.bind_vertex_buffer_offset_near_wrap_10
@@ -602,7 +602,7 @@ fd5_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
 	if (dirty & (FD_DIRTY_ZSA | FD_DIRTY_RASTERIZER | FD_DIRTY_PROG)) {
 		struct fd5_zsa_stateobj *zsa = fd5_zsa_stateobj(ctx->zsa);
-		bool fragz = fp->no_earlyz | fp->writes_pos;
+		bool fragz = fp->no_earlyz || fp->has_kill || fp->writes_pos;
 
 		OUT_PKT4(ring, REG_A5XX_RB_DEPTH_CNTL, 1);
 		OUT_RING(ring, zsa->rb_depth_cntl);
