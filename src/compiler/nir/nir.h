@@ -2699,6 +2699,15 @@ typedef enum {
     * determine.  Most passes shouldn't preserve this metadata type.
     */
    nir_metadata_loop_analysis = 0x10,
+
+   /** All metadata
+    *
+    * This includes all nir_metadata flags except not_properly_reset.  Passes
+    * which do not change the shader in any way should call
+    *
+    *    nir_metadata_preserve(impl, nir_metadata_all);
+    */
+   nir_metadata_all = ~nir_metadata_not_properly_reset,
 } nir_metadata;
 
 typedef struct {
@@ -3285,6 +3294,8 @@ nir_function_impl *nir_cf_node_get_function(nir_cf_node *node);
 void nir_metadata_require(nir_function_impl *impl, nir_metadata required, ...);
 /** dirties all but the preserved metadata */
 void nir_metadata_preserve(nir_function_impl *impl, nir_metadata preserved);
+/** Preserves all metadata for the given shader */
+void nir_shader_preserve_all_metadata(nir_shader *shader);
 
 /** creates an instruction with default swizzle/writemask/etc. with NULL registers */
 nir_alu_instr *nir_alu_instr_create(nir_shader *shader, nir_op op);
@@ -4568,7 +4579,20 @@ bool nir_opt_load_store_vectorize(nir_shader *shader, nir_variable_mode modes,
                                   nir_should_vectorize_mem_func callback,
                                   nir_variable_mode robust_modes);
 
-void nir_schedule(nir_shader *shader, int threshold);
+typedef struct nir_schedule_options {
+   /* On some hardware with some stages the inputs and outputs to the shader
+    * share the same memory. In that case scheduler needs to ensure that all
+    * output writes are scheduled after all of the input writes to avoid
+    * overwriting them. This is a bitmask of stages that need that.
+    */
+   unsigned stages_with_shared_io_memory;
+   /* The approximate amount of register pressure at which point the scheduler
+    * will try to reduce register usage.
+    */
+   int threshold;
+} nir_schedule_options;
+
+void nir_schedule(nir_shader *shader, const nir_schedule_options *options);
 
 void nir_strip(nir_shader *shader);
 

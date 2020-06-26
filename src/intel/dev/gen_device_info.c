@@ -62,6 +62,7 @@ static const struct {
    { "jsl", 0x4E71 },
    { "tgl", 0x9a49 },
    { "rkl", 0x4c8a },
+   { "dg1", 0x4905 },
 };
 
 /**
@@ -1050,6 +1051,17 @@ static const struct gen_device_info gen_device_info_rkl_gt1 = {
    GEN12_GT_FEATURES(1),
 };
 
+#define GEN12_DG1_FEATURES                      \
+   GEN12_GT_FEATURES(2),                        \
+   .is_dg1 = true,                              \
+   .has_llc = false,                            \
+   .urb.size = 768,                             \
+   .simulator_id = 30
+
+UNUSED static const struct gen_device_info gen_device_info_dg1 = {
+   GEN12_DG1_FEATURES,
+};
+
 static void
 gen_device_info_set_eu_mask(struct gen_device_info *devinfo,
                             unsigned slice,
@@ -1408,6 +1420,33 @@ gen_get_aperture_size(int fd, uint64_t *size)
    return ret;
 }
 
+static bool
+gen_has_get_tiling(int fd)
+{
+   int ret;
+
+   struct drm_i915_gem_create gem_create = {
+      .size = 4096,
+   };
+
+   if (gen_ioctl(fd, DRM_IOCTL_I915_GEM_CREATE, &gem_create)) {
+      unreachable("Failed to create GEM BO");
+      return false;
+   }
+
+   struct drm_i915_gem_get_tiling get_tiling = {
+      .handle = gem_create.handle,
+   };
+   ret = gen_ioctl(fd, DRM_IOCTL_I915_GEM_SET_TILING, &get_tiling);
+
+   struct drm_gem_close close = {
+      .handle = gem_create.handle,
+   };
+   gen_ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close);
+
+   return ret == 0;
+}
+
 bool
 gen_get_device_info_from_fd(int fd, struct gen_device_info *devinfo)
 {
@@ -1476,6 +1515,7 @@ gen_get_device_info_from_fd(int fd, struct gen_device_info *devinfo)
    }
 
    gen_get_aperture_size(fd, &devinfo->aperture_bytes);
+   devinfo->has_tiling_uapi = gen_has_get_tiling(fd);
 
    return true;
 }

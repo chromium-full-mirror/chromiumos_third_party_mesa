@@ -48,12 +48,12 @@ tu_image_create(VkDevice _device,
    struct tu_image *image = NULL;
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
 
-   tu_assert(pCreateInfo->mipLevels > 0);
-   tu_assert(pCreateInfo->arrayLayers > 0);
-   tu_assert(pCreateInfo->samples > 0);
-   tu_assert(pCreateInfo->extent.width > 0);
-   tu_assert(pCreateInfo->extent.height > 0);
-   tu_assert(pCreateInfo->extent.depth > 0);
+   assert(pCreateInfo->mipLevels > 0);
+   assert(pCreateInfo->arrayLayers > 0);
+   assert(pCreateInfo->samples > 0);
+   assert(pCreateInfo->extent.width > 0);
+   assert(pCreateInfo->extent.height > 0);
+   assert(pCreateInfo->extent.depth > 0);
 
    image = vk_zalloc2(&device->alloc, alloc, sizeof(*image), 8,
                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -187,20 +187,6 @@ invalid_layout:
    return vk_error(device->instance, VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT);
 }
 
-enum a6xx_tex_fetchsize
-tu6_fetchsize(VkFormat format)
-{
-   switch (vk_format_get_blocksize(format)) {
-   case 1: return TFETCH6_1_BYTE;
-   case 2: return TFETCH6_2_BYTE;
-   case 4: return TFETCH6_4_BYTE;
-   case 8: return TFETCH6_8_BYTE;
-   case 16: return TFETCH6_16_BYTE;
-   default:
-      unreachable("bad block size");
-   }
-}
-
 static void
 compose_swizzle(unsigned char *swiz, const VkComponentMapping *mapping)
 {
@@ -268,25 +254,6 @@ tu6_texswiz(const VkComponentMapping *comps,
           A6XX_TEX_CONST_0_SWIZ_Y(swiz[1]) |
           A6XX_TEX_CONST_0_SWIZ_Z(swiz[2]) |
           A6XX_TEX_CONST_0_SWIZ_W(swiz[3]);
-}
-
-static enum a6xx_tex_type
-tu6_tex_type(VkImageViewType type, bool storage)
-{
-   switch (type) {
-   default:
-   case VK_IMAGE_VIEW_TYPE_1D:
-   case VK_IMAGE_VIEW_TYPE_1D_ARRAY:
-      return A6XX_TEX_1D;
-   case VK_IMAGE_VIEW_TYPE_2D:
-   case VK_IMAGE_VIEW_TYPE_2D_ARRAY:
-      return A6XX_TEX_2D;
-   case VK_IMAGE_VIEW_TYPE_3D:
-      return A6XX_TEX_3D;
-   case VK_IMAGE_VIEW_TYPE_CUBE:
-   case VK_IMAGE_VIEW_TYPE_CUBE_ARRAY:
-      return storage ? A6XX_TEX_2D : A6XX_TEX_CUBE;
-   }
 }
 
 void
@@ -398,7 +365,7 @@ tu_image_view_init(struct tu_image_view *iview,
       A6XX_TEX_CONST_0_MIPLVLS(tu_get_levelCount(image, range) - 1);
    iview->descriptor[1] = A6XX_TEX_CONST_1_WIDTH(width) | A6XX_TEX_CONST_1_HEIGHT(height);
    iview->descriptor[2] =
-      A6XX_TEX_CONST_2_FETCHSIZE(tu6_fetchsize(format)) |
+      A6XX_TEX_CONST_2_PITCHALIGN(layout->pitchalign) |
       A6XX_TEX_CONST_2_PITCH(pitch) |
       A6XX_TEX_CONST_2_TYPE(tu6_tex_type(pCreateInfo->viewType, false));
    iview->descriptor[3] = A6XX_TEX_CONST_3_ARRAY_PITCH(layer_size);
@@ -515,20 +482,6 @@ tu_image_view_init(struct tu_image_view *iview,
       .color_format = cfmt.fmt,
       .color_swap = cfmt.swap,
       .flags = ubwc_enabled).value;
-}
-
-unsigned
-tu_image_queue_family_mask(const struct tu_image *image,
-                           uint32_t family,
-                           uint32_t queue_family)
-{
-   if (!image->exclusive)
-      return image->queue_family_mask;
-   if (family == VK_QUEUE_FAMILY_EXTERNAL)
-      return (1u << TU_MAX_QUEUE_FAMILIES) - 1u;
-   if (family == VK_QUEUE_FAMILY_IGNORED)
-      return 1u << queue_family;
-   return 1u << family;
 }
 
 VkResult

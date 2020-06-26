@@ -671,7 +671,7 @@ static void load_bitmasks_2x64(struct si_shader_context *ctx, LLVMValueRef lds_p
  * and return the per-wave thread count.
  *
  * \param new_num_threads    Total thread count on the input, per-wave thread count on the output.
- * \param tg_info	     tg_info SGPR value
+ * \param tg_info            tg_info SGPR value
  * \param tg_info_num_bits   the bit size of thread count field in tg_info
  * \param tg_info_shift      the bit offset of the thread count field in tg_info
  * \param wave_info          merged_wave_info SGPR value
@@ -1884,7 +1884,7 @@ static void clamp_gsprims_to_esverts(unsigned *max_gsprims, unsigned max_esverts
  * This happens before the shader is uploaded, since LDS relocations during
  * upload depend on the subgroup size.
  */
-void gfx10_ngg_calculate_subgroup_info(struct si_shader *shader)
+bool gfx10_ngg_calculate_subgroup_info(struct si_shader *shader)
 {
    const struct si_shader_selector *gs_sel = shader->selector;
    const struct si_shader_selector *es_sel =
@@ -1934,9 +1934,11 @@ void gfx10_ngg_calculate_subgroup_info(struct si_shader *shader)
    max_esverts_base = MIN2(max_esverts_base, 251 + max_verts_per_prim - 1);
 
    if (gs_type == PIPE_SHADER_GEOMETRY) {
+      bool force_multi_cycling = false;
       unsigned max_out_verts_per_gsprim = gs_sel->gs_max_out_vertices * gs_num_invocations;
 
-      if (max_out_verts_per_gsprim <= 256) {
+retry_select_mode:
+      if (max_out_verts_per_gsprim <= 256 && !force_multi_cycling) {
          if (max_out_verts_per_gsprim) {
             max_gsprims_base = MIN2(max_gsprims_base, 256 / max_out_verts_per_gsprim);
          }
@@ -1951,6 +1953,13 @@ void gfx10_ngg_calculate_subgroup_info(struct si_shader *shader)
 
       esvert_lds_size = es_sel->esgs_itemsize / 4;
       gsprim_lds_size = (gs_sel->gsvs_vertex_size / 4 + 1) * max_out_verts_per_gsprim;
+
+      if (gsprim_lds_size > target_lds_size && !force_multi_cycling) {
+         if (gs_sel->tess_turns_off_ngg || es_sel->type != PIPE_SHADER_TESS_EVAL) {
+            force_multi_cycling = true;
+            goto retry_select_mode;
+         }
+      }
    } else {
       /* VS and TES. */
       /* LDS size for passing data from ES to GS. */
@@ -2047,4 +2056,9 @@ void gfx10_ngg_calculate_subgroup_info(struct si_shader *shader)
    shader->ngg.ngg_emit_size = max_gsprims * gsprim_lds_size;
 
    assert(shader->ngg.hw_max_esverts >= 24); /* HW limitation */
+
+   /* If asserts are disabled, we use the same conditions to return false */
+   return max_esverts >= max_verts_per_prim && max_gsprims >= 1 &&
+          max_out_vertices <= 256 &&
+          shader->ngg.hw_max_esverts >= 24;
 }

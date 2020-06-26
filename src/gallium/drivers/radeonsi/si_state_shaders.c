@@ -479,8 +479,6 @@ static void si_shader_ls(struct si_screen *sscreen, struct si_shader *shader)
       return;
 
    va = shader->bo->gpu_address;
-   si_pm4_add_bo(pm4, shader->bo, RADEON_USAGE_READ, RADEON_PRIO_SHADER_BINARY);
-
    si_pm4_set_reg(pm4, R_00B520_SPI_SHADER_PGM_LO_LS, va >> 8);
    si_pm4_set_reg(pm4, R_00B524_SPI_SHADER_PGM_HI_LS, S_00B524_MEM_BASE(va >> 40));
 
@@ -503,7 +501,6 @@ static void si_shader_hs(struct si_screen *sscreen, struct si_shader *shader)
       return;
 
    va = shader->bo->gpu_address;
-   si_pm4_add_bo(pm4, shader->bo, RADEON_USAGE_READ, RADEON_PRIO_SHADER_BINARY);
 
    if (sscreen->info.chip_class >= GFX9) {
       if (sscreen->info.chip_class >= GFX10) {
@@ -589,7 +586,6 @@ static void si_shader_es(struct si_screen *sscreen, struct si_shader *shader)
 
    pm4->atom.emit = si_emit_shader_es;
    va = shader->bo->gpu_address;
-   si_pm4_add_bo(pm4, shader->bo, RADEON_USAGE_READ, RADEON_PRIO_SHADER_BINARY);
 
    if (shader->selector->type == PIPE_SHADER_VERTEX) {
       vgpr_comp_cnt = si_get_vs_vgpr_comp_cnt(sscreen, shader, false);
@@ -818,7 +814,6 @@ static void si_shader_gs(struct si_screen *sscreen, struct si_shader *shader)
       S_028B90_CNT(MIN2(gs_num_invocations, 127)) | S_028B90_ENABLE(gs_num_invocations > 0);
 
    va = shader->bo->gpu_address;
-   si_pm4_add_bo(pm4, shader->bo, RADEON_USAGE_READ, RADEON_PRIO_SHADER_BINARY);
 
    if (sscreen->info.chip_class >= GFX9) {
       unsigned input_prim = sel->info.properties[TGSI_PROPERTY_GS_INPUT_PRIM];
@@ -1088,7 +1083,6 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
    }
 
    va = shader->bo->gpu_address;
-   si_pm4_add_bo(pm4, shader->bo, RADEON_USAGE_READ, RADEON_PRIO_SHADER_BINARY);
 
    if (es_type == PIPE_SHADER_VERTEX) {
       es_vgpr_comp_cnt = si_get_vs_vgpr_comp_cnt(sscreen, shader, false);
@@ -1217,7 +1211,9 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
     * this.
     */
    shader->ctx_reg.ngg.pa_cl_ngg_cntl =
-      S_028838_INDEX_BUF_EDGE_FLAG_ENA(gs_type == PIPE_SHADER_VERTEX);
+      S_028838_INDEX_BUF_EDGE_FLAG_ENA(gs_type == PIPE_SHADER_VERTEX) |
+      /* Reuse for NGG. */
+      S_028838_VERTEX_REUSE_DEPTH_GFX103(sscreen->info.chip_class >= GFX10_3 ? 30 : 0);
    shader->pa_cl_vs_out_cntl = si_get_vs_out_cntl(gs_sel, true);
 
    /* Oversubscribe PC. This improves performance when there are too many varyings. */
@@ -1312,11 +1308,12 @@ static void si_emit_shader_vs(struct si_context *sctx)
                                  shader->vgt_vertex_reuse_block_cntl);
 
    /* Required programming for tessellation. (legacy pipeline only) */
-   if (sctx->chip_class == GFX10 && shader->selector->type == PIPE_SHADER_TESS_EVAL) {
-      radeon_opt_set_context_reg(sctx, R_028A44_VGT_GS_ONCHIP_CNTL, SI_TRACKED_VGT_GS_ONCHIP_CNTL,
+   if (sctx->chip_class >= GFX10 && shader->selector->type == PIPE_SHADER_TESS_EVAL) {
+      radeon_opt_set_context_reg(sctx, R_028A44_VGT_GS_ONCHIP_CNTL,
+                                 SI_TRACKED_VGT_GS_ONCHIP_CNTL,
                                  S_028A44_ES_VERTS_PER_SUBGRP(250) |
-                                    S_028A44_GS_PRIMS_PER_SUBGRP(126) |
-                                    S_028A44_GS_INST_PRIMS_IN_SUBGRP(126));
+                                 S_028A44_GS_PRIMS_PER_SUBGRP(126) |
+                                 S_028A44_GS_INST_PRIMS_IN_SUBGRP(126));
    }
 
    if (sctx->chip_class >= GFX10) {
@@ -1385,7 +1382,6 @@ static void si_shader_vs(struct si_screen *sscreen, struct si_shader *shader,
    }
 
    va = shader->bo->gpu_address;
-   si_pm4_add_bo(pm4, shader->bo, RADEON_USAGE_READ, RADEON_PRIO_SHADER_BINARY);
 
    if (gs) {
       vgpr_comp_cnt = 0; /* only VertexID is needed for GS-COPY. */
@@ -1484,15 +1480,19 @@ static unsigned si_get_ps_num_interp(struct si_shader *ps)
 
 static unsigned si_get_spi_shader_col_format(struct si_shader *shader)
 {
-   unsigned value = shader->key.part.ps.epilog.spi_shader_col_format;
-   unsigned i, num_targets = (util_last_bit(value) + 3) / 4;
+   unsigned spi_shader_col_format = shader->key.part.ps.epilog.spi_shader_col_format;
+   unsigned value = 0, num_mrts = 0;
+   unsigned i, num_targets = (util_last_bit(spi_shader_col_format) + 3) / 4;
 
-   /* If the i-th target format is set, all previous target formats must
-    * be non-zero to avoid hangs.
-    */
-   for (i = 0; i < num_targets; i++)
-      if (!(value & (0xf << (i * 4))))
-         value |= V_028714_SPI_SHADER_32_R << (i * 4);
+   /* Remove holes in spi_shader_col_format. */
+   for (i = 0; i < num_targets; i++) {
+      unsigned spi_format = (spi_shader_col_format >> (i * 4)) & 0xf;
+
+      if (spi_format) {
+         value |= spi_format << (num_mrts * 4);
+         num_mrts++;
+      }
+   }
 
    return value;
 }
@@ -1596,7 +1596,7 @@ static void si_shader_ps(struct si_screen *sscreen, struct si_shader *shader)
       spi_baryc_cntl |= S_0286E0_POS_FLOAT_ULC(1);
 
    spi_shader_col_format = si_get_spi_shader_col_format(shader);
-   cb_shader_mask = ac_get_cb_shader_mask(spi_shader_col_format);
+   cb_shader_mask = ac_get_cb_shader_mask(shader->key.part.ps.epilog.spi_shader_col_format);
 
    /* Ensure that some export memory is always allocated, for two reasons:
     *
@@ -1634,7 +1634,6 @@ static void si_shader_ps(struct si_screen *sscreen, struct si_shader *shader)
    shader->ctx_reg.ps.cb_shader_mask = cb_shader_mask;
 
    va = shader->bo->gpu_address;
-   si_pm4_add_bo(pm4, shader->bo, RADEON_USAGE_READ, RADEON_PRIO_SHADER_BINARY);
    si_pm4_set_reg(pm4, R_00B020_SPI_SHADER_PGM_LO_PS, va >> 8);
    si_pm4_set_reg(pm4, R_00B024_SPI_SHADER_PGM_HI_PS, S_00B024_MEM_BASE(va >> 40));
 
@@ -2651,7 +2650,7 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
          u_vertices_per_prim(sel->info.properties[TGSI_PROPERTY_GS_INPUT_PRIM]);
 
       /* EN_MAX_VERT_OUT_PER_GS_INSTANCE does not work with tesselation. */
-      sel->tess_turns_off_ngg = sscreen->info.chip_class == GFX10 &&
+      sel->tess_turns_off_ngg = sscreen->info.chip_class >= GFX10 &&
                                 sel->gs_num_invocations * sel->gs_max_out_vertices > 256;
       break;
 
@@ -2748,7 +2747,8 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
    }
 
    sel->ngg_culling_allowed =
-      sscreen->info.chip_class == GFX10 && sscreen->info.has_dedicated_vram &&
+      sscreen->info.chip_class >= GFX10 &&
+      sscreen->info.has_dedicated_vram &&
       sscreen->use_ngg_culling &&
       /* Disallow TES by default, because TessMark results are mixed. */
       (sel->type == PIPE_SHADER_VERTEX ||
@@ -3287,21 +3287,19 @@ static void si_emit_spi_map(struct si_context *sctx)
 /**
  * Writing CONFIG or UCONFIG VGT registers requires VGT_FLUSH before that.
  */
-static void si_init_config_add_vgt_flush(struct si_context *sctx)
+static void si_cs_preamble_add_vgt_flush(struct si_context *sctx)
 {
-   if (sctx->init_config_has_vgt_flush)
+   if (sctx->cs_preamble_has_vgt_flush)
       return;
 
    /* Done by Vulkan before VGT_FLUSH. */
-   si_pm4_cmd_begin(sctx->init_config, PKT3_EVENT_WRITE);
-   si_pm4_cmd_add(sctx->init_config, EVENT_TYPE(V_028A90_VS_PARTIAL_FLUSH) | EVENT_INDEX(4));
-   si_pm4_cmd_end(sctx->init_config, false);
+   si_pm4_cmd_add(sctx->cs_preamble_state, PKT3(PKT3_EVENT_WRITE, 0, 0));
+   si_pm4_cmd_add(sctx->cs_preamble_state, EVENT_TYPE(V_028A90_VS_PARTIAL_FLUSH) | EVENT_INDEX(4));
 
    /* VGT_FLUSH is required even if VGT is idle. It resets VGT pointers. */
-   si_pm4_cmd_begin(sctx->init_config, PKT3_EVENT_WRITE);
-   si_pm4_cmd_add(sctx->init_config, EVENT_TYPE(V_028A90_VGT_FLUSH) | EVENT_INDEX(0));
-   si_pm4_cmd_end(sctx->init_config, false);
-   sctx->init_config_has_vgt_flush = true;
+   si_pm4_cmd_add(sctx->cs_preamble_state, PKT3(PKT3_EVENT_WRITE, 0, 0));
+   si_pm4_cmd_add(sctx->cs_preamble_state, EVENT_TYPE(V_028A90_VGT_FLUSH) | EVENT_INDEX(0));
+   sctx->cs_preamble_has_vgt_flush = true;
 }
 
 /* Initialize state related to ESGS / GSVS ring buffers */
@@ -3370,7 +3368,7 @@ static bool si_update_gs_ring_buffers(struct si_context *sctx)
          return false;
    }
 
-   /* Create the "init_config_gs_rings" state. */
+   /* Create the "cs_preamble_gs_rings" state. */
    pm4 = CALLOC_STRUCT(si_pm4_state);
    if (!pm4)
       return false;
@@ -3390,15 +3388,15 @@ static bool si_update_gs_ring_buffers(struct si_context *sctx)
    }
 
    /* Set the state. */
-   if (sctx->init_config_gs_rings)
-      si_pm4_free_state(sctx, sctx->init_config_gs_rings, ~0);
-   sctx->init_config_gs_rings = pm4;
+   if (sctx->cs_preamble_gs_rings)
+      si_pm4_free_state(sctx, sctx->cs_preamble_gs_rings, ~0);
+   sctx->cs_preamble_gs_rings = pm4;
 
-   if (!sctx->init_config_has_vgt_flush) {
-      si_init_config_add_vgt_flush(sctx);
+   if (!sctx->cs_preamble_has_vgt_flush) {
+      si_cs_preamble_add_vgt_flush(sctx);
    }
 
-   /* Flush the context to re-emit both init_config states. */
+   /* Flush the context to re-emit both cs_preamble states. */
    sctx->initial_gfx_cs_size = 0; /* force flush */
    si_flush_gfx_cs(sctx, RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
 
@@ -3630,36 +3628,33 @@ static void si_init_tess_factor_ring(struct si_context *sctx)
    if (!sctx->tess_rings)
       return;
 
-   si_init_config_add_vgt_flush(sctx);
-
-   si_pm4_add_bo(sctx->init_config, si_resource(sctx->tess_rings), RADEON_USAGE_READWRITE,
-                 RADEON_PRIO_SHADER_RINGS);
+   si_cs_preamble_add_vgt_flush(sctx);
 
    uint64_t factor_va =
       si_resource(sctx->tess_rings)->gpu_address + sctx->screen->tess_offchip_ring_size;
 
    /* Append these registers to the init config state. */
    if (sctx->chip_class >= GFX7) {
-      si_pm4_set_reg(sctx->init_config, R_030938_VGT_TF_RING_SIZE,
+      si_pm4_set_reg(sctx->cs_preamble_state, R_030938_VGT_TF_RING_SIZE,
                      S_030938_SIZE(sctx->screen->tess_factor_ring_size / 4));
-      si_pm4_set_reg(sctx->init_config, R_030940_VGT_TF_MEMORY_BASE, factor_va >> 8);
+      si_pm4_set_reg(sctx->cs_preamble_state, R_030940_VGT_TF_MEMORY_BASE, factor_va >> 8);
       if (sctx->chip_class >= GFX10)
-         si_pm4_set_reg(sctx->init_config, R_030984_VGT_TF_MEMORY_BASE_HI_UMD,
+         si_pm4_set_reg(sctx->cs_preamble_state, R_030984_VGT_TF_MEMORY_BASE_HI_UMD,
                         S_030984_BASE_HI(factor_va >> 40));
       else if (sctx->chip_class == GFX9)
-         si_pm4_set_reg(sctx->init_config, R_030944_VGT_TF_MEMORY_BASE_HI,
+         si_pm4_set_reg(sctx->cs_preamble_state, R_030944_VGT_TF_MEMORY_BASE_HI,
                         S_030944_BASE_HI(factor_va >> 40));
-      si_pm4_set_reg(sctx->init_config, R_03093C_VGT_HS_OFFCHIP_PARAM,
+      si_pm4_set_reg(sctx->cs_preamble_state, R_03093C_VGT_HS_OFFCHIP_PARAM,
                      sctx->screen->vgt_hs_offchip_param);
    } else {
-      si_pm4_set_reg(sctx->init_config, R_008988_VGT_TF_RING_SIZE,
+      si_pm4_set_reg(sctx->cs_preamble_state, R_008988_VGT_TF_RING_SIZE,
                      S_008988_SIZE(sctx->screen->tess_factor_ring_size / 4));
-      si_pm4_set_reg(sctx->init_config, R_0089B8_VGT_TF_MEMORY_BASE, factor_va >> 8);
-      si_pm4_set_reg(sctx->init_config, R_0089B0_VGT_HS_OFFCHIP_PARAM,
+      si_pm4_set_reg(sctx->cs_preamble_state, R_0089B8_VGT_TF_MEMORY_BASE, factor_va >> 8);
+      si_pm4_set_reg(sctx->cs_preamble_state, R_0089B0_VGT_HS_OFFCHIP_PARAM,
                      sctx->screen->vgt_hs_offchip_param);
    }
 
-   /* Flush the context to re-emit the init_config state.
+   /* Flush the context to re-emit the cs_preamble state.
     * This is done only once in a lifetime of a context.
     */
    sctx->initial_gfx_cs_size = 0; /* force flush */

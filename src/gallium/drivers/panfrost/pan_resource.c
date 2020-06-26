@@ -280,7 +280,8 @@ panfrost_setup_slices(struct panfrost_resource *pres, size_t *bo_size)
          * makes code a lot simpler */
 
         bool renderable = res->bind &
-                          (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL);
+                          (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL) &&
+                          res->target != PIPE_BUFFER;
         bool afbc = pres->layout == MALI_TEXTURE_AFBC;
         bool tiled = pres->layout == MALI_TEXTURE_TILED;
         bool should_align = renderable || tiled;
@@ -426,6 +427,7 @@ panfrost_resource_create_bo(struct panfrost_device *dev, struct panfrost_resourc
         /* Set the layout appropriately */
         assert(!(must_tile && !can_tile)); /* must_tile => can_tile */
         pres->layout = ((can_tile && should_tile) || must_tile) ? MALI_TEXTURE_TILED : MALI_TEXTURE_LINEAR;
+        pres->layout_constant = must_tile || !can_tile;
 
         size_t bo_size;
 
@@ -507,6 +509,8 @@ static struct pipe_resource *
 panfrost_resource_create(struct pipe_screen *screen,
                          const struct pipe_resource *template)
 {
+        struct panfrost_device *dev = pan_device(screen);
+
         /* Make sure we're familiar */
         switch (template->target) {
         case PIPE_BUFFER:
@@ -522,13 +526,11 @@ panfrost_resource_create(struct pipe_screen *screen,
                 assert(0);
         }
 
-        if (template->bind &
-            (PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT | PIPE_BIND_SHARED))
+        if (dev->ro && (template->bind &
+            (PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)))
                 return panfrost_create_scanout_res(screen, template);
 
         struct panfrost_resource *so = rzalloc(screen, struct panfrost_resource);
-        struct panfrost_device *dev = pan_device(screen);
-
         so->base = *template;
         so->base.screen = screen;
         so->internal_format = template->format;
@@ -595,7 +597,30 @@ panfrost_transfer_map(struct pipe_context *pctx,
         if (pan_debug & (PAN_DBG_TRACE | PAN_DBG_SYNC))
                 pandecode_inject_mmap(bo->gpu, bo->cpu, bo->size, NULL);
 
-        if (usage & PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE) {
+        bool create_new_bo = usage & PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE;
+        bool copy_resource = false;
+
+        if (!create_new_bo &&
+            !(usage & PIPE_TRANSFER_UNSYNCHRONIZED) &&
+            (usage & PIPE_TRANSFER_WRITE) &&
+            !(resource->target == PIPE_BUFFER
+              && !util_ranges_intersect(&rsrc->valid_buffer_range, box->x, box->x + box->width)) &&
+            panfrost_pending_batches_access_bo(ctx, bo)) {
+
+                /* When a resource to be modified is already being used by a
+                 * pending batch, it is often faster to copy the whole BO than
+                 * to flush and split the frame in two. This also mostly
+                 * mitigates broken depth reload.
+                 */
+
+                panfrost_flush_batches_accessing_bo(ctx, bo, PAN_BO_ACCESS_WRITE);
+                panfrost_bo_wait(bo, INT64_MAX, PAN_BO_ACCESS_WRITE);
+
+                create_new_bo = true;
+                copy_resource = true;
+        }
+
+        if (create_new_bo) {
                 /* If the BO is used by one of the pending batches or if it's
                  * not ready yet (still accessed by one of the already flushed
                  * batches), we try to allocate a new one to avoid waiting.
@@ -617,6 +642,9 @@ panfrost_transfer_map(struct pipe_context *pctx,
                                                            flags);
 
                         if (newbo) {
+                                if (copy_resource)
+                                        memcpy(newbo->cpu, rsrc->bo->cpu, bo->size);
+
                                 panfrost_bo_unreference(bo);
                                 rsrc->bo = newbo;
                                 bo = newbo;
@@ -724,14 +752,48 @@ panfrost_transfer_unmap(struct pipe_context *pctx,
                         } else if (prsrc->layout == MALI_TEXTURE_TILED) {
                                 assert(transfer->box.depth == 1);
 
-                                panfrost_store_tiled_image(
-                                        bo->cpu + prsrc->slices[transfer->level].offset,
-                                        trans->map,
-                                        transfer->box.x, transfer->box.y,
-                                        transfer->box.width, transfer->box.height,
-                                        prsrc->slices[transfer->level].stride,
-                                        transfer->stride,
-                                        prsrc->internal_format);
+                                /* Do we overwrite the entire resource? If so,
+                                 * we don't need an intermediate blit so it's a
+                                 * good time to switch the layout. */
+
+                                bool discards_content = prsrc->base.last_level == 0
+                                    && transfer->box.width == prsrc->base.width0
+                                    && transfer->box.height == prsrc->base.height0
+                                    && transfer->box.x == 0
+                                    && transfer->box.y == 0
+                                    && !prsrc->layout_constant;
+
+                                /* It also serves as a good heuristic for
+                                 * streaming textures (e.g. in video players),
+                                 * but we could do better */
+
+                                if (discards_content)
+                                        ++prsrc->layout_updates;
+
+                                if (prsrc->layout_updates >= LAYOUT_CONVERT_THRESHOLD)
+                                {
+                                        prsrc->layout = MALI_TEXTURE_LINEAR;
+
+                                        util_copy_rect(
+                                                bo->cpu + prsrc->slices[0].offset,
+                                                prsrc->base.format,
+                                                prsrc->slices[0].stride,
+                                                0, 0,
+                                                transfer->box.width,
+                                                transfer->box.height,
+                                                trans->map,
+                                                transfer->stride,
+                                                0, 0);
+                                } else {
+                                        panfrost_store_tiled_image(
+                                                bo->cpu + prsrc->slices[transfer->level].offset,
+                                                trans->map,
+                                                transfer->box.x, transfer->box.y,
+                                                transfer->box.width, transfer->box.height,
+                                                prsrc->slices[transfer->level].stride,
+                                                transfer->stride,
+                                                prsrc->internal_format);
+                                }
                         }
                 }
         }

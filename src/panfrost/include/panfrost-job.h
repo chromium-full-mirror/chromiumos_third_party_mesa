@@ -104,6 +104,9 @@ enum mali_func {
 
 #define MALI_DEPTH_WRITEMASK    (1 << 11)
 
+#define MALI_DEPTH_CLIP_NEAR    (1 << 12)
+#define MALI_DEPTH_CLIP_FAR     (1 << 13)
+
 /* Next flags to unknown2_4 */
 #define MALI_STENCIL_TEST      	(1 << 0)
 
@@ -251,11 +254,13 @@ struct mali_channel_swizzle {
  * for Bifrost framebuffer output.
  */
 #define MALI_FORMAT_SPECIAL2 (7 << 5)
+#define MALI_EXTRACT_TYPE(fmt) ((fmt) & 0xe0)
 
 /* If the high 3 bits are 3 to 6 these two bits say how many components
  * there are.
  */
 #define MALI_NR_CHANNELS(n) ((n - 1) << 3)
+#define MALI_EXTRACT_CHANNELS(fmt) ((((fmt) >> 3) & 3) + 1)
 
 /* If the high 3 bits are 3 to 6, then the low 3 bits say how big each
  * component is, except the special MALI_CHANNEL_FLOAT which overrides what the
@@ -274,6 +279,7 @@ struct mali_channel_swizzle {
  * MALI_FORMAT_UNORM, it means a 32-bit float.
  */
 #define MALI_CHANNEL_FLOAT 7
+#define MALI_EXTRACT_BITS(fmt) (fmt & 0x7)
 
 enum mali_format {
 	MALI_ETC2_RGB8       = MALI_FORMAT_COMPRESSED | 0x1,

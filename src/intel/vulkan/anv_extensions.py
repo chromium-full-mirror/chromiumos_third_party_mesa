@@ -32,7 +32,7 @@ sys.path.append(VULKAN_UTIL)
 
 from vk_extensions import *
 
-API_PATCH_VERSION = 131
+API_PATCH_VERSION = 145
 
 # Supported API versions.  Each one is the maximum patch version for the given
 # version.  Version come in increasing order and each version is available if
@@ -87,7 +87,10 @@ EXTENSIONS = [
     Extension('VK_KHR_maintenance2',                      1, True),
     Extension('VK_KHR_maintenance3',                      1, True),
     Extension('VK_KHR_multiview',                         1, True),
-    Extension('VK_KHR_performance_query',                 1, 'device->use_softpin && device->perf && device->perf->i915_perf_version >= 3'),
+    Extension('VK_KHR_performance_query',                 1,
+              'device->use_softpin && device->perf && ' +
+              'device->perf->i915_perf_version >= 3 && ' +
+              'device->use_call_secondary'),
     Extension('VK_KHR_pipeline_executable_properties',    1, True),
     Extension('VK_KHR_push_descriptor',                   1, True),
     Extension('VK_KHR_relaxed_block_layout',              1, True),
@@ -139,6 +142,7 @@ EXTENSIONS = [
     Extension('VK_EXT_line_rasterization',                1, True),
     Extension('VK_EXT_memory_budget',                     1, 'device->has_mem_available'),
     Extension('VK_EXT_pci_bus_info',                      2, True),
+    Extension('VK_EXT_pipeline_creation_cache_control',   3, True),
     Extension('VK_EXT_pipeline_creation_feedback',        1, True),
     Extension('VK_EXT_post_depth_coverage',               1, 'device->info.gen >= 9'),
     Extension('VK_EXT_private_data',                      1, True),

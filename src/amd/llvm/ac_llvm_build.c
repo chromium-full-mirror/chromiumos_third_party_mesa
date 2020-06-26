@@ -705,6 +705,11 @@ ac_build_fdiv(struct ac_llvm_context *ctx,
 	unsigned type_size = ac_get_type_size(LLVMTypeOf(den));
 	const char *name;
 
+	/* For doubles, we need precise division to pass GLCTS. */
+	if (ctx->float_mode == AC_FLOAT_MODE_DEFAULT_OPENGL &&
+	    type_size == 8)
+		return LLVMBuildFDiv(ctx->builder, num, den, "");
+
 	if (type_size == 2)
 		name = "llvm.amdgcn.rcp.f16";
 	else if (type_size == 4)
@@ -1315,7 +1320,8 @@ ac_build_buffer_load_common(struct ac_llvm_context *ctx,
 	char name[256], type_name[8];
 
 	/* D16 is only supported on gfx8+ */
-	assert((channel_type != ctx->f16 && channel_type != ctx->i16) ||
+	assert(!use_format ||
+	       (channel_type != ctx->f16 && channel_type != ctx->i16) ||
 	       ctx->chip_class >= GFX8);
 
 	LLVMTypeRef type = func > 1 ? LLVMVectorType(channel_type, func) : channel_type;
@@ -1650,7 +1656,7 @@ ac_build_opencoded_load_format(struct ac_llvm_context *ctx,
 	}
 
 	int log_recombine = 0;
-	if (ctx->chip_class == GFX6 && !known_aligned) {
+	if ((ctx->chip_class == GFX6 || ctx->chip_class == GFX10) && !known_aligned) {
 		/* Avoid alignment restrictions by loading one byte at a time. */
 		load_num_channels <<= load_log_size;
 		log_recombine = load_log_size;

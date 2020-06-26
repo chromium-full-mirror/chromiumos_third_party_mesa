@@ -1349,8 +1349,8 @@ nir_src_is_dynamically_uniform(nir_src src)
    /* As are uniform variables */
    if (src.ssa->parent_instr->type == nir_instr_type_intrinsic) {
       nir_intrinsic_instr *intr = nir_instr_as_intrinsic(src.ssa->parent_instr);
-
-      if (intr->intrinsic == nir_intrinsic_load_uniform)
+      if (intr->intrinsic == nir_intrinsic_load_uniform &&
+          nir_src_is_dynamically_uniform(intr->src[0]))
          return true;
    }
 
@@ -1975,9 +1975,7 @@ nir_function_impl_lower_instructions(nir_function_impl *impl,
    if (progress) {
       nir_metadata_preserve(impl, preserved);
    } else {
-#ifndef NDEBUG
-      impl->valid_metadata &= ~nir_metadata_not_properly_reset;
-#endif
+      nir_metadata_preserve(impl, nir_metadata_all);
    }
 
    return progress;
@@ -2260,6 +2258,8 @@ nir_rewrite_image_intrinsic(nir_intrinsic_instr *intrin, nir_ssa_def *src,
    CASE(atomic_exchange)
    CASE(atomic_comp_swap)
    CASE(atomic_fadd)
+   CASE(atomic_inc_wrap)
+   CASE(atomic_dec_wrap)
    CASE(size)
    CASE(samples)
    CASE(load_raw_intel)

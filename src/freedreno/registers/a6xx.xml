@@ -158,15 +158,13 @@ xsi:schemaLocation="http://nouveau.freedesktop.org/ rules-ng.xsd">
 
 </enum>
 
-<enum name="a6xx_tex_fetchsize">
-	<value name="TFETCH6_1_BYTE"  value="0"/>
-	<value name="TFETCH6_2_BYTE"  value="1"/>
-	<value name="TFETCH6_4_BYTE"  value="2"/>
-	<value name="TFETCH6_8_BYTE"  value="3"/>
-	<value name="TFETCH6_16_BYTE" value="4"/>
+<!-- probably same as a5xx -->
+<enum name="a6xx_polygon_mode">
+	<value name="POLYMODE6_POINTS" value="1"/>
+	<value name="POLYMODE6_LINES" value="2"/>
+	<value name="POLYMODE6_TRIANGLES" value="3"/>
 </enum>
 
-<!-- probably same as a5xx -->
 <enum name="a6xx_depth_format">
 	<value name="DEPTH6_NONE" value="0"/>
 	<value name="DEPTH6_16" value="1"/>
@@ -1830,17 +1828,19 @@ to upconvert to 32b float internally?
 
 	Compared to a5xx and earlier, we just program the address of the first
 	stream and hw adds (pipe_num * VSC_*_STRM_PITCH)
+
+	LIMIT is set to PITCH - 64, to make room for a bit of overflow
 	 -->
 	<reg32 offset="0x0c30" name="VSC_PRIM_STRM_ADDRESS_LO"/>
 	<reg32 offset="0x0c31" name="VSC_PRIM_STRM_ADDRESS_HI"/>
 	<reg64 offset="0x0c30" name="VSC_PRIM_STRM_ADDRESS" type="waddress"/>
 	<reg32 offset="0x0c32" name="VSC_PRIM_STRM_PITCH"/>
-	<reg32 offset="0x0c33" name="VSC_PRIM_STRM_ARRAY_PITCH" shr="4" type="uint"/>
+	<reg32 offset="0x0c33" name="VSC_PRIM_STRM_LIMIT"/>
 	<reg32 offset="0x0c34" name="VSC_DRAW_STRM_ADDRESS_LO"/>
 	<reg32 offset="0x0c35" name="VSC_DRAW_STRM_ADDRESS_HI"/>
 	<reg64 offset="0x0c34" name="VSC_DRAW_STRM_ADDRESS" type="waddress"/>
 	<reg32 offset="0x0c36" name="VSC_DRAW_STRM_PITCH"/>
-	<reg32 offset="0x0c37" name="VSC_DRAW_STRM_ARRAY_PITCH" shr="4" type="uint"/>
+	<reg32 offset="0x0c37" name="VSC_DRAW_STRM_LIMIT"/>
 
 	<array offset="0x0c38" name="VSC_STATE" stride="1" length="32">
 		<doc>
@@ -2306,8 +2306,12 @@ to upconvert to 32b float internally?
 		<bitfield name="Z_WRITE_ENABLE" pos="1" type="boolean"/>
 		<bitfield name="ZFUNC" low="2" high="4" type="adreno_compare_func"/>
 		<bitfield name="Z_CLAMP_ENABLE" pos="5" type="boolean"/>
-		<doc>Z_TEST_ENABLE bit is set for zfunc other than GL_ALWAYS or GL_NEVER</doc>
+		<doc>
+		Z_TEST_ENABLE bit is set for zfunc other than GL_ALWAYS or GL_NEVER
+		also set when Z_BOUNDS_ENABLE is set
+		</doc>
 		<bitfield name="Z_TEST_ENABLE" pos="6" type="boolean"/>
+		<bitfield name="Z_BOUNDS_ENABLE" pos="7" type="boolean"/>
 	</reg32>
 	<!-- duplicates GRAS_SU_DEPTH_BUFFER_INFO: -->
 	<reg32 offset="0x8872" name="RB_DEPTH_BUFFER_INFO">
@@ -2325,10 +2329,8 @@ to upconvert to 32b float internally?
 	<reg64 offset="0x8875" name="RB_DEPTH_BUFFER_BASE" type="waddress"/>
 	<reg32 offset="0x8877" name="RB_DEPTH_BUFFER_BASE_GMEM"/>
 
-	<!-- always 0x0 ? -->
-	<reg32 offset="0x8878" name="RB_UNKNOWN_8878"/>
-	<!-- always 0x0 ? -->
-	<reg32 offset="0x8879" name="RB_UNKNOWN_8879"/>
+	<reg32 offset="0x8878" name="RB_Z_BOUNDS_MIN" type="float"/>
+	<reg32 offset="0x8879" name="RB_Z_BOUNDS_MAX" type="float"/>
 
 	<reg32 offset="0x8880" name="RB_STENCIL_CONTROL">
 		<bitfield name="STENCIL_ENABLE" pos="0" type="boolean"/>
@@ -2534,7 +2536,9 @@ to upconvert to 32b float internally?
 
 	<reg32 offset="0x9106" name="VPC_UNKNOWN_9106"/>
 	<reg32 offset="0x9107" name="VPC_UNKNOWN_9107"/>
-	<reg32 offset="0x9108" name="VPC_UNKNOWN_9108"/>
+	<reg32 offset="0x9108" name="VPC_POLYGON_MODE">
+		<bitfield name="MODE" low="0" high="1" type="a6xx_polygon_mode"/>
+	</reg32>
 
 	<array offset="0x9200" name="VPC_VARYING_INTERP" stride="1" length="8">
 		<reg32 offset="0x0" name="MODE"/>
@@ -2694,7 +2698,10 @@ to upconvert to 32b float internally?
 	</reg32>
 
 	<reg32 offset="0x9980" name="PC_UNKNOWN_9980"/>
-	<reg32 offset="0x9981" name="PC_UNKNOWN_9981"/>
+
+	<reg32 offset="0x9981" name="PC_POLYGON_MODE">
+		<bitfield name="MODE" low="0" high="1" type="a6xx_polygon_mode"/>
+	</reg32>
 
 	<reg32 offset="0x9990" name="PC_UNKNOWN_9990"/>
 
@@ -2702,6 +2709,7 @@ to upconvert to 32b float internally?
 		<bitfield name="PRIMITIVE_RESTART" pos="0" type="boolean"/>
 		<!-- maybe?  b1 seems always set, so just assume it is for now: -->
 		<bitfield name="PROVOKING_VTX_LAST" pos="1" type="boolean"/>
+		<bitfield name="TESS_UPPER_LEFT_DOMAIN_ORIGIN" pos="2" type="boolean"/>
 	</reg32>
 	<reg32 offset="0x9b01" name="PC_PRIMITIVE_CNTL_1">
 		<doc>
@@ -3489,7 +3497,8 @@ to upconvert to 32b float internally?
 		behavior of texture in dEQP-GLES31.functional.texture.texture_buffer.render.as_fragment_texture.buffer_size_131071
 		 -->
 		<bitfield name="UNK4" pos="4" type="boolean"/>
-		<bitfield name="FETCHSIZE" low="0" high="3" type="a6xx_tex_fetchsize"/>
+                <!-- minimum pitch (for mipmap levels): log2(pitchalign / 64) -->
+		<bitfield name="PITCHALIGN" low="0" high="3" type="uint"/>
 		<doc>Pitch in bytes (so actually stride)</doc>
 		<bitfield name="PITCH" low="7" high="28" type="uint"/>
 		<bitfield name="TYPE" low="29" high="30" type="a6xx_tex_type"/>

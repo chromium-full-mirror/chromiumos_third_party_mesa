@@ -2130,18 +2130,18 @@ vtn_emit_scoped_control_barrier(struct vtn_builder *b, SpvScope exec_scope,
                                 SpvScope mem_scope,
                                 SpvMemorySemanticsMask semantics)
 {
-   nir_memory_semantics nir_semantics;
-   nir_variable_mode modes;
-
-   nir_semantics = vtn_mem_semantics_to_nir_mem_semantics(b, semantics);
-   modes = vtn_mem_sematics_to_nir_var_modes(b, semantics);
-
-   /* No barrier to add. */
-   if (nir_semantics == 0 || modes == 0)
-      return;
-
+   nir_memory_semantics nir_semantics =
+      vtn_mem_semantics_to_nir_mem_semantics(b, semantics);
+   nir_variable_mode modes = vtn_mem_sematics_to_nir_var_modes(b, semantics);
    nir_scope nir_exec_scope = vtn_scope_to_nir_scope(b, exec_scope);
-   nir_scope nir_mem_scope = vtn_scope_to_nir_scope(b, mem_scope);
+
+   /* Memory semantics is optional for OpControlBarrier. */
+   nir_scope nir_mem_scope;
+   if (nir_semantics == 0 || modes == 0)
+      nir_mem_scope = NIR_SCOPE_NONE;
+   else
+      nir_mem_scope = vtn_scope_to_nir_scope(b, mem_scope);
+
    nir_scoped_barrier(&b->nb, nir_exec_scope, nir_mem_scope, nir_semantics, modes);
 }
 
@@ -2259,10 +2259,23 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
       struct vtn_value *val =
          vtn_push_value(b, w[2], vtn_value_type_sampled_image);
       val->sampled_image = ralloc(b, struct vtn_sampled_image);
-      val->sampled_image->image =
-         vtn_value(b, w[3], vtn_value_type_pointer)->pointer;
-      val->sampled_image->sampler =
-         vtn_value(b, w[4], vtn_value_type_pointer)->pointer;
+
+      /* It seems valid to use OpSampledImage with OpUndef instead of
+       * OpTypeImage or OpTypeSampler.
+       */
+      if (vtn_untyped_value(b, w[3])->value_type == vtn_value_type_undef) {
+         val->sampled_image->image = NULL;
+      } else {
+         val->sampled_image->image =
+            vtn_value(b, w[3], vtn_value_type_pointer)->pointer;
+      }
+
+      if (vtn_untyped_value(b, w[4])->value_type == vtn_value_type_undef) {
+         val->sampled_image->sampler = NULL;
+      } else {
+         val->sampled_image->sampler =
+            vtn_value(b, w[4], vtn_value_type_pointer)->pointer;
+      }
       return;
    } else if (opcode == SpvOpImage) {
       struct vtn_value *src_val = vtn_untyped_value(b, w[3]);
@@ -2285,6 +2298,11 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
    } else {
       vtn_assert(sampled_val->value_type == vtn_value_type_pointer);
       image = sampled_val->pointer;
+   }
+
+   if (!image) {
+      vtn_push_value(b, w[2], vtn_value_type_undef);
+      return;
    }
 
    nir_deref_instr *image_deref = vtn_pointer_to_deref(b, image);
@@ -2944,17 +2962,16 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
       struct vtn_type *type = vtn_value(b, w[1], vtn_value_type_type)->type;
 
       unsigned dest_components = glsl_get_vector_elements(type->type);
-      intrin->num_components = nir_intrinsic_infos[op].dest_components;
-      if (intrin->num_components == 0)
+      if (nir_intrinsic_infos[op].dest_components == 0)
          intrin->num_components = dest_components;
 
       nir_ssa_dest_init(&intrin->instr, &intrin->dest,
-                        intrin->num_components, 32, NULL);
+                        nir_intrinsic_dest_components(intrin), 32, NULL);
 
       nir_builder_instr_insert(&b->nb, &intrin->instr);
 
       nir_ssa_def *result = &intrin->dest.ssa;
-      if (intrin->num_components != dest_components)
+      if (nir_intrinsic_dest_components(intrin) != dest_components)
          result = nir_channels(&b->nb, result, (1 << dest_components) - 1);
 
       struct vtn_value *val =
@@ -3099,7 +3116,6 @@ vtn_handle_atomics(struct vtn_builder *b, SpvOp opcode,
    /* uniform as "atomic counter uniform" */
    if (ptr->mode == vtn_variable_mode_uniform) {
       nir_deref_instr *deref = vtn_pointer_to_deref(b, ptr);
-      const struct glsl_type *deref_type = deref->type;
       nir_intrinsic_op op = get_uniform_nir_atomic_op(b, opcode);
       atomic = nir_intrinsic_instr_create(b->nb.shader, op);
       atomic->src[0] = nir_src_for_ssa(&deref->dest.ssa);
@@ -3111,14 +3127,6 @@ vtn_handle_atomics(struct vtn_builder *b, SpvOp opcode,
 
       switch (opcode) {
       case SpvOpAtomicLoad:
-         atomic->num_components = glsl_get_vector_elements(deref_type);
-         break;
-
-      case SpvOpAtomicStore:
-         atomic->num_components = glsl_get_vector_elements(deref_type);
-         nir_intrinsic_set_write_mask(atomic, (1 << atomic->num_components) - 1);
-         break;
-
       case SpvOpAtomicExchange:
       case SpvOpAtomicCompareExchange:
       case SpvOpAtomicCompareExchangeWeak:
@@ -4163,6 +4171,7 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
          break;
       }
 
+      b->mem_model = w[2];
       switch (w[2]) {
       case SpvMemoryModelSimple:
       case SpvMemoryModelGLSL450:

@@ -139,6 +139,7 @@ struct radv_nir_compiler_options {
 	bool check_ir;
 	bool has_ls_vgpr_init_bug;
 	bool use_ngg_streamout;
+	bool enable_mrt_output_nan_fixup;
 	enum radeon_family family;
 	enum chip_class chip_class;
 	uint32_t tess_offchip_block_dw_size;
@@ -309,9 +310,11 @@ struct radv_shader_info {
 		uint32_t explicit_shaded_mask;
 		uint32_t float16_shaded_mask;
 		uint32_t num_interp;
+		uint32_t cb_shader_mask;
 		bool can_discard;
 		bool early_fragment_test;
 		bool post_depth_coverage;
+		uint8_t depth_layout;
 	} ps;
 	struct {
 		bool uses_grid_size;
@@ -434,10 +437,6 @@ radv_shader_compile_to_nir(struct radv_device *device,
 			   const VkPipelineCreateFlags flags,
 			   const struct radv_pipeline_layout *layout,
 			   unsigned subgroup_size, unsigned ballot_bit_size);
-
-void *
-radv_alloc_shader_memory(struct radv_device *device,
-			  struct radv_shader_variant *shader);
 
 void
 radv_destroy_shader_slabs(struct radv_device *device);

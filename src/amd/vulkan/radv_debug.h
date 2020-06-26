@@ -26,7 +26,7 @@
 
 #include "radv_private.h"
 
-/* Please keep docs/envvars.html up-to-date when you add/remove options. */
+/* Please keep docs/envvars.rst up-to-date when you add/remove options. */
 enum {
 	RADV_DEBUG_NO_FAST_CLEARS    =   0x1,
 	RADV_DEBUG_NO_DCC            =   0x2,
@@ -50,13 +50,12 @@ enum {
 	RADV_DEBUG_CHECKIR           = 0x80000,
 	RADV_DEBUG_NOTHREADLLVM      = 0x100000,
 	RADV_DEBUG_NOBINNING         = 0x200000,
-	RADV_DEBUG_NO_LOAD_STORE_OPT = 0x400000,
-	RADV_DEBUG_NO_NGG            = 0x800000,
-	RADV_DEBUG_NO_SHADER_BALLOT  = 0x1000000,
-	RADV_DEBUG_ALL_ENTRYPOINTS   = 0x2000000,
-	RADV_DEBUG_DUMP_META_SHADERS = 0x4000000,
-	RADV_DEBUG_NO_MEMORY_CACHE   = 0x8000000,
-	RADV_DEBUG_DISCARD_TO_DEMOTE = 0x10000000,
+	RADV_DEBUG_NO_NGG            = 0x400000,
+	RADV_DEBUG_ALL_ENTRYPOINTS   = 0x800000,
+	RADV_DEBUG_DUMP_META_SHADERS = 0x1000000,
+	RADV_DEBUG_NO_MEMORY_CACHE   = 0x2000000,
+	RADV_DEBUG_DISCARD_TO_DEMOTE = 0x4000000,
+	RADV_DEBUG_LLVM              = 0x8000000,
 };
 
 enum {
@@ -69,7 +68,6 @@ enum {
 	RADV_PERFTEST_PS_WAVE_32      =   0x40,
 	RADV_PERFTEST_GE_WAVE_32      =   0x80,
 	RADV_PERFTEST_DFSM            =  0x100,
-	RADV_PERFTEST_ACO             =  0x200,
 };
 
 bool

@@ -41,6 +41,37 @@ struct lower_context {
    std::vector<aco_ptr<Instruction>> instructions;
 };
 
+/* used by handle_operands() indirectly through Builder::copy */
+uint8_t int8_mul_table[512] = {
+    0, 20, 1, 1, 1, 2, 1, 3, 1, 4, 1, 5, 1, 6, 1, 7, 1, 8, 1, 9, 1, 10, 1, 11,
+    1, 12, 1, 13, 1, 14, 1, 15, 1, 16, 1, 17, 1, 18, 1, 19, 1, 20, 1, 21,
+    1, 22, 1, 23, 1, 24, 1, 25, 1, 26, 1, 27, 1, 28, 1, 29, 1, 30, 1, 31,
+    1, 32, 1, 33, 1, 34, 1, 35, 1, 36, 1, 37, 1, 38, 1, 39, 1, 40, 1, 41,
+    1, 42, 1, 43, 1, 44, 1, 45, 1, 46, 1, 47, 1, 48, 1, 49, 1, 50, 1, 51,
+    1, 52, 1, 53, 1, 54, 1, 55, 1, 56, 1, 57, 1, 58, 1, 59, 1, 60, 1, 61,
+    1, 62, 1, 63, 1, 64, 5, 13, 2, 33, 17, 19, 2, 34, 3, 23, 2, 35, 11, 53,
+    2, 36, 7, 47, 2, 37, 3, 25, 2, 38, 7, 11, 2, 39, 53, 243, 2, 40, 3, 27,
+    2, 41, 17, 35, 2, 42, 5, 17, 2, 43, 3, 29, 2, 44, 15, 23, 2, 45, 7, 13,
+    2, 46, 3, 31, 2, 47, 5, 19, 2, 48, 19, 59, 2, 49, 3, 33, 2, 50, 7, 51,
+    2, 51, 15, 41, 2, 52, 3, 35, 2, 53, 11, 33, 2, 54, 23, 27, 2, 55, 3, 37,
+    2, 56, 9, 41, 2, 57, 5, 23, 2, 58, 3, 39, 2, 59, 7, 17, 2, 60, 9, 241,
+    2, 61, 3, 41, 2, 62, 5, 25, 2, 63, 35, 245, 2, 64, 3, 43, 5, 26, 9, 43,
+    3, 44, 7, 19, 10, 39, 3, 45, 4, 34, 11, 59, 3, 46, 9, 243, 4, 35, 3, 47,
+    22, 53, 7, 57, 3, 48, 5, 29, 10, 245, 3, 49, 4, 37, 9, 45, 3, 50, 7, 241,
+    4, 38, 3, 51, 7, 22, 5, 31, 3, 52, 7, 59, 7, 242, 3, 53, 4, 40, 7, 23,
+    3, 54, 15, 45, 4, 41, 3, 55, 6, 241, 9, 47, 3, 56, 13, 13, 5, 34, 3, 57,
+    4, 43, 11, 39, 3, 58, 5, 35, 4, 44, 3, 59, 6, 243, 7, 245, 3, 60, 5, 241,
+    7, 26, 3, 61, 4, 46, 5, 37, 3, 62, 11, 17, 4, 47, 3, 63, 5, 38, 5, 243,
+    3, 64, 7, 247, 9, 50, 5, 39, 4, 241, 33, 37, 6, 33, 13, 35, 4, 242, 5, 245,
+    6, 247, 7, 29, 4, 51, 5, 41, 5, 246, 7, 249, 3, 240, 11, 19, 5, 42, 3, 241,
+    4, 245, 25, 29, 3, 242, 5, 43, 4, 246, 3, 243, 17, 58, 17, 43, 3, 244,
+    5, 249, 6, 37, 3, 245, 2, 240, 5, 45, 2, 241, 21, 23, 2, 242, 3, 247,
+    2, 243, 5, 251, 2, 244, 29, 61, 2, 245, 3, 249, 2, 246, 17, 29, 2, 247,
+    9, 55, 1, 240, 1, 241, 1, 242, 1, 243, 1, 244, 1, 245, 1, 246, 1, 247,
+    1, 248, 1, 249, 1, 250, 1, 251, 1, 252, 1, 253, 1, 254, 1, 255
+};
+
+
 aco_opcode get_reduce_opcode(chip_class chip, ReduceOp op) {
    /* Because some 16-bit instructions are already VOP3 on GFX10, we use the
     * 32-bit opcodes (VOP2) which allows to remove the tempory VGPR and to use
@@ -999,11 +1030,15 @@ void split_copy(unsigned offset, Definition *def, Operand *op, const copy_operat
                       RegClass(src.def.regClass().type(), bytes).as_subdword();
    *def = Definition(src.def.tempId(), def_reg, def_cls);
    if (src.op.isConstant()) {
-      assert(offset == 0 || (offset == 4 && src.op.bytes() == 8));
-      if (src.op.bytes() == 8 && bytes == 4)
+      assert(bytes >= 1 && bytes <= 8);
+      if (bytes == 8)
+         *op = Operand(src.op.constantValue64() >> (offset * 8u));
+      else if (bytes == 4)
          *op = Operand(uint32_t(src.op.constantValue64() >> (offset * 8u)));
-      else
-         *op  = src.op;
+      else if (bytes == 2)
+         *op = Operand(uint16_t(src.op.constantValue64() >> (offset * 8u)));
+      else if (bytes == 1)
+         *op = Operand(uint8_t(src.op.constantValue64() >> (offset * 8u)));
    } else {
       RegClass op_cls = bytes % 4 == 0 ? RegClass(src.op.regClass().type(), bytes / 4u) :
                         RegClass(src.op.regClass().type(), bytes).as_subdword();
@@ -1024,7 +1059,7 @@ uint32_t get_intersection_mask(int a_start, int a_size,
    return u_bit_consecutive(intersection_start, intersection_end - intersection_start) & mask;
 }
 
-bool do_copy(lower_context* ctx, Builder& bld, const copy_operation& copy, bool *preserve_scc)
+bool do_copy(lower_context* ctx, Builder& bld, const copy_operation& copy, bool *preserve_scc, PhysReg scratch_sgpr)
 {
    bool did_copy = false;
    for (unsigned offset = 0; offset < copy.bytes;) {
@@ -1042,11 +1077,41 @@ bool do_copy(lower_context* ctx, Builder& bld, const copy_operation& copy, bool 
          *preserve_scc = true;
       } else if (def.bytes() == 8 && def.getTemp().type() == RegType::sgpr) {
          bld.sop1(aco_opcode::s_mov_b64, def, Operand(op.physReg(), s2));
+      } else if (def.regClass().is_subdword() && ctx->program->chip_class < GFX8) {
+         if (op.physReg().byte()) {
+            assert(def.physReg().byte() == 0);
+            bld.vop2(aco_opcode::v_lshrrev_b32, def, Operand(op.physReg().byte() * 8), op);
+         } else if (def.physReg().byte() == 2) {
+            assert(op.physReg().byte() == 0);
+            /* preserve the target's lower half */
+            def = Definition(def.physReg().advance(-2), v1);
+            bld.vop2(aco_opcode::v_and_b32, Definition(op.physReg(), v1), Operand(0xFFFFu), op);
+            if (def.physReg().reg() != op.physReg().reg())
+               bld.vop2(aco_opcode::v_and_b32, def, Operand(0xFFFFu), Operand(def.physReg(), v2b));
+            bld.vop2(aco_opcode::v_cvt_pk_u16_u32, def, Operand(def.physReg(), v2b), op);
+         } else if (def.physReg().byte()) {
+            unsigned bits = def.physReg().byte() * 8;
+            assert(op.physReg().byte() == 0);
+            def = Definition(def.physReg().advance(-def.physReg().byte()), v1);
+            bld.vop2(aco_opcode::v_and_b32, def, Operand((1 << bits) - 1u), Operand(def.physReg(), op.regClass()));
+            if (def.physReg().reg() == op.physReg().reg()) {
+               if (bits < 24) {
+                  bld.vop2(aco_opcode::v_mul_u32_u24, def, Operand((1 << bits) + 1u), op);
+               } else {
+                  bld.sop1(aco_opcode::s_mov_b32, Definition(scratch_sgpr, s1), Operand((1 << bits) + 1u));
+                  bld.vop3(aco_opcode::v_mul_lo_u32, def, Operand(scratch_sgpr, s1), op);
+               }
+            } else {
+               bld.vop2(aco_opcode::v_lshlrev_b32, Definition(op.physReg(), def.regClass()), Operand(bits), op);
+               bld.vop2(aco_opcode::v_or_b32, def, Operand(def.physReg(), op.regClass()), op);
+               bld.vop2(aco_opcode::v_lshrrev_b32, Definition(op.physReg(), def.regClass()), Operand(bits), op);
+            }
+         } else {
+            bld.vop1(aco_opcode::v_mov_b32, def, op);
+         }
       } else {
          bld.copy(def, op);
       }
-
-      ctx->program->statistics[statistic_copies]++;
 
       did_copy = true;
       offset += def.bytes();
@@ -1094,12 +1159,11 @@ void do_swap(lower_context *ctx, Builder& bld, const copy_operation& copy, bool 
       Definition op_as_def = Definition(op.physReg(), op.regClass());
       if (ctx->program->chip_class >= GFX9 && def.regClass() == v1) {
          bld.vop1(aco_opcode::v_swap_b32, def, op_as_def, op, def_as_op);
-         ctx->program->statistics[statistic_copies]++;
       } else if (def.regClass() == v1) {
+         assert(def.physReg().byte() == 0 && op.physReg().byte() == 0);
          bld.vop2(aco_opcode::v_xor_b32, op_as_def, op, def_as_op);
          bld.vop2(aco_opcode::v_xor_b32, def, op, def_as_op);
          bld.vop2(aco_opcode::v_xor_b32, op_as_def, op, def_as_op);
-         ctx->program->statistics[statistic_copies] += 3;
       } else if (op.physReg() == scc || def.physReg() == scc) {
          /* we need to swap scc and another sgpr */
          assert(!preserve_scc);
@@ -1109,7 +1173,6 @@ void do_swap(lower_context *ctx, Builder& bld, const copy_operation& copy, bool 
          bld.sop1(aco_opcode::s_mov_b32, Definition(pi->scratch_sgpr, s1), Operand(scc, s1));
          bld.sopc(aco_opcode::s_cmp_lg_i32, Definition(scc, s1), Operand(other, s1), Operand(0u));
          bld.sop1(aco_opcode::s_mov_b32, Definition(other, s1), Operand(pi->scratch_sgpr, s1));
-         ctx->program->statistics[statistic_copies] += 3;
       } else if (def.regClass() == s1) {
          if (preserve_scc) {
             bld.sop1(aco_opcode::s_mov_b32, Definition(pi->scratch_sgpr, s1), op);
@@ -1120,7 +1183,6 @@ void do_swap(lower_context *ctx, Builder& bld, const copy_operation& copy, bool 
             bld.sop2(aco_opcode::s_xor_b32, def, Definition(scc, s1), op, def_as_op);
             bld.sop2(aco_opcode::s_xor_b32, op_as_def, Definition(scc, s1), op, def_as_op);
          }
-         ctx->program->statistics[statistic_copies] += 3;
       } else if (def.regClass() == s2) {
          if (preserve_scc)
             bld.sop1(aco_opcode::s_mov_b32, Definition(pi->scratch_sgpr, s1), Operand(scc, s1));
@@ -1129,7 +1191,6 @@ void do_swap(lower_context *ctx, Builder& bld, const copy_operation& copy, bool 
          bld.sop2(aco_opcode::s_xor_b64, op_as_def, Definition(scc, s1), op, def_as_op);
          if (preserve_scc)
             bld.sopc(aco_opcode::s_cmp_lg_i32, Definition(scc, s1), Operand(pi->scratch_sgpr, s1), Operand(0u));
-         ctx->program->statistics[statistic_copies] += 3;
       } else if (ctx->program->chip_class >= GFX9 && def.bytes() == 2 && def.physReg().reg() == op.physReg().reg()) {
          aco_ptr<VOP3P_instruction> vop3p{create_instruction<VOP3P_instruction>(aco_opcode::v_pk_add_u16, Format::VOP3P, 2, 1)};
          vop3p->operands[0] = Operand(PhysReg{op.physReg().reg()}, v1);
@@ -1143,22 +1204,45 @@ void do_swap(lower_context *ctx, Builder& bld, const copy_operation& copy, bool 
          bld.vop2_sdwa(aco_opcode::v_xor_b32, op_as_def, op, def_as_op);
          bld.vop2_sdwa(aco_opcode::v_xor_b32, def, op, def_as_op);
          bld.vop2_sdwa(aco_opcode::v_xor_b32, op_as_def, op, def_as_op);
-         ctx->program->statistics[statistic_copies] += 3;
       }
 
       offset += def.bytes();
    }
 
+   if (ctx->program->chip_class <= GFX7)
+      return;
+
    /* fixup in case we swapped bytes we shouldn't have */
    copy_operation tmp_copy = copy;
    tmp_copy.op.setFixed(copy.def.physReg());
    tmp_copy.def.setFixed(copy.op.physReg());
-   do_copy(ctx, bld, tmp_copy, &preserve_scc);
+   do_copy(ctx, bld, tmp_copy, &preserve_scc, pi->scratch_sgpr);
+}
+
+void do_pack_2x16(lower_context *ctx, Builder& bld, Definition def, Operand lo, Operand hi)
+{
+   if (ctx->program->chip_class >= GFX9) {
+      Instruction* instr = bld.vop3(aco_opcode::v_pack_b32_f16, def, lo, hi);
+      /* opsel: 0 = select low half, 1 = select high half. [0] = src0, [1] = src1 */
+      static_cast<VOP3A_instruction*>(instr)->opsel = hi.physReg().byte() | (lo.physReg().byte() >> 1);
+   } else if (ctx->program->chip_class >= GFX8) {
+      // TODO: optimize with v_mov_b32 / v_lshlrev_b32
+      PhysReg reg = def.physReg();
+      bld.copy(Definition(reg, v2b), lo);
+      reg.reg_b += 2;
+      bld.copy(Definition(reg, v2b), hi);
+   } else {
+      assert(lo.physReg().byte() == 0 && hi.physReg().byte() == 0);
+      bld.vop2(aco_opcode::v_and_b32, Definition(lo.physReg(), v1), Operand(0xFFFFu), lo);
+      bld.vop2(aco_opcode::v_and_b32, Definition(hi.physReg(), v1), Operand(0xFFFFu), hi);
+      bld.vop2(aco_opcode::v_cvt_pk_u16_u32, def, lo, hi);
+   }
 }
 
 void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context* ctx, chip_class chip_class, Pseudo_instruction *pi)
 {
    Builder bld(ctx->program, &ctx->instructions);
+   unsigned num_instructions_before = ctx->instructions.size();
    aco_ptr<Instruction> mov;
    std::map<PhysReg, copy_operation>::iterator it = copy_map.begin();
    std::map<PhysReg, copy_operation>::iterator target;
@@ -1194,6 +1278,26 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
          it->second.bytes = 8;
       }
 
+      /* try to coalesce copies */
+      if (it->second.bytes < 8 && !it->second.op.isConstant() &&
+          it->first.reg_b % util_next_power_of_two(it->second.bytes + 1) == 0 &&
+          it->second.op.physReg().reg_b % util_next_power_of_two(it->second.bytes + 1) == 0) {
+         // TODO try more relaxed alignment for subdword copies
+         PhysReg other_def_reg = it->first;
+         other_def_reg.reg_b += it->second.bytes;
+         PhysReg other_op_reg = it->second.op.physReg();
+         other_op_reg.reg_b += it->second.bytes;
+         std::map<PhysReg, copy_operation>::iterator other = copy_map.find(other_def_reg);
+         if (other != copy_map.end() &&
+             other->second.op.physReg() == other_op_reg &&
+             it->second.bytes + other->second.bytes <= 8) {
+            it->second.bytes += other->second.bytes;
+            it->second.def = Definition(it->first, RegClass::get(it->second.def.regClass().type(), it->second.bytes));
+            it->second.op = Operand(it->second.op.physReg(), RegClass::get(it->second.op.regClass().type(), it->second.bytes));
+            copy_map.erase(other);
+         }
+      }
+
       /* check if the definition reg is used by another copy operation */
       for (std::pair<const PhysReg, copy_operation>& copy : copy_map) {
          if (copy.second.op.isConstant())
@@ -1211,32 +1315,100 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
 
    /* first, handle paths in the location transfer graph */
    bool preserve_scc = pi->tmp_in_scc && !writes_scc;
+   bool skip_partial_copies = true;
    it = copy_map.begin();
-   while (it != copy_map.end()) {
+   while (true) {
+      if (copy_map.empty()) {
+         ctx->program->statistics[statistic_copies] += ctx->instructions.size() - num_instructions_before;
+         return;
+      }
+      if (it == copy_map.end()) {
+         if (!skip_partial_copies || ctx->program->chip_class < GFX8)
+            break;
+         skip_partial_copies = false;
+         it = copy_map.begin();
+      }
 
-      /* try to coalesce 32-bit sgpr copies to 64-bit copies */
-      if (it->second.is_used == 0 &&
-          it->second.def.getTemp().type() == RegType::sgpr && it->second.bytes == 4 &&
-          !it->second.op.isConstant() && it->first % 2 == it->second.op.physReg() % 2) {
+      /* check if we can pack one register at once */
+      if (it->first.byte() == 0 && it->second.bytes == 2) {
+         PhysReg reg_hi = it->first.advance(2);
+         std::map<PhysReg, copy_operation>::iterator other = copy_map.find(reg_hi);
+         if (other != copy_map.end() && other->second.bytes == 2) {
+            /* check if the target register is otherwise unused */
+            // TODO: also do this for self-intersecting registers
+            bool unused_lo = !it->second.is_used;
+            bool unused_hi = !other->second.is_used;
+            if (unused_lo && unused_hi) {
+               Operand lo = it->second.op;
+               Operand hi = other->second.op;
+               do_pack_2x16(ctx, bld, Definition(it->first, v1), lo, hi);
+               copy_map.erase(it);
+               copy_map.erase(other);
 
-         PhysReg other_def_reg = PhysReg{it->first % 2 ? it->first - 1 : it->first + 1};
-         PhysReg other_op_reg = PhysReg{it->first % 2 ? it->second.op.physReg() - 1 : it->second.op.physReg() + 1};
-         std::map<PhysReg, copy_operation>::iterator other = copy_map.find(other_def_reg);
-
-         if (other != copy_map.end() && !other->second.is_used && other->second.bytes == 4 &&
-             other->second.op.physReg() == other_op_reg && !other->second.op.isConstant()) {
-            std::map<PhysReg, copy_operation>::iterator to_erase = it->first % 2 ? it : other;
-            it = it->first % 2 ? other : it;
-            copy_map.erase(to_erase);
-            it->second.bytes = 8;
+               for (std::pair<const PhysReg, copy_operation>& other : copy_map) {
+                  for (uint16_t i = 0; i < other.second.bytes; i++) {
+                     /* distance might underflow */
+                     unsigned distance_lo = other.first.reg_b + i - lo.physReg().reg_b;
+                     unsigned distance_hi = other.first.reg_b + i - hi.physReg().reg_b;
+                     if (distance_lo < 2 || distance_hi < 2)
+                        other.second.uses[i] -= 1;
+                  }
+               }
+               it = copy_map.begin();
+               continue;
+            }
          }
       }
-      // TODO: try to coalesce subdword copies
+
+      /* on GFX6/7, we need some small workarounds as there is no
+       * SDWA instruction to do partial register writes */
+      if (ctx->program->chip_class < GFX8 && it->second.bytes < 4) {
+         if (it->first.byte() == 0 && it->second.op.physReg().byte() == 0 &&
+             !it->second.is_used && pi->opcode == aco_opcode::p_split_vector) {
+            /* Other operations might overwrite the high bits, so change all users
+             * of the high bits to the new target where they are still available.
+             * This mechanism depends on also emitting dead definitions. */
+            PhysReg reg_hi = it->second.op.physReg().advance(it->second.bytes);
+            while (reg_hi != PhysReg(it->second.op.physReg().reg() + 1)) {
+               std::map<PhysReg, copy_operation>::iterator other = copy_map.begin();
+               for (other = copy_map.begin(); other != copy_map.end(); other++) {
+                  /* on GFX6/7, if the high bits are used as operand, they cannot be a target */
+                  if (other->second.op.physReg() == reg_hi) {
+                     other->second.op.setFixed(it->first.advance(reg_hi.byte()));
+                     break; /* break because an operand can only be used once */
+                  }
+               }
+               reg_hi = reg_hi.advance(it->second.bytes);
+            }
+         } else if (it->first.byte()) {
+            assert(pi->opcode == aco_opcode::p_create_vector);
+            /* on GFX6/7, if we target an upper half where the lower half hasn't yet been handled,
+             * move to the target operand's high bits. This is save to do as it cannot be an operand */
+            PhysReg lo = PhysReg(it->first.reg());
+            std::map<PhysReg, copy_operation>::iterator other = copy_map.find(lo);
+            if (other != copy_map.end()) {
+               assert(other->second.bytes == it->first.byte());
+               PhysReg new_reg_hi = other->second.op.physReg().advance(it->first.byte());
+               it->second.def = Definition(new_reg_hi, it->second.def.regClass());
+               it->second.is_used = 0;
+               other->second.bytes += it->second.bytes;
+               other->second.def.setTemp(Temp(other->second.def.tempId(), RegClass::get(RegType::vgpr, other->second.bytes)));
+               other->second.op.setTemp(Temp(other->second.op.tempId(), RegClass::get(RegType::vgpr, other->second.bytes)));
+               /* if the new target's high bits are also a target, change uses */
+               std::map<PhysReg, copy_operation>::iterator target = copy_map.find(new_reg_hi);
+               if (target != copy_map.end()) {
+                  for (unsigned i = 0; i < it->second.bytes; i++)
+                     target->second.uses[i]++;
+               }
+            }
+         }
+      }
 
       /* find portions where the target reg is not used as operand for any other copy */
       if (it->second.is_used) {
-         if (it->second.op.isConstant()) {
-            /* we have to skip constants until is_used=0 */
+         if (it->second.op.isConstant() || skip_partial_copies) {
+            /* we have to skip constants until is_used=0.
+             * we also skip partial copies at the beginning to help coalescing */
             ++it;
             continue;
          }
@@ -1273,8 +1445,8 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
          }
       }
 
-      bool did_copy = do_copy(ctx, bld, it->second, &preserve_scc);
-
+      bool did_copy = do_copy(ctx, bld, it->second, &preserve_scc, pi->scratch_sgpr);
+      skip_partial_copies = did_copy;
       std::pair<PhysReg, copy_operation> copy = *it;
 
       if (it->second.is_used == 0) {
@@ -1321,9 +1493,6 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
          }
       }
    }
-
-   if (copy_map.empty())
-      return;
 
    /* all target regs are needed as operand somewhere which means, all entries are part of a cycle */
    unsigned largest = 0;
@@ -1392,6 +1561,10 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
          swap.bytes = offset;
       }
 
+      /* GFX6-7 can only swap full registers */
+      if (ctx->program->chip_class <= GFX7)
+         swap.bytes = align(swap.bytes, 4);
+
       do_swap(ctx, bld, swap, preserve_scc, pi);
 
       /* remove from map */
@@ -1411,8 +1584,6 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
 
          if (!imask)
             continue;
-
-         assert(target->second.bytes < swap.bytes);
 
          int offset = (int)target->second.op.physReg().reg_b - (int)swap.def.physReg().reg_b;
 
@@ -1462,6 +1633,7 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
             break;
       }
    }
+   ctx->program->statistics[statistic_copies] += ctx->instructions.size() - num_instructions_before;
 }
 
 void lower_to_hw_instr(Program* program)
@@ -1488,7 +1660,9 @@ void lower_to_hw_instr(Program* program)
          assert(block->kind & block_kind_top_level);
          uint32_t mode = block->fp_mode.val;
          /* "((size - 1) << 11) | register" (MODE is encoded as register 1) */
-         bld.sopk(aco_opcode::s_setreg_imm32_b32, Operand(mode), (7 << 11) | 1);
+         Instruction *instr = bld.sopk(aco_opcode::s_setreg_imm32_b32, Operand(mode), (7 << 11) | 1).instr;
+         /* has to be a literal */
+         instr->operands[0].setFixed(PhysReg{255});
       }
 
       for (size_t j = 0; j < block->instructions.size(); j++) {
@@ -1660,7 +1834,7 @@ void lower_to_hw_instr(Program* program)
             {
                if (ctx.program->chip_class <= GFX7)
                   emit_gfx6_bpermute(program, instr, bld);
-               else if (ctx.program->chip_class == GFX10 && ctx.program->wave_size == 64)
+               else if (ctx.program->chip_class >= GFX10 && ctx.program->wave_size == 64)
                   emit_gfx10_wave64_bpermute(program, instr, bld);
                else
                   unreachable("Current hardware supports ds_bpermute, don't emit p_bpermute.");

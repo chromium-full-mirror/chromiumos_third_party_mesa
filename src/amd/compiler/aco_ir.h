@@ -307,7 +307,7 @@ struct PhysReg {
    constexpr bool operator==(PhysReg other) const { return reg_b == other.reg_b; }
    constexpr bool operator!=(PhysReg other) const { return reg_b != other.reg_b; }
    constexpr bool operator <(PhysReg other) const { return reg_b < other.reg_b; }
-   constexpr PhysReg advance(unsigned bytes) const { PhysReg res = *this; res.reg_b += bytes; return res; }
+   constexpr PhysReg advance(int bytes) const { PhysReg res = *this; res.reg_b += bytes; return res; }
 
    uint16_t reg_b = 0;
 };
@@ -337,7 +337,7 @@ class Operand final
 public:
    constexpr Operand()
       : reg_(PhysReg{128}), isTemp_(false), isFixed_(true), isConstant_(false),
-        isKill_(false), isUndef_(true), isFirstKill_(false), is64BitConst_(false),
+        isKill_(false), isUndef_(true), isFirstKill_(false), constSize(0),
         isLateKill_(false) {}
 
    explicit Operand(Temp r) noexcept
@@ -350,11 +350,51 @@ public:
          setFixed(PhysReg{128});
       }
    };
+   explicit Operand(uint8_t v) noexcept
+   {
+      /* 8-bit constants are only used for copies and copies from any 8-bit
+       * constant can be implemented with a SDWA v_mul_u32_u24. So consider all
+       * to be inline constants. */
+      data_.i = v;
+      isConstant_ = true;
+      constSize = 0;
+      setFixed(PhysReg{0u});
+   };
+   explicit Operand(uint16_t v) noexcept
+   {
+      data_.i = v;
+      isConstant_ = true;
+      constSize = 1;
+      if (v <= 64)
+         setFixed(PhysReg{128u + v});
+      else if (v >= 0xFFF0) /* [-16 .. -1] */
+         setFixed(PhysReg{192u + (0xFFFF - v)});
+      else if (v == 0x3800) /* 0.5 */
+         setFixed(PhysReg{240});
+      else if (v == 0xB800) /* -0.5 */
+         setFixed(PhysReg{241});
+      else if (v == 0x3C00) /* 1.0 */
+         setFixed(PhysReg{242});
+      else if (v == 0xBC00) /* -1.0 */
+         setFixed(PhysReg{243});
+      else if (v == 0x4000) /* 2.0 */
+         setFixed(PhysReg{244});
+      else if (v == 0xC000) /* -2.0 */
+         setFixed(PhysReg{245});
+      else if (v == 0x4400) /* 4.0 */
+         setFixed(PhysReg{246});
+      else if (v == 0xC400) /* -4.0 */
+         setFixed(PhysReg{247});
+      else if (v == 0x3118) /* 1/2 PI */
+         setFixed(PhysReg{248});
+      else /* Literal Constant */
+         setFixed(PhysReg{255});
+   };
    explicit Operand(uint32_t v, bool is64bit = false) noexcept
    {
       data_.i = v;
       isConstant_ = true;
-      is64BitConst_ = is64bit;
+      constSize = is64bit ? 3 : 2;
       if (v <= 64)
          setFixed(PhysReg{128 + v});
       else if (v >= 0xFFFFFFF0) /* [-16 .. -1] */
@@ -383,7 +423,7 @@ public:
    explicit Operand(uint64_t v) noexcept
    {
       isConstant_ = true;
-      is64BitConst_ = true;
+      constSize = 3;
       if (v <= 64) {
          data_.i = (uint32_t) v;
          setFixed(PhysReg{128 + (uint32_t) v});
@@ -465,7 +505,7 @@ public:
    constexpr unsigned bytes() const noexcept
    {
       if (isConstant())
-         return is64BitConst_ ? 8 : 4; //TODO: sub-dword constants
+         return 1 << constSize;
       else
          return data_.temp.bytes();
    }
@@ -473,7 +513,7 @@ public:
    constexpr unsigned size() const noexcept
    {
       if (isConstant())
-         return is64BitConst_ ? 2 : 1;
+         return constSize > 2 ? 2 : 1;
       else
          return data_.temp.size();
    }
@@ -521,7 +561,7 @@ public:
 
    constexpr uint64_t constantValue64(bool signext=false) const noexcept
    {
-      if (is64BitConst_) {
+      if (constSize == 3) {
          if (reg_ <= 192)
             return reg_ - 128;
          else if (reg_ <= 208)
@@ -545,8 +585,17 @@ public:
          case 247:
             return 0xC010000000000000;
          }
+      } else if (constSize == 1) {
+         return (signext && (data_.i & 0x8000u) ? 0xffffffffffff0000ull : 0ull) | data_.i;
+      } else if (constSize == 0) {
+         return (signext && (data_.i & 0x80u) ? 0xffffffffffffff00ull : 0ull) | data_.i;
       }
       return (signext && (data_.i & 0x80000000u) ? 0xffffffff00000000ull : 0ull) | data_.i;
+   }
+
+   constexpr bool isOfType(RegType type) const noexcept
+   {
+      return hasRegClass() && regClass().type() == type;
    }
 
    /* Indicates that the killed operand's live range intersects with the
@@ -630,11 +679,11 @@ private:
          uint8_t isKill_:1;
          uint8_t isUndef_:1;
          uint8_t isFirstKill_:1;
-         uint8_t is64BitConst_:1;
+         uint8_t constSize:2;
          uint8_t isLateKill_:1;
       };
       /* can't initialize bit-fields in c++11, so work around using a union */
-      uint8_t control_ = 0;
+      uint16_t control_ = 0;
    };
 };
 
@@ -647,7 +696,7 @@ private:
 class Definition final
 {
 public:
-   constexpr Definition() : temp(Temp(0, s1)), reg_(0), isFixed_(0), hasHint_(0), isKill_(0) {}
+   constexpr Definition() : temp(Temp(0, s1)), reg_(0), isFixed_(0), hasHint_(0), isKill_(0), isPrecise_(0) {}
    Definition(uint32_t index, RegClass type) noexcept
       : temp(index, type) {}
    explicit Definition(Temp tmp) noexcept
@@ -734,6 +783,16 @@ public:
       return isKill_;
    }
 
+   constexpr void setPrecise(bool precise) noexcept
+   {
+      isPrecise_ = precise;
+   }
+
+   constexpr bool isPrecise() const noexcept
+   {
+      return isPrecise_;
+   }
+
 private:
    Temp temp = Temp(0, s1);
    PhysReg reg_;
@@ -742,6 +801,7 @@ private:
          uint8_t isFixed_:1;
          uint8_t hasHint_:1;
          uint8_t isKill_:1;
+         uint8_t isPrecise_:1;
       };
       /* can't initialize bit-fields in c++11, so work around using a union */
       uint8_t control_ = 0;
@@ -1220,8 +1280,12 @@ static inline bool is_phi(aco_ptr<Instruction>& instr)
 }
 
 barrier_interaction get_barrier_interaction(const Instruction* instr);
-
 bool is_dead(const std::vector<uint16_t>& uses, Instruction *instr);
+
+bool can_use_opsel(chip_class chip, aco_opcode op, int idx, bool high);
+bool can_use_SDWA(chip_class chip, const aco_ptr<Instruction>& instr);
+/* updates "instr" and returns the old instruction (or NULL if no update was needed) */
+aco_ptr<Instruction> convert_to_SDWA(chip_class chip, aco_ptr<Instruction>& instr);
 
 enum block_kind {
    /* uniform indicates that leaving this block,
@@ -1430,6 +1494,8 @@ public:
    unsigned workgroup_size; /* if known; otherwise UINT_MAX */
 
    bool xnack_enabled = false;
+   bool sram_ecc_enabled = false;
+   bool has_fast_fma32 = false;
 
    bool needs_vcc = false;
    bool needs_flat_scr = false;
@@ -1556,6 +1622,9 @@ typedef struct {
    const std::bitset<static_cast<int>(aco_opcode::num_opcodes)> is_atomic;
    const char *name[static_cast<int>(aco_opcode::num_opcodes)];
    const aco::Format format[static_cast<int>(aco_opcode::num_opcodes)];
+   /* sizes used for input/output modifiers and constants */
+   const unsigned operand_size[static_cast<int>(aco_opcode::num_opcodes)];
+   const unsigned definition_size[static_cast<int>(aco_opcode::num_opcodes)];
 } Info;
 
 extern const Info instr_info;

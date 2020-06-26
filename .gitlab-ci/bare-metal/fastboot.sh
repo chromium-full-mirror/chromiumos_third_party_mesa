@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BM=$CI_PROJECT_DIR/.gitlab-ci/bare-metal
+BM=$CI_PROJECT_DIR/install/bare-metal
 
 if [ -z "$BM_SERIAL" -a -z "$BM_SERIAL_SCRIPT" ]; then
   echo "Must set BM_SERIAL OR BM_SERIAL_SCRIPT in your gitlab-runner config.toml [[runners]] environment"
@@ -47,13 +47,23 @@ fi
 
 set -ex
 
-# Create the rootfs in a temp dir
-mkdir rootfs
-. .gitlab-ci/bare-metal/rootfs-setup.sh rootfs
+# Clear out any previous run's artifacts.
+rm -rf results/
+mkdir -p results
+find artifacts/ -name serial\*.txt  | xargs rm -f
 
-# Finally, pack it up into a cpio rootfs.
+# Create the rootfs in a temp dir
+rsync -a --delete $BM_ROOTFS/ rootfs/
+. $BM/rootfs-setup.sh rootfs
+
+# Finally, pack it up into a cpio rootfs.  Skip the vulkan CTS since none of
+# these devices use it and it would take up space in the initrd.
 pushd rootfs
-  find -H | cpio -H newc -o | xz --check=crc32 -T4 - > $CI_PROJECT_DIR/rootfs.cpio.gz
+find -H | \
+  egrep -v "external/(openglcts|vulkancts|amber|glslang|spirv-tools)" |
+  egrep -v "traces-db|apitrace|renderdoc|python" | \
+  cpio -H newc -o | \
+  xz --check=crc32 -T4 - > $CI_PROJECT_DIR/rootfs.cpio.gz
 popd
 
 cat $BM_KERNEL $BM_DTB > Image.gz-dtb
@@ -86,13 +96,15 @@ $BM/expect-output.sh artifacts/serial-output.txt \
 fastboot boot -s $BM_FASTBOOT_SERIAL artifacts/fastboot.img
 
 # Wait for the device to complete the deqp run
-$BM/expect-output.sh artifacts/serial-output.txt -f "DEQP RESULT"
+$BM/expect-output.sh artifacts/serial-output.txt \
+    -f "bare-metal result" \
+    -e "---. end Kernel panic"
 
 # power down the device
 PATH=$BM:$PATH $BM_POWERDOWN
 
 set +e
-if grep -q "DEQP RESULT: pass" artifacts/serial-output.txt; then
+if grep -q "bare-metal result: pass" artifacts/serial-output.txt; then
    exit 0
 else
    exit 1

@@ -165,6 +165,12 @@ public:
          }
       }
 
+      if (!glsl_type_is_vector_or_scalar(ir->return_type) &&
+          !ir->return_type->is_void()) {
+         unsupported = true;
+         return visit_stop;
+      }
+
       return visit_continue;
    }
 
@@ -1394,7 +1400,6 @@ nir_visitor::visit(ir_call *ir)
          break;
       case nir_intrinsic_shader_clock:
          nir_ssa_dest_init(&instr->instr, &instr->dest, 2, 32, NULL);
-         instr->num_components = 2;
          nir_intrinsic_set_memory_scope(instr, NIR_SCOPE_SUBGROUP);
          nir_builder_instr_insert(&b, &instr->instr);
          break;
@@ -1529,11 +1534,12 @@ nir_visitor::visit(ir_call *ir)
          nir_builder_instr_insert(&b, &instr->instr);
          break;
       }
-      case nir_intrinsic_vote_any:
-      case nir_intrinsic_vote_all:
-      case nir_intrinsic_vote_ieq: {
-         nir_ssa_dest_init(&instr->instr, &instr->dest, 1, 1, NULL);
+      case nir_intrinsic_vote_ieq:
          instr->num_components = 1;
+         /* fall-through */
+      case nir_intrinsic_vote_any:
+      case nir_intrinsic_vote_all: {
+         nir_ssa_dest_init(&instr->instr, &instr->dest, 1, 1, NULL);
 
          ir_rvalue *value = (ir_rvalue *) ir->actual_parameters.get_head();
          instr->src[0] = nir_src_for_ssa(evaluate_rvalue(value));
@@ -1580,7 +1586,6 @@ nir_visitor::visit(ir_call *ir)
       }
       case nir_intrinsic_is_helper_invocation: {
          nir_ssa_dest_init(&instr->instr, &instr->dest, 1, 1, NULL);
-         instr->num_components = 1;
          nir_builder_instr_insert(&b, &instr->instr);
          break;
       }

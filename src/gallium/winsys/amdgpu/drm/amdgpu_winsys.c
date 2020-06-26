@@ -63,7 +63,9 @@ static void handle_env_var_force_family(struct amdgpu_winsys *ws)
             ws->info.family = i;
             ws->info.name = "GCN-NOOP";
 
-            if (i >= CHIP_NAVI10)
+            if (i >= CHIP_SIENNA)
+               ws->info.chip_class = GFX10_3;
+            else if (i >= CHIP_NAVI10)
                ws->info.chip_class = GFX10;
             else if (i >= CHIP_VEGA10)
                ws->info.chip_class = GFX9;
@@ -98,7 +100,7 @@ static bool do_winsys_init(struct amdgpu_winsys *ws,
 
    handle_env_var_force_family(ws);
 
-   ws->addrlib = amdgpu_addr_create(&ws->info, &ws->amdinfo, &ws->info.max_alignment);
+   ws->addrlib = ac_addrlib_create(&ws->info, &ws->amdinfo, &ws->info.max_alignment);
    if (!ws->addrlib) {
       fprintf(stderr, "amdgpu: Cannot create addrlib.\n");
       goto fail;
@@ -145,7 +147,7 @@ static void do_winsys_deinit(struct amdgpu_winsys *ws)
    simple_mtx_destroy(&ws->global_bo_list_lock);
    simple_mtx_destroy(&ws->bo_export_table_lock);
 
-   AddrDestroy(ws->addrlib);
+   ac_addrlib_destroy(ws->addrlib);
    amdgpu_device_deinitialize(ws->dev);
    FREE(ws);
 }
@@ -363,7 +365,7 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
       return NULL;
 
    pipe_reference_init(&ws->reference, 1);
-   ws->fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+   ws->fd = os_dupfd_cloexec(fd);
 
    /* Look up the winsys from the dev table. */
    simple_mtx_lock(&dev_tab_mutex);

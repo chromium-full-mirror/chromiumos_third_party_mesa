@@ -34,8 +34,32 @@ mv /usr/local/bin/deqp-runner /lava-files/rootfs-${DEBIAN_ARCH}/usr/bin/.
 
 ############### Build dEQP
 STRIP_CMD="${GCC_ARCH}-strip"
-. .gitlab-ci/build-deqp-gl.sh
+if [ -n "$INCLUDE_VK_CTS" ]; then
+   DEQP_TARGET=surfaceless . .gitlab-ci/build-deqp-vk.sh
+else
+   . .gitlab-ci/build-deqp-gl.sh
+fi
+
 mv /deqp /lava-files/rootfs-${DEBIAN_ARCH}/.
+
+
+############### Build apitrace
+. .gitlab-ci/build-apitrace.sh
+mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/apitrace
+mv /apitrace/build /lava-files/rootfs-${DEBIAN_ARCH}/apitrace
+rm -rf /apitrace
+
+mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/waffle
+mv /waffle/build /lava-files/rootfs-${DEBIAN_ARCH}/waffle
+rm -rf /waffle
+
+
+############### Build renderdoc
+EXTRA_CMAKE_ARGS+=" -DENABLE_XCB=false"
+. .gitlab-ci/build-renderdoc.sh
+mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/renderdoc
+mv /renderdoc/build /lava-files/rootfs-${DEBIAN_ARCH}/renderdoc
+rm -rf /renderdoc
 
 
 ############### Cross-build kernel
@@ -73,7 +97,7 @@ debootstrap \
     --variant=minbase \
     --arch=${DEBIAN_ARCH} \
      --components main,contrib,non-free \
-    testing \
+    buster \
     /lava-files/rootfs-${DEBIAN_ARCH}/ \
     http://deb.debian.org/debian
 

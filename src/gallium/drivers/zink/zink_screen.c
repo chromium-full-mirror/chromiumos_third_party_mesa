@@ -80,8 +80,11 @@ static int
 get_video_mem(struct zink_screen *screen)
 {
    VkDeviceSize size = 0;
-   for (uint32_t i = 0; i < screen->mem_props.memoryHeapCount; ++i)
-      size += screen->mem_props.memoryHeaps[i].size;
+   for (uint32_t i = 0; i < screen->mem_props.memoryHeapCount; ++i) {
+      if (screen->mem_props.memoryHeaps[i].flags &
+          VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+         size += screen->mem_props.memoryHeaps[i].size;
+   }
    return (int)(size >> 20);
 }
 
@@ -136,6 +139,12 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_INDEP_BLEND_FUNC:
       return 1;
 
+   case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
+      return screen->have_EXT_transform_feedback ? screen->tf_props.maxTransformFeedbackBuffers : 0;
+   case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
+   case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
+      return 1;
+
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
       return screen->props.limits.maxImageArrayLayers;
 
@@ -162,7 +171,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
-      return 120;
+      return 130;
 
 #if 0 /* TODO: Enable me */
    case PIPE_CAP_COMPUTE:
@@ -267,10 +276,8 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_PCI_FUNCTION:
       return 0; /* TODO: figure these out */
 
-#if 0 /* TODO: Enable me */
    case PIPE_CAP_CULL_DISTANCE:
       return screen->feats.shaderCullDistance;
-#endif
 
    case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
       return screen->props.limits.viewportSubPixelBits;
@@ -302,6 +309,9 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 1;
 
    case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
+      return 1;
+
+   case PIPE_CAP_VIEWPORT_TRANSFORM_LOWERED:
       return 1;
 
    case PIPE_CAP_FLATSHADE:
@@ -724,7 +734,14 @@ load_device_extensions(struct zink_screen *screen)
       if (!screen->vk_##x)                                                  \
          return false;                                                      \
    } while (0)
-
+   if (screen->have_EXT_transform_feedback) {
+      GET_PROC_ADDR(CmdBindTransformFeedbackBuffersEXT);
+      GET_PROC_ADDR(CmdBeginTransformFeedbackEXT);
+      GET_PROC_ADDR(CmdEndTransformFeedbackEXT);
+      GET_PROC_ADDR(CmdBeginQueryIndexedEXT);
+      GET_PROC_ADDR(CmdEndQueryIndexedEXT);
+      GET_PROC_ADDR(CmdDrawIndirectByteCountEXT);
+   }
    if (screen->have_KHR_external_memory_fd)
       GET_PROC_ADDR(GetMemoryFdKHR);
 
@@ -742,6 +759,7 @@ static struct pipe_screen *
 zink_internal_create_screen(struct sw_winsys *winsys, int fd)
 {
    struct zink_screen *screen = CALLOC_STRUCT(zink_screen);
+   bool have_tf_ext = false, have_cond_render_ext = false;
    if (!screen)
       return NULL;
 
@@ -751,8 +769,6 @@ zink_internal_create_screen(struct sw_winsys *winsys, int fd)
    screen->pdev = choose_pdev(screen->instance);
    screen->gfx_queue = find_gfx_queue(screen->pdev);
 
-   vkGetPhysicalDeviceProperties(screen->pdev, &screen->props);
-   vkGetPhysicalDeviceFeatures(screen->pdev, &screen->feats);
    vkGetPhysicalDeviceMemoryProperties(screen->pdev, &screen->mem_props);
 
    screen->have_X8_D24_UNORM_PACK32 = zink_is_depth_format_supported(screen,
@@ -778,11 +794,46 @@ zink_internal_create_screen(struct sw_winsys *winsys, int fd)
                screen->have_KHR_external_memory_fd = true;
             if (!strcmp(extensions[i].extensionName,
                         VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME))
-               screen->have_EXT_conditional_rendering = true;
+               have_cond_render_ext = true;
+            if (!strcmp(extensions[i].extensionName,
+                        VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME))
+               have_tf_ext = true;
+
          }
          FREE(extensions);
       }
    }
+   VkPhysicalDeviceFeatures2 feats = {};
+   VkPhysicalDeviceTransformFeedbackFeaturesEXT tf_feats = {};
+   VkPhysicalDeviceConditionalRenderingFeaturesEXT cond_render_feats = {};
+
+   feats.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+   if (have_tf_ext) {
+      tf_feats.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT;
+      tf_feats.pNext = feats.pNext;
+      feats.pNext = &tf_feats;
+   }
+   if (have_cond_render_ext) {
+      cond_render_feats.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT;
+      cond_render_feats.pNext = feats.pNext;
+      feats.pNext = &cond_render_feats;
+   }
+   vkGetPhysicalDeviceFeatures2(screen->pdev, &feats);
+   memcpy(&screen->feats, &feats.features, sizeof(screen->feats));
+   if (have_tf_ext && tf_feats.transformFeedback)
+      screen->have_EXT_transform_feedback = true;
+   if (have_cond_render_ext && cond_render_feats.conditionalRendering)
+      screen->have_EXT_conditional_rendering = true;
+
+   VkPhysicalDeviceProperties2 props = {};
+   props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+   if (screen->have_EXT_transform_feedback) {
+      screen->tf_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT;
+      screen->tf_props.pNext = NULL;
+      props.pNext = &screen->tf_props;
+   }
+   vkGetPhysicalDeviceProperties2(screen->pdev, &props);
+   memcpy(&screen->props, &props.properties, sizeof(screen->props));
 
    if (!screen->have_KHR_maintenance1) {
       debug_printf("ZINK: VK_KHR_maintenance1 required!\n");
@@ -800,8 +851,11 @@ zink_internal_create_screen(struct sw_winsys *winsys, int fd)
    dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
    dci.queueCreateInfoCount = 1;
    dci.pQueueCreateInfos = &qci;
-   dci.pEnabledFeatures = &screen->feats;
-   const char *extensions[4] = {
+   /* extensions don't have bool members in pEnabledFeatures.
+    * this requires us to pass the whole VkPhysicalDeviceFeatures2 struct
+    */
+   dci.pNext = &feats;
+   const char *extensions[5] = {
       VK_KHR_MAINTENANCE1_EXTENSION_NAME,
    };
    num_extensions = 1;
@@ -819,6 +873,8 @@ zink_internal_create_screen(struct sw_winsys *winsys, int fd)
    if (screen->have_EXT_conditional_rendering)
       extensions[num_extensions++] = VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME;
 
+   if (screen->have_EXT_transform_feedback)
+      extensions[num_extensions++] = VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME;
    assert(num_extensions <= ARRAY_SIZE(extensions));
 
    dci.ppEnabledExtensionNames = extensions;

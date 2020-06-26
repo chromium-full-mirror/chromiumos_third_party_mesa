@@ -2953,8 +2953,7 @@ radv_dst_access_flush(struct radv_cmd_buffer *cmd_buffer,
 			flush_bits |= RADV_CMD_FLAG_INV_VCACHE;
 			/* Unlike LLVM, ACO uses SMEM for SSBOs and we have to
 			 * invalidate the scalar cache. */
-			if (cmd_buffer->device->physical_device->use_aco &&
-			    cmd_buffer->device->physical_device->rad_info.chip_class >= GFX8)
+			if (!cmd_buffer->device->physical_device->use_llvm)
 				flush_bits |= RADV_CMD_FLAG_INV_SCACHE;
 
 			if (!image_is_coherent)
@@ -3787,8 +3786,9 @@ VkResult radv_EndCommandBuffer(
 	vk_free(&cmd_buffer->pool->alloc, cmd_buffer->state.attachments);
 	vk_free(&cmd_buffer->pool->alloc, cmd_buffer->state.subpass_sample_locs);
 
-	if (!cmd_buffer->device->ws->cs_finalize(cmd_buffer->cs))
-		return vk_error(cmd_buffer->device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+	VkResult result = cmd_buffer->device->ws->cs_finalize(cmd_buffer->cs);
+	if (result != VK_SUCCESS)
+		return vk_error(cmd_buffer->device->instance, result);
 
 	cmd_buffer->status = RADV_CMD_BUFFER_STATUS_EXECUTABLE;
 

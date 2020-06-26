@@ -105,6 +105,9 @@
 #include "lp_rast.h"
 #include "nir/nir_to_tgsi_info.h"
 
+#include "lp_screen.h"
+#include "compiler/nir/nir_serialize.h"
+#include "util/mesa-sha1.h"
 /** Fragment shader number (for debugging) */
 static unsigned fs_no = 0;
 
@@ -2816,8 +2819,8 @@ generate_fragment(struct llvmpipe_context *lp,
 
    blend_vec_type = lp_build_vec_type(gallivm, blend_type);
 
-   snprintf(func_name, sizeof(func_name), "fs%u_variant%u_%s",
-            shader->no, variant->no, partial_mask ? "partial" : "whole");
+   snprintf(func_name, sizeof(func_name), "fs_variant_%s",
+            partial_mask ? "partial" : "whole");
 
    arg_types[0] = variant->jit_context_ptr_type;       /* context */
    arg_types[1] = int32_type;                          /* x */
@@ -2849,6 +2852,9 @@ generate_fragment(struct llvmpipe_context *lp,
    for(i = 0; i < ARRAY_SIZE(arg_types); ++i)
       if(LLVMGetTypeKind(arg_types[i]) == LLVMPointerTypeKind)
          lp_add_function_attr(function, i + 1, LP_FUNC_ATTR_NOALIAS);
+
+   if (variant->gallivm->cache->data_size)
+      return;
 
    context_ptr  = LLVMGetParam(function, 0);
    x            = LLVMGetParam(function, 1);
@@ -3247,6 +3253,27 @@ lp_debug_fs_variant(struct lp_fragment_shader_variant *variant)
    debug_printf("\n");
 }
 
+static void
+lp_fs_get_ir_cache_key(struct lp_fragment_shader_variant *variant,
+                            unsigned char ir_sha1_cache_key[20])
+{
+   struct blob blob = { 0 };
+   unsigned ir_size;
+   void *ir_binary;
+
+   blob_init(&blob);
+   nir_serialize(&blob, variant->shader->base.ir.nir, true);
+   ir_binary = blob.data;
+   ir_size = blob.size;
+
+   struct mesa_sha1 ctx;
+   _mesa_sha1_init(&ctx);
+   _mesa_sha1_update(&ctx, &variant->key, variant->shader->variant_key_size);
+   _mesa_sha1_update(&ctx, ir_binary, ir_size);
+   _mesa_sha1_final(&ctx, ir_sha1_cache_key);
+
+   blob_finish(&blob);
+}
 
 /**
  * Generate a new fragment shader variant from the shader code and
@@ -3257,11 +3284,14 @@ generate_variant(struct llvmpipe_context *lp,
                  struct lp_fragment_shader *shader,
                  const struct lp_fragment_shader_variant_key *key)
 {
+   struct llvmpipe_screen *screen = llvmpipe_screen(lp->pipe.screen);
    struct lp_fragment_shader_variant *variant;
    const struct util_format_description *cbuf0_format_desc = NULL;
    boolean fullcolormask;
    char module_name[64];
-
+   unsigned char ir_sha1_cache_key[20];
+   struct lp_cached_code cached = { 0 };
+   bool needs_caching = false;
    variant = MALLOC(sizeof *variant + shader->variant_key_size - sizeof variant->key);
    if (!variant)
       return NULL;
@@ -3270,18 +3300,27 @@ generate_variant(struct llvmpipe_context *lp,
    snprintf(module_name, sizeof(module_name), "fs%u_variant%u",
             shader->no, shader->variants_created);
 
-   variant->gallivm = gallivm_create(module_name, lp->context);
+   variant->shader = shader;
+   memcpy(&variant->key, key, shader->variant_key_size);
+
+   if (shader->base.ir.nir) {
+      lp_fs_get_ir_cache_key(variant, ir_sha1_cache_key);
+
+      lp_disk_cache_find_shader(screen, &cached, ir_sha1_cache_key);
+      if (!cached.data_size)
+         needs_caching = true;
+   }
+   variant->gallivm = gallivm_create(module_name, lp->context, &cached);
    if (!variant->gallivm) {
       FREE(variant);
       return NULL;
    }
 
-   variant->shader = shader;
    variant->list_item_global.base = variant;
    variant->list_item_local.base = variant;
    variant->no = shader->variants_created++;
 
-   memcpy(&variant->key, key, shader->variant_key_size);
+
 
    /*
     * Determine whether we are touching all channels in the color buffer.
@@ -3341,6 +3380,10 @@ generate_variant(struct llvmpipe_context *lp,
                                     variant->function[RAST_WHOLE]);
    } else if (!variant->jit_function[RAST_WHOLE]) {
       variant->jit_function[RAST_WHOLE] = variant->jit_function[RAST_EDGE_TEST];
+   }
+
+   if (needs_caching) {
+      lp_disk_cache_insert_shader(screen, &cached, ir_sha1_cache_key);
    }
 
    gallivm_free_ir(variant->gallivm);

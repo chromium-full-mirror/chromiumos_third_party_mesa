@@ -7,6 +7,11 @@ DEQP_OPTIONS="$DEQP_OPTIONS --deqp-surface-type=pbuffer"
 DEQP_OPTIONS="$DEQP_OPTIONS --deqp-gl-config-name=rgba8888d24s8ms0"
 DEQP_OPTIONS="$DEQP_OPTIONS --deqp-visibility=hidden"
 
+# deqp's shader cache (for vulkan) is not multiprocess safe for a common
+# filename, see:
+# https://gitlab.freedesktop.org/mesa/parallel-deqp-runner/-/merge_requests/13
+DEQP_OPTIONS="$DEQP_OPTIONS --deqp-shadercache=disable"
+
 if [ -z "$DEQP_VER" ]; then
    echo 'DEQP_VER must be set to something like "gles2", "gles31" or "vk" for the test run'
    exit 1
@@ -42,9 +47,14 @@ mkdir -p $RESULTS
 if [ "$DEQP_VER" = "vk" ]; then
    cp /deqp/mustpass/vk-master.txt /tmp/case-list.txt
    DEQP=/deqp/external/vulkancts/modules/vulkan/deqp-vk
-else
+elif [ "$DEQP_VER" = "gles2" -o "$DEQP_VER" = "gles3" -o "$DEQP_VER" = "gles31" ]; then
    cp /deqp/mustpass/$DEQP_VER-master.txt /tmp/case-list.txt
    DEQP=/deqp/modules/$DEQP_VER/deqp-$DEQP_VER
+   SUITE=dEQP
+else
+   cp /deqp/mustpass/$DEQP_VER-master.txt /tmp/case-list.txt
+   DEQP=/deqp/external/openglcts/modules/glcts
+   SUITE=KHR
 fi
 
 # If the job is parallel, take the corresponding fraction of the caselist.
@@ -144,10 +154,10 @@ extract_xml_result() {
             if [ "$line" = "$start" ]; then
                 dst="$testcase.qpa"
                 echo "#beginSession" > $dst
-                echo $line >> $dst
+                echo "$line" >> $dst
                 while IFS= read -r line; do
                     if [ "$line" = "#endTestCaseResult" ]; then
-                        echo $line >> $dst
+                        echo "$line" >> $dst
                         echo "#endSession" >> $dst
                         /deqp/executor/testlog-to-xml $dst "$RESULTS/$testcase$DEQP_RUN_SUFFIX.xml"
                         # copy the stylesheets here so they only end up in artifacts
@@ -156,7 +166,7 @@ extract_xml_result() {
                         cp /deqp/testlog.xsl "$RESULTS/"
                         return 0
                     fi
-                    echo $line >> $dst
+                    echo "$line" >> $dst
                 done
                 return 1
             fi
@@ -215,7 +225,7 @@ check_renderer() {
     # debug.
     # export EGL_LOG_LEVEL=debug
     VERSION=`echo $DEQP_VER | tr '[a-z]' '[A-Z]'`
-    $DEQP $DEQP_OPTIONS --deqp-case=dEQP-$VERSION.info.\* --deqp-log-filename=$RESULTS/deqp-info.qpa
+    $DEQP $DEQP_OPTIONS --deqp-case=$SUITE-$VERSION.info.\* --deqp-log-filename=$RESULTS/deqp-info.qpa
     parse_renderer
 }
 
@@ -241,11 +251,14 @@ if [ "$GALLIUM_DRIVER" = "virpipe" ]; then
     # deqp is to use virpipe, and virgl_test_server llvmpipe
     export GALLIUM_DRIVER="$GALLIUM_DRIVER"
 
+    VTEST_ARGS="--use-egl-surfaceless"
+    if [ "$VIRGL_HOST_API" = "GLES" ]; then
+        VTEST_ARGS="$VTEST_ARGS --use-gles"
+    fi
+
     GALLIUM_DRIVER=llvmpipe \
     GALLIVM_PERF="nopt,no_filter_hacks" \
-    VTEST_USE_EGL_SURFACELESS=1 \
-    VTEST_USE_GLES=1 \
-    virgl_test_server >$RESULTS/vtest-log.txt 2>&1 &
+    virgl_test_server $VTEST_ARGS >$RESULTS/vtest-log.txt 2>&1 &
 
     sleep 1
 fi

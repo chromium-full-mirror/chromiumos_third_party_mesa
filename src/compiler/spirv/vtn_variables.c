@@ -1354,10 +1354,22 @@ vtn_get_builtin_location(struct vtn_builder *b,
          vtn_fail("invalid stage for SpvBuiltInViewportIndex");
       break;
    case SpvBuiltInTessLevelOuter:
-      *location = VARYING_SLOT_TESS_LEVEL_OUTER;
+      if (b->options && b->options->tess_levels_are_sysvals &&
+          *mode == nir_var_shader_in) {
+         *location = SYSTEM_VALUE_TESS_LEVEL_OUTER;
+         set_mode_system_value(b, mode);
+      } else {
+         *location = VARYING_SLOT_TESS_LEVEL_OUTER;
+      }
       break;
    case SpvBuiltInTessLevelInner:
-      *location = VARYING_SLOT_TESS_LEVEL_INNER;
+      if (b->options && b->options->tess_levels_are_sysvals &&
+          *mode == nir_var_shader_in) {
+         *location = SYSTEM_VALUE_TESS_LEVEL_INNER;
+         set_mode_system_value(b, mode);
+      } else {
+         *location = VARYING_SLOT_TESS_LEVEL_INNER;
+      }
       break;
    case SpvBuiltInTessCoord:
       *location = SYSTEM_VALUE_TESS_COORD;
@@ -1583,6 +1595,9 @@ apply_var_decoration(struct vtn_builder *b,
    case SpvDecorationRestrict:
       var_data->access |= ACCESS_RESTRICT;
       break;
+   case SpvDecorationAliased:
+      var_data->access &= ~ACCESS_RESTRICT;
+      break;
    case SpvDecorationVolatile:
       var_data->access |= ACCESS_VOLATILE;
       break;
@@ -1605,6 +1620,11 @@ apply_var_decoration(struct vtn_builder *b,
       switch (builtin) {
       case SpvBuiltInTessLevelOuter:
       case SpvBuiltInTessLevelInner:
+         /* Since the compact flag is only valid on arrays, don't set it if
+          * we are lowering TessLevelInner/Outer to vec4/vec2. */
+         if (!b->options || !b->options->lower_tess_levels_to_vec)
+            var_data->compact = true;
+         break;
       case SpvBuiltInClipDistance:
       case SpvBuiltInCullDistance:
          var_data->compact = true;
@@ -1618,7 +1638,6 @@ apply_var_decoration(struct vtn_builder *b,
    case SpvDecorationRowMajor:
    case SpvDecorationColMajor:
    case SpvDecorationMatrixStride:
-   case SpvDecorationAliased:
    case SpvDecorationUniform:
    case SpvDecorationUniformId:
    case SpvDecorationLinkageAttributes:
@@ -1812,6 +1831,22 @@ var_decoration_cb(struct vtn_builder *b, struct vtn_value *val, int member,
          vtn_assert(vtn_var->mode == vtn_variable_mode_ubo ||
                     vtn_var->mode == vtn_variable_mode_ssbo ||
                     vtn_var->mode == vtn_variable_mode_push_constant);
+      }
+   }
+}
+
+static void
+var_decoration_tess_level_vec_cb(
+      struct vtn_builder *b, struct vtn_value *val, int member,
+      const struct vtn_decoration *dec, void *void_var)
+{
+   struct vtn_variable *vtn_var = void_var;
+   if (dec->decoration == SpvDecorationBuiltIn) {
+      SpvBuiltIn builtin = dec->operands[0];
+      if (builtin == SpvBuiltInTessLevelOuter) {
+         vtn_var->var->type = glsl_vector_type(GLSL_TYPE_FLOAT, 4);
+      } else if (builtin == SpvBuiltInTessLevelInner) {
+         vtn_var->var->type = glsl_vector_type(GLSL_TYPE_FLOAT, 2);
       }
    }
 }
@@ -2392,8 +2427,17 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
    if (var_initializer)
       var->var->pointer_initializer = var_initializer;
 
+   if (var->mode == vtn_variable_mode_uniform ||
+       var->mode == vtn_variable_mode_ssbo) {
+      /* SSBOs and images are assumed to not alias in the Simple, GLSL and Vulkan memory models */
+      var->var->data.access |= b->mem_model != SpvMemoryModelOpenCL ? ACCESS_RESTRICT : 0;
+   }
+
    vtn_foreach_decoration(b, val, var_decoration_cb, var);
    vtn_foreach_decoration(b, val, ptr_decoration_cb, val->pointer);
+
+   if (b->options && b->options->lower_tess_levels_to_vec)
+      vtn_foreach_decoration(b, val, var_decoration_tess_level_vec_cb, var);
 
    /* Propagate access flags from the OpVariable decorations. */
    val->pointer->access |= var->access;

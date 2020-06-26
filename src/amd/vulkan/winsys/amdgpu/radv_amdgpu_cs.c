@@ -57,7 +57,7 @@ struct radv_amdgpu_cs {
 	unsigned                    num_old_ib_buffers;
 	unsigned                    max_num_old_ib_buffers;
 	unsigned                    *ib_size_ptr;
-	bool                        failed;
+	VkResult                    status;
 	bool                        is_chained;
 
 	int                         buffer_hash_table[1024];
@@ -361,7 +361,7 @@ static void radv_amdgpu_cs_grow(struct radeon_cmdbuf *_cs, size_t min_size)
 {
 	struct radv_amdgpu_cs *cs = radv_amdgpu_cs(_cs);
 
-	if (cs->failed) {
+	if (cs->status != VK_SUCCESS) {
 		cs->base.cdw = 0;
 		return;
 	}
@@ -381,7 +381,7 @@ static void radv_amdgpu_cs_grow(struct radeon_cmdbuf *_cs, size_t min_size)
 				realloc(cs->old_cs_buffers,
 				        (cs->num_old_cs_buffers + 1) * sizeof(*cs->old_cs_buffers));
 			if (!cs->old_cs_buffers) {
-				cs->failed = true;
+				cs->status = VK_ERROR_OUT_OF_HOST_MEMORY;
 				cs->base.cdw = 0;
 				return;
 			}
@@ -402,7 +402,7 @@ static void radv_amdgpu_cs_grow(struct radeon_cmdbuf *_cs, size_t min_size)
 			if (ib_dws > limit_dws) {
 				fprintf(stderr, "amdgpu: Too high number of "
 						"dwords to allocate\n");
-				cs->failed = true;
+				cs->status = VK_ERROR_OUT_OF_HOST_MEMORY;
 				return;
 			}
 		}
@@ -412,7 +412,7 @@ static void radv_amdgpu_cs_grow(struct radeon_cmdbuf *_cs, size_t min_size)
 			cs->base.buf = new_buf;
 			cs->base.max_dw = ib_dws;
 		} else {
-			cs->failed = true;
+			cs->status = VK_ERROR_OUT_OF_HOST_MEMORY;
 			cs->base.cdw = 0;
 		}
 		return;
@@ -424,7 +424,7 @@ static void radv_amdgpu_cs_grow(struct radeon_cmdbuf *_cs, size_t min_size)
 	ib_size = MIN2(ib_size, 0xfffff);
 
 	while (!cs->base.cdw || (cs->base.cdw & 7) != 4)
-		radeon_emit(&cs->base, 0xffff1000);
+		radeon_emit(&cs->base, PKT3_NOP_PAD);
 
 	*cs->ib_size_ptr |= cs->base.cdw + 4;
 
@@ -445,7 +445,7 @@ static void radv_amdgpu_cs_grow(struct radeon_cmdbuf *_cs, size_t min_size)
 
 	if (!cs->ib_buffer) {
 		cs->base.cdw = 0;
-		cs->failed = true;
+		cs->status = VK_ERROR_OUT_OF_DEVICE_MEMORY;
 		cs->ib_buffer = cs->old_ib_buffers[--cs->num_old_ib_buffers];
 	}
 
@@ -453,7 +453,9 @@ static void radv_amdgpu_cs_grow(struct radeon_cmdbuf *_cs, size_t min_size)
 	if (!cs->ib_mapped) {
 		cs->ws->base.buffer_destroy(cs->ib_buffer);
 		cs->base.cdw = 0;
-		cs->failed = true;
+
+		/* VK_ERROR_MEMORY_MAP_FAILED is not valid for vkEndCommandBuffer. */
+		cs->status = VK_ERROR_OUT_OF_DEVICE_MEMORY;
 		cs->ib_buffer = cs->old_ib_buffers[--cs->num_old_ib_buffers];
 	}
 
@@ -472,27 +474,27 @@ static void radv_amdgpu_cs_grow(struct radeon_cmdbuf *_cs, size_t min_size)
 
 }
 
-static bool radv_amdgpu_cs_finalize(struct radeon_cmdbuf *_cs)
+static VkResult radv_amdgpu_cs_finalize(struct radeon_cmdbuf *_cs)
 {
 	struct radv_amdgpu_cs *cs = radv_amdgpu_cs(_cs);
 
 	if (cs->ws->use_ib_bos) {
 		while (!cs->base.cdw || (cs->base.cdw & 7) != 0)
-			radeon_emit(&cs->base, 0xffff1000);
+			radeon_emit(&cs->base, PKT3_NOP_PAD);
 
 		*cs->ib_size_ptr |= cs->base.cdw;
 
 		cs->is_chained = false;
 	}
 
-	return !cs->failed;
+	return cs->status;
 }
 
 static void radv_amdgpu_cs_reset(struct radeon_cmdbuf *_cs)
 {
 	struct radv_amdgpu_cs *cs = radv_amdgpu_cs(_cs);
 	cs->base.cdw = 0;
-	cs->failed = false;
+	cs->status = VK_SUCCESS;
 
 	for (unsigned i = 0; i < cs->num_buffers; ++i) {
 		unsigned hash = cs->handles[i].bo_handle &
@@ -558,13 +560,20 @@ static void radv_amdgpu_cs_add_buffer_internal(struct radv_amdgpu_cs *cs,
 	unsigned hash;
 	int index = radv_amdgpu_cs_find_buffer(cs, bo);
 
-	if (index != -1)
+	if (index != -1 || cs->status != VK_SUCCESS)
 		return;
 
 	if (cs->num_buffers == cs->max_num_buffers) {
 		unsigned new_count = MAX2(1, cs->max_num_buffers * 2);
-		cs->handles = realloc(cs->handles, new_count * sizeof(struct drm_amdgpu_bo_list_entry));
-		cs->max_num_buffers = new_count;
+		struct drm_amdgpu_bo_list_entry *new_entries =
+			realloc(cs->handles, new_count * sizeof(struct drm_amdgpu_bo_list_entry));
+		if (new_entries) {
+			cs->max_num_buffers = new_count;
+			cs->handles = new_entries;
+		} else {
+			cs->status = VK_ERROR_OUT_OF_HOST_MEMORY;
+			return;
+		}
 	}
 
 	cs->handles[cs->num_buffers].bo_handle = bo;
@@ -1033,7 +1042,7 @@ static int radv_amdgpu_winsys_cs_submit_sysmem(struct radeon_winsys_ctx *_ctx,
 	struct radeon_winsys *ws = (struct radeon_winsys*)cs0->ws;
 	uint32_t bo_list;
 	struct radv_amdgpu_cs_request request;
-	uint32_t pad_word = 0xffff1000U;
+	uint32_t pad_word = PKT3_NOP_PAD;
 	bool emit_signal_sem = sem_info->cs_emit_signal;
 
 	if (radv_amdgpu_winsys(ws)->info.chip_class == GFX6)

@@ -418,6 +418,10 @@ si_emit_graphics(struct radv_device *device,
 				  S_00B0C0_NUMBER_OF_REQUESTS_PER_CU(4 - 1));
 		radeon_set_sh_reg(cs, R_00B1C0_SPI_SHADER_REQ_CTRL_VS, 0);
 
+		if (physical_device->rad_info.chip_class >= GFX10_3) {
+			radeon_set_context_reg(cs, R_028750_SX_PS_DOWNCONVERT_CONTROL_GFX103, 0xff);
+		}
+
 		if (physical_device->rad_info.chip_class == GFX10) {
 			/* SQ_NON_EVENT must be emitted before GE_PC_ALLOC is written. */
 			radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
@@ -516,9 +520,9 @@ cik_create_gfx_config(struct radv_device *device)
 
 	while (cs->cdw & 7) {
 		if (device->physical_device->rad_info.gfx_ib_pad_with_type2)
-			radeon_emit(cs, 0x80000000);
+			radeon_emit(cs, PKT2_NOP_PAD);
 		else
-			radeon_emit(cs, 0xffff1000);
+			radeon_emit(cs, PKT3_NOP_PAD);
 	}
 
 	device->gfx_init = device->ws->buffer_create(device->ws,

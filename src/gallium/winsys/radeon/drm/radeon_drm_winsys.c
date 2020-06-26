@@ -29,6 +29,7 @@
 #include "radeon_drm_cs.h"
 #include "radeon_drm_public.h"
 
+#include "util/os_file.h"
 #include "util/u_cpu_detect.h"
 #include "util/u_memory.h"
 #include "util/u_hash_table.h"
@@ -628,7 +629,7 @@ static void radeon_winsys_destroy(struct radeon_winsys *rws)
 
    _mesa_hash_table_destroy(ws->bo_names, NULL);
    _mesa_hash_table_destroy(ws->bo_handles, NULL);
-   _mesa_hash_table_destroy(ws->bo_vas, NULL);
+   _mesa_hash_table_u64_destroy(ws->bo_vas, NULL);
    mtx_destroy(&ws->bo_handles_mutex);
    mtx_destroy(&ws->vm32.mutex);
    mtx_destroy(&ws->vm64.mutex);
@@ -840,7 +841,7 @@ radeon_drm_winsys_create(int fd, const struct pipe_screen_config *config,
       return NULL;
    }
 
-   ws->fd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+   ws->fd = os_dupfd_cloexec(fd);
 
    if (!do_winsys_init(ws))
       goto fail1;
@@ -900,7 +901,7 @@ radeon_drm_winsys_create(int fd, const struct pipe_screen_config *config,
 
    ws->bo_names = util_hash_table_create_ptr_keys();
    ws->bo_handles = util_hash_table_create_ptr_keys();
-   ws->bo_vas = util_hash_table_create_ptr_keys();
+   ws->bo_vas = _mesa_hash_table_u64_create(NULL);
    (void) mtx_init(&ws->bo_handles_mutex, mtx_plain);
    (void) mtx_init(&ws->vm32.mutex, mtx_plain);
    (void) mtx_init(&ws->vm64.mutex, mtx_plain);

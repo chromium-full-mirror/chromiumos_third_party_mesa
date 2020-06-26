@@ -246,7 +246,7 @@ mir_print_embedded_constant(midgard_instruction *ins, unsigned src_idx)
         unsigned *swizzle = ins->swizzle[src_idx];
         unsigned comp_mask = effective_writemask(&ins->alu, ins->mask);
         unsigned num_comp = util_bitcount(comp_mask);
-        unsigned max_comp = mir_components_for_type(ins->dest_type) >> 1;
+        unsigned max_comp = mir_components_for_type(ins->dest_type);
         bool first = true;
 
         printf("#");
@@ -271,6 +271,13 @@ mir_print_embedded_constant(midgard_instruction *ins, unsigned src_idx)
         if (num_comp > 1)
                 printf(")");
 }
+
+#define PRINT_SRC(ins, c) \
+        do { mir_print_index(ins->src[c]); \
+             if (ins->src[c] != ~0 && ins->src_types[c] != nir_type_invalid) { \
+                     pan_print_alu_type(ins->src_types[c], stdout); \
+                     mir_print_swizzle(ins->swizzle[c], ins->src_types[c]); \
+             } } while (0)
 
 void
 mir_print_instruction(midgard_instruction *ins)
@@ -299,6 +306,16 @@ mir_print_instruction(midgard_instruction *ins)
                         printf("false");
                 else
                         printf("true");
+
+                if (ins->writeout) {
+                        printf(" (c: ");
+                        PRINT_SRC(ins, 0);
+                        printf(", z: ");
+                        PRINT_SRC(ins, 2);
+                        printf(", s: ");
+                        PRINT_SRC(ins, 3);
+                        printf(")");
+                }
 
                 if (ins->branch.target_type != TARGET_DISCARD)
                         printf(" %s -> block(%d)\n",
@@ -363,37 +380,21 @@ mir_print_instruction(midgard_instruction *ins)
 
         if (ins->src[0] == r_constant)
                 mir_print_embedded_constant(ins, 0);
-        else {
-                mir_print_index(ins->src[0]);
+        else
+                PRINT_SRC(ins, 0);
 
-                if (ins->src[0] != ~0) {
-                        pan_print_alu_type(ins->src_types[0], stdout);
-                        mir_print_swizzle(ins->swizzle[0], ins->src_types[0]);
-                }
-        }
         printf(", ");
 
         if (ins->has_inline_constant)
                 printf("#%d", ins->inline_constant);
         else if (ins->src[1] == r_constant)
                 mir_print_embedded_constant(ins, 1);
-        else {
-                mir_print_index(ins->src[1]);
-
-                if (ins->src[1] != ~0) {
-                        pan_print_alu_type(ins->src_types[1], stdout);
-                        mir_print_swizzle(ins->swizzle[1], ins->src_types[1]);
-                }
-        }
+        else
+                PRINT_SRC(ins, 1);
 
         for (unsigned c = 2; c <= 3; ++c) {
                 printf(", ");
-                mir_print_index(ins->src[c]);
-
-                if (ins->src[c] != ~0) {
-                        pan_print_alu_type(ins->src_types[c], stdout);
-                        mir_print_swizzle(ins->swizzle[c], ins->src_types[c]);
-                }
+                PRINT_SRC(ins, c);
         }
 
         if (ins->no_spill)

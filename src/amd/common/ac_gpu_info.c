@@ -401,6 +401,7 @@ bool ac_query_gpu_info(int fd, void *dev_p,
 		identify_chip(NAVI10);
 		identify_chip(NAVI12);
 		identify_chip(NAVI14);
+		identify_chip(SIENNA);
 		break;
 	}
 
@@ -410,7 +411,9 @@ bool ac_query_gpu_info(int fd, void *dev_p,
 		return false;
 	}
 
-	if (info->family >= CHIP_NAVI10)
+	if (info->family >= CHIP_SIENNA)
+		info->chip_class = GFX10_3;
+	else if (info->family >= CHIP_NAVI10)
 		info->chip_class = GFX10;
 	else if (info->family >= CHIP_VEGA10)
 		info->chip_class = GFX9;
@@ -494,11 +497,8 @@ bool ac_query_gpu_info(int fd, void *dev_p,
 	info->has_unaligned_shader_loads = info->chip_class != GFX6;
 	/* Disable sparse mappings on GFX6 due to VM faults in CP DMA. Enable them once
 	 * these faults are mitigated in software.
-	 * Disable sparse mappings on GFX9 due to hangs.
 	 */
-	info->has_sparse_vm_mappings =
-		info->chip_class >= GFX7 && info->chip_class <= GFX8 &&
-		info->drm_minor >= 13;
+	info->has_sparse_vm_mappings = info->chip_class >= GFX7 && info->drm_minor >= 13;
 	info->has_2d_tiling = true;
 	info->has_read_registers_query = true;
 	info->has_scheduled_fence_dependency = info->drm_minor >= 28;
@@ -561,6 +561,17 @@ bool ac_query_gpu_info(int fd, void *dev_p,
 	info->num_rings[RING_VCN_ENC] = util_bitcount(vcn_enc.available_rings);
 	info->num_rings[RING_VCN_JPEG] = util_bitcount(vcn_jpeg.available_rings);
 
+	/* This is "align_mask" copied from the kernel, maximums of all IP versions. */
+	info->ib_pad_dw_mask[RING_GFX] = 0xff;
+	info->ib_pad_dw_mask[RING_COMPUTE] = 0xff;
+	info->ib_pad_dw_mask[RING_DMA] = 0xf;
+	info->ib_pad_dw_mask[RING_UVD] = 0xf;
+	info->ib_pad_dw_mask[RING_VCE] = 0x3f;
+	info->ib_pad_dw_mask[RING_UVD_ENC] = 0x3f;
+	info->ib_pad_dw_mask[RING_VCN_DEC] = 0xf;
+	info->ib_pad_dw_mask[RING_VCN_ENC] = 0x3f;
+	info->ib_pad_dw_mask[RING_VCN_JPEG] = 0xf;
+
 	/* The mere presence of CLEAR_STATE in the IB causes random GPU hangs
 	 * on GFX6. Some CLEAR_STATE cause asic hang on radeon kernel, etc.
 	 * SPI_VS_OUT_CONFIG. So only enable GFX7 CLEAR_STATE on amdgpu kernel.
@@ -585,7 +596,8 @@ bool ac_query_gpu_info(int fd, void *dev_p,
 			        info->family == CHIP_VEGA12 ||
 			        info->family == CHIP_RAVEN ||
 			        info->family == CHIP_RAVEN2 ||
-			        info->family == CHIP_RENOIR);
+			        info->family == CHIP_RENOIR ||
+				info->chip_class >= GFX10_3);
 
 	info->has_out_of_order_rast = info->chip_class >= GFX8 &&
 				      info->chip_class <= GFX9 &&
@@ -681,7 +693,11 @@ bool ac_query_gpu_info(int fd, void *dev_p,
 	/* GFX10 and maybe GFX9 need this alignment for cache coherency. */
 	if (info->chip_class >= GFX9)
 		ib_align = MAX2(ib_align, info->tcc_cache_line_size);
-	assert(ib_align);
+	/* The kernel pads gfx and compute IBs to 256 dwords since:
+	 *   66f3b2d527154bd258a57c8815004b5964aa1cf5
+	 * Do the same.
+	 */
+	ib_align = MAX2(ib_align, 1024);
 	info->ib_alignment = ib_align;
 
         if ((info->drm_minor >= 31 &&
@@ -714,6 +730,7 @@ bool ac_query_gpu_info(int fd, void *dev_p,
 		case CHIP_RENOIR:
 		case CHIP_NAVI10:
 		case CHIP_NAVI12:
+		case CHIP_SIENNA:
 			pc_lines = 1024;
 			break;
 		case CHIP_NAVI14:
@@ -739,8 +756,14 @@ bool ac_query_gpu_info(int fd, void *dev_p,
 	if (info->chip_class >= GFX10)
 		info->num_sdp_interfaces = device_info.num_tcc_blocks;
 
-	info->max_wave64_per_simd = info->family >= CHIP_POLARIS10 &&
-				    info->family <= CHIP_VEGAM ? 8 : 10;
+	if (info->chip_class >= GFX10_3)
+		info->max_wave64_per_simd = 16;
+	else if (info->chip_class == GFX10)
+		info->max_wave64_per_simd = 20;
+	else if (info->family >= CHIP_POLARIS10 && info->family <= CHIP_VEGAM)
+		info->max_wave64_per_simd = 8;
+	else
+		info->max_wave64_per_simd = 10;
 
 	/* The number is per SIMD. There is enough SGPRs for the maximum number
 	 * of Wave32, which is double the number for Wave64.

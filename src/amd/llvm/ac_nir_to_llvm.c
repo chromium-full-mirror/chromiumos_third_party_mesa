@@ -170,6 +170,17 @@ static LLVMValueRef emit_int_cmp(struct ac_llvm_context *ctx,
                                  LLVMIntPredicate pred, LLVMValueRef src0,
                                  LLVMValueRef src1)
 {
+	LLVMTypeRef src0_type = LLVMTypeOf(src0);
+	LLVMTypeRef src1_type = LLVMTypeOf(src1);
+
+	if (LLVMGetTypeKind(src0_type) == LLVMPointerTypeKind &&
+	    LLVMGetTypeKind(src1_type) != LLVMPointerTypeKind) {
+		src1 = LLVMBuildIntToPtr(ctx->builder, src1, src0_type, "");
+	} else if (LLVMGetTypeKind(src1_type) == LLVMPointerTypeKind &&
+		   LLVMGetTypeKind(src0_type) != LLVMPointerTypeKind) {
+		src0 = LLVMBuildIntToPtr(ctx->builder, src0, src1_type, "");
+	}
+
 	LLVMValueRef result = LLVMBuildICmp(ctx->builder, pred, src0, src1, "");
 	return LLVMBuildSelect(ctx->builder, result,
 	                       LLVMConstInt(ctx->i32, 0xFFFFFFFF, false),
@@ -693,8 +704,15 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
 		result = LLVMBuildFMul(ctx->ac.builder, src[0], src[1], "");
 		break;
 	case nir_op_frcp:
-		result = emit_intrin_1f_param(&ctx->ac, "llvm.amdgcn.rcp",
-					      ac_to_float_type(&ctx->ac, def_type), src[0]);
+		/* For doubles, we need precise division to pass GLCTS. */
+		if (ctx->ac.float_mode == AC_FLOAT_MODE_DEFAULT_OPENGL &&
+		    ac_get_type_size(def_type) == 8) {
+			result = LLVMBuildFDiv(ctx->ac.builder, ctx->ac.f64_1,
+					       ac_to_float(&ctx->ac, src[0]), "");
+		} else {
+			result = emit_intrin_1f_param(&ctx->ac, "llvm.amdgcn.rcp",
+						      ac_to_float_type(&ctx->ac, def_type), src[0]);
+		}
 		break;
 	case nir_op_iand:
 		result = LLVMBuildAnd(ctx->ac.builder, src[0], src[1], "");
@@ -4043,7 +4061,7 @@ static void visit_intrinsic(struct ac_nir_context *ctx,
 	case nir_intrinsic_shuffle:
 		if (ctx->ac.chip_class == GFX8 ||
 		    ctx->ac.chip_class == GFX9 ||
-		    (ctx->ac.chip_class == GFX10 && ctx->ac.wave_size == 32)) {
+		    (ctx->ac.chip_class >= GFX10 && ctx->ac.wave_size == 32)) {
 			result = ac_build_shuffle(&ctx->ac, get_src(ctx, instr->src[0]),
 						  get_src(ctx, instr->src[1]));
 		} else {

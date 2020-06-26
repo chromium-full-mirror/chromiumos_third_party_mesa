@@ -227,12 +227,13 @@ local_thread_id(nir_builder *b)
 }
 
 void
-ir3_nir_lower_to_explicit_output(nir_shader *shader, struct ir3_shader *s, unsigned topology)
+ir3_nir_lower_to_explicit_output(nir_shader *shader, struct ir3_shader_variant *v,
+		unsigned topology)
 {
 	struct state state = { };
 
 	build_primitive_map(shader, &state.map, &shader->outputs);
-	memcpy(s->output_loc, state.map.loc, sizeof(s->output_loc));
+	memcpy(v->output_loc, state.map.loc, sizeof(v->output_loc));
 
 	nir_function_impl *impl = nir_shader_get_entrypoint(shader);
 	assert(impl);
@@ -241,7 +242,7 @@ ir3_nir_lower_to_explicit_output(nir_shader *shader, struct ir3_shader *s, unsig
 	nir_builder_init(&b, impl);
 	b.cursor = nir_before_cf_list(&impl->body);
 
-	if (s->type == MESA_SHADER_VERTEX && topology != IR3_TESS_NONE)
+	if (v->type == MESA_SHADER_VERTEX && topology != IR3_TESS_NONE)
 		state.header = nir_load_tcs_header_ir3(&b);
 	else
 		state.header = nir_load_gs_header_ir3(&b);
@@ -252,7 +253,7 @@ ir3_nir_lower_to_explicit_output(nir_shader *shader, struct ir3_shader *s, unsig
 	nir_metadata_preserve(impl, nir_metadata_block_index |
 			nir_metadata_dominance);
 
-	s->output_size = state.map.stride;
+	v->output_size = state.map.stride;
 }
 
 
@@ -502,9 +503,12 @@ lower_tess_ctrl_block(nir_block *block, nir_builder *b, struct state *state)
 			b->cursor = nir_before_instr(&intr->instr);
 
 			if (levels) {
-				for (int i = 0; i < 4; i++)
-					if (nir_intrinsic_write_mask(intr) & (1 << i))
-						levels[i] = nir_channel(b, intr->src[0].ssa, i);
+				for (int i = 0; i < 4; i++) {
+					if (nir_intrinsic_write_mask(intr) & (1 << i)) {
+						uint32_t component = nir_intrinsic_component(intr);
+						levels[i + component] = nir_channel(b, intr->src[0].ssa, i);
+					}
+				}
 				nir_instr_remove(&intr->instr);
 			} else {
 				nir_ssa_def *address = nir_load_tess_param_base_ir3(b);
@@ -595,7 +599,8 @@ emit_tess_epilouge(nir_builder *b, struct state *state)
 }
 
 void
-ir3_nir_lower_tess_ctrl(nir_shader *shader, struct ir3_shader *s, unsigned topology)
+ir3_nir_lower_tess_ctrl(nir_shader *shader, struct ir3_shader_variant *v,
+		unsigned topology)
 {
 	struct state state = { .topology = topology };
 
@@ -606,8 +611,8 @@ ir3_nir_lower_tess_ctrl(nir_shader *shader, struct ir3_shader *s, unsigned topol
 	}
 
 	build_primitive_map(shader, &state.map, &shader->outputs);
-	memcpy(s->output_loc, state.map.loc, sizeof(s->output_loc));
-	s->output_size = state.map.stride;
+	memcpy(v->output_loc, state.map.loc, sizeof(v->output_loc));
+	v->output_size = state.map.stride;
 
 	nir_function_impl *impl = nir_shader_get_entrypoint(shader);
 	assert(impl);
@@ -707,6 +712,7 @@ lower_tess_eval_block(nir_block *block, nir_builder *b, struct state *state)
 
 		case nir_intrinsic_load_tess_level_inner:
 		case nir_intrinsic_load_tess_level_outer: {
+				unsigned dest_comp = nir_intrinsic_dest_components(intr);
 				b->cursor = nir_before_instr(&intr->instr);
 
 				gl_varying_slot slot;
@@ -725,7 +731,7 @@ lower_tess_eval_block(nir_block *block, nir_builder *b, struct state *state)
 				 * component individually.
 				 */
 				nir_ssa_def *levels[4];
-				for (unsigned i = 0; i < intr->num_components; i++) {
+				for (unsigned i = 0; i < dest_comp; i++) {
 					nir_intrinsic_instr *new_intr =
 						nir_intrinsic_instr_create(b->shader, nir_intrinsic_load_global_ir3);
 
@@ -737,7 +743,7 @@ lower_tess_eval_block(nir_block *block, nir_builder *b, struct state *state)
 					levels[i] = &new_intr->dest.ssa;
 				}
 
-				nir_ssa_def *v = nir_vec(b, levels, intr->num_components);
+				nir_ssa_def *v = nir_vec(b, levels, dest_comp);
 
 				nir_ssa_def_rewrite_uses(&intr->dest.ssa, nir_src_for_ssa(v));
 
@@ -983,7 +989,7 @@ ir3_link_geometry_stages(const struct ir3_shader_variant *producer,
 		nir_foreach_variable(out_var, &producer->shader->nir->outputs) {
 			if (in_var->data.location == out_var->data.location) {
 				locs[in_var->data.driver_location] =
-					producer->shader->output_loc[out_var->data.driver_location] * factor;
+					producer->output_loc[out_var->data.driver_location] * factor;
 
 				debug_assert(num_loc <= in_var->data.driver_location + 1);
 				num_loc = in_var->data.driver_location + 1;

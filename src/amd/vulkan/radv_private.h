@@ -311,8 +311,8 @@ struct radv_physical_device {
 	uint8_t cs_wave_size;
 	uint8_t ge_wave_size;
 
-	/* Whether to use the experimental compiler backend */
-	bool use_aco;
+	/* Whether to use the LLVM compiler backend */
+	bool use_llvm;
 
 	/* This is the drivers on-disk cache used as a fallback as opposed to
 	 * the pipeline cache defined by apps.
@@ -354,6 +354,11 @@ struct radv_instance {
 
 	struct driOptionCache dri_options;
 	struct driOptionCache available_dri_options;
+
+	/**
+	 * Workarounds for game bugs.
+	 */
+	bool enable_mrt_output_nan_fixup;
 };
 
 static inline
@@ -1576,7 +1581,7 @@ struct radv_shader_module;
 #define RADV_HASH_SHADER_CS_WAVE32           (1 << 1)
 #define RADV_HASH_SHADER_PS_WAVE32           (1 << 2)
 #define RADV_HASH_SHADER_GE_WAVE32           (1 << 3)
-#define RADV_HASH_SHADER_ACO                 (1 << 4)
+#define RADV_HASH_SHADER_LLVM                (1 << 4)
 
 void
 radv_hash_shaders(unsigned char *hash,
@@ -2391,7 +2396,7 @@ void radv_nir_shader_info_pass(const struct nir_shader *nir,
 			       const struct radv_pipeline_layout *layout,
 			       const struct radv_shader_variant_key *key,
 			       struct radv_shader_info *info,
-			       bool use_aco);
+			       bool use_llvm);
 
 void radv_nir_shader_info_init(struct radv_shader_info *info);
 

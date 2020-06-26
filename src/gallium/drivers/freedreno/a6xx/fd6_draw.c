@@ -53,13 +53,13 @@ draw_emit_indirect(struct fd_ringbuffer *ring,
 
 	if (info->index_size) {
 		struct pipe_resource *idx = info->index.resource;
-		unsigned max_indicies = (idx->width0 - index_offset) / info->index_size;
+		unsigned max_indices = (idx->width0 - index_offset) / info->index_size;
 
 		OUT_PKT(ring, CP_DRAW_INDX_INDIRECT,
 				pack_CP_DRAW_INDX_OFFSET_0(*draw0),
 				A5XX_CP_DRAW_INDX_INDIRECT_INDX_BASE(
 						fd_resource(idx)->bo, index_offset),
-				A5XX_CP_DRAW_INDX_INDIRECT_3(.max_indices = max_indicies),
+				A5XX_CP_DRAW_INDX_INDIRECT_3(.max_indices = max_indices),
 				A5XX_CP_DRAW_INDX_INDIRECT_INDIRECT(
 						ind->bo, info->indirect->offset)
 			);
@@ -82,17 +82,16 @@ draw_emit(struct fd_ringbuffer *ring,
 		assert(!info->has_user_indices);
 
 		struct pipe_resource *idx_buffer = info->index.resource;
-		uint32_t idx_size = info->index_size * info->count;
-		uint32_t idx_offset = index_offset + info->start * info->index_size;
+		unsigned max_indices = (idx_buffer->width0 - index_offset) / info->index_size;
 
 		OUT_PKT(ring, CP_DRAW_INDX_OFFSET,
 				pack_CP_DRAW_INDX_OFFSET_0(*draw0),
 				CP_DRAW_INDX_OFFSET_1(.num_instances = info->instance_count),
 				CP_DRAW_INDX_OFFSET_2(.num_indices = info->count),
-				CP_DRAW_INDX_OFFSET_3(0),
+				CP_DRAW_INDX_OFFSET_3(.first_indx = info->start),
 				A5XX_CP_DRAW_INDX_OFFSET_INDX_BASE(
-						fd_resource(idx_buffer)->bo, idx_offset),
-				A5XX_CP_DRAW_INDX_OFFSET_6(.indx_size = idx_size)
+						fd_resource(idx_buffer)->bo, index_offset),
+				A5XX_CP_DRAW_INDX_OFFSET_6(.max_indices = max_indices)
 			);
 	} else {
 		OUT_PKT(ring, CP_DRAW_INDX_OFFSET,
@@ -258,7 +257,7 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 
 		ctx->batch->tessellation = true;
 		ctx->batch->tessparam_size = MAX2(ctx->batch->tessparam_size,
-				emit.hs->shader->output_size * 4 * info->count);
+				emit.hs->output_size * 4 * info->count);
 		ctx->batch->tessfactor_size = MAX2(ctx->batch->tessfactor_size,
 				factor_stride * info->count);
 
@@ -466,7 +465,6 @@ fd6_clear(struct fd_context *ctx, unsigned buffers,
 	struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
 	const bool has_depth = pfb->zsbuf;
 	unsigned color_buffers = buffers >> 2;
-	unsigned i;
 
 	/* If we're clearing after draws, fallback to 3D pipe clears.  We could
 	 * use blitter clears in the draw batch but then we'd have to patch up the

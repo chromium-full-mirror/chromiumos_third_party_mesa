@@ -134,7 +134,8 @@ static void
 emit_tess_bos(struct fd_ringbuffer *ring, struct fd6_emit *emit, struct ir3_shader_variant *s)
 {
 	struct fd_context *ctx = emit->ctx;
-	const unsigned regid = s->shader->const_state.offsets.primitive_param * 4 + 4;
+	const struct ir3_const_state *const_state = ir3_const_state(s);
+	const unsigned regid = const_state->offsets.primitive_param * 4 + 4;
 	uint32_t dwords = 16;
 
 	OUT_PKT7(ring, fd6_stage2opcode(s->type), 3);
@@ -150,7 +151,8 @@ static void
 emit_stage_tess_consts(struct fd_ringbuffer *ring, struct ir3_shader_variant *v,
 		uint32_t *params, int num_params)
 {
-	const unsigned regid = v->shader->const_state.offsets.primitive_param;
+	const struct ir3_const_state *const_state = ir3_const_state(v);
+	const unsigned regid = const_state->offsets.primitive_param;
 	int size = MIN2(1 + regid, v->constlen) - regid;
 	if (size > 0)
 		fd6_emit_const(ring, v->type, regid * 4, 0, num_params, params, NULL);
@@ -173,8 +175,8 @@ emit_tess_consts(struct fd6_emit *emit)
 		emit->gs->shader->nir->info.gs.vertices_in;
 
 	uint32_t vs_params[4] = {
-		emit->vs->shader->output_size * num_vertices * 4,	/* vs primitive stride */
-		emit->vs->shader->output_size * 4,					/* vs vertex stride */
+		emit->vs->output_size * num_vertices * 4,	/* vs primitive stride */
+		emit->vs->output_size * 4,					/* vs vertex stride */
 		0,
 		0
 	};
@@ -183,9 +185,9 @@ emit_tess_consts(struct fd6_emit *emit)
 
 	if (emit->hs) {
 		uint32_t hs_params[4] = {
-			emit->vs->shader->output_size * num_vertices * 4,	/* vs primitive stride */
-			emit->vs->shader->output_size * 4,					/* vs vertex stride */
-			emit->hs->shader->output_size,
+			emit->vs->output_size * num_vertices * 4,	/* vs primitive stride */
+			emit->vs->output_size * 4,					/* vs vertex stride */
+			emit->hs->output_size,
 			emit->info->vertices_per_patch
 		};
 
@@ -196,9 +198,9 @@ emit_tess_consts(struct fd6_emit *emit)
 			num_vertices = emit->gs->shader->nir->info.gs.vertices_in;
 
 		uint32_t ds_params[4] = {
-			emit->ds->shader->output_size * num_vertices * 4,	/* ds primitive stride */
-			emit->ds->shader->output_size * 4,					/* ds vertex stride */
-			emit->hs->shader->output_size,                      /* hs vertex stride (dwords) */
+			emit->ds->output_size * num_vertices * 4,	/* ds primitive stride */
+			emit->ds->output_size * 4,					/* ds vertex stride */
+			emit->hs->output_size,                      /* hs vertex stride (dwords) */
 			emit->hs->shader->nir->info.tess.tcs_vertices_out
 		};
 
@@ -214,8 +216,8 @@ emit_tess_consts(struct fd6_emit *emit)
 			prev = emit->vs;
 
 		uint32_t gs_params[4] = {
-			prev->shader->output_size * num_vertices * 4,	/* ds primitive stride */
-			prev->shader->output_size * 4,					/* ds vertex stride */
+			prev->output_size * num_vertices * 4,	/* ds primitive stride */
+			prev->output_size * 4,					/* ds vertex stride */
 			0,
 			0,
 		};
@@ -231,10 +233,11 @@ static void
 fd6_emit_ubos(struct fd_context *ctx, const struct ir3_shader_variant *v,
 		struct fd_ringbuffer *ring, struct fd_constbuf_stateobj *constbuf)
 {
-	if (!v->shader->num_ubos)
-		return;
+	const struct ir3_const_state *const_state = ir3_const_state(v);
+	int num_ubos = const_state->num_ubos;
 
-	int num_ubos = v->shader->num_ubos;
+	if (!num_ubos)
+		return;
 
 	OUT_PKT7(ring, fd6_stage2opcode(v->type), 3 + (2 * num_ubos));
 	OUT_RING(ring, CP_LOAD_STATE6_0_DST_OFF(0) |
@@ -275,6 +278,29 @@ fd6_emit_ubos(struct fd_context *ctx, const struct ir3_shader_variant *v,
 	}
 }
 
+static unsigned
+user_consts_cmdstream_size(struct ir3_shader_variant *v)
+{
+	struct ir3_const_state *const_state = ir3_const_state(v);
+	struct ir3_ubo_analysis_state *ubo_state = &const_state->ubo_state;
+
+	if (unlikely(!ubo_state->cmdstream_size)) {
+		unsigned packets, size;
+
+		/* pre-calculate size required for userconst stateobj: */
+		ir3_user_consts_size(ubo_state, &packets, &size);
+
+		/* also account for UBO addresses: */
+		packets += 1;
+		size += 2 * const_state->num_ubos;
+
+		unsigned sizedwords = (4 * packets) + size;
+		ubo_state->cmdstream_size = sizedwords * 4;
+	}
+
+	return ubo_state->cmdstream_size;
+}
+
 static void
 emit_user_consts(struct fd6_emit *emit)
 {
@@ -282,7 +308,7 @@ emit_user_consts(struct fd6_emit *emit)
 			PIPE_SHADER_VERTEX, PIPE_SHADER_TESS_CTRL, PIPE_SHADER_TESS_EVAL,
 			PIPE_SHADER_GEOMETRY, PIPE_SHADER_FRAGMENT,
 	};
-	const struct ir3_shader_variant *variants[] = {
+	struct ir3_shader_variant *variants[] = {
 			emit->vs, emit->hs, emit->ds, emit->gs, emit->fs,
 	};
 	struct fd_context *ctx = emit->ctx;
@@ -291,7 +317,7 @@ emit_user_consts(struct fd6_emit *emit)
 	for (unsigned i = 0; i < ARRAY_SIZE(types); i++) {
 		if (!variants[i])
 			continue;
-		sz += variants[i]->shader->ubo_state.cmdstream_size;
+		sz += user_consts_cmdstream_size(variants[i]);
 	}
 
 	struct fd_ringbuffer *constobj = fd_submit_new_ringbuffer(
@@ -356,13 +382,6 @@ fd6_emit_immediates(struct fd_screen *screen, const struct ir3_shader_variant *v
 		struct fd_ringbuffer *ring)
 {
 	ir3_emit_immediates(screen, v, ring);
-}
-
-void
-fd6_user_consts_size(struct ir3_ubo_analysis_state *state,
-		unsigned *packets, unsigned *size)
-{
-	ir3_user_consts_size(state, packets, size);
 }
 
 void

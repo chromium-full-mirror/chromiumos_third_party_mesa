@@ -110,7 +110,7 @@ create_driver_param(struct ir3_context *ctx, enum ir3_driver_param dp)
 {
 	/* first four vec4 sysval's reserved for UBOs: */
 	/* NOTE: dp is in scalar, but there can be >4 dp components: */
-	struct ir3_const_state *const_state = &ctx->so->shader->const_state;
+	struct ir3_const_state *const_state = ir3_const_state(ctx->so);
 	unsigned n = const_state->offsets.driver_param;
 	unsigned r = regid(n + dp / 4, dp % 4);
 	return create_uniform(ctx->block, r);
@@ -772,7 +772,7 @@ emit_intrinsic_load_ubo(struct ir3_context *ctx, nir_intrinsic_instr *intr,
 {
 	struct ir3_block *b = ctx->block;
 	struct ir3_instruction *base_lo, *base_hi, *addr, *src0, *src1;
-	struct ir3_const_state *const_state = &ctx->so->shader->const_state;
+	const struct ir3_const_state *const_state = ir3_const_state(ctx->so);
 	unsigned ubo = regid(const_state->offsets.ubo, 0);
 	const unsigned ptrsz = ir3_pointer_size(ctx->compiler);
 
@@ -848,7 +848,7 @@ emit_intrinsic_ssbo_size(struct ir3_context *ctx, nir_intrinsic_instr *intr,
 		struct ir3_instruction **dst)
 {
 	/* SSBO size stored as a const starting at ssbo_sizes: */
-	struct ir3_const_state *const_state = &ctx->so->shader->const_state;
+	const struct ir3_const_state *const_state = ir3_const_state(ctx->so);
 	unsigned blk_idx = nir_src_as_uint(intr->src[0]);
 	unsigned idx = regid(const_state->offsets.ssbo_sizes, 0) +
 		const_state->ssbo_size.off[blk_idx];
@@ -1219,7 +1219,8 @@ emit_intrinsic_image_size_tex(struct ir3_context *ctx, nir_intrinsic_instr *intr
 		 * bytes-per-pixel should have been emitted in 2nd slot of
 		 * image_dims. See ir3_shader::emit_image_dims().
 		 */
-		struct ir3_const_state *const_state = &ctx->so->shader->const_state;
+		const struct ir3_const_state *const_state =
+				ir3_const_state(ctx->so);
 		unsigned cb = regid(const_state->offsets.image_dims, 0) +
 			const_state->image_dims.off[nir_src_as_uint(intr->src[0])];
 		struct ir3_instruction *aux = create_uniform(b, cb + 1);
@@ -1426,30 +1427,31 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 	struct ir3_instruction **dst;
 	struct ir3_instruction * const *src;
 	struct ir3_block *b = ctx->block;
+	unsigned dest_components = nir_intrinsic_dest_components(intr);
 	int idx, comp;
 
 	if (info->has_dest) {
-		unsigned n = nir_intrinsic_dest_components(intr);
-		dst = ir3_get_dst(ctx, &intr->dest, n);
+		dst = ir3_get_dst(ctx, &intr->dest, dest_components);
 	} else {
 		dst = NULL;
 	}
 
-	const unsigned primitive_param = ctx->so->shader->const_state.offsets.primitive_param * 4;
-	const unsigned primitive_map = ctx->so->shader->const_state.offsets.primitive_map * 4;
+	const struct ir3_const_state *const_state = ir3_const_state(ctx->so);
+	const unsigned primitive_param = const_state->offsets.primitive_param * 4;
+	const unsigned primitive_map = const_state->offsets.primitive_map * 4;
 
 	switch (intr->intrinsic) {
 	case nir_intrinsic_load_uniform:
 		idx = nir_intrinsic_base(intr);
 		if (nir_src_is_const(intr->src[0])) {
 			idx += nir_src_as_uint(intr->src[0]);
-			for (int i = 0; i < intr->num_components; i++) {
+			for (int i = 0; i < dest_components; i++) {
 				dst[i] = create_uniform_typed(b, idx + i,
 					nir_dest_bit_size(intr->dest) == 16 ? TYPE_F16 : TYPE_F32);
 			}
 		} else {
 			src = ir3_get_src(ctx, &intr->src[0]);
-			for (int i = 0; i < intr->num_components; i++) {
+			for (int i = 0; i < dest_components; i++) {
 				dst[i] = create_uniform_indirect(b, idx + i,
 						ir3_get_addr0(ctx, src[0], 1));
 			}
@@ -1459,7 +1461,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 			 * addr reg value can be:
 			 */
 			ctx->so->constlen = MAX2(ctx->so->constlen,
-					ctx->so->shader->ubo_state.size / 16);
+					const_state->ubo_state.size / 16);
 		}
 		break;
 
@@ -1522,6 +1524,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 
 	case nir_intrinsic_store_global_ir3: {
 		struct ir3_instruction *value, *addr, *offset;
+		unsigned ncomp = nir_intrinsic_src_components(intr, 0);
 
 		addr = ir3_create_collect(ctx, (struct ir3_instruction*[]){
 				ir3_get_src(ctx, &intr->src[1])[0],
@@ -1530,12 +1533,11 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 
 		offset = ir3_get_src(ctx, &intr->src[2])[0];
 
-		value = ir3_create_collect(ctx, ir3_get_src(ctx, &intr->src[0]),
-								   intr->num_components);
+		value = ir3_create_collect(ctx, ir3_get_src(ctx, &intr->src[0]), ncomp);
 
 		struct ir3_instruction *stg =
 			ir3_STG_G(ctx->block, addr, 0, value, 0,
-					  create_immed(ctx->block, intr->num_components), 0, offset, 0);
+					  create_immed(ctx->block, ncomp), 0, offset, 0);
 		stg->cat6.type = TYPE_U32;
 		stg->cat6.iim_val = 1;
 
@@ -1557,15 +1559,15 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		offset = ir3_get_src(ctx, &intr->src[1])[0];
 
 		struct ir3_instruction *load =
-			ir3_LDG(b, addr, 0, create_immed(ctx->block, intr->num_components),
+			ir3_LDG(b, addr, 0, create_immed(ctx->block, dest_components),
 					0, offset, 0);
 		load->cat6.type = TYPE_U32;
-		load->regs[0]->wrmask = MASK(intr->num_components);
+		load->regs[0]->wrmask = MASK(dest_components);
 
 		load->barrier_class = IR3_BARRIER_BUFFER_R;
 		load->barrier_conflict = IR3_BARRIER_BUFFER_W;
 
-		ir3_split_dest(b, dst, load, 0, intr->num_components);
+		ir3_split_dest(b, dst, load, 0, dest_components);
 		break;
 	}
 
@@ -1618,7 +1620,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		if (nir_src_is_const(intr->src[1])) {
 			struct ir3_instruction *coord = ir3_create_collect(ctx, src, 2);
 			idx += nir_src_as_uint(intr->src[1]);
-			for (int i = 0; i < intr->num_components; i++) {
+			for (int i = 0; i < dest_components; i++) {
 				unsigned inloc = idx * 4 + i + comp;
 				if (ctx->so->inputs[idx].bary &&
 						!ctx->so->inputs[idx].use_ldlv) {
@@ -1641,7 +1643,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		comp = nir_intrinsic_component(intr);
 		if (nir_src_is_const(intr->src[0])) {
 			idx += nir_src_as_uint(intr->src[0]);
-			for (int i = 0; i < intr->num_components; i++) {
+			for (int i = 0; i < dest_components; i++) {
 				unsigned n = idx * 4 + i + comp;
 				dst[i] = ctx->inputs[n];
 				compile_assert(ctx, ctx->inputs[n]);
@@ -1651,7 +1653,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 			struct ir3_instruction *collect =
 					ir3_create_collect(ctx, ctx->ir->inputs, ctx->ninputs);
 			struct ir3_instruction *addr = ir3_get_addr0(ctx, src[0], 4);
-			for (int i = 0; i < intr->num_components; i++) {
+			for (int i = 0; i < dest_components; i++) {
 				unsigned n = idx * 4 + i + comp;
 				dst[i] = create_indirect_load(ctx, ctx->ninputs,
 						n, addr, collect);
@@ -1771,7 +1773,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		idx += nir_src_as_uint(intr->src[1]);
 
 		src = ir3_get_src(ctx, &intr->src[0]);
-		for (int i = 0; i < intr->num_components; i++) {
+		for (int i = 0; i < nir_intrinsic_src_components(intr, 0); i++) {
 			unsigned n = idx * 4 + i + comp;
 			ctx->outputs[n] = src[i];
 		}
@@ -1782,6 +1784,12 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 			ctx->basevertex = create_driver_param(ctx, IR3_DP_VTXID_BASE);
 		}
 		dst[0] = ctx->basevertex;
+		break;
+	case nir_intrinsic_load_draw_id:
+		if (!ctx->draw_id) {
+			ctx->draw_id = create_driver_param(ctx, IR3_DP_DRAWID);
+		}
+		dst[0] = ctx->draw_id;
 		break;
 	case nir_intrinsic_load_base_instance:
 		if (!ctx->base_instance) {
@@ -1822,7 +1830,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		break;
 	case nir_intrinsic_load_user_clip_plane:
 		idx = nir_intrinsic_ucp_id(intr);
-		for (int i = 0; i < intr->num_components; i++) {
+		for (int i = 0; i < dest_components; i++) {
 			unsigned n = idx * 4 + i;
 			dst[i] = create_driver_param(ctx, IR3_DP_UCP0_X + n);
 		}
@@ -1857,12 +1865,12 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		ir3_split_dest(b, dst, ctx->work_group_id, 0, 3);
 		break;
 	case nir_intrinsic_load_num_work_groups:
-		for (int i = 0; i < intr->num_components; i++) {
+		for (int i = 0; i < dest_components; i++) {
 			dst[i] = create_driver_param(ctx, IR3_DP_NUM_WORK_GROUPS_X + i);
 		}
 		break;
 	case nir_intrinsic_load_local_group_size:
-		for (int i = 0; i < intr->num_components; i++) {
+		for (int i = 0; i < dest_components; i++) {
 			dst[i] = create_driver_param(ctx, IR3_DP_LOCAL_GROUP_SIZE_X + i);
 		}
 		break;
@@ -2805,7 +2813,8 @@ emit_stream_out(struct ir3_context *ctx)
 	 * stripped out in the backend.
 	 */
 	for (unsigned i = 0; i < IR3_MAX_SO_BUFFERS; i++) {
-		struct ir3_const_state *const_state = &ctx->so->shader->const_state;
+		const struct ir3_const_state *const_state =
+				ir3_const_state(ctx->so);
 		unsigned stride = strmout->stride[i];
 		struct ir3_instruction *base, *off;
 
@@ -3245,7 +3254,7 @@ emit_instructions(struct ir3_context *ctx)
 	ctx->inputs  = rzalloc_array(ctx, struct ir3_instruction *, ctx->ninputs);
 	ctx->outputs = rzalloc_array(ctx, struct ir3_instruction *, ctx->noutputs);
 
-	ctx->ir = ir3_create(ctx->compiler, ctx->so->type);
+	ctx->ir = ir3_create(ctx->compiler, ctx->so);
 
 	/* Create inputs in first block: */
 	ctx->block = get_block(ctx, nir_start_block(fxn));
@@ -3317,15 +3326,11 @@ emit_instructions(struct ir3_context *ctx)
 		setup_output(ctx, var);
 	}
 
-	/* Find # of samplers: */
-	nir_foreach_variable (var, &ctx->s->uniforms) {
-		ctx->so->num_samp += glsl_type_get_sampler_count(var->type);
-		/* just assume that we'll be reading from images.. if it
-		 * is write-only we don't have to count it, but not sure
-		 * if there is a good way to know?
-		 */
-		ctx->so->num_samp += glsl_type_get_image_count(var->type);
-	}
+	/* Find # of samplers. Just assume that we'll be reading from images.. if
+	 * it is write-only we don't have to count it, but after lowering derefs
+	 * is too late to compact indices for that.
+	 */
+	ctx->so->num_samp = util_last_bit(ctx->s->info.textures_used) + ctx->s->info.num_images;
 
 	/* NOTE: need to do something more clever when we support >1 fxn */
 	nir_foreach_register (reg, &fxn->registers) {
@@ -3446,10 +3451,16 @@ collect_tex_prefetches(struct ir3_context *ctx, struct ir3 *ir)
 				fetch->dst = instr->regs[0]->num;
 				fetch->src = instr->prefetch.input_offset;
 
+				/* These are the limits on a5xx/a6xx, we might need to
+				 * revisit if SP_FS_PREFETCH[n] changes on later gens:
+				 */
+				assert(fetch->dst <= 0x3f);
+				assert(fetch->tex_id <= 0x1f);
+				assert(fetch->samp_id < 0xf);
+
 				ctx->so->total_in =
 					MAX2(ctx->so->total_in, instr->prefetch.input_offset + 2);
 
-				/* Disable half precision until supported. */
 				fetch->half_precision = !!(instr->regs[0]->flags & IR3_REG_HALF);
 
 				/* Remove the prefetch placeholder instruction: */
@@ -3633,6 +3644,11 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 
 	ir3_debug_print(ir, "AFTER: ir3_sched");
 
+	if (IR3_PASS(ir, ir3_cp_postsched)) {
+		/* cleanup the result of removing unneeded mov's: */
+		while (IR3_PASS(ir, ir3_dce, so)) {}
+	}
+
 	/* Pre-assign VS inputs on a6xx+ binning pass shader, to align
 	 * with draw pass VS, so binning and draw pass can both use the
 	 * same VBO state.
@@ -3703,7 +3719,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 		goto out;
 	}
 
-	IR3_PASS(ir, ir3_postsched);
+	IR3_PASS(ir, ir3_postsched, so);
 
 	if (compiler->gpu_id >= 600) {
 		IR3_PASS(ir, ir3_a6xx_fixup_atomic_dests, so);

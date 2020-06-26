@@ -389,7 +389,7 @@ mir_compute_interference(
                         midgard_block *block = (midgard_block *) _block;
                         mir_foreach_instr_in_block_rev(block, ins) {
                                 if (ins->writeout)
-                                        r1w = ins->src[2];
+                                        r1w = ins->dest;
                         }
 
                         if (r1w != ~0)
@@ -433,6 +433,20 @@ mir_compute_interference(
 
                 free(live);
         }
+}
+
+static bool
+mir_is_64(midgard_instruction *ins)
+{
+        if (nir_alu_type_get_type_size(ins->dest_type) == 64)
+                return true;
+
+        mir_foreach_src(ins, v) {
+                if (nir_alu_type_get_type_size(ins->src_types[v]) == 64)
+                        return true;
+        }
+
+        return false;
 }
 
 /* This routine performs the actual register allocation. It should be succeeded
@@ -488,7 +502,7 @@ allocate_registers(compiler_context *ctx, bool *spilled)
                  * but once we get RA we shouldn't disrupt this further. Align
                  * sources of 64-bit instructions. */
 
-                if (ins->type == TAG_ALU_4 && ins->alu.reg_mode == midgard_reg_mode_64) {
+                if (ins->type == TAG_ALU_4 && mir_is_64(ins)) {
                         mir_foreach_src(ins, v) {
                                 unsigned s = ins->src[v];
 
@@ -600,26 +614,37 @@ allocate_registers(compiler_context *ctx, bool *spilled)
                 assert(check_read_class(l->class, ins->type, ins->src[2]));
         }
 
-        /* Mark writeout to r0, render target to r1.z, unknown to r1.w */
+        /* Mark writeout to r0, depth to r1.x, stencil to r1.y,
+         * render target to r1.z, unknown to r1.w */
         mir_foreach_instr_global(ctx, ins) {
                 if (!(ins->compact_branch && ins->writeout)) continue;
 
-                if (ins->src[0] < ctx->temp_count) {
-                        if (ins->writeout_depth)
-                                l->solutions[ins->src[0]] = (16 * 1) + COMPONENT_X * 4;
-                        else if (ins->writeout_stencil)
-                                l->solutions[ins->src[0]] = (16 * 1) + COMPONENT_Y * 4;
-                        else
-                                l->solutions[ins->src[0]] = 0;
-                }
+                if (ins->src[0] < ctx->temp_count)
+                        l->solutions[ins->src[0]] = 0;
+
+                if (ins->src[2] < ctx->temp_count)
+                        l->solutions[ins->src[2]] = (16 * 1) + COMPONENT_X * 4;
+
+                if (ins->src[3] < ctx->temp_count)
+                        l->solutions[ins->src[3]] = (16 * 1) + COMPONENT_Y * 4;
 
                 if (ins->src[1] < ctx->temp_count)
                         l->solutions[ins->src[1]] = (16 * 1) + COMPONENT_Z * 4;
 
-                if (ins->src[2] < ctx->temp_count)
-                        l->solutions[ins->src[2]] = (16 * 1) + COMPONENT_W * 4;
+                if (ins->dest < ctx->temp_count)
+                        l->solutions[ins->dest] = (16 * 1) + COMPONENT_W * 4;
         }
-        
+
+        /* Precolour blend input to r0. Note writeout is necessarily at the end
+         * and blend shaders are single-RT only so there is only a single
+         * writeout block, so this cannot conflict with the writeout r0 (there
+         * is no need to have an intermediate move) */
+
+        if (ctx->blend_input != ~0) {
+                assert(ctx->blend_input < ctx->temp_count);
+                l->solutions[ctx->blend_input] = 0;
+        }
+
         mir_compute_interference(ctx, l);
 
         *spilled = !lcra_solve(l);

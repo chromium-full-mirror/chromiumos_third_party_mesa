@@ -411,15 +411,6 @@ image("samples", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
 image("atomic_inc_wrap",  src_comp=[4, 1, 1], dest_comp=1)
 image("atomic_dec_wrap",  src_comp=[4, 1, 1], dest_comp=1)
 
-# Intel-specific query for loading from the brw_image_param struct passed
-# into the shader as a uniform.  The variable is a deref to the image
-# variable. The const index specifies which of the six parameters to load.
-intrinsic("image_deref_load_param_intel", src_comp=[1], dest_comp=0,
-          indices=[BASE], flags=[CAN_ELIMINATE, CAN_REORDER])
-image("load_raw_intel", src_comp=[1], dest_comp=0,
-      flags=[CAN_ELIMINATE])
-image("store_raw_intel", src_comp=[1, 0])
-
 # Vulkan descriptor set intrinsics
 #
 # The Vulkan API uses a different binding model from GL.  In the Vulkan
@@ -649,9 +640,6 @@ system_value("color1", 4)
 # System value for internal compute shaders in radeonsi.
 system_value("user_data_amd", 4)
 
-# Number of data items being operated on for a SIMD program.
-system_value("simd_width_intel", 1)
-
 # Barycentric coordinate intrinsics.
 #
 # These set up the barycentric coordinates for a particular interpolation.
@@ -872,17 +860,11 @@ intrinsic("bindless_resource_ir3", [1], dest_comp=1, indices=[DESC_SET], flags=[
 # One notable divergence is sRGB, which is asymmetric: raw_input_pan requires
 # an sRGB->linear conversion, but linear values should be written to
 # raw_output_pan and the hardware handles linear->sRGB.
-#
-# We also have format-specific Midgard intrinsics. There are rather
-# here-be-dragons. load_output_u8_as_fp16_pan does the equivalent of
-# load_raw_out_pan on an RGBA8 UNORM framebuffer followed by u2u16 -> fp16 ->
-# division by 255.
 
 # src[] = { value }
 store("raw_output_pan", 1, [])
-store("zs_output_pan", 1, [COMPONENT])
+store("combined_output_pan", 4, [BASE, COMPONENT])
 load("raw_output_pan", 0, [], [CAN_ELIMINATE, CAN_REORDER])
-load("output_u8_as_fp16_pan", 0, [], [CAN_ELIMINATE, CAN_REORDER])
 
 # Loads the sampler paramaters <min_lod, max_lod, lod_bias>
 # src[] = { sampler_index }
@@ -929,3 +911,15 @@ store("tlb_sample_color_v3d", 2, [BASE, COMPONENT, TYPE], [])
 # V3D-specific intrinsic to load the number of layers attached to
 # the target framebuffer
 intrinsic("load_fb_layers_v3d", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
+
+# Intel-specific query for loading from the brw_image_param struct passed
+# into the shader as a uniform.  The variable is a deref to the image
+# variable. The const index specifies which of the six parameters to load.
+intrinsic("image_deref_load_param_intel", src_comp=[1], dest_comp=0,
+          indices=[BASE], flags=[CAN_ELIMINATE, CAN_REORDER])
+image("load_raw_intel", src_comp=[1], dest_comp=0,
+      flags=[CAN_ELIMINATE])
+image("store_raw_intel", src_comp=[1, 0])
+
+# Number of data items being operated on for a SIMD program.
+system_value("simd_width_intel", 1)

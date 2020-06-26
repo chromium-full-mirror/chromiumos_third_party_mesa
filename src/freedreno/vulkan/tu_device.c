@@ -581,21 +581,21 @@ tu_GetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice,
    memset(pFeatures, 0, sizeof(*pFeatures));
 
    *pFeatures = (VkPhysicalDeviceFeatures) {
-      .robustBufferAccess = false,
+      .robustBufferAccess = true,
       .fullDrawIndexUint32 = true,
       .imageCubeArray = true,
       .independentBlend = true,
       .geometryShader = true,
-      .tessellationShader = false,
+      .tessellationShader = true,
       .sampleRateShading = true,
       .dualSrcBlend = true,
       .logicOp = true,
-      .multiDrawIndirect = false,
-      .drawIndirectFirstInstance = false,
+      .multiDrawIndirect = true,
+      .drawIndirectFirstInstance = true,
       .depthClamp = true,
       .depthBiasClamp = false,
-      .fillModeNonSolid = false,
-      .depthBounds = false,
+      .fillModeNonSolid = true,
+      .depthBounds = true,
       .wideLines = false,
       .largePoints = false,
       .alphaToOne = true,
@@ -636,6 +636,22 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
    vk_foreach_struct(ext, pFeatures->pNext)
    {
       switch (ext->sType) {
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES: {
+         VkPhysicalDeviceVulkan11Features *features = (void *) ext;
+         features->storageBuffer16BitAccess            = false;
+         features->uniformAndStorageBuffer16BitAccess  = false;
+         features->storagePushConstant16               = false;
+         features->storageInputOutput16                = false;
+         features->multiview                           = false;
+         features->multiviewGeometryShader             = false;
+         features->multiviewTessellationShader         = false;
+         features->variablePointersStorageBuffer       = false;
+         features->variablePointers                    = false;
+         features->protectedMemory                     = false;
+         features->samplerYcbcrConversion              = true;
+         features->shaderDrawParameters                = true;
+         break;
+      }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES: {
          VkPhysicalDeviceVariablePointersFeatures *features = (void *) ext;
          features->variablePointersStorageBuffer = false;
@@ -653,7 +669,7 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES: {
          VkPhysicalDeviceShaderDrawParametersFeatures *features =
             (VkPhysicalDeviceShaderDrawParametersFeatures *) ext;
-         features->shaderDrawParameters = false;
+         features->shaderDrawParameters = true;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROTECTED_MEMORY_FEATURES: {
@@ -714,6 +730,19 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
             (VkPhysicalDeviceTransformFeedbackFeaturesEXT *) ext;
          features->transformFeedback = true;
          features->geometryStreams = false;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT: {
+         VkPhysicalDeviceIndexTypeUint8FeaturesEXT *features =
+            (VkPhysicalDeviceIndexTypeUint8FeaturesEXT *)ext;
+         features->indexTypeUint8 = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT: {
+         VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT *features =
+            (VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT *)ext;
+         features->vertexAttributeInstanceRateDivisor = true;
+         features->vertexAttributeInstanceRateZeroDivisor = true;
          break;
       }
       default:
@@ -796,11 +825,11 @@ tu_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
       .maxComputeWorkGroupInvocations = 2048,
       .maxComputeWorkGroupSize = { 2048, 2048, 2048 },
       .subPixelPrecisionBits = 8,
-      .subTexelPrecisionBits = 4 /* FIXME */,
-      .mipmapPrecisionBits = 4 /* FIXME */,
+      .subTexelPrecisionBits = 8,
+      .mipmapPrecisionBits = 8,
       .maxDrawIndexedIndexValue = UINT32_MAX,
       .maxDrawIndirectCount = UINT32_MAX,
-      .maxSamplerLodBias = 16,
+      .maxSamplerLodBias = 4095.0 / 256.0, /* [-16, 15.99609375] */
       .maxSamplerAnisotropy = 16,
       .maxViewports = MAX_VIEWPORTS,
       .maxViewportDimensions = { (1 << 14), (1 << 14) },
@@ -810,13 +839,13 @@ tu_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
       .minTexelBufferOffsetAlignment = 64,
       .minUniformBufferOffsetAlignment = 64,
       .minStorageBufferOffsetAlignment = 64,
-      .minTexelOffset = -32,
-      .maxTexelOffset = 31,
+      .minTexelOffset = -16,
+      .maxTexelOffset = 15,
       .minTexelGatherOffset = -32,
       .maxTexelGatherOffset = 31,
-      .minInterpolationOffset = -2,
-      .maxInterpolationOffset = 2,
-      .subPixelInterpolationOffsetBits = 8,
+      .minInterpolationOffset = -0.5,
+      .maxInterpolationOffset = 0.4375,
+      .subPixelInterpolationOffsetBits = 4,
       .maxFramebufferWidth = (1 << 14),
       .maxFramebufferHeight = (1 << 14),
       .maxFramebufferLayers = (1 << 10),
@@ -948,7 +977,22 @@ tu_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          properties->filterMinmaxSingleComponentFormats = true;
          break;
       }
-
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES: {
+         VkPhysicalDeviceSubgroupProperties *properties =
+            (VkPhysicalDeviceSubgroupProperties *)ext;
+         properties->subgroupSize = 64;
+         properties->supportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
+         properties->supportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT |
+                                           VK_SUBGROUP_FEATURE_VOTE_BIT;
+         properties->quadOperationsInAllStages = false;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT: {
+         VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT *props =
+            (VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT *)ext;
+         props->maxVertexAttribDivisor = UINT32_MAX;
+         break;
+      }
       default:
          break;
       }
@@ -1302,8 +1346,7 @@ tu_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
          tu_bo_finish(device, &device->scratch_bos[i].bo);
    }
 
-   /* the compiler does not use pAllocator */
-   ralloc_free(device->compiler);
+   ir3_compiler_destroy(device->compiler);
 
    VkPipelineCache pc = tu_pipeline_cache_to_handle(device->mem_cache);
    tu_DestroyPipelineCache(tu_device_to_handle(device), pc, NULL);
@@ -2122,57 +2165,6 @@ tu_DestroyFramebuffer(VkDevice _device,
    vk_free2(&device->alloc, pAllocator, fb);
 }
 
-static enum a6xx_tex_clamp
-tu6_tex_wrap(VkSamplerAddressMode address_mode)
-{
-   switch (address_mode) {
-   case VK_SAMPLER_ADDRESS_MODE_REPEAT:
-      return A6XX_TEX_REPEAT;
-   case VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT:
-      return A6XX_TEX_MIRROR_REPEAT;
-   case VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE:
-      return A6XX_TEX_CLAMP_TO_EDGE;
-   case VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER:
-      return A6XX_TEX_CLAMP_TO_BORDER;
-   case VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE:
-      /* only works for PoT.. need to emulate otherwise! */
-      return A6XX_TEX_MIRROR_CLAMP;
-   default:
-      unreachable("illegal tex wrap mode");
-      break;
-   }
-}
-
-static enum a6xx_tex_filter
-tu6_tex_filter(VkFilter filter, unsigned aniso)
-{
-   switch (filter) {
-   case VK_FILTER_NEAREST:
-      return A6XX_TEX_NEAREST;
-   case VK_FILTER_LINEAR:
-      return aniso ? A6XX_TEX_ANISO : A6XX_TEX_LINEAR;
-   case VK_FILTER_CUBIC_EXT:
-      return A6XX_TEX_CUBIC;
-   default:
-      unreachable("illegal texture filter");
-      break;
-   }
-}
-
-static inline enum adreno_compare_func
-tu6_compare_func(VkCompareOp op)
-{
-   return (enum adreno_compare_func) op;
-}
-
-static inline enum a6xx_reduction_mode
-tu6_reduction_mode(VkSamplerReductionMode reduction_mode)
-{
-   /* note: vulkan enum matches hw */
-
-   return (enum a6xx_reduction_mode) reduction_mode;
-}
-
 static void
 tu_init_sampler(struct tu_device *device,
                 struct tu_sampler *sampler,
@@ -2186,6 +2178,8 @@ tu_init_sampler(struct tu_device *device,
    unsigned aniso = pCreateInfo->anisotropyEnable ?
       util_last_bit(MIN2((uint32_t)pCreateInfo->maxAnisotropy >> 1, 8)) : 0;
    bool miplinear = (pCreateInfo->mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR);
+   float min_lod = CLAMP(pCreateInfo->minLod, 0.0f, 4095.0f / 256.0f);
+   float max_lod = CLAMP(pCreateInfo->maxLod, 0.0f, 4095.0f / 256.0f);
 
    sampler->descriptor[0] =
       COND(miplinear, A6XX_TEX_SAMP_0_MIPFILTER_LINEAR_NEAR) |
@@ -2199,8 +2193,8 @@ tu_init_sampler(struct tu_device *device,
    sampler->descriptor[1] =
       /* COND(!cso->seamless_cube_map, A6XX_TEX_SAMP_1_CUBEMAPSEAMLESSFILTOFF) | */
       COND(pCreateInfo->unnormalizedCoordinates, A6XX_TEX_SAMP_1_UNNORM_COORDS) |
-      A6XX_TEX_SAMP_1_MIN_LOD(pCreateInfo->minLod) |
-      A6XX_TEX_SAMP_1_MAX_LOD(pCreateInfo->maxLod) |
+      A6XX_TEX_SAMP_1_MIN_LOD(min_lod) |
+      A6XX_TEX_SAMP_1_MAX_LOD(max_lod) |
       COND(pCreateInfo->compareEnable,
            A6XX_TEX_SAMP_1_COMPARE_FUNC(tu6_compare_func(pCreateInfo->compareOp)));
    /* This is an offset into the border_color BO, which we fill with all the

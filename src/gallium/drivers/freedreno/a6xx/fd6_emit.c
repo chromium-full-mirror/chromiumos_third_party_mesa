@@ -258,8 +258,7 @@ fd6_emit_fb_tex(struct fd_ringbuffer *state, struct fd_context *ctx)
 	OUT_RING(state, texconst0);
 	OUT_RING(state, A6XX_TEX_CONST_1_WIDTH(pfb->width) |
 			A6XX_TEX_CONST_1_HEIGHT(pfb->height));
-	OUT_RINGP(state, A6XX_TEX_CONST_2_TYPE(A6XX_TEX_2D) |
-			A6XX_TEX_CONST_2_FETCHSIZE(TFETCH6_2_BYTE),
+	OUT_RINGP(state, A6XX_TEX_CONST_2_TYPE(A6XX_TEX_2D),
 			&ctx->batch->fb_read_patches);
 	OUT_RING(state, A6XX_TEX_CONST_3_ARRAY_PITCH(rsc->layout.layer_size));
 
@@ -1160,9 +1159,6 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	WRITE(REG_A6XX_RB_UNKNOWN_8811, 0x00000010);
 	WRITE(REG_A6XX_PC_MODE_CNTL, 0x1f);
 
-	OUT_PKT4(ring, REG_A6XX_RB_SRGB_CNTL, 1);
-	OUT_RING(ring, 0);
-
 	WRITE(REG_A6XX_GRAS_UNKNOWN_8101, 0);
 	WRITE(REG_A6XX_GRAS_SAMPLE_CNTL, 0);
 	WRITE(REG_A6XX_GRAS_UNKNOWN_8110, 0x2);
@@ -1198,9 +1194,7 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	WRITE(REG_A6XX_VPC_UNKNOWN_9210, 0);
 	WRITE(REG_A6XX_VPC_UNKNOWN_9211, 0);
 	WRITE(REG_A6XX_VPC_UNKNOWN_9602, 0);
-	WRITE(REG_A6XX_PC_UNKNOWN_9981, 0x3);
 	WRITE(REG_A6XX_PC_UNKNOWN_9E72, 0);
-	WRITE(REG_A6XX_VPC_UNKNOWN_9108, 0x3);
 	WRITE(REG_A6XX_SP_TP_SAMPLE_CONFIG, 0);
 	/* NOTE blob seems to (mostly?) use 0xb2 for SP_TP_UNKNOWN_B309
 	 * but this seems to kill texture gather offsets.
@@ -1208,8 +1202,8 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	WRITE(REG_A6XX_SP_TP_UNKNOWN_B309, 0xa2);
 	WRITE(REG_A6XX_RB_SAMPLE_CONFIG, 0);
 	WRITE(REG_A6XX_GRAS_SAMPLE_CONFIG, 0);
-	WRITE(REG_A6XX_RB_UNKNOWN_8878, 0);
-	WRITE(REG_A6XX_RB_UNKNOWN_8879, 0);
+	WRITE(REG_A6XX_RB_Z_BOUNDS_MIN, 0);
+	WRITE(REG_A6XX_RB_Z_BOUNDS_MAX, 0);
 	WRITE(REG_A6XX_HLSQ_CONTROL_5_REG, 0xfc);
 
 	emit_marker6(ring, 7);

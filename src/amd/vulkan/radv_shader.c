@@ -86,6 +86,10 @@ static const struct nir_shader_compiler_options nir_options_llvm = {
                                nir_lower_divmod64 |
                                nir_lower_minmax64 |
                                nir_lower_iabs64,
+	.lower_doubles_options = nir_lower_drcp |
+				 nir_lower_dsqrt |
+				 nir_lower_drsq |
+				 nir_lower_ddiv,
 };
 
 static const struct nir_shader_compiler_options nir_options_aco = {
@@ -120,9 +124,12 @@ static const struct nir_shader_compiler_options nir_options_aco = {
                                nir_lower_imul_high64 |
                                nir_lower_imul_2x32_64 |
                                nir_lower_divmod64 |
-                               nir_lower_logic64 |
                                nir_lower_minmax64 |
                                nir_lower_iabs64,
+	.lower_doubles_options = nir_lower_drcp |
+				 nir_lower_dsqrt |
+				 nir_lower_drsq |
+				 nir_lower_ddiv,
 };
 
 bool
@@ -302,8 +309,8 @@ radv_shader_compile_to_nir(struct radv_device *device,
 {
 	nir_shader *nir;
 	const nir_shader_compiler_options *nir_options =
-		device->physical_device->use_aco ? &nir_options_aco :
-						   &nir_options_llvm;
+		device->physical_device->use_llvm ? &nir_options_llvm :
+						    &nir_options_aco;
 
 	if (module->nir) {
 		/* Some things such as our meta clear/blit code will give us a NIR
@@ -351,8 +358,6 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				}
 			}
 		}
-		bool int8_int16_enable = !device->physical_device->use_aco ||
-					 device->physical_device->rad_info.chip_class >= GFX8;
 		const struct spirv_to_nir_options spirv_options = {
 			.lower_ubo_ssbo_access_to_offsets = true,
 			.caps = {
@@ -363,7 +368,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				.amd_shader_ballot = device->physical_device->use_shader_ballot,
 				.amd_shader_explicit_vertex_parameter = true,
 				.amd_trinary_minmax = true,
-				.demote_to_helper_invocation = device->physical_device->use_aco,
+				.demote_to_helper_invocation = true,
 				.derivative_group = true,
 				.descriptor_array_dynamic_indexing = true,
 				.descriptor_array_non_uniform_indexing = true,
@@ -371,14 +376,14 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				.device_group = true,
 				.draw_parameters = true,
 				.float_controls = true,
-				.float16 = device->physical_device->rad_info.has_packed_math_16bit && !device->physical_device->use_aco,
+				.float16 = device->physical_device->rad_info.has_packed_math_16bit,
 				.float64 = true,
 				.geometry_streams = true,
 				.image_ms_array = true,
 				.image_read_without_format = true,
 				.image_write_without_format = true,
-				.int8 = int8_int16_enable,
-				.int16 = int8_int16_enable,
+				.int8 = true,
+				.int16 = true,
 				.int64 = true,
 				.int64_atomics = true,
 				.min_lod = true,
@@ -389,8 +394,8 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				.shader_clock = true,
 				.shader_viewport_index_layer = true,
 				.stencil_export = true,
-				.storage_8bit = int8_int16_enable,
-				.storage_16bit = int8_int16_enable,
+				.storage_8bit = true,
+				.storage_16bit = true,
 				.storage_image_ms = true,
 				.subgroup_arithmetic = true,
 				.subgroup_ballot = true,
@@ -453,7 +458,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 		NIR_PASS_V(nir, nir_split_per_member_structs);
 
 		if (nir->info.stage == MESA_SHADER_FRAGMENT &&
-		    device->physical_device->use_aco)
+		    !device->physical_device->use_llvm)
                         NIR_PASS_V(nir, nir_lower_io_to_vector, nir_var_shader_out);
 		if (nir->info.stage == MESA_SHADER_FRAGMENT)
 			NIR_PASS_V(nir, nir_lower_input_attachments, true);
@@ -469,6 +474,19 @@ radv_shader_compile_to_nir(struct radv_device *device,
 		NIR_PASS_V(nir, radv_nir_lower_ycbcr_textures, layout);
 		if (device->instance->debug_flags & RADV_DEBUG_DISCARD_TO_DEMOTE)
 			NIR_PASS_V(nir, nir_lower_discard_to_demote);
+
+		nir_lower_doubles_options lower_doubles =
+			nir->options->lower_doubles_options;
+
+		if (device->physical_device->rad_info.chip_class == GFX6) {
+			/* GFX6 doesn't support v_floor_f64 and the precision
+			 * of v_fract_f64 which is used to implement 64-bit
+			 * floor is less than what Vulkan requires.
+			 */
+			lower_doubles |= nir_lower_dfloor;
+		}
+
+		NIR_PASS_V(nir, nir_lower_doubles, NULL, lower_doubles);
 	}
 
 	/* Vulkan uses the separate-shader linking model */
@@ -634,7 +652,7 @@ radv_lower_fs_io(nir_shader *nir)
 }
 
 
-void *
+static void *
 radv_alloc_shader_memory(struct radv_device *device,
 			 struct radv_shader_variant *shader)
 {
@@ -670,7 +688,18 @@ radv_alloc_shader_memory(struct radv_device *device,
 					     (device->physical_device->rad_info.cpdma_prefetch_writes_memory ?
 					             0 : RADEON_FLAG_READ_ONLY),
 					     RADV_BO_PRIORITY_SHADER);
+	if (!slab->bo) {
+		free(slab);
+		return NULL;
+	}
+
 	slab->ptr = (char*)device->ws->buffer_map(slab->bo);
+	if (!slab->ptr) {
+		device->ws->buffer_destroy(slab->bo);
+		free(slab);
+		return NULL;
+	}
+
 	list_inithead(&slab->shaders);
 
 	mtx_lock(&device->shader_slab_mutex);
@@ -982,7 +1011,8 @@ radv_shader_variant_create(struct radv_device *device,
 			return NULL;
 		}
 
-		if (!ac_rtld_read_config(&rtld_binary, &config)) {
+		if (!ac_rtld_read_config(&device->physical_device->rad_info,
+					 &rtld_binary, &config)) {
 			ac_rtld_close(&rtld_binary);
 			free(variant);
 			return NULL;
@@ -1014,6 +1044,12 @@ radv_shader_variant_create(struct radv_device *device,
 	}
 
 	void *dest_ptr = radv_alloc_shader_memory(device, variant);
+	if (!dest_ptr) {
+		if (binary->type == RADV_BINARY_TYPE_RTLD)
+			ac_rtld_close(&rtld_binary);
+		free(variant);
+		return NULL;
+	}
 
 	if (binary->type == RADV_BINARY_TYPE_RTLD) {
 		struct radv_shader_binary_rtld* bin = (struct radv_shader_binary_rtld *)binary;
@@ -1117,6 +1153,7 @@ shader_variant_compile(struct radv_device *device,
 	options->address32_hi = device->physical_device->rad_info.address32_hi;
 	options->has_ls_vgpr_init_bug = device->physical_device->rad_info.has_ls_vgpr_init_bug;
 	options->use_ngg_streamout = device->physical_device->use_ngg_streamout;
+	options->enable_mrt_output_nan_fixup = device->instance->enable_mrt_output_nan_fixup;
 
 	struct radv_shader_args args = {};
 	args.options = options;
@@ -1129,14 +1166,14 @@ shader_variant_compile(struct radv_device *device,
 				 shader_count >= 2 ? shaders[shader_count - 2]->info.stage
 						   : MESA_SHADER_VERTEX);
 
-	if (!device->physical_device->use_aco ||
+	if (device->physical_device->use_llvm ||
 	    options->dump_shader || options->record_ir)
 		ac_init_llvm_once();
 
-	if (device->physical_device->use_aco) {
-		aco_compile_shader(shader_count, shaders, &binary, &args);
-	} else {
+	if (device->physical_device->use_llvm) {
 		llvm_compile_shader(device, shader_count, shaders, &binary, &args);
+	} else {
+		aco_compile_shader(shader_count, shaders, &binary, &args);
 	}
 
 	binary->info = *info;
@@ -1197,7 +1234,7 @@ radv_shader_variant_compile(struct radv_device *device,
 	if (key)
 		options.key = *key;
 
-	options.explicit_scratch_args = device->physical_device->use_aco;
+	options.explicit_scratch_args = !device->physical_device->use_llvm;
 	options.robust_buffer_access = device->robust_buffer_access;
 
 	return shader_variant_compile(device, module, shaders, shader_count, shaders[shader_count - 1]->info.stage, info,
@@ -1214,7 +1251,7 @@ radv_create_gs_copy_shader(struct radv_device *device,
 {
 	struct radv_nir_compiler_options options = {0};
 
-	options.explicit_scratch_args = device->physical_device->use_aco;
+	options.explicit_scratch_args = !device->physical_device->use_llvm;
 	options.key.has_multiview_view_index = multiview;
 
 	return shader_variant_compile(device, NULL, &shader, 1, MESA_SHADER_VERTEX,

@@ -1132,6 +1132,9 @@ void st_init_extensions(struct pipe_screen *screen,
 
    consts->AllowGLSLCrossStageInterpolationMismatch = options->allow_glsl_cross_stage_interpolation_mismatch;
 
+   consts->PrimitiveRestartFixedIndex =
+      screen->get_param(screen, PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX);
+
    /* Technically we are turning on the EXT_gpu_shader5 extension,
     * ARB_gpu_shader5 does not exist in GLES, but this flag is what
     * switches on EXT_gpu_shader5:
@@ -1399,6 +1402,9 @@ void st_init_extensions(struct pipe_screen *screen,
    if (options->allow_glsl_extension_directive_midshader)
       consts->AllowGLSLExtensionDirectiveMidShader = GL_TRUE;
 
+   if (options->allow_glsl_120_subset_in_110)
+      consts->AllowGLSL120SubsetIn110 = GL_TRUE;
+
    if (options->allow_glsl_builtin_const_expression)
       consts->AllowGLSLBuiltinConstantExpression = GL_TRUE;
 
@@ -1505,7 +1511,8 @@ void st_init_extensions(struct pipe_screen *screen,
     */
    if (GLSLVersion >= 130 &&
        extensions->ARB_uniform_buffer_object &&
-       extensions->NV_primitive_restart &&
+       (extensions->NV_primitive_restart ||
+        consts->PrimitiveRestartFixedIndex) &&
        screen->get_shader_param(screen, PIPE_SHADER_VERTEX,
                                 PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS) >= 16 &&
        /* Requirements for ETC2 emulation. */

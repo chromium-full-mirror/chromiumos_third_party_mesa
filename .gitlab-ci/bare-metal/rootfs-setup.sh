@@ -2,9 +2,7 @@
 
 rootfs_dst=$1
 
-# Copy the rootfs to a temporary for our setup, as I believe changes to the
-# container can end up impacting future runs.
-cp -Rp $BM_ROOTFS/. $rootfs_dst
+mkdir -p $rootfs_dst/results
 
 # Set up the init script that brings up the system.
 cp $BM/init.sh $rootfs_dst/init
@@ -14,6 +12,7 @@ set +x
 touch $rootfs_dst/set-job-env-vars.sh
 chmod +x $rootfs_dst/set-job-env-vars.sh
 for var in \
+    BARE_METAL_TEST_SCRIPT \
     CI_COMMIT_BRANCH \
     CI_COMMIT_TITLE \
     CI_JOB_ID \
@@ -25,18 +24,29 @@ for var in \
     CI_PIPELINE_ID \
     CI_RUNNER_DESCRIPTION \
     DEQP_CASELIST_FILTER \
+    DEQP_EXPECTED_FAILS \
     DEQP_EXPECTED_RENDERER \
     DEQP_NO_SAVE_RESULTS \
     DEQP_PARALLEL \
     DEQP_RUN_SUFFIX \
+    DEQP_SKIPS \
     DEQP_VER \
+    DEVICE_NAME \
     FD_MESA_DEBUG \
     FLAKES_CHANNEL \
     IR3_SHADER_DEBUG \
+    MESA_GL_VERSION_OVERRIDE \
+    MESA_GLSL_VERSION_OVERRIDE \
+    MESA_GLES_VERSION_OVERRIDE \
     NIR_VALIDATE \
+    TRACIE_NO_UNIT_TESTS \
+    TU_DEBUG \
+    VK_DRIVER \
     ; do
   val=`echo ${!var} | sed 's|"||g'`
-  echo "export $var=\"${val}\"" >> $rootfs_dst/set-job-env-vars.sh
+  if [ -n "$val" ]; then
+    echo "export $var=\"${val}\"" >> $rootfs_dst/set-job-env-vars.sh
+  fi
 done
 echo "Variables passed through:"
 cat $rootfs_dst/set-job-env-vars.sh
@@ -46,10 +56,3 @@ set -x
 mkdir -p $rootfs_dst/$CI_PROJECT_DIR
 tar -C $rootfs_dst/$CI_PROJECT_DIR/ -xf $CI_PROJECT_DIR/artifacts/install.tar
 ln -sf $CI_PROJECT_DIR/install $rootfs_dst/install
-
-# Copy the deqp runner script and metadata.
-cp .gitlab-ci/deqp-runner.sh $rootfs_dst/deqp/
-cp .gitlab-ci/$DEQP_SKIPS $rootfs_dst/$CI_PROJECT_DIR/install/deqp-skips.txt
-if [ -n "$DEQP_EXPECTED_FAILS" ]; then
-  cp .gitlab-ci/$DEQP_EXPECTED_FAILS $rootfs_dst/$CI_PROJECT_DIR/install/deqp-expected-fails.txt
-fi

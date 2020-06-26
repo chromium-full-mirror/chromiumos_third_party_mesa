@@ -550,23 +550,28 @@ panfrost_frag_meta_rasterizer_update(struct panfrost_context *ctx,
                 fragmeta->depth_factor = 0.0f;
                 SET_BIT(fragmeta->unknown2_4, MALI_DEPTH_RANGE_A, false);
                 SET_BIT(fragmeta->unknown2_4, MALI_DEPTH_RANGE_B, false);
+                SET_BIT(fragmeta->unknown2_3, MALI_DEPTH_CLIP_NEAR, true);
+                SET_BIT(fragmeta->unknown2_3, MALI_DEPTH_CLIP_FAR, true);
                 return;
         }
 
-        bool msaa = ctx->rasterizer->base.multisample;
+        struct pipe_rasterizer_state *rast = &ctx->rasterizer->base;
+
+        bool msaa = rast->multisample;
 
         /* TODO: Sample size */
         SET_BIT(fragmeta->unknown2_3, MALI_HAS_MSAA, msaa);
         SET_BIT(fragmeta->unknown2_4, MALI_NO_MSAA, !msaa);
-        fragmeta->depth_units = ctx->rasterizer->base.offset_units * 2.0f;
-        fragmeta->depth_factor = ctx->rasterizer->base.offset_scale;
+        fragmeta->depth_units = rast->offset_units * 2.0f;
+        fragmeta->depth_factor = rast->offset_scale;
 
         /* XXX: Which bit is which? Does this maybe allow offseting not-tri? */
 
-        SET_BIT(fragmeta->unknown2_4, MALI_DEPTH_RANGE_A,
-                ctx->rasterizer->base.offset_tri);
-        SET_BIT(fragmeta->unknown2_4, MALI_DEPTH_RANGE_B,
-                ctx->rasterizer->base.offset_tri);
+        SET_BIT(fragmeta->unknown2_4, MALI_DEPTH_RANGE_A, rast->offset_tri);
+        SET_BIT(fragmeta->unknown2_4, MALI_DEPTH_RANGE_B, rast->offset_tri);
+
+        SET_BIT(fragmeta->unknown2_3, MALI_DEPTH_CLIP_NEAR, rast->depth_clip_near);
+        SET_BIT(fragmeta->unknown2_3, MALI_DEPTH_CLIP_FAR, rast->depth_clip_far);
 }
 
 static void
@@ -826,7 +831,7 @@ panfrost_frag_shader_meta_init(struct panfrost_context *ctx,
         fs = panfrost_get_shader_state(ctx, PIPE_SHADER_FRAGMENT);
 
         fragmeta->alpha_coverage = ~MALI_ALPHA_COVERAGE(0.000000);
-        fragmeta->unknown2_3 = MALI_DEPTH_FUNC(MALI_FUNC_ALWAYS) | 0x3010;
+        fragmeta->unknown2_3 = MALI_DEPTH_FUNC(MALI_FUNC_ALWAYS) | 0x10;
         fragmeta->unknown2_4 = 0x4e0;
 
         /* unknown2_4 has 0x10 bit set on T6XX and T720. We don't know why this
@@ -844,7 +849,8 @@ panfrost_frag_shader_meta_init(struct panfrost_context *ctx,
                  * enable early-z testing. TODO: respect e-z force */
 
                 SET_BIT(fragmeta->midgard1.flags_lo, MALI_EARLY_Z,
-                        !fs->can_discard && !fs->writes_depth && !fs->writes_global);
+                        !fs->can_discard && !fs->writes_global &&
+                        !fs->writes_depth && !fs->writes_stencil);
 
                 /* Add the writes Z/S flags if needed. */
                 SET_BIT(fragmeta->midgard1.flags_lo, MALI_WRITES_Z, fs->writes_depth);
@@ -1023,8 +1029,16 @@ panfrost_mali_viewport_init(struct panfrost_context *ctx,
         mvp->viewport0[1] = miny;
         mvp->viewport1[1] = MALI_POSITIVE(maxy);
 
-        mvp->clip_minz = minz;
-        mvp->clip_maxz = maxz;
+        bool clip_near = true;
+        bool clip_far = true;
+
+        if (ctx->rasterizer) {
+                clip_near = ctx->rasterizer->base.depth_clip_near;
+                clip_far = ctx->rasterizer->base.depth_clip_far;
+        }
+
+        mvp->clip_minz = clip_near ? minz : -INFINITY;
+        mvp->clip_maxz = clip_far ? maxz : INFINITY;
 }
 
 void
@@ -1374,11 +1388,23 @@ panfrost_get_tex_desc(struct panfrost_batch *batch,
                               PAN_BO_ACCESS_SHARED | PAN_BO_ACCESS_READ |
                               panfrost_bo_access_for_stage(st));
 
-        panfrost_batch_add_bo(batch, view->midgard_bo,
+        panfrost_batch_add_bo(batch, view->bo,
                               PAN_BO_ACCESS_SHARED | PAN_BO_ACCESS_READ |
                               panfrost_bo_access_for_stage(st));
 
-        return view->midgard_bo->gpu;
+        return view->bo->gpu;
+}
+
+static void
+panfrost_update_sampler_view(struct panfrost_sampler_view *view,
+                             struct pipe_context *pctx)
+{
+        struct panfrost_resource *rsrc = pan_resource(view->base.texture);
+        if (view->texture_bo != rsrc->bo->gpu ||
+            view->layout != rsrc->layout) {
+                panfrost_bo_unreference(view->bo);
+                panfrost_create_sampler_view_bo(view, pctx, &rsrc->base);
+        }
 }
 
 void
@@ -1402,6 +1428,7 @@ panfrost_emit_texture_descriptors(struct panfrost_batch *batch,
                         struct panfrost_sampler_view *view = ctx->sampler_views[stage][i];
                         struct pipe_sampler_view *pview = &view->base;
                         struct panfrost_resource *rsrc = pan_resource(pview->texture);
+                        panfrost_update_sampler_view(view, &ctx->base);
 
                         /* Add the BOs to the job so they are retained until the job is done. */
 
@@ -1409,7 +1436,7 @@ panfrost_emit_texture_descriptors(struct panfrost_batch *batch,
                                               PAN_BO_ACCESS_SHARED | PAN_BO_ACCESS_READ |
                                               panfrost_bo_access_for_stage(stage));
 
-                        panfrost_batch_add_bo(batch, view->bifrost_bo,
+                        panfrost_batch_add_bo(batch, view->bo,
                                               PAN_BO_ACCESS_SHARED | PAN_BO_ACCESS_READ |
                                               panfrost_bo_access_for_stage(stage));
 
@@ -1425,9 +1452,13 @@ panfrost_emit_texture_descriptors(struct panfrost_batch *batch,
         } else {
                 uint64_t trampolines[PIPE_MAX_SHADER_SAMPLER_VIEWS];
 
-                for (int i = 0; i < ctx->sampler_view_count[stage]; ++i)
-                        trampolines[i] = panfrost_get_tex_desc(batch, stage,
-                                                               ctx->sampler_views[stage][i]);
+                for (int i = 0; i < ctx->sampler_view_count[stage]; ++i) {
+                        struct panfrost_sampler_view *view = ctx->sampler_views[stage][i];
+
+                        panfrost_update_sampler_view(view, &ctx->base);
+
+                        trampolines[i] = panfrost_get_tex_desc(batch, stage, view);
+                }
 
                 postfix->textures = panfrost_upload_transient(batch,
                                                               trampolines,
@@ -1614,6 +1645,13 @@ panfrost_emit_varyings(struct panfrost_batch *batch, union mali_attr *slot,
         return transfer.gpu;
 }
 
+static unsigned
+panfrost_streamout_offset(unsigned stride, unsigned offset,
+                        struct pipe_stream_output_target *target)
+{
+        return (target->buffer_offset + (offset * stride * 4)) & 63;
+}
+
 static void
 panfrost_emit_streamout(struct panfrost_batch *batch, union mali_attr *slot,
                         unsigned stride, unsigned offset, unsigned count,
@@ -1625,8 +1663,6 @@ panfrost_emit_streamout(struct panfrost_batch *batch, union mali_attr *slot,
 
         unsigned max_size = target->buffer_size;
         unsigned expected_size = slot->stride * count;
-
-        slot->size = MIN2(max_size, expected_size);
 
         /* Grab the BO and bind it to the batch */
         struct panfrost_bo *bo = pan_resource(target->buffer)->bo;
@@ -1640,59 +1676,10 @@ panfrost_emit_streamout(struct panfrost_batch *batch, union mali_attr *slot,
                               PAN_BO_ACCESS_VERTEX_TILER |
                               PAN_BO_ACCESS_FRAGMENT);
 
+        /* We will have an offset applied to get alignment */
         mali_ptr addr = bo->gpu + target->buffer_offset + (offset * slot->stride);
-        slot->elements = addr;
-}
-
-/* Given a shader and buffer indices, link varying metadata together */
-
-static bool
-is_special_varying(gl_varying_slot loc)
-{
-        switch (loc) {
-        case VARYING_SLOT_POS:
-        case VARYING_SLOT_PSIZ:
-        case VARYING_SLOT_PNTC:
-        case VARYING_SLOT_FACE:
-                return true;
-        default:
-                return false;
-        }
-}
-
-static void
-panfrost_emit_varying_meta(void *outptr, struct panfrost_shader_state *ss,
-                           signed general, signed gl_Position,
-                           signed gl_PointSize, signed gl_PointCoord,
-                           signed gl_FrontFacing)
-{
-        struct mali_attr_meta *out = (struct mali_attr_meta *) outptr;
-
-        for (unsigned i = 0; i < ss->varying_count; ++i) {
-                gl_varying_slot location = ss->varyings_loc[i];
-                int index = -1;
-
-                switch (location) {
-                case VARYING_SLOT_POS:
-                        index = gl_Position;
-                        break;
-                case VARYING_SLOT_PSIZ:
-                        index = gl_PointSize;
-                        break;
-                case VARYING_SLOT_PNTC:
-                        index = gl_PointCoord;
-                        break;
-                case VARYING_SLOT_FACE:
-                        index = gl_FrontFacing;
-                        break;
-                default:
-                        index = general;
-                        break;
-                }
-
-                assert(index >= 0);
-                out[i].index = index;
-        }
+        slot->elements = (addr & ~63) | MALI_ATTR_LINEAR;
+        slot->size = MIN2(max_size, expected_size) + (addr & 63);
 }
 
 static bool
@@ -1720,6 +1707,331 @@ pan_get_so(struct pipe_stream_output_info *info, gl_varying_slot loc)
         unreachable("Varying not captured");
 }
 
+static unsigned
+pan_varying_size(enum mali_format fmt)
+{
+        unsigned type = MALI_EXTRACT_TYPE(fmt);
+        unsigned chan = MALI_EXTRACT_CHANNELS(fmt);
+        unsigned bits = MALI_EXTRACT_BITS(fmt);
+        unsigned bpc = 0;
+
+        if (bits == MALI_CHANNEL_FLOAT) {
+                /* No doubles */
+                bool fp16 = (type == MALI_FORMAT_SINT);
+                assert(fp16 || (type == MALI_FORMAT_UNORM));
+
+                bpc = fp16 ? 2 : 4;
+        } else {
+                assert(type >= MALI_FORMAT_SNORM && type <= MALI_FORMAT_SINT);
+
+                /* See the enums */
+                bits = 1 << bits;
+                assert(bits >= 8);
+                bpc = bits / 8;
+        }
+
+        return bpc * chan;
+}
+
+/* Indices for named (non-XFB) varyings that are present. These are packed
+ * tightly so they correspond to a bitfield present (P) indexed by (1 <<
+ * PAN_VARY_*). This has the nice property that you can lookup the buffer index
+ * of a given special field given a shift S by:
+ *
+ *      idx = popcount(P & ((1 << S) - 1))
+ *
+ * That is... look at all of the varyings that come earlier and count them, the
+ * count is the new index since plus one. Likewise, the total number of special
+ * buffers required is simply popcount(P)
+ */
+
+enum pan_special_varying {
+        PAN_VARY_GENERAL = 0,
+        PAN_VARY_POSITION = 1,
+        PAN_VARY_PSIZ = 2,
+        PAN_VARY_PNTCOORD = 3,
+        PAN_VARY_FACE = 4,
+        PAN_VARY_FRAGCOORD = 5,
+
+        /* Keep last */
+        PAN_VARY_MAX,
+};
+
+/* Given a varying, figure out which index it correpsonds to */
+
+static inline unsigned
+pan_varying_index(unsigned present, enum pan_special_varying v)
+{
+        unsigned mask = (1 << v) - 1;
+        return util_bitcount(present & mask);
+}
+
+/* Get the base offset for XFB buffers, which by convention come after
+ * everything else. Wrapper function for semantic reasons; by construction this
+ * is just popcount. */
+
+static inline unsigned
+pan_xfb_base(unsigned present)
+{
+        return util_bitcount(present);
+}
+
+/* Computes the present mask for varyings so we can start emitting varying records */
+
+static inline unsigned
+pan_varying_present(
+        struct panfrost_shader_state *vs,
+        struct panfrost_shader_state *fs,
+        unsigned quirks)
+{
+        /* At the moment we always emit general and position buffers. Not
+         * strictly necessary but usually harmless */
+
+        unsigned present = (1 << PAN_VARY_GENERAL) | (1 << PAN_VARY_POSITION);
+
+        /* Enable special buffers by the shader info */
+
+        if (vs->writes_point_size)
+                present |= (1 << PAN_VARY_PSIZ);
+
+        if (fs->reads_point_coord)
+                present |= (1 << PAN_VARY_PNTCOORD);
+
+        if (fs->reads_face)
+                present |= (1 << PAN_VARY_FACE);
+
+        if (fs->reads_frag_coord && !(quirks & IS_BIFROST))
+                present |= (1 << PAN_VARY_FRAGCOORD);
+
+        /* Also, if we have a point sprite, we need a point coord buffer */
+
+        for (unsigned i = 0; i < fs->varying_count; i++)  {
+                gl_varying_slot loc = fs->varyings_loc[i];
+
+                if (has_point_coord(fs->point_sprite_mask, loc))
+                        present |= (1 << PAN_VARY_PNTCOORD);
+        }
+
+        return present;
+}
+
+/* Emitters for varying records */
+
+static struct mali_attr_meta
+pan_emit_vary(unsigned present, enum pan_special_varying buf,
+                unsigned quirks, enum mali_format format,
+                unsigned offset)
+{
+        unsigned nr_channels = MALI_EXTRACT_CHANNELS(format);
+
+        struct mali_attr_meta meta = {
+                .index = pan_varying_index(present, buf),
+                .unknown1 = quirks & IS_BIFROST ? 0x0 : 0x2,
+                .swizzle = quirks & HAS_SWIZZLES ?
+                        panfrost_get_default_swizzle(nr_channels) :
+                        panfrost_bifrost_swizzle(nr_channels),
+                .format = format,
+                .src_offset = offset
+        };
+
+        return meta;
+}
+
+/* General varying that is unused */
+
+static struct mali_attr_meta
+pan_emit_vary_only(unsigned present, unsigned quirks)
+{
+        return pan_emit_vary(present, 0, quirks, MALI_VARYING_DISCARD, 0);
+}
+
+/* Special records */
+
+static const enum mali_format pan_varying_formats[PAN_VARY_MAX] = {
+        [PAN_VARY_POSITION]     = MALI_VARYING_POS,
+        [PAN_VARY_PSIZ]         = MALI_R16F,
+        [PAN_VARY_PNTCOORD]     = MALI_R16F,
+        [PAN_VARY_FACE]         = MALI_R32I,
+        [PAN_VARY_FRAGCOORD]    = MALI_RGBA32F
+};
+
+static struct mali_attr_meta
+pan_emit_vary_special(unsigned present, enum pan_special_varying buf,
+                unsigned quirks)
+{
+        assert(buf < PAN_VARY_MAX);
+        return pan_emit_vary(present, buf, quirks, pan_varying_formats[buf], 0);
+}
+
+static enum mali_format
+pan_xfb_format(enum mali_format format, unsigned nr)
+{
+        if (MALI_EXTRACT_BITS(format) == MALI_CHANNEL_FLOAT)
+                return MALI_R32F | MALI_NR_CHANNELS(nr);
+        else
+                return MALI_EXTRACT_TYPE(format) | MALI_NR_CHANNELS(nr) | MALI_CHANNEL_32;
+}
+
+/* Transform feedback records. Note struct pipe_stream_output is (if packed as
+ * a bitfield) 32-bit, smaller than a 64-bit pointer, so may as well pass by
+ * value. */
+
+static struct mali_attr_meta
+pan_emit_vary_xfb(unsigned present,
+                unsigned max_xfb,
+                unsigned *streamout_offsets,
+                unsigned quirks,
+                enum mali_format format,
+                struct pipe_stream_output o)
+{
+        /* Otherwise construct a record for it */
+        struct mali_attr_meta meta = {
+                /* XFB buffers come after everything else */
+                .index = pan_xfb_base(present) + o.output_buffer,
+
+                /* As usual unknown bit */
+                .unknown1 = quirks & IS_BIFROST ? 0x0 : 0x2,
+
+                /* Override swizzle with number of channels */
+                .swizzle = quirks & HAS_SWIZZLES ?
+                        panfrost_get_default_swizzle(o.num_components) :
+                        panfrost_bifrost_swizzle(o.num_components),
+
+                /* Override number of channels and precision to highp */
+                .format = pan_xfb_format(format, o.num_components),
+
+                /* Apply given offsets together */
+                .src_offset = (o.dst_offset * 4) /* dwords */
+                        + streamout_offsets[o.output_buffer]
+        };
+
+        return meta;
+}
+
+/* Determine if we should capture a varying for XFB. This requires actually
+ * having a buffer for it. If we don't capture it, we'll fallback to a general
+ * varying path (linked or unlinked, possibly discarding the write) */
+
+static bool
+panfrost_xfb_captured(struct panfrost_shader_state *xfb,
+                unsigned loc, unsigned max_xfb)
+{
+        if (!(xfb->so_mask & (1ll << loc)))
+                return false;
+
+        struct pipe_stream_output *o = pan_get_so(&xfb->stream_output, loc);
+        return o->output_buffer < max_xfb;
+}
+
+/* Higher-level wrapper around all of the above, classifying a varying into one
+ * of the above types */
+
+static struct mali_attr_meta
+panfrost_emit_varying(
+                struct panfrost_shader_state *stage,
+                struct panfrost_shader_state *other,
+                struct panfrost_shader_state *xfb,
+                unsigned present,
+                unsigned max_xfb,
+                unsigned *streamout_offsets,
+                unsigned quirks,
+                unsigned *gen_offsets,
+                enum mali_format *gen_formats,
+                unsigned *gen_stride,
+                unsigned idx,
+                bool should_alloc,
+                bool is_fragment)
+{
+        gl_varying_slot loc = stage->varyings_loc[idx];
+        enum mali_format format = stage->varyings[idx];
+
+        /* Override format to match linkage */
+        if (!should_alloc && gen_formats[idx])
+                format = gen_formats[idx];
+
+        if (has_point_coord(stage->point_sprite_mask, loc)) {
+                return pan_emit_vary_special(present, PAN_VARY_PNTCOORD, quirks);
+        } else if (panfrost_xfb_captured(xfb, loc, max_xfb)) {
+                struct pipe_stream_output *o = pan_get_so(&xfb->stream_output, loc);
+                return pan_emit_vary_xfb(present, max_xfb, streamout_offsets, quirks, format, *o);
+        } else if (loc == VARYING_SLOT_POS) {
+                if (is_fragment)
+                        return pan_emit_vary_special(present, PAN_VARY_FRAGCOORD, quirks);
+                else
+                        return pan_emit_vary_special(present, PAN_VARY_POSITION, quirks);
+        } else if (loc == VARYING_SLOT_PSIZ) {
+                return pan_emit_vary_special(present, PAN_VARY_PSIZ, quirks);
+        } else if (loc == VARYING_SLOT_PNTC) {
+                return pan_emit_vary_special(present, PAN_VARY_PNTCOORD, quirks);
+        } else if (loc == VARYING_SLOT_FACE) {
+                return pan_emit_vary_special(present, PAN_VARY_FACE, quirks);
+        }
+
+        /* We've exhausted special cases, so it's otherwise a general varying. Check if we're linked */
+        signed other_idx = -1;
+
+        for (unsigned j = 0; j < other->varying_count; ++j) {
+                if (other->varyings_loc[j] == loc) {
+                        other_idx = j;
+                        break;
+                }
+        }
+
+        if (other_idx < 0)
+                return pan_emit_vary_only(present, quirks);
+
+        unsigned offset = gen_offsets[other_idx];
+
+        if (should_alloc) {
+                /* We're linked, so allocate a space via a watermark allocation */
+                enum mali_format alt = other->varyings[other_idx];
+
+                /* Do interpolation at minimum precision */
+                unsigned size_main = pan_varying_size(format);
+                unsigned size_alt = pan_varying_size(alt);
+                unsigned size = MIN2(size_main, size_alt);
+
+                /* If a varying is marked for XFB but not actually captured, we
+                 * should match the format to the format that would otherwise
+                 * be used for XFB, since dEQP checks for invariance here. It's
+                 * unclear if this is required by the spec. */
+
+                if (xfb->so_mask & (1ull << loc)) {
+                        struct pipe_stream_output *o = pan_get_so(&xfb->stream_output, loc);
+                        format = pan_xfb_format(format, o->num_components);
+                        size = pan_varying_size(format);
+                } else if (size == size_alt) {
+                        format = alt;
+                }
+
+                gen_offsets[idx] = *gen_stride;
+                gen_formats[other_idx] = format;
+                offset = *gen_stride;
+                *gen_stride += size;
+        }
+
+        return pan_emit_vary(present, PAN_VARY_GENERAL,
+                        quirks, format, offset);
+}
+
+static void
+pan_emit_special_input(union mali_attr *varyings,
+                unsigned present,
+                enum pan_special_varying v,
+                mali_ptr addr)
+{
+        if (present & (1 << v)) {
+                /* Ensure we write exactly once for performance and with fields
+                 * zeroed appropriately to avoid flakes */
+
+                union mali_attr s = {
+                        .elements = addr
+                };
+
+                varyings[pan_varying_index(present, v)] = s;
+        }
+}
+
 void
 panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
                                  unsigned vertex_count,
@@ -1729,9 +2041,8 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
 {
         /* Load the shaders */
         struct panfrost_context *ctx = batch->ctx;
-        struct panfrost_device *device = pan_device(ctx->base.screen);
+        struct panfrost_device *dev = pan_device(ctx->base.screen);
         struct panfrost_shader_state *vs, *fs;
-        unsigned int num_gen_varyings = 0;
         size_t vs_size, fs_size;
 
         /* Allocate the varying descriptor */
@@ -1746,257 +2057,87 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
                                                                      fs_size);
 
         struct pipe_stream_output_info *so = &vs->stream_output;
+        unsigned present = pan_varying_present(vs, fs, dev->quirks);
 
         /* Check if this varying is linked by us. This is the case for
          * general-purpose, non-captured varyings. If it is, link it. If it's
          * not, use the provided stream out information to determine the
          * offset, since it was already linked for us. */
 
-        for (unsigned i = 0; i < vs->varying_count; i++) {
-                gl_varying_slot loc = vs->varyings_loc[i];
+        unsigned gen_offsets[32];
+        enum mali_format gen_formats[32];
+        memset(gen_offsets, 0, sizeof(gen_offsets));
+        memset(gen_formats, 0, sizeof(gen_formats));
 
-                bool special = is_special_varying(loc);
-                bool captured = ((vs->so_mask & (1ll << loc)) ? true : false);
+        unsigned gen_stride = 0;
+        assert(vs->varying_count < ARRAY_SIZE(gen_offsets));
+        assert(fs->varying_count < ARRAY_SIZE(gen_offsets));
 
-                if (captured) {
-                        struct pipe_stream_output *o = pan_get_so(so, loc);
+        unsigned streamout_offsets[32];
 
-                        unsigned dst_offset = o->dst_offset * 4; /* dwords */
-                        vs->varyings[i].src_offset = dst_offset;
-                } else if (!special) {
-                        vs->varyings[i].src_offset = 16 * (num_gen_varyings++);
-                }
+        for (unsigned i = 0; i < ctx->streamout.num_targets; ++i) {
+                streamout_offsets[i] = panfrost_streamout_offset(
+                                        so->stride[i],
+                                        ctx->streamout.offsets[i],
+                                        ctx->streamout.targets[i]);
         }
 
-        /* Conversely, we need to set src_offset for the captured varyings.
-         * Here, the layout is defined by the stream out info, not us */
+        struct mali_attr_meta *ovs = (struct mali_attr_meta *)trans.cpu;
+        struct mali_attr_meta *ofs = ovs + vs->varying_count;
 
-        /* Link up with fragment varyings */
-        bool reads_point_coord = fs->reads_point_coord;
+        for (unsigned i = 0; i < vs->varying_count; i++) {
+                ovs[i] = panfrost_emit_varying(vs, fs, vs, present,
+                                ctx->streamout.num_targets, streamout_offsets,
+                                dev->quirks,
+                                gen_offsets, gen_formats, &gen_stride, i, true, false);
+        }
 
         for (unsigned i = 0; i < fs->varying_count; i++) {
-                gl_varying_slot loc = fs->varyings_loc[i];
-                unsigned src_offset;
-                signed vs_idx = -1;
-
-                /* Link up */
-                for (unsigned j = 0; j < vs->varying_count; ++j) {
-                        if (vs->varyings_loc[j] == loc) {
-                                vs_idx = j;
-                                break;
-                        }
-                }
-
-                /* Either assign or reuse */
-                if (vs_idx >= 0)
-                        src_offset = vs->varyings[vs_idx].src_offset;
-                else
-                        src_offset = 16 * (num_gen_varyings++);
-
-                fs->varyings[i].src_offset = src_offset;
-
-                if (has_point_coord(fs->point_sprite_mask, loc))
-                        reads_point_coord = true;
+                ofs[i] = panfrost_emit_varying(fs, vs, vs, present,
+                                ctx->streamout.num_targets, streamout_offsets,
+                                dev->quirks,
+                                gen_offsets, gen_formats, &gen_stride, i, false, true);
         }
 
-        memcpy(trans.cpu, vs->varyings, vs_size);
-        memcpy(trans.cpu + vs_size, fs->varyings, fs_size);
-
-        union mali_attr varyings[PIPE_MAX_ATTRIBS] = {0};
-
-        /* Figure out how many streamout buffers could be bound */
-        unsigned so_count = ctx->streamout.num_targets;
-        for (unsigned i = 0; i < vs->varying_count; i++) {
-                gl_varying_slot loc = vs->varyings_loc[i];
-
-                bool captured = ((vs->so_mask & (1ll << loc)) ? true : false);
-                if (!captured) continue;
-
-                struct pipe_stream_output *o = pan_get_so(so, loc);
-                so_count = MAX2(so_count, o->output_buffer + 1);
-        }
-
-        signed idx = so_count;
-        signed general = idx++;
-        signed gl_Position = idx++;
-        signed gl_PointSize = vs->writes_point_size ? (idx++) : -1;
-        signed gl_PointCoord = reads_point_coord ? (idx++) : -1;
-        signed gl_FrontFacing = fs->reads_face ? (idx++) : -1;
-        signed gl_FragCoord = (fs->reads_frag_coord &&
-                        !(device->quirks & IS_BIFROST))
-                        ? (idx++) : -1;
+        unsigned xfb_base = pan_xfb_base(present);
+        struct panfrost_transfer T = panfrost_allocate_transient(batch,
+                        sizeof(union mali_attr) * (xfb_base + ctx->streamout.num_targets));
+        union mali_attr *varyings = (union mali_attr *) T.cpu;
 
         /* Emit the stream out buffers */
 
         unsigned out_count = u_stream_outputs_for_vertices(ctx->active_prim,
                                                            ctx->vertex_count);
 
-        for (unsigned i = 0; i < so_count; ++i) {
-                if (i < ctx->streamout.num_targets) {
-                        panfrost_emit_streamout(batch, &varyings[i],
-                                                so->stride[i],
-                                                ctx->streamout.offsets[i],
-                                                out_count,
-                                                ctx->streamout.targets[i]);
-                } else {
-                        /* Emit a dummy buffer */
-                        panfrost_emit_varyings(batch, &varyings[i],
-                                               so->stride[i] * 4,
-                                               out_count);
-
-                        /* Clear the attribute type */
-                        varyings[i].elements &= ~0xF;
-                }
+        for (unsigned i = 0; i < ctx->streamout.num_targets; ++i) {
+                panfrost_emit_streamout(batch, &varyings[xfb_base + i],
+                                        so->stride[i],
+                                        ctx->streamout.offsets[i],
+                                        out_count,
+                                        ctx->streamout.targets[i]);
         }
 
-        panfrost_emit_varyings(batch, &varyings[general],
-                               num_gen_varyings * 16,
-                               vertex_count);
-
-        mali_ptr varyings_p;
+        panfrost_emit_varyings(batch,
+                        &varyings[pan_varying_index(present, PAN_VARY_GENERAL)],
+                        gen_stride, vertex_count);
 
         /* fp32 vec4 gl_Position */
-        varyings_p = panfrost_emit_varyings(batch, &varyings[gl_Position],
-                                            sizeof(float) * 4, vertex_count);
-        tiler_postfix->position_varying = varyings_p;
+        tiler_postfix->position_varying = panfrost_emit_varyings(batch,
+                        &varyings[pan_varying_index(present, PAN_VARY_POSITION)],
+                        sizeof(float) * 4, vertex_count);
 
-
-        if (panfrost_writes_point_size(ctx)) {
-                varyings_p = panfrost_emit_varyings(batch,
-                                                    &varyings[gl_PointSize],
-                                                    2, vertex_count);
-                primitive_size->pointer = varyings_p;
+        if (present & (1 << PAN_VARY_PSIZ)) {
+                primitive_size->pointer = panfrost_emit_varyings(batch,
+                                &varyings[pan_varying_index(present, PAN_VARY_PSIZ)],
+                                2, vertex_count);
         }
 
-        if (gl_PointCoord >= 0)
-                varyings[gl_PointCoord].elements = MALI_VARYING_POINT_COORD;
+        pan_emit_special_input(varyings, present, PAN_VARY_PNTCOORD, MALI_VARYING_POINT_COORD);
+        pan_emit_special_input(varyings, present, PAN_VARY_FACE, MALI_VARYING_FRONT_FACING);
+        pan_emit_special_input(varyings, present, PAN_VARY_FRAGCOORD, MALI_VARYING_FRAG_COORD);
 
-        if (gl_FrontFacing >= 0)
-                varyings[gl_FrontFacing].elements = MALI_VARYING_FRONT_FACING;
-
-        if (gl_FragCoord >= 0)
-                varyings[gl_FragCoord].elements = MALI_VARYING_FRAG_COORD;
-
-        assert(!(device->quirks & IS_BIFROST) || !(reads_point_coord));
-
-        /* Let's go ahead and link varying meta to the buffer in question, now
-         * that that information is available. VARYING_SLOT_POS is mapped to
-         * gl_FragCoord for fragment shaders but gl_Positionf or vertex shaders
-         * */
-
-        panfrost_emit_varying_meta(trans.cpu, vs, general, gl_Position,
-                                   gl_PointSize, gl_PointCoord,
-                                   gl_FrontFacing);
-
-        panfrost_emit_varying_meta(trans.cpu + vs_size, fs, general,
-                                   gl_FragCoord, gl_PointSize,
-                                   gl_PointCoord, gl_FrontFacing);
-
-        /* Replace streamout */
-
-        struct mali_attr_meta *ovs = (struct mali_attr_meta *)trans.cpu;
-        struct mali_attr_meta *ofs = ovs + vs->varying_count;
-
-        for (unsigned i = 0; i < vs->varying_count; i++) {
-                gl_varying_slot loc = vs->varyings_loc[i];
-
-                /* If we write gl_PointSize from the vertex shader but don't
-                 * consume it, no memory will be allocated for it, so if we
-                 * attempted to write anyway we would dereference a NULL
-                 * pointer on the GPU. Midgard seems fine with this; Bifrost
-                 * faults. */
-
-                if (loc == VARYING_SLOT_PSIZ && !panfrost_writes_point_size(ctx))
-                        ovs[i].format = MALI_VARYING_DISCARD;
-
-                bool captured = ((vs->so_mask & (1ll << loc)) ? true : false);
-                if (!captured)
-                        continue;
-
-                struct pipe_stream_output *o = pan_get_so(so, loc);
-                ovs[i].index = o->output_buffer;
-
-                assert(o->stream == 0);
-                ovs[i].format = (vs->varyings[i].format & ~MALI_NR_CHANNELS(4))
-                        | MALI_NR_CHANNELS(o->num_components);
-
-                if (device->quirks & HAS_SWIZZLES)
-                        ovs[i].swizzle = panfrost_get_default_swizzle(o->num_components);
-                else
-                        ovs[i].swizzle = panfrost_bifrost_swizzle(o->num_components);
-
-                /* Link to the fragment */
-                signed fs_idx = -1;
-
-                /* Link up */
-                for (unsigned j = 0; j < fs->varying_count; ++j) {
-                        if (fs->varyings_loc[j] == loc) {
-                                fs_idx = j;
-                                break;
-                        }
-                }
-
-                if (fs_idx >= 0) {
-                        ofs[fs_idx].index = ovs[i].index;
-                        ofs[fs_idx].format = ovs[i].format;
-                        ofs[fs_idx].swizzle = ovs[i].swizzle;
-                }
-        }
-
-        /* Replace point sprite */
-        for (unsigned i = 0; i < fs->varying_count; i++) {
-                /* If we have a point sprite replacement, handle that here. We
-                 * have to translate location first.  TODO: Flip y in shader.
-                 * We're already keying ... just time crunch .. */
-
-                if (has_point_coord(fs->point_sprite_mask,
-                                    fs->varyings_loc[i])) {
-                        ofs[i].index = gl_PointCoord;
-
-                        /* Swizzle out the z/w to 0/1 */
-                        ofs[i].format = MALI_RG16F;
-                        ofs[i].swizzle = panfrost_get_default_swizzle(2);
-                }
-        }
-
-        /* Fix up unaligned addresses */
-        for (unsigned i = 0; i < so_count; ++i) {
-                if (varyings[i].elements < MALI_RECORD_SPECIAL)
-                        continue;
-
-                unsigned align = (varyings[i].elements & 63);
-
-                /* While we're at it, the SO buffers are linear */
-
-                if (!align) {
-                        varyings[i].elements |= MALI_ATTR_LINEAR;
-                        continue;
-                }
-
-                /* We need to adjust alignment */
-                varyings[i].elements &= ~63;
-                varyings[i].elements |= MALI_ATTR_LINEAR;
-                varyings[i].size += align;
-
-                for (unsigned v = 0; v < vs->varying_count; ++v) {
-                        if (ovs[v].index != i)
-                                continue;
-
-                        ovs[v].src_offset = vs->varyings[v].src_offset + align;
-                }
-
-                for (unsigned f = 0; f < fs->varying_count; ++f) {
-                        if (ofs[f].index != i)
-                                continue;
-
-                        ofs[f].src_offset = fs->varyings[f].src_offset + align;
-                }
-        }
-
-        varyings_p = panfrost_upload_transient(batch, varyings,
-                                               idx * sizeof(*varyings));
-        vertex_postfix->varyings = varyings_p;
-        tiler_postfix->varyings = varyings_p;
+        vertex_postfix->varyings = T.gpu;
+        tiler_postfix->varyings = T.gpu;
 
         vertex_postfix->varying_meta = trans.gpu;
         tiler_postfix->varying_meta = trans.gpu + vs_size;

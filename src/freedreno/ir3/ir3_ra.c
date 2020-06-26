@@ -30,7 +30,7 @@
 #include "util/bitset.h"
 
 #include "ir3.h"
-#include "ir3_compiler.h"
+#include "ir3_shader.h"
 #include "ir3_ra.h"
 
 
@@ -563,13 +563,16 @@ ra_init(struct ir3_ra_ctx *ctx)
 	ctx->hr0_xyz_nodes = ctx->alloc_count;
 	ctx->alloc_count += 3;
 
+	/* Add vreg name for prefetch-exclusion range: */
+	ctx->prefetch_exclude_node = ctx->alloc_count++;
+
 	ctx->g = ra_alloc_interference_graph(ctx->set->regs, ctx->alloc_count);
 	ralloc_steal(ctx->g, ctx->instrd);
 	ctx->def = rzalloc_array(ctx->g, unsigned, ctx->alloc_count);
 	ctx->use = rzalloc_array(ctx->g, unsigned, ctx->alloc_count);
 
 	/* TODO add selector callback for split (pre-a6xx) register file: */
-	if (ctx->ir->compiler->gpu_id >= 600) {
+	if (ctx->v->mergedregs) {
 		ra_set_select_reg_callback(ctx->g, ra_select_reg_merged, ctx);
 
 		if (ctx->scalar_pass) {
@@ -711,10 +714,19 @@ ra_block_compute_live_ranges(struct ir3_ra_ctx *ctx, struct ir3_block *block)
 			 */
 			if (is_tex_or_prefetch(instr)) {
 				int writemask_skipped_regs = ffs(instr->regs[0]->wrmask) - 1;
-				int r0_xyz = (instr->regs[0]->flags & IR3_REG_HALF) ?
+				int r0_xyz = is_half(instr) ?
 					ctx->hr0_xyz_nodes : ctx->r0_xyz_nodes;
 				for (int i = 0; i < writemask_skipped_regs; i++)
 					ra_add_node_interference(ctx->g, name, r0_xyz + i);
+			}
+
+			/* Pre-fetched textures have a lower limit for bits to encode dst
+			 * register, so add additional interference with registers above
+			 * that limit.
+			 */
+			if (instr->opc == OPC_META_TEX_PREFETCH) {
+				ra_add_node_interference(ctx->g, name,
+						ctx->prefetch_exclude_node);
 			}
 		}
 
@@ -1011,13 +1023,18 @@ ra_add_interference(struct ir3_ra_ctx *ctx)
 		arr->end_ip = 0;
 	}
 
-
 	/* set up the r0.xyz precolor regs. */
 	for (int i = 0; i < 3; i++) {
 		ra_set_node_reg(ctx->g, ctx->r0_xyz_nodes + i, i);
 		ra_set_node_reg(ctx->g, ctx->hr0_xyz_nodes + i,
 				ctx->set->first_half_reg + i);
 	}
+
+	/* pre-color node that conflict with half/full regs higher than what
+	 * can be encoded for tex-prefetch:
+	 */
+	ra_set_node_reg(ctx->g, ctx->prefetch_exclude_node,
+			ctx->set->prefetch_exclude_reg);
 
 	/* compute live ranges (use/def) on a block level, also updating
 	 * block's def/use bitmasks (used below to calculate per-block
@@ -1293,13 +1310,6 @@ ra_precolor(struct ir3_ra_ctx *ctx, struct ir3_instruction **precolor, unsigned 
 
 			debug_assert(!(instr->regs[0]->flags & (IR3_REG_HALF | IR3_REG_HIGH)));
 
-			/* only consider the first component: */
-			if (id->off > 0)
-				continue;
-
-			if (ctx->scalar_pass && !should_assign(ctx, instr))
-				continue;
-
 			/* 'base' is in scalar (class 0) but we need to map that
 			 * the conflicting register of the appropriate class (ie.
 			 * input could be vec2/vec3/etc)
@@ -1318,6 +1328,9 @@ ra_precolor(struct ir3_ra_ctx *ctx, struct ir3_instruction **precolor, unsigned 
 			 *           .. and so on..
 			 */
 			unsigned regid = instr->regs[0]->num;
+			assert(regid >= id->off);
+			regid -= id->off;
+
 			unsigned reg = ctx->set->gpr_to_ra_reg[id->cls][regid];
 			unsigned name = ra_name(ctx, id);
 			ra_set_node_reg(ctx->g, name, reg);
@@ -1471,7 +1484,8 @@ ir3_ra_pass(struct ir3_shader_variant *v, struct ir3_instruction **precolor,
 	struct ir3_ra_ctx ctx = {
 			.v = v,
 			.ir = v->ir,
-			.set = v->ir->compiler->set,
+			.set = v->mergedregs ?
+				v->ir->compiler->mergedregs_set : v->ir->compiler->set,
 			.scalar_pass = scalar_pass,
 	};
 	int ret;

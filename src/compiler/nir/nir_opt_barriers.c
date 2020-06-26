@@ -40,7 +40,7 @@ nir_opt_combine_memory_barriers_impl(
 
          nir_intrinsic_instr *current = nir_instr_as_intrinsic(instr);
          if (current->intrinsic != nir_intrinsic_scoped_barrier ||
-             nir_intrinsic_memory_scope(current) != NIR_SCOPE_NONE) {
+             nir_intrinsic_execution_scope(current) != NIR_SCOPE_NONE) {
             prev = NULL;
             continue;
          }
@@ -58,6 +58,8 @@ nir_opt_combine_memory_barriers_impl(
       nir_metadata_preserve(impl, nir_metadata_block_index |
                                   nir_metadata_dominance |
                                   nir_metadata_live_ssa_defs);
+   } else {
+      nir_metadata_preserve(impl, nir_metadata_all);
    }
 
    return progress;

@@ -112,7 +112,8 @@ setup_stages(struct fd4_emit *emit, struct stage *s)
 		if (s[i].v) {
 			s[i].i = &s[i].v->info;
 			/* constlen is in units of 4 * vec4: */
-			s[i].constlen = align(s[i].v->constlen, 4) / 4;
+			assert(s[i].v->constlen % 4 == 0);
+			s[i].constlen = s[i].v->constlen / 4;
 			/* instrlen is already in units of 16 instr.. although
 			 * probably we should ditch that and not make the compiler
 			 * care about instruction group size of a3xx vs a4xx
@@ -463,40 +464,32 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 				}
 			}
 
-			gl_varying_slot slot = s[FS].v->inputs[j].slot;
-
-			/* since we don't enable PIPE_CAP_TGSI_TEXCOORD: */
-			if (slot >= VARYING_SLOT_VAR0) {
-				unsigned texmask = 1 << (slot - VARYING_SLOT_VAR0);
-				/* Replace the .xy coordinates with S/T from the point sprite. Set
-				 * interpolation bits for .zw such that they become .01
+			bool coord_mode = emit->sprite_coord_mode;
+			if (ir3_point_sprite(s[FS].v, j, emit->sprite_coord_enable, &coord_mode)) {
+				/* mask is two 2-bit fields, where:
+				 *   '01' -> S
+				 *   '10' -> T
+				 *   '11' -> 1 - T  (flip mode)
 				 */
-				if (emit->sprite_coord_enable & texmask) {
-					/* mask is two 2-bit fields, where:
-					 *   '01' -> S
-					 *   '10' -> T
-					 *   '11' -> 1 - T  (flip mode)
-					 */
-					unsigned mask = emit->sprite_coord_mode ? 0b1101 : 0b1001;
-					uint32_t loc = inloc;
-					if (compmask & 0x1) {
-						vpsrepl[loc / 16] |= ((mask >> 0) & 0x3) << ((loc % 16) * 2);
-						loc++;
-					}
-					if (compmask & 0x2) {
-						vpsrepl[loc / 16] |= ((mask >> 2) & 0x3) << ((loc % 16) * 2);
-						loc++;
-					}
-					if (compmask & 0x4) {
-						/* .z <- 0.0f */
-						vinterp[loc / 16] |= 0b10 << ((loc % 16) * 2);
-						loc++;
-					}
-					if (compmask & 0x8) {
-						/* .w <- 1.0f */
-						vinterp[loc / 16] |= 0b11 << ((loc % 16) * 2);
-						loc++;
-					}
+				unsigned mask = coord_mode ? 0b1101 : 0b1001;
+				uint32_t loc = inloc;
+				if (compmask & 0x1) {
+					vpsrepl[loc / 16] |= ((mask >> 0) & 0x3) << ((loc % 16) * 2);
+					loc++;
+				}
+				if (compmask & 0x2) {
+					vpsrepl[loc / 16] |= ((mask >> 2) & 0x3) << ((loc % 16) * 2);
+					loc++;
+				}
+				if (compmask & 0x4) {
+					/* .z <- 0.0f */
+					vinterp[loc / 16] |= 0b10 << ((loc % 16) * 2);
+					loc++;
+				}
+				if (compmask & 0x8) {
+					/* .w <- 1.0f */
+					vinterp[loc / 16] |= 0b11 << ((loc % 16) * 2);
+					loc++;
 				}
 			}
 		}

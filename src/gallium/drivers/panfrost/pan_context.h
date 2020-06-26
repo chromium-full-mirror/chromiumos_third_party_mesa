@@ -204,7 +204,7 @@ struct panfrost_shader_state {
         enum bifrost_shader_type blend_types[BIFROST_MAX_RENDER_TARGET_COUNT];
 
         unsigned int varying_count;
-        struct mali_attr_meta varyings[PIPE_MAX_ATTRIBS];
+        enum mali_format varyings[PIPE_MAX_ATTRIBS];
         gl_varying_slot varyings_loc[PIPE_MAX_ATTRIBS];
         struct pipe_stream_output_info stream_output;
         uint64_t so_mask;
@@ -263,9 +263,10 @@ struct panfrost_sampler_state {
 
 struct panfrost_sampler_view {
         struct pipe_sampler_view base;
-        struct panfrost_bo *midgard_bo;
-        struct panfrost_bo *bifrost_bo;
+        struct panfrost_bo *bo;
         struct bifrost_texture_descriptor *bifrost_descriptor;
+        mali_ptr texture_bo;
+        enum mali_texture_layout layout;
 };
 
 static inline struct panfrost_context *
@@ -333,6 +334,11 @@ panfrost_shader_compile(struct panfrost_context *ctx,
 
 unsigned
 panfrost_ubo_count(struct panfrost_context *ctx, enum pipe_shader_type stage);
+
+void
+panfrost_create_sampler_view_bo(struct panfrost_sampler_view *so,
+                                struct pipe_context *pctx,
+                                struct pipe_resource *texture);
 
 /* Instancing */
 

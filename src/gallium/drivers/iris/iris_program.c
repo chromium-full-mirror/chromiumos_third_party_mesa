@@ -125,6 +125,7 @@ iris_to_brw_fs_key(const struct gen_device_info *devinfo,
       .coherent_fb_fetch = key->coherent_fb_fetch,
       .color_outputs_valid = key->color_outputs_valid,
       .input_slots_valid = key->input_slots_valid,
+      .ignore_sample_mask_out = !key->multisample_fbo,
    };
 }
 
@@ -267,8 +268,10 @@ iris_lower_storage_image_derefs(nir_shader *nir)
 static bool
 iris_fix_edge_flags(nir_shader *nir)
 {
-   if (nir->info.stage != MESA_SHADER_VERTEX)
+   if (nir->info.stage != MESA_SHADER_VERTEX) {
+      nir_shader_preserve_all_metadata(nir);
       return false;
+   }
 
    nir_variable *var = NULL;
    nir_foreach_variable(v, &nir->outputs) {
@@ -278,8 +281,10 @@ iris_fix_edge_flags(nir_shader *nir)
       }
    }
 
-   if (!var)
+   if (!var) {
+      nir_shader_preserve_all_metadata(nir);
       return false;
+   }
 
    exec_node_remove(&var->node);
    var->data.mode = nir_var_shader_temp;
@@ -294,6 +299,8 @@ iris_fix_edge_flags(nir_shader *nir)
                                         nir_metadata_dominance |
                                         nir_metadata_live_ssa_defs |
                                         nir_metadata_loop_analysis);
+      } else {
+         nir_metadata_preserve(f->impl, nir_metadata_all);
       }
    }
 

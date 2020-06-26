@@ -299,6 +299,54 @@ anv_shader_compile_to_nir(struct anv_device *device,
    return nir;
 }
 
+VkResult
+anv_pipeline_init(struct anv_pipeline *pipeline,
+                  struct anv_device *device,
+                  enum anv_pipeline_type type,
+                  VkPipelineCreateFlags flags,
+                  const VkAllocationCallbacks *pAllocator)
+{
+   VkResult result;
+
+   memset(pipeline, 0, sizeof(*pipeline));
+
+   vk_object_base_init(&device->vk, &pipeline->base,
+                       VK_OBJECT_TYPE_PIPELINE);
+   pipeline->device = device;
+
+   /* It's the job of the child class to provide actual backing storage for
+    * the batch by setting batch.start, batch.next, and batch.end.
+    */
+   pipeline->batch.alloc = pAllocator ? pAllocator : &device->vk.alloc;
+   pipeline->batch.relocs = &pipeline->batch_relocs;
+   pipeline->batch.status = VK_SUCCESS;
+
+   result = anv_reloc_list_init(&pipeline->batch_relocs,
+                                pipeline->batch.alloc);
+   if (result != VK_SUCCESS)
+      return result;
+
+   pipeline->mem_ctx = ralloc_context(NULL);
+
+   pipeline->type = type;
+   pipeline->flags = flags;
+
+   util_dynarray_init(&pipeline->executables, pipeline->mem_ctx);
+
+   return VK_SUCCESS;
+}
+
+void
+anv_pipeline_finish(struct anv_pipeline *pipeline,
+                    struct anv_device *device,
+                    const VkAllocationCallbacks *pAllocator)
+{
+   anv_reloc_list_finish(&pipeline->batch_relocs,
+                         pAllocator ? pAllocator : &device->vk.alloc);
+   ralloc_free(pipeline->mem_ctx);
+   vk_object_base_finish(&pipeline->base);
+}
+
 void anv_DestroyPipeline(
     VkDevice                                    _device,
     VkPipeline                                  _pipeline,
@@ -309,11 +357,6 @@ void anv_DestroyPipeline(
 
    if (!pipeline)
       return;
-
-   anv_reloc_list_finish(&pipeline->batch_relocs,
-                         pAllocator ? pAllocator : &device->vk.alloc);
-
-   ralloc_free(pipeline->mem_ctx);
 
    switch (pipeline->type) {
    case ANV_PIPELINE_GRAPHICS: {
@@ -344,7 +387,7 @@ void anv_DestroyPipeline(
       unreachable("invalid pipeline type");
    }
 
-   vk_object_base_finish(&pipeline->base);
+   anv_pipeline_finish(pipeline, device, pAllocator);
    vk_free2(&device->vk.alloc, pAllocator, pipeline);
 }
 
@@ -472,6 +515,8 @@ populate_wm_prog_key(const struct gen_device_info *devinfo,
 
    /* XXX Vulkan doesn't appear to specify */
    key->clamp_fragment_color = false;
+
+   key->ignore_sample_mask_out = false;
 
    assert(subpass->color_count <= MAX_RTS);
    for (uint32_t i = 0; i < subpass->color_count; i++) {
@@ -1374,6 +1419,9 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
       }
    }
 
+   if (info->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT)
+      return VK_PIPELINE_COMPILE_REQUIRED_EXT;
+
    void *pipeline_ctx = ralloc_context(NULL);
 
    for (unsigned s = 0; s < MESA_SHADER_STAGES; s++) {
@@ -1635,6 +1683,10 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
                                          sizeof(stage.cache_key),
                                          &cache_hit);
    }
+
+   if (bin == NULL &&
+       (info->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT))
+      return VK_PIPELINE_COMPILE_REQUIRED_EXT;
 
    void *mem_ctx = ralloc_context(NULL);
    if (bin == NULL) {
@@ -1974,40 +2026,28 @@ anv_pipeline_setup_l3_config(struct anv_pipeline *pipeline, bool needs_slm)
 }
 
 VkResult
-anv_pipeline_init(struct anv_graphics_pipeline *pipeline,
-                  struct anv_device *device,
-                  struct anv_pipeline_cache *cache,
-                  const VkGraphicsPipelineCreateInfo *pCreateInfo,
-                  const VkAllocationCallbacks *alloc)
+anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline,
+                           struct anv_device *device,
+                           struct anv_pipeline_cache *cache,
+                           const VkGraphicsPipelineCreateInfo *pCreateInfo,
+                           const VkAllocationCallbacks *alloc)
 {
    VkResult result;
 
    anv_pipeline_validate_create_info(pCreateInfo);
 
-   if (alloc == NULL)
-      alloc = &device->vk.alloc;
+   result = anv_pipeline_init(&pipeline->base, device,
+                              ANV_PIPELINE_GRAPHICS, pCreateInfo->flags,
+                              alloc);
+   if (result != VK_SUCCESS)
+      return result;
 
-   vk_object_base_init(&device->vk, &pipeline->base.base,
-                       VK_OBJECT_TYPE_PIPELINE);
-   pipeline->base.device = device;
-   pipeline->base.type = ANV_PIPELINE_GRAPHICS;
+   anv_batch_set_storage(&pipeline->base.batch, ANV_NULL_ADDRESS,
+                         pipeline->batch_data, sizeof(pipeline->batch_data));
 
    ANV_FROM_HANDLE(anv_render_pass, render_pass, pCreateInfo->renderPass);
    assert(pCreateInfo->subpass < render_pass->subpass_count);
    pipeline->subpass = &render_pass->subpasses[pCreateInfo->subpass];
-
-   result = anv_reloc_list_init(&pipeline->base.batch_relocs, alloc);
-   if (result != VK_SUCCESS)
-      return result;
-
-   pipeline->base.batch.alloc = alloc;
-   pipeline->base.batch.next = pipeline->base.batch.start = pipeline->batch_data;
-   pipeline->base.batch.end = pipeline->base.batch.start + sizeof(pipeline->batch_data);
-   pipeline->base.batch.relocs = &pipeline->base.batch_relocs;
-   pipeline->base.batch.status = VK_SUCCESS;
-
-   pipeline->base.mem_ctx = ralloc_context(NULL);
-   pipeline->base.flags = pCreateInfo->flags;
 
    assert(pCreateInfo->pRasterizationState);
 
@@ -2034,12 +2074,9 @@ anv_pipeline_init(struct anv_graphics_pipeline *pipeline,
     */
    memset(pipeline->shaders, 0, sizeof(pipeline->shaders));
 
-   util_dynarray_init(&pipeline->base.executables, pipeline->base.mem_ctx);
-
    result = anv_pipeline_compile_graphics(pipeline, cache, pCreateInfo);
    if (result != VK_SUCCESS) {
-      ralloc_free(pipeline->base.mem_ctx);
-      anv_reloc_list_finish(&pipeline->base.batch_relocs, alloc);
+      anv_pipeline_finish(&pipeline->base, device, alloc);
       return result;
    }
 

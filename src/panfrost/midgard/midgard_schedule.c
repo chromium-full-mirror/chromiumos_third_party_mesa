@@ -26,6 +26,7 @@
 #include "midgard_quirks.h"
 #include "util/u_memory.h"
 #include "util/u_math.h"
+#include "util/half_float.h"
 
 /* Scheduling for Midgard is complicated, to say the least. ALU instructions
  * must be grouped into VLIW bundles according to following model:
@@ -198,12 +199,12 @@ mir_is_scalar(midgard_instruction *ains)
 
         /* Otherwise, check mode hazards */
         bool could_scalar = true;
+        unsigned szd = nir_alu_type_get_type_size(ains->dest_type);
         unsigned sz0 = nir_alu_type_get_type_size(ains->src_types[0]);
         unsigned sz1 = nir_alu_type_get_type_size(ains->src_types[1]);
 
         /* Only 16/32-bit can run on a scalar unit */
-        could_scalar &= ains->alu.reg_mode != midgard_reg_mode_8;
-        could_scalar &= ains->alu.reg_mode != midgard_reg_mode_64;
+        could_scalar &= (szd == 16) || (szd == 32);
 
         if (ains->src[0] != ~0)
                 could_scalar &= (sz0 == 16) || (sz0 == 32);
@@ -508,6 +509,64 @@ mir_pipeline_count(midgard_instruction *ins)
         return DIV_ROUND_UP(bytecount, 16);
 }
 
+/* Matches FADD x, x with modifiers compatible. Since x + x = x * 2, for
+ * any x including of the form f(y) for some swizzle/abs/neg function f */
+
+static bool
+mir_is_add_2(midgard_instruction *ins)
+{
+        if (ins->alu.op != midgard_alu_op_fadd)
+                return false;
+
+        if (ins->src[0] != ins->src[1])
+                return false;
+
+        if (ins->src_types[0] != ins->src_types[1])
+                return false;
+
+        for (unsigned i = 0; i < MIR_VEC_COMPONENTS; ++i) {
+                if (ins->swizzle[0][i] != ins->swizzle[1][i])
+                        return false;
+        }
+
+        if (ins->src_abs[0] != ins->src_abs[1])
+                return false;
+
+        if (ins->src_neg[0] != ins->src_neg[1])
+                return false;
+
+        return true;
+}
+
+static void
+mir_adjust_unit(midgard_instruction *ins, unsigned unit)
+{
+        /* FADD x, x = FMUL x, #2 */
+        if (mir_is_add_2(ins) && (unit & (UNITS_MUL | UNIT_VLUT))) {
+                ins->alu.op = midgard_alu_op_fmul;
+
+                ins->src[1] = ~0;
+                ins->src_abs[1] = false;
+                ins->src_neg[1] = false;
+
+                ins->has_inline_constant = true;
+                ins->inline_constant = _mesa_float_to_half(2.0);
+        }
+}
+
+static unsigned
+mir_has_unit(midgard_instruction *ins, unsigned unit)
+{
+        if (alu_opcode_props[ins->alu.op].props & unit)
+                return true;
+
+        /* FADD x, x can run on any adder or any multiplier */
+        if (mir_is_add_2(ins))
+                return true;
+
+        return false;
+}
+
 static midgard_instruction *
 mir_choose_instruction(
                 midgard_instruction **instructions,
@@ -554,7 +613,7 @@ mir_choose_instruction(
                 if (predicate->exclude != ~0 && instructions[i]->dest == predicate->exclude)
                         continue;
 
-                if (alu && !branch && !(alu_opcode_props[instructions[i]->alu.op].props & unit))
+                if (alu && !branch && !(mir_has_unit(instructions[i], unit)))
                         continue;
 
                 if (branch && !instructions[i]->compact_branch)
@@ -606,6 +665,9 @@ mir_choose_instruction(
 
                 if (ldst)
                         predicate->pipeline_count += mir_pipeline_count(instructions[best_index]);
+
+                if (alu)
+                        mir_adjust_unit(instructions[best_index], unit);
 
                 /* Once we schedule a conditional, we can't again */
                 predicate->no_cond |= best_conditional;
@@ -906,8 +968,7 @@ mir_schedule_alu(
 
         mir_choose_alu(&branch, instructions, worklist, len, &predicate, ALU_ENAB_BR_COMPACT);
         mir_update_worklist(worklist, len, instructions, branch);
-        bool writeout = branch && branch->writeout;
-        bool zs_writeout = writeout && (branch->writeout_depth | branch->writeout_stencil);
+        unsigned writeout = branch ? branch->writeout : 0;
 
         if (branch && branch->branch.conditional) {
                 midgard_instruction *cond = mir_schedule_condition(ctx, &predicate, worklist, len, instructions, branch);
@@ -939,7 +1000,8 @@ mir_schedule_alu(
                 predicate.no_cond = true;
         }
 
-        mir_choose_alu(&smul, instructions, worklist, len, &predicate, UNIT_SMUL);
+        if (writeout < PAN_WRITEOUT_Z)
+                mir_choose_alu(&smul, instructions, worklist, len, &predicate, UNIT_SMUL);
 
         if (!writeout) {
                 mir_choose_alu(&vlut, instructions, worklist, len, &predicate, UNIT_VLUT);
@@ -948,7 +1010,7 @@ mir_schedule_alu(
                 bundle.last_writeout = branch->last_writeout;
         }
 
-        if (writeout && !zs_writeout) {
+        if (writeout) {
                 vadd = ralloc(ctx, midgard_instruction);
                 *vadd = v_mov(~0, make_compiler_temp(ctx));
 
@@ -972,12 +1034,71 @@ mir_schedule_alu(
 
                 vadd->unit = UNIT_VADD;
                 vadd->mask = 0x1;
-                branch->src[2] = vadd->dest;
-                branch->src_types[2] = vadd->dest_type;
+                branch->dest = vadd->dest;
+                branch->dest_type = vadd->dest_type;
+        }
+
+        if (writeout & PAN_WRITEOUT_Z) {
+                /* Depth writeout */
+
+                unsigned src = (branch->src[0] == ~0) ? SSA_FIXED_REGISTER(1) : branch->src[2];
+
+                predicate.unit = UNIT_SMUL;
+                predicate.dest = src;
+                predicate.mask = 0x1;
+
+                midgard_instruction *z_store;
+
+                z_store = mir_choose_instruction(instructions, worklist, len, &predicate);
+
+                predicate.dest = predicate.mask = 0;
+
+                if (!z_store) {
+                        z_store = ralloc(ctx, midgard_instruction);
+                        *z_store = v_mov(src, make_compiler_temp(ctx));
+
+                        branch->src[2] = z_store->dest;
+                }
+
+                smul = z_store;
+                smul->unit = UNIT_SMUL;
+        }
+
+        if (writeout & PAN_WRITEOUT_S) {
+                /* Stencil writeout */
+
+                unsigned src = (branch->src[0] == ~0) ? SSA_FIXED_REGISTER(1) : branch->src[3];
+
+                predicate.unit = UNIT_VLUT;
+                predicate.dest = src;
+                predicate.mask = 0x1;
+
+                midgard_instruction *z_store;
+
+                z_store = mir_choose_instruction(instructions, worklist, len, &predicate);
+
+                predicate.dest = predicate.mask = 0;
+
+                if (!z_store) {
+                        z_store = ralloc(ctx, midgard_instruction);
+                        *z_store = v_mov(src, make_compiler_temp(ctx));
+
+                        branch->src[3] = z_store->dest;
+
+                        z_store->mask = 0x1;
+
+                        unsigned swizzle = (branch->src[0] == ~0) ? COMPONENT_Y : COMPONENT_X;
+
+                        for (unsigned c = 0; c < 16; ++c)
+                                z_store->swizzle[1][c] = swizzle;
+                }
+
+                vlut = z_store;
+                vlut->unit = UNIT_VLUT;
         }
 
         mir_choose_alu(&vadd, instructions, worklist, len, &predicate, UNIT_VADD);
-        
+
         mir_update_worklist(worklist, len, instructions, vlut);
         mir_update_worklist(worklist, len, instructions, vadd);
         mir_update_worklist(worklist, len, instructions, smul);
@@ -1004,7 +1125,7 @@ mir_schedule_alu(
 
         if (writeout) {
                 midgard_instruction *stages[] = { sadd, vadd, smul };
-                unsigned src = (branch->src[0] == ~0) ? SSA_FIXED_REGISTER(zs_writeout ? 1 : 0) : branch->src[0];
+                unsigned src = (branch->src[0] == ~0) ? SSA_FIXED_REGISTER(0) : branch->src[0];
                 unsigned writeout_mask = 0x0;
                 bool bad_writeout = false;
 
@@ -1020,12 +1141,10 @@ mir_schedule_alu(
                 }
 
                 /* It's possible we'll be able to schedule something into vmul
-                 * to fill r0/r1. Let's peak into the future, trying to schedule
+                 * to fill r0. Let's peak into the future, trying to schedule
                  * vmul specially that way. */
 
-                unsigned full_mask = zs_writeout ?
-                        (1 << (branch->writeout_depth + branch->writeout_stencil)) - 1 :
-                        0xF;
+                unsigned full_mask = 0xF;
 
                 if (!bad_writeout && writeout_mask != full_mask) {
                         predicate.unit = UNIT_VMUL;
@@ -1048,7 +1167,7 @@ mir_schedule_alu(
 
                 /* Finally, add a move if necessary */
                 if (bad_writeout || writeout_mask != full_mask) {
-                        unsigned temp = (branch->src[0] == ~0) ? SSA_FIXED_REGISTER(zs_writeout ? 1 : 0) : make_compiler_temp(ctx);
+                        unsigned temp = (branch->src[0] == ~0) ? SSA_FIXED_REGISTER(0) : make_compiler_temp(ctx);
 
                         vmul = ralloc(ctx, midgard_instruction);
                         *vmul = v_mov(src, temp);

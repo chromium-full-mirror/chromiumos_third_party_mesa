@@ -1036,8 +1036,11 @@ struct anv_memory_heap {
    VkDeviceSize      size;
    VkMemoryHeapFlags flags;
 
-   /* Driver-internal book-keeping */
-   VkDeviceSize      used;
+   /** Driver-internal book-keeping.
+    *
+    * Align it to 64 bits to make atomic operations faster on 32 bit platforms.
+    */
+   VkDeviceSize      used __attribute__ ((aligned (8)));
 };
 
 struct anv_physical_device {
@@ -1084,6 +1087,7 @@ struct anv_physical_device {
 
     bool                                        use_softpin;
     bool                                        always_use_bindless;
+    bool                                        use_call_secondary;
 
     /** True if we can access buffers using A64 messages */
     bool                                        has_a64_buffer_access;
@@ -1240,6 +1244,8 @@ struct anv_pipeline_cache {
    struct hash_table *                          nir_cache;
 
    struct hash_table *                          cache;
+
+   bool                                         external_sync;
 };
 
 struct nir_xfb_info;
@@ -1647,6 +1653,15 @@ void anv_batch_emit_batch(struct anv_batch *batch, struct anv_batch *other);
 uint64_t anv_batch_emit_reloc(struct anv_batch *batch,
                               void *location, struct anv_bo *bo, uint32_t offset);
 struct anv_address anv_batch_address(struct anv_batch *batch, void *batch_location);
+
+static inline void
+anv_batch_set_storage(struct anv_batch *batch, struct anv_address addr,
+                      void *map, size_t size)
+{
+   batch->start_addr = addr;
+   batch->next = batch->start = map;
+   batch->end = map + size;
+}
 
 static inline VkResult
 anv_batch_set_error(struct anv_batch *batch, VkResult error)
@@ -3400,10 +3415,22 @@ anv_pipeline_get_last_vue_prog_data(const struct anv_graphics_pipeline *pipeline
 }
 
 VkResult
-anv_pipeline_init(struct anv_graphics_pipeline *pipeline, struct anv_device *device,
-                  struct anv_pipeline_cache *cache,
-                  const VkGraphicsPipelineCreateInfo *pCreateInfo,
-                  const VkAllocationCallbacks *alloc);
+anv_pipeline_init(struct anv_pipeline *pipeline,
+                  struct anv_device *device,
+                  enum anv_pipeline_type type,
+                  VkPipelineCreateFlags flags,
+                  const VkAllocationCallbacks *pAllocator);
+
+void
+anv_pipeline_finish(struct anv_pipeline *pipeline,
+                    struct anv_device *device,
+                    const VkAllocationCallbacks *pAllocator);
+
+VkResult
+anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline, struct anv_device *device,
+                           struct anv_pipeline_cache *cache,
+                           const VkGraphicsPipelineCreateInfo *pCreateInfo,
+                           const VkAllocationCallbacks *alloc);
 
 VkResult
 anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
@@ -4303,6 +4330,8 @@ anv_device_entrypoint_is_enabled(int index, uint32_t core_version,
                                  const struct anv_instance_extension_table *instance,
                                  const struct anv_device_extension_table *device);
 
+void *anv_resolve_device_entrypoint(const struct gen_device_info *devinfo,
+                                    uint32_t index);
 void *anv_lookup_entrypoint(const struct gen_device_info *devinfo,
                             const char *name);
 

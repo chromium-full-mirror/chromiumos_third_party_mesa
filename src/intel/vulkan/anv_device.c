@@ -39,7 +39,7 @@
 #include "util/os_file.h"
 #include "util/u_atomic.h"
 #include "util/u_string.h"
-#include "util/xmlpool.h"
+#include "util/driconf.h"
 #include "git_sha1.h"
 #include "vk_util.h"
 #include "common/gen_aux_map.h"
@@ -453,6 +453,10 @@ anv_physical_device_try_create(struct anv_instance *instance,
 
    device->always_use_bindless =
       env_var_as_boolean("ANV_ALWAYS_BINDLESS", false);
+
+   device->use_call_secondary =
+      device->use_softpin &&
+      !env_var_as_boolean("ANV_DISABLE_SECONDARY_CMD_BUFFER_CALLS", false);
 
    /* We first got the A64 messages on broadwell and we can only use them if
     * we can pass addresses directly into the shader which requires softpin.
@@ -1252,6 +1256,13 @@ void anv_GetPhysicalDeviceFeatures2(
          feature->performanceCounterQueryPools = true;
          /* HW only supports a single configuration at a time. */
          feature->performanceCounterMultipleQueryPools = false;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT: {
+         VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT *features =
+            (VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT *)ext;
+         features->pipelineCreationCacheControl = true;
          break;
       }
 
@@ -2480,55 +2491,6 @@ VkResult anv_EnumerateDeviceExtensionProperties(
    return vk_outarray_status(&out);
 }
 
-static void
-anv_device_init_dispatch(struct anv_device *device)
-{
-   const struct anv_instance *instance = device->physical->instance;
-
-   const struct anv_device_dispatch_table *genX_table;
-   switch (device->info.gen) {
-   case 12:
-      genX_table = &gen12_device_dispatch_table;
-      break;
-   case 11:
-      genX_table = &gen11_device_dispatch_table;
-      break;
-   case 10:
-      genX_table = &gen10_device_dispatch_table;
-      break;
-   case 9:
-      genX_table = &gen9_device_dispatch_table;
-      break;
-   case 8:
-      genX_table = &gen8_device_dispatch_table;
-      break;
-   case 7:
-      if (device->info.is_haswell)
-         genX_table = &gen75_device_dispatch_table;
-      else
-         genX_table = &gen7_device_dispatch_table;
-      break;
-   default:
-      unreachable("unsupported gen\n");
-   }
-
-   for (unsigned i = 0; i < ARRAY_SIZE(device->dispatch.entrypoints); i++) {
-      /* Vulkan requires that entrypoints for extensions which have not been
-       * enabled must not be advertised.
-       */
-      if (!anv_device_entrypoint_is_enabled(i, instance->app_info.api_version,
-                                            &instance->enabled_extensions,
-                                            &device->enabled_extensions)) {
-         device->dispatch.entrypoints[i] = NULL;
-      } else if (genX_table->entrypoints[i]) {
-         device->dispatch.entrypoints[i] = genX_table->entrypoints[i];
-      } else {
-         device->dispatch.entrypoints[i] =
-            anv_device_dispatch_table.entrypoints[i];
-      }
-   }
-}
-
 static int
 vk_priority_to_gen(int priority)
 {
@@ -2858,7 +2820,20 @@ VkResult anv_CreateDevice(
    device->robust_buffer_access = robust_buffer_access;
    device->enabled_extensions = enabled_extensions;
 
-   anv_device_init_dispatch(device);
+   const struct anv_instance *instance = physical_device->instance;
+   for (unsigned i = 0; i < ARRAY_SIZE(device->dispatch.entrypoints); i++) {
+      /* Vulkan requires that entrypoints for extensions which have not been
+       * enabled must not be advertised.
+       */
+      if (!anv_device_entrypoint_is_enabled(i, instance->app_info.api_version,
+                                            &instance->enabled_extensions,
+                                            &device->enabled_extensions)) {
+         device->dispatch.entrypoints[i] = NULL;
+      } else {
+         device->dispatch.entrypoints[i] =
+            anv_resolve_device_entrypoint(&device->info, i);
+      }
+   }
 
    if (pthread_mutex_init(&device->mutex, NULL) != 0) {
       result = vk_error(VK_ERROR_INITIALIZATION_FAILED);
@@ -2927,7 +2902,7 @@ VkResult anv_CreateDevice(
          goto fail_surface_state_pool;
    }
 
-   if (device->info.gen >= 12) {
+   if (device->info.has_aux_map) {
       device->aux_map_ctx = gen_aux_map_init(device, &aux_map_allocator,
                                              &physical_device->info);
       if (!device->aux_map_ctx)
@@ -3029,7 +3004,7 @@ VkResult anv_CreateDevice(
  fail_workaround_bo:
    anv_device_release_bo(device, device->workaround_bo);
  fail_surface_aux_map_pool:
-   if (device->info.gen >= 12) {
+   if (device->info.has_aux_map) {
       gen_aux_map_finish(device->aux_map_ctx);
       device->aux_map_ctx = NULL;
    }
@@ -3101,7 +3076,7 @@ void anv_DestroyDevice(
    if (device->info.gen >= 10)
       anv_device_release_bo(device, device->hiz_clear_bo);
 
-   if (device->info.gen >= 12) {
+   if (device->info.has_aux_map) {
       gen_aux_map_finish(device->aux_map_ctx);
       device->aux_map_ctx = NULL;
    }
