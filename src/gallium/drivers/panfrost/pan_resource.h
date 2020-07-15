@@ -28,7 +28,7 @@
 
 #include <panfrost-job.h>
 #include "pan_screen.h"
-#include "pan_allocate.h"
+#include "pan_pool.h"
 #include "pan_minmax_cache.h"
 #include "pan_texture.h"
 #include "drm-uapi/drm.h"
@@ -94,7 +94,7 @@ pan_transfer(struct pipe_transfer *p)
 mali_ptr
 panfrost_get_texture_address(
         struct panfrost_resource *rsrc,
-        unsigned level, unsigned face);
+        unsigned level, unsigned face, unsigned sample);
 
 void panfrost_resource_screen_init(struct pipe_screen *screen);
 
@@ -126,8 +126,31 @@ panfrost_resource_set_damage_region(struct pipe_screen *screen,
                                     unsigned int nrects,
                                     const struct pipe_box *rects);
 
+static inline enum mali_texture_type
+panfrost_translate_texture_type(enum pipe_texture_target t) {
+        switch (t)
+        {
+        case PIPE_BUFFER:
+        case PIPE_TEXTURE_1D:
+        case PIPE_TEXTURE_1D_ARRAY:
+                return MALI_TEX_1D;
 
-struct panfrost_bo *
-pan_bo_create(struct panfrost_device *dev, size_t size, uint32_t flags);
+        case PIPE_TEXTURE_2D:
+        case PIPE_TEXTURE_2D_ARRAY:
+        case PIPE_TEXTURE_RECT:
+                return MALI_TEX_2D;
+
+        case PIPE_TEXTURE_3D:
+                return MALI_TEX_3D;
+
+        case PIPE_TEXTURE_CUBE:
+        case PIPE_TEXTURE_CUBE_ARRAY:
+                return MALI_TEX_CUBE;
+
+        default:
+                unreachable("Unknown target");
+        }
+}
+
 
 #endif /* PAN_RESOURCE_H */

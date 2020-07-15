@@ -60,7 +60,7 @@ fd6_emit_flag_reference(struct fd_ringbuffer *ring, struct fd_resource *rsc,
 	if (fd_resource_ubwc_enabled(rsc, level)) {
 		OUT_RELOC(ring, rsc->bo, fd_resource_ubwc_offset(rsc, level, layer), 0, 0);
 		OUT_RING(ring,
-				A6XX_RB_MRT_FLAG_BUFFER_PITCH_PITCH(rsc->layout.ubwc_slices[level].pitch) |
+				A6XX_RB_MRT_FLAG_BUFFER_PITCH_PITCH(fdl_ubwc_pitch(&rsc->layout, level)) |
 				A6XX_RB_MRT_FLAG_BUFFER_PITCH_ARRAY_PITCH(rsc->layout.ubwc_layer_size >> 2));
 	} else {
 		OUT_RING(ring, 0x00000000);    /* RB_MRT_FLAG_BUFFER[i].ADDR_LO */
@@ -112,7 +112,7 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
 		offset = fd_resource_offset(rsc, psurf->u.tex.level,
 				psurf->u.tex.first_layer);
 
-		stride = slice->pitch;
+		stride = fd_resource_pitch(rsc, psurf->u.tex.level);
 		swap = fd6_resource_swap(rsc, pformat);
 
 		tile_mode = fd_resource_tile_mode(psurf->texture, psurf->u.tex.level);
@@ -172,9 +172,8 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
 	if (zsbuf) {
 		struct fd_resource *rsc = fd_resource(zsbuf->texture);
 		enum a6xx_depth_format fmt = fd6_pipe2depth(zsbuf->format);
-		struct fdl_slice *slice = fd_resource_slice(rsc, 0);
-		uint32_t stride = slice->pitch;
-		uint32_t size = slice->size0;
+		uint32_t stride = fd_resource_pitch(rsc, 0);
+		uint32_t size = fd_resource_slice(rsc, 0)->size0;
 		uint32_t base = gmem ? gmem->zsbuf_base[0] : 0;
 		uint32_t offset = fd_resource_offset(rsc, zsbuf->u.tex.level,
 				zsbuf->u.tex.first_layer);
@@ -215,9 +214,8 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
 		OUT_RING(ring, CP_EVENT_WRITE_0_EVENT(UNK_25));
 
 		if (rsc->stencil) {
-			struct fdl_slice *slice = fd_resource_slice(rsc->stencil, 0);
-			stride = slice->pitch;
-			size = slice->size0;
+			stride = fd_resource_pitch(rsc->stencil, 0);
+			size = fd_resource_slice(rsc->stencil, 0)->size0;
 			uint32_t base = gmem ? gmem->zsbuf_base[1] : 0;
 
 			OUT_REG(ring,
@@ -541,8 +539,8 @@ set_scissor(struct fd_ringbuffer *ring, uint32_t x1, uint32_t y1, uint32_t x2, u
 			A6XX_GRAS_SC_WINDOW_SCISSOR_BR(.x = x2, .y = y2));
 
 	OUT_REG(ring,
-			A6XX_GRAS_RESOLVE_CNTL_1(.x = x1, .y = y1),
-			A6XX_GRAS_RESOLVE_CNTL_2(.x = x2, .y = y2));
+			A6XX_GRAS_2D_RESOLVE_CNTL_1(.x = x1, .y = y1),
+			A6XX_GRAS_2D_RESOLVE_CNTL_2(.x = x2, .y = y2));
 }
 
 static void
@@ -707,8 +705,7 @@ fd6_emit_tile_init(struct fd_batch *batch)
 
 	if (use_hw_binning(batch)) {
 		/* enable stream-out during binning pass: */
-		OUT_PKT4(ring, REG_A6XX_VPC_SO_OVERRIDE, 1);
-		OUT_RING(ring, 0);
+		OUT_REG(ring, A6XX_VPC_SO_DISABLE(false));
 
 		set_bin_size(ring, gmem->bin_w, gmem->bin_h,
 				A6XX_RB_BIN_CONTROL_BINNING_PASS | 0x6000000);
@@ -716,8 +713,7 @@ fd6_emit_tile_init(struct fd_batch *batch)
 		emit_binning_pass(batch);
 
 		/* and disable stream-out for draw pass: */
-		OUT_PKT4(ring, REG_A6XX_VPC_SO_OVERRIDE, 1);
-		OUT_RING(ring, A6XX_VPC_SO_OVERRIDE_SO_DISABLE);
+		OUT_REG(ring, A6XX_VPC_SO_DISABLE(true));
 
 		/*
 		 * NOTE: even if we detect VSC overflow and disable use of
@@ -744,8 +740,7 @@ fd6_emit_tile_init(struct fd_batch *batch)
 		OUT_RING(ring, 0x1);
 	} else {
 		/* no binning pass, so enable stream-out for draw pass:: */
-		OUT_PKT4(ring, REG_A6XX_VPC_SO_OVERRIDE, 1);
-		OUT_RING(ring, 0);
+		OUT_REG(ring, A6XX_VPC_SO_DISABLE(false));
 
 		set_bin_size(ring, gmem->bin_w, gmem->bin_h, 0x6000000);
 	}
@@ -859,7 +854,6 @@ emit_blit(struct fd_batch *batch,
 		  struct pipe_surface *psurf,
 		  bool stencil)
 {
-	struct fdl_slice *slice;
 	struct fd_resource *rsc = fd_resource(psurf->texture);
 	enum pipe_format pfmt = psurf->format;
 	uint32_t offset;
@@ -873,7 +867,6 @@ emit_blit(struct fd_batch *batch,
 		pfmt = rsc->base.format;
 	}
 
-	slice = fd_resource_slice(rsc, psurf->u.tex.level);
 	offset = fd_resource_offset(rsc, psurf->u.tex.level,
 			psurf->u.tex.first_layer);
 	ubwc_enabled = fd_resource_ubwc_enabled(rsc, psurf->u.tex.level);
@@ -881,8 +874,8 @@ emit_blit(struct fd_batch *batch,
 	debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
 	enum a6xx_format format = fd6_pipe2color(pfmt);
-	uint32_t stride = slice->pitch;
-	uint32_t size = slice->size0;
+	uint32_t stride = fd_resource_pitch(rsc, psurf->u.tex.level);
+	uint32_t size = fd_resource_slice(rsc, psurf->u.tex.level)->size0;
 	enum a3xx_color_swap swap = fd6_resource_swap(rsc, pfmt);
 	enum a3xx_msaa_samples samples =
 			fd_msaa_samples(rsc->base.nr_samples);
@@ -1331,6 +1324,7 @@ emit_sysmem_clears(struct fd_batch *batch, struct fd_ringbuffer *ring)
 			value.ui[0] = batch->clear_stencil;
 
 			struct pipe_surface stencil_surf = *pfb->zsbuf;
+			stencil_surf.format = PIPE_FORMAT_S8_UINT;
 			stencil_surf.texture = separate_stencil;
 
 			fd6_clear_surface(ctx, ring,
@@ -1409,8 +1403,7 @@ fd6_emit_sysmem_prep(struct fd_batch *batch)
 	OUT_RING(ring, fd6_context(batch->ctx)->magic.RB_CCU_CNTL_bypass);
 
 	/* enable stream-out, with sysmem there is only one pass: */
-	OUT_PKT4(ring, REG_A6XX_VPC_SO_OVERRIDE, 1);
-	OUT_RING(ring, 0);
+	OUT_REG(ring, A6XX_VPC_SO_DISABLE(false));
 
 	OUT_PKT7(ring, CP_SET_VISIBILITY_OVERRIDE, 1);
 	OUT_RING(ring, 0x1);

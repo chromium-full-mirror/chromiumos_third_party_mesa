@@ -1609,8 +1609,8 @@ nir_block_cf_tree_next(nir_block *block)
          return nir_if_first_else_block(if_stmt);
 
       assert(block == nir_if_last_else_block(if_stmt));
-      /* fall through */
    }
+   /* fallthrough */
 
    case nir_cf_node_loop:
       return nir_cf_node_as_block(nir_cf_node_next(parent));
@@ -1645,8 +1645,8 @@ nir_block_cf_tree_prev(nir_block *block)
          return nir_if_last_then_block(if_stmt);
 
       assert(block == nir_if_first_then_block(if_stmt));
-      /* fall through */
    }
+   /* fallthrough */
 
    case nir_cf_node_loop:
       return nir_cf_node_as_block(nir_cf_node_prev(parent));
@@ -2025,6 +2025,8 @@ nir_intrinsic_from_system_value(gl_system_value val)
       return nir_intrinsic_load_frag_coord;
    case SYSTEM_VALUE_POINT_COORD:
       return nir_intrinsic_load_point_coord;
+   case SYSTEM_VALUE_LINE_COORD:
+      return nir_intrinsic_load_line_coord;
    case SYSTEM_VALUE_FRONT_FACE:
       return nir_intrinsic_load_front_face;
    case SYSTEM_VALUE_SAMPLE_ID:
@@ -2122,6 +2124,8 @@ nir_system_value_from_intrinsic(nir_intrinsic_op intrin)
       return SYSTEM_VALUE_FRAG_COORD;
    case nir_intrinsic_load_point_coord:
       return SYSTEM_VALUE_POINT_COORD;
+   case nir_intrinsic_load_line_coord:
+      return SYSTEM_VALUE_LINE_COORD;
    case nir_intrinsic_load_front_face:
       return SYSTEM_VALUE_FRONT_FACE;
    case nir_intrinsic_load_sample_id:

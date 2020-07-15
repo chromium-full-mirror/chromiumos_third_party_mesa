@@ -211,9 +211,21 @@ panfrost_mfbd_set_cbuf(
         assert(surf->u.tex.last_layer == first_layer);
         int stride = rsrc->slices[level].stride;
 
-        mali_ptr base = panfrost_get_texture_address(rsrc, level, first_layer);
+        /* Only set layer_stride for MSAA rendering */
+
+        unsigned nr_samples = surf->nr_samples;
+
+        if (!nr_samples)
+                nr_samples = surf->texture->nr_samples;
+
+        unsigned layer_stride = (nr_samples > 1) ? rsrc->slices[level].size0 : 0;
+
+        mali_ptr base = panfrost_get_texture_address(rsrc, level, first_layer, 0);
 
         rt->format = panfrost_mfbd_format(surf);
+
+        if (layer_stride)
+                rt->format.flags |= MALI_MFBD_FORMAT_MSAA | MALI_MFBD_FORMAT_LAYERED;
 
         /* Now, we set the layout specific pieces */
 
@@ -226,6 +238,7 @@ panfrost_mfbd_set_cbuf(
 
                 rt->framebuffer = base;
                 rt->framebuffer_stride = stride / 16;
+                rt->layer_stride = layer_stride;
         } else if (rsrc->layout == MALI_TEXTURE_TILED) {
                 if (is_bifrost) {
                         rt->format.unk3 |= 0x8;
@@ -235,12 +248,14 @@ panfrost_mfbd_set_cbuf(
 
                 rt->framebuffer = base;
                 rt->framebuffer_stride = stride;
+                rt->layer_stride = layer_stride;
         } else if (rsrc->layout == MALI_TEXTURE_AFBC) {
                 rt->format.block = MALI_BLOCK_AFBC;
 
                 unsigned header_size = rsrc->slices[level].header_size;
 
                 rt->framebuffer = base + header_size;
+                rt->layer_stride = layer_stride;
                 rt->afbc.metadata = base;
                 rt->afbc.stride = 0;
                 rt->afbc.flags = MALI_AFBC_FLAGS;
@@ -274,7 +289,7 @@ panfrost_mfbd_set_zsbuf(
         unsigned first_layer = surf->u.tex.first_layer;
         assert(surf->u.tex.last_layer == first_layer);
 
-        mali_ptr base = panfrost_get_texture_address(rsrc, level, first_layer);
+        mali_ptr base = panfrost_get_texture_address(rsrc, level, first_layer, 0);
 
         if (rsrc->layout == MALI_TEXTURE_AFBC) {
                 /* The only Z/S format we can compress is Z24S8 or variants
@@ -300,6 +315,13 @@ panfrost_mfbd_set_zsbuf(
 
                 int stride = rsrc->slices[level].stride;
 
+                unsigned nr_samples = surf->nr_samples;
+
+                if (!nr_samples)
+                        nr_samples = surf->texture->nr_samples;
+
+                unsigned layer_stride = (nr_samples > 1) ? rsrc->slices[level].size0 : 0;
+
                 fb->mfbd_flags |= MALI_MFBD_EXTRA;
                 fbx->flags_hi |= MALI_EXTRA_PRESENT;
                 fbx->flags_lo |= MALI_EXTRA_ZS;
@@ -309,6 +331,7 @@ panfrost_mfbd_set_zsbuf(
                 if (rsrc->layout == MALI_TEXTURE_LINEAR) {
                         fbx->zs_block = MALI_BLOCK_LINEAR;
                         fbx->ds_linear.depth_stride = stride / 16;
+                        fbx->ds_linear.depth_layer_stride = layer_stride;
                 } else {
                         if (is_bifrost) {
                                 fbx->zs_block = MALI_BLOCK_UNKNOWN;
@@ -319,6 +342,7 @@ panfrost_mfbd_set_zsbuf(
                         }
 
                         fbx->ds_linear.depth_stride = stride;
+                        fbx->ds_linear.depth_layer_stride = layer_stride;
                 }
 
                 if (panfrost_is_z24s8_variant(surf->format)) {
@@ -335,9 +359,11 @@ panfrost_mfbd_set_zsbuf(
 
                         struct panfrost_resource *stencil = rsrc->separate_stencil;
                         struct panfrost_slice stencil_slice = stencil->slices[level];
+                        unsigned stencil_layer_stride = (nr_samples > 1) ? stencil_slice.size0 : 0;
 
-                        fbx->ds_linear.stencil = panfrost_get_texture_address(stencil, level, first_layer);
+                        fbx->ds_linear.stencil = panfrost_get_texture_address(stencil, level, first_layer, 0);
                         fbx->ds_linear.stencil_stride = stencil_slice.stride;
+                        fbx->ds_linear.stencil_layer_stride = stencil_layer_stride;
                 }
 
         } else {
@@ -374,7 +400,7 @@ panfrost_mfbd_upload(struct panfrost_batch *batch,
                 sizeof(struct mali_render_target) * 4;
 
         struct panfrost_transfer m_f_trans =
-                panfrost_allocate_transient(batch, total_sz);
+                panfrost_pool_alloc(&batch->pool, total_sz);
 
         /* Do the transfer */
 
@@ -498,6 +524,14 @@ panfrost_mfbd_fragment(struct panfrost_batch *batch, bool has_draws)
                 struct pipe_surface *surf = batch->key.cbufs[cb];
 
                 if (surf) {
+                        unsigned nr_samples = surf->nr_samples;
+
+                        if (!nr_samples)
+                                nr_samples = surf->texture->nr_samples;
+
+                        if (nr_samples > 1)
+                                batch->requirements |= PAN_REQ_MSAA;
+
                         panfrost_mfbd_set_cbuf(&rts[cb], surf);
 
                         /* What is this? Looks like some extension of the bpp

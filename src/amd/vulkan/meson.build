@@ -131,7 +131,7 @@ if with_platform_wayland
   libradv_files += files('radv_wsi_wayland.c')
 endif
 
-if with_platform_drm
+if system_has_kms_drm and not with_platform_android
   radv_flags += '-DVK_USE_PLATFORM_DISPLAY_KHR'
   libradv_files += files('radv_wsi_display.c')
 endif
@@ -176,6 +176,7 @@ if with_symbols_check
     args : [
       '--lib', libvulkan_radeon,
       '--symbols-file', vulkan_icd_symbols,
+      '--ignore-symbol', 'ac_init_llvm_once',
       symbols_check_args,
     ],
     suite : ['amd'],

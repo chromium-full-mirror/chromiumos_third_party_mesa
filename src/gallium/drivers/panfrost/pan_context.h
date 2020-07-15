@@ -163,6 +163,7 @@ struct panfrost_context {
         struct pipe_blend_color blend_color;
         struct pipe_depth_stencil_alpha_state *depth_stencil;
         struct pipe_stencil_ref stencil_ref;
+        unsigned sample_mask;
 };
 
 /* Corresponds to the CSO */
@@ -223,6 +224,9 @@ struct panfrost_shader_state {
 
         unsigned first_tag;
         struct panfrost_bo *bo;
+
+        BITSET_WORD outputs_read;
+        enum pipe_format rt_formats[8];
 };
 
 /* A collection of varyings (the CSO) */

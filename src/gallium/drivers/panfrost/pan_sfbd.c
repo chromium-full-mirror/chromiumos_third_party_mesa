@@ -134,7 +134,7 @@ panfrost_sfbd_set_cbuf(
         assert(surf->u.tex.last_layer == first_layer);
         signed stride = rsrc->slices[level].stride;
 
-        mali_ptr base = panfrost_get_texture_address(rsrc, level, first_layer);
+        mali_ptr base = panfrost_get_texture_address(rsrc, level, first_layer, 0);
 
         fb->format = panfrost_sfbd_format(surf);
 
@@ -204,12 +204,11 @@ panfrost_emit_sfbd(struct panfrost_batch *batch, unsigned vertex_count)
         /* TODO: Why do we need to make the stack bigger than other platforms? */
         unsigned shift = panfrost_get_stack_shift(MAX2(batch->stack_size, 512));
 
-        /* TODO: where do we specify the shift? */
-
         struct mali_single_framebuffer framebuffer = {
                 .width = MALI_POSITIVE(width),
                 .height = MALI_POSITIVE(height),
                 .shared_memory = {
+                        .stack_shift = shift,
                         .shared_workgroup_count = ~0,
                         .scratchpad = panfrost_batch_get_scratchpad(batch, shift, dev->thread_tls_alloc, dev->core_count)->gpu,
                 },
@@ -267,5 +266,5 @@ panfrost_sfbd_fragment(struct panfrost_batch *batch, bool has_draws)
                 fb.format.unk2 |= MALI_SFBD_FORMAT_MSAA_B;
         }
 
-        return panfrost_upload_transient(batch, &fb, sizeof(fb));
+        return panfrost_pool_upload(&batch->pool, &fb, sizeof(fb));
 }

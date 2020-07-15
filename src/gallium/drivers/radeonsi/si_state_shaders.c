@@ -69,7 +69,7 @@ void si_get_ir_cache_key(struct si_shader_selector *sel, bool ngg, bool es,
       shader_variant_flags |= 1 << 0;
    if (sel->nir)
       shader_variant_flags |= 1 << 1;
-   if (si_get_wave_size(sel->screen, sel->type, ngg, es, false) == 32)
+   if (si_get_wave_size(sel->screen, sel->type, ngg, es, false, false) == 32)
       shader_variant_flags |= 1 << 2;
    if (sel->type == PIPE_SHADER_FRAGMENT && sel->info.uses_derivatives && sel->info.uses_kill &&
        sel->screen->debug_flags & DBG(FS_CORRECT_DERIVS_AFTER_KILL))
@@ -1120,11 +1120,13 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
    else
       gs_vgpr_comp_cnt = 0; /* VGPR0 contains offsets 0, 1 */
 
+   unsigned wave_size = si_get_shader_wave_size(shader);
+
    si_pm4_set_reg(pm4, R_00B320_SPI_SHADER_PGM_LO_ES, va >> 8);
    si_pm4_set_reg(pm4, R_00B324_SPI_SHADER_PGM_HI_ES, va >> 40);
    si_pm4_set_reg(
       pm4, R_00B228_SPI_SHADER_PGM_RSRC1_GS,
-      S_00B228_VGPRS((shader->config.num_vgprs - 1) / (sscreen->ge_wave_size == 32 ? 8 : 4)) |
+      S_00B228_VGPRS((shader->config.num_vgprs - 1) / (wave_size == 32 ? 8 : 4)) |
          S_00B228_FLOAT_MODE(shader->config.float_mode) | S_00B228_DX10_CLAMP(1) |
          S_00B228_MEM_ORDERED(1) | S_00B228_WGP_MODE(1) |
          S_00B228_GS_VGPR_COMP_CNT(gs_vgpr_comp_cnt));
@@ -2542,7 +2544,7 @@ void si_schedule_initial_compile(struct si_context *sctx, unsigned processor,
 }
 
 /* Return descriptor slot usage masks from the given shader info. */
-void si_get_active_slot_masks(const struct si_shader_info *info, uint32_t *const_and_shader_buffers,
+void si_get_active_slot_masks(const struct si_shader_info *info, uint64_t *const_and_shader_buffers,
                               uint64_t *samplers_and_images)
 {
    unsigned start, num_shaderbufs, num_constbufs, num_images, num_msaa_images, num_samplers;
@@ -2556,7 +2558,7 @@ void si_get_active_slot_masks(const struct si_shader_info *info, uint32_t *const
 
    /* The layout is: sb[last] ... sb[0], cb[0] ... cb[last] */
    start = si_get_shaderbuf_slot(num_shaderbufs - 1);
-   *const_and_shader_buffers = u_bit_consecutive(start, num_shaderbufs + num_constbufs);
+   *const_and_shader_buffers = u_bit_consecutive64(start, num_shaderbufs + num_constbufs);
 
    /* The layout is:
     *   - fmask[last] ... fmask[0]     go to [15-last .. 15]
@@ -2750,9 +2752,10 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
       sscreen->info.chip_class >= GFX10 &&
       sscreen->info.has_dedicated_vram &&
       sscreen->use_ngg_culling &&
-      /* Disallow TES by default, because TessMark results are mixed. */
       (sel->type == PIPE_SHADER_VERTEX ||
-       (sscreen->always_use_ngg_culling && sel->type == PIPE_SHADER_TESS_EVAL)) &&
+       (sel->type == PIPE_SHADER_TESS_EVAL &&
+        (sscreen->always_use_ngg_culling_all ||
+         sscreen->always_use_ngg_culling_tess))) &&
       sel->info.writes_position &&
       !sel->info.writes_viewport_index && /* cull only against viewport 0 */
       !sel->info.writes_memory && !sel->so.num_outputs &&
@@ -3692,7 +3695,9 @@ static struct si_pm4_state *si_build_vgt_shader_config(struct si_screen *screen,
    if (screen->info.chip_class >= GFX9)
       stages |= S_028B54_MAX_PRIMGRP_IN_WAVE(2);
 
-   if (screen->info.chip_class >= GFX10 && screen->ge_wave_size == 32) {
+   if (screen->info.chip_class >= GFX10 &&
+       /* GS fast launch hangs with Wave64, so always use Wave32. */
+       (screen->ge_wave_size == 32 || (key.u.ngg && key.u.ngg_gs_fast_launch))) {
       stages |= S_028B54_HS_W32_EN(1) |
                 S_028B54_GS_W32_EN(key.u.ngg) | /* legacy GS only supports Wave64 */
                 S_028B54_VS_W32_EN(1);

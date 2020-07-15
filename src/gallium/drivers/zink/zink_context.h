@@ -121,10 +121,11 @@ struct zink_context {
 
    struct pipe_stencil_ref stencil_ref;
 
-   struct list_head active_queries;
+   struct list_head suspended_queries;
    bool queries_disabled;
 
    struct pipe_resource *dummy_buffer;
+   struct pipe_resource *null_buffers[5]; /* used to create zink_framebuffer->null_surface, one buffer per samplecount */
 
    uint32_t num_so_targets;
    struct pipe_stream_output_target *so_targets[PIPE_MAX_SO_OUTPUTS];

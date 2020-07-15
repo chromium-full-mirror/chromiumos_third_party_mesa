@@ -7,8 +7,8 @@ system.
 The master git repository is hosted on
 `freedesktop.org <https://www.freedesktop.org>`__.
 
-You may access the repository either as an `anonymous
-user <#anonymous>`__ (read-only) or as a `developer <#developer>`__
+You may access the repository either as an :ref:`anonymous
+user <anonymous>` (read-only) or as a :ref:`developer <developer>`
 (read/write).
 
 You may also `browse the main Mesa git
@@ -53,8 +53,8 @@ please follow this procedure:
 #. Subscribe to the
    `mesa-dev <https://lists.freedesktop.org/mailman/listinfo/mesa-dev>`__
    mailing list.
-#. Start contributing to the project by `submitting
-   patches <submittingpatches.rst>`__. Specifically,
+#. Start contributing to the project by :doc:`submitting
+   patches <submittingpatches>`. Specifically,
 
    -  Use `gitlab <https://gitlab.freedesktop.org/>`__ to create your
       merge requests.

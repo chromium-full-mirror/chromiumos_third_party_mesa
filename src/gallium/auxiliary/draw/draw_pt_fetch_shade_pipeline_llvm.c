@@ -582,6 +582,7 @@ llvm_pipeline_generic(struct draw_pt_middle_end *middle,
    const unsigned *elts;
    ushort *tes_elts_out = NULL;
 
+   memset(&gs_vert_info, 0, sizeof(struct draw_vertex_info) * TGSI_MAX_VERTEX_STREAMS);
    assert(fetch_info->count > 0);
    llvm_vert_info.count = fetch_info->count;
    llvm_vert_info.vertex_size = fpme->vertex_size;
@@ -722,19 +723,14 @@ llvm_pipeline_generic(struct draw_pt_middle_end *middle,
          }
       }
    }
-   if (prim_info->count == 0) {
-      debug_printf("GS/IA didn't emit any vertices!\n");
-
-      FREE(vert_info->verts);
-      if (free_prim_info) {
-         FREE(tes_elts_out);
-         FREE(prim_info->primitive_lengths);
-      }
-      return;
-   }
 
    /* stream output needs to be done before clipping */
    draw_pt_so_emit( fpme->so_emit, gshader ? gshader->num_vertex_streams : 1, vert_info, prim_info );
+
+   if (prim_info->count == 0) {
+      debug_printf("GS/IA didn't emit any vertices!\n");
+      goto out;
+   }
 
    draw_stats_clipper_primitives(draw, prim_info);
 
@@ -761,7 +757,12 @@ llvm_pipeline_generic(struct draw_pt_middle_end *middle,
          emit( fpme->emit, vert_info, prim_info );
       }
    }
+out:
    FREE(vert_info->verts);
+   if (gshader && gshader->num_vertex_streams > 1)
+     for (unsigned i = 1; i < gshader->num_vertex_streams; i++)
+       FREE(gs_vert_info[i].verts);
+
    if (free_prim_info) {
       FREE(tes_elts_out);
       FREE(prim_info->primitive_lengths);

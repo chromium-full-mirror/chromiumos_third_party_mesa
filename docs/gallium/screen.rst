@@ -275,6 +275,9 @@ The integer capabilities:
   existing user memory into the device address space for direct device access.
   The create function is pipe_screen::resource_from_user_memory. The address
   and size must be page-aligned.
+* ``PIPE_CAP_RESOURCE_FROM_USER_MEMORY_COMPUTE_ONLY``: Same as
+  ``PIPE_CAP_RESOURCE_FROM_USER_MEMORY`` but indicates it is only supported from
+  the compute engines.
 * ``PIPE_CAP_DEVICE_RESET_STATUS_QUERY``:
   Whether pipe_context::get_device_reset_status is implemented.
 * ``PIPE_CAP_MAX_SHADER_PATCH_VARYINGS``:
@@ -446,12 +449,14 @@ The integer capabilities:
 * ``PIPE_CAP_FRAMEBUFFER_MSAA_CONSTRAINTS``: This determines limitations
   on the number of samples that framebuffer attachments can have.
   Possible values:
-    0: color.nr_samples == zs.nr_samples == color.nr_storage_samples
+
+    0. color.nr_samples == zs.nr_samples == color.nr_storage_samples
        (standard MSAA quality)
-    1: color.nr_samples >= zs.nr_samples == color.nr_storage_samples
+    1. color.nr_samples >= zs.nr_samples == color.nr_storage_samples
        (enhanced MSAA quality)
-    2: color.nr_samples >= zs.nr_samples >= color.nr_storage_samples
+    2. color.nr_samples >= zs.nr_samples >= color.nr_storage_samples
        (full flexibility in tuning MSAA quality and performance)
+
   All color attachments must have the same number of samples and the same
   number of storage samples.
 * ``PIPE_CAP_SIGNED_VERTEX_BUFFER_OFFSET``:
@@ -657,6 +662,8 @@ MOV OUT[0], CONST[0][3]  # copy vector 3 of constbuf 0
   DDX and DDY opcodes are supported.
 * ``PIPE_SHADER_CAP_INT16``: Whether 16-bit signed and unsigned integer types
   are supported.
+* ``PIPE_SHADER_CAP_GLSL_16BIT_TEMPS``: Lower mediump temporaries to 16-bit.
+  This generates 16-bit phis in NIR, 16-bit loop counters, and 16-bit indirect arrays.
 * ``PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS``: The maximum number of texture
   samplers.
 * ``PIPE_SHADER_CAP_PREFERRED_IR``: Preferred representation of the
@@ -936,6 +943,7 @@ If there are not enough slots to store all sample colors, some samples will
 have an undefined color (called "undefined samples").
 
 The resolve blit behavior is driver-specific, but can be one of these two:
+
 1. Only defined samples will be averaged. Undefined samples will be ignored.
 2. Undefined samples will be approximated by looking at surrounding defined
    samples (even in different pixels).

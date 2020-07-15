@@ -910,83 +910,46 @@ static const struct gen_device_info gen_device_info_icl_gt0_5 = {
    .simulator_id = 19,
 };
 
-static const struct gen_device_info gen_device_info_ehl_7 = {
+#define GEN11_LP_FEATURES                           \
+   .is_elkhartlake = true,                          \
+   .urb = {                                         \
+      GEN11_URB_MIN_MAX_ENTRIES,                    \
+   },                                               \
+   .disable_ccs_repack = true,                      \
+   .simulator_id = 28
+
+static const struct gen_device_info gen_device_info_ehl_4x8 = {
    GEN11_FEATURES(1, 1, subslices(4), 4),
-   .is_elkhartlake = true,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2384,
-         [MESA_SHADER_TESS_CTRL] = 1032,
-         [MESA_SHADER_TESS_EVAL] = 2384,
-         [MESA_SHADER_GEOMETRY]  = 1032,
-      },
-   },
-   .disable_ccs_repack = true,
-   .simulator_id = 28,
+   GEN11_LP_FEATURES,
 };
 
-static const struct gen_device_info gen_device_info_ehl_6 = {
+static const struct gen_device_info gen_device_info_ehl_4x6 = {
    GEN11_FEATURES(1, 1, subslices(4), 4),
-   .is_elkhartlake = true,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2384,
-         [MESA_SHADER_TESS_CTRL] = 1032,
-         [MESA_SHADER_TESS_EVAL] = 2384,
-         [MESA_SHADER_GEOMETRY]  = 1032,
-      },
-   },
-   .disable_ccs_repack = true,
+   GEN11_LP_FEATURES,
    .num_eu_per_subslice = 6,
-   .simulator_id = 28,
 };
 
-static const struct gen_device_info gen_device_info_ehl_5 = {
+static const struct gen_device_info gen_device_info_ehl_4x5 = {
    GEN11_FEATURES(1, 1, subslices(4), 4),
-   .is_elkhartlake = true,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2384,
-         [MESA_SHADER_TESS_CTRL] = 1032,
-         [MESA_SHADER_TESS_EVAL] = 2384,
-         [MESA_SHADER_GEOMETRY]  = 1032,
-      },
-   },
-   .disable_ccs_repack = true,
-   .num_eu_per_subslice = 4,
-   .simulator_id = 28,
+   GEN11_LP_FEATURES,
+   .num_eu_per_subslice = 5,
 };
 
-static const struct gen_device_info gen_device_info_ehl_4 = {
+static const struct gen_device_info gen_device_info_ehl_4x4 = {
+   GEN11_FEATURES(1, 1, subslices(4), 4),
+   GEN11_LP_FEATURES,
+   .num_eu_per_subslice = 4,
+};
+
+static const struct gen_device_info gen_device_info_ehl_2x8 = {
    GEN11_FEATURES(1, 1, subslices(2), 4),
-   .is_elkhartlake = true,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2384,
-         [MESA_SHADER_TESS_CTRL] = 1032,
-         [MESA_SHADER_TESS_EVAL] = 2384,
-         [MESA_SHADER_GEOMETRY]  = 1032,
-      },
-   },
-   .disable_ccs_repack = true,
+   GEN11_LP_FEATURES,
+};
+
+static const struct gen_device_info gen_device_info_ehl_2x4 = {
+   GEN11_FEATURES(1, 1, subslices(2), 4),
+   GEN11_LP_FEATURES,
    .num_eu_per_subslice =4,
-   .simulator_id = 28,
 };
 
 #define GEN12_URB_MIN_MAX_ENTRIES                   \

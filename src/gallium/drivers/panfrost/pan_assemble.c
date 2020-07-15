@@ -132,8 +132,7 @@ bifrost_blend_type_from_nir(nir_alu_type nir_type)
         case nir_type_uint16:
                 return BIFROST_BLEND_U16;
         default:
-                DBG("Unsupported blend shader type for NIR alu type %d", nir_type);
-                assert(0);
+                unreachable("Unsupported blend shader type for NIR alu type");
                 return 0;
         }
 }
@@ -166,11 +165,13 @@ panfrost_shader_compile(struct panfrost_context *ctx,
                 .alpha_ref = state->alpha_state.ref_value
         };
 
+        memcpy(program.rt_formats, state->rt_formats, sizeof(program.rt_formats));
+
         if (dev->quirks & IS_BIFROST) {
                 bifrost_compile_shader_nir(s, &program, dev->gpu_id);
         } else {
                 midgard_compile_shader_nir(s, &program, false, 0, dev->gpu_id,
-                                pan_debug & PAN_DBG_PRECOMPILE);
+                                dev->debug & PAN_DBG_PRECOMPILE);
         }
 
         /* Prepare the compiled binary for upload */
@@ -182,7 +183,7 @@ panfrost_shader_compile(struct panfrost_context *ctx,
          * that's how I'd do it. */
 
         if (size) {
-                state->bo = pan_bo_create(dev, size, PAN_BO_EXECUTE);
+                state->bo = panfrost_bo_create(dev, size, PAN_BO_EXECUTE);
                 memcpy(state->bo->cpu, dst, size);
         }
 
@@ -224,6 +225,12 @@ panfrost_shader_compile(struct panfrost_context *ctx,
                         state->writes_depth = true;
                 if (s->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_STENCIL))
                         state->writes_stencil = true;
+
+                uint64_t outputs_read = s->info.outputs_read;
+                if (outputs_read & BITFIELD64_BIT(FRAG_RESULT_COLOR))
+                        outputs_read |= BITFIELD64_BIT(FRAG_RESULT_DATA0);
+
+                state->outputs_read = outputs_read >> FRAG_RESULT_DATA0;
 
                 /* List of reasons we need to execute frag shaders when things
                  * are masked off */

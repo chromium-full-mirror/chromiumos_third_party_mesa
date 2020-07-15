@@ -237,13 +237,14 @@ static const struct pandecode_flag_info u4_flag_info[] = {
         FLAG_INFO(DEPTH_RANGE_A),
         FLAG_INFO(DEPTH_RANGE_B),
         FLAG_INFO(STENCIL_TEST),
-        FLAG_INFO(SAMPLE_ALPHA_TO_COVERAGE_NO_BLEND_SHADER),
+        FLAG_INFO(ALPHA_TO_COVERAGE),
         {}
 };
 #undef FLAG_INFO
 
 #define FLAG_INFO(flag) { MALI_MFBD_FORMAT_##flag, "MALI_MFBD_FORMAT_" #flag }
 static const struct pandecode_flag_info mfbd_fmt_flag_info[] = {
+        FLAG_INFO(LAYERED),
         FLAG_INFO(MSAA),
         FLAG_INFO(SRGB),
         {}
@@ -1087,6 +1088,9 @@ pandecode_render_target(uint64_t gpu_va, unsigned job_no, const struct mali_fram
                 MEMORY_PROP(rt, framebuffer);
                 pandecode_prop("framebuffer_stride = %d", rt->framebuffer_stride);
 
+                if (rt->layer_stride)
+                        pandecode_prop("layer_stride = %d", rt->layer_stride);
+
                 if (rt->clear_color_1 | rt->clear_color_2 | rt->clear_color_3 | rt->clear_color_4) {
                         pandecode_prop("clear_color_1 = 0x%" PRIx32, rt->clear_color_1);
                         pandecode_prop("clear_color_2 = 0x%" PRIx32, rt->clear_color_2);
@@ -1094,11 +1098,10 @@ pandecode_render_target(uint64_t gpu_va, unsigned job_no, const struct mali_fram
                         pandecode_prop("clear_color_4 = 0x%" PRIx32, rt->clear_color_4);
                 }
 
-                if (rt->zero1 || rt->zero2 || rt->zero3) {
+                if (rt->zero1 || rt->zero2) {
                         pandecode_msg("XXX: render target zeros tripped\n");
                         pandecode_prop("zero1 = 0x%" PRIx64, rt->zero1);
                         pandecode_prop("zero2 = 0x%" PRIx32, rt->zero2);
-                        pandecode_prop("zero3 = 0x%" PRIx32, rt->zero3);
                 }
 
                 pandecode_indent--;
@@ -1270,30 +1273,29 @@ pandecode_mfbd_bfr(uint64_t gpu_va, int job_no, bool is_fragment, bool is_comput
                                 MEMORY_PROP_DIR(fbx->ds_linear, depth);
                                 pandecode_prop("depth_stride = %d",
                                                fbx->ds_linear.depth_stride);
-                        } else if (fbx->ds_linear.depth_stride) {
-                                pandecode_msg("XXX: depth stride zero tripped %d\n", fbx->ds_linear.depth_stride);
+                                pandecode_prop("depth_layer_stride = %d",
+                                               fbx->ds_linear.depth_layer_stride);
+                        } else if (fbx->ds_linear.depth_stride || fbx->ds_linear.depth_layer_stride) {
+                                pandecode_msg("XXX: depth stride zero tripped %d %d\n", fbx->ds_linear.depth_stride, fbx->ds_linear.depth_layer_stride);
                         }
 
                         if (fbx->ds_linear.stencil) {
                                 MEMORY_PROP_DIR(fbx->ds_linear, stencil);
                                 pandecode_prop("stencil_stride = %d",
                                                fbx->ds_linear.stencil_stride);
-                        } else if (fbx->ds_linear.stencil_stride) {
-                                pandecode_msg("XXX: stencil stride zero tripped %d\n", fbx->ds_linear.stencil_stride);
+                                pandecode_prop("stencil_layer_stride = %d",
+                                               fbx->ds_linear.stencil_layer_stride);
+                        } else if (fbx->ds_linear.stencil_stride || fbx->ds_linear.stencil_layer_stride) {
+                                pandecode_msg("XXX: stencil stride zero tripped %d %d\n", fbx->ds_linear.stencil_stride, fbx->ds_linear.stencil_layer_stride);
                         }
 
                         if (fbx->ds_linear.depth_stride_zero ||
-                            fbx->ds_linear.stencil_stride_zero ||
-                            fbx->ds_linear.zero1 || fbx->ds_linear.zero2) {
+                            fbx->ds_linear.stencil_stride_zero) {
                                 pandecode_msg("XXX: Depth/stencil zeros tripped\n");
                                 pandecode_prop("depth_stride_zero = 0x%x",
                                                fbx->ds_linear.depth_stride_zero);
                                 pandecode_prop("stencil_stride_zero = 0x%x",
                                                fbx->ds_linear.stencil_stride_zero);
-                                pandecode_prop("zero1 = 0x%" PRIx32,
-                                               fbx->ds_linear.zero1);
-                                pandecode_prop("zero2 = 0x%" PRIx32,
-                                               fbx->ds_linear.zero2);
                         }
 
                         pandecode_indent--;
@@ -2065,8 +2067,9 @@ pandecode_texture_payload(mali_ptr payload,
         /* Miptree for each face */
         if (type == MALI_TEX_CUBE)
                 bitmap_count *= 6;
-        else if (type == MALI_TEX_3D && layout == MALI_TEXTURE_LINEAR)
-                bitmap_count *= (depth + 1);
+
+        /* Array of layers */
+        bitmap_count *= (depth + 1);
 
         /* Array of textures */
         bitmap_count *= (array_size + 1);
@@ -2171,22 +2174,19 @@ pandecode_texture(mali_ptr u,
         /* All four width/height/depth/array_size dimensions are present
          * regardless of the type of texture, but it is an error to have
          * non-zero dimensions for unused dimensions. Verify this. array_size
-         * can always be set, as can width. */
+         * can always be set, as can width. Depth used for MSAA. */
 
         if (t->height && dimension < 2)
                 pandecode_msg("XXX: nonzero height for <2D texture\n");
-
-        if (t->depth && dimension < 3)
-                pandecode_msg("XXX: nonzero depth for <2D texture\n");
 
         /* Print only the dimensions that are actually there */
 
         pandecode_log_cont(": %d", t->width + 1);
 
-        if (dimension >= 2)
+        if (t->height || t->depth)
                 pandecode_log_cont("x%u", t->height + 1);
 
-        if (dimension >= 3)
+        if (t->depth)
                 pandecode_log_cont("x%u", t->depth + 1);
 
         if (t->array_size)
@@ -2641,14 +2641,8 @@ pandecode_vertex_tiler_postfix_pre(
                         pandecode_prop("depth_units = %f", s->depth_units);
                 }
 
-                if (s->alpha_coverage) {
-                        bool invert_alpha_coverage = s->alpha_coverage & 0xFFF0;
-                        uint16_t inverted_coverage = invert_alpha_coverage ? ~s->alpha_coverage : s->alpha_coverage;
-
-                        pandecode_prop("alpha_coverage = %sMALI_ALPHA_COVERAGE(%f)",
-                                       invert_alpha_coverage ? "~" : "",
-                                       MALI_GET_ALPHA_COVERAGE(inverted_coverage));
-                }
+                if (s->coverage_mask)
+                        pandecode_prop("coverage_mask = 0x%X", s->coverage_mask);
 
                 if (s->unknown2_2)
                         pandecode_prop(".unknown2_2 = %X", s->unknown2_2);
@@ -3287,4 +3281,6 @@ pandecode_jc(mali_ptr jc_gpu_va, bool bifrost, unsigned gpu_id, bool minimal)
                         break;
                 }
         } while ((jc_gpu_va = h->next_job));
+
+        pandecode_map_read_write();
 }

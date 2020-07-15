@@ -48,6 +48,10 @@
 /* for fd_get_driver/device_uuid() */
 #include "freedreno/common/freedreno_uuid.h"
 
+static void
+tu_semaphore_remove_temp(struct tu_device *device,
+                         struct tu_semaphore *sem);
+
 static int
 tu_device_get_cache_uuid(uint16_t family, void *uuid)
 {
@@ -206,12 +210,15 @@ tu_physical_device_init(struct tu_physical_device *device,
       return result;
    }
 
+   device->msm_major_version = version->version_major;
+   device->msm_minor_version = version->version_minor;
+
    drmFreeVersion(version);
 
    if (instance->debug_flags & TU_DEBUG_STARTUP)
       tu_logi("Found compatible device '%s'.", path);
 
-   device->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
+   vk_object_base_init(NULL, &device->base, VK_OBJECT_TYPE_PHYSICAL_DEVICE);
    device->instance = instance;
    assert(strlen(path) < ARRAY_SIZE(device->path));
    strncpy(device->path, path, ARRAY_SIZE(device->path));
@@ -332,6 +339,8 @@ tu_physical_device_finish(struct tu_physical_device *device)
    close(device->local_fd);
    if (device->master_fd != -1)
       close(device->master_fd);
+
+   vk_object_base_finish(&device->base);
 }
 
 static VKAPI_ATTR void *
@@ -414,10 +423,11 @@ tu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
 
    instance = vk_zalloc2(&default_alloc, pAllocator, sizeof(*instance), 8,
                          VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+
    if (!instance)
       return vk_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   instance->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
+   vk_object_base_init(NULL, &instance->base, VK_OBJECT_TYPE_INSTANCE);
 
    if (pAllocator)
       instance->alloc = *pAllocator;
@@ -438,6 +448,7 @@ tu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       int index = tu_get_instance_extension_index(ext_name);
 
       if (index < 0 || !tu_instance_extensions_supported.extensions[index]) {
+         vk_object_base_finish(&instance->base);
          vk_free2(&default_alloc, pAllocator, instance);
          return vk_error(instance, VK_ERROR_EXTENSION_NOT_PRESENT);
       }
@@ -447,6 +458,7 @@ tu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
 
    result = vk_debug_report_instance_init(&instance->debug_report_callbacks);
    if (result != VK_SUCCESS) {
+      vk_object_base_finish(&instance->base);
       vk_free2(&default_alloc, pAllocator, instance);
       return vk_error(instance, result);
    }
@@ -479,6 +491,7 @@ tu_DestroyInstance(VkInstance _instance,
 
    vk_debug_report_instance_destroy(&instance->debug_report_callbacks);
 
+   vk_object_base_finish(&instance->base);
    vk_free(&instance->alloc, instance);
 }
 
@@ -494,8 +507,12 @@ tu_enumerate_devices(struct tu_instance *instance)
 
    max_devices = drmGetDevices2(0, devices, ARRAY_SIZE(devices));
 
-   if (instance->debug_flags & TU_DEBUG_STARTUP)
-      tu_logi("Found %d drm nodes", max_devices);
+   if (instance->debug_flags & TU_DEBUG_STARTUP) {
+      if (max_devices < 0)
+         tu_logi("drmGetDevices2 returned error: %s\n", strerror(max_devices));
+      else
+         tu_logi("Found %d drm nodes", max_devices);
+   }
 
    if (max_devices < 1)
       return vk_error(instance, VK_ERROR_INCOMPATIBLE_DRIVER);
@@ -593,11 +610,11 @@ tu_GetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice,
       .multiDrawIndirect = true,
       .drawIndirectFirstInstance = true,
       .depthClamp = true,
-      .depthBiasClamp = false,
+      .depthBiasClamp = true,
       .fillModeNonSolid = true,
       .depthBounds = true,
       .wideLines = false,
-      .largePoints = false,
+      .largePoints = true,
       .alphaToOne = true,
       .multiViewport = false,
       .samplerAnisotropy = true,
@@ -645,8 +662,8 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          features->multiview                           = false;
          features->multiviewGeometryShader             = false;
          features->multiviewTessellationShader         = false;
-         features->variablePointersStorageBuffer       = false;
-         features->variablePointers                    = false;
+         features->variablePointersStorageBuffer       = true;
+         features->variablePointers                    = true;
          features->protectedMemory                     = false;
          features->samplerYcbcrConversion              = true;
          features->shaderDrawParameters                = true;
@@ -654,8 +671,8 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES: {
          VkPhysicalDeviceVariablePointersFeatures *features = (void *) ext;
-         features->variablePointersStorageBuffer = false;
-         features->variablePointers = false;
+         features->variablePointersStorageBuffer = true;
+         features->variablePointers = true;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES: {
@@ -743,6 +760,12 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
             (VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT *)ext;
          features->vertexAttributeInstanceRateDivisor = true;
          features->vertexAttributeInstanceRateZeroDivisor = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES_EXT: {
+         VkPhysicalDevicePrivateDataFeaturesEXT *features =
+            (VkPhysicalDevicePrivateDataFeaturesEXT *)ext;
+         features->privateData = true;
          break;
       }
       default:
@@ -866,9 +889,9 @@ tu_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
       .maxCullDistances = 8,
       .maxCombinedClipAndCullDistances = 8,
       .discreteQueuePriorities = 1,
-      .pointSizeRange = { 0.125, 255.875 },
+      .pointSizeRange = { 1, 4092 },
       .lineWidthRange = { 0.0, 7.9921875 },
-      .pointSizeGranularity = (1.0 / 8.0),
+      .pointSizeGranularity = 	0.0625,
       .lineWidthGranularity = (1.0 / 128.0),
       .strictLines = false, /* FINISHME */
       .standardSampleLocations = true,
@@ -1085,7 +1108,8 @@ tu_queue_init(struct tu_device *device,
               int idx,
               VkDeviceQueueCreateFlags flags)
 {
-   queue->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
+   vk_object_base_init(&device->vk, &queue->base, VK_OBJECT_TYPE_QUEUE);
+
    queue->device = device;
    queue->queue_family_index = queue_family_index;
    queue->queue_idx = idx;
@@ -1171,7 +1195,6 @@ struct PACKED bcolor_entry {
    },
 };
 
-
 VkResult
 tu_CreateDevice(VkPhysicalDevice physicalDevice,
                 const VkDeviceCreateInfo *pCreateInfo,
@@ -1202,21 +1225,19 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    if (!device)
       return vk_error(physical_device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   device->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
+   vk_device_init(&device->vk, pCreateInfo,
+         &physical_device->instance->alloc, pAllocator);
+
    device->instance = physical_device->instance;
    device->physical_device = physical_device;
-
-   if (pAllocator)
-      device->alloc = *pAllocator;
-   else
-      device->alloc = physical_device->instance->alloc;
+   device->_lost = false;
 
    for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
       const char *ext_name = pCreateInfo->ppEnabledExtensionNames[i];
       int index = tu_get_device_extension_index(ext_name);
       if (index < 0 ||
           !physical_device->supported_extensions.extensions[index]) {
-         vk_free(&device->alloc, device);
+         vk_free(&device->vk.alloc, device);
          return vk_error(physical_device->instance,
                          VK_ERROR_EXTENSION_NOT_PRESENT);
       }
@@ -1229,7 +1250,7 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
          &pCreateInfo->pQueueCreateInfos[i];
       uint32_t qfi = queue_create->queueFamilyIndex;
       device->queues[qfi] = vk_alloc(
-         &device->alloc, queue_create->queueCount * sizeof(struct tu_queue),
+         &device->vk.alloc, queue_create->queueCount * sizeof(struct tu_queue),
          8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
       if (!device->queues[qfi]) {
          result = VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -1253,30 +1274,21 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    if (!device->compiler)
       goto fail_queues;
 
-#define VSC_DRAW_STRM_SIZE(pitch)  ((pitch) * 32 + 0x100)  /* extra size to store VSC_SIZE */
-#define VSC_PRIM_STRM_SIZE(pitch) ((pitch) * 32)
+   /* initial sizes, these will increase if there is overflow */
+   device->vsc_draw_strm_pitch = 0x1000 + VSC_PAD;
+   device->vsc_prim_strm_pitch = 0x4000 + VSC_PAD;
 
-   device->vsc_draw_strm_pitch = 0x440 * 4;
-   device->vsc_prim_strm_pitch = 0x1040 * 4;
-
-   result = tu_bo_init_new(device, &device->vsc_draw_strm, VSC_DRAW_STRM_SIZE(device->vsc_draw_strm_pitch));
+   STATIC_ASSERT(sizeof(border_color) == sizeof(((struct tu6_global*) 0)->border_color));
+   result = tu_bo_init_new(device, &device->global_bo, sizeof(struct tu6_global));
    if (result != VK_SUCCESS)
-      goto fail_vsc_data;
+      goto fail_global_bo;
 
-   result = tu_bo_init_new(device, &device->vsc_prim_strm, VSC_PRIM_STRM_SIZE(device->vsc_prim_strm_pitch));
+   result = tu_bo_map(device, &device->global_bo);
    if (result != VK_SUCCESS)
-      goto fail_vsc_data2;
+      goto fail_global_bo_map;
 
-   STATIC_ASSERT(sizeof(struct bcolor_entry) == 128);
-   result = tu_bo_init_new(device, &device->border_color, sizeof(border_color));
-   if (result != VK_SUCCESS)
-      goto fail_border_color;
-
-   result = tu_bo_map(device, &device->border_color);
-   if (result != VK_SUCCESS)
-      goto fail_border_color_map;
-
-   memcpy(device->border_color.map, border_color, sizeof(border_color));
+   memcpy(device->global_bo.map + gb_offset(border_color), border_color, sizeof(border_color));
+   tu_init_clear_blit_shaders(device->global_bo.map);
 
    VkPipelineCacheCreateInfo ci;
    ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
@@ -1295,20 +1307,16 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    for (unsigned i = 0; i < ARRAY_SIZE(device->scratch_bos); i++)
       mtx_init(&device->scratch_bos[i].construct_mtx, mtx_plain);
 
+   mtx_init(&device->vsc_pitch_mtx, mtx_plain);
+
    *pDevice = tu_device_to_handle(device);
    return VK_SUCCESS;
 
 fail_pipeline_cache:
-fail_border_color_map:
-   tu_bo_finish(device, &device->border_color);
+fail_global_bo_map:
+   tu_bo_finish(device, &device->global_bo);
 
-fail_border_color:
-   tu_bo_finish(device, &device->vsc_prim_strm);
-
-fail_vsc_data2:
-   tu_bo_finish(device, &device->vsc_draw_strm);
-
-fail_vsc_data:
+fail_global_bo:
    ralloc_free(device->compiler);
 
 fail_queues:
@@ -1316,10 +1324,10 @@ fail_queues:
       for (unsigned q = 0; q < device->queue_count[i]; q++)
          tu_queue_finish(&device->queues[i][q]);
       if (device->queue_count[i])
-         vk_free(&device->alloc, device->queues[i]);
+         vk_object_free(&device->vk, NULL, device->queues[i]);
    }
 
-   vk_free(&device->alloc, device);
+   vk_free(&device->vk.alloc, device);
    return result;
 }
 
@@ -1331,14 +1339,11 @@ tu_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    if (!device)
       return;
 
-   tu_bo_finish(device, &device->vsc_draw_strm);
-   tu_bo_finish(device, &device->vsc_prim_strm);
-
    for (unsigned i = 0; i < TU_MAX_QUEUE_FAMILIES; i++) {
       for (unsigned q = 0; q < device->queue_count[i]; q++)
          tu_queue_finish(&device->queues[i][q]);
       if (device->queue_count[i])
-         vk_free(&device->alloc, device->queues[i]);
+         vk_object_free(&device->vk, NULL, device->queues[i]);
    }
 
    for (unsigned i = 0; i < ARRAY_SIZE(device->scratch_bos); i++) {
@@ -1351,7 +1356,30 @@ tu_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    VkPipelineCache pc = tu_pipeline_cache_to_handle(device->mem_cache);
    tu_DestroyPipelineCache(tu_device_to_handle(device), pc, NULL);
 
-   vk_free(&device->alloc, device);
+   vk_free(&device->vk.alloc, device);
+}
+
+VkResult
+_tu_device_set_lost(struct tu_device *device,
+                    const char *file, int line,
+                    const char *msg, ...)
+{
+   /* Set the flag indicating that waits should return in finite time even
+    * after device loss.
+    */
+   p_atomic_inc(&device->_lost);
+
+   /* TODO: Report the log message through VkDebugReportCallbackEXT instead */
+   fprintf(stderr, "%s:%d: ", file, line);
+   va_list ap;
+   va_start(ap, msg);
+   vfprintf(stderr, msg, ap);
+   va_end(ap);
+
+   if (env_var_as_boolean("TU_ABORT_ON_DEVICE_LOSS", false))
+      abort();
+
+   return VK_ERROR_DEVICE_LOST;
 }
 
 VkResult
@@ -1456,6 +1484,65 @@ tu_GetDeviceQueue(VkDevice _device,
    tu_GetDeviceQueue2(_device, &info, pQueue);
 }
 
+static VkResult
+tu_get_semaphore_syncobjs(const VkSemaphore *sems,
+                          uint32_t sem_count,
+                          bool wait,
+                          struct drm_msm_gem_submit_syncobj **out,
+                          uint32_t *out_count)
+{
+   uint32_t syncobj_count = 0;
+   struct drm_msm_gem_submit_syncobj *syncobjs;
+
+   for (uint32_t i = 0; i  < sem_count; ++i) {
+      TU_FROM_HANDLE(tu_semaphore, sem, sems[i]);
+
+      struct tu_semaphore_part *part =
+         sem->temporary.kind != TU_SEMAPHORE_NONE ?
+            &sem->temporary : &sem->permanent;
+
+      if (part->kind == TU_SEMAPHORE_SYNCOBJ)
+         ++syncobj_count;
+   }
+
+   *out = NULL;
+   *out_count = syncobj_count;
+   if (!syncobj_count)
+      return VK_SUCCESS;
+
+   *out = syncobjs = calloc(syncobj_count, sizeof (*syncobjs));
+   if (!syncobjs)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   for (uint32_t i = 0, j = 0; i  < sem_count; ++i) {
+      TU_FROM_HANDLE(tu_semaphore, sem, sems[i]);
+
+      struct tu_semaphore_part *part =
+         sem->temporary.kind != TU_SEMAPHORE_NONE ?
+            &sem->temporary : &sem->permanent;
+
+      if (part->kind == TU_SEMAPHORE_SYNCOBJ) {
+         syncobjs[j].handle = part->syncobj;
+         syncobjs[j].flags = wait ? MSM_SUBMIT_SYNCOBJ_RESET : 0;
+         ++j;
+      }
+   }
+
+   return VK_SUCCESS;
+}
+
+
+static void
+tu_semaphores_remove_temp(struct tu_device *device,
+                          const VkSemaphore *sems,
+                          uint32_t sem_count)
+{
+   for (uint32_t i = 0; i  < sem_count; ++i) {
+      TU_FROM_HANDLE(tu_semaphore, sem, sems[i]);
+      tu_semaphore_remove_temp(device, sem);
+   }
+}
+
 VkResult
 tu_QueueSubmit(VkQueue _queue,
                uint32_t submitCount,
@@ -1463,12 +1550,32 @@ tu_QueueSubmit(VkQueue _queue,
                VkFence _fence)
 {
    TU_FROM_HANDLE(tu_queue, queue, _queue);
+   VkResult result;
 
    for (uint32_t i = 0; i < submitCount; ++i) {
       const VkSubmitInfo *submit = pSubmits + i;
       const bool last_submit = (i == submitCount - 1);
+      struct drm_msm_gem_submit_syncobj *in_syncobjs = NULL, *out_syncobjs = NULL;
+      uint32_t nr_in_syncobjs, nr_out_syncobjs;
       struct tu_bo_list bo_list;
       tu_bo_list_init(&bo_list);
+
+      result = tu_get_semaphore_syncobjs(pSubmits[i].pWaitSemaphores,
+                                         pSubmits[i].waitSemaphoreCount,
+                                         false, &in_syncobjs, &nr_in_syncobjs);
+      if (result != VK_SUCCESS) {
+         return tu_device_set_lost(queue->device,
+                                   "failed to allocate space for semaphore submission\n");
+      }
+
+      result = tu_get_semaphore_syncobjs(pSubmits[i].pSignalSemaphores,
+                                         pSubmits[i].signalSemaphoreCount,
+                                         false, &out_syncobjs, &nr_out_syncobjs);
+      if (result != VK_SUCCESS) {
+         free(in_syncobjs);
+         return tu_device_set_lost(queue->device,
+                                   "failed to allocate space for semaphore submission\n");
+      }
 
       uint32_t entry_count = 0;
       for (uint32_t j = 0; j < submit->commandBufferCount; ++j) {
@@ -1497,6 +1604,13 @@ tu_QueueSubmit(VkQueue _queue,
       }
 
       uint32_t flags = MSM_PIPE_3D0;
+      if (nr_in_syncobjs) {
+         flags |= MSM_SUBMIT_SYNCOBJ_IN;
+      }
+      if (nr_out_syncobjs) {
+         flags |= MSM_SUBMIT_SYNCOBJ_OUT;
+      }
+
       if (last_submit) {
          flags |= MSM_SUBMIT_FENCE_FD_OUT;
       }
@@ -1508,21 +1622,34 @@ tu_QueueSubmit(VkQueue _queue,
          .nr_bos = bo_list.count,
          .cmds = (uint64_t)(uintptr_t)cmds,
          .nr_cmds = entry_count,
+         .in_syncobjs = (uint64_t)(uintptr_t)in_syncobjs,
+         .out_syncobjs = (uint64_t)(uintptr_t)out_syncobjs,
+         .nr_in_syncobjs = nr_in_syncobjs,
+         .nr_out_syncobjs = nr_out_syncobjs,
+         .syncobj_stride = sizeof(struct drm_msm_gem_submit_syncobj),
       };
 
       int ret = drmCommandWriteRead(queue->device->physical_device->local_fd,
                                     DRM_MSM_GEM_SUBMIT,
                                     &req, sizeof(req));
       if (ret) {
-         fprintf(stderr, "submit failed: %s\n", strerror(errno));
-         abort();
+         free(in_syncobjs);
+         free(out_syncobjs);
+         return tu_device_set_lost(queue->device, "submit failed: %s\n",
+                                   strerror(errno));
       }
 
       tu_bo_list_destroy(&bo_list);
+      free(in_syncobjs);
+      free(out_syncobjs);
 
+      tu_semaphores_remove_temp(queue->device, pSubmits[i].pWaitSemaphores,
+                                pSubmits[i].waitSemaphoreCount);
       if (last_submit) {
          /* no need to merge fences as queue execution is serialized */
          tu_fence_update_fd(&queue->submit_fence, req.fence_fd);
+      } else if (last_submit) {
+         close(req.fence_fd);
       }
    }
 
@@ -1539,6 +1666,9 @@ tu_QueueWaitIdle(VkQueue _queue)
 {
    TU_FROM_HANDLE(tu_queue, queue, _queue);
 
+   if (tu_device_is_lost(queue->device))
+      return VK_ERROR_DEVICE_LOST;
+
    tu_fence_wait_idle(&queue->submit_fence);
 
    return VK_SUCCESS;
@@ -1549,49 +1679,14 @@ tu_DeviceWaitIdle(VkDevice _device)
 {
    TU_FROM_HANDLE(tu_device, device, _device);
 
+   if (tu_device_is_lost(device))
+      return VK_ERROR_DEVICE_LOST;
+
    for (unsigned i = 0; i < TU_MAX_QUEUE_FAMILIES; i++) {
       for (unsigned q = 0; q < device->queue_count[i]; q++) {
          tu_QueueWaitIdle(tu_queue_to_handle(&device->queues[i][q]));
       }
    }
-   return VK_SUCCESS;
-}
-
-VkResult
-tu_ImportSemaphoreFdKHR(VkDevice _device,
-                        const VkImportSemaphoreFdInfoKHR *pImportSemaphoreFdInfo)
-{
-   tu_stub();
-
-   return VK_SUCCESS;
-}
-
-VkResult
-tu_GetSemaphoreFdKHR(VkDevice _device,
-                     const VkSemaphoreGetFdInfoKHR *pGetFdInfo,
-                     int *pFd)
-{
-   tu_stub();
-
-   return VK_SUCCESS; 
-}
-
-VkResult
-tu_ImportFenceFdKHR(VkDevice _device,
-                    const VkImportFenceFdInfoKHR *pImportFenceFdInfo)
-{
-   tu_stub();
-
-   return VK_SUCCESS;
-}
-
-VkResult
-tu_GetFenceFdKHR(VkDevice _device,
-                 const VkFenceGetFdInfoKHR *pGetFdInfo,
-                 int *pFd)
-{
-   tu_stub();
-
    return VK_SUCCESS;
 }
 
@@ -1689,8 +1784,8 @@ tu_alloc_memory(struct tu_device *device,
       return VK_SUCCESS;
    }
 
-   mem = vk_alloc2(&device->alloc, pAllocator, sizeof(*mem), 8,
-                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   mem = vk_object_alloc(&device->vk, pAllocator, sizeof(*mem),
+                         VK_OBJECT_TYPE_DEVICE_MEMORY);
    if (mem == NULL)
       return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -1722,7 +1817,7 @@ tu_alloc_memory(struct tu_device *device,
    }
 
    if (result != VK_SUCCESS) {
-      vk_free2(&device->alloc, pAllocator, mem);
+      vk_object_free(&device->vk, pAllocator, mem);
       return result;
    }
 
@@ -1759,7 +1854,7 @@ tu_FreeMemory(VkDevice _device,
       return;
 
    tu_bo_finish(device, &mem->bo);
-   vk_free2(&device->alloc, pAllocator, mem);
+   vk_object_free(&device->vk, pAllocator, mem);
 }
 
 VkResult
@@ -1850,8 +1945,8 @@ tu_GetImageMemoryRequirements(VkDevice _device,
    TU_FROM_HANDLE(tu_image, image, _image);
 
    pMemoryRequirements->memoryTypeBits = 1;
-   pMemoryRequirements->size = image->layout.size;
-   pMemoryRequirements->alignment = image->layout.base_align;
+   pMemoryRequirements->size = image->total_size;
+   pMemoryRequirements->alignment = image->layout[0].base_align;
 }
 
 void
@@ -1974,6 +2069,30 @@ tu_QueueBindSparse(VkQueue _queue,
 
 // Queue semaphore functions
 
+
+static void
+tu_semaphore_part_destroy(struct tu_device *device,
+                          struct tu_semaphore_part *part)
+{
+   switch(part->kind) {
+   case TU_SEMAPHORE_NONE:
+      break;
+   case TU_SEMAPHORE_SYNCOBJ:
+      drmSyncobjDestroy(device->physical_device->local_fd, part->syncobj);
+      break;
+   }
+   part->kind = TU_SEMAPHORE_NONE;
+}
+
+static void
+tu_semaphore_remove_temp(struct tu_device *device,
+                         struct tu_semaphore *sem)
+{
+   if (sem->temporary.kind != TU_SEMAPHORE_NONE) {
+      tu_semaphore_part_destroy(device, &sem->temporary);
+   }
+}
+
 VkResult
 tu_CreateSemaphore(VkDevice _device,
                    const VkSemaphoreCreateInfo *pCreateInfo,
@@ -1983,11 +2102,26 @@ tu_CreateSemaphore(VkDevice _device,
    TU_FROM_HANDLE(tu_device, device, _device);
 
    struct tu_semaphore *sem =
-      vk_alloc2(&device->alloc, pAllocator, sizeof(*sem), 8,
-                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+         vk_object_alloc(&device->vk, pAllocator, sizeof(*sem),
+                         VK_OBJECT_TYPE_SEMAPHORE);
    if (!sem)
       return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
+   const VkExportSemaphoreCreateInfo *export =
+      vk_find_struct_const(pCreateInfo->pNext, EXPORT_SEMAPHORE_CREATE_INFO);
+   VkExternalSemaphoreHandleTypeFlags handleTypes =
+      export ? export->handleTypes : 0;
+
+   sem->permanent.kind = TU_SEMAPHORE_NONE;
+   sem->temporary.kind = TU_SEMAPHORE_NONE;
+
+   if (handleTypes) {
+      if (drmSyncobjCreate(device->physical_device->local_fd, 0, &sem->permanent.syncobj) < 0) {
+          vk_free2(&device->vk.alloc, pAllocator, sem);
+          return VK_ERROR_OUT_OF_HOST_MEMORY;
+      }
+      sem->permanent.kind = TU_SEMAPHORE_SYNCOBJ;
+   }
    *pSemaphore = tu_semaphore_to_handle(sem);
    return VK_SUCCESS;
 }
@@ -2002,7 +2136,10 @@ tu_DestroySemaphore(VkDevice _device,
    if (!_semaphore)
       return;
 
-   vk_free2(&device->alloc, pAllocator, sem);
+   tu_semaphore_part_destroy(device, &sem->permanent);
+   tu_semaphore_part_destroy(device, &sem->temporary);
+
+   vk_object_free(&device->vk, pAllocator, sem);
 }
 
 VkResult
@@ -2012,10 +2149,10 @@ tu_CreateEvent(VkDevice _device,
                VkEvent *pEvent)
 {
    TU_FROM_HANDLE(tu_device, device, _device);
-   struct tu_event *event =
-      vk_alloc2(&device->alloc, pAllocator, sizeof(*event), 8,
-                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 
+   struct tu_event *event =
+         vk_object_alloc(&device->vk, pAllocator, sizeof(*event),
+                         VK_OBJECT_TYPE_EVENT);
    if (!event)
       return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -2034,7 +2171,7 @@ tu_CreateEvent(VkDevice _device,
 fail_map:
    tu_bo_finish(device, &event->bo);
 fail_alloc:
-   vk_free2(&device->alloc, pAllocator, event);
+   vk_object_free(&device->vk, pAllocator, event);
    return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 }
 
@@ -2050,7 +2187,7 @@ tu_DestroyEvent(VkDevice _device,
       return;
 
    tu_bo_finish(device, &event->bo);
-   vk_free2(&device->alloc, pAllocator, event);
+   vk_object_free(&device->vk, pAllocator, event);
 }
 
 VkResult
@@ -2092,8 +2229,8 @@ tu_CreateBuffer(VkDevice _device,
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
 
-   buffer = vk_alloc2(&device->alloc, pAllocator, sizeof(*buffer), 8,
-                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   buffer = vk_object_alloc(&device->vk, pAllocator, sizeof(*buffer),
+                            VK_OBJECT_TYPE_BUFFER);
    if (buffer == NULL)
       return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -2117,7 +2254,7 @@ tu_DestroyBuffer(VkDevice _device,
    if (!buffer)
       return;
 
-   vk_free2(&device->alloc, pAllocator, buffer);
+   vk_object_free(&device->vk, pAllocator, buffer);
 }
 
 VkResult
@@ -2127,14 +2264,15 @@ tu_CreateFramebuffer(VkDevice _device,
                      VkFramebuffer *pFramebuffer)
 {
    TU_FROM_HANDLE(tu_device, device, _device);
+   TU_FROM_HANDLE(tu_render_pass, pass, pCreateInfo->renderPass);
    struct tu_framebuffer *framebuffer;
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
 
    size_t size = sizeof(*framebuffer) + sizeof(struct tu_attachment_info) *
                                            pCreateInfo->attachmentCount;
-   framebuffer = vk_alloc2(&device->alloc, pAllocator, size, 8,
-                           VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   framebuffer = vk_object_alloc(&device->vk, pAllocator, size,
+                                 VK_OBJECT_TYPE_FRAMEBUFFER);
    if (framebuffer == NULL)
       return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -2147,6 +2285,8 @@ tu_CreateFramebuffer(VkDevice _device,
       struct tu_image_view *iview = tu_image_view_from_handle(_iview);
       framebuffer->attachments[i].attachment = iview;
    }
+
+   tu_framebuffer_tiling_config(framebuffer, device, pass);
 
    *pFramebuffer = tu_framebuffer_to_handle(framebuffer);
    return VK_SUCCESS;
@@ -2162,7 +2302,8 @@ tu_DestroyFramebuffer(VkDevice _device,
 
    if (!fb)
       return;
-   vk_free2(&device->alloc, pAllocator, fb);
+
+   vk_object_free(&device->vk, pAllocator, fb);
 }
 
 static void
@@ -2235,8 +2376,8 @@ tu_CreateSampler(VkDevice _device,
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
 
-   sampler = vk_alloc2(&device->alloc, pAllocator, sizeof(*sampler), 8,
-                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   sampler = vk_object_alloc(&device->vk, pAllocator, sizeof(*sampler),
+                             VK_OBJECT_TYPE_SAMPLER);
    if (!sampler)
       return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -2256,7 +2397,8 @@ tu_DestroySampler(VkDevice _device,
 
    if (!sampler)
       return;
-   vk_free2(&device->alloc, pAllocator, sampler);
+
+   vk_object_free(&device->vk, pAllocator, sampler);
 }
 
 /* vk_icd.h does not declare this function, so we declare it here to
@@ -2339,15 +2481,151 @@ tu_GetMemoryFdPropertiesKHR(VkDevice _device,
    return VK_SUCCESS;
 }
 
+VkResult
+tu_ImportFenceFdKHR(VkDevice _device,
+                    const VkImportFenceFdInfoKHR *pImportFenceFdInfo)
+{
+   tu_stub();
+
+   return VK_SUCCESS;
+}
+
+VkResult
+tu_GetFenceFdKHR(VkDevice _device,
+                 const VkFenceGetFdInfoKHR *pGetFdInfo,
+                 int *pFd)
+{
+   tu_stub();
+
+   return VK_SUCCESS;
+}
+
+VkResult
+tu_ImportSemaphoreFdKHR(VkDevice _device,
+                        const VkImportSemaphoreFdInfoKHR *pImportSemaphoreFdInfo)
+{
+   TU_FROM_HANDLE(tu_device, device, _device);
+   TU_FROM_HANDLE(tu_semaphore, sem, pImportSemaphoreFdInfo->semaphore);
+   int ret;
+   struct tu_semaphore_part *dst = NULL;
+
+   if (pImportSemaphoreFdInfo->flags & VK_SEMAPHORE_IMPORT_TEMPORARY_BIT) {
+      dst = &sem->temporary;
+   } else {
+      dst = &sem->permanent;
+   }
+
+   uint32_t syncobj = dst->kind == TU_SEMAPHORE_SYNCOBJ ? dst->syncobj : 0;
+
+   switch(pImportSemaphoreFdInfo->handleType) {
+      case VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT: {
+         uint32_t old_syncobj = syncobj;
+         ret = drmSyncobjFDToHandle(device->physical_device->local_fd, pImportSemaphoreFdInfo->fd, &syncobj);
+         if (ret == 0) {
+            close(pImportSemaphoreFdInfo->fd);
+            if (old_syncobj)
+               drmSyncobjDestroy(device->physical_device->local_fd, old_syncobj);
+         }
+         break;
+      }
+      case VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT: {
+         if (!syncobj) {
+            ret = drmSyncobjCreate(device->physical_device->local_fd, 0, &syncobj);
+            if (ret)
+               break;
+         }
+         if (pImportSemaphoreFdInfo->fd == -1) {
+            ret = drmSyncobjSignal(device->physical_device->local_fd, &syncobj, 1);
+         } else {
+            ret = drmSyncobjImportSyncFile(device->physical_device->local_fd, syncobj, pImportSemaphoreFdInfo->fd);
+         }
+         if (!ret)
+            close(pImportSemaphoreFdInfo->fd);
+         break;
+      }
+      default:
+         unreachable("Unhandled semaphore handle type");
+   }
+
+   if (ret) {
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+   }
+   dst->syncobj = syncobj;
+   dst->kind = TU_SEMAPHORE_SYNCOBJ;
+
+   return VK_SUCCESS;
+}
+
+VkResult
+tu_GetSemaphoreFdKHR(VkDevice _device,
+                     const VkSemaphoreGetFdInfoKHR *pGetFdInfo,
+                     int *pFd)
+{
+   TU_FROM_HANDLE(tu_device, device, _device);
+   TU_FROM_HANDLE(tu_semaphore, sem, pGetFdInfo->semaphore);
+   int ret;
+   uint32_t syncobj_handle;
+
+   if (sem->temporary.kind != TU_SEMAPHORE_NONE) {
+      assert(sem->temporary.kind == TU_SEMAPHORE_SYNCOBJ);
+      syncobj_handle = sem->temporary.syncobj;
+   } else {
+      assert(sem->permanent.kind == TU_SEMAPHORE_SYNCOBJ);
+      syncobj_handle = sem->permanent.syncobj;
+   }
+
+   switch(pGetFdInfo->handleType) {
+   case VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT:
+      ret = drmSyncobjHandleToFD(device->physical_device->local_fd, syncobj_handle, pFd);
+      break;
+   case VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT:
+      ret = drmSyncobjExportSyncFile(device->physical_device->local_fd, syncobj_handle, pFd);
+      if (!ret) {
+         if (sem->temporary.kind != TU_SEMAPHORE_NONE) {
+            tu_semaphore_part_destroy(device, &sem->temporary);
+         } else {
+            drmSyncobjReset(device->physical_device->local_fd, &syncobj_handle, 1);
+         }
+      }
+      break;
+   default:
+      unreachable("Unhandled semaphore handle type");
+   }
+
+   if (ret)
+      return vk_error(device->instance, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+   return VK_SUCCESS;
+}
+
+
+static bool tu_has_syncobj(struct tu_physical_device *pdev)
+{
+   uint64_t value;
+   if (drmGetCap(pdev->local_fd, DRM_CAP_SYNCOBJ, &value))
+      return false;
+   return value && pdev->msm_major_version == 1 && pdev->msm_minor_version >= 6;
+}
+
 void
 tu_GetPhysicalDeviceExternalSemaphoreProperties(
    VkPhysicalDevice physicalDevice,
    const VkPhysicalDeviceExternalSemaphoreInfo *pExternalSemaphoreInfo,
    VkExternalSemaphoreProperties *pExternalSemaphoreProperties)
 {
-   pExternalSemaphoreProperties->exportFromImportedHandleTypes = 0;
-   pExternalSemaphoreProperties->compatibleHandleTypes = 0;
-   pExternalSemaphoreProperties->externalSemaphoreFeatures = 0;
+   TU_FROM_HANDLE(tu_physical_device, pdev, physicalDevice);
+
+   if (tu_has_syncobj(pdev) &&
+       (pExternalSemaphoreInfo->handleType == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT ||
+        pExternalSemaphoreInfo->handleType == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT)) {
+      pExternalSemaphoreProperties->exportFromImportedHandleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+      pExternalSemaphoreProperties->compatibleHandleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+      pExternalSemaphoreProperties->externalSemaphoreFeatures = VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT |
+         VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT;
+   } else {
+      pExternalSemaphoreProperties->exportFromImportedHandleTypes = 0;
+      pExternalSemaphoreProperties->compatibleHandleTypes = 0;
+      pExternalSemaphoreProperties->externalSemaphoreFeatures = 0;
+   }
 }
 
 void
@@ -2426,4 +2704,57 @@ void tu_GetPhysicalDeviceMultisamplePropertiesEXT(
       pMultisampleProperties->maxSampleLocationGridSize = (VkExtent2D){ 1, 1 };
    else
       pMultisampleProperties->maxSampleLocationGridSize = (VkExtent2D){ 0, 0 };
+}
+
+
+VkResult
+tu_CreatePrivateDataSlotEXT(VkDevice _device,
+                            const VkPrivateDataSlotCreateInfoEXT* pCreateInfo,
+                            const VkAllocationCallbacks* pAllocator,
+                            VkPrivateDataSlotEXT* pPrivateDataSlot)
+{
+   TU_FROM_HANDLE(tu_device, device, _device);
+   return vk_private_data_slot_create(&device->vk,
+                                      pCreateInfo,
+                                      pAllocator,
+                                      pPrivateDataSlot);
+}
+
+void
+tu_DestroyPrivateDataSlotEXT(VkDevice _device,
+                             VkPrivateDataSlotEXT privateDataSlot,
+                             const VkAllocationCallbacks* pAllocator)
+{
+   TU_FROM_HANDLE(tu_device, device, _device);
+   vk_private_data_slot_destroy(&device->vk, privateDataSlot, pAllocator);
+}
+
+VkResult
+tu_SetPrivateDataEXT(VkDevice _device,
+                     VkObjectType objectType,
+                     uint64_t objectHandle,
+                     VkPrivateDataSlotEXT privateDataSlot,
+                     uint64_t data)
+{
+   TU_FROM_HANDLE(tu_device, device, _device);
+   return vk_object_base_set_private_data(&device->vk,
+                                          objectType,
+                                          objectHandle,
+                                          privateDataSlot,
+                                          data);
+}
+
+void
+tu_GetPrivateDataEXT(VkDevice _device,
+                     VkObjectType objectType,
+                     uint64_t objectHandle,
+                     VkPrivateDataSlotEXT privateDataSlot,
+                     uint64_t* pData)
+{
+   TU_FROM_HANDLE(tu_device, device, _device);
+   vk_object_base_get_private_data(&device->vk,
+                                   objectType,
+                                   objectHandle,
+                                   privateDataSlot,
+                                   pData);
 }

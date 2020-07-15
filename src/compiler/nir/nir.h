@@ -4018,6 +4018,12 @@ typedef enum {
    nir_address_format_32bit_index_offset,
 
    /**
+    * An address format which is comprised of a vec3 where the first two
+    * components specify the buffer and the third is an offset.
+    */
+   nir_address_format_vec2_index_32bit_offset,
+
+   /**
     * An address format which is a simple 32-bit offset.
     */
    nir_address_format_32bit_offset,
@@ -4036,12 +4042,13 @@ static inline unsigned
 nir_address_format_bit_size(nir_address_format addr_format)
 {
    switch (addr_format) {
-   case nir_address_format_32bit_global:           return 32;
-   case nir_address_format_64bit_global:           return 64;
-   case nir_address_format_64bit_bounded_global:   return 32;
-   case nir_address_format_32bit_index_offset:     return 32;
-   case nir_address_format_32bit_offset:           return 32;
-   case nir_address_format_logical:                return 32;
+   case nir_address_format_32bit_global:              return 32;
+   case nir_address_format_64bit_global:              return 64;
+   case nir_address_format_64bit_bounded_global:      return 32;
+   case nir_address_format_32bit_index_offset:        return 32;
+   case nir_address_format_vec2_index_32bit_offset:   return 32;
+   case nir_address_format_32bit_offset:              return 32;
+   case nir_address_format_logical:                   return 32;
    }
    unreachable("Invalid address format");
 }
@@ -4050,12 +4057,13 @@ static inline unsigned
 nir_address_format_num_components(nir_address_format addr_format)
 {
    switch (addr_format) {
-   case nir_address_format_32bit_global:           return 1;
-   case nir_address_format_64bit_global:           return 1;
-   case nir_address_format_64bit_bounded_global:   return 4;
-   case nir_address_format_32bit_index_offset:     return 2;
-   case nir_address_format_32bit_offset:           return 1;
-   case nir_address_format_logical:                return 1;
+   case nir_address_format_32bit_global:              return 1;
+   case nir_address_format_64bit_global:              return 1;
+   case nir_address_format_64bit_bounded_global:      return 4;
+   case nir_address_format_32bit_index_offset:        return 2;
+   case nir_address_format_vec2_index_32bit_offset:   return 3;
+   case nir_address_format_32bit_offset:              return 1;
+   case nir_address_format_logical:                   return 1;
    }
    unreachable("Invalid address format");
 }
@@ -4131,6 +4139,7 @@ void nir_lower_io_to_scalar(nir_shader *shader, nir_variable_mode mask);
 void nir_lower_io_to_scalar_early(nir_shader *shader, nir_variable_mode mask);
 bool nir_lower_io_to_vector(nir_shader *shader, nir_variable_mode mask);
 
+bool nir_lower_fragcolor(nir_shader *shader);
 void nir_lower_fragcoord_wtrans(nir_shader *shader);
 void nir_lower_viewport_transform(nir_shader *shader);
 bool nir_lower_uniforms_to_ubo(nir_shader *shader, int multiplier);
@@ -4144,6 +4153,7 @@ typedef struct nir_lower_subgroups_options {
    bool lower_subgroup_masks:1;
    bool lower_shuffle:1;
    bool lower_shuffle_to_32bit:1;
+   bool lower_shuffle_to_swizzle_amd:1;
    bool lower_quad:1;
    bool lower_quad_broadcast_dynamic:1;
    bool lower_quad_broadcast_dynamic_to_const:1;
@@ -4357,6 +4367,7 @@ bool nir_lower_clip_gs(nir_shader *shader, unsigned ucp_enables,
 bool nir_lower_clip_fs(nir_shader *shader, unsigned ucp_enables,
                        bool use_clipdist_array);
 bool nir_lower_clip_cull_distance_arrays(nir_shader *nir);
+bool nir_lower_clip_disable(nir_shader *shader, unsigned clip_plane_enable);
 
 void nir_lower_point_size_mov(nir_shader *shader,
                               const gl_state_index16 *pointsize_state_tokens);

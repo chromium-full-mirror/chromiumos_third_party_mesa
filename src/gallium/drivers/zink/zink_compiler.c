@@ -52,8 +52,49 @@ lower_discard_if_instr(nir_intrinsic_instr *instr, nir_builder *b)
       nir_instr_remove(&instr->instr);
       return true;
    }
-   assert(instr->intrinsic != nir_intrinsic_discard ||
-          nir_block_last_instr(instr->instr.block) == &instr->instr);
+   /* a shader like this (shaders@glsl-fs-discard-04):
+
+      uniform int j, k;
+
+      void main()
+      {
+       for (int i = 0; i < j; i++) {
+        if (i > k)
+         continue;
+        discard;
+       }
+       gl_FragColor = vec4(0.0, 1.0, 0.0, 0.0);
+      }
+
+
+
+      will generate nir like:
+
+      loop   {
+         //snip
+         if   ssa_11   {
+            block   block_5:
+            /   preds:   block_4   /
+            vec1   32   ssa_17   =   iadd   ssa_50,   ssa_31
+            /   succs:   block_7   /
+         }   else   {
+            block   block_6:
+            /   preds:   block_4   /
+            intrinsic   discard   ()   () <-- not last instruction
+            vec1   32   ssa_23   =   iadd   ssa_50,   ssa_31 <-- dead code loop itr increment
+            /   succs:   block_7   /
+         }
+         //snip
+      }
+
+      which means that we can't assert like this:
+
+      assert(instr->intrinsic != nir_intrinsic_discard ||
+             nir_block_last_instr(instr->instr.block) == &instr->instr);
+
+
+      and it's unnecessary anyway since post-vtn optimizing will dce the instructions following the discard
+    */
 
    return false;
 }
@@ -94,6 +135,7 @@ static const struct nir_shader_compiler_options nir_options = {
    .lower_extract_word = true,
    .lower_mul_high = true,
    .lower_rotate = true,
+   .lower_uadd_carry = true,
 };
 
 const void *
@@ -190,6 +232,7 @@ zink_compile_nir(struct zink_screen *screen, struct nir_shader *nir,
    optimize_nir(nir);
    NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
    NIR_PASS_V(nir, lower_discard_if);
+   NIR_PASS_V(nir, nir_lower_fragcolor);
    NIR_PASS_V(nir, nir_convert_from_ssa, true);
 
    if (zink_debug & ZINK_DEBUG_NIR) {

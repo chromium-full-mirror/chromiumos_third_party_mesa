@@ -130,6 +130,7 @@ EXTENSIONS = [
     Extension('VK_EXT_depth_range_unrestricted',          1, True),
     Extension('VK_EXT_descriptor_indexing',               2, True),
     Extension('VK_EXT_discard_rectangles',                1, True),
+    Extension('VK_EXT_extended_dynamic_state',            1, True),
     Extension('VK_EXT_external_memory_dma_buf',           1, True),
     Extension('VK_EXT_external_memory_host',              1, 'device->rad_info.has_userptr'),
     Extension('VK_EXT_global_priority',                   1, 'device->rad_info.has_ctx_priority'),
@@ -171,7 +172,7 @@ EXTENSIONS = [
     # Disable mixed attachment samples on GFX6-GFX7 until the CTS failures have been resolved.
     Extension('VK_AMD_mixed_attachment_samples',          1, 'device->rad_info.chip_class >= GFX8'),
     Extension('VK_AMD_rasterization_order',               1, 'device->rad_info.has_out_of_order_rast'),
-    Extension('VK_AMD_shader_ballot',                     1, 'device->use_shader_ballot'),
+    Extension('VK_AMD_shader_ballot',                     1, True),
     Extension('VK_AMD_shader_core_properties',            1, True),
     Extension('VK_AMD_shader_core_properties2',           1, True),
     Extension('VK_AMD_shader_explicit_vertex_parameter',  1, True),

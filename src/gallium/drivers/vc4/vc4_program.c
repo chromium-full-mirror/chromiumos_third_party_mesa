@@ -25,6 +25,7 @@
 #include <inttypes.h>
 #include "util/format/u_format.h"
 #include "util/crc32.h"
+#include "util/u_helpers.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/ralloc.h"
@@ -1608,11 +1609,8 @@ ntq_setup_inputs(struct vc4_compile *c)
                 if (c->stage == QSTAGE_FRAG) {
                         if (var->data.location == VARYING_SLOT_POS) {
                                 emit_fragcoord_input(c, loc);
-                        } else if (var->data.location == VARYING_SLOT_PNTC ||
-                                   (var->data.location >= VARYING_SLOT_VAR0 &&
-                                    (c->fs_key->point_sprite_mask &
-                                     (1 << (var->data.location -
-                                            VARYING_SLOT_VAR0))))) {
+                        } else if (util_varying_is_point_coord(var->data.location,
+                                                               c->fs_key->point_sprite_mask)) {
                                 c->inputs[loc * 4 + 0] = c->point_x;
                                 c->inputs[loc * 4 + 1] = c->point_y;
                         } else {
@@ -2472,8 +2470,8 @@ vc4_shader_state_create(struct pipe_context *pctx,
         if (s->info.stage == MESA_SHADER_VERTEX)
                 NIR_PASS_V(s, nir_lower_point_size, 1.0f, 0.0f);
 
-        NIR_PASS_V(s, nir_lower_io, nir_var_all, type_size,
-                   (nir_lower_io_options)0);
+        NIR_PASS_V(s, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
+                   type_size, (nir_lower_io_options)0);
 
         NIR_PASS_V(s, nir_lower_regs_to_ssa);
         NIR_PASS_V(s, nir_normalize_cubemap_coords);

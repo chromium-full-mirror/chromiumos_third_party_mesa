@@ -36,15 +36,15 @@ static unsigned slot_pack_map[] = {
    [VARYING_SLOT_COL0] = 0, /* input/output */
    [VARYING_SLOT_COL1] = 1, /* input/output */
    [VARYING_SLOT_FOGC] = 2, /* input/output */
-   /* TEX0-7 are translated to VAR0-7 by nir, so we don't need to reserve */
-   [VARYING_SLOT_TEX0] = UINT_MAX, /* input/output */
-   [VARYING_SLOT_TEX1] = UINT_MAX,
-   [VARYING_SLOT_TEX2] = UINT_MAX,
-   [VARYING_SLOT_TEX3] = UINT_MAX,
-   [VARYING_SLOT_TEX4] = UINT_MAX,
-   [VARYING_SLOT_TEX5] = UINT_MAX,
-   [VARYING_SLOT_TEX6] = UINT_MAX,
-   [VARYING_SLOT_TEX7] = UINT_MAX,
+   /* TEX0-7 are deprecated, so we put them at the end of the range and hope nobody uses them all */
+   [VARYING_SLOT_TEX0] = VARYING_SLOT_VAR0 - 1, /* input/output */
+   [VARYING_SLOT_TEX1] = VARYING_SLOT_VAR0 - 2,
+   [VARYING_SLOT_TEX2] = VARYING_SLOT_VAR0 - 3,
+   [VARYING_SLOT_TEX3] = VARYING_SLOT_VAR0 - 4,
+   [VARYING_SLOT_TEX4] = VARYING_SLOT_VAR0 - 5,
+   [VARYING_SLOT_TEX5] = VARYING_SLOT_VAR0 - 6,
+   [VARYING_SLOT_TEX6] = VARYING_SLOT_VAR0 - 7,
+   [VARYING_SLOT_TEX7] = VARYING_SLOT_VAR0 - 8,
 
    /* PointSize is builtin */
    [VARYING_SLOT_PSIZ] = UINT_MAX,
@@ -122,6 +122,9 @@ struct ntv_context {
    SpvId loop_break, loop_cont;
 
    SpvId front_face_var, instance_id_var, vertex_id_var;
+#ifndef NDEBUG
+   bool seen_texcoord[8]; //whether we've seen a VARYING_SLOT_TEX[n] this pass
+#endif
 };
 
 static SpvId
@@ -284,6 +287,28 @@ get_glsl_type(struct ntv_context *ctx, const struct glsl_type *type)
    unreachable("we shouldn't get here, I think...");
 }
 
+static inline unsigned
+handle_slot(struct ntv_context *ctx, unsigned slot)
+{
+   unsigned orig = slot;
+   if (slot < VARYING_SLOT_VAR0) {
+#ifndef NDEBUG
+      if (slot >= VARYING_SLOT_TEX0 && slot <= VARYING_SLOT_TEX7)
+         ctx->seen_texcoord[slot - VARYING_SLOT_TEX0] = true;
+#endif
+      slot = slot_pack_map[slot];
+      if (slot == UINT_MAX)
+         debug_printf("unhandled varying slot: %s\n", gl_varying_slot_name(orig));
+   } else {
+      slot -= VARYING_SLOT_VAR0 - NTV_MIN_RESERVED_SLOTS;
+      assert(slot <= VARYING_SLOT_VAR0 - 8 ||
+             !ctx->seen_texcoord[VARYING_SLOT_VAR0 - slot - 1]);
+
+   }
+   assert(slot < VARYING_SLOT_VAR0);
+   return slot;
+}
+
 #define HANDLE_EMIT_BUILTIN(SLOT, BUILTIN) \
       case VARYING_SLOT_##SLOT: \
          spirv_builder_emit_builtin(&ctx->builder, var_id, SpvBuiltIn##BUILTIN); \
@@ -316,13 +341,7 @@ emit_input(struct ntv_context *ctx, struct nir_variable *var)
       HANDLE_EMIT_BUILTIN(FACE, FrontFacing);
 
       default:
-         if (slot < VARYING_SLOT_VAR0) {
-            slot = slot_pack_map[slot];
-            if (slot == UINT_MAX)
-               debug_printf("unhandled varying slot: %s\n", gl_varying_slot_name(var->data.location));
-         } else
-            slot -= VARYING_SLOT_VAR0 - NTV_MIN_RESERVED_SLOTS;
-         assert(slot < VARYING_SLOT_VAR0);
+         slot = handle_slot(ctx, slot);
          spirv_builder_emit_location(&ctx->builder, var_id, slot);
       }
    } else {
@@ -378,31 +397,21 @@ emit_output(struct ntv_context *ctx, struct nir_variable *var)
          break;
 
       default:
-         if (slot < VARYING_SLOT_VAR0) {
-            slot = slot_pack_map[slot];
-            if (slot == UINT_MAX)
-               debug_printf("unhandled varying slot: %s\n", gl_varying_slot_name(var->data.location));
-         } else
-            slot -= VARYING_SLOT_VAR0 - NTV_MIN_RESERVED_SLOTS;
-         assert(slot < VARYING_SLOT_VAR0);
+         slot = handle_slot(ctx, slot);
          spirv_builder_emit_location(&ctx->builder, var_id, slot);
-         /* non-builtins get location incremented by VARYING_SLOT_VAR0 in vtn, so
-          * use driver_location for non-builtins with defined slots to avoid overlap
-          */
       }
       ctx->outputs[var->data.location] = var_id;
       ctx->so_output_gl_types[var->data.location] = var->type;
       ctx->so_output_types[var->data.location] = var_type;
    } else if (ctx->stage == MESA_SHADER_FRAGMENT) {
-      if (var->data.location >= FRAG_RESULT_DATA0)
+      if (var->data.location >= FRAG_RESULT_DATA0) {
          spirv_builder_emit_location(&ctx->builder, var_id,
                                      var->data.location - FRAG_RESULT_DATA0);
-      else {
+         spirv_builder_emit_index(&ctx->builder, var_id, var->data.index);
+      } else {
          switch (var->data.location) {
          case FRAG_RESULT_COLOR:
-            spirv_builder_emit_location(&ctx->builder, var_id, 0);
-            spirv_builder_emit_index(&ctx->builder, var_id, var->data.index);
-            break;
+            unreachable("gl_FragColor should be lowered by now");
 
          case FRAG_RESULT_DEPTH:
             spirv_builder_emit_builtin(&ctx->builder, var_id, SpvBuiltInFragDepth);
@@ -411,6 +420,7 @@ emit_output(struct ntv_context *ctx, struct nir_variable *var)
          default:
             spirv_builder_emit_location(&ctx->builder, var_id,
                                         var->data.driver_location);
+            spirv_builder_emit_index(&ctx->builder, var_id, var->data.index);
          }
       }
    }
@@ -895,6 +905,8 @@ emit_so_info(struct ntv_context *ctx, unsigned max_output_location,
       if (max_output_location >= VARYING_SLOT_VAR0)
          location = max_output_location - VARYING_SLOT_VAR0 + 1 + i;
       assert(location < VARYING_SLOT_VAR0);
+      assert(location <= VARYING_SLOT_VAR0 - 8 ||
+             !ctx->seen_texcoord[VARYING_SLOT_VAR0 - location - 1]);
       spirv_builder_emit_location(&ctx->builder, var_id, location);
 
       /* note: gl_ClipDistance[4] can the 0-indexed member of VARYING_SLOT_CLIP_DIST1 here,
@@ -1586,9 +1598,8 @@ emit_load_deref(struct ntv_context *ctx, nir_intrinsic_instr *intr)
 {
    SpvId ptr = get_src(ctx, intr->src);
 
-   nir_variable *var = nir_intrinsic_get_var(intr, 0);
    SpvId result = spirv_builder_emit_load(&ctx->builder,
-                                          get_glsl_type(ctx, var->type),
+                                          get_glsl_type(ctx, nir_src_as_deref(intr->src[0])->type),
                                           ptr);
    unsigned num_components = nir_dest_num_components(intr->dest);
    unsigned bit_size = nir_dest_bit_size(intr->dest);
@@ -1602,8 +1613,7 @@ emit_store_deref(struct ntv_context *ctx, nir_intrinsic_instr *intr)
    SpvId ptr = get_src(ctx, &intr->src[0]);
    SpvId src = get_src(ctx, &intr->src[1]);
 
-   nir_variable *var = nir_intrinsic_get_var(intr, 0);
-   SpvId type = get_glsl_type(ctx, glsl_without_array(var->type));
+   SpvId type = get_glsl_type(ctx, nir_src_as_deref(intr->src[0])->type);
    SpvId result = emit_bitcast(ctx, type, src);
    spirv_builder_emit_store(&ctx->builder, ptr, result);
 }
@@ -2119,7 +2129,9 @@ emit_loop(struct ntv_context *ctx, nir_loop *loop)
    ctx->loop_break = save_break;
    ctx->loop_cont = save_cont;
 
-   branch(ctx, cont_id);
+   /* loop->body may have already ended our block */
+   if (ctx->block_started)
+      branch(ctx, cont_id);
    start_block(ctx, cont_id);
    branch(ctx, header_id);
 

@@ -43,8 +43,7 @@
  * better GPU utilization.
  *
  * Each accessed BO has a corresponding entry in the ->accessed_bos hash table.
- * A BO is either being written or read at any time, that's what the type field
- * encodes.
+ * A BO is either being written or read at any time (see if writer != NULL).
  * When the last access is a write, the batch writing the BO might have read
  * dependencies (readers that have not been executed yet and want to read the
  * previous BO content), and when the last access is a read, all readers might
@@ -56,7 +55,6 @@
  * updated to point to the new writer.
  */
 struct panfrost_bo_access {
-        uint32_t type;
         struct util_dynarray readers;
         struct panfrost_batch_fence *writer;
 };
@@ -109,14 +107,15 @@ panfrost_create_batch(struct panfrost_context *ctx,
         batch->ctx = ctx;
 
         batch->bos = _mesa_hash_table_create(batch, _mesa_hash_pointer,
-                                             _mesa_key_pointer_equal);
+                        _mesa_key_pointer_equal);
 
         batch->minx = batch->miny = ~0;
         batch->maxx = batch->maxy = 0;
-        batch->transient_offset = 0;
 
         batch->out_sync = panfrost_create_batch_fence(batch);
         util_copy_framebuffer_state(&batch->key, key);
+
+        batch->pool = panfrost_create_pool(batch, pan_device(ctx->base.screen));
 
         return batch;
 }
@@ -174,6 +173,9 @@ panfrost_free_batch(struct panfrost_batch *batch)
 #endif
 
         hash_table_foreach(batch->bos, entry)
+                panfrost_bo_unreference((struct panfrost_bo *)entry->key);
+
+        hash_table_foreach(batch->pool.bos, entry)
                 panfrost_bo_unreference((struct panfrost_bo *)entry->key);
 
         util_dynarray_foreach(&batch->dependencies,
@@ -307,7 +309,7 @@ panfrost_get_fresh_batch_for_fbo(struct panfrost_context *ctx)
          * Note that it's perfectly fine to re-use a batch with an
          * existing clear, we'll just update it with the new clear request.
          */
-        if (!batch->first_job)
+        if (!batch->scoreboard.first_job)
                 return batch;
 
         /* Otherwise, we need to freeze the existing one and instantiate a new
@@ -411,36 +413,31 @@ panfrost_batch_in_readers(struct panfrost_batch *batch,
 
 static void
 panfrost_batch_update_bo_access(struct panfrost_batch *batch,
-                                struct panfrost_bo *bo, uint32_t access_type,
+                                struct panfrost_bo *bo, bool writes,
                                 bool already_accessed)
 {
         struct panfrost_context *ctx = batch->ctx;
         struct panfrost_bo_access *access;
-        uint32_t old_access_type;
+        bool old_writes = false;
         struct hash_entry *entry;
-
-        assert(access_type == PAN_BO_ACCESS_WRITE ||
-               access_type == PAN_BO_ACCESS_READ);
 
         entry = _mesa_hash_table_search(ctx->accessed_bos, bo);
         access = entry ? entry->data : NULL;
         if (access) {
-                old_access_type = access->type;
+                old_writes = access->writer != NULL;
         } else {
                 access = rzalloc(ctx, struct panfrost_bo_access);
                 util_dynarray_init(&access->readers, access);
                 _mesa_hash_table_insert(ctx->accessed_bos, bo, access);
                 /* We are the first to access this BO, let's initialize
-                 * old_access_type to our own access type in that case.
+                 * old_writes to our own access type in that case.
                  */
-                old_access_type = access_type;
-                access->type = access_type;
+                old_writes = writes;
         }
 
         assert(access);
 
-        if (access_type == PAN_BO_ACCESS_WRITE &&
-            old_access_type == PAN_BO_ACCESS_READ) {
+        if (writes && !old_writes) {
                 /* Previous access was a read and we want to write this BO.
                  * We first need to add explicit deps between our batch and
                  * the previous readers.
@@ -458,9 +455,11 @@ panfrost_batch_update_bo_access(struct panfrost_batch *batch,
                 }
                 panfrost_batch_fence_reference(batch->out_sync);
 
+                if (access->writer)
+                        panfrost_batch_fence_unreference(access->writer);
+
                 /* We now are the new writer. */
                 access->writer = batch->out_sync;
-                access->type = access_type;
 
                 /* Release the previous readers and reset the readers array. */
                 util_dynarray_foreach(&access->readers,
@@ -472,10 +471,8 @@ panfrost_batch_update_bo_access(struct panfrost_batch *batch,
                 }
 
                 util_dynarray_clear(&access->readers);
-        } else if (access_type == PAN_BO_ACCESS_WRITE &&
-                   old_access_type == PAN_BO_ACCESS_WRITE) {
-                /* Previous access was a write and we want to write this BO.
-                 * First check if we were the previous writer, in that case
+        } else if (writes && old_writes) {
+                /* First check if we were the previous writer, in that case
                  * there's nothing to do. Otherwise we need to add a
                  * dependency between the new writer and the old one.
                  */
@@ -487,10 +484,8 @@ panfrost_batch_update_bo_access(struct panfrost_batch *batch,
                         panfrost_batch_fence_reference(batch->out_sync);
                         access->writer = batch->out_sync;
                 }
-        } else if (access_type == PAN_BO_ACCESS_READ &&
-                   old_access_type == PAN_BO_ACCESS_WRITE) {
-                /* Previous access was a write and we want to read this BO.
-                 * First check if we were the previous writer, in that case
+        } else if (!writes && old_writes) {
+                /* First check if we were the previous writer, in that case
                  * we want to keep the access type unchanged, as a write is
                  * more constraining than a read.
                  */
@@ -509,7 +504,7 @@ panfrost_batch_update_bo_access(struct panfrost_batch *batch,
                         util_dynarray_append(&access->readers,
                                              struct panfrost_batch_fence *,
                                              batch->out_sync);
-                        access->type = PAN_BO_ACCESS_READ;
+                        access->writer = NULL;
                 }
         } else {
                 /* We already accessed this BO before, so we should already be
@@ -580,11 +575,9 @@ panfrost_batch_add_bo(struct panfrost_batch *batch, struct panfrost_bo *bo,
         if (batch == batch->ctx->wallpaper_batch)
                 return;
 
-        /* Only pass R/W flags to the dep tracking logic. */
         assert(flags & PAN_BO_ACCESS_RW);
-        flags = (flags & PAN_BO_ACCESS_WRITE) ?
-                PAN_BO_ACCESS_WRITE : PAN_BO_ACCESS_READ;
-        panfrost_batch_update_bo_access(batch, bo, flags, old_flags != 0);
+        panfrost_batch_update_bo_access(batch, bo, flags & PAN_BO_ACCESS_WRITE,
+                        old_flags != 0);
 }
 
 static void
@@ -625,12 +618,12 @@ panfrost_batch_create_bo(struct panfrost_batch *batch, size_t size,
 {
         struct panfrost_bo *bo;
 
-        bo = pan_bo_create(pan_device(batch->ctx->base.screen), size,
+        bo = panfrost_bo_create(pan_device(batch->ctx->base.screen), size,
                                 create_flags);
         panfrost_batch_add_bo(batch, bo, access_flags);
 
         /* panfrost_batch_add_bo() has retained a reference and
-         * pan_bo_create() initialize the refcnt to 1, so let's
+         * panfrost_bo_create() initialize the refcnt to 1, so let's
          * unreference the BO here so it gets released when the batch is
          * destroyed (unless it's retained by someone else in the meantime).
          */
@@ -747,10 +740,10 @@ panfrost_batch_get_tiler_meta(struct panfrost_batch *batch, unsigned vertex_coun
             .flags = 0x0,
             .width = MALI_POSITIVE(batch->key.width),
             .height = MALI_POSITIVE(batch->key.height),
-            .tiler_heap_meta = panfrost_upload_transient(batch, &tiler_heap_meta, sizeof(tiler_heap_meta)),
+            .tiler_heap_meta = panfrost_pool_upload(&batch->pool, &tiler_heap_meta, sizeof(tiler_heap_meta)),
         };
 
-        batch->tiler_meta = panfrost_upload_transient(batch, &tiler_meta, sizeof(tiler_meta));
+        batch->tiler_meta = panfrost_pool_upload(&batch->pool, &tiler_meta, sizeof(tiler_meta));
         return batch->tiler_meta;
 }
 
@@ -793,7 +786,7 @@ panfrost_batch_draw_wallpaper(struct panfrost_batch *batch)
         /* No draw calls, and no clear on the depth/stencil bufs.
          * Drawing the wallpaper would be useless.
          */
-        if (!batch->tiler_dep &&
+        if (!batch->scoreboard.tiler_dep &&
             !(batch->clear & PIPE_CLEAR_DEPTHSTENCIL))
                 return;
 
@@ -892,6 +885,25 @@ panfrost_batch_draw_wallpaper(struct panfrost_batch *batch)
         batch->ctx->wallpaper_batch = NULL;
 }
 
+static void
+panfrost_batch_record_bo(struct hash_entry *entry, unsigned *bo_handles, unsigned idx)
+{
+        struct panfrost_bo *bo = (struct panfrost_bo *)entry->key;
+        uint32_t flags = (uintptr_t)entry->data;
+
+        assert(bo->gem_handle > 0);
+        bo_handles[idx] = bo->gem_handle;
+
+        /* Update the BO access flags so that panfrost_bo_wait() knows
+         * about all pending accesses.
+         * We only keep the READ/WRITE info since this is all the BO
+         * wait logic cares about.
+         * We also preserve existing flags as this batch might not
+         * be the first one to access the BO.
+         */
+        bo->gpu_access |= flags & (PAN_BO_ACCESS_RW);
+}
+
 static int
 panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
                             mali_ptr first_job_desc,
@@ -905,7 +917,7 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
         bool is_fragment_shader;
         int ret;
 
-        is_fragment_shader = (reqs & PANFROST_JD_REQ_FS) && batch->first_job;
+        is_fragment_shader = (reqs & PANFROST_JD_REQ_FS) && batch->scoreboard.first_job;
         if (is_fragment_shader)
                 submit.in_sync_count = 1;
         else
@@ -935,25 +947,14 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
         submit.jc = first_job_desc;
         submit.requirements = reqs;
 
-        bo_handles = calloc(batch->bos->entries, sizeof(*bo_handles));
+        bo_handles = calloc(batch->pool.bos->entries + batch->bos->entries, sizeof(*bo_handles));
         assert(bo_handles);
 
-        hash_table_foreach(batch->bos, entry) {
-                struct panfrost_bo *bo = (struct panfrost_bo *)entry->key;
-                uint32_t flags = (uintptr_t)entry->data;
+        hash_table_foreach(batch->bos, entry)
+                panfrost_batch_record_bo(entry, bo_handles, submit.bo_handle_count++);
 
-                assert(bo->gem_handle > 0);
-                bo_handles[submit.bo_handle_count++] = bo->gem_handle;
-
-                /* Update the BO access flags so that panfrost_bo_wait() knows
-                 * about all pending accesses.
-                 * We only keep the READ/WRITE info since this is all the BO
-                 * wait logic cares about.
-                 * We also preserve existing flags as this batch might not
-                 * be the first one to access the BO.
-                 */
-                bo->gpu_access |= flags & (PAN_BO_ACCESS_RW);
-        }
+        hash_table_foreach(batch->pool.bos, entry)
+                panfrost_batch_record_bo(entry, bo_handles, submit.bo_handle_count++);
 
         submit.bo_handles = (u64) (uintptr_t) bo_handles;
         ret = drmIoctl(dev->fd, DRM_IOCTL_PANFROST_SUBMIT, &submit);
@@ -961,18 +962,20 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
         free(in_syncs);
 
         if (ret) {
-                DBG("Error submitting: %m\n");
+                if (dev->debug & PAN_DBG_MSGS)
+                        fprintf(stderr, "Error submitting: %m\n");
+
                 return errno;
         }
 
         /* Trace the job if we're doing that */
-        if (pan_debug & (PAN_DBG_TRACE | PAN_DBG_SYNC)) {
+        if (dev->debug & (PAN_DBG_TRACE | PAN_DBG_SYNC)) {
                 /* Wait so we can get errors reported back */
                 drmSyncobjWait(dev->fd, &batch->out_sync->syncobj, 1,
                                INT64_MAX, 0, NULL);
 
                 /* Trace gets priority over sync */
-                bool minimal = !(pan_debug & PAN_DBG_TRACE);
+                bool minimal = !(dev->debug & PAN_DBG_TRACE);
                 pandecode_jc(submit.jc, dev->quirks & IS_BIFROST, dev->gpu_id, minimal);
         }
 
@@ -982,15 +985,15 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
 static int
 panfrost_batch_submit_jobs(struct panfrost_batch *batch)
 {
-        bool has_draws = batch->first_job;
+        bool has_draws = batch->scoreboard.first_job;
         int ret = 0;
 
         if (has_draws) {
-                ret = panfrost_batch_submit_ioctl(batch, batch->first_job, 0);
+                ret = panfrost_batch_submit_ioctl(batch, batch->scoreboard.first_job, 0);
                 assert(!ret);
         }
 
-        if (batch->tiler_dep || batch->clear) {
+        if (batch->scoreboard.tiler_dep || batch->clear) {
                 mali_ptr fragjob = panfrost_fragment_job(batch, has_draws);
                 ret = panfrost_batch_submit_ioctl(batch, fragjob, PANFROST_JD_REQ_FS);
                 assert(!ret);
@@ -1003,6 +1006,7 @@ static void
 panfrost_batch_submit(struct panfrost_batch *batch)
 {
         assert(batch);
+        struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
 
         /* Submit the dependencies first. */
         util_dynarray_foreach(&batch->dependencies,
@@ -1014,7 +1018,7 @@ panfrost_batch_submit(struct panfrost_batch *batch)
         int ret;
 
         /* Nothing to do! */
-        if (!batch->first_job && !batch->clear) {
+        if (!batch->scoreboard.first_job && !batch->clear) {
                 /* Mark the fence as signaled so the fence logic does not try
                  * to wait on it.
                  */
@@ -1027,7 +1031,7 @@ panfrost_batch_submit(struct panfrost_batch *batch)
         /* Now that all draws are in, we can finally prepare the
          * FBD for the batch */
 
-        if (batch->framebuffer.gpu && batch->first_job) {
+        if (batch->framebuffer.gpu && batch->scoreboard.first_job) {
                 struct panfrost_context *ctx = batch->ctx;
                 struct pipe_context *gallium = (struct pipe_context *) ctx;
                 struct panfrost_device *dev = pan_device(gallium->screen);
@@ -1038,12 +1042,15 @@ panfrost_batch_submit(struct panfrost_batch *batch)
                         panfrost_attach_mfbd(batch, ~0);
         }
 
-        panfrost_scoreboard_initialize_tiler(batch);
+        mali_ptr polygon_list = panfrost_batch_get_polygon_list(batch,
+                MALI_TILER_MINIMUM_HEADER_SIZE);
+
+        panfrost_scoreboard_initialize_tiler(&batch->pool, &batch->scoreboard, polygon_list);
 
         ret = panfrost_batch_submit_jobs(batch);
 
-        if (ret)
-                DBG("panfrost_batch_submit failed: %d\n", ret);
+        if (ret && dev->debug & PAN_DBG_MSGS)
+                fprintf(stderr, "panfrost_batch_submit failed: %d\n", ret);
 
         /* We must reset the damage info of our render targets here even
          * though a damage reset normally happens when the DRI layer swaps
@@ -1139,28 +1146,25 @@ panfrost_pending_batches_access_bo(struct panfrost_context *ctx,
         return false;
 }
 
+/* We always flush writers. We might also need to flush readers */
+
 void
 panfrost_flush_batches_accessing_bo(struct panfrost_context *ctx,
                                     struct panfrost_bo *bo,
-                                    uint32_t access_type)
+                                    bool flush_readers)
 {
         struct panfrost_bo_access *access;
         struct hash_entry *hentry;
-
-        /* It doesn't make any to flush only the readers. */
-        assert(access_type == PAN_BO_ACCESS_WRITE ||
-               access_type == PAN_BO_ACCESS_RW);
 
         hentry = _mesa_hash_table_search(ctx->accessed_bos, bo);
         access = hentry ? hentry->data : NULL;
         if (!access)
                 return;
 
-        if (access_type & PAN_BO_ACCESS_WRITE && access->writer &&
-            access->writer->batch)
+        if (access->writer && access->writer->batch)
                 panfrost_batch_submit(access->writer->batch);
 
-        if (!(access_type & PAN_BO_ACCESS_READ))
+        if (!flush_readers)
                 return;
 
         util_dynarray_foreach(&access->readers, struct panfrost_batch_fence *,

@@ -136,8 +136,11 @@ Temp emit_mbcnt(isel_context *ctx, Definition dst,
 
    if (ctx->program->wave_size == 32) {
       return thread_id_lo;
+   } else if (ctx->program->chip_class <= GFX7) {
+      Temp thread_id_hi = bld.vop2(aco_opcode::v_mbcnt_hi_u32_b32, dst, mask_hi, thread_id_lo);
+      return thread_id_hi;
    } else {
-      Temp thread_id_hi = bld.vop3(aco_opcode::v_mbcnt_hi_u32_b32, dst, mask_hi, thread_id_lo);
+      Temp thread_id_hi = bld.vop3(aco_opcode::v_mbcnt_hi_u32_b32_e64, dst, mask_hi, thread_id_lo);
       return thread_id_hi;
    }
 }
@@ -202,6 +205,36 @@ static Temp emit_bpermute(isel_context *ctx, Builder &bld, Temp index, Temp data
       Temp index_x4 = bld.vop2(aco_opcode::v_lshlrev_b32, bld.def(v1), Operand(2u), index);
       return bld.ds(aco_opcode::ds_bpermute_b32, bld.def(v1), index_x4, data);
    }
+}
+
+static Temp emit_masked_swizzle(isel_context *ctx, Builder &bld, Temp src, unsigned mask)
+{
+   if (ctx->options->chip_class >= GFX8) {
+      unsigned and_mask = mask & 0x1f;
+      unsigned or_mask = (mask >> 5) & 0x1f;
+      unsigned xor_mask = (mask >> 10) & 0x1f;
+
+      uint16_t dpp_ctrl = 0xffff;
+
+      // TODO: we could use DPP8 for some swizzles
+      if (and_mask == 0x1f && or_mask < 4 && xor_mask < 4) {
+         unsigned res[4] = {0, 1, 2, 3};
+         for (unsigned i = 0; i < 4; i++)
+            res[i] = ((res[i] | or_mask) ^ xor_mask) & 0x3;
+         dpp_ctrl = dpp_quad_perm(res[0], res[1], res[2], res[3]);
+      } else if (and_mask == 0x1f && !or_mask && xor_mask == 8) {
+         dpp_ctrl = dpp_row_rr(8);
+      } else if (and_mask == 0x1f && !or_mask && xor_mask == 0xf) {
+         dpp_ctrl = dpp_row_mirror;
+      } else if (and_mask == 0x1f && !or_mask && xor_mask == 0x7) {
+         dpp_ctrl = dpp_row_half_mirror;
+      }
+
+      if (dpp_ctrl != 0xffff)
+         return bld.vop1_dpp(aco_opcode::v_mov_b32, bld.def(v1), src, dpp_ctrl);
+   }
+
+   return bld.ds(aco_opcode::ds_swizzle_b32, bld.def(v1), src, mask, 0, false);
 }
 
 Temp as_vgpr(isel_context *ctx, Temp val)
@@ -7918,15 +7951,25 @@ void visit_intrinsic(isel_context *ctx, nir_intrinsic_instr *instr)
       }
       Temp dst = get_ssa_temp(ctx, &instr->dest.ssa);
       uint32_t mask = nir_intrinsic_swizzle_mask(instr);
-      if (dst.regClass() == v1) {
-         emit_wqm(ctx,
-                  bld.ds(aco_opcode::ds_swizzle_b32, bld.def(v1), src, mask, 0, false),
-                  dst);
+      if (instr->dest.ssa.bit_size == 1) {
+         assert(src.regClass() == bld.lm);
+         src = bld.vop2_e64(aco_opcode::v_cndmask_b32, bld.def(v1), Operand(0u), Operand((uint32_t)-1), src);
+         src = emit_masked_swizzle(ctx, bld, src, mask);
+         Temp tmp = bld.vopc(aco_opcode::v_cmp_lg_u32, bld.def(bld.lm), Operand(0u), src);
+         emit_wqm(ctx, tmp, dst);
+      } else if (dst.regClass() == v1b) {
+         Temp tmp = emit_wqm(ctx, emit_masked_swizzle(ctx, bld, src, mask));
+         emit_extract_vector(ctx, tmp, 0, dst);
+      } else if (dst.regClass() == v2b) {
+         Temp tmp = emit_wqm(ctx, emit_masked_swizzle(ctx, bld, src, mask));
+         emit_extract_vector(ctx, tmp, 0, dst);
+      } else if (dst.regClass() == v1) {
+         emit_wqm(ctx, emit_masked_swizzle(ctx, bld, src, mask), dst);
       } else if (dst.regClass() == v2) {
          Temp lo = bld.tmp(v1), hi = bld.tmp(v1);
          bld.pseudo(aco_opcode::p_split_vector, Definition(lo), Definition(hi), src);
-         lo = emit_wqm(ctx, bld.ds(aco_opcode::ds_swizzle_b32, bld.def(v1), lo, mask, 0, false));
-         hi = emit_wqm(ctx, bld.ds(aco_opcode::ds_swizzle_b32, bld.def(v1), hi, mask, 0, false));
+         lo = emit_wqm(ctx, emit_masked_swizzle(ctx, bld, lo, mask));
+         hi = emit_wqm(ctx, emit_masked_swizzle(ctx, bld, hi, mask));
          bld.pseudo(aco_opcode::p_create_vector, Definition(dst), lo, hi);
          emit_split_vector(ctx, dst, 2);
       } else {
@@ -8950,13 +8993,19 @@ void visit_tex(isel_context *ctx, nir_tex_instr *instr)
 }
 
 
-Operand get_phi_operand(isel_context *ctx, nir_ssa_def *ssa, RegClass rc)
+Operand get_phi_operand(isel_context *ctx, nir_ssa_def *ssa, RegClass rc, bool logical)
 {
    Temp tmp = get_ssa_temp(ctx, ssa);
-   if (ssa->parent_instr->type == nir_instr_type_ssa_undef)
+   if (ssa->parent_instr->type == nir_instr_type_ssa_undef) {
       return Operand(rc);
-   else
+   } else if (logical && ssa->bit_size == 1 && ssa->parent_instr->type == nir_instr_type_load_const) {
+      if (ctx->program->wave_size == 64)
+         return Operand(nir_instr_as_load_const(ssa->parent_instr)->value[0].b ? UINT64_MAX : 0u);
+      else
+         return Operand(nir_instr_as_load_const(ssa->parent_instr)->value[0].b ? UINT32_MAX : 0u);
+   } else {
       return Operand(tmp);
+   }
 }
 
 void visit_phi(isel_context *ctx, nir_phi_instr *instr)
@@ -8999,7 +9048,7 @@ void visit_phi(isel_context *ctx, nir_phi_instr *instr)
       if (!(ctx->block->kind & block_kind_loop_header) && cur_pred_idx >= preds.size())
          continue;
       cur_pred_idx++;
-      Operand op = get_phi_operand(ctx, src.second, dst.regClass());
+      Operand op = get_phi_operand(ctx, src.second, dst.regClass(), logical);
       operands[num_operands++] = op;
       num_defined += !op.isUndefined();
    }

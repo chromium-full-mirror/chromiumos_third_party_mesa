@@ -39,6 +39,7 @@
 #include "fd6_emit.h"
 #include "fd6_texture.h"
 #include "fd6_format.h"
+#include "fd6_pack.h"
 
 void
 fd6_emit_shader(struct fd_ringbuffer *ring, const struct ir3_shader_variant *so)
@@ -225,8 +226,16 @@ setup_stream_out(struct fd6_program_state *state, const struct ir3_shader_varian
 static void
 setup_config_stateobj(struct fd_ringbuffer *ring, struct fd6_program_state *state)
 {
-	OUT_PKT4(ring, REG_A6XX_HLSQ_UPDATE_CNTL, 1);
-	OUT_RING(ring, 0xff);        /* XXX */
+	OUT_REG(ring, A6XX_HLSQ_INVALIDATE_CMD(
+			.vs_state = true,
+			.hs_state = true,
+			.ds_state = true,
+			.gs_state = true,
+			.fs_state = true,
+			.cs_state = true,
+			.gfx_ibo = true,
+			.cs_ibo = true,
+		));
 
 	debug_assert(state->vs->constlen >= state->bs->constlen);
 
@@ -303,7 +312,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	uint32_t vertex_regid, instance_regid, layer_regid, primitive_regid;
 	uint32_t hs_invocation_regid;
 	uint32_t tess_coord_x_regid, tess_coord_y_regid, hs_patch_regid, ds_patch_regid;
-	uint32_t ij_pix_regid, ij_samp_regid, ij_cent_regid, ij_size_regid;
+	uint32_t ij_regid[IJ_COUNT];
 	uint32_t gs_header_regid;
 	enum a3xx_threadsize fssz;
 	uint8_t psize_loc = ~0, pos_loc = ~0, layer_loc = ~0;
@@ -380,20 +389,18 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	face_regid      = ir3_find_sysval_regid(fs, SYSTEM_VALUE_FRONT_FACE);
 	coord_regid     = ir3_find_sysval_regid(fs, SYSTEM_VALUE_FRAG_COORD);
 	zwcoord_regid   = next_regid(coord_regid, 2);
-	ij_pix_regid    = ir3_find_sysval_regid(fs, SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL);
-	ij_samp_regid   = ir3_find_sysval_regid(fs, SYSTEM_VALUE_BARYCENTRIC_PERSP_SAMPLE);
-	ij_cent_regid   = ir3_find_sysval_regid(fs, SYSTEM_VALUE_BARYCENTRIC_PERSP_CENTROID);
-	ij_size_regid   = ir3_find_sysval_regid(fs, SYSTEM_VALUE_BARYCENTRIC_PERSP_SIZE);
 	posz_regid      = ir3_find_output_regid(fs, FRAG_RESULT_DEPTH);
 	smask_regid     = ir3_find_output_regid(fs, FRAG_RESULT_SAMPLE_MASK);
+	for (unsigned i = 0; i < ARRAY_SIZE(ij_regid); i++)
+		ij_regid[i] = ir3_find_sysval_regid(fs, SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL + i);
 
 	/* If we have pre-dispatch texture fetches, then ij_pix should not
 	 * be DCE'd, even if not actually used in the shader itself:
 	 */
 	if (fs->num_sampler_prefetch > 0) {
-		assert(VALIDREG(ij_pix_regid));
+		assert(VALIDREG(ij_regid[IJ_PERSP_PIXEL]));
 		/* also, it seems like ij_pix is *required* to be r0.x */
-		assert(ij_pix_regid == regid(0, 0));
+		assert(ij_regid[IJ_PERSP_PIXEL] == regid(0, 0));
 	}
 
 	/* we can't write gl_SampleMask for !msaa..  if b0 is zero then we
@@ -579,34 +586,33 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 		OUT_RING(ring, A6XX_PC_TESS_CNTL_SPACING(fd6_gl2spacing(ds_info->tess.spacing)) |
 				A6XX_PC_TESS_CNTL_OUTPUT(output));
 
-		/* xxx: Misc tess unknowns: */
-		OUT_PKT4(ring, REG_A6XX_VPC_UNKNOWN_9103, 1);
+		OUT_PKT4(ring, REG_A6XX_VPC_DS_CLIP_CNTL, 1);
 		OUT_RING(ring, 0x00ffff00);
 
-		OUT_PKT4(ring, REG_A6XX_VPC_UNKNOWN_9106, 1);
+		OUT_PKT4(ring, REG_A6XX_VPC_DS_LAYER_CNTL, 1);
 		OUT_RING(ring, 0x0000ffff);
 
-		OUT_PKT4(ring, REG_A6XX_GRAS_UNKNOWN_809D, 1);
+		OUT_PKT4(ring, REG_A6XX_GRAS_DS_LAYER_CNTL, 1);
 		OUT_RING(ring, 0x0);
 
-		OUT_PKT4(ring, REG_A6XX_GRAS_UNKNOWN_8002, 1);
+		OUT_PKT4(ring, REG_A6XX_GRAS_DS_CL_CNTL, 1);
 		OUT_RING(ring, 0x0);
 
-		OUT_PKT4(ring, REG_A6XX_VPC_PACK, 1);
-		OUT_RING(ring, A6XX_VPC_PACK_POSITIONLOC(pos_loc) |
-				 A6XX_VPC_PACK_PSIZELOC(255) |
-				 A6XX_VPC_PACK_STRIDE_IN_VPC(l.max_loc));
+		OUT_PKT4(ring, REG_A6XX_VPC_VS_PACK, 1);
+		OUT_RING(ring, A6XX_VPC_VS_PACK_POSITIONLOC(pos_loc) |
+				 A6XX_VPC_VS_PACK_PSIZELOC(255) |
+				 A6XX_VPC_VS_PACK_STRIDE_IN_VPC(l.max_loc));
 
-		OUT_PKT4(ring, REG_A6XX_VPC_PACK_3, 1);
-		OUT_RING(ring, A6XX_VPC_PACK_3_POSITIONLOC(pos_loc) |
-				 A6XX_VPC_PACK_3_PSIZELOC(psize_loc) |
-				 A6XX_VPC_PACK_3_STRIDE_IN_VPC(l.max_loc));
+		OUT_PKT4(ring, REG_A6XX_VPC_DS_PACK, 1);
+		OUT_RING(ring, A6XX_VPC_DS_PACK_POSITIONLOC(pos_loc) |
+				 A6XX_VPC_DS_PACK_PSIZELOC(psize_loc) |
+				 A6XX_VPC_DS_PACK_STRIDE_IN_VPC(l.max_loc));
 
 		OUT_PKT4(ring, REG_A6XX_SP_DS_PRIMITIVE_CNTL, 1);
-		OUT_RING(ring, A6XX_SP_DS_PRIMITIVE_CNTL_DSOUT(l.cnt));
+		OUT_RING(ring, A6XX_SP_DS_PRIMITIVE_CNTL_OUT(l.cnt));
 
-		OUT_PKT4(ring, REG_A6XX_PC_PRIMITIVE_CNTL_4, 1);
-		OUT_RING(ring, A6XX_PC_PRIMITIVE_CNTL_4_STRIDE_IN_VPC(l.max_loc) |
+		OUT_PKT4(ring, REG_A6XX_PC_DS_OUT_CNTL, 1);
+		OUT_RING(ring, A6XX_PC_DS_OUT_CNTL_STRIDE_IN_VPC(l.max_loc) |
 				CONDREG(psize_regid, 0x100));
 
 	} else {
@@ -614,8 +620,8 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 		OUT_RING(ring, 0);
 	}
 
-	OUT_PKT4(ring, REG_A6XX_SP_PRIMITIVE_CNTL, 1);
-	OUT_RING(ring, A6XX_SP_PRIMITIVE_CNTL_VSOUT(l.cnt));
+	OUT_PKT4(ring, REG_A6XX_SP_VS_PRIMITIVE_CNTL, 1);
+	OUT_RING(ring, A6XX_SP_VS_PRIMITIVE_CNTL_OUT(l.cnt));
 
 	bool enable_varyings = fs->total_in > 0;
 
@@ -625,9 +631,9 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 			 A6XX_VPC_CNTL_0_PRIMIDLOC(l.primid_loc) |
 			 A6XX_VPC_CNTL_0_UNKLOC(0xff));
 
-	OUT_PKT4(ring, REG_A6XX_PC_PRIMITIVE_CNTL_1, 1);
-	OUT_RING(ring, A6XX_PC_PRIMITIVE_CNTL_1_STRIDE_IN_VPC(l.max_loc) |
-			CONDREG(psize_regid, A6XX_PC_PRIMITIVE_CNTL_1_PSIZE));
+	OUT_PKT4(ring, REG_A6XX_PC_VS_OUT_CNTL, 1);
+	OUT_RING(ring, A6XX_PC_VS_OUT_CNTL_STRIDE_IN_VPC(l.max_loc) |
+			CONDREG(psize_regid, A6XX_PC_VS_OUT_CNTL_PSIZE));
 
 	OUT_PKT4(ring, REG_A6XX_PC_PRIMITIVE_CNTL_3, 1);
 	OUT_RING(ring, 0);
@@ -637,14 +643,16 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	OUT_RING(ring, A6XX_HLSQ_CONTROL_2_REG_FACEREGID(face_regid) |
 			 A6XX_HLSQ_CONTROL_2_REG_SAMPLEID(samp_id_regid) |
 			 A6XX_HLSQ_CONTROL_2_REG_SAMPLEMASK(smask_in_regid) |
-			 A6XX_HLSQ_CONTROL_2_REG_SIZE(ij_size_regid));
-	OUT_RING(ring, A6XX_HLSQ_CONTROL_3_REG_BARY_IJ_PIXEL(ij_pix_regid) |
-			 A6XX_HLSQ_CONTROL_3_REG_BARY_IJ_CENTROID(ij_cent_regid) |
-			 0xfc00fc00);               /* XXX */
+			 A6XX_HLSQ_CONTROL_2_REG_SIZE(ij_regid[IJ_PERSP_SIZE]));
+	OUT_RING(ring,
+			 A6XX_HLSQ_CONTROL_3_REG_IJ_PERSP_PIXEL(ij_regid[IJ_PERSP_PIXEL]) |
+			 A6XX_HLSQ_CONTROL_3_REG_IJ_LINEAR_PIXEL(ij_regid[IJ_LINEAR_PIXEL]) |
+			 A6XX_HLSQ_CONTROL_3_REG_IJ_PERSP_CENTROID(ij_regid[IJ_PERSP_CENTROID]) |
+			 A6XX_HLSQ_CONTROL_3_REG_IJ_LINEAR_CENTROID(ij_regid[IJ_LINEAR_CENTROID]));
 	OUT_RING(ring, A6XX_HLSQ_CONTROL_4_REG_XYCOORDREGID(coord_regid) |
 			 A6XX_HLSQ_CONTROL_4_REG_ZWCOORDREGID(zwcoord_regid) |
-			 A6XX_HLSQ_CONTROL_4_REG_BARY_IJ_PIXEL_PERSAMP(ij_samp_regid) |
-			 0x0000fc00);               /* XXX */
+			 A6XX_HLSQ_CONTROL_4_REG_IJ_PERSP_SAMPLE(ij_regid[IJ_PERSP_SAMPLE]) |
+			 A6XX_HLSQ_CONTROL_4_REG_IJ_LINEAR_SAMPLE(ij_regid[IJ_LINEAR_SAMPLE]));
 	OUT_RING(ring, 0xfc);              /* XXX */
 
 	OUT_PKT4(ring, REG_A6XX_HLSQ_UNKNOWN_B980, 1);
@@ -663,36 +671,46 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	OUT_PKT4(ring, REG_A6XX_SP_UNKNOWN_A982, 1);
 	OUT_RING(ring, 0);        /* XXX */
 
-	OUT_PKT4(ring, REG_A6XX_VPC_GS_SIV_CNTL, 1);
+	OUT_PKT4(ring, REG_A6XX_VPC_VS_LAYER_CNTL, 1);
 	OUT_RING(ring, 0x0000ffff);        /* XXX */
+
+	bool need_size = fs->frag_face || fs->fragcoord_compmask != 0;
+	bool need_size_persamp = false;
+	if (VALIDREG(ij_regid[IJ_PERSP_SIZE])) {
+		if (sample_shading)
+			need_size_persamp = true;
+		else
+			need_size = true;
+	}
+	if (VALIDREG(ij_regid[IJ_LINEAR_PIXEL]))
+		need_size = true;
+
+	/* XXX: enable bits for linear centroid and linear sample bary */
 
 	OUT_PKT4(ring, REG_A6XX_GRAS_CNTL, 1);
 	OUT_RING(ring,
-			CONDREG(ij_pix_regid, A6XX_GRAS_CNTL_VARYING) |
-			CONDREG(ij_cent_regid, A6XX_GRAS_CNTL_CENTROID) |
-			CONDREG(ij_samp_regid, A6XX_GRAS_CNTL_PERSAMP_VARYING) |
-			COND(VALIDREG(ij_size_regid) && !sample_shading, A6XX_GRAS_CNTL_SIZE) |
-			COND(VALIDREG(ij_size_regid) &&  sample_shading, A6XX_GRAS_CNTL_SIZE_PERSAMP) |
-			COND(fs->fragcoord_compmask != 0, A6XX_GRAS_CNTL_SIZE |
-								A6XX_GRAS_CNTL_COORD_MASK(fs->fragcoord_compmask)) |
-			COND(fs->frag_face, A6XX_GRAS_CNTL_SIZE));
+			CONDREG(ij_regid[IJ_PERSP_PIXEL], A6XX_GRAS_CNTL_IJ_PERSP_PIXEL) |
+			CONDREG(ij_regid[IJ_PERSP_CENTROID], A6XX_GRAS_CNTL_IJ_PERSP_CENTROID) |
+			CONDREG(ij_regid[IJ_PERSP_SAMPLE], A6XX_GRAS_CNTL_IJ_PERSP_SAMPLE) |
+			COND(need_size, A6XX_GRAS_CNTL_SIZE) |
+			COND(need_size_persamp, A6XX_GRAS_CNTL_SIZE_PERSAMP) |
+			COND(fs->fragcoord_compmask != 0, A6XX_GRAS_CNTL_COORD_MASK(fs->fragcoord_compmask)));
 
 	OUT_PKT4(ring, REG_A6XX_RB_RENDER_CONTROL0, 2);
 	OUT_RING(ring,
-			CONDREG(ij_pix_regid, A6XX_RB_RENDER_CONTROL0_VARYING) |
-			CONDREG(ij_cent_regid, A6XX_RB_RENDER_CONTROL0_CENTROID) |
-			CONDREG(ij_samp_regid, A6XX_RB_RENDER_CONTROL0_PERSAMP_VARYING) |
+			CONDREG(ij_regid[IJ_PERSP_PIXEL], A6XX_RB_RENDER_CONTROL0_IJ_PERSP_PIXEL) |
+			CONDREG(ij_regid[IJ_PERSP_CENTROID], A6XX_RB_RENDER_CONTROL0_IJ_PERSP_CENTROID) |
+			CONDREG(ij_regid[IJ_PERSP_SAMPLE], A6XX_RB_RENDER_CONTROL0_IJ_PERSP_SAMPLE) |
+			COND(need_size, A6XX_RB_RENDER_CONTROL0_SIZE) |
 			COND(enable_varyings, A6XX_RB_RENDER_CONTROL0_UNK10) |
-			COND(VALIDREG(ij_size_regid) && !sample_shading, A6XX_RB_RENDER_CONTROL0_SIZE) |
-			COND(VALIDREG(ij_size_regid) &&  sample_shading, A6XX_RB_RENDER_CONTROL0_SIZE_PERSAMP) |
-			COND(fs->fragcoord_compmask != 0, A6XX_RB_RENDER_CONTROL0_SIZE |
-								A6XX_RB_RENDER_CONTROL0_COORD_MASK(fs->fragcoord_compmask)) |
-			COND(fs->frag_face, A6XX_RB_RENDER_CONTROL0_SIZE));
+			COND(need_size_persamp, A6XX_RB_RENDER_CONTROL0_SIZE_PERSAMP) |
+			COND(fs->fragcoord_compmask != 0,
+					A6XX_RB_RENDER_CONTROL0_COORD_MASK(fs->fragcoord_compmask)));
 
 	OUT_RING(ring,
 			CONDREG(smask_in_regid, A6XX_RB_RENDER_CONTROL1_SAMPLEMASK) |
 			CONDREG(samp_id_regid, A6XX_RB_RENDER_CONTROL1_SAMPLEID) |
-			CONDREG(ij_size_regid, A6XX_RB_RENDER_CONTROL1_SIZE) |
+			CONDREG(ij_regid[IJ_PERSP_SIZE], A6XX_RB_RENDER_CONTROL1_SIZE) |
 			COND(fs->frag_face, A6XX_RB_RENDER_CONTROL1_FACENESS));
 
 	OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_CNTL, 1);
@@ -710,10 +728,10 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 				COND(color_regid[i] & HALF_REG_ID, A6XX_SP_FS_OUTPUT_REG_HALF_PRECISION));
 	}
 
-	OUT_PKT4(ring, REG_A6XX_VPC_PACK, 1);
-	OUT_RING(ring, A6XX_VPC_PACK_POSITIONLOC(pos_loc) |
-			 A6XX_VPC_PACK_PSIZELOC(psize_loc) |
-			 A6XX_VPC_PACK_STRIDE_IN_VPC(l.max_loc));
+	OUT_PKT4(ring, REG_A6XX_VPC_VS_PACK, 1);
+	OUT_RING(ring, A6XX_VPC_VS_PACK_POSITIONLOC(pos_loc) |
+			 A6XX_VPC_VS_PACK_PSIZELOC(psize_loc) |
+			 A6XX_VPC_VS_PACK_STRIDE_IN_VPC(l.max_loc));
 
 	if (gs) {
 		OUT_PKT4(ring, REG_A6XX_SP_GS_CTRL_REG0, 1);
@@ -731,28 +749,28 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 		else
 			fd6_emit_link_map(screen, vs, gs, ring);
 
-		OUT_PKT4(ring, REG_A6XX_VPC_PACK_GS, 1);
-		OUT_RING(ring, A6XX_VPC_PACK_GS_POSITIONLOC(pos_loc) |
-				 A6XX_VPC_PACK_GS_PSIZELOC(psize_loc) |
-				 A6XX_VPC_PACK_GS_STRIDE_IN_VPC(l.max_loc));
+		OUT_PKT4(ring, REG_A6XX_VPC_GS_PACK, 1);
+		OUT_RING(ring, A6XX_VPC_GS_PACK_POSITIONLOC(pos_loc) |
+				 A6XX_VPC_GS_PACK_PSIZELOC(psize_loc) |
+				 A6XX_VPC_GS_PACK_STRIDE_IN_VPC(l.max_loc));
 
-		OUT_PKT4(ring, REG_A6XX_VPC_UNKNOWN_9105, 1);
-		OUT_RING(ring, A6XX_VPC_UNKNOWN_9105_LAYERLOC(layer_loc) | 0xff00);
+		OUT_PKT4(ring, REG_A6XX_VPC_GS_LAYER_CNTL, 1);
+		OUT_RING(ring, A6XX_VPC_GS_LAYER_CNTL_LAYERLOC(layer_loc) | 0xff00);
 
-		OUT_PKT4(ring, REG_A6XX_GRAS_UNKNOWN_809C, 1);
-		OUT_RING(ring, CONDREG(layer_regid, A6XX_GRAS_UNKNOWN_809C_GS_WRITES_LAYER));
+		OUT_PKT4(ring, REG_A6XX_GRAS_GS_LAYER_CNTL, 1);
+		OUT_RING(ring, CONDREG(layer_regid, A6XX_GRAS_GS_LAYER_CNTL_WRITES_LAYER));
 
 		uint32_t flags_regid = ir3_find_output_regid(gs, VARYING_SLOT_GS_VERTEX_FLAGS_IR3);
 
-		OUT_PKT4(ring, REG_A6XX_SP_PRIMITIVE_CNTL_GS, 1);
-		OUT_RING(ring, A6XX_SP_PRIMITIVE_CNTL_GS_GSOUT(l.cnt) |
-				A6XX_SP_PRIMITIVE_CNTL_GS_FLAGS_REGID(flags_regid));
+		OUT_PKT4(ring, REG_A6XX_SP_GS_PRIMITIVE_CNTL, 1);
+		OUT_RING(ring, A6XX_SP_GS_PRIMITIVE_CNTL_OUT(l.cnt) |
+				A6XX_SP_GS_PRIMITIVE_CNTL_FLAGS_REGID(flags_regid));
 
-		OUT_PKT4(ring, REG_A6XX_PC_PRIMITIVE_CNTL_2, 1);
-		OUT_RING(ring, A6XX_PC_PRIMITIVE_CNTL_2_STRIDE_IN_VPC(l.max_loc) |
-				CONDREG(psize_regid, A6XX_PC_PRIMITIVE_CNTL_2_PSIZE) |
-				CONDREG(layer_regid, A6XX_PC_PRIMITIVE_CNTL_2_LAYER) |
-				CONDREG(primitive_regid, A6XX_PC_PRIMITIVE_CNTL_2_PRIMITIVE_ID));
+		OUT_PKT4(ring, REG_A6XX_PC_GS_OUT_CNTL, 1);
+		OUT_RING(ring, A6XX_PC_GS_OUT_CNTL_STRIDE_IN_VPC(l.max_loc) |
+				CONDREG(psize_regid, A6XX_PC_GS_OUT_CNTL_PSIZE) |
+				CONDREG(layer_regid, A6XX_PC_GS_OUT_CNTL_LAYER) |
+				CONDREG(primitive_regid, A6XX_PC_GS_OUT_CNTL_PRIMITIVE_ID));
 
 		uint32_t output;
 		switch (gs->shader->nir->info.gs.output_primitive) {
@@ -774,13 +792,13 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 				A6XX_PC_PRIMITIVE_CNTL_5_GS_OUTPUT(output) |
 				A6XX_PC_PRIMITIVE_CNTL_5_GS_INVOCATIONS(gs->shader->nir->info.gs.invocations - 1));
 
-		OUT_PKT4(ring, REG_A6XX_GRAS_UNKNOWN_8003, 1);
+		OUT_PKT4(ring, REG_A6XX_GRAS_GS_CL_CNTL, 1);
 		OUT_RING(ring, 0);
 
 		OUT_PKT4(ring, REG_A6XX_VPC_UNKNOWN_9100, 1);
 		OUT_RING(ring, 0xff);
 
-		OUT_PKT4(ring, REG_A6XX_VPC_UNKNOWN_9102, 1);
+		OUT_PKT4(ring, REG_A6XX_VPC_GS_CLIP_CNTL, 1);
 		OUT_RING(ring, 0xffff00);
 
 		const struct ir3_shader_variant *prev = state->ds ? state->ds : state->vs;
@@ -804,7 +822,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 		OUT_RING(ring, 0);
 	}
 
-	OUT_PKT4(ring, REG_A6XX_VPC_UNKNOWN_9101, 1);
+	OUT_PKT4(ring, REG_A6XX_VPC_VS_CLIP_CNTL, 1);
 	OUT_RING(ring, 0xffff00);
 
 	OUT_PKT4(ring, REG_A6XX_VPC_UNKNOWN_9107, 1);
@@ -813,8 +831,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	if (fs->instrlen)
 		fd6_emit_shader(ring, fs);
 
-	OUT_PKT4(ring, REG_A6XX_PC_PRIMID_CNTL, 1);
-	OUT_RING(ring, COND(primid_passthru, A6XX_PC_PRIMID_CNTL_PRIMID_PASSTHRU));
+	OUT_REG(ring, A6XX_PC_PRIMID_PASSTHRU(primid_passthru));
 
 	uint32_t non_sysval_input_count = 0;
 	for (uint32_t i = 0; i < vs->inputs_count; i++)

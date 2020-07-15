@@ -22,18 +22,32 @@
  *
  */
 
-#ifndef __PAN_ALLOCATE_H__
-#define __PAN_ALLOCATE_H__
-
-#include <unistd.h>
-#include <sys/mman.h>
-#include <stdbool.h>
+#ifndef __PAN_POOL_H__
+#define __PAN_POOL_H__
 
 #include <panfrost-misc.h>
 
-#include "util/list.h"
+/* Represents a pool of memory that can only grow, used to allocate objects
+ * with the same lifetime as the pool itself. In OpenGL, a pool is owned by the
+ * batch for transient structures. In Vulkan, it may be owned by e.g. the
+ * command pool */
 
-struct panfrost_batch;
+struct pan_pool {
+        /* Parent device for allocation */
+        struct panfrost_device *dev;
+
+        /* panfrost_bo -> access_flags owned by the pool */
+        struct hash_table *bos;
+
+        /* Current transient BO */
+        struct panfrost_bo *transient_bo;
+
+        /* Within the topmost transient BO, how much has been used? */
+        unsigned transient_offset;
+};
+
+struct pan_pool
+panfrost_create_pool(void *memctx, struct panfrost_device *dev);
 
 /* Represents a fat pointer for GPU-mapped memory, returned from the transient
  * allocator and not used for much else */
@@ -44,10 +58,9 @@ struct panfrost_transfer {
 };
 
 struct panfrost_transfer
-panfrost_allocate_transient(struct panfrost_batch *batch, size_t sz);
+panfrost_pool_alloc(struct pan_pool *pool, size_t sz);
 
 mali_ptr
-panfrost_upload_transient(struct panfrost_batch *batch, const void *data,
-                          size_t sz);
+panfrost_pool_upload(struct pan_pool *pool, const void *data, size_t sz);
 
-#endif /* __PAN_ALLOCATE_H__ */
+#endif

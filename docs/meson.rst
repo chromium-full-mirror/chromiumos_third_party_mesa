@@ -190,7 +190,7 @@ Compiler Options
 Meson supports the common CFLAGS, CXXFLAGS, etc. environment variables
 but their use is discouraged because of the many caveats in using them.
 
-Instead, it is recomended to use ``-D${lang}_args`` and
+Instead, it is recommended to use ``-D${lang}_args`` and
 ``-D${lang}_link_args``. Among the benefits of these options is that
 they are guaranteed to persist across rebuilds and reconfigurations.
 
@@ -290,7 +290,7 @@ Then configure meson:
 
    meson builddir/ --cross-file cross-llvm.ini
 
-See the `Cross Compilation <#cross-compilation>`__ section for more
+See the :ref:`Cross Compilation <cross-compilation>` section for more
 information.
 
 On windows (and in other cases), using llvm-config or cmake may be
@@ -310,7 +310,7 @@ The wrap file must define the following:
 It may also define:
 
 -  ``irbuilder_h``: a ``files()`` object pointing to llvm/IR/IRBuilder.h
-   (this is requred for SWR)
+   (this is required for SWR)
 -  ``has_rtti``: a ``bool`` that declares whether LLVM was built with
    RTTI. Defaults to true
 
@@ -400,6 +400,8 @@ For those coming from autotools be aware of the following:
    ``false`` (the default) assertions are enabled, when set to true they
    are disabled. This is unrelated to the ``buildtype``; setting the
    latter to ``release`` will not turn off assertions.
+
+.. _cross-compilation:
 
 4. Cross-compilation and 32-bit builds
 --------------------------------------

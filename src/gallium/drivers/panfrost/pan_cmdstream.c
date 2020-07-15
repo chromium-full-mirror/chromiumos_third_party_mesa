@@ -28,7 +28,7 @@
 
 #include "panfrost-quirks.h"
 
-#include "pan_allocate.h"
+#include "pan_pool.h"
 #include "pan_bo.h"
 #include "pan_cmdstream.h"
 #include "pan_context.h"
@@ -64,7 +64,7 @@ panfrost_vt_emit_shared_memory(struct panfrost_context *ctx,
                 .scratchpad = panfrost_batch_get_scratchpad(batch, shift, dev->thread_tls_alloc, dev->core_count)->gpu,
                 .shared_workgroup_count = ~0,
         };
-        postfix->shared_memory = panfrost_upload_transient(batch, &shared, sizeof(shared));
+        postfix->shared_memory = panfrost_pool_upload(&batch->pool, &shared, sizeof(shared));
 }
 
 static void
@@ -81,7 +81,7 @@ panfrost_vt_attach_framebuffer(struct panfrost_context *ctx,
                         sizeof(struct mali_single_framebuffer) :
                         sizeof(struct mali_framebuffer);
 
-                batch->framebuffer = panfrost_allocate_transient(batch, size);
+                batch->framebuffer = panfrost_pool_alloc(&batch->pool, size);
 
                 /* Tag the pointer */
                 if (!(dev->quirks & MIDGARD_SFBD))
@@ -134,10 +134,15 @@ panfrost_vt_update_occlusion_query(struct panfrost_context *ctx,
                                    struct mali_vertex_tiler_postfix *postfix)
 {
         SET_BIT(postfix->gl_enables, MALI_OCCLUSION_QUERY, ctx->occlusion_query);
-        if (ctx->occlusion_query)
+        if (ctx->occlusion_query) {
                 postfix->occlusion_counter = ctx->occlusion_query->bo->gpu;
-        else
+                panfrost_batch_add_bo(ctx->batch, ctx->occlusion_query->bo,
+                                      PAN_BO_ACCESS_SHARED |
+                                      PAN_BO_ACCESS_RW |
+                                      PAN_BO_ACCESS_FRAGMENT);
+        } else {
                 postfix->occlusion_counter = 0;
+        }
 }
 
 void
@@ -226,7 +231,7 @@ panfrost_get_index_buffer_bounded(struct panfrost_context *ctx,
         } else {
                 /* Otherwise, we need to upload to transient memory */
                 const uint8_t *ibuf8 = (const uint8_t *) info->index.user;
-                out = panfrost_upload_transient(batch, ibuf8 + offset,
+                out = panfrost_pool_upload(&batch->pool, ibuf8 + offset,
                                                 info->count *
                                                 info->index_size);
         }
@@ -667,6 +672,9 @@ panfrost_frag_meta_blend_update(struct panfrost_context *ctx,
                 (dev->quirks & MIDGARD_SFBD) && ctx->blend &&
                 !ctx->blend->base.dither);
 
+        SET_BIT(fragmeta->unknown2_4, MALI_ALPHA_TO_COVERAGE,
+                        ctx->blend->base.alpha_to_coverage);
+
         /* Get blending setup */
         unsigned rt_count = MAX2(ctx->pipe_framebuffer.nr_cbufs, 1);
 
@@ -830,7 +838,9 @@ panfrost_frag_shader_meta_init(struct panfrost_context *ctx,
 
         fs = panfrost_get_shader_state(ctx, PIPE_SHADER_FRAGMENT);
 
-        fragmeta->alpha_coverage = ~MALI_ALPHA_COVERAGE(0.000000);
+        bool msaa = ctx->rasterizer && ctx->rasterizer->base.multisample;
+        fragmeta->coverage_mask = (msaa ? ctx->sample_mask : ~0) & 0xF;
+
         fragmeta->unknown2_3 = MALI_DEPTH_FUNC(MALI_FUNC_ALWAYS) | 0x10;
         fragmeta->unknown2_4 = 0x4e0;
 
@@ -850,7 +860,8 @@ panfrost_frag_shader_meta_init(struct panfrost_context *ctx,
 
                 SET_BIT(fragmeta->midgard1.flags_lo, MALI_EARLY_Z,
                         !fs->can_discard && !fs->writes_global &&
-                        !fs->writes_depth && !fs->writes_stencil);
+                        !fs->writes_depth && !fs->writes_stencil &&
+                        !ctx->blend->base.alpha_to_coverage);
 
                 /* Add the writes Z/S flags if needed. */
                 SET_BIT(fragmeta->midgard1.flags_lo, MALI_WRITES_Z, fs->writes_depth);
@@ -867,7 +878,8 @@ panfrost_frag_shader_meta_init(struct panfrost_context *ctx,
                 bool depth_enabled = fs->writes_depth ||
                    (zsa && zsa->depth.enabled && zsa->depth.func != PIPE_FUNC_ALWAYS);
 
-                SET_BIT(fragmeta->midgard1.flags_lo, 0x400, !depth_enabled && fs->can_discard);
+                SET_BIT(fragmeta->midgard1.flags_lo, MALI_READS_TILEBUFFER,
+                        fs->outputs_read || (!depth_enabled && fs->can_discard));
                 SET_BIT(fragmeta->midgard1.flags_lo, MALI_READS_ZS, depth_enabled && fs->can_discard);
         }
 
@@ -923,7 +935,7 @@ panfrost_emit_shader_meta(struct panfrost_batch *batch,
 
                 panfrost_frag_shader_meta_init(ctx, &meta, rts);
 
-                xfer = panfrost_allocate_transient(batch, desc_size);
+                xfer = panfrost_pool_alloc(&batch->pool, desc_size);
 
                 memcpy(xfer.cpu, &meta, sizeof(meta));
                 memcpy(xfer.cpu + sizeof(meta), rts, rt_size * rt_count);
@@ -933,7 +945,7 @@ panfrost_emit_shader_meta(struct panfrost_batch *batch,
 
                 shader_ptr = xfer.gpu;
         } else {
-                shader_ptr = panfrost_upload_transient(batch, &meta,
+                shader_ptr = panfrost_pool_upload(&batch->pool, &meta,
                                                        sizeof(meta));
         }
 
@@ -1060,7 +1072,7 @@ panfrost_emit_viewport(struct panfrost_batch *batch,
                                              mvp.viewport1[0] + 1,
                                              mvp.viewport1[1] + 1);
 
-        tiler_postfix->viewport = panfrost_upload_transient(batch, &mvp,
+        tiler_postfix->viewport = panfrost_pool_upload(&batch->pool, &mvp,
                                                             sizeof(mvp));
 }
 
@@ -1083,7 +1095,7 @@ panfrost_map_constant_buffer_gpu(struct panfrost_batch *batch,
                  * PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT */
                 return rsrc->bo->gpu + cb->buffer_offset;
         } else if (cb->user_buffer) {
-                return panfrost_upload_transient(batch,
+                return panfrost_pool_upload(&batch->pool,
                                                  cb->user_buffer +
                                                  cb->buffer_offset,
                                                  cb->buffer_size);
@@ -1288,7 +1300,7 @@ panfrost_emit_const_buf(struct panfrost_batch *batch,
         size_t sys_size = sizeof(float) * 4 * ss->sysval_count;
         size_t uniform_size = has_uniforms ? (buf->cb[0].buffer_size) : 0;
         size_t size = sys_size + uniform_size;
-        struct panfrost_transfer transfer = panfrost_allocate_transient(batch,
+        struct panfrost_transfer transfer = panfrost_pool_alloc(&batch->pool,
                                                                         size);
 
         /* Upload sysvals requested by the shader */
@@ -1334,7 +1346,7 @@ panfrost_emit_const_buf(struct panfrost_batch *batch,
                 ubos[ubo] = MALI_MAKE_UBO(aligned / bytes_per_field, gpu);
         }
 
-        mali_ptr ubufs = panfrost_upload_transient(batch, ubos, sz);
+        mali_ptr ubufs = panfrost_pool_upload(&batch->pool, ubos, sz);
         postfix->uniforms = transfer.gpu;
         postfix->uniform_buffers = ubufs;
 
@@ -1367,7 +1379,7 @@ panfrost_emit_shared_memory(struct panfrost_batch *batch,
                 .shared_shift = util_logbase2(single_size) - 1
         };
 
-        vtp->postfix.shared_memory = panfrost_upload_transient(batch, &shared,
+        vtp->postfix.shared_memory = panfrost_pool_upload(&batch->pool, &shared,
                                                                sizeof(shared));
 }
 
@@ -1443,7 +1455,7 @@ panfrost_emit_texture_descriptors(struct panfrost_batch *batch,
                         memcpy(&descriptors[i], view->bifrost_descriptor, sizeof(*view->bifrost_descriptor));
                 }
 
-                postfix->textures = panfrost_upload_transient(batch,
+                postfix->textures = panfrost_pool_upload(&batch->pool,
                                                               descriptors,
                                                               sizeof(struct bifrost_texture_descriptor) *
                                                                       ctx->sampler_view_count[stage]);
@@ -1460,7 +1472,7 @@ panfrost_emit_texture_descriptors(struct panfrost_batch *batch,
                         trampolines[i] = panfrost_get_tex_desc(batch, stage, view);
                 }
 
-                postfix->textures = panfrost_upload_transient(batch,
+                postfix->textures = panfrost_pool_upload(&batch->pool,
                                                               trampolines,
                                                               sizeof(uint64_t) *
                                                               ctx->sampler_view_count[stage]);
@@ -1481,7 +1493,7 @@ panfrost_emit_sampler_descriptors(struct panfrost_batch *batch,
         if (device->quirks & IS_BIFROST) {
                 size_t desc_size = sizeof(struct bifrost_sampler_descriptor);
                 size_t transfer_size = desc_size * ctx->sampler_count[stage];
-                struct panfrost_transfer transfer = panfrost_allocate_transient(batch,
+                struct panfrost_transfer transfer = panfrost_pool_alloc(&batch->pool,
                                                                                 transfer_size);
                 struct bifrost_sampler_descriptor *desc = (struct bifrost_sampler_descriptor *)transfer.cpu;
 
@@ -1492,7 +1504,7 @@ panfrost_emit_sampler_descriptors(struct panfrost_batch *batch,
         } else {
                 size_t desc_size = sizeof(struct mali_sampler_descriptor);
                 size_t transfer_size = desc_size * ctx->sampler_count[stage];
-                struct panfrost_transfer transfer = panfrost_allocate_transient(batch,
+                struct panfrost_transfer transfer = panfrost_pool_alloc(&batch->pool,
                                                                                 transfer_size);
                 struct mali_sampler_descriptor *desc = (struct mali_sampler_descriptor *)transfer.cpu;
 
@@ -1515,7 +1527,7 @@ panfrost_emit_vertex_attr_meta(struct panfrost_batch *batch,
         struct panfrost_vertex_state *so = ctx->vertex;
 
         panfrost_vertex_state_upd_attr_offs(ctx, vertex_postfix);
-        vertex_postfix->attribute_meta = panfrost_upload_transient(batch, so->hw,
+        vertex_postfix->attribute_meta = panfrost_pool_upload(&batch->pool, so->hw,
                                                                sizeof(*so->hw) *
                                                                PAN_MAX_ATTRIBUTE);
 }
@@ -1624,7 +1636,7 @@ panfrost_emit_vertex_data(struct panfrost_batch *batch,
 
         /* Upload whatever we emitted and go */
 
-        vertex_postfix->attributes = panfrost_upload_transient(batch, attrs,
+        vertex_postfix->attributes = panfrost_pool_upload(&batch->pool, attrs,
                                                            k * sizeof(*attrs));
 }
 
@@ -1637,7 +1649,7 @@ panfrost_emit_varyings(struct panfrost_batch *batch, union mali_attr *slot,
         slot->size = stride * count;
         slot->shift = slot->extra_flags = 0;
 
-        struct panfrost_transfer transfer = panfrost_allocate_transient(batch,
+        struct panfrost_transfer transfer = panfrost_pool_alloc(&batch->pool,
                                                                         slot->size);
 
         slot->elements = transfer.gpu | MALI_ATTR_LINEAR;
@@ -2052,7 +2064,7 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
         vs_size = sizeof(struct mali_attr_meta) * vs->varying_count;
         fs_size = sizeof(struct mali_attr_meta) * fs->varying_count;
 
-        struct panfrost_transfer trans = panfrost_allocate_transient(batch,
+        struct panfrost_transfer trans = panfrost_pool_alloc(&batch->pool,
                                                                      vs_size +
                                                                      fs_size);
 
@@ -2100,7 +2112,7 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
         }
 
         unsigned xfb_base = pan_xfb_base(present);
-        struct panfrost_transfer T = panfrost_allocate_transient(batch,
+        struct panfrost_transfer T = panfrost_pool_alloc(&batch->pool,
                         sizeof(union mali_attr) * (xfb_base + ctx->streamout.num_targets));
         union mali_attr *varyings = (union mali_attr *) T.cpu;
 
@@ -2153,7 +2165,7 @@ panfrost_emit_vertex_tiler_jobs(struct panfrost_batch *batch,
 {
         struct panfrost_context *ctx = batch->ctx;
         struct panfrost_device *device = pan_device(ctx->base.screen);
-        bool wallpapering = ctx->wallpaper_batch && batch->tiler_dep;
+        bool wallpapering = ctx->wallpaper_batch && batch->scoreboard.tiler_dep;
         struct bifrost_payload_vertex bifrost_vertex = {0,};
         struct bifrost_payload_tiler bifrost_tiler = {0,};
         struct midgard_payload_vertex_tiler midgard_vertex = {0,};
@@ -2189,9 +2201,9 @@ panfrost_emit_vertex_tiler_jobs(struct panfrost_batch *batch,
         if (wallpapering) {
                 /* Inject in reverse order, with "predicted" job indices.
                  * THIS IS A HACK XXX */
-                panfrost_new_job(batch, JOB_TYPE_TILER, false,
-                                 batch->job_index + 2, tp, tp_size, true);
-                panfrost_new_job(batch, JOB_TYPE_VERTEX, false, 0,
+                panfrost_new_job(&batch->pool, &batch->scoreboard, JOB_TYPE_TILER, false,
+                                 batch->scoreboard.job_index + 2, tp, tp_size, true);
+                panfrost_new_job(&batch->pool, &batch->scoreboard, JOB_TYPE_VERTEX, false, 0,
                                  vp, vp_size, true);
                 return;
         }
@@ -2201,13 +2213,13 @@ panfrost_emit_vertex_tiler_jobs(struct panfrost_batch *batch,
         bool rasterizer_discard = ctx->rasterizer &&
                                   ctx->rasterizer->base.rasterizer_discard;
 
-        unsigned vertex = panfrost_new_job(batch, JOB_TYPE_VERTEX, false, 0,
+        unsigned vertex = panfrost_new_job(&batch->pool, &batch->scoreboard, JOB_TYPE_VERTEX, false, 0,
                                            vp, vp_size, false);
 
         if (rasterizer_discard)
                 return;
 
-        panfrost_new_job(batch, JOB_TYPE_TILER, false, vertex, tp, tp_size,
+        panfrost_new_job(&batch->pool, &batch->scoreboard, JOB_TYPE_TILER, false, vertex, tp, tp_size,
                          false);
 }
 
@@ -2266,5 +2278,5 @@ panfrost_emit_sample_locations(struct panfrost_batch *batch)
             0, 0,
         };
 
-        return panfrost_upload_transient(batch, locations, 96 * sizeof(uint16_t));
+        return panfrost_pool_upload(&batch->pool, locations, 96 * sizeof(uint16_t));
 }

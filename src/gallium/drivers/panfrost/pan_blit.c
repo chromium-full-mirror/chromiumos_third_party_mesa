@@ -48,9 +48,7 @@ panfrost_blitter_save(
         util_blitter_save_depth_stencil_alpha(blitter, ctx->depth_stencil);
         util_blitter_save_stencil_ref(blitter, &ctx->stencil_ref);
         util_blitter_save_so_targets(blitter, 0, NULL);
-
-        /* For later */
-//        util_blitter_save_sample_mask(blitter, ctx->sample_mask);
+        util_blitter_save_sample_mask(blitter, ctx->sample_mask);
 
         util_blitter_save_framebuffer(blitter, &ctx->pipe_framebuffer);
         util_blitter_save_fragment_sampler_states(blitter,
@@ -66,11 +64,15 @@ panfrost_u_blitter_blit(struct pipe_context *pipe,
                         const struct pipe_blit_info *info)
 {
         struct panfrost_context *ctx = pan_context(pipe);
+        struct panfrost_device *dev = pan_device(pipe->screen);
 
         if (!util_blitter_is_blit_supported(ctx->blitter, info)) {
-                DBG("blit unsupported %s -> %s\n",
-                        util_format_short_name(info->src.resource->format),
-                        util_format_short_name(info->dst.resource->format));
+                if (dev->debug & PAN_DBG_MSGS) {
+                        fprintf(stderr, "blit unsupported %s -> %s\n",
+                                        util_format_short_name(info->src.resource->format),
+                                        util_format_short_name(info->dst.resource->format));
+                }
+
                 return false;
         }
 

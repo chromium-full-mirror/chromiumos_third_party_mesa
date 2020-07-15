@@ -41,6 +41,7 @@
 #include "util/xmlconfig.h"
 
 #include "vk_util.h"
+#include "vk_enum_to_str.h"
 #include "wsi_common_private.h"
 #include "wsi_common_x11.h"
 #include "wsi_common_queue.h"
@@ -450,7 +451,6 @@ x11_surface_get_support(VkIcdSurfaceBase *icd_surface,
    return VK_SUCCESS;
 }
 
-
 static uint32_t
 x11_get_min_image_count(struct wsi_device *wsi_device)
 {
@@ -477,6 +477,7 @@ x11_get_min_image_count(struct wsi_device *wsi_device)
     */
    return 3;
 }
+
 static VkResult
 x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
                              struct wsi_device *wsi_device,
@@ -796,7 +797,8 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(x11_swapchain, base.base, VkSwapchainKHR,
  * this has not been seen, success will be returned.
  */
 static VkResult
-x11_swapchain_result(struct x11_swapchain *chain, VkResult result)
+_x11_swapchain_result(struct x11_swapchain *chain, VkResult result,
+                      const char *file, int line)
 {
    /* Prioritise returning existing errors for consistency. */
    if (chain->status < 0)
@@ -804,6 +806,10 @@ x11_swapchain_result(struct x11_swapchain *chain, VkResult result)
 
    /* If we have a new error, mark it as permanent on the chain and return. */
    if (result < 0) {
+#ifndef NDEBUG
+      fprintf(stderr, "%s:%d: Swapchain status changed to %s\n",
+              file, line, vk_Result_to_str(result));
+#endif
       chain->status = result;
       return result;
    }
@@ -816,6 +822,12 @@ x11_swapchain_result(struct x11_swapchain *chain, VkResult result)
     * and is always returned rather than success.
     */
    if (result == VK_SUBOPTIMAL_KHR) {
+#ifndef NDEBUG
+      if (chain->status != VK_SUBOPTIMAL_KHR) {
+         fprintf(stderr, "%s:%d: Swapchain status changed to %s\n",
+                 file, line, vk_Result_to_str(result));
+      }
+#endif
       chain->status = result;
       return result;
    }
@@ -823,6 +835,8 @@ x11_swapchain_result(struct x11_swapchain *chain, VkResult result)
    /* No changes, so return the last status. */
    return chain->status;
 }
+#define x11_swapchain_result(chain, result) \
+   _x11_swapchain_result(chain, result, __FILE__, __LINE__)
 
 static struct wsi_image *
 x11_get_wsi_image(struct wsi_swapchain *wsi_chain, uint32_t image_index)
@@ -1442,12 +1456,12 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
 
    unsigned num_images = pCreateInfo->minImageCount;
-   if (!wsi_device->x11.strict_imageCount) {
-      if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR)
-         num_images = MAX2(num_images, 5);
-
+   if (wsi_device->x11.strict_imageCount)
+      num_images = pCreateInfo->minImageCount;
+   else if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR)
+      num_images = MAX2(num_images, 5);
+   else if (wsi_device->x11.ensure_minImageCount)
       num_images = MAX2(num_images, x11_get_min_image_count(wsi_device));
-   }
 
    xcb_connection_t *conn = x11_surface_get_connection(icd_surface);
    struct wsi_x11_connection *wsi_conn =
@@ -1667,6 +1681,11 @@ wsi_x11_init_wsi(struct wsi_device *wsi_device,
          wsi_device->x11.strict_imageCount =
             driQueryOptionb(dri_options, "vk_x11_strict_image_count");
       }
+      if (driCheckOption(dri_options, "vk_x11_ensure_min_image_count", DRI_BOOL)) {
+         wsi_device->x11.ensure_minImageCount =
+            driQueryOptionb(dri_options, "vk_x11_ensure_min_image_count");
+      }
+
    }
 
    wsi->base.get_support = x11_surface_get_support;

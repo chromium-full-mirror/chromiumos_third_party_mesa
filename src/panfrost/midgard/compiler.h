@@ -51,6 +51,7 @@ struct midgard_block;
 #define TARGET_BREAK 1
 #define TARGET_CONTINUE 2
 #define TARGET_DISCARD 3
+#define TARGET_TILEBUF_WAIT 4
 
 typedef struct midgard_branch {
         /* If conditional, the condition is specified in r31.w */
@@ -244,6 +245,9 @@ typedef struct compiler_context {
 
         /* Index to precolour to r0 for an input blend colour */
         unsigned blend_input;
+
+        /* Index to precolour to r2 for a dual-source blend colour */
+        unsigned blend_src1;
 
         /* Tracking for blend constant patching */
         int blend_constant_offset;

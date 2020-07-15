@@ -49,12 +49,12 @@ time
 
 ``-D platforms=...``
    List the platforms (window systems) to support. Its argument is a
-   comma separated string such as ``-D platforms=x11,drm``. It decides
+   comma separated string such as ``-D platforms=x11,wayland``. It decides
    the platforms a driver may support. The first listed platform is also
    used by the main library to decide the native platform.
 
-   The available platforms are ``x11``, ``drm``, ``wayland``,
-   ``surfaceless``, ``android``, and ``haiku``. The ``android`` platform
+   The available platforms are ``x11``, ``wayland``,
+   ``android``, and ``haiku``. The ``android`` platform
    can either be built as a system component, part of AOSP, using
    ``Android.mk`` files, or cross-compiled using appropriate options.
    Unless for special needs, the build system should select the right

@@ -991,8 +991,13 @@ optimizations.extend([
    # Packing and then unpacking does nothing
    (('unpack_64_2x32_split_x', ('pack_64_2x32_split', a, b)), a),
    (('unpack_64_2x32_split_y', ('pack_64_2x32_split', a, b)), b),
+   (('unpack_64_2x32', ('pack_64_2x32_split', a, b)), ('vec2', a, b)),
+   (('unpack_64_2x32', ('pack_64_2x32', a)), a),
    (('pack_64_2x32_split', ('unpack_64_2x32_split_x', a),
                            ('unpack_64_2x32_split_y', a)), a),
+   (('pack_64_2x32', ('vec2', ('unpack_64_2x32_split_x', a),
+                              ('unpack_64_2x32_split_y', a))), a),
+   (('pack_64_2x32', ('unpack_64_2x32', a)), a),
 
    # Comparing two halves of an unpack separately.  While this optimization
    # should be correct for non-constant values, it's less obvious that it's
@@ -1772,6 +1777,42 @@ for op in ['frcp', 'frsq', 'fsqrt', 'fexp2', 'flog2', 'fsign', 'fsin', 'fcos']:
         (('bcsel', a, (op, b), (op + '(is_used_once)', c)), (op, ('bcsel', a, b, c))),
     ]
 
+# This section contains optimizations to propagate downsizing conversions of
+# constructed vectors into vectors of downsized components. Whether this is
+# useful depends on the SIMD semantics of the backend. On a true SIMD machine,
+# this reduces the register pressure of the vector itself and often enables the
+# conversions to be eliminated via other algebraic rules or constant folding.
+# In the worst case on a SIMD architecture, the propagated conversions may be
+# revectorized via nir_opt_vectorize so instruction count is minimally
+# impacted.
+#
+# On a machine with SIMD-within-a-register only, this actually
+# counterintuitively hurts instruction count. These machines are the same that
+# require vectorize_vec2_16bit, so we predicate the optimizations on that flag
+# not being set.
+#
+# Finally for scalar architectures, there should be no difference in generated
+# code since it all ends up scalarized at the end, but it might minimally help
+# compile-times.
+
+for i in range(2, 4 + 1):
+   for T in ('f', 'u', 'i'):
+      vec_inst = ('vec' + str(i),)
+
+      indices = ['a', 'b', 'c', 'd']
+      suffix_in = tuple((indices[j] + '@32') for j in range(i))
+
+      to_16 = '{}2{}16'.format(T, T)
+      to_mp = '{}2{}mp'.format(T, T)
+
+      out_16 = tuple((to_16, indices[j]) for j in range(i))
+      out_mp = tuple((to_mp, indices[j]) for j in range(i))
+
+      optimizations  += [
+         ((to_16, vec_inst + suffix_in), vec_inst + out_16, '!options->vectorize_vec2_16bit'),
+         ((to_mp, vec_inst + suffix_in), vec_inst + out_mp, '!options->vectorize_vec2_16bit')
+      ]
+
 # This section contains "late" optimizations that should be run before
 # creating ffmas and calling regular optimizations for the final time.
 # Optimizations should go here if they help code generation and conflict
@@ -2000,6 +2041,9 @@ distribute_src_mods = [
    (('fdot_replicated4', ('fneg', a), ('fneg', b)), ('fdot_replicated4', a, b)),
    (('fneg', ('fneg', a)), a),
 
+   (('fneg', ('fmul(is_used_once)', a, b)), ('fmul', ('fneg', a), b)),
+   (('fabs', ('fmul(is_used_once)', a, b)), ('fmul', ('fabs', a), ('fabs', b))),
+
    (('fneg', ('ffma(is_used_once)', a, b, c)), ('ffma', ('fneg', a), b, ('fneg', c))),
    (('fneg', ('flrp(is_used_once)', a, b, c)), ('flrp', ('fneg', a), ('fneg', b), c)),
    (('fneg', ('fadd(is_used_once)', a, b)), ('fadd', ('fneg', a), ('fneg', b))),
@@ -2009,20 +2053,17 @@ distribute_src_mods = [
    (('fneg', ('fmin(is_used_once)', a, b)), ('fmax', ('fneg', a), ('fneg', b))),
    (('fneg', ('fmax(is_used_once)', a, b)), ('fmin', ('fneg', a), ('fneg', b))),
 
+   (('fneg', ('fdot_replicated2(is_used_once)', a, b)), ('fdot_replicated2', ('fneg', a), b)),
+   (('fneg', ('fdot_replicated3(is_used_once)', a, b)), ('fdot_replicated3', ('fneg', a), b)),
+   (('fneg', ('fdot_replicated4(is_used_once)', a, b)), ('fdot_replicated4', ('fneg', a), b)),
+
    # fdph works mostly like fdot, but to get the correct result, the negation
    # must be applied to the second source.
    (('fneg', ('fdph_replicated(is_used_once)', a, b)), ('fdph_replicated', a, ('fneg', b))),
-   (('fabs', ('fdph_replicated(is_used_once)', a, b)), ('fdph_replicated', ('fabs', a), ('fabs', b))),
 
    (('fneg', ('fsign(is_used_once)', a)), ('fsign', ('fneg', a))),
    (('fabs', ('fsign(is_used_once)', a)), ('fsign', ('fabs', a))),
 ]
-
-for op in ['fmul', 'fdot_replicated2', 'fdot_replicated3', 'fdot_replicated4']:
-   distribute_src_mods.extend([
-       (('fneg', (op + '(is_used_once)', a, b)), (op, ('fneg', a), b)),
-       (('fabs', (op + '(is_used_once)', a, b)), (op, ('fabs', a), ('fabs', b))),
-   ])
 
 print(nir_algebraic.AlgebraicPass("nir_opt_algebraic", optimizations).render())
 print(nir_algebraic.AlgebraicPass("nir_opt_algebraic_before_ffma",

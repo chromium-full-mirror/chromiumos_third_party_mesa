@@ -29,6 +29,7 @@
 #include "zink_framebuffer.h"
 #include "zink_helpers.h"
 #include "zink_pipeline.h"
+#include "zink_query.h"
 #include "zink_render_pass.h"
 #include "zink_resource.h"
 #include "zink_screen.h"
@@ -56,6 +57,9 @@ zink_context_destroy(struct pipe_context *pctx)
 
    if (vkQueueWaitIdle(ctx->queue) != VK_SUCCESS)
       debug_printf("vkQueueWaitIdle failed\n");
+
+   for (unsigned i = 0; i < ARRAY_SIZE(ctx->null_buffers); i++)
+      pipe_resource_reference(&ctx->null_buffers[i], NULL);
 
    for (int i = 0; i < ARRAY_SIZE(ctx->batches); ++i)
       vkFreeCommandBuffers(screen->dev, ctx->cmdpool, 1, &ctx->batches[i].cmdbuf);
@@ -497,9 +501,14 @@ get_render_pass(struct zink_context *ctx)
 
    for (int i = 0; i < fb->nr_cbufs; i++) {
       struct pipe_surface *surf = fb->cbufs[i];
-      state.rts[i].format = zink_get_format(screen, surf->format);
-      state.rts[i].samples = surf->nr_samples > 0 ? surf->nr_samples :
-                                                    VK_SAMPLE_COUNT_1_BIT;
+      if (surf) {
+         state.rts[i].format = zink_get_format(screen, surf->format);
+         state.rts[i].samples = surf->nr_samples > 0 ? surf->nr_samples :
+                                                       VK_SAMPLE_COUNT_1_BIT;
+      } else {
+         state.rts[i].format = VK_FORMAT_R8_UINT;
+         state.rts[i].samples = MAX2(fb->samples, 1);
+      }
    }
    state.num_cbufs = fb->nr_cbufs;
 
@@ -533,6 +542,7 @@ create_framebuffer(struct zink_context *ctx)
    for (int i = 0; i < ctx->fb_state.nr_cbufs; i++) {
       struct pipe_surface *psurf = ctx->fb_state.cbufs[i];
       state.attachments[i] = zink_surface(psurf);
+      state.has_null_attachments |= !state.attachments[i];
    }
 
    state.num_attachments = ctx->fb_state.nr_cbufs;
@@ -544,15 +554,20 @@ create_framebuffer(struct zink_context *ctx)
    state.width = ctx->fb_state.width;
    state.height = ctx->fb_state.height;
    state.layers = MAX2(ctx->fb_state.layers, 1);
+   state.samples = ctx->fb_state.samples;
 
-   return zink_create_framebuffer(screen, &state);
+   return zink_create_framebuffer(ctx, screen, &state);
 }
 
 static void
-framebuffer_state_buffer_barriers_setup(const struct pipe_framebuffer_state *state, struct zink_batch *batch)
+framebuffer_state_buffer_barriers_setup(struct zink_context *ctx,
+                                        const struct pipe_framebuffer_state *state, struct zink_batch *batch)
 {
    for (int i = 0; i < state->nr_cbufs; i++) {
-      struct zink_resource *res = zink_resource(state->cbufs[i]->texture);
+      struct pipe_surface *surf = state->cbufs[i];
+      if (!surf)
+         surf = ctx->framebuffer->null_surface;
+      struct zink_resource *res = zink_resource(surf->texture);
       if (res->layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
          zink_resource_barrier(batch->cmdbuf, res, res->aspect,
                                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -590,7 +605,7 @@ zink_begin_render_pass(struct zink_context *ctx, struct zink_batch *batch)
    assert(!batch->rp || batch->rp == ctx->gfx_pipeline_state.render_pass);
    assert(!batch->fb || batch->fb == ctx->framebuffer);
 
-   framebuffer_state_buffer_barriers_setup(fb_state, batch);
+   framebuffer_state_buffer_barriers_setup(ctx, fb_state, batch);
 
    zink_render_pass_reference(screen, &batch->rp, ctx->gfx_pipeline_state.render_pass);
    zink_framebuffer_reference(screen, &batch->fb, ctx->framebuffer);
@@ -660,7 +675,7 @@ zink_set_framebuffer_state(struct pipe_context *pctx,
 
    struct zink_batch *batch = zink_batch_no_rp(ctx);
 
-   framebuffer_state_buffer_barriers_setup(state, batch);
+   framebuffer_state_buffer_barriers_setup(ctx, state, batch);
 }
 
 static void

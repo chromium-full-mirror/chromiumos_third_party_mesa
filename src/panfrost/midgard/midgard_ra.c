@@ -266,9 +266,6 @@ mir_lower_special_reads(compiler_context *ctx)
 
                         unsigned idx = spill_idx++;
 
-                        midgard_instruction m = hazard_write ?
-                                v_mov(idx, i) : v_mov(i, idx);
-
                         /* Insert move before each read/write, depending on the
                          * hazard we're trying to account for */
 
@@ -279,19 +276,23 @@ mir_lower_special_reads(compiler_context *ctx)
                                 if (hazard_write) {
                                         if (pre_use->dest != i)
                                                 continue;
-                                } else {
-                                        if (!mir_has_arg(pre_use, i))
-                                                continue;
-                                }
 
-                                if (hazard_write) {
+                                        midgard_instruction m = v_mov(idx, i);
+                                        m.dest_type = pre_use->dest_type;
+                                        m.src_types[1] = m.dest_type;
+                                        m.mask = pre_use->mask;
+
                                         midgard_instruction *use = mir_next_op(pre_use);
                                         assert(use);
                                         mir_insert_instruction_before(ctx, use, m);
                                         mir_rewrite_index_dst_single(pre_use, i, idx);
                                 } else {
+                                        if (!mir_has_arg(pre_use, i))
+                                                continue;
+
                                         idx = spill_idx++;
-                                        m = v_mov(i, idx);
+
+                                        midgard_instruction m = v_mov(i, idx);
                                         m.mask = mir_from_bytemask(mir_round_bytemask_up(
                                                                 mir_bytemask_of_read_components(pre_use, i), 32), 32);
                                         mir_insert_instruction_before(ctx, pre_use, m);
@@ -307,69 +308,6 @@ mir_lower_special_reads(compiler_context *ctx)
         free(ldst);
         free(texr);
         free(texw);
-}
-
-/* We register allocate after scheduling, so we need to ensure instructions
- * executing in parallel within a segment of a bundle don't clobber each
- * other's registers. This is mostly a non-issue thanks to scheduling, but
- * there are edge cases. In particular, after a register is written in a
- * segment, it interferes with anything reading. */
-
-static void
-mir_compute_segment_interference(
-                compiler_context *ctx,
-                struct lcra_state *l,
-                midgard_bundle *bun,
-                unsigned pivot,
-                unsigned i)
-{
-        for (unsigned j = pivot; j < i; ++j) {
-                mir_foreach_src(bun->instructions[j], s) {
-                        if (bun->instructions[j]->src[s] >= ctx->temp_count)
-                                continue;
-
-                        for (unsigned q = pivot; q < i; ++q) {
-                                if (bun->instructions[q]->dest >= ctx->temp_count)
-                                        continue;
-
-                                /* See dEQP-GLES2.functional.shaders.return.output_write_in_func_dynamic_fragment */
-
-                                if (q >= j) {
-                                        if (!(bun->instructions[j]->unit == UNIT_SMUL && bun->instructions[q]->unit == UNIT_VLUT))
-                                                continue;
-                                }
-
-                                unsigned mask = mir_bytemask(bun->instructions[q]);
-                                unsigned rmask = mir_bytemask_of_read_components(bun->instructions[j], bun->instructions[j]->src[s]);
-                                lcra_add_node_interference(l, bun->instructions[q]->dest, mask, bun->instructions[j]->src[s], rmask);
-                        }
-                }
-        }
-}
-
-static void
-mir_compute_bundle_interference(
-                compiler_context *ctx,
-                struct lcra_state *l,
-                midgard_bundle *bun)
-{
-        if (!IS_ALU(bun->tag))
-                return;
-
-        bool old = bun->instructions[0]->unit >= UNIT_VADD;
-        unsigned pivot = 0;
-
-        for (unsigned i = 1; i < bun->instruction_count; ++i) {
-                bool new = bun->instructions[i]->unit >= UNIT_VADD;
-
-                if (old != new) {
-                        mir_compute_segment_interference(ctx, l, bun, 0, i);
-                        pivot = i;
-                        break;
-                }
-        }
-
-        mir_compute_segment_interference(ctx, l, bun, pivot, bun->instruction_count);
 }
 
 static void
@@ -428,9 +366,6 @@ mir_compute_interference(
                         mir_liveness_ins_update(live, ins, ctx->temp_count);
                 }
 
-                mir_foreach_bundle_in_block(blk, bun)
-                        mir_compute_bundle_interference(ctx, l, bun);
-
                 free(live);
         }
 }
@@ -466,7 +401,11 @@ allocate_registers(compiler_context *ctx, bool *spilled)
         if (!ctx->temp_count)
                 return NULL;
 
-        struct lcra_state *l = lcra_alloc_equations(ctx->temp_count, 5);
+        /* Initialize LCRA. Allocate an extra node at the end for a precoloured
+         * r1 for interference */
+
+        struct lcra_state *l = lcra_alloc_equations(ctx->temp_count + 1, 5);
+        unsigned node_r1 = ctx->temp_count;
 
         /* Starts of classes, in bytes */
         l->class_start[REG_CLASS_WORK]  = 16 * 0;
@@ -635,6 +574,52 @@ allocate_registers(compiler_context *ctx, bool *spilled)
                         l->solutions[ins->dest] = (16 * 1) + COMPONENT_W * 4;
         }
 
+        /* Destinations of instructions in a writeout block cannot be assigned
+         * to r1 unless they are actually used as r1 from the writeout itself,
+         * since the writes to r1 are special. A code sequence like:
+         *
+         *      sadd.fmov r1.x, [...]
+         *      vadd.fadd r0, r1, r2
+         *      [writeout branch]
+         *
+         * will misbehave since the r1.x write will be interpreted as a
+         * gl_FragDepth write so it won't show up correctly when r1 is read in
+         * the following segment. We model this as interference.
+         */
+
+        l->solutions[node_r1] = (16 * 1);
+
+        mir_foreach_block(ctx, _blk) {
+                midgard_block *blk = (midgard_block *) _blk;
+
+                mir_foreach_bundle_in_block(blk, v) {
+                        /* We need at least a writeout and nonwriteout instruction */
+                        if (v->instruction_count < 2)
+                                continue;
+
+                        /* Branches always come at the end */
+                        midgard_instruction *br = v->instructions[v->instruction_count - 1];
+
+                        if (!br->writeout)
+                                continue;
+
+                        for (signed i = v->instruction_count - 2; i >= 0; --i) {
+                                midgard_instruction *ins = v->instructions[i];
+
+                                if (ins->dest >= ctx->temp_count)
+                                        continue;
+
+                                bool used_as_r1 = (br->dest == ins->dest);
+
+                                mir_foreach_src(br, s)
+                                        used_as_r1 |= (s > 0) && (br->src[s] == ins->dest);
+
+                                if (!used_as_r1)
+                                        lcra_add_node_interference(l, ins->dest, mir_bytemask(ins), node_r1, 0xFFFF);
+                        }
+                }
+        }
+
         /* Precolour blend input to r0. Note writeout is necessarily at the end
          * and blend shaders are single-RT only so there is only a single
          * writeout block, so this cannot conflict with the writeout r0 (there
@@ -643,6 +628,15 @@ allocate_registers(compiler_context *ctx, bool *spilled)
         if (ctx->blend_input != ~0) {
                 assert(ctx->blend_input < ctx->temp_count);
                 l->solutions[ctx->blend_input] = 0;
+        }
+
+        /* Same for the dual-source blend input/output, except here we use r2,
+         * which is also set in the fragment shader. */
+
+        if (ctx->blend_src1 != ~0) {
+                assert(ctx->blend_src1 < ctx->temp_count);
+                l->solutions[ctx->blend_src1] = (16 * 2);
+                ctx->work_registers = MAX2(ctx->work_registers, 2);
         }
 
         mir_compute_interference(ctx, l);

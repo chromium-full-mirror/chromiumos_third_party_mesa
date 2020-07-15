@@ -1260,7 +1260,7 @@ Converter::parseNIR()
       break;
    case Program::TYPE_FRAGMENT:
       info->prop.fp.earlyFragTests = nir->info.fs.early_fragment_tests;
-      info->prop.fp.persampleInvocation =
+      prog->persampleInvocation =
          (nir->info.system_values_read & SYSTEM_BIT_SAMPLE_ID) ||
          (nir->info.system_values_read & SYSTEM_BIT_SAMPLE_POS);
       info->prop.fp.postDepthCoverage = nir->info.fs.post_depth_coverage;
@@ -1271,7 +1271,6 @@ Converter::parseNIR()
          !!(nir->info.system_values_read & SYSTEM_BIT_SAMPLE_MASK_IN);
       break;
    case Program::TYPE_GEOMETRY:
-      info->prop.gp.inputPrim = nir->info.gs.input_primitive;
       info->prop.gp.instanceCount = nir->info.gs.invocations;
       info->prop.gp.maxVertices = nir->info.gs.vertices_out;
       info->prop.gp.outputPrim = nir->info.gs.output_primitive;
@@ -1692,11 +1691,21 @@ Converter::visit(nir_intrinsic_instr *insn)
 
       // see load_barycentric_* handling
       if (prog->getType() == Program::TYPE_FRAGMENT) {
-         mode = translateInterpMode(&vary, nvirOp);
          if (op == nir_intrinsic_load_interpolated_input) {
             ImmediateValue immMode;
             if (getSrc(&insn->src[0], 1)->getUniqueInsn()->src(0).getImmediate(immMode))
-               mode |= immMode.reg.data.u32;
+               mode = immMode.reg.data.u32;
+         }
+         if (mode == NV50_IR_INTERP_DEFAULT)
+            mode |= translateInterpMode(&vary, nvirOp);
+         else {
+            if (vary.linear) {
+               nvirOp = OP_LINTERP;
+               mode |= NV50_IR_INTERP_LINEAR;
+            } else {
+               nvirOp = OP_PINTERP;
+               mode |= NV50_IR_INTERP_PERSPECTIVE;
+            }
          }
       }
 
@@ -2928,14 +2937,11 @@ Converter::getNIRArgCount(TexInstruction::Target& target)
 CacheMode
 Converter::convert(enum gl_access_qualifier access)
 {
-   switch (access) {
-   case ACCESS_VOLATILE:
+   if (access & ACCESS_VOLATILE)
       return CACHE_CV;
-   case ACCESS_COHERENT:
+   if (access & ACCESS_COHERENT)
       return CACHE_CG;
-   default:
-      return CACHE_CA;
-   }
+   return CACHE_CA;
 }
 
 bool
@@ -3129,7 +3135,9 @@ Converter::run()
       .ballot_bit_size = 32,
    };
 
-   NIR_PASS_V(nir, nir_lower_io, nir_var_all, type_size, (nir_lower_io_options)0);
+   NIR_PASS_V(nir, nir_lower_io,
+              (nir_variable_mode)(nir_var_shader_in | nir_var_shader_out),
+              type_size, (nir_lower_io_options)0);
    NIR_PASS_V(nir, nir_lower_subgroups, &subgroup_options);
    NIR_PASS_V(nir, nir_lower_regs_to_ssa);
    NIR_PASS_V(nir, nir_lower_load_const_to_scalar);

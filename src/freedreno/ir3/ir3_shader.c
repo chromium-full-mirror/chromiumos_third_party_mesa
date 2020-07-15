@@ -176,13 +176,15 @@ compile_variant(struct ir3_shader_variant *v)
 {
 	int ret = ir3_compile_shader_nir(v->shader->compiler, v);
 	if (ret) {
-		debug_error("compile failed!");
+		_debug_printf("compile failed! (%s:%s)", v->shader->nir->info.name,
+				v->shader->nir->info.label);
 		return false;
 	}
 
 	assemble_variant(v);
 	if (!v->bin) {
-		debug_error("assemble failed!");
+		_debug_printf("assemble failed! (%s:%s)", v->shader->nir->info.name,
+				v->shader->nir->info.label);
 		return false;
 	}
 
@@ -340,6 +342,8 @@ ir3_setup_used_key(struct ir3_shader *shader)
 
 	key->safe_constlen = true;
 
+	key->ucp_enables = 0xff;
+
 	if (info->stage == MESA_SHADER_FRAGMENT) {
 		key->fsaturate_s = ~0;
 		key->fsaturate_t = ~0;
@@ -350,6 +354,10 @@ ir3_setup_used_key(struct ir3_shader *shader)
 		if (info->inputs_read & VARYING_BITS_COLOR) {
 			key->rasterflat = true;
 			key->color_two_side = true;
+		}
+
+		if (info->inputs_read & VARYING_BIT_LAYER) {
+			key->layer_zero = true;
 		}
 
 		if ((info->outputs_written & ~(FRAG_RESULT_DEPTH |
@@ -394,7 +402,7 @@ trim_constlens(unsigned *constlens,
       cur_total += constlens[i];
    }
 
-   unsigned max_stage;
+   unsigned max_stage = 0;
    unsigned max_const = 0;
    uint32_t trimmed = 0;
 

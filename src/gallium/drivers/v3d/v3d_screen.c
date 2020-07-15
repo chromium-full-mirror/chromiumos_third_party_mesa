@@ -78,7 +78,7 @@ v3d_screen_destroy(struct pipe_screen *pscreen)
         free(screen->ro);
 
         if (using_v3d_simulator)
-                v3d_simulator_destroy(screen);
+                v3d_simulator_destroy(screen->sim_file);
 
         v3d_compiler_free(screen->compiler);
         u_transfer_helper_destroy(pscreen->transfer_helper);
@@ -136,6 +136,7 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
         case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
         case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
+        case PIPE_CAP_TGSI_TEXCOORD:
                 return 1;
 
         case PIPE_CAP_TEXTURE_QUERY_LOD:
@@ -374,6 +375,7 @@ v3d_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
         case PIPE_SHADER_CAP_FP16:
         case PIPE_SHADER_CAP_FP16_DERIVATIVES:
         case PIPE_SHADER_CAP_INT16:
+        case PIPE_SHADER_CAP_GLSL_16BIT_TEMPS:
         case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
         case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
         case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
@@ -682,7 +684,7 @@ v3d_screen_create(int fd, const struct pipe_screen_config *config,
         screen->bo_handles = util_hash_table_create_ptr_keys();
 
 #if defined(USE_V3D_SIMULATOR)
-        v3d_simulator_init(screen);
+        screen->sim_file = v3d_simulator_init(screen->fd);
 #endif
 
         if (!v3d_get_device_info(screen->fd, &screen->devinfo, &v3d_ioctl))

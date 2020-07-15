@@ -218,8 +218,10 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
    case PIPE_CAP_VERTEX_COLOR_CLAMPED:
       return 1;
-   case PIPE_CAP_GLSL_FEATURE_LEVEL:
-      return 330;
+   case PIPE_CAP_GLSL_FEATURE_LEVEL: {
+      struct llvmpipe_screen *lscreen = llvmpipe_screen(screen);
+      return lscreen->use_tgsi ? 330 : 420;
+   }
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
       return 140;
    case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
@@ -371,7 +373,6 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_TES_LAYER_VIEWPORT:
    case PIPE_CAP_CAN_BIND_CONST_BUFFER_AS_VERTEX:
    case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
-   case PIPE_CAP_POST_DEPTH_COVERAGE:
    case PIPE_CAP_BINDLESS_TEXTURE:
    case PIPE_CAP_NIR_SAMPLERS_AS_DEREF:
    case PIPE_CAP_MEMOBJ:
@@ -404,6 +405,7 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_LOAD_CONSTBUF:
    case PIPE_CAP_TEXTURE_MULTISAMPLE:
    case PIPE_CAP_SAMPLE_SHADING:
+   case PIPE_CAP_POST_DEPTH_COVERAGE:
    case PIPE_CAP_PACKED_UNIFORMS: {
       struct llvmpipe_screen *lscreen = llvmpipe_screen(screen);
       return !lscreen->use_tgsi;
@@ -424,6 +426,7 @@ llvmpipe_get_shader_param(struct pipe_screen *screen,
    case PIPE_SHADER_COMPUTE:
       if ((LP_DEBUG & DEBUG_CL) && param == PIPE_SHADER_CAP_SUPPORTED_IRS)
          return (1 << PIPE_SHADER_IR_TGSI) | (1 << PIPE_SHADER_IR_NIR) | (1 << PIPE_SHADER_IR_NIR_SERIALIZED);
+      /* fallthrough */
    case PIPE_SHADER_FRAGMENT:
       if (param == PIPE_SHADER_CAP_PREFERRED_IR) {
          if (lscreen->use_tgsi)
@@ -435,11 +438,13 @@ llvmpipe_get_shader_param(struct pipe_screen *screen,
       default:
          return gallivm_get_shader_param(param);
       }
+      /* fallthrough */
    case PIPE_SHADER_TESS_CTRL:
    case PIPE_SHADER_TESS_EVAL:
       /* Tessellation shader needs llvm coroutines support */
       if (!GALLIVM_HAVE_CORO || lscreen->use_tgsi)
          return 0;
+      /* fallthrough */
    case PIPE_SHADER_VERTEX:
    case PIPE_SHADER_GEOMETRY:
       if (param == PIPE_SHADER_CAP_PREFERRED_IR) {

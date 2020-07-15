@@ -94,7 +94,7 @@ panfrost_compression_tag(
 {
         if (layout == MALI_TEXTURE_AFBC)
                 return desc->nr_channels >= 3;
-        else if (format == MALI_ASTC_HDR_SUPP || format == MALI_ASTC_SRGB_SUPP)
+        else if (format == MALI_ASTC_2D_LDR || format == MALI_ASTC_2D_HDR)
                 return (panfrost_astc_stretch(desc->block.height) << 3) |
                         panfrost_astc_stretch(desc->block.width);
         else
@@ -197,6 +197,7 @@ panfrost_emit_texture_payload(
         unsigned width, unsigned height,
         unsigned first_level, unsigned last_level,
         unsigned first_layer, unsigned last_layer,
+        unsigned nr_samples,
         unsigned cube_stride,
         bool manual_stride,
         mali_ptr base,
@@ -214,27 +215,44 @@ panfrost_emit_texture_payload(
                 panfrost_adjust_cube_dimensions(&first_face, &last_face, &first_layer, &last_layer);
         }
 
+        nr_samples = MAX2(nr_samples, 1);
+
         unsigned idx = 0;
 
         for (unsigned w = first_layer; w <= last_layer; ++w) {
                 for (unsigned l = first_level; l <= last_level; ++l) {
                         for (unsigned f = first_face; f <= last_face; ++f) {
-                                payload[idx++] = base + panfrost_texture_offset(
-                                                slices, type == MALI_TEX_3D,
-                                                cube_stride, l, w * face_mult + f);
+                                for (unsigned s = 0; s < nr_samples; ++s) {
+                                        payload[idx++] = base + panfrost_texture_offset(
+                                                        slices, type == MALI_TEX_3D,
+                                                        cube_stride, l, w * face_mult + f, s);
 
-                                if (manual_stride) {
-                                        payload[idx++] = (layout == MALI_TEXTURE_LINEAR) ?
-                                                slices[l].stride :
-                                                panfrost_nonlinear_stride(layout,
-                                                                MAX2(desc->block.bits / 8, 1),
-                                                                u_minify(width, l),
-                                                                u_minify(height, l));
+                                        if (manual_stride) {
+                                                payload[idx++] = (layout == MALI_TEXTURE_LINEAR) ?
+                                                        slices[l].stride :
+                                                        panfrost_nonlinear_stride(layout,
+                                                                        MAX2(desc->block.bits / 8, 1),
+                                                                        u_minify(width, l),
+                                                                        u_minify(height, l));
+                                        }
                                 }
                         }
                 }
         }
 }
+
+#define MALI_SWIZZLE_R001 \
+        (MALI_CHANNEL_RED << 0) | \
+        (MALI_CHANNEL_ZERO << 3) | \
+        (MALI_CHANNEL_ZERO << 6) | \
+        (MALI_CHANNEL_ONE << 9)
+
+#define MALI_SWIZZLE_A001 \
+        (MALI_CHANNEL_ALPHA << 0) | \
+        (MALI_CHANNEL_ZERO << 3) | \
+        (MALI_CHANNEL_ZERO << 6) | \
+        (MALI_CHANNEL_ONE << 9)
+
 
 void
 panfrost_new_texture(
@@ -246,6 +264,7 @@ panfrost_new_texture(
         enum mali_texture_layout layout,
         unsigned first_level, unsigned last_level,
         unsigned first_layer, unsigned last_layer,
+        unsigned nr_samples,
         unsigned cube_stride,
         unsigned swizzle,
         mali_ptr base,
@@ -269,7 +288,11 @@ panfrost_new_texture(
                 .depth = MALI_POSITIVE(u_minify(depth, first_level)),
                 .array_size = MALI_POSITIVE(array_size),
                 .format = {
-                        .swizzle = panfrost_translate_swizzle_4(desc->swizzle),
+                        .swizzle = (format == PIPE_FORMAT_X24S8_UINT) ?
+                                MALI_SWIZZLE_A001 :
+                                (format == PIPE_FORMAT_S8_UINT) ?
+                                MALI_SWIZZLE_R001 :
+                                panfrost_translate_swizzle_4(desc->swizzle),
                         .format = mali_format,
                         .srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB),
                         .type = type,
@@ -293,6 +316,7 @@ panfrost_new_texture(
                 width, height,
                 first_level, last_level,
                 first_layer, last_layer,
+                nr_samples,
                 cube_stride,
                 manual_stride,
                 base,
@@ -309,6 +333,7 @@ panfrost_new_texture_bifrost(
         enum mali_texture_layout layout,
         unsigned first_level, unsigned last_level,
         unsigned first_layer, unsigned last_layer,
+        unsigned nr_samples,
         unsigned cube_stride,
         unsigned swizzle,
         mali_ptr base,
@@ -330,6 +355,7 @@ panfrost_new_texture_bifrost(
                 width, height,
                 first_level, last_level,
                 first_layer, last_layer,
+                nr_samples,
                 cube_stride,
                 true, /* Stride explicit on Bifrost */
                 base,
@@ -390,8 +416,8 @@ panfrost_get_layer_stride(struct panfrost_slice *slices, bool is_3d, unsigned cu
  * the base address of a texture to get the address to that level/face */
 
 unsigned
-panfrost_texture_offset(struct panfrost_slice *slices, bool is_3d, unsigned cube_stride, unsigned level, unsigned face)
+panfrost_texture_offset(struct panfrost_slice *slices, bool is_3d, unsigned cube_stride, unsigned level, unsigned face, unsigned sample)
 {
         unsigned layer_stride = panfrost_get_layer_stride(slices, is_3d, cube_stride, level);
-        return slices[level].offset + (face * layer_stride);
+        return slices[level].offset + (face * layer_stride) + (sample * slices[level].size0);
 }

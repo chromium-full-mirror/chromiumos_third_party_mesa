@@ -1,22 +1,24 @@
 Submitting Patches
 ==================
 
+.. _guidelines:
+
 Basic guidelines
 ----------------
 
 -  Patches should not mix code changes with code formatting changes
    (except, perhaps, in very trivial cases.)
--  Code patches should follow Mesa `coding
-   conventions <codingstyle.rst>`__.
+-  Code patches should follow Mesa :doc:`coding
+   conventions <codingstyle>`.
 -  Whenever possible, patches should only affect individual Mesa/Gallium
    components.
 -  Patches should never introduce build breaks and should be bisectable
    (see ``git bisect``.)
--  Patches should be properly `formatted <#formatting>`__.
--  Patches should be sufficiently `tested <#testing>`__ before
+-  Patches should be properly :ref:`formatted <formatting>`.
+-  Patches should be sufficiently :ref:`tested <testing>` before
    submitting.
--  Patches should be `submitted <#submit>`__ via a merge request for
-   `review <#reviewing>`__.
+-  Patches should be :ref:`submitted <submit>` via a merge request for
+   :ref:`review <reviewing>`.
 
 .. _formatting:
 
@@ -62,7 +64,7 @@ Patch formatting
 
    **Do not use the ``Fixes:`` tag for this!** Mesa already uses
    ``Fixes:`` for something else.
-   See `below <#fixes>`__.
+   See :ref:`below <fixes>`.
 
 -  If there have been several revisions to a patch during the review
    process, they should be noted such as in this example:
@@ -124,7 +126,7 @@ The stable tag
 If you want a commit to be applied to a stable branch, you should add an
 appropriate note to the commit message.
 
-Using a ``Fixes:`` tag as described in `Patch formatting <#formatting>`__
+Using a ``Fixes:`` tag as described in :ref:`Patch formatting <formatting>`
 is the preferred way to nominate a commit that should be backported.
 There are scripts that will figure out which releases to apply the patch
 to automatically, so you don't need to figure it out.
@@ -132,6 +134,8 @@ to automatically, so you don't need to figure it out.
 Alternatively, you may use a "CC:" tag. Here are some examples of such a
 note::
 
+    Cc: mesa-stable
+    Cc: 20.0 <mesa-stable>
     CC: 20.0 19.3 <mesa-stable>
 
 Using the CC tag **should** include the stable branches you want to
@@ -284,8 +288,8 @@ is not monitored actively and is a historical artifact.
 If you are not the author of the original patch, please Cc: them in your
 nomination request.
 
-The current patch status can be observed in the `staging
-branch <releasing.rst#stagingbranch>`__.
+The current patch status can be observed in the :ref:`staging
+branch <stagingbranch>`.
 
 .. _criteria:
 
@@ -299,7 +303,7 @@ mechanism described above. The following rules define which patches are
 accepted and which are not. The stable-release manager is also given
 broad discretion in rejecting patches that have been nominated.
 
--  Patch must conform with the `Basic guidelines <#guidelines>`__
+-  Patch must conform with the :ref:`Basic guidelines <guidelines>`
 -  Patch must have landed in master first. In case where the original
    patch is too large and/or otherwise contradicts with the rules set
    within, a backport is appropriate.
@@ -317,7 +321,7 @@ broad discretion in rejecting patches that have been nominated.
 
    .. note::
       An exception to this rule, are hardware-enabling "features". For
-      example, `backports <#backports>`__ of new code to support a
+      example, :ref:`backports <backports>` of new code to support a
       newly-developed hardware product can be accepted if they can be
       reasonably determined not to have effects on other hardware.
 
@@ -329,7 +333,7 @@ broad discretion in rejecting patches that have been nominated.
    numbers to represent your measurements.
 
 If the patch complies with the rules it will be
-`cherry-picked <releasing.rst#pickntest>`__. Alternatively the release
+:ref:`cherry-picked <pickntest>`. Alternatively the release
 manager will reply to the patch in question stating why the patch has
 been rejected or would request a backport. The stable-release manager
 may at times need to force-push changes to the stable branches, for

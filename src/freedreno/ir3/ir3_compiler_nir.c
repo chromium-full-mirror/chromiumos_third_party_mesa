@@ -98,7 +98,7 @@ create_frag_input(struct ir3_context *ctx, bool use_ldlv, unsigned n)
 		instr->cat6.type = TYPE_U32;
 		instr->cat6.iim_val = 1;
 	} else {
-		instr = ir3_BARY_F(block, inloc, 0, ctx->ij_pixel, 0);
+		instr = ir3_BARY_F(block, inloc, 0, ctx->ij[IJ_PERSP_PIXEL], 0);
 		instr->regs[2]->wrmask = 0x3;
 	}
 
@@ -928,6 +928,10 @@ emit_intrinsic_load_shared_ir3(struct ir3_context *ctx, nir_intrinsic_instr *int
 			create_immed(b, intr->num_components), 0,
 			create_immed(b, base), 0);
 
+	/* for a650, use LDL for tess ctrl inputs: */
+	if (ctx->so->type == MESA_SHADER_TESS_CTRL && ctx->compiler->tess_use_shared)
+		load->opc = OPC_LDL;
+
 	load->cat6.type = utype_dst(intr->dest);
 	load->regs[0]->wrmask = MASK(intr->num_components);
 
@@ -951,6 +955,11 @@ emit_intrinsic_store_shared_ir3(struct ir3_context *ctx, nir_intrinsic_instr *in
 	store = ir3_STLW(b, offset, 0,
 		ir3_create_collect(ctx, value, intr->num_components), 0,
 		create_immed(b, intr->num_components), 0);
+
+	/* for a650, use STL for vertex outputs used by tess ctrl shader: */
+	if (ctx->so->type == MESA_SHADER_VERTEX && ctx->so->key.tessellation &&
+		ctx->compiler->tess_use_shared)
+		store->opc = OPC_STL;
 
 	store->cat6.dst_offset = nir_intrinsic_base(intr);
 	store->cat6.type = utype_src(intr->src[0]);
@@ -1346,44 +1355,84 @@ create_sysval_input(struct ir3_context *ctx, gl_system_value slot,
 }
 
 static struct ir3_instruction *
-get_barycentric_centroid(struct ir3_context *ctx)
+get_barycentric(struct ir3_context *ctx, enum ir3_bary bary)
 {
-	if (!ctx->ij_centroid) {
+	static const gl_system_value sysval_base = SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL;
+
+	STATIC_ASSERT(sysval_base + IJ_PERSP_PIXEL == SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL);
+	STATIC_ASSERT(sysval_base + IJ_PERSP_SAMPLE == SYSTEM_VALUE_BARYCENTRIC_PERSP_SAMPLE);
+	STATIC_ASSERT(sysval_base + IJ_PERSP_CENTROID == SYSTEM_VALUE_BARYCENTRIC_PERSP_CENTROID);
+	STATIC_ASSERT(sysval_base + IJ_PERSP_SIZE == SYSTEM_VALUE_BARYCENTRIC_PERSP_SIZE);
+	STATIC_ASSERT(sysval_base + IJ_LINEAR_PIXEL == SYSTEM_VALUE_BARYCENTRIC_LINEAR_PIXEL);
+	STATIC_ASSERT(sysval_base + IJ_LINEAR_CENTROID == SYSTEM_VALUE_BARYCENTRIC_LINEAR_CENTROID);
+	STATIC_ASSERT(sysval_base + IJ_LINEAR_SAMPLE == SYSTEM_VALUE_BARYCENTRIC_LINEAR_SAMPLE);
+
+	if (!ctx->ij[bary]) {
 		struct ir3_instruction *xy[2];
 		struct ir3_instruction *ij;
 
-		ij = create_sysval_input(ctx, SYSTEM_VALUE_BARYCENTRIC_PERSP_CENTROID, 0x3);
+		ij = create_sysval_input(ctx, sysval_base + bary, 0x3);
 		ir3_split_dest(ctx->block, xy, ij, 0, 2);
 
-		ctx->ij_centroid = ir3_create_collect(ctx, xy, 2);
+		ctx->ij[bary] = ir3_create_collect(ctx, xy, 2);
 	}
 
-	return ctx->ij_centroid;
+	return ctx->ij[bary];
 }
 
-static struct ir3_instruction *
-get_barycentric_sample(struct ir3_context *ctx)
+/* TODO: make this a common NIR helper?
+ * there is a nir_system_value_from_intrinsic but it takes nir_intrinsic_op so it
+ * can't be extended to work with this
+ */
+static gl_system_value
+nir_intrinsic_barycentric_sysval(nir_intrinsic_instr *intr)
 {
-	if (!ctx->ij_sample) {
-		struct ir3_instruction *xy[2];
-		struct ir3_instruction *ij;
+	enum glsl_interp_mode interp_mode = nir_intrinsic_interp_mode(intr);
+	gl_system_value sysval;
 
-		ij = create_sysval_input(ctx, SYSTEM_VALUE_BARYCENTRIC_PERSP_SAMPLE, 0x3);
-		ir3_split_dest(ctx->block, xy, ij, 0, 2);
-
-		ctx->ij_sample = ir3_create_collect(ctx, xy, 2);
+	switch (intr->intrinsic) {
+	case nir_intrinsic_load_barycentric_pixel:
+		if (interp_mode == INTERP_MODE_NOPERSPECTIVE)
+			sysval = SYSTEM_VALUE_BARYCENTRIC_LINEAR_PIXEL;
+		else
+			sysval = SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL;
+		break;
+	case nir_intrinsic_load_barycentric_centroid:
+		if (interp_mode == INTERP_MODE_NOPERSPECTIVE)
+			sysval = SYSTEM_VALUE_BARYCENTRIC_LINEAR_CENTROID;
+		else
+			sysval = SYSTEM_VALUE_BARYCENTRIC_PERSP_CENTROID;
+		break;
+	case nir_intrinsic_load_barycentric_sample:
+		if (interp_mode == INTERP_MODE_NOPERSPECTIVE)
+			sysval = SYSTEM_VALUE_BARYCENTRIC_LINEAR_SAMPLE;
+		else
+			sysval = SYSTEM_VALUE_BARYCENTRIC_PERSP_SAMPLE;
+		break;
+	default:
+		unreachable("invalid barycentric intrinsic");
 	}
 
-	return ctx->ij_sample;
+	return sysval;
 }
 
-static struct ir3_instruction  *
-get_barycentric_pixel(struct ir3_context *ctx)
+static void
+emit_intrinsic_barycentric(struct ir3_context *ctx, nir_intrinsic_instr *intr,
+		struct ir3_instruction **dst)
 {
-	/* TODO when tgsi_to_nir supports "new-style" FS inputs switch
-	 * this to create ij_pixel only on demand:
-	 */
-	return ctx->ij_pixel;
+	gl_system_value sysval = nir_intrinsic_barycentric_sysval(intr);
+
+	if (!ctx->so->key.msaa) {
+		if (sysval == SYSTEM_VALUE_BARYCENTRIC_PERSP_SAMPLE)
+			sysval = SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL;
+		if (sysval == SYSTEM_VALUE_BARYCENTRIC_LINEAR_SAMPLE)
+			sysval = SYSTEM_VALUE_BARYCENTRIC_LINEAR_PIXEL;
+	}
+
+	enum ir3_bary bary = sysval - SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL;
+
+	struct ir3_instruction *ij = get_barycentric(ctx, bary);
+	ir3_split_dest(ctx->block, dst, ij, 0, 2);
 }
 
 static struct ir3_instruction *
@@ -1594,24 +1643,16 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		break;
 	}
 	case nir_intrinsic_load_size_ir3:
-		if (!ctx->ij_size) {
-			ctx->ij_size =
+		if (!ctx->ij[IJ_PERSP_SIZE]) {
+			ctx->ij[IJ_PERSP_SIZE] =
 				create_sysval_input(ctx, SYSTEM_VALUE_BARYCENTRIC_PERSP_SIZE, 0x1);
 		}
-		dst[0] = ctx->ij_size;
+		dst[0] = ctx->ij[IJ_PERSP_SIZE];
 		break;
 	case nir_intrinsic_load_barycentric_centroid:
-		ir3_split_dest(b, dst, get_barycentric_centroid(ctx), 0, 2);
-		break;
 	case nir_intrinsic_load_barycentric_sample:
-		if (ctx->so->key.msaa) {
-			ir3_split_dest(b, dst, get_barycentric_sample(ctx), 0, 2);
-		} else {
-			ir3_split_dest(b, dst, get_barycentric_pixel(ctx), 0, 2);
-		}
-		break;
 	case nir_intrinsic_load_barycentric_pixel:
-		ir3_split_dest(b, dst, get_barycentric_pixel(ctx), 0, 2);
+		emit_intrinsic_barycentric(ctx, intr, dst);
 		break;
 	case nir_intrinsic_load_interpolated_input:
 		idx = nir_intrinsic_base(intr);
@@ -2423,7 +2464,7 @@ emit_tex(struct ir3_context *ctx, nir_tex_instr *tex)
 
 		sam = ir3_META_TEX_PREFETCH(b);
 		__ssa_dst(sam)->wrmask = MASK(ncomp);   /* dst */
-		__ssa_src(sam, get_barycentric_pixel(ctx), 0);
+		__ssa_src(sam, get_barycentric(ctx, IJ_PERSP_PIXEL), 0);
 		sam->prefetch.input_offset =
 				ir3_nir_coord_offset(tex->src[idx].src.ssa);
 		/* make sure not to add irrelevant flags like S2EN */
@@ -2982,6 +3023,9 @@ setup_input(struct ir3_context *ctx, nir_variable *in)
 	} else if (ctx->so->type == MESA_SHADER_VERTEX) {
 		struct ir3_instruction *input = NULL;
 		struct ir3_instruction *components[4];
+		/* input as setup as frac=0 with "ncomp + frac" components,
+		 * this avoids getting a sparse writemask
+		 */
 		unsigned mask = (1 << (ncomp + frac)) - 1;
 
 		foreach_input (in, ctx->ir) {
@@ -3002,20 +3046,16 @@ setup_input(struct ir3_context *ctx, nir_variable *in)
 			 * If the new input that aliases a previously processed input
 			 * sets no new bits, then just bail as there is nothing to see
 			 * here.
-			 *
-			 * Note that we don't expect to get an input w/ frac!=0, if we
-			 * did we'd have to adjust ncomp and frac to cover the entire
-			 * merged input.
 			 */
 			if (!(mask & ~input->regs[0]->wrmask))
 				return;
 			input->regs[0]->wrmask |= mask;
 		}
 
-		ir3_split_dest(ctx->block, components, input, frac, ncomp);
+		ir3_split_dest(ctx->block, components, input, 0, ncomp + frac);
 
-		for (int i = 0; i < ncomp; i++) {
-			unsigned idx = (n * 4) + i + frac;
+		for (int i = 0; i < ncomp + frac; i++) {
+			unsigned idx = (n * 4) + i;
 			compile_assert(ctx, idx < ctx->ninputs);
 
 			/* With aliased inputs, since we add to the wrmask above, we
@@ -3042,6 +3082,9 @@ setup_input(struct ir3_context *ctx, nir_variable *in)
 		ir3_context_error(ctx, "unknown shader type: %d\n", ctx->so->type);
 	}
 
+	/* note: this can be wrong for sparse vertex inputs, this happens with
+	 * vulkan, only a3xx/a4xx use this value for VS, so it shouldn't matter
+	 */
 	if (so->inputs[n].bary || (ctx->so->type == MESA_SHADER_VERTEX)) {
 		so->total_in += ncomp;
 	}
@@ -3270,7 +3313,7 @@ emit_instructions(struct ir3_context *ctx)
 	 * tgsi_to_nir)
 	 */
 	if (ctx->so->type == MESA_SHADER_FRAGMENT) {
-		ctx->ij_pixel = create_input(ctx, 0x3);
+		ctx->ij[IJ_PERSP_PIXEL] = create_input(ctx, 0x3);
 	}
 
 	/* Setup inputs: */
@@ -3281,9 +3324,9 @@ emit_instructions(struct ir3_context *ctx)
 	/* Defer add_sysval_input() stuff until after setup_inputs(),
 	 * because sysvals need to be appended after varyings:
 	 */
-	if (ctx->ij_pixel) {
+	if (ctx->ij[IJ_PERSP_PIXEL]) {
 		add_sysval_input_compmask(ctx, SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL,
-				0x3, ctx->ij_pixel);
+				0x3, ctx->ij[IJ_PERSP_PIXEL]);
 	}
 
 

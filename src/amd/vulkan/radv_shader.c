@@ -365,7 +365,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				.amd_gcn_shader = true,
 				.amd_image_gather_bias_lod = true,
 				.amd_image_read_write_lod = true,
-				.amd_shader_ballot = device->physical_device->use_shader_ballot,
+				.amd_shader_ballot = true,
 				.amd_shader_explicit_vertex_parameter = true,
 				.amd_trinary_minmax = true,
 				.demote_to_helper_invocation = true,
@@ -531,6 +531,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 			.lower_vote_eq_to_ballot = 1,
 			.lower_quad_broadcast_dynamic = 1,
 			.lower_quad_broadcast_dynamic_to_const = gfx7minus,
+			.lower_shuffle_to_swizzle_amd = 1,
 		});
 
 	nir_lower_load_const_to_scalar(nir);
@@ -1035,13 +1036,6 @@ radv_shader_variant_create(struct radv_device *device,
 	variant->info = binary->info;
 	radv_postprocess_config(device->physical_device, &config, &binary->info,
 				binary->stage, &variant->config);
-
-	if (radv_device_use_secure_compile(device->instance)) {
-		if (binary->type == RADV_BINARY_TYPE_RTLD)
-			ac_rtld_close(&rtld_binary);
-
-		return variant;
-	}
 
 	void *dest_ptr = radv_alloc_shader_memory(device, variant);
 	if (!dest_ptr) {

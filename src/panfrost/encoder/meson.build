@@ -30,7 +30,9 @@ libpanfrost_encoder_files = files(
   'pan_sampler.c',
   'pan_tiler.c',
   'pan_texture.c',
+  'pan_scoreboard.c',
   'pan_scratch.c',
+  'pan_pool.c',
   'pan_props.c',
 )
 
