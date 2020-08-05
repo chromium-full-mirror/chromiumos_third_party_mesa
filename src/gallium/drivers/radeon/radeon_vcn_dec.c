@@ -375,7 +375,7 @@ static rvcn_dec_message_vp9_t get_vp9_msg(struct radeon_decoder *dec,
 					struct pipe_vp9_picture_desc *pic)
 {
 	rvcn_dec_message_vp9_t result;
-	unsigned i;
+	unsigned i,j;
 
 	memset(&result, 0, sizeof(result));
 
@@ -501,16 +501,35 @@ static rvcn_dec_message_vp9_t get_vp9_msg(struct radeon_decoder *dec,
 
 	assert(dec->base.max_references + 1 <= 16);
 
+        //clear the dec->render list if it is not used as a reference
+        for (i = 0 ; i < 16 ; i++) {
+		if (dec->render_pic_list[i]) {
+			for (j = 0 ; j < 8 ; j++) {
+				if (dec->render_pic_list[i] == pic->ref[j])
+					break;
+			}
+			if (j == 8)
+				dec->render_pic_list[i] = NULL;
+		}
+	}
+
 	for (i = 0 ; i < 16 ; ++i) {
 		if (dec->render_pic_list[i] && dec->render_pic_list[i] == target) {
-			result.curr_pic_idx =
-				(uintptr_t)vl_video_buffer_get_associated_data(target, &dec->base);
-			break;
+		       if(target->codec != NULL) {
+			       result.curr_pic_idx =
+				       (uintptr_t)vl_video_buffer_get_associated_data(target, &dec->base);
+		       } else {
+			       result.curr_pic_idx = i;
+			       vl_video_buffer_set_associated_data(target, &dec->base,
+					       (void *)(uintptr_t)i,
+					       &radeon_dec_destroy_associated_data);
+		       }
+		       break;
 		} else if (!dec->render_pic_list[i]) {
 			dec->render_pic_list[i] = target;
-			result.curr_pic_idx = dec->ref_idx;
+			result.curr_pic_idx = i;
 			vl_video_buffer_set_associated_data(target, &dec->base,
-					    (void *)(uintptr_t)dec->ref_idx++,
+					    (void *)(uintptr_t)i,
 					    &radeon_dec_destroy_associated_data);
 			break;
 		}
