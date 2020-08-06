@@ -503,15 +503,8 @@ static rvcn_dec_message_vp9_t get_vp9_msg(struct radeon_decoder *dec,
 
 	for (i = 0 ; i < 16 ; ++i) {
 		if (dec->render_pic_list[i] && dec->render_pic_list[i] == target) {
-			if(target->codec != NULL){
-				result.curr_pic_idx =
-					(uintptr_t)vl_video_buffer_get_associated_data(target, &dec->base);
-			} else {
-				result.curr_pic_idx = i;
-				vl_video_buffer_set_associated_data(target, &dec->base,
-						(void *)(uintptr_t)i,
-						&radeon_dec_destroy_associated_data);
-			}
+			result.curr_pic_idx =
+				(uintptr_t)vl_video_buffer_get_associated_data(target, &dec->base);
 			break;
 		} else if (!dec->render_pic_list[i]) {
 			dec->render_pic_list[i] = target;
