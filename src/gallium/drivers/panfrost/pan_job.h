@@ -46,20 +46,6 @@ struct panfrost_batch_fence {
          * batch has been flushed or not.
          */
         struct panfrost_batch *batch;
-
-        /* Context this fence is attached to. We need both ctx and batch, as
-         * the batch will go away after it's been submitted, but the fence
-         * will stay a bit longer.
-         */
-        struct panfrost_context *ctx;
-
-        /* Sync object backing this fence. */
-        uint32_t syncobj;
-
-        /* Cached value of the signaled state to avoid calling WAIT_SYNCOBJs
-         * when we know the fence has already been signaled.
-         */
-        bool signaled;
 };
 
 #define PAN_REQ_MSAA            (1 << 0)
@@ -74,6 +60,9 @@ struct panfrost_batch {
 
         /* Buffers cleared (PIPE_CLEAR_* bitmask) */
         unsigned clear;
+
+        /* Buffers drawn */
+        unsigned draws;
 
         /* Packed clear values, indexed by both render target as well as word.
          * Essentially, a single pixel is packed, with some padding to bring it
@@ -165,7 +154,7 @@ panfrost_batch_create_bo(struct panfrost_batch *batch, size_t size,
                          uint32_t create_flags, uint32_t access_flags);
 
 void
-panfrost_flush_all_batches(struct panfrost_context *ctx, bool wait);
+panfrost_flush_all_batches(struct panfrost_context *ctx, uint32_t out_sync);
 
 bool
 panfrost_pending_batches_access_bo(struct panfrost_context *ctx,
@@ -217,5 +206,8 @@ panfrost_batch_is_scanout(struct panfrost_batch *batch);
 
 mali_ptr
 panfrost_batch_get_tiler_meta(struct panfrost_batch *batch, unsigned vertex_count);
+
+mali_ptr
+panfrost_batch_reserve_framebuffer(struct panfrost_batch *batch);
 
 #endif

@@ -53,7 +53,7 @@
 #include "pan_blend_shaders.h"
 #include "pan_cmdstream.h"
 #include "pan_util.h"
-#include "pandecode/decode.h"
+#include "decode.h"
 #include "util/pan_lower_framebuffer.h"
 
 struct midgard_tiler_descriptor
@@ -240,35 +240,18 @@ panfrost_flush(
 {
         struct panfrost_context *ctx = pan_context(pipe);
         struct panfrost_device *dev = pan_device(pipe->screen);
-        struct util_dynarray fences;
+        uint32_t syncobj = 0;
 
-        /* We must collect the fences before the flush is done, otherwise we'll
-         * lose track of them.
-         */
-        if (fence) {
-                util_dynarray_init(&fences, NULL);
-                hash_table_foreach(ctx->batches, hentry) {
-                        struct panfrost_batch *batch = hentry->data;
-
-                        panfrost_batch_fence_reference(batch->out_sync);
-                        util_dynarray_append(&fences,
-                                             struct panfrost_batch_fence *,
-                                             batch->out_sync);
-                }
-        }
+        if (fence)
+                drmSyncobjCreate(dev->fd, 0, &syncobj);
 
         /* Submit all pending jobs */
-        panfrost_flush_all_batches(ctx, false);
+        panfrost_flush_all_batches(ctx, syncobj);
 
         if (fence) {
-                struct panfrost_fence *f = panfrost_fence_create(ctx, &fences);
+                struct panfrost_fence *f = panfrost_fence_create(ctx, syncobj);
                 pipe->screen->fence_reference(pipe->screen, fence, NULL);
                 *fence = (struct pipe_fence_handle *)f;
-
-                util_dynarray_foreach(&fences, struct panfrost_batch_fence *, fence)
-                        panfrost_batch_fence_unreference(*fence);
-
-                util_dynarray_fini(&fences);
         }
 
         if (dev->debug & PAN_DBG_TRACE)
@@ -279,7 +262,7 @@ static void
 panfrost_texture_barrier(struct pipe_context *pipe, unsigned flags)
 {
         struct panfrost_context *ctx = pan_context(pipe);
-        panfrost_flush_all_batches(ctx, false);
+        panfrost_flush_all_batches(ctx, 0);
 }
 
 #define DEFINE_CASE(c) case PIPE_PRIM_##c: return MALI_##c;
@@ -937,7 +920,28 @@ panfrost_create_sampler_view_bo(struct panfrost_sampler_view *so,
 {
         struct panfrost_device *device = pan_device(pctx->screen);
         struct panfrost_resource *prsrc = (struct panfrost_resource *)texture;
+        enum pipe_format format = so->base.format;
         assert(prsrc->bo);
+
+        /* Format to access the stencil portion of a Z32_S8 texture */
+        if (format == PIPE_FORMAT_X32_S8X24_UINT) {
+                assert(prsrc->separate_stencil);
+                texture = &prsrc->separate_stencil->base;
+                prsrc = (struct panfrost_resource *)texture;
+                format = texture->format;
+        }
+
+        const struct util_format_description *desc = util_format_description(format);
+
+        bool fake_rgtc = !panfrost_supports_compressed_format(device, MALI_BC4_UNORM);
+
+        if (desc->layout == UTIL_FORMAT_LAYOUT_RGTC && fake_rgtc) {
+                if (desc->is_snorm)
+                        format = PIPE_FORMAT_R8G8B8A8_SNORM;
+                else
+                        format = PIPE_FORMAT_R8G8B8A8_UNORM;
+                desc = util_format_description(format);
+        }
 
         so->texture_bo = prsrc->bo->gpu;
         so->layout = prsrc->layout;
@@ -976,8 +980,6 @@ panfrost_create_sampler_view_bo(struct panfrost_sampler_view *so,
                 panfrost_translate_texture_type(so->base.target);
 
         if (device->quirks & IS_BIFROST) {
-                const struct util_format_description *desc =
-                        util_format_description(so->base.format);
                 unsigned char composed_swizzle[4];
                 util_format_compose_swizzles(desc->swizzle, user_swizzle, composed_swizzle);
 
@@ -986,6 +988,7 @@ panfrost_create_sampler_view_bo(struct panfrost_sampler_view *so,
                                 so->base.u.tex.last_level,
                                 so->base.u.tex.first_layer,
                                 so->base.u.tex.last_layer,
+                                texture->nr_samples,
                                 type, prsrc->layout);
 
                 so->bo = panfrost_bo_create(device, size, 0);
@@ -995,7 +998,7 @@ panfrost_create_sampler_view_bo(struct panfrost_sampler_view *so,
                                 so->bifrost_descriptor,
                                 texture->width0, texture->height0,
                                 depth, array_size,
-                                so->base.format,
+                                format,
                                 type, prsrc->layout,
                                 so->base.u.tex.first_level,
                                 so->base.u.tex.last_level,
@@ -1013,6 +1016,7 @@ panfrost_create_sampler_view_bo(struct panfrost_sampler_view *so,
                                 so->base.u.tex.last_level,
                                 so->base.u.tex.first_layer,
                                 so->base.u.tex.last_layer,
+                                texture->nr_samples,
                                 type, prsrc->layout);
                 size += sizeof(struct mali_texture_descriptor);
 
@@ -1022,7 +1026,7 @@ panfrost_create_sampler_view_bo(struct panfrost_sampler_view *so,
                                 so->bo->cpu,
                                 texture->width0, texture->height0,
                                 depth, array_size,
-                                so->base.format,
+                                format,
                                 type, prsrc->layout,
                                 so->base.u.tex.first_level,
                                 so->base.u.tex.last_level,
@@ -1201,6 +1205,15 @@ panfrost_set_sample_mask(struct pipe_context *pipe,
 }
 
 static void
+panfrost_set_min_samples(struct pipe_context *pipe,
+                         unsigned min_samples)
+{
+        struct panfrost_context *ctx = pan_context(pipe);
+        ctx->min_samples = min_samples;
+}
+
+
+static void
 panfrost_set_clip_state(struct pipe_context *pipe,
                         const struct pipe_clip_state *clip)
 {
@@ -1370,8 +1383,8 @@ panfrost_get_query_result(struct pipe_context *pipe,
         case PIPE_QUERY_OCCLUSION_COUNTER:
         case PIPE_QUERY_OCCLUSION_PREDICATE:
         case PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE:
-                panfrost_flush_batches_accessing_bo(ctx, query->bo, PAN_BO_ACCESS_WRITE);
-                panfrost_bo_wait(query->bo, INT64_MAX, PAN_BO_ACCESS_WRITE);
+                panfrost_flush_batches_accessing_bo(ctx, query->bo, false);
+                panfrost_bo_wait(query->bo, INT64_MAX, false);
 
                 /* Read back the query results */
                 unsigned *result = (unsigned *) query->bo->cpu;
@@ -1387,7 +1400,7 @@ panfrost_get_query_result(struct pipe_context *pipe,
 
         case PIPE_QUERY_PRIMITIVES_GENERATED:
         case PIPE_QUERY_PRIMITIVES_EMITTED:
-                panfrost_flush_all_batches(ctx, true);
+                panfrost_flush_all_batches(ctx, 0);
                 vresult->u64 = query->end - query->start;
                 break;
 
@@ -1507,6 +1520,7 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
         gallium->delete_depth_stencil_alpha_state = panfrost_delete_depth_stencil_state;
 
         gallium->set_sample_mask = panfrost_set_sample_mask;
+        gallium->set_min_samples = panfrost_set_min_samples;
 
         gallium->set_clip_state = panfrost_set_clip_state;
         gallium->set_viewport_states = panfrost_set_viewport_states;
@@ -1554,6 +1568,11 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
 
         panfrost_batch_init(ctx);
         panfrost_invalidate_frame(ctx);
+
+        if (!(dev->quirks & IS_BIFROST)) {
+                for (unsigned c = 0; c < PIPE_MAX_COLOR_BUFS; ++c)
+                        ctx->blit_blend.rt[c].shaders = _mesa_hash_table_u64_create(ctx);
+        }
 
         /* By default mask everything on */
         ctx->sample_mask = ~0;

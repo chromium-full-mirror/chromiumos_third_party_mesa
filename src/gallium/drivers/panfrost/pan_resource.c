@@ -47,19 +47,8 @@
 #include "pan_resource.h"
 #include "pan_util.h"
 #include "pan_tiling.h"
-#include "pandecode/decode.h"
+#include "decode.h"
 #include "panfrost-quirks.h"
-
-void
-panfrost_resource_reset_damage(struct panfrost_resource *pres)
-{
-        /* We set the damage extent to the full resource size but keep the
-         * damage box empty so that the FB content is reloaded by default.
-         */
-        memset(&pres->damage, 0, sizeof(pres->damage));
-        pres->damage.extent.maxx = pres->base.width0;
-        pres->damage.extent.maxy = pres->base.height0;
-}
 
 static struct pipe_resource *
 panfrost_resource_from_handle(struct pipe_screen *pscreen,
@@ -90,7 +79,7 @@ panfrost_resource_from_handle(struct pipe_screen *pscreen,
         rsc->slices[0].stride = whandle->stride;
         rsc->slices[0].offset = whandle->offset;
         rsc->slices[0].initialized = true;
-        panfrost_resource_reset_damage(rsc);
+        panfrost_resource_set_damage_region(NULL, &rsc->base, 0, NULL);
 
         if (dev->quirks & IS_BIFROST &&
             templat->bind & PIPE_BIND_RENDER_TARGET) {
@@ -188,6 +177,7 @@ panfrost_create_surface(struct pipe_context *pipe,
                         assert(surf_tmpl->u.tex.level <= pt->last_level);
                         ps->width = u_minify(pt->width0, surf_tmpl->u.tex.level);
                         ps->height = u_minify(pt->height0, surf_tmpl->u.tex.level);
+                        ps->nr_samples = surf_tmpl->nr_samples;
                         ps->u.tex.level = surf_tmpl->u.tex.level;
                         ps->u.tex.first_layer = surf_tmpl->u.tex.first_layer;
                         ps->u.tex.last_layer = surf_tmpl->u.tex.last_layer;
@@ -441,56 +431,28 @@ panfrost_resource_set_damage_region(struct pipe_screen *screen,
                                     const struct pipe_box *rects)
 {
         struct panfrost_resource *pres = pan_resource(res);
-        struct pipe_box *damage_rect = &pres->damage.biggest_rect;
         struct pipe_scissor_state *damage_extent = &pres->damage.extent;
         unsigned int i;
 
-	if (!nrects) {
-		panfrost_resource_reset_damage(pres);
-		return;
-	}
+        if (pres->damage.inverted_rects)
+                ralloc_free(pres->damage.inverted_rects);
 
-        /* We keep track of 2 different things here:
-         * 1 the damage extent: the quad including all damage regions. Will be
-         *   used restrict the rendering area
-         * 2 the biggest damage rectangle: when there are more than one damage
-         *   rect we keep the biggest one and will generate 4 wallpaper quads
-         *   out of it (see panfrost_draw_wallpaper() for more details). We
-         *   might want to do something smarter at some point.
-         *
-         *                _________________________________
-         *                |                               |
-         *                |    _________________________  |
-         *                |   | rect1|         _________| |
-         *                |   |______|_____   | rect 3: | |
-         *                |   |    | rect2 |  | biggest | |
-         *                |   |    |_______|  |  rect   | |
-         *                |   |_______________|_________| |
-         *                |        damage extent          |
-         *                |_______________________________|
-         *                            resource
-         */
         memset(&pres->damage, 0, sizeof(pres->damage));
+
+        pres->damage.inverted_rects =
+                pan_subtract_damage(pres,
+                        res->width0, res->height0,
+                        nrects, rects, &pres->damage.inverted_len);
+
+        /* Track the damage extent: the quad including all damage regions. Will
+         * be used restrict the rendering area */
+
         damage_extent->minx = 0xffff;
         damage_extent->miny = 0xffff;
+
         for (i = 0; i < nrects; i++) {
                 int x = rects[i].x, w = rects[i].width, h = rects[i].height;
                 int y = res->height0 - (rects[i].y + h);
-
-                /* Clamp x,y,w,h to prevent negative values. */
-                if (x < 0) {
-                        h += x;
-                        x = 0;
-                }
-                if (y < 0) {
-                        w += y;
-                        y = 0;
-                }
-                w = MAX2(w, 0);
-                h = MAX2(h, 0);
-
-                if (damage_rect->width * damage_rect->height < w * h)
-                       u_box_2d(x, y, w, h, damage_rect);
 
                 damage_extent->minx = MIN2(damage_extent->minx, x);
                 damage_extent->miny = MIN2(damage_extent->miny, y);
@@ -499,6 +461,14 @@ panfrost_resource_set_damage_region(struct pipe_screen *screen,
                 damage_extent->maxy = MAX2(damage_extent->maxy,
                                            MIN2(y + h, res->height0));
         }
+
+        if (nrects == 0) {
+                damage_extent->minx = 0;
+                damage_extent->miny = 0;
+                damage_extent->maxx = res->width0;
+                damage_extent->maxy = res->height0;
+        }
+
 }
 
 static struct pipe_resource *
@@ -515,6 +485,7 @@ panfrost_resource_create(struct pipe_screen *screen,
         case PIPE_TEXTURE_3D:
         case PIPE_TEXTURE_CUBE:
         case PIPE_TEXTURE_RECT:
+        case PIPE_TEXTURE_1D_ARRAY:
         case PIPE_TEXTURE_2D_ARRAY:
                 break;
         default:
@@ -535,7 +506,7 @@ panfrost_resource_create(struct pipe_screen *screen,
         util_range_init(&so->valid_buffer_range);
 
         panfrost_resource_create_bo(dev, so);
-        panfrost_resource_reset_damage(so);
+        panfrost_resource_set_damage_region(NULL, &so->base, 0, NULL);
 
         if (template->bind & PIPE_BIND_INDEX_BUFFER)
                 so->index_cache = rzalloc(so, struct panfrost_minmax_cache);
@@ -609,8 +580,8 @@ panfrost_transfer_map(struct pipe_context *pctx,
                  * mitigates broken depth reload.
                  */
 
-                panfrost_flush_batches_accessing_bo(ctx, bo, PAN_BO_ACCESS_WRITE);
-                panfrost_bo_wait(bo, INT64_MAX, PAN_BO_ACCESS_WRITE);
+                panfrost_flush_batches_accessing_bo(ctx, bo, false);
+                panfrost_bo_wait(bo, INT64_MAX, false);
 
                 create_new_bo = true;
                 copy_resource = true;
@@ -622,7 +593,7 @@ panfrost_transfer_map(struct pipe_context *pctx,
                  * batches), we try to allocate a new one to avoid waiting.
                  */
                 if (panfrost_pending_batches_access_bo(ctx, bo) ||
-                    !panfrost_bo_wait(bo, 0, PAN_BO_ACCESS_RW)) {
+                    !panfrost_bo_wait(bo, 0, true)) {
                         /* We want the BO to be MMAPed. */
                         uint32_t flags = bo->flags & ~PAN_BO_DELAY_MMAP;
                         struct panfrost_bo *newbo = NULL;
@@ -658,10 +629,10 @@ panfrost_transfer_map(struct pipe_context *pctx,
         } else if (!(usage & PIPE_TRANSFER_UNSYNCHRONIZED)) {
                 if (usage & PIPE_TRANSFER_WRITE) {
                         panfrost_flush_batches_accessing_bo(ctx, bo, true);
-                        panfrost_bo_wait(bo, INT64_MAX, PAN_BO_ACCESS_RW);
+                        panfrost_bo_wait(bo, INT64_MAX, true);
                 } else if (usage & PIPE_TRANSFER_READ) {
                         panfrost_flush_batches_accessing_bo(ctx, bo, false);
-                        panfrost_bo_wait(bo, INT64_MAX, PAN_BO_ACCESS_WRITE);
+                        panfrost_bo_wait(bo, INT64_MAX, false);
                 }
         }
 
@@ -965,6 +936,10 @@ static const struct u_transfer_vtbl transfer_vtbl = {
 void
 panfrost_resource_screen_init(struct pipe_screen *pscreen)
 {
+        struct panfrost_device *dev = pan_device(pscreen);
+
+        bool fake_rgtc = !panfrost_supports_compressed_format(dev, MALI_BC4_UNORM);
+
         //pscreen->base.resource_create_with_modifiers =
         //        panfrost_resource_create_with_modifiers;
         pscreen->resource_create = u_transfer_helper_resource_create;
@@ -973,7 +948,7 @@ panfrost_resource_screen_init(struct pipe_screen *pscreen)
         pscreen->resource_get_handle = panfrost_resource_get_handle;
         pscreen->transfer_helper = u_transfer_helper_create(&transfer_vtbl,
                                         true, false,
-                                        true, true);
+                                        fake_rgtc, true);
 }
 
 void

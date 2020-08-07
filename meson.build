@@ -51,6 +51,7 @@ pre_args = [
 
 with_vulkan_icd_dir = get_option('vulkan-icd-dir')
 with_tests = get_option('build-tests')
+with_aco_tests = get_option('build-aco-tests')
 with_glx_read_only_text = get_option('glx-read-only-text')
 with_glx_direct = get_option('glx-direct')
 with_osmesa = get_option('osmesa')
@@ -275,6 +276,9 @@ endif
 if with_gallium_tegra and not with_gallium_nouveau
   error('tegra driver requires nouveau driver')
 endif
+if with_aco_tests and not with_amd_vk
+  error('ACO tests require Radv')
+endif
 
 if host_machine.system() == 'darwin'
   with_dri_platform = 'apple'
@@ -385,7 +389,7 @@ elif _xlib_lease == 'false'
   warning('xlib_lease option "false" deprecated, please use "disabled" instead.')
 endif
 if _xlib_lease == 'auto'
-  with_xlib_lease = with_platform_x11 and with_gbm
+  with_xlib_lease = with_platform_x11 and system_has_kms_drm
 else
   with_xlib_lease = _xlib_lease == 'enabled'
 endif
@@ -537,6 +541,10 @@ endif
 
 if with_gallium_zink
   dep_vulkan = dependency('vulkan')
+endif
+
+if with_vulkan_overlay_layer or with_aco_tests
+  prog_glslang = find_program('glslangValidator')
 endif
 
 _xvmc = get_option('gallium-xvmc')
@@ -828,19 +836,29 @@ endif
 if with_gbm
   pre_args += '-DHAVE_DRM_PLATFORM'
 endif
+
+with_android_stub = get_option('android-stub')
+if with_android_stub and not with_platform_android
+  error('`-D android-stub=true` makes no sense without `-D platforms=android`')
+endif
+
 if with_platform_android
-  dep_android = [
-    dependency('cutils'),
-    dependency('hardware'),
-    dependency('sync'),
+  if not with_android_stub
+    dep_android = [
+      dependency('cutils'),
+      dependency('hardware'),
+      dependency('sync'),
+      dependency('backtrace')
+    ]
+    if get_option('platform-sdk-version') >= 26
+      dep_android += dependency('nativewindow')
+    endif
+  endif
+  pre_args += [
+    '-DHAVE_ANDROID_PLATFORM',
+    '-DANDROID',
+    '-DANDROID_API_LEVEL=' + get_option('platform-sdk-version').to_string()
   ]
-  if with_gallium
-    dep_android += dependency('backtrace')
-  endif
-  if get_option('platform-sdk-version') >= 26
-    dep_android += dependency('nativewindow')
-  endif
-  pre_args += '-DHAVE_ANDROID_PLATFORM'
 endif
 if with_platform_haiku
   pre_args += '-DHAVE_HAIKU_PLATFORM'
@@ -1755,6 +1773,19 @@ if _sensors != 'disabled'
   endif
 else
   dep_lmsensors = null_dep
+endif
+
+# If the compiler supports it, put function and data symbols in their
+# own sections and GC the sections after linking.  This lets drivers
+# drop shared code unused by that specific driver (particularly
+# relevant for Vulkan drivers).
+if cc.has_link_argument('-Wl,--gc-sections')
+  add_project_arguments('-Wl,--gc-sections', language : ['c', 'cpp'])
+  foreach a: ['-ffunction-sections', '-fdata-sections']
+    if cc.has_argument(a)
+      add_project_arguments(a, language : ['c', 'cpp'])
+    endif
+  endforeach
 endif
 
 foreach a : pre_args

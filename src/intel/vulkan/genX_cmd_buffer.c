@@ -3264,6 +3264,28 @@ cmd_buffer_flush_push_constants(struct anv_cmd_buffer *cmd_buffer,
 }
 
 void
+genX(cmd_buffer_emit_clip)(struct anv_cmd_buffer *cmd_buffer)
+{
+   struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
+
+   if (cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_PIPELINE |
+                                      ANV_CMD_DIRTY_DYNAMIC_VIEWPORT)) {
+      uint32_t dwords[GENX(3DSTATE_CLIP_length)];
+      int32_t count =
+         cmd_buffer->state.gfx.dynamic.viewport.count > 0 ?
+            cmd_buffer->state.gfx.dynamic.viewport.count - 1 : 0;
+
+      struct GENX(3DSTATE_CLIP) clip = {
+         GENX(3DSTATE_CLIP_header),
+         .MaximumVPIndex = count,
+      };
+      GENX(3DSTATE_CLIP_pack)(NULL, dwords, &clip);
+      anv_batch_emit_merge(&cmd_buffer->batch, dwords,
+                           pipeline->gen7.clip);
+   }
+}
+
+void
 genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
 {
    struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
@@ -3298,6 +3320,17 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
          struct anv_buffer *buffer = cmd_buffer->state.vertex_bindings[vb].buffer;
          uint32_t offset = cmd_buffer->state.vertex_bindings[vb].offset;
 
+         /* If dynamic, use stride/size from vertex binding, otherwise use
+          * stride/size that was setup in the pipeline object.
+          */
+         bool dynamic_stride = cmd_buffer->state.gfx.dynamic.dyn_vbo_stride;
+         bool dynamic_size = cmd_buffer->state.gfx.dynamic.dyn_vbo_size;
+
+         uint32_t stride = dynamic_stride ?
+            cmd_buffer->state.vertex_bindings[vb].stride : pipeline->vb[vb].stride;
+         uint32_t size = dynamic_size ?
+            cmd_buffer->state.vertex_bindings[vb].size : buffer->size;
+
          struct GENX(VERTEX_BUFFER_STATE) state;
          if (buffer) {
             state = (struct GENX(VERTEX_BUFFER_STATE)) {
@@ -3308,16 +3341,15 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
                .BufferAccessType = pipeline->vb[vb].instanced ? INSTANCEDATA : VERTEXDATA,
                .InstanceDataStepRate = pipeline->vb[vb].instance_divisor,
 #endif
-
                .AddressModifyEnable = true,
-               .BufferPitch = pipeline->vb[vb].stride,
+               .BufferPitch = stride,
                .BufferStartingAddress = anv_address_add(buffer->address, offset),
                .NullVertexBuffer = offset >= buffer->size,
 
 #if GEN_GEN >= 8
-               .BufferSize = buffer->size - offset
+               .BufferSize = size - offset
 #else
-               .EndAddress = anv_address_add(buffer->address, buffer->size - 1),
+               .EndAddress = anv_address_add(buffer->address, size - 1),
 #endif
             };
          } else {
@@ -3382,6 +3414,9 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
       cmd_buffer_alloc_push_constants(cmd_buffer);
    }
 
+   if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_PIPELINE)
+      cmd_buffer->state.gfx.primitive_topology = pipeline->topology;
+
 #if GEN_GEN <= 7
    if (cmd_buffer->state.descriptors_dirty & VK_SHADER_STAGE_VERTEX_BIT ||
        cmd_buffer->state.push_constants_dirty & VK_SHADER_STAGE_VERTEX_BIT) {
@@ -3434,8 +3469,10 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
    if (dirty)
       cmd_buffer_emit_descriptor_pointers(cmd_buffer, dirty);
 
-   if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_DYNAMIC_VIEWPORT)
+   if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_DYNAMIC_VIEWPORT) {
+      genX(cmd_buffer_emit_clip)(cmd_buffer);
       gen8_cmd_buffer_emit_viewport(cmd_buffer);
+   }
 
    if (cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_DYNAMIC_VIEWPORT |
                                   ANV_CMD_DIRTY_PIPELINE)) {
@@ -3581,7 +3618,7 @@ void genX(CmdDraw)(
    anv_batch_emit(&cmd_buffer->batch, GENX(3DPRIMITIVE), prim) {
       prim.PredicateEnable          = cmd_buffer->state.conditional_render_enabled;
       prim.VertexAccessType         = SEQUENTIAL;
-      prim.PrimitiveTopologyType    = pipeline->topology;
+      prim.PrimitiveTopologyType    = cmd_buffer->state.gfx.primitive_topology;
       prim.VertexCountPerInstance   = vertexCount;
       prim.StartVertexLocation      = firstVertex;
       prim.InstanceCount            = instanceCount;
@@ -3632,7 +3669,7 @@ void genX(CmdDrawIndexed)(
    anv_batch_emit(&cmd_buffer->batch, GENX(3DPRIMITIVE), prim) {
       prim.PredicateEnable          = cmd_buffer->state.conditional_render_enabled;
       prim.VertexAccessType         = RANDOM;
-      prim.PrimitiveTopologyType    = pipeline->topology;
+      prim.PrimitiveTopologyType    = cmd_buffer->state.gfx.primitive_topology;
       prim.VertexCountPerInstance   = indexCount;
       prim.StartVertexLocation      = firstIndex;
       prim.InstanceCount            = instanceCount;
@@ -3712,7 +3749,7 @@ void genX(CmdDrawIndirectByteCountEXT)(
    anv_batch_emit(&cmd_buffer->batch, GENX(3DPRIMITIVE), prim) {
       prim.IndirectParameterEnable  = true;
       prim.VertexAccessType         = SEQUENTIAL;
-      prim.PrimitiveTopologyType    = pipeline->topology;
+      prim.PrimitiveTopologyType    = cmd_buffer->state.gfx.primitive_topology;
    }
 
    update_dirty_vbs_for_gen8_vb_flush(cmd_buffer, SEQUENTIAL);
@@ -3797,7 +3834,7 @@ void genX(CmdDrawIndirect)(
          prim.IndirectParameterEnable  = true;
          prim.PredicateEnable          = cmd_buffer->state.conditional_render_enabled;
          prim.VertexAccessType         = SEQUENTIAL;
-         prim.PrimitiveTopologyType    = pipeline->topology;
+         prim.PrimitiveTopologyType    = cmd_buffer->state.gfx.primitive_topology;
       }
 
       update_dirty_vbs_for_gen8_vb_flush(cmd_buffer, SEQUENTIAL);
@@ -3847,7 +3884,7 @@ void genX(CmdDrawIndexedIndirect)(
          prim.IndirectParameterEnable  = true;
          prim.PredicateEnable          = cmd_buffer->state.conditional_render_enabled;
          prim.VertexAccessType         = RANDOM;
-         prim.PrimitiveTopologyType    = pipeline->topology;
+         prim.PrimitiveTopologyType    = cmd_buffer->state.gfx.primitive_topology;
       }
 
       update_dirty_vbs_for_gen8_vb_flush(cmd_buffer, RANDOM);
@@ -4002,7 +4039,7 @@ void genX(CmdDrawIndirectCount)(
          prim.IndirectParameterEnable  = true;
          prim.PredicateEnable          = true;
          prim.VertexAccessType         = SEQUENTIAL;
-         prim.PrimitiveTopologyType    = pipeline->topology;
+         prim.PrimitiveTopologyType    = cmd_buffer->state.gfx.primitive_topology;
       }
 
       update_dirty_vbs_for_gen8_vb_flush(cmd_buffer, SEQUENTIAL);
@@ -4074,7 +4111,7 @@ void genX(CmdDrawIndexedIndirectCount)(
          prim.IndirectParameterEnable  = true;
          prim.PredicateEnable          = true;
          prim.VertexAccessType         = RANDOM;
-         prim.PrimitiveTopologyType    = pipeline->topology;
+         prim.PrimitiveTopologyType    = cmd_buffer->state.gfx.primitive_topology;
       }
 
       update_dirty_vbs_for_gen8_vb_flush(cmd_buffer, RANDOM);

@@ -478,7 +478,7 @@ emit_alu(struct ir3_context *ctx, nir_alu_instr *alu)
 		dst[0]->cat5.type = TYPE_F32;
 		break;
 	case nir_op_fddx_fine:
-		dst[0] = ir3_DSXPP_1(b, src[0], 0);
+		dst[0] = ir3_DSXPP_MACRO(b, src[0], 0);
 		dst[0]->cat5.type = TYPE_F32;
 		break;
 	case nir_op_fddy:
@@ -488,7 +488,7 @@ emit_alu(struct ir3_context *ctx, nir_alu_instr *alu)
 		break;
 		break;
 	case nir_op_fddy_fine:
-		dst[0] = ir3_DSYPP_1(b, src[0], 0);
+		dst[0] = ir3_DSYPP_MACRO(b, src[0], 0);
 		dst[0]->cat5.type = TYPE_F32;
 		break;
 	case nir_op_flt:
@@ -785,8 +785,8 @@ emit_intrinsic_load_ubo(struct ir3_context *ctx, nir_intrinsic_instr *intr,
 		base_lo = create_uniform(b, ubo + (src0->regs[1]->iim_val * ptrsz));
 		base_hi = create_uniform(b, ubo + (src0->regs[1]->iim_val * ptrsz) + 1);
 	} else {
-		base_lo = create_uniform_indirect(b, ubo, ir3_get_addr0(ctx, src0, ptrsz));
-		base_hi = create_uniform_indirect(b, ubo + 1, ir3_get_addr0(ctx, src0, ptrsz));
+		base_lo = create_uniform_indirect(b, ubo, TYPE_U32, ir3_get_addr0(ctx, src0, ptrsz));
+		base_hi = create_uniform_indirect(b, ubo + 1, TYPE_U32, ir3_get_addr0(ctx, src0, ptrsz));
 
 		/* NOTE: since relative addressing is used, make sure constlen is
 		 * at least big enough to cover all the UBO addresses, since the
@@ -847,6 +847,28 @@ static void
 emit_intrinsic_ssbo_size(struct ir3_context *ctx, nir_intrinsic_instr *intr,
 		struct ir3_instruction **dst)
 {
+	if (ir3_bindless_resource(intr->src[0])) {
+		struct ir3_block *b = ctx->block;
+		struct ir3_instruction *ibo = ir3_ssbo_to_ibo(ctx, intr->src[0]);
+		struct ir3_instruction *resinfo = ir3_RESINFO(b, ibo, 0);
+		resinfo->cat6.iim_val = 1;
+		resinfo->cat6.d = 1;
+		resinfo->cat6.type = TYPE_U32;
+		resinfo->cat6.typed = false;
+		/* resinfo has no writemask and always writes out 3 components */
+		resinfo->regs[0]->wrmask = MASK(3);
+		ir3_handle_bindless_cat6(resinfo, intr->src[0]);
+		struct ir3_instruction *resinfo_dst;
+		ir3_split_dest(b, &resinfo_dst, resinfo, 0, 1);
+		/* Unfortunately resinfo returns the array length, i.e. in dwords,
+		 * while NIR expects us to return the size in bytes.
+		 *
+		 * TODO: fix this in NIR.
+		 */
+		*dst = ir3_SHL_B(b, resinfo_dst, 0, create_immed(b, 2), 0);
+		return;
+	}
+
 	/* SSBO size stored as a const starting at ssbo_sizes: */
 	const struct ir3_const_state *const_state = ir3_const_state(ctx->so);
 	unsigned blk_idx = nir_src_as_uint(intr->src[0]);
@@ -1502,6 +1524,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 			src = ir3_get_src(ctx, &intr->src[0]);
 			for (int i = 0; i < dest_components; i++) {
 				dst[i] = create_uniform_indirect(b, idx + i,
+						nir_dest_bit_size(intr->dest) == 16 ? TYPE_F16 : TYPE_F32,
 						ir3_get_addr0(ctx, src[0], 1));
 			}
 			/* NOTE: if relative addressing is used, we set
@@ -3209,6 +3232,9 @@ setup_output(struct ir3_context *ctx, nir_variable *out)
 		case FRAG_RESULT_SAMPLE_MASK:
 			so->writes_smask = true;
 			break;
+		case FRAG_RESULT_STENCIL:
+			so->writes_stencilref = true;
+			break;
 		default:
 			slot += out->data.index; /* For dual-src blend */
 			if (slot >= FRAG_RESULT_DATA0)
@@ -3317,7 +3343,7 @@ emit_instructions(struct ir3_context *ctx)
 	}
 
 	/* Setup inputs: */
-	nir_foreach_variable (var, &ctx->s->inputs) {
+	nir_foreach_shader_in_variable (var, ctx->s) {
 		setup_input(ctx, var);
 	}
 
@@ -3365,7 +3391,7 @@ emit_instructions(struct ir3_context *ctx)
 	}
 
 	/* Setup outputs: */
-	nir_foreach_variable (var, &ctx->s->outputs) {
+	nir_foreach_shader_out_variable (var, ctx->s) {
 		setup_output(ctx, var);
 	}
 

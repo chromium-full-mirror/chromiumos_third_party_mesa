@@ -25,34 +25,9 @@
 #include "aco_ir.h"
 #include "vulkan/radv_shader.h"
 #include "vulkan/radv_shader_args.h"
-#include "c11/threads.h"
-#include "util/debug.h"
 
 #include <iostream>
 #include <sstream>
-
-namespace aco {
-uint64_t debug_flags = 0;
-
-static const struct debug_control aco_debug_options[] = {
-   {"validateir", DEBUG_VALIDATE},
-   {"validatera", DEBUG_VALIDATE_RA},
-   {"perfwarn", DEBUG_PERFWARN},
-   {NULL, 0}
-};
-
-static once_flag init_once_flag = ONCE_FLAG_INIT;
-
-static void init()
-{
-   debug_flags = parse_debug_string(getenv("ACO_DEBUG"), aco_debug_options);
-
-   #ifndef NDEBUG
-   /* enable some flags by default on debug builds */
-   debug_flags |= aco::DEBUG_VALIDATE;
-   #endif
-}
-}
 
 static radv_compiler_statistic_info statistic_infos[] = {
    [aco::statistic_hash] = {"Hash", "CRC32 hash of code and constant data"},
@@ -68,12 +43,21 @@ static radv_compiler_statistic_info statistic_infos[] = {
    [aco::statistic_vgpr_presched] = {"Pre-Sched VGPRs", "VGPR usage before scheduling"},
 };
 
+static void validate(aco::Program *program)
+{
+   if (!(aco::debug_flags & aco::DEBUG_VALIDATE))
+      return;
+
+   bool is_valid = aco::validate(program, stderr);
+   assert(is_valid);
+}
+
 void aco_compile_shader(unsigned shader_count,
                         struct nir_shader *const *shaders,
                         struct radv_shader_binary **binary,
                         struct radv_shader_args *args)
 {
-   call_once(&aco::init_once_flag, aco::init);
+   aco::init();
 
    ac_shader_config config = {0};
    std::unique_ptr<aco::Program> program{new aco::Program};
@@ -95,7 +79,7 @@ void aco_compile_shader(unsigned shader_count,
    /* Phi lowering */
    aco::lower_phis(program.get());
    aco::dominator_tree(program.get());
-   aco::validate(program.get(), stderr);
+   validate(program.get());
 
    /* Optimization */
    aco::value_numbering(program.get());
@@ -104,15 +88,11 @@ void aco_compile_shader(unsigned shader_count,
    /* cleanup and exec mask handling */
    aco::setup_reduce_temp(program.get());
    aco::insert_exec_mask(program.get());
-   aco::validate(program.get(), stderr);
+   validate(program.get());
 
    /* spilling and scheduling */
    aco::live live_vars = aco::live_var_analysis(program.get(), args->options);
    aco::spill(program.get(), live_vars, args->options);
-   if (program->collect_statistics)
-      aco::collect_presched_stats(program.get());
-   aco::schedule_program(program.get(), live_vars);
-   aco::validate(program.get(), stderr);
 
    std::string llvm_ir;
    if (args->options->record_ir) {
@@ -129,6 +109,11 @@ void aco_compile_shader(unsigned shader_count,
       free(data);
    }
 
+   if (program->collect_statistics)
+      aco::collect_presched_stats(program.get());
+   aco::schedule_program(program.get(), live_vars);
+   validate(program.get());
+
    /* Register Allocation */
    aco::register_allocation(program.get(), live_vars.live_out);
    if (args->options->dump_shader) {
@@ -142,7 +127,7 @@ void aco_compile_shader(unsigned shader_count,
       abort();
    }
 
-   aco::validate(program.get(), stderr);
+   validate(program.get());
 
    /* Lower to HW Instructions */
    aco::ssa_elimination(program.get());

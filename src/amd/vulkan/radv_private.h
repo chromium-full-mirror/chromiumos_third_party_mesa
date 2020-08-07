@@ -675,6 +675,8 @@ struct radv_meta_state {
 
 #define RADV_MAX_QUEUE_FAMILIES 3
 
+struct radv_deferred_queue_submission;
+
 enum ring_type radv_queue_family_to_ring(int f);
 
 struct radv_queue {
@@ -711,6 +713,13 @@ struct radv_queue {
 
 	struct list_head pending_submissions;
 	pthread_mutex_t pending_mutex;
+
+	pthread_mutex_t thread_mutex;
+	pthread_cond_t thread_cond;
+	struct radv_deferred_queue_submission *thread_submission;
+	pthread_t submission_thread;
+	bool thread_exit;
+	bool thread_running;
 };
 
 struct radv_bo_list {
@@ -1612,7 +1621,6 @@ unsigned radv_format_meta_fs_key(VkFormat format);
 
 struct radv_multisample_state {
 	uint32_t db_eqaa;
-	uint32_t pa_sc_line_cntl;
 	uint32_t pa_sc_mode_cntl_0;
 	uint32_t pa_sc_mode_cntl_1;
 	uint32_t pa_sc_aa_config;
@@ -1623,10 +1631,6 @@ struct radv_multisample_state {
 struct radv_prim_vertex_count {
 	uint8_t min;
 	uint8_t incr;
-};
-
-struct radv_vertex_elements_info {
-	uint32_t format_size[MAX_VERTEX_ATTRIBS];
 };
 
 struct radv_ia_multi_vgt_param_helpers {
@@ -1660,8 +1664,6 @@ struct radv_pipeline {
 	uint32_t                                  ctx_cs_hash;
 	struct radeon_cmdbuf                      ctx_cs;
 
-	struct radv_vertex_elements_info             vertex_elements;
-
 	uint32_t                                     binding_stride[MAX_VBS];
 	uint8_t                                      num_vertex_bindings;
 
@@ -1688,7 +1690,6 @@ struct radv_pipeline {
 			/* Used for rbplus */
 			uint32_t col_format;
 			uint32_t cb_target_mask;
-			bool is_dual_src;
 		} graphics;
 	};
 
@@ -1719,7 +1720,7 @@ struct radv_userdata_info *radv_lookup_user_sgpr(struct radv_pipeline *pipeline,
 						 gl_shader_stage stage,
 						 int idx);
 
-struct radv_shader_variant *radv_get_shader(struct radv_pipeline *pipeline,
+struct radv_shader_variant *radv_get_shader(const struct radv_pipeline *pipeline,
 					    gl_shader_stage stage);
 
 struct radv_graphics_pipeline_create_info {
@@ -2270,6 +2271,7 @@ typedef enum {
 	RADV_SEMAPHORE_NONE,
 	RADV_SEMAPHORE_WINSYS,
 	RADV_SEMAPHORE_SYNCOBJ,
+	RADV_SEMAPHORE_TIMELINE_SYNCOBJ,
 	RADV_SEMAPHORE_TIMELINE,
 } radv_semaphore_kind;
 
@@ -2310,12 +2312,20 @@ struct radv_timeline {
 	struct list_head waiters;
 };
 
+struct radv_timeline_syncobj {
+	/* Keep syncobj first, so common-code can just handle this as
+	 * non-timeline syncobj. */
+	uint32_t syncobj;
+	uint64_t max_point; /* max submitted point. */
+};
+
 struct radv_semaphore_part {
 	radv_semaphore_kind kind;
 	union {
 		uint32_t syncobj;
 		struct radeon_winsys_sem *ws_sem;
 		struct radv_timeline timeline;
+		struct radv_timeline_syncobj timeline_syncobj;
 	};
 };
 
@@ -2364,13 +2374,32 @@ void radv_initialize_fmask(struct radv_cmd_buffer *cmd_buffer,
 			   struct radv_image *image,
 			   const VkImageSubresourceRange *range);
 
+typedef enum {
+	RADV_FENCE_NONE,
+	RADV_FENCE_WINSYS,
+	RADV_FENCE_SYNCOBJ,
+	RADV_FENCE_WSI,
+} radv_fence_kind;
+
+struct radv_fence_part {
+	radv_fence_kind kind;
+
+	union {
+		/* AMDGPU winsys fence. */
+		struct radeon_winsys_fence *fence;
+
+		/* DRM syncobj handle for syncobj-based fences. */
+		uint32_t syncobj;
+
+		/* WSI fence. */
+		struct wsi_fence *fence_wsi;
+	};
+};
+
 struct radv_fence {
 	struct vk_object_base base;
-	struct radeon_winsys_fence *fence;
-	struct wsi_fence *fence_wsi;
-
-	uint32_t syncobj;
-	uint32_t temp_syncobj;
+	struct radv_fence_part permanent;
+	struct radv_fence_part temporary;
 };
 
 /* radv_nir_to_llvm.c */
@@ -2573,6 +2602,16 @@ static inline uint32_t si_translate_stencil_op(enum VkStencilOp op)
 	default:
 		return 0;
 	}
+}
+
+/**
+ * Helper used for debugging compiler issues by enabling/disabling LLVM for a
+ * specific shader stage (developers only).
+ */
+static inline bool
+radv_use_llvm_for_stage(struct radv_device *device, UNUSED gl_shader_stage stage)
+{
+	return device->physical_device->use_llvm;
 }
 
 #define RADV_DEFINE_HANDLE_CASTS(__radv_type, __VkType)		\

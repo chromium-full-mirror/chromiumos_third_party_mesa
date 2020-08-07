@@ -1278,13 +1278,14 @@ st_create_fp_variant(struct st_context *st,
       }
 
       if (key->lower_two_sided_color) {
-         NIR_PASS_V(state.ir.nir, nir_lower_two_sided_color);
+         bool face_sysval = st->ctx->Const.GLSLFrontFacingIsSysVal;
+         NIR_PASS_V(state.ir.nir, nir_lower_two_sided_color, face_sysval);
          finalize = true;
       }
 
       if (key->persample_shading) {
           nir_shader *shader = state.ir.nir;
-          nir_foreach_variable(var, &shader->inputs)
+          nir_foreach_shader_in_variable(var, shader)
              var->data.sample = true;
           finalize = true;
       }

@@ -82,7 +82,8 @@ struct panfrost_query {
 
 struct panfrost_fence {
         struct pipe_reference reference;
-        struct util_dynarray syncfds;
+        uint32_t syncobj;
+        bool signaled;
 };
 
 struct panfrost_streamout {
@@ -164,6 +165,9 @@ struct panfrost_context {
         struct pipe_depth_stencil_alpha_state *depth_stencil;
         struct pipe_stencil_ref stencil_ref;
         unsigned sample_mask;
+        unsigned min_samples;
+
+        struct panfrost_blend_state blit_blend;
 };
 
 /* Corresponds to the CSO */

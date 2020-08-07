@@ -191,12 +191,9 @@ struct ir3_const_state {
 		uint32_t off[IR3_MAX_SHADER_IMAGES];
 	} image_dims;
 
-	unsigned immediate_idx;
 	unsigned immediates_count;
 	unsigned immediates_size;
-	struct {
-		uint32_t val[4];
-	} *immediates;
+	uint32_t *immediates;
 
 	/* State of ubo access lowered to push consts: */
 	struct ir3_ubo_analysis_state ubo_state;
@@ -564,7 +561,7 @@ struct ir3_shader_variant {
 		uint8_t regid;
 		bool    half : 1;
 	} outputs[32 + 2];  /* +POSITION +PSIZE */
-	bool writes_pos, writes_smask, writes_psize;
+	bool writes_pos, writes_smask, writes_psize, writes_stencilref;
 
 	/* Size in dwords of all outputs for VS, size of entire patch for HS. */
 	uint32_t output_size;

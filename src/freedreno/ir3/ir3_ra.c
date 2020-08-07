@@ -115,15 +115,6 @@ intersects(unsigned a_start, unsigned a_end, unsigned b_start, unsigned b_end)
 	return !((a_start >= b_end) || (b_start >= a_end));
 }
 
-static unsigned
-reg_size_for_array(struct ir3_array *arr)
-{
-	if (arr->half)
-		return DIV_ROUND_UP(arr->length, 2);
-
-	return arr->length;
-}
-
 static bool
 instr_before(struct ir3_instruction *a, struct ir3_instruction *b)
 {
@@ -552,8 +543,8 @@ ra_init(struct ir3_ra_ctx *ctx)
 	base = ctx->class_base[total_class_count];
 	foreach_array (arr, &ctx->ir->array_list) {
 		arr->base = base;
-		ctx->class_alloc_count[total_class_count] += reg_size_for_array(arr);
-		base += reg_size_for_array(arr);
+		ctx->class_alloc_count[total_class_count] += arr->length;
+		base += arr->length;
 	}
 	ctx->alloc_count += ctx->class_alloc_count[total_class_count];
 
@@ -565,6 +556,27 @@ ra_init(struct ir3_ra_ctx *ctx)
 
 	/* Add vreg name for prefetch-exclusion range: */
 	ctx->prefetch_exclude_node = ctx->alloc_count++;
+
+	if (RA_DEBUG) {
+		d("INSTRUCTION VREG NAMES:");
+		foreach_block (block, &ctx->ir->block_list) {
+			foreach_instr (instr, &block->instr_list) {
+				if (!ctx->instrd[instr->ip].defn)
+					continue;
+				if (!writes_gpr(instr))
+					continue;
+				di(instr, "%04u", scalar_name(ctx, instr, 0));
+			}
+		}
+		d("ARRAY VREG NAMES:");
+		foreach_array (arr, &ctx->ir->array_list) {
+			d("%04u: arr%u", arr->base, arr->id);
+		}
+		d("EXTRA VREG NAMES:");
+		d("%04u: r0_xyz_nodes", ctx->r0_xyz_nodes);
+		d("%04u: hr0_xyz_nodes", ctx->hr0_xyz_nodes);
+		d("%04u: prefetch_exclude_node", ctx->prefetch_exclude_node);
+	}
 
 	ctx->g = ra_alloc_interference_graph(ctx->set->regs, ctx->alloc_count);
 	ralloc_steal(ctx->g, ctx->instrd);
@@ -605,8 +617,7 @@ name_to_array(struct ir3_ra_ctx *ctx, unsigned name)
 {
 	ra_assert(ctx, name_is_array(ctx, name));
 	foreach_array (arr, &ctx->ir->array_list) {
-		unsigned sz = reg_size_for_array(arr);
-		if (name < (arr->base + sz))
+		if (name < (arr->base + arr->length))
 			return arr;
 	}
 	ra_unreachable(ctx, "invalid array name");
@@ -1063,20 +1074,6 @@ ra_add_interference(struct ir3_ra_ctx *ctx)
 			d("   start_ip: %u", arr->start_ip);
 			d("   end_ip:   %u", arr->end_ip);
 		}
-		d("INSTRUCTION VREG NAMES:");
-		foreach_block (block, &ctx->ir->block_list) {
-			foreach_instr (instr, &block->instr_list) {
-				if (!ctx->instrd[instr->ip].defn)
-					continue;
-				if (!writes_gpr(instr))
-					continue;
-				di(instr, "%04u", scalar_name(ctx, instr, 0));
-			}
-		}
-		d("ARRAY VREG NAMES:");
-		foreach_array (arr, &ctx->ir->array_list) {
-			d("%04u: arr%u", arr->base, arr->id);
-		}
 	}
 
 	/* extend start/end ranges based on livein/liveout info from cfg: */
@@ -1240,6 +1237,15 @@ static void
 assign_arr_base(struct ir3_ra_ctx *ctx, struct ir3_array *arr,
 		struct ir3_instruction **precolor, unsigned nprecolor)
 {
+	/* In the mergedregs case, we convert full precision arrays
+	 * to their effective half-precision base, and find conflicts
+	 * amongst all other arrays/inputs.
+	 *
+	 * In the splitregs case (halfreg file and fullreg file do
+	 * not conflict), we ignore arrays and other pre-colors that
+	 * are not the same precision.
+	 */
+	bool mergedregs = ctx->v->mergedregs;
 	unsigned base = 0;
 
 	/* figure out what else we conflict with which has already
@@ -1249,14 +1255,34 @@ retry:
 	foreach_array (arr2, &ctx->ir->array_list) {
 		if (arr2 == arr)
 			break;
-		if (arr2->end_ip == 0)
+		ra_assert(ctx, arr2->start_ip <= arr2->end_ip);
+
+		unsigned base2 = arr2->reg;
+		unsigned len2  = arr2->length;
+		unsigned len   = arr->length;
+
+		if (mergedregs) {
+			/* convert into half-reg space: */
+			if (!arr2->half) {
+				base2 *= 2;
+				len2  *= 2;
+			}
+			if (!arr->half) {
+				len   *= 2;
+			}
+		} else if (arr2->half != arr->half) {
+			/* for split-register-file mode, we only conflict with
+			 * other arrays of same precision:
+			 */
 			continue;
+		}
+
 		/* if it intersects with liverange AND register range.. */
 		if (intersects(arr->start_ip, arr->end_ip,
 				arr2->start_ip, arr2->end_ip) &&
-			intersects(base, base + reg_size_for_array(arr),
-				arr2->reg, arr2->reg + reg_size_for_array(arr2))) {
-			base = MAX2(base, arr2->reg + reg_size_for_array(arr2));
+			intersects(base, base + len,
+				base2, base2 + len2)) {
+			base = MAX2(base, base2 + len2);
 			goto retry;
 		}
 	}
@@ -1274,19 +1300,42 @@ retry:
 		if (id->off > 0)
 			continue;
 
-		unsigned name = ra_name(ctx, id);
-		unsigned regid = instr->regs[0]->num;
+		unsigned name   = ra_name(ctx, id);
+		unsigned regid  = instr->regs[0]->num;
+		unsigned reglen = class_sizes[id->cls];
+		unsigned len    = arr->length;
+
+		if (mergedregs) {
+			/* convert into half-reg space: */
+			if (!is_half(instr)) {
+				regid  *= 2;
+				reglen *= 2;
+			}
+			if (!arr->half) {
+				len   *= 2;
+			}
+		} else if (is_half(instr) != arr->half) {
+			/* for split-register-file mode, we only conflict with
+			 * other arrays of same precision:
+			 */
+			continue;
+		}
 
 		/* Check if array intersects with liverange AND register
 		 * range of the input:
 		 */
 		if (intersects(arr->start_ip, arr->end_ip,
 						ctx->def[name], ctx->use[name]) &&
-				intersects(base, base + reg_size_for_array(arr),
-						regid, regid + class_sizes[id->cls])) {
-			base = MAX2(base, regid + class_sizes[id->cls]);
+				intersects(base, base + len,
+						regid, regid + reglen)) {
+			base = MAX2(base, regid + reglen);
 			goto retry;
 		}
+	}
+
+	/* convert back from half-reg space to fullreg space: */
+	if (mergedregs && !arr->half) {
+		base = DIV_ROUND_UP(base, 2);
 	}
 
 	arr->reg = base;
@@ -1337,11 +1386,8 @@ ra_precolor(struct ir3_ra_ctx *ctx, struct ir3_instruction **precolor, unsigned 
 		}
 	}
 
-	/* pre-assign array elements:
-	 *
-	 * TODO this is going to need some work for half-precision.. possibly
-	 * this is easier on a6xx, where we can just divide array size by two?
-	 * But on a5xx and earlier it will need to track two bases.
+	/*
+	 * Pre-assign array elements:
 	 */
 	foreach_array (arr, &ctx->ir->array_list) {
 
@@ -1351,28 +1397,12 @@ ra_precolor(struct ir3_ra_ctx *ctx, struct ir3_instruction **precolor, unsigned 
 		if (!ctx->scalar_pass)
 			assign_arr_base(ctx, arr, precolor, nprecolor);
 
-		unsigned base = arr->reg;
-
 		for (unsigned i = 0; i < arr->length; i++) {
-			unsigned name, reg;
+			unsigned cls = arr->half ? HALF_OFFSET : 0;
 
-			if (arr->half) {
-				/* Doesn't need to do this on older generations than a6xx,
-				 * since there's no conflict between full regs and half regs
-				 * on them.
-				 *
-				 * TODO Presumably "base" could start from 0 respectively
-				 * for half regs of arrays on older generations.
-				 */
-				unsigned base_half = base * 2 + i;
-				reg = ctx->set->gpr_to_ra_reg[0+HALF_OFFSET][base_half];
-				base = base_half / 2 + 1;
-			} else {
-				reg = ctx->set->gpr_to_ra_reg[0][base++];
-			}
-
-			name = arr->base + i;
-			ra_set_node_reg(ctx->g, name, reg);
+			ra_set_node_reg(ctx->g,
+					arr->base + i,   /* vreg name */
+					ctx->set->gpr_to_ra_reg[cls][arr->reg + i]);
 		}
 	}
 

@@ -25,9 +25,9 @@
  */
 
 #include "bit.h"
-#include "panfrost/pandecode/decode.h"
+#include "panfrost/lib/decode.h"
 #include "drm-uapi/panfrost_drm.h"
-#include "panfrost/encoder/pan_encoder.h"
+#include "panfrost/lib/pan_encoder.h"
 
 /* Standalone compiler tests submitting jobs directly to the hardware. Uses the
  * `bit` prefix for `BIfrost Tests` and because bit sounds wicked cool. */

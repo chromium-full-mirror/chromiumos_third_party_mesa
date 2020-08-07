@@ -608,6 +608,9 @@ system_value("global_invocation_index", 1, bit_sizes=[32, 64])
 system_value("work_dim", 1)
 system_value("line_width", 1)
 system_value("aa_line_width", 1)
+# BASE=0 for global/shader, BASE=1 for local/function
+system_value("scratch_base_ptr", 0, bit_sizes=[32,64], indices=[BASE])
+
 # Driver-specific viewport scale/offset parameters.
 #
 # VC4 and V3D need to emit a scaled version of the position in the vertex
@@ -866,7 +869,7 @@ intrinsic("bindless_resource_ir3", [1], dest_comp=1, indices=[DESC_SET], flags=[
 # src[] = { value }
 store("raw_output_pan", [], [])
 store("combined_output_pan", [1, 1, 1], [BASE, COMPONENT])
-load("raw_output_pan", [], [BASE], [CAN_ELIMINATE, CAN_REORDER])
+load("raw_output_pan", [1], [BASE], [CAN_ELIMINATE, CAN_REORDER])
 
 # Loads the sampler paramaters <min_lod, max_lod, lod_bias>
 # src[] = { sampler_index }

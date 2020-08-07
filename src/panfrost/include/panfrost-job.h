@@ -30,7 +30,13 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <panfrost-misc.h>
+#include <inttypes.h>
+
+typedef uint8_t  u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef uint64_t mali_ptr;
 
 enum mali_job_type {
         JOB_NOT_STARTED	= 0,
@@ -92,6 +98,10 @@ enum mali_func {
 /* Flags apply to unknown2_3? */
 
 #define MALI_HAS_MSAA		(1 << 0)
+
+/* Execute fragment shader per-sample if set (e.g. to implement gl_SampleID
+ * reads) */
+#define MALI_PER_SAMPLE         (1 << 2)
 #define MALI_CAN_DISCARD 	(1 << 5)
 
 /* Applies on SFBD systems, specifying that programmable blending is in use */
@@ -1689,14 +1699,22 @@ struct mali_single_framebuffer {
         /* More below this, maybe */
 } __attribute__((packed));
 
-/* Format bits for the render target flags. Setting MSAA alone works for on
- * chip MSAA. Setting MSAA with the LAYERED flag works for MSAA where each
- * sample is its own image (implements the ES3 spec directly but inefficient on
- * mobile). */
 
-#define MALI_MFBD_FORMAT_LAYERED  (1 << 0)
-#define MALI_MFBD_FORMAT_MSAA 	  (1 << 1)
-#define MALI_MFBD_FORMAT_SRGB 	  (1 << 2)
+/* SINGLE to disable multisampling, AVERAGE for
+ * EXT_multisampled_render_to_texture operation where multiple tilebuffer
+ * samples are implicitly resolved before writeout, MULTIPLE to write multiple
+ * samples inline, and LAYERED for ES3-style multisampling with each sample in
+ * a different buffer.
+ */
+
+enum mali_msaa_mode {
+        MALI_MSAA_SINGLE = 0,
+        MALI_MSAA_AVERAGE = 1,
+        MALI_MSAA_MULTIPLE = 2,
+        MALI_MSAA_LAYERED = 3,
+};
+
+#define MALI_MFBD_FORMAT_SRGB 	  (1 << 0)
 
 struct mali_rt_format {
         unsigned unk1 : 32;
@@ -1707,7 +1725,8 @@ struct mali_rt_format {
         unsigned unk3 : 4;
         unsigned unk4 : 1;
         enum mali_block_format block : 2;
-        unsigned flags : 4;
+        enum mali_msaa_mode msaa : 2;
+        unsigned flags : 2;
 
         unsigned swizzle : 12;
 
@@ -1773,7 +1792,7 @@ struct mali_render_target {
  */
 
 /* flags_hi */
-#define MALI_EXTRA_PRESENT      (0x10)
+#define MALI_EXTRA_PRESENT      (0x1)
 
 /* flags_lo */
 #define MALI_EXTRA_ZS           (0x4)
@@ -1785,7 +1804,11 @@ struct mali_framebuffer_extra  {
 
         unsigned flags_lo : 4;
         enum mali_block_format zs_block : 2;
-        unsigned flags_hi : 26;
+
+        /* Number of samples in Z/S attachment, MALI_POSITIVE. So zero for
+         * 1-sample (non-MSAA), 0x3 for MSAA 4x, etc */
+        unsigned zs_samples : 4;
+        unsigned flags_hi : 22;
 
         union {
                 /* Note: AFBC is only allowed for 24/8 combined depth/stencil. */
@@ -1841,8 +1864,8 @@ struct mali_framebuffer {
         u32 zero3;
         u16 width2, height2;
         u32 unk1 : 19; // = 0x01000
-        u32 rt_count_1 : 2; // off-by-one (use MALI_POSITIVE)
-        u32 unk2 : 3; // = 0
+        u32 rt_count_1 : 3; // off-by-one (use MALI_POSITIVE)
+        u32 unk2 : 2; // = 0
         u32 rt_count_2 : 3; // no off-by-one
         u32 zero4 : 5;
         /* 0x30 */

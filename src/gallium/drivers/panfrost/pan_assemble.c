@@ -171,7 +171,7 @@ panfrost_shader_compile(struct panfrost_context *ctx,
                 bifrost_compile_shader_nir(s, &program, dev->gpu_id);
         } else {
                 midgard_compile_shader_nir(s, &program, false, 0, dev->gpu_id,
-                                dev->debug & PAN_DBG_PRECOMPILE);
+                                dev->debug & PAN_DBG_PRECOMPILE, false);
         }
 
         /* Prepare the compiled binary for upload */
@@ -274,10 +274,10 @@ panfrost_shader_compile(struct panfrost_context *ctx,
 
         /* Record the varying mapping for the command stream's bookkeeping */
 
-        struct exec_list *l_varyings =
-                        stage == MESA_SHADER_VERTEX ? &s->outputs : &s->inputs;
+        nir_variable_mode varying_mode =
+                        stage == MESA_SHADER_VERTEX ? nir_var_shader_out : nir_var_shader_in;
 
-        nir_foreach_variable(var, l_varyings) {
+        nir_foreach_variable_with_modes(var, s, varying_mode) {
                 unsigned loc = var->data.driver_location;
                 unsigned sz = glsl_count_attribute_slots(var->type, FALSE);
 

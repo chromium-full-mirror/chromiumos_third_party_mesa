@@ -25,7 +25,6 @@
 #define __PAN_IR_H
 
 #include <stdint.h>
-#include "panfrost-job.h"
 #include "compiler/nir/nir.h"
 #include "util/u_dynarray.h"
 #include "util/hash_table.h"
@@ -87,7 +86,7 @@ typedef struct {
         int uniform_cutoff;
 
         /* For Bifrost - output type for each RT */
-        nir_alu_type blend_types[BIFROST_MAX_RENDER_TARGET_COUNT];
+        nir_alu_type blend_types[8];
 
         /* Prepended before uniforms, mapping to SYSVAL_ names for the
          * sysval */

@@ -71,24 +71,8 @@ static void
 panfrost_vt_attach_framebuffer(struct panfrost_context *ctx,
                                struct mali_vertex_tiler_postfix *postfix)
 {
-        struct panfrost_device *dev = pan_device(ctx->base.screen);
         struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
-
-        /* If we haven't, reserve space for the framebuffer */
-
-        if (!batch->framebuffer.gpu) {
-                unsigned size = (dev->quirks & MIDGARD_SFBD) ?
-                        sizeof(struct mali_single_framebuffer) :
-                        sizeof(struct mali_framebuffer);
-
-                batch->framebuffer = panfrost_pool_alloc(&batch->pool, size);
-
-                /* Tag the pointer */
-                if (!(dev->quirks & MIDGARD_SFBD))
-                        batch->framebuffer.gpu |= MALI_MFBD;
-        }
-
-        postfix->shared_memory = batch->framebuffer.gpu;
+        postfix->shared_memory = panfrost_batch_reserve_framebuffer(batch);
 }
 
 static void
@@ -483,7 +467,9 @@ void panfrost_sampler_desc_init(const struct pipe_sampler_state *cso,
                 .wrap_s = translate_tex_wrap(cso->wrap_s),
                 .wrap_t = translate_tex_wrap(cso->wrap_t),
                 .wrap_r = translate_tex_wrap(cso->wrap_r),
-                .compare_func = panfrost_flip_compare_func(func),
+                .compare_func = cso->compare_mode ?
+                        panfrost_flip_compare_func(func) :
+                        MALI_FUNC_NEVER,
                 .border_color = {
                         cso->border_color.f[0],
                         cso->border_color.f[1],
@@ -567,6 +553,15 @@ panfrost_frag_meta_rasterizer_update(struct panfrost_context *ctx,
         /* TODO: Sample size */
         SET_BIT(fragmeta->unknown2_3, MALI_HAS_MSAA, msaa);
         SET_BIT(fragmeta->unknown2_4, MALI_NO_MSAA, !msaa);
+
+        struct panfrost_shader_state *fs;
+        fs = panfrost_get_shader_state(ctx, PIPE_SHADER_FRAGMENT);
+
+        /* EXT_shader_framebuffer_fetch requires the shader to be run
+         * per-sample when outputs are read. */
+        bool per_sample = ctx->min_samples > 1 || fs->outputs_read;
+        SET_BIT(fragmeta->unknown2_3, MALI_PER_SAMPLE, msaa && per_sample);
+
         fragmeta->depth_units = rast->offset_units * 2.0f;
         fragmeta->depth_factor = rast->offset_scale;
 
@@ -664,6 +659,7 @@ panfrost_frag_meta_blend_update(struct panfrost_context *ctx,
                                 struct mali_shader_meta *fragmeta,
                                 void *rts)
 {
+        struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
         const struct panfrost_device *dev = pan_device(ctx->base.screen);
         struct panfrost_shader_state *fs;
         fs = panfrost_get_shader_state(ctx, PIPE_SHADER_FRAGMENT);
@@ -745,6 +741,8 @@ panfrost_frag_meta_blend_update(struct panfrost_context *ctx,
 
                 SET_BIT(fragmeta->unknown2_3, MALI_CAN_DISCARD,
                         !blend[0].no_blending || fs->can_discard); 
+
+                batch->draws |= PIPE_CLEAR_COLOR0;
                 return;
         }
 
@@ -765,6 +763,7 @@ panfrost_frag_meta_blend_update(struct panfrost_context *ctx,
 
                 if (ctx->pipe_framebuffer.nr_cbufs > i && !blend[i].no_colour) {
                         flags = 0x200;
+                        batch->draws |= (PIPE_CLEAR_COLOR0 << i);
 
                         bool is_srgb = (ctx->pipe_framebuffer.nr_cbufs > i) &&
                                        (ctx->pipe_framebuffer.cbufs[i]) &&
@@ -873,14 +872,21 @@ panfrost_frag_shader_meta_init(struct panfrost_context *ctx,
                 SET_BIT(fragmeta->midgard1.flags_lo, MALI_HELPER_INVOCATIONS,
                         fs->helper_invocations);
 
-                const struct pipe_depth_stencil_alpha_state *zsa = ctx->depth_stencil;
+                /* If discard is enabled, which bit we set to convey this
+                 * depends on if depth/stencil is used for the draw or not.
+                 * Just one of depth OR stencil is enough to trigger this. */
 
-                bool depth_enabled = fs->writes_depth ||
-                   (zsa && zsa->depth.enabled && zsa->depth.func != PIPE_FUNC_ALWAYS);
+                const struct pipe_depth_stencil_alpha_state *zsa = ctx->depth_stencil;
+                bool zs_enabled = fs->writes_depth || fs->writes_stencil;
+
+                if (zsa) {
+                        zs_enabled |= (zsa->depth.enabled && zsa->depth.func != PIPE_FUNC_ALWAYS);
+                        zs_enabled |= zsa->stencil[0].enabled;
+                }
 
                 SET_BIT(fragmeta->midgard1.flags_lo, MALI_READS_TILEBUFFER,
-                        fs->outputs_read || (!depth_enabled && fs->can_discard));
-                SET_BIT(fragmeta->midgard1.flags_lo, MALI_READS_ZS, depth_enabled && fs->can_discard);
+                        fs->outputs_read || (!zs_enabled && fs->can_discard));
+                SET_BIT(fragmeta->midgard1.flags_lo, MALI_READS_ZS, zs_enabled && fs->can_discard);
         }
 
         panfrost_frag_meta_rasterizer_update(ctx, fragmeta);

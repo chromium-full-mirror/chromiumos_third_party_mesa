@@ -328,13 +328,13 @@ i915_add_config(struct gen_perf_config *perf, int fd,
    memcpy(i915_config.uuid, guid, sizeof(i915_config.uuid));
 
    i915_config.n_mux_regs = config->n_mux_regs;
-   i915_config.mux_regs_ptr = to_user_pointer(config->mux_regs);
+   i915_config.mux_regs_ptr = to_const_user_pointer(config->mux_regs);
 
    i915_config.n_boolean_regs = config->n_b_counter_regs;
-   i915_config.boolean_regs_ptr = to_user_pointer(config->b_counter_regs);
+   i915_config.boolean_regs_ptr = to_const_user_pointer(config->b_counter_regs);
 
    i915_config.n_flex_regs = config->n_flex_regs;
-   i915_config.flex_regs_ptr = to_user_pointer(config->flex_regs);
+   i915_config.flex_regs_ptr = to_const_user_pointer(config->flex_regs);
 
    int ret = gen_ioctl(fd, DRM_IOCTL_I915_PERF_ADD_CONFIG, &i915_config);
    return ret > 0 ? ret : 0;
@@ -748,9 +748,9 @@ gen_perf_load_configuration(struct gen_perf_config *perf_cfg, int fd, const char
     * struct gen_perf_query_register_prog maps exactly to the tuple of
     * (register offset, register value) returned by the i915.
     */
-   i915_config.flex_regs_ptr = to_user_pointer(config->flex_regs);
-   i915_config.mux_regs_ptr = to_user_pointer(config->mux_regs);
-   i915_config.boolean_regs_ptr = to_user_pointer(config->b_counter_regs);
+   i915_config.flex_regs_ptr = to_const_user_pointer(config->flex_regs);
+   i915_config.mux_regs_ptr = to_const_user_pointer(config->mux_regs);
+   i915_config.boolean_regs_ptr = to_const_user_pointer(config->b_counter_regs);
    if (!i915_query_perf_config_data(perf_cfg, fd, guid, &i915_config)) {
       ralloc_free(config);
       return NULL;
@@ -866,7 +866,7 @@ gen_perf_get_counters_passes(struct gen_perf_config *perf,
                              struct gen_perf_counter_pass *counter_pass)
 {
    uint64_t queries_mask = get_passes_mask(perf, counter_indices, counter_indices_count);
-   uint32_t n_passes = __builtin_popcount(queries_mask);
+   ASSERTED uint32_t n_passes = __builtin_popcount(queries_mask);
 
    for (uint32_t i = 0; i < counter_indices_count; i++) {
       assert(counter_indices[i] < perf->n_counters);

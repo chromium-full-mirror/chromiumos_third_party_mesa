@@ -703,7 +703,7 @@ void gfx9_get_gs_info(struct si_shader_selector *es, struct si_shader_selector *
    out->gs_prims_per_subgroup = gs_prims;
    out->gs_inst_prims_in_subgroup = gs_prims * gs_num_invocations;
    out->max_prims_per_subgroup = out->gs_inst_prims_in_subgroup * gs->gs_max_out_vertices;
-   out->esgs_ring_size = 4 * esgs_lds_size;
+   out->esgs_ring_size = esgs_lds_size;
 
    assert(out->max_prims_per_subgroup <= max_out_prims);
 }
@@ -2651,9 +2651,15 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
       sel->gs_input_verts_per_prim =
          u_vertices_per_prim(sel->info.properties[TGSI_PROPERTY_GS_INPUT_PRIM]);
 
-      /* EN_MAX_VERT_OUT_PER_GS_INSTANCE does not work with tesselation. */
+      /* EN_MAX_VERT_OUT_PER_GS_INSTANCE does not work with tesselation so
+       * we can't split workgroups. Disable ngg if any of the following conditions is true:
+       * - num_invocations * gs_max_out_vertices > 256
+       * - LDS usage is too high
+       */
       sel->tess_turns_off_ngg = sscreen->info.chip_class >= GFX10 &&
-                                sel->gs_num_invocations * sel->gs_max_out_vertices > 256;
+                                (sel->gs_num_invocations * sel->gs_max_out_vertices > 256 ||
+                                 sel->gs_num_invocations * sel->gs_max_out_vertices *
+                                 (sel->info.num_outputs * 4 + 1) > 6500 /* max dw per GS primitive */);
       break;
 
    case PIPE_SHADER_TESS_CTRL:
@@ -3292,6 +3298,9 @@ static void si_emit_spi_map(struct si_context *sctx)
  */
 static void si_cs_preamble_add_vgt_flush(struct si_context *sctx)
 {
+   /* We shouldn't get here if registers are shadowed. */
+   assert(!sctx->shadowed_regs);
+
    if (sctx->cs_preamble_has_vgt_flush)
       return;
 
@@ -3303,6 +3312,20 @@ static void si_cs_preamble_add_vgt_flush(struct si_context *sctx)
    si_pm4_cmd_add(sctx->cs_preamble_state, PKT3(PKT3_EVENT_WRITE, 0, 0));
    si_pm4_cmd_add(sctx->cs_preamble_state, EVENT_TYPE(V_028A90_VGT_FLUSH) | EVENT_INDEX(0));
    sctx->cs_preamble_has_vgt_flush = true;
+}
+
+/**
+ * Writing CONFIG or UCONFIG VGT registers requires VGT_FLUSH before that.
+ */
+static void si_emit_vgt_flush(struct radeon_cmdbuf *cs)
+{
+   /* This is required before VGT_FLUSH. */
+   radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+   radeon_emit(cs, EVENT_TYPE(V_028A90_VS_PARTIAL_FLUSH) | EVENT_INDEX(4));
+
+   /* VGT_FLUSH is required even if VGT is idle. It resets VGT pointers. */
+   radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+   radeon_emit(cs, EVENT_TYPE(V_028A90_VGT_FLUSH) | EVENT_INDEX(0));
 }
 
 /* Initialize state related to ESGS / GSVS ring buffers */
@@ -3371,6 +3394,41 @@ static bool si_update_gs_ring_buffers(struct si_context *sctx)
          return false;
    }
 
+   /* Set ring bindings. */
+   if (sctx->esgs_ring) {
+      assert(sctx->chip_class <= GFX8);
+      si_set_ring_buffer(sctx, SI_ES_RING_ESGS, sctx->esgs_ring, 0, sctx->esgs_ring->width0, true,
+                         true, 4, 64, 0);
+      si_set_ring_buffer(sctx, SI_GS_RING_ESGS, sctx->esgs_ring, 0, sctx->esgs_ring->width0, false,
+                         false, 0, 0, 0);
+   }
+   if (sctx->gsvs_ring) {
+      si_set_ring_buffer(sctx, SI_RING_GSVS, sctx->gsvs_ring, 0, sctx->gsvs_ring->width0, false,
+                         false, 0, 0, 0);
+   }
+
+   if (sctx->shadowed_regs) {
+      /* These registers will be shadowed, so set them only once. */
+      struct radeon_cmdbuf *cs = sctx->gfx_cs;
+
+      assert(sctx->chip_class >= GFX7);
+
+      si_emit_vgt_flush(cs);
+
+      /* Set the GS registers. */
+      if (sctx->esgs_ring) {
+         assert(sctx->chip_class <= GFX8);
+         radeon_set_uconfig_reg(cs, R_030900_VGT_ESGS_RING_SIZE,
+                                sctx->esgs_ring->width0 / 256);
+      }
+      if (sctx->gsvs_ring) {
+         radeon_set_uconfig_reg(cs, R_030904_VGT_GSVS_RING_SIZE,
+                                sctx->gsvs_ring->width0 / 256);
+      }
+      return true;
+   }
+
+   /* The codepath without register shadowing. */
    /* Create the "cs_preamble_gs_rings" state. */
    pm4 = CALLOC_STRUCT(si_pm4_state);
    if (!pm4)
@@ -3395,26 +3453,11 @@ static bool si_update_gs_ring_buffers(struct si_context *sctx)
       si_pm4_free_state(sctx, sctx->cs_preamble_gs_rings, ~0);
    sctx->cs_preamble_gs_rings = pm4;
 
-   if (!sctx->cs_preamble_has_vgt_flush) {
-      si_cs_preamble_add_vgt_flush(sctx);
-   }
+   si_cs_preamble_add_vgt_flush(sctx);
 
    /* Flush the context to re-emit both cs_preamble states. */
    sctx->initial_gfx_cs_size = 0; /* force flush */
    si_flush_gfx_cs(sctx, RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
-
-   /* Set ring bindings. */
-   if (sctx->esgs_ring) {
-      assert(sctx->chip_class <= GFX8);
-      si_set_ring_buffer(sctx, SI_ES_RING_ESGS, sctx->esgs_ring, 0, sctx->esgs_ring->width0, true,
-                         true, 4, 64, 0);
-      si_set_ring_buffer(sctx, SI_GS_RING_ESGS, sctx->esgs_ring, 0, sctx->esgs_ring->width0, false,
-                         false, 0, 0, 0);
-   }
-   if (sctx->gsvs_ring) {
-      si_set_ring_buffer(sctx, SI_RING_GSVS, sctx->gsvs_ring, 0, sctx->gsvs_ring->width0, false,
-                         false, 0, 0, 0);
-   }
 
    return true;
 }
@@ -3631,10 +3674,37 @@ static void si_init_tess_factor_ring(struct si_context *sctx)
    if (!sctx->tess_rings)
       return;
 
-   si_cs_preamble_add_vgt_flush(sctx);
-
    uint64_t factor_va =
       si_resource(sctx->tess_rings)->gpu_address + sctx->screen->tess_offchip_ring_size;
+
+   if (sctx->shadowed_regs) {
+      /* These registers will be shadowed, so set them only once. */
+      struct radeon_cmdbuf *cs = sctx->gfx_cs;
+
+      assert(sctx->chip_class >= GFX7);
+
+      radeon_add_to_buffer_list(sctx, sctx->gfx_cs, si_resource(sctx->tess_rings),
+                                RADEON_USAGE_READWRITE, RADEON_PRIO_SHADER_RINGS);
+      si_emit_vgt_flush(cs);
+
+      /* Set tessellation registers. */
+      radeon_set_uconfig_reg(cs, R_030938_VGT_TF_RING_SIZE,
+                             S_030938_SIZE(sctx->screen->tess_factor_ring_size / 4));
+      radeon_set_uconfig_reg(cs, R_030940_VGT_TF_MEMORY_BASE, factor_va >> 8);
+      if (sctx->chip_class >= GFX10) {
+         radeon_set_uconfig_reg(cs, R_030984_VGT_TF_MEMORY_BASE_HI_UMD,
+                                S_030984_BASE_HI(factor_va >> 40));
+      } else if (sctx->chip_class == GFX9) {
+         radeon_set_uconfig_reg(cs, R_030944_VGT_TF_MEMORY_BASE_HI,
+                                S_030944_BASE_HI(factor_va >> 40));
+      }
+      radeon_set_uconfig_reg(cs, R_03093C_VGT_HS_OFFCHIP_PARAM,
+                             sctx->screen->vgt_hs_offchip_param);
+      return;
+   }
+
+   /* The codepath without register shadowing. */
+   si_cs_preamble_add_vgt_flush(sctx);
 
    /* Append these registers to the init config state. */
    if (sctx->chip_class >= GFX7) {

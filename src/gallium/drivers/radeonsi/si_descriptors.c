@@ -55,6 +55,7 @@
 
 #include "si_pipe.h"
 #include "si_compute.h"
+#include "si_build_pm4.h"
 #include "sid.h"
 #include "util/format/u_format.h"
 #include "util/hash_table.h"
@@ -389,8 +390,18 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
          state[3] |= S_008F1C_SW_MODE(tex->surface.u.gfx9.stencil.swizzle_mode);
          state[4] |= S_008F20_PITCH(tex->surface.u.gfx9.stencil.epitch);
       } else {
+         uint16_t epitch = tex->surface.u.gfx9.surf.epitch;
+         if (tex->buffer.b.b.format == PIPE_FORMAT_R8G8_R8B8_UNORM &&
+             block_width == 1) {
+            /* epitch is patched in ac_surface for sdma/vcn blocks to get
+             * a value expressed in elements unit.
+             * But here the texture is used with block_width == 1 so we
+             * need epitch in pixel units.
+             */
+            epitch = (epitch + 1) / tex->surface.blk_w - 1;
+         }
          state[3] |= S_008F1C_SW_MODE(tex->surface.u.gfx9.surf.swizzle_mode);
-         state[4] |= S_008F20_PITCH(tex->surface.u.gfx9.surf.epitch);
+         state[4] |= S_008F20_PITCH(epitch);
       }
 
       state[5] &=
@@ -2023,6 +2034,7 @@ void si_shader_change_notify(struct si_context *sctx)
 static void si_emit_shader_pointer_head(struct radeon_cmdbuf *cs, unsigned sh_offset,
                                         unsigned pointer_count)
 {
+   SI_CHECK_SHADOWED_REGS(sh_offset, pointer_count);
    radeon_emit(cs, PKT3(PKT3_SET_SH_REG, pointer_count, 0));
    radeon_emit(cs, (sh_offset - SI_SH_REG_OFFSET) >> 2);
 }
@@ -2075,6 +2087,13 @@ static void si_emit_global_shader_pointers(struct si_context *sctx, struct si_de
       si_emit_shader_pointer(sctx, descs, R_00B130_SPI_SHADER_USER_DATA_VS_0);
       si_emit_shader_pointer(sctx, descs, R_00B230_SPI_SHADER_USER_DATA_GS_0);
       si_emit_shader_pointer(sctx, descs, R_00B430_SPI_SHADER_USER_DATA_HS_0);
+      return;
+   } else if (sctx->chip_class == GFX9 && sctx->shadowed_regs) {
+      /* We can't use the COMMON registers with register shadowing. */
+      si_emit_shader_pointer(sctx, descs, R_00B030_SPI_SHADER_USER_DATA_PS_0);
+      si_emit_shader_pointer(sctx, descs, R_00B130_SPI_SHADER_USER_DATA_VS_0);
+      si_emit_shader_pointer(sctx, descs, R_00B330_SPI_SHADER_USER_DATA_ES_0);
+      si_emit_shader_pointer(sctx, descs, R_00B430_SPI_SHADER_USER_DATA_LS_0);
       return;
    } else if (sctx->chip_class == GFX9) {
       /* Broadcast it to all shader stages. */

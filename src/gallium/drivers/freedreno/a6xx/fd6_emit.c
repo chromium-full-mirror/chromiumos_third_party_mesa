@@ -35,6 +35,7 @@
 #include "freedreno_log.h"
 #include "freedreno_resource.h"
 #include "freedreno_query_hw.h"
+#include "common/freedreno_guardband.h"
 
 #include "fd6_emit.h"
 #include "fd6_blend.h"
@@ -904,8 +905,12 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 				)
 			);
 
-		unsigned guardband_x = fd_calc_guardband(scissor->maxx - scissor->minx);
-		unsigned guardband_y = fd_calc_guardband(scissor->maxy - scissor->miny);
+		unsigned guardband_x =
+			fd_calc_guardband(ctx->viewport.translate[0], ctx->viewport.scale[0],
+							  false);
+		unsigned guardband_y =
+			fd_calc_guardband(ctx->viewport.translate[1], ctx->viewport.scale[1],
+							  false);
 
 		OUT_REG(ring, A6XX_GRAS_CL_GUARDBAND_CLIP_ADJ(
 					.horz = guardband_x,
@@ -1169,7 +1174,7 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	WRITE(REG_A6XX_UCHE_UNKNOWN_0E12, 0x3200000);
 	WRITE(REG_A6XX_UCHE_CLIENT_PF, 4);
 	WRITE(REG_A6XX_RB_UNKNOWN_8E01, 0x1);
-	WRITE(REG_A6XX_SP_UNKNOWN_AB00, 0x5);
+	WRITE(REG_A6XX_SP_MODE_CONTROL, A6XX_SP_MODE_CONTROL_CONSTANT_DEMOTION_ENABLE | 4);
 	WRITE(REG_A6XX_VFD_ADD_OFFSET, A6XX_VFD_ADD_OFFSET_VERTEX);
 	WRITE(REG_A6XX_RB_UNKNOWN_8811, 0x00000010);
 	WRITE(REG_A6XX_PC_MODE_CNTL, 0x1f);

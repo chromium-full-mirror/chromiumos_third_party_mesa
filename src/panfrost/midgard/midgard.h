@@ -29,7 +29,6 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "panfrost-job.h"
 
 #define MIDGARD_DBG_MSGS		0x0001
 #define MIDGARD_DBG_SHADERS		0x0002
@@ -519,6 +518,7 @@ typedef enum {
 } midgard_load_store_op;
 
 typedef enum {
+        midgard_interp_sample = 0,
         midgard_interp_centroid = 1,
         midgard_interp_default = 2
 } midgard_interpolation;
@@ -678,7 +678,7 @@ __attribute__((__packed__))
         unsigned cont  : 1;
         unsigned last  : 1;
 
-        enum mali_texture_type format : 2;
+        unsigned format : 2;
 
         /* Are sampler_handle/texture_handler respectively set by registers? If
          * true, the lower 8-bits of the respective field is a register word.
@@ -715,7 +715,7 @@ __attribute__((__packed__))
 
         unsigned mask : 4;
 
-        /* Intriguingly, textures can take an outmod just like textures. Int
+        /* Intriguingly, textures can take an outmod just like alu ops. Int
          * outmods are not supported as far as I can tell, so this is only
          * meaningful for float samplers */
         midgard_outmod_float outmod  : 2;

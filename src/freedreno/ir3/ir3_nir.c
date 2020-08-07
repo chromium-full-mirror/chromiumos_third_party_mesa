@@ -71,6 +71,13 @@ static const nir_shader_compiler_options options = {
 		.lower_to_scalar = true,
 		.has_imul24 = true,
 		.lower_wpos_pntc = true,
+		.lower_cs_local_index_from_id = true,
+
+		/* Only needed for the spirv_to_nir() pass done in ir3_cmdline.c
+		 * but that should be harmless for GL since 64b is not
+		 * supported there.
+		 */
+		.lower_int64_options = (nir_lower_int64_options)~0,
 };
 
 /* we don't want to lower vertex_id to _zero_based on newer gpus: */
@@ -115,6 +122,13 @@ static const nir_shader_compiler_options options_a6xx = {
 		.has_imul24 = true,
 		.max_unroll_iterations = 32,
 		.lower_wpos_pntc = true,
+		.lower_cs_local_index_from_id = true,
+
+		/* Only needed for the spirv_to_nir() pass done in ir3_cmdline.c
+		 * but that should be harmless for GL since 64b is not
+		 * supported there.
+		 */
+		.lower_int64_options = (nir_lower_int64_options)~0,
 };
 
 const nir_shader_compiler_options *
@@ -310,7 +324,7 @@ static bool
 ir3_nir_lower_layer_id(nir_shader *nir)
 {
 	unsigned layer_id_loc = ~0;
-	nir_foreach_variable(var, &nir->inputs) {
+	nir_foreach_shader_in_variable(var, nir) {
 		if (var->data.location == VARYING_SLOT_LAYER) {
 			layer_id_loc = var->data.driver_location;
 			break;
@@ -412,7 +426,7 @@ ir3_nir_lower_variant(struct ir3_shader_variant *so, nir_shader *s)
 			progress |= OPT(s, ir3_nir_lower_layer_id);
 	}
 	if (so->key.color_two_side) {
-		OPT_V(s, nir_lower_two_sided_color);
+		OPT_V(s, nir_lower_two_sided_color, true);
 		progress = true;
 	}
 
@@ -503,6 +517,8 @@ ir3_nir_scan_driver_consts(nir_shader *shader,
 
 				switch (intr->intrinsic) {
 				case nir_intrinsic_get_buffer_size:
+					if (ir3_bindless_resource(intr->src[0]))
+						break;
 					idx = nir_src_as_uint(intr->src[0]);
 					if (layout->ssbo_size.mask & (1 << idx))
 						break;

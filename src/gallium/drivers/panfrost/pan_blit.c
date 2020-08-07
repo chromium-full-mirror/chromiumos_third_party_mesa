@@ -57,6 +57,8 @@ panfrost_blitter_save(
         util_blitter_save_fragment_sampler_views(blitter,
                         ctx->sampler_view_count[PIPE_SHADER_FRAGMENT],
                         (struct pipe_sampler_view **)&ctx->sampler_views[PIPE_SHADER_FRAGMENT]);
+        util_blitter_save_fragment_constant_buffer_slot(blitter,
+                        ctx->constant_buffer[PIPE_SHADER_FRAGMENT].cb);
 }
 
 static bool
@@ -64,17 +66,9 @@ panfrost_u_blitter_blit(struct pipe_context *pipe,
                         const struct pipe_blit_info *info)
 {
         struct panfrost_context *ctx = pan_context(pipe);
-        struct panfrost_device *dev = pan_device(pipe->screen);
 
-        if (!util_blitter_is_blit_supported(ctx->blitter, info)) {
-                if (dev->debug & PAN_DBG_MSGS) {
-                        fprintf(stderr, "blit unsupported %s -> %s\n",
-                                        util_format_short_name(info->src.resource->format),
-                                        util_format_short_name(info->dst.resource->format));
-                }
-
-                return false;
-        }
+        if (!util_blitter_is_blit_supported(ctx->blitter, info))
+                unreachable("Unsupported blit\n");
 
         /* TODO: Scissor */
 

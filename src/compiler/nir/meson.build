@@ -153,6 +153,7 @@ files_libnir = files(
   'nir_lower_io_to_scalar.c',
   'nir_lower_io_to_vector.c',
   'nir_lower_mediump_outputs.c',
+  'nir_lower_memory_model.c',
   'nir_lower_non_uniform_access.c',
   'nir_lower_packing.c',
   'nir_lower_passthrough_edgeflags.c',
@@ -206,7 +207,7 @@ files_libnir = files(
   'nir_opt_peephole_select.c',
   'nir_opt_rematerialize_compares.c',
   'nir_opt_remove_phis.c',
-  'nir_opt_shrink_load.c',
+  'nir_opt_shrink_vectors.c',
   'nir_opt_sink.c',
   'nir_opt_trivial_continues.c',
   'nir_opt_undef.c',
@@ -220,6 +221,7 @@ files_libnir = files(
   'nir_remove_dead_variables.c',
   'nir_repair_ssa.c',
   'nir_schedule.c',
+  'nir_schedule.h',
   'nir_search.c',
   'nir_search.h',
   'nir_search_helpers.h',
@@ -374,6 +376,19 @@ if with_tests
     executable(
       'nir_serialize_test',
       files('tests/serialize_tests.cpp'),
+      cpp_args : [cpp_msvc_compat_args],
+      gnu_symbol_visibility : 'hidden',
+      include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
+      dependencies : [dep_thread, idep_gtest, idep_nir, idep_mesautil],
+    ),
+    suite : ['compiler', 'nir'],
+  )
+
+  test(
+    'nir_opt_if',
+    executable(
+      'nir_opt_if_tests',
+      files('tests/opt_if_tests.cpp'),
       cpp_args : [cpp_msvc_compat_args],
       gnu_symbol_visibility : 'hidden',
       include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],

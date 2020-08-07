@@ -425,6 +425,10 @@ static void emit_load_var(struct lp_build_nir_context *bld_base,
       }
       break;
    case nir_var_shader_out:
+      if (bld->fs_iface && bld->fs_iface->fb_fetch) {
+         bld->fs_iface->fb_fetch(bld->fs_iface, &bld_base->base, var->data.driver_location, result);
+         return;
+      }
       for (unsigned i = 0; i < num_components; i++) {
          int idx = (i * dmul) + var->data.location_frac;
          if (bld->tcs_iface) {
@@ -925,13 +929,11 @@ static void emit_load_ubo(struct lp_build_nir_context *bld_base,
       LLVMValueRef overflow_mask;
       LLVMValueRef num_consts = lp_build_array_get(gallivm, bld->const_sizes_ptr, index);
 
-      num_consts = LLVMBuildShl(gallivm->builder, num_consts, lp_build_const_int32(gallivm, 4), "");
       num_consts = lp_build_broadcast_scalar(uint_bld, num_consts);
       for (unsigned c = 0; c < nc; c++) {
          LLVMValueRef this_offset = lp_build_add(uint_bld, offset, lp_build_const_int_vec(gallivm, uint_bld->type, c));
          overflow_mask = lp_build_compare(gallivm, uint_bld->type, PIPE_FUNC_GEQUAL,
                                           this_offset, num_consts);
-
          result[c] = build_gather(bld_base, bld_broad, consts_ptr, this_offset, overflow_mask, NULL);
       }
    }

@@ -25,6 +25,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+#include "common/freedreno_guardband.h"
 #include "tu_private.h"
 
 #include "ir3/ir3_nir.h"
@@ -444,7 +445,7 @@ tu6_emit_xs_config(struct tu_cs *cs,
 
    const struct ir3_const_state *const_state = ir3_const_state(xs);
    uint32_t base = const_state->offsets.immediate;
-   int size = const_state->immediates_count;
+   int size = DIV_ROUND_UP(const_state->immediates_count, 4);
 
    /* truncate size to avoid writing constants that shader
     * does not use:
@@ -463,12 +464,7 @@ tu6_emit_xs_config(struct tu_cs *cs,
    tu_cs_emit(cs, CP_LOAD_STATE6_1_EXT_SRC_ADDR(0));
    tu_cs_emit(cs, CP_LOAD_STATE6_2_EXT_SRC_ADDR_HI(0));
 
-   for (unsigned i = 0; i < size; i++) {
-      tu_cs_emit(cs, const_state->immediates[i].val[0]);
-      tu_cs_emit(cs, const_state->immediates[i].val[1]);
-      tu_cs_emit(cs, const_state->immediates[i].val[2]);
-      tu_cs_emit(cs, const_state->immediates[i].val[3]);
-   }
+   tu_cs_emit_array(cs, const_state->immediates, size * 4);
 }
 
 static void
@@ -739,7 +735,9 @@ tu6_emit_vpc(struct tu_cs *cs,
              const struct ir3_shader_variant *hs,
              const struct ir3_shader_variant *ds,
              const struct ir3_shader_variant *gs,
-             const struct ir3_shader_variant *fs)
+             const struct ir3_shader_variant *fs,
+             uint32_t patch_control_points,
+             bool vshs_workgroup)
 {
    /* note: doesn't compile as static because of the array regs.. */
    const struct reg_config {
@@ -846,6 +844,14 @@ tu6_emit_vpc(struct tu_cs *cs,
 
    tu6_setup_streamout(cs, last_shader, &linkage);
 
+   /* The GPU hangs on some models when there are no outputs (xs_pack::CNT),
+    * at least when a DS is the last stage, so add a dummy output to keep it
+    * happy if there aren't any. We do this late in order to avoid emitting
+    * any unused code and make sure that optimizations don't remove it.
+    */
+   if (linkage.cnt == 0)
+      ir3_link_add(&linkage, 0, 0x1, linkage.max_loc);
+
    /* map outputs of the last shader to VPC */
    assert(linkage.cnt <= 32);
    const uint32_t sp_out_count = DIV_ROUND_UP(linkage.cnt, 2);
@@ -903,16 +909,30 @@ tu6_emit_vpc(struct tu_cs *cs,
 
    if (hs) {
       shader_info *hs_info = &hs->shader->nir->info;
+      uint32_t unknown_a831 = vs->output_size;
+
       tu_cs_emit_pkt4(cs, REG_A6XX_PC_TESS_NUM_VERTEX, 1);
       tu_cs_emit(cs, hs_info->tess.tcs_vertices_out);
 
       /* Total attribute slots in HS incoming patch. */
-      tu_cs_emit_pkt4(cs, REG_A6XX_PC_UNKNOWN_9801, 1);
-      tu_cs_emit(cs,
-            hs_info->tess.tcs_vertices_out * vs->output_size / 4);
+      tu_cs_emit_pkt4(cs, REG_A6XX_PC_HS_INPUT_SIZE, 1);
+      tu_cs_emit(cs, patch_control_points * vs->output_size / 4);
+
+      /* for A650 this value seems to be local memory size per wave */
+      if (vshs_workgroup) {
+         const uint32_t wavesize = 64;
+         /* note: if HS is really just the VS extended, then this
+          * should be by MAX2(patch_control_points, hs_info->tess.tcs_vertices_out)
+          * however that doesn't match the blob, and fails some dEQP tests.
+          */
+         uint32_t prims_per_wave = wavesize / hs_info->tess.tcs_vertices_out;
+         uint32_t total_size = vs->output_size * patch_control_points * prims_per_wave;
+         unknown_a831 = DIV_ROUND_UP(total_size, wavesize);
+      }
 
       tu_cs_emit_pkt4(cs, REG_A6XX_SP_HS_UNKNOWN_A831, 1);
-      tu_cs_emit(cs, vs->output_size);
+      tu_cs_emit(cs, unknown_a831);
+
       /* In SPIR-V generated from GLSL, the tessellation primitive params are
        * are specified in the tess eval shader, but in SPIR-V generated from
        * HLSL, they are specified in the tess control shader. */
@@ -1229,10 +1249,11 @@ tu6_emit_fs_outputs(struct tu_cs *cs,
                     uint32_t render_components,
                     bool is_s8_uint)
 {
-   uint32_t smask_regid, posz_regid;
+   uint32_t smask_regid, posz_regid, stencilref_regid;
 
    posz_regid      = ir3_find_output_regid(fs, FRAG_RESULT_DEPTH);
    smask_regid     = ir3_find_output_regid(fs, FRAG_RESULT_SAMPLE_MASK);
+   stencilref_regid = ir3_find_output_regid(fs, FRAG_RESULT_STENCIL);
 
    uint32_t fragdata_regid[8];
    if (fs->color0_mrt) {
@@ -1247,8 +1268,8 @@ tu6_emit_fs_outputs(struct tu_cs *cs,
    tu_cs_emit_pkt4(cs, REG_A6XX_SP_FS_OUTPUT_CNTL0, 2);
    tu_cs_emit(cs, A6XX_SP_FS_OUTPUT_CNTL0_DEPTH_REGID(posz_regid) |
                   A6XX_SP_FS_OUTPUT_CNTL0_SAMPMASK_REGID(smask_regid) |
-                  COND(dual_src_blend, A6XX_SP_FS_OUTPUT_CNTL0_DUAL_COLOR_IN_ENABLE) |
-                  0xfc000000);
+                  A6XX_SP_FS_OUTPUT_CNTL0_STENCILREF_REGID(stencilref_regid) |
+                  COND(dual_src_blend, A6XX_SP_FS_OUTPUT_CNTL0_DUAL_COLOR_IN_ENABLE));
    tu_cs_emit(cs, A6XX_SP_FS_OUTPUT_CNTL1_MRT(mrt_count));
 
    tu_cs_emit_pkt4(cs, REG_A6XX_SP_FS_OUTPUT_REG(0), 8);
@@ -1265,6 +1286,7 @@ tu6_emit_fs_outputs(struct tu_cs *cs,
    tu_cs_emit_pkt4(cs, REG_A6XX_RB_FS_OUTPUT_CNTL0, 2);
    tu_cs_emit(cs, COND(fs->writes_pos, A6XX_RB_FS_OUTPUT_CNTL0_FRAG_WRITES_Z) |
                   COND(fs->writes_smask, A6XX_RB_FS_OUTPUT_CNTL0_FRAG_WRITES_SAMPMASK) |
+                  COND(fs->writes_stencilref, A6XX_RB_FS_OUTPUT_CNTL0_FRAG_WRITES_STENCILREF) |
                   COND(dual_src_blend, A6XX_RB_FS_OUTPUT_CNTL0_DUAL_COLOR_IN_ENABLE));
    tu_cs_emit(cs, A6XX_RB_FS_OUTPUT_CNTL1_MRT(mrt_count));
 
@@ -1273,7 +1295,7 @@ tu6_emit_fs_outputs(struct tu_cs *cs,
 
    enum a6xx_ztest_mode zmode;
 
-   if (fs->no_earlyz || fs->has_kill || fs->writes_pos || is_s8_uint) {
+   if (fs->no_earlyz || fs->has_kill || fs->writes_pos || fs->writes_stencilref || is_s8_uint) {
       zmode = A6XX_LATE_Z;
    } else {
       zmode = A6XX_EARLY_Z;
@@ -1360,6 +1382,8 @@ tu6_emit_program(struct tu_cs *cs,
    const struct ir3_shader_variant *gs = builder->variants[MESA_SHADER_GEOMETRY];
    const struct ir3_shader_variant *fs = builder->variants[MESA_SHADER_FRAGMENT];
    gl_shader_stage stage = MESA_SHADER_VERTEX;
+   uint32_t cps_per_patch = builder->create_info->pTessellationState ?
+      builder->create_info->pTessellationState->patchControlPoints : 0;
 
    STATIC_ASSERT(MESA_SHADER_VERTEX == 0);
 
@@ -1392,7 +1416,8 @@ tu6_emit_program(struct tu_cs *cs,
    tu_cs_emit_pkt4(cs, REG_A6XX_SP_HS_UNKNOWN_A831, 1);
    tu_cs_emit(cs, 0);
 
-   tu6_emit_vpc(cs, vs, hs, ds, gs, fs);
+   tu6_emit_vpc(cs, vs, hs, ds, gs, fs, cps_per_patch,
+                builder->device->physical_device->gpu_id == 650);
    tu6_emit_vpc_varying_modes(cs, fs);
 
    if (fs) {
@@ -1412,8 +1437,6 @@ tu6_emit_program(struct tu_cs *cs,
    }
 
    if (gs || hs) {
-      uint32_t cps_per_patch = builder->create_info->pTessellationState ?
-            builder->create_info->pTessellationState->patchControlPoints : 0;
       tu6_emit_geom_tess_consts(cs, vs, hs, ds, gs, cps_per_patch);
    }
 }
@@ -1496,15 +1519,6 @@ tu6_emit_vertex_input(struct tu_cs *cs,
                      .decode_cnt = vfd_decode_idx));
 }
 
-static uint32_t
-tu6_guardband_adj(uint32_t v)
-{
-   if (v > 256)
-      return (uint32_t)(511.0 - 65.0 * (log2(v) - 8.0));
-   else
-      return 511;
-}
-
 void
 tu6_emit_viewport(struct tu_cs *cs, const VkViewport *viewport)
 {
@@ -1535,8 +1549,8 @@ tu6_emit_viewport(struct tu_cs *cs, const VkViewport *viewport)
    assert(min.y >= 0 && min.y < max.y);
 
    VkExtent2D guardband_adj;
-   guardband_adj.width = tu6_guardband_adj(max.x - min.x);
-   guardband_adj.height = tu6_guardband_adj(max.y - min.y);
+   guardband_adj.width = fd_calc_guardband(offsets[0], scales[0], false);
+   guardband_adj.height = fd_calc_guardband(offsets[1], scales[1], false);
 
    tu_cs_emit_regs(cs,
                    A6XX_GRAS_CL_VPORT_XOFFSET(0, offsets[0]),
@@ -2222,13 +2236,21 @@ tu_pipeline_builder_parse_rasterization(struct tu_pipeline_builder *builder,
 
    enum a6xx_polygon_mode mode = tu6_polygon_mode(rast_info->polygonMode);
 
+   bool depth_clip_disable = rast_info->depthClampEnable;
+
+   const VkPipelineRasterizationDepthClipStateCreateInfoEXT *depth_clip_state =
+      vk_find_struct_const(rast_info, PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT);
+   if (depth_clip_state)
+      depth_clip_disable = !depth_clip_state->depthClipEnable;
+
    struct tu_cs cs;
    pipeline->rast_state = tu_cs_draw_state(&pipeline->cs, &cs, 9);
 
    tu_cs_emit_regs(&cs,
                    A6XX_GRAS_CL_CNTL(
-                     .znear_clip_disable = rast_info->depthClampEnable,
-                     .zfar_clip_disable = rast_info->depthClampEnable,
+                     .znear_clip_disable = depth_clip_disable,
+                     .zfar_clip_disable = depth_clip_disable,
+                     /* TODO should this be depth_clip_disable instead? */
                      .unk5 = rast_info->depthClampEnable,
                      .zero_gb_scale_z = 1,
                      .vp_clip_code_ignore = 1));

@@ -346,8 +346,8 @@ void st_init_limits(struct pipe_screen *screen,
          screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_FP16_DERIVATIVES);
       options->LowerPrecisionInt16 =
          screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_INT16);
-      options->LowerPrecisionTemporaries =
-         screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_GLSL_16BIT_TEMPS);
+      options->LowerPrecisionConstants =
+         screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_GLSL_16BIT_CONSTS);
    }
 
    c->MaxUserAssignableUniformLocations =
@@ -1469,6 +1469,9 @@ void st_init_extensions(struct pipe_screen *screen,
    unsigned max_fb_fetch_rts = screen->get_param(screen, PIPE_CAP_FBFETCH);
    bool coherent_fb_fetch =
       screen->get_param(screen, PIPE_CAP_FBFETCH_COHERENT);
+
+   if (screen->get_param(screen, PIPE_CAP_BLEND_EQUATION_ADVANCED))
+      extensions->KHR_blend_equation_advanced = true;
 
    if (max_fb_fetch_rts > 0) {
       extensions->KHR_blend_equation_advanced = true;

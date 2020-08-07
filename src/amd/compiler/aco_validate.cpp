@@ -46,11 +46,8 @@ void perfwarn(bool cond, const char *msg, Instruction *instr)
 }
 #endif
 
-void validate(Program* program, FILE * output)
+bool validate(Program* program, FILE *output)
 {
-   if (!(debug_flags & DEBUG_VALIDATE))
-      return;
-
    bool is_valid = true;
    auto check = [&output, &is_valid](bool check, const char * msg, aco::Instruction * instr) -> void {
       if (!check) {
@@ -439,7 +436,7 @@ void validate(Program* program, FILE * output)
       }
    }
 
-   assert(is_valid);
+   return is_valid;
 }
 
 /* RA validation */
@@ -486,6 +483,8 @@ bool validate_subdword_operand(chip_class chip, const aco_ptr<Instruction>& inst
    Operand op = instr->operands[index];
    unsigned byte = op.physReg().byte();
 
+   if (instr->opcode == aco_opcode::p_as_uniform)
+      return byte == 0;
    if (instr->format == Format::PSEUDO && chip >= GFX8)
       return true;
    if (instr->isSDWA() && (static_cast<SDWA_instruction *>(instr.get())->sel[index] & sdwa_asuint) == (sdwa_isra | op.bytes()))
