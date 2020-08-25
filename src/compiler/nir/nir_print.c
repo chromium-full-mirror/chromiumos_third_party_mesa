@@ -808,7 +808,9 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
       [NIR_INTRINSIC_MEMORY_MODES] = "mem_modes",
       [NIR_INTRINSIC_MEMORY_SCOPE] = "mem_scope",
       [NIR_INTRINSIC_EXECUTION_SCOPE] = "exec_scope",
+      [NIR_INTRINSIC_IO_SEMANTICS] = "io_semantics",
    };
+
    for (unsigned idx = 1; idx < NIR_INTRINSIC_NUM_INDEX_FLAGS; idx++) {
       if (!info->index_map[idx])
          continue;
@@ -923,6 +925,32 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
          break;
       }
 
+      case NIR_INTRINSIC_IO_SEMANTICS:
+         fprintf(fp, " location=%u slots=%u",
+                 nir_intrinsic_io_semantics(instr).location,
+                 nir_intrinsic_io_semantics(instr).num_slots);
+         if (state->shader->info.stage == MESA_SHADER_FRAGMENT &&
+             instr->intrinsic == nir_intrinsic_store_output &&
+             nir_intrinsic_io_semantics(instr).dual_source_blend_index) {
+            fprintf(fp, " dualsrc=1");
+         }
+         if (state->shader->info.stage == MESA_SHADER_FRAGMENT &&
+             instr->intrinsic == nir_intrinsic_load_output &&
+             nir_intrinsic_io_semantics(instr).fb_fetch_output) {
+            fprintf(fp, " fbfetch=1");
+         }
+         if (state->shader->info.stage == MESA_SHADER_GEOMETRY &&
+             instr->intrinsic == nir_intrinsic_store_output) {
+            unsigned gs_streams = nir_intrinsic_io_semantics(instr).gs_streams;
+            fprintf(fp, " gs_streams(");
+            for (unsigned i = 0; i < 4; i++) {
+               fprintf(fp, "%s%c=%u", i ? " " : "", "xyzw"[i],
+                       (gs_streams >> (i * 2)) & 0x3);
+            }
+            fprintf(fp, ")");
+         }
+         break;
+
       default: {
          unsigned off = info->index_map[idx] - 1;
          assert(index_name[idx]);  /* forgot to update index_name table? */
@@ -936,27 +964,26 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
    if (!state->shader)
       return;
 
-   struct exec_list *var_list = NULL;
-
+   nir_variable_mode var_mode;
    switch (instr->intrinsic) {
    case nir_intrinsic_load_uniform:
-      var_list = &state->shader->uniforms;
+      var_mode = nir_var_uniform;
       break;
    case nir_intrinsic_load_input:
    case nir_intrinsic_load_interpolated_input:
    case nir_intrinsic_load_per_vertex_input:
-      var_list = &state->shader->inputs;
+      var_mode = nir_var_shader_in;
       break;
    case nir_intrinsic_load_output:
    case nir_intrinsic_store_output:
    case nir_intrinsic_store_per_vertex_output:
-      var_list = &state->shader->outputs;
+      var_mode = nir_var_shader_out;
       break;
    default:
       return;
    }
 
-   nir_foreach_variable(var, var_list) {
+   nir_foreach_variable_with_modes(var, state->shader, var_mode) {
       if ((var->data.driver_location == nir_intrinsic_base(instr)) &&
           (instr->intrinsic == nir_intrinsic_load_uniform ||
            (nir_intrinsic_component(instr) >= var->data.location_frac  &&
@@ -1216,6 +1243,19 @@ print_jump_instr(nir_jump_instr *instr, print_state *state)
    case nir_jump_return:
       fprintf(fp, "return");
       break;
+
+   case nir_jump_goto:
+      fprintf(fp, "goto block_%u",
+              instr->target ? instr->target->index : -1);
+      break;
+
+   case nir_jump_goto_if:
+      fprintf(fp, "goto block_%u if ",
+              instr->target ? instr->target->index : -1);
+      print_src(&instr->condition, state);
+      fprintf(fp, " else block_%u",
+              instr->else_target ? instr->else_target->index : -1);
+      break;
    }
 }
 
@@ -1431,7 +1471,7 @@ print_function_impl(nir_function_impl *impl, print_state *state)
 
    fprintf(fp, "{\n");
 
-   nir_foreach_variable(var, &impl->locals) {
+   nir_foreach_function_temp_variable(var, impl) {
       fprintf(fp, "\t");
       print_var_decl(var, state);
    }
@@ -1518,30 +1558,11 @@ nir_print_shader_annotated(nir_shader *shader, FILE *fp,
    fprintf(fp, "shared: %u\n", shader->num_shared);
    if (shader->scratch_size)
       fprintf(fp, "scratch: %u\n", shader->scratch_size);
+   if (shader->constant_data_size)
+      fprintf(fp, "constants: %u\n", shader->constant_data_size);
 
-   nir_foreach_variable(var, &shader->uniforms) {
+   nir_foreach_variable_in_shader(var, shader)
       print_var_decl(var, &state);
-   }
-
-   nir_foreach_variable(var, &shader->inputs) {
-      print_var_decl(var, &state);
-   }
-
-   nir_foreach_variable(var, &shader->outputs) {
-      print_var_decl(var, &state);
-   }
-
-   nir_foreach_variable(var, &shader->shared) {
-      print_var_decl(var, &state);
-   }
-
-   nir_foreach_variable(var, &shader->globals) {
-      print_var_decl(var, &state);
-   }
-
-   nir_foreach_variable(var, &shader->system_values) {
-      print_var_decl(var, &state);
-   }
 
    foreach_list_typed(nir_function, func, node, &shader->functions) {
       print_function(func, &state);

@@ -776,6 +776,8 @@ VkResult anv_CreateInstance(
    driParseOptionInfo(&instance->available_dri_options, anv_dri_options_xml);
    driParseConfigFiles(&instance->dri_options, &instance->available_dri_options,
                        0, "anv", NULL,
+                       instance->app_info.app_name,
+                       instance->app_info.app_version,
                        instance->app_info.engine_name,
                        instance->app_info.engine_version);
 
@@ -1082,6 +1084,14 @@ void anv_GetPhysicalDeviceFeatures2(
 
    vk_foreach_struct(ext, pFeatures->pNext) {
       switch (ext->sType) {
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_4444_FORMATS_FEATURES_EXT: {
+         VkPhysicalDevice4444FormatsFeaturesEXT *features =
+            (VkPhysicalDevice4444FormatsFeaturesEXT *)ext;
+         features->formatA4R4G4B4 = true;
+         features->formatA4B4G4R4 = false;
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES_KHR: {
          VkPhysicalDevice8BitStorageFeaturesKHR *features =
             (VkPhysicalDevice8BitStorageFeaturesKHR *)ext;
@@ -1196,6 +1206,13 @@ void anv_GetPhysicalDeviceFeatures2(
          CORE_FEATURE(1, 2, descriptorBindingPartiallyBound);
          CORE_FEATURE(1, 2, descriptorBindingVariableDescriptorCount);
          CORE_FEATURE(1, 2, runtimeDescriptorArray);
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_ROBUSTNESS_FEATURES_EXT: {
+         VkPhysicalDeviceImageRobustnessFeaturesEXT *features =
+            (VkPhysicalDeviceImageRobustnessFeaturesEXT *)ext;
+         features->robustImageAccess = true;
          break;
       }
 
@@ -1314,6 +1331,23 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT: {
+         VkPhysicalDeviceShaderAtomicFloatFeaturesEXT *features = (void *)ext;
+         features->shaderBufferFloat32Atomics =    true;
+         features->shaderBufferFloat32AtomicAdd =  false;
+         features->shaderBufferFloat64Atomics =    false;
+         features->shaderBufferFloat64AtomicAdd =  false;
+         features->shaderSharedFloat32Atomics =    true;
+         features->shaderSharedFloat32AtomicAdd =  false;
+         features->shaderSharedFloat64Atomics =    false;
+         features->shaderSharedFloat64AtomicAdd =  false;
+         features->shaderImageFloat32Atomics =     true;
+         features->shaderImageFloat32AtomicAdd =   false;
+         features->sparseImageFloat32Atomics =     false;
+         features->sparseImageFloat32AtomicAdd =   false;
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES_KHR: {
          VkPhysicalDeviceShaderAtomicInt64FeaturesKHR *features = (void *)ext;
          CORE_FEATURE(1, 2, shaderBufferInt64Atomics);
@@ -1338,6 +1372,13 @@ void anv_GetPhysicalDeviceFeatures2(
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES: {
          VkPhysicalDeviceShaderDrawParametersFeatures *features = (void *)ext;
          CORE_FEATURE(1, 1, shaderDrawParameters);
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_FUNCTIONS_2_FEATURES_INTEL: {
+         VkPhysicalDeviceShaderIntegerFunctions2FeaturesINTEL *features =
+            (VkPhysicalDeviceShaderIntegerFunctions2FeaturesINTEL *)ext;
+         features->shaderIntegerFunctions2 = true;
          break;
       }
 
@@ -1420,6 +1461,13 @@ void anv_GetPhysicalDeviceFeatures2(
          VkPhysicalDeviceYcbcrImageArraysFeaturesEXT *features =
             (VkPhysicalDeviceYcbcrImageArraysFeaturesEXT *)ext;
          features->ycbcrImageArrays = true;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT: {
+         VkPhysicalDeviceExtendedDynamicStateFeaturesEXT *features =
+            (VkPhysicalDeviceExtendedDynamicStateFeaturesEXT *)ext;
+         features->extendedDynamicState = true;
          break;
       }
 
@@ -2877,8 +2925,8 @@ VkResult anv_CreateDevice(
        */
       anv_state_reserved_pool_init(&device->custom_border_colors,
                                    &device->dynamic_state_pool,
-                                   sizeof(struct gen8_border_color),
-                                   MAX_CUSTOM_BORDER_COLORS, 64);
+                                   MAX_CUSTOM_BORDER_COLORS,
+                                   sizeof(struct gen8_border_color), 64);
    }
 
    result = anv_state_pool_init(&device->instruction_state_pool, device,
@@ -2924,10 +2972,10 @@ VkResult anv_CreateDevice(
                                        "Anv") + 8, 8),
    };
 
-   if (!device->info.has_llc) {
-      gen_clflush_range(device->workaround_bo->map,
-                        device->workaround_address.offset);
-   }
+   device->debug_frame_desc =
+      intel_debug_get_identifier_block(device->workaround_bo->map,
+                                       device->workaround_bo->size,
+                                       GEN_DEBUG_BLOCK_TYPE_FRAME);
 
    result = anv_device_init_trivial_batch(device);
    if (result != VK_SUCCESS)

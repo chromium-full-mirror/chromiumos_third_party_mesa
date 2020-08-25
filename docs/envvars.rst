@@ -414,15 +414,22 @@ Clover environment variables
 Softpipe driver environment variables
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``SOFTPIPE_DUMP_FS``
-   if set, the softpipe driver will print fragment shaders to stderr
-``SOFTPIPE_DUMP_GS``
-   if set, the softpipe driver will print geometry shaders to stderr
-``SOFTPIPE_NO_RAST``
-   if set, rasterization is no-op'd. For profiling purposes.
-``SOFTPIPE_USE_LLVM``
-   if set, the softpipe driver will try to use LLVM JIT for vertex
-   shading processing.
+``SOFTPIPE_DEBUG``
+   a comma-separated list of named flags, which do various things:
+
+   ``vs``
+      Dump vertex shader assembly to stderr
+   ``fs``
+      Dump fragment shader assembly to stderr
+   ``gs``
+      Dump geometry shader assembly to stderr
+   ``cs``
+      Dump compute shader assembly to stderr
+   ``no_rast``
+      rasterization is no-op'd. For profiling purposes.
+   ``use_llvm``
+      the softpipe driver will try to use LLVM JIT for vertex
+      shading processing.
 
 LLVMpipe driver environment variables
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -520,6 +527,9 @@ RADV driver environment variables
       validate the LLVM IR before LLVM compiles the shader
    ``errors``
       display more info about errors
+   ``forcecompress``
+      Enables DCC,FMASK,CMASK,HTILE in situations where the driver supports it
+      but normally does not deem it beneficial.
    ``info``
       show GPU-related information
    ``metashaders``
@@ -602,6 +612,8 @@ RADV driver environment variables
       validate register assignment of ACO IR and catches many RA bugs
    ``perfwarn``
       abort on some suboptimal code generation
+   ``force-waitcnt``
+      force emitting waitcnt states if there is something to wait for
 
 radeonsi driver environment variables
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -251,6 +251,11 @@ struct lp_build_fs_iface {
                              unsigned attrib, unsigned chan,
                              bool centroid, bool sample,
                              LLVMValueRef indir_index, LLVMValueRef offsets[2]);
+
+   void (*fb_fetch)(const struct lp_build_fs_iface *iface,
+                    struct lp_build_context *bld,
+                    unsigned cbuf,
+                    LLVMValueRef result[4]);
 };
 
 void
@@ -454,6 +459,7 @@ struct lp_build_tcs_iface
                              LLVMValueRef vertex_index,
                              boolean is_aindex_indirect,
                              LLVMValueRef attrib_index,
+                             boolean is_sindex_indirect,
                              LLVMValueRef swizzle_index,
                              LLVMValueRef value,
                              LLVMValueRef mask_vec);

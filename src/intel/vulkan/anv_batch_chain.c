@@ -1377,9 +1377,6 @@ static bool
 relocate_cmd_buffer(struct anv_cmd_buffer *cmd_buffer,
                     struct anv_execbuf *exec)
 {
-   if (cmd_buffer->perf_query_pool)
-      return false;
-
    if (!exec->has_relocs)
       return true;
 
@@ -1636,7 +1633,7 @@ setup_empty_execbuf(struct anv_execbuf *execbuf, struct anv_device *device)
       .buffer_count = execbuf->bo_count,
       .batch_start_offset = 0,
       .batch_len = 8, /* GEN7_MI_BATCH_BUFFER_END and NOOP */
-      .flags = I915_EXEC_HANDLE_LUT | I915_EXEC_RENDER,
+      .flags = I915_EXEC_HANDLE_LUT | I915_EXEC_RENDER | I915_EXEC_NO_RELOC,
       .rsvd1 = device->context_id,
       .rsvd2 = 0,
    };
@@ -1709,7 +1706,7 @@ anv_queue_execbuf_locked(struct anv_queue *queue,
          .buffer_count = execbuf.bo_count,
          .batch_start_offset = 0,
          .batch_len = submit->simple_bo_size,
-         .flags = I915_EXEC_HANDLE_LUT | I915_EXEC_RENDER,
+         .flags = I915_EXEC_HANDLE_LUT | I915_EXEC_RENDER | I915_EXEC_NO_RELOC,
          .rsvd1 = device->context_id,
          .rsvd2 = 0,
       };

@@ -191,12 +191,9 @@ struct ir3_const_state {
 		uint32_t off[IR3_MAX_SHADER_IMAGES];
 	} image_dims;
 
-	unsigned immediate_idx;
 	unsigned immediates_count;
 	unsigned immediates_size;
-	struct {
-		uint32_t val[4];
-	} *immediates;
+	uint32_t *immediates;
 
 	/* State of ubo access lowered to push consts: */
 	struct ir3_ubo_analysis_state ubo_state;
@@ -564,7 +561,7 @@ struct ir3_shader_variant {
 		uint8_t regid;
 		bool    half : 1;
 	} outputs[32 + 2];  /* +POSITION +PSIZE */
-	bool writes_pos, writes_smask, writes_psize;
+	bool writes_pos, writes_smask, writes_psize, writes_stencilref;
 
 	/* Size in dwords of all outputs for VS, size of entire patch for HS. */
 	uint32_t output_size;
@@ -854,6 +851,9 @@ struct ir3_shader_linkage {
 
 	/* location for fixed-function gl_PrimitiveID passthrough */
 	uint8_t primid_loc;
+
+	/* location for fixed-function gl_ViewIndex passthrough */
+	uint8_t viewid_loc;
 };
 
 static inline void
@@ -894,6 +894,7 @@ ir3_link_shaders(struct ir3_shader_linkage *l,
 	int j = -1, k;
 
 	l->primid_loc = 0xff;
+	l->viewid_loc = 0xff;
 
 	while (l->cnt < ARRAY_SIZE(l->var)) {
 		j = ir3_next_varying(fs, j);
@@ -908,6 +909,11 @@ ir3_link_shaders(struct ir3_shader_linkage *l,
 
 		if (k < 0 && fs->inputs[j].slot == VARYING_SLOT_PRIMITIVE_ID) {
 			l->primid_loc = fs->inputs[j].inloc;
+		}
+
+		if (fs->inputs[j].slot == VARYING_SLOT_VIEW_INDEX) {
+			assert(k < 0);
+			l->viewid_loc = fs->inputs[j].inloc;
 		}
 
 		ir3_link_add(l, k >= 0 ? vs->outputs[k].regid : default_regid,

@@ -117,9 +117,12 @@ bool ShaderFromNirProcessor::scan_instruction(nir_instr *instr)
       case nir_intrinsic_image_atomic_umin:
       case nir_intrinsic_ssbo_atomic_umax:
       case nir_intrinsic_image_atomic_umax:
+      case nir_intrinsic_ssbo_atomic_xor:
       case nir_intrinsic_image_atomic_xor:
+      case nir_intrinsic_ssbo_atomic_exchange:
       case nir_intrinsic_image_atomic_exchange:
       case nir_intrinsic_image_atomic_comp_swap:
+      case nir_intrinsic_ssbo_atomic_comp_swap:
          m_sel.info.writes_memory = 1;
          /* fallthrough */
       case nir_intrinsic_image_load:
@@ -252,10 +255,15 @@ bool ShaderFromNirProcessor::process_uniforms(nir_variable *uniform)
       ++sh_info().nhwatomic_ranges;
       atom.buffer_id = uniform->data.binding;
       atom.hw_idx = m_atomic_base + m_next_hwatomic_loc;
-      atom.start = m_next_hwatomic_loc;
+
+      atom.start = uniform->data.offset >> 2;
       atom.end = atom.start + natomics - 1;
-      m_next_hwatomic_loc = atom.end + 1;
-      //atom.array_id = uniform->type->is_array() ? 1 : 0;
+
+      if (m_atomic_base_map.find(uniform->data.binding) ==
+          m_atomic_base_map.end())
+         m_atomic_base_map[uniform->data.binding] = m_next_hwatomic_loc;
+
+      m_next_hwatomic_loc += natomics;
 
       m_sel.info.file_count[TGSI_FILE_HW_ATOMIC] += atom.end  - atom.start + 1;
 
@@ -263,8 +271,11 @@ bool ShaderFromNirProcessor::process_uniforms(nir_variable *uniform)
               << m_sel.info.file_count[TGSI_FILE_HW_ATOMIC] << "\n";
    }
 
-   if (uniform->type->is_image() || uniform->data.mode == nir_var_mem_ssbo) {
+   auto type = uniform->type->is_array() ? uniform->type->without_array(): uniform->type;
+   if (type->is_image() || uniform->data.mode == nir_var_mem_ssbo) {
       sh_info().uses_images = 1;
+      if (uniform->type->is_array())
+         sh_info().indirect_files |= TGSI_FILE_IMAGE;
    }
 
    if (uniform->type->is_image()) {
@@ -746,48 +757,83 @@ GPRVector ShaderFromNirProcessor::vec_from_nir_with_fetch_constant(const nir_src
    bool use_same = true;
    GPRVector::Values v;
 
+   std::array<bool,4> used_swizzles = {false, false, false, false};
+
+   /* Check whether all sources come from a GPR, and,
+    * if requested, whether they are swizzled as epected */
+
    for (int i = 0; i < 4 && use_same; ++i)  {
       if ((1 << i) & mask) {
          if (swizzle[i] < 4) {
             v[i] = from_nir(src, swizzle[i]);
             assert(v[i]);
-            if (v[i]->type() != Value::gpr)
-               use_same = false;
-            if (match && (v[i]->chan() != swizzle[i]))
-                use_same = false;
+            use_same &= (v[i]->type() == Value::gpr);
+            if (match) {
+               use_same &= (v[i]->chan() == swizzle[i]);
+            }
+            used_swizzles[v[i]->chan()] = true;
          }
       }
    }
 
+
+   /* Now check whether all inputs come from the same GPR, and fill
+    * empty slots in the vector with unused swizzles, bail out if
+    * the sources are not from the same GPR
+    */
+
    if (use_same) {
+      int next_free_swizzle = 0;
+      while (used_swizzles[next_free_swizzle] && next_free_swizzle < 4)
+         next_free_swizzle++;
+
+      /* Find the first GPR index used */
       int i = 0;
       while (!v[i] && i < 4) ++i;
       assert(i < 4);
-
       unsigned sel = v[i]->sel();
+
+
       for (i = 0; i < 4 && use_same; ++i) {
-         if (!v[i])
-            v[i] = PValue(new GPRValue(sel, swizzle[i]));
+         if (!v[i]) {
+            if (swizzle[i] >= 4)
+               v[i] = PValue(new GPRValue(sel, swizzle[i]));
+            else {
+               assert(next_free_swizzle < 4);
+               v[i] = PValue(new GPRValue(sel, next_free_swizzle));
+            }
+
+            if (swizzle[i] < 4) {
+               used_swizzles[next_free_swizzle] = true;
+               while (next_free_swizzle < 4 && used_swizzles[swizzle[next_free_swizzle]])
+                  next_free_swizzle++;
+            }
+         }
          else
             use_same &= v[i]->sel() == sel;
       }
    }
 
+   /* We can't re-use the source data because they either need re-swizzling, or
+    * they didn't come all from a GPR or the same GPR, so copy to a new vector
+    */
    if (!use_same) {
       AluInstruction *ir = nullptr;
-      int sel = allocate_temp_register();
+      GPRVector result(allocate_temp_register(), swizzle);
       for (int i = 0; i < 4; ++i) {
-         v[i] = PValue(new GPRValue(sel, swizzle[i]));
          if (swizzle[i] < 4 && (mask & (1 << i))) {
-            ir = new AluInstruction(op1_mov, v[i], from_nir(src, swizzle[i]),
+            ir = new AluInstruction(op1_mov, result[i], from_nir(src, swizzle[i]),
                                     EmitInstruction::write);
             emit_instruction(ir);
+         } else {
+
          }
       }
       if (ir)
          ir->set_flag(alu_last_instr);
-   }
-   return GPRVector(v);;
+      return result;
+   } else
+      return GPRVector(v);;
 }
 
 bool ShaderFromNirProcessor::emit_load_ubo(nir_intrinsic_instr* instr)
@@ -983,13 +1029,13 @@ AluInstruction *ShaderFromNirProcessor::emit_load_literal(const nir_load_const_i
    return ir;
 }
 
-PValue ShaderFromNirProcessor::from_nir_with_fetch_constant(const nir_src& src, unsigned component)
+PValue ShaderFromNirProcessor::from_nir_with_fetch_constant(const nir_src& src, unsigned component, int channel)
 {
    PValue value = from_nir(src, component);
    if (value->type() != Value::gpr &&
        value->type() != Value::gpr_vector &&
        value->type() != Value::gpr_array_value) {
-      PValue retval = get_temp_register();
+      PValue retval = get_temp_register(channel);
       emit_instruction(new AluInstruction(op1_mov, retval, value,
                                           EmitInstruction::last_write));
       value = retval;

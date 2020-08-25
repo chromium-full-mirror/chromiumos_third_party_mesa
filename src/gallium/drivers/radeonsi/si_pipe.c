@@ -33,6 +33,7 @@
 #include "si_public.h"
 #include "si_shader_internal.h"
 #include "sid.h"
+#include "ac_shadowed_regs.h"
 #include "util/disk_cache.h"
 #include "util/u_log.h"
 #include "util/u_memory.h"
@@ -90,6 +91,7 @@ static const struct debug_named_value debug_options[] = {
    {"check_vm", DBG(CHECK_VM), "Check VM faults and dump debug info."},
    {"reserve_vmid", DBG(RESERVE_VMID), "Force VMID reservation per context."},
    {"zerovram", DBG(ZERO_VRAM), "Clear VRAM allocations."},
+   {"shadowregs", DBG(SHADOW_REGS), "Enable CP register shadowing."},
 
    /* 3D engine options: */
    {"nogfx", DBG(NO_GFX), "Disable graphics. Only multimedia compute paths can be used."},
@@ -195,7 +197,8 @@ static void si_destroy_context(struct pipe_context *context)
    si_resource_reference(&sctx->wait_mem_scratch, NULL);
    si_resource_reference(&sctx->small_prim_cull_info_buf, NULL);
 
-   si_pm4_free_state(sctx, sctx->cs_preamble_state, ~0);
+   if (sctx->cs_preamble_state)
+      si_pm4_free_state(sctx, sctx->cs_preamble_state, ~0);
    if (sctx->cs_preamble_gs_rings)
       si_pm4_free_state(sctx, sctx->cs_preamble_gs_rings, ~0);
    for (i = 0; i < ARRAY_SIZE(sctx->vgt_shader_config); i++)
@@ -296,6 +299,7 @@ static void si_destroy_context(struct pipe_context *context)
    si_resource_reference(&sctx->index_ring, NULL);
    si_resource_reference(&sctx->barrier_buf, NULL);
    si_resource_reference(&sctx->last_ib_barrier_buf, NULL);
+   si_resource_reference(&sctx->shadowed_regs, NULL);
    pb_reference(&sctx->gds, NULL);
    pb_reference(&sctx->gds_oa, NULL);
 
@@ -479,6 +483,14 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
         *    https://gitlab.freedesktop.org/mesa/mesa/-/issues/1889
         */
        (sctx->chip_class != GFX8 || sscreen->debug_flags & DBG(FORCE_SDMA)) &&
+       /* SDMA causes corruption on gfx9 APUs:
+        *    https://gitlab.freedesktop.org/mesa/mesa/-/issues/2814
+        *
+        * While we could keep buffer copies and clears enabled, let's disable
+        * everything, because neither gfx8 nor gfx10 enable SDMA, and it's not
+        * easy to test.
+        */
+       (sctx->chip_class != GFX9 || sscreen->debug_flags & DBG(FORCE_SDMA)) &&
        /* SDMA timeouts sometimes on gfx10 so disable it for now. See:
         *    https://bugs.freedesktop.org/show_bug.cgi?id=111481
         *    https://gitlab.freedesktop.org/mesa/mesa/-/issues/1907
@@ -551,7 +563,6 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
       si_init_msaa_functions(sctx);
       si_init_shader_functions(sctx);
       si_init_state_functions(sctx);
-      si_init_cs_preamble_state(sctx);
       si_init_streamout_functions(sctx);
       si_init_viewport_functions(sctx);
 
@@ -668,7 +679,12 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
 
    /* The remainder of this function initializes the gfx CS and must be last. */
    assert(sctx->gfx_cs->current.cdw == 0);
-   si_begin_new_gfx_cs(sctx);
+
+   if (sctx->has_graphics) {
+      si_init_cp_reg_shadowing(sctx);
+   }
+
+   si_begin_new_gfx_cs(sctx, true);
    assert(sctx->gfx_cs->current.cdw == sctx->initial_gfx_cs_size);
 
    /* Initialize per-context buffers. */
@@ -1081,7 +1097,7 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
    unsigned max_offchip_buffers_per_se;
 
    if (sscreen->info.chip_class >= GFX10)
-      max_offchip_buffers_per_se = 256;
+      max_offchip_buffers_per_se = 128;
    /* Only certain chips can use the maximum value. */
    else if (sscreen->info.family == CHIP_VEGA12 || sscreen->info.family == CHIP_VEGA20)
       max_offchip_buffers_per_se = double_offchip_buffers ? 128 : 64;
@@ -1135,6 +1151,11 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
    sscreen->commutative_blend_add =
       driQueryOptionb(config->options, "radeonsi_commutative_blend_add") ||
       driQueryOptionb(config->options, "allow_draw_out_of_order");
+
+   /* TODO: Find out why NGG culling hangs on gfx10.3 */
+   if (sscreen->info.chip_class == GFX10_3 &&
+       !(sscreen->debug_flags & (DBG(ALWAYS_NGG_CULLING_ALL) | DBG(ALWAYS_NGG_CULLING_TESS))))
+      sscreen->debug_flags |= DBG(NO_NGG_CULLING);
 
    sscreen->use_ngg = sscreen->info.chip_class >= GFX10 && sscreen->info.family != CHIP_NAVI14 &&
                       !(sscreen->debug_flags & DBG(NO_NGG));
@@ -1273,6 +1294,8 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
       si_test_gds_memory_management((struct si_context *)sscreen->aux_context, 4, 1,
                                     RADEON_DOMAIN_OA);
    }
+
+   ac_print_shadowed_regs(&sscreen->info);
 
    STATIC_ASSERT(sizeof(union si_vgt_stages_key) == 4);
    return &sscreen->b;

@@ -1442,7 +1442,7 @@ read_ssa_undef(read_ctx *ctx, union packed_instr header)
 union packed_tex_data {
    uint32_t u32;
    struct {
-      enum glsl_sampler_dim sampler_dim:4;
+      unsigned sampler_dim:4;
       unsigned dest_type:8;
       unsigned coord_components:3;
       unsigned is_array:1;
@@ -1901,6 +1901,8 @@ read_cf_list(read_ctx *ctx, struct exec_list *cf_list)
 static void
 write_function_impl(write_ctx *ctx, const nir_function_impl *fi)
 {
+   blob_write_uint8(ctx->blob, fi->structured);
+
    write_var_list(ctx, &fi->locals);
    write_reg_list(ctx, &fi->registers);
    blob_write_uint32(ctx->blob, fi->reg_alloc);
@@ -1914,6 +1916,8 @@ read_function_impl(read_ctx *ctx, nir_function *fxn)
 {
    nir_function_impl *fi = nir_function_impl_create_bare(ctx->nir);
    fi->function = fxn;
+
+   fi->structured = blob_read_uint8(ctx->blob);
 
    read_var_list(ctx, &fi->locals);
    read_reg_list(ctx, &fi->registers);
@@ -2013,12 +2017,7 @@ nir_serialize(struct blob *blob, const nir_shader *nir, bool strip)
    info.name = info.label = NULL;
    blob_write_bytes(blob, (uint8_t *) &info, sizeof(info));
 
-   write_var_list(&ctx, &nir->uniforms);
-   write_var_list(&ctx, &nir->inputs);
-   write_var_list(&ctx, &nir->outputs);
-   write_var_list(&ctx, &nir->shared);
-   write_var_list(&ctx, &nir->globals);
-   write_var_list(&ctx, &nir->system_values);
+   write_var_list(&ctx, &nir->variables);
 
    blob_write_uint32(blob, nir->num_inputs);
    blob_write_uint32(blob, nir->num_uniforms);
@@ -2071,12 +2070,7 @@ nir_deserialize(void *mem_ctx,
 
    ctx.nir->info = info;
 
-   read_var_list(&ctx, &ctx.nir->uniforms);
-   read_var_list(&ctx, &ctx.nir->inputs);
-   read_var_list(&ctx, &ctx.nir->outputs);
-   read_var_list(&ctx, &ctx.nir->shared);
-   read_var_list(&ctx, &ctx.nir->globals);
-   read_var_list(&ctx, &ctx.nir->system_values);
+   read_var_list(&ctx, &ctx.nir->variables);
 
    ctx.nir->num_inputs = blob_read_uint32(blob);
    ctx.nir->num_uniforms = blob_read_uint32(blob);

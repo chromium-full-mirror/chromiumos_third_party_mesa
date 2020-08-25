@@ -29,7 +29,6 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "panfrost-job.h"
 
 #define MIDGARD_DBG_MSGS		0x0001
 #define MIDGARD_DBG_SHADERS		0x0002
@@ -519,6 +518,7 @@ typedef enum {
 } midgard_load_store_op;
 
 typedef enum {
+        midgard_interp_sample = 0,
         midgard_interp_centroid = 1,
         midgard_interp_default = 2
 } midgard_interpolation;
@@ -657,9 +657,6 @@ enum mali_sampler_type {
         MALI_SAMPLER_SIGNED     = 0x3, /* isampler */
 };
 
-#define MIDGARD_BARRIER_BUFFER (1 << 0)
-#define MIDGARD_BARRIER_SHARED (1 << 1)
-
 typedef struct
 __attribute__((__packed__))
 {
@@ -678,7 +675,7 @@ __attribute__((__packed__))
         unsigned cont  : 1;
         unsigned last  : 1;
 
-        enum mali_texture_type format : 2;
+        unsigned format : 2;
 
         /* Are sampler_handle/texture_handler respectively set by registers? If
          * true, the lower 8-bits of the respective field is a register word.
@@ -715,17 +712,15 @@ __attribute__((__packed__))
 
         unsigned mask : 4;
 
-        /* Intriguingly, textures can take an outmod just like textures. Int
+        /* Intriguingly, textures can take an outmod just like alu ops. Int
          * outmods are not supported as far as I can tell, so this is only
          * meaningful for float samplers */
         midgard_outmod_float outmod  : 2;
 
         unsigned swizzle  : 8;
 
-        /* For barriers, control barriers are implied regardless, but these
-         * bits also enable memory barriers of various types. For regular
-         * textures, these indicate how many bundles after this texture op may
-         * be executed in parallel with this op. We may execute only ALU and
+         /* These indicate how many bundles after this texture op may be
+          * executed in parallel with this op. We may execute only ALU and
          * ld/st in parallel (not other textures), and obviously there cannot
          * be any dependency (the blob appears to forbid even accessing other
          * channels of a given texture register). */
@@ -801,10 +796,8 @@ __attribute__((__packed__))
         unsigned zero2 : 14;
 
         unsigned zero3 : 24;
-        unsigned buffer : 1;
-        unsigned shared : 1;
-        unsigned stack  : 1;
-        unsigned zero4 : 5;
+        unsigned out_of_order : 4;
+        unsigned zero4 : 4;
 
         uint64_t zero5;
 } midgard_texture_barrier_word;

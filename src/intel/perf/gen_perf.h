@@ -190,13 +190,13 @@ struct gen_perf_query_register_prog {
 
 /* Register programming for a given query */
 struct gen_perf_registers {
-   struct gen_perf_query_register_prog *flex_regs;
+   const struct gen_perf_query_register_prog *flex_regs;
    uint32_t n_flex_regs;
 
-   struct gen_perf_query_register_prog *mux_regs;
+   const struct gen_perf_query_register_prog *mux_regs;
    uint32_t n_mux_regs;
 
-   struct gen_perf_query_register_prog *b_counter_regs;
+   const struct gen_perf_query_register_prog *b_counter_regs;
    uint32_t n_b_counter_regs;
 };
 
@@ -207,6 +207,7 @@ struct gen_perf_query_info {
       GEN_PERF_QUERY_TYPE_PIPELINE,
    } kind;
    const char *name;
+   const char *symbol_name;
    const char *guid;
    struct gen_perf_query_counter *counters;
    int n_counters;
@@ -281,6 +282,11 @@ struct gen_perf_config {
     * runtime
     */
    struct hash_table *oa_metrics_table;
+
+   /* When MDAPI hasn't configured the metric we need to use by the time the
+    * query begins, this OA metric is used as a fallback.
+    */
+   uint64_t fallback_raw_oa_metric;
 
    /* Whether we have support for this platform. If true && n_queries == 0,
     * this means we will not be able to use i915-perf because of it is in

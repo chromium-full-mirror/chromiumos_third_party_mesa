@@ -346,8 +346,8 @@ void st_init_limits(struct pipe_screen *screen,
          screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_FP16_DERIVATIVES);
       options->LowerPrecisionInt16 =
          screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_INT16);
-      options->LowerPrecisionTemporaries =
-         screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_GLSL_16BIT_TEMPS);
+      options->LowerPrecisionConstants =
+         screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_GLSL_16BIT_CONSTS);
    }
 
    c->MaxUserAssignableUniformLocations =
@@ -1470,6 +1470,9 @@ void st_init_extensions(struct pipe_screen *screen,
    bool coherent_fb_fetch =
       screen->get_param(screen, PIPE_CAP_FBFETCH_COHERENT);
 
+   if (screen->get_param(screen, PIPE_CAP_BLEND_EQUATION_ADVANCED))
+      extensions->KHR_blend_equation_advanced = true;
+
    if (max_fb_fetch_rts > 0) {
       extensions->KHR_blend_equation_advanced = true;
       extensions->KHR_blend_equation_advanced_coherent = coherent_fb_fetch;
@@ -1757,4 +1760,11 @@ void st_init_extensions(struct pipe_screen *screen,
    }
 
    consts->AllowDrawOutOfOrder = options->allow_draw_out_of_order;
+
+   bool prefer_nir = PIPE_SHADER_IR_NIR ==
+         screen->get_shader_param(screen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_PREFERRED_IR);
+   if (prefer_nir &&
+       screen->get_shader_param(screen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_INTEGERS) &&
+       extensions->ARB_stencil_texturing)
+      extensions->NV_copy_depth_to_color = TRUE;
 }

@@ -53,6 +53,7 @@ if cc.get_id() == 'msvc'
 else
   idep_getopt = null_dep
 endif
+subdir('android_stub')
 subdir('util')
 subdir('mapi')
 # TODO: opengl
@@ -83,6 +84,9 @@ if with_gallium_freedreno or with_freedreno_vk
 endif
 if with_gallium_panfrost or with_gallium_lima
   subdir('panfrost')
+endif
+if with_gallium_virgl
+  subdir('virtio')
 endif
 if with_dri_i965 or with_intel_vk or with_gallium_iris
   subdir('intel')

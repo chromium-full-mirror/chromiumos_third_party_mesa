@@ -35,6 +35,7 @@
 #include "freedreno_log.h"
 #include "freedreno_resource.h"
 #include "freedreno_query_hw.h"
+#include "common/freedreno_guardband.h"
 
 #include "fd6_emit.h"
 #include "fd6_blend.h"
@@ -345,7 +346,7 @@ fd6_emit_textures(struct fd_pipe *pipe, struct fd_ringbuffer *ring,
 			OUT_RING(state, sampler->texsamp0);
 			OUT_RING(state, sampler->texsamp1);
 			OUT_RING(state, sampler->texsamp2 |
-				A6XX_TEX_SAMP_2_BCOLOR_OFFSET((i + bcolor_offset) * sizeof(struct bcolor_entry)));
+				A6XX_TEX_SAMP_2_BCOLOR(i + bcolor_offset));
 			OUT_RING(state, sampler->texsamp3);
 			needs_border |= sampler->needs_border;
 		}
@@ -904,8 +905,12 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 				)
 			);
 
-		unsigned guardband_x = fd_calc_guardband(scissor->maxx - scissor->minx);
-		unsigned guardband_y = fd_calc_guardband(scissor->maxy - scissor->miny);
+		unsigned guardband_x =
+			fd_calc_guardband(ctx->viewport.translate[0], ctx->viewport.scale[0],
+							  false);
+		unsigned guardband_y =
+			fd_calc_guardband(ctx->viewport.translate[1], ctx->viewport.scale[1],
+							  false);
 
 		OUT_REG(ring, A6XX_GRAS_CL_GUARDBAND_CLIP_ADJ(
 					.horz = guardband_x,
@@ -1169,7 +1174,7 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	WRITE(REG_A6XX_UCHE_UNKNOWN_0E12, 0x3200000);
 	WRITE(REG_A6XX_UCHE_CLIENT_PF, 4);
 	WRITE(REG_A6XX_RB_UNKNOWN_8E01, 0x1);
-	WRITE(REG_A6XX_SP_UNKNOWN_AB00, 0x5);
+	WRITE(REG_A6XX_SP_MODE_CONTROL, A6XX_SP_MODE_CONTROL_CONSTANT_DEMOTION_ENABLE | 4);
 	WRITE(REG_A6XX_VFD_ADD_OFFSET, A6XX_VFD_ADD_OFFSET_VERTEX);
 	WRITE(REG_A6XX_RB_UNKNOWN_8811, 0x00000010);
 	WRITE(REG_A6XX_PC_MODE_CNTL, 0x1f);
@@ -1195,7 +1200,7 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 
 	WRITE(REG_A6XX_PC_UNKNOWN_9980, 0);
 
-	WRITE(REG_A6XX_PC_UNKNOWN_9B07, 0);
+	WRITE(REG_A6XX_PC_MULTIVIEW_CNTL, 0);
 
 	WRITE(REG_A6XX_SP_UNKNOWN_A81B, 0);
 
@@ -1225,7 +1230,7 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	OUT_PKT4(ring, REG_A6XX_VFD_MODE_CNTL, 1);
 	OUT_RING(ring, 0x00000000);   /* VFD_MODE_CNTL */
 
-	WRITE(REG_A6XX_VFD_UNKNOWN_A008, 0);
+	WRITE(REG_A6XX_VFD_MULTIVIEW_CNTL, 0);
 
 	OUT_PKT4(ring, REG_A6XX_PC_MODE_CNTL, 1);
 	OUT_RING(ring, 0x0000001f);   /* PC_MODE_CNTL */

@@ -2,17 +2,38 @@
 
 set -ex
 
+if [ $DEBIAN_ARCH = arm64 ]; then
+    ARCH_PACKAGES="firmware-qcom-media"
+elif [ $DEBIAN_ARCH = amd64 ]; then
+    # Upstream LLVM package repository
+    apt-get -y install --no-install-recommends gnupg ca-certificates
+    apt-key add /llvm-snapshot.gpg.key
+    echo "deb https://apt.llvm.org/buster/ llvm-toolchain-buster-9 main" >/etc/apt/sources.list.d/llvm9.list
+    apt-get update
+
+    ARCH_PACKAGES="libelf1
+                   libllvm9
+                   libxcb-dri2-0
+                   libxcb-dri3-0
+                   libxcb-present0
+                   libxcb-sync1
+                   libxcb-xfixes0
+                   libxshmfence1
+                   firmware-amd-graphics
+                  "
+fi
+
 apt-get -y install --no-install-recommends \
     ca-certificates \
+    curl \
     initramfs-tools \
     libpng16-16 \
     strace \
     libsensors5 \
     libexpat1 \
-    libdrm2 \
-    libdrm-nouveau2 \
     libx11-6 \
     libx11-xcb1 \
+    $ARCH_PACKAGES \
     netcat-openbsd \
     python3 \
     libpython3.7 \
@@ -20,6 +41,7 @@ apt-get -y install --no-install-recommends \
     python3-pytest \
     python3-requests \
     python3-yaml \
+    sntp \
     wget \
     xz-utils
 
@@ -37,13 +59,19 @@ exec sh
 EOF
 chmod +x  /init
 
+mkdir -p /lib/firmware/rtl_nic
+wget https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/rtl_nic/rtl8153a-3.fw -O /lib/firmware/rtl_nic/rtl8153a-3.fw
+
 #######################################################################
 # Strip the image to a small minimal system without removing the debian
 # toolchain.
 
-# xz compress firmware so it doesn't waste RAM at runtime.
+# xz compress firmware so it doesn't waste RAM at runtime.  Except db820c's
+# GPU firmware, due to using a precompiled kernel without compression support.
 find /lib/firmware -type f -print0 | \
+    grep -vz a530 | \
     xargs -0r -P4 -n4 xz -T1 -C crc32
+ln -s /lib/firmware/qcom/a530* /lib/firmware/
 
 # Copy timezone file and remove tzdata package
 rm -rf /etc/localtime
@@ -51,7 +79,8 @@ cp /usr/share/zoneinfo/Etc/UTC /etc/localtime
 
 UNNEEDED_PACKAGES="libfdisk1
                    tzdata
-                   diffutils"
+                   diffutils
+                   gnupg"
 
 export DEBIAN_FRONTEND=noninteractive
 

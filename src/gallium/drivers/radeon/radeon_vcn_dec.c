@@ -256,17 +256,19 @@ static rvcn_dec_message_hevc_t get_h265_msg(struct radeon_decoder *dec,
    result.num_delta_pocs_ref_rps_idx = pic->NumDeltaPocsOfRefRpsIdx;
    result.curr_poc = pic->CurrPicOrderCntVal;
 
-   for (i = 0; i < 16; i++) {
-      for (j = 0; (pic->ref[j] != NULL) && (j < 16); j++) {
+   for (i = 0; i < ARRAY_SIZE(dec->render_pic_list); i++) {
+      for (j = 0; 
+           (pic->ref[j] != NULL) && (j < ARRAY_SIZE(dec->render_pic_list));
+           j++) {
          if (dec->render_pic_list[i] == pic->ref[j])
             break;
-         if (j == 15)
+         if (j == ARRAY_SIZE(dec->render_pic_list) - 1)
             dec->render_pic_list[i] = NULL;
          else if (pic->ref[j + 1] == NULL)
             dec->render_pic_list[i] = NULL;
       }
    }
-   for (i = 0; i < 16; i++) {
+   for (i = 0; i < ARRAY_SIZE(dec->render_pic_list); i++) {
       if (dec->render_pic_list[i] == NULL) {
          dec->render_pic_list[i] = target;
          result.curr_idx = i;
@@ -369,7 +371,7 @@ static rvcn_dec_message_vp9_t get_vp9_msg(struct radeon_decoder *dec,
                                           struct pipe_vp9_picture_desc *pic)
 {
    rvcn_dec_message_vp9_t result;
-   unsigned i;
+   unsigned i ,j;
 
    memset(&result, 0, sizeof(result));
 
@@ -482,16 +484,34 @@ static rvcn_dec_message_vp9_t get_vp9_msg(struct radeon_decoder *dec,
    result.uncompressed_header_size = pic->picture_parameter.frame_header_length_in_bytes;
    result.compressed_header_size = pic->picture_parameter.first_partition_size;
 
-   assert(dec->base.max_references + 1 <= 16);
+   assert(dec->base.max_references + 1 <= ARRAY_SIZE(dec->render_pic_list));
 
-   for (i = 0; i < 16; ++i) {
+   //clear the dec->render list if it is not used as a reference
+   for (i = 0; i < ARRAY_SIZE(dec->render_pic_list); i++) {
+      if (dec->render_pic_list[i]) {
+          for (j=0;j<8;j++) {
+            if (dec->render_pic_list[i] == pic->ref[j])
+                 break;
+	  }
+	  if(j == 8)
+             dec->render_pic_list[i] = NULL;
+      }
+   }
+
+   for (i = 0; i < ARRAY_SIZE(dec->render_pic_list); ++i) {
       if (dec->render_pic_list[i] && dec->render_pic_list[i] == target) {
-         result.curr_pic_idx = (uintptr_t)vl_video_buffer_get_associated_data(target, &dec->base);
-         break;
+	if (target->codec != NULL){
+	    result.curr_pic_idx =(uintptr_t)vl_video_buffer_get_associated_data(target, &dec->base);
+	} else {
+	    result.curr_pic_idx = i;
+	    vl_video_buffer_set_associated_data(target, &dec->base, (void *)(uintptr_t)i,
+						&radeon_dec_destroy_associated_data);
+	}
+	break;
       } else if (!dec->render_pic_list[i]) {
          dec->render_pic_list[i] = target;
-         result.curr_pic_idx = dec->ref_idx;
-         vl_video_buffer_set_associated_data(target, &dec->base, (void *)(uintptr_t)dec->ref_idx++,
+         result.curr_pic_idx = i;
+         vl_video_buffer_set_associated_data(target, &dec->base, (void *)(uintptr_t)i,
                                              &radeon_dec_destroy_associated_data);
          break;
       }
@@ -824,7 +844,7 @@ static struct pb_buffer *rvcn_dec_message_decode(struct radeon_decoder *dec,
                        dec->base.width > 32 && dec->stream_type == RDECODE_CODEC_VP9)
                          ? align(dec->base.width, 64)
                          : align(dec->base.width, 32);
-   if (((struct si_screen*)dec->screen)->info.family >= CHIP_SIENNA &&
+   if (((struct si_screen*)dec->screen)->info.family >= CHIP_SIENNA_CICHLID &&
        dec->stream_type == RDECODE_CODEC_VP9)
       decode->db_aligned_height = align(dec->base.height, 64);
 
@@ -1504,7 +1524,7 @@ struct pipe_video_codec *radeon_create_decoder(struct pipe_context *context,
       goto error;
    }
 
-   for (i = 0; i < 16; i++)
+   for (i = 0; i < ARRAY_SIZE(dec->render_pic_list); i++)
       dec->render_pic_list[i] = NULL;
    bs_buf_size = width * height * (512 / (16 * 16));
    for (i = 0; i < NUM_BUFFERS; ++i) {
@@ -1587,7 +1607,8 @@ struct pipe_video_codec *radeon_create_decoder(struct pipe_context *context,
       dec->jpg.direct_reg = true;
       break;
    case CHIP_ARCTURUS:
-   case CHIP_SIENNA:
+   case CHIP_SIENNA_CICHLID:
+   case CHIP_NAVY_FLOUNDER:
       dec->reg.data0 = RDECODE_VCN2_5_GPCOM_VCPU_DATA0;
       dec->reg.data1 = RDECODE_VCN2_5_GPCOM_VCPU_DATA1;
       dec->reg.cmd = RDECODE_VCN2_5_GPCOM_VCPU_CMD;

@@ -119,7 +119,7 @@ panfrost_launch_grid(struct pipe_context *pipe,
 
         panfrost_vt_init(ctx, PIPE_SHADER_COMPUTE, &payload.prefix, &payload.postfix);
 
-        panfrost_emit_shader_meta(batch, PIPE_SHADER_COMPUTE, &payload.postfix);
+        payload.postfix.shader = panfrost_emit_compute_shader_meta(batch, PIPE_SHADER_COMPUTE);
         panfrost_emit_const_buf(batch, PIPE_SHADER_COMPUTE, &payload.postfix);
         panfrost_emit_shared_memory(batch, info, &payload);
 
@@ -133,9 +133,9 @@ panfrost_launch_grid(struct pipe_context *pipe,
                                           false);
 
         panfrost_new_job(&batch->pool, &batch->scoreboard,
-                        JOB_TYPE_COMPUTE, true, 0, &payload,
+                        MALI_JOB_TYPE_COMPUTE, true, 0, &payload,
                          sizeof(payload), false);
-        panfrost_flush_all_batches(ctx, true);
+        panfrost_flush_all_batches(ctx, 0);
 }
 
 static void

@@ -457,7 +457,7 @@ static int si_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_typ
    case PIPE_SHADER_CAP_FP16:
    case PIPE_SHADER_CAP_FP16_DERIVATIVES:
    case PIPE_SHADER_CAP_INT16:
-   case PIPE_SHADER_CAP_GLSL_16BIT_TEMPS:
+   case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
    case PIPE_SHADER_CAP_SUBROUTINES:
    case PIPE_SHADER_CAP_SUPPORTED_IRS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
@@ -649,7 +649,7 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
       if (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)
          return PIPE_FORMAT_P010;
       else if (profile == PIPE_VIDEO_PROFILE_VP9_PROFILE2)
-         return PIPE_FORMAT_P016;
+         return PIPE_FORMAT_P010;
       else
          return PIPE_FORMAT_NV12;
 
@@ -710,7 +710,7 @@ static bool si_vid_is_format_supported(struct pipe_screen *screen, enum pipe_for
 
    /* Vp9 profile 2 supports 10 bit decoding using P016 */
    if (profile == PIPE_VIDEO_PROFILE_VP9_PROFILE2)
-      return format == PIPE_FORMAT_P016;
+      return (format == PIPE_FORMAT_P010) || (format == PIPE_FORMAT_P016);
 
    /* we can only handle this one with UVD */
    if (profile != PIPE_VIDEO_PROFILE_UNKNOWN)

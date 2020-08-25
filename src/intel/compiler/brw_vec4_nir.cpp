@@ -999,7 +999,7 @@ try_immediate_source(const nir_alu_instr *instr, src_reg *op,
 
    case BRW_REGISTER_TYPE_F: {
       int first_comp = -1;
-      float f[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+      float f[NIR_MAX_VEC_COMPONENTS] = { 0.0f };
       bool is_scalar = true;
 
       for (unsigned i = 0; i < NIR_MAX_VEC_COMPONENTS; i++) {
@@ -1465,7 +1465,7 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
    case nir_op_flt32:
    case nir_op_fge32:
    case nir_op_feq32:
-   case nir_op_fne32: {
+   case nir_op_fneu32: {
       enum brw_conditional_mod conditional_mod =
          brw_cmod_for_nir_comparison(instr->op);
 

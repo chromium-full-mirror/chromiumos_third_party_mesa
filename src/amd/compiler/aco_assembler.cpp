@@ -80,8 +80,17 @@ void emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction*
 
    uint32_t opcode = ctx.opcode[(int)instr->opcode];
    if (opcode == (uint32_t)-1) {
-      fprintf(stderr, "Unsupported opcode: ");
-      aco_print_instr(instr, stderr);
+      char *out;
+      size_t outsize;
+      FILE *memf = open_memstream(&out, &outsize);
+
+      fprintf(memf, "Unsupported opcode: ");
+      aco_print_instr(instr, memf);
+      fclose(memf);
+
+      aco_err(ctx.program, out);
+      free(out);
+
       abort();
    }
 
@@ -527,7 +536,9 @@ void emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction*
    }
    case Format::PSEUDO:
    case Format::PSEUDO_BARRIER:
-      unreachable("Pseudo instructions should be lowered before assembly.");
+      if (instr->opcode != aco_opcode::p_unit_test)
+         unreachable("Pseudo instructions should be lowered before assembly.");
+      break;
    default:
       if ((uint16_t) instr->format & (uint16_t) Format::VOP3A) {
          VOP3A_instruction* vop3 = static_cast<VOP3A_instruction*>(instr);
@@ -622,6 +633,8 @@ void emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction*
          encoding |= dpp->neg[1] << 22;
          encoding |= dpp->abs[0] << 21;
          encoding |= dpp->neg[0] << 20;
+         if (ctx.chip_class >= GFX10)
+            encoding |= 1 << 18; /* set Fetch Inactive to match GFX9 behaviour */
          encoding |= dpp->bound_ctrl << 19;
          encoding |= dpp->dpp_ctrl << 8;
          encoding |= (0xFF) & dpp_op.physReg();
@@ -733,7 +746,7 @@ void fix_exports(asm_context& ctx, std::vector<uint32_t>& out, Program* program)
 
    if (!exported) {
       /* Abort in order to avoid a GPU hang. */
-      fprintf(stderr, "Missing export in %s shader:\n", (program->stage & hw_vs) ? "vertex" : "fragment");
+      aco_err(program, "Missing export in %s shader:", (program->stage & hw_vs) ? "vertex" : "fragment");
       aco_print_program(program, stderr);
       abort();
    }
@@ -783,7 +796,7 @@ static void fix_branches_gfx10(asm_context& ctx, std::vector<uint32_t>& out)
 
 void fix_branches(asm_context& ctx, std::vector<uint32_t>& out)
 {
-   if (ctx.chip_class >= GFX10)
+   if (ctx.chip_class == GFX10)
       fix_branches_gfx10(ctx, out);
 
    for (std::pair<int, SOPP_instruction*> &branch : ctx.branches) {

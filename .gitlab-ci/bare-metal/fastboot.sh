@@ -45,6 +45,13 @@ if [ -z "$BM_ROOTFS" ]; then
   exit 1
 fi
 
+if [ -z "$BM_WEBDAV_IP" -o -z "$BM_WEBDAV_PORT" ]; then
+  echo "BM_WEBDAV_IP and/or BM_WEBDAV_PORT is not set - no results will be uploaded from DUT!"
+  WEBDAV_CMDLINE=""
+else
+  WEBDAV_CMDLINE="webdav=http://$BM_WEBDAV_IP:$BM_WEBDAV_PORT"
+fi
+
 set -ex
 
 # Clear out any previous run's artifacts.
@@ -72,12 +79,23 @@ abootimg \
   --create artifacts/fastboot.img \
   -k Image.gz-dtb \
   -r rootfs.cpio.gz \
-  -c cmdline="$BM_CMDLINE"
+  -c cmdline="$BM_CMDLINE $WEBDAV_CMDLINE"
 rm Image.gz-dtb
+
+# Start nginx to get results from DUT
+if [ -n "$WEBDAV_CMDLINE" ]; then
+  ln -s `pwd`/results /results
+  sed -i s/80/$BM_WEBDAV_PORT/g /etc/nginx/sites-enabled/default
+  sed -i s/www-data/root/g /etc/nginx/nginx.conf
+  nginx
+fi
 
 # Start watching serial, and power up the device.
 if [ -n "$BM_SERIAL" ]; then
-  $BM/serial-buffer.py $BM_SERIAL | tee artifacts/serial-output.txt &
+  python3 $BM/serial_buffer.py \
+    --dev $BM_SERIAL \
+    --file artifacts/serial-output.txt \
+    --prefix "SERIAL> " &
 else
   PATH=$BM:$PATH $BM_SERIAL_SCRIPT | tee artifacts/serial-output.txt &
 fi
