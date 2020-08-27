@@ -22,7 +22,9 @@
  */
 
 #include "vtn_private.h"
+#include "spirv_info.h"
 #include "nir/nir_vla.h"
+#include "util/debug.h"
 
 static struct vtn_block *
 vtn_block(struct vtn_builder *b, uint32_t value_id)
@@ -476,6 +478,74 @@ vtn_add_cfg_work_item(struct vtn_builder *b,
    list_addtail(&work->link, work_list);
 }
 
+/* returns the default block */
+static void
+vtn_parse_switch(struct vtn_builder *b,
+                 struct vtn_switch *swtch,
+                 const uint32_t *branch,
+                 struct list_head *case_list)
+{
+   const uint32_t *branch_end = branch + (branch[0] >> SpvWordCountShift);
+
+   struct vtn_value *sel_val = vtn_untyped_value(b, branch[1]);
+   vtn_fail_if(!sel_val->type ||
+               sel_val->type->base_type != vtn_base_type_scalar,
+               "Selector of OpSwitch must have a type of OpTypeInt");
+
+   nir_alu_type sel_type =
+      nir_get_nir_type_for_glsl_type(sel_val->type->type);
+   vtn_fail_if(nir_alu_type_get_base_type(sel_type) != nir_type_int &&
+               nir_alu_type_get_base_type(sel_type) != nir_type_uint,
+               "Selector of OpSwitch must have a type of OpTypeInt");
+
+   struct hash_table *block_to_case = _mesa_pointer_hash_table_create(b);
+
+   bool is_default = true;
+   const unsigned bitsize = nir_alu_type_get_type_size(sel_type);
+   for (const uint32_t *w = branch + 2; w < branch_end;) {
+      uint64_t literal = 0;
+      if (!is_default) {
+         if (bitsize <= 32) {
+            literal = *(w++);
+         } else {
+            assert(bitsize == 64);
+            literal = vtn_u64_literal(w);
+            w += 2;
+         }
+      }
+      struct vtn_block *case_block = vtn_block(b, *(w++));
+
+      struct hash_entry *case_entry =
+         _mesa_hash_table_search(block_to_case, case_block);
+
+      struct vtn_case *cse;
+      if (case_entry) {
+         cse = case_entry->data;
+      } else {
+         cse = rzalloc(b, struct vtn_case);
+
+         cse->node.type = vtn_cf_node_type_case;
+         cse->node.parent = swtch ? &swtch->node : NULL;
+         cse->block = case_block;
+         list_inithead(&cse->body);
+         util_dynarray_init(&cse->values, b);
+
+         list_addtail(&cse->node.link, case_list);
+         _mesa_hash_table_insert(block_to_case, case_block, cse);
+      }
+
+      if (is_default) {
+         cse->is_default = true;
+      } else {
+         util_dynarray_append(&cse->values, uint64_t, literal);
+      }
+
+      is_default = false;
+   }
+
+   _mesa_hash_table_destroy(block_to_case, NULL);
+}
+
 /* Processes a block and returns the next block to process or NULL if we've
  * reached the end of the construct.
  */
@@ -679,17 +749,6 @@ vtn_process_block(struct vtn_builder *b,
    }
 
    case SpvOpSwitch: {
-      struct vtn_value *sel_val = vtn_untyped_value(b, block->branch[1]);
-      vtn_fail_if(!sel_val->type ||
-                  sel_val->type->base_type != vtn_base_type_scalar,
-                  "Selector of OpSwitch must have a type of OpTypeInt");
-
-      nir_alu_type sel_type =
-         nir_get_nir_type_for_glsl_type(sel_val->type->type);
-      vtn_fail_if(nir_alu_type_get_base_type(sel_type) != nir_type_int &&
-                  nir_alu_type_get_base_type(sel_type) != nir_type_uint,
-                  "Selector of OpSwitch must have a type of OpTypeInt");
-
       struct vtn_switch *swtch = rzalloc(b, struct vtn_switch);
 
       swtch->node.type = vtn_cf_node_type_switch;
@@ -710,81 +769,38 @@ vtn_process_block(struct vtn_builder *b,
       }
 
       /* First, we go through and record all of the cases. */
-      const uint32_t *branch_end =
-         block->branch + (block->branch[0] >> SpvWordCountShift);
+      vtn_parse_switch(b, swtch, block->branch, &swtch->cases);
 
-      struct hash_table *block_to_case = _mesa_pointer_hash_table_create(b);
+      /* Gather the branch types for the switch */
+      vtn_foreach_cf_node(case_node, &swtch->cases) {
+         struct vtn_case *cse = vtn_cf_node_as_case(case_node);
 
-      bool is_default = true;
-      const unsigned bitsize = nir_alu_type_get_type_size(sel_type);
-      for (const uint32_t *w = block->branch + 2; w < branch_end;) {
-         uint64_t literal = 0;
-         if (!is_default) {
-            if (bitsize <= 32) {
-               literal = *(w++);
-            } else {
-               assert(bitsize == 64);
-               literal = vtn_u64_literal(w);
-               w += 2;
-            }
+         cse->type = vtn_handle_branch(b, &swtch->node, cse->block);
+         switch (cse->type) {
+         case vtn_branch_type_none:
+            /* This is a "real" cases which has stuff in it */
+            vtn_fail_if(cse->block->switch_case != NULL,
+                        "OpSwitch has a case which is also in another "
+                        "OpSwitch construct");
+            cse->block->switch_case = cse;
+            vtn_add_cfg_work_item(b, work_list, &cse->node,
+                                  &cse->body, cse->block);
+            break;
+
+         case vtn_branch_type_switch_break:
+         case vtn_branch_type_loop_break:
+         case vtn_branch_type_loop_continue:
+            /* Switch breaks as well as loop breaks and continues can be
+             * used to break out of a switch construct or as direct targets
+             * of the OpSwitch.
+             */
+            break;
+
+         default:
+            vtn_fail("Target of OpSwitch is not a valid structured exit "
+                     "from the switch construct.");
          }
-         struct vtn_block *case_block = vtn_block(b, *(w++));
-
-         struct hash_entry *case_entry =
-            _mesa_hash_table_search(block_to_case, case_block);
-
-         struct vtn_case *cse;
-         if (case_entry) {
-            cse = case_entry->data;
-         } else {
-            cse = rzalloc(b, struct vtn_case);
-
-            cse->node.type = vtn_cf_node_type_case;
-            cse->node.parent = &swtch->node;
-            list_inithead(&cse->body);
-            util_dynarray_init(&cse->values, b);
-
-            cse->type = vtn_handle_branch(b, &swtch->node, case_block);
-            switch (cse->type) {
-            case vtn_branch_type_none:
-               /* This is a "real" cases which has stuff in it */
-               vtn_fail_if(case_block->switch_case != NULL,
-                           "OpSwitch has a case which is also in another "
-                           "OpSwitch construct");
-               case_block->switch_case = cse;
-               vtn_add_cfg_work_item(b, work_list, &cse->node,
-                                     &cse->body, case_block);
-               break;
-
-            case vtn_branch_type_switch_break:
-            case vtn_branch_type_loop_break:
-            case vtn_branch_type_loop_continue:
-               /* Switch breaks as well as loop breaks and continues can be
-                * used to break out of a switch construct or as direct targets
-                * of the OpSwitch.
-                */
-               break;
-
-            default:
-               vtn_fail("Target of OpSwitch is not a valid structured exit "
-                        "from the switch construct.");
-            }
-
-            list_addtail(&cse->node.link, &swtch->cases);
-
-            _mesa_hash_table_insert(block_to_case, case_block, cse);
-         }
-
-         if (is_default) {
-            cse->is_default = true;
-         } else {
-            util_dynarray_append(&cse->values, uint64_t, literal);
-         }
-
-         is_default = false;
       }
-
-      _mesa_hash_table_destroy(block_to_case, NULL);
 
       return swtch->break_block;
    }
@@ -802,6 +818,9 @@ vtn_build_cfg(struct vtn_builder *b, const uint32_t *words, const uint32_t *end)
 {
    vtn_foreach_instruction(b, words, end,
                            vtn_cfg_handle_prepass_instruction);
+
+   if (b->shader->info.stage == MESA_SHADER_KERNEL)
+      return;
 
    vtn_foreach_cf_node(func_node, &b->functions) {
       struct vtn_function *func = vtn_cf_node_as_function(func_node);
@@ -996,9 +1015,27 @@ vtn_selection_control(struct vtn_builder *b, struct vtn_if *vtn_if)
 }
 
 static void
-vtn_emit_cf_list(struct vtn_builder *b, struct list_head *cf_list,
-                 nir_variable *switch_fall_var, bool *has_switch_break,
-                 vtn_instruction_handler handler)
+vtn_emit_ret_store(struct vtn_builder *b, struct vtn_block *block)
+{
+   if ((*block->branch & SpvOpCodeMask) != SpvOpReturnValue)
+      return;
+
+   vtn_fail_if(b->func->type->return_type->base_type == vtn_base_type_void,
+               "Return with a value from a function returning void");
+   struct vtn_ssa_value *src = vtn_ssa_value(b, block->branch[1]);
+   const struct glsl_type *ret_type =
+      glsl_get_bare_type(b->func->type->return_type->type);
+   nir_deref_instr *ret_deref =
+      nir_build_deref_cast(&b->nb, nir_load_param(&b->nb, 0),
+                           nir_var_function_temp, ret_type, 0);
+   vtn_local_store(b, src, ret_deref, 0);
+}
+
+static void
+vtn_emit_cf_list_structured(struct vtn_builder *b, struct list_head *cf_list,
+                            nir_variable *switch_fall_var,
+                            bool *has_switch_break,
+                            vtn_instruction_handler handler)
 {
    vtn_foreach_cf_node(node, cf_list) {
       switch (node->type) {
@@ -1018,18 +1055,7 @@ vtn_emit_cf_list(struct vtn_builder *b, struct list_head *cf_list,
                                                      nir_intrinsic_nop);
          nir_builder_instr_insert(&b->nb, &block->end_nop->instr);
 
-         if ((*block->branch & SpvOpCodeMask) == SpvOpReturnValue) {
-            vtn_fail_if(b->func->type->return_type->base_type ==
-                        vtn_base_type_void,
-                        "Return with a value from a function returning void");
-            struct vtn_ssa_value *src = vtn_ssa_value(b, block->branch[1]);
-            const struct glsl_type *ret_type =
-               glsl_get_bare_type(b->func->type->return_type->type);
-            nir_deref_instr *ret_deref =
-               nir_build_deref_cast(&b->nb, nir_load_param(&b->nb, 0),
-                                    nir_var_function_temp, ret_type, 0);
-            vtn_local_store(b, src, ret_deref, 0);
-         }
+         vtn_emit_ret_store(b, block);
 
          if (block->branch_type != vtn_branch_type_none) {
             vtn_emit_branch(b, block->branch_type,
@@ -1050,16 +1076,16 @@ vtn_emit_cf_list(struct vtn_builder *b, struct list_head *cf_list,
          nif->control = vtn_selection_control(b, vtn_if);
 
          if (vtn_if->then_type == vtn_branch_type_none) {
-            vtn_emit_cf_list(b, &vtn_if->then_body,
-                             switch_fall_var, &sw_break, handler);
+            vtn_emit_cf_list_structured(b, &vtn_if->then_body,
+                                        switch_fall_var, &sw_break, handler);
          } else {
             vtn_emit_branch(b, vtn_if->then_type, switch_fall_var, &sw_break);
          }
 
          nir_push_else(&b->nb, nif);
          if (vtn_if->else_type == vtn_branch_type_none) {
-            vtn_emit_cf_list(b, &vtn_if->else_body,
-                             switch_fall_var, &sw_break, handler);
+            vtn_emit_cf_list_structured(b, &vtn_if->else_body,
+                                        switch_fall_var, &sw_break, handler);
          } else {
             vtn_emit_branch(b, vtn_if->else_type, switch_fall_var, &sw_break);
          }
@@ -1085,7 +1111,7 @@ vtn_emit_cf_list(struct vtn_builder *b, struct list_head *cf_list,
          nir_loop *loop = nir_push_loop(&b->nb);
          loop->control = vtn_loop_control(b, vtn_loop);
 
-         vtn_emit_cf_list(b, &vtn_loop->body, NULL, NULL, handler);
+         vtn_emit_cf_list_structured(b, &vtn_loop->body, NULL, NULL, handler);
 
          if (!list_is_empty(&vtn_loop->cont_body)) {
             /* If we have a non-trivial continue body then we need to put
@@ -1103,7 +1129,8 @@ vtn_emit_cf_list(struct vtn_builder *b, struct list_head *cf_list,
             nir_if *cont_if =
                nir_push_if(&b->nb, nir_load_var(&b->nb, do_cont));
 
-            vtn_emit_cf_list(b, &vtn_loop->cont_body, NULL, NULL, handler);
+            vtn_emit_cf_list_structured(b, &vtn_loop->cont_body, NULL, NULL,
+                                        handler);
 
             nir_pop_if(&b->nb, cont_if);
 
@@ -1148,7 +1175,8 @@ vtn_emit_cf_list(struct vtn_builder *b, struct list_head *cf_list,
 
             bool has_break = false;
             nir_store_var(&b->nb, fall_var, nir_imm_true(&b->nb), 1);
-            vtn_emit_cf_list(b, &cse->body, fall_var, &has_break, handler);
+            vtn_emit_cf_list_structured(b, &cse->body, fall_var, &has_break,
+                                        handler);
             (void)has_break; /* We don't care */
 
             nir_pop_if(&b->nb, case_if);
@@ -1163,10 +1191,151 @@ vtn_emit_cf_list(struct vtn_builder *b, struct list_head *cf_list,
    }
 }
 
+static struct nir_block *
+vtn_new_unstructured_block(struct vtn_builder *b, struct vtn_function *func)
+{
+   struct nir_block *n = nir_block_create(b->shader);
+   exec_list_push_tail(&func->impl->body, &n->cf_node.node);
+   n->cf_node.parent = &func->impl->cf_node;
+   return n;
+}
+
+static void
+vtn_add_unstructured_block(struct vtn_builder *b,
+                           struct vtn_function *func,
+                           struct list_head *work_list,
+                           struct vtn_block *block)
+{
+   if (!block->block) {
+      block->block = vtn_new_unstructured_block(b, func);
+      list_addtail(&block->node.link, work_list);
+   }
+}
+
+static void
+vtn_emit_cf_func_unstructured(struct vtn_builder *b, struct vtn_function *func,
+                              vtn_instruction_handler handler)
+{
+   struct list_head work_list;
+   list_inithead(&work_list);
+
+   func->start_block->block = nir_start_block(func->impl);
+   list_addtail(&func->start_block->node.link, &work_list);
+   while (!list_is_empty(&work_list)) {
+      struct vtn_block *block =
+         list_first_entry(&work_list, struct vtn_block, node.link);
+      list_del(&block->node.link);
+
+      vtn_assert(block->block);
+
+      const uint32_t *block_start = block->label;
+      const uint32_t *block_end = block->branch;
+
+      b->nb.cursor = nir_after_block(block->block);
+      block_start = vtn_foreach_instruction(b, block_start, block_end,
+                                            vtn_handle_phis_first_pass);
+      vtn_foreach_instruction(b, block_start, block_end, handler);
+      block->end_nop = nir_intrinsic_instr_create(b->nb.shader,
+                                                  nir_intrinsic_nop);
+      nir_builder_instr_insert(&b->nb, &block->end_nop->instr);
+
+      SpvOp op = *block_end & SpvOpCodeMask;
+      switch (op) {
+      case SpvOpBranch: {
+         struct vtn_block *branch_block = vtn_block(b, block->branch[1]);
+         vtn_add_unstructured_block(b, func, &work_list, branch_block);
+         nir_goto(&b->nb, branch_block->block);
+         break;
+      }
+
+      case SpvOpBranchConditional: {
+         nir_ssa_def *cond = vtn_ssa_value(b, block->branch[1])->def;
+         struct vtn_block *then_block = vtn_block(b, block->branch[2]);
+         struct vtn_block *else_block = vtn_block(b, block->branch[3]);
+
+         vtn_add_unstructured_block(b, func, &work_list, then_block);
+         if (then_block == else_block) {
+            nir_goto(&b->nb, then_block->block);
+         } else {
+            vtn_add_unstructured_block(b, func, &work_list, else_block);
+            nir_goto_if(&b->nb, then_block->block, nir_src_for_ssa(cond),
+                                else_block->block);
+         }
+
+         break;
+      }
+
+      case SpvOpSwitch: {
+         struct list_head cases;
+         list_inithead(&cases);
+         vtn_parse_switch(b, NULL, block->branch, &cases);
+
+         nir_ssa_def *sel = vtn_get_nir_ssa(b, block->branch[1]);
+
+         struct vtn_case *def = NULL;
+         vtn_foreach_cf_node(case_node, &cases) {
+            struct vtn_case *cse = vtn_cf_node_as_case(case_node);
+            if (cse->is_default) {
+               assert(def == NULL);
+               def = cse;
+               continue;
+            }
+
+            nir_ssa_def *cond = nir_imm_false(&b->nb);
+            util_dynarray_foreach(&cse->values, uint64_t, val) {
+               nir_ssa_def *imm = nir_imm_intN_t(&b->nb, *val, sel->bit_size);
+               cond = nir_ior(&b->nb, cond, nir_ieq(&b->nb, sel, imm));
+            }
+
+            /* block for the next check */
+            nir_block *e = vtn_new_unstructured_block(b, func);
+            vtn_add_unstructured_block(b, func, &work_list, cse->block);
+
+            /* add branching */
+            nir_goto_if(&b->nb, cse->block->block, nir_src_for_ssa(cond), e);
+            b->nb.cursor = nir_after_block(e);
+         }
+
+         vtn_assert(def != NULL);
+         vtn_add_unstructured_block(b, func, &work_list, def->block);
+
+         /* now that all cases are handled, branch into the default block */
+         nir_goto(&b->nb, def->block->block);
+         break;
+      }
+
+      case SpvOpKill: {
+         nir_intrinsic_instr *discard =
+            nir_intrinsic_instr_create(b->nb.shader, nir_intrinsic_discard);
+         nir_builder_instr_insert(&b->nb, &discard->instr);
+         nir_goto(&b->nb, b->func->impl->end_block);
+         break;
+      }
+
+      case SpvOpUnreachable:
+      case SpvOpReturn:
+      case SpvOpReturnValue: {
+         vtn_emit_ret_store(b, block);
+         nir_goto(&b->nb, b->func->impl->end_block);
+         break;
+      }
+
+      default:
+         vtn_fail("Unhandled opcode %s", spirv_op_to_string(op));
+      }
+   }
+}
+
 void
 vtn_function_emit(struct vtn_builder *b, struct vtn_function *func,
                   vtn_instruction_handler instruction_handler)
 {
+   static int force_unstructured = -1;
+   if (force_unstructured < 0) {
+      force_unstructured =
+         env_var_as_boolean("MESA_SPIRV_FORCE_UNSTRUCTURED", false);
+   }
+
    nir_builder_init(&b->nb, func->impl);
    b->func = func;
    b->nb.cursor = nir_after_cf_list(&func->impl->body);
@@ -1174,7 +1343,13 @@ vtn_function_emit(struct vtn_builder *b, struct vtn_function *func,
    b->has_loop_continue = false;
    b->phi_table = _mesa_pointer_hash_table_create(b);
 
-   vtn_emit_cf_list(b, &func->body, NULL, NULL, instruction_handler);
+   if (b->shader->info.stage == MESA_SHADER_KERNEL || force_unstructured) {
+      b->func->impl->structured = false;
+      vtn_emit_cf_func_unstructured(b, func, instruction_handler);
+   } else {
+      vtn_emit_cf_list_structured(b, &func->body, NULL, NULL,
+                                  instruction_handler);
+   }
 
    vtn_foreach_instruction(b, func->start_block->label, func->end,
                            vtn_handle_phi_second_pass);

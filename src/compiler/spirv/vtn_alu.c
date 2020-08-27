@@ -281,8 +281,9 @@ vtn_nir_alu_op_for_spirv_opcode(struct vtn_builder *b,
    case SpvOpFOrdEqual:                            return nir_op_feq;
    case SpvOpFUnordEqual:                          return nir_op_feq;
    case SpvOpINotEqual:                            return nir_op_ine;
-   case SpvOpFOrdNotEqual:                         return nir_op_fne;
-   case SpvOpFUnordNotEqual:                       return nir_op_fne;
+   case SpvOpLessOrGreater:                        /* Deprecated, use OrdNotEqual */
+   case SpvOpFOrdNotEqual:                         return nir_op_fneu;
+   case SpvOpFUnordNotEqual:                       return nir_op_fneu;
    case SpvOpULessThan:                            return nir_op_ult;
    case SpvOpSLessThan:                            return nir_op_ilt;
    case SpvOpFOrdLessThan:                         return nir_op_flt;
@@ -352,6 +353,9 @@ vtn_nir_alu_op_for_spirv_opcode(struct vtn_builder *b,
    case SpvOpDPdyFine:     return nir_op_fddy_fine;
    case SpvOpDPdxCoarse:   return nir_op_fddx_coarse;
    case SpvOpDPdyCoarse:   return nir_op_fddy_coarse;
+
+   case SpvOpIsNormal:     return nir_op_fisnormal;
+   case SpvOpIsFinite:     return nir_op_fisfinite;
 
    default:
       vtn_fail("No NIR equivalent: %u", opcode);
@@ -509,7 +513,17 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
       break;
 
    case SpvOpIsNan:
-      dest->def = nir_fne(&b->nb, src[0], src[0]);
+      dest->def = nir_fneu(&b->nb, src[0], src[0]);
+      break;
+
+   case SpvOpOrdered:
+      dest->def = nir_iand(&b->nb, nir_feq(&b->nb, src[0], src[0]),
+                                   nir_feq(&b->nb, src[1], src[1]));
+      break;
+
+   case SpvOpUnordered:
+      dest->def = nir_ior(&b->nb, nir_fneu(&b->nb, src[0], src[0]),
+                                  nir_fneu(&b->nb, src[1], src[1]));
       break;
 
    case SpvOpIsInf: {
@@ -540,11 +554,12 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
          nir_ior(&b->nb,
                  nir_build_alu(&b->nb, op, src[0], src[1], NULL, NULL),
                  nir_ior(&b->nb,
-                         nir_fne(&b->nb, src[0], src[0]),
-                         nir_fne(&b->nb, src[1], src[1])));
+                         nir_fneu(&b->nb, src[0], src[0]),
+                         nir_fneu(&b->nb, src[1], src[1])));
       break;
    }
 
+   case SpvOpLessOrGreater:
    case SpvOpFOrdNotEqual: {
       /* For all the SpvOpFOrd* comparisons apart from NotEqual, the value
        * from the ALU will probably already be false if the operands are not

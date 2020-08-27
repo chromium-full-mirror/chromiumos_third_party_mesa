@@ -31,11 +31,13 @@ for var in \
     DEQP_EXPECTED_FAILS \
     DEQP_EXPECTED_RENDERER \
     DEQP_NO_SAVE_RESULTS \
+    DEQP_FLAKES \
     DEQP_PARALLEL \
     DEQP_RUN_SUFFIX \
     DEQP_SKIPS \
     DEQP_VER \
     DEVICE_NAME \
+    DRIVER_NAME \
     FD_MESA_DEBUG \
     FLAKES_CHANNEL \
     IR3_SHADER_DEBUG \
@@ -48,9 +50,8 @@ for var in \
     TU_DEBUG \
     VK_DRIVER \
     ; do
-  val=`echo ${!var} | sed 's|"||g'`
-  if [ -n "$val" ]; then
-    echo "export $var=\"${val}\"" >> $rootfs_dst/set-job-env-vars.sh
+  if [ -n "${!var+x}" ]; then
+    echo "export $var=${!var@Q}" >> $rootfs_dst/set-job-env-vars.sh
   fi
 done
 echo "Variables passed through:"

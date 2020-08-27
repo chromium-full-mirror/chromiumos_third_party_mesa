@@ -278,13 +278,13 @@ radv_optimize_nir(struct nir_shader *shader, bool optimize_conservatively,
                 }
 
                 NIR_PASS(progress, shader, nir_opt_undef);
+                NIR_PASS(progress, shader, nir_opt_shrink_vectors);
                 if (shader->options->max_unroll_iterations) {
                         NIR_PASS(progress, shader, nir_opt_loop_unroll, 0);
                 }
         } while (progress && !optimize_conservatively);
 
 	NIR_PASS(progress, shader, nir_opt_conditional_discard);
-        NIR_PASS(progress, shader, nir_opt_shrink_vectors);
         NIR_PASS(progress, shader, nir_opt_move, nir_move_load_ubo);
 }
 
@@ -297,6 +297,58 @@ shared_var_info(const struct glsl_type *type, unsigned *size, unsigned *align)
 	unsigned length = glsl_get_vector_elements(type);
 	*size = comp_size * length,
 	*align = comp_size;
+}
+
+struct radv_shader_debug_data {
+	struct radv_device *device;
+	const struct radv_shader_module *module;
+};
+
+static void radv_spirv_nir_debug(void *private_data,
+				 enum nir_spirv_debug_level level,
+				 size_t spirv_offset,
+				 const char *message)
+{
+	struct radv_shader_debug_data *debug_data = private_data;
+	struct radv_instance *instance = debug_data->device->instance;
+
+	static const VkDebugReportFlagsEXT vk_flags[] = {
+		[NIR_SPIRV_DEBUG_LEVEL_INFO] = VK_DEBUG_REPORT_INFORMATION_BIT_EXT,
+		[NIR_SPIRV_DEBUG_LEVEL_WARNING] = VK_DEBUG_REPORT_WARNING_BIT_EXT,
+		[NIR_SPIRV_DEBUG_LEVEL_ERROR] = VK_DEBUG_REPORT_ERROR_BIT_EXT,
+	};
+	char buffer[256];
+
+	snprintf(buffer, sizeof(buffer), "SPIR-V offset %lu: %s",
+		 (unsigned long)spirv_offset, message);
+
+	vk_debug_report(&instance->debug_report_callbacks,
+			vk_flags[level],
+			VK_DEBUG_REPORT_OBJECT_TYPE_SHADER_MODULE_EXT,
+			(uint64_t)(uintptr_t)debug_data->module,
+			0, 0, "radv", buffer);
+}
+
+static void radv_compiler_debug(void *private_data,
+				enum radv_compiler_debug_level level,
+				const char *message)
+{
+	struct radv_shader_debug_data *debug_data = private_data;
+	struct radv_instance *instance = debug_data->device->instance;
+
+	static const VkDebugReportFlagsEXT vk_flags[] = {
+		[RADV_COMPILER_DEBUG_LEVEL_PERFWARN] = VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT,
+		[RADV_COMPILER_DEBUG_LEVEL_ERROR] = VK_DEBUG_REPORT_ERROR_BIT_EXT,
+	};
+
+	/* VK_DEBUG_REPORT_DEBUG_BIT_EXT specifies diagnostic information
+	 * from the implementation and layers.
+	 */
+	vk_debug_report(&instance->debug_report_callbacks,
+			vk_flags[level] | VK_DEBUG_REPORT_DEBUG_BIT_EXT,
+			VK_DEBUG_REPORT_OBJECT_TYPE_SHADER_MODULE_EXT,
+			(uint64_t)(uintptr_t)debug_data->module,
+			0, 0, "radv", message);
 }
 
 nir_shader *
@@ -359,6 +411,11 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				}
 			}
 		}
+
+		struct radv_shader_debug_data spirv_debug_data = {
+			.device = device,
+			.module = module,
+		};
 		const struct spirv_to_nir_options spirv_options = {
 			.lower_ubo_ssbo_access_to_offsets = true,
 			.caps = {
@@ -417,6 +474,10 @@ radv_shader_compile_to_nir(struct radv_device *device,
 			.push_const_addr_format = nir_address_format_logical,
 			.shared_addr_format = nir_address_format_32bit_offset,
 			.frag_coord_is_sysval = true,
+			.debug = {
+				.func = radv_spirv_nir_debug,
+				.private_data = &spirv_debug_data,
+			},
 		};
 		nir = spirv_to_nir(spirv, module->size / 4,
 				   spec_entries, num_spec_entries,
@@ -466,7 +527,11 @@ radv_shader_compile_to_nir(struct radv_device *device,
 		    !radv_use_llvm_for_stage(device, nir->info.stage))
                         NIR_PASS_V(nir, nir_lower_io_to_vector, nir_var_shader_out);
 		if (nir->info.stage == MESA_SHADER_FRAGMENT)
-			NIR_PASS_V(nir, nir_lower_input_attachments, true);
+			NIR_PASS_V(nir, nir_lower_input_attachments,
+				   &(nir_input_attachment_options) {
+					.use_fragcoord_sysval = true,
+					.use_layer_id_sysval = false,
+				   });
 
 		NIR_PASS_V(nir, nir_remove_dead_variables,
 		           nir_var_shader_in | nir_var_shader_out | nir_var_system_value | nir_var_mem_shared,
@@ -475,6 +540,8 @@ radv_shader_compile_to_nir(struct radv_device *device,
 		NIR_PASS_V(nir, nir_propagate_invariant);
 
 		NIR_PASS_V(nir, nir_lower_system_values);
+		NIR_PASS_V(nir, nir_lower_compute_system_values, NULL);
+
 		NIR_PASS_V(nir, nir_lower_clip_cull_distance_arrays);
 
 		if (device->instance->debug_flags & RADV_DEBUG_DISCARD_TO_DEMOTE)
@@ -600,13 +667,12 @@ find_layer_in_var(nir_shader *nir)
 }
 
 /* We use layered rendering to implement multiview, which means we need to map
- * view_index to gl_Layer. The attachment lowering also uses needs to know the
- * layer so that it can sample from the correct layer. The code generates a
- * load from the layer_id sysval, but since we don't have a way to get at this
- * information from the fragment shader, we also need to lower this to the
- * gl_Layer varying.  This pass lowers both to a varying load from the LAYER
- * slot, before lowering io, so that nir_assign_var_locations() will give the
- * LAYER varying the correct driver_location.
+ * view_index to gl_Layer. The code generates a load from the layer_id sysval,
+ * but since we don't have a way to get at this information from the fragment
+ * shader, we also need to lower this to the gl_Layer varying.  This pass
+ * lowers both to a varying load from the LAYER slot, before lowering io, so
+ * that nir_assign_var_locations() will give the LAYER varying the correct
+ * driver_location.
  */
 
 static bool
@@ -624,8 +690,7 @@ lower_view_index(nir_shader *nir)
 				continue;
 
 			nir_intrinsic_instr *load = nir_instr_as_intrinsic(instr);
-			if (load->intrinsic != nir_intrinsic_load_view_index &&
-			    load->intrinsic != nir_intrinsic_load_layer_id)
+			if (load->intrinsic != nir_intrinsic_load_view_index)
 				continue;
 
 			if (!layer)
@@ -740,12 +805,13 @@ radv_get_shader_binary_size(size_t code_size)
 	return code_size + DEBUGGER_NUM_MARKERS * 4;
 }
 
-static void radv_postprocess_config(const struct radv_physical_device *pdevice,
+static void radv_postprocess_config(const struct radv_device *device,
 				    const struct ac_shader_config *config_in,
 				    const struct radv_shader_info *info,
 				    gl_shader_stage stage,
 				    struct ac_shader_config *config_out)
 {
+	const struct radv_physical_device *pdevice = device->physical_device;
 	bool scratch_enabled = config_in->scratch_bytes_per_wave > 0;
 	unsigned vgpr_comp_cnt = 0;
 	unsigned num_input_vgprs = info->num_input_vgprs;
@@ -770,6 +836,15 @@ static void radv_postprocess_config(const struct radv_physical_device *pdevice,
 
 	config_out->rsrc2 = S_00B12C_USER_SGPR(info->num_user_sgprs) |
 			    S_00B12C_SCRATCH_EN(scratch_enabled);
+
+	if (device->trap_handler_shader) {
+		/* Enable the trap handler if requested and configure the
+		 * shader exceptions like memory violation, etc.
+		 * TODO: Enable (and validate) more exceptions.
+		 */
+		config_out->rsrc2 |= S_00B12C_TRAP_PRESENT(1) |
+				     S_00B12C_EXCP_EN(1 << 8); /* mem_viol */
+	}
 
 	if (!pdevice->use_ngg_streamout) {
 		config_out->rsrc2 |= S_00B12C_SO_BASE0_EN(!!info->so.strides[0]) |
@@ -1043,7 +1118,7 @@ radv_shader_variant_create(struct radv_device *device,
 	}
 
 	variant->info = binary->info;
-	radv_postprocess_config(device->physical_device, &config, &binary->info,
+	radv_postprocess_config(device, &config, &binary->info,
 				binary->stage, &variant->config);
 
 	void *dest_ptr = radv_alloc_shader_memory(device, variant);
@@ -1137,12 +1212,18 @@ shader_variant_compile(struct radv_device *device,
 		       struct radv_shader_info *info,
 		       struct radv_nir_compiler_options *options,
 		       bool gs_copy_shader,
+		       bool trap_handler_shader,
 		       bool keep_shader_info,
 		       bool keep_statistic_info,
 		       struct radv_shader_binary **binary_out)
 {
 	enum radeon_family chip_family = device->physical_device->rad_info.family;
 	struct radv_shader_binary *binary = NULL;
+
+	struct radv_shader_debug_data debug_data = {
+		.device = device,
+                .module = module,
+        };
 
 	options->family = chip_family;
 	options->chip_class = device->physical_device->rad_info.chip_class;
@@ -1157,11 +1238,15 @@ shader_variant_compile(struct radv_device *device,
 	options->has_ls_vgpr_init_bug = device->physical_device->rad_info.has_ls_vgpr_init_bug;
 	options->use_ngg_streamout = device->physical_device->use_ngg_streamout;
 	options->enable_mrt_output_nan_fixup = device->instance->enable_mrt_output_nan_fixup;
+	options->debug.func = radv_compiler_debug;
+	options->debug.private_data = &debug_data;
 
 	struct radv_shader_args args = {};
 	args.options = options;
 	args.shader_info = info;
 	args.is_gs_copy_shader = gs_copy_shader;
+	args.is_trap_handler_shader = trap_handler_shader;
+
 	radv_declare_shader_args(&args, 
 				 gs_copy_shader ? MESA_SHADER_VERTEX
 						: shaders[shader_count - 1]->info.stage,
@@ -1199,7 +1284,7 @@ shader_variant_compile(struct radv_device *device,
 
 	if (keep_shader_info) {
 		variant->nir_string = radv_dump_nir_shaders(shaders, shader_count);
-		if (!gs_copy_shader && !module->nir) {
+		if (!gs_copy_shader && !trap_handler_shader && !module->nir) {
 			variant->spirv = malloc(module->size);
 			if (!variant->spirv) {
 				free(variant);
@@ -1242,7 +1327,8 @@ radv_shader_variant_compile(struct radv_device *device,
 	options.robust_buffer_access = device->robust_buffer_access;
 
 	return shader_variant_compile(device, module, shaders, shader_count, stage, info,
-				     &options, false, keep_shader_info, keep_statistic_info, binary_out);
+				      &options, false, false,
+				      keep_shader_info, keep_statistic_info, binary_out);
 }
 
 struct radv_shader_variant *
@@ -1260,7 +1346,33 @@ radv_create_gs_copy_shader(struct radv_device *device,
 	options.key.has_multiview_view_index = multiview;
 
 	return shader_variant_compile(device, NULL, &shader, 1, stage,
-				      info, &options, true, keep_shader_info, keep_statistic_info, binary_out);
+				      info, &options, true, false,
+				      keep_shader_info, keep_statistic_info, binary_out);
+}
+
+struct radv_shader_variant *
+radv_create_trap_handler_shader(struct radv_device *device)
+{
+	struct radv_nir_compiler_options options = {0};
+	struct radv_shader_variant *shader = NULL;
+	struct radv_shader_binary *binary = NULL;
+	struct radv_shader_info info = {0};
+
+	nir_builder b;
+	nir_builder_init_simple_shader(&b, NULL, MESA_SHADER_COMPUTE, NULL);
+	b.shader->info.name = ralloc_strdup(b.shader, "meta_trap_handler");
+
+	options.explicit_scratch_args = true;
+	info.wave_size = 64;
+
+	shader = shader_variant_compile(device, NULL, &b.shader, 1,
+					MESA_SHADER_COMPUTE, &info, &options,
+					false, true, true, false, &binary);
+
+	ralloc_free(b.shader);
+	free(binary);
+
+	return shader;
 }
 
 void

@@ -31,9 +31,10 @@ namespace aco {
 uint64_t debug_flags = 0;
 
 static const struct debug_control aco_debug_options[] = {
-   {"validateir", DEBUG_VALIDATE},
+   {"validateir", DEBUG_VALIDATE_IR},
    {"validatera", DEBUG_VALIDATE_RA},
    {"perfwarn", DEBUG_PERFWARN},
+   {"force-waitcnt", DEBUG_FORCE_WAITCNT},
    {NULL, 0}
 };
 
@@ -45,7 +46,7 @@ static void init_once()
 
    #ifndef NDEBUG
    /* enable some flags by default on debug builds */
-   debug_flags |= aco::DEBUG_VALIDATE;
+   debug_flags |= aco::DEBUG_VALIDATE_IR;
    #endif
 }
 
@@ -237,6 +238,10 @@ aco_ptr<Instruction> convert_to_SDWA(chip_class chip, aco_ptr<Instruction>& inst
    }
 
    for (unsigned i = 0; i < instr->operands.size(); i++) {
+      /* SDWA only uses operands 0 and 1. */
+      if (i >= 2)
+         break;
+
       switch (instr->operands[i].bytes()) {
       case 1:
          sdwa->sel[i] = sdwa_ubyte;

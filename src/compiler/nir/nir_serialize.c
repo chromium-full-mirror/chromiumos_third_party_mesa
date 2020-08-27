@@ -1442,7 +1442,7 @@ read_ssa_undef(read_ctx *ctx, union packed_instr header)
 union packed_tex_data {
    uint32_t u32;
    struct {
-      enum glsl_sampler_dim sampler_dim:4;
+      unsigned sampler_dim:4;
       unsigned dest_type:8;
       unsigned coord_components:3;
       unsigned is_array:1;
@@ -1901,6 +1901,8 @@ read_cf_list(read_ctx *ctx, struct exec_list *cf_list)
 static void
 write_function_impl(write_ctx *ctx, const nir_function_impl *fi)
 {
+   blob_write_uint8(ctx->blob, fi->structured);
+
    write_var_list(ctx, &fi->locals);
    write_reg_list(ctx, &fi->registers);
    blob_write_uint32(ctx->blob, fi->reg_alloc);
@@ -1914,6 +1916,8 @@ read_function_impl(read_ctx *ctx, nir_function *fxn)
 {
    nir_function_impl *fi = nir_function_impl_create_bare(ctx->nir);
    fi->function = fxn;
+
+   fi->structured = blob_read_uint8(ctx->blob);
 
    read_var_list(ctx, &fi->locals);
    read_reg_list(ctx, &fi->registers);

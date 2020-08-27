@@ -90,7 +90,7 @@ bi_load(enum bi_class T, nir_intrinsic_instr *instr)
         if (info->has_dest)
                 load.dest = pan_dest_index(&instr->dest);
 
-        if (info->has_dest && info->index_map[NIR_INTRINSIC_TYPE] > 0)
+        if (info->has_dest && nir_intrinsic_has_type(instr))
                 load.dest_type = nir_intrinsic_type(instr);
 
         nir_src *offset = nir_get_io_offset_src(instr);
@@ -525,7 +525,7 @@ bi_class_for_nir_alu(nir_op op)
         BI_CASE_CMP(nir_op_flt)
         BI_CASE_CMP(nir_op_fge)
         BI_CASE_CMP(nir_op_feq)
-        BI_CASE_CMP(nir_op_fne)
+        BI_CASE_CMP(nir_op_fneu)
         BI_CASE_CMP(nir_op_ilt)
         BI_CASE_CMP(nir_op_ige)
         BI_CASE_CMP(nir_op_ieq)
@@ -630,7 +630,7 @@ bi_cond_for_nir(nir_op op, bool soft)
         BI_CASE_CMP(nir_op_ieq)
                 return BI_COND_EQ;
 
-        BI_CASE_CMP(nir_op_fne)
+        BI_CASE_CMP(nir_op_fneu)
         BI_CASE_CMP(nir_op_ine)
                 return BI_COND_NE;
         default:
@@ -848,7 +848,7 @@ emit_alu(bi_context *ctx, nir_alu_instr *instr)
         BI_CASE_CMP(nir_op_ige)
         BI_CASE_CMP(nir_op_feq)
         BI_CASE_CMP(nir_op_ieq)
-        BI_CASE_CMP(nir_op_fne)
+        BI_CASE_CMP(nir_op_fneu)
         BI_CASE_CMP(nir_op_ine)
         BI_CASE_CMP(nir_op_uge)
                 alu.cond = bi_cond_for_nir(instr->op, false);
@@ -1342,7 +1342,7 @@ bifrost_compile_shader_nir(nir_shader *nir, panfrost_program *program, unsigned 
                 nir_print_shader(nir, stdout);
         }
 
-        panfrost_nir_assign_sysvals(&ctx->sysvals, nir);
+        panfrost_nir_assign_sysvals(&ctx->sysvals, ctx, nir);
         program->sysval_count = ctx->sysvals.sysval_count;
         memcpy(program->sysvals, ctx->sysvals.sysvals, sizeof(ctx->sysvals.sysvals[0]) * ctx->sysvals.sysval_count);
         ctx->blend_types = program->blend_types;

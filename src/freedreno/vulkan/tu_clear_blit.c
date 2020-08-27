@@ -25,69 +25,32 @@ tu_pack_float32_for_unorm(float val, int bits)
 /* r2d_ = BLIT_OP_SCALE operations */
 
 static enum a6xx_2d_ifmt
-format_to_ifmt(enum a6xx_format fmt)
+format_to_ifmt(VkFormat format)
 {
-   switch (fmt) {
-   case FMT6_A8_UNORM:
-   case FMT6_8_UNORM:
-   case FMT6_8_SNORM:
-   case FMT6_8_8_UNORM:
-   case FMT6_8_8_SNORM:
-   case FMT6_8_8_8_8_UNORM:
-   case FMT6_8_8_8_X8_UNORM:
-   case FMT6_8_8_8_8_SNORM:
-   case FMT6_4_4_4_4_UNORM:
-   case FMT6_5_5_5_1_UNORM:
-   case FMT6_5_6_5_UNORM:
-   case FMT6_Z24_UNORM_S8_UINT:
-   case FMT6_Z24_UNORM_S8_UINT_AS_R8G8B8A8:
+   if (format == VK_FORMAT_D24_UNORM_S8_UINT ||
+       format == VK_FORMAT_X8_D24_UNORM_PACK32)
       return R2D_UNORM8;
 
-   case FMT6_32_UINT:
-   case FMT6_32_SINT:
-   case FMT6_32_32_UINT:
-   case FMT6_32_32_SINT:
-   case FMT6_32_32_32_32_UINT:
-   case FMT6_32_32_32_32_SINT:
-      return R2D_INT32;
-
-   case FMT6_16_UINT:
-   case FMT6_16_SINT:
-   case FMT6_16_16_UINT:
-   case FMT6_16_16_SINT:
-   case FMT6_16_16_16_16_UINT:
-   case FMT6_16_16_16_16_SINT:
-   case FMT6_10_10_10_2_UINT:
-      return R2D_INT16;
-
-   case FMT6_8_UINT:
-   case FMT6_8_SINT:
-   case FMT6_8_8_UINT:
-   case FMT6_8_8_SINT:
-   case FMT6_8_8_8_8_UINT:
-   case FMT6_8_8_8_8_SINT:
+   /* get_component_bits doesn't work with depth/stencil formats: */
+   if (format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT)
+      return R2D_FLOAT32;
+   if (format == VK_FORMAT_S8_UINT)
       return R2D_INT8;
 
-   case FMT6_16_UNORM:
-   case FMT6_16_SNORM:
-   case FMT6_16_16_UNORM:
-   case FMT6_16_16_SNORM:
-   case FMT6_16_16_16_16_UNORM:
-   case FMT6_16_16_16_16_SNORM:
-   case FMT6_32_FLOAT:
-   case FMT6_32_32_FLOAT:
-   case FMT6_32_32_32_32_FLOAT:
-      return R2D_FLOAT32;
-
-   case FMT6_16_FLOAT:
-   case FMT6_16_16_FLOAT:
-   case FMT6_16_16_16_16_FLOAT:
-   case FMT6_11_11_10_FLOAT:
-   case FMT6_10_10_10_2_UNORM:
-   case FMT6_10_10_10_2_UNORM_DEST:
-      return R2D_FLOAT16;
-
-   default:
+   /* use the size of the red channel to find the corresponding "ifmt" */
+   bool is_int = vk_format_is_int(format);
+   switch (vk_format_get_component_bits(format, UTIL_FORMAT_COLORSPACE_RGB, PIPE_SWIZZLE_X)) {
+   case 4: case 5: case 8:
+      return is_int ? R2D_INT8 : R2D_UNORM8;
+   case 10: case 11:
+      return is_int ? R2D_INT16 : R2D_FLOAT16;
+   case 16:
+      if (vk_format_is_float(format))
+         return R2D_FLOAT16;
+      return is_int ? R2D_INT16 : R2D_FLOAT32;
+   case 32:
+      return is_int ? R2D_INT32 : R2D_FLOAT32;
+    default:
       unreachable("bad format");
       return 0;
    }
@@ -142,7 +105,7 @@ r2d_clear_value(struct tu_cs *cs, VkFormat format, const VkClearValue *val)
    default:
       assert(!vk_format_is_depth_or_stencil(format));
       const struct util_format_description *desc = vk_format_description(format);
-      enum a6xx_2d_ifmt ifmt = format_to_ifmt(tu6_base_format(format));
+      enum a6xx_2d_ifmt ifmt = format_to_ifmt(format);
 
       assert(desc && (desc->layout == UTIL_FORMAT_LAYOUT_PLAIN ||
                       format == VK_FORMAT_B10G11R11_UFLOAT_PACK32));
@@ -265,7 +228,7 @@ r2d_setup_common(struct tu_cmd_buffer *cmd,
                  bool scissor)
 {
    enum a6xx_format format = tu6_base_format(vk_format);
-   enum a6xx_2d_ifmt ifmt = format_to_ifmt(format);
+   enum a6xx_2d_ifmt ifmt = format_to_ifmt(vk_format);
    uint32_t unknown_8c01 = 0;
 
    if ((vk_format == VK_FORMAT_D24_UNORM_S8_UINT ||
@@ -475,6 +438,16 @@ r3d_common(struct tu_cmd_buffer *cmd, struct tu_cs *cs, bool blit, uint32_t num_
 
    tu_cs_emit_regs(cs, A6XX_PC_PRIMITIVE_CNTL_0());
    tu_cs_emit_regs(cs, A6XX_VFD_CONTROL_0());
+
+   /* Copy what the blob does here. This will emit an extra 0x3f
+    * CP_EVENT_WRITE when multiview is disabled. I'm not exactly sure what
+    * this is working around yet.
+    */
+   tu_cs_emit_pkt7(cs, CP_REG_WRITE, 3);
+   tu_cs_emit(cs, CP_REG_WRITE_0_TRACKER(UNK_EVENT_WRITE));
+   tu_cs_emit(cs, REG_A6XX_PC_MULTIVIEW_CNTL);
+   tu_cs_emit(cs, 0);
+   tu_cs_emit_regs(cs, A6XX_VFD_MULTIVIEW_CNTL());
 
    tu6_emit_vpc(cs, &vs, NULL, NULL, NULL, &fs, 0, false);
 
@@ -1050,11 +1023,20 @@ tu6_blit_image(struct tu_cmd_buffer *cmd,
        filter == VK_FILTER_CUBIC_EXT)
       ops = &r3d_ops;
 
-   /* TODO: shader path fails some of blit_image.all_formats.generate_mipmaps.* tests,
-    * figure out why (should be able to pass all tests with only shader path)
+   /* use the right format in setup() for D32_S8
+    * TODO: this probably should use a helper
     */
+   VkFormat format = dst_image->vk_format;
+   if (format == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+      if (info->dstSubresource.aspectMask == VK_IMAGE_ASPECT_DEPTH_BIT)
+         format = VK_FORMAT_D32_SFLOAT;
+      else if (info->dstSubresource.aspectMask == VK_IMAGE_ASPECT_STENCIL_BIT)
+         format = VK_FORMAT_S8_UINT;
+      else
+         unreachable("unexpected D32_S8 aspect mask in blit_image");
+   }
 
-   ops->setup(cmd, cs, dst_image->vk_format, info->dstSubresource.aspectMask,
+   ops->setup(cmd, cs, format, info->dstSubresource.aspectMask,
               rotate[mirror_y][mirror_x], false, dst_image->layout[0].ubwc);
 
    if (ops == &r3d_ops) {
@@ -1108,8 +1090,23 @@ tu_CmdBlitImage(VkCommandBuffer commandBuffer,
    tu_bo_list_add(&cmd->bo_list, src_image->bo, MSM_SUBMIT_BO_READ);
    tu_bo_list_add(&cmd->bo_list, dst_image->bo, MSM_SUBMIT_BO_WRITE);
 
-   for (uint32_t i = 0; i < regionCount; ++i)
+   for (uint32_t i = 0; i < regionCount; ++i) {
+      /* can't blit both depth and stencil at once with D32_S8
+       * TODO: more advanced 3D blit path to support it instead?
+       */
+      if (src_image->vk_format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+          dst_image->vk_format == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+         VkImageBlit region = pRegions[i];
+         uint32_t b;
+         for_each_bit(b, pRegions[i].dstSubresource.aspectMask) {
+            region.srcSubresource.aspectMask = BIT(b);
+            region.dstSubresource.aspectMask = BIT(b);
+            tu6_blit_image(cmd, src_image, dst_image, &region, filter);
+         }
+         continue;
+      }
       tu6_blit_image(cmd, src_image, dst_image, pRegions + i, filter);
+   }
 }
 
 static void
@@ -1678,11 +1675,18 @@ tu_CmdResolveImage(VkCommandBuffer commandBuffer,
    ops->teardown(cmd, cs);
 }
 
+#define for_each_layer(layer, layer_mask, layers) \
+   for (uint32_t layer = 0; \
+        layer < ((layer_mask) ? (util_logbase2(layer_mask) + 1) : layers); \
+        layer++) \
+      if (!layer_mask || (layer_mask & BIT(layer)))
+
 void
 tu_resolve_sysmem(struct tu_cmd_buffer *cmd,
                   struct tu_cs *cs,
                   struct tu_image_view *src,
                   struct tu_image_view *dst,
+                  uint32_t layer_mask,
                   uint32_t layers,
                   const VkRect2D *rect)
 {
@@ -1697,7 +1701,7 @@ tu_resolve_sysmem(struct tu_cmd_buffer *cmd,
               ROTATE_0, false, dst->ubwc_enabled);
    ops->coords(cs, &rect->offset, &rect->offset, &rect->extent);
 
-   for (uint32_t i = 0; i < layers; i++) {
+   for_each_layer(i, layer_mask, layers) {
       ops->src(cmd, cs, src, i, VK_FILTER_NEAREST);
       ops->dst(cs, dst, i);
       ops->run(cmd, cs);
@@ -1891,6 +1895,15 @@ tu_clear_sysmem_attachments(struct tu_cmd_buffer *cmd,
          layered_clear = true;
    }
 
+   /* a630 doesn't support multiview masks, which means that we can't use the
+    * normal multiview path without potentially recompiling a shader on-demand
+    * or using a more complicated variant that takes the mask as a const. Just
+    * use the layered path instead, since it shouldn't be much worse.
+    */
+   if (subpass->multiview_mask) {
+      layered_clear = true;
+   }
+
    r3d_common(cmd, cs, false, num_rts, layered_clear);
 
    tu_cs_emit_regs(cs,
@@ -1936,7 +1949,15 @@ tu_clear_sysmem_attachments(struct tu_cmd_buffer *cmd,
       tu_cs_emit_array(cs, clear_value[b], 4);
 
    for (uint32_t i = 0; i < rect_count; i++) {
-      for (uint32_t layer = 0; layer < rects[i].layerCount; layer++) {
+      /* This should be true because of this valid usage for
+       * vkCmdClearAttachments:
+       *
+       *    "If the render pass instance this is recorded in uses multiview,
+       *    then baseArrayLayer must be zero and layerCount must be one"
+       */
+      assert(!subpass->multiview_mask || rects[i].baseArrayLayer == 0);
+
+      for_each_layer(layer, subpass->multiview_mask, rects[i].layerCount) {
          r3d_coords_raw(cs, (float[]) {
             rects[i].rect.offset.x, rects[i].rect.offset.y,
             z_clear_val, uif(rects[i].baseArrayLayer + layer),
@@ -1952,8 +1973,6 @@ tu_clear_sysmem_attachments(struct tu_cmd_buffer *cmd,
 static void
 pack_gmem_clear_value(const VkClearValue *val, VkFormat format, uint32_t clear_value[4])
 {
-   enum pipe_format pformat = vk_format_to_pipe_format(format);
-
    switch (format) {
    case VK_FORMAT_X8_D24_UNORM_PACK32:
    case VK_FORMAT_D24_UNORM_S8_UINT:
@@ -1969,27 +1988,63 @@ pack_gmem_clear_value(const VkClearValue *val, VkFormat format, uint32_t clear_v
    case VK_FORMAT_S8_UINT:
       clear_value[0] = val->depthStencil.stencil;
       return;
-   /* these formats use a different base format when tiled
-    * the same format can be used for both because GMEM is always in WZYX order
-    */
-   case VK_FORMAT_R5G5B5A1_UNORM_PACK16:
-   case VK_FORMAT_B5G5R5A1_UNORM_PACK16:
-      pformat = PIPE_FORMAT_B5G5R5A1_UNORM;
    default:
       break;
    }
 
-   VkClearColorValue color;
+   float tmp[4];
+   memcpy(tmp, val->color.float32, 4 * sizeof(float));
+   if (vk_format_is_srgb(format)) {
+      for (int i = 0; i < 4; i++)
+         tmp[i] = util_format_linear_to_srgb_float(tmp[i]);
+   }
 
-   /**
-    * GMEM is tiled and wants the components in WZYX order,
-    * apply swizzle to the color before packing, to counteract
-    * deswizzling applied by packing functions
-    */
-   pipe_swizzle_4f(color.float32, val->color.float32,
-                   util_format_description(pformat)->swizzle);
-
-   util_format_pack_rgba(pformat, clear_value, color.uint32, 1);
+#define PACK_F(type) util_format_##type##_pack_rgba_float \
+   ( (uint8_t*) &clear_value[0], 0, tmp, 0, 1, 1)
+   switch (vk_format_get_component_bits(format, UTIL_FORMAT_COLORSPACE_RGB, PIPE_SWIZZLE_X)) {
+   case 4:
+      PACK_F(r4g4b4a4_unorm);
+      break;
+   case 5:
+      if (vk_format_get_component_bits(format, UTIL_FORMAT_COLORSPACE_RGB, PIPE_SWIZZLE_Y) == 6)
+         PACK_F(r5g6b5_unorm);
+      else
+         PACK_F(r5g5b5a1_unorm);
+      break;
+   case 8:
+      if (vk_format_is_snorm(format))
+         PACK_F(r8g8b8a8_snorm);
+      else if (vk_format_is_unorm(format))
+         PACK_F(r8g8b8a8_unorm);
+      else
+         pack_int8(clear_value, val->color.uint32);
+      break;
+   case 10:
+      if (vk_format_is_int(format))
+         pack_int10_2(clear_value, val->color.uint32);
+      else
+         PACK_F(r10g10b10a2_unorm);
+      break;
+   case 11:
+      clear_value[0] = float3_to_r11g11b10f(val->color.float32);
+      break;
+   case 16:
+      if (vk_format_is_snorm(format))
+         PACK_F(r16g16b16a16_snorm);
+      else if (vk_format_is_unorm(format))
+         PACK_F(r16g16b16a16_unorm);
+      else if (vk_format_is_float(format))
+         PACK_F(r16g16b16a16_float);
+      else
+         pack_int16(clear_value, val->color.uint32);
+      break;
+   case 32:
+      memcpy(clear_value, val->color.float32, 4 * sizeof(float));
+      break;
+   default:
+      unreachable("unexpected channel size");
+   }
+#undef PACK_F
 }
 
 static void
@@ -2129,6 +2184,7 @@ clear_sysmem_attachment(struct tu_cmd_buffer *cmd,
 {
    const struct tu_framebuffer *fb = cmd->state.framebuffer;
    const struct tu_image_view *iview = fb->attachments[a].attachment;
+   const uint32_t clear_views = cmd->state.pass->attachments[a].clear_views;
    const struct blit_ops *ops = &r2d_ops;
    if (cmd->state.pass->attachments[a].samples > 1)
       ops = &r3d_ops;
@@ -2137,7 +2193,7 @@ clear_sysmem_attachment(struct tu_cmd_buffer *cmd,
    ops->coords(cs, &info->renderArea.offset, NULL, &info->renderArea.extent);
    ops->clear_value(cs, format, &info->pClearValues[a]);
 
-   for (uint32_t i = 0; i < fb->layers; i++) {
+   for_each_layer(i, clear_views, fb->layers) {
       if (separate_stencil) {
          if (ops == &r3d_ops)
             r3d_dst_stencil(cs, iview, i);

@@ -576,7 +576,7 @@ static LLVMValueRef do_alu_action(struct lp_build_nir_context *bld_base,
    case nir_op_fmax:
       result = lp_build_max(get_flt_bld(bld_base, src_bit_size[0]), src[0], src[1]);
       break;
-   case nir_op_fne32:
+   case nir_op_fneu32:
       result = fcmp32(bld_base, PIPE_FUNC_NOTEQUAL, src_bit_size[0], src);
       break;
    case nir_op_fneg:
@@ -689,6 +689,7 @@ static LLVMValueRef do_alu_action(struct lp_build_nir_context *bld_base,
       result = lp_build_or(get_int_bld(bld_base, false, src_bit_size[0]),
                            src[0], src[1]);
       break;
+   case nir_op_imod:
    case nir_op_irem:
       result = do_int_mod(bld_base, false, src_bit_size[0], src[0], src[1]);
       break;
@@ -1015,6 +1016,19 @@ static void visit_load_ubo(struct lp_build_nir_context *bld_base,
 
    bool offset_is_uniform = nir_src_is_dynamically_uniform(instr->src[1]);
    idx = LLVMBuildExtractElement(builder, idx, lp_build_const_int32(gallivm, 0), "");
+   bld_base->load_ubo(bld_base, nir_dest_num_components(instr->dest), nir_dest_bit_size(instr->dest),
+                      offset_is_uniform, idx, offset, result);
+}
+
+static void visit_load_push_constant(struct lp_build_nir_context *bld_base,
+                                     nir_intrinsic_instr *instr,
+                                     LLVMValueRef result[4])
+{
+   struct gallivm_state *gallivm = bld_base->base.gallivm;
+   LLVMValueRef offset = get_src(bld_base, instr->src[0]);
+   LLVMValueRef idx = lp_build_const_int32(gallivm, 0);
+   bool offset_is_uniform = nir_src_is_dynamically_uniform(instr->src[0]);
+
    bld_base->load_ubo(bld_base, nir_dest_num_components(instr->dest), nir_dest_bit_size(instr->dest),
                       offset_is_uniform, idx, offset, result);
 }
@@ -1396,6 +1410,9 @@ static void visit_intrinsic(struct lp_build_nir_context *bld_base,
    case nir_intrinsic_load_ubo:
       visit_load_ubo(bld_base, instr, result);
       break;
+   case nir_intrinsic_load_push_constant:
+      visit_load_push_constant(bld_base, instr, result);
+      break;
    case nir_intrinsic_load_ssbo:
       visit_load_ssbo(bld_base, instr, result);
       break;
@@ -1758,11 +1775,17 @@ static void visit_tex(struct lp_build_nir_context *bld_base, nir_tex_instr *inst
          coords[4] = lp_build_mul(&bld_base->base, coords[4], projector);
    }
 
-   uint32_t base_index = 0;
-   if (!texture_deref_instr) {
+   uint32_t samp_base_index = 0, tex_base_index = 0;
+   if (!sampler_deref_instr) {
       int samp_src_index = nir_tex_instr_src_index(instr, nir_tex_src_sampler_handle);
       if (samp_src_index == -1) {
-         base_index = instr->sampler_index;
+         samp_base_index = instr->sampler_index;
+      }
+   }
+   if (!texture_deref_instr) {
+      int tex_src_index = nir_tex_instr_src_index(instr, nir_tex_src_texture_handle);
+      if (tex_src_index == -1) {
+         tex_base_index = instr->texture_index;
       }
    }
 
@@ -1781,9 +1804,9 @@ static void visit_tex(struct lp_build_nir_context *bld_base, nir_tex_instr *inst
    sample_key |= lod_property << LP_SAMPLER_LOD_PROPERTY_SHIFT;
    params.sample_key = sample_key;
    params.offsets = offsets;
-   params.texture_index = base_index;
+   params.texture_index = tex_base_index;
    params.texture_index_offset = texture_unit_offset;
-   params.sampler_index = base_index;
+   params.sampler_index = samp_base_index;
    params.coords = coords;
    params.texel = texel;
    params.lod = explicit_lod;

@@ -36,6 +36,8 @@
 #include "vulkan/vulkan.h"
 #include "vulkan/util/vk_object.h"
 
+#define RADV_VERT_ATTRIB_MAX MAX2(VERT_ATTRIB_MAX, VERT_ATTRIB_GENERIC0 + MAX_VERTEX_ATTRIBS)
+
 struct radv_device;
 
 struct radv_shader_module {
@@ -127,6 +129,11 @@ struct radv_shader_variant_key {
 	bool has_multiview_view_index;
 };
 
+enum radv_compiler_debug_level {
+	RADV_COMPILER_DEBUG_LEVEL_PERFWARN,
+	RADV_COMPILER_DEBUG_LEVEL_ERROR,
+};
+
 struct radv_nir_compiler_options {
 	struct radv_pipeline_layout *layout;
 	struct radv_shader_variant_key key;
@@ -145,6 +152,13 @@ struct radv_nir_compiler_options {
 	enum chip_class chip_class;
 	uint32_t tess_offchip_block_dw_size;
 	uint32_t address32_hi;
+
+	struct {
+		void (*func)(void *private_data,
+			     enum radv_compiler_debug_level level,
+			     const char *message);
+		void *private_data;
+	} debug;
 };
 
 enum radv_ud_index {
@@ -253,7 +267,7 @@ struct radv_shader_info {
 	bool is_ngg_passthrough;
 	struct {
 		uint64_t ls_outputs_written;
-		uint8_t input_usage_mask[VERT_ATTRIB_MAX];
+		uint8_t input_usage_mask[RADV_VERT_ATTRIB_MAX];
 		uint8_t output_usage_mask[VARYING_SLOT_VAR31 + 1];
 		bool has_vertex_buffers; /* needs vertex buffers and base/start */
 		bool needs_draw_id;
@@ -473,6 +487,9 @@ radv_create_gs_copy_shader(struct radv_device *device, struct nir_shader *nir,
 			   struct radv_shader_binary **binary_out,
 			   bool multiview,  bool keep_shader_info,
 			   bool keep_statistic_info);
+
+struct radv_shader_variant *
+radv_create_trap_handler_shader(struct radv_device *device);
 
 void
 radv_shader_variant_destroy(struct radv_device *device,

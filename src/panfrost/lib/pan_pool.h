@@ -26,7 +26,7 @@
 #define __PAN_POOL_H__
 
 #include <stddef.h>
-#include <panfrost-job.h>
+#include <midgard_pack.h>
 
 /* Represents a pool of memory that can only grow, used to allocate objects
  * with the same lifetime as the pool itself. In OpenGL, a pool is owned by the
@@ -45,10 +45,13 @@ struct pan_pool {
 
         /* Within the topmost transient BO, how much has been used? */
         unsigned transient_offset;
+
+        /* BO flags to use in the pool */
+        unsigned create_flags;
 };
 
 struct pan_pool
-panfrost_create_pool(void *memctx, struct panfrost_device *dev);
+panfrost_create_pool(void *memctx, struct panfrost_device *dev, unsigned create_flags, bool prealloc);
 
 /* Represents a fat pointer for GPU-mapped memory, returned from the transient
  * allocator and not used for much else */
@@ -59,9 +62,24 @@ struct panfrost_transfer {
 };
 
 struct panfrost_transfer
+panfrost_pool_alloc_aligned(struct pan_pool *pool, size_t sz, unsigned alignment);
+
+/* Default to self-alignment */
+
+static inline struct panfrost_transfer
+panfrost_pool_alloc(struct pan_pool *pool, size_t sz)
+{
+        assert(sz == util_next_power_of_two(sz));
+        return panfrost_pool_alloc_aligned(pool, sz, sz);
+}
+
+struct panfrost_transfer
 panfrost_pool_alloc(struct pan_pool *pool, size_t sz);
 
 mali_ptr
 panfrost_pool_upload(struct pan_pool *pool, const void *data, size_t sz);
+
+mali_ptr
+panfrost_pool_upload_aligned(struct pan_pool *pool, const void *data, size_t sz, unsigned alignment);
 
 #endif

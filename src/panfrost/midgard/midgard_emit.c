@@ -501,12 +501,14 @@ load_store_from_instr(midgard_instruction *ins)
 
         if (ins->src[1] != ~0) {
                 unsigned src = SSA_REG_FROM_FIXED(ins->src[1]);
-                ldst.arg_1 |= midgard_ldst_reg(src, ins->swizzle[1][0]);
+                unsigned sz = nir_alu_type_get_type_size(ins->src_types[1]);
+                ldst.arg_1 |= midgard_ldst_reg(src, ins->swizzle[1][0], sz);
         }
 
         if (ins->src[2] != ~0) {
                 unsigned src = SSA_REG_FROM_FIXED(ins->src[2]);
-                ldst.arg_2 |= midgard_ldst_reg(src, ins->swizzle[2][0]);
+                unsigned sz = nir_alu_type_get_type_size(ins->src_types[2]);
+                ldst.arg_2 |= midgard_ldst_reg(src, ins->swizzle[2][0], sz);
         }
 
         return ldst;
@@ -903,6 +905,7 @@ emit_binary_bundle(compiler_context *ctx,
                 /* Nothing else to pack for barriers */
                 if (ins->op == TEXTURE_OP_BARRIER) {
                         ins->texture.cont = ins->texture.last = 1;
+                        ins->texture.op = ins->op;
                         util_dynarray_append(emission, midgard_texture_word, ins->texture);
                         return;
                 }

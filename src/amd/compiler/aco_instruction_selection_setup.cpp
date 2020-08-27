@@ -339,7 +339,7 @@ void fill_desc_set_info(isel_context *ctx, nir_function_impl *impl)
          if (instr->type != nir_instr_type_intrinsic)
             continue;
          nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-         if (!(nir_intrinsic_infos[intrin->intrinsic].index_map[NIR_INTRINSIC_ACCESS]))
+         if (!nir_intrinsic_has_access(intrin))
             continue;
 
          nir_ssa_def *res = NULL;
@@ -600,9 +600,6 @@ void init_context(isel_context *ctx, nir_shader *shader)
                   case nir_op_fsub:
                   case nir_op_fmax:
                   case nir_op_fmin:
-                  case nir_op_fmax3:
-                  case nir_op_fmin3:
-                  case nir_op_fmed3:
                   case nir_op_fneg:
                   case nir_op_fabs:
                   case nir_op_fsat:
@@ -936,6 +933,14 @@ void init_context(isel_context *ctx, nir_shader *shader)
 
    ctx->allocated.reset(allocated.release());
    ctx->cf_info.nir_to_aco.reset(nir_to_aco.release());
+
+   /* align and copy constant data */
+   while (ctx->program->constant_data.size() % 4u)
+      ctx->program->constant_data.push_back(0);
+   ctx->constant_data_offset = ctx->program->constant_data.size();
+   ctx->program->constant_data.insert(ctx->program->constant_data.end(),
+                                      (uint8_t*)shader->constant_data,
+                                      (uint8_t*)shader->constant_data + shader->constant_data_size);
 }
 
 Pseudo_instruction *add_startpgm(struct isel_context *ctx)
@@ -1304,16 +1309,6 @@ lower_bit_size_callback(const nir_alu_instr *alu, void *_)
 void
 setup_nir(isel_context *ctx, nir_shader *nir)
 {
-   Program *program = ctx->program;
-
-   /* align and copy constant data */
-   while (program->constant_data.size() % 4u)
-      program->constant_data.push_back(0);
-   ctx->constant_data_offset = program->constant_data.size();
-   program->constant_data.insert(program->constant_data.end(),
-                                 (uint8_t*)nir->constant_data,
-                                 (uint8_t*)nir->constant_data + nir->constant_data_size);
-
    /* the variable setup has to be done before lower_io / CSE */
    setup_variables(ctx, nir);
 

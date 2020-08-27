@@ -888,7 +888,7 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
                 ALU_CASE(mov, imov);
 
                 ALU_CASE_CMP(feq32, feq, false);
-                ALU_CASE_CMP(fne32, fne, false);
+                ALU_CASE_CMP(fneu32, fne, false);
                 ALU_CASE_CMP(flt32, flt, false);
                 ALU_CASE_CMP(ieq32, ieq, true);
                 ALU_CASE_CMP(ine32, ine, true);
@@ -1570,11 +1570,6 @@ emit_control_barrier(compiler_context *ctx)
                 .dest = ~0,
                 .src = { ~0, ~0, ~0, ~0 },
                 .op = TEXTURE_OP_BARRIER,
-                .texture = {
-                        /* TODO: optimize */
-                        .out_of_order = MIDGARD_BARRIER_BUFFER |
-                                MIDGARD_BARRIER_SHARED ,
-                }
         };
 
         emit_mir_instruction(ctx, ins);
@@ -2847,7 +2842,6 @@ midgard_compile_shader_nir(nir_shader *nir, panfrost_program *program, bool is_b
         ctx->nir = nir;
         ctx->stage = nir->info.stage;
         ctx->is_blend = is_blend;
-        ctx->alpha_ref = program->alpha_ref;
         ctx->blend_rt = MIDGARD_COLOR_RT0 + blend_rt;
         ctx->blend_input = ~0;
         ctx->blend_src1 = ~0;
@@ -2861,7 +2855,6 @@ midgard_compile_shader_nir(nir_shader *nir, panfrost_program *program, bool is_b
         /* Initialize at a global (not block) level hash tables */
 
         ctx->ssa_constants = _mesa_hash_table_u64_create(NULL);
-        ctx->hash_to_temp = _mesa_hash_table_u64_create(NULL);
 
         /* Lower gl_Position pre-optimisation, but after lowering vars to ssa
          * (so we don't accidentally duplicate the epilogue since mesa/st has
@@ -2904,7 +2897,7 @@ midgard_compile_shader_nir(nir_shader *nir, panfrost_program *program, bool is_b
         /* Assign sysvals and counts, now that we're sure
          * (post-optimisation) */
 
-        panfrost_nir_assign_sysvals(&ctx->sysvals, nir);
+        panfrost_nir_assign_sysvals(&ctx->sysvals, ctx, nir);
         program->sysval_count = ctx->sysvals.sysval_count;
         memcpy(program->sysvals, ctx->sysvals.sysvals, sizeof(ctx->sysvals.sysvals[0]) * ctx->sysvals.sysval_count);
 

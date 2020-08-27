@@ -49,6 +49,7 @@ struct blorp_params;
 #define IRIS_MAX_SSBOS 16
 #define IRIS_MAX_VIEWPORTS 16
 #define IRIS_MAX_CLIP_PLANES 8
+#define IRIS_MAX_GLOBAL_BINDINGS 32
 
 enum iris_param_domain {
    BRW_PARAM_DOMAIN_BUILTIN = 0,
@@ -377,6 +378,9 @@ struct iris_uncompiled_shader {
    /* Whether shader uses atomic operations. */
    bool uses_atomic_load_store;
 
+   /** Size (in bytes) of the kernel input data */
+   unsigned kernel_input_size;
+
    /** Constant data scraped from the shader by nir_opt_large_constants */
    struct pipe_resource *const_data;
 
@@ -436,6 +440,9 @@ struct iris_compiled_shader {
    /** A list of system values to be uploaded as uniforms. */
    enum brw_param_builtin *system_values;
    unsigned num_system_values;
+
+   /** Size (in bytes) of the kernel input data */
+   unsigned kernel_input_size;
 
    /** Number of constbufs expected by the shader. */
    unsigned num_cbufs;
@@ -697,6 +704,9 @@ struct iris_context {
       /** Do any samplers need border color?  One bit per shader stage. */
       uint8_t need_border_colors;
 
+      /** Global resource bindings */
+      struct pipe_resource *global_bindings[IRIS_MAX_GLOBAL_BINDINGS];
+
       struct pipe_stream_output_target *so_target[PIPE_MAX_SO_BUFFERS];
       bool streamout_active;
 
@@ -882,6 +892,7 @@ struct iris_compiled_shader *iris_upload_shader(struct iris_context *ice,
                                                 uint32_t *streamout,
                                                 enum brw_param_builtin *sysv,
                                                 unsigned num_system_values,
+                                                unsigned kernel_input_size,
                                                 unsigned num_cbufs,
                                                 const struct iris_binding_table *bt);
 const void *iris_find_previous_compile(const struct iris_context *ice,

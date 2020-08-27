@@ -293,8 +293,6 @@ typedef struct compiler_context {
         /* Constants which have been loaded, for later inlining */
         struct hash_table_u64 *ssa_constants;
 
-        /* Mapping of hashes computed from NIR indices to the sequential temp indices ultimately used in MIR */
-        struct hash_table_u64 *hash_to_temp;
         int temp_count;
         int max_hash;
 
@@ -310,9 +308,6 @@ typedef struct compiler_context {
 
         /* Count of instructions emitted from NIR overall, across all blocks */
         int instruction_count;
-
-        /* Alpha ref value passed in */
-        float alpha_ref;
 
         unsigned quadword_count;
 

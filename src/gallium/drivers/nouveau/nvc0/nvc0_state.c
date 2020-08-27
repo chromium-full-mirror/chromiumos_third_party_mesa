@@ -616,6 +616,7 @@ nvc0_sp_state_create(struct pipe_context *pipe,
 
    prog->translated = nvc0_program_translate(
       prog, nvc0_context(pipe)->screen->base.device->chipset,
+      nvc0_context(pipe)->screen->base.disk_shader_cache,
       &nouveau_context(pipe)->debug);
 
    return (void *)prog;
@@ -755,6 +756,7 @@ nvc0_cp_state_create(struct pipe_context *pipe,
 
    prog->translated = nvc0_program_translate(
       prog, nvc0_context(pipe)->screen->base.device->chipset,
+      nvc0_context(pipe)->screen->base.disk_shader_cache,
       &nouveau_context(pipe)->debug);
 
    return (void *)prog;
@@ -1378,6 +1380,9 @@ nvc0_set_global_bindings(struct pipe_context *pipe,
    struct pipe_resource **ptr;
    unsigned i;
    const unsigned end = start + nr;
+
+   if (!nr)
+      return;
 
    if (nvc0->global_residents.size <= (end * sizeof(struct pipe_resource *))) {
       const unsigned old_size = nvc0->global_residents.size;

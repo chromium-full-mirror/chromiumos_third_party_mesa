@@ -194,10 +194,24 @@ radv_clear_mask(uint32_t *inout_mask, uint32_t clear_mask)
 struct radv_image_view;
 struct radv_instance;
 
-VkResult __vk_errorf(struct radv_instance *instance, VkResult error, const char *file, int line, const char *format, ...);
+VkResult __vk_errorv(struct radv_instance *instance, const void *object,
+		     VkDebugReportObjectTypeEXT type, VkResult error,
+		     const char *file, int line, const char *format,
+		     va_list args);
 
-#define vk_error(instance, error) __vk_errorf(instance, error, __FILE__, __LINE__, NULL);
-#define vk_errorf(instance, error, format, ...) __vk_errorf(instance, error, __FILE__, __LINE__, format, ## __VA_ARGS__);
+VkResult __vk_errorf(struct radv_instance *instance, const void *object,
+		     VkDebugReportObjectTypeEXT type, VkResult error,
+		     const char *file, int line, const char *format, ...)
+	radv_printflike(7, 8);
+
+#define vk_error(instance, error) \
+	__vk_errorf(instance, NULL, \
+		    VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT, \
+		    error, __FILE__, __LINE__, NULL);
+#define vk_errorf(instance, error, format, ...) \
+	__vk_errorf(instance, NULL, \
+		    VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT, \
+		    error, __FILE__, __LINE__, format, ## __VA_ARGS__);
 
 void __radv_finishme(const char *file, int line, const char *format, ...)
 	radv_printflike(3, 4);
@@ -320,6 +334,8 @@ struct radv_instance {
 
 	uint32_t                                    apiVersion;
 
+	char *                                      applicationName;
+	uint32_t                                    applicationVersion;
 	char *                                      engineName;
 	uint32_t                                    engineVersion;
 
@@ -831,11 +847,33 @@ struct radv_device {
 	uint32_t thread_trace_buffer_size;
 	int thread_trace_start_frame;
 
+	/* Trap handler. */
+	struct radv_shader_variant *trap_handler_shader;
+	struct radeon_winsys_bo *tma_bo; /* Trap Memory Address */
+	uint32_t *tma_ptr;
+
 	/* Overallocation. */
 	bool overallocation_disallowed;
 	uint64_t allocated_memory_size[VK_MAX_MEMORY_HEAPS];
 	mtx_t overallocation_mutex;
+
+	/* Track the number of device loss occurs. */
+	int lost;
 };
+
+VkResult _radv_device_set_lost(struct radv_device *device,
+                              const char *file, int line,
+                              const char *msg, ...)
+	radv_printflike(4, 5);
+
+#define radv_device_set_lost(dev, ...) \
+	_radv_device_set_lost(dev, __FILE__, __LINE__, __VA_ARGS__)
+
+static inline bool
+radv_device_is_lost(const struct radv_device *device)
+{
+	return unlikely(p_atomic_read(&device->lost));
+}
 
 struct radv_device_memory {
 	struct vk_object_base                        base;
@@ -1416,7 +1454,7 @@ bool radv_cmd_buffer_uses_mec(struct radv_cmd_buffer *cmd_buffer);
 
 void si_emit_graphics(struct radv_device *device,
 		      struct radeon_cmdbuf *cs);
-void si_emit_compute(struct radv_physical_device *physical_device,
+void si_emit_compute(struct radv_device *device,
 		      struct radeon_cmdbuf *cs);
 
 void cik_create_gfx_config(struct radv_device *device);

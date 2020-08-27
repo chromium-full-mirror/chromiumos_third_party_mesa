@@ -76,7 +76,7 @@ struct panfrost_sysvals {
 };
 
 void
-panfrost_nir_assign_sysvals(struct panfrost_sysvals *ctx, nir_shader *shader);
+panfrost_nir_assign_sysvals(struct panfrost_sysvals *ctx, void *memctx, nir_shader *shader);
 
 int
 panfrost_sysval_for_instr(nir_instr *instr, nir_dest *dest);
@@ -106,9 +106,6 @@ typedef struct {
         /* The number of bytes to allocate per-thread for Thread Local Storage
          * (register spilling), or zero if no spilling is used */
         unsigned tls_size;
-
-        /* IN: For a fragment shader with a lowered alpha test, the ref value */
-        float alpha_ref;
 
         /* IN: Render target formats for output load/store lowering */
         enum pipe_format rt_formats[8];

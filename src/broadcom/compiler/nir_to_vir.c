@@ -339,9 +339,12 @@ ntq_emit_tmu_general(struct v3d_compile *c, nir_intrinsic_instr *instr,
                         num_components = tmu_writes - 1;
                 }
 
+                uint32_t perquad = is_load
+                   ? GENERAL_TMU_LOOKUP_PER_QUAD
+                   : GENERAL_TMU_LOOKUP_PER_PIXEL;
                 uint32_t config = (0xffffff00 |
                                    tmu_op << 3|
-                                   GENERAL_TMU_LOOKUP_PER_PIXEL);
+                                   perquad);
                 if (num_components == 1) {
                         config |= GENERAL_TMU_LOOKUP_TYPE_32BIT_UI;
                 } else {
@@ -797,7 +800,7 @@ ntq_emit_comparison(struct v3d_compile *c,
                 vir_set_pf(vir_XOR_dest(c, nop, src0, src1), V3D_QPU_PF_PUSHZ);
                 break;
 
-        case nir_op_fne32:
+        case nir_op_fneu32:
         case nir_op_sne:
                 vir_set_pf(vir_FCMP_dest(c, nop, src0, src1), V3D_QPU_PF_PUSHZ);
                 cond_invert = true;
@@ -1041,7 +1044,7 @@ ntq_emit_alu(struct v3d_compile *c, nir_alu_instr *instr)
         case nir_op_i2b32:
         case nir_op_f2b32:
         case nir_op_feq32:
-        case nir_op_fne32:
+        case nir_op_fneu32:
         case nir_op_fge32:
         case nir_op_flt32:
         case nir_op_ieq32:
@@ -1777,6 +1780,8 @@ ntq_emit_image_size(struct v3d_compile *c, nir_intrinsic_instr *instr)
         unsigned image_index = nir_src_as_uint(instr->src[0]);
         bool is_array = nir_intrinsic_image_array(instr);
 
+        assert(nir_src_as_uint(instr->src[1]) == 0);
+
         ntq_store_dest(c, &instr->dest, 0,
                        vir_uniform(c, QUNIFORM_IMAGE_WIDTH, image_index));
         if (instr->num_components > 1) {
@@ -2392,6 +2397,10 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                                vir_uniform(c, QUNIFORM_FB_LAYERS, 0));
                 break;
 
+        case nir_intrinsic_load_sample_id:
+                ntq_store_dest(c, &instr->dest, 0, vir_SAMPID(c));
+                break;
+
         default:
                 fprintf(stderr, "Unknown intrinsic: ");
                 nir_print_instr(&instr->instr, stderr);
@@ -2587,6 +2596,12 @@ ntq_emit_jump(struct v3d_compile *c, nir_jump_instr *jump)
 
         case nir_jump_return:
                 unreachable("All returns shouold be lowered\n");
+                break;
+
+        case nir_jump_goto:
+        case nir_jump_goto_if:
+                unreachable("not supported\n");
+                break;
         }
 }
 

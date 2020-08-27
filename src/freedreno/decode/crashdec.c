@@ -40,7 +40,6 @@
 #include <assert.h>
 #include <getopt.h>
 #include <inttypes.h>
-#include <setjmp.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -101,6 +100,23 @@ regval(const char *name)
  * Line reading and string helpers:
  */
 
+static char *
+replacestr(char *line, const char *find, const char *replace)
+{
+	char *tail, *s;
+
+	if (!(s = strstr(line, find)))
+		return line;
+
+	tail = s + strlen(find);
+
+	char *newline;
+	asprintf(&newline, "%.*s%s%s", (int)(s - line), line, replace, tail);
+	free(line);
+
+	return newline;
+}
+
 static char *lastline;
 static char *pushedline;
 
@@ -119,6 +135,10 @@ popline(void)
 	size_t n = 0;
 	if (getline(&r, &n, in) < 0)
 		exit(0);
+
+	/* Handle section name typo's from earlier kernels: */
+	r = replacestr(r, "CP_MEMPOOOL", "CP_MEMPOOL");
+	r = replacestr(r, "CP_SEQ_STAT", "CP_SQE_STAT");
 
 	lastline = r;
 	return r;
@@ -209,34 +229,6 @@ parseline(const char *line, const char *fmt, ...)
 			pushline();                                           \
 			break;                                                \
 		} else
-
-/*
- * Provide our own disasm assert() handler, so that we can recover
- * after attempting to disassemble things that might not be valid
- * instructions:
- */
-
-static bool jmp_env_valid;
-static jmp_buf jmp_env;
-
-void
-ir3_assert_handler(const char *expr, const char *file, int line,
-		const char *func)
-{
-	printf("\n%s:%u: %s: Assertion `%s' failed.\n", file, line, func, expr);
-	if (jmp_env_valid)
-		longjmp(jmp_env, 1);
-	abort();
-}
-
-#define TRY(x) do { \
-		assert(!jmp_env_valid); \
-		if (setjmp(jmp_env) == 0) { \
-			jmp_env_valid = true; \
-			x; \
-		} \
-		jmp_env_valid = false; \
-	} while (0)
 
 /*
  * Decode ringbuffer section:
@@ -471,7 +463,7 @@ decode_clusters(void)
  */
 
 static void
-dump_cp_seq_stat(uint32_t *stat)
+dump_cp_sqe_stat(uint32_t *stat)
 {
 	printf("\t PC: %04x\n", stat[0]);
 	stat++;
@@ -850,23 +842,23 @@ decode_indexed_registers(void)
 			 * so far) not useful, so skip them if not in verbose mode:
 			 */
 			bool dump = verbose ||
-				!strcmp(name, "CP_SEQ_STAT") ||
+				!strcmp(name, "CP_SQE_STAT") ||
 				!strcmp(name, "CP_DRAW_STATE") ||
 				!strcmp(name, "CP_ROQ") ||
 				0;
 
-			if (!strcmp(name, "CP_SEQ_STAT"))
-				dump_cp_seq_stat(buf);
+			if (!strcmp(name, "CP_SQE_STAT"))
+				dump_cp_sqe_stat(buf);
 
 			if (!strcmp(name, "CP_UCODE_DBG_DATA"))
 				dump_cp_ucode_dbg(buf);
 
-			/* note that name was typo'd in earlier kernels: */
-			if (!strcmp(name, "CP_MEMPOOL") || !strcmp(name, "CP_MEMPOOOL"))
+			if (!strcmp(name, "CP_MEMPOOL"))
 				dump_cp_mem_pool(buf);
 
 			if (dump)
 				dump_hex_ascii(buf, 4 * sizedwords, 1);
+
 			free(buf);
 
 			continue;
@@ -909,7 +901,7 @@ decode_shader_blocks(void)
 				 * (or parts of shaders?), so perhaps we should search
 				 * for ends of shaders and decode each?
 				 */
-				TRY(disasm_a3xx(buf, sizedwords, 1, stdout, options.gpu_id));
+				try_disasm_a3xx(buf, sizedwords, 1, stdout, options.gpu_id);
 			}
 
 			if (dump)

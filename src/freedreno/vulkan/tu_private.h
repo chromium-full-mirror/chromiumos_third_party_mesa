@@ -95,7 +95,7 @@ typedef uint32_t xcb_window_t;
 #define MAX_DYNAMIC_BUFFERS                                                  \
    (MAX_DYNAMIC_UNIFORM_BUFFERS + MAX_DYNAMIC_STORAGE_BUFFERS)
 #define TU_MAX_DRM_DEVICES 8
-#define MAX_VIEWS 8
+#define MAX_VIEWS 16
 #define MAX_BIND_POINTS 2 /* compute + graphics */
 /* The Qualcomm driver exposes 0x20000058 */
 #define MAX_STORAGE_BUFFER_RANGE 0x20000000
@@ -111,24 +111,9 @@ typedef uint32_t xcb_window_t;
 
 #define tu_printflike(a, b) __attribute__((__format__(__printf__, a, b)))
 
-static inline uint32_t
-tu_minify(uint32_t n, uint32_t levels)
-{
-   if (unlikely(n == 0))
-      return 0;
-   else
-      return MAX2(n >> levels, 1);
-}
-
 #define for_each_bit(b, dword)                                               \
    for (uint32_t __dword = (dword);                                          \
         (b) = __builtin_ffs(__dword) - 1, __dword; __dword &= ~(1 << (b)))
-
-#define typed_memcpy(dest, src, count)                                       \
-   ({                                                                        \
-      STATIC_ASSERT(sizeof(*src) == sizeof(*dest));                          \
-      memcpy((dest), (src), (count) * sizeof(*(src)));                       \
-   })
 
 #define COND(bool, val) ((bool) ? (val) : 0)
 #define BIT(bit) (1u << (bit))
@@ -215,6 +200,7 @@ struct tu_physical_device
    /* gmem store/load granularity */
 #define GMEM_ALIGN_W 16
 #define GMEM_ALIGN_H 4
+   bool supports_multiview_mask;
 
    struct {
       uint32_t PC_UNKNOWN_9805;
@@ -353,12 +339,12 @@ enum global_shader {
    GLOBAL_SH_COUNT,
 };
 
+#define TU_BORDER_COLOR_COUNT 4096
+#define TU_BORDER_COLOR_BUILTIN 6
+
 /* This struct defines the layout of the global_bo */
 struct tu6_global
 {
-   /* 6 bcolor_entry entries, one for each VK_BORDER_COLOR */
-   uint8_t border_color[128 * 6];
-
    /* clear/blit shaders, all <= 16 instrs (16 instr = 1 instrlen unit) */
    instr_t shaders[GLOBAL_SH_COUNT][16];
 
@@ -375,6 +361,9 @@ struct tu6_global
       uint32_t offset;
       uint32_t pad[7];
    } flush_base[4];
+
+   /* note: larger global bo will be used for customBorderColors */
+   struct bcolor_entry bcolor_builtin[TU_BORDER_COLOR_BUILTIN], bcolor[];
 };
 #define gb_offset(member) offsetof(struct tu6_global, member)
 #define global_iova(cmd, member) ((cmd)->device->global_bo.iova + gb_offset(member))
@@ -417,7 +406,8 @@ struct tu_device
 
    uint32_t vsc_draw_strm_pitch;
    uint32_t vsc_prim_strm_pitch;
-   mtx_t vsc_pitch_mtx;
+   BITSET_DECLARE(custom_border_color, TU_BORDER_COLOR_COUNT);
+   mtx_t mutex;
 };
 
 VkResult _tu_device_set_lost(struct tu_device *device,
@@ -1089,10 +1079,14 @@ struct tu_shader
    uint8_t active_desc_sets;
 };
 
+bool
+tu_nir_lower_multiview(nir_shader *nir, uint32_t mask, struct tu_device *dev);
+
 struct tu_shader *
 tu_shader_create(struct tu_device *dev,
                  gl_shader_stage stage,
                  const VkPipelineShaderStageCreateInfo *stage_info,
+                 unsigned multiview_mask,
                  struct tu_pipeline_layout *layout,
                  const VkAllocationCallbacks *alloc);
 
@@ -1217,6 +1211,7 @@ tu_resolve_sysmem(struct tu_cmd_buffer *cmd,
                   struct tu_cs *cs,
                   struct tu_image_view *src,
                   struct tu_image_view *dst,
+                  uint32_t layer_mask,
                   uint32_t layers,
                   const VkRect2D *rect);
 
@@ -1495,6 +1490,7 @@ struct tu_subpass
    VkSampleCountFlagBits samples;
 
    uint32_t srgb_cntl;
+   uint32_t multiview_mask;
 
    struct tu_subpass_barrier start_barrier;
 };
@@ -1505,6 +1501,7 @@ struct tu_render_pass_attachment
    uint32_t samples;
    uint32_t cpp;
    VkImageAspectFlags clear_mask;
+   uint32_t clear_views;
    bool load;
    bool store;
    int32_t gmem_offset;

@@ -518,6 +518,14 @@ tu_CreateRenderPass(VkDevice device,
    VkAttachmentReference2 reference[reference_count];
    VkAttachmentReference2 *reference_ptr = reference;
 
+   VkRenderPassMultiviewCreateInfo *multiview_info = NULL;
+   vk_foreach_struct(ext, pCreateInfo->pNext) {
+      if (ext->sType == VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO) {
+         multiview_info = (VkRenderPassMultiviewCreateInfo*) ext;
+         break;
+      }
+   }
+
    for (uint32_t i = 0; i < pCreateInfo->attachmentCount; i++) {
       attachments[i] = (VkAttachmentDescription2) {
          .sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2,
@@ -544,6 +552,9 @@ tu_CreateRenderPass(VkDevice device,
          .inputAttachmentCount = pCreateInfo->pSubpasses[i].inputAttachmentCount,
          .colorAttachmentCount = pCreateInfo->pSubpasses[i].colorAttachmentCount,
       };
+
+      if (multiview_info && multiview_info->subpassCount)
+         subpasses[i].viewMask = multiview_info->pViewMasks[i];
 
       subpasses[i].pInputAttachments = reference_ptr;
       translate_references(&reference_ptr,
@@ -584,6 +595,9 @@ tu_CreateRenderPass(VkDevice device,
          .dependencyFlags = pCreateInfo->pDependencies[i].dependencyFlags,
          .viewOffset = 0,
       };
+
+      if (multiview_info && multiview_info->dependencyCount)
+         dependencies[i].viewOffset = multiview_info->pViewOffsets[i];
    }
 
    VkRenderPassCreateInfo2 create_info = {
@@ -597,6 +611,11 @@ tu_CreateRenderPass(VkDevice device,
       .dependencyCount = pCreateInfo->dependencyCount,
       .pDependencies = dependencies,
    };
+
+   if (multiview_info) {
+      create_info.correlatedViewMaskCount = multiview_info->correlationMaskCount;
+      create_info.pCorrelatedViewMasks = multiview_info->pCorrelationMasks;
+   }
 
    return tu_CreateRenderPass2(device, &create_info, pAllocator, pRenderPass);
 }
@@ -680,6 +699,8 @@ tu_CreateRenderPass2(VkDevice _device,
       subpass->samples = 0;
       subpass->srgb_cntl = 0;
 
+      subpass->multiview_mask = desc->viewMask;
+
       if (desc->inputAttachmentCount > 0) {
          subpass->input_attachments = p;
          p += desc->inputAttachmentCount;
@@ -706,6 +727,8 @@ tu_CreateRenderPass2(VkDevice _device,
 
                if (vk_format_is_srgb(pass->attachments[a].format))
                   subpass->srgb_cntl |= 1 << j;
+
+               pass->attachments[a].clear_views |= subpass->multiview_mask;
             }
          }
       }
@@ -740,7 +763,20 @@ tu_CreateRenderPass2(VkDevice _device,
       }
    }
 
-   tu_render_pass_gmem_config(pass, device->physical_device);
+   /* From the VK_KHR_multiview spec:
+    *
+    *    Multiview is all-or-nothing for a render pass - that is, either all
+    *    subpasses must have a non-zero view mask (though some subpasses may
+    *    have only one view) or all must be zero.
+    *
+    * This means we only have to check one of the view masks.
+    */
+   if (pCreateInfo->pSubpasses[0].viewMask) {
+      /* It seems multiview must use sysmem rendering. */
+      pass->gmem_pixels = 0;
+   } else {
+      tu_render_pass_gmem_config(pass, device->physical_device);
+   }
 
    for (unsigned i = 0; i < pCreateInfo->dependencyCount; ++i) {
       tu_render_pass_add_subpass_dep(pass, &pCreateInfo->pDependencies[i]);

@@ -144,7 +144,8 @@ nir_variable_create(nir_shader *shader, nir_variable_mode mode,
    var->data.how_declared = nir_var_declared_normally;
 
    if ((mode == nir_var_shader_in &&
-        shader->info.stage != MESA_SHADER_VERTEX) ||
+        shader->info.stage != MESA_SHADER_VERTEX &&
+        shader->info.stage != MESA_SHADER_KERNEL) ||
        (mode == nir_var_shader_out &&
         shader->info.stage != MESA_SHADER_FRAGMENT))
       var->data.interpolation = INTERP_MODE_SMOOTH;
@@ -295,6 +296,7 @@ nir_function_impl_create_bare(nir_shader *shader)
    impl->reg_alloc = 0;
    impl->ssa_alloc = 0;
    impl->valid_metadata = nir_metadata_none;
+   impl->structured = true;
 
    /* create start & end blocks */
    nir_block *start_block = nir_block_create(shader);
@@ -476,7 +478,10 @@ nir_jump_instr_create(nir_shader *shader, nir_jump_type type)
 {
    nir_jump_instr *instr = ralloc(shader, nir_jump_instr);
    instr_init(&instr->instr, nir_instr_type_jump);
+   src_init(&instr->condition);
    instr->type = type;
+   instr->target = NULL;
+   instr->else_target = NULL;
    return instr;
 }
 
@@ -728,8 +733,6 @@ reduce_cursor(nir_cursor cursor)
 {
    switch (cursor.option) {
    case nir_cursor_before_block:
-      assert(nir_cf_node_prev(&cursor.block->cf_node) == NULL ||
-             nir_cf_node_prev(&cursor.block->cf_node)->type != nir_cf_node_block);
       if (exec_list_is_empty(&cursor.block->instr_list)) {
          /* Empty block.  After is as good as before. */
          cursor.option = nir_cursor_after_block;
@@ -1194,6 +1197,15 @@ visit_parallel_copy_src(nir_parallel_copy_instr *instr,
    return true;
 }
 
+static bool
+visit_jump_src(nir_jump_instr *instr, nir_foreach_src_cb cb, void *state)
+{
+   if (instr->type != nir_jump_goto_if)
+      return true;
+
+   return visit_src(&instr->condition, cb, state);
+}
+
 typedef struct {
    void *state;
    nir_foreach_src_cb cb;
@@ -1247,6 +1259,7 @@ nir_foreach_src(nir_instr *instr, nir_foreach_src_cb cb, void *state)
          return false;
       break;
    case nir_instr_type_jump:
+      return visit_jump_src(nir_instr_as_jump(instr), cb, state);
    case nir_instr_type_ssa_undef:
       return true;
 
@@ -1477,6 +1490,7 @@ nir_ssa_def_init(nir_instr *instr, nir_ssa_def *def,
                  unsigned bit_size, const char *name)
 {
    def->name = ralloc_strdup(instr, name);
+   def->live_index = UINT_MAX; /* Something clearly OOB */
    def->parent_instr = instr;
    list_inithead(&def->uses);
    list_inithead(&def->if_uses);
@@ -1590,6 +1604,33 @@ nir_ssa_def_components_read(const nir_ssa_def *def)
 }
 
 nir_block *
+nir_block_unstructured_next(nir_block *block)
+{
+   if (block == NULL) {
+      /* nir_foreach_block_unstructured_safe() will call this function on a
+       * NULL block after the last iteration, but it won't use the result so
+       * just return NULL here.
+       */
+      return NULL;
+   }
+
+   nir_cf_node *cf_next = nir_cf_node_next(&block->cf_node);
+   if (cf_next == NULL && block->cf_node.parent->type == nir_cf_node_function)
+      return NULL;
+
+   if (cf_next && cf_next->type == nir_cf_node_block)
+      return nir_cf_node_as_block(cf_next);
+
+   return nir_block_cf_tree_next(block);
+}
+
+nir_block *
+nir_unstructured_start_block(nir_function_impl *impl)
+{
+   return nir_start_block(impl);
+}
+
+nir_block *
 nir_block_cf_tree_next(nir_block *block)
 {
    if (block == NULL) {
@@ -1599,6 +1640,8 @@ nir_block_cf_tree_next(nir_block *block)
        */
       return NULL;
    }
+
+   assert(nir_cf_node_get_function(&block->cf_node)->structured);
 
    nir_cf_node *cf_next = nir_cf_node_next(&block->cf_node);
    if (cf_next)
@@ -1635,6 +1678,8 @@ nir_block_cf_tree_prev(nir_block *block)
       /* do this for consistency with nir_block_cf_tree_next() */
       return NULL;
    }
+
+   assert(nir_cf_node_get_function(&block->cf_node)->structured);
 
    nir_cf_node *cf_prev = nir_cf_node_prev(&block->cf_node);
    if (cf_prev)
@@ -1770,7 +1815,7 @@ nir_index_blocks(nir_function_impl *impl)
    if (impl->valid_metadata & nir_metadata_block_index)
       return;
 
-   nir_foreach_block(block, impl) {
+   nir_foreach_block_unstructured(block, impl) {
       block->index = index++;
    }
 
@@ -1798,7 +1843,7 @@ nir_index_ssa_defs(nir_function_impl *impl)
 {
    unsigned index = 0;
 
-   nir_foreach_block(block, impl) {
+   nir_foreach_block_unstructured(block, impl) {
       nir_foreach_instr(instr, block)
          nir_foreach_ssa_def(instr, index_ssa_def_cb, &index);
    }
@@ -2077,6 +2122,8 @@ nir_intrinsic_from_system_value(gl_system_value val)
       return nir_intrinsic_load_local_group_size;
    case SYSTEM_VALUE_GLOBAL_INVOCATION_ID:
       return nir_intrinsic_load_global_invocation_id;
+   case SYSTEM_VALUE_BASE_GLOBAL_INVOCATION_ID:
+      return nir_intrinsic_load_base_global_invocation_id;
    case SYSTEM_VALUE_GLOBAL_INVOCATION_INDEX:
       return nir_intrinsic_load_global_invocation_index;
    case SYSTEM_VALUE_WORK_DIM:
@@ -2176,6 +2223,12 @@ nir_system_value_from_intrinsic(nir_intrinsic_op intrin)
       return SYSTEM_VALUE_LOCAL_GROUP_SIZE;
    case nir_intrinsic_load_global_invocation_id:
       return SYSTEM_VALUE_GLOBAL_INVOCATION_ID;
+   case nir_intrinsic_load_base_global_invocation_id:
+      return SYSTEM_VALUE_BASE_GLOBAL_INVOCATION_ID;
+   case nir_intrinsic_load_global_invocation_index:
+      return SYSTEM_VALUE_GLOBAL_INVOCATION_INDEX;
+   case nir_intrinsic_load_work_dim:
+      return SYSTEM_VALUE_WORK_DIM;
    case nir_intrinsic_load_user_data_amd:
       return SYSTEM_VALUE_USER_DATA_AMD;
    default:
