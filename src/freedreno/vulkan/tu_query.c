@@ -76,7 +76,7 @@ struct PACKED primitive_query_slot {
 /* Returns the IOVA of a given uint64_t field in a given slot of a query
  * pool. */
 #define query_iova(type, pool, query, field, value_index)            \
-   pool->bo.iova + pool->stride * query + offsetof(type, field) +    \
+   pool->bo.iova + pool->stride * (query) + offsetof(type, field) +  \
          offsetof(struct slot_value, values[value_index])
 
 #define occlusion_query_iova(pool, query, field)                     \
@@ -726,6 +726,44 @@ emit_end_xfb_query(struct tu_cmd_buffer *cmdbuf,
    tu_cs_emit_qw(cs, 0x1);
 }
 
+/* Implement this bit of spec text from section 17.2 "Query Operation":
+ *
+ *     If queries are used while executing a render pass instance that has
+ *     multiview enabled, the query uses N consecutive query indices in the
+ *     query pool (starting at query) where N is the number of bits set in the
+ *     view mask in the subpass the query is used in. How the numerical
+ *     results of the query are distributed among the queries is
+ *     implementation-dependent. For example, some implementations may write
+ *     each view’s results to a distinct query, while other implementations
+ *     may write the total result to the first query and write zero to the
+ *     other queries. However, the sum of the results in all the queries must
+ *     accurately reflect the total result of the query summed over all views.
+ *     Applications can sum the results from all the queries to compute the
+ *     total result.
+ *
+ * Since we execute all views at once, we write zero to the other queries.
+ * Furthermore, because queries must be reset before use, and we set the
+ * result to 0 in vkCmdResetQueryPool(), we just need to mark it as available.
+ */
+
+static void
+handle_multiview_queries(struct tu_cmd_buffer *cmd,
+                         struct tu_query_pool *pool,
+                         uint32_t query)
+{
+   if (!cmd->state.pass || !cmd->state.subpass->multiview_mask)
+      return;
+
+   unsigned views = util_bitcount(cmd->state.subpass->multiview_mask);
+   struct tu_cs *cs = &cmd->draw_epilogue_cs;
+
+   for (uint32_t i = 1; i < views; i++) {
+      tu_cs_emit_pkt7(cs, CP_MEM_WRITE, 4);
+      tu_cs_emit_qw(cs, query_available_iova(pool, query + i));
+      tu_cs_emit_qw(cs, 0x1);
+   }
+}
+
 void
 tu_CmdEndQuery(VkCommandBuffer commandBuffer,
                VkQueryPool queryPool,
@@ -748,6 +786,8 @@ tu_CmdEndQuery(VkCommandBuffer commandBuffer,
    default:
       assert(!"Invalid query type");
    }
+
+   handle_multiview_queries(cmdbuf, pool, query);
 
    tu_bo_list_add(&cmdbuf->bo_list, &pool->bo, MSM_SUBMIT_BO_WRITE);
 }
@@ -782,10 +822,34 @@ tu_CmdWriteTimestamp(VkCommandBuffer commandBuffer,
 {
    TU_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
    TU_FROM_HANDLE(tu_query_pool, pool, queryPool);
-   struct tu_cs *cs = cmd->state.pass ? &cmd->draw_epilogue_cs : &cmd->cs;
 
-   /* WFI to get more accurate timestamp */
-   tu_cs_emit_wfi(cs);
+   tu_bo_list_add(&cmd->bo_list, &pool->bo, MSM_SUBMIT_BO_WRITE);
+
+   /* Inside a render pass, just write the timestamp multiple times so that
+    * the user gets the last one if we use GMEM. There isn't really much
+    * better we can do, and this seems to be what the blob does too.
+    */
+   struct tu_cs *cs = cmd->state.pass ? &cmd->draw_cs : &cmd->cs;
+
+   /* Stages that will already have been executed by the time the CP executes
+    * the REG_TO_MEM. DrawIndirect parameters are read by the CP, so the draw
+    * indirect stage counts as top-of-pipe too.
+    */
+   VkPipelineStageFlags top_of_pipe_flags =
+      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT |
+      VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+
+   if (pipelineStage & ~top_of_pipe_flags) {
+      /* Execute a WFI so that all commands complete. Note that CP_REG_TO_MEM
+       * does CP_WAIT_FOR_ME internally, which will wait for the WFI to
+       * complete.
+       *
+       * Stalling the CP like this is really unfortunate, but I don't think
+       * there's a better solution that allows all 48 bits of precision
+       * because CP_EVENT_WRITE doesn't support 64-bit timestamps.
+       */
+      tu_cs_emit_wfi(cs);
+   }
 
    tu_cs_emit_pkt7(cs, CP_REG_TO_MEM, 3);
    tu_cs_emit(cs, CP_REG_TO_MEM_0_REG(REG_A6XX_CP_ALWAYS_ON_COUNTER_LO) |
@@ -793,16 +857,39 @@ tu_CmdWriteTimestamp(VkCommandBuffer commandBuffer,
                   CP_REG_TO_MEM_0_64B);
    tu_cs_emit_qw(cs, query_result_iova(pool, query, 0));
 
+   /* Only flag availability once the entire renderpass is done, similar to
+    * the begin/end path.
+    */
+   cs = cmd->state.pass ? &cmd->draw_epilogue_cs : &cmd->cs;
+
    tu_cs_emit_pkt7(cs, CP_MEM_WRITE, 4);
    tu_cs_emit_qw(cs, query_available_iova(pool, query));
    tu_cs_emit_qw(cs, 0x1);
 
-   if (cmd->state.pass) {
-      /* TODO: to have useful in-renderpass timestamps:
-       * for sysmem path, we can just emit the timestamp in draw_cs,
-       * for gmem renderpass, we do something with accumulate,
-       * but I'm not sure that would follow the spec
-       */
-      tu_finishme("CmdWriteTimestam in renderpass not accurate");
-   }
+   /* From the spec for vkCmdWriteTimestamp:
+    *
+    *    If vkCmdWriteTimestamp is called while executing a render pass
+    *    instance that has multiview enabled, the timestamp uses N consecutive
+    *    query indices in the query pool (starting at query) where N is the
+    *    number of bits set in the view mask of the subpass the command is
+    *    executed in. The resulting query values are determined by an
+    *    implementation-dependent choice of one of the following behaviors:
+    *
+    *    -   The first query is a timestamp value and (if more than one bit is
+    *        set in the view mask) zero is written to the remaining queries.
+    *        If two timestamps are written in the same subpass, the sum of the
+    *        execution time of all views between those commands is the
+    *        difference between the first query written by each command.
+    *
+    *    -   All N queries are timestamp values. If two timestamps are written
+    *        in the same subpass, the sum of the execution time of all views
+    *        between those commands is the sum of the difference between
+    *        corresponding queries written by each command. The difference
+    *        between corresponding queries may be the execution time of a
+    *        single view.
+    *
+    * We execute all views in the same draw call, so we implement the first
+    * option, the same as regular queries.
+    */
+   handle_multiview_queries(cmd, pool, query);
 }

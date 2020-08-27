@@ -243,9 +243,9 @@ _vulkan_drivers = get_option('vulkan-drivers')
 if _vulkan_drivers.contains('auto')
   if system_has_kms_drm
     if host_machine.cpu_family().startswith('x86')
-      _vulkan_drivers = ['amd', 'intel']
+      _vulkan_drivers = ['amd', 'intel', 'swrast']
     elif ['arm', 'aarch64'].contains(host_machine.cpu_family())
-      _vulkan_drivers = []
+      _vulkan_drivers = ['swrast']
     else
       error('Unknown architecture @0@. Please pass -Dvulkan-drivers to set driver options. Patches gladly accepted to fix this.'.format(
             host_machine.cpu_family()))
@@ -262,8 +262,12 @@ endif
 with_intel_vk = _vulkan_drivers.contains('intel')
 with_amd_vk = _vulkan_drivers.contains('amd')
 with_freedreno_vk = _vulkan_drivers.contains('freedreno')
+with_swrast_vk = _vulkan_drivers.contains('swrast')
 with_any_vk = _vulkan_drivers.length() != 0
 
+if with_swrast_vk and not with_gallium_softpipe
+  error('swrast vulkan requires gallium swrast')
+endif
 if with_dri_swrast and (with_gallium_softpipe or with_gallium_swr)
   error('Only one swrast provider can be built')
 endif
@@ -790,23 +794,10 @@ if _opencl != 'disabled'
   dep_clc = dependency('libclc')
   with_gallium_opencl = true
   with_opencl_icd = _opencl == 'icd'
-
-  with_opencl_spirv = get_option('opencl-spirv')
-  if with_opencl_spirv
-    dep_spirv_tools = dependency('SPIRV-Tools', required : true, version : '>= 2018.0')
-    # LLVMSPIRVLib is available at https://github.com/KhronosGroup/SPIRV-LLVM-Translator
-    dep_llvmspirvlib = dependency('LLVMSPIRVLib', required : true, version : '>= 0.2.1')
-  else
-    dep_spirv_tools = null_dep
-    dep_llvmspirvlib = null_dep
-  endif
 else
   dep_clc = null_dep
-  dep_spirv_tools = null_dep
-  dep_llvmspirvlib = null_dep
   with_gallium_opencl = false
   with_opencl_icd = false
-  with_opencl_spirv = false
 endif
 
 gl_pkgconfig_c_flags = []
@@ -941,7 +932,7 @@ elif host_machine.system() == 'sunos'
   pre_args += '-D__EXTENSIONS__'
 elif host_machine.system() == 'windows'
   pre_args += [
-    '-D_WINDOWS', '-D_WIN32_WINNT=0x0601', '-DWINVER=0x0601',
+    '-D_WINDOWS', '-D_WIN32_WINNT=0x0A00', '-DWINVER=0x0A00',
     '-DPIPE_SUBSYSTEM_WINDOWS_USER',
     '-D_USE_MATH_DEFINES',  # XXX: scons doesn't use this for mingw
   ]
@@ -980,6 +971,10 @@ if cc.get_id() == 'msvc'
                '/wd4146',  # unary minus operator applied to unsigned type, result still unsigned
                '/wd4200',  # nonstandard extension used: zero-sized array in struct/union
                '/wd4624',  # destructor was implicitly defined as deleted [from LLVM]
+               '/wd4309',  # 'initializing': truncation of constant value
+               '/wd4838',  # conversion from 'int' to 'const char' requires a narrowing conversion
+               '/we4020',  # Error when passing the wrong number of parameters
+               '/we4024',  # Error when passing different type of parameter
               ]
     if cc.has_argument(a)
       c_args += a
@@ -1448,7 +1443,8 @@ if with_gallium_opencl
   ]
 endif
 
-if with_amd_vk or with_gallium_radeonsi
+with_opencl_spirv = _opencl != 'disabled' and get_option('opencl-spirv')
+if with_amd_vk or with_gallium_radeonsi or with_opencl_spirv
   _llvm_version = '>= 8.0.0'
 elif with_gallium_swr
   _llvm_version = '>= 6.0.0'
@@ -1509,6 +1505,7 @@ endif
 if with_llvm
   pre_args += '-DLLVM_AVAILABLE'
   pre_args += '-DMESA_LLVM_VERSION_STRING="@0@"'.format(dep_llvm.version())
+  pre_args += '-DLLVM_IS_SHARED=@0@'.format(_shared_llvm.to_int())
 
   # LLVM can be built without rtti, turning off rtti changes the ABI of C++
   # programs, so we need to build all C++ code in mesa without rtti as well to
@@ -1541,6 +1538,30 @@ elif with_gallium_opencl
   error('The OpenCL "Clover" state tracker requires LLVM, but LLVM is disabled.')
 endif
 
+if with_opencl_spirv
+  chosen_llvm_version_array = dep_llvm.version().split('.')
+  chosen_llvm_version_major = chosen_llvm_version_array[0].to_int()
+  chosen_llvm_version_minor = chosen_llvm_version_array[1].to_int()
+
+  # Require an SPIRV-LLVM-Translator version compatible with the chosen LLVM
+  # one.
+  _llvmspirvlib_version = [
+    # This first version check is still needed as maybe LLVM 8.0 was picked but
+    # we do not want to accept SPIRV-LLVM-Translator 8.0.0.1 as that version does
+    # not have the required API and those are only available starting from
+    # 8.0.1.3.
+    '>= 8.0.1.3',
+    '>= @0@.@1@'.format(chosen_llvm_version_major, chosen_llvm_version_minor),
+    '< @0@.@1@'.format(chosen_llvm_version_major, chosen_llvm_version_minor + 1) ]
+
+  dep_spirv_tools = dependency('SPIRV-Tools', required : true, version : '>= 2018.0')
+  # LLVMSPIRVLib is available at https://github.com/KhronosGroup/SPIRV-LLVM-Translator
+  dep_llvmspirvlib = dependency('LLVMSPIRVLib', required : true, version : _llvmspirvlib_version)
+else
+  dep_spirv_tools = null_dep
+  dep_llvmspirvlib = null_dep
+endif
+
 if (with_amd_vk or with_gallium_radeonsi or with_gallium_opencl or
     (with_gallium_r600 and with_llvm))
   dep_elf = dependency('libelf', required : false)
@@ -1553,7 +1574,7 @@ endif
 
 dep_glvnd = null_dep
 if with_glvnd
-  dep_glvnd = dependency('libglvnd', version : '>= 1.2.0')
+  dep_glvnd = dependency('libglvnd', version : '>= 1.3.2')
   pre_args += '-DUSE_LIBGLVND=1'
 endif
 
@@ -1645,7 +1666,7 @@ if with_osmesa != 'none'
   osmesa_bits = get_option('osmesa-bits')
   if osmesa_bits != '8'
     if with_dri or with_glx != 'disabled'
-      error('OSMesa bits must be 8 if building glx or dir based drivers')
+      error('OSMesa bits must be 8 if building glx or dri based drivers')
     endif
     osmesa_lib_name = osmesa_lib_name + osmesa_bits
     pre_args += [
@@ -1696,6 +1717,7 @@ dep_xcb_sync = null_dep
 dep_xcb_xfixes = null_dep
 dep_xshmfence = null_dep
 dep_xcb_xrandr = null_dep
+dep_xcb_shm = null_dep
 dep_xlib_xrandr = null_dep
 if with_platform_x11
   if with_glx == 'xlib' or with_glx == 'gallium-xlib'
@@ -1706,8 +1728,9 @@ if with_platform_x11
     dep_x11 = dependency('x11')
     dep_xext = dependency('xext')
     dep_xdamage = dependency('xdamage', version : '>= 1.1')
-    dep_xfixes = dependency('xfixes')
+    dep_xfixes = dependency('xfixes', version : '>= 2.0')
     dep_xcb_glx = dependency('xcb-glx', version : '>= 1.8.1')
+    dep_xcb_shm = dependency('xcb-shm')
   endif
   if (with_any_vk or with_glx == 'dri' or with_egl or
        (with_gallium_vdpau or with_gallium_xvmc or with_gallium_va or
@@ -1761,10 +1784,10 @@ endif
 _sensors = get_option('lmsensors')
 if _sensors == 'true'
   _sensors = 'enabled'
-  warning('sensors option "true" deprecated, please use "enabled" instead.')
+  warning('lmsensors option "true" deprecated, please use "enabled" instead.')
 elif _sensors == 'false'
   _sensors = 'disabled'
-  warning('sensors option "false" deprecated, please use "disabled" instead.')
+  warning('lmsensors option "false" deprecated, please use "disabled" instead.')
 endif
 if _sensors != 'disabled'
   dep_lmsensors = cc.find_library('sensors', required : _sensors == 'enabled')

@@ -29,10 +29,14 @@
 #define __PAN_TEXTURE_H
 
 #include <stdbool.h>
+#include "drm-uapi/drm_fourcc.h"
 #include "util/format/u_format.h"
 #include "compiler/shader_enums.h"
-#include "panfrost-job.h"
+#include "midgard_pack.h"
 #include "pan_bo.h"
+
+#define PAN_MODIFIER_COUNT 4
+extern uint64_t pan_best_modifiers[PAN_MODIFIER_COUNT];
 
 struct panfrost_slice {
         unsigned offset;
@@ -57,14 +61,14 @@ struct pan_image {
         /* Format and size */
         uint16_t width0, height0, depth0, array_size;
         enum pipe_format format;
-        enum mali_texture_type type;
+        enum mali_texture_dimension dim;
         unsigned first_level, last_level;
         unsigned first_layer, last_layer;
         unsigned nr_samples;
         struct panfrost_bo *bo;
         struct panfrost_slice *slices;
         unsigned cubemap_stride;
-        enum mali_texture_layout layout;
+        uint64_t modifier;
 };
 
 unsigned
@@ -81,14 +85,15 @@ panfrost_format_supports_afbc(enum pipe_format format);
 unsigned
 panfrost_afbc_header_size(unsigned width, unsigned height);
 
-/* mali_texture_descriptor */
+bool
+panfrost_afbc_can_ytr(enum pipe_format format);
 
 unsigned
 panfrost_estimate_texture_payload_size(
                 unsigned first_level, unsigned last_level,
                 unsigned first_layer, unsigned last_layer,
                 unsigned nr_samples,
-                enum mali_texture_type type, enum mali_texture_layout layout);
+                enum mali_texture_dimension dim, uint64_t modifier);
 
 void
 panfrost_new_texture(
@@ -96,8 +101,8 @@ panfrost_new_texture(
         uint16_t width, uint16_t height,
         uint16_t depth, uint16_t array_size,
         enum pipe_format format,
-        enum mali_texture_type type,
-        enum mali_texture_layout layout,
+        enum mali_texture_dimension dim,
+        uint64_t modifier,
         unsigned first_level, unsigned last_level,
         unsigned first_layer, unsigned last_layer,
         unsigned nr_samples,
@@ -108,12 +113,12 @@ panfrost_new_texture(
 
 void
 panfrost_new_texture_bifrost(
-        struct bifrost_texture_descriptor *descriptor,
+        struct mali_bifrost_texture_packed *out,
         uint16_t width, uint16_t height,
         uint16_t depth, uint16_t array_size,
         enum pipe_format format,
-        enum mali_texture_type type,
-        enum mali_texture_layout layout,
+        enum mali_texture_dimension dim,
+        uint64_t modifier,
         unsigned first_level, unsigned last_level,
         unsigned first_layer, unsigned last_layer,
         unsigned nr_samples,
@@ -153,17 +158,17 @@ panfrost_get_default_swizzle(unsigned components)
 {
         switch (components) {
         case 1:
-                return (MALI_CHANNEL_RED << 0) | (MALI_CHANNEL_ZERO << 3) |
-                        (MALI_CHANNEL_ZERO << 6) | (MALI_CHANNEL_ONE << 9);
+                return (MALI_CHANNEL_R << 0) | (MALI_CHANNEL_0 << 3) |
+                        (MALI_CHANNEL_0 << 6) | (MALI_CHANNEL_1 << 9);
         case 2:
-                return (MALI_CHANNEL_RED << 0) | (MALI_CHANNEL_GREEN << 3) |
-                        (MALI_CHANNEL_ZERO << 6) | (MALI_CHANNEL_ONE << 9);
+                return (MALI_CHANNEL_R << 0) | (MALI_CHANNEL_G << 3) |
+                        (MALI_CHANNEL_0 << 6) | (MALI_CHANNEL_1 << 9);
         case 3:
-                return (MALI_CHANNEL_RED << 0) | (MALI_CHANNEL_GREEN << 3) |
-                        (MALI_CHANNEL_BLUE << 6) | (MALI_CHANNEL_ONE << 9);
+                return (MALI_CHANNEL_R << 0) | (MALI_CHANNEL_G << 3) |
+                        (MALI_CHANNEL_B << 6) | (MALI_CHANNEL_1 << 9);
         case 4:
-                return (MALI_CHANNEL_RED << 0) | (MALI_CHANNEL_GREEN << 3) |
-                        (MALI_CHANNEL_BLUE << 6) | (MALI_CHANNEL_ALPHA << 9);
+                return (MALI_CHANNEL_R << 0) | (MALI_CHANNEL_G << 3) |
+                        (MALI_CHANNEL_B << 6) | (MALI_CHANNEL_A << 9);
         default:
                 unreachable("Invalid number of components");
         }
@@ -194,5 +199,11 @@ panfrost_load_midg(
                 mali_ptr coordinates, unsigned vertex_count,
                 struct pan_image *image,
                 unsigned loc);
+
+/* DRM modifier helper */
+
+#define drm_is_afbc(mod) \
+        ((mod >> 52) == (DRM_FORMAT_MOD_ARM_TYPE_AFBC | \
+                (DRM_FORMAT_MOD_VENDOR_ARM << 4)))
 
 #endif

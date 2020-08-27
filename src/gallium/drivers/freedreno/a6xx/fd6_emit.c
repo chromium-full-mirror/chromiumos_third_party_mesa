@@ -346,7 +346,7 @@ fd6_emit_textures(struct fd_pipe *pipe, struct fd_ringbuffer *ring,
 			OUT_RING(state, sampler->texsamp0);
 			OUT_RING(state, sampler->texsamp1);
 			OUT_RING(state, sampler->texsamp2 |
-				A6XX_TEX_SAMP_2_BCOLOR_OFFSET((i + bcolor_offset) * sizeof(struct bcolor_entry)));
+				A6XX_TEX_SAMP_2_BCOLOR(i + bcolor_offset));
 			OUT_RING(state, sampler->texsamp3);
 			needs_border |= sampler->needs_border;
 		}
@@ -1200,7 +1200,7 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 
 	WRITE(REG_A6XX_PC_UNKNOWN_9980, 0);
 
-	WRITE(REG_A6XX_PC_UNKNOWN_9B07, 0);
+	WRITE(REG_A6XX_PC_MULTIVIEW_CNTL, 0);
 
 	WRITE(REG_A6XX_SP_UNKNOWN_A81B, 0);
 
@@ -1230,7 +1230,7 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	OUT_PKT4(ring, REG_A6XX_VFD_MODE_CNTL, 1);
 	OUT_RING(ring, 0x00000000);   /* VFD_MODE_CNTL */
 
-	WRITE(REG_A6XX_VFD_UNKNOWN_A008, 0);
+	WRITE(REG_A6XX_VFD_MULTIVIEW_CNTL, 0);
 
 	OUT_PKT4(ring, REG_A6XX_PC_MODE_CNTL, 1);
 	OUT_RING(ring, 0x0000001f);   /* PC_MODE_CNTL */

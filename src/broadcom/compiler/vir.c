@@ -586,6 +586,7 @@ v3d_lower_nir(struct v3d_compile *c)
 
         NIR_PASS_V(c->s, nir_lower_tex, &tex_options);
         NIR_PASS_V(c->s, nir_lower_system_values);
+        NIR_PASS_V(c->s, nir_lower_compute_system_values, NULL);
 
         NIR_PASS_V(c->s, nir_lower_vars_to_scratch,
                    nir_var_function_temp,
@@ -821,8 +822,11 @@ v3d_nir_lower_vs_early(struct v3d_compile *c)
         NIR_PASS_V(c->s, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
                    type_size_vec4,
                    (nir_lower_io_options)0);
-        /* clean up nir_lower_io's deref_var remains */
+        /* clean up nir_lower_io's deref_var remains and do a constant folding pass
+         * on the code it generated.
+         */
         NIR_PASS_V(c->s, nir_opt_dce);
+        NIR_PASS_V(c->s, nir_opt_constant_folding);
 }
 
 static void
@@ -1146,6 +1150,23 @@ v3d_attempt_compile(struct v3d_compile *c)
         v3d_nir_to_vir(c);
 }
 
+uint32_t
+v3d_prog_data_size(gl_shader_stage stage)
+{
+        static const int prog_data_size[] = {
+                [MESA_SHADER_VERTEX] = sizeof(struct v3d_vs_prog_data),
+                [MESA_SHADER_GEOMETRY] = sizeof(struct v3d_gs_prog_data),
+                [MESA_SHADER_FRAGMENT] = sizeof(struct v3d_fs_prog_data),
+                [MESA_SHADER_COMPUTE] = sizeof(struct v3d_compute_prog_data),
+        };
+
+        assert(stage >= 0 &&
+               stage < ARRAY_SIZE(prog_data_size) &&
+               prog_data_size[stage]);
+
+        return prog_data_size[stage];
+}
+
 uint64_t *v3d_compile(const struct v3d_compiler *compiler,
                       struct v3d_key *key,
                       struct v3d_prog_data **out_prog_data,
@@ -1189,18 +1210,7 @@ uint64_t *v3d_compile(const struct v3d_compiler *compiler,
 
         struct v3d_prog_data *prog_data;
 
-        static const int prog_data_size[] = {
-                [MESA_SHADER_VERTEX] = sizeof(struct v3d_vs_prog_data),
-                [MESA_SHADER_GEOMETRY] = sizeof(struct v3d_gs_prog_data),
-                [MESA_SHADER_FRAGMENT] = sizeof(struct v3d_fs_prog_data),
-                [MESA_SHADER_COMPUTE] = sizeof(struct v3d_compute_prog_data),
-        };
-
-        assert(c->s->info.stage >= 0 &&
-               c->s->info.stage < ARRAY_SIZE(prog_data_size) &&
-               prog_data_size[c->s->info.stage]);
-
-        prog_data = rzalloc_size(NULL, prog_data_size[c->s->info.stage]);
+        prog_data = rzalloc_size(NULL, v3d_prog_data_size(c->s->info.stage));
 
         v3d_set_prog_data(c, prog_data);
 

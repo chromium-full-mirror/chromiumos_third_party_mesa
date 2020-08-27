@@ -37,6 +37,8 @@
 #include "aco_opcodes.h"
 #include "aco_util.h"
 
+#include "vulkan/radv_shader.h"
+
 struct radv_nir_compiler_options;
 struct radv_shader_args;
 struct radv_shader_info;
@@ -46,9 +48,10 @@ namespace aco {
 extern uint64_t debug_flags;
 
 enum {
-   DEBUG_VALIDATE = 0x1,
+   DEBUG_VALIDATE_IR = 0x1,
    DEBUG_VALIDATE_RA = 0x2,
    DEBUG_PERFWARN = 0x4,
+   DEBUG_FORCE_WAITCNT = 0x8,
 };
 
 /**
@@ -377,6 +380,20 @@ struct PhysReg {
 static constexpr PhysReg m0{124};
 static constexpr PhysReg vcc{106};
 static constexpr PhysReg vcc_hi{107};
+static constexpr PhysReg tba{108}; /* GFX6-GFX8 */
+static constexpr PhysReg tma{110}; /* GFX6-GFX8 */
+static constexpr PhysReg ttmp0{112};
+static constexpr PhysReg ttmp1{113};
+static constexpr PhysReg ttmp2{114};
+static constexpr PhysReg ttmp3{115};
+static constexpr PhysReg ttmp4{116};
+static constexpr PhysReg ttmp5{117};
+static constexpr PhysReg ttmp6{118};
+static constexpr PhysReg ttmp7{119};
+static constexpr PhysReg ttmp8{120};
+static constexpr PhysReg ttmp9{121};
+static constexpr PhysReg ttmp10{122};
+static constexpr PhysReg ttmp11{123};
 static constexpr PhysReg sgpr_null{125}; /* GFX10+ */
 static constexpr PhysReg exec{126};
 static constexpr PhysReg exec_lo{126};
@@ -1580,6 +1597,13 @@ public:
    bool collect_statistics = false;
    uint32_t statistics[num_statistics];
 
+   struct {
+      void (*func)(void *private_data,
+                   enum radv_compiler_debug_level level,
+                   const char *message);
+      void *private_data;
+   } debug;
+
    uint32_t allocateId()
    {
       assert(allocationID <= 16777215);
@@ -1641,6 +1665,9 @@ void select_program(Program *program,
 void select_gs_copy_shader(Program *program, struct nir_shader *gs_shader,
                            ac_shader_config* config,
                            struct radv_shader_args *args);
+void select_trap_handler_shader(Program *program, struct nir_shader *shader,
+                                ac_shader_config* config,
+                                struct radv_shader_args *args);
 
 void lower_wqm(Program* program, live& live_vars,
                const struct radv_nir_compiler_options *options);
@@ -1665,10 +1692,10 @@ void insert_NOPs(Program* program);
 unsigned emit_program(Program* program, std::vector<uint32_t>& code);
 void print_asm(Program *program, std::vector<uint32_t>& binary,
                unsigned exec_size, std::ostream& out);
-bool validate(Program* program, FILE *output);
-bool validate_ra(Program* program, const struct radv_nir_compiler_options *options, FILE *output);
+bool validate_ir(Program* program);
+bool validate_ra(Program* program, const struct radv_nir_compiler_options *options);
 #ifndef NDEBUG
-void perfwarn(bool cond, const char *msg, Instruction *instr=NULL);
+void perfwarn(Program *program, bool cond, const char *msg, Instruction *instr=NULL);
 #else
 #define perfwarn(program, cond, msg, ...) do {} while(0)
 #endif
@@ -1679,6 +1706,14 @@ void collect_postasm_stats(Program *program, const std::vector<uint32_t>& code);
 
 void aco_print_instr(const Instruction *instr, FILE *output);
 void aco_print_program(const Program *program, FILE *output);
+
+void _aco_perfwarn(Program *program, const char *file, unsigned line,
+                   const char *fmt, ...);
+void _aco_err(Program *program, const char *file, unsigned line,
+              const char *fmt, ...);
+
+#define aco_perfwarn(program, ...) _aco_perfwarn(program, __FILE__, __LINE__, __VA_ARGS__)
+#define aco_err(program, ...) _aco_err(program, __FILE__, __LINE__, __VA_ARGS__)
 
 /* utilities for dealing with register demand */
 RegisterDemand get_live_changes(aco_ptr<Instruction>& instr);

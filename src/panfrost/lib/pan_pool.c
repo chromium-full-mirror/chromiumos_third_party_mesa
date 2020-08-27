@@ -27,18 +27,42 @@
 #include "pan_bo.h"
 #include "pan_pool.h"
 
-/* TODO: What does this actually have to be? */
-#define ALIGNMENT 128
-
 /* Transient command stream pooling: command stream uploads try to simply copy
  * into whereever we left off. If there isn't space, we allocate a new entry
  * into the pool and copy there */
 
+static struct panfrost_bo *
+panfrost_pool_alloc_backing(struct pan_pool *pool, size_t bo_sz)
+{
+        /* We don't know what the BO will be used for, so let's flag it
+         * RW and attach it to both the fragment and vertex/tiler jobs.
+         * TODO: if we want fine grained BO assignment we should pass
+         * flags to this function and keep the read/write,
+         * fragment/vertex+tiler pools separate.
+         */
+        struct panfrost_bo *bo = panfrost_bo_create(pool->dev, bo_sz,
+                        pool->create_flags);
+
+        uintptr_t flags = PAN_BO_ACCESS_PRIVATE |
+                PAN_BO_ACCESS_RW |
+                PAN_BO_ACCESS_VERTEX_TILER |
+                PAN_BO_ACCESS_FRAGMENT;
+
+        _mesa_hash_table_insert(pool->bos, bo, (void *) flags);
+
+        pool->transient_bo = bo;
+        pool->transient_offset = 0;
+
+        return bo;
+}
+
 struct pan_pool
-panfrost_create_pool(void *memctx, struct panfrost_device *dev)
+panfrost_create_pool(void *memctx, struct panfrost_device *dev,
+                unsigned create_flags, bool prealloc)
 {
         struct pan_pool pool = {
                 .dev = dev,
+                .create_flags = create_flags,
                 .transient_offset = 0,
                 .transient_bo = NULL
         };
@@ -46,55 +70,29 @@ panfrost_create_pool(void *memctx, struct panfrost_device *dev)
         pool.bos = _mesa_hash_table_create(memctx, _mesa_hash_pointer,
                         _mesa_key_pointer_equal);
 
+        if (prealloc)
+                panfrost_pool_alloc_backing(&pool, TRANSIENT_SLAB_SIZE);
 
         return pool;
 }
 
 struct panfrost_transfer
-panfrost_pool_alloc(struct pan_pool *pool, size_t sz)
+panfrost_pool_alloc_aligned(struct pan_pool *pool, size_t sz, unsigned alignment)
 {
-        /* Pad the size */
-        sz = ALIGN_POT(sz, ALIGNMENT);
+        assert(alignment == util_next_power_of_two(alignment));
 
         /* Find or create a suitable BO */
-        struct panfrost_bo *bo = NULL;
+        struct panfrost_bo *bo = pool->transient_bo;
+        unsigned offset = ALIGN_POT(pool->transient_offset, alignment);
 
-        unsigned offset = 0;
-
-        bool fits_in_current = (pool->transient_offset + sz) < TRANSIENT_SLAB_SIZE;
-
-        if (likely(pool->transient_bo && fits_in_current)) {
-                /* We can reuse the current BO, so get it */
-                bo = pool->transient_bo;
-
-                /* Use the specified offset */
-                offset = pool->transient_offset;
-                pool->transient_offset = offset + sz;
-        } else {
-                size_t bo_sz = sz < TRANSIENT_SLAB_SIZE ?
-                               TRANSIENT_SLAB_SIZE : ALIGN_POT(sz, 4096);
-
-                /* We can't reuse the current BO, but we can create a new one.
-                 * We don't know what the BO will be used for, so let's flag it
-                 * RW and attach it to both the fragment and vertex/tiler jobs.
-                 * TODO: if we want fine grained BO assignment we should pass
-                 * flags to this function and keep the read/write,
-                 * fragment/vertex+tiler pools separate.
-                 */
-                bo = panfrost_bo_create(pool->dev, bo_sz, 0);
-
-                uintptr_t flags = PAN_BO_ACCESS_PRIVATE |
-                                  PAN_BO_ACCESS_RW |
-                                  PAN_BO_ACCESS_VERTEX_TILER |
-                                  PAN_BO_ACCESS_FRAGMENT;
-
-                _mesa_hash_table_insert(pool->bos, bo, (void *) flags);
-
-                if (sz < TRANSIENT_SLAB_SIZE) {
-                        pool->transient_bo = bo;
-                        pool->transient_offset = offset + sz;
-                }
+        /* If we don't fit, allocate a new backing */
+        if (unlikely(bo == NULL || (offset + sz) >= TRANSIENT_SLAB_SIZE)) {
+                bo = panfrost_pool_alloc_backing(pool,
+                                ALIGN_POT(MAX2(TRANSIENT_SLAB_SIZE, sz), 4096));
+                offset = 0;
         }
+
+        pool->transient_offset = offset + sz;
 
         struct panfrost_transfer ret = {
                 .cpu = bo->cpu + offset,
@@ -102,13 +100,18 @@ panfrost_pool_alloc(struct pan_pool *pool, size_t sz)
         };
 
         return ret;
-
 }
 
 mali_ptr
 panfrost_pool_upload(struct pan_pool *pool, const void *data, size_t sz)
 {
-        struct panfrost_transfer transfer = panfrost_pool_alloc(pool, sz);
+        return panfrost_pool_upload_aligned(pool, data, sz, sz);
+}
+
+mali_ptr
+panfrost_pool_upload_aligned(struct pan_pool *pool, const void *data, size_t sz, unsigned alignment)
+{
+        struct panfrost_transfer transfer = panfrost_pool_alloc_aligned(pool, sz, alignment);
         memcpy(transfer.cpu, data, sz);
         return transfer.gpu;
 }

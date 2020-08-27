@@ -36,6 +36,7 @@
 #include "radv_shader.h"
 
 #define TRACE_BO_SIZE 4096
+#define TMA_BO_SIZE 4096
 
 #define COLOR_RESET	"\033[0m"
 #define COLOR_RED	"\033[31m"
@@ -272,6 +273,12 @@ static void si_add_split_disasm(const char *disasm,
 	while ((next = strchr(disasm, '\n'))) {
 		struct radv_shader_inst *inst = &instructions[*num];
 		unsigned len = next - disasm;
+
+		if (!memchr(disasm, ';', len)) {
+			/* Ignore everything that is not an instruction. */
+			disasm = next + 1;
+			continue;
+		}
 
 		assert(len < ARRAY_SIZE(inst->text));
 		memcpy(inst->text, disasm, len);
@@ -671,4 +678,199 @@ radv_print_spirv(const char *data, uint32_t size, FILE *fp)
 fail:
 	close(fd);
 	unlink(path);
+}
+
+bool
+radv_trap_handler_init(struct radv_device *device)
+{
+	struct radeon_winsys *ws = device->ws;
+
+	/* Create the trap handler shader and upload it like other shaders. */
+	device->trap_handler_shader = radv_create_trap_handler_shader(device);
+	if (!device->trap_handler_shader) {
+		fprintf(stderr, "radv: failed to create the trap handler shader.\n");
+		return false;
+	}
+
+	device->tma_bo = ws->buffer_create(ws, TMA_BO_SIZE, 256,
+					   RADEON_DOMAIN_VRAM,
+					   RADEON_FLAG_CPU_ACCESS |
+					   RADEON_FLAG_NO_INTERPROCESS_SHARING |
+					   RADEON_FLAG_ZERO_VRAM |
+					   RADEON_FLAG_32BIT,
+					   RADV_BO_PRIORITY_SCRATCH);
+	if (!device->tma_bo)
+		return false;
+
+	device->tma_ptr = ws->buffer_map(device->tma_bo);
+	if (!device->tma_ptr)
+		return false;
+
+	/* Upload a buffer descriptor to store various info from the trap. */
+	uint64_t tma_va = radv_buffer_get_va(device->tma_bo) + 16;
+	uint32_t desc[4];
+
+	desc[0] = tma_va;
+	desc[1] = S_008F04_BASE_ADDRESS_HI(tma_va >> 32);
+	desc[2] = TMA_BO_SIZE;
+	desc[3] = S_008F0C_DST_SEL_X(V_008F0C_SQ_SEL_X) |
+		  S_008F0C_DST_SEL_Y(V_008F0C_SQ_SEL_Y) |
+		  S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) |
+		  S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W) |
+		  S_008F0C_DATA_FORMAT(V_008F0C_BUF_DATA_FORMAT_32);
+
+	memcpy(device->tma_ptr, desc, sizeof(desc));
+
+	return true;
+}
+
+void
+radv_trap_handler_finish(struct radv_device *device)
+{
+	struct radeon_winsys *ws = device->ws;
+
+	if (unlikely(device->trap_handler_shader))
+		radv_shader_variant_destroy(device, device->trap_handler_shader);
+
+	if (unlikely(device->tma_bo))
+		ws->buffer_destroy(device->tma_bo);
+}
+
+static struct radv_shader_variant *
+radv_get_faulty_shader(struct radv_device *device, uint64_t faulty_pc)
+{
+	struct radv_shader_variant *shader = NULL;
+
+	mtx_lock(&device->shader_slab_mutex);
+	list_for_each_entry(struct radv_shader_slab, slab, &device->shader_slabs, slabs) {
+		list_for_each_entry(struct radv_shader_variant, s, &slab->shaders, slab_list) {
+			uint64_t offset = align_u64(s->bo_offset + s->code_size, 256);
+			uint64_t va = radv_buffer_get_va(s->bo);
+
+			if (faulty_pc >= va + s->bo_offset && faulty_pc < va + offset) {
+				mtx_unlock(&device->shader_slab_mutex);
+				return s;
+			}
+		}
+	}
+	mtx_unlock(&device->shader_slab_mutex);
+
+	return shader;
+}
+
+static void
+radv_dump_faulty_shader(struct radv_device *device, uint64_t faulty_pc)
+{
+	struct radv_shader_variant *shader;
+	uint64_t start_addr, end_addr;
+	uint32_t instr_offset;
+
+	shader = radv_get_faulty_shader(device, faulty_pc);
+	if (!shader)
+		return;
+
+	start_addr = radv_buffer_get_va(shader->bo) + shader->bo_offset;
+	end_addr = start_addr + shader->code_size;
+	instr_offset = faulty_pc - start_addr;
+
+	fprintf(stderr, "Faulty shader found "
+			"VA=[0x%"PRIx64"-0x%"PRIx64"], instr_offset=%d\n",
+		start_addr, end_addr, instr_offset);
+
+	/* Get the list of instructions.
+	 * Buffer size / 4 is the upper bound of the instruction count.
+	 */
+	unsigned num_inst = 0;
+	struct radv_shader_inst *instructions =
+		calloc(shader->code_size / 4, sizeof(struct radv_shader_inst));
+
+	/* Split the disassembly string into instructions. */
+	si_add_split_disasm(shader->disasm_string, start_addr, &num_inst, instructions);
+
+	/* Print instructions with annotations. */
+	for (unsigned i = 0; i < num_inst; i++) {
+		struct radv_shader_inst *inst = &instructions[i];
+
+		if (start_addr + inst->offset == faulty_pc) {
+			fprintf(stderr, "\n!!! Faulty instruction below !!!\n");
+			fprintf(stderr, "%s\n", inst->text);
+			fprintf(stderr, "\n");
+		} else {
+			fprintf(stderr, "%s\n", inst->text);
+		}
+	}
+
+	free(instructions);
+}
+
+struct radv_sq_hw_reg {
+	uint32_t status;
+	uint32_t trap_sts;
+	uint32_t hw_id;
+	uint32_t ib_sts;
+};
+
+static void
+radv_dump_sq_hw_regs(struct radv_device *device)
+{
+	struct radv_sq_hw_reg *regs = (struct radv_sq_hw_reg *)&device->tma_ptr[6];
+
+	fprintf(stderr, "\nHardware registers:\n");
+	ac_dump_reg(stderr, device->physical_device->rad_info.chip_class,
+		    R_000002_SQ_HW_REG_STATUS, regs->status, ~0);
+	ac_dump_reg(stderr, device->physical_device->rad_info.chip_class,
+		    R_000003_SQ_HW_REG_TRAP_STS, regs->trap_sts, ~0);
+	ac_dump_reg(stderr, device->physical_device->rad_info.chip_class,
+		    R_000004_SQ_HW_REG_HW_ID, regs->hw_id, ~0);
+	ac_dump_reg(stderr, device->physical_device->rad_info.chip_class,
+		    R_000007_SQ_HW_REG_IB_STS, regs->ib_sts, ~0);
+	fprintf(stderr, "\n\n");
+}
+
+void
+radv_check_trap_handler(struct radv_queue *queue)
+{
+	enum ring_type ring = radv_queue_family_to_ring(queue->queue_family_index);
+	struct radv_device *device = queue->device;
+	struct radeon_winsys *ws = device->ws;
+
+	/* Wait for the context to be idle in a finite time. */
+	ws->ctx_wait_idle(queue->hw_ctx, ring, queue->queue_idx);
+
+	/* Try to detect if the trap handler has been reached by the hw by
+	 * looking at ttmp0 which should be non-zero if a shader exception
+	 * happened.
+	 */
+	if (!device->tma_ptr[4])
+		return;
+
+#if 0
+	fprintf(stderr, "tma_ptr:\n");
+	for (unsigned i = 0; i < 10; i++)
+		fprintf(stderr, "tma_ptr[%d]=0x%x\n", i, device->tma_ptr[i]);
+#endif
+
+	radv_dump_sq_hw_regs(device);
+
+	uint32_t ttmp0 = device->tma_ptr[4];
+	uint32_t ttmp1 = device->tma_ptr[5];
+
+	/* According to the ISA docs, 3.10 Trap and Exception Registers:
+	 *
+	 * "{ttmp1, ttmp0} = {3'h0, pc_rewind[3:0], HT[0], trapID[7:0], PC[47:0]}"
+	 *
+	 * "When the trap handler is entered, the PC of the faulting
+	 *  instruction is: (PC - PC_rewind * 4)."
+	 * */
+	uint8_t trap_id = (ttmp1 >> 16) & 0xff;
+	uint8_t ht = (ttmp1 >> 24) & 0x1;
+	uint8_t pc_rewind = (ttmp1 >> 25) & 0xf;
+	uint64_t pc = (ttmp0 | ((ttmp1 & 0x0000ffffull) << 32)) - (pc_rewind * 4);
+
+	fprintf(stderr, "PC=0x%"PRIx64", trapID=%d, HT=%d, PC_rewind=%d\n",
+		pc, trap_id, ht, pc_rewind);
+
+	radv_dump_faulty_shader(device, pc);
+
+	abort();
 }

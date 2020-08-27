@@ -3050,7 +3050,7 @@ struct gl_shader_program
       GLint VerticesIn;
 
       bool UsesEndPrimitive;
-      bool UsesStreams;
+      unsigned ActiveStreamMask;
    } Geom;
 
    /**
@@ -4438,6 +4438,7 @@ struct gl_extensions
    GLboolean NV_alpha_to_coverage_dither_control;
    GLboolean NV_compute_shader_derivatives;
    GLboolean NV_conditional_render;
+   GLboolean NV_copy_depth_to_color;
    GLboolean NV_copy_image;
    GLboolean NV_fill_rectangle;
    GLboolean NV_fog_distance;

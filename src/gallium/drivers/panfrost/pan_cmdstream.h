@@ -28,15 +28,12 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
 
-#include "panfrost-job.h"
+#include "midgard_pack.h"
 
 #include "pan_job.h"
 
-void panfrost_sampler_desc_init(const struct pipe_sampler_state *cso,
-                                struct mali_sampler_descriptor *hw);
-
-void panfrost_sampler_desc_init_bifrost(const struct pipe_sampler_state *cso,
-                                        struct bifrost_sampler_descriptor *hw);
+void panfrost_sampler_desc_init(const struct pipe_sampler_state *cso, struct mali_midgard_sampler_packed *hw);
+void panfrost_sampler_desc_init_bifrost(const struct pipe_sampler_state *cso, struct mali_bifrost_sampler_packed *hw);
 
 void
 panfrost_vt_init(struct panfrost_context *ctx,
@@ -54,10 +51,11 @@ panfrost_vt_set_draw_info(struct panfrost_context *ctx,
                           unsigned *vertex_count,
                           unsigned *padded_count);
 
-void
-panfrost_emit_shader_meta(struct panfrost_batch *batch,
-                          enum pipe_shader_type st,
-                          struct mali_vertex_tiler_postfix *postfix);
+mali_ptr
+panfrost_emit_compute_shader_meta(struct panfrost_batch *batch, enum pipe_shader_type stage);
+
+mali_ptr
+panfrost_emit_frag_shader_meta(struct panfrost_batch *batch);
 
 void
 panfrost_emit_viewport(struct panfrost_batch *batch,
@@ -82,10 +80,6 @@ void
 panfrost_emit_sampler_descriptors(struct panfrost_batch *batch,
                                   enum pipe_shader_type stage,
                                   struct mali_vertex_tiler_postfix *postfix);
-
-void
-panfrost_emit_vertex_attr_meta(struct panfrost_batch *batch,
-                               struct mali_vertex_tiler_postfix *vertex_postfix);
 
 void
 panfrost_emit_vertex_data(struct panfrost_batch *batch,
@@ -113,5 +107,21 @@ panfrost_vt_update_primitive_size(struct panfrost_context *ctx,
 
 mali_ptr
 panfrost_emit_sample_locations(struct panfrost_batch *batch);
+
+static inline unsigned
+panfrost_translate_compare_func(enum pipe_compare_func in)
+{
+        switch (in) {
+        case PIPE_FUNC_NEVER: return MALI_FUNC_NEVER;
+        case PIPE_FUNC_LESS: return MALI_FUNC_LESS;
+        case PIPE_FUNC_EQUAL: return MALI_FUNC_EQUAL;
+        case PIPE_FUNC_LEQUAL: return MALI_FUNC_LEQUAL;
+        case PIPE_FUNC_GREATER: return MALI_FUNC_GREATER;
+        case PIPE_FUNC_NOTEQUAL: return MALI_FUNC_NOT_EQUAL;
+        case PIPE_FUNC_GEQUAL: return MALI_FUNC_GEQUAL;
+        case PIPE_FUNC_ALWAYS: return MALI_FUNC_ALWAYS;
+        default: unreachable("Invalid func");
+        }
+}
 
 #endif /* __PAN_CMDSTREAM_H__ */

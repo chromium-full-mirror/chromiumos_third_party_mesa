@@ -118,6 +118,9 @@ int glsl_get_cl_size(const struct glsl_type *type);
 
 int glsl_get_cl_alignment(const struct glsl_type *type);
 
+void glsl_get_cl_type_size_align(const struct glsl_type *type,
+                                 unsigned *size, unsigned *align);
+
 unsigned glsl_get_explicit_size(const struct glsl_type *type, bool align_to_stride);
 
 static inline unsigned
@@ -201,6 +204,7 @@ const struct glsl_type *glsl_sampler_type(enum glsl_sampler_dim dim,
                                           bool is_shadow, bool is_array,
                                           enum glsl_base_type base_type);
 const struct glsl_type *glsl_bare_sampler_type();
+const struct glsl_type *glsl_bare_shadow_sampler_type();
 const struct glsl_type *glsl_image_type(enum glsl_sampler_dim dim,
                                         bool is_array,
                                         enum glsl_base_type base_type);

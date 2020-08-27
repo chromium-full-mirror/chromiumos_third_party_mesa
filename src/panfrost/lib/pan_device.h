@@ -37,7 +37,7 @@
 #include "util/list.h"
 #include "util/sparse_array.h"
 
-#include <panfrost-job.h>
+#include <midgard_pack.h>
 
 /* Driver limits */
 #define PAN_MAX_CONST_BUFFERS 16
@@ -45,7 +45,7 @@
 /* Transient slab size. This is a balance between fragmentation against cache
  * locality and ease of bookkeeping */
 
-#define TRANSIENT_SLAB_PAGES (32) /* 128kb */
+#define TRANSIENT_SLAB_PAGES (16) /* 64kb */
 #define TRANSIENT_SLAB_SIZE (4096 * TRANSIENT_SLAB_PAGES)
 
 /* Maximum number of transient slabs so we don't need dynamic arrays. Most
@@ -127,6 +127,14 @@ struct panfrost_device {
         } bo_cache;
 
         struct pan_blit_shaders blit_shaders;
+
+        /* Tiler heap shared across all tiler jobs, allocated against the
+         * device since there's only a single tiler. Since this is invisible to
+         * the CPU, it's okay for multiple contexts to reference it
+         * simultaneously; by keeping on the device struct, we eliminate a
+         * costly per-context allocation. */
+
+        struct panfrost_bo *tiler_heap;
 };
 
 void

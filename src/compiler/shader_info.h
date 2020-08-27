@@ -193,6 +193,11 @@ typedef struct shader_info {
    /* Whether flrp has been lowered. */
    bool flrp_lowered:1;
 
+   /* Whether nir_lower_io has been called to lower derefs.
+    * nir_variables for inputs and outputs might not be present in the IR.
+    */
+   bool io_lowered:1;
+
    /* Whether the shader writes memory, including transform feedback. */
    bool writes_memory:1;
 
@@ -234,8 +239,8 @@ typedef struct shader_info {
          /** Whether or not this shader uses EndPrimitive */
          bool uses_end_primitive:1;
 
-         /** Whether or not this shader uses non-zero streams */
-         bool uses_streams:1;
+         /** The streams used in this shaders (max. 4) */
+         uint8_t active_stream_mask:4;
       } gs;
 
       struct {
@@ -302,6 +307,17 @@ typedef struct shader_info {
 
          /** gl_FragDepth layout for ARB_conservative_depth. */
          enum gl_frag_depth_layout depth_layout:3;
+
+         /**
+          * Interpolation qualifiers for drivers that lowers color inputs
+          * to system values.
+          */
+         unsigned color0_interp:3; /* glsl_interp_mode */
+         bool color0_sample:1;
+         bool color0_centroid:1;
+         unsigned color1_interp:3; /* glsl_interp_mode */
+         bool color1_sample:1;
+         bool color1_centroid:1;
       } fs;
 
       struct {

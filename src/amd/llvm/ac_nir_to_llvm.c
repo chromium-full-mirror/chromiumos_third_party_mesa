@@ -771,7 +771,7 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
 	case nir_op_feq32:
 		result = emit_float_cmp(&ctx->ac, LLVMRealOEQ, src[0], src[1]);
 		break;
-	case nir_op_fne32:
+	case nir_op_fneu32:
 		result = emit_float_cmp(&ctx->ac, LLVMRealUNE, src[0], src[1]);
 		break;
 	case nir_op_flt32:
@@ -1171,57 +1171,6 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
 			in[chan] = ac_llvm_extract_elem(&ctx->ac, src[0], chan);
 		result = ac_build_intrinsic(&ctx->ac,  "llvm.amdgcn.cubeid",
 						ctx->ac.f32, in, 3, AC_FUNC_ATTR_READNONE);
-		break;
-	}
-
-	case nir_op_fmin3:
-		result = emit_intrin_2f_param(&ctx->ac, "llvm.minnum",
-						ac_to_float_type(&ctx->ac, def_type), src[0], src[1]);
-		result = emit_intrin_2f_param(&ctx->ac, "llvm.minnum",
-						ac_to_float_type(&ctx->ac, def_type), result, src[2]);
-		break;
-	case nir_op_umin3:
-		result = ac_build_umin(&ctx->ac, src[0], src[1]);
-		result = ac_build_umin(&ctx->ac, result, src[2]);
-		break;
-	case nir_op_imin3:
-		result = ac_build_imin(&ctx->ac, src[0], src[1]);
-		result = ac_build_imin(&ctx->ac, result, src[2]);
-		break;
-	case nir_op_fmax3:
-		result = emit_intrin_2f_param(&ctx->ac, "llvm.maxnum",
-						ac_to_float_type(&ctx->ac, def_type), src[0], src[1]);
-		result = emit_intrin_2f_param(&ctx->ac, "llvm.maxnum",
-						ac_to_float_type(&ctx->ac, def_type), result, src[2]);
-		break;
-	case nir_op_umax3:
-		result = ac_build_umax(&ctx->ac, src[0], src[1]);
-		result = ac_build_umax(&ctx->ac, result, src[2]);
-		break;
-	case nir_op_imax3:
-		result = ac_build_imax(&ctx->ac, src[0], src[1]);
-		result = ac_build_imax(&ctx->ac, result, src[2]);
-		break;
-	case nir_op_fmed3: {
-		src[0] = ac_to_float(&ctx->ac, src[0]);
-		src[1] = ac_to_float(&ctx->ac, src[1]);
-		src[2] = ac_to_float(&ctx->ac, src[2]);
-		result = ac_build_fmed3(&ctx->ac, src[0], src[1], src[2],
-					instr->dest.dest.ssa.bit_size);
-		break;
-	}
-	case nir_op_imed3: {
-		LLVMValueRef tmp1 = ac_build_imin(&ctx->ac, src[0], src[1]);
-		LLVMValueRef tmp2 = ac_build_imax(&ctx->ac, src[0], src[1]);
-		tmp2 = ac_build_imin(&ctx->ac, tmp2, src[2]);
-		result = ac_build_imax(&ctx->ac, tmp1, tmp2);
-		break;
-	}
-	case nir_op_umed3: {
-		LLVMValueRef tmp1 = ac_build_umin(&ctx->ac, src[0], src[1]);
-		LLVMValueRef tmp2 = ac_build_umax(&ctx->ac, src[0], src[1]);
-		tmp2 = ac_build_umin(&ctx->ac, tmp2, src[2]);
-		result = ac_build_umax(&ctx->ac, tmp1, tmp2);
 		break;
 	}
 
@@ -3144,6 +3093,7 @@ static LLVMValueRef visit_image_size(struct ac_nir_context *ctx,
 		args.dmask = 0xf;
 		args.resource = get_image_descriptor(ctx, instr, dynamic_index, AC_DESC_IMAGE, false);
 		args.opcode = ac_image_get_resinfo;
+		assert(nir_src_as_uint(instr->src[1]) == 0);
 		args.lod = ctx->ac.i32_0;
 		args.attributes = AC_FUNC_ATTR_READNONE;
 

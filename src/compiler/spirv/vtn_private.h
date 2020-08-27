@@ -184,6 +184,8 @@ struct vtn_if {
 struct vtn_case {
    struct vtn_cf_node node;
 
+   struct vtn_block *block;
+
    enum vtn_branch_type type;
    struct list_head body;
 
@@ -240,6 +242,9 @@ struct vtn_block {
 
    /** Every block ends in a nop intrinsic so that we can find it again */
    nir_intrinsic_instr *end_nop;
+
+   /** attached nir_block */
+   struct nir_block *block;
 };
 
 struct vtn_function {

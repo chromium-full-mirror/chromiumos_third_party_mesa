@@ -222,7 +222,7 @@ x86_build:
   extends:
     - .use-x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_build "2020-07-28-x86-2"
+    FDO_DISTRIBUTION_TAG: &x86_build "2020-08-08-glvnd"
 
 .use-x86_build:
   variables:
@@ -294,7 +294,7 @@ x86_test-base:
 x86_test-gl:
   extends: .use-x86_test-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_test-gl "2020-07-28-x86-2"
+    FDO_DISTRIBUTION_TAG: &x86_test-gl "2020-08-14-xcb-shm"
 
 # Debian 10 based x86 test image for VK
 x86_test-vk:
@@ -355,7 +355,7 @@ arm64_test:
   extends:
     - .use-arm_test-base
   variables:
-    FDO_DISTRIBUTION_TAG: &arm64_test "2020-08-04-nfs-2"
+    FDO_DISTRIBUTION_TAG: &arm64_test "2020-08-18"
 
 .use-arm64_test:
   variables:
@@ -550,6 +550,7 @@ meson-gallium:
       -D gallium-nine=true
       -D gallium-opencl=disabled
     GALLIUM_DRIVERS: "iris,nouveau,kmsro,r300,r600,freedreno,swr,swrast,svga,v3d,vc4,virgl,etnaviv,panfrost,lima,zink"
+    VULKAN_DRIVERS: swrast
     EXTRA_OPTION: >
       -D osmesa=gallium
       -D tools=all
@@ -965,6 +966,7 @@ virgl-gles2-on-gl:
     DEQP_VER: gles2
     NIR_VALIDATE: 0
     DEQP_NO_SAVE_RESULTS: 1
+    DEQP_SKIPS: deqp-virgl-gl-skips.txt
     # Don't use threads inside llvmpipe, we've already got all cores
     # busy at the deqp-runner level.
     LP_NUM_THREADS: 0
@@ -1052,7 +1054,7 @@ arm64_a630_gles2:
     BM_KERNEL: /lava-files/cheza-kernel
     BM_CMDLINE: "ip=dhcp console=ttyMSM0,115200n8 root=/dev/nfs rw nfsrootdebug nfsroot=,tcp,nfsvers=4.2 init=/init"
     DEQP_EXPECTED_FAILS: deqp-freedreno-a630-fails.txt
-    DEQP_SKIPS: deqp-freedreno-a630-skips.txt
+    DEQP_FLAKES: deqp-freedreno-a630-flakes.txt
     GIT_STRATEGY: none
     DEQP_EXPECTED_RENDERER: FD630
     DEQP_NO_SAVE_RESULTS: ""
@@ -1101,6 +1103,7 @@ arm64_a630_traces:
   variables:
     BARE_METAL_TEST_SCRIPT: "/install/tracie-runner-gl.sh"
     DEVICE_NAME: "freedreno-a630"
+    DRIVER_NAME: "freedreno"
     TRACIE_NO_UNIT_TESTS: 1
     TRACIE_UPLOAD_TO_MINIO: 1
     # This lets us run several more traces which don't use any features we're
@@ -1172,7 +1175,8 @@ arm64_a306_gles2:
     FLAKES_CHANNEL: "#freedreno-ci"
     BARE_METAL_TEST_SCRIPT: "/install/deqp-runner.sh"
     DEQP_EXPECTED_FAILS: deqp-freedreno-a307-fails.txt
-    DEQP_SKIPS: deqp-freedreno-a307-skips.txt
+    DEQP_SKIPS: deqp-default-skips.txt
+    DEQP_FLAKES: deqp-freedreno-a307-flakes.txt
     DEQP_VER: gles2
     DEQP_PARALLEL: 4
     DEQP_EXPECTED_RENDERER: FD307
@@ -1218,7 +1222,7 @@ arm64_a530_gles2:
     # current upstream kernel.
     BM_CMDLINE: "ip=dhcp console=ttyMSM0,115200n8 nosmp"
     DEQP_EXPECTED_FAILS: deqp-freedreno-a530-fails.txt
-    DEQP_SKIPS: deqp-freedreno-a530-skips.txt
+    DEQP_FLAKES: deqp-freedreno-a530-flakes.txt
     DEQP_EXPECTED_RENDERER: FD530
     NIR_VALIDATE: 0
   tags:
@@ -1281,6 +1285,9 @@ radv-fossils:
     # Navi10 (GFX10)
     - export RADV_FORCE_FAMILY="gfx1010"
     - ./install/fossilize-runner.sh
+    # Sienna Cichlid (GFX10)
+    - export RADV_FORCE_FAMILY="gfx1030"
+    - ./install/fossilize-runner.sh
 
 # Traces CI
 .traces-test:
@@ -1313,6 +1320,7 @@ llvmpipe-traces:
     LIBGL_ALWAYS_SOFTWARE: "true"
     GALLIUM_DRIVER: "llvmpipe"
     DEVICE_NAME: "gl-vmware-llvmpipe"
+    DRIVER_NAME: "llvmpipe"
 
 radv-polaris10-traces:
   extends:
@@ -1321,6 +1329,7 @@ radv-polaris10-traces:
     - .test-manual
   variables:
     DEVICE_NAME: "vk-amd-polaris10"
+    DRIVER_NAME: "radv"
   tags:
     - polaris10
 
@@ -1331,6 +1340,7 @@ radv-raven-traces:
     - .test-manual
   variables:
     DEVICE_NAME: "vk-amd-raven"
+    DRIVER_NAME: "radv"
   tags:
     - raven
 
@@ -1342,5 +1352,6 @@ virgl-traces:
     LIBGL_ALWAYS_SOFTWARE: "true"
     GALLIUM_DRIVER: "virpipe"
     DEVICE_NAME: "gl-virgl"
+    DRIVER_NAME: "virgl"
     MESA_GLES_VERSION_OVERRIDE: "3.1"
     MESA_GLSL_VERSION_OVERRIDE: "310"

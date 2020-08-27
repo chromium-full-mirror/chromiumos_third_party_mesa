@@ -101,6 +101,7 @@ panfrost_build_blit_shader(panfrost_program *program, unsigned gpu_id, gl_frag_r
                 nir_store_var(b, c_out, nir_channel(b, &tex->dest.ssa, 0), 0xFF);
 
         midgard_compile_shader_nir(shader, program, false, 0, gpu_id, false, true);
+        ralloc_free(shader);
 }
 
 /* Compile and upload all possible blit shaders ahead-of-time to reduce draw
@@ -183,48 +184,43 @@ panfrost_load_midg(
                 struct pan_image *image,
                 unsigned loc)
 {
+        bool srgb = util_format_is_srgb(image->format);
         unsigned width = u_minify(image->width0, image->first_level);
         unsigned height = u_minify(image->height0, image->first_level);
 
-        struct mali_viewport viewport = {
-                .clip_minx = -INFINITY,
-                .clip_miny = -INFINITY,
-                .clip_maxx = INFINITY,
-                .clip_maxy = INFINITY,
-                .clip_minz = 0.0,
-                .clip_maxz = 1.0,
+        struct panfrost_transfer viewport = panfrost_pool_alloc(pool, MALI_VIEWPORT_LENGTH);
+        struct panfrost_transfer sampler = panfrost_pool_alloc(pool, MALI_MIDGARD_SAMPLER_LENGTH);
+        struct panfrost_transfer varying = panfrost_pool_alloc(pool, MALI_ATTRIBUTE_LENGTH);
+        struct panfrost_transfer varying_buffer  = panfrost_pool_alloc(pool, MALI_ATTRIBUTE_BUFFER_LENGTH);
 
-                .viewport0 = { 0, 0 },
-                .viewport1 = { MALI_POSITIVE(width), MALI_POSITIVE(height) }
-        };
+        pan_pack(viewport.cpu, VIEWPORT, cfg) {
+                cfg.scissor_maximum_x = width - 1; /* Inclusive */
+                cfg.scissor_maximum_y = height - 1;
+        }
 
-        union mali_attr varying = {
-		.elements = coordinates | MALI_ATTR_LINEAR,
-		.stride = 4 * sizeof(float),
-		.size = 4 * sizeof(float) * vertex_count,
-	};
+        pan_pack(varying_buffer.cpu, ATTRIBUTE_BUFFER, cfg) {
+                cfg.pointer = coordinates;
+                cfg.stride = 4 * sizeof(float);
+                cfg.size = cfg.stride * vertex_count;
+        }
 
-        struct mali_attr_meta varying_meta = {
-                .index = 0,
-                .unknown1 = 2,
-                .swizzle = (MALI_CHANNEL_RED << 0) | (MALI_CHANNEL_GREEN << 3),
-                .format = MALI_RGBA32F
-        };
+        pan_pack(varying.cpu, ATTRIBUTE, cfg) {
+                cfg.buffer_index = 0;
+                cfg.format = (MALI_CHANNEL_R << 0) | (MALI_CHANNEL_G << 3) | (MALI_RGBA32F << 12);
+        }
 
-        struct mali_stencil_test stencil = {
-                .mask = 0xFF,
-                .func = MALI_FUNC_ALWAYS,
-                .sfail = MALI_STENCIL_REPLACE,
-                .dpfail = MALI_STENCIL_REPLACE,
-                .dppass = MALI_STENCIL_REPLACE,
-        };
+        struct mali_blend_equation_packed eq;
+
+        pan_pack(&eq, BLEND_EQUATION, cfg) {
+                cfg.rgb_mode = 0x122;
+                cfg.alpha_mode = 0x122;
+
+                if (loc < FRAG_RESULT_DATA0)
+                        cfg.color_mask = 0x0;
+        }
 
         union midgard_blend replace = {
-                .equation = {
-                        .rgb_mode = 0x122,
-                        .alpha_mode = 0x122,
-                        .color_mask = MALI_MASK_R | MALI_MASK_G | MALI_MASK_B | MALI_MASK_A,
-                }
+                .equation = eq
         };
 
         if (blend_shader)
@@ -241,50 +237,57 @@ panfrost_load_midg(
 
         bool ms = image->nr_samples > 1;
 
-        struct mali_shader_meta shader_meta = {
-                .shader = pool->dev->blit_shaders.loads[loc][T][ms],
-                .sampler_count = 1,
-                .texture_count = 1,
-                .varying_count = 1,
-                .midgard1 = {
-                        .flags_lo = 0x20,
-                        .work_count = 4,
-                },
-                .coverage_mask = 0xF,
-                .unknown2_3 = MALI_DEPTH_FUNC(MALI_FUNC_ALWAYS) | 0x10,
-                .unknown2_4 = 0x4e0,
-                .stencil_mask_front = ~0,
-                .stencil_mask_back = ~0,
-                .stencil_front = stencil,
-                .stencil_back = stencil,
-                .blend = {
-                        .shader = blend_shader
-                }
-        };
+        struct mali_midgard_properties_packed properties;
 
-        if (ms)
-                shader_meta.unknown2_3 |= MALI_HAS_MSAA | MALI_PER_SAMPLE;
-        else
-                shader_meta.unknown2_4 |= MALI_NO_MSAA;
+        struct panfrost_transfer shader_meta_t = panfrost_pool_alloc_aligned(
+                pool, MALI_STATE_LENGTH + 8 * sizeof(struct midgard_blend_rt), 128);
 
-        assert(shader_meta.shader);
-
-        if (pool->dev->quirks & MIDGARD_SFBD) {
-                shader_meta.unknown2_4 |= (0x10 | MALI_NO_DITHER);
-                shader_meta.blend = replace;
-
-                if (loc < FRAG_RESULT_DATA0)
-                        shader_meta.blend.equation.color_mask = 0x0;
+        pan_pack(&properties, MIDGARD_PROPERTIES, cfg) {
+                cfg.work_register_count = 4;
+                cfg.early_z_enable = (loc >= FRAG_RESULT_DATA0);
+                cfg.stencil_from_shader = (loc == FRAG_RESULT_STENCIL);
+                cfg.depth_source = (loc == FRAG_RESULT_DEPTH) ?
+                        MALI_DEPTH_SOURCE_SHADER :
+                        MALI_DEPTH_SOURCE_FIXED_FUNCTION;
         }
 
-        if (loc == FRAG_RESULT_DEPTH) {
-                shader_meta.midgard1.flags_lo |= MALI_WRITES_Z;
-                shader_meta.unknown2_3 |= MALI_DEPTH_WRITEMASK;
-        } else if (loc == FRAG_RESULT_STENCIL) {
-                shader_meta.midgard1.flags_hi |= MALI_WRITES_S;
-                shader_meta.unknown2_4 |= MALI_STENCIL_TEST;
-        } else {
-                shader_meta.midgard1.flags_lo |= MALI_EARLY_Z;
+        pan_pack(shader_meta_t.cpu, STATE, cfg) {
+                cfg.shader.shader = pool->dev->blit_shaders.loads[loc][T][ms];
+                cfg.shader.varying_count = 1;
+                cfg.shader.texture_count = 1;
+                cfg.shader.sampler_count = 1;
+
+                cfg.properties = properties.opaque[0];
+
+                cfg.multisample_misc.sample_mask = 0xFFFF;
+                cfg.multisample_misc.multisample_enable = ms;
+                cfg.multisample_misc.evaluate_per_sample = ms;
+                cfg.multisample_misc.depth_write_mask = (loc == FRAG_RESULT_DEPTH);
+                cfg.multisample_misc.depth_function = MALI_FUNC_ALWAYS;
+
+                cfg.stencil_mask_misc.stencil_enable = (loc == FRAG_RESULT_STENCIL);
+                cfg.stencil_mask_misc.stencil_mask_front = 0xFF;
+                cfg.stencil_mask_misc.stencil_mask_back = 0xFF;
+                cfg.stencil_mask_misc.unknown_1 = 0x7;
+
+                cfg.stencil_front.compare_function = MALI_FUNC_ALWAYS;
+                cfg.stencil_front.stencil_fail = MALI_STENCIL_OP_REPLACE;
+                cfg.stencil_front.depth_fail = MALI_STENCIL_OP_REPLACE;
+                cfg.stencil_front.depth_pass = MALI_STENCIL_OP_REPLACE;
+
+                cfg.stencil_back = cfg.stencil_front;
+
+                if (pool->dev->quirks & MIDGARD_SFBD) {
+                        cfg.stencil_mask_misc.sfbd_write_enable = true;
+                        cfg.stencil_mask_misc.sfbd_dither_disable = true;
+                        cfg.stencil_mask_misc.sfbd_srgb = srgb;
+                        cfg.multisample_misc.sfbd_blend_shader = blend_shader;
+                        memcpy(&cfg.sfbd_blend, &replace, sizeof(replace));
+                } else if (!(pool->dev->quirks & IS_BIFROST)) {
+                        memcpy(&cfg.sfbd_blend, &blend_shader, sizeof(blend_shader));
+                }
+
+                assert(cfg.shader.shader);
         }
 
         /* Create the texture descriptor. We partially compute the base address
@@ -293,50 +296,46 @@ panfrost_load_midg(
          * textures, removing the need to separately key the blit shaders for
          * 2D and 3D variants */
 
-        struct panfrost_transfer texture_t = panfrost_pool_alloc(pool, sizeof(struct mali_texture_descriptor) + sizeof(mali_ptr) * 2 * MAX2(image->nr_samples, 1));
+        struct panfrost_transfer texture_t = panfrost_pool_alloc_aligned(
+                        pool, MALI_MIDGARD_TEXTURE_LENGTH + sizeof(mali_ptr) * 2 * MAX2(image->nr_samples, 1), 128);
 
         panfrost_new_texture(texture_t.cpu,
                         image->width0, image->height0,
                         MAX2(image->nr_samples, 1), 1,
-                        image->format, MALI_TEX_2D,
-                        image->layout,
+                        image->format, MALI_TEXTURE_DIMENSION_2D,
+                        image->modifier,
                         image->first_level, image->last_level,
                         0, 0,
                         image->nr_samples,
                         0,
-                        (MALI_CHANNEL_RED << 0) | (MALI_CHANNEL_GREEN << 3) | (MALI_CHANNEL_BLUE << 6) | (MALI_CHANNEL_ALPHA << 9),
+                        (MALI_CHANNEL_R << 0) | (MALI_CHANNEL_G << 3) | (MALI_CHANNEL_B << 6) | (MALI_CHANNEL_A << 9),
                         image->bo->gpu + image->first_layer *
                                 panfrost_get_layer_stride(image->slices,
-                                        image->type == MALI_TEX_3D,
+                                        image->dim == MALI_TEXTURE_DIMENSION_3D,
                                         image->cubemap_stride, image->first_level),
                         image->slices);
 
-        struct mali_sampler_descriptor sampler = {
-                .filter_mode = MALI_SAMP_MAG_NEAREST | MALI_SAMP_MIN_NEAREST,
-                .wrap_s = MALI_WRAP_CLAMP_TO_EDGE,
-                .wrap_t = MALI_WRAP_CLAMP_TO_EDGE,
-                .wrap_r = MALI_WRAP_CLAMP_TO_EDGE,
-        };
-
-        struct panfrost_transfer shader_meta_t = panfrost_pool_alloc(pool, sizeof(shader_meta) + 8 * sizeof(struct midgard_blend_rt));
-        memcpy(shader_meta_t.cpu, &shader_meta, sizeof(shader_meta));
+        pan_pack(sampler.cpu, MIDGARD_SAMPLER, cfg)
+                cfg.normalized_coordinates = false;
 
         for (unsigned i = 0; i < 8; ++i) {
-                void *dest = shader_meta_t.cpu + sizeof(shader_meta) + sizeof(struct midgard_blend_rt) * i;
+                void *dest = shader_meta_t.cpu + MALI_STATE_LENGTH + sizeof(struct midgard_blend_rt) * i;
 
                 if (loc == (FRAG_RESULT_DATA0 + i)) {
                         struct midgard_blend_rt blend_rt = {
-                                .flags = 0x200 | MALI_BLEND_NO_DITHER,
                                 .blend = replace,
                         };
 
-                        if (util_format_is_srgb(image->format))
-                                blend_rt.flags |= MALI_BLEND_SRGB;
-
-                        if (blend_shader) {
-                                blend_rt.flags |= MALI_BLEND_MRT_SHADER;
-                                blend_rt.blend.shader = blend_shader;
+                        unsigned flags = 0;
+                        pan_pack(&flags, BLEND_FLAGS, cfg) {
+                                cfg.dither_disable = true;
+                                cfg.srgb = srgb;
+                                cfg.midgard_blend_shader = blend_shader;
                         }
+                        blend_rt.flags.opaque[0] = flags;
+
+                        if (blend_shader)
+                                blend_rt.blend.shader = blend_shader;
 
                         memcpy(dest, &blend_rt, sizeof(struct midgard_blend_rt));
                 } else {
@@ -346,7 +345,7 @@ panfrost_load_midg(
 
         struct midgard_payload_vertex_tiler payload = {
                 .prefix = {
-                        .draw_mode = MALI_TRIANGLES,
+                        .draw_mode = MALI_DRAW_MODE_TRIANGLES,
                         .unknown_draw = 0x3000,
                         .index_count = MALI_POSITIVE(vertex_count)
                 },
@@ -354,11 +353,11 @@ panfrost_load_midg(
                         .gl_enables = 0x7,
                         .position_varying = coordinates,
                         .textures = panfrost_pool_upload(pool, &texture_t.gpu, sizeof(texture_t.gpu)),
-                        .sampler_descriptor = panfrost_pool_upload(pool, &sampler, sizeof(sampler)),
+                        .sampler_descriptor = sampler.gpu,
                         .shader = shader_meta_t.gpu,
-                        .varyings = panfrost_pool_upload(pool, &varying, sizeof(varying)),
-                        .varying_meta = panfrost_pool_upload(pool, &varying_meta, sizeof(varying_meta)),
-                        .viewport = panfrost_pool_upload(pool, &viewport, sizeof(viewport)),
+                        .varyings = varying_buffer.gpu,
+                        .varying_meta = varying.gpu,
+                        .viewport = viewport.gpu,
                         .shared_memory = fbd
                 }
         };
@@ -366,5 +365,5 @@ panfrost_load_midg(
         panfrost_pack_work_groups_compute(&payload.prefix, 1, vertex_count, 1, 1, 1, 1, true);
         payload.prefix.workgroups_x_shift_3 = 6;
 
-        panfrost_new_job(pool, scoreboard, JOB_TYPE_TILER, false, 0, &payload, sizeof(payload), true);
+        panfrost_new_job(pool, scoreboard, MALI_JOB_TYPE_TILER, false, 0, &payload, sizeof(payload), true);
 }
