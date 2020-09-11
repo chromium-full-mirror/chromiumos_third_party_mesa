@@ -127,19 +127,14 @@ static void si_create_compute_state_async(void *job, int thread_index)
    assert(program->ir_type == PIPE_SHADER_IR_NIR);
    si_nir_scan_shader(sel->nir, &sel->info);
 
-   /* Store the declared LDS size into si_shader_info for the shader
-    * cache to include it.
-    */
-   sel->info.properties[TGSI_PROPERTY_CS_LOCAL_SIZE] = program->local_size;
-
+   sel->info.base.cs.shared_size = program->local_size;
    si_get_active_slot_masks(&sel->info, &sel->active_const_and_shader_buffers,
                             &sel->active_samplers_and_images);
 
    program->shader.is_monolithic = true;
-   program->reads_variable_block_size =
-      sel->info.uses_block_size && sel->info.properties[TGSI_PROPERTY_CS_FIXED_BLOCK_WIDTH] == 0;
+   program->reads_variable_block_size = sel->info.uses_variable_block_size;
    program->num_cs_user_data_dwords =
-      sel->info.properties[TGSI_PROPERTY_CS_USER_DATA_COMPONENTS_AMD];
+      sel->info.base.cs.user_data_components_amd;
 
    unsigned user_sgprs = SI_NUM_RESOURCE_SGPRS + (sel->info.uses_grid_size ? 3 : 0) +
                          (program->reads_variable_block_size ? 3 : 0) +
@@ -147,7 +142,7 @@ static void si_create_compute_state_async(void *job, int thread_index)
 
    /* Fast path for compute shaders - some descriptors passed via user SGPRs. */
    /* Shader buffers in user SGPRs. */
-   for (unsigned i = 0; i < 3 && user_sgprs <= 12 && sel->info.shader_buffers_declared & (1 << i); i++) {
+   for (unsigned i = 0; i < MIN2(3, sel->info.base.num_ssbos) && user_sgprs <= 12; i++) {
       user_sgprs = align(user_sgprs, 4);
       if (i == 0)
          sel->cs_shaderbufs_sgpr_index = user_sgprs;
@@ -156,10 +151,11 @@ static void si_create_compute_state_async(void *job, int thread_index)
    }
 
    /* Images in user SGPRs. */
-   unsigned non_msaa_images = sel->info.images_declared & ~sel->info.msaa_images_declared;
+   unsigned non_msaa_images = u_bit_consecutive(0, sel->info.base.num_images) &
+                              ~sel->info.base.msaa_images;
 
    for (unsigned i = 0; i < 3 && non_msaa_images & (1 << i); i++) {
-      unsigned num_sgprs = sel->info.image_buffers & (1 << i) ? 4 : 8;
+      unsigned num_sgprs = sel->info.base.image_buffers & (1 << i) ? 4 : 8;
 
       if (align(user_sgprs, num_sgprs) + num_sgprs > 16)
          break;
@@ -235,8 +231,12 @@ static void *si_create_compute_state(struct pipe_context *ctx, const struct pipe
    struct si_shader_selector *sel = &program->sel;
 
    pipe_reference_init(&sel->base.reference, 1);
-   sel->type = PIPE_SHADER_COMPUTE;
+   sel->info.stage = MESA_SHADER_COMPUTE;
    sel->screen = sscreen;
+   sel->const_and_shader_buf_descriptors_index =
+      si_const_and_shader_buffer_descriptors_idx(PIPE_SHADER_COMPUTE);
+   sel->sampler_and_images_descriptors_index =
+      si_sampler_and_image_descriptors_idx(PIPE_SHADER_COMPUTE);
    program->shader.selector = &program->sel;
    program->ir_type = cso->ir_type;
    program->local_size = cso->req_local_mem;
@@ -256,7 +256,7 @@ static void *si_create_compute_state(struct pipe_context *ctx, const struct pipe
       sel->compiler_ctx_state.is_debug_context = sctx->is_debug;
       p_atomic_inc(&sscreen->num_shaders_created);
 
-      si_schedule_initial_compile(sctx, PIPE_SHADER_COMPUTE, &sel->ready, &sel->compiler_ctx_state,
+      si_schedule_initial_compile(sctx, MESA_SHADER_COMPUTE, &sel->ready, &sel->compiler_ctx_state,
                                   program, si_create_compute_state_async);
    } else {
       const struct pipe_binary_program_header *header;

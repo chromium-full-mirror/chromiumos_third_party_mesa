@@ -78,12 +78,16 @@ fs_visitor::nir_setup_outputs()
       /* Check if there are any ranges that start within this range and extend
        * past it. If so, include them in this allocation.
        */
-      for (unsigned i = 1; i < reg_size; i++)
+      for (unsigned i = 1; i < reg_size; i++) {
+         assert(i + loc < ARRAY_SIZE(vec4s));
          reg_size = MAX2(vec4s[i + loc] + i, reg_size);
+      }
 
       fs_reg reg = bld.vgrf(BRW_REGISTER_TYPE_F, 4 * reg_size);
-      for (unsigned i = 0; i < reg_size; i++)
+      for (unsigned i = 0; i < reg_size; i++) {
+         assert(loc + i < ARRAY_SIZE(outputs));
          outputs[loc + i] = offset(reg, bld, 4 * i);
+      }
 
       loc += reg_size;
    }
@@ -752,6 +756,8 @@ fs_visitor::prepare_alu_destination_and_sources(const fs_builder &bld,
    case nir_op_vec2:
    case nir_op_vec3:
    case nir_op_vec4:
+   case nir_op_vec8:
+   case nir_op_vec16:
       return result;
    default:
       break;
@@ -1002,14 +1008,16 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
    unsigned execution_mode =
       bld.shader->nir->info.float_controls_execution_mode;
 
-   fs_reg op[4];
+   fs_reg op[NIR_MAX_VEC_COMPONENTS];
    fs_reg result = prepare_alu_destination_and_sources(bld, instr, op, need_dest);
 
    switch (instr->op) {
    case nir_op_mov:
    case nir_op_vec2:
    case nir_op_vec3:
-   case nir_op_vec4: {
+   case nir_op_vec4:
+   case nir_op_vec8:
+   case nir_op_vec16: {
       fs_reg temp = result;
       bool need_extra_copy = false;
       for (unsigned i = 0; i < nir_op_infos[instr->op].num_inputs; i++) {
@@ -1026,10 +1034,10 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
             continue;
 
          if (instr->op == nir_op_mov) {
-            inst = bld.MOV(offset(temp, bld, i),
+            bld.MOV(offset(temp, bld, i),
                            offset(op[0], bld, instr->src[0].swizzle[i]));
          } else {
-            inst = bld.MOV(offset(temp, bld, i),
+            bld.MOV(offset(temp, bld, i),
                            offset(op[i], bld, instr->src[i].swizzle[0]));
          }
       }
@@ -3755,6 +3763,7 @@ fs_visitor::nir_emit_cs_intrinsic(const fs_builder &bld,
    }
 
    case nir_intrinsic_load_num_work_groups: {
+      assert(nir_dest_bit_size(instr->dest) == 32);
       const unsigned surface =
          cs_prog_data->binding_table.work_groups_start;
 
@@ -3763,14 +3772,12 @@ fs_visitor::nir_emit_cs_intrinsic(const fs_builder &bld,
       fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
       srcs[SURFACE_LOGICAL_SRC_SURFACE] = brw_imm_ud(surface);
       srcs[SURFACE_LOGICAL_SRC_IMM_DIMS] = brw_imm_ud(1);
-      srcs[SURFACE_LOGICAL_SRC_IMM_ARG] = brw_imm_ud(1); /* num components */
-
-      /* Read the 3 GLuint components of gl_NumWorkGroups */
-      for (unsigned i = 0; i < 3; i++) {
-         srcs[SURFACE_LOGICAL_SRC_ADDRESS] = brw_imm_ud(i << 2);
+      srcs[SURFACE_LOGICAL_SRC_IMM_ARG] = brw_imm_ud(3); /* num components */
+      srcs[SURFACE_LOGICAL_SRC_ADDRESS] = brw_imm_ud(0);
+      fs_inst *inst =
          bld.emit(SHADER_OPCODE_UNTYPED_SURFACE_READ_LOGICAL,
-                  offset(dest, bld, i), srcs, SURFACE_LOGICAL_NUM_SRCS);
-      }
+                  dest, srcs, SURFACE_LOGICAL_NUM_SRCS);
+      inst->size_written = 3 * dispatch_width * 4;
       break;
    }
 
@@ -4392,6 +4399,13 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
       bld.MOV(retype(dest, BRW_REGISTER_TYPE_D), brw_imm_d(1));
       break;
 
+   case nir_intrinsic_load_reloc_const_intel: {
+      uint32_t id = nir_intrinsic_param_idx(instr);
+      bld.emit(SHADER_OPCODE_MOV_RELOC_IMM,
+               dest, brw_imm_ud(id));
+      break;
+   }
+
    case nir_intrinsic_load_uniform: {
       /* Offsets are in bytes but they should always aligned to
        * the type size
@@ -4550,7 +4564,8 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
       break;
    }
 
-   case nir_intrinsic_load_global: {
+   case nir_intrinsic_load_global:
+   case nir_intrinsic_load_global_constant: {
       assert(devinfo->gen >= 8);
 
       assert(nir_dest_bit_size(instr->dest) <= 32);

@@ -112,9 +112,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
         case PIPE_CAP_POINT_SPRITE:
         case PIPE_CAP_DEPTH_CLIP_DISABLE:
+        case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
         case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
         case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
-        case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
                 return 1;
 
         case PIPE_CAP_MAX_RENDER_TARGETS:
@@ -161,6 +161,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
         case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
                 return is_bifrost ? 0 : 64;
+        case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
         case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
                 return is_bifrost ? 0 : 1;
 
@@ -177,8 +178,6 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return 16;
 
         /* For faking GLES 3.1 for dEQP-GLES31 */
-        case PIPE_CAP_MAX_COMBINED_HW_ATOMIC_COUNTERS:
-        case PIPE_CAP_MAX_COMBINED_HW_ATOMIC_COUNTER_BUFFERS:
         case PIPE_CAP_IMAGE_LOAD_FORMATTED:
         case PIPE_CAP_CUBE_MAP_ARRAY:
         case PIPE_CAP_COMPUTE:
@@ -231,7 +230,8 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_ENDIANNESS:
                 return PIPE_ENDIAN_NATIVE;
 
-                return 1;
+        case PIPE_CAP_MAX_TEXTURE_GATHER_COMPONENTS:
+                return is_deqp ? 4 : 0;
 
         case PIPE_CAP_MIN_TEXTURE_GATHER_OFFSET:
                 return -8;

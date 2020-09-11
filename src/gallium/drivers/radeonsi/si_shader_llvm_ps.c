@@ -131,7 +131,6 @@ static LLVMValueRef si_build_fs_interp(struct si_shader_context *ctx, unsigned a
  *
  * @param ctx		context
  * @param input_index		index of the input in hardware
- * @param semantic_name		TGSI_SEMANTIC_*
  * @param semantic_index	semantic index
  * @param num_interp_inputs	number of all interpolated inputs (= BCOLOR offset)
  * @param colors_read_mask	color components read (4 bits for each color, 8 bits in total)
@@ -241,16 +240,6 @@ struct si_ps_exports {
    unsigned num;
    struct ac_export_args args[10];
 };
-
-static void si_export_mrt_z(struct si_shader_context *ctx, LLVMValueRef depth, LLVMValueRef stencil,
-                            LLVMValueRef samplemask, struct si_ps_exports *exp)
-{
-   struct ac_export_args args;
-
-   ac_export_mrt_z(&ctx->ac, depth, stencil, samplemask, &args);
-
-   memcpy(&exp->args[exp->num++], &args, sizeof(args));
-}
 
 /* Initialize arguments for the shader export intrinsic */
 static void si_llvm_init_ps_export_args(struct si_shader_context *ctx, LLVMValueRef *values,
@@ -438,12 +427,6 @@ static bool si_export_mrt_color(struct si_shader_context *ctx, LLVMValueRef *col
    return true;
 }
 
-static void si_emit_ps_exports(struct si_shader_context *ctx, struct si_ps_exports *exp)
-{
-   for (unsigned i = 0; i < exp->num; i++)
-      ac_build_export(&ctx->ac, &exp->args[i]);
-}
-
 /**
  * Return PS outputs in this order:
  *
@@ -475,29 +458,31 @@ static void si_llvm_return_fs_outputs(struct ac_shader_abi *abi, unsigned max_ou
 
    /* Read the output values. */
    for (i = 0; i < info->num_outputs; i++) {
-      unsigned semantic_name = info->output_semantic_name[i];
-      unsigned semantic_index = info->output_semantic_index[i];
+      unsigned semantic = info->output_semantic[i];
 
-      switch (semantic_name) {
-      case TGSI_SEMANTIC_COLOR:
-         assert(semantic_index < 8);
-         for (j = 0; j < 4; j++) {
-            LLVMValueRef ptr = addrs[4 * i + j];
-            LLVMValueRef result = LLVMBuildLoad(builder, ptr, "");
-            color[semantic_index][j] = result;
-         }
-         break;
-      case TGSI_SEMANTIC_POSITION:
+      switch (semantic) {
+      case FRAG_RESULT_DEPTH:
          depth = LLVMBuildLoad(builder, addrs[4 * i + 0], "");
          break;
-      case TGSI_SEMANTIC_STENCIL:
+      case FRAG_RESULT_STENCIL:
          stencil = LLVMBuildLoad(builder, addrs[4 * i + 0], "");
          break;
-      case TGSI_SEMANTIC_SAMPLEMASK:
+      case FRAG_RESULT_SAMPLE_MASK:
          samplemask = LLVMBuildLoad(builder, addrs[4 * i + 0], "");
          break;
       default:
-         fprintf(stderr, "Warning: GFX6 unhandled fs output type:%d\n", semantic_name);
+         if (semantic >= FRAG_RESULT_DATA0 && semantic <= FRAG_RESULT_DATA7) {
+            unsigned index = semantic - FRAG_RESULT_DATA0;
+
+            for (j = 0; j < 4; j++) {
+               LLVMValueRef ptr = addrs[4 * i + j];
+               LLVMValueRef result = LLVMBuildLoad(builder, ptr, "");
+               color[index][j] = result;
+            }
+         } else {
+            fprintf(stderr, "Warning: Unhandled fs output type:%d\n", semantic);
+         }
+         break;
       }
    }
 
@@ -902,12 +887,14 @@ void si_llvm_build_ps_epilog(struct si_shader_context *ctx, union si_shader_part
       samplemask = LLVMGetParam(ctx->main_fn, vgpr++);
 
    if (depth || stencil || samplemask)
-      si_export_mrt_z(ctx, depth, stencil, samplemask, &exp);
+      ac_export_mrt_z(&ctx->ac, depth, stencil, samplemask, &exp.args[exp.num++]);
    else if (last_color_export == -1)
       ac_build_export_null(&ctx->ac);
 
-   if (exp.num)
-      si_emit_ps_exports(ctx, &exp);
+   if (exp.num) {
+      for (unsigned i = 0; i < exp.num; i++)
+         ac_build_export(&ctx->ac, &exp.args[i]);
+   }
 
    /* Compile. */
    LLVMBuildRetVoid(ctx->ac.builder);

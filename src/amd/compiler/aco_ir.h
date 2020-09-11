@@ -52,6 +52,9 @@ enum {
    DEBUG_VALIDATE_RA = 0x2,
    DEBUG_PERFWARN = 0x4,
    DEBUG_FORCE_WAITCNT = 0x8,
+   DEBUG_NO_VN = 0x10,
+   DEBUG_NO_OPT = 0x20,
+   DEBUG_NO_SCHED = 0x40,
 };
 
 /**
@@ -446,7 +449,7 @@ public:
       if (v <= 64)
          setFixed(PhysReg{128u + v});
       else if (v >= 0xFFF0) /* [-16 .. -1] */
-         setFixed(PhysReg{192u + (0xFFFF - v)});
+         setFixed(PhysReg{(unsigned)(192 - (int16_t)v)});
       else if (v == 0x3800) /* 0.5 */
          setFixed(PhysReg{240});
       else if (v == 0xB800) /* -0.5 */

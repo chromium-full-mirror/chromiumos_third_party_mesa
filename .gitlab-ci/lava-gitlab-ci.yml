@@ -131,23 +131,34 @@ kernel+rootfs_armhf:
     - kernel+rootfs_amd64
     - meson-testing
 
+.lava-traces-base:
+  after_script:
+    - mkdir -p artifacts
+    - wget -O "artifacts/junit.xml" "https://minio-packet.freedesktop.org/artifacts/${CI_PROJECT_PATH}/${CI_PIPELINE_ID}/${CI_JOB_ID}/traces/junit.xml"
+  artifacts:
+    reports:
+      junit: artifacts/junit.xml
+
 .lava-traces:amd64:
   variables:
     TEST_SUITE: "tracie"
   extends:
     - .lava-test:amd64
+    - .lava-traces-base
 
 .lava-traces:armhf:
   variables:
     TEST_SUITE: "tracie"
   extends:
     - .lava-test:armhf
+    - .lava-traces-base
 
 .lava-traces:arm64:
   variables:
     TEST_SUITE: "tracie"
   extends:
     - .lava-test:arm64
+    - .lava-traces-base
 
 panfrost-t720-gles2:arm64:
   extends:
@@ -278,12 +289,23 @@ radeonsi-stoney-gles2:amd64:
   tags:
     - mesa-ci-aarch64-lava-collabora
 
-# Commented out while waiting for more DUTs to come online
-.radeonsi-stoney-gles3:amd64:
+radeonsi-stoney-gles3:amd64:
   extends:
     - radeonsi-stoney-gles2:amd64
   variables:
     DEQP_VERSION: gles3
+    CI_NODE_INDEX: 1
+    CI_NODE_TOTAL: 4
+  tags:
+    - mesa-ci-aarch64-lava-collabora
+
+radeonsi-stoney-gles31:amd64:
+  extends:
+    - radeonsi-stoney-gles2:amd64
+  variables:
+    DEQP_VERSION: gles31
+    CI_NODE_INDEX: 1
+    CI_NODE_TOTAL: 5
   tags:
     - mesa-ci-aarch64-lava-collabora
 

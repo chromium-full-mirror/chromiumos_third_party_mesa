@@ -60,7 +60,7 @@ nir_shader_create(void *mem_ctx,
    shader->num_inputs = 0;
    shader->num_outputs = 0;
    shader->num_uniforms = 0;
-   shader->num_shared = 0;
+   shader->shared_size = 0;
 
    return shader;
 }
@@ -115,6 +115,7 @@ nir_shader_add_variable(nir_shader *shader, nir_variable *var)
    case nir_var_mem_ssbo:
    case nir_var_mem_shared:
    case nir_var_system_value:
+   case nir_var_mem_constant:
       break;
 
    case nir_var_mem_global:
@@ -801,6 +802,8 @@ add_ssa_def_cb(nir_ssa_def *def, void *state)
          nir_cf_node_get_function(&instr->block->cf_node);
 
       def->index = impl->ssa_alloc++;
+
+      impl->valid_metadata &= ~nir_metadata_live_ssa_defs;
    }
 
    return true;
@@ -1503,6 +1506,8 @@ nir_ssa_def_init(nir_instr *instr, nir_ssa_def *def,
          nir_cf_node_get_function(&instr->block->cf_node);
 
       def->index = impl->ssa_alloc++;
+
+      impl->valid_metadata &= ~nir_metadata_live_ssa_defs;
    } else {
       def->index = UINT_MAX;
    }
@@ -1842,6 +1847,8 @@ void
 nir_index_ssa_defs(nir_function_impl *impl)
 {
    unsigned index = 0;
+
+   impl->valid_metadata &= ~nir_metadata_live_ssa_defs;
 
    nir_foreach_block_unstructured(block, impl) {
       nir_foreach_instr(instr, block)
@@ -2285,6 +2292,9 @@ nir_rewrite_image_intrinsic(nir_intrinsic_instr *intrin, nir_ssa_def *src,
                             bool bindless)
 {
    enum gl_access_qualifier access = nir_intrinsic_access(intrin);
+   nir_alu_type type = nir_type_invalid;
+   if (nir_intrinsic_infos[intrin->intrinsic].index_map[NIR_INTRINSIC_TYPE])
+      type = nir_intrinsic_type(intrin);
 
    switch (intrin->intrinsic) {
 #define CASE(op) \
@@ -2323,6 +2333,8 @@ nir_rewrite_image_intrinsic(nir_intrinsic_instr *intrin, nir_ssa_def *src,
    nir_intrinsic_set_image_array(intrin, glsl_sampler_type_is_array(deref->type));
    nir_intrinsic_set_access(intrin, access | var->data.access);
    nir_intrinsic_set_format(intrin, var->data.image.format);
+   if (nir_intrinsic_infos[intrin->intrinsic].index_map[NIR_INTRINSIC_TYPE])
+      nir_intrinsic_set_type(intrin, type);
 
    nir_instr_rewrite_src(&intrin->instr, &intrin->src[0],
                          nir_src_for_ssa(src));

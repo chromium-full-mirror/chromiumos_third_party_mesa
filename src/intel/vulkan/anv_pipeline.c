@@ -242,6 +242,7 @@ anv_shader_compile_to_nir(struct anv_device *device,
                    stage, entrypoint_name, &spirv_options, nir_options);
    assert(nir->info.stage == stage);
    nir_validate_shader(nir, "after spirv_to_nir");
+   nir_validate_ssa_dominance(nir, "after spirv_to_nir");
    ralloc_steal(mem_ctx, nir);
 
    free(spec_entries);
@@ -1186,9 +1187,8 @@ anv_pipeline_add_executable(struct anv_pipeline *pipeline,
       /* Creating this is far cheaper than it looks.  It's perfectly fine to
        * do it for every binary.
        */
-      struct gen_disasm *d = gen_disasm_create(&pipeline->device->info);
-      gen_disasm_disassemble(d, stage->code, code_offset, stream);
-      gen_disasm_destroy(d);
+      gen_disassemble(&pipeline->device->info,
+                      stage->code, code_offset, stream);
 
       fclose(stream);
 
@@ -1581,8 +1581,6 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
                                   sizeof(stages[s].cache_key),
                                   stages[s].code,
                                   stages[s].prog_data.base.program_size,
-                                  stages[s].nir->constant_data,
-                                  stages[s].nir->constant_data_size,
                                   &stages[s].prog_data.base,
                                   brw_prog_data_size(s),
                                   stages[s].stats, stages[s].num_stats,
@@ -1771,8 +1769,6 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
                                      MESA_SHADER_COMPUTE,
                                      &stage.cache_key, sizeof(stage.cache_key),
                                      stage.code, code_size,
-                                     stage.nir->constant_data,
-                                     stage.nir->constant_data_size,
                                      &stage.prog_data.base,
                                      sizeof(stage.prog_data.cs),
                                      stage.stats, stage.num_stats,

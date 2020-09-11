@@ -418,6 +418,12 @@ validate_deref_instr(nir_deref_instr *instr, validate_state *state)
       /* We just validate that the type and mode are there */
       validate_assert(state, instr->mode);
       validate_assert(state, instr->type);
+      if (instr->cast.align_mul > 0) {
+         validate_assert(state, util_is_power_of_two_nonzero(instr->cast.align_mul));
+         validate_assert(state, instr->cast.align_offset < instr->cast.align_mul);
+      } else {
+         validate_assert(state, instr->cast.align_offset == 0);
+      }
    } else {
       /* We require the parent to be SSA.  This may be lifted in the future */
       validate_assert(state, instr->parent.is_ssa);
@@ -509,7 +515,8 @@ validate_deref_instr(nir_deref_instr *instr, validate_state *state)
          validate_assert(state, instr->mode == nir_var_mem_ubo ||
                                 instr->mode == nir_var_mem_ssbo ||
                                 instr->mode == nir_var_mem_shared ||
-                                instr->mode == nir_var_mem_global);
+                                instr->mode == nir_var_mem_global ||
+                                instr->mode == nir_var_mem_constant);
       }
    }
 }
@@ -594,9 +601,13 @@ validate_intrinsic_instr(nir_intrinsic_instr *instr, validate_state *state)
    }
 
    case nir_intrinsic_load_ubo:
+      /* Make sure that the creator didn't forget to set the range_base+range. */
+      validate_assert(state, nir_intrinsic_range(instr) != 0);
+      /* Fall through */
    case nir_intrinsic_load_ssbo:
    case nir_intrinsic_load_shared:
    case nir_intrinsic_load_global:
+   case nir_intrinsic_load_global_constant:
    case nir_intrinsic_load_scratch:
    case nir_intrinsic_load_constant:
       /* These memory load operations must have alignments */
@@ -1195,6 +1206,60 @@ validate_var_decl(nir_variable *var, nir_variable_mode valid_modes,
    state->var = NULL;
 }
 
+static bool
+validate_ssa_def_dominance(nir_ssa_def *def, void *_state)
+{
+   validate_state *state = _state;
+
+   validate_assert(state, def->index < state->impl->ssa_alloc);
+   validate_assert(state, !BITSET_TEST(state->ssa_defs_found, def->index));
+   BITSET_SET(state->ssa_defs_found, def->index);
+
+   return true;
+}
+
+static bool
+validate_src_dominance(nir_src *src, void *_state)
+{
+   validate_state *state = _state;
+   if (!src->is_ssa)
+      return true;
+
+   if (src->ssa->parent_instr->block == src->parent_instr->block) {
+      validate_assert(state, src->ssa->index < state->impl->ssa_alloc);
+      validate_assert(state, BITSET_TEST(state->ssa_defs_found,
+                                         src->ssa->index));
+   } else {
+      validate_assert(state, nir_block_dominates(src->ssa->parent_instr->block,
+                                                 src->parent_instr->block));
+   }
+   return true;
+}
+
+static void
+validate_ssa_dominance(nir_function_impl *impl, validate_state *state)
+{
+   nir_metadata_require(impl, nir_metadata_dominance);
+
+   nir_foreach_block(block, impl) {
+      state->block = block;
+      nir_foreach_instr(instr, block) {
+         state->instr = instr;
+         if (instr->type == nir_instr_type_phi) {
+            nir_phi_instr *phi = nir_instr_as_phi(instr);
+            nir_foreach_phi_src(src, phi) {
+               validate_assert(state,
+                  nir_block_dominates(src->src.ssa->parent_instr->block,
+                                      src->pred));
+            }
+         } else {
+            nir_foreach_src(instr, validate_src_dominance, state);
+         }
+         nir_foreach_ssa_def(instr, validate_ssa_def_dominance, state);
+      }
+   }
+}
+
 static void
 validate_function_impl(nir_function_impl *impl, validate_state *state)
 {
@@ -1246,6 +1311,14 @@ validate_function_impl(nir_function_impl *impl, validate_state *state)
 
    validate_assert(state, state->ssa_srcs->entries == 0);
    _mesa_set_clear(state->ssa_srcs, NULL);
+
+   static int validate_dominance = -1;
+   if (validate_dominance < 0) {
+      validate_dominance =
+         env_var_as_boolean("NIR_VALIDATE_SSA_DOMINANCE", false);
+   }
+   if (validate_dominance)
+      validate_ssa_dominance(impl, state);
 }
 
 static void
@@ -1336,7 +1409,8 @@ nir_validate_shader(nir_shader *shader, const char *when)
       nir_var_mem_ubo |
       nir_var_system_value |
       nir_var_mem_ssbo |
-      nir_var_mem_shared;
+      nir_var_mem_shared |
+      nir_var_mem_constant;
 
    exec_list_validate(&shader->variables);
    nir_foreach_variable_in_shader(var, shader)
@@ -1345,6 +1419,40 @@ nir_validate_shader(nir_shader *shader, const char *when)
    exec_list_validate(&shader->functions);
    foreach_list_typed(nir_function, func, node, &shader->functions) {
       validate_function(func, &state);
+   }
+
+   if (_mesa_hash_table_num_entries(state.errors) > 0)
+      dump_errors(&state, when);
+
+   destroy_validate_state(&state);
+}
+
+void
+nir_validate_ssa_dominance(nir_shader *shader, const char *when)
+{
+   static int should_validate = -1;
+   if (should_validate < 0)
+      should_validate = env_var_as_boolean("NIR_VALIDATE", true);
+   if (!should_validate)
+      return;
+
+   validate_state state;
+   init_validate_state(&state);
+
+   state.shader = shader;
+
+   nir_foreach_function(func, shader) {
+      if (func->impl == NULL)
+         continue;
+
+      state.ssa_defs_found = reralloc(state.mem_ctx, state.ssa_defs_found,
+                                      BITSET_WORD,
+                                      BITSET_WORDS(func->impl->ssa_alloc));
+      memset(state.ssa_defs_found, 0, BITSET_WORDS(func->impl->ssa_alloc) *
+                                      sizeof(BITSET_WORD));
+
+      state.impl = func->impl;
+      validate_ssa_dominance(func->impl, &state);
    }
 
    if (_mesa_hash_table_num_entries(state.errors) > 0)

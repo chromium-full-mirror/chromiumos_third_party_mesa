@@ -23,7 +23,6 @@
  *
  */
 
-#include "util/hash_table.h"
 #include "pan_bo.h"
 #include "pan_pool.h"
 
@@ -43,37 +42,53 @@ panfrost_pool_alloc_backing(struct pan_pool *pool, size_t bo_sz)
         struct panfrost_bo *bo = panfrost_bo_create(pool->dev, bo_sz,
                         pool->create_flags);
 
-        uintptr_t flags = PAN_BO_ACCESS_PRIVATE |
-                PAN_BO_ACCESS_RW |
-                PAN_BO_ACCESS_VERTEX_TILER |
-                PAN_BO_ACCESS_FRAGMENT;
-
-        _mesa_hash_table_insert(pool->bos, bo, (void *) flags);
-
+        util_dynarray_append(&pool->bos, struct panfrost_bo *, bo);
         pool->transient_bo = bo;
         pool->transient_offset = 0;
 
         return bo;
 }
 
-struct pan_pool
-panfrost_create_pool(void *memctx, struct panfrost_device *dev,
-                unsigned create_flags, bool prealloc)
+void
+panfrost_pool_init(struct pan_pool *pool, void *memctx,
+                   struct panfrost_device *dev,
+                   unsigned create_flags, bool prealloc)
 {
-        struct pan_pool pool = {
-                .dev = dev,
-                .create_flags = create_flags,
-                .transient_offset = 0,
-                .transient_bo = NULL
-        };
-
-        pool.bos = _mesa_hash_table_create(memctx, _mesa_hash_pointer,
-                        _mesa_key_pointer_equal);
+        memset(pool, 0, sizeof(*pool));
+        pool->dev = dev;
+        pool->create_flags = create_flags;
+        util_dynarray_init(&pool->bos, memctx);
 
         if (prealloc)
-                panfrost_pool_alloc_backing(&pool, TRANSIENT_SLAB_SIZE);
+                panfrost_pool_alloc_backing(pool, TRANSIENT_SLAB_SIZE);
+}
 
-        return pool;
+void
+panfrost_pool_cleanup(struct pan_pool *pool)
+{
+        util_dynarray_foreach(&pool->bos, struct panfrost_bo *, bo)
+                panfrost_bo_unreference(*bo);
+
+        util_dynarray_fini(&pool->bos);
+}
+
+void
+panfrost_pool_get_bo_handles(struct pan_pool *pool, uint32_t *handles)
+{
+        unsigned idx = 0;
+        util_dynarray_foreach(&pool->bos, struct panfrost_bo *, bo) {
+                assert((*bo)->gem_handle > 0);
+                handles[idx++] = (*bo)->gem_handle;
+
+               /* Update the BO access flags so that panfrost_bo_wait() knows
+                * about all pending accesses.
+                * We only keep the READ/WRITE info since this is all the BO
+                * wait logic cares about.
+                * We also preserve existing flags as this batch might not
+                * be the first one to access the BO.
+                */
+                (*bo)->gpu_access |= PAN_BO_ACCESS_RW;
+        }
 }
 
 struct panfrost_transfer

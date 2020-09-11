@@ -68,9 +68,8 @@ __gen_uint(uint64_t v, uint32_t start, uint32_t end)
 static inline uint32_t
 __gen_sint(int32_t v, uint32_t start, uint32_t end)
 {
-   const int width = end - start + 1;
-
 #ifndef NDEBUG
+   const int width = end - start + 1;
    if (width < 64) {
       const int64_t max = (1ll << (width - 1)) - 1;
       const int64_t min = -(1ll << (width - 1));
@@ -80,6 +79,23 @@ __gen_sint(int32_t v, uint32_t start, uint32_t end)
 
    return ((uint32_t) v) << start;
 }
+
+static inline uint32_t
+__gen_padded(uint32_t v, uint32_t start, uint32_t end)
+{
+    unsigned shift = __builtin_ctz(v);
+    unsigned odd = v >> (shift + 1);
+
+#ifndef NDEBUG
+    assert((v >> shift) & 1);
+    assert(shift <= 31);
+    assert(odd <= 7);
+    assert((end - start + 1) == 8);
+#endif
+
+    return __gen_uint(shift | (odd << 5), start, end);
+}
+
 
 static inline uint64_t
 __gen_unpack_uint(const uint8_t *restrict cl, uint32_t start, uint32_t end)
@@ -103,6 +119,16 @@ __gen_unpack_sint(const uint8_t *restrict cl, uint32_t start, uint32_t end)
 
    /* Get the sign bit extended. */
    return (val << (64 - size)) >> (64 - size);
+}
+
+static inline uint64_t
+__gen_unpack_padded(const uint8_t *restrict cl, uint32_t start, uint32_t end)
+{
+   unsigned val = __gen_unpack_uint(cl, start, end);
+   unsigned shift = val & 0b11111;
+   unsigned odd = val >> 5;
+
+   return (2*odd + 1) << shift;
 }
 
 #define pan_pack(dst, T, name)                          \
@@ -224,7 +250,7 @@ class Field(object):
             type = 'uint64_t'
         elif self.type == 'int':
             type = 'int32_t'
-        elif self.type == 'uint':
+        elif self.type in ['uint', 'padded']:
             type = 'uint32_t'
         elif self.type in self.parser.structs:
             type = 'struct ' + self.parser.gen_prefix(safe_name(self.type.upper()))
@@ -358,6 +384,9 @@ class Group(object):
                 if field.type == "uint" or field.type == "address":
                     s = "__gen_uint(%s, %d, %d)" % \
                         (value, start, end)
+                elif field.type == "padded":
+                    s = "__gen_padded(%s, %d, %d)" % \
+                        (value, start, end)
                 elif field.type in self.parser.enums:
                     s = "__gen_uint(%s, %d, %d)" % \
                         (value, start, end)
@@ -437,6 +466,8 @@ class Group(object):
                 convert = "__gen_unpack_uint"
             elif field.type == "int":
                 convert = "__gen_unpack_sint"
+            elif field.type == "padded":
+                convert = "__gen_unpack_padded"
             elif field.type == "bool":
                 convert = "__gen_unpack_uint"
             elif field.type == "float":
@@ -553,7 +584,10 @@ class Parser(object):
                 default_fields.append("   .{} = {{ {}_header }}".format(field.name, self.gen_prefix(safe_name(field.type.upper()))))
 
         print('#define %-40s\\' % (name + '_header'))
-        print(",  \\\n".join(default_fields))
+        if default_fields:
+            print(",  \\\n".join(default_fields))
+        else:
+            print('   0')
         print('')
 
     def emit_template_struct(self, name, group, opaque_structs):

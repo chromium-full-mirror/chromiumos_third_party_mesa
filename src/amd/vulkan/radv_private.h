@@ -741,7 +741,7 @@ struct radv_queue {
 struct radv_bo_list {
 	struct radv_winsys_bo_list list;
 	unsigned capacity;
-	pthread_mutex_t mutex;
+	pthread_rwlock_t rwlock;
 };
 
 VkResult radv_bo_list_add(struct radv_device *device,
@@ -846,6 +846,7 @@ struct radv_device {
 	void *thread_trace_ptr;
 	uint32_t thread_trace_buffer_size;
 	int thread_trace_start_frame;
+	char *thread_trace_trigger_file;
 
 	/* Trap handler. */
 	struct radv_shader_variant *trap_handler_shader;
@@ -2576,7 +2577,7 @@ si_conv_gl_prim_to_vertices(unsigned gl_prim)
 	case 0xc: /* GL_TRIANGLES_ADJACENCY_ARB */
 		return 6;
 	case 7: /* GL_QUADS */
-		return V_028A6C_OUTPRIM_TYPE_TRISTRIP;
+		return V_028A6C_TRISTRIP;
 	default:
 		assert(0);
 		return 0;

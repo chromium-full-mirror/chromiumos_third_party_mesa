@@ -115,7 +115,7 @@ indirect_uniform_load(struct vc4_compile *c, nir_intrinsic_instr *intr)
 static struct qreg
 vc4_ubo_load(struct vc4_compile *c, nir_intrinsic_instr *intr)
 {
-        int buffer_index = nir_src_as_uint(intr->src[0]);
+        ASSERTED int buffer_index = nir_src_as_uint(intr->src[0]);
         assert(buffer_index == 1);
         assert(c->stage == QSTAGE_FRAG);
 
@@ -1546,8 +1546,7 @@ vc4_optimize_nir(struct nir_shader *s)
 
                         NIR_PASS(lower_flrp_progress, s, nir_lower_flrp,
                                  lower_flrp,
-                                 false /* always_precise */,
-                                 s->options->lower_ffma);
+                                 false /* always_precise */);
                         if (lower_flrp_progress) {
                                 NIR_PASS(progress, s, nir_opt_constant_folding);
                                 progress = true;

@@ -762,6 +762,10 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
     */
    ctx->Point.MaxSize = MAX2(ctx->Const.MaxPointSize,
                              ctx->Const.MaxPointSizeAA);
+
+   ctx->Const.NoClippingOnCopyTex = screen->get_param(screen,
+                                                      PIPE_CAP_NO_CLIP_ON_COPY_TEX);
+
    /* For vertex shaders, make sure not to emit saturate when SM 3.0
     * is not supported
     */
@@ -810,6 +814,17 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    st->shader_has_one_variant[MESA_SHADER_COMPUTE] = st->has_shareable_shaders;
 
    st->bitmap.cache.empty = true;
+
+   if (ctx->Const.ForceGLNamesReuse && ctx->Shared->RefCount == 1) {
+      _mesa_HashEnableNameReuse(ctx->Shared->TexObjects);
+      _mesa_HashEnableNameReuse(ctx->Shared->ShaderObjects);
+      _mesa_HashEnableNameReuse(ctx->Shared->BufferObjects);
+      _mesa_HashEnableNameReuse(ctx->Shared->SamplerObjects);
+      _mesa_HashEnableNameReuse(ctx->Shared->FrameBuffers);
+      _mesa_HashEnableNameReuse(ctx->Shared->RenderBuffers);
+      _mesa_HashEnableNameReuse(ctx->Shared->MemoryObjects);
+      _mesa_HashEnableNameReuse(ctx->Shared->SemaphoreObjects);
+   }
 
    _mesa_override_extensions(ctx);
    _mesa_compute_version(ctx);

@@ -869,6 +869,12 @@ void st_init_extensions(struct pipe_screen *screen,
           PIPE_FORMAT_R16_SNORM,
           PIPE_FORMAT_R16G16_SNORM,
           PIPE_FORMAT_R16G16B16A16_SNORM } },
+
+      { { o(EXT_color_buffer_half_float) },
+        { PIPE_FORMAT_R16_FLOAT,
+          PIPE_FORMAT_R16G16_FLOAT,
+          PIPE_FORMAT_R16G16B16X16_FLOAT,
+          PIPE_FORMAT_R16G16B16A16_FLOAT } },
    };
 
    /* Required: render target, sampler, and blending */
@@ -1214,6 +1220,8 @@ void st_init_extensions(struct pipe_screen *screen,
    } else {
       consts->GLSLZeroInit = screen->get_param(screen, PIPE_CAP_GLSL_ZERO_INIT);
    }
+
+   consts->ForceGLNamesReuse = options->force_gl_names_reuse;
 
    consts->ForceIntegerTexNearest = options->force_integer_tex_nearest;
 

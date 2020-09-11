@@ -224,7 +224,7 @@ glsl_to_nir(struct gl_context *ctx,
     * inline functions.  That way they get properly initialized at the top
     * of the function and not at the top of its caller.
     */
-   nir_lower_variable_initializers(shader, (nir_variable_mode)~0);
+   nir_lower_variable_initializers(shader, nir_var_all);
    nir_lower_returns(shader);
    nir_inline_functions(shader);
    nir_opt_deref(shader);
@@ -1334,6 +1334,8 @@ nir_visitor::visit(ir_call *ir)
          } else if (op == nir_intrinsic_image_deref_load ||
                     op == nir_intrinsic_image_deref_store) {
             instr->num_components = 4;
+            nir_intrinsic_set_type(instr,
+               nir_get_nir_type_for_glsl_base_type(type->sampled_type));
          }
 
          if (op == nir_intrinsic_image_deref_size ||
@@ -1988,7 +1990,7 @@ nir_visitor::visit(ir_expression *ir)
    }
 
    case ir_unop_u2ump: {
-      result = nir_build_alu(&b, nir_op_u2ump, srcs[0], NULL, NULL, NULL);
+      result = nir_build_alu(&b, nir_op_i2imp, srcs[0], NULL, NULL, NULL);
       break;
    }
 
@@ -2190,10 +2192,10 @@ nir_visitor::visit(ir_expression *ir)
    case ir_binop_logic_xor:
       result = nir_ixor(&b, srcs[0], srcs[1]);
       break;
-   case ir_binop_lshift: result = nir_ishl(&b, srcs[0], srcs[1]); break;
+   case ir_binop_lshift: result = nir_ishl(&b, srcs[0], nir_u2u32(&b, srcs[1])); break;
    case ir_binop_rshift:
-      result = (type_is_signed(out_type)) ? nir_ishr(&b, srcs[0], srcs[1])
-                                          : nir_ushr(&b, srcs[0], srcs[1]);
+      result = (type_is_signed(out_type)) ? nir_ishr(&b, srcs[0], nir_u2u32(&b, srcs[1]))
+                                          : nir_ushr(&b, srcs[0], nir_u2u32(&b, srcs[1]));
       break;
    case ir_binop_imul_high:
       result = (out_type == GLSL_TYPE_INT) ? nir_imul_high(&b, srcs[0], srcs[1])

@@ -680,6 +680,7 @@ enum glsl_interp_mode
    INTERP_MODE_FLAT,
    INTERP_MODE_NOPERSPECTIVE,
    INTERP_MODE_EXPLICIT,
+   INTERP_MODE_COLOR, /**< glShadeModel determines the interp mode */
    INTERP_MODE_COUNT /**< Number of interpolation qualifiers */
 };
 
@@ -898,6 +899,23 @@ enum float_controls
    FLOAT_CONTROLS_ROUNDING_MODE_RTZ_FP16            = 0x1000,
    FLOAT_CONTROLS_ROUNDING_MODE_RTZ_FP32            = 0x2000,
    FLOAT_CONTROLS_ROUNDING_MODE_RTZ_FP64            = 0x4000,
+};
+
+/**
+* Enums to describe sampler properties used by OpenCL's inline constant samplers.
+* These values match the meanings described in the SPIR-V spec.
+*/
+enum cl_sampler_addressing_mode {
+   SAMPLER_ADDRESSING_MODE_NONE = 0,
+   SAMPLER_ADDRESSING_MODE_CLAMP_TO_EDGE = 1,
+   SAMPLER_ADDRESSING_MODE_CLAMP = 2,
+   SAMPLER_ADDRESSING_MODE_REPEAT = 3,
+   SAMPLER_ADDRESSING_MODE_REPEAT_MIRRORED = 4,
+};
+
+enum cl_sampler_filter_mode {
+   SAMPLER_FILTER_MODE_NEAREST = 0,
+   SAMPLER_FILTER_MODE_LINEAR = 1,
 };
 
 #ifdef __cplusplus

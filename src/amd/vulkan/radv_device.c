@@ -26,20 +26,10 @@
  */
 
 #include "dirent.h"
-#include <errno.h>
-#include <fcntl.h>
-#include <linux/audit.h>
-#include <linux/bpf.h>
-#include <linux/filter.h>
-#include <linux/seccomp.h>
-#include <linux/unistd.h>
+
 #include <stdatomic.h>
 #include <stdbool.h>
-#include <stddef.h>
-#include <stdio.h>
 #include <string.h>
-#include <sys/prctl.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -138,15 +128,25 @@ radv_get_device_uuid(struct radeon_info *info, void *uuid)
 }
 
 static uint64_t
+radv_get_adjusted_vram_size(struct radv_physical_device *device)
+{
+	int ov = driQueryOptioni(&device->instance->dri_options,
+	                         "override_vram_size");
+	if (ov >= 0)
+		return MIN2(device->rad_info.vram_size, (uint64_t)ov << 20);
+	return device->rad_info.vram_size;
+}
+
+static uint64_t
 radv_get_visible_vram_size(struct radv_physical_device *device)
 {
-	return MIN2(device->rad_info.vram_size, device->rad_info.vram_vis_size);
+	return MIN2(radv_get_adjusted_vram_size(device) , device->rad_info.vram_vis_size);
 }
 
 static uint64_t
 radv_get_vram_size(struct radv_physical_device *device)
 {
-	return device->rad_info.vram_size - radv_get_visible_vram_size(device);
+	return radv_get_adjusted_vram_size(device) - device->rad_info.vram_vis_size;
 }
 
 static void
@@ -619,6 +619,7 @@ DRI_CONF_BEGIN
 	DRI_CONF_SECTION_END
 
 	DRI_CONF_SECTION_DEBUG
+		DRI_CONF_OVERRIDE_VRAM_SIZE()
 		DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST("false")
 	DRI_CONF_SECTION_END
 DRI_CONF_END;
@@ -2205,7 +2206,7 @@ radv_get_memory_budget_properties(VkPhysicalDevice physicalDevice,
 							     RADEON_ALLOCATED_VRAM);
 
 			heap_budget = vram_size -
-				device->ws->query_value(device->ws, RADEON_VRAM_USAGE) +
+				MIN2(vram_size, device->ws->query_value(device->ws, RADEON_VRAM_USAGE)) +
 				heap_usage;
 
 			memoryBudget->heapBudget[heap_index] = heap_budget;
@@ -2215,7 +2216,7 @@ radv_get_memory_budget_properties(VkPhysicalDevice physicalDevice,
 							     RADEON_ALLOCATED_VRAM_VIS);
 
 			heap_budget = visible_vram_size -
-				device->ws->query_value(device->ws, RADEON_VRAM_VIS_USAGE) +
+				MIN2(visible_vram_size, device->ws->query_value(device->ws, RADEON_VRAM_VIS_USAGE)) +
 				heap_usage;
 
 			memoryBudget->heapBudget[heap_index] = heap_budget;
@@ -2382,7 +2383,7 @@ radv_queue_finish(struct radv_queue *queue)
 static void
 radv_bo_list_init(struct radv_bo_list *bo_list)
 {
-	pthread_mutex_init(&bo_list->mutex, NULL);
+	pthread_rwlock_init(&bo_list->rwlock, NULL);
 	bo_list->list.count = bo_list->capacity = 0;
 	bo_list->list.bos = NULL;
 }
@@ -2391,7 +2392,7 @@ static void
 radv_bo_list_finish(struct radv_bo_list *bo_list)
 {
 	free(bo_list->list.bos);
-	pthread_mutex_destroy(&bo_list->mutex);
+	pthread_rwlock_destroy(&bo_list->rwlock);
 }
 
 VkResult radv_bo_list_add(struct radv_device *device,
@@ -2405,13 +2406,13 @@ VkResult radv_bo_list_add(struct radv_device *device,
 	if (unlikely(!device->use_global_bo_list))
 		return VK_SUCCESS;
 
-	pthread_mutex_lock(&bo_list->mutex);
+	pthread_rwlock_wrlock(&bo_list->rwlock);
 	if (bo_list->list.count == bo_list->capacity) {
 		unsigned capacity = MAX2(4, bo_list->capacity * 2);
 		void *data = realloc(bo_list->list.bos, capacity * sizeof(struct radeon_winsys_bo*));
 
 		if (!data) {
-			pthread_mutex_unlock(&bo_list->mutex);
+			pthread_rwlock_unlock(&bo_list->rwlock);
 			return VK_ERROR_OUT_OF_HOST_MEMORY;
 		}
 
@@ -2420,7 +2421,7 @@ VkResult radv_bo_list_add(struct radv_device *device,
 	}
 
 	bo_list->list.bos[bo_list->list.count++] = bo;
-	pthread_mutex_unlock(&bo_list->mutex);
+	pthread_rwlock_unlock(&bo_list->rwlock);
 	return VK_SUCCESS;
 }
 
@@ -2435,7 +2436,7 @@ void radv_bo_list_remove(struct radv_device *device,
 	if (unlikely(!device->use_global_bo_list))
 		return;
 
-	pthread_mutex_lock(&bo_list->mutex);
+	pthread_rwlock_wrlock(&bo_list->rwlock);
 	/* Loop the list backwards so we find the most recently added
 	 * memory first. */
 	for(unsigned i = bo_list->list.count; i-- > 0;) {
@@ -2445,7 +2446,7 @@ void radv_bo_list_remove(struct radv_device *device,
 			break;
 		}
 	}
-	pthread_mutex_unlock(&bo_list->mutex);
+	pthread_rwlock_unlock(&bo_list->rwlock);
 }
 
 static void
@@ -2486,15 +2487,20 @@ radv_get_int_debug_option(const char *name, int default_value)
 	return result;
 }
 
+static bool radv_thread_trace_enabled()
+{
+	return radv_get_int_debug_option("RADV_THREAD_TRACE", -1) >= 0 ||
+	       getenv("RADV_THREAD_TRACE_TRIGGER");
+}
+
 static void
 radv_device_init_dispatch(struct radv_device *device)
 {
 	const struct radv_instance *instance = device->physical_device->instance;
 	const struct radv_device_dispatch_table *dispatch_table_layer = NULL;
 	bool unchecked = instance->debug_flags & RADV_DEBUG_ALL_ENTRYPOINTS;
-	int radv_thread_trace = radv_get_int_debug_option("RADV_THREAD_TRACE", -1);
 
-	if (radv_thread_trace >= 0) {
+	if (radv_thread_trace_enabled()) {
 		/* Use device entrypoints from the SQTT layer if enabled. */
 		dispatch_table_layer = &sqtt_device_dispatch_table;
 	}
@@ -2792,11 +2798,16 @@ VkResult radv_CreateDevice(
 		fprintf(stderr, "*****************************************************************************\n");
 
 		fprintf(stderr, "Trace file will be dumped to %s\n", filename);
+
+		/* Wait for idle after every draw/dispatch to identify the
+		 * first bad call.
+		 */
+		device->instance->debug_flags |= RADV_DEBUG_SYNC_SHADERS;
+
 		radv_dump_enabled_options(device, stderr);
 	}
 
-	int radv_thread_trace = radv_get_int_debug_option("RADV_THREAD_TRACE", -1);
-	if (radv_thread_trace >= 0) {
+	if (radv_thread_trace_enabled()) {
 		fprintf(stderr, "*************************************************\n");
 		fprintf(stderr, "* WARNING: Thread trace support is experimental *\n");
 		fprintf(stderr, "*************************************************\n");
@@ -2811,7 +2822,11 @@ VkResult radv_CreateDevice(
 		/* Default buffer size set to 1MB per SE. */
 		device->thread_trace_buffer_size =
 			radv_get_int_debug_option("RADV_THREAD_TRACE_BUFFER_SIZE", 1024 * 1024);
-		device->thread_trace_start_frame = radv_thread_trace;
+		device->thread_trace_start_frame = radv_get_int_debug_option("RADV_THREAD_TRACE", -1);
+
+		const char *trigger_file = getenv("RADV_THREAD_TRACE_TRIGGER");
+		if (trigger_file)
+			device->thread_trace_trigger_file = strdup(trigger_file);
 
 		if (!radv_thread_trace_init(device))
 			goto fail;
@@ -2820,6 +2835,10 @@ VkResult radv_CreateDevice(
 	if (getenv("RADV_TRAP_HANDLER")) {
 		/* TODO: Add support for more hardware. */
 		assert(device->physical_device->rad_info.chip_class == GFX8);
+
+		fprintf(stderr, "**********************************************************************\n");
+		fprintf(stderr, "* WARNING: RADV_TRAP_HANDLER is experimental and only for debugging! *\n");
+		fprintf(stderr, "**********************************************************************\n");
 
 		/* To get the disassembly of the faulty shaders, we have to
 		 * keep some shader info around.
@@ -2905,6 +2924,7 @@ fail:
 	radv_bo_list_finish(&device->bo_list);
 
 	radv_thread_trace_finish(device);
+	free(device->thread_trace_trigger_file);
 
 	radv_trap_handler_finish(device);
 
@@ -2964,6 +2984,7 @@ void radv_DestroyDevice(
 	pthread_cond_destroy(&device->timeline_cond);
 	radv_bo_list_finish(&device->bo_list);
 
+	free(device->thread_trace_trigger_file);
 	radv_thread_trace_finish(device);
 
 	vk_free(&device->vk.alloc, device);
@@ -3271,8 +3292,8 @@ radv_get_hs_offchip_param(struct radv_device *device, uint32_t *max_offchip_buff
 		if (device->physical_device->rad_info.chip_class >= GFX8)
 			--max_offchip_buffers;
 		hs_offchip_param =
-			S_03093C_OFFCHIP_BUFFERING(max_offchip_buffers) |
-			S_03093C_OFFCHIP_GRANULARITY(offchip_granularity);
+			S_03093C_OFFCHIP_BUFFERING_GFX7(max_offchip_buffers) |
+			S_03093C_OFFCHIP_GRANULARITY_GFX7(offchip_granularity);
 	} else {
 		hs_offchip_param =
 			S_0089B0_OFFCHIP_BUFFERING(max_offchip_buffers);
@@ -4404,6 +4425,12 @@ radv_queue_enqueue_submission(struct radv_deferred_queue_submission *submission,
 	 * submitted, but if the queue was empty, we decrement ourselves as there is no previous
 	 * submission. */
 	uint32_t decrement = submission->wait_semaphore_count - wait_cnt + (is_first ? 1 : 0);
+
+	/* if decrement is zero, then we don't have a refcounted reference to the
+	 * submission anymore, so it is not safe to access the submission. */
+	if (!decrement)
+		return VK_SUCCESS;
+
 	return radv_queue_trigger_submission(submission, decrement, processing_list);
 }
 
@@ -4533,7 +4560,7 @@ radv_queue_submit_deferred(struct radv_deferred_queue_submission *submission,
 			sem_info.cs_emit_signal = j + advance == submission->cmd_buffer_count;
 
 			if (unlikely(queue->device->use_global_bo_list)) {
-				pthread_mutex_lock(&queue->device->bo_list.mutex);
+				pthread_rwlock_rdlock(&queue->device->bo_list.rwlock);
 				bo_list = &queue->device->bo_list.list;
 			}
 
@@ -4543,7 +4570,7 @@ radv_queue_submit_deferred(struct radv_deferred_queue_submission *submission,
 							      can_patch, base_fence);
 
 			if (unlikely(queue->device->use_global_bo_list))
-				pthread_mutex_unlock(&queue->device->bo_list.mutex);
+				pthread_rwlock_unlock(&queue->device->bo_list.rwlock);
 
 			if (result != VK_SUCCESS)
 				goto fail;
@@ -7409,7 +7436,7 @@ radv_init_sampler(struct radv_device *device,
 		sampler->state[2] |=
 			S_008F38_DISABLE_LSB_CEIL(device->physical_device->rad_info.chip_class <= GFX8) |
 			S_008F38_FILTER_PREC_FIX(1) |
-			S_008F38_ANISO_OVERRIDE_GFX6(device->physical_device->rad_info.chip_class >= GFX8);
+			S_008F38_ANISO_OVERRIDE_GFX8(device->physical_device->rad_info.chip_class >= GFX8);
 	}
 }
 
@@ -7921,7 +7948,9 @@ radv_GetDeviceGroupPeerMemoryFeatures(
 static const VkTimeDomainEXT radv_time_domains[] = {
 	VK_TIME_DOMAIN_DEVICE_EXT,
 	VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT,
+#ifdef CLOCK_MONOTONIC_RAW
 	VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT,
+#endif
 };
 
 VkResult radv_GetPhysicalDeviceCalibrateableTimeDomainsEXT(
@@ -7948,8 +7977,10 @@ radv_clock_gettime(clockid_t clock_id)
 	int ret;
 
 	ret = clock_gettime(clock_id, &current);
+#ifdef CLOCK_MONOTONIC_RAW
 	if (ret < 0 && clock_id == CLOCK_MONOTONIC_RAW)
 		ret = clock_gettime(CLOCK_MONOTONIC, &current);
+#endif
 	if (ret < 0)
 		return 0;
 
@@ -7969,7 +8000,11 @@ VkResult radv_GetCalibratedTimestampsEXT(
 	uint64_t begin, end;
         uint64_t max_clock_period = 0;
 
+#ifdef CLOCK_MONOTONIC_RAW
 	begin = radv_clock_gettime(CLOCK_MONOTONIC_RAW);
+#else
+	begin = radv_clock_gettime(CLOCK_MONOTONIC);
+#endif
 
 	for (d = 0; d < timestampCount; d++) {
 		switch (pTimestampInfos[d].timeDomain) {
@@ -7984,16 +8019,22 @@ VkResult radv_GetCalibratedTimestampsEXT(
                         max_clock_period = MAX2(max_clock_period, 1);
 			break;
 
+#ifdef CLOCK_MONOTONIC_RAW
 		case VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT:
 			pTimestamps[d] = begin;
 			break;
+#endif
 		default:
 			pTimestamps[d] = 0;
 			break;
 		}
 	}
 
+#ifdef CLOCK_MONOTONIC_RAW
 	end = radv_clock_gettime(CLOCK_MONOTONIC_RAW);
+#else
+	end = radv_clock_gettime(CLOCK_MONOTONIC);
+#endif
 
         /*
          * The maximum deviation is the sum of the interval over which we

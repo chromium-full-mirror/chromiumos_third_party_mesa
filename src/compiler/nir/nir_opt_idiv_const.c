@@ -102,38 +102,22 @@ nir_opt_idiv_const_instr(nir_builder *b, nir_alu_instr *alu)
    assert(alu->dest.dest.is_ssa);
    assert(alu->src[0].src.is_ssa && alu->src[1].src.is_ssa);
 
-   nir_const_value *const_denom = nir_src_as_const_value(alu->src[1].src);
-   if (!const_denom)
+   if (!nir_src_is_const(alu->src[1].src))
       return false;
 
    unsigned bit_size = alu->src[1].src.ssa->bit_size;
 
    b->cursor = nir_before_instr(&alu->instr);
 
-   nir_ssa_def *q[4];
+   nir_ssa_def *q[NIR_MAX_VEC_COMPONENTS];
    for (unsigned comp = 0; comp < alu->dest.dest.ssa.num_components; comp++) {
       /* Get the numerator for the channel */
       nir_ssa_def *n = nir_channel(b, alu->src[0].src.ssa,
                                    alu->src[0].swizzle[comp]);
 
       /* Get the denominator for the channel */
-      int64_t d;
-      switch (bit_size) {
-      case 8:
-         d = const_denom[alu->src[1].swizzle[comp]].i8;
-         break;
-      case 16:
-         d = const_denom[alu->src[1].swizzle[comp]].i16;
-         break;
-      case 32:
-         d = const_denom[alu->src[1].swizzle[comp]].i32;
-         break;
-      case 64:
-         d = const_denom[alu->src[1].swizzle[comp]].i64;
-         break;
-      default:
-         unreachable("Invalid bit size");
-      }
+      int64_t d = nir_src_comp_as_int(alu->src[1].src,
+                                      alu->src[1].swizzle[comp]);
 
       nir_alu_type d_type = nir_op_infos[alu->op].input_types[1];
       if (nir_alu_type_get_base_type(d_type) == nir_type_uint) {

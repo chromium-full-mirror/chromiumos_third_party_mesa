@@ -102,7 +102,6 @@ brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo)
 
    brw_fs_alloc_reg_sets(compiler);
    brw_vec4_alloc_reg_set(compiler);
-   brw_init_compaction_tables(devinfo);
 
    compiler->precise_trig = env_var_as_boolean("INTEL_PRECISE_TRIG", false);
 
@@ -163,13 +162,13 @@ brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo)
       compiler->glsl_compiler_options[i].MaxIfDepth =
          devinfo->gen < 6 ? 16 : UINT_MAX;
 
-      compiler->glsl_compiler_options[i].EmitNoIndirectInput = true;
+      /* We handle this in NIR */
+      compiler->glsl_compiler_options[i].EmitNoIndirectInput = false;
+      compiler->glsl_compiler_options[i].EmitNoIndirectOutput = false;
       compiler->glsl_compiler_options[i].EmitNoIndirectUniform = false;
+      compiler->glsl_compiler_options[i].EmitNoIndirectTemp = false;
 
       bool is_scalar = compiler->scalar_stage[i];
-
-      compiler->glsl_compiler_options[i].EmitNoIndirectOutput = is_scalar;
-      compiler->glsl_compiler_options[i].EmitNoIndirectTemp = is_scalar;
       compiler->glsl_compiler_options[i].OptimizeForAOS = !is_scalar;
 
       struct nir_shader_compiler_options *nir_options =
@@ -199,13 +198,6 @@ brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo)
 
       compiler->glsl_compiler_options[i].ClampBlockIndicesToArrayBounds = true;
    }
-
-   compiler->glsl_compiler_options[MESA_SHADER_TESS_CTRL].EmitNoIndirectInput = false;
-   compiler->glsl_compiler_options[MESA_SHADER_TESS_EVAL].EmitNoIndirectInput = false;
-   compiler->glsl_compiler_options[MESA_SHADER_TESS_CTRL].EmitNoIndirectOutput = false;
-
-   if (compiler->scalar_stage[MESA_SHADER_GEOMETRY])
-      compiler->glsl_compiler_options[MESA_SHADER_GEOMETRY].EmitNoIndirectInput = false;
 
    return compiler;
 }
@@ -267,4 +259,23 @@ brw_prog_key_size(gl_shader_stage stage)
    };
    assert((int)stage >= 0 && stage < ARRAY_SIZE(stage_sizes));
    return stage_sizes[stage];
+}
+
+void
+brw_write_shader_relocs(const struct gen_device_info *devinfo,
+                        void *program,
+                        const struct brw_stage_prog_data *prog_data,
+                        struct brw_shader_reloc_value *values,
+                        unsigned num_values)
+{
+   for (unsigned i = 0; i < prog_data->num_relocs; i++) {
+      assert(prog_data->relocs[i].offset % 8 == 0);
+      brw_inst *inst = (brw_inst *)(program + prog_data->relocs[i].offset);
+      for (unsigned j = 0; j < num_values; j++) {
+         if (prog_data->relocs[i].id == values[j].id) {
+            brw_update_reloc_imm(devinfo, inst, values[j].value);
+            break;
+         }
+      }
+   }
 }

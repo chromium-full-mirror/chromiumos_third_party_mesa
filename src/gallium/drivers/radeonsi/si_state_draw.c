@@ -118,7 +118,7 @@ static void si_emit_derived_tess_state(struct si_context *sctx, const struct pip
 
    if (sctx->tcs_shader.cso) {
       num_tcs_outputs = util_last_bit64(tcs->outputs_written);
-      num_tcs_output_cp = tcs->info.properties[TGSI_PROPERTY_TCS_VERTICES_OUT];
+      num_tcs_output_cp = tcs->info.base.tess.tcs_vertices_out;
       num_tcs_patch_outputs = util_last_bit64(tcs->patch_outputs_written);
    } else {
       /* No TCS. Route varyings from LS to TES. */
@@ -527,22 +527,22 @@ static unsigned si_get_ia_multi_vgt_param(struct si_context *sctx,
 static unsigned si_conv_prim_to_gs_out(unsigned mode)
 {
    static const int prim_conv[] = {
-      [PIPE_PRIM_POINTS] = V_028A6C_OUTPRIM_TYPE_POINTLIST,
-      [PIPE_PRIM_LINES] = V_028A6C_OUTPRIM_TYPE_LINESTRIP,
-      [PIPE_PRIM_LINE_LOOP] = V_028A6C_OUTPRIM_TYPE_LINESTRIP,
-      [PIPE_PRIM_LINE_STRIP] = V_028A6C_OUTPRIM_TYPE_LINESTRIP,
-      [PIPE_PRIM_TRIANGLES] = V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-      [PIPE_PRIM_TRIANGLE_STRIP] = V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-      [PIPE_PRIM_TRIANGLE_FAN] = V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-      [PIPE_PRIM_QUADS] = V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-      [PIPE_PRIM_QUAD_STRIP] = V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-      [PIPE_PRIM_POLYGON] = V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-      [PIPE_PRIM_LINES_ADJACENCY] = V_028A6C_OUTPRIM_TYPE_LINESTRIP,
-      [PIPE_PRIM_LINE_STRIP_ADJACENCY] = V_028A6C_OUTPRIM_TYPE_LINESTRIP,
-      [PIPE_PRIM_TRIANGLES_ADJACENCY] = V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-      [PIPE_PRIM_TRIANGLE_STRIP_ADJACENCY] = V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-      [PIPE_PRIM_PATCHES] = V_028A6C_OUTPRIM_TYPE_POINTLIST,
-      [SI_PRIM_RECTANGLE_LIST] = V_028A6C_VGT_OUT_RECT_V0,
+      [PIPE_PRIM_POINTS] = V_028A6C_POINTLIST,
+      [PIPE_PRIM_LINES] = V_028A6C_LINESTRIP,
+      [PIPE_PRIM_LINE_LOOP] = V_028A6C_LINESTRIP,
+      [PIPE_PRIM_LINE_STRIP] = V_028A6C_LINESTRIP,
+      [PIPE_PRIM_TRIANGLES] = V_028A6C_TRISTRIP,
+      [PIPE_PRIM_TRIANGLE_STRIP] = V_028A6C_TRISTRIP,
+      [PIPE_PRIM_TRIANGLE_FAN] = V_028A6C_TRISTRIP,
+      [PIPE_PRIM_QUADS] = V_028A6C_TRISTRIP,
+      [PIPE_PRIM_QUAD_STRIP] = V_028A6C_TRISTRIP,
+      [PIPE_PRIM_POLYGON] = V_028A6C_TRISTRIP,
+      [PIPE_PRIM_LINES_ADJACENCY] = V_028A6C_LINESTRIP,
+      [PIPE_PRIM_LINE_STRIP_ADJACENCY] = V_028A6C_LINESTRIP,
+      [PIPE_PRIM_TRIANGLES_ADJACENCY] = V_028A6C_TRISTRIP,
+      [PIPE_PRIM_TRIANGLE_STRIP_ADJACENCY] = V_028A6C_TRISTRIP,
+      [PIPE_PRIM_PATCHES] = V_028A6C_POINTLIST,
+      [SI_PRIM_RECTANGLE_LIST] = V_028A6C_RECTLIST,
    };
    assert(mode < ARRAY_SIZE(prim_conv));
 
@@ -1549,8 +1549,8 @@ static bool si_all_vs_resources_read_only(struct si_context *sctx, struct pipe_r
 
    /* Samplers. */
    struct si_shader_selector *vs = sctx->vs_shader.cso;
-   if (vs->info.samplers_declared) {
-      unsigned num_samplers = util_last_bit(vs->info.samplers_declared);
+   if (vs->info.base.textures_used) {
+      unsigned num_samplers = util_last_bit(vs->info.base.textures_used);
 
       for (unsigned i = 0; i < num_samplers; i++) {
          struct pipe_sampler_view *view = sctx->samplers[PIPE_SHADER_VERTEX].views[i];
@@ -1563,9 +1563,8 @@ static bool si_all_vs_resources_read_only(struct si_context *sctx, struct pipe_r
    }
 
    /* Images. */
-   if (vs->info.images_declared) {
-      unsigned num_images = util_last_bit(vs->info.images_declared);
-
+   unsigned num_images = vs->info.base.num_images;
+   if (num_images) {
       for (unsigned i = 0; i < num_images; i++) {
          struct pipe_resource *res = sctx->images[PIPE_SHADER_VERTEX].views[i].resource;
          if (!res)
@@ -1689,7 +1688,7 @@ static void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *i
        */
       struct si_shader_selector *tcs = sctx->tcs_shader.cso;
       bool ls_vgpr_fix =
-         tcs && info->vertices_per_patch > tcs->info.properties[TGSI_PROPERTY_TCS_VERTICES_OUT];
+         tcs && info->vertices_per_patch > tcs->info.base.tess.tcs_vertices_out;
 
       if (ls_vgpr_fix != sctx->ls_vgpr_fix) {
          sctx->ls_vgpr_fix = ls_vgpr_fix;
@@ -1827,7 +1826,7 @@ static void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *i
        (!sctx->vs_shader.cso->info.uses_bindless_samplers || pd_msg("uses bindless samplers")) &&
        (!sctx->vs_shader.cso->info.writes_memory || pd_msg("writes memory")) &&
        (!sctx->vs_shader.cso->info.writes_viewport_index || pd_msg("writes viewport index")) &&
-       !sctx->vs_shader.cso->info.properties[TGSI_PROPERTY_VS_WINDOW_SPACE_POSITION] &&
+       !sctx->vs_shader.cso->info.base.vs.window_space_position &&
        !sctx->vs_shader.cso->so.num_outputs &&
 #else
        (sctx->vs_shader.cso->prim_discard_cs_allowed ||

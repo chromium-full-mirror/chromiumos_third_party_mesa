@@ -89,6 +89,10 @@ UCP_ID = "NIR_INTRINSIC_UCP_ID"
 # may access.  This is used to provide bounds if the offset is
 # not constant.
 RANGE = "NIR_INTRINSIC_RANGE"
+# The offset to the start of the NIR_INTRINSIC_RANGE.  This is an alternative
+# to NIR_INTRINSIC_BASE for describing the valid range in intrinsics that don't
+# have the implicit addition of a base to the offset.
+RANGE_BASE = "NIR_INTRINSIC_RANGE_BASE"
 # The vulkan descriptor set binding for vulkan_resource_index
 # intrinsic
 DESC_SET = "NIR_INTRINSIC_DESC_SET"
@@ -386,16 +390,16 @@ atomic3("atomic_counter_comp_swap")
 # argument with the value to be written, and image atomic operations take
 # either one or two additional scalar arguments with the same meaning as in
 # the ARB_shader_image_load_store specification.
-def image(name, src_comp=[], **kwargs):
+def image(name, src_comp=[], extra_indices=[], **kwargs):
     intrinsic("image_deref_" + name, src_comp=[1] + src_comp,
-              indices=[ACCESS], **kwargs)
+              indices=[ACCESS] + extra_indices, **kwargs)
     intrinsic("image_" + name, src_comp=[1] + src_comp,
-              indices=[IMAGE_DIM, IMAGE_ARRAY, FORMAT, ACCESS], **kwargs)
+              indices=[IMAGE_DIM, IMAGE_ARRAY, FORMAT, ACCESS] + extra_indices, **kwargs)
     intrinsic("bindless_image_" + name, src_comp=[1] + src_comp,
-              indices=[IMAGE_DIM, IMAGE_ARRAY, FORMAT, ACCESS], **kwargs)
+              indices=[IMAGE_DIM, IMAGE_ARRAY, FORMAT, ACCESS] + extra_indices, **kwargs)
 
-image("load", src_comp=[4, 1, 1], dest_comp=0, flags=[CAN_ELIMINATE])
-image("store", src_comp=[4, 1, 0, 1])
+image("load", src_comp=[4, 1, 1], extra_indices=[TYPE], dest_comp=0, flags=[CAN_ELIMINATE])
+image("store", src_comp=[4, 1, 0, 1], extra_indices=[TYPE])
 image("atomic_add",  src_comp=[4, 1, 1], dest_comp=1)
 image("atomic_imin",  src_comp=[4, 1, 1], dest_comp=1)
 image("atomic_umin",  src_comp=[4, 1, 1], dest_comp=1)
@@ -411,6 +415,9 @@ image("size",    dest_comp=0, src_comp=[1], flags=[CAN_ELIMINATE, CAN_REORDER])
 image("samples", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
 image("atomic_inc_wrap",  src_comp=[4, 1, 1], dest_comp=1)
 image("atomic_dec_wrap",  src_comp=[4, 1, 1], dest_comp=1)
+# CL-specific format queries
+image("format", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
+image("order", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
 
 # Vulkan descriptor set intrinsics
 #
@@ -621,6 +628,7 @@ system_value("line_width", 1)
 system_value("aa_line_width", 1)
 # BASE=0 for global/shader, BASE=1 for local/function
 system_value("scratch_base_ptr", 0, bit_sizes=[32,64], indices=[BASE])
+system_value("constant_base_ptr", 0, bit_sizes=[32,64])
 
 # Driver-specific viewport scale/offset parameters.
 #
@@ -720,6 +728,10 @@ intrinsic("load_fs_input_interp_deltas", src_comp=[1], dest_comp=3,
 # range (starting at base) of the data from which we are loading.  If
 # range == 0, then the range is unknown.
 #
+# UBO load operations have a nir_intrinsic_range_base() and
+# nir_intrinsic_range() that specify the byte range [range_base,
+# range_base+range] of the UBO that the src offset access must lie within.
+#
 # Some load operations such as UBO/SSBO load and per_vertex loads take an
 # additional source to specify which UBO/SSBO/vertex to load from.
 #
@@ -735,7 +747,7 @@ def load(name, src_comp, indices=[], flags=[]):
 # src[] = { offset }.
 load("uniform", [1], [BASE, RANGE, TYPE], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { buffer_index, offset }.
-load("ubo", [-1, 1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=[CAN_ELIMINATE, CAN_REORDER])
+load("ubo", [-1, 1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET, RANGE_BASE, RANGE], flags=[CAN_ELIMINATE, CAN_REORDER])
 # src[] = { buffer_index, offset in vec4 units }
 load("ubo_vec4", [-1, 1], [ACCESS, COMPONENT], flags=[CAN_ELIMINATE, CAN_REORDER])
 # src[] = { offset }.
@@ -764,6 +776,9 @@ load("constant", [1], [BASE, RANGE, ALIGN_MUL, ALIGN_OFFSET],
      [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { address }.
 load("global", [1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
+# src[] = { address }.
+load("global_constant", [1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET],
+     [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { address }.
 load("kernel_input", [1], [BASE, RANGE, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { offset }.
@@ -935,3 +950,7 @@ image("store_raw_intel", src_comp=[1, 0])
 
 # Number of data items being operated on for a SIMD program.
 system_value("simd_width_intel", 1)
+
+# Load a relocatable 32-bit value
+intrinsic("load_reloc_const_intel", dest_comp=1, bit_sizes=[32],
+          indices=[PARAM_IDX], flags=[CAN_ELIMINATE, CAN_REORDER])

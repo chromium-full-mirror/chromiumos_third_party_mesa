@@ -38,21 +38,6 @@ typedef uint32_t u32;
 typedef uint64_t u64;
 typedef uint64_t mali_ptr;
 
-/* Applies to tiler_gl_enables */
-
-#define MALI_OCCLUSION_QUERY    (1 << 3)
-#define MALI_OCCLUSION_PRECISE  (1 << 4)
-
-/* Set for a glFrontFace(GL_CCW) in a Y=0=TOP coordinate system (like Gallium).
- * In OpenGL, this would corresponds to glFrontFace(GL_CW). Mesa and the blob
- * disagree about how to do viewport flipping, so the blob actually sets this
- * for GL_CW but then has a negative viewport stride */
-
-#define MALI_FRONT_CCW_TOP      (1 << 5)
-
-#define MALI_CULL_FACE_FRONT    (1 << 6)
-#define MALI_CULL_FACE_BACK     (1 << 7)
-
 enum mali_nondominant_mode {
         MALI_BLEND_NON_MIRROR = 0,
         MALI_BLEND_NON_ZERO = 1
@@ -420,106 +405,9 @@ struct mali_payload_write_value {
  * fused payloads.
  */
 
-/* Applies to unknown_draw */
-
-#define MALI_DRAW_INDEXED_UINT8  (0x10)
-#define MALI_DRAW_INDEXED_UINT16 (0x20)
-#define MALI_DRAW_INDEXED_UINT32 (0x30)
-#define MALI_DRAW_INDEXED_SIZE   (0x30)
-#define MALI_DRAW_INDEXED_SHIFT  (4)
-
-#define MALI_DRAW_VARYING_SIZE   (0x100)
-
-/* Set to use first vertex as the provoking vertex for flatshading. Clear to
- * use the last vertex. This is the default in DX and VK, but not in GL. */
-
-#define MALI_DRAW_FLATSHADE_FIRST (0x800)
-
-#define MALI_DRAW_PRIMITIVE_RESTART_FIXED_INDEX (0x10000)
-
 struct mali_vertex_tiler_prefix {
-        /* This is a dynamic bitfield containing the following things in this order:
-         *
-         * - gl_WorkGroupSize.x
-         * - gl_WorkGroupSize.y
-         * - gl_WorkGroupSize.z
-         * - gl_NumWorkGroups.x
-         * - gl_NumWorkGroups.y
-         * - gl_NumWorkGroups.z
-         *
-         * The number of bits allocated for each number is based on the *_shift
-         * fields below. For example, workgroups_y_shift gives the bit that
-         * gl_NumWorkGroups.y starts at, and workgroups_z_shift gives the bit
-         * that gl_NumWorkGroups.z starts at (and therefore one after the bit
-         * that gl_NumWorkGroups.y ends at). The actual value for each gl_*
-         * value is one more than the stored value, since if any of the values
-         * are zero, then there would be no invocations (and hence no job). If
-         * there were 0 bits allocated to a given field, then it must be zero,
-         * and hence the real value is one.
-         *
-         * Vertex jobs reuse the same job dispatch mechanism as compute jobs,
-         * effectively doing glDispatchCompute(1, vertex_count, instance_count)
-         * where vertex count is the number of vertices.
-         */
-        u32 invocation_count;
-
-        /* Bitfield for shifts:
-         *
-         * size_y_shift : 5
-         * size_z_shift : 5
-         * workgroups_x_shift : 6
-         * workgroups_y_shift : 6
-         * workgroups_z_shift : 6
-         * workgroups_x_shift_2 : 4
-         */
-        u32 invocation_shifts;
-
-        u32 draw_mode : 4;
-        u32 unknown_draw : 22;
-
-        /* This is the the same as workgroups_x_shift_2 in compute shaders, but
-         * always 5 for vertex jobs and 6 for tiler jobs. I suspect this has
-         * something to do with how many quads get put in the same execution
-         * engine, which is a balance (you don't want to starve the engine, but
-         * you also want to distribute work evenly).
-         */
-        u32 workgroups_x_shift_3 : 6;
-
-
-        /* Negative of min_index. This is used to compute
-         * the unbiased index in tiler/fragment shader runs.
-         * 
-         * The hardware adds offset_bias_correction in each run,
-         * so that absent an index bias, the first vertex processed is
-         * genuinely the first vertex (0). But with an index bias,
-         * the first vertex process is numbered the same as the bias.
-         *
-         * To represent this more conviniently:
-         * unbiased_index = lower_bound_index +
-         *                  index_bias +
-         *                  offset_bias_correction
-         *
-         * This is done since the hardware doesn't accept a index_bias
-         * and this allows it to recover the unbiased index.
-         */
-        int32_t offset_bias_correction;
-        u32 zero1;
-
-        /* Like many other strictly nonzero quantities, index_count is
-         * subtracted by one. For an indexed cube, this is equal to 35 = 6
-         * faces * 2 triangles/per face * 3 vertices/per triangle - 1. That is,
-         * for an indexed draw, index_count is the number of actual vertices
-         * rendered whereas invocation_count is the number of unique vertices
-         * rendered (the number of times the vertex shader must be invoked).
-         * For non-indexed draws, this is just equal to invocation_count. */
-
-        u32 index_count;
-
-        /* No hidden structure; literally just a pointer to an array of uint
-         * indices (width depends on flags). Thanks, guys, for not making my
-         * life insane for once! NULL for non-indexed draws. */
-
-        u64 indices;
+        struct mali_invocation_packed invocation;
+        struct mali_primitive_packed primitive;
 } __attribute__((packed));
 
 /* Point size / line width can either be specified as a 32-bit float (for
@@ -561,95 +449,23 @@ struct bifrost_tiler_meta {
         u64 zeros[20];
 } __attribute__((packed));
 
-struct bifrost_tiler_only {
-        /* 0x20 */
-        union midgard_primitive_size primitive_size;
-
-        mali_ptr tiler_meta;
-
-        u64 zero1, zero2, zero3, zero4, zero5, zero6;
-} __attribute__((packed));
-
-struct mali_vertex_tiler_postfix {
-        u16 gl_enables; // 0x6 on Midgard, 0x2 on Bifrost
-
-        /* Both zero for non-instanced draws. For instanced draws, a
-         * decomposition of padded_num_vertices. See the comments about the
-         * corresponding fields in mali_attr for context. */
-
-        unsigned instance_shift : 5;
-        unsigned instance_odd : 3;
-
-        u8 zero4;
-
-        /* Offset for first vertex in buffer */
-        u32 offset_start;
-
-	u64 zero5;
-
-        /* Zero for vertex jobs. Pointer to the position (gl_Position) varying
-         * output from the vertex shader for tiler jobs.
-         */
-
-        u64 position_varying;
-
-        /* An array of mali_uniform_buffer_meta's. The size is given by the
-         * shader_meta.
-         */
-        u64 uniform_buffers;
-
-        /* On Bifrost, this is a pointer to an array of bifrost_texture_descriptor.
-         * On Midgard, this is a pointer to an array of pointers to the texture
-         * descriptors, number of pointers bounded by number of textures. The
-         * indirection is needed to accomodate varying numbers and sizes of
-         * texture descriptors */
-        u64 textures;
-
-        /* For OpenGL, from what I've seen, this is intimately connected to
-         * texture_meta. cwabbott says this is not the case under Vulkan, hence
-         * why this field is seperate (Midgard is Vulkan capable). Pointer to
-         * array of sampler descriptors (which are uniform in size) */
-        u64 sampler_descriptor;
-
-        u64 uniforms;
-        u64 shader;
-        u64 attributes; /* struct attribute_buffer[] */
-        u64 attribute_meta; /* attribute_meta[] */
-        u64 varyings; /* struct attr */
-        u64 varying_meta; /* pointer */
-        u64 viewport;
-        u64 occlusion_counter; /* A single bit as far as I can tell */
-
-        /* On Bifrost, this points directly to a mali_shared_memory structure.
-         * On Midgard, this points to a framebuffer (either SFBD or MFBD as
-         * tagged), which embeds a mali_shared_memory structure */
-        mali_ptr shared_memory;
-} __attribute__((packed));
-
 struct midgard_payload_vertex_tiler {
         struct mali_vertex_tiler_prefix prefix;
-        struct mali_vertex_tiler_postfix postfix;
-
+        struct mali_draw_packed postfix;
         union midgard_primitive_size primitive_size;
 } __attribute__((packed));
 
 struct bifrost_payload_vertex {
         struct mali_vertex_tiler_prefix prefix;
-        struct mali_vertex_tiler_postfix postfix;
+        struct mali_draw_packed postfix;
 } __attribute__((packed));
 
 struct bifrost_payload_tiler {
         struct mali_vertex_tiler_prefix prefix;
-        struct bifrost_tiler_only tiler;
-        struct mali_vertex_tiler_postfix postfix;
-} __attribute__((packed));
-
-struct bifrost_payload_fused {
-        struct mali_vertex_tiler_prefix prefix;
-        struct bifrost_tiler_only tiler;
-        struct mali_vertex_tiler_postfix tiler_postfix;
-        u64 padding; /* zero */
-        struct mali_vertex_tiler_postfix vertex_postfix;
+        union midgard_primitive_size primitive_size;
+        mali_ptr tiler_meta;
+        u64 zero1, zero2, zero3, zero4, zero5, zero6;
+        struct mali_draw_packed postfix;
 } __attribute__((packed));
 
 /* Purposeful off-by-one in width, height fields. For example, a (64, 64)

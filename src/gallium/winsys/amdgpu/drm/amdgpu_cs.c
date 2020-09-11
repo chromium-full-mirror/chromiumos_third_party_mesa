@@ -191,25 +191,23 @@ bool amdgpu_fence_wait(struct pipe_fence_handle *fence, uint64_t timeout,
    if (afence->signalled)
       return true;
 
+   if (absolute)
+      abs_timeout = timeout;
+   else
+      abs_timeout = os_time_get_absolute_timeout(timeout);
+
    /* Handle syncobjs. */
    if (amdgpu_fence_is_syncobj(afence)) {
-      /* Absolute timeouts are only be used by BO fences, which aren't
-       * backed by syncobjs.
-       */
-      assert(!absolute);
+      if (abs_timeout == OS_TIMEOUT_INFINITE)
+         abs_timeout = INT64_MAX;
 
       if (amdgpu_cs_syncobj_wait(afence->ws->dev, &afence->syncobj, 1,
-                                 timeout, 0, NULL))
+                                 abs_timeout, 0, NULL))
          return false;
 
       afence->signalled = true;
       return true;
    }
-
-   if (absolute)
-      abs_timeout = timeout;
-   else
-      abs_timeout = os_time_get_absolute_timeout(timeout);
 
    /* The fence might not have a number assigned if its IB is being
     * submitted in the other thread right now. Wait until the submission
@@ -1688,8 +1686,14 @@ finalize:
       /* Success. */
       uint64_t *user_fence = NULL;
 
+      /* Need to reserve 4 QWORD for user fence:
+       *   QWORD[0]: completed fence
+       *   QWORD[1]: preempted fence
+       *   QWORD[2]: reset fence
+       *   QWORD[3]: preempted then reset
+       **/
       if (has_user_fence)
-         user_fence = acs->ctx->user_fence_cpu_address_base + acs->ring_type;
+         user_fence = acs->ctx->user_fence_cpu_address_base + acs->ring_type * 4;
       amdgpu_fence_submitted(cs->fence, seq_no, user_fence);
    }
 
