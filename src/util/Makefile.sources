@@ -20,6 +20,7 @@ MESA_UTIL_FILES := \
 	disk_cache.h \
 	double.c \
 	double.h \
+	enum_operators.h \
 	fast_idiv_by_const.c \
 	fast_idiv_by_const.h \
 	format/u_format.c \
@@ -50,6 +51,8 @@ MESA_UTIL_FILES := \
 	half_float.h \
 	hash_table.c \
 	hash_table.h \
+	u_idalloc.c \
+	u_idalloc.h \
 	list.h \
 	macros.h \
 	mesa-sha1.c \

@@ -38,6 +38,8 @@ struct ra_regs;
 struct nir_shader;
 struct brw_program;
 
+typedef struct nir_shader nir_shader;
+
 struct brw_compiler {
    const struct gen_device_info *devinfo;
 
@@ -642,6 +644,32 @@ enum brw_param_builtin {
 #define BRW_PARAM_BUILTIN_CLIP_PLANE_COMP(param) \
    (((param) - BRW_PARAM_BUILTIN_CLIP_PLANE_0_X) & 0x3)
 
+/** Represents a code relocation
+ *
+ * Relocatable constants are immediates in the code which we want to be able
+ * to replace post-compile with the actual value.
+ */
+struct brw_shader_reloc {
+   /** The 32-bit ID of the relocatable constant */
+   uint32_t id;
+
+   /** The offset in the shader to the relocatable instruction
+    *
+    * This is the offset to the instruction rather than the immediate value
+    * itself.  This allows us to do some sanity checking while we relocate.
+    */
+   uint32_t offset;
+};
+
+/** A value to write to a relocation */
+struct brw_shader_reloc_value {
+   /** The 32-bit ID of the relocatable constant */
+   uint32_t id;
+
+   /** The value with which to replace the relocated immediate */
+   uint32_t value;
+};
+
 struct brw_stage_prog_data {
    struct {
       /** size of our binding table. */
@@ -684,6 +712,12 @@ struct brw_stage_prog_data {
    unsigned total_shared;
 
    unsigned program_size;
+
+   unsigned const_data_size;
+   unsigned const_data_offset;
+
+   unsigned num_relocs;
+   const struct brw_shader_reloc *relocs;
 
    /** Does this program pull from any UBO or other constant buffers? */
    bool has_ubo_pull;
@@ -1367,7 +1401,7 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
                void *mem_ctx,
                const struct brw_vs_prog_key *key,
                struct brw_vs_prog_data *prog_data,
-               struct nir_shader *shader,
+               nir_shader *nir,
                int shader_time_index,
                struct brw_compile_stats *stats,
                char **error_str);
@@ -1383,7 +1417,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
                 void *mem_ctx,
                 const struct brw_tcs_prog_key *key,
                 struct brw_tcs_prog_data *prog_data,
-                struct nir_shader *nir,
+                nir_shader *nir,
                 int shader_time_index,
                 struct brw_compile_stats *stats,
                 char **error_str);
@@ -1399,7 +1433,7 @@ brw_compile_tes(const struct brw_compiler *compiler, void *log_data,
                 const struct brw_tes_prog_key *key,
                 const struct brw_vue_map *input_vue_map,
                 struct brw_tes_prog_data *prog_data,
-                struct nir_shader *shader,
+                nir_shader *nir,
                 int shader_time_index,
                 struct brw_compile_stats *stats,
                 char **error_str);
@@ -1414,7 +1448,7 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
                void *mem_ctx,
                const struct brw_gs_prog_key *key,
                struct brw_gs_prog_data *prog_data,
-               struct nir_shader *shader,
+               nir_shader *nir,
                struct gl_program *prog,
                int shader_time_index,
                struct brw_compile_stats *stats,
@@ -1462,7 +1496,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
                void *mem_ctx,
                const struct brw_wm_prog_key *key,
                struct brw_wm_prog_data *prog_data,
-               struct nir_shader *shader,
+               nir_shader *nir,
                int shader_time_index8,
                int shader_time_index16,
                int shader_time_index32,
@@ -1481,7 +1515,7 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
                void *mem_ctx,
                const struct brw_cs_prog_key *key,
                struct brw_cs_prog_data *prog_data,
-               const struct nir_shader *shader,
+               const nir_shader *nir,
                int shader_time_index,
                struct brw_compile_stats *stats,
                char **error_str);
@@ -1531,6 +1565,13 @@ unsigned
 brw_cs_simd_size_for_group_size(const struct gen_device_info *devinfo,
                                 const struct brw_cs_prog_data *cs_prog_data,
                                 unsigned group_size);
+
+void
+brw_write_shader_relocs(const struct gen_device_info *devinfo,
+                        void *program,
+                        const struct brw_stage_prog_data *prog_data,
+                        struct brw_shader_reloc_value *values,
+                        unsigned num_values);
 
 /**
  * Calculate the RightExecutionMask field used in GPGPU_WALKER.

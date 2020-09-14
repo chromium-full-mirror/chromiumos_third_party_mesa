@@ -842,7 +842,9 @@ gfx10_make_texture_descriptor(struct radv_device *device,
 		   S_00A014_MAX_MIP(image->info.samples > 1 ?
 				    util_logbase2(image->info.samples) :
 				    image->info.levels - 1) |
-		   S_00A014_PERF_MOD(4);
+		   S_00A014_PERF_MOD(4) |
+		   S_00A014_BIG_PAGE(device->physical_device->rad_info.chip_class >= GFX10_3 &&
+				     image->alignment % (64 * 1024) == 0);
 	state[6] = 0;
 	state[7] = 0;
 
@@ -1030,13 +1032,13 @@ si_make_texture_descriptor(struct radv_device *device,
 			fmask_format = V_008F14_IMG_DATA_FORMAT_FMASK;
 			switch (image->info.samples) {
 			case 2:
-				num_format = V_008F14_IMG_FMASK_8_2_2;
+				num_format = V_008F14_IMG_NUM_FORMAT_FMASK_8_2_2;
 				break;
 			case 4:
-				num_format = V_008F14_IMG_FMASK_8_4_4;
+				num_format = V_008F14_IMG_NUM_FORMAT_FMASK_8_4_4;
 				break;
 			case 8:
-				num_format = V_008F14_IMG_FMASK_32_8_8;
+				num_format = V_008F14_IMG_NUM_FORMAT_FMASK_32_8_8;
 				break;
 			default:
 				unreachable("invalid nr_samples");

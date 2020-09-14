@@ -70,12 +70,14 @@ test-docs:
   stage: container+docs
   rules:
     - *ignore_scheduled_pipelines
-    - if: '$CI_PROJECT_NAMESPACE == "mesa"'
-      when: never
     - if: '$GITLAB_USER_LOGIN == "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
       changes: *docs-or-ci
       when: on_success
-    - changes: *docs-or-ci
+    - if: '$GITLAB_USER_LOGIN != "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME && $CI_PROJECT_PATH == "mesa/mesa"'
+      changes: *docs-or-ci
+      when: on_success
+    - if: '$CI_PROJECT_PATH != "mesa/mesa" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+      changes: *docs-or-ci
       when: manual
     # Other cases default to never
 
@@ -118,14 +120,15 @@ success:
   image: debian:stable-slim
   rules:
     - *ignore_scheduled_pipelines
-    - if: '$CI_PROJECT_NAMESPACE == "mesa"'
+    - if: '$CI_PROJECT_NAMESPACE == "mesa" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
       when: never
     - if: '$GITLAB_USER_LOGIN == "marge-bot"'
       changes: *docs-or-ci
       when: never
     - changes: *all_paths
       when: never
-    - when: on_success
+    - if: '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+      when: on_success
   variables:
     GIT_STRATEGY: none
   script:
@@ -167,7 +170,7 @@ success:
     - *ignore_scheduled_pipelines
     # Run pipeline by default in the main project if any CI pipeline
     # configuration files were changed, to ensure docker images are up to date
-    - if: '$CI_PROJECT_PATH == "mesa/mesa"'
+    - if: '$CI_PROJECT_PATH == "mesa/mesa" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
       changes:
       - .gitlab-ci.yml
       - .gitlab-ci/**/*
@@ -180,7 +183,7 @@ success:
       when: on_success
     # Run pipeline by default in the main project if it was not triggered by
     # Marge Bot, and any files affecting the pipeline were changed
-    - if: '$GITLAB_USER_LOGIN != "marge-bot" && $CI_PROJECT_PATH == "mesa/mesa"'
+    - if: '$GITLAB_USER_LOGIN != "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME && $CI_PROJECT_PATH == "mesa/mesa"'
       changes:
         *all_paths
       when: on_success
@@ -204,7 +207,7 @@ x86_build-base:
     - .fdo.container-build@debian
     - .container
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_build-base "2020-07-28-x86-2"
+    FDO_DISTRIBUTION_TAG: &x86_build-base "2020-08-13-gold"
 
 .use-x86_build-base:
   extends:
@@ -222,7 +225,7 @@ x86_build:
   extends:
     - .use-x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_build "2020-08-08-glvnd"
+    FDO_DISTRIBUTION_TAG: &x86_build "2020-09-10-libdrm"
 
 .use-x86_build:
   variables:
@@ -236,7 +239,7 @@ i386_build:
   extends:
     - .use-x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &i386_build "2020-07-28-x86-2"
+    FDO_DISTRIBUTION_TAG: &i386_build "2020-09-10-libdrm"
 
 .use-i386_build:
   variables:
@@ -250,7 +253,7 @@ ppc64el_build:
   extends:
     - .use-x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &ppc64el_build "2020-07-28-x86-2"
+    FDO_DISTRIBUTION_TAG: &ppc64el_build "2020-09-10-libdrm"
 
 .use-ppc64el_build:
   variables:
@@ -264,7 +267,7 @@ s390x_build:
   extends:
     - .use-x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &s390x_build "2020-07-28-x86-2"
+    FDO_DISTRIBUTION_TAG: &s390x_build "2020-09-10-libdrm"
 
 .use-s390x_build:
   variables:
@@ -277,7 +280,7 @@ s390x_build:
 x86_test-base:
   extends: x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_test-base "2020-07-28-x86-2"
+    FDO_DISTRIBUTION_TAG: &x86_test-base "2020-08-13-gold"
 
 .use-x86_test-base:
   extends:
@@ -294,19 +297,19 @@ x86_test-base:
 x86_test-gl:
   extends: .use-x86_test-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_test-gl "2020-08-14-xcb-shm"
+    FDO_DISTRIBUTION_TAG: &x86_test-gl "2020-09-10-libdrm"
 
 # Debian 10 based x86 test image for VK
 x86_test-vk:
   extends: .use-x86_test-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_test-vk "2020-07-28-x86-2"
+    FDO_DISTRIBUTION_TAG: &x86_test-vk "2020-08-31-deqp-version"
 
 # Debian 9 based x86 build image (old LLVM)
 x86_build_old:
   extends: x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_build_old "2020-07-28-x86-2"
+    FDO_DISTRIBUTION_TAG: &x86_build_old "2020-08-13-gold"
     FDO_DISTRIBUTION_VERSION: stretch-slim
 
 .use-x86_build_old:
@@ -322,7 +325,7 @@ arm_build:
     - .fdo.container-build@debian@arm64v8
     - .container
   variables:
-    FDO_DISTRIBUTION_TAG: &arm_build "2020-08-04-nfs-2"
+    FDO_DISTRIBUTION_TAG: &arm_build "2020-09-10-libdrm"
 
 .use-arm_build:
   variables:
@@ -337,7 +340,7 @@ arm_test-base:
     - .fdo.container-build@debian
     - .container
   variables:
-    FDO_DISTRIBUTION_TAG: &arm_test-base "2020-07-28-libdrm"
+    FDO_DISTRIBUTION_TAG: &arm_test-base "2020-09-10-libdrm"
 
 .use-arm_test-base:
   extends:
@@ -355,7 +358,7 @@ arm64_test:
   extends:
     - .use-arm_test-base
   variables:
-    FDO_DISTRIBUTION_TAG: &arm64_test "2020-08-18"
+    FDO_DISTRIBUTION_TAG: &arm64_test "2020-09-04-pagetables"
 
 .use-arm64_test:
   variables:
@@ -559,6 +562,36 @@ meson-gallium:
     - .gitlab-ci/meson-build.sh
     - .gitlab-ci/run-shader-db.sh
     - src/freedreno/.gitlab-ci/run-fdtools.sh
+
+# Test a release build with -Werror so new warnings don't sneak in.
+meson-release:
+  extends: .meson-build
+  variables:
+    UNWIND: "enabled"
+    DRI_LOADERS: >
+      -D glx=dri
+      -D gbm=enabled
+      -D egl=enabled
+      -D platforms=x11,wayland
+    GALLIUM_ST: >
+      -D dri3=enabled
+      -D gallium-extra-hud=true
+      -D gallium-vdpau=enabled
+      -D gallium-xvmc=disabled
+      -D gallium-omx=disabled
+      -D gallium-va=enabled
+      -D gallium-xa=enabled
+      -D gallium-nine=false
+      -D gallium-opencl=disabled
+      -D llvm=false
+    GALLIUM_DRIVERS: "nouveau,kmsro,r300,svga,v3d,vc4,virgl,etnaviv,panfrost,lima,zink"
+    BUILDTYPE: "release"
+    EXTRA_OPTION: >
+      -D osmesa=none
+      -D tools=all
+      -D werror=true
+  script:
+    - .gitlab-ci/meson-build.sh
 
 meson-classic:
   extends: .meson-build
@@ -961,6 +994,15 @@ softpipe-gles31:
     DEQP_VER: gles31
   extends: softpipe-gles2
 
+# Note that KHR-GL3* test sets include all tests from the previous
+# version, so we only need to run one test list (unlike dEQP-GLES,
+# where the test sets are separate).
+softpipe-gl:
+  variables:
+    DEQP_VER: gl33
+  extends:
+    - softpipe-gles2
+
 virgl-gles2-on-gl:
   variables:
     DEQP_VER: gles2
@@ -1110,6 +1152,9 @@ arm64_a630_traces:
     # missing.
     MESA_GLSL_VERSION_OVERRIDE: "460"
     MESA_GL_VERSION_OVERRIDE: "4.6"
+  artifacts:
+    reports:
+      junit: results/junit.xml
 
 # Along with checking gmem path, check that we don't get obvious nir
 # validation failures (though it's too expensive to have it on for the
@@ -1121,6 +1166,11 @@ arm64_a630_gmem:
     CI_NODE_TOTAL: 5
     FD_MESA_DEBUG: nobypass
     NIR_VALIDATE: 1
+
+arm64_a630_gl:
+  extends: arm64_a630_gles2
+  variables:
+    DEQP_VER: gl30
 
 arm64_a630_vk:
   extends: arm64_a630_gles2
@@ -1297,6 +1347,9 @@ radv-fossils:
       - traces-db/
   variables:
     TRACIE_UPLOAD_TO_MINIO: 1
+  artifacts:
+    reports:
+      junit: results/junit.xml
 
 .traces-test-gl:
   extends:

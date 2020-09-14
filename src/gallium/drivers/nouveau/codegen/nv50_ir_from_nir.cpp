@@ -355,6 +355,7 @@ Converter::getFile(nir_intrinsic_op op)
    switch (op) {
    case nir_intrinsic_load_global:
    case nir_intrinsic_store_global:
+   case nir_intrinsic_load_global_constant:
       return FILE_MEMORY_GLOBAL;
    case nir_intrinsic_load_scratch:
    case nir_intrinsic_store_scratch:
@@ -2211,7 +2212,6 @@ Converter::visit(nir_intrinsic_instr *insn)
       case nir_intrinsic_bindless_image_store:
       case nir_intrinsic_image_store:
          ty = TYPE_U32;
-         mask = 0xf;
          bindless = op == nir_intrinsic_bindless_image_store;
          info_out->io.globalAccess |= 0x2;
          lod_src = 5;
@@ -2219,6 +2219,7 @@ Converter::visit(nir_intrinsic_instr *insn)
          break;
       case nir_intrinsic_bindless_image_samples:
          mask = 0x8;
+         /* fallthrough */
       case nir_intrinsic_image_samples:
          ty = TYPE_U32;
          bindless = op == nir_intrinsic_bindless_image_samples;
@@ -2328,7 +2329,8 @@ Converter::visit(nir_intrinsic_instr *insn)
       mkOp1(OP_RDSV, dType, newDefs[1], mkSysVal(SV_CLOCK, 0))->fixed = 1;
       break;
    }
-   case nir_intrinsic_load_global: {
+   case nir_intrinsic_load_global:
+   case nir_intrinsic_load_global_constant: {
       const DataType dType = getDType(insn);
       LValues &newDefs = convert(&insn->dest);
       Value *indirectOffset;
@@ -3122,8 +3124,7 @@ Converter::run()
    NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_function_temp, nir_address_format_32bit_offset);
    NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
 
-   NIR_PASS_V(nir, nir_lower_io,
-              (nir_variable_mode)(nir_var_shader_in | nir_var_shader_out),
+   NIR_PASS_V(nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
               type_size, (nir_lower_io_options)0);
 
    NIR_PASS_V(nir, nir_lower_subgroups, &subgroup_options);

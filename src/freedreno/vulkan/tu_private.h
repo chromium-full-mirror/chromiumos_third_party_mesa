@@ -178,7 +178,6 @@ struct tu_physical_device
 
    struct tu_instance *instance;
 
-   char path[20];
    char name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
    uint8_t driver_uuid[VK_UUID_SIZE];
    uint8_t device_uuid[VK_UUID_SIZE];
@@ -677,12 +676,6 @@ tu_buffer_iova(struct tu_buffer *buffer)
    return buffer->bo->iova + buffer->bo_offset;
 }
 
-struct tu_vertex_binding
-{
-   struct tu_buffer *buffer;
-   VkDeviceSize offset;
-};
-
 const char *
 tu_get_debug_option_name(int id);
 
@@ -862,11 +855,10 @@ struct tu_cmd_state
    struct tu_pipeline *compute_pipeline;
 
    /* Vertex buffers */
-   struct
-   {
-      struct tu_buffer *buffers[MAX_VBS];
-      VkDeviceSize offsets[MAX_VBS];
-   } vb;
+   struct {
+      uint64_t base;
+      uint32_t size;
+   } vb[MAX_VBS];
 
    /* for dynamic states that can't be emitted directly */
    uint32_t dynamic_stencil_mask;
@@ -927,14 +919,6 @@ struct tu_cmd_pool
    uint32_t queue_family_index;
 };
 
-struct tu_cmd_buffer_upload
-{
-   uint8_t *map;
-   unsigned offset;
-   uint64_t size;
-   struct list_head list;
-};
-
 enum tu_cmd_buffer_status
 {
    TU_CMD_BUFFER_STATUS_INVALID,
@@ -992,8 +976,6 @@ struct tu_cmd_buffer
    enum tu_cmd_buffer_status status;
 
    struct tu_cmd_state state;
-   struct tu_vertex_binding vertex_bindings[MAX_VBS];
-   uint32_t vertex_bindings_set;
    uint32_t queue_family_index;
 
    uint32_t push_constants[MAX_PUSH_CONSTANTS_SIZE / 4];
@@ -1001,8 +983,6 @@ struct tu_cmd_buffer
    struct tu_descriptor_set meta_push_descriptors;
 
    struct tu_descriptor_state descriptors[MAX_BIND_POINTS];
-
-   struct tu_cmd_buffer_upload upload;
 
    VkResult record_result;
 
@@ -1059,10 +1039,8 @@ struct tu_shader_module
 {
    struct vk_object_base base;
 
-   unsigned char sha1[20];
-
    uint32_t code_size;
-   const uint32_t *code[0];
+   uint32_t code[];
 };
 
 struct tu_push_constant_range
@@ -1128,6 +1106,9 @@ struct tu_pipeline
    /* draw states for the pipeline */
    struct tu_draw_state load_state, rast_state, ds_state, blend_state;
 
+   /* for vertex buffers state */
+   uint32_t num_vbs;
+
    struct
    {
       struct tu_draw_state state;
@@ -1140,7 +1121,6 @@ struct tu_pipeline
    {
       struct tu_draw_state state;
       struct tu_draw_state binning_state;
-      uint32_t bindings_used;
    } vi;
 
    struct
@@ -1289,10 +1269,6 @@ struct tu_image
 
    struct fdl_layout layout[3];
    uint32_t total_size;
-
-   unsigned queue_family_mask;
-   bool exclusive;
-   bool shareable;
 
    /* For VK_ANDROID_native_buffer, the WSI image owns the memory, */
    VkDeviceMemory owned_memory;

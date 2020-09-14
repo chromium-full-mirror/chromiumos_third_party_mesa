@@ -253,6 +253,7 @@ write_variable(write_ctx *ctx, const nir_variable *var)
     * which is typically after shaders are linked.
     */
    if (ctx->strip &&
+       data.mode != nir_var_system_value &&
        data.mode != nir_var_shader_in &&
        data.mode != nir_var_shader_out)
       data.location = 0;
@@ -636,9 +637,9 @@ union packed_instr {
       unsigned instr_type:4;
       unsigned deref_type:3;
       unsigned cast_type_same_as_last:1;
-      unsigned mode:10; /* deref_var redefines this */
+      unsigned mode:12; /* deref_var redefines this */
       unsigned packed_src_ssa_16bit:1; /* deref_var redefines this */
-      unsigned _pad:5;  /* deref_var redefines this */
+      unsigned _pad:3;  /* deref_var redefines this */
       unsigned dest:8;
    } deref;
    struct {
@@ -980,7 +981,7 @@ static void
 write_deref(write_ctx *ctx, const nir_deref_instr *deref)
 {
    assert(deref->deref_type < 8);
-   assert(deref->mode < (1 << 10));
+   assert(deref->mode < (1 << 12));
 
    union packed_instr header;
    header.u32 = 0;
@@ -1036,6 +1037,8 @@ write_deref(write_ctx *ctx, const nir_deref_instr *deref)
    case nir_deref_type_cast:
       write_src(ctx, &deref->parent);
       blob_write_uint32(ctx->blob, deref->cast.ptr_stride);
+      blob_write_uint32(ctx->blob, deref->cast.align_mul);
+      blob_write_uint32(ctx->blob, deref->cast.align_offset);
       if (!header.deref.cast_type_same_as_last) {
          encode_type_to_blob(ctx->blob, deref->type);
          ctx->last_type = deref->type;
@@ -1100,6 +1103,8 @@ read_deref(read_ctx *ctx, union packed_instr header)
    case nir_deref_type_cast:
       read_src(ctx, &deref->parent, &deref->instr);
       deref->cast.ptr_stride = blob_read_uint32(ctx->blob);
+      deref->cast.align_mul = blob_read_uint32(ctx->blob);
+      deref->cast.align_offset = blob_read_uint32(ctx->blob);
       if (header.deref.cast_type_same_as_last) {
          deref->type = ctx->last_type;
       } else {
@@ -2022,7 +2027,7 @@ nir_serialize(struct blob *blob, const nir_shader *nir, bool strip)
    blob_write_uint32(blob, nir->num_inputs);
    blob_write_uint32(blob, nir->num_uniforms);
    blob_write_uint32(blob, nir->num_outputs);
-   blob_write_uint32(blob, nir->num_shared);
+   blob_write_uint32(blob, nir->shared_size);
    blob_write_uint32(blob, nir->scratch_size);
 
    blob_write_uint32(blob, exec_list_length(&nir->functions));
@@ -2075,7 +2080,7 @@ nir_deserialize(void *mem_ctx,
    ctx.nir->num_inputs = blob_read_uint32(blob);
    ctx.nir->num_uniforms = blob_read_uint32(blob);
    ctx.nir->num_outputs = blob_read_uint32(blob);
-   ctx.nir->num_shared = blob_read_uint32(blob);
+   ctx.nir->shared_size = blob_read_uint32(blob);
    ctx.nir->scratch_size = blob_read_uint32(blob);
 
    unsigned num_functions = blob_read_uint32(blob);

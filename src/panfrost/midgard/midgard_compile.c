@@ -461,6 +461,23 @@ midgard_nir_reorder_writeout(nir_shader *nir)
         return progress;
 }
 
+static bool
+mdg_is_64(const nir_instr *instr, const void *_unused)
+{
+        const nir_alu_instr *alu = nir_instr_as_alu(instr);
+
+        if (nir_dest_bit_size(alu->dest.dest) == 64)
+                return true;
+
+        switch (alu->op) {
+        case nir_op_umul_high:
+        case nir_op_imul_high:
+                return true;
+        default:
+                return false;
+        }
+}
+
 /* Flushes undefined values to zero */
 
 static void
@@ -480,6 +497,7 @@ optimise_nir(nir_shader *nir, unsigned quirks, bool is_blend)
                 .lower_txp = ~0,
                 .lower_tex_without_implicit_lod =
                         (quirks & MIDGARD_EXPLICIT_LOD),
+                .lower_tg4_broadcom_swizzle = true,
 
                 /* TODO: we have native gradient.. */
                 .lower_txd = true,
@@ -518,8 +536,7 @@ optimise_nir(nir_shader *nir, unsigned quirks, bool is_blend)
                                  nir,
                                  nir_lower_flrp,
                                  lower_flrp,
-                                 false /* always_precise */,
-                                 nir->options->lower_ffma);
+                                 false /* always_precise */);
                         if (lower_flrp_progress) {
                                 NIR_PASS(progress, nir,
                                          nir_opt_constant_folding);
@@ -540,8 +557,10 @@ optimise_nir(nir_shader *nir, unsigned quirks, bool is_blend)
                          nir_var_shader_out |
                          nir_var_function_temp);
 
-                NIR_PASS(progress, nir, nir_opt_vectorize);
+                NIR_PASS(progress, nir, nir_opt_vectorize, NULL, NULL);
         } while (progress);
+
+        NIR_PASS_V(nir, nir_lower_alu_to_scalar, mdg_is_64, NULL);
 
         /* Run after opts so it can hit more */
         if (!is_blend)
@@ -646,6 +665,15 @@ nir_is_non_scalar_swizzle(nir_alu_src *src, unsigned nr_components)
 
         return false;
 }
+
+#define ATOMIC_CASE_IMPL(ctx, instr, nir, op, is_shared) \
+        case nir_intrinsic_##nir: \
+                emit_atomic(ctx, instr, is_shared, midgard_op_##op); \
+                break;
+
+#define ATOMIC_CASE(ctx, instr, nir, op) \
+        ATOMIC_CASE_IMPL(ctx, instr, shared_atomic_##nir, atomic_##op, true); \
+        ATOMIC_CASE_IMPL(ctx, instr, global_atomic_##nir, atomic_##op, false);
 
 #define ALU_CASE(nir, _op) \
 	case nir_op_##nir: \
@@ -858,8 +886,8 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
         /* Should we swap arguments? */
         bool flip_src12 = false;
 
-        unsigned src_bitsize = nir_src_bit_size(instr->src[0].src);
-        unsigned dst_bitsize = nir_dest_bit_size(*dest);
+        ASSERTED unsigned src_bitsize = nir_src_bit_size(instr->src[0].src);
+        ASSERTED unsigned dst_bitsize = nir_dest_bit_size(*dest);
 
         enum midgard_roundmode roundmode = MIDGARD_RTE;
 
@@ -881,6 +909,8 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
                 ALU_CASE(iadd, iadd);
                 ALU_CASE(isub, isub);
                 ALU_CASE(imul, imul);
+                ALU_CASE(imul_high, imul);
+                ALU_CASE(umul_high, imul);
 
                 /* Zero shoved as second-arg */
                 ALU_CASE(iabs, iabsdiff);
@@ -1059,7 +1089,9 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
         unsigned outmod = 0;
         bool is_int = midgard_is_integer_op(op);
 
-        if (midgard_is_integer_out_op(op)) {
+        if (instr->op == nir_op_umul_high || instr->op == nir_op_imul_high) {
+                outmod = midgard_outmod_int_high;
+        } else if (midgard_is_integer_out_op(op)) {
                 outmod = midgard_outmod_int_wrap;
         } else if (instr->op == nir_op_fsat) {
                 outmod = midgard_outmod_sat;
@@ -1267,8 +1299,8 @@ mir_set_intr_mask(nir_instr *instr, midgard_instruction *ins, bool is_read)
 
         /* Once we have the NIR mask, we need to normalize to work in 32-bit space */
         unsigned bytemask = pan_to_bytemask(dsize, nir_mask);
-        mir_set_bytemask(ins, bytemask);
         ins->dest_type = nir_type_uint | dsize;
+        mir_set_bytemask(ins, bytemask);
 }
 
 /* Uniforms and UBOs use a shared code path, as uniforms are just (slightly
@@ -1333,6 +1365,69 @@ emit_global(
 
         mir_set_offset(ctx, &ins, offset, is_shared);
         mir_set_intr_mask(instr, &ins, is_read);
+
+        /* Set a valid swizzle for masked out components */
+        assert(ins.mask);
+        unsigned first_component = __builtin_ffs(ins.mask) - 1;
+
+        for (unsigned i = 0; i < ARRAY_SIZE(ins.swizzle[0]); ++i) {
+                if (!(ins.mask & (1 << i)))
+                        ins.swizzle[0][i] = first_component;
+        }
+
+        emit_mir_instruction(ctx, ins);
+}
+
+/* If is_shared is off, the only other possible value are globals, since
+ * SSBO's are being lowered to globals through a NIR pass. */
+static void
+emit_atomic(
+        compiler_context *ctx,
+        nir_intrinsic_instr *instr,
+        bool is_shared,
+        midgard_load_store_op op)
+{
+        unsigned bitsize = nir_src_bit_size(instr->src[1]);
+        nir_alu_type type =
+                (op == midgard_op_atomic_imin || op == midgard_op_atomic_imax) ?
+                nir_type_int : nir_type_uint;
+
+        unsigned dest = nir_dest_index(&instr->dest);
+        unsigned val = nir_src_index(ctx, &instr->src[1]);
+        emit_explicit_constant(ctx, val, val);
+
+        midgard_instruction ins = {
+                .type = TAG_LOAD_STORE_4,
+                .mask = 0xF,
+                .dest = dest,
+                .src = { ~0, ~0, ~0, val },
+                .src_types = { 0, 0, 0, type | bitsize },
+                .op = op
+        };
+
+        nir_src *src_offset = nir_get_io_offset_src(instr);
+
+        /* cmpxchg takes an extra value in arg_2, so we don't use it for the offset */
+        if (op == midgard_op_atomic_cmpxchg) {
+                unsigned addr = nir_src_index(ctx, src_offset);
+
+                ins.src[1] = addr;
+                ins.src_types[1] = nir_type_uint | nir_src_bit_size(*src_offset);
+
+                unsigned xchg_val = nir_src_index(ctx, &instr->src[2]);
+                emit_explicit_constant(ctx, xchg_val, xchg_val);
+
+                ins.src[2] = val;
+                ins.src_types[2] = type | bitsize;
+                ins.src[3] = xchg_val;
+
+                if (is_shared)
+                        ins.load_store.arg_1 |= 0x6E;
+        } else {
+                mir_set_offset(ctx, &ins, src_offset, is_shared);
+        }
+
+        mir_set_intr_mask(&instr->instr, &ins, true);
 
         emit_mir_instruction(ctx, ins);
 }
@@ -1547,13 +1642,13 @@ emit_vertex_builtin(compiler_context *ctx, nir_intrinsic_instr *instr)
 }
 
 static void
-emit_msaa_builtin(compiler_context *ctx, nir_intrinsic_instr *instr)
+emit_special(compiler_context *ctx, nir_intrinsic_instr *instr, unsigned idx)
 {
         unsigned reg = nir_dest_index(&instr->dest);
 
         midgard_instruction ld = m_ld_color_buffer_32u(reg, 0);
         ld.op = midgard_op_ld_color_buffer_32u_old;
-        ld.load_store.address = 97;
+        ld.load_store.address = idx;
         ld.load_store.arg_2 = 0x1E;
 
         for (int i = 0; i < 4; ++i)
@@ -1836,7 +1931,7 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                         else if (combined)
                                 rt = MIDGARD_ZS_RT;
                         else
-                                assert(0);
+                                unreachable("bad rt");
 
                         unsigned reg_z = ~0, reg_s = ~0;
                         if (combined) {
@@ -1947,8 +2042,12 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                 emit_vertex_builtin(ctx, instr);
                 break;
 
+        case nir_intrinsic_load_sample_mask_in:
+                emit_special(ctx, instr, 96);
+                break;
+
         case nir_intrinsic_load_sample_id:
-                emit_msaa_builtin(ctx, instr);
+                emit_special(ctx, instr, 97);
                 break;
 
         case nir_intrinsic_memory_barrier_buffer:
@@ -1960,6 +2059,17 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                 emit_control_barrier(ctx);
                 schedule_barrier(ctx);
                 break;
+
+        ATOMIC_CASE(ctx, instr, add, add);
+        ATOMIC_CASE(ctx, instr, and, and);
+        ATOMIC_CASE(ctx, instr, comp_swap, cmpxchg);
+        ATOMIC_CASE(ctx, instr, exchange, xchg);
+        ATOMIC_CASE(ctx, instr, imax, imax);
+        ATOMIC_CASE(ctx, instr, imin, imin);
+        ATOMIC_CASE(ctx, instr, or, or);
+        ATOMIC_CASE(ctx, instr, umax, umax);
+        ATOMIC_CASE(ctx, instr, umin, umin);
+        ATOMIC_CASE(ctx, instr, xor, xor);
 
         default:
                 fprintf(stderr, "Unhandled intrinsic %s\n", nir_intrinsic_infos[instr->intrinsic].name);
@@ -2029,6 +2139,19 @@ pan_attach_constant_bias(
         return true;
 }
 
+static enum mali_texture_mode
+mdg_texture_mode(nir_tex_instr *instr)
+{
+        if (instr->op == nir_texop_tg4 && instr->is_shadow)
+                return TEXTURE_GATHER_SHADOW;
+        else if (instr->op == nir_texop_tg4)
+                return TEXTURE_GATHER_X + instr->component;
+        else if (instr->is_shadow)
+                return TEXTURE_SHADOW;
+        else
+                return TEXTURE_NORMAL;
+}
+
 static void
 emit_texop_native(compiler_context *ctx, nir_tex_instr *instr,
                   unsigned midgard_texop)
@@ -2063,11 +2186,11 @@ emit_texop_native(compiler_context *ctx, nir_tex_instr *instr,
                         .format = midgard_tex_format(instr->sampler_dim),
                         .texture_handle = texture_index,
                         .sampler_handle = sampler_index,
-                        .shadow = instr->is_shadow,
+                        .mode = mdg_texture_mode(instr)
                 }
         };
 
-        if (instr->is_shadow && !instr->is_new_style_shadow)
+        if (instr->is_shadow && !instr->is_new_style_shadow && instr->op != nir_texop_tg4)
            for (int i = 0; i < 4; ++i)
               ins.swizzle[0][i] = COMPONENT_X;
 
@@ -2237,6 +2360,7 @@ emit_tex(compiler_context *ctx, nir_tex_instr *instr)
                 emit_texop_native(ctx, instr, TEXTURE_OP_NORMAL);
                 break;
         case nir_texop_txl:
+        case nir_texop_tg4:
                 emit_texop_native(ctx, instr, TEXTURE_OP_LOD);
                 break;
         case nir_texop_txf:
@@ -2390,6 +2514,13 @@ max_bitsize_for_alu(midgard_instruction *ins)
 
         default:
                 break;
+        }
+
+        /* High implies computing at a higher bitsize, e.g umul_high of 32-bit
+         * requires computing at 64-bit */
+        if (midgard_is_integer_out_op(ins->op) && ins->outmod == midgard_outmod_int_high) {
+                max_bitsize *= 2;
+                assert(max_bitsize <= 64);
         }
 
         return max_bitsize;

@@ -308,8 +308,8 @@ void si_build_prim_discard_compute_shader(struct si_shader_context *ctx)
    LLVMSetLinkage(vs, LLVMPrivateLinkage);
 
    enum ac_arg_type const_desc_type;
-   if (ctx->shader->selector->info.const_buffers_declared == 1 &&
-       ctx->shader->selector->info.shader_buffers_declared == 0)
+   if (ctx->shader->selector->info.base.num_ubos == 1 &&
+       ctx->shader->selector->info.base.num_ssbos == 0)
       const_desc_type = AC_ARG_CONST_FLOAT_PTR;
    else
       const_desc_type = AC_ARG_CONST_DESC_PTR;
@@ -346,10 +346,10 @@ void si_build_prim_discard_compute_shader(struct si_shader_context *ctx)
    ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_INT, &param_local_id);
 
    /* Create the compute shader function. */
-   unsigned old_type = ctx->type;
-   ctx->type = PIPE_SHADER_COMPUTE;
+   gl_shader_stage old_stage = ctx->stage;
+   ctx->stage = MESA_SHADER_COMPUTE;
    si_llvm_create_func(ctx, "prim_discard_cs", NULL, 0, THREADGROUP_SIZE);
-   ctx->type = old_type;
+   ctx->stage = old_stage;
 
    if (VERTEX_COUNTER_GDS_MODE == 2) {
       ac_llvm_add_target_dep_function_attr(ctx->main_fn, "amdgpu-gds-size", 256);

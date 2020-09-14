@@ -285,6 +285,12 @@ get_glsl_type(struct ntv_context *ctx, const struct glsl_type *type)
       return ret;
    }
 
+   if (glsl_type_is_matrix(type))
+      return spirv_builder_type_matrix(&ctx->builder,
+                                       spirv_builder_type_vector(&ctx->builder,
+                                                                 get_glsl_basetype(ctx, glsl_get_base_type(type)),
+                                                                 glsl_get_vector_elements(type)),
+                                       glsl_get_matrix_columns(type));
 
    unreachable("we shouldn't get here, I think...");
 }
@@ -1545,7 +1551,7 @@ emit_load_const(struct ntv_context *ctx, nir_load_const_instr *load_const)
 static void
 emit_load_ubo(struct ntv_context *ctx, nir_intrinsic_instr *intr)
 {
-   nir_const_value *const_block_index = nir_src_as_const_value(intr->src[0]);
+   ASSERTED nir_const_value *const_block_index = nir_src_as_const_value(intr->src[0]);
    assert(const_block_index); // no dynamic indexing for now
    assert(const_block_index->u32 == 0); // we only support the default UBO for now
 

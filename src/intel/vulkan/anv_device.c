@@ -25,11 +25,11 @@
 #include <stdbool.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/sysinfo.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <xf86drm.h>
 #include "drm-uapi/drm_fourcc.h"
+#include "drm-uapi/drm.h"
+#include <xf86drm.h>
 
 #include "anv_private.h"
 #include "util/debug.h"
@@ -37,6 +37,7 @@
 #include "util/disk_cache.h"
 #include "util/mesa-sha1.h"
 #include "util/os_file.h"
+#include "util/os_misc.h"
 #include "util/u_atomic.h"
 #include "util/u_string.h"
 #include "util/driconf.h"
@@ -106,10 +107,9 @@ static uint64_t
 anv_compute_heap_size(int fd, uint64_t gtt_size)
 {
    /* Query the total ram from the system */
-   struct sysinfo info;
-   sysinfo(&info);
-
-   uint64_t total_ram = (uint64_t)info.totalram * (uint64_t)info.mem_unit;
+   uint64_t total_ram;
+   if (!os_get_total_physical_memory(&total_ram))
+      return 0;
 
    /* We don't want to burn too much ram with the GPU.  If the user has 4GiB
     * or less, we use at most half.  If they have more than 4GiB, we use 3/4.
@@ -308,29 +308,6 @@ anv_physical_device_free_disk_cache(struct anv_physical_device *device)
 #endif
 }
 
-static uint64_t
-get_available_system_memory()
-{
-   char *meminfo = os_read_file("/proc/meminfo", NULL);
-   if (!meminfo)
-      return 0;
-
-   char *str = strstr(meminfo, "MemAvailable:");
-   if (!str) {
-      free(meminfo);
-      return 0;
-   }
-
-   uint64_t kb_mem_available;
-   if (sscanf(str, "MemAvailable: %" PRIx64, &kb_mem_available) == 1) {
-      free(meminfo);
-      return kb_mem_available << 10;
-   }
-
-   free(meminfo);
-   return 0;
-}
-
 static VkResult
 anv_physical_device_try_create(struct anv_instance *instance,
                                drmDevicePtr drm_device,
@@ -439,6 +416,9 @@ anv_physical_device_try_create(struct anv_instance *instance,
    device->has_syncobj = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_FENCE_ARRAY);
    device->has_syncobj_wait = device->has_syncobj &&
                               anv_gem_supports_syncobj_wait(fd);
+   device->has_syncobj_wait_available =
+      anv_gem_get_drm_cap(fd, DRM_CAP_SYNCOBJ_TIMELINE) != 0;
+
    device->has_context_priority = anv_gem_has_context_priority(fd);
 
    result = anv_physical_device_init_heaps(device, fd);
@@ -450,6 +430,14 @@ anv_physical_device_try_create(struct anv_instance *instance,
 
    device->has_context_isolation =
       anv_gem_get_param(fd, I915_PARAM_HAS_CONTEXT_ISOLATION);
+
+   device->has_exec_timeline =
+      anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_TIMELINE_FENCES);
+   if (env_var_as_boolean("ANV_QUEUE_THREAD_DISABLE", false))
+      device->has_exec_timeline = false;
+
+   device->has_thread_submit =
+      device->has_syncobj_wait_available && device->has_exec_timeline;
 
    device->always_use_bindless =
       env_var_as_boolean("ANV_ALWAYS_BINDLESS", false);
@@ -484,7 +472,8 @@ anv_physical_device_try_create(struct anv_instance *instance,
    device->has_reg_timestamp = anv_gem_reg_read(fd, TIMESTAMP | I915_REG_READ_8B_WA,
                                                 &u64_ignore) == 0;
 
-   device->has_mem_available = get_available_system_memory() != 0;
+   uint64_t avail_mem;
+   device->has_mem_available = os_get_available_system_memory(&avail_mem);
 
    device->always_flush_cache =
       driQueryOptionb(&instance->dri_options, "always_flush_cache");
@@ -1598,7 +1587,7 @@ void anv_GetPhysicalDeviceProperties(
        */
       .minTexelBufferOffsetAlignment            = 16,
       .minUniformBufferOffsetAlignment          = ANV_UBO_ALIGNMENT,
-      .minStorageBufferOffsetAlignment          = 4,
+      .minStorageBufferOffsetAlignment          = ANV_SSBO_ALIGNMENT,
       .minTexelOffset                           = -8,
       .maxTexelOffset                           = 7,
       .minTexelGatherOffset                     = -32,
@@ -2229,8 +2218,10 @@ anv_get_memory_budget(VkPhysicalDevice physicalDevice,
                       VkPhysicalDeviceMemoryBudgetPropertiesEXT *memoryBudget)
 {
    ANV_FROM_HANDLE(anv_physical_device, device, physicalDevice);
-   uint64_t sys_available = get_available_system_memory();
-   assert(sys_available > 0);
+   uint64_t sys_available;
+   ASSERTED bool has_available_memory =
+      os_get_available_system_memory(&sys_available);
+   assert(has_available_memory);
 
    VkDeviceSize total_heaps_size = 0;
    for (size_t i = 0; i < device->memory.heap_count; i++)
@@ -2812,6 +2803,8 @@ VkResult anv_CreateDevice(
       goto fail_fd;
    }
 
+   device->has_thread_submit = physical_device->has_thread_submit;
+
    result = anv_queue_init(device, &device->queue);
    if (result != VK_SUCCESS)
       goto fail_context_id;
@@ -3102,11 +3095,11 @@ void anv_DestroyDevice(
    if (!device)
       return;
 
+   anv_queue_finish(&device->queue);
+
    anv_device_finish_blorp(device);
 
    anv_pipeline_cache_finish(&device->default_pipeline_cache);
-
-   anv_queue_finish(&device->queue);
 
 #ifdef HAVE_VALGRIND
    /* We only need to free these to prevent valgrind errors.  The backing
@@ -3219,6 +3212,22 @@ void anv_GetDeviceQueue2(
       *pQueue = NULL;
 }
 
+void
+_anv_device_report_lost(struct anv_device *device)
+{
+   assert(p_atomic_read(&device->_lost) > 0);
+
+   device->lost_reported = true;
+
+   struct anv_queue *queue = &device->queue;
+
+   __vk_errorf(device->physical->instance, device,
+               VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_EXT,
+               VK_ERROR_DEVICE_LOST,
+               queue->error_file, queue->error_line,
+               "%s", queue->error_msg);
+}
+
 VkResult
 _anv_device_set_lost(struct anv_device *device,
                      const char *file, int line,
@@ -3227,7 +3236,11 @@ _anv_device_set_lost(struct anv_device *device,
    VkResult err;
    va_list ap;
 
+   if (p_atomic_read(&device->_lost) > 0)
+      return VK_ERROR_DEVICE_LOST;
+
    p_atomic_inc(&device->_lost);
+   device->lost_reported = true;
 
    va_start(ap, msg);
    err = __vk_errorv(device->physical->instance, device,
@@ -3243,24 +3256,29 @@ _anv_device_set_lost(struct anv_device *device,
 
 VkResult
 _anv_queue_set_lost(struct anv_queue *queue,
-                    const char *file, int line,
-                    const char *msg, ...)
+                     const char *file, int line,
+                     const char *msg, ...)
 {
-   VkResult err;
    va_list ap;
 
-   p_atomic_inc(&queue->device->_lost);
+   if (queue->lost)
+      return VK_ERROR_DEVICE_LOST;
 
+   queue->lost = true;
+
+   queue->error_file = file;
+   queue->error_line = line;
    va_start(ap, msg);
-   err = __vk_errorv(queue->device->physical->instance, queue->device,
-                     VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_EXT,
-                     VK_ERROR_DEVICE_LOST, file, line, msg, ap);
+   vsnprintf(queue->error_msg, sizeof(queue->error_msg),
+             msg, ap);
    va_end(ap);
+
+   p_atomic_inc(&queue->device->_lost);
 
    if (env_var_as_boolean("ANV_ABORT_ON_DEVICE_LOSS", false))
       abort();
 
-   return err;
+   return VK_ERROR_DEVICE_LOST;
 }
 
 VkResult
@@ -4424,7 +4442,9 @@ void anv_DestroyFramebuffer(
 static const VkTimeDomainEXT anv_time_domains[] = {
    VK_TIME_DOMAIN_DEVICE_EXT,
    VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT,
+#ifdef CLOCK_MONOTONIC_RAW
    VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT,
+#endif
 };
 
 VkResult anv_GetPhysicalDeviceCalibrateableTimeDomainsEXT(
@@ -4451,8 +4471,10 @@ anv_clock_gettime(clockid_t clock_id)
    int ret;
 
    ret = clock_gettime(clock_id, &current);
+#ifdef CLOCK_MONOTONIC_RAW
    if (ret < 0 && clock_id == CLOCK_MONOTONIC_RAW)
       ret = clock_gettime(CLOCK_MONOTONIC, &current);
+#endif
    if (ret < 0)
       return 0;
 
@@ -4473,7 +4495,11 @@ VkResult anv_GetCalibratedTimestampsEXT(
    uint64_t begin, end;
    uint64_t max_clock_period = 0;
 
+#ifdef CLOCK_MONOTONIC_RAW
    begin = anv_clock_gettime(CLOCK_MONOTONIC_RAW);
+#else
+   begin = anv_clock_gettime(CLOCK_MONOTONIC);
+#endif
 
    for (d = 0; d < timestampCount; d++) {
       switch (pTimestampInfos[d].timeDomain) {
@@ -4493,16 +4519,22 @@ VkResult anv_GetCalibratedTimestampsEXT(
          max_clock_period = MAX2(max_clock_period, 1);
          break;
 
+#ifdef CLOCK_MONOTONIC_RAW
       case VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT:
          pTimestamps[d] = begin;
          break;
+#endif
       default:
          pTimestamps[d] = 0;
          break;
       }
    }
 
+#ifdef CLOCK_MONOTONIC_RAW
    end = anv_clock_gettime(CLOCK_MONOTONIC_RAW);
+#else
+   end = anv_clock_gettime(CLOCK_MONOTONIC);
+#endif
 
     /*
      * The maximum deviation is the sum of the interval over which we

@@ -26,13 +26,16 @@
  * Simultaneously, remap existing UBO accesses by increasing their binding
  * point by 1.
  *
- * Both the base and the offset are interpreted as 16-byte units.
+ * Note that nir_intrinsic_load_uniform base/ranges can be set in different
+ * units, and the multiplier argument caters to supporting these different
+ * units.
  *
- * Note that locations can be set in different units, and the multiplier
- * argument caters to supporting these different units.
  * For example:
- * - st_glsl_to_nir uses dwords (4 bytes) so the multiplier should be 4
- * - tgsi_to_nir uses bytes, so the multiplier should be 16
+ * - st_glsl_to_nir for PIPE_CAP_PACKED_UNIFORMS uses dwords (4 bytes) so the
+ *   multiplier should be 4
+ * - st_glsl_to_nir for !PIPE_CAP_PACKED_UNIFORMS uses vec4s so the
+ *   multiplier should be 16
+ * - tgsi_to_nir uses vec4s, so the multiplier should be 16
  */
 
 #include "nir.h"
@@ -72,6 +75,9 @@ lower_instr(nir_intrinsic_instr *instr, nir_builder *b, int multiplier)
                         instr->dest.ssa.name);
       nir_builder_instr_insert(b, &load->instr);
       nir_ssa_def_rewrite_uses(&instr->dest.ssa, nir_src_for_ssa(&load->dest.ssa));
+
+      nir_intrinsic_set_range_base(load, nir_intrinsic_base(instr) * multiplier);
+      nir_intrinsic_set_range(load, nir_intrinsic_range(instr) * multiplier);
 
       nir_instr_remove(&instr->instr);
       return true;

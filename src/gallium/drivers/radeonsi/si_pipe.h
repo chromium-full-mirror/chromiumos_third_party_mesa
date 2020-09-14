@@ -141,12 +141,12 @@ enum si_clear_code
 enum
 {
    /* Shader logging options: */
-   DBG_VS = PIPE_SHADER_VERTEX,
-   DBG_PS = PIPE_SHADER_FRAGMENT,
-   DBG_GS = PIPE_SHADER_GEOMETRY,
-   DBG_TCS = PIPE_SHADER_TESS_CTRL,
-   DBG_TES = PIPE_SHADER_TESS_EVAL,
-   DBG_CS = PIPE_SHADER_COMPUTE,
+   DBG_VS = MESA_SHADER_VERTEX,
+   DBG_TCS = MESA_SHADER_TESS_CTRL,
+   DBG_TES = MESA_SHADER_TESS_EVAL,
+   DBG_GS = MESA_SHADER_GEOMETRY,
+   DBG_PS = MESA_SHADER_FRAGMENT,
+   DBG_CS = MESA_SHADER_COMPUTE,
    DBG_NO_IR,
    DBG_NO_NIR,
    DBG_NO_ASM,
@@ -162,6 +162,7 @@ enum
    DBG_W64_PS,
    DBG_W64_CS,
    DBG_KILL_PS_INF_INTERP,
+   DBG_CLAMP_DIV_BY_ZERO,
 
    /* Shader compiler options (with no effect on the shader cache): */
    DBG_CHECK_IR,
@@ -489,6 +490,7 @@ struct si_screen {
    struct disk_cache *disk_shader_cache;
 
    struct radeon_info info;
+   struct nir_shader_compiler_options nir_options;
    uint64_t debug_flags;
    char renderer_string[183];
 
@@ -1657,9 +1659,9 @@ static inline struct si_shader *si_get_vs_state(struct si_context *sctx)
    return vs->current ? vs->current : NULL;
 }
 
-static inline bool si_can_dump_shader(struct si_screen *sscreen, unsigned processor)
+static inline bool si_can_dump_shader(struct si_screen *sscreen, gl_shader_stage stage)
 {
-   return sscreen->debug_flags & (1 << processor);
+   return sscreen->debug_flags & (1 << stage);
 }
 
 static inline bool si_get_strmout_en(struct si_context *sctx)
@@ -1779,7 +1781,7 @@ static inline unsigned si_get_total_colormask(struct si_context *sctx)
    unsigned colormask =
       sctx->framebuffer.colorbuf_enabled_4bit & sctx->queued.named.blend->cb_target_mask;
 
-   if (!ps->info.properties[TGSI_PROPERTY_FS_COLOR0_WRITES_ALL_CBUFS])
+   if (!ps->info.color0_writes_all_cbufs)
       colormask &= ps->colors_written_4bit;
    else if (!ps->colors_written_4bit)
       colormask = 0; /* color0 writes all cbufs, but it's not written */
@@ -1887,19 +1889,19 @@ static inline bool si_compute_prim_discard_enabled(struct si_context *sctx)
 }
 
 static inline unsigned si_get_wave_size(struct si_screen *sscreen,
-                                        enum pipe_shader_type shader_type, bool ngg, bool es,
+                                        gl_shader_stage stage, bool ngg, bool es,
                                         bool gs_fast_launch, bool prim_discard_cs)
 {
-   if (shader_type == PIPE_SHADER_COMPUTE)
+   if (stage == MESA_SHADER_COMPUTE)
       return sscreen->compute_wave_size;
-   else if (shader_type == PIPE_SHADER_FRAGMENT)
+   else if (stage == MESA_SHADER_FRAGMENT)
       return sscreen->ps_wave_size;
    else if (gs_fast_launch)
       return 32; /* GS fast launch hangs with Wave64, so always use Wave32. */
-   else if ((shader_type == PIPE_SHADER_VERTEX && prim_discard_cs) || /* only Wave64 implemented */
-            (shader_type == PIPE_SHADER_VERTEX && es && !ngg) ||
-            (shader_type == PIPE_SHADER_TESS_EVAL && es && !ngg) ||
-            (shader_type == PIPE_SHADER_GEOMETRY && !ngg)) /* legacy GS only supports Wave64 */
+   else if ((stage == MESA_SHADER_VERTEX && prim_discard_cs) || /* only Wave64 implemented */
+            (stage == MESA_SHADER_VERTEX && es && !ngg) ||
+            (stage == MESA_SHADER_TESS_EVAL && es && !ngg) ||
+            (stage == MESA_SHADER_GEOMETRY && !ngg)) /* legacy GS only supports Wave64 */
       return 64;
    else
       return sscreen->ge_wave_size;
@@ -1907,7 +1909,8 @@ static inline unsigned si_get_wave_size(struct si_screen *sscreen,
 
 static inline unsigned si_get_shader_wave_size(struct si_shader *shader)
 {
-   return si_get_wave_size(shader->selector->screen, shader->selector->type, shader->key.as_ngg,
+   return si_get_wave_size(shader->selector->screen, shader->selector->info.stage,
+                           shader->key.as_ngg,
                            shader->key.as_es,
                            shader->key.opt.ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_ALL,
                            shader->key.opt.vs_as_prim_discard_cs);

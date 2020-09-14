@@ -48,9 +48,10 @@ panfrost_build_blit_shader(panfrost_program *program, unsigned gpu_id, gl_frag_r
 {
         bool is_colour = loc >= FRAG_RESULT_DATA0;
 
-        nir_shader *shader = nir_shader_create(NULL, MESA_SHADER_FRAGMENT, &midgard_nir_options, NULL);
-        nir_function *fn = nir_function_create(shader, "main");
-        nir_function_impl *impl = nir_function_impl_create(fn);
+        nir_builder _b;
+        nir_builder_init_simple_shader(&_b, NULL, MESA_SHADER_FRAGMENT, &midgard_nir_options);
+        nir_builder *b = &_b;
+        nir_shader *shader = b->shader;
 
         nir_variable *c_src = nir_variable_create(shader, nir_var_shader_in, glsl_vector_type(GLSL_TYPE_FLOAT, 2), "coord");
         nir_variable *c_out = nir_variable_create(shader, nir_var_shader_out, glsl_vector_type(
@@ -58,11 +59,6 @@ panfrost_build_blit_shader(panfrost_program *program, unsigned gpu_id, gl_frag_r
 
         c_src->data.location = VARYING_SLOT_TEX0;
         c_out->data.location = loc;
-
-        nir_builder _b;
-        nir_builder *b = &_b;
-        nir_builder_init(b, impl);
-        b->cursor = nir_before_block(nir_start_block(impl));
 
         nir_ssa_def *coord = nir_load_var(b, c_src);
 
@@ -343,27 +339,34 @@ panfrost_load_midg(
                 }
         }
 
-        struct midgard_payload_vertex_tiler payload = {
-                .prefix = {
-                        .draw_mode = MALI_DRAW_MODE_TRIANGLES,
-                        .unknown_draw = 0x3000,
-                        .index_count = MALI_POSITIVE(vertex_count)
-                },
-                .postfix = {
-                        .gl_enables = 0x7,
-                        .position_varying = coordinates,
-                        .textures = panfrost_pool_upload(pool, &texture_t.gpu, sizeof(texture_t.gpu)),
-                        .sampler_descriptor = sampler.gpu,
-                        .shader = shader_meta_t.gpu,
-                        .varyings = varying_buffer.gpu,
-                        .varying_meta = varying.gpu,
-                        .viewport = viewport.gpu,
-                        .shared_memory = fbd
-                }
-        };
+        struct midgard_payload_vertex_tiler payload = {};
+        struct mali_primitive_packed primitive;
+        struct mali_draw_packed draw;
+        struct mali_invocation_packed invocation;
 
-        panfrost_pack_work_groups_compute(&payload.prefix, 1, vertex_count, 1, 1, 1, 1, true);
-        payload.prefix.workgroups_x_shift_3 = 6;
+        pan_pack(&draw, DRAW, cfg) {
+                cfg.unknown_1 = 0x7;
+                cfg.position = coordinates;
+                cfg.textures = panfrost_pool_upload(pool, &texture_t.gpu, sizeof(texture_t.gpu));
+                cfg.samplers = sampler.gpu;
+                cfg.state = shader_meta_t.gpu;
+                cfg.varying_buffers = varying_buffer.gpu;
+                cfg.varyings = varying.gpu;
+                cfg.viewport = viewport.gpu;
+                cfg.shared = fbd;
+        }
+
+        pan_pack(&primitive, PRIMITIVE, cfg) {
+                cfg.draw_mode = MALI_DRAW_MODE_TRIANGLES;
+                cfg.index_count = vertex_count;
+                cfg.unknown_3 = 6;
+        }
+
+        panfrost_pack_work_groups_compute(&invocation, 1, vertex_count, 1, 1, 1, 1, true);
+
+        payload.prefix.primitive = primitive;
+        memcpy(&payload.postfix, &draw, MALI_DRAW_LENGTH);
+        payload.prefix.invocation = invocation;
 
         panfrost_new_job(pool, scoreboard, MALI_JOB_TYPE_TILER, false, 0, &payload, sizeof(payload), true);
 }

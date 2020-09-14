@@ -25,6 +25,7 @@
 #include "util/macros.h"
 #include "util/u_prim.h"
 #include "util/u_vbuf.h"
+#include "util/u_helpers.h"
 
 #include "panfrost-quirks.h"
 
@@ -51,12 +52,10 @@ panfrost_bo_access_for_stage(enum pipe_shader_type stage)
                PAN_BO_ACCESS_VERTEX_TILER;
 }
 
-static void
-panfrost_vt_emit_shared_memory(struct panfrost_context *ctx,
-                               struct mali_vertex_tiler_postfix *postfix)
+mali_ptr
+panfrost_vt_emit_shared_memory(struct panfrost_batch *batch)
 {
-        struct panfrost_device *dev = pan_device(ctx->base.screen);
-        struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
+        struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
 
         struct mali_shared_memory shared = {
                 .shared_workgroup_count = ~0,
@@ -72,108 +71,22 @@ panfrost_vt_emit_shared_memory(struct panfrost_context *ctx,
                 shared.scratchpad = stack->gpu;
         }
 
-        postfix->shared_memory = panfrost_pool_upload_aligned(&batch->pool, &shared, sizeof(shared), 64);
-}
-
-static void
-panfrost_vt_attach_framebuffer(struct panfrost_context *ctx,
-                               struct mali_vertex_tiler_postfix *postfix)
-{
-        struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
-        postfix->shared_memory = panfrost_batch_reserve_framebuffer(batch);
-}
-
-static void
-panfrost_vt_update_rasterizer(struct panfrost_rasterizer *rasterizer,
-                              struct mali_vertex_tiler_prefix *prefix,
-                              struct mali_vertex_tiler_postfix *postfix)
-{
-        postfix->gl_enables |= 0x7;
-        SET_BIT(postfix->gl_enables, MALI_FRONT_CCW_TOP,
-                rasterizer->base.front_ccw);
-        SET_BIT(postfix->gl_enables, MALI_CULL_FACE_FRONT,
-                (rasterizer->base.cull_face & PIPE_FACE_FRONT));
-        SET_BIT(postfix->gl_enables, MALI_CULL_FACE_BACK,
-                (rasterizer->base.cull_face & PIPE_FACE_BACK));
-        SET_BIT(prefix->unknown_draw, MALI_DRAW_FLATSHADE_FIRST,
-                rasterizer->base.flatshade_first);
+        return panfrost_pool_upload_aligned(&batch->pool, &shared, sizeof(shared), 64);
 }
 
 void
 panfrost_vt_update_primitive_size(struct panfrost_context *ctx,
-                                  struct mali_vertex_tiler_prefix *prefix,
+                                  bool points,
                                   union midgard_primitive_size *primitive_size)
 {
         struct panfrost_rasterizer *rasterizer = ctx->rasterizer;
 
         if (!panfrost_writes_point_size(ctx)) {
-                float val = (prefix->draw_mode == MALI_DRAW_MODE_POINTS) ?
+                float val = points ?
                               rasterizer->base.point_size :
                               rasterizer->base.line_width;
 
                 primitive_size->constant = val;
-        }
-}
-
-static void
-panfrost_vt_update_occlusion_query(struct panfrost_context *ctx,
-                                   struct mali_vertex_tiler_postfix *postfix)
-{
-        SET_BIT(postfix->gl_enables, MALI_OCCLUSION_QUERY, ctx->occlusion_query);
-        if (ctx->occlusion_query) {
-                postfix->occlusion_counter = ctx->occlusion_query->bo->gpu;
-                panfrost_batch_add_bo(ctx->batch, ctx->occlusion_query->bo,
-                                      PAN_BO_ACCESS_SHARED |
-                                      PAN_BO_ACCESS_RW |
-                                      PAN_BO_ACCESS_FRAGMENT);
-        } else {
-                postfix->occlusion_counter = 0;
-        }
-}
-
-void
-panfrost_vt_init(struct panfrost_context *ctx,
-                 enum pipe_shader_type stage,
-                 struct mali_vertex_tiler_prefix *prefix,
-                 struct mali_vertex_tiler_postfix *postfix)
-{
-        struct panfrost_device *device = pan_device(ctx->base.screen);
-
-        if (!ctx->shader[stage])
-                return;
-
-        memset(prefix, 0, sizeof(*prefix));
-        memset(postfix, 0, sizeof(*postfix));
-
-        if (device->quirks & IS_BIFROST) {
-                postfix->gl_enables = 0x2;
-                panfrost_vt_emit_shared_memory(ctx, postfix);
-        } else {
-                postfix->gl_enables = 0x6;
-                panfrost_vt_attach_framebuffer(ctx, postfix);
-        }
-
-        if (stage == PIPE_SHADER_FRAGMENT) {
-                panfrost_vt_update_occlusion_query(ctx, postfix);
-                panfrost_vt_update_rasterizer(ctx->rasterizer, prefix, postfix);
-        }
-}
-
-static unsigned
-panfrost_translate_index_size(unsigned size)
-{
-        switch (size) {
-        case 1:
-                return MALI_DRAW_INDEXED_UINT8;
-
-        case 2:
-                return MALI_DRAW_INDEXED_UINT16;
-
-        case 4:
-                return MALI_DRAW_INDEXED_UINT32;
-
-        default:
-                unreachable("Invalid index size");
         }
 }
 
@@ -183,7 +96,7 @@ panfrost_translate_index_size(unsigned size)
  * these operations together because there are natural optimizations which
  * require them to be together. */
 
-static mali_ptr
+mali_ptr
 panfrost_get_index_buffer_bounded(struct panfrost_context *ctx,
                                   const struct pipe_draw_info *info,
                                   unsigned *min_index, unsigned *max_index)
@@ -237,73 +150,6 @@ panfrost_get_index_buffer_bounded(struct panfrost_context *ctx,
         }
 
         return out;
-}
-
-void
-panfrost_vt_set_draw_info(struct panfrost_context *ctx,
-                          const struct pipe_draw_info *info,
-                          enum mali_draw_mode draw_mode,
-                          struct mali_vertex_tiler_postfix *vertex_postfix,
-                          struct mali_vertex_tiler_prefix *tiler_prefix,
-                          struct mali_vertex_tiler_postfix *tiler_postfix,
-                          unsigned *vertex_count,
-                          unsigned *padded_count)
-{
-        tiler_prefix->draw_mode = draw_mode;
-
-        unsigned draw_flags = 0;
-
-        if (panfrost_writes_point_size(ctx))
-                draw_flags |= MALI_DRAW_VARYING_SIZE;
-
-        if (info->primitive_restart)
-                draw_flags |= MALI_DRAW_PRIMITIVE_RESTART_FIXED_INDEX;
-
-        /* These doesn't make much sense */
-
-        draw_flags |= 0x3000;
-
-        if (info->index_size) {
-                unsigned min_index = 0, max_index = 0;
-
-                tiler_prefix->indices = panfrost_get_index_buffer_bounded(ctx,
-                                                                       info,
-                                                                       &min_index,
-                                                                       &max_index);
-
-                /* Use the corresponding values */
-                *vertex_count = max_index - min_index + 1;
-                tiler_postfix->offset_start = vertex_postfix->offset_start = min_index + info->index_bias;
-                tiler_prefix->offset_bias_correction = -min_index;
-                tiler_prefix->index_count = MALI_POSITIVE(info->count);
-                draw_flags |= panfrost_translate_index_size(info->index_size);
-        } else {
-                tiler_prefix->indices = 0;
-                *vertex_count = ctx->vertex_count;
-                tiler_postfix->offset_start = vertex_postfix->offset_start = info->start;
-                tiler_prefix->offset_bias_correction = 0;
-                tiler_prefix->index_count = MALI_POSITIVE(ctx->vertex_count);
-        }
-
-        tiler_prefix->unknown_draw = draw_flags;
-
-        /* Encode the padded vertex count */
-
-        if (info->instance_count > 1) {
-                *padded_count = panfrost_padded_vertex_count(*vertex_count);
-
-                unsigned shift = __builtin_ctz(ctx->padded_count);
-                unsigned k = ctx->padded_count >> (shift + 1);
-
-                tiler_postfix->instance_shift = vertex_postfix->instance_shift = shift;
-                tiler_postfix->instance_odd = vertex_postfix->instance_odd = k;
-        } else {
-                *padded_count = *vertex_count;
-
-                /* Reset instancing state */
-                tiler_postfix->instance_shift = vertex_postfix->instance_shift = 0;
-                tiler_postfix->instance_odd = vertex_postfix->instance_odd = 0;
-        }
 }
 
 static unsigned
@@ -435,15 +281,22 @@ panfrost_emit_blend(struct panfrost_batch *batch, void *rts,
         unsigned rt_count = batch->key.nr_cbufs;
 
         struct bifrost_blend_rt *brts = rts;
-        struct midgard_blend_rt *mrts = rts;
 
-        /* Disable blending for depth-only on Bifrost */
+        /* Disable blending for depth-only */
 
-        if (rt_count == 0 && dev->quirks & IS_BIFROST)
-                brts[0].unk2 = 0x3;
+        if (rt_count == 0) {
+                if (dev->quirks & IS_BIFROST) {
+                        memset(brts, 0, sizeof(*brts));
+                        brts[0].unk2 = 0x3;
+                } else {
+                        pan_pack(rts, MIDGARD_BLEND_OPAQUE, cfg) {
+                                cfg.equation = 0xf0122122; /* Replace */
+                        }
+                }
+        }
 
         for (unsigned i = 0; i < rt_count; ++i) {
-                unsigned flags = 0;
+                struct mali_blend_flags_packed flags = {0};
 
                 pan_pack(&flags, BLEND_FLAGS, cfg) {
                         if (blend[i].no_colour) {
@@ -462,7 +315,8 @@ panfrost_emit_blend(struct panfrost_batch *batch, void *rts,
                 }
 
                 if (dev->quirks & IS_BIFROST) {
-                        brts[i].flags = flags;
+                        memset(brts + i, 0, sizeof(brts[i]));
+                        brts[i].flags = flags.opaque[0];
 
                         if (blend[i].is_shader) {
                                 /* The blend shader's address needs to be at
@@ -494,14 +348,18 @@ panfrost_emit_blend(struct panfrost_batch *batch, void *rts,
                                 brts[i].shader_type = fs->blend_types[i];
                         }
                 } else {
-                        memcpy(&mrts[i].flags, &flags, sizeof(flags));
+                        pan_pack(rts, MIDGARD_BLEND_OPAQUE, cfg) {
+                                cfg.flags = flags;
 
-                        if (blend[i].is_shader) {
-                                mrts[i].blend.shader = blend[i].shader.gpu | blend[i].shader.first_tag;
-                        } else {
-                                mrts[i].blend.equation = blend[i].equation.equation;
-                                mrts[i].blend.constant = blend[i].equation.constant;
+                                if (blend[i].is_shader) {
+                                        cfg.shader = blend[i].shader.gpu | blend[i].shader.first_tag;
+                                } else {
+                                        cfg.equation = blend[i].equation.equation.opaque[0];
+                                        cfg.constant = blend[i].equation.constant;
+                                }
                         }
+
+                        rts += MALI_MIDGARD_BLEND_LENGTH;
                 }
         }
 }
@@ -707,7 +565,6 @@ panfrost_emit_frag_shader_meta(struct panfrost_batch *batch)
 
         struct panfrost_device *dev = pan_device(ctx->base.screen);
         unsigned rt_count = MAX2(ctx->pipe_framebuffer.nr_cbufs, 1);
-        void *rts = NULL;
         struct panfrost_transfer xfer;
         unsigned rt_size;
 
@@ -719,35 +576,25 @@ panfrost_emit_frag_shader_meta(struct panfrost_batch *batch)
                 rt_size = sizeof(struct midgard_blend_rt);
 
         unsigned desc_size = MALI_STATE_LENGTH + rt_size * rt_count;
-
-        if (rt_size)
-                rts = rzalloc_size(ctx, rt_size * rt_count);
+        xfer = panfrost_pool_alloc_aligned(&batch->pool, desc_size, MALI_STATE_LENGTH);
 
         struct panfrost_blend_final blend[PIPE_MAX_COLOR_BUFS];
 
         for (unsigned c = 0; c < ctx->pipe_framebuffer.nr_cbufs; ++c)
                 blend[c] = panfrost_get_blend_for_context(ctx, c);
 
-        if (!(dev->quirks & MIDGARD_SFBD))
-                panfrost_emit_blend(batch, rts, blend);
-        else
-                batch->draws |= PIPE_CLEAR_COLOR0;
-
-        xfer = panfrost_pool_alloc_aligned(&batch->pool, desc_size, MALI_STATE_LENGTH);
-
         panfrost_emit_frag_shader(ctx, (struct mali_state_packed *) xfer.cpu, blend);
 
-        memcpy(xfer.cpu + MALI_STATE_LENGTH, rts, rt_size * rt_count);
-
-        if (rt_size)
-                ralloc_free(rts);
+        if (!(dev->quirks & MIDGARD_SFBD))
+                panfrost_emit_blend(batch, xfer.cpu + MALI_STATE_LENGTH, blend);
+        else
+                batch->draws |= PIPE_CLEAR_COLOR0;
 
         return xfer.gpu;
 }
 
-void
-panfrost_emit_viewport(struct panfrost_batch *batch,
-                       struct mali_vertex_tiler_postfix *tiler_postfix)
+mali_ptr
+panfrost_emit_viewport(struct panfrost_batch *batch)
 {
         struct panfrost_context *ctx = batch->ctx;
         const struct pipe_viewport_state *vp = &ctx->pipe_viewport;
@@ -792,8 +639,8 @@ panfrost_emit_viewport(struct panfrost_batch *batch,
                 cfg.maximum_z = rast->depth_clip_far ? maxz : INFINITY;
         }
 
-        tiler_postfix->viewport = T.gpu;
         panfrost_batch_union_scissor(batch, minx, miny, maxx, maxy);
+        return T.gpu;
 }
 
 static mali_ptr
@@ -998,16 +845,16 @@ panfrost_map_constant_buffer_cpu(struct panfrost_constant_buffer *buf,
                 unreachable("No constant buffer");
 }
 
-void
+mali_ptr
 panfrost_emit_const_buf(struct panfrost_batch *batch,
                         enum pipe_shader_type stage,
-                        struct mali_vertex_tiler_postfix *postfix)
+                        mali_ptr *push_constants)
 {
         struct panfrost_context *ctx = batch->ctx;
         struct panfrost_shader_variants *all = ctx->shader[stage];
 
         if (!all)
-                return;
+                return 0;
 
         struct panfrost_constant_buffer *buf = &ctx->constant_buffer[stage];
 
@@ -1075,16 +922,15 @@ panfrost_emit_const_buf(struct panfrost_batch *batch,
                 }
         }
 
-        postfix->uniforms = transfer.gpu;
-        postfix->uniform_buffers = ubos.gpu;
+        *push_constants = transfer.gpu;
 
         buf->dirty_mask = 0;
+        return ubos.gpu;
 }
 
-void
+mali_ptr
 panfrost_emit_shared_memory(struct panfrost_batch *batch,
-                            const struct pipe_grid_info *info,
-                            struct midgard_payload_vertex_tiler *vtp)
+                            const struct pipe_grid_info *info)
 {
         struct panfrost_context *ctx = batch->ctx;
         struct panfrost_device *dev = pan_device(ctx->base.screen);
@@ -1109,8 +955,8 @@ panfrost_emit_shared_memory(struct panfrost_batch *batch,
                 .shared_shift = util_logbase2(single_size) + 1
         };
 
-        vtp->postfix.shared_memory = panfrost_pool_upload_aligned(&batch->pool, &shared,
-                                                               sizeof(shared), 64);
+        return panfrost_pool_upload_aligned(&batch->pool, &shared,
+                        sizeof(shared), 64);
 }
 
 static mali_ptr
@@ -1149,16 +995,15 @@ panfrost_update_sampler_view(struct panfrost_sampler_view *view,
         }
 }
 
-void
+mali_ptr
 panfrost_emit_texture_descriptors(struct panfrost_batch *batch,
-                                  enum pipe_shader_type stage,
-                                  struct mali_vertex_tiler_postfix *postfix)
+                                  enum pipe_shader_type stage)
 {
         struct panfrost_context *ctx = batch->ctx;
         struct panfrost_device *device = pan_device(ctx->base.screen);
 
         if (!ctx->sampler_view_count[stage])
-                return;
+                return 0;
 
         if (device->quirks & IS_BIFROST) {
                 struct panfrost_transfer T = panfrost_pool_alloc_aligned(&batch->pool,
@@ -1188,7 +1033,7 @@ panfrost_emit_texture_descriptors(struct panfrost_batch *batch,
                                               panfrost_bo_access_for_stage(stage));
                 }
 
-                postfix->textures = T.gpu;
+                return T.gpu;
         } else {
                 uint64_t trampolines[PIPE_MAX_SHADER_SAMPLER_VIEWS];
 
@@ -1200,23 +1045,21 @@ panfrost_emit_texture_descriptors(struct panfrost_batch *batch,
                         trampolines[i] = panfrost_get_tex_desc(batch, stage, view);
                 }
 
-                postfix->textures = panfrost_pool_upload_aligned(&batch->pool,
-                                                              trampolines,
-                                                              sizeof(uint64_t) *
-                                                              ctx->sampler_view_count[stage],
-                                                              sizeof(uint64_t));
+                return panfrost_pool_upload_aligned(&batch->pool, trampolines,
+                                sizeof(uint64_t) *
+                                ctx->sampler_view_count[stage],
+                                sizeof(uint64_t));
         }
 }
 
-void
+mali_ptr
 panfrost_emit_sampler_descriptors(struct panfrost_batch *batch,
-                                  enum pipe_shader_type stage,
-                                  struct mali_vertex_tiler_postfix *postfix)
+                                  enum pipe_shader_type stage)
 {
         struct panfrost_context *ctx = batch->ctx;
 
         if (!ctx->sampler_count[stage])
-                return;
+                return 0;
 
         size_t desc_size = MALI_BIFROST_SAMPLER_LENGTH;
         assert(MALI_BIFROST_SAMPLER_LENGTH == MALI_MIDGARD_SAMPLER_LENGTH);
@@ -1228,27 +1071,22 @@ panfrost_emit_sampler_descriptors(struct panfrost_batch *batch,
         for (unsigned i = 0; i < ctx->sampler_count[stage]; ++i)
                 out[i] = ctx->samplers[stage][i]->hw;
 
-        postfix->sampler_descriptor = T.gpu;
+        return T.gpu;
 }
 
-void
+mali_ptr
 panfrost_emit_vertex_data(struct panfrost_batch *batch,
-                          struct mali_vertex_tiler_postfix *vertex_postfix)
+                          mali_ptr *buffers)
 {
         struct panfrost_context *ctx = batch->ctx;
         struct panfrost_vertex_state *so = ctx->vertex;
         struct panfrost_shader_state *vs = panfrost_get_shader_state(ctx, PIPE_SHADER_VERTEX);
 
-        unsigned instance_shift = vertex_postfix->instance_shift;
-        unsigned instance_odd = vertex_postfix->instance_odd;
-
         /* Worst case: everything is NPOT, which is only possible if instancing
          * is enabled. Otherwise single record is gauranteed */
-        bool could_npot = instance_shift || instance_odd;
-
         struct panfrost_transfer S = panfrost_pool_alloc_aligned(&batch->pool,
                         MALI_ATTRIBUTE_BUFFER_LENGTH * vs->attribute_count *
-                        (could_npot ? 2 : 1),
+                        (ctx->instance_count > 1 ? 2 : 1),
                         MALI_ATTRIBUTE_BUFFER_LENGTH * 2);
 
         struct panfrost_transfer T = panfrost_pool_alloc_aligned(&batch->pool,
@@ -1313,14 +1151,14 @@ panfrost_emit_vertex_data(struct panfrost_batch *batch,
 
                 if (!divisor || ctx->instance_count <= 1) {
                         pan_pack(bufs + k, ATTRIBUTE_BUFFER, cfg) {
-                                if (ctx->instance_count > 1)
+                                if (ctx->instance_count > 1) {
                                         cfg.type = MALI_ATTRIBUTE_TYPE_1D_MODULUS;
+                                        cfg.divisor = ctx->padded_count;
+                                }
 
                                 cfg.pointer = addr;
                                 cfg.stride = stride;
                                 cfg.size = size;
-                                cfg.divisor_r = instance_shift;
-                                cfg.divisor_p = instance_odd;
                         }
                 } else if (util_is_power_of_two_or_zero(hw_divisor)) {
                         pan_pack(bufs + k, ATTRIBUTE_BUFFER, cfg) {
@@ -1385,8 +1223,6 @@ panfrost_emit_vertex_data(struct panfrost_batch *batch,
          * addressing modes and now base is 64 aligned.
          */
 
-        unsigned start = vertex_postfix->offset_start;
-
         for (unsigned i = 0; i < so->num_elements; ++i) {
                 unsigned vbi = so->pipe[i].vertex_buffer_index;
                 struct pipe_vertex_buffer *buf = &ctx->vertex_buffers[vbi];
@@ -1403,8 +1239,8 @@ panfrost_emit_vertex_data(struct panfrost_batch *batch,
                 /* Also, somewhat obscurely per-instance data needs to be
                  * offset in response to a delayed start in an indexed draw */
 
-                if (so->pipe[i].instance_divisor && ctx->instance_count > 1 && start)
-                        src_offset -= buf->stride * start;
+                if (so->pipe[i].instance_divisor && ctx->instance_count > 1)
+                        src_offset -= buf->stride * ctx->offset_start;
 
                 pan_pack(out + i, ATTRIBUTE, cfg) {
                         cfg.buffer_index = attrib_to_buffer[i];
@@ -1413,8 +1249,8 @@ panfrost_emit_vertex_data(struct panfrost_batch *batch,
                 }
         }
 
-        vertex_postfix->attributes = S.gpu;
-        vertex_postfix->attribute_meta = T.gpu;
+        *buffers = S.gpu;
+        return T.gpu;
 }
 
 static mali_ptr
@@ -1435,16 +1271,16 @@ panfrost_emit_varyings(struct panfrost_batch *batch,
 }
 
 static unsigned
-panfrost_streamout_offset(unsigned stride, unsigned offset,
+panfrost_streamout_offset(unsigned stride,
                         struct pipe_stream_output_target *target)
 {
-        return (target->buffer_offset + (offset * stride * 4)) & 63;
+        return (target->buffer_offset + (pan_so_target(target)->offset * stride * 4)) & 63;
 }
 
 static void
 panfrost_emit_streamout(struct panfrost_batch *batch,
                         struct mali_attribute_buffer_packed *slot,
-                        unsigned stride_words, unsigned offset, unsigned count,
+                        unsigned stride_words, unsigned count,
                         struct pipe_stream_output_target *target)
 {
         unsigned stride = stride_words * 4;
@@ -1464,24 +1300,13 @@ panfrost_emit_streamout(struct panfrost_batch *batch,
                               PAN_BO_ACCESS_FRAGMENT);
 
         /* We will have an offset applied to get alignment */
-        mali_ptr addr = bo->gpu + target->buffer_offset + (offset * stride);
+        mali_ptr addr = bo->gpu + target->buffer_offset + (pan_so_target(target)->offset * stride);
 
         pan_pack(slot, ATTRIBUTE_BUFFER, cfg) {
                 cfg.pointer = (addr & ~63);
                 cfg.stride = stride;
                 cfg.size = MIN2(max_size, expected_size) + (addr & 63);
         }
-}
-
-static bool
-has_point_coord(unsigned mask, gl_varying_slot loc)
-{
-        if ((loc >= VARYING_SLOT_TEX0) && (loc <= VARYING_SLOT_TEX7))
-                return (mask & (1 << (loc - VARYING_SLOT_TEX0)));
-        else if (loc == VARYING_SLOT_PNTC)
-                return (mask & (1 << 8));
-        else
-                return false;
 }
 
 /* Helpers for manipulating stream out information so we can pack varyings
@@ -1573,7 +1398,8 @@ static inline unsigned
 pan_varying_present(
         struct panfrost_shader_state *vs,
         struct panfrost_shader_state *fs,
-        unsigned quirks)
+        unsigned quirks,
+        uint16_t point_coord_mask)
 {
         /* At the moment we always emit general and position buffers. Not
          * strictly necessary but usually harmless */
@@ -1599,7 +1425,7 @@ pan_varying_present(
         for (unsigned i = 0; i < fs->varying_count; i++)  {
                 gl_varying_slot loc = fs->varyings_loc[i];
 
-                if (has_point_coord(fs->point_sprite_mask, loc))
+                if (util_varying_is_point_coord(loc, point_coord_mask))
                         present |= (1 << PAN_VARY_PNTCOORD);
         }
 
@@ -1782,6 +1608,7 @@ panfrost_emit_varying(
                 struct panfrost_shader_state *other,
                 struct panfrost_shader_state *xfb,
                 unsigned present,
+                uint16_t point_sprite_mask,
                 unsigned max_xfb,
                 unsigned *streamout_offsets,
                 unsigned quirks,
@@ -1799,7 +1626,7 @@ panfrost_emit_varying(
         if (!should_alloc && gen_formats[idx])
                 format = gen_formats[idx];
 
-        if (has_point_coord(stage->point_sprite_mask, loc)) {
+        if (util_varying_is_point_coord(loc, point_sprite_mask)) {
                 pan_emit_vary_special(out, present, PAN_VARY_PNTCOORD, quirks);
         } else if (panfrost_xfb_captured(xfb, loc, max_xfb)) {
                 struct pipe_stream_output *o = pan_get_so(&xfb->stream_output, loc);
@@ -1841,9 +1668,11 @@ pan_emit_special_input(struct mali_attribute_buffer_packed *out,
 void
 panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
                                  unsigned vertex_count,
-                                 struct mali_vertex_tiler_postfix *vertex_postfix,
-                                 struct mali_vertex_tiler_postfix *tiler_postfix,
-                                 union midgard_primitive_size *primitive_size)
+                                 mali_ptr *vs_attribs,
+                                 mali_ptr *fs_attribs,
+                                 mali_ptr *buffers,
+                                 mali_ptr *position,
+                                 mali_ptr *psiz)
 {
         /* Load the shaders */
         struct panfrost_context *ctx = batch->ctx;
@@ -1862,7 +1691,8 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
                         &batch->pool, vs_size + fs_size, MALI_ATTRIBUTE_LENGTH);
 
         struct pipe_stream_output_info *so = &vs->stream_output;
-        unsigned present = pan_varying_present(vs, fs, dev->quirks);
+        uint16_t point_coord_mask = ctx->rasterizer->base.sprite_coord_enable;
+        unsigned present = pan_varying_present(vs, fs, dev->quirks, point_coord_mask);
 
         /* Check if this varying is linked by us. This is the case for
          * general-purpose, non-captured varyings. If it is, link it. If it's
@@ -1883,7 +1713,6 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
         for (unsigned i = 0; i < ctx->streamout.num_targets; ++i) {
                 streamout_offsets[i] = panfrost_streamout_offset(
                                         so->stride[i],
-                                        ctx->streamout.offsets[i],
                                         ctx->streamout.targets[i]);
         }
 
@@ -1891,14 +1720,14 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
         struct mali_attribute_packed *ofs = ovs + vs->varying_count;
 
         for (unsigned i = 0; i < vs->varying_count; i++) {
-                panfrost_emit_varying(ovs + i, vs, fs, vs, present,
+                panfrost_emit_varying(ovs + i, vs, fs, vs, present, 0,
                                 ctx->streamout.num_targets, streamout_offsets,
                                 dev->quirks,
                                 gen_offsets, gen_formats, &gen_stride, i, true, false);
         }
 
         for (unsigned i = 0; i < fs->varying_count; i++) {
-                panfrost_emit_varying(ofs + i, fs, vs, vs, present,
+                panfrost_emit_varying(ofs + i, fs, vs, vs, present, point_coord_mask,
                                 ctx->streamout.num_targets, streamout_offsets,
                                 dev->quirks,
                                 gen_offsets, gen_formats, &gen_stride, i, false, true);
@@ -1919,7 +1748,6 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
         for (unsigned i = 0; i < ctx->streamout.num_targets; ++i) {
                 panfrost_emit_streamout(batch, &varyings[xfb_base + i],
                                         so->stride[i],
-                                        ctx->streamout.offsets[i],
                                         out_count,
                                         ctx->streamout.targets[i]);
         }
@@ -1929,12 +1757,12 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
                         gen_stride, vertex_count);
 
         /* fp32 vec4 gl_Position */
-        tiler_postfix->position_varying = panfrost_emit_varyings(batch,
+        *position = panfrost_emit_varyings(batch,
                         &varyings[pan_varying_index(present, PAN_VARY_POSITION)],
                         sizeof(float) * 4, vertex_count);
 
         if (present & (1 << PAN_VARY_PSIZ)) {
-                primitive_size->pointer = panfrost_emit_varyings(batch,
+                *psiz = panfrost_emit_varyings(batch,
                                 &varyings[pan_varying_index(present, PAN_VARY_PSIZ)],
                                 2, vertex_count);
         }
@@ -1943,19 +1771,17 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
         pan_emit_special_input(varyings, present, PAN_VARY_FACE, MALI_ATTRIBUTE_SPECIAL_FRONT_FACING);
         pan_emit_special_input(varyings, present, PAN_VARY_FRAGCOORD, MALI_ATTRIBUTE_SPECIAL_FRAG_COORD);
 
-        vertex_postfix->varyings = T.gpu;
-        tiler_postfix->varyings = T.gpu;
-
-        vertex_postfix->varying_meta = trans.gpu;
-        tiler_postfix->varying_meta = trans.gpu + vs_size;
+        *buffers = T.gpu;
+        *vs_attribs = trans.gpu;
+        *fs_attribs = trans.gpu + vs_size;
 }
 
 void
 panfrost_emit_vertex_tiler_jobs(struct panfrost_batch *batch,
                                 struct mali_vertex_tiler_prefix *vertex_prefix,
-                                struct mali_vertex_tiler_postfix *vertex_postfix,
+                                struct mali_draw_packed *vertex_draw,
                                 struct mali_vertex_tiler_prefix *tiler_prefix,
-                                struct mali_vertex_tiler_postfix *tiler_postfix,
+                                struct mali_draw_packed *tiler_draw,
                                 union midgard_primitive_size *primitive_size)
 {
         struct panfrost_context *ctx = batch->ctx;
@@ -1970,24 +1796,24 @@ panfrost_emit_vertex_tiler_jobs(struct panfrost_batch *batch,
 
         if (device->quirks & IS_BIFROST) {
                 bifrost_vertex.prefix = *vertex_prefix;
-                bifrost_vertex.postfix = *vertex_postfix;
+                memcpy(&bifrost_vertex.postfix, vertex_draw, MALI_DRAW_LENGTH);
                 vp = &bifrost_vertex;
                 vp_size = sizeof(bifrost_vertex);
 
                 bifrost_tiler.prefix = *tiler_prefix;
-                bifrost_tiler.tiler.primitive_size = *primitive_size;
-                bifrost_tiler.tiler.tiler_meta = panfrost_batch_get_tiler_meta(batch, ~0);
-                bifrost_tiler.postfix = *tiler_postfix;
+                bifrost_tiler.primitive_size = *primitive_size;
+                bifrost_tiler.tiler_meta = panfrost_batch_get_tiler_meta(batch, ~0);
+                memcpy(&bifrost_tiler.postfix, tiler_draw, MALI_DRAW_LENGTH);
                 tp = &bifrost_tiler;
                 tp_size = sizeof(bifrost_tiler);
         } else {
                 midgard_vertex.prefix = *vertex_prefix;
-                midgard_vertex.postfix = *vertex_postfix;
+                memcpy(&midgard_vertex.postfix, vertex_draw, MALI_DRAW_LENGTH);
                 vp = &midgard_vertex;
                 vp_size = sizeof(midgard_vertex);
 
                 midgard_tiler.prefix = *tiler_prefix;
-                midgard_tiler.postfix = *tiler_postfix;
+                memcpy(&midgard_tiler.postfix, tiler_draw, MALI_DRAW_LENGTH);
                 midgard_tiler.primitive_size = *primitive_size;
                 tp = &midgard_tiler;
                 tp_size = sizeof(midgard_tiler);

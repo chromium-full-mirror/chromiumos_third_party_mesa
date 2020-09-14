@@ -240,7 +240,7 @@ mir_pack_swizzle(unsigned mask, unsigned *swizzle,
                 for (unsigned c = (dest_up ? 4 : 0); c < (dest_up ? 8 : 4); ++c) {
                         unsigned v = swizzle[c];
 
-                        bool t_upper = v > 3;
+                        ASSERTED bool t_upper = v > 3;
 
                         /* Ensure we're doing something sane */
 
@@ -419,7 +419,7 @@ mir_pack_ldst_mask(midgard_instruction *ins)
                 for (unsigned i = 0; i < 4; ++i) {
                         /* Make sure we're duplicated */
                         bool u = (ins->mask & (1 << (2*i + 0))) != 0;
-                        bool v = (ins->mask & (1 << (2*i + 1))) != 0;
+                        ASSERTED bool v = (ins->mask & (1 << (2*i + 1))) != 0;
                         assert(u == v);
 
                         packed |= (u << i);
@@ -497,6 +497,15 @@ load_store_from_instr(midgard_instruction *ins)
                 ldst.reg = SSA_REG_FROM_FIXED(ins->src[0]) & 1;
         } else {
                 ldst.reg = SSA_REG_FROM_FIXED(ins->dest);
+        }
+
+        /* Atomic opcode swizzles have a special meaning:
+         *   - The first two bits say which component of the implicit register should be used
+         *   - The next two bits say if the implicit register is r26 or r27 */
+        if (OP_IS_ATOMIC(ins->op)) {
+                ldst.swizzle = 0;
+                ldst.swizzle |= ins->swizzle[3][0] & 3;
+                ldst.swizzle |= (SSA_REG_FROM_FIXED(ins->src[3]) & 1 ? 1 : 0) << 2;
         }
 
         if (ins->src[1] != ~0) {
@@ -643,7 +652,8 @@ emit_branch(midgard_instruction *ins,
         int quadword_offset = 0;
 
         if (is_discard) {
-                /* Ignored */
+                /* Fixed encoding, not actually an offset */
+                quadword_offset = 0x2;
         } else if (is_tilebuf_wait) {
                 quadword_offset = -1;
         } else if (target_number > block->base.name) {
@@ -854,7 +864,9 @@ emit_binary_bundle(compiler_context *ctx,
                 for (unsigned i = 0; i < bundle->instruction_count; ++i) {
                         mir_pack_ldst_mask(bundle->instructions[i]);
 
-                        mir_pack_swizzle_ldst(bundle->instructions[i]);
+                        /* Atomic ops don't use this swizzle the same way as other ops */
+                        if (!OP_IS_ATOMIC(bundle->instructions[i]->op))
+                                mir_pack_swizzle_ldst(bundle->instructions[i]);
 
                         /* Apply a constant offset */
                         unsigned offset = bundle->instructions[i]->constants.u32[0];

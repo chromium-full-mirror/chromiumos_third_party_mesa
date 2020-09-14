@@ -102,36 +102,10 @@ st_shader_gather_info(nir_shader *nir, struct gl_program *prog)
 void
 st_nir_assign_vs_in_locations(struct nir_shader *nir)
 {
-   if (nir->info.stage != MESA_SHADER_VERTEX)
+   if (nir->info.stage != MESA_SHADER_VERTEX || nir->info.io_lowered)
       return;
 
    nir->num_inputs = util_bitcount64(nir->info.inputs_read);
-
-   if (nir->info.io_lowered) {
-      /* Adjust the locations in load_input intrinsics. */
-      nir_foreach_function(f, nir) {
-         if (f->impl) {
-            nir_foreach_block(block, f->impl) {
-               nir_foreach_instr_safe(instr, block) {
-                  if (instr->type == nir_instr_type_intrinsic) {
-                     nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-
-                     if (intrin->intrinsic == nir_intrinsic_load_input) {
-                        unsigned base = nir_intrinsic_base(intrin);
-                        unsigned loc = nir_intrinsic_io_semantics(intrin).location;
-
-                        assert(nir->info.inputs_read & BITFIELD64_BIT(loc));
-                        base = util_bitcount64(nir->info.inputs_read &
-                                               BITFIELD64_MASK(loc));
-                        nir_intrinsic_set_base(intrin, base);
-                     }
-                  }
-               }
-            }
-         }
-      }
-      return;
-   }
 
    bool removed_inputs = false;
 
@@ -290,9 +264,8 @@ st_nir_opts(nir_shader *nir)
        * might be able to make progress after it.
        */
       NIR_PASS(progress, nir, nir_remove_dead_variables,
-               (nir_variable_mode)(nir_var_function_temp |
-                                   nir_var_shader_temp |
-                                   nir_var_mem_shared),
+               nir_var_function_temp | nir_var_shader_temp |
+               nir_var_mem_shared,
                NULL);
 
       NIR_PASS(progress, nir, nir_opt_copy_prop_vars);
@@ -332,8 +305,7 @@ st_nir_opts(nir_shader *nir)
 
             NIR_PASS(lower_flrp_progress, nir, nir_lower_flrp,
                      lower_flrp,
-                     false /* always_precise */,
-                     nir->options->lower_ffma);
+                     false /* always_precise */);
             if (lower_flrp_progress) {
                NIR_PASS(progress, nir,
                         nir_opt_constant_folding);
@@ -409,8 +381,7 @@ st_nir_preprocess(struct st_context *st, struct gl_program *prog,
     * calls below do a little extra work but should otherwise have no impact.
     */
    if (!_mesa_is_gles(st->ctx) || !nir->info.separate_shader) {
-      nir_variable_mode mask =
-         (nir_variable_mode) (nir_var_shader_in | nir_var_shader_out);
+      nir_variable_mode mask = nir_var_shader_in | nir_var_shader_out;
       nir_remove_dead_variables(nir, mask, NULL);
    }
 
@@ -534,8 +505,8 @@ st_glsl_to_nir_post_opts(struct st_context *st, struct gl_program *prog,
          st_nir_opts(nir);
    }
 
-   nir_variable_mode mask = (nir_variable_mode)
-      (nir_var_shader_in | nir_var_shader_out | nir_var_function_temp );
+   nir_variable_mode mask =
+      nir_var_shader_in | nir_var_shader_out | nir_var_function_temp;
    nir_remove_dead_variables(nir, mask, NULL);
 
    if (!st->has_hw_atomics && !screen->get_param(screen, PIPE_CAP_NIR_ATOMICS_AS_DEREF))
@@ -836,6 +807,8 @@ st_link_nir(struct gl_context *ctx,
       struct gl_linked_shader *shader = linked_shader[i];
       struct shader_info *info = &shader->Program->nir->info;
 
+      st_glsl_to_nir_post_opts(st, shader->Program, shader_program);
+
       if (prev_info &&
           ctx->Const.ShaderCompilerOptions[shader->Stage].NirOptions->unify_interfaces) {
          prev_info->outputs_written |= info->inputs_read &
@@ -853,7 +826,6 @@ st_link_nir(struct gl_context *ctx,
       struct gl_linked_shader *shader = linked_shader[i];
       struct gl_program *prog = shader->Program;
       struct st_program *stp = st_program(prog);
-      st_glsl_to_nir_post_opts(st, prog, shader_program);
 
       /* Initialize st_vertex_program members. */
       if (shader->Stage == MESA_SHADER_VERTEX)

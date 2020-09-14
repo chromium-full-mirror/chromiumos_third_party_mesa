@@ -686,6 +686,7 @@ vtn_process_block(struct vtn_builder *b,
       return NULL;
 
    case SpvOpKill:
+      b->has_kill = true;
       block->branch_type = vtn_branch_type_discard;
       return NULL;
 
@@ -1165,6 +1166,13 @@ vtn_emit_cf_list_structured(struct vtn_builder *b, struct list_head *cf_list,
          vtn_foreach_cf_node(case_node, &vtn_switch->cases) {
             struct vtn_case *cse = vtn_cf_node_as_case(case_node);
 
+            /* If this case jumps directly to the break block, we don't have
+             * to handle the case as the body is empty and doesn't fall
+             * through.
+             */
+            if (cse->block == vtn_switch->break_block)
+               continue;
+
             /* Figure out the condition */
             nir_ssa_def *cond =
                vtn_switch_case_condition(b, vtn_switch, sel, cse);
@@ -1360,7 +1368,7 @@ vtn_function_emit(struct vtn_builder *b, struct vtn_function *func,
     * but instructions in the continue may use SSA defs in the loop body.
     * Therefore, we need to repair SSA to insert the needed phi nodes.
     */
-   if (b->has_loop_continue)
+   if (b->has_loop_continue || b->has_kill)
       nir_repair_ssa_impl(func->impl);
 
    func->emitted = true;

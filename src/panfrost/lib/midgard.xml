@@ -201,6 +201,19 @@
     <value name="Layered" value="3"/>
   </enum>
 
+  <enum name="Index Type">
+    <value name="None" value="0"/>
+    <value name="UINT8" value="1"/>
+    <value name="UINT16" value="2"/>
+    <value name="UINT32" value="3"/>
+  </enum>
+
+  <enum name="Occlusion Mode">
+    <value name="Disabled" value="0"/>
+    <value name="Predicate" value="1"/>
+    <value name="Counter" value="3"/>
+  </enum>
+
   <enum name="Stencil Op">
     <value name="Keep" value="0"/>
     <value name="Replace" value="1"/>
@@ -251,6 +264,7 @@
     <field name="Stride" size="32" start="64" type="uint"/>
     <field name="Size" size="32" start="96" type="uint"/>
 
+    <field name="Divisor" size="8" start="56" type="padded" default="1"/>
     <field name="Divisor R" size="5" start="56" type="uint"/>
     <field name="Divisor P" size="3" start="61" type="uint"/>
     <field name="Divisor E" size="1" start="61" type="uint"/>
@@ -274,6 +288,74 @@
     <field name="Enable" size="1" start="9" type="bool" default="true"/>
     <field name="sRGB" size="1" start="10" type="bool" default="false"/>
     <field name="Dither disable" size="1" start="11" type="bool" default="false"/>
+  </struct>
+
+  <struct name="Midgard Blend" size="4" with_opaque="true">
+    <field name="Flags" size="32" start="0:0" type="Blend Flags"/>
+    <field name="Equation" size="32" start="2:0" type="uint"/> <!-- XXX -->
+    <field name="Constant" size="32" start="3:0" type="float"/>
+    <field name="Shader" size="64" start="2:0" type="address"/>
+  </struct>
+
+  <struct name="Invocation">
+    <!-- Dynamic bitfield containing WorkGroupSize.xyz, NumWorkGroups.xyz
+      The number of bits allocated for each number is based on the *_shift
+      fields. For example, workgroups_y_shift gives the bit that
+      gl_NumWorkGroups.y starts at, and workgroups_z_shift gives the bit
+      that gl_NumWorkGroups.z starts at (and therefore one after the bit
+      that gl_NumWorkGroups.y ends at). The actual value for each
+      is one more than the stored value, since if any of the values
+      are zero, then there would be no invocations (and hence no job). -->
+    <field name="Invocations" size="32" start="0:0" type="uint"/>
+    <field name="Size Y shift" size="5" start="1:0" type="uint"/>
+    <field name="Size Z shift" size="5" start="1:5" type="uint"/>
+    <field name="Workgroups X shift" size="6" start="1:10" type="uint"/>
+    <field name="Workgroups Y shift" size="6" start="1:16" type="uint"/>
+    <field name="Workgroups Z shift" size="6" start="1:22" type="uint"/>
+    <field name="Unknown shift" size="4" start="1:28" type="uint"/>
+  </struct>
+
+  <struct name="Primitive">
+    <field name="Draw mode" size="4" start="0:0" type="Draw Mode" default="None"/>
+    <field name="Index type" size="2" start="0:8" type="Index Type" default="None"/>
+    <field name="Point size array" size="1" start="0:12" type="bool"/>
+    <!--- TODO -->
+    <field name="First provoking vertex" size="1" start="0:15" type="bool" default="true"/>
+    <field name="Unknown 1" size="1" start="0:16" type="bool" default="true"/>
+    <field name="Unknown 2" size="1" start="0:17" type="bool" default="true"/>
+    <!--- TODO -->
+    <field name="Primitive restart" size="1" start="0:20" type="bool"/>
+    <field name="Unknown 3" size="6" start="0:26" type="uint"/>
+    <field name="Base vertex offset" size="32" start="1:0" type="uint"/>
+    <!--- TODO: word 2 -->
+    <field name="Index count" size="32" start="3:0" type="uint" modifier="minus(1)"/>
+    <field name="Indices" size="64" start="4:0" type="address"/>
+  </struct>
+
+  <struct name="Draw" size="30">
+    <field name="Unknown 1" size="3" start="0:0" type="uint"/>
+    <field name="Occlusion query" size="2" start="0:3" type="Occlusion Mode" default="Disabled"/>
+    <field name="Front face CCW" size="1" start="0:5" type="bool"/>
+    <field name="Cull front face" size="1" start="0:6" type="bool"/>
+    <field name="Cull back face" size="1" start="0:7" type="bool"/>
+    <!-- TODO 0:7-0:15 -->
+    <field name="Instances" size="8" start="0:16" type="padded" default="1"/>
+    <!-- TODO: 0:16-0:24 -->
+    <field name="Offset start" size="32" start="1:0" type="uint"/>
+    <!-- TODO: 2-3 -->
+    <field name="Position" size="64" start="4:0" type="address"/>
+    <field name="Uniform buffers" size="64" start="6:0" type="address"/>
+    <field name="Textures" size="64" start="8:0" type="address"/>
+    <field name="Samplers" size="64" start="10:0" type="address"/>
+    <field name="Push uniforms" size="64" start="12:0" type="address"/>
+    <field name="State" size="64" start="14:0" type="address"/>
+    <field name="Attribute buffers" size="64" start="16:0" type="address"/>
+    <field name="Attributes" size="64" start="18:0" type="address"/>
+    <field name="Varying buffers" size="64" start="20:0" type="address"/>
+    <field name="Varyings" size="64" start="22:0" type="address"/>
+    <field name="Viewport" size="64" start="24:0" type="address"/>
+    <field name="Occlusion" size="64" start="26:0" type="address"/>
+    <field name="Shared" size="64" start="28:0" type="address"/>
   </struct>
 
   <struct name="Midgard Sampler">

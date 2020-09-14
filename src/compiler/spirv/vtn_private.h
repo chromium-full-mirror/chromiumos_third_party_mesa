@@ -484,6 +484,7 @@ enum vtn_variable_mode {
    vtn_variable_mode_push_constant,
    vtn_variable_mode_workgroup,
    vtn_variable_mode_cross_workgroup,
+   vtn_variable_mode_constant,
    vtn_variable_mode_input,
    vtn_variable_mode_output,
    vtn_variable_mode_image,
@@ -552,8 +553,6 @@ struct vtn_variable {
     */
    int base_location;
 
-   int shared_location;
-
    /**
     * In some early released versions of GLSLang, it implemented all function
     * calls by making copies of all parameters into temporary variables and
@@ -585,11 +584,17 @@ struct vtn_image_pointer {
 
 struct vtn_value {
    enum vtn_value_type value_type;
+
+   /* Workaround for https://gitlab.freedesktop.org/mesa/mesa/-/issues/3406
+    * Only set for OpImage / OpSampledImage. Note that this is in addition
+    * the existence of a NonUniform decoration on this value.*/
+   uint32_t propagated_non_uniform : 1;
+
    const char *name;
    struct vtn_decoration *decoration;
    struct vtn_type *type;
    union {
-      char *str;
+      const char *str;
       nir_constant *constant;
       struct vtn_pointer *pointer;
       struct vtn_image_pointer *image;
@@ -639,7 +644,7 @@ struct vtn_builder {
     * automatically by vtn_foreach_instruction.
     */
    size_t spirv_offset;
-   char *file;
+   const char *file;
    int line, col;
 
    /*
@@ -678,6 +683,7 @@ struct vtn_builder {
    unsigned func_param_idx;
 
    bool has_loop_continue;
+   bool has_kill;
 
    /* false by default, set to true by the ContractionOff execution mode */
    bool exact;
@@ -837,10 +843,11 @@ void vtn_local_store(struct vtn_builder *b, struct vtn_ssa_value *src,
                      enum gl_access_qualifier access);
 
 struct vtn_ssa_value *
-vtn_variable_load(struct vtn_builder *b, struct vtn_pointer *src);
+vtn_variable_load(struct vtn_builder *b, struct vtn_pointer *src,
+                  enum gl_access_qualifier access);
 
 void vtn_variable_store(struct vtn_builder *b, struct vtn_ssa_value *src,
-                        struct vtn_pointer *dest);
+                        struct vtn_pointer *dest, enum gl_access_qualifier access);
 
 void vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
                           const uint32_t *w, unsigned count);
@@ -927,7 +934,7 @@ bool vtn_handle_amd_shader_explicit_vertex_parameter_instruction(struct vtn_buil
                                                                  const uint32_t *words,
                                                                  unsigned count);
 
-SpvMemorySemanticsMask vtn_storage_class_to_memory_semantics(SpvStorageClass sc);
+SpvMemorySemanticsMask vtn_mode_to_memory_semantics(enum vtn_variable_mode mode);
 
 void vtn_emit_memory_barrier(struct vtn_builder *b, SpvScope scope,
                              SpvMemorySemanticsMask semantics);

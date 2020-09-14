@@ -2238,7 +2238,8 @@ generate_code(struct brw_codegen *p,
 
       /* overriding the shader makes disasm_info invalid */
       if (!brw_try_override_assembly(p, 0, sha1buf)) {
-         dump_assembly(p->store, disasm_info, perf.block_latency);
+         dump_assembly(p->store, 0, p->next_insn_offset,
+                       disasm_info, perf.block_latency);
       } else {
          fprintf(stderr, "Successfully overrode shader with sha1 %s\n\n", sha1buf);
       }
@@ -2279,6 +2280,13 @@ brw_vec4_generate_assembly(const struct brw_compiler *compiler,
    brw_set_default_access_mode(p, BRW_ALIGN_16);
 
    generate_code(p, compiler, log_data, nir, prog_data, cfg, perf, stats);
+
+   assert(prog_data->base.const_data_size == 0);
+   if (nir->constant_data_size > 0) {
+      prog_data->base.const_data_size = nir->constant_data_size;
+      prog_data->base.const_data_offset =
+         brw_append_data(p, nir->constant_data, nir->constant_data_size, 32);
+   }
 
    return brw_get_program(p, &prog_data->base.program_size);
 }

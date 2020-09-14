@@ -684,7 +684,7 @@ tu_shader_create(struct tu_device *dev,
          tu_shader_module_from_handle(stage_info->module);
       assert(module->code_size % 4 == 0);
       nir = tu_spirv_to_nir(
-         dev->compiler, (const uint32_t *) module->code, module->code_size / 4,
+         dev->compiler, module->code, module->code_size / 4,
          stage, stage_info->pName, stage_info->pSpecializationInfo);
    } else {
       assert(stage == MESA_SHADER_FRAGMENT);
@@ -757,7 +757,7 @@ tu_shader_create(struct tu_device *dev,
     * a global BO, they can be directly accessed via stg and ldg.
     * nir_lower_indirect_derefs will instead generate a big if-ladder which
     * isn't *incorrect* but is much less efficient. */
-   NIR_PASS_V(nir, nir_lower_indirect_derefs, nir_var_shader_in | nir_var_shader_out);
+   NIR_PASS_V(nir, nir_lower_indirect_derefs, nir_var_shader_in | nir_var_shader_out, UINT32_MAX);
 
    NIR_PASS_V(nir, nir_lower_io_arrays_to_elements_no_indirects, false);
 
@@ -844,8 +844,6 @@ tu_CreateShaderModule(VkDevice _device,
 
    module->code_size = pCreateInfo->codeSize;
    memcpy(module->code, pCreateInfo->pCode, pCreateInfo->codeSize);
-
-   _mesa_sha1_compute(module->code, module->code_size, module->sha1);
 
    *pShaderModule = tu_shader_module_to_handle(module);
 

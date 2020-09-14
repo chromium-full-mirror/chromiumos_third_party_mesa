@@ -696,6 +696,7 @@ glsl_get_natural_size_align_bytes(const struct glsl_type *type,
       break;
    }
 
+   case GLSL_TYPE_INTERFACE:
    case GLSL_TYPE_STRUCT:
       *size = 0;
       *align = 0;
@@ -719,7 +720,6 @@ glsl_get_natural_size_align_bytes(const struct glsl_type *type,
    case GLSL_TYPE_SUBROUTINE:
    case GLSL_TYPE_VOID:
    case GLSL_TYPE_ERROR:
-   case GLSL_TYPE_INTERFACE:
    case GLSL_TYPE_FUNCTION:
       unreachable("type does not have a natural size");
    }
@@ -858,6 +858,18 @@ unsigned
 glsl_get_explicit_size(const struct glsl_type *type, bool align_to_stride)
 {
    return type->explicit_size(align_to_stride);
+}
+
+unsigned
+glsl_get_explicit_alignment(const struct glsl_type *type)
+{
+   return type->explicit_alignment;
+}
+
+bool
+glsl_type_is_packed(const struct glsl_type *type)
+{
+   return type->packed;
 }
 
 bool

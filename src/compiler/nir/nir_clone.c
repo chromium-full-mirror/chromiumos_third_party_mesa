@@ -339,6 +339,8 @@ clone_deref_instr(clone_state *state, const nir_deref_instr *deref)
 
    case nir_deref_type_cast:
       nderef->cast.ptr_stride = deref->cast.ptr_stride;
+      nderef->cast.align_mul = deref->cast.align_mul;
+      nderef->cast.align_offset = deref->cast.align_offset;
       break;
 
    default:
@@ -515,6 +517,16 @@ clone_instr(clone_state *state, const nir_instr *instr)
       unreachable("bad instr type");
       return NULL;
    }
+}
+
+nir_instr *
+nir_instr_clone(nir_shader *shader, const nir_instr *orig)
+{
+   clone_state state = {
+      .allow_remap_fallback = true,
+      .ns = shader,
+   };
+   return clone_instr(&state, orig);
 }
 
 static nir_block *
@@ -756,7 +768,7 @@ nir_shader_clone(void *mem_ctx, const nir_shader *s)
    ns->num_inputs = s->num_inputs;
    ns->num_uniforms = s->num_uniforms;
    ns->num_outputs = s->num_outputs;
-   ns->num_shared = s->num_shared;
+   ns->shared_size = s->shared_size;
    ns->scratch_size = s->scratch_size;
 
    ns->constant_data_size = s->constant_data_size;

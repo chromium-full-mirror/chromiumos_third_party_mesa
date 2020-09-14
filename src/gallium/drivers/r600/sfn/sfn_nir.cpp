@@ -636,8 +636,7 @@ r600_nir_lower_atomics(nir_shader *shader)
       }
 
       if (impl_progress) {
-         nir_metadata_preserve(function->impl, (nir_metadata)(nir_metadata_block_index |
-                                                              nir_metadata_dominance));
+         nir_metadata_preserve(function->impl, nir_metadata_block_index | nir_metadata_dominance);
          progress = true;
       }
    }
@@ -769,7 +768,7 @@ optimize_once(nir_shader *shader)
    NIR_PASS(progress, shader, nir_opt_algebraic);
    NIR_PASS(progress, shader, nir_opt_constant_folding);
    NIR_PASS(progress, shader, nir_opt_copy_prop_vars);
-   NIR_PASS(progress, shader, nir_opt_vectorize);
+   NIR_PASS(progress, shader, nir_opt_vectorize, NULL, NULL);
 
    NIR_PASS(progress, shader, nir_opt_remove_phis);
 
