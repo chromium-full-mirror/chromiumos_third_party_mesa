@@ -79,6 +79,7 @@ panfrost_resource_from_handle(struct pipe_screen *pscreen,
         rsc->internal_format = templat->format;
         rsc->modifier = (whandle->modifier == DRM_FORMAT_MOD_INVALID) ?
                 DRM_FORMAT_MOD_LINEAR : whandle->modifier;
+        rsc->modifier_constant = true;
         rsc->slices[0].stride = whandle->stride;
         rsc->slices[0].offset = whandle->offset;
         rsc->slices[0].initialized = true;
@@ -118,6 +119,7 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
         struct renderonly_scanout *scanout = rsrc->scanout;
 
         handle->modifier = rsrc->modifier;
+        rsrc->modifier_constant = true;
 
         if (handle->type == WINSYS_HANDLE_TYPE_SHARED) {
                 return false;
@@ -770,7 +772,7 @@ static void *
 panfrost_transfer_map(struct pipe_context *pctx,
                       struct pipe_resource *resource,
                       unsigned level,
-                      unsigned usage,  /* a combination of PIPE_TRANSFER_x */
+                      unsigned usage,  /* a combination of PIPE_MAP_x */
                       const struct pipe_box *box,
                       struct pipe_transfer **out_transfer)
 {
@@ -781,7 +783,7 @@ panfrost_transfer_map(struct pipe_context *pctx,
         struct panfrost_bo *bo = rsrc->bo;
 
         /* Can't map tiled/compressed directly */
-        if ((usage & PIPE_TRANSFER_MAP_DIRECTLY) && rsrc->modifier != DRM_FORMAT_MOD_LINEAR)
+        if ((usage & PIPE_MAP_DIRECTLY) && rsrc->modifier != DRM_FORMAT_MOD_LINEAR)
                 return NULL;
 
         struct panfrost_gtransfer *transfer = rzalloc(pctx, struct panfrost_gtransfer);
@@ -812,7 +814,7 @@ panfrost_transfer_map(struct pipe_context *pctx,
                  * from a pending batch XXX */
                 panfrost_flush_batches_accessing_bo(ctx, rsrc->bo, true);
 
-                if ((usage & PIPE_TRANSFER_READ) && rsrc->slices[level].initialized) {
+                if ((usage & PIPE_MAP_READ) && rsrc->slices[level].initialized) {
                         pan_blit_to_staging(pctx, transfer);
                         panfrost_flush_batches_accessing_bo(ctx, staging->bo, true);
                         panfrost_bo_wait(staging->bo, INT64_MAX, false);
@@ -828,12 +830,12 @@ panfrost_transfer_map(struct pipe_context *pctx,
         if (dev->debug & (PAN_DBG_TRACE | PAN_DBG_SYNC))
                 pandecode_inject_mmap(bo->gpu, bo->cpu, bo->size, NULL);
 
-        bool create_new_bo = usage & PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE;
+        bool create_new_bo = usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE;
         bool copy_resource = false;
 
         if (!create_new_bo &&
-            !(usage & PIPE_TRANSFER_UNSYNCHRONIZED) &&
-            (usage & PIPE_TRANSFER_WRITE) &&
+            !(usage & PIPE_MAP_UNSYNCHRONIZED) &&
+            (usage & PIPE_MAP_WRITE) &&
             !(resource->target == PIPE_BUFFER
               && !util_ranges_intersect(&rsrc->valid_buffer_range, box->x, box->x + box->width)) &&
             panfrost_pending_batches_access_bo(ctx, bo)) {
@@ -885,15 +887,15 @@ panfrost_transfer_map(struct pipe_context *pctx,
                                 panfrost_bo_wait(bo, INT64_MAX, true);
                         }
                 }
-        } else if ((usage & PIPE_TRANSFER_WRITE)
+        } else if ((usage & PIPE_MAP_WRITE)
                    && resource->target == PIPE_BUFFER
                    && !util_ranges_intersect(&rsrc->valid_buffer_range, box->x, box->x + box->width)) {
                 /* No flush for writes to uninitialized */
-        } else if (!(usage & PIPE_TRANSFER_UNSYNCHRONIZED)) {
-                if (usage & PIPE_TRANSFER_WRITE) {
+        } else if (!(usage & PIPE_MAP_UNSYNCHRONIZED)) {
+                if (usage & PIPE_MAP_WRITE) {
                         panfrost_flush_batches_accessing_bo(ctx, bo, true);
                         panfrost_bo_wait(bo, INT64_MAX, true);
-                } else if (usage & PIPE_TRANSFER_READ) {
+                } else if (usage & PIPE_MAP_READ) {
                         panfrost_flush_batches_accessing_bo(ctx, bo, false);
                         panfrost_bo_wait(bo, INT64_MAX, false);
                 }
@@ -905,7 +907,7 @@ panfrost_transfer_map(struct pipe_context *pctx,
                 transfer->map = ralloc_size(transfer, transfer->base.layer_stride * box->depth);
                 assert(box->depth == 1);
 
-                if ((usage & PIPE_TRANSFER_READ) && rsrc->slices[level].initialized) {
+                if ((usage & PIPE_MAP_READ) && rsrc->slices[level].initialized) {
                         panfrost_load_tiled_image(
                                         transfer->map,
                                         bo->cpu + rsrc->slices[level].offset,
@@ -923,7 +925,7 @@ panfrost_transfer_map(struct pipe_context *pctx,
                  * caching... I don't know if this is actually possible but we
                  * should still get it right */
 
-                unsigned dpw = PIPE_TRANSFER_MAP_DIRECTLY | PIPE_TRANSFER_WRITE | PIPE_TRANSFER_PERSISTENT;
+                unsigned dpw = PIPE_MAP_DIRECTLY | PIPE_MAP_WRITE | PIPE_MAP_PERSISTENT;
 
                 if ((usage & dpw) == dpw && rsrc->index_cache)
                         return NULL;
@@ -936,7 +938,7 @@ panfrost_transfer_map(struct pipe_context *pctx,
                 /* By mapping direct-write, we're implicitly already
                  * initialized (maybe), so be conservative */
 
-                if (usage & PIPE_TRANSFER_WRITE) {
+                if (usage & PIPE_MAP_WRITE) {
                         rsrc->slices[level].initialized = true;
                         panfrost_minmax_cache_invalidate(rsrc->index_cache, &transfer->base);
                 }
@@ -992,7 +994,7 @@ panfrost_transfer_unmap(struct pipe_context *pctx,
          * malformed AFBC data if uninitialized */
 
         if (trans->staging.rsrc) {
-                if (transfer->usage & PIPE_TRANSFER_WRITE) {
+                if (transfer->usage & PIPE_MAP_WRITE) {
                         if (panfrost_should_linear_convert(prsrc, transfer)) {
 
                                 panfrost_bo_unreference(prsrc->bo);
@@ -1016,7 +1018,7 @@ panfrost_transfer_unmap(struct pipe_context *pctx,
         if (trans->map) {
                 struct panfrost_bo *bo = prsrc->bo;
 
-                if (transfer->usage & PIPE_TRANSFER_WRITE) {
+                if (transfer->usage & PIPE_MAP_WRITE) {
                         prsrc->slices[transfer->level].initialized = true;
 
                         if (prsrc->modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED) {

@@ -57,37 +57,25 @@ panfrost_vt_emit_shared_memory(struct panfrost_batch *batch)
 {
         struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
 
-        struct mali_shared_memory shared = {
-                .shared_workgroup_count = ~0,
-        };
+        struct panfrost_transfer t =
+                panfrost_pool_alloc_aligned(&batch->pool,
+                                            MALI_LOCAL_STORAGE_LENGTH,
+                                            64);
 
-        if (batch->stack_size) {
-                struct panfrost_bo *stack =
-                        panfrost_batch_get_scratchpad(batch, batch->stack_size,
-                                        dev->thread_tls_alloc,
-                                        dev->core_count);
+        pan_pack(t.cpu, LOCAL_STORAGE, ls) {
+                ls.wls_instances = MALI_LOCAL_STORAGE_NO_WORKGROUP_MEM;
+                if (batch->stack_size) {
+                        struct panfrost_bo *stack =
+                                panfrost_batch_get_scratchpad(batch, batch->stack_size,
+                                                              dev->thread_tls_alloc,
+                                                              dev->core_count);
 
-                shared.stack_shift = panfrost_get_stack_shift(batch->stack_size);
-                shared.scratchpad = stack->gpu;
+                        ls.tls_size = panfrost_get_stack_shift(batch->stack_size);
+                        ls.tls_base_pointer = stack->gpu;
+                }
         }
 
-        return panfrost_pool_upload_aligned(&batch->pool, &shared, sizeof(shared), 64);
-}
-
-void
-panfrost_vt_update_primitive_size(struct panfrost_context *ctx,
-                                  bool points,
-                                  union midgard_primitive_size *primitive_size)
-{
-        struct panfrost_rasterizer *rasterizer = ctx->rasterizer;
-
-        if (!panfrost_writes_point_size(ctx)) {
-                float val = points ?
-                              rasterizer->base.point_size :
-                              rasterizer->base.line_width;
-
-                primitive_size->constant = val;
-        }
+        return t.gpu;
 }
 
 /* Gets a GPU address for the associated index buffer. Only gauranteed to be
@@ -308,7 +296,7 @@ panfrost_emit_blend(struct panfrost_batch *batch, void *rts,
 
                         cfg.srgb = util_format_is_srgb(batch->key.cbufs[i]->format);
                         cfg.load_destination = blend[i].load_dest;
-                        cfg.dither_disable = !batch->ctx->blend->base.dither;
+                        cfg.round_to_fb_precision = !batch->ctx->blend->base.dither;
 
                         if (!(dev->quirks & IS_BIFROST))
                                 cfg.midgard_blend_shader = blend[i].is_shader;
@@ -338,6 +326,8 @@ panfrost_emit_blend(struct panfrost_batch *batch, void *rts,
                                 brts[i].constant = blend[i].equation.constant;
 
                                 brts[i].format = panfrost_format_to_bifrost_blend(format_desc);
+                                if (dev->quirks & HAS_SWIZZLES)
+                                        brts[i].swizzle = panfrost_get_default_swizzle(4);
 
                                 /* 0x19 disables blending and forces REPLACE
                                  * mode (equivalent to rgb_mode = alpha_mode =
@@ -579,10 +569,12 @@ panfrost_emit_frag_shader_meta(struct panfrost_batch *batch)
         xfer = panfrost_pool_alloc_aligned(&batch->pool, desc_size, MALI_STATE_LENGTH);
 
         struct panfrost_blend_final blend[PIPE_MAX_COLOR_BUFS];
+        unsigned shader_offset = 0;
+        struct panfrost_bo *shader_bo = NULL;
 
         for (unsigned c = 0; c < ctx->pipe_framebuffer.nr_cbufs; ++c)
-                blend[c] = panfrost_get_blend_for_context(ctx, c);
-
+                blend[c] = panfrost_get_blend_for_context(ctx, c, &shader_bo,
+                                                          &shader_offset);
         panfrost_emit_frag_shader(ctx, (struct mali_state_packed *) xfer.cpu, blend);
 
         if (!(dev->quirks & MIDGARD_SFBD))
@@ -605,20 +597,20 @@ panfrost_emit_viewport(struct panfrost_batch *batch)
         /* Derive min/max from translate/scale. Note since |x| >= 0 by
          * definition, we have that -|x| <= |x| hence translate - |scale| <=
          * translate + |scale|, so the ordering is correct here. */
-        float vp_minx = (int) (vp->translate[0] - fabsf(vp->scale[0]));
-        float vp_maxx = (int) (vp->translate[0] + fabsf(vp->scale[0]));
-        float vp_miny = (int) (vp->translate[1] - fabsf(vp->scale[1]));
-        float vp_maxy = (int) (vp->translate[1] + fabsf(vp->scale[1]));
+        float vp_minx = vp->translate[0] - fabsf(vp->scale[0]);
+        float vp_maxx = vp->translate[0] + fabsf(vp->scale[0]);
+        float vp_miny = vp->translate[1] - fabsf(vp->scale[1]);
+        float vp_maxy = vp->translate[1] + fabsf(vp->scale[1]);
         float minz = (vp->translate[2] - fabsf(vp->scale[2]));
         float maxz = (vp->translate[2] + fabsf(vp->scale[2]));
 
         /* Scissor to the intersection of viewport and to the scissor, clamped
          * to the framebuffer */
 
-        unsigned minx = MIN2(fb->width, vp_minx);
-        unsigned maxx = MIN2(fb->width, vp_maxx);
-        unsigned miny = MIN2(fb->height, vp_miny);
-        unsigned maxy = MIN2(fb->height, vp_maxy);
+        unsigned minx = MIN2(fb->width, MAX2((int) vp_minx, 0));
+        unsigned maxx = MIN2(fb->width, MAX2((int) vp_maxx, 0));
+        unsigned miny = MIN2(fb->height, MAX2((int) vp_miny, 0));
+        unsigned maxy = MIN2(fb->height, MAX2((int) vp_maxy, 0));
 
         if (ss && rast->scissor) {
                 minx = MAX2(ss->minx, minx);
@@ -627,9 +619,15 @@ panfrost_emit_viewport(struct panfrost_batch *batch)
                 maxy = MIN2(ss->maxy, maxy);
         }
 
+        /* Set the range to [1, 1) so max values don't wrap round */
+        if (maxx == 0 || maxy == 0)
+                maxx = maxy = minx = miny = 1;
+
         struct panfrost_transfer T = panfrost_pool_alloc(&batch->pool, MALI_VIEWPORT_LENGTH);
 
         pan_pack(T.cpu, VIEWPORT, cfg) {
+                /* [minx, maxx) and [miny, maxy) are exclusive ranges, but
+                 * these are inclusive */
                 cfg.scissor_minimum_x = minx;
                 cfg.scissor_minimum_y = miny;
                 cfg.scissor_maximum_x = maxx - 1;
@@ -915,8 +913,12 @@ panfrost_emit_const_buf(struct panfrost_batch *batch,
                         continue;
                 }
 
+                /* Issue (57) for the ARB_uniform_buffer_object spec says that
+                 * the buffer can be larger than the uniform data inside it,
+                 * so clamp ubo size to what hardware supports. */
+
                 pan_pack(ubo_ptr + ubo, UNIFORM_BUFFER, cfg) {
-                        cfg.entries = DIV_ROUND_UP(usz, 16);
+                        cfg.entries = MIN2(DIV_ROUND_UP(usz, 16), 1 << 12);
                         cfg.pointer = panfrost_map_constant_buffer_gpu(batch,
                                         stage, buf, ubo);
                 }
@@ -948,15 +950,18 @@ panfrost_emit_shared_memory(struct panfrost_batch *batch,
         struct panfrost_bo *bo = panfrost_batch_get_shared_memory(batch,
                                                                   shared_size,
                                                                   1);
+        struct panfrost_transfer t =
+                panfrost_pool_alloc_aligned(&batch->pool,
+                                            MALI_LOCAL_STORAGE_LENGTH,
+                                            64);
 
-        struct mali_shared_memory shared = {
-                .shared_memory = bo->gpu,
-                .shared_workgroup_count = log2_instances,
-                .shared_shift = util_logbase2(single_size) + 1
+        pan_pack(t.cpu, LOCAL_STORAGE, ls) {
+                ls.wls_base_pointer = bo->gpu;
+                ls.wls_instances = log2_instances;
+                ls.wls_size_scale = util_logbase2(single_size) + 1;
         };
 
-        return panfrost_pool_upload_aligned(&batch->pool, &shared,
-                        sizeof(shared), 64);
+        return t.gpu;
 }
 
 static mali_ptr
@@ -1778,67 +1783,32 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
 
 void
 panfrost_emit_vertex_tiler_jobs(struct panfrost_batch *batch,
-                                struct mali_vertex_tiler_prefix *vertex_prefix,
-                                struct mali_draw_packed *vertex_draw,
-                                struct mali_vertex_tiler_prefix *tiler_prefix,
-                                struct mali_draw_packed *tiler_draw,
-                                union midgard_primitive_size *primitive_size)
+                                const struct panfrost_transfer *vertex_job,
+                                const struct panfrost_transfer *tiler_job)
 {
         struct panfrost_context *ctx = batch->ctx;
-        struct panfrost_device *device = pan_device(ctx->base.screen);
         bool wallpapering = ctx->wallpaper_batch && batch->scoreboard.tiler_dep;
-        struct bifrost_payload_vertex bifrost_vertex = {0,};
-        struct bifrost_payload_tiler bifrost_tiler = {0,};
-        struct midgard_payload_vertex_tiler midgard_vertex = {0,};
-        struct midgard_payload_vertex_tiler midgard_tiler = {0,};
-        void *vp, *tp;
-        size_t vp_size, tp_size;
-
-        if (device->quirks & IS_BIFROST) {
-                bifrost_vertex.prefix = *vertex_prefix;
-                memcpy(&bifrost_vertex.postfix, vertex_draw, MALI_DRAW_LENGTH);
-                vp = &bifrost_vertex;
-                vp_size = sizeof(bifrost_vertex);
-
-                bifrost_tiler.prefix = *tiler_prefix;
-                bifrost_tiler.primitive_size = *primitive_size;
-                bifrost_tiler.tiler_meta = panfrost_batch_get_tiler_meta(batch, ~0);
-                memcpy(&bifrost_tiler.postfix, tiler_draw, MALI_DRAW_LENGTH);
-                tp = &bifrost_tiler;
-                tp_size = sizeof(bifrost_tiler);
-        } else {
-                midgard_vertex.prefix = *vertex_prefix;
-                memcpy(&midgard_vertex.postfix, vertex_draw, MALI_DRAW_LENGTH);
-                vp = &midgard_vertex;
-                vp_size = sizeof(midgard_vertex);
-
-                midgard_tiler.prefix = *tiler_prefix;
-                memcpy(&midgard_tiler.postfix, tiler_draw, MALI_DRAW_LENGTH);
-                midgard_tiler.primitive_size = *primitive_size;
-                tp = &midgard_tiler;
-                tp_size = sizeof(midgard_tiler);
-        }
 
         if (wallpapering) {
                 /* Inject in reverse order, with "predicted" job indices.
                  * THIS IS A HACK XXX */
-                panfrost_new_job(&batch->pool, &batch->scoreboard, MALI_JOB_TYPE_TILER, false,
-                                 batch->scoreboard.job_index + 2, tp, tp_size, true);
-                panfrost_new_job(&batch->pool, &batch->scoreboard, MALI_JOB_TYPE_VERTEX, false, 0,
-                                 vp, vp_size, true);
+
+                panfrost_add_job(&batch->pool, &batch->scoreboard, MALI_JOB_TYPE_TILER, false,
+                                 batch->scoreboard.job_index + 2, tiler_job, true);
+                panfrost_add_job(&batch->pool, &batch->scoreboard, MALI_JOB_TYPE_VERTEX, false, 0,
+                                 vertex_job, true);
                 return;
         }
 
         /* If rasterizer discard is enable, only submit the vertex */
 
-        unsigned vertex = panfrost_new_job(&batch->pool, &batch->scoreboard, MALI_JOB_TYPE_VERTEX, false, 0,
-                                           vp, vp_size, false);
+        unsigned vertex = panfrost_add_job(&batch->pool, &batch->scoreboard, MALI_JOB_TYPE_VERTEX, false, 0,
+                                           vertex_job, false);
 
         if (ctx->rasterizer->base.rasterizer_discard)
                 return;
 
-        panfrost_new_job(&batch->pool, &batch->scoreboard, MALI_JOB_TYPE_TILER, false, vertex, tp, tp_size,
-                         false);
+        panfrost_add_job(&batch->pool, &batch->scoreboard, MALI_JOB_TYPE_TILER, false, vertex, tiler_job, false);
 }
 
 /* TODO: stop hardcoding this */

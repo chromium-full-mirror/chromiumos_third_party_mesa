@@ -585,11 +585,16 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
    case nir_op_vec2:
    case nir_op_vec3:
    case nir_op_vec4:
+   case nir_op_unpack_32_2x16:
+   case nir_op_unpack_64_2x32:
+   case nir_op_unpack_64_4x16:
       src_components = 1;
       break;
    case nir_op_pack_half_2x16:
    case nir_op_pack_snorm_2x16:
    case nir_op_pack_unorm_2x16:
+   case nir_op_pack_32_2x16:
+   case nir_op_pack_64_2x32:
       src_components = 2;
       break;
    case nir_op_unpack_half_2x16:
@@ -598,6 +603,9 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
    case nir_op_cube_face_coord:
    case nir_op_cube_face_index:
       src_components = 3;
+      break;
+   case nir_op_pack_64_4x16:
+      src_components = 4;
       break;
    default:
       src_components = num_components;
@@ -853,10 +861,10 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
       }
       break;
    case nir_op_ffma:
-      /* FMA is better on GFX10, because it has FMA units instead of MUL-ADD units. */
-      result =
-         emit_intrin_3f_param(&ctx->ac, ctx->ac.chip_class >= GFX10 ? "llvm.fma" : "llvm.fmuladd",
-                              ac_to_float_type(&ctx->ac, def_type), src[0], src[1], src[2]);
+      /* FMA is slow on gfx6-8, so it shouldn't be used. */
+      assert(instr->dest.dest.ssa.bit_size != 32 || ctx->ac.chip_class >= GFX9);
+      result = emit_intrin_3f_param(&ctx->ac, "llvm.fma", ac_to_float_type(&ctx->ac, def_type),
+                                    src[0], src[1], src[2]);
       break;
    case nir_op_ldexp:
       src[0] = ac_to_float(&ctx->ac, src[0]);
@@ -1057,13 +1065,17 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
       result = emit_ddxy(ctx, instr->op, src[0]);
       break;
 
+   case nir_op_unpack_64_2x32: {
+      result = LLVMBuildBitCast(ctx->ac.builder, src[0],
+            ctx->ac.v2i32, "");
+      break;
+   }
    case nir_op_unpack_64_2x32_split_x: {
       assert(ac_get_llvm_num_components(src[0]) == 1);
       LLVMValueRef tmp = LLVMBuildBitCast(ctx->ac.builder, src[0], ctx->ac.v2i32, "");
       result = LLVMBuildExtractElement(ctx->ac.builder, tmp, ctx->ac.i32_0, "");
       break;
    }
-
    case nir_op_unpack_64_2x32_split_y: {
       assert(ac_get_llvm_num_components(src[0]) == 1);
       LLVMValueRef tmp = LLVMBuildBitCast(ctx->ac.builder, src[0], ctx->ac.v2i32, "");
@@ -1071,24 +1083,38 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
       break;
    }
 
+   case nir_op_pack_64_2x32: {
+      result = LLVMBuildBitCast(ctx->ac.builder, src[0],
+            ctx->ac.i64, "");
+      break;
+   }
    case nir_op_pack_64_2x32_split: {
       LLVMValueRef tmp = ac_build_gather_values(&ctx->ac, src, 2);
       result = LLVMBuildBitCast(ctx->ac.builder, tmp, ctx->ac.i64, "");
       break;
    }
 
+   case nir_op_pack_32_2x16: {
+      result = LLVMBuildBitCast(ctx->ac.builder, src[0],
+            ctx->ac.i32, "");
+      break;
+   }
    case nir_op_pack_32_2x16_split: {
       LLVMValueRef tmp = ac_build_gather_values(&ctx->ac, src, 2);
       result = LLVMBuildBitCast(ctx->ac.builder, tmp, ctx->ac.i32, "");
       break;
    }
 
+   case nir_op_unpack_32_2x16: {
+      result = LLVMBuildBitCast(ctx->ac.builder, src[0],
+            ctx->ac.v2i16, "");
+      break;
+   }
    case nir_op_unpack_32_2x16_split_x: {
       LLVMValueRef tmp = LLVMBuildBitCast(ctx->ac.builder, src[0], ctx->ac.v2i16, "");
       result = LLVMBuildExtractElement(ctx->ac.builder, tmp, ctx->ac.i32_0, "");
       break;
    }
-
    case nir_op_unpack_32_2x16_split_y: {
       LLVMValueRef tmp = LLVMBuildBitCast(ctx->ac.builder, src[0], ctx->ac.v2i16, "");
       result = LLVMBuildExtractElement(ctx->ac.builder, tmp, ctx->ac.i32_1, "");
@@ -1543,8 +1569,8 @@ static LLVMValueRef visit_load_push_constant(struct ac_nir_context *ctx, nir_int
    return LLVMBuildLoad(ctx->ac.builder, ptr, "");
 }
 
-static LLVMValueRef visit_get_buffer_size(struct ac_nir_context *ctx,
-                                          const nir_intrinsic_instr *instr)
+static LLVMValueRef visit_get_ssbo_size(struct ac_nir_context *ctx,
+                                        const nir_intrinsic_instr *instr)
 {
    LLVMValueRef index = get_src(ctx, instr->src[0]);
 
@@ -1930,6 +1956,121 @@ static LLVMValueRef enter_waterfall_ubo(struct ac_nir_context *ctx, struct water
 {
    return enter_waterfall(ctx, wctx, get_src(ctx, instr->src[0]),
                           nir_intrinsic_access(instr) & ACCESS_NON_UNIFORM);
+}
+
+static LLVMValueRef visit_load_global(struct ac_nir_context *ctx,
+                                      nir_intrinsic_instr *instr)
+{
+   LLVMValueRef addr = get_src(ctx, instr->src[0]);
+   LLVMTypeRef result_type = get_def_type(ctx, &instr->dest.ssa);
+   LLVMValueRef val;
+
+   LLVMTypeRef ptr_type = LLVMPointerType(result_type, AC_ADDR_SPACE_GLOBAL);
+
+   addr = LLVMBuildIntToPtr(ctx->ac.builder, addr, ptr_type, "");
+
+   val = LLVMBuildLoad(ctx->ac.builder, addr, "");
+
+   if (nir_intrinsic_access(instr) & (ACCESS_COHERENT | ACCESS_VOLATILE)) {
+      LLVMSetOrdering(val, LLVMAtomicOrderingMonotonic);
+      LLVMSetAlignment(val, ac_get_type_size(result_type));
+   }
+
+   return val;
+}
+
+static void visit_store_global(struct ac_nir_context *ctx,
+				     nir_intrinsic_instr *instr)
+{
+   if (ctx->ac.postponed_kill) {
+      LLVMValueRef cond = LLVMBuildLoad(ctx->ac.builder, ctx->ac.postponed_kill, "");
+      ac_build_ifcc(&ctx->ac, cond, 7002);
+   }
+
+   LLVMValueRef data = get_src(ctx, instr->src[0]);
+   LLVMValueRef addr = get_src(ctx, instr->src[1]);
+   LLVMTypeRef type = LLVMTypeOf(data);
+   LLVMValueRef val;
+
+   LLVMTypeRef ptr_type = LLVMPointerType(type, AC_ADDR_SPACE_GLOBAL);
+
+   addr = LLVMBuildIntToPtr(ctx->ac.builder, addr, ptr_type, "");
+
+   val = LLVMBuildStore(ctx->ac.builder, data, addr);
+
+   if (nir_intrinsic_access(instr) & (ACCESS_COHERENT | ACCESS_VOLATILE)) {
+      LLVMSetOrdering(val, LLVMAtomicOrderingMonotonic);
+      LLVMSetAlignment(val, ac_get_type_size(type));
+   }
+
+   if (ctx->ac.postponed_kill)
+      ac_build_endif(&ctx->ac, 7002);
+}
+
+static LLVMValueRef visit_global_atomic(struct ac_nir_context *ctx,
+					nir_intrinsic_instr *instr)
+{
+   if (ctx->ac.postponed_kill) {
+      LLVMValueRef cond = LLVMBuildLoad(ctx->ac.builder, ctx->ac.postponed_kill, "");
+      ac_build_ifcc(&ctx->ac, cond, 7002);
+   }
+
+   LLVMValueRef addr = get_src(ctx, instr->src[0]);
+   LLVMValueRef data = get_src(ctx, instr->src[1]);
+   LLVMAtomicRMWBinOp op;
+   LLVMValueRef result;
+
+   /* use "singlethread" sync scope to implement relaxed ordering */
+   const char *sync_scope = LLVM_VERSION_MAJOR >= 9 ? "singlethread-one-as" : "singlethread";
+
+   LLVMTypeRef ptr_type = LLVMPointerType(LLVMTypeOf(data), AC_ADDR_SPACE_GLOBAL);
+
+   addr = LLVMBuildIntToPtr(ctx->ac.builder, addr, ptr_type, "");
+
+   if (instr->intrinsic == nir_intrinsic_global_atomic_comp_swap) {
+      LLVMValueRef data1 = get_src(ctx, instr->src[2]);
+      result = ac_build_atomic_cmp_xchg(&ctx->ac, addr, data, data1, sync_scope);
+      result = LLVMBuildExtractValue(ctx->ac.builder, result, 0, "");
+   } else {
+      switch (instr->intrinsic) {
+      case nir_intrinsic_global_atomic_add:
+         op = LLVMAtomicRMWBinOpAdd;
+         break;
+      case nir_intrinsic_global_atomic_umin:
+         op = LLVMAtomicRMWBinOpUMin;
+         break;
+      case nir_intrinsic_global_atomic_umax:
+         op = LLVMAtomicRMWBinOpUMax;
+         break;
+      case nir_intrinsic_global_atomic_imin:
+         op = LLVMAtomicRMWBinOpMin;
+         break;
+      case nir_intrinsic_global_atomic_imax:
+         op = LLVMAtomicRMWBinOpMax;
+         break;
+      case nir_intrinsic_global_atomic_and:
+         op = LLVMAtomicRMWBinOpAnd;
+         break;
+      case nir_intrinsic_global_atomic_or:
+         op = LLVMAtomicRMWBinOpOr;
+         break;
+      case nir_intrinsic_global_atomic_xor:
+         op = LLVMAtomicRMWBinOpXor;
+         break;
+      case nir_intrinsic_global_atomic_exchange:
+         op = LLVMAtomicRMWBinOpXchg;
+         break;
+      default:
+         unreachable("Invalid global atomic operation");
+      }
+
+      result = ac_build_atomic_rmw(&ctx->ac, op, addr, ac_to_integer(&ctx->ac, data), sync_scope);
+   }
+
+   if (ctx->ac.postponed_kill)
+      ac_build_endif(&ctx->ac, 7002);
+
+   return result;
 }
 
 static LLVMValueRef visit_load_ubo_buffer(struct ac_nir_context *ctx, nir_intrinsic_instr *instr)
@@ -2424,6 +2565,7 @@ static void visit_store_output(struct ac_nir_context *ctx, nir_intrinsic_instr *
       indir_index = get_src(ctx, offset);
 
    switch (ac_get_elem_bits(&ctx->ac, LLVMTypeOf(src))) {
+   case 16:
    case 32:
       break;
    case 64:
@@ -3222,11 +3364,20 @@ static LLVMValueRef visit_var_atomic(struct ac_nir_context *ctx, const nir_intri
       if (instr->intrinsic == nir_intrinsic_shared_atomic_fadd ||
           instr->intrinsic == nir_intrinsic_deref_atomic_fadd) {
          val = ac_to_float(&ctx->ac, src);
+
+         LLVMTypeRef ptr_type =
+            LLVMPointerType(LLVMTypeOf(val), LLVMGetPointerAddressSpace(LLVMTypeOf(ptr)));
+         ptr = LLVMBuildBitCast(ctx->ac.builder, ptr, ptr_type, "");
       } else {
          val = ac_to_integer(&ctx->ac, src);
       }
 
       result = ac_build_atomic_rmw(&ctx->ac, op, ptr, val, sync_scope);
+
+      if (instr->intrinsic == nir_intrinsic_shared_atomic_fadd ||
+          instr->intrinsic == nir_intrinsic_deref_atomic_fadd) {
+         result = ac_to_integer(&ctx->ac, result);
+      }
    }
 
    if (ctx->ac.postponed_kill)
@@ -3674,6 +3825,24 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
    case nir_intrinsic_load_ssbo:
       result = visit_load_buffer(ctx, instr);
       break;
+   case nir_intrinsic_load_global:
+      result = visit_load_global(ctx, instr);
+      break;
+   case nir_intrinsic_store_global:
+      visit_store_global(ctx, instr);
+      break;
+   case nir_intrinsic_global_atomic_add:
+   case nir_intrinsic_global_atomic_imin:
+   case nir_intrinsic_global_atomic_umin:
+   case nir_intrinsic_global_atomic_imax:
+   case nir_intrinsic_global_atomic_umax:
+   case nir_intrinsic_global_atomic_and:
+   case nir_intrinsic_global_atomic_or:
+   case nir_intrinsic_global_atomic_xor:
+   case nir_intrinsic_global_atomic_exchange:
+   case nir_intrinsic_global_atomic_comp_swap:
+      result = visit_global_atomic(ctx, instr);
+      break;
    case nir_intrinsic_ssbo_atomic_add:
    case nir_intrinsic_ssbo_atomic_imin:
    case nir_intrinsic_ssbo_atomic_umin:
@@ -3689,8 +3858,8 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
    case nir_intrinsic_load_ubo:
       result = visit_load_ubo_buffer(ctx, instr);
       break;
-   case nir_intrinsic_get_buffer_size:
-      result = visit_get_buffer_size(ctx, instr);
+   case nir_intrinsic_get_ssbo_size:
+      result = visit_get_ssbo_size(ctx, instr);
       break;
    case nir_intrinsic_load_deref:
       result = visit_load_var(ctx, instr);

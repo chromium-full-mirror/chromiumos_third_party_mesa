@@ -47,6 +47,7 @@ pack_header = """
 #include <assert.h>
 #include <math.h>
 #include <inttypes.h>
+#include "util/macros.h"
 #include "util/u_math.h"
 
 #define __gen_unpack_float(x, y, z) uif(__gen_unpack_uint(x, y, z))
@@ -102,10 +103,10 @@ __gen_unpack_uint(const uint8_t *restrict cl, uint32_t start, uint32_t end)
 {
    uint64_t val = 0;
    const int width = end - start + 1;
-   const uint32_t mask = (width == 32 ? ~0 : (1 << width) - 1 );
+   const uint64_t mask = (width == 64 ? ~0 : (1ull << width) - 1 );
 
    for (int byte = start / 8; byte <= end / 8; byte++) {
-      val |= cl[byte] << ((byte - start / 8) * 8);
+      val |= ((uint64_t) cl[byte]) << ((byte - start / 8) * 8);
    }
 
    return (val >> (start % 8)) & mask;
@@ -131,12 +132,42 @@ __gen_unpack_padded(const uint8_t *restrict cl, uint32_t start, uint32_t end)
    return (2*odd + 1) << shift;
 }
 
-#define pan_pack(dst, T, name)                          \
-   for (struct MALI_ ## T name = { MALI_ ## T ## _header }, \
-        *_loop_terminate = (void *) (dst); \
-        __builtin_expect(_loop_terminate != NULL, 1); \
-        ({ MALI_ ## T ## _pack((uint32_t *) (dst), &name); \
+#define pan_pack(dst, T, name)                              \\
+   for (struct MALI_ ## T name = { MALI_ ## T ## _header }, \\
+        *_loop_terminate = (void *) (dst);                  \\
+        __builtin_expect(_loop_terminate != NULL, 1);       \\
+        ({ MALI_ ## T ## _pack((uint32_t *) (dst), &name);  \\
            _loop_terminate = NULL; }))
+
+#define pan_unpack(src, T, name)                        \\
+        struct MALI_ ## T name;                         \\
+        MALI_ ## T ## _unpack((uint8_t *)(src), &name)
+
+#define pan_print(fp, T, var, indent)                   \\
+        MALI_ ## T ## _print(fp, &(var), indent)
+
+#define pan_section_ptr(base, A, S) \\
+        ((void *)((uint8_t *)(base) + MALI_ ## A ## _SECTION_ ## S ## _OFFSET))
+
+#define pan_section_pack(dst, A, S, name)                                                         \\
+   for (MALI_ ## A ## _SECTION_ ## S ## _TYPE name = { MALI_ ## A ## _SECTION_ ## S ## _header }, \\
+        *_loop_terminate = (void *) (dst);                                                        \\
+        __builtin_expect(_loop_terminate != NULL, 1);                                             \\
+        ({ MALI_ ## A ## _SECTION_ ## S ## _pack(pan_section_ptr(dst, A, S), &name);              \\
+           _loop_terminate = NULL; }))
+
+#define pan_section_unpack(src, A, S, name)                               \\
+        MALI_ ## A ## _SECTION_ ## S ## _TYPE name;                       \\
+        MALI_ ## A ## _SECTION_ ## S ## _unpack(pan_section_ptr(src, A, S), &name)
+
+#define pan_section_print(fp, A, S, var, indent)                          \\
+        MALI_ ## A ## _SECTION_ ## S ## _print(fp, &(var), indent)
+
+/* From presentations, 16x16 tiles externally. Use shift for fast computation
+ * of tile numbers. */
+
+#define MALI_TILE_SHIFT 4
+#define MALI_TILE_LENGTH (1 << MALI_TILE_SHIFT)
 
 """
 
@@ -189,18 +220,66 @@ def num_from_str(num_str):
         assert(not num_str.startswith('0') and 'octals numbers not allowed')
         return int(num_str)
 
-MODIFIERS = ["shr", "minus"]
+MODIFIERS = ["shr", "minus", "align", "log2"]
 
 def parse_modifier(modifier):
     if modifier is None:
         return None
 
     for mod in MODIFIERS:
-        if modifier[0:len(mod)] == mod and modifier[len(mod)] == '(' and modifier[-1] == ')':
-            return [mod, int(modifier[(len(mod) + 1):-1])]
+        if modifier[0:len(mod)] == mod:
+            if mod == "log2":
+                assert(len(mod) == len(modifier))
+                return [mod]
+
+            if modifier[len(mod)] == '(' and modifier[-1] == ')':
+                ret = [mod, int(modifier[(len(mod) + 1):-1])]
+                if ret[0] == 'align':
+                    align = ret[1]
+                    # Make sure the alignment is a power of 2
+                    assert(align > 0 and not(align & (align - 1)));
+
+                return ret
 
     print("Invalid modifier")
     assert(False)
+
+class Aggregate(object):
+    def __init__(self, parser, name, attrs):
+        self.parser = parser
+        self.sections = []
+        self.name = name
+        self.explicit_size = int(attrs["size"]) if "size" in attrs else 0
+        self.size = 0
+
+    class Section:
+        def __init__(self, name):
+            self.name = name
+
+    def get_size(self):
+        if self.size > 0:
+            return self.size
+
+        size = 0
+        for section in self.sections:
+            size = max(size, section.offset + section.type.get_length())
+
+        if self.explicit_size > 0:
+            assert(self.explicit_size >= size)
+            self.size = self.explicit_size
+        else:
+            self.size = size
+        return self.size
+
+    def add_section(self, type_name, attrs):
+        assert("name" in attrs)
+        section = self.Section(safe_name(attrs["name"]).lower())
+        section.human_name = attrs["name"]
+        section.offset = int(attrs["offset"])
+        assert(section.offset % 4 == 0)
+        section.type = self.parser.structs[attrs["type"]]
+        section.type_name = type_name
+        self.sections.append(section)
 
 class Field(object):
     def __init__(self, parser, attrs):
@@ -272,7 +351,6 @@ class Field(object):
     def overlaps(self, field):
         return self != field and max(self.start, field.start) <= min(self.end, field.end)
 
-
 class Group(object):
     def __init__(self, parser, parent, start, count):
         self.parser = parser
@@ -283,12 +361,25 @@ class Group(object):
         self.length = 0
         self.fields = []
 
+    def get_length(self):
+        # Determine number of bytes in this group.
+        calculated = max(field.end // 8 for field in self.fields) + 1 if len(self.fields) > 0 else 0
+        if self.length > 0:
+            assert(self.length >= calculated)
+        else:
+            self.length = calculated
+        return self.length
+
+
     def emit_template_struct(self, dim, opaque_structs):
         if self.count == 0:
             print("   /* variable length fields follow */")
         else:
             if self.count > 1:
                 dim = "%s[%d]" % (dim, self.count)
+
+            if len(self.fields) == 0:
+                print("   int dummy;")
 
             for field in self.fields:
                 if field.exact is not None:
@@ -313,13 +404,7 @@ class Group(object):
                 words[b].fields.append(field)
 
     def emit_pack_function(self, opaque_structs):
-        # Determine number of bytes in this group.
-        calculated = max(field.end // 8 for field in self.fields) + 1
-
-        if self.length > 0:
-            assert(self.length >= calculated)
-        else:
-            self.length = calculated
+        self.get_length()
 
         words = {}
         self.collect_words(words)
@@ -339,6 +424,8 @@ class Group(object):
                 print("   assert((values->{} & {}) == 0);".format(field.name, mask))
             elif field.modifier[0] == "minus":
                 print("   assert(values->{} >= {});".format(field.name, field.modifier[1]))
+            elif field.modifier[0] == "log2":
+                print("   assert(util_is_power_of_two_nonzero(values->{}));".format(field.name))
 
         for index in range(self.length // 4):
             # Handle MBZ words
@@ -380,6 +467,10 @@ class Group(object):
                         value = "{} >> {}".format(value, field.modifier[1])
                     elif field.modifier[0] == "minus":
                         value = "{} - {}".format(value, field.modifier[1])
+                    elif field.modifier[0] == "align":
+                        value = "ALIGN_POT({}, {})".format(value, field.modifier[1])
+                    elif field.modifier[0] == "log2":
+                        value = "util_logbase2({})".format(value)
 
                 if field.type == "uint" or field.type == "address":
                     s = "__gen_uint(%s, %d, %d)" % \
@@ -476,15 +567,21 @@ class Group(object):
                 s = "/* unhandled field %s, type %s */\n" % (field.name, field.type)
 
             suffix = ""
+            prefix = ""
             if field.modifier:
                 if field.modifier[0] == "minus":
                     suffix = " + {}".format(field.modifier[1])
                 elif field.modifier[0] == "shr":
                     suffix = " << {}".format(field.modifier[1])
+                if field.modifier[0] == "log2":
+                    prefix = "1 << "
 
-            decoded = '{}({}){}'.format(convert, ', '.join(args), suffix)
+            decoded = '{}{}({}){}'.format(prefix, convert, ', '.join(args), suffix)
 
             print('   values->{} = {};'.format(field.name, decoded))
+            if field.modifier and field.modifier[0] == "align":
+                mask = hex(field.modifier[1] - 1)
+                print('   assert(!(values->{} & {}));'.format(field.name, mask))
 
     def emit_print_function(self):
         for field in self.fields:
@@ -514,7 +611,7 @@ class Group(object):
 class Value(object):
     def __init__(self, attrs):
         self.name = attrs["name"]
-        self.value = int(attrs["value"])
+        self.value = int(attrs["value"], 0)
 
 class Parser(object):
     def __init__(self):
@@ -526,6 +623,8 @@ class Parser(object):
         self.structs = {}
         # Set of enum names we've seen.
         self.enums = set()
+        self.aggregate = None
+        self.aggregates = {}
 
     def gen_prefix(self, name):
         return '{}_{}'.format(global_prefix.upper(), name)
@@ -557,6 +656,13 @@ class Parser(object):
                 self.prefix= None
         elif name == "value":
             self.values.append(Value(attrs))
+        elif name == "aggregate":
+            aggregate_name = self.gen_prefix(safe_name(attrs["name"].upper()))
+            self.aggregate = Aggregate(self, aggregate_name, attrs)
+            self.aggregates[attrs['name']] = self.aggregate
+        elif name == "section":
+            type_name = self.gen_prefix(safe_name(attrs["type"].upper()))
+            self.aggregate.add_section(type_name, attrs)
 
     def end_element(self, name):
         if name == "struct":
@@ -568,6 +674,9 @@ class Parser(object):
         elif name  == "enum":
             self.emit_enum()
             self.enum = None
+        elif name == "aggregate":
+            self.emit_aggregate()
+            self.aggregate = None
         elif name == "panxml":
             # Include at the end so it can depend on us but not the converse
             print('#include "panfrost-job.h"')
@@ -598,6 +707,21 @@ class Parser(object):
         if opaque_structs:
             # Just so it isn't left undefined
             print('#define %-40s 0' % (name + '_OPAQUE_header'))
+
+    def emit_aggregate(self):
+        aggregate = self.aggregate
+        print("struct %s_packed {" % aggregate.name.lower())
+        print("   uint32_t opaque[{}];".format(aggregate.get_size() // 4))
+        print("};\n")
+        print('#define {}_LENGTH {}'.format(aggregate.name.upper(), aggregate.size))
+        for section in aggregate.sections:
+            print('#define {}_SECTION_{}_TYPE struct {}'.format(aggregate.name.upper(), section.name.upper(), section.type_name))
+            print('#define {}_SECTION_{}_header {}_header'.format(aggregate.name.upper(), section.name.upper(), section.type_name))
+            print('#define {}_SECTION_{}_pack {}_pack'.format(aggregate.name.upper(), section.name.upper(), section.type_name))
+            print('#define {}_SECTION_{}_unpack {}_unpack'.format(aggregate.name.upper(), section.name.upper(), section.type_name))
+            print('#define {}_SECTION_{}_print {}_print'.format(aggregate.name.upper(), section.name.upper(), section.type_name))
+            print('#define {}_SECTION_{}_OFFSET {}'.format(aggregate.name.upper(), section.name.upper(), section.offset))
+        print("")
 
     def emit_pack_function(self, name, group, with_opaque):
         print("static inline void\n%s_pack(uint32_t * restrict cl,\n%sconst struct %s * restrict values)\n{" %

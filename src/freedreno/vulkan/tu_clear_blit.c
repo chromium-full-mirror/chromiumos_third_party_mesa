@@ -761,7 +761,6 @@ r3d_setup(struct tu_cmd_buffer *cmd,
 
    tu_cs_emit_regs(cs, A6XX_SP_BLEND_CNTL());
    tu_cs_emit_regs(cs, A6XX_RB_BLEND_CNTL(.sample_mask = 0xffff));
-   tu_cs_emit_regs(cs, A6XX_RB_ALPHA_CONTROL());
 
    tu_cs_emit_regs(cs, A6XX_RB_DEPTH_PLANE_CNTL());
    tu_cs_emit_regs(cs, A6XX_RB_DEPTH_CNTL());
@@ -1087,9 +1086,6 @@ tu_CmdBlitImage(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_image, src_image, srcImage);
    TU_FROM_HANDLE(tu_image, dst_image, dstImage);
 
-   tu_bo_list_add(&cmd->bo_list, src_image->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst_image->bo, MSM_SUBMIT_BO_WRITE);
-
    for (uint32_t i = 0; i < regionCount; ++i) {
       /* can't blit both depth and stencil at once with D32_S8
        * TODO: more advanced 3D blit path to support it instead?
@@ -1210,9 +1206,6 @@ tu_CmdCopyBufferToImage(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_image, dst_image, dstImage);
    TU_FROM_HANDLE(tu_buffer, src_buffer, srcBuffer);
 
-   tu_bo_list_add(&cmd->bo_list, src_buffer->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst_image->bo, MSM_SUBMIT_BO_WRITE);
-
    for (unsigned i = 0; i < regionCount; ++i)
       tu_copy_buffer_to_image(cmd, src_buffer, dst_image, pRegions + i);
 }
@@ -1284,9 +1277,6 @@ tu_CmdCopyImageToBuffer(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
    TU_FROM_HANDLE(tu_image, src_image, srcImage);
    TU_FROM_HANDLE(tu_buffer, dst_buffer, dstBuffer);
-
-   tu_bo_list_add(&cmd->bo_list, src_image->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst_buffer->bo, MSM_SUBMIT_BO_WRITE);
 
    for (unsigned i = 0; i < regionCount; ++i)
       tu_copy_image_to_buffer(cmd, src_image, dst_buffer, pRegions + i);
@@ -1444,9 +1434,6 @@ tu_copy_image_to_image(struct tu_cmd_buffer *cmd,
          return;
       }
 
-      tu_bo_list_add(&cmd->bo_list, staging_image.bo,
-                     MSM_SUBMIT_BO_READ | MSM_SUBMIT_BO_WRITE);
-
       struct tu_image_view staging;
       tu_image_view_copy(&staging, &staging_image, src_format,
                          &staging_subresource, 0, false);
@@ -1509,9 +1496,6 @@ tu_CmdCopyImage(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_image, src_image, srcImage);
    TU_FROM_HANDLE(tu_image, dst_image, destImage);
 
-   tu_bo_list_add(&cmd->bo_list, src_image->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst_image->bo, MSM_SUBMIT_BO_WRITE);
-
    for (uint32_t i = 0; i < regionCount; ++i)
       tu_copy_image_to_image(cmd, src_image, dst_image, pRegions + i);
 }
@@ -1559,9 +1543,6 @@ tu_CmdCopyBuffer(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_buffer, src_buffer, srcBuffer);
    TU_FROM_HANDLE(tu_buffer, dst_buffer, dstBuffer);
 
-   tu_bo_list_add(&cmd->bo_list, src_buffer->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst_buffer->bo, MSM_SUBMIT_BO_WRITE);
-
    for (unsigned i = 0; i < regionCount; ++i) {
       copy_buffer(cmd,
                   tu_buffer_iova(dst_buffer) + pRegions[i].dstOffset,
@@ -1579,8 +1560,6 @@ tu_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
 {
    TU_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
    TU_FROM_HANDLE(tu_buffer, buffer, dstBuffer);
-
-   tu_bo_list_add(&cmd->bo_list, buffer->bo, MSM_SUBMIT_BO_WRITE);
 
    struct tu_cs_memory tmp;
    VkResult result = tu_cs_alloc(&cmd->sub_cs, DIV_ROUND_UP(dataSize, 64), 64, &tmp);
@@ -1604,8 +1583,6 @@ tu_CmdFillBuffer(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_buffer, buffer, dstBuffer);
    const struct blit_ops *ops = &r2d_ops;
    struct tu_cs *cs = &cmd->cs;
-
-   tu_bo_list_add(&cmd->bo_list, buffer->bo, MSM_SUBMIT_BO_WRITE);
 
    if (fillSize == VK_WHOLE_SIZE)
       fillSize = buffer->size - dstOffset;
@@ -1645,9 +1622,6 @@ tu_CmdResolveImage(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_image, dst_image, dstImage);
    const struct blit_ops *ops = &r2d_ops;
    struct tu_cs *cs = &cmd->cs;
-
-   tu_bo_list_add(&cmd->bo_list, src_image->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst_image->bo, MSM_SUBMIT_BO_WRITE);
 
    ops->setup(cmd, cs, dst_image->vk_format, VK_IMAGE_ASPECT_COLOR_BIT,
               ROTATE_0, false, dst_image->layout[0].ubwc);
@@ -1691,9 +1665,6 @@ tu_resolve_sysmem(struct tu_cmd_buffer *cmd,
                   const VkRect2D *rect)
 {
    const struct blit_ops *ops = &r2d_ops;
-
-   tu_bo_list_add(&cmd->bo_list, src->image->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst->image->bo, MSM_SUBMIT_BO_WRITE);
 
    assert(src->image->vk_format == dst->image->vk_format);
 
@@ -1774,8 +1745,6 @@ tu_CmdClearColorImage(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
    TU_FROM_HANDLE(tu_image, image, image_h);
 
-   tu_bo_list_add(&cmd->bo_list, image->bo, MSM_SUBMIT_BO_WRITE);
-
    for (unsigned i = 0; i < rangeCount; i++)
       clear_image(cmd, image, (const VkClearValue*) pColor, pRanges + i, VK_IMAGE_ASPECT_COLOR_BIT);
 }
@@ -1790,8 +1759,6 @@ tu_CmdClearDepthStencilImage(VkCommandBuffer commandBuffer,
 {
    TU_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
    TU_FROM_HANDLE(tu_image, image, image_h);
-
-   tu_bo_list_add(&cmd->bo_list, image->bo, MSM_SUBMIT_BO_WRITE);
 
    for (unsigned i = 0; i < rangeCount; i++) {
       const VkImageSubresourceRange *range = &pRanges[i];
@@ -1917,7 +1884,6 @@ tu_clear_sysmem_attachments(struct tu_cmd_buffer *cmd,
 
    tu_cs_emit_regs(cs, A6XX_SP_BLEND_CNTL());
    tu_cs_emit_regs(cs, A6XX_RB_BLEND_CNTL(.independent_blend = 1, .sample_mask = 0xffff));
-   tu_cs_emit_regs(cs, A6XX_RB_ALPHA_CONTROL());
    for (uint32_t i = 0; i < mrt_count; i++) {
       tu_cs_emit_regs(cs, A6XX_RB_MRT_CONTROL(i,
             .component_enable = COND(clear_rts & (1 << i), 0xf)));

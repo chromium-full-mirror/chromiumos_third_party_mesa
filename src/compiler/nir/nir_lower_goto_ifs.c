@@ -50,7 +50,6 @@ struct path_fork {
 };
 
 struct routes {
-   struct set *outside;
    struct path regular;
    struct path brk;
    struct path cont;
@@ -68,9 +67,6 @@ struct strct_lvl {
 
    /** Reach set from inside_outside if irreducable */
    struct set *reach;
-
-   /** Outside set from inside_outside if irreducable */
-   struct set *outside;
 
    /** True if a skip region starts with this level */
    bool skip_start;
@@ -170,10 +166,12 @@ set_path_vars_cond(nir_builder *b, struct path_fork *fork, nir_src condition,
       for (i = 0; i < 2; i++) {
          if (_mesa_set_search(fork->paths[i].reachable, then_block)) {
             if (_mesa_set_search(fork->paths[i].reachable, else_block)) {
-               if (fork->is_var)
+               if (fork->is_var) {
                   nir_store_var(b, fork->path_var, nir_imm_bool(b, i), 1);
-               else
+               } else {
+                  assert(fork->path_ssa == NULL);
                   fork->path_ssa = nir_imm_bool(b, i);
+               }
                fork = fork->paths[i].fork;
                break;
             }
@@ -184,10 +182,12 @@ set_path_vars_cond(nir_builder *b, struct path_fork *fork, nir_src condition,
                assert(ssa_def->num_components == 1);
                if (!i)
                   ssa_def = nir_inot(b, ssa_def);
-               if (fork->is_var)
+               if (fork->is_var) {
                   nir_store_var(b, fork->path_var, ssa_def, 1);
-               else
+               } else {
+                  assert(fork->path_ssa == NULL);
                   fork->path_ssa = ssa_def;
+               }
                set_path_vars(b, fork->paths[i].fork, then_block);
                set_path_vars(b, fork->paths[!i].fork, else_block);
                return;
@@ -291,18 +291,14 @@ fork_reachable(struct path_fork *fork)
 static void
 loop_routing_start(struct routes *routing, nir_builder *b,
                    struct path loop_path, struct set *reach,
-                   struct set *outside, void *mem_ctx)
+                   void *mem_ctx)
 {
    if (NIR_LOWER_GOTO_IFS_DEBUG) {
       printf("loop_routing_start:\n");
       printf("    reach =                       ");
       print_block_set(reach);
-      printf("    outside =                     ");
-      print_block_set(outside);
       printf("    loop_path.reachable =         ");
       print_block_set(loop_path.reachable);
-      printf("    routing->outside =            ");
-      print_block_set(routing->outside);
       printf("    routing->regular.reachable =  ");
       print_block_set(routing->regular.reachable);
       printf("    routing->brk.reachable =      ");
@@ -312,7 +308,7 @@ loop_routing_start(struct routes *routing, nir_builder *b,
       printf("\n");
    }
 
-   struct routes *routing_backup = ralloc(mem_ctx, struct routes);
+   struct routes *routing_backup = rzalloc(mem_ctx, struct routes);
    *routing_backup = *routing;
    bool break_needed = false;
    bool continue_needed = false;
@@ -330,19 +326,13 @@ loop_routing_start(struct routes *routing, nir_builder *b,
       continue_needed = true;
    }
 
-   if (outside && outside->entries) {
-      routing->outside = _mesa_set_clone(routing->outside, routing);
-      set_foreach(outside, entry)
-         _mesa_set_add_pre_hashed(routing->outside, entry->hash, entry->key);
-   }
-
    routing->brk = routing_backup->regular;
    routing->cont = loop_path;
    routing->regular = loop_path;
    routing->loop_backup = routing_backup;
 
    if (break_needed) {
-      struct path_fork *fork = ralloc(mem_ctx, struct path_fork);
+      struct path_fork *fork = rzalloc(mem_ctx, struct path_fork);
       fork->is_var = true;
       fork->path_var = nir_local_variable_create(b->impl, glsl_bool_type(),
                                                  "path_break");
@@ -352,7 +342,7 @@ loop_routing_start(struct routes *routing, nir_builder *b,
       routing->brk.reachable = fork_reachable(fork);
    }
    if (continue_needed) {
-      struct path_fork *fork = ralloc(mem_ctx, struct path_fork);
+      struct path_fork *fork = rzalloc(mem_ctx, struct path_fork);
       fork->is_var = true;
       fork->path_var = nir_local_variable_create(b->impl, glsl_bool_type(),
                                                  "path_continue");
@@ -522,7 +512,7 @@ select_fork_recur(struct nir_block **blocks, unsigned start, unsigned end,
    if (start == end - 1)
       return NULL;
 
-   struct path_fork *fork = ralloc(mem_ctx, struct path_fork);
+   struct path_fork *fork = rzalloc(mem_ctx, struct path_fork);
    fork->is_var = need_var;
    if (need_var)
       fork->path_var = nir_local_variable_create(impl, glsl_bool_type(),
@@ -628,7 +618,6 @@ handle_irreducible(struct set *remaining, struct strct_lvl *curr_level,
       inside_outside((nir_block *) entry->key, loop_heads, remaining,
                      curr_level->reach, brk_reachable, mem_ctx);
    }
-   curr_level->outside = remaining;
    _mesa_set_destroy(loop_heads, NULL);
 }
 
@@ -668,20 +657,15 @@ handle_irreducible(struct set *remaining, struct strct_lvl *curr_level,
  *                       zeroth level
  */
 static void
-organize_levels(struct list_head *levels, struct set *children,
+organize_levels(struct list_head *levels, struct set *remaining,
                 struct set *reach, struct routes *routing,
                 nir_function_impl *impl, bool is_domminated, void *mem_ctx)
 {
    if (NIR_LOWER_GOTO_IFS_DEBUG) {
       printf("organize_levels:\n");
-      printf("    children = ");
-      print_block_set(children);
       printf("    reach =     ");
       print_block_set(reach);
    }
-
-   /* Duplicate remaining because we're going to destroy it */
-   struct set *remaining = _mesa_set_clone(children, mem_ctx);
 
    /* blocks that can be reached by the remaining blocks */
    struct set *remaining_frontier = _mesa_pointer_set_create(mem_ctx);
@@ -734,28 +718,20 @@ organize_levels(struct list_head *levels, struct set *children,
 
       struct set *prev_frontier = NULL;
       if (!prev_level) {
-         prev_frontier = reach;
+         prev_frontier = _mesa_set_clone(reach, curr_level);
       } else if (prev_level->irreducible) {
-         prev_frontier = prev_level->reach;
-      } else {
-         set_foreach(curr_level->blocks, blocks_entry) {
-            nir_block *level_block = (nir_block *) blocks_entry->key;
-            if (curr_level->blocks->entries == 1) {
-               /* If we only have one block, there's no union operation and we
-                * can just use the one from the one block.
-                */
-               prev_frontier = level_block->dom_frontier;
-               break;
-            }
+         prev_frontier = _mesa_set_clone(prev_level->reach, curr_level);
+      }
 
-            if (prev_frontier == NULL) {
-               prev_frontier =
-                  _mesa_set_clone(level_block->dom_frontier, prev_level);
-            } else {
-               set_foreach(level_block->dom_frontier, entry)
-                  _mesa_set_add_pre_hashed(prev_frontier, entry->hash,
-                                           entry->key);
-            }
+      set_foreach(curr_level->blocks, blocks_entry) {
+         nir_block *level_block = (nir_block *) blocks_entry->key;
+         if (prev_frontier == NULL) {
+            prev_frontier =
+               _mesa_set_clone(level_block->dom_frontier, curr_level);
+         } else {
+            set_foreach(level_block->dom_frontier, entry)
+               _mesa_set_add_pre_hashed(prev_frontier, entry->hash,
+                                        entry->key);
          }
       }
 
@@ -801,7 +777,7 @@ organize_levels(struct list_head *levels, struct set *children,
       routing->regular.fork = select_fork(routing->regular.reachable, impl,
                                           need_var, mem_ctx);
       if (level->skip_start) {
-         struct path_fork *fork = ralloc(mem_ctx, struct path_fork);
+         struct path_fork *fork = rzalloc(mem_ctx, struct path_fork);
          fork->is_var = need_var;
          if (need_var)
             fork->path_var = nir_local_variable_create(impl, glsl_bool_type(),
@@ -859,10 +835,8 @@ plant_levels(struct list_head *levels, struct routes *routing,
       }
       struct path in_path = routing->regular;
       routing->regular = level->out_path;
-      if (level->irreducible) {
-         loop_routing_start(routing, b, in_path, level->reach,
-                            level->outside, mem_ctx);
-      }
+      if (level->irreducible)
+         loop_routing_start(routing, b, in_path, level->reach, mem_ctx);
       select_blocks(routing, b, in_path, mem_ctx);
       if (level->irreducible)
          loop_routing_end(routing, b);
@@ -881,7 +855,7 @@ nir_structurize(struct routes *routing, nir_builder *b, nir_block *block,
 {
    struct set *remaining = _mesa_pointer_set_create(mem_ctx);
    for (int i = 0; i < block->num_dom_children; i++) {
-      if (!_mesa_set_search(routing->outside, block->dom_children[i]))
+      if (!_mesa_set_search(routing->brk.reachable, block->dom_children[i]))
          _mesa_set_add(remaining, block->dom_children[i]);
    }
 
@@ -909,7 +883,7 @@ nir_structurize(struct routes *routing, nir_builder *b, nir_block *block,
       };
       _mesa_set_add(loop_path.reachable, block);
 
-      loop_routing_start(routing, b, loop_path, reach, outside, mem_ctx);
+      loop_routing_start(routing, b, loop_path, reach, mem_ctx);
    }
 
    struct set *reach = _mesa_pointer_set_create(mem_ctx);
@@ -957,6 +931,12 @@ nir_lower_goto_ifs_impl(nir_function_impl *impl)
 
    nir_metadata_require(impl, nir_metadata_dominance);
 
+   /* We're going to re-arrange blocks like crazy.  This is much easier to do
+    * if we don't have any phi nodes to fix up.
+    */
+   nir_foreach_block_unstructured(block, impl)
+      nir_lower_phis_to_regs_block(block);
+
    nir_cf_list cf_list;
    nir_cf_extract(&cf_list, nir_before_cf_list(&impl->body),
                             nir_after_cf_list(&impl->body));
@@ -978,9 +958,8 @@ nir_lower_goto_ifs_impl(nir_function_impl *impl)
       exec_node_data(nir_cf_node, exec_list_get_head(&cf_list.list), node);
    nir_block *start_block = nir_cf_node_as_block(start_node);
 
-   struct routes *routing = ralloc(mem_ctx, struct routes);
+   struct routes *routing = rzalloc(mem_ctx, struct routes);
    *routing = (struct routes) {
-      .outside = empty_set,
       .regular.reachable = end_set,
       .brk.reachable = empty_set,
       .cont.reachable = empty_set,
@@ -996,6 +975,9 @@ nir_lower_goto_ifs_impl(nir_function_impl *impl)
    nir_cf_delete(&cf_list);
 
    nir_metadata_preserve(impl, nir_metadata_none);
+
+   nir_repair_ssa_impl(impl);
+   nir_lower_regs_to_ssa_impl(impl);
 
    return true;
 }

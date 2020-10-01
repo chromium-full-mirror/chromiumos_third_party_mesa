@@ -324,6 +324,7 @@ enum vtn_base_type {
    vtn_base_type_sampler,
    vtn_base_type_sampled_image,
    vtn_base_type_function,
+   vtn_base_type_event,
 };
 
 struct vtn_type {
@@ -522,16 +523,6 @@ struct vtn_pointer {
    /* Access qualifiers */
    enum gl_access_qualifier access;
 };
-
-bool vtn_mode_uses_ssa_offset(struct vtn_builder *b,
-                              enum vtn_variable_mode mode);
-
-static inline bool vtn_pointer_uses_ssa_offset(struct vtn_builder *b,
-                                               struct vtn_pointer *ptr)
-{
-   return vtn_mode_uses_ssa_offset(b, ptr->mode);
-}
-
 
 struct vtn_variable {
    enum vtn_variable_mode mode;
@@ -888,6 +879,8 @@ bool vtn_handle_glsl450_instruction(struct vtn_builder *b, SpvOp ext_opcode,
 
 bool vtn_handle_opencl_instruction(struct vtn_builder *b, SpvOp ext_opcode,
                                    const uint32_t *words, unsigned count);
+bool vtn_handle_opencl_core_instruction(struct vtn_builder *b, SpvOp opcode,
+                                        const uint32_t *w, unsigned count);
 
 struct vtn_builder* vtn_create_builder(const uint32_t *words, size_t word_count,
                                        gl_shader_stage stage, const char *entry_point_name,
@@ -906,6 +899,9 @@ enum vtn_variable_mode vtn_storage_class_to_mode(struct vtn_builder *b,
 
 nir_address_format vtn_mode_to_address_format(struct vtn_builder *b,
                                               enum vtn_variable_mode);
+
+nir_rounding_mode vtn_rounding_mode_to_nir(struct vtn_builder *b,
+                                           SpvFPRoundingMode mode);
 
 static inline uint32_t
 vtn_align_u32(uint32_t v, uint32_t a)

@@ -1301,6 +1301,25 @@ struct radv_subpass_sample_locs_state {
 	struct radv_sample_locations_state sample_location;
 };
 
+enum rgp_flush_bits {
+	RGP_FLUSH_WAIT_ON_EOP_TS   = 0x1,
+	RGP_FLUSH_VS_PARTIAL_FLUSH = 0x2,
+	RGP_FLUSH_PS_PARTIAL_FLUSH = 0x4,
+	RGP_FLUSH_CS_PARTIAL_FLUSH = 0x8,
+	RGP_FLUSH_PFP_SYNC_ME      = 0x10,
+	RGP_FLUSH_SYNC_CP_DMA      = 0x20,
+	RGP_FLUSH_INVAL_VMEM_L0    = 0x40,
+	RGP_FLUSH_INVAL_ICACHE     = 0x80,
+	RGP_FLUSH_INVAL_SMEM_L0    = 0x100,
+	RGP_FLUSH_FLUSH_L2         = 0x200,
+	RGP_FLUSH_INVAL_L2         = 0x400,
+	RGP_FLUSH_FLUSH_CB         = 0x800,
+	RGP_FLUSH_INVAL_CB         = 0x1000,
+	RGP_FLUSH_FLUSH_DB         = 0x2000,
+	RGP_FLUSH_INVAL_DB         = 0x4000,
+	RGP_FLUSH_INVAL_L1         = 0x8000,
+};
+
 struct radv_cmd_state {
 	/* Vertex descriptors */
 	uint64_t                                      vb_va;
@@ -1369,6 +1388,8 @@ struct radv_cmd_state {
 	uint32_t current_event_type;
 	uint32_t num_events;
 	uint32_t num_layout_transitions;
+	bool pending_sqtt_barrier_end;
+	enum rgp_flush_bits sqtt_flush_bits;
 };
 
 struct radv_cmd_pool {
@@ -1486,6 +1507,7 @@ void si_cs_emit_cache_flush(struct radeon_cmdbuf *cs,
 			    uint32_t *fence_ptr, uint64_t va,
 			    bool is_mec,
 			    enum radv_cmd_flush_bits flush_bits,
+			    enum rgp_flush_bits *sqtt_flush_bits,
 			    uint64_t gfx9_eop_bug_va);
 void si_emit_cache_flush(struct radv_cmd_buffer *cmd_buffer);
 void si_emit_set_predication_state(struct radv_cmd_buffer *cmd_buffer,
@@ -1813,7 +1835,8 @@ uint32_t radv_translate_tex_numformat(VkFormat format,
 bool radv_format_pack_clear_color(VkFormat format,
 				  uint32_t clear_vals[2],
 				  VkClearColorValue *value);
-bool radv_is_colorbuffer_format_supported(VkFormat format, bool *blendable);
+bool radv_is_colorbuffer_format_supported(const struct radv_physical_device *pdevice,
+                                          VkFormat format, bool *blendable);
 bool radv_dcc_formats_compatible(VkFormat format1,
                                  VkFormat format2);
 bool radv_device_supports_etc(struct radv_physical_device *physical_device);
@@ -2417,7 +2440,6 @@ typedef enum {
 	RADV_FENCE_NONE,
 	RADV_FENCE_WINSYS,
 	RADV_FENCE_SYNCOBJ,
-	RADV_FENCE_WSI,
 } radv_fence_kind;
 
 struct radv_fence_part {
@@ -2429,9 +2451,6 @@ struct radv_fence_part {
 
 		/* DRM syncobj handle for syncobj-based fences. */
 		uint32_t syncobj;
-
-		/* WSI fence. */
-		struct wsi_fence *fence_wsi;
 	};
 };
 
@@ -2494,7 +2513,8 @@ bool radv_begin_thread_trace(struct radv_queue *queue);
 bool radv_end_thread_trace(struct radv_queue *queue);
 bool radv_get_thread_trace(struct radv_queue *queue,
 			   struct radv_thread_trace *thread_trace);
-void radv_emit_thread_trace_userdata(struct radeon_cmdbuf *cs,
+void radv_emit_thread_trace_userdata(const struct radv_device *device,
+				     struct radeon_cmdbuf *cs,
 				     const void *data, uint32_t num_dwords);
 
 /* radv_rgp.c */
@@ -2553,6 +2573,7 @@ void radv_describe_end_render_pass_clear(struct radv_cmd_buffer *cmd_buffer);
 void radv_describe_barrier_start(struct radv_cmd_buffer *cmd_buffer,
 				 enum rgp_barrier_reason reason);
 void radv_describe_barrier_end(struct radv_cmd_buffer *cmd_buffer);
+void radv_describe_barrier_end_delayed(struct radv_cmd_buffer *cmd_buffer);
 void radv_describe_layout_transition(struct radv_cmd_buffer *cmd_buffer,
 				     const struct radv_barrier_data *barrier);
 

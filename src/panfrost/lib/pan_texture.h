@@ -113,6 +113,7 @@ panfrost_new_texture(
 
 void
 panfrost_new_texture_bifrost(
+        const struct panfrost_device *dev,
         struct mali_bifrost_texture_packed *out,
         uint16_t width, uint16_t height,
         uint16_t depth, uint16_t array_size,
@@ -146,6 +147,9 @@ extern struct panfrost_format panfrost_pipe_format_table[PIPE_FORMAT_COUNT];
 
 bool
 panfrost_is_z24s8_variant(enum pipe_format fmt);
+
+enum mali_z_internal_format
+panfrost_get_z_internal_format(enum pipe_format fmt);
 
 unsigned
 panfrost_translate_swizzle_4(const unsigned char swizzle[4]);

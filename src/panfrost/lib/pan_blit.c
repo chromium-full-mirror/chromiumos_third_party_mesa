@@ -53,6 +53,8 @@ panfrost_build_blit_shader(panfrost_program *program, unsigned gpu_id, gl_frag_r
         nir_builder *b = &_b;
         nir_shader *shader = b->shader;
 
+        shader->info.internal = true;
+
         nir_variable *c_src = nir_variable_create(shader, nir_var_shader_in, glsl_vector_type(GLSL_TYPE_FLOAT, 2), "coord");
         nir_variable *c_out = nir_variable_create(shader, nir_var_shader_out, glsl_vector_type(
                                 GLSL_TYPE_FLOAT, is_colour ? 4 : 1), "out");
@@ -96,7 +98,7 @@ panfrost_build_blit_shader(panfrost_program *program, unsigned gpu_id, gl_frag_r
         else
                 nir_store_var(b, c_out, nir_channel(b, &tex->dest.ssa, 0), 0xFF);
 
-        midgard_compile_shader_nir(shader, program, false, 0, gpu_id, false, true);
+        midgard_compile_shader_nir(shader, program, false, 0, gpu_id, false);
         ralloc_free(shader);
 }
 
@@ -270,6 +272,7 @@ panfrost_load_midg(
                 cfg.stencil_front.stencil_fail = MALI_STENCIL_OP_REPLACE;
                 cfg.stencil_front.depth_fail = MALI_STENCIL_OP_REPLACE;
                 cfg.stencil_front.depth_pass = MALI_STENCIL_OP_REPLACE;
+                cfg.stencil_front.mask = 0xFF;
 
                 cfg.stencil_back = cfg.stencil_front;
 
@@ -324,7 +327,7 @@ panfrost_load_midg(
 
                         unsigned flags = 0;
                         pan_pack(&flags, BLEND_FLAGS, cfg) {
-                                cfg.dither_disable = true;
+                                cfg.round_to_fb_precision = true;
                                 cfg.srgb = srgb;
                                 cfg.midgard_blend_shader = blend_shader;
                         }
@@ -339,12 +342,10 @@ panfrost_load_midg(
                 }
         }
 
-        struct midgard_payload_vertex_tiler payload = {};
-        struct mali_primitive_packed primitive;
-        struct mali_draw_packed draw;
-        struct mali_invocation_packed invocation;
+        struct panfrost_transfer t =
+                panfrost_pool_alloc_aligned(pool, MALI_MIDGARD_TILER_JOB_LENGTH, 64);
 
-        pan_pack(&draw, DRAW, cfg) {
+        pan_section_pack(t.cpu, MIDGARD_TILER_JOB, DRAW, cfg) {
                 cfg.unknown_1 = 0x7;
                 cfg.position = coordinates;
                 cfg.textures = panfrost_pool_upload(pool, &texture_t.gpu, sizeof(texture_t.gpu));
@@ -356,17 +357,14 @@ panfrost_load_midg(
                 cfg.shared = fbd;
         }
 
-        pan_pack(&primitive, PRIMITIVE, cfg) {
+        pan_section_pack(t.cpu, MIDGARD_TILER_JOB, PRIMITIVE, cfg) {
                 cfg.draw_mode = MALI_DRAW_MODE_TRIANGLES;
                 cfg.index_count = vertex_count;
                 cfg.unknown_3 = 6;
         }
 
-        panfrost_pack_work_groups_compute(&invocation, 1, vertex_count, 1, 1, 1, 1, true);
+        panfrost_pack_work_groups_compute(pan_section_ptr(t.cpu, MIDGARD_TILER_JOB, INVOCATION),
+                                          1, vertex_count, 1, 1, 1, 1, true);
 
-        payload.prefix.primitive = primitive;
-        memcpy(&payload.postfix, &draw, MALI_DRAW_LENGTH);
-        payload.prefix.invocation = invocation;
-
-        panfrost_new_job(pool, scoreboard, MALI_JOB_TYPE_TILER, false, 0, &payload, sizeof(payload), true);
+        panfrost_add_job(pool, scoreboard, MALI_JOB_TYPE_TILER, false, 0, &t, true);
 }

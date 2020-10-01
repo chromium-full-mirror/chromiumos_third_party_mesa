@@ -98,6 +98,9 @@ typedef struct shader_info {
    /* Descriptive name provided by the client; may be NULL */
    const char *label;
 
+   /* Shader is internal, and should be ignored by things like NIR_PRINT */
+   bool internal;
+
    /** The shader stage, such as MESA_SHADER_VERTEX. */
    gl_shader_stage stage:8;
 
@@ -248,6 +251,8 @@ typedef struct shader_info {
       struct {
          bool uses_discard:1;
          bool uses_demote:1;
+         bool uses_fbfetch_output:1;
+         bool color_is_dual_source:1;
 
          /**
           * True if this fragment shader requires helper invocations.  This

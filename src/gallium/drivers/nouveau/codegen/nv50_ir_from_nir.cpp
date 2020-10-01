@@ -198,6 +198,8 @@ Converter::Converter(Program *prog, nir_shader *nir, nv50_ir_prog_info *info,
      nir(nir),
      curLoopDepth(0),
      curIfDepth(0),
+     exit(NULL),
+     immInsertPos(NULL),
      clipVertexOutput(-1)
 {
    zero = mkImm((uint32_t)0);
@@ -1995,7 +1997,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       }
       break;
    }
-   case nir_intrinsic_get_buffer_size: {
+   case nir_intrinsic_get_ssbo_size: {
       LValues &newDefs = convert(&insn->dest);
       const DataType dType = getDType(insn);
       Value *indirectBuffer;
@@ -3204,8 +3206,12 @@ nvir_nir_shader_compiler_options(int chipset)
 {
    nir_shader_compiler_options op = {};
    op.lower_fdiv = (chipset >= NVISA_GV100_CHIPSET);
-   op.lower_ffma = false;
-   op.fuse_ffma = false; /* nir doesn't track mad vs fma */
+   op.lower_ffma16 = false;
+   op.lower_ffma32 = false;
+   op.lower_ffma64 = false;
+   op.fuse_ffma16 = false; /* nir doesn't track mad vs fma */
+   op.fuse_ffma32 = false; /* nir doesn't track mad vs fma */
+   op.fuse_ffma64 = false; /* nir doesn't track mad vs fma */
    op.lower_flrp16 = (chipset >= NVISA_GV100_CHIPSET);
    op.lower_flrp32 = true;
    op.lower_flrp64 = true;

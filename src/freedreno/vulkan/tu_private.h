@@ -43,9 +43,12 @@
 #define VG(x) ((void)0)
 #endif
 
+#define MESA_LOG_TAG "TU"
+
 #include "c11/threads.h"
 #include "main/macros.h"
 #include "util/list.h"
+#include "util/log.h"
 #include "util/macros.h"
 #include "util/u_atomic.h"
 #include "vk_alloc.h"
@@ -85,7 +88,7 @@ typedef uint32_t xcb_window_t;
 #define MAX_VERTEX_ATTRIBS 32
 #define MAX_RTS 8
 #define MAX_VSC_PIPES 32
-#define MAX_VIEWPORTS 1
+#define MAX_VIEWPORTS 16
 #define MAX_SCISSORS 16
 #define MAX_DISCARD_RECTANGLES 4
 #define MAX_PUSH_CONSTANTS_SIZE 128
@@ -141,10 +144,6 @@ __vk_errorf(struct tu_instance *instance,
 void
 __tu_finishme(const char *file, int line, const char *format, ...)
    tu_printflike(3, 4);
-void
-tu_loge(const char *format, ...) tu_printflike(1, 2);
-void
-tu_logi(const char *format, ...) tu_printflike(1, 2);
 
 /**
  * Print a FINISHME message, including its source location.
@@ -228,6 +227,7 @@ enum tu_debug_flags
    TU_DEBUG_SYSMEM = 1 << 4,
    TU_DEBUG_FORCEBIN = 1 << 5,
    TU_DEBUG_NOUBWC = 1 << 6,
+   TU_DEBUG_NOMULTIPOS = 1 << 7,
 };
 
 struct tu_instance
@@ -288,26 +288,10 @@ struct tu_pipeline_key
 
 #define TU_MAX_QUEUE_FAMILIES 1
 
-struct tu_fence
-{
+struct tu_syncobj {
    struct vk_object_base base;
-   struct wsi_fence *fence_wsi;
-   bool signaled;
-   int fd;
+   uint32_t permanent, temporary;
 };
-
-void
-tu_fence_init(struct tu_fence *fence, bool signaled);
-void
-tu_fence_finish(struct tu_fence *fence);
-void
-tu_fence_update_fd(struct tu_fence *fence, int fd);
-void
-tu_fence_copy(struct tu_fence *fence, const struct tu_fence *src);
-void
-tu_fence_signal(struct tu_fence *fence);
-void
-tu_fence_wait_idle(struct tu_fence *fence);
 
 struct tu_queue
 {
@@ -319,7 +303,7 @@ struct tu_queue
    VkDeviceQueueCreateFlags flags;
 
    uint32_t msm_queue_id;
-   struct tu_fence submit_fence;
+   int fence;
 };
 
 struct tu_bo
@@ -381,6 +365,7 @@ struct tu_device
    int queue_count[TU_MAX_QUEUE_FAMILIES];
 
    struct tu_physical_device *physical_device;
+   int fd;
    int _lost;
 
    struct ir3_compiler *compiler;
@@ -407,6 +392,13 @@ struct tu_device
    uint32_t vsc_prim_strm_pitch;
    BITSET_DECLARE(custom_border_color, TU_BORDER_COLOR_COUNT);
    mtx_t mutex;
+
+   /* bo list for submits: */
+   struct drm_msm_gem_submit_bo *bo_list;
+   /* map bo handles to bo list index: */
+   uint32_t *bo_idx;
+   uint32_t bo_count, bo_list_size, bo_idx_size;
+   mtx_t bo_mutex;
 };
 
 VkResult _tu_device_set_lost(struct tu_device *device,
@@ -422,7 +414,7 @@ tu_device_is_lost(struct tu_device *device)
 }
 
 VkResult
-tu_bo_init_new(struct tu_device *dev, struct tu_bo *bo, uint64_t size);
+tu_bo_init_new(struct tu_device *dev, struct tu_bo *bo, uint64_t size, bool dump);
 VkResult
 tu_bo_init_dmabuf(struct tu_device *dev,
                   struct tu_bo *bo,
@@ -467,7 +459,14 @@ enum tu_dynamic_state
 {
    /* re-use VK_DYNAMIC_STATE_ enums for non-extended dynamic states */
    TU_DYNAMIC_STATE_SAMPLE_LOCATIONS = VK_DYNAMIC_STATE_STENCIL_REFERENCE + 1,
+   TU_DYNAMIC_STATE_RB_DEPTH_CNTL,
+   TU_DYNAMIC_STATE_RB_STENCIL_CNTL,
+   TU_DYNAMIC_STATE_VB_STRIDE,
    TU_DYNAMIC_STATE_COUNT,
+   /* no associated draw state: */
+   TU_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY = TU_DYNAMIC_STATE_COUNT,
+   /* re-use the line width enum as it uses GRAS_SU_CNTL: */
+   TU_DYNAMIC_STATE_GRAS_SU_CNTL = VK_DYNAMIC_STATE_LINE_WIDTH,
 };
 
 enum tu_draw_state_group_id
@@ -479,7 +478,6 @@ enum tu_draw_state_group_id
    TU_DRAW_STATE_VI,
    TU_DRAW_STATE_VI_BINNING,
    TU_DRAW_STATE_RAST,
-   TU_DRAW_STATE_DS,
    TU_DRAW_STATE_BLEND,
    TU_DRAW_STATE_VS_CONST,
    TU_DRAW_STATE_HS_CONST,
@@ -559,15 +557,6 @@ struct tu_device_memory
    struct vk_object_base base;
 
    struct tu_bo bo;
-   VkDeviceSize size;
-
-   /* for dedicated allocations */
-   struct tu_image *image;
-   struct tu_buffer *buffer;
-
-   uint32_t type_index;
-   void *map;
-   void *user_ptr;
 };
 
 struct tu_descriptor_range
@@ -588,14 +577,6 @@ struct tu_descriptor_set
    uint32_t *mapped_ptr;
 
    uint32_t *dynamic_descriptors;
-
-   struct tu_bo *buffers[0];
-};
-
-struct tu_push_descriptor_set
-{
-   struct tu_descriptor_set set;
-   uint32_t capacity;
 };
 
 struct tu_descriptor_pool_entry
@@ -646,7 +627,7 @@ struct tu_descriptor_update_template_entry
    size_t src_stride;
 
    /* For push descriptors */
-   const uint32_t *immutable_samplers;
+   const struct tu_sampler *immutable_samplers;
 };
 
 struct tu_descriptor_update_template
@@ -654,6 +635,7 @@ struct tu_descriptor_update_template
    struct vk_object_base base;
 
    uint32_t entry_count;
+   VkPipelineBindPoint bind_point;
    struct tu_descriptor_update_template_entry entry[0];
 };
 
@@ -685,17 +667,24 @@ tu_get_perftest_option_name(int id);
 struct tu_descriptor_state
 {
    struct tu_descriptor_set *sets[MAX_SETS];
+   struct tu_descriptor_set push_set;
    uint32_t dynamic_descriptors[MAX_DYNAMIC_BUFFERS * A6XX_TEX_CONST_DWORDS];
 };
 
 enum tu_cmd_dirty_bits
 {
-   TU_CMD_DIRTY_VERTEX_BUFFERS = 1 << 2,
-   TU_CMD_DIRTY_DESC_SETS_LOAD = 1 << 3,
-   TU_CMD_DIRTY_COMPUTE_DESC_SETS_LOAD = 1 << 4,
-   TU_CMD_DIRTY_SHADER_CONSTS = 1 << 5,
+   TU_CMD_DIRTY_VERTEX_BUFFERS = BIT(0),
+   TU_CMD_DIRTY_VB_STRIDE = BIT(1),
+   TU_CMD_DIRTY_GRAS_SU_CNTL = BIT(2),
+   TU_CMD_DIRTY_RB_DEPTH_CNTL = BIT(3),
+   TU_CMD_DIRTY_RB_STENCIL_CNTL = BIT(4),
+   TU_CMD_DIRTY_DESC_SETS_LOAD = BIT(5),
+   TU_CMD_DIRTY_COMPUTE_DESC_SETS_LOAD = BIT(6),
+   TU_CMD_DIRTY_SHADER_CONSTS = BIT(7),
    /* all draw states were disabled and need to be re-enabled: */
-   TU_CMD_DIRTY_DRAW_STATE = 1 << 7,
+   TU_CMD_DIRTY_DRAW_STATE = BIT(8)
+
+
 };
 
 /* There are only three cache domains we have to care about: the CCU, or
@@ -854,17 +843,26 @@ struct tu_cmd_state
    struct tu_pipeline *pipeline;
    struct tu_pipeline *compute_pipeline;
 
-   /* Vertex buffers */
+   /* Vertex buffers, viewports, and scissors
+    * the states for these can be updated partially, so we need to save these
+    * to be able to emit a complete draw state
+    */
    struct {
       uint64_t base;
       uint32_t size;
+      uint32_t stride;
    } vb[MAX_VBS];
+   VkViewport viewport[MAX_VIEWPORTS];
+   VkRect2D scissor[MAX_SCISSORS];
+   uint32_t max_viewport, max_scissor;
 
    /* for dynamic states that can't be emitted directly */
    uint32_t dynamic_stencil_mask;
    uint32_t dynamic_stencil_wrmask;
    uint32_t dynamic_stencil_ref;
-   uint32_t dynamic_gras_su_cntl;
+
+   uint32_t gras_su_cntl, rb_depth_cntl, rb_stencil_cntl;
+   enum pc_di_primtype primtype;
 
    /* saved states to re-emit in TU_CMD_DIRTY_DRAW_STATE case */
    struct tu_draw_state dynamic_state[TU_DYNAMIC_STATE_COUNT];
@@ -928,40 +926,6 @@ enum tu_cmd_buffer_status
    TU_CMD_BUFFER_STATUS_PENDING,
 };
 
-#ifndef MSM_SUBMIT_BO_READ
-#define MSM_SUBMIT_BO_READ             0x0001
-#define MSM_SUBMIT_BO_WRITE            0x0002
-#define MSM_SUBMIT_BO_DUMP             0x0004
-
-struct drm_msm_gem_submit_bo {
-   uint32_t flags;          /* in, mask of MSM_SUBMIT_BO_x */
-   uint32_t handle;         /* in, GEM handle */
-   uint64_t presumed;       /* in/out, presumed buffer address */
-};
-#endif
-
-struct tu_bo_list
-{
-   uint32_t count;
-   uint32_t capacity;
-   struct drm_msm_gem_submit_bo *bo_infos;
-};
-
-#define TU_BO_LIST_FAILED (~0)
-
-void
-tu_bo_list_init(struct tu_bo_list *list);
-void
-tu_bo_list_destroy(struct tu_bo_list *list);
-void
-tu_bo_list_reset(struct tu_bo_list *list);
-uint32_t
-tu_bo_list_add(struct tu_bo_list *list,
-               const struct tu_bo *bo,
-               uint32_t flags);
-VkResult
-tu_bo_list_merge(struct tu_bo_list *list, const struct tu_bo_list *other);
-
 struct tu_cmd_buffer
 {
    struct vk_object_base base;
@@ -986,7 +950,6 @@ struct tu_cmd_buffer
 
    VkResult record_result;
 
-   struct tu_bo_list bo_list;
    struct tu_cs cs;
    struct tu_cs draw_cs;
    struct tu_cs draw_epilogue_cs;
@@ -1055,15 +1018,21 @@ struct tu_shader
 
    struct tu_push_constant_range push_consts;
    uint8_t active_desc_sets;
+   bool multi_pos_output;
 };
 
 bool
-tu_nir_lower_multiview(nir_shader *nir, uint32_t mask, struct tu_device *dev);
+tu_nir_lower_multiview(nir_shader *nir, uint32_t mask, bool *multi_pos_output,
+                       struct tu_device *dev);
+
+nir_shader *
+tu_spirv_to_nir(struct tu_device *dev,
+                const VkPipelineShaderStageCreateInfo *stage_info,
+                gl_shader_stage stage);
 
 struct tu_shader *
 tu_shader_create(struct tu_device *dev,
-                 gl_shader_stage stage,
-                 const VkPipelineShaderStageCreateInfo *stage_info,
+                 nir_shader *nir,
                  unsigned multiview_mask,
                  struct tu_pipeline_layout *layout,
                  const VkAllocationCallbacks *alloc);
@@ -1100,11 +1069,15 @@ struct tu_pipeline
    uint32_t dynamic_state_mask;
    struct tu_draw_state dynamic_state[TU_DYNAMIC_STATE_COUNT];
 
-   /* gras_su_cntl without line width, used for dynamic line width state */
-   uint32_t gras_su_cntl;
+   /* for dynamic states which use the same register: */
+   uint32_t gras_su_cntl, gras_su_cntl_mask;
+   uint32_t rb_depth_cntl, rb_depth_cntl_mask;
+   uint32_t rb_stencil_cntl, rb_stencil_cntl_mask;
+
+   bool rb_depth_cntl_disable;
 
    /* draw states for the pipeline */
-   struct tu_draw_state load_state, rast_state, ds_state, blend_state;
+   struct tu_draw_state load_state, rast_state, blend_state;
 
    /* for vertex buffers state */
    uint32_t num_vbs;
@@ -1145,10 +1118,10 @@ struct tu_pipeline
 };
 
 void
-tu6_emit_viewport(struct tu_cs *cs, const VkViewport *viewport);
+tu6_emit_viewport(struct tu_cs *cs, const VkViewport *viewport, uint32_t num_viewport);
 
 void
-tu6_emit_scissor(struct tu_cs *cs, const VkRect2D *scissor);
+tu6_emit_scissor(struct tu_cs *cs, const VkRect2D *scs, uint32_t scissor_count);
 
 void
 tu6_emit_sample_locations(struct tu_cs *cs, const VkSampleLocationsInfoEXT *samp_loc);
@@ -1512,38 +1485,8 @@ struct tu_query_pool
    struct tu_bo bo;
 };
 
-enum tu_semaphore_kind
-{
-   TU_SEMAPHORE_NONE,
-   TU_SEMAPHORE_SYNCOBJ,
-};
-
-struct tu_semaphore_part
-{
-   enum tu_semaphore_kind kind;
-   union {
-      uint32_t syncobj;
-   };
-};
-
-struct tu_semaphore
-{
-   struct vk_object_base base;
-
-   struct tu_semaphore_part permanent;
-   struct tu_semaphore_part temporary;
-};
-
 void
-tu_set_descriptor_set(struct tu_cmd_buffer *cmd_buffer,
-                      VkPipelineBindPoint bind_point,
-                      struct tu_descriptor_set *set,
-                      unsigned idx);
-
-void
-tu_update_descriptor_sets(struct tu_device *device,
-                          struct tu_cmd_buffer *cmd_buffer,
-                          VkDescriptorSet overrideSet,
+tu_update_descriptor_sets(VkDescriptorSet overrideSet,
                           uint32_t descriptorWriteCount,
                           const VkWriteDescriptorSet *pDescriptorWrites,
                           uint32_t descriptorCopyCount,
@@ -1551,8 +1494,6 @@ tu_update_descriptor_sets(struct tu_device *device,
 
 void
 tu_update_descriptor_set_with_template(
-   struct tu_device *device,
-   struct tu_cmd_buffer *cmd_buffer,
    struct tu_descriptor_set *set,
    VkDescriptorUpdateTemplate descriptorUpdateTemplate,
    const void *pData);
@@ -1570,6 +1511,9 @@ tu_drm_submitqueue_new(const struct tu_device *dev,
 
 void
 tu_drm_submitqueue_close(const struct tu_device *dev, uint32_t queue_id);
+
+int
+tu_signal_fences(struct tu_device *device, struct tu_syncobj *fence1, struct tu_syncobj *fence2);
 
 #define TU_DEFINE_HANDLE_CASTS(__tu_type, __VkType)                          \
                                                                              \
@@ -1614,7 +1558,6 @@ TU_DEFINE_NONDISP_HANDLE_CASTS(tu_descriptor_set_layout,
 TU_DEFINE_NONDISP_HANDLE_CASTS(tu_descriptor_update_template,
                                VkDescriptorUpdateTemplate)
 TU_DEFINE_NONDISP_HANDLE_CASTS(tu_device_memory, VkDeviceMemory)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_fence, VkFence)
 TU_DEFINE_NONDISP_HANDLE_CASTS(tu_event, VkEvent)
 TU_DEFINE_NONDISP_HANDLE_CASTS(tu_framebuffer, VkFramebuffer)
 TU_DEFINE_NONDISP_HANDLE_CASTS(tu_image, VkImage)
@@ -1627,6 +1570,8 @@ TU_DEFINE_NONDISP_HANDLE_CASTS(tu_render_pass, VkRenderPass)
 TU_DEFINE_NONDISP_HANDLE_CASTS(tu_sampler, VkSampler)
 TU_DEFINE_NONDISP_HANDLE_CASTS(tu_sampler_ycbcr_conversion, VkSamplerYcbcrConversion)
 TU_DEFINE_NONDISP_HANDLE_CASTS(tu_shader_module, VkShaderModule)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_semaphore, VkSemaphore)
+
+/* for TU_FROM_HANDLE with both VkFence and VkSemaphore: */
+#define tu_syncobj_from_handle(x) ((struct tu_syncobj*) (uintptr_t) (x))
 
 #endif /* TU_PRIVATE_H */

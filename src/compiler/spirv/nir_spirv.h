@@ -56,9 +56,6 @@ enum nir_spirv_execution_environment {
 struct spirv_to_nir_options {
    enum nir_spirv_execution_environment environment;
 
-   /* Whether or not to lower all UBO/SSBO access to offsets up-front. */
-   bool lower_ubo_ssbo_access_to_offsets;
-
    /* Whether to make FragCoord to a system value, the same as
     * GLSLFragCoordIsSysVal in GLSL.
     */
@@ -67,6 +64,9 @@ struct spirv_to_nir_options {
    /* Whether to keep ViewIndex as an input instead of rewriting to a sysval.
     */
    bool view_index_is_input;
+
+   /* Create a nir library. */
+   bool create_library;
 
    struct spirv_supported_capabilities caps;
 
@@ -79,6 +79,8 @@ struct spirv_to_nir_options {
    nir_address_format global_addr_format;
    nir_address_format temp_addr_format;
    nir_address_format constant_addr_format;
+
+   nir_shader *clc_shader;
 
    struct {
       void (*func)(void *private_data,

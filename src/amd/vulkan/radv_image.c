@@ -222,8 +222,8 @@ radv_use_dcc_for_image(struct radv_device *device,
 
 	/* Determine if the formats are DCC compatible. */
 	dcc_compatible_formats =
-		radv_is_colorbuffer_format_supported(format,
-						     &blendable);
+		radv_is_colorbuffer_format_supported(device->physical_device,
+						     format, &blendable);
 
 	if (pCreateInfo->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) {
 		const struct VkImageFormatListCreateInfo *format_list =
@@ -268,6 +268,7 @@ radv_use_htile_for_image(const struct radv_device *device,
                          const struct radv_image *image)
 {
 	return image->info.levels == 1 &&
+	       !image->shareable &&
 	       ((image->info.width * image->info.height >= 8 * 8) ||
 	        (device->instance->debug_flags & RADV_DEBUG_FORCE_COMPRESS));
 }
@@ -842,9 +843,7 @@ gfx10_make_texture_descriptor(struct radv_device *device,
 		   S_00A014_MAX_MIP(image->info.samples > 1 ?
 				    util_logbase2(image->info.samples) :
 				    image->info.levels - 1) |
-		   S_00A014_PERF_MOD(4) |
-		   S_00A014_BIG_PAGE(device->physical_device->rad_info.chip_class >= GFX10_3 &&
-				     image->alignment % (64 * 1024) == 0);
+		   S_00A014_PERF_MOD(4);
 	state[6] = 0;
 	state[7] = 0;
 

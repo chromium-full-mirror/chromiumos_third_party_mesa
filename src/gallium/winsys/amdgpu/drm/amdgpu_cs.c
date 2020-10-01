@@ -715,7 +715,7 @@ static bool amdgpu_ib_new_buffer(struct amdgpu_winsys *ws,
    if (!pb)
       return false;
 
-   mapped = amdgpu_bo_map(pb, NULL, PIPE_TRANSFER_WRITE);
+   mapped = amdgpu_bo_map(pb, NULL, PIPE_MAP_WRITE);
    if (!mapped) {
       pb_reference(&pb, NULL);
       return false;
@@ -973,7 +973,7 @@ amdgpu_cs_create(struct radeon_winsys_ctx *rwctx,
 
    struct amdgpu_cs_fence_info fence_info;
    fence_info.handle = cs->ctx->user_fence_bo;
-   fence_info.offset = cs->ring_type;
+   fence_info.offset = cs->ring_type * 4;
    amdgpu_cs_chunk_fence_info_to_data(&fence_info, (void*)&cs->fence_chunk);
 
    cs->main.ib_type = IB_MAIN;
@@ -1054,7 +1054,7 @@ amdgpu_cs_setup_preemption(struct radeon_cmdbuf *rcs, const uint32_t *preamble_i
       return false;
 
    map = (uint32_t*)amdgpu_bo_map(preamble_bo, NULL,
-                                  PIPE_TRANSFER_WRITE | RADEON_TRANSFER_TEMPORARY);
+                                  PIPE_MAP_WRITE | RADEON_MAP_TEMPORARY);
    if (!map) {
       pb_reference(&preamble_bo, NULL);
       return false;
@@ -1420,7 +1420,7 @@ static bool amdgpu_add_sparse_backing_buffers(struct amdgpu_cs_context *cs)
    return true;
 }
 
-void amdgpu_cs_submit_ib(void *job, int thread_index)
+static void amdgpu_cs_submit_ib(void *job, int thread_index)
 {
    struct amdgpu_cs *acs = (struct amdgpu_cs*)job;
    struct amdgpu_winsys *ws = acs->ctx->ws;
@@ -1656,7 +1656,7 @@ void amdgpu_cs_submit_ib(void *job, int thread_index)
       chunks[num_chunks].chunk_data = (uintptr_t)&cs->ib[IB_MAIN];
       num_chunks++;
 
-      if (ws->secure && cs->secure) {
+      if (cs->secure) {
          cs->ib[IB_PREAMBLE].flags |= AMDGPU_IB_FLAGS_SECURE;
          cs->ib[IB_MAIN].flags |= AMDGPU_IB_FLAGS_SECURE;
       } else {
@@ -1838,6 +1838,12 @@ static int amdgpu_cs_flush(struct radeon_cmdbuf *rcs,
       /* Submit. */
       util_queue_add_job(&ws->cs_queue, cs, &cs->flush_completed,
                          amdgpu_cs_submit_ib, NULL, 0);
+
+      if (flags & RADEON_FLUSH_TOGGLE_SECURE_SUBMISSION)
+         cs->csc->secure = !cs->cst->secure;
+      else
+         cs->csc->secure = cs->cst->secure;
+
       /* The submission has been queued, unlock the fence now. */
       simple_mtx_unlock(&ws->bo_fence_lock);
 
@@ -1846,6 +1852,8 @@ static int amdgpu_cs_flush(struct radeon_cmdbuf *rcs,
          error_code = cur->error_code;
       }
    } else {
+      if (flags & RADEON_FLUSH_TOGGLE_SECURE_SUBMISSION)
+         cs->csc->secure = !cs->csc->secure;
       amdgpu_cs_context_cleanup(cs->csc);
    }
 

@@ -37,8 +37,38 @@ stages:
 # ----------------------------------------------------------
 .scheduled_pipelines-rules:
   rules: &ignore_scheduled_pipelines
-    if: '$CI_PIPELINE_SOURCE == "schedule"'
+    if: &is-scheduled-pipeline '$CI_PIPELINE_SOURCE == "schedule"'
     when: never
+
+# YAML anchors for rule conditions
+# --------------------------------
+.rules-anchors:
+  rules:
+    # For Marge Bot
+    - if: &is-for-marge '$GITLAB_USER_LOGIN == "marge-bot"'
+      when: never
+    # Forked project branch
+    - if: &is-forked-branch '$CI_PROJECT_NAMESPACE != "mesa" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+      when: manual
+    # Forked project branch / pre-merge pipeline
+    - if: &is-forked-branch-or-pre-merge '$CI_PROJECT_NAMESPACE != "mesa" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+      when: manual
+    # Pipeline runs for the master branch of the main project
+    - if: &is-main-master '$CI_PROJECT_NAMESPACE == "mesa" && $CI_COMMIT_REF_NAME == "master" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != "master"'
+      when: always
+    # Post-merge pipeline
+    - if: &is-post-merge '$CI_PROJECT_NAMESPACE == "mesa" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+      when: on_success
+    # Post-merge pipeline, not for Marge Bot
+    - if: &is-post-merge-not-for-marge '$CI_PROJECT_NAMESPACE == "mesa" && $GITLAB_USER_LOGIN != "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+      when: on_success
+    # Pre-merge pipeline
+    - if: &is-pre-merge '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+      when: on_success
+    # Pre-merge pipeline for Marge Bot
+    - if: &is-pre-merge-for-marge '$GITLAB_USER_LOGIN == "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+      when: on_success
+
 
 .docs-base:
   extends: .ci-run-policy
@@ -56,7 +86,7 @@ pages:
     - public
   rules:
     - *ignore_scheduled_pipelines
-    - if: '$CI_PROJECT_NAMESPACE == "mesa" && $CI_COMMIT_REF_NAME == "master"'
+    - if: *is-main-master
       changes: &docs-or-ci
       - docs/**/*
       - .gitlab-ci.yml
@@ -70,13 +100,16 @@ test-docs:
   stage: container+docs
   rules:
     - *ignore_scheduled_pipelines
-    - if: '$GITLAB_USER_LOGIN == "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+    - if: *is-main-master
+      changes: *docs-or-ci
+      when: never
+    - if: *is-pre-merge-for-marge
       changes: *docs-or-ci
       when: on_success
-    - if: '$GITLAB_USER_LOGIN != "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME && $CI_PROJECT_PATH == "mesa/mesa"'
+    - if: *is-post-merge-not-for-marge
       changes: *docs-or-ci
       when: on_success
-    - if: '$CI_PROJECT_PATH != "mesa/mesa" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+    - if: *is-forked-branch-or-pre-merge
       changes: *docs-or-ci
       when: manual
     # Other cases default to never
@@ -120,14 +153,14 @@ success:
   image: debian:stable-slim
   rules:
     - *ignore_scheduled_pipelines
-    - if: '$CI_PROJECT_NAMESPACE == "mesa" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+    - if: *is-post-merge
       when: never
-    - if: '$GITLAB_USER_LOGIN == "marge-bot"'
+    - if: *is-for-marge
       changes: *docs-or-ci
       when: never
     - changes: *all_paths
       when: never
-    - if: '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+    - if: *is-pre-merge
       when: on_success
   variables:
     GIT_STRATEGY: none
@@ -170,20 +203,20 @@ success:
     - *ignore_scheduled_pipelines
     # Run pipeline by default in the main project if any CI pipeline
     # configuration files were changed, to ensure docker images are up to date
-    - if: '$CI_PROJECT_PATH == "mesa/mesa" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+    - if: *is-post-merge
       changes:
       - .gitlab-ci.yml
       - .gitlab-ci/**/*
       when: on_success
     # Run pipeline by default if it was triggered by Marge Bot, is for a
     # merge request, and any files affecting the pipeline were changed
-    - if: '$GITLAB_USER_LOGIN == "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+    - if: *is-pre-merge-for-marge
       changes:
         *all_paths
       when: on_success
     # Run pipeline by default in the main project if it was not triggered by
     # Marge Bot, and any files affecting the pipeline were changed
-    - if: '$GITLAB_USER_LOGIN != "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME && $CI_PROJECT_PATH == "mesa/mesa"'
+    - if: *is-post-merge-not-for-marge
       changes:
         *all_paths
       when: on_success
@@ -358,7 +391,7 @@ arm64_test:
   extends:
     - .use-arm_test-base
   variables:
-    FDO_DISTRIBUTION_TAG: &arm64_test "2020-09-04-pagetables"
+    FDO_DISTRIBUTION_TAG: &arm64_test "2020-09-28-deqp-surfaceless-fix"
 
 .use-arm64_test:
   variables:
@@ -411,7 +444,7 @@ git_archive:
   extends: .fdo.container-build@alpine
   stage: container+docs
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: *is-scheduled-pipeline
       when: always
   variables:
     FDO_REPO_SUFFIX: &git-archive-suffix "alpine/git_archive"
@@ -428,7 +461,7 @@ make git archive:
   stage: git-archive
   extends: .fdo.suffixed-image@alpine
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: *is-scheduled-pipeline
       when: on_success
   # ensure we are running on packet
   tags:
@@ -712,7 +745,7 @@ meson-clang:
     DRI_LOADERS: >
       -D glvnd=true
     DRI_DRIVERS: "auto"
-    GALLIUM_DRIVERS: "auto"
+    GALLIUM_DRIVERS: "iris,nouveau,kmsro,r300,r600,freedreno,swr,swrast,svga,v3d,vc4,virgl,etnaviv,panfrost,lima,zink,radeonsi,tegra"
     VULKAN_DRIVERS: intel,amd,freedreno
     CC: "ccache clang-9"
     CXX: "ccache clang++-9"
@@ -753,25 +786,6 @@ meson-clover:
   script:
     - .gitlab-ci/meson-build.sh
     - LLVM_VERSION=8 .gitlab-ci/meson-build.sh
-
-meson-clover-old-llvm:
-  extends:
-    - meson-clover
-    - .use-x86_build_old
-  variables:
-    UNWIND: "disabled"
-    DRI_LOADERS: >
-      -D glx=disabled
-      -D egl=disabled
-      -D gbm=disabled
-      -D platforms=[]
-    GALLIUM_DRIVERS: "i915,r600"
-  script:
-    - LLVM_VERSION=3.9 .gitlab-ci/meson-build.sh
-    - LLVM_VERSION=4.0 .gitlab-ci/meson-build.sh
-    - LLVM_VERSION=5.0 .gitlab-ci/meson-build.sh
-    - LLVM_VERSION=6.0 .gitlab-ci/meson-build.sh
-    - LLVM_VERSION=7 .gitlab-ci/meson-build.sh
 
 meson-vulkan:
   extends: .meson-build
@@ -1059,7 +1073,7 @@ virgl-gl32-on-gl:
 .test-manual:
   rules:
     - *ignore_scheduled_pipelines
-    - if: '$CI_PROJECT_PATH != "mesa/mesa" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+    - if: *is-forked-branch
       changes:
         *all_paths
       when: manual
@@ -1171,6 +1185,36 @@ arm64_a630_gl:
   extends: arm64_a630_gles2
   variables:
     DEQP_VER: gl30
+
+# disabled pending https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/1859
+.arm64_a630_gles3_multisample:
+  extends: arm64_a630_gles3
+  variables:
+    DEQP_CONFIG: rgba8888d24s8ms4
+    DEQP_VARIANT: multisample
+    DEQP_EXPECTED_FAILS: deqp-freedreno-a630-multisample-fails.txt
+
+# disabled pending https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/1859
+.arm64_a630_gles31_multisample:
+  extends: arm64_a630_gles31
+  variables:
+    DEQP_CONFIG: rgba8888d24s8ms4
+    DEQP_VARIANT: multisample
+    DEQP_EXPECTED_FAILS: deqp-freedreno-a630-multisample-fails.txt
+
+arm64_a630_gles3_565nozs:
+  extends: arm64_a630_gles3
+  variables:
+    DEQP_CONFIG: rgb565d0s0ms0
+    DEQP_VARIANT: 565-no-depth-no-stencil
+    DEQP_EXPECTED_FAILS: deqp-freedreno-a630-565nozs-fails.txt
+
+arm64_a630_gles31_565nozs:
+  extends: arm64_a630_gles31
+  variables:
+    DEQP_CONFIG: rgb565d0s0ms0
+    DEQP_VARIANT: 565-no-depth-no-stencil
+    DEQP_EXPECTED_FAILS: deqp-freedreno-a630-565nozs-fails.txt
 
 arm64_a630_vk:
   extends: arm64_a630_gles2

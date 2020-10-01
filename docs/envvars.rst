@@ -39,7 +39,7 @@ Core Mesa environment variables
    if set, disables Intel SSE optimizations
 ``MESA_NO_ERROR``
    if set to 1, error checking is disabled as per ``KHR_no_error``. This
-   will result in undefined behaviour for invalid use of the api, but
+   will result in undefined behavior for invalid use of the api, but
    can reduce CPU use for apps that are known to be error free.
 ``MESA_DEBUG``
    if set, error messages are printed to stderr. For example, if the
@@ -48,7 +48,7 @@ Core Mesa environment variables
    will be printed to stderr. For release builds, ``MESA_DEBUG``
    defaults to off (no debug output). ``MESA_DEBUG`` accepts the
    following comma-separated list of named flags, which adds extra
-   behaviour to just set ``MESA_DEBUG=1``:
+   behavior to just set ``MESA_DEBUG=1``:
 
    ``silent``
       turn off debug messages. Only useful for debug builds.
@@ -180,12 +180,14 @@ Core Mesa environment variables
       instance version as advertised by ``vkEnumerateInstanceVersion``
    -  This can be very useful for debugging but some features may not be
       implemented correctly. (For developers only)
+``MESA_LOADER_DRIVER_OVERRIDE``
+   chooses a different driver binary such as ``etnaviv`` or ``zink``.
 
 NIR passes environment variables
 --------------------------------
 
 The following are only applicable for drivers that uses NIR, as they
-modify the behaviour for the common NIR_PASS and NIR_PASS_V macros, that
+modify the behavior for the common NIR_PASS and NIR_PASS_V macros, that
 wrap calls to NIR lowering/optimizations.
 
 ``NIR_PRINT``
@@ -216,7 +218,7 @@ the :doc:`Xlib software driver page <xlibdriver>` for details.
 ``MESA_XSYNC``
    enable synchronous X behavior (for debugging only)
 ``MESA_GLX_FORCE_CI``
-   if set, force GLX to treat 8bpp visuals as CI visuals
+   if set, force GLX to treat 8 BPP visuals as CI visuals
 ``MESA_GLX_FORCE_ALPHA``
    if set, forces RGB windows to have an alpha channel.
 ``MESA_GLX_DEPTH_BITS``
@@ -331,6 +333,20 @@ i945/i965 driver environment variables (non-Gallium)
 ``INTEL_PRECISE_TRIG``
    if set to 1, true or yes, then the driver prefers accuracy over
    performance in trig functions.
+``INTEL_SHADER_ASM_READ_PATH``
+   if set, determines the directory to be used for overriding shader
+   assembly. The binaries with custom assembly should be placed in
+   this folder and have a name formatted as ``sha1_of_assembly.bin``.
+   The sha1 of a shader assembly is printed when assembly is dumped via
+   corresponding ``INTEL_DEBUG`` flag (e.g. ``vs`` for vertex shader).
+   A binary could be generated from a dumped assembly by ``i965_asm``.
+   For ``INTEL_SHADER_ASM_READ_PATH`` to work it is necessary to enable
+   dumping of corresponding shader stages via ``INTEL_DEBUG``.
+   It is advised to use ``nocompact`` flag of ``INTEL_DEBUG`` when
+   dumping and overriding shader assemblies.
+   The success of assembly override would be signified by "Successfully
+   overrode shader with sha1 <sha1>" in stderr replacing the original
+   assembly.
 
 Radeon driver environment variables (radeon, r200, and r300g)
 -------------------------------------------------------------
@@ -348,7 +364,7 @@ Gallium environment variables
 -----------------------------
 
 ``GALLIUM_HUD``
-   draws various information on the screen, like framerate, cpu load,
+   draws various information on the screen, like framerate, CPU load,
    driver statistics, performance counters, etc. Set
    ``GALLIUM_HUD=help`` and run e.g. ``glxgears`` for more info.
 ``GALLIUM_HUD_PERIOD``

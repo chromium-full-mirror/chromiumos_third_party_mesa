@@ -394,6 +394,7 @@ radv_physical_device_try_create(struct radv_instance *instance,
 
 	device->use_ngg = device->rad_info.chip_class >= GFX10 &&
 			  device->rad_info.family != CHIP_NAVI14 &&
+			  device->rad_info.has_dedicated_vram &&
 			  !(device->instance->debug_flags & RADV_DEBUG_NO_NGG);
 
 	/* TODO: Implement NGG GS with ACO. */
@@ -3766,6 +3767,7 @@ radv_get_preamble_cs(struct radv_queue *queue,
 	}
 
 	for(int i = 0; i < 3; ++i) {
+		enum rgp_flush_bits sqtt_flush_bits = 0;
 		struct radeon_cmdbuf *cs = NULL;
 		cs = queue->device->ws->cs_create(queue->device->ws,
 						  queue->queue_family_index ? RING_COMPUTE : RING_GFX);
@@ -3831,7 +3833,7 @@ radv_get_preamble_cs(struct radv_queue *queue,
 			                       RADV_CMD_FLAG_INV_SCACHE |
 			                       RADV_CMD_FLAG_INV_VCACHE |
 			                       RADV_CMD_FLAG_INV_L2 |
-					       RADV_CMD_FLAG_START_PIPELINE_STATS, 0);
+					       RADV_CMD_FLAG_START_PIPELINE_STATS, &sqtt_flush_bits, 0);
 		} else if (i == 1) {
 			si_cs_emit_cache_flush(cs,
 			                       queue->device->physical_device->rad_info.chip_class,
@@ -3842,7 +3844,7 @@ radv_get_preamble_cs(struct radv_queue *queue,
 			                       RADV_CMD_FLAG_INV_SCACHE |
 			                       RADV_CMD_FLAG_INV_VCACHE |
 			                       RADV_CMD_FLAG_INV_L2 |
-					       RADV_CMD_FLAG_START_PIPELINE_STATS, 0);
+					       RADV_CMD_FLAG_START_PIPELINE_STATS, &sqtt_flush_bits, 0);
 		}
 
 		if (queue->device->ws->cs_finalize(cs) != VK_SUCCESS)
@@ -5649,9 +5651,6 @@ radv_destroy_fence_part(struct radv_device *device,
 	case RADV_FENCE_SYNCOBJ:
 		device->ws->destroy_syncobj(device->ws, part->syncobj);
 		break;
-	case RADV_FENCE_WSI:
-		part->fence_wsi->destroy(part->fence_wsi);
-		break;
 	default:
 		unreachable("Invalid fence type");
 	}
@@ -5875,12 +5874,6 @@ VkResult radv_WaitForFences(
 						      timeout))
 				return VK_TIMEOUT;
 			break;
-		case RADV_FENCE_WSI: {
-			VkResult result = part->fence_wsi->wait(part->fence_wsi, timeout);
-			if (result != VK_SUCCESS)
-				return result;
-			break;
-		}
 		default:
 			unreachable("Invalid fence type");
 		}
@@ -5912,7 +5905,7 @@ VkResult radv_ResetFences(VkDevice _device,
 		struct radv_fence_part *part = &fence->permanent;
 
 		switch (part->kind) {
-		case RADV_FENCE_WSI:
+		case RADV_FENCE_WINSYS:
 			device->ws->reset_fence(part->fence);
 			break;
 		case RADV_FENCE_SYNCOBJ:
@@ -5950,15 +5943,6 @@ VkResult radv_GetFenceStatus(VkDevice _device, VkFence _fence)
 							&part->syncobj, 1, true, 0);
 		if (!success)
 			return VK_NOT_READY;
-		break;
-	}
-	case RADV_FENCE_WSI: {
-		VkResult result = part->fence_wsi->wait(part->fence_wsi, 0);
-		if (result != VK_SUCCESS) {
-			if (result == VK_TIMEOUT)
-				return VK_NOT_READY;
-			return result;
-		}
 		break;
 	}
 	default:

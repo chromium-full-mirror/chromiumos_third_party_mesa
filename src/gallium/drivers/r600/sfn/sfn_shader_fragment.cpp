@@ -48,7 +48,9 @@ FragmentShaderFromNir::FragmentShaderFromNir(const nir_shader& nir,
    m_front_face_loaded(false),
    m_depth_exports(0),
    m_enable_centroid_interpolators(false),
-   m_apply_sample_mask(key.ps.apply_sample_id_mask)
+   m_enable_sample_interpolators(false),
+   m_apply_sample_mask(key.ps.apply_sample_id_mask),
+   m_dual_source_blend(key.ps.dual_source_blend)
 {
    for (auto&  i: m_interpolator) {
       i.enabled = false;
@@ -131,6 +133,12 @@ bool FragmentShaderFromNir::scan_sysvalue_access(nir_instr *instr)
          /* This is not a sysvalue, should go elsewhere */
          m_enable_centroid_interpolators = true;
          break;
+      case nir_intrinsic_interp_deref_at_sample:
+         m_enable_sample_interpolators = true;
+         break;
+      case nir_intrinsic_load_helper_invocation:
+         m_sv_values.set(es_helper_invocation);
+         break;
       default:
          ;
       }
@@ -161,6 +169,9 @@ bool FragmentShaderFromNir::do_allocate_reserved_registers()
       m_interpolator[2].enabled = true; /* perspective */
       m_interpolator[5].enabled = true; /* linear */
    }
+
+   if (m_enable_sample_interpolators)
+      m_interpolator[1].enabled = true; /* perspective */
 
    // sort the varying inputs
    m_shaderio.sort_varying_inputs();
@@ -278,19 +289,33 @@ void FragmentShaderFromNir::emit_shader_start()
          m_frag_pos[i] = reg;
       }
    }
+
+   if (m_sv_values.test(es_helper_invocation)) {
+      m_helper_invocation = get_temp_register();
+      auto dummy = PValue(new GPRValue(m_helper_invocation->sel(), 7));
+      emit_instruction(new AluInstruction(op1_mov, m_helper_invocation, literal(-1), {alu_write, alu_last_instr}));
+      GPRVector dst({m_helper_invocation, dummy, dummy, dummy});
+
+      auto vtx = new FetchInstruction(dst, m_helper_invocation,
+                                      R600_BUFFER_INFO_CONST_BUFFER, bim_none);
+      vtx->set_flag(vtx_vpm);
+      vtx->set_flag(vtx_use_tc);
+      vtx->set_dest_swizzle({4,7,7,7});
+      emit_instruction(vtx);
+   }
 }
 
 bool FragmentShaderFromNir::do_emit_store_deref(const nir_variable *out_var, nir_intrinsic_instr* instr)
 {
    if (out_var->data.location == FRAG_RESULT_COLOR)
-      return emit_export_pixel(out_var, instr, true);
+      return emit_export_pixel(out_var, instr, m_dual_source_blend ? 1 : m_max_color_exports);
 
    if ((out_var->data.location >= FRAG_RESULT_DATA0 &&
         out_var->data.location <= FRAG_RESULT_DATA7) ||
        out_var->data.location == FRAG_RESULT_DEPTH ||
        out_var->data.location == FRAG_RESULT_STENCIL ||
        out_var->data.location == FRAG_RESULT_SAMPLE_MASK)
-      return emit_export_pixel(out_var, instr, false);
+      return emit_export_pixel(out_var, instr, 1);
 
    sfn_log << SfnLog::err << "r600-NIR: Unimplemented store_deref for " <<
               out_var->data.location << "(" << out_var->data.driver_location << ")\n";
@@ -299,9 +324,11 @@ bool FragmentShaderFromNir::do_emit_store_deref(const nir_variable *out_var, nir
 
 bool FragmentShaderFromNir::do_process_outputs(nir_variable *output)
 {
-   sfn_log << SfnLog::instr << "Parse output variable "
+   sfn_log << SfnLog::io << "Parse output variable "
            << output->name << "  @" << output->data.location
-           << "@dl:" << output->data.driver_location << "\n";
+           << "@dl:" << output->data.driver_location
+           << " dual source idx: " << output->data.index
+           << "\n";
 
    ++sh_info().noutput;
    r600_shader_io& io = sh_info().output[output->data.driver_location];
@@ -320,13 +347,18 @@ bool FragmentShaderFromNir::do_process_outputs(nir_variable *output)
 
    int loc = output->data.location;
    if (loc == FRAG_RESULT_COLOR &&
-       (m_nir.info.outputs_written & (1ull << loc))) {
+       (m_nir.info.outputs_written & (1ull << loc)) &&
+       !m_dual_source_blend) {
            sh_info().fs_write_all = true;
    }
 
    if (output->data.location == FRAG_RESULT_COLOR ||
        (output->data.location >= FRAG_RESULT_DATA0 &&
         output->data.location <= FRAG_RESULT_DATA7))  {
+      ++m_max_counted_color_exports;
+
+      if (m_max_counted_color_exports > 1)
+         sh_info().fs_write_all = false;
       return true;
    }
    if (output->data.location == FRAG_RESULT_DEPTH ||
@@ -370,7 +402,8 @@ bool FragmentShaderFromNir::emit_intrinsic_instruction_override(nir_intrinsic_in
       return emit_interp_deref_at_centroid(instr);
    case nir_intrinsic_load_sample_pos:
       return emit_load_sample_pos(instr);
-
+   case nir_intrinsic_load_helper_invocation:
+      return load_preloaded_value(instr->dest, 0, m_helper_invocation);
    default:
       return false;
    }
@@ -431,16 +464,28 @@ bool FragmentShaderFromNir::emit_interp_deref_at_sample(nir_intrinsic_instr* ins
    assert(var);
 
    auto& io = m_shaderio.input(var->data.driver_location, var->data.location_frac);
-   auto interpolator = m_interpolator[io.ij_index()];
-   PValue dummy(new GPRValue(interpolator.i->sel(), 7));
+
+   auto interpolator = m_interpolator[1];
+   assert(interpolator.enabled);
+   PValue dummy(new GPRValue(interpolator.i->sel(), 0));
 
    GPRVector src({interpolator.j, interpolator.i, dummy, dummy});
 
    auto tex = new TexInstruction(TexInstruction::get_gradient_h, grad, src, 0, 0, PValue());
+   tex->set_flag(TexInstruction::grad_fine);
+   tex->set_flag(TexInstruction::x_unnormalized);
+   tex->set_flag(TexInstruction::y_unnormalized);
+   tex->set_flag(TexInstruction::z_unnormalized);
+   tex->set_flag(TexInstruction::w_unnormalized);
    tex->set_dest_swizzle({0,1,7,7});
    emit_instruction(tex);
 
    tex = new TexInstruction(TexInstruction::get_gradient_v, grad, src, 0, 0, PValue());
+   tex->set_flag(TexInstruction::x_unnormalized);
+   tex->set_flag(TexInstruction::y_unnormalized);
+   tex->set_flag(TexInstruction::z_unnormalized);
+   tex->set_flag(TexInstruction::w_unnormalized);
+   tex->set_flag(TexInstruction::grad_fine);
    tex->set_dest_swizzle({7,7,0,1});
    emit_instruction(tex);
 
@@ -473,7 +518,7 @@ bool FragmentShaderFromNir::emit_interp_deref_at_offset(nir_intrinsic_instr* ins
 
    auto& io = m_shaderio.input(var->data.driver_location, var->data.location_frac);
    auto interpolator = m_interpolator[io.ij_index()];
-   PValue dummy(new GPRValue(interpolator.i->sel(), 7));
+   PValue dummy(new GPRValue(interpolator.i->sel(), 0));
 
    GPRVector interp({interpolator.j, interpolator.i, dummy, dummy});
 
@@ -483,6 +528,7 @@ bool FragmentShaderFromNir::emit_interp_deref_at_offset(nir_intrinsic_instr* ins
    getgradh->set_flag(TexInstruction::y_unnormalized);
    getgradh->set_flag(TexInstruction::z_unnormalized);
    getgradh->set_flag(TexInstruction::w_unnormalized);
+   getgradh->set_flag(TexInstruction::grad_fine);
    emit_instruction(getgradh);
 
    auto getgradv = new TexInstruction(TexInstruction::get_gradient_v, help, interp, 0, 0, PValue());
@@ -491,6 +537,7 @@ bool FragmentShaderFromNir::emit_interp_deref_at_offset(nir_intrinsic_instr* ins
    getgradv->set_flag(TexInstruction::y_unnormalized);
    getgradv->set_flag(TexInstruction::z_unnormalized);
    getgradv->set_flag(TexInstruction::w_unnormalized);
+   getgradv->set_flag(TexInstruction::grad_fine);
    emit_instruction(getgradv);
 
    PValue ofs_x = from_nir(instr->src[1], 0);
@@ -557,7 +604,9 @@ bool FragmentShaderFromNir::do_emit_load_deref(const nir_variable *in_var, nir_i
    auto dst = vec_from_nir(instr->dest, 4);
 
    sfn_log << SfnLog::io << "Set input[" << in_var->data.driver_location
-           << "].gpr=" << dst.sel() << "\n";
+           << "].gpr=" << dst.sel()
+           << " interp=" << io.ij_index()
+           << "\n";
 
    io.set_gpr(dst.sel());
 
@@ -711,10 +760,8 @@ bool FragmentShaderFromNir::load_interpolated_two_comp_for_one(GPRVector &dest,
 }
 
 
-bool FragmentShaderFromNir::emit_export_pixel(const nir_variable *out_var, nir_intrinsic_instr* instr, bool all_chanels)
+bool FragmentShaderFromNir::emit_export_pixel(const nir_variable *out_var, nir_intrinsic_instr* instr, int outputs)
 {
-   int outputs = all_chanels ? m_max_color_exports : 1;
-
    std::array<uint32_t,4> swizzle;
    unsigned writemask = nir_intrinsic_write_mask(instr);
    switch (out_var->data.location) {
@@ -745,10 +792,14 @@ bool FragmentShaderFromNir::emit_export_pixel(const nir_variable *out_var, nir_i
         out_var->data.location <= FRAG_RESULT_DATA7)) {
       for (int k = 0 ; k < outputs; ++k) {
 
-         unsigned location = out_var->data.driver_location + k - m_depth_exports;
+         unsigned location = (m_dual_source_blend ? out_var->data.index : out_var->data.driver_location) + k - m_depth_exports;
+
+         sfn_log << SfnLog::io << "Pixel output " << out_var->name << " at loc:" << location << "\n";
+
          if (location >= m_max_color_exports) {
-            sfn_log << SfnLog::io << "Pixel output " << location
-                    << " skipped  because  we have only "   << m_max_color_exports << "CBs\n";
+            sfn_log << SfnLog::io << "Pixel output loc:" << location
+                    << " dl:" << out_var->data.location
+                    << " skipped  because  we have only "   << m_max_color_exports << " CBs\n";
             continue;
          }
 
@@ -763,7 +814,6 @@ bool FragmentShaderFromNir::emit_export_pixel(const nir_variable *out_var, nir_i
          sh_info().ps_color_export_mask |= mask;
 
          emit_export_instruction(m_last_pixel_export);
-         ++m_max_counted_color_exports;
       };
    } else if (out_var->data.location == FRAG_RESULT_DEPTH ||
               out_var->data.location == FRAG_RESULT_STENCIL ||

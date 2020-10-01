@@ -886,7 +886,9 @@ bool si_shader_binary_upload(struct si_screen *sscreen, struct si_shader *shader
 
    si_resource_reference(&shader->bo, NULL);
    shader->bo = si_aligned_buffer_create(
-      &sscreen->b, sscreen->info.cpdma_prefetch_writes_memory ? 0 : SI_RESOURCE_FLAG_READ_ONLY,
+      &sscreen->b,
+      (sscreen->info.cpdma_prefetch_writes_memory ?
+         0 : SI_RESOURCE_FLAG_READ_ONLY) | SI_RESOURCE_FLAG_DRIVER_INTERNAL,
       PIPE_USAGE_IMMUTABLE, align(binary.rx_size, SI_CPDMA_ALIGNMENT), 256);
    if (!shader->bo)
       return false;
@@ -899,7 +901,7 @@ bool si_shader_binary_upload(struct si_screen *sscreen, struct si_shader *shader
    u.rx_va = shader->bo->gpu_address;
    u.rx_ptr = sscreen->ws->buffer_map(
       shader->bo->buf, NULL,
-      PIPE_TRANSFER_READ_WRITE | PIPE_TRANSFER_UNSYNCHRONIZED | RADEON_TRANSFER_TEMPORARY);
+      PIPE_MAP_READ_WRITE | PIPE_MAP_UNSYNCHRONIZED | RADEON_MAP_TEMPORARY);
    if (!u.rx_ptr)
       return false;
 
@@ -1288,7 +1290,7 @@ static void si_dump_shader_key(const struct si_shader *shader, FILE *f)
         stage == MESA_SHADER_VERTEX) &&
        !key->as_es && !key->as_ls) {
       fprintf(f, "  opt.kill_outputs = 0x%" PRIx64 "\n", key->opt.kill_outputs);
-      fprintf(f, "  opt.clip_disable = %u\n", key->opt.clip_disable);
+      fprintf(f, "  opt.kill_clip_distances = 0x%x\n", key->opt.kill_clip_distances);
       if (stage != MESA_SHADER_GEOMETRY)
          fprintf(f, "  opt.ngg_culling = 0x%x\n", key->opt.ngg_culling);
    }
@@ -1602,10 +1604,11 @@ static bool si_should_optimize_less(struct ac_llvm_compiler *compiler,
 
 static struct nir_shader *get_nir_shader(struct si_shader_selector *sel, bool *free_nir)
 {
+   nir_shader *nir;
    *free_nir = false;
 
    if (sel->nir) {
-      return sel->nir;
+      nir = sel->nir;
    } else if (sel->nir_binary) {
       struct pipe_screen *screen = &sel->screen->b;
       const void *options = screen->get_compiler_options(screen, PIPE_SHADER_IR_NIR,
@@ -1614,9 +1617,14 @@ static struct nir_shader *get_nir_shader(struct si_shader_selector *sel, bool *f
       struct blob_reader blob_reader;
       blob_reader_init(&blob_reader, sel->nir_binary, sel->nir_size);
       *free_nir = true;
-      return nir_deserialize(NULL, options, &blob_reader);
+      nir = nir_deserialize(NULL, options, &blob_reader);
+   } else {
+      return NULL;
    }
-   return NULL;
+
+   NIR_PASS_V(nir, nir_lower_bool_to_int32);
+
+   return nir;
 }
 
 static bool si_llvm_compile_shader(struct si_screen *sscreen, struct ac_llvm_compiler *compiler,
@@ -2260,6 +2268,7 @@ void si_get_ps_epilog_key(struct si_shader *shader, union si_shader_part_key *ke
    struct si_shader_info *info = &shader->selector->info;
    memset(key, 0, sizeof(*key));
    key->ps_epilog.colors_written = info->colors_written;
+   key->ps_epilog.color_types = info->output_color_types;
    key->ps_epilog.writes_z = info->writes_z;
    key->ps_epilog.writes_stencil = info->writes_stencil;
    key->ps_epilog.writes_samplemask = info->writes_samplemask;

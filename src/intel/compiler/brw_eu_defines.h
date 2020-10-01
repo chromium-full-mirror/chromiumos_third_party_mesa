@@ -580,7 +580,6 @@ enum opcode {
    VS_OPCODE_URB_WRITE,
    VS_OPCODE_PULL_CONSTANT_LOAD,
    VS_OPCODE_PULL_CONSTANT_LOAD_GEN7,
-   VS_OPCODE_SET_SIMD4X2_HEADER_GEN9,
 
    VS_OPCODE_UNPACK_FLAGS_SIMD4X2,
 
@@ -904,6 +903,11 @@ enum surface_logical_srcs {
    SURFACE_LOGICAL_SRC_IMM_DIMS,
    /** Per-opcode immediate argument.  For atomics, this is the atomic opcode */
    SURFACE_LOGICAL_SRC_IMM_ARG,
+   /**
+    * Some instructions with side-effects should not be predicated on
+    * sample mask, e.g. lowered stores to scratch.
+    */
+   SURFACE_LOGICAL_SRC_ALLOW_SAMPLE_MASK,
 
    SURFACE_LOGICAL_NUM_SRCS
 };

@@ -188,6 +188,9 @@ anv_reloc_list_add(struct anv_reloc_list *list,
    if (address_u64_out)
       *address_u64_out = target_bo_offset + delta;
 
+   assert(unwrapped_target_bo->gem_handle > 0);
+   assert(unwrapped_target_bo->refcount > 0);
+
    if (unwrapped_target_bo->flags & EXEC_OBJECT_PINNED) {
       assert(!target_bo->is_wrapper);
       uint32_t idx = unwrapped_target_bo->gem_handle;
