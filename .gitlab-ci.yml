@@ -37,8 +37,38 @@ stages:
 # ----------------------------------------------------------
 .scheduled_pipelines-rules:
   rules: &ignore_scheduled_pipelines
-    if: '$CI_PIPELINE_SOURCE == "schedule"'
+    if: &is-scheduled-pipeline '$CI_PIPELINE_SOURCE == "schedule"'
     when: never
+
+# YAML anchors for rule conditions
+# --------------------------------
+.rules-anchors:
+  rules:
+    # For Marge Bot
+    - if: &is-for-marge '$GITLAB_USER_LOGIN == "marge-bot"'
+      when: never
+    # Forked project branch
+    - if: &is-forked-branch '$CI_PROJECT_NAMESPACE != "mesa" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+      when: manual
+    # Forked project branch / pre-merge pipeline
+    - if: &is-forked-branch-or-pre-merge '$CI_PROJECT_NAMESPACE != "mesa" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+      when: manual
+    # Pipeline runs for the master branch of the main project
+    - if: &is-main-master '$CI_PROJECT_NAMESPACE == "mesa" && $CI_COMMIT_REF_NAME == "master" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != "master"'
+      when: always
+    # Post-merge pipeline
+    - if: &is-post-merge '$CI_PROJECT_NAMESPACE == "mesa" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+      when: on_success
+    # Post-merge pipeline, not for Marge Bot
+    - if: &is-post-merge-not-for-marge '$CI_PROJECT_NAMESPACE == "mesa" && $GITLAB_USER_LOGIN != "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+      when: on_success
+    # Pre-merge pipeline
+    - if: &is-pre-merge '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+      when: on_success
+    # Pre-merge pipeline for Marge Bot
+    - if: &is-pre-merge-for-marge '$GITLAB_USER_LOGIN == "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+      when: on_success
+
 
 .docs-base:
   extends: .ci-run-policy
@@ -56,7 +86,7 @@ pages:
     - public
   rules:
     - *ignore_scheduled_pipelines
-    - if: '$CI_PROJECT_NAMESPACE == "mesa" && $CI_COMMIT_REF_NAME == "master"'
+    - if: *is-main-master
       changes: &docs-or-ci
       - docs/**/*
       - .gitlab-ci.yml
@@ -70,13 +100,16 @@ test-docs:
   stage: container+docs
   rules:
     - *ignore_scheduled_pipelines
-    - if: '$GITLAB_USER_LOGIN == "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+    - if: *is-main-master
+      changes: *docs-or-ci
+      when: never
+    - if: *is-pre-merge-for-marge
       changes: *docs-or-ci
       when: on_success
-    - if: '$GITLAB_USER_LOGIN != "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME && $CI_PROJECT_PATH == "mesa/mesa"'
+    - if: *is-post-merge-not-for-marge
       changes: *docs-or-ci
       when: on_success
-    - if: '$CI_PROJECT_PATH != "mesa/mesa" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+    - if: *is-forked-branch-or-pre-merge
       changes: *docs-or-ci
       when: manual
     # Other cases default to never
@@ -120,14 +153,14 @@ success:
   image: debian:stable-slim
   rules:
     - *ignore_scheduled_pipelines
-    - if: '$CI_PROJECT_NAMESPACE == "mesa" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+    - if: *is-post-merge
       when: never
-    - if: '$GITLAB_USER_LOGIN == "marge-bot"'
+    - if: *is-for-marge
       changes: *docs-or-ci
       when: never
     - changes: *all_paths
       when: never
-    - if: '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+    - if: *is-pre-merge
       when: on_success
   variables:
     GIT_STRATEGY: none
@@ -170,20 +203,20 @@ success:
     - *ignore_scheduled_pipelines
     # Run pipeline by default in the main project if any CI pipeline
     # configuration files were changed, to ensure docker images are up to date
-    - if: '$CI_PROJECT_PATH == "mesa/mesa" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+    - if: *is-post-merge
       changes:
       - .gitlab-ci.yml
       - .gitlab-ci/**/*
       when: on_success
     # Run pipeline by default if it was triggered by Marge Bot, is for a
     # merge request, and any files affecting the pipeline were changed
-    - if: '$GITLAB_USER_LOGIN == "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == $CI_COMMIT_REF_NAME'
+    - if: *is-pre-merge-for-marge
       changes:
         *all_paths
       when: on_success
     # Run pipeline by default in the main project if it was not triggered by
     # Marge Bot, and any files affecting the pipeline were changed
-    - if: '$GITLAB_USER_LOGIN != "marge-bot" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME && $CI_PROJECT_PATH == "mesa/mesa"'
+    - if: *is-post-merge-not-for-marge
       changes:
         *all_paths
       when: on_success
@@ -207,7 +240,7 @@ x86_build-base:
     - .fdo.container-build@debian
     - .container
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_build-base "2020-08-13-gold"
+    FDO_DISTRIBUTION_TAG: &x86_build-base "2020-10-06-clang10-2"
 
 .use-x86_build-base:
   extends:
@@ -225,7 +258,7 @@ x86_build:
   extends:
     - .use-x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_build "2020-09-10-libdrm"
+    FDO_DISTRIBUTION_TAG: &x86_build "2020-10-06-clang10-cl3"
 
 .use-x86_build:
   variables:
@@ -239,7 +272,7 @@ i386_build:
   extends:
     - .use-x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &i386_build "2020-09-10-libdrm"
+    FDO_DISTRIBUTION_TAG: &i386_build "2020-10-06-clang10-2"
 
 .use-i386_build:
   variables:
@@ -253,7 +286,7 @@ ppc64el_build:
   extends:
     - .use-x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &ppc64el_build "2020-09-10-libdrm"
+    FDO_DISTRIBUTION_TAG: &ppc64el_build "2020-10-06-clang10-2"
 
 .use-ppc64el_build:
   variables:
@@ -267,7 +300,7 @@ s390x_build:
   extends:
     - .use-x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &s390x_build "2020-09-10-libdrm"
+    FDO_DISTRIBUTION_TAG: &s390x_build "2020-10-06-clang10-2"
 
 .use-s390x_build:
   variables:
@@ -280,7 +313,7 @@ s390x_build:
 x86_test-base:
   extends: x86_build-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_test-base "2020-08-13-gold"
+    FDO_DISTRIBUTION_TAG: &x86_test-base "2020-10-06-clang10-2"
 
 .use-x86_test-base:
   extends:
@@ -297,13 +330,13 @@ x86_test-base:
 x86_test-gl:
   extends: .use-x86_test-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_test-gl "2020-09-10-libdrm"
+    FDO_DISTRIBUTION_TAG: &x86_test-gl "2020-10-06-clang10-cl3"
 
 # Debian 10 based x86 test image for VK
 x86_test-vk:
   extends: .use-x86_test-base
   variables:
-    FDO_DISTRIBUTION_TAG: &x86_test-vk "2020-08-31-deqp-version"
+    FDO_DISTRIBUTION_TAG: &x86_test-vk "2020-10-06-clang10-2"
 
 # Debian 9 based x86 build image (old LLVM)
 x86_build_old:
@@ -340,7 +373,7 @@ arm_test-base:
     - .fdo.container-build@debian
     - .container
   variables:
-    FDO_DISTRIBUTION_TAG: &arm_test-base "2020-09-10-libdrm"
+    FDO_DISTRIBUTION_TAG: &arm_test-base "2020-10-06-clang10-2"
 
 .use-arm_test-base:
   extends:
@@ -358,7 +391,7 @@ arm64_test:
   extends:
     - .use-arm_test-base
   variables:
-    FDO_DISTRIBUTION_TAG: &arm64_test "2020-09-04-pagetables"
+    FDO_DISTRIBUTION_TAG: &arm64_test "2020-09-28-deqp-surfaceless-fix"
 
 .use-arm64_test:
   variables:
@@ -411,7 +444,7 @@ git_archive:
   extends: .fdo.container-build@alpine
   stage: container+docs
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: *is-scheduled-pipeline
       when: always
   variables:
     FDO_REPO_SUFFIX: &git-archive-suffix "alpine/git_archive"
@@ -428,7 +461,7 @@ make git archive:
   stage: git-archive
   extends: .fdo.suffixed-image@alpine
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: *is-scheduled-pipeline
       when: on_success
   # ensure we are running on packet
   tags:
@@ -497,7 +530,7 @@ make git archive:
     - .use-x86_build
   stage: meson-x86_64
   variables:
-    LLVM_VERSION: 9
+    LLVM_VERSION: 10
   script:
     - .gitlab-ci/meson-build.sh
 
@@ -529,6 +562,26 @@ meson-testing:
       -D werror=true
     UPLOAD_FOR_LAVA: 1
     DEBIAN_ARCH: amd64
+  script:
+    - .gitlab-ci/meson-build.sh
+    - .gitlab-ci/prepare-artifacts.sh
+
+meson-clover-testing:
+  extends:
+    - .meson-build
+    - .ci-deqp-artifacts
+  variables:
+    UNWIND: "enabled"
+    LLVM_VERSION: 10
+    DRI_LOADERS: >
+      -D glx=disabled
+      -D egl=disabled
+      -D gbm=disabled
+    GALLIUM_ST: >
+      -D gallium-opencl=icd
+      -D opencl-spirv=true
+    GALLIUM_DRIVERS: "swrast"
+    BUILDTYPE: "debugoptimized"
   script:
     - .gitlab-ci/meson-build.sh
     - .gitlab-ci/prepare-artifacts.sh
@@ -712,10 +765,10 @@ meson-clang:
     DRI_LOADERS: >
       -D glvnd=true
     DRI_DRIVERS: "auto"
-    GALLIUM_DRIVERS: "auto"
+    GALLIUM_DRIVERS: "iris,nouveau,kmsro,r300,r600,freedreno,swr,swrast,svga,v3d,vc4,virgl,etnaviv,panfrost,lima,zink,radeonsi,tegra"
     VULKAN_DRIVERS: intel,amd,freedreno
-    CC: "ccache clang-9"
-    CXX: "ccache clang++-9"
+    CC: "ccache clang-10"
+    CXX: "ccache clang++-10"
 
 .meson-windows-vs2019:
   extends:
@@ -751,27 +804,9 @@ meson-clover:
       -D gallium-nine=false
       -D gallium-opencl=icd
   script:
-    - .gitlab-ci/meson-build.sh
     - LLVM_VERSION=8 .gitlab-ci/meson-build.sh
-
-meson-clover-old-llvm:
-  extends:
-    - meson-clover
-    - .use-x86_build_old
-  variables:
-    UNWIND: "disabled"
-    DRI_LOADERS: >
-      -D glx=disabled
-      -D egl=disabled
-      -D gbm=disabled
-      -D platforms=[]
-    GALLIUM_DRIVERS: "i915,r600"
-  script:
-    - LLVM_VERSION=3.9 .gitlab-ci/meson-build.sh
-    - LLVM_VERSION=4.0 .gitlab-ci/meson-build.sh
-    - LLVM_VERSION=5.0 .gitlab-ci/meson-build.sh
-    - LLVM_VERSION=6.0 .gitlab-ci/meson-build.sh
-    - LLVM_VERSION=7 .gitlab-ci/meson-build.sh
+    - LLVM_VERSION=9 .gitlab-ci/meson-build.sh
+    - .gitlab-ci/meson-build.sh
 
 meson-vulkan:
   extends: .meson-build
@@ -866,15 +901,21 @@ meson-mingw32-x86_64:
     paths:
       - results/
 
-.test-gl:
+.use-x86_test-gl:
   extends:
     - .test
   variables:
     TAG: *x86_test-gl
   image: "$CI_REGISTRY_IMAGE/debian/x86_test-gl:$TAG"
   needs:
-    - meson-testing
     - x86_test-gl
+
+.test-gl:
+  extends:
+    - .use-x86_test-gl
+  needs:
+    - x86_test-gl
+    - meson-testing
 
 .test-vk:
   extends:
@@ -885,6 +926,13 @@ meson-mingw32-x86_64:
   needs:
     - meson-testing
     - x86_test-vk
+
+.test-cl:
+  extends:
+    - .use-x86_test-gl
+  needs:
+    - x86_test-gl
+    - meson-clover-testing
 
 .piglit-test:
   extends:
@@ -900,6 +948,19 @@ meson-mingw32-x86_64:
     PIGLIT_NO_WINDOW: 1
   script:
     - install/piglit/run.sh
+
+piglit-cl:
+  extends:
+    - .piglit-test
+    - .test-cl
+  variables:
+    LP_CL: 1
+    LP_NUM_THREADS: 1
+    PIGLIT_PROFILES: cl
+    PIGLIT_OPTIONS: >
+      -x bswap -x phatk
+  script:
+    - install/piglit/run_cl.sh
 
 piglit-quick_gl:
   extends: .piglit-test
@@ -1059,7 +1120,7 @@ virgl-gl32-on-gl:
 .test-manual:
   rules:
     - *ignore_scheduled_pipelines
-    - if: '$CI_PROJECT_PATH != "mesa/mesa" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+    - if: *is-forked-branch
       changes:
         *all_paths
       when: manual
@@ -1171,6 +1232,36 @@ arm64_a630_gl:
   extends: arm64_a630_gles2
   variables:
     DEQP_VER: gl30
+
+# disabled pending https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/1859
+.arm64_a630_gles3_multisample:
+  extends: arm64_a630_gles3
+  variables:
+    DEQP_CONFIG: rgba8888d24s8ms4
+    DEQP_VARIANT: multisample
+    DEQP_EXPECTED_FAILS: deqp-freedreno-a630-multisample-fails.txt
+
+# disabled pending https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/1859
+.arm64_a630_gles31_multisample:
+  extends: arm64_a630_gles31
+  variables:
+    DEQP_CONFIG: rgba8888d24s8ms4
+    DEQP_VARIANT: multisample
+    DEQP_EXPECTED_FAILS: deqp-freedreno-a630-multisample-fails.txt
+
+arm64_a630_gles3_565nozs:
+  extends: arm64_a630_gles3
+  variables:
+    DEQP_CONFIG: rgb565d0s0ms0
+    DEQP_VARIANT: 565-no-depth-no-stencil
+    DEQP_EXPECTED_FAILS: deqp-freedreno-a630-565nozs-fails.txt
+
+arm64_a630_gles31_565nozs:
+  extends: arm64_a630_gles31
+  variables:
+    DEQP_CONFIG: rgb565d0s0ms0
+    DEQP_VARIANT: 565-no-depth-no-stencil
+    DEQP_EXPECTED_FAILS: deqp-freedreno-a630-565nozs-fails.txt
 
 arm64_a630_vk:
   extends: arm64_a630_gles2

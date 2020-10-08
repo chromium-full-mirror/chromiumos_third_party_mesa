@@ -667,7 +667,8 @@ emit_pipeline_select(struct iris_batch *batch, uint32_t pipeline)
 
    iris_emit_cmd(batch, GENX(PIPELINE_SELECT), sel) {
 #if GEN_GEN >= 9
-      sel.MaskBits = 3;
+      sel.MaskBits = GEN_GEN >= 12 ? 0x13 : 3;
+      sel.MediaSamplerDOPClockGateEnable = GEN_GEN >= 12;
 #endif
       sel.PipelineSelection = pipeline;
    }
@@ -971,6 +972,8 @@ iris_init_render_context(struct iris_batch *batch)
    iris_pack_state(GENX(CACHE_MODE_1), &reg_val, reg) {
       reg.FloatBlendOptimizationEnable = true;
       reg.FloatBlendOptimizationEnableMask = true;
+      reg.MSCRAWHazardAvoidanceBit = true;
+      reg.MSCRAWHazardAvoidanceBitMask = true;
       reg.PartialResolveDisableInVC = true;
       reg.PartialResolveDisableInVCMask = true;
    }
@@ -3311,6 +3314,8 @@ upload_sysvals(struct iris_context *ice,
                  sysval <= BRW_PARAM_BUILTIN_WORK_GROUP_SIZE_Z) {
          unsigned i = sysval - BRW_PARAM_BUILTIN_WORK_GROUP_SIZE_X;
          value = ice->state.last_block[i];
+      } else if (sysval == BRW_PARAM_BUILTIN_WORK_DIM) {
+         value = grid->work_dim;
       } else {
          assert(!"unhandled system value");
       }
@@ -4461,14 +4466,11 @@ iris_store_cs_state(struct iris_context *ice,
                     const struct gen_device_info *devinfo,
                     struct iris_compiled_shader *shader)
 {
-   struct brw_stage_prog_data *prog_data = shader->prog_data;
    struct brw_cs_prog_data *cs_prog_data = (void *) shader->prog_data;
    void *map = shader->derived_data;
 
    iris_pack_state(GENX(INTERFACE_DESCRIPTOR_DATA), map, desc) {
       desc.ConstantURBEntryReadLength = cs_prog_data->push.per_thread.regs;
-      desc.SharedLocalMemorySize =
-         encode_slm_size(GEN_GEN, prog_data->total_shared);
       desc.BarrierEnable = cs_prog_data->uses_barrier;
       desc.CrossThreadConstantDataReadLength =
          cs_prog_data->push.cross_thread.regs;
@@ -6649,6 +6651,8 @@ iris_upload_gpgpu_walker(struct iris_context *ice,
    const struct gen_device_info *devinfo = &screen->devinfo;
    struct iris_binder *binder = &ice->state.binder;
    struct iris_shader_state *shs = &ice->state.shaders[MESA_SHADER_COMPUTE];
+   struct iris_uncompiled_shader *ish =
+      ice->shaders.uncompiled[MESA_SHADER_COMPUTE];
    struct iris_compiled_shader *shader =
       ice->shaders.prog[MESA_SHADER_COMPUTE];
    struct brw_stage_prog_data *prog_data = shader->prog_data;
@@ -6738,7 +6742,12 @@ iris_upload_gpgpu_walker(struct iris_context *ice,
                       IRIS_STAGE_DIRTY_CS)) {
       uint32_t desc[GENX(INTERFACE_DESCRIPTOR_DATA_length)];
 
+      unsigned slm_size = prog_data->total_shared;
+      if (ish->kernel_shared_size)
+         slm_size = ALIGN(slm_size, 8) + ish->kernel_shared_size;
+
       iris_pack_state(GENX(INTERFACE_DESCRIPTOR_DATA), desc, idd) {
+         idd.SharedLocalMemorySize = encode_slm_size(GEN_GEN, slm_size);
          idd.KernelStartPointer =
             KSP(shader) + brw_cs_prog_data_prog_offset(cs_prog_data, simd_size);
          idd.SamplerStatePointer = shs->sampler_table.offset;

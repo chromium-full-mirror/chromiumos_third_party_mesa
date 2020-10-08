@@ -625,25 +625,6 @@ cast_deref(nir_builder *b, unsigned num_components, unsigned bit_size, nir_deref
    return nir_build_deref_cast(b, &deref->dest.ssa, deref->mode, type, 0);
 }
 
-/* Return true if the write mask "write_mask" of a store with "old_bit_size"
- * bits per element can be represented for a store with "new_bit_size" bits per
- * element. */
-static bool
-writemask_representable(unsigned write_mask, unsigned old_bit_size, unsigned new_bit_size)
-{
-   while (write_mask) {
-      int start, count;
-      u_bit_scan_consecutive_range(&write_mask, &start, &count);
-      start *= old_bit_size;
-      count *= old_bit_size;
-      if (start % new_bit_size != 0)
-         return false;
-      if (count % new_bit_size != 0)
-         return false;
-   }
-   return true;
-}
-
 /* Return true if "new_bit_size" is a usable bit size for a vectorized load/store
  * of "low" and "high". */
 static bool
@@ -667,9 +648,10 @@ new_bitsize_acceptable(struct vectorize_ctx *ctx, unsigned new_bit_size,
    if (new_bit_size / common_bit_size > NIR_MAX_VEC_COMPONENTS)
       return false;
 
-   uint32_t align = low->align_offset ? 1 << (ffs(low->align_offset) - 1) : low->align_mul;
-   if (!ctx->callback(align, new_bit_size, new_num_components,
-                      high_offset, low->intrin, high->intrin))
+   if (!ctx->callback(low->align_mul,
+                      low->align_offset,
+                      new_bit_size, new_num_components,
+                      low->intrin, high->intrin))
       return false;
 
    if (low->is_store) {
@@ -682,31 +664,15 @@ new_bitsize_acceptable(struct vectorize_ctx *ctx, unsigned new_bit_size,
          return false;
 
       unsigned write_mask = nir_intrinsic_write_mask(low->intrin);
-      if (!writemask_representable(write_mask, low_size, new_bit_size))
+      if (!nir_component_mask_can_reinterpret(write_mask, get_bit_size(low), new_bit_size))
          return false;
 
       write_mask = nir_intrinsic_write_mask(high->intrin);
-      if (!writemask_representable(write_mask, high_size, new_bit_size))
+      if (!nir_component_mask_can_reinterpret(write_mask, get_bit_size(high), new_bit_size))
          return false;
    }
 
    return true;
-}
-
-/* Updates a write mask, "write_mask", so that it can be used with a
- * "new_bit_size"-bit store instead of a "old_bit_size"-bit store. */
-static uint32_t
-update_writemask(unsigned write_mask, unsigned old_bit_size, unsigned new_bit_size)
-{
-   uint32_t res = 0;
-   while (write_mask) {
-      int start, count;
-      u_bit_scan_consecutive_range(&write_mask, &start, &count);
-      start = start * old_bit_size / new_bit_size;
-      count = count * old_bit_size / new_bit_size;
-      res |= ((1 << count) - 1) << start;
-   }
-   return res;
 }
 
 static nir_deref_instr *subtract_deref(nir_builder *b, nir_deref_instr *deref, int64_t offset)
@@ -846,8 +812,12 @@ vectorize_stores(nir_builder *b, struct vectorize_ctx *ctx,
    /* get new writemasks */
    uint32_t low_write_mask = nir_intrinsic_write_mask(low->intrin);
    uint32_t high_write_mask = nir_intrinsic_write_mask(high->intrin);
-   low_write_mask = update_writemask(low_write_mask, get_bit_size(low), new_bit_size);
-   high_write_mask = update_writemask(high_write_mask, get_bit_size(high), new_bit_size);
+   low_write_mask = nir_component_mask_reinterpret(low_write_mask,
+                                                   get_bit_size(low),
+                                                   new_bit_size);
+   high_write_mask = nir_component_mask_reinterpret(high_write_mask,
+                                                    get_bit_size(high),
+                                                    new_bit_size);
    high_write_mask <<= high_start / new_bit_size;
 
    uint32_t write_mask = low_write_mask | high_write_mask;
@@ -1144,23 +1114,33 @@ vectorize_entries(struct vectorize_ctx *ctx, nir_function_impl *impl, struct has
             util_dynarray_num_elements(arr, struct entry *),
             sizeof(struct entry *), &sort_entries);
 
-      unsigned i = 0;
-      for (; i < util_dynarray_num_elements(arr, struct entry*) - 1; i++) {
-         struct entry *low = *util_dynarray_element(arr, struct entry *, i);
-         struct entry *high = *util_dynarray_element(arr, struct entry *, i + 1);
+      unsigned num_entries = util_dynarray_num_elements(arr, struct entry *);
 
-         uint64_t diff = high->offset_signed - low->offset_signed;
-         if (diff > get_bit_size(low) / 8u * low->intrin->num_components)
+      for (unsigned first_idx = 0; first_idx < num_entries; first_idx++) {
+         struct entry *low = *util_dynarray_element(arr, struct entry *, first_idx);
+         if (!low)
             continue;
 
-         struct entry *first = low->index < high->index ? low : high;
-         struct entry *second = low->index < high->index ? high : low;
+         for (unsigned second_idx = first_idx + 1; second_idx < num_entries; second_idx++) {
+            struct entry *high = *util_dynarray_element(arr, struct entry *, second_idx);
+            if (!high)
+               continue;
 
-         if (try_vectorize(impl, ctx, low, high, first, second)) {
-            *util_dynarray_element(arr, struct entry *, i) = NULL;
-            *util_dynarray_element(arr, struct entry *, i + 1) = low->is_store ? second : first;
-            progress = true;
+            uint64_t diff = high->offset_signed - low->offset_signed;
+            if (diff > get_bit_size(low) / 8u * low->intrin->num_components)
+               break;
+
+            struct entry *first = low->index < high->index ? low : high;
+            struct entry *second = low->index < high->index ? high : low;
+
+            if (try_vectorize(impl, ctx, low, high, first, second)) {
+               low = low->is_store ? second : first;
+               *util_dynarray_element(arr, struct entry *, second_idx) = NULL;
+               progress = true;
+            }
          }
+
+         *util_dynarray_element(arr, struct entry *, first_idx) = low;
       }
 
       util_dynarray_foreach(arr, struct entry *, elem) {

@@ -214,35 +214,17 @@ vec4_gs_visitor::emit_thread_end()
     */
    int base_mrf = 1;
 
-   bool static_vertex_count = gs_prog_data->static_vertex_count != -1;
-
-   /* If the previous instruction was a URB write, we don't need to issue
-    * a second one - we can just set the EOT bit on the previous write.
-    *
-    * Skip this on Gen8+ unless there's a static vertex count, as we also
-    * need to write the vertex count out, and combining the two may not be
-    * possible (or at least not straightforward).
-    */
-   vec4_instruction *last = (vec4_instruction *) instructions.get_tail();
-   if (last && last->opcode == GS_OPCODE_URB_WRITE &&
-       !(INTEL_DEBUG & DEBUG_SHADER_TIME) &&
-       devinfo->gen >= 8 && static_vertex_count) {
-      last->urb_write_flags = BRW_URB_WRITE_EOT | last->urb_write_flags;
-      return;
-   }
-
    current_annotation = "thread end";
    dst_reg mrf_reg(MRF, base_mrf);
    src_reg r0(retype(brw_vec8_grf(0, 0), BRW_REGISTER_TYPE_UD));
    vec4_instruction *inst = emit(MOV(mrf_reg, r0));
    inst->force_writemask_all = true;
-   if (devinfo->gen < 8 || !static_vertex_count)
-      emit(GS_OPCODE_SET_VERTEX_COUNT, mrf_reg, this->vertex_count);
+   emit(GS_OPCODE_SET_VERTEX_COUNT, mrf_reg, this->vertex_count);
    if (INTEL_DEBUG & DEBUG_SHADER_TIME)
       emit_shader_time_end();
    inst = emit(GS_OPCODE_THREAD_END);
    inst->base_mrf = base_mrf;
-   inst->mlen = devinfo->gen >= 8 && !static_vertex_count ? 2 : 1;
+   inst->mlen = 1;
 }
 
 
@@ -278,12 +260,6 @@ vec4_gs_visitor::emit_urb_write_opcode(bool complete)
 
    vec4_instruction *inst = emit(GS_OPCODE_URB_WRITE);
    inst->offset = gs_prog_data->control_data_header_size_hwords;
-
-   /* We need to increment Global Offset by 1 to make room for Broadwell's
-    * extra "Vertex Count" payload at the beginning of the URB entry.
-    */
-   if (devinfo->gen >= 8 && gs_prog_data->static_vertex_count == -1)
-      inst->offset++;
 
    inst->urb_write_flags = BRW_URB_WRITE_PER_SLOT_OFFSET;
    return inst;
@@ -398,13 +374,6 @@ vec4_gs_visitor::emit_control_data_bits()
    inst->force_writemask_all = true;
    inst = emit(GS_OPCODE_URB_WRITE);
    inst->urb_write_flags = urb_write_flags;
-   /* We need to increment Global Offset by 256-bits to make room for
-    * Broadwell's extra "Vertex Count" payload at the beginning of the
-    * URB entry.  Since this is an OWord message, Global Offset is counted
-    * in 128-bit units, so we must set it to 2.
-    */
-   if (devinfo->gen >= 8 && gs_prog_data->static_vertex_count == -1)
-      inst->offset = 2;
    inst->base_mrf = base_mrf;
    inst->mlen = 2;
 }
@@ -844,7 +813,7 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
    /* Now that prog_data setup is done, we are ready to actually compile the
     * program.
     */
-   if (unlikely(INTEL_DEBUG & DEBUG_GS)) {
+   if (INTEL_DEBUG & DEBUG_GS) {
       fprintf(stderr, "GS Input ");
       brw_print_vue_map(stderr, &c.input_vue_map);
       fprintf(stderr, "GS Output ");
@@ -860,7 +829,7 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
 
          fs_generator g(compiler, log_data, mem_ctx,
                         &prog_data->base.base, false, MESA_SHADER_GEOMETRY);
-         if (unlikely(INTEL_DEBUG & DEBUG_GS)) {
+         if (INTEL_DEBUG & DEBUG_GS) {
             const char *label =
                nir->info.label ? nir->info.label : "unnamed";
             char *name = ralloc_asprintf(mem_ctx, "%s geometry shader %s",
@@ -872,6 +841,11 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
          g.add_const_data(nir->constant_data, nir->constant_data_size);
          return g.get_assembly();
       }
+
+      if (error_str)
+         *error_str = ralloc_strdup(mem_ctx, v.fail_msg);
+
+      return NULL;
    }
 
    if (compiler->devinfo->gen >= 7) {
@@ -880,7 +854,7 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
        * dual object mode.
        */
       if (prog_data->invocations <= 1 &&
-          likely(!(INTEL_DEBUG & DEBUG_NO_DUAL_OBJECT_GS))) {
+          !(INTEL_DEBUG & DEBUG_NO_DUAL_OBJECT_GS)) {
          prog_data->base.dispatch_mode = DISPATCH_MODE_4X2_DUAL_OBJECT;
 
          brw::vec4_gs_visitor v(compiler, log_data, &c, prog_data, nir,

@@ -36,6 +36,68 @@
 
 #include "main/menums.h" /* BITFIELD64_MASK */
 
+
+/** Return true if the component mask "mask" with bit size "old_bit_size" can
+ * be re-interpreted to be used with "new_bit_size".
+ */
+bool
+nir_component_mask_can_reinterpret(nir_component_mask_t mask,
+                                   unsigned old_bit_size,
+                                   unsigned new_bit_size)
+{
+   assert(util_is_power_of_two_nonzero(old_bit_size));
+   assert(util_is_power_of_two_nonzero(new_bit_size));
+
+   if (old_bit_size == new_bit_size)
+      return true;
+
+   if (old_bit_size == 1 || new_bit_size == 1)
+      return false;
+
+   if (old_bit_size > new_bit_size) {
+      unsigned ratio = old_bit_size / new_bit_size;
+      return util_last_bit(mask) * ratio <= NIR_MAX_VEC_COMPONENTS;
+   }
+
+   unsigned iter = mask;
+   while (iter) {
+      int start, count;
+      u_bit_scan_consecutive_range(&iter, &start, &count);
+      start *= old_bit_size;
+      count *= old_bit_size;
+      if (start % new_bit_size != 0)
+         return false;
+      if (count % new_bit_size != 0)
+         return false;
+   }
+   return true;
+}
+
+/** Re-interprets a component mask "mask" with bit size "old_bit_size" so that
+ * it can be used can be used with "new_bit_size".
+ */
+nir_component_mask_t
+nir_component_mask_reinterpret(nir_component_mask_t mask,
+                               unsigned old_bit_size,
+                               unsigned new_bit_size)
+{
+   assert(nir_component_mask_can_reinterpret(mask, old_bit_size, new_bit_size));
+
+   if (old_bit_size == new_bit_size)
+      return mask;
+
+   nir_component_mask_t new_mask = 0;
+   unsigned iter = mask;
+   while (iter) {
+      int start, count;
+      u_bit_scan_consecutive_range(&iter, &start, &count);
+      start = start * old_bit_size / new_bit_size;
+      count = count * old_bit_size / new_bit_size;
+      new_mask |= BITFIELD_RANGE(start, count);
+   }
+   return new_mask;
+}
+
 nir_shader *
 nir_shader_create(void *mem_ctx,
                   gl_shader_stage stage,
@@ -115,15 +177,12 @@ nir_shader_add_variable(nir_shader *shader, nir_variable *var)
    case nir_var_mem_ssbo:
    case nir_var_mem_shared:
    case nir_var_system_value:
+   case nir_var_mem_push_const:
    case nir_var_mem_constant:
       break;
 
    case nir_var_mem_global:
       assert(!"nir_shader_add_variable cannot be used for global memory");
-      return;
-
-   case nir_var_mem_push_const:
-      assert(!"nir_var_push_constant is not supposed to be used for variables");
       return;
 
    default:
@@ -2238,6 +2297,12 @@ nir_system_value_from_intrinsic(nir_intrinsic_op intrin)
       return SYSTEM_VALUE_WORK_DIM;
    case nir_intrinsic_load_user_data_amd:
       return SYSTEM_VALUE_USER_DATA_AMD;
+   case nir_intrinsic_load_barycentric_model:
+      return SYSTEM_VALUE_BARYCENTRIC_PULL_MODEL;
+   case nir_intrinsic_load_gs_header_ir3:
+      return SYSTEM_VALUE_GS_HEADER_IR3;
+   case nir_intrinsic_load_tcs_header_ir3:
+      return SYSTEM_VALUE_TCS_HEADER_IR3;
    default:
       unreachable("intrinsic doesn't produce a system value");
    }
@@ -2292,9 +2357,16 @@ nir_rewrite_image_intrinsic(nir_intrinsic_instr *intrin, nir_ssa_def *src,
                             bool bindless)
 {
    enum gl_access_qualifier access = nir_intrinsic_access(intrin);
-   nir_alu_type type = nir_type_invalid;
-   if (nir_intrinsic_infos[intrin->intrinsic].index_map[NIR_INTRINSIC_TYPE])
-      type = nir_intrinsic_type(intrin);
+
+   /* Image intrinsics only have one of these */
+   assert(!nir_intrinsic_has_src_type(intrin) ||
+          !nir_intrinsic_has_dest_type(intrin));
+
+   nir_alu_type data_type = nir_type_invalid;
+   if (nir_intrinsic_has_src_type(intrin))
+      data_type = nir_intrinsic_src_type(intrin);
+   if (nir_intrinsic_has_dest_type(intrin))
+      data_type = nir_intrinsic_dest_type(intrin);
 
    switch (intrin->intrinsic) {
 #define CASE(op) \
@@ -2333,8 +2405,10 @@ nir_rewrite_image_intrinsic(nir_intrinsic_instr *intrin, nir_ssa_def *src,
    nir_intrinsic_set_image_array(intrin, glsl_sampler_type_is_array(deref->type));
    nir_intrinsic_set_access(intrin, access | var->data.access);
    nir_intrinsic_set_format(intrin, var->data.image.format);
-   if (nir_intrinsic_infos[intrin->intrinsic].index_map[NIR_INTRINSIC_TYPE])
-      nir_intrinsic_set_type(intrin, type);
+   if (nir_intrinsic_has_src_type(intrin))
+      nir_intrinsic_set_src_type(intrin, data_type);
+   if (nir_intrinsic_has_dest_type(intrin))
+      nir_intrinsic_set_dest_type(intrin, data_type);
 
    nir_instr_rewrite_src(&intrin->instr, &intrin->src[0],
                          nir_src_for_ssa(src));

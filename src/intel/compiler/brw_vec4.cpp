@@ -285,7 +285,6 @@ vec4_instruction::can_do_writemask(const struct gen_device_info *devinfo)
    case VEC4_OPCODE_SET_HIGH_32BIT:
    case VS_OPCODE_PULL_CONSTANT_LOAD:
    case VS_OPCODE_PULL_CONSTANT_LOAD_GEN7:
-   case VS_OPCODE_SET_SIMD4X2_HEADER_GEN9:
    case TCS_OPCODE_SET_INPUT_URB_OFFSETS:
    case TCS_OPCODE_SET_OUTPUT_URB_OFFSETS:
    case TES_OPCODE_CREATE_INPUT_READ_HEADER:
@@ -1009,23 +1008,7 @@ vec4_visitor::is_dep_ctrl_unsafe(const vec4_instruction *inst)
 
 #define IS_64BIT(reg) (reg.file != BAD_FILE && type_sz(reg.type) == 8)
 
-   /* From the Cherryview and Broadwell PRMs:
-    *
-    * "When source or destination datatype is 64b or operation is integer DWord
-    * multiply, DepCtrl must not be used."
-    *
-    * SKL PRMs don't include this restriction, however, gen7 seems to be
-    * affected, at least by the 64b restriction, since DepCtrl with double
-    * precision instructions seems to produce GPU hangs in some cases.
-    */
-   if (devinfo->gen == 8 || gen_device_info_is_9lp(devinfo)) {
-      if (inst->opcode == BRW_OPCODE_MUL &&
-         IS_DWORD(inst->src[0]) &&
-         IS_DWORD(inst->src[1]))
-         return true;
-   }
-
-   if (devinfo->gen >= 7 && devinfo->gen <= 8) {
+   if (devinfo->gen >= 7) {
       if (IS_64BIT(inst->dst) || IS_64BIT(inst->src[0]) ||
           IS_64BIT(inst->src[1]) || IS_64BIT(inst->src[2]))
       return true;
@@ -1033,11 +1016,6 @@ vec4_visitor::is_dep_ctrl_unsafe(const vec4_instruction *inst)
 
 #undef IS_64BIT
 #undef IS_DWORD
-
-   if (devinfo->gen >= 8) {
-      if (inst->opcode == BRW_OPCODE_F32TO16)
-         return true;
-   }
 
    /*
     * mlen:
@@ -1912,7 +1890,7 @@ vec4_visitor::lower_minmax()
 src_reg
 vec4_visitor::get_timestamp()
 {
-   assert(devinfo->gen >= 7);
+   assert(devinfo->gen == 7);
 
    src_reg ts = src_reg(brw_reg(BRW_ARCHITECTURE_REGISTER_FILE,
                                 BRW_ARF_TIMESTAMP,
@@ -2707,7 +2685,7 @@ vec4_visitor::run()
       pass_num++;                                                      \
       bool this_progress = pass(args);                                 \
                                                                        \
-      if (unlikely(INTEL_DEBUG & DEBUG_OPTIMIZER) && this_progress) {  \
+      if ((INTEL_DEBUG & DEBUG_OPTIMIZER) && this_progress) {  \
          char filename[64];                                            \
          snprintf(filename, 64, "%s-%s-%02d-%02d-" #pass,              \
                   stage_abbrev, nir->info.name, iteration, pass_num); \
@@ -2720,7 +2698,7 @@ vec4_visitor::run()
    })
 
 
-   if (unlikely(INTEL_DEBUG & DEBUG_OPTIMIZER)) {
+   if (INTEL_DEBUG & DEBUG_OPTIMIZER) {
       char filename[64];
       snprintf(filename, 64, "%s-%s-00-00-start",
                stage_abbrev, nir->info.name);
@@ -2783,7 +2761,7 @@ vec4_visitor::run()
 
    setup_payload();
 
-   if (unlikely(INTEL_DEBUG & DEBUG_SPILL_VEC4)) {
+   if (INTEL_DEBUG & DEBUG_SPILL_VEC4) {
       /* Debug of register spilling: Go spill everything. */
       const int grf_count = alloc.count;
       float spill_costs[alloc.count];

@@ -375,16 +375,10 @@ RegClass get_reg_class(isel_context *ctx, RegType type, unsigned components, uns
       return RegClass::get(type, components * bitsize / 8u);
 }
 
-int
-type_size(const struct glsl_type *type, bool bindless)
-{
-   // TODO: don't we need type->std430_base_alignment() here?
-   return glsl_count_attribute_slots(type, false);
-}
-
 bool
-mem_vectorize_callback(unsigned align, unsigned bit_size,
-                       unsigned num_components, unsigned high_offset,
+mem_vectorize_callback(unsigned align_mul, unsigned align_offset,
+                       unsigned bit_size,
+                       unsigned num_components,
                        nir_intrinsic_instr *low, nir_intrinsic_instr *high)
 {
    if (num_components > 4)
@@ -393,6 +387,12 @@ mem_vectorize_callback(unsigned align, unsigned bit_size,
    /* >128 bit loads are split except with SMEM */
    if (bit_size * num_components > 128)
       return false;
+
+   uint32_t align;
+   if (align_offset)
+      align = 1 << (ffs(align_offset) - 1);
+   else
+      align = align_mul;
 
    switch (low->intrinsic) {
    case nir_intrinsic_load_global:
@@ -470,19 +470,6 @@ setup_vs_output_info(isel_context *ctx, nir_shader *nir,
 void
 setup_vs_variables(isel_context *ctx, nir_shader *nir)
 {
-   nir_foreach_shader_in_variable(variable, nir)
-   {
-      variable->data.driver_location = variable->data.location * 4;
-   }
-   nir_foreach_shader_out_variable(variable, nir)
-   {
-      if (ctx->stage == vertex_vs || ctx->stage == ngg_vertex_gs)
-         variable->data.driver_location = variable->data.location * 4;
-
-      assert(variable->data.location >= 0 && variable->data.location <= UINT8_MAX);
-      ctx->output_drv_loc_to_var_slot[MESA_SHADER_VERTEX][variable->data.driver_location / 4] = variable->data.location;
-   }
-
    if (ctx->stage == vertex_vs || ctx->stage == ngg_vertex_gs) {
       radv_vs_output_info *outinfo = &ctx->program->info->vs.outinfo;
       setup_vs_output_info(ctx, nir, outinfo->export_prim_id,
@@ -503,10 +490,6 @@ void setup_gs_variables(isel_context *ctx, nir_shader *nir)
 {
    if (ctx->stage == vertex_geometry_gs || ctx->stage == tess_eval_geometry_gs)
       ctx->program->config->lds_size = ctx->program->info->gs_ring_info.lds_size; /* Already in units of the alloc granularity */
-
-   nir_foreach_shader_out_variable(variable, nir) {
-      variable->data.driver_location = variable->data.location * 4;
-   }
 
    if (ctx->stage == vertex_geometry_gs)
       ctx->program->info->gs.es_type = MESA_SHADER_VERTEX;
@@ -566,33 +549,10 @@ setup_tcs_info(isel_context *ctx, nir_shader *nir, nir_shader *vs)
 }
 
 void
-setup_tcs_variables(isel_context *ctx, nir_shader *nir)
-{
-   nir_foreach_shader_out_variable(variable, nir) {
-      assert(variable->data.location >= 0 && variable->data.location <= UINT8_MAX);
-
-      if (variable->data.location == VARYING_SLOT_TESS_LEVEL_OUTER)
-         ctx->tcs_tess_lvl_out_loc = variable->data.driver_location * 4u;
-      else if (variable->data.location == VARYING_SLOT_TESS_LEVEL_INNER)
-         ctx->tcs_tess_lvl_in_loc = variable->data.driver_location * 4u;
-
-      if (variable->data.patch)
-         ctx->output_tcs_patch_drv_loc_to_var_slot[variable->data.driver_location / 4] = variable->data.location;
-      else
-         ctx->output_drv_loc_to_var_slot[MESA_SHADER_TESS_CTRL][variable->data.driver_location / 4] = variable->data.location;
-   }
-}
-
-void
 setup_tes_variables(isel_context *ctx, nir_shader *nir)
 {
    ctx->tcs_num_patches = ctx->args->options->key.tes.num_patches;
    ctx->tcs_num_outputs = ctx->program->info->tes.num_linked_inputs;
-
-   nir_foreach_shader_out_variable(variable, nir) {
-      if (ctx->stage == tess_eval_vs || ctx->stage == ngg_tess_eval_gs)
-         variable->data.driver_location = variable->data.location * 4;
-   }
 
    if (ctx->stage == tess_eval_vs || ctx->stage == ngg_tess_eval_gs) {
       radv_vs_output_info *outinfo = &ctx->program->info->tes.outinfo;
@@ -606,11 +566,6 @@ setup_variables(isel_context *ctx, nir_shader *nir)
 {
    switch (nir->info.stage) {
    case MESA_SHADER_FRAGMENT: {
-      nir_foreach_shader_out_variable(variable, nir)
-      {
-         int idx = variable->data.location + variable->data.index;
-         variable->data.driver_location = idx * 4;
-      }
       break;
    }
    case MESA_SHADER_COMPUTE: {
@@ -627,7 +582,6 @@ setup_variables(isel_context *ctx, nir_shader *nir)
       break;
    }
    case MESA_SHADER_TESS_CTRL: {
-      setup_tcs_variables(ctx, nir);
       break;
    }
    case MESA_SHADER_TESS_EVAL: {
@@ -673,12 +627,6 @@ setup_nir(isel_context *ctx, nir_shader *nir)
    /* the variable setup has to be done before lower_io / CSE */
    setup_variables(ctx, nir);
 
-   /* optimize and lower memory operations */
-   if (nir_lower_explicit_io(nir, nir_var_mem_global, nir_address_format_64bit_global)) {
-      nir_opt_constant_folding(nir);
-      nir_opt_cse(nir);
-   }
-
    bool lower_to_scalar = false;
    bool lower_pack = false;
    nir_variable_mode robust_modes = (nir_variable_mode)0;
@@ -698,8 +646,6 @@ setup_nir(isel_context *ctx, nir_shader *nir)
       lower_to_scalar = true;
       lower_pack = true;
    }
-   if (nir->info.stage != MESA_SHADER_COMPUTE)
-      nir_lower_io(nir, nir_var_shader_in | nir_var_shader_out, type_size, (nir_lower_io_options)0);
 
    lower_to_scalar |= nir_opt_shrink_vectors(nir);
 
@@ -918,7 +864,7 @@ void init_context(isel_context *ctx, nir_shader *shader)
                   case nir_intrinsic_load_num_subgroups:
                   case nir_intrinsic_load_first_vertex:
                   case nir_intrinsic_load_base_instance:
-                  case nir_intrinsic_get_buffer_size:
+                  case nir_intrinsic_get_ssbo_size:
                   case nir_intrinsic_vote_all:
                   case nir_intrinsic_vote_any:
                   case nir_intrinsic_read_first_invocation:
@@ -1152,7 +1098,7 @@ void init_context(isel_context *ctx, nir_shader *shader)
    ctx->program->config->spi_ps_input_addr = spi_ps_inputs;
 
    for (unsigned i = 0; i < impl->ssa_alloc; i++)
-      allocated[i] = Temp(ctx->program->allocateId(), allocated[i].regClass());
+      allocated[i] = ctx->program->allocateTmp(allocated[i].regClass());
 
    ctx->allocated.reset(allocated.release());
    ctx->cf_info.nir_to_aco.reset(nir_to_aco.release());

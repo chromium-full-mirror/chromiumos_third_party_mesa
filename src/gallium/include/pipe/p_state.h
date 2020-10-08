@@ -213,10 +213,10 @@ struct pipe_viewport_state
 {
    float scale[3];
    float translate[3];
-   enum pipe_viewport_swizzle swizzle_x:3;
-   enum pipe_viewport_swizzle swizzle_y:3;
-   enum pipe_viewport_swizzle swizzle_z:3;
-   enum pipe_viewport_swizzle swizzle_w:3;
+   enum pipe_viewport_swizzle swizzle_x:8;
+   enum pipe_viewport_swizzle swizzle_y:8;
+   enum pipe_viewport_swizzle swizzle_z:8;
+   enum pipe_viewport_swizzle swizzle_w:8;
 };
 
 
@@ -586,7 +586,7 @@ struct pipe_transfer
 {
    struct pipe_resource *resource; /**< resource to transfer to/from  */
    unsigned level;                 /**< texture mipmap level */
-   enum pipe_transfer_usage usage;
+   enum pipe_map_flags usage;
    struct pipe_box box;            /**< region of the resource to access */
    unsigned stride;                /**< row stride in bytes */
    unsigned layer_stride;          /**< image/layer stride in bytes */

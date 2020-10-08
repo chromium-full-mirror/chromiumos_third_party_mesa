@@ -2,96 +2,10 @@ traces-db:
   download-url: "https://minio-packet.freedesktop.org/mesa-tracie-public/"
 
 traces:
-# This trace takes an egregious amount of time in replay (5 minutes)
-#  on freedreno for some reason.
-#  - path: glxgears/glxgears.trace
-#    expectations:
-#      - device: freedreno-a630
-#        checksum: 5599d6e8e43384c59196b9c9b0161268
-  - path: gputest/furmark.trace
+  - path: 0ad/0ad.trace
     expectations:
       - device: freedreno-a630
-        checksum: de674022e53fc9e0a9eb217f8bf0fe03
-# Note: Requires GL3.3
-  - path: gputest/gimark.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: 2cae8e2104356e2b3017cbd953cf7b4a
-  - path: gputest/pixmark-julia-fp32.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: 4a02628395948c34d95d035a9c9735cb
-# Note: Requires GL4 (fp64).
-#  - path: gputest/pixmark-julia-fp64.trace
-#    expectations:
-#      - device: freedreno-a630
-#        checksum: 0
-# Intermittent GPU hangs on a630 result in test failures for this.
-#  - path: gputest/pixmark-piano.trace
-#    expectations:
-#      # One of the material textures appears brighter on freedreno than
-#      # i965 in a way that is probably wrong.
-#      - device: freedreno-a630
-#        checksum: 1aad6e1ffe23cae71acdb70695a6184b
-  - path: gputest/pixmark-volplosion.trace
-    expectations:
-      # Looks fine, but totally different shape from the rendering on i965.
-      - device: freedreno-a630
-        checksum: 86d678c70b8adf27095ace1a6bbfe2d2
-  - path: gputest/plot3d.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: 67a9eb692e694b11107860bbcd47d493
-# Note: Requires GL4 for tess.
-  - path: gputest/tessmark.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: 985e231b58b7dc4b6da34ff32f8ebb82
-  - path: gputest/triangle.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: 1dc6abfb1cfbc5b16adc6f4abf76eec8
-  - path: humus/AmbientAperture.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: 894a9398f597258cb634bedfb8f2d31e
-  - path: humus/CelShading.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: b0ac8fb4b2b2268cfb87944730125886
-  - path: humus/DynamicBranching3.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: 238f06550db39c36e5b880d3b3d7440f
-  - path: humus/HDR.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: 40387a4e89ef71c472a94413b175ff59
-  - path: humus/Portals.trace
-    expectations:
-      # Bad rendering -- some sort of gap in the upper right of the image.
-      - device: freedreno-a630
-        checksum: 38bcb0a348010c7591efe41b3cc0a9e6
-  - path: humus/RaytracedShadows.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: fa2d20bf642cd413341d83c4ec5ef1d4
-  - path: humus/VolumetricFogging2.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: 6027f10cbffa8c68ffe7d8208f84d32d
-  - path: pathfinder/canvas_moire.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: 0e32ca8fc815a7250f38a07faeafb21b
-  - path: pathfinder/canvas_text.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: 74129b650bd3ca806ff2dd46813ba6e6
-  - path: pathfinder/demo.trace
-    expectations:
-      - device: freedreno-a630
-        checksum: f6661ed4de9e0a444c6338ebd0cd3768
+        checksum: 09eb7a4cfe73cb77043f2ac09db96d91
   - path: glmark2/buffer-columns=200:interleave=false:update-dispersion=0.9:update-fraction=0.5:update-method=map.rdc
     expectations:
       - device: freedreno-a630
@@ -149,7 +63,7 @@ traces:
   - path: glmark2/effect2d-kernel=1,1,1,1,1;1,1,1,1,1;1,1,1,1,1;.rdc
     expectations:
       - device: freedreno-a630
-        checksum: 2346a6597f4d1f20b493e8d6a8f7e592
+        checksum: 2964d37446db126a5fe462b1ba4542cd
   - path: glmark2/function-fragment-complexity=low:fragment-steps=5.rdc
     expectations:
       # Incorrect rendering, a bunch of the area is uniform gray when it should
@@ -215,7 +129,7 @@ traces:
   - path: glmark2/shading-shading=gouraud.rdc
     expectations:
       - device: freedreno-a630
-        checksum: fcc26fca31375b216382e69bc5f113fb
+        checksum: bd9058f041bd2d59c039cccdb7d50bf7
   - path: glmark2/shading-shading=phong.rdc
     # Some speckling on the main specular highlight that may just be
     # mediump artifacts
@@ -226,11 +140,6 @@ traces:
     expectations:
       - device: freedreno-a630
         checksum: d8b5931669733240797f1acf5d98db25
-    # Very yellow terrain compared to i965, may just be mediump artifacts.
-  - path: glmark2/terrain.rdc
-    expectations:
-      - device: freedreno-a630
-        checksum: 114f7dfe97768d9c565a29f656c8f9cf
   - path: glmark2/texture-texture-filter=linear.rdc
     expectations:
       - device: freedreno-a630
@@ -243,6 +152,107 @@ traces:
     expectations:
       - device: freedreno-a630
         checksum: 0b0114e48cf37efc43d8b27b926eaadf
+  - path: glxgears/glxgears.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: 5599d6e8e43384c59196b9c9b0161268
+  - path: gputest/furmark.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: af6e1faf11407a7e7c416f2c532de029
+# Note: Requires GL3.3
+  - path: gputest/gimark.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: 47419914b87422b267e20b6981a7eb43
+  - path: gputest/pixmark-julia-fp32.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: 4a02628395948c34d95d035a9c9735cb
+# Note: Requires GL4 (fp64).
+#  - path: gputest/pixmark-julia-fp64.trace
+#    expectations:
+#      - device: freedreno-a630
+#        checksum: 0
+# Intermittent GPU hangs on a630 result in test failures for this.
+#  - path: gputest/pixmark-piano.trace
+#    expectations:
+#      # One of the material textures appears brighter on freedreno than
+#      # i965 in a way that is probably wrong.
+#      - device: freedreno-a630
+#        checksum: 1aad6e1ffe23cae71acdb70695a6184b
+  - path: gputest/pixmark-volplosion.trace
+    expectations:
+      # Looks fine, but totally different shape from the rendering on i965.
+      - device: freedreno-a630
+        checksum: 9ee5a036510be0f506705eacc1516bf3
+  - path: gputest/plot3d.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: 42aba3ab943dae2fe952cae1ff91c354
+# Note: Requires GL4 for tess.
+  - path: gputest/tessmark.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: 8688b3904b6b2bc591d8b669ecae4d53
+  - path: gputest/triangle.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: 1dc6abfb1cfbc5b16adc6f4abf76eec8
+  - path: humus/AmbientAperture.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: 894a9398f597258cb634bedfb8f2d31e
+  - path: humus/CelShading.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: b0ac8fb4b2b2268cfb87944730125886
+  - path: humus/DynamicBranching3.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: 238f06550db39c36e5b880d3b3d7440f
+  - path: humus/HDR.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: 40387a4e89ef71c472a94413b175ff59
+  - path: humus/Portals.trace
+    expectations:
+      # Bad rendering -- some sort of gap in the upper right of the image.
+      - device: freedreno-a630
+        checksum: 38bcb0a348010c7591efe41b3cc0a9e6
+  - path: humus/RaytracedShadows.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: fa2d20bf642cd413341d83c4ec5ef1d4
+  - path: humus/VolumetricFogging2.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: 6027f10cbffa8c68ffe7d8208f84d32d
+# Fails trying to use a GLX symbol
+#  - path: itoral-gl-terrain-demo/demo.trace
+#    expectations:
+#      - device: freedreno-a630
+#        checksum: 0
+  - path: neverball/neverball.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: e67cdf15590f1729201eb82393f5513e
+  - path: pathfinder/canvas_moire.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: 0e32ca8fc815a7250f38a07faeafb21b
+  - path: pathfinder/canvas_text.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: 74129b650bd3ca806ff2dd46813ba6e6
+  - path: pathfinder/demo.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: f6661ed4de9e0a444c6338ebd0cd3768
+  - path: xonotic/xonotic-keybench-high.trace
+    expectations:
+      - device: freedreno-a630
+        checksum: 62fa3bb64f5c38142d155da85afb1312
 # Throws errors on freedreno
 #  - path: supertuxkart/supertuxkart-antediluvian-abyss.rdc
 #    expectations:

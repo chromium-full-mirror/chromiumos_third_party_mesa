@@ -1678,7 +1678,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 			ctx->so->no_earlyz = true;
 		ctx->funcs->emit_intrinsic_store_ssbo(ctx, intr);
 		break;
-	case nir_intrinsic_get_buffer_size:
+	case nir_intrinsic_get_ssbo_size:
 		emit_intrinsic_ssbo_size(ctx, intr, dst);
 		break;
 	case nir_intrinsic_ssbo_atomic_add_ir3:
@@ -3106,7 +3106,16 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 	unsigned n = nir_intrinsic_base(intr) + offset;
 	unsigned frac = nir_intrinsic_component(intr);
 	unsigned ncomp = nir_intrinsic_src_components(intr, 0);
-	unsigned slot = io.location + offset;
+
+	/* For per-view variables, each user-facing slot corresponds to multiple
+	 * views, each with a corresponding driver_location, and the offset is for
+	 * the driver_location. To properly figure out of the slot, we'd need to
+	 * plumb through the number of views. However, for now we only use
+	 * per-view with gl_Position, so we assume that the variable is not an
+	 * array or matrix (so there are no indirect accesses to the variable
+	 * itself) and the indirect offset corresponds to the view.
+	 */
+	unsigned slot = io.location + (io.per_view ? 0 : offset);
 
 	if (ctx->so->type == MESA_SHADER_FRAGMENT) {
 		switch (slot) {
@@ -3140,7 +3149,6 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 			so->writes_psize = true;
 			break;
 		case VARYING_SLOT_PRIMITIVE_ID:
-		case VARYING_SLOT_LAYER:
 		case VARYING_SLOT_GS_VERTEX_FLAGS_IR3:
 			debug_assert(ctx->so->type == MESA_SHADER_GEOMETRY);
 			/* fall through */
@@ -3152,6 +3160,8 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		case VARYING_SLOT_CLIP_DIST0:
 		case VARYING_SLOT_CLIP_DIST1:
 		case VARYING_SLOT_CLIP_VERTEX:
+		case VARYING_SLOT_LAYER:
+		case VARYING_SLOT_VIEWPORT:
 			break;
 		default:
 			if (slot >= VARYING_SLOT_VAR0)
@@ -3171,6 +3181,8 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 	compile_assert(ctx, so->outputs_count < ARRAY_SIZE(so->outputs));
 
 	so->outputs[n].slot = slot;
+	if (io.per_view)
+		so->outputs[n].view = offset;
 
 	for (int i = 0; i < ncomp; i++) {
 		unsigned idx = (n * 4) + i + frac;

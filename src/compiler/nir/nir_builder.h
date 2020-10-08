@@ -1373,6 +1373,31 @@ nir_copy_deref(nir_builder *build, nir_deref_instr *dest, nir_deref_instr *src)
                               (enum gl_access_qualifier) 0);
 }
 
+static inline void
+nir_memcpy_deref_with_access(nir_builder *build, nir_deref_instr *dest,
+                             nir_deref_instr *src, nir_ssa_def *size,
+                             enum gl_access_qualifier dest_access,
+                             enum gl_access_qualifier src_access)
+{
+   nir_intrinsic_instr *copy =
+      nir_intrinsic_instr_create(build->shader, nir_intrinsic_memcpy_deref);
+   copy->src[0] = nir_src_for_ssa(&dest->dest.ssa);
+   copy->src[1] = nir_src_for_ssa(&src->dest.ssa);
+   copy->src[2] = nir_src_for_ssa(size);
+   nir_intrinsic_set_dst_access(copy, dest_access);
+   nir_intrinsic_set_src_access(copy, src_access);
+   nir_builder_instr_insert(build, &copy->instr);
+}
+
+static inline void
+nir_memcpy_deref(nir_builder *build, nir_deref_instr *dest,
+                 nir_deref_instr *src, nir_ssa_def *size)
+{
+   nir_memcpy_deref_with_access(build, dest, src, size,
+                                (enum gl_access_qualifier)0,
+                                (enum gl_access_qualifier)0);
+}
+
 static inline nir_ssa_def *
 nir_load_var(nir_builder *build, nir_variable *var)
 {
@@ -1449,6 +1474,30 @@ nir_load_reloc_const_intel(nir_builder *b, uint32_t id)
    nir_ssa_dest_init(&load->instr, &load->dest, 1, 32, NULL);
    nir_builder_instr_insert(b, &load->instr);
    return &load->dest.ssa;
+}
+
+static inline nir_ssa_def *
+nir_convert_alu_types(nir_builder *b, nir_ssa_def *src,
+                      nir_alu_type src_type, nir_alu_type dest_type,
+                      nir_rounding_mode round, bool saturate)
+{
+   assert(nir_alu_type_get_type_size(dest_type) != 0);
+   assert(nir_alu_type_get_type_size(src_type) == 0 ||
+          nir_alu_type_get_type_size(src_type) == src->bit_size);
+   src_type = (nir_alu_type)(src_type | src->bit_size);
+
+   nir_intrinsic_instr *conv =
+      nir_intrinsic_instr_create(b->shader, nir_intrinsic_convert_alu_types);
+   conv->src[0] = nir_src_for_ssa(src);
+   conv->num_components = src->num_components;
+   nir_intrinsic_set_src_type(conv, src_type);
+   nir_intrinsic_set_dest_type(conv, dest_type);
+   nir_intrinsic_set_rounding_mode(conv, round);
+   nir_intrinsic_set_saturate(conv, saturate);
+   nir_ssa_dest_init(&conv->instr, &conv->dest, src->num_components,
+                     nir_alu_type_get_type_size(dest_type), NULL);
+   nir_builder_instr_insert(b, &conv->instr);
+   return &conv->dest.ssa;
 }
 
 #include "nir_builder_opcodes.h"

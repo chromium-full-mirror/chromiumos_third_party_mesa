@@ -45,22 +45,23 @@
 #include "vk_util.h"
 #include "common/gen_aux_map.h"
 #include "common/gen_defines.h"
+#include "common/gen_uuid.h"
 #include "compiler/glsl_types.h"
 
 #include "genxml/gen7_pack.h"
 
-static const char anv_dri_options_xml[] =
-DRI_CONF_BEGIN
+static const driOptionDescription anv_dri_options[] = {
    DRI_CONF_SECTION_PERFORMANCE
       DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
-      DRI_CONF_VK_X11_STRICT_IMAGE_COUNT("false")
+      DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
+      DRI_CONF_DISABLE_D16UNORM_COMPRESSION(false)
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_DEBUG
-      DRI_CONF_ALWAYS_FLUSH_CACHE("false")
-      DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST("false")
+      DRI_CONF_ALWAYS_FLUSH_CACHE(false)
+      DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST(false)
    DRI_CONF_SECTION_END
-DRI_CONF_END;
+};
 
 /* This is probably far to big but it reflects the max size used for messages
  * in OpenGLs KHR_debug.
@@ -97,8 +98,8 @@ compiler_perf_log(void *data, const char *fmt, ...)
    va_list args;
    va_start(args, fmt);
 
-   if (unlikely(INTEL_DEBUG & DEBUG_PERF))
-      intel_logd_v(fmt, args);
+   if (INTEL_DEBUG & DEBUG_PERF)
+      mesa_logd_v(fmt, args);
 
    va_end(args);
 }
@@ -161,7 +162,7 @@ anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
        * address support can still fail.  Just clamp the address space size to
        * 2 GiB if we don't have 48-bit support.
        */
-      intel_logw("%s:%d: The kernel reported a GTT size larger than 2 GiB but "
+      mesa_logw("%s:%d: The kernel reported a GTT size larger than 2 GiB but "
                         "not support for 48-bit addresses",
                         __FILE__, __LINE__);
       heap_size = 2ull << 30;
@@ -253,26 +254,8 @@ anv_physical_device_init_uuids(struct anv_physical_device *device)
    _mesa_sha1_final(&sha1_ctx, sha1);
    memcpy(device->pipeline_cache_uuid, sha1, VK_UUID_SIZE);
 
-   /* The driver UUID is used for determining sharability of images and memory
-    * between two Vulkan instances in separate processes.  People who want to
-    * share memory need to also check the device UUID (below) so all this
-    * needs to be is the build-id.
-    */
-   memcpy(device->driver_uuid, build_id_data(note), VK_UUID_SIZE);
-
-   /* The device UUID uniquely identifies the given device within the machine.
-    * Since we never have more than one device, this doesn't need to be a real
-    * UUID.  However, on the off-chance that someone tries to use this to
-    * cache pre-tiled images or something of the like, we use the PCI ID and
-    * some bits of ISL info to ensure that this is safe.
-    */
-   _mesa_sha1_init(&sha1_ctx);
-   _mesa_sha1_update(&sha1_ctx, &device->info.chipset_id,
-                     sizeof(device->info.chipset_id));
-   _mesa_sha1_update(&sha1_ctx, &device->isl_dev.has_bit6_swizzling,
-                     sizeof(device->isl_dev.has_bit6_swizzling));
-   _mesa_sha1_final(&sha1_ctx, sha1);
-   memcpy(device->device_uuid, sha1, VK_UUID_SIZE);
+   gen_uuid_compute_driver_id(device->driver_uuid, &device->info, VK_UUID_SIZE);
+   gen_uuid_compute_device_id(device->device_uuid, &device->isl_dev, VK_UUID_SIZE);
 
    return VK_SUCCESS;
 }
@@ -322,8 +305,14 @@ anv_physical_device_try_create(struct anv_instance *instance,
    brw_process_intel_debug_variable();
 
    fd = open(path, O_RDWR | O_CLOEXEC);
-   if (fd < 0)
-      return vk_error(VK_ERROR_INCOMPATIBLE_DRIVER);
+   if (fd < 0) {
+      if (errno == ENOMEM) {
+         return vk_errorfi(instance, NULL, VK_ERROR_OUT_OF_HOST_MEMORY,
+                        "Unable to open device %s: out of memory", path);
+      }
+      return vk_errorfi(instance, NULL, VK_ERROR_INCOMPATIBLE_DRIVER,
+                        "Unable to open device %s: %m", path);
+   }
 
    struct gen_device_info devinfo;
    if (!gen_get_device_info_from_fd(fd, &devinfo)) {
@@ -334,15 +323,15 @@ anv_physical_device_try_create(struct anv_instance *instance,
    const char *device_name = gen_get_device_name(devinfo.chipset_id);
 
    if (devinfo.is_haswell) {
-      intel_logw("Haswell Vulkan support is incomplete");
+      mesa_logw("Haswell Vulkan support is incomplete");
    } else if (devinfo.gen == 7 && !devinfo.is_baytrail) {
-      intel_logw("Ivy Bridge Vulkan support is incomplete");
+      mesa_logw("Ivy Bridge Vulkan support is incomplete");
    } else if (devinfo.gen == 7 && devinfo.is_baytrail) {
-      intel_logw("Bay Trail Vulkan support is incomplete");
+      mesa_logw("Bay Trail Vulkan support is incomplete");
    } else if (devinfo.gen >= 8 && devinfo.gen <= 11) {
       /* Gen8-11 fully supported */
    } else if (devinfo.gen == 12) {
-      intel_logw("Vulkan is not yet fully supported on gen12");
+      mesa_logw("Vulkan is not yet fully supported on gen12");
    } else {
       result = vk_errorfi(instance, NULL, VK_ERROR_INCOMPATIBLE_DRIVER,
                           "Vulkan not yet supported on %s", device_name);
@@ -491,7 +480,7 @@ anv_physical_device_try_create(struct anv_instance *instance,
        * many platforms, but otherwise, things will just work.
        */
       if (device->subslice_total < 1 || device->eu_total < 1) {
-         intel_logw("Kernel 4.1 required to properly query GPU properties");
+         mesa_logw("Kernel 4.1 required to properly query GPU properties");
       }
    } else if (device->info.gen == 7) {
       device->subslice_total = 1 << (device->info.gt - 1);
@@ -520,6 +509,7 @@ anv_physical_device_try_create(struct anv_instance *instance,
       device->info.gen < 8 || !device->has_context_isolation;
    device->compiler->supports_shader_constants = true;
    device->compiler->compact_params = false;
+   device->compiler->indirect_ubos_use_sampler = device->info.gen <= 7;
 
    /* Broadwell PRM says:
     *
@@ -645,6 +635,19 @@ VkResult anv_EnumerateInstanceExtensionProperties(
    return vk_outarray_status(&out);
 }
 
+static void
+anv_init_dri_options(struct anv_instance *instance)
+{
+   driParseOptionInfo(&instance->available_dri_options, anv_dri_options,
+                      ARRAY_SIZE(anv_dri_options));
+   driParseConfigFiles(&instance->dri_options,
+                       &instance->available_dri_options, 0, "anv", NULL,
+                       instance->app_info.app_name,
+                       instance->app_info.app_version,
+                       instance->app_info.engine_name,
+                       instance->app_info.engine_version);
+}
+
 VkResult anv_CreateInstance(
     const VkInstanceCreateInfo*                 pCreateInfo,
     const VkAllocationCallbacks*                pAllocator,
@@ -762,13 +765,9 @@ VkResult anv_CreateInstance(
 
    VG(VALGRIND_CREATE_MEMPOOL(instance, 0, false));
 
-   driParseOptionInfo(&instance->available_dri_options, anv_dri_options_xml);
-   driParseConfigFiles(&instance->dri_options, &instance->available_dri_options,
-                       0, "anv", NULL,
-                       instance->app_info.app_name,
-                       instance->app_info.app_version,
-                       instance->app_info.engine_name,
-                       instance->app_info.engine_version);
+   anv_init_dri_options(instance);
+   instance->disable_d16unorm_compression =
+      driQueryOptionb(&instance->dri_options, "disable_d16unorm_compression");
 
    *pInstance = anv_instance_to_handle(instance);
 
@@ -2120,7 +2119,9 @@ void anv_GetPhysicalDeviceProperties2(
          props->transformFeedbackQueries = true;
          props->transformFeedbackStreamsLinesTriangles = false;
          props->transformFeedbackRasterizationStreamSelect = false;
-         props->transformFeedbackDraw = true;
+         /* This requires MI_MATH */
+         props->transformFeedbackDraw = pdevice->info.is_haswell ||
+                                        pdevice->info.gen >= 8;
          break;
       }
 

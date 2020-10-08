@@ -1561,6 +1561,7 @@ class Program final {
 public:
    float_mode next_fp_mode;
    std::vector<Block> blocks;
+   std::vector<RegClass> temp_rc = {s1};
    RegisterDemand max_reg_demand = RegisterDemand();
    uint16_t num_waves = 0;
    uint16_t max_waves = 0; /* maximum number of waves, regardless of register usage */
@@ -1607,10 +1608,16 @@ public:
       void *private_data;
    } debug;
 
-   uint32_t allocateId()
+   uint32_t allocateId(RegClass rc)
    {
       assert(allocationID <= 16777215);
+      temp_rc.push_back(rc);
       return allocationID++;
+   }
+
+   Temp allocateTmp(RegClass rc)
+   {
+      return Temp(allocateId(rc), rc);
    }
 
    uint32_t peekAllocationId()
@@ -1640,16 +1647,9 @@ private:
    uint32_t allocationID = 1;
 };
 
-struct TempHash {
-   std::size_t operator()(Temp t) const {
-      return t.id();
-   }
-};
-using TempSet = std::unordered_set<Temp, TempHash>;
-
 struct live {
    /* live temps out per block */
-   std::vector<TempSet> live_out;
+   std::vector<IDSet> live_out;
    /* register demand (sgpr/vgpr) per instruction per block */
    std::vector<std::vector<RegisterDemand>> register_demand;
 };
@@ -1685,7 +1685,7 @@ void value_numbering(Program* program);
 void optimize(Program* program);
 void setup_reduce_temp(Program* program);
 void lower_to_cssa(Program* program, live& live_vars, const struct radv_nir_compiler_options *options);
-void register_allocation(Program *program, std::vector<TempSet>& live_out_per_block);
+void register_allocation(Program *program, std::vector<IDSet>& live_out_per_block);
 void ssa_elimination(Program* program);
 void lower_to_hw_instr(Program* program);
 void schedule_program(Program* program, live& live_vars);

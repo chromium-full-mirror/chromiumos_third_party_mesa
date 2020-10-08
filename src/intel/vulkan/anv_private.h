@@ -92,7 +92,8 @@ struct gen_perf_query_result;
 #include "isl/isl.h"
 
 #include "dev/gen_debug.h"
-#include "common/intel_log.h"
+#define MESA_LOG_TAG "MESA-INTEL"
+#include "util/log.h"
 #include "wsi_common.h"
 
 #define NSEC_PER_SEC 1000000000ull
@@ -507,7 +508,7 @@ VkResult __vk_errorf(struct anv_instance *instance, const void *object,
  *    defined by extensions supported by that component.
  */
 #define anv_debug_ignored_stype(sType) \
-   intel_logd("%s: ignored VkStructureType %u\n", __func__, (sType))
+   mesa_logd("%s: ignored VkStructureType %u\n", __func__, (sType))
 
 void __anv_perf_warn(struct anv_device *device, const void *object,
                      VkDebugReportObjectTypeEXT type, const char *file,
@@ -523,7 +524,7 @@ void anv_loge_v(const char *format, va_list va);
    do { \
       static bool reported = false; \
       if (!reported) { \
-         intel_logw("%s:%d: FINISHME: " format, __FILE__, __LINE__, \
+         mesa_logw("%s:%d: FINISHME: " format, __FILE__, __LINE__, \
                     ##__VA_ARGS__); \
          reported = true; \
       } \
@@ -535,7 +536,7 @@ void anv_loge_v(const char *format, va_list va);
 #define anv_perf_warn(instance, obj, format, ...) \
    do { \
       static bool reported = false; \
-      if (!reported && unlikely(INTEL_DEBUG & DEBUG_PERF)) { \
+      if (!reported && (INTEL_DEBUG & DEBUG_PERF)) { \
          __anv_perf_warn(instance, obj, REPORT_OBJECT_TYPE(obj), __FILE__, __LINE__,\
                          format, ##__VA_ARGS__); \
          reported = true; \
@@ -546,7 +547,7 @@ void anv_loge_v(const char *format, va_list va);
 #ifdef DEBUG
 #define anv_assert(x) ({ \
    if (unlikely(!(x))) \
-      intel_loge("%s:%d ASSERT: %s", __FILE__, __LINE__, #x); \
+      mesa_loge("%s:%d ASSERT: %s", __FILE__, __LINE__, #x); \
 })
 #else
 #define anv_assert(x)
@@ -1170,6 +1171,7 @@ struct anv_instance {
 
     struct driOptionCache                       dri_options;
     struct driOptionCache                       available_dri_options;
+    bool                                        disable_d16unorm_compression;
 };
 
 VkResult anv_init_wsi(struct anv_physical_device *physical_device);
@@ -2504,7 +2506,8 @@ enum anv_pipe_bits {
    ANV_PIPE_AUX_TABLE_INVALIDATE_BIT)
 
 static inline enum anv_pipe_bits
-anv_pipe_flush_bits_for_access_flags(VkAccessFlags flags)
+anv_pipe_flush_bits_for_access_flags(struct anv_device *device,
+                                     VkAccessFlags flags)
 {
    enum anv_pipe_bits pipe_bits = 0;
 
@@ -2564,7 +2567,8 @@ anv_pipe_flush_bits_for_access_flags(VkAccessFlags flags)
 }
 
 static inline enum anv_pipe_bits
-anv_pipe_invalidate_bits_for_access_flags(VkAccessFlags flags)
+anv_pipe_invalidate_bits_for_access_flags(struct anv_device *device,
+                                          VkAccessFlags flags)
 {
    enum anv_pipe_bits pipe_bits = 0;
 
@@ -2603,7 +2607,10 @@ anv_pipe_invalidate_bits_for_access_flags(VkAccessFlags flags)
           * port) to avoid stale data.
           */
          pipe_bits |= ANV_PIPE_CONSTANT_CACHE_INVALIDATE_BIT;
-         pipe_bits |= ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT;
+         if (device->physical->compiler->indirect_ubos_use_sampler)
+            pipe_bits |= ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT;
+         else
+            pipe_bits |= ANV_PIPE_DATA_CACHE_FLUSH_BIT;
          break;
       case VK_ACCESS_SHADER_READ_BIT:
       case VK_ACCESS_INPUT_ATTACHMENT_READ_BIT:
@@ -3470,6 +3477,7 @@ struct anv_graphics_pipeline {
       uint32_t                                  sf[7];
       uint32_t                                  depth_stencil_state[3];
       uint32_t                                  clip[4];
+      uint32_t                                  xfb_bo_pitch[4];
    } gen7;
 
    struct {
@@ -4205,7 +4213,8 @@ VkResult anv_image_create(VkDevice _device,
                           VkImage *pImage);
 
 enum isl_format
-anv_isl_format_for_descriptor_type(VkDescriptorType type);
+anv_isl_format_for_descriptor_type(const struct anv_device *device,
+                                   VkDescriptorType type);
 
 static inline VkExtent3D
 anv_sanitize_image_extent(const VkImageType imageType,

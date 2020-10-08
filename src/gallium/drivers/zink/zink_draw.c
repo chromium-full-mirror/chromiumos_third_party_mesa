@@ -210,6 +210,7 @@ zink_draw_vbo(struct pipe_context *pctx,
    struct zink_context *ctx = zink_context(pctx);
    struct zink_screen *screen = zink_screen(pctx->screen);
    struct zink_rasterizer_state *rast_state = ctx->rast_state;
+   struct zink_depth_stencil_alpha_state *dsa_state = ctx->dsa_state;
    struct zink_so_target *so_target = zink_so_target(dinfo->count_from_stream_output);
    VkBuffer counter_buffers[PIPE_MAX_SO_OUTPUTS];
    VkDeviceSize counter_buffer_offsets[PIPE_MAX_SO_OUTPUTS] = {};
@@ -267,7 +268,7 @@ zink_draw_vbo(struct pipe_context *pctx,
    if (dinfo->index_size > 0) {
        uint32_t restart_index = util_prim_restart_index_from_size(dinfo->index_size);
        if ((dinfo->primitive_restart && (dinfo->restart_index != restart_index)) ||
-           (!screen->have_EXT_index_type_uint8 && dinfo->index_size == 8)) {
+           (!screen->info.have_EXT_index_type_uint8 && dinfo->index_size == 8)) {
           util_translate_prim_restart_ib(pctx, dinfo, &index_buffer);
           need_index_buffer_unref = true;
        } else {
@@ -305,7 +306,7 @@ zink_draw_vbo(struct pipe_context *pctx,
          int index = shader->bindings[j].index;
          if (shader->bindings[j].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
             assert(ctx->ubos[i][index].buffer_size > 0);
-            assert(ctx->ubos[i][index].buffer_size <= screen->props.limits.maxUniformBufferRange);
+            assert(ctx->ubos[i][index].buffer_size <= screen->info.props.limits.maxUniformBufferRange);
             assert(ctx->ubos[i][index].buffer);
             struct zink_resource *res = zink_resource(ctx->ubos[i][index].buffer);
             buffer_infos[num_buffer_info].buffer = res->buffer;
@@ -393,25 +394,37 @@ zink_draw_vbo(struct pipe_context *pctx,
       }
    }
 
-   vkCmdSetViewport(batch->cmdbuf, 0, ctx->num_viewports, ctx->viewports);
+   vkCmdSetViewport(batch->cmdbuf, 0, ctx->gfx_pipeline_state.num_viewports, ctx->viewports);
    if (ctx->rast_state->base.scissor)
-      vkCmdSetScissor(batch->cmdbuf, 0, ctx->num_viewports, ctx->scissors);
+      vkCmdSetScissor(batch->cmdbuf, 0, ctx->gfx_pipeline_state.num_viewports, ctx->scissors);
    else if (ctx->fb_state.width && ctx->fb_state.height) {
-      VkRect2D fb_scissor = {};
-      fb_scissor.extent.width = ctx->fb_state.width;
-      fb_scissor.extent.height = ctx->fb_state.height;
-      vkCmdSetScissor(batch->cmdbuf, 0, 1, &fb_scissor);
+      VkRect2D fb_scissor[ctx->gfx_pipeline_state.num_viewports];
+      for (unsigned i = 0; i < ctx->gfx_pipeline_state.num_viewports; i++) {
+         fb_scissor[i].offset.x = fb_scissor[i].offset.y = 0;
+         fb_scissor[i].extent.width = ctx->fb_state.width;
+         fb_scissor[i].extent.height = ctx->fb_state.height;
+      }
+      vkCmdSetScissor(batch->cmdbuf, 0, ctx->gfx_pipeline_state.num_viewports, fb_scissor);
    }
 
    if (line_width_needed(reduced_prim, rast_state->hw_state.polygon_mode)) {
-      if (screen->feats.wideLines || ctx->line_width == 1.0f)
+      if (screen->info.feats.features.wideLines || ctx->line_width == 1.0f)
          vkCmdSetLineWidth(batch->cmdbuf, ctx->line_width);
       else
          debug_printf("BUG: wide lines not supported, needs fallback!");
    }
 
-   vkCmdSetStencilReference(batch->cmdbuf, VK_STENCIL_FACE_FRONT_BIT, ctx->stencil_ref.ref_value[0]);
-   vkCmdSetStencilReference(batch->cmdbuf, VK_STENCIL_FACE_BACK_BIT, ctx->stencil_ref.ref_value[1]);
+   if (dsa_state->base.stencil[0].enabled) {
+      if (dsa_state->base.stencil[1].enabled) {
+         vkCmdSetStencilReference(batch->cmdbuf, VK_STENCIL_FACE_FRONT_BIT,
+                                  ctx->stencil_ref.ref_value[0]);
+         vkCmdSetStencilReference(batch->cmdbuf, VK_STENCIL_FACE_BACK_BIT,
+                                  ctx->stencil_ref.ref_value[1]);
+      } else
+         vkCmdSetStencilReference(batch->cmdbuf,
+                                  VK_STENCIL_FACE_FRONT_AND_BACK,
+                                  ctx->stencil_ref.ref_value[0]);
+   }
 
    if (depth_bias)
       vkCmdSetDepthBias(batch->cmdbuf, rast_state->offset_units, rast_state->offset_clamp, rast_state->offset_scale);
@@ -454,7 +467,7 @@ zink_draw_vbo(struct pipe_context *pctx,
          index_size = MAX2(index_size, 2);
       switch (index_size) {
       case 1:
-         assert(screen->have_EXT_index_type_uint8);
+         assert(screen->info.have_EXT_index_type_uint8);
          index_type = VK_INDEX_TYPE_UINT8_EXT;
          break;
       case 2:
@@ -473,11 +486,11 @@ zink_draw_vbo(struct pipe_context *pctx,
          dinfo->count, dinfo->instance_count,
          need_index_buffer_unref ? 0 : dinfo->start, dinfo->index_bias, dinfo->start_instance);
    } else {
-      if (so_target && screen->tf_props.transformFeedbackDraw) {
+      if (so_target && screen->info.tf_props.transformFeedbackDraw) {
          zink_batch_reference_resoure(batch, zink_resource(so_target->counter_buffer));
          screen->vk_CmdDrawIndirectByteCountEXT(batch->cmdbuf, dinfo->instance_count, dinfo->start_instance,
                                        zink_resource(so_target->counter_buffer)->buffer, so_target->counter_buffer_offset, 0,
-                                       MIN2(so_target->stride, screen->tf_props.maxTransformFeedbackBufferDataStride));
+                                       MIN2(so_target->stride, screen->info.tf_props.maxTransformFeedbackBufferDataStride));
       }
       else
          vkCmdDraw(batch->cmdbuf, dinfo->count, dinfo->instance_count, dinfo->start, dinfo->start_instance);

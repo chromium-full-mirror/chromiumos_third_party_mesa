@@ -27,6 +27,18 @@
 #include "bi_print.h"
 #include "bi_print_common.h"
 
+static const char *
+bi_segment_name(enum bi_segment seg)
+{
+        switch (seg) {
+        case BI_SEGMENT_NONE: return "global";
+        case BI_SEGMENT_WLS:  return "wls";
+        case BI_SEGMENT_UBO:  return "ubo";
+        case BI_SEGMENT_TLS:  return "tls";
+        default: return "invalid";
+        }
+}
+
 const char *
 bi_class_name(enum bi_class cl)
 {
@@ -111,10 +123,13 @@ bi_print_src(FILE *fp, bi_instruction *ins, unsigned s)
         if (abs)
                 fprintf(fp, "abs(");
 
-        if (ins->type == BI_BITWISE && ins->bitwise.src_invert[s])
-                fprintf(fp, "~");
-
         bi_print_index(fp, ins, src, s);
+
+        if (ins->type == BI_BITWISE && s == 1 && ins->bitwise.src1_invert) {
+                /* For XOR, just use the destination invert */
+                assert(ins->op.bitwise != BI_BITWISE_XOR);
+                fprintf(fp, ".not");
+        }
 
         if (abs)
                 fprintf(fp, ")");
@@ -231,8 +246,9 @@ bi_cond_name(enum bi_cond cond)
 static void
 bi_print_texture(struct bi_texture *tex, FILE *fp)
 {
-        fprintf(fp, " - texture %u, sampler %u",
-                        tex->texture_index, tex->sampler_index);
+        fprintf(fp, " - texture %u, sampler %u%s",
+                        tex->texture_index, tex->sampler_index,
+                        tex->compute_lod ? ", compute lod" : "");
 }
 
 void
@@ -275,14 +291,23 @@ bi_print_instruction(bi_instruction *ins, FILE *fp)
         if (ins->vector_channels)
                 fprintf(fp, ".v%u", ins->vector_channels);
 
+        if (ins->segment)
+                fprintf(fp, ".%s", bi_segment_name(ins->segment));
+
         if (ins->dest)
                 pan_print_alu_type(ins->dest_type, fp);
+
+        if (ins->format && ins->dest != ins->format)
+                pan_print_alu_type(ins->format, fp);
 
         if (bi_has_outmod(ins))
                 fprintf(fp, "%s", bi_output_mod_name(ins->outmod));
 
         if (bi_class_props[ins->type] & BI_ROUNDMODE)
                 fprintf(fp, "%s", bi_round_mode_name(ins->roundmode));
+
+        if (ins->type == BI_BITWISE && ins->bitwise.dest_invert)
+                fprintf(fp, ".not");
 
         fprintf(fp, " ");
         ASSERTED bool succ = bi_print_dest_index(fp, ins, ins->dest);
@@ -318,24 +343,40 @@ bi_print_instruction(bi_instruction *ins, FILE *fp)
         fprintf(fp, "\n");
 }
 
+static const char *
+bi_reg_op_name(enum bifrost_reg_op op)
+{
+        switch (op) {
+        case BIFROST_OP_IDLE: return "idle";
+        case BIFROST_OP_READ: return "read";
+        case BIFROST_OP_WRITE: return "write";
+        case BIFROST_OP_WRITE_LO: return "write lo";
+        case BIFROST_OP_WRITE_HI: return "write hi";
+        default: return "invalid";
+        }
+}
+
 void
-bi_print_ports(bi_registers *regs, FILE *fp)
+bi_print_slots(bi_registers *regs, FILE *fp)
 {
         for (unsigned i = 0; i < 2; ++i) {
                 if (regs->enabled[i])
-                        fprintf(fp, "port %u: %u\n", i, regs->port[i]);
+                        fprintf(fp, "slot %u: %u\n", i, regs->slot[i]);
         }
 
-        if (regs->write_fma || regs->write_add) {
-                fprintf(fp, "port 2 (%s): %u\n",
-                                regs->write_add ? "ADD" : "FMA",
-                                regs->port[2]);
+        if (regs->slot23.slot2) {
+                fprintf(fp, "slot 2 (%s%s): %u\n",
+                                bi_reg_op_name(regs->slot23.slot2),
+                                regs->slot23.slot2 >= BIFROST_OP_WRITE ?
+                                        " FMA": "",
+                                regs->slot[2]);
         }
 
-        if ((regs->write_fma && regs->write_add) || regs->read_port3) {
-                fprintf(fp, "port 3 (%s): %u\n",
-                                regs->read_port3 ? "read" : "FMA",
-                                regs->port[3]);
+        if (regs->slot23.slot3) {
+                fprintf(fp, "slot 3 (%s %s): %u\n",
+                                bi_reg_op_name(regs->slot23.slot3),
+                                regs->slot23.slot3_fma ? "FMA" : "ADD",
+                                regs->slot[3]);
         }
 }
 

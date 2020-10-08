@@ -103,8 +103,10 @@ static void *
 panfrost_create_blend_state(struct pipe_context *pipe,
                             const struct pipe_blend_state *blend)
 {
+        struct panfrost_device *dev = pan_device(pipe->screen);
         struct panfrost_context *ctx = pan_context(pipe);
         struct panfrost_blend_state *so = rzalloc(ctx, struct panfrost_blend_state);
+        unsigned version = dev->gpu_id >> 12;
         so->base = *blend;
 
         /* TODO: The following features are not yet implemented */
@@ -129,8 +131,21 @@ panfrost_create_blend_state(struct pipe_context *pipe,
                                         &rt->equation,
                                         &rt->constant_mask);
 
-                if (rt->has_fixed_function)
-                        rt->opaque = (rt->equation.opaque[0] == 0xf0122122);
+                /* v6 doesn't support blend constants in FF blend equations. */
+                if (rt->has_fixed_function && version == 6 && rt->constant_mask)
+                        rt->has_fixed_function = false;
+
+                if (rt->has_fixed_function) {
+                        rt->opaque = pipe.rgb_src_factor == PIPE_BLENDFACTOR_ONE &&
+                                     pipe.rgb_dst_factor == PIPE_BLENDFACTOR_ZERO &&
+                                     (pipe.rgb_func == PIPE_BLEND_ADD ||
+                                      pipe.rgb_func == PIPE_BLEND_SUBTRACT) &&
+                                     pipe.alpha_src_factor == PIPE_BLENDFACTOR_ONE &&
+                                     pipe.alpha_dst_factor == PIPE_BLENDFACTOR_ZERO &&
+                                     (pipe.alpha_func == PIPE_BLEND_ADD ||
+                                      pipe.alpha_func == PIPE_BLEND_SUBTRACT) &&
+                                     pipe.colormask == 0xf;
+                }
 
                 rt->load_dest = util_blend_uses_dest(pipe)
                         || pipe.colormask != 0xF;
@@ -212,7 +227,7 @@ panfrost_blend_constant(float *out, float *in, unsigned mask)
 /* Create a final blend given the context */
 
 struct panfrost_blend_final
-panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rti)
+panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rti, struct panfrost_bo **bo, unsigned *shader_offset)
 {
         struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
         struct pipe_framebuffer_state *fb = &ctx->pipe_framebuffer;
@@ -247,19 +262,25 @@ panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rti)
         /* Otherwise, we need to grab a shader */
         struct panfrost_blend_shader *shader = panfrost_get_blend_shader(ctx, blend, fmt, rti);
 
-        struct panfrost_bo *bo = panfrost_batch_create_bo(batch, shader->size,
+        /* Upload the shader, sharing a BO */
+        if (!(*bo)) {
+                *bo = panfrost_batch_create_bo(batch, 4096,
                    PAN_BO_EXECUTE,
                    PAN_BO_ACCESS_PRIVATE |
                    PAN_BO_ACCESS_READ |
                    PAN_BO_ACCESS_FRAGMENT);
+        }
 
-        memcpy(bo->cpu, shader->buffer, shader->size);
+        /* Size check */
+        assert((*shader_offset + shader->size) < 4096);
+
+        memcpy((*bo)->cpu + *shader_offset, shader->buffer, shader->size);
 
         if (shader->patch_index) {
                 /* We have to specialize the blend shader to use constants, so
                  * patch in the current constants */
 
-                float *patch = (float *) (bo->cpu + shader->patch_index);
+                float *patch = (float *) ((*bo)->cpu + *shader_offset + shader->patch_index);
                 memcpy(patch, ctx->blend_color.color, sizeof(float) * 4);
         }
 
@@ -268,10 +289,12 @@ panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rti)
                 .shader = {
                         .work_count = shader->work_count,
                         .first_tag = shader->first_tag,
-                        .gpu = bo->gpu,
+                        .gpu = (*bo)->gpu + *shader_offset,
                 },
                 .load_dest = rt->load_dest,
         };
+
+        *shader_offset += shader->size;
 
         return final;
 }

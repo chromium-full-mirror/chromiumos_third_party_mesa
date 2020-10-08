@@ -2112,6 +2112,19 @@ LLVMValueRef ac_build_image_opcode(struct ac_llvm_context *ctx, struct ac_image_
    bool load = a->opcode == ac_image_sample || a->opcode == ac_image_gather4 ||
                a->opcode == ac_image_load || a->opcode == ac_image_load_mip;
    LLVMTypeRef coord_type = sample ? ctx->f32 : ctx->i32;
+   uint8_t dmask = a->dmask;
+   LLVMTypeRef data_type;
+   char data_type_str[8];
+
+   if (atomic) {
+      data_type = ctx->i32;
+   } else if (a->opcode == ac_image_store || a->opcode == ac_image_store_mip) {
+      /* Image stores might have been shrinked using the format. */
+      data_type = LLVMTypeOf(a->data[0]);
+      dmask = (1 << ac_get_llvm_num_components(a->data[0])) - 1;
+   } else {
+      data_type = a->d16 ? ctx->v4f16 : ctx->v4f32;
+   }
 
    if (atomic || a->opcode == ac_image_store || a->opcode == ac_image_store_mip) {
       args[num_args++] = a->data[0];
@@ -2120,7 +2133,7 @@ LLVMValueRef ac_build_image_opcode(struct ac_llvm_context *ctx, struct ac_image_
    }
 
    if (!atomic)
-      args[num_args++] = LLVMConstInt(ctx->i32, a->dmask, false);
+      args[num_args++] = LLVMConstInt(ctx->i32, dmask, false);
 
    if (a->offset)
       args[num_args++] = ac_to_integer(ctx, a->offset);
@@ -2225,6 +2238,8 @@ LLVMValueRef ac_build_image_opcode(struct ac_llvm_context *ctx, struct ac_image_
       unreachable("invalid dim");
    }
 
+   ac_build_type_name_for_intr(data_type, data_type_str, sizeof(data_type_str));
+
    bool lod_suffix = a->lod && (a->opcode == ac_image_sample || a->opcode == ac_image_gather4);
    char intr_name[96];
    snprintf(intr_name, sizeof(intr_name),
@@ -2234,7 +2249,7 @@ LLVMValueRef ac_build_image_opcode(struct ac_llvm_context *ctx, struct ac_image_
             name, atomic_subop, a->compare ? ".c" : "",
             a->bias ? ".b" : lod_suffix ? ".l" : a->derivs[0] ? ".d" : a->level_zero ? ".lz" : "",
             a->min_lod ? ".cl" : "", a->offset ? ".o" : "", dimname,
-            atomic ? "i32" : (a->d16 ? "v4f16" : "v4f32"), overload[0], overload[1], overload[2]);
+            data_type_str, overload[0], overload[1], overload[2]);
 
    LLVMTypeRef retty;
    if (atomic)
@@ -2283,6 +2298,28 @@ LLVMValueRef ac_build_cvt_pknorm_u16(struct ac_llvm_context *ctx, LLVMValueRef a
    LLVMValueRef res = ac_build_intrinsic(ctx, "llvm.amdgcn.cvt.pknorm.u16", ctx->v2i16, args, 2,
                                          AC_FUNC_ATTR_READNONE);
    return LLVMBuildBitCast(ctx->builder, res, ctx->i32, "");
+}
+
+LLVMValueRef ac_build_cvt_pknorm_i16_f16(struct ac_llvm_context *ctx,
+                                         LLVMValueRef args[2])
+{
+   LLVMTypeRef param_types[] = {ctx->f16, ctx->f16};
+   LLVMTypeRef calltype = LLVMFunctionType(ctx->i32, param_types, 2, false);
+   LLVMValueRef code = LLVMConstInlineAsm(calltype,
+                                          "v_cvt_pknorm_i16_f16 $0, $1, $2", "=v,v,v",
+                                          false, false);
+   return LLVMBuildCall(ctx->builder, code, args, 2, "");
+}
+
+LLVMValueRef ac_build_cvt_pknorm_u16_f16(struct ac_llvm_context *ctx,
+                                         LLVMValueRef args[2])
+{
+   LLVMTypeRef param_types[] = {ctx->f16, ctx->f16};
+   LLVMTypeRef calltype = LLVMFunctionType(ctx->i32, param_types, 2, false);
+   LLVMValueRef code = LLVMConstInlineAsm(calltype,
+                                          "v_cvt_pknorm_u16_f16 $0, $1, $2", "=v,v,v",
+                                          false, false);
+   return LLVMBuildCall(ctx->builder, code, args, 2, "");
 }
 
 /* The 8-bit and 10-bit clamping is for HW workarounds. */
@@ -2438,7 +2475,7 @@ LLVMValueRef ac_const_uint_vec(struct ac_llvm_context *ctx, LLVMTypeRef type, ui
    if (LLVMGetTypeKind(type) == LLVMVectorTypeKind) {
       LLVMValueRef scalar = LLVMConstInt(LLVMGetElementType(type), value, 0);
       unsigned vec_size = LLVMGetVectorSize(type);
-      LLVMValueRef *scalars = alloca(vec_size * sizeof(LLVMValueRef *));
+      LLVMValueRef *scalars = alloca(vec_size * sizeof(LLVMValueRef));
 
       for (unsigned i = 0; i < vec_size; i++)
          scalars[i] = scalar;

@@ -239,7 +239,7 @@ static nir_ssa_def *
 emit_load(struct lower_io_state *state,
           nir_ssa_def *vertex_index, nir_variable *var, nir_ssa_def *offset,
           unsigned component, unsigned num_components, unsigned bit_size,
-          nir_alu_type type)
+          nir_alu_type dest_type)
 {
    nir_builder *b = &state->builder;
    const nir_shader *nir = b->shader;
@@ -302,7 +302,7 @@ emit_load(struct lower_io_state *state,
    if (load->intrinsic == nir_intrinsic_load_input ||
        load->intrinsic == nir_intrinsic_load_input_vertex ||
        load->intrinsic == nir_intrinsic_load_uniform)
-      nir_intrinsic_set_type(load, type);
+      nir_intrinsic_set_dest_type(load, dest_type);
 
    if (load->intrinsic != nir_intrinsic_load_uniform) {
       nir_io_semantics semantics = {0};
@@ -386,7 +386,7 @@ static void
 emit_store(struct lower_io_state *state, nir_ssa_def *data,
            nir_ssa_def *vertex_index, nir_variable *var, nir_ssa_def *offset,
            unsigned component, unsigned num_components,
-           nir_component_mask_t write_mask, nir_alu_type type)
+           nir_component_mask_t write_mask, nir_alu_type src_type)
 {
    nir_builder *b = &state->builder;
    nir_variable_mode mode = var->data.mode;
@@ -408,7 +408,7 @@ emit_store(struct lower_io_state *state, nir_ssa_def *data,
       nir_intrinsic_set_component(store, component);
 
    if (store->intrinsic == nir_intrinsic_store_output)
-      nir_intrinsic_set_type(store, type);
+      nir_intrinsic_set_src_type(store, src_type);
 
    nir_intrinsic_set_write_mask(store, write_mask);
 
@@ -437,6 +437,7 @@ emit_store(struct lower_io_state *state, nir_ssa_def *data,
    semantics.medium_precision =
       var->data.precision == GLSL_PRECISION_MEDIUM ||
       var->data.precision == GLSL_PRECISION_LOW;
+   semantics.per_view = var->data.per_view;
    nir_intrinsic_set_io_semantics(store, semantics);
 
    nir_builder_instr_insert(b, &store->instr);
@@ -636,6 +637,37 @@ nir_lower_io_block(nir_block *block,
                                 mode == nir_var_shader_out ||
                                 var->data.bindless;
 
+     if (nir_deref_instr_is_known_out_of_bounds(deref)) {
+        /* Section 5.11 (Out-of-Bounds Accesses) of the GLSL 4.60 spec says:
+         *
+         *    In the subsections described above for array, vector, matrix and
+         *    structure accesses, any out-of-bounds access produced undefined
+         *    behavior....
+         *    Out-of-bounds reads return undefined values, which
+         *    include values from other variables of the active program or zero.
+         *    Out-of-bounds writes may be discarded or overwrite
+         *    other variables of the active program.
+         *
+         * GL_KHR_robustness and GL_ARB_robustness encourage us to return zero
+         * for reads.
+         *
+         * Otherwise get_io_offset would return out-of-bound offset which may
+         * result in out-of-bound loading/storing of inputs/outputs,
+         * that could cause issues in drivers down the line.
+         */
+         if (intrin->intrinsic != nir_intrinsic_store_deref) {
+            nir_ssa_def *zero =
+               nir_imm_zero(b, intrin->dest.ssa.num_components,
+                             intrin->dest.ssa.bit_size);
+            nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
+                                  nir_src_for_ssa(zero));
+         }
+
+         nir_instr_remove(&intrin->instr);
+         progress = true;
+         continue;
+      }
+
       offset = get_io_offset(b, deref, per_vertex ? &vertex_index : NULL,
                              state->type_size, &component_offset,
                              bindless_type_size);
@@ -817,7 +849,7 @@ build_addr_for_var(nir_builder *b, nir_variable *var,
 {
    assert(var->data.mode & (nir_var_uniform | nir_var_mem_shared |
                             nir_var_shader_temp | nir_var_function_temp |
-                            nir_var_mem_constant));
+                            nir_var_mem_push_const | nir_var_mem_constant));
 
    const unsigned num_comps = nir_address_format_num_components(addr_format);
    const unsigned bit_size = nir_address_format_bit_size(addr_format);
@@ -982,10 +1014,13 @@ nir_get_explicit_deref_range(nir_deref_instr *deref,
             goto fail;
 
          if (deref->deref_type != nir_deref_type_array_wildcard &&
-             nir_src_is_const(deref->arr.index))
+             nir_src_is_const(deref->arr.index)) {
             base += stride * nir_src_as_uint(deref->arr.index);
-         else
+         } else {
+            if (glsl_get_length(parent->type) == 0)
+               goto fail;
             range += stride * (glsl_get_length(parent->type) - 1);
+         }
          break;
       }
 
@@ -1099,6 +1134,10 @@ build_explicit_io_load(nir_builder *b, nir_intrinsic_instr *intrin,
          op = nir_intrinsic_load_global;
       }
       break;
+   case nir_var_mem_push_const:
+      assert(addr_format == nir_address_format_32bit_offset);
+      op = nir_intrinsic_load_push_constant;
+      break;
    case nir_var_mem_constant:
       if (addr_format_is_offset(addr_format)) {
          op = nir_intrinsic_load_constant;
@@ -1129,6 +1168,13 @@ build_explicit_io_load(nir_builder *b, nir_intrinsic_instr *intrin,
    if (op == nir_intrinsic_load_constant) {
       nir_intrinsic_set_base(load, 0);
       nir_intrinsic_set_range(load, b->shader->constant_data_size);
+   } else if (mode == nir_var_mem_push_const) {
+      /* Push constants are required to be able to be chased back to the
+       * variable so we can provide a base/range.
+       */
+      nir_variable *var = nir_deref_instr_get_variable(deref);
+      nir_intrinsic_set_base(load, 0);
+      nir_intrinsic_set_range(load, glsl_get_explicit_size(var->type, false));
    }
 
    unsigned bit_size = intrin->dest.ssa.bit_size;
@@ -1137,7 +1183,8 @@ build_explicit_io_load(nir_builder *b, nir_intrinsic_instr *intrin,
       bit_size = 32;
    }
 
-   nir_intrinsic_set_align(load, align_mul, align_offset);
+   if (nir_intrinsic_has_align(load))
+      nir_intrinsic_set_align(load, align_mul, align_offset);
 
    if (nir_intrinsic_has_range_base(load)) {
       unsigned base, range;
@@ -1619,6 +1666,7 @@ lower_explicit_io_array_length(nir_builder *b, nir_intrinsic_instr *intrin,
 
    assert(glsl_type_is_array(deref->type));
    assert(glsl_get_length(deref->type) == 0);
+   assert(deref->mode == nir_var_mem_ssbo);
    unsigned stride = glsl_get_explicit_stride(deref->type);
    assert(stride > 0);
 
@@ -1627,7 +1675,7 @@ lower_explicit_io_array_length(nir_builder *b, nir_intrinsic_instr *intrin,
    nir_ssa_def *offset = addr_to_offset(b, addr, addr_format);
 
    nir_intrinsic_instr *bsize =
-      nir_intrinsic_instr_create(b->shader, nir_intrinsic_get_buffer_size);
+      nir_intrinsic_instr_create(b->shader, nir_intrinsic_get_ssbo_size);
    bsize->src[0] = nir_src_for_ssa(index);
    nir_ssa_dest_init(&bsize->instr, &bsize->dest, 1, 32, NULL);
    nir_builder_instr_insert(b, &bsize->instr);
@@ -2211,7 +2259,7 @@ static bool is_dual_slot(nir_intrinsic_instr *intrin)
 
 static bool
 add_const_offset_to_base_block(nir_block *block, nir_builder *b,
-                               nir_variable_mode mode)
+                               nir_variable_mode modes)
 {
    bool progress = false;
    nir_foreach_instr_safe(instr, block) {
@@ -2220,11 +2268,13 @@ add_const_offset_to_base_block(nir_block *block, nir_builder *b,
 
       nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
 
-      if ((mode == nir_var_shader_in && is_input(intrin)) ||
-          (mode == nir_var_shader_out && is_output(intrin))) {
+      if (((modes & nir_var_shader_in) && is_input(intrin)) ||
+          ((modes & nir_var_shader_out) && is_output(intrin))) {
          nir_src *offset = nir_get_io_offset_src(intrin);
 
-         if (nir_src_is_const(*offset)) {
+         /* TODO: Better handling of per-view variables here */
+         if (nir_src_is_const(*offset) &&
+             !nir_intrinsic_io_semantics(intrin).per_view) {
             unsigned off = nir_src_as_uint(*offset);
 
             nir_intrinsic_set_base(intrin, nir_intrinsic_base(intrin) + off);
@@ -2247,7 +2297,7 @@ add_const_offset_to_base_block(nir_block *block, nir_builder *b,
 }
 
 bool
-nir_io_add_const_offset_to_base(nir_shader *nir, nir_variable_mode mode)
+nir_io_add_const_offset_to_base(nir_shader *nir, nir_variable_mode modes)
 {
    bool progress = false;
 
@@ -2256,7 +2306,7 @@ nir_io_add_const_offset_to_base(nir_shader *nir, nir_variable_mode mode)
          nir_builder b;
          nir_builder_init(&b, f->impl);
          nir_foreach_block(block, f->impl) {
-            progress |= add_const_offset_to_base_block(block, &b, mode);
+            progress |= add_const_offset_to_base_block(block, &b, modes);
          }
       }
    }

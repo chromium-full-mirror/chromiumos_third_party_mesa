@@ -354,8 +354,6 @@ st_release_program(struct st_context *st, struct st_program **p)
 void
 st_finalize_nir_before_variants(struct nir_shader *nir)
 {
-   NIR_PASS_V(nir, nir_opt_access);
-
    NIR_PASS_V(nir, nir_split_var_copies);
    NIR_PASS_V(nir, nir_lower_var_copies);
    if (nir->options->lower_all_io_to_temps ||
@@ -1322,7 +1320,8 @@ st_create_fp_variant(struct st_context *st,
 
       if (unlikely(key->external.lower_nv12 || key->external.lower_iyuv ||
                    key->external.lower_xy_uxvx || key->external.lower_yx_xuxv ||
-                   key->external.lower_ayuv || key->external.lower_xyuv)) {
+                   key->external.lower_ayuv || key->external.lower_xyuv ||
+                   key->external.lower_yuv)) {
 
          st_nir_lower_samplers(pipe->screen, state.ir.nir,
                                stfp->shader_program, &stfp->Base);
@@ -1334,6 +1333,7 @@ st_create_fp_variant(struct st_context *st,
          options.lower_yx_xuxv_external = key->external.lower_yx_xuxv;
          options.lower_ayuv_external = key->external.lower_ayuv;
          options.lower_xyuv_external = key->external.lower_xyuv;
+         options.lower_yuv_external = key->external.lower_yuv;
          NIR_PASS_V(state.ir.nir, nir_lower_tex, &options);
          finalize = true;
       }
@@ -1346,7 +1346,8 @@ st_create_fp_variant(struct st_context *st,
       /* This pass needs to happen *after* nir_lower_sampler */
       if (unlikely(key->external.lower_nv12 || key->external.lower_iyuv ||
                    key->external.lower_xy_uxvx || key->external.lower_yx_xuxv ||
-                   key->external.lower_ayuv || key->external.lower_xyuv)) {
+                   key->external.lower_ayuv || key->external.lower_xyuv ||
+                   key->external.lower_yuv)) {
          NIR_PASS_V(state.ir.nir, st_nir_lower_tex_src_plane,
                     ~stfp->Base.SamplersUsed,
                     key->external.lower_nv12 || key->external.lower_xy_uxvx ||

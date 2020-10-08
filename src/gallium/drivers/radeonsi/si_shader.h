@@ -315,6 +315,13 @@ struct si_compiler_ctx_state {
    bool is_debug_context;
 };
 
+enum si_color_output_type {
+   SI_TYPE_ANY32,
+   SI_TYPE_FLOAT16,
+   SI_TYPE_INT16,
+   SI_TYPE_UINT16,
+};
+
 struct si_shader_info {
    shader_info base;
 
@@ -330,6 +337,7 @@ struct si_shader_info {
    ubyte output_usagemask[PIPE_MAX_SHADER_OUTPUTS];
    ubyte output_readmask[PIPE_MAX_SHADER_OUTPUTS];
    ubyte output_streams[PIPE_MAX_SHADER_OUTPUTS];
+   ubyte output_type[PIPE_MAX_SHADER_OUTPUTS]; /* enum nir_alu_type */
 
    ubyte color_interpolate[2];
    ubyte color_interpolate_loc[2];
@@ -341,6 +349,7 @@ struct si_shader_info {
 
    ubyte colors_read; /**< which color components are read by the FS */
    ubyte colors_written;
+   uint16_t output_color_types; /**< Each bit pair is enum si_color_output_type */
    bool color0_writes_all_cbufs; /**< gl_FragColor */
    bool reads_samplemask;   /**< does fragment shader read sample mask? */
    bool reads_tess_factors; /**< If TES reads TESSINNER or TESSOUTER */
@@ -373,7 +382,6 @@ struct si_shader_info {
    bool writes_layer;
    bool uses_bindless_samplers;
    bool uses_bindless_images;
-   bool uses_fbfetch;
 
    /** Whether all codepaths write tess factors in all invocations. */
    bool tessfactors_are_def_in_all_invocs;
@@ -414,7 +422,6 @@ struct si_shader_selector {
    ubyte sampler_and_images_descriptors_index;
    bool vs_needs_prolog;
    bool prim_discard_cs_allowed;
-   bool ngg_culling_allowed;
    ubyte cs_shaderbufs_sgpr_index;
    ubyte cs_num_shaderbufs_in_user_sgprs;
    ubyte cs_images_sgpr_index;
@@ -423,6 +430,8 @@ struct si_shader_selector {
    ubyte num_vs_inputs;
    ubyte num_vbos_in_user_sgprs;
    unsigned pa_cl_vs_out_cntl;
+   unsigned ngg_cull_vert_threshold; /* 0 = disabled */
+   unsigned ngg_cull_nonindexed_fast_launch_vert_threshold; /* 0 = disabled */
    ubyte clipdist_mask;
    ubyte culldist_mask;
    ubyte rast_prim;
@@ -577,6 +586,7 @@ union si_shader_part_key {
    struct {
       struct si_ps_epilog_bits states;
       unsigned colors_written : 8;
+      unsigned color_types : 16;
       unsigned writes_z : 1;
       unsigned writes_stencil : 1;
       unsigned writes_samplemask : 1;
@@ -637,8 +647,8 @@ struct si_shader_key {
    struct {
       /* For HW VS (it can be VS, TES, GS) */
       uint64_t kill_outputs; /* "get_unique_index" bits */
+      unsigned kill_clip_distances : 8;
       unsigned kill_pointsize : 1;
-      unsigned clip_disable : 1;
 
       /* For NGG VS and TES. */
       unsigned ngg_culling : 5; /* SI_NGG_CULL_* */

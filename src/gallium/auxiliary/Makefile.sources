@@ -216,8 +216,6 @@ C_SOURCES := \
 	util/u_bitmask.c \
 	util/u_bitmask.h \
 	util/u_blend.h \
-	util/u_blit.c \
-	util/u_blit.h \
 	util/u_blitter.c \
 	util/u_blitter.h \
 	util/u_box.h \
@@ -250,7 +248,6 @@ C_SOURCES := \
 	util/u_framebuffer.h \
 	util/u_gen_mipmap.c \
 	util/u_gen_mipmap.h \
-	util/u_half.h \
 	util/u_handle_table.c \
 	util/u_handle_table.h \
 	util/u_hash_table.c \

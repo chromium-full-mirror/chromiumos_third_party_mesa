@@ -42,7 +42,7 @@
 #include "compiler/nir/nir_builder.h"
 
 #include "tgsi/tgsi_strings.h"
-#include "util/u_half.h"
+#include "util/half_float.h"
 
 static bool
 etna_alu_to_scalar_filter_cb(const nir_instr *instr, const void *data)
@@ -146,6 +146,7 @@ etna_optimize_loop(nir_shader *s)
 
       NIR_PASS_V(s, nir_lower_vars_to_ssa);
       progress |= OPT(s, nir_opt_copy_prop_vars);
+      progress |= OPT(s, nir_opt_shrink_vectors);
       progress |= OPT(s, nir_copy_prop);
       progress |= OPT(s, nir_opt_dce);
       progress |= OPT(s, nir_opt_cse);

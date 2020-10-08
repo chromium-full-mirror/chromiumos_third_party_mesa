@@ -90,8 +90,8 @@ bi_load(enum bi_class T, nir_intrinsic_instr *instr)
         if (info->has_dest)
                 load.dest = pan_dest_index(&instr->dest);
 
-        if (info->has_dest && nir_intrinsic_has_type(instr))
-                load.dest_type = nir_intrinsic_type(instr);
+        if (info->has_dest && nir_intrinsic_has_dest_type(instr))
+                load.dest_type = nir_intrinsic_dest_type(instr);
 
         nir_src *offset = nir_get_io_offset_src(instr);
 
@@ -111,6 +111,7 @@ bi_emit_ld_vary(bi_context *ctx, nir_intrinsic_instr *instr)
         ins.load_vary.reuse = false; /* TODO */
         ins.load_vary.flat = instr->intrinsic != nir_intrinsic_load_interpolated_input;
         ins.dest_type = nir_type_float | nir_dest_bit_size(instr->dest);
+        ins.format = ins.dest_type;
 
         if (nir_src_is_const(*nir_get_io_offset_src(instr))) {
                 /* Zero it out for direct */
@@ -135,7 +136,7 @@ bi_emit_frag_out(bi_context *ctx, nir_intrinsic_instr *instr)
                         },
                         .src_types = {
                                 nir_type_uint32,
-                                nir_intrinsic_type(instr)
+                                nir_intrinsic_src_type(instr)
                         },
                         .swizzle = {
                                 { 0 },
@@ -155,9 +156,12 @@ bi_emit_frag_out(bi_context *ctx, nir_intrinsic_instr *instr)
                 .src = {
                         pan_src_index(&instr->src[0]),
                         BIR_INDEX_REGISTER | 60 /* Can this be arbitrary? */,
+                        /* Blend descriptor */
+                        BIR_INDEX_PASS | BIFROST_SRC_CONST_LO,
+                        BIR_INDEX_PASS | BIFROST_SRC_CONST_HI,
                 },
                 .src_types = {
-                        nir_intrinsic_type(instr),
+                        nir_intrinsic_src_type(instr),
                         nir_type_uint32
                 },
                 .swizzle = {
@@ -183,10 +187,11 @@ bi_load_with_r61(enum bi_class T, nir_intrinsic_instr *instr)
         bi_instruction ld = bi_load(T, instr);
         ld.src[1] = BIR_INDEX_REGISTER | 61; /* TODO: RA */
         ld.src[2] = BIR_INDEX_REGISTER | 62;
-        ld.src[3] = 0;
         ld.src_types[1] = nir_type_uint32;
         ld.src_types[2] = nir_type_uint32;
-        ld.src_types[3] = nir_intrinsic_type(instr);
+        ld.format = instr->intrinsic == nir_intrinsic_store_output ?
+                nir_intrinsic_src_type(instr) :
+                nir_intrinsic_dest_type(instr);
         return ld;
 }
 
@@ -230,6 +235,7 @@ bi_emit_ld_uniform(bi_context *ctx, nir_intrinsic_instr *instr)
 {
         bi_instruction ld = bi_load(BI_LOAD_UNIFORM, instr);
         ld.src[1] = BIR_INDEX_ZERO; /* TODO: UBO index */
+        ld.segment = BI_SEGMENT_UBO;
 
         /* TODO: Indirect access, since we need to multiply by the element
          * size. I believe we can get this lowering automatically via
@@ -259,6 +265,7 @@ bi_emit_sysval(bi_context *ctx, nir_instr *instr,
 
         bi_instruction load = {
                 .type = BI_LOAD_UNIFORM,
+                .segment = BI_SEGMENT_UBO,
                 .vector_channels = nr_components,
                 .src = { BIR_INDEX_CONSTANT, BIR_INDEX_ZERO },
                 .src_types = { nir_type_uint32, nir_type_uint32 },
@@ -331,8 +338,12 @@ bi_emit_ld_frag_coord(bi_context *ctx, nir_intrinsic_instr *instr)
                         },
                         .vector_channels = 1,
                         .dest_type = nir_type_float32,
+                        .format = nir_type_float32,
                         .dest = bi_make_temp(ctx),
-                        .src = { BIR_INDEX_CONSTANT, BIR_INDEX_ZERO },
+                        .src = {
+                                BIR_INDEX_CONSTANT,
+                                BIR_INDEX_PASS | BIFROST_SRC_CONST_LO
+                        },
                         .src_types = { nir_type_uint32, nir_type_uint32 },
                         .constant = {
                                 .u32 = (i == 0) ? BIFROST_FRAGZ : BIFROST_FRAGW
@@ -445,7 +456,7 @@ emit_intrinsic(bi_context *ctx, nir_intrinsic_instr *instr)
                 bi_emit_sysval(ctx, &instr->instr, 1, 0);
                 break;
 
-        case nir_intrinsic_get_buffer_size:
+        case nir_intrinsic_get_ssbo_size:
                 bi_emit_sysval(ctx, &instr->instr, 1, 8);
                 break;
 
@@ -805,27 +816,31 @@ emit_alu(bi_context *ctx, nir_alu_instr *instr)
                 break;
         case nir_op_iadd:
                 alu.op.imath = BI_IMATH_ADD;
+                /* Carry */
+                alu.src[2] = BIR_INDEX_ZERO;
                 break;
         case nir_op_isub:
                 alu.op.imath = BI_IMATH_SUB;
+                /* Borrow */
+                alu.src[2] = BIR_INDEX_ZERO;
                 break;
         case nir_op_iabs:
                 alu.op.special = BI_SPECIAL_IABS;
                 break;
         case nir_op_inot:
-                /* no dedicated bitwise not, but we can invert sources. convert to ~a | 0 */
+                /* no dedicated bitwise not, but we can invert sources. convert to ~(a | 0) */
                 alu.op.bitwise = BI_BITWISE_OR;
-                alu.bitwise.src_invert[0] = true;
+                alu.bitwise.dest_invert = true;
                 alu.src[1] = BIR_INDEX_ZERO;
                 /* zero shift */
                 alu.src[2] = BIR_INDEX_ZERO;
-                alu.src_types[2] = alu.src_types[1];
+                alu.src_types[2] = nir_type_uint8;
                 break;
         case nir_op_ishl:
                 alu.op.bitwise = BI_BITWISE_OR;
                 /* move src1 to src2 and replace with zero. underlying op is (src0 << src2) | src1 */
                 alu.src[2] = alu.src[1];
-                alu.src_types[2] = alu.src_types[1];
+                alu.src_types[2] = nir_type_uint8;
                 alu.src[1] = BIR_INDEX_ZERO;
                 break;
         case nir_op_imul:
@@ -869,19 +884,19 @@ emit_alu(bi_context *ctx, nir_alu_instr *instr)
                 alu.op.bitwise = BI_BITWISE_AND;
                 /* zero shift */
                 alu.src[2] = BIR_INDEX_ZERO;
-                alu.src_types[2] = alu.src_types[1];
+                alu.src_types[2] = nir_type_uint8;
                 break;
         case nir_op_ior:
                 alu.op.bitwise = BI_BITWISE_OR;
                 /* zero shift */
                 alu.src[2] = BIR_INDEX_ZERO;
-                alu.src_types[2] = alu.src_types[1];
+                alu.src_types[2] = nir_type_uint8;
                 break;
         case nir_op_ixor:
                 alu.op.bitwise = BI_BITWISE_XOR;
                 /* zero shift */
                 alu.src[2] = BIR_INDEX_ZERO;
-                alu.src_types[2] = alu.src_types[1];
+                alu.src_types[2] = nir_type_uint8;
                 break;
         case nir_op_f2i32:
                 alu.roundmode = BIFROST_RTZ;
@@ -939,6 +954,7 @@ emit_tex_compact(bi_context *ctx, nir_tex_instr *instr)
                 .texture = {
                         .texture_index = instr->texture_index,
                         .sampler_index = instr->sampler_index,
+                        .compute_lod = instr->op == nir_texop_tex,
                 },
                 .dest = pan_dest_index(&instr->dest),
                 .dest_type = instr->dest_type,

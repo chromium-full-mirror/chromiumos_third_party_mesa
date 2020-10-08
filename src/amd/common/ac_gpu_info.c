@@ -140,6 +140,41 @@ static uint32_t get_l2_cache_size(enum radeon_family family)
    }
 }
 
+static bool
+has_tmz_support(amdgpu_device_handle dev,
+                struct radeon_info *info,
+                struct amdgpu_gpu_info *amdinfo)
+{
+   struct amdgpu_bo_alloc_request request = {0};
+   int r;
+   amdgpu_bo_handle bo;
+
+   if (amdinfo->ids_flags & AMDGPU_IDS_FLAGS_TMZ)
+      return true;
+
+   /* AMDGPU_IDS_FLAGS_TMZ is supported starting from drm_minor 40 */
+   if (info->drm_minor >= 40)
+      return false;
+
+   /* Find out ourselves if TMZ is enabled */
+   if (info->chip_class < GFX9)
+      return false;
+
+   if (info->drm_minor < 36)
+      return false;
+
+   request.alloc_size = 256;
+   request.phys_alignment = 1024;
+   request.preferred_heap = AMDGPU_GEM_DOMAIN_VRAM;
+   request.flags = AMDGPU_GEM_CREATE_ENCRYPTED;
+   r = amdgpu_bo_alloc(dev, &request, &bo);
+   if (r)
+      return false;
+   amdgpu_bo_free(bo);
+   return true;
+}
+
+
 bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
                        struct amdgpu_gpu_info *amdinfo)
 {
@@ -400,6 +435,10 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
       identify_chip(NAVI14);
       identify_chip(SIENNA_CICHLID);
       identify_chip(NAVY_FLOUNDER);
+      identify_chip(DIMGREY_CAVEFISH);
+      break;
+   case FAMILY_VGH:
+      identify_chip(VANGOGH);
       break;
    }
 
@@ -495,6 +534,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
    info->has_read_registers_query = true;
    info->has_scheduled_fence_dependency = info->drm_minor >= 28;
    info->mid_command_buffer_preemption_enabled = amdinfo->ids_flags & AMDGPU_IDS_FLAGS_PREEMPTION;
+	info->has_tmz_support = has_tmz_support(dev, info, amdinfo);
 
    info->pa_sc_tile_steering_override = device_info.pa_sc_tile_steering_override;
    info->num_render_backends = amdinfo->rb_pipes;
@@ -706,10 +746,14 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
       case CHIP_NAVI12:
       case CHIP_SIENNA_CICHLID:
       case CHIP_NAVY_FLOUNDER:
+      case CHIP_DIMGREY_CAVEFISH:
          pc_lines = 1024;
          break;
       case CHIP_NAVI14:
          pc_lines = 512;
+         break;
+      case CHIP_VANGOGH:
+         pc_lines = 256;
          break;
       case CHIP_ARCTURUS:
          break;
@@ -912,6 +956,7 @@ void ac_print_gpu_info(struct radeon_info *info)
    printf("    has_scheduled_fence_dependency = %u\n", info->has_scheduled_fence_dependency);
    printf("    mid_command_buffer_preemption_enabled = %u\n",
           info->mid_command_buffer_preemption_enabled);
+	printf("    has_tmz_support = %u\n", info->has_tmz_support);
 
    printf("Shader core info:\n");
    printf("    max_shader_clock = %i\n", info->max_shader_clock);

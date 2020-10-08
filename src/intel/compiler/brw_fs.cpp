@@ -166,7 +166,8 @@ fs_visitor::VARYING_PULL_CONSTANT_LOAD(const fs_builder &bld,
                                        const fs_reg &dst,
                                        const fs_reg &surf_index,
                                        const fs_reg &varying_offset,
-                                       uint32_t const_offset)
+                                       uint32_t const_offset,
+                                       uint8_t alignment)
 {
    /* We have our constant surface use a pitch of 4 bytes, so our index can
     * be any component of a vector, and then we load 4 contiguous
@@ -190,7 +191,8 @@ fs_visitor::VARYING_PULL_CONSTANT_LOAD(const fs_builder &bld,
     */
    fs_reg vec4_result = bld.vgrf(BRW_REGISTER_TYPE_F, 4);
    fs_inst *inst = bld.emit(FS_OPCODE_VARYING_PULL_CONSTANT_LOAD_LOGICAL,
-                            vec4_result, surf_index, vec4_offset);
+                            vec4_result, surf_index, vec4_offset,
+                            brw_imm_ud(alignment));
    inst->size_written = 4 * vec4_result.component_size(inst->exec_size);
 
    shuffle_from_32bit_read(bld, dst, vec4_result,
@@ -2602,7 +2604,7 @@ fs_visitor::lower_constant_loads()
          VARYING_PULL_CONSTANT_LOAD(ibld, inst->dst,
                                     brw_imm_ud(index),
                                     inst->src[1],
-                                    pull_index * 4);
+                                    pull_index * 4, 4);
          inst->remove(block);
       }
    }
@@ -5380,7 +5382,10 @@ lower_surface_logical_send(const fs_builder &bld, fs_inst *inst)
    const fs_reg &surface_handle = inst->src[SURFACE_LOGICAL_SRC_SURFACE_HANDLE];
    const UNUSED fs_reg &dims = inst->src[SURFACE_LOGICAL_SRC_IMM_DIMS];
    const fs_reg &arg = inst->src[SURFACE_LOGICAL_SRC_IMM_ARG];
+   const fs_reg &allow_sample_mask =
+      inst->src[SURFACE_LOGICAL_SRC_ALLOW_SAMPLE_MASK];
    assert(arg.file == IMM);
+   assert(allow_sample_mask.file == IMM);
 
    /* We must have exactly one of surface and surface_handle */
    assert((surface.file == BAD_FILE) != (surface_handle.file == BAD_FILE));
@@ -5404,8 +5409,9 @@ lower_surface_logical_send(const fs_builder &bld, fs_inst *inst)
                               surface.ud == GEN8_BTI_STATELESS_NON_COHERENT);
 
    const bool has_side_effects = inst->has_side_effects();
-   fs_reg sample_mask = has_side_effects ? sample_mask_reg(bld) :
-                                           fs_reg(brw_imm_d(0xffff));
+
+   fs_reg sample_mask = allow_sample_mask.ud ? sample_mask_reg(bld) :
+                                               fs_reg(brw_imm_d(0xffff));
 
    /* From the BDW PRM Volume 7, page 147:
     *
@@ -5771,6 +5777,7 @@ static void
 lower_varying_pull_constant_logical_send(const fs_builder &bld, fs_inst *inst)
 {
    const gen_device_info *devinfo = bld.shader->devinfo;
+   const brw_compiler *compiler = bld.shader->compiler;
 
    if (devinfo->gen >= 7) {
       fs_reg index = inst->src[0];
@@ -5778,32 +5785,72 @@ lower_varying_pull_constant_logical_send(const fs_builder &bld, fs_inst *inst)
        * send-from-grf instruction.  Since sends can't handle strides or
        * source modifiers, we have to make a copy of the offset source.
        */
-      fs_reg offset = bld.vgrf(BRW_REGISTER_TYPE_UD);
-      bld.MOV(offset, inst->src[1]);
+      fs_reg ubo_offset = bld.vgrf(BRW_REGISTER_TYPE_UD);
+      bld.MOV(ubo_offset, inst->src[1]);
 
-      const unsigned simd_mode =
-         inst->exec_size <= 8 ? BRW_SAMPLER_SIMD_MODE_SIMD8 :
-                                BRW_SAMPLER_SIMD_MODE_SIMD16;
+      assert(inst->src[2].file == BRW_IMMEDIATE_VALUE);
+      unsigned alignment = inst->src[2].ud;
 
       inst->opcode = SHADER_OPCODE_SEND;
       inst->mlen = inst->exec_size / 8;
       inst->resize_sources(3);
 
-      inst->sfid = BRW_SFID_SAMPLER;
-      inst->desc = brw_sampler_desc(devinfo, 0, 0,
-                                    GEN5_SAMPLER_MESSAGE_SAMPLE_LD,
-                                    simd_mode, 0);
       if (index.file == IMM) {
-         inst->desc |= index.ud & 0xff;
+         inst->desc = index.ud & 0xff;
          inst->src[0] = brw_imm_ud(0);
       } else {
+         inst->desc = 0;
          const fs_builder ubld = bld.exec_all().group(1, 0);
          fs_reg tmp = ubld.vgrf(BRW_REGISTER_TYPE_UD);
          ubld.AND(tmp, index, brw_imm_ud(0xff));
          inst->src[0] = component(tmp, 0);
       }
       inst->src[1] = brw_imm_ud(0); /* ex_desc */
-      inst->src[2] = offset; /* payload */
+      inst->src[2] = ubo_offset; /* payload */
+
+      if (compiler->indirect_ubos_use_sampler) {
+         const unsigned simd_mode =
+            inst->exec_size <= 8 ? BRW_SAMPLER_SIMD_MODE_SIMD8 :
+                                   BRW_SAMPLER_SIMD_MODE_SIMD16;
+
+         inst->sfid = BRW_SFID_SAMPLER;
+         inst->desc |= brw_sampler_desc(devinfo, 0, 0,
+                                        GEN5_SAMPLER_MESSAGE_SAMPLE_LD,
+                                        simd_mode, 0);
+      } else if (alignment >= 4) {
+         inst->sfid = (devinfo->gen >= 8 || devinfo->is_haswell ?
+                       HSW_SFID_DATAPORT_DATA_CACHE_1 :
+                       GEN7_SFID_DATAPORT_DATA_CACHE);
+         inst->desc |= brw_dp_untyped_surface_rw_desc(devinfo, inst->exec_size,
+                                                      4, /* num_channels */
+                                                      false   /* write */);
+      } else {
+         inst->sfid = GEN7_SFID_DATAPORT_DATA_CACHE;
+         inst->desc |= brw_dp_byte_scattered_rw_desc(devinfo, inst->exec_size,
+                                                     32,     /* bit_size */
+                                                     false   /* write */);
+         /* The byte scattered messages can only read one dword at a time so
+          * we have to duplicate the message 4 times to read the full vec4.
+          * Hopefully, dead code will clean up the mess if some of them aren't
+          * needed.
+          */
+         assert(inst->size_written == 16 * inst->exec_size);
+         inst->size_written /= 4;
+         for (unsigned c = 1; c < 4; c++) {
+            /* Emit a copy of the instruction because we're about to modify
+             * it.  Because this loop starts at 1, we will emit copies for the
+             * first 3 and the final one will be the modified instruction.
+             */
+            bld.emit(*inst);
+
+            /* Offset the source */
+            inst->src[2] = bld.vgrf(BRW_REGISTER_TYPE_UD);
+            bld.ADD(inst->src[2], ubo_offset, brw_imm_ud(c * 4));
+
+            /* Offset the destination */
+            inst->dst = offset(inst->dst, bld, 1);
+         }
+      }
    } else {
       const fs_reg payload(MRF, FIRST_PULL_LOAD_MRF(devinfo->gen),
                            BRW_REGISTER_TYPE_UD);
@@ -7404,7 +7451,7 @@ fs_visitor::optimize()
       pass_num++;                                                       \
       bool this_progress = pass(args);                                  \
                                                                         \
-      if (unlikely(INTEL_DEBUG & DEBUG_OPTIMIZER) && this_progress) {   \
+      if ((INTEL_DEBUG & DEBUG_OPTIMIZER) && this_progress) {           \
          char filename[64];                                             \
          snprintf(filename, 64, "%s%d-%s-%02d-%02d-" #pass,              \
                   stage_abbrev, dispatch_width, nir->info.name, iteration, pass_num); \
@@ -7418,7 +7465,7 @@ fs_visitor::optimize()
       this_progress;                                                    \
    })
 
-   if (unlikely(INTEL_DEBUG & DEBUG_OPTIMIZER)) {
+   if (INTEL_DEBUG & DEBUG_OPTIMIZER) {
       char filename[64];
       snprintf(filename, 64, "%s%d-%s-00-00-start",
                stage_abbrev, dispatch_width, nir->info.name);
@@ -8628,7 +8675,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
 
       delete v8;
       return NULL;
-   } else if (likely(!(INTEL_DEBUG & DEBUG_NO8))) {
+   } else if (!(INTEL_DEBUG & DEBUG_NO8)) {
       simd8_cfg = v8->cfg;
       prog_data->base.dispatch_grf_start_reg = v8->payload.num_regs;
       prog_data->reg_blocks_8 = brw_register_blocks(v8->grf_used);
@@ -8650,7 +8697,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
 
    if (!has_spilled &&
        v8->max_dispatch_width >= 16 &&
-       likely(!(INTEL_DEBUG & DEBUG_NO16) || use_rep_send)) {
+       (!(INTEL_DEBUG & DEBUG_NO16) || use_rep_send)) {
       /* Try a SIMD16 compile */
       v16 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
                            &prog_data->base, nir, 16, shader_time_index16);
@@ -8756,7 +8803,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
    fs_generator g(compiler, log_data, mem_ctx, &prog_data->base,
                   v8->runtime_check_aads_emit, MESA_SHADER_FRAGMENT);
 
-   if (unlikely(INTEL_DEBUG & DEBUG_WM)) {
+   if (INTEL_DEBUG & DEBUG_WM) {
       g.enable_debug(ralloc_asprintf(mem_ctx, "%s fragment shader %s",
                                      nir->info.label ?
                                         nir->info.label : "unnamed",
@@ -9004,7 +9051,7 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
    fs_visitor *v8 = NULL, *v16 = NULL, *v32 = NULL;
    fs_visitor *v = NULL;
 
-   if (likely(!(INTEL_DEBUG & DEBUG_NO8)) &&
+   if (!(INTEL_DEBUG & DEBUG_NO8) &&
        min_dispatch_width <= 8 && max_dispatch_width >= 8) {
       nir_shader *nir8 = compile_cs_to_nir(compiler, mem_ctx, key,
                                            nir, 8);
@@ -9028,7 +9075,7 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
       cs_fill_push_const_info(compiler->devinfo, prog_data);
    }
 
-   if (likely(!(INTEL_DEBUG & DEBUG_NO16)) &&
+   if (!(INTEL_DEBUG & DEBUG_NO16) &&
        (generate_all || !prog_data->prog_spilled) &&
        min_dispatch_width <= 16 && max_dispatch_width >= 16) {
       /* Try a SIMD16 compile */
@@ -9075,7 +9122,7 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
                          (INTEL_DEBUG & DEBUG_DO32) ||
                          generate_all;
 
-   if (likely(!(INTEL_DEBUG & DEBUG_NO32)) &&
+   if (!(INTEL_DEBUG & DEBUG_NO32) &&
        (generate_all || !prog_data->prog_spilled) &&
        needs_32 &&
        min_dispatch_width <= 32 && max_dispatch_width >= 32) {
@@ -9115,7 +9162,7 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
       }
    }
 
-   if (unlikely(!v && (INTEL_DEBUG & (DEBUG_NO8 | DEBUG_NO16 | DEBUG_NO32)))) {
+   if (unlikely(!v) && (INTEL_DEBUG & (DEBUG_NO8 | DEBUG_NO16 | DEBUG_NO32))) {
       if (error_str) {
          *error_str =
             ralloc_strdup(mem_ctx,
@@ -9194,7 +9241,7 @@ brw_cs_simd_size_for_group_size(const struct gen_device_info *devinfo,
    static const unsigned simd16 = 1 << 1;
    static const unsigned simd32 = 1 << 2;
 
-   if (unlikely(INTEL_DEBUG & DEBUG_DO32) && (mask & simd32))
+   if ((INTEL_DEBUG & DEBUG_DO32) && (mask & simd32))
       return 32;
 
    /* Limit max_threads to 64 for the GPGPU_WALKER command */

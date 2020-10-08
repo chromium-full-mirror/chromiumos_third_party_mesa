@@ -89,6 +89,7 @@ struct zink_context {
 
    struct zink_vertex_elements_state *element_state;
    struct zink_rasterizer_state *rast_state;
+   struct zink_depth_stencil_alpha_state *dsa_state;
 
    struct zink_shader *gfx_stages[ZINK_SHADER_COUNT];
    struct zink_gfx_pipeline_state gfx_pipeline_state;
@@ -107,8 +108,6 @@ struct zink_context {
    struct pipe_scissor_state scissor_states[PIPE_MAX_VIEWPORTS];
    VkViewport viewports[PIPE_MAX_VIEWPORTS];
    VkRect2D scissors[PIPE_MAX_VIEWPORTS];
-   unsigned num_viewports;
-
    struct pipe_vertex_buffer buffers[PIPE_MAX_ATTRIBS];
    uint32_t buffers_enabled_mask;
 
@@ -153,6 +152,9 @@ zink_batch_rp(struct zink_context *ctx);
 
 struct zink_batch *
 zink_batch_no_rp(struct zink_context *ctx);
+
+void
+zink_fence_wait(struct pipe_context *ctx);
 
 void
 zink_resource_barrier(VkCommandBuffer cmdbuf, struct zink_resource *res,

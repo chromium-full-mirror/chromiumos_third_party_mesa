@@ -285,7 +285,6 @@ struct radv_shader_info {
 		uint8_t num_stream_output_components[4];
 		uint8_t output_streams[VARYING_SLOT_VAR31 + 1];
 		uint8_t max_stream;
-		bool writes_memory;
 		unsigned gsvs_vertex_size;
 		unsigned max_gsvs_emit_size;
 		unsigned vertices_in;
@@ -384,7 +383,7 @@ struct radv_shader_binary_legacy {
 	unsigned ir_size;
 	unsigned disasm_size;
 	unsigned stats_size;
-	
+
 	/* data has size of stats_size + code_size + ir_size + disasm_size + 2,
 	 * where the +2 is for 0 of the ir strings. */
 	uint8_t data[0];
@@ -634,6 +633,6 @@ get_tcs_num_patches(unsigned tcs_num_input_vertices,
 }
 
 void
-radv_lower_fs_io(nir_shader *nir);
+radv_lower_io(struct radv_device *device, nir_shader *nir);
 
 #endif

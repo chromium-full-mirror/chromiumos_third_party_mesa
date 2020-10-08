@@ -218,6 +218,27 @@ glsl_unsigned_base_type_of(enum glsl_base_type type)
    }
 }
 
+static inline enum glsl_base_type
+glsl_signed_base_type_of(enum glsl_base_type type)
+{
+   switch (type) {
+   case GLSL_TYPE_UINT:
+      return GLSL_TYPE_INT;
+   case GLSL_TYPE_UINT8:
+      return GLSL_TYPE_INT8;
+   case GLSL_TYPE_UINT16:
+      return GLSL_TYPE_INT16;
+   case GLSL_TYPE_UINT64:
+      return GLSL_TYPE_INT64;
+   default:
+      assert(type == GLSL_TYPE_INT ||
+             type == GLSL_TYPE_INT8 ||
+             type == GLSL_TYPE_INT16 ||
+             type == GLSL_TYPE_INT64);
+      return type;
+   }
+}
+
 enum glsl_sampler_dim {
    GLSL_SAMPLER_DIM_1D = 0,
    GLSL_SAMPLER_DIM_2D,
@@ -625,6 +646,8 @@ public:
     */
    const glsl_type *get_explicit_type_for_size_align(glsl_type_size_align_func type_info,
                                                      unsigned *size, unsigned *align) const;
+
+   const glsl_type *replace_vec3_with_vec4() const;
 
    /**
     * Alignment in bytes of the start of this type in OpenCL memory.

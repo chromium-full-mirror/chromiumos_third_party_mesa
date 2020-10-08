@@ -678,7 +678,7 @@ panfrost_batch_get_shared_memory(struct panfrost_batch *batch,
 }
 
 mali_ptr
-panfrost_batch_get_tiler_meta(struct panfrost_batch *batch, unsigned vertex_count)
+panfrost_batch_get_bifrost_tiler(struct panfrost_batch *batch, unsigned vertex_count)
 {
         if (!vertex_count)
                 return 0;
@@ -687,25 +687,27 @@ panfrost_batch_get_tiler_meta(struct panfrost_batch *batch, unsigned vertex_coun
                 return batch->tiler_meta;
 
         struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
+        struct panfrost_transfer t =
+                panfrost_pool_alloc_aligned(&batch->pool, MALI_BIFROST_TILER_HEAP_LENGTH, 64);
 
-        struct bifrost_tiler_heap_meta tiler_heap_meta = {
-            .heap_size = dev->tiler_heap->size,
-            .tiler_heap_start = dev->tiler_heap->gpu,
-            .tiler_heap_free = dev->tiler_heap->gpu,
-            .tiler_heap_end = dev->tiler_heap->gpu + dev->tiler_heap->size,
-            .unk1 = 0x1,
-            .unk7e007e = 0x7e007e,
-        };
+        pan_pack(t.cpu, BIFROST_TILER_HEAP, heap) {
+                heap.size = dev->tiler_heap->size;
+                heap.base = dev->tiler_heap->gpu;
+                heap.bottom = dev->tiler_heap->gpu;
+                heap.top = dev->tiler_heap->gpu + dev->tiler_heap->size;
+        }
 
-        struct bifrost_tiler_meta tiler_meta = {
-            .hierarchy_mask = 0x28,
-            .flags = 0x0,
-            .width = MALI_POSITIVE(batch->key.width),
-            .height = MALI_POSITIVE(batch->key.height),
-            .tiler_heap_meta = panfrost_pool_upload_aligned(&batch->pool, &tiler_heap_meta, sizeof(tiler_heap_meta), 64)
-        };
+        mali_ptr heap = t.gpu;
 
-        batch->tiler_meta = panfrost_pool_upload_aligned(&batch->pool, &tiler_meta, sizeof(tiler_meta), 64);
+        t = panfrost_pool_alloc_aligned(&batch->pool, MALI_BIFROST_TILER_LENGTH, 64);
+        pan_pack(t.cpu, BIFROST_TILER, tiler) {
+                tiler.hierarchy_mask = 0x28;
+                tiler.fb_width = batch->key.width;
+                tiler.fb_height = batch->key.height;
+                tiler.heap = heap;
+        }
+
+        batch->tiler_meta = t.gpu;
         return batch->tiler_meta;
 }
 
@@ -741,14 +743,14 @@ panfrost_batch_reserve_framebuffer(struct panfrost_batch *batch)
 
         if (!batch->framebuffer.gpu) {
                 unsigned size = (dev->quirks & MIDGARD_SFBD) ?
-                        sizeof(struct mali_single_framebuffer) :
-                        sizeof(struct mali_framebuffer);
+                        MALI_SINGLE_TARGET_FRAMEBUFFER_LENGTH :
+                        MALI_MULTI_TARGET_FRAMEBUFFER_LENGTH;
 
                 batch->framebuffer = panfrost_pool_alloc_aligned(&batch->pool, size, 64);
 
                 /* Tag the pointer */
                 if (!(dev->quirks & MIDGARD_SFBD))
-                        batch->framebuffer.gpu |= MALI_MFBD;
+                        batch->framebuffer.gpu |= MALI_FBD_TAG_IS_MFBD;
         }
 
         return batch->framebuffer.gpu;
@@ -970,7 +972,7 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
 
         if (!out_sync && dev->debug & (PAN_DBG_TRACE | PAN_DBG_SYNC)) {
                 drmSyncobjCreate(dev->fd, 0, &out_sync);
-                our_sync = false;
+                our_sync = true;
         }
 
         submit.out_sync = out_sync;
@@ -1002,6 +1004,9 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
         if (ret) {
                 if (dev->debug & PAN_DBG_MSGS)
                         fprintf(stderr, "Error submitting: %m\n");
+
+                if (our_sync)
+                        drmSyncobjDestroy(dev->fd, out_sync);
 
                 return errno;
         }
@@ -1099,7 +1104,7 @@ panfrost_batch_submit(struct panfrost_batch *batch, uint32_t out_sync)
         }
 
         mali_ptr polygon_list = panfrost_batch_get_polygon_list(batch,
-                MALI_TILER_MINIMUM_HEADER_SIZE);
+                MALI_MIDGARD_TILER_MINIMUM_HEADER_SIZE);
 
         panfrost_scoreboard_initialize_tiler(&batch->pool, &batch->scoreboard, polygon_list);
 

@@ -70,8 +70,9 @@ protected:
    bool test_alu(nir_instr *instr, nir_op op);
    bool test_alu_def(nir_instr *instr, unsigned index, nir_ssa_def *def, unsigned swizzle=0);
 
-   static bool mem_vectorize_callback(unsigned align, unsigned bit_size,
-                                      unsigned num_components, unsigned high_offset,
+   static bool mem_vectorize_callback(unsigned align_mul, unsigned align_offset,
+                                      unsigned bit_size,
+                                      unsigned num_components,
                                       nir_intrinsic_instr *low, nir_intrinsic_instr *high);
    static void shared_type_info(const struct glsl_type *type, unsigned *size, unsigned *align);
 
@@ -363,7 +364,8 @@ bool nir_load_store_vectorize_test::test_alu_def(
 }
 
 bool nir_load_store_vectorize_test::mem_vectorize_callback(
-   unsigned align, unsigned bit_size, unsigned num_components, unsigned high_offset,
+   unsigned align_mul, unsigned align_offset, unsigned bit_size,
+   unsigned num_components,
    nir_intrinsic_instr *low, nir_intrinsic_instr *high)
 {
    return bit_size / 8;
@@ -1875,6 +1877,6 @@ TEST_F(nir_load_store_vectorize_test, ubo_alignment_const_100)
       create_indirect_load(nir_var_mem_ubo, 0, nir_imm_int(b, 100), 0x1);
 
    EXPECT_TRUE(run_vectorizer(nir_var_mem_ubo));
-   EXPECT_EQ(nir_intrinsic_align_mul(load), 0x40000000);
+   EXPECT_EQ(nir_intrinsic_align_mul(load), NIR_ALIGN_MUL_MAX);
    EXPECT_EQ(nir_intrinsic_align_offset(load), 100);
 }

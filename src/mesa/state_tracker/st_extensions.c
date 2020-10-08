@@ -87,6 +87,8 @@ void st_init_limits(struct pipe_screen *screen,
 
    c->MaxTextureSize = screen->get_param(screen, PIPE_CAP_MAX_TEXTURE_2D_SIZE);
    c->MaxTextureSize = MIN2(c->MaxTextureSize, 1 << (MAX_TEXTURE_LEVELS - 1));
+   c->MaxTextureMbytes = MAX2(c->MaxTextureMbytes,
+                              screen->get_param(screen, PIPE_CAP_MAX_TEXTURE_MB));
 
    c->Max3DTextureLevels
       = _min(screen->get_param(screen, PIPE_CAP_MAX_TEXTURE_3D_LEVELS),
@@ -333,7 +335,7 @@ void st_init_limits(struct pipe_screen *screen,
        */
       options->LowerBufferInterfaceBlocks = !prefer_nir;
 
-      if (sh == MESA_SHADER_VERTEX) {
+      if (sh == PIPE_SHADER_VERTEX || sh == PIPE_SHADER_GEOMETRY) {
          if (screen->get_param(screen, PIPE_CAP_VIEWPORT_TRANSFORM_LOWERED))
             options->LowerBuiltinVariablesXfb |= VARYING_BIT_POS;
          if (screen->get_param(screen, PIPE_CAP_PSIZ_CLAMPED))
@@ -813,6 +815,7 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(NV_fill_rectangle),                PIPE_CAP_POLYGON_MODE_FILL_RECTANGLE      },
       { o(NV_primitive_restart),             PIPE_CAP_PRIMITIVE_RESTART                },
       { o(NV_shader_atomic_float),           PIPE_CAP_TGSI_ATOMFADD                    },
+      { o(NV_shader_atomic_int64),           PIPE_CAP_SHADER_ATOMIC_INT64              },
       { o(NV_texture_barrier),               PIPE_CAP_TEXTURE_BARRIER                  },
       { o(NV_viewport_array2),               PIPE_CAP_VIEWPORT_MASK                    },
       { o(NV_viewport_swizzle),              PIPE_CAP_VIEWPORT_SWIZZLE                 },
@@ -1749,6 +1752,7 @@ void st_init_extensions(struct pipe_screen *screen,
       spirv_caps->image_read_without_format  = extensions->EXT_shader_image_load_formatted;
       spirv_caps->image_write_without_format = extensions->ARB_shader_image_load_store;
       spirv_caps->int64                      = extensions->ARB_gpu_shader_int64;
+      spirv_caps->int64_atomics              = extensions->NV_shader_atomic_int64;
       spirv_caps->post_depth_coverage        = extensions->ARB_post_depth_coverage;
       spirv_caps->shader_clock               = extensions->ARB_shader_clock;
       spirv_caps->shader_viewport_index_layer = extensions->ARB_shader_viewport_layer_array;
@@ -1771,8 +1775,12 @@ void st_init_extensions(struct pipe_screen *screen,
 
    bool prefer_nir = PIPE_SHADER_IR_NIR ==
          screen->get_shader_param(screen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_PREFERRED_IR);
+   const struct nir_shader_compiler_options *nir_options =
+      consts->ShaderCompilerOptions[MESA_SHADER_FRAGMENT].NirOptions;
+
    if (prefer_nir &&
        screen->get_shader_param(screen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_INTEGERS) &&
-       extensions->ARB_stencil_texturing)
+       extensions->ARB_stencil_texturing &&
+       !(nir_options->lower_doubles_options & nir_lower_fp64_full_software))
       extensions->NV_copy_depth_to_color = TRUE;
 }

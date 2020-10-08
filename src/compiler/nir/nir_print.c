@@ -465,6 +465,8 @@ get_variable_mode_str(nir_variable_mode mode, bool want_local_global_mode)
       return "shared";
    case nir_var_mem_global:
       return "global";
+   case nir_var_mem_push_const:
+      return "push_const";
    case nir_var_mem_constant:
       return "constant";
    case nir_var_shader_temp:
@@ -734,7 +736,9 @@ print_deref_instr(nir_deref_instr *instr, print_state *state)
    }
 
    if (instr->deref_type == nir_deref_type_cast) {
-      fprintf(fp, " /* ptr_stride=%u */", instr->cast.ptr_stride);
+      fprintf(fp, " /* ptr_stride=%u, align_mul=%u, align_offset=%u */",
+              instr->cast.ptr_stride,
+              instr->cast.align_mul, instr->cast.align_offset);
    }
 }
 
@@ -833,7 +837,8 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
       [NIR_INTRINSIC_ALIGN_MUL] = "align_mul",
       [NIR_INTRINSIC_ALIGN_OFFSET] = "align_offset",
       [NIR_INTRINSIC_DESC_TYPE] = "desc_type",
-      [NIR_INTRINSIC_TYPE] = "type",
+      [NIR_INTRINSIC_SRC_TYPE] = "src_type",
+      [NIR_INTRINSIC_DEST_TYPE] = "dest_type",
       [NIR_INTRINSIC_SWIZZLE_MASK] = "swizzle_mask",
       [NIR_INTRINSIC_DRIVER_LOCATION] = "driver_location",
       [NIR_INTRINSIC_MEMORY_SEMANTICS] = "mem_semantics",
@@ -841,6 +846,8 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
       [NIR_INTRINSIC_MEMORY_SCOPE] = "mem_scope",
       [NIR_INTRINSIC_EXECUTION_SCOPE] = "exec_scope",
       [NIR_INTRINSIC_IO_SEMANTICS] = "io_semantics",
+      [NIR_INTRINSIC_ROUNDING_MODE] = "src_type",
+      [NIR_INTRINSIC_SATURATE] = "src_type",
    };
 
    for (unsigned idx = 1; idx < NIR_INTRINSIC_NUM_INDEX_FLAGS; idx++) {
@@ -894,9 +901,15 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
          break;
       }
 
-      case NIR_INTRINSIC_TYPE: {
-         fprintf(fp, " type=");
-         print_alu_type(nir_intrinsic_type(instr), state);
+      case NIR_INTRINSIC_SRC_TYPE: {
+         fprintf(fp, " src_type=");
+         print_alu_type(nir_intrinsic_src_type(instr), state);
+         break;
+      }
+
+      case NIR_INTRINSIC_DEST_TYPE: {
+         fprintf(fp, " src_type=");
+         print_alu_type(nir_intrinsic_dest_type(instr), state);
          break;
       }
 
@@ -972,6 +985,10 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
                 nir_intrinsic_io_semantics(instr).fb_fetch_output) {
                fprintf(fp, " fbfetch=1");
             }
+            if (instr->intrinsic == nir_intrinsic_store_output &&
+                nir_intrinsic_io_semantics(instr).per_view) {
+               fprintf(fp, " perview=1");
+            }
             if (state->shader->info.stage == MESA_SHADER_GEOMETRY &&
                 instr->intrinsic == nir_intrinsic_store_output) {
                unsigned gs_streams = nir_intrinsic_io_semantics(instr).gs_streams;
@@ -988,6 +1005,19 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
             }
          }
          break;
+
+      case NIR_INTRINSIC_ROUNDING_MODE: {
+         fprintf(fp, " rounding_mode=");
+         switch (nir_intrinsic_rounding_mode(instr)) {
+         case nir_rounding_mode_undef: fprintf(fp, "undef");   break;
+         case nir_rounding_mode_rtne:  fprintf(fp, "rtne");    break;
+         case nir_rounding_mode_ru:    fprintf(fp, "ru");      break;
+         case nir_rounding_mode_rd:    fprintf(fp, "rd");      break;
+         case nir_rounding_mode_rtz:   fprintf(fp, "rtz");     break;
+         default:                      fprintf(fp, "unkown");  break;
+         }
+         break;
+      }
 
       default: {
          unsigned off = info->index_map[idx] - 1;

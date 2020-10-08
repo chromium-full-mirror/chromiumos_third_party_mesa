@@ -174,8 +174,7 @@ iris_upload_ubo_ssbo_surf_state(struct iris_context *ice,
                          .address = res->bo->gtt_offset + res->offset +
                                     buf->buffer_offset,
                          .size_B = buf->buffer_size - res->offset,
-                         .format = ssbo ? ISL_FORMAT_RAW
-                                        : ISL_FORMAT_R32G32B32A32_FLOAT,
+                         .format = ISL_FORMAT_RAW,
                          .swizzle = ISL_SWIZZLE_IDENTITY,
                          .stride_B = 1,
                          .mocs = iris_mocs(res->bo, &screen->isl_dev));
@@ -396,6 +395,7 @@ iris_setup_uniforms(const struct brw_compiler *compiler,
    unsigned ucp_idx[IRIS_MAX_CLIP_PLANES];
    unsigned img_idx[PIPE_MAX_SHADER_IMAGES];
    unsigned variable_group_size_idx = -1;
+   unsigned work_dim_idx = -1;
    memset(ucp_idx, -1, sizeof(ucp_idx));
    memset(img_idx, -1, sizeof(img_idx));
 
@@ -537,6 +537,16 @@ iris_setup_uniforms(const struct brw_compiler *compiler,
             b.cursor = nir_before_instr(instr);
             offset = nir_imm_int(&b, system_values_start +
                                      variable_group_size_idx * sizeof(uint32_t));
+            break;
+         }
+         case nir_intrinsic_load_work_dim: {
+            if (work_dim_idx == -1) {
+               work_dim_idx = num_system_values++;
+               system_values[work_dim_idx] = BRW_PARAM_BUILTIN_WORK_DIM;
+            }
+            b.cursor = nir_before_instr(instr);
+            offset = nir_imm_int(&b, system_values_start +
+                                     work_dim_idx * sizeof(uint32_t));
             break;
          }
          case nir_intrinsic_load_kernel_input: {
@@ -879,7 +889,7 @@ iris_setup_binding_table(const struct gen_device_info *devinfo,
             mark_used_with_src(bt, &intrin->src[1], IRIS_SURFACE_GROUP_SSBO);
             break;
 
-         case nir_intrinsic_get_buffer_size:
+         case nir_intrinsic_get_ssbo_size:
          case nir_intrinsic_ssbo_atomic_add:
          case nir_intrinsic_ssbo_atomic_imin:
          case nir_intrinsic_ssbo_atomic_umin:
@@ -922,7 +932,7 @@ iris_setup_binding_table(const struct gen_device_info *devinfo,
    }
    bt->size_bytes = next * 4;
 
-   if (unlikely(INTEL_DEBUG & DEBUG_BT)) {
+   if (INTEL_DEBUG & DEBUG_BT) {
       iris_print_binding_table(stderr, gl_shader_stage_name(info->stage), bt);
    }
 
@@ -984,7 +994,7 @@ iris_setup_binding_table(const struct gen_device_info *devinfo,
             }
             break;
 
-         case nir_intrinsic_get_buffer_size:
+         case nir_intrinsic_get_ssbo_size:
          case nir_intrinsic_ssbo_atomic_add:
          case nir_intrinsic_ssbo_atomic_imin:
          case nir_intrinsic_ssbo_atomic_umin:
@@ -2405,6 +2415,7 @@ iris_create_compute_state(struct pipe_context *ctx,
    struct iris_uncompiled_shader *ish =
       iris_create_uncompiled_shader(ctx, nir, NULL);
    ish->kernel_input_size = state->req_input_mem;
+   ish->kernel_shared_size = state->req_local_mem;
 
    // XXX: disallow more than 64KB of shared variables
 

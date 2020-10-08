@@ -35,17 +35,16 @@ sys.path.append(VULKAN_UTIL)
 from vk_extensions import *
 from vk_extensions_gen import *
 
-MAX_API_VERSION = '1.2.128'
+API_PATCH_VERSION = 145
 
 # Supported API versions.  Each one is the maximum patch version for the given
 # version.  Version come in increasing order and each version is available if
 # it's provided "enable" condition is true and all previous versions are
 # available.
-# TODO: The patch version should be unified!
 API_VERSIONS = [
-    ApiVersion('1.0.68',  True),
-    ApiVersion('1.1.107', True),
-    ApiVersion('1.2.131', '!ANDROID'),
+    ApiVersion('1.0', True),
+    ApiVersion('1.1', True),
+    ApiVersion('1.2', '!ANDROID'),
 ]
 
 MAX_API_VERSION = None # Computed later
@@ -61,6 +60,7 @@ EXTENSIONS = [
     Extension('VK_KHR_16bit_storage',                     1, True),
     Extension('VK_KHR_bind_memory2',                      1, True),
     Extension('VK_KHR_buffer_device_address',             1, True),
+    Extension('VK_KHR_copy_commands2',                    1, True),
     Extension('VK_KHR_create_renderpass2',                1, True),
     Extension('VK_KHR_dedicated_allocation',              1, True),
     Extension('VK_KHR_depth_stencil_resolve',             1, True),
@@ -125,7 +125,7 @@ EXTENSIONS = [
     Extension('VK_EXT_conservative_rasterization',        1, 'device->rad_info.chip_class >= GFX9'),
     Extension('VK_EXT_custom_border_color',               12, True),
     Extension('VK_EXT_display_surface_counter',           1, 'VK_USE_PLATFORM_DISPLAY_KHR'),
-    Extension('VK_EXT_display_control',                   1, 'VK_USE_PLATFORM_DISPLAY_KHR'),
+    Extension('VK_EXT_display_control',                   1, 'VK_USE_PLATFORM_DISPLAY_KHR && device->rad_info.has_syncobj_wait_for_submit'),
     Extension('VK_EXT_debug_report',                      9, True),
     Extension('VK_EXT_depth_clip_enable',                 1, True),
     Extension('VK_EXT_depth_range_unrestricted',          1, True),
@@ -194,6 +194,7 @@ EXTENSIONS = [
 MAX_API_VERSION = VkVersion('0.0.0')
 for version in API_VERSIONS:
     version.version = VkVersion(version.version)
+    version.version.patch = API_PATCH_VERSION
     assert version.version > MAX_API_VERSION
     MAX_API_VERSION = version.version
 

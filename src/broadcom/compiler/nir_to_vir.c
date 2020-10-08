@@ -2150,7 +2150,7 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                 v3d40_vir_emit_image_load_store(c, instr);
                 break;
 
-        case nir_intrinsic_get_buffer_size:
+        case nir_intrinsic_get_ssbo_size:
                 ntq_store_dest(c, &instr->dest, 0,
                                vir_uniform(c, QUNIFORM_GET_BUFFER_SIZE,
                                            nir_src_as_uint(instr->src[0])));
@@ -2874,7 +2874,9 @@ const nir_shader_compiler_options v3d_nir_options = {
         .lower_unpack_half_2x16 = true,
         .lower_fdiv = true,
         .lower_find_lsb = true,
-        .lower_ffma = true,
+	.lower_ffma16 = true,
+	.lower_ffma32 = true,
+	.lower_ffma64 = true,
         .lower_flrp32 = true,
         .lower_fpow = true,
         .lower_fsat = true,
@@ -3044,13 +3046,29 @@ v3d_nir_to_vir(struct v3d_compile *c)
                 if (temp_registers)
                         break;
 
+                if (c->threads == min_threads &&
+                    (V3D_DEBUG & V3D_DEBUG_RA)) {
+                        fprintf(stderr,
+                                "Failed to register allocate using %s\n",
+                                c->fallback_scheduler ? "the fallback scheduler:" :
+                                "the normal scheduler: \n");
+
+                        vir_dump(c);
+
+                        char *shaderdb;
+                        int ret = v3d_shaderdb_dump(c, &shaderdb);
+                        if (ret > 0) {
+                                fprintf(stderr, "%s\n", shaderdb);
+                                free(shaderdb);
+                        }
+                }
+
                 if (c->threads == min_threads) {
                         if (c->fallback_scheduler) {
                                 fprintf(stderr,
                                         "Failed to register allocate at %d "
-                                        "threads:\n",
+                                        "threads with any strategy.\n",
                                         c->threads);
-                                vir_dump(c);
                         }
                         c->compilation_result =
                                 V3D_COMPILATION_FAILED_REGISTER_ALLOCATION;

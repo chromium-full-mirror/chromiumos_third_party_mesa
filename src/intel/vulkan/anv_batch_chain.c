@@ -188,6 +188,9 @@ anv_reloc_list_add(struct anv_reloc_list *list,
    if (address_u64_out)
       *address_u64_out = target_bo_offset + delta;
 
+   assert(unwrapped_target_bo->gem_handle > 0);
+   assert(unwrapped_target_bo->refcount > 0);
+
    if (unwrapped_target_bo->flags & EXEC_OBJECT_PINNED) {
       assert(!target_bo->is_wrapper);
       uint32_t idx = unwrapped_target_bo->gem_handle;
@@ -1747,7 +1750,7 @@ anv_queue_execbuf_locked(struct anv_queue *queue,
       submit->cmd_buffer &&
       submit->cmd_buffer->perf_query_pool;
 
-   if (unlikely(INTEL_DEBUG & DEBUG_BATCH)) {
+   if (INTEL_DEBUG & DEBUG_BATCH) {
       if (submit->cmd_buffer) {
          if (has_perf_query) {
             struct anv_query_pool *query_pool = submit->cmd_buffer->perf_query_pool;
@@ -1813,7 +1816,7 @@ anv_queue_execbuf_locked(struct anv_queue *queue,
       /* Some performance queries just the pipeline statistic HW, no need for
        * OA in that case, so no need to reconfigure.
        */
-      if (likely((INTEL_DEBUG & DEBUG_NO_OACONFIG) == 0) &&
+      if ((INTEL_DEBUG & DEBUG_NO_OACONFIG) == 0 &&
           (query_info->kind == GEN_PERF_QUERY_TYPE_OA ||
            query_info->kind == GEN_PERF_QUERY_TYPE_RAW)) {
          int ret = gen_ioctl(device->perf_fd, I915_PERF_IOCTL_CONFIG,

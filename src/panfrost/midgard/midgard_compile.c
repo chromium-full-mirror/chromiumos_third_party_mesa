@@ -174,11 +174,15 @@ glsl_type_size(const struct glsl_type *type, bool bindless)
 }
 
 /* Lower fdot2 to a vector multiplication followed by channel addition  */
-static void
-midgard_nir_lower_fdot2_body(nir_builder *b, nir_alu_instr *alu)
+static bool
+midgard_nir_lower_fdot2_instr(nir_builder *b, nir_instr *instr, void *data)
 {
+        if (instr->type != nir_instr_type_alu)
+                return false;
+
+        nir_alu_instr *alu = nir_instr_as_alu(instr);
         if (alu->op != nir_op_fdot2)
-                return;
+                return false;
 
         b->cursor = nir_before_instr(&alu->instr);
 
@@ -193,36 +197,17 @@ midgard_nir_lower_fdot2_body(nir_builder *b, nir_alu_instr *alu)
 
         /* Replace the fdot2 with this sum */
         nir_ssa_def_rewrite_uses(&alu->dest.dest.ssa, nir_src_for_ssa(sum));
+
+        return true;
 }
 
 static bool
 midgard_nir_lower_fdot2(nir_shader *shader)
 {
-        bool progress = false;
-
-        nir_foreach_function(function, shader) {
-                if (!function->impl) continue;
-
-                nir_builder _b;
-                nir_builder *b = &_b;
-                nir_builder_init(b, function->impl);
-
-                nir_foreach_block(block, function->impl) {
-                        nir_foreach_instr_safe(instr, block) {
-                                if (instr->type != nir_instr_type_alu) continue;
-
-                                nir_alu_instr *alu = nir_instr_as_alu(instr);
-                                midgard_nir_lower_fdot2_body(b, alu);
-
-                                progress |= true;
-                        }
-                }
-
-                nir_metadata_preserve(function->impl, nir_metadata_block_index | nir_metadata_dominance);
-
-        }
-
-        return progress;
+        return nir_shader_instructions_pass(shader,
+                                            midgard_nir_lower_fdot2_instr,
+                                            nir_metadata_block_index | nir_metadata_dominance,
+                                            NULL);
 }
 
 static const nir_variable *
@@ -687,7 +672,7 @@ nir_is_non_scalar_swizzle(nir_alu_src *src, unsigned nr_components)
                 roundmode = MIDGARD_RTZ; \
 		break;
 
-#define ALU_CHECK_CMP(sext) \
+#define ALU_CHECK_CMP() \
                 assert(src_bitsize == 16 || src_bitsize == 32); \
                 assert(dst_bitsize == 16 || dst_bitsize == 32); \
 
@@ -695,14 +680,14 @@ nir_is_non_scalar_swizzle(nir_alu_src *src, unsigned nr_components)
         case nir_op_##nir: \
                 op = midgard_alu_op_##_op; \
                 broadcast_swizzle = count; \
-                ALU_CHECK_CMP(true); \
+                ALU_CHECK_CMP(); \
                 break;
 
-#define ALU_CASE_CMP(nir, _op, sext) \
+#define ALU_CASE_CMP(nir, _op) \
 	case nir_op_##nir: \
 		op = midgard_alu_op_##_op; \
-                ALU_CHECK_CMP(sext); \
-                 break;
+                ALU_CHECK_CMP(); \
+                break;
 
 /* Compare mir_lower_invert */
 static bool
@@ -915,15 +900,18 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
                 /* Zero shoved as second-arg */
                 ALU_CASE(iabs, iabsdiff);
 
+                ALU_CASE(uabs_isub, iabsdiff);
+                ALU_CASE(uabs_usub, uabsdiff);
+
                 ALU_CASE(mov, imov);
 
-                ALU_CASE_CMP(feq32, feq, false);
-                ALU_CASE_CMP(fneu32, fne, false);
-                ALU_CASE_CMP(flt32, flt, false);
-                ALU_CASE_CMP(ieq32, ieq, true);
-                ALU_CASE_CMP(ine32, ine, true);
-                ALU_CASE_CMP(ilt32, ilt, true);
-                ALU_CASE_CMP(ult32, ult, false);
+                ALU_CASE_CMP(feq32, feq);
+                ALU_CASE_CMP(fneu32, fne);
+                ALU_CASE_CMP(flt32, flt);
+                ALU_CASE_CMP(ieq32, ieq);
+                ALU_CASE_CMP(ine32, ine);
+                ALU_CASE_CMP(ilt32, ilt);
+                ALU_CASE_CMP(ult32, ult);
 
                 /* We don't have a native b2f32 instruction. Instead, like many
                  * GPUs, we exploit booleans as 0/~0 for false/true, and
@@ -936,15 +924,15 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
                  * At the end of emit_alu (as MIR), we'll fix-up the constant
                  */
 
-                ALU_CASE_CMP(b2f32, iand, true);
-                ALU_CASE_CMP(b2f16, iand, true);
-                ALU_CASE_CMP(b2i32, iand, true);
+                ALU_CASE_CMP(b2f32, iand);
+                ALU_CASE_CMP(b2f16, iand);
+                ALU_CASE_CMP(b2i32, iand);
 
                 /* Likewise, we don't have a dedicated f2b32 instruction, but
                  * we can do a "not equal to 0.0" test. */
 
-                ALU_CASE_CMP(f2b32, fne, false);
-                ALU_CASE_CMP(i2b32, ine, true);
+                ALU_CASE_CMP(f2b32, fne);
+                ALU_CASE_CMP(i2b32, ine);
 
                 ALU_CASE(frcp, frcp);
                 ALU_CASE(frsq, frsqrt);
@@ -985,19 +973,19 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
 
                 ALU_CASE_BCAST(b32all_fequal2, fball_eq, 2);
                 ALU_CASE_BCAST(b32all_fequal3, fball_eq, 3);
-                ALU_CASE_CMP(b32all_fequal4, fball_eq, true);
+                ALU_CASE_CMP(b32all_fequal4, fball_eq);
 
                 ALU_CASE_BCAST(b32any_fnequal2, fbany_neq, 2);
                 ALU_CASE_BCAST(b32any_fnequal3, fbany_neq, 3);
-                ALU_CASE_CMP(b32any_fnequal4, fbany_neq, true);
+                ALU_CASE_CMP(b32any_fnequal4, fbany_neq);
 
                 ALU_CASE_BCAST(b32all_iequal2, iball_eq, 2);
                 ALU_CASE_BCAST(b32all_iequal3, iball_eq, 3);
-                ALU_CASE_CMP(b32all_iequal4, iball_eq, true);
+                ALU_CASE_CMP(b32all_iequal4, iball_eq);
 
                 ALU_CASE_BCAST(b32any_inequal2, ibany_neq, 2);
                 ALU_CASE_BCAST(b32any_inequal3, ibany_neq, 3);
-                ALU_CASE_CMP(b32any_inequal4, ibany_neq, true);
+                ALU_CASE_CMP(b32any_inequal4, ibany_neq);
 
                 /* Source mods will be shoved in later */
                 ALU_CASE(fabs, fmov);
@@ -1048,7 +1036,7 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
                         0;
 
                 flip_src12 = true;
-                ALU_CHECK_CMP(false);
+                ALU_CHECK_CMP();
                 break;
         }
 
@@ -1751,7 +1739,7 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                 nir_alu_type t =
                         (is_ubo || is_global || is_shared) ? nir_type_uint :
                         (is_interp) ? nir_type_float :
-                        nir_intrinsic_type(instr);
+                        nir_intrinsic_dest_type(instr);
 
                 t = nir_alu_type_get_base_type(t);
 
@@ -1963,7 +1951,7 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                         st.load_store.arg_1 = 0x9E;
                         st.load_store.arg_2 = 0x1E;
 
-                        switch (nir_alu_type_get_base_type(nir_intrinsic_type(instr))) {
+                        switch (nir_alu_type_get_base_type(nir_intrinsic_src_type(instr))) {
                         case nir_type_uint:
                         case nir_type_bool:
                                 st.op = midgard_op_st_vary_32u;
@@ -2021,7 +2009,7 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                 emit_sysval_read(ctx, &instr->instr, 1, 0);
                 break;
 
-        case nir_intrinsic_get_buffer_size:
+        case nir_intrinsic_get_ssbo_size:
                 emit_sysval_read(ctx, &instr->instr, 1, 8);
                 break;
 
@@ -2961,7 +2949,7 @@ mir_add_writeout_loops(compiler_context *ctx)
 }
 
 int
-midgard_compile_shader_nir(nir_shader *nir, panfrost_program *program, bool is_blend, unsigned blend_rt, unsigned gpu_id, bool shaderdb, bool silent)
+midgard_compile_shader_nir(nir_shader *nir, panfrost_program *program, bool is_blend, unsigned blend_rt, unsigned gpu_id, bool shaderdb)
 {
         struct util_dynarray *compiled = &program->compiled;
 
@@ -3021,7 +3009,7 @@ midgard_compile_shader_nir(nir_shader *nir, panfrost_program *program, bool is_b
 
         NIR_PASS_V(nir, midgard_nir_reorder_writeout);
 
-        if ((midgard_debug & MIDGARD_DBG_SHADERS) && !silent) {
+        if ((midgard_debug & MIDGARD_DBG_SHADERS) && !nir->info.internal) {
                 nir_print_shader(nir, stdout);
         }
 
@@ -3155,10 +3143,10 @@ midgard_compile_shader_nir(nir_shader *nir, panfrost_program *program, bool is_b
         program->blend_patch_offset = ctx->blend_constant_offset;
         program->tls_size = ctx->tls_size;
 
-        if ((midgard_debug & MIDGARD_DBG_SHADERS) && !silent)
+        if ((midgard_debug & MIDGARD_DBG_SHADERS) && !nir->info.internal)
                 disassemble_midgard(stdout, program->compiled.data, program->compiled.size, gpu_id, ctx->stage);
 
-        if ((midgard_debug & MIDGARD_DBG_SHADERDB || shaderdb) && !silent) {
+        if ((midgard_debug & MIDGARD_DBG_SHADERDB || shaderdb) && !nir->info.internal) {
                 unsigned nr_bundles = 0, nr_ins = 0;
 
                 /* Count instructions and bundles */

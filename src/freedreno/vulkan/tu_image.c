@@ -271,6 +271,36 @@ tu_image_create(VkDevice _device,
       image->total_size = MAX2(image->total_size, layout->size);
    }
 
+   const struct util_format_description *desc = util_format_description(image->layout[0].format);
+   if (util_format_has_depth(desc) && !(device->instance->debug_flags & TU_DEBUG_NOLRZ))
+   {
+      /* Depth plane is the first one */
+      struct fdl_layout *layout = &image->layout[0];
+      unsigned width = layout->width0;
+      unsigned height = layout->height0;
+
+      /* LRZ buffer is super-sampled */
+      switch (layout->nr_samples) {
+      case 4:
+         width *= 2;
+         /* fallthru */
+      case 2:
+         height *= 2;
+         break;
+      default:
+         break;
+      }
+
+      unsigned lrz_pitch  = align(DIV_ROUND_UP(width, 8), 32);
+      unsigned lrz_height = align(DIV_ROUND_UP(height, 8), 16);
+
+      image->lrz_height = lrz_height;
+      image->lrz_pitch = lrz_pitch;
+      image->lrz_offset = image->total_size;
+      unsigned lrz_size = lrz_pitch * lrz_height * 2;
+      image->total_size += lrz_size;
+   }
+
    *pImage = tu_image_to_handle(image);
 
    return VK_SUCCESS;
@@ -454,8 +484,9 @@ tu_image_view_init(struct tu_image_view *iview,
       format = tu6_plane_format(format, tu6_plane_index(format, aspect_mask));
 
    struct tu_native_format fmt = tu6_format_texture(format, layout->tile_mode);
-   /* note: freedreno layout assumes no TILE_ALL bit for non-UBWC
-    * this means smaller mipmap levels have a linear tile mode
+   /* note: freedreno layout assumes no TILE_ALL bit for non-UBWC color formats
+    * this means smaller mipmap levels have a linear tile mode.
+    * Depth/stencil formats have non-linear tile mode.
     */
    fmt.tile_mode = fdl_tile_mode(layout, range->baseMipLevel);
 
@@ -492,6 +523,9 @@ tu_image_view_init(struct tu_image_view *iview,
    iview->descriptor[3] = A6XX_TEX_CONST_3_ARRAY_PITCH(layer_size);
    iview->descriptor[4] = base_addr;
    iview->descriptor[5] = (base_addr >> 32) | A6XX_TEX_CONST_5_DEPTH(depth);
+
+   if (layout->tile_all)
+      iview->descriptor[3] |= A6XX_TEX_CONST_3_TILE_ALL;
 
    if (format == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ||
        format == VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM) {
@@ -539,7 +573,7 @@ tu_image_view_init(struct tu_image_view *iview,
       uint32_t block_width, block_height;
       fdl6_get_ubwc_blockwidth(layout, &block_width, &block_height);
 
-      iview->descriptor[3] |= A6XX_TEX_CONST_3_FLAG | A6XX_TEX_CONST_3_TILE_ALL;
+      iview->descriptor[3] |= A6XX_TEX_CONST_3_FLAG;
       iview->descriptor[7] = ubwc_addr;
       iview->descriptor[8] = ubwc_addr >> 32;
       iview->descriptor[9] |= A6XX_TEX_CONST_9_FLAG_BUFFER_ARRAY_PITCH(layout->ubwc_layer_size >> 2);

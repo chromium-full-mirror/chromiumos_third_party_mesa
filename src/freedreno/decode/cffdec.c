@@ -403,8 +403,10 @@ dump_shader(const char *ext, void *buf, int bufsz)
 		int fd;
 		sprintf(filename, "%04d.%s", n++, ext);
 		fd = open(filename, O_WRONLY| O_TRUNC | O_CREAT, 0644);
-		write(fd, buf, bufsz);
-		close(fd);
+		if (fd != -1) {
+			write(fd, buf, bufsz);
+			close(fd);
+		}
 	}
 }
 
@@ -1438,8 +1440,8 @@ cp_load_state(uint32_t *dwords, uint32_t sizedwords, int level)
 	case STATE_SRC_BINDLESS: {
 		const unsigned base_reg =
 			stage == MESA_SHADER_COMPUTE ?
-				regbase("HLSQ_CS_BINDLESS_BASE[0]") :
-				regbase("HLSQ_BINDLESS_BASE[0]");
+				regbase("HLSQ_CS_BINDLESS_BASE[0].ADDR") :
+				regbase("HLSQ_BINDLESS_BASE[0].ADDR");
 
 		if (is_64b()) {
 			const unsigned reg = base_reg + (dwords[1] >> 28) * 2;

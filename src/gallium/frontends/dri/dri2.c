@@ -726,6 +726,16 @@ dri2_update_tex_buffer(struct dri_drawable *drawable,
    /* no-op */
 }
 
+static const struct dri2_format_mapping r8_g8b8_mapping = {
+   DRM_FORMAT_NV12,
+   __DRI_IMAGE_FORMAT_NONE,
+   __DRI_IMAGE_COMPONENTS_Y_UV,
+   PIPE_FORMAT_R8_G8B8_420_UNORM,
+   2,
+   { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
+     { 1, 1, 1, __DRI_IMAGE_FORMAT_GR88, 2 } }
+};
+
 static __DRIimage *
 dri2_create_image_from_winsys(__DRIscreen *_screen,
                               int width, int height, const struct dri2_format_mapping *map,
@@ -747,6 +757,14 @@ dri2_create_image_from_winsys(__DRIscreen *_screen,
    if (pscreen->is_format_supported(pscreen, map->pipe_format, screen->target, 0, 0,
                                     PIPE_BIND_SAMPLER_VIEW))
       tex_usage |= PIPE_BIND_SAMPLER_VIEW;
+
+   /* For NV12, see if we have support for sampling r8_b8g8 */
+   if (!tex_usage && map->pipe_format == PIPE_FORMAT_NV12 &&
+       pscreen->is_format_supported(pscreen, PIPE_FORMAT_R8_G8B8_420_UNORM,
+                                    screen->target, 0, 0, PIPE_BIND_SAMPLER_VIEW)) {
+      map = &r8_g8b8_mapping;
+      tex_usage |= PIPE_BIND_SAMPLER_VIEW;
+   }
 
    if (!tex_usage && util_format_is_yuv(map->pipe_format)) {
       /* YUV format sampling can be emulated by the GL gallium frontend by
@@ -1558,8 +1576,7 @@ dri2_map_image(__DRIcontext *context, __DRIimage *image,
 {
    struct dri_context *ctx = dri_context(context);
    struct pipe_context *pipe = ctx->st->pipe;
-   enum pipe_transfer_usage pipe_access = 0;
-   struct pipe_resource *resource = image->texture;
+   enum pipe_map_flags pipe_access = 0;
    struct pipe_transfer *trans;
    void *map;
 
@@ -1570,13 +1587,14 @@ dri2_map_image(__DRIcontext *context, __DRIimage *image,
    if (plane >= dri2_get_mapping_by_format(image->dri_format)->nplanes)
       return NULL;
 
+   struct pipe_resource *resource = image->texture;
    while (plane--)
       resource = resource->next;
 
    if (flags & __DRI_IMAGE_TRANSFER_READ)
-         pipe_access |= PIPE_TRANSFER_READ;
+         pipe_access |= PIPE_MAP_READ;
    if (flags & __DRI_IMAGE_TRANSFER_WRITE)
-         pipe_access |= PIPE_TRANSFER_WRITE;
+         pipe_access |= PIPE_MAP_WRITE;
 
    map = pipe_transfer_map(pipe, resource, 0, 0, pipe_access, x0, y0,
                            width, height, &trans);

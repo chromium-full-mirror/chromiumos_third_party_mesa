@@ -348,7 +348,9 @@ zink_set_viewport_states(struct pipe_context *pctx,
       ctx->viewport_states[start_slot + i] = state[i];
       ctx->viewports[start_slot + i] = viewport;
    }
-   ctx->num_viewports = start_slot + num_viewports;
+   if (ctx->gfx_pipeline_state.num_viewports != start_slot + num_viewports)
+      ctx->gfx_pipeline_state.hash = 0;
+   ctx->gfx_pipeline_state.num_viewports = start_slot + num_viewports;
 }
 
 static void
@@ -383,7 +385,7 @@ zink_set_constant_buffer(struct pipe_context *pctx,
       if (cb->user_buffer) {
          struct zink_screen *screen = zink_screen(pctx->screen);
          u_upload_data(ctx->base.const_uploader, 0, cb->buffer_size,
-                       screen->props.limits.minUniformBufferOffsetAlignment,
+                       screen->info.props.limits.minUniformBufferOffsetAlignment,
                        cb->user_buffer, &offset, &buffer);
       }
 
@@ -444,7 +446,7 @@ get_render_pass(struct zink_context *ctx)
       struct pipe_surface *surf = fb->cbufs[i];
       if (surf) {
          state.rts[i].format = zink_get_format(screen, surf->format);
-         state.rts[i].samples = surf->nr_samples > 0 ? surf->nr_samples :
+         state.rts[i].samples = surf->texture->nr_samples > 0 ? surf->texture->nr_samples :
                                                        VK_SAMPLE_COUNT_1_BIT;
       } else {
          state.rts[i].format = VK_FORMAT_R8_UINT;
@@ -492,9 +494,9 @@ create_framebuffer(struct zink_context *ctx)
       state.attachments[state.num_attachments++] = zink_surface(psurf);
    }
 
-   state.width = ctx->fb_state.width;
-   state.height = ctx->fb_state.height;
-   state.layers = MAX2(ctx->fb_state.layers, 1);
+   state.width = MAX2(ctx->fb_state.width, 1);
+   state.height = MAX2(ctx->fb_state.height, 1);
+   state.layers = MAX2(util_framebuffer_get_num_layers(&ctx->fb_state), 1);
    state.samples = ctx->fb_state.samples;
 
    return zink_create_framebuffer(ctx, screen, &state);
@@ -611,7 +613,7 @@ zink_set_framebuffer_state(struct pipe_context *pctx,
    zink_framebuffer_reference(screen, &ctx->framebuffer, fb);
    zink_render_pass_reference(screen, &ctx->gfx_pipeline_state.render_pass, fb->rp);
 
-   ctx->gfx_pipeline_state.rast_samples = MAX2(state->samples, 1);
+   ctx->gfx_pipeline_state.rast_samples = util_framebuffer_get_num_samples(state);
    ctx->gfx_pipeline_state.num_attachments = state->nr_cbufs;
    ctx->gfx_pipeline_state.hash = 0;
 
@@ -873,7 +875,7 @@ zink_flush(struct pipe_context *pctx,
    struct zink_batch *batch = zink_curr_batch(ctx);
    flush_batch(ctx);
 
-   if (zink_screen(pctx->screen)->have_EXT_transform_feedback && ctx->num_so_targets)
+   if (zink_screen(pctx->screen)->info.have_EXT_transform_feedback && ctx->num_so_targets)
       ctx->dirty_so_targets = true;
 
    if (pfence)
@@ -895,6 +897,18 @@ zink_flush(struct pipe_context *pctx,
                                  PIPE_TIMEOUT_INFINITE);
 }
 
+void
+zink_fence_wait(struct pipe_context *pctx)
+{
+   struct pipe_fence_handle *fence = NULL;
+   pctx->flush(pctx, &fence, PIPE_FLUSH_HINT_FINISH);
+   if (fence) {
+      pctx->screen->fence_finish(pctx->screen, NULL, fence,
+                                 PIPE_TIMEOUT_INFINITE);
+      pctx->screen->fence_reference(pctx->screen, &fence, NULL);
+   }
+}
+
 static void
 zink_flush_resource(struct pipe_context *pipe,
                     struct pipe_resource *resource)
@@ -913,6 +927,17 @@ zink_resource_copy_region(struct pipe_context *pctx,
    struct zink_context *ctx = zink_context(pctx);
    if (dst->base.target != PIPE_BUFFER && src->base.target != PIPE_BUFFER) {
       VkImageCopy region = {};
+      if (util_format_get_num_planes(src->base.format) == 1 &&
+          util_format_get_num_planes(dst->base.format) == 1) {
+      /* If neither the calling command’s srcImage nor the calling command’s dstImage
+       * has a multi-planar image format then the aspectMask member of srcSubresource
+       * and dstSubresource must match
+       *
+       * -VkImageCopy spec
+       */
+         assert(src->aspect == dst->aspect);
+      } else
+         unreachable("planar formats not yet handled");
 
       region.srcSubresource.aspectMask = src->aspect;
       region.srcSubresource.mipLevel = src_level;
@@ -949,16 +974,7 @@ zink_resource_copy_region(struct pipe_context *pctx,
       zink_batch_reference_resoure(batch, src);
       zink_batch_reference_resoure(batch, dst);
 
-      if (src->layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-         zink_resource_barrier(batch->cmdbuf, src, src->aspect,
-                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-      }
-
-      if (dst->layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-         zink_resource_barrier(batch->cmdbuf, dst, dst->aspect,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-      }
-
+      zink_resource_setup_transfer_layouts(batch, src, dst);
       vkCmdCopyImage(batch->cmdbuf, src->image, src->layout,
                      dst->image, dst->layout,
                      1, &region);
@@ -989,12 +1005,6 @@ zink_create_stream_output_target(struct pipe_context *pctx,
    if (!t)
       return NULL;
 
-   t->base.reference.count = 1;
-   t->base.context = pctx;
-   pipe_resource_reference(&t->base.buffer, pres);
-   t->base.buffer_offset = buffer_offset;
-   t->base.buffer_size = buffer_size;
-
    /* using PIPE_BIND_CUSTOM here lets us create a custom pipe buffer resource,
     * which allows us to differentiate and use VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT
     * as we must for this case
@@ -1004,6 +1014,12 @@ zink_create_stream_output_target(struct pipe_context *pctx,
       FREE(t);
       return NULL;
    }
+
+   t->base.reference.count = 1;
+   t->base.context = pctx;
+   pipe_resource_reference(&t->base.buffer, pres);
+   t->base.buffer_offset = buffer_offset;
+   t->base.buffer_size = buffer_size;
 
    return &t->base;
 }

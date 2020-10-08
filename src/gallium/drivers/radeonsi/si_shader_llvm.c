@@ -356,22 +356,8 @@ LLVMValueRef si_llvm_get_block_size(struct ac_shader_abi *abi)
 {
    struct si_shader_context *ctx = si_shader_context_from_abi(abi);
 
-   LLVMValueRef values[3];
-   LLVMValueRef result;
-   unsigned i;
-
-   if (!ctx->shader->selector->info.base.cs.local_size_variable) {
-      uint16_t *local_size = ctx->shader->selector->info.base.cs.local_size;
-
-      for (i = 0; i < 3; ++i)
-         values[i] = LLVMConstInt(ctx->ac.i32, local_size[i], 0);
-
-      result = ac_build_gather_values(&ctx->ac, values, 3);
-   } else {
-      result = ac_get_arg(&ctx->ac, ctx->block_size);
-   }
-
-   return result;
+   assert(ctx->shader->selector->info.base.cs.local_size_variable);
+   return ac_get_arg(&ctx->ac, ctx->block_size);
 }
 
 void si_llvm_declare_compute_memory(struct si_shader_context *ctx)
@@ -426,7 +412,7 @@ bool si_nir_build_llvm(struct si_shader_context *ctx, struct nir_shader *nir)
          ctx->shader->key.mono.u.ps.interpolate_at_sample_force_center;
 
       ctx->abi.kill_ps_if_inf_interp =
-         (ctx->screen->debug_flags & DBG(KILL_PS_INF_INTERP)) &&
+         ctx->screen->options.no_infinite_interp &&
          (ctx->shader->selector->info.uses_persp_center ||
           ctx->shader->selector->info.uses_persp_centroid ||
           ctx->shader->selector->info.uses_persp_sample);
@@ -450,8 +436,13 @@ bool si_nir_build_llvm(struct si_shader_context *ctx, struct nir_shader *nir)
 
    const struct si_shader_info *info = &ctx->shader->selector->info;
    for (unsigned i = 0; i < info->num_outputs; i++) {
+      LLVMTypeRef type = ctx->ac.f32;
+
+      if (nir_alu_type_get_type_size(ctx->shader->selector->info.output_type[i]) == 16)
+         type = ctx->ac.f16;
+
       for (unsigned j = 0; j < 4; j++)
-         ctx->abi.outputs[i * 4 + j] = ac_build_alloca_undef(&ctx->ac, ctx->ac.f32, "");
+         ctx->abi.outputs[i * 4 + j] = ac_build_alloca_undef(&ctx->ac, type, "");
    }
 
    ac_nir_translate(&ctx->ac, &ctx->abi, &ctx->args, nir);

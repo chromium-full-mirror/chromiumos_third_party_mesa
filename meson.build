@@ -72,6 +72,7 @@ if with_tools.contains('all')
     'xvmc',
   ]
 endif
+with_clc = false
 
 with_intel_tools = with_tools.contains('intel') or with_tools.contains('intel-ui')
 with_imgui = with_intel_tools or with_vulkan_overlay_layer
@@ -162,6 +163,8 @@ if dri_drivers.contains('auto')
       dri_drivers = ['i915', 'i965', 'r100', 'r200', 'nouveau']
     elif ['arm', 'aarch64'].contains(host_machine.cpu_family())
       dri_drivers = []
+    elif ['mips', 'mips64'].contains(host_machine.cpu_family())
+      dri_drivers = ['r100', 'r200', 'nouveau']
     else
       error('Unknown architecture @0@. Please pass -Ddri-drivers to set driver options. Patches gladly accepted to fix this.'.format(
             host_machine.cpu_family()))
@@ -197,6 +200,10 @@ if gallium_drivers.contains('auto')
       gallium_drivers = [
         'kmsro', 'v3d', 'vc4', 'freedreno', 'etnaviv', 'nouveau',
         'tegra', 'virgl', 'lima', 'panfrost', 'swrast'
+      ]
+    elif ['mips', 'mips64'].contains(host_machine.cpu_family())
+      gallium_drivers = [
+        'r300', 'r600', 'radeonsi', 'nouveau', 'virgl', 'swrast'
       ]
     else
       error('Unknown architecture @0@. Please pass -Dgallium-drivers to set driver options. Patches gladly accepted to fix this.'.format(
@@ -246,6 +253,8 @@ if _vulkan_drivers.contains('auto')
       _vulkan_drivers = ['amd', 'intel', 'swrast']
     elif ['arm', 'aarch64'].contains(host_machine.cpu_family())
       _vulkan_drivers = ['swrast']
+    elif ['mips', 'mips64'].contains(host_machine.cpu_family())
+      _vulkan_drivers = ['amd', 'swrast']
     else
       error('Unknown architecture @0@. Please pass -Dvulkan-drivers to set driver options. Patches gladly accepted to fix this.'.format(
             host_machine.cpu_family()))
@@ -263,6 +272,7 @@ with_intel_vk = _vulkan_drivers.contains('intel')
 with_amd_vk = _vulkan_drivers.contains('amd')
 with_freedreno_vk = _vulkan_drivers.contains('freedreno')
 with_swrast_vk = _vulkan_drivers.contains('swrast')
+with_freedreno_kgsl = get_option('freedreno-kgsl')
 with_any_vk = _vulkan_drivers.length() != 0
 
 if with_swrast_vk and not with_gallium_softpipe
@@ -756,7 +766,7 @@ _power8 = get_option('power8')
 if _power8 == 'true'
   _power8 = 'enabled'
   warning('power8 option "true" deprecated, please use "enabled" instead.')
-elif _power8 == 'disabled'
+elif _power8 == 'false'
   _power8 = 'disabled'
   warning('power8 option "false" deprecated, please use "disabled" instead.')
 endif
@@ -793,13 +803,17 @@ if _opencl != 'disabled'
     error('OpenCL Clover implementation requires at least one gallium driver.')
   endif
 
-  dep_clc = dependency('libclc')
+  with_clc = true
   with_gallium_opencl = true
   with_opencl_icd = _opencl == 'icd'
 else
-  dep_clc = null_dep
   with_gallium_opencl = false
   with_opencl_icd = false
+endif
+
+dep_clc = null_dep
+if with_clc
+  dep_clc = dependency('libclc')
 endif
 
 gl_pkgconfig_c_flags = []
@@ -1441,8 +1455,7 @@ if with_gallium_opencl
   ]
 endif
 
-with_opencl_spirv = _opencl != 'disabled' and get_option('opencl-spirv')
-if with_amd_vk or with_gallium_radeonsi or with_opencl_spirv
+if with_amd_vk or with_gallium_radeonsi or with_gallium_opencl
   _llvm_version = '>= 8.0.0'
 elif with_gallium_swr
   _llvm_version = '>= 6.0.0'
@@ -1536,6 +1549,7 @@ elif with_gallium_opencl
   error('The OpenCL "Clover" state tracker requires LLVM, but LLVM is disabled.')
 endif
 
+with_opencl_spirv = _opencl != 'disabled' and get_option('opencl-spirv')
 if with_opencl_spirv
   chosen_llvm_version_array = dep_llvm.version().split('.')
   chosen_llvm_version_major = chosen_llvm_version_array[0].to_int()

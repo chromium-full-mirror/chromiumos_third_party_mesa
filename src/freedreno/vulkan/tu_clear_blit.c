@@ -14,7 +14,7 @@
 #include "util/format_r11g11b10f.h"
 #include "util/format_rgb9e5.h"
 #include "util/format_srgb.h"
-#include "util/u_half.h"
+#include "util/half_float.h"
 
 static uint32_t
 tu_pack_float32_for_unorm(float val, int bits)
@@ -122,7 +122,7 @@ r2d_clear_value(struct tu_cs *cs, VkFormat format, const VkClearValue *val)
             else
                clear_value[i] = tu_pack_float32_for_unorm(linear, 8);
          } else if (ifmt == R2D_FLOAT16) {
-            clear_value[i] = util_float_to_half(val->color.float32[i]);
+            clear_value[i] = _mesa_float_to_half(val->color.float32[i]);
          } else {
             assert(ifmt == R2D_FLOAT32 || ifmt == R2D_INT32 ||
                    ifmt == R2D_INT16 || ifmt == R2D_INT8);
@@ -761,7 +761,6 @@ r3d_setup(struct tu_cmd_buffer *cmd,
 
    tu_cs_emit_regs(cs, A6XX_SP_BLEND_CNTL());
    tu_cs_emit_regs(cs, A6XX_RB_BLEND_CNTL(.sample_mask = 0xffff));
-   tu_cs_emit_regs(cs, A6XX_RB_ALPHA_CONTROL());
 
    tu_cs_emit_regs(cs, A6XX_RB_DEPTH_PLANE_CNTL());
    tu_cs_emit_regs(cs, A6XX_RB_DEPTH_CNTL());
@@ -913,6 +912,24 @@ copy_format(VkFormat format, VkImageAspectFlags aspect_mask, bool copy_buffer)
       assert(aspect_mask == VK_IMAGE_ASPECT_DEPTH_BIT);
       return VK_FORMAT_D32_SFLOAT;
    }
+}
+
+void
+tu6_clear_lrz(struct tu_cmd_buffer *cmd,
+              struct tu_cs *cs,
+              struct tu_image *image,
+              const VkClearValue *value)
+{
+   const struct blit_ops *ops = &r2d_ops;
+
+   ops->setup(cmd, cs, VK_FORMAT_D16_UNORM, VK_IMAGE_ASPECT_DEPTH_BIT, ROTATE_0, true, false);
+   ops->clear_value(cs, VK_FORMAT_D16_UNORM, value);
+   ops->dst_buffer(cs, VK_FORMAT_D16_UNORM,
+                   image->bo->iova + image->bo_offset + image->lrz_offset,
+                   image->lrz_pitch * 2);
+   ops->coords(cs, &(VkOffset2D) {}, NULL, &(VkExtent2D) {image->lrz_pitch, image->lrz_height});
+   ops->run(cmd, cs);
+   ops->teardown(cmd, cs);
 }
 
 static void
@@ -1087,9 +1104,6 @@ tu_CmdBlitImage(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_image, src_image, srcImage);
    TU_FROM_HANDLE(tu_image, dst_image, dstImage);
 
-   tu_bo_list_add(&cmd->bo_list, src_image->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst_image->bo, MSM_SUBMIT_BO_WRITE);
-
    for (uint32_t i = 0; i < regionCount; ++i) {
       /* can't blit both depth and stencil at once with D32_S8
        * TODO: more advanced 3D blit path to support it instead?
@@ -1210,9 +1224,6 @@ tu_CmdCopyBufferToImage(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_image, dst_image, dstImage);
    TU_FROM_HANDLE(tu_buffer, src_buffer, srcBuffer);
 
-   tu_bo_list_add(&cmd->bo_list, src_buffer->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst_image->bo, MSM_SUBMIT_BO_WRITE);
-
    for (unsigned i = 0; i < regionCount; ++i)
       tu_copy_buffer_to_image(cmd, src_buffer, dst_image, pRegions + i);
 }
@@ -1284,9 +1295,6 @@ tu_CmdCopyImageToBuffer(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
    TU_FROM_HANDLE(tu_image, src_image, srcImage);
    TU_FROM_HANDLE(tu_buffer, dst_buffer, dstBuffer);
-
-   tu_bo_list_add(&cmd->bo_list, src_image->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst_buffer->bo, MSM_SUBMIT_BO_WRITE);
 
    for (unsigned i = 0; i < regionCount; ++i)
       tu_copy_image_to_buffer(cmd, src_image, dst_buffer, pRegions + i);
@@ -1444,9 +1452,6 @@ tu_copy_image_to_image(struct tu_cmd_buffer *cmd,
          return;
       }
 
-      tu_bo_list_add(&cmd->bo_list, staging_image.bo,
-                     MSM_SUBMIT_BO_READ | MSM_SUBMIT_BO_WRITE);
-
       struct tu_image_view staging;
       tu_image_view_copy(&staging, &staging_image, src_format,
                          &staging_subresource, 0, false);
@@ -1509,9 +1514,6 @@ tu_CmdCopyImage(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_image, src_image, srcImage);
    TU_FROM_HANDLE(tu_image, dst_image, destImage);
 
-   tu_bo_list_add(&cmd->bo_list, src_image->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst_image->bo, MSM_SUBMIT_BO_WRITE);
-
    for (uint32_t i = 0; i < regionCount; ++i)
       tu_copy_image_to_image(cmd, src_image, dst_image, pRegions + i);
 }
@@ -1559,9 +1561,6 @@ tu_CmdCopyBuffer(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_buffer, src_buffer, srcBuffer);
    TU_FROM_HANDLE(tu_buffer, dst_buffer, dstBuffer);
 
-   tu_bo_list_add(&cmd->bo_list, src_buffer->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst_buffer->bo, MSM_SUBMIT_BO_WRITE);
-
    for (unsigned i = 0; i < regionCount; ++i) {
       copy_buffer(cmd,
                   tu_buffer_iova(dst_buffer) + pRegions[i].dstOffset,
@@ -1579,8 +1578,6 @@ tu_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
 {
    TU_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
    TU_FROM_HANDLE(tu_buffer, buffer, dstBuffer);
-
-   tu_bo_list_add(&cmd->bo_list, buffer->bo, MSM_SUBMIT_BO_WRITE);
 
    struct tu_cs_memory tmp;
    VkResult result = tu_cs_alloc(&cmd->sub_cs, DIV_ROUND_UP(dataSize, 64), 64, &tmp);
@@ -1604,8 +1601,6 @@ tu_CmdFillBuffer(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_buffer, buffer, dstBuffer);
    const struct blit_ops *ops = &r2d_ops;
    struct tu_cs *cs = &cmd->cs;
-
-   tu_bo_list_add(&cmd->bo_list, buffer->bo, MSM_SUBMIT_BO_WRITE);
 
    if (fillSize == VK_WHOLE_SIZE)
       fillSize = buffer->size - dstOffset;
@@ -1645,9 +1640,6 @@ tu_CmdResolveImage(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_image, dst_image, dstImage);
    const struct blit_ops *ops = &r2d_ops;
    struct tu_cs *cs = &cmd->cs;
-
-   tu_bo_list_add(&cmd->bo_list, src_image->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst_image->bo, MSM_SUBMIT_BO_WRITE);
 
    ops->setup(cmd, cs, dst_image->vk_format, VK_IMAGE_ASPECT_COLOR_BIT,
               ROTATE_0, false, dst_image->layout[0].ubwc);
@@ -1691,9 +1683,6 @@ tu_resolve_sysmem(struct tu_cmd_buffer *cmd,
                   const VkRect2D *rect)
 {
    const struct blit_ops *ops = &r2d_ops;
-
-   tu_bo_list_add(&cmd->bo_list, src->image->bo, MSM_SUBMIT_BO_READ);
-   tu_bo_list_add(&cmd->bo_list, dst->image->bo, MSM_SUBMIT_BO_WRITE);
 
    assert(src->image->vk_format == dst->image->vk_format);
 
@@ -1774,8 +1763,6 @@ tu_CmdClearColorImage(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
    TU_FROM_HANDLE(tu_image, image, image_h);
 
-   tu_bo_list_add(&cmd->bo_list, image->bo, MSM_SUBMIT_BO_WRITE);
-
    for (unsigned i = 0; i < rangeCount; i++)
       clear_image(cmd, image, (const VkClearValue*) pColor, pRanges + i, VK_IMAGE_ASPECT_COLOR_BIT);
 }
@@ -1790,8 +1777,6 @@ tu_CmdClearDepthStencilImage(VkCommandBuffer commandBuffer,
 {
    TU_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
    TU_FROM_HANDLE(tu_image, image, image_h);
-
-   tu_bo_list_add(&cmd->bo_list, image->bo, MSM_SUBMIT_BO_WRITE);
 
    for (unsigned i = 0; i < rangeCount; i++) {
       const VkImageSubresourceRange *range = &pRanges[i];
@@ -1917,10 +1902,14 @@ tu_clear_sysmem_attachments(struct tu_cmd_buffer *cmd,
 
    tu_cs_emit_regs(cs, A6XX_SP_BLEND_CNTL());
    tu_cs_emit_regs(cs, A6XX_RB_BLEND_CNTL(.independent_blend = 1, .sample_mask = 0xffff));
-   tu_cs_emit_regs(cs, A6XX_RB_ALPHA_CONTROL());
    for (uint32_t i = 0; i < mrt_count; i++) {
       tu_cs_emit_regs(cs, A6XX_RB_MRT_CONTROL(i,
             .component_enable = COND(clear_rts & (1 << i), 0xf)));
+   }
+
+   if (z_clear) {
+      tu_cs_emit_regs(cs, A6XX_GRAS_LRZ_CNTL(0));
+      tu_cs_emit_regs(cs, A6XX_RB_LRZ_CNTL(0));
    }
 
    tu_cs_emit_regs(cs, A6XX_RB_DEPTH_PLANE_CNTL());
@@ -2171,6 +2160,13 @@ tu_CmdClearAttachments(VkCommandBuffer commandBuffer,
    tu_cond_exec_start(cs, CP_COND_EXEC_0_RENDER_MODE_SYSMEM);
    tu_clear_sysmem_attachments(cmd, attachmentCount, pAttachments, rectCount, pRects);
    tu_cond_exec_end(cs);
+
+   for (uint32_t j = 0; j < attachmentCount; j++) {
+      if ((pAttachments[j].aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) == 0)
+         continue;
+      cmd->state.lrz.valid = false;
+      cmd->state.dirty |= TU_CMD_DIRTY_LRZ;
+   }
 }
 
 static void

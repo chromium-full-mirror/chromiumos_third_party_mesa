@@ -123,6 +123,7 @@
 #define SI_RESOURCE_FLAG_MICRO_TILE_MODE_GET(x)                                                    \
    (((x) >> SI_RESOURCE_FLAG_MICRO_TILE_MODE_SHIFT) & 0x3)
 #define SI_RESOURCE_FLAG_UNCACHED          (PIPE_RESOURCE_FLAG_DRV_PRIV << 12)
+#define SI_RESOURCE_FLAG_DRIVER_INTERNAL   (PIPE_RESOURCE_FLAG_DRV_PRIV << 13)
 
 enum si_clear_code
 {
@@ -161,8 +162,6 @@ enum
    DBG_W64_GE,
    DBG_W64_PS,
    DBG_W64_CS,
-   DBG_KILL_PS_INF_INTERP,
-   DBG_CLAMP_DIV_BY_ZERO,
 
    /* Shader compiler options (with no effect on the shader cache): */
    DBG_CHECK_IR,
@@ -211,6 +210,8 @@ enum
    DBG_NO_DCC_FB,
    DBG_NO_DCC_MSAA,
    DBG_NO_FMASK,
+
+   DBG_TMZ,
 
    DBG_COUNT
 };
@@ -384,6 +385,8 @@ struct si_texture {
    unsigned ps_draw_ratio;
    /* The number of clears since the last DCC usage analysis. */
    unsigned num_slow_clears;
+
+   struct si_resource *dcc_retile_buffer;
 };
 
 struct si_surface {
@@ -513,6 +516,8 @@ struct si_screen {
    unsigned eqaa_force_coverage_samples;
    unsigned eqaa_force_z_samples;
    unsigned eqaa_force_color_samples;
+   unsigned pbb_context_states_per_bin;
+   unsigned pbb_persistent_states_per_bin;
    bool has_draw_indirect_multi;
    bool has_out_of_order_rast;
    bool assume_no_z_fights;
@@ -522,8 +527,6 @@ struct si_screen {
    bool llvm_has_working_vgpr_indexing;
    bool use_ngg;
    bool use_ngg_culling;
-   bool always_use_ngg_culling_all;
-   bool always_use_ngg_culling_tess;
    bool use_ngg_streamout;
 
    struct {
@@ -704,7 +707,6 @@ struct si_framebuffer {
    ubyte nr_color_samples; /* at most 8xAA */
    ubyte compressed_cb_mask;
    ubyte uncompressed_cb_mask;
-   ubyte displayable_dcc_cb_mask;
    ubyte color_is_int8;
    ubyte color_is_int10;
    ubyte dirty_cbufs;
@@ -715,8 +717,6 @@ struct si_framebuffer {
    bool CB_has_shader_readable_metadata;
    bool DB_has_shader_readable_metadata;
    bool all_DCC_pipe_aligned;
-   bool color_big_page;
-   bool zs_big_page;
 };
 
 enum si_quant_mode
@@ -906,6 +906,7 @@ struct si_context {
    struct pipe_fence_handle *last_gfx_fence;
    struct pipe_fence_handle *last_sdma_fence;
    struct si_resource *eop_bug_scratch;
+   struct si_resource *eop_bug_scratch_tmz;
    struct u_upload_mgr *cached_gtt_allocator;
    struct threaded_context *tc;
    struct u_suballocator *allocator_zeroed_memory;
@@ -949,9 +950,11 @@ struct si_context {
    struct si_shader_ctx_state fixed_func_tcs_shader;
    /* Offset 0: EOP flush number; Offset 4: GDS prim restart counter */
    struct si_resource *wait_mem_scratch;
+   struct si_resource *wait_mem_scratch_tmz;
    unsigned wait_mem_number;
    uint16_t prefetch_L2_mask;
 
+   bool is_noop;
    bool has_graphics;
    bool gfx_flush_in_progress : 1;
    bool gfx_last_ib_is_busy : 1;
@@ -1019,6 +1022,8 @@ struct si_context {
 
    /* Precomputed states. */
    struct si_pm4_state *cs_preamble_state;
+   struct si_pm4_state *cs_preamble_tess_rings;
+   struct si_pm4_state *cs_preamble_tess_rings_tmz;
    struct si_pm4_state *cs_preamble_gs_rings;
    bool cs_preamble_has_vgt_flush;
    struct si_pm4_state *vgt_shader_config[SI_NUM_VGT_STAGES_STATES];
@@ -1060,6 +1065,7 @@ struct si_context {
    struct pipe_resource *esgs_ring;
    struct pipe_resource *gsvs_ring;
    struct pipe_resource *tess_rings;
+   struct pipe_resource *tess_rings_tmz;
    union pipe_color_union *border_color_table; /* in CPU memory, any endian */
    struct si_resource *border_color_buffer;
    union pipe_color_union *border_color_map; /* in VRAM (slow access), little endian */
@@ -1918,5 +1924,10 @@ static inline unsigned si_get_shader_wave_size(struct si_shader *shader)
 
 #define PRINT_ERR(fmt, args...)                                                                    \
    fprintf(stderr, "EE %s:%d %s - " fmt, __FILE__, __LINE__, __func__, ##args)
+
+struct pipe_resource *si_buffer_from_winsys_buffer(struct pipe_screen *screen,
+                                                   const struct pipe_resource *templ,
+                                                   struct pb_buffer *imported_buf,
+                                                   bool dedicated);
 
 #endif

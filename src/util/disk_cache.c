@@ -95,6 +95,14 @@ disk_cache_create(const char *gpu_name, const char *driver_id,
    /* Assume failure. */
    cache->path_init_failed = true;
 
+#ifdef ANDROID
+   /* Android needs the "disk cache" to be enabled for
+    * EGL_ANDROID_blob_cache's callbacks to be called, but it doesn't actually
+    * want any storing to disk to happen inside of the driver.
+    */
+   goto path_fail;
+#endif
+
    char *path = disk_cache_generate_cache_dir(local);
    if (!path)
       goto path_fail;
@@ -372,15 +380,9 @@ disk_cache_get(struct disk_cache *cache, const cache_key key, size_t *size)
 
    char *filename = disk_cache_get_cache_filename(cache, key);
    if (filename == NULL)
-      goto fail;
+      return NULL;
 
    return disk_cache_load_item(cache, filename, size);
-
-fail:
-   if (filename)
-      free(filename);
-
-   return NULL;
 }
 
 void

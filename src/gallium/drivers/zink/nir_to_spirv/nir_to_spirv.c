@@ -536,7 +536,11 @@ emit_sampler(struct ntv_context *ctx, struct nir_variable *var)
                                                    sampled_type);
 
    if (glsl_type_is_array(var->type)) {
-      for (int i = 0; i < glsl_get_length(var->type); ++i) {
+      /* ARB_arrays_of_arrays from GLSL 1.30 allows nesting of arrays, so we just
+       * use the total array size if we encounter a nested array
+       */
+      unsigned size = glsl_get_aoa_size(var->type);
+      for (int i = 0; i < size; ++i) {
          SpvId var_id = spirv_builder_emit_var(&ctx->builder, pointer_type,
                                                SpvStorageClassUniformConstant);
 
@@ -553,8 +557,7 @@ emit_sampler(struct ntv_context *ctx, struct nir_variable *var)
          ctx->samplers[index] = var_id;
          ctx->samplers_used |= 1 << index;
 
-         spirv_builder_emit_descriptor_set(&ctx->builder, var_id,
-                                           var->data.descriptor_set);
+         spirv_builder_emit_descriptor_set(&ctx->builder, var_id, 0);
          int binding = zink_binding(ctx->stage,
                                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                     var->data.binding + i);
@@ -574,8 +577,7 @@ emit_sampler(struct ntv_context *ctx, struct nir_variable *var)
       ctx->samplers[index] = var_id;
       ctx->samplers_used |= 1 << index;
 
-      spirv_builder_emit_descriptor_set(&ctx->builder, var_id,
-                                        var->data.descriptor_set);
+      spirv_builder_emit_descriptor_set(&ctx->builder, var_id, 0);
       int binding = zink_binding(ctx->stage,
                                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                  var->data.binding);
@@ -586,7 +588,13 @@ emit_sampler(struct ntv_context *ctx, struct nir_variable *var)
 static void
 emit_ubo(struct ntv_context *ctx, struct nir_variable *var)
 {
-   uint32_t size = glsl_count_attribute_slots(var->type, false);
+   /* variables accessed inside a uniform block will get merged into a big
+    * memory blob and accessed by offset
+    */
+   if (var->data.location)
+      return;
+
+   uint32_t size = glsl_count_attribute_slots(var->interface_type, false);
    SpvId vec4_type = get_uvec_type(ctx, 32, 4);
    SpvId array_length = emit_uint_const(ctx, 32, size);
    SpvId array_type = spirv_builder_type_array(&ctx->builder, vec4_type,
@@ -618,8 +626,7 @@ emit_ubo(struct ntv_context *ctx, struct nir_variable *var)
    assert(ctx->num_ubos < ARRAY_SIZE(ctx->ubos));
    ctx->ubos[ctx->num_ubos++] = var_id;
 
-   spirv_builder_emit_descriptor_set(&ctx->builder, var_id,
-                                     var->data.descriptor_set);
+   spirv_builder_emit_descriptor_set(&ctx->builder, var_id, 0);
    int binding = zink_binding(ctx->stage,
                               VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                               var->data.binding);
@@ -1562,7 +1569,8 @@ emit_load_ubo(struct ntv_context *ctx, nir_intrinsic_instr *intr)
                                                       SpvStorageClassUniform,
                                                       uvec4_type);
 
-      unsigned idx = const_offset->u32;
+      assert(const_offset->u32 % 16 == 0);
+      unsigned idx = const_offset->u32 / 16;
       SpvId member = emit_uint_const(ctx, 32, 0);
       SpvId offset = emit_uint_const(ctx, 32, idx);
       SpvId offsets[] = { member, offset };
@@ -2263,6 +2271,13 @@ nir_to_spirv(struct nir_shader *s, const struct zink_so_info *so_info)
       unreachable("invalid stage");
    }
 
+   if (s->info.outputs_written & BITFIELD64_BIT(VARYING_SLOT_VIEWPORT)) {
+      if (s->info.stage < MESA_SHADER_GEOMETRY)
+         spirv_builder_emit_cap(&ctx.builder, SpvCapabilityShaderViewportIndex);
+      else
+         spirv_builder_emit_cap(&ctx.builder, SpvCapabilityMultiViewport);
+   }
+
    // TODO: only enable when needed
    if (s->info.stage == MESA_SHADER_FRAGMENT) {
       spirv_builder_emit_cap(&ctx.builder, SpvCapabilitySampled1D);
@@ -2319,12 +2334,15 @@ nir_to_spirv(struct nir_shader *s, const struct zink_so_info *so_info)
    nir_foreach_shader_out_variable(var, s)
       emit_output(&ctx, var);
 
+
    if (so_info)
       emit_so_info(&ctx, util_last_bit64(s->info.outputs_written), so_info);
-   nir_foreach_variable_with_modes(var, s, nir_var_uniform |
-                                           nir_var_mem_ubo |
-                                           nir_var_mem_ssbo)
-      emit_uniform(&ctx, var);
+   /* we have to reverse iterate to match what's done in zink_compiler.c */
+   foreach_list_typed_reverse(nir_variable, var, node, &s->variables)
+      if (_nir_shader_variable_has_mode(var, nir_var_uniform |
+                                        nir_var_mem_ubo |
+                                        nir_var_mem_ssbo))
+         emit_uniform(&ctx, var);
 
    if (s->info.stage == MESA_SHADER_FRAGMENT) {
       spirv_builder_emit_exec_mode(&ctx.builder, entry_point,
