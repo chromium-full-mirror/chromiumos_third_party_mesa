@@ -173,16 +173,13 @@ bit_vertex(struct panfrost_device *dev, panfrost_program prog,
                 cfg.wls_instances = MALI_LOCAL_STORAGE_NO_WORKGROUP_MEM;
         }
 
-        pan_pack(shader_desc->cpu, STATE, cfg) {
+        pan_pack(shader_desc->cpu, RENDERER_STATE, cfg) {
                 cfg.shader.shader = shader->gpu;
                 cfg.shader.attribute_count = cfg.shader.varying_count = 1;
-                cfg.properties = 0x800001;
-
-                pan_pack(&cfg.preload.untyped, PRELOAD_VERTEX, n) {
-                        n.vertex_id = true;
-                        n.instance_id = true;
-                }
- 
+                cfg.properties.uniform_buffer_count = 1;
+                cfg.properties.uniform_count = 4;
+                cfg.preload.vertex_id = true;
+                cfg.preload.instance_id = true;
                 cfg.preload.uniform_count = (sz_ubo / 16);
         }
 
@@ -195,8 +192,8 @@ bit_vertex(struct panfrost_device *dev, panfrost_program prog,
         }
 
         pan_section_pack(&job, COMPUTE_JOB, DRAW, cfg) {
-                cfg.unknown_1 = 0x2;
-                cfg.shared = shmem->gpu;
+                cfg.draw_descriptor_is_64b = true;
+                cfg.thread_storage = shmem->gpu;
                 cfg.state = shader_desc->gpu;
                 cfg.push_uniforms = ubo->gpu + 1024;
                 cfg.uniform_buffers = ubo->gpu;

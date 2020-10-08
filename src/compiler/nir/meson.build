@@ -107,6 +107,7 @@ files_libnir = files(
   'nir_gather_xfb_info.c',
   'nir_gs_count_vertices.c',
   'nir_inline_functions.c',
+  'nir_inline_uniforms.c',
   'nir_instr_set.c',
   'nir_instr_set.h',
   'nir_linking_helpers.c',
@@ -180,6 +181,7 @@ files_libnir = files(
   'nir_lower_vars_to_ssa.c',
   'nir_lower_var_copies.c',
   'nir_lower_vec_to_movs.c',
+  'nir_lower_vec3_to_vec4.c',
   'nir_lower_viewport_transform.c',
   'nir_lower_wpos_center.c',
   'nir_lower_wpos_ytransform.c',
@@ -210,6 +212,7 @@ files_libnir = files(
   'nir_opt_large_constants.c',
   'nir_opt_load_store_vectorize.c',
   'nir_opt_loop_unroll.c',
+  'nir_opt_memcpy.c',
   'nir_opt_move.c',
   'nir_opt_peephole_select.c',
   'nir_opt_rematerialize_compares.c',
@@ -248,6 +251,8 @@ files_libnir = files(
   '../spirv/GLSL.ext.AMD.h',
   '../spirv/GLSL.std.450.h',
   '../spirv/gl_spirv.c',
+  '../spirv/nir_load_libclc.c',
+  '../spirv/nir_lower_libclc.c',
   '../spirv/nir_spirv.h',
   '../spirv/OpenCL.std.h',
   '../spirv/spirv.h',
@@ -263,13 +268,62 @@ files_libnir = files(
   '../spirv/vtn_variables.c',
 )
 
+_libnir_args = []
+if dep_clc.found()
+  _basedir = dep_clc.get_variable(pkgconfig : 'libexecdir')
+
+  _static_libclc = get_option('static-libclc')
+  if _static_libclc.length() > 0
+    if _static_libclc.contains('all')
+      _static_libclc = ['spirv', 'spirv64']
+    endif
+
+    prog_zstd = find_program('zstd', required : false)
+    _zstd_static_libclc = dep_zstd.found() and prog_zstd.found()
+    if _zstd_static_libclc
+      _libnir_args += '-DHAVE_STATIC_LIBCLC_ZSTD'
+    endif
+
+    foreach s : _static_libclc
+      _libnir_args += '-DHAVE_STATIC_LIBCLC_@0@'.format(s.to_upper())
+      f = '@0@-mesa3d-.spv'.format(s)
+      _libclc_file = _basedir / f
+
+      if _zstd_static_libclc
+        _libclc_file = custom_target(
+          '@0@.zstd'.format(f),
+          command : [prog_zstd, '-f', '@INPUT@', '-o', '@OUTPUT@'],
+          input : [_libclc_file],
+          output : '@0@.zstd'.format(f),
+        )
+      endif
+
+      files_libnir += custom_target(
+        '@0@.h'.format(f),
+        command : [
+          prog_python, files_xxd, '-b', '@INPUT@', '@OUTPUT@',
+          '-n', 'libclc_@0@_mesa3d_spv'.format(s),
+        ],
+        input : [_libclc_file],
+        output : '@0@.h'.format(f),
+        depend_files : files_xxd,
+      )
+    endforeach
+  else
+    _libnir_args += ['-DDYNAMIC_LIBCLC_PATH="@0@/"'.format(_basedir)]
+    if not cc.has_function('mmap')
+      error('mmap required for dynamic libCLC loading')
+    endif
+  endif
+endif
+
 _libnir = static_library(
   'nir',
   [files_libnir, spirv_info_c, nir_opt_algebraic_c, nir_opcodes_c,
    nir_opcodes_h, nir_constant_expressions_c, nir_builder_opcodes_h,
    vtn_gather_types_c, nir_intrinsics_c, nir_intrinsics_h],
   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_compiler, include_directories('../spirv')],
-  c_args : [c_msvc_compat_args, no_override_init_args],
+  c_args : [c_msvc_compat_args, no_override_init_args, _libnir_args],
   gnu_symbol_visibility : 'hidden',
   link_with : libcompiler,
   build_by_default : false,

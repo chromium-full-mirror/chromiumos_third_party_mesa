@@ -49,10 +49,7 @@
 
 #include "common/gen_defines.h"
 
-static const __DRIconfigOptionsExtension brw_config_options = {
-   .base = { __DRI_CONFIG_OPTIONS, 1 },
-   .xml =
-DRI_CONF_BEGIN
+static const driOptionDescription brw_driconf[] = {
    DRI_CONF_SECTION_PERFORMANCE
       /* Options correspond to DRI_CONF_BO_REUSE_DISABLED,
        * DRI_CONF_BO_REUSE_ALL
@@ -61,47 +58,57 @@ DRI_CONF_BEGIN
                      "Buffer object reuse",
                      DRI_CONF_ENUM(0, "Disable buffer object reuse")
                      DRI_CONF_ENUM(1, "Enable reuse of all sizes of buffer objects"))
-      DRI_CONF_MESA_NO_ERROR("false")
-      DRI_CONF_MESA_GLTHREAD("false")
+      DRI_CONF_MESA_NO_ERROR(false)
+      DRI_CONF_MESA_GLTHREAD(false)
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_QUALITY
-      DRI_CONF_PRECISE_TRIG("false")
+      DRI_CONF_PRECISE_TRIG(false)
 
-      DRI_CONF_OPT_BEGIN(clamp_max_samples, int, -1)
-              DRI_CONF_DESC("Clamp the value of GL_MAX_SAMPLES to the "
-                            "given integer. If negative, then do not clamp.")
-      DRI_CONF_OPT_END
+      DRI_CONF_OPT_I(clamp_max_samples, -1, 0, 0,
+                     "Clamp the value of GL_MAX_SAMPLES to the "
+                     "given integer. If negative, then do not clamp.")
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_DEBUG
-      DRI_CONF_ALWAYS_FLUSH_BATCH("false")
-      DRI_CONF_ALWAYS_FLUSH_CACHE("false")
-      DRI_CONF_DISABLE_THROTTLING("false")
-      DRI_CONF_FORCE_GLSL_EXTENSIONS_WARN("false")
+      DRI_CONF_ALWAYS_FLUSH_BATCH(false)
+      DRI_CONF_ALWAYS_FLUSH_CACHE(false)
+      DRI_CONF_DISABLE_THROTTLING(false)
+      DRI_CONF_FORCE_GLSL_EXTENSIONS_WARN(false)
       DRI_CONF_FORCE_GLSL_VERSION(0)
-      DRI_CONF_DISABLE_GLSL_LINE_CONTINUATIONS("false")
-      DRI_CONF_DISABLE_BLEND_FUNC_EXTENDED("false")
-      DRI_CONF_DUAL_COLOR_BLEND_BY_LOCATION("false")
-      DRI_CONF_ALLOW_GLSL_EXTENSION_DIRECTIVE_MIDSHADER("false")
-      DRI_CONF_ALLOW_GLSL_BUILTIN_VARIABLE_REDECLARATION("false")
-      DRI_CONF_ALLOW_GLSL_CROSS_STAGE_INTERPOLATION_MISMATCH("false")
-      DRI_CONF_ALLOW_HIGHER_COMPAT_VERSION("false")
-      DRI_CONF_FORCE_COMPAT_PROFILE("false")
-      DRI_CONF_FORCE_GLSL_ABS_SQRT("false")
+      DRI_CONF_DISABLE_GLSL_LINE_CONTINUATIONS(false)
+      DRI_CONF_DISABLE_BLEND_FUNC_EXTENDED(false)
+      DRI_CONF_DUAL_COLOR_BLEND_BY_LOCATION(false)
+      DRI_CONF_ALLOW_GLSL_EXTENSION_DIRECTIVE_MIDSHADER(false)
+      DRI_CONF_ALLOW_GLSL_BUILTIN_VARIABLE_REDECLARATION(false)
+      DRI_CONF_ALLOW_GLSL_CROSS_STAGE_INTERPOLATION_MISMATCH(false)
+      DRI_CONF_ALLOW_HIGHER_COMPAT_VERSION(false)
+      DRI_CONF_FORCE_COMPAT_PROFILE(false)
+      DRI_CONF_FORCE_GLSL_ABS_SQRT(false)
       DRI_CONF_FORCE_GL_VENDOR()
 
-      DRI_CONF_OPT_B(shader_precompile, "true", "Perform code generation at shader link time.")
+      DRI_CONF_OPT_B(shader_precompile, true, "Perform code generation at shader link time.")
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_MISCELLANEOUS
-      DRI_CONF_GLSL_ZERO_INIT("false")
-      DRI_CONF_VS_POSITION_ALWAYS_INVARIANT("false")
-      DRI_CONF_ALLOW_RGB10_CONFIGS("false")
-      DRI_CONF_ALLOW_RGB565_CONFIGS("true")
-      DRI_CONF_ALLOW_FP16_CONFIGS("false")
+      DRI_CONF_GLSL_ZERO_INIT(false)
+      DRI_CONF_VS_POSITION_ALWAYS_INVARIANT(false)
+      DRI_CONF_ALLOW_RGB10_CONFIGS(false)
+      DRI_CONF_ALLOW_RGB565_CONFIGS(true)
+      DRI_CONF_ALLOW_FP16_CONFIGS(false)
    DRI_CONF_SECTION_END
-DRI_CONF_END
+};
+
+static char *
+brw_driconf_get_xml(const char *driver_name)
+{
+   return driGetOptionsXml(brw_driconf, ARRAY_SIZE(brw_driconf));
+}
+
+static const __DRIconfigOptionsExtension brw_config_options = {
+   .base = { __DRI_CONFIG_OPTIONS, 2 },
+   .xml = NULL,
+   .getXml = brw_driconf_get_xml,
 };
 
 #include "intel_batchbuffer.h"
@@ -360,7 +367,7 @@ modifier_is_supported(const struct gen_device_info *devinfo,
 
    if (modinfo->aux_usage == ISL_AUX_USAGE_CCS_E) {
       /* If INTEL_DEBUG=norbc is set, don't support any CCS_E modifiers */
-      if (unlikely(INTEL_DEBUG & DEBUG_NO_RBC))
+      if (INTEL_DEBUG & DEBUG_NO_RBC)
          return false;
 
       /* CCS_E is not supported for planar images */
@@ -2492,7 +2499,7 @@ shader_perf_log_mesa(void *data, const char *fmt, ...)
    va_list args;
    va_start(args, fmt);
 
-   if (unlikely(INTEL_DEBUG & DEBUG_PERF)) {
+   if (INTEL_DEBUG & DEBUG_PERF) {
       va_list args_copy;
       va_copy(args_copy, args);
       vfprintf(stderr, fmt, args_copy);
@@ -2539,7 +2546,7 @@ __DRIconfig **intelInitScreen2(__DRIscreen *dri_screen)
    driOptionCache options;
    memset(&options, 0, sizeof(options));
 
-   driParseOptionInfo(&options, brw_config_options.xml);
+   driParseOptionInfo(&options, brw_driconf, ARRAY_SIZE(brw_driconf));
    driParseConfigFiles(&screen->optionCache, &options, dri_screen->myNum,
                        "i965", NULL, NULL, 0, NULL, 0);
    driDestroyOptionCache(&options);
@@ -2567,7 +2574,7 @@ __DRIconfig **intelInitScreen2(__DRIscreen *dri_screen)
    if ((INTEL_DEBUG & DEBUG_SHADER_TIME) && devinfo->gen < 7) {
       fprintf(stderr,
               "shader_time debugging requires gen7 (Ivybridge) or better.\n");
-      INTEL_DEBUG &= ~DEBUG_SHADER_TIME;
+      intel_debug &= ~DEBUG_SHADER_TIME;
    }
 
    if (intel_get_integer(screen, I915_PARAM_MMAP_GTT_VERSION) >= 1) {

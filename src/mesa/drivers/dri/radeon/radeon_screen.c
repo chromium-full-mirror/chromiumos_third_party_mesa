@@ -86,64 +86,62 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define DRI_CONF_NO_NEG_LOD_BIAS(def) \
    DRI_CONF_OPT_B(no_neg_lod_bias, def, "Forbid negative texture LOD bias")
 
-#define DRI_CONF_DEF_MAX_ANISOTROPY(def,range) \
-DRI_CONF_OPT_BEGIN_V(def_max_anisotropy,float,def,range) \
-        DRI_CONF_DESC("Initial maximum value for anisotropic texture filtering") \
-DRI_CONF_OPT_END
+#define DRI_CONF_DEF_MAX_ANISOTROPY(def, min, max) \
+   DRI_CONF_OPT_F(def_max_anisotropy,def, min, max, \
+                  "Initial maximum value for anisotropic texture filtering")
 
 #if defined(RADEON_R100)	/* R100 */
-static const __DRIconfigOptionsExtension radeon_config_options = {
-   .base = { __DRI_CONFIG_OPTIONS, 1 },
-   .xml =
-DRI_CONF_BEGIN
+static const driOptionDescription radeon_driconf[] = {
     DRI_CONF_SECTION_PERFORMANCE
         DRI_CONF_TCL_MODE(DRI_CONF_TCL_CODEGEN)
         DRI_CONF_FTHROTTLE_MODE(DRI_CONF_FTHROTTLE_IRQS)
         DRI_CONF_MAX_TEXTURE_UNITS(3,2,3)
-        DRI_CONF_HYPERZ("false")
+        DRI_CONF_HYPERZ(false)
         DRI_CONF_COMMAND_BUFFER_SIZE(8, 8, 32)
     DRI_CONF_SECTION_END
     DRI_CONF_SECTION_QUALITY
         DRI_CONF_TEXTURE_DEPTH(DRI_CONF_TEXTURE_DEPTH_FB)
-        DRI_CONF_DEF_MAX_ANISOTROPY(1.0,"1.0,2.0,4.0,8.0,16.0")
-        DRI_CONF_NO_NEG_LOD_BIAS("false")
+        DRI_CONF_DEF_MAX_ANISOTROPY(1.0, 1.0, 16.0)
+        DRI_CONF_NO_NEG_LOD_BIAS(false)
         DRI_CONF_COLOR_REDUCTION(DRI_CONF_COLOR_REDUCTION_DITHER)
         DRI_CONF_ROUND_MODE(DRI_CONF_ROUND_TRUNC)
         DRI_CONF_DITHER_MODE(DRI_CONF_DITHER_XERRORDIFF)
     DRI_CONF_SECTION_END
-DRI_CONF_END
 };
 
 #elif defined(RADEON_R200)
-
-#define DRI_CONF_TEXTURE_BLEND_QUALITY(def,range) \
-DRI_CONF_OPT_BEGIN_V(texture_blend_quality,float,def,range) \
-       DRI_CONF_DESC("Texture filtering quality vs. speed, AKA “brilinear” texture filtering") \
-DRI_CONF_OPT_END
-
-static const __DRIconfigOptionsExtension radeon_config_options = {
-   .base = { __DRI_CONFIG_OPTIONS, 1 },
-   .xml =
-DRI_CONF_BEGIN
+static const driOptionDescription radeon_driconf[] = {
     DRI_CONF_SECTION_PERFORMANCE
         DRI_CONF_TCL_MODE(DRI_CONF_TCL_CODEGEN)
         DRI_CONF_FTHROTTLE_MODE(DRI_CONF_FTHROTTLE_IRQS)
         DRI_CONF_MAX_TEXTURE_UNITS(6,2,6)
-        DRI_CONF_HYPERZ("false")
+        DRI_CONF_HYPERZ(false)
         DRI_CONF_COMMAND_BUFFER_SIZE(8, 8, 32)
     DRI_CONF_SECTION_END
     DRI_CONF_SECTION_QUALITY
         DRI_CONF_TEXTURE_DEPTH(DRI_CONF_TEXTURE_DEPTH_FB)
-        DRI_CONF_DEF_MAX_ANISOTROPY(1.0,"1.0,2.0,4.0,8.0,16.0")
-        DRI_CONF_NO_NEG_LOD_BIAS("false")
+        DRI_CONF_DEF_MAX_ANISOTROPY(1.0, 1.0, 16.0)
+        DRI_CONF_NO_NEG_LOD_BIAS(false)
         DRI_CONF_COLOR_REDUCTION(DRI_CONF_COLOR_REDUCTION_DITHER)
         DRI_CONF_ROUND_MODE(DRI_CONF_ROUND_TRUNC)
         DRI_CONF_DITHER_MODE(DRI_CONF_DITHER_XERRORDIFF)
-        DRI_CONF_TEXTURE_BLEND_QUALITY(1.0,"0.0:1.0")
+        DRI_CONF_OPT_F(texture_blend_quality, 1.0, 0.0, 1.0,
+                       "Texture filtering quality vs. speed, AKA “brilinear” texture filtering")
     DRI_CONF_SECTION_END
-DRI_CONF_END
 };
 #endif
+
+static char *
+radeon_driconf_get_xml(const char *driver_name)
+{
+   return driGetOptionsXml(radeon_driconf, ARRAY_SIZE(radeon_driconf));
+}
+
+static const __DRIconfigOptionsExtension radeon_config_options = {
+   .base = { __DRI_CONFIG_OPTIONS, 2 },
+   .xml = NULL,
+   .getXml = radeon_driconf_get_xml,
+};
 
 static int
 radeonGetParam(__DRIscreen *sPriv, int param, void *value)
@@ -583,7 +581,8 @@ radeonCreateScreen2(__DRIscreen *sPriv)
    radeon_init_debug();
 
    /* parse information in __driConfigOptions */
-   driParseOptionInfo (&screen->optionCache, radeon_config_options.xml);
+   driParseOptionInfo (&screen->optionCache, radeon_driconf,
+                       ARRAY_SIZE(radeon_driconf));
 
    screen->chip_flags = 0;
 

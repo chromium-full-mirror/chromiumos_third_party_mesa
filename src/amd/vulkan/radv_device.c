@@ -606,28 +606,27 @@ radv_handle_per_app_options(struct radv_instance *instance,
 		instance->debug_flags |= RADV_DEBUG_NO_DYNAMIC_BOUNDS;
 }
 
-static const char radv_dri_options_xml[] =
-DRI_CONF_BEGIN
+static const driOptionDescription radv_dri_options[] = {
 	DRI_CONF_SECTION_PERFORMANCE
-		DRI_CONF_ADAPTIVE_SYNC("true")
+		DRI_CONF_ADAPTIVE_SYNC(true)
 		DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
-		DRI_CONF_VK_X11_STRICT_IMAGE_COUNT("false")
-		DRI_CONF_VK_X11_ENSURE_MIN_IMAGE_COUNT("false")
-		DRI_CONF_RADV_REPORT_LLVM9_VERSION_STRING("false")
-		DRI_CONF_RADV_ENABLE_MRT_OUTPUT_NAN_FIXUP("false")
-		DRI_CONF_RADV_NO_DYNAMIC_BOUNDS("false")
+		DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
+		DRI_CONF_VK_X11_ENSURE_MIN_IMAGE_COUNT(false)
+		DRI_CONF_RADV_REPORT_LLVM9_VERSION_STRING(false)
+		DRI_CONF_RADV_ENABLE_MRT_OUTPUT_NAN_FIXUP(false)
+		DRI_CONF_RADV_NO_DYNAMIC_BOUNDS(false)
 		DRI_CONF_RADV_OVERRIDE_UNIFORM_OFFSET_ALIGNMENT(0)
 	DRI_CONF_SECTION_END
 
 	DRI_CONF_SECTION_DEBUG
 		DRI_CONF_OVERRIDE_VRAM_SIZE()
-		DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST("false")
+		DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST(false)
 	DRI_CONF_SECTION_END
-DRI_CONF_END;
+};
 
 static void  radv_init_dri_options(struct radv_instance *instance)
 {
-	driParseOptionInfo(&instance->available_dri_options, radv_dri_options_xml);
+	driParseOptionInfo(&instance->available_dri_options, radv_dri_options, ARRAY_SIZE(radv_dri_options));
 	driParseConfigFiles(&instance->dri_options,
 	                    &instance->available_dri_options,
 	                    0, "radv", NULL,
@@ -4334,18 +4333,24 @@ radv_create_deferred_submission(struct radv_queue *queue,
 
 	deferred->cmd_buffers = (void*)(deferred + 1);
 	deferred->cmd_buffer_count = submission->cmd_buffer_count;
-	memcpy(deferred->cmd_buffers, submission->cmd_buffers,
-	       submission->cmd_buffer_count * sizeof(*deferred->cmd_buffers));
+	if (submission->cmd_buffer_count) {
+		memcpy(deferred->cmd_buffers, submission->cmd_buffers,
+		       submission->cmd_buffer_count * sizeof(*deferred->cmd_buffers));
+	}
 
 	deferred->buffer_binds = (void*)(deferred->cmd_buffers + submission->cmd_buffer_count);
 	deferred->buffer_bind_count = submission->buffer_bind_count;
-	memcpy(deferred->buffer_binds, submission->buffer_binds,
-	       submission->buffer_bind_count * sizeof(*deferred->buffer_binds));
+	if (submission->buffer_bind_count) {
+		memcpy(deferred->buffer_binds, submission->buffer_binds,
+		       submission->buffer_bind_count * sizeof(*deferred->buffer_binds));
+	}
 
 	deferred->image_opaque_binds = (void*)(deferred->buffer_binds + submission->buffer_bind_count);
 	deferred->image_opaque_bind_count = submission->image_opaque_bind_count;
-	memcpy(deferred->image_opaque_binds, submission->image_opaque_binds,
-	       submission->image_opaque_bind_count * sizeof(*deferred->image_opaque_binds));
+	if (submission->image_opaque_bind_count) {
+		memcpy(deferred->image_opaque_binds, submission->image_opaque_binds,
+		       submission->image_opaque_bind_count * sizeof(*deferred->image_opaque_binds));
+	}
 
 	deferred->flush_caches = submission->flush_caches;
 	deferred->wait_dst_stage_mask = submission->wait_dst_stage_mask;
@@ -4383,9 +4388,13 @@ radv_create_deferred_submission(struct radv_queue *queue,
 	}
 
 	deferred->wait_values = (void*)(deferred->temporary_semaphore_parts + temporary_count);
-	memcpy(deferred->wait_values, submission->wait_values, submission->wait_value_count * sizeof(uint64_t));
+	if (submission->wait_value_count) {
+		memcpy(deferred->wait_values, submission->wait_values, submission->wait_value_count * sizeof(uint64_t));
+	}
 	deferred->signal_values = deferred->wait_values + submission->wait_value_count;
-	memcpy(deferred->signal_values, submission->signal_values, submission->signal_value_count * sizeof(uint64_t));
+	if (submission->signal_value_count) {
+		memcpy(deferred->signal_values, submission->signal_values, submission->signal_value_count * sizeof(uint64_t));
+	}
 
 	deferred->wait_nodes = (void*)(deferred->signal_values + submission->signal_value_count);
 	/* This is worst-case. radv_queue_enqueue_submission will fill in further, but this
@@ -7544,11 +7553,11 @@ static uint32_t radv_compute_valid_memory_types_attempt(struct radv_physical_dev
                                                         enum radeon_bo_flag ignore_flags)
 {
 	/* Don't count GTT/CPU as relevant:
-	 * 
+	 *
 	 * - We're not fully consistent between the two.
 	 * - Sometimes VRAM gets VRAM|GTT.
 	 */
-	const enum radeon_bo_domain relevant_domains = RADEON_DOMAIN_VRAM | 
+	const enum radeon_bo_domain relevant_domains = RADEON_DOMAIN_VRAM |
 	                                               RADEON_DOMAIN_GDS |
 	                                               RADEON_DOMAIN_OA;
 	uint32_t bits = 0;
@@ -7751,7 +7760,7 @@ void radv_GetPhysicalDeviceExternalSemaphoreProperties(
 {
 	RADV_FROM_HANDLE(radv_physical_device, pdevice, physicalDevice);
 	VkSemaphoreTypeKHR type = radv_get_semaphore_type(pExternalSemaphoreInfo->pNext, NULL);
-	
+
 	if (type == VK_SEMAPHORE_TYPE_TIMELINE && pdevice->rad_info.has_timeline_syncobj &&
 	    pExternalSemaphoreInfo->handleType == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT) {
 		pExternalSemaphoreProperties->exportFromImportedHandleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
@@ -7765,7 +7774,7 @@ void radv_GetPhysicalDeviceExternalSemaphoreProperties(
 
 	/* Require has_syncobj_wait_for_submit for the syncobj signal ioctl introduced at virtually the same time */
 	} else if (pdevice->rad_info.has_syncobj_wait_for_submit &&
-	           (pExternalSemaphoreInfo->handleType == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT || 
+	           (pExternalSemaphoreInfo->handleType == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT ||
 	            pExternalSemaphoreInfo->handleType == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT)) {
 		pExternalSemaphoreProperties->exportFromImportedHandleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
 		pExternalSemaphoreProperties->compatibleHandleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
@@ -7863,7 +7872,7 @@ void radv_GetPhysicalDeviceExternalFenceProperties(
 	RADV_FROM_HANDLE(radv_physical_device, pdevice, physicalDevice);
 
 	if (pdevice->rad_info.has_syncobj_wait_for_submit &&
-	    (pExternalFenceInfo->handleType == VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_FD_BIT || 
+	    (pExternalFenceInfo->handleType == VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_FD_BIT ||
 	     pExternalFenceInfo->handleType == VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT)) {
 		pExternalFenceProperties->exportFromImportedHandleTypes = VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
 		pExternalFenceProperties->compatibleHandleTypes = VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;

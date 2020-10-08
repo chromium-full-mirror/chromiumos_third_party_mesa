@@ -132,6 +132,9 @@ __gen_unpack_padded(const uint8_t *restrict cl, uint32_t start, uint32_t end)
    return (2*odd + 1) << shift;
 }
 
+#define pan_prepare(dst, T)                                 \\
+   *(dst) = (struct MALI_ ## T){ MALI_ ## T ## _header }
+
 #define pan_pack(dst, T, name)                              \\
    for (struct MALI_ ## T name = { MALI_ ## T ## _header }, \\
         *_loop_terminate = (void *) (dst);                  \\
@@ -318,7 +321,7 @@ class Field(object):
 
         self.modifier  = parse_modifier(attrs.get("modifier"))
 
-    def emit_template_struct(self, dim, opaque_structs):
+    def emit_template_struct(self, dim):
         if self.type == 'address':
             type = 'uint64_t'
         elif self.type == 'bool':
@@ -333,9 +336,6 @@ class Field(object):
             type = 'uint32_t'
         elif self.type in self.parser.structs:
             type = 'struct ' + self.parser.gen_prefix(safe_name(self.type.upper()))
-
-            if opaque_structs:
-                type = type.lower() + '_packed'
         elif self.type in self.parser.enums:
             type = 'enum ' + enum_name(self.type)
         else:
@@ -371,7 +371,7 @@ class Group(object):
         return self.length
 
 
-    def emit_template_struct(self, dim, opaque_structs):
+    def emit_template_struct(self, dim):
         if self.count == 0:
             print("   /* variable length fields follow */")
         else:
@@ -385,31 +385,58 @@ class Group(object):
                 if field.exact is not None:
                     continue
 
-                field.emit_template_struct(dim, opaque_structs)
+                field.emit_template_struct(dim)
 
     class Word:
         def __init__(self):
             self.size = 32
-            self.fields = []
+            self.contributors = []
 
-    def collect_words(self, words):
-        for field in self.fields:
-            first_word = field.start // 32
-            last_word = field.end // 32
+    class FieldRef:
+        def __init__(self, field, path, start, end):
+            self.field = field
+            self.path = path
+            self.start = start
+            self.end = end
 
+    def collect_fields(self, fields, offset, path, all_fields):
+        for field in fields:
+            field_path = '{}{}'.format(path, field.name)
+            field_offset = offset + field.start
+
+            if field.type in self.parser.structs:
+                sub_struct = self.parser.structs[field.type]
+                self.collect_fields(sub_struct.fields, field_offset, field_path + '.', all_fields)
+                continue
+
+            start = field_offset
+            end = offset + field.end
+            all_fields.append(self.FieldRef(field, field_path, start, end))
+
+    def collect_words(self, fields, offset, path, words):
+        for field in fields:
+            field_path = '{}{}'.format(path, field.name)
+            start = offset + field.start
+
+            if field.type in self.parser.structs:
+                sub_fields = self.parser.structs[field.type].fields
+                self.collect_words(sub_fields, start, field_path + '.', words)
+                continue
+
+            end = offset + field.end
+            contributor = self.FieldRef(field, field_path, start, end)
+            first_word = contributor.start // 32
+            last_word = contributor.end // 32
             for b in range(first_word, last_word + 1):
                 if not b in words:
                     words[b] = self.Word()
+                words[b].contributors.append(contributor)
 
-                words[b].fields.append(field)
-
-    def emit_pack_function(self, opaque_structs):
+    def emit_pack_function(self):
         self.get_length()
 
         words = {}
-        self.collect_words(words)
-
-        emitted_structs = set()
+        self.collect_words(self.fields, 0, '', words)
 
         # Validate the modifier is lossless
         for field in self.fields:
@@ -440,28 +467,16 @@ class Group(object):
             v = None
             prefix = "   cl[%2d] =" % index
 
-            first = word.fields[0]
-            if first.type in self.parser.structs and first.start not in emitted_structs:
-                pack_name = self.parser.gen_prefix(safe_name(first.type.upper()))
-                start = first.start
-                assert((first.start % 32) == 0)
-                assert(first.end == first.start + (self.parser.structs[first.type].length * 8) - 1)
-                emitted_structs.add(first.start)
-
-                if opaque_structs:
-                    print("   memcpy(cl + {}, &values->{}, {});".format(first.start // 32, first.name, (first.end - first.start + 1) // 8))
-                else:
-                    print("   {}_pack(cl + {}, &values->{});".format(pack_name, first.start // 32, first.name))
-
-            for field in word.fields:
+            for contributor in word.contributors:
+                field = contributor.field
                 name = field.name
-                start = field.start
-                end = field.end
-                field_word_start = (field.start // 32) * 32
-                start -= field_word_start
-                end -= field_word_start
+                start = contributor.start
+                end = contributor.end
+                contrib_word_start = (start // 32) * 32
+                start -= contrib_word_start
+                end -= contrib_word_start
 
-                value = str(field.exact) if field.exact is not None else "values->%s" % name
+                value = str(field.exact) if field.exact is not None else "values->{}".format(contributor.path)
                 if field.modifier is not None:
                     if field.modifier[0] == "shr":
                         value = "{} >> {}".format(value, field.modifier[1])
@@ -490,19 +505,15 @@ class Group(object):
                 elif field.type == "float":
                     assert(start == 0 and end == 31)
                     s = "__gen_uint(fui({}), 0, 32)".format(value)
-                elif field.type in self.parser.structs:
-                    # Structs are packed directly
-                    assert(len(word.fields) == 1)
-                    continue
                 else:
-                    s = "#error unhandled field {}, type {}".format(name, field.type)
+                    s = "#error unhandled field {}, type {}".format(contributor.path, field.type)
 
                 if not s == None:
-                    shift = word_start - field_word_start
+                    shift = word_start - contrib_word_start
                     if shift:
                         s = "%s >> %d" % (s, shift)
 
-                    if field == word.fields[-1]:
+                    if contributor == word.contributors[-1]:
                         print("%s %s;" % (prefix, s))
                     else:
                         print("%s %s |" % (prefix, s))
@@ -525,12 +536,12 @@ class Group(object):
     def emit_unpack_function(self):
         # First, verify there is no garbage in unused bits
         words = {}
-        self.collect_words(words)
+        self.collect_words(self.fields, 0, '', words)
 
         for index in range(self.length // 4):
             base = index * 32
             word = words.get(index, self.Word())
-            masks = [self.mask_for_word(index, f.start, f.end) for f in word.fields]
+            masks = [self.mask_for_word(index, c.start, c.end) for c in word.contributors]
             mask = reduce(lambda x,y: x | y, masks, 0)
 
             ALL_ONES = 0xffffffff
@@ -539,19 +550,16 @@ class Group(object):
                 TMPL = '   if (((const uint32_t *) cl)[{}] & {}) fprintf(stderr, "XXX: Invalid field unpacked at word {}\\n");'
                 print(TMPL.format(index, hex(mask ^ ALL_ONES), index))
 
-        for field in self.fields:
-            # Recurse for structs, see pack() for validation
-            if field.type in self.parser.structs:
-                pack_name = self.parser.gen_prefix(safe_name(field.type)).upper()
-                print("   {}_unpack(cl + {}, &values->{});".format(pack_name, field.start // 8, field.name))
-                continue
-
+        fieldrefs = []
+        self.collect_fields(self.fields, 0, '', fieldrefs)
+        for fieldref in fieldrefs:
+            field = fieldref.field
             convert = None
 
             args = []
             args.append('cl')
-            args.append(str(field.start))
-            args.append(str(field.end))
+            args.append(str(fieldref.start))
+            args.append(str(fieldref.end))
 
             if field.type in set(["uint", "address"]) | self.parser.enums:
                 convert = "__gen_unpack_uint"
@@ -578,10 +586,10 @@ class Group(object):
 
             decoded = '{}{}({}){}'.format(prefix, convert, ', '.join(args), suffix)
 
-            print('   values->{} = {};'.format(field.name, decoded))
+            print('   values->{} = {};'.format(fieldref.path, decoded))
             if field.modifier and field.modifier[0] == "align":
                 mask = hex(field.modifier[1] - 1)
-                print('   assert(!(values->{} & {}));'.format(field.name, mask))
+                print('   assert(!(values->{} & {}));'.format(fieldref.path, mask))
 
     def emit_print_function(self):
         for field in self.fields:
@@ -634,8 +642,7 @@ class Parser(object):
             print(pack_header)
         elif name == "struct":
             name = attrs["name"]
-            self.with_opaque = attrs.get("with_opaque", False)
-
+            self.no_direct_packing = attrs.get("no-direct-packing", False)
             object_name = self.gen_prefix(safe_name(name.upper()))
             self.struct = object_name
 
@@ -699,14 +706,10 @@ class Parser(object):
             print('   0')
         print('')
 
-    def emit_template_struct(self, name, group, opaque_structs):
-        print("struct %s {" % (name + ('_OPAQUE' if opaque_structs else '')))
-        group.emit_template_struct("", opaque_structs)
+    def emit_template_struct(self, name, group):
+        print("struct %s {" % name)
+        group.emit_template_struct("")
         print("};\n")
-
-        if opaque_structs:
-            # Just so it isn't left undefined
-            print('#define %-40s 0' % (name + '_OPAQUE_header'))
 
     def emit_aggregate(self):
         aggregate = self.aggregate
@@ -723,21 +726,13 @@ class Parser(object):
             print('#define {}_SECTION_{}_OFFSET {}'.format(aggregate.name.upper(), section.name.upper(), section.offset))
         print("")
 
-    def emit_pack_function(self, name, group, with_opaque):
+    def emit_pack_function(self, name, group):
         print("static inline void\n%s_pack(uint32_t * restrict cl,\n%sconst struct %s * restrict values)\n{" %
               (name, ' ' * (len(name) + 6), name))
 
-        group.emit_pack_function(False)
+        group.emit_pack_function()
 
         print("}\n\n")
-
-        if with_opaque:
-            print("static inline void\n%s_OPAQUE_pack(uint32_t * restrict cl,\n%sconst struct %s_OPAQUE * restrict values)\n{" %
-                  (name, ' ' * (len(name) + 6), name))
-
-            group.emit_pack_function(True)
-
-            print("}\n")
 
         # Should be a whole number of words
         assert((self.group.length % 4) == 0)
@@ -765,12 +760,11 @@ class Parser(object):
     def emit_struct(self):
         name = self.struct
 
-        self.emit_template_struct(self.struct, self.group, False)
-        if self.with_opaque:
-            self.emit_template_struct(self.struct, self.group, True)
+        self.emit_template_struct(self.struct, self.group)
         self.emit_header(name)
-        self.emit_pack_function(self.struct, self.group, self.with_opaque)
-        self.emit_unpack_function(self.struct, self.group)
+        if self.no_direct_packing == False:
+            self.emit_pack_function(self.struct, self.group)
+            self.emit_unpack_function(self.struct, self.group)
         self.emit_print_function(self.struct, self.group)
 
     def enum_prefix(self, name):

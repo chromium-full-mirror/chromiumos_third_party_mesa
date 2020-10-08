@@ -4123,12 +4123,12 @@ bool store_output_to_temps(isel_context *ctx, nir_intrinsic_instr *instr)
    unsigned write_mask = nir_intrinsic_write_mask(instr);
    unsigned component = nir_intrinsic_component(instr);
    unsigned idx = nir_intrinsic_base(instr) * 4u + component;
+   nir_src offset = *nir_get_io_offset_src(instr);
 
-   if (!nir_src_is_const(instr->src[1]))
+   if (!nir_src_is_const(offset) || nir_src_as_uint(offset))
       return false;
 
    Temp src = get_ssa_temp(ctx, instr->src[0].ssa);
-   idx += nir_src_as_uint(instr->src[1]) * 4u;
 
    if (instr->src[0].ssa->bit_size == 64)
       write_mask = widen_mask(write_mask, 2);
@@ -4508,15 +4508,16 @@ void visit_load_input(isel_context *ctx, nir_intrinsic_instr *instr)
 {
    Builder bld(ctx->program, ctx->block);
    Temp dst = get_ssa_temp(ctx, &instr->dest.ssa);
+   nir_src offset = *nir_get_io_offset_src(instr);
+
    if (ctx->shader->info.stage == MESA_SHADER_VERTEX) {
 
-      if (!nir_src_is_const(instr->src[0]))
-         isel_err(instr->src[0].ssa->parent_instr, "Unimplemented non-const nir_intrinsic_load_input offset");
-      uint32_t offset = nir_src_as_uint(instr->src[0]);
+      if (!nir_src_is_const(offset) || nir_src_as_uint(offset))
+         isel_err(offset.ssa->parent_instr, "Unimplemented non-zero nir_intrinsic_load_input offset");
 
       Temp vertex_buffers = convert_pointer_to_64_bit(ctx, get_arg(ctx, ctx->args->vertex_buffers));
 
-      unsigned location = nir_intrinsic_base(instr) - VERT_ATTRIB_GENERIC0 + offset;
+      unsigned location = nir_intrinsic_base(instr) - VERT_ATTRIB_GENERIC0;
       unsigned component = nir_intrinsic_component(instr);
       unsigned bitsize = instr->dest.ssa.bit_size;
       unsigned attrib_binding = ctx->options->key.vs.vertex_attribute_bindings[location];
@@ -4567,7 +4568,7 @@ void visit_load_input(isel_context *ctx, nir_intrinsic_instr *instr)
       /* skip unused channels at the start */
       if (vtx_info->chan_byte_size && !post_shuffle) {
          channel_start = ffs(mask) - 1;
-         for (unsigned i = 0; i < channel_start; i++)
+         for (unsigned i = 0; i < MIN2(channel_start, num_channels); i++)
             channels[i] = Temp(0, s1);
       } else if (vtx_info->chan_byte_size && post_shuffle && !(mask & 0x8)) {
          num_channels = 3 - (ffs(mask) - 1);
@@ -4718,9 +4719,8 @@ void visit_load_input(isel_context *ctx, nir_intrinsic_instr *instr)
             ctx->allocated_vec.emplace(dst.id(), elems);
       }
    } else if (ctx->shader->info.stage == MESA_SHADER_FRAGMENT) {
-      nir_src *off_src = nir_get_io_offset_src(instr);
-      if (!nir_src_is_const(*off_src) || nir_src_as_uint(*off_src))
-         isel_err(off_src->ssa->parent_instr, "Unimplemented non-zero nir_intrinsic_load_input offset");
+      if (!nir_src_is_const(offset) || nir_src_as_uint(offset))
+         isel_err(offset.ssa->parent_instr, "Unimplemented non-zero nir_intrinsic_load_input offset");
 
       Temp prim_mask = get_arg(ctx, ctx->args->ac.prim_mask);
 
