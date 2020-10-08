@@ -258,8 +258,8 @@ pan_emit_draw_descs(struct panfrost_batch *batch,
                 struct MALI_DRAW *d, enum pipe_shader_type st)
 {
         d->offset_start = batch->ctx->offset_start;
-        d->instances = batch->ctx->instance_count > 1 ?
-                batch->ctx->padded_count : 1;
+        d->instance_size = batch->ctx->instance_count > 1 ?
+                           batch->ctx->padded_count : 1;
 
         d->uniform_buffers = panfrost_emit_const_buf(batch, st, &d->push_uniforms);
         d->textures = panfrost_emit_texture_descriptors(batch, st);
@@ -296,12 +296,14 @@ panfrost_draw_emit_vertex(struct panfrost_batch *batch,
         }
 
         pan_section_pack(job, COMPUTE_JOB, DRAW, cfg) {
-                cfg.unknown_1 = (device->quirks & IS_BIFROST) ? 0x2 : 0x6;
+                cfg.draw_descriptor_is_64b = true;
+                if (!(device->quirks & IS_BIFROST))
+                        cfg.texture_descriptor_is_64b = true;
                 cfg.state = panfrost_emit_compute_shader_meta(batch, PIPE_SHADER_VERTEX);
                 cfg.attributes = panfrost_emit_vertex_data(batch, &cfg.attribute_buffers);
                 cfg.varyings = vs_vary;
                 cfg.varying_buffers = varyings;
-                cfg.shared = shared_mem;
+                cfg.thread_storage = shared_mem;
                 pan_emit_draw_descs(batch, &cfg, PIPE_SHADER_VERTEX);
         }
 }
@@ -347,10 +349,12 @@ panfrost_draw_emit_tiler(struct panfrost_batch *batch,
                   pan_section_ptr(job, MIDGARD_TILER_JOB, PRIMITIVE);
         pan_pack(section, PRIMITIVE, cfg) {
                 cfg.draw_mode = pan_draw_mode(info->mode);
-                cfg.point_size_array = panfrost_writes_point_size(ctx);
+                if (panfrost_writes_point_size(ctx))
+                        cfg.point_size_array_format = MALI_POINT_SIZE_ARRAY_FORMAT_FP16;
                 cfg.first_provoking_vertex = rast->flatshade_first;
-                cfg.primitive_restart = info->primitive_restart;
-                cfg.unknown_3 = 6;
+                if (info->primitive_restart)
+                        cfg.primitive_restart = MALI_PRIMITIVE_RESTART_IMPLICIT;
+                cfg.job_task_split = 6;
 
                 if (info->index_size) {
                         cfg.index_type = panfrost_translate_index_size(info->index_size);
@@ -381,7 +385,10 @@ panfrost_draw_emit_tiler(struct panfrost_batch *batch,
                   pan_section_ptr(job, BIFROST_TILER_JOB, DRAW) :
                   pan_section_ptr(job, MIDGARD_TILER_JOB, DRAW);
         pan_pack(section, DRAW, cfg) {
-                cfg.unknown_1 = (device->quirks & IS_BIFROST) ? 0x3 : 0x7;
+                cfg.four_components_per_vertex = true;
+                cfg.draw_descriptor_is_64b = true;
+                if (!(device->quirks & IS_BIFROST))
+                        cfg.texture_descriptor_is_64b = true;
                 cfg.front_face_ccw = rast->front_ccw;
                 cfg.cull_front_face = rast->cull_face & PIPE_FACE_FRONT;
                 cfg.cull_back_face = rast->cull_face & PIPE_FACE_BACK;
@@ -390,7 +397,7 @@ panfrost_draw_emit_tiler(struct panfrost_batch *batch,
                 cfg.viewport = panfrost_emit_viewport(batch);
                 cfg.varyings = fs_vary;
                 cfg.varying_buffers = varyings;
-                cfg.shared = shared_mem;
+                cfg.thread_storage = shared_mem;
 
                 pan_emit_draw_descs(batch, &cfg, PIPE_SHADER_FRAGMENT);
 
@@ -1174,15 +1181,14 @@ pan_pipe_to_stencil_op(enum pipe_stencil_op in)
 }
 
 static inline void
-pan_pipe_to_stencil(const struct pipe_stencil_state *in, void *out)
+pan_pipe_to_stencil(const struct pipe_stencil_state *in, struct MALI_STENCIL *out)
 {
-        pan_pack(out, STENCIL, cfg) {
-                cfg.mask = in->valuemask;
-                cfg.compare_function = panfrost_translate_compare_func(in->func);
-                cfg.stencil_fail = pan_pipe_to_stencil_op(in->fail_op);
-                cfg.depth_fail = pan_pipe_to_stencil_op(in->zfail_op);
-                cfg.depth_pass = pan_pipe_to_stencil_op(in->zpass_op);
-        }
+        pan_prepare(out, STENCIL);
+        out->mask = in->valuemask;
+        out->compare_function = panfrost_translate_compare_func(in->func);
+        out->stencil_fail = pan_pipe_to_stencil_op(in->fail_op);
+        out->depth_fail = pan_pipe_to_stencil_op(in->zfail_op);
+        out->depth_pass = pan_pipe_to_stencil_op(in->zpass_op);
 }
 
 static void *
@@ -1198,7 +1204,7 @@ panfrost_create_depth_stencil_state(struct pipe_context *pipe,
         if (zsa->stencil[1].enabled) {
                 pan_pipe_to_stencil(&zsa->stencil[1], &so->stencil_back);
                 so->stencil_mask_back = zsa->stencil[1].writemask;
-        } else {
+	} else {
                 so->stencil_back = so->stencil_front;
                 so->stencil_mask_back = so->stencil_mask_front;
         }

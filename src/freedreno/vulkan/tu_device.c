@@ -99,13 +99,13 @@ tu_physical_device_init(struct tu_physical_device *device,
       device->supports_multiview_mask = true;
       break;
    default:
-      result = vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
-                         "device %s is unsupported", device->name);
+      result = vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                                 "device %s is unsupported", device->name);
       goto fail;
    }
    if (tu_device_get_cache_uuid(device->gpu_id, device->cache_uuid)) {
-      result = vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
-                         "cannot generate UUID");
+      result = vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                                 "cannot generate UUID");
       goto fail;
    }
 
@@ -131,7 +131,7 @@ tu_physical_device_init(struct tu_physical_device *device,
 
    result = tu_wsi_init(device);
    if (result != VK_SUCCESS) {
-      vk_error(instance, result);
+      vk_startup_errorf(instance, result, "WSI init failure");
       goto fail;
    }
 
@@ -198,6 +198,7 @@ static const struct debug_control tu_debug_options[] = {
    { "forcebin", TU_DEBUG_FORCEBIN },
    { "noubwc", TU_DEBUG_NOUBWC },
    { "nomultipos", TU_DEBUG_NOMULTIPOS },
+   { "nolrz", TU_DEBUG_NOLRZ },
    { NULL, 0 }
 };
 
@@ -255,6 +256,14 @@ tu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    instance->debug_flags =
       parse_debug_string(getenv("TU_DEBUG"), tu_debug_options);
 
+#ifdef DEBUG
+   /* Enable startup debugging by default on debug drivers.  You almost always
+    * want to see your startup failures in that case, and it's hard to set
+    * this env var on android.
+    */
+   instance->debug_flags |= TU_DEBUG_STARTUP;
+#endif
+
    if (instance->debug_flags & TU_DEBUG_STARTUP)
       mesa_logi("Created an instance");
 
@@ -265,7 +274,8 @@ tu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       if (index < 0 || !tu_instance_extensions_supported.extensions[index]) {
          vk_object_base_finish(&instance->base);
          vk_free2(&default_alloc, pAllocator, instance);
-         return vk_error(instance, VK_ERROR_EXTENSION_NOT_PRESENT);
+         return vk_startup_errorf(instance, VK_ERROR_EXTENSION_NOT_PRESENT,
+                                  "Missing %s", ext_name);
       }
 
       instance->enabled_extensions.extensions[index] = true;
@@ -275,7 +285,7 @@ tu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    if (result != VK_SUCCESS) {
       vk_object_base_finish(&instance->base);
       vk_free2(&default_alloc, pAllocator, instance);
-      return vk_error(instance, result);
+      return vk_startup_errorf(instance, result, "debug_report setup failure");
    }
 
    glsl_type_singleton_init_or_ref();
@@ -944,7 +954,8 @@ tu_queue_init(struct tu_device *device,
 
    int ret = tu_drm_submitqueue_new(device, 0, &queue->msm_queue_id);
    if (ret)
-      return VK_ERROR_INITIALIZATION_FAILED;
+      return vk_startup_errorf(device->instance, VK_ERROR_INITIALIZATION_FAILED,
+                               "submitqueue create failed");
 
    queue->fence = -1;
 
@@ -990,8 +1001,9 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
          sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
       for (uint32_t i = 0; i < num_features; i++) {
          if (enabled_feature[i] && !supported_feature[i])
-            return vk_error(physical_device->instance,
-                            VK_ERROR_FEATURE_NOT_PRESENT);
+            return vk_startup_errorf(physical_device->instance,
+                                     VK_ERROR_FEATURE_NOT_PRESENT,
+                                     "Missing feature bit %d\n", i);
       }
    }
 
@@ -1010,7 +1022,7 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    device = vk_zalloc2(&physical_device->instance->alloc, pAllocator,
                        sizeof(*device), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
    if (!device)
-      return vk_error(physical_device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_startup_errorf(physical_device->instance, VK_ERROR_OUT_OF_HOST_MEMORY, "OOM");
 
    vk_device_init(&device->vk, pCreateInfo,
          &physical_device->instance->alloc, pAllocator);
@@ -1028,8 +1040,9 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
       if (index < 0 ||
           !physical_device->supported_extensions.extensions[index]) {
          vk_free(&device->vk.alloc, device);
-         return vk_error(physical_device->instance,
-                         VK_ERROR_EXTENSION_NOT_PRESENT);
+         return vk_startup_errorf(physical_device->instance,
+                                  VK_ERROR_EXTENSION_NOT_PRESENT,
+                                  "Missing device extension '%s'", ext_name);
       }
 
       device->enabled_extensions.extensions[index] = true;
@@ -1043,7 +1056,9 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
          &device->vk.alloc, queue_create->queueCount * sizeof(struct tu_queue),
          8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
       if (!device->queues[qfi]) {
-         result = VK_ERROR_OUT_OF_HOST_MEMORY;
+         result = vk_startup_errorf(physical_device->instance,
+                                    VK_ERROR_OUT_OF_HOST_MEMORY,
+                                    "OOM");
          goto fail_queues;
       }
 
@@ -1061,8 +1076,12 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    }
 
    device->compiler = ir3_compiler_create(NULL, physical_device->gpu_id);
-   if (!device->compiler)
+   if (!device->compiler) {
+      result = vk_startup_errorf(physical_device->instance,
+                                 VK_ERROR_INITIALIZATION_FAILED,
+                                 "failed to initialize ir3 compiler");
       goto fail_queues;
+   }
 
    /* initial sizes, these will increase if there is overflow */
    device->vsc_draw_strm_pitch = 0x1000 + VSC_PAD;
@@ -1073,12 +1092,16 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
       global_size += TU_BORDER_COLOR_COUNT * sizeof(struct bcolor_entry);
 
    result = tu_bo_init_new(device, &device->global_bo, global_size, false);
-   if (result != VK_SUCCESS)
+   if (result != VK_SUCCESS) {
+      vk_startup_errorf(device->instance, result, "BO init");
       goto fail_global_bo;
+   }
 
    result = tu_bo_map(device, &device->global_bo);
-   if (result != VK_SUCCESS)
+   if (result != VK_SUCCESS) {
+      vk_startup_errorf(device->instance, result, "BO map");
       goto fail_global_bo_map;
+   }
 
    struct tu6_global *global = device->global_bo.map;
    tu_init_clear_blit_shaders(device->global_bo.map);
@@ -1108,8 +1131,10 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    VkPipelineCache pc;
    result =
       tu_CreatePipelineCache(tu_device_to_handle(device), &ci, NULL, &pc);
-   if (result != VK_SUCCESS)
+   if (result != VK_SUCCESS) {
+      vk_startup_errorf(device->instance, result, "create pipeline cache failed");
       goto fail_pipeline_cache;
+   }
 
    device->mem_cache = tu_pipeline_cache_from_handle(pc);
 
@@ -1172,7 +1197,6 @@ tu_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
 
 VkResult
 _tu_device_set_lost(struct tu_device *device,
-                    const char *file, int line,
                     const char *msg, ...)
 {
    /* Set the flag indicating that waits should return in finite time even
@@ -1181,10 +1205,9 @@ _tu_device_set_lost(struct tu_device *device,
    p_atomic_inc(&device->_lost);
 
    /* TODO: Report the log message through VkDebugReportCallbackEXT instead */
-   fprintf(stderr, "%s:%d: ", file, line);
    va_list ap;
    va_start(ap, msg);
-   vfprintf(stderr, msg, ap);
+   mesa_loge_v(msg, ap);
    va_end(ap);
 
    if (env_var_as_boolean("TU_ABORT_ON_DEVICE_LOSS", false))

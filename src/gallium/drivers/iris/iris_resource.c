@@ -113,7 +113,7 @@ modifier_is_supported(const struct gen_device_info *devinfo,
       break;
    case I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS:
    case I915_FORMAT_MOD_Y_TILED_CCS: {
-      if (unlikely(INTEL_DEBUG & DEBUG_NO_RBC))
+      if (INTEL_DEBUG & DEBUG_NO_RBC)
          return false;
 
       enum isl_format rt_format =
@@ -2135,7 +2135,7 @@ iris_flush_bits_for_history(struct iris_resource *res)
 
    if (res->bind_history & PIPE_BIND_CONSTANT_BUFFER) {
       flush |= PIPE_CONTROL_CONST_CACHE_INVALIDATE |
-               PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE;
+               PIPE_CONTROL_DATA_CACHE_FLUSH;
    }
 
    if (res->bind_history & PIPE_BIND_SAMPLER_VIEW)

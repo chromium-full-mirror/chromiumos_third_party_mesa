@@ -103,8 +103,10 @@ static void *
 panfrost_create_blend_state(struct pipe_context *pipe,
                             const struct pipe_blend_state *blend)
 {
+        struct panfrost_device *dev = pan_device(pipe->screen);
         struct panfrost_context *ctx = pan_context(pipe);
         struct panfrost_blend_state *so = rzalloc(ctx, struct panfrost_blend_state);
+        unsigned version = dev->gpu_id >> 12;
         so->base = *blend;
 
         /* TODO: The following features are not yet implemented */
@@ -129,8 +131,21 @@ panfrost_create_blend_state(struct pipe_context *pipe,
                                         &rt->equation,
                                         &rt->constant_mask);
 
-                if (rt->has_fixed_function)
-                        rt->opaque = (rt->equation.opaque[0] == 0xf0122122);
+                /* v6 doesn't support blend constants in FF blend equations. */
+                if (rt->has_fixed_function && version == 6 && rt->constant_mask)
+                        rt->has_fixed_function = false;
+
+                if (rt->has_fixed_function) {
+                        rt->opaque = pipe.rgb_src_factor == PIPE_BLENDFACTOR_ONE &&
+                                     pipe.rgb_dst_factor == PIPE_BLENDFACTOR_ZERO &&
+                                     (pipe.rgb_func == PIPE_BLEND_ADD ||
+                                      pipe.rgb_func == PIPE_BLEND_SUBTRACT) &&
+                                     pipe.alpha_src_factor == PIPE_BLENDFACTOR_ONE &&
+                                     pipe.alpha_dst_factor == PIPE_BLENDFACTOR_ZERO &&
+                                     (pipe.alpha_func == PIPE_BLEND_ADD ||
+                                      pipe.alpha_func == PIPE_BLEND_SUBTRACT) &&
+                                     pipe.colormask == 0xf;
+                }
 
                 rt->load_dest = util_blend_uses_dest(pipe)
                         || pipe.colormask != 0xF;

@@ -112,8 +112,6 @@ typedef uint32_t xcb_window_t;
 #define A6XX_TEX_CONST_DWORDS 16
 #define A6XX_TEX_SAMP_DWORDS 4
 
-#define tu_printflike(a, b) __attribute__((__format__(__printf__, a, b)))
-
 #define for_each_bit(b, dword)                                               \
    for (uint32_t __dword = (dword);                                          \
         (b) = __builtin_ffs(__dword) - 1, __dword; __dword &= ~(1 << (b)))
@@ -131,19 +129,27 @@ struct tu_instance;
 VkResult
 __vk_errorf(struct tu_instance *instance,
             VkResult error,
+            bool force_print,
             const char *file,
             int line,
             const char *format,
-            ...);
+            ...) PRINTFLIKE(6, 7);
 
 #define vk_error(instance, error)                                            \
-   __vk_errorf(instance, error, __FILE__, __LINE__, NULL);
+   __vk_errorf(instance, error, false, __FILE__, __LINE__, NULL);
 #define vk_errorf(instance, error, format, ...)                              \
-   __vk_errorf(instance, error, __FILE__, __LINE__, format, ##__VA_ARGS__);
+   __vk_errorf(instance, error, false, __FILE__, __LINE__, format, ##__VA_ARGS__);
+
+/* Prints startup errors if TU_DEBUG=startup is set or on a debug driver
+ * build.
+ */
+#define vk_startup_errorf(instance, error, format, ...) \
+   __vk_errorf(instance, error, instance->debug_flags & TU_DEBUG_STARTUP, \
+               __FILE__, __LINE__, format, ##__VA_ARGS__)
 
 void
 __tu_finishme(const char *file, int line, const char *format, ...)
-   tu_printflike(3, 4);
+   PRINTFLIKE(3, 4);
 
 /**
  * Print a FINISHME message, including its source location.
@@ -228,6 +234,7 @@ enum tu_debug_flags
    TU_DEBUG_FORCEBIN = 1 << 5,
    TU_DEBUG_NOUBWC = 1 << 6,
    TU_DEBUG_NOMULTIPOS = 1 << 7,
+   TU_DEBUG_NOLRZ = 1 << 8,
 };
 
 struct tu_instance
@@ -288,10 +295,7 @@ struct tu_pipeline_key
 
 #define TU_MAX_QUEUE_FAMILIES 1
 
-struct tu_syncobj {
-   struct vk_object_base base;
-   uint32_t permanent, temporary;
-};
+struct tu_syncobj;
 
 struct tu_queue
 {
@@ -402,10 +406,9 @@ struct tu_device
 };
 
 VkResult _tu_device_set_lost(struct tu_device *device,
-                             const char *file, int line,
-                             const char *msg, ...) PRINTFLIKE(4, 5);
+                             const char *msg, ...) PRINTFLIKE(2, 3);
 #define tu_device_set_lost(dev, ...) \
-   _tu_device_set_lost(dev, __FILE__, __LINE__, __VA_ARGS__)
+   _tu_device_set_lost(dev, __VA_ARGS__)
 
 static inline bool
 tu_device_is_lost(struct tu_device *device)
@@ -489,6 +492,7 @@ enum tu_draw_state_group_id
    TU_DRAW_STATE_VS_PARAMS,
    TU_DRAW_STATE_INPUT_ATTACHMENTS_GMEM,
    TU_DRAW_STATE_INPUT_ATTACHMENTS_SYSMEM,
+   TU_DRAW_STATE_LRZ,
 
    /* dynamic state related draw states */
    TU_DRAW_STATE_DYNAMIC,
@@ -681,10 +685,9 @@ enum tu_cmd_dirty_bits
    TU_CMD_DIRTY_DESC_SETS_LOAD = BIT(5),
    TU_CMD_DIRTY_COMPUTE_DESC_SETS_LOAD = BIT(6),
    TU_CMD_DIRTY_SHADER_CONSTS = BIT(7),
+   TU_CMD_DIRTY_LRZ = BIT(8),
    /* all draw states were disabled and need to be re-enabled: */
-   TU_CMD_DIRTY_DRAW_STATE = BIT(8)
-
-
+   TU_CMD_DIRTY_DRAW_STATE = BIT(9)
 };
 
 /* There are only three cache domains we have to care about: the CCU, or
@@ -836,6 +839,25 @@ struct tu_cache_state {
    enum tu_cmd_flush_bits flush_bits;
 };
 
+struct tu_lrz_pipeline
+{
+   bool write : 1;
+   bool invalidate : 1;
+
+   bool enable : 1;
+   bool greater : 1;
+   bool z_test_enable : 1;
+   bool blend_disable_write : 1;
+};
+
+struct tu_lrz_state
+{
+   /* Depth/Stencil image currently on use to do LRZ */
+   struct tu_image *image;
+   bool valid : 1;
+   struct tu_draw_state state;
+};
+
 struct tu_cmd_state
 {
    uint32_t dirty;
@@ -905,6 +927,8 @@ struct tu_cmd_state
    bool has_tess;
    bool has_subpass_predication;
    bool predication_active;
+
+   struct tu_lrz_state lrz;
 };
 
 struct tu_cmd_pool
@@ -1115,6 +1139,8 @@ struct tu_pipeline
    {
       uint32_t local_size[3];
    } compute;
+
+   struct tu_lrz_pipeline lrz;
 };
 
 void
@@ -1122,6 +1148,9 @@ tu6_emit_viewport(struct tu_cs *cs, const VkViewport *viewport, uint32_t num_vie
 
 void
 tu6_emit_scissor(struct tu_cs *cs, const VkRect2D *scs, uint32_t scissor_count);
+
+void
+tu6_clear_lrz(struct tu_cmd_buffer *cmd, struct tu_cs *cs, struct tu_image* image, const VkClearValue *value);
 
 void
 tu6_emit_sample_locations(struct tu_cs *cs, const VkSampleLocationsInfoEXT *samp_loc);
@@ -1249,6 +1278,10 @@ struct tu_image
    /* Set when bound */
    struct tu_bo *bo;
    VkDeviceSize bo_offset;
+
+   uint32_t lrz_height;
+   uint32_t lrz_pitch;
+   uint32_t lrz_offset;
 };
 
 static inline uint32_t
@@ -1514,6 +1547,9 @@ tu_drm_submitqueue_close(const struct tu_device *dev, uint32_t queue_id);
 
 int
 tu_signal_fences(struct tu_device *device, struct tu_syncobj *fence1, struct tu_syncobj *fence2);
+
+int
+tu_syncobj_to_fd(struct tu_device *device, struct tu_syncobj *sync);
 
 #define TU_DEFINE_HANDLE_CASTS(__tu_type, __VkType)                          \
                                                                              \

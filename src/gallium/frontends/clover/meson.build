@@ -26,8 +26,8 @@ clover_opencl_cpp_args = [
   '-DCL_USE_DEPRECATED_OPENCL_1_2_APIS',
   '-DCL_USE_DEPRECATED_OPENCL_2_0_APIS',
   '-DCL_USE_DEPRECATED_OPENCL_2_1_APIS',
-  '-DLIBCLC_INCLUDEDIR="@0@/"'.format(dep_clc.get_pkgconfig_variable('includedir')),
-  '-DLIBCLC_LIBEXECDIR="@0@/"'.format(dep_clc.get_pkgconfig_variable('libexecdir'))
+  '-DLIBCLC_INCLUDEDIR="@0@/"'.format(dep_clc.get_variable(pkgconfig : 'includedir')),
+  '-DLIBCLC_LIBEXECDIR="@0@/"'.format(dep_clc.get_variable(pkgconfig : 'libexecdir'))
 ]
 clover_spirv_cpp_args = []
 clover_incs = [inc_include, inc_src, inc_gallium, inc_gallium_aux]
@@ -85,7 +85,7 @@ libclspirv = static_library(
 
 libclnir = static_library(
   'clnir',
-  files('nir/invocation.cpp', 'nir/invocation.hpp', 'nir/nir_lower_libclc.c', 'nir/nir_lower_libclc.h'),
+  files('nir/invocation.cpp', 'nir/invocation.hpp'),
   include_directories : [clover_incs, inc_mesa],
   dependencies : idep_nir,
   cpp_args : [clover_opencl_cpp_args, clover_spirv_cpp_args],

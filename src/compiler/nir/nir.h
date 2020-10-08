@@ -76,6 +76,14 @@ nir_num_components_valid(unsigned num_components)
            num_components == 16;
 }
 
+bool nir_component_mask_can_reinterpret(nir_component_mask_t mask,
+                                        unsigned old_bit_size,
+                                        unsigned new_bit_size);
+nir_component_mask_t
+nir_component_mask_reinterpret(nir_component_mask_t mask,
+                               unsigned old_bit_size,
+                               unsigned new_bit_size);
+
 /** Defines a cast function
  *
  * This macro defines a cast function from in_type to out_type where
@@ -3140,9 +3148,6 @@ typedef struct nir_shader_compiler_options {
    /* lower b/fall_equalN/b/fany_nequalN (ex:fany_nequal4 to sne+fdot4+fsat) */
    bool lower_vector_cmp;
 
-   /** enables rules to lower idiv by power-of-two: */
-   bool lower_idiv;
-
    /** enable rules to avoid bit ops */
    bool lower_bitops;
 
@@ -4119,6 +4124,11 @@ void nir_inline_function_impl(struct nir_builder *b,
                               struct hash_table *shader_var_remap);
 bool nir_inline_functions(nir_shader *shader);
 
+void nir_find_inlinable_uniforms(nir_shader *shader);
+void nir_inline_uniforms(nir_shader *shader, unsigned num_uniforms,
+                         const uint32_t *uniform_values,
+                         const uint16_t *uniform_dw_offsets);
+
 bool nir_propagate_invariant(nir_shader *shader);
 
 void nir_lower_var_copy_instr(nir_intrinsic_instr *copy, nir_shader *shader);
@@ -4126,6 +4136,7 @@ void nir_lower_deref_copy_instr(struct nir_builder *b,
                                 nir_intrinsic_instr *copy);
 bool nir_lower_var_copies(nir_shader *shader);
 
+bool nir_opt_memcpy(nir_shader *shader);
 bool nir_lower_memcpy(nir_shader *shader);
 
 void nir_fixup_deref_modes(nir_shader *shader);
@@ -4224,6 +4235,8 @@ nir_lower_vars_to_explicit_types(nir_shader *shader,
 
 bool nir_lower_mem_constant_vars(nir_shader *shader,
                                  glsl_type_size_align_func type_info);
+
+bool nir_lower_vec3_to_vec4(nir_shader *shader, nir_variable_mode modes);
 
 typedef enum {
    /**
@@ -4388,7 +4401,7 @@ bool nir_opt_simplify_convert_alu_types(nir_shader *shader);
 bool nir_lower_convert_alu_types(nir_shader *shader,
                                  bool (*should_lower)(nir_intrinsic_instr *));
 bool nir_lower_constant_convert_alu_types(nir_shader *shader);
-bool nir_lower_alu_covnersion_to_intrinsic(nir_shader *shader);
+bool nir_lower_alu_conversion_to_intrinsic(nir_shader *shader);
 bool nir_lower_int_to_float(nir_shader *shader);
 bool nir_lower_load_const_to_scalar(nir_shader *shader);
 bool nir_lower_read_invocation_to_scalar(nir_shader *shader);
@@ -4476,6 +4489,7 @@ typedef struct nir_lower_tex_options {
    unsigned lower_xy_uxvx_external;
    unsigned lower_ayuv_external;
    unsigned lower_xyuv_external;
+   unsigned lower_yuv_external;
    unsigned bt709_external;
    unsigned bt2020_external;
 

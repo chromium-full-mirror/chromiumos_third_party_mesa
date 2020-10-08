@@ -74,7 +74,7 @@ EXTENSIONS = [
     Extension('VK_EXT_sample_locations',                  1, 'device->gpu_id == 650'),
     Extension('VK_EXT_sampler_filter_minmax',             1, True),
     Extension('VK_EXT_transform_feedback',                1, True),
-    Extension('VK_ANDROID_native_buffer',                 1, True),
+    Extension('VK_ANDROID_native_buffer',                 1, 'ANDROID'),
     Extension('VK_KHR_external_fence',                    1, True),
     Extension('VK_KHR_external_fence_fd',                 1, True),
     Extension('VK_KHR_external_semaphore',                1, True),
@@ -98,6 +98,7 @@ EXTENSIONS = [
     Extension('VK_EXT_shader_viewport_index_layer',       1, True),
     Extension('VK_EXT_extended_dynamic_state',            1, True),
     Extension('VK_KHR_push_descriptor',                   1, True),
+    Extension('VK_KHR_incremental_present',               1, 'TU_HAS_SURFACE'),
 ]
 
 MAX_API_VERSION = VkVersion(MAX_API_VERSION)

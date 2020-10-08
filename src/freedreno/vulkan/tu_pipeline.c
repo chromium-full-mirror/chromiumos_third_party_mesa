@@ -2495,6 +2495,58 @@ tu_pipeline_builder_parse_depth_stencil(struct tu_pipeline_builder *builder,
       tu_cs_emit_regs(&cs, A6XX_RB_STENCILREF(.ref = ds_info->front.reference & 0xff,
                                               .bfref = ds_info->back.reference & 0xff));
    }
+
+   if (ds_info->depthTestEnable) {
+      pipeline->lrz.write = ds_info->depthWriteEnable;
+      pipeline->lrz.invalidate = false;
+      pipeline->lrz.z_test_enable = true;
+
+      /* LRZ does not support some depth modes.
+       *
+       * The HW has a flag for GREATER and GREATER_OR_EQUAL modes which is used
+       * in freedreno, however there are some dEQP-VK tests that fail if we use here.
+       * Furthermore, blob disables LRZ on these comparison opcodes too.
+       *
+       * TODO: investigate if we can enable GREATER flag here.
+       */
+      switch(ds_info->depthCompareOp) {
+      case VK_COMPARE_OP_ALWAYS:
+      case VK_COMPARE_OP_NOT_EQUAL:
+      case VK_COMPARE_OP_GREATER:
+      case VK_COMPARE_OP_GREATER_OR_EQUAL:
+         pipeline->lrz.invalidate = true;
+         pipeline->lrz.write = false;
+         break;
+      case VK_COMPARE_OP_EQUAL:
+      case VK_COMPARE_OP_NEVER:
+         pipeline->lrz.enable = true;
+         pipeline->lrz.write = false;
+         break;
+      case VK_COMPARE_OP_LESS:
+      case VK_COMPARE_OP_LESS_OR_EQUAL:
+         pipeline->lrz.enable = true;
+         break;
+      default:
+         unreachable("bad VK_COMPARE_OP value");
+         break;
+      };
+   }
+
+   if (ds_info->stencilTestEnable) {
+      pipeline->lrz.write = false;
+      pipeline->lrz.invalidate = true;
+   }
+
+   if (builder->shaders[MESA_SHADER_FRAGMENT]) {
+      const struct ir3_shader_variant *fs = &builder->shaders[MESA_SHADER_FRAGMENT]->ir3_shader->variants[0];
+      if (fs->has_kill || fs->no_earlyz || fs->writes_pos) {
+         pipeline->lrz.write = false;
+      }
+      if (fs->no_earlyz || fs->writes_pos) {
+         pipeline->lrz.enable = false;
+         pipeline->lrz.z_test_enable = false;
+      }
+   }
 }
 
 static void
@@ -2540,6 +2592,24 @@ tu_pipeline_builder_parse_multisample_and_color_blend(
                           builder->use_dual_src_blend, msaa_info);
 
    assert(cs.cur == cs.end); /* validate draw state size */
+
+   if (blend_enable_mask) {
+      for (int i = 0; i < blend_info->attachmentCount; i++) {
+         VkPipelineColorBlendAttachmentState blendAttachment = blend_info->pAttachments[i];
+         /* Disable LRZ writes when blend is enabled, since the
+          * resulting pixel value from the blend-draw
+          * depends on an earlier draw, which LRZ in the draw pass
+          * could early-reject if the previous blend-enabled draw wrote LRZ.
+          *
+          * From the PoV of LRZ, having masked color channels is
+          * the same as having blend enabled, in that the draw will
+          * care about the fragments from an earlier draw.
+          */
+         if (blendAttachment.blendEnable || blendAttachment.colorWriteMask != 0xf) {
+            pipeline->lrz.blend_disable_write = true;
+         }
+      }
+   }
 
    if (tu_pipeline_static_state(pipeline, &cs, VK_DYNAMIC_STATE_BLEND_CONSTANTS, 5)) {
       tu_cs_emit_pkt4(&cs, REG_A6XX_RB_BLEND_RED_F32, 4);

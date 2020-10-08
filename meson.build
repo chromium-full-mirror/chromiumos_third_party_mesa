@@ -72,6 +72,7 @@ if with_tools.contains('all')
     'xvmc',
   ]
 endif
+with_clc = false
 
 with_intel_tools = with_tools.contains('intel') or with_tools.contains('intel-ui')
 with_imgui = with_intel_tools or with_vulkan_overlay_layer
@@ -765,7 +766,7 @@ _power8 = get_option('power8')
 if _power8 == 'true'
   _power8 = 'enabled'
   warning('power8 option "true" deprecated, please use "enabled" instead.')
-elif _power8 == 'disabled'
+elif _power8 == 'false'
   _power8 = 'disabled'
   warning('power8 option "false" deprecated, please use "disabled" instead.')
 endif
@@ -802,13 +803,17 @@ if _opencl != 'disabled'
     error('OpenCL Clover implementation requires at least one gallium driver.')
   endif
 
-  dep_clc = dependency('libclc')
+  with_clc = true
   with_gallium_opencl = true
   with_opencl_icd = _opencl == 'icd'
 else
-  dep_clc = null_dep
   with_gallium_opencl = false
   with_opencl_icd = false
+endif
+
+dep_clc = null_dep
+if with_clc
+  dep_clc = dependency('libclc')
 endif
 
 gl_pkgconfig_c_flags = []

@@ -68,6 +68,7 @@ static const struct nir_shader_compiler_options nir_options_llvm = {
 	.lower_unpack_snorm_4x8 = true,
 	.lower_unpack_unorm_2x16 = true,
 	.lower_unpack_unorm_4x8 = true,
+	.lower_unpack_half_2x16 = true,
 	.lower_extract_byte = true,
 	.lower_extract_word = true,
 	.lower_ffma16 = true,
@@ -429,16 +430,16 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				spec_entries[i].id = spec_info->pMapEntries[i].constantID;
 				switch (entry.size) {
 				case 8:
-					spec_entries[i].value.u64 = *(const uint64_t *)data;
+					memcpy(&spec_entries[i].value.u64, data, sizeof(uint64_t));
 					break;
 				case 4:
-					spec_entries[i].value.u32 = *(const uint32_t *)data;
+					memcpy(&spec_entries[i].value.u32, data, sizeof(uint32_t));
 					break;
 				case 2:
-					spec_entries[i].value.u16 = *(const uint16_t *)data;
+					memcpy(&spec_entries[i].value.u16, data, sizeof(uint16_t));
 					break;
 				case 1:
-					spec_entries[i].value.u8 = *(const uint8_t *)data;
+					memcpy(&spec_entries[i].value.u8, data, sizeof(uint8_t));
 					break;
 				default:
 					assert(!"Invalid spec constant size");
@@ -727,7 +728,7 @@ lower_view_index(nir_shader *nir)
 	nir_function_impl *entry = nir_shader_get_entrypoint(nir);
 	nir_builder b;
 	nir_builder_init(&b, entry);
-	
+
 	nir_variable *layer = NULL;
 	nir_foreach_block(block, entry) {
 		nir_foreach_instr_safe(instr, block) {
@@ -760,18 +761,18 @@ radv_lower_io(struct radv_device *device, nir_shader *nir)
 	if (nir->info.stage == MESA_SHADER_COMPUTE)
 		return;
 
-	/* TODO: Lower IO for all stages with LLVM. */
-	if (nir->info.stage != MESA_SHADER_FRAGMENT &&
-	    radv_use_llvm_for_stage(device, nir->info.stage))
-		return;
-
 	if (nir->info.stage == MESA_SHADER_FRAGMENT) {
 		NIR_PASS_V(nir, lower_view_index);
 		nir_assign_io_var_locations(nir, nir_var_shader_in, &nir->num_inputs,
 					    MESA_SHADER_FRAGMENT);
 	}
 
-	NIR_PASS_V(nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size_vec4, 0);
+	/* The RADV/LLVM backend expects 64-bit IO to be lowered. */
+	nir_lower_io_options options =
+		radv_use_llvm_for_stage(device, nir->info.stage) ? nir_lower_io_lower_64bit_to_32 : 0;
+
+	NIR_PASS_V(nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
+		   type_size_vec4, options);
 
 	/* This pass needs actual constants */
 	nir_opt_constant_folding(nir);
@@ -1158,7 +1159,7 @@ radv_shader_variant_create(struct radv_device *device,
 			.num_shared_lds_symbols = num_lds_symbols,
 			.shared_lds_symbols = lds_symbols,
 		};
-		
+
 		if (!ac_rtld_open(&rtld_binary, open_info)) {
 			free(variant);
 			return NULL;
@@ -1202,7 +1203,7 @@ radv_shader_variant_create(struct radv_device *device,
 		struct ac_rtld_upload_info info = {
 			.binary = &rtld_binary,
 			.rx_va = radv_buffer_get_va(variant->bo) + variant->bo_offset,
-			.rx_ptr = dest_ptr, 
+			.rx_ptr = dest_ptr,
 		};
 
 		if (!ac_rtld_upload(&info)) {
@@ -1315,7 +1316,7 @@ shader_variant_compile(struct radv_device *device,
 	args.is_gs_copy_shader = gs_copy_shader;
 	args.is_trap_handler_shader = trap_handler_shader;
 
-	radv_declare_shader_args(&args, 
+	radv_declare_shader_args(&args,
 				 gs_copy_shader ? MESA_SHADER_VERTEX
 						: shaders[shader_count - 1]->info.stage,
 				 shader_count >= 2,

@@ -116,10 +116,8 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_OCCLUSION_QUERY:
       return 1;
 
-#if 0 /* TODO: Enable me */
    case PIPE_CAP_QUERY_TIME_ELAPSED:
       return 1;
-#endif
 
    case PIPE_CAP_TEXTURE_MULTISAMPLE:
       return 1;
@@ -184,10 +182,8 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
       return screen->info.props.limits.minUniformBufferOffsetAlignment;
 
-#if 0 /* TODO: Enable me */
    case PIPE_CAP_QUERY_TIMESTAMP:
-      return 1;
-#endif
+      return screen->info.have_EXT_calibrated_timestamps;
 
    case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
       return screen->info.props.limits.minMemoryMapAlignment;
@@ -296,7 +292,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return screen->info.props.limits.maxDescriptorSetStorageBuffers;
 
    case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
-      return screen->info.props.limits.maxStorageBufferRange; /* unsure */
+      return 65536;
 
    case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
    case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
@@ -417,7 +413,7 @@ zink_get_shader_param(struct pipe_screen *pscreen,
       }
 
    case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
-      return MIN2(screen->info.props.limits.maxUniformBufferRange, INT_MAX);
+      return 65536;
 
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
       return screen->info.props.limits.maxPerStageDescriptorUniformBuffers;
@@ -795,7 +791,7 @@ load_device_extensions(struct zink_screen *screen)
 }
 
 static struct pipe_screen *
-zink_internal_create_screen(struct sw_winsys *winsys, int fd)
+zink_internal_create_screen(struct sw_winsys *winsys, int fd, const struct pipe_screen_config *config)
 {
    struct zink_screen *screen = CALLOC_STRUCT(zink_screen);
    if (!screen)
@@ -876,11 +872,11 @@ fail:
 struct pipe_screen *
 zink_create_screen(struct sw_winsys *winsys)
 {
-   return zink_internal_create_screen(winsys, -1);
+   return zink_internal_create_screen(winsys, -1, NULL);
 }
 
 struct pipe_screen *
-zink_drm_create_screen(int fd)
+zink_drm_create_screen(int fd, const struct pipe_screen_config *config)
 {
-   return zink_internal_create_screen(NULL, fd);
+   return zink_internal_create_screen(NULL, fd, config);
 }

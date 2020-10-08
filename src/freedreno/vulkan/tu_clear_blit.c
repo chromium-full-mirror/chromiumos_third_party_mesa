@@ -14,7 +14,7 @@
 #include "util/format_r11g11b10f.h"
 #include "util/format_rgb9e5.h"
 #include "util/format_srgb.h"
-#include "util/u_half.h"
+#include "util/half_float.h"
 
 static uint32_t
 tu_pack_float32_for_unorm(float val, int bits)
@@ -122,7 +122,7 @@ r2d_clear_value(struct tu_cs *cs, VkFormat format, const VkClearValue *val)
             else
                clear_value[i] = tu_pack_float32_for_unorm(linear, 8);
          } else if (ifmt == R2D_FLOAT16) {
-            clear_value[i] = util_float_to_half(val->color.float32[i]);
+            clear_value[i] = _mesa_float_to_half(val->color.float32[i]);
          } else {
             assert(ifmt == R2D_FLOAT32 || ifmt == R2D_INT32 ||
                    ifmt == R2D_INT16 || ifmt == R2D_INT8);
@@ -912,6 +912,24 @@ copy_format(VkFormat format, VkImageAspectFlags aspect_mask, bool copy_buffer)
       assert(aspect_mask == VK_IMAGE_ASPECT_DEPTH_BIT);
       return VK_FORMAT_D32_SFLOAT;
    }
+}
+
+void
+tu6_clear_lrz(struct tu_cmd_buffer *cmd,
+              struct tu_cs *cs,
+              struct tu_image *image,
+              const VkClearValue *value)
+{
+   const struct blit_ops *ops = &r2d_ops;
+
+   ops->setup(cmd, cs, VK_FORMAT_D16_UNORM, VK_IMAGE_ASPECT_DEPTH_BIT, ROTATE_0, true, false);
+   ops->clear_value(cs, VK_FORMAT_D16_UNORM, value);
+   ops->dst_buffer(cs, VK_FORMAT_D16_UNORM,
+                   image->bo->iova + image->bo_offset + image->lrz_offset,
+                   image->lrz_pitch * 2);
+   ops->coords(cs, &(VkOffset2D) {}, NULL, &(VkExtent2D) {image->lrz_pitch, image->lrz_height});
+   ops->run(cmd, cs);
+   ops->teardown(cmd, cs);
 }
 
 static void
@@ -1889,6 +1907,11 @@ tu_clear_sysmem_attachments(struct tu_cmd_buffer *cmd,
             .component_enable = COND(clear_rts & (1 << i), 0xf)));
    }
 
+   if (z_clear) {
+      tu_cs_emit_regs(cs, A6XX_GRAS_LRZ_CNTL(0));
+      tu_cs_emit_regs(cs, A6XX_RB_LRZ_CNTL(0));
+   }
+
    tu_cs_emit_regs(cs, A6XX_RB_DEPTH_PLANE_CNTL());
    tu_cs_emit_regs(cs, A6XX_RB_DEPTH_CNTL(
          .z_enable = z_clear,
@@ -2137,6 +2160,13 @@ tu_CmdClearAttachments(VkCommandBuffer commandBuffer,
    tu_cond_exec_start(cs, CP_COND_EXEC_0_RENDER_MODE_SYSMEM);
    tu_clear_sysmem_attachments(cmd, attachmentCount, pAttachments, rectCount, pRects);
    tu_cond_exec_end(cs);
+
+   for (uint32_t j = 0; j < attachmentCount; j++) {
+      if ((pAttachments[j].aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) == 0)
+         continue;
+      cmd->state.lrz.valid = false;
+      cmd->state.dirty |= TU_CMD_DIRTY_LRZ;
+   }
 }
 
 static void

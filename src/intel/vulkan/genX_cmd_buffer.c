@@ -1827,7 +1827,7 @@ genX(cmd_buffer_config_l3)(struct anv_cmd_buffer *cmd_buffer,
    if (cfg == cmd_buffer->state.current_l3_config)
       return;
 
-   if (unlikely(INTEL_DEBUG & DEBUG_L3)) {
+   if (INTEL_DEBUG & DEBUG_L3) {
       mesa_logd("L3 config transition: ");
       gen_dump_l3_config(cfg, stderr);
    }
@@ -2365,8 +2365,8 @@ void genX(CmdPipelineBarrier)(
    }
 
    cmd_buffer->state.pending_pipe_bits |=
-      anv_pipe_flush_bits_for_access_flags(src_flags) |
-      anv_pipe_invalidate_bits_for_access_flags(dst_flags);
+      anv_pipe_flush_bits_for_access_flags(cmd_buffer->device, src_flags) |
+      anv_pipe_invalidate_bits_for_access_flags(cmd_buffer->device, dst_flags);
 }
 
 static void
@@ -2539,7 +2539,8 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
          unsigned constant_data_size = shader->prog_data->const_data_size;
 
          const enum isl_format format =
-            anv_isl_format_for_descriptor_type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+            anv_isl_format_for_descriptor_type(cmd_buffer->device,
+                                               VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
          anv_fill_buffer_surface_state(cmd_buffer->device,
                                        surface_state, format,
                                        constant_data, constant_data_size, 1);
@@ -2558,7 +2559,8 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
             anv_cmd_buffer_alloc_surface_state(cmd_buffer);
 
          const enum isl_format format =
-            anv_isl_format_for_descriptor_type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+            anv_isl_format_for_descriptor_type(cmd_buffer->device,
+                                               VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
          anv_fill_buffer_surface_state(cmd_buffer->device, surface_state,
                                        format,
                                        cmd_buffer->state.compute.num_workgroups,
@@ -2693,7 +2695,8 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
                surface_state =
                   anv_state_stream_alloc(&cmd_buffer->surface_state_stream, 64, 64);
                enum isl_format format =
-                  anv_isl_format_for_descriptor_type(desc->type);
+                  anv_isl_format_for_descriptor_type(cmd_buffer->device,
+                                                     desc->type);
 
                anv_fill_buffer_surface_state(cmd_buffer->device, surface_state,
                                              format, address, range, 1);
@@ -3424,8 +3427,9 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
 
    cmd_buffer->state.gfx.vb_dirty &= ~vb_emit;
 
-#if GEN_GEN >= 8
-   if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_XFB_ENABLE) {
+   if ((cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_XFB_ENABLE) ||
+       (GEN_GEN == 7 && (cmd_buffer->state.gfx.dirty &
+                         ANV_CMD_DIRTY_PIPELINE))) {
       /* We don't need any per-buffer dirty tracking because you're not
        * allowed to bind different XFB buffers while XFB is enabled.
        */
@@ -3440,13 +3444,23 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
 #endif
 
             if (cmd_buffer->state.xfb_enabled && xfb->buffer && xfb->size != 0) {
-               sob.SOBufferEnable = true;
                sob.MOCS = cmd_buffer->device->isl_dev.mocs.internal,
-               sob.StreamOffsetWriteEnable = false;
                sob.SurfaceBaseAddress = anv_address_add(xfb->buffer->address,
                                                         xfb->offset);
+#if GEN_GEN >= 8
+               sob.SOBufferEnable = true;
+               sob.StreamOffsetWriteEnable = false;
                /* Size is in DWords - 1 */
                sob.SurfaceSize = DIV_ROUND_UP(xfb->size, 4) - 1;
+#else
+               /* We don't have SOBufferEnable in 3DSTATE_SO_BUFFER on Gen7 so
+                * we trust in SurfaceEndAddress = SurfaceBaseAddress = 0 (the
+                * default for an empty SO_BUFFER packet) to disable them.
+                */
+               sob.SurfacePitch = pipeline->gen7.xfb_bo_pitch[idx];
+               sob.SurfaceEndAddress = anv_address_add(xfb->buffer->address,
+                                                       xfb->offset + xfb->size);
+#endif
             }
          }
       }
@@ -3455,7 +3469,6 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
       if (GEN_GEN >= 10)
          cmd_buffer->state.pending_pipe_bits |= ANV_PIPE_CS_STALL_BIT;
    }
-#endif
 
    if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_PIPELINE) {
       anv_batch_emit_batch(&cmd_buffer->batch, &pipeline->base.batch);

@@ -35,6 +35,11 @@
 
 #include "tu_private.h"
 
+struct tu_syncobj {
+   struct vk_object_base base;
+   uint32_t permanent, temporary;
+};
+
 static int
 tu_drm_get_param(const struct tu_physical_device *dev,
                  uint32_t param,
@@ -306,8 +311,8 @@ tu_drm_device_init(struct tu_physical_device *device,
 
    fd = open(path, O_RDWR | O_CLOEXEC);
    if (fd < 0) {
-      return vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
-                       "failed to open device %s", path);
+      return vk_startup_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
+                               "failed to open device %s", path);
    }
 
    /* Version 1.6 added SYNCOBJ support. */
@@ -317,25 +322,27 @@ tu_drm_device_init(struct tu_physical_device *device,
    version = drmGetVersion(fd);
    if (!version) {
       close(fd);
-      return vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
-                       "failed to query kernel driver version for device %s",
-                       path);
+      return vk_startup_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
+                               "failed to query kernel driver version for device %s",
+                               path);
    }
 
    if (strcmp(version->name, "msm")) {
       drmFreeVersion(version);
       close(fd);
-      return vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
-                       "device %s does not use the msm kernel driver", path);
+      return vk_startup_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
+                               "device %s does not use the msm kernel driver",
+                               path);
    }
 
    if (version->version_major != min_version_major ||
        version->version_minor < min_version_minor) {
-      result = vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
-                         "kernel driver for device %s has version %d.%d, "
-                         "but Vulkan requires version >= %d.%d",
-                         path, version->version_major, version->version_minor,
-                         min_version_major, min_version_minor);
+      result = vk_startup_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
+                                 "kernel driver for device %s has version %d.%d, "
+                                 "but Vulkan requires version >= %d.%d",
+                                 path,
+                                 version->version_major, version->version_minor,
+                                 min_version_major, min_version_minor);
       drmFreeVersion(version);
       close(fd);
       return result;
@@ -416,7 +423,8 @@ tu_enumerate_devices(struct tu_instance *instance)
    }
 
    if (max_devices < 1)
-      return vk_error(instance, VK_ERROR_INCOMPATIBLE_DRIVER);
+      return vk_startup_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
+                               "No DRM devices found");
 
    for (unsigned i = 0; i < (unsigned) max_devices; i++) {
       if (devices[i]->available_nodes & 1 << DRM_NODE_RENDER &&
@@ -894,3 +902,72 @@ tu_signal_fences(struct tu_device *device, struct tu_syncobj *fence1, struct tu_
       .count_handles = count
    });
 }
+
+int
+tu_syncobj_to_fd(struct tu_device *device, struct tu_syncobj *sync)
+{
+   struct drm_syncobj_handle handle = { .handle = sync->permanent };
+   int ret;
+
+   ret = ioctl(device->fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &handle);
+   if (ret)
+      return 0;
+
+   return ret ? -1 : handle.fd;
+}
+
+#ifdef ANDROID
+#include <libsync.h>
+
+VkResult
+tu_QueueSignalReleaseImageANDROID(VkQueue _queue,
+                                  uint32_t waitSemaphoreCount,
+                                  const VkSemaphore *pWaitSemaphores,
+                                  VkImage image,
+                                  int *pNativeFenceFd)
+{
+   TU_FROM_HANDLE(tu_queue, queue, _queue);
+   VkResult result = VK_SUCCESS;
+
+   if (waitSemaphoreCount == 0) {
+      if (pNativeFenceFd)
+         *pNativeFenceFd = -1;
+      return VK_SUCCESS;
+   }
+
+   int fd = -1;
+
+   for (uint32_t i = 0; i < waitSemaphoreCount; ++i) {
+      int tmp_fd;
+      result = tu_GetSemaphoreFdKHR(
+         tu_device_to_handle(queue->device),
+         &(VkSemaphoreGetFdInfoKHR) {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
+            .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+            .semaphore = pWaitSemaphores[i],
+         },
+         &tmp_fd);
+      if (result != VK_SUCCESS) {
+         if (fd >= 0)
+            close(fd);
+         return result;
+      }
+
+      if (fd < 0)
+         fd = tmp_fd;
+      else if (tmp_fd >= 0) {
+         sync_accumulate("tu", &fd, tmp_fd);
+         close(tmp_fd);
+      }
+   }
+
+   if (pNativeFenceFd) {
+      *pNativeFenceFd = fd;
+   } else if (fd >= 0) {
+      close(fd);
+      /* We still need to do the exports, to reset the semaphores, but
+       * otherwise we don't wait on them. */
+   }
+   return VK_SUCCESS;
+}
+#endif

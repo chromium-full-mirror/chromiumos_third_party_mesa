@@ -35,6 +35,21 @@ struct zink_query {
    union pipe_query_result accumulated_result;
 };
 
+static void
+timestamp_to_nanoseconds(struct zink_screen *screen, uint64_t *timestamp)
+{
+   /* The number of valid bits in a timestamp value is determined by
+    * the VkQueueFamilyProperties::timestampValidBits property of the queue on which the timestamp is written.
+    * - 17.5. Timestamp Queries
+    */
+   *timestamp &= ((1ull << screen->timestamp_valid_bits) - 1);
+   /* The number of nanoseconds it takes for a timestamp value to be incremented by 1
+    * can be obtained from VkPhysicalDeviceLimits::timestampPeriod
+    * - 17.5. Timestamp Queries
+    */
+   *timestamp *= screen->info.props.limits.timestampPeriod;
+}
+
 static VkQueryType
 convert_query_type(unsigned query_type, bool *use_64bit, bool *precise)
 {
@@ -48,6 +63,7 @@ convert_query_type(unsigned query_type, bool *use_64bit, bool *precise)
    case PIPE_QUERY_OCCLUSION_PREDICATE:
    case PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE:
       return VK_QUERY_TYPE_OCCLUSION;
+   case PIPE_QUERY_TIME_ELAPSED:
    case PIPE_QUERY_TIMESTAMP:
       *use_64bit = true;
       return VK_QUERY_TYPE_TIMESTAMP;
@@ -62,6 +78,12 @@ convert_query_type(unsigned query_type, bool *use_64bit, bool *precise)
                    util_str_query_type(query_type, true));
       unreachable("zink: unknown query type");
    }
+}
+
+static bool
+is_time_query(struct zink_query *query)
+{
+   return query->type == PIPE_QUERY_TIMESTAMP || query->type == PIPE_QUERY_TIME_ELAPSED;
 }
 
 static struct pipe_query *
@@ -81,7 +103,7 @@ zink_create_query(struct pipe_context *pctx,
    if (query->vkqtype == -1)
       return NULL;
 
-   query->num_queries = query_type == PIPE_QUERY_TIMESTAMP ? 1 : NUM_QUERIES;
+   query->num_queries = NUM_QUERIES;
    query->curr_query = 0;
 
    pool_create.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -97,6 +119,8 @@ zink_create_query(struct pipe_context *pctx,
    }
    struct zink_batch *batch = zink_batch_no_rp(zink_context(pctx));
    vkCmdResetQueryPool(batch->cmdbuf, query->query_pool, 0, query->num_queries);
+   if (query->type == PIPE_QUERY_TIMESTAMP)
+      query->active = true;
    return (struct pipe_query *)query;
 }
 
@@ -156,12 +180,14 @@ get_query_result(struct pipe_context *pctx,
       flags |= VK_QUERY_RESULT_64_BIT;
 
    if (result != &query->accumulated_result) {
-      memcpy(result, &query->accumulated_result, sizeof(query->accumulated_result));
-      util_query_clear_result(&query->accumulated_result, query->type);
-   } else {
-      assert(query->vkqtype != VK_QUERY_TYPE_TIMESTAMP);
+      if (query->type == PIPE_QUERY_TIMESTAMP)
+         util_query_clear_result(result, query->type);
+      else {
+         memcpy(result, &query->accumulated_result, sizeof(query->accumulated_result));
+         util_query_clear_result(&query->accumulated_result, query->type);
+      }
+   } else
       flags |= VK_QUERY_RESULT_PARTIAL_BIT;
-   }
 
    // union pipe_query_result results[NUM_QUERIES * 2];
    /* xfb queries return 2 results */
@@ -193,6 +219,7 @@ get_query_result(struct pipe_context *pctx,
          return false;
    }
 
+   uint64_t last_val = 0;
    for (int i = 0; i < num_results; ++i) {
       switch (query->type) {
       case PIPE_QUERY_OCCLUSION_PREDICATE:
@@ -203,6 +230,15 @@ get_query_result(struct pipe_context *pctx,
          result->b |= results[i] != 0;
          break;
 
+      case PIPE_QUERY_TIME_ELAPSED:
+      case PIPE_QUERY_TIMESTAMP:
+         /* the application can sum the differences between all N queries to determine the total execution time.
+          * - 17.5. Timestamp Queries
+          */
+         if (query->type != PIPE_QUERY_TIME_ELAPSED || i > 0)
+            result->u64 += results[i] - last_val;
+         last_val = results[i];
+         break;
       case PIPE_QUERY_OCCLUSION_COUNTER:
          result->u64 += results[i];
          break;
@@ -227,6 +263,9 @@ get_query_result(struct pipe_context *pctx,
    }
    query->last_checked_query = query->curr_query;
 
+   if (is_time_query(query))
+      timestamp_to_nanoseconds(screen, &result->u64);
+
    return TRUE;
 }
 
@@ -239,7 +278,8 @@ reset_pool(struct zink_context *ctx, struct zink_batch *batch, struct zink_query
     */
    batch = zink_batch_no_rp(ctx);
 
-   get_query_result(&ctx->base, (struct pipe_query*)q, false, &q->accumulated_result);
+   if (q->type != PIPE_QUERY_TIMESTAMP)
+      get_query_result(&ctx->base, (struct pipe_query*)q, false, &q->accumulated_result);
    vkCmdResetQueryPool(batch->cmdbuf, q->query_pool, 0, q->num_queries);
    q->last_checked_query = q->curr_query = 0;
    q->needs_reset = false;
@@ -253,6 +293,12 @@ begin_query(struct zink_context *ctx, struct zink_batch *batch, struct zink_quer
    if (q->needs_reset)
       reset_pool(ctx, batch, q);
    assert(q->curr_query < q->num_queries);
+   q->active = true;
+   if (q->type == PIPE_QUERY_TIME_ELAPSED)
+      vkCmdWriteTimestamp(batch->cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, q->query_pool, q->curr_query++);
+   /* ignore the rest of begin_query for timestamps */
+   if (is_time_query(q))
+      return;
    if (q->precise)
       flags |= VK_QUERY_CONTROL_PRECISE_BIT;
    if (q->vkqtype == VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT) {
@@ -264,7 +310,6 @@ begin_query(struct zink_context *ctx, struct zink_batch *batch, struct zink_quer
       q->xfb_running = true;
    } else
       vkCmdBeginQuery(batch->cmdbuf, q->query_pool, q->curr_query, flags);
-   q->active = true;
    if (!batch->active_queries)
       batch->active_queries = _mesa_set_create(NULL, _mesa_hash_pointer, _mesa_key_pointer_equal);
    assert(batch->active_queries);
@@ -279,9 +324,6 @@ zink_begin_query(struct pipe_context *pctx,
    struct zink_query *query = (struct zink_query *)q;
    struct zink_batch *batch = zink_curr_batch(zink_context(pctx));
 
-   /* ignore begin_query for timestamps */
-   if (query->type == PIPE_QUERY_TIMESTAMP)
-      return true;
    util_query_clear_result(&query->accumulated_result, query->type);
 
    begin_query(zink_context(pctx), batch, query);
@@ -293,9 +335,11 @@ static void
 end_query(struct zink_context *ctx, struct zink_batch *batch, struct zink_query *q)
 {
    struct zink_screen *screen = zink_screen(ctx->base.screen);
-   assert(q->type != PIPE_QUERY_TIMESTAMP);
-   q->active = false;
-   if (q->vkqtype == VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT)
+   q->active = q->type == PIPE_QUERY_TIMESTAMP;
+   if (is_time_query(q))
+      vkCmdWriteTimestamp(batch->cmdbuf, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                          q->query_pool, q->curr_query);
+   else if (q->vkqtype == VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT)
       screen->vk_CmdEndQueryIndexedEXT(batch->cmdbuf, q->query_pool, q->curr_query, q->index);
    else
       vkCmdEndQuery(batch->cmdbuf, q->query_pool, q->curr_query);
@@ -316,11 +360,7 @@ zink_end_query(struct pipe_context *pctx,
    struct zink_query *query = (struct zink_query *)q;
    struct zink_batch *batch = zink_curr_batch(ctx);
 
-   if (query->type == PIPE_QUERY_TIMESTAMP) {
-      assert(query->curr_query == 0);
-      vkCmdWriteTimestamp(batch->cmdbuf, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                          query->query_pool, 0);
-   } else if (query->active)
+   if (query->active)
       end_query(ctx, batch, query);
 
    return true;
@@ -437,6 +477,20 @@ zink_render_condition(struct pipe_context *pctx,
    pipe_resource_reference(&pres, NULL);
 }
 
+static uint64_t
+zink_get_timestamp(struct pipe_context *pctx)
+{
+   struct zink_screen *screen = zink_screen(pctx->screen);
+   uint64_t timestamp, deviation;
+   assert(screen->info.have_EXT_calibrated_timestamps);
+   VkCalibratedTimestampInfoEXT cti = {};
+   cti.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT;
+   cti.timeDomain = VK_TIME_DOMAIN_DEVICE_EXT;
+   screen->vk_GetCalibratedTimestampsEXT(screen->dev, 1, &cti, &timestamp, &deviation);
+   timestamp_to_nanoseconds(screen, &timestamp);
+   return timestamp;
+}
+
 void
 zink_context_query_init(struct pipe_context *pctx)
 {
@@ -450,4 +504,5 @@ zink_context_query_init(struct pipe_context *pctx)
    pctx->get_query_result = zink_get_query_result;
    pctx->set_active_query_state = zink_set_active_query_state;
    pctx->render_condition = zink_render_condition;
+   pctx->get_timestamp = zink_get_timestamp;
 }

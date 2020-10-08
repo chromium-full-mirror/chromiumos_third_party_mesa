@@ -2821,7 +2821,8 @@ util_blitter_stencil_fallback(struct blitter_context *blitter,
                               const struct pipe_box *dstbox,
                               struct pipe_resource *src,
                               unsigned src_level,
-                              const struct pipe_box *srcbox)
+                              const struct pipe_box *srcbox,
+                              const struct pipe_scissor_state *scissor)
 {
    struct blitter_context_priv *ctx = (struct blitter_context_priv *)blitter;
    struct pipe_context *pipe = ctx->base.pipe;
@@ -2857,13 +2858,24 @@ util_blitter_stencil_fallback(struct blitter_context *blitter,
    pipe->set_framebuffer_state(pipe, &fb_state);
    pipe->set_sample_mask(pipe, ~0);
 
-   blitter_set_common_draw_rect_state(ctx, false,
+   blitter_set_common_draw_rect_state(ctx, scissor != NULL,
       util_framebuffer_get_num_samples(&fb_state) > 1);
    blitter_set_dst_dimensions(ctx, dst_view->width, dst_view->height);
 
-   pipe->clear_depth_stencil(pipe, dst_view, PIPE_CLEAR_STENCIL, 0.0, 0,
-                             dstbox->x, dstbox->y, dstbox->width, dstbox->height,
-                             true);
+   if (scissor) {
+      pipe->clear_depth_stencil(pipe, dst_view, PIPE_CLEAR_STENCIL, 0.0, 0,
+                                MAX2(dstbox->x, scissor->minx),
+                                MAX2(dstbox->y, scissor->miny),
+                                MIN2(dstbox->x + dstbox->width, scissor->maxx) - dstbox->x,
+                                MIN2(dstbox->y + dstbox->height, scissor->maxy) - dstbox->y,
+                                true);
+      pipe->set_scissor_states(pipe, 0, 1, scissor);
+   } else {
+      pipe->clear_depth_stencil(pipe, dst_view, PIPE_CLEAR_STENCIL, 0.0, 0,
+                                dstbox->x, dstbox->y,
+                                dstbox->width, dstbox->height,
+                                true);
+   }
 
    pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 1, &src_view);
    pipe->bind_sampler_states(pipe, PIPE_SHADER_FRAGMENT, 0, 1, &ctx->sampler_state);
@@ -2904,6 +2916,9 @@ util_blitter_stencil_fallback(struct blitter_context *blitter,
                               &coord);
    }
 
+   if (scissor)
+      pipe->set_scissor_states(pipe, 0, 1, &ctx->base.saved_scissor);
+
    util_blitter_restore_vertex_states(blitter);
    util_blitter_restore_fragment_states(blitter);
    util_blitter_restore_textures(blitter);
@@ -2911,4 +2926,7 @@ util_blitter_stencil_fallback(struct blitter_context *blitter,
    util_blitter_restore_render_cond(blitter);
    util_blitter_restore_constant_buffer_state(blitter);
    util_blitter_unset_running_flag(blitter);
+
+   pipe_surface_reference(&dst_view, NULL);
+   pipe_sampler_view_reference(&src_view, NULL);
 }

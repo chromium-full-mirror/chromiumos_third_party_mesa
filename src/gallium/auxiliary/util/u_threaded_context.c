@@ -30,6 +30,7 @@
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_upload_mgr.h"
+#include "compiler/shader_info.h"
 
 /* 0 = disabled, 1 = assertions, 2 = printfs */
 #define TC_DEBUG 0
@@ -696,11 +697,41 @@ tc_set_constant_buffer(struct pipe_context *_pipe,
       } else {
          tc_set_resource_reference(&p->cb.buffer,
                                    cb->buffer);
-         memcpy(&p->cb, cb, sizeof(*cb));
+         p->cb.user_buffer = NULL;
+         p->cb.buffer_offset = cb->buffer_offset;
+         p->cb.buffer_size = cb->buffer_size;
       }
    } else {
       memset(&p->cb, 0, sizeof(*cb));
    }
+}
+
+struct tc_inlinable_constants {
+   ubyte shader;
+   ubyte num_values;
+   uint32_t values[MAX_INLINABLE_UNIFORMS];
+};
+
+static void
+tc_call_set_inlinable_constants(struct pipe_context *pipe, union tc_payload *payload)
+{
+   struct tc_inlinable_constants *p = (struct tc_inlinable_constants *)payload;
+
+   pipe->set_inlinable_constants(pipe, p->shader, p->num_values, p->values);
+}
+
+static void
+tc_set_inlinable_constants(struct pipe_context *_pipe,
+                           enum pipe_shader_type shader,
+                           uint num_values, uint32_t *values)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+   struct tc_inlinable_constants *p =
+      tc_add_struct_typed_call(tc, TC_CALL_set_inlinable_constants,
+                               tc_inlinable_constants);
+   p->shader = shader;
+   p->num_values = num_values;
+   memcpy(p->values, values, num_values * 4);
 }
 
 struct tc_scissors {
@@ -1608,9 +1639,9 @@ tc_transfer_unmap(struct pipe_context *_pipe, struct pipe_transfer *transfer)
                                   PIPE_MAP_DISCARD_RANGE)));
 
       struct pipe_context *pipe = tc->pipe;
-      pipe->transfer_unmap(pipe, transfer);
       util_range_add(&tres->b, tres->base_valid_buffer_range,
                       transfer->box.x, transfer->box.x + transfer->box.width);
+      pipe->transfer_unmap(pipe, transfer);
       return;
    }
 
@@ -1993,6 +2024,20 @@ tc_set_context_param(struct pipe_context *_pipe,
    }
 }
 
+static void
+tc_call_set_frontend_noop(struct pipe_context *pipe, union tc_payload *payload)
+{
+   pipe->set_frontend_noop(pipe, payload->boolean);
+}
+
+static void
+tc_set_frontend_noop(struct pipe_context *_pipe, bool enable)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+
+   tc_add_small_call(tc, TC_CALL_set_frontend_noop)->boolean = enable;
+}
+
 
 /********************************************************************
  * draw, launch, clear, blit, copy, flush
@@ -2039,19 +2084,7 @@ tc_flush(struct pipe_context *_pipe, struct pipe_fence_handle **fence,
    struct threaded_context *tc = threaded_context(_pipe);
    struct pipe_context *pipe = tc->pipe;
    struct pipe_screen *screen = pipe->screen;
-   bool async = flags & PIPE_FLUSH_DEFERRED;
-
-   if (flags & PIPE_FLUSH_ASYNC) {
-      struct tc_batch *last = &tc->batch_slots[tc->last];
-
-      /* Prefer to do the flush in the driver thread, but avoid the inter-thread
-       * communication overhead if the driver thread is currently idle and the
-       * caller is going to wait for the fence immediately anyway.
-       */
-      if (!(util_queue_fence_is_signalled(&last->fence) &&
-            (flags & PIPE_FLUSH_HINT_FINISH)))
-         async = true;
-   }
+   bool async = flags & (PIPE_FLUSH_DEFERRED | PIPE_FLUSH_ASYNC);
 
    if (async && tc->create_fence) {
       if (fence) {
@@ -2746,6 +2779,7 @@ threaded_context_create(struct pipe_context *pipe,
    CTX_INIT(set_min_samples);
    CTX_INIT(set_clip_state);
    CTX_INIT(set_constant_buffer);
+   CTX_INIT(set_inlinable_constants);
    CTX_INIT(set_framebuffer_state);
    CTX_INIT(set_polygon_stipple);
    CTX_INIT(set_scissor_states);
@@ -2793,6 +2827,7 @@ threaded_context_create(struct pipe_context *pipe,
    CTX_INIT(create_image_handle);
    CTX_INIT(delete_image_handle);
    CTX_INIT(make_image_handle_resident);
+   CTX_INIT(set_frontend_noop);
 #undef CTX_INIT
 
    if (out)
