@@ -1052,6 +1052,10 @@ struct si_context {
    unsigned descriptors_dirty;
    unsigned shader_pointers_dirty;
    unsigned shader_needs_decompress_mask;
+   unsigned shader_has_inlinable_uniforms_mask;
+   unsigned inlinable_uniforms_dirty_mask;
+   unsigned inlinable_uniforms_valid_mask;
+   uint32_t inlinable_uniforms[SI_NUM_SHADERS][MAX_INLINABLE_UNIFORMS];
    struct si_buffer_resources rw_buffers;
    struct si_buffer_resources const_and_shader_buffers[SI_NUM_SHADERS];
    struct si_samplers samplers[SI_NUM_SHADERS];
@@ -1429,7 +1433,7 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
 void si_allocate_gds(struct si_context *ctx);
 void si_set_tracked_regs_to_clear_state(struct si_context *ctx);
 void si_begin_new_gfx_cs(struct si_context *ctx, bool first_cs);
-void si_need_gfx_cs_space(struct si_context *ctx);
+void si_need_gfx_cs_space(struct si_context *ctx, unsigned num_draws);
 void si_unref_sdma_uploads(struct si_context *sctx);
 
 /* si_gpu_load.c */
@@ -1447,15 +1451,19 @@ enum si_prim_discard_outcome
    SI_PRIM_DISCARD_ENABLED,
    SI_PRIM_DISCARD_DISABLED,
    SI_PRIM_DISCARD_DRAW_SPLIT,
+   SI_PRIM_DISCARD_MULTI_DRAW_SPLIT,
 };
 
 void si_build_prim_discard_compute_shader(struct si_shader_context *ctx);
 enum si_prim_discard_outcome
 si_prepare_prim_discard_or_split_draw(struct si_context *sctx, const struct pipe_draw_info *info,
-                                      bool primitive_restart);
+                                      const struct pipe_draw_start_count *draws,
+                                      unsigned num_draws, bool primitive_restart,
+                                      unsigned total_count);
 void si_compute_signal_gfx(struct si_context *sctx);
 void si_dispatch_prim_discard_cs_and_draw(struct si_context *sctx,
-                                          const struct pipe_draw_info *info, unsigned index_size,
+                                          const struct pipe_draw_info *info,
+                                          unsigned count, unsigned index_size,
                                           unsigned base_vertex, uint64_t input_indexbuf_va,
                                           unsigned input_indexbuf_max_elements);
 void si_initialize_prim_discard_tunables(struct si_screen *sscreen, bool is_aux_context,
@@ -1589,14 +1597,17 @@ static inline unsigned si_tile_mode_index(struct si_texture *tex, unsigned level
       return tex->surface.u.legacy.tiling_index[level];
 }
 
-static inline unsigned si_get_minimum_num_gfx_cs_dwords(struct si_context *sctx)
+static inline unsigned si_get_minimum_num_gfx_cs_dwords(struct si_context *sctx,
+                                                        unsigned num_draws)
 {
    /* Don't count the needed CS space exactly and just use an upper bound.
     *
     * Also reserve space for stopping queries at the end of IB, because
     * the number of active queries is unlimited in theory.
+    *
+    * Both indexed and non-indexed draws use 6 dwords per draw.
     */
-   return 2048 + sctx->num_cs_dw_queries_suspend;
+   return 2048 + sctx->num_cs_dw_queries_suspend + num_draws * 6;
 }
 
 static inline void si_context_add_resource_size(struct si_context *sctx, struct pipe_resource *r)

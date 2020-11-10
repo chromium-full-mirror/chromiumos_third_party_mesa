@@ -54,7 +54,6 @@ static const driOptionDescription anv_dri_options[] = {
    DRI_CONF_SECTION_PERFORMANCE
       DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
       DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
-      DRI_CONF_DISABLE_D16UNORM_COMPRESSION(false)
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_DEBUG
@@ -70,6 +69,11 @@ static const driOptionDescription anv_dri_options[] = {
 
 /* Render engine timestamp register */
 #define TIMESTAMP 0x2358
+
+/* The "RAW" clocks on Linux are called "FAST" on FreeBSD */
+#if !defined(CLOCK_MONOTONIC_RAW) && defined(CLOCK_MONOTONIC_FAST)
+#define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC_FAST
+#endif
 
 static void
 compiler_debug_log(void *data, const char *fmt, ...)
@@ -328,10 +332,8 @@ anv_physical_device_try_create(struct anv_instance *instance,
       mesa_logw("Ivy Bridge Vulkan support is incomplete");
    } else if (devinfo.gen == 7 && devinfo.is_baytrail) {
       mesa_logw("Bay Trail Vulkan support is incomplete");
-   } else if (devinfo.gen >= 8 && devinfo.gen <= 11) {
-      /* Gen8-11 fully supported */
-   } else if (devinfo.gen == 12) {
-      mesa_logw("Vulkan is not yet fully supported on gen12");
+   } else if (devinfo.gen >= 8 && devinfo.gen <= 12) {
+      /* Gen8-12 fully supported */
    } else {
       result = vk_errorfi(instance, NULL, VK_ERROR_INCOMPATIBLE_DRIVER,
                           "Vulkan not yet supported on %s", device_name);
@@ -509,7 +511,7 @@ anv_physical_device_try_create(struct anv_instance *instance,
       device->info.gen < 8 || !device->has_context_isolation;
    device->compiler->supports_shader_constants = true;
    device->compiler->compact_params = false;
-   device->compiler->indirect_ubos_use_sampler = device->info.gen <= 7;
+   device->compiler->indirect_ubos_use_sampler = device->info.gen < 12;
 
    /* Broadwell PRM says:
     *
@@ -766,8 +768,6 @@ VkResult anv_CreateInstance(
    VG(VALGRIND_CREATE_MEMPOOL(instance, 0, false));
 
    anv_init_dri_options(instance);
-   instance->disable_d16unorm_compression =
-      driQueryOptionb(&instance->dri_options, "disable_d16unorm_compression");
 
    *pInstance = anv_instance_to_handle(instance);
 
@@ -1027,7 +1027,7 @@ anv_get_physical_device_features_1_2(struct anv_physical_device *pdevice,
    f->descriptorBindingStorageTexelBufferUpdateAfterBind = descIndexing;
    f->descriptorBindingUpdateUnusedWhilePending          = descIndexing;
    f->descriptorBindingPartiallyBound                    = descIndexing;
-   f->descriptorBindingVariableDescriptorCount           = false;
+   f->descriptorBindingVariableDescriptorCount           = descIndexing;
    f->runtimeDescriptorArray                             = descIndexing;
 
    f->samplerFilterMinmax                 = pdevice->info.gen >= 9;
@@ -1374,6 +1374,13 @@ void anv_GetPhysicalDeviceFeatures2(
          VkPhysicalDeviceShaderSubgroupExtendedTypesFeaturesKHR *features =
             (VkPhysicalDeviceShaderSubgroupExtendedTypesFeaturesKHR *)ext;
          CORE_FEATURE(1, 2, shaderSubgroupExtendedTypes);
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_TERMINATE_INVOCATION_FEATURES_KHR: {
+         VkPhysicalDeviceShaderTerminateInvocationFeaturesKHR *features =
+            (VkPhysicalDeviceShaderTerminateInvocationFeaturesKHR *)ext;
+         features->shaderTerminateInvocation = true;
          break;
       }
 
@@ -1742,17 +1749,22 @@ anv_get_physical_device_properties_1_2(struct anv_physical_device *pdevice,
    p->shaderSignedZeroInfNanPreserveFloat64  = true;
 
    /* It's a bit hard to exactly map our implementation to the limits
-    * described here.  The bindless surface handle in the extended
+    * described by Vulkan.  The bindless surface handle in the extended
     * message descriptors is 20 bits and it's an index into the table of
     * RENDER_SURFACE_STATE structs that starts at bindless surface base
-    * address.  Given that most things consume two surface states per
-    * view (general/sampled for textures and write-only/read-write for
-    * images), we claim 2^19 things.
+    * address.  This means that we can have at must 1M surface states
+    * allocated at any given time.  Since most image views take two
+    * descriptors, this means we have a limit of about 500K image views.
     *
-    * For SSBOs, we just use A64 messages so there is no real limit
-    * there beyond the limit on the total size of a descriptor set.
+    * However, since we allocate surface states at vkCreateImageView time,
+    * this means our limit is actually something on the order of 500K image
+    * views allocated at any time.  The actual limit describe by Vulkan, on
+    * the other hand, is a limit of how many you can have in a descriptor set.
+    * Assuming anyone using 1M descriptors will be using the same image view
+    * twice a bunch of times (or a bunch of null descriptors), we can safely
+    * advertise a larger limit here.
     */
-   const unsigned max_bindless_views = 1 << 19;
+   const unsigned max_bindless_views = 1 << 20;
    p->maxUpdateAfterBindDescriptorsInAllPools            = max_bindless_views;
    p->shaderUniformBufferArrayNonUniformIndexingNative   = false;
    p->shaderSampledImageArrayNonUniformIndexingNative    = false;
@@ -2043,7 +2055,8 @@ void anv_GetPhysicalDeviceProperties2(
          STATIC_ASSERT(8 <= BRW_SUBGROUP_SIZE && BRW_SUBGROUP_SIZE <= 32);
          props->minSubgroupSize = 8;
          props->maxSubgroupSize = 32;
-         props->maxComputeWorkgroupSubgroups = pdevice->info.max_cs_threads;
+         /* Limit max_threads to 64 for the GPGPU_WALKER command. */
+         props->maxComputeWorkgroupSubgroups = MIN2(64, pdevice->info.max_cs_threads);
          props->requiredSubgroupSizeStages = VK_SHADER_STAGE_COMPUTE_BIT;
          break;
       }
@@ -3007,9 +3020,6 @@ VkResult anv_CreateDevice(
       break;
    case 9:
       result = gen9_init_device_state(device);
-      break;
-   case 10:
-      result = gen10_init_device_state(device);
       break;
    case 11:
       result = gen11_init_device_state(device);
@@ -4337,12 +4347,13 @@ uint64_t anv_GetDeviceMemoryOpaqueCaptureAddress(
 void
 anv_fill_buffer_surface_state(struct anv_device *device, struct anv_state state,
                               enum isl_format format,
+                              isl_surf_usage_flags_t usage,
                               struct anv_address address,
                               uint32_t range, uint32_t stride)
 {
    isl_buffer_fill_state(&device->isl_dev, state.map,
                          .address = anv_address_physical(address),
-                         .mocs = device->isl_dev.mocs.internal,
+                         .mocs = isl_mocs(&device->isl_dev, usage),
                          .size_B = range,
                          .format = format,
                          .swizzle = ISL_SWIZZLE_IDENTITY,

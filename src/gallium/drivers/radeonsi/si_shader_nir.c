@@ -189,7 +189,7 @@ static void scan_instruction(const struct nir_shader *nir, struct si_shader_info
       nir_variable *var = deref ? nir_deref_instr_get_variable(deref) : NULL;
 
       if (var) {
-         if (deref->mode != nir_var_uniform || var->data.bindless)
+         if (var->data.mode != nir_var_uniform || var->data.bindless)
             info->uses_bindless_samplers = true;
       }
    } else if (instr->type == nir_instr_type_intrinsic) {
@@ -428,7 +428,7 @@ static bool si_alu_to_scalar_filter(const nir_instr *instr, const void *data)
    return true;
 }
 
-static void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool first)
+void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool first)
 {
    bool progress;
 
@@ -525,7 +525,7 @@ static void si_nir_lower_color(nir_shader *nir)
             continue;
 
          nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
-         if (deref->mode != nir_var_shader_in)
+         if (!nir_deref_mode_is(deref, nir_var_shader_in))
             continue;
 
          b.cursor = nir_before_instr(instr);
@@ -663,6 +663,7 @@ static void si_lower_nir(struct si_screen *sscreen, struct nir_shader *nir)
       .lower_subgroup_masks = true,
       .lower_vote_trivial = false,
       .lower_vote_eq_to_ballot = true,
+      .lower_elect = true,
    };
    NIR_PASS_V(nir, nir_lower_subgroups, &subgroups_options);
 
@@ -722,4 +723,7 @@ void si_finalize_nir(struct pipe_screen *screen, void *nirptr, bool optimize)
    si_lower_io(nir);
    si_lower_nir(sscreen, nir);
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+
+   if (sscreen->options.inline_uniforms)
+      nir_find_inlinable_uniforms(nir);
 }

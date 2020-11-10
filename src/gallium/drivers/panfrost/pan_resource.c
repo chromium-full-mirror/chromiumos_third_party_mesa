@@ -427,7 +427,7 @@ panfrost_can_linear(struct panfrost_device *dev, const struct panfrost_resource 
 {
         /* XXX: We should be able to do linear Z/S with the right bits.. */
         return !((pres->base.bind & PIPE_BIND_DEPTH_STENCIL) &&
-                (dev->quirks & (MIDGARD_SFBD | IS_BIFROST)));
+                (dev->quirks & MIDGARD_SFBD));
 }
 
 static bool
@@ -728,48 +728,62 @@ pan_alloc_staging(struct panfrost_context *ctx, struct panfrost_resource *rsc,
         return pan_resource(pstaging);
 }
 
+static enum pipe_format
+pan_blit_format(enum pipe_format fmt)
+{
+        const struct util_format_description *desc;
+        desc = util_format_description(fmt);
+
+        /* This must be an emulated format (using u_transfer_helper) as if it
+         * was real RGTC we wouldn't have used AFBC and needed a blit. */
+        if (desc->layout == UTIL_FORMAT_LAYOUT_RGTC)
+                fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
+
+        return fmt;
+}
+
 static void
-pan_blit_from_staging(struct pipe_context *pctx, struct panfrost_gtransfer *trans)
+pan_blit_from_staging(struct pipe_context *pctx, struct panfrost_transfer *trans)
 {
         struct pipe_resource *dst = trans->base.resource;
         struct pipe_blit_info blit = {0};
 
         blit.dst.resource = dst;
-        blit.dst.format   = dst->format;
+        blit.dst.format   = pan_blit_format(dst->format);
         blit.dst.level    = trans->base.level;
         blit.dst.box      = trans->base.box;
         blit.src.resource = trans->staging.rsrc;
-        blit.src.format   = trans->staging.rsrc->format;
+        blit.src.format   = pan_blit_format(trans->staging.rsrc->format);
         blit.src.level    = 0;
         blit.src.box      = trans->staging.box;
-        blit.mask = util_format_get_mask(trans->staging.rsrc->format);
+        blit.mask = util_format_get_mask(blit.src.format);
         blit.filter = PIPE_TEX_FILTER_NEAREST;
 
         panfrost_blit(pctx, &blit);
 }
 
 static void
-pan_blit_to_staging(struct pipe_context *pctx, struct panfrost_gtransfer *trans)
+pan_blit_to_staging(struct pipe_context *pctx, struct panfrost_transfer *trans)
 {
         struct pipe_resource *src = trans->base.resource;
         struct pipe_blit_info blit = {0};
 
         blit.src.resource = src;
-        blit.src.format   = src->format;
+        blit.src.format   = pan_blit_format(src->format);
         blit.src.level    = trans->base.level;
         blit.src.box      = trans->base.box;
         blit.dst.resource = trans->staging.rsrc;
-        blit.dst.format   = trans->staging.rsrc->format;
+        blit.dst.format   = pan_blit_format(trans->staging.rsrc->format);
         blit.dst.level    = 0;
         blit.dst.box      = trans->staging.box;
-        blit.mask = util_format_get_mask(trans->staging.rsrc->format);
+        blit.mask = util_format_get_mask(blit.dst.format);
         blit.filter = PIPE_TEX_FILTER_NEAREST;
 
         panfrost_blit(pctx, &blit);
 }
 
 static void *
-panfrost_transfer_map(struct pipe_context *pctx,
+panfrost_ptr_map(struct pipe_context *pctx,
                       struct pipe_resource *resource,
                       unsigned level,
                       unsigned usage,  /* a combination of PIPE_MAP_x */
@@ -786,7 +800,7 @@ panfrost_transfer_map(struct pipe_context *pctx,
         if ((usage & PIPE_MAP_DIRECTLY) && rsrc->modifier != DRM_FORMAT_MOD_LINEAR)
                 return NULL;
 
-        struct panfrost_gtransfer *transfer = rzalloc(pctx, struct panfrost_gtransfer);
+        struct panfrost_transfer *transfer = rzalloc(pctx, struct panfrost_transfer);
         transfer->base.level = level;
         transfer->base.usage = usage;
         transfer->base.box = *box;
@@ -821,14 +835,14 @@ panfrost_transfer_map(struct pipe_context *pctx,
                 }
 
                 panfrost_bo_mmap(staging->bo);
-                return staging->bo->cpu;
+                return staging->bo->ptr.cpu;
         }
 
         /* If we haven't already mmaped, now's the time */
         panfrost_bo_mmap(bo);
 
         if (dev->debug & (PAN_DBG_TRACE | PAN_DBG_SYNC))
-                pandecode_inject_mmap(bo->gpu, bo->cpu, bo->size, NULL);
+                pandecode_inject_mmap(bo->ptr.gpu, bo->ptr.cpu, bo->size, NULL);
 
         bool create_new_bo = usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE;
         bool copy_resource = false;
@@ -874,7 +888,7 @@ panfrost_transfer_map(struct pipe_context *pctx,
 
                         if (newbo) {
                                 if (copy_resource)
-                                        memcpy(newbo->cpu, rsrc->bo->cpu, bo->size);
+                                        memcpy(newbo->ptr.cpu, rsrc->bo->ptr.cpu, bo->size);
 
                                 panfrost_bo_unreference(bo);
                                 rsrc->bo = newbo;
@@ -910,7 +924,7 @@ panfrost_transfer_map(struct pipe_context *pctx,
                 if ((usage & PIPE_MAP_READ) && rsrc->slices[level].initialized) {
                         panfrost_load_tiled_image(
                                         transfer->map,
-                                        bo->cpu + rsrc->slices[level].offset,
+                                        bo->ptr.cpu + rsrc->slices[level].offset,
                                         box->x, box->y, box->width, box->height,
                                         transfer->base.stride,
                                         rsrc->slices[level].stride,
@@ -943,7 +957,7 @@ panfrost_transfer_map(struct pipe_context *pctx,
                         panfrost_minmax_cache_invalidate(rsrc->index_cache, &transfer->base);
                 }
 
-                return bo->cpu
+                return bo->ptr.cpu
                        + rsrc->slices[level].offset
                        + transfer->base.box.z * transfer->base.layer_stride
                        + transfer->base.box.y * rsrc->slices[level].stride
@@ -979,12 +993,12 @@ panfrost_should_linear_convert(struct panfrost_resource *prsrc,
 }
 
 static void
-panfrost_transfer_unmap(struct pipe_context *pctx,
+panfrost_ptr_unmap(struct pipe_context *pctx,
                         struct pipe_transfer *transfer)
 {
         /* Gallium expects writeback here, so we tile */
 
-        struct panfrost_gtransfer *trans = pan_transfer(transfer);
+        struct panfrost_transfer *trans = pan_transfer(transfer);
         struct panfrost_resource *prsrc = (struct panfrost_resource *) transfer->resource;
         struct panfrost_device *dev = pan_device(pctx->screen);
 
@@ -1028,7 +1042,7 @@ panfrost_transfer_unmap(struct pipe_context *pctx,
                                         prsrc->modifier = DRM_FORMAT_MOD_LINEAR;
 
                                         util_copy_rect(
-                                                bo->cpu + prsrc->slices[0].offset,
+                                                bo->ptr.cpu + prsrc->slices[0].offset,
                                                 prsrc->base.format,
                                                 prsrc->slices[0].stride,
                                                 0, 0,
@@ -1039,7 +1053,7 @@ panfrost_transfer_unmap(struct pipe_context *pctx,
                                                 0, 0);
                                 } else {
                                         panfrost_store_tiled_image(
-                                                bo->cpu + prsrc->slices[transfer->level].offset,
+                                                bo->ptr.cpu + prsrc->slices[transfer->level].offset,
                                                 trans->map,
                                                 transfer->box.x, transfer->box.y,
                                                 transfer->box.width, transfer->box.height,
@@ -1066,7 +1080,7 @@ panfrost_transfer_unmap(struct pipe_context *pctx,
 }
 
 static void
-panfrost_transfer_flush_region(struct pipe_context *pctx,
+panfrost_ptr_flush_region(struct pipe_context *pctx,
                                struct pipe_transfer *transfer,
                                const struct pipe_box *box)
 {
@@ -1134,7 +1148,10 @@ panfrost_get_texture_address(
         unsigned level, unsigned face, unsigned sample)
 {
         bool is_3d = rsrc->base.target == PIPE_TEXTURE_3D;
-        return rsrc->bo->gpu + panfrost_texture_offset(rsrc->slices, is_3d, rsrc->cubemap_stride, level, face, sample);
+        return rsrc->bo->ptr.gpu +
+               panfrost_texture_offset(rsrc->slices, is_3d,
+                                       rsrc->cubemap_stride,
+                                       level, face, sample);
 }
 
 static void
@@ -1153,9 +1170,9 @@ panfrost_resource_get_stencil(struct pipe_resource *prsrc)
 static const struct u_transfer_vtbl transfer_vtbl = {
         .resource_create          = panfrost_resource_create,
         .resource_destroy         = panfrost_resource_destroy,
-        .transfer_map             = panfrost_transfer_map,
-        .transfer_unmap           = panfrost_transfer_unmap,
-        .transfer_flush_region    = panfrost_transfer_flush_region,
+        .transfer_map             = panfrost_ptr_map,
+        .transfer_unmap           = panfrost_ptr_unmap,
+        .transfer_flush_region    = panfrost_ptr_flush_region,
         .get_internal_format      = panfrost_resource_get_internal_format,
         .set_stencil              = panfrost_resource_set_stencil,
         .get_stencil              = panfrost_resource_get_stencil,

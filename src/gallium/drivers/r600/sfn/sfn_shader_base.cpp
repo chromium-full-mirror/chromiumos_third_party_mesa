@@ -299,7 +299,7 @@ void ShaderFromNirProcessor::add_array_deref(nir_deref_instr *instr)
 {
    nir_variable *var = nir_deref_instr_get_variable(instr);
 
-   assert(instr->mode == nir_var_function_temp);
+   assert(nir_deref_mode_is(instr, nir_var_function_temp));
    assert(glsl_type_is_array(var->type));
 
    // add an alias for the index to the register(s);
@@ -311,7 +311,8 @@ void ShaderFromNirProcessor::set_var_address(nir_deref_instr *instr)
 {
    auto& dest = instr->dest;
    unsigned index = dest.is_ssa ? dest.ssa.index : dest.reg.reg->index;
-   m_var_mode[instr->var] = instr->mode;
+   assert(util_bitcount(instr->modes) == 1);
+   m_var_mode[instr->var] = instr->modes;
    m_var_derefs[index] = instr->var;
 
    sfn_log << SfnLog::io << "Add var deref:" << index
@@ -408,6 +409,7 @@ void ShaderFromNirProcessor::emit_instruction_internal(Instruction *ir)
 void ShaderFromNirProcessor::emit_shader_start()
 {
    /* placeholder, may become an abstract method */
+   m_ssbo_instr.set_ssbo_offset(m_image_count);
 }
 
 bool ShaderFromNirProcessor::emit_jump_instruction(nir_jump_instr *instr)
@@ -677,8 +679,8 @@ bool ShaderFromNirProcessor::emit_intrinsic_instruction(nir_intrinsic_instr* ins
    case nir_intrinsic_control_barrier:
    case nir_intrinsic_memory_barrier_tcs_patch:
    case nir_intrinsic_memory_barrier_shared:
-   case nir_intrinsic_memory_barrier:
    case nir_intrinsic_memory_barrier_buffer:
+   case nir_intrinsic_memory_barrier:
    case nir_intrinsic_memory_barrier_image:
    case nir_intrinsic_group_memory_barrier:
       return emit_barrier(instr);

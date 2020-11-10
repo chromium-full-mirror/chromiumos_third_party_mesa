@@ -160,15 +160,6 @@ dump_gmem_state(const struct fd_gmem_stateobj *gmem)
 			gmem->screen->gmemsize_bytes);
 }
 
-static uint32_t bin_width(struct fd_screen *screen)
-{
-	if (is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen))
-		return 1024;
-	if (is_a3xx(screen))
-		return 992;
-	return 512;
-}
-
 static unsigned
 div_align(unsigned num, unsigned denom, unsigned al)
 {
@@ -187,8 +178,14 @@ layout_gmem(struct gmem_key *key, uint32_t nbins_x, uint32_t nbins_y,
 		return false;
 
 	uint32_t bin_w, bin_h;
-	bin_w = div_align(key->width, nbins_x, screen->tile_alignw);
-	bin_h = div_align(key->height, nbins_y, screen->tile_alignh);
+	bin_w = div_align(key->width, nbins_x, screen->info.tile_align_w);
+	bin_h = div_align(key->height, nbins_y, screen->info.tile_align_h);
+
+	if (bin_w > screen->info.tile_max_w)
+		return false;
+
+	if (bin_h > screen->info.tile_max_h)
+		return false;
 
 	gmem->bin_w = bin_w;
 	gmem->bin_h = bin_h;
@@ -224,7 +221,8 @@ calc_nbins(struct gmem_key *key, struct fd_gmem_stateobj *gmem)
 {
 	struct fd_screen *screen = gmem->screen;
 	uint32_t nbins_x = 1, nbins_y = 1;
-	uint32_t max_width = bin_width(screen);
+	uint32_t max_width = screen->info.tile_max_w;
+	uint32_t max_height = screen->info.tile_max_h;
 
 	if (fd_mesa_debug & FD_DBG_MSGS) {
 		debug_printf("binning input: cbuf cpp:");
@@ -234,11 +232,15 @@ calc_nbins(struct gmem_key *key, struct fd_gmem_stateobj *gmem)
 				key->zsbuf_cpp[0], key->width, key->height);
 	}
 
-	/* first, find a bin width that satisfies the maximum width
-	 * restrictions:
+	/* first, find a bin size that satisfies the maximum width/
+	 * height restrictions:
 	 */
-	while (div_align(key->width, nbins_x, screen->tile_alignw) > max_width) {
+	while (div_align(key->width, nbins_x, screen->info.tile_align_w) > max_width) {
 		nbins_x++;
+	}
+
+	while (div_align(key->height, nbins_y, screen->info.tile_align_h) > max_height) {
+		nbins_y++;
 	}
 
 	/* then find a bin width/height that satisfies the memory
@@ -266,7 +268,6 @@ calc_nbins(struct gmem_key *key, struct fd_gmem_stateobj *gmem)
 	}
 
 	layout_gmem(key, nbins_x, nbins_y, gmem);
-
 }
 
 static struct fd_gmem_stateobj *
@@ -279,7 +280,7 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
 	gmem->key = key;
 	list_inithead(&gmem->node);
 
-	const unsigned npipes = screen->num_vsc_pipes;
+	const unsigned npipes = screen->info.num_vsc_pipes;
 	uint32_t i, j, t, xoff, yoff;
 	uint32_t tpp_x, tpp_y;
 	int tile_n[npipes];
@@ -499,8 +500,8 @@ gmem_key_init(struct fd_batch *batch, bool assume_zs, bool no_scis_opt)
 		}
 
 		/* round down to multiple of alignment: */
-		key->minx = scissor->minx & ~(screen->gmem_alignw - 1);
-		key->miny = scissor->miny & ~(screen->gmem_alignh - 1);
+		key->minx = scissor->minx & ~(screen->info.gmem_align_w - 1);
+		key->miny = scissor->miny & ~(screen->info.gmem_align_h - 1);
 		key->width = scissor->maxx - key->minx;
 		key->height = scissor->maxy - key->miny;
 	}
@@ -527,10 +528,14 @@ lookup_gmem_state(struct fd_batch *batch, bool assume_zs, bool no_scis_opt)
 	struct fd_screen *screen = batch->ctx->screen;
 	struct fd_gmem_cache *cache = &screen->gmem_cache;
 	struct fd_gmem_stateobj *gmem = NULL;
+
+	/* Lock before allocating gmem_key, since that a screen-wide
+	 * ralloc pool and ralloc itself is not thread-safe.
+	 */
+	fd_screen_lock(screen);
+
 	struct gmem_key *key = gmem_key_init(batch, assume_zs, no_scis_opt);
 	uint32_t hash = gmem_key_hash(key);
-
-	fd_screen_lock(screen);
 
 	struct hash_entry *entry =
 		_mesa_hash_table_search_pre_hashed(cache->ht, hash, key);
@@ -777,6 +782,12 @@ fd_gmem_needs_restore(struct fd_batch *batch, const struct fd_tile *tile,
 		return false;
 
 	return true;
+}
+
+static inline unsigned
+max_bitfield_val(unsigned high, unsigned low, unsigned shift)
+{
+	return BITFIELD_MASK(high - low) << shift;
 }
 
 void

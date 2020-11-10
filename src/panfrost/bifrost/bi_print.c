@@ -62,16 +62,21 @@ bi_class_name(enum bi_class cl)
         case BI_LOAD_ATTR: return "load_attr";
         case BI_LOAD_VAR: return "load_var";
         case BI_LOAD_VAR_ADDRESS: return "load_var_address";
+        case BI_LOAD_TILE: return "load_tile";
         case BI_MINMAX: return "minmax";
         case BI_MOV: return "mov";
         case BI_SELECT: return "select";
         case BI_STORE: return "store";
         case BI_STORE_VAR: return "store_var";
-        case BI_SPECIAL: return "special";
+        case BI_SPECIAL_ADD: return "special";
+        case BI_SPECIAL_FMA: return "special";
         case BI_TABLE: return "table";
-        case BI_TEX: return "tex";
+        case BI_TEXS: return "texs";
+        case BI_TEXC: return "texc";
+        case BI_TEXC_DUAL: return "texc_dual";
         case BI_ROUND: return "round";
         case BI_IMUL: return "imul";
+        case BI_ZS_EMIT: return "zs_emit";
         default: return "unknown_class";
         }
 }
@@ -79,16 +84,17 @@ bi_class_name(enum bi_class cl)
 static bool
 bi_print_dest_index(FILE *fp, bi_instruction *ins, unsigned index)
 {
+        if ((index & BIR_SPECIAL) && (index & BIR_SPECIAL) != BIR_INDEX_REGISTER)
+                return false;
+
         if (!index)
                 fprintf(fp, "_");
         else if (index & BIR_INDEX_REGISTER)
                 fprintf(fp, "br%u", index & ~BIR_INDEX_REGISTER);
         else if (index & PAN_IS_REG)
                 fprintf(fp, "r%u", index >> 1);
-        else if (!(index & BIR_SPECIAL))
-                fprintf(fp, "%u", (index >> 1) - 1);
         else
-                return false;
+                fprintf(fp, "%u", (index >> 1) - 1);
 
         return true;
 }
@@ -105,6 +111,9 @@ bi_print_index(FILE *fp, bi_instruction *ins, unsigned index, unsigned s)
                 fprintf(fp, "#0x%" PRIx64, bi_get_immediate(ins, s));
         else if (index & BIR_INDEX_ZERO)
                 fprintf(fp, "#0");
+        else if (index & BIR_INDEX_BLEND)
+                fprintf(fp, "blend_descriptor_%u.%c", ins->blend_location,
+                        (index & ~BIR_INDEX_BLEND) == BIFROST_SRC_FAU_HI ? 'y' : 'x');
         else
                 fprintf(fp, "#err");
 }
@@ -183,6 +192,10 @@ bi_special_op_name(enum bi_special_op op)
         case BI_SPECIAL_FRCP: return "frcp";
         case BI_SPECIAL_FRSQ: return "frsq";
         case BI_SPECIAL_EXP2_LOW: return "exp2_low";
+        case BI_SPECIAL_CUBEFACE1: return "cubeface1";
+        case BI_SPECIAL_CUBEFACE2: return "cubeface2";
+        case BI_SPECIAL_CUBE_SSEL: return "cube_ssel";
+        case BI_SPECIAL_CUBE_TSEL: return "cube_tsel";
         default: return "invalid";
         }
 }
@@ -201,17 +214,6 @@ bi_frexp_op_name(enum bi_frexp_op op)
 {
         switch (op) {
         case BI_FREXPE_LOG: return "frexpe_log";
-        default: return "invalid";
-        }
-}
-
-const char *
-bi_tex_op_name(enum bi_tex_op op)
-{
-        switch (op) {
-        case BI_TEX_NORMAL: return "normal";
-        case BI_TEX_COMPACT: return "compact";
-        case BI_TEX_DUAL: return "dual";
         default: return "invalid";
         }
 }
@@ -260,7 +262,7 @@ bi_print_instruction(bi_instruction *ins, FILE *fp)
                 fprintf(fp, "%s", bi_bitwise_op_name(ins->op.bitwise));
         else if (ins->type == BI_IMATH)
                 fprintf(fp, "%s", bi_imath_op_name(ins->op.imath));
-        else if (ins->type == BI_SPECIAL)
+        else if (ins->type == BI_SPECIAL_ADD || ins->type == BI_SPECIAL_FMA)
                 fprintf(fp, "%s", bi_special_op_name(ins->op.special));
         else if (ins->type == BI_TABLE)
                 fprintf(fp, "%s", bi_table_op_name(ins->op.table));
@@ -280,13 +282,17 @@ bi_print_instruction(bi_instruction *ins, FILE *fp)
                 bi_print_load_vary(&ins->load_vary, fp);
         else if (ins->type == BI_BLEND)
                 fprintf(fp, ".loc%u", ins->blend_location);
-        else if (ins->type == BI_TEX) {
-                fprintf(fp, ".%s", bi_tex_op_name(ins->op.texture));
-        } else if (ins->type == BI_BITWISE)
+        else if (ins->type == BI_BITWISE)
                 fprintf(fp, ".%cshift", ins->bitwise.rshift ? 'r' : 'l');
 
         if (bi_class_props[ins->type] & BI_CONDITIONAL)
                 fprintf(fp, ".%s", bi_cond_name(ins->cond));
+
+        if (ins->skip)
+                fprintf(fp, ".skip");
+
+        if (ins->no_spill)
+                fprintf(fp, ".no_spill");
 
         if (ins->vector_channels)
                 fprintf(fp, ".v%u", ins->vector_channels);
@@ -336,7 +342,7 @@ bi_print_instruction(bi_instruction *ins, FILE *fp)
                 } else {
                         fprintf(fp, "-> void");
                 }
-        } else if (ins->type == BI_TEX) {
+        } else if (ins->type == BI_TEXS) {
                 bi_print_texture(&ins->texture, fp);
         }
 
@@ -409,11 +415,13 @@ bi_print_clause(bi_clause *clause, FILE *fp)
                 fprintf(fp, ")");
         }
 
-        if (!clause->back_to_back)
-                fprintf(fp, " nbb %s", clause->branch_conditional ? "branch-cond" : "branch-uncond");
+        fprintf(fp, " %s", bi_flow_control_name(clause->flow_control));
 
-        if (clause->data_register_write_barrier)
-                fprintf(fp, " drwb");
+        if (!clause->next_clause_prefetch)
+               fprintf(fp, " no_prefetch");
+
+        if (clause->staging_barrier)
+                fprintf(fp, " osrb");
 
         fprintf(fp, "\n");
 

@@ -461,6 +461,8 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return fd_device_version(screen->dev) >= FD_VERSION_FENCE_FD;
 	case PIPE_CAP_FENCE_SIGNAL:
 		return screen->has_syncobj;
+	case PIPE_CAP_CULL_DISTANCE:
+		return is_a6xx(screen);
 	default:
 		return u_pipe_screen_get_param_defaults(pscreen, param);
 	}
@@ -494,7 +496,7 @@ fd_screen_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
 	case PIPE_CAPF_CONSERVATIVE_RASTER_DILATE_GRANULARITY:
 		return 0.0f;
 	}
-	debug_printf("unknown paramf %d\n", param);
+	mesa_loge("unknown paramf %d", param);
 	return 0;
 }
 
@@ -521,7 +523,7 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
 			break;
 		return 0;
 	default:
-		DBG("unknown shader type %d", shader);
+		mesa_loge("unknown shader type %d", shader);
 		return 0;
 	}
 
@@ -634,7 +636,7 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
 		}
 		return 0;
 	}
-	debug_printf("unknown shader param %d\n", param);
+	mesa_loge("unknown shader param %d", param);
 	return 0;
 }
 
@@ -986,25 +988,11 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 		fd6_screen_init(pscreen);
 		break;
 	default:
-		debug_printf("unsupported GPU: a%03d\n", screen->gpu_id);
+		mesa_loge("unsupported GPU: a%03d", screen->gpu_id);
 		goto fail;
 	}
 
-	if (screen->gpu_id >= 600) {
-		screen->gmem_alignw = 16;
-		screen->gmem_alignh = 4;
-		screen->tile_alignw = is_a650(screen) ? 96 : 32;
-		screen->tile_alignh = 32;
-		screen->num_vsc_pipes = 32;
-	} else if (screen->gpu_id >= 500) {
-		screen->gmem_alignw = screen->tile_alignw = 64;
-		screen->gmem_alignh = screen->tile_alignh = 32;
-		screen->num_vsc_pipes = 16;
-	} else {
-		screen->gmem_alignw = screen->tile_alignw = 32;
-		screen->gmem_alignh = screen->tile_alignh = 32;
-		screen->num_vsc_pipes = 8;
-	}
+	freedreno_dev_info_init(&screen->info, screen->gpu_id);
 
 	if (fd_mesa_debug & FD_DBG_PERFC) {
 		screen->perfcntr_groups = fd_perfcntrs(screen->gpu_id,

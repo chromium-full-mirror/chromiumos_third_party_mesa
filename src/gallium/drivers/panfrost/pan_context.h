@@ -79,6 +79,9 @@ struct panfrost_query {
 
         /* Memory for the GPU to writeback the value of the query */
         struct panfrost_bo *bo;
+
+        /* Whether an occlusion query is for a MSAA framebuffer */
+        bool msaa;
 };
 
 struct panfrost_fence {
@@ -159,15 +162,6 @@ struct panfrost_context {
         struct primconvert_context *primconvert;
         struct blitter_context *blitter;
 
-        /* Blitting the wallpaper (the old contents of the framebuffer back to
-         * itself) uses a dedicated u_blitter instance versus general blit()
-         * callbacks from Gallium, as the blit() callback can trigger
-         * wallpapering without Gallium realising, which in turns u_blitter
-         * errors due to unsupported reucrsion */
-
-        struct blitter_context *blitter_wallpaper;
-        struct panfrost_batch *wallpaper_batch;
-
         struct panfrost_blend_state *blend;
 
         struct pipe_viewport_state pipe_viewport;
@@ -178,7 +172,8 @@ struct panfrost_context {
         unsigned sample_mask;
         unsigned min_samples;
 
-        struct panfrost_blend_state blit_blend;
+        struct panfrost_blend_state *blit_blend;
+        struct hash_table *blend_shaders;
 };
 
 /* Corresponds to the CSO */
@@ -245,6 +240,9 @@ struct panfrost_shader_state {
 
         BITSET_WORD outputs_read;
         enum pipe_format rt_formats[8];
+
+        /* Blend return addresses */
+        uint32_t blend_ret_addrs[8];
 };
 
 /* A collection of varyings (the CSO) */
@@ -330,7 +328,7 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags);
 bool
 panfrost_writes_point_size(struct panfrost_context *ctx);
 
-struct panfrost_transfer
+struct panfrost_ptr
 panfrost_vertex_tiler_job(struct panfrost_context *ctx, bool is_tiler);
 
 void

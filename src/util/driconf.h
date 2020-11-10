@@ -159,6 +159,10 @@
    DRI_CONF_OPT_I(force_glsl_version, def, 0, 999, \
                   "Force a default GLSL version for shaders that lack an explicit #version line")
 
+#define DRI_CONF_ALLOW_EXTRA_PP_TOKENS(def) \
+   DRI_CONF_OPT_B(allow_extra_pp_tokens, def, \
+                  "Allow extra tokens at end of preprocessor directives.")
+
 #define DRI_CONF_ALLOW_GLSL_EXTENSION_DIRECTIVE_MIDSHADER(def) \
    DRI_CONF_OPT_B(allow_glsl_extension_directive_midshader, def, \
                   "Allow GLSL #extension directives in the middle of shaders")
@@ -195,10 +199,6 @@
    DRI_CONF_OPT_B(allow_glsl_cross_stage_interpolation_mismatch, def,   \
                   "Allow interpolation qualifier mismatch across shader stages")
 
-#define DRI_CONF_ALLOW_GLSL_LAYOUT_QUALIFIER_ON_FUNCTION_PARAMETERS(def) \
-   DRI_CONF_OPT_B(allow_glsl_layout_qualifier_on_function_parameters, def, \
-                  "Allow layout qualifiers on function parameters.")
-
 #define DRI_CONF_ALLOW_DRAW_OUT_OF_ORDER(def) \
    DRI_CONF_OPT_B(allow_draw_out_of_order, def, \
                   "Allow out-of-order draw optimizations. Set when Z fighting doesn't have to be accurate.")
@@ -216,6 +216,18 @@
 
 #define DRI_CONF_FORCE_GL_NAMES_REUSE(def) \
    DRI_CONF_OPT_B(force_gl_names_reuse, def, "Force GL names reuse")
+
+#define DRI_CONF_GLX_EXTENSION_OVERRIDE(def) \
+   DRI_CONF_OPT_S(glx_extension_override, def, \
+                  "Allow enabling/disabling a list of GLX extensions")
+
+#define DRI_CONF_INDIRECT_GL_EXTENSION_OVERRIDE(def) \
+   DRI_CONF_OPT_S(indirect_gl_extension_override, def, \
+                  "Allow enabling/disabling a list of indirect-GL extensions")
+
+#define DRI_CONF_DISABLE_PROTECTED_CONTENT_CHECK(def) \
+   DRI_CONF_OPT_B(disable_protected_content_check, def, \
+                  "Don't reject image import if protected_content attribute doesn't match")
 
 /**
  * \brief Image quality-related options
@@ -450,13 +462,5 @@
 #define DRI_CONF_RADV_OVERRIDE_UNIFORM_OFFSET_ALIGNMENT(def) \
    DRI_CONF_OPT_I(radv_override_uniform_offset_alignment, def, 0, 128, \
                   "Override the minUniformBufferOffsetAlignment exposed to the application. (0 = default)")
-
-/**
- * \brief ANV specific configuration options
- */
-
-#define DRI_CONF_DISABLE_D16UNORM_COMPRESSION(def) \
-   DRI_CONF_OPT_B(disable_d16unorm_compression, def, \
-                  "Disable HIZ_CCS_WT compression for D16_UNORM surface format")
 
 #endif

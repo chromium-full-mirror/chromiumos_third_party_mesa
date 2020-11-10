@@ -25,6 +25,7 @@
 
 #include "pipe/p_context.h"
 #include "pipe/p_state.h"
+#include "util/set.h"
 #include "util/slab.h"
 #include "util/u_debug.h"
 #include "intel/blorp/blorp.h"
@@ -545,6 +546,9 @@ struct iris_context {
    /** A device reset status callback for notifying that the GPU is hosed. */
    struct pipe_device_reset_callback reset;
 
+   /** A set of dmabuf resources dirtied beyond their default aux-states. */
+   struct set *dirty_dmabufs;
+
    /** Slab allocator for iris_transfer_map objects. */
    struct slab_child_pool transfer_pool;
 
@@ -784,6 +788,10 @@ iris_create_context(struct pipe_screen *screen, void *priv, unsigned flags);
 
 void iris_lost_context_state(struct iris_batch *batch);
 
+void iris_mark_dirty_dmabuf(struct iris_context *ice,
+                            struct pipe_resource *res);
+void iris_flush_dirty_dmabufs(struct iris_context *ice);
+
 void iris_init_blit_functions(struct pipe_context *ctx);
 void iris_init_clear_functions(struct pipe_context *ctx);
 void iris_init_program_functions(struct pipe_context *ctx);
@@ -850,7 +858,7 @@ uint32_t iris_upload_border_color(struct iris_context *ice,
 void iris_upload_ubo_ssbo_surf_state(struct iris_context *ice,
                                      struct pipe_shader_buffer *buf,
                                      struct iris_state_ref *surf_state,
-                                     bool ssbo);
+                                     isl_surf_usage_flags_t usage);
 const struct shader_info *iris_get_shader_info(const struct iris_context *ice,
                                                gl_shader_stage stage);
 struct iris_bo *iris_get_scratch_space(struct iris_context *ice,
@@ -966,9 +974,6 @@ void gen9_toggle_preemption(struct iris_context *ice,
 #  include "iris_genx_protos.h"
 #  undef genX
 #  define genX(x) gen9_##x
-#  include "iris_genx_protos.h"
-#  undef genX
-#  define genX(x) gen10_##x
 #  include "iris_genx_protos.h"
 #  undef genX
 #  define genX(x) gen11_##x

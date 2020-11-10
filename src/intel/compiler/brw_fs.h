@@ -213,7 +213,6 @@ public:
                          const fs_reg &texture_handle);
    void emit_gen6_gather_wa(uint8_t wa, fs_reg dst);
    fs_reg resolve_source_modifiers(const fs_reg &src);
-   void emit_discard_jump();
    void emit_fsign(const class brw::fs_builder &, const nir_alu_instr *instr,
                    fs_reg result, fs_reg *op, unsigned fsign_src);
    void emit_shader_float_controls_execution_mode();
@@ -344,12 +343,9 @@ public:
 
    const struct brw_vue_map *input_vue_map;
 
-   BRW_ANALYSIS(live_analysis, brw::fs_live_variables,
-                backend_shader *) live_analysis;
-   BRW_ANALYSIS(regpressure_analysis, brw::register_pressure,
-                fs_visitor *) regpressure_analysis;
-   BRW_ANALYSIS(performance_analysis, brw::performance,
-                fs_visitor *) performance_analysis;
+   brw_analysis<brw::fs_live_variables, backend_shader> live_analysis;
+   brw_analysis<brw::register_pressure, fs_visitor> regpressure_analysis;
+   brw_analysis<brw::performance, fs_visitor> performance_analysis;
 
    /** Number of uniform variable components visited. */
    unsigned uniforms;
@@ -513,6 +509,7 @@ private:
    void generate_scratch_write(fs_inst *inst, struct brw_reg src);
    void generate_scratch_read(fs_inst *inst, struct brw_reg dst);
    void generate_scratch_read_gen7(fs_inst *inst, struct brw_reg dst);
+   void generate_scratch_header(fs_inst *inst, struct brw_reg dst);
    void generate_uniform_pull_constant_load(fs_inst *inst, struct brw_reg dst,
                                             struct brw_reg index,
                                             struct brw_reg offset);

@@ -27,6 +27,8 @@
 #include <array>
 #include <map>
 
+#include "util/memstream.h"
+
 namespace aco {
 
 static void aco_log(Program *program, enum radv_compiler_debug_level level,
@@ -78,13 +80,15 @@ bool validate_ir(Program* program)
       if (!check) {
          char *out;
          size_t outsize;
-         FILE *memf = open_memstream(&out, &outsize);
+         struct u_memstream mem;
+         u_memstream_open(&mem, &out, &outsize);
+         FILE *const memf = u_memstream_get(&mem);
 
          fprintf(memf, "%s: ", msg);
          aco_print_instr(instr, memf);
-         fclose(memf);
+         u_memstream_close(&mem);
 
-         aco_err(program, out);
+         aco_err(program, "%s", out);
          free(out);
 
          is_valid = false;
@@ -328,7 +332,7 @@ bool validate_ir(Program* program)
                   if (!instr->definitions[i].regClass().is_subdword())
                      continue;
                   Operand op = instr->operands[i];
-                  check(!op.isLiteral(), "Sub-dword copies cannot take literals", instr.get());
+                  check(program->chip_class >= GFX9 || !op.isLiteral(), "Sub-dword copies cannot take literals", instr.get());
                   if (op.isConstant() || (op.hasRegClass() && op.regClass().type() == RegType::sgpr))
                      check(program->chip_class >= GFX9, "Sub-dword pseudo instructions can only take constants or SGPRs on GFX9+", instr.get());
                }
@@ -349,7 +353,6 @@ bool validate_ir(Program* program)
 
                check(!is_subdword || !has_const_sgpr || program->chip_class >= GFX9,
                      "Sub-dword pseudo instructions can only take constants or SGPRs on GFX9+", instr.get());
-               check(!is_subdword || !has_literal, "Sub-dword pseudo instructions cannot take literals", instr.get());
             }
 
             if (instr->opcode == aco_opcode::p_create_vector) {
@@ -369,6 +372,17 @@ bool validate_ir(Program* program)
                check((instr->operands[1].constantValue() + 1) * instr->definitions[0].bytes() <= instr->operands[0].bytes(), "Index out of range", instr.get());
                check(instr->definitions[0].getTemp().type() == RegType::vgpr || instr->operands[0].regClass().type() == RegType::sgpr,
                      "Cannot extract SGPR value from VGPR vector", instr.get());
+            } else if (instr->opcode == aco_opcode::p_split_vector) {
+               check(instr->operands[0].isTemp(), "Operand must be a temporary", instr.get());
+               unsigned size = 0;
+               for (const Definition& def : instr->definitions) {
+                  size += def.bytes();
+               }
+               check(size == instr->operands[0].bytes(), "Operand size does not match definition sizes", instr.get());
+               if (instr->operands[0].getTemp().type() == RegType::vgpr) {
+                  for (const Definition& def : instr->definitions)
+                     check(def.regClass().type() == RegType::vgpr, "Wrong Definition type for VGPR split_vector", instr.get());
+               }
             } else if (instr->opcode == aco_opcode::p_parallelcopy) {
                check(instr->definitions.size() == instr->operands.size(), "Number of Operands does not match number of Definitions", instr.get());
                for (unsigned i = 0; i < instr->operands.size(); i++) {
@@ -385,6 +399,19 @@ bool validate_ir(Program* program)
                   check(!op.isTemp() || op.getTemp().is_linear(), "Wrong Operand type", instr.get());
                check(instr->operands.size() == block.linear_preds.size(), "Number of Operands does not match number of predecessors", instr.get());
             }
+            break;
+         }
+         case Format::PSEUDO_REDUCTION: {
+            for (const Operand &op : instr->operands)
+               check(op.regClass().type() == RegType::vgpr, "All operands of PSEUDO_REDUCTION instructions must be in VGPRs.", instr.get());
+
+            unsigned cluster_size = static_cast<Pseudo_reduction_instruction *>(instr.get())->cluster_size;
+
+            if (instr->opcode == aco_opcode::p_reduce && cluster_size == program->wave_size)
+               check(instr->definitions[0].regClass().type() == RegType::sgpr, "The result of unclustered reductions must go into an SGPR.", instr.get());
+            else
+               check(instr->definitions[0].regClass().type() == RegType::vgpr, "The result of scans and clustered reductions must go into a VGPR.", instr.get());
+
             break;
          }
          case Format::SMEM: {
@@ -510,7 +537,9 @@ bool ra_fail(Program *program, Location loc, Location loc2, const char *fmt, ...
 
    char *out;
    size_t outsize;
-   FILE *memf = open_memstream(&out, &outsize);
+   struct u_memstream mem;
+   u_memstream_open(&mem, &out, &outsize);
+   FILE *const memf = u_memstream_get(&mem);
 
    fprintf(memf, "RA error found at instruction in BB%d:\n", loc.block->index);
    if (loc.instr) {
@@ -524,9 +553,9 @@ bool ra_fail(Program *program, Location loc, Location loc2, const char *fmt, ...
       aco_print_instr(loc2.instr, memf);
    }
    fprintf(memf, "\n\n");
-   fclose(memf);
+   u_memstream_close(&mem);
 
-   aco_err(program, out);
+   aco_err(program, "%s", out);
    free(out);
 
    return true;
@@ -664,12 +693,12 @@ unsigned get_subdword_bytes_written(Program *program, const aco_ptr<Instruction>
 
 } /* end namespace */
 
-bool validate_ra(Program *program, const struct radv_nir_compiler_options *options) {
+bool validate_ra(Program *program) {
    if (!(debug_flags & DEBUG_VALIDATE_RA))
       return false;
 
    bool err = false;
-   aco::live live_vars = aco::live_var_analysis(program, options);
+   aco::live live_vars = aco::live_var_analysis(program);
    std::vector<std::vector<Temp>> phi_sgpr_ops(program->blocks.size());
 
    std::map<unsigned, Assignment> assignments;

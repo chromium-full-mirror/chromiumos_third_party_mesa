@@ -168,6 +168,10 @@ bi_writes_component(bi_instruction *ins, unsigned comp)
         return comp < bi_get_component_count(ins, -1);
 }
 
+/* Determine effective writemask for RA/DCE, noting that we currently act
+ * per-register hence aligning. TODO: when real write masks are handled in
+ * packing (not for a while), update this routine, removing the align */
+
 unsigned
 bi_writemask(bi_instruction *ins)
 {
@@ -175,8 +179,33 @@ bi_writemask(bi_instruction *ins)
         unsigned size = nir_alu_type_get_type_size(T);
         unsigned bytes_per_comp = size / 8;
         unsigned components = bi_get_component_count(ins, -1);
-        unsigned bytes = bytes_per_comp * components;
+        unsigned bytes = ALIGN_POT(bytes_per_comp * components, 4);
         unsigned mask = (1 << bytes) - 1;
         unsigned shift = ins->dest_offset * 4; /* 32-bit words */
         return (mask << shift);
 }
+
+/* Rewrites uses of an index. This is O(nc) to the program and number of
+ * uses, so combine lowering is effectively O(n^2).  Better bookkeeping
+ * would bring down to linear if that's an issue. */
+
+void
+bi_rewrite_uses(bi_context *ctx,
+                unsigned old, unsigned oldc,
+                unsigned new, unsigned newc)
+{
+        assert(newc >= oldc);
+
+        bi_foreach_instr_global(ctx, ins) {
+                bi_foreach_src(ins, s) {
+                        if (ins->src[s] != old) continue;
+
+                        for (unsigned i = 0; i < 16; ++i)
+                                ins->swizzle[s][i] += (newc - oldc);
+
+                        ins->src[s] = new;
+                }
+        }
+}
+
+

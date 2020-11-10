@@ -281,21 +281,6 @@ LLVMValueRef ac_build_raw_tbuffer_load(struct ac_llvm_context *ctx, LLVMValueRef
                                        LLVMValueRef immoffset, unsigned num_channels, unsigned dfmt,
                                        unsigned nfmt, unsigned cache_policy, bool can_speculate);
 
-/* For ac_build_fetch_format.
- *
- * Note: FLOAT must be 0 (used for convenience of encoding in radeonsi).
- */
-enum
-{
-   AC_FETCH_FORMAT_FLOAT = 0,
-   AC_FETCH_FORMAT_FIXED,
-   AC_FETCH_FORMAT_UNORM,
-   AC_FETCH_FORMAT_SNORM,
-   AC_FETCH_FORMAT_USCALED,
-   AC_FETCH_FORMAT_SSCALED,
-   AC_FETCH_FORMAT_UINT,
-   AC_FETCH_FORMAT_SINT,
-};
 
 LLVMValueRef ac_build_opencoded_load_format(struct ac_llvm_context *ctx, unsigned log_size,
                                             unsigned num_channels, unsigned format, bool reverse,
@@ -455,6 +440,9 @@ LLVMValueRef ac_build_isign(struct ac_llvm_context *ctx, LLVMValueRef src0);
 LLVMValueRef ac_build_fsign(struct ac_llvm_context *ctx, LLVMValueRef src);
 LLVMValueRef ac_build_bit_count(struct ac_llvm_context *ctx, LLVMValueRef src0);
 
+LLVMValueRef ac_build_fsat(struct ac_llvm_context *ctx, LLVMValueRef src,
+                           LLVMTypeRef type);
+
 LLVMValueRef ac_build_bitfield_reverse(struct ac_llvm_context *ctx, LLVMValueRef src0);
 
 void ac_optimize_vs_outputs(struct ac_llvm_context *ac, LLVMValueRef main_fn,
@@ -478,8 +466,6 @@ void ac_build_else(struct ac_llvm_context *ctx, int lable_id);
 void ac_build_endif(struct ac_llvm_context *ctx, int lable_id);
 void ac_build_endloop(struct ac_llvm_context *ctx, int lable_id);
 void ac_build_ifcc(struct ac_llvm_context *ctx, LLVMValueRef cond, int label_id);
-void ac_build_if(struct ac_llvm_context *ctx, LLVMValueRef value, int lable_id);
-void ac_build_uif(struct ac_llvm_context *ctx, LLVMValueRef value, int lable_id);
 
 LLVMValueRef ac_build_alloca(struct ac_llvm_context *ac, LLVMTypeRef type, const char *name);
 LLVMValueRef ac_build_alloca_undef(struct ac_llvm_context *ac, LLVMTypeRef type, const char *name);

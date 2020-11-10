@@ -51,10 +51,14 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct pipe_fence_handle *fence = NULL;
-	// TODO we want to lookup batch if it exists, but not create one if not.
-	struct fd_batch *batch = fd_context_batch(ctx);
+	struct fd_batch *batch = NULL;
 
-	DBG("%p: flush: flags=%x\n", ctx->batch, flags);
+	/* We want to lookup current batch if it exists, but not create a new
+	 * one if not (unless we need a fence)
+	 */
+	fd_batch_reference(&batch, ctx->batch);
+
+	DBG("%p: flush: flags=%x", batch, flags);
 
 	/* In some sequence of events, we can end up with a last_fence that is
 	 * not an "fd" fence, which results in eglDupNativeFenceFDANDROID()
@@ -73,7 +77,9 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
 		goto out;
 	}
 
-	if (!batch) {
+	if (fencep && !batch) {
+		batch = fd_context_batch(ctx);
+	} else if (!batch) {
 		fd_bc_dump(ctx->screen, "%p: NULL batch, remaining:\n", ctx);
 		return;
 	}
@@ -104,6 +110,8 @@ out:
 	fd_fence_ref(&ctx->last_fence, fence);
 
 	fd_fence_ref(&fence, NULL);
+
+	fd_batch_reference(&batch, NULL);
 
 	if (flags & PIPE_FLUSH_END_OF_FRAME)
 		fd_log_eof(ctx);
@@ -194,13 +202,89 @@ fd_emit_string_marker(struct pipe_context *pctx, const char *string, int len)
 	if (!ctx->batch)
 		return;
 
+	struct fd_batch *batch = fd_context_batch_locked(ctx);
+
 	ctx->batch->needs_flush = true;
 
 	if (ctx->screen->gpu_id >= 500) {
-		fd_emit_string5(ctx->batch->draw, string, len);
+		fd_emit_string5(batch->draw, string, len);
 	} else {
-		fd_emit_string(ctx->batch->draw, string, len);
+		fd_emit_string(batch->draw, string, len);
 	}
+
+	fd_batch_unlock_submit(batch);
+	fd_batch_reference(&batch, NULL);
+}
+
+/**
+ * If we have a pending fence_server_sync() (GPU side sync), flush now.
+ * The alternative to try to track this with batch dependencies gets
+ * hairy quickly.
+ *
+ * Call this before switching to a different batch, to handle this case.
+ */
+void
+fd_context_switch_from(struct fd_context *ctx)
+{
+	if (ctx->batch && (ctx->batch->in_fence_fd != -1))
+		fd_batch_flush(ctx->batch);
+}
+
+/**
+ * If there is a pending fence-fd that we need to sync on, this will
+ * transfer the reference to the next batch we are going to render
+ * to.
+ */
+void
+fd_context_switch_to(struct fd_context *ctx, struct fd_batch *batch)
+{
+	if (ctx->in_fence_fd != -1) {
+		sync_accumulate("freedreno", &batch->in_fence_fd, ctx->in_fence_fd);
+		close(ctx->in_fence_fd);
+		ctx->in_fence_fd = -1;
+	}
+}
+
+/**
+ * Return a reference to the current batch, caller must unref.
+ */
+struct fd_batch *
+fd_context_batch(struct fd_context *ctx)
+{
+	struct fd_batch *batch = NULL;
+
+	fd_batch_reference(&batch, ctx->batch);
+
+	if (unlikely(!batch)) {
+		batch = fd_batch_from_fb(&ctx->screen->batch_cache, ctx, &ctx->framebuffer);
+		util_copy_framebuffer_state(&batch->framebuffer, &ctx->framebuffer);
+		fd_batch_reference(&ctx->batch, batch);
+		fd_context_all_dirty(ctx);
+	}
+	fd_context_switch_to(ctx, batch);
+
+	return batch;
+}
+
+/**
+ * Return a locked reference to the current batch.  A batch with emit
+ * lock held is protected against flushing while the lock is held.
+ * The emit-lock should be acquired before screen-lock.  The emit-lock
+ * should be held while emitting cmdstream.
+ */
+struct fd_batch *
+fd_context_batch_locked(struct fd_context *ctx)
+{
+	struct fd_batch *batch = NULL;
+
+	while (!batch) {
+		batch = fd_context_batch(ctx);
+		if (!fd_batch_lock_submit(batch)) {
+			fd_batch_reference(&batch, NULL);
+		}
+	}
+
+	return batch;
 }
 
 void
@@ -464,6 +548,7 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 	list_inithead(&ctx->log_chunks);
 
 	fd_screen_lock(ctx->screen);
+	ctx->seqno = ++screen->ctx_seqno;
 	list_add(&ctx->node, &ctx->screen->context_list);
 	fd_screen_unlock(ctx->screen);
 

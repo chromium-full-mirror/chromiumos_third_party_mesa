@@ -92,21 +92,7 @@ static struct bo *bos;
 #define IS_USERPTR(p) ((uintptr_t) (p) & USERPTR_FLAG)
 #define GET_PTR(p) ( (void *) ((uintptr_t) p & ~(uintptr_t) 1) )
 
-static void __attribute__ ((format(__printf__, 2, 3)))
-fail_if(int cond, const char *format, ...)
-{
-   va_list args;
-
-   if (!cond)
-      return;
-
-   va_start(args, format);
-   fprintf(stderr, "intel_dump_gpu: ");
-   vfprintf(stderr, format, args);
-   va_end(args);
-
-   raise(SIGTRAP);
-}
+#define fail_if(cond, ...) _fail_if(cond, "intel_dump_gpu", __VA_ARGS__)
 
 static struct bo *
 get_bo(unsigned fd, uint32_t handle)
@@ -446,7 +432,12 @@ maybe_init(int fd)
 
    initialized = true;
 
-   config = fopen(getenv("INTEL_DUMP_GPU_CONFIG"), "r");
+   const char *config_path = getenv("INTEL_DUMP_GPU_CONFIG");
+   fail_if(config_path == NULL, "INTEL_DUMP_GPU_CONFIG is not set\n");
+
+   config = fopen(config_path, "r");
+   fail_if(config == NULL, "failed to open file %s\n", config_path);
+
    while (fscanf(config, "%m[^=]=%m[^\n]\n", &key, &value) != EOF) {
       if (!strcmp(key, "verbose")) {
          if (!strcmp(value, "1")) {
@@ -455,15 +446,15 @@ maybe_init(int fd)
             verbose = 2;
          }
       } else if (!strcmp(key, "device")) {
-         fail_if(device != 0, "Device/Platform override specified multiple times.");
+         fail_if(device != 0, "Device/Platform override specified multiple times.\n");
          fail_if(sscanf(value, "%i", &device) != 1,
-                 "failed to parse device id '%s'",
+                 "failed to parse device id '%s'\n",
                  value);
          device_override = true;
       } else if (!strcmp(key, "platform")) {
-         fail_if(device != 0, "Device/Platform override specified multiple times.");
+         fail_if(device != 0, "Device/Platform override specified multiple times.\n");
          device = gen_device_name_to_pci_device_id(value);
-         fail_if(device == -1, "Unknown platform '%s'", value);
+         fail_if(device == -1, "Unknown platform '%s'\n", value);
          device_override = true;
       } else if (!strcmp(key, "file")) {
          output_filename = strdup(value);
@@ -710,6 +701,17 @@ ioctl(int fd, unsigned long request, ...)
          ret = libc_ioctl(fd, request, argp);
          if (ret == 0) {
             struct drm_i915_gem_mmap *mmap = argp;
+            struct bo *bo = get_bo(fd, mmap->handle);
+            bo->user_mapped = true;
+            bo->dirty = true;
+         }
+         return ret;
+      }
+
+      case DRM_IOCTL_I915_GEM_MMAP_OFFSET: {
+         ret = libc_ioctl(fd, request, argp);
+         if (ret == 0) {
+            struct drm_i915_gem_mmap_offset *mmap = argp;
             struct bo *bo = get_bo(fd, mmap->handle);
             bo->user_mapped = true;
             bo->dirty = true;

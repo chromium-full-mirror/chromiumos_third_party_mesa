@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2019-2020 Collabora, Ltd.
  * Copyright 2018-2019 Alyssa Rosenzweig
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -57,6 +58,30 @@ panfrost_mfbd_size(struct panfrost_batch *batch)
                (rt_count * MALI_RENDER_TARGET_LENGTH);
 }
 
+static enum mali_mfbd_color_format
+panfrost_mfbd_raw_format(unsigned bits)
+{
+        switch (bits) {
+        case    8: return MALI_MFBD_COLOR_FORMAT_RAW8;
+        case   16: return MALI_MFBD_COLOR_FORMAT_RAW16;
+        case   24: return MALI_MFBD_COLOR_FORMAT_RAW24;
+        case   32: return MALI_MFBD_COLOR_FORMAT_RAW32;
+        case   48: return MALI_MFBD_COLOR_FORMAT_RAW48;
+        case   64: return MALI_MFBD_COLOR_FORMAT_RAW64;
+        case   96: return MALI_MFBD_COLOR_FORMAT_RAW96;
+        case  128: return MALI_MFBD_COLOR_FORMAT_RAW128;
+        case  192: return MALI_MFBD_COLOR_FORMAT_RAW192;
+        case  256: return MALI_MFBD_COLOR_FORMAT_RAW256;
+        case  384: return MALI_MFBD_COLOR_FORMAT_RAW384;
+        case  512: return MALI_MFBD_COLOR_FORMAT_RAW512;
+        case  768: return MALI_MFBD_COLOR_FORMAT_RAW768;
+        case 1024: return MALI_MFBD_COLOR_FORMAT_RAW1024;
+        case 1536: return MALI_MFBD_COLOR_FORMAT_RAW1536;
+        case 2048: return MALI_MFBD_COLOR_FORMAT_RAW2048;
+        default: unreachable("invalid raw bpp");
+        }
+}
+
 static void
 panfrost_mfbd_rt_init_format(struct pipe_surface *surf,
                              struct MALI_RENDER_TARGET *rt)
@@ -78,122 +103,24 @@ panfrost_mfbd_rt_init_format(struct pipe_surface *surf,
         if (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB)
                 rt->srgb = true;
 
-        /* sRGB handled as a dedicated flag */
-        enum pipe_format linearized = util_format_linear(surf->format);
+        struct pan_blendable_format fmt = panfrost_blend_format(surf->format);
 
-        if (util_format_is_unorm8(desc)) {
-                rt->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8;
-                switch (desc->nr_channels) {
-                case 1:
-                        rt->writeback_format = MALI_MFBD_COLOR_FORMAT_R8;
-                        break;
-                case 2:
-                        rt->writeback_format = MALI_MFBD_COLOR_FORMAT_R8G8;
-                        break;
-                case 3:
-                        rt->writeback_format = MALI_MFBD_COLOR_FORMAT_R8G8B8;
-                        break;
-                case 4:
-                        rt->writeback_format = MALI_MFBD_COLOR_FORMAT_R8G8B8A8;
-                        break;
-                default:
-                        unreachable("Invalid number of channels");
-                }
+        if (fmt.internal) {
+                rt->internal_format = fmt.internal;
+                rt->writeback_format = fmt.writeback;
+        } else {
+                /* Construct RAW internal/writeback, where internal is
+                 * specified logarithmically (round to next power-of-two).
+                 * Offset specified from RAW8, where 8 = 2^3 */
 
-                /* If RGB, we're good to go */
-                return;
-        }
+                unsigned bits = desc->block.bits;
+                unsigned offset = util_logbase2_ceil(bits) - 3;
+                assert(offset <= 4);
 
-        /* Set flags for alternative formats */
+                rt->internal_format =
+                        MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW8 + offset;
 
-        switch (linearized) {
-        case PIPE_FORMAT_B5G6R5_UNORM:
-                rt->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_R5G6B5A0;
-                rt->writeback_format = MALI_MFBD_COLOR_FORMAT_R5G6B5;
-                break;
-
-        case PIPE_FORMAT_A4B4G4R4_UNORM:
-        case PIPE_FORMAT_B4G4R4A4_UNORM:
-        case PIPE_FORMAT_R4G4B4A4_UNORM:
-                rt->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_R4G4B4A4;
-                rt->writeback_format = MALI_MFBD_COLOR_FORMAT_R4G4B4A4;
-                break;
-
-        case PIPE_FORMAT_R10G10B10A2_UNORM:
-        case PIPE_FORMAT_B10G10R10A2_UNORM:
-        case PIPE_FORMAT_R10G10B10X2_UNORM:
-        case PIPE_FORMAT_B10G10R10X2_UNORM:
-                rt->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_R10G10B10A2;
-                rt->writeback_format = MALI_MFBD_COLOR_FORMAT_R10G10B10A2;
-                break;
-
-        case PIPE_FORMAT_B5G5R5A1_UNORM:
-        case PIPE_FORMAT_R5G5B5A1_UNORM:
-        case PIPE_FORMAT_B5G5R5X1_UNORM:
-                rt->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_R5G5B5A1;
-                rt->writeback_format = MALI_MFBD_COLOR_FORMAT_R5G5B5A1;
-                break;
-
-        /* Generic 8-bit */
-        case PIPE_FORMAT_R8_UINT:
-        case PIPE_FORMAT_R8_SINT:
-                rt->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW8;
-                rt->writeback_format = MALI_MFBD_COLOR_FORMAT_RAW8;
-                break;
-
-        /* Generic 32-bit */
-        case PIPE_FORMAT_R11G11B10_FLOAT:
-        case PIPE_FORMAT_R8G8B8A8_UINT:
-        case PIPE_FORMAT_R8G8B8A8_SINT:
-        case PIPE_FORMAT_R16G16_FLOAT:
-        case PIPE_FORMAT_R16G16_UINT:
-        case PIPE_FORMAT_R16G16_SINT:
-        case PIPE_FORMAT_R32_FLOAT:
-        case PIPE_FORMAT_R32_UINT:
-        case PIPE_FORMAT_R32_SINT:
-        case PIPE_FORMAT_R10G10B10A2_UINT:
-                rt->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW32;
-                rt->writeback_format = MALI_MFBD_COLOR_FORMAT_RAW32;
-                break;
-
-        /* Generic 16-bit */
-        case PIPE_FORMAT_R8G8_UINT:
-        case PIPE_FORMAT_R8G8_SINT:
-        case PIPE_FORMAT_R16_FLOAT:
-        case PIPE_FORMAT_R16_UINT:
-        case PIPE_FORMAT_R16_SINT:
-                rt->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW16;
-                rt->writeback_format = MALI_MFBD_COLOR_FORMAT_RAW16;
-                break;
-
-        /* Generic 64-bit */
-        case PIPE_FORMAT_R32G32_FLOAT:
-        case PIPE_FORMAT_R32G32_SINT:
-        case PIPE_FORMAT_R32G32_UINT:
-        case PIPE_FORMAT_R16G16B16A16_FLOAT:
-        case PIPE_FORMAT_R16G16B16A16_SINT:
-        case PIPE_FORMAT_R16G16B16A16_UINT:
-                rt->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW64;
-                rt->writeback_format = MALI_MFBD_COLOR_FORMAT_RAW64;
-                break;
-
-        case PIPE_FORMAT_R16G16B16_FLOAT:
-        case PIPE_FORMAT_R16G16B16_SINT:
-        case PIPE_FORMAT_R16G16B16_UINT:
-                rt->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW64;
-                rt->writeback_format = MALI_MFBD_COLOR_FORMAT_RAW48;
-                break;
-
-        /* Generic 128-bit */
-        case PIPE_FORMAT_R32G32B32A32_FLOAT:
-        case PIPE_FORMAT_R32G32B32A32_SINT:
-        case PIPE_FORMAT_R32G32B32A32_UINT:
-                rt->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW128;
-                rt->writeback_format = MALI_MFBD_COLOR_FORMAT_RAW128;
-                break;
-
-        default:
-                unreachable("Invalid format rendering");
+                rt->writeback_format = panfrost_mfbd_raw_format(bits);
         }
 }
 
@@ -331,9 +258,9 @@ panfrost_mfbd_zs_crc_ext_set_bufs(struct panfrost_batch *batch,
 
                         ext->crc_row_stride = slice->checksum_stride;
                         if (slice->checksum_bo)
-                                ext->crc_base = slice->checksum_bo->gpu;
+                                ext->crc_base = slice->checksum_bo->ptr.gpu;
                         else
-                                ext->crc_base = rsrc->bo->gpu + slice->checksum_offset;
+                                ext->crc_base = rsrc->bo->ptr.gpu + slice->checksum_offset;
 
                         if ((batch->clear & PIPE_CLEAR_COLOR0) && version >= 7) {
                                 ext->crc_clear_color = batch->clear_color[0][0] |
@@ -362,23 +289,17 @@ panfrost_mfbd_zs_crc_ext_set_bufs(struct panfrost_batch *batch,
         ext->zs_msaa = nr_samples > 1 ? MALI_MSAA_LAYERED : MALI_MSAA_SINGLE;
 
         if (drm_is_afbc(rsrc->modifier)) {
-                /* The only Z/S format we can compress is Z24S8 or variants
-                 * thereof (handled by the gallium frontend) */
-                assert(panfrost_is_z24s8_variant(zs_surf->format));
-
                 unsigned header_size = rsrc->slices[level].header_size;
-
-                ext->zs_write_format = MALI_ZS_FORMAT_D24S8;
-                if (version >= 7)
-                        ext->zs_block_format_v7 = MALI_BLOCK_FORMAT_V7_AFBC;
-                else
-                        ext->zs_block_format = MALI_BLOCK_FORMAT_AFBC;
-
                 ext->zs_afbc_header = base;
                 ext->zs_afbc_body = base + header_size;
                 ext->zs_afbc_body_size = 0x1000;
                 ext->zs_afbc_chunk_size = 9;
                 ext->zs_afbc_sparse = true;
+
+                if (version >= 7)
+                        ext->zs_block_format_v7 = MALI_BLOCK_FORMAT_V7_AFBC;
+                else
+                        ext->zs_block_format = MALI_BLOCK_FORMAT_AFBC;
         } else {
                 assert(rsrc->modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED ||
                        rsrc->modifier == DRM_FORMAT_MOD_LINEAR);
@@ -404,37 +325,40 @@ panfrost_mfbd_zs_crc_ext_set_bufs(struct panfrost_batch *batch,
                         else
                                 ext->zs_block_format = MALI_BLOCK_FORMAT_TILED_U_INTERLEAVED;
                 }
+        }
 
-                switch (zs_surf->format) {
-                case PIPE_FORMAT_Z24_UNORM_S8_UINT:
-                        ext->zs_write_format = MALI_ZS_FORMAT_D24S8;
-                        break;
-                case PIPE_FORMAT_Z24X8_UNORM:
-                        ext->zs_write_format = MALI_ZS_FORMAT_D24X8;
-                        break;
-                case PIPE_FORMAT_Z32_FLOAT:
-                        ext->zs_write_format = MALI_ZS_FORMAT_D32;
-                        break;
-                case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
-                        /* Midgard/Bifrost support interleaved depth/stencil
-                         * buffers, but we always treat them as multu-planar.
-                         */
-                        ext->zs_write_format = MALI_ZS_FORMAT_D32;
-                        ext->s_write_format = MALI_S_FORMAT_S8;
+        switch (zs_surf->format) {
+        case PIPE_FORMAT_Z16_UNORM:
+                ext->zs_write_format = MALI_ZS_FORMAT_D16;
+                break;
+        case PIPE_FORMAT_Z24_UNORM_S8_UINT:
+                ext->zs_write_format = MALI_ZS_FORMAT_D24S8;
+                break;
+        case PIPE_FORMAT_Z24X8_UNORM:
+                ext->zs_write_format = MALI_ZS_FORMAT_D24X8;
+                break;
+        case PIPE_FORMAT_Z32_FLOAT:
+                ext->zs_write_format = MALI_ZS_FORMAT_D32;
+                break;
+        case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+                /* Midgard/Bifrost support interleaved depth/stencil
+                 * buffers, but we always treat them as multu-planar.
+                 */
+                ext->zs_write_format = MALI_ZS_FORMAT_D32;
+                ext->s_write_format = MALI_S_FORMAT_S8;
 
-                        struct panfrost_resource *stencil = rsrc->separate_stencil;
-                        struct panfrost_slice stencil_slice = stencil->slices[level];
-                        unsigned stencil_layer_stride = (nr_samples > 1) ? stencil_slice.size0 : 0;
+                struct panfrost_resource *stencil = rsrc->separate_stencil;
+                struct panfrost_slice stencil_slice = stencil->slices[level];
+                unsigned stencil_layer_stride = (nr_samples > 1) ? stencil_slice.size0 : 0;
 
-                        ext->s_writeback_base = panfrost_get_texture_address(stencil, level, first_layer, 0);
-                        ext->s_writeback_row_stride = stencil_slice.stride;
-                        if (rsrc->modifier != DRM_FORMAT_MOD_LINEAR)
-                                ext->s_writeback_row_stride *= 16;
-                        ext->s_writeback_surface_stride = stencil_layer_stride;
-                        break;
-                default:
-                        unreachable("Unsupported depth/stencil format.");
-                }
+                ext->s_writeback_base = panfrost_get_texture_address(stencil, level, first_layer, 0);
+                ext->s_writeback_row_stride = stencil_slice.stride;
+                if (rsrc->modifier != DRM_FORMAT_MOD_LINEAR)
+                        ext->s_writeback_row_stride *= 16;
+                ext->s_writeback_surface_stride = stencil_layer_stride;
+                break;
+        default:
+                unreachable("Unsupported depth/stencil format.");
         }
 }
 
@@ -447,21 +371,21 @@ panfrost_mfbd_emit_zs_crc_ext(struct panfrost_batch *batch, void *extp)
         }
 }
 
-/* Determines the # of bytes per pixel we need to reserve for a given format in
- * the tilebuffer (compared to 128-bit budget, etc). Usually the same as the
- * bytes per pixel of the format itself, but there are some special cases I
- * don't understand. */
+/* Measure format as it appears in the tile buffer */
 
 static unsigned
 pan_bytes_per_pixel_tib(enum pipe_format format)
 {
-        const struct util_format_description *desc =
-                util_format_description(format);
-
-        if (util_format_is_unorm8(desc) || format == PIPE_FORMAT_B5G6R5_UNORM)
+        if (panfrost_blend_format(format).internal) {
+                /* Blendable formats are always 32-bits in the tile buffer,
+                 * extra bits are used as padding or to dither */
                 return 4;
-
-        return desc->block.bits / 8;
+        } else {
+                /* Non-blendable formats are raw, rounded up to the nearest
+                 * power-of-two size */
+                unsigned bytes = util_format_get_blocksize(format);
+                return util_next_power_of_two(bytes);
+        }
 }
 
 /* Calculates the internal color buffer size and tile size based on the number
@@ -513,7 +437,7 @@ panfrost_mfbd_emit_local_storage(struct panfrost_batch *batch, void *fb)
                                                               dev->thread_tls_alloc,
                                                               dev->core_count);
                         ls.tls_size = shift;
-                        ls.tls_base_pointer = bo->gpu;
+                        ls.tls_base_pointer = bo->ptr.gpu;
                 }
 
                 ls.wls_instances = MALI_LOCAL_STORAGE_NO_WORKGROUP_MEM;
@@ -556,10 +480,10 @@ panfrost_attach_mfbd(struct panfrost_batch *batch, unsigned vertex_count)
         struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
         void *fb = batch->framebuffer.cpu;
 
+        panfrost_mfbd_emit_local_storage(batch, fb);
+
         if (dev->quirks & IS_BIFROST)
-                panfrost_mfbd_emit_bifrost_parameters(batch, fb);
-        else
-                panfrost_mfbd_emit_local_storage(batch, fb);
+                return;
 
         pan_section_pack(fb, MULTI_TARGET_FRAMEBUFFER, PARAMETERS, params) {
                 params.width = batch->key.width;
@@ -572,10 +496,7 @@ panfrost_attach_mfbd(struct panfrost_batch *batch, unsigned vertex_count)
                 params.render_target_count = MAX2(batch->key.nr_cbufs, 1);
         }
 
-        if (dev->quirks & IS_BIFROST)
-                panfrost_mfbd_emit_bifrost_tiler(batch, fb, vertex_count);
-        else
-                panfrost_mfbd_emit_midgard_tiler(batch, fb, vertex_count);
+        panfrost_mfbd_emit_midgard_tiler(batch, fb, vertex_count);
 }
 
 /* Creates an MFBD for the FRAGMENT section of the bound framebuffer */
@@ -585,7 +506,7 @@ panfrost_mfbd_fragment(struct panfrost_batch *batch, bool has_draws)
 {
         struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
         unsigned vertex_count = has_draws;
-        struct panfrost_transfer t =
+        struct panfrost_ptr t =
                 panfrost_pool_alloc_aligned(&batch->pool,
                                             panfrost_mfbd_size(batch), 64);
         void *fb = t.cpu, *zs_crc_ext, *rts;

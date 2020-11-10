@@ -270,14 +270,7 @@ static VkResult anv_create_cmd_buffer(
 
    anv_cmd_state_init(cmd_buffer);
 
-   if (pool) {
-      list_addtail(&cmd_buffer->pool_link, &pool->cmd_buffers);
-   } else {
-      /* Init the pool_link so we can safefly call list_del when we destroy
-       * the command buffer
-       */
-      list_inithead(&cmd_buffer->pool_link);
-   }
+   list_addtail(&cmd_buffer->pool_link, &pool->cmd_buffers);
 
    *pCommandBuffer = anv_cmd_buffer_to_handle(cmd_buffer);
 
@@ -389,9 +382,6 @@ VkResult anv_ResetCommandBuffer(
       break;                                       \
    case 9:                                         \
       gen9_##func(__VA_ARGS__);                    \
-      break;                                       \
-   case 10:                                        \
-      gen10_##func(__VA_ARGS__);                   \
       break;                                       \
    case 11:                                        \
       gen11_##func(__VA_ARGS__);                   \
@@ -1242,8 +1232,9 @@ anv_cmd_buffer_push_descriptor_set(struct anv_cmd_buffer *cmd_buffer,
       anv_descriptor_set_layout_ref(layout);
       set->layout = layout;
    }
-   set->size = anv_descriptor_set_layout_size(layout);
+   set->size = anv_descriptor_set_layout_size(layout, 0);
    set->buffer_view_count = layout->buffer_view_count;
+   set->descriptor_count = layout->descriptor_count;
    set->buffer_views = (*push_set)->buffer_views;
 
    if (layout->descriptor_buffer_size &&
@@ -1277,6 +1268,7 @@ anv_cmd_buffer_push_descriptor_set(struct anv_cmd_buffer *cmd_buffer,
                                 isl_dev->ss.size, isl_dev->ss.align);
       anv_fill_buffer_surface_state(cmd_buffer->device,
                                     set->desc_surface_state, format,
+                                    ISL_SURF_USAGE_CONSTANT_BUFFER_BIT,
                                     addr, layout->descriptor_buffer_size, 1);
    }
 

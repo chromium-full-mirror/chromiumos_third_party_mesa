@@ -41,9 +41,11 @@
 #include "stw_device.h"
 #include "gdi/gdi_sw_winsys.h"
 
+#ifdef GALLIUM_SOFTPIPE
 #include "softpipe/sp_texture.h"
 #include "softpipe/sp_screen.h"
 #include "softpipe/sp_public.h"
+#endif
 
 #ifdef GALLIUM_LLVMPIPE
 #include "llvmpipe/lp_texture.h"
@@ -54,12 +56,18 @@
 #ifdef GALLIUM_SWR
 #include "swr/swr_public.h"
 #endif
+#ifdef GALLIUM_D3D12
+#include "d3d12/d3d12_public.h"
+#endif
 
 #ifdef GALLIUM_LLVMPIPE
 static boolean use_llvmpipe = FALSE;
 #endif
 #ifdef GALLIUM_SWR
 static boolean use_swr = FALSE;
+#endif
+#ifdef GALLIUM_D3D12
+static boolean use_d3d12 = FALSE;
 #endif
 
 static struct pipe_screen *
@@ -78,8 +86,10 @@ gdi_screen_create(void)
    default_driver = "llvmpipe";
 #elif GALLIUM_SWR
    default_driver = "swr";
-#else
+#elif defined(GALLIUM_SOFTPIPE)
    default_driver = "softpipe";
+#else
+#error "no suitable default-driver"
 #endif
 
    driver = debug_get_option("GALLIUM_DRIVER", default_driver);
@@ -98,13 +108,20 @@ gdi_screen_create(void)
          use_swr = TRUE;
    }
 #endif
+#ifdef GALLIUM_D3D12
+   if (strcmp(driver, "d3d12") == 0) {
+      screen = d3d12_create_screen( winsys, NULL );
+      if (screen)
+         use_d3d12 = TRUE;
+   }
+#endif
    (void) driver;
 
-   if (screen == NULL) {
+#ifdef GALLIUM_SOFTPIPE
+   if (screen == NULL)
       screen = softpipe_create_screen( winsys );
-   }
-
-   if(!screen)
+#endif
+   if (!screen)
       goto no_screen;
 
    return screen;
@@ -150,9 +167,18 @@ gdi_present(struct pipe_screen *screen,
    }
 #endif
 
+#ifdef GALLIUM_D3D12
+   if (use_d3d12) {
+      screen->flush_frontbuffer(screen, res, 0, 0, hDC, NULL);
+      return;
+   }
+#endif
+
+#ifdef GALLIUM_SOFTPIPE
    winsys = softpipe_screen(screen)->winsys,
    dt = softpipe_resource(res)->dt,
    gdi_sw_display(winsys, dt, hDC);
+#endif
 }
 
 

@@ -29,20 +29,25 @@
 #include "bi_print_common.h"
 
 const char *
-bi_clause_type_name(enum bifrost_clause_type T)
+bi_message_type_name(enum bifrost_message_type T)
 {
         switch (T) {
-        case BIFROST_CLAUSE_NONE: return "";
-        case BIFROST_CLAUSE_LOAD_VARY: return "load_vary";
-        case BIFROST_CLAUSE_UBO: return "ubo";
-        case BIFROST_CLAUSE_TEX: return "tex";
-        case BIFROST_CLAUSE_SSBO_LOAD: return "load";
-        case BIFROST_CLAUSE_SSBO_STORE: return "store";
-        case BIFROST_CLAUSE_BLEND: return "blend";
-        case BIFROST_CLAUSE_FRAGZ: return "fragz";
-        case BIFROST_CLAUSE_ATEST: return "atest";
-        case BIFROST_CLAUSE_64BIT: return "64";
-        default: return "??";
+        case BIFROST_MESSAGE_NONE: return "";
+        case BIFROST_MESSAGE_VARYING: return "vary";
+        case BIFROST_MESSAGE_ATTRIBUTE: return "attr";
+        case BIFROST_MESSAGE_TEX: return "tex";
+        case BIFROST_MESSAGE_VARTEX: return "vartex";
+        case BIFROST_MESSAGE_LOAD: return "load";
+        case BIFROST_MESSAGE_STORE: return "store";
+        case BIFROST_MESSAGE_ATOMIC: return "atomic";
+        case BIFROST_MESSAGE_BARRIER: return "barrier";
+        case BIFROST_MESSAGE_BLEND: return "blend";
+        case BIFROST_MESSAGE_TILE: return "tile";
+        case BIFROST_MESSAGE_Z_STENCIL: return "z_stencil";
+        case BIFROST_MESSAGE_ATEST: return "atest";
+        case BIFROST_MESSAGE_JOB: return "job";
+        case BIFROST_MESSAGE_64BIT: return "64";
+        default: return "XXX reserved";
         }
 }
 
@@ -86,10 +91,26 @@ const char *
 bi_interp_mode_name(enum bifrost_interp_mode mode)
 {
         switch (mode) {
-        case BIFROST_INTERP_PER_FRAG: return ".per_frag";
+        case BIFROST_INTERP_CENTER: return ".center";
         case BIFROST_INTERP_CENTROID: return ".centroid";
-        case BIFROST_INTERP_DEFAULT: return "";
+        case BIFROST_INTERP_SAMPLE: return ".sample";
         case BIFROST_INTERP_EXPLICIT: return ".explicit";
         default: return ".unknown";
+        }
+}
+
+const char *
+bi_flow_control_name(enum bifrost_flow mode)
+{
+        switch (mode) {
+        case BIFROST_FLOW_END: return "eos";
+        case BIFROST_FLOW_NBTB_PC: return "nbb br_pc";
+        case BIFROST_FLOW_NBTB_UNCONDITIONAL: return "nbb r_uncond";
+        case BIFROST_FLOW_NBTB: return "nbb";
+        case BIFROST_FLOW_BTB_UNCONDITIONAL: return "bb r_uncond";
+        case BIFROST_FLOW_BTB_NONE: return "bb";
+        case BIFROST_FLOW_WE_UNCONDITIONAL: return "we r_uncond";
+        case BIFROST_FLOW_WE: return "we";
+        default: return "XXX";
         }
 }

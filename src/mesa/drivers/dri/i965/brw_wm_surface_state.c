@@ -55,7 +55,7 @@
 #include "brw_defines.h"
 #include "brw_wm.h"
 
-uint32_t wb_mocs[] = {
+static const uint32_t wb_mocs[] = {
    [7] = GEN7_MOCS_L3,
    [8] = BDW_MOCS_WB,
    [9] = SKL_MOCS_WB,
@@ -63,7 +63,7 @@ uint32_t wb_mocs[] = {
    [11] = ICL_MOCS_WB,
 };
 
-uint32_t pte_mocs[] = {
+static const uint32_t pte_mocs[] = {
    [7] = GEN7_MOCS_L3,
    [8] = BDW_MOCS_PTE,
    [9] = SKL_MOCS_PTE,
@@ -166,10 +166,7 @@ brw_emit_surface_state(struct brw_context *brw,
       /* We only really need a clear color if we also have an auxiliary
        * surface.  Without one, it does nothing.
        */
-      clear_color =
-         intel_miptree_get_clear_color(devinfo, mt, view.format,
-                                       view.usage & ISL_SURF_USAGE_TEXTURE_BIT,
-                                       &clear_bo, &clear_offset);
+      clear_color = intel_miptree_get_clear_color(mt, &clear_bo, &clear_offset);
    }
 
    void *state = brw_state_batch(brw,

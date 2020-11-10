@@ -340,6 +340,7 @@ NIR_FILES = \
 	nir/nir_opt_sink.c \
 	nir/nir_opt_trivial_continues.c \
 	nir/nir_opt_undef.c \
+	nir/nir_opt_uniform_atomics.c \
 	nir/nir_opt_vectorize.c \
 	nir/nir_phi_builder.c \
 	nir/nir_phi_builder.h \
@@ -370,7 +371,8 @@ NIR_FILES = \
 
 SPIRV_GENERATED_FILES = \
 	spirv/spirv_info.c \
-	spirv/vtn_gather_types.c
+	spirv/vtn_gather_types.c \
+	spirv/vtn_generator_ids.h
 
 SPIRV_FILES = \
 	spirv/GLSL.ext.AMD.h \

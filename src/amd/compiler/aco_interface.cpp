@@ -23,13 +23,13 @@
 
 #include "aco_interface.h"
 #include "aco_ir.h"
+#include "util/memstream.h"
 #include "vulkan/radv_shader.h"
 #include "vulkan/radv_shader_args.h"
 
 #include <iostream>
-#include <sstream>
 
-static radv_compiler_statistic_info statistic_infos[] = {
+static aco_compiler_statistic_info statistic_infos[] = {
    [aco::statistic_hash] = {"Hash", "CRC32 hash of code and constant data"},
    [aco::statistic_instructions] = {"Instructions", "Instruction count"},
    [aco::statistic_copies] = {"Copies", "Copy instructions created for pseudo-instructions"},
@@ -102,19 +102,20 @@ void aco_compile_shader(unsigned shader_count,
       validate(program.get());
 
       /* spilling and scheduling */
-      live_vars = aco::live_var_analysis(program.get(), args->options);
-      aco::spill(program.get(), live_vars, args->options);
+      live_vars = aco::live_var_analysis(program.get());
+      aco::spill(program.get(), live_vars);
    }
 
    std::string llvm_ir;
    if (args->options->record_ir) {
       char *data = NULL;
       size_t size = 0;
-      FILE *f = open_memstream(&data, &size);
-      if (f) {
-         aco_print_program(program.get(), f);
-         fputc(0, f);
-         fclose(f);
+      u_memstream mem;
+      if (u_memstream_open(&mem, &data, &size)) {
+         FILE *const memf = u_memstream_get(&mem);
+         aco_print_program(program.get(), memf);
+         fputc(0, memf);
+         u_memstream_close(&mem);
       }
 
       llvm_ir = std::string(data, data + size);
@@ -137,7 +138,7 @@ void aco_compile_shader(unsigned shader_count,
          aco_print_program(program.get(), stderr);
       }
 
-      if (aco::validate_ra(program.get(), args->options)) {
+      if (aco::validate_ra(program.get())) {
          std::cerr << "Program after RA validation failure:\n";
          aco_print_program(program.get(), stderr);
          abort();
@@ -155,6 +156,9 @@ void aco_compile_shader(unsigned shader_count,
    aco::insert_wait_states(program.get());
    aco::insert_NOPs(program.get());
 
+   if (program->chip_class >= GFX10)
+      aco::form_hard_clauses(program.get());
+
    if (program->collect_statistics)
       aco::collect_preasm_stats(program.get());
 
@@ -171,16 +175,30 @@ void aco_compile_shader(unsigned shader_count,
 
    std::string disasm;
    if (get_disasm) {
-      std::ostringstream stream;
-      aco::print_asm(program.get(), code, exec_size / 4u, stream);
-      stream << '\0';
-      disasm = stream.str();
-      size += disasm.size();
+      char *data = NULL;
+      size_t disasm_size = 0;
+      FILE *f = open_memstream(&data, &disasm_size);
+      if (f) {
+         bool fail = aco::print_asm(program.get(), code, exec_size / 4u, f);
+         fputc(0, f);
+         fclose(f);
+
+         if (fail) {
+            fprintf(stderr, "Failed to disassemble program:\n");
+            aco_print_program(program.get(), stderr);
+            fputs(data, stderr);
+            abort();
+         }
+      }
+
+      disasm = std::string(data, data + disasm_size);
+      size += disasm_size;
+      free(data);
    }
 
    size_t stats_size = 0;
    if (program->collect_statistics)
-      stats_size = sizeof(radv_compiler_statistics) + aco::num_statistics * sizeof(uint32_t);
+      stats_size = sizeof(aco_compiler_statistics) + aco::num_statistics * sizeof(uint32_t);
    size += stats_size;
 
    size += code.size() * sizeof(uint32_t) + sizeof(radv_shader_binary_legacy);
@@ -196,7 +214,7 @@ void aco_compile_shader(unsigned shader_count,
    legacy_binary->base.total_size = size;
 
    if (program->collect_statistics) {
-      radv_compiler_statistics *statistics = (radv_compiler_statistics *)legacy_binary->data;
+      aco_compiler_statistics *statistics = (aco_compiler_statistics *)legacy_binary->data;
       statistics->count = aco::num_statistics;
       statistics->infos = statistic_infos;
       memcpy(statistics->values, program->statistics, aco::num_statistics * sizeof(uint32_t));

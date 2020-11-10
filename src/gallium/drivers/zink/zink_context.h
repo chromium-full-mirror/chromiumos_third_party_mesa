@@ -48,7 +48,10 @@ struct zink_vertex_elements_state;
 
 struct zink_sampler_view {
    struct pipe_sampler_view base;
-   VkImageView image_view;
+   union {
+      VkImageView image_view;
+      VkBufferView buffer_view;
+   };
 };
 
 static inline struct zink_sampler_view *
@@ -78,8 +81,11 @@ struct zink_context {
    struct slab_child_pool transfer_pool;
    struct blitter_context *blitter;
 
+   struct pipe_device_reset_callback reset;
+
    VkCommandPool cmdpool;
    struct zink_batch batches[4];
+   bool is_device_lost;
    unsigned curr_batch;
 
    VkQueue queue;
@@ -123,6 +129,7 @@ struct zink_context {
    struct pipe_stencil_ref stencil_ref;
 
    struct list_head suspended_queries;
+   struct list_head primitives_generated_queries;
    bool queries_disabled;
 
    struct pipe_resource *dummy_buffer;

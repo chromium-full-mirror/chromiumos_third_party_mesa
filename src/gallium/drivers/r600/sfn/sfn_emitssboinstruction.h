@@ -3,6 +3,7 @@
 
 #include "sfn_emitinstruction.h"
 #include "sfn_instruction_gds.h"
+#include "sfn_value_gpr.h"
 
 namespace r600 {
 
@@ -36,16 +37,19 @@ private:
 
    bool fetch_return_value(const nir_intrinsic_instr *intrin);
 
+   bool make_stores_ack_and_waitack();
+
    ESDOp get_opcode(nir_intrinsic_op opcode);
    RatInstruction::ERatOp get_rat_opcode(const nir_intrinsic_op opcode, pipe_format format) const;
 
    GPRVector make_dest(const nir_intrinsic_instr* instr);
 
-   PValue m_atomic_update;
+   PGPRValue m_atomic_update;
 
    bool m_require_rat_return_address;
    GPRVector m_rat_return_address;
    int m_ssbo_image_offset;
+   std::vector<RatInstruction *> m_store_ops;
 };
 
 }

@@ -236,6 +236,7 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_DEMOTE_TO_HELPER_INVOCATION:
    case PIPE_CAP_NATIVE_FENCE_FD:
    case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
+   case PIPE_CAP_FENCE_SIGNAL:
       return true;
    case PIPE_CAP_FBFETCH:
       return BRW_MAX_DRAW_BUFFERS;
@@ -805,7 +806,7 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
    screen->compiler->supports_pull_constants = false;
    screen->compiler->supports_shader_constants = true;
    screen->compiler->compact_params = false;
-   screen->compiler->indirect_ubos_use_sampler = false;
+   screen->compiler->indirect_ubos_use_sampler = screen->devinfo.gen < 12;
 
    screen->l3_config_3d = iris_get_default_l3_config(&screen->devinfo, false);
    screen->l3_config_cs = iris_get_default_l3_config(&screen->devinfo, true);

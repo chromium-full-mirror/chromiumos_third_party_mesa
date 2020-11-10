@@ -497,10 +497,10 @@ pandecode_bifrost_blend(void *descs, int job_no, int rt_no, mali_ptr frag_shader
 {
         pan_unpack(descs + (rt_no * MALI_BLEND_LENGTH), BLEND, b);
         DUMP_UNPACKED(BLEND, b, "Blend RT %d:\n", rt_no);
-        if (b.bifrost.mode != MALI_BIFROST_BLEND_MODE_SHADER)
+        if (b.bifrost.internal.mode != MALI_BIFROST_BLEND_MODE_SHADER)
                 return 0;
 
-        return (frag_shader & 0xFFFFFFFF00000000ULL) | b.bifrost.shader.pc;
+        return (frag_shader & 0xFFFFFFFF00000000ULL) | b.bifrost.internal.shader.pc;
 }
 
 static mali_ptr
@@ -971,7 +971,7 @@ pandecode_vertex_tiler_postfix_pre(
                 if (is_bifrost)
                         uniform_count = state.preload.uniform_count;
                 else
-                        uniform_count = state.properties.uniform_count;
+                        uniform_count = state.properties.midgard.uniform_count;
 
                 pandecode_shader_prop("texture_count", texture_count, info.texture_count, false);
                 pandecode_shader_prop("sampler_count", sampler_count, info.sampler_count, false);

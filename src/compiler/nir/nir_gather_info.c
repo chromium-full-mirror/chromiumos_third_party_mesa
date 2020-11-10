@@ -300,15 +300,8 @@ try_mask_partial_io(nir_shader *shader, nir_variable *var,
 static void
 update_memory_written_for_deref(nir_shader *shader, nir_deref_instr *deref)
 {
-   switch (deref->mode) {
-   case nir_var_mem_ssbo:
-   case nir_var_mem_global:
+   if (nir_deref_mode_may_be(deref, (nir_var_mem_ssbo | nir_var_mem_global)))
       shader->info.writes_memory = true;
-      break;
-   default:
-      /* Nothing to do. */
-      break;
-   }
 }
 
 static void
@@ -337,6 +330,12 @@ gather_intrinsic_info(nir_intrinsic_instr *instr, nir_shader *shader,
          shader->info.fs.uses_discard = true;
       break;
 
+   case nir_intrinsic_terminate:
+   case nir_intrinsic_terminate_if:
+      assert(shader->info.stage == MESA_SHADER_FRAGMENT);
+      shader->info.fs.uses_discard = true;
+      break;
+
    case nir_intrinsic_interp_deref_at_centroid:
    case nir_intrinsic_interp_deref_at_sample:
    case nir_intrinsic_interp_deref_at_offset:
@@ -344,8 +343,8 @@ gather_intrinsic_info(nir_intrinsic_instr *instr, nir_shader *shader,
    case nir_intrinsic_load_deref:
    case nir_intrinsic_store_deref:{
       nir_deref_instr *deref = nir_src_as_deref(instr->src[0]);
-      if (deref->mode == nir_var_shader_in ||
-          deref->mode == nir_var_shader_out) {
+      if (nir_deref_mode_is_one_of(deref, nir_var_shader_in |
+                                          nir_var_shader_out)) {
          nir_variable *var = nir_deref_instr_get_variable(deref);
          bool is_output_read = false;
          if (var->data.mode == nir_var_shader_out &&
@@ -433,6 +432,12 @@ gather_intrinsic_info(nir_intrinsic_instr *instr, nir_shader *shader,
          shader->info.fs.color_is_dual_source = true;
       break;
 
+   case nir_intrinsic_load_color0:
+   case nir_intrinsic_load_color1:
+      shader->info.inputs_read |=
+         BITFIELD64_BIT(VARYING_SLOT_COL0 <<
+                        (instr->intrinsic == nir_intrinsic_load_color1));
+      /* fall through */
    case nir_intrinsic_load_subgroup_size:
    case nir_intrinsic_load_subgroup_invocation:
    case nir_intrinsic_load_subgroup_eq_mask:
@@ -459,8 +464,6 @@ gather_intrinsic_info(nir_intrinsic_instr *instr, nir_shader *shader,
    case nir_intrinsic_load_sample_pos:
    case nir_intrinsic_load_sample_mask_in:
    case nir_intrinsic_load_helper_invocation:
-   case nir_intrinsic_load_color0:
-   case nir_intrinsic_load_color1:
    case nir_intrinsic_load_tess_coord:
    case nir_intrinsic_load_patch_vertices_in:
    case nir_intrinsic_load_primitive_id:
@@ -709,11 +712,18 @@ gather_alu_info(nir_alu_instr *instr, nir_shader *shader)
       break;
    }
 
-   shader->info.uses_64bit |= instr->dest.dest.ssa.bit_size == 64;
-   unsigned num_srcs = nir_op_infos[instr->op].num_inputs;
-   for (unsigned i = 0; i < num_srcs; i++) {
-      shader->info.uses_64bit |= nir_src_bit_size(instr->src[i].src) == 64;
+   const nir_op_info *info = &nir_op_infos[instr->op];
+
+   for (unsigned i = 0; i < info->num_inputs; i++) {
+      if (nir_alu_type_get_base_type(info->input_types[i]) == nir_type_float)
+         shader->info.bit_sizes_float |= nir_src_bit_size(instr->src[i].src);
+      else
+         shader->info.bit_sizes_int |= nir_src_bit_size(instr->src[i].src);
    }
+   if (nir_alu_type_get_base_type(info->output_type) == nir_type_float)
+      shader->info.bit_sizes_float |= nir_dest_bit_size(instr->dest.dest);
+   else
+      shader->info.bit_sizes_int |= nir_dest_bit_size(instr->dest.dest);
 }
 
 static void
@@ -746,6 +756,8 @@ nir_shader_gather_info(nir_shader *shader, nir_function_impl *entrypoint)
    shader->info.num_images = 0;
    shader->info.image_buffers = 0;
    shader->info.msaa_images = 0;
+   shader->info.bit_sizes_float = 0;
+   shader->info.bit_sizes_int = 0;
 
    nir_foreach_uniform_variable(var, shader) {
       /* Bindless textures and images don't use non-bindless slots.

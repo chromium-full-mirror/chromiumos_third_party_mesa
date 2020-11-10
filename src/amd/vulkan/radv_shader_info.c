@@ -31,23 +31,6 @@ static void mark_sampler_desc(const nir_variable *var,
 	info->desc_set_used_mask |= (1u << var->data.descriptor_set);
 }
 
-static void mark_ls_output(struct radv_shader_info *info,
-			   uint32_t param, int num_slots)
-{
-	uint64_t mask = (1ull << num_slots) - 1ull;
-	info->vs.ls_outputs_written |= (mask << param);
-}
-
-static void mark_tess_output(struct radv_shader_info *info,
-			     bool is_patch, uint32_t param, int num_slots)
-{
-	uint64_t mask = (1ull << num_slots) - 1ull;
-	if (is_patch)
-		info->tcs.patch_outputs_written |= (mask << param);
-	else
-		info->tcs.outputs_written |= (mask << param);
-}
-
 static void
 gather_intrinsic_load_input_info(const nir_shader *nir,
 			       const nir_intrinsic_instr *instr,
@@ -88,7 +71,7 @@ gather_intrinsic_store_output_info(const nir_shader *nir,
 				   const nir_intrinsic_instr *instr,
 				   struct radv_shader_info *info)
 {
-	unsigned idx = nir_intrinsic_io_semantics(instr).location;
+	unsigned idx = nir_intrinsic_base(instr);
 	unsigned num_slots = nir_intrinsic_io_semantics(instr).num_slots;
 	unsigned component = nir_intrinsic_component(instr);
 	unsigned write_mask = nir_intrinsic_write_mask(instr);
@@ -103,9 +86,6 @@ gather_intrinsic_store_output_info(const nir_shader *nir,
 		break;
 	case MESA_SHADER_TESS_EVAL:
 		output_usage_mask = info->tes.output_usage_mask;
-		break;
-	case MESA_SHADER_TESS_CTRL:
-		/* TODO: Gather tess outputs for LLVM. */
 		break;
 	case MESA_SHADER_GEOMETRY:
 		output_usage_mask = info->gs.output_usage_mask;
@@ -423,18 +403,6 @@ gather_info_input_decl(const nir_shader *nir, const nir_variable *var,
 }
 
 static void
-gather_info_output_decl_ls(const nir_shader *nir, const nir_variable *var,
-			   struct radv_shader_info *info)
-{
-	int idx = var->data.location;
-	unsigned param = shader_io_get_unique_index(idx);
-	int num_slots = glsl_count_attribute_slots(var->type, false);
-	if (var->data.compact)
-		num_slots = DIV_ROUND_UP(var->data.location_frac + glsl_get_length(var->type), 4);
-	mark_ls_output(info, param, num_slots);
-}
-
-static void
 gather_info_output_decl_ps(const nir_shader *nir, const nir_variable *var,
 			   struct radv_shader_info *info)
 {
@@ -497,9 +465,8 @@ gather_info_output_decl(const nir_shader *nir, const nir_variable *var,
 		    !key->vs_common_out.as_es)
 			vs_info = &info->vs.outinfo;
 
-		if (key->vs_common_out.as_ls)
-			gather_info_output_decl_ls(nir, var, info);
-		else if (key->vs_common_out.as_ngg)
+		/* TODO: Adjust as_ls/as_nng. */
+		if (!key->vs_common_out.as_ls && key->vs_common_out.as_ngg)
 			gather_info_output_decl_gs(nir, var, info);
 		break;
 	case MESA_SHADER_GEOMETRY:
@@ -510,21 +477,6 @@ gather_info_output_decl(const nir_shader *nir, const nir_variable *var,
 		if (!key->vs_common_out.as_es)
 			vs_info = &info->tes.outinfo;
 		break;
-       case MESA_SHADER_TESS_CTRL: {
-               unsigned param = shader_io_get_unique_index(var->data.location);
-               const struct glsl_type *type = var->type;
-
-               if (!var->data.patch)
-                       type = glsl_get_array_element(var->type);
-
-               unsigned slots =
-                       var->data.compact ? DIV_ROUND_UP(var->data.location_frac + glsl_get_length(type), 4)
-                                         : glsl_count_attribute_slots(type, false);
-
-               mark_tess_output(info, var->data.patch, param, slots);
-               break;
-       }
-
 	default:
 		break;
 	}
@@ -598,8 +550,7 @@ void
 radv_nir_shader_info_pass(const struct nir_shader *nir,
 			  const struct radv_pipeline_layout *layout,
 			  const struct radv_shader_variant_key *key,
-			  struct radv_shader_info *info,
-			  bool use_llvm)
+			  struct radv_shader_info *info)
 {
 	struct nir_function *func =
 		(struct nir_function *)exec_list_get_head_const(&nir->functions);
@@ -752,26 +703,10 @@ radv_nir_shader_info_pass(const struct nir_shader *nir,
 	    key->vs_common_out.as_es) {
 		struct radv_es_output_info *es_info =
 			nir->info.stage == MESA_SHADER_VERTEX ? &info->vs.es_info : &info->tes.es_info;
-
-		if (use_llvm) {
-			/* The outputs may contain gaps, use the highest output index + 1 */
-			uint32_t max_output_written = 0;
-			uint64_t output_mask = nir->info.outputs_written;
-
-			while (output_mask) {
-				const int i = u_bit_scan64(&output_mask);
-				unsigned param_index = shader_io_get_unique_index(i);
-
-				max_output_written = MAX2(param_index, max_output_written);
-			}
-			es_info->esgs_itemsize = (max_output_written + 1) * 16;
-		} else {
-			/* The outputs don't contain gaps, se we can use the number of outputs */
-			uint32_t num_outputs_written = nir->info.stage == MESA_SHADER_VERTEX
-				? info->vs.num_linked_outputs
-				: info->tes.num_linked_outputs;
-			es_info->esgs_itemsize = num_outputs_written * 16;
-		}
+		uint32_t num_outputs_written = nir->info.stage == MESA_SHADER_VERTEX
+			? info->vs.num_linked_outputs
+			: info->tes.num_linked_outputs;
+		es_info->esgs_itemsize = num_outputs_written * 16;
 	}
 
 	info->float_controls_mode = nir->info.float_controls_execution_mode;

@@ -498,25 +498,22 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
    if (!sctx->ctx)
       goto fail;
 
+   /* SDMA causes corruption on: :
+    *    - RX 580: https://gitlab.freedesktop.org/mesa/mesa/-/issues/1399, 1889
+    *    - gfx9 APUs: https://gitlab.freedesktop.org/mesa/mesa/-/issues/2814
+    *    - gfx10: https://gitlab.freedesktop.org/mesa/mesa/-/issues/1907,
+                  https://gitlab.freedesktop.org/drm/amd/issues/892
+    *
+    * While we could keep buffer copies and clears enabled, let's disable
+    * everything because SDMA decreases CPU performance because of its
+    * command submission overhead.
+    *
+    * And SDMA is disabled on all chips (instead of just the ones listed above),
+    * because it doesn't make sense to keep it enabled on old chips only
+    * that are not tested as often as newer chips.
+    */
    if (sscreen->info.num_rings[RING_DMA] && !(sscreen->debug_flags & DBG(NO_SDMA)) &&
-       /* SDMA causes corruption on RX 580:
-        *    https://gitlab.freedesktop.org/mesa/mesa/-/issues/1399
-        *    https://gitlab.freedesktop.org/mesa/mesa/-/issues/1889
-        */
-       (sctx->chip_class != GFX8 || sscreen->debug_flags & DBG(FORCE_SDMA)) &&
-       /* SDMA causes corruption on gfx9 APUs:
-        *    https://gitlab.freedesktop.org/mesa/mesa/-/issues/2814
-        *
-        * While we could keep buffer copies and clears enabled, let's disable
-        * everything, because neither gfx8 nor gfx10 enable SDMA, and it's not
-        * easy to test.
-        */
-       (sctx->chip_class != GFX9 || sscreen->debug_flags & DBG(FORCE_SDMA)) &&
-       /* SDMA timeouts sometimes on gfx10 so disable it for now. See:
-        *    https://bugs.freedesktop.org/show_bug.cgi?id=111481
-        *    https://gitlab.freedesktop.org/mesa/mesa/-/issues/1907
-        */
-       (sctx->chip_class != GFX10 || sscreen->debug_flags & DBG(FORCE_SDMA))) {
+       sscreen->debug_flags & DBG(FORCE_SDMA)) {
       sctx->sdma_cs = sctx->ws->cs_create(sctx->ctx, RING_DMA, (void *)si_flush_dma_cs, sctx,
                                           stop_exec_on_failure);
    }
@@ -1041,7 +1038,7 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
       sscreen->debug_flags |= DBG(FS_CORRECT_DERIVS_AFTER_KILL);
 
    if (sscreen->debug_flags & DBG(INFO))
-      ac_print_gpu_info(&sscreen->info);
+      ac_print_gpu_info(&sscreen->info, stdout);
 
    slab_create_parent(&sscreen->pool_transfers, sizeof(struct si_transfer), 64);
 
@@ -1189,14 +1186,10 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
       driQueryOptionb(config->options, "radeonsi_commutative_blend_add") ||
       driQueryOptionb(config->options, "allow_draw_out_of_order");
 
-   /* TODO: Find out why NGG culling hangs on gfx10.3 */
-   if (sscreen->info.chip_class == GFX10_3 &&
-       !(sscreen->debug_flags & (DBG(ALWAYS_NGG_CULLING_ALL) | DBG(ALWAYS_NGG_CULLING_TESS))))
-      sscreen->debug_flags |= DBG(NO_NGG_CULLING);
-
    sscreen->use_ngg = !(sscreen->debug_flags & DBG(NO_NGG)) &&
                       sscreen->info.chip_class >= GFX10 &&
-                      sscreen->info.family != CHIP_NAVI14 &&
+                      (sscreen->info.family != CHIP_NAVI14 ||
+                       sscreen->info.is_pro_graphics) &&
                       sscreen->info.has_dedicated_vram;
    sscreen->use_ngg_culling = sscreen->use_ngg && !(sscreen->debug_flags & DBG(NO_NGG_CULLING));
    sscreen->use_ngg_streamout = false;

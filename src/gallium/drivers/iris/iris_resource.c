@@ -511,6 +511,9 @@ iris_resource_configure_main(const struct iris_screen *screen,
 
    isl_surf_usage_flags_t usage = 0;
 
+   if (templ->usage == PIPE_USAGE_STAGING)
+      usage |= ISL_SURF_USAGE_STAGING_BIT;
+
    if (templ->bind & PIPE_BIND_RENDER_TARGET)
       usage |= ISL_SURF_USAGE_RENDER_TARGET_BIT;
 
@@ -1149,6 +1152,7 @@ iris_resource_get_param(struct pipe_screen *pscreen,
                         struct pipe_resource *resource,
                         unsigned plane,
                         unsigned layer,
+                        unsigned level,
                         enum pipe_resource_param param,
                         unsigned handle_usage,
                         uint64_t *value)
@@ -1981,7 +1985,7 @@ iris_transfer_flush_region(struct pipe_context *ctx,
          history_flush |= PIPE_CONTROL_RENDER_TARGET_FLUSH;
 
       if (map->dest_had_defined_contents)
-         history_flush |= iris_flush_bits_for_history(res);
+         history_flush |= iris_flush_bits_for_history(ice, res);
 
       util_range_add(&res->base, &res->valid_buffer_range, box->x, box->x + box->width);
    }
@@ -2129,12 +2133,17 @@ iris_dirty_for_history(struct iris_context *ice,
  * resource becomes visible, and any stale read cache data is invalidated.
  */
 uint32_t
-iris_flush_bits_for_history(struct iris_resource *res)
+iris_flush_bits_for_history(struct iris_context *ice,
+                            struct iris_resource *res)
 {
+   struct iris_screen *screen = (struct iris_screen *) ice->ctx.screen;
+
    uint32_t flush = PIPE_CONTROL_CS_STALL;
 
    if (res->bind_history & PIPE_BIND_CONSTANT_BUFFER) {
-      flush |= PIPE_CONTROL_CONST_CACHE_INVALIDATE |
+      flush |= PIPE_CONTROL_CONST_CACHE_INVALIDATE;
+      flush |= screen->compiler->indirect_ubos_use_sampler ?
+               PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE :
                PIPE_CONTROL_DATA_CACHE_FLUSH;
    }
 
@@ -2160,7 +2169,7 @@ iris_flush_and_dirty_for_history(struct iris_context *ice,
    if (res->base.target != PIPE_BUFFER)
       return;
 
-   uint32_t flush = iris_flush_bits_for_history(res) | extra_flags;
+   uint32_t flush = iris_flush_bits_for_history(ice, res) | extra_flags;
 
    iris_emit_pipe_control_flush(batch, reason, flush);
 

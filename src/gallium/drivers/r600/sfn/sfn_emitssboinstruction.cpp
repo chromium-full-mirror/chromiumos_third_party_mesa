@@ -100,6 +100,11 @@ bool EmitSSBOInstruction::do_emit(nir_instr* instr)
       return emit_image_size(intr);
    case nir_intrinsic_get_ssbo_size:
       return emit_buffer_size(intr);
+   case nir_intrinsic_memory_barrier:
+   case nir_intrinsic_memory_barrier_image:
+   case nir_intrinsic_memory_barrier_buffer:
+   case nir_intrinsic_group_memory_barrier:
+      return make_stores_ack_and_waitack();
    default:
       return false;
    }
@@ -243,6 +248,7 @@ bool EmitSSBOInstruction::emit_atomic_add(const nir_intrinsic_instr* instr)
 bool EmitSSBOInstruction::load_atomic_inc_limits()
 {
    m_atomic_update = get_temp_register();
+   m_atomic_update->set_keep_alive();
    emit_instruction(new AluInstruction(op1_mov, m_atomic_update, literal(1),
    {alu_write, alu_last_instr}));
    return true;
@@ -301,7 +307,8 @@ bool EmitSSBOInstruction::emit_load_ssbo(const nir_intrinsic_instr* instr)
 
    /* TODO fix resource index */
    auto ir = new FetchInstruction(dest, addr_temp,
-                                  R600_IMAGE_REAL_RESOURCE_OFFSET, from_nir(instr->src[0], 0),
+                                  R600_IMAGE_REAL_RESOURCE_OFFSET + m_ssbo_image_offset
+                                  , from_nir(instr->src[0], 0),
                                   formats[nir_dest_num_components(instr->dest) - 1], vtx_nf_int);
    ir->set_dest_swizzle(dest_swt[nir_dest_num_components(instr->dest) - 1]);
    ir->set_flag(vtx_use_tc);
@@ -351,17 +358,24 @@ bool EmitSSBOInstruction::emit_store_ssbo(const nir_intrinsic_instr* instr)
    auto values = vec_from_nir_with_fetch_constant(instr->src[0],
          (1 << nir_src_num_components(instr->src[0])) - 1, {0,1,2,3}, true);
 
-   emit_instruction(new RatInstruction(cf_mem_rat, RatInstruction::STORE_TYPED,
-                                       values, addr_vec, m_ssbo_image_offset, rat_id, 1,
-                                       1, 0, false));
+   auto cf_op = cf_mem_rat;
+   //auto cf_op = nir_intrinsic_access(instr) & ACCESS_COHERENT ? cf_mem_rat_cacheless : cf_mem_rat;
+   auto store = new RatInstruction(cf_op, RatInstruction::STORE_TYPED,
+                                   values, addr_vec, m_ssbo_image_offset, rat_id, 1,
+                                   1, 0, false);
+   emit_instruction(store);
+   m_store_ops.push_back(store);
 
    for (unsigned i = 1; i < nir_src_num_components(instr->src[0]); ++i) {
       emit_instruction(new AluInstruction(op1_mov, temp2.reg_i(0), from_nir(instr->src[0], i), write));
       emit_instruction(new AluInstruction(op2_add_int, addr_vec.reg_i(0),
                                           {addr_vec.reg_i(0), Value::one_i}, last_write));
-      emit_instruction(new RatInstruction(cf_mem_rat, RatInstruction::STORE_TYPED,
-                                          temp2, addr_vec, 0, rat_id, 1,
-                                          1, 0, false));
+      store = new RatInstruction(cf_op, RatInstruction::STORE_TYPED,
+                                 temp2, addr_vec, 0, rat_id, 1,
+                                 1, 0, false);
+      emit_instruction(store);
+      if (!(nir_intrinsic_access(instr) & ACCESS_COHERENT))
+         m_store_ops.push_back(store);
    }
 #endif
    return true;
@@ -389,8 +403,13 @@ EmitSSBOInstruction::emit_image_store(const nir_intrinsic_instr *intrin)
       emit_instruction(new AluInstruction(op1_mov, coord.reg_i(1), coord.reg_i(2), {alu_last_instr, alu_write}));
    }
 
-   auto store = new RatInstruction(cf_mem_rat, RatInstruction::STORE_TYPED, value, coord, imageid,
+   auto op = cf_mem_rat; //nir_intrinsic_access(intrin) & ACCESS_COHERENT ? cf_mem_rat_cacheless : cf_mem_rat;
+   auto store = new RatInstruction(op, RatInstruction::STORE_TYPED, value, coord, imageid,
                                    image_offset, 1, 0xf, 0, false);
+
+   //if (!(nir_intrinsic_access(intrin) & ACCESS_COHERENT))
+      m_store_ops.push_back(store);
+
    emit_instruction(store);
    return true;
 }
@@ -495,8 +514,9 @@ EmitSSBOInstruction::emit_image_load(const nir_intrinsic_instr *intrin)
                                              from_nir(intrin->src[3], 0), {alu_last_instr, alu_write}));
       }
    }
+   auto cf_op = cf_mem_rat;// nir_intrinsic_access(intrin) & ACCESS_COHERENT ? cf_mem_rat_cacheless : cf_mem_rat;
 
-   auto store = new RatInstruction(cf_mem_rat, rat_op, m_rat_return_address, coord, imageid,
+   auto store = new RatInstruction(cf_op, rat_op, m_rat_return_address, coord, imageid,
                                    image_offset, 1, 0xf, 0, true);
    emit_instruction(store);
    return fetch_return_value(intrin);
@@ -533,7 +553,7 @@ bool EmitSSBOInstruction::fetch_return_value(const nir_intrinsic_instr *intrin)
                                      dest,
                                      0,
                                      false,
-                                     0xf,
+                                     0x3,
                                      R600_IMAGE_IMMED_RESOURCE_OFFSET + imageid,
                                      0,
                                      bim_none,
@@ -612,6 +632,19 @@ bool EmitSSBOInstruction::emit_buffer_size(const nir_intrinsic_instr *intr)
 
    emit_instruction(new FetchInstruction(dst, PValue(new GPRValue(0, 7)),
                     res_id, bim_none));
+
+   return true;
+}
+
+bool EmitSSBOInstruction::make_stores_ack_and_waitack()
+{
+   for (auto&& store: m_store_ops)
+      store->set_ack();
+
+   if (!m_store_ops.empty())
+      emit_instruction(new WaitAck(0));
+
+   m_store_ops.clear();
 
    return true;
 }

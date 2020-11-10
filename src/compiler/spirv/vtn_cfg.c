@@ -255,6 +255,7 @@ vtn_cfg_handle_prepass_instruction(struct vtn_builder *b, SpvOp opcode,
    case SpvOpBranchConditional:
    case SpvOpSwitch:
    case SpvOpKill:
+   case SpvOpTerminateInvocation:
    case SpvOpReturn:
    case SpvOpReturnValue:
    case SpvOpUnreachable:
@@ -690,6 +691,10 @@ vtn_process_block(struct vtn_builder *b,
       block->branch_type = vtn_branch_type_discard;
       return NULL;
 
+   case SpvOpTerminateInvocation:
+      block->branch_type = vtn_branch_type_terminate;
+      return NULL;
+
    case SpvOpBranchConditional: {
       struct vtn_value *cond_val = vtn_untyped_value(b, block->branch[1]);
       vtn_fail_if(!cond_val->type ||
@@ -944,9 +949,17 @@ vtn_emit_branch(struct vtn_builder *b, enum vtn_branch_type branch_type,
       nir_jump(&b->nb, nir_jump_return);
       break;
    case vtn_branch_type_discard: {
+      nir_intrinsic_op op =
+         b->convert_discard_to_demote ? nir_intrinsic_demote : nir_intrinsic_discard;
       nir_intrinsic_instr *discard =
-         nir_intrinsic_instr_create(b->nb.shader, nir_intrinsic_discard);
+         nir_intrinsic_instr_create(b->nb.shader, op);
       nir_builder_instr_insert(&b->nb, &discard->instr);
+      break;
+   }
+   case vtn_branch_type_terminate: {
+      nir_intrinsic_instr *terminate =
+         nir_intrinsic_instr_create(b->nb.shader, nir_intrinsic_terminate);
+      nir_builder_instr_insert(&b->nb, &terminate->instr);
       break;
    }
    default:
@@ -971,10 +984,8 @@ vtn_switch_case_condition(struct vtn_builder *b, struct vtn_switch *swtch,
       return nir_inot(&b->nb, any);
    } else {
       nir_ssa_def *cond = nir_imm_false(&b->nb);
-      util_dynarray_foreach(&cse->values, uint64_t, val) {
-         nir_ssa_def *imm = nir_imm_intN_t(&b->nb, *val, sel->bit_size);
-         cond = nir_ior(&b->nb, cond, nir_ieq(&b->nb, sel, imm));
-      }
+      util_dynarray_foreach(&cse->values, uint64_t, val)
+         cond = nir_ior(&b->nb, cond, nir_ieq_imm(&b->nb, sel, *val));
       return cond;
    }
 }
@@ -1290,10 +1301,8 @@ vtn_emit_cf_func_unstructured(struct vtn_builder *b, struct vtn_function *func,
             }
 
             nir_ssa_def *cond = nir_imm_false(&b->nb);
-            util_dynarray_foreach(&cse->values, uint64_t, val) {
-               nir_ssa_def *imm = nir_imm_intN_t(&b->nb, *val, sel->bit_size);
-               cond = nir_ior(&b->nb, cond, nir_ieq(&b->nb, sel, imm));
-            }
+            util_dynarray_foreach(&cse->values, uint64_t, val)
+               cond = nir_ior(&b->nb, cond, nir_ieq_imm(&b->nb, sel, *val));
 
             /* block for the next check */
             nir_block *e = vtn_new_unstructured_block(b, func);
