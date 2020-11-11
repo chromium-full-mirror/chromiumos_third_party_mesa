@@ -235,6 +235,7 @@ with_gallium_virgl = gallium_drivers.contains('virgl')
 with_gallium_swr = gallium_drivers.contains('swr')
 with_gallium_lima = gallium_drivers.contains('lima')
 with_gallium_zink = gallium_drivers.contains('zink')
+with_gallium_d3d12 = gallium_drivers.contains('d3d12')
 
 with_gallium = gallium_drivers.length() != 0
 
@@ -273,7 +274,11 @@ with_amd_vk = _vulkan_drivers.contains('amd')
 with_freedreno_vk = _vulkan_drivers.contains('freedreno')
 with_swrast_vk = _vulkan_drivers.contains('swrast')
 with_freedreno_kgsl = get_option('freedreno-kgsl')
+with_broadcom_vk = _vulkan_drivers.contains('broadcom')
 with_any_vk = _vulkan_drivers.length() != 0
+
+with_any_broadcom = with_gallium_vc4 or with_gallium_v3d or with_broadcom_vk
+with_any_intel = with_dri_i965 or with_intel_vk or with_gallium_iris
 
 if with_swrast_vk and not with_gallium_softpipe
   error('swrast vulkan requires gallium swrast')
@@ -346,7 +351,9 @@ endif
 
 with_glx = get_option('glx')
 if with_glx == 'auto'
-  if with_dri
+  if with_platform_android
+    with_glx = 'disabled'
+  elif with_dri
     with_glx = 'dri'
   elif with_platform_haiku
     with_glx = 'disabled'
@@ -908,11 +915,14 @@ elif _shader_cache == 'false'
 endif
 if _shader_cache != 'disabled'
   if host_machine.system() == 'windows'
-    if _shader_cache == 'enabled'
+    if ['enabled', 'default-disabled'].contains(_shader_cache)
       error('Shader Cache does not currently work on Windows')
     endif
   else
     pre_args += '-DENABLE_SHADER_CACHE'
+    if _shader_cache == 'default-disabled'
+      pre_args += '-DSHADER_CACHE_DISABLE_BY_DEFAULT'
+    endif
     with_shader_cache = true
   endif
 endif
@@ -1361,7 +1371,8 @@ if dep_thread.found() and host_machine.system() != 'windows'
   endif
 endif
 if host_machine.system() != 'windows'
-  dep_expat = dependency('expat', fallback : ['expat', 'expat_dep'])
+  dep_expat = dependency('expat', fallback : ['expat', 'expat_dep'],
+                         required: not with_platform_android or with_any_broadcom or with_any_intel)
 else
   dep_expat = null_dep
 endif
@@ -1657,7 +1668,7 @@ elif _libunwind == 'false'
   _libunwind = 'disabled'
   warning('libunwind option "false" deprecated, please use "disabled" instead.')
 endif
-if _libunwind != 'disabled'
+if _libunwind != 'disabled' and not with_platform_android
   dep_unwind = dependency('libunwind', required : _libunwind == 'enabled')
   if dep_unwind.found()
     pre_args += '-DHAVE_LIBUNWIND'
@@ -1775,10 +1786,13 @@ if with_platform_x11
   if with_glx == 'dri'
     if with_dri_platform == 'drm'
       dep_dri2proto = dependency('dri2proto', version : '>= 2.8')
-      dep_xxf86vm = dependency('xxf86vm')
+      if with_glx_direct
+        dep_xxf86vm = dependency('xxf86vm')
+      endif
     endif
   endif
-  if (with_egl or (
+  if (with_egl or 
+      with_dri3 or (
       with_gallium_vdpau or with_gallium_xvmc or with_gallium_xa or
       with_gallium_omx != 'disabled'))
     dep_xcb_xfixes = dependency('xcb-xfixes')
@@ -1815,7 +1829,6 @@ endif
 # drop shared code unused by that specific driver (particularly
 # relevant for Vulkan drivers).
 if cc.has_link_argument('-Wl,--gc-sections')
-  add_project_arguments('-Wl,--gc-sections', language : ['c', 'cpp'])
   foreach a: ['-ffunction-sections', '-fdata-sections']
     if cc.has_argument(a)
       add_project_arguments(a, language : ['c', 'cpp'])
@@ -1843,7 +1856,9 @@ elif with_glx == 'dri'
     'xcb-glx >= 1.8.1']
   if with_dri_platform == 'drm'
     gl_priv_reqs += 'xcb-dri2 >= 1.8'
-    gl_priv_reqs += 'xxf86vm'
+    if with_glx_direct
+      gl_priv_reqs += 'xxf86vm'
+    endif
   endif
 endif
 if dep_libdrm.found()

@@ -210,11 +210,10 @@ bool FragmentShaderFromNir::do_allocate_reserved_registers()
    // handle system values
    if (m_sv_values.test(es_face) || m_need_back_color) {
       face_reg_index = m_reserved_registers++;
-      auto ffr = new GPRValue(face_reg_index,0);
-      ffr->set_as_input();
-      m_front_face_reg.reset(ffr);
+      m_front_face_reg = std::make_shared<GPRValue>(face_reg_index,0);
+      m_front_face_reg->set_as_input();
       sfn_log << SfnLog::io << "Set front_face register to " <<  *m_front_face_reg << "\n";
-      inject_register(ffr->sel(), ffr->chan(), m_front_face_reg, false);
+      inject_register(m_front_face_reg->sel(), m_front_face_reg->chan(), m_front_face_reg, false);
 
       m_shaderio.add_input(new ShaderInputSystemValue(TGSI_SEMANTIC_FACE, face_reg_index));
       load_front_face();
@@ -224,11 +223,9 @@ bool FragmentShaderFromNir::do_allocate_reserved_registers()
       if (face_reg_index < 0)
          face_reg_index = m_reserved_registers++;
 
-      auto smi = new GPRValue(face_reg_index,2);
-      smi->set_as_input();
-      m_sample_mask_reg.reset(smi);
+      m_sample_mask_reg = std::make_shared<GPRValue>(face_reg_index,2);
+      m_sample_mask_reg->set_as_input();
       sfn_log << SfnLog::io << "Set sample mask in register to " <<  *m_sample_mask_reg << "\n";
-      //inject_register(smi->sel(), smi->chan(), m_sample_mask_reg, false);
       sh_info().nsys_inputs = 1;
       m_shaderio.add_input(new ShaderInputSystemValue(TGSI_SEMANTIC_SAMPLEMASK, face_reg_index));
    }
@@ -238,9 +235,8 @@ bool FragmentShaderFromNir::do_allocate_reserved_registers()
       if (sample_id_index < 0)
          sample_id_index = m_reserved_registers++;
 
-      auto smi = new GPRValue(sample_id_index, 3);
-      smi->set_as_input();
-      m_sample_id_reg.reset(smi);
+      m_sample_id_reg = std::make_shared<GPRValue>(sample_id_index, 3);
+      m_sample_id_reg->set_as_input();
       sfn_log << SfnLog::io << "Set sample id register to " <<  *m_sample_id_reg << "\n";
       sh_info().nsys_inputs++;
       m_shaderio.add_input(new ShaderInputSystemValue(TGSI_SEMANTIC_SAMPLEID, sample_id_index));
@@ -717,7 +713,7 @@ bool FragmentShaderFromNir::load_interpolated_one_comp(GPRVector &dest,
 
 
       auto ir = new AluInstruction(op, dest[chan], i & 1 ? ip.j : ip.i,
-                                   PValue(new InlineConstValue(ALU_SRC_PARAM_BASE + io.lds_pos(), 0)),
+                                   PValue(new InlineConstValue(ALU_SRC_PARAM_BASE + io.lds_pos(), i)),
                                    i == 0  ? EmitInstruction::write : EmitInstruction::last);
       dest.pin_to_channel(chan);
 
@@ -732,7 +728,7 @@ bool FragmentShaderFromNir::load_interpolated_two_comp(GPRVector &dest, ShaderIn
 {
    AluInstruction *ir = nullptr;
    for (unsigned i = 0; i < 4 ; ++i) {
-      ir = new AluInstruction(op, dest[i], i & 1 ? ip.j : ip.i, PValue(new InlineConstValue(ALU_SRC_PARAM_BASE + io.lds_pos(), 0)),
+      ir = new AluInstruction(op, dest[i], i & 1 ? ip.j : ip.i, PValue(new InlineConstValue(ALU_SRC_PARAM_BASE + io.lds_pos(), i)),
                               (writemask & (1 << i)) ? EmitInstruction::write : EmitInstruction::empty);
       dest.pin_to_channel(i);
       ir->set_bank_swizzle(alu_vec_210);
@@ -749,7 +745,7 @@ bool FragmentShaderFromNir::load_interpolated_two_comp_for_one(GPRVector &dest,
    AluInstruction *ir = nullptr;
    for (int i = 0; i <  4 ; ++i) {
       ir = new AluInstruction(op, dest[i], i & 1 ? ip.j : ip.i,
-                                   PValue(new InlineConstValue(ALU_SRC_PARAM_BASE + io.lds_pos(), 0)),
+                                   PValue(new InlineConstValue(ALU_SRC_PARAM_BASE + io.lds_pos(), i)),
                                    i == comp ? EmitInstruction::write : EmitInstruction::empty);
       ir->set_bank_swizzle(alu_vec_210);
       dest.pin_to_channel(i);

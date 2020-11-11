@@ -79,6 +79,7 @@ static const driOptionDescription brw_driconf[] = {
       DRI_CONF_DISABLE_GLSL_LINE_CONTINUATIONS(false)
       DRI_CONF_DISABLE_BLEND_FUNC_EXTENDED(false)
       DRI_CONF_DUAL_COLOR_BLEND_BY_LOCATION(false)
+      DRI_CONF_ALLOW_EXTRA_PP_TOKENS(false)
       DRI_CONF_ALLOW_GLSL_EXTENSION_DIRECTIVE_MIDSHADER(false)
       DRI_CONF_ALLOW_GLSL_BUILTIN_VARIABLE_REDECLARATION(false)
       DRI_CONF_ALLOW_GLSL_CROSS_STAGE_INTERPOLATION_MISMATCH(false)
@@ -100,7 +101,7 @@ static const driOptionDescription brw_driconf[] = {
 };
 
 static char *
-brw_driconf_get_xml(const char *driver_name)
+brw_driconf_get_xml(UNUSED const char *driver_name)
 {
    return driGetOptionsXml(brw_driconf, ARRAY_SIZE(brw_driconf));
 }
@@ -879,7 +880,8 @@ intel_map_image(__DRIcontext *context, __DRIimage *image,
 }
 
 static void
-intel_unmap_image(__DRIcontext *context, __DRIimage *image, void *map_info)
+intel_unmap_image(UNUSED __DRIcontext *context, UNUSED __DRIimage *image,
+                  void *map_info)
 {
    struct brw_bo *bo = map_info;
 
@@ -2896,7 +2898,7 @@ intelAllocateBuffer(__DRIscreen *dri_screen,
 }
 
 static void
-intelReleaseBuffer(__DRIscreen *dri_screen, __DRIbuffer *buffer)
+intelReleaseBuffer(UNUSED __DRIscreen *dri_screen, __DRIbuffer *buffer)
 {
    struct intel_buffer *intelBuffer = (struct intel_buffer *) buffer;
 

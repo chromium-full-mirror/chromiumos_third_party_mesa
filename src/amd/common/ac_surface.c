@@ -127,11 +127,14 @@ ac_compute_dcc_retile_tile_indices(struct ac_addrlib *addrlib, const struct rade
                                    unsigned bpp, unsigned swizzle_mode, bool rb_aligned,
                                    bool pipe_aligned)
 {
-   struct dcc_retile_tile_key key = (struct dcc_retile_tile_key){.family = info->family,
-                                                                 .bpp = bpp,
-                                                                 .swizzle_mode = swizzle_mode,
-                                                                 .rb_aligned = rb_aligned,
-                                                                 .pipe_aligned = pipe_aligned};
+   struct dcc_retile_tile_key key;
+   memset(&key, 0, sizeof(key));
+
+   key.family = info->family;
+   key.bpp = bpp;
+   key.swizzle_mode = swizzle_mode;
+   key.rb_aligned = rb_aligned;
+   key.pipe_aligned = pipe_aligned;
 
    struct hash_entry *entry = _mesa_hash_table_search(addrlib->dcc_retile_tile_indices, &key);
    if (entry)
@@ -182,7 +185,7 @@ ac_compute_dcc_retile_tile_indices(struct ac_addrlib *addrlib, const struct rade
    if (!indices)
       return NULL;
 
-   ADDR2_COMPUTE_DCC_ADDRFROMCOORD_OUTPUT addrout = {};
+   ADDR2_COMPUTE_DCC_ADDRFROMCOORD_OUTPUT addrout = {0};
    addrout.size = sizeof(addrout);
 
    for (unsigned y = 0; y < h; ++y) {
@@ -1115,7 +1118,7 @@ static int gfx6_compute_surface(ADDR_HANDLE addrlib, const struct radeon_info *i
        !(surf->flags & RADEON_SURF_NO_FMASK)) {
       ADDR_COMPUTE_FMASK_INFO_INPUT fin = {0};
       ADDR_COMPUTE_FMASK_INFO_OUTPUT fout = {0};
-      ADDR_TILEINFO fmask_tile_info = {};
+      ADDR_TILEINFO fmask_tile_info = {0};
 
       fin.size = sizeof(fin);
       fout.size = sizeof(fout);
@@ -1362,7 +1365,7 @@ static int gfx9_compute_miptree(struct ac_addrlib *addrlib, const struct radeon_
                                 const struct ac_surf_config *config, struct radeon_surf *surf,
                                 bool compressed, ADDR2_COMPUTE_SURFACE_INFO_INPUT *in)
 {
-   ADDR2_MIP_INFO mip_info[RADEON_SURF_MAX_LEVELS] = {};
+   ADDR2_MIP_INFO mip_info[RADEON_SURF_MAX_LEVELS] = {0};
    ADDR2_COMPUTE_SURFACE_INFO_OUTPUT out = {0};
    ADDR_E_RETURNCODE ret;
 
@@ -1421,6 +1424,9 @@ static int gfx9_compute_miptree(struct ac_addrlib *addrlib, const struct radeon_
          surf->u.gfx9.pitch[i] = mip_info[i].pitch;
       }
    }
+
+   surf->u.gfx9.base_mip_width = mip_info[0].pitch;
+   surf->u.gfx9.base_mip_height = mip_info[0].height;
 
    if (in->flags.depth) {
       assert(in->swizzleMode != ADDR_SW_LINEAR);
@@ -1494,7 +1500,7 @@ static int gfx9_compute_miptree(struct ac_addrlib *addrlib, const struct radeon_
                                    !in->flags.metaPipeUnaligned))) {
          ADDR2_COMPUTE_DCCINFO_INPUT din = {0};
          ADDR2_COMPUTE_DCCINFO_OUTPUT dout = {0};
-         ADDR2_META_MIP_INFO meta_mip_info[RADEON_SURF_MAX_LEVELS] = {};
+         ADDR2_META_MIP_INFO meta_mip_info[RADEON_SURF_MAX_LEVELS] = {0};
 
          din.size = sizeof(ADDR2_COMPUTE_DCCINFO_INPUT);
          dout.size = sizeof(ADDR2_COMPUTE_DCCINFO_OUTPUT);

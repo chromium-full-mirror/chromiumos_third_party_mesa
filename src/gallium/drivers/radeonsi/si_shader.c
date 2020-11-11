@@ -289,8 +289,7 @@ static void declare_vb_descriptor_input_sgprs(struct si_shader_context *ctx)
    }
 }
 
-static void declare_vs_input_vgprs(struct si_shader_context *ctx, unsigned *num_prolog_vgprs,
-                                   bool ngg_cull_shader)
+static void declare_vs_input_vgprs(struct si_shader_context *ctx, unsigned *num_prolog_vgprs)
 {
    struct si_shader *shader = ctx->shader;
 
@@ -316,10 +315,6 @@ static void declare_vs_input_vgprs(struct si_shader_context *ctx, unsigned *num_
    }
 
    if (!shader->is_gs_copy_shader) {
-      if (shader->key.opt.ngg_culling && !ngg_cull_shader) {
-         ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_INT, &ctx->ngg_old_thread_id);
-      }
-
       /* Vertex load indices. */
       if (shader->selector->info.num_inputs) {
          ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_INT, &ctx->vertex_index0);
@@ -351,16 +346,12 @@ static void declare_vs_blit_inputs(struct si_shader_context *ctx, unsigned vs_bl
    }
 }
 
-static void declare_tes_input_vgprs(struct si_shader_context *ctx, bool ngg_cull_shader)
+static void declare_tes_input_vgprs(struct si_shader_context *ctx)
 {
    ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_FLOAT, &ctx->tes_u);
    ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_FLOAT, &ctx->tes_v);
    ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_INT, &ctx->tes_rel_patch_id);
    ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_INT, &ctx->args.tes_patch_id);
-
-   if (ctx->shader->key.opt.ngg_culling && !ngg_cull_shader) {
-      ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_INT, &ctx->ngg_old_thread_id);
-   }
 }
 
 enum
@@ -404,7 +395,7 @@ void si_create_function(struct si_shader_context *ctx, bool ngg_cull_shader)
          declare_vs_blit_inputs(ctx, shader->selector->info.base.vs.blit_sgprs_amd);
 
          /* VGPRs */
-         declare_vs_input_vgprs(ctx, &num_prolog_vgprs, ngg_cull_shader);
+         declare_vs_input_vgprs(ctx, &num_prolog_vgprs);
          break;
       }
 
@@ -423,7 +414,7 @@ void si_create_function(struct si_shader_context *ctx, bool ngg_cull_shader)
       }
 
       /* VGPRs */
-      declare_vs_input_vgprs(ctx, &num_prolog_vgprs, ngg_cull_shader);
+      declare_vs_input_vgprs(ctx, &num_prolog_vgprs);
 
       /* Return values */
       if (shader->key.opt.vs_as_prim_discard_cs) {
@@ -480,7 +471,7 @@ void si_create_function(struct si_shader_context *ctx, bool ngg_cull_shader)
       ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_INT, &ctx->args.tcs_rel_ids);
 
       if (ctx->stage == MESA_SHADER_VERTEX) {
-         declare_vs_input_vgprs(ctx, &num_prolog_vgprs, ngg_cull_shader);
+         declare_vs_input_vgprs(ctx, &num_prolog_vgprs);
 
          /* LS return values are inputs to the TCS main shader part. */
          for (i = 0; i < 8 + GFX9_TCS_NUM_USER_SGPR; i++)
@@ -548,9 +539,9 @@ void si_create_function(struct si_shader_context *ctx, bool ngg_cull_shader)
       ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_INT, &ctx->gs_vtx45_offset);
 
       if (ctx->stage == MESA_SHADER_VERTEX) {
-         declare_vs_input_vgprs(ctx, &num_prolog_vgprs, ngg_cull_shader);
+         declare_vs_input_vgprs(ctx, &num_prolog_vgprs);
       } else if (ctx->stage == MESA_SHADER_TESS_EVAL) {
-         declare_tes_input_vgprs(ctx, ngg_cull_shader);
+         declare_tes_input_vgprs(ctx);
       }
 
       if ((ctx->shader->key.as_es || ngg_cull_shader) &&
@@ -572,12 +563,12 @@ void si_create_function(struct si_shader_context *ctx, bool ngg_cull_shader)
             num_user_sgprs = GFX9_TESGS_NUM_USER_SGPR;
          }
 
-         /* The NGG cull shader has to return all 9 VGPRs + the old thread ID.
+         /* The NGG cull shader has to return all 9 VGPRs.
           *
           * The normal merged ESGS shader only has to return the 5 VGPRs
           * for the GS stage.
           */
-         num_vgprs = ngg_cull_shader ? 10 : 5;
+         num_vgprs = ngg_cull_shader ? 9 : 5;
 
          /* ES return values are inputs to GS. */
          for (i = 0; i < 8 + num_user_sgprs; i++)
@@ -604,7 +595,7 @@ void si_create_function(struct si_shader_context *ctx, bool ngg_cull_shader)
       }
 
       /* VGPRs */
-      declare_tes_input_vgprs(ctx, ngg_cull_shader);
+      declare_tes_input_vgprs(ctx);
       break;
 
    case MESA_SHADER_GEOMETRY:
@@ -999,8 +990,7 @@ static void si_calculate_max_simd_waves(struct si_shader *shader)
        */
       lds_per_wave = conf->lds_size * lds_increment + align(num_inputs * 48, lds_increment);
       break;
-   case MESA_SHADER_COMPUTE:
-      if (shader->selector) {
+   case MESA_SHADER_COMPUTE: {
          unsigned max_workgroup_size = si_get_max_workgroup_size(shader);
          lds_per_wave = (conf->lds_size * lds_increment) /
                         DIV_ROUND_UP(max_workgroup_size, sscreen->compute_wave_size);
@@ -1560,8 +1550,6 @@ static void si_get_vs_prolog_key(const struct si_shader_info *info, unsigned num
          !!(shader_out->key.opt.ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_TRI_LIST);
       key->vs_prolog.gs_fast_launch_tri_strip =
          !!(shader_out->key.opt.ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_TRI_STRIP);
-   } else {
-      key->vs_prolog.has_ngg_cull_inputs = !!shader_out->key.opt.ngg_culling;
    }
 
    if (shader_out->selector->info.stage == MESA_SHADER_TESS_CTRL) {
@@ -1602,7 +1590,9 @@ static bool si_should_optimize_less(struct ac_llvm_compiler *compiler,
    return sel->info.stage == MESA_SHADER_COMPUTE && sel->info.num_memory_stores > 1000;
 }
 
-static struct nir_shader *get_nir_shader(struct si_shader_selector *sel, bool *free_nir)
+static struct nir_shader *get_nir_shader(struct si_shader_selector *sel,
+                                         const struct si_shader_key *key,
+                                         bool *free_nir)
 {
    nir_shader *nir;
    *free_nir = false;
@@ -1622,7 +1612,59 @@ static struct nir_shader *get_nir_shader(struct si_shader_selector *sel, bool *f
       return NULL;
    }
 
-   NIR_PASS_V(nir, nir_lower_bool_to_int32);
+   if (key && key->opt.inline_uniforms) {
+      assert(*free_nir);
+
+      /* Most places use shader information from the default variant, not
+       * the optimized variant. These are the things that the driver looks at
+       * in optimized variants and the list of things that we need to do.
+       *
+       * The driver takes into account these things if they suddenly disappear
+       * from the shader code:
+       * - Register usage and code size decrease (obvious)
+       * - Eliminated PS system values are disabled by LLVM
+       *   (FragCoord, FrontFace, barycentrics)
+       * - VS/TES/GS outputs feeding PS are eliminated if outputs are undef.
+       *   (thanks to an LLVM pass in Mesa - TODO: move it to NIR)
+       *   The storage for eliminated outputs is also not allocated.
+       * - VS/TCS/TES/GS/PS input loads are eliminated (VS relies on DCE in LLVM)
+       * - TCS output stores are eliminated
+       *
+       * TODO: These are things the driver ignores in the final shader code
+       * and relies on the default shader info.
+       * - Other system values are not eliminated
+       * - PS.NUM_INTERP = bitcount64(inputs_read), renumber inputs
+       *   to remove holes
+       * - uses_discard - if it changed to false
+       * - writes_memory - if it changed to false
+       * - VS->TCS, VS->GS, TES->GS output stores for the former stage are not
+       *   eliminated
+       * - Eliminated VS/TCS/TES outputs are still allocated. (except when feeding PS)
+       *   GS outputs are eliminated except for the temporary LDS.
+       *   Clip distances, gl_PointSize, and PS outputs are eliminated based
+       *   on current states, so we don't care about the shader code.
+       *
+       * TODO: Merged shaders don't inline uniforms for the first stage.
+       * VS-GS: only GS inlines uniforms; VS-TCS: only TCS; TES-GS: only GS.
+       * (key == NULL for the first stage here)
+       *
+       * TODO: Compute shaders don't support inlinable uniforms, because they
+       * don't have shader variants.
+       *
+       * TODO: The driver uses a linear search to find a shader variant. This
+       * can be really slow if we get too many variants due to uniform inlining.
+       */
+      NIR_PASS_V(nir, nir_inline_uniforms,
+                 nir->info.num_inlinable_uniforms,
+                 key->opt.inlined_uniform_values,
+                 nir->info.inlinable_uniform_dw_offsets);
+
+      si_nir_opts(sel->screen, nir, true);
+
+      /* This must be done again. */
+      NIR_PASS_V(nir, nir_io_add_const_offset_to_base, nir_var_shader_in |
+                                                       nir_var_shader_out);
+   }
 
    return nir;
 }
@@ -1710,7 +1752,7 @@ static bool si_llvm_compile_shader(struct si_screen *sscreen, struct ac_llvm_com
          parts[3] = ctx.main_fn;
 
          /* VS as LS main part */
-         nir = get_nir_shader(ls, &free_nir);
+         nir = get_nir_shader(ls, NULL, &free_nir);
          struct si_shader shader_ls = {};
          shader_ls.selector = ls;
          shader_ls.key.as_ls = 1;
@@ -1772,7 +1814,7 @@ static bool si_llvm_compile_shader(struct si_screen *sscreen, struct ac_llvm_com
          gs_prolog = ctx.main_fn;
 
          /* ES main part */
-         nir = get_nir_shader(es, &free_nir);
+         nir = get_nir_shader(es, NULL, &free_nir);
          struct si_shader shader_es = {};
          shader_es.selector = es;
          shader_es.key.as_es = 1;
@@ -1862,7 +1904,7 @@ bool si_compile_shader(struct si_screen *sscreen, struct ac_llvm_compiler *compi
 {
    struct si_shader_selector *sel = shader->selector;
    bool free_nir;
-   struct nir_shader *nir = get_nir_shader(sel, &free_nir);
+   struct nir_shader *nir = get_nir_shader(sel, &shader->key, &free_nir);
 
    /* Dump NIR before doing NIR->LLVM conversion in case the
     * conversion fails. */

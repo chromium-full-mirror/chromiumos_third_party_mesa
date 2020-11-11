@@ -153,10 +153,11 @@ void
 iris_upload_ubo_ssbo_surf_state(struct iris_context *ice,
                                 struct pipe_shader_buffer *buf,
                                 struct iris_state_ref *surf_state,
-                                bool ssbo)
+                                isl_surf_usage_flags_t usage)
 {
    struct pipe_context *ctx = &ice->ctx;
    struct iris_screen *screen = (struct iris_screen *) ctx->screen;
+   bool ssbo = usage & ISL_SURF_USAGE_STORAGE_BIT;
 
    void *map =
       upload_state(ice->state.surface_uploader, surf_state,
@@ -170,14 +171,17 @@ iris_upload_ubo_ssbo_surf_state(struct iris_context *ice,
    struct iris_bo *surf_bo = iris_resource_bo(surf_state->res);
    surf_state->offset += iris_bo_offset_from_base_address(surf_bo);
 
+   const bool dataport = ssbo || !screen->compiler->indirect_ubos_use_sampler;
+
    isl_buffer_fill_state(&screen->isl_dev, map,
                          .address = res->bo->gtt_offset + res->offset +
                                     buf->buffer_offset,
                          .size_B = buf->buffer_size - res->offset,
-                         .format = ISL_FORMAT_RAW,
+                         .format = dataport ? ISL_FORMAT_RAW
+                                            : ISL_FORMAT_R32G32B32A32_FLOAT,
                          .swizzle = ISL_SWIZZLE_IDENTITY,
                          .stride_B = 1,
-                         .mocs = iris_mocs(res->bo, &screen->isl_dev));
+                         .mocs = iris_mocs(res->bo, &screen->isl_dev, usage));
 }
 
 static nir_ssa_def *
@@ -1832,7 +1836,8 @@ iris_update_pull_constant_descriptors(struct iris_context *ice,
       struct pipe_shader_buffer *cbuf = &shs->constbuf[i];
       struct iris_state_ref *surf_state = &shs->constbuf_surf_state[i];
       if (!surf_state->res && cbuf->buffer) {
-         iris_upload_ubo_ssbo_surf_state(ice, cbuf, surf_state, false);
+         iris_upload_ubo_ssbo_surf_state(ice, cbuf, surf_state,
+                                         ISL_SURF_USAGE_CONSTANT_BUFFER_BIT);
          any_new_descriptors = true;
       }
    }

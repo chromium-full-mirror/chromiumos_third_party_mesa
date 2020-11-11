@@ -34,6 +34,7 @@
 #include "radv_private.h"
 #include "radv_cs.h"
 #include "sid.h"
+#include "util/u_atomic.h"
 
 #define TIMESTAMP_NOT_READY UINT64_MAX
 
@@ -1133,7 +1134,7 @@ radv_query_pool_needs_gds(struct radv_device *device,
 	 * TODO: fix use of NGG GS and non-NGG GS inside the same begin/end
 	 * query.
 	 */
-	return device->physical_device->use_ngg_gs &&
+	return device->physical_device->use_ngg &&
 	       (pool->pipeline_stats_mask & VK_QUERY_PIPELINE_STATISTIC_GEOMETRY_SHADER_PRIMITIVES_BIT);
 }
 

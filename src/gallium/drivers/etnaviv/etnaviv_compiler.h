@@ -59,7 +59,6 @@ struct etna_compiler {
 /* compiler output per input/output */
 struct etna_shader_inout {
    int reg; /* native register */
-   struct tgsi_declaration_semantic semantic; /* tgsi semantic name and index */
    int slot; /* nir: gl_varying_slot or gl_vert_attrib */
    int num_components;
 };
@@ -72,11 +71,6 @@ struct etna_shader_io_file {
 /* shader object, for linking */
 struct etna_shader_variant {
    uint32_t id; /* for debug */
-
-   /* index into outputs (for linking) - only for TGSI compiler */
-   int output_count_per_semantic[TGSI_SEMANTIC_COUNT];
-   struct etna_shader_inout * *output_per_semantic_list; /* list of pointers to outputs */
-   struct etna_shader_inout **output_per_semantic[TGSI_SEMANTIC_COUNT];
 
    /* shader variants form a linked list */
    struct etna_shader_variant *next;
@@ -133,6 +127,9 @@ struct etna_shader_variant {
 
    /* shader is larger than GPU instruction limit, thus needs icache */
    bool needs_icache;
+
+   /* shader uses pixel kill/discard */
+   bool uses_discard;
 };
 
 struct etna_varying {
@@ -173,15 +170,9 @@ etna_destroy_shader(struct etna_shader_variant *shader);
 bool
 etna_compile_shader_nir(struct etna_shader_variant *shader);
 
-void
-etna_dump_shader_nir(const struct etna_shader_variant *shader);
-
 bool
 etna_link_shader_nir(struct etna_shader_link_info *info,
                      const struct etna_shader_variant *vs,
                      const struct etna_shader_variant *fs);
-
-void
-etna_destroy_shader_nir(struct etna_shader_variant *shader);
 
 #endif

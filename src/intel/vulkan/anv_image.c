@@ -420,25 +420,22 @@ add_aux_surface_if_supported(struct anv_device *device,
           * TODO: This is a heuristic trade-off; we haven't tuned it at all.
           */
          assert(device->info.gen >= 12);
-         /* The experiment showed that running the benchmark with HIZ performs
-          * better than HIZ_CCS and HIZ_CCS_WT. Because the benchmark uses the
-          * depth pass with D16_UNORM surfaces format which fills the L3 cache
-          * and next pass doesn't make use of it where we end up clearing cache
-          * which results in performance regression.
-          *
-          * In order to avoid perf regression, disable HIZ_CCS_WT compression
-          * for D16_UNORM surface format on Fallout4 via driconf option.
-          */
-         if (plane_format.isl_format == ISL_FORMAT_R16_UNORM &&
-             device->physical->instance->disable_d16unorm_compression)
-            image->planes[plane].aux_usage = ISL_AUX_USAGE_HIZ;
-         else
-            image->planes[plane].aux_usage = ISL_AUX_USAGE_HIZ_CCS_WT;
+         image->planes[plane].aux_usage = ISL_AUX_USAGE_HIZ_CCS_WT;
       } else {
          assert(device->info.gen >= 12);
          image->planes[plane].aux_usage = ISL_AUX_USAGE_HIZ_CCS;
       }
       add_surface(image, &image->planes[plane].aux_surface, plane);
+   } else if (aspect == VK_IMAGE_ASPECT_STENCIL_BIT) {
+
+      if (INTEL_DEBUG & DEBUG_NO_RBC)
+         return VK_SUCCESS;
+
+      if (!isl_surf_supports_ccs(&device->isl_dev,
+                                 &image->planes[plane].surface.isl))
+         return VK_SUCCESS;
+
+      image->planes[plane].aux_usage = ISL_AUX_USAGE_STC_CCS;
    } else if ((aspect & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) && image->samples == 1) {
       if (image->n_planes != 1) {
          /* Multiplanar images seem to hit a sampler bug with CCS and R16G16
@@ -1372,9 +1369,6 @@ anv_layout_to_aux_state(const struct gen_device_info * const devinfo,
    /* All images that use an auxiliary surface are required to be tiled. */
    assert(image->planes[plane].surface.isl.tiling != ISL_TILING_LINEAR);
 
-   /* Stencil has no aux */
-   assert(aspect != VK_IMAGE_ASPECT_STENCIL_BIT);
-
    /* Handle a few special cases */
    switch (layout) {
    /* Invalid layouts */
@@ -1473,6 +1467,7 @@ anv_layout_to_aux_state(const struct gen_device_info * const devinfo,
 
       case ISL_AUX_USAGE_CCS_E:
       case ISL_AUX_USAGE_MCS:
+      case ISL_AUX_USAGE_STC_CCS:
          break;
 
       default:
@@ -1508,6 +1503,10 @@ anv_layout_to_aux_state(const struct gen_device_info * const devinfo,
       } else {
          return ISL_AUX_STATE_PASS_THROUGH;
       }
+
+   case ISL_AUX_USAGE_STC_CCS:
+      assert(aux_supported);
+      return ISL_AUX_STATE_COMPRESSED_NO_CLEAR;
 
    default:
       unreachable("Unsupported aux usage");
@@ -1767,7 +1766,7 @@ anv_image_fill_surface_state(struct anv_device *device,
                             .format = ISL_FORMAT_RAW,
                             .swizzle = ISL_SWIZZLE_IDENTITY,
                             .stride_B = 1,
-                            .mocs = anv_mocs_for_bo(device, address.bo));
+                            .mocs = anv_mocs(device, address.bo, view_usage));
       state_inout->address = address,
       state_inout->aux_address = ANV_NULL_ADDRESS;
       state_inout->clear_address = ANV_NULL_ADDRESS;
@@ -1843,7 +1842,7 @@ anv_image_fill_surface_state(struct anv_device *device,
       state_inout->aux_address = aux_address;
 
       struct anv_address clear_address = ANV_NULL_ADDRESS;
-      if (device->info.gen >= 10 && aux_usage != ISL_AUX_USAGE_NONE) {
+      if (device->info.gen >= 10 && isl_aux_usage_has_fast_clears(aux_usage)) {
          if (aspect == VK_IMAGE_ASPECT_DEPTH_BIT) {
             clear_address = (struct anv_address) {
                .bo = device->hiz_clear_bo,
@@ -1865,8 +1864,8 @@ anv_image_fill_surface_state(struct anv_device *device,
                           .aux_address = anv_address_physical(aux_address),
                           .clear_address = anv_address_physical(clear_address),
                           .use_clear_address = !anv_address_is_null(clear_address),
-                          .mocs = anv_mocs_for_bo(device,
-                                                  state_inout->address.bo),
+                          .mocs = anv_mocs(device, state_inout->address.bo,
+                                           view_usage),
                           .x_offset_sa = tile_x_sa,
                           .y_offset_sa = tile_y_sa);
 
@@ -2239,7 +2238,7 @@ anv_CreateBufferView(VkDevice _device,
       view->surface_state = alloc_surface_state(device);
 
       anv_fill_buffer_surface_state(device, view->surface_state,
-                                    view->format,
+                                    view->format, ISL_SURF_USAGE_TEXTURE_BIT,
                                     view->address, view->range, format_bs);
    } else {
       view->surface_state = (struct anv_state){ 0 };
@@ -2256,14 +2255,14 @@ anv_CreateBufferView(VkDevice _device,
          ISL_FORMAT_RAW;
 
       anv_fill_buffer_surface_state(device, view->storage_surface_state,
-                                    storage_format,
+                                    storage_format, ISL_SURF_USAGE_STORAGE_BIT,
                                     view->address, view->range,
                                     (storage_format == ISL_FORMAT_RAW ? 1 :
                                      isl_format_get_layout(storage_format)->bpb / 8));
 
       /* Write-only accesses should use the original format. */
       anv_fill_buffer_surface_state(device, view->writeonly_storage_surface_state,
-                                    view->format,
+                                    view->format, ISL_SURF_USAGE_STORAGE_BIT,
                                     view->address, view->range,
                                     isl_format_get_layout(view->format)->bpb / 8);
 

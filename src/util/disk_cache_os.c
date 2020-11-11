@@ -28,6 +28,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <fcntl.h>
 
 #include "zlib.h"
 
@@ -52,8 +56,7 @@ write_all(int fd, const void *buf, size_t count);
  * of the data written to disk.
  */
 static size_t
-deflate_and_write_to_disk(const void *in_data, size_t in_data_size, int dest,
-                          const char *filename)
+deflate_and_write_to_disk(const void *in_data, size_t in_data_size, int dest)
 {
 #ifdef HAVE_ZSTD
    /* from the zstd docs (https://facebook.github.io/zstd/zstd_manual.html):
@@ -765,7 +768,7 @@ disk_cache_write_item_to_disk(struct disk_cache_put_job *dc_job,
     * perform an atomic increment of the total cache size.
     */
    size_t file_size = deflate_and_write_to_disk(dc_job->data, dc_job->size,
-                                                fd, filename_tmp);
+                                                fd);
    if (file_size == 0) {
       unlink(filename_tmp);
       goto done;
@@ -874,7 +877,12 @@ disk_cache_enabled()
       return false;
 
    /* At user request, disable shader cache entirely. */
-   if (env_var_as_boolean("MESA_GLSL_CACHE_DISABLE", false))
+#ifdef SHADER_CACHE_DISABLE_BY_DEFAULT
+   bool disable_by_default = true;
+#else
+   bool disable_by_default = false;
+#endif
+   if (env_var_as_boolean("MESA_GLSL_CACHE_DISABLE", disable_by_default))
       return false;
 
    return true;

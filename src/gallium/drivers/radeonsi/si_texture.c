@@ -589,6 +589,7 @@ static bool si_has_displayable_dcc(struct si_texture *tex)
 
 static bool si_resource_get_param(struct pipe_screen *screen, struct pipe_context *context,
                                   struct pipe_resource *resource, unsigned plane, unsigned layer,
+                                  unsigned level,
                                   enum pipe_resource_param param, unsigned handle_usage,
                                   uint64_t *value)
 {
@@ -644,6 +645,8 @@ static bool si_resource_get_param(struct pipe_screen *screen, struct pipe_contex
 
       *value = whandle.handle;
       return true;
+   case PIPE_RESOURCE_PARAM_LAYER_STRIDE:
+      break;
    }
    return false;
 }
@@ -654,12 +657,12 @@ static void si_texture_get_info(struct pipe_screen *screen, struct pipe_resource
    uint64_t value;
 
    if (pstride) {
-      si_resource_get_param(screen, NULL, resource, 0, 0, PIPE_RESOURCE_PARAM_STRIDE, 0, &value);
+      si_resource_get_param(screen, NULL, resource, 0, 0, 0, PIPE_RESOURCE_PARAM_STRIDE, 0, &value);
       *pstride = value;
    }
 
    if (poffset) {
-      si_resource_get_param(screen, NULL, resource, 0, 0, PIPE_RESOURCE_PARAM_OFFSET, 0, &value);
+      si_resource_get_param(screen, NULL, resource, 0, 0, 0, PIPE_RESOURCE_PARAM_OFFSET, 0, &value);
       *poffset = value;
    }
 }
@@ -1437,6 +1440,8 @@ static struct pipe_resource *si_texture_from_winsys_buffer(struct si_screen *ssc
    tex->buffer.b.is_shared = true;
    tex->buffer.external_usage = usage;
    tex->num_planes = 1;
+   if (tex->buffer.flags & RADEON_FLAG_ENCRYPTED)
+      tex->buffer.b.b.bind |= PIPE_BIND_PROTECTED;
 
    /* Account for multiple planes with lowered yuv import. */
    struct pipe_resource *next_plane = tex->buffer.b.b.next;

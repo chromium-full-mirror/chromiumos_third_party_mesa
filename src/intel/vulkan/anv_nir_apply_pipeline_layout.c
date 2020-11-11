@@ -262,7 +262,7 @@ try_lower_direct_buffer_intrinsic(nir_intrinsic_instr *intrin, bool is_atomic,
    nir_builder *b = &state->builder;
 
    nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
-   if (deref->mode != nir_var_mem_ssbo)
+   if (!nir_deref_mode_is(deref, nir_var_mem_ssbo))
       return false;
 
    /* 64-bit atomics only support A64 messages so we can't lower them to the
@@ -637,7 +637,7 @@ lower_load_vulkan_descriptor(nir_intrinsic_instr *intrin,
          nir_builder_instr_insert(b, &dyn_load->instr);
 
          nir_ssa_def *dynamic_offset =
-            nir_bcsel(b, nir_ieq(b, dyn_offset_base, nir_imm_int(b, 0xff)),
+            nir_bcsel(b, nir_ieq_imm(b, dyn_offset_base, 0xff),
                          nir_imm_int(b, 0), &dyn_load->dest.ssa);
 
          switch (state->ssbo_addr_format) {

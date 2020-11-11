@@ -27,16 +27,14 @@
 #ifndef FREEDRENO_CONTEXT_H_
 #define FREEDRENO_CONTEXT_H_
 
-#include <libsync.h>
-
 #include "pipe/p_context.h"
 #include "indices/u_primconvert.h"
 #include "util/u_blitter.h"
+#include "util/libsync.h"
 #include "util/list.h"
 #include "util/slab.h"
 #include "util/u_string.h"
 
-#include "freedreno_batch.h"
 #include "freedreno_screen.h"
 #include "freedreno_gmem.h"
 #include "freedreno_util.h"
@@ -44,6 +42,7 @@
 #define BORDER_COLOR_UPLOAD_SIZE (2 * PIPE_MAX_SAMPLERS * BORDERCOLOR_SIZE)
 
 struct fd_vertex_stateobj;
+struct fd_batch;
 
 struct fd_texture_stateobj {
 	struct pipe_sampler_view *textures[PIPE_MAX_SAMPLERS];
@@ -165,6 +164,28 @@ enum fd_dirty_shader_state {
 	FD_DIRTY_SHADER_IMAGE = BIT(4),
 };
 
+/* Bitmask of stages in rendering that a particular query is active.
+ * Queries will be automatically started/stopped (generating additional
+ * fd_hw_sample_period's) on entrance/exit from stages that are
+ * applicable to the query.
+ *
+ * NOTE: set the stage to NULL at end of IB to ensure no query is still
+ * active.  Things aren't going to work out the way you want if a query
+ * is active across IB's (or between tile IB and draw IB)
+ */
+enum fd_render_stage {
+	FD_STAGE_NULL     = 0x00,
+	FD_STAGE_DRAW     = 0x01,
+	FD_STAGE_CLEAR    = 0x02,
+	/* used for driver internal draws (ie. util_blitter_blit()): */
+	FD_STAGE_BLIT     = 0x04,
+	FD_STAGE_ALL      = 0xff,
+};
+
+#define MAX_HW_SAMPLE_PROVIDERS 7
+struct fd_hw_sample_provider;
+struct fd_hw_sample;
+
 struct fd_context {
 	struct pipe_context base;
 
@@ -283,6 +304,9 @@ struct fd_context {
 	 * gpu.
 	 */
 	uint32_t context_reset_count, global_reset_count;
+
+	/* Context sequence #, used for batch-cache key: */
+	uint16_t seqno;
 
 	/* Are we in process of shadowing a resource? Used to detect recursion
 	 * in transfer_map, and skip unneeded synchronization.
@@ -438,24 +462,6 @@ fd_context(struct pipe_context *pctx)
 	return (struct fd_context *)pctx;
 }
 
-static inline void
-fd_context_assert_locked(struct fd_context *ctx)
-{
-	fd_screen_assert_locked(ctx->screen);
-}
-
-static inline void
-fd_context_lock(struct fd_context *ctx)
-{
-	fd_screen_lock(ctx->screen);
-}
-
-static inline void
-fd_context_unlock(struct fd_context *ctx)
-{
-	fd_screen_unlock(ctx->screen);
-}
-
 /* mark all state dirty: */
 static inline void
 fd_context_all_dirty(struct fd_context *ctx)
@@ -495,59 +501,10 @@ fd_supported_prim(struct fd_context *ctx, unsigned prim)
 	return (1 << prim) & ctx->primtype_mask;
 }
 
-/**
- * If we have a pending fence_server_sync() (GPU side sync), flush now.
- * The alternative to try to track this with batch dependencies gets
- * hairy quickly.
- *
- * Call this before switching to a different batch, to handle this case.
- */
-static inline void
-fd_context_switch_from(struct fd_context *ctx)
-{
-	if (ctx->batch && (ctx->batch->in_fence_fd != -1))
-		fd_batch_flush(ctx->batch);
-}
-
-/**
- * If there is a pending fence-fd that we need to sync on, this will
- * transfer the reference to the next batch we are going to render
- * to.
- */
-static inline void
-fd_context_switch_to(struct fd_context *ctx, struct fd_batch *batch)
-{
-	if (ctx->in_fence_fd != -1) {
-		sync_accumulate("freedreno", &batch->in_fence_fd, ctx->in_fence_fd);
-		close(ctx->in_fence_fd);
-		ctx->in_fence_fd = -1;
-	}
-}
-
-static inline struct fd_batch *
-fd_context_batch(struct fd_context *ctx)
-{
-	if (unlikely(!ctx->batch)) {
-		struct fd_batch *batch =
-			fd_batch_from_fb(&ctx->screen->batch_cache, ctx, &ctx->framebuffer);
-		util_copy_framebuffer_state(&batch->framebuffer, &ctx->framebuffer);
-		ctx->batch = batch;
-		fd_context_all_dirty(ctx);
-	}
-	fd_context_switch_to(ctx, ctx->batch);
-	return ctx->batch;
-}
-
-static inline void
-fd_batch_set_stage(struct fd_batch *batch, enum fd_render_stage stage)
-{
-	struct fd_context *ctx = batch->ctx;
-
-	if (ctx->query_set_stage)
-		ctx->query_set_stage(batch, stage);
-
-	batch->stage = stage;
-}
+void fd_context_switch_from(struct fd_context *ctx);
+void fd_context_switch_to(struct fd_context *ctx, struct fd_batch *batch);
+struct fd_batch * fd_context_batch(struct fd_context *ctx);
+struct fd_batch * fd_context_batch_locked(struct fd_context *ctx);
 
 void fd_context_setup_common_vbos(struct fd_context *ctx);
 void fd_context_cleanup_common_vbos(struct fd_context *ctx);

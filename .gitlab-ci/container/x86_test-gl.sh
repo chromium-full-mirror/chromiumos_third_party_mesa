@@ -42,11 +42,17 @@ apt-get install -y --no-remove \
       libclang-cpp10 \
       libxcb-shm0 \
       ocl-icd-libopencl1 \
-      spirv-tools \
+      python3-lxml \
+      python3-simplejson \
       $STABLE_EPHEMERAL
 
 
 . .gitlab-ci/container/container_pre_build.sh
+
+
+############### Build spirv-tools (debian too old)
+
+. .gitlab-ci/build-spirv-tools.sh
 
 ############### Build libclc
 
@@ -58,11 +64,12 @@ apt-get install -y --no-remove \
 
 ############### Build piglit
 
-. .gitlab-ci/build-piglit.sh
+INCLUDE_OPENCL_TESTS=1 . .gitlab-ci/build-piglit.sh
 
-############### Build dEQP runner
-
-. .gitlab-ci/build-cts-runner.sh
+############### Build dEQP runner (and install rust temporarily for it)
+. .gitlab-ci/build-rust.sh
+. .gitlab-ci/build-deqp-runner.sh
+rm -rf /root/.rustup /root/.cargo
 
 ############### Build dEQP GL
 

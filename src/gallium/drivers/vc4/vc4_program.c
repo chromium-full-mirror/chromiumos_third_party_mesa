@@ -1803,11 +1803,6 @@ ntq_emit_intrinsic(struct vc4_compile *c, nir_intrinsic_instr *instr)
                                            0));
                 break;
 
-        case nir_intrinsic_load_alpha_ref_float:
-                ntq_store_dest(c, &instr->dest, 0,
-                               qir_uniform(c, QUNIFORM_ALPHA_REF, 0));
-                break;
-
         case nir_intrinsic_load_sample_mask_in:
                 ntq_store_dest(c, &instr->dest, 0,
                                qir_uniform(c, QUNIFORM_SAMPLE_MASK, 0));
@@ -2191,6 +2186,9 @@ static const nir_shader_compiler_options nir_options = {
         .lower_negate = true,
         .lower_rotate = true,
         .lower_to_scalar = true,
+        .lower_umax = true,
+        .lower_umin = true,
+        .lower_isign = true,
         .max_unroll_iterations = 32,
 };
 
@@ -2253,13 +2251,6 @@ vc4_shader_ntq(struct vc4_context *vc4, enum qstage stage,
         c->s = nir_shader_clone(c, key->shader_state->base.ir.nir);
 
         if (stage == QSTAGE_FRAG) {
-                if (c->fs_key->alpha_test_func != COMPARE_FUNC_ALWAYS) {
-                        NIR_PASS_V(c->s, nir_lower_alpha_test,
-                                   c->fs_key->alpha_test_func,
-                                   c->fs_key->sample_alpha_to_one &&
-                                   c->fs_key->msaa,
-                                   NULL);
-                }
                 NIR_PASS_V(c->s, vc4_nir_lower_blend, c);
         }
 
@@ -2471,7 +2462,8 @@ vc4_shader_state_create(struct pipe_context *pctx,
         if (s->info.stage == MESA_SHADER_VERTEX)
                 NIR_PASS_V(s, nir_lower_point_size, 1.0f, 0.0f);
 
-        NIR_PASS_V(s, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
+        NIR_PASS_V(s, nir_lower_io,
+                   nir_var_shader_in | nir_var_shader_out | nir_var_uniform,
                    type_size, (nir_lower_io_options)0);
 
         NIR_PASS_V(s, nir_lower_regs_to_ssa);

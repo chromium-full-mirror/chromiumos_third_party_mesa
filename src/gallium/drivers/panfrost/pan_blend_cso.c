@@ -67,33 +67,44 @@
  * tracking paths. If the cache hits, boom, done. */
 
 struct panfrost_blend_shader *
-panfrost_get_blend_shader(
-        struct panfrost_context *ctx,
-        struct panfrost_blend_state *blend,
-        enum pipe_format fmt,
-        unsigned rt)
+panfrost_get_blend_shader(struct panfrost_context *ctx,
+                          struct panfrost_blend_state *blend,
+                          enum pipe_format fmt,
+                          unsigned rt,
+                          const float *constants)
 {
         /* Prevent NULL collision issues.. */
         assert(fmt != 0);
 
         /* Check the cache. Key by the RT and format */
-        struct hash_table_u64 *shaders = blend->rt[rt].shaders;
-        unsigned key = (fmt << 3) | rt;
+        struct hash_table *shaders = ctx->blend_shaders;
+        struct panfrost_blend_shader_key key = {
+                .rt = rt,
+                .format = fmt,
+                .has_constants = constants != NULL,
+                .logicop_enable = blend->base.logicop_enable,
+        };
 
-        struct panfrost_blend_shader *shader =
-                _mesa_hash_table_u64_search(shaders, key);
+        if (blend->base.logicop_enable) {
+                key.logicop_func = blend->base.logicop_func;
+        } else {
+                unsigned idx = blend->base.independent_blend_enable ? rt : 0;
 
-        if (shader)
-                return shader;
+                if (blend->base.rt[idx].blend_enable)
+                        key.equation = blend->base.rt[idx];
+        }
 
-        /* Cache miss. Build one instead, cache it, and go */
+        struct hash_entry *he = _mesa_hash_table_search(shaders, &key);
+        struct panfrost_blend_shader *shader = he ? he->data : NULL;
 
-        struct panfrost_blend_shader generated =
-                panfrost_compile_blend_shader(ctx, &blend->base, fmt, rt);
+        if (!shader) {
+                /* Cache miss. Build one instead, cache it, and go */
+                shader = panfrost_create_blend_shader(ctx, blend, &key);
+                _mesa_hash_table_insert(shaders, &shader->key, shader);
+        }
 
-        shader = mem_dup(&generated, sizeof(generated));
-        _mesa_hash_table_u64_insert(shaders, key, shader);
-        return  shader;
+        panfrost_compile_blend_shader(shader, constants);
+        return shader;
 }
 
 /* Create a blend CSO. Essentially, try to compile a fixed-function
@@ -117,7 +128,6 @@ panfrost_create_blend_state(struct pipe_context *pipe,
                 struct pipe_rt_blend_state pipe = blend->rt[g];
 
                 struct panfrost_blend_rt *rt = &so->rt[c];
-                rt->shaders = _mesa_hash_table_u64_create(so);
 
                 /* Logic ops are always shader */
                 if (blend->logicop_enable) {
@@ -125,11 +135,9 @@ panfrost_create_blend_state(struct pipe_context *pipe,
                         continue;
                 }
 
+                rt->constant_mask = panfrost_blend_constant_mask(&pipe);
                 rt->has_fixed_function =
-                                panfrost_make_fixed_blend_mode(
-                                        pipe,
-                                        &rt->equation,
-                                        &rt->constant_mask);
+                        panfrost_make_fixed_blend_mode(pipe, &rt->equation);
 
                 /* v6 doesn't support blend constants in FF blend equations. */
                 if (rt->has_fixed_function && version == 6 && rt->constant_mask)
@@ -165,23 +173,10 @@ panfrost_bind_blend_state(struct pipe_context *pipe,
 }
 
 static void
-panfrost_delete_blend_shader(struct hash_entry *entry)
-{
-        struct panfrost_blend_shader *shader = (struct panfrost_blend_shader *)entry->data;
-        free(shader->buffer);
-        free(shader);
-}
-
-static void
 panfrost_delete_blend_state(struct pipe_context *pipe,
                             void *cso)
 {
         struct panfrost_blend_state *blend = (struct panfrost_blend_state *) cso;
-
-        for (unsigned c = 0; c < PIPE_MAX_COLOR_BUFS; ++c) {
-                struct panfrost_blend_rt *rt = &blend->rt[c];
-                _mesa_hash_table_u64_clear(rt->shaders, panfrost_delete_blend_shader);
-        }
         ralloc_free(blend);
 }
 
@@ -260,7 +255,10 @@ panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rti, struc
         }
 
         /* Otherwise, we need to grab a shader */
-        struct panfrost_blend_shader *shader = panfrost_get_blend_shader(ctx, blend, fmt, rti);
+        struct panfrost_blend_shader *shader =
+                panfrost_get_blend_shader(ctx, blend, fmt, rti,
+                                          rt->constant_mask ?
+                                          ctx->blend_color.color : NULL);
 
         /* Upload the shader, sharing a BO */
         if (!(*bo)) {
@@ -274,22 +272,14 @@ panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rti, struc
         /* Size check */
         assert((*shader_offset + shader->size) < 4096);
 
-        memcpy((*bo)->cpu + *shader_offset, shader->buffer, shader->size);
-
-        if (shader->patch_index) {
-                /* We have to specialize the blend shader to use constants, so
-                 * patch in the current constants */
-
-                float *patch = (float *) ((*bo)->cpu + *shader_offset + shader->patch_index);
-                memcpy(patch, ctx->blend_color.color, sizeof(float) * 4);
-        }
+        memcpy((*bo)->ptr.cpu + *shader_offset, shader->buffer, shader->size);
 
         struct panfrost_blend_final final = {
                 .is_shader = true,
                 .shader = {
                         .work_count = shader->work_count,
                         .first_tag = shader->first_tag,
-                        .gpu = (*bo)->gpu + *shader_offset,
+                        .gpu = (*bo)->ptr.gpu + *shader_offset,
                 },
                 .load_dest = rt->load_dest,
         };

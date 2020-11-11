@@ -235,6 +235,7 @@ static void
 emit_setup(struct fd_batch *batch)
 {
 	struct fd_ringbuffer *ring = batch->draw;
+	struct fd_screen *screen = batch->ctx->screen;
 
 	fd6_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
 	fd6_event_write(batch, ring, PC_CCU_FLUSH_DEPTH_TS, true);
@@ -244,7 +245,7 @@ emit_setup(struct fd_batch *batch)
 	/* normal BLIT_OP_SCALE operation needs bypass RB_CCU_CNTL */
 	OUT_WFI5(ring);
 	OUT_PKT4(ring, REG_A6XX_RB_CCU_CNTL, 1);
-	OUT_RING(ring, fd6_context(batch->ctx)->magic.RB_CCU_CNTL_bypass);
+	OUT_RING(ring, A6XX_RB_CCU_CNTL_OFFSET(screen->info.a6xx.ccu_offset_bypass));
 }
 
 static void
@@ -420,7 +421,7 @@ emit_blit_buffer(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		OUT_WFI5(ring);
 
 		OUT_PKT4(ring, REG_A6XX_RB_UNKNOWN_8E04, 1);
-		OUT_RING(ring, fd6_context(ctx)->magic.RB_UNKNOWN_8E04_blit);
+		OUT_RING(ring, ctx->screen->info.a6xx.magic.RB_UNKNOWN_8E04_blit);
 
 		OUT_PKT7(ring, CP_BLIT, 1);
 		OUT_RING(ring, CP_BLIT_0_OP(BLIT_OP_SCALE));
@@ -514,7 +515,7 @@ fd6_clear_ubwc(struct fd_batch *batch, struct fd_resource *rsc)
 		OUT_WFI5(ring);
 
 		OUT_PKT4(ring, REG_A6XX_RB_UNKNOWN_8E04, 1);
-		OUT_RING(ring, fd6_context(batch->ctx)->magic.RB_UNKNOWN_8E04_blit);
+		OUT_RING(ring, batch->ctx->screen->info.a6xx.magic.RB_UNKNOWN_8E04_blit);
 
 		OUT_PKT7(ring, CP_BLIT, 1);
 		OUT_RING(ring, CP_BLIT_0_OP(BLIT_OP_SCALE));
@@ -685,7 +686,7 @@ emit_blit_texture(struct fd_context *ctx,
 		OUT_WFI5(ring);
 
 		OUT_PKT4(ring, REG_A6XX_RB_UNKNOWN_8E04, 1);
-		OUT_RING(ring, fd6_context(ctx)->magic.RB_UNKNOWN_8E04_blit);
+		OUT_RING(ring, ctx->screen->info.a6xx.magic.RB_UNKNOWN_8E04_blit);
 
 		OUT_PKT7(ring, CP_BLIT, 1);
 		OUT_RING(ring, CP_BLIT_0_OP(BLIT_OP_SCALE));
@@ -776,7 +777,7 @@ fd6_clear_surface(struct fd_context *ctx,
 		OUT_WFI5(ring);
 
 		OUT_PKT4(ring, REG_A6XX_RB_UNKNOWN_8E04, 1);
-		OUT_RING(ring, fd6_context(ctx)->magic.RB_UNKNOWN_8E04_blit);
+		OUT_RING(ring, ctx->screen->info.a6xx.magic.RB_UNKNOWN_8E04_blit);
 
 		OUT_PKT7(ring, CP_BLIT, 1);
 		OUT_RING(ring, CP_BLIT_0_OP(BLIT_OP_SCALE));
@@ -806,6 +807,9 @@ handle_rgba_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
 	fd_batch_resource_write(batch, fd_resource(info->dst.resource));
 
 	fd_screen_unlock(ctx->screen);
+
+	bool ret = fd_batch_lock_submit(batch);
+	assert(ret);
 
 	/* Clearing last_fence must come after the batch dependency tracking
 	 * (resource_read()/resource_write()), as that can trigger a flush,
@@ -839,6 +843,8 @@ handle_rgba_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
 	fd6_event_write(batch, batch->draw, PC_CCU_FLUSH_DEPTH_TS, true);
 	fd6_event_write(batch, batch->draw, CACHE_FLUSH_TS, true);
 	fd6_cache_inv(batch, batch->draw);
+
+	fd_batch_unlock_submit(batch);
 
 	fd_resource(info->dst.resource)->valid = true;
 	batch->needs_flush = true;

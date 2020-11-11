@@ -82,7 +82,7 @@ pan_resource(struct pipe_resource *p)
         return (struct panfrost_resource *)p;
 }
 
-struct panfrost_gtransfer {
+struct panfrost_transfer {
         struct pipe_transfer base;
         void *map;
         struct {
@@ -91,10 +91,10 @@ struct panfrost_gtransfer {
         } staging;
 };
 
-static inline struct panfrost_gtransfer *
+static inline struct panfrost_transfer *
 pan_transfer(struct pipe_transfer *p)
 {
-        return (struct panfrost_gtransfer *)p;
+        return (struct panfrost_transfer *)p;
 }
 
 mali_ptr
@@ -111,10 +111,6 @@ void panfrost_resource_context_init(struct pipe_context *pctx);
 void
 panfrost_blit(struct pipe_context *pipe,
               const struct pipe_blit_info *info);
-
-void
-panfrost_blit_wallpaper(struct panfrost_context *ctx,
-                        struct pipe_box *box);
 
 void
 panfrost_resource_set_damage_region(struct pipe_screen *screen,

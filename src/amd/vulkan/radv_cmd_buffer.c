@@ -677,7 +677,7 @@ radv_save_descriptors(struct radv_cmd_buffer *cmd_buffer,
 	struct radv_descriptor_state *descriptors_state =
 		radv_get_descriptors_state(cmd_buffer, bind_point);
 	struct radv_device *device = cmd_buffer->device;
-	uint32_t data[MAX_SETS * 2] = {};
+	uint32_t data[MAX_SETS * 2] = {0};
 	uint64_t va;
 	unsigned i;
 	va = radv_buffer_get_va(device->trace_bo) + 24;
@@ -855,7 +855,7 @@ radv_emit_sample_locations(struct radv_cmd_buffer *cmd_buffer)
 		&cmd_buffer->state.dynamic.sample_location;
 	uint32_t num_samples = (uint32_t)sample_location->per_pixel;
 	struct radeon_cmdbuf *cs = cmd_buffer->cs;
-	uint32_t sample_locs_pixel[4][2] = {};
+	uint32_t sample_locs_pixel[4][2] = {0};
 	VkOffset2D sample_locs[4][8]; /* 8 is the max. sample count supported */
 	uint32_t max_sample_dist = 0;
 	uint64_t centroid_priority;
@@ -3850,7 +3850,6 @@ radv_bind_descriptor_set(struct radv_cmd_buffer *cmd_buffer,
 	radv_set_descriptor_set(cmd_buffer, bind_point, set, idx);
 
 	assert(set);
-	assert(!(set->layout->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR));
 
 	if (!cmd_buffer->device->use_global_bo_list) {
 		for (unsigned j = 0; j < set->buffer_count; ++j)
@@ -3881,17 +3880,17 @@ void radv_CmdBindDescriptorSets(
 		radv_get_descriptors_state(cmd_buffer, pipelineBindPoint);
 
 	for (unsigned i = 0; i < descriptorSetCount; ++i) {
-		unsigned idx = i + firstSet;
+		unsigned set_idx = i + firstSet;
 		RADV_FROM_HANDLE(radv_descriptor_set, set, pDescriptorSets[i]);
 
 		/* If the set is already bound we only need to update the
 		 * (potentially changed) dynamic offsets. */
-		if (descriptors_state->sets[idx] != set ||
-		    !(descriptors_state->valid & (1u << idx))) {
-			radv_bind_descriptor_set(cmd_buffer, pipelineBindPoint, set, idx);
+		if (descriptors_state->sets[set_idx] != set ||
+		    !(descriptors_state->valid & (1u << set_idx))) {
+			radv_bind_descriptor_set(cmd_buffer, pipelineBindPoint, set, set_idx);
 		}
 
-		for(unsigned j = 0; j < set->layout->dynamic_offset_count; ++j, ++dyn_idx) {
+		for(unsigned j = 0; j < layout->set[set_idx].dynamic_offset_count; ++j, ++dyn_idx) {
 			unsigned idx = j + layout->set[i + firstSet].dynamic_offset_start;
 			uint32_t *dst = descriptors_state->dynamic_buffers + idx * 4;
 			assert(dyn_idx < dynamicOffsetCount);
@@ -3920,8 +3919,7 @@ void radv_CmdBindDescriptorSets(
 				}
 			}
 
-			cmd_buffer->push_constant_stages |=
-			                     set->layout->dynamic_shader_stages;
+			cmd_buffer->push_constant_stages |= layout->set[set_idx].dynamic_offset_stages;
 		}
 	}
 }
@@ -5370,7 +5368,7 @@ void radv_CmdDraw(
 	uint32_t                                    firstInstance)
 {
 	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
-	struct radv_draw_info info = {};
+	struct radv_draw_info info = {0};
 
 	info.count = vertexCount;
 	info.instance_count = instanceCount;
@@ -5389,7 +5387,7 @@ void radv_CmdDrawIndexed(
 	uint32_t                                    firstInstance)
 {
 	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
-	struct radv_draw_info info = {};
+	struct radv_draw_info info = {0};
 
 	info.indexed = true;
 	info.count = indexCount;
@@ -5410,7 +5408,7 @@ void radv_CmdDrawIndirect(
 {
 	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
 	RADV_FROM_HANDLE(radv_buffer, buffer, _buffer);
-	struct radv_draw_info info = {};
+	struct radv_draw_info info = {0};
 
 	info.count = drawCount;
 	info.indirect = buffer;
@@ -5429,7 +5427,7 @@ void radv_CmdDrawIndexedIndirect(
 {
 	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
 	RADV_FROM_HANDLE(radv_buffer, buffer, _buffer);
-	struct radv_draw_info info = {};
+	struct radv_draw_info info = {0};
 
 	info.indexed = true;
 	info.count = drawCount;
@@ -5452,7 +5450,7 @@ void radv_CmdDrawIndirectCount(
 	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
 	RADV_FROM_HANDLE(radv_buffer, buffer, _buffer);
 	RADV_FROM_HANDLE(radv_buffer, count_buffer, _countBuffer);
-	struct radv_draw_info info = {};
+	struct radv_draw_info info = {0};
 
 	info.count = maxDrawCount;
 	info.indirect = buffer;
@@ -5476,7 +5474,7 @@ void radv_CmdDrawIndexedIndirectCount(
 	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
 	RADV_FROM_HANDLE(radv_buffer, buffer, _buffer);
 	RADV_FROM_HANDLE(radv_buffer, count_buffer, _countBuffer);
-	struct radv_draw_info info = {};
+	struct radv_draw_info info = {0};
 
 	info.indexed = true;
 	info.count = maxDrawCount;
@@ -5725,7 +5723,7 @@ void radv_CmdDispatchBase(
 	uint32_t                                    z)
 {
 	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
-	struct radv_dispatch_info info = {};
+	struct radv_dispatch_info info = {0};
 
 	info.blocks[0] = x;
 	info.blocks[1] = y;
@@ -5753,7 +5751,7 @@ void radv_CmdDispatchIndirect(
 {
 	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
 	RADV_FROM_HANDLE(radv_buffer, buffer, _buffer);
-	struct radv_dispatch_info info = {};
+	struct radv_dispatch_info info = {0};
 
 	info.indirect = buffer;
 	info.indirect_offset = offset;
@@ -5767,7 +5765,7 @@ void radv_unaligned_dispatch(
 	uint32_t                                    y,
 	uint32_t                                    z)
 {
-	struct radv_dispatch_info info = {};
+	struct radv_dispatch_info info = {0};
 
 	info.blocks[0] = x;
 	info.blocks[1] = y;
@@ -5825,8 +5823,8 @@ static void radv_initialize_htile(struct radv_cmd_buffer *cmd_buffer,
 	VkImageAspectFlags aspects = VK_IMAGE_ASPECT_DEPTH_BIT;
 	struct radv_cmd_state *state = &cmd_buffer->state;
 	uint32_t htile_value = vk_format_is_stencil(image->vk_format) ? 0xfffff30f : 0xfffc000f;
-	VkClearDepthStencilValue value = {};
-	struct radv_barrier_data barrier = {};
+	VkClearDepthStencilValue value = {0};
+	struct radv_barrier_data barrier = {0};
 
 	state->flush_bits |= RADV_CMD_FLAG_FLUSH_AND_INV_DB |
 			     RADV_CMD_FLAG_FLUSH_AND_INV_DB_META;
@@ -5891,7 +5889,7 @@ static void radv_initialise_cmask(struct radv_cmd_buffer *cmd_buffer,
 				  uint32_t value)
 {
 	struct radv_cmd_state *state = &cmd_buffer->state;
-	struct radv_barrier_data barrier = {};
+	struct radv_barrier_data barrier = {0};
 
 	state->flush_bits |= RADV_CMD_FLAG_FLUSH_AND_INV_CB |
 			    RADV_CMD_FLAG_FLUSH_AND_INV_CB_META;
@@ -5917,7 +5915,7 @@ void radv_initialize_fmask(struct radv_cmd_buffer *cmd_buffer,
 	};
 	uint32_t log2_samples = util_logbase2(image->info.samples);
 	uint32_t value = fmask_clear_values[log2_samples];
-	struct radv_barrier_data barrier = {};
+	struct radv_barrier_data barrier = {0};
 
 	state->flush_bits |= RADV_CMD_FLAG_FLUSH_AND_INV_CB |
 			     RADV_CMD_FLAG_FLUSH_AND_INV_CB_META;
@@ -5935,7 +5933,7 @@ void radv_initialize_dcc(struct radv_cmd_buffer *cmd_buffer,
 			 const VkImageSubresourceRange *range, uint32_t value)
 {
 	struct radv_cmd_state *state = &cmd_buffer->state;
-	struct radv_barrier_data barrier = {};
+	struct radv_barrier_data barrier = {0};
 	unsigned size = 0;
 
 	state->flush_bits |= RADV_CMD_FLAG_FLUSH_AND_INV_CB |
@@ -6016,24 +6014,21 @@ static void radv_init_color_image_metadata(struct radv_cmd_buffer *cmd_buffer,
 
 	if (radv_dcc_enabled(image, range->baseMipLevel)) {
 		uint32_t value = 0xffffffffu; /* Fully expanded mode. */
-		bool need_decompress_pass = false;
 
 		if (radv_layout_dcc_compressed(cmd_buffer->device, image, dst_layout,
 					       dst_render_loop,
 					       dst_queue_mask)) {
-			value = 0x20202020u;
-			need_decompress_pass = true;
+			value = 0u;
 		}
 
 		radv_initialize_dcc(cmd_buffer, image, range, value);
 
-		radv_update_fce_metadata(cmd_buffer, image, range,
-					 need_decompress_pass);
+		radv_update_fce_metadata(cmd_buffer, image, range, false);
 	}
 
 	if (radv_image_has_cmask(image) ||
 	    radv_dcc_enabled(image, range->baseMipLevel)) {
-		uint32_t color_values[2] = {};
+		uint32_t color_values[2] = {0};
 		radv_set_color_clear_metadata(cmd_buffer, image, range,
 					      color_values);
 	}
@@ -6079,7 +6074,9 @@ static void radv_handle_color_image_transition(struct radv_cmd_buffer *cmd_buffe
 			fce_eliminate = true;
 		}
 
-		if (radv_image_has_fmask(image)) {
+		if (radv_image_has_fmask(image) &&
+		    (image->usage & (VK_IMAGE_USAGE_STORAGE_BIT |
+				     VK_IMAGE_USAGE_TRANSFER_DST_BIT))) {
 			if (src_layout != VK_IMAGE_LAYOUT_GENERAL &&
 			    dst_layout == VK_IMAGE_LAYOUT_GENERAL) {
 				/* A FMASK decompress is required before doing
@@ -6093,7 +6090,7 @@ static void radv_handle_color_image_transition(struct radv_cmd_buffer *cmd_buffe
 			radv_fast_clear_flush_image_inplace(cmd_buffer, image, range);
 
 		if (fmask_expand) {
-			struct radv_barrier_data barrier = {};
+			struct radv_barrier_data barrier = {0};
 			barrier.layout_transitions.fmask_color_expand = 1;
 			radv_describe_layout_transition(cmd_buffer, &barrier);
 
@@ -6239,7 +6236,7 @@ radv_barrier(struct radv_cmd_buffer *cmd_buffer,
 		const struct VkSampleLocationsInfoEXT *sample_locs_info =
 			vk_find_struct_const(pImageMemoryBarriers[i].pNext,
 					     SAMPLE_LOCATIONS_INFO_EXT);
-		struct radv_sample_locations_state sample_locations = {};
+		struct radv_sample_locations_state sample_locations = {0};
 
 		if (sample_locs_info) {
 			assert(image->flags & VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT);
@@ -6313,7 +6310,7 @@ static void write_event(struct radv_cmd_buffer *cmd_buffer,
 
 	radv_cs_add_buffer(cmd_buffer->device->ws, cs, event->bo);
 
-	ASSERTED unsigned cdw_max = radeon_check_space(cmd_buffer->device->ws, cs, 21);
+	ASSERTED unsigned cdw_max = radeon_check_space(cmd_buffer->device->ws, cs, 28);
 
 	/* Flags that only require a top-of-pipe event. */
 	VkPipelineStageFlags top_of_pipe_flags =
@@ -6894,7 +6891,7 @@ void radv_CmdDrawIndirectByteCountEXT(
 {
 	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
 	RADV_FROM_HANDLE(radv_buffer, counterBuffer, _counterBuffer);
-	struct radv_draw_info info = {};
+	struct radv_draw_info info = {0};
 
 	info.instance_count = instanceCount;
 	info.first_instance = firstInstance;

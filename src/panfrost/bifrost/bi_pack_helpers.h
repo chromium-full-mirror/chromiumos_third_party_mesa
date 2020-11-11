@@ -29,24 +29,24 @@
 #include "compiler.h"
 
 static inline void
-bi_set_data_register(bi_clause *clause, unsigned idx)
+bi_set_staging_register(bi_clause *clause, unsigned idx)
 {
         assert(idx & BIR_INDEX_REGISTER);
         unsigned reg = idx & ~BIR_INDEX_REGISTER;
         assert(reg <= 63);
-        clause->data_register = reg;
+        clause->staging_register = reg;
 }
 
 static inline void
-bi_read_data_register(bi_clause *clause, bi_instruction *ins)
+bi_read_staging_register(bi_clause *clause, bi_instruction *ins)
 {
-        bi_set_data_register(clause, ins->src[0]);
+        bi_set_staging_register(clause, ins->src[0]);
 }
 
 static inline void
-bi_write_data_register(bi_clause *clause, bi_instruction *ins)
+bi_write_staging_register(bi_clause *clause, bi_instruction *ins)
 {
-        bi_set_data_register(clause, ins->dest);
+        bi_set_staging_register(clause, ins->dest);
 }
 
 static inline enum bifrost_packed_src
@@ -64,6 +64,19 @@ bi_get_src_reg_slot(bi_registers *regs, unsigned src)
                 unreachable("Tried to access register with no port");
 }
 
+/* Sources are usually strictly required, but in a few special cases they can
+ * be made optional with the value passed arbitrary. Check that here */
+
+static bool
+bi_src_nullable(bi_instruction *ins, unsigned s)
+{
+        /* Z/S flags inferred */
+        if (ins->type == BI_ZS_EMIT && s < 2)
+                return true;
+
+        return false;
+}
+
 static inline enum bifrost_packed_src
 bi_get_src(bi_instruction *ins, bi_registers *regs, unsigned s)
 {
@@ -73,6 +86,8 @@ bi_get_src(bi_instruction *ins, bi_registers *regs, unsigned s)
                 return bi_get_src_reg_slot(regs, src);
         else if (src & BIR_INDEX_PASS)
                 return src & ~BIR_INDEX_PASS;
+        else if (!src && bi_src_nullable(ins, s))
+                return BIFROST_SRC_STAGE;
         else {
 #ifndef NDEBUG
                 bi_print_instruction(ins, stderr);

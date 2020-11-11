@@ -830,6 +830,8 @@ int r600_shader_from_nir(struct r600_context *rctx,
               40,
               r600_get_natural_size_align_bytes);
 
+   NIR_PASS_V(sel->nir, nir_lower_bool_to_int32);
+
    while (optimize_once(sel->nir, true));
 
    auto sh = nir_shader_clone(sel->nir, sel->nir);
@@ -842,7 +844,9 @@ int r600_shader_from_nir(struct r600_context *rctx,
 
    //NIR_PASS_V(sel->nir, nir_opt_algebraic);
    //NIR_PASS_V(sel->nir, nir_copy_prop);
-   NIR_PASS_V(sh, nir_lower_to_source_mods, nir_lower_float_source_mods);
+   NIR_PASS_V(sh, nir_lower_to_source_mods,
+	      (nir_lower_to_source_mods_flags)(nir_lower_float_source_mods |
+					       nir_lower_64bit_source_mods));
    NIR_PASS_V(sh, nir_convert_from_ssa, true);
    NIR_PASS_V(sh, nir_opt_dce);
 
@@ -918,8 +922,8 @@ int r600_shader_from_nir(struct r600_context *rctx,
    } else {
       r600::sfn_log << r600::SfnLog::shader_info << "This is not a Geometry shader\n";
    }
-   if (pipeshader->shader.bc.ngpr < 4)
-      pipeshader->shader.bc.ngpr = 4;
+   if (pipeshader->shader.bc.ngpr < 6)
+      pipeshader->shader.bc.ngpr = 6;
 
    return 0;
 }

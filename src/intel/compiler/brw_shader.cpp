@@ -301,8 +301,20 @@ brw_instruction_name(const struct gen_device_info *devinfo, enum opcode op)
       return "untyped_surface_write";
    case SHADER_OPCODE_UNTYPED_SURFACE_WRITE_LOGICAL:
       return "untyped_surface_write_logical";
+   case SHADER_OPCODE_OWORD_BLOCK_READ_LOGICAL:
+      return "oword_block_read_logical";
+   case SHADER_OPCODE_UNALIGNED_OWORD_BLOCK_READ_LOGICAL:
+      return "unaligned_oword_block_read_logical";
+   case SHADER_OPCODE_OWORD_BLOCK_WRITE_LOGICAL:
+      return "oword_block_write_logical";
    case SHADER_OPCODE_A64_UNTYPED_READ_LOGICAL:
       return "a64_untyped_read_logical";
+   case SHADER_OPCODE_A64_OWORD_BLOCK_READ_LOGICAL:
+      return "a64_oword_block_read_logical";
+   case SHADER_OPCODE_A64_UNALIGNED_OWORD_BLOCK_READ_LOGICAL:
+      return "a64_unaligned_oword_block_read_logical";
+   case SHADER_OPCODE_A64_OWORD_BLOCK_WRITE_LOGICAL:
+      return "a64_oword_block_write_logical";
    case SHADER_OPCODE_A64_UNTYPED_WRITE_LOGICAL:
       return "a64_untyped_write_logical";
    case SHADER_OPCODE_A64_BYTE_SCATTERED_READ_LOGICAL:
@@ -349,6 +361,8 @@ brw_instruction_name(const struct gen_device_info *devinfo, enum opcode op)
       return "gen4_scratch_write";
    case SHADER_OPCODE_GEN7_SCRATCH_READ:
       return "gen7_scratch_read";
+   case SHADER_OPCODE_SCRATCH_HEADER:
+      return "scratch_header";
    case SHADER_OPCODE_URB_WRITE_SIMD8:
       return "gen8_urb_write_simd8";
    case SHADER_OPCODE_URB_WRITE_SIMD8_PER_SLOT:
@@ -1086,6 +1100,8 @@ backend_instruction::has_side_effects() const
    case SHADER_OPCODE_RND_MODE:
    case SHADER_OPCODE_FLOAT_CONTROL_MODE:
    case FS_OPCODE_SCHEDULING_FENCE:
+   case SHADER_OPCODE_OWORD_BLOCK_WRITE_LOGICAL:
+   case SHADER_OPCODE_A64_OWORD_BLOCK_WRITE_LOGICAL:
       return true;
    default:
       return eot;
@@ -1296,13 +1312,6 @@ brw_compile_tes(const struct brw_compiler *compiler,
 
    /* URB entry sizes are stored as a multiple of 64 bytes. */
    prog_data->base.urb_entry_size = ALIGN(output_size_bytes, 64) / 64;
-
-   /* On Cannonlake software shall not program an allocation size that
-    * specifies a size that is a multiple of 3 64B (512-bit) cachelines.
-    */
-   if (devinfo->gen == 10 &&
-       prog_data->base.urb_entry_size % 3 == 0)
-      prog_data->base.urb_entry_size++;
 
    prog_data->base.urb_read_length = 0;
 

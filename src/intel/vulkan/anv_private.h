@@ -1171,7 +1171,6 @@ struct anv_instance {
 
     struct driOptionCache                       dri_options;
     struct driOptionCache                       available_dri_options;
-    bool                                        disable_d16unorm_compression;
 };
 
 VkResult anv_init_wsi(struct anv_physical_device *physical_device);
@@ -1454,12 +1453,14 @@ anv_binding_table_pool_free(struct anv_device *device, struct anv_state state) {
 }
 
 static inline uint32_t
-anv_mocs_for_bo(const struct anv_device *device, const struct anv_bo *bo)
+anv_mocs(const struct anv_device *device,
+         const struct anv_bo *bo,
+         isl_surf_usage_flags_t usage)
 {
    if (bo->is_external)
       return device->isl_dev.mocs.external;
-   else
-      return device->isl_dev.mocs.internal;
+
+   return isl_mocs(&device->isl_dev, usage);
 }
 
 void anv_device_init_blorp(struct anv_device *device);
@@ -1950,10 +1951,8 @@ enum anv_descriptor_data {
 };
 
 struct anv_descriptor_set_binding_layout {
-#ifndef NDEBUG
    /* The type of the descriptors in this binding */
    VkDescriptorType type;
-#endif
 
    /* Flags provided when this binding was created */
    VkDescriptorBindingFlagsEXT flags;
@@ -2007,8 +2006,8 @@ struct anv_descriptor_set_layout {
    /* Number of bindings in this descriptor set */
    uint16_t binding_count;
 
-   /* Total size of the descriptor set with room for all array entries */
-   uint16_t size;
+   /* Total number of descriptors */
+   uint16_t descriptor_count;
 
    /* Shader stages affected by this descriptor set */
    uint16_t shader_stages;
@@ -2092,6 +2091,7 @@ struct anv_descriptor_set {
    /* Link to descriptor pool's desc_sets list . */
    struct list_head pool_link;
 
+   uint32_t descriptor_count;
    struct anv_descriptor descriptors[0];
 };
 
@@ -2188,7 +2188,8 @@ struct anv_descriptor_update_template {
 };
 
 size_t
-anv_descriptor_set_layout_size(const struct anv_descriptor_set_layout *layout);
+anv_descriptor_set_layout_size(const struct anv_descriptor_set_layout *layout,
+                               uint32_t var_desc_count);
 
 void
 anv_descriptor_set_write_image_view(struct anv_device *device,
@@ -2235,6 +2236,7 @@ VkResult
 anv_descriptor_set_create(struct anv_device *device,
                           struct anv_descriptor_pool *pool,
                           struct anv_descriptor_set_layout *layout,
+                          uint32_t var_desc_count,
                           struct anv_descriptor_set **out_set);
 
 void
@@ -3868,10 +3870,7 @@ anv_image_aux_levels(const struct anv_image * const image,
    if (image->planes[plane].aux_usage == ISL_AUX_USAGE_NONE)
       return 0;
 
-   /* The Gen12 CCS aux surface is represented with only one level. */
-   return image->planes[plane].aux_surface.isl.tiling == ISL_TILING_GEN12_CCS ?
-          image->planes[plane].surface.isl.levels :
-          image->planes[plane].aux_surface.isl.levels;
+   return image->levels;
 }
 
 /* Returns the number of auxiliary buffer layers attached to an image. */
@@ -3890,18 +3889,9 @@ anv_image_aux_layers(const struct anv_image * const image,
        * auxiliary data.
        */
       return 0;
-   } else {
-      uint32_t plane = anv_image_aspect_to_plane(image->aspects, aspect);
-
-      /* The Gen12 CCS aux surface is represented with only one layer. */
-      const struct isl_extent4d *aux_logical_level0_px =
-         image->planes[plane].aux_surface.isl.tiling == ISL_TILING_GEN12_CCS ?
-         &image->planes[plane].surface.isl.logical_level0_px :
-         &image->planes[plane].aux_surface.isl.logical_level0_px;
-
-      return MAX2(aux_logical_level0_px->array_len,
-                  aux_logical_level0_px->depth >> miplevel);
    }
+
+   return MAX2(image->array_size, image->extent.depth >> miplevel);
 }
 
 static inline struct anv_address
@@ -4257,6 +4247,7 @@ anv_get_image_format_features(const struct gen_device_info *devinfo,
 void anv_fill_buffer_surface_state(struct anv_device *device,
                                    struct anv_state state,
                                    enum isl_format format,
+                                   isl_surf_usage_flags_t usage,
                                    struct anv_address address,
                                    uint32_t range, uint32_t stride);
 
@@ -4599,9 +4590,6 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(anv_performance_configuration_intel, base,
 #  include "anv_genX.h"
 #  undef genX
 #  define genX(x) gen9_##x
-#  include "anv_genX.h"
-#  undef genX
-#  define genX(x) gen10_##x
 #  include "anv_genX.h"
 #  undef genX
 #  define genX(x) gen11_##x

@@ -203,7 +203,9 @@ unsigned ac_get_type_size(LLVMTypeRef type)
 
 static LLVMTypeRef to_integer_type_scalar(struct ac_llvm_context *ctx, LLVMTypeRef t)
 {
-   if (t == ctx->i8)
+   if (t == ctx->i1)
+      return ctx->i1;
+   else if (t == ctx->i8)
       return ctx->i8;
    else if (t == ctx->f16 || t == ctx->i16)
       return ctx->i16;
@@ -435,6 +437,9 @@ LLVMValueRef ac_build_ballot(struct ac_llvm_context *ctx, LLVMValueRef value)
 {
    const char *name;
 
+   if (LLVMTypeOf(value) == ctx->i1)
+      value = LLVMBuildZExt(ctx->builder, value, ctx->i32, "");
+
    if (LLVM_VERSION_MAJOR >= 9) {
       if (ctx->wave_size == 64)
          name = "llvm.amdgcn.icmp.i64.i32";
@@ -567,7 +572,7 @@ static LLVMValueRef ac_build_expand(struct ac_llvm_context *ctx, LLVMValueRef va
                                     unsigned src_channels, unsigned dst_channels)
 {
    LLVMTypeRef elemtype;
-   LLVMValueRef chan[dst_channels];
+   LLVMValueRef *const chan = alloca(dst_channels * sizeof(LLVMValueRef));
 
    if (LLVMGetTypeKind(LLVMTypeOf(value)) == LLVMVectorTypeKind) {
       unsigned vec_size = LLVMGetVectorSize(LLVMTypeOf(value));
@@ -600,7 +605,7 @@ static LLVMValueRef ac_build_expand(struct ac_llvm_context *ctx, LLVMValueRef va
 LLVMValueRef ac_extract_components(struct ac_llvm_context *ctx, LLVMValueRef value, unsigned start,
                                    unsigned channels)
 {
-   LLVMValueRef chan[channels];
+   LLVMValueRef *const chan = alloca(channels * sizeof(LLVMValueRef));
 
    for (unsigned i = 0; i < channels; i++)
       chan[i] = ac_llvm_extract_elem(ctx, value, i + start);
@@ -2117,7 +2122,7 @@ LLVMValueRef ac_build_image_opcode(struct ac_llvm_context *ctx, struct ac_image_
    char data_type_str[8];
 
    if (atomic) {
-      data_type = ctx->i32;
+      data_type = LLVMTypeOf(a->data[0]);
    } else if (a->opcode == ac_image_store || a->opcode == ac_image_store_mip) {
       /* Image stores might have been shrinked using the format. */
       data_type = LLVMTypeOf(a->data[0]);
@@ -2253,7 +2258,7 @@ LLVMValueRef ac_build_image_opcode(struct ac_llvm_context *ctx, struct ac_image_
 
    LLVMTypeRef retty;
    if (atomic)
-      retty = ctx->i32;
+      retty = data_type;
    else if (a->opcode == ac_image_store || a->opcode == ac_image_store_mip)
       retty = ctx->voidt;
    else
@@ -2445,6 +2450,50 @@ void ac_build_waitcnt(struct ac_llvm_context *ctx, unsigned wait_flags)
       LLVMConstInt(ctx->i32, simm16, false),
    };
    ac_build_intrinsic(ctx, "llvm.amdgcn.s.waitcnt", ctx->voidt, args, 1, 0);
+}
+
+LLVMValueRef ac_build_fsat(struct ac_llvm_context *ctx, LLVMValueRef src,
+                           LLVMTypeRef type)
+{
+   unsigned bitsize = ac_get_elem_bits(ctx, type);
+   LLVMValueRef zero = LLVMConstReal(type, 0.0);
+   LLVMValueRef one = LLVMConstReal(type, 1.0);
+   LLVMValueRef result;
+
+   if (bitsize == 64 || (bitsize == 16 && ctx->chip_class <= GFX8)) {
+      /* Use fmin/fmax for 64-bit fsat or 16-bit on GFX6-GFX8 because LLVM
+       * doesn't expose an intrinsic.
+       */
+      result = ac_build_fmin(ctx, ac_build_fmax(ctx, src, zero), one);
+   } else {
+      LLVMTypeRef type;
+      char *intr;
+
+      if (bitsize == 16) {
+         intr = "llvm.amdgcn.fmed3.f16";
+         type = ctx->f16;
+      } else {
+         assert(bitsize == 32);
+         intr = "llvm.amdgcn.fmed3.f32";
+         type = ctx->f32;
+      }
+
+      LLVMValueRef params[] = {
+         zero,
+         one,
+         src,
+      };
+
+      result = ac_build_intrinsic(ctx, intr, type, params, 3,
+                                  AC_FUNC_ATTR_READNONE);
+   }
+
+   if (ctx->chip_class < GFX9 && bitsize == 32) {
+      /* Only pre-GFX9 chips do not flush denorms. */
+      result = ac_build_canonicalize(ctx, result, bitsize);
+   }
+
+   return result;
 }
 
 LLVMValueRef ac_build_fract(struct ac_llvm_context *ctx, LLVMValueRef src0, unsigned bitsize)
@@ -2657,7 +2706,7 @@ static bool ac_eliminate_const_output(uint8_t *vs_output_param_offset, uint32_t 
                                       struct ac_vs_exp_inst *exp)
 {
    unsigned i, default_val; /* SPI_PS_INPUT_CNTL_i.DEFAULT_VAL */
-   bool is_zero[4] = {}, is_one[4] = {};
+   bool is_zero[4] = {0}, is_one[4] = {0};
 
    for (i = 0; i < 4; i++) {
       /* It's a constant expression. Undef outputs are eliminated too. */
@@ -3127,19 +3176,6 @@ void ac_build_ifcc(struct ac_llvm_context *ctx, LLVMValueRef cond, int label_id)
    LLVMPositionBuilderAtEnd(ctx->builder, if_block);
 }
 
-void ac_build_if(struct ac_llvm_context *ctx, LLVMValueRef value, int label_id)
-{
-   LLVMValueRef cond = LLVMBuildFCmp(ctx->builder, LLVMRealUNE, value, ctx->f32_0, "");
-   ac_build_ifcc(ctx, cond, label_id);
-}
-
-void ac_build_uif(struct ac_llvm_context *ctx, LLVMValueRef value, int label_id)
-{
-   LLVMValueRef cond =
-      LLVMBuildICmp(ctx->builder, LLVMIntNE, ac_to_integer(ctx, value), ctx->i32_0, "");
-   ac_build_ifcc(ctx, cond, label_id);
-}
-
 LLVMValueRef ac_build_alloca_undef(struct ac_llvm_context *ac, LLVMTypeRef type, const char *name)
 {
    LLVMBuilderRef builder = ac->builder;
@@ -3180,7 +3216,7 @@ LLVMValueRef ac_trim_vector(struct ac_llvm_context *ctx, LLVMValueRef value, uns
    if (count == num_components)
       return value;
 
-   LLVMValueRef masks[MAX2(count, 2)];
+   LLVMValueRef *const masks = alloca(MAX2(count, 2) * sizeof(LLVMValueRef));
    masks[0] = ctx->i32_0;
    masks[1] = ctx->i32_1;
    for (unsigned i = 2; i < count; i++)
@@ -3224,7 +3260,7 @@ LLVMValueRef ac_unpack_param(struct ac_llvm_context *ctx, LLVMValueRef param, un
 void ac_apply_fmask_to_sample(struct ac_llvm_context *ac, LLVMValueRef fmask, LLVMValueRef *addr,
                               bool is_array_tex)
 {
-   struct ac_image_args fmask_load = {};
+   struct ac_image_args fmask_load = {0};
    fmask_load.opcode = ac_image_load;
    fmask_load.resource = fmask;
    fmask_load.dmask = 0xf;
@@ -3587,7 +3623,18 @@ static LLVMValueRef ac_build_set_inactive(struct ac_llvm_context *ctx, LLVMValue
 static LLVMValueRef get_reduction_identity(struct ac_llvm_context *ctx, nir_op op,
                                            unsigned type_size)
 {
-   if (type_size == 1) {
+
+   if (type_size == 0) {
+      switch (op) {
+      case nir_op_ior:
+      case nir_op_ixor:
+         return LLVMConstInt(ctx->i1, 0, 0);
+      case nir_op_iand:
+         return LLVMConstInt(ctx->i1, 1, 0);
+      default:
+         unreachable("bad reduction intrinsic");
+      }
+   } else if (type_size == 1) {
       switch (op) {
       case nir_op_iadd:
          return ctx->i8_0;
@@ -4322,8 +4369,7 @@ LLVMValueRef ac_build_load_helper_invocation(struct ac_llvm_context *ctx)
 {
    LLVMValueRef result =
       ac_build_intrinsic(ctx, "llvm.amdgcn.ps.live", ctx->i1, NULL, 0, AC_FUNC_ATTR_READNONE);
-   result = LLVMBuildNot(ctx->builder, result, "");
-   return LLVMBuildSExt(ctx->builder, result, ctx->i32, "");
+   return LLVMBuildNot(ctx->builder, result, "");
 }
 
 LLVMValueRef ac_build_is_helper_invocation(struct ac_llvm_context *ctx)
@@ -4336,10 +4382,7 @@ LLVMValueRef ac_build_is_helper_invocation(struct ac_llvm_context *ctx)
       ac_build_intrinsic(ctx, "llvm.amdgcn.ps.live", ctx->i1, NULL, 0, AC_FUNC_ATTR_READNONE);
 
    LLVMValueRef postponed = LLVMBuildLoad(ctx->builder, ctx->postponed_kill, "");
-   LLVMValueRef result = LLVMBuildAnd(ctx->builder, exact, postponed, "");
-
-   return LLVMBuildSelect(ctx->builder, result, ctx->i32_0,
-                          LLVMConstInt(ctx->i32, 0xFFFFFFFF, false), "");
+   return LLVMBuildNot(ctx->builder, LLVMBuildAnd(ctx->builder, exact, postponed, ""), "");
 }
 
 LLVMValueRef ac_build_call(struct ac_llvm_context *ctx, LLVMValueRef func, LLVMValueRef *args,
@@ -4442,11 +4485,11 @@ void ac_build_sendmsg_gs_alloc_req(struct ac_llvm_context *ctx, LLVMValueRef wav
    ac_build_sendmsg(ctx, AC_SENDMSG_GS_ALLOC_REQ, tmp);
 
    if (export_dummy_prim) {
-      struct ac_ngg_prim prim = {};
+      struct ac_ngg_prim prim = {0};
       /* The vertex indices are 0,0,0. */
       prim.passthrough = ctx->i32_0;
 
-      struct ac_export_args pos = {};
+      struct ac_export_args pos = {0};
       pos.out[0] = pos.out[1] = pos.out[2] = pos.out[3] = ctx->f32_0;
       pos.target = V_008DFC_SQ_EXP_POS;
       pos.enabled_channels = 0xf;

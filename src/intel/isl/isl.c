@@ -112,6 +112,9 @@ isl_device_setup_mocs(struct isl_device *dev)
          dev->mocs.external = 3 << 1;
          /* TC=LLC/eLLC, LeCC=WB, LRUM=3, L3CC=WB */
          dev->mocs.internal = 2 << 1;
+
+         /* L1 - HDC:L1 + L3 + LLC */
+         dev->mocs.l1_hdc_l3_llc = 48 << 1;
       }
    } else if (dev->info->gen >= 9) {
       /* TC=LLC/eLLC, LeCC=PTE, LRUM=3, L3CC=WB */
@@ -152,6 +155,33 @@ isl_device_setup_mocs(struct isl_device *dev)
       dev->mocs.internal = 0;
       dev->mocs.external = 0;
    }
+}
+
+/**
+ * Return an appropriate MOCS entry for the given usage flags.
+ */
+uint32_t
+isl_mocs(const struct isl_device *dev, isl_surf_usage_flags_t usage)
+{
+   if (dev->info->gen >= 12 && !dev->info->is_dg1) {
+      if (usage & ISL_SURF_USAGE_STAGING_BIT)
+         return dev->mocs.internal;
+
+      /* Using L1:HDC for storage buffers breaks Vulkan memory model
+       * tests that use shader atomics.  This isn't likely to work out,
+       * and we can't know a priori whether they'll be used.  So just
+       * continue with ordinary internal MOCS for now.
+       */
+      if (usage & ISL_SURF_USAGE_STORAGE_BIT)
+         return dev->mocs.internal;
+
+      if (usage & (ISL_SURF_USAGE_CONSTANT_BUFFER_BIT |
+                   ISL_SURF_USAGE_RENDER_TARGET_BIT |
+                   ISL_SURF_USAGE_TEXTURE_BIT))
+         return dev->mocs.l1_hdc_l3_llc;
+   }
+
+   return dev->mocs.internal;
 }
 
 void
@@ -1972,17 +2002,6 @@ isl_surf_supports_ccs(const struct isl_device *dev,
       if (isl_surf_usage_is_stencil(surf->usage) && surf->samples > 1)
          return false;
 
-      /* On Gen12, 8BPP surfaces cannot be compressed if any level is not
-       * 32Bx4row-aligned. For now, just reject the cases where alignment
-       * matters.
-       */
-      if (isl_format_get_layout(surf->format)->bpb == 8 && surf->levels >= 3) {
-         isl_finishme("%s:%s: CCS for 8BPP textures with 3+ miplevels is "
-                      "disabled, but support for more levels is possible.",
-                      __FILE__, __func__);
-         return false;
-      }
-
       /* On Gen12, all CCS-compressed surface pitches must be multiples of
        * 512B.
        */
@@ -2195,9 +2214,6 @@ isl_surf_get_ccs_surf(const struct isl_device *dev,
       break;                                       \
    case 9:                                         \
       isl_gen9_##func(__VA_ARGS__);                \
-      break;                                       \
-   case 10:                                        \
-      isl_gen10_##func(__VA_ARGS__);               \
       break;                                       \
    case 11:                                        \
       isl_gen11_##func(__VA_ARGS__);               \
@@ -2955,7 +2971,7 @@ isl_format_get_aux_map_encoding(enum isl_format format)
    case ISL_FORMAT_R32_SINT: return 0x12;
    case ISL_FORMAT_R32_UINT: return 0x13;
    case ISL_FORMAT_R32_FLOAT: return 0x11;
-   case ISL_FORMAT_R24_UNORM_X8_TYPELESS: return 0x11;
+   case ISL_FORMAT_R24_UNORM_X8_TYPELESS: return 0x13;
    case ISL_FORMAT_B5G6R5_UNORM: return 0xA;
    case ISL_FORMAT_B5G6R5_UNORM_SRGB: return 0xA;
    case ISL_FORMAT_B5G5R5A1_UNORM: return 0xA;

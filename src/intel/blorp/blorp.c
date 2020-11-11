@@ -29,6 +29,22 @@
 #include "compiler/brw_compiler.h"
 #include "compiler/brw_nir.h"
 
+const char *
+blorp_shader_type_to_name(enum blorp_shader_type type)
+{
+   static const char *shader_name[] = {
+      [BLORP_SHADER_TYPE_COPY]                = "BLORP-copy",
+      [BLORP_SHADER_TYPE_BLIT]                = "BLORP-blit",
+      [BLORP_SHADER_TYPE_CLEAR]               = "BLORP-clear",
+      [BLORP_SHADER_TYPE_MCS_PARTIAL_RESOLVE] = "BLORP-mcs-partial-resolve",
+      [BLORP_SHADER_TYPE_LAYER_OFFSET_VS]     = "BLORP-layer-offset-vs",
+      [BLORP_SHADER_TYPE_GEN4_SF]             = "BLORP-gen4-sf",
+   };
+   assert(type < ARRAY_SIZE(shader_name));
+
+   return shader_name[type];
+}
+
 void
 blorp_init(struct blorp_context *blorp, void *driver_ctx,
            struct isl_device *isl_dev)
@@ -63,7 +79,7 @@ void
 brw_blorp_surface_info_init(struct blorp_context *blorp,
                             struct brw_blorp_surface_info *info,
                             const struct blorp_surf *surf,
-                            unsigned int level, unsigned int layer,
+                            unsigned int level, float layer,
                             enum isl_format format, bool is_render_target)
 {
    memset(info, 0, sizeof(*info));

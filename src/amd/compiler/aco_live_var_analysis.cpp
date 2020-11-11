@@ -33,8 +33,6 @@
 #include <set>
 #include <vector>
 
-#include "vulkan/radv_shader.h"
-
 namespace aco {
 RegisterDemand get_live_changes(aco_ptr<Instruction>& instr)
 {
@@ -377,8 +375,7 @@ void update_vgpr_sgpr_demand(Program* program, const RegisterDemand new_demand)
    }
 }
 
-live live_var_analysis(Program* program,
-                       const struct radv_nir_compiler_options *options)
+live live_var_analysis(Program* program)
 {
    live result;
    result.live_out.resize(program->blocks.size());

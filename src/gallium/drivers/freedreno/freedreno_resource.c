@@ -692,9 +692,9 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 		struct fd_batch *write_batch = NULL;
 
 		/* hold a reference, so it doesn't disappear under us: */
-		fd_context_lock(ctx);
+		fd_screen_lock(ctx->screen);
 		fd_batch_reference_locked(&write_batch, rsc->write_batch);
-		fd_context_unlock(ctx);
+		fd_screen_unlock(ctx->screen);
 
 		if ((usage & PIPE_MAP_WRITE) && write_batch &&
 				write_batch->back_blit) {
@@ -838,6 +838,14 @@ fd_resource_get_handle(struct pipe_screen *pscreen,
 
 	handle->modifier = fd_resource_modifier(rsc);
 
+	DBG("%p: target=%d, format=%s, %ux%ux%u, array_size=%u, last_level=%u, "
+			"nr_samples=%u, usage=%u, bind=%x, flags=%x, modifier=%"PRIx64,
+			prsc, prsc->target, util_format_name(prsc->format),
+			prsc->width0, prsc->height0, prsc->depth0,
+			prsc->array_size, prsc->last_level, prsc->nr_samples,
+			prsc->usage, prsc->bind, prsc->flags,
+			handle->modifier);
+
 	return fd_screen_bo_get_handle(pscreen, rsc->bo, rsc->scanout,
 			fd_resource_pitch(rsc, 0), handle);
 }
@@ -928,8 +936,12 @@ fd_resource_allocate_and_resolve(struct pipe_screen *pscreen,
 	 * should.)
 	 */
 	bool allow_ubwc = drm_find_modifier(DRM_FORMAT_MOD_INVALID, modifiers, count);
-	if (tmpl->bind & PIPE_BIND_SHARED)
+	if (tmpl->bind & PIPE_BIND_SHARED) {
 		allow_ubwc = drm_find_modifier(DRM_FORMAT_MOD_QCOM_COMPRESSED, modifiers, count);
+		if (!allow_ubwc) {
+			linear = true;
+		}
+	}
 
 	allow_ubwc &= !(fd_mesa_debug & FD_DBG_NOUBWC);
 
@@ -1009,7 +1021,7 @@ fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
 		struct winsys_handle handle;
 
 		/* note: alignment is wrong for a6xx */
-		scanout_templat.width0 = align(tmpl->width0, screen->gmem_alignw);
+		scanout_templat.width0 = align(tmpl->width0, screen->info.gmem_align_w);
 
 		scanout = renderonly_scanout_for_resource(&scanout_templat,
 												  screen->ro, &handle);
@@ -1071,12 +1083,13 @@ fd_resource_from_handle(struct pipe_screen *pscreen,
 	struct fdl_slice *slice = fd_resource_slice(rsc, 0);
 	struct pipe_resource *prsc = &rsc->base;
 
-	DBG("target=%d, format=%s, %ux%ux%u, array_size=%u, last_level=%u, "
-			"nr_samples=%u, usage=%u, bind=%x, flags=%x",
-			tmpl->target, util_format_name(tmpl->format),
+	DBG("%p: target=%d, format=%s, %ux%ux%u, array_size=%u, last_level=%u, "
+			"nr_samples=%u, usage=%u, bind=%x, flags=%x, modifier=%"PRIx64,
+			prsc, tmpl->target, util_format_name(tmpl->format),
 			tmpl->width0, tmpl->height0, tmpl->depth0,
 			tmpl->array_size, tmpl->last_level, tmpl->nr_samples,
-			tmpl->usage, tmpl->bind, tmpl->flags);
+			tmpl->usage, tmpl->bind, tmpl->flags,
+			handle->modifier);
 
 	*prsc = *tmpl;
 	fd_resource_layout_init(prsc);
@@ -1100,14 +1113,14 @@ fd_resource_from_handle(struct pipe_screen *pscreen,
 	slice->offset = handle->offset;
 	slice->size0 = handle->stride * prsc->height0;
 
-	/* use a pitchalign of gmem_alignw pixels, because GMEM resolve for
+	/* use a pitchalign of gmem_align_w pixels, because GMEM resolve for
 	 * lower alignments is not implemented (but possible for a6xx at least)
 	 *
 	 * for UBWC-enabled resources, layout_resource_for_modifier will further
 	 * validate the pitch and set the right pitchalign
 	 */
 	rsc->layout.pitchalign =
-		fdl_cpp_shift(&rsc->layout) + util_logbase2(screen->gmem_alignw);
+		fdl_cpp_shift(&rsc->layout) + util_logbase2(screen->info.gmem_align_w);
 
 	/* apply the minimum pitchalign (note: actually 4 for a3xx but doesn't matter) */
 	if (is_a6xx(screen) || is_a5xx(screen))

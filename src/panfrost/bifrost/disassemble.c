@@ -75,22 +75,51 @@ struct bifrost_reg_ctrl {
 
 static void dump_header(FILE *fp, struct bifrost_header header, bool verbose)
 {
-        fprintf(fp, "id(%du) ", header.scoreboard_index);
+        fprintf(fp, "ds(%du) ", header.dependency_slot);
 
-        if (header.clause_type != 0) {
-                const char *name = bi_clause_type_name(header.clause_type);
+        if (header.staging_barrier)
+                fprintf(fp, "osrb ");
 
-                if (name[0] == '?')
-                        fprintf(fp, "unk%u ", header.clause_type);
-                else
-                        fprintf(fp, "%s ", name);
-        }
+        fprintf(fp, "%s ", bi_flow_control_name(header.flow_control));
 
-        if (header.scoreboard_deps != 0) {
-                fprintf(fp, "next-wait(");
+        if (header.suppress_inf)
+                fprintf(fp, "inf_suppress ");
+        if (header.suppress_nan)
+                fprintf(fp, "nan_suppress ");
+
+        if (header.flush_to_zero == BIFROST_FTZ_DX11)
+                fprintf(fp, "ftz_dx11 ");
+        else if (header.flush_to_zero == BIFROST_FTZ_ALWAYS)
+                fprintf(fp, "ftz_hsa ");
+        if (header.flush_to_zero == BIFROST_FTZ_ABRUPT)
+                fprintf(fp, "ftz_au ");
+
+        assert(!header.zero1);
+        assert(!header.zero2);
+
+        if (header.float_exceptions == BIFROST_EXCEPTIONS_DISABLED)
+                fprintf(fp, "fpe_ts ");
+        else if (header.float_exceptions == BIFROST_EXCEPTIONS_PRECISE_DIVISION)
+                fprintf(fp, "fpe_pd ");
+        else if (header.float_exceptions == BIFROST_EXCEPTIONS_PRECISE_SQRT)
+                fprintf(fp, "fpe_psqr ");
+
+        if (header.message_type)
+                fprintf(fp, "%s ", bi_message_type_name(header.message_type));
+
+        if (header.terminate_discarded_threads)
+                fprintf(fp, "td ");
+
+        if (header.next_clause_prefetch)
+                fprintf(fp, "ncph ");
+
+        if (header.next_message_type)
+                fprintf(fp, "next_%s ", bi_message_type_name(header.next_message_type));
+        if (header.dependency_wait != 0) {
+                fprintf(fp, "dwb(");
                 bool first = true;
                 for (unsigned i = 0; i < 8; i++) {
-                        if (header.scoreboard_deps & (1 << i)) {
+                        if (header.dependency_wait & (1 << i)) {
                                 if (!first) {
                                         fprintf(fp, ", ");
                                 }
@@ -101,45 +130,7 @@ static void dump_header(FILE *fp, struct bifrost_header header, bool verbose)
                 fprintf(fp, ") ");
         }
 
-        if (header.datareg_writebarrier)
-                fprintf(fp, "data-reg-barrier ");
-
-        if (!header.no_end_of_shader)
-                fprintf(fp, "eos ");
-
-        if (!header.back_to_back) {
-                fprintf(fp, "nbb ");
-                if (header.branch_cond)
-                        fprintf(fp, "branch-cond ");
-                else
-                        fprintf(fp, "branch-uncond ");
-        }
-
-        if (header.elide_writes)
-                fprintf(fp, "we ");
-
-        if (header.suppress_inf)
-                fprintf(fp, "suppress-inf ");
-        if (header.suppress_nan)
-                fprintf(fp, "suppress-nan ");
-
-        if (header.unk0)
-                fprintf(fp, "unk0 ");
-        if (header.unk1)
-                fprintf(fp, "unk1 ");
-        if  (header.unk2)
-                fprintf(fp, "unk2 ");
-        if (header.unk3)
-                fprintf(fp, "unk3 ");
-        if (header.unk4)
-                fprintf(fp, "unk4 ");
-
         fprintf(fp, "\n");
-
-        if (verbose) {
-                fprintf(fp, "# clause type %d, next clause type %d\n",
-                       header.clause_type, header.next_clause_type);
-        }
 }
 
 static struct bifrost_reg_ctrl DecodeRegCtrl(FILE *fp, struct bifrost_regs regs, bool first)
@@ -195,9 +186,9 @@ static void dump_regs(FILE *fp, struct bifrost_regs srcs, bool first)
         else if (ctrl.slot23.slot3 == BIFROST_OP_WRITE_HI)
                 fprintf(fp, "slot 3: r%d (write hi %s) ", srcs.reg3, slot3_fma);
 
-        if (srcs.uniform_const) {
-                if (srcs.uniform_const & 0x80) {
-                        fprintf(fp, "uniform: u%d", (srcs.uniform_const & 0x7f) * 2);
+        if (srcs.fau_idx) {
+                if (srcs.fau_idx & 0x80) {
+                        fprintf(fp, "uniform: u%d", (srcs.fau_idx & 0x7f) * 2);
                 }
         }
 
@@ -235,10 +226,10 @@ bi_disasm_dest_add(FILE *fp, struct bifrost_regs *next_regs, bool last)
     struct bifrost_reg_ctrl ctrl = DecodeRegCtrl(fp, *next_regs, last);
 
     if (ctrl.slot23.slot3 >= BIFROST_OP_WRITE && !ctrl.slot23.slot3_fma) {
-        fprintf(fp, "r%u:t0", next_regs->reg3);
+        fprintf(fp, "r%u:t1", next_regs->reg3);
         bi_disasm_dest_mask(fp, ctrl.slot23.slot3);
     } else
-        fprintf(fp, "t0");
+        fprintf(fp, "t1");
 }
 
 static void dump_const_imm(FILE *fp, uint32_t imm)
@@ -300,15 +291,15 @@ const_fau_to_idx(unsigned fau_value)
         return map[fau_value];
 }
 
-static void dump_uniform_const_src(FILE *fp, struct bifrost_regs srcs, struct bi_constants *consts, bool high32)
+static void dump_fau_src(FILE *fp, struct bifrost_regs srcs, struct bi_constants *consts, bool high32)
 {
-        if (srcs.uniform_const & 0x80) {
-                unsigned uniform = (srcs.uniform_const & 0x7f);
+        if (srcs.fau_idx & 0x80) {
+                unsigned uniform = (srcs.fau_idx & 0x7f);
                 fprintf(fp, "u%d.w%d", uniform, high32);
-        } else if (srcs.uniform_const >= 0x20) {
-                unsigned idx = const_fau_to_idx(srcs.uniform_const >> 4);
+        } else if (srcs.fau_idx >= 0x20) {
+                unsigned idx = const_fau_to_idx(srcs.fau_idx >> 4);
                 uint64_t imm = consts->raw[idx];
-                imm |= (srcs.uniform_const & 0xf);
+                imm |= (srcs.fau_idx & 0xf);
                 if (consts->mods[idx] != BI_CONSTMOD_NONE)
                         dump_pc_imm(fp, imm, consts->mods[idx], high32);
                 else if (high32)
@@ -316,7 +307,7 @@ static void dump_uniform_const_src(FILE *fp, struct bifrost_regs srcs, struct bi
                 else
                         dump_const_imm(fp, imm);
         } else {
-                switch (srcs.uniform_const) {
+                switch (srcs.fau_idx) {
                 case 0:
                         fprintf(fp, "#0");
                         break;
@@ -346,10 +337,10 @@ static void dump_uniform_const_src(FILE *fp, struct bifrost_regs srcs, struct bi
                 case 13:
                 case 14:
                 case 15:
-                        fprintf(fp, "blend_descriptor_%u", (unsigned) srcs.uniform_const - 8);
+                        fprintf(fp, "blend_descriptor_%u", (unsigned) srcs.fau_idx - 8);
                         break;
                 default:
-                        fprintf(fp, "XXX - reserved%u", (unsigned) srcs.uniform_const);
+                        fprintf(fp, "XXX - reserved%u", (unsigned) srcs.fau_idx);
                         break;
                 }
 
@@ -380,10 +371,10 @@ dump_src(FILE *fp, unsigned src, struct bifrost_regs srcs, struct bi_constants *
                         fprintf(fp, "t"); // i.e. the output of FMA this cycle
                 break;
         case 4:
-                dump_uniform_const_src(fp, srcs, consts, false);
+                dump_fau_src(fp, srcs, consts, false);
                 break;
         case 5:
-                dump_uniform_const_src(fp, srcs, consts, true);
+                dump_fau_src(fp, srcs, consts, true);
                 break;
         case 6:
                 fprintf(fp, "t0");
@@ -656,7 +647,7 @@ static bool dump_clause(FILE *fp, uint32_t *words, unsigned *size, unsigned offs
         struct bifrost_header header;
         memcpy((char *) &header, (char *) &header_bits, sizeof(struct bifrost_header));
         dump_header(fp, header, verbose);
-        if (!header.no_end_of_shader)
+        if (header.flow_control == BIFROST_FLOW_END)
                 stopbit = true;
 
         fprintf(fp, "{\n");
@@ -677,10 +668,13 @@ static bool dump_clause(FILE *fp, uint32_t *words, unsigned *size, unsigned offs
                         dump_regs(fp, regs, i == 0);
                 }
 
-                bi_disasm_fma(fp, instrs[i].fma_bits, &regs, &next_regs, header.datareg,
-                              offset, &consts, i + 1 == num_instrs);
-                bi_disasm_add(fp, instrs[i].add_bits, &regs, &next_regs, header.datareg,
-                              offset, &consts, i + 1 == num_instrs);
+                bi_disasm_fma(fp, instrs[i].fma_bits, &regs, &next_regs,
+                                header.staging_register, offset, &consts,
+                                i + 1 == num_instrs);
+
+                bi_disasm_add(fp, instrs[i].add_bits, &regs, &next_regs,
+                                header.staging_register, offset, &consts,
+                                i + 1 == num_instrs);
         }
         fprintf(fp, "}\n");
 

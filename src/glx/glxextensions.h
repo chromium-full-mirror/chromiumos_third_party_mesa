@@ -74,7 +74,11 @@ enum
    SGI_make_current_read_bit,
    SGI_swap_control_bit,
    SGI_video_sync_bit,
+
+   __NUM_GLX_EXTS,
 };
+
+#define __GLX_EXT_BYTES   ((__NUM_GLX_EXTS + 7) / 8)
 
 /* From the GLX perspective, the ARB and EXT extensions are identical.  Use a
  * single bit for both.
@@ -261,6 +265,10 @@ extern void __glXCalculateUsableExtensions(struct glx_screen *psc,
                                            display_is_direct_capable,
                                            int server_minor_version);
 
+extern void __glXParseExtensionOverride(struct glx_screen *psc,
+                                        const char *override);
+extern void __IndirectGlParseExtensionOverride(struct glx_screen *psc,
+                                               const char *override);
 extern void __glXCalculateUsableGLExtensions(struct glx_context *gc,
                                              const char *server_string,
                                              int major_version,

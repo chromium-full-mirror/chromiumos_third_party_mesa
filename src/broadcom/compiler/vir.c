@@ -210,6 +210,17 @@ vir_set_unpack(struct qinst *inst, int src,
 }
 
 void
+vir_set_pack(struct qinst *inst, enum v3d_qpu_output_pack pack)
+{
+        if (vir_is_add(inst)) {
+                inst->qpu.alu.add.output_pack = pack;
+        } else {
+                assert(vir_is_mul(inst));
+                inst->qpu.alu.mul.output_pack = pack;
+        }
+}
+
+void
 vir_set_cond(struct qinst *inst, enum v3d_qpu_cond cond)
 {
         if (vir_is_add(inst)) {
@@ -625,11 +636,19 @@ v3d_vs_set_prog_data(struct v3d_compile *c,
         }
 
         prog_data->uses_vid = (c->s->info.system_values_read &
-                               (1ull << SYSTEM_VALUE_VERTEX_ID));
+                               (1ull << SYSTEM_VALUE_VERTEX_ID |
+                                1ull << SYSTEM_VALUE_VERTEX_ID_ZERO_BASE));
+
+        prog_data->uses_biid = (c->s->info.system_values_read &
+                                (1ull << SYSTEM_VALUE_BASE_INSTANCE));
+
         prog_data->uses_iid = (c->s->info.system_values_read &
-                               (1ull << SYSTEM_VALUE_INSTANCE_ID));
+                               (1ull << SYSTEM_VALUE_INSTANCE_ID |
+                                1ull << SYSTEM_VALUE_INSTANCE_INDEX));
 
         if (prog_data->uses_vid)
+                prog_data->vpm_input_size++;
+        if (prog_data->uses_biid)
                 prog_data->vpm_input_size++;
         if (prog_data->uses_iid)
                 prog_data->vpm_input_size++;
@@ -741,6 +760,7 @@ v3d_fs_set_prog_data(struct v3d_compile *c,
                 c->uses_implicit_point_line_varyings;
         prog_data->lock_scoreboard_on_first_thrsw =
                 c->lock_scoreboard_on_first_thrsw;
+        prog_data->force_per_sample_msaa = c->force_per_sample_msaa;
 }
 
 static void
@@ -952,12 +972,6 @@ v3d_nir_lower_fs_late(struct v3d_compile *c)
         if (c->fs_key->clamp_color)
                 NIR_PASS_V(c->s, nir_lower_clamp_color_outputs);
 
-        if (c->fs_key->alpha_test) {
-                NIR_PASS_V(c->s, nir_lower_alpha_test,
-                           c->fs_key->alpha_test_func,
-                           false, NULL);
-        }
-
         /* In OpenGL the fragment shader can't read gl_ClipDistance[], but
          * Vulkan allows it, in which case the SPIR-V compiler will declare
          * VARING_SLOT_CLIP_DIST0 as compact array variable. Pass true as
@@ -1105,6 +1119,17 @@ v3d_attempt_compile(struct v3d_compile *c)
         NIR_PASS_V(c->s, v3d_nir_lower_txf_ms, c);
         NIR_PASS_V(c->s, v3d_nir_lower_image_load_store);
         NIR_PASS_V(c->s, nir_lower_idiv, nir_lower_idiv_fast);
+
+        if (c->key->robust_buffer_access) {
+           /* v3d_nir_lower_robust_buffer_access assumes constant buffer
+            * indices on ubo/ssbo intrinsics so run a copy propagation pass
+            * before we run the lowering to warrant this. We also want to run
+            * the lowering before v3d_optimize to clean-up redundant
+            * get_buffer_size calls produced in the pass.
+            */
+           NIR_PASS_V(c->s, nir_copy_prop);
+           NIR_PASS_V(c->s, v3d_nir_lower_robust_buffer_access, c);
+        }
 
         v3d_optimize_nir(c->s);
 

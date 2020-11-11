@@ -424,6 +424,15 @@ schedule_node::set_latency_gen7(bool is_haswell)
 
       case GEN7_SFID_DATAPORT_DATA_CACHE:
          switch ((inst->desc >> 14) & 0x1f) {
+         case BRW_DATAPORT_READ_MESSAGE_OWORD_BLOCK_READ:
+         case GEN7_DATAPORT_DC_UNALIGNED_OWORD_BLOCK_READ:
+         case GEN6_DATAPORT_WRITE_MESSAGE_OWORD_BLOCK_WRITE:
+            /* We have no data for this but assume it's a little faster than
+             * untyped surface read/write.
+             */
+            latency = 200;
+            break;
+
          case GEN7_DATAPORT_DC_DWORD_SCATTERED_READ:
          case GEN6_DATAPORT_WRITE_MESSAGE_DWORD_SCATTERED_WRITE:
          case HSW_DATAPORT_DC_PORT0_BYTE_SCATTERED_READ:
@@ -493,6 +502,8 @@ schedule_node::set_latency_gen7(bool is_haswell)
          case GEN8_DATAPORT_DC_PORT1_A64_UNTYPED_SURFACE_READ:
          case GEN8_DATAPORT_DC_PORT1_A64_SCATTERED_WRITE:
          case GEN9_DATAPORT_DC_PORT1_A64_SCATTERED_READ:
+         case GEN9_DATAPORT_DC_PORT1_A64_OWORD_BLOCK_READ:
+         case GEN9_DATAPORT_DC_PORT1_A64_OWORD_BLOCK_WRITE:
             /* See also GEN7_DATAPORT_DC_UNTYPED_SURFACE_READ */
             latency = 300;
             break;

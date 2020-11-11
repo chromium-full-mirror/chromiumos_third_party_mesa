@@ -60,7 +60,7 @@ genX(cmd_buffer_emit_state_base_address)(struct anv_cmd_buffer *cmd_buffer)
 {
    struct anv_device *device = cmd_buffer->device;
    UNUSED const struct gen_device_info *devinfo = &device->info;
-   uint32_t mocs = device->isl_dev.mocs.internal;
+   uint32_t mocs = isl_mocs(&device->isl_dev, 0);
 
    /* If we are emitting a new state base address we probably need to re-emit
     * binding tables.
@@ -572,7 +572,7 @@ transition_depth_buffer(struct anv_cmd_buffer *cmd_buffer,
        cmd_buffer->device->physical->has_implicit_ccs &&
        cmd_buffer->device->info.has_aux_map) {
       anv_image_init_aux_tt(cmd_buffer, image, VK_IMAGE_ASPECT_DEPTH_BIT,
-                            0, 1, 0, 1);
+                            0, 1, base_layer, layer_count);
    }
 #endif
 
@@ -637,7 +637,8 @@ transition_stencil_buffer(struct anv_cmd_buffer *cmd_buffer,
                           uint32_t base_level, uint32_t level_count,
                           uint32_t base_layer, uint32_t layer_count,
                           VkImageLayout initial_layout,
-                          VkImageLayout final_layout)
+                          VkImageLayout final_layout,
+                          bool will_full_fast_clear)
 {
 #if GEN_GEN == 7
    uint32_t plane = anv_image_aspect_to_plane(image->aspects,
@@ -667,7 +668,51 @@ transition_stencil_buffer(struct anv_cmd_buffer *cmd_buffer,
                                base_level, level_count,
                                base_layer, layer_count);
    }
-#endif /* GEN_GEN == 7 */
+#elif GEN_GEN == 12
+   uint32_t plane = anv_image_aspect_to_plane(image->aspects,
+                                              VK_IMAGE_ASPECT_STENCIL_BIT);
+   if (image->planes[plane].aux_usage == ISL_AUX_USAGE_NONE)
+      return;
+
+   if ((initial_layout == VK_IMAGE_LAYOUT_UNDEFINED ||
+        initial_layout == VK_IMAGE_LAYOUT_PREINITIALIZED) &&
+       cmd_buffer->device->physical->has_implicit_ccs &&
+       cmd_buffer->device->info.has_aux_map) {
+      anv_image_init_aux_tt(cmd_buffer, image, VK_IMAGE_ASPECT_STENCIL_BIT,
+                            base_level, level_count, base_layer, layer_count);
+
+      /* If will_full_fast_clear is set, the caller promises to fast-clear the
+       * largest portion of the specified range as it can.
+       */
+      if (will_full_fast_clear)
+         return;
+
+      for (uint32_t l = 0; l < level_count; l++) {
+         const uint32_t level = base_level + l;
+         const VkRect2D clear_rect = {
+            .offset.x = 0,
+            .offset.y = 0,
+            .extent.width = anv_minify(image->extent.width, level),
+            .extent.height = anv_minify(image->extent.height, level),
+         };
+
+         uint32_t aux_layers =
+            anv_image_aux_layers(image, VK_IMAGE_ASPECT_STENCIL_BIT, level);
+         uint32_t level_layer_count =
+            MIN2(layer_count, aux_layers - base_layer);
+
+         /* From Bspec's 3DSTATE_STENCIL_BUFFER_BODY > Stencil Compression
+          * Enable:
+          *
+          *    "When enabled, Stencil Buffer needs to be initialized via
+          *    stencil clear (HZ_OP) before any renderpass."
+          */
+         anv_image_hiz_clear(cmd_buffer, image, VK_IMAGE_ASPECT_STENCIL_BIT,
+                             level, base_layer, level_layer_count,
+                             clear_rect, 0 /* Stencil clear value */);
+      }
+   }
+#endif
 }
 
 #define MI_PREDICATE_SRC0    0x2400
@@ -1536,8 +1581,17 @@ genX(BeginCommandBuffer)(
 
    cmd_buffer->usage_flags = pBeginInfo->flags;
 
-   assert(cmd_buffer->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY ||
-          !(cmd_buffer->usage_flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT));
+   /* VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT must be ignored for
+    * primary level command buffers.
+    *
+    * From the Vulkan 1.0 spec:
+    *
+    *    VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT specifies that a
+    *    secondary command buffer is considered to be entirely inside a render
+    *    pass. If this is a primary command buffer, then this bit is ignored.
+    */
+   if (cmd_buffer->level == VK_COMMAND_BUFFER_LEVEL_PRIMARY)
+      cmd_buffer->usage_flags &= ~VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
 
    genX(cmd_buffer_emit_state_base_address)(cmd_buffer);
 
@@ -2345,7 +2399,8 @@ void genX(CmdPipelineBarrier)(
                                    anv_get_levelCount(image, range),
                                    base_layer, layer_count,
                                    pImageMemoryBarriers[i].oldLayout,
-                                   pImageMemoryBarriers[i].newLayout);
+                                   pImageMemoryBarriers[i].newLayout,
+                                   false /* will_full_fast_clear */);
       }
 
       if (range->aspectMask & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) {
@@ -2543,6 +2598,7 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
                                                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
          anv_fill_buffer_surface_state(cmd_buffer->device,
                                        surface_state, format,
+                                       ISL_SURF_USAGE_CONSTANT_BUFFER_BIT,
                                        constant_data, constant_data_size, 1);
 
          assert(surface_state.map);
@@ -2563,6 +2619,7 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
                                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
          anv_fill_buffer_surface_state(cmd_buffer->device, surface_state,
                                        format,
+                                       ISL_SURF_USAGE_CONSTANT_BUFFER_BIT,
                                        cmd_buffer->state.compute.num_workgroups,
                                        12, 1);
 
@@ -2591,8 +2648,25 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
 
       default: {
          assert(binding->set < MAX_SETS);
-         const struct anv_descriptor *desc =
-            &pipe_state->descriptors[binding->set]->descriptors[binding->index];
+         const struct anv_descriptor_set *set =
+            pipe_state->descriptors[binding->set];
+         if (binding->index >= set->descriptor_count) {
+            /* From the Vulkan spec section entitled "DescriptorSet and
+             * Binding Assignment":
+             *
+             *    "If the array is runtime-sized, then array elements greater
+             *    than or equal to the size of that binding in the bound
+             *    descriptor set must not be used."
+             *
+             * Unfortunately, the compiler isn't smart enough to figure out
+             * when a dynamic binding isn't used so it may grab the whole
+             * array and stick it in the binding table.  In this case, it's
+             * safe to just skip those bindings that are OOB.
+             */
+            assert(binding->index < set->layout->descriptor_count);
+            continue;
+         }
+         const struct anv_descriptor *desc = &set->descriptors[binding->index];
 
          switch (desc->type) {
          case VK_DESCRIPTOR_TYPE_SAMPLER:
@@ -2698,8 +2772,13 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
                   anv_isl_format_for_descriptor_type(cmd_buffer->device,
                                                      desc->type);
 
+               isl_surf_usage_flags_t usage =
+                  desc->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ?
+                  ISL_SURF_USAGE_CONSTANT_BUFFER_BIT :
+                  ISL_SURF_USAGE_STORAGE_BIT;
+
                anv_fill_buffer_surface_state(cmd_buffer->device, surface_state,
-                                             format, address, range, 1);
+                                             format, usage, address, range, 1);
                if (need_client_mem_relocs)
                   add_surface_reloc(cmd_buffer, surface_state, address);
             } else {
@@ -3070,7 +3149,7 @@ cmd_buffer_emit_push_constant(struct anv_cmd_buffer *cmd_buffer,
           * same bit of memory for both scanout and a UBO is nuts.  Let's not
           * bother and assume it's all internal.
           */
-         c.MOCS = cmd_buffer->device->isl_dev.mocs.internal;
+         c.MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0);
 #endif
 
 #if GEN_GEN >= 8 || GEN_IS_HASWELL
@@ -3134,7 +3213,7 @@ cmd_buffer_emit_push_constant_all(struct anv_cmd_buffer *cmd_buffer,
    if (buffer_count == 0) {
       anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_CONSTANT_ALL), c) {
          c.ShaderUpdateEnable = shader_mask;
-         c.MOCS = cmd_buffer->device->isl_dev.mocs.internal;
+         c.MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0);
       }
       return;
    }
@@ -3166,7 +3245,7 @@ cmd_buffer_emit_push_constant_all(struct anv_cmd_buffer *cmd_buffer,
                         GENX(3DSTATE_CONSTANT_ALL),
                         .ShaderUpdateEnable = shader_mask,
                         .PointerBufferMask = buffer_mask,
-                        .MOCS = cmd_buffer->device->isl_dev.mocs.internal);
+                        .MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0));
 
    for (int i = 0; i < buffer_count; i++) {
       const struct anv_push_range *range = &bind_map->push_ranges[i];
@@ -3391,7 +3470,8 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
             state = (struct GENX(VERTEX_BUFFER_STATE)) {
                .VertexBufferIndex = vb,
 
-               .MOCS = anv_mocs_for_bo(cmd_buffer->device, buffer->address.bo),
+               .MOCS = anv_mocs(cmd_buffer->device, buffer->address.bo,
+                                ISL_SURF_USAGE_VERTEX_BUFFER_BIT),
 #if GEN_GEN <= 7
                .BufferAccessType = pipeline->vb[vb].instanced ? INSTANCEDATA : VERTEXDATA,
                .InstanceDataStepRate = pipeline->vb[vb].instance_divisor,
@@ -3444,7 +3524,7 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
 #endif
 
             if (cmd_buffer->state.xfb_enabled && xfb->buffer && xfb->size != 0) {
-               sob.MOCS = cmd_buffer->device->isl_dev.mocs.internal,
+               sob.MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0);
                sob.SurfaceBaseAddress = anv_address_add(xfb->buffer->address,
                                                         xfb->offset);
 #if GEN_GEN >= 8
@@ -3565,7 +3645,8 @@ emit_vertex_bo(struct anv_cmd_buffer *cmd_buffer,
          .VertexBufferIndex = index,
          .AddressModifyEnable = true,
          .BufferPitch = 0,
-         .MOCS = addr.bo ? anv_mocs_for_bo(cmd_buffer->device, addr.bo) : 0,
+         .MOCS = addr.bo ? anv_mocs(cmd_buffer->device, addr.bo,
+                                    ISL_SURF_USAGE_VERTEX_BUFFER_BIT) : 0,
          .NullVertexBuffer = size == 0,
 #if (GEN_GEN >= 8)
          .BufferStartingAddress = addr,
@@ -4998,7 +5079,8 @@ cmd_buffer_emit_depth_stencil(struct anv_cmd_buffer *cmd_buffer)
                               image->planes[depth_plane].address.offset +
                               surface->offset);
       info.mocs =
-         anv_mocs_for_bo(device, image->planes[depth_plane].address.bo);
+         anv_mocs(device, image->planes[depth_plane].address.bo,
+                  ISL_SURF_USAGE_DEPTH_BIT);
 
       const uint32_t ds =
          cmd_buffer->state.subpass->depth_stencil_attachment->attachment;
@@ -5025,6 +5107,7 @@ cmd_buffer_emit_depth_stencil(struct anv_cmd_buffer *cmd_buffer)
 
       info.stencil_surf = &surface->isl;
 
+      info.stencil_aux_usage = image->planes[stencil_plane].aux_usage;
       info.stencil_address =
          anv_batch_emit_reloc(&cmd_buffer->batch,
                               dw + device->isl_dev.ds.stencil_offset / 4,
@@ -5032,7 +5115,8 @@ cmd_buffer_emit_depth_stencil(struct anv_cmd_buffer *cmd_buffer)
                               image->planes[stencil_plane].address.offset +
                               surface->offset);
       info.mocs =
-         anv_mocs_for_bo(device, image->planes[stencil_plane].address.bo);
+         anv_mocs(device, image->planes[stencil_plane].address.bo,
+                  ISL_SURF_USAGE_STENCIL_BIT);
    }
 
    isl_emit_depth_stencil_hiz_s(&device->isl_dev, dw, &info);
@@ -5199,10 +5283,15 @@ cmd_buffer_begin_subpass(struct anv_cmd_buffer *cmd_buffer,
       }
 
       if (image->aspects & VK_IMAGE_ASPECT_STENCIL_BIT) {
+         bool will_full_fast_clear =
+            (att_state->pending_clear_aspects & VK_IMAGE_ASPECT_STENCIL_BIT) &&
+            att_state->fast_clear && full_surface_draw;
+
          transition_stencil_buffer(cmd_buffer, image,
                                    level, 1, base_layer, layer_count,
                                    att_state->current_stencil_layout,
-                                   target_stencil_layout);
+                                   target_stencil_layout,
+                                   will_full_fast_clear);
       }
       att_state->current_layout = target_layout;
       att_state->current_stencil_layout = target_stencil_layout;
@@ -5745,7 +5834,10 @@ cmd_buffer_end_subpass(struct anv_cmd_buffer *cmd_buffer)
          dst_state->current_stencil_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
          enum isl_aux_usage src_aux_usage = ISL_AUX_USAGE_NONE;
-         enum isl_aux_usage dst_aux_usage = ISL_AUX_USAGE_NONE;
+         uint32_t plane = anv_image_aspect_to_plane(dst_iview->image->aspects,
+                                                    VK_IMAGE_ASPECT_STENCIL_BIT);
+         enum isl_aux_usage dst_aux_usage =
+            dst_iview->image->planes[plane].aux_usage;
 
          enum blorp_filter filter =
             vk_to_blorp_resolve_mode(subpass->stencil_resolve_mode);
@@ -5858,7 +5950,8 @@ cmd_buffer_end_subpass(struct anv_cmd_buffer *cmd_buffer)
                                    iview->planes[0].isl.base_level, 1,
                                    base_layer, layer_count,
                                    att_state->current_stencil_layout,
-                                   target_stencil_layout);
+                                   target_stencil_layout,
+                                   false /* will_full_fast_clear */);
       }
    }
 

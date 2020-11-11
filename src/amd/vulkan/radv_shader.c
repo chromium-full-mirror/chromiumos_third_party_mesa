@@ -25,6 +25,7 @@
  * IN THE SOFTWARE.
  */
 
+#include "util/memstream.h"
 #include "util/mesa-sha1.h"
 #include "util/u_atomic.h"
 #include "radv_debug.h"
@@ -45,25 +46,25 @@
 #include "util/debug.h"
 #include "ac_exp_param.h"
 
-#include "aco_interface.h"
-
-static const struct nir_shader_compiler_options nir_options_llvm = {
+static const struct nir_shader_compiler_options nir_options = {
 	.vertex_id_zero_based = true,
 	.lower_scmp = true,
 	.lower_flrp16 = true,
 	.lower_flrp32 = true,
 	.lower_flrp64 = true,
 	.lower_device_index_to_zero = true,
-	.lower_fsat = true,
 	.lower_fdiv = true,
 	.lower_fmod = true,
 	.lower_bitfield_insert_to_bitfield_select = true,
 	.lower_bitfield_extract = true,
-	.lower_sub = true,
 	.lower_pack_snorm_2x16 = true,
 	.lower_pack_snorm_4x8 = true,
 	.lower_pack_unorm_2x16 = true,
 	.lower_pack_unorm_4x8 = true,
+	.lower_pack_half_2x16 = true,
+	.lower_pack_64_2x32 = true,
+	.lower_pack_64_4x16 = true,
+	.lower_pack_32_2x16 = true,
 	.lower_unpack_snorm_2x16 = true,
 	.lower_unpack_snorm_4x8 = true,
 	.lower_unpack_unorm_2x16 = true,
@@ -92,49 +93,7 @@ static const struct nir_shader_compiler_options nir_options_llvm = {
 				 nir_lower_dsqrt |
 				 nir_lower_drsq |
 				 nir_lower_ddiv,
-};
-
-static const struct nir_shader_compiler_options nir_options_aco = {
-	.vertex_id_zero_based = true,
-	.lower_scmp = true,
-	.lower_flrp16 = true,
-	.lower_flrp32 = true,
-	.lower_flrp64 = true,
-	.lower_device_index_to_zero = true,
-	.lower_fdiv = true,
-	.lower_fmod = true,
-	.lower_bitfield_insert_to_bitfield_select = true,
-	.lower_bitfield_extract = true,
-	.lower_pack_snorm_2x16 = true,
-	.lower_pack_snorm_4x8 = true,
-	.lower_pack_unorm_2x16 = true,
-	.lower_pack_unorm_4x8 = true,
-	.lower_unpack_snorm_2x16 = true,
-	.lower_unpack_snorm_4x8 = true,
-	.lower_unpack_unorm_2x16 = true,
-	.lower_unpack_unorm_4x8 = true,
-	.lower_unpack_half_2x16 = true,
-	.lower_extract_byte = true,
-	.lower_extract_word = true,
-	.lower_ffma16 = true,
-	.lower_ffma32 = true,
-	.lower_ffma64 = true,
-	.lower_fpow = true,
-	.lower_mul_2x32_64 = true,
-	.lower_rotate = true,
-	.use_scoped_barrier = true,
-	.max_unroll_iterations = 32,
-	.use_interpolated_input_intrinsics = true,
-	.lower_int64_options = nir_lower_imul64 |
-                               nir_lower_imul_high64 |
-                               nir_lower_imul_2x32_64 |
-                               nir_lower_divmod64 |
-                               nir_lower_minmax64 |
-                               nir_lower_iabs64,
-	.lower_doubles_options = nir_lower_drcp |
-				 nir_lower_dsqrt |
-				 nir_lower_drsq |
-				 nir_lower_ddiv,
+   .divergence_analysis_options = nir_divergence_view_index_uniform,
 };
 
 bool
@@ -224,7 +183,6 @@ radv_optimize_nir(struct nir_shader *shader, bool optimize_conservatively,
 		NIR_PASS(progress, shader, nir_shrink_vec_array_vars, nir_var_function_temp);
 
                 NIR_PASS_V(shader, nir_lower_vars_to_ssa);
-		NIR_PASS_V(shader, nir_lower_pack);
 
 		if (allow_copies) {
 			/* Only run this pass in the first call to
@@ -398,15 +356,13 @@ radv_shader_compile_to_nir(struct radv_device *device,
 			   unsigned subgroup_size, unsigned ballot_bit_size)
 {
 	nir_shader *nir;
-	const nir_shader_compiler_options *nir_options =
-		radv_use_llvm_for_stage(device, stage) ? &nir_options_llvm : &nir_options_aco;
 
 	if (module->nir) {
 		/* Some things such as our meta clear/blit code will give us a NIR
 		 * shader directly.  In that case, we just ignore the SPIR-V entirely
 		 * and just use the NIR shader */
 		nir = module->nir;
-		nir->options = nir_options;
+		nir->options = &nir_options;
 		nir_validate_shader(nir, "in internal shader");
 
 		assert(exec_list_length(&nir->functions) == 1);
@@ -473,6 +429,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				.float32_atomic_add = true,
 				.float64 = true,
 				.geometry_streams = true,
+				.image_atomic_int64 = true,
 				.image_ms_array = true,
 				.image_read_without_format = true,
 				.image_write_without_format = true,
@@ -517,7 +474,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 		nir = spirv_to_nir(spirv, module->size / 4,
 				   spec_entries, num_spec_entries,
 				   stage, entrypoint_name,
-				   &spirv_options, nir_options);
+				   &spirv_options, &nir_options);
 		assert(nir->info.stage == stage);
 		nir_validate_shader(nir, "after spirv_to_nir");
 
@@ -600,8 +557,18 @@ radv_shader_compile_to_nir(struct radv_device *device,
 
 	nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
 
-	if (nir->info.stage == MESA_SHADER_GEOMETRY)
-		nir_lower_gs_intrinsics(nir, true);
+	if (nir->info.stage == MESA_SHADER_GEOMETRY) {
+		unsigned nir_gs_flags = nir_lower_gs_intrinsics_per_stream;
+
+		if (device->physical_device->use_ngg && !radv_use_llvm_for_stage(device, stage)) {
+			/* ACO needs NIR to do some of the hard lifting */
+			nir_gs_flags |= nir_lower_gs_intrinsics_count_primitives |
+			                nir_lower_gs_intrinsics_count_vertices_per_primitive |
+							nir_lower_gs_intrinsics_overwrite_incomplete;
+		}
+
+		nir_lower_gs_intrinsics(nir, nir_gs_flags);
+	}
 
 	static const nir_lower_tex_options tex_options = {
 	  .lower_txp = ~0,
@@ -638,6 +605,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 			.lower_quad_broadcast_dynamic = 1,
 			.lower_quad_broadcast_dynamic_to_const = gfx7minus,
 			.lower_shuffle_to_swizzle_amd = 1,
+			.lower_elect = radv_use_llvm_for_stage(device, stage),
 		});
 
 	nir_lower_load_const_to_scalar(nir);
@@ -686,8 +654,12 @@ radv_shader_compile_to_nir(struct radv_device *device,
 	 * bloat the instruction count of the loop and cause it to be
 	 * considered too large for unrolling.
 	 */
-	ac_lower_indirect_derefs(nir, device->physical_device->rad_info.chip_class);
-	radv_optimize_nir(nir, flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT, false);
+	if (ac_lower_indirect_derefs(nir, device->physical_device->rad_info.chip_class) &&
+	    !(flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT) &&
+	    nir->info.stage != MESA_SHADER_COMPUTE) {
+		/* Optimize the lowered code before the linking optimizations. */
+		radv_optimize_nir(nir, false, false);
+	}
 
 	return nir;
 }
@@ -1256,11 +1228,12 @@ radv_dump_nir_shaders(struct nir_shader * const *shaders,
 	char *data = NULL;
 	char *ret = NULL;
 	size_t size = 0;
-	FILE *f = open_memstream(&data, &size);
-	if (f) {
+	struct u_memstream mem;
+	if (u_memstream_open(&mem, &data, &size)) {
+		FILE *const memf = u_memstream_get(&mem);
 		for (int i = 0; i < shader_count; ++i)
-			nir_print_shader(shaders[i], f);
-		fclose(f);
+			nir_print_shader(shaders[i], memf);
+		u_memstream_close(&mem);
 	}
 
 	ret = malloc(size + 1);
@@ -1310,7 +1283,7 @@ shader_variant_compile(struct radv_device *device,
 	options->debug.func = radv_compiler_debug;
 	options->debug.private_data = &debug_data;
 
-	struct radv_shader_args args = {};
+	struct radv_shader_args args = {0};
 	args.options = options;
 	args.shader_info = info;
 	args.is_gs_copy_shader = gs_copy_shader;
@@ -1594,7 +1567,7 @@ radv_GetShaderInfoAMD(VkDevice _device,
 			unsigned lds_multiplier = device->physical_device->rad_info.chip_class >= GFX7 ? 512 : 256;
 			struct ac_shader_config *conf = &variant->config;
 
-			VkShaderStatisticsInfoAMD statistics = {};
+			VkShaderStatisticsInfoAMD statistics = {0};
 			statistics.shaderStageMask = shaderStage;
 			statistics.numPhysicalVgprs = device->physical_device->rad_info.num_physical_wave64_vgprs_per_simd;
 			statistics.numPhysicalSgprs = device->physical_device->rad_info.num_physical_sgprs_per_simd;
@@ -1633,13 +1606,15 @@ radv_GetShaderInfoAMD(VkDevice _device,
 	case VK_SHADER_INFO_TYPE_DISASSEMBLY_AMD: {
 		char *out;
 	        size_t outsize;
-	        FILE *memf = open_memstream(&out, &outsize);
+		struct u_memstream mem;
+		u_memstream_open(&mem, &out, &outsize);
+		FILE *const memf = u_memstream_get(&mem);
 
 		fprintf(memf, "%s:\n", radv_get_shader_name(&variant->info, stage));
 		fprintf(memf, "%s\n\n", variant->ir_string);
 		fprintf(memf, "%s\n\n", variant->disasm_string);
 		radv_dump_shader_stats(device, pipeline, stage, memf);
-		fclose(memf);
+		u_memstream_close(&mem);
 
 		/* Need to include the null terminator. */
 		size_t length = outsize + 1;
@@ -1678,7 +1653,7 @@ radv_dump_shader_stats(struct radv_device *device,
 	uint32_t prop_count = 0;
 	VkResult result;
 
-	VkPipelineInfoKHR pipeline_info = {};
+	VkPipelineInfoKHR pipeline_info = {0};
 	pipeline_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR;
 	pipeline_info.pipeline = radv_pipeline_to_handle(pipeline);
 
@@ -1706,7 +1681,7 @@ radv_dump_shader_stats(struct radv_device *device,
 		uint32_t stat_count = 0;
 		VkResult result;
 
-		VkPipelineExecutableInfoKHR exec_info = {};
+		VkPipelineExecutableInfoKHR exec_info = {0};
 		exec_info.pipeline = radv_pipeline_to_handle(pipeline);
 		exec_info.executableIndex = i;
 

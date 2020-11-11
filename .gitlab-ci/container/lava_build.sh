@@ -17,11 +17,14 @@ check_minio "${CI_PROJECT_PATH}"
 
 . .gitlab-ci/container/container_pre_build.sh
 
+# Install rust, which we'll be using for deqp-runner.  It will be cleaned up at the end.
+. .gitlab-ci/build-rust.sh
+
 if [[ "$DEBIAN_ARCH" = "arm64" ]]; then
     GCC_ARCH="aarch64-linux-gnu"
     KERNEL_ARCH="arm64"
     DEFCONFIG="arch/arm64/configs/defconfig"
-    DEVICE_TREES="arch/arm64/boot/dts/rockchip/rk3399-gru-kevin.dtb arch/arm64/boot/dts/amlogic/meson-gxl-s905x-libretech-cc.dtb arch/arm64/boot/dts/allwinner/sun50i-h6-pine-h64.dtb arch/arm64/boot/dts/amlogic/meson-gxm-khadas-vim2.dtb arch/arm64/boot/dts/qcom/apq8016-sbc.dtb"
+    DEVICE_TREES="arch/arm64/boot/dts/rockchip/rk3399-gru-kevin.dtb arch/arm64/boot/dts/amlogic/meson-gxl-s905x-libretech-cc.dtb arch/arm64/boot/dts/allwinner/sun50i-h6-pine-h64.dtb arch/arm64/boot/dts/amlogic/meson-gxm-khadas-vim2.dtb arch/arm64/boot/dts/qcom/apq8016-sbc.dtb arch/arm64/boot/dts/amlogic/meson-g12b-a311d-khadas-vim3.dtb"
     KERNEL_IMAGE_NAME="Image"
 elif [[ "$DEBIAN_ARCH" = "armhf" ]]; then
     GCC_ARCH="arm-linux-gnueabihf"
@@ -42,6 +45,14 @@ fi
 if [[ -e /cross_file-$DEBIAN_ARCH.txt ]]; then
     EXTRA_MESON_ARGS="--cross-file /cross_file-$DEBIAN_ARCH.txt"
     EXTRA_CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=/toolchain-$DEBIAN_ARCH.cmake"
+
+    if [ $DEBIAN_ARCH = arm64 ]; then
+        RUST_TARGET="aarch64-unknown-linux-gnu"
+    elif [ $DEBIAN_ARCH = armhf ]; then
+        RUST_TARGET="armv7-unknown-linux-gnueabihf"
+    fi
+    rustup target add $RUST_TARGET
+    export EXTRA_CARGO_ARGS="--target $RUST_TARGET"
 
     export ARCH=${KERNEL_ARCH}
     export CROSS_COMPILE="${GCC_ARCH}-"
@@ -87,7 +98,8 @@ if [[ "$DEBIAN_ARCH" = "armhf" ]]; then
 fi
 
 ############### Build dEQP runner
-. .gitlab-ci/build-cts-runner.sh
+
+. .gitlab-ci/build-deqp-runner.sh
 mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/usr/bin
 mv /usr/local/bin/deqp-runner /lava-files/rootfs-${DEBIAN_ARCH}/usr/bin/.
 
@@ -131,6 +143,9 @@ mkdir -p kernel
 wget -qO- ${KERNEL_URL} | tar -xz --strip-components=1 -C kernel
 pushd kernel
 
+############### Delete rust, since the tests won't be compiling anything.
+rm -rf /root/.rustup /root/.cargo
+
 # The kernel doesn't like the gold linker (or the old lld in our debians).
 # Sneak in some override symlinks during kernel build until we can update
 # debian (they'll get blown away by the rm of the kernel dir at the end).
@@ -141,15 +156,22 @@ for i in /usr/bin/*-ld /usr/bin/ld; do
 done
 export PATH=`pwd`/ld-links:$PATH
 
+# Disable all modules in defconfig, so we only build the ones we want
+sed -i 's/=m/=n/g' ${DEFCONFIG}
+
 ./scripts/kconfig/merge_config.sh ${DEFCONFIG} ../.gitlab-ci/${KERNEL_ARCH}.config
 make ${KERNEL_IMAGE_NAME}
 for image in ${KERNEL_IMAGE_NAME}; do
     cp arch/${KERNEL_ARCH}/boot/${image} /lava-files/.
 done
+
 if [[ -n ${DEVICE_TREES} ]]; then
     make dtbs
     cp ${DEVICE_TREES} /lava-files/.
 fi
+
+make modules
+INSTALL_MOD_PATH=/lava-files/rootfs-${DEBIAN_ARCH}/ make modules_install
 
 if [[ ${DEBIAN_ARCH} = "arm64" ]] && which mkimage > /dev/null; then
     make Image.lzma

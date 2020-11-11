@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2019-2020 Collabora, Ltd.
  * Copyright 2018-2019 Alyssa Rosenzweig
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -44,50 +45,13 @@ panfrost_sfbd_format(struct pipe_surface *surf,
 
         fb->swizzle = panfrost_translate_swizzle_4(swizzle);
 
-        if (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB)
-                fb->srgb = true;
+        struct pan_blendable_format fmt = panfrost_blend_format(surf->format);
 
-        if (util_format_is_unorm8(desc)) {
-                fb->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8;
-                switch (desc->nr_channels) {
-                case 1:
-                        fb->color_writeback_format = MALI_SFBD_COLOR_FORMAT_R8;
-                        break;
-                case 2:
-                        fb->color_writeback_format = MALI_SFBD_COLOR_FORMAT_R8G8;
-                        break;
-                case 3:
-                        fb->color_writeback_format = MALI_SFBD_COLOR_FORMAT_R8G8B8;
-                        break;
-                case 4:
-                        fb->color_writeback_format = MALI_SFBD_COLOR_FORMAT_R8G8B8A8;
-                        break;
-                default:
-                        unreachable("Invalid number of components");
-                }
-
-                /* If 8b RGB variant, we're good to go */
-                return;
-        }
-
-        /* sRGB handled as a dedicated flag */
-        enum pipe_format linearized = util_format_linear(surf->format);
-
-        switch (linearized) {
-        case PIPE_FORMAT_B5G6R5_UNORM:
-                fb->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_R5G6B5A0;
-                fb->color_writeback_format = MALI_SFBD_COLOR_FORMAT_R5G6B5;
-                break;
-
-        case PIPE_FORMAT_A4B4G4R4_UNORM:
-        case PIPE_FORMAT_B4G4R4A4_UNORM:
-        case PIPE_FORMAT_R4G4B4A4_UNORM:
-                fb->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_R4G4B4A4;
-                fb->color_writeback_format = MALI_SFBD_COLOR_FORMAT_R4G4B4A4;
-                break;
-
-        default:
-                unreachable("Invalid format rendering");
+        if (fmt.internal) {
+                fb->internal_format = fmt.internal;
+                fb->color_writeback_format = fmt.writeback;
+        } else {
+                unreachable("raw formats not finished for SFBD");
         }
 }
 
@@ -155,9 +119,12 @@ panfrost_sfbd_set_zsbuf(
                 unreachable("Invalid render modifier.");
 
         fb->zs_block_format = MALI_BLOCK_FORMAT_TILED_U_INTERLEAVED;
-        fb->zs_writeback.base = rsrc->bo->gpu + rsrc->slices[level].offset;
+        fb->zs_writeback.base = rsrc->bo->ptr.gpu + rsrc->slices[level].offset;
         fb->zs_writeback.row_stride = rsrc->slices[level].stride * 16;
         switch (surf->format) {
+        case PIPE_FORMAT_Z16_UNORM:
+                fb->zs_format = MALI_ZS_FORMAT_D16;
+                break;
         case PIPE_FORMAT_Z24_UNORM_S8_UINT:
                 fb->zs_format = MALI_ZS_FORMAT_D24S8;
                 break;
@@ -201,7 +168,7 @@ panfrost_emit_sfdb_local_storage(struct panfrost_batch *batch, void *sfbd,
                         panfrost_batch_get_scratchpad(batch,
                                                       shift,
                                                       dev->thread_tls_alloc,
-                                                      dev->core_count)->gpu;
+                                                      dev->core_count)->ptr.gpu;
         }
 }
 
@@ -236,7 +203,7 @@ panfrost_attach_sfbd(struct panfrost_batch *batch, unsigned vertex_count)
 mali_ptr
 panfrost_sfbd_fragment(struct panfrost_batch *batch, bool has_draws)
 {
-        struct panfrost_transfer t =
+        struct panfrost_ptr t =
                 panfrost_pool_alloc_aligned(&batch->pool,
                                             MALI_SINGLE_TARGET_FRAMEBUFFER_LENGTH,
                                             64);
@@ -261,7 +228,7 @@ panfrost_sfbd_fragment(struct panfrost_batch *batch, bool has_draws)
                                 struct panfrost_slice *slice = &rsrc->slices[level];
 
                                 params.crc_buffer.row_stride = slice->checksum_stride;
-                                params.crc_buffer.base = bo->gpu + slice->checksum_offset;
+                                params.crc_buffer.base = bo->ptr.gpu + slice->checksum_offset;
                         }
                 }
 

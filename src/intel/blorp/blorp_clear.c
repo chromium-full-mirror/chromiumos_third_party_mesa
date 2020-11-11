@@ -64,7 +64,8 @@ blorp_params_get_clear_kernel(struct blorp_batch *batch,
    void *mem_ctx = ralloc_context(NULL);
 
    nir_builder b;
-   blorp_nir_init_shader(&b, mem_ctx, MESA_SHADER_FRAGMENT, "BLORP-clear");
+   blorp_nir_init_shader(&b, mem_ctx, MESA_SHADER_FRAGMENT,
+                         blorp_shader_type_to_name(blorp_key.shader_type));
 
    nir_variable *v_color =
       BLORP_CREATE_NIR_INPUT(b.shader, clear_color, glsl_vec4_type());
@@ -75,9 +76,9 @@ blorp_params_get_clear_kernel(struct blorp_batch *batch,
       nir_ssa_def *comp = nir_umod(&b, nir_channel(&b, pos, 0),
                                        nir_imm_int(&b, 3));
       nir_ssa_def *color_component =
-         nir_bcsel(&b, nir_ieq(&b, comp, nir_imm_int(&b, 0)),
+         nir_bcsel(&b, nir_ieq_imm(&b, comp, 0),
                        nir_channel(&b, color, 0),
-                       nir_bcsel(&b, nir_ieq(&b, comp, nir_imm_int(&b, 1)),
+                       nir_bcsel(&b, nir_ieq_imm(&b, comp, 1),
                                      nir_channel(&b, color, 1),
                                      nir_channel(&b, color, 2)));
 
@@ -143,7 +144,8 @@ blorp_params_get_layer_offset_vs(struct blorp_batch *batch,
    void *mem_ctx = ralloc_context(NULL);
 
    nir_builder b;
-   blorp_nir_init_shader(&b, mem_ctx, MESA_SHADER_VERTEX, "BLORP-layer-offset-vs");
+   blorp_nir_init_shader(&b, mem_ctx, MESA_SHADER_VERTEX,
+                         blorp_shader_type_to_name(blorp_key.shader_type));
 
    const struct glsl_type *uvec4_type = glsl_vector_type(GLSL_TYPE_UINT, 4);
 
@@ -1142,7 +1144,7 @@ blorp_params_get_mcs_partial_resolve_kernel(struct blorp_batch *batch,
 
    nir_builder b;
    blorp_nir_init_shader(&b, mem_ctx, MESA_SHADER_FRAGMENT,
-                         "BLORP-mcs-partial-resolve");
+                         blorp_shader_type_to_name(blorp_key.shader_type));
 
    nir_variable *v_color =
       BLORP_CREATE_NIR_INPUT(b.shader, clear_color, glsl_vec4_type());
