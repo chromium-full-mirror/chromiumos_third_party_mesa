@@ -222,6 +222,10 @@ lower_system_value_instr(nir_builder *b, nir_instr *instr, void *_state)
          return NULL;
       }
 
+   case nir_intrinsic_load_num_work_groups:
+   case nir_intrinsic_load_work_group_id:
+      return sanitize_32bit_sysval(b, intrin);
+
    case nir_intrinsic_load_deref: {
       nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
       if (deref->mode != nir_var_system_value)
@@ -266,6 +270,34 @@ lower_system_value_instr(nir_builder *b, nir_instr *instr, void *_state)
       case SYSTEM_VALUE_GLOBAL_GROUP_SIZE:
          return build_global_group_size(b, bit_size);
 
+      case SYSTEM_VALUE_BARYCENTRIC_LINEAR_PIXEL:
+         return nir_load_barycentric(b, nir_intrinsic_load_barycentric_pixel,
+                                     INTERP_MODE_NOPERSPECTIVE);
+
+      case SYSTEM_VALUE_BARYCENTRIC_LINEAR_CENTROID:
+         return nir_load_barycentric(b, nir_intrinsic_load_barycentric_centroid,
+                                     INTERP_MODE_NOPERSPECTIVE);
+
+      case SYSTEM_VALUE_BARYCENTRIC_LINEAR_SAMPLE:
+         return nir_load_barycentric(b, nir_intrinsic_load_barycentric_sample,
+                                     INTERP_MODE_NOPERSPECTIVE);
+
+      case SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL:
+         return nir_load_barycentric(b, nir_intrinsic_load_barycentric_pixel,
+                                     INTERP_MODE_SMOOTH);
+
+      case SYSTEM_VALUE_BARYCENTRIC_PERSP_CENTROID:
+         return nir_load_barycentric(b, nir_intrinsic_load_barycentric_centroid,
+                                     INTERP_MODE_SMOOTH);
+
+      case SYSTEM_VALUE_BARYCENTRIC_PERSP_SAMPLE:
+         return nir_load_barycentric(b, nir_intrinsic_load_barycentric_sample,
+                                     INTERP_MODE_SMOOTH);
+
+      case SYSTEM_VALUE_BARYCENTRIC_PULL_MODEL:
+         return nir_load_barycentric(b, nir_intrinsic_load_barycentric_model,
+                                     INTERP_MODE_NONE);
+
       default:
          break;
       }
@@ -273,6 +305,7 @@ lower_system_value_instr(nir_builder *b, nir_instr *instr, void *_state)
       nir_intrinsic_op sysval_op =
          nir_intrinsic_from_system_value(var->data.location);
       return nir_load_system_value(b, sysval_op, 0,
+                                      intrin->dest.ssa.num_components,
                                       intrin->dest.ssa.bit_size);
    }
 
@@ -295,7 +328,8 @@ nir_lower_system_values(nir_shader *shader)
    if (progress)
       nir_remove_dead_derefs(shader);
 
-   exec_list_make_empty(&shader->system_values);
+   nir_foreach_variable_with_modes_safe(var, shader, nir_var_system_value)
+      exec_node_remove(&var->node);
 
    return progress;
 }

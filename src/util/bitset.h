@@ -95,7 +95,21 @@ __bitset_ffs(const BITSET_WORD *x, int n)
    return 0;
 }
 
+/* Get the last bit set in a bitset.
+ */
+static inline int
+__bitset_last_bit(const BITSET_WORD *x, int n)
+{
+   for (int i = n - 1; i >= 0; i--) {
+      if (x[i])
+         return util_last_bit(x[i]) + BITSET_WORDBITS * i;
+   }
+
+   return 0;
+}
+
 #define BITSET_FFS(x) __bitset_ffs(x, ARRAY_SIZE(x))
+#define BITSET_LAST_BIT(x, size) __bitset_last_bit(x, size)
 
 static inline unsigned
 __bitset_next_set(unsigned i, BITSET_WORD *tmp,
@@ -129,9 +143,17 @@ __bitset_next_set(unsigned i, BITSET_WORD *tmp,
    return word * BITSET_WORDBITS + bit;
 }
 
-#define BITSET_FOREACH_SET(__i, __tmp, __set, __size) \
-   for (__tmp = *(__set), __i = 0; \
-        (__i = __bitset_next_set(__i, &__tmp, __set, __size)) < __size;)
+/**
+ * Iterates over each set bit in a set
+ *
+ * @param __i    iteration variable, bit number
+ * @param __set  the bitset to iterate (will not be modified)
+ * @param __size number of bits in the set to consider
+ */
+#define BITSET_FOREACH_SET(__i, __set, __size) \
+   for (BITSET_WORD __tmp = *(__set), *__foo = &__tmp; __foo != NULL; __foo = NULL) \
+      for (__i = 0; \
+           (__i = __bitset_next_set(__i, &__tmp, __set, __size)) < __size;)
 
 #ifdef __cplusplus
 

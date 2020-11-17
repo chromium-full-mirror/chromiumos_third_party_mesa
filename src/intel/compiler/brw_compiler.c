@@ -47,7 +47,10 @@
    .vectorize_io = true,                                                      \
    .use_interpolated_input_intrinsics = true,                                 \
    .vertex_id_zero_based = true,                                              \
-   .lower_base_vertex = true
+   .lower_base_vertex = true,                                                 \
+   .use_scoped_barrier = true,                                                \
+   .support_8bit_alu = true,                                                  \
+   .support_16bit_alu = true
 
 #define COMMON_SCALAR_OPTIONS                                                 \
    .lower_to_scalar = true,                                                   \
@@ -61,6 +64,9 @@
    .lower_unpack_snorm_4x8 = true,                                            \
    .lower_unpack_unorm_2x16 = true,                                           \
    .lower_unpack_unorm_4x8 = true,                                            \
+   .lower_usub_sat64 = true,                                                  \
+   .lower_hadd64 = true,                                                      \
+   .lower_bfe_with_two_constants = true,                                      \
    .max_unroll_iterations = 32
 
 static const struct nir_shader_compiler_options scalar_nir_options = {
@@ -139,16 +145,8 @@ brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo)
       nir_lower_dsub |
       nir_lower_ddiv;
 
-   if (!devinfo->has_64bit_types || (INTEL_DEBUG & DEBUG_SOFT64)) {
-      int64_options |= nir_lower_mov64 |
-                       nir_lower_icmp64 |
-                       nir_lower_iadd64 |
-                       nir_lower_iabs64 |
-                       nir_lower_ineg64 |
-                       nir_lower_logic64 |
-                       nir_lower_minmax64 |
-                       nir_lower_shift64 |
-                       nir_lower_extract64;
+   if (!devinfo->has_64bit_float || (INTEL_DEBUG & DEBUG_SOFT64)) {
+      int64_options |= (nir_lower_int64_options)~0;
       fp64_options |= nir_lower_fp64_full_software;
    }
 
@@ -194,6 +192,9 @@ brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo)
 
       nir_options->lower_int64_options = int64_options;
       nir_options->lower_doubles_options = fp64_options;
+
+      nir_options->unify_interfaces = i < MESA_SHADER_FRAGMENT;
+
       compiler->glsl_compiler_options[i].NirOptions = nir_options;
 
       compiler->glsl_compiler_options[i].ClampBlockIndicesToArrayBounds = true;

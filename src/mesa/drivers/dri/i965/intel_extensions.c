@@ -97,6 +97,7 @@ intelInitExtensions(struct gl_context *ctx)
    ctx->Extensions.EXT_blend_func_separate = true;
    ctx->Extensions.EXT_blend_minmax = true;
    ctx->Extensions.EXT_draw_buffers2 = true;
+   ctx->Extensions.EXT_EGL_image_storage = true;
    ctx->Extensions.EXT_float_blend = true;
    ctx->Extensions.EXT_framebuffer_sRGB = true;
    ctx->Extensions.EXT_gpu_program_parameters = true;
@@ -202,6 +203,7 @@ intelInitExtensions(struct gl_context *ctx)
       ctx->Extensions.ARB_texture_gather = true;
       ctx->Extensions.ARB_texture_multisample = true;
       ctx->Extensions.ARB_uniform_buffer_object = true;
+      ctx->Extensions.EXT_gpu_shader4 = true;
       ctx->Extensions.EXT_texture_shadow_lod = true;
 
       if (ctx->API != API_OPENGL_COMPAT ||
@@ -269,6 +271,7 @@ intelInitExtensions(struct gl_context *ctx)
             ctx->Extensions.ARB_ES3_1_compatibility =
                devinfo->gen >= 8 || devinfo->is_haswell;
             ctx->Extensions.NV_compute_shader_derivatives = true;
+            ctx->Extensions.ARB_compute_variable_group_size = true;
          }
 
          if (can_do_predicate_writes(brw->screen)) {
@@ -314,11 +317,22 @@ intelInitExtensions(struct gl_context *ctx)
       ctx->Extensions.OES_copy_image = true;
    }
 
+   /* Gen < 6 still uses the blitter. It's somewhat annoying to add support
+    * for blackhole there... Does anybody actually care anymore anyway?
+    */
+   if (devinfo->gen >= 6)
+      ctx->Extensions.INTEL_blackhole_render = true;
+
    if (devinfo->gen >= 8) {
       ctx->Extensions.ARB_gpu_shader_int64 = true;
       /* requires ARB_gpu_shader_int64 */
       ctx->Extensions.ARB_shader_ballot = true;
       ctx->Extensions.ARB_ES3_2_compatibility = true;
+
+      /* Currently only implemented in the scalar backend, so only enable for
+       * Gen8+.  Eventually Gen6+ could be supported.
+       */
+      ctx->Extensions.INTEL_shader_integer_functions2 = true;
    }
 
    if (devinfo->gen >= 9) {
@@ -375,4 +389,6 @@ intelInitExtensions(struct gl_context *ctx)
    ctx->Extensions.ANGLE_texture_compression_dxt = true;
 
    ctx->Extensions.EXT_demote_to_helper_invocation = true;
+
+   ctx->Const.PrimitiveRestartFixedIndex = true;
 }

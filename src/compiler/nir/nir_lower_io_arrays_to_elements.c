@@ -61,7 +61,7 @@ get_io_offset(nir_builder *b, nir_deref_instr *deref, nir_variable *var,
          unsigned size = glsl_count_attribute_slots((*p)->type, false);
          offset += size * index;
 
-         xfb_offset += index * glsl_get_component_slots((*p)->type) * 4;
+         *xfb_offset += index * glsl_get_component_slots((*p)->type) * 4;
 
          unsigned num_elements = glsl_type_is_array((*p)->type) ?
             glsl_get_aoa_size((*p)->type) : 1;
@@ -167,7 +167,8 @@ lower_array(nir_builder *b, nir_intrinsic_instr *intr, nir_variable *var,
                         intr->num_components, intr->dest.ssa.bit_size, NULL);
 
       if (intr->intrinsic == nir_intrinsic_interp_deref_at_offset ||
-          intr->intrinsic == nir_intrinsic_interp_deref_at_sample) {
+          intr->intrinsic == nir_intrinsic_interp_deref_at_sample ||
+          intr->intrinsic == nir_intrinsic_interp_deref_at_vertex) {
          nir_src_copy(&element_intr->src[1], &intr->src[1],
                       &element_intr->instr);
       }
@@ -232,7 +233,8 @@ create_indirects_mask(nir_shader *shader,
                    intr->intrinsic != nir_intrinsic_store_deref &&
                    intr->intrinsic != nir_intrinsic_interp_deref_at_centroid &&
                    intr->intrinsic != nir_intrinsic_interp_deref_at_sample &&
-                   intr->intrinsic != nir_intrinsic_interp_deref_at_offset)
+                   intr->intrinsic != nir_intrinsic_interp_deref_at_offset &&
+                   intr->intrinsic != nir_intrinsic_interp_deref_at_vertex)
                   continue;
 
                nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
@@ -277,7 +279,8 @@ lower_io_arrays_to_elements(nir_shader *shader, nir_variable_mode mask,
                    intr->intrinsic != nir_intrinsic_store_deref &&
                    intr->intrinsic != nir_intrinsic_interp_deref_at_centroid &&
                    intr->intrinsic != nir_intrinsic_interp_deref_at_sample &&
-                   intr->intrinsic != nir_intrinsic_interp_deref_at_offset)
+                   intr->intrinsic != nir_intrinsic_interp_deref_at_offset &&
+                   intr->intrinsic != nir_intrinsic_interp_deref_at_vertex)
                   continue;
 
                nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
@@ -288,6 +291,10 @@ lower_io_arrays_to_elements(nir_shader *shader, nir_variable_mode mask,
 
                /* Drivers assume compact arrays are, in fact, arrays. */
                if (var->data.compact)
+                  continue;
+
+               /* Per-view variables are expected to remain arrays. */
+               if (var->data.per_view)
                   continue;
 
                /* Skip indirects */
@@ -327,6 +334,7 @@ lower_io_arrays_to_elements(nir_shader *shader, nir_variable_mode mask,
                case nir_intrinsic_interp_deref_at_centroid:
                case nir_intrinsic_interp_deref_at_sample:
                case nir_intrinsic_interp_deref_at_offset:
+               case nir_intrinsic_interp_deref_at_vertex:
                case nir_intrinsic_load_deref:
                case nir_intrinsic_store_deref:
                   if ((mask & nir_var_shader_in && mode == nir_var_shader_in) ||
@@ -349,7 +357,7 @@ nir_lower_io_arrays_to_elements_no_indirects(nir_shader *shader,
    struct hash_table *split_inputs = _mesa_pointer_hash_table_create(NULL);
    struct hash_table *split_outputs = _mesa_pointer_hash_table_create(NULL);
 
-   BITSET_DECLARE(indirects, 4 * VARYING_SLOT_TESS_MAX) = {{0}};
+   BITSET_DECLARE(indirects, 4 * VARYING_SLOT_TESS_MAX) = {0};
 
    lower_io_arrays_to_elements(shader, nir_var_shader_out,
                                indirects, split_outputs, true);
@@ -387,7 +395,7 @@ nir_lower_io_arrays_to_elements(nir_shader *producer, nir_shader *consumer)
    struct hash_table *split_inputs = _mesa_pointer_hash_table_create(NULL);
    struct hash_table *split_outputs = _mesa_pointer_hash_table_create(NULL);
 
-   BITSET_DECLARE(indirects, 4 * VARYING_SLOT_TESS_MAX) = {{0}};
+   BITSET_DECLARE(indirects, 4 * VARYING_SLOT_TESS_MAX) = {0};
 
    create_indirects_mask(producer, indirects, nir_var_shader_out);
    create_indirects_mask(consumer, indirects, nir_var_shader_in);

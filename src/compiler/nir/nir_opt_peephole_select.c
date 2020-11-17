@@ -27,6 +27,7 @@
 
 #include "nir.h"
 #include "nir_control_flow.h"
+#include "nir_search_helpers.h"
 
 /*
  * Implements a small peephole optimization that looks for
@@ -107,6 +108,8 @@ block_check_for_allowed_instrs(nir_block *block, unsigned *count,
 
       case nir_instr_type_alu: {
          nir_alu_instr *mov = nir_instr_as_alu(instr);
+         bool movelike = false;
+
          switch (mov->op) {
          case nir_op_mov:
          case nir_op_fneg:
@@ -116,6 +119,9 @@ block_check_for_allowed_instrs(nir_block *block, unsigned *count,
          case nir_op_vec2:
          case nir_op_vec3:
          case nir_op_vec4:
+         case nir_op_vec8:
+         case nir_op_vec16:
+            movelike = true;
             break;
 
          case nir_op_fcos:
@@ -149,7 +155,13 @@ block_check_for_allowed_instrs(nir_block *block, unsigned *count,
             return false;
 
          if (alu_ok) {
-            (*count)++;
+            /* If the ALU operation is an fsat or a move-like operation, do
+             * not count it.  The expectation is that it will eventually be
+             * merged as a destination modifier or source modifier on some
+             * other instruction.
+             */
+            if (mov->op != nir_op_fsat && !movelike)
+               (*count)++;
          } else {
             /* Can't handle saturate */
             if (mov->dest.saturate)
@@ -294,9 +306,7 @@ nir_opt_peephole_select_impl(nir_function_impl *impl, unsigned limit,
    if (progress) {
       nir_metadata_preserve(impl, nir_metadata_none);
    } else {
-#ifndef NDEBUG
-      impl->valid_metadata &= ~nir_metadata_not_properly_reset;
-#endif
+      nir_metadata_preserve(impl, nir_metadata_all);
    }
 
    return progress;

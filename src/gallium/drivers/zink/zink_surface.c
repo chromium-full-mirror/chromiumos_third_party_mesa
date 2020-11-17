@@ -26,7 +26,7 @@
 #include "zink_screen.h"
 #include "zink_surface.h"
 
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 
@@ -94,6 +94,7 @@ zink_create_surface(struct pipe_context *pctx,
    }
 
    ivci.format = zink_get_format(screen, templ->format);
+   assert(ivci.format != VK_FORMAT_UNDEFINED);
 
    // TODO: format swizzles
    ivci.components.r = VK_COMPONENT_SWIZZLE_R;

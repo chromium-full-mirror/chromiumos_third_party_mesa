@@ -29,12 +29,13 @@
 #define __PANFROST_JOB_H__
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <panfrost-misc.h>
 
 enum mali_job_type {
         JOB_NOT_STARTED	= 0,
         JOB_TYPE_NULL = 1,
-        JOB_TYPE_SET_VALUE = 2,
+        JOB_TYPE_WRITE_VALUE = 2,
         JOB_TYPE_CACHE_FLUSH = 3,
         JOB_TYPE_COMPUTE = 4,
         JOB_TYPE_VERTEX = 5,
@@ -75,15 +76,6 @@ enum mali_draw_mode {
 #define MALI_CULL_FACE_FRONT    (1 << 6)
 #define MALI_CULL_FACE_BACK     (1 << 7)
 
-/* TODO: Might this actually be a finer bitfield? */
-#define MALI_DEPTH_STENCIL_ENABLE 0x6400
-
-#define DS_ENABLE(field) \
-	(field == MALI_DEPTH_STENCIL_ENABLE) \
-	? "MALI_DEPTH_STENCIL_ENABLE" \
-	: (field == 0) ? "0" \
-	: "0 /* XXX: Unknown, check hexdump */"
-
 /* Used in stencil and depth tests */
 
 enum mali_func {
@@ -97,22 +89,13 @@ enum mali_func {
         MALI_FUNC_ALWAYS   = 7
 };
 
-/* Same OpenGL, but mixed up. Why? Because forget me, that's why! */
-
-enum mali_alt_func {
-        MALI_ALT_FUNC_NEVER    = 0,
-        MALI_ALT_FUNC_GREATER  = 1,
-        MALI_ALT_FUNC_EQUAL    = 2,
-        MALI_ALT_FUNC_GEQUAL   = 3,
-        MALI_ALT_FUNC_LESS     = 4,
-        MALI_ALT_FUNC_NOTEQUAL = 5,
-        MALI_ALT_FUNC_LEQUAL   = 6,
-        MALI_ALT_FUNC_ALWAYS   = 7
-};
-
 /* Flags apply to unknown2_3? */
 
 #define MALI_HAS_MSAA		(1 << 0)
+
+/* Execute fragment shader per-sample if set (e.g. to implement gl_SampleID
+ * reads) */
+#define MALI_PER_SAMPLE         (1 << 2)
 #define MALI_CAN_DISCARD 	(1 << 5)
 
 /* Applies on SFBD systems, specifying that programmable blending is in use */
@@ -123,13 +106,15 @@ enum mali_alt_func {
 #define MALI_GET_DEPTH_FUNC(flags) ((flags >> 8) & 0x7)
 #define MALI_DEPTH_FUNC_MASK	   MALI_DEPTH_FUNC(0x7)
 
-#define MALI_DEPTH_TEST		(1 << 11)
+#define MALI_DEPTH_WRITEMASK    (1 << 11)
+
+#define MALI_DEPTH_CLIP_NEAR    (1 << 12)
+#define MALI_DEPTH_CLIP_FAR     (1 << 13)
 
 /* Next flags to unknown2_4 */
 #define MALI_STENCIL_TEST      	(1 << 0)
 
-/* What?! */
-#define MALI_SAMPLE_ALPHA_TO_COVERAGE_NO_BLEND_SHADER (1 << 1)
+#define MALI_ALPHA_TO_COVERAGE (1 << 1)
 
 #define MALI_NO_DITHER		(1 << 9)
 #define MALI_DEPTH_RANGE_A	(1 << 12)
@@ -250,6 +235,9 @@ struct mali_channel_swizzle {
 
 /* The top 3 bits specify how the bits of each component are interpreted. */
 
+/* e.g. ETC2_RGB8 */
+#define MALI_FORMAT_COMPRESSED (0 << 5)
+
 /* e.g. R11F_G11F_B10F */
 #define MALI_FORMAT_SPECIAL (2 << 5)
 
@@ -269,11 +257,13 @@ struct mali_channel_swizzle {
  * for Bifrost framebuffer output.
  */
 #define MALI_FORMAT_SPECIAL2 (7 << 5)
+#define MALI_EXTRACT_TYPE(fmt) ((fmt) & 0xe0)
 
 /* If the high 3 bits are 3 to 6 these two bits say how many components
  * there are.
  */
 #define MALI_NR_CHANNELS(n) ((n - 1) << 3)
+#define MALI_EXTRACT_CHANNELS(fmt) ((((fmt) >> 3) & 3) + 1)
 
 /* If the high 3 bits are 3 to 6, then the low 3 bits say how big each
  * component is, except the special MALI_CHANNEL_FLOAT which overrides what the
@@ -292,19 +282,51 @@ struct mali_channel_swizzle {
  * MALI_FORMAT_UNORM, it means a 32-bit float.
  */
 #define MALI_CHANNEL_FLOAT 7
+#define MALI_EXTRACT_BITS(fmt) (fmt & 0x7)
 
 enum mali_format {
+        /* Not all formats are in fact available, need to query dynamically to
+         * check. Factory settings for Juno enables only ETC2 and ASTC, no
+         * DXT/RGTC formats.
+         * */
+
+        /* 0x0 invalid */
+	MALI_ETC2_RGB8       = MALI_FORMAT_COMPRESSED | 0x1,
+	MALI_ETC2_R11_UNORM  = MALI_FORMAT_COMPRESSED | 0x2,
+	MALI_ETC2_RGBA8      = MALI_FORMAT_COMPRESSED | 0x3,
+	MALI_ETC2_RG11_UNORM = MALI_FORMAT_COMPRESSED | 0x4,
+        /* 0x5 reserved */
+        MALI_NXR             = MALI_FORMAT_COMPRESSED | 0x6, /* Nokia eXtended Range */
+        MALI_BC1_UNORM       = MALI_FORMAT_COMPRESSED | 0x7, /* DXT1 */
+        MALI_BC2_UNORM       = MALI_FORMAT_COMPRESSED | 0x8, /* DXT3 */
+        MALI_BC3_UNORM       = MALI_FORMAT_COMPRESSED | 0x9, /* DXT5 */
+        MALI_BC4_UNORM       = MALI_FORMAT_COMPRESSED | 0xA, /* RGTC1_UNORM */
+        MALI_BC4_SNORM       = MALI_FORMAT_COMPRESSED | 0xB, /* RGTC1_SNORM */
+        MALI_BC5_UNORM       = MALI_FORMAT_COMPRESSED | 0xC, /* RGTC2_UNORM */
+        MALI_BC5_SNORM       = MALI_FORMAT_COMPRESSED | 0xD, /* RGTC2_SNORM */
+        MALI_BC6H_UF16       = MALI_FORMAT_COMPRESSED | 0xE,
+        MALI_BC6H_SF16       = MALI_FORMAT_COMPRESSED | 0xF,
+        MALI_BC7_UNORM       = MALI_FORMAT_COMPRESSED | 0x10,
+	MALI_ETC2_R11_SNORM  = MALI_FORMAT_COMPRESSED | 0x11, /* EAC_SNORM */
+	MALI_ETC2_RG11_SNORM = MALI_FORMAT_COMPRESSED | 0x12, /* EAC_SNORM */
+	MALI_ETC2_RGB8A1     = MALI_FORMAT_COMPRESSED | 0x13,
+	MALI_ASTC_3D_LDR     = MALI_FORMAT_COMPRESSED | 0x14,
+	MALI_ASTC_3D_HDR     = MALI_FORMAT_COMPRESSED | 0x15,
+	MALI_ASTC_2D_LDR     = MALI_FORMAT_COMPRESSED | 0x16,
+	MALI_ASTC_2D_HDR     = MALI_FORMAT_COMPRESSED | 0x17,
+
 	MALI_RGB565         = MALI_FORMAT_SPECIAL | 0x0,
+	MALI_RGB5_X1_UNORM  = MALI_FORMAT_SPECIAL | 0x1,
 	MALI_RGB5_A1_UNORM  = MALI_FORMAT_SPECIAL | 0x2,
 	MALI_RGB10_A2_UNORM = MALI_FORMAT_SPECIAL | 0x3,
 	MALI_RGB10_A2_SNORM = MALI_FORMAT_SPECIAL | 0x5,
 	MALI_RGB10_A2UI     = MALI_FORMAT_SPECIAL | 0x7,
 	MALI_RGB10_A2I      = MALI_FORMAT_SPECIAL | 0x9,
 
-	/* YUV formats */
-	MALI_NV12           = MALI_FORMAT_SPECIAL | 0xc,
+	MALI_RGB332_UNORM   = MALI_FORMAT_SPECIAL | 0xb,
+	MALI_RGB233_UNORM   = MALI_FORMAT_SPECIAL | 0xc,
 
-	MALI_Z32_UNORM      = MALI_FORMAT_SPECIAL | 0xD,
+	MALI_Z24X8_UNORM    = MALI_FORMAT_SPECIAL | 0xd,
 	MALI_R32_FIXED      = MALI_FORMAT_SPECIAL | 0x11,
 	MALI_RG32_FIXED     = MALI_FORMAT_SPECIAL | 0x12,
 	MALI_RGB32_FIXED    = MALI_FORMAT_SPECIAL | 0x13,
@@ -385,20 +407,16 @@ enum mali_format {
 };
 
 
-/* Alpha coverage is encoded as 4-bits (from a clampf), with inversion
- * literally performing a bitwise invert. This function produces slightly wrong
- * results and I'm not sure why; some rounding issue I suppose... */
+/* Applies to midgard1.flags_lo */
 
-#define MALI_ALPHA_COVERAGE(clampf) ((uint16_t) (int) (clampf * 15.0f))
-#define MALI_GET_ALPHA_COVERAGE(nibble) ((float) nibble / 15.0f)
+/* Should be set when the fragment shader updates the depth value. */
+#define MALI_WRITES_Z (1 << 4)
 
-/* Applies to midgard1.flags */
-
-/* Should the hardware perform early-Z testing? Normally should be set
- * for performance reasons. Clear if you use: discard,
- * alpha-to-coverage... * It's also possible this disables
- * forward-pixel kill; we're not quite sure which bit is which yet.
- * TODO: How does this interact with blending?*/
+/* Should the hardware perform early-Z testing? Set if the shader does not use
+ * discard, alpha-to-coverage, shader depth writes, and if the shader has no
+ * side effects (writes to global memory or images) unless early-z testing is
+ * forced in the shader.
+ */
 
 #define MALI_EARLY_Z (1 << 6)
 
@@ -412,7 +430,51 @@ enum mali_format {
  * it might read depth/stencil in particular, also set MALI_READS_ZS */
 
 #define MALI_READS_ZS (1 << 8)
-#define MALI_READS_TILEBUFFER (1 << 12)
+
+/* The shader might write to global memory (via OpenCL, SSBOs, or images).
+ * Reading is okay, as are ordinary writes to the tilebuffer/varyings. Setting
+ * incurs a performance penalty. On a fragment shader, this bit implies there
+ * are side effects, hence it interacts with early-z. */
+#define MALI_WRITES_GLOBAL (1 << 9)
+
+#define MALI_READS_TILEBUFFER (1 << 10)
+
+/* Applies to midgard1.flags_hi */
+
+/* Should be set when the fragment shader updates the stencil value. */
+#define MALI_WRITES_S (1 << 2)
+
+/* Mode to suppress generation of Infinity and NaN values by clamping inf
+ * (-inf) to MAX_FLOAT (-MIN_FLOAT) and flushing NaN to 0.0
+ *
+ * Compare suppress_inf/suppress_nan flags on the Bifrost clause header for the
+ * same functionality.
+ *
+ * This is not conformant on GLES3 or OpenCL, but is optional on GLES2, where
+ * it works around app bugs (e.g. in glmark2-es2 -bterrain with FP16).
+ */
+#define MALI_SUPPRESS_INF_NAN (1 << 3)
+
+/* Flags for bifrost1.unk1 */
+
+/* Shader uses less than 32 registers, partitioned as [R0, R15] U [R48, R63],
+ * allowing for full thread count. If clear, the full [R0, R63] register set is
+ * available at half thread count */
+#define MALI_BIFROST_FULL_THREAD (1 << 9)
+
+/* Enable early-z testing (presumably). This flag may not be set if the shader:
+ *
+ *  - Uses blending
+ *  - Uses discard
+ *  - Writes gl_FragDepth
+ *
+ * This differs from Midgard which sets the MALI_EARLY_Z flag even with
+ * blending, although I've begun to suspect that flag does not in fact enable
+ * EARLY_Z alone. */
+#define MALI_BIFROST_EARLY_Z (1 << 15)
+
+/* First clause type is ATEST */
+#define MALI_BIFROST_FIRST_ATEST (1 << 26)
 
 /* The raw Midgard blend payload can either be an equation or a shader
  * address, depending on the context */
@@ -426,6 +488,14 @@ union midgard_blend {
         };
 };
 
+/* We need to load the tilebuffer to blend (i.e. the destination factor is not
+ * ZERO) */
+
+#define MALI_BLEND_LOAD_TIB (0x1)
+
+/* A blend shader is used to blend this render target */
+#define MALI_BLEND_MRT_SHADER (0x2)
+
 /* On MRT Midgard systems (using an MFBD), each render target gets its own
  * blend descriptor */
 
@@ -437,8 +507,7 @@ union midgard_blend {
 struct midgard_blend_rt {
         /* Flags base value of 0x200 to enable the render target.
          * OR with 0x1 for blending (anything other than REPLACE).
-         * OR with 0x2 for programmable blending with 0-2 registers
-         * OR with 0x3 for programmable blending with 2+ registers
+         * OR with 0x2 for programmable blending
          * OR with MALI_BLEND_SRGB for implicit sRGB
          */
 
@@ -448,6 +517,17 @@ struct midgard_blend_rt {
 
 /* On Bifrost systems (all MRT), each render target gets one of these
  * descriptors */
+
+enum bifrost_shader_type {
+        BIFROST_BLEND_F16 = 0,
+        BIFROST_BLEND_F32 = 1,
+        BIFROST_BLEND_I32 = 2,
+        BIFROST_BLEND_U32 = 3,
+        BIFROST_BLEND_I16 = 4,
+        BIFROST_BLEND_U16 = 5,
+};
+
+#define BIFROST_MAX_RENDER_TARGET_COUNT 8
 
 struct bifrost_blend_rt {
         /* This is likely an analogue of the flags on
@@ -465,57 +545,53 @@ struct bifrost_blend_rt {
          * constant_hi = int(f / 255)
          * constant_lo = 65535*f - (65535/255) * constant_hi
          */
-
         u16 constant;
 
         struct mali_blend_equation equation;
+
         /*
          * - 0x19 normally
          * - 0x3 when this slot is unused (everything else is 0 except the index)
          * - 0x11 when this is the fourth slot (and it's used)
-+	 * - 0 when there is a blend shader
+         * - 0 when there is a blend shader
          */
         u16 unk2;
+
         /* increments from 0 to 3 */
         u16 index;
 
-	union {
-		struct {
-			/* So far, I've only seen:
-			 * - R001 for 1-component formats
-			 * - RG01 for 2-component formats
-			 * - RGB1 for 3-component formats
-			 * - RGBA for 4-component formats
-			 */
-			u32 swizzle : 12;
-			enum mali_format format : 8;
+        union {
+                struct {
+                        /* So far, I've only seen:
+                         * - R001 for 1-component formats
+                         * - RG01 for 2-component formats
+                         * - RGB1 for 3-component formats
+                         * - RGBA for 4-component formats
+                         */
+                        u32 swizzle : 12;
+                        enum mali_format format : 8;
 
-			/* Type of the shader output variable. Note, this can
-			 * be different from the format.
-			 *
-			 * 0: f16 (mediump float)
-			 * 1: f32 (highp float)
-			 * 2: i32 (highp int)
-			 * 3: u32 (highp uint)
-			 * 4: i16 (mediump int)
-			 * 5: u16 (mediump uint)
-			 */
-			u32 shader_type : 3;
-			u32 zero : 9;
-		};
+                        /* Type of the shader output variable. Note, this can
+                          * be different from the format.
+                          * enum bifrost_shader_type
+                         */
+                        u32 zero1 : 4;
+                        u32 shader_type : 3;
+                        u32 zero2 : 5;
+                };
 
-		/* Only the low 32 bits of the blend shader are stored, the
-		 * high 32 bits are implicitly the same as the original shader.
-		 * According to the kernel driver, the program counter for
-		 * shaders is actually only 24 bits, so shaders cannot cross
-		 * the 2^24-byte boundary, and neither can the blend shader.
-		 * The blob handles this by allocating a 2^24 byte pool for
-		 * shaders, and making sure that any blend shaders are stored
-		 * in the same pool as the original shader. The kernel will
-		 * make sure this allocation is aligned to 2^24 bytes.
-		 */
-		u32 shader;
-	};
+                /* Only the low 32 bits of the blend shader are stored, the
+                 * high 32 bits are implicitly the same as the original shader.
+                 * According to the kernel driver, the program counter for
+                 * shaders is actually only 24 bits, so shaders cannot cross
+                 * the 2^24-byte boundary, and neither can the blend shader.
+                 * The blob handles this by allocating a 2^24 byte pool for
+                 * shaders, and making sure that any blend shaders are stored
+                 * in the same pool as the original shader. The kernel will
+                 * make sure this allocation is aligned to 2^24 bytes.
+                 */
+                u32 shader;
+        };
 } __attribute__((packed));
 
 /* Descriptor for the shader. Following this is at least one, up to four blend
@@ -535,14 +611,12 @@ struct mali_shader_meta {
                 } bifrost1;
                 struct {
                         unsigned uniform_buffer_count : 4;
-                        unsigned flags : 12;
+                        unsigned flags_lo : 12;
 
-                        /* Whole number of uniform registers used, times two;
-                         * whole number of work registers used (no scale).
-                         */
+                        /* vec4 units */
                         unsigned work_count : 5;
                         unsigned uniform_count : 5;
-                        unsigned unknown2 : 6;
+                        unsigned flags_hi : 6;
                 } midgard1;
         };
 
@@ -552,7 +626,11 @@ struct mali_shader_meta {
 
         u32 unknown2_2;
 
-        u16 alpha_coverage;
+        /* Generated from SAMPLE_COVERAGE_VALUE and SAMPLE_COVERAGE_INVERT. See
+         * 13.8.3 ("Multisample Fragment Operations") in the OpenGL ES 3.2
+         * specification. Only matters when multisampling is enabled. */
+        u16 coverage_mask;
+
         u16 unknown2_3;
 
         u8 stencil_mask_front;
@@ -596,6 +674,11 @@ struct mali_shader_meta {
                          * - R61 : gl_SampleMaskIn and gl_SampleID, used by
                          *   varying interpolation.
                          * - R62 : unknown (bit always unset).
+                         *
+                         * Later GPUs (starting with Mali-G52?) support
+                         * preloading float varyings into r0-r7. This is
+                         * indicated by setting 0x40. There is no distinction
+                         * here between 1 varying and 2.
                          */
                         u32 preload_regs : 8;
                         /* In units of 8 bytes or 64 bits, since the
@@ -609,8 +692,7 @@ struct mali_shader_meta {
                 } midgard2;
         };
 
-        /* zero on bifrost */
-        u32 unknown2_8;
+        u32 padding;
 
         /* Blending information for the older non-MRT Midgard HW. Check for
          * MALI_HAS_BLEND_SHADER to decide how to interpret.
@@ -637,11 +719,7 @@ struct mali_job_descriptor_header {
         u16 job_index;
         u16 job_dependency_index_1;
         u16 job_dependency_index_2;
-
-        union {
-                u64 next_job_64;
-                u32 next_job_32;
-        };
+        u64 next_job;
 } __attribute__((packed));
 
 /* These concern exception_status */
@@ -659,15 +737,17 @@ enum mali_exception_access {
         MALI_EXCEPTION_ACCESS_WRITE   = 3
 };
 
-struct mali_payload_set_value {
-        u64 out;
-        u64 unknown;
-} __attribute__((packed));
+/* Details about write_value from panfrost igt tests which use it as a generic
+ * dword write primitive */
 
-/* Special attributes have a fixed index */
-#define MALI_SPECIAL_ATTRIBUTE_BASE 16
-#define MALI_VERTEX_ID   (MALI_SPECIAL_ATTRIBUTE_BASE + 0)
-#define MALI_INSTANCE_ID (MALI_SPECIAL_ATTRIBUTE_BASE + 1)
+#define MALI_WRITE_VALUE_ZERO 3
+
+struct mali_payload_write_value {
+        u64 address;
+        u32 value_descriptor;
+        u32 reserved;
+        u64 immediate;
+} __attribute__((packed));
 
 /*
  * Mali Attributes
@@ -796,9 +876,8 @@ struct mali_payload_set_value {
  * let shift=extra_flags=0. Stride is set to the image format's bytes-per-pixel
  * (*NOT the row stride*). Size is set to the size of the image itself.
  *
- * Special internal varyings (including gl_FrontFacing) could be seen as
- * IMAGE/INTERNAL as well as LINEAR, setting all fields set to zero and using a
- * special elements pseudo-pointer.
+ * Special internal attribtues and varyings (gl_VertexID, gl_FrontFacing, etc)
+ * use particular fixed addresses with modified structures.
  */
 
 enum mali_attr_mode {
@@ -808,12 +887,12 @@ enum mali_attr_mode {
 	MALI_ATTR_MODULO = 3,
 	MALI_ATTR_NPOT_DIVIDE = 4,
         MALI_ATTR_IMAGE = 5,
-        MALI_ATTR_INTERNAL = 6
 };
 
-/* Pseudo-address for gl_FrontFacing, used with INTERNAL. Same addres is used
- * for gl_FragCoord with IMAGE, needing a coordinate flip. Who knows. */
+/* Pseudo-address for gl_VertexID, gl_FragCoord, gl_FrontFacing */
 
+#define MALI_ATTR_VERTEXID (0x22)
+#define MALI_ATTR_INSTANCEID (0x24)
 #define MALI_VARYING_FRAG_COORD (0x25)
 #define MALI_VARYING_FRONT_FACING (0x26)
 
@@ -827,7 +906,7 @@ enum mali_attr_mode {
 /* Used for comparison to check if an address is special. Mostly a guess, but
  * it doesn't really matter. */
 
-#define MALI_VARYING_SPECIAL (0x100)
+#define MALI_RECORD_SPECIAL (0x100)
 
 union mali_attr {
 	/* This is used for actual attributes. */
@@ -867,31 +946,31 @@ struct mali_attr_meta {
         int32_t src_offset;
 } __attribute__((packed));
 
-enum mali_fbd_type {
-        MALI_SFBD = 0,
-        MALI_MFBD = 1,
-};
-
-#define FBD_TYPE (1)
 #define FBD_MASK (~0x3f)
+
+/* MFBD, rather than SFBD */
+#define MALI_MFBD (0x1)
 
 /* ORed into an MFBD address to specify the fbx section is included */
 #define MALI_MFBD_TAG_EXTRA (0x2)
 
-struct mali_uniform_buffer_meta {
-        /* This is actually the size minus 1 (MALI_POSITIVE), in units of 16
-         * bytes. This gives a maximum of 2^14 bytes, which just so happens to
-         * be the GL minimum-maximum for GL_MAX_UNIFORM_BLOCK_SIZE.
-         */
-        u64 size : 10;
+/* Uniform buffer objects are 64-bit fields divided as:
+ *
+ *      u64 size : 10;
+ *      mali_ptr ptr : 64 - 10;
+ *
+ * The size is actually the size minus 1 (MALI_POSITIVE), in units of 16 bytes.
+ * This gives a maximum of 2^14 bytes, which just so happens to be the GL
+ * minimum-maximum for GL_MAX_UNIFORM_BLOCK_SIZE.
+ *
+ * The pointer is missing the bottom 2 bits and top 8 bits. The top 8 bits
+ * should be 0 for userspace pointers, according to
+ * https://lwn.net/Articles/718895/. By reusing these bits, we can make each
+ * entry in the table only 64 bits.
+ */
 
-        /* This is missing the bottom 2 bits and top 8 bits. The top 8 bits
-         * should be 0 for userspace pointers, according to
-         * https://lwn.net/Articles/718895/. By reusing these bits, we can make
-         * each entry in the table only 64 bits.
-         */
-        mali_ptr ptr : 64 - 10;
-};
+#define MALI_MAKE_UBO(elements, ptr) \
+        (MALI_POSITIVE((elements)) | (((ptr) >> 2) << 10))
 
 /* On Bifrost, these fields are the same between the vertex and tiler payloads.
  * They also seem to be the same between Bifrost and Midgard. They're shared in
@@ -907,6 +986,12 @@ struct mali_uniform_buffer_meta {
 #define MALI_DRAW_INDEXED_SHIFT  (4)
 
 #define MALI_DRAW_VARYING_SIZE   (0x100)
+
+/* Set to use first vertex as the provoking vertex for flatshading. Clear to
+ * use the last vertex. This is the default in DX and VK, but not in GL. */
+
+#define MALI_DRAW_FLATSHADE_FIRST (0x800)
+
 #define MALI_DRAW_PRIMITIVE_RESTART_FIXED_INDEX (0x10000)
 
 struct mali_vertex_tiler_prefix {
@@ -935,13 +1020,16 @@ struct mali_vertex_tiler_prefix {
          */
         u32 invocation_count;
 
-        u32 size_y_shift : 5;
-        u32 size_z_shift : 5;
-        u32 workgroups_x_shift : 6;
-        u32 workgroups_y_shift : 6;
-        u32 workgroups_z_shift : 6;
-        /* This is max(workgroups_x_shift, 2) in all the cases I've seen. */
-        u32 workgroups_x_shift_2 : 4;
+        /* Bitfield for shifts:
+         *
+         * size_y_shift : 5
+         * size_z_shift : 5
+         * workgroups_x_shift : 6
+         * workgroups_y_shift : 6
+         * workgroups_z_shift : 6
+         * workgroups_x_shift_2 : 4
+         */
+        u32 invocation_shifts;
 
         u32 draw_mode : 4;
         u32 unknown_draw : 22;
@@ -1003,14 +1091,6 @@ union midgard_primitive_size {
         u64 pointer;
 };
 
-struct bifrost_vertex_only {
-        u32 unk2; /* =0x2 */
-
-        u32 zero0;
-
-        u64 zero1;
-} __attribute__((packed));
-
 struct bifrost_tiler_heap_meta {
         u32 zero;
         u32 heap_size;
@@ -1020,16 +1100,19 @@ struct bifrost_tiler_heap_meta {
         mali_ptr tiler_heap_end;
 
         /* hierarchy weights? but they're still 0 after the job has run... */
-        u32 zeros[12];
+        u32 zeros[10];
+        u32 unk1;
+        u32 unk7e007e;
 } __attribute__((packed));
 
 struct bifrost_tiler_meta {
-        u64 zero0;
-        u16 hierarchy_mask;
+        u32 tiler_heap_next_start;  /* To be written by the GPU */
+        u32 used_hierarchy_mask;  /* To be written by the GPU */
+        u16 hierarchy_mask; /* Five values observed: 0xa, 0x14, 0x28, 0x50, 0xa0 */
         u16 flags;
         u16 width;
         u16 height;
-        u64 zero1;
+        u64 zero0;
         mali_ptr tiler_heap_meta;
         /* TODO what is this used for? */
         u64 zeros[20];
@@ -1042,24 +1125,25 @@ struct bifrost_tiler_only {
         mali_ptr tiler_meta;
 
         u64 zero1, zero2, zero3, zero4, zero5, zero6;
-
-        u32 gl_enables;
-        u32 zero7;
-        u64 zero8;
-} __attribute__((packed));
-
-struct bifrost_scratchpad {
-        u32 zero;
-        u32 flags; // = 0x1f
-        /* This is a pointer to a CPU-inaccessible buffer, 16 pages, allocated
-         * during startup. It seems to serve the same purpose as the
-         * gpu_scratchpad in the SFBD for Midgard, although it's slightly
-         * larger.
-         */
-        mali_ptr gpu_scratchpad;
 } __attribute__((packed));
 
 struct mali_vertex_tiler_postfix {
+        u16 gl_enables; // 0x6 on Midgard, 0x2 on Bifrost
+
+        /* Both zero for non-instanced draws. For instanced draws, a
+         * decomposition of padded_num_vertices. See the comments about the
+         * corresponding fields in mali_attr for context. */
+
+        unsigned instance_shift : 5;
+        unsigned instance_odd : 3;
+
+        u8 zero4;
+
+        /* Offset for first vertex in buffer */
+        u32 offset_start;
+
+	u64 zero5;
+
         /* Zero for vertex jobs. Pointer to the position (gl_Position) varying
          * output from the vertex shader for tiler jobs.
          */
@@ -1071,11 +1155,12 @@ struct mali_vertex_tiler_postfix {
          */
         u64 uniform_buffers;
 
-        /* This is a pointer to an array of pointers to the texture
+        /* On Bifrost, this is a pointer to an array of bifrost_texture_descriptor.
+         * On Midgard, this is a pointer to an array of pointers to the texture
          * descriptors, number of pointers bounded by number of textures. The
          * indirection is needed to accomodate varying numbers and sizes of
          * texture descriptors */
-        u64 texture_trampoline;
+        u64 textures;
 
         /* For OpenGL, from what I've seen, this is intimately connected to
          * texture_meta. cwabbott says this is not the case under Vulkan, hence
@@ -1092,32 +1177,14 @@ struct mali_vertex_tiler_postfix {
         u64 viewport;
         u64 occlusion_counter; /* A single bit as far as I can tell */
 
-        /* Note: on Bifrost, this isn't actually the FBD. It points to
-         * bifrost_scratchpad instead. However, it does point to the same thing
-         * in vertex and tiler jobs.
-         */
-        mali_ptr framebuffer;
+        /* On Bifrost, this points directly to a mali_shared_memory structure.
+         * On Midgard, this points to a framebuffer (either SFBD or MFBD as
+         * tagged), which embeds a mali_shared_memory structure */
+        mali_ptr shared_memory;
 } __attribute__((packed));
 
 struct midgard_payload_vertex_tiler {
         struct mali_vertex_tiler_prefix prefix;
-
-        u16 gl_enables; // 0x5
-
-        /* Both zero for non-instanced draws. For instanced draws, a
-         * decomposition of padded_num_vertices. See the comments about the
-         * corresponding fields in mali_attr for context. */
-
-        unsigned instance_shift : 5;
-        unsigned instance_odd : 3;
-
-        u8 zero4;
-
-        /* Offset for first vertex in buffer */
-        u32 offset_start;
-
-	u64 zero5;
-
         struct mali_vertex_tiler_postfix postfix;
 
         union midgard_primitive_size primitive_size;
@@ -1125,7 +1192,6 @@ struct midgard_payload_vertex_tiler {
 
 struct bifrost_payload_vertex {
         struct mali_vertex_tiler_prefix prefix;
-        struct bifrost_vertex_only vertex;
         struct mali_vertex_tiler_postfix postfix;
 } __attribute__((packed));
 
@@ -1140,7 +1206,6 @@ struct bifrost_payload_fused {
         struct bifrost_tiler_only tiler;
         struct mali_vertex_tiler_postfix tiler_postfix;
         u64 padding; /* zero */
-        struct bifrost_vertex_only vertex;
         struct mali_vertex_tiler_postfix vertex_postfix;
 } __attribute__((packed));
 
@@ -1152,17 +1217,17 @@ struct bifrost_payload_fused {
 
 #define MALI_POSITIVE(dim) (dim - 1)
 
-/* Opposite of MALI_POSITIVE, found in the depth_units field */
-
-#define MALI_NEGATIVE(dim) (dim + 1)
-
-/* Used with wrapping. Incomplete (this is a 4-bit field...) */
+/* Used with wrapping. Unclear what top bit conveys */
 
 enum mali_wrap_mode {
-        MALI_WRAP_REPEAT = 0x8,
-        MALI_WRAP_CLAMP_TO_EDGE = 0x9,
-        MALI_WRAP_CLAMP_TO_BORDER = 0xB,
-        MALI_WRAP_MIRRORED_REPEAT = 0xC
+        MALI_WRAP_REPEAT                   = 0x8 |       0x0,
+        MALI_WRAP_CLAMP_TO_EDGE            = 0x8 |       0x1,
+        MALI_WRAP_CLAMP                    = 0x8 |       0x2,
+        MALI_WRAP_CLAMP_TO_BORDER          = 0x8 |       0x3,
+        MALI_WRAP_MIRRORED_REPEAT          = 0x8 | 0x4 | 0x0,
+        MALI_WRAP_MIRRORED_CLAMP_TO_EDGE   = 0x8 | 0x4 | 0x1,
+        MALI_WRAP_MIRRORED_CLAMP           = 0x8 | 0x4 | 0x2,
+        MALI_WRAP_MIRRORED_CLAMP_TO_BORDER = 0x8 | 0x4 | 0x3,
 };
 
 /* Shared across both command stream and Midgard, and even with Bifrost */
@@ -1245,8 +1310,39 @@ struct mali_texture_descriptor {
         uint32_t unknown5;
         uint32_t unknown6;
         uint32_t unknown7;
+} __attribute__((packed));
 
-        mali_ptr payload[MAX_MIP_LEVELS * MAX_CUBE_FACES * MAX_ELEMENTS];
+/* While Midgard texture descriptors are variable length, Bifrost descriptors
+ * are fixed like samplers with more pointers to expand if necessary */
+
+struct bifrost_texture_descriptor {
+        unsigned format_unk : 4; /* 2 */
+        enum mali_texture_type type : 2;
+        unsigned zero : 4;
+        unsigned format_swizzle : 12;
+        enum mali_format format : 8;
+        unsigned srgb : 1;
+        unsigned format_unk3 : 1; /* 0 */
+
+        uint16_t width; /* MALI_POSITIVE */
+        uint16_t height; /* MALI_POSITIVE */
+
+        /* OpenGL swizzle */
+        unsigned swizzle : 12;
+        enum mali_texture_layout layout : 4;
+        uint8_t levels : 8; /* Number of levels-1 if mipmapped, 0 if not */
+        unsigned unk1 : 8;
+
+        unsigned levels_unk : 24; /* 0 */
+        unsigned level_2 : 8; /* Number of levels, again? */
+
+        mali_ptr payload;
+
+        uint16_t array_size;
+        uint16_t unk4;
+
+        uint16_t depth;
+        uint16_t unk5;
 } __attribute__((packed));
 
 /* filter_mode */
@@ -1269,33 +1365,36 @@ struct mali_texture_descriptor {
 
 #define DECODE_FIXED_16(x) ((float) (x / 256.0))
 
-static inline uint16_t
-FIXED_16(float x)
+static inline int16_t
+FIXED_16(float x, bool allow_negative)
 {
         /* Clamp inputs, accounting for float error */
         float max_lod = (32.0 - (1.0 / 512.0));
+        float min_lod = allow_negative ? -max_lod : 0.0;
 
-        x = ((x > max_lod) ? max_lod : ((x < 0.0) ? 0.0 : x));
+        x = ((x > max_lod) ? max_lod : ((x < min_lod) ? min_lod : x));
 
         return (int) (x * 256.0);
 }
 
 struct mali_sampler_descriptor {
-        uint32_t filter_mode;
+        uint16_t filter_mode;
 
-        /* Fixed point. Upper 8-bits is before the decimal point, although it
-         * caps [0-31]. Lower 8-bits is after the decimal point: int(round(x *
-         * 256)) */
+        /* Fixed point, signed.
+         * Upper 7 bits before the decimal point, although it caps [0-31].
+         * Lower 8 bits after the decimal point: int(round(x * 256)) */
 
-        uint16_t min_lod;
-        uint16_t max_lod;
+        int16_t lod_bias;
+        int16_t min_lod;
+        int16_t max_lod;
 
-        /* All one word in reality, but packed a bit */
+        /* All one word in reality, but packed a bit. Comparisons are flipped
+         * from OpenGL. */
 
         enum mali_wrap_mode wrap_s : 4;
         enum mali_wrap_mode wrap_t : 4;
         enum mali_wrap_mode wrap_r : 4;
-        enum mali_alt_func compare_func : 3;
+        enum mali_func compare_func : 3;
 
         /* No effect on 2D textures. For cubemaps, set for ES3 and clear for
          * ES2, controlling seamless cubemapping */
@@ -1305,6 +1404,35 @@ struct mali_sampler_descriptor {
 
         uint32_t zero2;
         float border_color[4];
+} __attribute__((packed));
+
+/* Bifrost sampler descriptors look pretty similar */
+
+#define BIFROST_SAMP_MIN_NEAREST        (1)
+#define BIFROST_SAMP_MAG_LINEAR         (1)
+
+struct bifrost_sampler_descriptor {
+        uint8_t unk1;
+
+        enum mali_wrap_mode wrap_r : 4;
+        enum mali_wrap_mode wrap_t : 4;
+        enum mali_wrap_mode wrap_s : 4;
+        uint8_t unk8 : 4;
+
+        uint8_t unk2 : 1;
+        uint8_t norm_coords : 1;
+        uint8_t unk3 : 1;
+        uint8_t min_filter : 1;
+        uint8_t zero1 : 1;
+        uint8_t mag_filter : 1;
+        uint8_t mip_filter : 1;
+
+        int16_t min_lod;
+        int16_t max_lod;
+
+        uint64_t zero2;
+        uint64_t zero3;
+        uint64_t zero4;
 } __attribute__((packed));
 
 /* viewport0/viewport1 form the arguments to glViewport. viewport1 is
@@ -1374,9 +1502,10 @@ struct mali_payload_fragment {
 /* Flags apply to format. With just MSAA_A and MSAA_B, the framebuffer is
  * configured for 4x. With MSAA_8, it is configured for 8x. */
 
-#define MALI_FRAMEBUFFER_MSAA_8 (1 << 3)
-#define MALI_FRAMEBUFFER_MSAA_A (1 << 4)
-#define MALI_FRAMEBUFFER_MSAA_B (1 << 23)
+#define MALI_SFBD_FORMAT_MSAA_8 (1 << 3)
+#define MALI_SFBD_FORMAT_MSAA_A (1 << 4)
+#define MALI_SFBD_FORMAT_MSAA_B (1 << 4)
+#define MALI_SFBD_FORMAT_SRGB 	(1 << 5)
 
 /* Fast/slow based on whether all three buffers are cleared at once */
 
@@ -1391,8 +1520,16 @@ struct mali_payload_fragment {
 /* See pan_tiler.c for derivation */
 #define MALI_HIERARCHY_MASK ((1 << 9) - 1)
 
-/* Flag disabling the tiler for clear-only jobs */
+/* Flag disabling the tiler for clear-only jobs, with
+   hierarchical tiling */
 #define MALI_TILER_DISABLED (1 << 12)
+
+/* Flag selecting userspace-generated polygon list, for clear-only jobs without
+ * hierarhical tiling. */
+#define MALI_TILER_USER 0xFFF
+
+/* Absent any geometry, the minimum size of the polygon list header */
+#define MALI_TILER_MINIMUM_HEADER_SIZE 0x200
 
 struct midgard_tiler_descriptor {
         /* Size of the entire polygon list; see pan_tiler.c for the
@@ -1426,17 +1563,75 @@ struct midgard_tiler_descriptor {
         u32 weights[8];
 };
 
-struct mali_single_framebuffer {
-        u32 unknown1;
-        u32 unknown2;
-        u64 unknown_address_0;
+enum mali_block_format {
+        MALI_BLOCK_TILED   = 0x0,
+        MALI_BLOCK_UNKNOWN = 0x1,
+        MALI_BLOCK_LINEAR  = 0x2,
+        MALI_BLOCK_AFBC    = 0x3,
+};
+
+struct mali_sfbd_format {
+        /* 0x1 */
+        unsigned unk1 : 6;
+
+        /* mali_channel_swizzle */
+        unsigned swizzle : 12;
+
+        /* MALI_POSITIVE */
+        unsigned nr_channels : 2;
+
+        /* 0x4 */
+        unsigned unk2 : 6;
+
+        enum mali_block_format block : 2;
+
+        /* 0xb */
+        unsigned unk3 : 4;
+};
+
+/* Shared structure at the start of framebuffer descriptors, or used bare for
+ * compute jobs, configuring stack and shared memory */
+
+struct mali_shared_memory {
+        u32 stack_shift : 4;
+        u32 unk0 : 28;
+
+        /* Configuration for shared memory for compute shaders.
+         * shared_workgroup_count is logarithmic and may be computed for a
+         * compute shader using shared memory as:
+         *
+         *  shared_workgroup_count = MAX2(ceil(log2(count_x)) + ... + ceil(log2(count_z), 10)
+         *
+         * For compute shaders that don't use shared memory, or non-compute
+         * shaders, this is set to ~0
+         */
+
+        u32 shared_workgroup_count : 5;
+        u32 shared_unk1 : 3;
+        u32 shared_shift : 4;
+        u32 shared_zero : 20;
+
+        mali_ptr scratchpad;
+
+        /* For compute shaders, the RAM backing of workgroup-shared memory. For
+         * fragment shaders on Bifrost, apparently multisampling locations */
+
+        mali_ptr shared_memory;
+        mali_ptr unknown1;
+} __attribute__((packed));
+
+/* Configures multisampling on Bifrost fragment jobs */
+
+struct bifrost_multisampling {
         u64 zero1;
-        u64 zero0;
+        u64 zero2;
+        mali_ptr sample_locations;
+        u64 zero4;
+} __attribute__((packed));
 
-        /* Exact format is ironically not known, since EGL is finnicky with the
-         * blob. MSAA, colourspace, etc are configured here. */
-
-        u32 format;
+struct mali_single_framebuffer {
+        struct mali_shared_memory shared_memory;
+        struct mali_sfbd_format format;
 
         u32 clear_flags;
         u32 zero2;
@@ -1447,7 +1642,10 @@ struct mali_single_framebuffer {
         u16 width;
         u16 height;
 
-        u32 zero3[8];
+        u32 zero3[4];
+        mali_ptr checksum;
+        u32 checksum_stride;
+        u32 zero5;
 
         /* By default, the framebuffer is upside down from OpenGL's
          * perspective. Set framebuffer to the end and negate the stride to
@@ -1465,10 +1663,14 @@ struct mali_single_framebuffer {
          * disabled. */
 
         mali_ptr depth_buffer; // not SAME_VA
-        u64 depth_buffer_enable;
+        u32 depth_stride_zero : 4;
+        u32 depth_stride : 28;
+        u32 zero7;
 
         mali_ptr stencil_buffer; // not SAME_VA
-        u64 stencil_buffer_enable;
+        u32 stencil_stride_zero : 4;
+        u32 stencil_stride : 28;
+        u32 zero8;
 
         u32 clear_color_1; // RGBA8888 from glClear, actually used by hardware
         u32 clear_color_2; // always equal, but unclear function?
@@ -1491,24 +1693,22 @@ struct mali_single_framebuffer {
         /* More below this, maybe */
 } __attribute__((packed));
 
-/* On Midgard, this "framebuffer descriptor" is used for the framebuffer field
- * of compute jobs. Superficially resembles a single framebuffer descriptor */
 
-struct mali_compute_fbd {
-        u32 unknown1[8];
-} __attribute__((packed));
+/* SINGLE to disable multisampling, AVERAGE for
+ * EXT_multisampled_render_to_texture operation where multiple tilebuffer
+ * samples are implicitly resolved before writeout, MULTIPLE to write multiple
+ * samples inline, and LAYERED for ES3-style multisampling with each sample in
+ * a different buffer.
+ */
 
-/* Format bits for the render target flags */
-
-#define MALI_MFBD_FORMAT_MSAA 	  (1 << 1)
-#define MALI_MFBD_FORMAT_SRGB 	  (1 << 2)
-
-enum mali_mfbd_block_format {
-        MALI_MFBD_BLOCK_TILED   = 0x0,
-        MALI_MFBD_BLOCK_UNKNOWN = 0x1,
-        MALI_MFBD_BLOCK_LINEAR  = 0x2,
-        MALI_MFBD_BLOCK_AFBC    = 0x3,
+enum mali_msaa_mode {
+        MALI_MSAA_SINGLE = 0,
+        MALI_MSAA_AVERAGE = 1,
+        MALI_MSAA_MULTIPLE = 2,
+        MALI_MSAA_LAYERED = 3,
 };
+
+#define MALI_MFBD_FORMAT_SRGB 	  (1 << 0)
 
 struct mali_rt_format {
         unsigned unk1 : 32;
@@ -1516,9 +1716,11 @@ struct mali_rt_format {
 
         unsigned nr_channels : 2; /* MALI_POSITIVE */
 
-        unsigned unk3 : 5;
-        enum mali_mfbd_block_format block : 2;
-        unsigned flags : 4;
+        unsigned unk3 : 4;
+        unsigned unk4 : 1;
+        enum mali_block_format block : 2;
+        enum mali_msaa_mode msaa : 2;
+        unsigned flags : 2;
 
         unsigned swizzle : 12;
 
@@ -1534,7 +1736,14 @@ struct mali_rt_format {
         unsigned no_preload : 1;
 } __attribute__((packed));
 
-struct bifrost_render_target {
+/* Flags for afbc.flags and ds_afbc.flags */
+
+#define MALI_AFBC_FLAGS 0x10009
+
+/* Lossless RGB and RGBA colorspace transform */
+#define MALI_AFBC_YTR (1 << 17)
+
+struct mali_render_target {
         struct mali_rt_format format;
 
         u64 zero1;
@@ -1552,14 +1761,14 @@ struct bifrost_render_target {
 
                 mali_ptr metadata;
                 u32 stride; // stride in units of tiles
-                u32 unk; // = 0x20000
+                u32 flags; // = 0x20000
         } afbc;
 
         mali_ptr framebuffer;
 
         u32 zero2 : 4;
-        u32 framebuffer_stride : 28; // in units of bytes
-        u32 zero3;
+        u32 framebuffer_stride : 28; // in units of bytes, row to next
+        u32 layer_stride; /* For multisample rendering */
 
         u32 clear_color_1; // RGBA8888 from glClear, actually used by hardware
         u32 clear_color_2; // always equal, but unclear function?
@@ -1567,7 +1776,7 @@ struct bifrost_render_target {
         u32 clear_color_4; // always equal, but unclear function?
 } __attribute__((packed));
 
-/* An optional part of bifrost_framebuffer. It comes between the main structure
+/* An optional part of mali_framebuffer. It comes between the main structure
  * and the array of render targets. It must be included if any of these are
  * enabled:
  *
@@ -1576,26 +1785,31 @@ struct bifrost_render_target {
  * - TODO: Anything else?
  */
 
-/* Flags field: note, these are guesses */
+/* flags_hi */
+#define MALI_EXTRA_PRESENT      (0x1)
 
-#define MALI_EXTRA_PRESENT      (0x400)
-#define MALI_EXTRA_AFBC         (0x20)
-#define MALI_EXTRA_AFBC_ZS      (0x10)
+/* flags_lo */
 #define MALI_EXTRA_ZS           (0x4)
 
-struct bifrost_fb_extra {
+struct mali_framebuffer_extra  {
         mali_ptr checksum;
         /* Each tile has an 8 byte checksum, so the stride is "width in tiles * 8" */
         u32 checksum_stride;
 
-        u32 flags;
+        unsigned flags_lo : 4;
+        enum mali_block_format zs_block : 2;
+
+        /* Number of samples in Z/S attachment, MALI_POSITIVE. So zero for
+         * 1-sample (non-MSAA), 0x3 for MSAA 4x, etc */
+        unsigned zs_samples : 4;
+        unsigned flags_hi : 22;
 
         union {
                 /* Note: AFBC is only allowed for 24/8 combined depth/stencil. */
                 struct {
                         mali_ptr depth_stencil_afbc_metadata;
                         u32 depth_stencil_afbc_stride; // in units of tiles
-                        u32 zero1;
+                        u32 flags;
 
                         mali_ptr depth_stencil;
 
@@ -1607,17 +1821,19 @@ struct bifrost_fb_extra {
                         mali_ptr depth;
                         u32 depth_stride_zero : 4;
                         u32 depth_stride : 28;
-                        u32 zero1;
+                        u32 depth_layer_stride;
 
                         mali_ptr stencil;
                         u32 stencil_stride_zero : 4;
                         u32 stencil_stride : 28;
-                        u32 zero2;
+                        u32 stencil_layer_stride;
                 } ds_linear;
         };
 
 
-        u64 zero3, zero4;
+        u32 clear_color_1;
+        u32 clear_color_2;
+        u64 zero3;
 } __attribute__((packed));
 
 /* Flags for mfbd_flags */
@@ -1627,26 +1843,23 @@ struct bifrost_fb_extra {
 
 #define MALI_MFBD_DEPTH_WRITE (1 << 10)
 
-/* The MFBD contains the extra bifrost_fb_extra section */
+/* The MFBD contains the extra mali_framebuffer_extra  section */
 
 #define MALI_MFBD_EXTRA (1 << 13)
 
-struct bifrost_framebuffer {
-        u32 unk0; // = 0x10
+struct mali_framebuffer {
+        union {
+                struct mali_shared_memory shared_memory;
+                struct bifrost_multisampling msaa;
+        };
 
-        u32 unknown2; // = 0x1f, same as SFBD
-        mali_ptr scratchpad;
-
-        /* 0x10 */
-        mali_ptr sample_locations;
-        mali_ptr unknown1;
         /* 0x20 */
         u16 width1, height1;
         u32 zero3;
         u16 width2, height2;
         u32 unk1 : 19; // = 0x01000
-        u32 rt_count_1 : 2; // off-by-one (use MALI_POSITIVE)
-        u32 unk2 : 3; // = 0
+        u32 rt_count_1 : 3; // off-by-one (use MALI_POSITIVE)
+        u32 unk2 : 2; // = 0
         u32 rt_count_2 : 3; // no off-by-one
         u32 zero4 : 5;
         /* 0x30 */
@@ -1654,10 +1867,16 @@ struct bifrost_framebuffer {
         u32 mfbd_flags : 24; // = 0x100
         float clear_depth;
 
-        struct midgard_tiler_descriptor tiler;
+        union {
+                struct midgard_tiler_descriptor tiler;
+                struct {
+                        mali_ptr tiler_meta;
+                        u32 zeros[16];
+                };
+        };
 
-        /* optional: struct bifrost_fb_extra extra */
-        /* struct bifrost_render_target rts[] */
+        /* optional: struct mali_framebuffer_extra  extra */
+        /* struct mali_render_target rts[] */
 } __attribute__((packed));
 
 #endif /* __PANFROST_JOB_H__ */

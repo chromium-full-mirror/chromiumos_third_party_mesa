@@ -27,6 +27,7 @@
 #include <libsync.h>
 #include <unistd.h>
 
+#include "util/os_file.h"
 #include "util/os_time.h"
 
 /**
@@ -86,6 +87,7 @@ tu_fence_init(struct tu_fence *fence, bool signaled)
 {
    fence->signaled = signaled;
    fence->fd = -1;
+   fence->fence_wsi = NULL;
 }
 
 void
@@ -93,6 +95,8 @@ tu_fence_finish(struct tu_fence *fence)
 {
    if (fence->fd >= 0)
       close(fence->fd);
+   if (fence->fence_wsi)
+      fence->fence_wsi->destroy(fence->fence_wsi);
 }
 
 /**
@@ -123,7 +127,7 @@ tu_fence_copy(struct tu_fence *fence, const struct tu_fence *src)
    /* dup src->fd */
    int fd = -1;
    if (src->fd >= 0) {
-      fd = fcntl(src->fd, F_DUPFD_CLOEXEC, 0);
+      fd = os_dupfd_cloexec(src->fd);
       if (fd < 0) {
          tu_loge("failed to dup fd %d for fence", src->fd);
          sync_wait(src->fd, -1);
@@ -166,9 +170,8 @@ tu_CreateFence(VkDevice _device,
    TU_FROM_HANDLE(tu_device, device, _device);
 
    struct tu_fence *fence =
-      vk_alloc2(&device->alloc, pAllocator, sizeof(*fence), 8,
-                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-
+         vk_object_alloc(&device->vk, pAllocator, sizeof(*fence),
+                         VK_OBJECT_TYPE_FENCE);
    if (!fence)
       return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -192,7 +195,7 @@ tu_DestroyFence(VkDevice _device,
 
    tu_fence_finish(fence);
 
-   vk_free2(&device->alloc, pAllocator, fence);
+   vk_object_free(&device->vk, pAllocator, fence);
 }
 
 /**
@@ -207,6 +210,10 @@ tu_fence_init_poll_fds(uint32_t fence_count,
    nfds_t nfds = 0;
    for (uint32_t i = 0; i < fence_count; i++) {
       TU_FROM_HANDLE(tu_fence, fence, fences[i]);
+
+      /* skip wsi fences */
+      if (fence->fence_wsi)
+            continue;
 
       if (fence->signaled) {
          if (wait_all) {
@@ -289,6 +296,10 @@ tu_fence_update_fences_and_poll_fds(uint32_t fence_count,
    for (uint32_t i = 0; i < fence_count; i++) {
       TU_FROM_HANDLE(tu_fence, fence, fences[i]);
 
+      /* skip wsi fences */
+      if (fence->fence_wsi)
+            continue;
+
       /* no signaled fence in fds */
       if (fence->signaled)
          continue;
@@ -324,12 +335,15 @@ tu_WaitForFences(VkDevice _device,
 {
    TU_FROM_HANDLE(tu_device, device, _device);
 
+   if (tu_device_is_lost(device))
+      return VK_ERROR_DEVICE_LOST;
+
    /* add a simpler path for when fenceCount == 1? */
 
    struct pollfd stack_fds[8];
    struct pollfd *fds = stack_fds;
    if (fenceCount > ARRAY_SIZE(stack_fds)) {
-      fds = vk_alloc(&device->alloc, sizeof(*fds) * fenceCount, 8,
+      fds = vk_alloc(&device->vk.alloc, sizeof(*fds) * fenceCount, 8,
                      VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
       if (!fds)
          return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -347,7 +361,19 @@ tu_WaitForFences(VkDevice _device,
    }
 
    if (fds != stack_fds)
-      vk_free(&device->alloc, fds);
+      vk_free(&device->vk.alloc, fds);
+
+   if (result != VK_SUCCESS)
+      return result;
+
+   for (uint32_t i = 0; i < fenceCount; ++i) {
+      TU_FROM_HANDLE(tu_fence, fence, pFences[i]);
+      if (fence->fence_wsi) {
+         VkResult result = fence->fence_wsi->wait(fence->fence_wsi, timeout);
+         if (result != VK_SUCCESS)
+            return result;
+      }
+   }
 
    return result;
 }
@@ -375,6 +401,15 @@ tu_GetFenceStatus(VkDevice _device, VkFence _fence)
          tu_fence_set_state(fence, TU_FENCE_STATE_SIGNALED, -1);
       else if (err && errno != ETIME)
          return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+   if (fence->fence_wsi) {
+      VkResult result = fence->fence_wsi->wait(fence->fence_wsi, 0);
+
+      if (result != VK_SUCCESS) {
+         if (result == VK_TIMEOUT)
+            return VK_NOT_READY;
+         return result;
+      }
    }
 
    return fence->signaled ? VK_SUCCESS : VK_NOT_READY;

@@ -41,11 +41,44 @@
 
 #include <drm_fourcc.h>
 
+struct etna_sampler_state_desc {
+   struct pipe_sampler_state base;
+   uint32_t SAMP_CTRL0;
+   uint32_t SAMP_CTRL1;
+   uint32_t SAMP_LOD_MINMAX;
+   uint32_t SAMP_LOD_BIAS;
+   uint32_t SAMP_ANISOTROPY;
+};
+
+static inline struct etna_sampler_state_desc *
+etna_sampler_state_desc(struct pipe_sampler_state *samp)
+{
+   return (struct etna_sampler_state_desc *)samp;
+}
+
+struct etna_sampler_view_desc {
+   struct pipe_sampler_view base;
+   /* format-dependent merged with sampler state */
+   uint32_t SAMP_CTRL0;
+   uint32_t SAMP_CTRL1;
+
+   struct etna_bo *bo;
+   struct etna_reloc DESC_ADDR;
+   struct etna_sampler_ts ts;
+};
+
+static inline struct etna_sampler_view_desc *
+etna_sampler_view_desc(struct pipe_sampler_view *view)
+{
+   return (struct etna_sampler_view_desc *)view;
+}
+
 static void *
 etna_create_sampler_state_desc(struct pipe_context *pipe,
                           const struct pipe_sampler_state *ss)
 {
    struct etna_sampler_state_desc *cs = CALLOC_STRUCT(etna_sampler_state_desc);
+   const bool ansio = ss->max_anisotropy > 1;
 
    if (!cs)
       return NULL;
@@ -76,6 +109,7 @@ etna_create_sampler_state_desc(struct pipe_context *pipe,
    cs->SAMP_LOD_BIAS =
       VIVS_NTE_DESCRIPTOR_SAMP_LOD_BIAS_BIAS(etna_float_to_fixp88(ss->lod_bias)) |
       COND(ss->lod_bias != 0.0, VIVS_NTE_DESCRIPTOR_SAMP_LOD_BIAS_ENABLE);
+   cs->SAMP_ANISOTROPY = COND(ansio, etna_log2_fixp88(ss->max_anisotropy));
 
    return cs;
 }
@@ -90,6 +124,7 @@ static struct pipe_sampler_view *
 etna_create_sampler_view_desc(struct pipe_context *pctx, struct pipe_resource *prsc,
                          const struct pipe_sampler_view *so)
 {
+   const struct util_format_description *desc = util_format_description(so->format);
    struct etna_sampler_view_desc *sv = CALLOC_STRUCT(etna_sampler_view_desc);
    struct etna_context *ctx = etna_context(pctx);
    const uint32_t format = translate_texture_format(so->format);
@@ -126,9 +161,6 @@ etna_create_sampler_view_desc(struct pipe_context *pctx, struct pipe_resource *p
    if (util_format_is_srgb(so->format))
       sv->SAMP_CTRL1 |= VIVS_NTE_DESCRIPTOR_SAMP_CTRL1_SRGB;
 
-   if (!util_format_is_float(so->format) && so->target != PIPE_TEXTURE_3D)
-      sv->SAMP_CTRL0 |= VIVS_NTE_DESCRIPTOR_SAMP_CTRL0_INT_FILTER;
-
    /* Create texture descriptor */
    sv->bo = etna_bo_new(ctx->screen->dev, 0x100, DRM_ETNA_GEM_CACHE_WC);
    if (!sv->bo)
@@ -141,6 +173,17 @@ etna_create_sampler_view_desc(struct pipe_context *pctx, struct pipe_resource *p
    /** GC7000 needs the size of the BASELOD level */
    uint32_t base_width = u_minify(res->base.width0, sv->base.u.tex.first_level);
    uint32_t base_height = u_minify(res->base.height0, sv->base.u.tex.first_level);
+   uint32_t base_depth = u_minify(res->base.depth0, sv->base.u.tex.first_level);
+   bool is_array = false;
+   bool sint = util_format_is_pure_sint(so->format);
+
+   if (sv->base.target == PIPE_TEXTURE_1D_ARRAY) {
+      is_array = true;
+      base_height = res->base.array_size;
+   } else if (sv->base.target == PIPE_TEXTURE_2D_ARRAY) {
+      is_array = true;
+      base_depth = res->base.array_size;
+   }
 
 #define DESC_SET(x, y) buf[(TEXDESC_##x)>>2] = (y)
    DESC_SET(CONFIG0, COND(!ext && !astc, VIVS_TE_SAMPLER_CONFIG0_FORMAT(format))
@@ -149,11 +192,15 @@ etna_create_sampler_view_desc(struct pipe_context *pctx, struct pipe_resource *p
                         VIVS_TE_SAMPLER_CONFIG0_ADDRESSING_MODE(TEXTURE_ADDRESSING_MODE_LINEAR)));
    DESC_SET(CONFIG1, COND(ext, VIVS_TE_SAMPLER_CONFIG1_FORMAT_EXT(format)) |
                      COND(astc, VIVS_TE_SAMPLER_CONFIG1_FORMAT_EXT(TEXTURE_FORMAT_EXT_ASTC)) |
-                            VIVS_TE_SAMPLER_CONFIG1_HALIGN(res->halign) | swiz);
-   DESC_SET(CONFIG2, 0x00030000);
+                     COND(is_array, VIVS_TE_SAMPLER_CONFIG1_TEXTURE_ARRAY) |
+                     VIVS_TE_SAMPLER_CONFIG1_HALIGN(res->halign) | swiz);
+   DESC_SET(CONFIG2, 0x00030000 |
+         COND(sint && desc->channel[0].size == 8, TE_SAMPLER_CONFIG2_SIGNED_INT8) |
+         COND(sint && desc->channel[0].size == 16, TE_SAMPLER_CONFIG2_SIGNED_INT16));
    DESC_SET(LINEAR_STRIDE, res->levels[0].stride);
+   DESC_SET(VOLUME, etna_log2_fixp88(base_depth));
    DESC_SET(SLICE, res->levels[0].layer_stride);
-   DESC_SET(3D_CONFIG, 0x00000001);
+   DESC_SET(3D_CONFIG, VIVS_TE_SAMPLER_3D_CONFIG_DEPTH(base_depth));
    DESC_SET(ASTC0, COND(astc, VIVS_NTE_SAMPLER_ASTC0_ASTC_FORMAT(format)) |
                    VIVS_NTE_SAMPLER_ASTC0_UNK8(0xc) |
                    VIVS_NTE_SAMPLER_ASTC0_UNK16(0xc) |
@@ -243,6 +290,10 @@ etna_emit_texture_desc(struct etna_context *ctx)
          if ((1 << x) & active_samplers) {
             struct etna_sampler_state_desc *ss = etna_sampler_state_desc(ctx->sampler[x]);
             struct etna_sampler_view_desc *sv = etna_sampler_view_desc(ctx->sampler_view[x]);
+
+            if (texture_use_int_filter(&sv->base, &ss->base, true))
+               sv->SAMP_CTRL0 |= VIVS_NTE_DESCRIPTOR_SAMP_CTRL0_INT_FILTER;
+
             etna_set_state(stream, VIVS_NTE_DESCRIPTOR_TX_CTRL(x),
                COND(sv->ts.enable, VIVS_NTE_DESCRIPTOR_TX_CTRL_TS_ENABLE) |
                VIVS_NTE_DESCRIPTOR_TX_CTRL_TS_MODE(sv->ts.mode) |
@@ -251,6 +302,7 @@ etna_emit_texture_desc(struct etna_context *ctx)
             etna_set_state(stream, VIVS_NTE_DESCRIPTOR_SAMP_CTRL1(x), ss->SAMP_CTRL1 | sv->SAMP_CTRL1);
             etna_set_state(stream, VIVS_NTE_DESCRIPTOR_SAMP_LOD_MINMAX(x), ss->SAMP_LOD_MINMAX);
             etna_set_state(stream, VIVS_NTE_DESCRIPTOR_SAMP_LOD_BIAS(x), ss->SAMP_LOD_BIAS);
+            etna_set_state(stream, VIVS_NTE_DESCRIPTOR_SAMP_ANISOTROPY(x), ss->SAMP_ANISOTROPY);
          }
       }
    }

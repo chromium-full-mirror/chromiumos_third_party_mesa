@@ -34,7 +34,7 @@
 #include <inttypes.h>  /* for PRId64 macro */
 
 #include "main/errors.h"
-#include "main/imports.h"
+
 #include "main/mtypes.h"
 #include "main/arrayobj.h"
 #include "main/bufferobj.h"
@@ -289,6 +289,15 @@ bufferobj_data(struct gl_context *ctx,
    struct st_memory_object *st_mem_obj = st_memory_object(memObj);
    bool is_mapped = _mesa_bufferobj_mapped(obj, MAP_USER);
 
+   if (size > UINT32_MAX || offset > UINT32_MAX) {
+      /* pipe_resource.width0 is 32 bits only and increasing it
+       * to 64 bits doesn't make much sense since hw support
+       * for > 4GB resources is limited.
+       */
+      st_obj->Base.Size = 0;
+      return GL_FALSE;
+   }
+
    if (target != GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD &&
        size && st_obj->buffer &&
        st_obj->Base.Size == size &&
@@ -485,6 +494,8 @@ st_access_flags_to_transfer_flags(GLbitfield access, bool wholeBuffer)
 
    if (access & MESA_MAP_NOWAIT_BIT)
       flags |= PIPE_TRANSFER_DONTBLOCK;
+   if (access & MESA_MAP_THREAD_SAFE_BIT)
+      flags |= PIPE_TRANSFER_THREAD_SAFE;
 
    return flags;
 }
@@ -594,7 +605,7 @@ st_copy_buffer_subdata(struct gl_context *ctx,
 
    /* buffer should not already be mapped */
    assert(!_mesa_check_disallowed_mapping(src));
-   assert(!_mesa_check_disallowed_mapping(dst));
+   /* dst can be mapped, just not the same range as the target range */
 
    u_box_1d(readOffset, size, &box);
 

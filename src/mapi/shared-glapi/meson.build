@@ -47,11 +47,11 @@ libglapi = shared_library(
   c_args : [
     _glapi_c_args,
     c_msvc_compat_args,
-    c_vis_args,
     '-DMAPI_MODE_GLAPI',
     '-DMAPI_ABI_HEADER="@0@"'.format(shared_glapi_mapi_tmp_h.full_path()),
     gcc_lto_quirk,
   ],
+  gnu_symbol_visibility : 'hidden',
   link_args : [ld_args_gc_sections],
   include_directories : [inc_src, inc_include, inc_mapi],
   dependencies : [dep_thread, dep_selinux],
@@ -74,14 +74,14 @@ if with_any_opengl and with_tests
     ),
     suite : ['mapi'],
   )
-  if prog_nm.found()
+  if with_symbols_check
     test(
       'shared-glapi symbols check',
       symbols_check,
       args : [
         '--lib', libglapi,
         '--symbols-file', files('glapi-symbols.txt'),
-        '--nm', prog_nm.path(),
+        symbols_check_args,
       ],
       suite : ['mapi'],
     )

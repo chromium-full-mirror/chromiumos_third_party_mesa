@@ -589,6 +589,8 @@ static void StreamOut(
         }
     }
 
+    pDC->dynState.soPrims += soContext.numPrimsWritten;
+
     UPDATE_STAT_FE(SoPrimStorageNeeded[streamIndex], soContext.numPrimStorageNeeded);
     UPDATE_STAT_FE(SoNumPrimsWritten[streamIndex], soContext.numPrimsWritten);
 
@@ -702,7 +704,6 @@ void ProcessStreamIdBuffer(uint32_t stream,
 {
     SWR_ASSERT(stream < MAX_SO_STREAMS);
 
-    uint32_t numInputBytes  = AlignUp(numEmittedVerts * 2, 8) / 8;
     uint32_t numOutputBytes = AlignUp(numEmittedVerts, 8) / 8;
 
     for (uint32_t b = 0; b < numOutputBytes; ++b)
@@ -1242,7 +1243,7 @@ static void AllocateTessellationData(SWR_CONTEXT* pContext)
     {
         gt_pTessellationThreadData =
             (TessellationThreadLocalData*)AlignedMalloc(sizeof(TessellationThreadLocalData), 64);
-        memset(gt_pTessellationThreadData, 0, sizeof(*gt_pTessellationThreadData));
+        memset((void*)gt_pTessellationThreadData, 0, sizeof(*gt_pTessellationThreadData));
     }
 }
 
@@ -1335,6 +1336,13 @@ static void TessellationStages(DRAW_CONTEXT* pDC,
     // Max storage for one attribute for an entire simdprimitive
     simdvector simdattrib[MAX_NUM_VERTS_PER_PRIM];
 
+    // Assemble position separately
+    // TESS_TODO: this could be avoided - fix it
+    pa.Assemble(VERTEX_POSITION_SLOT, simdattrib);
+    for (uint32_t i = 0; i < numVertsPerPrim; ++i) {
+        hsContext.vert[i].attrib[VERTEX_POSITION_SLOT] = simdattrib[i];
+    }
+
     // assemble all attributes for the input primitives
     for (uint32_t slot = 0; slot < tsState.numHsInputAttribs; ++slot)
     {
@@ -1362,6 +1370,7 @@ static void TessellationStages(DRAW_CONTEXT* pDC,
 #if defined(_DEBUG)
     //memset(hsContext.pCPout, 0x90, sizeof(ScalarPatch) * KNOB_SIMD_WIDTH);
 #endif
+    memset(hsContext.pCPout, 0x90, sizeof(ScalarPatch) * KNOB_SIMD_WIDTH);
 
 #if USE_SIMD16_FRONTEND
     uint32_t numPrims = numPrims_simd8;
@@ -1387,7 +1396,7 @@ static void TessellationStages(DRAW_CONTEXT* pDC,
         SWR_TESSELLATION_FACTORS tessFactors;
         tessFactors                    = hsContext.pCPout[p].tessFactors;
 
-        // Run Tessellator
+          // Run Tessellator
         SWR_TS_TESSELLATED_DATA tsData = {0};
         RDTSC_BEGIN(pDC->pContext->pBucketMgr, FETessellation, pDC->drawId);
         TSTessellate(tsCtx, tessFactors, tsData);
@@ -1543,7 +1552,7 @@ static void TessellationStages(DRAW_CONTEXT* pDC,
                     // Gather data from the SVG if provided.
                     simd16scalari vViewportIdx = SIMD16::setzero_si();
                     simd16scalari vRtIdx       = SIMD16::setzero_si();
-                    SIMD16::Vec4  svgAttrib[4];
+                    SIMD16::Vec4 svgAttrib[4] = {SIMD16::setzero_ps()};
 
                     if (state.backendState.readViewportArrayIndex ||
                         state.backendState.readRenderTargetArrayIndex)

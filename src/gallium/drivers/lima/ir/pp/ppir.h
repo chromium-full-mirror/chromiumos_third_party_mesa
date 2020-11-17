@@ -27,6 +27,7 @@
 
 #include "util/u_math.h"
 #include "util/list.h"
+#include "util/set.h"
 
 #include "ir/lima_ir.h"
 
@@ -53,7 +54,6 @@ typedef enum {
    ppir_op_normalize3,
    ppir_op_normalize4,
 
-   ppir_op_sel_cond,
    ppir_op_select,
 
    ppir_op_sin,
@@ -99,6 +99,7 @@ typedef enum {
    ppir_op_load_uniform,
    ppir_op_load_varying,
    ppir_op_load_coords,
+   ppir_op_load_coords_reg,
    ppir_op_load_fragcoord,
    ppir_op_load_pointcoord,
    ppir_op_load_frontface,
@@ -106,7 +107,6 @@ typedef enum {
    ppir_op_load_temp,
 
    ppir_op_store_temp,
-   ppir_op_store_color,
 
    ppir_op_const,
 
@@ -114,6 +114,7 @@ typedef enum {
    ppir_op_branch,
 
    ppir_op_undef,
+   ppir_op_dummy,
 
    ppir_op_num,
 } ppir_op;
@@ -151,6 +152,7 @@ typedef struct {
 
 typedef struct ppir_node {
    struct list_head list;
+   struct list_head sched_list;
    ppir_op op;
    ppir_node_type type;
    int index;
@@ -159,6 +161,8 @@ typedef struct ppir_node {
    struct ppir_instr *instr;
    int instr_pos;
    struct ppir_block *block;
+   bool is_end;
+   bool succ_different_block;
 
    /* for scheduler */
    struct list_head succ_list;
@@ -180,13 +184,11 @@ typedef struct ppir_reg {
    int index;
    int regalloc_index;
    int num_components;
+
    /* whether this reg has to start from the x component
     * of a full physical reg, this is true for reg used
-    * in load/store instr which has no swizzle field
-    */
+    * in load/store instr which has no swizzle field */
    bool is_head;
-   /* instr live range */
-   int live_in, live_out;
    bool spilled;
    bool undef;
 } ppir_reg;
@@ -269,9 +271,12 @@ typedef struct {
 typedef struct {
    ppir_node node;
    ppir_dest dest;
-   ppir_src src_coords; /* not to be used after lowering */
+   ppir_src src[2];
+   int num_src;
    int sampler;
    int sampler_dim;
+   bool lod_bias_en;
+   bool explicit_lod;
 } ppir_load_texture_node;
 
 typedef struct {
@@ -295,6 +300,11 @@ enum ppir_instr_slot {
    PPIR_INSTR_SLOT_ALU_END = PPIR_INSTR_SLOT_ALU_COMBINE,
 };
 
+struct ppir_liveness {
+   ppir_reg *reg;
+   unsigned mask : 4;
+};
+
 typedef struct ppir_instr {
    struct list_head list;
    int index;
@@ -314,6 +324,16 @@ typedef struct ppir_instr {
    bool scheduled;
    int offset;
    int encode_size;
+
+   /* for liveness analysis */
+   struct ppir_liveness *live_in;
+   struct ppir_liveness *live_out;
+   /* live_internal is to mark registers only live within an
+    * instruction, without propagation */
+   struct ppir_liveness *live_internal;
+   struct set *live_in_set;
+   struct set *live_out_set;
+   struct set *live_internal_set;
 } ppir_instr;
 
 typedef struct ppir_block {
@@ -330,11 +350,11 @@ typedef struct ppir_block {
    int sched_instr_base;
    int index;
 
-   /*  for liveness analysis */
-   BITSET_WORD *def;
-   BITSET_WORD *use;
-   BITSET_WORD *live_in;
-   BITSET_WORD *live_out;
+   /* for liveness analysis */
+   struct ppir_liveness *live_in;
+   struct ppir_liveness *live_out;
+   struct set *live_in_set;
+   struct set *live_out_set;
 } ppir_block;
 
 typedef struct {
@@ -365,6 +385,7 @@ typedef struct ppir_compiler {
 
    struct ra_regs *ra;
    struct lima_fs_shader_state *prog;
+   bool uses_discard;
 
    /* for scheduler */
    int sched_instr_base;
@@ -392,7 +413,6 @@ void ppir_node_replace_child(ppir_node *parent, ppir_node *old_child, ppir_node 
 void ppir_node_replace_all_succ(ppir_node *dst, ppir_node *src);
 void ppir_node_replace_pred(ppir_dep *dep, ppir_node *new_pred);
 ppir_dep *ppir_dep_for_pred(ppir_node *node, ppir_node *pred);
-ppir_node *ppir_node_clone(ppir_block *block, ppir_node *node);
 /* Assumes that node successors are in the same block */
 ppir_node *ppir_node_insert_mov(ppir_node *node);
 
@@ -408,7 +428,8 @@ static inline bool ppir_node_is_leaf(ppir_node *node)
 
 static inline bool ppir_node_has_single_succ(ppir_node *node)
 {
-   return list_is_singular(&node->succ_list);
+   return list_is_singular(&node->succ_list)
+      && !node->succ_different_block;
 }
 
 bool ppir_node_has_single_src_succ(ppir_node *node);
@@ -471,6 +492,7 @@ static inline int ppir_node_get_src_num(ppir_node *node)
    case ppir_node_type_load:
       return ppir_node_to_load(node)->num_src;
    case ppir_node_type_load_texture:
+      return ppir_node_to_load_texture(node)->num_src;
    case ppir_node_type_store:
       return 1;
    default:
@@ -491,7 +513,7 @@ static inline ppir_src *ppir_node_get_src(ppir_node *node, int idx)
    case ppir_node_type_branch:
       return &ppir_node_to_branch(node)->src[idx];
    case ppir_node_type_load_texture:
-      return &ppir_node_to_load_texture(node)->src_coords;
+      return &ppir_node_to_load_texture(node)->src[idx];
    case ppir_node_type_load:
       return &ppir_node_to_load(node)->src;
    case ppir_node_type_store:
@@ -525,17 +547,6 @@ static inline ppir_reg *ppir_dest_get_reg(ppir_dest *dest)
    default:
       return NULL;
    }
-}
-
-static inline ppir_src *ppir_node_get_src_for_pred(ppir_node *node, ppir_node *pred)
-{
-   for (int i = 0; i < ppir_node_get_src_num(node); i++) {
-      ppir_src *src = ppir_node_get_src(node, i);
-      if (src && src->node == pred)
-         return src;
-   }
-
-   return NULL;
 }
 
 static inline void ppir_node_target_assign(ppir_src *src, ppir_node *node)
@@ -608,7 +619,18 @@ static inline int ppir_target_get_dest_reg_index(ppir_dest *dest)
    return -1;
 }
 
-static inline bool ppir_target_is_scaler(ppir_dest *dest)
+static inline int ppir_src_get_mask(ppir_src *src)
+{
+   ppir_reg *reg = ppir_src_get_reg(src);
+   int mask = 0;
+
+   for (int i = 0; i < reg->num_components; i++)
+      mask |= (1 << src->swizzle[i]);
+
+   return mask;
+}
+
+static inline bool ppir_target_is_scalar(ppir_dest *dest)
 {
    switch (dest->type) {
    case ppir_target_ssa:
@@ -632,6 +654,17 @@ static inline bool ppir_target_is_scaler(ppir_dest *dest)
    default:
       return false;
    }
+}
+
+static inline bool ppir_node_schedulable_slot(ppir_node *node,
+                                              enum ppir_instr_slot slot)
+{
+   int *slots = ppir_op_infos[node->op].slots;
+   for (int i = 0; slots[i] != PPIR_INSTR_SLOT_END; i++)
+      if (slots[i] == slot)
+         return true;
+
+   return false;
 }
 
 ppir_instr *ppir_instr_create(ppir_block *block);

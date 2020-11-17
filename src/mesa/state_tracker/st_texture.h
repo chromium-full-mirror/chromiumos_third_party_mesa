@@ -78,6 +78,12 @@ struct st_sampler_views
    struct st_sampler_view views[0];
 };
 
+struct st_compressed_data
+{
+   struct pipe_reference reference;
+   GLubyte *ptr;
+};
+
 
 /**
  * Subclass of gl_texure_image.
@@ -101,7 +107,7 @@ struct st_texture_image
     * the original data. This is necessary for mapping/unmapping,
     * as well as image copies.
     */
-   GLubyte *compressed_data;
+   struct st_compressed_data* compressed_data;
 };
 
 
@@ -321,6 +327,9 @@ st_destroy_bound_texture_handles(struct st_context *st);
 
 void
 st_destroy_bound_image_handles(struct st_context *st);
+
+bool
+st_astc_format_fallback(const struct st_context *st, mesa_format format);
 
 bool
 st_compressed_format_fallback(struct st_context *st, mesa_format format);

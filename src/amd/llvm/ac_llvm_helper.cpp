@@ -25,12 +25,6 @@
 
 #include <cstring>
 
-#include "ac_binary.h"
-#include "ac_llvm_util.h"
-#include "ac_llvm_build.h"
-
-#include "util/macros.h"
-
 #include <llvm-c/Core.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/IR/IRBuilder.h>
@@ -39,10 +33,34 @@
 
 #include <llvm/IR/LegacyPassManager.h>
 
+/* DO NOT REORDER THE HEADERS
+ * The LLVM headers need to all be included before any Mesa header,
+ * as they use the `restrict` keyword in ways that are incompatible
+ * with our #define in include/c99_compat.h
+ */
+
+#include "ac_binary.h"
+#include "ac_llvm_util.h"
+#include "ac_llvm_build.h"
+
+#include "util/macros.h"
+
 void ac_add_attr_dereferenceable(LLVMValueRef val, uint64_t bytes)
 {
    llvm::Argument *A = llvm::unwrap<llvm::Argument>(val);
    A->addAttr(llvm::Attribute::getWithDereferenceableBytes(A->getContext(), bytes));
+}
+
+void ac_add_attr_alignment(LLVMValueRef val, uint64_t bytes)
+{
+#if LLVM_VERSION_MAJOR >= 10
+	llvm::Argument *A = llvm::unwrap<llvm::Argument>(val);
+	A->addAttr(llvm::Attribute::getWithAlignment(A->getContext(), llvm::Align(bytes)));
+#else
+	/* Avoid unused parameter warnings. */
+	(void)val;
+	(void)bytes;
+#endif
 }
 
 bool ac_is_sgpr_param(LLVMValueRef arg)
@@ -84,12 +102,18 @@ LLVMBuilderRef ac_create_builder(LLVMContextRef ctx,
 	case AC_FLOAT_MODE_DEFAULT:
 	case AC_FLOAT_MODE_DENORM_FLUSH_TO_ZERO:
 		break;
-	case AC_FLOAT_MODE_NO_SIGNED_ZEROS_FP_MATH:
-		flags.setNoSignedZeros();
-		llvm::unwrap(builder)->setFastMathFlags(flags);
-		break;
-	case AC_FLOAT_MODE_UNSAFE_FP_MATH:
-		flags.setFast();
+
+	case AC_FLOAT_MODE_DEFAULT_OPENGL:
+		/* Allow optimizations to treat the sign of a zero argument or
+		 * result as insignificant.
+		 */
+		flags.setNoSignedZeros(); /* nsz */
+
+		/* Allow optimizations to use the reciprocal of an argument
+		 * rather than perform division.
+		 */
+		flags.setAllowReciprocal(); /* arcp */
+
 		llvm::unwrap(builder)->setFastMathFlags(flags);
 		break;
 	}
@@ -192,7 +216,11 @@ struct ac_compiler_passes *ac_create_llvm_passes(LLVMTargetMachineRef tm)
 
 	if (TM->addPassesToEmitFile(p->passmgr, p->ostream,
 				    nullptr,
+#if LLVM_VERSION_MAJOR >= 10
+				    llvm::CGFT_ObjectFile)) {
+#else
 				    llvm::TargetMachine::CGFT_ObjectFile)) {
+#endif
 		fprintf(stderr, "amd: TargetMachine can't emit a file of this type!\n");
 		delete p;
 		return NULL;

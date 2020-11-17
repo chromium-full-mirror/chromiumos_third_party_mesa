@@ -69,6 +69,13 @@ dpp_row_sr(unsigned amount)
     return (dpp_ctrl)(((unsigned) _dpp_row_sr) | amount);
 }
 
+inline dpp_ctrl
+dpp_row_rr(unsigned amount)
+{
+    assert(amount > 0 && amount < 16);
+    return (dpp_ctrl)(((unsigned) _dpp_row_rr) | amount);
+}
+
 inline unsigned
 ds_pattern_bitmode(unsigned and_mask, unsigned or_mask, unsigned xor_mask)
 {
@@ -77,6 +84,35 @@ ds_pattern_bitmode(unsigned and_mask, unsigned or_mask, unsigned xor_mask)
 }
 
 aco_ptr<Instruction> create_s_mov(Definition dst, Operand src);
+
+extern uint8_t int8_mul_table[512];
+
+enum sendmsg {
+   sendmsg_none = 0,
+   _sendmsg_gs = 2,
+   _sendmsg_gs_done = 3,
+   sendmsg_save_wave = 4,
+   sendmsg_stall_wave_gen = 5,
+   sendmsg_halt_waves = 6,
+   sendmsg_ordered_ps_done = 7,
+   sendmsg_early_prim_dealloc = 8,
+   sendmsg_gs_alloc_req = 9,
+   sendmsg_id_mask = 0xf,
+};
+
+inline sendmsg
+sendmsg_gs(bool cut, bool emit, unsigned stream)
+{
+    assert(stream < 4);
+    return (sendmsg)((unsigned)_sendmsg_gs | (cut << 4) | (emit << 5) | (stream << 8));
+}
+
+inline sendmsg
+sendmsg_gs_done(bool cut, bool emit, unsigned stream)
+{
+    assert(stream < 4);
+    return (sendmsg)((unsigned)_sendmsg_gs_done | (cut << 4) | (emit << 5) | (stream << 8));
+}
 
 class Builder {
 public:
@@ -113,16 +149,50 @@ public:
       Op(Result res) : op((Temp)res) {}
    };
 
+   enum WaveSpecificOpcode {
+      s_cselect = (unsigned) aco_opcode::s_cselect_b64,
+      s_cmp_lg = (unsigned) aco_opcode::s_cmp_lg_u64,
+      s_and = (unsigned) aco_opcode::s_and_b64,
+      s_andn2 = (unsigned) aco_opcode::s_andn2_b64,
+      s_or = (unsigned) aco_opcode::s_or_b64,
+      s_orn2 = (unsigned) aco_opcode::s_orn2_b64,
+      s_not = (unsigned) aco_opcode::s_not_b64,
+      s_mov = (unsigned) aco_opcode::s_mov_b64,
+      s_wqm = (unsigned) aco_opcode::s_wqm_b64,
+      s_and_saveexec = (unsigned) aco_opcode::s_and_saveexec_b64,
+      s_or_saveexec = (unsigned) aco_opcode::s_or_saveexec_b64,
+      s_xnor = (unsigned) aco_opcode::s_xnor_b64,
+      s_xor = (unsigned) aco_opcode::s_xor_b64,
+      s_bcnt1_i32 = (unsigned) aco_opcode::s_bcnt1_i32_b64,
+      s_bitcmp1 = (unsigned) aco_opcode::s_bitcmp1_b64,
+      s_ff1_i32 = (unsigned) aco_opcode::s_ff1_i32_b64,
+   };
+
    Program *program;
    bool use_iterator;
    bool start; // only when use_iterator == false
+   RegClass lm;
 
    std::vector<aco_ptr<Instruction>> *instructions;
    std::vector<aco_ptr<Instruction>>::iterator it;
+   bool is_precise = false;
+   bool is_nuw = false;
 
-   Builder(Program *pgm) : program(pgm), use_iterator(false), start(false), instructions(NULL) {}
-   Builder(Program *pgm, Block *block) : program(pgm), use_iterator(false), start(false), instructions(&block->instructions) {}
-   Builder(Program *pgm, std::vector<aco_ptr<Instruction>> *instrs) : program(pgm), use_iterator(false), start(false), instructions(instrs) {}
+   Builder(Program *pgm) : program(pgm), use_iterator(false), start(false), lm(pgm ? pgm->lane_mask : s2), instructions(NULL) {}
+   Builder(Program *pgm, Block *block) : program(pgm), use_iterator(false), start(false), lm(pgm ? pgm->lane_mask : s2), instructions(&block->instructions) {}
+   Builder(Program *pgm, std::vector<aco_ptr<Instruction>> *instrs) : program(pgm), use_iterator(false), start(false), lm(pgm ? pgm->lane_mask : s2), instructions(instrs) {}
+
+   Builder precise() const {
+      Builder res = *this;
+      res.is_precise = true;
+      return res;
+   };
+
+   Builder nuw() const {
+      Builder res = *this;
+      res.is_nuw = true;
+      return res;
+   }
 
    void moveEnd(Block *block) {
       instructions = &block->instructions;
@@ -202,19 +272,73 @@ public:
       return Definition(program->allocateId(), reg, rc);
    }
 
+   inline aco_opcode w64or32(WaveSpecificOpcode opcode) const {
+      if (program->wave_size == 64)
+         return (aco_opcode) opcode;
+
+      switch (opcode) {
+      case s_cselect:
+         return aco_opcode::s_cselect_b32;
+      case s_cmp_lg:
+         return aco_opcode::s_cmp_lg_u32;
+      case s_and:
+         return aco_opcode::s_and_b32;
+      case s_andn2:
+         return aco_opcode::s_andn2_b32;
+      case s_or:
+         return aco_opcode::s_or_b32;
+      case s_orn2:
+         return aco_opcode::s_orn2_b32;
+      case s_not:
+         return aco_opcode::s_not_b32;
+      case s_mov:
+         return aco_opcode::s_mov_b32;
+      case s_wqm:
+         return aco_opcode::s_wqm_b32;
+      case s_and_saveexec:
+         return aco_opcode::s_and_saveexec_b32;
+      case s_or_saveexec:
+         return aco_opcode::s_or_saveexec_b32;
+      case s_xnor:
+         return aco_opcode::s_xnor_b32;
+      case s_xor:
+         return aco_opcode::s_xor_b32;
+      case s_bcnt1_i32:
+         return aco_opcode::s_bcnt1_i32_b32;
+      case s_bitcmp1:
+         return aco_opcode::s_bitcmp1_b32;
+      case s_ff1_i32:
+         return aco_opcode::s_ff1_i32_b32;
+      default:
+         unreachable("Unsupported wave specific opcode.");
+      }
+   }
+
 % for fixed in ['m0', 'vcc', 'exec', 'scc']:
    Operand ${fixed}(Temp tmp) {
+       % if fixed == 'vcc' or fixed == 'exec':
+          //vcc_hi and exec_hi can still be used in wave32
+          assert(tmp.type() == RegType::sgpr && tmp.bytes() <= 8);
+       % endif
        Operand op(tmp);
        op.setFixed(aco::${fixed});
        return op;
    }
 
    Definition ${fixed}(Definition def) {
+       % if fixed == 'vcc' or fixed == 'exec':
+          //vcc_hi and exec_hi can still be used in wave32
+          assert(def.regClass().type() == RegType::sgpr && def.bytes() <= 8);
+       % endif
        def.setFixed(aco::${fixed});
        return def;
    }
 
    Definition hint_${fixed}(Definition def) {
+       % if fixed == 'vcc' or fixed == 'exec':
+          //vcc_hi and exec_hi can still be used in wave32
+          assert(def.regClass().type() == RegType::sgpr && def.bytes() <= 8);
+       % endif
        def.setHint(aco::${fixed});
        return def;
    }
@@ -254,9 +378,13 @@ public:
 
    Result copy(Definition dst, Op op_) {
       Operand op = op_.op;
+      assert(op.bytes() == dst.bytes());
       if (dst.regClass() == s1 && op.size() == 1 && op.isLiteral()) {
          uint32_t imm = op.constantValue();
-         if (imm >= 0xffff8000 || imm <= 0x7fff) {
+         if (imm == 0x3e22f983) {
+            if (program->chip_class >= GFX8)
+               op.setFixed(PhysReg{248}); /* it can be an inline constant on GFX8+ */
+         } else if (imm >= 0xffff8000 || imm <= 0x7fff) {
             return sopk(aco_opcode::s_movk_i32, dst, imm & 0xFFFFu);
          } else if (util_bitreverse(imm) <= 64 || util_bitreverse(imm) >= 0xFFFFFFF0) {
             uint32_t rev = util_bitreverse(imm);
@@ -271,29 +399,72 @@ public:
          }
       }
 
-      if (dst.regClass() == s2) {
+      if (dst.regClass() == s1) {
+        return sop1(aco_opcode::s_mov_b32, dst, op);
+      } else if (dst.regClass() == s2) {
         return sop1(aco_opcode::s_mov_b64, dst, op);
-      } else if (op.size() > 1) {
-         return pseudo(aco_opcode::p_create_vector, dst, op);
       } else if (dst.regClass() == v1 || dst.regClass() == v1.as_linear()) {
         return vop1(aco_opcode::v_mov_b32, dst, op);
+      } else if (op.bytes() > 2) {
+         return pseudo(aco_opcode::p_create_vector, dst, op);
+      } else if (op.bytes() == 1 && op.isConstant()) {
+        uint8_t val = op.constantValue();
+        Operand op32((uint32_t)val | (val & 0x80u ? 0xffffff00u : 0u));
+        aco_ptr<SDWA_instruction> sdwa;
+        if (op32.isLiteral()) {
+            sdwa.reset(create_instruction<SDWA_instruction>(aco_opcode::v_mul_u32_u24, asSDWA(Format::VOP2), 2, 1));
+            uint32_t a = (uint32_t)int8_mul_table[val * 2];
+            uint32_t b = (uint32_t)int8_mul_table[val * 2 + 1];
+            sdwa->operands[0] = Operand(a | (a & 0x80u ? 0xffffff00u : 0x0u));
+            sdwa->operands[1] = Operand(b | (b & 0x80u ? 0xffffff00u : 0x0u));
+        } else {
+            sdwa.reset(create_instruction<SDWA_instruction>(aco_opcode::v_mov_b32, asSDWA(Format::VOP1), 1, 1));
+            sdwa->operands[0] = op32;
+        }
+        sdwa->definitions[0] = dst;
+        sdwa->sel[0] = sdwa_udword;
+        sdwa->sel[1] = sdwa_udword;
+        sdwa->dst_sel = sdwa_ubyte;
+        sdwa->dst_preserve = true;
+        return insert(std::move(sdwa));
+      } else if (op.bytes() == 2 && op.isConstant() && !op.isLiteral()) {
+        aco_ptr<SDWA_instruction> sdwa{create_instruction<SDWA_instruction>(aco_opcode::v_add_f16, asSDWA(Format::VOP2), 2, 1)};
+        sdwa->operands[0] = op;
+        sdwa->operands[1] = Operand(0u);
+        sdwa->definitions[0] = dst;
+        sdwa->sel[0] = sdwa_uword;
+        sdwa->sel[1] = sdwa_udword;
+        sdwa->dst_sel = dst.bytes() == 1 ? sdwa_ubyte : sdwa_uword;
+        sdwa->dst_preserve = true;
+        return insert(std::move(sdwa));
+      } else if (dst.regClass().is_subdword()) {
+        if (program->chip_class >= GFX8) {
+            aco_ptr<SDWA_instruction> sdwa{create_instruction<SDWA_instruction>(aco_opcode::v_mov_b32, asSDWA(Format::VOP1), 1, 1)};
+            sdwa->operands[0] = op;
+            sdwa->definitions[0] = dst;
+            sdwa->sel[0] = op.bytes() == 1 ? sdwa_ubyte : sdwa_uword;
+            sdwa->dst_sel = dst.bytes() == 1 ? sdwa_ubyte : sdwa_uword;
+            sdwa->dst_preserve = true;
+            return insert(std::move(sdwa));
+        } else {
+            return vop1(aco_opcode::v_mov_b32, dst, op);
+        }
       } else {
-        assert(dst.regClass() == s1);
-        return sop1(aco_opcode::s_mov_b32, dst, op);
+        unreachable("Unhandled case in bld.copy()");
       }
    }
 
-   Result vadd32(Definition dst, Op a, Op b, bool carry_out=false, Op carry_in=Op(Operand(s2))) {
+   Result vadd32(Definition dst, Op a, Op b, bool carry_out=false, Op carry_in=Op(Operand(s2)), bool post_ra=false) {
       if (!b.op.isTemp() || b.op.regClass().type() != RegType::vgpr)
          std::swap(a, b);
-      assert(b.op.isTemp() && b.op.regClass().type() == RegType::vgpr);
+      assert((post_ra || b.op.hasRegClass()) && b.op.regClass().type() == RegType::vgpr);
 
       if (!carry_in.op.isUndefined())
-         return vop2(aco_opcode::v_addc_co_u32, Definition(dst), hint_vcc(def(s2)), a, b, carry_in);
+         return vop2(aco_opcode::v_addc_co_u32, Definition(dst), hint_vcc(def(lm)), a, b, carry_in);
       else if (program->chip_class >= GFX10 && carry_out)
-         return vop3(aco_opcode::v_add_co_u32_e64, Definition(dst), def(s2), a, b);
+         return vop3(aco_opcode::v_add_co_u32_e64, Definition(dst), def(lm), a, b);
       else if (program->chip_class < GFX9 || carry_out)
-         return vop2(aco_opcode::v_add_co_u32, Definition(dst), hint_vcc(def(s2)), a, b);
+         return vop2(aco_opcode::v_add_co_u32, Definition(dst), hint_vcc(def(lm)), a, b);
       else
          return vop2(aco_opcode::v_add_u32, Definition(dst), a, b);
    }
@@ -346,24 +517,40 @@ public:
       }
       return insert(std::move(sub));
    }
+
+   Result readlane(Definition dst, Op vsrc, Op lane)
+   {
+      if (program->chip_class >= GFX8)
+         return vop3(aco_opcode::v_readlane_b32_e64, dst, vsrc, lane);
+      else
+         return vop2(aco_opcode::v_readlane_b32, dst, vsrc, lane);
+   }
+   Result writelane(Definition dst, Op val, Op lane, Op vsrc) {
+      if (program->chip_class >= GFX8)
+         return vop3(aco_opcode::v_writelane_b32_e64, dst, val, lane, vsrc);
+      else
+         return vop2(aco_opcode::v_writelane_b32, dst, val, lane, vsrc);
+   }
 <%
 import itertools
 formats = [("pseudo", [Format.PSEUDO], 'Pseudo_instruction', list(itertools.product(range(5), range(5))) + [(8, 1), (1, 8)]),
-           ("sop1", [Format.SOP1], 'SOP1_instruction', [(1, 1), (2, 1), (3, 2)]),
+           ("sop1", [Format.SOP1], 'SOP1_instruction', [(0, 1), (1, 0), (1, 1), (2, 1), (3, 2)]),
            ("sop2", [Format.SOP2], 'SOP2_instruction', itertools.product([1, 2], [2, 3])),
            ("sopk", [Format.SOPK], 'SOPK_instruction', itertools.product([0, 1, 2], [0, 1])),
-           ("sopp", [Format.SOPP], 'SOPP_instruction', [(0, 0), (0, 1)]),
+           ("sopp", [Format.SOPP], 'SOPP_instruction', itertools.product([0, 1], [0, 1])),
            ("sopc", [Format.SOPC], 'SOPC_instruction', [(1, 2)]),
            ("smem", [Format.SMEM], 'SMEM_instruction', [(0, 4), (0, 3), (1, 0), (1, 3), (1, 2), (0, 0)]),
            ("ds", [Format.DS], 'DS_instruction', [(1, 1), (1, 2), (0, 3), (0, 4)]),
            ("mubuf", [Format.MUBUF], 'MUBUF_instruction', [(0, 4), (1, 3)]),
-           ("mimg", [Format.MIMG], 'MIMG_instruction', [(0, 4), (1, 3), (0, 3), (1, 2)]), #TODO(pendingchaos): less shapes?
+           ("mtbuf", [Format.MTBUF], 'MTBUF_instruction', [(0, 4), (1, 3)]),
+           ("mimg", [Format.MIMG], 'MIMG_instruction', [(0, 3), (1, 3)]),
            ("exp", [Format.EXP], 'Export_instruction', [(0, 4)]),
-           ("branch", [Format.PSEUDO_BRANCH], 'Pseudo_branch_instruction', itertools.product([0], [0, 1])),
+           ("branch", [Format.PSEUDO_BRANCH], 'Pseudo_branch_instruction', itertools.product([1], [0, 1])),
            ("barrier", [Format.PSEUDO_BARRIER], 'Pseudo_barrier_instruction', [(0, 0)]),
-           ("reduction", [Format.PSEUDO_REDUCTION], 'Pseudo_reduction_instruction', [(3, 2), (3, 4)]),
+           ("reduction", [Format.PSEUDO_REDUCTION], 'Pseudo_reduction_instruction', [(3, 2)]),
            ("vop1", [Format.VOP1], 'VOP1_instruction', [(1, 1), (2, 2)]),
            ("vop2", [Format.VOP2], 'VOP2_instruction', itertools.product([1, 2], [2, 3])),
+           ("vop2_sdwa", [Format.VOP2, Format.SDWA], 'SDWA_instruction', itertools.product([1, 2], [2, 3])),
            ("vopc", [Format.VOPC], 'VOPC_instruction', itertools.product([1, 2], [2])),
            ("vop3", [Format.VOP3A], 'VOP3A_instruction', [(1, 3), (1, 2), (1, 1), (2, 2)]),
            ("vintrp", [Format.VINTRP], 'Interp_instruction', [(1, 2), (1, 3)]),
@@ -375,8 +562,9 @@ formats = [("pseudo", [Format.PSEUDO], 'Pseudo_instruction', list(itertools.prod
            ("vopc_e64", [Format.VOPC, Format.VOP3A], 'VOP3A_instruction', itertools.product([1, 2], [2])),
            ("flat", [Format.FLAT], 'FLAT_instruction', [(0, 3), (1, 2)]),
            ("global", [Format.GLOBAL], 'FLAT_instruction', [(0, 3), (1, 2)])]
+formats = [(f if len(f) == 5 else f + ('',)) for f in formats]
 %>\\
-% for name, formats, struct, shapes in formats:
+% for name, formats, struct, shapes, extra_field_setup in formats:
     % for num_definitions, num_operands in shapes:
         <%
         args = ['aco_opcode opcode']
@@ -393,6 +581,8 @@ formats = [("pseudo", [Format.PSEUDO], 'Pseudo_instruction', list(itertools.prod
       ${struct} *instr = create_instruction<${struct}>(opcode, (Format)(${'|'.join('(int)Format::%s' % f.name for f in formats)}), ${num_operands}, ${num_definitions});
         % for i in range(num_definitions):
             instr->definitions[${i}] = def${i};
+            instr->definitions[${i}].setPrecise(is_precise);
+            instr->definitions[${i}].setNUW(is_nuw);
         % endfor
         % for i in range(num_operands):
             instr->operands[${i}] = op${i}.op;
@@ -401,9 +591,28 @@ formats = [("pseudo", [Format.PSEUDO], 'Pseudo_instruction', list(itertools.prod
             % for dest, field_name in zip(f.get_builder_field_dests(), f.get_builder_field_names()):
       instr->${dest} = ${field_name};
             % endfor
+            ${f.get_builder_initialization(num_operands)}
         % endfor
+       ${extra_field_setup}
       return insert(instr);
    }
+
+    % if name == 'sop1' or name == 'sop2' or name == 'sopc':
+        <%
+        args[0] = 'WaveSpecificOpcode opcode'
+        params = []
+        for i in range(num_definitions):
+            params.append('def%d' % i)
+        for i in range(num_operands):
+            params.append('op%d' % i)
+        %>\\
+
+   inline Result ${name}(${', '.join(args)})
+   {
+       return ${name}(w64or32(opcode), ${', '.join(params)});
+   }
+
+    % endif
     % endfor
 % endfor
 };

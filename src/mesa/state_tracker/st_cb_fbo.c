@@ -33,7 +33,7 @@
  */
 
 
-#include "main/imports.h"
+
 #include "main/context.h"
 #include "main/fbobject.h"
 #include "main/framebuffer.h"
@@ -56,7 +56,7 @@
 #include "st_util.h"
 #include "st_manager.h"
 
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_surface.h"
 

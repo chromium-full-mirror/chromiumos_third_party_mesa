@@ -29,11 +29,11 @@
 
 #include "util/slab.h"
 #include "util/u_debug.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 
-#include "state_tracker/sw_winsys.h"
+#include "frontend/sw_winsys.h"
 
 static void
 zink_resource_destroy(struct pipe_screen *pscreen,
@@ -104,7 +104,8 @@ resource_create(struct pipe_screen *pscreen,
       bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
       bci.size = templ->width0;
 
-      bci.usage = 0;
+      bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                  VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
       if (templ->bind & PIPE_BIND_VERTEX_BUFFER)
          bci.usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
@@ -121,8 +122,11 @@ resource_create(struct pipe_screen *pscreen,
       if (templ->bind & PIPE_BIND_COMMAND_ARGS_BUFFER)
          bci.usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 
-      if (templ->usage == PIPE_USAGE_STAGING)
-         bci.usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+      if (templ->bind == (PIPE_BIND_STREAM_OUTPUT | PIPE_BIND_CUSTOM)) {
+         bci.usage |= VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT;
+      } else if (templ->bind & PIPE_BIND_STREAM_OUTPUT) {
+         bci.usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT;
+      }
 
       if (vkCreateBuffer(screen->dev, &bci, NULL, &res->buffer) !=
           VK_SUCCESS) {
@@ -173,7 +177,7 @@ resource_create(struct pipe_screen *pscreen,
       ici.extent.height = templ->height0;
       ici.extent.depth = templ->depth0;
       ici.mipLevels = templ->last_level + 1;
-      ici.arrayLayers = templ->array_size;
+      ici.arrayLayers = MAX2(templ->array_size, 1);
       ici.samples = templ->nr_samples ? templ->nr_samples : VK_SAMPLE_COUNT_1_BIT;
       ici.tiling = templ->bind & PIPE_BIND_LINEAR ? VK_IMAGE_TILING_LINEAR : VK_IMAGE_TILING_OPTIMAL;
 
@@ -181,21 +185,16 @@ resource_create(struct pipe_screen *pscreen,
           templ->target == PIPE_TEXTURE_CUBE_ARRAY)
          ici.arrayLayers *= 6;
 
-      if (templ->bind & (PIPE_BIND_DISPLAY_TARGET |
-                         PIPE_BIND_SCANOUT |
-                         PIPE_BIND_SHARED)) {
-         // assert(ici.tiling == VK_IMAGE_TILING_LINEAR);
+      if (templ->bind & PIPE_BIND_SHARED)
          ici.tiling = VK_IMAGE_TILING_LINEAR;
-      }
 
       if (templ->usage == PIPE_USAGE_STAGING)
          ici.tiling = VK_IMAGE_TILING_LINEAR;
 
       /* sadly, gallium doesn't let us know if it'll ever need this, so we have to assume */
-      ici.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-
-      if (templ->bind & PIPE_BIND_SAMPLER_VIEW)
-         ici.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+      ici.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                  VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                  VK_IMAGE_USAGE_SAMPLED_BIT;
 
       if (templ->bind & PIPE_BIND_SHADER_IMAGE)
          ici.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
@@ -250,7 +249,6 @@ resource_create(struct pipe_screen *pscreen,
    };
 
    if (whandle && whandle->type == WINSYS_HANDLE_TYPE_FD) {
-      imfi.sType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
       imfi.pNext = NULL;
       imfi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
       imfi.fd = whandle->handle;
@@ -326,11 +324,6 @@ zink_resource_get_handle(struct pipe_screen *pscreen,
    }
 
    if (whandle->type == WINSYS_HANDLE_TYPE_FD) {
-
-      if (!screen->vk_GetMemoryFdKHR)
-         screen->vk_GetMemoryFdKHR = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(screen->dev, "vkGetMemoryFdKHR");
-      if (!screen->vk_GetMemoryFdKHR)
-         return false;
       fd_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
       fd_info.memory = res->mem;
       fd_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
@@ -447,6 +440,21 @@ zink_transfer_map(struct pipe_context *pctx,
 
    void *ptr;
    if (pres->target == PIPE_BUFFER) {
+      if (usage & PIPE_TRANSFER_READ) {
+         /* need to wait for rendering to finish
+          * TODO: optimize/fix this to be much less obtrusive
+          * mesa/mesa#2966
+          */
+         struct pipe_fence_handle *fence = NULL;
+         pctx->flush(pctx, &fence, PIPE_FLUSH_HINT_FINISH);
+         if (fence) {
+            pctx->screen->fence_finish(pctx->screen, NULL, fence,
+                                       PIPE_TIMEOUT_INFINITE);
+            pctx->screen->fence_reference(pctx->screen, &fence, NULL);
+         }
+      }
+
+
       VkResult result = vkMapMemory(screen->dev, res->mem, res->offset, res->size, 0, &ptr);
       if (result != VK_SUCCESS)
          return NULL;

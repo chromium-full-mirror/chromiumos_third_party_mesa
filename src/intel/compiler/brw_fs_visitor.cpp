@@ -122,6 +122,7 @@ fs_visitor::emit_dummy_fs()
    wm_prog_data->num_varying_inputs = devinfo->gen < 6 ? 1 : 0;
    memset(wm_prog_data->urb_setup, -1,
           sizeof(wm_prog_data->urb_setup[0]) * VARYING_SLOT_MAX);
+   brw_compute_urb_setup_index(wm_prog_data);
 
    /* We don't have any uniforms. */
    stage_prog_data->nr_params = 0;
@@ -176,12 +177,12 @@ fs_visitor::emit_interpolation_setup_gen4()
    const fs_reg xstart(negate(brw_vec1_grf(1, 0)));
    const fs_reg ystart(negate(brw_vec1_grf(1, 1)));
 
-   if (devinfo->has_pln && dispatch_width == 16) {
-      for (unsigned i = 0; i < 2; i++) {
-         abld.half(i).ADD(half(offset(delta_xy, abld, i), 0),
-                          half(this->pixel_x, i), xstart);
-         abld.half(i).ADD(half(offset(delta_xy, abld, i), 1),
-                          half(this->pixel_y, i), ystart);
+   if (devinfo->has_pln) {
+      for (unsigned i = 0; i < dispatch_width / 8; i++) {
+         abld.quarter(i).ADD(quarter(offset(delta_xy, abld, 0), i),
+                             quarter(this->pixel_x, i), xstart);
+         abld.quarter(i).ADD(quarter(offset(delta_xy, abld, 1), i),
+                             quarter(this->pixel_y, i), ystart);
       }
    } else {
       abld.ADD(offset(delta_xy, abld, 0), this->pixel_x, xstart);
@@ -241,6 +242,9 @@ brw_rnd_mode_from_nir(unsigned mode, unsigned *mask)
    if (mode == FLOAT_CONTROLS_DEFAULT_FLOAT_CONTROL_MODE)
       *mask |= BRW_CR0_FP_MODE_MASK;
 
+   if (*mask != 0)
+      assert((*mask & brw_mode) == brw_mode);
+
    return brw_mode;
 }
 
@@ -252,8 +256,11 @@ fs_visitor::emit_shader_float_controls_execution_mode()
       return;
 
    fs_builder abld = bld.annotate("shader floats control execution mode");
-   unsigned mask = 0;
-   unsigned mode = brw_rnd_mode_from_nir(execution_mode, &mask);
+   unsigned mask, mode = brw_rnd_mode_from_nir(execution_mode, &mask);
+
+   if (mask == 0)
+      return;
+
    abld.emit(SHADER_OPCODE_FLOAT_CONTROL_MODE, bld.null_reg_ud(),
              brw_imm_d(mode), brw_imm_d(mask));
 }
@@ -328,8 +335,8 @@ fs_visitor::emit_interpolation_setup_gen6()
    struct brw_wm_prog_data *wm_prog_data = brw_wm_prog_data(prog_data);
 
    for (int i = 0; i < BRW_BARYCENTRIC_MODE_COUNT; ++i) {
-      this->delta_xy[i] = fetch_payload_reg(
-         bld, payload.barycentric_coord_reg[i], BRW_REGISTER_TYPE_F, 2);
+      this->delta_xy[i] = fetch_barycentric_reg(
+         bld, payload.barycentric_coord_reg[i]);
    }
 
    uint32_t centroid_modes = wm_prog_data->barycentric_interp_modes &
@@ -351,15 +358,18 @@ fs_visitor::emit_interpolation_setup_gen6()
          if (!(centroid_modes & (1 << i)))
             continue;
 
+         const fs_reg centroid_delta_xy = delta_xy[i];
          const fs_reg &pixel_delta_xy = delta_xy[i - 1];
 
-         for (unsigned q = 0; q < dispatch_width / 8; q++) {
-            for (unsigned c = 0; c < 2; c++) {
-               const unsigned idx = c + (q & 2) + (q & 1) * dispatch_width / 8;
-               set_predicate_inv(
-                  BRW_PREDICATE_NORMAL, true,
-                  bld.half(q).MOV(horiz_offset(delta_xy[i], idx * 8),
-                                  horiz_offset(pixel_delta_xy, idx * 8)));
+         delta_xy[i] = bld.vgrf(BRW_REGISTER_TYPE_F, 2);
+
+         for (unsigned c = 0; c < 2; c++) {
+            for (unsigned q = 0; q < dispatch_width / 8; q++) {
+               set_predicate(BRW_PREDICATE_NORMAL,
+                  bld.quarter(q).SEL(
+                     quarter(offset(delta_xy[i], bld, c), q),
+                     quarter(offset(centroid_delta_xy, bld, c), q),
+                     quarter(offset(pixel_delta_xy, bld, c), q)));
             }
          }
       }
@@ -453,7 +463,7 @@ fs_visitor::emit_single_fb_write(const fs_builder &bld,
 
    if (prog_data->uses_kill) {
       write->predicate = BRW_PREDICATE_NORMAL;
-      write->flag_subreg = 1;
+      write->flag_subreg = sample_mask_flag_subreg(this);
    }
 
    return write;
@@ -491,7 +501,7 @@ fs_visitor::emit_fb_writes()
     * so we compute if we need replicate alpha and emit alpha to coverage
     * workaround here.
     */
-   prog_data->replicate_alpha = key->alpha_test_replicate_alpha ||
+   const bool replicate_alpha = key->alpha_test_replicate_alpha ||
       (key->nr_color_regions > 1 && key->alpha_to_coverage &&
        (sample_mask.file == BAD_FILE || devinfo->gen == 6));
 
@@ -504,7 +514,7 @@ fs_visitor::emit_fb_writes()
          ralloc_asprintf(this->mem_ctx, "FB write target %d", target));
 
       fs_reg src0_alpha;
-      if (devinfo->gen >= 6 && prog_data->replicate_alpha && target != 0)
+      if (devinfo->gen >= 6 && replicate_alpha && target != 0)
          src0_alpha = offset(outputs[0], bld, 3);
 
       inst = emit_single_fb_write(abld, this->outputs[target],
@@ -535,6 +545,23 @@ fs_visitor::emit_fb_writes()
 
    inst->last_rt = true;
    inst->eot = true;
+
+   if (devinfo->gen >= 11 && devinfo->gen <= 12 &&
+       prog_data->dual_src_blend) {
+      /* The dual-source RT write messages fail to release the thread
+       * dependency on ICL and TGL with SIMD32 dispatch, leading to hangs.
+       *
+       * XXX - Emit an extra single-source NULL RT-write marked LastRT in
+       *       order to release the thread dependency without disabling
+       *       SIMD32.
+       *
+       * The dual-source RT write messages may lead to hangs with SIMD16
+       * dispatch on ICL due some unknown reasons, see
+       * https://gitlab.freedesktop.org/mesa/mesa/-/issues/2183
+       */
+      limit_dispatch_width(8, "Dual source blending unsupported "
+                           "in SIMD16 and SIMD32 modes.\n");
+   }
 }
 
 void
@@ -683,8 +710,18 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
                sources[length++] = reg;
             }
          } else {
-            for (unsigned i = 0; i < 4; i++)
-               sources[length++] = offset(this->outputs[varying], bld, i);
+            int slot_offset = 0;
+
+            /* When using Primitive Replication, there may be multiple slots
+             * assigned to POS.
+             */
+            if (varying == VARYING_SLOT_POS)
+               slot_offset = slot - vue_map->varying_to_slot[VARYING_SLOT_POS];
+
+            for (unsigned i = 0; i < 4; i++) {
+               sources[length++] = offset(this->outputs[varying], bld,
+                                          i + (slot_offset * 4));
+            }
          }
          break;
       }
@@ -872,6 +909,8 @@ fs_visitor::fs_visitor(const struct brw_compiler *compiler, void *log_data,
    : backend_shader(compiler, log_data, mem_ctx, shader, prog_data),
      key(key), gs_compile(NULL), prog_data(prog_data),
      input_vue_map(input_vue_map),
+     live_analysis(this), regpressure_analysis(this),
+     performance_analysis(this),
      dispatch_width(dispatch_width),
      shader_time_index(shader_time_index),
      bld(fs_builder(this, dispatch_width).at_end())
@@ -889,6 +928,8 @@ fs_visitor::fs_visitor(const struct brw_compiler *compiler, void *log_data,
                     &prog_data->base.base),
      key(&c->key.base), gs_compile(c),
      prog_data(&prog_data->base.base),
+     live_analysis(this), regpressure_analysis(this),
+     performance_analysis(this),
      dispatch_width(8),
      shader_time_index(shader_time_index),
      bld(fs_builder(this, dispatch_width).at_end())
@@ -918,11 +959,6 @@ fs_visitor::init()
    this->runtime_check_aads_emit = false;
    this->first_non_payload_grf = 0;
    this->max_grf = devinfo->gen >= 7 ? GEN7_MRF_HACK_START : BRW_MAX_GRF;
-
-   this->virtual_grf_start = NULL;
-   this->virtual_grf_end = NULL;
-   this->live_intervals = NULL;
-   this->regs_live_at_ip = NULL;
 
    this->uniforms = 0;
    this->last_scratch = 0;

@@ -28,11 +28,6 @@ template = """\
 
 namespace aco {
 
-const unsigned VOPC_to_GFX6[256] = {
-% for code in VOPC_GFX6:
-    ${code},
-% endfor
-};
 
 <%
 opcode_names = sorted(opcodes.keys())
@@ -42,6 +37,11 @@ is_atomic = "".join([opcodes[name].is_atomic for name in reversed(opcode_names)]
 %>
 
 extern const aco::Info instr_info = {
+   .opcode_gfx7 = {
+      % for name in opcode_names:
+      ${opcodes[name].opcode_gfx7},
+      % endfor
+   },
    .opcode_gfx9 = {
       % for name in opcode_names:
       ${opcodes[name].opcode_gfx9},
@@ -65,12 +65,22 @@ extern const aco::Info instr_info = {
       aco::Format::${str(opcodes[name].format.name)},
       % endfor
    },
+   .operand_size = {
+      % for name in opcode_names:
+      ${opcodes[name].operand_size},
+      % endfor
+   },
+   .definition_size = {
+      % for name in opcode_names:
+      ${opcodes[name].definition_size},
+      % endfor
+   },
 };
 
 }
 """
 
-from aco_opcodes import opcodes, VOPC_GFX6
+from aco_opcodes import opcodes
 from mako.template import Template
 
-print(Template(template).render(opcodes=opcodes, VOPC_GFX6=VOPC_GFX6))
+print(Template(template).render(opcodes=opcodes))

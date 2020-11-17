@@ -21,7 +21,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 #include <gtest/gtest.h>
-#include "main/compiler.h"
+#include "util/compiler.h"
 #include "main/mtypes.h"
 #include "main/macros.h"
 #include "util/ralloc.h"
@@ -80,11 +80,11 @@ link_varyings::SetUp()
    this->ir.make_empty();
 
    this->consumer_inputs =
-         _mesa_hash_table_create(NULL, _mesa_key_hash_string,
+         _mesa_hash_table_create(NULL, _mesa_hash_string,
                                  _mesa_key_string_equal);
 
    this->consumer_interface_inputs =
-         _mesa_hash_table_create(NULL, _mesa_key_hash_string,
+         _mesa_hash_table_create(NULL, _mesa_hash_string,
                                  _mesa_key_string_equal);
 
    /* Needs to happen after glsl type initialization */

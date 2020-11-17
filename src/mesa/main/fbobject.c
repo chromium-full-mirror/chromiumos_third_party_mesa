@@ -174,21 +174,16 @@ _mesa_lookup_framebuffer_dsa(struct gl_context *ctx, GLuint id,
    /* Name exists but buffer is not initialized */
    if (fb == &DummyFramebuffer) {
       fb = ctx->Driver.NewFramebuffer(ctx, id);
-      _mesa_HashLockMutex(ctx->Shared->FrameBuffers);
       _mesa_HashInsert(ctx->Shared->FrameBuffers, id, fb);
-      _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
    }
    /* Name doesn't exist */
    else if (!fb) {
-      _mesa_HashLockMutex(ctx->Shared->FrameBuffers);
       fb = ctx->Driver.NewFramebuffer(ctx, id);
       if (!fb) {
-         _mesa_HashUnlockMutex(ctx->Shared->FrameBuffers);
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "%s", func);
          return NULL;
       }
-      _mesa_HashInsertLocked(ctx->Shared->BufferObjects, id, fb);
-      _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
+      _mesa_HashInsert(ctx->Shared->FrameBuffers, id, fb);
    }
    return fb;
 }
@@ -301,6 +296,7 @@ get_attachment(struct gl_context *ctx, struct gl_framebuffer *fb,
           || (i > 0 && ctx->API == API_OPENGLES)) {
          return NULL;
       }
+      assert(BUFFER_COLOR0 + i < ARRAY_SIZE(fb->Attachment));
       return &fb->Attachment[BUFFER_COLOR0 + i];
    case GL_DEPTH_STENCIL_ATTACHMENT:
       if (!_mesa_is_desktop_gl(ctx) && !_mesa_is_gles3(ctx))
@@ -348,6 +344,7 @@ get_fb0_attachment(struct gl_context *ctx, struct gl_framebuffer *fb,
    }
 
    switch (attachment) {
+   case GL_FRONT:
    case GL_FRONT_LEFT:
       /* Front buffers can be allocated on the first use, but
        * glGetFramebufferAttachmentParameteriv must work even if that
@@ -3042,6 +3039,7 @@ _mesa_bind_framebuffers(struct gl_context *ctx,
       check_begin_texture_render(ctx, newDrawFb);
 
       _mesa_reference_framebuffer(&ctx->DrawBuffer, newDrawFb);
+      _mesa_update_allow_draw_out_of_order(ctx);
    }
 
    if ((bindDrawBuf || bindReadBuf) && ctx->Driver.BindFramebuffer) {
@@ -4733,6 +4731,63 @@ _mesa_NamedFramebufferParameteri(GLuint framebuffer, GLenum pname,
 }
 
 
+/* Helper function for ARB_framebuffer_no_attachments functions interacting with EXT_direct_state_access */
+static struct gl_framebuffer *
+lookup_named_framebuffer_ext_dsa(struct gl_context *ctx, GLuint framebuffer, const char* caller)
+{
+   struct gl_framebuffer *fb = NULL;
+
+   if (framebuffer) {
+      /* The ARB_framebuffer_no_attachments spec says:
+       *
+       *     "The error INVALID_VALUE is generated if <framebuffer> is not
+       *     a name returned by GenFramebuffers.  If a framebuffer object
+       *     named <framebuffer> does not yet exist, it will be created."
+       *
+       * This is different from the EXT_direct_state_access spec which says:
+       *
+       *     "If the framebuffer object named by the framebuffer parameter has not
+       *      been previously bound or has been deleted since the last binding,
+       *     the GL first creates a new state vector in the same manner as when
+       *    BindFramebuffer creates a new framebuffer object"
+       *
+       * So first we verify that the name exists.
+       */
+      fb = _mesa_lookup_framebuffer(ctx, framebuffer);
+      if (!fb) {
+         _mesa_error(ctx, GL_INVALID_VALUE, "%s(frameBuffer)", caller);
+         return NULL;
+      }
+      /* Then, make sure it's initialized */
+      if (fb == &DummyFramebuffer) {
+         fb = ctx->Driver.NewFramebuffer(ctx, framebuffer);
+         _mesa_HashInsert(ctx->Shared->FrameBuffers, framebuffer, fb);
+      }
+   }
+   else
+      fb = ctx->WinSysDrawBuffer;
+
+   return fb;
+}
+
+
+void GLAPIENTRY
+_mesa_NamedFramebufferParameteriEXT(GLuint framebuffer, GLenum pname,
+                                    GLint param)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_framebuffer *fb =
+      lookup_named_framebuffer_ext_dsa(ctx, framebuffer,
+                                       "glNamedFramebufferParameteriEXT");
+
+   if (!fb)
+      return;
+
+   framebuffer_parameteri(ctx, fb, pname, param,
+                             "glNamedFramebufferParameteriEXT");
+}
+
+
 void GLAPIENTRY
 _mesa_GetFramebufferParameterivEXT(GLuint framebuffer, GLenum pname,
                                    GLint *param)
@@ -4761,7 +4816,11 @@ _mesa_GetFramebufferParameterivEXT(GLuint framebuffer, GLenum pname,
          *param = fb->ColorReadBuffer;
       }
       else if (GL_DRAW_BUFFER0 <= pname && pname <= GL_DRAW_BUFFER15) {
-         *param = fb->ColorDrawBuffer[pname - GL_DRAW_BUFFER0];
+         unsigned buffer = pname - GL_DRAW_BUFFER0;
+         if (buffer < ARRAY_SIZE(fb->ColorDrawBuffer))
+            *param = fb->ColorDrawBuffer[buffer];
+         else
+            _mesa_error(ctx, GL_INVALID_ENUM, "glGetFramebufferParameterivEXT(pname)");
       }
       else {
          _mesa_error(ctx, GL_INVALID_ENUM, "glGetFramebufferParameterivEXT(pname)");
@@ -4795,6 +4854,23 @@ _mesa_GetNamedFramebufferParameteriv(GLuint framebuffer, GLenum pname,
       get_framebuffer_parameteriv(ctx, fb, pname, param,
                                   "glGetNamedFramebufferParameteriv");
    }
+}
+
+
+void GLAPIENTRY
+_mesa_GetNamedFramebufferParameterivEXT(GLuint framebuffer, GLenum pname,
+                                     GLint *param)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_framebuffer *fb =
+      lookup_named_framebuffer_ext_dsa(ctx, framebuffer,
+                                       "glGetNamedFramebufferParameterivEXT");
+
+   if (!fb)
+      return;
+
+   get_framebuffer_parameteriv(ctx, fb, pname, param,
+                               "glGetNamedFramebufferParameterivEXT");
 }
 
 
@@ -4953,6 +5029,7 @@ get_fb_attachment(struct gl_context *ctx, struct gl_framebuffer *fb,
       const unsigned i = attachment - GL_COLOR_ATTACHMENT0;
       if (i >= ctx->Const.MaxColorAttachments)
          return NULL;
+      assert(BUFFER_COLOR0 + i < ARRAY_SIZE(fb->Attachment));
       return &fb->Attachment[BUFFER_COLOR0 + i];
    }
    case GL_DEPTH:
@@ -5268,7 +5345,7 @@ sample_locations(struct gl_context *ctx, struct gl_framebuffer *fb,
       if (isnan(v[i]))
          fb->SampleLocationTable[start * 2 + i] = 0.5f;
       else
-         fb->SampleLocationTable[start * 2 + i] = CLAMP(v[i], 0.0f, 1.0f);
+         fb->SampleLocationTable[start * 2 + i] = SATURATE(v[i]);
    }
 
    if (fb == ctx->DrawBuffer)

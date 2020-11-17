@@ -29,7 +29,7 @@
 
 #include "util/u_inlines.h"
 
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_memory.h"
 #include "util/u_upload_mgr.h"
 #include "util/u_prim.h"
@@ -324,7 +324,7 @@ static boolean immd_is_good_idea(struct r300_context *r300,
     }
 
     /* Buffers can only be used for read by r300 (except query buffers, but
-     * those can't be bound by a state tracker as vertex buffers). */
+     * those can't be bound by an gallium frontend as vertex buffers). */
     return TRUE;
 }
 

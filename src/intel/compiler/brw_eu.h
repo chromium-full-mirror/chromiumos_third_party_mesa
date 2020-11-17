@@ -199,9 +199,6 @@ brw_inst *brw_##OP(struct brw_codegen *p,	\
 	      struct brw_reg src1,		\
 	      struct brw_reg src2);
 
-#define ROUND(OP) \
-void brw_##OP(struct brw_codegen *p, struct brw_reg dest, struct brw_reg src0);
-
 ALU1(MOV)
 ALU2(SEL)
 ALU1(NOT)
@@ -222,6 +219,9 @@ ALU2(AVG)
 ALU2(MUL)
 ALU1(FRC)
 ALU1(RNDD)
+ALU1(RNDE)
+ALU1(RNDU)
+ALU1(RNDZ)
 ALU2(MAC)
 ALU2(MACH)
 ALU1(LZD)
@@ -244,13 +244,9 @@ ALU2(ADDC)
 ALU2(SUBB)
 ALU2(MAC)
 
-ROUND(RNDZ)
-ROUND(RNDE)
-
 #undef ALU1
 #undef ALU2
 #undef ALU3
-#undef ROUND
 
 
 /* Helpers for SEND instruction:
@@ -314,6 +310,36 @@ brw_message_ex_desc_ex_mlen(UNUSED const struct gen_device_info *devinfo,
                             uint32_t ex_desc)
 {
    return GET_BITS(ex_desc, 9, 6);
+}
+
+static inline uint32_t
+brw_urb_desc(const struct gen_device_info *devinfo,
+             unsigned msg_type,
+             bool per_slot_offset_present,
+             bool channel_mask_present,
+             unsigned global_offset)
+{
+   if (devinfo->gen >= 8) {
+      return (SET_BITS(per_slot_offset_present, 17, 17) |
+              SET_BITS(channel_mask_present, 15, 15) |
+              SET_BITS(global_offset, 14, 4) |
+              SET_BITS(msg_type, 3, 0));
+   } else if (devinfo->gen >= 7) {
+      assert(!channel_mask_present);
+      return (SET_BITS(per_slot_offset_present, 16, 16) |
+              SET_BITS(global_offset, 13, 3) |
+              SET_BITS(msg_type, 3, 0));
+   } else {
+      unreachable("unhandled URB write generation");
+   }
+}
+
+static inline uint32_t
+brw_urb_desc_msg_type(ASSERTED const struct gen_device_info *devinfo,
+                      uint32_t desc)
+{
+   assert(devinfo->gen >= 7);
+   return GET_BITS(desc, 3, 0);
 }
 
 /**
@@ -698,6 +724,37 @@ brw_dp_byte_scattered_rw_desc(const struct gen_device_info *devinfo,
 }
 
 static inline uint32_t
+brw_dp_dword_scattered_rw_desc(const struct gen_device_info *devinfo,
+                               unsigned exec_size,
+                               bool write)
+{
+   assert(exec_size == 8 || exec_size == 16);
+
+   unsigned msg_type;
+   if (write) {
+      if (devinfo->gen >= 6) {
+         msg_type = GEN6_DATAPORT_WRITE_MESSAGE_DWORD_SCATTERED_WRITE;
+      } else {
+         msg_type = BRW_DATAPORT_WRITE_MESSAGE_DWORD_SCATTERED_WRITE;
+      }
+   } else {
+      if (devinfo->gen >= 7) {
+         msg_type = GEN7_DATAPORT_DC_DWORD_SCATTERED_READ;
+      } else if (devinfo->gen > 4 || devinfo->is_g4x) {
+         msg_type = G45_DATAPORT_READ_MESSAGE_DWORD_SCATTERED_READ;
+      } else {
+         msg_type = BRW_DATAPORT_READ_MESSAGE_DWORD_SCATTERED_READ;
+      }
+   }
+
+   const unsigned msg_control =
+      SET_BITS(1, 1, 1) | /* Legacy SIMD Mode */
+      SET_BITS(exec_size == 16, 0, 0);
+
+   return brw_dp_surface_desc(devinfo, msg_type, msg_control);
+}
+
+static inline uint32_t
 brw_dp_a64_untyped_surface_rw_desc(const struct gen_device_info *devinfo,
                                    unsigned exec_size, /**< 0 for SIMD4x2 */
                                    unsigned num_channels,
@@ -718,7 +775,8 @@ brw_dp_a64_untyped_surface_rw_desc(const struct gen_device_info *devinfo,
       SET_BITS(brw_mdc_cmask(num_channels), 3, 0) |
       SET_BITS(simd_mode, 5, 4);
 
-   return brw_dp_desc(devinfo, BRW_BTI_STATELESS, msg_type, msg_control);
+   return brw_dp_desc(devinfo, GEN8_BTI_STATELESS_NON_COHERENT,
+                      msg_type, msg_control);
 }
 
 /**
@@ -756,7 +814,8 @@ brw_dp_a64_byte_scattered_rw_desc(const struct gen_device_info *devinfo,
       SET_BITS(brw_mdc_a64_ds(bit_size / 8), 3, 2) |
       SET_BITS(exec_size == 16, 4, 4);
 
-   return brw_dp_desc(devinfo, BRW_BTI_STATELESS, msg_type, msg_control);
+   return brw_dp_desc(devinfo, GEN8_BTI_STATELESS_NON_COHERENT,
+                      msg_type, msg_control);
 }
 
 static inline uint32_t
@@ -777,7 +836,8 @@ brw_dp_a64_untyped_atomic_desc(const struct gen_device_info *devinfo,
       SET_BITS(bit_size == 64, 4, 4) |
       SET_BITS(response_expected, 5, 5);
 
-   return brw_dp_desc(devinfo, BRW_BTI_STATELESS, msg_type, msg_control);
+   return brw_dp_desc(devinfo, GEN8_BTI_STATELESS_NON_COHERENT,
+                      msg_type, msg_control);
 }
 
 static inline uint32_t
@@ -796,7 +856,8 @@ brw_dp_a64_untyped_atomic_float_desc(const struct gen_device_info *devinfo,
       SET_BITS(atomic_op, 1, 0) |
       SET_BITS(response_expected, 5, 5);
 
-   return brw_dp_desc(devinfo, BRW_BTI_STATELESS, msg_type, msg_control);
+   return brw_dp_desc(devinfo, GEN8_BTI_STATELESS_NON_COHERENT,
+                      msg_type, msg_control);
 }
 
 static inline uint32_t
@@ -1072,7 +1133,7 @@ brw_inst *brw_WHILE(struct brw_codegen *p);
 
 brw_inst *brw_BREAK(struct brw_codegen *p);
 brw_inst *brw_CONT(struct brw_codegen *p);
-brw_inst *gen6_HALT(struct brw_codegen *p);
+brw_inst *brw_HALT(struct brw_codegen *p);
 
 /* Forward jumps:
  */
@@ -1127,7 +1188,8 @@ brw_memory_fence(struct brw_codegen *p,
                  struct brw_reg dst,
                  struct brw_reg src,
                  enum opcode send_op,
-                 bool stall,
+                 enum brw_message_target sfid,
+                 bool commit_enable,
                  unsigned bti);
 
 void
@@ -1212,6 +1274,9 @@ void brw_debug_compact_uncompact(const struct gen_device_info *devinfo,
                                  brw_inst *orig, brw_inst *uncompacted);
 
 /* brw_eu_validate.c */
+bool brw_validate_instruction(const struct gen_device_info *devinfo,
+                              const brw_inst *inst, int offset,
+                              struct disasm_info *disasm);
 bool brw_validate_instructions(const struct gen_device_info *devinfo,
                                const void *assembly, int start_offset, int end_offset,
                                struct disasm_info *disasm);

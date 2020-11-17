@@ -107,7 +107,8 @@ pipe_surface_reference(struct pipe_surface **dst, struct pipe_surface *src)
 {
    struct pipe_surface *old_dst = *dst;
 
-   if (pipe_reference_described(&old_dst->reference, &src->reference,
+   if (pipe_reference_described(old_dst ? &old_dst->reference : NULL,
+                                src ? &src->reference : NULL,
                                 (debug_reference_descriptor)
                                 debug_describe_surface))
       old_dst->context->surface_destroy(old_dst->context, old_dst);
@@ -138,7 +139,8 @@ pipe_resource_reference(struct pipe_resource **dst, struct pipe_resource *src)
 {
    struct pipe_resource *old_dst = *dst;
 
-   if (pipe_reference_described(&old_dst->reference, &src->reference,
+   if (pipe_reference_described(old_dst ? &old_dst->reference : NULL,
+                                src ? &src->reference : NULL,
                                 (debug_reference_descriptor)
                                 debug_describe_resource)) {
       /* Avoid recursion, which would prevent inlining this function */
@@ -147,7 +149,8 @@ pipe_resource_reference(struct pipe_resource **dst, struct pipe_resource *src)
 
          old_dst->screen->resource_destroy(old_dst->screen, old_dst);
          old_dst = next;
-      } while (pipe_reference_described(&old_dst->reference, NULL,
+      } while (pipe_reference_described(old_dst ? &old_dst->reference : NULL,
+                                        NULL,
                                         (debug_reference_descriptor)
                                         debug_describe_resource));
    }
@@ -185,7 +188,8 @@ pipe_sampler_view_reference(struct pipe_sampler_view **dst,
 {
    struct pipe_sampler_view *old_dst = *dst;
 
-   if (pipe_reference_described(&old_dst->reference, &src->reference,
+   if (pipe_reference_described(old_dst ? &old_dst->reference : NULL,
+                                src ? &src->reference : NULL,
                                 (debug_reference_descriptor)
                                 debug_describe_sampler_view))
       old_dst->context->sampler_view_destroy(old_dst->context, old_dst);
@@ -198,7 +202,8 @@ pipe_so_target_reference(struct pipe_stream_output_target **dst,
 {
    struct pipe_stream_output_target *old_dst = *dst;
 
-   if (pipe_reference_described(&old_dst->reference, &src->reference,
+   if (pipe_reference_described(old_dst ? &old_dst->reference : NULL,
+                     src ? &src->reference : NULL,
                      (debug_reference_descriptor)debug_describe_so_target))
       old_dst->context->stream_output_target_destroy(old_dst->context, old_dst);
    *dst = src;
@@ -731,6 +736,32 @@ util_texrange_covers_whole_level(const struct pipe_resource *tex,
           depth == util_num_layers(tex, level);
 }
 
+static inline bool
+util_logicop_reads_dest(enum pipe_logicop op)
+{
+   switch (op) {
+   case PIPE_LOGICOP_NOR:
+   case PIPE_LOGICOP_AND_INVERTED:
+   case PIPE_LOGICOP_AND_REVERSE:
+   case PIPE_LOGICOP_INVERT:
+   case PIPE_LOGICOP_XOR:
+   case PIPE_LOGICOP_NAND:
+   case PIPE_LOGICOP_AND:
+   case PIPE_LOGICOP_EQUIV:
+   case PIPE_LOGICOP_NOOP:
+   case PIPE_LOGICOP_OR_INVERTED:
+   case PIPE_LOGICOP_OR_REVERSE:
+   case PIPE_LOGICOP_OR:
+      return true;
+   case PIPE_LOGICOP_CLEAR:
+   case PIPE_LOGICOP_COPY_INVERTED:
+   case PIPE_LOGICOP_COPY:
+   case PIPE_LOGICOP_SET:
+      return false;
+   }
+   unreachable("bad logicop");
+}
+
 static inline struct pipe_context *
 pipe_create_multimedia_context(struct pipe_screen *screen)
 {
@@ -740,6 +771,11 @@ pipe_create_multimedia_context(struct pipe_screen *screen)
       flags |= PIPE_CONTEXT_COMPUTE_ONLY;
 
    return screen->context_create(screen, NULL, flags);
+}
+
+static inline unsigned util_res_sample_count(struct pipe_resource *res)
+{
+   return res->nr_samples > 0 ? res->nr_samples : 1;
 }
 
 #ifdef __cplusplus

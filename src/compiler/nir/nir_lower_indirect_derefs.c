@@ -126,6 +126,7 @@ lower_indirect_derefs_block(nir_block *block, nir_builder *b,
           intrin->intrinsic != nir_intrinsic_interp_deref_at_centroid &&
           intrin->intrinsic != nir_intrinsic_interp_deref_at_sample &&
           intrin->intrinsic != nir_intrinsic_interp_deref_at_offset &&
+          intrin->intrinsic != nir_intrinsic_interp_deref_at_vertex &&
           intrin->intrinsic != nir_intrinsic_store_deref)
          continue;
 
@@ -190,6 +191,8 @@ lower_indirects_impl(nir_function_impl *impl, nir_variable_mode modes)
 
    if (progress)
       nir_metadata_preserve(impl, nir_metadata_none);
+   else
+      nir_metadata_preserve(impl, nir_metadata_all);
 
    return progress;
 }

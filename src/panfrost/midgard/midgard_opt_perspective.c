@@ -37,6 +37,16 @@
 
 #include "compiler.h"
 
+static bool
+is_swizzle_0(unsigned *swizzle)
+{
+        for (unsigned c = 0; c < MIR_VEC_COMPONENTS; ++c)
+                if (swizzle[c])
+                        return false;
+
+        return true;
+}
+
 bool
 midgard_opt_combine_projection(compiler_context *ctx, midgard_block *block)
 {
@@ -45,27 +55,21 @@ midgard_opt_combine_projection(compiler_context *ctx, midgard_block *block)
         mir_foreach_instr_in_block_safe(block, ins) {
                 /* First search for fmul */
                 if (ins->type != TAG_ALU_4) continue;
-                if (ins->alu.op != midgard_alu_op_fmul) continue;
+                if (ins->op != midgard_alu_op_fmul) continue;
 
                 /* TODO: Flip */
 
                 /* Check the swizzles */
                 
-                midgard_vector_alu_src src1 =
-                        vector_alu_from_unsigned(ins->alu.src1);
-
-                midgard_vector_alu_src src2 =
-                        vector_alu_from_unsigned(ins->alu.src2);
-
-                if (!mir_is_simple_swizzle(src1.swizzle, ins->mask)) continue;
-                if (src2.swizzle != SWIZZLE_XXXX) continue;
+                if (!mir_is_simple_swizzle(ins->swizzle[0], ins->mask)) continue;
+                if (!is_swizzle_0(ins->swizzle[1])) continue;
 
                 /* Awesome, we're the right form. Now check where src2 is from */
                 unsigned frcp = ins->src[1];
                 unsigned to = ins->dest;
 
-                if (frcp & IS_REG) continue;
-                if (to & IS_REG) continue;
+                if (frcp & PAN_IS_REG) continue;
+                if (to & PAN_IS_REG) continue;
 
                 bool frcp_found = false;
                 unsigned frcp_component = 0;
@@ -74,19 +78,17 @@ midgard_opt_combine_projection(compiler_context *ctx, midgard_block *block)
                 mir_foreach_instr_in_block_safe(block, sub) {
                         if (sub->dest != frcp) continue;
 
-                        midgard_vector_alu_src s =
-                                vector_alu_from_unsigned(sub->alu.src1);
-
-                        frcp_component = s.swizzle & 3;
+                        frcp_component = sub->swizzle[0][0];
                         frcp_from = sub->src[0];
 
                         frcp_found =
                                 (sub->type == TAG_ALU_4) &&
-                                (sub->alu.op == midgard_alu_op_frcp);
+                                (sub->op == midgard_alu_op_frcp);
                         break;
                 }
 
                 if (!frcp_found) continue;
+                if (frcp_from != ins->src[0]) continue;
                 if (frcp_component != COMPONENT_W && frcp_component != COMPONENT_Z) continue;
                 if (!mir_single_use(ctx, frcp)) continue;
 
@@ -100,7 +102,7 @@ midgard_opt_combine_projection(compiler_context *ctx, midgard_block *block)
                 mir_foreach_instr_in_block_safe(block, v) {
                         if (v->dest != frcp_from) continue;
                         if (v->type != TAG_LOAD_STORE_4) break;
-                        if (!OP_IS_LOAD_VARY_F(v->load_store.op)) break;
+                        if (!OP_IS_LOAD_VARY_F(v->op)) break;
 
                         ok = true;
                         break;
@@ -115,12 +117,14 @@ midgard_opt_combine_projection(compiler_context *ctx, midgard_block *block)
                         .type = TAG_LOAD_STORE_4,
                         .mask = ins->mask,
                         .dest = to,
-                        .src = { frcp_from, ~0, ~0 },
+                        .dest_type = nir_type_float32,
+                        .src = { frcp_from, ~0, ~0, ~0 },
+                        .src_types = { nir_type_float32 },
+                        .swizzle = SWIZZLE_IDENTITY_4,
+                        .op = frcp_component == COMPONENT_W ?
+                                midgard_op_ldst_perspective_division_w :
+                                midgard_op_ldst_perspective_division_z,
                         .load_store = {
-                                .op = frcp_component == COMPONENT_W ?
-                                        midgard_op_ldst_perspective_division_w : 
-                                        midgard_op_ldst_perspective_division_z,
-                                .swizzle = SWIZZLE_XYZW,
                                 .arg_1 = 0x20
                         }
                 };
@@ -142,13 +146,13 @@ midgard_opt_varying_projection(compiler_context *ctx, midgard_block *block)
         mir_foreach_instr_in_block_safe(block, ins) {
                 /* Search for a projection */
                 if (ins->type != TAG_LOAD_STORE_4) continue;
-                if (!OP_IS_PROJECTION(ins->load_store.op)) continue;
+                if (!OP_IS_PROJECTION(ins->op)) continue;
 
                 unsigned vary = ins->src[0];
                 unsigned to = ins->dest;
 
-                if (vary & IS_REG) continue;
-                if (to & IS_REG) continue;
+                if (vary & PAN_IS_REG) continue;
+                if (to & PAN_IS_REG) continue;
                 if (!mir_single_use(ctx, vary)) continue;
 
                 /* Check for a varying source. If we find it, we rewrite */
@@ -158,7 +162,7 @@ midgard_opt_varying_projection(compiler_context *ctx, midgard_block *block)
                 mir_foreach_instr_in_block_safe(block, v) {
                         if (v->dest != vary) continue;
                         if (v->type != TAG_LOAD_STORE_4) break;
-                        if (!OP_IS_LOAD_VARY_F(v->load_store.op)) break;
+                        if (!OP_IS_LOAD_VARY_F(v->op)) break;
 
                         /* We found it, so rewrite it to project. Grab the
                          * modifier */
@@ -171,7 +175,7 @@ midgard_opt_varying_projection(compiler_context *ctx, midgard_block *block)
                                 break;
 
                         bool projects_w =
-                                ins->load_store.op == midgard_op_ldst_perspective_division_w;
+                                ins->op == midgard_op_ldst_perspective_division_w;
 
                         p.modifier = projects_w ?
                                 midgard_varying_mod_perspective_w :

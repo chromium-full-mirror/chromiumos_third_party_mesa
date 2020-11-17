@@ -118,7 +118,7 @@ enum r600_coherency {
 	R600_COHERENCY_CB_META,
 };
 
-#ifdef PIPE_ARCH_BIG_ENDIAN
+#if UTIL_ARCH_BIG_ENDIAN
 #define R600_BIG_ENDIAN 1
 #else
 #define R600_BIG_ENDIAN 0
@@ -289,7 +289,7 @@ struct r600_mmio_counter {
 };
 
 union r600_mmio_counters {
-	struct {
+	struct r600_mmio_counters_named {
 		/* For global GPU load including SDMA. */
 		struct r600_mmio_counter gpu;
 
@@ -320,7 +320,7 @@ union r600_mmio_counters {
 		struct r600_mmio_counter cp_dma;
 		struct r600_mmio_counter scratch_ram;
 	} named;
-	unsigned array[0];
+	unsigned array[sizeof(struct r600_mmio_counters_named) / sizeof(unsigned)];
 };
 
 struct r600_memory_object {

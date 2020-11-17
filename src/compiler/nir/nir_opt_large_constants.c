@@ -75,31 +75,28 @@ build_constant_load(nir_builder *b, nir_deref_instr *deref,
    size_align(var->type, &var_size, &var_align);
    assert(var->data.location % var_align == 0);
 
+   UNUSED unsigned deref_size, deref_align;
+   size_align(deref->type, &deref_size, &deref_align);
+
    nir_intrinsic_instr *load =
       nir_intrinsic_instr_create(b->shader, nir_intrinsic_load_constant);
    load->num_components = num_components;
    nir_intrinsic_set_base(load, var->data.location);
    nir_intrinsic_set_range(load, var_size);
+   nir_intrinsic_set_align(load, deref_align, 0);
    load->src[0] = nir_src_for_ssa(nir_build_deref_offset(b, deref, size_align));
    nir_ssa_dest_init(&load->instr, &load->dest,
                      num_components, bit_size, NULL);
    nir_builder_instr_insert(b, &load->instr);
 
    if (load->dest.ssa.bit_size < 8) {
-      /* Booleans are special-cased to be 32-bit
-       *
-       * Ideally, for drivers that can handle 32-bit booleans, we wouldn't
-       * emit the i2b here.  However, at this point, the driver is likely to
-       * still have 1-bit booleans so we need to at least convert bit sizes.
-       * Unfortunately, we don't have a good way to annotate the load as
-       * loading a known boolean value so the optimizer isn't going to be
-       * able to get rid of the conversion.  Some day, we may solve that
-       * problem but not today.
-       */
+      /* Booleans are special-cased to be 32-bit */
       assert(glsl_type_is_boolean(deref->type));
+      assert(deref_size == num_components * 4);
       load->dest.ssa.bit_size = 32;
-      return nir_i2b(b, &load->dest.ssa);
+      return nir_b2b1(b, &load->dest.ssa);
    } else {
+      assert(deref_size == num_components * bit_size / 8);
       return &load->dest.ssa;
    }
 }
@@ -121,8 +118,11 @@ handle_constant_store(void *mem_ctx, struct var_info *info,
       info->constant_data = rzalloc_size(mem_ctx, var_size);
    }
 
-   char *dst = (char *)info->constant_data +
-               nir_deref_instr_get_const_offset(deref, size_align);
+   const unsigned offset = nir_deref_instr_get_const_offset(deref, size_align);
+   if (offset >= info->constant_data_size)
+      return;
+
+   char *dst = (char *)info->constant_data + offset;
 
    for (unsigned i = 0; i < num_components; i++) {
       if (!(writemask & (1 << i)))
@@ -179,19 +179,16 @@ nir_opt_large_constants(nir_shader *shader,
    /* This pass can only be run once */
    assert(shader->constant_data == NULL && shader->constant_data_size == 0);
 
-   /* The index parameter is unused for local variables so we'll use it for
-    * indexing into our array of variable metadata.
-    */
-   unsigned num_locals = 0;
-   nir_foreach_variable(var, &impl->locals)
-      var->data.index = num_locals++;
+   unsigned num_locals = nir_function_impl_index_vars(impl);
 
-   if (num_locals == 0)
+   if (num_locals == 0) {
+      nir_shader_preserve_all_metadata(shader);
       return false;
+   }
 
    struct var_info *var_infos = ralloc_array(NULL, struct var_info, num_locals);
-   nir_foreach_variable(var, &impl->locals) {
-      var_infos[var->data.index] = (struct var_info) {
+   nir_foreach_function_temp_variable(var, impl) {
+      var_infos[var->index] = (struct var_info) {
          .var = var,
          .is_constant = true,
          .found_read = false,
@@ -236,7 +233,7 @@ nir_opt_large_constants(nir_shader *shader,
             nir_variable *var = nir_deref_instr_get_variable(dst_deref);
             assert(var->data.mode == nir_var_function_temp);
 
-            struct var_info *info = &var_infos[var->data.index];
+            struct var_info *info = &var_infos[var->index];
             if (!info->is_constant)
                continue;
 
@@ -264,7 +261,7 @@ nir_opt_large_constants(nir_shader *shader,
             /* We only consider variables constant if all the reads are
              * dominated by the block that writes to it.
              */
-            struct var_info *info = &var_infos[var->data.index];
+            struct var_info *info = &var_infos[var->index];
             if (!info->is_constant)
                continue;
 
@@ -286,7 +283,7 @@ nir_opt_large_constants(nir_shader *shader,
       struct var_info *info = &var_infos[i];
 
       /* Fix up indices after we sorted. */
-      info->var->data.index = i;
+      info->var->index = i;
 
       if (!info->is_constant)
          continue;
@@ -309,6 +306,7 @@ nir_opt_large_constants(nir_shader *shader,
    }
 
    if (shader->constant_data_size == 0) {
+      nir_shader_preserve_all_metadata(shader);
       ralloc_free(var_infos);
       return false;
    }
@@ -339,7 +337,7 @@ nir_opt_large_constants(nir_shader *shader,
                continue;
 
             nir_variable *var = nir_deref_instr_get_variable(deref);
-            struct var_info *info = &var_infos[var->data.index];
+            struct var_info *info = &var_infos[var->index];
             if (info->is_constant) {
                b.cursor = nir_after_instr(&intrin->instr);
                nir_ssa_def *val = build_constant_load(&b, deref, size_align);
@@ -357,7 +355,7 @@ nir_opt_large_constants(nir_shader *shader,
                continue;
 
             nir_variable *var = nir_deref_instr_get_variable(deref);
-            struct var_info *info = &var_infos[var->data.index];
+            struct var_info *info = &var_infos[var->index];
             if (info->is_constant) {
                nir_instr_remove(&intrin->instr);
                nir_deref_instr_remove_if_unused(deref);

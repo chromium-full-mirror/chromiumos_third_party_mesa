@@ -33,17 +33,21 @@
 
 #include "pipe/p_screen.h"
 
-#define LIMA_DEBUG_GP      (1 << 0)
-#define LIMA_DEBUG_PP      (1 << 1)
-#define LIMA_DEBUG_DUMP    (1 << 2)
-#define LIMA_DEBUG_SHADERDB (1 << 3)
-#define LIMA_DEBUG_NO_BO_CACHE (1 << 4)
+#define LIMA_DEBUG_GP             (1 << 0)
+#define LIMA_DEBUG_PP             (1 << 1)
+#define LIMA_DEBUG_DUMP           (1 << 2)
+#define LIMA_DEBUG_SHADERDB       (1 << 3)
+#define LIMA_DEBUG_NO_BO_CACHE    (1 << 4)
+#define LIMA_DEBUG_BO_CACHE       (1 << 5)
+#define LIMA_DEBUG_NO_TILING      (1 << 6)
+#define LIMA_DEBUG_NO_GROW_HEAP   (1 << 7)
+#define LIMA_DEBUG_SINGLE_JOB     (1 << 8)
 
 extern uint32_t lima_debug;
-extern FILE *lima_dump_command_stream;
 extern int lima_ctx_num_plb;
 extern int lima_plb_max_blk;
 extern int lima_ppir_force_spilling;
+extern int lima_plb_pp_stream_cache_size;
 
 struct ra_regs;
 
@@ -67,8 +71,8 @@ struct lima_screen {
    /* bo table */
    mtx_t bo_table_lock;
    mtx_t bo_cache_lock;
-   struct util_hash_table *bo_handles;
-   struct util_hash_table *bo_flink_names;
+   struct hash_table *bo_handles;
+   struct hash_table *bo_flink_names;
    struct list_head bo_cache_buckets[NR_BO_CACHE_BUCKETS];
    struct list_head bo_cache_time;
 
@@ -84,6 +88,7 @@ struct lima_screen {
    #define pp_clear_gl_pos_offset    0x0100
    #define pp_buffer_size            0x1000
 
+   bool has_growable_heap_buffer;
 };
 
 static inline struct lima_screen *

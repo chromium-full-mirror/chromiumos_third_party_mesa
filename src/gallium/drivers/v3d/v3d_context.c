@@ -123,7 +123,7 @@ v3d_invalidate_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
  * output targets.
  */
 void
-v3d_tf_update_counters(struct v3d_context *v3d)
+v3d_update_primitive_counters(struct v3d_context *v3d)
 {
         struct v3d_job *job = v3d_get_job_for_fbo(v3d);
         if (job->draw_calls_queued == 0)
@@ -147,6 +147,51 @@ v3d_tf_update_counters(struct v3d_context *v3d)
                         v3d_stream_output_target(v3d->streamout.targets[i]);
                 so->recorded_vertex_count += num_verts;
         }
+}
+
+bool
+v3d_line_smoothing_enabled(struct v3d_context *v3d)
+{
+        if (!v3d->rasterizer->base.line_smooth)
+                return false;
+
+        /* According to the OpenGL docs, line smoothing shouldn’t be applied
+         * when multisampling
+         */
+        if (v3d->job->msaa || v3d->rasterizer->base.multisample)
+                return false;
+
+        if (v3d->framebuffer.nr_cbufs <= 0)
+                return false;
+
+        struct pipe_surface *cbuf = v3d->framebuffer.cbufs[0];
+        if (!cbuf)
+                return false;
+
+        /* Modifying the alpha for pure integer formats probably
+         * doesn’t make sense because we don’t know how the application
+         * uses the alpha value.
+         */
+        if (util_format_is_pure_integer(cbuf->format))
+                return false;
+
+        return true;
+}
+
+float
+v3d_get_real_line_width(struct v3d_context *v3d)
+{
+        float width = v3d->rasterizer->base.line_width;
+
+        if (v3d_line_smoothing_enabled(v3d)) {
+                /* If line smoothing is enabled then we want to add some extra
+                 * pixels to the width in order to have some semi-transparent
+                 * edges.
+                 */
+                width = floorf(M_SQRT2 * width) + 3;
+        }
+
+        return width;
 }
 
 static void

@@ -32,7 +32,7 @@
 
 #include "util/u_debug.h"
 #include "util/u_memory.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_hash_table.h"
 #include "util/u_screen.h"
 #include "util/u_transfer_helper.h"
@@ -72,13 +72,13 @@ v3d_screen_destroy(struct pipe_screen *pscreen)
 {
         struct v3d_screen *screen = v3d_screen(pscreen);
 
-        util_hash_table_destroy(screen->bo_handles);
+        _mesa_hash_table_destroy(screen->bo_handles, NULL);
         v3d_bufmgr_destroy(pscreen);
         slab_destroy_parent(&screen->transfer_pool);
         free(screen->ro);
 
         if (using_v3d_simulator)
-                v3d_simulator_destroy(screen);
+                v3d_simulator_destroy(screen->sim_file);
 
         v3d_compiler_free(screen->compiler);
         u_transfer_helper_destroy(pscreen->transfer_helper);
@@ -123,8 +123,7 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
         case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
         case PIPE_CAP_VERTEX_SHADER_SATURATE:
-        case PIPE_CAP_TEXTURE_QUERY_LOD:
-        case PIPE_CAP_PRIMITIVE_RESTART:
+        case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
         case PIPE_CAP_OCCLUSION_QUERY:
         case PIPE_CAP_POINT_SPRITE:
         case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
@@ -137,13 +136,21 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
         case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
         case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
+        case PIPE_CAP_TGSI_TEXCOORD:
                 return 1;
+
+        case PIPE_CAP_TEXTURE_QUERY_LOD:
+                return screen->devinfo.ver >= 42;
+                break;
 
         case PIPE_CAP_PACKED_UNIFORMS:
                 /* We can't enable this flag, because it results in load_ubo
                  * intrinsics across a 16b boundary, but v3d's TMU general
                  * memory accesses wrap on 16b boundaries.
                  */
+                return 0;
+
+        case PIPE_CAP_NIR_IMAGES_AS_DEREF:
                 return 0;
 
         case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
@@ -251,6 +258,16 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_UMA:
                 return 1;
 
+        /* Geometry shaders */
+        case PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS:
+                /* Minimum required by GLES 3.2 */
+                return 1024;
+        case PIPE_CAP_MAX_GEOMETRY_OUTPUT_VERTICES:
+                /* MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS / 4 */
+                return 256;
+        case PIPE_CAP_MAX_GS_INVOCATIONS:
+                return 32;
+
         default:
                 return u_pipe_screen_get_param_defaults(pscreen, param);
         }
@@ -297,6 +314,10 @@ v3d_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
                 if (!screen->has_csd)
                         return 0;
                 break;
+        case PIPE_SHADER_GEOMETRY:
+                if (screen->devinfo.ver < 41)
+                        return 0;
+                break;
         default:
                 return 0;
         }
@@ -313,10 +334,16 @@ v3d_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
                 return UINT_MAX;
 
         case PIPE_SHADER_CAP_MAX_INPUTS:
-                if (shader == PIPE_SHADER_FRAGMENT)
-                        return V3D_MAX_FS_INPUTS / 4;
-                else
+                switch (shader) {
+                case PIPE_SHADER_VERTEX:
                         return V3D_MAX_VS_INPUTS / 4;
+                case PIPE_SHADER_GEOMETRY:
+                        return V3D_MAX_GS_INPUTS / 4;
+                case PIPE_SHADER_FRAGMENT:
+                        return V3D_MAX_FS_INPUTS / 4;
+                default:
+                        return 0;
+                };
         case PIPE_SHADER_CAP_MAX_OUTPUTS:
                 if (shader == PIPE_SHADER_FRAGMENT)
                         return 4;
@@ -334,6 +361,7 @@ v3d_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
         case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
                 return 0;
         case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
+                return 1;
         case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
                 return 0;
         case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
@@ -345,6 +373,9 @@ v3d_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
         case PIPE_SHADER_CAP_INTEGERS:
                 return 1;
         case PIPE_SHADER_CAP_FP16:
+        case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+        case PIPE_SHADER_CAP_INT16:
+        case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
         case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
         case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
         case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
@@ -360,9 +391,10 @@ v3d_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
 
         case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
                 if (screen->has_cache_flush) {
-                        if (shader == PIPE_SHADER_VERTEX)
+                        if (shader == PIPE_SHADER_VERTEX ||
+                            shader == PIPE_SHADER_GEOMETRY) {
                                 return 0;
-
+                        }
                         return PIPE_MAX_SHADER_BUFFERS;
                  } else {
                         return 0;
@@ -587,18 +619,6 @@ v3d_screen_is_format_supported(struct pipe_screen *pscreen,
         return true;
 }
 
-#define PTR_TO_UINT(x) ((unsigned)((intptr_t)(x)))
-
-static unsigned handle_hash(void *key)
-{
-    return PTR_TO_UINT(key);
-}
-
-static int handle_compare(void *key1, void *key2)
-{
-    return PTR_TO_UINT(key1) != PTR_TO_UINT(key2);
-}
-
 static const void *
 v3d_screen_get_compiler_options(struct pipe_screen *pscreen,
                                 enum pipe_shader_ir ir, unsigned shader)
@@ -661,10 +681,10 @@ v3d_screen_create(int fd, const struct pipe_screen_config *config,
         }
         list_inithead(&screen->bo_cache.time_list);
         (void)mtx_init(&screen->bo_handles_mutex, mtx_plain);
-        screen->bo_handles = util_hash_table_create(handle_hash, handle_compare);
+        screen->bo_handles = util_hash_table_create_ptr_keys();
 
 #if defined(USE_V3D_SIMULATOR)
-        v3d_simulator_init(screen);
+        screen->sim_file = v3d_simulator_init(screen->fd);
 #endif
 
         if (!v3d_get_device_info(screen->fd, &screen->devinfo, &v3d_ioctl))

@@ -37,14 +37,13 @@
  *  data) in return.  Objects in the cache may not have relocations
  * (pointers to other BOs) in them.
  *
- * The inner workings are a simple hash table based on a CRC of the
+ * The inner workings are a simple hash table based on a FNV-1a of the
  * key data.
  *
  * Replacement is not implemented.  Instead, when the cache gets too
  * big we throw out all of the cache data and let it get regenerated.
  */
 
-#include "main/imports.h"
 #include "main/streaming-load-memcpy.h"
 #include "x86/common_x86_asm.h"
 #include "intel_batchbuffer.h"
@@ -54,6 +53,9 @@
 #include "brw_cs.h"
 #include "brw_program.h"
 #include "compiler/brw_eu.h"
+#include "util/u_memory.h"
+#define XXH_INLINE_ALL
+#include "util/xxhash.h"
 
 #define FILE_DEBUG_FLAG DEBUG_STATE
 
@@ -96,17 +98,9 @@ brw_stage_cache_id(gl_shader_stage stage)
 static GLuint
 hash_key(struct brw_cache_item *item)
 {
-   GLuint *ikey = (GLuint *)item->key;
-   GLuint hash = item->cache_id, i;
-
-   assert(item->key_size % 4 == 0);
-
-   /* I'm sure this can be improved on:
-    */
-   for (i = 0; i < item->key_size/4; i++) {
-      hash ^= ikey[i];
-      hash = (hash << 5) | (hash >> 27);
-   }
+    uint32_t hash = 0;
+    hash = XXH32(&item->cache_id, sizeof(item->cache_id), hash);
+    hash = XXH32(item->key, item->key_size, hash);
 
    return hash;
 }

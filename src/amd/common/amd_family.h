@@ -102,6 +102,8 @@ enum radeon_family {
     CHIP_NAVI10,
     CHIP_NAVI12,
     CHIP_NAVI14,
+    CHIP_SIENNA_CICHLID,
+    CHIP_NAVY_FLOUNDER,
     CHIP_LAST,
 };
 
@@ -119,6 +121,20 @@ enum chip_class {
     GFX8,
     GFX9,
     GFX10,
+    GFX10_3,
+};
+
+enum ring_type {
+    RING_GFX = 0,
+    RING_COMPUTE,
+    RING_DMA,
+    RING_UVD,
+    RING_VCE,
+    RING_UVD_ENC,
+    RING_VCN_DEC,
+    RING_VCN_ENC,
+    RING_VCN_JPEG,
+    NUM_RING_TYPES,
 };
 
 #endif

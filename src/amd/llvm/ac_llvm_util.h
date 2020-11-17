@@ -58,21 +58,18 @@ enum ac_func_attr {
 
 enum ac_target_machine_options {
 	AC_TM_SUPPORTS_SPILL = (1 << 0),
-	AC_TM_SISCHED = (1 << 1),
-	AC_TM_FORCE_ENABLE_XNACK = (1 << 2),
-	AC_TM_FORCE_DISABLE_XNACK = (1 << 3),
-	AC_TM_PROMOTE_ALLOCA_TO_SCRATCH = (1 << 4),
-	AC_TM_CHECK_IR = (1 << 5),
-	AC_TM_ENABLE_GLOBAL_ISEL = (1 << 6),
-	AC_TM_CREATE_LOW_OPT = (1 << 7),
-	AC_TM_NO_LOAD_STORE_OPT = (1 << 8),
-	AC_TM_WAVE32 = (1 << 9),
+	AC_TM_FORCE_ENABLE_XNACK = (1 << 1),
+	AC_TM_FORCE_DISABLE_XNACK = (1 << 2),
+	AC_TM_PROMOTE_ALLOCA_TO_SCRATCH = (1 << 3),
+	AC_TM_CHECK_IR = (1 << 4),
+	AC_TM_ENABLE_GLOBAL_ISEL = (1 << 5),
+	AC_TM_CREATE_LOW_OPT = (1 << 6),
+	AC_TM_WAVE32 = (1 << 7),
 };
 
 enum ac_float_mode {
 	AC_FLOAT_MODE_DEFAULT,
-	AC_FLOAT_MODE_NO_SIGNED_ZEROS_FP_MATH,
-	AC_FLOAT_MODE_UNSAFE_FP_MATH,
+	AC_FLOAT_MODE_DEFAULT_OPENGL,
 	AC_FLOAT_MODE_DENORM_FLUSH_TO_ZERO,
 };
 
@@ -98,6 +95,7 @@ struct ac_llvm_compiler {
 
 const char *ac_get_llvm_processor_name(enum radeon_family family);
 void ac_add_attr_dereferenceable(LLVMValueRef val, uint64_t bytes);
+void ac_add_attr_alignment(LLVMValueRef val, uint64_t bytes);
 bool ac_is_sgpr_param(LLVMValueRef param);
 void ac_add_function_attr(LLVMContextRef ctx, LLVMValueRef function,
                           int attr_idx, enum ac_func_attr attr);
@@ -131,6 +129,7 @@ ac_count_scratch_private_memory(LLVMValueRef function);
 
 LLVMTargetLibraryInfoRef ac_create_target_library_info(const char *triple);
 void ac_dispose_target_library_info(LLVMTargetLibraryInfoRef library_info);
+void ac_init_shared_llvm_once(void); /* Do not use directly, use ac_init_llvm_once */
 void ac_init_llvm_once(void);
 
 

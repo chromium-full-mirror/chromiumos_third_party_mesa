@@ -25,6 +25,8 @@
 #define AC_SHADER_ABI_H
 
 #include <llvm-c/Core.h>
+#include <assert.h>
+#include "ac_shader_args.h"
 
 #include "compiler/shader_enums.h"
 
@@ -48,47 +50,14 @@ enum ac_descriptor_type {
  * radv to share a compiler backend.
  */
 struct ac_shader_abi {
-	LLVMValueRef base_vertex;
-	LLVMValueRef start_instance;
-	LLVMValueRef draw_id;
+	LLVMValueRef outputs[AC_LLVM_MAX_OUTPUTS * 4];
+
+	/* These input registers sometimes need to be fixed up. */
 	LLVMValueRef vertex_id;
 	LLVMValueRef instance_id;
-	LLVMValueRef tcs_patch_id;
-	LLVMValueRef tcs_rel_ids;
-	LLVMValueRef tes_patch_id;
-	LLVMValueRef gs_prim_id;
-	LLVMValueRef gs_invocation_id;
-
-	/* PS */
-	LLVMValueRef frag_pos[4];
-	LLVMValueRef front_face;
-	LLVMValueRef ancillary;
-	LLVMValueRef sample_coverage;
-	LLVMValueRef prim_mask;
-	LLVMValueRef color0;
-	LLVMValueRef color1;
+	LLVMValueRef persp_centroid, linear_centroid;
+	LLVMValueRef color0, color1;
 	LLVMValueRef user_data;
-	LLVMValueRef persp_sample;
-	LLVMValueRef persp_center;
-	LLVMValueRef persp_centroid;
-	LLVMValueRef linear_sample;
-	LLVMValueRef linear_center;
-	LLVMValueRef linear_centroid;
-
-	/* CS */
-	LLVMValueRef local_invocation_ids;
-	LLVMValueRef num_work_groups;
-	LLVMValueRef workgroup_ids[3];
-	LLVMValueRef tg_size;
-
-	/* Vulkan only */
-	LLVMValueRef push_constants;
-	LLVMValueRef inline_push_consts[AC_MAX_INLINE_PUSH_CONSTS];
-	unsigned num_inline_push_consts;
-	unsigned base_inline_push_consts;
-	LLVMValueRef view_index;
-
-	LLVMValueRef outputs[AC_LLVM_MAX_OUTPUTS * 4];
 
 	/* For VS and PS: pre-loaded shader inputs.
 	 *
@@ -111,7 +80,10 @@ struct ac_shader_abi {
 	void (*emit_primitive)(struct ac_shader_abi *abi,
 			       unsigned stream);
 
-	void (*emit_kill)(struct ac_shader_abi *abi, LLVMValueRef visible);
+	void (*emit_vertex_with_counter)(struct ac_shader_abi *abi,
+					 unsigned stream,
+					 LLVMValueRef vertexidx,
+					 LLVMValueRef *addrs);
 
 	LLVMValueRef (*load_inputs)(struct ac_shader_abi *abi,
 				    unsigned location,
@@ -214,6 +186,15 @@ struct ac_shader_abi {
 
 	/* Whether bounds checks are required */
 	bool robust_buffer_access;
+
+	/* Check for Inf interpolation coeff */
+	bool kill_ps_if_inf_interp;
+
+	/* Whether undef values must be converted to zero */
+	bool convert_undef_to_zero;
+
+	/* Clamp div by 0 (so it won't produce NaN) */
+	bool clamp_div_by_zero;
 };
 
 #endif /* AC_SHADER_ABI_H */

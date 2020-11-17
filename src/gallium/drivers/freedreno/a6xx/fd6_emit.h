@@ -46,14 +46,13 @@ enum fd6_state_id {
 	FD6_GROUP_PROG_CONFIG,
 	FD6_GROUP_PROG,
 	FD6_GROUP_PROG_BINNING,
+	FD6_GROUP_PROG_INTERP,
+	FD6_GROUP_PROG_FB_RAST,
 	FD6_GROUP_LRZ,
 	FD6_GROUP_LRZ_BINNING,
+	FD6_GROUP_VTXSTATE,
 	FD6_GROUP_VBO,
-	FD6_GROUP_VS_CONST,
-	FD6_GROUP_HS_CONST,
-	FD6_GROUP_DS_CONST,
-	FD6_GROUP_GS_CONST,
-	FD6_GROUP_FS_CONST,
+	FD6_GROUP_CONST,
 	FD6_GROUP_VS_DRIVER_PARAMS,
 	FD6_GROUP_PRIMITIVE_PARAMS,
 	FD6_GROUP_VS_TEX,
@@ -64,7 +63,14 @@ enum fd6_state_id {
 	FD6_GROUP_IBO,
 	FD6_GROUP_RASTERIZER,
 	FD6_GROUP_ZSA,
+	FD6_GROUP_BLEND,
+	FD6_GROUP_SCISSOR,
+	FD6_GROUP_BLEND_COLOR,
+	FD6_GROUP_SO,
 };
+
+#define ENABLE_ALL (CP_SET_DRAW_STATE__0_BINNING | CP_SET_DRAW_STATE__0_GMEM | CP_SET_DRAW_STATE__0_SYSMEM)
+#define ENABLE_DRAW (CP_SET_DRAW_STATE__0_GMEM | CP_SET_DRAW_STATE__0_SYSMEM)
 
 struct fd6_state_group {
 	struct fd_ringbuffer *stateobj;
@@ -72,7 +78,7 @@ struct fd6_state_group {
 	/* enable_mask controls which states the stateobj is evaluated in,
 	 * b0 is binning pass b1 and/or b2 is draw pass
 	 */
-	uint8_t enable_mask;
+	uint32_t enable_mask;
 };
 
 /* grouped together emit-state for prog/vertex/state emit: */
@@ -87,12 +93,7 @@ struct fd6_emit {
 	bool sprite_coord_mode;
 	bool rasterflat;
 	bool no_decode_srgb;
-
-	/* in binning pass, we don't have real frag shader, so we
-	 * don't know if real draw disqualifies lrz write.  So just
-	 * figure that out up-front and stash it in the emit.
-	 */
-	bool no_lrz_write;
+	bool primitive_restart;
 
 	/* cached to avoid repeated lookups: */
 	const struct fd6_program_state *prog;
@@ -153,7 +154,7 @@ fd6_event_write(struct fd_batch *batch, struct fd_ringbuffer *ring,
 	if (timestamp) {
 		struct fd6_context *fd6_ctx = fd6_context(batch->ctx);
 		seqno = ++fd6_ctx->seqno;
-		OUT_RELOCW(ring, control_ptr(fd6_ctx, seqno));  /* ADDR_LO/HI */
+		OUT_RELOC(ring, control_ptr(fd6_ctx, seqno));  /* ADDR_LO/HI */
 		OUT_RING(ring, seqno);
 	}
 
@@ -172,21 +173,22 @@ fd6_cache_flush(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	struct fd6_context *fd6_ctx = fd6_context(batch->ctx);
 	unsigned seqno;
 
-	seqno = fd6_event_write(batch, ring, CACHE_FLUSH_AND_INV_EVENT, true);
+	seqno = fd6_event_write(batch, ring, RB_DONE_TS, true);
 
 	OUT_PKT7(ring, CP_WAIT_REG_MEM, 6);
-	OUT_RING(ring, 0x00000013);
+	OUT_RING(ring, CP_WAIT_REG_MEM_0_FUNCTION(WRITE_EQ) |
+		       CP_WAIT_REG_MEM_0_POLL_MEMORY);
 	OUT_RELOC(ring, control_ptr(fd6_ctx, seqno));
-	OUT_RING(ring, seqno);
-	OUT_RING(ring, 0xffffffff);
-	OUT_RING(ring, 0x00000010);
+	OUT_RING(ring, CP_WAIT_REG_MEM_3_REF(seqno));
+	OUT_RING(ring, CP_WAIT_REG_MEM_4_MASK(~0));
+	OUT_RING(ring, CP_WAIT_REG_MEM_5_DELAY_LOOP_CYCLES(16));
 
 	seqno = fd6_event_write(batch, ring, CACHE_FLUSH_TS, true);
 
-	OUT_PKT7(ring, CP_UNK_A6XX_14, 4);
-	OUT_RING(ring, 0x00000000);
+	OUT_PKT7(ring, CP_WAIT_MEM_GTE, 4);
+	OUT_RING(ring, CP_WAIT_MEM_GTE_0_RESERVED(0));
 	OUT_RELOC(ring, control_ptr(fd6_ctx, seqno));
-	OUT_RING(ring, seqno);
+	OUT_RING(ring, CP_WAIT_MEM_GTE_3_REF(seqno));
 }
 
 static inline void
@@ -204,22 +206,28 @@ fd6_emit_lrz_flush(struct fd_ringbuffer *ring)
 	OUT_RING(ring, LRZ_FLUSH);
 }
 
-static inline uint32_t
-fd6_stage2opcode(gl_shader_stage type)
+static inline bool
+fd6_geom_stage(gl_shader_stage type)
 {
 	switch (type) {
 	case MESA_SHADER_VERTEX:
 	case MESA_SHADER_TESS_CTRL:
 	case MESA_SHADER_TESS_EVAL:
 	case MESA_SHADER_GEOMETRY:
-		return CP_LOAD_STATE6_GEOM;
+		return true;
 	case MESA_SHADER_FRAGMENT:
 	case MESA_SHADER_COMPUTE:
 	case MESA_SHADER_KERNEL:
-		return CP_LOAD_STATE6_FRAG;
+		return false;
 	default:
 		unreachable("bad shader type");
 	}
+}
+
+static inline uint32_t
+fd6_stage2opcode(gl_shader_stage type)
+{
+	return fd6_geom_stage(type) ? CP_LOAD_STATE6_GEOM : CP_LOAD_STATE6_FRAG;
 }
 
 static inline enum a6xx_state_block
@@ -242,6 +250,22 @@ fd6_stage2shadersb(gl_shader_stage type)
 	default:
 		unreachable("bad shader type");
 		return ~0;
+	}
+}
+
+static inline enum a6xx_tess_spacing
+fd6_gl2spacing(enum gl_tess_spacing spacing)
+{
+	switch (spacing) {
+	case TESS_SPACING_EQUAL:
+		return TESS_EQUAL;
+	case TESS_SPACING_FRACTIONAL_ODD:
+		return TESS_FRACTIONAL_ODD;
+	case TESS_SPACING_FRACTIONAL_EVEN:
+		return TESS_FRACTIONAL_EVEN;
+	case TESS_SPACING_UNSPECIFIED:
+	default:
+		unreachable("spacing must be specified");
 	}
 }
 

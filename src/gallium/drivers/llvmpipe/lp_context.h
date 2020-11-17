@@ -67,12 +67,15 @@ struct llvmpipe_context {
    struct lp_fragment_shader *fs;
    struct draw_vertex_shader *vs;
    const struct lp_geometry_shader *gs;
+   const struct lp_tess_ctrl_shader *tcs;
+   const struct lp_tess_eval_shader *tes;
    struct lp_compute_shader *cs;
    const struct lp_velems_state *velems;
    const struct lp_so_state *so;
 
    /** Other rendering state */
    unsigned sample_mask;
+   unsigned min_samples;
    struct pipe_blend_color blend_color;
    struct pipe_stencil_ref stencil_ref;
    struct pipe_clip_state clip;
@@ -96,12 +99,16 @@ struct llvmpipe_context {
 
    struct draw_so_target *so_targets[PIPE_MAX_SO_BUFFERS];
    int num_so_targets;
-   struct pipe_query_data_so_statistics so_stats;
+   struct pipe_query_data_so_statistics so_stats[PIPE_MAX_VERTEX_STREAMS];
 
    struct pipe_query_data_pipeline_statistics pipeline_statistics;
    unsigned active_statistics_queries;
 
    unsigned active_occlusion_queries;
+
+   unsigned active_primgen_queries;
+
+   bool queries_disabled;
 
    unsigned dirty; /**< Mask of LP_NEW_x flags */
    unsigned cs_dirty; /**< Mask of LP_CSNEW_x flags */
@@ -165,6 +172,10 @@ struct llvmpipe_context {
 
    /** The LLVMContext to use for LLVM related work */
    LLVMContextRef context;
+
+   int max_global_buffers;
+   struct pipe_resource **global_buffers;
+
 };
 
 

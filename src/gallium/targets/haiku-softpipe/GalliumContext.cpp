@@ -22,7 +22,7 @@
 //#include "state_tracker/st_cb_flush.h"
 #include "state_tracker/st_context.h"
 #include "state_tracker/st_gl_api.h"
-#include "state_tracker/sw_winsys.h"
+#include "frontend/sw_winsys.h"
 #include "sw/hgl/hgl_sw_winsys.h"
 #include "util/u_atomic.h"
 #include "util/u_memory.h"
@@ -243,7 +243,7 @@ GalliumContext::DestroyContext(context_id contextID)
 		return;
 
 	if (fContext[contextID]->st) {
-		fContext[contextID]->st->flush(fContext[contextID]->st, 0, NULL);
+		fContext[contextID]->st->flush(fContext[contextID]->st, 0, NULL, NULL, NULL);
 		fContext[contextID]->st->destroy(fContext[contextID]->st);
 	}
 
@@ -297,7 +297,7 @@ GalliumContext::SetCurrentContext(Bitmap *bitmap, context_id contextID)
 
 	if (oldContextID > 0 && oldContextID != contextID) {
 		fContext[oldContextID]->st->flush(fContext[oldContextID]->st,
-			ST_FLUSH_FRONT, NULL);
+			ST_FLUSH_FRONT, NULL, NULL, NULL);
 	}
 
 	// We need to lock and unlock framebuffers before accessing them
@@ -333,7 +333,7 @@ GalliumContext::SwapBuffers(context_id contextID)
 		ERROR("%s: context not found\n", __func__);
 		return B_ERROR;
 	}
-	context->st->flush(context->st, ST_FLUSH_FRONT, NULL);
+	context->st->flush(context->st, ST_FLUSH_FRONT, NULL, NULL, NULL);
 
 	struct hgl_buffer* buffer = hgl_st_framebuffer(context->draw->stfbi);
 	pipe_surface* surface = buffer->surface;

@@ -43,7 +43,7 @@
 #include "dri_util.h"
 #include "utils.h"
 #include "util/u_endian.h"
-#include "util/xmlpool.h"
+#include "util/driconf.h"
 #include "main/mtypes.h"
 #include "main/framebuffer.h"
 #include "main/version.h"
@@ -150,7 +150,7 @@ driCreateNewScreen2(int scrn, int fd,
     /* Option parsing before ->InitScreen(), as some options apply there. */
     driParseOptionInfo(&psp->optionInfo, __dri2ConfigOptions);
     driParseConfigFiles(&psp->optionCache, &psp->optionInfo, psp->myNum,
-                        "dri2", NULL, NULL, 0);
+                        "dri2", NULL, NULL, 0, NULL, 0);
 
     *driver_configs = psp->driver->InitScreen(psp);
     if (*driver_configs == NULL) {
@@ -947,7 +947,7 @@ static const struct {
       .mesa_format     =        MESA_FORMAT_L_UNORM8,
       .internal_format =        GL_R8,
    },
-#ifdef PIPE_ARCH_LITTLE_ENDIAN
+#if UTIL_ARCH_LITTLE_ENDIAN
    {
       .image_format    = __DRI_IMAGE_FORMAT_GR88,
       .mesa_format     =        MESA_FORMAT_RG_UNORM8,
@@ -984,7 +984,7 @@ static const struct {
       .mesa_format     =        MESA_FORMAT_L_UNORM16,
       .internal_format =        GL_R16,
    },
-#ifdef PIPE_ARCH_LITTLE_ENDIAN
+#if UTIL_ARCH_LITTLE_ENDIAN
    {
       .image_format    = __DRI_IMAGE_FORMAT_GR1616,
       .mesa_format     =        MESA_FORMAT_RG_UNORM16,

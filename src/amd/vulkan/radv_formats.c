@@ -595,7 +595,7 @@ static bool radv_is_filter_minmax_format_supported(VkFormat format)
 	/* From the Vulkan spec 1.1.71:
 	 *
 	 * "The following formats must support the
-	 *  VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT_EXT feature with
+	 *  VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT feature with
 	 *  VK_IMAGE_TILING_OPTIMAL, if they support
 	 *  VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT."
 	 */
@@ -624,7 +624,6 @@ radv_device_supports_etc(struct radv_physical_device *physical_device)
 {
 	return physical_device->rad_info.family == CHIP_VEGA10 ||
 	       physical_device->rad_info.family == CHIP_RAVEN ||
-	       physical_device->rad_info.family == CHIP_RAVEN2 ||
 	       physical_device->rad_info.family == CHIP_STONEY;
 }
 
@@ -695,7 +694,7 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
 			         VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 
 			if (radv_is_filter_minmax_format_supported(format))
-				 tiled |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT_EXT;
+				 tiled |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT;
 
 			/* Don't support blitting surfaces with depth/stencil. */
 			if (vk_format_is_depth(format) && vk_format_is_stencil(format))
@@ -713,7 +712,7 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
 				VK_FORMAT_FEATURE_BLIT_SRC_BIT;
 
 			if (radv_is_filter_minmax_format_supported(format))
-				 tiled |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT_EXT;
+				 tiled |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT;
 
 			if (linear_sampling) {
 				linear |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
@@ -750,7 +749,9 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
 		          VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 	}
 
-	if (format == VK_FORMAT_R32_UINT || format == VK_FORMAT_R32_SINT) {
+	if (format == VK_FORMAT_R32_UINT ||
+	    format == VK_FORMAT_R32_SINT ||
+	    format == VK_FORMAT_R32_SFLOAT) {
 		buffer |= VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_ATOMIC_BIT;
 		linear |= VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT;
 		tiled |= VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT;
@@ -1061,7 +1062,7 @@ bool radv_format_pack_clear_color(VkFormat format,
 			if (channel->size == 32) {
 				memcpy(&v, &value->float32[c], 4);
 			} else if(channel->size == 16) {
-				v = util_float_to_half(value->float32[c]);
+				v = util_float_to_half_rtz(value->float32[c]);
 			} else {
 				fprintf(stderr, "failed to fast clear for unhandled float size in format %d\n", format);
 				return false;
@@ -1324,7 +1325,10 @@ get_external_image_format_properties(struct radv_physical_device *physical_devic
 	case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
 		switch (pImageFormatInfo->type) {
 		case VK_IMAGE_TYPE_2D:
-			flags = VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT|VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT|VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+			flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT|VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+			if (pImageFormatInfo->tiling != VK_IMAGE_TILING_LINEAR)
+				flags |= VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT;
+
 			compat_flags = export_flags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT |
 						      VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
 			break;
@@ -1347,7 +1351,10 @@ get_external_image_format_properties(struct radv_physical_device *physical_devic
 		format_properties->maxArrayLayers = MIN2(1, format_properties->maxArrayLayers);
 		format_properties->sampleCounts &= VK_SAMPLE_COUNT_1_BIT;
 
-		flags = VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT|VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT|VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+		flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT|VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+		if (pImageFormatInfo->tiling != VK_IMAGE_TILING_LINEAR)
+			flags |= VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT;
+
 		compat_flags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
 		break;
 	case VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT:
@@ -1375,6 +1382,7 @@ VkResult radv_GetPhysicalDeviceImageFormatProperties2(
 	VkExternalImageFormatProperties *external_props = NULL;
 	struct VkAndroidHardwareBufferUsageANDROID *android_usage = NULL;
 	VkSamplerYcbcrConversionImageFormatProperties *ycbcr_props = NULL;
+	VkTextureLODGatherFormatPropertiesAMD *texture_lod_props = NULL;
 	VkResult result;
 	VkFormat format = radv_select_android_external_format(base_info->pNext, base_info->format);
 
@@ -1405,6 +1413,9 @@ VkResult radv_GetPhysicalDeviceImageFormatProperties2(
 			break;
 		case VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_USAGE_ANDROID:
 			android_usage = (void *) s;
+			break;
+		case VK_STRUCTURE_TYPE_TEXTURE_LOD_GATHER_FORMAT_PROPERTIES_AMD:
+			texture_lod_props = (void *) s;
 			break;
 		default:
 			break;
@@ -1447,6 +1458,14 @@ VkResult radv_GetPhysicalDeviceImageFormatProperties2(
 
 	if (ycbcr_props) {
 		ycbcr_props->combinedImageSamplerDescriptorCount = vk_format_get_plane_count(format);
+	}
+
+	if (texture_lod_props) {
+		if (physical_device->rad_info.chip_class >= GFX9) {
+			texture_lod_props->supportsTextureGatherLODBiasAMD = true;
+		} else {
+			texture_lod_props->supportsTextureGatherLODBiasAMD = !vk_format_is_int(format);
+		}
 	}
 
 	return VK_SUCCESS;

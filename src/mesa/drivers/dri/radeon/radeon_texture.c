@@ -30,7 +30,6 @@
  */
 
 #include "main/glheader.h"
-#include "main/imports.h"
 #include "main/context.h"
 #include "main/enums.h"
 #include "main/mipmap.h"
@@ -41,7 +40,7 @@
 #include "main/texobj.h"
 #include "drivers/common/meta.h"
 
-#include "util/xmlpool.h"		/* for symbolic values of enum-type options */
+#include "util/driconf.h"		/* for symbolic values of enum-type options */
 
 #include "radeon_common.h"
 
@@ -113,7 +112,7 @@ radeonAllocTextureImageBuffer(struct gl_context *ctx,
 		return GL_FALSE;
 
 	teximage_assign_miptree(rmesa, texobj, timage);
-				
+
 	return GL_TRUE;
 }
 
@@ -182,7 +181,7 @@ radeon_map_texture_image(struct gl_context *ctx,
 	} else if (likely(mt)) {
 		void *base;
 		radeon_mipmap_level *lvl = &image->mt->levels[texImage->Level];
-		       
+
 		radeon_bo_map(mt->bo, write);
 		base = mt->bo->ptr + lvl->faces[image->base.Base.Face].offset;
 
@@ -602,20 +601,19 @@ mesa_format _radeon_texformat_argb1555 = MESA_FORMAT_NONE;
 static void
 radeonInitTextureFormats(void)
 {
-   if (_mesa_little_endian()) {
-      _radeon_texformat_rgba8888	= MESA_FORMAT_A8B8G8R8_UNORM;
-      _radeon_texformat_argb8888	= MESA_FORMAT_B8G8R8A8_UNORM;
-      _radeon_texformat_rgb565		= MESA_FORMAT_B5G6R5_UNORM;
-      _radeon_texformat_argb4444	= MESA_FORMAT_B4G4R4A4_UNORM;
-      _radeon_texformat_argb1555	= MESA_FORMAT_B5G5R5A1_UNORM;
-   }
-   else {
-      _radeon_texformat_rgba8888	= MESA_FORMAT_R8G8B8A8_UNORM;
-      _radeon_texformat_argb8888	= MESA_FORMAT_A8R8G8B8_UNORM;
-      _radeon_texformat_rgb565		= MESA_FORMAT_R5G6B5_UNORM;
-      _radeon_texformat_argb4444	= MESA_FORMAT_A4R4G4B4_UNORM;
-      _radeon_texformat_argb1555	= MESA_FORMAT_A1R5G5B5_UNORM;
-   }
+#if UTIL_ARCH_LITTLE_ENDIAN
+   _radeon_texformat_rgba8888	= MESA_FORMAT_A8B8G8R8_UNORM;
+   _radeon_texformat_argb8888	= MESA_FORMAT_B8G8R8A8_UNORM;
+   _radeon_texformat_rgb565	= MESA_FORMAT_B5G6R5_UNORM;
+   _radeon_texformat_argb4444	= MESA_FORMAT_B4G4R4A4_UNORM;
+   _radeon_texformat_argb1555	= MESA_FORMAT_B5G5R5A1_UNORM;
+#else
+   _radeon_texformat_rgba8888	= MESA_FORMAT_R8G8B8A8_UNORM;
+   _radeon_texformat_argb8888	= MESA_FORMAT_A8R8G8B8_UNORM;
+   _radeon_texformat_rgb565	= MESA_FORMAT_R5G6B5_UNORM;
+   _radeon_texformat_argb4444	= MESA_FORMAT_A4R4G4B4_UNORM;
+   _radeon_texformat_argb1555	= MESA_FORMAT_A1R5G5B5_UNORM;
+#endif
 }
 
 void
@@ -682,12 +680,12 @@ static radeon_mipmap_tree *radeon_miptree_create_for_teximage(radeonContextPtr r
 		    texImage->Level == firstLevel) {
 			lastLevel = firstLevel;
 		} else {
-			lastLevel = firstLevel + _mesa_logbase2(MAX2(MAX2(width, height), depth));
+			lastLevel = firstLevel + util_logbase2(MAX2(MAX2(width, height), depth));
 		}
 	}
 
 	return  radeon_miptree_create(rmesa, texObj->Target,
 				      texImage->TexFormat, firstLevel, lastLevel - firstLevel + 1,
-				      width, height, depth, 
+				      width, height, depth,
 				      t->tile_bits);
-}				     
+}

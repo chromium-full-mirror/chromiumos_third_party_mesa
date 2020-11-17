@@ -62,7 +62,8 @@ radv_init_trace(struct radv_device *device)
 	device->trace_bo = ws->buffer_create(ws, TRACE_BO_SIZE, 8,
 					     RADEON_DOMAIN_VRAM,
 					     RADEON_FLAG_CPU_ACCESS|
-					     RADEON_FLAG_NO_INTERPROCESS_SHARING,
+					     RADEON_FLAG_NO_INTERPROCESS_SHARING |
+					     RADEON_FLAG_ZERO_VRAM,
 					     RADV_BO_PRIORITY_UPLOAD_BUFFER);
 	if (!device->trace_bo)
 		return false;
@@ -70,8 +71,6 @@ radv_init_trace(struct radv_device *device)
 	device->trace_id_ptr = ws->buffer_map(device->trace_bo);
 	if (!device->trace_id_ptr)
 		return false;
-
-	memset(device->trace_id_ptr, 0, TRACE_BO_SIZE);
 
 	ac_vm_fault_occured(device->physical_device->rad_info.chip_class,
 			    &device->dmesg_timestamp, NULL);
@@ -248,7 +247,7 @@ radv_dump_descriptors(struct radv_device *device, FILE *f)
 	fprintf(f, "Descriptors:\n");
 	for (i = 0; i < MAX_SETS; i++) {
 		struct radv_descriptor_set *set =
-			(struct radv_descriptor_set *)ptr[i + 3];
+			*(struct radv_descriptor_set **)(ptr + i + 3);
 
 		radv_dump_descriptor_set(device, set, i, f);
 	}
@@ -433,7 +432,9 @@ radv_dump_shader(struct radv_pipeline *pipeline,
 		fprintf(f, "NIR:\n%s\n", shader->nir_string);
 	}
 
-	fprintf(f, "LLVM IR:\n%s\n", shader->ir_string);
+	fprintf(f, "%s IR:\n%s\n",
+		pipeline->device->physical_device->use_llvm ? "LLVM" : "ACO",
+		shader->ir_string);
 	fprintf(f, "DISASM:\n%s\n", shader->disasm_string);
 
 	radv_shader_dump_stats(pipeline->device, shader, stage, f);
@@ -497,7 +498,7 @@ radv_get_saved_graphics_pipeline(struct radv_device *device)
 {
 	uint64_t *ptr = (uint64_t *)device->trace_id_ptr;
 
-	return (struct radv_pipeline *)ptr[1];
+	return *(struct radv_pipeline **)(ptr + 1);
 }
 
 static struct radv_pipeline *
@@ -505,7 +506,7 @@ radv_get_saved_compute_pipeline(struct radv_device *device)
 {
 	uint64_t *ptr = (uint64_t *)device->trace_id_ptr;
 
-	return (struct radv_pipeline *)ptr[2];
+	return *(struct radv_pipeline **)(ptr + 2);
 }
 
 static void
@@ -568,8 +569,7 @@ radv_dump_device_name(struct radv_device *device, FILE *f)
 		snprintf(kernel_version, sizeof(kernel_version),
 			 " / %s", uname_data.release);
 
-	fprintf(f, "Device name: %s (%s DRM %i.%i.%i%s, LLVM "
-		MESA_LLVM_VERSION_STRING ")\n\n",
+	fprintf(f, "Device name: %s (%s / DRM %i.%i.%i%s)\n\n",
 		chip_name, device->physical_device->name,
 		info->drm_major, info->drm_minor, info->drm_patchlevel,
 		kernel_version);

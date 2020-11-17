@@ -20,7 +20,7 @@
 
 inc_util = include_directories('.')
 
-subdir('xmlpool')
+subdir('format')
 
 files_mesa_util = files(
   'anon_file.h',
@@ -33,6 +33,7 @@ files_mesa_util = files(
   'blob.h',
   'build_id.c',
   'build_id.h',
+  'compiler.h',
   'crc32.c',
   'crc32.h',
   'dag.c',
@@ -61,6 +62,8 @@ files_mesa_util = files(
   'os_file.c',
   'os_misc.c',
   'os_misc.h',
+  'os_socket.c',
+  'os_socket.h',
   'u_process.c',
   'u_process.h',
   'sha1/sha1.c',
@@ -84,6 +87,8 @@ files_mesa_util = files(
   'slab.h',
   'softfloat.c',
   'softfloat.h',
+  'sparse_array.c',
+  'sparse_array.h',
   'string_buffer.c',
   'string_buffer.h',
   'strndup.h',
@@ -103,6 +108,9 @@ files_mesa_util = files(
   'u_vector.h',
   'u_math.c',
   'u_math.h',
+  'u_memset.h',
+  'u_mm.c',
+  'u_mm.h',
   'u_debug.c',
   'u_debug.h',
   'u_debug_memory.c',
@@ -110,6 +118,7 @@ files_mesa_util = files(
   'u_cpu_detect.h',
   'vma.c',
   'vma.h',
+  'xxhash.h',
 )
 
 files_drirc = files('00-mesa-defaults.conf')
@@ -148,18 +157,30 @@ deps_for_libmesa_util = [
   dep_atomic,
   dep_m,
   dep_valgrind,
+  dep_zstd,
+  dep_dl,
+  dep_unwind,
 ]
 
 if with_platform_android
   deps_for_libmesa_util += dep_android
+  files_debug_stack = files('u_debug_stack_android.cpp')
+ else
+  files_debug_stack = files(
+    'u_debug_stack.c',
+    'u_debug_symbol.c',
+    'u_debug_symbol.h',
+  )
 endif
 
 _libmesa_util = static_library(
   'mesa_util',
-  [files_mesa_util, format_srgb],
-  include_directories : inc_common,
+  [files_mesa_util, files_debug_stack, format_srgb],
+  include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
   dependencies : deps_for_libmesa_util,
-  c_args : [c_msvc_compat_args, c_vis_args],
+  link_with: libmesa_format,
+  c_args : [c_msvc_compat_args],
+  gnu_symbol_visibility : 'hidden',
   build_by_default : false
 )
 
@@ -172,10 +193,10 @@ idep_mesautil = declare_dependency(
 _libxmlconfig = static_library(
   'xmlconfig',
   files_xmlconfig,
-  include_directories : inc_common,
+  include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
   dependencies : [idep_mesautil, dep_expat, dep_m],
   c_args : [
-    c_msvc_compat_args, c_vis_args,
+    c_msvc_compat_args,
     '-DSYSCONFDIR="@0@"'.format(
       join_paths(get_option('prefix'), get_option('sysconfdir'))
     ),
@@ -183,14 +204,13 @@ _libxmlconfig = static_library(
       join_paths(get_option('prefix'), get_option('datadir'))
     ),
   ],
+  gnu_symbol_visibility : 'hidden',
   build_by_default : false,
 )
 
 idep_xmlconfig = declare_dependency(
-  sources : xmlpool_options_h,
-  include_directories : inc_util,
-  link_with : _libxmlconfig,
   dependencies : dep_expat,
+  link_with : _libxmlconfig,
 )
 
 if with_tests
@@ -199,7 +219,7 @@ if with_tests
     executable(
       'u_atomic_test',
       files('u_atomic_test.c'),
-      include_directories : inc_common,
+      include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
       dependencies : idep_mesautil,
       c_args : [c_msvc_compat_args],
     ),
@@ -211,7 +231,7 @@ if with_tests
     executable(
       'blob_test',
       files('blob_test.c'),
-      include_directories : inc_common,
+      include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
       dependencies : idep_mesautil,
       c_args : [c_msvc_compat_args],
     ),
@@ -223,7 +243,7 @@ if with_tests
     executable(
       'rb_tree_test',
       files('rb_tree_test.c'),
-      include_directories : inc_common,
+      include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
       dependencies : idep_mesautil,
       c_args : [c_msvc_compat_args],
     ),
@@ -235,11 +255,12 @@ if with_tests
     executable(
       'roundeven_test',
       files('roundeven_test.c'),
-      include_directories : inc_common,
+      include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
       c_args : [c_msvc_compat_args],
       dependencies : [dep_m],
     ),
     suite : ['util'],
+    should_fail : meson.get_cross_property('xfail', '').contains('roundeven'),
   )
 
   # FIXME: this test crashes on windows
@@ -249,7 +270,7 @@ if with_tests
       executable(
         'mesa-sha1_test',
         files('mesa-sha1_test.c'),
-        include_directories : inc_common,
+        include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
         link_with : _libmesa_util,
         c_args : [c_msvc_compat_args],
       ),
@@ -262,10 +283,48 @@ if with_tests
     executable(
        'bitset_test',
        files('bitset_test.cpp'),
-       include_directories : inc_common,
+       include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
        dependencies : [idep_mesautil, idep_gtest],
      ),
      suite : ['util'],
+  )
+
+  test(
+    'u_debug_stack',
+    executable(
+      'u_debug_stack_test',
+      files('u_debug_stack_test.cpp'),
+      include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
+      dependencies : [idep_mesautil, idep_gtest],
+      c_args : [c_msvc_compat_args],
+    ),
+     suite : ['util'],
+  )
+
+  process_test_exe = executable(
+    'process_test',
+    files('process_test.c'),
+    include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
+    dependencies : idep_mesautil,
+    c_args : [c_msvc_compat_args],
+  )
+  if (host_machine.system() == 'windows' and build_machine.system() != 'windows')
+    # This conversion is only required on mingw crosscompilers, otherwise we hit at least one of these issues
+    # https://gitlab.freedesktop.org/mesa/mesa/-/issues/2690
+    # https://gitlab.freedesktop.org/mesa/mesa/-/issues/2788
+    prog_winepath = find_program('winepath')
+    process_test_exe_full_path = run_command(
+      prog_winepath, '-w', process_test_exe.full_path()
+    ).stdout().strip()
+  else
+    process_test_exe_full_path = process_test_exe.full_path()
+  endif
+
+  test(
+    'process',
+    process_test_exe,
+    suite : ['util'],
+    env: ['BUILD_FULL_PATH='+process_test_exe_full_path]
   )
 
   subdir('tests/fast_idiv_by_const')
@@ -280,4 +339,7 @@ if with_tests
   endif
   subdir('tests/vma')
   subdir('tests/set')
+  subdir('tests/sparse_array')
+  subdir('tests/format')
+  subdir('tests/vector')
 endif

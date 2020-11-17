@@ -87,6 +87,8 @@ fd_blitter_pipe_begin(struct fd_context *ctx, bool render_cond, bool discard,
 	util_blitter_save_vertex_buffer_slot(ctx->blitter, ctx->vtx.vertexbuf.vb);
 	util_blitter_save_vertex_elements(ctx->blitter, ctx->vtx.vtx);
 	util_blitter_save_vertex_shader(ctx->blitter, ctx->prog.vs);
+	util_blitter_save_tessctrl_shader(ctx->blitter, ctx->prog.hs);
+	util_blitter_save_tesseval_shader(ctx->blitter, ctx->prog.ds);
 	util_blitter_save_geometry_shader(ctx->blitter, ctx->prog.gs);
 	util_blitter_save_so_targets(ctx->blitter, ctx->streamout.num_targets,
 			ctx->streamout.targets);
@@ -112,15 +114,13 @@ fd_blitter_pipe_begin(struct fd_context *ctx, bool render_cond, bool discard,
 	if (ctx->batch)
 		fd_batch_set_stage(ctx->batch, stage);
 
-	ctx->in_blit = discard;
+	ctx->in_discard_blit = discard;
 }
 
 static void
 fd_blitter_pipe_end(struct fd_context *ctx)
 {
-	if (ctx->batch)
-		fd_batch_set_stage(ctx->batch, FD_STAGE_NULL);
-	ctx->in_blit = false;
+	ctx->in_discard_blit = false;
 }
 
 bool

@@ -30,6 +30,7 @@
 #include <xcb/xcb.h>
 #include <xcb/dri3.h>
 #include <xcb/present.h>
+#include <xcb/xfixes.h>
 
 #include <X11/Xlib-xcb.h>
 
@@ -37,7 +38,7 @@
 #include "util/macros.h"
 #include "drm-uapi/drm_fourcc.h"
 
-/* From xmlpool/options.h, user exposed so should be stable */
+/* From driconf.h, user exposed so should be stable */
 #define DRI_CONF_VBLANK_NEVER 0
 #define DRI_CONF_VBLANK_DEF_INTERVAL_0 1
 #define DRI_CONF_VBLANK_DEF_INTERVAL_1 2
@@ -526,7 +527,8 @@ dri3_handle_present_event(struct loader_dri3_drawable *draw,
 }
 
 static bool
-dri3_wait_for_event_locked(struct loader_dri3_drawable *draw)
+dri3_wait_for_event_locked(struct loader_dri3_drawable *draw,
+                           unsigned *full_sequence)
 {
    xcb_generic_event_t *ev;
    xcb_present_generic_event_t *ge;
@@ -536,6 +538,8 @@ dri3_wait_for_event_locked(struct loader_dri3_drawable *draw)
    /* Only have one thread waiting for events at a time */
    if (draw->has_event_waiter) {
       cnd_wait(&draw->event_cnd, &draw->mtx);
+      if (full_sequence)
+         *full_sequence = draw->last_special_event_sequence;
       /* Another thread has updated the protected info, so retest. */
       return true;
    } else {
@@ -549,6 +553,9 @@ dri3_wait_for_event_locked(struct loader_dri3_drawable *draw)
    }
    if (!ev)
       return false;
+   draw->last_special_event_sequence = ev->full_sequence;
+   if (full_sequence)
+      *full_sequence = ev->full_sequence;
    ge = (void *) ev;
    dri3_handle_present_event(draw, ge);
    return true;
@@ -571,22 +578,16 @@ loader_dri3_wait_for_msc(struct loader_dri3_drawable *draw,
                                                      target_msc,
                                                      divisor,
                                                      remainder);
-   xcb_generic_event_t *ev;
    unsigned full_sequence;
 
    mtx_lock(&draw->mtx);
-   xcb_flush(draw->conn);
 
    /* Wait for the event */
    do {
-      ev = xcb_wait_for_special_event(draw->conn, draw->special_event);
-      if (!ev) {
+      if (!dri3_wait_for_event_locked(draw, &full_sequence)) {
          mtx_unlock(&draw->mtx);
          return false;
       }
-
-      full_sequence = ev->full_sequence;
-      dri3_handle_present_event(draw, (void *) ev);
    } while (full_sequence != cookie.sequence || draw->notify_msc < target_msc);
 
    *ust = draw->notify_ust;
@@ -619,7 +620,7 @@ loader_dri3_wait_for_sbc(struct loader_dri3_drawable *draw,
       target_sbc = draw->send_sbc;
 
    while (draw->recv_sbc < target_sbc) {
-      if (!dri3_wait_for_event_locked(draw)) {
+      if (!dri3_wait_for_event_locked(draw, NULL)) {
          mtx_unlock(&draw->mtx);
          return 0;
       }
@@ -667,7 +668,7 @@ dri3_find_back(struct loader_dri3_drawable *draw)
             return id;
          }
       }
-      if (!dri3_wait_for_event_locked(draw)) {
+      if (!dri3_wait_for_event_locked(draw, NULL)) {
          mtx_unlock(&draw->mtx);
          return -1;
       }
@@ -908,6 +909,7 @@ int64_t
 loader_dri3_swap_buffers_msc(struct loader_dri3_drawable *draw,
                              int64_t target_msc, int64_t divisor,
                              int64_t remainder, unsigned flush_flags,
+                             const int *rects, int n_rects,
                              bool force_copy)
 {
    struct loader_dri3_buffer *back;
@@ -1006,12 +1008,29 @@ loader_dri3_swap_buffers_msc(struct loader_dri3_drawable *draw,
 #endif
       back->busy = 1;
       back->last_swap = draw->send_sbc;
+
+      xcb_xfixes_region_t region = 0;
+      xcb_rectangle_t xcb_rects[64];
+
+      if (n_rects > 0 && n_rects <= ARRAY_SIZE(xcb_rects)) {
+         for (int i = 0; i < n_rects; i++) {
+            const int *rect = &rects[i * 4];
+            xcb_rects[i].x = rect[0];
+            xcb_rects[i].y = draw->height - rect[1] - rect[3];
+            xcb_rects[i].width = rect[2];
+            xcb_rects[i].height = rect[3];
+         }
+
+         region = xcb_generate_id(draw->conn);
+         xcb_xfixes_create_region(draw->conn, region, n_rects, xcb_rects);
+      }
+
       xcb_present_pixmap(draw->conn,
                          draw->drawable,
                          back->pixmap,
                          (uint32_t) draw->send_sbc,
                          0,                                    /* valid */
-                         0,                                    /* update */
+                         region,                               /* update */
                          0,                                    /* x_off */
                          0,                                    /* y_off */
                          None,                                 /* target_crtc */
@@ -1022,6 +1041,9 @@ loader_dri3_swap_buffers_msc(struct loader_dri3_drawable *draw,
                          divisor,
                          remainder, 0, NULL);
       ret = (int64_t) draw->send_sbc;
+
+      if (region)
+         xcb_xfixes_destroy_region(draw->conn, region);
 
       /* Schedule a server-side back-preserving blit if necessary.
        * This happens iff all conditions below are satisfied:

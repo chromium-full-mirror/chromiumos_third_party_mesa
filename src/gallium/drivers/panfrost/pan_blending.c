@@ -26,7 +26,7 @@
 #include "pan_blending.h"
 #include "pan_context.h"
 #include "gallium/auxiliary/util/u_blend.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 
 /*
  * Implements fixed-function blending on Midgard.
@@ -107,26 +107,15 @@ panfrost_can_fixed_blend(enum pipe_format format)
         /* Fixed-function can handle sRGB */
         format = util_format_linear(format);
 
-        /* Decompose the format */
-        const struct util_format_description *desc =
-                util_format_description(format);
-
-        /* Any 8-bit unorm is supported */
-        if (util_format_is_unorm8(desc))
-                return true;
-
-        /* Certain special formats are, too */
-        switch (format) {
-        case PIPE_FORMAT_B5G6R5_UNORM:
-        case PIPE_FORMAT_R10G10B10A2_UNORM:
-        case PIPE_FORMAT_B10G10R10A2_UNORM:
-        case PIPE_FORMAT_R10G10B10X2_UNORM:
-        case PIPE_FORMAT_B10G10R10X2_UNORM:
-        case PIPE_FORMAT_B4G4R4A4_UNORM:
-        case PIPE_FORMAT_B4G4R4X4_UNORM:
-        case PIPE_FORMAT_A4R4_UNORM:
-        case PIPE_FORMAT_R4A4_UNORM:
-        case PIPE_FORMAT_A4B4G4R4_UNORM:
+        switch (panfrost_pipe_format_table[format].hw) {
+        case MALI_RGB565:
+        case MALI_RGB5_A1_UNORM:
+        case MALI_RGB10_A2_UNORM:
+        case MALI_RGBA4_UNORM:
+        case MALI_R8_UNORM:
+        case MALI_RG8_UNORM:
+        case MALI_RGB8_UNORM:
+        case MALI_RGBA8_UNORM:
                 return true;
         default:
                 return false;

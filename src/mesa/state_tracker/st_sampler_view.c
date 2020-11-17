@@ -24,7 +24,7 @@
  */
 
 #include "pipe/p_context.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_inlines.h"
 
 #include "main/context.h"
@@ -226,7 +226,7 @@ st_texture_release_all_sampler_views(struct st_context *st,
    for (unsigned i = 0; i < views->count; ++i) {
       struct st_sampler_view *stsv = &views->views[i];
       if (stsv->view) {
-         if (stsv->st != st) {
+         if (stsv->st && stsv->st != st) {
             /* Transfer this reference to the zombie list.  It will
              * likely be freed when the zombie list is freed.
              */
@@ -499,6 +499,7 @@ get_sampler_view_format(struct st_context *st,
    case PIPE_FORMAT_IYUV:
       format = PIPE_FORMAT_R8_UNORM;
       break;
+   case PIPE_FORMAT_P010:
    case PIPE_FORMAT_P016:
       format = PIPE_FORMAT_R16_UNORM;
       break;

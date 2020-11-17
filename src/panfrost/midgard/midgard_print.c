@@ -21,6 +21,10 @@
  * SOFTWARE.
  */
 
+#include <math.h>
+
+#include "util/bitscan.h"
+#include "util/half_float.h"
 #include "compiler.h"
 #include "helpers.h"
 #include "midgard_ops.h"
@@ -66,6 +70,20 @@ mir_print_mask(unsigned mask)
         }
 }
 
+static void
+mir_print_swizzle(unsigned *swizzle, nir_alu_type T)
+{
+        unsigned comps = mir_components_for_type(T);
+
+        printf(".");
+
+        for (unsigned i = 0; i < comps; ++i) {
+                unsigned C = swizzle[i];
+                assert(C < comps);
+                putchar(components[C]);
+        }
+}
+
 static const char *
 mir_get_unit(unsigned unit)
 {
@@ -90,21 +108,227 @@ mir_get_unit(unsigned unit)
 }
 
 void
+mir_print_constant_component(FILE *fp, const midgard_constants *consts, unsigned c,
+                             midgard_reg_mode reg_mode, bool half,
+                             unsigned mod, midgard_alu_op op)
+{
+        bool is_sint = false, is_uint = false, is_hex = false;
+        const char *opname = alu_opcode_props[op].name;
+
+        /* Add a sentinel name to prevent crashing */
+        if (!opname)
+                opname = "unknown";
+
+        if (opname[0] == 'u') {
+                /* If the opcode starts with a 'u' we are sure we deal with an
+                 * unsigned int operation
+		 */
+                is_uint = true;
+	} else if (opname[0] == 'i') {
+                /* Bit ops are easier to follow when the constant is printed in
+                 * hexadecimal. Other operations starting with a 'i' are
+                 * considered to operate on signed integers. That might not
+                 * be true for all of them, but it's good enough for traces.
+                 */
+                if (op >= midgard_alu_op_iand &&
+                    op <= midgard_alu_op_ibitcount8)
+                        is_hex = true;
+                else
+                        is_sint = true;
+        }
+
+        if (half)
+                reg_mode--;
+
+        switch (reg_mode) {
+        case midgard_reg_mode_64:
+                if (is_sint) {
+                        fprintf(fp, "%"PRIi64, consts->i64[c]);
+                } else if (is_uint) {
+                        fprintf(fp, "%"PRIu64, consts->u64[c]);
+                } else if (is_hex) {
+                        fprintf(fp, "0x%"PRIX64, consts->u64[c]);
+                } else {
+                        double v = consts->f64[c];
+
+                        if (mod & MIDGARD_FLOAT_MOD_ABS) v = fabs(v);
+                        if (mod & MIDGARD_FLOAT_MOD_NEG) v = -v;
+
+                        printf("%g", v);
+                }
+                break;
+
+        case midgard_reg_mode_32:
+                if (is_sint) {
+                        int64_t v;
+
+                        if (half && mod == midgard_int_zero_extend)
+                                v = consts->u32[c];
+                        else if (half && mod == midgard_int_shift)
+                                v = (uint64_t)consts->u32[c] << 32;
+                        else
+                                v = consts->i32[c];
+
+                        fprintf(fp, "%"PRIi64, v);
+                } else if (is_uint || is_hex) {
+                        uint64_t v;
+
+                        if (half && mod == midgard_int_shift)
+                                v = (uint64_t)consts->u32[c] << 32;
+                        else
+                                v = consts->u32[c];
+
+                        fprintf(fp, is_uint ? "%"PRIu64 : "0x%"PRIX64, v);
+                } else {
+                        float v = consts->f32[c];
+
+                        if (mod & MIDGARD_FLOAT_MOD_ABS) v = fabsf(v);
+                        if (mod & MIDGARD_FLOAT_MOD_NEG) v = -v;
+
+                        fprintf(fp, "%g", v);
+                }
+                break;
+
+        case midgard_reg_mode_16:
+                if (is_sint) {
+                        int32_t v;
+
+                        if (half && mod == midgard_int_zero_extend)
+                                v = consts->u16[c];
+                        else if (half && mod == midgard_int_shift)
+                                v = (uint32_t)consts->u16[c] << 16;
+                        else
+                                v = consts->i16[c];
+
+                        fprintf(fp, "%d", v);
+                } else if (is_uint || is_hex) {
+                        uint32_t v;
+
+                        if (half && mod == midgard_int_shift)
+                                v = (uint32_t)consts->u16[c] << 16;
+                        else
+                                v = consts->u16[c];
+
+                        fprintf(fp, is_uint ? "%u" : "0x%X", v);
+                } else {
+                        float v = _mesa_half_to_float(consts->f16[c]);
+
+                        if (mod & MIDGARD_FLOAT_MOD_ABS) v = fabsf(v);
+                        if (mod & MIDGARD_FLOAT_MOD_NEG) v = -v;
+
+                        fprintf(fp, "%g", v);
+                }
+                break;
+
+        case midgard_reg_mode_8:
+                fprintf(fp, "0x%X", consts->u8[c]);
+
+                if (mod)
+                        fprintf(fp, " /* %u */", mod);
+
+                assert(!half); /* No 4-bit */
+
+                break;
+        }
+}
+
+static void
+mir_print_embedded_constant(midgard_instruction *ins, unsigned src_idx)
+{
+        assert(src_idx <= 1);
+
+        unsigned base_size = max_bitsize_for_alu(ins);
+        unsigned sz = nir_alu_type_get_type_size(ins->src_types[src_idx]);
+        bool half = (sz == (base_size >> 1));
+        unsigned mod = mir_pack_mod(ins, src_idx, false);
+        unsigned *swizzle = ins->swizzle[src_idx];
+        midgard_reg_mode reg_mode = reg_mode_for_bitsize(max_bitsize_for_alu(ins));
+        unsigned comp_mask = effective_writemask(ins->op, ins->mask);
+        unsigned num_comp = util_bitcount(comp_mask);
+        unsigned max_comp = mir_components_for_type(ins->dest_type);
+        bool first = true;
+
+        printf("#");
+
+        if (num_comp > 1)
+                printf("vec%d(", num_comp);
+
+        for (unsigned comp = 0; comp < max_comp; comp++) {
+                if (!(comp_mask & (1 << comp)))
+                        continue;
+
+                if (first)
+                        first = false;
+                else
+                        printf(", ");
+
+                mir_print_constant_component(stdout, &ins->constants,
+                                             swizzle[comp], reg_mode,
+                                             half, mod, ins->op);
+        }
+
+        if (num_comp > 1)
+                printf(")");
+}
+
+#define PRINT_SRC(ins, c) \
+        do { mir_print_index(ins->src[c]); \
+             if (ins->src[c] != ~0 && ins->src_types[c] != nir_type_invalid) { \
+                     pan_print_alu_type(ins->src_types[c], stdout); \
+                     mir_print_swizzle(ins->swizzle[c], ins->src_types[c]); \
+             } } while (0)
+
+void
 mir_print_instruction(midgard_instruction *ins)
 {
         printf("\t");
 
-        switch (ins->type) {
-        case TAG_ALU_4: {
-                midgard_alu_op op = ins->alu.op;
-                const char *name = alu_opcode_props[op].name;
-
+        if (midgard_is_branch_unit(ins->unit)) {
                 const char *branch_target_names[] = {
                         "goto", "break", "continue", "discard"
                 };
 
-                if (ins->compact_branch && !ins->prepacked_branch)
-                        name = branch_target_names[ins->branch.target_type];
+                printf("%s.", mir_get_unit(ins->unit));
+                if (ins->branch.target_type == TARGET_DISCARD)
+                        printf("discard.");
+                else if (ins->writeout)
+                        printf("write.");
+                else if (ins->unit == ALU_ENAB_BR_COMPACT &&
+                         !ins->branch.conditional)
+                        printf("uncond.");
+                else
+                        printf("cond.");
+
+                if (!ins->branch.conditional)
+                        printf("always");
+                else if (ins->branch.invert_conditional)
+                        printf("false");
+                else
+                        printf("true");
+
+                if (ins->writeout) {
+                        printf(" (c: ");
+                        PRINT_SRC(ins, 0);
+                        printf(", z: ");
+                        PRINT_SRC(ins, 2);
+                        printf(", s: ");
+                        PRINT_SRC(ins, 3);
+                        printf(")");
+                }
+
+                if (ins->branch.target_type != TARGET_DISCARD)
+                        printf(" %s -> block(%d)\n",
+                               ins->branch.target_type < 4 ?
+                                       branch_target_names[ins->branch.target_type] : "??",
+                               ins->branch.target_block);
+
+                return;
+        }
+
+        switch (ins->type) {
+        case TAG_ALU_4: {
+                midgard_alu_op op = ins->op;
+                const char *name = alu_opcode_props[op].name;
 
                 if (ins->unit)
                         printf("%s.", mir_get_unit(ins->unit));
@@ -114,7 +338,7 @@ mir_print_instruction(midgard_instruction *ins)
         }
 
         case TAG_LOAD_STORE_4: {
-                midgard_load_store_op op = ins->load_store.op;
+                midgard_load_store_op op = ins->op;
                 const char *name = load_store_opcode_props[op].name;
 
                 assert(name);
@@ -124,6 +348,13 @@ mir_print_instruction(midgard_instruction *ins)
 
         case TAG_TEXTURE_4: {
                 printf("texture");
+
+                if (ins->helper_terminate)
+                        printf(".terminate");
+
+                if (ins->helper_execute)
+                        printf(".execute");
+
                 break;
         }
 
@@ -131,36 +362,38 @@ mir_print_instruction(midgard_instruction *ins)
                 assert(0);
         }
 
-        if (ins->invert || (ins->compact_branch && !ins->prepacked_branch && ins->branch.invert_conditional))
+        if (ins->compact_branch && ins->branch.invert_conditional)
                 printf(".not");
 
         printf(" ");
         mir_print_index(ins->dest);
 
-        if (ins->mask != 0xF)
+        if (ins->dest != ~0) {
+                pan_print_alu_type(ins->dest_type, stdout);
                 mir_print_mask(ins->mask);
+        }
 
         printf(", ");
 
-        mir_print_index(ins->src[0]);
+        unsigned r_constant = SSA_FIXED_REGISTER(REGISTER_CONSTANT);
+
+        if (ins->src[0] == r_constant)
+                mir_print_embedded_constant(ins, 0);
+        else
+                PRINT_SRC(ins, 0);
+
         printf(", ");
 
         if (ins->has_inline_constant)
                 printf("#%d", ins->inline_constant);
+        else if (ins->src[1] == r_constant)
+                mir_print_embedded_constant(ins, 1);
         else
-                mir_print_index(ins->src[1]);
+                PRINT_SRC(ins, 1);
 
-        printf(", ");
-        mir_print_index(ins->src[2]);
-
-        if (ins->has_constants) {
-                uint32_t *uc = ins->constants;
-                float *fc = (float *) uc;
-
-                if (midgard_is_integer_op(ins->alu.op))
-                        printf(" <0x%X, 0x%X, 0x%X, 0x%x>", uc[0], uc[1], uc[2], uc[3]);
-                else
-                        printf(" <%f, %f, %f, %f>", fc[0], fc[1], fc[2], fc[3]);
+        for (unsigned c = 2; c <= 3; ++c) {
+                printf(", ");
+                PRINT_SRC(ins, c);
         }
 
         if (ins->no_spill)
@@ -174,9 +407,9 @@ mir_print_instruction(midgard_instruction *ins)
 void
 mir_print_block(midgard_block *block)
 {
-        printf("block%u: {\n", block->source_id);
+        printf("block%u: {\n", block->base.name);
 
-        if (block->is_scheduled) {
+        if (block->scheduled) {
                 mir_foreach_bundle_in_block(block, bundle) {
                         for (unsigned i = 0; i < bundle->instruction_count; ++i)
                                 mir_print_instruction(bundle->instructions[i]);
@@ -191,17 +424,15 @@ mir_print_block(midgard_block *block)
 
         printf("}");
 
-        if (block->nr_successors) {
+        if (block->base.successors[0]) {
                 printf(" -> ");
-                for (unsigned i = 0; i < block->nr_successors; ++i) {
-                        printf("block%u%s", block->successors[i]->source_id,
-                                        (i + 1) != block->nr_successors ? ", " : "");
-                }
+                pan_foreach_successor((&block->base), succ)
+                        printf(" block%u ", succ->name);
         }
 
         printf(" from { ");
         mir_foreach_predecessor(block, pred)
-                printf("block%u ", pred->source_id);
+                printf("block%u ", pred->base.name);
         printf("}");
 
         printf("\n\n");
@@ -211,6 +442,6 @@ void
 mir_print_shader(compiler_context *ctx)
 {
         mir_foreach_block(ctx, block) {
-                mir_print_block(block);
+                mir_print_block((midgard_block *) block);
         }
 }

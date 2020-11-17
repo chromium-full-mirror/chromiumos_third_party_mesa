@@ -33,6 +33,7 @@
 #define BRW_EU_DEFINES_H
 
 #include <stdint.h>
+#include <stdlib.h>
 #include "util/macros.h"
 
 /* The following hunk, up-to "Execution Unit" is used by both the
@@ -446,19 +447,29 @@ enum opcode {
     */
    SHADER_OPCODE_BYTE_SCATTERED_READ_LOGICAL,
    SHADER_OPCODE_BYTE_SCATTERED_WRITE_LOGICAL,
+   SHADER_OPCODE_DWORD_SCATTERED_READ_LOGICAL,
+   SHADER_OPCODE_DWORD_SCATTERED_WRITE_LOGICAL,
 
    /**
     * Memory fence messages.
     *
     * Source 0: Must be register g0, used as header.
-    * Source 1: Immediate bool to indicate whether or not we need to stall
-    *           until memory transactions prior to the fence are completed.
+    * Source 1: Immediate bool to indicate whether control is returned to the
+    *           thread only after the fence has been honored.
     * Source 2: Immediate byte indicating which memory to fence.  Zero means
     *           global memory; GEN7_BTI_SLM means SLM (for Gen11+ only).
     *
     * Vec4 backend only uses Source 0.
     */
    SHADER_OPCODE_MEMORY_FENCE,
+
+   /**
+    * Scheduling-only fence.
+    *
+    * Sources can be used to force a stall until the registers in those are
+    * available.  This might generate MOVs or SYNC_NOPs (Gen12+).
+    */
+   FS_OPCODE_SCHEDULING_FENCE,
 
    SHADER_OPCODE_GEN4_SCRATCH_READ,
    SHADER_OPCODE_GEN4_SCRATCH_WRITE,
@@ -482,6 +493,12 @@ enum opcode {
     * BROADCAST pseudo-opcode.
     */
    SHADER_OPCODE_FIND_LIVE_CHANNEL,
+
+   /**
+    * Return the current execution mask in the specified flag subregister.
+    * Can be CSE'ed more easily than a plain MOV from the ce0 ARF register.
+    */
+   FS_OPCODE_LOAD_LIVE_CHANNELS,
 
    /**
     * Pick the channel from its first source register given by the index
@@ -735,6 +752,12 @@ enum opcode {
     */
    SHADER_OPCODE_MULH,
 
+   /** Signed subtraction with saturation. */
+   SHADER_OPCODE_ISUB_SAT,
+
+   /** Unsigned subtraction with saturation. */
+   SHADER_OPCODE_USUB_SAT,
+
    /**
     * A MOV that uses VxH indirect addressing.
     *
@@ -878,6 +901,11 @@ enum surface_logical_srcs {
    SURFACE_LOGICAL_SRC_IMM_DIMS,
    /** Per-opcode immediate argument.  For atomics, this is the atomic opcode */
    SURFACE_LOGICAL_SRC_IMM_ARG,
+   /**
+    * Some instructions with side-effects should not be predicated on
+    * sample mask, e.g. lowered stores to scratch.
+    */
+   SURFACE_LOGICAL_SRC_ALLOW_SAMPLE_MASK,
 
    SURFACE_LOGICAL_NUM_SRCS
 };
@@ -1396,12 +1424,37 @@ enum brw_message_target {
 /* Dataport special binding table indices: */
 #define BRW_BTI_STATELESS                255
 #define GEN7_BTI_SLM                     254
-/* Note that on Gen8+ BTI 255 was redefined to be IA-coherent according to the
- * hardware spec, however because the DRM sets bit 4 of HDC_CHICKEN0 on BDW,
- * CHV and at least some pre-production steppings of SKL due to
- * WaForceEnableNonCoherent, HDC memory access may have been overridden by the
- * kernel to be non-coherent (matching the behavior of the same BTI on
- * pre-Gen8 hardware) and BTI 255 may actually be an alias for BTI 253.
+
+#define HSW_BTI_STATELESS_LOCALLY_COHERENT 255
+#define HSW_BTI_STATELESS_NON_COHERENT 253
+#define HSW_BTI_STATELESS_GLOBALLY_COHERENT 252
+#define HSW_BTI_STATELESS_LLC_COHERENT 251
+#define HSW_BTI_STATELESS_L3_UNCACHED 250
+
+/* The hardware docs are a bit contradictory here.  On Haswell, where they
+ * first added cache ability control, there were 5 different cache modes (see
+ * HSW_BTI_STATELESS_* above).  On Broadwell, they reduced to two:
+ *
+ *  - IA-Coherent (BTI=255): Coherent within Gen and coherent within the
+ *    entire IA cache memory hierarchy.
+ *
+ *  - Non-Coherent (BTI=253): Coherent within Gen, same cache type.
+ *
+ * Information about stateless cache coherency can be found in the "A32
+ * Stateless" section of the "3D Media GPGPU" volume of the PRM for each
+ * hardware generation.
+ *
+ * Unfortunately, the docs for MDC_STATELESS appear to have been copied and
+ * pasted from Haswell and give the Haswell definitions for the BTI values of
+ * 255 and 253 including a warning about accessing 253 surfaces from multiple
+ * threads.  This seems to be a copy+paste error and the definitions from the
+ * "A32 Stateless" section should be trusted instead.
+ *
+ * Note that because the DRM sets bit 4 of HDC_CHICKEN0 on BDW, CHV and at
+ * least some pre-production steppings of SKL due to WaForceEnableNonCoherent,
+ * HDC memory access may have been overridden by the kernel to be non-coherent
+ * (matching the behavior of the same BTI on pre-Gen8 hardware) and BTI 255
+ * may actually be an alias for BTI 253.
  */
 #define GEN8_BTI_STATELESS_IA_COHERENT   255
 #define GEN8_BTI_STATELESS_NON_COHERENT  253

@@ -514,7 +514,9 @@ static const char *compute_shader_yuv_bob_y =
 
          /* Scale */
          "DIV TEMP[2], TEMP[2], CONST[3].zwzw\n"
+         "DIV TEMP[2], TEMP[2], IMM[1].xyxy\n"
          "DIV TEMP[3], TEMP[3], CONST[3].zwzw\n"
+         "DIV TEMP[3], TEMP[3], IMM[1].xyxy\n"
 
          /* Fetch texels */
          "TEX_LZ TEMP[4].x, TEMP[2], SAMP[0], RECT\n"
@@ -564,7 +566,9 @@ static const char *compute_shader_yuv_bob_uv =
 
          /* Scale */
          "DIV TEMP[2], TEMP[2], CONST[3].zwzw\n"
+         "DIV TEMP[2], TEMP[2], IMM[1].xyxy\n"
          "DIV TEMP[3], TEMP[3], CONST[3].zwzw\n"
+         "DIV TEMP[3], TEMP[3], IMM[1].xyxy\n"
 
          /* Fetch texels */
          "TEX_LZ TEMP[4].x, TEMP[2], SAMP[0], RECT\n"
@@ -588,7 +592,7 @@ cs_launch(struct vl_compositor *c,
    struct pipe_context *ctx = c->pipe;
 
    /* Bind the image */
-   struct pipe_image_view image = {};
+   struct pipe_image_view image = {0};
    image.resource = c->fb_state.cbufs[0]->texture;
    image.shader_access = image.access = PIPE_IMAGE_ACCESS_READ_WRITE;
    image.format = c->fb_state.cbufs[0]->texture->format;
@@ -599,7 +603,7 @@ cs_launch(struct vl_compositor *c,
    ctx->bind_compute_state(ctx, cs);
 
    /* Dispatch compute */
-   struct pipe_grid_info info = {};
+   struct pipe_grid_info info = {0};
    info.block[0] = 8;
    info.block[1] = 8;
    info.block[2] = 1;
@@ -708,7 +712,10 @@ draw_layers(struct vl_compositor       *c,
          drawn.area = calc_drawn_area(s, layer);
          drawn.scale_x = layer->viewport.scale[0] /
                   (float)layer->sampler_views[0]->texture->width0;
-         drawn.scale_y = drawn.scale_x;
+         drawn.scale_y = layer->viewport.scale[1] /
+                  ((float)layer->sampler_views[0]->texture->height0 * 
+                   (s->interlaced ? 2.0 : 1.0));
+
          drawn.translate_x = (int)layer->viewport.translate[0];
          drawn.translate_y = (int)layer->viewport.translate[1];
          drawn.sampler0_w = (float)layer->sampler_views[0]->texture->width0;
@@ -754,7 +761,7 @@ vl_compositor_cs_create_shader(struct vl_compositor *c,
       return NULL;
    }
 
-   struct pipe_compute_state state = {};
+   struct pipe_compute_state state = {0};
    state.ir_type = PIPE_SHADER_IR_TGSI;
    state.prog = tokens;
 

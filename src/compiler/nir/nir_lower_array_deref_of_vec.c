@@ -80,6 +80,7 @@ nir_lower_array_deref_of_vec_impl(nir_function_impl *impl,
              intrin->intrinsic != nir_intrinsic_interp_deref_at_centroid &&
              intrin->intrinsic != nir_intrinsic_interp_deref_at_sample &&
              intrin->intrinsic != nir_intrinsic_interp_deref_at_offset &&
+             intrin->intrinsic != nir_intrinsic_interp_deref_at_vertex &&
              intrin->intrinsic != nir_intrinsic_store_deref)
             continue;
 
@@ -161,6 +162,8 @@ nir_lower_array_deref_of_vec_impl(nir_function_impl *impl,
    if (progress) {
       nir_metadata_preserve(impl, nir_metadata_block_index |
                                   nir_metadata_dominance);
+   } else {
+      nir_metadata_preserve(impl, nir_metadata_all);
    }
 
    return progress;

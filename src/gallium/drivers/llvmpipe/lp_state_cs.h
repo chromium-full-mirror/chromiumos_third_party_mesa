@@ -42,9 +42,30 @@ struct lp_compute_shader_variant_key
    unsigned nr_samplers:8;
    unsigned nr_sampler_views:8;
    unsigned nr_images:8;
-   struct lp_image_static_state image_state[PIPE_MAX_SHADER_IMAGES];
-   struct lp_sampler_static_state state[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+   /* followed by variable number of images */
+   struct lp_sampler_static_state samplers[1];
 };
+
+#define LP_CS_MAX_VARIANT_KEY_SIZE                                      \
+   (sizeof(struct lp_compute_shader_variant_key) +                     \
+    PIPE_MAX_SHADER_SAMPLER_VIEWS * sizeof(struct lp_sampler_static_state) +\
+    PIPE_MAX_SHADER_IMAGES * sizeof(struct lp_image_static_state))
+
+static inline size_t
+lp_cs_variant_key_size(unsigned nr_samplers, unsigned nr_images)
+{
+   unsigned samplers = nr_samplers > 1 ? (nr_samplers - 1) : 0;
+   return (sizeof(struct lp_compute_shader_variant_key) +
+           samplers * sizeof(struct lp_sampler_static_state) +
+           nr_images * sizeof(struct lp_image_static_state));
+}
+
+static inline struct lp_image_static_state *
+lp_cs_variant_key_images(const struct lp_compute_shader_variant_key *key)
+{
+   return (struct lp_image_static_state *)
+      &key->samplers[key->nr_samplers];
+}
 
 struct lp_cs_variant_list_item
 {
@@ -54,8 +75,6 @@ struct lp_cs_variant_list_item
 
 struct lp_compute_shader_variant
 {
-   struct lp_compute_shader_variant_key key;
-
    struct gallivm_state *gallivm;
 
    LLVMTypeRef jit_cs_context_ptr_type;
@@ -73,6 +92,9 @@ struct lp_compute_shader_variant
 
    /* For debugging/profiling purposes */
    unsigned no;
+
+   /* key is variable-sized, must be last */
+   struct lp_compute_shader_variant_key key;
 };
 
 struct lp_compute_shader {
@@ -89,6 +111,9 @@ struct lp_compute_shader {
    unsigned no;
    unsigned variants_created;
    unsigned variants_cached;
+
+   int max_global_buffers;
+   struct pipe_resource **global_buffers;
 };
 
 struct lp_cs_exec {
@@ -120,6 +145,8 @@ struct lp_cs_context {
    struct {
       struct pipe_image_view current;
    } images[LP_MAX_TGSI_SHADER_IMAGES];
+
+   void *input;
 };
 
 struct lp_cs_context *lp_csctx_create(struct pipe_context *pipe);

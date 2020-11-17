@@ -23,19 +23,13 @@
 #define __MDG_HELPERS_H
 
 #include "util/macros.h"
+#include <stdio.h>
 #include <string.h>
 
 #define OP_IS_LOAD_VARY_F(op) (\
                 op == midgard_op_ld_vary_16 || \
                 op == midgard_op_ld_vary_32 \
         )
-
-#define OP_IS_STORE_VARY(op) (\
-		op == midgard_op_st_vary_16 || \
-		op == midgard_op_st_vary_32 || \
-                op == midgard_op_st_vary_32u || \
-		op == midgard_op_st_vary_32i \
-	)
 
 #define OP_IS_PROJECTION(op) ( \
                 op == midgard_op_ldst_perspective_division_z || \
@@ -76,6 +70,19 @@
                 op == TEXTURE_OP_DFDY \
         )
 
+#define OP_IS_UNSIGNED_CMP(op) ( \
+                op == midgard_alu_op_ult || \
+                op == midgard_alu_op_ule \
+        )
+
+#define OP_IS_INTEGER_CMP(op) ( \
+                op == midgard_alu_op_ieq || \
+                op == midgard_alu_op_ine || \
+                op == midgard_alu_op_ilt || \
+                op == midgard_alu_op_ile || \
+                OP_IS_UNSIGNED_CMP(op) \
+        )
+
 /* ALU control words are single bit fields with a lot of space */
 
 #define ALU_ENAB_VEC_MUL  (1 << 17)
@@ -113,6 +120,13 @@
 /* Does the op convert types between int- and float- space (i2f/f2u/etc) */
 #define OP_TYPE_CONVERT (1 << 4)
 
+/* Is this opcode the first in a f2x (rte, rtz, rtn, rtp) sequence? If so,
+ * takes a roundmode argument in the IR. This has the semantic of rounding the
+ * source (it's all fused in), which is why it doesn't necessarily make sense
+ * for i2f (though folding there might be necessary for OpenCL reasons). Comes
+ * up in format conversion, i.e. f2u_rte */
+#define MIDGARD_ROUNDS (1 << 5)
+
 /* Vector-independant shorthands for the above; these numbers are arbitrary and
  * not from the ISA. Convert to the above with unit_enum_to_midgard */
 
@@ -120,38 +134,7 @@
 #define UNIT_ADD 1
 #define UNIT_LUT 2
 
-/* 4-bit type tags */
-
-#define TAG_TEXTURE_4_VTX 0x2
-#define TAG_TEXTURE_4 0x3
-#define TAG_LOAD_STORE_4 0x5
-#define TAG_ALU_4 0x8
-#define TAG_ALU_8 0x9
-#define TAG_ALU_12 0xA
-#define TAG_ALU_16 0xB
-
-static inline int
-quadword_size(int tag)
-{
-        switch (tag) {
-        case TAG_ALU_4:
-        case TAG_LOAD_STORE_4:
-        case TAG_TEXTURE_4:
-        case TAG_TEXTURE_4_VTX:
-                return 1;
-        case TAG_ALU_8:
-                return 2;
-        case TAG_ALU_12:
-                return 3;
-        case TAG_ALU_16:
-                return 4;
-        default:
-                unreachable("Unknown tag");
-        }
-}
-
-#define IS_ALU(tag) (tag == TAG_ALU_4 || tag == TAG_ALU_8 ||  \
-		     tag == TAG_ALU_12 || tag == TAG_ALU_16)
+#define IS_ALU(tag) (tag >= TAG_ALU_4)
 
 /* Special register aliases */
 
@@ -160,6 +143,9 @@ quadword_size(int tag)
 /* Uniforms are begin at (REGISTER_UNIFORMS - uniform_count) */
 #define REGISTER_UNIFORMS 24
 
+/* r24 and r25 are special registers that only exist during the pipeline,
+ * by using them when we don't care about the register we skip a roundtrip
+ * to the register file. */
 #define REGISTER_UNUSED 24
 #define REGISTER_CONSTANT 26
 #define REGISTER_LDST_BASE 26
@@ -168,47 +154,28 @@ quadword_size(int tag)
 
 /* SSA helper aliases to mimic the registers. */
 
-#define SSA_UNUSED ~0
 #define SSA_FIXED_SHIFT 24
 #define SSA_FIXED_REGISTER(reg) (((1 + (reg)) << SSA_FIXED_SHIFT) | 1)
 #define SSA_REG_FROM_FIXED(reg) ((((reg) & ~1) >> SSA_FIXED_SHIFT) - 1)
 #define SSA_FIXED_MINIMUM SSA_FIXED_REGISTER(0)
 
-/* Swizzle support */
-
-#define SWIZZLE(A, B, C, D) (((D) << 6) | ((C) << 4) | ((B) << 2) | ((A) << 0))
-#define SWIZZLE_FROM_ARRAY(r) SWIZZLE(r[0], r[1], r[2], r[3])
 #define COMPONENT_X 0x0
 #define COMPONENT_Y 0x1
 #define COMPONENT_Z 0x2
 #define COMPONENT_W 0x3
 
-#define SWIZZLE_XXXX SWIZZLE(COMPONENT_X, COMPONENT_X, COMPONENT_X, COMPONENT_X)
-#define SWIZZLE_XYXX SWIZZLE(COMPONENT_X, COMPONENT_Y, COMPONENT_X, COMPONENT_X)
-#define SWIZZLE_XYZX SWIZZLE(COMPONENT_X, COMPONENT_Y, COMPONENT_Z, COMPONENT_X)
-#define SWIZZLE_XYZW SWIZZLE(COMPONENT_X, COMPONENT_Y, COMPONENT_Z, COMPONENT_W)
-#define SWIZZLE_XYXZ SWIZZLE(COMPONENT_X, COMPONENT_Y, COMPONENT_X, COMPONENT_Z)
-#define SWIZZLE_XYZZ SWIZZLE(COMPONENT_X, COMPONENT_Y, COMPONENT_Z, COMPONENT_Z)
-#define SWIZZLE_XXXY SWIZZLE(COMPONENT_X, COMPONENT_X, COMPONENT_X, COMPONENT_Y)
-#define SWIZZLE_ZZZW SWIZZLE(COMPONENT_Z, COMPONENT_Z, COMPONENT_Z, COMPONENT_W)
-#define SWIZZLE_ZWWW SWIZZLE(COMPONENT_Z, COMPONENT_W, COMPONENT_W, COMPONENT_W)
-#define SWIZZLE_WWWW SWIZZLE(COMPONENT_W, COMPONENT_W, COMPONENT_W, COMPONENT_W)
+#define SWIZZLE_IDENTITY { \
+        { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }, \
+        { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }, \
+        { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }, \
+        { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } \
+}
 
-static inline unsigned
-swizzle_of(unsigned comp)
-{
-        switch (comp) {
-        case 1:
-                return SWIZZLE_XXXX;
-        case 2:
-                return SWIZZLE_XYXX;
-        case 3:
-                return SWIZZLE_XYZX;
-        case 4:
-                return SWIZZLE_XYZW;
-        default:
-                unreachable("Invalid component count");
-        }
+#define SWIZZLE_IDENTITY_4 { \
+        { 0, 1, 2, 3, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0,  0 }, \
+        { 0, 1, 2, 3, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0,  0 }, \
+        { 0, 1, 2, 3, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0,  0 }, \
+        { 0, 1, 2, 3, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0,  0 }, \
 }
 
 static inline unsigned
@@ -216,7 +183,6 @@ mask_of(unsigned nr_comp)
 {
         return (1 << nr_comp) - 1;
 }
-
 
 /* See ISA notes */
 
@@ -256,6 +222,11 @@ struct mir_ldst_op_props {
         unsigned props;
 };
 
+struct mir_tag_props {
+        const char *name;
+        unsigned size;
+};
+
 /* Lower 2-bits are a midgard_reg_mode */
 #define GET_LDST_SIZE(c) (c & 3)
 
@@ -269,20 +240,25 @@ struct mir_ldst_op_props {
  * its mask is 0 */
 #define LDST_SIDE_FX (1 << 4)
 
+/* Computes an address according to indirects/zext/shift/etc */
+#define LDST_ADDRESS (1 << 5)
+
 /* This file is common, so don't define the tables themselves. #include
  * midgard_op.h if you need that, or edit midgard_ops.c directly */
 
-/* Duplicate bits to convert a 4-bit writemask to duplicated 8-bit format,
- * which is used for 32-bit vector units */
+/* Duplicate bits to convert a per-component to duplicated 8-bit format,
+ * which is used for vector units */
 
 static inline unsigned
-expand_writemask_32(unsigned mask)
+expand_writemask(unsigned mask, unsigned log2_channels)
 {
         unsigned o = 0;
+        unsigned factor = 8 >> log2_channels;
+        unsigned expanded = (1 << factor) - 1;
 
-        for (int i = 0; i < 4; ++i)
+        for (unsigned i = 0; i < (1 << log2_channels); ++i)
                 if (mask & (1 << i))
-                        o |= (3 << (2 * i));
+                        o |= (expanded << (factor * i));
 
         return o;
 }
@@ -305,44 +281,26 @@ vector_alu_from_unsigned(unsigned u)
         return s;
 }
 
-/* Composes two swizzles */
-static inline unsigned
-pan_compose_swizzle(unsigned left, unsigned right)
+static inline void
+mir_compose_swizzle(unsigned *left, unsigned *right, unsigned *final_out)
 {
-        unsigned out = 0;
+        unsigned out[16];
 
-        for (unsigned c = 0; c < 4; ++c) {
-                unsigned s = (left >> (2*c)) & 0x3;
-                unsigned q = (right >> (2*s)) & 0x3;
+        for (unsigned c = 0; c < 16; ++c)
+                out[c] = right[left[c]];
 
-                out |= (q << (2*c));
-        }
-
-        return out;
-}
-
-/* Applies a swizzle to an ALU source */
-
-static inline unsigned
-vector_alu_apply_swizzle(unsigned src, unsigned swizzle)
-{
-        midgard_vector_alu_src s =
-                vector_alu_from_unsigned(src);
-
-        s.swizzle = pan_compose_swizzle(s.swizzle, swizzle);
-
-        return vector_alu_srco_unsigned(s);
+        memcpy(final_out, out, sizeof(out));
 }
 
 /* Checks for an xyzw.. swizzle, given a mask */
 
 static inline bool
-mir_is_simple_swizzle(unsigned swizzle, unsigned mask)
+mir_is_simple_swizzle(unsigned *swizzle, unsigned mask)
 {
         for (unsigned i = 0; i < 16; ++i) {
                 if (!(mask & (1 << i))) continue;
 
-                if (((swizzle >> (2 * i)) & 0x3) != i)
+                if (swizzle[i] != i)
                         return false;
         }
 
@@ -367,52 +325,19 @@ midgard_ldst_reg(unsigned reg, unsigned component)
         return packed;
 }
 
-/* Unpacks a load/store argument */
-
-static inline midgard_ldst_register_select
-midgard_ldst_select(uint8_t u)
+static inline bool
+midgard_is_branch_unit(unsigned unit)
 {
-        midgard_ldst_register_select sel;
-        memcpy(&sel, &u, sizeof(u));
-        return sel;
+        return (unit == ALU_ENAB_BRANCH) || (unit == ALU_ENAB_BR_COMPACT);
 }
 
-static inline uint8_t
-midgard_ldst_pack(midgard_ldst_register_select sel)
-{
-        uint8_t packed;
-        memcpy(&packed, &sel, sizeof(packed));
-        return packed;
-}
+/* Packs ALU mod argument */
+struct midgard_instruction;
+unsigned mir_pack_mod(struct midgard_instruction *ins, unsigned i, bool scalar);
 
-/* Gets a swizzle like yyyy and returns y */
-
-static inline unsigned
-swizzle_to_component(unsigned swizzle)
-{
-        unsigned c = swizzle & 3;
-        assert(((swizzle >> 2) & 3) == c);
-        assert(((swizzle >> 4) & 3) == c);
-        assert(((swizzle >> 6) & 3) == c);
-        return  c;
-}
-
-
-static inline unsigned
-component_to_swizzle(unsigned c, unsigned count)
-{
-        switch (count) {
-        case 1:
-                return SWIZZLE(c, c, c, c);
-        case 2:
-                return SWIZZLE(c, c + 1, c + 1, c + 1);
-        case 3:
-                return SWIZZLE(c, c + 1, c + 2, c + 2);
-        case 4:
-                return SWIZZLE(c, c + 1, c + 2, c + 3);
-        default:
-                unreachable("Invalid component count");
-        }
-}
+void
+mir_print_constant_component(FILE *fp, const midgard_constants *consts,
+                             unsigned c, midgard_reg_mode reg_mode, bool half,
+                             unsigned mod, midgard_alu_op op);
 
 #endif

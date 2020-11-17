@@ -55,8 +55,8 @@ struct panfrost_blend_shader {
 /* A blend shader descriptor ready for actual use */
 
 struct panfrost_blend_shader_final {
-        /* The compiled shader in GPU memory, possibly patched */
-        struct panfrost_bo *bo;
+        /* GPU address where we're compiled to */
+        uint64_t gpu;
 
         /* First instruction tag (for tagging the pointer) */
         unsigned first_tag;
@@ -99,9 +99,11 @@ struct panfrost_blend_final {
         /* Set for a shader, clear for an equation */
         bool is_shader;
 
-        /* Set if the destination needs to be loaded from the tilebuffer,
-         * basically (for an equation) or if a shader is present */
+        /* Clear if the destination needs to be loaded from the tilebuffer */
         bool no_blending;
+
+        /* Set if the colour mask is 0x0 (nothing is written) */
+        bool no_colour;
 
         union {
                 struct panfrost_blend_shader_final shader;
@@ -113,6 +115,13 @@ void
 panfrost_blend_context_init(struct pipe_context *pipe);
 
 struct panfrost_blend_final
-panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rt);
+panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rt, struct panfrost_bo **bo, unsigned *shader_offset);
+
+struct panfrost_blend_shader *
+panfrost_get_blend_shader(
+        struct panfrost_context *ctx,
+        struct panfrost_blend_state *blend,
+        enum pipe_format fmt,
+        unsigned rt);
 
 #endif

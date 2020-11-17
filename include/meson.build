@@ -18,11 +18,18 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-inc_include = include_directories('.')
+inc_include = [include_directories('.')]
 inc_d3d9 = include_directories('D3D9')
 inc_haikugl = include_directories('HaikuGL')
 
-if not glvnd_has_headers_and_pc_files
+# Most things assume that Android headers are in the default include
+# path when compiling for Android so add the stub headers to
+# inc_include when using the stub.
+if with_android_stub
+  inc_include += [include_directories('android_stub')]
+endif
+
+if not with_glvnd
   if with_gles1 or with_gles2 or with_opengl or with_egl
     install_headers('KHR/khrplatform.h', subdir : 'KHR')
   endif
@@ -127,6 +134,7 @@ if with_gallium_opencl and not with_opencl_icd
     'CL/cl_ext_intel.h',
     'CL/cl_gl.h',
     'CL/cl_gl_ext.h',
+    'CL/cl_icd.h',
     'CL/cl_platform.h',
     'CL/cl_va_api_media_sharing_intel.h',
     'CL/cl_version.h',

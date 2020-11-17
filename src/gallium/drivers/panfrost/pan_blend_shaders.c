@@ -28,6 +28,7 @@
 #include "midgard/midgard_compile.h"
 #include "compiler/nir/nir_builder.h"
 #include "nir/nir_lower_blend.h"
+#include "panfrost/util/pan_lower_framebuffer.h"
 #include "gallium/auxiliary/util/u_blend.h"
 #include "util/u_memory.h"
 
@@ -48,29 +49,17 @@
  *
  * As is typical with Midgard, shader binaries must be accompanied by
  * information about the first tag (ORed with the bottom nibble of address,
- * like usual) and work registers. Work register count is specified in the
- * blend descriptor, as well as in the coresponding fragment shader's work
- * count. This suggests that blend shader invocation is tied to fragment shader
+ * like usual) and work registers. Work register count is assumed to be less
+ * than or equal to the coresponding fragment shader's work count. This
+ * suggests that blend shader invocation is tied to fragment shader
  * execution.
  *
- * ---
- *
- * As for blend shaders, they use the standard ISA.
- *
- * The source pixel colour, including alpha, is preloaded into r0 as a vec4 of
- * float32.
- *
- * The destination pixel colour must be loaded explicitly via load/store ops.
- * TODO: Investigate.
- *
- * They use fragment shader writeout; however, instead of writing a vec4 of
- * float32 for RGBA encoding, we writeout a vec4 of uint8, using 8-bit imov
- * instead of 32-bit fmov. The net result is that r0 encodes a single uint32
- * containing all four channels of the color.  Accordingly, the blend shader
- * epilogue has to scale all four channels by 255 and then type convert to a
- * uint8.
- *
- * ---
+ * The shaders themselves use the standard ISA. The source pixel colour,
+ * including alpha, is preloaded into r0 as a vec4 of float32. The destination
+ * pixel colour must be loaded explicitly via load/store ops, possibly
+ * performing conversions in software. The blended colour must be stored with a
+ * fragment writeout in the correct framebuffer format, either in software or
+ * via conversion opcodes on the load/store pipe.
  *
  * Blend shaders hardcode constants. Naively, this requires recompilation each
  * time the blend color changes, which is a performance risk. Accordingly, we
@@ -85,52 +74,69 @@
  */
 
 static nir_lower_blend_options
-nir_make_options(const struct pipe_blend_state *blend, unsigned nr_cbufs)
+nir_make_options(const struct pipe_blend_state *blend, unsigned i)
 {
-        nir_lower_blend_options options;
+        nir_lower_blend_options options = { 0 };
 
-        for (unsigned i = 0; i < nr_cbufs; ++i) {
-                /* If blend is disabled, we just use replace mode */
-
-                nir_lower_blend_channel rgb = {
-                        .func = BLEND_FUNC_ADD,
-                        .src_factor = BLEND_FACTOR_ZERO,
-                        .invert_src_factor = true,
-                        .dst_factor = BLEND_FACTOR_ZERO,
-                        .invert_dst_factor = false
-                };
-
-                nir_lower_blend_channel alpha = rgb;
-
-                if (blend->rt[i].blend_enable) {
-                        rgb.func = util_blend_func_to_shader(blend->rt[i].rgb_func);
-                        rgb.src_factor = util_blend_factor_to_shader(blend->rt[i].rgb_src_factor);
-                        rgb.dst_factor = util_blend_factor_to_shader(blend->rt[i].rgb_dst_factor);
-                        rgb.invert_src_factor = util_blend_factor_is_inverted(blend->rt[i].rgb_src_factor);
-                        rgb.invert_dst_factor = util_blend_factor_is_inverted(blend->rt[i].rgb_dst_factor);
-
-                        alpha.func = util_blend_func_to_shader(blend->rt[i].alpha_func);
-                        alpha.src_factor = util_blend_factor_to_shader(blend->rt[i].alpha_src_factor);
-                        alpha.dst_factor = util_blend_factor_to_shader(blend->rt[i].alpha_dst_factor);
-                        alpha.invert_src_factor = util_blend_factor_is_inverted(blend->rt[i].alpha_src_factor);
-                        alpha.invert_dst_factor = util_blend_factor_is_inverted(blend->rt[i].alpha_dst_factor);
-                }
-
-                options.rt[i].rgb = rgb;
-                options.rt[i].alpha = alpha;
-
-                options.rt[i].colormask = blend->rt[i].colormask;
+        if (blend->logicop_enable) {
+            options.logicop_enable = true;
+            options.logicop_func = blend->logicop_func;
+            return options;
         }
 
+        options.logicop_enable = false;
+
+        if (!blend->independent_blend_enable)
+                i = 0;
+
+        /* If blend is disabled, we just use replace mode */
+
+        nir_lower_blend_channel rgb = {
+                .func = BLEND_FUNC_ADD,
+                .src_factor = BLEND_FACTOR_ZERO,
+                .invert_src_factor = true,
+                .dst_factor = BLEND_FACTOR_ZERO,
+                .invert_dst_factor = false
+        };
+
+        nir_lower_blend_channel alpha = rgb;
+
+        if (blend->rt[i].blend_enable) {
+                rgb.func = util_blend_func_to_shader(blend->rt[i].rgb_func);
+                rgb.src_factor = util_blend_factor_to_shader(blend->rt[i].rgb_src_factor);
+                rgb.dst_factor = util_blend_factor_to_shader(blend->rt[i].rgb_dst_factor);
+                rgb.invert_src_factor = util_blend_factor_is_inverted(blend->rt[i].rgb_src_factor);
+                rgb.invert_dst_factor = util_blend_factor_is_inverted(blend->rt[i].rgb_dst_factor);
+
+                alpha.func = util_blend_func_to_shader(blend->rt[i].alpha_func);
+                alpha.src_factor = util_blend_factor_to_shader(blend->rt[i].alpha_src_factor);
+                alpha.dst_factor = util_blend_factor_to_shader(blend->rt[i].alpha_dst_factor);
+                alpha.invert_src_factor = util_blend_factor_is_inverted(blend->rt[i].alpha_src_factor);
+                alpha.invert_dst_factor = util_blend_factor_is_inverted(blend->rt[i].alpha_dst_factor);
+        }
+
+        options.rgb = rgb;
+        options.alpha = alpha;
+
+        options.colormask = blend->rt[i].colormask;
+
         return options;
+}
+
+static nir_ssa_def *
+nir_iclamp(nir_builder *b, nir_ssa_def *v, int32_t lo, int32_t hi)
+{
+        return nir_imin(b, nir_imax(b, v, nir_imm_int(b, lo)), nir_imm_int(b, hi));
 }
 
 struct panfrost_blend_shader
 panfrost_compile_blend_shader(
         struct panfrost_context *ctx,
         struct pipe_blend_state *cso,
-        enum pipe_format format)
+        enum pipe_format format,
+        unsigned rt)
 {
+        struct panfrost_device *dev = pan_device(ctx->base.screen);
         struct panfrost_blend_shader res;
 
         res.ctx = ctx;
@@ -141,13 +147,32 @@ panfrost_compile_blend_shader(
         nir_function *fn = nir_function_create(shader, "main");
         nir_function_impl *impl = nir_function_impl_create(fn);
 
+        const struct util_format_description *format_desc =
+                util_format_description(format);
+
+        nir_alu_type T = pan_unpacked_type_for_format(format_desc);
+        enum glsl_base_type g =
+                (T == nir_type_float16) ? GLSL_TYPE_FLOAT16 :
+                (T == nir_type_float32) ? GLSL_TYPE_FLOAT :
+                (T == nir_type_int8) ? GLSL_TYPE_INT8 :
+                (T == nir_type_int16) ? GLSL_TYPE_INT16 :
+                (T == nir_type_int32) ? GLSL_TYPE_INT :
+                (T == nir_type_uint8) ? GLSL_TYPE_UINT8 :
+                (T == nir_type_uint16) ? GLSL_TYPE_UINT16 :
+                (T == nir_type_uint32) ? GLSL_TYPE_UINT :
+                GLSL_TYPE_FLOAT;
+
         /* Create the blend variables */
 
         nir_variable *c_src = nir_variable_create(shader, nir_var_shader_in, glsl_vector_type(GLSL_TYPE_FLOAT, 4), "gl_Color");
-        nir_variable *c_out = nir_variable_create(shader, nir_var_shader_out, glsl_vector_type(GLSL_TYPE_FLOAT, 4), "gl_FragColor");
+        nir_variable *c_src1 = nir_variable_create(shader, nir_var_shader_in, glsl_vector_type(GLSL_TYPE_FLOAT, 4), "gl_Color1");
+        nir_variable *c_out = nir_variable_create(shader, nir_var_shader_out, glsl_vector_type(g, 4), "gl_FragColor");
 
         c_src->data.location = VARYING_SLOT_COL0;
+        c_src1->data.location = VARYING_SLOT_VAR0;
         c_out->data.location = FRAG_RESULT_COLOR;
+
+        c_src1->data.driver_location = 1;
 
         /* Setup nir_builder */
 
@@ -158,30 +183,48 @@ panfrost_compile_blend_shader(
 
         /* Setup inputs */
 
-        nir_ssa_def *s_src = nir_load_var(b, c_src);
+        nir_ssa_def *s_src[] = {nir_load_var(b, c_src), nir_load_var(b, c_src1)};
+
+        for (int i = 0; i < ARRAY_SIZE(s_src); ++i) {
+                if (T == nir_type_float16)
+                        s_src[i] = nir_f2f16(b, s_src[i]);
+                else if (T == nir_type_int16)
+                        s_src[i] = nir_i2i16(b, nir_iclamp(b, s_src[i], -32768, 32767));
+                else if (T == nir_type_uint16)
+                        s_src[i] = nir_u2u16(b, nir_umin(b, s_src[i], nir_imm_int(b, 65535)));
+                else if (T == nir_type_int8)
+                        s_src[i] = nir_i2i8(b, nir_iclamp(b, s_src[i], -128, 127));
+                else if (T == nir_type_uint8)
+                        s_src[i] = nir_u2u8(b, nir_umin(b, s_src[i], nir_imm_int(b, 255)));
+        }
 
         /* Build a trivial blend shader */
-        nir_store_var(b, c_out, s_src, 0xFF);
+        nir_store_var(b, c_out, s_src[0], 0xFF);
 
         nir_lower_blend_options options =
-                nir_make_options(cso, 1);
-        NIR_PASS_V(shader, nir_lower_blend, options);
+                nir_make_options(cso, rt);
+        options.format = format;
+        options.src1 = s_src[1];
 
-        NIR_PASS_V(shader, nir_lower_framebuffer, format);
+        if (T == nir_type_float16)
+                options.half = true;
+
+        NIR_PASS_V(shader, nir_lower_blend, options);
 
         /* Compile the built shader */
 
-        midgard_program program;
-        midgard_compile_shader_nir(&ctx->compiler, shader, &program, true);
+        panfrost_program program = {
+           .rt_formats = {format}
+        };
 
-        /* At least two work registers are needed due to an encoding quirk */
-        res.work_count = MAX2(program.work_register_count, 2);
+        midgard_compile_shader_nir(shader, &program, true, rt, dev->gpu_id, false, false);
 
         /* Allow us to patch later */
         res.patch_index = program.blend_patch_offset;
         res.first_tag = program.first_tag;
         res.size = program.compiled.size;
         res.buffer = program.compiled.data;
+        res.work_count = program.work_register_count;
 
         return res;
 }

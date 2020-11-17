@@ -39,13 +39,13 @@
 //
 #include "util/u_endian.h"
 
-#if defined(PIPE_ARCH_LITTLE_ENDIAN)
+#if UTIL_ARCH_LITTLE_ENDIAN
 #define LITTLEENDIAN_CPU
-#elif defined(PIPE_ARCH_BIG_ENDIAN)
+#elif UTIL_ARCH_BIG_ENDIAN
 #define BIGENDIAN_CPU
 #endif
 
-union GB_ADDR_CONFIG {
+union GB_ADDR_CONFIG_gfx9 {
     struct {
 #if        defined(LITTLEENDIAN_CPU)
         unsigned int                       NUM_PIPES : 3;

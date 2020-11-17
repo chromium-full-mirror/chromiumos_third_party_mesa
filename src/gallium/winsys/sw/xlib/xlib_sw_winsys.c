@@ -35,11 +35,11 @@
 #include "pipe/p_format.h"
 #include "pipe/p_context.h"
 #include "util/u_inlines.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 
-#include "state_tracker/xlibsw_api.h"
+#include "frontend/xlibsw_api.h"
 #include "xlib_sw_winsys.h"
 
 #include <X11/Xlib.h>

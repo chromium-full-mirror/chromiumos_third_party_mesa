@@ -47,6 +47,7 @@ etna_bind_sampler_states(struct pipe_context *pctx, enum pipe_shader_type shader
 {
    /* bind fragment sampler */
    struct etna_context *ctx = etna_context(pctx);
+   struct etna_screen *screen = ctx->screen;
    int offset;
 
    switch (shader) {
@@ -55,7 +56,7 @@ etna_bind_sampler_states(struct pipe_context *pctx, enum pipe_shader_type shader
       ctx->num_fragment_samplers = num_samplers;
       break;
    case PIPE_SHADER_VERTEX:
-      offset = ctx->specs.vertex_sampler_offset;
+      offset = screen->specs.vertex_sampler_offset;
       break;
    default:
       assert(!"Invalid shader");
@@ -102,7 +103,7 @@ etna_configure_sampler_ts(struct etna_sampler_ts *sts, struct pipe_sampler_view 
       COND(lev->ts_compress_fmt >= 0, VIVS_TS_SAMPLER_CONFIG_COMPRESSION) |
       VIVS_TS_SAMPLER_CONFIG_COMPRESSION_FORMAT(lev->ts_compress_fmt);
    sts->TS_SAMPLER_CLEAR_VALUE = lev->clear_value;
-   sts->TS_SAMPLER_CLEAR_VALUE2 = lev->clear_value; /* To handle 64-bit formats this needs a different value */
+   sts->TS_SAMPLER_CLEAR_VALUE2 = lev->clear_value >> 32;
    sts->TS_SAMPLER_STATUS_BASE.bo = rsc->ts_bo;
    sts->TS_SAMPLER_STATUS_BASE.offset = lev->ts_offset;
    sts->TS_SAMPLER_STATUS_BASE.flags = ETNA_RELOC_READ;
@@ -266,8 +267,9 @@ static inline void
 etna_fragtex_set_sampler_views(struct etna_context *ctx, unsigned nr,
                                struct pipe_sampler_view **views)
 {
+   struct etna_screen *screen = ctx->screen;
    unsigned start = 0;
-   unsigned end = start + ctx->specs.fragment_sampler_count;
+   unsigned end = start + screen->specs.fragment_sampler_count;
 
    set_sampler_views(ctx, start, end, nr, views);
    ctx->num_fragment_sampler_views = nr;
@@ -278,8 +280,9 @@ static inline void
 etna_vertex_set_sampler_views(struct etna_context *ctx, unsigned nr,
                               struct pipe_sampler_view **views)
 {
-   unsigned start = ctx->specs.vertex_sampler_offset;
-   unsigned end = start + ctx->specs.vertex_sampler_count;
+   struct etna_screen *screen = ctx->screen;
+   unsigned start = screen->specs.vertex_sampler_offset;
+   unsigned end = start + screen->specs.vertex_sampler_count;
 
    set_sampler_views(ctx, start, end, nr, views);
 }
@@ -326,12 +329,13 @@ void
 etna_texture_init(struct pipe_context *pctx)
 {
    struct etna_context *ctx = etna_context(pctx);
+   struct etna_screen *screen = ctx->screen;
 
    pctx->bind_sampler_states = etna_bind_sampler_states;
    pctx->set_sampler_views = etna_set_sampler_views;
    pctx->texture_barrier = etna_texture_barrier;
 
-   if (ctx->specs.halti >= 5)
+   if (screen->specs.halti >= 5)
       etna_texture_desc_init(pctx);
    else
       etna_texture_state_init(pctx);

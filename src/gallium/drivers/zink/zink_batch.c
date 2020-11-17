@@ -12,8 +12,9 @@
 #include "util/set.h"
 
 static void
-reset_batch(struct zink_screen *screen, struct zink_batch *batch)
+reset_batch(struct zink_context *ctx, struct zink_batch *batch)
 {
+   struct zink_screen *screen = zink_screen(ctx->base.screen);
    batch->descs_left = ZINK_BATCH_DESC_SIZE;
 
    // cmdbuf hasn't been submitted before
@@ -52,7 +53,7 @@ reset_batch(struct zink_screen *screen, struct zink_batch *batch)
 void
 zink_start_batch(struct zink_context *ctx, struct zink_batch *batch)
 {
-   reset_batch(zink_screen(ctx->base.screen), batch);
+   reset_batch(ctx, batch);
 
    VkCommandBufferBeginInfo cbbi = {};
    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -76,7 +77,7 @@ zink_end_batch(struct zink_context *ctx, struct zink_batch *batch)
    }
 
    assert(batch->fence == NULL);
-   batch->fence = zink_create_fence(ctx->base.screen);
+   batch->fence = zink_create_fence(ctx->base.screen, batch);
    if (!batch->fence)
       return;
 
@@ -102,9 +103,8 @@ zink_batch_reference_resoure(struct zink_batch *batch,
 {
    struct set_entry *entry = _mesa_set_search(batch->resources, res);
    if (!entry) {
-      struct pipe_resource *tmp = NULL;
       entry = _mesa_set_add(batch->resources, res);
-      pipe_resource_reference(&tmp, &res->base);
+      pipe_reference(NULL, &res->base.reference);
    }
 }
 
@@ -114,8 +114,7 @@ zink_batch_reference_sampler_view(struct zink_batch *batch,
 {
    struct set_entry *entry = _mesa_set_search(batch->sampler_views, sv);
    if (!entry) {
-      struct pipe_sampler_view *tmp = NULL;
       entry = _mesa_set_add(batch->sampler_views, sv);
-      pipe_sampler_view_reference(&tmp, &sv->base);
+      pipe_reference(NULL, &sv->base.reference);
    }
 }

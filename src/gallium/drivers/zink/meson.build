@@ -22,9 +22,12 @@ files_libzink = files(
   'nir_to_spirv/nir_to_spirv.c',
   'nir_to_spirv/spirv_builder.c',
   'zink_batch.c',
+  'zink_blit.c',
   'zink_compiler.c',
   'zink_context.c',
+  'zink_draw.c',
   'zink_fence.c',
+  'zink_format.c',
   'zink_framebuffer.c',
   'zink_pipeline.c',
   'zink_program.c',
@@ -36,11 +39,23 @@ files_libzink = files(
   'zink_surface.c',
 )
 
+zink_nir_algebraic_c = custom_target(
+  'zink_nir_algebraic.c',
+  input : 'nir_to_spirv/zink_nir_algebraic.py',
+  output : 'zink_nir_algebraic.c',
+  command : [
+    prog_python, '@INPUT@',
+    '-p', join_paths(meson.source_root(), 'src/compiler/nir/'),
+  ],
+  capture : true,
+  depend_files : nir_algebraic_py,
+)
+
 libzink = static_library(
   'zink',
-  files_libzink,
-  c_args : c_vis_args,
-  include_directories : inc_common,
+  [files_libzink, zink_nir_algebraic_c],
+  gnu_symbol_visibility : 'hidden',
+  include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
   dependencies: [dep_vulkan, idep_nir_headers],
 )
 

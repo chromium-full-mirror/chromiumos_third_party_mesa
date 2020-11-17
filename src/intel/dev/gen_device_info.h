@@ -62,6 +62,8 @@ struct gen_device_info
    bool is_geminilake;
    bool is_coffeelake;
    bool is_cannonlake;
+   bool is_elkhartlake;
+   bool is_dg1;
 
    bool has_hiz_and_separate_stencil;
    bool must_use_separate_stencil;
@@ -69,7 +71,8 @@ struct gen_device_info
    bool has_llc;
 
    bool has_pln;
-   bool has_64bit_types;
+   bool has_64bit_float;
+   bool has_64bit_int;
    bool has_integer_dword_mul;
    bool has_compr4;
    bool has_surface_tile_offset;
@@ -77,6 +80,7 @@ struct gen_device_info
    bool has_resource_streamer;
    bool disable_ccs_repack;
    bool has_aux_map;
+   bool has_tiling_uapi;
 
    /**
     * \name Intel hardware quirks
@@ -205,14 +209,14 @@ struct gen_device_info
 
    struct {
       /**
-       * Hardware default URB size.
+       * Fixed size of the URB.
        *
-       * The units this is expressed in are somewhat inconsistent: 512b units
-       * on Gen4-5, KB on Gen6-7, and KB times the slice count on Gen8+.
+       * On Gen6 and DG1, this is measured in KB.  Gen4-5 instead measure
+       * this in 512b blocks, as that's more convenient there.
        *
-       * Look up "URB Size" in the "Device Attributes" page, and take the
-       * maximum.  Look up the slice count for each GT SKU on the same page.
-       * urb.size = URB Size (kbytes) / slice count
+       * On most Gen7+ platforms, the URB is a section of the L3 cache,
+       * and can be resized based on the L3 programming.  For those platforms,
+       * simply leave this field blank (zero) - it isn't used.
        */
       unsigned size;
 
@@ -249,6 +253,8 @@ struct gen_device_info
     * seeing a drift of ~2 milliseconds per second.
     */
    uint64_t timestamp_frequency;
+
+   uint64_t aperture_bytes;
 
    /**
     * ID to put into the .aub files.
@@ -291,6 +297,7 @@ gen_device_info_timebase_scale(const struct gen_device_info *devinfo,
 bool gen_get_device_info_from_fd(int fh, struct gen_device_info *devinfo);
 bool gen_get_device_info_from_pci_id(int pci_id,
                                      struct gen_device_info *devinfo);
+int gen_get_aperture_size(int fd, uint64_t *size);
 
 #ifdef __cplusplus
 }

@@ -29,7 +29,7 @@
 #include "util/u_string.h"
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "tgsi/tgsi_dump.h"
 #include "tgsi/tgsi_parse.h"
 #include "nir/tgsi_to_nir.h"
@@ -40,7 +40,7 @@
 #include "fd2_program.h"
 #include "fd2_texture.h"
 #include "fd2_util.h"
-#include "instr-a2xx.h"
+#include "ir2/instr-a2xx.h"
 
 static struct fd2_shader_stateobj *
 create_shader(struct pipe_context *pctx, gl_shader_stage type)
@@ -98,10 +98,11 @@ fd2_fp_state_create(struct pipe_context *pctx,
 		return NULL;
 
 	so->nir = (cso->type == PIPE_SHADER_IR_NIR) ? cso->ir.nir :
-		tgsi_to_nir(cso->tokens, pctx->screen);
+		tgsi_to_nir(cso->tokens, pctx->screen, false);
 
-	NIR_PASS_V(so->nir, nir_lower_io, nir_var_all, ir2_glsl_type_size,
-			   (nir_lower_io_options)0);
+	NIR_PASS_V(so->nir, nir_lower_io,
+	           nir_var_shader_in | nir_var_shader_out,
+	           ir2_glsl_type_size, (nir_lower_io_options)0);
 
 	if (ir2_optimize_nir(so->nir, true))
 		goto fail;
@@ -135,10 +136,11 @@ fd2_vp_state_create(struct pipe_context *pctx,
 		return NULL;
 
 	so->nir = (cso->type == PIPE_SHADER_IR_NIR) ? cso->ir.nir :
-		tgsi_to_nir(cso->tokens, pctx->screen);
+		tgsi_to_nir(cso->tokens, pctx->screen, false);
 
-	NIR_PASS_V(so->nir, nir_lower_io, nir_var_all, ir2_glsl_type_size,
-			   (nir_lower_io_options)0);
+	NIR_PASS_V(so->nir, nir_lower_io,
+	           nir_var_shader_in | nir_var_shader_out,
+	           ir2_glsl_type_size, (nir_lower_io_options)0);
 
 	if (ir2_optimize_nir(so->nir, true))
 		goto fail;
