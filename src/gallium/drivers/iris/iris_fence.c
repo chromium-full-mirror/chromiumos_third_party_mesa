@@ -154,7 +154,7 @@ clear_stale_syncobjs(struct iris_batch *batch)
 
       if (syncobj != nth_syncobj) {
          *syncobj = *nth_syncobj;
-         memcpy(nth_fence, fence, sizeof(*fence));
+         memcpy(fence, nth_fence, sizeof(*fence));
       }
    }
 }
@@ -240,6 +240,8 @@ iris_fence_flush(struct pipe_context *ctx,
                  (INTEL_DEBUG & DEBUG_COLOR) ? NORMAL : "");
       }
    }
+
+   iris_flush_dirty_dmabufs(ice);
 
    if (!deferred) {
       for (unsigned i = 0; i < IRIS_BATCH_COUNT; i++)
