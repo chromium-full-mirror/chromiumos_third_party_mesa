@@ -251,6 +251,7 @@ typedef struct {
    vl_csc_matrix csc;
    mtx_t mutex;
    char vendor_string[256];
+   int num_supported_vp9_codec_inst;
 } vlVaDriver;
 
 typedef struct {

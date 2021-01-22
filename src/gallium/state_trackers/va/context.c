@@ -38,6 +38,8 @@
 
 #include <va/va_drmcommon.h>
 
+#define MAX_SUPPORTED_VP9_CODEC_INSTANCES 8
+
 static struct VADriverVTable vtable =
 {
    &vlVaTerminate,
@@ -168,6 +170,8 @@ VA_DRIVER_INIT_FUNC(VADriverContextP ctx)
    if (!vl_compositor_set_csc_matrix(&drv->cstate, (const vl_csc_matrix *)&drv->csc, 1.0f, 0.0f))
       goto error_csc_matrix;
    (void) mtx_init(&drv->mutex, mtx_plain);
+
+   drv->num_supported_vp9_codec_inst = MAX_SUPPORTED_VP9_CODEC_INSTANCES;
 
    ctx->pDriverData = (void *)drv;
    ctx->version_major = 0;
@@ -338,30 +342,31 @@ vlVaDestroyContext(VADriverContextP ctx, VAContextID context_id)
    }
 
    if (context->decoder) {
+      enum pipe_video_format format =
+         u_reduce_video_profile(context->decoder->profile);
+
       if (context->desc.base.entry_point == PIPE_VIDEO_ENTRYPOINT_ENCODE) {
-         if (u_reduce_video_profile(context->decoder->profile) ==
-             PIPE_VIDEO_FORMAT_MPEG4_AVC) {
+         if (format == PIPE_VIDEO_FORMAT_MPEG4_AVC) {
             if (context->desc.h264enc.frame_idx)
                util_hash_table_destroy (context->desc.h264enc.frame_idx);
          }
-         if (u_reduce_video_profile(context->decoder->profile) ==
-             PIPE_VIDEO_FORMAT_HEVC) {
+         if (format == PIPE_VIDEO_FORMAT_HEVC) {
             if (context->desc.h265enc.frame_idx)
                util_hash_table_destroy (context->desc.h265enc.frame_idx);
          }
       } else {
-         if (u_reduce_video_profile(context->decoder->profile) ==
-               PIPE_VIDEO_FORMAT_MPEG4_AVC) {
+         if (format == PIPE_VIDEO_FORMAT_MPEG4_AVC) {
             FREE(context->desc.h264.pps->sps);
             FREE(context->desc.h264.pps);
          }
-         if (u_reduce_video_profile(context->decoder->profile) ==
-               PIPE_VIDEO_FORMAT_HEVC) {
+         if (format == PIPE_VIDEO_FORMAT_HEVC) {
             FREE(context->desc.h265.pps->sps);
             FREE(context->desc.h265.pps);
          }
       }
       context->decoder->destroy(context->decoder);
+      if (format == PIPE_VIDEO_FORMAT_VP9)
+         drv->num_supported_vp9_codec_inst++;
    }
    if (context->blit_cs)
       drv->pipe->delete_compute_state(drv->pipe, context->blit_cs);
