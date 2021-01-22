@@ -1,0 +1,6892 @@
+/*
+ * Copyright 2019 Google LLC
+ * SPDX-License-Identifier: MIT
+ *
+ * based in part on anv and radv which are:
+ * Copyright © 2015 Intel Corporation
+ * Copyright © 2016 Red Hat.
+ * Copyright © 2016 Bas Nieuwenhuizen
+ */
+
+#include "vn_device.h"
+
+#include <stdio.h>
+
+#include "git_sha1.h"
+#include "util/mesa-sha1.h"
+#include "venus-protocol/vn_protocol_driver.h"
+
+#include "vn_icd.h"
+#include "vn_renderer.h"
+
+/* require and request at least Vulkan 1.1 at both instance and device levels
+ */
+#define VN_MIN_RENDERER_VERSION VK_API_VERSION_1_1
+
+static void
+vn_cs_device_init(struct vn_cs_device *dev,
+                  const VkDeviceCreateInfo *info,
+                  const VkAllocationCallbacks *alloc)
+{
+   vk_device_init(&dev->base, info, alloc, alloc);
+   assert(sizeof(dev->id) >= sizeof(dev));
+   dev->id = (uintptr_t)dev;
+}
+
+static void
+vn_cs_device_fini(struct vn_cs_device *dev)
+{
+   vk_device_finish(&dev->base);
+}
+
+static void
+vn_cs_object_init(struct vn_cs_object *obj,
+                  VkObjectType type,
+                  struct vn_cs_device *dev)
+{
+   vk_object_base_init(&dev->base, &obj->base, type);
+   assert(sizeof(obj->id) >= sizeof(obj));
+   obj->id = (uintptr_t)obj;
+}
+
+static void
+vn_cs_object_fini(struct vn_cs_object *obj)
+{
+   vk_object_base_finish(&obj->base);
+}
+
+static uint32_t
+get_instance_api_version(const VkInstanceCreateInfo *create_info)
+{
+   return (create_info->pApplicationInfo &&
+           create_info->pApplicationInfo->apiVersion)
+             ? create_info->pApplicationInfo->apiVersion
+             : VK_API_VERSION_1_0;
+}
+
+static int
+get_instance_extension_index(const char *name)
+{
+   for (int i = 0; i < VN_INSTANCE_EXTENSION_COUNT; i++) {
+      if (!strcmp(name, vn_instance_extensions[i].extensionName))
+         return i;
+   }
+   return -1;
+}
+
+static int
+get_device_extension_index(const char *name)
+{
+   for (int i = 0; i < VN_DEVICE_EXTENSION_COUNT; i++) {
+      if (!strcmp(name, vn_device_extensions[i].extensionName))
+         return i;
+   }
+   return -1;
+}
+
+static VkResult
+vn_instance_init_extensions(struct vn_instance *instance,
+                            const char *const *names,
+                            uint32_t count)
+{
+   for (uint32_t i = 0; i < count; i++) {
+      const int index = get_instance_extension_index(names[i]);
+      if (index < 0 || !vn_instance_extensions_supported.extensions[index])
+         return VK_ERROR_EXTENSION_NOT_PRESENT;
+      instance->enabled_extensions.extensions[index] = true;
+   }
+   return VK_SUCCESS;
+}
+
+static void
+vn_instance_init_dispatch(struct vn_instance *instance)
+{
+   uint32_t count = ARRAY_SIZE(vn_instance_dispatch_table.entrypoints);
+   void *const *from = vn_instance_dispatch_table.entrypoints;
+   void **to = instance->dispatch.entrypoints;
+   for (uint32_t i = 0; i < count; i++) {
+      to[i] = vn_instance_entrypoint_is_enabled(i, instance->api_version,
+                                                &instance->enabled_extensions)
+                 ? from[i]
+                 : NULL;
+   }
+
+   count = ARRAY_SIZE(vn_physical_device_dispatch_table.entrypoints);
+   from = vn_physical_device_dispatch_table.entrypoints;
+   to = instance->physical_device_dispatch.entrypoints;
+   for (uint32_t i = 0; i < count; i++) {
+      to[i] = vn_physical_device_entrypoint_is_enabled(
+                 i, instance->api_version, &instance->enabled_extensions)
+                 ? from[i]
+                 : NULL;
+   }
+
+   count = ARRAY_SIZE(vn_device_dispatch_table.entrypoints);
+   from = vn_device_dispatch_table.entrypoints;
+   to = instance->device_dispatch.entrypoints;
+   for (uint32_t i = 0; i < count; i++) {
+      to[i] =
+         vn_device_entrypoint_is_enabled(i, instance->api_version,
+                                         &instance->enabled_extensions, NULL)
+            ? from[i]
+            : NULL;
+   }
+}
+
+static PFN_vkVoidFunction
+vn_instance_get_dispatch(struct vn_instance *instance, const char *name)
+{
+   int idx = vn_get_instance_entrypoint_index(name);
+   if (idx >= 0)
+      return instance->dispatch.entrypoints[idx];
+
+   idx = vn_get_physical_device_entrypoint_index(name);
+   if (idx >= 0)
+      return instance->physical_device_dispatch.entrypoints[idx];
+
+   idx = vn_get_device_entrypoint_index(name);
+   if (idx >= 0)
+      return instance->device_dispatch.entrypoints[idx];
+
+   return NULL;
+}
+
+static VkResult
+vn_instance_init_renderer(struct vn_instance *instance)
+{
+   const VkAllocationCallbacks *alloc = &instance->allocator;
+
+   VkResult result = vn_renderer_create(instance, alloc, &instance->renderer);
+   if (result != VK_SUCCESS)
+      return result;
+
+   vn_renderer_get_info(instance->renderer, &instance->renderer_info);
+
+   uint32_t version = vn_info_wire_format_version();
+   if (instance->renderer_info.wire_format_version != version) {
+      if (VN_DEBUG(INIT)) {
+         vn_log(instance, "wire format version %d != %d",
+                instance->renderer_info.wire_format_version, version);
+      }
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   version = vn_info_vk_xml_version();
+   if (instance->renderer_info.vk_xml_version > version)
+      instance->renderer_info.vk_xml_version = version;
+
+   version = vn_info_extension_spec_version("VK_EXT_command_serialization");
+   if (instance->renderer_info.vk_ext_command_serialization_spec_version >
+       version) {
+      instance->renderer_info.vk_ext_command_serialization_spec_version =
+         version;
+   }
+
+   version = vn_info_extension_spec_version("VK_MESA_venus_protocol");
+   if (instance->renderer_info.vk_mesa_venus_protocol_spec_version >
+       version) {
+      instance->renderer_info.vk_mesa_venus_protocol_spec_version = version;
+   }
+
+   if (VN_DEBUG(INIT)) {
+      vn_log(instance, "connected to renderer");
+      vn_log(instance, "wire format version %d",
+             instance->renderer_info.wire_format_version);
+      vn_log(instance, "vk xml version %d.%d.%d",
+             VK_VERSION_MAJOR(instance->renderer_info.vk_xml_version),
+             VK_VERSION_MINOR(instance->renderer_info.vk_xml_version),
+             VK_VERSION_PATCH(instance->renderer_info.vk_xml_version));
+      vn_log(
+         instance, "VK_EXT_command_serialization spec version %d",
+         instance->renderer_info.vk_ext_command_serialization_spec_version);
+      vn_log(instance, "VK_MESA_venus_protocol spec version %d",
+             instance->renderer_info.vk_mesa_venus_protocol_spec_version);
+   }
+
+   /* reply bo will be allocated on demand by
+    * vn_instance_get_cs_reply_bo_locked
+    */
+   result = vn_renderer_sync_create_cpu(instance->renderer, alloc,
+                                        VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE,
+                                        &instance->cs_reply.sync);
+   if (result != VK_SUCCESS) {
+      if (VN_DEBUG(INIT))
+         vn_log(instance, "failed to create reply sync");
+      return result;
+   }
+
+   vn_cs_init(&instance->cs, alloc, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE,
+              16 * 1024);
+
+   uint32_t renderer_version = 0;
+   result = vn_call_vkEnumerateInstanceVersion(instance, &renderer_version);
+   if (result != VK_SUCCESS) {
+      if (VN_DEBUG(INIT))
+         vn_log(instance, "failed to enumerate renderer instance version");
+      return result;
+   }
+
+   if (renderer_version < VN_MIN_RENDERER_VERSION) {
+      if (VN_DEBUG(INIT)) {
+         vn_log(instance, "unsupported renderer instance version %d.%d",
+                VK_VERSION_MAJOR(instance->renderer_version),
+                VK_VERSION_MINOR(instance->renderer_version));
+      }
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   instance->renderer_version =
+      instance->api_version > VN_MIN_RENDERER_VERSION
+         ? instance->api_version
+         : VN_MIN_RENDERER_VERSION;
+
+   if (VN_DEBUG(INIT)) {
+      vn_log(instance, "vk instance version %d.%d.%d",
+             VK_VERSION_MAJOR(instance->renderer_version),
+             VK_VERSION_MINOR(instance->renderer_version),
+             VK_VERSION_PATCH(instance->renderer_version));
+   }
+
+   return VK_SUCCESS;
+}
+
+static bool
+vn_instance_grow_cs_reply_bo_locked(struct vn_instance *instance, size_t size)
+{
+   const size_t min_bo_size = 1 << 20;
+   const VkAllocationCallbacks *alloc = &instance->allocator;
+
+   size_t bo_size =
+      instance->cs_reply.size ? instance->cs_reply.size : min_bo_size;
+   while (bo_size < size) {
+      bo_size <<= 1;
+      if (!bo_size)
+         return false;
+   }
+
+   struct vn_renderer_bo *bo;
+   VkResult result =
+      vn_renderer_bo_create_cpu(instance->renderer, bo_size, alloc,
+                                VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE, &bo);
+   if (result != VK_SUCCESS)
+      return false;
+
+   void *ptr = vn_renderer_bo_map(bo);
+   if (!ptr) {
+      vn_renderer_bo_unref(bo, alloc);
+      return false;
+   }
+
+   if (instance->cs_reply.bo)
+      vn_renderer_bo_unref(instance->cs_reply.bo, alloc);
+   instance->cs_reply.bo = bo;
+   instance->cs_reply.size = bo_size;
+   instance->cs_reply.used = 0;
+   instance->cs_reply.ptr = ptr;
+
+   return true;
+}
+
+struct vn_renderer_bo *
+vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
+                                   size_t size,
+                                   void **ptr)
+{
+   struct vn_cs *cs = &instance->cs;
+
+   if (unlikely(instance->cs_reply.used + size > instance->cs_reply.size)) {
+      if (!vn_instance_grow_cs_reply_bo_locked(instance, size))
+         return NULL;
+
+      const struct VkCommandStreamDescriptionMESA stream = {
+         .resourceId = instance->cs_reply.bo->res_id,
+         .size = instance->cs_reply.size,
+      };
+      const size_t cmd_size = vn_sizeof_vkSetReplyCommandStreamMESA(&stream);
+      if (vn_cs_reserve_out(cs, cmd_size))
+         vn_encode_vkSetReplyCommandStreamMESA(cs, 0, &stream);
+   }
+
+   /* TODO can we avoid this seek command? */
+   const size_t offset = instance->cs_reply.used;
+   const size_t cmd_size = vn_sizeof_vkSeekReplyCommandStreamMESA(offset);
+   if (vn_cs_reserve_out(cs, cmd_size))
+      vn_encode_vkSeekReplyCommandStreamMESA(cs, 0, offset);
+
+   *ptr = instance->cs_reply.ptr + offset;
+   instance->cs_reply.used += size;
+
+   return vn_renderer_bo_ref(instance->cs_reply.bo);
+}
+
+static void
+vn_instance_flush_cs(struct vn_instance *instance)
+{
+   struct vn_cs *cs = vn_instance_lock_cs(instance);
+   if (vn_cs_has_out(cs))
+      vn_instance_submit_cs_locked(instance, NULL, NULL);
+   vn_instance_unlock_cs(instance);
+}
+
+static struct vn_physical_device *
+vn_instance_find_physical_device(struct vn_instance *instance,
+                                 vn_cs_object_id id)
+{
+   for (uint32_t i = 0; i < instance->physical_device_count; i++) {
+      if (instance->physical_devices[i].base.id == id)
+         return &instance->physical_devices[i];
+   }
+   return NULL;
+}
+
+static void
+vn_physical_device_init_features(struct vn_physical_device *physical_dev)
+{
+   struct vn_instance *instance = physical_dev->instance;
+   struct {
+      /* Vulkan 1.1 */
+      VkPhysicalDevice16BitStorageFeatures sixteen_bit_storage;
+      VkPhysicalDeviceMultiviewFeatures multiview;
+      VkPhysicalDeviceVariablePointersFeatures variable_pointers;
+      VkPhysicalDeviceProtectedMemoryFeatures protected_memory;
+      VkPhysicalDeviceSamplerYcbcrConversionFeatures sampler_ycbcr_conversion;
+      VkPhysicalDeviceShaderDrawParametersFeatures shader_draw_parameters;
+   } local_feats;
+
+   physical_dev->features.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+   if (physical_dev->renderer_version >= VK_API_VERSION_1_2) {
+      physical_dev->features.pNext = &physical_dev->vulkan_1_1_features;
+
+      physical_dev->vulkan_1_1_features.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+      physical_dev->vulkan_1_1_features.pNext =
+         &physical_dev->vulkan_1_2_features;
+      physical_dev->vulkan_1_2_features.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+      physical_dev->vulkan_1_2_features.pNext = NULL;
+   } else {
+      physical_dev->features.pNext = &local_feats.sixteen_bit_storage;
+
+      local_feats.sixteen_bit_storage.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES;
+      local_feats.sixteen_bit_storage.pNext = &local_feats.multiview;
+      local_feats.multiview.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES;
+      local_feats.multiview.pNext = &local_feats.variable_pointers;
+      local_feats.variable_pointers.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES;
+      local_feats.variable_pointers.pNext = &local_feats.protected_memory;
+      local_feats.protected_memory.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROTECTED_MEMORY_FEATURES;
+      local_feats.protected_memory.pNext =
+         &local_feats.sampler_ycbcr_conversion;
+      local_feats.sampler_ycbcr_conversion.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES;
+      local_feats.sampler_ycbcr_conversion.pNext =
+         &local_feats.shader_draw_parameters;
+      local_feats.shader_draw_parameters.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES;
+      local_feats.shader_draw_parameters.pNext = NULL;
+   }
+
+   if (physical_dev->renderer_extensions.EXT_transform_feedback) {
+      physical_dev->transform_feedback_features.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT;
+      physical_dev->transform_feedback_features.pNext =
+         physical_dev->features.pNext;
+      physical_dev->features.pNext =
+         &physical_dev->transform_feedback_features;
+   }
+
+   vn_call_vkGetPhysicalDeviceFeatures2(
+      instance, vn_physical_device_to_handle(physical_dev),
+      &physical_dev->features);
+
+   struct VkPhysicalDeviceVulkan11Features *vk11_feats =
+      &physical_dev->vulkan_1_1_features;
+
+   if (physical_dev->renderer_version < VK_API_VERSION_1_2) {
+      vk11_feats->storageBuffer16BitAccess =
+         local_feats.sixteen_bit_storage.storageBuffer16BitAccess;
+      vk11_feats->uniformAndStorageBuffer16BitAccess =
+         local_feats.sixteen_bit_storage.uniformAndStorageBuffer16BitAccess;
+      vk11_feats->storagePushConstant16 =
+         local_feats.sixteen_bit_storage.storagePushConstant16;
+      vk11_feats->storageInputOutput16 =
+         local_feats.sixteen_bit_storage.storageInputOutput16;
+
+      vk11_feats->multiview = local_feats.multiview.multiview;
+      vk11_feats->multiviewGeometryShader =
+         local_feats.multiview.multiviewGeometryShader;
+      vk11_feats->multiviewTessellationShader =
+         local_feats.multiview.multiviewTessellationShader;
+
+      vk11_feats->variablePointersStorageBuffer =
+         local_feats.variable_pointers.variablePointersStorageBuffer;
+      vk11_feats->variablePointers =
+         local_feats.variable_pointers.variablePointers;
+
+      vk11_feats->protectedMemory =
+         local_feats.protected_memory.protectedMemory;
+
+      vk11_feats->samplerYcbcrConversion =
+         local_feats.sampler_ycbcr_conversion.samplerYcbcrConversion;
+
+      vk11_feats->shaderDrawParameters =
+         local_feats.shader_draw_parameters.shaderDrawParameters;
+   }
+}
+
+static void
+vn_physical_device_init_uuids(struct vn_physical_device *physical_dev)
+{
+   struct VkPhysicalDeviceProperties *props =
+      &physical_dev->properties.properties;
+   struct VkPhysicalDeviceVulkan11Properties *vk11_props =
+      &physical_dev->vulkan_1_1_properties;
+   struct VkPhysicalDeviceVulkan12Properties *vk12_props =
+      &physical_dev->vulkan_1_2_properties;
+   struct mesa_sha1 sha1_ctx;
+   uint8_t sha1[SHA1_DIGEST_LENGTH];
+
+   static_assert(VK_UUID_SIZE <= SHA1_DIGEST_LENGTH, "");
+
+   _mesa_sha1_init(&sha1_ctx);
+   _mesa_sha1_update(&sha1_ctx, &props->pipelineCacheUUID,
+                     sizeof(props->pipelineCacheUUID));
+   _mesa_sha1_final(&sha1_ctx, sha1);
+
+   memcpy(props->pipelineCacheUUID, sha1, VK_UUID_SIZE);
+
+   _mesa_sha1_init(&sha1_ctx);
+   _mesa_sha1_update(&sha1_ctx, &props->vendorID, sizeof(props->vendorID));
+   _mesa_sha1_update(&sha1_ctx, &props->deviceID, sizeof(props->deviceID));
+   _mesa_sha1_final(&sha1_ctx, sha1);
+
+   memcpy(vk11_props->deviceUUID, sha1, VK_UUID_SIZE);
+
+   _mesa_sha1_init(&sha1_ctx);
+   _mesa_sha1_update(&sha1_ctx, vk12_props->driverName,
+                     strlen(vk12_props->driverName));
+   _mesa_sha1_update(&sha1_ctx, vk12_props->driverInfo,
+                     strlen(vk12_props->driverInfo));
+   _mesa_sha1_final(&sha1_ctx, sha1);
+
+   memcpy(vk11_props->driverUUID, sha1, VK_UUID_SIZE);
+
+   memset(vk11_props->deviceLUID, 0, VK_LUID_SIZE);
+   vk11_props->deviceNodeMask = 0;
+   vk11_props->deviceLUIDValid = false;
+}
+
+static void
+vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
+{
+   struct vn_instance *instance = physical_dev->instance;
+   struct {
+      /* Vulkan 1.1 */
+      VkPhysicalDeviceIDProperties id;
+      VkPhysicalDeviceSubgroupProperties subgroup;
+      VkPhysicalDevicePointClippingProperties point_clipping;
+      VkPhysicalDeviceMultiviewProperties multiview;
+      VkPhysicalDeviceProtectedMemoryProperties protected_memory;
+      VkPhysicalDeviceMaintenance3Properties maintenance_3;
+   } local_props;
+
+   physical_dev->properties.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+   if (physical_dev->renderer_version >= VK_API_VERSION_1_2) {
+      physical_dev->properties.pNext = &physical_dev->vulkan_1_1_properties;
+
+      physical_dev->vulkan_1_1_properties.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
+      physical_dev->vulkan_1_1_properties.pNext =
+         &physical_dev->vulkan_1_2_properties;
+      physical_dev->vulkan_1_2_properties.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES;
+      physical_dev->vulkan_1_2_properties.pNext = NULL;
+   } else {
+      physical_dev->properties.pNext = &local_props.id;
+
+      local_props.id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+      local_props.id.pNext = &local_props.subgroup;
+      local_props.subgroup.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+      local_props.subgroup.pNext = &local_props.point_clipping;
+      local_props.point_clipping.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_POINT_CLIPPING_PROPERTIES;
+      local_props.point_clipping.pNext = &local_props.multiview;
+      local_props.multiview.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_PROPERTIES;
+      local_props.multiview.pNext = &local_props.protected_memory;
+      local_props.protected_memory.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROTECTED_MEMORY_PROPERTIES;
+      local_props.protected_memory.pNext = &local_props.maintenance_3;
+      local_props.maintenance_3.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES;
+      local_props.maintenance_3.pNext = NULL;
+   }
+
+   if (physical_dev->renderer_extensions.EXT_transform_feedback) {
+      physical_dev->transform_feedback_properties.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT;
+      physical_dev->transform_feedback_properties.pNext =
+         physical_dev->properties.pNext;
+      physical_dev->properties.pNext =
+         &physical_dev->transform_feedback_properties;
+   }
+
+   vn_call_vkGetPhysicalDeviceProperties2(
+      instance, vn_physical_device_to_handle(physical_dev),
+      &physical_dev->properties);
+
+   struct VkPhysicalDeviceProperties *props =
+      &physical_dev->properties.properties;
+   struct VkPhysicalDeviceVulkan11Properties *vk11_props =
+      &physical_dev->vulkan_1_1_properties;
+   struct VkPhysicalDeviceVulkan12Properties *vk12_props =
+      &physical_dev->vulkan_1_2_properties;
+
+   if (physical_dev->renderer_version < VK_API_VERSION_1_2) {
+      memcpy(vk11_props->deviceUUID, local_props.id.deviceUUID,
+             sizeof(vk11_props->deviceUUID));
+      memcpy(vk11_props->driverUUID, local_props.id.driverUUID,
+             sizeof(vk11_props->driverUUID));
+      memcpy(vk11_props->deviceLUID, local_props.id.deviceLUID,
+             sizeof(vk11_props->deviceLUID));
+      vk11_props->deviceNodeMask = local_props.id.deviceNodeMask;
+      vk11_props->deviceLUIDValid = local_props.id.deviceLUIDValid;
+
+      vk11_props->subgroupSize = local_props.subgroup.subgroupSize;
+      vk11_props->subgroupSupportedStages =
+         local_props.subgroup.supportedStages;
+      vk11_props->subgroupSupportedOperations =
+         local_props.subgroup.supportedOperations;
+      vk11_props->subgroupQuadOperationsInAllStages =
+         local_props.subgroup.quadOperationsInAllStages;
+
+      vk11_props->pointClippingBehavior =
+         local_props.point_clipping.pointClippingBehavior;
+
+      vk11_props->maxMultiviewViewCount =
+         local_props.multiview.maxMultiviewViewCount;
+      vk11_props->maxMultiviewInstanceIndex =
+         local_props.multiview.maxMultiviewInstanceIndex;
+
+      vk11_props->protectedNoFault =
+         local_props.protected_memory.protectedNoFault;
+
+      vk11_props->maxPerSetDescriptors =
+         local_props.maintenance_3.maxPerSetDescriptors;
+      vk11_props->maxMemoryAllocationSize =
+         local_props.maintenance_3.maxMemoryAllocationSize;
+   }
+
+   const uint32_t max_api_version =
+      vn_physical_device_api_version(physical_dev);
+   if (props->apiVersion > max_api_version)
+      props->apiVersion = max_api_version;
+
+   props->driverVersion = vk_get_driver_version();
+   props->vendorID = instance->renderer_info.pci.vendor_id;
+   props->deviceID = instance->renderer_info.pci.device_id;
+   /* some apps don't like VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU */
+   props->deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+   snprintf(props->deviceName, sizeof(props->deviceName), "Virtio GPU");
+
+   vk12_props->driverID = 0;
+   snprintf(vk12_props->driverName, sizeof(vk12_props->driverName), "venus");
+   snprintf(vk12_props->driverInfo, sizeof(vk12_props->driverInfo),
+            "Mesa " PACKAGE_VERSION MESA_GIT_SHA1);
+   vk12_props->conformanceVersion = (VkConformanceVersionKHR){
+      .major = 0,
+      .minor = 0,
+      .subminor = 0,
+      .patch = 0,
+   };
+
+   vn_physical_device_init_uuids(physical_dev);
+}
+
+static VkResult
+vn_physical_device_init_queue_family_properties(
+   struct vn_physical_device *physical_dev)
+{
+   struct vn_instance *instance = physical_dev->instance;
+   const VkAllocationCallbacks *alloc = &instance->allocator;
+   uint32_t count;
+
+   vn_call_vkGetPhysicalDeviceQueueFamilyProperties2(
+      instance, vn_physical_device_to_handle(physical_dev), &count, NULL);
+
+   uint32_t *sync_queue_bases;
+   VkQueueFamilyProperties2 *props =
+      vk_alloc(alloc, (sizeof(*props) + sizeof(*sync_queue_bases)) * count,
+               VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+   if (!props)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   sync_queue_bases = (uint32_t *)&props[count];
+
+   for (uint32_t i = 0; i < count; i++) {
+      props[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
+      /* define an extension to query sync queue base? */
+      props[i].pNext = NULL;
+   }
+   vn_call_vkGetPhysicalDeviceQueueFamilyProperties2(
+      instance, vn_physical_device_to_handle(physical_dev), &count, props);
+
+   physical_dev->queue_family_properties = props;
+   /* sync_queue_bases will be initialized later */
+   physical_dev->queue_family_sync_queue_bases = sync_queue_bases;
+   physical_dev->queue_family_count = count;
+
+   return VK_SUCCESS;
+}
+
+static void
+vn_physical_device_init_memory_properties(
+   struct vn_physical_device *physical_dev)
+{
+   struct vn_instance *instance = physical_dev->instance;
+
+   physical_dev->memory_properties.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+
+   vn_call_vkGetPhysicalDeviceMemoryProperties2(
+      instance, vn_physical_device_to_handle(physical_dev),
+      &physical_dev->memory_properties);
+
+   if (!instance->renderer_info.has_cache_management) {
+      VkPhysicalDeviceMemoryProperties *props =
+         &physical_dev->memory_properties.memoryProperties;
+      const uint32_t host_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+
+      for (uint32_t i = 0; i < props->memoryTypeCount; i++) {
+         const bool coherent = props->memoryTypes[i].propertyFlags &
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+         if (!coherent)
+            props->memoryTypes[i].propertyFlags &= ~host_flags;
+      }
+   }
+}
+
+static VkResult
+vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
+{
+   struct vn_instance *instance = physical_dev->instance;
+   const VkAllocationCallbacks *alloc = &instance->allocator;
+
+   /* get renderer extensions */
+   uint32_t count;
+   VkResult result = vn_call_vkEnumerateDeviceExtensionProperties(
+      instance, vn_physical_device_to_handle(physical_dev), NULL, &count,
+      NULL);
+   if (result != VK_SUCCESS)
+      return result;
+
+   VkExtensionProperties *exts = NULL;
+   if (count) {
+      exts = vk_alloc(alloc, sizeof(*exts) * count, VN_DEFAULT_ALIGN,
+                      VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (!exts)
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+      result = vn_call_vkEnumerateDeviceExtensionProperties(
+         instance, vn_physical_device_to_handle(physical_dev), NULL, &count,
+         exts);
+      if (result < VK_SUCCESS) {
+         vk_free(alloc, exts);
+         return result;
+      }
+   }
+
+   struct vn_device_extension_table supported;
+   vn_physical_device_get_supported_extensions(physical_dev, &supported);
+
+   physical_dev->extension_spec_versions =
+      vk_zalloc(alloc,
+                sizeof(*physical_dev->extension_spec_versions) *
+                   VN_DEVICE_EXTENSION_COUNT,
+                VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+   if (!physical_dev->extension_spec_versions) {
+      vk_free(alloc, exts);
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+
+   for (uint32_t i = 0; i < VN_DEVICE_EXTENSION_COUNT; i++) {
+      const VkExtensionProperties *props = &vn_device_extensions[i];
+      const VkExtensionProperties *renderer_props = NULL;
+
+      for (uint32_t j = 0; j < count; j++) {
+         if (!strcmp(props->extensionName, exts[j].extensionName)) {
+            physical_dev->renderer_extensions.extensions[i] = true;
+            renderer_props = &exts[j];
+            break;
+         }
+      }
+
+      /* no driver support */
+      if (!supported.extensions[i])
+         continue;
+
+      /* does not depend on renderer (e.g., WSI) */
+      if (props->specVersion) {
+         physical_dev->supported_extensions.extensions[i] = true;
+         continue;
+      }
+
+      /* check renderer support */
+      if (!renderer_props)
+         continue;
+
+      /* check encoder support */
+      const uint32_t spec_version =
+         vn_info_extension_spec_version(props->extensionName);
+      if (!spec_version)
+         continue;
+
+      physical_dev->supported_extensions.extensions[i] = true;
+      physical_dev->extension_spec_versions[i] =
+         MIN2(renderer_props->specVersion, spec_version);
+   }
+
+   vk_free(alloc, exts);
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+vn_physical_device_init_version(struct vn_physical_device *physical_dev)
+{
+   struct vn_instance *instance = physical_dev->instance;
+
+   /*
+    * We either check and enable VK_KHR_get_physical_device_properties2, or we
+    * must use vkGetPhysicalDeviceProperties to get the device-level version.
+    */
+   VkPhysicalDeviceProperties props;
+   vn_call_vkGetPhysicalDeviceProperties(
+      instance, vn_physical_device_to_handle(physical_dev), &props);
+   if (props.apiVersion < VN_MIN_RENDERER_VERSION) {
+      if (VN_DEBUG(INIT)) {
+         vn_log(instance, "unsupported renderer device version %d.%d",
+                VK_VERSION_MAJOR(props.apiVersion),
+                VK_VERSION_MINOR(props.apiVersion));
+      }
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   physical_dev->renderer_version = props.apiVersion;
+   if (physical_dev->renderer_version > instance->renderer_version)
+      physical_dev->renderer_version = instance->renderer_version;
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+vn_physical_device_init(struct vn_physical_device *physical_dev)
+{
+   struct vn_instance *instance = physical_dev->instance;
+   const VkAllocationCallbacks *alloc = &instance->allocator;
+
+   VkResult result = vn_physical_device_init_version(physical_dev);
+   if (result != VK_SUCCESS)
+      return result;
+
+   result = vn_physical_device_init_extensions(physical_dev);
+   if (result != VK_SUCCESS)
+      return result;
+
+   /* TODO query all caps with minimal round trips */
+   vn_physical_device_init_features(physical_dev);
+   vn_physical_device_init_properties(physical_dev);
+
+   result = vn_physical_device_init_queue_family_properties(physical_dev);
+   if (result != VK_SUCCESS)
+      goto fail;
+
+   vn_physical_device_init_memory_properties(physical_dev);
+
+   result = vn_wsi_init(physical_dev);
+   if (result != VK_SUCCESS)
+      goto fail;
+
+   return VK_SUCCESS;
+
+fail:
+   vk_free(alloc, physical_dev->extension_spec_versions);
+   vk_free(alloc, physical_dev->queue_family_properties);
+   return result;
+}
+
+static void
+vn_physical_device_fini(struct vn_physical_device *physical_dev)
+{
+   struct vn_instance *instance = physical_dev->instance;
+   const VkAllocationCallbacks *alloc = &instance->allocator;
+
+   vn_wsi_fini(physical_dev);
+   vk_free(alloc, physical_dev->extension_spec_versions);
+   vk_free(alloc, physical_dev->queue_family_properties);
+
+   vn_cs_object_fini(&physical_dev->base);
+}
+
+static VkResult
+vn_instance_enumerate_physical_devices(struct vn_instance *instance)
+{
+   const VkAllocationCallbacks *alloc = &instance->allocator;
+   VkResult result;
+
+   mtx_lock(&instance->physical_device_mutex);
+
+   if (instance->physical_devices) {
+      result = VK_SUCCESS;
+      goto out;
+   }
+
+   uint32_t count;
+   result = vn_call_vkEnumeratePhysicalDevices(
+      instance, vn_instance_to_handle(instance), &count, NULL);
+   if (result != VK_SUCCESS || !count)
+      goto out;
+
+   struct vn_physical_device *physical_devs =
+      vk_zalloc(alloc, sizeof(*physical_devs) * count, VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+   if (!physical_devs) {
+      result = VK_ERROR_OUT_OF_HOST_MEMORY;
+      goto out;
+   }
+
+   VkPhysicalDevice *handles =
+      vk_alloc(alloc, sizeof(*handles) * count, VN_DEFAULT_ALIGN,
+               VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   if (!handles) {
+      vk_free(alloc, physical_devs);
+      result = VK_ERROR_OUT_OF_HOST_MEMORY;
+      goto out;
+   }
+
+   for (uint32_t i = 0; i < count; i++) {
+      struct vn_physical_device *physical_dev = &physical_devs[i];
+
+      vn_cs_object_init(&physical_dev->base, VK_OBJECT_TYPE_PHYSICAL_DEVICE,
+                        NULL);
+      physical_dev->instance = instance;
+
+      handles[i] = vn_physical_device_to_handle(physical_dev);
+   }
+
+   result = vn_call_vkEnumeratePhysicalDevices(
+      instance, vn_instance_to_handle(instance), &count, handles);
+   vk_free(alloc, handles);
+
+   if (result != VK_SUCCESS) {
+      vk_free(alloc, physical_devs);
+      goto out;
+   }
+
+   uint32_t sync_queue_base = 0;
+   uint32_t i = 0;
+   while (i < count) {
+      struct vn_physical_device *physical_dev = &physical_devs[i];
+
+      result = vn_physical_device_init(physical_dev);
+      if (result == VK_SUCCESS) {
+         /* TODO assign sync queues more fairly */
+         for (uint32_t j = 0; j < physical_dev->queue_family_count; j++) {
+            const VkQueueFamilyProperties *props =
+               &physical_dev->queue_family_properties[j].queueFamilyProperties;
+
+            if (sync_queue_base + props->queueCount >
+                instance->renderer_info.max_sync_queue_count) {
+               if (VN_DEBUG(INIT)) {
+                  vn_log(instance, "not enough sync queues (max %d)",
+                         instance->renderer_info.max_sync_queue_count);
+               }
+               result = VK_ERROR_INITIALIZATION_FAILED;
+               break;
+            }
+
+            physical_dev->queue_family_sync_queue_bases[j] = sync_queue_base;
+            sync_queue_base += props->queueCount;
+         }
+      }
+
+      if (result != VK_SUCCESS) {
+         memmove(&physical_devs[i], &physical_devs[i + 1],
+                 sizeof(*physical_devs) * (count - i - 1));
+         count--;
+         continue;
+      }
+
+      i++;
+   }
+
+   instance->physical_devices = physical_devs;
+   instance->physical_device_count = count;
+
+out:
+   mtx_unlock(&instance->physical_device_mutex);
+   return result;
+}
+
+static VkResult
+vn_device_enable_extensions(struct vn_device *dev,
+                            const char *const *names,
+                            uint32_t count)
+{
+   for (uint32_t i = 0; i < count; i++) {
+      const int index = get_device_extension_index(names[i]);
+      if (index < 0 ||
+          !dev->physical_device->supported_extensions.extensions[index])
+         return VK_ERROR_EXTENSION_NOT_PRESENT;
+      dev->enabled_extensions.extensions[index] = true;
+   }
+   return VK_SUCCESS;
+}
+
+static void
+vn_device_init_dispatch(struct vn_device *dev)
+{
+   struct vn_instance *instance = dev->instance;
+   const uint32_t count = ARRAY_SIZE(vn_device_dispatch_table.entrypoints);
+   void *const *from = vn_device_dispatch_table.entrypoints;
+   void **to = dev->dispatch.entrypoints;
+
+   for (uint32_t i = 0; i < count; i++) {
+      to[i] = vn_device_entrypoint_is_enabled(i, instance->api_version,
+                                              &instance->enabled_extensions,
+                                              &dev->enabled_extensions)
+                 ? from[i]
+                 : NULL;
+   }
+}
+
+/* instance commands */
+
+/* vn_EnumerateInstanceVersion is generated */
+
+VkResult
+vn_EnumerateInstanceExtensionProperties(const char *pLayerName,
+                                        uint32_t *pPropertyCount,
+                                        VkExtensionProperties *pProperties)
+{
+   if (pLayerName)
+      return vn_error(NULL, VK_ERROR_LAYER_NOT_PRESENT);
+
+   /*
+    * Instance extensions add instance-level or physical-device-level
+    * functionalities.  Currently, there are
+    *
+    *  - VK_KHR_surface and related extensions
+    *  - VK_KHR_display and related extensions
+    *  - VK_EXT_debug_{report,utils}
+    *  - VK_EXT_validation_{flags,features}
+    *  - promoted to core
+    *    - VK_KHR_get_physical_device_properties2
+    *    - VK_KHR_device_group_creation
+    *    - VK_KHR_external_{memory,semaphore,fence}_capabilities
+    *
+    * It seems renderer support is either unnecessary or optional.  We should
+    * be able to advertise them or lie about them locally.
+    */
+   VK_OUTARRAY_MAKE(out, pProperties, pPropertyCount);
+   for (uint32_t i = 0; i < VN_INSTANCE_EXTENSION_COUNT; i++) {
+      if (vn_instance_extensions_supported.extensions[i]) {
+         vk_outarray_append (&out, prop) {
+            *prop = vn_instance_extensions[i];
+         }
+      }
+   }
+
+   return vk_outarray_status(&out);
+}
+
+VkResult
+vn_EnumerateInstanceLayerProperties(uint32_t *pPropertyCount,
+                                    VkLayerProperties *pProperties)
+{
+   *pPropertyCount = 0;
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
+                  const VkAllocationCallbacks *pAllocator,
+                  VkInstance *pInstance)
+{
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &vn_default_allocator;
+   struct vn_instance *instance;
+   VkResult result;
+
+   vn_debug_init();
+
+   instance = vk_zalloc(alloc, sizeof(*instance), VN_DEFAULT_ALIGN,
+                        VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+   if (!instance)
+      return vn_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&instance->base, VK_OBJECT_TYPE_INSTANCE, NULL);
+
+   instance->allocator = *alloc;
+   instance->api_version = get_instance_api_version(pCreateInfo);
+
+   mtx_init(&instance->cs_mutex, mtx_plain);
+   mtx_init(&instance->physical_device_mutex, mtx_plain);
+
+   if (!vn_icd_supports_api_version(instance->api_version)) {
+      result = VK_ERROR_INCOMPATIBLE_DRIVER;
+      goto fail;
+   }
+
+   if (pCreateInfo->enabledLayerCount) {
+      result = VK_ERROR_LAYER_NOT_PRESENT;
+      goto fail;
+   }
+
+   result = vn_instance_init_extensions(instance,
+                                        pCreateInfo->ppEnabledExtensionNames,
+                                        pCreateInfo->enabledExtensionCount);
+   if (result != VK_SUCCESS)
+      goto fail;
+
+   vn_instance_init_dispatch(instance);
+
+   result = vn_instance_init_renderer(instance);
+   if (result != VK_SUCCESS)
+      goto fail;
+
+   VkInstanceCreateInfo local_create_info;
+   local_create_info = *pCreateInfo;
+   local_create_info.ppEnabledExtensionNames = NULL;
+   local_create_info.enabledExtensionCount = 0;
+   pCreateInfo = &local_create_info;
+
+   /* request at least instance->renderer_version */
+   VkApplicationInfo local_app_info = {
+      .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+      .apiVersion = instance->renderer_version,
+   };
+   if (instance->api_version < instance->renderer_version) {
+      if (pCreateInfo->pApplicationInfo) {
+         local_app_info = *pCreateInfo->pApplicationInfo;
+         local_app_info.apiVersion = instance->renderer_version;
+      }
+      local_create_info.pApplicationInfo = &local_app_info;
+   }
+
+   VkInstance instance_handle = vn_instance_to_handle(instance);
+   result =
+      vn_call_vkCreateInstance(instance, pCreateInfo, NULL, &instance_handle);
+   if (result != VK_SUCCESS)
+      return result;
+
+   *pInstance = instance_handle;
+
+   return VK_SUCCESS;
+
+fail:
+   if (instance->cs_reply.bo)
+      vn_renderer_bo_unref(instance->cs_reply.bo, alloc);
+   if (instance->cs_reply.sync)
+      vn_renderer_sync_destroy(instance->cs_reply.sync, alloc);
+
+   if (instance->renderer) {
+      vn_renderer_destroy(instance->renderer, alloc);
+      vn_cs_fini(&instance->cs);
+   }
+
+   mtx_destroy(&instance->cs_mutex);
+   mtx_destroy(&instance->physical_device_mutex);
+   vk_free(alloc, instance);
+
+   return vn_error(NULL, result);
+}
+
+void
+vn_DestroyInstance(VkInstance _instance,
+                   const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_instance *instance = vn_instance_from_handle(_instance);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &instance->allocator;
+
+   if (!instance)
+      return;
+
+   if (instance->physical_devices) {
+      for (uint32_t i = 0; i < instance->physical_device_count; i++)
+         vn_physical_device_fini(&instance->physical_devices[i]);
+      vk_free(alloc, instance->physical_devices);
+   }
+
+   vn_call_vkDestroyInstance(instance, _instance, NULL);
+
+   vn_renderer_bo_unref(instance->cs_reply.bo, alloc);
+   vn_renderer_sync_destroy(instance->cs_reply.sync, alloc);
+
+   vn_renderer_destroy(instance->renderer, alloc);
+   vn_cs_fini(&instance->cs);
+   mtx_destroy(&instance->cs_mutex);
+   mtx_destroy(&instance->physical_device_mutex);
+
+   vn_cs_object_fini(&instance->base);
+   vk_free(alloc, instance);
+}
+
+PFN_vkVoidFunction
+vn_GetInstanceProcAddr(VkInstance _instance, const char *pName)
+{
+   static const struct {
+      const char *name;
+      PFN_vkVoidFunction command;
+   } instance_commands[] = {
+      { "vkGetInstanceProcAddr", (PFN_vkVoidFunction)vn_GetInstanceProcAddr },
+      { "vkEnumerateInstanceVersion",
+        (PFN_vkVoidFunction)vn_EnumerateInstanceVersion },
+      { "vkEnumerateInstanceExtensionProperties",
+        (PFN_vkVoidFunction)vn_EnumerateInstanceExtensionProperties },
+      { "vkEnumerateInstanceLayerProperties",
+        (PFN_vkVoidFunction)vn_EnumerateInstanceLayerProperties },
+      { "vkCreateInstance", (PFN_vkVoidFunction)vn_CreateInstance },
+   };
+   struct vn_instance *instance = vn_instance_from_handle(_instance);
+
+   assert(pName);
+   for (uint32_t i = 0; i < ARRAY_SIZE(instance_commands); i++) {
+      if (!strcmp(instance_commands[i].name, pName))
+         return instance_commands[i].command;
+   }
+
+   if (!instance)
+      return NULL;
+
+   return vn_instance_get_dispatch(instance, pName);
+}
+
+/* physical device commands */
+
+VkResult
+vn_EnumeratePhysicalDevices(VkInstance _instance,
+                            uint32_t *pPhysicalDeviceCount,
+                            VkPhysicalDevice *pPhysicalDevices)
+{
+   struct vn_instance *instance = vn_instance_from_handle(_instance);
+
+   VkResult result = vn_instance_enumerate_physical_devices(instance);
+   if (result != VK_SUCCESS)
+      return vn_error(instance, result);
+
+   VK_OUTARRAY_MAKE(out, pPhysicalDevices, pPhysicalDeviceCount);
+   for (uint32_t i = 0; i < instance->physical_device_count; i++) {
+      vk_outarray_append (&out, physical_dev) {
+         *physical_dev =
+            vn_physical_device_to_handle(&instance->physical_devices[i]);
+      }
+   }
+
+   return vk_outarray_status(&out);
+}
+
+VkResult
+vn_EnumeratePhysicalDeviceGroups(
+   VkInstance _instance,
+   uint32_t *pPhysicalDeviceGroupCount,
+   VkPhysicalDeviceGroupProperties *pPhysicalDeviceGroupProperties)
+{
+   struct vn_instance *instance = vn_instance_from_handle(_instance);
+   const VkAllocationCallbacks *alloc = &instance->allocator;
+   struct vn_cs_object *dummy = NULL;
+   VkResult result;
+
+   result = vn_instance_enumerate_physical_devices(instance);
+   if (result != VK_SUCCESS)
+      return vn_error(instance, result);
+
+   /* make sure VkPhysicalDevice point to objects, as they are considered
+    * inputs by the encoder
+    */
+   if (pPhysicalDeviceGroupProperties) {
+      const uint32_t count = *pPhysicalDeviceGroupCount;
+      const size_t size = sizeof(*dummy) * VK_MAX_DEVICE_GROUP_SIZE * count;
+
+      dummy = vk_zalloc(alloc, size, VN_DEFAULT_ALIGN,
+                        VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (!dummy)
+         return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+      for (uint32_t i = 0; i < count; i++) {
+         VkPhysicalDeviceGroupProperties *props =
+            &pPhysicalDeviceGroupProperties[i];
+
+         for (uint32_t j = 0; j < VK_MAX_DEVICE_GROUP_SIZE; j++) {
+            props->physicalDevices[j] =
+               (VkPhysicalDevice)&dummy[VK_MAX_DEVICE_GROUP_SIZE * i + j];
+         }
+      }
+   }
+
+   result = vn_call_vkEnumeratePhysicalDeviceGroups(
+      instance, vn_instance_to_handle(instance), pPhysicalDeviceGroupCount,
+      pPhysicalDeviceGroupProperties);
+   if (result != VK_SUCCESS) {
+      if (dummy)
+         vk_free(alloc, dummy);
+      return vn_error(instance, result);
+   }
+
+   if (pPhysicalDeviceGroupProperties) {
+      for (uint32_t i = 0; i < *pPhysicalDeviceGroupCount; i++) {
+         VkPhysicalDeviceGroupProperties *props =
+            &pPhysicalDeviceGroupProperties[i];
+         for (uint32_t j = 0; j < props->physicalDeviceCount; j++) {
+            const vn_cs_object_id id =
+               dummy[VK_MAX_DEVICE_GROUP_SIZE * i + j].id;
+            struct vn_physical_device *physical_dev =
+               vn_instance_find_physical_device(instance, id);
+            props->physicalDevices[j] =
+               vn_physical_device_to_handle(physical_dev);
+         }
+      }
+   }
+
+   if (dummy)
+      vk_free(alloc, dummy);
+
+   return VK_SUCCESS;
+}
+
+void
+vn_GetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice,
+                             VkPhysicalDeviceFeatures *pFeatures)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   *pFeatures = physical_dev->features.features;
+}
+
+void
+vn_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
+                               VkPhysicalDeviceProperties *pProperties)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   *pProperties = physical_dev->properties.properties;
+}
+
+void
+vn_GetPhysicalDeviceQueueFamilyProperties(
+   VkPhysicalDevice physicalDevice,
+   uint32_t *pQueueFamilyPropertyCount,
+   VkQueueFamilyProperties *pQueueFamilyProperties)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   VK_OUTARRAY_MAKE(out, pQueueFamilyProperties, pQueueFamilyPropertyCount);
+   for (uint32_t i = 0; i < physical_dev->queue_family_count; i++) {
+      vk_outarray_append (&out, props) {
+         *props =
+            physical_dev->queue_family_properties[i].queueFamilyProperties;
+      }
+   }
+}
+
+void
+vn_GetPhysicalDeviceMemoryProperties(
+   VkPhysicalDevice physicalDevice,
+   VkPhysicalDeviceMemoryProperties *pMemoryProperties)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   *pMemoryProperties = physical_dev->memory_properties.memoryProperties;
+}
+
+void
+vn_GetPhysicalDeviceFormatProperties(VkPhysicalDevice physicalDevice,
+                                     VkFormat format,
+                                     VkFormatProperties *pFormatProperties)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   /* TODO query all formats during init */
+   vn_call_vkGetPhysicalDeviceFormatProperties(
+      physical_dev->instance, physicalDevice, format, pFormatProperties);
+}
+
+VkResult
+vn_GetPhysicalDeviceImageFormatProperties(
+   VkPhysicalDevice physicalDevice,
+   VkFormat format,
+   VkImageType type,
+   VkImageTiling tiling,
+   VkImageUsageFlags usage,
+   VkImageCreateFlags flags,
+   VkImageFormatProperties *pImageFormatProperties)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   /* TODO per-device cache */
+   VkResult result = vn_call_vkGetPhysicalDeviceImageFormatProperties(
+      physical_dev->instance, physicalDevice, format, type, tiling, usage,
+      flags, pImageFormatProperties);
+
+   return vn_result(physical_dev->instance, result);
+}
+
+void
+vn_GetPhysicalDeviceSparseImageFormatProperties(
+   VkPhysicalDevice physicalDevice,
+   VkFormat format,
+   VkImageType type,
+   uint32_t samples,
+   VkImageUsageFlags usage,
+   VkImageTiling tiling,
+   uint32_t *pPropertyCount,
+   VkSparseImageFormatProperties *pProperties)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   /* TODO per-device cache */
+   vn_call_vkGetPhysicalDeviceSparseImageFormatProperties(
+      physical_dev->instance, physicalDevice, format, type, samples, usage,
+      tiling, pPropertyCount, pProperties);
+}
+
+void
+vn_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
+                              VkPhysicalDeviceFeatures2 *pFeatures)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+   const struct VkPhysicalDeviceVulkan11Features *vk11_feats =
+      &physical_dev->vulkan_1_1_features;
+   const struct VkPhysicalDeviceVulkan12Features *vk12_feats =
+      &physical_dev->vulkan_1_2_features;
+   union {
+      VkBaseOutStructure *pnext;
+
+      /* Vulkan 1.1 */
+      VkPhysicalDevice16BitStorageFeatures *sixteen_bit_storage;
+      VkPhysicalDeviceMultiviewFeatures *multiview;
+      VkPhysicalDeviceVariablePointersFeatures *variable_pointers;
+      VkPhysicalDeviceProtectedMemoryFeatures *protected_memory;
+      VkPhysicalDeviceSamplerYcbcrConversionFeatures *sampler_ycbcr_conversion;
+      VkPhysicalDeviceShaderDrawParametersFeatures *shader_draw_parameters;
+
+      /* Vulkan 1.2 */
+      VkPhysicalDevice8BitStorageFeatures *eight_bit_storage;
+      VkPhysicalDeviceShaderAtomicInt64Features *shader_atomic_int64;
+      VkPhysicalDeviceShaderFloat16Int8Features *shader_float16_int8;
+      VkPhysicalDeviceDescriptorIndexingFeatures *descriptor_indexing;
+      VkPhysicalDeviceScalarBlockLayoutFeatures *scalar_block_layout;
+      VkPhysicalDeviceImagelessFramebufferFeatures *imageless_framebuffer;
+      VkPhysicalDeviceUniformBufferStandardLayoutFeatures
+         *uniform_buffer_standard_layout;
+      VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures
+         *shader_subgroup_extended_types;
+      VkPhysicalDeviceSeparateDepthStencilLayoutsFeatures
+         *separate_depth_stencil_layouts;
+      VkPhysicalDeviceHostQueryResetFeatures *host_query_reset;
+      VkPhysicalDeviceTimelineSemaphoreFeatures *timeline_semaphore;
+      VkPhysicalDeviceBufferDeviceAddressFeatures *buffer_device_address;
+      VkPhysicalDeviceVulkanMemoryModelFeatures *vulkan_memory_model;
+
+      VkPhysicalDeviceTransformFeedbackFeaturesEXT *transform_feedback;
+   } u;
+
+   u.pnext = (VkBaseOutStructure *)pFeatures;
+   while (u.pnext) {
+      void *saved = u.pnext->pNext;
+      switch (u.pnext->sType) {
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2:
+         memcpy(u.pnext, &physical_dev->features,
+                sizeof(physical_dev->features));
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES:
+         memcpy(u.pnext, vk11_feats, sizeof(*vk11_feats));
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
+         memcpy(u.pnext, vk12_feats, sizeof(*vk12_feats));
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES:
+         u.sixteen_bit_storage->storageBuffer16BitAccess =
+            vk11_feats->storageBuffer16BitAccess;
+         u.sixteen_bit_storage->uniformAndStorageBuffer16BitAccess =
+            vk11_feats->uniformAndStorageBuffer16BitAccess;
+         u.sixteen_bit_storage->storagePushConstant16 =
+            vk11_feats->storagePushConstant16;
+         u.sixteen_bit_storage->storageInputOutput16 =
+            vk11_feats->storageInputOutput16;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES:
+         u.multiview->multiview = vk11_feats->multiview;
+         u.multiview->multiviewGeometryShader =
+            vk11_feats->multiviewGeometryShader;
+         u.multiview->multiviewTessellationShader =
+            vk11_feats->multiviewTessellationShader;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES:
+         u.variable_pointers->variablePointersStorageBuffer =
+            vk11_feats->variablePointersStorageBuffer;
+         u.variable_pointers->variablePointers = vk11_feats->variablePointers;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROTECTED_MEMORY_FEATURES:
+         u.protected_memory->protectedMemory = vk11_feats->protectedMemory;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES:
+         u.sampler_ycbcr_conversion->samplerYcbcrConversion =
+            vk11_feats->samplerYcbcrConversion;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES:
+         u.shader_draw_parameters->shaderDrawParameters =
+            vk11_feats->shaderDrawParameters;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES:
+         u.eight_bit_storage->storageBuffer8BitAccess =
+            vk12_feats->storageBuffer8BitAccess;
+         u.eight_bit_storage->uniformAndStorageBuffer8BitAccess =
+            vk12_feats->uniformAndStorageBuffer8BitAccess;
+         u.eight_bit_storage->storagePushConstant8 =
+            vk12_feats->storagePushConstant8;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES:
+         u.shader_atomic_int64->shaderBufferInt64Atomics =
+            vk12_feats->shaderBufferInt64Atomics;
+         u.shader_atomic_int64->shaderSharedInt64Atomics =
+            vk12_feats->shaderSharedInt64Atomics;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES:
+         u.shader_float16_int8->shaderFloat16 = vk12_feats->shaderFloat16;
+         u.shader_float16_int8->shaderInt8 = vk12_feats->shaderInt8;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES:
+         u.descriptor_indexing->shaderInputAttachmentArrayDynamicIndexing =
+            vk12_feats->shaderInputAttachmentArrayDynamicIndexing;
+         u.descriptor_indexing->shaderUniformTexelBufferArrayDynamicIndexing =
+            vk12_feats->shaderUniformTexelBufferArrayDynamicIndexing;
+         u.descriptor_indexing->shaderStorageTexelBufferArrayDynamicIndexing =
+            vk12_feats->shaderStorageTexelBufferArrayDynamicIndexing;
+         u.descriptor_indexing->shaderUniformBufferArrayNonUniformIndexing =
+            vk12_feats->shaderUniformBufferArrayNonUniformIndexing;
+         u.descriptor_indexing->shaderSampledImageArrayNonUniformIndexing =
+            vk12_feats->shaderSampledImageArrayNonUniformIndexing;
+         u.descriptor_indexing->shaderStorageBufferArrayNonUniformIndexing =
+            vk12_feats->shaderStorageBufferArrayNonUniformIndexing;
+         u.descriptor_indexing->shaderStorageImageArrayNonUniformIndexing =
+            vk12_feats->shaderStorageImageArrayNonUniformIndexing;
+         u.descriptor_indexing->shaderInputAttachmentArrayNonUniformIndexing =
+            vk12_feats->shaderInputAttachmentArrayNonUniformIndexing;
+         u.descriptor_indexing
+            ->shaderUniformTexelBufferArrayNonUniformIndexing =
+            vk12_feats->shaderUniformTexelBufferArrayNonUniformIndexing;
+         u.descriptor_indexing
+            ->shaderStorageTexelBufferArrayNonUniformIndexing =
+            vk12_feats->shaderStorageTexelBufferArrayNonUniformIndexing;
+         u.descriptor_indexing->descriptorBindingUniformBufferUpdateAfterBind =
+            vk12_feats->descriptorBindingUniformBufferUpdateAfterBind;
+         u.descriptor_indexing->descriptorBindingSampledImageUpdateAfterBind =
+            vk12_feats->descriptorBindingSampledImageUpdateAfterBind;
+         u.descriptor_indexing->descriptorBindingStorageImageUpdateAfterBind =
+            vk12_feats->descriptorBindingStorageImageUpdateAfterBind;
+         u.descriptor_indexing->descriptorBindingStorageBufferUpdateAfterBind =
+            vk12_feats->descriptorBindingStorageBufferUpdateAfterBind;
+         u.descriptor_indexing
+            ->descriptorBindingUniformTexelBufferUpdateAfterBind =
+            vk12_feats->descriptorBindingUniformTexelBufferUpdateAfterBind;
+         u.descriptor_indexing
+            ->descriptorBindingStorageTexelBufferUpdateAfterBind =
+            vk12_feats->descriptorBindingStorageTexelBufferUpdateAfterBind;
+         u.descriptor_indexing->descriptorBindingUpdateUnusedWhilePending =
+            vk12_feats->descriptorBindingUpdateUnusedWhilePending;
+         u.descriptor_indexing->descriptorBindingPartiallyBound =
+            vk12_feats->descriptorBindingPartiallyBound;
+         u.descriptor_indexing->descriptorBindingVariableDescriptorCount =
+            vk12_feats->descriptorBindingVariableDescriptorCount;
+         u.descriptor_indexing->runtimeDescriptorArray =
+            vk12_feats->runtimeDescriptorArray;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES:
+         u.scalar_block_layout->scalarBlockLayout =
+            vk12_feats->scalarBlockLayout;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES:
+         u.imageless_framebuffer->imagelessFramebuffer =
+            vk12_feats->imagelessFramebuffer;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFORM_BUFFER_STANDARD_LAYOUT_FEATURES:
+         u.uniform_buffer_standard_layout->uniformBufferStandardLayout =
+            vk12_feats->uniformBufferStandardLayout;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES:
+         u.shader_subgroup_extended_types->shaderSubgroupExtendedTypes =
+            vk12_feats->shaderSubgroupExtendedTypes;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SEPARATE_DEPTH_STENCIL_LAYOUTS_FEATURES:
+         u.separate_depth_stencil_layouts->separateDepthStencilLayouts =
+            vk12_feats->separateDepthStencilLayouts;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES:
+         u.host_query_reset->hostQueryReset = vk12_feats->hostQueryReset;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES:
+         u.timeline_semaphore->timelineSemaphore =
+            vk12_feats->timelineSemaphore;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES:
+         u.buffer_device_address->bufferDeviceAddress =
+            vk12_feats->bufferDeviceAddress;
+         u.buffer_device_address->bufferDeviceAddressCaptureReplay =
+            vk12_feats->bufferDeviceAddressCaptureReplay;
+         u.buffer_device_address->bufferDeviceAddressMultiDevice =
+            vk12_feats->bufferDeviceAddressMultiDevice;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES:
+         u.vulkan_memory_model->vulkanMemoryModel =
+            vk12_feats->vulkanMemoryModel;
+         u.vulkan_memory_model->vulkanMemoryModelDeviceScope =
+            vk12_feats->vulkanMemoryModelDeviceScope;
+         u.vulkan_memory_model->vulkanMemoryModelAvailabilityVisibilityChains =
+            vk12_feats->vulkanMemoryModelAvailabilityVisibilityChains;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT:
+         memcpy(u.transform_feedback,
+                &physical_dev->transform_feedback_features,
+                sizeof(physical_dev->transform_feedback_features));
+         break;
+      default:
+         break;
+      }
+      u.pnext->pNext = saved;
+
+      u.pnext = u.pnext->pNext;
+   }
+}
+
+void
+vn_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
+                                VkPhysicalDeviceProperties2 *pProperties)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+   const struct VkPhysicalDeviceVulkan11Properties *vk11_props =
+      &physical_dev->vulkan_1_1_properties;
+   const struct VkPhysicalDeviceVulkan12Properties *vk12_props =
+      &physical_dev->vulkan_1_2_properties;
+   union {
+      VkBaseOutStructure *pnext;
+
+      /* Vulkan 1.1 */
+      VkPhysicalDeviceIDProperties *id;
+      VkPhysicalDeviceSubgroupProperties *subgroup;
+      VkPhysicalDevicePointClippingProperties *point_clipping;
+      VkPhysicalDeviceMultiviewProperties *multiview;
+      VkPhysicalDeviceProtectedMemoryProperties *protected_memory;
+      VkPhysicalDeviceMaintenance3Properties *maintenance_3;
+
+      /* Vulkan 1.2 */
+      VkPhysicalDeviceDriverProperties *driver;
+      VkPhysicalDeviceFloatControlsProperties *float_controls;
+      VkPhysicalDeviceDescriptorIndexingProperties *descriptor_indexing;
+      VkPhysicalDeviceDepthStencilResolveProperties *depth_stencil_resolve;
+      VkPhysicalDeviceSamplerFilterMinmaxProperties *sampler_filter_minmax;
+      VkPhysicalDeviceTimelineSemaphoreProperties *timeline_semaphore;
+
+      VkPhysicalDevicePCIBusInfoPropertiesEXT *pci_bus_info;
+      VkPhysicalDeviceTransformFeedbackPropertiesEXT *transform_feedback;
+   } u;
+
+   u.pnext = (VkBaseOutStructure *)pProperties;
+   while (u.pnext) {
+      void *saved = u.pnext->pNext;
+      switch (u.pnext->sType) {
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2:
+         memcpy(u.pnext, &physical_dev->properties,
+                sizeof(physical_dev->properties));
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES:
+         memcpy(u.pnext, vk11_props, sizeof(*vk11_props));
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES:
+         memcpy(u.pnext, vk12_props, sizeof(*vk12_props));
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES:
+         memcpy(u.id->deviceUUID, vk11_props->deviceUUID,
+                sizeof(vk11_props->deviceUUID));
+         memcpy(u.id->driverUUID, vk11_props->driverUUID,
+                sizeof(vk11_props->driverUUID));
+         memcpy(u.id->deviceLUID, vk11_props->deviceLUID,
+                sizeof(vk11_props->deviceLUID));
+         u.id->deviceNodeMask = vk11_props->deviceNodeMask;
+         u.id->deviceLUIDValid = vk11_props->deviceLUIDValid;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES:
+         u.subgroup->subgroupSize = vk11_props->subgroupSize;
+         u.subgroup->supportedStages = vk11_props->subgroupSupportedStages;
+         u.subgroup->supportedOperations =
+            vk11_props->subgroupSupportedOperations;
+         u.subgroup->quadOperationsInAllStages =
+            vk11_props->subgroupQuadOperationsInAllStages;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_POINT_CLIPPING_PROPERTIES:
+         u.point_clipping->pointClippingBehavior =
+            vk11_props->pointClippingBehavior;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_PROPERTIES:
+         u.multiview->maxMultiviewViewCount =
+            vk11_props->maxMultiviewViewCount;
+         u.multiview->maxMultiviewInstanceIndex =
+            vk11_props->maxMultiviewInstanceIndex;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROTECTED_MEMORY_PROPERTIES:
+         u.protected_memory->protectedNoFault = vk11_props->protectedNoFault;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES:
+         u.maintenance_3->maxPerSetDescriptors =
+            vk11_props->maxPerSetDescriptors;
+         u.maintenance_3->maxMemoryAllocationSize =
+            vk11_props->maxMemoryAllocationSize;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES:
+         u.driver->driverID = vk12_props->driverID;
+         memcpy(u.driver->driverName, vk12_props->driverName,
+                sizeof(vk12_props->driverName));
+         memcpy(u.driver->driverInfo, vk12_props->driverInfo,
+                sizeof(vk12_props->driverInfo));
+         u.driver->conformanceVersion = vk12_props->conformanceVersion;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES:
+         u.float_controls->denormBehaviorIndependence =
+            vk12_props->denormBehaviorIndependence;
+         u.float_controls->roundingModeIndependence =
+            vk12_props->roundingModeIndependence;
+         u.float_controls->shaderSignedZeroInfNanPreserveFloat16 =
+            vk12_props->shaderSignedZeroInfNanPreserveFloat16;
+         u.float_controls->shaderSignedZeroInfNanPreserveFloat32 =
+            vk12_props->shaderSignedZeroInfNanPreserveFloat32;
+         u.float_controls->shaderSignedZeroInfNanPreserveFloat64 =
+            vk12_props->shaderSignedZeroInfNanPreserveFloat64;
+         u.float_controls->shaderDenormPreserveFloat16 =
+            vk12_props->shaderDenormPreserveFloat16;
+         u.float_controls->shaderDenormPreserveFloat32 =
+            vk12_props->shaderDenormPreserveFloat32;
+         u.float_controls->shaderDenormPreserveFloat64 =
+            vk12_props->shaderDenormPreserveFloat64;
+         u.float_controls->shaderDenormFlushToZeroFloat16 =
+            vk12_props->shaderDenormFlushToZeroFloat16;
+         u.float_controls->shaderDenormFlushToZeroFloat32 =
+            vk12_props->shaderDenormFlushToZeroFloat32;
+         u.float_controls->shaderDenormFlushToZeroFloat64 =
+            vk12_props->shaderDenormFlushToZeroFloat64;
+         u.float_controls->shaderRoundingModeRTEFloat16 =
+            vk12_props->shaderRoundingModeRTEFloat16;
+         u.float_controls->shaderRoundingModeRTEFloat32 =
+            vk12_props->shaderRoundingModeRTEFloat32;
+         u.float_controls->shaderRoundingModeRTEFloat64 =
+            vk12_props->shaderRoundingModeRTEFloat64;
+         u.float_controls->shaderRoundingModeRTZFloat16 =
+            vk12_props->shaderRoundingModeRTZFloat16;
+         u.float_controls->shaderRoundingModeRTZFloat32 =
+            vk12_props->shaderRoundingModeRTZFloat32;
+         u.float_controls->shaderRoundingModeRTZFloat64 =
+            vk12_props->shaderRoundingModeRTZFloat64;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES:
+         u.descriptor_indexing->maxUpdateAfterBindDescriptorsInAllPools =
+            vk12_props->maxUpdateAfterBindDescriptorsInAllPools;
+         u.descriptor_indexing
+            ->shaderUniformBufferArrayNonUniformIndexingNative =
+            vk12_props->shaderUniformBufferArrayNonUniformIndexingNative;
+         u.descriptor_indexing
+            ->shaderSampledImageArrayNonUniformIndexingNative =
+            vk12_props->shaderSampledImageArrayNonUniformIndexingNative;
+         u.descriptor_indexing
+            ->shaderStorageBufferArrayNonUniformIndexingNative =
+            vk12_props->shaderStorageBufferArrayNonUniformIndexingNative;
+         u.descriptor_indexing
+            ->shaderStorageImageArrayNonUniformIndexingNative =
+            vk12_props->shaderStorageImageArrayNonUniformIndexingNative;
+         u.descriptor_indexing
+            ->shaderInputAttachmentArrayNonUniformIndexingNative =
+            vk12_props->shaderInputAttachmentArrayNonUniformIndexingNative;
+         u.descriptor_indexing->robustBufferAccessUpdateAfterBind =
+            vk12_props->robustBufferAccessUpdateAfterBind;
+         u.descriptor_indexing->quadDivergentImplicitLod =
+            vk12_props->quadDivergentImplicitLod;
+         u.descriptor_indexing->maxPerStageDescriptorUpdateAfterBindSamplers =
+            vk12_props->maxPerStageDescriptorUpdateAfterBindSamplers;
+         u.descriptor_indexing
+            ->maxPerStageDescriptorUpdateAfterBindUniformBuffers =
+            vk12_props->maxPerStageDescriptorUpdateAfterBindUniformBuffers;
+         u.descriptor_indexing
+            ->maxPerStageDescriptorUpdateAfterBindStorageBuffers =
+            vk12_props->maxPerStageDescriptorUpdateAfterBindStorageBuffers;
+         u.descriptor_indexing
+            ->maxPerStageDescriptorUpdateAfterBindSampledImages =
+            vk12_props->maxPerStageDescriptorUpdateAfterBindSampledImages;
+         u.descriptor_indexing
+            ->maxPerStageDescriptorUpdateAfterBindStorageImages =
+            vk12_props->maxPerStageDescriptorUpdateAfterBindStorageImages;
+         u.descriptor_indexing
+            ->maxPerStageDescriptorUpdateAfterBindInputAttachments =
+            vk12_props->maxPerStageDescriptorUpdateAfterBindInputAttachments;
+         u.descriptor_indexing->maxPerStageUpdateAfterBindResources =
+            vk12_props->maxPerStageUpdateAfterBindResources;
+         u.descriptor_indexing->maxDescriptorSetUpdateAfterBindSamplers =
+            vk12_props->maxDescriptorSetUpdateAfterBindSamplers;
+         u.descriptor_indexing->maxDescriptorSetUpdateAfterBindUniformBuffers =
+            vk12_props->maxDescriptorSetUpdateAfterBindUniformBuffers;
+         u.descriptor_indexing
+            ->maxDescriptorSetUpdateAfterBindUniformBuffersDynamic =
+            vk12_props->maxDescriptorSetUpdateAfterBindUniformBuffersDynamic;
+         u.descriptor_indexing->maxDescriptorSetUpdateAfterBindStorageBuffers =
+            vk12_props->maxDescriptorSetUpdateAfterBindStorageBuffers;
+         u.descriptor_indexing
+            ->maxDescriptorSetUpdateAfterBindStorageBuffersDynamic =
+            vk12_props->maxDescriptorSetUpdateAfterBindStorageBuffersDynamic;
+         u.descriptor_indexing->maxDescriptorSetUpdateAfterBindSampledImages =
+            vk12_props->maxDescriptorSetUpdateAfterBindSampledImages;
+         u.descriptor_indexing->maxDescriptorSetUpdateAfterBindStorageImages =
+            vk12_props->maxDescriptorSetUpdateAfterBindStorageImages;
+         u.descriptor_indexing
+            ->maxDescriptorSetUpdateAfterBindInputAttachments =
+            vk12_props->maxDescriptorSetUpdateAfterBindInputAttachments;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES:
+         u.depth_stencil_resolve->supportedDepthResolveModes =
+            vk12_props->supportedDepthResolveModes;
+         u.depth_stencil_resolve->supportedStencilResolveModes =
+            vk12_props->supportedStencilResolveModes;
+         u.depth_stencil_resolve->independentResolveNone =
+            vk12_props->independentResolveNone;
+         u.depth_stencil_resolve->independentResolve =
+            vk12_props->independentResolve;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_FILTER_MINMAX_PROPERTIES:
+         u.sampler_filter_minmax->filterMinmaxSingleComponentFormats =
+            vk12_props->filterMinmaxSingleComponentFormats;
+         u.sampler_filter_minmax->filterMinmaxImageComponentMapping =
+            vk12_props->filterMinmaxImageComponentMapping;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_PROPERTIES:
+         u.timeline_semaphore->maxTimelineSemaphoreValueDifference =
+            vk12_props->maxTimelineSemaphoreValueDifference;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PCI_BUS_INFO_PROPERTIES_EXT:
+         /* this is used by WSI */
+         if (physical_dev->instance->renderer_info.pci.has_bus_info) {
+            u.pci_bus_info->pciDomain =
+               physical_dev->instance->renderer_info.pci.domain;
+            u.pci_bus_info->pciBus =
+               physical_dev->instance->renderer_info.pci.bus;
+            u.pci_bus_info->pciDevice =
+               physical_dev->instance->renderer_info.pci.device;
+            u.pci_bus_info->pciFunction =
+               physical_dev->instance->renderer_info.pci.function;
+         }
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT:
+         memcpy(u.transform_feedback,
+                &physical_dev->transform_feedback_properties,
+                sizeof(physical_dev->transform_feedback_properties));
+         break;
+      default:
+         break;
+      }
+      u.pnext->pNext = saved;
+
+      u.pnext = u.pnext->pNext;
+   }
+}
+
+void
+vn_GetPhysicalDeviceQueueFamilyProperties2(
+   VkPhysicalDevice physicalDevice,
+   uint32_t *pQueueFamilyPropertyCount,
+   VkQueueFamilyProperties2 *pQueueFamilyProperties)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   VK_OUTARRAY_MAKE(out, pQueueFamilyProperties, pQueueFamilyPropertyCount);
+   for (uint32_t i = 0; i < physical_dev->queue_family_count; i++) {
+      vk_outarray_append (&out, props) {
+         *props = physical_dev->queue_family_properties[i];
+      }
+   }
+}
+
+void
+vn_GetPhysicalDeviceMemoryProperties2(
+   VkPhysicalDevice physicalDevice,
+   VkPhysicalDeviceMemoryProperties2 *pMemoryProperties)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   pMemoryProperties->memoryProperties =
+      physical_dev->memory_properties.memoryProperties;
+}
+
+void
+vn_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
+                                      VkFormat format,
+                                      VkFormatProperties2 *pFormatProperties)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   /* TODO query all formats during init */
+   vn_call_vkGetPhysicalDeviceFormatProperties2(
+      physical_dev->instance, physicalDevice, format, pFormatProperties);
+}
+
+VkResult
+vn_GetPhysicalDeviceImageFormatProperties2(
+   VkPhysicalDevice physicalDevice,
+   const VkPhysicalDeviceImageFormatInfo2 *pImageFormatInfo,
+   VkImageFormatProperties2 *pImageFormatProperties)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   VkResult result;
+   /* TODO per-device cache */
+   result = vn_call_vkGetPhysicalDeviceImageFormatProperties2(
+      physical_dev->instance, physicalDevice, pImageFormatInfo,
+      pImageFormatProperties);
+
+   VkExternalImageFormatProperties *props = vk_find_struct(
+      pImageFormatProperties->pNext, EXTERNAL_IMAGE_FORMAT_PROPERTIES);
+   if (props) {
+      memset(&props->externalMemoryProperties, 0,
+             sizeof(props->externalMemoryProperties));
+   }
+
+   return vn_result(physical_dev->instance, result);
+}
+
+void
+vn_GetPhysicalDeviceSparseImageFormatProperties2(
+   VkPhysicalDevice physicalDevice,
+   const VkPhysicalDeviceSparseImageFormatInfo2 *pFormatInfo,
+   uint32_t *pPropertyCount,
+   VkSparseImageFormatProperties2 *pProperties)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   /* TODO per-device cache */
+   vn_call_vkGetPhysicalDeviceSparseImageFormatProperties2(
+      physical_dev->instance, physicalDevice, pFormatInfo, pPropertyCount,
+      pProperties);
+}
+
+void
+vn_GetPhysicalDeviceExternalBufferProperties(
+   VkPhysicalDevice physicalDevice,
+   const VkPhysicalDeviceExternalBufferInfo *pExternalBufferInfo,
+   VkExternalBufferProperties *pExternalBufferProperties)
+{
+   VkExternalMemoryProperties *props =
+      &pExternalBufferProperties->externalMemoryProperties;
+
+   props->compatibleHandleTypes = pExternalBufferInfo->handleType;
+   props->exportFromImportedHandleTypes = 0;
+   props->externalMemoryFeatures = 0;
+}
+
+void
+vn_GetPhysicalDeviceExternalFenceProperties(
+   VkPhysicalDevice physicalDevice,
+   const VkPhysicalDeviceExternalFenceInfo *pExternalFenceInfo,
+   VkExternalFenceProperties *pExternalFenceProperties)
+{
+   pExternalFenceProperties->compatibleHandleTypes =
+      pExternalFenceInfo->handleType;
+   pExternalFenceProperties->exportFromImportedHandleTypes = 0;
+   pExternalFenceProperties->externalFenceFeatures = 0;
+}
+
+void
+vn_GetPhysicalDeviceExternalSemaphoreProperties(
+   VkPhysicalDevice physicalDevice,
+   const VkPhysicalDeviceExternalSemaphoreInfo *pExternalSemaphoreInfo,
+   VkExternalSemaphoreProperties *pExternalSemaphoreProperties)
+{
+   pExternalSemaphoreProperties->compatibleHandleTypes =
+      pExternalSemaphoreInfo->handleType;
+   pExternalSemaphoreProperties->exportFromImportedHandleTypes = 0;
+   pExternalSemaphoreProperties->externalSemaphoreFeatures = 0;
+}
+
+/* device commands */
+
+VkResult
+vn_EnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice,
+                                      const char *pLayerName,
+                                      uint32_t *pPropertyCount,
+                                      VkExtensionProperties *pProperties)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   if (pLayerName)
+      return vn_error(physical_dev->instance, VK_ERROR_LAYER_NOT_PRESENT);
+
+   VK_OUTARRAY_MAKE(out, pProperties, pPropertyCount);
+   for (uint32_t i = 0; i < VN_DEVICE_EXTENSION_COUNT; i++) {
+      if (physical_dev->supported_extensions.extensions[i]) {
+         vk_outarray_append (&out, prop) {
+            *prop = vn_device_extensions[i];
+            if (!prop->specVersion)
+               prop->specVersion = physical_dev->extension_spec_versions[i];
+         }
+      }
+   }
+
+   return vk_outarray_status(&out);
+}
+
+VkResult
+vn_EnumerateDeviceLayerProperties(VkPhysicalDevice physicalDevice,
+                                  uint32_t *pPropertyCount,
+                                  VkLayerProperties *pProperties)
+{
+   *pPropertyCount = 0;
+   return VK_SUCCESS;
+}
+
+static VkResult
+vn_queue_init(struct vn_device *dev,
+              struct vn_queue *queue,
+              const VkDeviceQueueCreateInfo *queue_info,
+              uint32_t queue_index,
+              uint32_t sync_queue_index,
+              const VkAllocationCallbacks *alloc)
+{
+   vn_cs_object_init(&queue->base, VK_OBJECT_TYPE_QUEUE, &dev->base);
+
+   VkQueue queue_handle = vn_queue_to_handle(queue);
+   vn_async_vkGetDeviceQueue2(
+      dev->instance, vn_device_to_handle(dev),
+      &(VkDeviceQueueInfo2){
+         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2,
+         .flags = queue_info->flags,
+         .queueFamilyIndex = queue_info->queueFamilyIndex,
+         .queueIndex = queue_index,
+      },
+      &queue_handle);
+
+   queue->device = dev;
+   queue->family = queue_info->queueFamilyIndex;
+   queue->index = queue_index;
+   queue->flags = queue_info->flags;
+
+   queue->sync_queue_index = sync_queue_index;
+
+   VkResult result = vn_renderer_sync_create_cpu(
+      dev->instance->renderer, alloc, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE,
+      &queue->idle_sync);
+   if (result != VK_SUCCESS)
+      return result;
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_CreateDevice(VkPhysicalDevice physicalDevice,
+                const VkDeviceCreateInfo *pCreateInfo,
+                const VkAllocationCallbacks *pAllocator,
+                VkDevice *pDevice)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+   struct vn_instance *instance = physical_dev->instance;
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &instance->allocator;
+   struct vn_device *dev;
+   VkResult result;
+
+   dev = vk_zalloc(alloc, sizeof(*dev), VN_DEFAULT_ALIGN,
+                   VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   if (!dev)
+      return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_device_init(&dev->base, pCreateInfo, alloc);
+
+   dev->allocator = *alloc;
+   dev->instance = instance;
+   dev->physical_device = physical_dev;
+
+   result =
+      vn_device_enable_extensions(dev, pCreateInfo->ppEnabledExtensionNames,
+                                  pCreateInfo->enabledExtensionCount);
+   if (result != VK_SUCCESS)
+      goto fail;
+
+   vn_device_init_dispatch(dev);
+
+   VkDeviceCreateInfo local_create_info;
+   if (physical_dev->wsi_device.supports_modifiers) {
+      bool found = false;
+      for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
+         const char *name = pCreateInfo->ppEnabledExtensionNames[i];
+         if (!strcmp(name, "VK_EXT_image_drm_format_modifier")) {
+            found = true;
+            break;
+         }
+      }
+      if (!found) {
+         const uint32_t name_count = pCreateInfo->enabledExtensionCount + 1;
+         const char **names = malloc(sizeof(*names) * name_count);
+         if (!names) {
+            result = VK_ERROR_OUT_OF_HOST_MEMORY;
+            goto fail;
+         }
+
+         memcpy(names, pCreateInfo->ppEnabledExtensionNames,
+                sizeof(*names) * (name_count - 1));
+         names[name_count - 1] = "VK_EXT_image_drm_format_modifier";
+
+         local_create_info = *pCreateInfo;
+         local_create_info.enabledExtensionCount = name_count;
+         local_create_info.ppEnabledExtensionNames = names;
+         pCreateInfo = &local_create_info;
+      }
+   }
+
+   for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; i++)
+      dev->queue_count += pCreateInfo->pQueueCreateInfos[i].queueCount;
+   dev->queues =
+      vk_zalloc(alloc, sizeof(*dev->queues) * dev->queue_count,
+                VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   if (!dev->queues) {
+      result = VK_ERROR_OUT_OF_HOST_MEMORY;
+      goto fail;
+   }
+
+   VkDevice dev_handle = vn_device_to_handle(dev);
+   result = vn_call_vkCreateDevice(instance, physicalDevice, pCreateInfo,
+                                   NULL, &dev_handle);
+   if (result != VK_SUCCESS)
+      goto fail;
+
+   uint32_t queue_count = 0;
+   for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; i++) {
+      const VkDeviceQueueCreateInfo *queue_info =
+         &pCreateInfo->pQueueCreateInfos[i];
+      const uint32_t sync_queue_base =
+         physical_dev
+            ->queue_family_sync_queue_bases[queue_info->queueFamilyIndex];
+
+      for (uint32_t j = 0; j < queue_info->queueCount; j++) {
+         struct vn_queue *queue = &dev->queues[queue_count];
+
+         result = vn_queue_init(dev, queue, queue_info, j,
+                                sync_queue_base + j, alloc);
+         if (result != VK_SUCCESS)
+            break;
+         queue_count++;
+      }
+   }
+   if (queue_count < dev->queue_count) {
+      for (uint32_t i = 0; i < queue_count; i++) {
+         struct vn_queue *queue = &dev->queues[i];
+         vn_renderer_sync_destroy(queue->idle_sync, alloc);
+      }
+      vn_call_vkDestroyDevice(instance, dev_handle, NULL);
+      goto fail;
+   }
+
+   *pDevice = dev_handle;
+
+   if (pCreateInfo == &local_create_info)
+      vk_free(alloc, (void *)pCreateInfo->ppEnabledExtensionNames);
+
+   return VK_SUCCESS;
+
+fail:
+   if (pCreateInfo == &local_create_info)
+      vk_free(alloc, (void *)pCreateInfo->ppEnabledExtensionNames);
+
+   vk_free(alloc, dev->queues);
+   vk_free(alloc, dev);
+   return vn_error(instance, result);
+}
+
+void
+vn_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!dev)
+      return;
+
+   vn_async_vkDestroyDevice(dev->instance, device, NULL);
+
+   for (uint32_t i = 0; i < dev->queue_count; i++) {
+      struct vn_queue *queue = &dev->queues[i];
+      vn_renderer_sync_destroy(queue->idle_sync, alloc);
+      vn_cs_object_fini(&queue->base);
+   }
+   vk_free(alloc, dev->queues);
+
+   vn_cs_device_fini(&dev->base);
+   vk_free(alloc, dev);
+}
+
+PFN_vkVoidFunction
+vn_GetDeviceProcAddr(VkDevice device, const char *pName)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   assert(device && pName);
+
+   int idx = vn_get_device_entrypoint_index(pName);
+   if (idx < 0)
+      return NULL;
+
+   return dev->dispatch.entrypoints[idx];
+}
+
+void
+vn_GetDeviceGroupPeerMemoryFeatures(
+   VkDevice device,
+   uint32_t heapIndex,
+   uint32_t localDeviceIndex,
+   uint32_t remoteDeviceIndex,
+   VkPeerMemoryFeatureFlags *pPeerMemoryFeatures)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   /* TODO get and cache the values in vkCreateDevice */
+   vn_call_vkGetDeviceGroupPeerMemoryFeatures(
+      dev->instance, device, heapIndex, localDeviceIndex, remoteDeviceIndex,
+      pPeerMemoryFeatures);
+}
+
+VkResult
+vn_DeviceWaitIdle(VkDevice device)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   for (uint32_t i = 0; i < dev->queue_count; i++) {
+      struct vn_queue *queue = &dev->queues[i];
+      VkResult result = vn_QueueWaitIdle(vn_queue_to_handle(queue));
+      if (result != VK_SUCCESS)
+         return vn_error(dev->instance, result);
+   }
+
+   return VK_SUCCESS;
+}
+
+/* queue commands */
+
+void
+vn_GetDeviceQueue(VkDevice device,
+                  uint32_t queueFamilyIndex,
+                  uint32_t queueIndex,
+                  VkQueue *pQueue)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   for (uint32_t i = 0; i < dev->queue_count; i++) {
+      struct vn_queue *queue = &dev->queues[i];
+      if (queue->family == queueFamilyIndex && queue->index == queueIndex) {
+         assert(!queue->flags);
+         *pQueue = vn_queue_to_handle(queue);
+         return;
+      }
+   }
+   unreachable("bad queue family/index");
+}
+
+void
+vn_GetDeviceQueue2(VkDevice device,
+                   const VkDeviceQueueInfo2 *pQueueInfo,
+                   VkQueue *pQueue)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   for (uint32_t i = 0; i < dev->queue_count; i++) {
+      struct vn_queue *queue = &dev->queues[i];
+      if (queue->family == pQueueInfo->queueFamilyIndex &&
+          queue->index == pQueueInfo->queueIndex &&
+          queue->flags == pQueueInfo->flags) {
+         *pQueue = vn_queue_to_handle(queue);
+         return;
+      }
+   }
+   unreachable("bad queue family/index");
+}
+
+static void
+vn_semaphore_reset_wsi(struct vn_device *dev, struct vn_semaphore *sem);
+
+struct vn_queue_submission {
+   VkStructureType batch_type;
+   VkQueue queue;
+   uint32_t batch_count;
+   union {
+      const void *batches;
+      const VkSubmitInfo *submit_batches;
+      const VkBindSparseInfo *bind_sparse_batches;
+   };
+   VkFence fence;
+
+   uint32_t wait_semaphore_count;
+   uint32_t wait_wsi_count;
+   uint32_t signal_semaphore_count;
+   uint32_t signal_device_only_count;
+   uint32_t signal_timeline_count;
+
+   uint32_t sync_count;
+
+   struct {
+      void *storage;
+
+      union {
+         void *batches;
+         VkSubmitInfo *submit_batches;
+         VkBindSparseInfo *bind_sparse_batches;
+      };
+      VkSemaphore *semaphores;
+
+      struct vn_renderer_sync **syncs;
+      uint64_t *sync_values;
+
+      uint32_t *batch_sync_counts;
+   } temp;
+};
+
+static void
+vn_queue_submission_count_semaphores(struct vn_queue_submission *submit)
+{
+   submit->wait_semaphore_count = 0;
+   submit->wait_wsi_count = 0;
+   submit->signal_semaphore_count = 0;
+   submit->signal_device_only_count = 0;
+   submit->signal_timeline_count = 0;
+   switch (submit->batch_type) {
+   case VK_STRUCTURE_TYPE_SUBMIT_INFO:
+      for (uint32_t i = 0; i < submit->batch_count; i++) {
+         const VkSubmitInfo *batch = &submit->submit_batches[i];
+
+         submit->wait_semaphore_count += batch->waitSemaphoreCount;
+         submit->signal_semaphore_count += batch->signalSemaphoreCount;
+
+         for (uint32_t j = 0; j < batch->waitSemaphoreCount; j++) {
+            struct vn_semaphore *sem =
+               vn_semaphore_from_handle(batch->pWaitSemaphores[j]);
+            const struct vn_sync_payload *payload = sem->payload;
+
+            if (payload->type == VN_SYNC_TYPE_WSI_SIGNALED)
+               submit->wait_wsi_count++;
+         }
+
+         for (uint32_t j = 0; j < batch->signalSemaphoreCount; j++) {
+            struct vn_semaphore *sem =
+               vn_semaphore_from_handle(batch->pSignalSemaphores[j]);
+            const struct vn_sync_payload *payload = sem->payload;
+
+            if (payload->type == VN_SYNC_TYPE_DEVICE_ONLY)
+               submit->signal_device_only_count++;
+            else if (sem->type == VK_SEMAPHORE_TYPE_TIMELINE)
+               submit->signal_timeline_count++;
+         }
+      }
+      break;
+   case VK_STRUCTURE_TYPE_BIND_SPARSE_INFO:
+      for (uint32_t i = 0; i < submit->batch_count; i++) {
+         const VkBindSparseInfo *batch = &submit->bind_sparse_batches[i];
+
+         submit->wait_semaphore_count += batch->waitSemaphoreCount;
+         submit->signal_semaphore_count += batch->signalSemaphoreCount;
+
+         for (uint32_t j = 0; j < batch->waitSemaphoreCount; j++) {
+            struct vn_semaphore *sem =
+               vn_semaphore_from_handle(batch->pWaitSemaphores[j]);
+            const struct vn_sync_payload *payload = sem->payload;
+
+            if (payload->type == VN_SYNC_TYPE_WSI_SIGNALED)
+               submit->wait_wsi_count++;
+         }
+
+         for (uint32_t j = 0; j < batch->signalSemaphoreCount; j++) {
+            struct vn_semaphore *sem =
+               vn_semaphore_from_handle(batch->pSignalSemaphores[j]);
+            const struct vn_sync_payload *payload = sem->payload;
+
+            if (payload->type == VN_SYNC_TYPE_DEVICE_ONLY)
+               submit->signal_device_only_count++;
+            else if (sem->type == VK_SEMAPHORE_TYPE_TIMELINE)
+               submit->signal_timeline_count++;
+         }
+      }
+      break;
+   default:
+      unreachable("unexpected batch type");
+      break;
+   }
+
+   submit->sync_count =
+      submit->signal_semaphore_count - submit->signal_device_only_count;
+   if (submit->fence != VK_NULL_HANDLE)
+      submit->sync_count++;
+}
+
+static VkResult
+vn_queue_submission_alloc_storage(struct vn_queue_submission *submit)
+{
+   struct vn_queue *queue = vn_queue_from_handle(submit->queue);
+   const VkAllocationCallbacks *alloc = &queue->device->allocator;
+   size_t alloc_size = 0;
+   size_t semaphores_offset = 0;
+   size_t syncs_offset = 0;
+   size_t sync_values_offset = 0;
+   size_t batch_sync_counts_offset = 0;
+
+   /* we want to filter out VN_SYNC_TYPE_WSI_SIGNALED wait semaphores */
+   if (submit->wait_wsi_count) {
+      switch (submit->batch_type) {
+      case VK_STRUCTURE_TYPE_SUBMIT_INFO:
+         alloc_size += sizeof(VkSubmitInfo) * submit->batch_count;
+         break;
+      case VK_STRUCTURE_TYPE_BIND_SPARSE_INFO:
+         alloc_size += sizeof(VkBindSparseInfo) * submit->batch_count;
+         break;
+      default:
+         unreachable("unexpected batch type");
+         break;
+      }
+
+      semaphores_offset = alloc_size;
+      alloc_size += sizeof(*submit->temp.semaphores) *
+                    (submit->wait_semaphore_count - submit->wait_wsi_count);
+   }
+
+   if (submit->sync_count) {
+      syncs_offset = alloc_size;
+      alloc_size += sizeof(*submit->temp.syncs) * submit->sync_count;
+
+      alloc_size = (alloc_size + 7) & ~7;
+      sync_values_offset = alloc_size;
+      alloc_size += sizeof(*submit->temp.sync_values) * submit->sync_count;
+
+      batch_sync_counts_offset = alloc_size;
+      alloc_size +=
+         sizeof(*submit->temp.batch_sync_counts) * submit->batch_count;
+   }
+
+   if (!alloc_size) {
+      submit->temp.storage = NULL;
+      return VK_SUCCESS;
+   }
+
+   submit->temp.storage = vk_alloc(alloc, alloc_size, VN_DEFAULT_ALIGN,
+                                   VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   if (!submit->temp.storage)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   submit->temp.batches = submit->temp.storage;
+   submit->temp.semaphores = submit->temp.storage + semaphores_offset;
+
+   submit->temp.syncs = submit->temp.storage + syncs_offset;
+   submit->temp.sync_values = submit->temp.storage + sync_values_offset;
+   submit->temp.batch_sync_counts =
+      submit->temp.storage + batch_sync_counts_offset;
+
+   return VK_SUCCESS;
+}
+
+static void
+vn_queue_submission_setup_batches(struct vn_queue_submission *submit)
+{
+   struct vn_queue *queue = vn_queue_from_handle(submit->queue);
+
+   if (!submit->temp.storage)
+      return;
+
+   VkSemaphore *wait_sems = submit->temp.semaphores;
+   struct vn_renderer_sync **syncs = submit->temp.syncs;
+   uint64_t *sync_values = submit->temp.sync_values;
+   switch (submit->batch_type) {
+   case VK_STRUCTURE_TYPE_SUBMIT_INFO:
+      for (uint32_t i = 0; i < submit->batch_count; i++) {
+         const VkSubmitInfo *batch = &submit->submit_batches[i];
+
+         /* filter out VN_SYNC_TYPE_WSI_SIGNALED wait semaphores */
+         if (submit->wait_wsi_count) {
+            VkSubmitInfo *dst = &submit->temp.submit_batches[i];
+            *dst = *batch;
+            dst->pWaitSemaphores = wait_sems;
+            dst->waitSemaphoreCount = 0;
+            for (uint32_t j = 0; j < batch->waitSemaphoreCount; j++) {
+               struct vn_semaphore *sem =
+                  vn_semaphore_from_handle(batch->pWaitSemaphores[j]);
+               const struct vn_sync_payload *payload = sem->payload;
+
+               if (payload->type == VN_SYNC_TYPE_WSI_SIGNALED) {
+                  vn_semaphore_reset_wsi(queue->device, sem);
+               } else {
+                  wait_sems[dst->waitSemaphoreCount++] =
+                     batch->pWaitSemaphores[j];
+               }
+            }
+            wait_sems += dst->waitSemaphoreCount;
+         }
+
+         if (submit->sync_count)
+            submit->temp.batch_sync_counts[i] = 0;
+
+         if (submit->signal_semaphore_count >
+             submit->signal_device_only_count) {
+            const VkTimelineSemaphoreSubmitInfo *timeline =
+               vk_find_struct_const(batch->pNext,
+                                    TIMELINE_SEMAPHORE_SUBMIT_INFO);
+
+            for (uint32_t j = 0; j < batch->signalSemaphoreCount; j++) {
+               struct vn_semaphore *sem =
+                  vn_semaphore_from_handle(batch->pSignalSemaphores[j]);
+               const struct vn_sync_payload *payload = sem->payload;
+
+               if (payload->type == VN_SYNC_TYPE_DEVICE_ONLY)
+                  continue;
+
+               assert(payload->type == VN_SYNC_TYPE_SYNC);
+               *syncs++ = payload->sync;
+               *sync_values++ = sem->type == VK_SEMAPHORE_TYPE_TIMELINE
+                                   ? timeline->pSignalSemaphoreValues[j]
+                                   : 1;
+               submit->temp.batch_sync_counts[i]++;
+            }
+         }
+      }
+
+      if (submit->wait_wsi_count)
+         submit->submit_batches = submit->temp.submit_batches;
+      break;
+   case VK_STRUCTURE_TYPE_BIND_SPARSE_INFO:
+      for (uint32_t i = 0; i < submit->batch_count; i++) {
+         const VkBindSparseInfo *batch = &submit->bind_sparse_batches[i];
+
+         /* filter out VN_SYNC_TYPE_WSI_SIGNALED wait semaphores */
+         if (submit->wait_wsi_count) {
+            VkBindSparseInfo *dst = &submit->temp.bind_sparse_batches[i];
+            *dst = *batch;
+            dst->pWaitSemaphores = wait_sems;
+            dst->waitSemaphoreCount = 0;
+            for (uint32_t j = 0; j < batch->waitSemaphoreCount; j++) {
+               struct vn_semaphore *sem =
+                  vn_semaphore_from_handle(batch->pWaitSemaphores[j]);
+               const struct vn_sync_payload *payload = sem->payload;
+
+               if (payload->type == VN_SYNC_TYPE_WSI_SIGNALED) {
+                  vn_semaphore_reset_wsi(queue->device, sem);
+               } else {
+                  wait_sems[dst->waitSemaphoreCount++] =
+                     batch->pWaitSemaphores[j];
+               }
+            }
+            wait_sems += dst->waitSemaphoreCount;
+         }
+
+         if (submit->sync_count)
+            submit->temp.batch_sync_counts[i] = 0;
+
+         if (submit->signal_semaphore_count >
+             submit->signal_device_only_count) {
+            const VkTimelineSemaphoreSubmitInfo *timeline =
+               vk_find_struct_const(batch->pNext,
+                                    TIMELINE_SEMAPHORE_SUBMIT_INFO);
+            for (uint32_t j = 0; j < batch->signalSemaphoreCount; j++) {
+               struct vn_semaphore *sem =
+                  vn_semaphore_from_handle(batch->pSignalSemaphores[j]);
+               const struct vn_sync_payload *payload = sem->payload;
+
+               if (payload->type == VN_SYNC_TYPE_DEVICE_ONLY)
+                  continue;
+
+               assert(payload->type == VN_SYNC_TYPE_SYNC);
+               *syncs++ = payload->sync;
+               *sync_values++ = sem->type == VK_SEMAPHORE_TYPE_TIMELINE
+                                   ? timeline->pSignalSemaphoreValues[j]
+                                   : 1;
+               submit->temp.batch_sync_counts[i]++;
+            }
+         }
+      }
+
+      if (submit->wait_wsi_count)
+         submit->bind_sparse_batches = submit->temp.bind_sparse_batches;
+      break;
+   default:
+      unreachable("unexpected batch type");
+      break;
+   }
+
+   if (submit->fence != VK_NULL_HANDLE) {
+      struct vn_fence *fence = vn_fence_from_handle(submit->fence);
+      struct vn_sync_payload *payload = fence->payload;
+
+      assert(payload->type == VN_SYNC_TYPE_SYNC);
+      *syncs++ = payload->sync;
+      *sync_values++ = 1;
+   }
+   assert(submit->temp.syncs + submit->sync_count == syncs);
+   assert(submit->temp.sync_values + submit->sync_count == sync_values);
+}
+
+static VkResult
+vn_queue_submission_prepare_submit(struct vn_queue_submission *submit,
+                                   VkQueue queue,
+                                   uint32_t batch_count,
+                                   const VkSubmitInfo *submit_batches,
+                                   VkFence fence)
+{
+   submit->batch_type = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+   submit->queue = queue;
+   submit->batch_count = batch_count;
+   submit->submit_batches = submit_batches;
+   submit->fence = fence;
+
+   vn_queue_submission_count_semaphores(submit);
+
+   VkResult result = vn_queue_submission_alloc_storage(submit);
+   if (result != VK_SUCCESS)
+      return result;
+
+   vn_queue_submission_setup_batches(submit);
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+vn_queue_submission_prepare_bind_sparse(
+   struct vn_queue_submission *submit,
+   VkQueue queue,
+   uint32_t batch_count,
+   const VkBindSparseInfo *bind_sparse_batches,
+   VkFence fence)
+{
+   submit->batch_type = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO;
+   submit->queue = queue;
+   submit->batch_count = batch_count;
+   submit->bind_sparse_batches = bind_sparse_batches;
+   submit->fence = fence;
+
+   vn_queue_submission_count_semaphores(submit);
+
+   VkResult result = vn_queue_submission_alloc_storage(submit);
+   if (result != VK_SUCCESS)
+      return result;
+
+   vn_queue_submission_setup_batches(submit);
+
+   return VK_SUCCESS;
+}
+
+static void
+vn_queue_submission_cleanup(struct vn_queue_submission *submit)
+{
+   struct vn_queue *queue = vn_queue_from_handle(submit->queue);
+   const VkAllocationCallbacks *alloc = &queue->device->allocator;
+
+   vk_free(alloc, submit->temp.storage);
+}
+
+VkResult
+vn_QueueSubmit(VkQueue _queue,
+               uint32_t submitCount,
+               const VkSubmitInfo *pSubmits,
+               VkFence fence)
+{
+   struct vn_queue *queue = vn_queue_from_handle(_queue);
+   struct vn_device *dev = queue->device;
+
+   struct vn_queue_submission submit;
+   VkResult result = vn_queue_submission_prepare_submit(
+      &submit, _queue, submitCount, pSubmits, fence);
+   if (result != VK_SUCCESS)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   const struct vn_device_memory *wsi_mem = NULL;
+   if (submit.batch_count == 1) {
+      const struct wsi_memory_signal_submit_info *info = vk_find_struct_const(
+         submit.submit_batches[0].pNext, WSI_MEMORY_SIGNAL_SUBMIT_INFO_MESA);
+      if (info)
+         wsi_mem = vn_device_memory_from_handle(info->memory);
+   }
+
+   /* TODO this should be one trip to the renderer */
+   if (submit.signal_timeline_count) {
+      struct vn_renderer *renderer = dev->instance->renderer;
+
+      uint32_t sync_base = 0;
+      for (uint32_t i = 0; i < submit.batch_count - 1; i++) {
+         vn_async_vkQueueSubmit(dev->instance, submit.queue, 1,
+                                &submit.submit_batches[i], VK_NULL_HANDLE);
+         vn_instance_flush_cs(dev->instance);
+
+         const struct vn_renderer_submit dst = {
+            .batches =
+               &(const struct vn_renderer_submit_batch){
+                  .sync_queue_index = queue->sync_queue_index,
+                  .sync_queue_id = queue->base.id,
+                  .syncs = &submit.temp.syncs[sync_base],
+                  .sync_values = &submit.temp.sync_values[sync_base],
+                  .sync_count = submit.temp.batch_sync_counts[i],
+               },
+            .batch_count = 1,
+         };
+         vn_renderer_submit(renderer, &dst);
+
+         sync_base += submit.temp.batch_sync_counts[i];
+      }
+
+      result = vn_call_vkQueueSubmit(
+         dev->instance, submit.queue, 1,
+         &submit.submit_batches[submit.batch_count - 1], submit.fence);
+      if (result != VK_SUCCESS) {
+         vn_queue_submission_cleanup(&submit);
+         return vn_error(dev->instance, result);
+      }
+
+      if (sync_base < submit.sync_count || wsi_mem) {
+         const struct vn_renderer_submit dst = {
+            .bos = wsi_mem ? &wsi_mem->bo : NULL,
+            .bo_count = wsi_mem ? 1 : 0,
+            .batches =
+               &(const struct vn_renderer_submit_batch){
+                  .sync_queue_index = queue->sync_queue_index,
+                  .sync_queue_id = queue->base.id,
+                  .syncs = &submit.temp.syncs[sync_base],
+                  .sync_values = &submit.temp.sync_values[sync_base],
+                  .sync_count = submit.sync_count - sync_base,
+               },
+            .batch_count = 1,
+         };
+         vn_renderer_submit(renderer, &dst);
+      }
+   } else {
+      result = vn_call_vkQueueSubmit(dev->instance, submit.queue,
+                                     submit.batch_count,
+                                     submit.submit_batches, submit.fence);
+      if (result != VK_SUCCESS) {
+         vn_queue_submission_cleanup(&submit);
+         return vn_error(dev->instance, result);
+      }
+
+      if (submit.sync_count || wsi_mem) {
+         struct vn_renderer *renderer = dev->instance->renderer;
+         const struct vn_renderer_submit dst = {
+            .bos = wsi_mem ? &wsi_mem->bo : NULL,
+            .bo_count = wsi_mem ? 1 : 0,
+            .batches =
+               &(const struct vn_renderer_submit_batch){
+                  .sync_queue_index = queue->sync_queue_index,
+                  .sync_queue_id = queue->base.id,
+                  .syncs = submit.temp.syncs,
+                  .sync_values = submit.temp.sync_values,
+                  .sync_count = submit.sync_count,
+               },
+            .batch_count = 1,
+         };
+         vn_renderer_submit(renderer, &dst);
+      }
+   }
+
+   /* XXX The implicit fence won't work because the host is not aware of it.
+    * It is guest-only and the guest kernel does not wait.  We need kernel
+    * support, or better yet, an explicit fence that the host is aware of.
+    *
+    * That said, I am not ready to vkQueueWaitIdle yet.  And there is a WSI
+    * server that actually waits.
+    *
+    * vn_AcquireNextImage2KHR is also broken.
+    */
+   if (wsi_mem && false) {
+      if (VN_DEBUG(WSI))
+         vn_log(dev->instance, "forcing vkQueueWaitIdle before presenting");
+      vn_call_vkQueueWaitIdle(dev->instance, submit.queue);
+   }
+
+   vn_queue_submission_cleanup(&submit);
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_QueueBindSparse(VkQueue _queue,
+                   uint32_t bindInfoCount,
+                   const VkBindSparseInfo *pBindInfo,
+                   VkFence fence)
+{
+   struct vn_queue *queue = vn_queue_from_handle(_queue);
+   struct vn_device *dev = queue->device;
+
+   struct vn_queue_submission submit;
+   VkResult result = vn_queue_submission_prepare_bind_sparse(
+      &submit, _queue, bindInfoCount, pBindInfo, fence);
+   if (result != VK_SUCCESS)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   /* TODO this should be one trip to the renderer */
+   if (submit.signal_timeline_count) {
+      struct vn_renderer *renderer = dev->instance->renderer;
+
+      uint32_t sync_base = 0;
+      for (uint32_t i = 0; i < submit.batch_count - 1; i++) {
+         vn_async_vkQueueBindSparse(dev->instance, submit.queue, 1,
+                                    &submit.bind_sparse_batches[i],
+                                    VK_NULL_HANDLE);
+         vn_instance_flush_cs(dev->instance);
+
+         const struct vn_renderer_submit dst = {
+            .batches =
+               &(const struct vn_renderer_submit_batch){
+                  .sync_queue_index = queue->sync_queue_index,
+                  .sync_queue_id = queue->base.id,
+                  .syncs = &submit.temp.syncs[sync_base],
+                  .sync_values = &submit.temp.sync_values[sync_base],
+                  .sync_count = submit.temp.batch_sync_counts[i],
+               },
+            .batch_count = 1,
+         };
+         vn_renderer_submit(renderer, &dst);
+
+         sync_base += submit.temp.batch_sync_counts[i];
+      }
+
+      result = vn_call_vkQueueBindSparse(
+         dev->instance, submit.queue, 1,
+         &submit.bind_sparse_batches[submit.batch_count - 1], submit.fence);
+      if (result != VK_SUCCESS) {
+         vn_queue_submission_cleanup(&submit);
+         return vn_error(dev->instance, result);
+      }
+
+      if (sync_base < submit.sync_count) {
+         const struct vn_renderer_submit dst = {
+            .batches =
+               &(const struct vn_renderer_submit_batch){
+                  .sync_queue_index = queue->sync_queue_index,
+                  .sync_queue_id = queue->base.id,
+                  .syncs = &submit.temp.syncs[sync_base],
+                  .sync_values = &submit.temp.sync_values[sync_base],
+                  .sync_count = submit.sync_count - sync_base,
+               },
+            .batch_count = 1,
+         };
+         vn_renderer_submit(renderer, &dst);
+      }
+   } else {
+      result = vn_call_vkQueueBindSparse(
+         dev->instance, submit.queue, submit.batch_count,
+         submit.bind_sparse_batches, submit.fence);
+      if (result != VK_SUCCESS) {
+         vn_queue_submission_cleanup(&submit);
+         return vn_error(dev->instance, result);
+      }
+
+      if (submit.sync_count) {
+         struct vn_renderer *renderer = dev->instance->renderer;
+         const struct vn_renderer_submit dst = {
+            .batches =
+               &(const struct vn_renderer_submit_batch){
+                  .sync_queue_index = queue->sync_queue_index,
+                  .sync_queue_id = queue->base.id,
+                  .syncs = submit.temp.syncs,
+                  .sync_values = submit.temp.sync_values,
+                  .sync_count = submit.sync_count,
+               },
+            .batch_count = 1,
+         };
+         vn_renderer_submit(renderer, &dst);
+      }
+   }
+
+   vn_queue_submission_cleanup(&submit);
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_QueueWaitIdle(VkQueue _queue)
+{
+   struct vn_queue *queue = vn_queue_from_handle(_queue);
+   struct vn_device *dev = queue->device;
+   struct vn_renderer *renderer = dev->instance->renderer;
+
+   vn_instance_flush_cs(dev->instance);
+
+   /* TODO merge with vn_instance_flush_cs above */
+   const uint64_t val = ++queue->idle_sync_value;
+   const struct vn_renderer_submit submit = {
+      .batches =
+         &(const struct vn_renderer_submit_batch){
+            .sync_queue_index = queue->sync_queue_index,
+            .sync_queue_id = queue->base.id,
+            .syncs = &queue->idle_sync,
+            .sync_values = &val,
+            .sync_count = 1,
+         },
+      .batch_count = 1,
+   };
+   vn_renderer_submit(renderer, &submit);
+
+   const struct vn_renderer_wait wait = {
+      .timeout = UINT64_MAX,
+      .syncs = &queue->idle_sync,
+      .sync_values = &val,
+      .sync_count = 1,
+   };
+   VkResult result = vn_renderer_wait(renderer, &wait);
+
+   return vn_result(dev->instance, result);
+}
+
+/* fence commands */
+
+static void
+vn_sync_payload_release(struct vn_device *dev,
+                        struct vn_sync_payload *payload)
+{
+   if (payload->type == VN_SYNC_TYPE_SYNC)
+      vn_renderer_sync_release(payload->sync);
+
+   payload->type = VN_SYNC_TYPE_INVALID;
+}
+
+static VkResult
+vn_fence_init_payloads(struct vn_device *dev,
+                       struct vn_fence *fence,
+                       bool signaled,
+                       const VkAllocationCallbacks *alloc)
+{
+   struct vn_renderer_sync *perm_sync;
+   VkResult result = vn_renderer_sync_create_fence(
+      dev->instance->renderer, signaled, 0, alloc,
+      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, &perm_sync);
+   if (result != VK_SUCCESS)
+      return result;
+
+   struct vn_renderer_sync *temp_sync;
+   result = vn_renderer_sync_create_empty(dev->instance->renderer, alloc,
+                                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
+                                          &temp_sync);
+   if (result != VK_SUCCESS) {
+      vn_renderer_sync_destroy(perm_sync, alloc);
+      return result;
+   }
+
+   fence->permanent.type = VN_SYNC_TYPE_SYNC;
+   fence->permanent.sync = perm_sync;
+
+   /* temp_sync is uninitialized */
+   fence->temporary.type = VN_SYNC_TYPE_INVALID;
+   fence->temporary.sync = temp_sync;
+
+   fence->payload = &fence->permanent;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_fence_signal_wsi(struct vn_device *dev, struct vn_fence *fence)
+{
+   struct vn_sync_payload *temp = &fence->temporary;
+
+   vn_sync_payload_release(dev, temp);
+   temp->type = VN_SYNC_TYPE_WSI_SIGNALED;
+   fence->payload = temp;
+}
+
+VkResult
+vn_CreateFence(VkDevice device,
+               const VkFenceCreateInfo *pCreateInfo,
+               const VkAllocationCallbacks *pAllocator,
+               VkFence *pFence)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_fence *fence = vk_zalloc(alloc, sizeof(*fence), VN_DEFAULT_ALIGN,
+                                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!fence)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&fence->base, VK_OBJECT_TYPE_FENCE, &dev->base);
+
+   VkResult result = vn_fence_init_payloads(
+      dev, fence, pCreateInfo->flags & VK_FENCE_CREATE_SIGNALED_BIT, alloc);
+   if (result != VK_SUCCESS) {
+      vk_free(alloc, fence);
+      return vn_error(dev->instance, result);
+   }
+
+   VkFence fence_handle = vn_fence_to_handle(fence);
+   vn_async_vkCreateFence(dev->instance, device, pCreateInfo, NULL,
+                          &fence_handle);
+
+   *pFence = fence_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyFence(VkDevice device,
+                VkFence _fence,
+                const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_fence *fence = vn_fence_from_handle(_fence);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!fence)
+      return;
+
+   vn_async_vkDestroyFence(dev->instance, device, _fence, NULL);
+
+   vn_sync_payload_release(dev, &fence->permanent);
+   vn_sync_payload_release(dev, &fence->temporary);
+   vn_renderer_sync_destroy(fence->permanent.sync, alloc);
+   vn_renderer_sync_destroy(fence->temporary.sync, alloc);
+
+   vn_cs_object_fini(&fence->base);
+   vk_free(alloc, fence);
+}
+
+VkResult
+vn_ResetFences(VkDevice device, uint32_t fenceCount, const VkFence *pFences)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   /* TODO if the fence is shared-by-ref, this needs to be synchronous */
+   if (false)
+      vn_call_vkResetFences(dev->instance, device, fenceCount, pFences);
+   else
+      vn_async_vkResetFences(dev->instance, device, fenceCount, pFences);
+
+   for (uint32_t i = 0; i < fenceCount; i++) {
+      struct vn_fence *fence = vn_fence_from_handle(pFences[i]);
+      struct vn_sync_payload *perm = &fence->permanent;
+
+      vn_sync_payload_release(dev, &fence->temporary);
+
+      assert(perm->type == VN_SYNC_TYPE_SYNC);
+      vn_renderer_sync_reset(perm->sync, 0);
+      fence->payload = perm;
+   }
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_GetFenceStatus(VkDevice device, VkFence _fence)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_fence *fence = vn_fence_from_handle(_fence);
+   struct vn_sync_payload *payload = fence->payload;
+
+   VkResult result;
+   uint64_t val;
+   switch (payload->type) {
+   case VN_SYNC_TYPE_SYNC:
+      result = vn_renderer_sync_read(payload->sync, &val);
+      if (result == VK_SUCCESS && !val)
+         result = VK_NOT_READY;
+      break;
+   case VN_SYNC_TYPE_WSI_SIGNALED:
+      result = VK_SUCCESS;
+      break;
+   default:
+      unreachable("unexpected fence payload type");
+      break;
+   }
+
+   return vn_result(dev->instance, result);
+}
+
+VkResult
+vn_WaitForFences(VkDevice device,
+                 uint32_t fenceCount,
+                 const VkFence *pFences,
+                 VkBool32 waitAll,
+                 uint64_t timeout)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc = &dev->allocator;
+
+   struct vn_renderer_sync *local_syncs[8];
+   uint64_t local_sync_vals[8];
+   struct vn_renderer_sync **syncs = local_syncs;
+   uint64_t *sync_vals = local_sync_vals;
+   if (fenceCount > ARRAY_SIZE(local_syncs)) {
+      syncs = vk_alloc(alloc, sizeof(*syncs) * fenceCount, VN_DEFAULT_ALIGN,
+                       VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      sync_vals =
+         vk_alloc(alloc, sizeof(*sync_vals) * fenceCount, VN_DEFAULT_ALIGN,
+                  VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (!syncs || !sync_vals) {
+         vk_free(alloc, syncs);
+         vk_free(alloc, sync_vals);
+         return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+   }
+
+   uint32_t wait_count = 0;
+   uint32_t signaled_count = 0;
+   for (uint32_t i = 0; i < fenceCount; i++) {
+      struct vn_fence *fence = vn_fence_from_handle(pFences[i]);
+      const struct vn_sync_payload *payload = fence->payload;
+
+      switch (payload->type) {
+      case VN_SYNC_TYPE_SYNC:
+         syncs[wait_count] = payload->sync;
+         sync_vals[wait_count] = 1;
+         wait_count++;
+         break;
+      case VN_SYNC_TYPE_WSI_SIGNALED:
+         signaled_count++;
+         break;
+      default:
+         unreachable("unexpected fence payload type");
+         break;
+      }
+   }
+
+   VkResult result = VK_SUCCESS;
+   if (wait_count && (waitAll || !signaled_count)) {
+      const struct vn_renderer_wait wait = {
+         .wait_any = !waitAll,
+         .timeout = timeout,
+         .syncs = syncs,
+         .sync_values = sync_vals,
+         .sync_count = wait_count,
+      };
+      result = vn_renderer_wait(dev->instance->renderer, &wait);
+   }
+
+   if (syncs != local_syncs) {
+      vk_free(alloc, syncs);
+      vk_free(alloc, sync_vals);
+   }
+
+   return vn_result(dev->instance, result);
+}
+
+/* semaphore commands */
+
+static VkResult
+vn_semaphore_init_payloads(struct vn_device *dev,
+                           struct vn_semaphore *sem,
+                           uint64_t initial_val,
+                           const VkAllocationCallbacks *alloc)
+{
+   struct vn_renderer_sync *perm_sync;
+   VkResult result;
+   if (sem->type == VK_SEMAPHORE_TYPE_TIMELINE) {
+      result = vn_renderer_sync_create_semaphore(
+         dev->instance->renderer, VK_SEMAPHORE_TYPE_TIMELINE, initial_val, 0,
+         alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, &perm_sync);
+   } else {
+      result = vn_renderer_sync_create_empty(
+         dev->instance->renderer, alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
+         &perm_sync);
+   }
+   if (result != VK_SUCCESS)
+      return result;
+
+   struct vn_renderer_sync *temp_sync;
+   result = vn_renderer_sync_create_empty(dev->instance->renderer, alloc,
+                                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
+                                          &temp_sync);
+   if (result != VK_SUCCESS) {
+      vn_renderer_sync_destroy(perm_sync, alloc);
+      return result;
+   }
+
+   sem->permanent.type = sem->type == VK_SEMAPHORE_TYPE_TIMELINE
+                            ? VN_SYNC_TYPE_SYNC
+                            : VN_SYNC_TYPE_DEVICE_ONLY;
+   sem->permanent.sync = perm_sync;
+
+   /* temp_sync is uninitialized */
+   sem->temporary.type = VN_SYNC_TYPE_INVALID;
+   sem->temporary.sync = temp_sync;
+
+   sem->payload = &sem->permanent;
+
+   return VK_SUCCESS;
+}
+
+static void
+vn_semaphore_reset_wsi(struct vn_device *dev, struct vn_semaphore *sem)
+{
+   struct vn_sync_payload *perm = &sem->permanent;
+
+   vn_sync_payload_release(dev, &sem->temporary);
+
+   if (perm->type == VN_SYNC_TYPE_SYNC)
+      vn_renderer_sync_reset(perm->sync, 0);
+   sem->payload = perm;
+}
+
+void
+vn_semaphore_signal_wsi(struct vn_device *dev, struct vn_semaphore *sem)
+{
+   struct vn_sync_payload *temp = &sem->temporary;
+
+   vn_sync_payload_release(dev, temp);
+   temp->type = VN_SYNC_TYPE_WSI_SIGNALED;
+   sem->payload = temp;
+}
+
+VkResult
+vn_CreateSemaphore(VkDevice device,
+                   const VkSemaphoreCreateInfo *pCreateInfo,
+                   const VkAllocationCallbacks *pAllocator,
+                   VkSemaphore *pSemaphore)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_semaphore *sem = vk_zalloc(alloc, sizeof(*sem), VN_DEFAULT_ALIGN,
+                                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!sem)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&sem->base, VK_OBJECT_TYPE_SEMAPHORE, &dev->base);
+
+   const VkSemaphoreTypeCreateInfo *type_info =
+      vk_find_struct_const(pCreateInfo->pNext, SEMAPHORE_TYPE_CREATE_INFO);
+   uint64_t initial_val = 0;
+   if (type_info && type_info->semaphoreType == VK_SEMAPHORE_TYPE_TIMELINE) {
+      sem->type = VK_SEMAPHORE_TYPE_TIMELINE;
+      initial_val = type_info->initialValue;
+   } else {
+      sem->type = VK_SEMAPHORE_TYPE_BINARY;
+   }
+
+   VkResult result = vn_semaphore_init_payloads(dev, sem, initial_val, alloc);
+   if (result != VK_SUCCESS) {
+      vk_free(alloc, sem);
+      return vn_error(dev->instance, result);
+   }
+
+   VkSemaphore sem_handle = vn_semaphore_to_handle(sem);
+   vn_async_vkCreateSemaphore(dev->instance, device, pCreateInfo, NULL,
+                              &sem_handle);
+
+   *pSemaphore = sem_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroySemaphore(VkDevice device,
+                    VkSemaphore semaphore,
+                    const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_semaphore *sem = vn_semaphore_from_handle(semaphore);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!sem)
+      return;
+
+   vn_async_vkDestroySemaphore(dev->instance, device, semaphore, NULL);
+
+   vn_sync_payload_release(dev, &sem->permanent);
+   vn_sync_payload_release(dev, &sem->temporary);
+   vn_renderer_sync_destroy(sem->permanent.sync, alloc);
+   vn_renderer_sync_destroy(sem->temporary.sync, alloc);
+
+   vn_cs_object_fini(&sem->base);
+   vk_free(alloc, sem);
+}
+
+VkResult
+vn_GetSemaphoreCounterValue(VkDevice device,
+                            VkSemaphore semaphore,
+                            uint64_t *pValue)
+{
+   struct vn_semaphore *sem = vn_semaphore_from_handle(semaphore);
+   struct vn_sync_payload *payload = sem->payload;
+
+   assert(payload->type == VN_SYNC_TYPE_SYNC);
+   return vn_renderer_sync_read(payload->sync, pValue);
+}
+
+VkResult
+vn_SignalSemaphore(VkDevice device, const VkSemaphoreSignalInfo *pSignalInfo)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_semaphore *sem =
+      vn_semaphore_from_handle(pSignalInfo->semaphore);
+   struct vn_sync_payload *payload = sem->payload;
+
+   /* TODO if the semaphore is shared-by-ref, this needs to be synchronous */
+   if (false) {
+      vn_call_vkSignalSemaphore(dev->instance, device, pSignalInfo);
+   } else {
+      vn_async_vkSignalSemaphore(dev->instance, device, pSignalInfo);
+      /* wake up any waiter */
+      vn_instance_flush_cs(dev->instance);
+   }
+
+   assert(payload->type == VN_SYNC_TYPE_SYNC);
+   vn_renderer_sync_write(payload->sync, pSignalInfo->value);
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_WaitSemaphores(VkDevice device,
+                  const VkSemaphoreWaitInfo *pWaitInfo,
+                  uint64_t timeout)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc = &dev->allocator;
+
+   struct vn_renderer_sync *local_syncs[8];
+   struct vn_renderer_sync **syncs = local_syncs;
+   if (pWaitInfo->semaphoreCount > ARRAY_SIZE(local_syncs)) {
+      syncs = vk_alloc(alloc, sizeof(*syncs) * pWaitInfo->semaphoreCount,
+                       VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (!syncs)
+         return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
+   for (uint32_t i = 0; i < pWaitInfo->semaphoreCount; i++) {
+      struct vn_semaphore *sem =
+         vn_semaphore_from_handle(pWaitInfo->pSemaphores[i]);
+      const struct vn_sync_payload *payload = sem->payload;
+
+      assert(payload->type == VN_SYNC_TYPE_SYNC);
+      syncs[i] = payload->sync;
+   }
+
+   const struct vn_renderer_wait wait = {
+      .wait_any = pWaitInfo->flags & VK_SEMAPHORE_WAIT_ANY_BIT,
+      .timeout = timeout,
+      .syncs = syncs,
+      .sync_values = pWaitInfo->pValues,
+      .sync_count = pWaitInfo->semaphoreCount,
+   };
+   VkResult result = vn_renderer_wait(dev->instance->renderer, &wait);
+
+   if (syncs != local_syncs)
+      vk_free(alloc, syncs);
+
+   return vn_result(dev->instance, result);
+}
+
+/* device memory commands */
+
+VkResult
+vn_AllocateMemory(VkDevice device,
+                  const VkMemoryAllocateInfo *pAllocateInfo,
+                  const VkAllocationCallbacks *pAllocator,
+                  VkDeviceMemory *pMemory)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_device_memory *mem =
+      vk_zalloc(alloc, sizeof(*mem), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!mem)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&mem->base, VK_OBJECT_TYPE_DEVICE_MEMORY, &dev->base);
+
+   VkDeviceMemory mem_handle = vn_device_memory_to_handle(mem);
+   VkResult result = vn_call_vkAllocateMemory(
+      dev->instance, device, pAllocateInfo, NULL, &mem_handle);
+   if (result != VK_SUCCESS) {
+      vk_free(alloc, mem);
+      return vn_error(dev->instance, result);
+   }
+
+   mem->size = pAllocateInfo->allocationSize;
+
+   const VkPhysicalDeviceMemoryProperties *mem_props =
+      &dev->physical_device->memory_properties.memoryProperties;
+   const VkMemoryType *mem_type =
+      &mem_props->memoryTypes[pAllocateInfo->memoryTypeIndex];
+   const VkExportMemoryAllocateInfo *export_info =
+      vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
+
+   result = vn_renderer_bo_create_gpu(
+      dev->instance->renderer, mem->size, mem->base.id,
+      mem_type->propertyFlags, export_info ? export_info->handleTypes : 0,
+      alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, &mem->bo);
+   if (result != VK_SUCCESS) {
+      vn_async_vkFreeMemory(dev->instance, device, mem_handle, NULL);
+      vk_free(alloc, mem);
+      return vn_error(dev->instance, result);
+   }
+
+   *pMemory = mem_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_FreeMemory(VkDevice device,
+              VkDeviceMemory memory,
+              const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_device_memory *mem = vn_device_memory_from_handle(memory);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!mem)
+      return;
+
+   vn_async_vkFreeMemory(dev->instance, device, memory, NULL);
+
+   vn_renderer_bo_unref(mem->bo, alloc);
+
+   vn_cs_object_fini(&mem->base);
+   vk_free(alloc, mem);
+}
+
+uint64_t
+vn_GetDeviceMemoryOpaqueCaptureAddress(
+   VkDevice device, const VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   return vn_call_vkGetDeviceMemoryOpaqueCaptureAddress(dev->instance, device,
+                                                        pInfo);
+}
+
+VkResult
+vn_MapMemory(VkDevice device,
+             VkDeviceMemory memory,
+             VkDeviceSize offset,
+             VkDeviceSize size,
+             VkMemoryMapFlags flags,
+             void **ppData)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_device_memory *mem = vn_device_memory_from_handle(memory);
+
+   void *ptr = vn_renderer_bo_map(mem->bo);
+   if (!ptr)
+      return vn_error(dev->instance, VK_ERROR_MEMORY_MAP_FAILED);
+
+   mem->map_end = size == VK_WHOLE_SIZE ? mem->size : offset + size;
+
+   *ppData = ptr + offset;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_UnmapMemory(VkDevice device, VkDeviceMemory memory)
+{
+}
+
+VkResult
+vn_FlushMappedMemoryRanges(VkDevice device,
+                           uint32_t memoryRangeCount,
+                           const VkMappedMemoryRange *pMemoryRanges)
+{
+   for (uint32_t i = 0; i < memoryRangeCount; i++) {
+      const VkMappedMemoryRange *range = &pMemoryRanges[i];
+      struct vn_device_memory *mem =
+         vn_device_memory_from_handle(range->memory);
+
+      const VkDeviceSize size = range->size == VK_WHOLE_SIZE
+                                   ? mem->map_end - range->offset
+                                   : range->size;
+      vn_renderer_bo_flush(mem->bo, range->offset, size);
+   }
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_InvalidateMappedMemoryRanges(VkDevice device,
+                                uint32_t memoryRangeCount,
+                                const VkMappedMemoryRange *pMemoryRanges)
+{
+   for (uint32_t i = 0; i < memoryRangeCount; i++) {
+      const VkMappedMemoryRange *range = &pMemoryRanges[i];
+      struct vn_device_memory *mem =
+         vn_device_memory_from_handle(range->memory);
+
+      const VkDeviceSize size = range->size == VK_WHOLE_SIZE
+                                   ? mem->map_end - range->offset
+                                   : range->size;
+      vn_renderer_bo_invalidate(mem->bo, range->offset, size);
+   }
+
+   return VK_SUCCESS;
+}
+
+void
+vn_GetDeviceMemoryCommitment(VkDevice device,
+                             VkDeviceMemory memory,
+                             VkDeviceSize *pCommittedMemoryInBytes)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   vn_call_vkGetDeviceMemoryCommitment(dev->instance, device, memory,
+                                       pCommittedMemoryInBytes);
+}
+
+VkResult
+vn_GetMemoryFdKHR(VkDevice device,
+                  const VkMemoryGetFdInfoKHR *pGetFdInfo,
+                  int *pFd)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_device_memory *mem =
+      vn_device_memory_from_handle(pGetFdInfo->memory);
+
+   /* XXX this is only for WSI */
+   assert(pGetFdInfo->handleType ==
+          VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+   *pFd = vn_renderer_bo_export_dmabuf(mem->bo);
+   if (*pFd < 0)
+      return vn_error(dev->instance, VK_ERROR_TOO_MANY_OBJECTS);
+
+   return VK_SUCCESS;
+}
+
+/* buffer commands */
+
+VkResult
+vn_CreateBuffer(VkDevice device,
+                const VkBufferCreateInfo *pCreateInfo,
+                const VkAllocationCallbacks *pAllocator,
+                VkBuffer *pBuffer)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_buffer *buf = vk_zalloc(alloc, sizeof(*buf), VN_DEFAULT_ALIGN,
+                                     VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!buf)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&buf->base, VK_OBJECT_TYPE_BUFFER, &dev->base);
+
+   VkBuffer buf_handle = vn_buffer_to_handle(buf);
+   /* TODO async */
+   VkResult result = vn_call_vkCreateBuffer(dev->instance, device,
+                                            pCreateInfo, NULL, &buf_handle);
+   if (result != VK_SUCCESS) {
+      vk_free(alloc, buf);
+      return vn_error(dev->instance, result);
+   }
+
+   /* TODO add a per-device cache for the requirements */
+   buf->memory_requirements.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+   buf->memory_requirements.pNext = &buf->dedicated_requirements;
+   buf->dedicated_requirements.sType =
+      VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
+   buf->dedicated_requirements.pNext = NULL;
+
+   vn_call_vkGetBufferMemoryRequirements2(
+      dev->instance, device,
+      &(VkBufferMemoryRequirementsInfo2){
+         .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2,
+         .buffer = vn_buffer_to_handle(buf),
+      },
+      &buf->memory_requirements);
+
+   *pBuffer = buf_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyBuffer(VkDevice device,
+                 VkBuffer buffer,
+                 const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_buffer *buf = vn_buffer_from_handle(buffer);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!buf)
+      return;
+
+   vn_async_vkDestroyBuffer(dev->instance, device, buffer, NULL);
+
+   vn_cs_object_fini(&buf->base);
+   vk_free(alloc, buf);
+}
+
+VkDeviceAddress
+vn_GetBufferDeviceAddress(VkDevice device,
+                          const VkBufferDeviceAddressInfo *pInfo)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   return vn_call_vkGetBufferDeviceAddress(dev->instance, device, pInfo);
+}
+
+uint64_t
+vn_GetBufferOpaqueCaptureAddress(VkDevice device,
+                                 const VkBufferDeviceAddressInfo *pInfo)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   return vn_call_vkGetBufferOpaqueCaptureAddress(dev->instance, device,
+                                                  pInfo);
+}
+
+void
+vn_GetBufferMemoryRequirements(VkDevice device,
+                               VkBuffer buffer,
+                               VkMemoryRequirements *pMemoryRequirements)
+{
+   const struct vn_buffer *buf = vn_buffer_from_handle(buffer);
+
+   *pMemoryRequirements = buf->memory_requirements.memoryRequirements;
+}
+
+void
+vn_GetBufferMemoryRequirements2(VkDevice device,
+                                const VkBufferMemoryRequirementsInfo2 *pInfo,
+                                VkMemoryRequirements2 *pMemoryRequirements)
+{
+   const struct vn_buffer *buf = vn_buffer_from_handle(pInfo->buffer);
+
+   VkBaseOutStructure *pnext = (VkBaseOutStructure *)pMemoryRequirements;
+   while (pnext) {
+      void *saved = pnext->pNext;
+
+      switch (pnext->sType) {
+      case VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2:
+         *((VkMemoryRequirements2 *)pnext) = buf->memory_requirements;
+         break;
+      case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS:
+         *((VkMemoryDedicatedRequirements *)pnext) =
+            buf->dedicated_requirements;
+         break;
+      default:
+         break;
+      }
+
+      pnext->pNext = saved;
+      pnext = saved;
+   }
+}
+
+VkResult
+vn_BindBufferMemory(VkDevice device,
+                    VkBuffer buffer,
+                    VkDeviceMemory memory,
+                    VkDeviceSize memoryOffset)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   vn_async_vkBindBufferMemory(dev->instance, device, buffer, memory,
+                               memoryOffset);
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_BindBufferMemory2(VkDevice device,
+                     uint32_t bindInfoCount,
+                     const VkBindBufferMemoryInfo *pBindInfos)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   vn_async_vkBindBufferMemory2(dev->instance, device, bindInfoCount,
+                                pBindInfos);
+
+   return VK_SUCCESS;
+}
+
+/* buffer view commands */
+
+VkResult
+vn_CreateBufferView(VkDevice device,
+                    const VkBufferViewCreateInfo *pCreateInfo,
+                    const VkAllocationCallbacks *pAllocator,
+                    VkBufferView *pView)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_buffer_view *view =
+      vk_zalloc(alloc, sizeof(*view), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!view)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&view->base, VK_OBJECT_TYPE_BUFFER_VIEW, &dev->base);
+
+   VkBufferView view_handle = vn_buffer_view_to_handle(view);
+   vn_async_vkCreateBufferView(dev->instance, device, pCreateInfo, NULL,
+                               &view_handle);
+
+   *pView = view_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyBufferView(VkDevice device,
+                     VkBufferView bufferView,
+                     const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_buffer_view *view = vn_buffer_view_from_handle(bufferView);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!view)
+      return;
+
+   vn_async_vkDestroyBufferView(dev->instance, device, bufferView, NULL);
+
+   vn_cs_object_fini(&view->base);
+   vk_free(alloc, view);
+}
+
+/* image commands */
+
+VkResult
+vn_CreateImage(VkDevice device,
+               const VkImageCreateInfo *pCreateInfo,
+               const VkAllocationCallbacks *pAllocator,
+               VkImage *pImage)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   /* TODO wsi_create_native_image uses modifiers or set wsi_info->scanout to
+    * true.  Instead of forcing VK_IMAGE_TILING_LINEAR, we should ask wsi to
+    * use wsi_create_prime_image instead.
+    */
+   const struct wsi_image_create_info *wsi_info =
+      vk_find_struct_const(pCreateInfo->pNext, WSI_IMAGE_CREATE_INFO_MESA);
+   VkImageCreateInfo local_create_info;
+   if (wsi_info && wsi_info->scanout) {
+      if (VN_DEBUG(WSI))
+         vn_log(dev->instance, "forcing scanout image linear");
+      local_create_info = *pCreateInfo;
+      local_create_info.tiling = VK_IMAGE_TILING_LINEAR;
+      pCreateInfo = &local_create_info;
+   }
+
+   struct vn_image *img = vk_zalloc(alloc, sizeof(*img), VN_DEFAULT_ALIGN,
+                                    VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!img)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&img->base, VK_OBJECT_TYPE_IMAGE, &dev->base);
+
+   VkImage img_handle = vn_image_to_handle(img);
+   /* TODO async */
+   VkResult result = vn_call_vkCreateImage(dev->instance, device, pCreateInfo,
+                                           NULL, &img_handle);
+   if (result != VK_SUCCESS) {
+      vk_free(alloc, img);
+      return vn_error(dev->instance, result);
+   }
+
+   uint32_t plane_count = 1;
+   if (pCreateInfo->flags & VK_IMAGE_CREATE_DISJOINT_BIT) {
+      /* TODO VkDrmFormatModifierPropertiesEXT::drmFormatModifierPlaneCount */
+      assert(pCreateInfo->tiling != VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT);
+
+      switch (pCreateInfo->format) {
+      case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM:
+      case VK_FORMAT_G8_B8R8_2PLANE_422_UNORM:
+      case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16:
+      case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16:
+      case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16:
+      case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16:
+      case VK_FORMAT_G16_B16R16_2PLANE_420_UNORM:
+      case VK_FORMAT_G16_B16R16_2PLANE_422_UNORM:
+         plane_count = 2;
+         break;
+      case VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM:
+      case VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM:
+      case VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM:
+      case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16:
+      case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16:
+      case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16:
+      case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16:
+      case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16:
+      case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16:
+      case VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM:
+      case VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM:
+      case VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM:
+         plane_count = 3;
+         break;
+      default:
+         plane_count = 1;
+         break;
+      }
+   }
+   assert(plane_count <= ARRAY_SIZE(img->memory_requirements));
+
+   /* TODO add a per-device cache for the requirements */
+   for (uint32_t i = 0; i < plane_count; i++) {
+      img->memory_requirements[i].sType =
+         VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+      img->memory_requirements[i].pNext = &img->dedicated_requirements[i];
+      img->dedicated_requirements[i].sType =
+         VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
+      img->dedicated_requirements[i].pNext = NULL;
+   }
+
+   if (plane_count == 1) {
+      vn_call_vkGetImageMemoryRequirements2(
+         dev->instance, device,
+         &(VkImageMemoryRequirementsInfo2){
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+            .image = img_handle,
+         },
+         &img->memory_requirements[0]);
+   } else {
+      for (uint32_t i = 0; i < plane_count; i++) {
+         vn_call_vkGetImageMemoryRequirements2(
+            dev->instance, device,
+            &(VkImageMemoryRequirementsInfo2){
+               .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+               .pNext =
+                  &(VkImagePlaneMemoryRequirementsInfo){
+                     .sType =
+                        VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO,
+                     .planeAspect = VK_IMAGE_ASPECT_PLANE_0_BIT << i,
+                  },
+               .image = img_handle,
+            },
+            &img->memory_requirements[i]);
+      }
+   }
+
+   *pImage = img_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyImage(VkDevice device,
+                VkImage image,
+                const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_image *img = vn_image_from_handle(image);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!img)
+      return;
+
+   vn_async_vkDestroyImage(dev->instance, device, image, NULL);
+
+   vn_cs_object_fini(&img->base);
+   vk_free(alloc, img);
+}
+
+void
+vn_GetImageMemoryRequirements(VkDevice device,
+                              VkImage image,
+                              VkMemoryRequirements *pMemoryRequirements)
+{
+   const struct vn_image *img = vn_image_from_handle(image);
+
+   *pMemoryRequirements = img->memory_requirements[0].memoryRequirements;
+}
+
+void
+vn_GetImageSparseMemoryRequirements(
+   VkDevice device,
+   VkImage image,
+   uint32_t *pSparseMemoryRequirementCount,
+   VkSparseImageMemoryRequirements *pSparseMemoryRequirements)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   /* TODO per-device cache */
+   vn_call_vkGetImageSparseMemoryRequirements(dev->instance, device, image,
+                                              pSparseMemoryRequirementCount,
+                                              pSparseMemoryRequirements);
+}
+
+void
+vn_GetImageMemoryRequirements2(VkDevice device,
+                               const VkImageMemoryRequirementsInfo2 *pInfo,
+                               VkMemoryRequirements2 *pMemoryRequirements)
+{
+   const struct vn_image *img = vn_image_from_handle(pInfo->image);
+
+   uint32_t plane = 0;
+   const VkImagePlaneMemoryRequirementsInfo *plane_info =
+      vk_find_struct_const(pInfo->pNext,
+                           IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO);
+   if (plane_info) {
+      switch (plane_info->planeAspect) {
+      case VK_IMAGE_ASPECT_PLANE_1_BIT:
+         plane = 1;
+         break;
+      case VK_IMAGE_ASPECT_PLANE_2_BIT:
+         plane = 2;
+         break;
+      default:
+         plane = 0;
+         break;
+      }
+   }
+
+   VkBaseOutStructure *pnext = (VkBaseOutStructure *)pMemoryRequirements;
+   while (pnext) {
+      void *saved = pnext->pNext;
+
+      switch (pnext->sType) {
+      case VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2:
+         *((VkMemoryRequirements2 *)pnext) = img->memory_requirements[plane];
+         break;
+      case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS:
+         *((VkMemoryDedicatedRequirements *)pnext) =
+            img->dedicated_requirements[plane];
+         break;
+      default:
+         break;
+      }
+
+      pnext->pNext = saved;
+      pnext = saved;
+   }
+}
+
+void
+vn_GetImageSparseMemoryRequirements2(
+   VkDevice device,
+   const VkImageSparseMemoryRequirementsInfo2 *pInfo,
+   uint32_t *pSparseMemoryRequirementCount,
+   VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   /* TODO per-device cache */
+   vn_call_vkGetImageSparseMemoryRequirements2(dev->instance, device, pInfo,
+                                               pSparseMemoryRequirementCount,
+                                               pSparseMemoryRequirements);
+}
+
+VkResult
+vn_BindImageMemory(VkDevice device,
+                   VkImage image,
+                   VkDeviceMemory memory,
+                   VkDeviceSize memoryOffset)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   vn_async_vkBindImageMemory(dev->instance, device, image, memory,
+                              memoryOffset);
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_BindImageMemory2(VkDevice device,
+                    uint32_t bindInfoCount,
+                    const VkBindImageMemoryInfo *pBindInfos)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   vn_async_vkBindImageMemory2(dev->instance, device, bindInfoCount,
+                               pBindInfos);
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_GetImageDrmFormatModifierPropertiesEXT(
+   VkDevice device,
+   VkImage image,
+   VkImageDrmFormatModifierPropertiesEXT *pProperties)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   /* TODO local cache */
+   return vn_call_vkGetImageDrmFormatModifierPropertiesEXT(
+      dev->instance, device, image, pProperties);
+}
+
+void
+vn_GetImageSubresourceLayout(VkDevice device,
+                             VkImage image,
+                             const VkImageSubresource *pSubresource,
+                             VkSubresourceLayout *pLayout)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   /* TODO local cache */
+   vn_call_vkGetImageSubresourceLayout(dev->instance, device, image,
+                                       pSubresource, pLayout);
+}
+
+/* image view commands */
+
+VkResult
+vn_CreateImageView(VkDevice device,
+                   const VkImageViewCreateInfo *pCreateInfo,
+                   const VkAllocationCallbacks *pAllocator,
+                   VkImageView *pView)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_image_view *view =
+      vk_zalloc(alloc, sizeof(*view), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!view)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&view->base, VK_OBJECT_TYPE_IMAGE_VIEW, &dev->base);
+
+   VkImageView view_handle = vn_image_view_to_handle(view);
+   vn_async_vkCreateImageView(dev->instance, device, pCreateInfo, NULL,
+                              &view_handle);
+
+   *pView = view_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyImageView(VkDevice device,
+                    VkImageView imageView,
+                    const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_image_view *view = vn_image_view_from_handle(imageView);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!view)
+      return;
+
+   vn_async_vkDestroyImageView(dev->instance, device, imageView, NULL);
+
+   vn_cs_object_fini(&view->base);
+   vk_free(alloc, view);
+}
+
+/* sampler commands */
+
+VkResult
+vn_CreateSampler(VkDevice device,
+                 const VkSamplerCreateInfo *pCreateInfo,
+                 const VkAllocationCallbacks *pAllocator,
+                 VkSampler *pSampler)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_sampler *sampler =
+      vk_zalloc(alloc, sizeof(*sampler), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!sampler)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&sampler->base, VK_OBJECT_TYPE_SAMPLER, &dev->base);
+
+   VkSampler sampler_handle = vn_sampler_to_handle(sampler);
+   vn_async_vkCreateSampler(dev->instance, device, pCreateInfo, NULL,
+                            &sampler_handle);
+
+   *pSampler = sampler_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroySampler(VkDevice device,
+                  VkSampler _sampler,
+                  const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_sampler *sampler = vn_sampler_from_handle(_sampler);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!sampler)
+      return;
+
+   vn_async_vkDestroySampler(dev->instance, device, _sampler, NULL);
+
+   vn_cs_object_fini(&sampler->base);
+   vk_free(alloc, sampler);
+}
+
+/* sampler YCbCr conversion commands */
+
+VkResult
+vn_CreateSamplerYcbcrConversion(
+   VkDevice device,
+   const VkSamplerYcbcrConversionCreateInfo *pCreateInfo,
+   const VkAllocationCallbacks *pAllocator,
+   VkSamplerYcbcrConversion *pYcbcrConversion)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_sampler_ycbcr_conversion *conv =
+      vk_zalloc(alloc, sizeof(*conv), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!conv)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&conv->base, VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION,
+                     &dev->base);
+
+   VkSamplerYcbcrConversion conv_handle =
+      vn_sampler_ycbcr_conversion_to_handle(conv);
+   vn_async_vkCreateSamplerYcbcrConversion(dev->instance, device, pCreateInfo,
+                                           NULL, &conv_handle);
+
+   *pYcbcrConversion = conv_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroySamplerYcbcrConversion(VkDevice device,
+                                 VkSamplerYcbcrConversion ycbcrConversion,
+                                 const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_sampler_ycbcr_conversion *conv =
+      vn_sampler_ycbcr_conversion_from_handle(ycbcrConversion);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!conv)
+      return;
+
+   vn_async_vkDestroySamplerYcbcrConversion(dev->instance, device,
+                                            ycbcrConversion, NULL);
+
+   vn_cs_object_fini(&conv->base);
+   vk_free(alloc, conv);
+}
+
+/* descriptor set layout commands */
+
+void
+vn_GetDescriptorSetLayoutSupport(
+   VkDevice device,
+   const VkDescriptorSetLayoutCreateInfo *pCreateInfo,
+   VkDescriptorSetLayoutSupport *pSupport)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   /* TODO per-device cache */
+   vn_call_vkGetDescriptorSetLayoutSupport(dev->instance, device, pCreateInfo,
+                                           pSupport);
+}
+
+VkResult
+vn_CreateDescriptorSetLayout(
+   VkDevice device,
+   const VkDescriptorSetLayoutCreateInfo *pCreateInfo,
+   const VkAllocationCallbacks *pAllocator,
+   VkDescriptorSetLayout *pSetLayout)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   uint32_t max_binding = 0;
+   VkDescriptorSetLayoutBinding *local_bindings = NULL;
+   VkDescriptorSetLayoutCreateInfo local_create_info;
+   if (pCreateInfo->bindingCount) {
+      /* the encoder does not ignore
+       * VkDescriptorSetLayoutBinding::pImmutableSamplers when it should
+       */
+      const size_t binding_size =
+         sizeof(*pCreateInfo->pBindings) * pCreateInfo->bindingCount;
+      local_bindings = vk_alloc(alloc, binding_size, VN_DEFAULT_ALIGN,
+                                VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (!local_bindings)
+         return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+      memcpy(local_bindings, pCreateInfo->pBindings, binding_size);
+      for (uint32_t i = 0; i < pCreateInfo->bindingCount; i++) {
+         VkDescriptorSetLayoutBinding *binding = &local_bindings[i];
+
+         if (max_binding < binding->binding)
+            max_binding = binding->binding;
+
+         switch (binding->descriptorType) {
+         case VK_DESCRIPTOR_TYPE_SAMPLER:
+         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+            break;
+         default:
+            binding->pImmutableSamplers = NULL;
+            break;
+         }
+      }
+
+      local_create_info = *pCreateInfo;
+      local_create_info.pBindings = local_bindings;
+      pCreateInfo = &local_create_info;
+   }
+
+   const size_t layout_size =
+      offsetof(struct vn_descriptor_set_layout, bindings[max_binding + 1]);
+   struct vn_descriptor_set_layout *layout =
+      vk_zalloc(alloc, layout_size, VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!layout) {
+      vk_free(alloc, local_bindings);
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
+   vn_cs_object_init(&layout->base, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                     &dev->base);
+
+   for (uint32_t i = 0; i < pCreateInfo->bindingCount; i++) {
+      const VkDescriptorSetLayoutBinding *binding =
+         &pCreateInfo->pBindings[i];
+      struct vn_descriptor_set_layout_binding *dst =
+         &layout->bindings[binding->binding];
+
+      switch (binding->descriptorType) {
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+         dst->has_immutable_samplers = binding->pImmutableSamplers;
+         break;
+      default:
+         break;
+      }
+   }
+
+   VkDescriptorSetLayout layout_handle =
+      vn_descriptor_set_layout_to_handle(layout);
+   vn_async_vkCreateDescriptorSetLayout(dev->instance, device, pCreateInfo,
+                                        NULL, &layout_handle);
+
+   vk_free(alloc, local_bindings);
+
+   *pSetLayout = layout_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyDescriptorSetLayout(VkDevice device,
+                              VkDescriptorSetLayout descriptorSetLayout,
+                              const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_descriptor_set_layout *layout =
+      vn_descriptor_set_layout_from_handle(descriptorSetLayout);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!layout)
+      return;
+
+   vn_async_vkDestroyDescriptorSetLayout(dev->instance, device,
+                                         descriptorSetLayout, NULL);
+
+   vn_cs_object_fini(&layout->base);
+   vk_free(alloc, layout);
+}
+
+/* descriptor pool commands */
+
+VkResult
+vn_CreateDescriptorPool(VkDevice device,
+                        const VkDescriptorPoolCreateInfo *pCreateInfo,
+                        const VkAllocationCallbacks *pAllocator,
+                        VkDescriptorPool *pDescriptorPool)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_descriptor_pool *pool =
+      vk_zalloc(alloc, sizeof(*pool), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!pool)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&pool->base, VK_OBJECT_TYPE_DESCRIPTOR_POOL, &dev->base);
+
+   pool->allocator = *alloc;
+   list_inithead(&pool->descriptor_sets);
+
+   VkDescriptorPool pool_handle = vn_descriptor_pool_to_handle(pool);
+   vn_async_vkCreateDescriptorPool(dev->instance, device, pCreateInfo, NULL,
+                                   &pool_handle);
+
+   *pDescriptorPool = pool_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyDescriptorPool(VkDevice device,
+                         VkDescriptorPool descriptorPool,
+                         const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_descriptor_pool *pool =
+      vn_descriptor_pool_from_handle(descriptorPool);
+   const VkAllocationCallbacks *alloc;
+
+   if (!pool)
+      return;
+
+   alloc = pAllocator ? pAllocator : &pool->allocator;
+
+   vn_async_vkDestroyDescriptorPool(dev->instance, device, descriptorPool,
+                                    NULL);
+
+   list_for_each_entry_safe (struct vn_descriptor_set, set,
+                             &pool->descriptor_sets, head) {
+      list_del(&set->head);
+
+      vn_cs_object_fini(&set->base);
+      vk_free(alloc, set);
+   }
+
+   vn_cs_object_fini(&pool->base);
+   vk_free(alloc, pool);
+}
+
+VkResult
+vn_ResetDescriptorPool(VkDevice device,
+                       VkDescriptorPool descriptorPool,
+                       VkDescriptorPoolResetFlags flags)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_descriptor_pool *pool =
+      vn_descriptor_pool_from_handle(descriptorPool);
+   const VkAllocationCallbacks *alloc = &pool->allocator;
+
+   vn_async_vkResetDescriptorPool(dev->instance, device, descriptorPool,
+                                  flags);
+
+   list_for_each_entry_safe (struct vn_descriptor_set, set,
+                             &pool->descriptor_sets, head) {
+      list_del(&set->head);
+
+      vn_cs_object_fini(&set->base);
+      vk_free(alloc, set);
+   }
+
+   return VK_SUCCESS;
+}
+
+/* descriptor set commands */
+
+VkResult
+vn_AllocateDescriptorSets(VkDevice device,
+                          const VkDescriptorSetAllocateInfo *pAllocateInfo,
+                          VkDescriptorSet *pDescriptorSets)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_descriptor_pool *pool =
+      vn_descriptor_pool_from_handle(pAllocateInfo->descriptorPool);
+   const VkAllocationCallbacks *alloc = &pool->allocator;
+
+   for (uint32_t i = 0; i < pAllocateInfo->descriptorSetCount; i++) {
+      struct vn_descriptor_set *set =
+         vk_zalloc(alloc, sizeof(*set), VN_DEFAULT_ALIGN,
+                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (!set) {
+         for (uint32_t j = 0; j < i; j++) {
+            set = vn_descriptor_set_from_handle(pDescriptorSets[j]);
+            list_del(&set->head);
+            vk_free(alloc, set);
+         }
+         memset(pDescriptorSets, 0,
+                sizeof(*pDescriptorSets) * pAllocateInfo->descriptorSetCount);
+         return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+
+      vn_cs_object_init(&set->base, VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                        &dev->base);
+      set->layout =
+         vn_descriptor_set_layout_from_handle(pAllocateInfo->pSetLayouts[i]);
+      list_addtail(&set->head, &pool->descriptor_sets);
+
+      VkDescriptorSet set_handle = vn_descriptor_set_to_handle(set);
+      pDescriptorSets[i] = set_handle;
+   }
+
+   VkResult result = vn_call_vkAllocateDescriptorSets(
+      dev->instance, device, pAllocateInfo, pDescriptorSets);
+   if (result != VK_SUCCESS) {
+      for (uint32_t i = 0; i < pAllocateInfo->descriptorSetCount; i++) {
+         struct vn_descriptor_set *set =
+            vn_descriptor_set_from_handle(pDescriptorSets[i]);
+         list_del(&set->head);
+         vk_free(alloc, set);
+      }
+      memset(pDescriptorSets, 0,
+             sizeof(*pDescriptorSets) * pAllocateInfo->descriptorSetCount);
+      return vn_error(dev->instance, result);
+   }
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_FreeDescriptorSets(VkDevice device,
+                      VkDescriptorPool descriptorPool,
+                      uint32_t descriptorSetCount,
+                      const VkDescriptorSet *pDescriptorSets)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_descriptor_pool *pool =
+      vn_descriptor_pool_from_handle(descriptorPool);
+   const VkAllocationCallbacks *alloc = &pool->allocator;
+
+   vn_async_vkFreeDescriptorSets(dev->instance, device, descriptorPool,
+                                 descriptorSetCount, pDescriptorSets);
+
+   for (uint32_t i = 0; i < descriptorSetCount; i++) {
+      struct vn_descriptor_set *set =
+         vn_descriptor_set_from_handle(pDescriptorSets[i]);
+
+      if (!set)
+         continue;
+
+      list_del(&set->head);
+
+      vn_cs_object_fini(&set->base);
+      vk_free(alloc, set);
+   }
+
+   return VK_SUCCESS;
+}
+
+static struct vn_update_descriptor_sets *
+vn_update_descriptor_sets_alloc(uint32_t write_count,
+                                uint32_t image_count,
+                                uint32_t buffer_count,
+                                uint32_t view_count,
+                                const VkAllocationCallbacks *alloc,
+                                VkSystemAllocationScope scope)
+{
+   const size_t writes_offset = sizeof(struct vn_update_descriptor_sets);
+   const size_t images_offset =
+      writes_offset + sizeof(VkWriteDescriptorSet) * write_count;
+   const size_t buffers_offset =
+      images_offset + sizeof(VkDescriptorImageInfo) * image_count;
+   const size_t views_offset =
+      buffers_offset + sizeof(VkDescriptorBufferInfo) * buffer_count;
+   const size_t alloc_size = views_offset + sizeof(VkBufferView) * view_count;
+
+   void *storage = vk_alloc(alloc, alloc_size, VN_DEFAULT_ALIGN, scope);
+   if (!storage)
+      return NULL;
+
+   struct vn_update_descriptor_sets *update = storage;
+   update->write_count = write_count;
+   update->writes = storage + writes_offset;
+   update->images = storage + images_offset;
+   update->buffers = storage + buffers_offset;
+   update->views = storage + views_offset;
+
+   return update;
+}
+
+static struct vn_update_descriptor_sets *
+vn_update_descriptor_sets_parse_writes(uint32_t write_count,
+                                       const VkWriteDescriptorSet *writes,
+                                       const VkAllocationCallbacks *alloc)
+{
+   uint32_t img_count = 0;
+   for (uint32_t i = 0; i < write_count; i++) {
+      const VkWriteDescriptorSet *write = &writes[i];
+      switch (write->descriptorType) {
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+         img_count += write->descriptorCount;
+         break;
+      default:
+         break;
+      }
+   }
+
+   struct vn_update_descriptor_sets *update =
+      vn_update_descriptor_sets_alloc(write_count, img_count, 0, 0, alloc,
+                                      VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   if (!update)
+      return NULL;
+
+   /* the encoder does not ignore
+    * VkWriteDescriptorSet::{pImageInfo,pBufferInfo,pTexelBufferView} when it
+    * should
+    *
+    * TODO make the encoder smarter
+    */
+   memcpy(update->writes, writes, sizeof(*writes) * write_count);
+   img_count = 0;
+   for (uint32_t i = 0; i < write_count; i++) {
+      const struct vn_descriptor_set *set =
+         vn_descriptor_set_from_handle(writes[i].dstSet);
+      const struct vn_descriptor_set_layout_binding *binding =
+         &set->layout->bindings[writes[i].dstBinding];
+      VkWriteDescriptorSet *write = &update->writes[i];
+      VkDescriptorImageInfo *imgs = &update->images[img_count];
+
+      switch (write->descriptorType) {
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+         memcpy(imgs, write->pImageInfo,
+                sizeof(*imgs) * write->descriptorCount);
+         img_count += write->descriptorCount;
+
+         for (uint32_t j = 0; j < write->descriptorCount; j++) {
+            switch (write->descriptorType) {
+            case VK_DESCRIPTOR_TYPE_SAMPLER:
+               imgs[j].imageView = VK_NULL_HANDLE;
+               break;
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+               if (binding->has_immutable_samplers)
+                  imgs[j].sampler = VK_NULL_HANDLE;
+               break;
+            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+            case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+               imgs[j].sampler = VK_NULL_HANDLE;
+               break;
+            default:
+               break;
+            }
+         }
+
+         write->pImageInfo = imgs;
+         write->pBufferInfo = NULL;
+         write->pTexelBufferView = NULL;
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+         write->pImageInfo = NULL;
+         write->pBufferInfo = NULL;
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+         write->pImageInfo = NULL;
+         write->pTexelBufferView = NULL;
+         break;
+      default:
+         write->pImageInfo = NULL;
+         write->pBufferInfo = NULL;
+         write->pTexelBufferView = NULL;
+         break;
+      }
+   }
+
+   return update;
+}
+
+void
+vn_UpdateDescriptorSets(VkDevice device,
+                        uint32_t descriptorWriteCount,
+                        const VkWriteDescriptorSet *pDescriptorWrites,
+                        uint32_t descriptorCopyCount,
+                        const VkCopyDescriptorSet *pDescriptorCopies)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc = &dev->allocator;
+
+   struct vn_update_descriptor_sets *update =
+      vn_update_descriptor_sets_parse_writes(descriptorWriteCount,
+                                             pDescriptorWrites, alloc);
+   if (!update) {
+      /* TODO update one-by-one? */
+      vn_log(dev->instance, "TODO descriptor set update ignored due to OOM");
+      return;
+   }
+
+   vn_async_vkUpdateDescriptorSets(dev->instance, device, update->write_count,
+                                   update->writes, descriptorCopyCount,
+                                   pDescriptorCopies);
+
+   vk_free(alloc, update);
+}
+
+/* descriptor update template commands */
+
+static struct vn_update_descriptor_sets *
+vn_update_descriptor_sets_parse_template(
+   const VkDescriptorUpdateTemplateCreateInfo *create_info,
+   const VkAllocationCallbacks *alloc,
+   struct vn_descriptor_update_template_entry *entries)
+{
+   uint32_t img_count = 0;
+   uint32_t buf_count = 0;
+   uint32_t view_count = 0;
+   for (uint32_t i = 0; i < create_info->descriptorUpdateEntryCount; i++) {
+      const VkDescriptorUpdateTemplateEntry *entry =
+         &create_info->pDescriptorUpdateEntries[i];
+
+      switch (entry->descriptorType) {
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+         img_count += entry->descriptorCount;
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+         view_count += entry->descriptorCount;
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+         buf_count += entry->descriptorCount;
+         break;
+      default:
+         unreachable("unhandled descriptor type");
+         break;
+      }
+   }
+
+   struct vn_update_descriptor_sets *update = vn_update_descriptor_sets_alloc(
+      create_info->descriptorUpdateEntryCount, img_count, buf_count,
+      view_count, alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!update)
+      return NULL;
+
+   img_count = 0;
+   buf_count = 0;
+   view_count = 0;
+   for (uint32_t i = 0; i < create_info->descriptorUpdateEntryCount; i++) {
+      const VkDescriptorUpdateTemplateEntry *entry =
+         &create_info->pDescriptorUpdateEntries[i];
+      VkWriteDescriptorSet *write = &update->writes[i];
+
+      write->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      write->pNext = NULL;
+      write->dstBinding = entry->dstBinding;
+      write->dstArrayElement = entry->dstArrayElement;
+      write->descriptorCount = entry->descriptorCount;
+      write->descriptorType = entry->descriptorType;
+
+      entries[i].offset = entry->offset;
+      entries[i].stride = entry->stride;
+
+      switch (entry->descriptorType) {
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+         write->pImageInfo = &update->images[img_count];
+         write->pBufferInfo = NULL;
+         write->pTexelBufferView = NULL;
+         img_count += entry->descriptorCount;
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+         write->pImageInfo = NULL;
+         write->pBufferInfo = NULL;
+         write->pTexelBufferView = &update->views[view_count];
+         view_count += entry->descriptorCount;
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+         write->pImageInfo = NULL;
+         write->pBufferInfo = &update->buffers[buf_count];
+         write->pTexelBufferView = NULL;
+         buf_count += entry->descriptorCount;
+         break;
+      default:
+         break;
+      }
+   }
+
+   return update;
+}
+
+VkResult
+vn_CreateDescriptorUpdateTemplate(
+   VkDevice device,
+   const VkDescriptorUpdateTemplateCreateInfo *pCreateInfo,
+   const VkAllocationCallbacks *pAllocator,
+   VkDescriptorUpdateTemplate *pDescriptorUpdateTemplate)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   const size_t templ_size =
+      offsetof(struct vn_descriptor_update_template,
+               entries[pCreateInfo->descriptorUpdateEntryCount + 1]);
+   struct vn_descriptor_update_template *templ = vk_zalloc(
+      alloc, templ_size, VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!templ)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&templ->base, VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE,
+                     &dev->base);
+
+   templ->update = vn_update_descriptor_sets_parse_template(
+      pCreateInfo, alloc, templ->entries);
+   if (!templ->update) {
+      vk_free(alloc, templ);
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
+   mtx_init(&templ->mutex, mtx_plain);
+
+   /* no host object */
+   VkDescriptorUpdateTemplate templ_handle =
+      vn_descriptor_update_template_to_handle(templ);
+   *pDescriptorUpdateTemplate = templ_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyDescriptorUpdateTemplate(
+   VkDevice device,
+   VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+   const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_descriptor_update_template *templ =
+      vn_descriptor_update_template_from_handle(descriptorUpdateTemplate);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!templ)
+      return;
+
+   /* no host object */
+   vk_free(alloc, templ->update);
+   mtx_destroy(&templ->mutex);
+
+   vn_cs_object_fini(&templ->base);
+   vk_free(alloc, templ);
+}
+
+void
+vn_UpdateDescriptorSetWithTemplate(
+   VkDevice device,
+   VkDescriptorSet descriptorSet,
+   VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+   const void *pData)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_descriptor_set *set =
+      vn_descriptor_set_from_handle(descriptorSet);
+   struct vn_descriptor_update_template *templ =
+      vn_descriptor_update_template_from_handle(descriptorUpdateTemplate);
+   struct vn_update_descriptor_sets *update = templ->update;
+
+   /* duplicate update instead to avoid locking? */
+   mtx_lock(&templ->mutex);
+
+   for (uint32_t i = 0; i < update->write_count; i++) {
+      const struct vn_descriptor_update_template_entry *entry =
+         &templ->entries[i];
+      const struct vn_descriptor_set_layout_binding *binding =
+         &set->layout->bindings[update->writes[i].dstBinding];
+      VkWriteDescriptorSet *write = &update->writes[i];
+
+      write->dstSet = vn_descriptor_set_to_handle(set);
+
+      switch (write->descriptorType) {
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+         for (uint32_t j = 0; j < write->descriptorCount; j++) {
+            const bool need_sampler =
+               (write->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER ||
+                write->descriptorType ==
+                   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) &&
+               !binding->has_immutable_samplers;
+            const bool need_view =
+               write->descriptorType != VK_DESCRIPTOR_TYPE_SAMPLER;
+            const VkDescriptorImageInfo *src =
+               pData + entry->offset + entry->stride * j;
+            VkDescriptorImageInfo *dst =
+               (VkDescriptorImageInfo *)&write->pImageInfo[j];
+
+            dst->sampler = need_sampler ? src->sampler : VK_NULL_HANDLE;
+            dst->imageView = need_view ? src->imageView : VK_NULL_HANDLE;
+            dst->imageLayout = src->imageLayout;
+         }
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+         for (uint32_t j = 0; j < write->descriptorCount; j++) {
+            const VkBufferView *src =
+               pData + entry->offset + entry->stride * j;
+            VkBufferView *dst = (VkBufferView *)&write->pTexelBufferView[j];
+            *dst = *src;
+         }
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+         for (uint32_t j = 0; j < write->descriptorCount; j++) {
+            const VkDescriptorBufferInfo *src =
+               pData + entry->offset + entry->stride * j;
+            VkDescriptorBufferInfo *dst =
+               (VkDescriptorBufferInfo *)&write->pBufferInfo[j];
+            *dst = *src;
+         }
+         break;
+      default:
+         unreachable("unhandled descriptor type");
+         break;
+      }
+   }
+
+   vn_async_vkUpdateDescriptorSets(dev->instance, device, update->write_count,
+                                   update->writes, 0, NULL);
+
+   mtx_unlock(&templ->mutex);
+}
+
+/* render pass commands */
+
+VkResult
+vn_CreateRenderPass(VkDevice device,
+                    const VkRenderPassCreateInfo *pCreateInfo,
+                    const VkAllocationCallbacks *pAllocator,
+                    VkRenderPass *pRenderPass)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_render_pass *pass =
+      vk_zalloc(alloc, sizeof(*pass), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!pass)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&pass->base, VK_OBJECT_TYPE_RENDER_PASS, &dev->base);
+
+   /* XXX VK_IMAGE_LAYOUT_PRESENT_SRC_KHR */
+
+   VkRenderPass pass_handle = vn_render_pass_to_handle(pass);
+   vn_async_vkCreateRenderPass(dev->instance, device, pCreateInfo, NULL,
+                               &pass_handle);
+
+   *pRenderPass = pass_handle;
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_CreateRenderPass2(VkDevice device,
+                     const VkRenderPassCreateInfo2 *pCreateInfo,
+                     const VkAllocationCallbacks *pAllocator,
+                     VkRenderPass *pRenderPass)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_render_pass *pass =
+      vk_zalloc(alloc, sizeof(*pass), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!pass)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&pass->base, VK_OBJECT_TYPE_RENDER_PASS, &dev->base);
+
+   /* XXX VK_IMAGE_LAYOUT_PRESENT_SRC_KHR */
+
+   VkRenderPass pass_handle = vn_render_pass_to_handle(pass);
+   vn_async_vkCreateRenderPass2(dev->instance, device, pCreateInfo, NULL,
+                                &pass_handle);
+
+   *pRenderPass = pass_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyRenderPass(VkDevice device,
+                     VkRenderPass renderPass,
+                     const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_render_pass *pass = vn_render_pass_from_handle(renderPass);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!pass)
+      return;
+
+   vn_async_vkDestroyRenderPass(dev->instance, device, renderPass, NULL);
+
+   vn_cs_object_fini(&pass->base);
+   vk_free(alloc, pass);
+}
+
+void
+vn_GetRenderAreaGranularity(VkDevice device,
+                            VkRenderPass renderPass,
+                            VkExtent2D *pGranularity)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_render_pass *pass = vn_render_pass_from_handle(renderPass);
+
+   if (!pass->granularity.width) {
+      vn_call_vkGetRenderAreaGranularity(dev->instance, device, renderPass,
+                                         &pass->granularity);
+   }
+
+   *pGranularity = pass->granularity;
+}
+
+/* framebuffer commands */
+
+VkResult
+vn_CreateFramebuffer(VkDevice device,
+                     const VkFramebufferCreateInfo *pCreateInfo,
+                     const VkAllocationCallbacks *pAllocator,
+                     VkFramebuffer *pFramebuffer)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_framebuffer *fb = vk_zalloc(alloc, sizeof(*fb), VN_DEFAULT_ALIGN,
+                                         VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!fb)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&fb->base, VK_OBJECT_TYPE_FRAMEBUFFER, &dev->base);
+
+   VkFramebuffer fb_handle = vn_framebuffer_to_handle(fb);
+   vn_async_vkCreateFramebuffer(dev->instance, device, pCreateInfo, NULL,
+                                &fb_handle);
+
+   *pFramebuffer = fb_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyFramebuffer(VkDevice device,
+                      VkFramebuffer framebuffer,
+                      const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_framebuffer *fb = vn_framebuffer_from_handle(framebuffer);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!fb)
+      return;
+
+   vn_async_vkDestroyFramebuffer(dev->instance, device, framebuffer, NULL);
+
+   vn_cs_object_fini(&fb->base);
+   vk_free(alloc, fb);
+}
+
+/* event commands */
+
+VkResult
+vn_CreateEvent(VkDevice device,
+               const VkEventCreateInfo *pCreateInfo,
+               const VkAllocationCallbacks *pAllocator,
+               VkEvent *pEvent)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_event *ev = vk_zalloc(alloc, sizeof(*ev), VN_DEFAULT_ALIGN,
+                                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!ev)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&ev->base, VK_OBJECT_TYPE_EVENT, &dev->base);
+
+   VkEvent ev_handle = vn_event_to_handle(ev);
+   vn_async_vkCreateEvent(dev->instance, device, pCreateInfo, NULL,
+                          &ev_handle);
+
+   *pEvent = ev_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyEvent(VkDevice device,
+                VkEvent event,
+                const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_event *ev = vn_event_from_handle(event);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!ev)
+      return;
+
+   vn_async_vkDestroyEvent(dev->instance, device, event, NULL);
+
+   vn_cs_object_fini(&ev->base);
+   vk_free(alloc, ev);
+}
+
+VkResult
+vn_GetEventStatus(VkDevice device, VkEvent event)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   /* TODO When the renderer supports it (requires a new vk extension), there
+    * should be a coherent memory backing the event.
+    */
+   VkResult result = vn_call_vkGetEventStatus(dev->instance, device, event);
+
+   return vn_result(dev->instance, result);
+}
+
+VkResult
+vn_SetEvent(VkDevice device, VkEvent event)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   VkResult result = vn_call_vkSetEvent(dev->instance, device, event);
+
+   return vn_result(dev->instance, result);
+}
+
+VkResult
+vn_ResetEvent(VkDevice device, VkEvent event)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   VkResult result = vn_call_vkResetEvent(dev->instance, device, event);
+
+   return vn_result(dev->instance, result);
+}
+
+/* query pool commands */
+
+VkResult
+vn_CreateQueryPool(VkDevice device,
+                   const VkQueryPoolCreateInfo *pCreateInfo,
+                   const VkAllocationCallbacks *pAllocator,
+                   VkQueryPool *pQueryPool)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_query_pool *pool =
+      vk_zalloc(alloc, sizeof(*pool), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!pool)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&pool->base, VK_OBJECT_TYPE_QUERY_POOL, &dev->base);
+
+   pool->allocator = *alloc;
+
+   switch (pCreateInfo->queryType) {
+   case VK_QUERY_TYPE_OCCLUSION:
+      pool->result_array_size = 1;
+      break;
+   case VK_QUERY_TYPE_PIPELINE_STATISTICS:
+      pool->result_array_size =
+         util_bitcount(pCreateInfo->pipelineStatistics);
+      break;
+   case VK_QUERY_TYPE_TIMESTAMP:
+      pool->result_array_size = 1;
+      break;
+   case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
+      pool->result_array_size = 2;
+      break;
+   default:
+      unreachable("bad query type");
+      break;
+   }
+
+   VkQueryPool pool_handle = vn_query_pool_to_handle(pool);
+   vn_async_vkCreateQueryPool(dev->instance, device, pCreateInfo, NULL,
+                              &pool_handle);
+
+   *pQueryPool = pool_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyQueryPool(VkDevice device,
+                    VkQueryPool queryPool,
+                    const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_query_pool *pool = vn_query_pool_from_handle(queryPool);
+   const VkAllocationCallbacks *alloc;
+
+   if (!pool)
+      return;
+
+   alloc = pAllocator ? pAllocator : &pool->allocator;
+
+   vn_async_vkDestroyQueryPool(dev->instance, device, queryPool, NULL);
+
+   vn_cs_object_fini(&pool->base);
+   vk_free(alloc, pool);
+}
+
+void
+vn_ResetQueryPool(VkDevice device,
+                  VkQueryPool queryPool,
+                  uint32_t firstQuery,
+                  uint32_t queryCount)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   vn_async_vkResetQueryPool(dev->instance, device, queryPool, firstQuery,
+                             queryCount);
+}
+
+VkResult
+vn_GetQueryPoolResults(VkDevice device,
+                       VkQueryPool queryPool,
+                       uint32_t firstQuery,
+                       uint32_t queryCount,
+                       size_t dataSize,
+                       void *pData,
+                       VkDeviceSize stride,
+                       VkQueryResultFlags flags)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_query_pool *pool = vn_query_pool_from_handle(queryPool);
+   const VkAllocationCallbacks *alloc = &pool->allocator;
+
+   const size_t result_width = flags & VK_QUERY_RESULT_64_BIT ? 8 : 4;
+   const size_t result_size = pool->result_array_size * result_width;
+   const bool result_always_written =
+      flags & (VK_QUERY_RESULT_WAIT_BIT | VK_QUERY_RESULT_PARTIAL_BIT);
+
+   VkQueryResultFlags packed_flags = flags;
+   size_t packed_stride = result_size;
+   if (!result_always_written)
+      packed_flags |= VK_QUERY_RESULT_WITH_AVAILABILITY_BIT;
+   if (packed_flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT)
+      packed_stride += result_width;
+
+   const size_t packed_size = packed_stride * queryCount;
+   void *packed_data;
+   if (result_always_written && packed_stride == stride) {
+      packed_data = pData;
+   } else {
+      packed_data = vk_alloc(alloc, packed_size, VN_DEFAULT_ALIGN,
+                             VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (!packed_data)
+         return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
+   /* TODO the renderer should transparently vkCmdCopyQueryPoolResults to a
+    * coherent memory such that we can memcpy from the coherent memory to
+    * avoid this serialized round trip.
+    */
+   VkResult result = vn_call_vkGetQueryPoolResults(
+      dev->instance, device, queryPool, firstQuery, queryCount, packed_size,
+      packed_data, packed_stride, packed_flags);
+
+   if (packed_data == pData)
+      return vn_result(dev->instance, result);
+
+   const size_t copy_size =
+      result_size +
+      (flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT ? result_width : 0);
+   const void *src = packed_data;
+   void *dst = pData;
+   if (result == VK_SUCCESS) {
+      for (uint32_t i = 0; i < queryCount; i++) {
+         memcpy(dst, src, copy_size);
+         src += packed_stride;
+         dst += stride;
+      }
+   } else if (result == VK_NOT_READY) {
+      assert(!result_always_written &&
+             (packed_flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT));
+      if (flags & VK_QUERY_RESULT_64_BIT) {
+         for (uint32_t i = 0; i < queryCount; i++) {
+            const bool avail = *(const uint64_t *)(src + result_size);
+            if (avail)
+               memcpy(dst, src, copy_size);
+            else if (flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT)
+               *(uint64_t *)(dst + result_size) = 0;
+
+            src += packed_stride;
+            dst += stride;
+         }
+      } else {
+         for (uint32_t i = 0; i < queryCount; i++) {
+            const bool avail = *(const uint32_t *)(src + result_size);
+            if (avail)
+               memcpy(dst, src, copy_size);
+            else if (flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT)
+               *(uint32_t *)(dst + result_size) = 0;
+
+            src += packed_stride;
+            dst += stride;
+         }
+      }
+   }
+
+   vk_free(alloc, packed_data);
+   return vn_result(dev->instance, result);
+}
+
+/* shader module commands */
+
+VkResult
+vn_CreateShaderModule(VkDevice device,
+                      const VkShaderModuleCreateInfo *pCreateInfo,
+                      const VkAllocationCallbacks *pAllocator,
+                      VkShaderModule *pShaderModule)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_shader_module *mod =
+      vk_zalloc(alloc, sizeof(*mod), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!mod)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&mod->base, VK_OBJECT_TYPE_SHADER_MODULE, &dev->base);
+
+   VkShaderModule mod_handle = vn_shader_module_to_handle(mod);
+   vn_async_vkCreateShaderModule(dev->instance, device, pCreateInfo, NULL,
+                                 &mod_handle);
+
+   *pShaderModule = mod_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyShaderModule(VkDevice device,
+                       VkShaderModule shaderModule,
+                       const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_shader_module *mod = vn_shader_module_from_handle(shaderModule);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!mod)
+      return;
+
+   vn_async_vkDestroyShaderModule(dev->instance, device, shaderModule, NULL);
+
+   vn_cs_object_fini(&mod->base);
+   vk_free(alloc, mod);
+}
+
+/* pipeline layout commands */
+
+VkResult
+vn_CreatePipelineLayout(VkDevice device,
+                        const VkPipelineLayoutCreateInfo *pCreateInfo,
+                        const VkAllocationCallbacks *pAllocator,
+                        VkPipelineLayout *pPipelineLayout)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_pipeline_layout *layout =
+      vk_zalloc(alloc, sizeof(*layout), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!layout)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&layout->base, VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                     &dev->base);
+
+   VkPipelineLayout layout_handle = vn_pipeline_layout_to_handle(layout);
+   vn_async_vkCreatePipelineLayout(dev->instance, device, pCreateInfo, NULL,
+                                   &layout_handle);
+
+   *pPipelineLayout = layout_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyPipelineLayout(VkDevice device,
+                         VkPipelineLayout pipelineLayout,
+                         const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_pipeline_layout *layout =
+      vn_pipeline_layout_from_handle(pipelineLayout);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!layout)
+      return;
+
+   vn_async_vkDestroyPipelineLayout(dev->instance, device, pipelineLayout,
+                                    NULL);
+
+   vn_cs_object_fini(&layout->base);
+   vk_free(alloc, layout);
+}
+
+/* pipeline cache commands */
+
+VkResult
+vn_CreatePipelineCache(VkDevice device,
+                       const VkPipelineCacheCreateInfo *pCreateInfo,
+                       const VkAllocationCallbacks *pAllocator,
+                       VkPipelineCache *pPipelineCache)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_pipeline_cache *cache =
+      vk_zalloc(alloc, sizeof(*cache), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!cache)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&cache->base, VK_OBJECT_TYPE_PIPELINE_CACHE, &dev->base);
+
+   VkPipelineCacheCreateInfo local_create_info;
+   if (pCreateInfo->initialDataSize) {
+      local_create_info = *pCreateInfo;
+      local_create_info.pInitialData +=
+         sizeof(struct vk_pipeline_cache_header);
+      pCreateInfo = &local_create_info;
+   }
+
+   VkPipelineCache cache_handle = vn_pipeline_cache_to_handle(cache);
+   vn_async_vkCreatePipelineCache(dev->instance, device, pCreateInfo, NULL,
+                                  &cache_handle);
+
+   *pPipelineCache = cache_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyPipelineCache(VkDevice device,
+                        VkPipelineCache pipelineCache,
+                        const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_pipeline_cache *cache =
+      vn_pipeline_cache_from_handle(pipelineCache);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!cache)
+      return;
+
+   vn_async_vkDestroyPipelineCache(dev->instance, device, pipelineCache,
+                                   NULL);
+
+   vn_cs_object_fini(&cache->base);
+   vk_free(alloc, cache);
+}
+
+VkResult
+vn_GetPipelineCacheData(VkDevice device,
+                        VkPipelineCache pipelineCache,
+                        size_t *pDataSize,
+                        void *pData)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_physical_device *physical_dev = dev->physical_device;
+
+   struct vk_pipeline_cache_header *header = pData;
+   VkResult result;
+   if (!pData) {
+      result = vn_call_vkGetPipelineCacheData(dev->instance, device,
+                                              pipelineCache, pDataSize, NULL);
+      if (result != VK_SUCCESS)
+         return vn_error(dev->instance, result);
+
+      *pDataSize += sizeof(*header);
+      return VK_SUCCESS;
+   }
+
+   if (*pDataSize <= sizeof(*header)) {
+      *pDataSize = 0;
+      return VK_INCOMPLETE;
+   }
+
+   const VkPhysicalDeviceProperties *props =
+      &physical_dev->properties.properties;
+   header->header_size = sizeof(*header);
+   header->header_version = VK_PIPELINE_CACHE_HEADER_VERSION_ONE;
+   header->vendor_id = props->vendorID;
+   header->device_id = props->deviceID;
+   memcpy(header->uuid, props->pipelineCacheUUID, VK_UUID_SIZE);
+
+   *pDataSize -= header->header_size;
+   result =
+      vn_call_vkGetPipelineCacheData(dev->instance, device, pipelineCache,
+                                     pDataSize, pData + header->header_size);
+   if (result < VK_SUCCESS)
+      return vn_error(dev->instance, result);
+
+   *pDataSize += header->header_size;
+
+   return result;
+}
+
+VkResult
+vn_MergePipelineCaches(VkDevice device,
+                       VkPipelineCache dstCache,
+                       uint32_t srcCacheCount,
+                       const VkPipelineCache *pSrcCaches)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   vn_async_vkMergePipelineCaches(dev->instance, device, dstCache,
+                                  srcCacheCount, pSrcCaches);
+
+   return VK_SUCCESS;
+}
+
+/* pipeline commands */
+
+VkResult
+vn_CreateGraphicsPipelines(VkDevice device,
+                           VkPipelineCache pipelineCache,
+                           uint32_t createInfoCount,
+                           const VkGraphicsPipelineCreateInfo *pCreateInfos,
+                           const VkAllocationCallbacks *pAllocator,
+                           VkPipeline *pPipelines)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   for (uint32_t i = 0; i < createInfoCount; i++) {
+      struct vn_pipeline *pipeline =
+         vk_zalloc(alloc, sizeof(*pipeline), VN_DEFAULT_ALIGN,
+                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (!pipeline) {
+         for (uint32_t j = 0; j < i; j++)
+            vk_free(alloc, vn_pipeline_from_handle(pPipelines[j]));
+         memset(pPipelines, 0, sizeof(*pPipelines) * createInfoCount);
+         return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+
+      vn_cs_object_init(&pipeline->base, VK_OBJECT_TYPE_PIPELINE, &dev->base);
+
+      VkPipeline pipeline_handle = vn_pipeline_to_handle(pipeline);
+      pPipelines[i] = pipeline_handle;
+   }
+
+   vn_async_vkCreateGraphicsPipelines(dev->instance, device, pipelineCache,
+                                      createInfoCount, pCreateInfos, NULL,
+                                      pPipelines);
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_CreateComputePipelines(VkDevice device,
+                          VkPipelineCache pipelineCache,
+                          uint32_t createInfoCount,
+                          const VkComputePipelineCreateInfo *pCreateInfos,
+                          const VkAllocationCallbacks *pAllocator,
+                          VkPipeline *pPipelines)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   for (uint32_t i = 0; i < createInfoCount; i++) {
+      struct vn_pipeline *pipeline =
+         vk_zalloc(alloc, sizeof(*pipeline), VN_DEFAULT_ALIGN,
+                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (!pipeline) {
+         for (uint32_t j = 0; j < i; j++)
+            vk_free(alloc, vn_pipeline_from_handle(pPipelines[j]));
+         memset(pPipelines, 0, sizeof(*pPipelines) * createInfoCount);
+         return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+
+      vn_cs_object_init(&pipeline->base, VK_OBJECT_TYPE_PIPELINE, &dev->base);
+
+      VkPipeline pipeline_handle = vn_pipeline_to_handle(pipeline);
+      pPipelines[i] = pipeline_handle;
+   }
+
+   vn_async_vkCreateComputePipelines(dev->instance, device, pipelineCache,
+                                     createInfoCount, pCreateInfos, NULL,
+                                     pPipelines);
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyPipeline(VkDevice device,
+                   VkPipeline _pipeline,
+                   const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_pipeline *pipeline = vn_pipeline_from_handle(_pipeline);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   if (!pipeline)
+      return;
+
+   vn_async_vkDestroyPipeline(dev->instance, device, _pipeline, NULL);
+
+   vn_cs_object_fini(&pipeline->base);
+   vk_free(alloc, pipeline);
+}
+
+/* command pool commands */
+
+VkResult
+vn_CreateCommandPool(VkDevice device,
+                     const VkCommandPoolCreateInfo *pCreateInfo,
+                     const VkAllocationCallbacks *pAllocator,
+                     VkCommandPool *pCommandPool)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->allocator;
+
+   struct vn_command_pool *pool =
+      vk_zalloc(alloc, sizeof(*pool), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!pool)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vn_cs_object_init(&pool->base, VK_OBJECT_TYPE_COMMAND_POOL, &dev->base);
+
+   pool->allocator = *alloc;
+   list_inithead(&pool->command_buffers);
+
+   VkCommandPool pool_handle = vn_command_pool_to_handle(pool);
+   vn_async_vkCreateCommandPool(dev->instance, device, pCreateInfo, NULL,
+                                &pool_handle);
+
+   *pCommandPool = pool_handle;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_DestroyCommandPool(VkDevice device,
+                      VkCommandPool commandPool,
+                      const VkAllocationCallbacks *pAllocator)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_command_pool *pool = vn_command_pool_from_handle(commandPool);
+   const VkAllocationCallbacks *alloc;
+
+   if (!pool)
+      return;
+
+   alloc = pAllocator ? pAllocator : &pool->allocator;
+
+   vn_async_vkDestroyCommandPool(dev->instance, device, commandPool, NULL);
+
+   list_for_each_entry_safe (struct vn_command_buffer, cmd,
+                             &pool->command_buffers, head) {
+      vn_cs_fini(&cmd->cs);
+      vn_cs_object_fini(&cmd->base);
+      vk_free(alloc, cmd);
+   }
+
+   vn_cs_object_fini(&pool->base);
+   vk_free(alloc, pool);
+}
+
+VkResult
+vn_ResetCommandPool(VkDevice device,
+                    VkCommandPool commandPool,
+                    VkCommandPoolResetFlags flags)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_command_pool *pool = vn_command_pool_from_handle(commandPool);
+
+   list_for_each_entry_safe (struct vn_command_buffer, cmd,
+                             &pool->command_buffers, head) {
+      vn_cs_reset(&cmd->cs);
+      cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
+   }
+
+   vn_async_vkResetCommandPool(dev->instance, device, commandPool, flags);
+
+   return VK_SUCCESS;
+}
+
+void
+vn_TrimCommandPool(VkDevice device,
+                   VkCommandPool commandPool,
+                   VkCommandPoolTrimFlags flags)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   vn_async_vkTrimCommandPool(dev->instance, device, commandPool, flags);
+}
+
+/* command buffer commands */
+
+VkResult
+vn_AllocateCommandBuffers(VkDevice device,
+                          const VkCommandBufferAllocateInfo *pAllocateInfo,
+                          VkCommandBuffer *pCommandBuffers)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_command_pool *pool =
+      vn_command_pool_from_handle(pAllocateInfo->commandPool);
+   const VkAllocationCallbacks *alloc = &pool->allocator;
+
+   for (uint32_t i = 0; i < pAllocateInfo->commandBufferCount; i++) {
+      struct vn_command_buffer *cmd =
+         vk_zalloc(alloc, sizeof(*cmd), VN_DEFAULT_ALIGN,
+                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (!cmd) {
+         for (uint32_t j = 0; j < i; j++) {
+            cmd = vn_command_buffer_from_handle(pCommandBuffers[j]);
+            vn_cs_fini(&cmd->cs);
+            list_del(&cmd->head);
+            vk_free(alloc, cmd);
+         }
+         memset(pCommandBuffers, 0,
+                sizeof(*pCommandBuffers) * pAllocateInfo->commandBufferCount);
+         return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+
+      vn_cs_object_init(&cmd->base, VK_OBJECT_TYPE_COMMAND_BUFFER,
+                        &dev->base);
+      cmd->device = dev;
+
+      list_addtail(&cmd->head, &pool->command_buffers);
+
+      cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
+      vn_cs_init(&cmd->cs, alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
+                 16 * 1024);
+
+      VkCommandBuffer cmd_handle = vn_command_buffer_to_handle(cmd);
+      pCommandBuffers[i] = cmd_handle;
+   }
+
+   vn_async_vkAllocateCommandBuffers(dev->instance, device, pAllocateInfo,
+                                     pCommandBuffers);
+
+   return VK_SUCCESS;
+}
+
+void
+vn_FreeCommandBuffers(VkDevice device,
+                      VkCommandPool commandPool,
+                      uint32_t commandBufferCount,
+                      const VkCommandBuffer *pCommandBuffers)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_command_pool *pool = vn_command_pool_from_handle(commandPool);
+   const VkAllocationCallbacks *alloc = &pool->allocator;
+
+   vn_async_vkFreeCommandBuffers(dev->instance, device, commandPool,
+                                 commandBufferCount, pCommandBuffers);
+
+   for (uint32_t i = 0; i < commandBufferCount; i++) {
+      struct vn_command_buffer *cmd =
+         vn_command_buffer_from_handle(pCommandBuffers[i]);
+
+      if (!cmd)
+         continue;
+
+      vn_cs_fini(&cmd->cs);
+      list_del(&cmd->head);
+
+      vn_cs_object_fini(&cmd->base);
+      vk_free(alloc, cmd);
+   }
+}
+
+VkResult
+vn_ResetCommandBuffer(VkCommandBuffer commandBuffer,
+                      VkCommandBufferResetFlags flags)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+
+   vn_cs_reset(&cmd->cs);
+   cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
+
+   vn_async_vkResetCommandBuffer(cmd->device->instance, commandBuffer, flags);
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_BeginCommandBuffer(VkCommandBuffer commandBuffer,
+                      const VkCommandBufferBeginInfo *pBeginInfo)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   struct vn_instance *instance = cmd->device->instance;
+   size_t cmd_size;
+
+   vn_cs_reset(&cmd->cs);
+
+   cmd_size = vn_sizeof_vkBeginCommandBuffer(commandBuffer, pBeginInfo);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size)) {
+      cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
+      return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
+   vn_encode_vkBeginCommandBuffer(&cmd->cs, 0, commandBuffer, pBeginInfo);
+
+   cmd->state = VN_COMMAND_BUFFER_STATE_RECORDING;
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   struct vn_instance *instance = cmd->device->instance;
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkEndCommandBuffer(commandBuffer);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size)) {
+      cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
+      return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
+   vn_encode_vkEndCommandBuffer(&cmd->cs, 0, commandBuffer);
+   vn_cs_end_out(&cmd->cs);
+
+   if (vn_cs_has_error(&cmd->cs)) {
+      cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
+      return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
+   vn_instance_flush_cs(instance);
+   vn_renderer_submit_cs(instance->renderer, &cmd->cs);
+
+   vn_cs_reset(&cmd->cs);
+
+   cmd->state = VN_COMMAND_BUFFER_STATE_EXECUTABLE;
+
+   return VK_SUCCESS;
+}
+
+void
+vn_CmdBindPipeline(VkCommandBuffer commandBuffer,
+                   VkPipelineBindPoint pipelineBindPoint,
+                   VkPipeline pipeline)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size =
+      vn_sizeof_vkCmdBindPipeline(commandBuffer, pipelineBindPoint, pipeline);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdBindPipeline(&cmd->cs, 0, commandBuffer, pipelineBindPoint,
+                               pipeline);
+}
+
+void
+vn_CmdSetViewport(VkCommandBuffer commandBuffer,
+                  uint32_t firstViewport,
+                  uint32_t viewportCount,
+                  const VkViewport *pViewports)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdSetViewport(commandBuffer, firstViewport,
+                                         viewportCount, pViewports);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdSetViewport(&cmd->cs, 0, commandBuffer, firstViewport,
+                              viewportCount, pViewports);
+}
+
+void
+vn_CmdSetScissor(VkCommandBuffer commandBuffer,
+                 uint32_t firstScissor,
+                 uint32_t scissorCount,
+                 const VkRect2D *pScissors)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdSetScissor(commandBuffer, firstScissor,
+                                        scissorCount, pScissors);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdSetScissor(&cmd->cs, 0, commandBuffer, firstScissor,
+                             scissorCount, pScissors);
+}
+
+void
+vn_CmdSetLineWidth(VkCommandBuffer commandBuffer, float lineWidth)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdSetLineWidth(commandBuffer, lineWidth);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdSetLineWidth(&cmd->cs, 0, commandBuffer, lineWidth);
+}
+
+void
+vn_CmdSetDepthBias(VkCommandBuffer commandBuffer,
+                   float depthBiasConstantFactor,
+                   float depthBiasClamp,
+                   float depthBiasSlopeFactor)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size =
+      vn_sizeof_vkCmdSetDepthBias(commandBuffer, depthBiasConstantFactor,
+                                  depthBiasClamp, depthBiasSlopeFactor);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdSetDepthBias(&cmd->cs, 0, commandBuffer,
+                               depthBiasConstantFactor, depthBiasClamp,
+                               depthBiasSlopeFactor);
+}
+
+void
+vn_CmdSetBlendConstants(VkCommandBuffer commandBuffer,
+                        const float blendConstants[4])
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdSetBlendConstants(commandBuffer, blendConstants);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdSetBlendConstants(&cmd->cs, 0, commandBuffer,
+                                    blendConstants);
+}
+
+void
+vn_CmdSetDepthBounds(VkCommandBuffer commandBuffer,
+                     float minDepthBounds,
+                     float maxDepthBounds)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdSetDepthBounds(commandBuffer, minDepthBounds,
+                                            maxDepthBounds);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdSetDepthBounds(&cmd->cs, 0, commandBuffer, minDepthBounds,
+                                 maxDepthBounds);
+}
+
+void
+vn_CmdSetStencilCompareMask(VkCommandBuffer commandBuffer,
+                            VkStencilFaceFlags faceMask,
+                            uint32_t compareMask)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdSetStencilCompareMask(commandBuffer, faceMask,
+                                                   compareMask);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdSetStencilCompareMask(&cmd->cs, 0, commandBuffer, faceMask,
+                                        compareMask);
+}
+
+void
+vn_CmdSetStencilWriteMask(VkCommandBuffer commandBuffer,
+                          VkStencilFaceFlags faceMask,
+                          uint32_t writeMask)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size =
+      vn_sizeof_vkCmdSetStencilWriteMask(commandBuffer, faceMask, writeMask);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdSetStencilWriteMask(&cmd->cs, 0, commandBuffer, faceMask,
+                                      writeMask);
+}
+
+void
+vn_CmdSetStencilReference(VkCommandBuffer commandBuffer,
+                          VkStencilFaceFlags faceMask,
+                          uint32_t reference)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size =
+      vn_sizeof_vkCmdSetStencilReference(commandBuffer, faceMask, reference);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdSetStencilReference(&cmd->cs, 0, commandBuffer, faceMask,
+                                      reference);
+}
+
+void
+vn_CmdBindDescriptorSets(VkCommandBuffer commandBuffer,
+                         VkPipelineBindPoint pipelineBindPoint,
+                         VkPipelineLayout layout,
+                         uint32_t firstSet,
+                         uint32_t descriptorSetCount,
+                         const VkDescriptorSet *pDescriptorSets,
+                         uint32_t dynamicOffsetCount,
+                         const uint32_t *pDynamicOffsets)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdBindDescriptorSets(
+      commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount,
+      pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdBindDescriptorSets(&cmd->cs, 0, commandBuffer,
+                                     pipelineBindPoint, layout, firstSet,
+                                     descriptorSetCount, pDescriptorSets,
+                                     dynamicOffsetCount, pDynamicOffsets);
+}
+
+void
+vn_CmdBindIndexBuffer(VkCommandBuffer commandBuffer,
+                      VkBuffer buffer,
+                      VkDeviceSize offset,
+                      VkIndexType indexType)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdBindIndexBuffer(commandBuffer, buffer, offset,
+                                             indexType);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdBindIndexBuffer(&cmd->cs, 0, commandBuffer, buffer, offset,
+                                  indexType);
+}
+
+void
+vn_CmdBindVertexBuffers(VkCommandBuffer commandBuffer,
+                        uint32_t firstBinding,
+                        uint32_t bindingCount,
+                        const VkBuffer *pBuffers,
+                        const VkDeviceSize *pOffsets)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdBindVertexBuffers(
+      commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdBindVertexBuffers(&cmd->cs, 0, commandBuffer, firstBinding,
+                                    bindingCount, pBuffers, pOffsets);
+}
+
+void
+vn_CmdDraw(VkCommandBuffer commandBuffer,
+           uint32_t vertexCount,
+           uint32_t instanceCount,
+           uint32_t firstVertex,
+           uint32_t firstInstance)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdDraw(commandBuffer, vertexCount, instanceCount,
+                                  firstVertex, firstInstance);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdDraw(&cmd->cs, 0, commandBuffer, vertexCount, instanceCount,
+                       firstVertex, firstInstance);
+}
+
+void
+vn_CmdDrawIndexed(VkCommandBuffer commandBuffer,
+                  uint32_t indexCount,
+                  uint32_t instanceCount,
+                  uint32_t firstIndex,
+                  int32_t vertexOffset,
+                  uint32_t firstInstance)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size =
+      vn_sizeof_vkCmdDrawIndexed(commandBuffer, indexCount, instanceCount,
+                                 firstIndex, vertexOffset, firstInstance);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdDrawIndexed(&cmd->cs, 0, commandBuffer, indexCount,
+                              instanceCount, firstIndex, vertexOffset,
+                              firstInstance);
+}
+
+void
+vn_CmdDrawIndirect(VkCommandBuffer commandBuffer,
+                   VkBuffer buffer,
+                   VkDeviceSize offset,
+                   uint32_t drawCount,
+                   uint32_t stride)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdDrawIndirect(commandBuffer, buffer, offset,
+                                          drawCount, stride);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdDrawIndirect(&cmd->cs, 0, commandBuffer, buffer, offset,
+                               drawCount, stride);
+}
+
+void
+vn_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
+                          VkBuffer buffer,
+                          VkDeviceSize offset,
+                          uint32_t drawCount,
+                          uint32_t stride)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdDrawIndexedIndirect(commandBuffer, buffer,
+                                                 offset, drawCount, stride);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdDrawIndexedIndirect(&cmd->cs, 0, commandBuffer, buffer,
+                                      offset, drawCount, stride);
+}
+
+void
+vn_CmdDrawIndirectCount(VkCommandBuffer commandBuffer,
+                        VkBuffer buffer,
+                        VkDeviceSize offset,
+                        VkBuffer countBuffer,
+                        VkDeviceSize countBufferOffset,
+                        uint32_t maxDrawCount,
+                        uint32_t stride)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdDrawIndirectCount(commandBuffer, buffer, offset,
+                                               countBuffer, countBufferOffset,
+                                               maxDrawCount, stride);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdDrawIndirectCount(&cmd->cs, 0, commandBuffer, buffer,
+                                    offset, countBuffer, countBufferOffset,
+                                    maxDrawCount, stride);
+}
+
+void
+vn_CmdDrawIndexedIndirectCount(VkCommandBuffer commandBuffer,
+                               VkBuffer buffer,
+                               VkDeviceSize offset,
+                               VkBuffer countBuffer,
+                               VkDeviceSize countBufferOffset,
+                               uint32_t maxDrawCount,
+                               uint32_t stride)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdDrawIndexedIndirectCount(
+      commandBuffer, buffer, offset, countBuffer, countBufferOffset,
+      maxDrawCount, stride);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdDrawIndexedIndirectCount(
+      &cmd->cs, 0, commandBuffer, buffer, offset, countBuffer,
+      countBufferOffset, maxDrawCount, stride);
+}
+
+void
+vn_CmdDispatch(VkCommandBuffer commandBuffer,
+               uint32_t groupCountX,
+               uint32_t groupCountY,
+               uint32_t groupCountZ)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdDispatch(commandBuffer, groupCountX, groupCountY,
+                                      groupCountZ);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdDispatch(&cmd->cs, 0, commandBuffer, groupCountX,
+                           groupCountY, groupCountZ);
+}
+
+void
+vn_CmdDispatchIndirect(VkCommandBuffer commandBuffer,
+                       VkBuffer buffer,
+                       VkDeviceSize offset)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdDispatchIndirect(commandBuffer, buffer, offset);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdDispatchIndirect(&cmd->cs, 0, commandBuffer, buffer,
+                                   offset);
+}
+
+void
+vn_CmdCopyBuffer(VkCommandBuffer commandBuffer,
+                 VkBuffer srcBuffer,
+                 VkBuffer dstBuffer,
+                 uint32_t regionCount,
+                 const VkBufferCopy *pRegions)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer,
+                                        regionCount, pRegions);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdCopyBuffer(&cmd->cs, 0, commandBuffer, srcBuffer, dstBuffer,
+                             regionCount, pRegions);
+}
+
+void
+vn_CmdCopyImage(VkCommandBuffer commandBuffer,
+                VkImage srcImage,
+                VkImageLayout srcImageLayout,
+                VkImage dstImage,
+                VkImageLayout dstImageLayout,
+                uint32_t regionCount,
+                const VkImageCopy *pRegions)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdCopyImage(commandBuffer, srcImage,
+                                       srcImageLayout, dstImage,
+                                       dstImageLayout, regionCount, pRegions);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdCopyImage(&cmd->cs, 0, commandBuffer, srcImage,
+                            srcImageLayout, dstImage, dstImageLayout,
+                            regionCount, pRegions);
+}
+
+void
+vn_CmdBlitImage(VkCommandBuffer commandBuffer,
+                VkImage srcImage,
+                VkImageLayout srcImageLayout,
+                VkImage dstImage,
+                VkImageLayout dstImageLayout,
+                uint32_t regionCount,
+                const VkImageBlit *pRegions,
+                VkFilter filter)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdBlitImage(
+      commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout,
+      regionCount, pRegions, filter);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdBlitImage(&cmd->cs, 0, commandBuffer, srcImage,
+                            srcImageLayout, dstImage, dstImageLayout,
+                            regionCount, pRegions, filter);
+}
+
+void
+vn_CmdCopyBufferToImage(VkCommandBuffer commandBuffer,
+                        VkBuffer srcBuffer,
+                        VkImage dstImage,
+                        VkImageLayout dstImageLayout,
+                        uint32_t regionCount,
+                        const VkBufferImageCopy *pRegions)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size =
+      vn_sizeof_vkCmdCopyBufferToImage(commandBuffer, srcBuffer, dstImage,
+                                       dstImageLayout, regionCount, pRegions);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdCopyBufferToImage(&cmd->cs, 0, commandBuffer, srcBuffer,
+                                    dstImage, dstImageLayout, regionCount,
+                                    pRegions);
+}
+
+void
+vn_CmdCopyImageToBuffer(VkCommandBuffer commandBuffer,
+                        VkImage srcImage,
+                        VkImageLayout srcImageLayout,
+                        VkBuffer dstBuffer,
+                        uint32_t regionCount,
+                        const VkBufferImageCopy *pRegions)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdCopyImageToBuffer(commandBuffer, srcImage,
+                                               srcImageLayout, dstBuffer,
+                                               regionCount, pRegions);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdCopyImageToBuffer(&cmd->cs, 0, commandBuffer, srcImage,
+                                    srcImageLayout, dstBuffer, regionCount,
+                                    pRegions);
+}
+
+void
+vn_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
+                   VkBuffer dstBuffer,
+                   VkDeviceSize dstOffset,
+                   VkDeviceSize dataSize,
+                   const void *pData)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdUpdateBuffer(commandBuffer, dstBuffer, dstOffset,
+                                          dataSize, pData);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdUpdateBuffer(&cmd->cs, 0, commandBuffer, dstBuffer,
+                               dstOffset, dataSize, pData);
+}
+
+void
+vn_CmdFillBuffer(VkCommandBuffer commandBuffer,
+                 VkBuffer dstBuffer,
+                 VkDeviceSize dstOffset,
+                 VkDeviceSize size,
+                 uint32_t data)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdFillBuffer(commandBuffer, dstBuffer, dstOffset,
+                                        size, data);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdFillBuffer(&cmd->cs, 0, commandBuffer, dstBuffer, dstOffset,
+                             size, data);
+}
+
+void
+vn_CmdClearColorImage(VkCommandBuffer commandBuffer,
+                      VkImage image,
+                      VkImageLayout imageLayout,
+                      const VkClearColorValue *pColor,
+                      uint32_t rangeCount,
+                      const VkImageSubresourceRange *pRanges)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdClearColorImage(
+      commandBuffer, image, imageLayout, pColor, rangeCount, pRanges);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdClearColorImage(&cmd->cs, 0, commandBuffer, image,
+                                  imageLayout, pColor, rangeCount, pRanges);
+}
+
+void
+vn_CmdClearDepthStencilImage(VkCommandBuffer commandBuffer,
+                             VkImage image,
+                             VkImageLayout imageLayout,
+                             const VkClearDepthStencilValue *pDepthStencil,
+                             uint32_t rangeCount,
+                             const VkImageSubresourceRange *pRanges)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdClearDepthStencilImage(
+      commandBuffer, image, imageLayout, pDepthStencil, rangeCount, pRanges);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdClearDepthStencilImage(&cmd->cs, 0, commandBuffer, image,
+                                         imageLayout, pDepthStencil,
+                                         rangeCount, pRanges);
+}
+
+void
+vn_CmdClearAttachments(VkCommandBuffer commandBuffer,
+                       uint32_t attachmentCount,
+                       const VkClearAttachment *pAttachments,
+                       uint32_t rectCount,
+                       const VkClearRect *pRects)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdClearAttachments(
+      commandBuffer, attachmentCount, pAttachments, rectCount, pRects);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdClearAttachments(&cmd->cs, 0, commandBuffer,
+                                   attachmentCount, pAttachments, rectCount,
+                                   pRects);
+}
+
+void
+vn_CmdResolveImage(VkCommandBuffer commandBuffer,
+                   VkImage srcImage,
+                   VkImageLayout srcImageLayout,
+                   VkImage dstImage,
+                   VkImageLayout dstImageLayout,
+                   uint32_t regionCount,
+                   const VkImageResolve *pRegions)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdResolveImage(
+      commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout,
+      regionCount, pRegions);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdResolveImage(&cmd->cs, 0, commandBuffer, srcImage,
+                               srcImageLayout, dstImage, dstImageLayout,
+                               regionCount, pRegions);
+}
+
+void
+vn_CmdSetEvent(VkCommandBuffer commandBuffer,
+               VkEvent event,
+               VkPipelineStageFlags stageMask)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdSetEvent(commandBuffer, event, stageMask);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdSetEvent(&cmd->cs, 0, commandBuffer, event, stageMask);
+}
+
+void
+vn_CmdResetEvent(VkCommandBuffer commandBuffer,
+                 VkEvent event,
+                 VkPipelineStageFlags stageMask)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdResetEvent(commandBuffer, event, stageMask);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdResetEvent(&cmd->cs, 0, commandBuffer, event, stageMask);
+}
+
+void
+vn_CmdWaitEvents(VkCommandBuffer commandBuffer,
+                 uint32_t eventCount,
+                 const VkEvent *pEvents,
+                 VkPipelineStageFlags srcStageMask,
+                 VkPipelineStageFlags dstStageMask,
+                 uint32_t memoryBarrierCount,
+                 const VkMemoryBarrier *pMemoryBarriers,
+                 uint32_t bufferMemoryBarrierCount,
+                 const VkBufferMemoryBarrier *pBufferMemoryBarriers,
+                 uint32_t imageMemoryBarrierCount,
+                 const VkImageMemoryBarrier *pImageMemoryBarriers)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdWaitEvents(
+      commandBuffer, eventCount, pEvents, srcStageMask, dstStageMask,
+      memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount,
+      pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   /* XXX VK_IMAGE_LAYOUT_PRESENT_SRC_KHR */
+
+   vn_encode_vkCmdWaitEvents(&cmd->cs, 0, commandBuffer, eventCount, pEvents,
+                             srcStageMask, dstStageMask, memoryBarrierCount,
+                             pMemoryBarriers, bufferMemoryBarrierCount,
+                             pBufferMemoryBarriers, imageMemoryBarrierCount,
+                             pImageMemoryBarriers);
+}
+
+void
+vn_CmdPipelineBarrier(VkCommandBuffer commandBuffer,
+                      VkPipelineStageFlags srcStageMask,
+                      VkPipelineStageFlags dstStageMask,
+                      VkDependencyFlags dependencyFlags,
+                      uint32_t memoryBarrierCount,
+                      const VkMemoryBarrier *pMemoryBarriers,
+                      uint32_t bufferMemoryBarrierCount,
+                      const VkBufferMemoryBarrier *pBufferMemoryBarriers,
+                      uint32_t imageMemoryBarrierCount,
+                      const VkImageMemoryBarrier *pImageMemoryBarriers)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdPipelineBarrier(
+      commandBuffer, srcStageMask, dstStageMask, dependencyFlags,
+      memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount,
+      pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   /* XXX VK_IMAGE_LAYOUT_PRESENT_SRC_KHR */
+
+   vn_encode_vkCmdPipelineBarrier(
+      &cmd->cs, 0, commandBuffer, srcStageMask, dstStageMask, dependencyFlags,
+      memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount,
+      pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+}
+
+void
+vn_CmdBeginQuery(VkCommandBuffer commandBuffer,
+                 VkQueryPool queryPool,
+                 uint32_t query,
+                 VkQueryControlFlags flags)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size =
+      vn_sizeof_vkCmdBeginQuery(commandBuffer, queryPool, query, flags);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdBeginQuery(&cmd->cs, 0, commandBuffer, queryPool, query,
+                             flags);
+}
+
+void
+vn_CmdEndQuery(VkCommandBuffer commandBuffer,
+               VkQueryPool queryPool,
+               uint32_t query)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdEndQuery(commandBuffer, queryPool, query);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdEndQuery(&cmd->cs, 0, commandBuffer, queryPool, query);
+}
+
+void
+vn_CmdResetQueryPool(VkCommandBuffer commandBuffer,
+                     VkQueryPool queryPool,
+                     uint32_t firstQuery,
+                     uint32_t queryCount)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdResetQueryPool(commandBuffer, queryPool,
+                                            firstQuery, queryCount);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdResetQueryPool(&cmd->cs, 0, commandBuffer, queryPool,
+                                 firstQuery, queryCount);
+}
+
+void
+vn_CmdWriteTimestamp(VkCommandBuffer commandBuffer,
+                     VkPipelineStageFlagBits pipelineStage,
+                     VkQueryPool queryPool,
+                     uint32_t query)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdWriteTimestamp(commandBuffer, pipelineStage,
+                                            queryPool, query);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdWriteTimestamp(&cmd->cs, 0, commandBuffer, pipelineStage,
+                                 queryPool, query);
+}
+
+void
+vn_CmdCopyQueryPoolResults(VkCommandBuffer commandBuffer,
+                           VkQueryPool queryPool,
+                           uint32_t firstQuery,
+                           uint32_t queryCount,
+                           VkBuffer dstBuffer,
+                           VkDeviceSize dstOffset,
+                           VkDeviceSize stride,
+                           VkQueryResultFlags flags)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdCopyQueryPoolResults(
+      commandBuffer, queryPool, firstQuery, queryCount, dstBuffer, dstOffset,
+      stride, flags);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdCopyQueryPoolResults(&cmd->cs, 0, commandBuffer, queryPool,
+                                       firstQuery, queryCount, dstBuffer,
+                                       dstOffset, stride, flags);
+}
+
+void
+vn_CmdPushConstants(VkCommandBuffer commandBuffer,
+                    VkPipelineLayout layout,
+                    VkShaderStageFlags stageFlags,
+                    uint32_t offset,
+                    uint32_t size,
+                    const void *pValues)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdPushConstants(commandBuffer, layout, stageFlags,
+                                           offset, size, pValues);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdPushConstants(&cmd->cs, 0, commandBuffer, layout,
+                                stageFlags, offset, size, pValues);
+}
+
+void
+vn_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
+                      const VkRenderPassBeginInfo *pRenderPassBegin,
+                      VkSubpassContents contents)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdBeginRenderPass(commandBuffer, pRenderPassBegin,
+                                             contents);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdBeginRenderPass(&cmd->cs, 0, commandBuffer,
+                                  pRenderPassBegin, contents);
+}
+
+void
+vn_CmdNextSubpass(VkCommandBuffer commandBuffer, VkSubpassContents contents)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdNextSubpass(commandBuffer, contents);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdNextSubpass(&cmd->cs, 0, commandBuffer, contents);
+}
+
+void
+vn_CmdEndRenderPass(VkCommandBuffer commandBuffer)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdEndRenderPass(commandBuffer);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdEndRenderPass(&cmd->cs, 0, commandBuffer);
+}
+
+void
+vn_CmdBeginRenderPass2(VkCommandBuffer commandBuffer,
+                       const VkRenderPassBeginInfo *pRenderPassBegin,
+                       const VkSubpassBeginInfo *pSubpassBeginInfo)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdBeginRenderPass2(commandBuffer, pRenderPassBegin,
+                                              pSubpassBeginInfo);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdBeginRenderPass2(&cmd->cs, 0, commandBuffer,
+                                   pRenderPassBegin, pSubpassBeginInfo);
+}
+
+void
+vn_CmdNextSubpass2(VkCommandBuffer commandBuffer,
+                   const VkSubpassBeginInfo *pSubpassBeginInfo,
+                   const VkSubpassEndInfo *pSubpassEndInfo)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdNextSubpass2(commandBuffer, pSubpassBeginInfo,
+                                          pSubpassEndInfo);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdNextSubpass2(&cmd->cs, 0, commandBuffer, pSubpassBeginInfo,
+                               pSubpassEndInfo);
+}
+
+void
+vn_CmdEndRenderPass2(VkCommandBuffer commandBuffer,
+                     const VkSubpassEndInfo *pSubpassEndInfo)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdEndRenderPass2(commandBuffer, pSubpassEndInfo);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdEndRenderPass2(&cmd->cs, 0, commandBuffer, pSubpassEndInfo);
+}
+
+void
+vn_CmdExecuteCommands(VkCommandBuffer commandBuffer,
+                      uint32_t commandBufferCount,
+                      const VkCommandBuffer *pCommandBuffers)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdExecuteCommands(
+      commandBuffer, commandBufferCount, pCommandBuffers);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdExecuteCommands(&cmd->cs, 0, commandBuffer,
+                                  commandBufferCount, pCommandBuffers);
+}
+
+void
+vn_CmdSetDeviceMask(VkCommandBuffer commandBuffer, uint32_t deviceMask)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdSetDeviceMask(commandBuffer, deviceMask);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdSetDeviceMask(&cmd->cs, 0, commandBuffer, deviceMask);
+}
+
+void
+vn_CmdDispatchBase(VkCommandBuffer commandBuffer,
+                   uint32_t baseGroupX,
+                   uint32_t baseGroupY,
+                   uint32_t baseGroupZ,
+                   uint32_t groupCountX,
+                   uint32_t groupCountY,
+                   uint32_t groupCountZ)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdDispatchBase(commandBuffer, baseGroupX,
+                                          baseGroupY, baseGroupZ, groupCountX,
+                                          groupCountY, groupCountZ);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdDispatchBase(&cmd->cs, 0, commandBuffer, baseGroupX,
+                               baseGroupY, baseGroupZ, groupCountX,
+                               groupCountY, groupCountZ);
+}
+
+void
+vn_CmdBeginQueryIndexedEXT(VkCommandBuffer commandBuffer,
+                           VkQueryPool queryPool,
+                           uint32_t query,
+                           VkQueryControlFlags flags,
+                           uint32_t index)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdBeginQueryIndexedEXT(commandBuffer, queryPool,
+                                                  query, flags, index);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdBeginQueryIndexedEXT(&cmd->cs, 0, commandBuffer, queryPool,
+                                       query, flags, index);
+}
+
+void
+vn_CmdEndQueryIndexedEXT(VkCommandBuffer commandBuffer,
+                         VkQueryPool queryPool,
+                         uint32_t query,
+                         uint32_t index)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdEndQueryIndexedEXT(commandBuffer, queryPool,
+                                                query, index);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdEndQueryIndexedEXT(&cmd->cs, 0, commandBuffer, queryPool,
+                                     query, index);
+}
+
+void
+vn_CmdBindTransformFeedbackBuffersEXT(VkCommandBuffer commandBuffer,
+                                      uint32_t firstBinding,
+                                      uint32_t bindingCount,
+                                      const VkBuffer *pBuffers,
+                                      const VkDeviceSize *pOffsets,
+                                      const VkDeviceSize *pSizes)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdBindTransformFeedbackBuffersEXT(
+      commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets, pSizes);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdBindTransformFeedbackBuffersEXT(&cmd->cs, 0, commandBuffer,
+                                                  firstBinding, bindingCount,
+                                                  pBuffers, pOffsets, pSizes);
+}
+
+void
+vn_CmdBeginTransformFeedbackEXT(VkCommandBuffer commandBuffer,
+                                uint32_t firstCounterBuffer,
+                                uint32_t counterBufferCount,
+                                const VkBuffer *pCounterBuffers,
+                                const VkDeviceSize *pCounterBufferOffsets)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdBeginTransformFeedbackEXT(
+      commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers,
+      pCounterBufferOffsets);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdBeginTransformFeedbackEXT(
+      &cmd->cs, 0, commandBuffer, firstCounterBuffer, counterBufferCount,
+      pCounterBuffers, pCounterBufferOffsets);
+}
+
+void
+vn_CmdEndTransformFeedbackEXT(VkCommandBuffer commandBuffer,
+                              uint32_t firstCounterBuffer,
+                              uint32_t counterBufferCount,
+                              const VkBuffer *pCounterBuffers,
+                              const VkDeviceSize *pCounterBufferOffsets)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdEndTransformFeedbackEXT(
+      commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers,
+      pCounterBufferOffsets);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdEndTransformFeedbackEXT(
+      &cmd->cs, 0, commandBuffer, firstCounterBuffer, counterBufferCount,
+      pCounterBuffers, pCounterBufferOffsets);
+}
+
+void
+vn_CmdDrawIndirectByteCountEXT(VkCommandBuffer commandBuffer,
+                               uint32_t instanceCount,
+                               uint32_t firstInstance,
+                               VkBuffer counterBuffer,
+                               VkDeviceSize counterBufferOffset,
+                               uint32_t counterOffset,
+                               uint32_t vertexStride)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   size_t cmd_size;
+
+   cmd_size = vn_sizeof_vkCmdDrawIndirectByteCountEXT(
+      commandBuffer, instanceCount, firstInstance, counterBuffer,
+      counterBufferOffset, counterOffset, vertexStride);
+   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+      return;
+
+   vn_encode_vkCmdDrawIndirectByteCountEXT(
+      &cmd->cs, 0, commandBuffer, instanceCount, firstInstance, counterBuffer,
+      counterBufferOffset, counterOffset, vertexStride);
+}
