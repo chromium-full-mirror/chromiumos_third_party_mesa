@@ -56,8 +56,10 @@ anv_get_perf(const struct gen_device_info *devinfo, int fd)
    /* We need DRM_I915_PERF_PROP_HOLD_PREEMPTION support, only available in
     * perf revision 2.
     */
-   if (perf->i915_perf_version < 3)
-      goto err;
+   if (!(INTEL_DEBUG & DEBUG_NO_OACONFIG)) {
+      if (!gen_perf_has_hold_preemption(perf))
+         goto err;
+   }
 
    return perf;
 
@@ -104,7 +106,7 @@ anv_device_perf_open(struct anv_device *device, uint64_t metric_id)
     * enabled we would use only half on Gen11 because of functional
     * requirements.
     */
-   if (device->physical->perf->i915_perf_version >= 4) {
+   if (gen_perf_has_global_sseu(device->physical->perf)) {
       properties[p++] = DRM_I915_PERF_PROP_GLOBAL_SSEU;
       properties[p++] = (uintptr_t) &device->physical->perf->sseu;
    }

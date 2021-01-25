@@ -961,6 +961,7 @@ static void
 update_textures_and_samplers(struct NineDevice9 *device)
 {
     struct nine_context *context = &device->context;
+    struct pipe_context *pipe = context->pipe;
     struct pipe_sampler_view *view[NINE_MAX_SAMPLERS];
     unsigned num_textures;
     unsigned i;
@@ -1012,7 +1013,7 @@ update_textures_and_samplers(struct NineDevice9 *device)
         context->bound_samplers_mask_ps |= (1 << s);
     }
 
-    cso_set_sampler_views(context->cso, PIPE_SHADER_FRAGMENT, num_textures, view);
+    pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, num_textures, view);
 
     if (commit_samplers)
         cso_single_sampler_done(context->cso, PIPE_SHADER_FRAGMENT);
@@ -1060,7 +1061,7 @@ update_textures_and_samplers(struct NineDevice9 *device)
         context->bound_samplers_mask_vs |= (1 << i);
     }
 
-    cso_set_sampler_views(context->cso, PIPE_SHADER_VERTEX, num_textures, view);
+    pipe->set_sampler_views(pipe, PIPE_SHADER_VERTEX, 0, num_textures, view);
 
     if (commit_samplers)
         cso_single_sampler_done(context->cso, PIPE_SHADER_VERTEX);
@@ -1283,7 +1284,7 @@ nine_update_state(struct NineDevice9 *device)
             struct pipe_stencil_ref ref;
             ref.ref_value[0] = context->rs[D3DRS_STENCILREF];
             ref.ref_value[1] = ref.ref_value[0];
-            pipe->set_stencil_ref(pipe, &ref);
+            pipe->set_stencil_ref(pipe, ref);
         }
     }
 
@@ -2307,10 +2308,11 @@ CSMT_ITEM_NO_WAIT(nine_context_clear_fb,
 
 static inline void
 init_draw_info(struct pipe_draw_info *info,
+               struct pipe_draw_start_count *draw,
                struct NineDevice9 *dev, D3DPRIMITIVETYPE type, UINT count)
 {
     info->mode = d3dprimitivetype_to_pipe_prim(type);
-    info->count = prim_count_to_vertex_count(type, count);
+    draw->count = prim_count_to_vertex_count(type, count);
     info->start_instance = 0;
     info->instance_count = 1;
     if (dev->context.stream_instancedata_mask & dev->context.stream_usage_mask)
@@ -2318,8 +2320,6 @@ init_draw_info(struct pipe_draw_info *info,
     info->primitive_restart = FALSE;
     info->has_user_indices = FALSE;
     info->restart_index = 0;
-    info->count_from_stream_output = NULL;
-    info->indirect = NULL;
 }
 
 CSMT_ITEM_NO_WAIT(nine_context_draw_primitive,
@@ -2329,18 +2329,19 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_primitive,
 {
     struct nine_context *context = &device->context;
     struct pipe_draw_info info;
+    struct pipe_draw_start_count draw;
 
     nine_update_state(device);
 
-    init_draw_info(&info, device, PrimitiveType, PrimitiveCount);
+    init_draw_info(&info, &draw, device, PrimitiveType, PrimitiveCount);
     info.index_size = 0;
-    info.start = StartVertex;
+    draw.start = StartVertex;
     info.index_bias = 0;
-    info.min_index = info.start;
-    info.max_index = info.count - 1;
+    info.min_index = draw.start;
+    info.max_index = draw.count - 1;
     info.index.resource = NULL;
 
-    context->pipe->draw_vbo(context->pipe, &info);
+    context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
 }
 
 CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive,
@@ -2353,19 +2354,21 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive,
 {
     struct nine_context *context = &device->context;
     struct pipe_draw_info info;
+    struct pipe_draw_start_count draw;
 
     nine_update_state(device);
 
-    init_draw_info(&info, device, PrimitiveType, PrimitiveCount);
+    init_draw_info(&info, &draw, device, PrimitiveType, PrimitiveCount);
     info.index_size = context->index_size;
-    info.start = context->index_offset / context->index_size + StartIndex;
+    draw.start = context->index_offset / context->index_size + StartIndex;
     info.index_bias = BaseVertexIndex;
+    info.index_bounds_valid = true;
     /* These don't include index bias: */
     info.min_index = MinVertexIndex;
     info.max_index = MinVertexIndex + NumVertices - 1;
     info.index.resource = context->idxbuf;
 
-    context->pipe->draw_vbo(context->pipe, &info);
+    context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
 }
 
 CSMT_ITEM_NO_WAIT(nine_context_draw_primitive_from_vtxbuf,
@@ -2375,20 +2378,21 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_primitive_from_vtxbuf,
 {
     struct nine_context *context = &device->context;
     struct pipe_draw_info info;
+    struct pipe_draw_start_count draw;
 
     nine_update_state(device);
 
-    init_draw_info(&info, device, PrimitiveType, PrimitiveCount);
+    init_draw_info(&info, &draw, device, PrimitiveType, PrimitiveCount);
     info.index_size = 0;
-    info.start = 0;
+    draw.start = 0;
     info.index_bias = 0;
     info.min_index = 0;
-    info.max_index = info.count - 1;
+    info.max_index = draw.count - 1;
     info.index.resource = NULL;
 
     context->pipe->set_vertex_buffers(context->pipe, 0, 1, vtxbuf);
 
-    context->pipe->draw_vbo(context->pipe, &info);
+    context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
 }
 
 CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive_from_vtxbuf_idxbuf,
@@ -2404,13 +2408,15 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive_from_vtxbuf_idxbuf,
 {
     struct nine_context *context = &device->context;
     struct pipe_draw_info info;
+    struct pipe_draw_start_count draw;
 
     nine_update_state(device);
 
-    init_draw_info(&info, device, PrimitiveType, PrimitiveCount);
+    init_draw_info(&info, &draw, device, PrimitiveType, PrimitiveCount);
     info.index_size = index_size;
-    info.start = index_offset / info.index_size;
+    draw.start = index_offset / info.index_size;
     info.index_bias = 0;
+    info.index_bounds_valid = true;
     info.min_index = MinVertexIndex;
     info.max_index = MinVertexIndex + NumVertices - 1;
     info.has_user_indices = ibuf == NULL;
@@ -2421,7 +2427,7 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive_from_vtxbuf_idxbuf,
 
     context->pipe->set_vertex_buffers(context->pipe, 0, 1, vbuf);
 
-    context->pipe->draw_vbo(context->pipe, &info);
+    context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
 }
 
 CSMT_ITEM_NO_WAIT(nine_context_resource_copy_region,
@@ -2907,8 +2913,8 @@ nine_context_clear(struct NineDevice9 *device)
     cso_set_samplers(cso, PIPE_SHADER_VERTEX, 0, NULL);
     cso_set_samplers(cso, PIPE_SHADER_FRAGMENT, 0, NULL);
 
-    cso_set_sampler_views(cso, PIPE_SHADER_VERTEX, 0, NULL);
-    cso_set_sampler_views(cso, PIPE_SHADER_FRAGMENT, 0, NULL);
+    pipe->set_sampler_views(pipe, PIPE_SHADER_VERTEX, 0, NINE_MAX_SAMPLERS_VS, NULL);
+    pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, NINE_MAX_SAMPLERS_PS, NULL);
 
     pipe->set_vertex_buffers(pipe, 0, device->caps.MaxStreams, NULL);
 

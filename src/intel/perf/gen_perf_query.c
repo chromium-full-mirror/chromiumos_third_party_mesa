@@ -219,11 +219,6 @@ struct gen_perf_query_object
          bool results_accumulated;
 
          /**
-          * Frequency of the GT at begin and end of the query.
-          */
-         uint64_t gt_frequency[2];
-
-         /**
           * Accumulated OA results between begin and end of the query.
           */
          struct gen_perf_query_result result;
@@ -348,8 +343,6 @@ gen_perf_close(struct gen_perf_context *perfquery,
    }
 }
 
-#define NUM_PERF_PROPERTIES(array) (ARRAY_SIZE(array) / 2)
-
 static bool
 gen_perf_open(struct gen_perf_context *perf_ctx,
               int metrics_set_id,
@@ -358,28 +351,40 @@ gen_perf_open(struct gen_perf_context *perf_ctx,
               int drm_fd,
               uint32_t ctx_id)
 {
-   uint64_t properties[] = {
-      /* Single context sampling */
-      DRM_I915_PERF_PROP_CTX_HANDLE, ctx_id,
+   uint64_t properties[DRM_I915_PERF_PROP_MAX * 2];
+   uint32_t p = 0;
 
-      /* Include OA reports in samples */
-      DRM_I915_PERF_PROP_SAMPLE_OA, true,
+   /* Single context sampling */
+   properties[p++] = DRM_I915_PERF_PROP_CTX_HANDLE;
+   properties[p++] = ctx_id;
 
-      /* OA unit configuration */
-      DRM_I915_PERF_PROP_OA_METRICS_SET, metrics_set_id,
-      DRM_I915_PERF_PROP_OA_FORMAT, report_format,
-      DRM_I915_PERF_PROP_OA_EXPONENT, period_exponent,
+   /* Include OA reports in samples */
+   properties[p++] = DRM_I915_PERF_PROP_SAMPLE_OA;
+   properties[p++] = true;
 
-      /* SSEU configuration */
-      DRM_I915_PERF_PROP_GLOBAL_SSEU, to_user_pointer(&perf_ctx->perf->sseu),
-   };
+   /* OA unit configuration */
+   properties[p++] = DRM_I915_PERF_PROP_OA_METRICS_SET;
+   properties[p++] = metrics_set_id;
+
+   properties[p++] = DRM_I915_PERF_PROP_OA_FORMAT;
+   properties[p++] = report_format;
+
+   properties[p++] = DRM_I915_PERF_PROP_OA_EXPONENT;
+   properties[p++] = period_exponent;
+
+   /* SSEU configuration */
+   if (gen_perf_has_global_sseu(perf_ctx->perf)) {
+      properties[p++] = DRM_I915_PERF_PROP_GLOBAL_SSEU;
+      properties[p++] = to_user_pointer(&perf_ctx->perf->sseu);
+   }
+
+   assert(p <= ARRAY_SIZE(properties));
+
    struct drm_i915_perf_open_param param = {
       .flags = I915_PERF_FLAG_FD_CLOEXEC |
                I915_PERF_FLAG_FD_NONBLOCK |
                I915_PERF_FLAG_DISABLED,
-      .num_properties = perf_ctx->perf->i915_perf_version >= 4 ?
-                        NUM_PERF_PROPERTIES(properties) :
-                        NUM_PERF_PROPERTIES(properties) - 1,
+      .num_properties = p / 2,
       .properties_ptr = (uintptr_t) properties,
    };
    int fd = gen_ioctl(drm_fd, DRM_IOCTL_I915_PERF_OPEN, &param);
@@ -1395,37 +1400,6 @@ gen_perf_delete_query(struct gen_perf_context *perf_ctx,
    free(query);
 }
 
-#define GET_FIELD(word, field) (((word)  & field ## _MASK) >> field ## _SHIFT)
-
-static void
-read_gt_frequency(struct gen_perf_context *perf_ctx,
-                  struct gen_perf_query_object *obj)
-{
-   const struct gen_device_info *devinfo = perf_ctx->devinfo;
-   uint32_t start = *((uint32_t *)(obj->oa.map + MI_FREQ_START_OFFSET_BYTES)),
-      end = *((uint32_t *)(obj->oa.map + MI_FREQ_END_OFFSET_BYTES));
-
-   switch (devinfo->gen) {
-   case 7:
-   case 8:
-      obj->oa.gt_frequency[0] = GET_FIELD(start, GEN7_RPSTAT1_CURR_GT_FREQ) * 50ULL;
-      obj->oa.gt_frequency[1] = GET_FIELD(end, GEN7_RPSTAT1_CURR_GT_FREQ) * 50ULL;
-      break;
-   case 9:
-   case 11:
-   case 12:
-      obj->oa.gt_frequency[0] = GET_FIELD(start, GEN9_RPSTAT0_CURR_GT_FREQ) * 50ULL / 3ULL;
-      obj->oa.gt_frequency[1] = GET_FIELD(end, GEN9_RPSTAT0_CURR_GT_FREQ) * 50ULL / 3ULL;
-      break;
-   default:
-      unreachable("unexpected gen");
-   }
-
-   /* Put the numbers into Hz. */
-   obj->oa.gt_frequency[0] *= 1000000ULL;
-   obj->oa.gt_frequency[1] *= 1000000ULL;
-}
-
 static int
 get_oa_counter_data(struct gen_perf_context *perf_ctx,
                     struct gen_perf_query_object *query,
@@ -1530,7 +1504,6 @@ gen_perf_get_query_data(struct gen_perf_context *perf_ctx,
          while (!read_oa_samples_for_query(perf_ctx, query, current_batch))
             ;
 
-         read_gt_frequency(perf_ctx, query);
          uint32_t *begin_report = query->oa.map;
          uint32_t *end_report = query->oa.map + MI_RPC_BO_END_OFFSET_BYTES;
          gen_perf_query_result_read_frequencies(&query->oa.result,
@@ -1549,9 +1522,8 @@ gen_perf_get_query_data(struct gen_perf_context *perf_ctx,
          const struct gen_device_info *devinfo = perf_ctx->devinfo;
 
          written = gen_perf_query_result_write_mdapi((uint8_t *)data, data_size,
-                                                     devinfo, &query->oa.result,
-                                                     query->oa.gt_frequency[0],
-                                                     query->oa.gt_frequency[1]);
+                                                     devinfo, query->queryinfo,
+                                                     &query->oa.result);
       }
       break;
 

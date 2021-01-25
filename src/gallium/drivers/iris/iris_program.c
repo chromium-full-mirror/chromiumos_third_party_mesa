@@ -565,20 +565,16 @@ iris_setup_uniforms(const struct brw_compiler *compiler,
             continue;
          }
 
-         nir_intrinsic_instr *load =
-            nir_intrinsic_instr_create(nir, nir_intrinsic_load_ubo);
-         load->num_components = intrin->dest.ssa.num_components;
-         load->src[0] = nir_src_for_ssa(temp_ubo_name);
-         load->src[1] = nir_src_for_ssa(offset);
-         nir_intrinsic_set_align(load, 4, 0);
-         nir_intrinsic_set_range_base(load, 0);
-         nir_intrinsic_set_range(load, ~0);
-         nir_ssa_dest_init(&load->instr, &load->dest,
-                           intrin->dest.ssa.num_components,
-                           intrin->dest.ssa.bit_size, NULL);
-         nir_builder_instr_insert(&b, &load->instr);
+         nir_ssa_def *load =
+            nir_load_ubo(&b, intrin->dest.ssa.num_components, intrin->dest.ssa.bit_size,
+                         temp_ubo_name, offset,
+                         .align_mul = 4,
+                         .align_offset = 0,
+                         .range_base = 0,
+                         .range = ~0);
+
          nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                  nir_src_for_ssa(&load->dest.ssa));
+                                  nir_src_for_ssa(load));
          nir_instr_remove(instr);
       }
    }
@@ -1026,15 +1022,21 @@ iris_setup_binding_table(const struct gen_device_info *devinfo,
 
 static void
 iris_debug_recompile(struct iris_context *ice,
-                     struct shader_info *info,
+                     struct iris_uncompiled_shader *ish,
                      const struct brw_base_prog_key *key)
 {
+   if (!ish)
+      return;
+
+   if (!ish->compiled_once) {
+      ish->compiled_once = true;
+      return;
+   }
+
    struct iris_screen *screen = (struct iris_screen *) ice->ctx.screen;
    const struct gen_device_info *devinfo = &screen->devinfo;
    const struct brw_compiler *c = screen->compiler;
-
-   if (!info)
-      return;
+   const struct shader_info *info = &ish->nir->info;
 
    c->shader_perf_log(&ice->dbg, "Recompiling %s shader for program %s: %s\n",
                       _mesa_shader_stage_to_string(info->stage),
@@ -1148,11 +1150,7 @@ iris_compile_vs(struct iris_context *ice,
       return false;
    }
 
-   if (ish->compiled_once) {
-      iris_debug_recompile(ice, &nir->info, &brw_key.base);
-   } else {
-      ish->compiled_once = true;
-   }
+   iris_debug_recompile(ice, ish, &brw_key.base);
 
    uint32_t *so_decls =
       screen->vtbl.create_so_decl_list(&ish->stream_output,
@@ -1356,13 +1354,7 @@ iris_compile_tcs(struct iris_context *ice,
       return false;
    }
 
-   if (ish) {
-      if (ish->compiled_once) {
-         iris_debug_recompile(ice, &nir->info, &brw_key.base);
-      } else {
-         ish->compiled_once = true;
-      }
-   }
+   iris_debug_recompile(ice, ish, &brw_key.base);
 
    struct iris_compiled_shader *shader =
       iris_upload_shader(ice, IRIS_CACHE_TCS, sizeof(*key), key, program,
@@ -1482,11 +1474,7 @@ iris_compile_tes(struct iris_context *ice,
       return false;
    }
 
-   if (ish->compiled_once) {
-      iris_debug_recompile(ice, &nir->info, &brw_key.base);
-   } else {
-      ish->compiled_once = true;
-   }
+   iris_debug_recompile(ice, ish, &brw_key.base);
 
    uint32_t *so_decls =
       screen->vtbl.create_so_decl_list(&ish->stream_output,
@@ -1604,11 +1592,7 @@ iris_compile_gs(struct iris_context *ice,
       return false;
    }
 
-   if (ish->compiled_once) {
-      iris_debug_recompile(ice, &nir->info, &brw_key.base);
-   } else {
-      ish->compiled_once = true;
-   }
+   iris_debug_recompile(ice, ish, &brw_key.base);
 
    uint32_t *so_decls =
       screen->vtbl.create_so_decl_list(&ish->stream_output,
@@ -1723,11 +1707,7 @@ iris_compile_fs(struct iris_context *ice,
       return false;
    }
 
-   if (ish->compiled_once) {
-      iris_debug_recompile(ice, &nir->info, &brw_key.base);
-   } else {
-      ish->compiled_once = true;
-   }
+   iris_debug_recompile(ice, ish, &brw_key.base);
 
    struct iris_compiled_shader *shader =
       iris_upload_shader(ice, IRIS_CACHE_FS, sizeof(*key), key, program,
@@ -2007,11 +1987,7 @@ iris_compile_cs(struct iris_context *ice,
       return false;
    }
 
-   if (ish->compiled_once) {
-      iris_debug_recompile(ice, &nir->info, &brw_key.base);
-   } else {
-      ish->compiled_once = true;
-   }
+   iris_debug_recompile(ice, ish, &brw_key.base);
 
    struct iris_compiled_shader *shader =
       iris_upload_shader(ice, IRIS_CACHE_CS, sizeof(*key), key, program,

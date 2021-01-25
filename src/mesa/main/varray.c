@@ -459,8 +459,7 @@ static const uint16_t vertex_formats[][4][4] = {
  */
 static enum pipe_format
 vertex_format_to_pipe_format(GLubyte size, GLenum16 type, GLenum16 format,
-                             GLboolean normalized, GLboolean integer,
-                             GLboolean doubles)
+                             bool normalized, bool integer, bool doubles)
 {
    assert(size >= 1 && size <= 4);
    assert(format == GL_RGBA || format == GL_BGRA);
@@ -674,8 +673,8 @@ validate_array_format(struct gl_context *ctx, const char *func,
                       struct gl_vertex_array_object *vao,
                       GLuint attrib, GLbitfield legalTypesMask,
                       GLint sizeMin, GLint sizeMax,
-                      GLint size, GLenum type, GLboolean normalized,
-                      GLboolean integer, GLboolean doubles,
+                      GLint size, GLenum type, bool normalized,
+                      bool integer, bool doubles,
                       GLuint relativeOffset, GLenum format)
 {
    GLbitfield typeBit;
@@ -3131,7 +3130,8 @@ vertex_array_vertex_buffers(struct gl_context *ctx,
     *       their parameters are valid and no other error occurs."
     */
 
-   _mesa_HashLockMutex(ctx->Shared->BufferObjects);
+   _mesa_HashLockMaybeLocked(ctx->Shared->BufferObjects,
+                             ctx->BufferObjectsLocked);
 
    for (i = 0; i < count; i++) {
       struct gl_buffer_object *vbo;
@@ -3188,7 +3188,8 @@ vertex_array_vertex_buffers(struct gl_context *ctx,
                                vbo, offsets[i], strides[i], false, false);
    }
 
-   _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
+   _mesa_HashUnlockMaybeLocked(ctx->Shared->BufferObjects,
+                               ctx->BufferObjectsLocked);
 }
 
 

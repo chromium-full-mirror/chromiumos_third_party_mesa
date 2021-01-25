@@ -64,6 +64,9 @@ struct panfrost_batch {
         /* Buffers drawn */
         unsigned draws;
 
+        /* Buffers read */
+        unsigned read;
+
         /* Packed clear values, indexed by both render target as well as word.
          * Essentially, a single pixel is packed, with some padding to bring it
          * up to a 32-bit interval; that pixel is then duplicated over to fill
@@ -157,7 +160,7 @@ panfrost_batch_create_bo(struct panfrost_batch *batch, size_t size,
                          uint32_t create_flags, uint32_t access_flags);
 
 void
-panfrost_flush_all_batches(struct panfrost_context *ctx, uint32_t out_sync);
+panfrost_flush_all_batches(struct panfrost_context *ctx);
 
 bool
 panfrost_pending_batches_access_bo(struct panfrost_context *ctx,

@@ -26,6 +26,7 @@
 #include "pipe/p_format.h"
 #include "util/format/u_format.h"
 #include "util/u_math.h"
+#include "util/compiler.h"
 
 static const DXGI_FORMAT formats[PIPE_FORMAT_COUNT] = {
 #define MAP_FORMAT_NORM(FMT) \
@@ -90,7 +91,6 @@ static const DXGI_FORMAT formats[PIPE_FORMAT_COUNT] = {
 
    [PIPE_FORMAT_A8_UNORM] = DXGI_FORMAT_A8_UNORM,
    MAP_EMU_FORMAT_NO_ALPHA(8, UNORM)
-   MAP_EMU_FORMAT(8, SNORM)
    MAP_EMU_FORMAT(8, SNORM)
    MAP_EMU_FORMAT(8, SINT)
    MAP_EMU_FORMAT(8, UINT)
@@ -180,7 +180,7 @@ d3d12_get_resource_srv_format(enum pipe_format f, enum pipe_texture_target targe
    case PIPE_FORMAT_A8_UNORM:
       if (target == PIPE_BUFFER)
          return DXGI_FORMAT_R8_UNORM; /* A8_UNORM is not supported for buffer SRV */
-      /* passthrough */
+      FALLTHROUGH;
    default:
       return d3d12_get_format(f);
    }
@@ -285,9 +285,20 @@ d3d12_non_opaque_plane_count(DXGI_FORMAT format)
    case DXGI_FORMAT_Y216:
    case DXGI_FORMAT_NV11:
       return 2;
-   }
 
-   return 1;
+   default:
+      return 1;
+   }
+}
+
+unsigned
+d3d12_get_format_start_plane(enum pipe_format fmt)
+{
+   const struct util_format_description *desc = util_format_description(fmt);
+   if (util_format_has_stencil(desc) && !util_format_has_depth(desc))
+      return 1;
+
+   return 0;
 }
 
 unsigned

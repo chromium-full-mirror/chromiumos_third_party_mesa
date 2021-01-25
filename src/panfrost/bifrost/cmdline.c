@@ -30,7 +30,6 @@
 #include "compiler/nir_types.h"
 #include "util/u_dynarray.h"
 #include "bifrost_compile.h"
-#include "test/bit.h"
 
 static panfrost_program *
 compile_shader(char **argv, bool vertex_only)
@@ -80,6 +79,10 @@ compile_shader(char **argv, bool vertex_only)
         return compiled;
 }
 
+#define BI_FOURCC(ch0, ch1, ch2, ch3) ( \
+  (uint32_t)(ch0)        | (uint32_t)(ch1) << 8 | \
+  (uint32_t)(ch2) << 16  | (uint32_t)(ch3) << 24)
+
 static void
 disassemble(const char *filename, bool verbose)
 {
@@ -90,78 +93,26 @@ disassemble(const char *filename, bool verbose)
         unsigned filesize = ftell(fp);
         rewind(fp);
 
-        unsigned char *code = malloc(filesize);
+        uint32_t *code = malloc(filesize);
         unsigned res = fread(code, 1, filesize, fp);
         if (res != filesize) {
                 printf("Couldn't read full file\n");
         }
         fclose(fp);
 
-        disassemble_bifrost(stdout, code, filesize, verbose);
-        free(code);
-}
+        if (filesize && code[0] == BI_FOURCC('M', 'B', 'S', '2')) {
+                for (int i = 0; i < filesize / 4; ++i) {
+                        if (code[i] != BI_FOURCC('O', 'B', 'J', 'C'))
+                                continue;
 
-static void
-test_vertex(char **argv)
-{
-        void *memctx = NULL; /* TODO */
-        struct panfrost_device *dev = bit_initialize(memctx);
+                        unsigned size = code[i + 1];
+                        unsigned offset = i + 2;
 
-        float iubo[] = {
-                0.1, 0.2, 0.3, 0.4
-        };
-
-        float iattr[] = {
-                0.5, 0.6, 0.7, 0.8
-        };
-
-        float expected[] = {
-                0.6, 0.8, 1.0, 1.2
-        };
-
-        bit_vertex(dev, compile_shader(argv, true),
-                        (uint32_t *) iubo, sizeof(iubo),
-                        (uint32_t *) iattr, sizeof(iattr),
-                        (uint32_t *) expected, sizeof(expected),
-                        BIT_DEBUG_ALL);
-}
-
-static void
-tests(void)
-{
-        void *memctx = NULL; /* TODO */
-        struct panfrost_device *dev = bit_initialize(memctx);
-        bit_packing(dev, BIT_DEBUG_FAIL);
-}
-
-static void
-run(const char *filename)
-{
-        FILE *fp = fopen(filename, "rb");
-        assert(fp);
-
-        fseek(fp, 0, SEEK_END);
-        unsigned filesize = ftell(fp);
-        rewind(fp);
-
-        unsigned char *code = malloc(filesize);
-        unsigned res = fread(code, 1, filesize, fp);
-        if (res != filesize) {
-                printf("Couldn't read full file\n");
+                        disassemble_bifrost(stdout, (uint8_t*)(code + offset), size, verbose);
+                }
+        } else {
+                disassemble_bifrost(stdout, (uint8_t*)code, filesize, verbose);
         }
-        fclose(fp);
-
-        void *memctx = NULL; /* TODO */
-        struct panfrost_device *dev = bit_initialize(memctx);
-
-        panfrost_program prog = {
-                .compiled = {
-                        .data = code,
-                        .size = filesize
-                },
-        };
-
-        bit_vertex(dev, &prog, NULL, 0, NULL, 0, NULL, 0, BIT_DEBUG_ALL);
 
         free(code);
 }
@@ -180,12 +131,6 @@ main(int argc, char **argv)
                 disassemble(argv[2], false);
         else if (strcmp(argv[1], "disasm-verbose") == 0)
                 disassemble(argv[2], true);
-        else if (strcmp(argv[1], "tests") == 0)
-                tests();
-        else if (strcmp(argv[1], "test-vertex") == 0)
-                test_vertex(&argv[2]);
-        else if (strcmp(argv[1], "run") == 0)
-                run(argv[2]);
         else
                 unreachable("Unknown command. Valid: compile/disasm");
 

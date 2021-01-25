@@ -462,8 +462,10 @@ anv_image_init_aux_tt(struct anv_cmd_buffer *cmd_buffer,
 {
    uint32_t plane = anv_image_aspect_to_plane(image->aspects, aspect);
 
+   const struct anv_surface *surface = &image->planes[plane].surface;
    uint64_t base_address =
-      anv_address_physical(image->planes[plane].address);
+      anv_address_physical(anv_address_add(image->planes[plane].address,
+                                           surface->offset));
 
    const struct isl_surf *isl_surf = &image->planes[plane].surface.isl;
    uint64_t format_bits = gen_aux_map_format_bits_for_isl_surf(isl_surf);
@@ -2048,8 +2050,10 @@ genX(cmd_buffer_apply_pipe_flushes)(struct anv_cmd_buffer *cmd_buffer)
    UNUSED const struct gen_device_info *devinfo = &cmd_buffer->device->info;
    enum anv_pipe_bits bits = cmd_buffer->state.pending_pipe_bits;
 
-   if (cmd_buffer->device->physical->always_flush_cache)
+   if (unlikely(cmd_buffer->device->physical->always_flush_cache))
       bits |= ANV_PIPE_FLUSH_BITS | ANV_PIPE_INVALIDATE_BITS;
+   else if (bits == 0)
+      return;
 
    /*
     * From Sandybridge PRM, volume 2, "1.7.2 End-of-Pipe Synchronization":
@@ -2861,10 +2865,10 @@ emit_samplers(struct anv_cmd_buffer *cmd_buffer,
 static uint32_t
 flush_descriptor_sets(struct anv_cmd_buffer *cmd_buffer,
                       struct anv_cmd_pipeline_state *pipe_state,
+                      const VkShaderStageFlags dirty,
                       struct anv_shader_bin **shaders,
                       uint32_t num_shaders)
 {
-   const VkShaderStageFlags dirty = cmd_buffer->state.descriptors_dirty;
    VkShaderStageFlags flushed = 0;
 
    VkResult result = VK_SUCCESS;
@@ -2926,8 +2930,6 @@ flush_descriptor_sets(struct anv_cmd_buffer *cmd_buffer,
          flushed |= mesa_to_vk_shader_stage(stage);
       }
    }
-
-   cmd_buffer->state.descriptors_dirty &= ~flushed;
 
    return flushed;
 }
@@ -3221,7 +3223,7 @@ cmd_buffer_emit_push_constant_all(struct anv_cmd_buffer *cmd_buffer,
    const struct anv_cmd_graphics_state *gfx_state = &cmd_buffer->state.gfx;
    const struct anv_graphics_pipeline *pipeline = gfx_state->pipeline;
 
-   static const uint32_t push_constant_opcodes[] = {
+   static const UNUSED uint32_t push_constant_opcodes[] = {
       [MESA_SHADER_VERTEX]                      = 21,
       [MESA_SHADER_TESS_CTRL]                   = 25, /* HS */
       [MESA_SHADER_TESS_EVAL]                   = 26, /* DS */
@@ -3464,8 +3466,14 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
          if (buffer) {
             uint32_t stride = dynamic_stride ?
                cmd_buffer->state.vertex_bindings[vb].stride : pipeline->vb[vb].stride;
-            uint32_t size = dynamic_size ?
-               cmd_buffer->state.vertex_bindings[vb].size : buffer->size;
+            /* From the Vulkan spec (vkCmdBindVertexBuffers2EXT):
+             *
+             * "If pname:pSizes is not NULL then pname:pSizes[i] specifies
+             * the bound size of the vertex buffer starting from the corresponding
+             * elements of pname:pBuffers[i] plus pname:pOffsets[i]."
+             */
+            UNUSED uint32_t size = dynamic_size ?
+               cmd_buffer->state.vertex_bindings[vb].size : buffer->size - offset;
 
             state = (struct GENX(VERTEX_BUFFER_STATE)) {
                .VertexBufferIndex = vb,
@@ -3482,9 +3490,14 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
                .NullVertexBuffer = offset >= buffer->size,
 
 #if GEN_GEN >= 8
-               .BufferSize = size - offset
+               .BufferSize = size,
 #else
-               .EndAddress = anv_address_add(buffer->address, size - 1),
+               /* XXX: to handle dynamic offset for older gens we might want
+                * to modify Endaddress, but there are issues when doing so:
+                *
+                * https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/7439
+                */
+               .EndAddress = anv_address_add(buffer->address, buffer->size - 1),
 #endif
             };
          } else {
@@ -3506,6 +3519,12 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
    }
 
    cmd_buffer->state.gfx.vb_dirty &= ~vb_emit;
+
+   uint32_t descriptors_dirty = cmd_buffer->state.descriptors_dirty &
+                                pipeline->active_stages;
+   if (!cmd_buffer->state.gfx.dirty && !descriptors_dirty &&
+       !cmd_buffer->state.push_constants_dirty)
+      return;
 
    if ((cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_XFB_ENABLE) ||
        (GEN_GEN == 7 && (cmd_buffer->state.gfx.dirty &
@@ -3585,7 +3604,7 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
 
    /* Render targets live in the same binding table as fragment descriptors */
    if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_RENDER_TARGETS)
-      cmd_buffer->state.descriptors_dirty |= VK_SHADER_STAGE_FRAGMENT_BIT;
+      descriptors_dirty |= VK_SHADER_STAGE_FRAGMENT_BIT;
 
    /* We emit the binding tables and sampler tables first, then emit push
     * constants and then finally emit binding table and sampler table
@@ -3595,11 +3614,13 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
     * 3DSTATE_BINDING_TABLE_POINTER_* for the push constants to take effect.
     */
    uint32_t dirty = 0;
-   if (cmd_buffer->state.descriptors_dirty) {
+   if (descriptors_dirty) {
       dirty = flush_descriptor_sets(cmd_buffer,
                                     &cmd_buffer->state.gfx.base,
+                                    descriptors_dirty,
                                     pipeline->shaders,
                                     ARRAY_SIZE(pipeline->shaders));
+      cmd_buffer->state.descriptors_dirty &= ~dirty;
    }
 
    if (dirty || cmd_buffer->state.push_constants_dirty) {
@@ -4372,7 +4393,8 @@ void genX(CmdEndTransformFeedbackEXT)(
 void
 genX(cmd_buffer_flush_compute_state)(struct anv_cmd_buffer *cmd_buffer)
 {
-   struct anv_compute_pipeline *pipeline = cmd_buffer->state.compute.pipeline;
+   struct anv_cmd_compute_state *comp_state = &cmd_buffer->state.compute;
+   struct anv_compute_pipeline *pipeline = comp_state->pipeline;
 
    assert(pipeline->cs);
 
@@ -4410,8 +4432,11 @@ genX(cmd_buffer_flush_compute_state)(struct anv_cmd_buffer *cmd_buffer)
        cmd_buffer->state.compute.pipeline_dirty) {
       flush_descriptor_sets(cmd_buffer,
                             &cmd_buffer->state.compute.base,
+                            VK_SHADER_STAGE_COMPUTE_BIT,
                             &pipeline->cs, 1);
+      cmd_buffer->state.descriptors_dirty &= ~VK_SHADER_STAGE_COMPUTE_BIT;
 
+#if GEN_GEN <= 12 && !GEN_IS_GEN12HP
       uint32_t iface_desc_data_dw[GENX(INTERFACE_DESCRIPTOR_DATA_length)];
       struct GENX(INTERFACE_DESCRIPTOR_DATA) desc = {
          .BindingTablePointer =
@@ -4433,18 +4458,21 @@ genX(cmd_buffer_flush_compute_state)(struct anv_cmd_buffer *cmd_buffer)
          mid.InterfaceDescriptorTotalLength        = size;
          mid.InterfaceDescriptorDataStartAddress   = state.offset;
       }
+#endif
    }
 
    if (cmd_buffer->state.push_constants_dirty & VK_SHADER_STAGE_COMPUTE_BIT) {
-      struct anv_state push_state =
+      comp_state->push_data =
          anv_cmd_buffer_cs_push_constants(cmd_buffer);
 
-      if (push_state.alloc_size) {
+#if GEN_GEN <= 12 && !GEN_IS_GEN12HP
+      if (comp_state->push_data.alloc_size) {
          anv_batch_emit(&cmd_buffer->batch, GENX(MEDIA_CURBE_LOAD), curbe) {
-            curbe.CURBETotalDataLength    = push_state.alloc_size;
-            curbe.CURBEDataStartAddress   = push_state.offset;
+            curbe.CURBETotalDataLength    = comp_state->push_data.alloc_size;
+            curbe.CURBEDataStartAddress   = comp_state->push_data.offset;
          }
       }
+#endif
 
       cmd_buffer->state.push_constants_dirty &= ~VK_SHADER_STAGE_COMPUTE_BIT;
    }
@@ -4504,6 +4532,50 @@ void genX(CmdDispatch)(
    genX(CmdDispatchBase)(commandBuffer, 0, 0, 0, x, y, z);
 }
 
+#if GEN_GEN > 12 || GEN_IS_GEN12HP
+
+static inline void
+emit_compute_walker(struct anv_cmd_buffer *cmd_buffer,
+                    const struct anv_compute_pipeline *pipeline, bool indirect,
+                    const struct brw_cs_prog_data *prog_data,
+                    uint32_t groupCountX, uint32_t groupCountY,
+                    uint32_t groupCountZ)
+{
+   struct anv_cmd_compute_state *comp_state = &cmd_buffer->state.compute;
+   const struct anv_shader_bin *cs_bin = pipeline->cs;
+   bool predicate = cmd_buffer->state.conditional_render_enabled;
+   const struct anv_cs_parameters cs_params = anv_cs_parameters(pipeline);
+
+   anv_batch_emit(&cmd_buffer->batch, GENX(COMPUTE_WALKER), cw) {
+      cw.IndirectParameterEnable        = indirect;
+      cw.PredicateEnable                = predicate;
+      cw.SIMDSize                       = cs_params.simd_size / 16;
+      cw.IndirectDataStartAddress       = comp_state->push_data.offset;
+      cw.IndirectDataLength             = comp_state->push_data.alloc_size;
+      cw.LocalXMaximum                  = prog_data->local_size[0] - 1;
+      cw.LocalYMaximum                  = prog_data->local_size[1] - 1;
+      cw.LocalZMaximum                  = prog_data->local_size[2] - 1;
+      cw.ThreadGroupIDXDimension        = groupCountX;
+      cw.ThreadGroupIDYDimension        = groupCountY;
+      cw.ThreadGroupIDZDimension        = groupCountZ;
+      cw.ExecutionMask                  = pipeline->cs_right_mask;
+
+      cw.InterfaceDescriptor = (struct GENX(INTERFACE_DESCRIPTOR_DATA)) {
+         .KernelStartPointer = cs_bin->kernel.offset,
+         .SamplerStatePointer =
+            cmd_buffer->state.samplers[MESA_SHADER_COMPUTE].offset,
+         .BindingTablePointer =
+            cmd_buffer->state.binding_tables[MESA_SHADER_COMPUTE].offset,
+         .NumberofThreadsinGPGPUThreadGroup = cs_params.threads,
+         .SharedLocalMemorySize = encode_slm_size(GEN_GEN,
+                                                  prog_data->base.total_shared),
+         .BarrierEnable = prog_data->uses_barrier,
+      };
+   }
+}
+
+#else /* #if GEN_GEN > 12 || GEN_IS_GEN12HP */
+
 static inline void
 emit_gpgpu_walker(struct anv_cmd_buffer *cmd_buffer,
                   const struct anv_compute_pipeline *pipeline, bool indirect,
@@ -4530,6 +4602,24 @@ emit_gpgpu_walker(struct anv_cmd_buffer *cmd_buffer,
    }
 
    anv_batch_emit(&cmd_buffer->batch, GENX(MEDIA_STATE_FLUSH), msf);
+}
+
+#endif /* #if GEN_GEN > 12 || GEN_IS_GEN12HP */
+
+static inline void
+emit_cs_walker(struct anv_cmd_buffer *cmd_buffer,
+               const struct anv_compute_pipeline *pipeline, bool indirect,
+               const struct brw_cs_prog_data *prog_data,
+               uint32_t groupCountX, uint32_t groupCountY,
+               uint32_t groupCountZ)
+{
+#if GEN_GEN > 12 || GEN_IS_GEN12HP
+   emit_compute_walker(cmd_buffer, pipeline, indirect, prog_data, groupCountX,
+                       groupCountY, groupCountZ);
+#else
+   emit_gpgpu_walker(cmd_buffer, pipeline, indirect, prog_data, groupCountX,
+                     groupCountY, groupCountZ);
+#endif
 }
 
 void genX(CmdDispatchBase)(
@@ -4572,8 +4662,8 @@ void genX(CmdDispatchBase)(
    if (cmd_buffer->state.conditional_render_enabled)
       genX(cmd_emit_conditional_render_predicate)(cmd_buffer);
 
-   emit_gpgpu_walker(cmd_buffer, pipeline, false, prog_data, groupCountX,
-                     groupCountY, groupCountZ);
+   emit_cs_walker(cmd_buffer, pipeline, false, prog_data, groupCountX,
+                  groupCountY, groupCountZ);
 }
 
 #define GPGPU_DISPATCHDIMX 0x2500
@@ -4674,7 +4764,7 @@ void genX(CmdDispatchIndirect)(
       genX(cmd_emit_conditional_render_predicate)(cmd_buffer);
 #endif
 
-   emit_gpgpu_walker(cmd_buffer, pipeline, true, prog_data, 0, 0, 0);
+   emit_cs_walker(cmd_buffer, pipeline, true, prog_data, 0, 0, 0);
 }
 
 static void

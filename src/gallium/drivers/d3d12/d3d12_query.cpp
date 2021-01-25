@@ -30,6 +30,8 @@
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 
+#include <dxguids/dxguids.h>
+
 struct d3d12_query {
    enum pipe_query_type type;
 
@@ -106,7 +108,6 @@ d3d12_create_query(struct pipe_context *pctx,
    struct d3d12_screen *screen = d3d12_screen(pctx->screen);
    struct d3d12_query *query = CALLOC_STRUCT(d3d12_query);
    D3D12_QUERY_HEAP_DESC desc = {};
-   D3D12_RESOURCE_DESC res_desc = {};
 
    if (!query)
       return NULL;
@@ -137,15 +138,14 @@ d3d12_create_query(struct pipe_context *pctx,
    desc.Count = query->num_queries;
    desc.Type = d3d12_query_heap_type(query_type);
    if (FAILED(screen->dev->CreateQueryHeap(&desc,
-                                           __uuidof(query->query_heap),
-                                           (void **)&query->query_heap))) {
+                                           IID_PPV_ARGS(&query->query_heap)))) {
       FREE(query);
       return NULL;
    }
 
    /* Query result goes into a readback buffer */
    size_t buffer_size = query->query_size * query->num_queries;
-   u_suballocator_alloc(ctx->query_allocator, buffer_size, 256,
+   u_suballocator_alloc(&ctx->query_allocator, buffer_size, 256,
                         &query->buffer_offset, &query->buffer);
 
    return (struct pipe_query *)query;
@@ -187,7 +187,7 @@ accumulate_result(struct d3d12_context *ctx, struct d3d12_query *q,
    D3D12_QUERY_DATA_SO_STATISTICS *results_so = (D3D12_QUERY_DATA_SO_STATISTICS *)results;
 
    util_query_clear_result(result, q->type);
-   for (int i = 0; i < q->curr_query; ++i) {
+   for (unsigned i = 0; i < q->curr_query; ++i) {
       switch (q->type) {
       case PIPE_QUERY_OCCLUSION_PREDICATE:
       case PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE:
@@ -510,9 +510,8 @@ d3d12_context_query_init(struct pipe_context *pctx)
    struct d3d12_context *ctx = d3d12_context(pctx);
    list_inithead(&ctx->active_queries);
 
-   ctx->query_allocator =
-       u_suballocator_create(&ctx->base, 4096, 0, PIPE_USAGE_STAGING,
-                             0, true);
+   u_suballocator_init(&ctx->query_allocator, &ctx->base, 4096, 0, PIPE_USAGE_STAGING,
+                         0, true);
 
    pctx->create_query = d3d12_create_query;
    pctx->destroy_query = d3d12_destroy_query;

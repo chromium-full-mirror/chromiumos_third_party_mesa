@@ -43,7 +43,7 @@ get_state_var(nir_builder *b,
               const struct glsl_type *var_type,
               nir_variable **out_var)
 {
-   const gl_state_index16 tokens[5] = { STATE_INTERNAL, STATE_INTERNAL_DRIVER, var_enum };
+   const gl_state_index16 tokens[STATE_LENGTH] = { STATE_INTERNAL_DRIVER, var_enum };
    if (*out_var == NULL) {
       nir_variable *var = nir_variable_create(b->shader,
                                               nir_var_uniform,
@@ -432,27 +432,22 @@ lower_instr(nir_intrinsic_instr *instr, nir_builder *b,
 
    if (variable == NULL ||
        variable->num_state_slots != 1 ||
-       variable->state_slots[0].tokens[1] != STATE_INTERNAL_DRIVER)
+       variable->state_slots[0].tokens[0] != STATE_INTERNAL_DRIVER)
       return false;
 
-   enum d3d12_state_var var = variable->state_slots[0].tokens[2];
+   enum d3d12_state_var var = variable->state_slots[0].tokens[1];
    nir_ssa_def *ubo_idx = nir_imm_int(b, binding);
    nir_ssa_def *ubo_offset =  nir_imm_int(b, get_state_var_offset(shader, var) * 4);
-   nir_intrinsic_instr *load =
-      nir_intrinsic_instr_create(b->shader, nir_intrinsic_load_ubo);
-   load->num_components = instr->num_components;
-   load->src[0] = nir_src_for_ssa(ubo_idx);
-   load->src[1] = nir_src_for_ssa(ubo_offset);
-   assert(instr->dest.ssa.bit_size >= 8);
-   nir_intrinsic_set_align(load, instr->dest.ssa.bit_size / 8, 0);
-   nir_intrinsic_set_range_base(load, 0);
-   nir_intrinsic_set_range(load, ~0);
+   nir_ssa_def *load =
+      nir_load_ubo(b, instr->num_components, instr->dest.ssa.bit_size,
+                   ubo_idx, ubo_offset,
+                   .align_mul = instr->dest.ssa.bit_size / 8,
+                   .align_offset = 0,
+                   .range_base = 0,
+                   .range = ~0,
+                   );
 
-   nir_ssa_dest_init(&load->instr, &load->dest,
-                     load->num_components, instr->dest.ssa.bit_size,
-                     instr->dest.ssa.name);
-   nir_builder_instr_insert(b, &load->instr);
-   nir_ssa_def_rewrite_uses(&instr->dest.ssa, nir_src_for_ssa(&load->dest.ssa));
+   nir_ssa_def_rewrite_uses(&instr->dest.ssa, nir_src_for_ssa(load));
 
    /* Remove the old load_* instruction and any parent derefs */
    nir_instr_remove(&instr->instr);
@@ -477,11 +472,11 @@ d3d12_lower_state_vars(nir_shader *nir, struct d3d12_shader *shader)
     * exists it will be replaced by using the same binding.
     * In the event there are no other UBO's, use binding slot 1 to
     * be consistent with other non-default UBO's */
-   unsigned binding = max(nir->info.num_ubos, 1);
+   unsigned binding = MAX2(nir->info.num_ubos, 1);
 
    nir_foreach_variable_with_modes_safe(var, nir, nir_var_uniform) {
       if (var->num_state_slots == 1 &&
-          var->state_slots[0].tokens[1] == STATE_INTERNAL_DRIVER) {
+          var->state_slots[0].tokens[0] == STATE_INTERNAL_DRIVER) {
          if (var->data.mode == nir_var_mem_ubo) {
             binding = var->data.binding;
          }
@@ -515,13 +510,13 @@ d3d12_lower_state_vars(nir_shader *nir, struct d3d12_shader *shader)
       /* Remove state variables */
       nir_foreach_variable_with_modes_safe(var, nir, nir_var_uniform) {
          if (var->num_state_slots == 1 &&
-             var->state_slots[0].tokens[1] == STATE_INTERNAL_DRIVER) {
+             var->state_slots[0].tokens[0] == STATE_INTERNAL_DRIVER) {
             exec_node_remove(&var->node);
             nir->num_uniforms--;
          }
       }
 
-      const gl_state_index16 tokens[5] = { STATE_INTERNAL, STATE_INTERNAL_DRIVER };
+      const gl_state_index16 tokens[STATE_LENGTH] = { STATE_INTERNAL_DRIVER };
       const struct glsl_type *type = glsl_array_type(glsl_vec4_type(),
                                                      shader->state_vars_size / 4, 0);
       nir_variable *ubo = nir_variable_create(nir, nir_var_mem_ubo, type,
@@ -572,7 +567,7 @@ d3d12_create_bare_samplers(nir_shader *nir)
       const struct glsl_type *type = glsl_without_array(var->type);
       if (glsl_type_is_sampler(type) && glsl_get_sampler_result_type(type) != GLSL_TYPE_VOID) {
          /* Since samplers are already lowered to be accessed by index, all we need to do
-         /* here is create a bare sampler with the same binding */
+          * here is create a bare sampler with the same binding */
          nir_variable *clone = nir_variable_clone(var, nir);
          clone->type = get_bare_samplers_for_type(var->type);
          nir_shader_add_variable(nir, clone);
@@ -580,7 +575,7 @@ d3d12_create_bare_samplers(nir_shader *nir)
    }
 }
 
-bool
+static bool
 lower_bool_input_filter(const nir_instr *instr,
                         UNUSED const void *_options)
 {
@@ -779,7 +774,7 @@ d3d12_fix_io_uint_type(struct nir_shader *s, uint64_t in_mask, uint64_t out_mask
    return progress;
 }
 
-bool
+static bool
 lower_load_ubo_packed_filter(const nir_instr *instr,
                              UNUSED const void *_options) {
    if (instr->type != nir_instr_type_intrinsic)
@@ -792,7 +787,7 @@ lower_load_ubo_packed_filter(const nir_instr *instr,
 
 static nir_ssa_def *
 lower_load_ubo_packed_impl(nir_builder *b, nir_instr *instr,
-                              UNUSED const void *_options) {
+                              UNUSED void *_options) {
    nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
 
    nir_ssa_def *buffer = intr->src[0].ssa;
@@ -866,16 +861,6 @@ lower_triangle_strip_store(nir_builder *b, nir_intrinsic_instr *intr,
 }
 
 static void
-nir_emit_vertex(nir_builder *b, unsigned stream_id)
-{
-   nir_intrinsic_instr *instr;
-
-   instr = nir_intrinsic_instr_create(b->shader, nir_intrinsic_emit_vertex);
-   nir_intrinsic_set_stream_id(instr, stream_id);
-   nir_builder_instr_insert(b, &instr->instr);
-}
-
-static void
 lower_triangle_strip_emit_vertex(nir_builder *b, nir_intrinsic_instr *intr,
                                  nir_variable *vertex_count_var,
                                  nir_variable **varyings,
@@ -896,7 +881,6 @@ lower_triangle_strip_emit_vertex(nir_builder *b, nir_intrinsic_instr *intr,
     * vertex_count++;
     */
 
-   nir_intrinsic_instr *instr;
    nir_ssa_def *two = nir_imm_int(b, 2);
    nir_ssa_def *vertex_count = nir_load_var(b, vertex_count_var);
    nir_ssa_def *count_cmp = nir_uge(b, vertex_count, two);
@@ -919,9 +903,7 @@ lower_triangle_strip_emit_vertex(nir_builder *b, nir_intrinsic_instr *intr,
                         nir_build_deref_array(b, nir_build_deref_var(b, varyings[i]), two));
    }
 
-   instr = nir_intrinsic_instr_create(b->shader, nir_intrinsic_end_primitive);
-   nir_intrinsic_set_stream_id(instr, 0);
-   nir_builder_instr_insert(b, &instr->instr);
+   nir_end_primitive(b, .stream_id = 0);
 
    nir_pop_if(b, count_check);
 
@@ -1002,7 +984,6 @@ d3d12_fixup_clipdist_writes(nir_shader *shader)
 {
    nir_builder b;
    nir_function_impl *impl = nir_shader_get_entrypoint(shader);
-   nir_ssa_def *primitive_id;
    nir_builder_init(&b, impl);
 
    nir_foreach_block(block, impl) {

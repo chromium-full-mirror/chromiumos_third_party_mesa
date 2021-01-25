@@ -33,6 +33,7 @@
 #include "pipe/p_shader_tokens.h"
 #include "pipe/p_state.h"
 #include "pipe/p_screen.h"
+#include "util/compiler.h"
 #include "util/u_debug.h"
 #include "util/u_debug_describe.h"
 #include "util/u_debug_refcnt.h"
@@ -426,6 +427,23 @@ pipe_buffer_write_nooverlap(struct pipe_context *pipe,
                         offset, size, data);
 }
 
+/**
+ * Utility for simplifying pipe_context::resource_copy_region calls
+ */
+static inline void
+pipe_buffer_copy(struct pipe_context *pipe,
+                 struct pipe_resource *dst,
+                 struct pipe_resource *src,
+                 unsigned dst_offset,
+                 unsigned src_offset,
+                 unsigned size)
+{
+   struct pipe_box box;
+   /* only these fields are used */
+   box.x = (int)src_offset;
+   box.width = (int)size;
+   pipe->resource_copy_region(pipe, dst, 0, dst_offset, 0, 0, src, 0, &box);
+}
 
 /**
  * Create a new resource and immediately put data into it
@@ -708,7 +726,7 @@ util_max_layer(const struct pipe_resource *r, unsigned level)
       return u_minify(r->depth0, level) - 1;
    case PIPE_TEXTURE_CUBE:
       assert(r->array_size == 6);
-      /* fall-through */
+      FALLTHROUGH;
    case PIPE_TEXTURE_1D_ARRAY:
    case PIPE_TEXTURE_2D_ARRAY:
    case PIPE_TEXTURE_CUBE_ARRAY:
@@ -760,6 +778,26 @@ util_logicop_reads_dest(enum pipe_logicop op)
       return false;
    }
    unreachable("bad logicop");
+}
+
+static inline bool
+util_writes_stencil(const struct pipe_stencil_state *s)
+{
+   return s->enabled && s->writemask &&
+        ((s->fail_op != PIPE_STENCIL_OP_KEEP) ||
+         (s->zpass_op != PIPE_STENCIL_OP_KEEP) ||
+         (s->zfail_op != PIPE_STENCIL_OP_KEEP));
+}
+
+static inline bool
+util_writes_depth_stencil(const struct pipe_depth_stencil_alpha_state *zsa)
+{
+   if (zsa->depth_enabled && zsa->depth_writemask &&
+       (zsa->depth_func != PIPE_FUNC_NEVER))
+      return true;
+
+   return util_writes_stencil(&zsa->stencil[0]) ||
+          util_writes_stencil(&zsa->stencil[1]);
 }
 
 static inline struct pipe_context *

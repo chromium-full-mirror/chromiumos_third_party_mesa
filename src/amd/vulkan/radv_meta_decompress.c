@@ -460,7 +460,7 @@ radv_process_depth_image_layer(struct radv_cmd_buffer *cmd_buffer,
 						},
 						.clearValueCount = 0,
 						.pClearValues = NULL,
-					});
+					}, NULL);
 	radv_cmd_buffer_set_subpass(cmd_buffer,
 				    &cmd_buffer->state.pass->subpasses[0]);
 
@@ -480,9 +480,6 @@ static void radv_process_depth_stencil(struct radv_cmd_buffer *cmd_buffer,
 	struct radv_meta_saved_state saved_state;
 	VkCommandBuffer cmd_buffer_h = radv_cmd_buffer_to_handle(cmd_buffer);
 	VkPipeline *pipeline;
-
-	if (!radv_image_has_htile(image))
-		return;
 
 	radv_meta_save(&saved_state, cmd_buffer,
 		       RADV_META_SAVE_GRAPHICS_PIPELINE |

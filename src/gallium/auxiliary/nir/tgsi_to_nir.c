@@ -268,14 +268,14 @@ ttn_emit_declaration(struct ttn_compile *c)
 
       switch (sview->ReturnTypeX) {
       case TGSI_RETURN_TYPE_SINT:
-         type = nir_type_int;
+         type = nir_type_int32;
          break;
       case TGSI_RETURN_TYPE_UINT:
-         type = nir_type_uint;
+         type = nir_type_uint32;
          break;
       case TGSI_RETURN_TYPE_FLOAT:
       default:
-         type = nir_type_float;
+         type = nir_type_float32;
          break;
       }
 
@@ -897,10 +897,8 @@ ttn_get_src(struct ttn_compile *c, struct tgsi_full_src_register *tgsi_fsrc,
       def = nir_bitcast_vector(b, def, 64);
 
    if (tgsi_src->Absolute) {
-      if (src_is_float)
-         def = nir_fabs(b, def);
-      else
-         def = nir_iabs(b, def);
+      assert(src_is_float);
+      def = nir_fabs(b, def);
    }
 
    if (tgsi_src->Negate) {
@@ -1110,17 +1108,13 @@ ttn_ucmp(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
 static void
 ttn_barrier(nir_builder *b)
 {
-   nir_intrinsic_instr *barrier =
-      nir_intrinsic_instr_create(b->shader, nir_intrinsic_control_barrier);
-   nir_builder_instr_insert(b, &barrier->instr);
+   nir_control_barrier(b);
 }
 
 static void
 ttn_kill(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
 {
-   nir_intrinsic_instr *discard =
-      nir_intrinsic_instr_create(b->shader, nir_intrinsic_discard);
-   nir_builder_instr_insert(b, &discard->instr);
+   nir_discard(b);
    b->shader->info.fs.uses_discard = true;
 }
 
@@ -1132,10 +1126,7 @@ ttn_kill_if(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
    nir_ssa_def *cmp = nir_bany(b, nir_flt(b, src[0], nir_imm_float(b, 0.0)));
    b->exact = false;
 
-   nir_intrinsic_instr *discard =
-      nir_intrinsic_instr_create(b->shader, nir_intrinsic_discard_if);
-   discard->src[0] = nir_src_for_ssa(cmp);
-   nir_builder_instr_insert(b, &discard->instr);
+   nir_discard_if(b, cmp);
    b->shader->info.fs.uses_discard = true;
 }
 
@@ -1430,11 +1421,11 @@ ttn_tex(struct ttn_compile *c, nir_alu_dest dest, nir_ssa_def **src)
    sview = tgsi_inst->Src[samp].Register.Index;
 
    if (op == nir_texop_lod) {
-      instr->dest_type = nir_type_float;
+      instr->dest_type = nir_type_float32;
    } else if (sview < c->num_samp_types) {
       instr->dest_type = c->samp_types[sview];
    } else {
-      instr->dest_type = nir_type_float;
+      instr->dest_type = nir_type_float32;
    }
 
    nir_variable *var =
@@ -1962,6 +1953,8 @@ static const nir_op op_trans[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_U64MUL] = nir_op_imul,
    [TGSI_OPCODE_U64DIV] = nir_op_udiv,
    [TGSI_OPCODE_U64SNE] = nir_op_ine,
+   [TGSI_OPCODE_I64NEG] = nir_op_ineg,
+   [TGSI_OPCODE_I64ABS] = nir_op_iabs,
 };
 
 static void
@@ -2299,9 +2292,8 @@ ttn_compile_init(const void *tgsi_tokens,
          screen->get_compiler_options(screen, PIPE_SHADER_IR_NIR, scan.processor);
    }
 
-   nir_builder_init_simple_shader(&c->build, NULL,
-                                  tgsi_processor_to_shader_stage(scan.processor),
-                                  options);
+   c->build = nir_builder_init_simple_shader(tgsi_processor_to_shader_stage(scan.processor),
+                                             options, "TTN");
 
    s = c->build.shader;
 

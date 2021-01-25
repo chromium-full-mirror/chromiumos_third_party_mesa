@@ -299,7 +299,7 @@ get_attachment(struct gl_context *ctx, struct gl_framebuffer *fb,
    case GL_DEPTH_STENCIL_ATTACHMENT:
       if (!_mesa_is_desktop_gl(ctx) && !_mesa_is_gles3(ctx))
          return NULL;
-      /* fall-through */
+      FALLTHROUGH;
    case GL_DEPTH_ATTACHMENT_EXT:
       return &fb->Attachment[BUFFER_DEPTH];
    case GL_STENCIL_ATTACHMENT_EXT:
@@ -814,6 +814,7 @@ is_format_color_renderable(const struct gl_context *ctx, mesa_format format,
    case GL_RGB10:
    case GL_RGB9_E5:
    case GL_SR8_EXT:
+   case GL_SRG8_EXT:
       return GL_FALSE;
    default:
       break;
@@ -1318,15 +1319,33 @@ _mesa_test_framebuffer_completeness(struct gl_context *ctx,
             att_layer_count = att->Renderbuffer->Height;
          else
             att_layer_count = att->Renderbuffer->Depth;
+
+         /* From OpenGL ES 3.2 spec, chapter 9.4. FRAMEBUFFER COMPLETENESS:
+          *
+          *    "If any framebuffer attachment is layered, all populated
+          *    attachments must be layered. Additionally, all populated color
+          *    attachments must be from textures of the same target
+          *    (three-dimensional, one- or two-dimensional array, cube map, or
+          *    cube map array textures)."
+          *
+          * Same text can be found from OpenGL 4.6 spec.
+          *
+          * Setup the checked layer target with first color attachment here
+          * so that mismatch check below will not trigger between depth,
+          * stencil, only between color attachments.
+          */
+         if (i == 0)
+            layer_tex_target = att_tex_target;
+
       } else {
          att_layer_count = 0;
       }
       if (!layer_info_valid) {
          is_layered = att->Layered;
          max_layer_count = att_layer_count;
-         layer_tex_target = att_tex_target;
          layer_info_valid = true;
-      } else if (max_layer_count > 0 && layer_tex_target != att_tex_target) {
+      } else if (max_layer_count > 0 && layer_tex_target &&
+                 layer_tex_target != att_tex_target) {
          fb->_Status = GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS;
          fbo_incomplete(ctx, "layered framebuffer has mismatched targets", i);
          return;
@@ -3101,9 +3120,6 @@ _mesa_bind_framebuffers(struct gl_context *ctx,
     */
    if (bindReadBuf) {
       FLUSH_VERTICES(ctx, _NEW_BUFFERS);
-
-      /* check if old readbuffer was render-to-texture */
-      check_end_texture_render(ctx, oldReadFb);
 
       _mesa_reference_framebuffer(&ctx->ReadBuffer, newReadFb);
    }
@@ -5039,7 +5055,7 @@ invalidate_framebuffer_storage(struct gl_context *ctx,
              */
             if (_mesa_is_desktop_gl(ctx) || _mesa_is_gles3(ctx))
                break;
-            /* fallthrough */
+            FALLTHROUGH;
          case GL_COLOR_ATTACHMENT0:
          case GL_COLOR_ATTACHMENT1:
          case GL_COLOR_ATTACHMENT2:

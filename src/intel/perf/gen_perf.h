@@ -151,6 +151,11 @@ struct gen_perf_query_result {
    uint64_t unslice_frequency[2];
 
    /**
+    * Frequency of the whole GT at the begin and end of the query.
+    */
+   uint64_t gt_frequency[2];
+
+   /**
     * Timestamp of the query.
     */
    uint64_t begin_timestamp;
@@ -201,6 +206,8 @@ struct gen_perf_registers {
 };
 
 struct gen_perf_query_info {
+   struct gen_perf_config *perf;
+
    enum gen_perf_query_type {
       GEN_PERF_QUERY_TYPE_OA,
       GEN_PERF_QUERY_TYPE_RAW,
@@ -355,6 +362,14 @@ void gen_perf_query_result_read_frequencies(struct gen_perf_query_result *result
                                             const struct gen_device_info *devinfo,
                                             const uint32_t *start,
                                             const uint32_t *end);
+
+/** Store the GT frequency as reported by the RPSTAT register.
+ */
+void gen_perf_query_result_read_gt_frequency(struct gen_perf_query_result *result,
+                                             const struct gen_device_info *devinfo,
+                                             const uint32_t start,
+                                             const uint32_t end);
+
 /** Accumulate the delta between 2 OA reports into result for a given query.
  */
 void gen_perf_query_result_accumulate(struct gen_perf_query_result *result,
@@ -387,6 +402,26 @@ gen_perf_new(void *ctx)
 {
    struct gen_perf_config *perf = rzalloc(ctx, struct gen_perf_config);
    return perf;
+}
+
+/** Whether we have the ability to hold off preemption on a batch so we don't
+ * have to look at the OA buffer to subtract unrelated workloads off the
+ * values captured through MI_* commands.
+ */
+static inline bool
+gen_perf_has_hold_preemption(const struct gen_perf_config *perf)
+{
+   return perf->i915_perf_version >= 3;
+}
+
+/** Whether we have the ability to lock EU array power configuration for the
+ * duration of the performance recording. This is useful on Gen11 where the HW
+ * architecture requires half the EU for particular workloads.
+ */
+static inline bool
+gen_perf_has_global_sseu(const struct gen_perf_config *perf)
+{
+   return perf->i915_perf_version >= 4;
 }
 
 uint32_t gen_perf_get_n_passes(struct gen_perf_config *perf,

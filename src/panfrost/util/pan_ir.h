@@ -50,6 +50,8 @@ enum {
         PAN_SYSVAL_SSBO = 4,
         PAN_SYSVAL_NUM_WORK_GROUPS = 5,
         PAN_SYSVAL_SAMPLER = 7,
+        PAN_SYSVAL_LOCAL_GROUP_SIZE = 8,
+        PAN_SYSVAL_WORK_DIM = 9,
 };
 
 #define PAN_TXS_SYSVAL_ID(texidx, dim, is_array)          \
@@ -80,9 +82,6 @@ panfrost_nir_assign_sysvals(struct panfrost_sysvals *ctx, void *memctx, nir_shad
 
 int
 panfrost_sysval_for_instr(nir_instr *instr, nir_dest *dest);
-
-bool
-nir_undef_to_zero(nir_shader *shader);
 
 typedef struct {
         int work_register_count;
@@ -115,6 +114,7 @@ struct panfrost_compile_inputs {
         bool is_blend;
         struct {
                 unsigned rt;
+                unsigned nr_samples;
                 float constants[4];
                 uint64_t bifrost_blend_desc;
         } blend;
@@ -241,5 +241,7 @@ bool pan_has_dest_mod(nir_dest **dest, nir_op op);
 
 bool pan_nir_reorder_writeout(nir_shader *nir);
 bool pan_nir_lower_zs_store(nir_shader *nir);
+
+bool pan_nir_lower_64bit_intrin(nir_shader *shader);
 
 #endif

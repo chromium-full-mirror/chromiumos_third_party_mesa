@@ -170,6 +170,7 @@ setup_render_state(struct gl_context *ctx,
                    bool atlas)
 {
    struct st_context *st = st_context(ctx);
+   struct pipe_context *pipe = st->pipe;
    struct cso_context *cso = st->cso_context;
    struct st_fp_variant *fpv;
    struct st_fp_variant_key key;
@@ -200,11 +201,9 @@ setup_render_state(struct gl_context *ctx,
 
    cso_save_state(cso, (CSO_BIT_RASTERIZER |
                         CSO_BIT_FRAGMENT_SAMPLERS |
-                        CSO_BIT_FRAGMENT_SAMPLER_VIEWS |
                         CSO_BIT_VIEWPORT |
                         CSO_BIT_STREAM_OUTPUTS |
                         CSO_BIT_VERTEX_ELEMENTS |
-                        CSO_BIT_AUX_VERTEX_BUFFER_SLOT |
                         CSO_BITS_ALL_SHADERS));
 
 
@@ -248,7 +247,9 @@ setup_render_state(struct gl_context *ctx,
       memcpy(sampler_views, st->state.frag_sampler_views,
              sizeof(sampler_views));
       sampler_views[fpv->bitmap_sampler] = sv;
-      cso_set_sampler_views(cso, PIPE_SHADER_FRAGMENT, num, sampler_views);
+      pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, num, sampler_views);
+      st->state.num_sampler_views[PIPE_SHADER_FRAGMENT] =
+         MAX2(st->state.num_sampler_views[PIPE_SHADER_FRAGMENT], num);
    }
 
    /* viewport state: viewport matching window dims */
@@ -271,8 +272,21 @@ restore_render_state(struct gl_context *ctx)
 {
    struct st_context *st = st_context(ctx);
    struct cso_context *cso = st->cso_context;
+   struct pipe_context *pipe = st->pipe;
 
    cso_restore_state(cso);
+
+   /* Unbind all because st/mesa won't do it if the current shader doesn't
+    * use them.
+    */
+   static struct pipe_sampler_view *null[PIPE_MAX_SAMPLERS];
+   pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0,
+                           st->state.num_sampler_views[PIPE_SHADER_FRAGMENT],
+                           null);
+   st->state.num_sampler_views[PIPE_SHADER_FRAGMENT] = 0;
+
+   st->dirty |= ST_NEW_VERTEX_ARRAYS |
+                ST_NEW_FS_SAMPLER_VIEWS;
 }
 
 
@@ -286,7 +300,6 @@ draw_bitmap_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
                  const GLfloat *color)
 {
    struct st_context *st = st_context(ctx);
-   struct pipe_context *pipe = st->pipe;
    const float fb_width = (float) st->state.fb_width;
    const float fb_height = (float) st->state.fb_height;
    const float x0 = (float) x;
@@ -306,7 +319,7 @@ draw_bitmap_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
        * it up into chunks.
        */
       ASSERTED GLuint maxSize =
-         pipe->screen->get_param(pipe->screen, PIPE_CAP_MAX_TEXTURE_2D_SIZE);
+         st->screen->get_param(st->screen, PIPE_CAP_MAX_TEXTURE_2D_SIZE);
       assert(width <= (GLsizei) maxSize);
       assert(height <= (GLsizei) maxSize);
    }
@@ -536,8 +549,7 @@ accum_bitmap(struct gl_context *ctx,
 static void
 init_bitmap_state(struct st_context *st)
 {
-   struct pipe_context *pipe = st->pipe;
-   struct pipe_screen *screen = pipe->screen;
+   struct pipe_screen *screen = st->screen;
 
    /* This function should only be called once */
    assert(!st->bitmap.tex_format);
@@ -612,8 +624,8 @@ st_Bitmap(struct gl_context *ctx, GLint x, GLint y,
     * for bitmap drawing uses no constants and the FS constants are
     * explicitly uploaded in the draw_bitmap_quad() function.
     */
-   if ((st->dirty | ctx->NewDriverState) & ~ST_NEW_CONSTANTS &
-       ST_PIPELINE_RENDER_STATE_MASK ||
+   if ((st->dirty | ctx->NewDriverState) & st->active_states &
+       ~ST_NEW_CONSTANTS & ST_PIPELINE_RENDER_STATE_MASK ||
        st->gfx_shaders_may_be_dirty) {
       st_validate_state(st, ST_PIPELINE_META);
    }
@@ -763,6 +775,8 @@ st_DrawAtlasBitmaps(struct gl_context *ctx,
    u_upload_unmap(pipe->stream_uploader);
 
    cso_set_vertex_buffers(st->cso_context, 0, 1, &vb);
+   st->last_num_vbuffers = MAX2(st->last_num_vbuffers, 1);
+
    cso_draw_arrays(st->cso_context, PIPE_PRIM_QUADS, 0, num_verts);
 
 out:

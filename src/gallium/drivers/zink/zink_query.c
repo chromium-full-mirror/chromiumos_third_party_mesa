@@ -290,7 +290,7 @@ get_query_result(struct pipe_context *pctx,
          break;
 
       default:
-         debug_printf("unhangled query type: %s\n",
+         debug_printf("unhandled query type: %s\n",
                       util_str_query_type(query->type, true));
          unreachable("unexpected query type");
       }
@@ -492,6 +492,7 @@ zink_render_condition(struct pipe_context *pctx,
 
    if (query == NULL) {
       screen->vk_CmdEndConditionalRenderingEXT(batch->cmdbuf);
+      ctx->render_condition_active = false;
       return;
    }
 
@@ -528,6 +529,7 @@ zink_render_condition(struct pipe_context *pctx,
    begin_info.buffer = res->buffer;
    begin_info.flags = begin_flags;
    screen->vk_CmdBeginConditionalRenderingEXT(batch->cmdbuf, &begin_info);
+   ctx->render_condition_active = true;
 
    zink_batch_reference_resource_rw(batch, res, true);
 

@@ -44,12 +44,27 @@ struct zink_depth_stencil_alpha_state;
 struct zink_gfx_program;
 struct zink_rasterizer_state;
 struct zink_resource;
+struct zink_surface;
 struct zink_vertex_elements_state;
+
+enum zink_blit_flags {
+   ZINK_BLIT_NORMAL = 1 << 0,
+   ZINK_BLIT_SAVE_FS = 1 << 1,
+   ZINK_BLIT_SAVE_FB = 1 << 2,
+};
 
 struct zink_sampler_view {
    struct pipe_sampler_view base;
    union {
       VkImageView image_view;
+      VkBufferView buffer_view;
+   };
+};
+
+struct zink_image_view {
+   struct pipe_image_view base;
+   union {
+      struct zink_surface *surface;
       VkBufferView buffer_view;
    };
 };
@@ -91,6 +106,9 @@ struct zink_context {
    VkQueue queue;
 
    struct pipe_constant_buffer ubos[PIPE_SHADER_TYPES][PIPE_MAX_CONSTANT_BUFFERS];
+   struct pipe_shader_buffer ssbos[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_BUFFERS];
+   uint32_t writable_ssbos;
+   struct zink_image_view image_views[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_IMAGES];
    struct pipe_framebuffer_state fb_state;
 
    struct zink_vertex_elements_state *element_state;
@@ -120,17 +138,25 @@ struct zink_context {
    void *sampler_states[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
    VkSampler samplers[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
    unsigned num_samplers[PIPE_SHADER_TYPES];
-   struct pipe_sampler_view *image_views[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_SAMPLER_VIEWS];
-   unsigned num_image_views[PIPE_SHADER_TYPES];
+   struct pipe_sampler_view *sampler_views[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
+   unsigned num_sampler_views[PIPE_SHADER_TYPES];
 
    float line_width;
    float blend_constants[4];
 
    struct pipe_stencil_ref stencil_ref;
 
+   union {
+      struct {
+         float default_inner_level[2];
+         float default_outer_level[4];
+      };
+      float tess_levels[6];
+   };
+
    struct list_head suspended_queries;
    struct list_head primitives_generated_queries;
-   bool queries_disabled;
+   bool queries_disabled, render_condition_active;
 
    struct pipe_resource *dummy_buffer;
    struct pipe_resource *null_buffers[5]; /* used to create zink_framebuffer->null_surface, one buffer per samplecount */
@@ -164,6 +190,9 @@ void
 zink_fence_wait(struct pipe_context *ctx);
 
 void
+zink_wait_on_batch(struct zink_context *ctx, int batch_id);
+
+void
 zink_resource_barrier(VkCommandBuffer cmdbuf, struct zink_resource *res,
                       VkImageAspectFlags aspect, VkImageLayout new_layout);
 
@@ -182,11 +211,30 @@ void
 zink_context_query_init(struct pipe_context *ctx);
 
 void
+zink_blit_begin(struct zink_context *ctx, enum zink_blit_flags flags);
+
+void
 zink_blit(struct pipe_context *pctx,
           const struct pipe_blit_info *info);
 
 void
+zink_clear(struct pipe_context *pctx,
+           unsigned buffers,
+           const struct pipe_scissor_state *scissor_state,
+           const union pipe_color_union *pcolor,
+           double depth, unsigned stencil);
+void
+zink_clear_texture(struct pipe_context *ctx,
+                   struct pipe_resource *p_res,
+                   unsigned level,
+                   const struct pipe_box *box,
+                   const void *data);
+
+void
 zink_draw_vbo(struct pipe_context *pctx,
-              const struct pipe_draw_info *dinfo);
+              const struct pipe_draw_info *dinfo,
+              const struct pipe_draw_indirect_info *indirect,
+              const struct pipe_draw_start_count *draws,
+              unsigned num_draws);
 
 #endif

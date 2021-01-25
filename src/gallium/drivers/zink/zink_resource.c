@@ -38,7 +38,13 @@
 
 #include "frontend/sw_winsys.h"
 
+#ifndef _WIN32
+#define ZINK_USE_DMABUF
+#endif
+
+#ifdef ZINK_USE_DMABUF
 #include "drm-uapi/drm_fourcc.h"
+#endif
 
 static void
 zink_resource_destroy(struct pipe_screen *pscreen,
@@ -102,7 +108,7 @@ resource_create(struct pipe_screen *pscreen,
    pipe_reference_init(&res->base.reference, 1);
    res->base.screen = pscreen;
 
-   VkMemoryRequirements reqs;
+   VkMemoryRequirements reqs = {};
    VkMemoryPropertyFlags flags = 0;
 
    res->internal_format = templ->format;
@@ -114,8 +120,21 @@ resource_create(struct pipe_screen *pscreen,
       bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                   VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-      if (templ->bind & PIPE_BIND_SAMPLER_VIEW)
-         bci.usage |= VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
+      /* apparently gallium thinks this is the jack-of-all-trades bind type */
+      if (templ->bind & PIPE_BIND_SAMPLER_VIEW) {
+         bci.usage |= VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                      VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                      VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                      VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT;
+         VkFormatProperties props;
+         vkGetPhysicalDeviceFormatProperties(screen->pdev, zink_get_format(screen, templ->format), &props);
+         if (props.bufferFeatures & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
+            bci.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+         if (props.bufferFeatures & VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT)
+            bci.usage |= VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
+      }
 
       if (templ->bind & PIPE_BIND_VERTEX_BUFFER)
          bci.usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
@@ -152,6 +171,7 @@ resource_create(struct pipe_screen *pscreen,
       res->format = zink_get_format(screen, templ->format);
 
       VkImageCreateInfo ici = {};
+      VkExternalMemoryImageCreateInfo emici = {};
       ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
       ici.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
 
@@ -197,8 +217,16 @@ resource_create(struct pipe_screen *pscreen,
           templ->target == PIPE_TEXTURE_CUBE_ARRAY)
          ici.arrayLayers *= 6;
 
-      if (templ->bind & PIPE_BIND_SHARED)
+      if (templ->bind & (PIPE_BIND_DISPLAY_TARGET |
+                         PIPE_BIND_SHARED)) {
          ici.tiling = VK_IMAGE_TILING_LINEAR;
+      }
+
+      if (templ->bind & PIPE_BIND_SHARED) {
+         emici.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+         emici.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+         ici.pNext = &emici;
+      }
 
       if (templ->usage == PIPE_USAGE_STAGING)
          ici.tiling = VK_IMAGE_TILING_LINEAR;
@@ -208,8 +236,18 @@ resource_create(struct pipe_screen *pscreen,
                   VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                   VK_IMAGE_USAGE_SAMPLED_BIT;
 
-      if (templ->bind & PIPE_BIND_SHADER_IMAGE)
-         ici.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+      if ((templ->nr_samples <= 1 || screen->info.feats.features.shaderStorageImageMultisample) &&
+          (templ->bind & PIPE_BIND_SHADER_IMAGE ||
+          (templ->bind & PIPE_BIND_SAMPLER_VIEW && templ->flags & PIPE_RESOURCE_FLAG_TEXTURING_MORE_LIKELY))) {
+         VkFormatProperties props;
+         vkGetPhysicalDeviceFormatProperties(screen->pdev, res->format, &props);
+         /* gallium doesn't provide any way to actually know whether this will be used as a shader image,
+          * so we have to just assume and set the bit if it's available
+          */
+         if ((ici.tiling == VK_IMAGE_TILING_LINEAR && props.linearTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) ||
+             (ici.tiling == VK_IMAGE_TILING_OPTIMAL && props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))
+            ici.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+      }
 
       if (templ->bind & PIPE_BIND_RENDER_TARGET)
          ici.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -233,7 +271,7 @@ resource_create(struct pipe_screen *pscreen,
          .scanout = true,
       };
 
-      if (templ->bind & PIPE_BIND_SCANOUT)
+      if (screen->needs_mesa_wsi && (templ->bind & PIPE_BIND_SCANOUT))
          ici.pNext = &image_wsi_info;
 
       VkResult result = vkCreateImage(screen->dev, &ici, NULL, &res->image);
@@ -242,7 +280,7 @@ resource_create(struct pipe_screen *pscreen,
          return NULL;
       }
 
-      res->optimial_tiling = ici.tiling != VK_IMAGE_TILING_LINEAR;
+      res->optimal_tiling = ici.tiling != VK_IMAGE_TILING_LINEAR;
       res->aspect = aspect_from_format(templ->format);
 
       vkGetImageMemoryRequirements(screen->dev, res->image, &reqs);
@@ -285,7 +323,7 @@ resource_create(struct pipe_screen *pscreen,
       NULL,
    };
 
-   if (templ->bind & PIPE_BIND_SCANOUT) {
+   if (screen->needs_mesa_wsi && (templ->bind & PIPE_BIND_SCANOUT)) {
       memory_wsi_info.implicit_sync = true;
 
       memory_wsi_info.pNext = mai.pNext;
@@ -345,8 +383,6 @@ zink_resource_get_handle(struct pipe_screen *pscreen,
 {
    struct zink_resource *res = zink_resource(tex);
    struct zink_screen *screen = zink_screen(pscreen);
-   VkMemoryGetFdInfoKHR fd_info = {};
-   int fd;
 
    if (res->base.target != PIPE_BUFFER) {
       VkImageSubresource sub_res = {};
@@ -360,6 +396,9 @@ zink_resource_get_handle(struct pipe_screen *pscreen,
    }
 
    if (whandle->type == WINSYS_HANDLE_TYPE_FD) {
+#ifdef ZINK_USE_DMABUF
+      VkMemoryGetFdInfoKHR fd_info = {};
+      int fd;
       fd_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
       fd_info.memory = res->mem;
       fd_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
@@ -368,6 +407,9 @@ zink_resource_get_handle(struct pipe_screen *pscreen,
          return false;
       whandle->handle = fd;
       whandle->modifier = DRM_FORMAT_MOD_INVALID;
+#else
+      return false;
+#endif
    }
    return true;
 }
@@ -378,10 +420,14 @@ zink_resource_from_handle(struct pipe_screen *pscreen,
                  struct winsys_handle *whandle,
                  unsigned usage)
 {
+#ifdef ZINK_USE_DMABUF
    if (whandle->modifier != DRM_FORMAT_MOD_INVALID)
       return NULL;
 
    return resource_create(pscreen, templ, whandle, usage);
+#else
+   return NULL;
+#endif
 }
 
 static bool
@@ -537,7 +583,7 @@ zink_transfer_map(struct pipe_context *pctx,
       trans->base.layer_stride = 0;
       ptr = ((uint8_t *)ptr) + box->x;
    } else {
-      if (res->optimial_tiling || ((res->base.usage != PIPE_USAGE_STAGING))) {
+      if (res->optimal_tiling || ((res->base.usage != PIPE_USAGE_STAGING))) {
          enum pipe_format format = pres->format;
          if (usage & PIPE_MAP_DEPTH_ONLY)
             format = util_format_get_depth_only(pres->format);
@@ -584,7 +630,7 @@ zink_transfer_map(struct pipe_context *pctx,
             return NULL;
 
       } else {
-         assert(!res->optimial_tiling);
+         assert(!res->optimal_tiling);
          if (batch_uses >= ZINK_RESOURCE_ACCESS_WRITE)
             zink_fence_wait(pctx);
          VkResult result = vkMapMemory(screen->dev, res->mem, res->offset, res->size, 0, &ptr);
@@ -599,9 +645,12 @@ zink_transfer_map(struct pipe_context *pctx,
          vkGetImageSubresourceLayout(screen->dev, res->image, &isr, &srl);
          trans->base.stride = srl.rowPitch;
          trans->base.layer_stride = srl.arrayPitch;
-         ptr = ((uint8_t *)ptr) + box->z * srl.depthPitch +
-                                  box->y * srl.rowPitch +
-                                  box->x;
+         const struct util_format_description *desc = util_format_description(res->base.format);
+         unsigned offset = srl.offset +
+                           box->z * srl.depthPitch +
+                           (box->y / desc->block.height) * srl.rowPitch +
+                           (box->x / desc->block.width) * (desc->block.bits / 8);
+         ptr = ((uint8_t *)ptr) + offset;
       }
    }
 
@@ -670,9 +719,8 @@ zink_resource_setup_transfer_layouts(struct zink_batch *batch, struct zink_resou
        * VK_IMAGE_LAYOUT_GENERAL. And since this isn't a present-related
        * operation, VK_IMAGE_LAYOUT_GENERAL seems most appropriate.
        */
-      if (src->layout != VK_IMAGE_LAYOUT_GENERAL)
-         zink_resource_barrier(batch->cmdbuf, src, src->aspect,
-                               VK_IMAGE_LAYOUT_GENERAL);
+      zink_resource_barrier(batch->cmdbuf, src, src->aspect,
+                            VK_IMAGE_LAYOUT_GENERAL);
    } else {
       if (src->layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
          zink_resource_barrier(batch->cmdbuf, src, src->aspect,

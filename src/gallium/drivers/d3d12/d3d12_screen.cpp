@@ -29,7 +29,6 @@
 #include "d3d12_debug.h"
 #include "d3d12_fence.h"
 #include "d3d12_format.h"
-#include "d3d12_public.h"
 #include "d3d12_resource.h"
 #include "d3d12_nir_passes.h"
 
@@ -38,15 +37,17 @@
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_screen.h"
+#include "util/u_dl.h"
 
 #include "nir.h"
 #include "frontend/sw_winsys.h"
 
-#include <dxgi1_4.h>
-#include <d3d12sdklayers.h>
+#include <directx/d3d12sdklayers.h>
+
+#include <dxguids/dxguids.h>
 
 static const struct debug_named_value
-debug_options[] = {
+d3d12_debug_options[] = {
    { "verbose",      D3D12_DEBUG_VERBOSE,       NULL },
    { "blit",         D3D12_DEBUG_BLIT,          "Trace blit and copy resource calls" },
    { "experimental", D3D12_DEBUG_EXPERIMENTAL,  "Enable experimental shader models feature" },
@@ -58,7 +59,7 @@ debug_options[] = {
    DEBUG_NAMED_VALUE_END
 };
 
-DEBUG_GET_ONCE_FLAGS_OPTION(d3d12_debug, "D3D12_DEBUG", debug_options, 0)
+DEBUG_GET_ONCE_FLAGS_OPTION(d3d12_debug, "D3D12_DEBUG", d3d12_debug_options, 0)
 
 uint32_t
 d3d12_debug;
@@ -81,7 +82,7 @@ d3d12_get_device_vendor(struct pipe_screen *pscreen)
 {
    struct d3d12_screen* screen = d3d12_screen(pscreen);
 
-   switch (screen->adapter_desc.VendorId) {
+   switch (screen->vendor_id) {
    case HW_VENDOR_MICROSOFT:
       return "Microsoft";
    case HW_VENDOR_AMD:
@@ -95,29 +96,12 @@ d3d12_get_device_vendor(struct pipe_screen *pscreen)
    }
 }
 
-static const char *
-d3d12_get_name(struct pipe_screen *pscreen)
-{
-   struct d3d12_screen* screen = d3d12_screen(pscreen);
-
-   if (screen->adapter_desc.Description[0] == '\0')
-      return "D3D12 (Unknown)";
-
-   static char buf[1000];
-   snprintf(buf, sizeof(buf), "D3D12 (%S)", screen->adapter_desc.Description);
-   return buf;
-}
-
 static int
 d3d12_get_video_mem(struct pipe_screen *pscreen)
 {
    struct d3d12_screen* screen = d3d12_screen(pscreen);
 
-   // Note: memory sizes in bytes, but stored in size_t, so may be capped at 4GB.
-   // In that case, adding before conversion to MB can easily overflow.
-   return (screen->adapter_desc.DedicatedVideoMemory >> 20) +
-          (screen->adapter_desc.DedicatedSystemMemory >> 20) +
-          (screen->adapter_desc.SharedSystemMemory >> 20);
+   return screen->memory_size_megabytes;
 }
 
 static int
@@ -475,10 +459,10 @@ d3d12_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
    case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
       return 0; /* not implemented */
-   }
 
    /* should only get here on unhandled cases */
-   return 0;
+   default: return 0;
+   }
 }
 
 static bool
@@ -619,6 +603,7 @@ d3d12_destroy_screen(struct pipe_screen *pscreen)
 {
    struct d3d12_screen *screen = d3d12_screen(pscreen);
    slab_destroy_parent(&screen->transfer_pool);
+   screen->readback_slab_bufmgr->destroy(screen->readback_slab_bufmgr);
    screen->slab_bufmgr->destroy(screen->slab_bufmgr);
    screen->cache_bufmgr->destroy(screen->cache_bufmgr);
    screen->bufmgr->destroy(screen->bufmgr);
@@ -627,6 +612,7 @@ d3d12_destroy_screen(struct pipe_screen *pscreen)
 
 static void
 d3d12_flush_frontbuffer(struct pipe_screen * pscreen,
+                        struct pipe_context *pctx,
                         struct pipe_resource *pres,
                         unsigned level, unsigned layer,
                         void *winsys_drawable_handle,
@@ -635,23 +621,36 @@ d3d12_flush_frontbuffer(struct pipe_screen * pscreen,
    struct d3d12_screen *screen = d3d12_screen(pscreen);
    struct sw_winsys *winsys = screen->winsys;
    struct d3d12_resource *res = d3d12_resource(pres);
-   ID3D12Resource *d3d12_res = d3d12_resource_resource(res);
 
-   if (!winsys)
+   if (!winsys || !pctx)
      return;
 
    assert(res->dt);
    void *map = winsys->displaytarget_map(winsys, res->dt, 0);
 
    if (map) {
-      d3d12_res->ReadFromSubresource(map, res->dt_stride, 0, 0, NULL);
+      pipe_transfer *transfer = nullptr;
+      void *res_map = pipe_transfer_map(pctx, pres, level, layer, PIPE_MAP_READ, 0, 0,
+                                        u_minify(pres->width0, level),
+                                        u_minify(pres->height0, level),
+                                        &transfer);
+      if (res_map) {
+         util_copy_rect((ubyte*)map, pres->format, res->dt_stride, 0, 0,
+                        transfer->box.width, transfer->box.height,
+                        (const ubyte*)res_map, transfer->stride, 0, 0);
+         pipe_transfer_unmap(pctx, transfer);
+      }
       winsys->displaytarget_unmap(winsys, res->dt);
    }
 
+#ifdef _WIN32
+   // WindowFromDC is Windows-only, and this method requires an HWND, so only use it on Windows
    ID3D12SharingContract *sharing_contract;
-   if (SUCCEEDED(screen->cmdqueue->QueryInterface(__uuidof(sharing_contract),
-                                                  (void **)&sharing_contract)))
+   if (SUCCEEDED(screen->cmdqueue->QueryInterface(IID_PPV_ARGS(&sharing_contract)))) {
+      ID3D12Resource *d3d12_res = d3d12_resource_resource(res);
       sharing_contract->Present(d3d12_res, 0, WindowFromDC((HDC)winsys_drawable_handle));
+   }
+#endif
 
    winsys->displaytarget_display(winsys, res->dt, winsys_drawable_handle, sub_box);
 }
@@ -662,20 +661,20 @@ get_debug_interface()
    typedef HRESULT(WINAPI *PFN_D3D12_GET_DEBUG_INTERFACE)(REFIID riid, void **ppFactory);
    PFN_D3D12_GET_DEBUG_INTERFACE D3D12GetDebugInterface;
 
-   HMODULE hD3D12Mod = LoadLibrary("D3D12.DLL");
-   if (!hD3D12Mod) {
+   util_dl_library *d3d12_mod = util_dl_open(UTIL_DL_PREFIX "d3d12" UTIL_DL_EXT);
+   if (!d3d12_mod) {
       debug_printf("D3D12: failed to load D3D12.DLL\n");
       return NULL;
    }
 
-   D3D12GetDebugInterface = (PFN_D3D12_GET_DEBUG_INTERFACE)GetProcAddress(hD3D12Mod, "D3D12GetDebugInterface");
+   D3D12GetDebugInterface = (PFN_D3D12_GET_DEBUG_INTERFACE)util_dl_get_proc_address(d3d12_mod, "D3D12GetDebugInterface");
    if (!D3D12GetDebugInterface) {
       debug_printf("D3D12: failed to load D3D12GetDebugInterface from D3D12.DLL\n");
       return NULL;
    }
 
    ID3D12Debug *debug;
-   if (FAILED(D3D12GetDebugInterface(__uuidof(ID3D12Debug), (void **)&debug))) {
+   if (FAILED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
       debug_printf("D3D12: D3D12GetDebugInterface failed\n");
       return NULL;
    }
@@ -697,91 +696,33 @@ enable_gpu_validation()
    ID3D12Debug *debug = get_debug_interface();
    ID3D12Debug3 *debug3;
    if (debug &&
-       SUCCEEDED(debug->QueryInterface(__uuidof(debug), (void **)&debug3)))
+       SUCCEEDED(debug->QueryInterface(IID_PPV_ARGS(&debug3))))
       debug3->SetEnableGPUBasedValidation(true);
 }
 
-static IDXGIFactory4 *
-get_dxgi_factory()
-{
-   static const GUID IID_IDXGIFactory4 = {
-      0x1bc6ea02, 0xef36, 0x464f,
-      { 0xbf, 0x0c, 0x21, 0xca, 0x39, 0xe5, 0x16, 0x8a }
-   };
-
-   typedef HRESULT(WINAPI *PFN_CREATE_DXGI_FACTORY)(REFIID riid, void **ppFactory);
-   PFN_CREATE_DXGI_FACTORY CreateDXGIFactory;
-
-   HMODULE hDXGIMod = LoadLibrary("DXGI.DLL");
-   if (!hDXGIMod) {
-      debug_printf("D3D12: failed to load DXGI.DLL\n");
-      return NULL;
-   }
-
-   CreateDXGIFactory = (PFN_CREATE_DXGI_FACTORY)GetProcAddress(hDXGIMod, "CreateDXGIFactory");
-   if (!CreateDXGIFactory) {
-      debug_printf("D3D12: failed to load CreateDXGIFactory from DXGI.DLL\n");
-      return NULL;
-   }
-
-   IDXGIFactory4 *factory = NULL;
-   HRESULT hr = CreateDXGIFactory(IID_IDXGIFactory4, (void **)&factory);
-   if (FAILED(hr)) {
-      debug_printf("D3D12: CreateDXGIFactory failed: %08x\n", hr);
-      return NULL;
-   }
-
-   return factory;
-}
-
-static IDXGIAdapter1 *
-choose_adapter(IDXGIFactory4 *factory, LUID *adapter)
-{
-   IDXGIAdapter1 *ret;
-   if (adapter) {
-      if (SUCCEEDED(factory->EnumAdapterByLuid(*adapter,
-                                               __uuidof(IDXGIAdapter1),
-                                               (void**)&ret)))
-         return ret;
-      debug_printf("D3D12: requested adapter missing, falling back to auto-detection...\n");
-   }
-
-   bool want_warp = env_var_as_boolean("LIBGL_ALWAYS_SOFTWARE", false);
-   if (want_warp) {
-      if (SUCCEEDED(factory->EnumWarpAdapter(__uuidof(IDXGIAdapter1),
-                                             (void**)&ret)))
-         return ret;
-      debug_printf("D3D12: failed to enum warp adapter\n");
-      return NULL;
-   }
-
-   // The first adapter is the default
-   if (SUCCEEDED(factory->EnumAdapters1(0, &ret)))
-      return ret;
-
-   return NULL;
-}
-
 static ID3D12Device *
-create_device(IDXGIAdapter1 *adapter)
+create_device(IUnknown *adapter)
 {
    typedef HRESULT(WINAPI *PFN_D3D12CREATEDEVICE)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
    typedef HRESULT(WINAPI *PFN_D3D12ENABLEEXPERIMENTALFEATURES)(UINT, const IID*, void*, UINT*);
    PFN_D3D12CREATEDEVICE D3D12CreateDevice;
    PFN_D3D12ENABLEEXPERIMENTALFEATURES D3D12EnableExperimentalFeatures;
 
-   HMODULE hD3D12Mod = LoadLibrary("D3D12.DLL");
-   if (!hD3D12Mod) {
+   util_dl_library *d3d12_mod = util_dl_open(UTIL_DL_PREFIX "d3d12" UTIL_DL_EXT);
+   if (!d3d12_mod) {
       debug_printf("D3D12: failed to load D3D12.DLL\n");
       return NULL;
    }
 
-   if (d3d12_debug & D3D12_DEBUG_EXPERIMENTAL) {
-      D3D12EnableExperimentalFeatures = (PFN_D3D12ENABLEEXPERIMENTALFEATURES)GetProcAddress(hD3D12Mod, "D3D12EnableExperimentalFeatures");
+#ifdef _WIN32
+   if (d3d12_debug & D3D12_DEBUG_EXPERIMENTAL)
+#endif
+   {
+      D3D12EnableExperimentalFeatures = (PFN_D3D12ENABLEEXPERIMENTALFEATURES)util_dl_get_proc_address(d3d12_mod, "D3D12EnableExperimentalFeatures");
       D3D12EnableExperimentalFeatures(1, &D3D12ExperimentalShaderModels, NULL, NULL);
    }
 
-   D3D12CreateDevice = (PFN_D3D12CREATEDEVICE)GetProcAddress(hD3D12Mod, "D3D12CreateDevice");
+   D3D12CreateDevice = (PFN_D3D12CREATEDEVICE)util_dl_get_proc_address(d3d12_mod, "D3D12CreateDevice");
    if (!D3D12CreateDevice) {
       debug_printf("D3D12: failed to load D3D12CreateDevice from D3D12.DLL\n");
       return NULL;
@@ -789,7 +730,7 @@ create_device(IDXGIAdapter1 *adapter)
 
    ID3D12Device *dev;
    if (SUCCEEDED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0,
-                 __uuidof(ID3D12Device), (void **)&dev)))
+                 IID_PPV_ARGS(&dev))))
       return dev;
 
    debug_printf("D3D12: D3D12CreateDevice failed\n");
@@ -799,7 +740,7 @@ create_device(IDXGIAdapter1 *adapter)
 static bool
 can_attribute_at_vertex(struct d3d12_screen *screen)
 {
-   switch (screen->adapter_desc.VendorId)  {
+   switch (screen->vendor_id)  {
    case HW_VENDOR_MICROSOFT:
       return true;
    default:
@@ -807,18 +748,13 @@ can_attribute_at_vertex(struct d3d12_screen *screen)
    }
 }
 
-struct pipe_screen *
-d3d12_create_screen(struct sw_winsys *winsys, LUID *adapter_luid)
+bool
+d3d12_init_screen(struct d3d12_screen *screen, struct sw_winsys *winsys, IUnknown *adapter)
 {
-   struct d3d12_screen *screen = CALLOC_STRUCT(d3d12_screen);
-   if (!screen)
-      return NULL;
-
    d3d12_debug = debug_get_option_d3d12_debug();
 
    screen->winsys = winsys;
 
-   screen->base.get_name = d3d12_get_name;
    screen->base.get_vendor = d3d12_get_vendor;
    screen->base.get_device_vendor = d3d12_get_device_vendor;
    screen->base.get_param = d3d12_get_param;
@@ -838,32 +774,15 @@ d3d12_create_screen(struct sw_winsys *winsys, LUID *adapter_luid)
    if (d3d12_debug & D3D12_DEBUG_GPU_VALIDATOR)
       enable_gpu_validation();
 
-   screen->factory = get_dxgi_factory();
-   if (!screen->factory) {
-      debug_printf("D3D12: failed to create DXGI factory\n");
-      goto failed;
-   }
+   screen->dev = create_device(adapter);
 
-   screen->adapter = choose_adapter(screen->factory, adapter_luid);
-   if (!screen->adapter) {
-      debug_printf("D3D12: no suitable adapter\n");
-      return NULL;
-   }
-
-   if (FAILED(screen->adapter->GetDesc1(&screen->adapter_desc))) {
-      debug_printf("D3D12: failed to retrieve adapter description\n");
-      return NULL;
-   }
-
-   screen->dev = create_device(screen->adapter);
    if (!screen->dev) {
       debug_printf("D3D12: failed to create device\n");
       goto failed;
    }
 
    ID3D12InfoQueue *info_queue;
-   if (SUCCEEDED(screen->dev->QueryInterface(__uuidof(info_queue),
-                                             (void **)&info_queue))) {
+   if (SUCCEEDED(screen->dev->QueryInterface(IID_PPV_ARGS(&info_queue)))) {
       D3D12_MESSAGE_SEVERITY severities[] = {
          D3D12_MESSAGE_SEVERITY_INFO,
          D3D12_MESSAGE_SEVERITY_WARNING,
@@ -938,8 +857,7 @@ d3d12_create_screen(struct sw_winsys *winsys, LUID *adapter_luid)
    queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
    queue_desc.NodeMask = 0;
    if (FAILED(screen->dev->CreateCommandQueue(&queue_desc,
-                                              __uuidof(screen->cmdqueue),
-                                              (void **)&screen->cmdqueue)))
+                                              IID_PPV_ARGS(&screen->cmdqueue))))
       goto failed;
 
    UINT64 timestamp_freq;
@@ -953,18 +871,21 @@ d3d12_create_screen(struct sw_winsys *winsys, LUID *adapter_luid)
 
    struct pb_desc desc;
    desc.alignment = D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
-   desc.usage = (pb_usage_flags)PB_USAGE_ALL;
+   desc.usage = (pb_usage_flags)(PB_USAGE_CPU_WRITE | PB_USAGE_GPU_READ);
 
    screen->bufmgr = d3d12_bufmgr_create(screen);
    screen->cache_bufmgr = pb_cache_manager_create(screen->bufmgr, 0xfffff, 2, 0, 64 * 1024 * 1024);
    screen->slab_bufmgr = pb_slab_range_manager_create(screen->cache_bufmgr, 16, 512,
                                                       D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
                                                       &desc);
+   desc.usage = (pb_usage_flags)(PB_USAGE_CPU_READ_WRITE | PB_USAGE_GPU_WRITE);
+   screen->readback_slab_bufmgr = pb_slab_range_manager_create(screen->cache_bufmgr, 16, 512,
+                                                               D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
+                                                               &desc);
 
    screen->have_load_at_vertex = can_attribute_at_vertex(screen);
-   return &screen->base;
+   return true;
 
 failed:
-   FREE(screen);
-   return NULL;
+   return false;
 }

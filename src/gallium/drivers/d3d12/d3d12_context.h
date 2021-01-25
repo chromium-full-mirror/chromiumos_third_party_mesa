@@ -37,10 +37,9 @@
 #include "util/slab.h"
 #include "util/u_suballoc.h"
 
-#include <d3d12.h>
+#include <directx/d3d12.h>
 
 #define D3D12_GFX_SHADER_STAGES (PIPE_SHADER_TYPES - 1)
-#define D3D12_MAX_POINT_SIZE 255.0f
 
 enum d3d12_dirty_flags
 {
@@ -86,14 +85,6 @@ enum d3d12_binding_type {
    D3D12_BINDING_SAMPLER,
    D3D12_BINDING_STATE_VARS,
    D3D12_NUM_BINDING_TYPES
-};
-
-enum d3d12_state_var {
-   D3D12_STATE_VAR_Y_FLIP = 0,
-   D3D12_STATE_VAR_PT_SPRITE,
-   D3D12_STATE_VAR_FIRST_VERTEX,
-   D3D12_STATE_VAR_DEPTH_TRANSFORM,
-   D3D12_MAX_STATE_VARS
 };
 
 enum resource_dimension
@@ -175,8 +166,8 @@ struct d3d12_context {
    struct slab_child_pool transfer_pool;
    struct primconvert_context *primconvert;
    struct blitter_context *blitter;
-   struct u_suballocator *query_allocator;
-   struct u_suballocator *so_allocator;
+   struct u_suballocator query_allocator;
+   struct u_suballocator so_allocator;
    struct hash_table *pso_cache;
    struct hash_table *root_signature_cache;
    struct hash_table *gs_variant_cache;
@@ -319,7 +310,10 @@ d3d12_apply_resource_states(struct d3d12_context* ctx);
 
 void
 d3d12_draw_vbo(struct pipe_context *pctx,
-               const struct pipe_draw_info *dinfo);
+               const struct pipe_draw_info *dinfo,
+               const struct pipe_draw_indirect_info *indirect,
+               const struct pipe_draw_start_count *draws,
+               unsigned num_draws);
 
 void
 d3d12_blit(struct pipe_context *pctx,

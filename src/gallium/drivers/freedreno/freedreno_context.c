@@ -28,7 +28,6 @@
 #include "freedreno_blitter.h"
 #include "freedreno_draw.h"
 #include "freedreno_fence.h"
-#include "freedreno_log.h"
 #include "freedreno_program.h"
 #include "freedreno_resource.h"
 #include "freedreno_texture.h"
@@ -38,12 +37,6 @@
 #include "freedreno_query_hw.h"
 #include "freedreno_util.h"
 #include "util/u_upload_mgr.h"
-
-#if DETECT_OS_ANDROID
-#include "util/u_process.h"
-#include <sys/stat.h>
-#include <sys/types.h>
-#endif
 
 static void
 fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
@@ -113,8 +106,8 @@ out:
 
 	fd_batch_reference(&batch, NULL);
 
-	if (flags & PIPE_FLUSH_END_OF_FRAME)
-		fd_log_eof(ctx);
+	u_trace_context_process(&ctx->trace_context,
+		!!(flags & PIPE_FLUSH_END_OF_FRAME));
 }
 
 static void
@@ -299,13 +292,15 @@ fd_context_destroy(struct pipe_context *pctx)
 	list_del(&ctx->node);
 	fd_screen_unlock(ctx->screen);
 
-	fd_log_process(ctx, true);
-	assert(list_is_empty(&ctx->log_chunks));
-
 	fd_fence_ref(&ctx->last_fence, NULL);
 
 	if (ctx->in_fence_fd != -1)
 		close(ctx->in_fence_fd);
+
+	for (i = 0; i < ARRAY_SIZE(ctx->pvtmem); i++) {
+		if (ctx->pvtmem[i].bo)
+			fd_bo_del(ctx->pvtmem[i].bo);
+	}
 
 	util_copy_framebuffer_state(&ctx->framebuffer, NULL);
 	fd_batch_reference(&ctx->batch, NULL);  /* unref current batch */
@@ -337,7 +332,9 @@ fd_context_destroy(struct pipe_context *pctx)
 	fd_device_del(ctx->dev);
 	fd_pipe_del(ctx->pipe);
 
-	mtx_destroy(&ctx->gmem_lock);
+	simple_mtx_destroy(&ctx->gmem_lock);
+
+	u_trace_context_fini(&ctx->trace_context);
 
 	if (fd_mesa_debug & (FD_DBG_BSTAT | FD_DBG_MSGS)) {
 		printf("batch_total=%u, batch_sysmem=%u, batch_gmem=%u, batch_nondraw=%u, batch_restore=%u\n",
@@ -390,6 +387,47 @@ fd_get_device_reset_status(struct pipe_context *pctx)
 	ctx->global_reset_count = global_faults;
 
 	return status;
+}
+
+static void
+fd_trace_record_ts(struct u_trace *ut, struct pipe_resource *timestamps,
+		unsigned idx)
+{
+	struct fd_batch *batch = container_of(ut, struct fd_batch, trace);
+	struct fd_ringbuffer *ring = batch->nondraw ? batch->draw : batch->gmem;
+
+	if (ring->cur == batch->last_timestamp_cmd) {
+		uint64_t *ts = fd_bo_map(fd_resource(timestamps)->bo);
+		ts[idx] = U_TRACE_NO_TIMESTAMP;
+		return;
+	}
+
+	unsigned ts_offset = idx * sizeof(uint64_t);
+	batch->ctx->record_timestamp(ring, fd_resource(timestamps)->bo, ts_offset);
+	batch->last_timestamp_cmd = ring->cur;
+}
+
+static uint64_t
+fd_trace_read_ts(struct u_trace_context *utctx,
+		struct pipe_resource *timestamps, unsigned idx)
+{
+	struct fd_context *ctx = container_of(utctx, struct fd_context, trace_context);
+	struct fd_bo *ts_bo = fd_resource(timestamps)->bo;
+
+	/* Only need to stall on results for the first entry: */
+	if (idx == 0) {
+		int ret = fd_bo_cpu_prep(ts_bo, ctx->pipe, DRM_FREEDRENO_PREP_READ);
+		if (ret)
+			return U_TRACE_NO_TIMESTAMP;
+	}
+
+	uint64_t *ts = fd_bo_map(ts_bo);
+
+	/* Don't translate the no-timestamp marker: */
+	if (ts[idx] == U_TRACE_NO_TIMESTAMP)
+		return U_TRACE_NO_TIMESTAMP;
+
+	return ctx->ts_to_ns(ts[idx]);
 }
 
 /* TODO we could combine a few of these small buffers (solid_vbuf,
@@ -501,7 +539,7 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 		if (primtypes[i])
 			ctx->primtype_mask |= (1 << i);
 
-	(void) mtx_init(&ctx->gmem_lock, mtx_plain);
+	simple_mtx_init(&ctx->gmem_lock, mtx_plain);
 
 	/* need some sane default in case gallium frontends don't
 	 * set some state:
@@ -545,7 +583,6 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 
 	list_inithead(&ctx->hw_active_queries);
 	list_inithead(&ctx->acc_active_queries);
-	list_inithead(&ctx->log_chunks);
 
 	fd_screen_lock(ctx->screen);
 	ctx->seqno = ++screen->ctx_seqno;
@@ -554,25 +591,8 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 
 	ctx->current_scissor = &ctx->disabled_scissor;
 
-	ctx->log_out = stdout;
-
-	if ((fd_mesa_debug & FD_DBG_LOG) &&
-			!(ctx->record_timestamp && ctx->ts_to_ns)) {
-		printf("logging not supported!\n");
-		fd_mesa_debug &= ~FD_DBG_LOG;
-	}
-
-#if DETECT_OS_ANDROID
-	if (fd_mesa_debug & FD_DBG_LOG) {
-		static unsigned idx = 0;
-		char *p;
-		asprintf(&p, "/data/fdlog/%s-%d.log", util_get_process_name(), idx++);
-
-		FILE *f = fopen(p, "w");
-		if (f)
-			ctx->log_out = f;
-	}
-#endif
+	u_trace_context_init(&ctx->trace_context, pctx,
+			fd_trace_record_ts, fd_trace_read_ts);
 
 	return pctx;
 

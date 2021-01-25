@@ -38,6 +38,7 @@ void si_pm4_cmd_add(struct si_pm4_state *state, uint32_t dw)
 {
    assert(state->ndw < SI_PM4_MAX_DW);
    state->pm4[state->ndw++] = dw;
+   state->last_opcode = -1;
 }
 
 static void si_pm4_cmd_end(struct si_pm4_state *state, bool predicate)
@@ -76,13 +77,15 @@ void si_pm4_set_reg(struct si_pm4_state *state, unsigned reg, uint32_t val)
 
    reg >>= 2;
 
+   assert(state->ndw + 2 <= SI_PM4_MAX_DW);
+
    if (opcode != state->last_opcode || reg != (state->last_reg + 1)) {
       si_pm4_cmd_begin(state, opcode);
-      si_pm4_cmd_add(state, reg);
+      state->pm4[state->ndw++] = reg;
    }
 
    state->last_reg = reg;
-   si_pm4_cmd_add(state, val);
+   state->pm4[state->ndw++] = val;
    si_pm4_cmd_end(state, false);
 }
 
@@ -106,14 +109,16 @@ void si_pm4_free_state(struct si_context *sctx, struct si_pm4_state *state, unsi
 
 void si_pm4_emit(struct si_context *sctx, struct si_pm4_state *state)
 {
-   struct radeon_cmdbuf *cs = sctx->gfx_cs;
+   struct radeon_cmdbuf *cs = &sctx->gfx_cs;
 
    if (state->shader) {
-      radeon_add_to_buffer_list(sctx, sctx->gfx_cs, state->shader->bo,
+      radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, state->shader->bo,
                                 RADEON_USAGE_READ, RADEON_PRIO_SHADER_BINARY);
    }
 
+   radeon_begin(cs);
    radeon_emit_array(cs, state->pm4, state->ndw);
+   radeon_end();
 
    if (state->atom.emit)
       state->atom.emit(sctx);
@@ -137,5 +142,9 @@ void si_pm4_reset_emitted(struct si_context *sctx, bool first_cs)
    }
 
    memset(&sctx->emitted, 0, sizeof(sctx->emitted));
-   sctx->dirty_states |= u_bit_consecutive(0, SI_NUM_STATES);
+
+   for (unsigned i = 0; i < SI_NUM_STATES; i++) {
+      if (sctx->queued.array[i])
+         sctx->dirty_states |= BITFIELD_BIT(i);
+   }
 }

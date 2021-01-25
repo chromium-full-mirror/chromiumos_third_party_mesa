@@ -60,7 +60,12 @@
 #include "util/algorithm.hpp"
 
 
-using namespace clover;
+using clover::module;
+using clover::device;
+using clover::build_error;
+using clover::invalid_build_options_error;
+using clover::map;
+using clover::header_map;
 using namespace clover::llvm;
 
 using ::llvm::Function;
@@ -346,13 +351,14 @@ namespace {
 #ifdef HAVE_CLOVER_SPIRV
    SPIRV::TranslatorOpts
    get_spirv_translator_options(const device &dev) {
-      const auto supported_versions = spirv::supported_versions();
+      const auto supported_versions = clover::spirv::supported_versions();
+      const auto max_supported = clover::spirv::to_spirv_version_encoding(supported_versions.back().version);
       const auto maximum_spirv_version =
-         std::min(static_cast<SPIRV::VersionNumber>(supported_versions.back()),
+         std::min(static_cast<SPIRV::VersionNumber>(max_supported),
                   SPIRV::VersionNumber::MaximumVersion);
 
       SPIRV::TranslatorOpts::ExtensionsStatusMap spirv_extensions;
-      for (auto &ext : spirv::supported_extensions()) {
+      for (auto &ext : clover::spirv::supported_extensions()) {
          #define EXT(X) if (ext == #X) spirv_extensions.insert({ SPIRV::ExtensionID::X, true });
          #include <LLVMSPIRVLib/LLVMSPIRVExtensions.inc>
          #undef EXT
@@ -502,7 +508,7 @@ clover::llvm::compile_to_spirv(const std::string &source,
    }
 
    const std::string osContent = os.str();
-   std::vector<char> binary(osContent.begin(), osContent.end());
+   std::string binary(osContent.begin(), osContent.end());
    if (binary.empty()) {
       r_log += "Failed to retrieve SPIR-V binary.\n";
       throw error(CL_INVALID_VALUE);

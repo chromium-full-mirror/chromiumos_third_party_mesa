@@ -26,6 +26,7 @@ apt-get update
 
 apt-get install -y --no-remove \
       $STABLE_EPHEMERAL \
+      libasan5 \
       libarchive-dev \
       libclang-cpp10-dev \
       liblua5.3-dev \
@@ -60,7 +61,7 @@ export           WAYLAND_RELEASES=https://wayland.freedesktop.org/releases
 export         XORGMACROS_VERSION=util-macros-1.19.0
 export           XCBPROTO_VERSION=xcb-proto-1.13
 export             LIBXCB_VERSION=libxcb-1.13
-export         LIBWAYLAND_VERSION=wayland-1.17.0
+export         LIBWAYLAND_VERSION=wayland-1.18.0
 export  WAYLAND_PROTOCOLS_VERSION=wayland-protocols-1.12
 
 wget $XORG_RELEASES/util/$XORGMACROS_VERSION.tar.bz2
@@ -104,7 +105,7 @@ rm -rf libglvnd-v$GLVND_VERSION
 
 git clone https://github.com/KhronosGroup/SPIRV-LLVM-Translator -b llvm_release_100 --depth 1
 pushd SPIRV-LLVM-Translator
-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-fPIC -DCMAKE_CXX_FLAGS=-fPIC
+cmake -S . -B . -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-fPIC -DCMAKE_CXX_FLAGS=-fPIC
 ninja
 ninja install
 popd
@@ -116,6 +117,15 @@ cd shader-db
 make
 popd
 
+git clone https://github.com/microsoft/DirectX-Headers -b v1.0.1 --depth 1
+pushd DirectX-Headers
+mkdir build
+cd build
+meson .. --backend=ninja --buildtype=release -Dbuild-test=false
+ninja
+ninja install
+popd
+rm -rf DirectX-Headers
 
 ############### Uninstall the build software
 

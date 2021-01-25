@@ -78,8 +78,18 @@ struct _mesa_index_buffer
 
 
 void
-_mesa_initialize_exec_dispatch(const struct gl_context *ctx,
-                               struct _glapi_table *exec);
+_mesa_draw_gallium_fallback(struct gl_context *ctx,
+                            struct pipe_draw_info *info,
+                            const struct pipe_draw_start_count *draws,
+                            unsigned num_draws);
+
+void
+_mesa_draw_gallium_complex_fallback(struct gl_context *ctx,
+                                    struct pipe_draw_info *info,
+                                    const struct pipe_draw_start_count *draws,
+                                    const unsigned char *mode,
+                                    const int *base_vertex,
+                                    unsigned num_draws);
 
 void GLAPIENTRY
 _mesa_EvalMesh1(GLenum mode, GLint i1, GLint i2);
@@ -197,8 +207,8 @@ _mesa_MultiDrawArrays(GLenum mode, const GLint *first,
 
 
 void GLAPIENTRY
-_mesa_MultiDrawElements(GLenum mode, const GLsizei *count, GLenum type,
-                        const GLvoid *const *indices, GLsizei primcount);
+_mesa_MultiDrawElementsEXT(GLenum mode, const GLsizei *count, GLenum type,
+                           const GLvoid *const *indices, GLsizei primcount);
 
 
 void GLAPIENTRY
@@ -219,6 +229,29 @@ _mesa_MultiModeDrawElementsIBM(const GLenum * mode, const GLsizei * count,
                                GLenum type, const GLvoid * const * indices,
                                GLsizei primcount, GLint modestride);
 
+void GLAPIENTRY
+_mesa_Rectf(GLfloat x1, GLfloat y1, GLfloat x2, GLfloat y2);
+
+void GLAPIENTRY
+_mesa_Rectd(GLdouble x1, GLdouble y1, GLdouble x2, GLdouble y2);
+
+void GLAPIENTRY
+_mesa_Rectdv(const GLdouble *v1, const GLdouble *v2);
+
+void GLAPIENTRY
+_mesa_Rectfv(const GLfloat *v1, const GLfloat *v2);
+
+void GLAPIENTRY
+_mesa_Recti(GLint x1, GLint y1, GLint x2, GLint y2);
+
+void GLAPIENTRY
+_mesa_Rectiv(const GLint *v1, const GLint *v2);
+
+void GLAPIENTRY
+_mesa_Rects(GLshort x1, GLshort y1, GLshort x2, GLshort y2);
+
+void GLAPIENTRY
+_mesa_Rectsv(const GLshort *v1, const GLshort *v2);
 
 #ifdef __cplusplus
 } // extern "C"

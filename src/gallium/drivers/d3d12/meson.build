@@ -27,6 +27,7 @@ files_libd3d12 = files(
   'd3d12_context.cpp',
   'd3d12_descriptor_pool.cpp',
   'd3d12_draw.cpp',
+  'd3d12_dxcore_screen.cpp',
   'd3d12_fence.cpp',
   'd3d12_format.c',
   'd3d12_gs_variant.cpp',
@@ -43,12 +44,16 @@ files_libd3d12 = files(
   'd3d12_surface.cpp',
 )
 
+if host_machine.system() == 'windows'
+  files_libd3d12 += files('d3d12_dxgi_screen.cpp')
+endif
+
 libd3d12 = static_library(
   'd3d12',
   files_libd3d12,
   gnu_symbol_visibility : 'hidden',
   include_directories : [inc_include, inc_src, inc_mesa, inc_gallium, inc_gallium_aux],
-  dependencies: [idep_nir_headers, idep_libdxil_compiler, idep_libd3d12_resource_state],
+  dependencies: [idep_nir_headers, idep_libdxil_compiler, idep_libd3d12_resource_state, dep_dxheaders],
 )
 
 driver_d3d12 = declare_dependency(

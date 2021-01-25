@@ -43,6 +43,7 @@
 #include "util/driconf.h"
 #include "git_sha1.h"
 #include "vk_util.h"
+#include "vk_deferred_operation.h"
 #include "common/gen_aux_map.h"
 #include "common/gen_defines.h"
 #include "common/gen_uuid.h"
@@ -946,8 +947,7 @@ void anv_GetPhysicalDeviceFeatures(
       .shaderCullDistance                       = true,
       .shaderFloat64                            = pdevice->info.gen >= 8 &&
                                                   pdevice->info.has_64bit_float,
-      .shaderInt64                              = pdevice->info.gen >= 8 &&
-                                                  pdevice->info.has_64bit_int,
+      .shaderInt64                              = pdevice->info.gen >= 8,
       .shaderInt16                              = pdevice->info.gen >= 8,
       .shaderResourceMinLod                     = pdevice->info.gen >= 9,
       .variableMultisampleRate                  = true,
@@ -1560,7 +1560,7 @@ void anv_GetPhysicalDeviceProperties(
       .maxTessellationEvaluationInputComponents = 128,
       .maxTessellationEvaluationOutputComponents = 128,
       .maxGeometryShaderInvocations             = 32,
-      .maxGeometryInputComponents               = 64,
+      .maxGeometryInputComponents               = devinfo->gen >= 8 ? 128 : 64,
       .maxGeometryOutputComponents              = 128,
       .maxGeometryOutputVertices                = 256,
       .maxGeometryTotalOutputComponents         = 1024,
@@ -2918,10 +2918,19 @@ VkResult anv_CreateDevice(
 
    anv_bo_pool_init(&device->batch_bo_pool, device);
 
+   /* Because scratch is also relative to General State Base Address, we leave
+    * the base address 0 and start the pool memory at an offset.  This way we
+    * get the correct offsets in the anv_states that get allocated from it.
+    */
+   result = anv_state_pool_init(&device->general_state_pool, device,
+                                0, GENERAL_STATE_POOL_MIN_ADDRESS, 16384);
+   if (result != VK_SUCCESS)
+      goto fail_batch_bo_pool;
+
    result = anv_state_pool_init(&device->dynamic_state_pool, device,
                                 DYNAMIC_STATE_POOL_MIN_ADDRESS, 0, 16384);
    if (result != VK_SUCCESS)
-      goto fail_batch_bo_pool;
+      goto fail_general_state_pool;
 
    if (device->info.gen >= 8) {
       /* The border color pointer is limited to 24 bits, so we need to make
@@ -3025,7 +3034,10 @@ VkResult anv_CreateDevice(
       result = gen11_init_device_state(device);
       break;
    case 12:
-      result = gen12_init_device_state(device);
+      if (gen_device_info_is_12hp(&device->info))
+         result = gen125_init_device_state(device);
+      else
+         result = gen12_init_device_state(device);
       break;
    default:
       /* Shouldn't get here as we don't create physical devices for any other
@@ -3072,6 +3084,8 @@ VkResult anv_CreateDevice(
    if (device->info.gen >= 8)
       anv_state_reserved_pool_finish(&device->custom_border_colors);
    anv_state_pool_finish(&device->dynamic_state_pool);
+ fail_general_state_pool:
+   anv_state_pool_finish(&device->general_state_pool);
  fail_batch_bo_pool:
    anv_bo_pool_finish(&device->batch_bo_pool);
    anv_bo_cache_finish(&device->bo_cache);
@@ -3139,6 +3153,7 @@ void anv_DestroyDevice(
    anv_state_pool_finish(&device->surface_state_pool);
    anv_state_pool_finish(&device->instruction_state_pool);
    anv_state_pool_finish(&device->dynamic_state_pool);
+   anv_state_pool_finish(&device->general_state_pool);
 
    anv_bo_pool_finish(&device->batch_bo_pool);
 
@@ -4681,4 +4696,47 @@ void anv_GetPrivateDataEXT(
    vk_object_base_get_private_data(&device->vk,
                                    objectType, objectHandle,
                                    privateDataSlot, pData);
+}
+
+VkResult anv_CreateDeferredOperationKHR(
+    VkDevice                                    _device,
+    const VkAllocationCallbacks*                pAllocator,
+    VkDeferredOperationKHR*                     pDeferredOperation)
+{
+   ANV_FROM_HANDLE(anv_device, device, _device);
+   return vk_create_deferred_operation(&device->vk, pAllocator,
+                                       pDeferredOperation);
+}
+
+void anv_DestroyDeferredOperationKHR(
+    VkDevice                                    _device,
+    VkDeferredOperationKHR                      operation,
+    const VkAllocationCallbacks*                pAllocator)
+{
+   ANV_FROM_HANDLE(anv_device, device, _device);
+   vk_destroy_deferred_operation(&device->vk, operation, pAllocator);
+}
+
+uint32_t anv_GetDeferredOperationMaxConcurrencyKHR(
+    VkDevice                                    _device,
+    VkDeferredOperationKHR                      operation)
+{
+   ANV_FROM_HANDLE(anv_device, device, _device);
+   return vk_get_deferred_operation_max_concurrency(&device->vk, operation);
+}
+
+VkResult anv_GetDeferredOperationResultKHR(
+    VkDevice                                    _device,
+    VkDeferredOperationKHR                      operation)
+{
+   ANV_FROM_HANDLE(anv_device, device, _device);
+   return vk_get_deferred_operation_result(&device->vk, operation);
+}
+
+VkResult anv_DeferredOperationJoinKHR(
+    VkDevice                                    _device,
+    VkDeferredOperationKHR                      operation)
+{
+   ANV_FROM_HANDLE(anv_device, device, _device);
+   return vk_deferred_operation_join(&device->vk, operation);
 }

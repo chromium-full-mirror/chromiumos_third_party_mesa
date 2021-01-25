@@ -28,8 +28,12 @@
 #include "nir.h"
 #include "util/string_buffer.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* struct taken from DXILContainer
- * Enums values were replaced by uint32_t since the must occupy 32 bit
+ * Enums values were replaced by uint32_t since they must occupy 32 bit
  */
 
 struct dxil_signature_element {
@@ -75,34 +79,29 @@ struct dxil_psv_signature_element {
    uint8_t reserved;
 };
 
-struct dxil_vs_info {
-   char output_position_present;
-};
-
-struct dxil_gs_info {
-   uint32_t input_primitive;
-   uint32_t output_toplology;
-   uint32_t output_stream_mask;
-   char output_position_present;
-};
-
-struct dxil_ps_info {
-   char depth_output;
-   char sample_frequency;
-};
-
-/* Maximum sized defining the union size (MSInfo)*/
-struct dxil_max_sized_info {
-   uint32_t dummy1[3];
-   uint16_t dummy2[2];
-};
-
 struct dxil_psv_runtime_info_0 {
    union {
-      struct dxil_vs_info vs;
-      struct dxil_gs_info gs;
-      struct dxil_ps_info ps;
-      struct dxil_max_sized_info dummy;
+      struct {
+         char output_position_present;
+      } vs;
+
+      struct {
+         uint32_t input_primitive;
+         uint32_t output_toplology;
+         uint32_t output_stream_mask;
+         char output_position_present;
+      } gs;
+
+      struct {
+         char depth_output;
+         char sample_frequency;
+      } ps;
+
+      /* Maximum sized defining the union size (MSInfo)*/
+      struct {
+         uint32_t dummy1[3];
+         uint16_t dummy2[2];
+      } dummy;
    };
    uint32_t min_expected_wave_lane_count;  // minimum lane count required, 0 if unused
    uint32_t max_expected_wave_lane_count;  // maximum lane count required, 0xffffffff if unused
@@ -128,28 +127,8 @@ struct dxil_psv_runtime_info_1 {
    uint8_t sig_output_vectors[4];
 };
 
-struct dxil_pipe_state_validation {
-   unsigned val_major, val_minor;
-   uint32_t version;
-   uint32_t resource_count;
-   uint8_t  shader_stage;
-   struct _mesa_string_buffer *string_table;
-   struct dxil_psv_sem_index_table semantic_index_table;
-   uint8_t uses_view_id;
-   uint8_t sig_input_elements;
-   uint8_t sig_output_elements;
-   uint8_t sig_patch_const_or_prim_elements;
-   uint8_t sig_input_vectors;
-   uint8_t sig_patch_const_or_prim_vectors;
-   uint8_t sig_output_vectors[4];
-};
-
 struct dxil_mdnode;
 struct dxil_module;
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 const struct dxil_mdnode *
 get_signatures(struct dxil_module *mod, nir_shader *s);

@@ -32,7 +32,8 @@
 #include "util/u_dynarray.h"
 #include "util/u_memory.h"
 
-#include <d3d12.h>
+#include <directx/d3d12.h>
+#include <dxguids/dxguids.h>
 
 struct d3d12_descriptor_pool {
    ID3D12Device *dev;
@@ -68,8 +69,7 @@ d3d12_descriptor_heap_new(ID3D12Device *dev,
    heap->desc.Type = type;
    heap->desc.Flags = flags;
    if (FAILED(dev->CreateDescriptorHeap(&heap->desc,
-                                        __uuidof(heap->heap),
-                                        (void **)&heap->heap))) {
+                                        IID_PPV_ARGS(&heap->heap)))) {
       FREE(heap);
       return NULL;
    }
@@ -197,8 +197,6 @@ d3d12_descriptor_pool_new(pipe_context *pctx,
                           D3D12_DESCRIPTOR_HEAP_TYPE type,
                           uint32_t num_descriptors)
 {
-   struct d3d12_context *ctx = d3d12_context(pctx);
-
    struct d3d12_descriptor_pool *pool = CALLOC_STRUCT(d3d12_descriptor_pool);
    if (!pool)
       return NULL;

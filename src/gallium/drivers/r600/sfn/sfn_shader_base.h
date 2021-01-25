@@ -90,6 +90,8 @@ public:
       return m_atomic_base_map[base];
    }
 
+   void get_array_info(r600_shader& shader) const;
+
 protected:
 
    void set_var_address(nir_deref_instr *instr);
@@ -170,8 +172,6 @@ private:
    bool process_inputs(nir_variable *input);
    bool process_outputs(nir_variable *output);
 
-   void add_array_deref(nir_deref_instr* instr);
-
    void append_block(int nesting_change);
 
    virtual void emit_shader_start();
@@ -184,6 +184,7 @@ private:
 
    bool emit_store_scratch(nir_intrinsic_instr* instr);
    bool emit_load_scratch(nir_intrinsic_instr* instr);
+   bool emit_shader_clock(nir_intrinsic_instr* instr);
    virtual void do_finalize() = 0;
 
    void finalize();

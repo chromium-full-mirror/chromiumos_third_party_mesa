@@ -58,6 +58,10 @@ panfrost_nir_sysval_for_intrinsic(nir_intrinsic_instr *instr)
                 return PAN_SYSVAL_VIEWPORT_OFFSET;
         case nir_intrinsic_load_num_work_groups:
                 return PAN_SYSVAL_NUM_WORK_GROUPS;
+        case nir_intrinsic_load_local_group_size:
+                return PAN_SYSVAL_LOCAL_GROUP_SIZE;
+        case nir_intrinsic_load_work_dim:
+                return PAN_SYSVAL_WORK_DIM;
         case nir_intrinsic_load_ssbo_address: 
         case nir_intrinsic_get_ssbo_size: 
                 return panfrost_sysval_for_ssbo(instr);
@@ -119,6 +123,7 @@ panfrost_nir_assign_sysval_body(struct panfrost_sysvals *ctx, nir_instr *instr)
         /* It hasn't -- so assign it now! */
 
         unsigned id = ctx->sysval_count++;
+        assert(id < MAX_SYSVAL_COUNT);
         _mesa_hash_table_u64_insert(ctx->sysval_to_id, sysval, (void *) ((uintptr_t) id + 1));
         ctx->sysvals[id] = sysval;
 }

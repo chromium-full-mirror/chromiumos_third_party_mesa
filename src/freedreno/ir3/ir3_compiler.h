@@ -109,6 +109,9 @@ struct ir3_compiler {
 
 	/* Whether clip+cull distances are supported */
 	bool has_clip_cull;
+
+	/* Whether private memory is supported */
+	bool has_pvtmem;
 };
 
 void ir3_compiler_destroy(struct ir3_compiler *compiler);
@@ -152,6 +155,7 @@ enum ir3_shader_debug {
 };
 
 extern enum ir3_shader_debug ir3_shader_debug;
+extern const char *ir3_shader_override_path;
 
 static inline bool
 shader_debug_enabled(gl_shader_stage type)

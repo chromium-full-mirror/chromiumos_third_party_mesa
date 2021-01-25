@@ -99,10 +99,12 @@ void init_program(Program *program, Stage stage, struct radv_shader_info *info,
    program->has_16bank_lds = family == CHIP_KABINI || family == CHIP_STONEY;
 
    program->vgpr_limit = 256;
+   program->physical_vgprs = 256;
    program->vgpr_alloc_granule = 3;
 
    if (chip_class >= GFX10) {
       program->physical_sgprs = 2560; /* doesn't matter as long as it's at least 128 * 20 */
+      program->physical_vgprs = 512;
       program->sgpr_alloc_granule = 127;
       program->sgpr_limit = 106;
       if (chip_class >= GFX10_3)
@@ -138,19 +140,19 @@ memory_sync_info get_sync_info(const Instruction* instr)
 {
    switch (instr->format) {
    case Format::SMEM:
-      return static_cast<const SMEM_instruction*>(instr)->sync;
+      return instr->smem().sync;
    case Format::MUBUF:
-      return static_cast<const MUBUF_instruction*>(instr)->sync;
+      return instr->mubuf().sync;
    case Format::MIMG:
-      return static_cast<const MIMG_instruction*>(instr)->sync;
+      return instr->mimg().sync;
    case Format::MTBUF:
-      return static_cast<const MTBUF_instruction*>(instr)->sync;
+      return instr->mtbuf().sync;
    case Format::FLAT:
    case Format::GLOBAL:
    case Format::SCRATCH:
-      return static_cast<const FLAT_instruction*>(instr)->sync;
+      return instr->flatlike().sync;
    case Format::DS:
-      return static_cast<const DS_instruction*>(instr)->sync;
+      return instr->ds().sync;
    default:
       return memory_sync_info();
    }
@@ -168,12 +170,12 @@ bool can_use_SDWA(chip_class chip, const aco_ptr<Instruction>& instr)
       return true;
 
    if (instr->isVOP3()) {
-      VOP3A_instruction *vop3 = static_cast<VOP3A_instruction*>(instr.get());
+      VOP3_instruction& vop3 = instr->vop3();
       if (instr->format == Format::VOP3)
          return false;
-      if (vop3->clamp && instr->format == asVOP3(Format::VOPC) && chip != GFX8)
+      if (vop3.clamp && instr->format == asVOP3(Format::VOPC) && chip != GFX8)
          return false;
-      if (vop3->omod && chip < GFX9)
+      if (vop3.omod && chip < GFX9)
          return false;
 
       //TODO: return true if we know we will use vcc
@@ -204,7 +206,7 @@ bool can_use_SDWA(chip_class chip, const aco_ptr<Instruction>& instr)
       return false;
 
    //TODO: return true if we know we will use vcc
-   if ((unsigned)instr->format & (unsigned)Format::VOPC)
+   if (instr->isVOPC())
       return false;
    if (instr->operands.size() >= 3 && !is_mac)
       return false;
@@ -230,14 +232,14 @@ aco_ptr<Instruction> convert_to_SDWA(chip_class chip, aco_ptr<Instruction>& inst
    std::copy(tmp->operands.cbegin(), tmp->operands.cend(), instr->operands.begin());
    std::copy(tmp->definitions.cbegin(), tmp->definitions.cend(), instr->definitions.begin());
 
-   SDWA_instruction *sdwa = static_cast<SDWA_instruction*>(instr.get());
+   SDWA_instruction& sdwa = instr->sdwa();
 
    if (tmp->isVOP3()) {
-      VOP3A_instruction *vop3 = static_cast<VOP3A_instruction*>(tmp.get());
-      memcpy(sdwa->neg, vop3->neg, sizeof(sdwa->neg));
-      memcpy(sdwa->abs, vop3->abs, sizeof(sdwa->abs));
-      sdwa->omod = vop3->omod;
-      sdwa->clamp = vop3->clamp;
+      VOP3_instruction& vop3 = tmp->vop3();
+      memcpy(sdwa.neg, vop3.neg, sizeof(sdwa.neg));
+      memcpy(sdwa.abs, vop3.abs, sizeof(sdwa.abs));
+      sdwa.omod = vop3.omod;
+      sdwa.clamp = vop3.clamp;
    }
 
    for (unsigned i = 0; i < instr->operands.size(); i++) {
@@ -247,27 +249,27 @@ aco_ptr<Instruction> convert_to_SDWA(chip_class chip, aco_ptr<Instruction>& inst
 
       switch (instr->operands[i].bytes()) {
       case 1:
-         sdwa->sel[i] = sdwa_ubyte;
+         sdwa.sel[i] = sdwa_ubyte;
          break;
       case 2:
-         sdwa->sel[i] = sdwa_uword;
+         sdwa.sel[i] = sdwa_uword;
          break;
       case 4:
-         sdwa->sel[i] = sdwa_udword;
+         sdwa.sel[i] = sdwa_udword;
          break;
       }
    }
    switch (instr->definitions[0].bytes()) {
    case 1:
-      sdwa->dst_sel = sdwa_ubyte;
-      sdwa->dst_preserve = true;
+      sdwa.dst_sel = sdwa_ubyte;
+      sdwa.dst_preserve = true;
       break;
    case 2:
-      sdwa->dst_sel = sdwa_uword;
-      sdwa->dst_preserve = true;
+      sdwa.dst_sel = sdwa_uword;
+      sdwa.dst_preserve = true;
       break;
    case 4:
-      sdwa->dst_sel = sdwa_udword;
+      sdwa.dst_sel = sdwa_udword;
       break;
    }
 
@@ -404,6 +406,41 @@ uint32_t get_reduction_identity(ReduceOp op, unsigned idx)
       break;
    }
    return 0;
+}
+
+bool needs_exec_mask(const Instruction* instr) {
+   if (instr->isSALU())
+      return instr->reads_exec();
+   if (instr->isSMEM() || instr->isSALU())
+      return false;
+   if (instr->isBarrier())
+      return false;
+
+   if (instr->isPseudo()) {
+      switch (instr->opcode) {
+      case aco_opcode::p_create_vector:
+      case aco_opcode::p_extract_vector:
+      case aco_opcode::p_split_vector:
+         for (Definition def : instr->definitions) {
+            if (def.getTemp().type() == RegType::vgpr)
+               return true;
+         }
+         return false;
+      case aco_opcode::p_spill:
+      case aco_opcode::p_reload:
+         return false;
+      default:
+         break;
+      }
+   }
+
+   if (instr->opcode == aco_opcode::v_readlane_b32 ||
+       instr->opcode == aco_opcode::v_readlane_b32_e64 ||
+       instr->opcode == aco_opcode::v_writelane_b32 ||
+       instr->opcode == aco_opcode::v_writelane_b32_e64)
+      return false;
+
+   return true;
 }
 
 }

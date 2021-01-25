@@ -41,9 +41,12 @@
 #include "util/u_memory.h"
 #include "util/u_upload_mgr.h"
 #include "util/u_pstipple.h"
+#include "util/u_dl.h"
 #include "nir_to_dxil.h"
 
 #include "D3D12ResourceState.h"
+
+#include <dxguids/dxguids.h>
 
 extern "C" {
 #include "indices/u_primconvert.h"
@@ -62,7 +65,7 @@ d3d12_context_destroy(struct pipe_context *pctx)
 
    util_blitter_destroy(ctx->blitter);
    d3d12_end_batch(ctx, d3d12_current_batch(ctx));
-   for (int i = 0; i < ARRAY_SIZE(ctx->batches); ++i)
+   for (unsigned i = 0; i < ARRAY_SIZE(ctx->batches); ++i)
       d3d12_destroy_batch(ctx, &ctx->batches[i]);
    ctx->cmdlist->Release();
    ctx->cmdqueue_fence->Release();
@@ -76,7 +79,7 @@ d3d12_context_destroy(struct pipe_context *pctx)
    d3d12_gfx_pipeline_state_cache_destroy(ctx);
    d3d12_root_signature_cache_destroy(ctx);
 
-   u_suballocator_destroy(ctx->query_allocator);
+   u_suballocator_destroy(&ctx->query_allocator);
 
    if (pctx->stream_uploader)
       u_upload_destroy(pctx->stream_uploader);
@@ -407,9 +410,9 @@ d3d12_create_depth_stencil_alpha_state(struct pipe_context *pctx,
    if (!dsa)
       return NULL;
 
-   if (depth_stencil_alpha->depth.enabled) {
+   if (depth_stencil_alpha->depth_enabled) {
       dsa->desc.DepthEnable = TRUE;
-      dsa->desc.DepthFunc = compare_op((pipe_compare_func) depth_stencil_alpha->depth.func);
+      dsa->desc.DepthFunc = compare_op((pipe_compare_func) depth_stencil_alpha->depth_func);
    }
 
    /* TODO Add support for GL_depth_bound_tests */
@@ -433,7 +436,7 @@ d3d12_create_depth_stencil_alpha_state(struct pipe_context *pctx,
 
    dsa->desc.StencilReadMask = depth_stencil_alpha->stencil[0].valuemask; /* FIXME Back face mask */
    dsa->desc.StencilWriteMask = depth_stencil_alpha->stencil[0].writemask; /* FIXME Back face mask */
-   dsa->desc.DepthWriteMask = (D3D12_DEPTH_WRITE_MASK) depth_stencil_alpha->depth.writemask;
+   dsa->desc.DepthWriteMask = (D3D12_DEPTH_WRITE_MASK) depth_stencil_alpha->depth_writemask;
 
    return dsa;
 }
@@ -616,11 +619,12 @@ d3d12_create_sampler_state(struct pipe_context *pctx,
 {
    struct d3d12_context *ctx = d3d12_context(pctx);
    struct d3d12_screen *screen = d3d12_screen(pctx->screen);
-   struct d3d12_sampler_state *ss = CALLOC_STRUCT(d3d12_sampler_state);
-   D3D12_SAMPLER_DESC desc = {0};
+   struct d3d12_sampler_state *ss;
+   D3D12_SAMPLER_DESC desc = {};
    if (!state)
       return NULL;
 
+   ss = CALLOC_STRUCT(d3d12_sampler_state);
    ss->filter = (pipe_tex_filter)state->min_img_filter;
    ss->wrap_r = (pipe_tex_wrap)state->wrap_r;
    ss->wrap_s = (pipe_tex_wrap)state->wrap_s;
@@ -904,6 +908,8 @@ d3d12_create_sampler_view(struct pipe_context *pctx,
       desc.Buffer.StructureByteStride = 0;
       desc.Buffer.NumElements = texture->width0 / util_format_get_blocksize(state->format);
       break;
+   default:
+      unreachable("Invalid SRV dimension");
    }
 
    d3d12_descriptor_pool_alloc_handle(ctx->view_pool, &sampler_view->handle);
@@ -966,7 +972,6 @@ static void
 d3d12_destroy_sampler_view(struct pipe_context *pctx,
                            struct pipe_sampler_view *pview)
 {
-   struct d3d12_context *ctx = d3d12_context(pctx);
    struct d3d12_sampler_view *view = d3d12_sampler_view(pview);
    d3d12_descriptor_handle_free(&view->handle);
    pipe_resource_reference(&view->base.texture, NULL);
@@ -1274,13 +1279,13 @@ d3d12_set_sample_mask(struct pipe_context *pctx, unsigned sample_mask)
 
 static void
 d3d12_set_stencil_ref(struct pipe_context *pctx,
-                      const struct pipe_stencil_ref *ref)
+                      const struct pipe_stencil_ref ref)
 {
    struct d3d12_context *ctx = d3d12_context(pctx);
-   if ((ref->ref_value[0] != ref->ref_value[1]) &&
+   if ((ref.ref_value[0] != ref.ref_value[1]) &&
        (d3d12_debug & D3D12_DEBUG_VERBOSE))
        debug_printf("D3D12: Different values for front and back stencil reference are not supported\n");
-   ctx->stencil_ref = *ref;
+   ctx->stencil_ref = ref;
    ctx->state_dirty |= D3D12_DIRTY_STENCIL_REF;
 }
 
@@ -1296,8 +1301,6 @@ d3d12_create_stream_output_target(struct pipe_context *pctx,
                                   unsigned buffer_offset,
                                   unsigned buffer_size)
 {
-   struct d3d12_context *ctx = d3d12_context(pctx);
-   struct d3d12_screen *screen = d3d12_screen(pctx->screen);
    struct d3d12_resource *res = d3d12_resource(pres);
    struct d3d12_stream_output_target *cso = CALLOC_STRUCT(d3d12_stream_output_target);
 
@@ -1310,8 +1313,9 @@ d3d12_create_stream_output_target(struct pipe_context *pctx,
    cso->base.buffer_size = buffer_size;
    cso->base.context = pctx;
 
-   util_range_add(pres, &res->valid_buffer_range, buffer_offset,
-                  buffer_offset + buffer_size);
+   if (res->bo && res->bo->buffer && d3d12_buffer(res->bo->buffer)->map)
+      util_range_add(pres, &res->valid_buffer_range, buffer_offset,
+                     buffer_offset + buffer_size);
 
    return &cso->base;
 }
@@ -1355,7 +1359,7 @@ d3d12_set_stream_output_targets(struct pipe_context *pctx,
 
       if (target) {
          /* Sub-allocate a new fill buffer each time to avoid GPU/CPU synchronization */
-         u_suballocator_alloc(ctx->so_allocator, sizeof(uint64_t), 4,
+         u_suballocator_alloc(&ctx->so_allocator, sizeof(uint64_t), 4,
                               &target->fill_buffer_offset, &target->fill_buffer);
          fill_stream_output_buffer_view(&ctx->so_buffer_views[i], target);
          pipe_so_target_reference(&ctx->so_targets[i], targets[i]);
@@ -1377,7 +1381,7 @@ d3d12_enable_fake_so_buffers(struct d3d12_context *ctx, unsigned factor)
 
    d3d12_disable_fake_so_buffers(ctx);
 
-   for (int i = 0; i < ctx->gfx_pipeline_state.num_so_targets; ++i) {
+   for (unsigned i = 0; i < ctx->gfx_pipeline_state.num_so_targets; ++i) {
       struct d3d12_stream_output_target *target = (struct d3d12_stream_output_target *)ctx->so_targets[i];
       struct d3d12_stream_output_target *fake_target;
 
@@ -1390,7 +1394,7 @@ d3d12_enable_fake_so_buffers(struct d3d12_context *ctx, unsigned factor)
       d3d12_resource_wait_idle(ctx, d3d12_resource(target->base.buffer));
 
       /* Check if another target is using the same buffer */
-      for (int j = i - 1; j >= 0; --j) {
+      for (unsigned j = 0; j < i; ++j) {
          if (ctx->so_targets[j] && ctx->so_targets[j]->buffer == target->base.buffer) {
             struct d3d12_stream_output_target *prev_target =
                (struct d3d12_stream_output_target *)ctx->fake_so_targets[j];
@@ -1408,7 +1412,7 @@ d3d12_enable_fake_so_buffers(struct d3d12_context *ctx, unsigned factor)
                                                        PIPE_BIND_STREAM_OUTPUT,
                                                        PIPE_USAGE_STAGING,
                                                        target->base.buffer->width0 * factor);
-         u_suballocator_alloc(ctx->so_allocator, sizeof(uint64_t), 4,
+         u_suballocator_alloc(&ctx->so_allocator, sizeof(uint64_t), 4,
                               &fake_target->fill_buffer_offset, &fake_target->fill_buffer);
          pipe_buffer_read(&ctx->base, target->fill_buffer,
                           target->fill_buffer_offset, sizeof(uint64_t),
@@ -1435,10 +1439,10 @@ d3d12_disable_fake_so_buffers(struct d3d12_context *ctx)
 
    d3d12_flush_cmdlist_and_wait(ctx);
 
-   for (int i = 0; i < ctx->gfx_pipeline_state.num_so_targets; ++i) {
+   for (unsigned i = 0; i < ctx->gfx_pipeline_state.num_so_targets; ++i) {
       struct d3d12_stream_output_target *target = (struct d3d12_stream_output_target *)ctx->so_targets[i];
       struct d3d12_stream_output_target *fake_target = (struct d3d12_stream_output_target *)ctx->fake_so_targets[i];
-      uint64_t filled_size;
+      uint64_t filled_size = 0;
       struct pipe_transfer *src_transfer, *dst_transfer;
       uint8_t *src, *dst;
 
@@ -1474,7 +1478,7 @@ d3d12_disable_fake_so_buffers(struct d3d12_context *ctx)
       ctx->fake_so_buffer_views[i].SizeInBytes = 0;
 
       /* Make sure the buffer is not copied twice */
-      for (int j = i + 1; j <= ctx->gfx_pipeline_state.num_so_targets; ++j) {
+      for (unsigned j = i + 1; j <= ctx->gfx_pipeline_state.num_so_targets; ++j) {
          if (ctx->so_targets[j] && ctx->so_targets[j]->buffer == target->base.buffer)
             pipe_so_target_reference(&ctx->fake_so_targets[j], NULL);
       }
@@ -1580,9 +1584,11 @@ d3d12_clear_render_target(struct pipe_context *pctx,
          clear_color[c] = color->f[c];
    }
 
-   D3D12_RECT rect = { dstx, dsty, dstx + width, dsty + height };
+   D3D12_RECT rect = { (int)dstx, (int)dsty,
+                       (int)dstx + (int)width,
+                       (int)dsty + (int)height };
    ctx->cmdlist->ClearRenderTargetView(surf->desc_handle.cpu_handle,
-                                       color->f, 1, &rect);
+                                       clear_color, 1, &rect);
 
    d3d12_batch_reference_surface_texture(d3d12_current_batch(ctx), surf);
 
@@ -1619,7 +1625,9 @@ d3d12_clear_depth_stencil(struct pipe_context *pctx,
                                    D3D12_RESOURCE_STATE_DEPTH_WRITE);
    d3d12_apply_resource_states(ctx);
 
-   D3D12_RECT rect = { dstx, dsty, dstx + width, dsty + height };
+   D3D12_RECT rect = { (int)dstx, (int)dsty,
+                       (int)dstx + (int)width,
+                       (int)dsty + (int)height };
    ctx->cmdlist->ClearDepthStencilView(surf->desc_handle.cpu_handle, flags,
                                        depth, stencil, 1, &rect);
 
@@ -1814,7 +1822,6 @@ static uint64_t
 d3d12_get_timestamp(struct pipe_context *pctx)
 {
    struct d3d12_context *ctx = d3d12_context(pctx);
-   struct d3d12_screen *screen = d3d12_screen(pctx->screen);
 
    if (!ctx->timestamp_query)
       ctx->timestamp_query =  pctx->create_query(pctx, PIPE_QUERY_TIMESTAMP, 0);
@@ -1911,9 +1918,9 @@ d3d12_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
    ctx->base.stream_uploader = u_upload_create_default(&ctx->base);
    ctx->base.const_uploader = u_upload_create_default(&ctx->base);
-   ctx->so_allocator = u_suballocator_create(&ctx->base, 4096, 0,
-                                             PIPE_USAGE_DEFAULT,
-                                             0, true);
+   u_suballocator_init(&ctx->so_allocator, &ctx->base, 4096, 0,
+                       PIPE_USAGE_DEFAULT,
+                       0, true);
 
    struct primconvert_config cfg;
    cfg.primtypes_mask = 1 << PIPE_PRIM_POINTS |
@@ -1932,22 +1939,21 @@ d3d12_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    d3d12_root_signature_cache_init(ctx);
    d3d12_gs_variant_cache_init(ctx);
 
-   HMODULE hD3D12Mod = LoadLibrary("D3D12.DLL");
-   if (!hD3D12Mod) {
+   util_dl_library *d3d12_mod = util_dl_open(UTIL_DL_PREFIX "d3d12" UTIL_DL_EXT);
+   if (!d3d12_mod) {
       debug_printf("D3D12: failed to load D3D12.DLL\n");
       return NULL;
    }
    ctx->D3D12SerializeVersionedRootSignature =
-      (PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)GetProcAddress(hD3D12Mod, "D3D12SerializeVersionedRootSignature");
+      (PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)util_dl_get_proc_address(d3d12_mod, "D3D12SerializeVersionedRootSignature");
 
    if (FAILED(screen->dev->CreateFence(0, D3D12_FENCE_FLAG_NONE,
-                                       __uuidof(ctx->cmdqueue_fence),
-                                       (void **)&ctx->cmdqueue_fence))) {
+                                       IID_PPV_ARGS(&ctx->cmdqueue_fence)))) {
       FREE(ctx);
       return NULL;
    }
 
-   for (int i = 0; i < ARRAY_SIZE(ctx->batches); ++i) {
+   for (unsigned i = 0; i < ARRAY_SIZE(ctx->batches); ++i) {
       if (!d3d12_init_batch(ctx, &ctx->batches[i])) {
          FREE(ctx);
          return NULL;

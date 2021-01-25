@@ -74,28 +74,35 @@ void si_blitter_begin(struct si_context *sctx, enum si_blitter_op op)
    }
 
    if (op & SI_DISABLE_RENDER_COND)
-      sctx->render_cond_force_off = true;
+      sctx->render_cond_enabled = false;
 
    if (sctx->screen->dpbb_allowed) {
       sctx->dpbb_force_off = true;
       si_mark_atom_dirty(sctx, &sctx->atoms.s.dpbb_state);
    }
+
+   sctx->blitter_running = true;
 }
 
 void si_blitter_end(struct si_context *sctx)
 {
+   sctx->blitter_running = false;
+
    if (sctx->screen->dpbb_allowed) {
       sctx->dpbb_force_off = false;
       si_mark_atom_dirty(sctx, &sctx->atoms.s.dpbb_state);
    }
 
-   sctx->render_cond_force_off = false;
+   sctx->render_cond_enabled = sctx->render_cond;
 
    /* Restore shader pointers because the VS blit shader changed all
     * non-global VS user SGPRs. */
    sctx->shader_pointers_dirty |= SI_DESCS_SHADER_MASK(VERTEX);
-   sctx->vertex_buffer_pointer_dirty = sctx->vb_descriptors_buffer != NULL;
-   sctx->vertex_buffer_user_sgprs_dirty = sctx->num_vertex_elements > 0;
+   sctx->vertex_buffer_pointer_dirty = sctx->vb_descriptors_buffer != NULL &&
+                                       sctx->num_vertex_elements >
+                                       sctx->screen->num_vbos_in_user_sgprs;
+   sctx->vertex_buffer_user_sgprs_dirty = sctx->num_vertex_elements > 0 &&
+                                          sctx->screen->num_vbos_in_user_sgprs;
    si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
 }
 
@@ -723,7 +730,7 @@ void si_decompress_textures(struct si_context *sctx, unsigned shader_mask)
 {
    unsigned compressed_colortex_counter, mask;
 
-   if (sctx->blitter->running)
+   if (sctx->blitter_running)
       return;
 
    /* Update the compressed_colortex_mask if necessary. */
@@ -972,7 +979,6 @@ void si_resource_copy_region(struct pipe_context *ctx, struct pipe_resource *dst
 
    /* SNORM8 blitting has precision issues on some chips. Use the SINT
     * equivalent instead, which doesn't force DCC decompression.
-    * Note that some chips avoid this issue by using SDMA.
     */
    if (util_format_is_snorm8(dst_templ.format)) {
       dst_templ.format = src_templ.format = util_format_snorm8_to_sint8(dst_templ.format);
@@ -1137,21 +1143,18 @@ resolve_to_temp:
 static void si_blit(struct pipe_context *ctx, const struct pipe_blit_info *info)
 {
    struct si_context *sctx = (struct si_context *)ctx;
-   struct si_texture *dst = (struct si_texture *)info->dst.resource;
 
    if (do_hardware_msaa_resolve(ctx, info)) {
       return;
    }
 
-   /* Using SDMA for copying to a linear texture in GTT is much faster.
-    * This improves DRI PRIME performance.
-    *
-    * resource_copy_region can't do this yet, because dma_copy calls it
-    * on failure (recursion).
+   /* Using compute for copying to a linear texture in GTT is much faster than
+    * going through RBs (render backends). This improves DRI PRIME performance.
     */
-   if (dst->surface.is_linear && util_can_blit_via_copy_region(info, false)) {
-      sctx->dma_copy(ctx, info->dst.resource, info->dst.level, info->dst.box.x, info->dst.box.y,
-                     info->dst.box.z, info->src.resource, info->src.level, &info->src.box);
+   if (util_can_blit_via_copy_region(info, false)) {
+      si_resource_copy_region(ctx, info->dst.resource, info->dst.level,
+                              info->dst.box.x, info->dst.box.y, info->dst.box.z,
+                              info->src.resource, info->src.level, &info->src.box);
       return;
    }
 
@@ -1165,9 +1168,6 @@ static void si_blit(struct pipe_context *ctx, const struct pipe_blit_info *info)
                                          info->dst.format);
    si_decompress_subresource(ctx, info->src.resource, PIPE_MASK_RGBAZS, info->src.level,
                              info->src.box.z, info->src.box.z + info->src.box.depth - 1);
-
-   if (sctx->screen->debug_flags & DBG(FORCE_SDMA) && util_try_blit_via_copy_region(ctx, info))
-      return;
 
    si_blitter_begin(sctx, SI_BLIT | (info->render_condition_enable ? 0 : SI_DISABLE_RENDER_COND));
    util_blitter_blit(sctx->blitter, info);
@@ -1256,6 +1256,15 @@ static void si_flush_resource(struct pipe_context *ctx, struct pipe_resource *re
          vi_separate_dcc_process_and_reset_stats(ctx, tex);
       }
    }
+}
+
+void si_flush_implicit_resources(struct si_context *sctx)
+{
+   hash_table_foreach(sctx->dirty_implicit_resources, entry) {
+      si_flush_resource(&sctx->b, entry->data);
+      pipe_resource_reference((struct pipe_resource **)&entry->data, NULL);
+   }
+   _mesa_hash_table_clear(sctx->dirty_implicit_resources, NULL);
 }
 
 void si_decompress_dcc(struct si_context *sctx, struct si_texture *tex)

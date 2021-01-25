@@ -35,6 +35,7 @@ libglsl_util = static_library(
     'mesa/program/dummy_errors.c',
   ),
   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
+  dependencies : dep_valgrind,
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
 )
@@ -91,8 +92,11 @@ endif
 if with_any_intel
   subdir('intel')
 endif
-if with_gallium_d3d12
+if with_microsoft_clc or with_gallium_d3d12 or with_spirv_to_dxil
   subdir('microsoft')
+endif
+if with_gallium_nouveau
+  subdir('nouveau')
 endif
 subdir('mesa')
 subdir('loader')

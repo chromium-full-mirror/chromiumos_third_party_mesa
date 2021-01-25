@@ -68,7 +68,7 @@ enum fd_debug_flag {
 	FD_DBG_NOSCIS       = BITFIELD_BIT(4),
 	FD_DBG_DIRECT       = BITFIELD_BIT(5),
 	FD_DBG_NOBYPASS     = BITFIELD_BIT(6),
-	FD_DBG_LOG          = BITFIELD_BIT(7),
+	FD_DBG_PERF         = BITFIELD_BIT(7),
 	FD_DBG_NOBIN        = BITFIELD_BIT(8),
 	FD_DBG_NOGMEM       = BITFIELD_BIT(9),
 	/* BIT(10) */
@@ -99,6 +99,16 @@ extern bool fd_binning_enabled;
 		do { if (fd_mesa_debug & FD_DBG_MSGS) \
 			mesa_logd("%s:%d: "fmt, \
 				__FUNCTION__, __LINE__, ##__VA_ARGS__); } while (0)
+
+#define perf_debug_ctx(ctx, ...) do { \
+		perf_debug(__VA_ARGS__); \
+		pipe_debug_message(&(ctx)->debug, PERF_INFO, __VA_ARGS__); \
+	} while(0)
+
+#define perf_debug(...) do { \
+		if (unlikely(fd_mesa_debug & FD_DBG_PERF)) \
+			mesa_logw(__VA_ARGS__); \
+	} while(0)
 
 /* for conditionally setting boolean flag(s): */
 #define COND(bool, val) ((bool) ? (val) : 0)
@@ -272,16 +282,25 @@ __OUT_IB5(struct fd_ringbuffer *ring, struct fd_ringbuffer *target)
 // rework..
 #define HW_QUERY_BASE_REG REG_AXXX_CP_SCRATCH_REG4
 
+#ifdef DEBUG
+#  define __EMIT_MARKER 1
+#else
+#  define __EMIT_MARKER 0
+#endif
+
 static inline void
 emit_marker(struct fd_ringbuffer *ring, int scratch_idx)
 {
-	extern unsigned marker_cnt;
+	extern int32_t marker_cnt;
 	unsigned reg = REG_AXXX_CP_SCRATCH_REG0 + scratch_idx;
 	assert(reg != HW_QUERY_BASE_REG);
 	if (reg == HW_QUERY_BASE_REG)
 		return;
-	OUT_PKT0(ring, reg, 1);
-	OUT_RING(ring, ++marker_cnt);
+	if (__EMIT_MARKER) {
+		OUT_WFI5(ring);
+		OUT_PKT0(ring, reg, 1);
+		OUT_RING(ring, p_atomic_inc_return(&marker_cnt));
+	}
 }
 
 static inline uint32_t

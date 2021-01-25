@@ -46,10 +46,8 @@ typedef std::map<uint32_t, std::vector<std::pair<Definition, Operand>>> phi_info
 struct cssa_ctx {
    Program* program;
    live& live_vars;
-   phi_info logical_phi_info;
-   phi_info linear_phi_info;
-
-   cssa_ctx(Program* program, live& live_vars) : program(program), live_vars(live_vars) {}
+   phi_info logical_phi_info {};
+   phi_info linear_phi_info {};
 };
 
 bool collect_phi_info(cssa_ctx& ctx)
@@ -182,7 +180,7 @@ void insert_parallelcopies(cssa_ctx& ctx)
       Block& block = ctx.program->blocks[entry.first];
       std::vector<aco_ptr<Instruction>>::iterator it = block.instructions.end();
       --it;
-      assert((*it)->format == Format::PSEUDO_BRANCH);
+      assert((*it)->isBranch());
 
       Builder bld(ctx.program);
       bld.reset(&block.instructions, it);

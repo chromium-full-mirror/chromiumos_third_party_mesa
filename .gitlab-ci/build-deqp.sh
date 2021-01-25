@@ -6,13 +6,10 @@ git config --global user.email "mesa@example.com"
 git config --global user.name "Mesa CI"
 git clone \
     https://github.com/KhronosGroup/VK-GL-CTS.git \
-    -b vulkan-cts-1.2.3.2 \
+    -b vulkan-cts-1.2.5.0 \
+    --depth 1 \
     /VK-GL-CTS
 pushd /VK-GL-CTS
-
-# cherry-pick fix for surfaceless config choosing:
-git cherry-pick -x 8f3bfc6c7def0c0cb452d5dadf31aa7fef242365
-
 
 # --insecure is due to SSL cert failures hitting sourceforge for zlib and
 # libpng (sigh).  The archives get their checksums checked anyway, and git
@@ -26,11 +23,10 @@ cp doc/testlog-stylesheet/testlog.{css,xsl} /deqp
 popd
 
 pushd /deqp
-cmake -G Ninja \
+cmake -S /VK-GL-CTS -B . -G Ninja \
       -DDEQP_TARGET=${DEQP_TARGET:-x11_glx} \
       -DCMAKE_BUILD_TYPE=Release \
-      $EXTRA_CMAKE_ARGS \
-      /VK-GL-CTS
+      $EXTRA_CMAKE_ARGS
 ninja
 
 # Copy out the mustpass lists we want.

@@ -152,6 +152,13 @@ struct brw_compiler {
  */
 #define BRW_SUBGROUP_SIZE 32
 
+static inline bool
+brw_shader_stage_is_bindless(gl_shader_stage stage)
+{
+   return stage >= MESA_SHADER_RAYGEN &&
+          stage <= MESA_SHADER_CALLABLE;
+}
+
 /**
  * Program key structures.
  *
@@ -481,6 +488,10 @@ struct brw_cs_prog_key {
    struct brw_base_prog_key base;
 };
 
+struct brw_bs_prog_key {
+   struct brw_base_prog_key base;
+};
+
 /* brw_any_prog_key is any of the keys that map to an API stage */
 union brw_any_prog_key {
    struct brw_base_prog_key base;
@@ -490,6 +501,7 @@ union brw_any_prog_key {
    struct brw_gs_prog_key gs;
    struct brw_wm_prog_key wm;
    struct brw_cs_prog_key cs;
+   struct brw_bs_prog_key bs;
 };
 
 /*
@@ -702,6 +714,8 @@ struct brw_stage_prog_data {
 
    GLuint nr_params;       /**< number of float params/constants */
    GLuint nr_pull_params;
+
+   gl_shader_stage stage;
 
    /* zero_push_reg is a bitfield which indicates what push registers (if any)
     * should be zeroed by SW at the start of the shader.  The corresponding
@@ -984,6 +998,7 @@ struct brw_cs_prog_data {
 
    bool uses_barrier;
    bool uses_num_work_groups;
+   bool uses_btd_stack_ids;
 
    struct {
       struct brw_push_const_block cross_thread;
@@ -1010,6 +1025,12 @@ brw_cs_prog_data_prog_offset(const struct brw_cs_prog_data *prog_data,
    assert(prog_data->prog_mask & (1 << index));
    return prog_data->prog_offset[index];
 }
+
+struct brw_bs_prog_data {
+   struct brw_stage_prog_data base;
+   uint8_t simd_size;
+   uint32_t stack_size;
+};
 
 /**
  * Enum representing the i965-specific vertex results that don't correspond
@@ -1338,29 +1359,42 @@ union brw_any_prog_data {
    struct brw_gs_prog_data gs;
    struct brw_wm_prog_data wm;
    struct brw_cs_prog_data cs;
+   struct brw_bs_prog_data bs;
 };
 
-#define DEFINE_PROG_DATA_DOWNCAST(stage)                                   \
-static inline struct brw_##stage##_prog_data *                             \
-brw_##stage##_prog_data(struct brw_stage_prog_data *prog_data)             \
+#define DEFINE_PROG_DATA_DOWNCAST(STAGE, CHECK)                            \
+static inline struct brw_##STAGE##_prog_data *                             \
+brw_##STAGE##_prog_data(struct brw_stage_prog_data *prog_data)             \
 {                                                                          \
-   return (struct brw_##stage##_prog_data *) prog_data;                    \
+   if (prog_data)                                                          \
+      assert(CHECK);                                                       \
+   return (struct brw_##STAGE##_prog_data *) prog_data;                    \
 }                                                                          \
-static inline const struct brw_##stage##_prog_data *                       \
-brw_##stage##_prog_data_const(const struct brw_stage_prog_data *prog_data) \
+static inline const struct brw_##STAGE##_prog_data *                       \
+brw_##STAGE##_prog_data_const(const struct brw_stage_prog_data *prog_data) \
 {                                                                          \
-   return (const struct brw_##stage##_prog_data *) prog_data;              \
+   if (prog_data)                                                          \
+      assert(CHECK);                                                       \
+   return (const struct brw_##STAGE##_prog_data *) prog_data;              \
 }
-DEFINE_PROG_DATA_DOWNCAST(vue)
-DEFINE_PROG_DATA_DOWNCAST(vs)
-DEFINE_PROG_DATA_DOWNCAST(tcs)
-DEFINE_PROG_DATA_DOWNCAST(tes)
-DEFINE_PROG_DATA_DOWNCAST(gs)
-DEFINE_PROG_DATA_DOWNCAST(wm)
-DEFINE_PROG_DATA_DOWNCAST(cs)
-DEFINE_PROG_DATA_DOWNCAST(ff_gs)
-DEFINE_PROG_DATA_DOWNCAST(clip)
-DEFINE_PROG_DATA_DOWNCAST(sf)
+
+DEFINE_PROG_DATA_DOWNCAST(vs,  prog_data->stage == MESA_SHADER_VERTEX)
+DEFINE_PROG_DATA_DOWNCAST(tcs, prog_data->stage == MESA_SHADER_TESS_CTRL)
+DEFINE_PROG_DATA_DOWNCAST(tes, prog_data->stage == MESA_SHADER_TESS_EVAL)
+DEFINE_PROG_DATA_DOWNCAST(gs,  prog_data->stage == MESA_SHADER_GEOMETRY)
+DEFINE_PROG_DATA_DOWNCAST(wm,  prog_data->stage == MESA_SHADER_FRAGMENT)
+DEFINE_PROG_DATA_DOWNCAST(cs,  prog_data->stage == MESA_SHADER_COMPUTE)
+DEFINE_PROG_DATA_DOWNCAST(bs,  brw_shader_stage_is_bindless(prog_data->stage))
+
+DEFINE_PROG_DATA_DOWNCAST(vue, prog_data->stage == MESA_SHADER_VERTEX ||
+                               prog_data->stage == MESA_SHADER_TESS_CTRL ||
+                               prog_data->stage == MESA_SHADER_TESS_EVAL ||
+                               prog_data->stage == MESA_SHADER_GEOMETRY)
+
+/* These are not really brw_stage_prog_data. */
+DEFINE_PROG_DATA_DOWNCAST(ff_gs, true)
+DEFINE_PROG_DATA_DOWNCAST(clip,  true)
+DEFINE_PROG_DATA_DOWNCAST(sf,    true)
 #undef DEFINE_PROG_DATA_DOWNCAST
 
 struct brw_compile_stats {
@@ -1528,10 +1562,37 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
                struct brw_compile_stats *stats,
                char **error_str);
 
+/**
+ * Compile a Ray Tracing shader.
+ *
+ * Returns the final assembly and the program's size.
+ */
+const unsigned *
+brw_compile_bs(const struct brw_compiler *compiler, void *log_data,
+               void *mem_ctx,
+               const struct brw_bs_prog_key *key,
+               struct brw_bs_prog_data *prog_data,
+               struct nir_shader *shader,
+               struct brw_compile_stats *stats,
+               char **error_str);
+
 void brw_debug_key_recompile(const struct brw_compiler *c, void *log,
                              gl_shader_stage stage,
                              const struct brw_base_prog_key *old_key,
                              const struct brw_base_prog_key *key);
+
+/* Shared Local Memory Size is specified as powers of two,
+ * and also have a Gen-dependent minimum value if not zero.
+ */
+static inline uint32_t
+calculate_gen_slm_size(unsigned gen, uint32_t bytes)
+{
+   assert(bytes <= 64 * 1024);
+   if (bytes > 0)
+      return MAX2(util_next_power_of_two(bytes), gen >= 9 ? 1024 : 4096);
+   else
+      return 0;
+}
 
 static inline uint32_t
 encode_slm_size(unsigned gen, uint32_t bytes)
@@ -1547,18 +1608,19 @@ encode_slm_size(unsigned gen, uint32_t bytes)
     * -------------------------------------------------------------------
     * Gen9+  |    0 |    1 |    2 |    3 |    4 |     5 |     6 |     7 |
     */
-   assert(bytes <= 64 * 1024);
 
    if (bytes > 0) {
-      /* Shared Local Memory Size is specified as powers of two. */
-      slm_size = util_next_power_of_two(bytes);
+      slm_size = calculate_gen_slm_size(gen, bytes);
+      assert(util_is_power_of_two_nonzero(slm_size));
 
       if (gen >= 9) {
-         /* Use a minimum of 1kB; turn an exponent of 10 (1024 kB) into 1. */
-         slm_size = ffs(MAX2(slm_size, 1024)) - 10;
+         /* Turn an exponent of 10 (1024 kB) into 1. */
+         assert(slm_size >= 1024);
+         slm_size = ffs(slm_size) - 10;
       } else {
-         /* Use a minimum of 4kB; convert to the pre-Gen9 representation. */
-         slm_size = MAX2(slm_size, 4096) / 4096;
+         assert(slm_size >= 4096);
+         /* Convert to the pre-Gen9 representation. */
+         slm_size = slm_size / 4096;
       }
    }
 

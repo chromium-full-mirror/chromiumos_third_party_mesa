@@ -55,7 +55,7 @@
 #include "bifrost/bifrost_compile.h"
 #include "panfrost-quirks.h"
 
-static const struct debug_named_value debug_options[] = {
+static const struct debug_named_value panfrost_debug_options[] = {
         {"msgs",      PAN_DBG_MSGS,	"Print debug messages"},
         {"trace",     PAN_DBG_TRACE,    "Trace the command stream"},
         {"deqp",      PAN_DBG_DEQP,     "Hacks for dEQP"},
@@ -66,6 +66,7 @@ static const struct debug_named_value debug_options[] = {
         {"nofp16",     PAN_DBG_NOFP16,     "Disable 16-bit support"},
         {"gl3",       PAN_DBG_GL3,      "Enable experimental GL 3.x implementation, up to 3.3"},
         {"noafbc",    PAN_DBG_NO_AFBC,  "Disable AFBC support"},
+        {"nocrc",     PAN_DBG_NO_CRC,   "Disable transaction elimination"},
         DEBUG_NAMED_VALUE_END
 };
 
@@ -101,9 +102,8 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         /* Don't expose MRT related CAPs on GPUs that don't implement them */
         bool has_mrt = !(dev->quirks & MIDGARD_SFBD);
 
-        /* Bifrost is WIP. No MRT support yet. */
+        /* Bifrost is WIP */
         bool is_bifrost = (dev->quirks & IS_BIFROST);
-        has_mrt &= !is_bifrost || is_deqp;
 
         switch (param) {
         case PIPE_CAP_NPOT_TEXTURES:
@@ -116,6 +116,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
         case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
         case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
+        case PIPE_CAP_FRONTEND_NOOP:
                 return 1;
 
         case PIPE_CAP_MAX_RENDER_TARGETS:
@@ -135,11 +136,13 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
                 return true;
 
-        /* ES3 features unsupported on Bifrost */
+        case PIPE_CAP_ANISOTROPIC_FILTER:
+                return !!(dev->quirks & HAS_ANISOTROPIC);
+
         case PIPE_CAP_TGSI_INSTANCEID:
         case PIPE_CAP_TEXTURE_MULTISAMPLE:
         case PIPE_CAP_SURFACE_SAMPLE_COUNT:
-                return !is_bifrost || is_deqp;
+                return true;
 
         case PIPE_CAP_SAMPLER_VIEW_TARGET:
         case PIPE_CAP_TEXTURE_SWIZZLE:
@@ -156,25 +159,28 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
         case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
         case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
+        case PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED:
+        case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
+        case PIPE_CAP_TEXTURE_BUFFER_SAMPLER:
                 return 1;
 
         case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
-                return (is_bifrost && !is_deqp) ? 0 : 4;
+                return 4;
         case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
         case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
-                return (is_bifrost && !is_deqp) ? 0 : 64;
+                return 64;
         case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
         case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
-                return (is_bifrost && !is_deqp) ? 0 : 1;
+                return 1;
 
         case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
-                return (is_bifrost && !is_deqp) ? 0 : 256;
+                return 256;
 
         case PIPE_CAP_GLSL_FEATURE_LEVEL:
         case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
-                return is_gl3 ? 330 : (is_bifrost && !is_deqp) ? 120 : 140;
+                return is_gl3 ? 330 : 140;
         case PIPE_CAP_ESSL_FEATURE_LEVEL:
-                return (is_bifrost && !is_deqp) ? 120 : 300;
+                return 300;
 
         case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
                 return 16;
@@ -184,12 +190,14 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_CUBE_MAP_ARRAY:
         case PIPE_CAP_COMPUTE:
                 return is_deqp;
-        case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
-                return is_deqp ? 65536 : 0;
 
-        case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
+        case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
+                return 65536;
+
+        case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
+                return 16;
+
         case PIPE_CAP_QUERY_TIMESTAMP:
-        case PIPE_CAP_CONDITIONAL_RENDER:
                 return is_gl3;
 
         /* TODO: Where does this req come from in practice? */
@@ -199,7 +207,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
                 return 4096;
         case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
-                return (is_bifrost && !is_deqp) ? 0 : 13;
+                return 13;
         case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
                 return 13;
 
@@ -221,7 +229,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
         case PIPE_CAP_SEAMLESS_CUBE_MAP:
         case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
-                return !is_bifrost || is_deqp;
+                return true;
 
         case PIPE_CAP_MAX_VERTEX_ELEMENT_SRC_OFFSET:
                 return 0xffff;
@@ -251,7 +259,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         }
 
         case PIPE_CAP_SHADER_STENCIL_EXPORT:
-                return !is_bifrost || is_deqp;
+        case PIPE_CAP_CONDITIONAL_RENDER:
+        case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
+                return true;
 
         case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
                 return 4;
@@ -259,7 +269,10 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_MAX_VARYINGS:
                 return 16;
 
+        /* Removed in v6 (Bifrost) */
         case PIPE_CAP_ALPHA_TEST:
+                return dev->arch <= 5;
+
         case PIPE_CAP_FLATSHADE:
         case PIPE_CAP_TWO_SIDED_COLOR:
         case PIPE_CAP_CLIP_PLANES:
@@ -323,7 +336,7 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                 return 0;
 
         case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
-                return (is_bifrost && !is_deqp) ? 0 : 1;
+                return 1;
         case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
                 return 0;
 
@@ -331,7 +344,7 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                 return 0;
 
         case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
-                return (is_bifrost && !is_deqp) ? 0 : 1;
+                return 1;
 
         case PIPE_SHADER_CAP_SUBROUTINES:
                 return 0;
@@ -344,7 +357,7 @@ panfrost_get_shader_param(struct pipe_screen *screen,
 
         case PIPE_SHADER_CAP_FP16:
         case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
-                return (!is_nofp16 && (!is_bifrost || is_deqp)) || is_fp16;
+                return (!is_nofp16 && !is_bifrost) || is_fp16;
 
         case PIPE_SHADER_CAP_FP16_DERIVATIVES:
         case PIPE_SHADER_CAP_INT16:
@@ -435,7 +448,6 @@ panfrost_is_format_supported( struct pipe_screen *screen,
                               unsigned bind)
 {
         struct panfrost_device *dev = pan_device(screen);
-        bool is_bifrost = (dev->quirks & IS_BIFROST);
         const struct util_format_description *format_desc;
 
         assert(target == PIPE_BUFFER ||
@@ -461,10 +473,6 @@ panfrost_is_format_supported( struct pipe_screen *screen,
                 return false;
 
         if (MAX2(sample_count, 1) != MAX2(storage_sample_count, 1))
-                return false;
-
-        /* Don't advertise multisampling on Bifrost yet */
-        if (is_bifrost && sample_count > 1)
                 return false;
 
         /* Z16 causes dEQP failures on t720 */
@@ -507,9 +515,9 @@ panfrost_is_format_supported( struct pipe_screen *screen,
  * subset of those. */
 
 static void
-panfrost_query_dmabuf_modifiers(struct pipe_screen *screen,
+panfrost_walk_dmabuf_modifiers(struct pipe_screen *screen,
                 enum pipe_format format, int max, uint64_t *modifiers, unsigned
-                int *external_only, int *out_count)
+                int *external_only, int *out_count, uint64_t test_modifier)
 {
         /* Query AFBC status */
         bool afbc = panfrost_format_supports_afbc(format);
@@ -531,6 +539,10 @@ panfrost_query_dmabuf_modifiers(struct pipe_screen *screen,
                 if ((pan_best_modifiers[i] & AFBC_FORMAT_MOD_YTR) && !ytr)
                         continue;
 
+                if (test_modifier != DRM_FORMAT_MOD_INVALID &&
+                    test_modifier != pan_best_modifiers[i])
+                        continue;
+
                 count++;
 
                 if (max > (int) count) {
@@ -542,6 +554,33 @@ panfrost_query_dmabuf_modifiers(struct pipe_screen *screen,
         }
 
         *out_count = count;
+}
+
+static void
+panfrost_query_dmabuf_modifiers(struct pipe_screen *screen,
+                enum pipe_format format, int max, uint64_t *modifiers, unsigned
+                int *external_only, int *out_count)
+{
+        panfrost_walk_dmabuf_modifiers(screen, format, max, modifiers,
+                external_only, out_count, DRM_FORMAT_MOD_INVALID);
+}
+
+static bool
+panfrost_is_dmabuf_modifier_supported(struct pipe_screen *screen,
+                uint64_t modifier, enum pipe_format format,
+                bool *external_only)
+{
+        uint64_t unused;
+        unsigned int uint_extern_only = 0;
+        int count;
+
+        panfrost_walk_dmabuf_modifiers(screen, format, 1, &unused,
+                &uint_extern_only, &count, modifier);
+
+        if (external_only)
+           *external_only = uint_extern_only ? true : false;
+
+        return count > 0;
 }
 
 static int
@@ -670,17 +709,51 @@ panfrost_fence_finish(struct pipe_screen *pscreen,
 }
 
 struct panfrost_fence *
-panfrost_fence_create(struct panfrost_context *ctx,
-                      uint32_t syncobj)
+panfrost_fence_create(struct panfrost_context *ctx)
 {
         struct panfrost_fence *f = calloc(1, sizeof(*f));
         if (!f)
                 return NULL;
 
+        struct panfrost_device *dev = pan_device(ctx->base.screen);
+        int fd = -1, ret;
+
+        /* Snapshot the last rendering out fence. We'd rather have another
+         * syncobj instead of a sync file, but this is all we get.
+         * (HandleToFD/FDToHandle just gives you another syncobj ID for the
+         * same syncobj).
+         */
+        ret = drmSyncobjExportSyncFile(dev->fd, ctx->syncobj, &fd);
+        if (ret || fd == -1) {
+                fprintf(stderr, "export failed\n");
+                goto err_free_fence;
+        }
+
+        ret = drmSyncobjCreate(dev->fd, 0, &f->syncobj);
+        if (ret) {
+                fprintf(stderr, "create syncobj failed\n");
+                goto err_close_fd;
+        }
+
+        ret = drmSyncobjImportSyncFile(dev->fd, f->syncobj, fd);
+        if (ret) {
+                fprintf(stderr, "create syncobj failed\n");
+                goto err_destroy_syncobj;
+        }
+
+        assert(f->syncobj != ctx->syncobj);
+        close(fd);
         pipe_reference_init(&f->reference, 1);
-        f->syncobj = syncobj;
 
         return f;
+
+err_destroy_syncobj:
+        drmSyncobjDestroy(dev->fd, f->syncobj);
+err_close_fd:
+        close(fd);
+err_free_fence:
+        free(f);
+        return NULL;
 }
 
 static const void *
@@ -706,7 +779,7 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         struct panfrost_device *dev = pan_device(&screen->base);
         panfrost_open_device(screen, fd, dev);
 
-        dev->debug = debug_get_flags_option("PAN_MESA_DEBUG", debug_options, 0);
+        dev->debug = debug_get_flags_option("PAN_MESA_DEBUG", panfrost_debug_options, 0);
 
         if (dev->debug & PAN_DBG_NO_AFBC)
                 dev->quirks |= MIDGARD_NO_AFBC;
@@ -755,6 +828,8 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         screen->base.get_timestamp = panfrost_get_timestamp;
         screen->base.is_format_supported = panfrost_is_format_supported;
         screen->base.query_dmabuf_modifiers = panfrost_query_dmabuf_modifiers;
+        screen->base.is_dmabuf_modifier_supported =
+               panfrost_is_dmabuf_modifier_supported;
         screen->base.context_create = panfrost_create_context;
         screen->base.get_compiler_options = panfrost_screen_get_compiler_options;
         screen->base.fence_reference = panfrost_fence_reference;

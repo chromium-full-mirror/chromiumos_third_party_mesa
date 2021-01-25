@@ -161,26 +161,29 @@ st_bind_images(struct st_context *st, struct gl_program *prog,
 {
    unsigned i;
    struct pipe_image_view images[MAX_IMAGE_UNIFORMS];
-   struct gl_program_constants *c;
 
    if (!prog || !st->pipe->set_shader_images)
       return;
 
-   c = &st->ctx->Const.Program[prog->info.stage];
+   unsigned num_images = prog->info.num_images;
 
-   for (i = 0; i < prog->info.num_images; i++) {
+   for (i = 0; i < num_images; i++) {
       struct pipe_image_view *img = &images[i];
 
       st_convert_image_from_unit(st, img, prog->sh.ImageUnits[i],
                                  prog->sh.ImageAccess[i]);
    }
-   cso_set_shader_images(st->cso_context, shader_type, 0,
-                         prog->info.num_images, images);
+
+   struct pipe_context *pipe = st->pipe;
+   pipe->set_shader_images(pipe, shader_type, 0, num_images, images);
+
    /* clear out any stale shader images */
-   if (prog->info.num_images < c->MaxImageUniforms)
-      cso_set_shader_images(
-            st->cso_context, shader_type, prog->info.num_images,
-            c->MaxImageUniforms - prog->info.num_images, NULL);
+   unsigned last_num_images = st->state.num_images[shader_type];
+   if (num_images < last_num_images) {
+      pipe->set_shader_images(pipe, shader_type, num_images,
+                              last_num_images - num_images, NULL);
+   }
+   st->state.num_images[shader_type] = num_images;
 }
 
 void st_bind_vs_images(struct st_context *st)

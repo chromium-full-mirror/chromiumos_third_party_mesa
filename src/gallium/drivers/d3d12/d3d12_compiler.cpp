@@ -40,10 +40,13 @@
 #include "util/u_memory.h"
 #include "util/u_prim.h"
 #include "util/u_simple_shaders.h"
+#include "util/u_dl.h"
 
-#include <d3d12.h>
+#include <directx/d3d12.h>
+#include <dxguids/dxguids.h>
+
 #include <dxcapi.h>
-#include <wrl.h>
+#include <wrl/client.h>
 
 extern "C" {
 #include "tgsi/tgsi_parse.h"
@@ -67,9 +70,9 @@ struct d3d12_validation_tools
       ~HModule();
 
       bool load(LPCSTR file_name);
-      operator HMODULE () const;
+      operator util_dl_library *() const;
    private:
-      HMODULE module;
+      util_dl_library *module;
    };
 
    HModule dxil_module;
@@ -737,8 +740,9 @@ d3d12_fill_shader_key(struct d3d12_selection_context *sel_ctx,
       }
    }
 
-   for (int i = 0; i < sel_ctx->ctx->num_samplers[stage]; ++i) {
-      if (sel_ctx->ctx->samplers[stage][i]->filter == PIPE_TEX_FILTER_NEAREST)
+   for (unsigned i = 0; i < sel_ctx->ctx->num_samplers[stage]; ++i) {
+      if (!sel_ctx->ctx->samplers[stage][i] ||
+          sel_ctx->ctx->samplers[stage][i]->filter == PIPE_TEX_FILTER_NEAREST)
          continue;
 
       if (sel_ctx->ctx->samplers[stage][i]->wrap_r == PIPE_TEX_WRAP_CLAMP)
@@ -911,7 +915,7 @@ get_prev_shader(struct d3d12_context *ctx, pipe_shader_type current)
    case PIPE_SHADER_FRAGMENT:
       if (ctx->gfx_stages[PIPE_SHADER_GEOMETRY])
          return ctx->gfx_stages[PIPE_SHADER_GEOMETRY];
-      /* fallthrough */
+      FALLTHROUGH;
    case PIPE_SHADER_GEOMETRY:
       return ctx->gfx_stages[PIPE_SHADER_VERTEX];
    default:
@@ -928,7 +932,7 @@ get_next_shader(struct d3d12_context *ctx, pipe_shader_type current)
    case PIPE_SHADER_VERTEX:
       if (ctx->gfx_stages[PIPE_SHADER_GEOMETRY])
          return ctx->gfx_stages[PIPE_SHADER_GEOMETRY];
-      /* fallthrough */
+      FALLTHROUGH;
    case PIPE_SHADER_GEOMETRY:
       return ctx->gfx_stages[PIPE_SHADER_FRAGMENT];
    case PIPE_SHADER_FRAGMENT:
@@ -959,7 +963,7 @@ scan_texture_use(nir_shader *nir)
                case nir_texop_txd:
                   if (tex->is_shadow)
                      result |= TEX_CMP_WITH_LOD_BIAS_GRAD;
-                  /* fallthrough */
+                  FALLTHROUGH;
                case nir_texop_tex:
                   if (tex->dest_type & (nir_type_int | nir_type_uint))
                      result |= TEX_SAMPLE_INTEGER_TEXTURE;
@@ -1109,7 +1113,7 @@ d3d12_select_shader_variants(struct d3d12_context *ctx, const struct pipe_draw_i
 
    validate_geometry_shader_variant(&sel_ctx);
 
-   for (int i = 0; i < ARRAY_SIZE(order); ++i) {
+   for (unsigned i = 0; i < ARRAY_SIZE(order); ++i) {
       auto sel = ctx->gfx_stages[order[i]];
       if (!sel)
          continue;
@@ -1133,12 +1137,15 @@ d3d12_shader_free(struct d3d12_shader_selector *sel)
    ralloc_free(sel);
 }
 
+#ifdef _WIN32
 // Used to get path to self
 extern "C" extern IMAGE_DOS_HEADER __ImageBase;
+#endif
 
 void d3d12_validation_tools::load_dxil_dll()
 {
-   if (!dxil_module.load("dxil.dll")) {
+   if (!dxil_module.load(UTIL_DL_PREFIX "dxil" UTIL_DL_EXT)) {
+#ifdef _WIN32
       char selfPath[MAX_PATH] = "";
       uint32_t pathSize = GetModuleFileNameA((HINSTANCE)&__ImageBase, selfPath, sizeof(selfPath));
       if (pathSize == 0 || pathSize == sizeof(selfPath)) {
@@ -1159,26 +1166,33 @@ void d3d12_validation_tools::load_dxil_dll()
       }
 
       dxil_module.load(selfPath);
+#endif
    }
 }
 
 d3d12_validation_tools::d3d12_validation_tools()
 {
    load_dxil_dll();
-   DxcCreateInstanceProc dxil_create_func = (DxcCreateInstanceProc)GetProcAddress(dxil_module, "DxcCreateInstance");
-   assert(dxil_create_func);
+   DxcCreateInstanceProc dxil_create_func = (DxcCreateInstanceProc)util_dl_get_proc_address(dxil_module, "DxcCreateInstance");
 
-   HRESULT hr = dxil_create_func(CLSID_DxcValidator,  IID_PPV_ARGS(&validator));
-   if (FAILED(hr)) {
-      debug_printf("D3D12: Unable to create validator\n");
+   if (dxil_create_func) {
+      HRESULT hr = dxil_create_func(CLSID_DxcValidator,  IID_PPV_ARGS(&validator));
+      if (FAILED(hr)) {
+         debug_printf("D3D12: Unable to create validator\n");
+      }
    }
+#ifdef _WIN32
+   else if (!(d3d12_debug & D3D12_DEBUG_EXPERIMENTAL)) {
+      debug_printf("D3D12: Unable to load DXIL.dll\n");
+   }
+#endif
 
    DxcCreateInstanceProc compiler_create_func  = nullptr;
    if(dxc_compiler_module.load("dxcompiler.dll"))
-      compiler_create_func = (DxcCreateInstanceProc)GetProcAddress(dxc_compiler_module, "DxcCreateInstance");
+      compiler_create_func = (DxcCreateInstanceProc)util_dl_get_proc_address(dxc_compiler_module, "DxcCreateInstance");
 
    if (compiler_create_func) {
-      hr = compiler_create_func(CLSID_DxcLibrary, IID_PPV_ARGS(&library));
+      HRESULT hr = compiler_create_func(CLSID_DxcLibrary, IID_PPV_ARGS(&library));
       if (FAILED(hr)) {
          debug_printf("D3D12: Unable to create library instance: %x\n", hr);
       }
@@ -1202,11 +1216,11 @@ d3d12_validation_tools::HModule::HModule():
 d3d12_validation_tools::HModule::~HModule()
 {
    if (module)
-      ::FreeLibrary(module);
+      util_dl_close(module);
 }
 
 inline
-d3d12_validation_tools::HModule::operator HMODULE () const
+d3d12_validation_tools::HModule::operator util_dl_library * () const
 {
    return module;
 }
@@ -1214,7 +1228,7 @@ d3d12_validation_tools::HModule::operator HMODULE () const
 bool
 d3d12_validation_tools::HModule::load(LPCSTR file_name)
 {
-   module = ::LoadLibrary(file_name);
+   module = util_dl_open(file_name);
    return module != nullptr;
 }
 
@@ -1255,12 +1269,12 @@ bool d3d12_validation_tools::validate_and_sign(struct blob *dxil)
       char *errorString;
       if (printBlobUtf8) {
          errorString = reinterpret_cast<char*>(printBlobUtf8->GetBufferPointer());
-      }
 
-      errorString[printBlobUtf8->GetBufferSize() - 1] = 0;
-      debug_printf("== VALIDATION ERROR =============================================\n%s\n"
-                   "== END ==========================================================\n",
-                   errorString);
+         errorString[printBlobUtf8->GetBufferSize() - 1] = 0;
+         debug_printf("== VALIDATION ERROR =============================================\n%s\n"
+                     "== END ==========================================================\n",
+                     errorString);
+      }
 
       return false;
    }

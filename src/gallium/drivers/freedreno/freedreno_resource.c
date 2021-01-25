@@ -454,6 +454,7 @@ fd_alloc_staging(struct fd_context *ctx, struct fd_resource *rsc,
 	}
 	tmpl.last_level = 0;
 	tmpl.bind |= PIPE_BIND_LINEAR;
+	tmpl.usage = PIPE_USAGE_STAGING;
 
 	struct pipe_resource *pstaging =
 		pctx->screen->resource_create(pctx->screen, &tmpl);
@@ -838,13 +839,7 @@ fd_resource_get_handle(struct pipe_screen *pscreen,
 
 	handle->modifier = fd_resource_modifier(rsc);
 
-	DBG("%p: target=%d, format=%s, %ux%ux%u, array_size=%u, last_level=%u, "
-			"nr_samples=%u, usage=%u, bind=%x, flags=%x, modifier=%"PRIx64,
-			prsc, prsc->target, util_format_name(prsc->format),
-			prsc->width0, prsc->height0, prsc->depth0,
-			prsc->array_size, prsc->last_level, prsc->nr_samples,
-			prsc->usage, prsc->bind, prsc->flags,
-			handle->modifier);
+	DBG("%"PRSC_FMT", modifier=%"PRIx64, PRSC_ARGS(prsc), handle->modifier);
 
 	return fd_screen_bo_get_handle(pscreen, rsc->bo, rsc->scanout,
 			fd_resource_pitch(rsc, 0), handle);
@@ -902,17 +897,13 @@ fd_resource_allocate_and_resolve(struct pipe_screen *pscreen,
 	rsc = CALLOC_STRUCT(fd_resource);
 	prsc = &rsc->base;
 
-	DBG("%p: target=%d, format=%s, %ux%ux%u, array_size=%u, last_level=%u, "
-			"nr_samples=%u, usage=%u, bind=%x, flags=%x", prsc,
-			tmpl->target, util_format_name(format),
-			tmpl->width0, tmpl->height0, tmpl->depth0,
-			tmpl->array_size, tmpl->last_level, tmpl->nr_samples,
-			tmpl->usage, tmpl->bind, tmpl->flags);
-
 	if (!rsc)
 		return NULL;
 
 	*prsc = *tmpl;
+
+	DBG("%"PRSC_FMT, PRSC_ARGS(prsc));
+
 	fd_resource_layout_init(prsc);
 
 #define LINEAR \
@@ -921,8 +912,13 @@ fd_resource_allocate_and_resolve(struct pipe_screen *pscreen,
 	 PIPE_BIND_DISPLAY_TARGET)
 
 	bool linear = drm_find_modifier(DRM_FORMAT_MOD_LINEAR, modifiers, count);
-	if (tmpl->bind & LINEAR)
+	if (linear) {
+		perf_debug("%"PRSC_FMT": linear: DRM_FORMAT_MOD_LINEAR requested!", PRSC_ARGS(prsc));
+	} else if (tmpl->bind & LINEAR) {
+		if (tmpl->usage != PIPE_USAGE_STAGING)
+			perf_debug("%"PRSC_FMT": linear: LINEAR bind requested!", PRSC_ARGS(prsc));
 		linear = true;
+	}
 
 	if (fd_mesa_debug & FD_DBG_NOTILE)
 		linear = true;
@@ -935,11 +931,20 @@ fd_resource_allocate_and_resolve(struct pipe_screen *pscreen,
 	 * except we don't have a format modifier for tiled.  (We probably
 	 * should.)
 	 */
-	bool allow_ubwc = drm_find_modifier(DRM_FORMAT_MOD_INVALID, modifiers, count);
-	if (tmpl->bind & PIPE_BIND_SHARED) {
-		allow_ubwc = drm_find_modifier(DRM_FORMAT_MOD_QCOM_COMPRESSED, modifiers, count);
+	bool allow_ubwc = false;
+	if (!linear) {
+		allow_ubwc = drm_find_modifier(DRM_FORMAT_MOD_INVALID, modifiers, count);
 		if (!allow_ubwc) {
-			linear = true;
+			perf_debug("%"PRSC_FMT": not UBWC: DRM_FORMAT_MOD_INVALID not requested!",
+					PRSC_ARGS(prsc));
+		}
+		if (tmpl->bind & PIPE_BIND_SHARED) {
+			allow_ubwc = drm_find_modifier(DRM_FORMAT_MOD_QCOM_COMPRESSED, modifiers, count);
+			if (!allow_ubwc) {
+				perf_debug("%"PRSC_FMT": not UBWC: shared and DRM_FORMAT_MOD_QCOM_COMPRESSED not requested!",
+						PRSC_ARGS(prsc));
+				linear = true;
+			}
 		}
 	}
 
@@ -977,6 +982,7 @@ fd_resource_allocate_and_resolve(struct pipe_screen *pscreen,
 	if (size == 0) {
 		/* note, semi-intention == instead of & */
 		debug_assert(prsc->bind == PIPE_BIND_QUERY_BUFFER);
+		*psize = 0;
 		return prsc;
 	}
 
@@ -1083,15 +1089,10 @@ fd_resource_from_handle(struct pipe_screen *pscreen,
 	struct fdl_slice *slice = fd_resource_slice(rsc, 0);
 	struct pipe_resource *prsc = &rsc->base;
 
-	DBG("%p: target=%d, format=%s, %ux%ux%u, array_size=%u, last_level=%u, "
-			"nr_samples=%u, usage=%u, bind=%x, flags=%x, modifier=%"PRIx64,
-			prsc, tmpl->target, util_format_name(tmpl->format),
-			tmpl->width0, tmpl->height0, tmpl->depth0,
-			tmpl->array_size, tmpl->last_level, tmpl->nr_samples,
-			tmpl->usage, tmpl->bind, tmpl->flags,
-			handle->modifier);
-
 	*prsc = *tmpl;
+
+	DBG("%"PRSC_FMT", modifier=%"PRIx64, PRSC_ARGS(prsc), handle->modifier);
+
 	fd_resource_layout_init(prsc);
 
 	pipe_reference_init(&prsc->reference, 1);

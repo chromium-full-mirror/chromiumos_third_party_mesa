@@ -303,8 +303,12 @@ subscript(fs_reg reg, brw_reg_type type, unsigned i)
       reg.vstride += (reg.vstride ? delta : 0);
 
    } else if (reg.file == IMM) {
-      assert(reg.type == type);
-
+      unsigned bit_size = type_sz(type) * 8;
+      reg.u64 >>= i * bit_size;
+      reg.u64 &= BITFIELD64_MASK(bit_size);
+      if (bit_size <= 16)
+         reg.u64 |= reg.u64 << 16;
+      return retype(reg, type);
    } else {
       reg.stride *= type_sz(reg.type) / type_sz(type);
    }
@@ -451,13 +455,15 @@ regs_written(const fs_inst *inst)
  * Return the number of dataflow registers read by the instruction (either
  * fully or partially) counted from 'floor(reg_offset(inst->src[i]) /
  * register_size)'.  The somewhat arbitrary register size unit is 4B for the
- * UNIFORM and IMM files and 32B for all other files.
+ * UNIFORM files and 32B for all other files.
  */
 inline unsigned
 regs_read(const fs_inst *inst, unsigned i)
 {
-   const unsigned reg_size =
-      inst->src[i].file == UNIFORM || inst->src[i].file == IMM ? 4 : REG_SIZE;
+   if (inst->src[i].file == IMM)
+      return 1;
+
+   const unsigned reg_size = inst->src[i].file == UNIFORM ? 4 : REG_SIZE;
    return DIV_ROUND_UP(reg_offset(inst->src[i]) % reg_size +
                        inst->size_read(i) -
                        MIN2(inst->size_read(i), reg_padding(inst->src[i])),

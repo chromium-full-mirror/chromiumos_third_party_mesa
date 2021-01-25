@@ -94,14 +94,14 @@ resolve_supported(const struct pipe_blit_info *info)
       return false;
 
    // can only resolve full subresource
-   if (info->src.box.width != u_minify(info->src.resource->width0,
-                                       info->src.level) ||
-       info->src.box.height != u_minify(info->src.resource->height0,
-                                        info->src.level) ||
-       info->dst.box.width != u_minify(info->dst.resource->width0,
-                                           info->dst.level) ||
-       info->dst.box.height != u_minify(info->dst.resource->height0,
-                                            info->dst.level))
+   if (info->src.box.width != (int)u_minify(info->src.resource->width0,
+                                            info->src.level) ||
+       info->src.box.height != (int)u_minify(info->src.resource->height0,
+                                             info->src.level) ||
+       info->dst.box.width != (int)u_minify(info->dst.resource->width0,
+                                            info->dst.level) ||
+       info->dst.box.height != (int)u_minify(info->dst.resource->height0,
+                                             info->dst.level))
       return false;
 
    return true;
@@ -233,12 +233,12 @@ direct_copy_supported(struct d3d12_screen *screen,
       if (info->src.box.x != 0 ||
           info->src.box.y != 0 ||
           info->src.box.z != 0 ||
-          info->src.box.width != u_minify(info->src.resource->width0,
-                                          info->src.level) ||
-          info->src.box.height != u_minify(info->src.resource->height0,
-                                           info->src.level) ||
-          info->src.box.depth != u_minify(info->src.resource->depth0,
-                                          info->src.level))
+          info->src.box.width != (int)u_minify(info->src.resource->width0,
+                                               info->src.level) ||
+          info->src.box.height != (int)u_minify(info->src.resource->height0,
+                                                info->src.level) ||
+          info->src.box.depth != (int)u_minify(info->src.resource->depth0,
+                                               info->src.level))
          return false;
    }
 
@@ -267,7 +267,7 @@ copy_subregion_no_barriers(struct d3d12_context *ctx,
                            const struct pipe_box *psrc_box,
                            unsigned mask)
 {
-   struct d3d12_screen *screen = d3d12_screen(ctx->base.screen);
+   UNUSED struct d3d12_screen *screen = d3d12_screen(ctx->base.screen);
    D3D12_TEXTURE_COPY_LOCATION src_loc, dst_loc;
    unsigned src_z = psrc_box->z;
 
@@ -304,7 +304,7 @@ copy_subregion_no_barriers(struct d3d12_context *ctx,
    }
 
    static_assert(PIPE_MASK_S == 0x20 && PIPE_MASK_Z == 0x10, "unexpected ZS format mask");
-   int nsubres = min(src_nres, dst_nres);
+   int nsubres = MIN2(src_nres, dst_nres);
    unsigned subresource_copy_mask = nsubres > 1 ? mask >> 4 : 1;
 
    for (int subres = 0; subres < nsubres; ++subres) {
@@ -323,9 +323,9 @@ copy_subregion_no_barriers(struct d3d12_context *ctx,
       dst_loc.pResource = d3d12_resource_resource(dst);
 
       if (psrc_box->x == 0 && psrc_box->y == 0 && psrc_box->z == 0 &&
-          psrc_box->width == u_minify(src->base.width0, src_level) &&
-          psrc_box->height == u_minify(src->base.height0, src_level) &&
-          psrc_box->depth == u_minify(src->base.depth0, src_level)) {
+          psrc_box->width == (int)u_minify(src->base.width0, src_level) &&
+          psrc_box->height == (int)u_minify(src->base.height0, src_level) &&
+          psrc_box->depth == (int)u_minify(src->base.depth0, src_level)) {
 
          assert((dstx == 0 && dsty == 0 && dstz == 0) ||
                 screen->opts2.ProgrammableSamplePositionsTier !=
@@ -341,9 +341,9 @@ copy_subregion_no_barriers(struct d3d12_context *ctx,
       } else {
          D3D12_BOX src_box;
          src_box.left = psrc_box->x;
-         src_box.right = MIN2(psrc_box->x + psrc_box->width, u_minify(src->base.width0, src_level));
+         src_box.right = MIN2(psrc_box->x + psrc_box->width, (int)u_minify(src->base.width0, src_level));
          src_box.top = psrc_box->y;
-         src_box.bottom = MIN2(psrc_box->y + psrc_box->height, u_minify(src->base.height0, src_level));
+         src_box.bottom = MIN2(psrc_box->y + psrc_box->height, (int)u_minify(src->base.height0, src_level));
          src_box.front = src_z;
          src_box.back = src_z + psrc_box->depth;
 
@@ -419,11 +419,13 @@ d3d12_direct_copy(struct d3d12_context *ctx,
                    src_subres, dst_subres);
 
 
-   d3d12_transition_subresources_state(ctx, src, src_subres, 1, 0, 1, 0,
+   d3d12_transition_subresources_state(ctx, src, src_subres, 1, 0, 1,
+                                       d3d12_get_format_start_plane(src->base.format),
                                        d3d12_get_format_num_planes(src->base.format),
                                        D3D12_RESOURCE_STATE_COPY_SOURCE);
 
-   d3d12_transition_subresources_state(ctx, dst, dst_subres, 1, 0, 1, 0,
+   d3d12_transition_subresources_state(ctx, dst, dst_subres, 1, 0, 1,
+                                       d3d12_get_format_start_plane(dst->base.format),
                                        d3d12_get_format_num_planes(dst->base.format),
                                        D3D12_RESOURCE_STATE_COPY_DEST);
 
@@ -592,7 +594,7 @@ static struct pipe_resource *
 create_tmp_resource(struct pipe_screen *screen,
                     const struct pipe_blit_info *info)
 {
-   struct pipe_resource tpl = { 0 };
+   struct pipe_resource tpl = {};
    tpl.width0 = info->dst.box.width;
    tpl.height0 = info->dst.box.height;
    tpl.depth0 = info->dst.box.depth;
@@ -612,10 +614,9 @@ get_stencil_resolve_vs(struct d3d12_context *ctx)
    if (ctx->stencil_resolve_vs)
       return ctx->stencil_resolve_vs;
 
-   nir_builder b;
-   nir_builder_init_simple_shader(&b, NULL, MESA_SHADER_VERTEX,
-                                  dxil_get_nir_compiler_options());
-   b.shader->info.name = ralloc_strdup(b.shader, "linear_blit_vs");
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX,
+                                                  dxil_get_nir_compiler_options(),
+                                                  "linear_blit_vs");
 
    const struct glsl_type *vec4 = glsl_vec4_type();
    nir_variable *pos_in = nir_variable_create(b.shader, nir_var_shader_in,
@@ -627,7 +628,7 @@ get_stencil_resolve_vs(struct d3d12_context *ctx)
 
    nir_store_var(&b, pos_out, nir_load_var(&b, pos_in), 0xf);
 
-   struct pipe_shader_state state = { 0 };
+   struct pipe_shader_state state = {};
    state.type = PIPE_SHADER_IR_NIR;
    state.ir.nir = b.shader;
    ctx->stencil_resolve_vs = ctx->base.create_vs_state(&ctx->base, &state);
@@ -641,9 +642,9 @@ get_stencil_resolve_fs(struct d3d12_context *ctx)
    if (ctx->stencil_resolve_fs)
       return ctx->stencil_resolve_fs;
 
-   nir_builder b;
-   nir_builder_init_simple_shader(&b, NULL, MESA_SHADER_FRAGMENT,
-                                  dxil_get_nir_compiler_options());
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
+                                                  dxil_get_nir_compiler_options(),
+                                                  "stencil_resolve_fs");
 
    nir_variable *stencil_out = nir_variable_create(b.shader,
                                                    nir_var_shader_out,
@@ -674,7 +675,7 @@ get_stencil_resolve_fs(struct d3d12_context *ctx)
    tex->src[1].src = nir_src_for_ssa(nir_imm_int(&b, 0)); /* just use first sample */
    tex->src[2].src_type = nir_tex_src_texture_deref;
    tex->src[2].src = nir_src_for_ssa(tex_deref);
-   tex->dest_type = nir_type_uint;
+   tex->dest_type = nir_type_uint32;
    tex->is_array = false;
    tex->coord_components = 2;
 
@@ -683,7 +684,7 @@ get_stencil_resolve_fs(struct d3d12_context *ctx)
 
    nir_store_var(&b, stencil_out, nir_channel(&b, &tex->dest.ssa, 1), 0x1);
 
-   struct pipe_shader_state state = { 0 };
+   struct pipe_shader_state state = {};
    state.type = PIPE_SHADER_IR_NIR;
    state.ir.nir = b.shader;
    ctx->stencil_resolve_fs = ctx->base.create_fs_state(&ctx->base, &state);

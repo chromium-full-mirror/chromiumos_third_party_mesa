@@ -222,7 +222,7 @@ public:
 };
 
 bool
-fs_generator::patch_discard_jumps_to_fb_writes()
+fs_generator::patch_halt_jumps()
 {
    if (this->discard_halt_patches.is_empty())
       return false;
@@ -626,7 +626,17 @@ fs_generator::generate_shuffle(fs_inst *inst,
           * but asserting would be mean.
           */
          const unsigned i = idx.file == BRW_IMMEDIATE_VALUE ? idx.ud : 0;
-         brw_MOV(p, suboffset(dst, group), stride(suboffset(src, i), 0, 1, 0));
+         struct brw_reg group_src = stride(suboffset(src, i), 0, 1, 0);
+         struct brw_reg group_dst = suboffset(dst, group);
+         if (type_sz(src.type) > 4 && !devinfo->has_64bit_float) {
+            brw_MOV(p, subscript(group_dst, BRW_REGISTER_TYPE_UD, 0),
+                       subscript(group_src, BRW_REGISTER_TYPE_UD, 0));
+            brw_set_default_swsb(p, tgl_swsb_null());
+            brw_MOV(p, subscript(group_dst, BRW_REGISTER_TYPE_UD, 1),
+                       subscript(group_src, BRW_REGISTER_TYPE_UD, 1));
+         } else {
+            brw_MOV(p, group_dst, group_src);
+         }
       } else {
          /* We use VxH indirect addressing, clobbering a0.0 through a0.7. */
          struct brw_reg addr = vec8(brw_address_reg(0));
@@ -701,7 +711,8 @@ fs_generator::generate_shuffle(fs_inst *inst,
 
          if (type_sz(src.type) > 4 &&
              ((devinfo->gen == 7 && !devinfo->is_haswell) ||
-              devinfo->is_cherryview || gen_device_info_is_9lp(devinfo))) {
+              devinfo->is_cherryview || gen_device_info_is_9lp(devinfo) ||
+              !devinfo->has_64bit_float)) {
             /* IVB has an issue (which we found empirically) where it reads
              * two address register components per channel for indirectly
              * addressed 64-bit sources.
@@ -1450,7 +1461,7 @@ fs_generator::generate_ddy(const fs_inst *inst,
 }
 
 void
-fs_generator::generate_discard_jump(fs_inst *)
+fs_generator::generate_halt(fs_inst *)
 {
    /* This HALT will be patched up at FB write time to point UIP at the end of
     * the program, and at brw_uip_jip() JIP will be set to the end of the
@@ -2375,8 +2386,8 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          send_count++;
          break;
 
-      case FS_OPCODE_DISCARD_JUMP:
-         generate_discard_jump(inst);
+      case BRW_OPCODE_HALT:
+         generate_halt(inst);
          break;
 
       case SHADER_OPCODE_SHADER_TIME_ADD:
@@ -2459,11 +2470,25 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
 
       case SHADER_OPCODE_SEL_EXEC:
          assert(inst->force_writemask_all);
-         brw_set_default_mask_control(p, BRW_MASK_DISABLE);
-         brw_MOV(p, dst, src[1]);
-         brw_set_default_mask_control(p, BRW_MASK_ENABLE);
-         brw_set_default_swsb(p, tgl_swsb_null());
-         brw_MOV(p, dst, src[0]);
+         if (type_sz(dst.type) > 4 && !devinfo->has_64bit_float) {
+            brw_set_default_mask_control(p, BRW_MASK_DISABLE);
+            brw_MOV(p, subscript(dst, BRW_REGISTER_TYPE_UD, 0),
+                       subscript(src[1], BRW_REGISTER_TYPE_UD, 0));
+            brw_set_default_swsb(p, tgl_swsb_null());
+            brw_MOV(p, subscript(dst, BRW_REGISTER_TYPE_UD, 1),
+                       subscript(src[1], BRW_REGISTER_TYPE_UD, 1));
+            brw_set_default_mask_control(p, BRW_MASK_ENABLE);
+            brw_MOV(p, subscript(dst, BRW_REGISTER_TYPE_UD, 0),
+                       subscript(src[0], BRW_REGISTER_TYPE_UD, 0));
+            brw_MOV(p, subscript(dst, BRW_REGISTER_TYPE_UD, 1),
+                       subscript(src[0], BRW_REGISTER_TYPE_UD, 1));
+         } else {
+            brw_set_default_mask_control(p, BRW_MASK_DISABLE);
+            brw_MOV(p, dst, src[1]);
+            brw_set_default_mask_control(p, BRW_MASK_ENABLE);
+            brw_set_default_swsb(p, tgl_swsb_null());
+            brw_MOV(p, dst, src[0]);
+         }
          break;
 
       case SHADER_OPCODE_QUAD_SWIZZLE:
@@ -2492,7 +2517,8 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          struct brw_reg strided = stride(suboffset(src[0], component),
                                          vstride, width, 0);
          if (type_sz(src[0].type) > 4 &&
-             (devinfo->is_cherryview || gen_device_info_is_9lp(devinfo))) {
+             (devinfo->is_cherryview || gen_device_info_is_9lp(devinfo) ||
+              !devinfo->has_64bit_float)) {
             /* IVB has an issue (which we found empirically) where it reads
              * two address register components per channel for indirectly
              * addressed 64-bit sources.
@@ -2529,11 +2555,11 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
           generate_pack_half_2x16_split(inst, dst, src[0], src[1]);
           break;
 
-      case FS_OPCODE_PLACEHOLDER_HALT:
+      case SHADER_OPCODE_HALT_TARGET:
          /* This is the place where the final HALT needs to be inserted if
           * we've emitted any discards.  If not, this will emit no code.
           */
-         if (!patch_discard_jumps_to_fb_writes()) {
+         if (!patch_halt_jumps()) {
             if (unlikely(debug_flag)) {
                disasm_info->use_tail = true;
             }
@@ -2591,6 +2617,35 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          assert(src[0].file == BRW_IMMEDIATE_VALUE);
          assert(src[1].file == BRW_IMMEDIATE_VALUE);
          brw_float_controls_mode(p, src[0].d, src[1].d);
+         break;
+
+      case SHADER_OPCODE_GET_DSS_ID:
+         /* The Slice, Dual-SubSlice, SubSlice, EU, and Thread IDs are all
+          * stored in sr0.0.  Normally, for reading from HW regs, we'd just do
+          * this in the IR and let the back-end generate some code but these
+          * live in the state register which tends to have special rules.
+          *
+          * For convenience, we combine Slice ID and Dual-SubSlice ID into a
+          * single ID.
+          */
+         if (devinfo->gen == 12) {
+            /* There is a SWSB restriction that requires that any time sr0 is
+             * accessed both the instruction doing the access and the next one
+             * have SWSB set to RegDist(1).
+             */
+            if (brw_get_default_swsb(p).mode != TGL_SBID_NULL)
+               brw_SYNC(p, TGL_SYNC_NOP);
+            brw_set_default_swsb(p, tgl_swsb_regdist(1));
+            brw_SHR(p, dst, brw_sr0_reg(0), brw_imm_ud(9));
+            brw_set_default_swsb(p, tgl_swsb_regdist(1));
+            brw_AND(p, dst, dst, brw_imm_ud(0x1f));
+         } else {
+            /* These move around basically every hardware generation, so don't
+             * do any >= checks and fail if the platform hasn't explicitly
+             * been enabled here.
+             */
+            unreachable("Unsupported platform");
+         }
          break;
 
       default:

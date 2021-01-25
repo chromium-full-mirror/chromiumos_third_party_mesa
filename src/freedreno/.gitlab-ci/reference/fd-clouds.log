@@ -135,8 +135,8 @@ t4		write PC_RASTER_CNTL (9980)
 t4		write PC_MULTIVIEW_CNTL (9b07)
 			PC_MULTIVIEW_CNTL: { VIEWS = 0 }
 0000000001d91154:		0000: 489b0701 00000000
-t4		write SP_UNKNOWN_A81B (a81b)
-			SP_UNKNOWN_A81B: 0
+t4		write SP_VS_OBJ_FIRST_EXEC_OFFSET (a81b)
+			SP_VS_OBJ_FIRST_EXEC_OFFSET: 0
 0000000001d9115c:		0000: 40a81b01 00000000
 t4		write SP_UNKNOWN_B183 (b183)
 			SP_UNKNOWN_B183: 0
@@ -603,8 +603,8 @@ t4					write SP_IBO_COUNT (ab20)
 0000000001121120:				0120: 000000fc 000000fc 40930101 00ff0004 409b0601 00000000 40a87101 00000000
 0000000001121140:				0140: 48910101 00ffff00 48910701 00000000 40a00186 fcfcfcfc 0000fcfc fcfcfcfc
 0000000001121160:				0160: 000000fc 0000fcfc 00000000 40887001 00000000 48809401 00000000
-t4					write SP_HS_UNKNOWN_A833 (a833)
-						SP_HS_UNKNOWN_A833: 0
+t4					write SP_HS_OBJ_FIRST_EXEC_OFFSET (a833)
+						SP_HS_OBJ_FIRST_EXEC_OFFSET: 0
 0000000001121000:					0000: 40a83301 00000000
 t4					write SP_FS_PREFETCH_CNTL (a99e)
 						SP_FS_PREFETCH_CNTL: { COUNT = 0 | UNK4 = r63.x | 0x7000 }
@@ -634,18 +634,11 @@ t4					write SP_VS_OBJ_START_LO (a81c)
 							:0:0002:0002[00000000x_00000000x] nop
 							:0:0003:0003[00000000x_00000000x] nop
 							:0:0004:0004[00000000x_00000000x] nop
-							Register Stats:
-							- used (half): (cnt=0, max=0)
-							- used (full): (cnt=0, max=0)
-							- input (half): (cnt=0, max=0)
-							- input (full): (cnt=0, max=0)
-							- max const: 0
-
-							- output (half): (cnt=0, max=0)  (estimated)
-							- output (full): (cnt=0, max=0)  (estimated)
-							- shaderdb: 5 instructions, 4 nops, 1 non-nops, (5 instlen), 0 last-baryf, 0 half, 0 full
+							Stats:
+							- shaderdb: 5 instr, 4 nops, 1 non-nops, 0 mov, 0 cov
+							- shaderdb: 0 last-baryf, 0 half, 0 full, 0 constlen
 							- shaderdb: 5 cat0, 0 cat1, 0 cat2, 0 cat3, 0 cat4, 0 cat5, 0 cat6, 0 cat7
-							- shaderdb: 0 (ss), 0 (sy)
+							- shaderdb: 0 sstall, 0 (ss), 0 (sy)
 0000000001121038:					0000: 48a81c02 01011000 00000000
 t7					opcode: CP_LOAD_STATE6_GEOM (32) (4 dwords)
 						{ DST_OFF = 0 | STATE_TYPE = ST6_SHADER | STATE_SRC = SS6_INDIRECT | STATE_BLOCK = SB6_VS_SHADER | NUM_UNIT = 1 }
@@ -656,18 +649,11 @@ t7					opcode: CP_LOAD_STATE6_GEOM (32) (4 dwords)
 						:0:0002:0002[00000000x_00000000x] nop
 						:0:0003:0003[00000000x_00000000x] nop
 						:0:0004:0004[00000000x_00000000x] nop
-						Register Stats:
-						- used (half): (cnt=0, max=0)
-						- used (full): (cnt=0, max=0)
-						- input (half): (cnt=0, max=0)
-						- input (full): (cnt=0, max=0)
-						- max const: 0
-
-						- output (half): (cnt=0, max=0)  (estimated)
-						- output (full): (cnt=0, max=0)  (estimated)
-						- shaderdb: 5 instructions, 4 nops, 1 non-nops, (5 instlen), 0 last-baryf, 0 half, 0 full
+						Stats:
+						- shaderdb: 5 instr, 4 nops, 1 non-nops, 0 mov, 0 cov
+						- shaderdb: 0 last-baryf, 0 half, 0 full, 0 constlen
 						- shaderdb: 5 cat0, 0 cat1, 0 cat2, 0 cat3, 0 cat4, 0 cat5, 0 cat6, 0 cat7
-						- shaderdb: 0 (ss), 0 (sy)
+						- shaderdb: 0 sstall, 0 (ss), 0 (sy)
 0000000001121044:					0000: 70328003 00620000 01011000 00000000
 t4					write VPC_VAR[0].DISABLE (9212)
 						VPC_VAR[0].DISABLE: 0xffffffff
@@ -681,8 +667,8 @@ t4					write SP_VS_OUT[0].REG (a803)
 t4					write SP_VS_VPC_DST[0].REG (a813)
 						SP_VS_VPC_DST[0].REG: { OUTLOC0 = 0 | OUTLOC1 = 0 | OUTLOC2 = 0 | OUTLOC3 = 0 }
 0000000001121070:					0000: 48a81301 00000000
-t4					write SP_HS_UNKNOWN_A831 (a831)
-						SP_HS_UNKNOWN_A831: 0
+t4					write SP_HS_WAVE_INPUT_SIZE (a831)
+						SP_HS_WAVE_INPUT_SIZE: 0
 0000000001121078:					0000: 48a83101 00000000
 t4					write SP_VS_PRIMITIVE_CNTL (a802)
 						SP_VS_PRIMITIVE_CNTL: { OUT = 1 }
@@ -709,8 +695,8 @@ t4					write HLSQ_UNKNOWN_B980 (b980)
 t4					write SP_FS_CTRL_REG0 (a980)
 						SP_FS_CTRL_REG0: { HALFREGFOOTPRINT = 0 | FULLREGFOOTPRINT = 1 | BRANCHSTACK = 0 | THREADSIZE = FOUR_QUADS | MERGEDREGS | 0x1000000 }
 00000000011210c0:					0000: 40a98001 81100080
-t4					write SP_UNKNOWN_A982 (a982)
-						SP_UNKNOWN_A982: 0
+t4					write SP_FS_OBJ_FIRST_EXEC_OFFSET (a982)
+						SP_FS_OBJ_FIRST_EXEC_OFFSET: 0
 00000000011210c8:					0000: 48a98201 00000000
 t4					write VPC_VS_LAYER_CNTL (9104)
 						VPC_VS_LAYER_CNTL: { LAYERLOC = 255 | VIEWLOC = 255 }
@@ -1094,7 +1080,7 @@ t7			opcode: CP_DRAW_INDX_OFFSET (38) (4 dwords)
 !+	00000001			SP_VS_PRIMITIVE_CNTL: { OUT = 1 }
 !+	00000f00			SP_VS_OUT[0].REG: { A_REGID = r0.x | A_COMPMASK = 0xf | B_REGID = r0.x | B_COMPMASK = 0 }
  +	00000000			SP_VS_VPC_DST[0].REG: { OUTLOC0 = 0 | OUTLOC1 = 0 | OUTLOC2 = 0 | OUTLOC3 = 0 }
- +	00000000			SP_UNKNOWN_A81B: 0
+ +	00000000			SP_VS_OBJ_FIRST_EXEC_OFFSET: 0
 !+	01011000			SP_VS_OBJ_START_LO: 0x1011000		base=1011000, offset=0, size=128
  +	00000000			SP_VS_OBJ_START_HI: 0		base=1011000, offset=0, size=128
 0000000001011000:				0000: 00000000 03000000 00000000 00000000 00000000 00000000 00000000 00000000
@@ -1104,28 +1090,21 @@ t7			opcode: CP_DRAW_INDX_OFFSET (38) (4 dwords)
 				:0:0002:0002[00000000x_00000000x] nop
 				:0:0003:0003[00000000x_00000000x] nop
 				:0:0004:0004[00000000x_00000000x] nop
-				Register Stats:
-				- used (half): (cnt=0, max=0)
-				- used (full): (cnt=0, max=0)
-				- input (half): (cnt=0, max=0)
-				- input (full): (cnt=0, max=0)
-				- max const: 0
-
-				- output (half): (cnt=0, max=0)  (estimated)
-				- output (full): (cnt=0, max=0)  (estimated)
-				- shaderdb: 5 instructions, 4 nops, 1 non-nops, (5 instlen), 0 last-baryf, 0 half, 0 full
+				Stats:
+				- shaderdb: 5 instr, 4 nops, 1 non-nops, 0 mov, 0 cov
+				- shaderdb: 0 last-baryf, 0 half, 0 full, 0 constlen
 				- shaderdb: 5 cat0, 0 cat1, 0 cat2, 0 cat3, 0 cat4, 0 cat5, 0 cat6, 0 cat7
-				- shaderdb: 0 (ss), 0 (sy)
+				- shaderdb: 0 sstall, 0 (ss), 0 (sy)
 !+	00000100			SP_VS_CONFIG: { ENABLED | NTEX = 0 | NSAMP = 0 | NIBO = 0 }
 !+	00000001			SP_VS_INSTRLEN: 1
- +	00000000			SP_HS_UNKNOWN_A831: 0
- +	00000000			SP_HS_UNKNOWN_A833: 0
+ +	00000000			SP_HS_WAVE_INPUT_SIZE: 0
+ +	00000000			SP_HS_OBJ_FIRST_EXEC_OFFSET: 0
  +	00000000			SP_HS_CONFIG: { NTEX = 0 | NSAMP = 0 | NIBO = 0 }
  +	00000000			SP_DS_CONFIG: { NTEX = 0 | NSAMP = 0 | NIBO = 0 }
  +	00000000			SP_GS_PRIM_SIZE: 0
  +	00000000			SP_GS_CONFIG: { NTEX = 0 | NSAMP = 0 | NIBO = 0 }
 !+	81100080			SP_FS_CTRL_REG0: { HALFREGFOOTPRINT = 0 | FULLREGFOOTPRINT = 1 | BRANCHSTACK = 0 | THREADSIZE = FOUR_QUADS | MERGEDREGS | 0x1000000 }
- +	00000000			SP_UNKNOWN_A982: 0
+ +	00000000			SP_FS_OBJ_FIRST_EXEC_OFFSET: 0
  +	00000000			SP_SRGB_CNTL: { 0 }
 !+	0000000f			SP_FS_RENDER_COMPONENTS: { RT0 = 0xf | RT1 = 0 | RT2 = 0 | RT3 = 0 | RT4 = 0 | RT5 = 0 | RT6 = 0 | RT7 = 0 }
 !+	fcfcfc00			SP_FS_OUTPUT_CNTL0: { DEPTH_REGID = r63.x | SAMPMASK_REGID = r63.x | STENCILREF_REGID = r63.x }
@@ -1918,8 +1897,8 @@ t4					write SP_IBO_COUNT (ab20)
 00000000011202a0:				02a0: 3dd70a3e 3d3851ec 40d9999a 3d4ac083 3ba3d70a 3de147ae 358637bd 33d6bf95
 00000000011202c0:				02c0: 3f0ccccd 41800000 45070000 44b40000 3df5c28f 3f333333 3f266666 3f7851ec
 00000000011202e0:				02e0: 3f19999a 3f666666 3f7d70a4 40100000 00000000 3db851ec 00000000 07ee25f4
-t4					write SP_HS_UNKNOWN_A833 (a833)
-						SP_HS_UNKNOWN_A833: 0
+t4					write SP_HS_OBJ_FIRST_EXEC_OFFSET (a833)
+						SP_HS_OBJ_FIRST_EXEC_OFFSET: 0
 0000000001120000:					0000: 40a83301 00000000
 t4					write SP_FS_PREFETCH_CNTL (a99e)
 						SP_FS_PREFETCH_CNTL: { COUNT = 0 | UNK4 = r63.x | 0x7000 }
@@ -1949,18 +1928,11 @@ t4					write SP_VS_OBJ_START_LO (a81c)
 							:0:0002:0002[00000000x_00000000x] nop
 							:0:0003:0003[00000000x_00000000x] nop
 							:0:0004:0004[00000000x_00000000x] nop
-							Register Stats:
-							- used (half): (cnt=0, max=0)
-							- used (full): (cnt=0, max=0)
-							- input (half): (cnt=0, max=0)
-							- input (full): (cnt=0, max=0)
-							- max const: 0
-
-							- output (half): (cnt=0, max=0)  (estimated)
-							- output (full): (cnt=0, max=0)  (estimated)
-							- shaderdb: 5 instructions, 4 nops, 1 non-nops, (5 instlen), 0 last-baryf, 0 half, 0 full
+							Stats:
+							- shaderdb: 5 instr, 4 nops, 1 non-nops, 0 mov, 0 cov
+							- shaderdb: 0 last-baryf, 0 half, 0 full, 0 constlen
 							- shaderdb: 5 cat0, 0 cat1, 0 cat2, 0 cat3, 0 cat4, 0 cat5, 0 cat6, 0 cat7
-							- shaderdb: 0 (ss), 0 (sy)
+							- shaderdb: 0 sstall, 0 (ss), 0 (sy)
 0000000001120038:					0000: 48a81c02 01012000 00000000
 t7					opcode: CP_LOAD_STATE6_GEOM (32) (4 dwords)
 						{ DST_OFF = 0 | STATE_TYPE = ST6_SHADER | STATE_SRC = SS6_INDIRECT | STATE_BLOCK = SB6_VS_SHADER | NUM_UNIT = 1 }
@@ -1971,18 +1943,11 @@ t7					opcode: CP_LOAD_STATE6_GEOM (32) (4 dwords)
 						:0:0002:0002[00000000x_00000000x] nop
 						:0:0003:0003[00000000x_00000000x] nop
 						:0:0004:0004[00000000x_00000000x] nop
-						Register Stats:
-						- used (half): (cnt=0, max=0)
-						- used (full): (cnt=0, max=0)
-						- input (half): (cnt=0, max=0)
-						- input (full): (cnt=0, max=0)
-						- max const: 0
-
-						- output (half): (cnt=0, max=0)  (estimated)
-						- output (full): (cnt=0, max=0)  (estimated)
-						- shaderdb: 5 instructions, 4 nops, 1 non-nops, (5 instlen), 0 last-baryf, 0 half, 0 full
+						Stats:
+						- shaderdb: 5 instr, 4 nops, 1 non-nops, 0 mov, 0 cov
+						- shaderdb: 0 last-baryf, 0 half, 0 full, 0 constlen
 						- shaderdb: 5 cat0, 0 cat1, 0 cat2, 0 cat3, 0 cat4, 0 cat5, 0 cat6, 0 cat7
-						- shaderdb: 0 (ss), 0 (sy)
+						- shaderdb: 0 sstall, 0 (ss), 0 (sy)
 0000000001120044:					0000: 70328003 00620000 01012000 00000000
 t4					write VPC_VAR[0].DISABLE (9212)
 						VPC_VAR[0].DISABLE: 0xffffffff
@@ -1996,8 +1961,8 @@ t4					write SP_VS_OUT[0].REG (a803)
 t4					write SP_VS_VPC_DST[0].REG (a813)
 						SP_VS_VPC_DST[0].REG: { OUTLOC0 = 0 | OUTLOC1 = 0 | OUTLOC2 = 0 | OUTLOC3 = 0 }
 0000000001120070:					0000: 48a81301 00000000
-t4					write SP_HS_UNKNOWN_A831 (a831)
-						SP_HS_UNKNOWN_A831: 0
+t4					write SP_HS_WAVE_INPUT_SIZE (a831)
+						SP_HS_WAVE_INPUT_SIZE: 0
 0000000001120078:					0000: 48a83101 00000000
 t4					write SP_VS_PRIMITIVE_CNTL (a802)
 						SP_VS_PRIMITIVE_CNTL: { OUT = 1 }
@@ -2024,8 +1989,8 @@ t4					write HLSQ_UNKNOWN_B980 (b980)
 t4					write SP_FS_CTRL_REG0 (a980)
 						SP_FS_CTRL_REG0: { HALFREGFOOTPRINT = 0 | FULLREGFOOTPRINT = 19 | BRANCHSTACK = 2 | THREADSIZE = FOUR_QUADS | VARYING | MERGEDREGS | 0x1000000 }
 00000000011200c0:					0000: 40a98001 81508980
-t4					write SP_UNKNOWN_A982 (a982)
-						SP_UNKNOWN_A982: 0
+t4					write SP_FS_OBJ_FIRST_EXEC_OFFSET (a982)
+						SP_FS_OBJ_FIRST_EXEC_OFFSET: 0
 00000000011200c8:					0000: 48a98201 00000000
 t4					write VPC_VS_LAYER_CNTL (9104)
 						VPC_VS_LAYER_CNTL: { LAYERLOC = 255 | VIEWLOC = 255 }
@@ -2087,7 +2052,7 @@ t4					write SP_FS_OBJ_START_LO (a983)
 00000000010130c0:							00c0: 10261023 6386800d 20080013 42700010 10261023 6387000e 40141066 4010001b
 00000000010130e0:							00e0: 00141025 40700016 00000014 80100014 20040008 46f00008 00000004 80900000
 							:1:0000:0000[204cc000x_40400000x] mov.u32u32 r0.x, 0x40400000
-							:1:0001:0001[204cc006x_00000000x] mov.u32u32 r1.z, 0x00000000
+							:1:0001:0001[204cc006x_00000000x] mov.u32u32 r1.z, 0
 							:1:0002:0002[204cc004x_3e99999ax] mov.u32u32 r1.x, 0x3e99999a
 							:2:0003:0003[42700008x_20080014x] sub.s r2.x, r5.x, 8
 							:3:0004:0004[6380000cx_10331003x] mad.f32 r3.x, c0.w, r0.x, c12.w
@@ -2260,12 +2225,12 @@ t4					write SP_FS_OBJ_START_LO (a983)
 							:0:0171:0249[00000200x_00000000x] (rpt2)nop
 							:2:0172:0252[42bb08f8x_20820008x] (nop3) cmps.s.ge p0.x, r2.x, 130
 							:0:0173:0256[00000200x_00000000x] (rpt2)nop
-							:0:0174:0259[00800000x_00000464x] br p0.x, #1124
+							:0:0174:0259[00800000x_00000464x] br p0.x, #l1298
 							:1:0175:0260[280cc008x_00000003x] (jp)mov.u32u32 r2.x, r0.w
 							:0:0176:0261[00000200x_00000000x] (rpt2)nop
 							:2:0177:0264[40b808f8x_0008106ex] (nop3) cmps.f.lt p0.x, c27.z, r2.x
 							:0:0178:0268[00000200x_00000000x] (rpt2)nop
-							:0:0179:0271[00800000x_0000045fx] br p0.x, #1119
+							:0:0179:0271[00800000x_0000045fx] br p0.x, #l1298
 							:1:0180:0272[280cc012x_00000004x] (jp)mov.u32u32 r4.z, r1.x
 							:1:0181:0273[200cc018x_00000004x] mov.u32u32 r6.x, r1.x
 							:1:0182:0274[200cc019x_00000004x] mov.u32u32 r6.y, r1.x
@@ -2617,7 +2582,7 @@ t4					write SP_FS_OBJ_START_LO (a983)
 							:2:0528:0937[40580023x_10700023x] (nop2) max.f r8.w, r8.w, c28.x
 							:2:0529:0940[40700026x_103e0025x] mul.f r9.z, r9.y, c15.z
 							:2:0530:0941[40300023x_10290023x] min.f r8.w, r8.w, c10.y
-							:0:0531:0942[00900000x_000002cdx] br !p0.x, #717
+							:0:0531:0942[00900000x_000002cdx] br !p0.x, #l1248
 							:2:0532:0943[48100028x_10550019x] (jp)add.f r10.x, r6.y, c21.y
 							:2:0533:0944[40700029x_10270019x] mul.f r10.y, r6.y, c9.w
 							:2:0534:0945[40100019x_10590019x] add.f r6.y, r6.y, c22.y
@@ -3333,8 +3298,9 @@ t4					write SP_FS_OBJ_START_LO (a983)
 							:2:1244:2198[40700808x_0010001ax] (nop1) mul.f r2.x, r6.z, r4.x
 							:2:1245:2200[40700009x_00180029x] mul.f r2.y, r10.y, r6.x
 							:2:1246:2201[4070000ax_0012001dx] mul.f r2.z, r7.y, r4.z
-							:0:1247:2202[01000000x_0000000ex] jump #14
-							:1:1248:2203[284cc007x_00000000x] (jp)mov.u32u32 r1.w, 0x00000000
+							:0:1247:2202[01000000x_0000000ex] jump #l1261
+							:1:1248:2203[284cc007x_00000000x] l1248:
+							:1:1248:2203[284cc007x_00000000x] (jp)mov.u32u32 r1.w, 0
 							:0:1249:2204[00000200x_00000000x] (rpt2)nop
 							:1:1250:2207[200cc010x_00000007x] mov.u32u32 r4.x, r1.w
 							:0:1251:2208[00000200x_00000000x] (rpt2)nop
@@ -3347,6 +3313,7 @@ t4					write SP_FS_OBJ_START_LO (a983)
 							:1:1258:2223[200cc010x_00000009x] mov.u32u32 r4.x, r2.y
 							:0:1259:2224[00000200x_00000000x] (rpt2)nop
 							:1:1260:2227[200cc008x_00000010x] mov.u32u32 r2.x, r4.x
+							:1:1261:2228[280cc012x_00000004x] l1261:
 							:1:1261:2228[280cc012x_00000004x] (jp)mov.u32u32 r4.z, r1.x
 							:1:1262:2229[200cc019x_00000009x] mov.u32u32 r6.y, r2.y
 							:1:1263:2230[200cc01ax_0000000ax] mov.u32u32 r6.z, r2.z
@@ -3383,7 +3350,8 @@ t4					write SP_FS_OBJ_START_LO (a983)
 							:1:1294:2266[200cc024x_0000000bx] mov.u32u32 r9.x, r2.w
 							:2:1295:2267[42180006x_20010023x] (nop2) add.u r1.z, r8.w, 1
 							:1:1296:2270[200cc005x_00000024x] mov.u32u32 r1.y, r9.x
-							:0:1297:2271[01000000x_fffffb99x] jump #-1127
+							:0:1297:2271[01000000x_fffffb99x] jump #l170
+							:2:1298:2272[48500401x_00010001x] l1298:
 							:2:1298:2272[48500401x_00010001x] (jp)(sat)max.f r0.y, r0.y, r0.y
 							:2:1299:2273[40500402x_00020002x] (sat)max.f r0.z, r0.z, r0.z
 							:2:1300:2274[40100003x_400e1022x] add.f r0.w, c8.z, (neg)r3.z
@@ -3492,25 +3460,18 @@ t4					write SP_FS_OBJ_START_LO (a983)
 							:0:1403:2411[00000000x_00000000x] nop
 							:0:1404:2412[00000000x_00000000x] nop
 							:0:1405:2413[00000000x_00000000x] nop
-							Register Stats:
-							- used (half): 0-147 (cnt=148, max=147)
-							- used (full): 0-73 (cnt=74, max=73)
-							- input (half): 38-41 (cnt=4, max=41)
-							- input (full): 19-20 (cnt=2, max=20)
-							- max const: 113
-
-							- output (half): 8-15 (cnt=8, max=15)  (estimated)
-							- output (full): 4-7 (cnt=4, max=7)  (estimated)
-							- shaderdb: 2414 instructions, 1114 nops, 1300 non-nops, (1406 instlen), 0 last-baryf, 0 half, 19 full
+							Stats:
+							- shaderdb: 2414 instr, 1114 nops, 1300 non-nops, 46 mov, 2 cov
+							- shaderdb: 0 last-baryf, 0 half, 19 full, 29 constlen
 							- shaderdb: 1120 cat0, 48 cat1, 551 cat2, 512 cat3, 183 cat4, 0 cat5, 0 cat6, 0 cat7
-							- shaderdb: 140 (ss), 0 (sy)
+							- shaderdb: 1326 sstall, 140 (ss), 0 (sy)
 0000000001120158:					0000: 40a98302 01013000 00000000
 t7					opcode: CP_LOAD_STATE6_FRAG (34) (4 dwords)
 						{ DST_OFF = 0 | STATE_TYPE = ST6_SHADER | STATE_SRC = SS6_INDIRECT | STATE_BLOCK = SB6_FS_SHADER | NUM_UNIT = 88 }
 						{ EXT_SRC_ADDR = 0x1013000 }
 						{ EXT_SRC_ADDR_HI = 0 }
 						:1:0000:0000[204cc000x_40400000x] mov.u32u32 r0.x, 0x40400000
-						:1:0001:0001[204cc006x_00000000x] mov.u32u32 r1.z, 0x00000000
+						:1:0001:0001[204cc006x_00000000x] mov.u32u32 r1.z, 0
 						:1:0002:0002[204cc004x_3e99999ax] mov.u32u32 r1.x, 0x3e99999a
 						:2:0003:0003[42700008x_20080014x] sub.s r2.x, r5.x, 8
 						:3:0004:0004[6380000cx_10331003x] mad.f32 r3.x, c0.w, r0.x, c12.w
@@ -3683,12 +3644,12 @@ t7					opcode: CP_LOAD_STATE6_FRAG (34) (4 dwords)
 						:0:0171:0249[00000200x_00000000x] (rpt2)nop
 						:2:0172:0252[42bb08f8x_20820008x] (nop3) cmps.s.ge p0.x, r2.x, 130
 						:0:0173:0256[00000200x_00000000x] (rpt2)nop
-						:0:0174:0259[00800000x_00000464x] br p0.x, #1124
+						:0:0174:0259[00800000x_00000464x] br p0.x, #l1298
 						:1:0175:0260[280cc008x_00000003x] (jp)mov.u32u32 r2.x, r0.w
 						:0:0176:0261[00000200x_00000000x] (rpt2)nop
 						:2:0177:0264[40b808f8x_0008106ex] (nop3) cmps.f.lt p0.x, c27.z, r2.x
 						:0:0178:0268[00000200x_00000000x] (rpt2)nop
-						:0:0179:0271[00800000x_0000045fx] br p0.x, #1119
+						:0:0179:0271[00800000x_0000045fx] br p0.x, #l1298
 						:1:0180:0272[280cc012x_00000004x] (jp)mov.u32u32 r4.z, r1.x
 						:1:0181:0273[200cc018x_00000004x] mov.u32u32 r6.x, r1.x
 						:1:0182:0274[200cc019x_00000004x] mov.u32u32 r6.y, r1.x
@@ -4040,7 +4001,7 @@ t7					opcode: CP_LOAD_STATE6_FRAG (34) (4 dwords)
 						:2:0528:0937[40580023x_10700023x] (nop2) max.f r8.w, r8.w, c28.x
 						:2:0529:0940[40700026x_103e0025x] mul.f r9.z, r9.y, c15.z
 						:2:0530:0941[40300023x_10290023x] min.f r8.w, r8.w, c10.y
-						:0:0531:0942[00900000x_000002cdx] br !p0.x, #717
+						:0:0531:0942[00900000x_000002cdx] br !p0.x, #l1248
 						:2:0532:0943[48100028x_10550019x] (jp)add.f r10.x, r6.y, c21.y
 						:2:0533:0944[40700029x_10270019x] mul.f r10.y, r6.y, c9.w
 						:2:0534:0945[40100019x_10590019x] add.f r6.y, r6.y, c22.y
@@ -4756,8 +4717,9 @@ t7					opcode: CP_LOAD_STATE6_FRAG (34) (4 dwords)
 						:2:1244:2198[40700808x_0010001ax] (nop1) mul.f r2.x, r6.z, r4.x
 						:2:1245:2200[40700009x_00180029x] mul.f r2.y, r10.y, r6.x
 						:2:1246:2201[4070000ax_0012001dx] mul.f r2.z, r7.y, r4.z
-						:0:1247:2202[01000000x_0000000ex] jump #14
-						:1:1248:2203[284cc007x_00000000x] (jp)mov.u32u32 r1.w, 0x00000000
+						:0:1247:2202[01000000x_0000000ex] jump #l1261
+						:1:1248:2203[284cc007x_00000000x] l1248:
+						:1:1248:2203[284cc007x_00000000x] (jp)mov.u32u32 r1.w, 0
 						:0:1249:2204[00000200x_00000000x] (rpt2)nop
 						:1:1250:2207[200cc010x_00000007x] mov.u32u32 r4.x, r1.w
 						:0:1251:2208[00000200x_00000000x] (rpt2)nop
@@ -4770,6 +4732,7 @@ t7					opcode: CP_LOAD_STATE6_FRAG (34) (4 dwords)
 						:1:1258:2223[200cc010x_00000009x] mov.u32u32 r4.x, r2.y
 						:0:1259:2224[00000200x_00000000x] (rpt2)nop
 						:1:1260:2227[200cc008x_00000010x] mov.u32u32 r2.x, r4.x
+						:1:1261:2228[280cc012x_00000004x] l1261:
 						:1:1261:2228[280cc012x_00000004x] (jp)mov.u32u32 r4.z, r1.x
 						:1:1262:2229[200cc019x_00000009x] mov.u32u32 r6.y, r2.y
 						:1:1263:2230[200cc01ax_0000000ax] mov.u32u32 r6.z, r2.z
@@ -4806,7 +4769,8 @@ t7					opcode: CP_LOAD_STATE6_FRAG (34) (4 dwords)
 						:1:1294:2266[200cc024x_0000000bx] mov.u32u32 r9.x, r2.w
 						:2:1295:2267[42180006x_20010023x] (nop2) add.u r1.z, r8.w, 1
 						:1:1296:2270[200cc005x_00000024x] mov.u32u32 r1.y, r9.x
-						:0:1297:2271[01000000x_fffffb99x] jump #-1127
+						:0:1297:2271[01000000x_fffffb99x] jump #l170
+						:2:1298:2272[48500401x_00010001x] l1298:
 						:2:1298:2272[48500401x_00010001x] (jp)(sat)max.f r0.y, r0.y, r0.y
 						:2:1299:2273[40500402x_00020002x] (sat)max.f r0.z, r0.z, r0.z
 						:2:1300:2274[40100003x_400e1022x] add.f r0.w, c8.z, (neg)r3.z
@@ -4915,18 +4879,11 @@ t7					opcode: CP_LOAD_STATE6_FRAG (34) (4 dwords)
 						:0:1403:2411[00000000x_00000000x] nop
 						:0:1404:2412[00000000x_00000000x] nop
 						:0:1405:2413[00000000x_00000000x] nop
-						Register Stats:
-						- used (half): 0-147 (cnt=148, max=147)
-						- used (full): 0-73 (cnt=74, max=73)
-						- input (half): 38-41 (cnt=4, max=41)
-						- input (full): 19-20 (cnt=2, max=20)
-						- max const: 113
-
-						- output (half): 8-15 (cnt=8, max=15)  (estimated)
-						- output (full): 4-7 (cnt=4, max=7)  (estimated)
-						- shaderdb: 2414 instructions, 1114 nops, 1300 non-nops, (1406 instlen), 0 last-baryf, 0 half, 19 full
+						Stats:
+						- shaderdb: 2414 instr, 1114 nops, 1300 non-nops, 46 mov, 2 cov
+						- shaderdb: 0 last-baryf, 0 half, 19 full, 29 constlen
 						- shaderdb: 1120 cat0, 48 cat1, 551 cat2, 512 cat3, 183 cat4, 0 cat5, 0 cat6, 0 cat7
-						- shaderdb: 140 (ss), 0 (sy)
+						- shaderdb: 1326 sstall, 140 (ss), 0 (sy)
 0000000001120164:					0000: 70348003 16320000 01013000 00000000
 t4					write VFD_CONTROL_1 (a001)
 						VFD_CONTROL_1: { REGID4VTX = r63.x | REGID4INST = r63.x | REGID4PRIMID = r63.x | REGID4VIEWID = r63.x }
@@ -5329,28 +5286,21 @@ t7			opcode: CP_DRAW_INDX_OFFSET (38) (4 dwords)
 				:0:0002:0002[00000000x_00000000x] nop
 				:0:0003:0003[00000000x_00000000x] nop
 				:0:0004:0004[00000000x_00000000x] nop
-				Register Stats:
-				- used (half): (cnt=0, max=0)
-				- used (full): (cnt=0, max=0)
-				- input (half): (cnt=0, max=0)
-				- input (full): (cnt=0, max=0)
-				- max const: 0
-
-				- output (half): (cnt=0, max=0)  (estimated)
-				- output (full): (cnt=0, max=0)  (estimated)
-				- shaderdb: 5 instructions, 4 nops, 1 non-nops, (5 instlen), 0 last-baryf, 0 half, 0 full
+				Stats:
+				- shaderdb: 5 instr, 4 nops, 1 non-nops, 0 mov, 0 cov
+				- shaderdb: 0 last-baryf, 0 half, 0 full, 0 constlen
 				- shaderdb: 5 cat0, 0 cat1, 0 cat2, 0 cat3, 0 cat4, 0 cat5, 0 cat6, 0 cat7
-				- shaderdb: 0 (ss), 0 (sy)
+				- shaderdb: 0 sstall, 0 (ss), 0 (sy)
  +	00000100			SP_VS_CONFIG: { ENABLED | NTEX = 0 | NSAMP = 0 | NIBO = 0 }
  +	00000001			SP_VS_INSTRLEN: 1
- +	00000000			SP_HS_UNKNOWN_A831: 0
- +	00000000			SP_HS_UNKNOWN_A833: 0
+ +	00000000			SP_HS_WAVE_INPUT_SIZE: 0
+ +	00000000			SP_HS_OBJ_FIRST_EXEC_OFFSET: 0
  +	00000000			SP_HS_CONFIG: { NTEX = 0 | NSAMP = 0 | NIBO = 0 }
  +	00000000			SP_DS_CONFIG: { NTEX = 0 | NSAMP = 0 | NIBO = 0 }
  +	00000000			SP_GS_PRIM_SIZE: 0
  +	00000000			SP_GS_CONFIG: { NTEX = 0 | NSAMP = 0 | NIBO = 0 }
 !+	81508980			SP_FS_CTRL_REG0: { HALFREGFOOTPRINT = 0 | FULLREGFOOTPRINT = 19 | BRANCHSTACK = 2 | THREADSIZE = FOUR_QUADS | VARYING | MERGEDREGS | 0x1000000 }
- +	00000000			SP_UNKNOWN_A982: 0
+ +	00000000			SP_FS_OBJ_FIRST_EXEC_OFFSET: 0
 !+	01013000			SP_FS_OBJ_START_LO: 0x1013000		base=1013000, offset=0, size=11264
  +	00000000			SP_FS_OBJ_START_HI: 0		base=1013000, offset=0, size=11264
 0000000001013000:				0000: 40400000 204cc000 00000000 204cc006 3e99999a 204cc004 20080014 42700008
@@ -5362,7 +5312,7 @@ t7			opcode: CP_DRAW_INDX_OFFSET (38) (4 dwords)
 00000000010130c0:				00c0: 10261023 6386800d 20080013 42700010 10261023 6387000e 40141066 4010001b
 00000000010130e0:				00e0: 00141025 40700016 00000014 80100014 20040008 46f00008 00000004 80900000
 				:1:0000:0000[204cc000x_40400000x] mov.u32u32 r0.x, 0x40400000
-				:1:0001:0001[204cc006x_00000000x] mov.u32u32 r1.z, 0x00000000
+				:1:0001:0001[204cc006x_00000000x] mov.u32u32 r1.z, 0
 				:1:0002:0002[204cc004x_3e99999ax] mov.u32u32 r1.x, 0x3e99999a
 				:2:0003:0003[42700008x_20080014x] sub.s r2.x, r5.x, 8
 				:3:0004:0004[6380000cx_10331003x] mad.f32 r3.x, c0.w, r0.x, c12.w
@@ -5535,12 +5485,12 @@ t7			opcode: CP_DRAW_INDX_OFFSET (38) (4 dwords)
 				:0:0171:0249[00000200x_00000000x] (rpt2)nop
 				:2:0172:0252[42bb08f8x_20820008x] (nop3) cmps.s.ge p0.x, r2.x, 130
 				:0:0173:0256[00000200x_00000000x] (rpt2)nop
-				:0:0174:0259[00800000x_00000464x] br p0.x, #1124
+				:0:0174:0259[00800000x_00000464x] br p0.x, #l1298
 				:1:0175:0260[280cc008x_00000003x] (jp)mov.u32u32 r2.x, r0.w
 				:0:0176:0261[00000200x_00000000x] (rpt2)nop
 				:2:0177:0264[40b808f8x_0008106ex] (nop3) cmps.f.lt p0.x, c27.z, r2.x
 				:0:0178:0268[00000200x_00000000x] (rpt2)nop
-				:0:0179:0271[00800000x_0000045fx] br p0.x, #1119
+				:0:0179:0271[00800000x_0000045fx] br p0.x, #l1298
 				:1:0180:0272[280cc012x_00000004x] (jp)mov.u32u32 r4.z, r1.x
 				:1:0181:0273[200cc018x_00000004x] mov.u32u32 r6.x, r1.x
 				:1:0182:0274[200cc019x_00000004x] mov.u32u32 r6.y, r1.x
@@ -5892,7 +5842,7 @@ t7			opcode: CP_DRAW_INDX_OFFSET (38) (4 dwords)
 				:2:0528:0937[40580023x_10700023x] (nop2) max.f r8.w, r8.w, c28.x
 				:2:0529:0940[40700026x_103e0025x] mul.f r9.z, r9.y, c15.z
 				:2:0530:0941[40300023x_10290023x] min.f r8.w, r8.w, c10.y
-				:0:0531:0942[00900000x_000002cdx] br !p0.x, #717
+				:0:0531:0942[00900000x_000002cdx] br !p0.x, #l1248
 				:2:0532:0943[48100028x_10550019x] (jp)add.f r10.x, r6.y, c21.y
 				:2:0533:0944[40700029x_10270019x] mul.f r10.y, r6.y, c9.w
 				:2:0534:0945[40100019x_10590019x] add.f r6.y, r6.y, c22.y
@@ -6608,8 +6558,9 @@ t7			opcode: CP_DRAW_INDX_OFFSET (38) (4 dwords)
 				:2:1244:2198[40700808x_0010001ax] (nop1) mul.f r2.x, r6.z, r4.x
 				:2:1245:2200[40700009x_00180029x] mul.f r2.y, r10.y, r6.x
 				:2:1246:2201[4070000ax_0012001dx] mul.f r2.z, r7.y, r4.z
-				:0:1247:2202[01000000x_0000000ex] jump #14
-				:1:1248:2203[284cc007x_00000000x] (jp)mov.u32u32 r1.w, 0x00000000
+				:0:1247:2202[01000000x_0000000ex] jump #l1261
+				:1:1248:2203[284cc007x_00000000x] l1248:
+				:1:1248:2203[284cc007x_00000000x] (jp)mov.u32u32 r1.w, 0
 				:0:1249:2204[00000200x_00000000x] (rpt2)nop
 				:1:1250:2207[200cc010x_00000007x] mov.u32u32 r4.x, r1.w
 				:0:1251:2208[00000200x_00000000x] (rpt2)nop
@@ -6622,6 +6573,7 @@ t7			opcode: CP_DRAW_INDX_OFFSET (38) (4 dwords)
 				:1:1258:2223[200cc010x_00000009x] mov.u32u32 r4.x, r2.y
 				:0:1259:2224[00000200x_00000000x] (rpt2)nop
 				:1:1260:2227[200cc008x_00000010x] mov.u32u32 r2.x, r4.x
+				:1:1261:2228[280cc012x_00000004x] l1261:
 				:1:1261:2228[280cc012x_00000004x] (jp)mov.u32u32 r4.z, r1.x
 				:1:1262:2229[200cc019x_00000009x] mov.u32u32 r6.y, r2.y
 				:1:1263:2230[200cc01ax_0000000ax] mov.u32u32 r6.z, r2.z
@@ -6658,7 +6610,8 @@ t7			opcode: CP_DRAW_INDX_OFFSET (38) (4 dwords)
 				:1:1294:2266[200cc024x_0000000bx] mov.u32u32 r9.x, r2.w
 				:2:1295:2267[42180006x_20010023x] (nop2) add.u r1.z, r8.w, 1
 				:1:1296:2270[200cc005x_00000024x] mov.u32u32 r1.y, r9.x
-				:0:1297:2271[01000000x_fffffb99x] jump #-1127
+				:0:1297:2271[01000000x_fffffb99x] jump #l170
+				:2:1298:2272[48500401x_00010001x] l1298:
 				:2:1298:2272[48500401x_00010001x] (jp)(sat)max.f r0.y, r0.y, r0.y
 				:2:1299:2273[40500402x_00020002x] (sat)max.f r0.z, r0.z, r0.z
 				:2:1300:2274[40100003x_400e1022x] add.f r0.w, c8.z, (neg)r3.z
@@ -6767,18 +6720,11 @@ t7			opcode: CP_DRAW_INDX_OFFSET (38) (4 dwords)
 				:0:1403:2411[00000000x_00000000x] nop
 				:0:1404:2412[00000000x_00000000x] nop
 				:0:1405:2413[00000000x_00000000x] nop
-				Register Stats:
-				- used (half): 0-147 (cnt=148, max=147)
-				- used (full): 0-73 (cnt=74, max=73)
-				- input (half): 38-41 (cnt=4, max=41)
-				- input (full): 19-20 (cnt=2, max=20)
-				- max const: 113
-
-				- output (half): 8-15 (cnt=8, max=15)  (estimated)
-				- output (full): 4-7 (cnt=4, max=7)  (estimated)
-				- shaderdb: 2414 instructions, 1114 nops, 1300 non-nops, (1406 instlen), 0 last-baryf, 0 half, 19 full
+				Stats:
+				- shaderdb: 2414 instr, 1114 nops, 1300 non-nops, 46 mov, 2 cov
+				- shaderdb: 0 last-baryf, 0 half, 19 full, 29 constlen
 				- shaderdb: 1120 cat0, 48 cat1, 551 cat2, 512 cat3, 183 cat4, 0 cat5, 0 cat6, 0 cat7
-				- shaderdb: 140 (ss), 0 (sy)
+				- shaderdb: 1326 sstall, 140 (ss), 0 (sy)
 !+	00000100			SP_BLEND_CNTL: { UNK8 }
  +	fcfcfc00			SP_FS_OUTPUT_CNTL0: { DEPTH_REGID = r63.x | SAMPMASK_REGID = r63.x | STENCILREF_REGID = r63.x }
 !+	00000001			SP_FS_OUTPUT_CNTL1: { MRT = 1 }

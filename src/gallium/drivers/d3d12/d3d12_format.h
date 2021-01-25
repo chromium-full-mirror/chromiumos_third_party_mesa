@@ -24,7 +24,7 @@
 #ifndef D3D12_FORMATS_H
 #define D3D12_FORMATS_H
 
-#include <dxgiformat.h>
+#include <directx/dxgiformat.h>
 
 #include "pipe/p_format.h"
 #include "pipe/p_defines.h"
@@ -55,6 +55,9 @@ d3d12_get_format_info(enum pipe_format format, enum pipe_texture_target);
 
 enum pipe_format
 d3d12_emulated_vtx_format(enum pipe_format fmt);
+
+unsigned
+d3d12_get_format_start_plane(enum pipe_format fmt);
 
 unsigned
 d3d12_get_format_num_planes(enum pipe_format fmt);

@@ -362,6 +362,7 @@ enum virgl_formats {
    VIRGL_FORMAT_A4B4G4R4_UNORM          = 311,
 
    VIRGL_FORMAT_R8_SRGB                 = 312,
+   VIRGL_FORMAT_R8G8_SRGB               = 313,
    VIRGL_FORMAT_MAX /* = PIPE_FORMAT_COUNT */,
 
    /* Below formats must not be used in the guest. */
@@ -407,6 +408,7 @@ enum virgl_formats {
 
 /* These are used by the capability_bits_v2 field in virgl_caps_v2. */
 #define VIRGL_CAP_V2_BLEND_EQUATION       (1 << 0)
+#define VIRGL_CAP_V2_UNTYPED_RESOURCE     (1 << 1)
 
 /* virgl bind flags - these are compatible with mesa 10.5 gallium.
  * but are fixed, no other should be passed to virgl either.

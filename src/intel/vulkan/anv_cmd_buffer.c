@@ -267,6 +267,8 @@ static VkResult anv_create_cmd_buffer(
                          &device->surface_state_pool, 4096);
    anv_state_stream_init(&cmd_buffer->dynamic_state_stream,
                          &device->dynamic_state_pool, 16384);
+   anv_state_stream_init(&cmd_buffer->general_state_stream,
+                         &device->general_state_pool, 16384);
 
    anv_cmd_state_init(cmd_buffer);
 
@@ -319,6 +321,7 @@ anv_cmd_buffer_destroy(struct anv_cmd_buffer *cmd_buffer)
 
    anv_state_stream_finish(&cmd_buffer->surface_state_stream);
    anv_state_stream_finish(&cmd_buffer->dynamic_state_stream);
+   anv_state_stream_finish(&cmd_buffer->general_state_stream);
 
    anv_cmd_state_finish(cmd_buffer);
 
@@ -357,6 +360,11 @@ anv_cmd_buffer_reset(struct anv_cmd_buffer *cmd_buffer)
    anv_state_stream_finish(&cmd_buffer->dynamic_state_stream);
    anv_state_stream_init(&cmd_buffer->dynamic_state_stream,
                          &cmd_buffer->device->dynamic_state_pool, 16384);
+
+   anv_state_stream_finish(&cmd_buffer->general_state_stream);
+   anv_state_stream_init(&cmd_buffer->general_state_stream,
+                         &cmd_buffer->device->general_state_pool, 16384);
+
    return VK_SUCCESS;
 }
 
@@ -387,7 +395,11 @@ VkResult anv_ResetCommandBuffer(
       gen11_##func(__VA_ARGS__);                   \
       break;                                       \
    case 12:                                        \
-      gen12_##func(__VA_ARGS__);                   \
+      if (gen_device_info_is_12hp(devinfo)) {      \
+         gen125_##func(__VA_ARGS__);               \
+      } else {                                     \
+         gen12_##func(__VA_ARGS__);                \
+      }                                            \
       break;                                       \
    default:                                        \
       assert(!"Unknown hardware generation");      \
@@ -1034,6 +1046,7 @@ anv_cmd_buffer_gfx_push_constants(struct anv_cmd_buffer *cmd_buffer)
 struct anv_state
 anv_cmd_buffer_cs_push_constants(struct anv_cmd_buffer *cmd_buffer)
 {
+   const struct gen_device_info *devinfo = &cmd_buffer->device->info;
    struct anv_push_constants *data =
       &cmd_buffer->state.compute.base.push_constants;
    struct anv_compute_pipeline *pipeline = cmd_buffer->state.compute.pipeline;
@@ -1050,10 +1063,16 @@ anv_cmd_buffer_cs_push_constants(struct anv_cmd_buffer *cmd_buffer)
       cmd_buffer->device->info.gen < 8 ? 32 : 64;
    const unsigned aligned_total_push_constants_size =
       ALIGN(total_push_constants_size, push_constant_alignment);
-   struct anv_state state =
-      anv_cmd_buffer_alloc_dynamic_state(cmd_buffer,
-                                         aligned_total_push_constants_size,
-                                         push_constant_alignment);
+   struct anv_state state;
+   if (devinfo->gen > 12 || gen_device_info_is_12hp(devinfo)) {
+      state = anv_state_stream_alloc(&cmd_buffer->general_state_stream,
+                                     aligned_total_push_constants_size,
+                                     push_constant_alignment);
+   } else {
+      state = anv_cmd_buffer_alloc_dynamic_state(cmd_buffer,
+                                                 aligned_total_push_constants_size,
+                                                 push_constant_alignment);
+   }
 
    void *dst = state.map;
    const void *src = (char *)data + (range->start * 32);

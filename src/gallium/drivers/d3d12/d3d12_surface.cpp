@@ -134,6 +134,9 @@ initialize_dsv(struct pipe_context *pctx,
       desc.Texture2DArray.FirstArraySlice = tpl->u.tex.first_layer;
       desc.Texture2DArray.ArraySize = tpl->u.tex.last_layer - tpl->u.tex.first_layer + 1;
       break;
+
+   default:
+      unreachable("Unhandled DSV dimension");
    }
 
    d3d12_descriptor_pool_alloc_handle(ctx->dsv_pool, handle);
@@ -208,6 +211,9 @@ initialize_rtv(struct pipe_context *pctx,
       desc.Texture3D.FirstWSlice = tpl->u.tex.first_layer;
       desc.Texture3D.WSize = tpl->u.tex.last_layer - tpl->u.tex.first_layer + 1;
       break;
+
+   default:
+      unreachable("Unhandled RTV dimension");
    }
 
    d3d12_descriptor_pool_alloc_handle(ctx->rtv_pool, handle);
@@ -220,10 +226,6 @@ d3d12_create_surface(struct pipe_context *pctx,
                      struct pipe_resource *pres,
                      const struct pipe_surface *tpl)
 {
-   struct d3d12_resource *res = d3d12_resource(pres);
-   struct d3d12_context *ctx = d3d12_context(pctx);
-   struct d3d12_screen *screen = d3d12_screen(pctx->screen);
-
    bool is_depth_or_stencil = util_format_is_depth_or_stencil(tpl->format);
    unsigned bind = is_depth_or_stencil ? PIPE_BIND_DEPTH_STENCIL : PIPE_BIND_RENDER_TARGET;
 
@@ -259,7 +261,6 @@ static void
 d3d12_surface_destroy(struct pipe_context *pctx,
                       struct pipe_surface *psurf)
 {
-   struct d3d12_context *ctx = d3d12_context(pctx);
    struct d3d12_surface *surface = (struct d3d12_surface*) psurf;
 
    d3d12_descriptor_handle_free(&surface->desc_handle);
@@ -273,7 +274,7 @@ d3d12_surface_destroy(struct pipe_context *pctx,
 static void
 blit_surface(struct d3d12_surface *surface, bool pre)
 {
-   struct pipe_blit_info info = {0};
+   struct pipe_blit_info info = {};
 
    info.src.resource = pre ? surface->base.texture : surface->rgba_texture;
    info.dst.resource = pre ? surface->rgba_texture : surface->base.texture;

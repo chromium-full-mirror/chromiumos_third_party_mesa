@@ -84,7 +84,7 @@ st_get_external_sampler_key(struct st_context *st, struct gl_program *prog)
             key.lower_yuv |= (1 << unit);
             break;
          }
-         /* fallthrough */
+         FALLTHROUGH;
       case PIPE_FORMAT_P010:
       case PIPE_FORMAT_P012:
       case PIPE_FORMAT_P016:
@@ -144,10 +144,11 @@ struct st_fp_variant_key
    GLuint lower_two_sided_color:1;
 
    GLuint lower_flatshade:1;
+   GLuint lower_texcoord_replace:MAX_TEXTURE_COORD_UNITS;
    unsigned lower_alpha_func:3;
 
    /** needed for ATI_fragment_shader */
-   char texture_targets[MAX_NUM_FRAGMENT_REGISTERS_ATI];
+   uint8_t texture_index[MAX_NUM_FRAGMENT_REGISTERS_ATI];
 
    struct st_external_sampler_key external;
 };
@@ -356,6 +357,9 @@ st_serialize_nir(struct st_program *stp);
 
 extern void
 st_finalize_program(struct st_context *st, struct gl_program *prog);
+
+struct pipe_shader_state *
+st_create_nir_shader(struct st_context *st, struct pipe_shader_state *state);
 
 #ifdef __cplusplus
 }

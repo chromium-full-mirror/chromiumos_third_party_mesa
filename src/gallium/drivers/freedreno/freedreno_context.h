@@ -34,6 +34,7 @@
 #include "util/list.h"
 #include "util/slab.h"
 #include "util/u_string.h"
+#include "util/u_trace.h"
 
 #include "freedreno_screen.h"
 #include "freedreno_gmem.h"
@@ -84,6 +85,11 @@ struct fd_vertexbuf_stateobj {
 struct fd_vertex_stateobj {
 	struct pipe_vertex_element pipe[PIPE_MAX_ATTRIBS];
 	unsigned num_elements;
+};
+
+struct fd_stream_output_target {
+	struct pipe_stream_output_target base;
+	struct pipe_resource *offset_buf;
 };
 
 struct fd_streamout_stateobj {
@@ -199,7 +205,7 @@ struct fd_context {
 	 * case, with batch reordering where a ctxB batch triggers flushing
 	 * a ctxA batch
 	 */
-	mtx_t gmem_lock;
+	simple_mtx_t gmem_lock;
 
 	struct fd_device *dev;
 	struct fd_screen *screen;
@@ -252,6 +258,7 @@ struct fd_context {
 
 	/* shaders used by clear, and gmem->mem blits: */
 	struct fd_program_stateobj solid_prog; // TODO move to screen?
+	struct fd_program_stateobj solid_layered_prog;
 
 	/* shaders used by mem->gmem blits: */
 	struct fd_program_stateobj blit_prog[MAX_RENDER_TARGETS]; // TODO move to screen?
@@ -370,7 +377,30 @@ struct fd_context {
 	bool cond_cond; /* inverted rendering condition */
 	uint cond_mode;
 
+	/* Private memory is a memory space where each fiber gets its own piece of
+	 * memory, in addition to registers. It is backed by a buffer which needs
+	 * to be large enough to hold the contents of every possible wavefront in
+	 * every core of the GPU. Because it allocates space via the internal
+	 * wavefront ID which is shared between all currently executing shaders,
+	 * the same buffer can be reused by all shaders, as long as all shaders
+	 * sharing the same buffer use the exact same configuration. There are two
+	 * inputs to the configuration, the amount of per-fiber space and whether
+	 * to use the newer per-wave or older per-fiber layout. We only ever
+	 * increase the size, and shaders with a smaller size requirement simply
+	 * use the larger existing buffer, so that we only need to keep track of
+	 * one buffer and its size, but we still need to keep track of per-fiber
+	 * and per-wave buffers separately so that we never use the same buffer
+	 * for different layouts. pvtmem[0] is for per-fiber, and pvtmem[1] is for
+	 * per-wave.
+	 */
+	struct {
+		struct fd_bo *bo;
+		uint32_t per_fiber_size;
+	} pvtmem[2];
+
 	struct pipe_debug_callback debug;
+
+	struct u_trace_context trace_context;
 
 	/* Called on rebind_resource() for any per-gen cleanup required: */
 	void (*rebind_resource)(struct fd_context *ctx, struct fd_resource *rsc);
@@ -390,6 +420,8 @@ struct fd_context {
 
 	/* draw: */
 	bool (*draw_vbo)(struct fd_context *ctx, const struct pipe_draw_info *info,
+                         const struct pipe_draw_indirect_info *indirect,
+                         const struct pipe_draw_start_count *draw,
 			unsigned index_offset);
 	bool (*clear)(struct fd_context *ctx, unsigned buffers,
 			const union pipe_color_union *color, double depth, unsigned stencil);
@@ -414,10 +446,6 @@ struct fd_context {
 	/* logger: */
 	void (*record_timestamp)(struct fd_ringbuffer *ring, struct fd_bo *bo, unsigned offset);
 	uint64_t (*ts_to_ns)(uint64_t ts);
-
-	struct list_head log_chunks;  /* list of flushed log chunks in fifo order */
-	unsigned frame_nr;            /* frame counter (for fd_log) */
-	FILE *log_out;
 
 	/*
 	 * Common pre-cooked VBO state (used for a3xx and later):
@@ -460,6 +488,12 @@ static inline struct fd_context *
 fd_context(struct pipe_context *pctx)
 {
 	return (struct fd_context *)pctx;
+}
+
+static inline struct fd_stream_output_target *
+fd_stream_output_target(struct pipe_stream_output_target *target)
+{
+	return (struct fd_stream_output_target *)target;
 }
 
 /* mark all state dirty: */
