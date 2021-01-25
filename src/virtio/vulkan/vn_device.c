@@ -215,6 +215,7 @@ vn_instance_init_renderer(struct vn_instance *instance)
       return result;
    }
 
+   instance->cs_implicit_flush_threshold = 1 * 1024 * 1024;
    vn_cs_init(&instance->cs, alloc, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE,
               16 * 1024);
 

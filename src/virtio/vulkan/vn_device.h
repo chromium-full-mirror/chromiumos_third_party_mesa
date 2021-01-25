@@ -34,6 +34,7 @@ struct vn_instance {
    uint32_t renderer_version;
 
    mtx_t cs_mutex;
+   size_t cs_implicit_flush_threshold;
    struct vn_cs cs;
    struct {
       struct vn_renderer_bo *bo;
