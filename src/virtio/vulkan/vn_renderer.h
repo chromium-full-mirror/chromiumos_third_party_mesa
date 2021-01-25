@@ -195,6 +195,12 @@ vn_renderer_create(struct vn_instance *instance,
          return VK_SUCCESS;
    }
 
+   if (!VN_DEBUG(DRM)) {
+      vn_log(instance, "DRM backend skipped because VN_DEBUG=drm is not set");
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   vn_log(instance, "DRM backend is experimental");
    return vn_renderer_create_virtgpu(instance, alloc, renderer);
 }
 
