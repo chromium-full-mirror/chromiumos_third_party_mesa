@@ -120,6 +120,7 @@ struct sim_syncobj {
 
    int pending_fd;
    uint64_t pending_point;
+   bool pending_cpu;
 };
 
 static uint32_t
@@ -216,7 +217,20 @@ static void
 sim_syncobj_update_point_locked(struct sim_syncobj *syncobj, int poll_timeout)
 {
    if (syncobj->pending_fd >= 0) {
-      VkResult result = sim_syncobj_poll(syncobj->pending_fd, poll_timeout);
+      VkResult result;
+      if (syncobj->pending_cpu) {
+         const int max_cpu_timeout = 200;
+         assert(poll_timeout == -1);
+         poll_timeout = max_cpu_timeout;
+         result = sim_syncobj_poll(syncobj->pending_fd, poll_timeout);
+         if (result == VK_TIMEOUT) {
+            vn_log(NULL, "cpu sync timed out after %dms; ignoring",
+                   poll_timeout);
+            result = VK_SUCCESS;
+         }
+      } else {
+         result = sim_syncobj_poll(syncobj->pending_fd, poll_timeout);
+      }
       if (result == VK_SUCCESS) {
          close(syncobj->pending_fd);
          syncobj->pending_fd = -1;
@@ -348,7 +362,8 @@ sim_submit_signal_syncs(struct virtgpu *gpu,
                         int sync_fd,
                         struct vn_renderer_sync *const *syncs,
                         const uint64_t *sync_values,
-                        uint32_t sync_count)
+                        uint32_t sync_count,
+                        bool cpu)
 {
    for (uint32_t i = 0; i < sync_count; i++) {
       struct virtgpu_sync *sync = (struct virtgpu_sync *)syncs[i];
@@ -381,6 +396,7 @@ sim_submit_signal_syncs(struct virtgpu *gpu,
 
       syncobj->pending_fd = pending_fd;
       syncobj->pending_point = pending_point;
+      syncobj->pending_cpu = cpu;
 
       mtx_unlock(&syncobj->mutex);
 #else
@@ -496,7 +512,8 @@ sim_submit(struct virtgpu *gpu, const struct vn_renderer_submit *submit)
 
       if (batch->sync_count) {
          ret = sim_submit_signal_syncs(gpu, args.fence_fd, batch->syncs,
-                                       batch->sync_values, batch->sync_count);
+                                       batch->sync_values, batch->sync_count,
+                                       batch->sync_queue_cpu);
          close(args.fence_fd);
          if (ret)
             break;
