@@ -490,7 +490,7 @@ vlVaRenderPicture(VADriverContextP ctx, VAContextID context_id, VABufferID *buff
       return VA_STATUS_ERROR_INVALID_CONTEXT;
    }
 
-   for (i = 0; i < num_buffers; ++i) {
+   for (i = 0; i < num_buffers && vaStatus == VA_STATUS_SUCCESS; ++i) {
       vlVaBuffer *buf = handle_table_get(drv->htab, buffers[i]);
       if (!buf) {
          mtx_unlock(&drv->mutex);
