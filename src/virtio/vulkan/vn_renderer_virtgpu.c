@@ -369,12 +369,12 @@ sim_submit_signal_syncs(struct virtgpu *gpu,
       mtx_lock(&syncobj->mutex);
 
       if (syncobj->pending_fd >= 0) {
-         mtx_unlock(&syncobj->mutex);
+         //mtx_unlock(&syncobj->mutex);
 
          /* TODO */
          vn_log(gpu->instance, "sorry, no simulated timeline semaphore");
-         close(pending_fd);
-         return -1;
+         close(syncobj->pending_fd);
+         //return -1;
       }
       if (syncobj->point >= pending_point)
          vn_log(gpu->instance, "non-monotonic signaling");
