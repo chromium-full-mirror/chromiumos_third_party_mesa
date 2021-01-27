@@ -216,6 +216,7 @@ vn_instance_init_renderer(struct vn_instance *instance)
    }
 
    instance->cs_implicit_flush_threshold = 1 * 1024 * 1024;
+   instance->cs_implicit_flush_pipeline_threshold = 32;
    vn_cs_init(&instance->cs, alloc, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE,
               16 * 1024);
 
@@ -5454,6 +5455,13 @@ vn_CreateGraphicsPipelines(VkDevice device,
                                       createInfoCount, pCreateInfos, NULL,
                                       pPipelines);
 
+   dev->instance->cs_implicit_flush_pipeline_count += createInfoCount;
+   if (dev->instance->cs_implicit_flush_pipeline_count >
+       dev->instance->cs_implicit_flush_pipeline_threshold) {
+      vn_instance_flush_cs(dev->instance);
+      dev->instance->cs_implicit_flush_pipeline_count = 0;
+   }
+
    return VK_SUCCESS;
 }
 
@@ -5489,6 +5497,13 @@ vn_CreateComputePipelines(VkDevice device,
    vn_async_vkCreateComputePipelines(dev->instance, device, pipelineCache,
                                      createInfoCount, pCreateInfos, NULL,
                                      pPipelines);
+
+   dev->instance->cs_implicit_flush_pipeline_count += createInfoCount;
+   if (dev->instance->cs_implicit_flush_pipeline_count >
+       dev->instance->cs_implicit_flush_pipeline_threshold) {
+      vn_instance_flush_cs(dev->instance);
+      dev->instance->cs_implicit_flush_pipeline_count = 0;
+   }
 
    return VK_SUCCESS;
 }
