@@ -219,14 +219,17 @@ sim_syncobj_update_point_locked(struct sim_syncobj *syncobj, int poll_timeout)
    if (syncobj->pending_fd >= 0) {
       VkResult result;
       if (syncobj->pending_cpu) {
-         const int max_cpu_timeout = 200;
-         assert(poll_timeout == -1);
-         poll_timeout = max_cpu_timeout;
-         result = sim_syncobj_poll(syncobj->pending_fd, poll_timeout);
-         if (result == VK_TIMEOUT) {
-            vn_log(NULL, "cpu sync timed out after %dms; ignoring",
-                   poll_timeout);
-            result = VK_SUCCESS;
+         if (poll_timeout == -1) {
+            const int max_cpu_timeout = 2000;
+            poll_timeout = max_cpu_timeout;
+            result = sim_syncobj_poll(syncobj->pending_fd, poll_timeout);
+            if (result == VK_TIMEOUT) {
+               vn_log(NULL, "cpu sync timed out after %dms; ignoring",
+                      poll_timeout);
+               result = VK_SUCCESS;
+            }
+         } else {
+            result = sim_syncobj_poll(syncobj->pending_fd, poll_timeout);
          }
       } else {
          result = sim_syncobj_poll(syncobj->pending_fd, poll_timeout);
