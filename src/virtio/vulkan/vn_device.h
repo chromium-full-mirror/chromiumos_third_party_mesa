@@ -35,8 +35,8 @@ struct vn_instance {
 
    mtx_t cs_mutex;
    size_t cs_implicit_flush_threshold;
-   uint32_t cs_implicit_flush_pipeline_threshold;
-   atomic_uint_fast32_t cs_implicit_flush_pipeline_count;
+   uint32_t cs_throttle_pipeline_threshold;
+   uint32_t cs_throttle_pipeline_count;
    struct vn_cs cs;
    struct {
       struct vn_renderer_bo *bo;
@@ -426,6 +426,8 @@ vn_instance_submit_cs_locked(struct vn_instance *instance,
                              uint64_t *reply_sync_val)
 {
    struct vn_cs *cs = &instance->cs;
+
+   instance->cs_throttle_pipeline_count = 0;
 
    if (unlikely(vn_cs_has_error(cs))) {
       vn_cs_reset(cs);
