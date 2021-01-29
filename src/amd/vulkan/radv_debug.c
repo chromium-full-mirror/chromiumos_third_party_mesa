@@ -27,7 +27,9 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#ifndef _WIN32
 #include <sys/utsname.h>
+#endif
 #include <sys/stat.h>
 
 #include "util/mesa-sha1.h"
@@ -197,11 +199,11 @@ radv_dump_descriptor_set(struct radv_device *device,
 
 	if (!set)
 		return;
-	layout = set->layout;
+	layout = set->header.layout;
 
-	for (i = 0; i < set->layout->binding_count; i++) {
+	for (i = 0; i < set->header.layout->binding_count; i++) {
 		uint32_t *desc =
-			set->mapped_ptr + layout->binding[i].offset / 4;
+			set->header.mapped_ptr + layout->binding[i].offset / 4;
 
 		switch (layout->binding[i].type) {
 		case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
@@ -511,6 +513,7 @@ radv_dump_queue_state(struct radv_queue *queue, FILE *f)
 static void
 radv_dump_cmd(const char *cmd, FILE *f)
 {
+#ifndef _WIN32
 	char line[2048];
 	FILE *p;
 
@@ -521,6 +524,7 @@ radv_dump_cmd(const char *cmd, FILE *f)
 		fprintf(f, "\n");
 		pclose(p);
 	}
+#endif
 }
 
 static void
@@ -579,12 +583,19 @@ static void
 radv_dump_device_name(struct radv_device *device, FILE *f)
 {
 	struct radeon_info *info = &device->physical_device->rad_info;
+#ifndef _WIN32
 	char kernel_version[128] = {0};
 	struct utsname uname_data;
+#endif
 	const char *chip_name;
 
 	chip_name = device->ws->get_chip_name(device->ws);
 
+#ifdef _WIN32
+	fprintf(f, "Device name: %s (%s / DRM %i.%i.%i)\n\n",
+		chip_name, device->physical_device->name,
+		info->drm_major, info->drm_minor, info->drm_patchlevel);
+#else
 	if (uname(&uname_data) == 0)
 		snprintf(kernel_version, sizeof(kernel_version),
 			 " / %s", uname_data.release);
@@ -593,6 +604,7 @@ radv_dump_device_name(struct radv_device *device, FILE *f)
 		chip_name, device->physical_device->name,
 		info->drm_major, info->drm_minor, info->drm_patchlevel,
 		kernel_version);
+#endif
 }
 
 static void
@@ -785,6 +797,7 @@ radv_check_gpu_hangs(struct radv_queue *queue, struct radeon_cmdbuf *cs)
 void
 radv_print_spirv(const char *data, uint32_t size, FILE *fp)
 {
+#ifndef _WIN32
 	char path[] = "/tmp/fileXXXXXX";
 	char command[128];
 	int fd;
@@ -804,6 +817,7 @@ radv_print_spirv(const char *data, uint32_t size, FILE *fp)
 fail:
 	close(fd);
 	unlink(path);
+#endif
 }
 
 bool

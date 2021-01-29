@@ -511,6 +511,7 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
          .transform_feedback = true,
          .geometry_streams = true,
          .device_group = true,
+         .draw_parameters = true,
       },
       .ubo_addr_format = nir_address_format_32bit_index_offset,
       .ssbo_addr_format = nir_address_format_32bit_index_offset,
@@ -792,8 +793,8 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
 
    if (pipeline->pipeline_nir[MESA_SHADER_FRAGMENT]) {
       if (pipeline->pipeline_nir[MESA_SHADER_FRAGMENT]->info.fs.uses_sample_qualifier ||
-          pipeline->pipeline_nir[MESA_SHADER_FRAGMENT]->info.system_values_read & (SYSTEM_BIT_SAMPLE_ID |
-                                                                                   SYSTEM_BIT_SAMPLE_POS))
+          BITSET_TEST(pipeline->pipeline_nir[MESA_SHADER_FRAGMENT]->info.system_values_read, SYSTEM_VALUE_SAMPLE_ID) ||
+          BITSET_TEST(pipeline->pipeline_nir[MESA_SHADER_FRAGMENT]->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS))
          pipeline->force_min_sample = true;
    }
    if (pipeline->pipeline_nir[MESA_SHADER_TESS_CTRL]) {

@@ -826,7 +826,8 @@ wrap_type_in_array(const struct glsl_type *type,
 }
 
 static bool
-vtn_type_needs_explicit_layout(struct vtn_builder *b, enum vtn_variable_mode mode)
+vtn_type_needs_explicit_layout(struct vtn_builder *b, struct vtn_type *type,
+                               enum vtn_variable_mode mode)
 {
    /* For OpenCL we never want to strip the info from the types, and it makes
     * type comparisons easier in later stages.
@@ -848,6 +849,9 @@ vtn_type_needs_explicit_layout(struct vtn_builder *b, enum vtn_variable_mode mod
    case vtn_variable_mode_push_constant:
    case vtn_variable_mode_shader_record:
       return true;
+
+   case vtn_variable_mode_workgroup:
+      return b->options->caps.workgroup_memory_explicit_layout;
 
    default:
       return false;
@@ -922,7 +926,7 @@ vtn_type_get_nir_type(struct vtn_builder *b, struct vtn_type *type,
     * to allow SPIR-V generators perform type deduplication.  Discard
     * unnecessary ones when passing to NIR.
     */
-   if (!vtn_type_needs_explicit_layout(b, mode))
+   if (!vtn_type_needs_explicit_layout(b, type, mode))
       return glsl_get_bare_type(type->type);
 
    return type->type;
@@ -1575,16 +1579,20 @@ vtn_handle_type(struct vtn_builder *b, SpvOp opcode,
 
          val->type->deref = deref_type;
 
-         /* Only certain storage classes use ArrayStride.  The others (in
-          * particular Workgroup) are expected to be laid out by the driver.
-          */
+         /* Only certain storage classes use ArrayStride. */
          switch (storage_class) {
+         case SpvStorageClassWorkgroup:
+            if (!b->options->caps.workgroup_memory_explicit_layout)
+               break;
+            FALLTHROUGH;
+
          case SpvStorageClassUniform:
          case SpvStorageClassPushConstant:
          case SpvStorageClassStorageBuffer:
          case SpvStorageClassPhysicalStorageBuffer:
             vtn_foreach_decoration(b, val, array_stride_decoration_cb, NULL);
             break;
+
          default:
             /* Nothing to do. */
             break;
@@ -4539,6 +4547,20 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
          spv_check_supported(fragment_shading_rate, cap);
          break;
 
+      case SpvCapabilityWorkgroupMemoryExplicitLayoutKHR:
+         spv_check_supported(workgroup_memory_explicit_layout, cap);
+         break;
+
+      case SpvCapabilityWorkgroupMemoryExplicitLayout8BitAccessKHR:
+         spv_check_supported(workgroup_memory_explicit_layout, cap);
+         spv_check_supported(storage_8bit, cap);
+         break;
+
+      case SpvCapabilityWorkgroupMemoryExplicitLayout16BitAccessKHR:
+         spv_check_supported(workgroup_memory_explicit_layout, cap);
+         spv_check_supported(storage_16bit, cap);
+         break;
+
       default:
          vtn_fail("Unhandled capability: %s (%u)",
                   spirv_capability_to_string(cap), cap);
@@ -5721,6 +5743,9 @@ vtn_create_builder(const uint32_t *words, size_t word_count,
    b->value_id_bound = value_id_bound;
    b->values = rzalloc_array(b, struct vtn_value, value_id_bound);
 
+   if (b->options->environment == NIR_SPIRV_VULKAN)
+      b->vars_used_indirectly = _mesa_pointer_set_create(b);
+
    return b;
  fail:
    ralloc_free(b);
@@ -5796,6 +5821,13 @@ vtn_emit_kernel_entry_point_wrapper(struct vtn_builder *b,
    nir_builder_instr_insert(&b->nb, &call->instr);
 
    return main_entry_point;
+}
+
+static bool
+can_remove(nir_variable *var, void *data)
+{
+   const struct set *vars_used_indirectly = data;
+   return !_mesa_set_search(vars_used_indirectly, var);
 }
 
 nir_shader *
@@ -5946,12 +5978,38 @@ spirv_to_nir(const uint32_t *words, size_t word_count,
     */
    nir_lower_variable_initializers(b->shader, nir_var_shader_out |
                                               nir_var_system_value);
-   nir_remove_dead_variables(b->shader, ~nir_var_function_temp, NULL);
+   const nir_remove_dead_variables_options dead_opts = {
+      .can_remove_var = can_remove,
+      .can_remove_var_data = b->vars_used_indirectly,
+   };
+   nir_remove_dead_variables(b->shader, ~nir_var_function_temp,
+                             b->vars_used_indirectly ? &dead_opts : NULL);
 
    /* We sometimes generate bogus derefs that, while never used, give the
     * validator a bit of heartburn.  Run dead code to get rid of them.
     */
    nir_opt_dce(b->shader);
+
+   /* Per SPV_KHR_workgroup_storage_explicit_layout, if one shared variable is
+    * a Block, all of them will be and Blocks are explicitly laid out.
+    */
+   nir_foreach_variable_with_modes(var, b->shader, nir_var_mem_shared) {
+      if (glsl_type_is_interface(var->type)) {
+         assert(b->options->caps.workgroup_memory_explicit_layout);
+         b->shader->info.cs.shared_memory_explicit_layout = true;
+         break;
+      }
+   }
+   if (b->shader->info.cs.shared_memory_explicit_layout) {
+      unsigned size = 0;
+      nir_foreach_variable_with_modes(var, b->shader, nir_var_mem_shared) {
+         assert(glsl_type_is_interface(var->type));
+         const bool align_to_stride = false;
+         size = MAX2(size, glsl_get_explicit_size(var->type, align_to_stride));
+      }
+      b->shader->info.cs.shared_size = size;
+      b->shader->shared_size = size;
+   }
 
    /* Unparent the shader from the vtn_builder before we delete the builder */
    ralloc_steal(NULL, b->shader);

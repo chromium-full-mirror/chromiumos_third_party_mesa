@@ -189,6 +189,7 @@ struct gen_perf_query_result;
 #define ANV_SSBO_ALIGNMENT 4
 #define ANV_SSBO_BOUNDS_CHECK_ALIGNMENT 4
 #define MAX_VIEWS_FOR_PRIMITIVE_REPLICATION 16
+#define MAX_SAMPLE_LOCATIONS 16
 
 /* From the Skylake PRM Vol. 7 "Binding Table Surface State Model":
  *
@@ -1032,6 +1033,17 @@ struct anv_bo_cache {
 VkResult anv_bo_cache_init(struct anv_bo_cache *cache);
 void anv_bo_cache_finish(struct anv_bo_cache *cache);
 
+struct anv_queue_family {
+   /* Standard bits passed on to the client */
+   VkQueueFlags   queueFlags;
+   uint32_t       queueCount;
+
+   /* Driver internal information */
+   enum drm_i915_gem_engine_class engine_class;
+};
+
+#define ANV_MAX_QUEUE_FAMILIES 1
+
 struct anv_memory_type {
    /* Standard bits passed on to the client */
    VkMemoryPropertyFlags   propertyFlags;
@@ -1129,6 +1141,11 @@ struct anv_physical_device {
     uint32_t                                    subslice_total;
 
     struct {
+      uint32_t                                  family_count;
+      struct anv_queue_family                   families[ANV_MAX_QUEUE_FAMILIES];
+    } queue;
+
+    struct {
       uint32_t                                  type_count;
       struct anv_memory_type                    types[VK_MAX_MEMORY_TYPES];
       uint32_t                                  heap_count;
@@ -1145,6 +1162,7 @@ struct anv_physical_device {
     struct wsi_device                       wsi_device;
     int                                         local_fd;
     int                                         master_fd;
+    struct drm_i915_query_engine_info *         engine_info;
 };
 
 struct anv_app_info {
@@ -1239,11 +1257,14 @@ struct anv_queue_submit {
 };
 
 struct anv_queue {
-    struct vk_object_base                       base;
+   struct vk_object_base                     base;
 
    struct anv_device *                       device;
 
    VkDeviceQueueCreateFlags                  flags;
+   struct anv_queue_family *                 family;
+
+   uint32_t                                  exec_flags;
 
    /* Set once from the device api calls. */
    bool                                      lost_signaled;
@@ -1405,7 +1426,8 @@ struct anv_device {
 
     struct anv_state                            slice_hash;
 
-    struct anv_queue                            queue;
+    uint32_t                                    queue_count;
+    struct anv_queue  *                         queues;
 
     struct anv_scratch_pool                     scratch_pool;
 
@@ -1572,7 +1594,9 @@ VkResult anv_device_bo_busy(struct anv_device *device, struct anv_bo *bo);
 VkResult anv_device_wait(struct anv_device *device, struct anv_bo *bo,
                          int64_t timeout);
 
-VkResult anv_queue_init(struct anv_device *device, struct anv_queue *queue);
+VkResult anv_queue_init(struct anv_device *device, struct anv_queue *queue,
+                        uint32_t exec_flags,
+                        const VkDeviceQueueCreateInfo *pCreateInfo);
 void anv_queue_finish(struct anv_queue *queue);
 
 VkResult anv_queue_execbuf_locked(struct anv_queue *queue, struct anv_queue_submit *submit);
@@ -1595,6 +1619,10 @@ int anv_gem_execbuffer(struct anv_device *device,
 int anv_gem_set_tiling(struct anv_device *device, uint32_t gem_handle,
                        uint32_t stride, uint32_t tiling);
 int anv_gem_create_context(struct anv_device *device);
+int anv_gem_create_context_engines(struct anv_device *device,
+                                   const struct drm_i915_query_engine_info *info,
+                                   int num_engines,
+                                   uint16_t *engine_classes);
 bool anv_gem_has_context_priority(int fd);
 int anv_gem_destroy_context(struct anv_device *device, int context);
 int anv_gem_set_context_param(int fd, int context, uint32_t param,
@@ -1605,8 +1633,8 @@ int anv_gem_get_param(int fd, uint32_t param);
 uint64_t anv_gem_get_drm_cap(int fd, uint32_t capability);
 int anv_gem_get_tiling(struct anv_device *device, uint32_t gem_handle);
 bool anv_gem_get_bit6_swizzle(int fd, uint32_t tiling);
-int anv_gem_gpu_get_reset_stats(struct anv_device *device,
-                                uint32_t *active, uint32_t *pending);
+int anv_gem_context_get_reset_stats(int fd, int context,
+                                    uint32_t *active, uint32_t *pending);
 int anv_gem_handle_to_fd(struct anv_device *device, uint32_t gem_handle);
 int anv_gem_reg_read(int fd, uint32_t offset, uint64_t *result);
 uint32_t anv_gem_fd_to_handle(struct anv_device *device, int fd);
@@ -1637,6 +1665,11 @@ int anv_gem_syncobj_timeline_signal(struct anv_device *device,
 int anv_gem_syncobj_timeline_query(struct anv_device *device,
                                    const uint32_t *handles, uint64_t *points,
                                    uint32_t num_items);
+int anv_i915_query(int fd, uint64_t query_id, void *buffer,
+                   int32_t *buffer_len);
+struct drm_i915_query_engine_info *anv_gem_get_engine_info(int fd);
+int anv_gem_count_engines(const struct drm_i915_query_engine_info *info,
+                          uint16_t engine_class);
 
 uint64_t anv_vma_alloc(struct anv_device *device,
                        uint64_t size, uint64_t align,
@@ -2372,6 +2405,7 @@ enum anv_cmd_dirty_bits {
    ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE    = 1 << 21, /* VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE_EXT */
    ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE         = 1 << 22, /* VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT */
    ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP                  = 1 << 23, /* VK_DYNAMIC_STATE_STENCIL_OP_EXT */
+   ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS            = 1 << 24, /* VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT */
 };
 typedef uint32_t anv_cmd_dirty_mask_t;
 
@@ -2395,7 +2429,8 @@ typedef uint32_t anv_cmd_dirty_mask_t;
     ANV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP |            \
     ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE |    \
     ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE |         \
-    ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP)
+    ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP |                  \
+    ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS)
 
 static inline enum anv_cmd_dirty_bits
 anv_cmd_dirty_bit_for_vk_dynamic_state(VkDynamicState vk_state)
@@ -2443,6 +2478,8 @@ anv_cmd_dirty_bit_for_vk_dynamic_state(VkDynamicState vk_state)
       return ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE;
    case VK_DYNAMIC_STATE_STENCIL_OP_EXT:
       return ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP;
+   case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT:
+      return ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS;
    default:
       assert(!"Unsupported dynamic state");
       return 0;
@@ -2768,6 +2805,11 @@ struct anv_dynamic_state {
       uint32_t                                  factor;
       uint16_t                                  pattern;
    } line_stipple;
+
+   struct {
+      uint32_t                                  samples;
+      VkSampleLocationEXT                       locations[MAX_SAMPLE_LOCATIONS];
+   } sample_locations;
 
    VkCullModeFlags                              cull_mode;
    VkFrontFace                                  front_face;
@@ -4476,26 +4518,6 @@ void *anv_resolve_device_entrypoint(const struct gen_device_info *devinfo,
                                     uint32_t index);
 void *anv_lookup_entrypoint(const struct gen_device_info *devinfo,
                             const char *name);
-
-void anv_dump_image_to_ppm(struct anv_device *device,
-                           struct anv_image *image, unsigned miplevel,
-                           unsigned array_layer, VkImageAspectFlagBits aspect,
-                           const char *filename);
-
-enum anv_dump_action {
-   ANV_DUMP_FRAMEBUFFERS_BIT = 0x1,
-};
-
-#ifdef DEBUG
-PUBLIC
-#endif
-void anv_dump_start(struct anv_device *device, enum anv_dump_action actions);
-#ifdef DEBUG
-PUBLIC
-#endif
-void anv_dump_finish(void);
-
-void anv_dump_add_attachments(struct anv_cmd_buffer *cmd_buffer);
 
 static inline uint32_t
 anv_get_subpass_id(const struct anv_cmd_state * const cmd_state)

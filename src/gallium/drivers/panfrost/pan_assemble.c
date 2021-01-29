@@ -62,9 +62,9 @@ pan_prepare_midgard_props(struct panfrost_shader_state *state,
 
 static void
 pan_prepare_bifrost_props(struct panfrost_shader_state *state,
+                          panfrost_program *program,
                           gl_shader_stage stage)
 {
-
         switch (stage) {
         case MESA_SHADER_VERTEX:
                 pan_prepare(&state->properties, RENDERER_PROPERTIES);
@@ -91,6 +91,8 @@ pan_prepare_bifrost_props(struct panfrost_shader_state *state,
                 }
                 state->properties.uniform_buffer_count = state->ubo_count;
                 state->properties.bifrost.shader_modifies_coverage = state->can_discard;
+                state->properties.bifrost.shader_wait_dependency_6 = program->wait_6;
+                state->properties.bifrost.shader_wait_dependency_7 = program->wait_7;
 
                 pan_prepare(&state->preload, PRELOAD);
                 state->preload.uniform_count = state->uniform_count;
@@ -302,14 +304,15 @@ panfrost_shader_compile(struct panfrost_context *ctx,
         state->sysval_count = program->sysval_count;
         memcpy(state->sysval, program->sysvals, sizeof(state->sysval[0]) * state->sysval_count);
 
-        bool vertex_id = s->info.system_values_read & (1 << SYSTEM_VALUE_VERTEX_ID);
-        bool instance_id = s->info.system_values_read & (1 << SYSTEM_VALUE_INSTANCE_ID);
+        bool vertex_id = BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_VERTEX_ID);
+        bool instance_id = BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_INSTANCE_ID);
 
         state->writes_global = s->info.writes_memory;
 
         switch (stage) {
         case MESA_SHADER_VERTEX:
-                attribute_count = util_bitcount64(s->info.inputs_read);
+                attribute_count = util_bitcount64(s->info.inputs_read) +
+                                  util_bitcount(s->info.images_used);
                 varying_count = util_bitcount64(s->info.outputs_written);
 
                 if (vertex_id)
@@ -328,6 +331,7 @@ panfrost_shader_compile(struct panfrost_context *ctx,
                                                     program->blend_ret_offsets[i];
                         assert(!(state->blend_ret_addrs[i] & 0x7));
                 }
+                attribute_count = util_bitcount(s->info.images_used);
                 varying_count = util_bitcount64(s->info.inputs_read);
                 if (s->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_DEPTH))
                         state->writes_depth = true;
@@ -349,7 +353,7 @@ panfrost_shader_compile(struct panfrost_context *ctx,
                         s->info.fs.uses_demote;
                 break;
         case MESA_SHADER_COMPUTE:
-                /* TODO: images */
+                attribute_count = util_bitcount(s->info.images_used);
                 state->shared_size = s->info.cs.shared_size;
                 break;
         default:
@@ -361,10 +365,10 @@ panfrost_shader_compile(struct panfrost_context *ctx,
         state->stack_size = program->tls_size;
 
         state->reads_frag_coord = (s->info.inputs_read & (1 << VARYING_SLOT_POS)) ||
-                                  (s->info.system_values_read & (1 << SYSTEM_VALUE_FRAG_COORD));
+                                  BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_FRAG_COORD);
         state->reads_point_coord = s->info.inputs_read & (1 << VARYING_SLOT_PNTC);
         state->reads_face = (s->info.inputs_read & (1 << VARYING_SLOT_FACE)) ||
-                            (s->info.system_values_read & (1 << SYSTEM_VALUE_FRONT_FACE));
+                            BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_FRONT_FACE);
         state->writes_point_size = s->info.outputs_written & (1 << VARYING_SLOT_PSIZ);
 
         if (outputs_written)
@@ -418,7 +422,7 @@ panfrost_shader_compile(struct panfrost_context *ctx,
         state->shader.sampler_count = s->info.num_textures;
 
         if (dev->quirks & IS_BIFROST)
-                pan_prepare_bifrost_props(state, stage);
+                pan_prepare_bifrost_props(state, program, stage);
         else
                 pan_prepare_midgard_props(state, stage);
 

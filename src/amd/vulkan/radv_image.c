@@ -82,7 +82,9 @@ radv_use_tc_compat_htile_for_image(struct radv_device *device,
 	if (pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR)
 		return false;
 
-	if (pCreateInfo->mipLevels > 1)
+	if (pCreateInfo->mipLevels > 1 &&
+	    (device->physical_device->rad_info.chip_class < GFX10 ||
+	     pCreateInfo->arrayLayers > 1))
 		return false;
 
 	/* Do not enable TC-compatible HTILE if the image isn't readable by a
@@ -93,13 +95,13 @@ radv_use_tc_compat_htile_for_image(struct radv_device *device,
 				    VK_IMAGE_USAGE_TRANSFER_SRC_BIT)))
 		return false;
 
-	if (device->physical_device->rad_info.chip_class < GFX9) {
-		/* FIXME: for some reason TC compat with 2/4/8 samples breaks
-		 * some cts tests - disable for now.
-		 */
-		if (pCreateInfo->samples >= 2 && format == VK_FORMAT_D32_SFLOAT_S8_UINT)
-			return false;
+	/* FIXME: for some reason TC compat with 2/4/8 samples breaks
+	 * some cts tests - disable for now.
+	 */
+	if (pCreateInfo->samples >= 2 && format == VK_FORMAT_D32_SFLOAT_S8_UINT)
+		return false;
 
+	if (device->physical_device->rad_info.chip_class < GFX9) {
 		/* GFX9+ supports compression for both 32-bit and 16-bit depth
 		 * surfaces, while GFX8 only supports 32-bit natively. Though,
 		 * the driver allows TC-compat HTILE for 16-bit depth surfaces
@@ -249,8 +251,15 @@ static inline bool
 radv_use_htile_for_image(const struct radv_device *device,
                          const struct radv_image *image)
 {
-	return image->info.levels == 1 &&
-	       !image->shareable &&
+	/* TODO:
+	 * - Investigate about mips+layers.
+	 * - Enable on other gens.
+	 */
+	bool use_htile_for_mips = image->info.array_size == 1 &&
+				  device->physical_device->rad_info.chip_class >= GFX10;
+
+	return (image->info.levels == 1 || use_htile_for_mips) &&
+		!image->shareable &&
 	       ((image->info.width * image->info.height >= 8 * 8) ||
 	        (device->instance->debug_flags & RADV_DEBUG_FORCE_COMPRESS));
 }

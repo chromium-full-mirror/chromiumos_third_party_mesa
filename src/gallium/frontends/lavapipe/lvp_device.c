@@ -371,7 +371,6 @@ void lvp_GetPhysicalDeviceFeatures2(
          features->privateData = true;
          break;
       }
-
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT: {
          VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT *features =
             (VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT *)ext;
@@ -396,6 +395,13 @@ void lvp_GetPhysicalDeviceFeatures2(
 
          features->transformFeedback = true;
          features->geometryStreams = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT: {
+         VkPhysicalDeviceConditionalRenderingFeaturesEXT *features =
+            (VkPhysicalDeviceConditionalRenderingFeaturesEXT*)ext;
+         features->conditionalRendering = true;
+         features->inheritedConditionalRendering = false;
          break;
       }
       default:
@@ -1746,6 +1752,53 @@ void lvp_DestroySampler(
    vk_free2(&device->vk.alloc, pAllocator, sampler);
 }
 
+/* vk_icd.h does not declare this function, so we declare it here to
+ * suppress Wmissing-prototypes.
+ */
+PUBLIC VKAPI_ATTR VkResult VKAPI_CALL
+vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t* pSupportedVersion);
+
+PUBLIC VKAPI_ATTR VkResult VKAPI_CALL
+vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t* pSupportedVersion)
+{
+   /* For the full details on loader interface versioning, see
+    * <https://github.com/KhronosGroup/Vulkan-LoaderAndValidationLayers/blob/master/loader/LoaderAndLayerInterface.md>.
+    * What follows is a condensed summary, to help you navigate the large and
+    * confusing official doc.
+    *
+    *   - Loader interface v0 is incompatible with later versions. We don't
+    *     support it.
+    *
+    *   - In loader interface v1:
+    *       - The first ICD entrypoint called by the loader is
+    *         vk_icdGetInstanceProcAddr(). The ICD must statically expose this
+    *         entrypoint.
+    *       - The ICD must statically expose no other Vulkan symbol unless it is
+    *         linked with -Bsymbolic.
+    *       - Each dispatchable Vulkan handle created by the ICD must be
+    *         a pointer to a struct whose first member is VK_LOADER_DATA. The
+    *         ICD must initialize VK_LOADER_DATA.loadMagic to ICD_LOADER_MAGIC.
+    *       - The loader implements vkCreate{PLATFORM}SurfaceKHR() and
+    *         vkDestroySurfaceKHR(). The ICD must be capable of working with
+    *         such loader-managed surfaces.
+    *
+    *    - Loader interface v2 differs from v1 in:
+    *       - The first ICD entrypoint called by the loader is
+    *         vk_icdNegotiateLoaderICDInterfaceVersion(). The ICD must
+    *         statically expose this entrypoint.
+    *
+    *    - Loader interface v3 differs from v2 in:
+    *        - The ICD must implement vkCreate{PLATFORM}SurfaceKHR(),
+    *          vkDestroySurfaceKHR(), and other API which uses VKSurfaceKHR,
+    *          because the loader no longer does so.
+    *
+    *    - Loader interface v4 differs from v3 in:
+    *        - The ICD must implement vk_icdGetPhysicalDeviceProcAddr().
+    */
+   *pSupportedVersion = MIN2(*pSupportedVersion, 4u);
+   return VK_SUCCESS;
+}
+
 VkResult lvp_CreatePrivateDataSlotEXT(
    VkDevice                                    _device,
    const VkPrivateDataSlotCreateInfoEXT*       pCreateInfo,
@@ -1789,4 +1842,24 @@ void lvp_GetPrivateDataEXT(
    LVP_FROM_HANDLE(lvp_device, device, _device);
    vk_object_base_get_private_data(&device->vk, objectType, objectHandle,
                                    privateDataSlot, pData);
+}
+
+void lvp_GetPhysicalDeviceExternalFenceProperties(
+   VkPhysicalDevice                           physicalDevice,
+   const VkPhysicalDeviceExternalFenceInfo    *pExternalFenceInfo,
+   VkExternalFenceProperties                  *pExternalFenceProperties)
+{
+   pExternalFenceProperties->exportFromImportedHandleTypes = 0;
+   pExternalFenceProperties->compatibleHandleTypes = 0;
+   pExternalFenceProperties->externalFenceFeatures = 0;
+}
+
+void lvp_GetPhysicalDeviceExternalSemaphoreProperties(
+   VkPhysicalDevice                            physicalDevice,
+   const VkPhysicalDeviceExternalSemaphoreInfo *pExternalSemaphoreInfo,
+   VkExternalSemaphoreProperties               *pExternalSemaphoreProperties)
+{
+   pExternalSemaphoreProperties->exportFromImportedHandleTypes = 0;
+   pExternalSemaphoreProperties->compatibleHandleTypes = 0;
+   pExternalSemaphoreProperties->externalSemaphoreFeatures = 0;
 }

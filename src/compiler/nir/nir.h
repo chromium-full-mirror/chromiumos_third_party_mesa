@@ -4130,6 +4130,14 @@ typedef nir_ssa_def *(*nir_lower_instr_cb)(struct nir_builder *,
  */
 #define NIR_LOWER_INSTR_PROGRESS ((nir_ssa_def *)(uintptr_t)1)
 
+/**
+ * Special return value for nir_lower_instr_cb when some progress occurred
+ * that should remove the current instruction that doesn't create an output
+ * (like a store)
+ */
+
+#define NIR_LOWER_INSTR_PROGRESS_REPLACE ((nir_ssa_def *)(uintptr_t)2)
+
 /** Iterate over all the instructions in a nir_function_impl and lower them
  *  using the provided callbacks
  *
@@ -4472,8 +4480,15 @@ bool nir_lower_vars_to_ssa(nir_shader *shader);
 
 bool nir_remove_dead_derefs(nir_shader *shader);
 bool nir_remove_dead_derefs_impl(nir_function_impl *impl);
+
+typedef struct nir_remove_dead_variables_options {
+   bool (*can_remove_var)(nir_variable *var, void *data);
+   void *can_remove_var_data;
+} nir_remove_dead_variables_options;
+
 bool nir_remove_dead_variables(nir_shader *shader, nir_variable_mode modes,
-                               bool (*can_remove_var)(nir_variable *var));
+                               const nir_remove_dead_variables_options *options);
+
 bool nir_lower_variable_initializers(nir_shader *shader,
                                      nir_variable_mode modes);
 

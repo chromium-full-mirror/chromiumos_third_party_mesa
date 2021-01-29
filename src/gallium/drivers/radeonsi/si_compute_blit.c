@@ -141,7 +141,7 @@ static void si_compute_clear_12bytes_buffer(struct si_context *sctx, struct pipe
    struct pipe_constant_buffer cb = {};
    cb.buffer_size = sizeof(data);
    cb.user_buffer = data;
-   ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, &cb);
+   ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, false, &cb);
 
    struct pipe_shader_buffer sb = {0};
    sb.buffer = dst;
@@ -166,10 +166,9 @@ static void si_compute_clear_12bytes_buffer(struct si_context *sctx, struct pipe
    si_launch_grid_internal(sctx, &info, saved_cs, SI_CS_WAIT_FOR_IDLE);
 
    ctx->set_shader_buffers(ctx, PIPE_SHADER_COMPUTE, 0, 1, &saved_sb, saved_writable_mask);
-   ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, &saved_cb);
+   ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, true, &saved_cb);
 
    pipe_resource_reference(&saved_sb.buffer, NULL);
-   pipe_resource_reference(&saved_cb.buffer, NULL);
 }
 
 static void si_compute_do_clear_or_copy(struct si_context *sctx, struct pipe_resource *dst,
@@ -506,7 +505,7 @@ void si_compute_copy_image(struct si_context *sctx, struct pipe_resource *dst, u
       struct pipe_constant_buffer cb = {};
       cb.buffer_size = sizeof(data);
       cb.user_buffer = data;
-      ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, &cb);
+      ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, false, &cb);
    }
 
    struct pipe_image_view image[2] = {0};
@@ -535,7 +534,7 @@ void si_compute_copy_image(struct si_context *sctx, struct pipe_resource *dst, u
    if (is_dcc_decompress)
       image[1].access |= SI_IMAGE_ACCESS_DCC_OFF;
 
-   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 2, image);
+   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 2, 0, image);
 
    struct pipe_grid_info info = {0};
 
@@ -604,12 +603,11 @@ void si_compute_copy_image(struct si_context *sctx, struct pipe_resource *dst, u
    si_launch_grid_internal(sctx, &info, saved_cs,
                            SI_CS_WAIT_FOR_IDLE | SI_CS_IMAGE_OP);
 
-   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 2, saved_image);
+   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 2, 0, saved_image);
    for (int i = 0; i < 2; i++)
       pipe_resource_reference(&saved_image[i].resource, NULL);
    if (!is_dcc_decompress) {
-      ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, &saved_cb);
-      pipe_resource_reference(&saved_cb.buffer, NULL);
+      ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, true, &saved_cb);
    }
 }
 
@@ -654,7 +652,7 @@ void si_retile_dcc(struct si_context *sctx, struct si_texture *tex)
    img[2].u.buf.offset = tex->surface.display_dcc_offset;
    img[2].u.buf.size = tex->surface.u.gfx9.display_dcc_size;
 
-   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 3, img);
+   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 3, 0, img);
 
    /* Bind the compute shader. */
    if (!sctx->cs_dcc_retile)
@@ -681,7 +679,7 @@ void si_retile_dcc(struct si_context *sctx, struct si_texture *tex)
     */
 
    /* Restore states. */
-   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 3, saved_img);
+   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 3, 0, saved_img);
 
    for (unsigned i = 0; i < 3; i++) {
       pipe_resource_reference(&saved_img[i].resource, NULL);
@@ -719,7 +717,7 @@ void si_compute_expand_fmask(struct pipe_context *ctx, struct pipe_resource *tex
    if (is_array)
       image.u.tex.last_layer = tex->array_size - 1;
 
-   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 1, &image);
+   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 1, 0, &image);
 
    /* Bind the shader. */
    void **shader = &sctx->cs_fmask_expand[log_samples - 1][is_array];
@@ -742,7 +740,7 @@ void si_compute_expand_fmask(struct pipe_context *ctx, struct pipe_resource *tex
                            SI_CS_WAIT_FOR_IDLE | SI_CS_IMAGE_OP);
 
    /* Restore previous states. */
-   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 1, &saved_image);
+   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 1, 0, &saved_image);
    pipe_resource_reference(&saved_image.resource, NULL);
 
    /* Array of fully expanded FMASK values, arranged by [log2(fragments)][log2(samples)-1]. */
@@ -811,7 +809,7 @@ void si_compute_clear_render_target(struct pipe_context *ctx, struct pipe_surfac
    struct pipe_constant_buffer cb = {};
    cb.buffer_size = sizeof(data);
    cb.user_buffer = data;
-   ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, &cb);
+   ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, false, &cb);
 
    struct pipe_image_view image = {0};
    image.resource = dstsurf->texture;
@@ -821,7 +819,7 @@ void si_compute_clear_render_target(struct pipe_context *ctx, struct pipe_surfac
    image.u.tex.first_layer = 0; /* 3D images ignore first_layer (BASE_ARRAY) */
    image.u.tex.last_layer = dstsurf->u.tex.last_layer;
 
-   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 1, &image);
+   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 1, 0, &image);
 
    struct pipe_grid_info info = {0};
 
@@ -854,8 +852,7 @@ void si_compute_clear_render_target(struct pipe_context *ctx, struct pipe_surfac
                            SI_CS_WAIT_FOR_IDLE | SI_CS_IMAGE_OP |
                            (render_condition_enabled ? SI_CS_RENDER_COND_ENABLE : 0));
 
-   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 1, &saved_image);
-   ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, &saved_cb);
+   ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 1, 0, &saved_image);
+   ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, true, &saved_cb);
    pipe_resource_reference(&saved_image.resource, NULL);
-   pipe_resource_reference(&saved_cb.buffer, NULL);
 }

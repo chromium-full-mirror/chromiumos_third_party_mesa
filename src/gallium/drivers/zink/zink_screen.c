@@ -301,10 +301,8 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SHAREABLE_SHADERS:
       return 1;
 
-#if 0 /* TODO: Enable me. Enables GL_ARB_shader_storage_buffer_object */
    case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
       return screen->info.props.limits.minStorageBufferOffsetAlignment;
-#endif
 
    case PIPE_CAP_PCI_GROUP:
    case PIPE_CAP_PCI_BUS:
@@ -325,7 +323,8 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return screen->info.props.limits.maxGeometryShaderInvocations;
 
    case PIPE_CAP_MAX_COMBINED_SHADER_BUFFERS:
-      return screen->info.props.limits.maxDescriptorSetStorageBuffers;
+      /* gallium handles this automatically */
+      return 0;
 
    case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
       return 65536;

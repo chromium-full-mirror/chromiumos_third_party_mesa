@@ -237,6 +237,11 @@ vtn_variable_resource_index(struct vtn_builder *b, struct vtn_variable *var,
       desc_array_index = nir_imm_int(&b->nb, 0);
    }
 
+   if (b->vars_used_indirectly) {
+      vtn_assert(var->var);
+      _mesa_set_add(b->vars_used_indirectly, var->var);
+   }
+
    nir_intrinsic_instr *instr =
       nir_intrinsic_instr_create(b->nb.shader,
                                  nir_intrinsic_vulkan_resource_index);
@@ -2460,7 +2465,8 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
 
          nir_ssa_def *array_length =
             nir_build_deref_buffer_array_length(&b->nb, 32,
-                                                vtn_pointer_to_ssa(b, array));
+                                                vtn_pointer_to_ssa(b, array),
+                                                .access=ptr->access | ptr->type->access);
 
          vtn_push_nir_ssa(b, w[2], array_length);
       } else {
@@ -2475,7 +2481,8 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
             vtn_assert(ptr->block_index);
          }
 
-         nir_ssa_def *buf_size = nir_get_ssbo_size(&b->nb, ptr->block_index);
+         nir_ssa_def *buf_size = nir_get_ssbo_size(&b->nb, ptr->block_index,
+                                                   .access=ptr->access | ptr->type->access);
 
          /* array_length = max(buffer_size - offset, 0) / stride */
          nir_ssa_def *array_length =

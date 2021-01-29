@@ -29,6 +29,68 @@
 #include "panfrost/util/lcra.h"
 #include "util/u_memory.h"
 
+/* A clause may contain 1 message-passing instruction writing to a staging
+ * register. No instruction following it in the clause may access that staging
+ * register to prevent data races. Scheduling ensures this is possible but RA
+ * needs to preserve this. The simplest solution is forcing the staging
+ * register live in _all_ words at the end (and consequently throughout) the
+ * clause, addressing corner cases where a single component is masked out */
+
+static void
+bi_mark_sr_live(bi_block *block, bi_clause *clause, unsigned node_count, uint16_t *live)
+{
+        bi_foreach_instr_in_clause(block, clause, ins) {
+                if (!bi_opcode_props[ins->op].sr_write) continue;
+
+                bi_foreach_dest(ins, d) {
+                        unsigned node = bi_get_node(ins->dest[d]);
+                        if (node < node_count)
+                                live[node] = bi_writemask(ins);
+                }
+
+                break;
+        }
+}
+
+static void
+bi_mark_interference(bi_block *block, bi_clause *clause, struct lcra_state *l, uint16_t *live, unsigned node_count, bool is_blend)
+{
+        bi_foreach_instr_in_clause_rev(block, clause, ins) {
+                /* Mark all registers live after the instruction as
+                 * interfering with the destination */
+
+                bi_foreach_dest(ins, d) {
+                        if (bi_get_node(ins->dest[d]) >= node_count)
+                                continue;
+
+                        for (unsigned i = 1; i < node_count; ++i) {
+                                if (live[i]) {
+                                        lcra_add_node_interference(l, bi_get_node(ins->dest[d]),
+                                                        bi_writemask(ins), i, live[i]);
+                                }
+                        }
+                }
+
+                if (!is_blend && ins->op == BI_OPCODE_BLEND) {
+                        /* Add blend shader interference: blend shaders might
+                         * clobber r0-r15. */
+                        for (unsigned i = 1; i < node_count; ++i) {
+                                if (!live[i])
+                                        continue;
+
+                                for (unsigned j = 0; j < 4; j++) {
+                                        lcra_add_node_interference(l, node_count + j,
+                                                                   0xFFFF,
+                                                                   i, live[i]);
+                                }
+                        }
+                }
+
+                /* Update live_in */
+                bi_liveness_ins_update(live, ins, node_count);
+        }
+}
+
 static void
 bi_compute_interference(bi_context *ctx, struct lcra_state *l)
 {
@@ -40,37 +102,9 @@ bi_compute_interference(bi_context *ctx, struct lcra_state *l)
                 bi_block *blk = (bi_block *) _blk;
                 uint16_t *live = mem_dup(_blk->live_out, node_count * sizeof(uint16_t));
 
-                bi_foreach_instr_in_block_rev(blk, ins) {
-                        /* Mark all registers live after the instruction as
-                         * interfering with the destination */
-
-                        for (unsigned d = 0; d < ARRAY_SIZE(ins->dest); ++d) {
-                                if (bi_get_node(ins->dest[d]) >= node_count)
-                                        continue;
-
-                                for (unsigned i = 0; i < node_count; ++i) {
-                                        if (live[i])
-                                                lcra_add_node_interference(l, bi_get_node(ins->dest[d]), bi_writemask(ins), i, live[i]);
-                                }
-                        }
-
-                        if (!ctx->is_blend && ins->op == BI_OPCODE_BLEND) {
-                                /* Add blend shader interference: blend shaders might
-                                 * clobber r0-r15. */
-                                for (unsigned i = 0; i < node_count; ++i) {
-                                        if (!live[i])
-                                                continue;
-
-                                        for (unsigned j = 0; j < 4; j++) {
-                                                lcra_add_node_interference(l, node_count + j,
-                                                                           0xFFFF,
-                                                                           i, live[i]);
-                                        }
-                                }
-                        }
-
-                        /* Update live_in */
-                        bi_liveness_ins_update(live, ins, node_count);
+                bi_foreach_clause_in_block_rev(blk, clause) {
+                        bi_mark_sr_live(blk, clause, node_count, live);
+                        bi_mark_interference(blk, clause, l, live, node_count, ctx->is_blend);
                 }
 
                 free(live);
@@ -107,21 +141,23 @@ bi_allocate_registers(bi_context *ctx, bool *success)
         }
 
         bi_foreach_instr_global(ctx, ins) {
-                unsigned dest = bi_get_node(ins->dest[0]);
+                bi_foreach_dest(ins, d) {
+                        unsigned dest = bi_get_node(ins->dest[d]);
 
-                /* Blend shaders expect the src colour to be in r0-r3 */
-                if (ins->op == BI_OPCODE_BLEND && !ctx->is_blend) {
-                        unsigned node = bi_get_node(ins->src[0]);
-                        assert(node < node_count);
-                        l->solutions[node] = 0;
+                        /* Blend shaders expect the src colour to be in r0-r3 */
+                        if (ins->op == BI_OPCODE_BLEND && !ctx->is_blend) {
+                                unsigned node = bi_get_node(ins->src[0]);
+                                assert(node < node_count);
+                                l->solutions[node] = 0;
+                        }
+
+                        if (dest >= node_count)
+                                continue;
+
+                        l->class[dest] = BI_REG_CLASS_WORK;
+                        lcra_set_alignment(l, dest, 2, 16); /* 2^2 = 4 */
+                        lcra_restrict_range(l, dest, 4);
                 }
-
-                if (dest >= node_count)
-                        continue;
-
-                l->class[dest] = BI_REG_CLASS_WORK;
-                lcra_set_alignment(l, dest, 2, 16); /* 2^2 = 4 */
-                lcra_restrict_range(l, dest, 4);
 
         }
 
@@ -171,7 +207,8 @@ static void
 bi_install_registers(bi_context *ctx, struct lcra_state *l)
 {
         bi_foreach_instr_global(ctx, ins) {
-                ins->dest[0] = bi_reg_from_index(ctx, l, ins->dest[0]);
+                bi_foreach_dest(ins, d)
+                        ins->dest[d] = bi_reg_from_index(ctx, l, ins->dest[d]);
 
                 bi_foreach_src(ins, s)
                         ins->src[s] = bi_reg_from_index(ctx, l, ins->src[s]);
@@ -190,20 +227,16 @@ bi_rewrite_index_src_single(bi_instr *ins, bi_index old, bi_index new)
         }
 }
 
-/* Get the single instruction in a singleton clause. Precondition: clause
- * contains exactly 1 instruction.
- *
- * More complex scheduling implies tougher constraints on spilling. We'll cross
- * that bridge when we get to it. For now, just grab the one and only
- * instruction in the clause */
-
-static bi_instr *
-bi_unwrap_singleton(bi_clause *clause)
+static void
+bi_rewrite_index_dst_single(bi_instr *ins, bi_index old, bi_index new)
 {
-       assert(clause->bundle_count == 1);
-       assert((clause->bundles[0].fma != NULL) ^ (clause->bundles[0].add != NULL));
-
-       return clause->bundles[0].fma ?: clause->bundles[0].add;
+        bi_foreach_dest(ins, i) {
+                if (bi_is_equiv(ins->dest[i], old)) {
+                        ins->dest[i].type = new.type;
+                        ins->dest[i].reg = new.reg;
+                        ins->dest[i].value = new.value;
+                }
+        }
 }
 
 /* If register allocation fails, find the best spill node */
@@ -228,21 +261,13 @@ bi_choose_spill_node(bi_context *ctx, struct lcra_state *l)
 }
 
 static void
-bi_spill_dest(bi_builder *b, bi_index index, uint32_t offset,
-                bi_clause *clause, bi_block *block, bi_instr *ins,
-                uint32_t *channels)
+bi_spill_dest(bi_builder *b, bi_index index, bi_index temp, uint32_t offset,
+                bi_clause *clause, bi_block *block, unsigned channels)
 {
-        ins->dest[0] = bi_temp(b->shader);
-        ins->no_spill = true;
+        b->cursor = bi_after_clause(clause);
 
-        unsigned newc = util_last_bit(bi_writemask(ins)) >> 2;
-        *channels = MAX2(*channels, newc);
-
-        b->cursor = bi_after_instr(ins);
-
-        bi_instr *st = bi_store_to(b, (*channels) * 32, bi_null(),
-                        ins->dest[0], bi_imm_u32(offset), bi_zero(),
-                        BI_SEG_TL);
+        bi_instr *st = bi_store_to(b, channels * 32, bi_null(),
+                        temp, bi_imm_u32(offset), bi_zero(), BI_SEG_TL);
 
         bi_clause *singleton = bi_singleton(b->shader, st, block, 0, (1 << 0),
                         true);
@@ -252,12 +277,10 @@ bi_spill_dest(bi_builder *b, bi_index index, uint32_t offset,
 }
 
 static void
-bi_fill_src(bi_builder *b, bi_index index, uint32_t offset, bi_clause *clause,
-                bi_block *block, bi_instr *ins, unsigned channels)
+bi_fill_src(bi_builder *b, bi_index index, bi_index temp, uint32_t offset,
+                bi_clause *clause, bi_block *block, unsigned channels)
 {
-        bi_index temp = bi_temp(b->shader);
-
-        b->cursor = bi_before_instr(ins);
+        b->cursor = bi_before_clause(clause);
         bi_instr *ld = bi_load_to(b, channels * 32, temp, bi_imm_u32(offset),
                         bi_zero(), BI_SEG_TL);
         ld->no_spill = true;
@@ -266,10 +289,41 @@ bi_fill_src(bi_builder *b, bi_index index, uint32_t offset, bi_clause *clause,
                         (1 << 0), true);
 
         list_addtail(&singleton->link, &clause->link);
-
-        /* Rewrite to use */
-        bi_rewrite_index_src_single(ins, index, temp);
         b->shader->fills++;
+}
+
+static unsigned
+bi_clause_mark_spill(bi_context *ctx, bi_block *block,
+                bi_clause *clause, bi_index index, bi_index *temp)
+{
+        unsigned channels = 0;
+
+        bi_foreach_instr_in_clause(block, clause, ins) {
+                if (!bi_is_equiv(ins->dest[0], index)) continue;
+                if (bi_is_null(*temp)) *temp = bi_temp_reg(ctx);
+                ins->no_spill = true;
+                bi_rewrite_index_dst_single(ins, index, *temp);
+                unsigned newc = util_last_bit(bi_writemask(ins)) >> 2;
+                channels = MAX2(channels, newc);
+        }
+
+        return channels;
+}
+
+static bool
+bi_clause_mark_fill(bi_context *ctx, bi_block *block, bi_clause *clause,
+                bi_index index, bi_index *temp)
+{
+        bool fills = false;
+
+        bi_foreach_instr_in_clause(block, clause, ins) {
+                if (!bi_has_arg(ins, index)) continue;
+                if (bi_is_null(*temp)) *temp = bi_temp_reg(ctx);
+                bi_rewrite_index_src_single(ins, index, *temp);
+                fills = true;
+        }
+
+        return fills;
 }
 
 /* Once we've chosen a spill node, spill it. Precondition: node is a valid
@@ -288,14 +342,30 @@ bi_spill_register(bi_context *ctx, bi_index index, uint32_t offset)
         bi_foreach_block(ctx, _block) {
                 bi_block *block = (bi_block *) _block;
                 bi_foreach_clause_in_block_safe(block, clause) {
-                        bi_instr *ins = bi_unwrap_singleton(clause);
-                        if (bi_is_equiv(ins->dest[0], index)) {
-                                bi_spill_dest(&_b, index, offset, clause,
-                                                block, ins, &channels);
+                        bi_index tmp = bi_null();
+
+                        unsigned local_channels = bi_clause_mark_spill(ctx,
+                                        block, clause, index, &tmp);
+
+                        channels = MAX2(channels, local_channels);
+
+                        if (local_channels) {
+                                bi_spill_dest(&_b, index, tmp, offset,
+                                                clause, block, channels);
                         }
 
-                        if (bi_has_arg(ins, index))
-                                bi_fill_src(&_b, index, offset, clause, block, ins, channels);
+                        /* For SSA form, if we write/spill, there was no prior
+                         * contents to fill, so don't waste time reading
+                         * garbage */
+
+                        bool should_fill = !local_channels || index.reg;
+                        should_fill &= bi_clause_mark_fill(ctx, block, clause,
+                                        index, &tmp);
+
+                        if (should_fill) {
+                                bi_fill_src(&_b, index, tmp, offset, clause,
+                                                block, channels);
+                        }
                 }
         }
 

@@ -569,13 +569,17 @@ static void virgl_bind_vertex_elements_state(struct pipe_context *ctx,
 static void virgl_set_vertex_buffers(struct pipe_context *ctx,
                                     unsigned start_slot,
                                     unsigned num_buffers,
+                                     unsigned unbind_num_trailing_slots,
+                                     bool take_ownership,
                                     const struct pipe_vertex_buffer *buffers)
 {
    struct virgl_context *vctx = virgl_context(ctx);
 
    util_set_vertex_buffers_count(vctx->vertex_buffer,
                                  &vctx->num_vertex_buffers,
-                                 buffers, start_slot, num_buffers);
+                                 buffers, start_slot, num_buffers,
+                                 unbind_num_trailing_slots,
+                                 take_ownership);
 
    if (buffers) {
       for (unsigned i = 0; i < num_buffers; i++) {
@@ -632,6 +636,7 @@ static void virgl_hw_set_index_buffer(struct virgl_context *vctx,
 
 static void virgl_set_constant_buffer(struct pipe_context *ctx,
                                      enum pipe_shader_type shader, uint index,
+                                      bool take_ownership,
                                      const struct pipe_constant_buffer *buf)
 {
    struct virgl_context *vctx = virgl_context(ctx);
@@ -646,7 +651,12 @@ static void virgl_set_constant_buffer(struct pipe_context *ctx,
                                        buf->buffer_offset,
                                        buf->buffer_size, res);
 
-      pipe_resource_reference(&binding->ubos[index].buffer, buf->buffer);
+      if (take_ownership) {
+         pipe_resource_reference(&binding->ubos[index].buffer, NULL);
+         binding->ubos[index].buffer = buf->buffer;
+      } else {
+         pipe_resource_reference(&binding->ubos[index].buffer, buf->buffer);
+      }
       binding->ubos[index] = *buf;
       binding->ubo_enabled_mask |= 1 << index;
    } else {
@@ -1007,6 +1017,7 @@ static void virgl_set_sampler_views(struct pipe_context *ctx,
                                    enum pipe_shader_type shader_type,
                                    unsigned start_slot,
                                    unsigned num_views,
+                                   unsigned unbind_num_trailing_slots,
                                    struct pipe_sampler_view **views)
 {
    struct virgl_context *vctx = virgl_context(ctx);
@@ -1030,6 +1041,11 @@ static void virgl_set_sampler_views(struct pipe_context *ctx,
    virgl_encode_set_sampler_views(vctx, shader_type,
          start_slot, num_views, (struct virgl_sampler_view **)binding->views);
    virgl_attach_res_sampler_views(vctx, shader_type);
+
+   if (unbind_num_trailing_slots) {
+      virgl_set_sampler_views(ctx, shader_type, start_slot + num_views,
+                              unbind_num_trailing_slots, 0, NULL);
+   }
 }
 
 static void
@@ -1274,6 +1290,7 @@ static void virgl_fence_server_sync(struct pipe_context *ctx,
 static void virgl_set_shader_images(struct pipe_context *ctx,
                                     enum pipe_shader_type shader,
                                     unsigned start_slot, unsigned count,
+                                    unsigned unbind_num_trailing_slots,
                                     const struct pipe_image_view *images)
 {
    struct virgl_context *vctx = virgl_context(ctx);
@@ -1303,6 +1320,11 @@ static void virgl_set_shader_images(struct pipe_context *ctx,
    if (!max_shader_images)
       return;
    virgl_encode_set_shader_images(vctx, shader, start_slot, count, images);
+
+   if (unbind_num_trailing_slots) {
+      virgl_set_shader_images(ctx, shader, start_slot + count,
+                              unbind_num_trailing_slots, 0, NULL);
+   }
 }
 
 static void virgl_memory_barrier(struct pipe_context *ctx,
