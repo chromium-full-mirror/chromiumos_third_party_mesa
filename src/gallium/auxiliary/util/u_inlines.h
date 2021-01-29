@@ -223,6 +223,14 @@ static inline void
 pipe_vertex_buffer_reference(struct pipe_vertex_buffer *dst,
                              const struct pipe_vertex_buffer *src)
 {
+   if (dst->buffer.resource == src->buffer.resource) {
+      /* Just copy the fields, don't touch reference counts. */
+      dst->stride = src->stride;
+      dst->is_user_buffer = src->is_user_buffer;
+      dst->buffer_offset = src->buffer_offset;
+      return;
+   }
+
    pipe_vertex_buffer_unreference(dst);
    if (!src->is_user_buffer)
       pipe_resource_reference(&dst->buffer.resource, src->buffer.resource);
@@ -549,9 +557,9 @@ pipe_set_constant_buffer(struct pipe_context *pipe,
       cb.buffer_offset = 0;
       cb.buffer_size = buf->width0;
       cb.user_buffer = NULL;
-      pipe->set_constant_buffer(pipe, shader, index, &cb);
+      pipe->set_constant_buffer(pipe, shader, index, false, &cb);
    } else {
-      pipe->set_constant_buffer(pipe, shader, index, NULL);
+      pipe->set_constant_buffer(pipe, shader, index, false, NULL);
    }
 }
 
@@ -667,10 +675,16 @@ util_pipe_tex_to_tgsi_tex(enum pipe_texture_target pipe_tex_target,
 
 static inline void
 util_copy_constant_buffer(struct pipe_constant_buffer *dst,
-                          const struct pipe_constant_buffer *src)
+                          const struct pipe_constant_buffer *src,
+                          bool take_ownership)
 {
    if (src) {
-      pipe_resource_reference(&dst->buffer, src->buffer);
+      if (take_ownership) {
+         pipe_resource_reference(&dst->buffer, NULL);
+         dst->buffer = src->buffer;
+      } else {
+         pipe_resource_reference(&dst->buffer, src->buffer);
+      }
       dst->buffer_offset = src->buffer_offset;
       dst->buffer_size = src->buffer_size;
       dst->user_buffer = src->user_buffer;

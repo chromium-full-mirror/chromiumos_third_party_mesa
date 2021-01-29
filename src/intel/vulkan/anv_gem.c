@@ -375,6 +375,90 @@ anv_gem_create_context(struct anv_device *device)
 }
 
 int
+anv_gem_create_context_engines(struct anv_device *device,
+                               const struct drm_i915_query_engine_info *info,
+                               int num_engines, uint16_t *engine_classes)
+{
+   const size_t engine_inst_sz = 2 * sizeof(__u16); /* 1 class, 1 instance */
+   const size_t engines_param_size =
+      sizeof(__u64) /* extensions */ + num_engines * engine_inst_sz;
+
+   void *engines_param = malloc(engines_param_size);
+   assert(engines_param);
+   *(__u64*)engines_param = 0;
+   __u16 *class_inst_ptr = (__u16*)(((__u64*)engines_param) + 1);
+
+   /* For each type of drm_i915_gem_engine_class of interest, we keep track of
+    * the previous engine instance used.
+    */
+   int last_engine_idx[] = {
+      [I915_ENGINE_CLASS_RENDER] = -1,
+   };
+
+   int i915_engine_counts[] = {
+      [I915_ENGINE_CLASS_RENDER] =
+         anv_gem_count_engines(info, I915_ENGINE_CLASS_RENDER),
+   };
+
+   /* For each queue, we look for the next instance that matches the class we
+    * need.
+    */
+   for (int i = 0; i < num_engines; i++) {
+      uint16_t engine_class = engine_classes[i];
+      if (i915_engine_counts[engine_class] <= 0) {
+         free(engines_param);
+         return -1;
+      }
+
+      /* Run through the engines reported by the kernel looking for the next
+       * matching instance. We loop in case we want to create multiple
+       * contexts on an engine instance.
+       */
+      int engine_instance = -1;
+      for (int i = 0; i < info->num_engines; i++) {
+         int *idx = &last_engine_idx[engine_class];
+         if (++(*idx) >= info->num_engines)
+            *idx = 0;
+         if (info->engines[*idx].engine.engine_class == engine_class) {
+            engine_instance = info->engines[*idx].engine.engine_instance;
+            break;
+         }
+      }
+      if (engine_instance < 0) {
+         free(engines_param);
+         return -1;
+      }
+
+      *class_inst_ptr++ = engine_class;
+      *class_inst_ptr++ = engine_instance;
+   }
+
+   assert((uintptr_t)engines_param + engines_param_size ==
+          (uintptr_t)class_inst_ptr);
+
+   struct drm_i915_gem_context_create_ext_setparam set_engines = {
+      .base = {
+         .name = I915_CONTEXT_CREATE_EXT_SETPARAM,
+      },
+      .param = {
+	 .param = I915_CONTEXT_PARAM_ENGINES,
+         .value = (uintptr_t)engines_param,
+         .size = engines_param_size,
+      }
+   };
+   struct drm_i915_gem_context_create_ext create = {
+      .flags = I915_CONTEXT_CREATE_FLAGS_USE_EXTENSIONS,
+      .extensions = (uintptr_t)&set_engines,
+   };
+   int ret = gen_ioctl(device->fd, DRM_IOCTL_I915_GEM_CONTEXT_CREATE_EXT, &create);
+   free(engines_param);
+   if (ret == -1)
+      return -1;
+
+   return create.ctx_id;
+}
+
+int
 anv_gem_destroy_context(struct anv_device *device, int context)
 {
    struct drm_i915_gem_context_destroy destroy = {
@@ -416,14 +500,14 @@ anv_gem_get_context_param(int fd, int context, uint32_t param, uint64_t *value)
 }
 
 int
-anv_gem_gpu_get_reset_stats(struct anv_device *device,
-                            uint32_t *active, uint32_t *pending)
+anv_gem_context_get_reset_stats(int fd, int context,
+                                uint32_t *active, uint32_t *pending)
 {
    struct drm_i915_reset_stats stats = {
-      .ctx_id = device->context_id,
+      .ctx_id = context,
    };
 
-   int ret = gen_ioctl(device->fd, DRM_IOCTL_I915_GET_RESET_STATS, &stats);
+   int ret = gen_ioctl(fd, DRM_IOCTL_I915_GET_RESET_STATS, &stats);
    if (ret == 0) {
       *active = stats.batch_active;
       *pending = stats.batch_pending;
@@ -659,4 +743,59 @@ anv_gem_syncobj_timeline_query(struct anv_device *device,
    };
 
    return gen_ioctl(device->fd, DRM_IOCTL_SYNCOBJ_QUERY, &args);
+}
+
+int
+anv_i915_query(int fd, uint64_t query_id, void *buffer,
+               int32_t *buffer_len)
+{
+   struct drm_i915_query_item item = {
+      .query_id = query_id,
+      .length = *buffer_len,
+      .data_ptr = (uintptr_t)buffer,
+   };
+
+   struct drm_i915_query args = {
+      .num_items = 1,
+      .flags = 0,
+      .items_ptr = (uintptr_t)&item,
+   };
+
+   int ret = gen_ioctl(fd, DRM_IOCTL_I915_QUERY, &args);
+   *buffer_len = item.length;
+   return ret;
+}
+
+struct drm_i915_query_engine_info *
+anv_gem_get_engine_info(int fd)
+{
+   int32_t length = 0;
+   int ret = anv_i915_query(fd, DRM_I915_QUERY_ENGINE_INFO, NULL, &length);
+   assert(ret == 0);
+
+   if (ret == -1 && errno == EINVAL)
+      return NULL;
+
+   struct drm_i915_query_engine_info *info = calloc(1, length);
+   ret = anv_i915_query(fd, DRM_I915_QUERY_ENGINE_INFO, info, &length);
+   assert(ret == 0);
+
+   if (ret != 0) {
+      free(info);
+      return NULL;
+   }
+
+   return info;
+}
+
+int
+anv_gem_count_engines(const struct drm_i915_query_engine_info *info,
+                      uint16_t engine_class)
+{
+   int count = 0;
+   for (int i = 0; i < info->num_engines; i++) {
+      if (info->engines[i].engine.engine_class == engine_class)
+         count++;
+   }
+   return count;
 }

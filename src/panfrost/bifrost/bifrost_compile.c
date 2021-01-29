@@ -42,6 +42,7 @@ static const struct debug_named_value bifrost_debug_options[] = {
         {"shaders",   BIFROST_DBG_SHADERS,	"Dump shaders in NIR and MIR"},
         {"shaderdb",  BIFROST_DBG_SHADERDB,	"Print statistics"},
         {"verbose",   BIFROST_DBG_VERBOSE,	"Disassemble verbosely"},
+        {"internal",  BIFROST_DBG_INTERNAL,	"Dump even internal shaders"},
         DEBUG_NAMED_VALUE_END
 };
 
@@ -60,15 +61,6 @@ int bifrost_debug = 0;
 		do { if (bifrost_debug & BIFROST_DBG_MSGS) \
 			fprintf(stderr, "%s:%d: "fmt, \
 				__FUNCTION__, __LINE__, ##__VA_ARGS__); } while (0)
-
-static inline bi_builder
-bi_init_builder(bi_context *ctx)
-{
-        return (bi_builder) {
-                .shader = ctx,
-                .cursor = bi_after_block(ctx->current_block)
-        };
-}
 
 static bi_block *emit_cf_list(bi_context *ctx, struct exec_list *list);
 
@@ -1903,7 +1895,7 @@ emit_block(bi_context *ctx, nir_block *block)
         list_addtail(&ctx->current_block->base.link, &ctx->blocks);
         list_inithead(&ctx->current_block->base.instructions);
 
-        bi_builder _b = bi_init_builder(ctx);
+        bi_builder _b = bi_init_builder(ctx, bi_after_block(ctx->current_block));
 
         nir_foreach_instr(instr, block) {
                 bi_emit_instr(&_b, instr);
@@ -1937,7 +1929,7 @@ emit_if(bi_context *ctx, nir_if *nif)
         bi_block *before_block = ctx->current_block;
 
         /* Speculatively emit the branch, but we can't fill it in until later */
-        bi_builder _b = bi_init_builder(ctx);
+        bi_builder _b = bi_init_builder(ctx, bi_after_block(ctx->current_block));
         bi_instr *then_branch = bi_branch(&_b, &nif->condition, true);
 
         /* Emit the two subblocks. */
@@ -1991,7 +1983,7 @@ emit_loop(bi_context *ctx, nir_loop *nloop)
         emit_cf_list(ctx, &nloop->body);
 
         /* Branch back to loop back */
-        bi_builder _b = bi_init_builder(ctx);
+        bi_builder _b = bi_init_builder(ctx, bi_after_block(ctx->current_block));
         bi_jump(&_b, ctx->continue_block);
         pan_block_add_successor(&start_block->base, &ctx->continue_block->base);
         pan_block_add_successor(&ctx->current_block->base, &ctx->continue_block->base);
@@ -2049,13 +2041,13 @@ bi_print_stats(bi_context *ctx, FILE *fp)
 
                 bi_foreach_clause_in_block(block, clause) {
                         nr_clauses++;
-                        nr_tuples += clause->bundle_count;
+                        nr_tuples += clause->tuple_count;
 
-                        for (unsigned i = 0; i < clause->bundle_count; ++i) {
-                                if (clause->bundles[i].fma)
+                        for (unsigned i = 0; i < clause->tuple_count; ++i) {
+                                if (clause->tuples[i].fma)
                                         nr_ins++;
 
-                                if (clause->bundles[i].add)
+                                if (clause->tuples[i].add)
                                         nr_ins++;
                         }
                 }
@@ -2128,7 +2120,7 @@ bi_lower_constant(bi_builder *b, bi_instr *ins, unsigned s, uint32_t *accum, uns
 static void
 bi_lower_fau(bi_context *ctx, bi_block *block)
 {
-        bi_builder b = bi_init_builder(ctx);
+        bi_builder b = bi_init_builder(ctx, bi_after_block(ctx->current_block));
 
         bi_foreach_instr_in_block_safe(block, _ins) {
                 bi_instr *ins = (bi_instr *) _ins;
@@ -2280,6 +2272,28 @@ bifrost_nir_lower_i8_fragout(nir_shader *shader)
                         NULL);
 }
 
+/* Dead code elimination for branches at the end of a block - only one branch
+ * per block is legal semantically, but unreachable jumps can be generated */
+
+static void
+bi_cull_dead_branch(bi_block *block)
+{
+        bool branched = false;
+        ASSERTED bool was_jump = false;
+
+        bi_foreach_instr_in_block_safe(block, ins) {
+                if (!ins->branch_target) continue;
+
+                if (branched) {
+                        assert(was_jump);
+                        bi_remove_instruction(ins);
+                }
+
+                branched = true;
+                was_jump = ins->op == BI_OPCODE_JUMP;
+        }
+}
+
 panfrost_program *
 bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
                            const struct panfrost_compile_inputs *inputs)
@@ -2325,7 +2339,10 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
 
         NIR_PASS_V(nir, pan_nir_reorder_writeout);
 
-        if (bifrost_debug & BIFROST_DBG_SHADERS && !nir->info.internal) {
+        bool skip_internal = nir->info.internal;
+        skip_internal &= !(bifrost_debug & BIFROST_DBG_INTERNAL);
+
+        if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal) {
                 nir_print_shader(nir, stdout);
         }
 
@@ -2339,7 +2356,9 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
                 if (!func->impl)
                         continue;
 
-                ctx->impl = func->impl;
+                ctx->ssa_alloc += func->impl->ssa_alloc;
+                ctx->reg_alloc += func->impl->reg_alloc;
+
                 emit_cf_list(ctx, &func->impl->body);
                 break; /* TODO: Multi-function shaders */
         }
@@ -2352,6 +2371,8 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
                 /* Name blocks now that we're done emitting so the order is
                  * consistent */
                 block->base.name = block_source_count++;
+
+                bi_cull_dead_branch(block);
         }
 
         bool progress = false;
@@ -2361,7 +2382,7 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
 
                 bi_foreach_block(ctx, _block) {
                         bi_block *block = (bi_block *) _block;
-                        progress |= bi_opt_dead_code_eliminate(ctx, block);
+                        progress |= bi_opt_dead_code_eliminate(ctx, block, false);
                 }
         } while(progress);
 
@@ -2370,19 +2391,28 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
                 bi_lower_fau(ctx, block);
         }
 
-        if (bifrost_debug & BIFROST_DBG_SHADERS && !nir->info.internal)
+        if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal)
                 bi_print_shader(ctx, stdout);
         bi_schedule(ctx);
         bi_register_allocate(ctx);
-        if (bifrost_debug & BIFROST_DBG_SHADERS && !nir->info.internal)
+        if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal)
                 bi_print_shader(ctx, stdout);
 
         util_dynarray_init(&program->compiled, NULL);
         bi_pack(ctx, &program->compiled);
 
+        /* If we need to wait for ATEST or BLEND in the first clause, pass the
+         * corresponding bits through to the renderer state descriptor */
+        pan_block *first_block = list_first_entry(&ctx->blocks, pan_block, link);
+        bi_clause *first_clause = bi_next_clause(ctx, first_block, NULL);
+
+        unsigned first_deps = first_clause->dependencies;
+        program->wait_6 = (first_deps & (1 << 6));
+        program->wait_7 = (first_deps & (1 << 7));
+
         memcpy(program->blend_ret_offsets, ctx->blend_ret_offsets, sizeof(program->blend_ret_offsets));
 
-        if (bifrost_debug & BIFROST_DBG_SHADERS && !nir->info.internal) {
+        if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal) {
                 disassemble_bifrost(stdout, program->compiled.data,
                                 program->compiled.size,
                                 bifrost_debug & BIFROST_DBG_VERBOSE);
@@ -2395,7 +2425,7 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
         program->tls_size = ctx->tls_size;
 
         if ((bifrost_debug & BIFROST_DBG_SHADERDB || inputs->shaderdb) &&
-            !nir->info.internal) {
+            !skip_internal) {
                 bi_print_stats(ctx, stderr);
         }
 

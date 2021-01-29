@@ -314,17 +314,6 @@ update_so_info(struct zink_shader *sh,
    }
 }
 
-static bool
-last_vertex_stage(struct zink_shader *zs)
-{
-   assert(zs->nir->info.stage != MESA_SHADER_FRAGMENT);
-   if (zs->has_geometry_shader)
-      return zs->nir->info.stage == MESA_SHADER_GEOMETRY;
-   if (zs->has_tess_shader)
-      return zs->nir->info.stage == MESA_SHADER_TESS_EVAL;
-   return true;
-}
-
 VkShaderModule
 zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, struct zink_shader_key *key,
                     unsigned char *shader_slot_map, unsigned char *shader_slots_reserved)
@@ -333,15 +322,17 @@ zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, struct z
    void *streamout = NULL;
    nir_shader *nir = zs->nir;
    /* TODO: use a separate mem ctx here for ralloc */
-   if (zs->nir->info.stage != MESA_SHADER_FRAGMENT) {
-      if (last_vertex_stage(zs)) {
+   if (zs->nir->info.stage < MESA_SHADER_FRAGMENT) {
+      if (zink_vs_key(key)->last_vertex_stage) {
          if (zs->streamout.so_info_slots)
             streamout = &zs->streamout;
 
-         nir = nir_shader_clone(NULL, zs->nir);
-         NIR_PASS_V(nir, nir_lower_clip_halfz);
+         if (!zink_vs_key(key)->clip_halfz) {
+            nir = nir_shader_clone(NULL, zs->nir);
+            NIR_PASS_V(nir, nir_lower_clip_halfz);
+         }
       }
-   } else {
+   } else if (zs->nir->info.stage == MESA_SHADER_FRAGMENT) {
       if (!zink_fs_key(key)->samples &&
           nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK)) {
          nir = nir_shader_clone(NULL, zs->nir);
@@ -463,6 +454,7 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
    /* need to set up var->data.binding for UBOs, which means we need to start at
     * the "first" UBO, which is at the end of the list
     */
+   int ssbo_array_index = 0;
    foreach_list_typed_reverse(nir_variable, var, node, &nir->variables) {
       if (_nir_shader_variable_has_mode(var, nir_var_uniform |
                                         nir_var_mem_ubo |
@@ -493,14 +485,26 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
                ret->num_bindings++;
             }
          } else if (var->data.mode == nir_var_mem_ssbo) {
-            int binding = zink_binding(nir->info.stage,
-                                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                       var->data.binding);
-            ret->bindings[ret->num_bindings].index = var->data.binding;
-            ret->bindings[ret->num_bindings].binding = binding;
-            ret->bindings[ret->num_bindings].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            ret->bindings[ret->num_bindings].size = 1;
-            ret->num_bindings++;
+            /* same-ish mechanics as ubos */
+            bool bo_array = glsl_type_is_array(var->type) && glsl_type_is_interface(glsl_without_array(var->type));
+            if (var->data.location && !bo_array)
+               continue;
+            if (!var->data.explicit_binding) {
+               var->data.binding = ssbo_array_index;
+            }
+            for (unsigned i = 0; i < (bo_array ? glsl_get_aoa_size(var->type) : 1); i++) {
+               int binding = zink_binding(nir->info.stage,
+                                          VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                          var->data.binding + i);
+               if (strcmp(glsl_get_type_name(var->interface_type), "counters"))
+                  ret->bindings[ret->num_bindings].index = ssbo_array_index++;
+               else
+                  ret->bindings[ret->num_bindings].index = var->data.binding;
+               ret->bindings[ret->num_bindings].binding = binding;
+               ret->bindings[ret->num_bindings].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+               ret->bindings[ret->num_bindings].size = 1;
+               ret->num_bindings++;
+            }
          } else {
             assert(var->data.mode == nir_var_uniform);
             const struct glsl_type *type = glsl_without_array(var->type);

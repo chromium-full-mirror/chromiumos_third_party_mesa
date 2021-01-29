@@ -31,6 +31,7 @@
 #include "util/os_time.h"
 #include "common/gen_l3_config.h"
 #include "common/gen_disasm.h"
+#include "common/gen_sample_positions.h"
 #include "anv_private.h"
 #include "compiler/brw_nir.h"
 #include "anv_nir.h"
@@ -217,6 +218,7 @@ anv_shader_compile_to_nir(struct anv_device *device,
          .variable_pointers = true,
          .vk_memory_model = true,
          .vk_memory_model_device_scope = true,
+         .workgroup_memory_explicit_layout = true,
       },
       .ubo_addr_format = nir_address_format_32bit_index_offset,
       .ssbo_addr_format =
@@ -1743,8 +1745,11 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
 
       anv_pipeline_lower_nir(&pipeline->base, mem_ctx, &stage, layout);
 
-      NIR_PASS_V(stage.nir, nir_lower_vars_to_explicit_types,
-                 nir_var_mem_shared, shared_type_info);
+      if (!stage.nir->info.cs.shared_memory_explicit_layout) {
+         NIR_PASS_V(stage.nir, nir_lower_vars_to_explicit_types,
+                    nir_var_mem_shared, shared_type_info);
+      }
+
       NIR_PASS_V(stage.nir, nir_lower_explicit_io,
                  nir_var_mem_shared, nir_address_format_32bit_offset);
       NIR_PASS_V(stage.nir, brw_nir_lower_cs_intrinsics);
@@ -2037,6 +2042,34 @@ copy_non_dynamic_state(struct anv_graphics_pipeline *pipeline,
       if (states & ANV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE) {
          dynamic->line_stipple.factor = line_state->lineStippleFactor;
          dynamic->line_stipple.pattern = line_state->lineStipplePattern;
+      }
+   }
+
+   if (states & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS) {
+      const VkPipelineMultisampleStateCreateInfo *ms_info =
+         pCreateInfo->pMultisampleState;
+      const VkPipelineSampleLocationsStateCreateInfoEXT *sl_info = ms_info ?
+         vk_find_struct_const(ms_info, PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT) : NULL;
+
+      if (sl_info) {
+         dynamic->sample_locations.samples =
+            sl_info->sampleLocationsInfo.sampleLocationsCount;
+         const VkSampleLocationEXT *positions =
+            sl_info->sampleLocationsInfo.pSampleLocations;
+         for (uint32_t i = 0; i < dynamic->sample_locations.samples; i++) {
+            dynamic->sample_locations.locations[i].x = positions[i].x;
+            dynamic->sample_locations.locations[i].y = positions[i].y;
+         }
+
+      } else {
+         dynamic->sample_locations.samples =
+            ms_info ? ms_info->rasterizationSamples : 1;
+         const struct gen_sample_position *positions =
+            gen_get_sample_positions(dynamic->sample_locations.samples);
+         for (uint32_t i = 0; i < dynamic->sample_locations.samples; i++) {
+            dynamic->sample_locations.locations[i].x = positions[i].x;
+            dynamic->sample_locations.locations[i].y = positions[i].y;
+         }
       }
    }
 

@@ -432,6 +432,7 @@ panfrost_draw_emit_tiler(struct panfrost_batch *batch,
                 cfg.cull_back_face = rast->cull_face & PIPE_FACE_BACK;
                 cfg.position = pos;
                 cfg.state = panfrost_emit_frag_shader_meta(batch);
+                cfg.attributes = panfrost_emit_image_attribs(batch, &cfg.attribute_buffers, PIPE_SHADER_FRAGMENT);
                 cfg.viewport = panfrost_emit_viewport(batch);
                 cfg.varyings = fs_vary;
                 cfg.varying_buffers = fs_vary ? varyings : 0;
@@ -635,6 +636,53 @@ panfrost_bind_rasterizer_state(
 {
         struct panfrost_context *ctx = pan_context(pctx);
         ctx->rasterizer = hwcso;
+}
+
+static void
+panfrost_set_shader_images(
+        struct pipe_context *pctx,
+        enum pipe_shader_type shader,
+        unsigned start_slot, unsigned count, unsigned unbind_num_trailing_slots,
+        const struct pipe_image_view *iviews)
+{
+        struct panfrost_context *ctx = pan_context(pctx);
+
+        /* Unbind start_slot...start_slot+count */
+        if (!iviews) {
+                for (int i = start_slot; i < start_slot + count + unbind_num_trailing_slots; i++) {
+                        pipe_resource_reference(&ctx->images[shader][i].resource, NULL);
+                }
+
+                ctx->image_mask[shader] &= ~(((1ull << count) - 1) << start_slot);
+                return;
+        }
+
+        /* Bind start_slot...start_slot+count */
+        for (int i = 0; i < count; i++) {
+                const struct pipe_image_view *image = &iviews[i];
+                SET_BIT(ctx->image_mask[shader], 1 << (start_slot + i), image->resource);
+
+                if (!image->resource) {
+                        util_copy_image_view(&ctx->images[shader][start_slot+i], NULL);
+                        continue;
+                }
+
+                struct panfrost_resource *rsrc = pan_resource(image->resource);
+
+                /* Images don't work with AFBC, since they require pixel-level granularity */
+                if (drm_is_afbc(rsrc->layout.modifier)) {
+                        pan_resource_modifier_convert(ctx, rsrc,
+                                        DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED);
+                }
+
+                util_copy_image_view(&ctx->images[shader][start_slot+i], image);
+        }
+
+        /* Unbind start_slot+count...start_slot+count+unbind_num_trailing_slots */
+        for (int i = 0; i < unbind_num_trailing_slots; i++) {
+                SET_BIT(ctx->image_mask[shader], 1 << (start_slot + count + i), NULL);
+                util_copy_image_view(&ctx->images[shader][start_slot+count+i], NULL);
+        }
 }
 
 static void *
@@ -966,23 +1014,27 @@ panfrost_set_vertex_buffers(
         struct pipe_context *pctx,
         unsigned start_slot,
         unsigned num_buffers,
+        unsigned unbind_num_trailing_slots,
+        bool take_ownership,
         const struct pipe_vertex_buffer *buffers)
 {
         struct panfrost_context *ctx = pan_context(pctx);
 
-        util_set_vertex_buffers_mask(ctx->vertex_buffers, &ctx->vb_mask, buffers, start_slot, num_buffers);
+        util_set_vertex_buffers_mask(ctx->vertex_buffers, &ctx->vb_mask, buffers,
+                                     start_slot, num_buffers, unbind_num_trailing_slots,
+                                     take_ownership);
 }
 
 static void
 panfrost_set_constant_buffer(
         struct pipe_context *pctx,
-        enum pipe_shader_type shader, uint index,
+        enum pipe_shader_type shader, uint index, bool take_ownership,
         const struct pipe_constant_buffer *buf)
 {
         struct panfrost_context *ctx = pan_context(pctx);
         struct panfrost_constant_buffer *pbuf = &ctx->constant_buffer[shader];
 
-        util_copy_constant_buffer(&pbuf->cb[index], buf);
+        util_copy_constant_buffer(&pbuf->cb[index], buf, take_ownership);
 
         unsigned mask = (1 << index);
 
@@ -1135,6 +1187,7 @@ panfrost_set_sampler_views(
         struct pipe_context *pctx,
         enum pipe_shader_type shader,
         unsigned start_slot, unsigned num_views,
+        unsigned unbind_num_trailing_slots,
         struct pipe_sampler_view **views)
 {
         struct panfrost_context *ctx = pan_context(pctx);
@@ -1184,16 +1237,6 @@ panfrost_set_shader_buffers(
 
         util_set_shader_buffers_mask(ctx->ssbo[shader], &ctx->ssbo_mask[shader],
                         buffers, start, count);
-}
-
-static void
-panfrost_set_shader_images(
-        struct pipe_context *pctx,
-        enum pipe_shader_type shader,
-        unsigned start, unsigned count,
-        const struct pipe_image_view *images)
-{
-        /* TODO */
 }
 
 static void

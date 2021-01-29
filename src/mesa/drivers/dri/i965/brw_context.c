@@ -579,7 +579,7 @@ brw_initialize_context_constants(struct brw_context *brw)
    int max_samples;
    const int *msaa_modes = intel_supported_msaa_modes(brw->screen);
    const int clamp_max_samples =
-      driQueryOptioni(&brw->optionCache, "clamp_max_samples");
+      driQueryOptioni(&brw->screen->optionCache, "clamp_max_samples");
 
    if (clamp_max_samples < 0) {
       max_samples = msaa_modes[0];
@@ -858,11 +858,7 @@ brw_process_driconf_options(struct brw_context *brw)
 {
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
    struct gl_context *ctx = &brw->ctx;
-
-   driOptionCache *options = &brw->optionCache;
-   driParseConfigFiles(options, &brw->screen->optionCache,
-                       brw->driContext->driScreenPriv->myNum,
-                       "i965", NULL, NULL, 0, NULL, 0);
+   const driOptionCache *const options = &brw->screen->optionCache;
 
    if (INTEL_DEBUG & DEBUG_NO_HIZ) {
        brw->has_hiz = false;
@@ -889,9 +885,9 @@ brw_process_driconf_options(struct brw_context *brw)
       brw->disable_throttling = true;
    }
 
-   brw->precompile = driQueryOptionb(&brw->optionCache, "shader_precompile");
+   brw->precompile = driQueryOptionb(&brw->screen->optionCache, "shader_precompile");
 
-   if (driQueryOptionb(&brw->optionCache, "precise_trig"))
+   if (driQueryOptionb(&brw->screen->optionCache, "precise_trig"))
       brw->screen->compiler->precise_trig = true;
 
    ctx->Const.ForceGLSLExtensionsWarn =
@@ -1148,6 +1144,29 @@ brwCreateContext(gl_api api,
    _mesa_override_extensions(ctx);
    _mesa_compute_version(ctx);
 
+#ifndef NDEBUG
+   /* Enforce that the version of the context that was created is at least as
+    * high as the version that was advertised via GLX / EGL / whatever window
+    * system.
+    */
+   const __DRIscreen *const dri_screen = brw->screen->driScrnPriv;
+
+   switch (api) {
+   case API_OPENGL_COMPAT:
+      assert(ctx->Version >= dri_screen->max_gl_compat_version);
+      break;
+   case API_OPENGLES:
+      assert(ctx->Version >= dri_screen->max_gl_es1_version);
+      break;
+   case API_OPENGLES2:
+      assert(ctx->Version >= dri_screen->max_gl_es2_version);
+      break;
+   case API_OPENGL_CORE:
+      assert(ctx->Version >= dri_screen->max_gl_core_version);
+      break;
+   }
+#endif
+
    /* GL_ARB_gl_spirv */
    if (ctx->Extensions.ARB_gl_spirv) {
       brw_initialize_spirv_supported_capabilities(brw);
@@ -1243,8 +1262,6 @@ intelDestroyContext(__DRIcontext * driContextPriv)
    brw_bo_unreference(brw->throttle_batch[0]);
    brw->throttle_batch[1] = NULL;
    brw->throttle_batch[0] = NULL;
-
-   driDestroyOptionCache(&brw->optionCache);
 
    /* free the Mesa context */
    _mesa_free_context_data(&brw->ctx, true);

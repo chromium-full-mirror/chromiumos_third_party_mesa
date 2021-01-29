@@ -355,18 +355,16 @@ private:
 
 
 /* helper function for debugging */
-#if 0
-void print_regs(ra_ctx& ctx, bool vgprs, RegisterFile& reg_file)
+UNUSED void print_regs(ra_ctx& ctx, bool vgprs, RegisterFile& reg_file)
 {
    unsigned max = vgprs ? ctx.program->max_reg_demand.vgpr : ctx.program->max_reg_demand.sgpr;
-   unsigned lb = vgprs ? 256 : 0;
-   unsigned ub = lb + max;
+   PhysRegInterval regs { vgprs ? PhysReg{256} : PhysReg{0}, max };
    char reg_char = vgprs ? 'v' : 's';
 
    /* print markers */
    printf("       ");
-   for (unsigned i = lb; i < ub; i += 3) {
-      printf("%.2u ", i - lb);
+   for (unsigned i = 0; i < regs.size; i += 3) {
+      printf("%.2u ", i);
    }
    printf("\n");
 
@@ -375,12 +373,12 @@ void print_regs(ra_ctx& ctx, bool vgprs, RegisterFile& reg_file)
    unsigned free_regs = 0;
    unsigned prev = 0;
    bool char_select = false;
-   for (unsigned i = lb; i < ub; i++) {
-      if (reg_file[i] == 0xFFFF) {
+   for (auto reg : regs) {
+      if (reg_file[reg] == 0xFFFFFFFF) {
          printf("~");
-      } else if (reg_file[i]) {
-         if (reg_file[i] != prev) {
-            prev = reg_file[i];
+      } else if (reg_file[reg]) {
+         if (reg_file[reg] != prev) {
+            prev = reg_file[reg];
             char_select = !char_select;
          }
          printf(char_select ? "#" : "@");
@@ -396,18 +394,18 @@ void print_regs(ra_ctx& ctx, bool vgprs, RegisterFile& reg_file)
    /* print assignments */
    prev = 0;
    unsigned size = 0;
-   for (unsigned i = lb; i < ub; i++) {
+   for (auto i : regs) {
       if (reg_file[i] != prev) {
          if (prev && size > 1)
-            printf("-%d]\n", i - 1 - lb);
+            printf("-%d]\n", i - regs.lo() - 1);
          else if (prev)
             printf("]\n");
          prev = reg_file[i];
-         if (prev && prev != 0xFFFF) {
+         if (prev && prev != 0xFFFFFFFF) {
             if (ctx.orig_names.count(reg_file[i]) && ctx.orig_names[reg_file[i]].id() != reg_file[i])
-               printf("%%%u (was %%%d) = %c[%d", reg_file[i], ctx.orig_names[reg_file[i]].id(), reg_char, i - lb);
+               printf("%%%u (was %%%d) = %c[%d", reg_file[i], ctx.orig_names[reg_file[i]].id(), reg_char, i - regs.lo());
             else
-               printf("%%%u = %c[%d", reg_file[i], reg_char, i - lb);
+               printf("%%%u = %c[%d", reg_file[i], reg_char, i - regs.lo());
          }
          size = 1;
       } else {
@@ -415,11 +413,10 @@ void print_regs(ra_ctx& ctx, bool vgprs, RegisterFile& reg_file)
       }
    }
    if (prev && size > 1)
-      printf("-%d]\n", ub - lb - 1);
+      printf("-%d]\n", regs.size - 1);
    else if (prev)
       printf("]\n");
 }
-#endif
 
 
 unsigned get_subdword_operand_stride(chip_class chip, const aco_ptr<Instruction>& instr, unsigned idx, RegClass rc)

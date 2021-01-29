@@ -573,12 +573,14 @@ static void si_update_shader_needs_decompress_mask(struct si_context *sctx, unsi
 }
 
 static void si_set_sampler_views(struct pipe_context *ctx, enum pipe_shader_type shader,
-                                 unsigned start, unsigned count, struct pipe_sampler_view **views)
+                                 unsigned start, unsigned count,
+                                 unsigned unbind_num_trailing_slots,
+                                 struct pipe_sampler_view **views)
 {
    struct si_context *sctx = (struct si_context *)ctx;
    int i;
 
-   if (!count || shader >= SI_NUM_SHADERS)
+   if ((!count && !unbind_num_trailing_slots) || shader >= SI_NUM_SHADERS)
       return;
 
    if (views) {
@@ -588,6 +590,9 @@ static void si_set_sampler_views(struct pipe_context *ctx, enum pipe_shader_type
       for (i = 0; i < count; i++)
          si_set_sampler_view(sctx, shader, start + i, NULL, false);
    }
+
+   for (; i < count + unbind_num_trailing_slots; i++)
+      si_set_sampler_view(sctx, shader, start + i, NULL, false);
 
    si_update_shader_needs_decompress_mask(sctx, shader);
 }
@@ -803,6 +808,7 @@ static void si_set_shader_image(struct si_context *ctx, unsigned shader, unsigne
 
 static void si_set_shader_images(struct pipe_context *pipe, enum pipe_shader_type shader,
                                  unsigned start_slot, unsigned count,
+                                 unsigned unbind_num_trailing_slots,
                                  const struct pipe_image_view *views)
 {
    struct si_context *ctx = (struct si_context *)pipe;
@@ -810,10 +816,10 @@ static void si_set_shader_images(struct pipe_context *pipe, enum pipe_shader_typ
 
    assert(shader < SI_NUM_SHADERS);
 
-   if (!count)
+   if (!count && !unbind_num_trailing_slots)
       return;
 
-   assert(start_slot + count <= SI_NUM_IMAGES);
+   assert(start_slot + count + unbind_num_trailing_slots <= SI_NUM_IMAGES);
 
    if (views) {
       for (i = 0, slot = start_slot; i < count; ++i, ++slot)
@@ -822,6 +828,9 @@ static void si_set_shader_images(struct pipe_context *pipe, enum pipe_shader_typ
       for (i = 0, slot = start_slot; i < count; ++i, ++slot)
          si_set_shader_image(ctx, shader, slot, NULL, false);
    }
+
+   for (i = 0; i < unbind_num_trailing_slots; ++i, ++slot)
+      si_set_shader_image(ctx, shader, slot, NULL, false);
 
    if (shader == PIPE_SHADER_COMPUTE &&
        ctx->cs_shader_state.program &&
@@ -1093,7 +1102,7 @@ static void si_upload_const_buffer(struct si_context *sctx, struct si_resource *
 }
 
 static void si_set_constant_buffer(struct si_context *sctx, struct si_buffer_resources *buffers,
-                                   unsigned descriptors_idx, uint slot,
+                                   unsigned descriptors_idx, uint slot, bool take_ownership,
                                    const struct pipe_constant_buffer *input)
 {
    struct si_descriptors *descs = &sctx->descriptors[descriptors_idx];
@@ -1116,11 +1125,16 @@ static void si_set_constant_buffer(struct si_context *sctx, struct si_buffer_res
                                 input->buffer_size, &buffer_offset);
          if (!buffer) {
             /* Just unbind on failure. */
-            si_set_constant_buffer(sctx, buffers, descriptors_idx, slot, NULL);
+            si_set_constant_buffer(sctx, buffers, descriptors_idx, slot, false, NULL);
             return;
          }
       } else {
-         pipe_resource_reference(&buffer, input->buffer);
+         if (take_ownership) {
+            pipe_resource_reference(&buffer, NULL);
+            buffer = input->buffer;
+         } else {
+            pipe_resource_reference(&buffer, input->buffer);
+         }
          buffer_offset = input->buffer_offset;
       }
 
@@ -1157,7 +1171,8 @@ static void si_set_constant_buffer(struct si_context *sctx, struct si_buffer_res
 }
 
 static void si_pipe_set_constant_buffer(struct pipe_context *ctx, enum pipe_shader_type shader,
-                                        uint slot, const struct pipe_constant_buffer *input)
+                                        uint slot, bool take_ownership,
+                                        const struct pipe_constant_buffer *input)
 {
    struct si_context *sctx = (struct si_context *)ctx;
 
@@ -1182,7 +1197,8 @@ static void si_pipe_set_constant_buffer(struct pipe_context *ctx, enum pipe_shad
 
    slot = si_get_constbuf_slot(slot);
    si_set_constant_buffer(sctx, &sctx->const_and_shader_buffers[shader],
-                          si_const_and_shader_buffer_descriptors_idx(shader), slot, input);
+                          si_const_and_shader_buffer_descriptors_idx(shader), slot,
+                          take_ownership, input);
 }
 
 static void si_set_inlinable_constants(struct pipe_context *ctx,
@@ -1303,7 +1319,7 @@ void si_get_shader_buffers(struct si_context *sctx, enum pipe_shader_type shader
 void si_set_internal_const_buffer(struct si_context *sctx, uint slot,
                                   const struct pipe_constant_buffer *input)
 {
-   si_set_constant_buffer(sctx, &sctx->internal_bindings, SI_DESCS_INTERNAL, slot, input);
+   si_set_constant_buffer(sctx, &sctx->internal_bindings, SI_DESCS_INTERNAL, slot, false, input);
 }
 
 void si_set_internal_shader_buffer(struct si_context *sctx, uint slot,

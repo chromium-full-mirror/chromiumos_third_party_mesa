@@ -2740,6 +2740,7 @@ static void
 iris_set_shader_images(struct pipe_context *ctx,
                        enum pipe_shader_type p_stage,
                        unsigned start_slot, unsigned count,
+                       unsigned unbind_num_trailing_slots,
                        const struct pipe_image_view *p_images)
 {
    struct iris_context *ice = (struct iris_context *) ctx;
@@ -2751,7 +2752,8 @@ iris_set_shader_images(struct pipe_context *ctx,
    struct brw_image_param *image_params = genx->shaders[stage].image_param;
 #endif
 
-   shs->bound_image_views &= ~u_bit_consecutive(start_slot, count);
+   shs->bound_image_views &=
+      ~u_bit_consecutive(start_slot, count + unbind_num_trailing_slots);
 
    for (unsigned i = 0; i < count; i++) {
       struct iris_image_view *iv = &shs->image[start_slot + i];
@@ -2840,6 +2842,11 @@ iris_set_shader_images(struct pipe_context *ctx,
       ice->state.stage_dirty |= IRIS_STAGE_DIRTY_CONSTANTS_VS << stage;
       shs->sysvals_need_upload = true;
    }
+
+   if (unbind_num_trailing_slots) {
+      iris_set_shader_images(ctx, p_stage, start_slot + count,
+                             unbind_num_trailing_slots, 0, NULL);
+   }
 }
 
 
@@ -2850,15 +2857,18 @@ static void
 iris_set_sampler_views(struct pipe_context *ctx,
                        enum pipe_shader_type p_stage,
                        unsigned start, unsigned count,
+                       unsigned unbind_num_trailing_slots,
                        struct pipe_sampler_view **views)
 {
    struct iris_context *ice = (struct iris_context *) ctx;
    gl_shader_stage stage = stage_from_pipe(p_stage);
    struct iris_shader_state *shs = &ice->state.shaders[stage];
+   unsigned i;
 
-   shs->bound_sampler_views &= ~u_bit_consecutive(start, count);
+   shs->bound_sampler_views &=
+      ~u_bit_consecutive(start, count + unbind_num_trailing_slots);
 
-   for (unsigned i = 0; i < count; i++) {
+   for (i = 0; i < count; i++) {
       struct pipe_sampler_view *pview = views ? views[i] : NULL;
       pipe_sampler_view_reference((struct pipe_sampler_view **)
                                   &shs->textures[start + i], pview);
@@ -2872,6 +2882,10 @@ iris_set_sampler_views(struct pipe_context *ctx,
          update_surface_state_addrs(ice->state.surface_uploader,
                                     &view->surface_state, view->res->bo);
       }
+   }
+   for (; i < count + unbind_num_trailing_slots; i++) {
+      pipe_sampler_view_reference((struct pipe_sampler_view **)
+                                  &shs->textures[start + i], NULL);
    }
 
    ice->state.stage_dirty |= (IRIS_STAGE_DIRTY_BINDINGS_VS << stage);
@@ -3206,6 +3220,7 @@ iris_set_framebuffer_state(struct pipe_context *ctx,
 static void
 iris_set_constant_buffer(struct pipe_context *ctx,
                          enum pipe_shader_type p_stage, unsigned index,
+                         bool take_ownership,
                          const struct pipe_constant_buffer *input)
 {
    struct iris_context *ice = (struct iris_context *) ctx;
@@ -3227,14 +3242,19 @@ iris_set_constant_buffer(struct pipe_context *ctx,
 
          if (!cbuf->buffer) {
             /* Allocation was unsuccessful - just unbind */
-            iris_set_constant_buffer(ctx, p_stage, index, NULL);
+            iris_set_constant_buffer(ctx, p_stage, index, false, NULL);
             return;
          }
 
          assert(map);
          memcpy(map, input->user_buffer, input->buffer_size);
       } else if (input->buffer) {
-         pipe_resource_reference(&cbuf->buffer, input->buffer);
+         if (take_ownership) {
+            pipe_resource_reference(&cbuf->buffer, NULL);
+            cbuf->buffer = input->buffer;
+         } else {
+            pipe_resource_reference(&cbuf->buffer, input->buffer);
+         }
 
          cbuf->buffer_offset = input->buffer_offset;
       }
@@ -3415,13 +3435,16 @@ iris_delete_state(struct pipe_context *ctx, void *state)
 static void
 iris_set_vertex_buffers(struct pipe_context *ctx,
                         unsigned start_slot, unsigned count,
+                        unsigned unbind_num_trailing_slots,
+                        bool take_ownership,
                         const struct pipe_vertex_buffer *buffers)
 {
    struct iris_context *ice = (struct iris_context *) ctx;
    struct iris_screen *screen = (struct iris_screen *)ctx->screen;
    struct iris_genx_state *genx = ice->state.genx;
 
-   ice->state.bound_vertex_buffers &= ~u_bit_consecutive64(start_slot, count);
+   ice->state.bound_vertex_buffers &=
+      ~u_bit_consecutive64(start_slot, count + unbind_num_trailing_slots);
 
    for (unsigned i = 0; i < count; i++) {
       const struct pipe_vertex_buffer *buffer = buffers ? &buffers[i] : NULL;
@@ -3436,7 +3459,12 @@ iris_set_vertex_buffers(struct pipe_context *ctx,
       /* We may see user buffers that are NULL bindings. */
       assert(!(buffer->is_user_buffer && buffer->buffer.user != NULL));
 
-      pipe_resource_reference(&state->resource, buffer->buffer.resource);
+      if (take_ownership) {
+         pipe_resource_reference(&state->resource, NULL);
+         state->resource = buffer->buffer.resource;
+      } else {
+         pipe_resource_reference(&state->resource, buffer->buffer.resource);
+      }
       struct iris_resource *res = (void *) state->resource;
 
       state->offset = (int) buffer->buffer_offset;
@@ -3460,6 +3488,13 @@ iris_set_vertex_buffers(struct pipe_context *ctx,
             vb.NullVertexBuffer = true;
          }
       }
+   }
+
+   for (unsigned i = 0; i < unbind_num_trailing_slots; i++) {
+      struct iris_vertex_buffer_state *state =
+         &genx->vertex_buffers[start_slot + count + i];
+
+      pipe_resource_reference(&state->resource, NULL);
    }
 
    ice->state.dirty |= IRIS_DIRTY_VERTEX_BUFFERS;
@@ -5581,33 +5616,33 @@ iris_upload_dirty_render_state(struct iris_context *ice,
    }
 
    if (dirty & IRIS_DIRTY_URB) {
-      unsigned size[4];
-
       for (int i = MESA_SHADER_VERTEX; i <= MESA_SHADER_GEOMETRY; i++) {
          if (!ice->shaders.prog[i]) {
-            size[i] = 1;
+            ice->shaders.urb.size[i] = 1;
          } else {
             struct brw_vue_prog_data *vue_prog_data =
                (void *) ice->shaders.prog[i]->prog_data;
-            size[i] = vue_prog_data->urb_entry_size;
+            ice->shaders.urb.size[i] = vue_prog_data->urb_entry_size;
          }
-         assert(size[i] != 0);
+         assert(ice->shaders.urb.size[i] != 0);
       }
 
-      unsigned entries[4], start[4];
       gen_get_urb_config(&batch->screen->devinfo,
                          batch->screen->l3_config_3d,
                          ice->shaders.prog[MESA_SHADER_TESS_EVAL] != NULL,
                          ice->shaders.prog[MESA_SHADER_GEOMETRY] != NULL,
-                         size, entries, start,
-                         &ice->state.urb_deref_block_size);
+                         ice->shaders.urb.size,
+                         ice->shaders.urb.entries,
+                         ice->shaders.urb.start,
+                         &ice->state.urb_deref_block_size,
+                         &ice->shaders.urb.constrained);
 
       for (int i = MESA_SHADER_VERTEX; i <= MESA_SHADER_GEOMETRY; i++) {
          iris_emit_cmd(batch, GENX(3DSTATE_URB_VS), urb) {
             urb._3DCommandSubOpcode += i;
-            urb.VSURBStartingAddress     = start[i];
-            urb.VSURBEntryAllocationSize = size[i] - 1;
-            urb.VSNumberofURBEntries     = entries[i];
+            urb.VSURBStartingAddress     = ice->shaders.urb.start[i];
+            urb.VSURBEntryAllocationSize = ice->shaders.urb.size[i] - 1;
+            urb.VSNumberofURBEntries     = ice->shaders.urb.entries[i];
          }
       }
    }

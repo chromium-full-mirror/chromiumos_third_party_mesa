@@ -350,8 +350,20 @@ anv_queue_submit_deferred_locked(struct anv_queue *queue, uint32_t *advance)
 static VkResult
 anv_device_submit_deferred_locked(struct anv_device *device)
 {
-   uint32_t advance = 0;
-   return anv_queue_submit_deferred_locked(&device->queue, &advance);
+   VkResult result = VK_SUCCESS;
+
+   uint32_t advance;
+   do {
+      advance = 0;
+      for (uint32_t i = 0; i < device->queue_count; i++) {
+         struct anv_queue *queue = &device->queues[i];
+         VkResult qres = anv_queue_submit_deferred_locked(queue, &advance);
+         if (qres != VK_SUCCESS)
+            result = qres;
+      }
+   } while (advance);
+
+   return result;
 }
 
 static void
@@ -485,12 +497,20 @@ _anv_queue_submit(struct anv_queue *queue, struct anv_queue_submit **_submit,
 }
 
 VkResult
-anv_queue_init(struct anv_device *device, struct anv_queue *queue)
+anv_queue_init(struct anv_device *device, struct anv_queue *queue,
+               uint32_t exec_flags,
+               const VkDeviceQueueCreateInfo *pCreateInfo)
 {
+   struct anv_physical_device *pdevice = device->physical;
    VkResult result;
 
    queue->device = device;
-   queue->flags = 0;
+   queue->flags = pCreateInfo->flags;
+
+   assert(pCreateInfo->queueFamilyIndex < pdevice->queue.family_count);
+   queue->family = &pdevice->queue.families[pCreateInfo->queueFamilyIndex];
+
+   queue->exec_flags = exec_flags;
    queue->lost = false;
    queue->quit = false;
 
@@ -528,21 +548,20 @@ anv_queue_init(struct anv_device *device, struct anv_queue *queue)
 void
 anv_queue_finish(struct anv_queue *queue)
 {
+   if (queue->device->has_thread_submit) {
+      pthread_mutex_lock(&queue->mutex);
+      pthread_cond_broadcast(&queue->cond);
+      queue->quit = true;
+      pthread_mutex_unlock(&queue->mutex);
+
+      void *ret;
+      pthread_join(queue->thread, &ret);
+
+      pthread_cond_destroy(&queue->cond);
+      pthread_mutex_destroy(&queue->mutex);
+   }
+
    vk_object_base_finish(&queue->base);
-
-   if (!queue->device->has_thread_submit)
-      return;
-
-   pthread_mutex_lock(&queue->mutex);
-   pthread_cond_broadcast(&queue->cond);
-   queue->quit = true;
-   pthread_mutex_unlock(&queue->mutex);
-
-   void *ret;
-   pthread_join(queue->thread, &ret);
-
-   pthread_cond_destroy(&queue->cond);
-   pthread_mutex_destroy(&queue->mutex);
 }
 
 static VkResult

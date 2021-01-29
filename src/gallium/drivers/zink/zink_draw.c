@@ -162,6 +162,14 @@ zink_bind_vertex_buffers(struct zink_batch *batch, struct zink_context *ctx)
 static struct zink_gfx_program *
 get_gfx_program(struct zink_context *ctx)
 {
+   if (ctx->last_vertex_stage_dirty) {
+      if (ctx->gfx_stages[PIPE_SHADER_GEOMETRY])
+         ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_GEOMETRY);
+      else if (ctx->gfx_stages[PIPE_SHADER_TESS_EVAL])
+         ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_TESS_EVAL);
+      else
+         ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_VERTEX);
+   }
    if (ctx->dirty_shader_stages) {
       struct hash_entry *entry = _mesa_hash_table_search(ctx->program_cache,
                                                          ctx->gfx_stages);
@@ -366,17 +374,23 @@ zink_draw_vbo(struct pipe_context *pctx,
             wds[num_wds].pBufferInfo = buffer_infos + num_buffer_info;
             ++num_buffer_info;
          } else if (shader->bindings[j].type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-            assert(ctx->ssbos[i][index].buffer_size > 0);
-            assert(ctx->ssbos[i][index].buffer_size <= screen->info.props.limits.maxStorageBufferRange);
-            assert(ctx->ssbos[i][index].buffer);
             struct zink_resource *res = zink_resource(ctx->ssbos[i][index].buffer);
-            if (ctx->writable_ssbos & (1 << index))
-               write_desc_resources[num_wds] = res;
-            else
-               read_desc_resources[num_wds] = res;
-            buffer_infos[num_buffer_info].buffer = res->buffer;
-            buffer_infos[num_buffer_info].offset = ctx->ssbos[i][index].buffer_offset;
-            buffer_infos[num_buffer_info].range  = ctx->ssbos[i][index].buffer_size;
+            if (res) {
+               assert(ctx->ssbos[i][index].buffer_size > 0);
+               assert(ctx->ssbos[i][index].buffer_size <= screen->info.props.limits.maxStorageBufferRange);
+               if (ctx->writable_ssbos[i] & (1 << index))
+                  write_desc_resources[num_wds] = res;
+               else
+                  read_desc_resources[num_wds] = res;
+               buffer_infos[num_buffer_info].buffer = res->buffer;
+               buffer_infos[num_buffer_info].offset = ctx->ssbos[i][index].buffer_offset;
+               buffer_infos[num_buffer_info].range  = ctx->ssbos[i][index].buffer_size;
+            } else {
+               assert(screen->info.rb2_feats.nullDescriptor);
+               buffer_infos[num_buffer_info].buffer = VK_NULL_HANDLE;
+               buffer_infos[num_buffer_info].offset = 0;
+               buffer_infos[num_buffer_info].range  = VK_WHOLE_SIZE;
+            }
             wds[num_wds].pBufferInfo = buffer_infos + num_buffer_info;
             ++num_buffer_info;
          } else {

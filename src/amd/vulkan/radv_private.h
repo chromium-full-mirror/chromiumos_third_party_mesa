@@ -31,7 +31,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
-#include <pthread.h>
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
@@ -44,7 +43,10 @@
 #endif
 
 #include "c11/threads.h"
+#ifndef _WIN32
 #include <amdgpu.h>
+#include <xf86drm.h>
+#endif
 #include "compiler/shader_enums.h"
 #include "util/cnd_monotonic.h"
 #include "util/macros.h"
@@ -85,7 +87,6 @@ typedef uint32_t xcb_window_t;
 #include "radv_entrypoints.h"
 
 #include "wsi_common.h"
-#include "wsi_common_display.h"
 
 /* Helper to determine if we should compile
  * any of the Android AHB support.
@@ -97,6 +98,12 @@ typedef uint32_t xcb_window_t;
 #define RADV_SUPPORT_ANDROID_HARDWARE_BUFFER 1
 #else
 #define RADV_SUPPORT_ANDROID_HARDWARE_BUFFER 0
+#endif
+
+#ifdef _WIN32
+#define RADV_SUPPORT_CALIBRATED_TIMESTAMPS 0
+#else
+#define RADV_SUPPORT_CALIBRATED_TIMESTAMPS 1
 #endif
 
 #ifdef _WIN32
@@ -245,18 +252,6 @@ void radv_logi_v(const char *format, va_list va);
 } while (0)
 #endif
 
-#define stub_return(v)					\
-	do {						\
-		radv_finishme("stub %s", __func__);	\
-		return (v);				\
-	} while (0)
-
-#define stub()						\
-	do {						\
-		radv_finishme("stub %s", __func__);	\
-		return;					\
-	} while (0)
-
 int radv_get_instance_entrypoint_index(const char *name);
 int radv_get_device_entrypoint_index(const char *name);
 int radv_get_physical_device_entrypoint_index(const char *name);
@@ -323,7 +318,9 @@ struct radv_physical_device {
 	enum radeon_bo_flag memory_flags[VK_MAX_MEMORY_TYPES];
 	unsigned heaps;
 
+#ifndef _WIN32
 	drmPciBusInfo bus_info;
+#endif
 
 	struct radv_device_extension_table supported_extensions;
 };
@@ -902,7 +899,7 @@ struct radv_descriptor_range {
 	uint32_t size;
 };
 
-struct radv_descriptor_set {
+struct radv_descriptor_set_header {
 	struct vk_object_base base;
 	const struct radv_descriptor_set_layout *layout;
 	uint32_t size;
@@ -912,13 +909,17 @@ struct radv_descriptor_set {
 	uint64_t va;
 	uint32_t *mapped_ptr;
 	struct radv_descriptor_range *dynamic_descriptors;
+};
 
-	struct radeon_winsys_bo *descriptors[0];
+struct radv_descriptor_set {
+	struct radv_descriptor_set_header header;
+
+	struct radeon_winsys_bo *descriptors[];
 };
 
 struct radv_push_descriptor_set
 {
-	struct radv_descriptor_set set;
+	struct radv_descriptor_set_header set;
 	uint32_t capacity;
 };
 
@@ -1454,7 +1455,7 @@ struct radv_cmd_buffer {
 
 	uint8_t push_constants[MAX_PUSH_CONSTANTS_SIZE];
 	VkShaderStageFlags push_constant_stages;
-	struct radv_descriptor_set meta_push_descriptors;
+	struct radv_descriptor_set_header meta_push_descriptors;
 
 	struct radv_descriptor_state descriptors[MAX_BIND_POINTS];
 
@@ -2022,7 +2023,8 @@ radv_image_has_htile(const struct radv_image *image)
 static inline bool
 radv_htile_enabled(const struct radv_image *image, unsigned level)
 {
-	return radv_image_has_htile(image) && level == 0;
+	return radv_image_has_htile(image) &&
+	       level < image->planes[0].surface.num_htile_levels;
 }
 
 /**

@@ -195,7 +195,7 @@ fd_blitter_clear(struct pipe_context *pctx, unsigned buffers,
 		.buffer_size = 16,
 		.user_buffer = &color->ui,
 	};
-	pctx->set_constant_buffer(pctx, PIPE_SHADER_FRAGMENT, 0, &cb);
+	pctx->set_constant_buffer(pctx, PIPE_SHADER_FRAGMENT, 0, false, &cb);
 
 	unsigned rs_idx = pfb->samples > 1 ? 1 : 0;
 	if (!ctx->clear_rs_state[rs_idx]) {
@@ -219,7 +219,7 @@ fd_blitter_clear(struct pipe_context *pctx, unsigned buffers,
 	pctx->set_viewport_states(pctx, 0, 1, &vp);
 
 	pctx->bind_vertex_elements_state(pctx, ctx->solid_vbuf_state.vtx);
-	pctx->set_vertex_buffers(pctx, blitter->vb_slot, 1,
+	pctx->set_vertex_buffers(pctx, blitter->vb_slot, 1, 0, false,
 			&ctx->solid_vbuf_state.vertexbuf.vb[0]);
 	pctx->set_stream_output_targets(pctx, 0, NULL, NULL);
 

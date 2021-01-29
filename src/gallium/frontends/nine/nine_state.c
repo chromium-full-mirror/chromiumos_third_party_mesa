@@ -906,7 +906,7 @@ update_vertex_buffers(struct NineDevice9 *device)
             dummy_vtxbuf.is_user_buffer = false;
             dummy_vtxbuf.buffer_offset = 0;
             pipe->set_vertex_buffers(pipe, context->dummy_vbo_bound_at,
-                                     1, &dummy_vtxbuf);
+                                     1, 0, false, &dummy_vtxbuf);
             context->vbo_bound_done = TRUE;
         }
         mask &= ~(1 << context->dummy_vbo_bound_at);
@@ -915,9 +915,9 @@ update_vertex_buffers(struct NineDevice9 *device)
     for (i = 0; mask; mask >>= 1, ++i) {
         if (mask & 1) {
             if (context->vtxbuf[i].buffer.resource)
-                pipe->set_vertex_buffers(pipe, i, 1, &context->vtxbuf[i]);
+                pipe->set_vertex_buffers(pipe, i, 1, 0, false, &context->vtxbuf[i]);
             else
-                pipe->set_vertex_buffers(pipe, i, 1, NULL);
+                pipe->set_vertex_buffers(pipe, i, 0, 1, false, NULL);
         }
     }
 
@@ -1013,7 +1013,7 @@ update_textures_and_samplers(struct NineDevice9 *device)
         context->bound_samplers_mask_ps |= (1 << s);
     }
 
-    pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, num_textures, view);
+    pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, num_textures, 0, view);
 
     if (commit_samplers)
         cso_single_sampler_done(context->cso, PIPE_SHADER_FRAGMENT);
@@ -1061,7 +1061,7 @@ update_textures_and_samplers(struct NineDevice9 *device)
         context->bound_samplers_mask_vs |= (1 << i);
     }
 
-    pipe->set_sampler_views(pipe, PIPE_SHADER_VERTEX, 0, num_textures, view);
+    pipe->set_sampler_views(pipe, PIPE_SHADER_VERTEX, 0, num_textures, 0, view);
 
     if (commit_samplers)
         cso_single_sampler_done(context->cso, PIPE_SHADER_VERTEX);
@@ -1109,15 +1109,15 @@ commit_vs_constants(struct NineDevice9 *device)
     struct pipe_context *pipe = context->pipe;
 
     if (unlikely(!context->programmable_vs))
-        pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 0, &context->pipe_data.cb_vs_ff);
+        pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 0, false, &context->pipe_data.cb_vs_ff);
     else {
         if (context->swvp) {
-            pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 0, &context->pipe_data.cb0_swvp);
-            pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 1, &context->pipe_data.cb1_swvp);
-            pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 2, &context->pipe_data.cb2_swvp);
-            pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 3, &context->pipe_data.cb3_swvp);
+            pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 0, false, &context->pipe_data.cb0_swvp);
+            pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 1, false, &context->pipe_data.cb1_swvp);
+            pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 2, false, &context->pipe_data.cb2_swvp);
+            pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 3, false, &context->pipe_data.cb3_swvp);
         } else {
-            pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 0, &context->pipe_data.cb_vs);
+            pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 0, false, &context->pipe_data.cb_vs);
         }
     }
 }
@@ -1129,9 +1129,9 @@ commit_ps_constants(struct NineDevice9 *device)
     struct pipe_context *pipe = context->pipe;
 
     if (unlikely(!context->ps))
-        pipe->set_constant_buffer(pipe, PIPE_SHADER_FRAGMENT, 0, &context->pipe_data.cb_ps_ff);
+        pipe->set_constant_buffer(pipe, PIPE_SHADER_FRAGMENT, 0, false, &context->pipe_data.cb_ps_ff);
     else
-        pipe->set_constant_buffer(pipe, PIPE_SHADER_FRAGMENT, 0, &context->pipe_data.cb_ps);
+        pipe->set_constant_buffer(pipe, PIPE_SHADER_FRAGMENT, 0, false, &context->pipe_data.cb_ps);
 }
 
 static inline void
@@ -2390,7 +2390,7 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_primitive_from_vtxbuf,
     info.max_index = draw.count - 1;
     info.index.resource = NULL;
 
-    context->pipe->set_vertex_buffers(context->pipe, 0, 1, vtxbuf);
+    context->pipe->set_vertex_buffers(context->pipe, 0, 1, 0, false, vtxbuf);
 
     context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
 }
@@ -2425,7 +2425,7 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive_from_vtxbuf_idxbuf,
     else
         info.index.user = user_ibuf;
 
-    context->pipe->set_vertex_buffers(context->pipe, 0, 1, vbuf);
+    context->pipe->set_vertex_buffers(context->pipe, 0, 1, 0, false, vbuf);
 
     context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
 }
@@ -2913,10 +2913,10 @@ nine_context_clear(struct NineDevice9 *device)
     cso_set_samplers(cso, PIPE_SHADER_VERTEX, 0, NULL);
     cso_set_samplers(cso, PIPE_SHADER_FRAGMENT, 0, NULL);
 
-    pipe->set_sampler_views(pipe, PIPE_SHADER_VERTEX, 0, NINE_MAX_SAMPLERS_VS, NULL);
-    pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, NINE_MAX_SAMPLERS_PS, NULL);
+    pipe->set_sampler_views(pipe, PIPE_SHADER_VERTEX, 0, 0, NINE_MAX_SAMPLERS_VS, NULL);
+    pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 0, NINE_MAX_SAMPLERS_PS, NULL);
 
-    pipe->set_vertex_buffers(pipe, 0, device->caps.MaxStreams, NULL);
+    pipe->set_vertex_buffers(pipe, 0, 0, device->caps.MaxStreams, false, NULL);
 
     for (i = 0; i < ARRAY_SIZE(context->rt); ++i)
        nine_bind(&context->rt[i], NULL);
@@ -3100,10 +3100,10 @@ update_vertex_buffers_sw(struct NineDevice9 *device, int start_vertice, int num_
                                   &(vtxbuf.buffer.resource));
                     u_upload_unmap(device->pipe_sw->stream_uploader);
                 }
-                pipe_sw->set_vertex_buffers(pipe_sw, i, 1, &vtxbuf);
+                pipe_sw->set_vertex_buffers(pipe_sw, i, 1, 0, false, &vtxbuf);
                 pipe_vertex_buffer_unreference(&vtxbuf);
             } else
-                pipe_sw->set_vertex_buffers(pipe_sw, i, 1, NULL);
+                pipe_sw->set_vertex_buffers(pipe_sw, i, 0, 1, false, NULL);
         }
     }
     nine_context_get_pipe_release(device);
@@ -3145,13 +3145,13 @@ update_vs_constants_sw(struct NineDevice9 *device)
 
         buf = cb.user_buffer;
 
-        pipe_sw->set_constant_buffer(pipe_sw, PIPE_SHADER_VERTEX, 0, &cb);
+        pipe_sw->set_constant_buffer(pipe_sw, PIPE_SHADER_VERTEX, 0, false, &cb);
         if (cb.buffer)
             pipe_resource_reference(&cb.buffer, NULL);
 
         cb.user_buffer = (char *)buf + 4096 * sizeof(float[4]);
 
-        pipe_sw->set_constant_buffer(pipe_sw, PIPE_SHADER_VERTEX, 1, &cb);
+        pipe_sw->set_constant_buffer(pipe_sw, PIPE_SHADER_VERTEX, 1, false, &cb);
         if (cb.buffer)
             pipe_resource_reference(&cb.buffer, NULL);
     }
@@ -3164,7 +3164,7 @@ update_vs_constants_sw(struct NineDevice9 *device)
         cb.buffer_size = 2048 * sizeof(float[4]);
         cb.user_buffer = state->vs_const_i;
 
-        pipe_sw->set_constant_buffer(pipe_sw, PIPE_SHADER_VERTEX, 2, &cb);
+        pipe_sw->set_constant_buffer(pipe_sw, PIPE_SHADER_VERTEX, 2, false, &cb);
         if (cb.buffer)
             pipe_resource_reference(&cb.buffer, NULL);
     }
@@ -3177,7 +3177,7 @@ update_vs_constants_sw(struct NineDevice9 *device)
         cb.buffer_size = 512 * sizeof(float[4]);
         cb.user_buffer = state->vs_const_b;
 
-        pipe_sw->set_constant_buffer(pipe_sw, PIPE_SHADER_VERTEX, 3, &cb);
+        pipe_sw->set_constant_buffer(pipe_sw, PIPE_SHADER_VERTEX, 3, false, &cb);
         if (cb.buffer)
             pipe_resource_reference(&cb.buffer, NULL);
     }
@@ -3208,7 +3208,7 @@ update_vs_constants_sw(struct NineDevice9 *device)
             cb.user_buffer = NULL;
         }
 
-        pipe_sw->set_constant_buffer(pipe_sw, PIPE_SHADER_VERTEX, 4, &cb);
+        pipe_sw->set_constant_buffer(pipe_sw, PIPE_SHADER_VERTEX, 4, false, &cb);
         if (cb.buffer)
             pipe_resource_reference(&cb.buffer, NULL);
     }
@@ -3243,7 +3243,7 @@ nine_state_after_draw_sw(struct NineDevice9 *device)
     int i;
 
     for (i = 0; i < 4; i++) {
-        pipe_sw->set_vertex_buffers(pipe_sw, i, 1, NULL);
+        pipe_sw->set_vertex_buffers(pipe_sw, i, 0, 1, false, NULL);
         if (sw_internal->transfers_so[i])
             pipe->transfer_unmap(pipe, sw_internal->transfers_so[i]);
         sw_internal->transfers_so[i] = NULL;

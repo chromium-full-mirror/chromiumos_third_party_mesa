@@ -1327,8 +1327,7 @@ void si_restore_qbo_state(struct si_context *sctx, struct si_qbo_state *st)
 {
    sctx->b.bind_compute_state(&sctx->b, st->saved_compute);
 
-   sctx->b.set_constant_buffer(&sctx->b, PIPE_SHADER_COMPUTE, 0, &st->saved_const0);
-   pipe_resource_reference(&st->saved_const0.buffer, NULL);
+   sctx->b.set_constant_buffer(&sctx->b, PIPE_SHADER_COMPUTE, 0, true, &st->saved_const0);
 
    sctx->b.set_shader_buffers(&sctx->b, PIPE_SHADER_COMPUTE, 0, 3, st->saved_ssbo,
                               st->saved_ssbo_writable_mask);
@@ -1389,7 +1388,7 @@ static void si_emit_db_render_state(struct si_context *sctx)
       S_028010_DISABLE_ZMASK_EXPCLEAR_OPTIMIZATION(sctx->db_depth_disable_expclear) |
       S_028010_DISABLE_SMEM_EXPCLEAR_OPTIMIZATION(sctx->db_stencil_disable_expclear) |
       S_028010_DECOMPRESS_Z_ON_FLUSH(sctx->framebuffer.nr_samples >= 4) |
-      S_028010_CENTROID_COMPUTATION_MODE(sctx->chip_class >= GFX10_3 ? 2 : 0));
+      S_028010_CENTROID_COMPUTATION_MODE(sctx->chip_class >= GFX10_3 ? 1 : 0));
 
    db_shader_control = sctx->ps_db_shader_control;
 
@@ -4830,39 +4829,64 @@ static void si_delete_vertex_element(struct pipe_context *ctx, void *state)
 }
 
 static void si_set_vertex_buffers(struct pipe_context *ctx, unsigned start_slot, unsigned count,
+                                  unsigned unbind_num_trailing_slots, bool take_ownership,
                                   const struct pipe_vertex_buffer *buffers)
 {
    struct si_context *sctx = (struct si_context *)ctx;
    struct pipe_vertex_buffer *dst = sctx->vertex_buffer + start_slot;
-   unsigned updated_mask = u_bit_consecutive(start_slot, count);
+   unsigned updated_mask = u_bit_consecutive(start_slot, count + unbind_num_trailing_slots);
    uint32_t orig_unaligned = sctx->vertex_buffer_unaligned;
    uint32_t unaligned = 0;
    int i;
 
-   assert(start_slot + count <= ARRAY_SIZE(sctx->vertex_buffer));
+   assert(start_slot + count + unbind_num_trailing_slots <= ARRAY_SIZE(sctx->vertex_buffer));
 
    if (buffers) {
-      for (i = 0; i < count; i++) {
-         const struct pipe_vertex_buffer *src = buffers + i;
-         struct pipe_vertex_buffer *dsti = dst + i;
-         struct pipe_resource *buf = src->buffer.resource;
-         unsigned slot_bit = 1 << (start_slot + i);
+      if (take_ownership) {
+         for (i = 0; i < count; i++) {
+            const struct pipe_vertex_buffer *src = buffers + i;
+            struct pipe_vertex_buffer *dsti = dst + i;
+            struct pipe_resource *buf = src->buffer.resource;
+            unsigned slot_bit = 1 << (start_slot + i);
 
-         pipe_resource_reference(&dsti->buffer.resource, buf);
-         dsti->buffer_offset = src->buffer_offset;
-         dsti->stride = src->stride;
+            /* Only unreference bound vertex buffers. (take_ownership) */
+            pipe_resource_reference(&dsti->buffer.resource, NULL);
 
-         if (dsti->buffer_offset & 3 || dsti->stride & 3)
-            unaligned |= slot_bit;
+            if (src->buffer_offset & 3 || src->stride & 3)
+               unaligned |= slot_bit;
 
-         si_context_add_resource_size(sctx, buf);
-         if (buf)
-            si_resource(buf)->bind_history |= PIPE_BIND_VERTEX_BUFFER;
+            si_context_add_resource_size(sctx, buf);
+            if (buf)
+               si_resource(buf)->bind_history |= PIPE_BIND_VERTEX_BUFFER;
+         }
+         /* take_ownership allows us to copy pipe_resource pointers without refcounting. */
+         memcpy(dst, buffers, count * sizeof(struct pipe_vertex_buffer));
+      } else {
+         for (i = 0; i < count; i++) {
+            const struct pipe_vertex_buffer *src = buffers + i;
+            struct pipe_vertex_buffer *dsti = dst + i;
+            struct pipe_resource *buf = src->buffer.resource;
+            unsigned slot_bit = 1 << (start_slot + i);
+
+            pipe_resource_reference(&dsti->buffer.resource, buf);
+            dsti->buffer_offset = src->buffer_offset;
+            dsti->stride = src->stride;
+
+            if (dsti->buffer_offset & 3 || dsti->stride & 3)
+               unaligned |= slot_bit;
+
+            si_context_add_resource_size(sctx, buf);
+            if (buf)
+               si_resource(buf)->bind_history |= PIPE_BIND_VERTEX_BUFFER;
+         }
       }
    } else {
       for (i = 0; i < count; i++)
          pipe_resource_reference(&dst[i].buffer.resource, NULL);
    }
+
+   for (i = 0; i < unbind_num_trailing_slots; i++)
+      pipe_resource_reference(&dst[count + i].buffer.resource, NULL);
 
    sctx->vertex_buffers_dirty = sctx->num_vertex_elements > 0;
    sctx->vertex_buffer_unaligned = (orig_unaligned & ~updated_mask) | unaligned;

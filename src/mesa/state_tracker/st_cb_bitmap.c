@@ -247,7 +247,8 @@ setup_render_state(struct gl_context *ctx,
       memcpy(sampler_views, st->state.frag_sampler_views,
              sizeof(sampler_views));
       sampler_views[fpv->bitmap_sampler] = sv;
-      pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, num, sampler_views);
+      pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, num, 0,
+                              sampler_views);
       st->state.num_sampler_views[PIPE_SHADER_FRAGMENT] =
          MAX2(st->state.num_sampler_views[PIPE_SHADER_FRAGMENT], num);
    }
@@ -279,10 +280,9 @@ restore_render_state(struct gl_context *ctx)
    /* Unbind all because st/mesa won't do it if the current shader doesn't
     * use them.
     */
-   static struct pipe_sampler_view *null[PIPE_MAX_SAMPLERS];
-   pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0,
+   pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 0,
                            st->state.num_sampler_views[PIPE_SHADER_FRAGMENT],
-                           null);
+                           NULL);
    st->state.num_sampler_views[PIPE_SHADER_FRAGMENT] = 0;
 
    st->dirty |= ST_NEW_VERTEX_ARRAYS |
@@ -559,9 +559,9 @@ init_bitmap_state(struct st_context *st)
 
    /* init sampler state once */
    memset(&st->bitmap.sampler, 0, sizeof(st->bitmap.sampler));
-   st->bitmap.sampler.wrap_s = PIPE_TEX_WRAP_CLAMP;
-   st->bitmap.sampler.wrap_t = PIPE_TEX_WRAP_CLAMP;
-   st->bitmap.sampler.wrap_r = PIPE_TEX_WRAP_CLAMP;
+   st->bitmap.sampler.wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+   st->bitmap.sampler.wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+   st->bitmap.sampler.wrap_r = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
    st->bitmap.sampler.min_img_filter = PIPE_TEX_FILTER_NEAREST;
    st->bitmap.sampler.min_mip_filter = PIPE_TEX_MIPFILTER_NONE;
    st->bitmap.sampler.mag_img_filter = PIPE_TEX_FILTER_NEAREST;

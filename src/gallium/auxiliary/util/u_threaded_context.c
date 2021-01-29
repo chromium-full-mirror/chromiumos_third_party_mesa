@@ -100,6 +100,7 @@ simplify_draw_info(struct pipe_draw_info *info)
     */
    info->has_user_indices = false;
    info->index_bounds_valid = false;
+   info->take_index_buffer_ownership = false;
    info->_pad = 0;
 
    /* This shouldn't be set when merging single draws. */
@@ -764,8 +765,13 @@ tc_set_tess_state(struct pipe_context *_pipe,
    memcpy(p + 4, default_inner_level, 2 * sizeof(float));
 }
 
-struct tc_constant_buffer {
+struct tc_constant_buffer_info {
    ubyte shader, index;
+   bool is_null;
+};
+
+struct tc_constant_buffer {
+   struct tc_constant_buffer_info info;
    struct pipe_constant_buffer cb;
 };
 
@@ -774,58 +780,64 @@ tc_call_set_constant_buffer(struct pipe_context *pipe, union tc_payload *payload
 {
    struct tc_constant_buffer *p = (struct tc_constant_buffer *)payload;
 
-   pipe->set_constant_buffer(pipe,
-                             p->shader,
-                             p->index,
-                             &p->cb);
-   pipe_resource_reference(&p->cb.buffer, NULL);
+   if (unlikely(p->info.is_null)) {
+      pipe->set_constant_buffer(pipe, p->info.shader, p->info.index, false, NULL);
+      return;
+   }
+
+   pipe->set_constant_buffer(pipe, p->info.shader, p->info.index, true, &p->cb);
 }
 
 static void
 tc_set_constant_buffer(struct pipe_context *_pipe,
                        enum pipe_shader_type shader, uint index,
+                       bool take_ownership,
                        const struct pipe_constant_buffer *cb)
 {
    struct threaded_context *tc = threaded_context(_pipe);
 
-   if (cb && cb->user_buffer) {
-      struct pipe_resource *buffer = NULL;
-      unsigned offset;
+   if (unlikely(!cb || (!cb->buffer && !cb->user_buffer))) {
+      struct tc_constant_buffer_info *p =
+         tc_add_struct_typed_call(tc, TC_CALL_set_constant_buffer,
+                                  tc_constant_buffer_info);
+      p->shader = shader;
+      p->index = index;
+      p->is_null = true;
+      return;
+   }
 
+   struct pipe_resource *buffer;
+   unsigned offset;
+
+   if (cb->user_buffer) {
       /* This must be done before adding set_constant_buffer, because it could
        * generate e.g. transfer_unmap and flush partially-uninitialized
        * set_constant_buffer to the driver if it was done afterwards.
        */
-      u_upload_data(tc->base.const_uploader, 0, cb->buffer_size, tc->ubo_alignment,
-                    cb->user_buffer, &offset, &buffer);
+      buffer = NULL;
+      u_upload_data(tc->base.const_uploader, 0, cb->buffer_size,
+                    tc->ubo_alignment, cb->user_buffer, &offset, &buffer);
       u_upload_unmap(tc->base.const_uploader);
-
-      struct tc_constant_buffer *p =
-         tc_add_struct_typed_call(tc, TC_CALL_set_constant_buffer,
-                                  tc_constant_buffer);
-      p->shader = shader;
-      p->index = index;
-      p->cb.buffer_size = cb->buffer_size;
-      p->cb.user_buffer = NULL;
-      p->cb.buffer_offset = offset;
-      p->cb.buffer = buffer;
-      return;
+      take_ownership = true;
+   } else {
+      buffer = cb->buffer;
+      offset = cb->buffer_offset;
    }
 
    struct tc_constant_buffer *p =
       tc_add_struct_typed_call(tc, TC_CALL_set_constant_buffer,
                                tc_constant_buffer);
-   p->shader = shader;
-   p->index = index;
+   p->info.shader = shader;
+   p->info.index = index;
+   p->info.is_null = false;
+   p->cb.user_buffer = NULL;
+   p->cb.buffer_offset = offset;
+   p->cb.buffer_size = cb->buffer_size;
 
-   if (cb) {
-      tc_set_resource_reference(&p->cb.buffer, cb->buffer);
-      p->cb.user_buffer = NULL;
-      p->cb.buffer_offset = cb->buffer_offset;
-      p->cb.buffer_size = cb->buffer_size;
-   } else {
-      memset(&p->cb, 0, sizeof(*cb));
-   }
+   if (take_ownership)
+      p->cb.buffer = buffer;
+   else
+      tc_set_resource_reference(&p->cb.buffer, buffer);
 }
 
 struct tc_inlinable_constants {
@@ -940,7 +952,7 @@ tc_set_window_rectangles(struct pipe_context *_pipe, bool include,
 }
 
 struct tc_sampler_views {
-   ubyte shader, start, count;
+   ubyte shader, start, count, unbind_num_trailing_slots;
    struct pipe_sampler_view *slot[0]; /* more will be allocated if needed */
 };
 
@@ -950,7 +962,8 @@ tc_call_set_sampler_views(struct pipe_context *pipe, union tc_payload *payload)
    struct tc_sampler_views *p = (struct tc_sampler_views *)payload;
    unsigned count = p->count;
 
-   pipe->set_sampler_views(pipe, p->shader, p->start, p->count, p->slot);
+   pipe->set_sampler_views(pipe, p->shader, p->start, p->count,
+                           p->unbind_num_trailing_slots, p->slot);
    for (unsigned i = 0; i < count; i++)
       pipe_sampler_view_reference(&p->slot[i], NULL);
 }
@@ -959,9 +972,10 @@ static void
 tc_set_sampler_views(struct pipe_context *_pipe,
                      enum pipe_shader_type shader,
                      unsigned start, unsigned count,
+                     unsigned unbind_num_trailing_slots,
                      struct pipe_sampler_view **views)
 {
-   if (!count)
+   if (!count && !unbind_num_trailing_slots)
       return;
 
    struct threaded_context *tc = threaded_context(_pipe);
@@ -971,6 +985,7 @@ tc_set_sampler_views(struct pipe_context *_pipe,
    p->shader = shader;
    p->start = start;
    p->count = count;
+   p->unbind_num_trailing_slots = unbind_num_trailing_slots;
 
    if (views) {
       for (unsigned i = 0; i < count; i++) {
@@ -984,7 +999,7 @@ tc_set_sampler_views(struct pipe_context *_pipe,
 
 struct tc_shader_images {
    ubyte shader, start, count;
-   bool unbind;
+   ubyte unbind_num_trailing_slots;
    struct pipe_image_view slot[0]; /* more will be allocated if needed */
 };
 
@@ -994,12 +1009,14 @@ tc_call_set_shader_images(struct pipe_context *pipe, union tc_payload *payload)
    struct tc_shader_images *p = (struct tc_shader_images *)payload;
    unsigned count = p->count;
 
-   if (p->unbind) {
-      pipe->set_shader_images(pipe, p->shader, p->start, p->count, NULL);
+   if (!p->count) {
+      pipe->set_shader_images(pipe, p->shader, p->start, 0,
+                              p->unbind_num_trailing_slots, NULL);
       return;
    }
 
-   pipe->set_shader_images(pipe, p->shader, p->start, p->count, p->slot);
+   pipe->set_shader_images(pipe, p->shader, p->start, p->count,
+                           p->unbind_num_trailing_slots, p->slot);
 
    for (unsigned i = 0; i < count; i++)
       pipe_resource_reference(&p->slot[i].resource, NULL);
@@ -1009,9 +1026,10 @@ static void
 tc_set_shader_images(struct pipe_context *_pipe,
                      enum pipe_shader_type shader,
                      unsigned start, unsigned count,
+                     unsigned unbind_num_trailing_slots,
                      const struct pipe_image_view *images)
 {
-   if (!count)
+   if (!count && !unbind_num_trailing_slots)
       return;
 
    struct threaded_context *tc = threaded_context(_pipe);
@@ -1021,10 +1039,11 @@ tc_set_shader_images(struct pipe_context *_pipe,
 
    p->shader = shader;
    p->start = start;
-   p->count = count;
-   p->unbind = images == NULL;
 
    if (images) {
+      p->count = count;
+      p->unbind_num_trailing_slots = unbind_num_trailing_slots;
+
       for (unsigned i = 0; i < count; i++) {
          tc_set_resource_reference(&p->slot[i].resource, images[i].resource);
 
@@ -1040,6 +1059,9 @@ tc_set_shader_images(struct pipe_context *_pipe,
          }
       }
       memcpy(p->slot, images, count * sizeof(images[0]));
+   } else {
+      p->count = 0;
+      p->unbind_num_trailing_slots = count + unbind_num_trailing_slots;
    }
 }
 
@@ -1111,7 +1133,7 @@ tc_set_shader_buffers(struct pipe_context *_pipe,
 
 struct tc_vertex_buffers {
    ubyte start, count;
-   bool unbind;
+   ubyte unbind_num_trailing_slots;
    struct pipe_vertex_buffer slot[0]; /* more will be allocated if needed */
 };
 
@@ -1121,53 +1143,59 @@ tc_call_set_vertex_buffers(struct pipe_context *pipe, union tc_payload *payload)
    struct tc_vertex_buffers *p = (struct tc_vertex_buffers *)payload;
    unsigned count = p->count;
 
-   if (p->unbind) {
-      pipe->set_vertex_buffers(pipe, p->start, count, NULL);
+   if (!count) {
+      pipe->set_vertex_buffers(pipe, p->start, 0,
+                               p->unbind_num_trailing_slots, false, NULL);
       return;
    }
 
    for (unsigned i = 0; i < count; i++)
       tc_assert(!p->slot[i].is_user_buffer);
 
-   pipe->set_vertex_buffers(pipe, p->start, count, p->slot);
-   for (unsigned i = 0; i < count; i++)
-      pipe_resource_reference(&p->slot[i].buffer.resource, NULL);
+   pipe->set_vertex_buffers(pipe, p->start, count,
+                            p->unbind_num_trailing_slots, true, p->slot);
 }
 
 static void
 tc_set_vertex_buffers(struct pipe_context *_pipe,
                       unsigned start, unsigned count,
+                      unsigned unbind_num_trailing_slots,
+                      bool take_ownership,
                       const struct pipe_vertex_buffer *buffers)
 {
    struct threaded_context *tc = threaded_context(_pipe);
 
-   if (!count)
+   if (!count && !unbind_num_trailing_slots)
       return;
 
-   if (buffers) {
+   if (count && buffers) {
       struct tc_vertex_buffers *p =
          tc_add_slot_based_call(tc, TC_CALL_set_vertex_buffers, tc_vertex_buffers, count);
       p->start = start;
       p->count = count;
-      p->unbind = false;
+      p->unbind_num_trailing_slots = unbind_num_trailing_slots;
 
-      for (unsigned i = 0; i < count; i++) {
-         struct pipe_vertex_buffer *dst = &p->slot[i];
-         const struct pipe_vertex_buffer *src = buffers + i;
+      if (take_ownership) {
+         memcpy(p->slot, buffers, count * sizeof(struct pipe_vertex_buffer));
+      } else {
+         for (unsigned i = 0; i < count; i++) {
+            struct pipe_vertex_buffer *dst = &p->slot[i];
+            const struct pipe_vertex_buffer *src = buffers + i;
 
-         tc_assert(!src->is_user_buffer);
-         dst->stride = src->stride;
-         dst->is_user_buffer = false;
-         tc_set_resource_reference(&dst->buffer.resource,
-                                   src->buffer.resource);
-         dst->buffer_offset = src->buffer_offset;
+            tc_assert(!src->is_user_buffer);
+            dst->stride = src->stride;
+            dst->is_user_buffer = false;
+            tc_set_resource_reference(&dst->buffer.resource,
+                                      src->buffer.resource);
+            dst->buffer_offset = src->buffer_offset;
+         }
       }
    } else {
       struct tc_vertex_buffers *p =
          tc_add_slot_based_call(tc, TC_CALL_set_vertex_buffers, tc_vertex_buffers, 0);
       p->start = start;
-      p->count = count;
-      p->unbind = true;
+      p->count = 0;
+      p->unbind_num_trailing_slots = count + unbind_num_trailing_slots;
    }
 }
 
@@ -2308,6 +2336,7 @@ tc_call_draw_single(struct pipe_context *pipe, union tc_payload *payload)
 
    info->info.index_bounds_valid = false;
    info->info.has_user_indices = false;
+   info->info.take_index_buffer_ownership = false;
 
    pipe->draw_vbo(pipe, &info->info, NULL, draw, 1);
    if (info->info.index_size)
@@ -2326,6 +2355,7 @@ tc_call_draw_indirect(struct pipe_context *pipe, union tc_payload *payload)
    struct tc_draw_indirect *info = (struct tc_draw_indirect*)payload;
 
    info->info.index_bounds_valid = false;
+   info->info.take_index_buffer_ownership = false;
 
    pipe->draw_vbo(pipe, &info->info, &info->indirect, &info->draw, 1);
    if (info->info.index_size)
@@ -2349,6 +2379,7 @@ tc_call_draw_multi(struct pipe_context *pipe, union tc_payload *payload)
 
    info->info.has_user_indices = false;
    info->info.index_bounds_valid = false;
+   info->info.take_index_buffer_ownership = false;
 
    pipe->draw_vbo(pipe, &info->info, NULL, info->slot, info->num_draws);
    if (info->info.index_size)
@@ -2358,7 +2389,7 @@ tc_call_draw_multi(struct pipe_context *pipe, union tc_payload *payload)
 #define DRAW_INFO_SIZE_WITHOUT_INDEXBUF_AND_MIN_MAX_INDEX \
    offsetof(struct pipe_draw_info, index)
 
-static void
+void
 tc_draw_vbo(struct pipe_context *_pipe, const struct pipe_draw_info *info,
             const struct pipe_draw_indirect_info *indirect,
             const struct pipe_draw_start_count *draws,
@@ -2377,7 +2408,7 @@ tc_draw_vbo(struct pipe_context *_pipe, const struct pipe_draw_info *info,
 
       struct tc_draw_indirect *p =
          tc_add_struct_typed_call(tc, TC_CALL_draw_indirect, tc_draw_indirect);
-      if (index_size) {
+      if (index_size && !info->take_index_buffer_ownership) {
          tc_set_resource_reference(&p->info.index.resource,
                                    info->index.resource);
       }
@@ -2425,7 +2456,7 @@ tc_draw_vbo(struct pipe_context *_pipe, const struct pipe_draw_info *info,
          /* Non-indexed call or indexed with a real index buffer. */
          struct tc_draw_single *p =
             tc_add_struct_typed_call(tc, TC_CALL_draw_single, tc_draw_single);
-         if (index_size) {
+         if (index_size && !info->take_index_buffer_ownership) {
             tc_set_resource_reference(&p->info.index.resource,
                                       info->index.resource);
          }
@@ -2493,7 +2524,7 @@ tc_draw_vbo(struct pipe_context *_pipe, const struct pipe_draw_info *info,
       struct tc_draw_multi *p =
          tc_add_slot_based_call(tc, TC_CALL_draw_multi, tc_draw_multi,
                                 num_draws);
-      if (index_size) {
+      if (index_size && !info->take_index_buffer_ownership) {
          tc_set_resource_reference(&p->info.index.resource,
                                    info->index.resource);
       }

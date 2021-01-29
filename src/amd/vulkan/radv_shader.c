@@ -412,8 +412,8 @@ radv_shader_compile_to_nir(struct radv_device *device,
 			spec_entries = calloc(num_spec_entries, sizeof(*spec_entries));
 			for (uint32_t i = 0; i < num_spec_entries; i++) {
 				VkSpecializationMapEntry entry = spec_info->pMapEntries[i];
-				const void *data = spec_info->pData + entry.offset;
-				assert(data + entry.size <= spec_info->pData + spec_info->dataSize);
+				const void *data = (uint8_t *)spec_info->pData + entry.offset;
+				assert((uint8_t *)data + entry.size <= (uint8_t *)spec_info->pData + spec_info->dataSize);
 
 				spec_entries[i].id = spec_info->pMapEntries[i].constantID;
 				switch (entry.size) {
@@ -493,6 +493,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				.vk_memory_model = true,
 				.vk_memory_model_device_scope = true,
 				.fragment_shading_rate = device->physical_device->rad_info.chip_class >= GFX10_3,
+				.workgroup_memory_explicit_layout = true,
 			},
 			.ubo_addr_format = nir_address_format_32bit_index_offset,
 			.ssbo_addr_format = nir_address_format_32bit_index_offset,
@@ -679,8 +680,10 @@ radv_shader_compile_to_nir(struct radv_device *device,
 
 	/* Lower deref operations for compute shared memory. */
 	if (nir->info.stage == MESA_SHADER_COMPUTE) {
-		NIR_PASS_V(nir, nir_lower_vars_to_explicit_types,
-			   nir_var_mem_shared, shared_var_info);
+		if (!nir->info.cs.shared_memory_explicit_layout) {
+			NIR_PASS_V(nir, nir_lower_vars_to_explicit_types,
+			           nir_var_mem_shared, shared_var_info);
+		}
 		NIR_PASS_V(nir, nir_lower_explicit_io,
 			   nir_var_mem_shared, nir_address_format_32bit_offset);
 	}

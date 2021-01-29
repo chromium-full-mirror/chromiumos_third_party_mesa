@@ -25,6 +25,7 @@
  */
 
 #include "compiler.h"
+#include "bi_builder.h"
 
 /* Determines messsage type by checking the table and a few special cases. Only
  * case missing is tilebuffer instructions that access depth/stencil, which
@@ -81,16 +82,16 @@ bi_singleton(void *memctx, bi_instr *ins,
                 bool osrb)
 {
         bi_clause *u = rzalloc(memctx, bi_clause);
-        u->bundle_count = 1;
+        u->tuple_count = 1;
 
         ASSERTED bool can_fma = bi_opcode_props[ins->op].fma;
         bool can_add = bi_opcode_props[ins->op].add;
         assert(can_fma || can_add);
 
         if (can_add)
-                u->bundles[0].add = ins;
+                u->tuples[0].add = ins;
         else
-                u->bundles[0].fma = ins;
+                u->tuples[0].fma = ins;
 
         u->scoreboard_id = scoreboard_id;
         u->staging_barrier = osrb;
@@ -114,7 +115,7 @@ bi_singleton(void *memctx, bi_instr *ins,
                 unsigned value = ins->src[s].value;
 
                 /* Allow fast zero */
-                if (value == 0 && u->bundles[0].fma) continue;
+                if (value == 0 && u->tuples[0].fma) continue;
 
                 if (constant_count == 0) {
                         combined_constant = ins->src[s].value;
@@ -148,6 +149,109 @@ bi_singleton(void *memctx, bi_instr *ins,
         u->block = block;
 
         return u;
+}
+
+/* Scheduler predicates */
+
+ASSERTED static bool
+bi_can_fma(bi_instr *ins)
+{
+        /* TODO: some additional fp16 constraints */
+        return bi_opcode_props[ins->op].fma;
+}
+
+ASSERTED static bool
+bi_can_add(bi_instr *ins)
+{
+        /* TODO: some additional fp16 constraints */
+        return bi_opcode_props[ins->op].add;
+}
+
+ASSERTED static bool
+bi_must_last(bi_instr *ins)
+{
+        return bi_opcode_props[ins->op].last;
+}
+
+ASSERTED static bool
+bi_must_message(bi_instr *ins)
+{
+        return bi_opcode_props[ins->op].message != BIFROST_MESSAGE_NONE;
+}
+
+static bool
+bi_fma_atomic(enum bi_opcode op)
+{
+        switch (op) {
+        case BI_OPCODE_ATOM_C_I32:
+        case BI_OPCODE_ATOM_C_I64:
+        case BI_OPCODE_ATOM_C1_I32:
+        case BI_OPCODE_ATOM_C1_I64:
+        case BI_OPCODE_ATOM_C1_RETURN_I32:
+        case BI_OPCODE_ATOM_C1_RETURN_I64:
+        case BI_OPCODE_ATOM_C_RETURN_I32:
+        case BI_OPCODE_ATOM_C_RETURN_I64:
+        case BI_OPCODE_ATOM_POST_I32:
+        case BI_OPCODE_ATOM_POST_I64:
+        case BI_OPCODE_ATOM_PRE_I64:
+                return true;
+        default:
+                return false;
+        }
+}
+
+ASSERTED static bool
+bi_reads_zero(bi_instr *ins)
+{
+        return !(bi_fma_atomic(ins->op) || ins->op == BI_OPCODE_IMULD);
+}
+
+static bool
+bi_reads_temps(bi_instr *ins, unsigned src)
+{
+        switch (ins->op) {
+        /* Cannot permute a temporary */
+        case BI_OPCODE_CLPER_V6_I32:
+        case BI_OPCODE_CLPER_V7_I32:
+                return src != 0;
+        case BI_OPCODE_IMULD:
+                return false;
+        default:
+                return true;
+        }
+}
+
+ASSERTED static bool
+bi_reads_t(bi_instr *ins, unsigned src)
+{
+        /* Branch offset cannot come from passthrough */
+        if (bi_opcode_props[ins->op].branch)
+                return src != 2;
+
+        /* Table can never read passthrough */
+        if (bi_opcode_props[ins->op].table)
+                return false;
+
+        /* Staging register reads may happen before the succeeding register
+         * block encodes a write, so effectively there is no passthrough */
+        if (src == 0 && bi_opcode_props[ins->op].sr_read)
+                return false;
+
+        /* Descriptor must not come from a passthrough */
+        switch (ins->op) {
+        case BI_OPCODE_LD_CVT:
+        case BI_OPCODE_LD_TILE:
+        case BI_OPCODE_ST_CVT:
+        case BI_OPCODE_ST_TILE:
+        case BI_OPCODE_TEXC:
+                return src != 2;
+        case BI_OPCODE_BLEND:
+                return src != 2 && src != 3;
+
+        /* Else, just check if we can read any temps */
+        default:
+                return bi_reads_temps(ins, src);
+        }
 }
 
 /* Eventually, we'll need a proper scheduling, grouping instructions
@@ -187,3 +291,84 @@ bi_schedule(bi_context *ctx)
                 bblock->scheduled = true;
         }
 }
+
+#ifndef NDEBUG
+
+static bi_builder *
+bit_builder(void *memctx)
+{
+        bi_context *ctx = rzalloc(memctx, bi_context);
+        list_inithead(&ctx->blocks);
+
+        bi_block *blk = rzalloc(ctx, bi_block);
+
+        blk->base.predecessors = _mesa_set_create(blk,
+                        _mesa_hash_pointer,
+                        _mesa_key_pointer_equal);
+
+        list_addtail(&blk->base.link, &ctx->blocks);
+        list_inithead(&blk->base.instructions);
+
+        bi_builder *b = rzalloc(memctx, bi_builder);
+        b->shader = ctx;
+        b->cursor = bi_after_block(blk);
+        return b;
+}
+
+#define TMP() bi_temp(b->shader)
+
+static void
+bi_test_units(bi_builder *b)
+{
+        bi_instr *mov = bi_mov_i32_to(b, TMP(), TMP());
+        assert(bi_can_fma(mov));
+        assert(bi_can_add(mov));
+        assert(!bi_must_last(mov));
+        assert(!bi_must_message(mov));
+        assert(bi_reads_zero(mov));
+        assert(bi_reads_temps(mov, 0));
+        assert(bi_reads_t(mov, 0));
+
+        bi_instr *fma = bi_fma_f32_to(b, TMP(), TMP(), TMP(), bi_zero(), BI_ROUND_NONE);
+        assert(bi_can_fma(fma));
+        assert(!bi_can_add(fma));
+        assert(!bi_must_last(fma));
+        assert(!bi_must_message(fma));
+        assert(bi_reads_zero(fma));
+        for (unsigned i = 0; i < 3; ++i) {
+                assert(bi_reads_temps(fma, i));
+                assert(bi_reads_t(fma, i));
+        }
+
+        bi_instr *load = bi_load_i128_to(b, TMP(), TMP(), TMP(), BI_SEG_UBO);
+        assert(!bi_can_fma(load));
+        assert(bi_can_add(load));
+        assert(!bi_must_last(load));
+        assert(bi_must_message(load));
+        for (unsigned i = 0; i < 2; ++i) {
+                assert(bi_reads_temps(load, i));
+                assert(bi_reads_t(load, i));
+        }
+
+        bi_instr *blend = bi_blend_to(b, TMP(), TMP(), TMP(), TMP(), TMP());
+        assert(!bi_can_fma(load));
+        assert(bi_can_add(load));
+        assert(bi_must_last(blend));
+        assert(bi_must_message(blend));
+        for (unsigned i = 0; i < 4; ++i)
+                assert(bi_reads_temps(blend, i));
+        assert(!bi_reads_t(blend, 0));
+        assert(bi_reads_t(blend, 1));
+        assert(!bi_reads_t(blend, 2));
+        assert(!bi_reads_t(blend, 3));
+}
+
+int bi_test_scheduler(void)
+{
+        void *memctx = NULL;
+
+        bi_test_units(bit_builder(memctx));
+
+        return 0;
+}
+#endif
