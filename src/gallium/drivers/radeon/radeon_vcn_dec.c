@@ -795,18 +795,35 @@ static struct pb_buffer *rvcn_dec_message_decode(struct radeon_decoder *dec,
       (struct si_texture *)((struct vl_video_buffer *)target)->resources[1];
    rvcn_dec_message_header_t *header;
    rvcn_dec_message_index_t *index_codec;
+   rvcn_dec_message_index_t *index_dynamic_dpb = NULL;
    rvcn_dec_message_decode_t *decode;
    unsigned sizes = 0, offset_decode, offset_codec;
+   unsigned offset_dynamic_dpb = 0;
    void *codec;
+   rvcn_dec_message_dynamic_dpb_t *dynamic_dpb = NULL;
+   unsigned db_alignment;
 
    header = dec->msg;
    sizes += sizeof(rvcn_dec_message_header_t);
 
    index_codec = (void*)header + sizes;
    sizes += sizeof(rvcn_dec_message_index_t);
+
+   if (dec->dpb_type == DPB_DYNAMIC_TIER_1) {
+      index_dynamic_dpb = (void*)header + sizes;
+      sizes += sizeof(rvcn_dec_message_index_t);
+   }
+
    offset_decode = sizes;
    decode = (void*)header + sizes;
    sizes += sizeof(rvcn_dec_message_decode_t);
+
+   if (dec->dpb_type == DPB_DYNAMIC_TIER_1) {
+      offset_dynamic_dpb = sizes;
+      dynamic_dpb = (void*)header + sizes;
+      sizes += sizeof(rvcn_dec_message_dynamic_dpb_t);
+   }
+
    offset_codec = sizes;
    codec = (void*)header + sizes;
 
@@ -828,12 +845,25 @@ static struct pb_buffer *rvcn_dec_message_decode(struct radeon_decoder *dec,
    index_codec->filled = 0;
    ++header->num_buffers;
 
+   if (dec->dpb_type == DPB_DYNAMIC_TIER_1) {
+      index_dynamic_dpb->message_id = RDECODE_MESSAGE_DYNAMIC_DPB;
+      index_dynamic_dpb->offset = offset_dynamic_dpb;
+      index_dynamic_dpb->size = sizeof(rvcn_dec_message_dynamic_dpb_t);
+      index_dynamic_dpb->filled = 0;
+      ++header->num_buffers;
+   }
+
    decode->stream_type = dec->stream_type;
    decode->decode_flags = 0;
    decode->width_in_samples = dec->base.width;
    decode->height_in_samples = dec->base.height;
 
    decode->bsd_size = align(dec->bs_size, 128);
+
+   db_alignment = (((struct si_screen *)dec->screen)->info.family >= CHIP_RENOIR &&
+                   dec->base.width > 32 && (dec->stream_type == RDECODE_CODEC_VP9 ||
+                   dec->base.profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)) ? 64 : 32;
+
    decode->dpb_size = dec->dpb.res->buf->size;
    decode->dt_size = si_resource(((struct vl_video_buffer *)target)->resources[0])->buf->size +
                      si_resource(((struct vl_video_buffer *)target)->resources[1])->buf->size;
@@ -842,10 +872,8 @@ static struct pb_buffer *rvcn_dec_message_decode(struct radeon_decoder *dec,
    decode->sc_coeff_size = 0;
 
    decode->sw_ctxt_size = RDECODE_SESSION_CONTEXT_SIZE;
-   decode->db_pitch = (((struct si_screen *)dec->screen)->info.family >= CHIP_RENOIR &&
-                       dec->base.width > 32 && dec->stream_type == RDECODE_CODEC_VP9)
-                         ? align(dec->base.width, 64)
-                         : align(dec->base.width, 32);
+   decode->db_pitch = align(dec->base.width, db_alignment);
+
    if (((struct si_screen*)dec->screen)->info.family >= CHIP_SIENNA_CICHLID &&
        dec->stream_type == RDECODE_CODEC_VP9)
       decode->db_aligned_height = align(dec->base.height, 64);
@@ -872,6 +900,25 @@ static struct pb_buffer *rvcn_dec_message_decode(struct radeon_decoder *dec,
    } else {
       decode->dt_luma_bottom_offset = decode->dt_luma_top_offset;
       decode->dt_chroma_bottom_offset = decode->dt_chroma_top_offset;
+   }
+
+   if (dec->dpb_type == DPB_DYNAMIC_TIER_1) {
+      decode->decode_flags = 1;
+      dynamic_dpb->dpbArraySize = NUM_VP9_REFS + 1;
+      dynamic_dpb->dpbLumaPitch = align(decode->width_in_samples, db_alignment);
+      dynamic_dpb->dpbLumaAlignedHeight = align(decode->height_in_samples, db_alignment);
+      dynamic_dpb->dpbLumaAlignedSize =
+         dynamic_dpb->dpbLumaPitch * dynamic_dpb->dpbLumaAlignedHeight;
+      dynamic_dpb->dpbChromaPitch = dynamic_dpb->dpbLumaPitch >> 1;
+      dynamic_dpb->dpbChromaAlignedHeight = dynamic_dpb->dpbLumaAlignedHeight >> 1;
+      dynamic_dpb->dpbChromaAlignedSize =
+         dynamic_dpb->dpbChromaPitch * dynamic_dpb->dpbChromaAlignedHeight * 2;
+      dynamic_dpb->dpbReserved0[0] = db_alignment;
+
+      if (dec->base.profile == PIPE_VIDEO_PROFILE_VP9_PROFILE2) {
+         dynamic_dpb->dpbLumaAlignedSize = dynamic_dpb->dpbLumaAlignedSize * 3 / 2;
+         dynamic_dpb->dpbChromaAlignedSize = dynamic_dpb->dpbChromaAlignedSize * 3 / 2;
+      }
    }
 
    switch (u_reduce_video_profile(picture->profile)) {
@@ -1149,7 +1196,7 @@ static unsigned calc_ctx_size_h264_perf(struct radeon_decoder *dec)
 }
 
 /* calculate size of reference picture buffer */
-static unsigned calc_dpb_size(struct radeon_decoder *dec)
+static unsigned calc_dpb_size(struct radeon_decoder *dec, unsigned db_alignment)
 {
    unsigned width_in_mb, height_in_mb, image_size, dpb_size;
 
@@ -1261,9 +1308,13 @@ static unsigned calc_dpb_size(struct radeon_decoder *dec)
    case PIPE_VIDEO_FORMAT_VP9:
       max_references = MAX2(max_references, 9);
 
-      dpb_size = (((struct si_screen *)dec->screen)->info.family >= CHIP_RENOIR)
-                    ? (8192 * 4320 * 3 / 2) * max_references
-                    : (4096 * 3000 * 3 / 2) * max_references;
+      if (dec->dpb_type == DPB_MAX_RES)
+         dpb_size = (((struct si_screen *)dec->screen)->info.family >= CHIP_RENOIR)
+            ? (8192 * 4320 * 3 / 2) * max_references
+            : (4096 * 3000 * 3 / 2) * max_references;
+      else
+         dpb_size = (align(dec->base.width, db_alignment) *
+            align(dec->base.height, db_alignment) * 3 / 2) * max_references;
 
       if (dec->base.profile == PIPE_VIDEO_PROFILE_VP9_PROFILE2)
          dpb_size = dpb_size * 3 / 2;
@@ -1468,6 +1519,7 @@ struct pipe_video_codec *radeon_create_decoder(struct pipe_context *context,
    unsigned dpb_size, bs_buf_size, stream_type = 0, ring = RING_VCN_DEC;
    struct radeon_decoder *dec;
    int r, i;
+   unsigned db_alignment;
 
    switch (u_reduce_video_profile(templ->profile)) {
    case PIPE_VIDEO_FORMAT_MPEG12:
@@ -1569,7 +1621,11 @@ struct pipe_video_codec *radeon_create_decoder(struct pipe_context *context,
       }
    }
 
-   dpb_size = calc_dpb_size(dec);
+   db_alignment = (((struct si_screen *)dec->screen)->info.family >= CHIP_RENOIR &&
+                   dec->base.width > 32 && (dec->stream_type == RDECODE_CODEC_VP9 ||
+                   dec->base.profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)) ? 64 : 32;
+
+   dpb_size = calc_dpb_size(dec, db_alignment);
    if (dpb_size) {
       if (!si_vid_create_buffer(dec->screen, &dec->dpb, dpb_size, PIPE_USAGE_DEFAULT)) {
          RVID_ERR("Can't allocated dpb.\n");
