@@ -215,6 +215,7 @@ vn_instance_init_renderer(struct vn_instance *instance)
       return result;
    }
 
+   instance->cs_implicit_flush_threshold = 1 * 1024 * 1024;
    vn_cs_init(&instance->cs, alloc, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE,
               16 * 1024);
 
@@ -3332,21 +3333,26 @@ vn_AllocateMemory(VkDevice device,
 
    mem->size = pAllocateInfo->allocationSize;
 
+   /* check if a bo is needed */
    const VkPhysicalDeviceMemoryProperties *mem_props =
       &dev->physical_device->memory_properties.memoryProperties;
    const VkMemoryType *mem_type =
       &mem_props->memoryTypes[pAllocateInfo->memoryTypeIndex];
    const VkExportMemoryAllocateInfo *export_info =
       vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
-
-   result = vn_renderer_bo_create_gpu(
-      dev->instance->renderer, mem->size, mem->base.id,
-      mem_type->propertyFlags, export_info ? export_info->handleTypes : 0,
-      alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, &mem->bo);
-   if (result != VK_SUCCESS) {
-      vn_async_vkFreeMemory(dev->instance, device, mem_handle, NULL);
-      vk_free(alloc, mem);
-      return vn_error(dev->instance, result);
+   if (export_info && !export_info->handleTypes)
+      export_info = NULL;
+   if ((mem_type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
+       export_info) {
+      result = vn_renderer_bo_create_gpu(
+         dev->instance->renderer, mem->size, mem->base.id,
+         mem_type->propertyFlags, export_info ? export_info->handleTypes : 0,
+         alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, &mem->bo);
+      if (result != VK_SUCCESS) {
+         vn_async_vkFreeMemory(dev->instance, device, mem_handle, NULL);
+         vk_free(alloc, mem);
+         return vn_error(dev->instance, result);
+      }
    }
 
    *pMemory = mem_handle;
@@ -3369,7 +3375,8 @@ vn_FreeMemory(VkDevice device,
 
    vn_async_vkFreeMemory(dev->instance, device, memory, NULL);
 
-   vn_renderer_bo_unref(mem->bo, alloc);
+   if (mem->bo)
+      vn_renderer_bo_unref(mem->bo, alloc);
 
    vn_cs_object_fini(&mem->base);
    vk_free(alloc, mem);

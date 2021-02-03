@@ -34,6 +34,7 @@ struct vn_instance {
    uint32_t renderer_version;
 
    mtx_t cs_mutex;
+   size_t cs_implicit_flush_threshold;
    struct vn_cs cs;
    struct {
       struct vn_renderer_bo *bo;
@@ -177,8 +178,10 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_semaphore,
 struct vn_device_memory {
    struct vn_cs_object base;
 
-   struct vn_renderer_bo *bo;
    VkDeviceSize size;
+
+   /* non-NULL when mappable or external */
+   struct vn_renderer_bo *bo;
    VkDeviceSize map_end;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_device_memory,

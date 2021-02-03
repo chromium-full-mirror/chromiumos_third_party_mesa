@@ -160,7 +160,14 @@ vn_cs_end_out(struct vn_cs *cs);
 static inline size_t
 vn_cs_get_out_len(const struct vn_cs *cs)
 {
-   return cs->out.total_iov_len;
+   if (unlikely(!cs->out.iov_count))
+      return 0;
+
+   size_t len = cs->out.total_iov_len;
+   const struct vn_cs_iovec *iov = &cs->out.iovs[cs->out.iov_count - 1];
+   if (!iov->iov_len)
+      len += cs->out.cur - iov->iov_base;
+   return len;
 }
 
 static inline vn_cs_object_id

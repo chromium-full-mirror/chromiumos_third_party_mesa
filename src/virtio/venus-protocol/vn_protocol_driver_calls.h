@@ -53,6 +53,8 @@ static inline void vn_async_vkCreateInstance(struct vn_instance *vn_instance, co
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateInstance(cs, cmd_flags, pCreateInfo, pAllocator, pInstance);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -97,6 +99,8 @@ static inline void vn_async_vkDestroyInstance(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyInstance(cs, cmd_flags, instance, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -144,6 +148,8 @@ static inline void vn_async_vkEnumeratePhysicalDevices(struct vn_instance *vn_in
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkEnumeratePhysicalDevices(cs, cmd_flags, instance, pPhysicalDeviceCount, pPhysicalDevices);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -188,6 +194,8 @@ static inline void vn_async_vkGetPhysicalDeviceProperties(struct vn_instance *vn
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceProperties(cs, cmd_flags, physicalDevice, pProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -232,6 +240,8 @@ static inline void vn_async_vkGetPhysicalDeviceQueueFamilyProperties(struct vn_i
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceQueueFamilyProperties(cs, cmd_flags, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -276,6 +286,8 @@ static inline void vn_async_vkGetPhysicalDeviceMemoryProperties(struct vn_instan
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceMemoryProperties(cs, cmd_flags, physicalDevice, pMemoryProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -320,6 +332,8 @@ static inline void vn_async_vkGetPhysicalDeviceFeatures(struct vn_instance *vn_i
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceFeatures(cs, cmd_flags, physicalDevice, pFeatures);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -364,6 +378,8 @@ static inline void vn_async_vkGetPhysicalDeviceFormatProperties(struct vn_instan
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceFormatProperties(cs, cmd_flags, physicalDevice, format, pFormatProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -411,6 +427,8 @@ static inline void vn_async_vkGetPhysicalDeviceImageFormatProperties(struct vn_i
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceImageFormatProperties(cs, cmd_flags, physicalDevice, format, type, tiling, usage, flags, pImageFormatProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -458,6 +476,8 @@ static inline void vn_async_vkCreateDevice(struct vn_instance *vn_instance, VkPh
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateDevice(cs, cmd_flags, physicalDevice, pCreateInfo, pAllocator, pDevice);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -502,6 +522,8 @@ static inline void vn_async_vkDestroyDevice(struct vn_instance *vn_instance, VkD
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyDevice(cs, cmd_flags, device, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -549,6 +571,8 @@ static inline void vn_async_vkEnumerateInstanceVersion(struct vn_instance *vn_in
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkEnumerateInstanceVersion(cs, cmd_flags, pApiVersion);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -596,6 +620,8 @@ static inline void vn_async_vkEnumerateInstanceLayerProperties(struct vn_instanc
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkEnumerateInstanceLayerProperties(cs, cmd_flags, pPropertyCount, pProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -643,6 +669,8 @@ static inline void vn_async_vkEnumerateInstanceExtensionProperties(struct vn_ins
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkEnumerateInstanceExtensionProperties(cs, cmd_flags, pLayerName, pPropertyCount, pProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -690,6 +718,8 @@ static inline void vn_async_vkEnumerateDeviceLayerProperties(struct vn_instance 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkEnumerateDeviceLayerProperties(cs, cmd_flags, physicalDevice, pPropertyCount, pProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -737,6 +767,8 @@ static inline void vn_async_vkEnumerateDeviceExtensionProperties(struct vn_insta
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkEnumerateDeviceExtensionProperties(cs, cmd_flags, physicalDevice, pLayerName, pPropertyCount, pProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -781,6 +813,8 @@ static inline void vn_async_vkGetDeviceQueue(struct vn_instance *vn_instance, Vk
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetDeviceQueue(cs, cmd_flags, device, queueFamilyIndex, queueIndex, pQueue);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -828,6 +862,8 @@ static inline void vn_async_vkQueueSubmit(struct vn_instance *vn_instance, VkQue
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkQueueSubmit(cs, cmd_flags, queue, submitCount, pSubmits, fence);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -875,6 +911,8 @@ static inline void vn_async_vkQueueWaitIdle(struct vn_instance *vn_instance, VkQ
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkQueueWaitIdle(cs, cmd_flags, queue);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -922,6 +960,8 @@ static inline void vn_async_vkDeviceWaitIdle(struct vn_instance *vn_instance, Vk
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDeviceWaitIdle(cs, cmd_flags, device);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -969,6 +1009,8 @@ static inline void vn_async_vkAllocateMemory(struct vn_instance *vn_instance, Vk
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkAllocateMemory(cs, cmd_flags, device, pAllocateInfo, pAllocator, pMemory);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1013,6 +1055,8 @@ static inline void vn_async_vkFreeMemory(struct vn_instance *vn_instance, VkDevi
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkFreeMemory(cs, cmd_flags, device, memory, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1057,6 +1101,8 @@ static inline void vn_async_vkUnmapMemory(struct vn_instance *vn_instance, VkDev
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkUnmapMemory(cs, cmd_flags, device, memory);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1104,6 +1150,8 @@ static inline void vn_async_vkFlushMappedMemoryRanges(struct vn_instance *vn_ins
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkFlushMappedMemoryRanges(cs, cmd_flags, device, memoryRangeCount, pMemoryRanges);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1151,6 +1199,8 @@ static inline void vn_async_vkInvalidateMappedMemoryRanges(struct vn_instance *v
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkInvalidateMappedMemoryRanges(cs, cmd_flags, device, memoryRangeCount, pMemoryRanges);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1195,6 +1245,8 @@ static inline void vn_async_vkGetDeviceMemoryCommitment(struct vn_instance *vn_i
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetDeviceMemoryCommitment(cs, cmd_flags, device, memory, pCommittedMemoryInBytes);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1239,6 +1291,8 @@ static inline void vn_async_vkGetBufferMemoryRequirements(struct vn_instance *vn
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetBufferMemoryRequirements(cs, cmd_flags, device, buffer, pMemoryRequirements);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1286,6 +1340,8 @@ static inline void vn_async_vkBindBufferMemory(struct vn_instance *vn_instance, 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkBindBufferMemory(cs, cmd_flags, device, buffer, memory, memoryOffset);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1330,6 +1386,8 @@ static inline void vn_async_vkGetImageMemoryRequirements(struct vn_instance *vn_
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetImageMemoryRequirements(cs, cmd_flags, device, image, pMemoryRequirements);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1377,6 +1435,8 @@ static inline void vn_async_vkBindImageMemory(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkBindImageMemory(cs, cmd_flags, device, image, memory, memoryOffset);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1421,6 +1481,8 @@ static inline void vn_async_vkGetImageSparseMemoryRequirements(struct vn_instanc
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetImageSparseMemoryRequirements(cs, cmd_flags, device, image, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1465,6 +1527,8 @@ static inline void vn_async_vkGetPhysicalDeviceSparseImageFormatProperties(struc
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties(cs, cmd_flags, physicalDevice, format, type, samples, usage, tiling, pPropertyCount, pProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1512,6 +1576,8 @@ static inline void vn_async_vkQueueBindSparse(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkQueueBindSparse(cs, cmd_flags, queue, bindInfoCount, pBindInfo, fence);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1559,6 +1625,8 @@ static inline void vn_async_vkCreateFence(struct vn_instance *vn_instance, VkDev
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateFence(cs, cmd_flags, device, pCreateInfo, pAllocator, pFence);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1603,6 +1671,8 @@ static inline void vn_async_vkDestroyFence(struct vn_instance *vn_instance, VkDe
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyFence(cs, cmd_flags, device, fence, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1650,6 +1720,8 @@ static inline void vn_async_vkResetFences(struct vn_instance *vn_instance, VkDev
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkResetFences(cs, cmd_flags, device, fenceCount, pFences);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1697,6 +1769,8 @@ static inline void vn_async_vkGetFenceStatus(struct vn_instance *vn_instance, Vk
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetFenceStatus(cs, cmd_flags, device, fence);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1744,6 +1818,8 @@ static inline void vn_async_vkWaitForFences(struct vn_instance *vn_instance, VkD
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkWaitForFences(cs, cmd_flags, device, fenceCount, pFences, waitAll, timeout);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1791,6 +1867,8 @@ static inline void vn_async_vkCreateSemaphore(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateSemaphore(cs, cmd_flags, device, pCreateInfo, pAllocator, pSemaphore);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1835,6 +1913,8 @@ static inline void vn_async_vkDestroySemaphore(struct vn_instance *vn_instance, 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroySemaphore(cs, cmd_flags, device, semaphore, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1882,6 +1962,8 @@ static inline void vn_async_vkCreateEvent(struct vn_instance *vn_instance, VkDev
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateEvent(cs, cmd_flags, device, pCreateInfo, pAllocator, pEvent);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1926,6 +2008,8 @@ static inline void vn_async_vkDestroyEvent(struct vn_instance *vn_instance, VkDe
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyEvent(cs, cmd_flags, device, event, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -1973,6 +2057,8 @@ static inline void vn_async_vkGetEventStatus(struct vn_instance *vn_instance, Vk
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetEventStatus(cs, cmd_flags, device, event);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2020,6 +2106,8 @@ static inline void vn_async_vkSetEvent(struct vn_instance *vn_instance, VkDevice
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkSetEvent(cs, cmd_flags, device, event);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2067,6 +2155,8 @@ static inline void vn_async_vkResetEvent(struct vn_instance *vn_instance, VkDevi
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkResetEvent(cs, cmd_flags, device, event);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2114,6 +2204,8 @@ static inline void vn_async_vkCreateQueryPool(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateQueryPool(cs, cmd_flags, device, pCreateInfo, pAllocator, pQueryPool);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2158,6 +2250,8 @@ static inline void vn_async_vkDestroyQueryPool(struct vn_instance *vn_instance, 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyQueryPool(cs, cmd_flags, device, queryPool, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2205,6 +2299,8 @@ static inline void vn_async_vkGetQueryPoolResults(struct vn_instance *vn_instanc
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetQueryPoolResults(cs, cmd_flags, device, queryPool, firstQuery, queryCount, dataSize, pData, stride, flags);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2249,6 +2345,8 @@ static inline void vn_async_vkResetQueryPool(struct vn_instance *vn_instance, Vk
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkResetQueryPool(cs, cmd_flags, device, queryPool, firstQuery, queryCount);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2296,6 +2394,8 @@ static inline void vn_async_vkCreateBuffer(struct vn_instance *vn_instance, VkDe
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateBuffer(cs, cmd_flags, device, pCreateInfo, pAllocator, pBuffer);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2340,6 +2440,8 @@ static inline void vn_async_vkDestroyBuffer(struct vn_instance *vn_instance, VkD
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyBuffer(cs, cmd_flags, device, buffer, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2387,6 +2489,8 @@ static inline void vn_async_vkCreateBufferView(struct vn_instance *vn_instance, 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateBufferView(cs, cmd_flags, device, pCreateInfo, pAllocator, pView);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2431,6 +2535,8 @@ static inline void vn_async_vkDestroyBufferView(struct vn_instance *vn_instance,
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyBufferView(cs, cmd_flags, device, bufferView, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2478,6 +2584,8 @@ static inline void vn_async_vkCreateImage(struct vn_instance *vn_instance, VkDev
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateImage(cs, cmd_flags, device, pCreateInfo, pAllocator, pImage);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2522,6 +2630,8 @@ static inline void vn_async_vkDestroyImage(struct vn_instance *vn_instance, VkDe
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyImage(cs, cmd_flags, device, image, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2566,6 +2676,8 @@ static inline void vn_async_vkGetImageSubresourceLayout(struct vn_instance *vn_i
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetImageSubresourceLayout(cs, cmd_flags, device, image, pSubresource, pLayout);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2613,6 +2725,8 @@ static inline void vn_async_vkCreateImageView(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateImageView(cs, cmd_flags, device, pCreateInfo, pAllocator, pView);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2657,6 +2771,8 @@ static inline void vn_async_vkDestroyImageView(struct vn_instance *vn_instance, 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyImageView(cs, cmd_flags, device, imageView, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2704,6 +2820,8 @@ static inline void vn_async_vkCreateShaderModule(struct vn_instance *vn_instance
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateShaderModule(cs, cmd_flags, device, pCreateInfo, pAllocator, pShaderModule);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2748,6 +2866,8 @@ static inline void vn_async_vkDestroyShaderModule(struct vn_instance *vn_instanc
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyShaderModule(cs, cmd_flags, device, shaderModule, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2795,6 +2915,8 @@ static inline void vn_async_vkCreatePipelineCache(struct vn_instance *vn_instanc
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreatePipelineCache(cs, cmd_flags, device, pCreateInfo, pAllocator, pPipelineCache);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2839,6 +2961,8 @@ static inline void vn_async_vkDestroyPipelineCache(struct vn_instance *vn_instan
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyPipelineCache(cs, cmd_flags, device, pipelineCache, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2886,6 +3010,8 @@ static inline void vn_async_vkGetPipelineCacheData(struct vn_instance *vn_instan
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPipelineCacheData(cs, cmd_flags, device, pipelineCache, pDataSize, pData);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2933,6 +3059,8 @@ static inline void vn_async_vkMergePipelineCaches(struct vn_instance *vn_instanc
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkMergePipelineCaches(cs, cmd_flags, device, dstCache, srcCacheCount, pSrcCaches);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -2980,6 +3108,8 @@ static inline void vn_async_vkCreateGraphicsPipelines(struct vn_instance *vn_ins
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateGraphicsPipelines(cs, cmd_flags, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3027,6 +3157,8 @@ static inline void vn_async_vkCreateComputePipelines(struct vn_instance *vn_inst
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateComputePipelines(cs, cmd_flags, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3071,6 +3203,8 @@ static inline void vn_async_vkDestroyPipeline(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyPipeline(cs, cmd_flags, device, pipeline, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3118,6 +3252,8 @@ static inline void vn_async_vkCreatePipelineLayout(struct vn_instance *vn_instan
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreatePipelineLayout(cs, cmd_flags, device, pCreateInfo, pAllocator, pPipelineLayout);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3162,6 +3298,8 @@ static inline void vn_async_vkDestroyPipelineLayout(struct vn_instance *vn_insta
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyPipelineLayout(cs, cmd_flags, device, pipelineLayout, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3209,6 +3347,8 @@ static inline void vn_async_vkCreateSampler(struct vn_instance *vn_instance, VkD
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateSampler(cs, cmd_flags, device, pCreateInfo, pAllocator, pSampler);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3253,6 +3393,8 @@ static inline void vn_async_vkDestroySampler(struct vn_instance *vn_instance, Vk
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroySampler(cs, cmd_flags, device, sampler, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3300,6 +3442,8 @@ static inline void vn_async_vkCreateDescriptorSetLayout(struct vn_instance *vn_i
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateDescriptorSetLayout(cs, cmd_flags, device, pCreateInfo, pAllocator, pSetLayout);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3344,6 +3488,8 @@ static inline void vn_async_vkDestroyDescriptorSetLayout(struct vn_instance *vn_
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyDescriptorSetLayout(cs, cmd_flags, device, descriptorSetLayout, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3391,6 +3537,8 @@ static inline void vn_async_vkCreateDescriptorPool(struct vn_instance *vn_instan
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateDescriptorPool(cs, cmd_flags, device, pCreateInfo, pAllocator, pDescriptorPool);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3435,6 +3583,8 @@ static inline void vn_async_vkDestroyDescriptorPool(struct vn_instance *vn_insta
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyDescriptorPool(cs, cmd_flags, device, descriptorPool, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3482,6 +3632,8 @@ static inline void vn_async_vkResetDescriptorPool(struct vn_instance *vn_instanc
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkResetDescriptorPool(cs, cmd_flags, device, descriptorPool, flags);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3529,6 +3681,8 @@ static inline void vn_async_vkAllocateDescriptorSets(struct vn_instance *vn_inst
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkAllocateDescriptorSets(cs, cmd_flags, device, pAllocateInfo, pDescriptorSets);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3576,6 +3730,8 @@ static inline void vn_async_vkFreeDescriptorSets(struct vn_instance *vn_instance
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkFreeDescriptorSets(cs, cmd_flags, device, descriptorPool, descriptorSetCount, pDescriptorSets);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3620,6 +3776,8 @@ static inline void vn_async_vkUpdateDescriptorSets(struct vn_instance *vn_instan
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkUpdateDescriptorSets(cs, cmd_flags, device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3667,6 +3825,8 @@ static inline void vn_async_vkCreateFramebuffer(struct vn_instance *vn_instance,
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateFramebuffer(cs, cmd_flags, device, pCreateInfo, pAllocator, pFramebuffer);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3711,6 +3871,8 @@ static inline void vn_async_vkDestroyFramebuffer(struct vn_instance *vn_instance
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyFramebuffer(cs, cmd_flags, device, framebuffer, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3758,6 +3920,8 @@ static inline void vn_async_vkCreateRenderPass(struct vn_instance *vn_instance, 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateRenderPass(cs, cmd_flags, device, pCreateInfo, pAllocator, pRenderPass);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3802,6 +3966,8 @@ static inline void vn_async_vkDestroyRenderPass(struct vn_instance *vn_instance,
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyRenderPass(cs, cmd_flags, device, renderPass, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3846,6 +4012,8 @@ static inline void vn_async_vkGetRenderAreaGranularity(struct vn_instance *vn_in
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetRenderAreaGranularity(cs, cmd_flags, device, renderPass, pGranularity);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3893,6 +4061,8 @@ static inline void vn_async_vkCreateCommandPool(struct vn_instance *vn_instance,
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateCommandPool(cs, cmd_flags, device, pCreateInfo, pAllocator, pCommandPool);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3937,6 +4107,8 @@ static inline void vn_async_vkDestroyCommandPool(struct vn_instance *vn_instance
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyCommandPool(cs, cmd_flags, device, commandPool, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -3984,6 +4156,8 @@ static inline void vn_async_vkResetCommandPool(struct vn_instance *vn_instance, 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkResetCommandPool(cs, cmd_flags, device, commandPool, flags);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4031,6 +4205,8 @@ static inline void vn_async_vkAllocateCommandBuffers(struct vn_instance *vn_inst
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkAllocateCommandBuffers(cs, cmd_flags, device, pAllocateInfo, pCommandBuffers);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4075,6 +4251,8 @@ static inline void vn_async_vkFreeCommandBuffers(struct vn_instance *vn_instance
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkFreeCommandBuffers(cs, cmd_flags, device, commandPool, commandBufferCount, pCommandBuffers);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4122,6 +4300,8 @@ static inline void vn_async_vkBeginCommandBuffer(struct vn_instance *vn_instance
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkBeginCommandBuffer(cs, cmd_flags, commandBuffer, pBeginInfo);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4169,6 +4349,8 @@ static inline void vn_async_vkEndCommandBuffer(struct vn_instance *vn_instance, 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkEndCommandBuffer(cs, cmd_flags, commandBuffer);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4216,6 +4398,8 @@ static inline void vn_async_vkResetCommandBuffer(struct vn_instance *vn_instance
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkResetCommandBuffer(cs, cmd_flags, commandBuffer, flags);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4260,6 +4444,8 @@ static inline void vn_async_vkCmdBindPipeline(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdBindPipeline(cs, cmd_flags, commandBuffer, pipelineBindPoint, pipeline);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4304,6 +4490,8 @@ static inline void vn_async_vkCmdSetViewport(struct vn_instance *vn_instance, Vk
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdSetViewport(cs, cmd_flags, commandBuffer, firstViewport, viewportCount, pViewports);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4348,6 +4536,8 @@ static inline void vn_async_vkCmdSetScissor(struct vn_instance *vn_instance, VkC
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdSetScissor(cs, cmd_flags, commandBuffer, firstScissor, scissorCount, pScissors);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4392,6 +4582,8 @@ static inline void vn_async_vkCmdSetLineWidth(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdSetLineWidth(cs, cmd_flags, commandBuffer, lineWidth);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4436,6 +4628,8 @@ static inline void vn_async_vkCmdSetDepthBias(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdSetDepthBias(cs, cmd_flags, commandBuffer, depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4480,6 +4674,8 @@ static inline void vn_async_vkCmdSetBlendConstants(struct vn_instance *vn_instan
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdSetBlendConstants(cs, cmd_flags, commandBuffer, blendConstants);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4524,6 +4720,8 @@ static inline void vn_async_vkCmdSetDepthBounds(struct vn_instance *vn_instance,
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdSetDepthBounds(cs, cmd_flags, commandBuffer, minDepthBounds, maxDepthBounds);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4568,6 +4766,8 @@ static inline void vn_async_vkCmdSetStencilCompareMask(struct vn_instance *vn_in
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdSetStencilCompareMask(cs, cmd_flags, commandBuffer, faceMask, compareMask);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4612,6 +4812,8 @@ static inline void vn_async_vkCmdSetStencilWriteMask(struct vn_instance *vn_inst
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdSetStencilWriteMask(cs, cmd_flags, commandBuffer, faceMask, writeMask);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4656,6 +4858,8 @@ static inline void vn_async_vkCmdSetStencilReference(struct vn_instance *vn_inst
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdSetStencilReference(cs, cmd_flags, commandBuffer, faceMask, reference);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4700,6 +4904,8 @@ static inline void vn_async_vkCmdBindDescriptorSets(struct vn_instance *vn_insta
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdBindDescriptorSets(cs, cmd_flags, commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4744,6 +4950,8 @@ static inline void vn_async_vkCmdBindIndexBuffer(struct vn_instance *vn_instance
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdBindIndexBuffer(cs, cmd_flags, commandBuffer, buffer, offset, indexType);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4788,6 +4996,8 @@ static inline void vn_async_vkCmdBindVertexBuffers(struct vn_instance *vn_instan
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdBindVertexBuffers(cs, cmd_flags, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4832,6 +5042,8 @@ static inline void vn_async_vkCmdDraw(struct vn_instance *vn_instance, VkCommand
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdDraw(cs, cmd_flags, commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4876,6 +5088,8 @@ static inline void vn_async_vkCmdDrawIndexed(struct vn_instance *vn_instance, Vk
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdDrawIndexed(cs, cmd_flags, commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4920,6 +5134,8 @@ static inline void vn_async_vkCmdDrawIndirect(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdDrawIndirect(cs, cmd_flags, commandBuffer, buffer, offset, drawCount, stride);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -4964,6 +5180,8 @@ static inline void vn_async_vkCmdDrawIndexedIndirect(struct vn_instance *vn_inst
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdDrawIndexedIndirect(cs, cmd_flags, commandBuffer, buffer, offset, drawCount, stride);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5008,6 +5226,8 @@ static inline void vn_async_vkCmdDispatch(struct vn_instance *vn_instance, VkCom
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdDispatch(cs, cmd_flags, commandBuffer, groupCountX, groupCountY, groupCountZ);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5052,6 +5272,8 @@ static inline void vn_async_vkCmdDispatchIndirect(struct vn_instance *vn_instanc
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdDispatchIndirect(cs, cmd_flags, commandBuffer, buffer, offset);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5096,6 +5318,8 @@ static inline void vn_async_vkCmdCopyBuffer(struct vn_instance *vn_instance, VkC
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdCopyBuffer(cs, cmd_flags, commandBuffer, srcBuffer, dstBuffer, regionCount, pRegions);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5140,6 +5364,8 @@ static inline void vn_async_vkCmdCopyImage(struct vn_instance *vn_instance, VkCo
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdCopyImage(cs, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5184,6 +5410,8 @@ static inline void vn_async_vkCmdBlitImage(struct vn_instance *vn_instance, VkCo
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdBlitImage(cs, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions, filter);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5228,6 +5456,8 @@ static inline void vn_async_vkCmdCopyBufferToImage(struct vn_instance *vn_instan
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdCopyBufferToImage(cs, cmd_flags, commandBuffer, srcBuffer, dstImage, dstImageLayout, regionCount, pRegions);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5272,6 +5502,8 @@ static inline void vn_async_vkCmdCopyImageToBuffer(struct vn_instance *vn_instan
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdCopyImageToBuffer(cs, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstBuffer, regionCount, pRegions);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5316,6 +5548,8 @@ static inline void vn_async_vkCmdUpdateBuffer(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdUpdateBuffer(cs, cmd_flags, commandBuffer, dstBuffer, dstOffset, dataSize, pData);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5360,6 +5594,8 @@ static inline void vn_async_vkCmdFillBuffer(struct vn_instance *vn_instance, VkC
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdFillBuffer(cs, cmd_flags, commandBuffer, dstBuffer, dstOffset, size, data);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5404,6 +5640,8 @@ static inline void vn_async_vkCmdClearColorImage(struct vn_instance *vn_instance
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdClearColorImage(cs, cmd_flags, commandBuffer, image, imageLayout, pColor, rangeCount, pRanges);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5448,6 +5686,8 @@ static inline void vn_async_vkCmdClearDepthStencilImage(struct vn_instance *vn_i
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdClearDepthStencilImage(cs, cmd_flags, commandBuffer, image, imageLayout, pDepthStencil, rangeCount, pRanges);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5492,6 +5732,8 @@ static inline void vn_async_vkCmdClearAttachments(struct vn_instance *vn_instanc
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdClearAttachments(cs, cmd_flags, commandBuffer, attachmentCount, pAttachments, rectCount, pRects);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5536,6 +5778,8 @@ static inline void vn_async_vkCmdResolveImage(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdResolveImage(cs, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5580,6 +5824,8 @@ static inline void vn_async_vkCmdSetEvent(struct vn_instance *vn_instance, VkCom
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdSetEvent(cs, cmd_flags, commandBuffer, event, stageMask);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5624,6 +5870,8 @@ static inline void vn_async_vkCmdResetEvent(struct vn_instance *vn_instance, VkC
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdResetEvent(cs, cmd_flags, commandBuffer, event, stageMask);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5668,6 +5916,8 @@ static inline void vn_async_vkCmdWaitEvents(struct vn_instance *vn_instance, VkC
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdWaitEvents(cs, cmd_flags, commandBuffer, eventCount, pEvents, srcStageMask, dstStageMask, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5712,6 +5962,8 @@ static inline void vn_async_vkCmdPipelineBarrier(struct vn_instance *vn_instance
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdPipelineBarrier(cs, cmd_flags, commandBuffer, srcStageMask, dstStageMask, dependencyFlags, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5756,6 +6008,8 @@ static inline void vn_async_vkCmdBeginQuery(struct vn_instance *vn_instance, VkC
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdBeginQuery(cs, cmd_flags, commandBuffer, queryPool, query, flags);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5800,6 +6054,8 @@ static inline void vn_async_vkCmdEndQuery(struct vn_instance *vn_instance, VkCom
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdEndQuery(cs, cmd_flags, commandBuffer, queryPool, query);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5844,6 +6100,8 @@ static inline void vn_async_vkCmdResetQueryPool(struct vn_instance *vn_instance,
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdResetQueryPool(cs, cmd_flags, commandBuffer, queryPool, firstQuery, queryCount);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5888,6 +6146,8 @@ static inline void vn_async_vkCmdWriteTimestamp(struct vn_instance *vn_instance,
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdWriteTimestamp(cs, cmd_flags, commandBuffer, pipelineStage, queryPool, query);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5932,6 +6192,8 @@ static inline void vn_async_vkCmdCopyQueryPoolResults(struct vn_instance *vn_ins
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdCopyQueryPoolResults(cs, cmd_flags, commandBuffer, queryPool, firstQuery, queryCount, dstBuffer, dstOffset, stride, flags);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -5976,6 +6238,8 @@ static inline void vn_async_vkCmdPushConstants(struct vn_instance *vn_instance, 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdPushConstants(cs, cmd_flags, commandBuffer, layout, stageFlags, offset, size, pValues);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6020,6 +6284,8 @@ static inline void vn_async_vkCmdBeginRenderPass(struct vn_instance *vn_instance
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdBeginRenderPass(cs, cmd_flags, commandBuffer, pRenderPassBegin, contents);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6064,6 +6330,8 @@ static inline void vn_async_vkCmdNextSubpass(struct vn_instance *vn_instance, Vk
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdNextSubpass(cs, cmd_flags, commandBuffer, contents);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6108,6 +6376,8 @@ static inline void vn_async_vkCmdEndRenderPass(struct vn_instance *vn_instance, 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdEndRenderPass(cs, cmd_flags, commandBuffer);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6152,6 +6422,8 @@ static inline void vn_async_vkCmdExecuteCommands(struct vn_instance *vn_instance
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdExecuteCommands(cs, cmd_flags, commandBuffer, commandBufferCount, pCommandBuffers);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6196,6 +6468,8 @@ static inline void vn_async_vkGetPhysicalDeviceFeatures2(struct vn_instance *vn_
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceFeatures2(cs, cmd_flags, physicalDevice, pFeatures);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6240,6 +6514,8 @@ static inline void vn_async_vkGetPhysicalDeviceProperties2(struct vn_instance *v
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceProperties2(cs, cmd_flags, physicalDevice, pProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6284,6 +6560,8 @@ static inline void vn_async_vkGetPhysicalDeviceFormatProperties2(struct vn_insta
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceFormatProperties2(cs, cmd_flags, physicalDevice, format, pFormatProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6331,6 +6609,8 @@ static inline void vn_async_vkGetPhysicalDeviceImageFormatProperties2(struct vn_
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceImageFormatProperties2(cs, cmd_flags, physicalDevice, pImageFormatInfo, pImageFormatProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6375,6 +6655,8 @@ static inline void vn_async_vkGetPhysicalDeviceQueueFamilyProperties2(struct vn_
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceQueueFamilyProperties2(cs, cmd_flags, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6419,6 +6701,8 @@ static inline void vn_async_vkGetPhysicalDeviceMemoryProperties2(struct vn_insta
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceMemoryProperties2(cs, cmd_flags, physicalDevice, pMemoryProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6463,6 +6747,8 @@ static inline void vn_async_vkGetPhysicalDeviceSparseImageFormatProperties2(stru
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties2(cs, cmd_flags, physicalDevice, pFormatInfo, pPropertyCount, pProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6507,6 +6793,8 @@ static inline void vn_async_vkTrimCommandPool(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkTrimCommandPool(cs, cmd_flags, device, commandPool, flags);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6551,6 +6839,8 @@ static inline void vn_async_vkGetPhysicalDeviceExternalBufferProperties(struct v
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceExternalBufferProperties(cs, cmd_flags, physicalDevice, pExternalBufferInfo, pExternalBufferProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6595,6 +6885,8 @@ static inline void vn_async_vkGetPhysicalDeviceExternalSemaphoreProperties(struc
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceExternalSemaphoreProperties(cs, cmd_flags, physicalDevice, pExternalSemaphoreInfo, pExternalSemaphoreProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6639,6 +6931,8 @@ static inline void vn_async_vkGetPhysicalDeviceExternalFenceProperties(struct vn
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetPhysicalDeviceExternalFenceProperties(cs, cmd_flags, physicalDevice, pExternalFenceInfo, pExternalFenceProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6686,6 +6980,8 @@ static inline void vn_async_vkEnumeratePhysicalDeviceGroups(struct vn_instance *
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkEnumeratePhysicalDeviceGroups(cs, cmd_flags, instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6730,6 +7026,8 @@ static inline void vn_async_vkGetDeviceGroupPeerMemoryFeatures(struct vn_instanc
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetDeviceGroupPeerMemoryFeatures(cs, cmd_flags, device, heapIndex, localDeviceIndex, remoteDeviceIndex, pPeerMemoryFeatures);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6777,6 +7075,8 @@ static inline void vn_async_vkBindBufferMemory2(struct vn_instance *vn_instance,
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkBindBufferMemory2(cs, cmd_flags, device, bindInfoCount, pBindInfos);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6824,6 +7124,8 @@ static inline void vn_async_vkBindImageMemory2(struct vn_instance *vn_instance, 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkBindImageMemory2(cs, cmd_flags, device, bindInfoCount, pBindInfos);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6868,6 +7170,8 @@ static inline void vn_async_vkCmdSetDeviceMask(struct vn_instance *vn_instance, 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdSetDeviceMask(cs, cmd_flags, commandBuffer, deviceMask);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6912,6 +7216,8 @@ static inline void vn_async_vkCmdDispatchBase(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdDispatchBase(cs, cmd_flags, commandBuffer, baseGroupX, baseGroupY, baseGroupZ, groupCountX, groupCountY, groupCountZ);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -6959,6 +7265,8 @@ static inline void vn_async_vkCreateDescriptorUpdateTemplate(struct vn_instance 
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateDescriptorUpdateTemplate(cs, cmd_flags, device, pCreateInfo, pAllocator, pDescriptorUpdateTemplate);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7003,6 +7311,8 @@ static inline void vn_async_vkDestroyDescriptorUpdateTemplate(struct vn_instance
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroyDescriptorUpdateTemplate(cs, cmd_flags, device, descriptorUpdateTemplate, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7047,6 +7357,8 @@ static inline void vn_async_vkGetBufferMemoryRequirements2(struct vn_instance *v
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetBufferMemoryRequirements2(cs, cmd_flags, device, pInfo, pMemoryRequirements);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7091,6 +7403,8 @@ static inline void vn_async_vkGetImageMemoryRequirements2(struct vn_instance *vn
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetImageMemoryRequirements2(cs, cmd_flags, device, pInfo, pMemoryRequirements);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7135,6 +7449,8 @@ static inline void vn_async_vkGetImageSparseMemoryRequirements2(struct vn_instan
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetImageSparseMemoryRequirements2(cs, cmd_flags, device, pInfo, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7182,6 +7498,8 @@ static inline void vn_async_vkCreateSamplerYcbcrConversion(struct vn_instance *v
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateSamplerYcbcrConversion(cs, cmd_flags, device, pCreateInfo, pAllocator, pYcbcrConversion);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7226,6 +7544,8 @@ static inline void vn_async_vkDestroySamplerYcbcrConversion(struct vn_instance *
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkDestroySamplerYcbcrConversion(cs, cmd_flags, device, ycbcrConversion, pAllocator);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7270,6 +7590,8 @@ static inline void vn_async_vkGetDeviceQueue2(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetDeviceQueue2(cs, cmd_flags, device, pQueueInfo, pQueue);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7314,6 +7636,8 @@ static inline void vn_async_vkGetDescriptorSetLayoutSupport(struct vn_instance *
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetDescriptorSetLayoutSupport(cs, cmd_flags, device, pCreateInfo, pSupport);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7361,6 +7685,8 @@ static inline void vn_async_vkCreateRenderPass2(struct vn_instance *vn_instance,
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateRenderPass2(cs, cmd_flags, device, pCreateInfo, pAllocator, pRenderPass);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7405,6 +7731,8 @@ static inline void vn_async_vkCmdBeginRenderPass2(struct vn_instance *vn_instanc
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdBeginRenderPass2(cs, cmd_flags, commandBuffer, pRenderPassBegin, pSubpassBeginInfo);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7449,6 +7777,8 @@ static inline void vn_async_vkCmdNextSubpass2(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdNextSubpass2(cs, cmd_flags, commandBuffer, pSubpassBeginInfo, pSubpassEndInfo);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7493,6 +7823,8 @@ static inline void vn_async_vkCmdEndRenderPass2(struct vn_instance *vn_instance,
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdEndRenderPass2(cs, cmd_flags, commandBuffer, pSubpassEndInfo);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7540,6 +7872,8 @@ static inline void vn_async_vkGetSemaphoreCounterValue(struct vn_instance *vn_in
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetSemaphoreCounterValue(cs, cmd_flags, device, semaphore, pValue);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7587,6 +7921,8 @@ static inline void vn_async_vkWaitSemaphores(struct vn_instance *vn_instance, Vk
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkWaitSemaphores(cs, cmd_flags, device, pWaitInfo, timeout);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7634,6 +7970,8 @@ static inline void vn_async_vkSignalSemaphore(struct vn_instance *vn_instance, V
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkSignalSemaphore(cs, cmd_flags, device, pSignalInfo);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7678,6 +8016,8 @@ static inline void vn_async_vkCmdDrawIndirectCount(struct vn_instance *vn_instan
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdDrawIndirectCount(cs, cmd_flags, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7722,6 +8062,8 @@ static inline void vn_async_vkCmdDrawIndexedIndirectCount(struct vn_instance *vn
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdDrawIndexedIndirectCount(cs, cmd_flags, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7766,6 +8108,8 @@ static inline void vn_async_vkCmdBindTransformFeedbackBuffersEXT(struct vn_insta
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdBindTransformFeedbackBuffersEXT(cs, cmd_flags, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets, pSizes);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7810,6 +8154,8 @@ static inline void vn_async_vkCmdBeginTransformFeedbackEXT(struct vn_instance *v
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdBeginTransformFeedbackEXT(cs, cmd_flags, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7854,6 +8200,8 @@ static inline void vn_async_vkCmdEndTransformFeedbackEXT(struct vn_instance *vn_
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdEndTransformFeedbackEXT(cs, cmd_flags, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7898,6 +8246,8 @@ static inline void vn_async_vkCmdBeginQueryIndexedEXT(struct vn_instance *vn_ins
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdBeginQueryIndexedEXT(cs, cmd_flags, commandBuffer, queryPool, query, flags, index);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7942,6 +8292,8 @@ static inline void vn_async_vkCmdEndQueryIndexedEXT(struct vn_instance *vn_insta
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdEndQueryIndexedEXT(cs, cmd_flags, commandBuffer, queryPool, query, index);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -7986,6 +8338,8 @@ static inline void vn_async_vkCmdDrawIndirectByteCountEXT(struct vn_instance *vn
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCmdDrawIndirectByteCountEXT(cs, cmd_flags, commandBuffer, instanceCount, firstInstance, counterBuffer, counterBufferOffset, counterOffset, vertexStride);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -8033,6 +8387,8 @@ static inline void vn_async_vkGetImageDrmFormatModifierPropertiesEXT(struct vn_i
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetImageDrmFormatModifierPropertiesEXT(cs, cmd_flags, device, image, pProperties);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -8080,6 +8436,8 @@ static inline void vn_async_vkGetBufferOpaqueCaptureAddress(struct vn_instance *
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetBufferOpaqueCaptureAddress(cs, cmd_flags, device, pInfo);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -8127,6 +8485,8 @@ static inline void vn_async_vkGetBufferDeviceAddress(struct vn_instance *vn_inst
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetBufferDeviceAddress(cs, cmd_flags, device, pInfo);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -8174,6 +8534,8 @@ static inline void vn_async_vkGetDeviceMemoryOpaqueCaptureAddress(struct vn_inst
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkGetDeviceMemoryOpaqueCaptureAddress(cs, cmd_flags, device, pInfo);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -8218,6 +8580,8 @@ static inline void vn_async_vkSetReplyCommandStreamMESA(struct vn_instance *vn_i
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkSetReplyCommandStreamMESA(cs, cmd_flags, pStream);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -8262,6 +8626,8 @@ static inline void vn_async_vkSeekReplyCommandStreamMESA(struct vn_instance *vn_
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkSeekReplyCommandStreamMESA(cs, cmd_flags, position);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
@@ -8306,6 +8672,8 @@ static inline void vn_async_vkExecuteCommandStreamsMESA(struct vn_instance *vn_i
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkExecuteCommandStreamsMESA(cs, cmd_flags, streamCount, pStreams, pReplyPositions, dependencyCount, pDependencies, flags);
+    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+        vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
 
