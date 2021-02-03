@@ -3108,9 +3108,24 @@ static inline void vn_async_vkCreateGraphicsPipelines(struct vn_instance *vn_ins
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateGraphicsPipelines(cs, cmd_flags, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+
+    bool throttle = false;
+    uint64_t throttle_sync_val;
+    vn_instance->cs_throttle_pipeline_count += createInfoCount;
+    if (vn_instance->cs_throttle_pipeline_count >
+        vn_instance->cs_throttle_pipeline_threshold) {
+        /* TODO refactor vn_instance_submit_cs_locked */
+        assert(vn_instance->cs_reply.bo);
+        throttle = vn_instance_submit_cs_locked(vn_instance,
+                vn_instance->cs_reply.bo, &throttle_sync_val);
+    }
+
     if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
+
+    if (throttle)
+        vn_instance_wait_cs_reply(vn_instance, throttle_sync_val);
 }
 
 static inline VkResult vn_call_vkCreateComputePipelines(struct vn_instance *vn_instance, VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount, const VkComputePipelineCreateInfo* pCreateInfos, const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines)
@@ -3157,9 +3172,24 @@ static inline void vn_async_vkCreateComputePipelines(struct vn_instance *vn_inst
     struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
     if (vn_cs_reserve_out(cs, cmd_size))
         vn_encode_vkCreateComputePipelines(cs, cmd_flags, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+
+    bool throttle = false;
+    uint64_t throttle_sync_val;
+    vn_instance->cs_throttle_pipeline_count += createInfoCount;
+    if (vn_instance->cs_throttle_pipeline_count >
+        vn_instance->cs_throttle_pipeline_threshold) {
+        /* TODO refactor vn_instance_submit_cs_locked */
+        assert(vn_instance->cs_reply.bo);
+        throttle = vn_instance_submit_cs_locked(vn_instance,
+                vn_instance->cs_reply.bo, &throttle_sync_val);
+    }
+
     if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
+
+    if (throttle)
+        vn_instance_wait_cs_reply(vn_instance, throttle_sync_val);
 }
 
 static inline void vn_call_vkDestroyPipeline(struct vn_instance *vn_instance, VkDevice device, VkPipeline pipeline, const VkAllocationCallbacks* pAllocator)
