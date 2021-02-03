@@ -1621,6 +1621,11 @@ struct pipe_video_codec *radeon_create_decoder(struct pipe_context *context,
       }
    }
 
+   if (sctx->family <= CHIP_NAVI14 && stream_type == RDECODE_CODEC_VP9)
+      dec->dpb_type = DPB_DYNAMIC_TIER_1;
+   else
+      dec->dpb_type = DPB_MAX_RES;
+
    db_alignment = (((struct si_screen *)dec->screen)->info.family >= CHIP_RENOIR &&
                    dec->base.width > 32 && (dec->stream_type == RDECODE_CODEC_VP9 ||
                    dec->base.profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)) ? 64 : 32;
