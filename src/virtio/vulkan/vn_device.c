@@ -24,22 +24,6 @@
 #define VN_MIN_RENDERER_VERSION VK_API_VERSION_1_1
 
 static void
-vn_cs_device_init(struct vn_cs_device *dev,
-                  const VkDeviceCreateInfo *info,
-                  const VkAllocationCallbacks *alloc)
-{
-   vk_device_init(&dev->base, info, alloc, alloc);
-   assert(sizeof(dev->id) >= sizeof(dev));
-   dev->id = (uintptr_t)dev;
-}
-
-static void
-vn_cs_device_fini(struct vn_cs_device *dev)
-{
-   vk_device_finish(&dev->base);
-}
-
-static void
 vn_cs_object_init(struct vn_cs_object *obj,
                   VkObjectType type,
                   struct vn_cs_device *dev)
@@ -53,6 +37,22 @@ static void
 vn_cs_object_fini(struct vn_cs_object *obj)
 {
    vk_object_base_finish(&obj->base);
+}
+
+static void
+vn_cs_device_init(struct vn_cs_device *dev,
+                  const VkDeviceCreateInfo *info,
+                  const VkAllocationCallbacks *alloc)
+{
+   vk_device_init(&dev->base, info, alloc, alloc);
+   assert(sizeof(dev->id) >= sizeof(dev));
+   dev->id = (uintptr_t)dev;
+}
+
+static void
+vn_cs_device_fini(struct vn_cs_device *dev)
+{
+   vk_device_finish(&dev->base);
 }
 
 static uint32_t

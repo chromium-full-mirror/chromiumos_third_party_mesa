@@ -10,13 +10,13 @@
 
 typedef uint64_t vn_cs_object_id;
 
-struct vn_cs_device {
-   struct vk_device base;
+struct vn_cs_object {
+   struct vk_object_base base;
    vn_cs_object_id id;
 };
 
-struct vn_cs_object {
-   struct vk_object_base base;
+struct vn_cs_device {
+   struct vk_device base;
    vn_cs_object_id id;
 };
 
@@ -171,50 +171,41 @@ vn_cs_get_out_len(const struct vn_cs *cs)
 }
 
 static inline vn_cs_object_id
-vn_cs_handle_load_id(const void *vk_handle, bool is_dev)
+vn_cs_object_load_id(const void *obj_handle)
 {
-   const struct vk_object_base *base =
-      *(const struct vk_object_base **)vk_handle;
+   const struct vn_cs_object *obj = *(const struct vn_cs_object **)obj_handle;
+   assert(!obj || obj->base.type != VK_OBJECT_TYPE_DEVICE);
 
-   if (!base)
-      return 0;
-
-   if (is_dev) {
-      assert(base->type == VK_OBJECT_TYPE_DEVICE);
-
-      const struct vn_cs_device *dev = (const struct vn_cs_device *)base;
-      return dev->id;
-   } else {
-      assert(base->type != VK_OBJECT_TYPE_DEVICE);
-
-      const struct vn_cs_object *obj = (const struct vn_cs_object *)base;
-      return obj->id;
-   }
+   return obj ? obj->id : 0;
 }
 
 static inline void
-vn_cs_handle_store_id(void *vk_handle, vn_cs_object_id id, bool is_dev)
+vn_cs_object_store_id(void *obj_handle, vn_cs_object_id id)
 {
-   struct vk_object_base *base = *(struct vk_object_base **)vk_handle;
-   assert(base);
+   struct vn_cs_object *obj = *(struct vn_cs_object **)obj_handle;
+   assert(obj && obj->base.type != VK_OBJECT_TYPE_DEVICE);
+   assert(!obj->id || obj->id == id);
 
-   if (is_dev) {
-      assert(base->type == VK_OBJECT_TYPE_DEVICE);
+   obj->id = id;
+}
 
-      struct vn_cs_device *dev = (struct vn_cs_device *)base;
-      if (dev->id)
-         assert(dev->id == id);
-      else
-         dev->id = id;
-   } else {
-      assert(base->type != VK_OBJECT_TYPE_DEVICE);
+static inline vn_cs_object_id
+vn_cs_device_load_id(const VkDevice *dev_handle)
+{
+   const struct vn_cs_device *dev = *(const struct vn_cs_device **)dev_handle;
+   assert(!dev || dev->base.base.type == VK_OBJECT_TYPE_DEVICE);
 
-      struct vn_cs_object *obj = (struct vn_cs_object *)base;
-      if (obj->id)
-         assert(obj->id == id);
-      else
-         obj->id = id;
-   }
+   return dev ? dev->id : 0;
+}
+
+static inline void
+vn_cs_device_store_id(VkDevice *dev_handle, vn_cs_object_id id)
+{
+   struct vn_cs_device *dev = *(struct vn_cs_device **)dev_handle;
+   assert(dev && dev->base.base.type == VK_OBJECT_TYPE_DEVICE);
+   assert(!dev->id || dev->id == id);
+
+   dev->id = id;
 }
 
 #endif /* VN_CS_H */
