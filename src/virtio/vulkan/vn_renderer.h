@@ -47,7 +47,7 @@ struct vn_renderer_bo {
    /* import a VkDeviceMemory as the storage */
    VkResult (*init_gpu)(struct vn_renderer_bo *bo,
                         VkDeviceSize size,
-                        vn_cs_object_id mem_id,
+                        vn_object_id mem_id,
                         VkMemoryPropertyFlags flags,
                         VkExternalMemoryHandleTypeFlags external_handles);
 
@@ -116,7 +116,7 @@ struct vn_renderer_submit_batch {
     * and sync_queue_index/sync_queue_id are ignored.  TODO revisit this later
     */
    uint32_t sync_queue_index;
-   vn_cs_object_id sync_queue_id;
+   vn_object_id sync_queue_id;
    bool sync_queue_cpu;
 
    /* syncs to update when the virtual sync queue is signaled */
@@ -267,7 +267,7 @@ vn_renderer_bo_create_cpu(struct vn_renderer *renderer,
 static inline VkResult
 vn_renderer_bo_create_gpu(struct vn_renderer *renderer,
                           VkDeviceSize size,
-                          vn_cs_object_id mem_id,
+                          vn_object_id mem_id,
                           VkMemoryPropertyFlags flags,
                           VkExternalMemoryHandleTypeFlags external_handles,
                           const VkAllocationCallbacks *alloc,

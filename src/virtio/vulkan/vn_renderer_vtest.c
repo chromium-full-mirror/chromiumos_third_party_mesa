@@ -308,7 +308,7 @@ vtest_vcmd_resource_create_blob(struct vtest *vtest,
                                 enum vcmd_blob_type type,
                                 uint32_t flags,
                                 VkDeviceSize size,
-                                vn_cs_object_id blob_id,
+                                vn_object_id blob_id,
                                 int *res_fd)
 {
    uint32_t vtest_hdr[VTEST_HDR_SIZE];
@@ -723,7 +723,7 @@ vtest_bo_export_dmabuf(struct vn_renderer_bo *_bo)
 static VkResult
 vtest_bo_init_gpu(struct vn_renderer_bo *_bo,
                   VkDeviceSize size,
-                  vn_cs_object_id mem_id,
+                  vn_object_id mem_id,
                   VkMemoryPropertyFlags flags,
                   VkExternalMemoryHandleTypeFlags external_handles)
 {

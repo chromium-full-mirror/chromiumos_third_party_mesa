@@ -973,7 +973,7 @@ virtgpu_bo_export_dmabuf(struct vn_renderer_bo *_bo)
 static VkResult
 virtgpu_bo_init_gpu(struct vn_renderer_bo *_bo,
                     VkDeviceSize size,
-                    vn_cs_object_id mem_id,
+                    vn_object_id mem_id,
                     VkMemoryPropertyFlags flags,
                     VkExternalMemoryHandleTypeFlags external_handles)
 {

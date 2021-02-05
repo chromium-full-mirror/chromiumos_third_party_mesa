@@ -333,7 +333,7 @@ vn_instance_flush_cs(struct vn_instance *instance)
 
 static struct vn_physical_device *
 vn_instance_find_physical_device(struct vn_instance *instance,
-                                 vn_cs_object_id id)
+                                 vn_object_id id)
 {
    for (uint32_t i = 0; i < instance->physical_device_count; i++) {
       if (instance->physical_devices[i].base.id == id)
@@ -1249,7 +1249,7 @@ vn_EnumeratePhysicalDeviceGroups(
          VkPhysicalDeviceGroupProperties *props =
             &pPhysicalDeviceGroupProperties[i];
          for (uint32_t j = 0; j < props->physicalDeviceCount; j++) {
-            const vn_cs_object_id id =
+            const vn_object_id id =
                dummy[VK_MAX_DEVICE_GROUP_SIZE * i + j].id;
             struct vn_physical_device *physical_dev =
                vn_instance_find_physical_device(instance, id);

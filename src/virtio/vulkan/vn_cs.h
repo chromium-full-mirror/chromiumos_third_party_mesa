@@ -8,16 +8,14 @@
 
 #include "vn_common.h"
 
-typedef uint64_t vn_cs_object_id;
-
 struct vn_cs_object {
    struct vk_object_base base;
-   vn_cs_object_id id;
+   vn_object_id id;
 };
 
 struct vn_cs_device {
    struct vk_device base;
-   vn_cs_object_id id;
+   vn_object_id id;
 };
 
 struct vn_cs_iovec {
@@ -170,7 +168,7 @@ vn_cs_get_out_len(const struct vn_cs *cs)
    return len;
 }
 
-static inline vn_cs_object_id
+static inline vn_object_id
 vn_cs_object_load_id(const void *obj_handle)
 {
    const struct vn_cs_object *obj = *(const struct vn_cs_object **)obj_handle;
@@ -180,7 +178,7 @@ vn_cs_object_load_id(const void *obj_handle)
 }
 
 static inline void
-vn_cs_object_store_id(void *obj_handle, vn_cs_object_id id)
+vn_cs_object_store_id(void *obj_handle, vn_object_id id)
 {
    struct vn_cs_object *obj = *(struct vn_cs_object **)obj_handle;
    assert(obj && obj->base.type != VK_OBJECT_TYPE_DEVICE);
@@ -189,7 +187,7 @@ vn_cs_object_store_id(void *obj_handle, vn_cs_object_id id)
    obj->id = id;
 }
 
-static inline vn_cs_object_id
+static inline vn_object_id
 vn_cs_device_load_id(const VkDevice *dev_handle)
 {
    const struct vn_cs_device *dev = *(const struct vn_cs_device **)dev_handle;
@@ -199,7 +197,7 @@ vn_cs_device_load_id(const VkDevice *dev_handle)
 }
 
 static inline void
-vn_cs_device_store_id(VkDevice *dev_handle, vn_cs_object_id id)
+vn_cs_device_store_id(VkDevice *dev_handle, vn_object_id id)
 {
    struct vn_cs_device *dev = *(struct vn_cs_device **)dev_handle;
    assert(dev && dev->base.base.type == VK_OBJECT_TYPE_DEVICE);

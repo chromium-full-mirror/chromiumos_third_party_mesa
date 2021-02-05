@@ -81,6 +81,8 @@ enum vn_debug {
    VN_DEBUG_WSI = 1ull << 3,
 };
 
+typedef uint64_t vn_object_id;
+
 extern uint64_t vn_debug;
 extern const VkAllocationCallbacks vn_default_allocator;
 
