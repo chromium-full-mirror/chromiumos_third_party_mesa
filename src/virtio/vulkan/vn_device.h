@@ -93,7 +93,7 @@ VK_DEFINE_HANDLE_CASTS(vn_physical_device,
                        VK_OBJECT_TYPE_PHYSICAL_DEVICE)
 
 struct vn_device {
-   struct vn_cs_device base;
+   struct vn_device_object base;
 
    VkAllocationCallbacks allocator;
 

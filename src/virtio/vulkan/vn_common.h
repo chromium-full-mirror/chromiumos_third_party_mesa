@@ -89,6 +89,12 @@ struct vn_object {
    vn_object_id id;
 };
 
+/* base class of vn_device */
+struct vn_device_object {
+   struct vk_device base;
+   vn_object_id id;
+};
+
 extern uint64_t vn_debug;
 extern const VkAllocationCallbacks vn_default_allocator;
 

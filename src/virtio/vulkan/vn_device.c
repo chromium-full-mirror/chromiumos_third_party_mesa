@@ -26,7 +26,7 @@
 static void
 vn_object_init(struct vn_object *obj,
                VkObjectType type,
-               struct vn_cs_device *dev)
+               struct vn_device_object *dev)
 {
    vk_object_base_init(&dev->base, &obj->base, type);
    assert(sizeof(obj->id) >= sizeof(obj));
@@ -40,9 +40,9 @@ vn_object_fini(struct vn_object *obj)
 }
 
 static void
-vn_cs_device_init(struct vn_cs_device *dev,
-                  const VkDeviceCreateInfo *info,
-                  const VkAllocationCallbacks *alloc)
+vn_device_object_init(struct vn_device_object *dev,
+                      const VkDeviceCreateInfo *info,
+                      const VkAllocationCallbacks *alloc)
 {
    vk_device_init(&dev->base, info, alloc, alloc);
    assert(sizeof(dev->id) >= sizeof(dev));
@@ -50,7 +50,7 @@ vn_cs_device_init(struct vn_cs_device *dev,
 }
 
 static void
-vn_cs_device_fini(struct vn_cs_device *dev)
+vn_device_object_fini(struct vn_device_object *dev)
 {
    vk_device_finish(&dev->base);
 }
@@ -2028,7 +2028,7 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
    if (!dev)
       return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_device_init(&dev->base, pCreateInfo, alloc);
+   vn_device_object_init(&dev->base, pCreateInfo, alloc);
 
    dev->allocator = *alloc;
    dev->instance = instance;
@@ -2149,7 +2149,7 @@ vn_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator)
    }
    vk_free(alloc, dev->queues);
 
-   vn_cs_device_fini(&dev->base);
+   vn_device_object_fini(&dev->base);
    vk_free(alloc, dev);
 }
 

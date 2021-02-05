@@ -8,11 +8,6 @@
 
 #include "vn_common.h"
 
-struct vn_cs_device {
-   struct vk_device base;
-   vn_object_id id;
-};
-
 struct vn_cs_iovec {
    void *iov_base;
    size_t iov_len;
@@ -185,7 +180,8 @@ vn_cs_object_store_id(void *obj_handle, vn_object_id id)
 static inline vn_object_id
 vn_cs_device_load_id(const VkDevice *dev_handle)
 {
-   const struct vn_cs_device *dev = *(const struct vn_cs_device **)dev_handle;
+   const struct vn_device_object *dev =
+      *(const struct vn_device_object **)dev_handle;
    assert(!dev || dev->base.base.type == VK_OBJECT_TYPE_DEVICE);
 
    return dev ? dev->id : 0;
@@ -194,7 +190,7 @@ vn_cs_device_load_id(const VkDevice *dev_handle)
 static inline void
 vn_cs_device_store_id(VkDevice *dev_handle, vn_object_id id)
 {
-   struct vn_cs_device *dev = *(struct vn_cs_device **)dev_handle;
+   struct vn_device_object *dev = *(struct vn_device_object **)dev_handle;
    assert(dev && dev->base.base.type == VK_OBJECT_TYPE_DEVICE);
    assert(!dev->id || dev->id == id);
 
