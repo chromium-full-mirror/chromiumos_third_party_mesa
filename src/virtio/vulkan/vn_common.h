@@ -83,6 +83,12 @@ enum vn_debug {
 
 typedef uint64_t vn_object_id;
 
+/* base class of all driver objects except for vn_device */
+struct vn_object {
+   struct vk_object_base base;
+   vn_object_id id;
+};
+
 extern uint64_t vn_debug;
 extern const VkAllocationCallbacks vn_default_allocator;
 

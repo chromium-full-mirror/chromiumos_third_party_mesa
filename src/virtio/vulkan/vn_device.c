@@ -24,9 +24,9 @@
 #define VN_MIN_RENDERER_VERSION VK_API_VERSION_1_1
 
 static void
-vn_cs_object_init(struct vn_cs_object *obj,
-                  VkObjectType type,
-                  struct vn_cs_device *dev)
+vn_object_init(struct vn_object *obj,
+               VkObjectType type,
+               struct vn_cs_device *dev)
 {
    vk_object_base_init(&dev->base, &obj->base, type);
    assert(sizeof(obj->id) >= sizeof(obj));
@@ -34,7 +34,7 @@ vn_cs_object_init(struct vn_cs_object *obj,
 }
 
 static void
-vn_cs_object_fini(struct vn_cs_object *obj)
+vn_object_fini(struct vn_object *obj)
 {
    vk_object_base_finish(&obj->base);
 }
@@ -835,7 +835,7 @@ vn_physical_device_fini(struct vn_physical_device *physical_dev)
    vk_free(alloc, physical_dev->extension_spec_versions);
    vk_free(alloc, physical_dev->queue_family_properties);
 
-   vn_cs_object_fini(&physical_dev->base);
+   vn_object_fini(&physical_dev->base);
 }
 
 static VkResult
@@ -877,8 +877,8 @@ vn_instance_enumerate_physical_devices(struct vn_instance *instance)
    for (uint32_t i = 0; i < count; i++) {
       struct vn_physical_device *physical_dev = &physical_devs[i];
 
-      vn_cs_object_init(&physical_dev->base, VK_OBJECT_TYPE_PHYSICAL_DEVICE,
-                        NULL);
+      vn_object_init(&physical_dev->base, VK_OBJECT_TYPE_PHYSICAL_DEVICE,
+                     NULL);
       physical_dev->instance = instance;
 
       handles[i] = vn_physical_device_to_handle(physical_dev);
@@ -1035,7 +1035,7 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    if (!instance)
       return vn_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&instance->base, VK_OBJECT_TYPE_INSTANCE, NULL);
+   vn_object_init(&instance->base, VK_OBJECT_TYPE_INSTANCE, NULL);
 
    instance->allocator = *alloc;
    instance->api_version = get_instance_api_version(pCreateInfo);
@@ -1139,7 +1139,7 @@ vn_DestroyInstance(VkInstance _instance,
    mtx_destroy(&instance->cs_mutex);
    mtx_destroy(&instance->physical_device_mutex);
 
-   vn_cs_object_fini(&instance->base);
+   vn_object_fini(&instance->base);
    vk_free(alloc, instance);
 }
 
@@ -1205,7 +1205,7 @@ vn_EnumeratePhysicalDeviceGroups(
 {
    struct vn_instance *instance = vn_instance_from_handle(_instance);
    const VkAllocationCallbacks *alloc = &instance->allocator;
-   struct vn_cs_object *dummy = NULL;
+   struct vn_object *dummy = NULL;
    VkResult result;
 
    result = vn_instance_enumerate_physical_devices(instance);
@@ -1980,7 +1980,7 @@ vn_queue_init(struct vn_device *dev,
               uint32_t sync_queue_index,
               const VkAllocationCallbacks *alloc)
 {
-   vn_cs_object_init(&queue->base, VK_OBJECT_TYPE_QUEUE, &dev->base);
+   vn_object_init(&queue->base, VK_OBJECT_TYPE_QUEUE, &dev->base);
 
    VkQueue queue_handle = vn_queue_to_handle(queue);
    vn_async_vkGetDeviceQueue2(
@@ -2145,7 +2145,7 @@ vn_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator)
    for (uint32_t i = 0; i < dev->queue_count; i++) {
       struct vn_queue *queue = &dev->queues[i];
       vn_renderer_sync_destroy(queue->idle_sync, alloc);
-      vn_cs_object_fini(&queue->base);
+      vn_object_fini(&queue->base);
    }
    vk_free(alloc, dev->queues);
 
@@ -2935,7 +2935,7 @@ vn_CreateFence(VkDevice device,
    if (!fence)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&fence->base, VK_OBJECT_TYPE_FENCE, &dev->base);
+   vn_object_init(&fence->base, VK_OBJECT_TYPE_FENCE, &dev->base);
 
    VkResult result = vn_fence_init_payloads(
       dev, fence, pCreateInfo->flags & VK_FENCE_CREATE_SIGNALED_BIT, alloc);
@@ -2973,7 +2973,7 @@ vn_DestroyFence(VkDevice device,
    vn_renderer_sync_destroy(fence->permanent.sync, alloc);
    vn_renderer_sync_destroy(fence->temporary.sync, alloc);
 
-   vn_cs_object_fini(&fence->base);
+   vn_object_fini(&fence->base);
    vk_free(alloc, fence);
 }
 
@@ -3178,7 +3178,7 @@ vn_CreateSemaphore(VkDevice device,
    if (!sem)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&sem->base, VK_OBJECT_TYPE_SEMAPHORE, &dev->base);
+   vn_object_init(&sem->base, VK_OBJECT_TYPE_SEMAPHORE, &dev->base);
 
    const VkSemaphoreTypeCreateInfo *type_info =
       vk_find_struct_const(pCreateInfo->pNext, SEMAPHORE_TYPE_CREATE_INFO);
@@ -3225,7 +3225,7 @@ vn_DestroySemaphore(VkDevice device,
    vn_renderer_sync_destroy(sem->permanent.sync, alloc);
    vn_renderer_sync_destroy(sem->temporary.sync, alloc);
 
-   vn_cs_object_fini(&sem->base);
+   vn_object_fini(&sem->base);
    vk_free(alloc, sem);
 }
 
@@ -3323,7 +3323,7 @@ vn_AllocateMemory(VkDevice device,
    if (!mem)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&mem->base, VK_OBJECT_TYPE_DEVICE_MEMORY, &dev->base);
+   vn_object_init(&mem->base, VK_OBJECT_TYPE_DEVICE_MEMORY, &dev->base);
 
    VkDeviceMemory mem_handle = vn_device_memory_to_handle(mem);
    VkResult result = vn_call_vkAllocateMemory(
@@ -3380,7 +3380,7 @@ vn_FreeMemory(VkDevice device,
    if (mem->bo)
       vn_renderer_bo_unref(mem->bo, alloc);
 
-   vn_cs_object_fini(&mem->base);
+   vn_object_fini(&mem->base);
    vk_free(alloc, mem);
 }
 
@@ -3506,7 +3506,7 @@ vn_CreateBuffer(VkDevice device,
    if (!buf)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&buf->base, VK_OBJECT_TYPE_BUFFER, &dev->base);
+   vn_object_init(&buf->base, VK_OBJECT_TYPE_BUFFER, &dev->base);
 
    VkBuffer buf_handle = vn_buffer_to_handle(buf);
    /* TODO async */
@@ -3552,7 +3552,7 @@ vn_DestroyBuffer(VkDevice device,
 
    vn_async_vkDestroyBuffer(dev->instance, device, buffer, NULL);
 
-   vn_cs_object_fini(&buf->base);
+   vn_object_fini(&buf->base);
    vk_free(alloc, buf);
 }
 
@@ -3658,7 +3658,7 @@ vn_CreateBufferView(VkDevice device,
    if (!view)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&view->base, VK_OBJECT_TYPE_BUFFER_VIEW, &dev->base);
+   vn_object_init(&view->base, VK_OBJECT_TYPE_BUFFER_VIEW, &dev->base);
 
    VkBufferView view_handle = vn_buffer_view_to_handle(view);
    vn_async_vkCreateBufferView(dev->instance, device, pCreateInfo, NULL,
@@ -3684,7 +3684,7 @@ vn_DestroyBufferView(VkDevice device,
 
    vn_async_vkDestroyBufferView(dev->instance, device, bufferView, NULL);
 
-   vn_cs_object_fini(&view->base);
+   vn_object_fini(&view->base);
    vk_free(alloc, view);
 }
 
@@ -3720,7 +3720,7 @@ vn_CreateImage(VkDevice device,
    if (!img)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&img->base, VK_OBJECT_TYPE_IMAGE, &dev->base);
+   vn_object_init(&img->base, VK_OBJECT_TYPE_IMAGE, &dev->base);
 
    VkImage img_handle = vn_image_to_handle(img);
    /* TODO async */
@@ -3824,7 +3824,7 @@ vn_DestroyImage(VkDevice device,
 
    vn_async_vkDestroyImage(dev->instance, device, image, NULL);
 
-   vn_cs_object_fini(&img->base);
+   vn_object_fini(&img->base);
    vk_free(alloc, img);
 }
 
@@ -3985,7 +3985,7 @@ vn_CreateImageView(VkDevice device,
    if (!view)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&view->base, VK_OBJECT_TYPE_IMAGE_VIEW, &dev->base);
+   vn_object_init(&view->base, VK_OBJECT_TYPE_IMAGE_VIEW, &dev->base);
 
    VkImageView view_handle = vn_image_view_to_handle(view);
    vn_async_vkCreateImageView(dev->instance, device, pCreateInfo, NULL,
@@ -4011,7 +4011,7 @@ vn_DestroyImageView(VkDevice device,
 
    vn_async_vkDestroyImageView(dev->instance, device, imageView, NULL);
 
-   vn_cs_object_fini(&view->base);
+   vn_object_fini(&view->base);
    vk_free(alloc, view);
 }
 
@@ -4033,7 +4033,7 @@ vn_CreateSampler(VkDevice device,
    if (!sampler)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&sampler->base, VK_OBJECT_TYPE_SAMPLER, &dev->base);
+   vn_object_init(&sampler->base, VK_OBJECT_TYPE_SAMPLER, &dev->base);
 
    VkSampler sampler_handle = vn_sampler_to_handle(sampler);
    vn_async_vkCreateSampler(dev->instance, device, pCreateInfo, NULL,
@@ -4059,7 +4059,7 @@ vn_DestroySampler(VkDevice device,
 
    vn_async_vkDestroySampler(dev->instance, device, _sampler, NULL);
 
-   vn_cs_object_fini(&sampler->base);
+   vn_object_fini(&sampler->base);
    vk_free(alloc, sampler);
 }
 
@@ -4082,8 +4082,8 @@ vn_CreateSamplerYcbcrConversion(
    if (!conv)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&conv->base, VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION,
-                     &dev->base);
+   vn_object_init(&conv->base, VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION,
+                  &dev->base);
 
    VkSamplerYcbcrConversion conv_handle =
       vn_sampler_ycbcr_conversion_to_handle(conv);
@@ -4112,7 +4112,7 @@ vn_DestroySamplerYcbcrConversion(VkDevice device,
    vn_async_vkDestroySamplerYcbcrConversion(dev->instance, device,
                                             ycbcrConversion, NULL);
 
-   vn_cs_object_fini(&conv->base);
+   vn_object_fini(&conv->base);
    vk_free(alloc, conv);
 }
 
@@ -4188,8 +4188,8 @@ vn_CreateDescriptorSetLayout(
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
-   vn_cs_object_init(&layout->base, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
-                     &dev->base);
+   vn_object_init(&layout->base, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                  &dev->base);
 
    for (uint32_t i = 0; i < pCreateInfo->bindingCount; i++) {
       const VkDescriptorSetLayoutBinding *binding =
@@ -4236,7 +4236,7 @@ vn_DestroyDescriptorSetLayout(VkDevice device,
    vn_async_vkDestroyDescriptorSetLayout(dev->instance, device,
                                          descriptorSetLayout, NULL);
 
-   vn_cs_object_fini(&layout->base);
+   vn_object_fini(&layout->base);
    vk_free(alloc, layout);
 }
 
@@ -4258,7 +4258,7 @@ vn_CreateDescriptorPool(VkDevice device,
    if (!pool)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&pool->base, VK_OBJECT_TYPE_DESCRIPTOR_POOL, &dev->base);
+   vn_object_init(&pool->base, VK_OBJECT_TYPE_DESCRIPTOR_POOL, &dev->base);
 
    pool->allocator = *alloc;
    list_inithead(&pool->descriptor_sets);
@@ -4294,11 +4294,11 @@ vn_DestroyDescriptorPool(VkDevice device,
                              &pool->descriptor_sets, head) {
       list_del(&set->head);
 
-      vn_cs_object_fini(&set->base);
+      vn_object_fini(&set->base);
       vk_free(alloc, set);
    }
 
-   vn_cs_object_fini(&pool->base);
+   vn_object_fini(&pool->base);
    vk_free(alloc, pool);
 }
 
@@ -4319,7 +4319,7 @@ vn_ResetDescriptorPool(VkDevice device,
                              &pool->descriptor_sets, head) {
       list_del(&set->head);
 
-      vn_cs_object_fini(&set->base);
+      vn_object_fini(&set->base);
       vk_free(alloc, set);
    }
 
@@ -4353,8 +4353,7 @@ vn_AllocateDescriptorSets(VkDevice device,
          return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
       }
 
-      vn_cs_object_init(&set->base, VK_OBJECT_TYPE_DESCRIPTOR_SET,
-                        &dev->base);
+      vn_object_init(&set->base, VK_OBJECT_TYPE_DESCRIPTOR_SET, &dev->base);
       set->layout =
          vn_descriptor_set_layout_from_handle(pAllocateInfo->pSetLayouts[i]);
       list_addtail(&set->head, &pool->descriptor_sets);
@@ -4403,7 +4402,7 @@ vn_FreeDescriptorSets(VkDevice device,
 
       list_del(&set->head);
 
-      vn_cs_object_fini(&set->base);
+      vn_object_fini(&set->base);
       vk_free(alloc, set);
    }
 
@@ -4683,8 +4682,8 @@ vn_CreateDescriptorUpdateTemplate(
    if (!templ)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&templ->base, VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE,
-                     &dev->base);
+   vn_object_init(&templ->base, VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE,
+                  &dev->base);
 
    templ->update = vn_update_descriptor_sets_parse_template(
       pCreateInfo, alloc, templ->entries);
@@ -4722,7 +4721,7 @@ vn_DestroyDescriptorUpdateTemplate(
    vk_free(alloc, templ->update);
    mtx_destroy(&templ->mutex);
 
-   vn_cs_object_fini(&templ->base);
+   vn_object_fini(&templ->base);
    vk_free(alloc, templ);
 }
 
@@ -4827,7 +4826,7 @@ vn_CreateRenderPass(VkDevice device,
    if (!pass)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&pass->base, VK_OBJECT_TYPE_RENDER_PASS, &dev->base);
+   vn_object_init(&pass->base, VK_OBJECT_TYPE_RENDER_PASS, &dev->base);
 
    /* XXX VK_IMAGE_LAYOUT_PRESENT_SRC_KHR */
 
@@ -4856,7 +4855,7 @@ vn_CreateRenderPass2(VkDevice device,
    if (!pass)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&pass->base, VK_OBJECT_TYPE_RENDER_PASS, &dev->base);
+   vn_object_init(&pass->base, VK_OBJECT_TYPE_RENDER_PASS, &dev->base);
 
    /* XXX VK_IMAGE_LAYOUT_PRESENT_SRC_KHR */
 
@@ -4884,7 +4883,7 @@ vn_DestroyRenderPass(VkDevice device,
 
    vn_async_vkDestroyRenderPass(dev->instance, device, renderPass, NULL);
 
-   vn_cs_object_fini(&pass->base);
+   vn_object_fini(&pass->base);
    vk_free(alloc, pass);
 }
 
@@ -4921,7 +4920,7 @@ vn_CreateFramebuffer(VkDevice device,
    if (!fb)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&fb->base, VK_OBJECT_TYPE_FRAMEBUFFER, &dev->base);
+   vn_object_init(&fb->base, VK_OBJECT_TYPE_FRAMEBUFFER, &dev->base);
 
    VkFramebuffer fb_handle = vn_framebuffer_to_handle(fb);
    vn_async_vkCreateFramebuffer(dev->instance, device, pCreateInfo, NULL,
@@ -4947,7 +4946,7 @@ vn_DestroyFramebuffer(VkDevice device,
 
    vn_async_vkDestroyFramebuffer(dev->instance, device, framebuffer, NULL);
 
-   vn_cs_object_fini(&fb->base);
+   vn_object_fini(&fb->base);
    vk_free(alloc, fb);
 }
 
@@ -4968,7 +4967,7 @@ vn_CreateEvent(VkDevice device,
    if (!ev)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&ev->base, VK_OBJECT_TYPE_EVENT, &dev->base);
+   vn_object_init(&ev->base, VK_OBJECT_TYPE_EVENT, &dev->base);
 
    VkEvent ev_handle = vn_event_to_handle(ev);
    vn_async_vkCreateEvent(dev->instance, device, pCreateInfo, NULL,
@@ -4994,7 +4993,7 @@ vn_DestroyEvent(VkDevice device,
 
    vn_async_vkDestroyEvent(dev->instance, device, event, NULL);
 
-   vn_cs_object_fini(&ev->base);
+   vn_object_fini(&ev->base);
    vk_free(alloc, ev);
 }
 
@@ -5049,7 +5048,7 @@ vn_CreateQueryPool(VkDevice device,
    if (!pool)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&pool->base, VK_OBJECT_TYPE_QUERY_POOL, &dev->base);
+   vn_object_init(&pool->base, VK_OBJECT_TYPE_QUERY_POOL, &dev->base);
 
    pool->allocator = *alloc;
 
@@ -5097,7 +5096,7 @@ vn_DestroyQueryPool(VkDevice device,
 
    vn_async_vkDestroyQueryPool(dev->instance, device, queryPool, NULL);
 
-   vn_cs_object_fini(&pool->base);
+   vn_object_fini(&pool->base);
    vk_free(alloc, pool);
 }
 
@@ -5222,7 +5221,7 @@ vn_CreateShaderModule(VkDevice device,
    if (!mod)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&mod->base, VK_OBJECT_TYPE_SHADER_MODULE, &dev->base);
+   vn_object_init(&mod->base, VK_OBJECT_TYPE_SHADER_MODULE, &dev->base);
 
    VkShaderModule mod_handle = vn_shader_module_to_handle(mod);
    vn_async_vkCreateShaderModule(dev->instance, device, pCreateInfo, NULL,
@@ -5248,7 +5247,7 @@ vn_DestroyShaderModule(VkDevice device,
 
    vn_async_vkDestroyShaderModule(dev->instance, device, shaderModule, NULL);
 
-   vn_cs_object_fini(&mod->base);
+   vn_object_fini(&mod->base);
    vk_free(alloc, mod);
 }
 
@@ -5270,8 +5269,7 @@ vn_CreatePipelineLayout(VkDevice device,
    if (!layout)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&layout->base, VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                     &dev->base);
+   vn_object_init(&layout->base, VK_OBJECT_TYPE_PIPELINE_LAYOUT, &dev->base);
 
    VkPipelineLayout layout_handle = vn_pipeline_layout_to_handle(layout);
    vn_async_vkCreatePipelineLayout(dev->instance, device, pCreateInfo, NULL,
@@ -5299,7 +5297,7 @@ vn_DestroyPipelineLayout(VkDevice device,
    vn_async_vkDestroyPipelineLayout(dev->instance, device, pipelineLayout,
                                     NULL);
 
-   vn_cs_object_fini(&layout->base);
+   vn_object_fini(&layout->base);
    vk_free(alloc, layout);
 }
 
@@ -5321,7 +5319,7 @@ vn_CreatePipelineCache(VkDevice device,
    if (!cache)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&cache->base, VK_OBJECT_TYPE_PIPELINE_CACHE, &dev->base);
+   vn_object_init(&cache->base, VK_OBJECT_TYPE_PIPELINE_CACHE, &dev->base);
 
    VkPipelineCacheCreateInfo local_create_info;
    if (pCreateInfo->initialDataSize) {
@@ -5357,7 +5355,7 @@ vn_DestroyPipelineCache(VkDevice device,
    vn_async_vkDestroyPipelineCache(dev->instance, device, pipelineCache,
                                    NULL);
 
-   vn_cs_object_fini(&cache->base);
+   vn_object_fini(&cache->base);
    vk_free(alloc, cache);
 }
 
@@ -5446,7 +5444,7 @@ vn_CreateGraphicsPipelines(VkDevice device,
          return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
       }
 
-      vn_cs_object_init(&pipeline->base, VK_OBJECT_TYPE_PIPELINE, &dev->base);
+      vn_object_init(&pipeline->base, VK_OBJECT_TYPE_PIPELINE, &dev->base);
 
       VkPipeline pipeline_handle = vn_pipeline_to_handle(pipeline);
       pPipelines[i] = pipeline_handle;
@@ -5482,7 +5480,7 @@ vn_CreateComputePipelines(VkDevice device,
          return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
       }
 
-      vn_cs_object_init(&pipeline->base, VK_OBJECT_TYPE_PIPELINE, &dev->base);
+      vn_object_init(&pipeline->base, VK_OBJECT_TYPE_PIPELINE, &dev->base);
 
       VkPipeline pipeline_handle = vn_pipeline_to_handle(pipeline);
       pPipelines[i] = pipeline_handle;
@@ -5510,7 +5508,7 @@ vn_DestroyPipeline(VkDevice device,
 
    vn_async_vkDestroyPipeline(dev->instance, device, _pipeline, NULL);
 
-   vn_cs_object_fini(&pipeline->base);
+   vn_object_fini(&pipeline->base);
    vk_free(alloc, pipeline);
 }
 
@@ -5532,7 +5530,7 @@ vn_CreateCommandPool(VkDevice device,
    if (!pool)
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_cs_object_init(&pool->base, VK_OBJECT_TYPE_COMMAND_POOL, &dev->base);
+   vn_object_init(&pool->base, VK_OBJECT_TYPE_COMMAND_POOL, &dev->base);
 
    pool->allocator = *alloc;
    list_inithead(&pool->command_buffers);
@@ -5565,11 +5563,11 @@ vn_DestroyCommandPool(VkDevice device,
    list_for_each_entry_safe (struct vn_command_buffer, cmd,
                              &pool->command_buffers, head) {
       vn_cs_fini(&cmd->cs);
-      vn_cs_object_fini(&cmd->base);
+      vn_object_fini(&cmd->base);
       vk_free(alloc, cmd);
    }
 
-   vn_cs_object_fini(&pool->base);
+   vn_object_fini(&pool->base);
    vk_free(alloc, pool);
 }
 
@@ -5630,8 +5628,7 @@ vn_AllocateCommandBuffers(VkDevice device,
          return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
       }
 
-      vn_cs_object_init(&cmd->base, VK_OBJECT_TYPE_COMMAND_BUFFER,
-                        &dev->base);
+      vn_object_init(&cmd->base, VK_OBJECT_TYPE_COMMAND_BUFFER, &dev->base);
       cmd->device = dev;
 
       list_addtail(&cmd->head, &pool->command_buffers);
@@ -5673,7 +5670,7 @@ vn_FreeCommandBuffers(VkDevice device,
       vn_cs_fini(&cmd->cs);
       list_del(&cmd->head);
 
-      vn_cs_object_fini(&cmd->base);
+      vn_object_fini(&cmd->base);
       vk_free(alloc, cmd);
    }
 }

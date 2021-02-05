@@ -18,7 +18,7 @@
 #include "vn_wsi.h"
 
 struct vn_instance {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    VkAllocationCallbacks allocator;
 
@@ -58,7 +58,7 @@ VK_DEFINE_HANDLE_CASTS(vn_instance,
                        VK_OBJECT_TYPE_INSTANCE)
 
 struct vn_physical_device {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    struct vn_instance *instance;
 
@@ -112,7 +112,7 @@ VK_DEFINE_HANDLE_CASTS(vn_device,
                        VK_OBJECT_TYPE_DEVICE)
 
 struct vn_queue {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    struct vn_device *device;
    uint32_t family;
@@ -150,7 +150,7 @@ struct vn_sync_payload {
 };
 
 struct vn_fence {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    struct vn_sync_payload *payload;
 
@@ -163,7 +163,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_fence,
                                VK_OBJECT_TYPE_FENCE)
 
 struct vn_semaphore {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    VkSemaphoreType type;
 
@@ -178,7 +178,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_semaphore,
                                VK_OBJECT_TYPE_SEMAPHORE)
 
 struct vn_device_memory {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    VkDeviceSize size;
 
@@ -192,7 +192,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_device_memory,
                                VK_OBJECT_TYPE_DEVICE_MEMORY)
 
 struct vn_buffer {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    VkMemoryRequirements2 memory_requirements;
    VkMemoryDedicatedRequirements dedicated_requirements;
@@ -203,7 +203,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_buffer,
                                VK_OBJECT_TYPE_BUFFER)
 
 struct vn_buffer_view {
-   struct vn_cs_object base;
+   struct vn_object base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_buffer_view,
                                base.base,
@@ -211,7 +211,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_buffer_view,
                                VK_OBJECT_TYPE_BUFFER_VIEW)
 
 struct vn_image {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    VkMemoryRequirements2 memory_requirements[4];
    VkMemoryDedicatedRequirements dedicated_requirements[4];
@@ -222,7 +222,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_image,
                                VK_OBJECT_TYPE_IMAGE)
 
 struct vn_image_view {
-   struct vn_cs_object base;
+   struct vn_object base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_image_view,
                                base.base,
@@ -230,7 +230,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_image_view,
                                VK_OBJECT_TYPE_IMAGE_VIEW)
 
 struct vn_sampler {
-   struct vn_cs_object base;
+   struct vn_object base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_sampler,
                                base.base,
@@ -238,7 +238,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_sampler,
                                VK_OBJECT_TYPE_SAMPLER)
 
 struct vn_sampler_ycbcr_conversion {
-   struct vn_cs_object base;
+   struct vn_object base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_sampler_ycbcr_conversion,
                                base.base,
@@ -250,7 +250,7 @@ struct vn_descriptor_set_layout_binding {
 };
 
 struct vn_descriptor_set_layout {
-   struct vn_cs_object base;
+   struct vn_object base;
    struct vn_descriptor_set_layout_binding bindings[];
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_descriptor_set_layout,
@@ -259,7 +259,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_descriptor_set_layout,
                                VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)
 
 struct vn_descriptor_pool {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    VkAllocationCallbacks allocator;
    struct list_head descriptor_sets;
@@ -278,7 +278,7 @@ struct vn_update_descriptor_sets {
 };
 
 struct vn_descriptor_set {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    const struct vn_descriptor_set_layout *layout;
    struct list_head head;
@@ -294,7 +294,7 @@ struct vn_descriptor_update_template_entry {
 };
 
 struct vn_descriptor_update_template {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    mtx_t mutex;
    struct vn_update_descriptor_sets *update;
@@ -307,7 +307,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_descriptor_update_template,
                                VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE)
 
 struct vn_render_pass {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    VkExtent2D granularity;
 };
@@ -317,7 +317,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_render_pass,
                                VK_OBJECT_TYPE_RENDER_PASS)
 
 struct vn_framebuffer {
-   struct vn_cs_object base;
+   struct vn_object base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_framebuffer,
                                base.base,
@@ -325,7 +325,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_framebuffer,
                                VK_OBJECT_TYPE_FRAMEBUFFER)
 
 struct vn_event {
-   struct vn_cs_object base;
+   struct vn_object base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_event,
                                base.base,
@@ -333,7 +333,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_event,
                                VK_OBJECT_TYPE_EVENT)
 
 struct vn_query_pool {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    VkAllocationCallbacks allocator;
    uint32_t result_array_size;
@@ -344,7 +344,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_query_pool,
                                VK_OBJECT_TYPE_QUERY_POOL)
 
 struct vn_shader_module {
-   struct vn_cs_object base;
+   struct vn_object base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_shader_module,
                                base.base,
@@ -352,7 +352,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_shader_module,
                                VK_OBJECT_TYPE_SHADER_MODULE)
 
 struct vn_pipeline_layout {
-   struct vn_cs_object base;
+   struct vn_object base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_pipeline_layout,
                                base.base,
@@ -360,7 +360,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_pipeline_layout,
                                VK_OBJECT_TYPE_PIPELINE_LAYOUT)
 
 struct vn_pipeline_cache {
-   struct vn_cs_object base;
+   struct vn_object base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_pipeline_cache,
                                base.base,
@@ -368,7 +368,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_pipeline_cache,
                                VK_OBJECT_TYPE_PIPELINE_CACHE)
 
 struct vn_pipeline {
-   struct vn_cs_object base;
+   struct vn_object base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_pipeline,
                                base.base,
@@ -376,7 +376,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_pipeline,
                                VK_OBJECT_TYPE_PIPELINE)
 
 struct vn_command_pool {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    VkAllocationCallbacks allocator;
    struct list_head command_buffers;
@@ -394,7 +394,7 @@ enum vn_command_buffer_state {
 };
 
 struct vn_command_buffer {
-   struct vn_cs_object base;
+   struct vn_object base;
 
    struct vn_device *device;
 
