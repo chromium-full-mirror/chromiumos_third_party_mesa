@@ -161,19 +161,16 @@ vn_cs_get_out_len(const struct vn_cs *cs)
 static inline vn_object_id
 vn_cs_object_load_id(const void *obj_handle)
 {
-   const struct vn_object *obj = *(const struct vn_object **)obj_handle;
-   assert(!obj || obj->base.type != VK_OBJECT_TYPE_DEVICE);
-
+   const struct vn_object *obj =
+      vn_object_from_handle(*(const void **)obj_handle);
    return obj ? obj->id : 0;
 }
 
 static inline void
 vn_cs_object_store_id(void *obj_handle, vn_object_id id)
 {
-   struct vn_object *obj = *(struct vn_object **)obj_handle;
-   assert(obj && obj->base.type != VK_OBJECT_TYPE_DEVICE);
-   assert(!obj->id || obj->id == id);
-
+   struct vn_object *obj = vn_object_from_handle(*(void **)obj_handle);
+   assert(obj && (!obj->id || obj->id == id));
    obj->id = id;
 }
 
@@ -181,19 +178,15 @@ static inline vn_object_id
 vn_cs_device_load_id(const VkDevice *dev_handle)
 {
    const struct vn_device_object *dev =
-      *(const struct vn_device_object **)dev_handle;
-   assert(!dev || dev->base.base.type == VK_OBJECT_TYPE_DEVICE);
-
+      vn_device_object_from_handle(*dev_handle);
    return dev ? dev->id : 0;
 }
 
 static inline void
 vn_cs_device_store_id(VkDevice *dev_handle, vn_object_id id)
 {
-   struct vn_device_object *dev = *(struct vn_device_object **)dev_handle;
-   assert(dev && dev->base.base.type == VK_OBJECT_TYPE_DEVICE);
-   assert(!dev->id || dev->id == id);
-
+   struct vn_device_object *dev = vn_device_object_from_handle(*dev_handle);
+   assert(dev && (!dev->id || dev->id == id));
    dev->id = id;
 }
 

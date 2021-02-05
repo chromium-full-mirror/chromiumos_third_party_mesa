@@ -126,6 +126,22 @@ vn_device_object_init(struct vn_device_object *dev,
 void
 vn_device_object_fini(struct vn_device_object *dev);
 
+static inline struct vn_object *
+vn_object_from_handle(const void *handle)
+{
+   struct vn_object *obj = (struct vn_object *)handle;
+   assert(!obj || obj->base.type != VK_OBJECT_TYPE_DEVICE);
+   return obj;
+}
+
+static inline struct vn_device_object *
+vn_device_object_from_handle(const VkDevice handle)
+{
+   struct vn_device_object *dev = (struct vn_device_object *)handle;
+   assert(!dev || dev->base.base.type == VK_OBJECT_TYPE_DEVICE);
+   return dev;
+}
+
 /* missing from vn_entrypoints.h */
 
 bool
