@@ -69,8 +69,6 @@ vn_cs_reset(struct vn_cs *cs)
 void
 vn_cs_set_in_data(struct vn_cs *cs, const void *data, size_t size)
 {
-   assert(size >= cs->in.reserved);
-
    cs->in.cur = data;
    cs->in.end = data + size;
 }

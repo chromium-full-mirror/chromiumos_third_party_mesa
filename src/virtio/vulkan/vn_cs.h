@@ -20,8 +20,6 @@ struct vn_cs {
    bool error;
 
    struct vn_cs_in {
-      size_t reserved;
-
       const void *cur;
       const void *end;
    } in;
@@ -65,12 +63,6 @@ static inline bool
 vn_cs_has_error(const struct vn_cs *cs)
 {
    return cs->error;
-}
-
-static inline void
-vn_cs_reserve_in(struct vn_cs *cs, size_t size)
-{
-   cs->in.reserved += size;
 }
 
 void
