@@ -110,6 +110,22 @@ vn_log_result(struct vn_instance *instance,
               VkResult result,
               const char *where);
 
+void
+vn_object_init(struct vn_object *obj,
+               VkObjectType type,
+               struct vn_device_object *dev);
+
+void
+vn_object_fini(struct vn_object *obj);
+
+void
+vn_device_object_init(struct vn_device_object *dev,
+                      const VkDeviceCreateInfo *info,
+                      const VkAllocationCallbacks *alloc);
+
+void
+vn_device_object_fini(struct vn_device_object *dev);
+
 /* missing from vn_entrypoints.h */
 
 bool

@@ -23,38 +23,6 @@
  */
 #define VN_MIN_RENDERER_VERSION VK_API_VERSION_1_1
 
-static void
-vn_object_init(struct vn_object *obj,
-               VkObjectType type,
-               struct vn_device_object *dev)
-{
-   vk_object_base_init(&dev->base, &obj->base, type);
-   assert(sizeof(obj->id) >= sizeof(obj));
-   obj->id = (uintptr_t)obj;
-}
-
-static void
-vn_object_fini(struct vn_object *obj)
-{
-   vk_object_base_finish(&obj->base);
-}
-
-static void
-vn_device_object_init(struct vn_device_object *dev,
-                      const VkDeviceCreateInfo *info,
-                      const VkAllocationCallbacks *alloc)
-{
-   vk_device_init(&dev->base, info, alloc, alloc);
-   assert(sizeof(dev->id) >= sizeof(dev));
-   dev->id = (uintptr_t)dev;
-}
-
-static void
-vn_device_object_fini(struct vn_device_object *dev)
-{
-   vk_device_finish(&dev->base);
-}
-
 static uint32_t
 get_instance_api_version(const VkInstanceCreateInfo *create_info)
 {
