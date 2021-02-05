@@ -126,15 +126,6 @@ vn_get_physical_device_entrypoint_index(const char *name);
 int
 vn_get_device_entrypoint_index(const char *name);
 
-const char *
-vn_get_instance_entry_name(int index);
-
-const char *
-vn_get_physical_device_entry_name(int index);
-
-const char *
-vn_get_device_entry_name(int index);
-
 void *
 vn_lookup_entrypoint(const char *name);
 
