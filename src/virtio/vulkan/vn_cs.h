@@ -8,23 +8,23 @@
 
 #include "vn_common.h"
 
-struct vn_cs_iovec {
-   void *iov_base;
-   size_t iov_len;
+struct vn_cs_buffer {
+   void *base;
+   size_t size;
 };
 
 struct vn_cs_encoder {
    const VkAllocationCallbacks *allocator;
    VkSystemAllocationScope alloc_scope;
-   size_t min_iov_size;
+   size_t min_buffer_size;
 
    bool fatal_error;
 
-   struct vn_cs_iovec *iovs;
-   uint32_t iov_max;
-   uint32_t iov_count;
-   size_t last_iov_size;
-   size_t total_iov_len;
+   struct vn_cs_buffer *buffers;
+   uint32_t buffer_count;
+   uint32_t buffer_max;
+   size_t last_buffer_size;
+   size_t total_buffer_size;
 
    void *cur;
    const void *end;
@@ -65,19 +65,19 @@ vn_cs_encoder_get_fatal(const struct vn_cs_encoder *enc)
 static inline bool
 vn_cs_encoder_is_empty(const struct vn_cs_encoder *enc)
 {
-   return !enc->iov_count || enc->cur == enc->iovs[0].iov_base;
+   return !enc->buffer_count || enc->cur == enc->buffers[0].base;
 }
 
 static inline size_t
 vn_cs_encoder_get_len(const struct vn_cs_encoder *enc)
 {
-   if (unlikely(!enc->iov_count))
+   if (unlikely(!enc->buffer_count))
       return 0;
 
-   size_t len = enc->total_iov_len;
-   const struct vn_cs_iovec *iov = &enc->iovs[enc->iov_count - 1];
-   if (!iov->iov_len)
-      len += enc->cur - iov->iov_base;
+   size_t len = enc->total_buffer_size;
+   const struct vn_cs_buffer *buf = &enc->buffers[enc->buffer_count - 1];
+   if (!buf->size)
+      len += enc->cur - buf->base;
    return len;
 }
 

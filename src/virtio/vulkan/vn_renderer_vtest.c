@@ -547,10 +547,9 @@ vtest_vcmd_submit_cmd2(struct vtest *vtest,
 
    /* write cs */
    if (cs_size) {
-      const struct vn_cs_iovec *iovs = submit->cs->iovs;
-      const uint32_t iov_count = submit->cs->iov_count;
-      for (uint32_t i = 0; i < iov_count; i++)
-         vtest_write(vtest, iovs[i].iov_base, iovs[i].iov_len);
+      const struct vn_cs_buffer *bufs = submit->cs->buffers;
+      for (uint32_t i = 0; i < submit->cs->buffer_count; i++)
+         vtest_write(vtest, bufs[i].base, bufs[i].size);
    }
 
    /* write syncs */

@@ -418,17 +418,17 @@ sim_submit_alloc_cmd(const struct vn_cs_encoder *cs,
                      size_t offset,
                      size_t size)
 {
-   const struct vn_cs_iovec *iovs = cs->iovs;
-   const uint32_t iov_count = cs->iov_count;
+   const struct vn_cs_buffer *bufs = cs->buffers;
+   const uint32_t buf_count = cs->buffer_count;
 
    /* seek to offset */
    uint32_t i;
-   for (i = 0; i < iov_count; i++) {
-      if (offset < iovs[i].iov_len)
+   for (i = 0; i < buf_count; i++) {
+      if (offset < bufs[i].size)
          break;
-      offset -= iovs[i].iov_len;
+      offset -= bufs[i].size;
    }
-   if (i == iov_count)
+   if (i == buf_count)
       return NULL;
 
    void *cmd = malloc(size);
@@ -437,15 +437,15 @@ sim_submit_alloc_cmd(const struct vn_cs_encoder *cs,
 
    void *ptr = cmd;
    while (size) {
-      const size_t s = MIN2(size, iovs[i].iov_len - offset);
-      memcpy(ptr, iovs[i].iov_base + offset, s);
+      const size_t s = MIN2(size, bufs[i].size - offset);
+      memcpy(ptr, bufs[i].base + offset, s);
 
       ptr += s;
       size -= s;
 
       i++;
       offset = 0;
-      if (i == iov_count)
+      if (i == buf_count)
          break;
    }
 
