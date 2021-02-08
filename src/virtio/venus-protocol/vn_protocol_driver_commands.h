@@ -36,19 +36,19 @@ static inline size_t vn_sizeof_vkCreateInstance(const VkInstanceCreateInfo* pCre
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateInstance(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance)
+static inline void vn_encode_vkCreateInstance(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateInstance_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkInstanceCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkInstanceCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pInstance))
-        vn_encode_VkInstance(cs, pInstance);
+    if (vn_encode_simple_pointer(enc, pInstance))
+        vn_encode_VkInstance(enc, pInstance);
 }
 
 static inline size_t vn_sizeof_vkCreateInstance_reply(const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance)
@@ -100,15 +100,15 @@ static inline size_t vn_sizeof_vkDestroyInstance(VkInstance instance, const VkAl
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyInstance(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkInstance instance, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyInstance(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkInstance instance, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyInstance_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkInstance(cs, &instance);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkInstance(enc, &instance);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -154,22 +154,22 @@ static inline size_t vn_sizeof_vkEnumeratePhysicalDevices(VkInstance instance, u
     return cmd_size;
 }
 
-static inline void vn_encode_vkEnumeratePhysicalDevices(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkInstance instance, uint32_t* pPhysicalDeviceCount, VkPhysicalDevice* pPhysicalDevices)
+static inline void vn_encode_vkEnumeratePhysicalDevices(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkInstance instance, uint32_t* pPhysicalDeviceCount, VkPhysicalDevice* pPhysicalDevices)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkEnumeratePhysicalDevices_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkInstance(cs, &instance);
-    if (vn_encode_simple_pointer(cs, pPhysicalDeviceCount))
-        vn_encode_uint32_t(cs, pPhysicalDeviceCount);
+    vn_encode_VkInstance(enc, &instance);
+    if (vn_encode_simple_pointer(enc, pPhysicalDeviceCount))
+        vn_encode_uint32_t(enc, pPhysicalDeviceCount);
     if (pPhysicalDevices) {
-        vn_encode_array_size(cs, *pPhysicalDeviceCount);
+        vn_encode_array_size(enc, *pPhysicalDeviceCount);
         for (uint32_t i = 0; i < *pPhysicalDeviceCount; i++)
-            vn_encode_VkPhysicalDevice(cs, &pPhysicalDevices[i]);
+            vn_encode_VkPhysicalDevice(enc, &pPhysicalDevices[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -235,16 +235,16 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceProperties(VkPhysicalDevice ph
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceProperties(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties* pProperties)
+static inline void vn_encode_vkGetPhysicalDeviceProperties(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties* pProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceProperties_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pProperties))
-        vn_encode_VkPhysicalDeviceProperties_partial(cs, pProperties);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pProperties))
+        vn_encode_VkPhysicalDeviceProperties_partial(enc, pProperties);
 }
 
 static inline size_t vn_sizeof_vkGetPhysicalDeviceProperties_reply(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties* pProperties)
@@ -295,22 +295,22 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceQueueFamilyProperties(VkPhysic
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceQueueFamilyProperties(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, uint32_t* pQueueFamilyPropertyCount, VkQueueFamilyProperties* pQueueFamilyProperties)
+static inline void vn_encode_vkGetPhysicalDeviceQueueFamilyProperties(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, uint32_t* pQueueFamilyPropertyCount, VkQueueFamilyProperties* pQueueFamilyProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceQueueFamilyProperties_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pQueueFamilyPropertyCount))
-        vn_encode_uint32_t(cs, pQueueFamilyPropertyCount);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pQueueFamilyPropertyCount))
+        vn_encode_uint32_t(enc, pQueueFamilyPropertyCount);
     if (pQueueFamilyProperties) {
-        vn_encode_array_size(cs, *pQueueFamilyPropertyCount);
+        vn_encode_array_size(enc, *pQueueFamilyPropertyCount);
         for (uint32_t i = 0; i < *pQueueFamilyPropertyCount; i++)
-            vn_encode_VkQueueFamilyProperties_partial(cs, &pQueueFamilyProperties[i]);
+            vn_encode_VkQueueFamilyProperties_partial(enc, &pQueueFamilyProperties[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -370,16 +370,16 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceMemoryProperties(VkPhysicalDev
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceMemoryProperties(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties* pMemoryProperties)
+static inline void vn_encode_vkGetPhysicalDeviceMemoryProperties(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties* pMemoryProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceMemoryProperties_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pMemoryProperties))
-        vn_encode_VkPhysicalDeviceMemoryProperties_partial(cs, pMemoryProperties);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pMemoryProperties))
+        vn_encode_VkPhysicalDeviceMemoryProperties_partial(enc, pMemoryProperties);
 }
 
 static inline size_t vn_sizeof_vkGetPhysicalDeviceMemoryProperties_reply(VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties* pMemoryProperties)
@@ -423,16 +423,16 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceFeatures(VkPhysicalDevice phys
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceFeatures(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures* pFeatures)
+static inline void vn_encode_vkGetPhysicalDeviceFeatures(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures* pFeatures)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceFeatures_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pFeatures))
-        vn_encode_VkPhysicalDeviceFeatures_partial(cs, pFeatures);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pFeatures))
+        vn_encode_VkPhysicalDeviceFeatures_partial(enc, pFeatures);
 }
 
 static inline size_t vn_sizeof_vkGetPhysicalDeviceFeatures_reply(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures* pFeatures)
@@ -477,17 +477,17 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceFormatProperties(VkPhysicalDev
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceFormatProperties(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkFormat format, VkFormatProperties* pFormatProperties)
+static inline void vn_encode_vkGetPhysicalDeviceFormatProperties(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkFormat format, VkFormatProperties* pFormatProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceFormatProperties_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    vn_encode_VkFormat(cs, &format);
-    if (vn_encode_simple_pointer(cs, pFormatProperties))
-        vn_encode_VkFormatProperties_partial(cs, pFormatProperties);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    vn_encode_VkFormat(enc, &format);
+    if (vn_encode_simple_pointer(enc, pFormatProperties))
+        vn_encode_VkFormatProperties_partial(enc, pFormatProperties);
 }
 
 static inline size_t vn_sizeof_vkGetPhysicalDeviceFormatProperties_reply(VkPhysicalDevice physicalDevice, VkFormat format, VkFormatProperties* pFormatProperties)
@@ -538,21 +538,21 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceImageFormatProperties(VkPhysic
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceImageFormatProperties(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkFormat format, VkImageType type, VkImageTiling tiling, VkImageUsageFlags usage, VkImageCreateFlags flags, VkImageFormatProperties* pImageFormatProperties)
+static inline void vn_encode_vkGetPhysicalDeviceImageFormatProperties(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkFormat format, VkImageType type, VkImageTiling tiling, VkImageUsageFlags usage, VkImageCreateFlags flags, VkImageFormatProperties* pImageFormatProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceImageFormatProperties_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    vn_encode_VkFormat(cs, &format);
-    vn_encode_VkImageType(cs, &type);
-    vn_encode_VkImageTiling(cs, &tiling);
-    vn_encode_VkFlags(cs, &usage);
-    vn_encode_VkFlags(cs, &flags);
-    if (vn_encode_simple_pointer(cs, pImageFormatProperties))
-        vn_encode_VkImageFormatProperties_partial(cs, pImageFormatProperties);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    vn_encode_VkFormat(enc, &format);
+    vn_encode_VkImageType(enc, &type);
+    vn_encode_VkImageTiling(enc, &tiling);
+    vn_encode_VkFlags(enc, &usage);
+    vn_encode_VkFlags(enc, &flags);
+    if (vn_encode_simple_pointer(enc, pImageFormatProperties))
+        vn_encode_VkImageFormatProperties_partial(enc, pImageFormatProperties);
 }
 
 static inline size_t vn_sizeof_vkGetPhysicalDeviceImageFormatProperties_reply(VkPhysicalDevice physicalDevice, VkFormat format, VkImageType type, VkImageTiling tiling, VkImageUsageFlags usage, VkImageCreateFlags flags, VkImageFormatProperties* pImageFormatProperties)
@@ -618,20 +618,20 @@ static inline size_t vn_sizeof_vkCreateDevice(VkPhysicalDevice physicalDevice, c
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateDevice(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice)
+static inline void vn_encode_vkCreateDevice(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateDevice_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkDeviceCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkDeviceCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pDevice))
-        vn_encode_VkDevice(cs, pDevice);
+    if (vn_encode_simple_pointer(enc, pDevice))
+        vn_encode_VkDevice(enc, pDevice);
 }
 
 static inline size_t vn_sizeof_vkCreateDevice_reply(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice)
@@ -685,15 +685,15 @@ static inline size_t vn_sizeof_vkDestroyDevice(VkDevice device, const VkAllocati
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyDevice(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyDevice(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyDevice_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -729,14 +729,14 @@ static inline size_t vn_sizeof_vkEnumerateInstanceVersion(uint32_t* pApiVersion)
     return cmd_size;
 }
 
-static inline void vn_encode_vkEnumerateInstanceVersion(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, uint32_t* pApiVersion)
+static inline void vn_encode_vkEnumerateInstanceVersion(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, uint32_t* pApiVersion)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkEnumerateInstanceVersion_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_simple_pointer(cs, pApiVersion); /* out */
+    vn_encode_simple_pointer(enc, pApiVersion); /* out */
 }
 
 static inline size_t vn_sizeof_vkEnumerateInstanceVersion_reply(uint32_t* pApiVersion)
@@ -790,21 +790,21 @@ static inline size_t vn_sizeof_vkEnumerateInstanceLayerProperties(uint32_t* pPro
     return cmd_size;
 }
 
-static inline void vn_encode_vkEnumerateInstanceLayerProperties(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, uint32_t* pPropertyCount, VkLayerProperties* pProperties)
+static inline void vn_encode_vkEnumerateInstanceLayerProperties(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, uint32_t* pPropertyCount, VkLayerProperties* pProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkEnumerateInstanceLayerProperties_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    if (vn_encode_simple_pointer(cs, pPropertyCount))
-        vn_encode_uint32_t(cs, pPropertyCount);
+    if (vn_encode_simple_pointer(enc, pPropertyCount))
+        vn_encode_uint32_t(enc, pPropertyCount);
     if (pProperties) {
-        vn_encode_array_size(cs, *pPropertyCount);
+        vn_encode_array_size(enc, *pPropertyCount);
         for (uint32_t i = 0; i < *pPropertyCount; i++)
-            vn_encode_VkLayerProperties_partial(cs, &pProperties[i]);
+            vn_encode_VkLayerProperties_partial(enc, &pProperties[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -881,28 +881,28 @@ static inline size_t vn_sizeof_vkEnumerateInstanceExtensionProperties(const char
     return cmd_size;
 }
 
-static inline void vn_encode_vkEnumerateInstanceExtensionProperties(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties)
+static inline void vn_encode_vkEnumerateInstanceExtensionProperties(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkEnumerateInstanceExtensionProperties_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
     if (pLayerName) {
         const size_t string_size = strlen(pLayerName) + 1;
-        vn_encode_array_size(cs, string_size);
-        vn_encode_blob_array(cs, pLayerName, string_size);
+        vn_encode_array_size(enc, string_size);
+        vn_encode_blob_array(enc, pLayerName, string_size);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    if (vn_encode_simple_pointer(cs, pPropertyCount))
-        vn_encode_uint32_t(cs, pPropertyCount);
+    if (vn_encode_simple_pointer(enc, pPropertyCount))
+        vn_encode_uint32_t(enc, pPropertyCount);
     if (pProperties) {
-        vn_encode_array_size(cs, *pPropertyCount);
+        vn_encode_array_size(enc, *pPropertyCount);
         for (uint32_t i = 0; i < *pPropertyCount; i++)
-            vn_encode_VkExtensionProperties_partial(cs, &pProperties[i]);
+            vn_encode_VkExtensionProperties_partial(enc, &pProperties[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -975,22 +975,22 @@ static inline size_t vn_sizeof_vkEnumerateDeviceLayerProperties(VkPhysicalDevice
     return cmd_size;
 }
 
-static inline void vn_encode_vkEnumerateDeviceLayerProperties(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, uint32_t* pPropertyCount, VkLayerProperties* pProperties)
+static inline void vn_encode_vkEnumerateDeviceLayerProperties(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, uint32_t* pPropertyCount, VkLayerProperties* pProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkEnumerateDeviceLayerProperties_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pPropertyCount))
-        vn_encode_uint32_t(cs, pPropertyCount);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pPropertyCount))
+        vn_encode_uint32_t(enc, pPropertyCount);
     if (pProperties) {
-        vn_encode_array_size(cs, *pPropertyCount);
+        vn_encode_array_size(enc, *pPropertyCount);
         for (uint32_t i = 0; i < *pPropertyCount; i++)
-            vn_encode_VkLayerProperties_partial(cs, &pProperties[i]);
+            vn_encode_VkLayerProperties_partial(enc, &pProperties[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -1070,29 +1070,29 @@ static inline size_t vn_sizeof_vkEnumerateDeviceExtensionProperties(VkPhysicalDe
     return cmd_size;
 }
 
-static inline void vn_encode_vkEnumerateDeviceExtensionProperties(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties)
+static inline void vn_encode_vkEnumerateDeviceExtensionProperties(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkEnumerateDeviceExtensionProperties_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
     if (pLayerName) {
         const size_t string_size = strlen(pLayerName) + 1;
-        vn_encode_array_size(cs, string_size);
-        vn_encode_blob_array(cs, pLayerName, string_size);
+        vn_encode_array_size(enc, string_size);
+        vn_encode_blob_array(enc, pLayerName, string_size);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    if (vn_encode_simple_pointer(cs, pPropertyCount))
-        vn_encode_uint32_t(cs, pPropertyCount);
+    if (vn_encode_simple_pointer(enc, pPropertyCount))
+        vn_encode_uint32_t(enc, pPropertyCount);
     if (pProperties) {
-        vn_encode_array_size(cs, *pPropertyCount);
+        vn_encode_array_size(enc, *pPropertyCount);
         for (uint32_t i = 0; i < *pPropertyCount; i++)
-            vn_encode_VkExtensionProperties_partial(cs, &pProperties[i]);
+            vn_encode_VkExtensionProperties_partial(enc, &pProperties[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -1162,18 +1162,18 @@ static inline size_t vn_sizeof_vkGetDeviceQueue(VkDevice device, uint32_t queueF
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetDeviceQueue(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue)
+static inline void vn_encode_vkGetDeviceQueue(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetDeviceQueue_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_uint32_t(cs, &queueFamilyIndex);
-    vn_encode_uint32_t(cs, &queueIndex);
-    if (vn_encode_simple_pointer(cs, pQueue))
-        vn_encode_VkQueue(cs, pQueue);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_uint32_t(enc, &queueFamilyIndex);
+    vn_encode_uint32_t(enc, &queueIndex);
+    if (vn_encode_simple_pointer(enc, pQueue))
+        vn_encode_VkQueue(enc, pQueue);
 }
 
 static inline size_t vn_sizeof_vkGetDeviceQueue_reply(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue)
@@ -1227,23 +1227,23 @@ static inline size_t vn_sizeof_vkQueueSubmit(VkQueue queue, uint32_t submitCount
     return cmd_size;
 }
 
-static inline void vn_encode_vkQueueSubmit(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence)
+static inline void vn_encode_vkQueueSubmit(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkQueueSubmit_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkQueue(cs, &queue);
-    vn_encode_uint32_t(cs, &submitCount);
+    vn_encode_VkQueue(enc, &queue);
+    vn_encode_uint32_t(enc, &submitCount);
     if (pSubmits) {
-        vn_encode_array_size(cs, submitCount);
+        vn_encode_array_size(enc, submitCount);
         for (uint32_t i = 0; i < submitCount; i++)
-            vn_encode_VkSubmitInfo(cs, &pSubmits[i]);
+            vn_encode_VkSubmitInfo(enc, &pSubmits[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_VkFence(cs, &fence);
+    vn_encode_VkFence(enc, &fence);
 }
 
 static inline size_t vn_sizeof_vkQueueSubmit_reply(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence)
@@ -1288,14 +1288,14 @@ static inline size_t vn_sizeof_vkQueueWaitIdle(VkQueue queue)
     return cmd_size;
 }
 
-static inline void vn_encode_vkQueueWaitIdle(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkQueue queue)
+static inline void vn_encode_vkQueueWaitIdle(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkQueue queue)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkQueueWaitIdle_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkQueue(cs, &queue);
+    vn_encode_VkQueue(enc, &queue);
 }
 
 static inline size_t vn_sizeof_vkQueueWaitIdle_reply(VkQueue queue)
@@ -1334,14 +1334,14 @@ static inline size_t vn_sizeof_vkDeviceWaitIdle(VkDevice device)
     return cmd_size;
 }
 
-static inline void vn_encode_vkDeviceWaitIdle(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device)
+static inline void vn_encode_vkDeviceWaitIdle(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDeviceWaitIdle_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
+    vn_encode_VkDevice(enc, &device);
 }
 
 static inline size_t vn_sizeof_vkDeviceWaitIdle_reply(VkDevice device)
@@ -1389,20 +1389,20 @@ static inline size_t vn_sizeof_vkAllocateMemory(VkDevice device, const VkMemoryA
     return cmd_size;
 }
 
-static inline void vn_encode_vkAllocateMemory(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkMemoryAllocateInfo* pAllocateInfo, const VkAllocationCallbacks* pAllocator, VkDeviceMemory* pMemory)
+static inline void vn_encode_vkAllocateMemory(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkMemoryAllocateInfo* pAllocateInfo, const VkAllocationCallbacks* pAllocator, VkDeviceMemory* pMemory)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkAllocateMemory_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pAllocateInfo))
-        vn_encode_VkMemoryAllocateInfo(cs, pAllocateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pAllocateInfo))
+        vn_encode_VkMemoryAllocateInfo(enc, pAllocateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pMemory))
-        vn_encode_VkDeviceMemory(cs, pMemory);
+    if (vn_encode_simple_pointer(enc, pMemory))
+        vn_encode_VkDeviceMemory(enc, pMemory);
 }
 
 static inline size_t vn_sizeof_vkAllocateMemory_reply(VkDevice device, const VkMemoryAllocateInfo* pAllocateInfo, const VkAllocationCallbacks* pAllocator, VkDeviceMemory* pMemory)
@@ -1457,16 +1457,16 @@ static inline size_t vn_sizeof_vkFreeMemory(VkDevice device, VkDeviceMemory memo
     return cmd_size;
 }
 
-static inline void vn_encode_vkFreeMemory(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkFreeMemory(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkFreeMemory_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkDeviceMemory(cs, &memory);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkDeviceMemory(enc, &memory);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -1505,15 +1505,15 @@ static inline size_t vn_sizeof_vkUnmapMemory(VkDevice device, VkDeviceMemory mem
     return cmd_size;
 }
 
-static inline void vn_encode_vkUnmapMemory(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDeviceMemory memory)
+static inline void vn_encode_vkUnmapMemory(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDeviceMemory memory)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkUnmapMemory_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkDeviceMemory(cs, &memory);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkDeviceMemory(enc, &memory);
 }
 
 static inline size_t vn_sizeof_vkUnmapMemory_reply(VkDevice device, VkDeviceMemory memory)
@@ -1556,21 +1556,21 @@ static inline size_t vn_sizeof_vkFlushMappedMemoryRanges(VkDevice device, uint32
     return cmd_size;
 }
 
-static inline void vn_encode_vkFlushMappedMemoryRanges(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t memoryRangeCount, const VkMappedMemoryRange* pMemoryRanges)
+static inline void vn_encode_vkFlushMappedMemoryRanges(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t memoryRangeCount, const VkMappedMemoryRange* pMemoryRanges)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkFlushMappedMemoryRanges_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_uint32_t(cs, &memoryRangeCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_uint32_t(enc, &memoryRangeCount);
     if (pMemoryRanges) {
-        vn_encode_array_size(cs, memoryRangeCount);
+        vn_encode_array_size(enc, memoryRangeCount);
         for (uint32_t i = 0; i < memoryRangeCount; i++)
-            vn_encode_VkMappedMemoryRange(cs, &pMemoryRanges[i]);
+            vn_encode_VkMappedMemoryRange(enc, &pMemoryRanges[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -1622,21 +1622,21 @@ static inline size_t vn_sizeof_vkInvalidateMappedMemoryRanges(VkDevice device, u
     return cmd_size;
 }
 
-static inline void vn_encode_vkInvalidateMappedMemoryRanges(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t memoryRangeCount, const VkMappedMemoryRange* pMemoryRanges)
+static inline void vn_encode_vkInvalidateMappedMemoryRanges(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t memoryRangeCount, const VkMappedMemoryRange* pMemoryRanges)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkInvalidateMappedMemoryRanges_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_uint32_t(cs, &memoryRangeCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_uint32_t(enc, &memoryRangeCount);
     if (pMemoryRanges) {
-        vn_encode_array_size(cs, memoryRangeCount);
+        vn_encode_array_size(enc, memoryRangeCount);
         for (uint32_t i = 0; i < memoryRangeCount; i++)
-            vn_encode_VkMappedMemoryRange(cs, &pMemoryRanges[i]);
+            vn_encode_VkMappedMemoryRange(enc, &pMemoryRanges[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -1682,16 +1682,16 @@ static inline size_t vn_sizeof_vkGetDeviceMemoryCommitment(VkDevice device, VkDe
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetDeviceMemoryCommitment(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDeviceMemory memory, VkDeviceSize* pCommittedMemoryInBytes)
+static inline void vn_encode_vkGetDeviceMemoryCommitment(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDeviceMemory memory, VkDeviceSize* pCommittedMemoryInBytes)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetDeviceMemoryCommitment_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkDeviceMemory(cs, &memory);
-    vn_encode_simple_pointer(cs, pCommittedMemoryInBytes); /* out */
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkDeviceMemory(enc, &memory);
+    vn_encode_simple_pointer(enc, pCommittedMemoryInBytes); /* out */
 }
 
 static inline size_t vn_sizeof_vkGetDeviceMemoryCommitment_reply(VkDevice device, VkDeviceMemory memory, VkDeviceSize* pCommittedMemoryInBytes)
@@ -1738,17 +1738,17 @@ static inline size_t vn_sizeof_vkGetBufferMemoryRequirements(VkDevice device, Vk
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetBufferMemoryRequirements(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkBuffer buffer, VkMemoryRequirements* pMemoryRequirements)
+static inline void vn_encode_vkGetBufferMemoryRequirements(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkBuffer buffer, VkMemoryRequirements* pMemoryRequirements)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetBufferMemoryRequirements_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkBuffer(cs, &buffer);
-    if (vn_encode_simple_pointer(cs, pMemoryRequirements))
-        vn_encode_VkMemoryRequirements_partial(cs, pMemoryRequirements);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkBuffer(enc, &buffer);
+    if (vn_encode_simple_pointer(enc, pMemoryRequirements))
+        vn_encode_VkMemoryRequirements_partial(enc, pMemoryRequirements);
 }
 
 static inline size_t vn_sizeof_vkGetBufferMemoryRequirements_reply(VkDevice device, VkBuffer buffer, VkMemoryRequirements* pMemoryRequirements)
@@ -1794,17 +1794,17 @@ static inline size_t vn_sizeof_vkBindBufferMemory(VkDevice device, VkBuffer buff
     return cmd_size;
 }
 
-static inline void vn_encode_vkBindBufferMemory(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize memoryOffset)
+static inline void vn_encode_vkBindBufferMemory(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize memoryOffset)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkBindBufferMemory_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkBuffer(cs, &buffer);
-    vn_encode_VkDeviceMemory(cs, &memory);
-    vn_encode_VkDeviceSize(cs, &memoryOffset);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkBuffer(enc, &buffer);
+    vn_encode_VkDeviceMemory(enc, &memory);
+    vn_encode_VkDeviceSize(enc, &memoryOffset);
 }
 
 static inline size_t vn_sizeof_vkBindBufferMemory_reply(VkDevice device, VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize memoryOffset)
@@ -1853,17 +1853,17 @@ static inline size_t vn_sizeof_vkGetImageMemoryRequirements(VkDevice device, VkI
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetImageMemoryRequirements(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImage image, VkMemoryRequirements* pMemoryRequirements)
+static inline void vn_encode_vkGetImageMemoryRequirements(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImage image, VkMemoryRequirements* pMemoryRequirements)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetImageMemoryRequirements_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkImage(cs, &image);
-    if (vn_encode_simple_pointer(cs, pMemoryRequirements))
-        vn_encode_VkMemoryRequirements_partial(cs, pMemoryRequirements);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkImage(enc, &image);
+    if (vn_encode_simple_pointer(enc, pMemoryRequirements))
+        vn_encode_VkMemoryRequirements_partial(enc, pMemoryRequirements);
 }
 
 static inline size_t vn_sizeof_vkGetImageMemoryRequirements_reply(VkDevice device, VkImage image, VkMemoryRequirements* pMemoryRequirements)
@@ -1909,17 +1909,17 @@ static inline size_t vn_sizeof_vkBindImageMemory(VkDevice device, VkImage image,
     return cmd_size;
 }
 
-static inline void vn_encode_vkBindImageMemory(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImage image, VkDeviceMemory memory, VkDeviceSize memoryOffset)
+static inline void vn_encode_vkBindImageMemory(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImage image, VkDeviceMemory memory, VkDeviceSize memoryOffset)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkBindImageMemory_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkImage(cs, &image);
-    vn_encode_VkDeviceMemory(cs, &memory);
-    vn_encode_VkDeviceSize(cs, &memoryOffset);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkImage(enc, &image);
+    vn_encode_VkDeviceMemory(enc, &memory);
+    vn_encode_VkDeviceSize(enc, &memoryOffset);
 }
 
 static inline size_t vn_sizeof_vkBindImageMemory_reply(VkDevice device, VkImage image, VkDeviceMemory memory, VkDeviceSize memoryOffset)
@@ -1975,23 +1975,23 @@ static inline size_t vn_sizeof_vkGetImageSparseMemoryRequirements(VkDevice devic
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetImageSparseMemoryRequirements(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImage image, uint32_t* pSparseMemoryRequirementCount, VkSparseImageMemoryRequirements* pSparseMemoryRequirements)
+static inline void vn_encode_vkGetImageSparseMemoryRequirements(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImage image, uint32_t* pSparseMemoryRequirementCount, VkSparseImageMemoryRequirements* pSparseMemoryRequirements)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetImageSparseMemoryRequirements_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkImage(cs, &image);
-    if (vn_encode_simple_pointer(cs, pSparseMemoryRequirementCount))
-        vn_encode_uint32_t(cs, pSparseMemoryRequirementCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkImage(enc, &image);
+    if (vn_encode_simple_pointer(enc, pSparseMemoryRequirementCount))
+        vn_encode_uint32_t(enc, pSparseMemoryRequirementCount);
     if (pSparseMemoryRequirements) {
-        vn_encode_array_size(cs, *pSparseMemoryRequirementCount);
+        vn_encode_array_size(enc, *pSparseMemoryRequirementCount);
         for (uint32_t i = 0; i < *pSparseMemoryRequirementCount; i++)
-            vn_encode_VkSparseImageMemoryRequirements_partial(cs, &pSparseMemoryRequirements[i]);
+            vn_encode_VkSparseImageMemoryRequirements_partial(enc, &pSparseMemoryRequirements[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -2065,27 +2065,27 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceSparseImageFormatProperties(Vk
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkFormat format, VkImageType type, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageTiling tiling, uint32_t* pPropertyCount, VkSparseImageFormatProperties* pProperties)
+static inline void vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkFormat format, VkImageType type, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageTiling tiling, uint32_t* pPropertyCount, VkSparseImageFormatProperties* pProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceSparseImageFormatProperties_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    vn_encode_VkFormat(cs, &format);
-    vn_encode_VkImageType(cs, &type);
-    vn_encode_VkSampleCountFlagBits(cs, &samples);
-    vn_encode_VkFlags(cs, &usage);
-    vn_encode_VkImageTiling(cs, &tiling);
-    if (vn_encode_simple_pointer(cs, pPropertyCount))
-        vn_encode_uint32_t(cs, pPropertyCount);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    vn_encode_VkFormat(enc, &format);
+    vn_encode_VkImageType(enc, &type);
+    vn_encode_VkSampleCountFlagBits(enc, &samples);
+    vn_encode_VkFlags(enc, &usage);
+    vn_encode_VkImageTiling(enc, &tiling);
+    if (vn_encode_simple_pointer(enc, pPropertyCount))
+        vn_encode_uint32_t(enc, pPropertyCount);
     if (pProperties) {
-        vn_encode_array_size(cs, *pPropertyCount);
+        vn_encode_array_size(enc, *pPropertyCount);
         for (uint32_t i = 0; i < *pPropertyCount; i++)
-            vn_encode_VkSparseImageFormatProperties_partial(cs, &pProperties[i]);
+            vn_encode_VkSparseImageFormatProperties_partial(enc, &pProperties[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -2161,23 +2161,23 @@ static inline size_t vn_sizeof_vkQueueBindSparse(VkQueue queue, uint32_t bindInf
     return cmd_size;
 }
 
-static inline void vn_encode_vkQueueBindSparse(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkQueue queue, uint32_t bindInfoCount, const VkBindSparseInfo* pBindInfo, VkFence fence)
+static inline void vn_encode_vkQueueBindSparse(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkQueue queue, uint32_t bindInfoCount, const VkBindSparseInfo* pBindInfo, VkFence fence)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkQueueBindSparse_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkQueue(cs, &queue);
-    vn_encode_uint32_t(cs, &bindInfoCount);
+    vn_encode_VkQueue(enc, &queue);
+    vn_encode_uint32_t(enc, &bindInfoCount);
     if (pBindInfo) {
-        vn_encode_array_size(cs, bindInfoCount);
+        vn_encode_array_size(enc, bindInfoCount);
         for (uint32_t i = 0; i < bindInfoCount; i++)
-            vn_encode_VkBindSparseInfo(cs, &pBindInfo[i]);
+            vn_encode_VkBindSparseInfo(enc, &pBindInfo[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_VkFence(cs, &fence);
+    vn_encode_VkFence(enc, &fence);
 }
 
 static inline size_t vn_sizeof_vkQueueBindSparse_reply(VkQueue queue, uint32_t bindInfoCount, const VkBindSparseInfo* pBindInfo, VkFence fence)
@@ -2231,20 +2231,20 @@ static inline size_t vn_sizeof_vkCreateFence(VkDevice device, const VkFenceCreat
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateFence(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkFenceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkFence* pFence)
+static inline void vn_encode_vkCreateFence(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkFenceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkFence* pFence)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateFence_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkFenceCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkFenceCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pFence))
-        vn_encode_VkFence(cs, pFence);
+    if (vn_encode_simple_pointer(enc, pFence))
+        vn_encode_VkFence(enc, pFence);
 }
 
 static inline size_t vn_sizeof_vkCreateFence_reply(VkDevice device, const VkFenceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkFence* pFence)
@@ -2299,16 +2299,16 @@ static inline size_t vn_sizeof_vkDestroyFence(VkDevice device, VkFence fence, co
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyFence(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkFence fence, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyFence(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkFence fence, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyFence_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkFence(cs, &fence);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkFence(enc, &fence);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -2354,21 +2354,21 @@ static inline size_t vn_sizeof_vkResetFences(VkDevice device, uint32_t fenceCoun
     return cmd_size;
 }
 
-static inline void vn_encode_vkResetFences(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t fenceCount, const VkFence* pFences)
+static inline void vn_encode_vkResetFences(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t fenceCount, const VkFence* pFences)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkResetFences_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_uint32_t(cs, &fenceCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_uint32_t(enc, &fenceCount);
     if (pFences) {
-        vn_encode_array_size(cs, fenceCount);
+        vn_encode_array_size(enc, fenceCount);
         for (uint32_t i = 0; i < fenceCount; i++)
-            vn_encode_VkFence(cs, &pFences[i]);
+            vn_encode_VkFence(enc, &pFences[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -2413,15 +2413,15 @@ static inline size_t vn_sizeof_vkGetFenceStatus(VkDevice device, VkFence fence)
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetFenceStatus(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkFence fence)
+static inline void vn_encode_vkGetFenceStatus(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkFence fence)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetFenceStatus_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkFence(cs, &fence);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkFence(enc, &fence);
 }
 
 static inline size_t vn_sizeof_vkGetFenceStatus_reply(VkDevice device, VkFence fence)
@@ -2472,24 +2472,24 @@ static inline size_t vn_sizeof_vkWaitForFences(VkDevice device, uint32_t fenceCo
     return cmd_size;
 }
 
-static inline void vn_encode_vkWaitForFences(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t fenceCount, const VkFence* pFences, VkBool32 waitAll, uint64_t timeout)
+static inline void vn_encode_vkWaitForFences(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t fenceCount, const VkFence* pFences, VkBool32 waitAll, uint64_t timeout)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkWaitForFences_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_uint32_t(cs, &fenceCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_uint32_t(enc, &fenceCount);
     if (pFences) {
-        vn_encode_array_size(cs, fenceCount);
+        vn_encode_array_size(enc, fenceCount);
         for (uint32_t i = 0; i < fenceCount; i++)
-            vn_encode_VkFence(cs, &pFences[i]);
+            vn_encode_VkFence(enc, &pFences[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_VkBool32(cs, &waitAll);
-    vn_encode_uint64_t(cs, &timeout);
+    vn_encode_VkBool32(enc, &waitAll);
+    vn_encode_uint64_t(enc, &timeout);
 }
 
 static inline size_t vn_sizeof_vkWaitForFences_reply(VkDevice device, uint32_t fenceCount, const VkFence* pFences, VkBool32 waitAll, uint64_t timeout)
@@ -2545,20 +2545,20 @@ static inline size_t vn_sizeof_vkCreateSemaphore(VkDevice device, const VkSemaph
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateSemaphore(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkSemaphoreCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSemaphore* pSemaphore)
+static inline void vn_encode_vkCreateSemaphore(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkSemaphoreCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSemaphore* pSemaphore)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateSemaphore_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkSemaphoreCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkSemaphoreCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pSemaphore))
-        vn_encode_VkSemaphore(cs, pSemaphore);
+    if (vn_encode_simple_pointer(enc, pSemaphore))
+        vn_encode_VkSemaphore(enc, pSemaphore);
 }
 
 static inline size_t vn_sizeof_vkCreateSemaphore_reply(VkDevice device, const VkSemaphoreCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSemaphore* pSemaphore)
@@ -2613,16 +2613,16 @@ static inline size_t vn_sizeof_vkDestroySemaphore(VkDevice device, VkSemaphore s
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroySemaphore(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkSemaphore semaphore, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroySemaphore(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkSemaphore semaphore, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroySemaphore_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkSemaphore(cs, &semaphore);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkSemaphore(enc, &semaphore);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -2669,20 +2669,20 @@ static inline size_t vn_sizeof_vkCreateEvent(VkDevice device, const VkEventCreat
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateEvent(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkEventCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkEvent* pEvent)
+static inline void vn_encode_vkCreateEvent(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkEventCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkEvent* pEvent)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateEvent_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkEventCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkEventCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pEvent))
-        vn_encode_VkEvent(cs, pEvent);
+    if (vn_encode_simple_pointer(enc, pEvent))
+        vn_encode_VkEvent(enc, pEvent);
 }
 
 static inline size_t vn_sizeof_vkCreateEvent_reply(VkDevice device, const VkEventCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkEvent* pEvent)
@@ -2737,16 +2737,16 @@ static inline size_t vn_sizeof_vkDestroyEvent(VkDevice device, VkEvent event, co
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyEvent(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkEvent event, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyEvent(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkEvent event, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyEvent_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkEvent(cs, &event);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkEvent(enc, &event);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -2785,15 +2785,15 @@ static inline size_t vn_sizeof_vkGetEventStatus(VkDevice device, VkEvent event)
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetEventStatus(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkEvent event)
+static inline void vn_encode_vkGetEventStatus(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkEvent event)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetEventStatus_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkEvent(cs, &event);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkEvent(enc, &event);
 }
 
 static inline size_t vn_sizeof_vkGetEventStatus_reply(VkDevice device, VkEvent event)
@@ -2835,15 +2835,15 @@ static inline size_t vn_sizeof_vkSetEvent(VkDevice device, VkEvent event)
     return cmd_size;
 }
 
-static inline void vn_encode_vkSetEvent(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkEvent event)
+static inline void vn_encode_vkSetEvent(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkEvent event)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkSetEvent_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkEvent(cs, &event);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkEvent(enc, &event);
 }
 
 static inline size_t vn_sizeof_vkSetEvent_reply(VkDevice device, VkEvent event)
@@ -2885,15 +2885,15 @@ static inline size_t vn_sizeof_vkResetEvent(VkDevice device, VkEvent event)
     return cmd_size;
 }
 
-static inline void vn_encode_vkResetEvent(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkEvent event)
+static inline void vn_encode_vkResetEvent(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkEvent event)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkResetEvent_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkEvent(cs, &event);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkEvent(enc, &event);
 }
 
 static inline size_t vn_sizeof_vkResetEvent_reply(VkDevice device, VkEvent event)
@@ -2943,20 +2943,20 @@ static inline size_t vn_sizeof_vkCreateQueryPool(VkDevice device, const VkQueryP
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateQueryPool(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkQueryPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkQueryPool* pQueryPool)
+static inline void vn_encode_vkCreateQueryPool(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkQueryPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkQueryPool* pQueryPool)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateQueryPool_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkQueryPoolCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkQueryPoolCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pQueryPool))
-        vn_encode_VkQueryPool(cs, pQueryPool);
+    if (vn_encode_simple_pointer(enc, pQueryPool))
+        vn_encode_VkQueryPool(enc, pQueryPool);
 }
 
 static inline size_t vn_sizeof_vkCreateQueryPool_reply(VkDevice device, const VkQueryPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkQueryPool* pQueryPool)
@@ -3011,16 +3011,16 @@ static inline size_t vn_sizeof_vkDestroyQueryPool(VkDevice device, VkQueryPool q
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyQueryPool(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkQueryPool queryPool, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyQueryPool(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkQueryPool queryPool, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyQueryPool_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkQueryPool(cs, &queryPool);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkQueryPool(enc, &queryPool);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -3065,21 +3065,21 @@ static inline size_t vn_sizeof_vkGetQueryPoolResults(VkDevice device, VkQueryPoo
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetQueryPoolResults(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount, size_t dataSize, void* pData, VkDeviceSize stride, VkQueryResultFlags flags)
+static inline void vn_encode_vkGetQueryPoolResults(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount, size_t dataSize, void* pData, VkDeviceSize stride, VkQueryResultFlags flags)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetQueryPoolResults_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkQueryPool(cs, &queryPool);
-    vn_encode_uint32_t(cs, &firstQuery);
-    vn_encode_uint32_t(cs, &queryCount);
-    vn_encode_size_t(cs, &dataSize);
-    vn_encode_array_size(cs, pData ? dataSize : 0); /* out */
-    vn_encode_VkDeviceSize(cs, &stride);
-    vn_encode_VkFlags(cs, &flags);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkQueryPool(enc, &queryPool);
+    vn_encode_uint32_t(enc, &firstQuery);
+    vn_encode_uint32_t(enc, &queryCount);
+    vn_encode_size_t(enc, &dataSize);
+    vn_encode_array_size(enc, pData ? dataSize : 0); /* out */
+    vn_encode_VkDeviceSize(enc, &stride);
+    vn_encode_VkFlags(enc, &flags);
 }
 
 static inline size_t vn_sizeof_vkGetQueryPoolResults_reply(VkDevice device, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount, size_t dataSize, void* pData, VkDeviceSize stride, VkQueryResultFlags flags)
@@ -3146,17 +3146,17 @@ static inline size_t vn_sizeof_vkResetQueryPool(VkDevice device, VkQueryPool que
     return cmd_size;
 }
 
-static inline void vn_encode_vkResetQueryPool(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount)
+static inline void vn_encode_vkResetQueryPool(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkResetQueryPool_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkQueryPool(cs, &queryPool);
-    vn_encode_uint32_t(cs, &firstQuery);
-    vn_encode_uint32_t(cs, &queryCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkQueryPool(enc, &queryPool);
+    vn_encode_uint32_t(enc, &firstQuery);
+    vn_encode_uint32_t(enc, &queryCount);
 }
 
 static inline size_t vn_sizeof_vkResetQueryPool_reply(VkDevice device, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount)
@@ -3204,20 +3204,20 @@ static inline size_t vn_sizeof_vkCreateBuffer(VkDevice device, const VkBufferCre
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateBuffer(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkBufferCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkBuffer* pBuffer)
+static inline void vn_encode_vkCreateBuffer(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkBufferCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkBuffer* pBuffer)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateBuffer_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkBufferCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkBufferCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pBuffer))
-        vn_encode_VkBuffer(cs, pBuffer);
+    if (vn_encode_simple_pointer(enc, pBuffer))
+        vn_encode_VkBuffer(enc, pBuffer);
 }
 
 static inline size_t vn_sizeof_vkCreateBuffer_reply(VkDevice device, const VkBufferCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkBuffer* pBuffer)
@@ -3272,16 +3272,16 @@ static inline size_t vn_sizeof_vkDestroyBuffer(VkDevice device, VkBuffer buffer,
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyBuffer(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkBuffer buffer, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyBuffer(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkBuffer buffer, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyBuffer_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkBuffer(cs, &buffer);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkBuffer(enc, &buffer);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -3328,20 +3328,20 @@ static inline size_t vn_sizeof_vkCreateBufferView(VkDevice device, const VkBuffe
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateBufferView(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkBufferViewCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkBufferView* pView)
+static inline void vn_encode_vkCreateBufferView(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkBufferViewCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkBufferView* pView)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateBufferView_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkBufferViewCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkBufferViewCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pView))
-        vn_encode_VkBufferView(cs, pView);
+    if (vn_encode_simple_pointer(enc, pView))
+        vn_encode_VkBufferView(enc, pView);
 }
 
 static inline size_t vn_sizeof_vkCreateBufferView_reply(VkDevice device, const VkBufferViewCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkBufferView* pView)
@@ -3396,16 +3396,16 @@ static inline size_t vn_sizeof_vkDestroyBufferView(VkDevice device, VkBufferView
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyBufferView(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkBufferView bufferView, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyBufferView(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkBufferView bufferView, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyBufferView_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkBufferView(cs, &bufferView);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkBufferView(enc, &bufferView);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -3452,20 +3452,20 @@ static inline size_t vn_sizeof_vkCreateImage(VkDevice device, const VkImageCreat
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateImage(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkImageCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkImage* pImage)
+static inline void vn_encode_vkCreateImage(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkImageCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkImage* pImage)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateImage_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkImageCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkImageCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pImage))
-        vn_encode_VkImage(cs, pImage);
+    if (vn_encode_simple_pointer(enc, pImage))
+        vn_encode_VkImage(enc, pImage);
 }
 
 static inline size_t vn_sizeof_vkCreateImage_reply(VkDevice device, const VkImageCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkImage* pImage)
@@ -3520,16 +3520,16 @@ static inline size_t vn_sizeof_vkDestroyImage(VkDevice device, VkImage image, co
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyImage(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImage image, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyImage(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImage image, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyImage_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkImage(cs, &image);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkImage(enc, &image);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -3574,19 +3574,19 @@ static inline size_t vn_sizeof_vkGetImageSubresourceLayout(VkDevice device, VkIm
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetImageSubresourceLayout(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImage image, const VkImageSubresource* pSubresource, VkSubresourceLayout* pLayout)
+static inline void vn_encode_vkGetImageSubresourceLayout(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImage image, const VkImageSubresource* pSubresource, VkSubresourceLayout* pLayout)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetImageSubresourceLayout_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkImage(cs, &image);
-    if (vn_encode_simple_pointer(cs, pSubresource))
-        vn_encode_VkImageSubresource(cs, pSubresource);
-    if (vn_encode_simple_pointer(cs, pLayout))
-        vn_encode_VkSubresourceLayout_partial(cs, pLayout);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkImage(enc, &image);
+    if (vn_encode_simple_pointer(enc, pSubresource))
+        vn_encode_VkImageSubresource(enc, pSubresource);
+    if (vn_encode_simple_pointer(enc, pLayout))
+        vn_encode_VkSubresourceLayout_partial(enc, pLayout);
 }
 
 static inline size_t vn_sizeof_vkGetImageSubresourceLayout_reply(VkDevice device, VkImage image, const VkImageSubresource* pSubresource, VkSubresourceLayout* pLayout)
@@ -3640,20 +3640,20 @@ static inline size_t vn_sizeof_vkCreateImageView(VkDevice device, const VkImageV
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateImageView(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkImageViewCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkImageView* pView)
+static inline void vn_encode_vkCreateImageView(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkImageViewCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkImageView* pView)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateImageView_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkImageViewCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkImageViewCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pView))
-        vn_encode_VkImageView(cs, pView);
+    if (vn_encode_simple_pointer(enc, pView))
+        vn_encode_VkImageView(enc, pView);
 }
 
 static inline size_t vn_sizeof_vkCreateImageView_reply(VkDevice device, const VkImageViewCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkImageView* pView)
@@ -3708,16 +3708,16 @@ static inline size_t vn_sizeof_vkDestroyImageView(VkDevice device, VkImageView i
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyImageView(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImageView imageView, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyImageView(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImageView imageView, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyImageView_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkImageView(cs, &imageView);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkImageView(enc, &imageView);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -3764,20 +3764,20 @@ static inline size_t vn_sizeof_vkCreateShaderModule(VkDevice device, const VkSha
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateShaderModule(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule)
+static inline void vn_encode_vkCreateShaderModule(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateShaderModule_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkShaderModuleCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkShaderModuleCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pShaderModule))
-        vn_encode_VkShaderModule(cs, pShaderModule);
+    if (vn_encode_simple_pointer(enc, pShaderModule))
+        vn_encode_VkShaderModule(enc, pShaderModule);
 }
 
 static inline size_t vn_sizeof_vkCreateShaderModule_reply(VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule)
@@ -3832,16 +3832,16 @@ static inline size_t vn_sizeof_vkDestroyShaderModule(VkDevice device, VkShaderMo
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyShaderModule(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkShaderModule shaderModule, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyShaderModule(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkShaderModule shaderModule, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyShaderModule_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkShaderModule(cs, &shaderModule);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkShaderModule(enc, &shaderModule);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -3888,20 +3888,20 @@ static inline size_t vn_sizeof_vkCreatePipelineCache(VkDevice device, const VkPi
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreatePipelineCache(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkPipelineCacheCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkPipelineCache* pPipelineCache)
+static inline void vn_encode_vkCreatePipelineCache(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkPipelineCacheCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkPipelineCache* pPipelineCache)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreatePipelineCache_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkPipelineCacheCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkPipelineCacheCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pPipelineCache))
-        vn_encode_VkPipelineCache(cs, pPipelineCache);
+    if (vn_encode_simple_pointer(enc, pPipelineCache))
+        vn_encode_VkPipelineCache(enc, pPipelineCache);
 }
 
 static inline size_t vn_sizeof_vkCreatePipelineCache_reply(VkDevice device, const VkPipelineCacheCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkPipelineCache* pPipelineCache)
@@ -3956,16 +3956,16 @@ static inline size_t vn_sizeof_vkDestroyPipelineCache(VkDevice device, VkPipelin
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyPipelineCache(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipelineCache pipelineCache, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyPipelineCache(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipelineCache pipelineCache, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyPipelineCache_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkPipelineCache(cs, &pipelineCache);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkPipelineCache(enc, &pipelineCache);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -4008,18 +4008,18 @@ static inline size_t vn_sizeof_vkGetPipelineCacheData(VkDevice device, VkPipelin
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPipelineCacheData(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipelineCache pipelineCache, size_t* pDataSize, void* pData)
+static inline void vn_encode_vkGetPipelineCacheData(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipelineCache pipelineCache, size_t* pDataSize, void* pData)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPipelineCacheData_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkPipelineCache(cs, &pipelineCache);
-    if (vn_encode_simple_pointer(cs, pDataSize))
-        vn_encode_size_t(cs, pDataSize);
-    vn_encode_array_size(cs, pData ? *pDataSize : 0); /* out */
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkPipelineCache(enc, &pipelineCache);
+    if (vn_encode_simple_pointer(enc, pDataSize))
+        vn_encode_size_t(enc, pDataSize);
+    vn_encode_array_size(enc, pData ? *pDataSize : 0); /* out */
 }
 
 static inline size_t vn_sizeof_vkGetPipelineCacheData_reply(VkDevice device, VkPipelineCache pipelineCache, size_t* pDataSize, void* pData)
@@ -4090,22 +4090,22 @@ static inline size_t vn_sizeof_vkMergePipelineCaches(VkDevice device, VkPipeline
     return cmd_size;
 }
 
-static inline void vn_encode_vkMergePipelineCaches(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipelineCache dstCache, uint32_t srcCacheCount, const VkPipelineCache* pSrcCaches)
+static inline void vn_encode_vkMergePipelineCaches(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipelineCache dstCache, uint32_t srcCacheCount, const VkPipelineCache* pSrcCaches)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkMergePipelineCaches_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkPipelineCache(cs, &dstCache);
-    vn_encode_uint32_t(cs, &srcCacheCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkPipelineCache(enc, &dstCache);
+    vn_encode_uint32_t(enc, &srcCacheCount);
     if (pSrcCaches) {
-        vn_encode_array_size(cs, srcCacheCount);
+        vn_encode_array_size(enc, srcCacheCount);
         for (uint32_t i = 0; i < srcCacheCount; i++)
-            vn_encode_VkPipelineCache(cs, &pSrcCaches[i]);
+            vn_encode_VkPipelineCache(enc, &pSrcCaches[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -4170,31 +4170,31 @@ static inline size_t vn_sizeof_vkCreateGraphicsPipelines(VkDevice device, VkPipe
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateGraphicsPipelines(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount, const VkGraphicsPipelineCreateInfo* pCreateInfos, const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines)
+static inline void vn_encode_vkCreateGraphicsPipelines(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount, const VkGraphicsPipelineCreateInfo* pCreateInfos, const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateGraphicsPipelines_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkPipelineCache(cs, &pipelineCache);
-    vn_encode_uint32_t(cs, &createInfoCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkPipelineCache(enc, &pipelineCache);
+    vn_encode_uint32_t(enc, &createInfoCount);
     if (pCreateInfos) {
-        vn_encode_array_size(cs, createInfoCount);
+        vn_encode_array_size(enc, createInfoCount);
         for (uint32_t i = 0; i < createInfoCount; i++)
-            vn_encode_VkGraphicsPipelineCreateInfo(cs, &pCreateInfos[i]);
+            vn_encode_VkGraphicsPipelineCreateInfo(enc, &pCreateInfos[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
     if (pPipelines) {
-        vn_encode_array_size(cs, createInfoCount);
+        vn_encode_array_size(enc, createInfoCount);
         for (uint32_t i = 0; i < createInfoCount; i++)
-            vn_encode_VkPipeline(cs, &pPipelines[i]);
+            vn_encode_VkPipeline(enc, &pPipelines[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -4276,31 +4276,31 @@ static inline size_t vn_sizeof_vkCreateComputePipelines(VkDevice device, VkPipel
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateComputePipelines(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount, const VkComputePipelineCreateInfo* pCreateInfos, const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines)
+static inline void vn_encode_vkCreateComputePipelines(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount, const VkComputePipelineCreateInfo* pCreateInfos, const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateComputePipelines_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkPipelineCache(cs, &pipelineCache);
-    vn_encode_uint32_t(cs, &createInfoCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkPipelineCache(enc, &pipelineCache);
+    vn_encode_uint32_t(enc, &createInfoCount);
     if (pCreateInfos) {
-        vn_encode_array_size(cs, createInfoCount);
+        vn_encode_array_size(enc, createInfoCount);
         for (uint32_t i = 0; i < createInfoCount; i++)
-            vn_encode_VkComputePipelineCreateInfo(cs, &pCreateInfos[i]);
+            vn_encode_VkComputePipelineCreateInfo(enc, &pCreateInfos[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
     if (pPipelines) {
-        vn_encode_array_size(cs, createInfoCount);
+        vn_encode_array_size(enc, createInfoCount);
         for (uint32_t i = 0; i < createInfoCount; i++)
-            vn_encode_VkPipeline(cs, &pPipelines[i]);
+            vn_encode_VkPipeline(enc, &pPipelines[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -4367,16 +4367,16 @@ static inline size_t vn_sizeof_vkDestroyPipeline(VkDevice device, VkPipeline pip
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyPipeline(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipeline pipeline, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyPipeline(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipeline pipeline, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyPipeline_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkPipeline(cs, &pipeline);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkPipeline(enc, &pipeline);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -4423,20 +4423,20 @@ static inline size_t vn_sizeof_vkCreatePipelineLayout(VkDevice device, const VkP
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreatePipelineLayout(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkPipelineLayoutCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkPipelineLayout* pPipelineLayout)
+static inline void vn_encode_vkCreatePipelineLayout(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkPipelineLayoutCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkPipelineLayout* pPipelineLayout)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreatePipelineLayout_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkPipelineLayoutCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkPipelineLayoutCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pPipelineLayout))
-        vn_encode_VkPipelineLayout(cs, pPipelineLayout);
+    if (vn_encode_simple_pointer(enc, pPipelineLayout))
+        vn_encode_VkPipelineLayout(enc, pPipelineLayout);
 }
 
 static inline size_t vn_sizeof_vkCreatePipelineLayout_reply(VkDevice device, const VkPipelineLayoutCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkPipelineLayout* pPipelineLayout)
@@ -4491,16 +4491,16 @@ static inline size_t vn_sizeof_vkDestroyPipelineLayout(VkDevice device, VkPipeli
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyPipelineLayout(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipelineLayout pipelineLayout, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyPipelineLayout(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkPipelineLayout pipelineLayout, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyPipelineLayout_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkPipelineLayout(cs, &pipelineLayout);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkPipelineLayout(enc, &pipelineLayout);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -4547,20 +4547,20 @@ static inline size_t vn_sizeof_vkCreateSampler(VkDevice device, const VkSamplerC
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateSampler(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkSamplerCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSampler* pSampler)
+static inline void vn_encode_vkCreateSampler(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkSamplerCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSampler* pSampler)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateSampler_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkSamplerCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkSamplerCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pSampler))
-        vn_encode_VkSampler(cs, pSampler);
+    if (vn_encode_simple_pointer(enc, pSampler))
+        vn_encode_VkSampler(enc, pSampler);
 }
 
 static inline size_t vn_sizeof_vkCreateSampler_reply(VkDevice device, const VkSamplerCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSampler* pSampler)
@@ -4615,16 +4615,16 @@ static inline size_t vn_sizeof_vkDestroySampler(VkDevice device, VkSampler sampl
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroySampler(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkSampler sampler, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroySampler(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkSampler sampler, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroySampler_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkSampler(cs, &sampler);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkSampler(enc, &sampler);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -4671,20 +4671,20 @@ static inline size_t vn_sizeof_vkCreateDescriptorSetLayout(VkDevice device, cons
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateDescriptorSetLayout(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDescriptorSetLayoutCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorSetLayout* pSetLayout)
+static inline void vn_encode_vkCreateDescriptorSetLayout(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDescriptorSetLayoutCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorSetLayout* pSetLayout)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateDescriptorSetLayout_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkDescriptorSetLayoutCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkDescriptorSetLayoutCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pSetLayout))
-        vn_encode_VkDescriptorSetLayout(cs, pSetLayout);
+    if (vn_encode_simple_pointer(enc, pSetLayout))
+        vn_encode_VkDescriptorSetLayout(enc, pSetLayout);
 }
 
 static inline size_t vn_sizeof_vkCreateDescriptorSetLayout_reply(VkDevice device, const VkDescriptorSetLayoutCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorSetLayout* pSetLayout)
@@ -4739,16 +4739,16 @@ static inline size_t vn_sizeof_vkDestroyDescriptorSetLayout(VkDevice device, VkD
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyDescriptorSetLayout(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDescriptorSetLayout descriptorSetLayout, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyDescriptorSetLayout(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDescriptorSetLayout descriptorSetLayout, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyDescriptorSetLayout_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkDescriptorSetLayout(cs, &descriptorSetLayout);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkDescriptorSetLayout(enc, &descriptorSetLayout);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -4795,20 +4795,20 @@ static inline size_t vn_sizeof_vkCreateDescriptorPool(VkDevice device, const VkD
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateDescriptorPool(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDescriptorPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorPool* pDescriptorPool)
+static inline void vn_encode_vkCreateDescriptorPool(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDescriptorPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorPool* pDescriptorPool)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateDescriptorPool_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkDescriptorPoolCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkDescriptorPoolCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pDescriptorPool))
-        vn_encode_VkDescriptorPool(cs, pDescriptorPool);
+    if (vn_encode_simple_pointer(enc, pDescriptorPool))
+        vn_encode_VkDescriptorPool(enc, pDescriptorPool);
 }
 
 static inline size_t vn_sizeof_vkCreateDescriptorPool_reply(VkDevice device, const VkDescriptorPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorPool* pDescriptorPool)
@@ -4863,16 +4863,16 @@ static inline size_t vn_sizeof_vkDestroyDescriptorPool(VkDevice device, VkDescri
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyDescriptorPool(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDescriptorPool descriptorPool, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyDescriptorPool(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDescriptorPool descriptorPool, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyDescriptorPool_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkDescriptorPool(cs, &descriptorPool);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkDescriptorPool(enc, &descriptorPool);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -4912,16 +4912,16 @@ static inline size_t vn_sizeof_vkResetDescriptorPool(VkDevice device, VkDescript
     return cmd_size;
 }
 
-static inline void vn_encode_vkResetDescriptorPool(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDescriptorPool descriptorPool, VkDescriptorPoolResetFlags flags)
+static inline void vn_encode_vkResetDescriptorPool(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDescriptorPool descriptorPool, VkDescriptorPoolResetFlags flags)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkResetDescriptorPool_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkDescriptorPool(cs, &descriptorPool);
-    vn_encode_VkFlags(cs, &flags);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkDescriptorPool(enc, &descriptorPool);
+    vn_encode_VkFlags(enc, &flags);
 }
 
 static inline size_t vn_sizeof_vkResetDescriptorPool_reply(VkDevice device, VkDescriptorPool descriptorPool, VkDescriptorPoolResetFlags flags)
@@ -4974,22 +4974,22 @@ static inline size_t vn_sizeof_vkAllocateDescriptorSets(VkDevice device, const V
     return cmd_size;
 }
 
-static inline void vn_encode_vkAllocateDescriptorSets(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDescriptorSetAllocateInfo* pAllocateInfo, VkDescriptorSet* pDescriptorSets)
+static inline void vn_encode_vkAllocateDescriptorSets(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDescriptorSetAllocateInfo* pAllocateInfo, VkDescriptorSet* pDescriptorSets)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkAllocateDescriptorSets_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pAllocateInfo))
-        vn_encode_VkDescriptorSetAllocateInfo(cs, pAllocateInfo);
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pAllocateInfo))
+        vn_encode_VkDescriptorSetAllocateInfo(enc, pAllocateInfo);
     if (pDescriptorSets) {
-        vn_encode_array_size(cs, pAllocateInfo->descriptorSetCount);
+        vn_encode_array_size(enc, pAllocateInfo->descriptorSetCount);
         for (uint32_t i = 0; i < pAllocateInfo->descriptorSetCount; i++)
-            vn_encode_VkDescriptorSet(cs, &pDescriptorSets[i]);
+            vn_encode_VkDescriptorSet(enc, &pDescriptorSets[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -5055,22 +5055,22 @@ static inline size_t vn_sizeof_vkFreeDescriptorSets(VkDevice device, VkDescripto
     return cmd_size;
 }
 
-static inline void vn_encode_vkFreeDescriptorSets(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDescriptorPool descriptorPool, uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets)
+static inline void vn_encode_vkFreeDescriptorSets(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDescriptorPool descriptorPool, uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkFreeDescriptorSets_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkDescriptorPool(cs, &descriptorPool);
-    vn_encode_uint32_t(cs, &descriptorSetCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkDescriptorPool(enc, &descriptorPool);
+    vn_encode_uint32_t(enc, &descriptorSetCount);
     if (pDescriptorSets) {
-        vn_encode_array_size(cs, descriptorSetCount);
+        vn_encode_array_size(enc, descriptorSetCount);
         for (uint32_t i = 0; i < descriptorSetCount; i++)
-            vn_encode_VkDescriptorSet(cs, &pDescriptorSets[i]);
+            vn_encode_VkDescriptorSet(enc, &pDescriptorSets[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -5132,29 +5132,29 @@ static inline size_t vn_sizeof_vkUpdateDescriptorSets(VkDevice device, uint32_t 
     return cmd_size;
 }
 
-static inline void vn_encode_vkUpdateDescriptorSets(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites, uint32_t descriptorCopyCount, const VkCopyDescriptorSet* pDescriptorCopies)
+static inline void vn_encode_vkUpdateDescriptorSets(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites, uint32_t descriptorCopyCount, const VkCopyDescriptorSet* pDescriptorCopies)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkUpdateDescriptorSets_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_uint32_t(cs, &descriptorWriteCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_uint32_t(enc, &descriptorWriteCount);
     if (pDescriptorWrites) {
-        vn_encode_array_size(cs, descriptorWriteCount);
+        vn_encode_array_size(enc, descriptorWriteCount);
         for (uint32_t i = 0; i < descriptorWriteCount; i++)
-            vn_encode_VkWriteDescriptorSet(cs, &pDescriptorWrites[i]);
+            vn_encode_VkWriteDescriptorSet(enc, &pDescriptorWrites[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_uint32_t(cs, &descriptorCopyCount);
+    vn_encode_uint32_t(enc, &descriptorCopyCount);
     if (pDescriptorCopies) {
-        vn_encode_array_size(cs, descriptorCopyCount);
+        vn_encode_array_size(enc, descriptorCopyCount);
         for (uint32_t i = 0; i < descriptorCopyCount; i++)
-            vn_encode_VkCopyDescriptorSet(cs, &pDescriptorCopies[i]);
+            vn_encode_VkCopyDescriptorSet(enc, &pDescriptorCopies[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -5205,20 +5205,20 @@ static inline size_t vn_sizeof_vkCreateFramebuffer(VkDevice device, const VkFram
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateFramebuffer(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkFramebufferCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkFramebuffer* pFramebuffer)
+static inline void vn_encode_vkCreateFramebuffer(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkFramebufferCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkFramebuffer* pFramebuffer)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateFramebuffer_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkFramebufferCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkFramebufferCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pFramebuffer))
-        vn_encode_VkFramebuffer(cs, pFramebuffer);
+    if (vn_encode_simple_pointer(enc, pFramebuffer))
+        vn_encode_VkFramebuffer(enc, pFramebuffer);
 }
 
 static inline size_t vn_sizeof_vkCreateFramebuffer_reply(VkDevice device, const VkFramebufferCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkFramebuffer* pFramebuffer)
@@ -5273,16 +5273,16 @@ static inline size_t vn_sizeof_vkDestroyFramebuffer(VkDevice device, VkFramebuff
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyFramebuffer(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkFramebuffer framebuffer, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyFramebuffer(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkFramebuffer framebuffer, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyFramebuffer_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkFramebuffer(cs, &framebuffer);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkFramebuffer(enc, &framebuffer);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -5329,20 +5329,20 @@ static inline size_t vn_sizeof_vkCreateRenderPass(VkDevice device, const VkRende
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateRenderPass(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkRenderPassCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkRenderPass* pRenderPass)
+static inline void vn_encode_vkCreateRenderPass(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkRenderPassCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkRenderPass* pRenderPass)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateRenderPass_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkRenderPassCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkRenderPassCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pRenderPass))
-        vn_encode_VkRenderPass(cs, pRenderPass);
+    if (vn_encode_simple_pointer(enc, pRenderPass))
+        vn_encode_VkRenderPass(enc, pRenderPass);
 }
 
 static inline size_t vn_sizeof_vkCreateRenderPass_reply(VkDevice device, const VkRenderPassCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkRenderPass* pRenderPass)
@@ -5397,16 +5397,16 @@ static inline size_t vn_sizeof_vkDestroyRenderPass(VkDevice device, VkRenderPass
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyRenderPass(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkRenderPass renderPass, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyRenderPass(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkRenderPass renderPass, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyRenderPass_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkRenderPass(cs, &renderPass);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkRenderPass(enc, &renderPass);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -5448,17 +5448,17 @@ static inline size_t vn_sizeof_vkGetRenderAreaGranularity(VkDevice device, VkRen
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetRenderAreaGranularity(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkRenderPass renderPass, VkExtent2D* pGranularity)
+static inline void vn_encode_vkGetRenderAreaGranularity(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkRenderPass renderPass, VkExtent2D* pGranularity)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetRenderAreaGranularity_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkRenderPass(cs, &renderPass);
-    if (vn_encode_simple_pointer(cs, pGranularity))
-        vn_encode_VkExtent2D_partial(cs, pGranularity);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkRenderPass(enc, &renderPass);
+    if (vn_encode_simple_pointer(enc, pGranularity))
+        vn_encode_VkExtent2D_partial(enc, pGranularity);
 }
 
 static inline size_t vn_sizeof_vkGetRenderAreaGranularity_reply(VkDevice device, VkRenderPass renderPass, VkExtent2D* pGranularity)
@@ -5510,20 +5510,20 @@ static inline size_t vn_sizeof_vkCreateCommandPool(VkDevice device, const VkComm
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateCommandPool(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkCommandPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkCommandPool* pCommandPool)
+static inline void vn_encode_vkCreateCommandPool(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkCommandPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkCommandPool* pCommandPool)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateCommandPool_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkCommandPoolCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkCommandPoolCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pCommandPool))
-        vn_encode_VkCommandPool(cs, pCommandPool);
+    if (vn_encode_simple_pointer(enc, pCommandPool))
+        vn_encode_VkCommandPool(enc, pCommandPool);
 }
 
 static inline size_t vn_sizeof_vkCreateCommandPool_reply(VkDevice device, const VkCommandPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkCommandPool* pCommandPool)
@@ -5578,16 +5578,16 @@ static inline size_t vn_sizeof_vkDestroyCommandPool(VkDevice device, VkCommandPo
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyCommandPool(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkCommandPool commandPool, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyCommandPool(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkCommandPool commandPool, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyCommandPool_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkCommandPool(cs, &commandPool);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkCommandPool(enc, &commandPool);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -5627,16 +5627,16 @@ static inline size_t vn_sizeof_vkResetCommandPool(VkDevice device, VkCommandPool
     return cmd_size;
 }
 
-static inline void vn_encode_vkResetCommandPool(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkCommandPool commandPool, VkCommandPoolResetFlags flags)
+static inline void vn_encode_vkResetCommandPool(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkCommandPool commandPool, VkCommandPoolResetFlags flags)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkResetCommandPool_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkCommandPool(cs, &commandPool);
-    vn_encode_VkFlags(cs, &flags);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkCommandPool(enc, &commandPool);
+    vn_encode_VkFlags(enc, &flags);
 }
 
 static inline size_t vn_sizeof_vkResetCommandPool_reply(VkDevice device, VkCommandPool commandPool, VkCommandPoolResetFlags flags)
@@ -5689,22 +5689,22 @@ static inline size_t vn_sizeof_vkAllocateCommandBuffers(VkDevice device, const V
     return cmd_size;
 }
 
-static inline void vn_encode_vkAllocateCommandBuffers(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkCommandBufferAllocateInfo* pAllocateInfo, VkCommandBuffer* pCommandBuffers)
+static inline void vn_encode_vkAllocateCommandBuffers(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkCommandBufferAllocateInfo* pAllocateInfo, VkCommandBuffer* pCommandBuffers)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkAllocateCommandBuffers_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pAllocateInfo))
-        vn_encode_VkCommandBufferAllocateInfo(cs, pAllocateInfo);
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pAllocateInfo))
+        vn_encode_VkCommandBufferAllocateInfo(enc, pAllocateInfo);
     if (pCommandBuffers) {
-        vn_encode_array_size(cs, pAllocateInfo->commandBufferCount);
+        vn_encode_array_size(enc, pAllocateInfo->commandBufferCount);
         for (uint32_t i = 0; i < pAllocateInfo->commandBufferCount; i++)
-            vn_encode_VkCommandBuffer(cs, &pCommandBuffers[i]);
+            vn_encode_VkCommandBuffer(enc, &pCommandBuffers[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -5770,22 +5770,22 @@ static inline size_t vn_sizeof_vkFreeCommandBuffers(VkDevice device, VkCommandPo
     return cmd_size;
 }
 
-static inline void vn_encode_vkFreeCommandBuffers(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkCommandPool commandPool, uint32_t commandBufferCount, const VkCommandBuffer* pCommandBuffers)
+static inline void vn_encode_vkFreeCommandBuffers(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkCommandPool commandPool, uint32_t commandBufferCount, const VkCommandBuffer* pCommandBuffers)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkFreeCommandBuffers_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkCommandPool(cs, &commandPool);
-    vn_encode_uint32_t(cs, &commandBufferCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkCommandPool(enc, &commandPool);
+    vn_encode_uint32_t(enc, &commandBufferCount);
     if (pCommandBuffers) {
-        vn_encode_array_size(cs, commandBufferCount);
+        vn_encode_array_size(enc, commandBufferCount);
         for (uint32_t i = 0; i < commandBufferCount; i++)
-            vn_encode_VkCommandBuffer(cs, &pCommandBuffers[i]);
+            vn_encode_VkCommandBuffer(enc, &pCommandBuffers[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -5828,16 +5828,16 @@ static inline size_t vn_sizeof_vkBeginCommandBuffer(VkCommandBuffer commandBuffe
     return cmd_size;
 }
 
-static inline void vn_encode_vkBeginCommandBuffer(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, const VkCommandBufferBeginInfo* pBeginInfo)
+static inline void vn_encode_vkBeginCommandBuffer(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, const VkCommandBufferBeginInfo* pBeginInfo)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkBeginCommandBuffer_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    if (vn_encode_simple_pointer(cs, pBeginInfo))
-        vn_encode_VkCommandBufferBeginInfo(cs, pBeginInfo);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    if (vn_encode_simple_pointer(enc, pBeginInfo))
+        vn_encode_VkCommandBufferBeginInfo(enc, pBeginInfo);
 }
 
 static inline size_t vn_sizeof_vkBeginCommandBuffer_reply(VkCommandBuffer commandBuffer, const VkCommandBufferBeginInfo* pBeginInfo)
@@ -5878,14 +5878,14 @@ static inline size_t vn_sizeof_vkEndCommandBuffer(VkCommandBuffer commandBuffer)
     return cmd_size;
 }
 
-static inline void vn_encode_vkEndCommandBuffer(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer)
+static inline void vn_encode_vkEndCommandBuffer(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkEndCommandBuffer_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
 }
 
 static inline size_t vn_sizeof_vkEndCommandBuffer_reply(VkCommandBuffer commandBuffer)
@@ -5925,15 +5925,15 @@ static inline size_t vn_sizeof_vkResetCommandBuffer(VkCommandBuffer commandBuffe
     return cmd_size;
 }
 
-static inline void vn_encode_vkResetCommandBuffer(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkCommandBufferResetFlags flags)
+static inline void vn_encode_vkResetCommandBuffer(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkCommandBufferResetFlags flags)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkResetCommandBuffer_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkFlags(cs, &flags);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkFlags(enc, &flags);
 }
 
 static inline size_t vn_sizeof_vkResetCommandBuffer_reply(VkCommandBuffer commandBuffer, VkCommandBufferResetFlags flags)
@@ -5976,16 +5976,16 @@ static inline size_t vn_sizeof_vkCmdBindPipeline(VkCommandBuffer commandBuffer, 
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdBindPipeline(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipeline pipeline)
+static inline void vn_encode_vkCmdBindPipeline(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipeline pipeline)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdBindPipeline_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkPipelineBindPoint(cs, &pipelineBindPoint);
-    vn_encode_VkPipeline(cs, &pipeline);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkPipelineBindPoint(enc, &pipelineBindPoint);
+    vn_encode_VkPipeline(enc, &pipeline);
 }
 
 static inline size_t vn_sizeof_vkCmdBindPipeline_reply(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipeline pipeline)
@@ -6031,22 +6031,22 @@ static inline size_t vn_sizeof_vkCmdSetViewport(VkCommandBuffer commandBuffer, u
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdSetViewport(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t firstViewport, uint32_t viewportCount, const VkViewport* pViewports)
+static inline void vn_encode_vkCmdSetViewport(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t firstViewport, uint32_t viewportCount, const VkViewport* pViewports)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdSetViewport_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &firstViewport);
-    vn_encode_uint32_t(cs, &viewportCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &firstViewport);
+    vn_encode_uint32_t(enc, &viewportCount);
     if (pViewports) {
-        vn_encode_array_size(cs, viewportCount);
+        vn_encode_array_size(enc, viewportCount);
         for (uint32_t i = 0; i < viewportCount; i++)
-            vn_encode_VkViewport(cs, &pViewports[i]);
+            vn_encode_VkViewport(enc, &pViewports[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -6095,22 +6095,22 @@ static inline size_t vn_sizeof_vkCmdSetScissor(VkCommandBuffer commandBuffer, ui
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdSetScissor(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t firstScissor, uint32_t scissorCount, const VkRect2D* pScissors)
+static inline void vn_encode_vkCmdSetScissor(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t firstScissor, uint32_t scissorCount, const VkRect2D* pScissors)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdSetScissor_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &firstScissor);
-    vn_encode_uint32_t(cs, &scissorCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &firstScissor);
+    vn_encode_uint32_t(enc, &scissorCount);
     if (pScissors) {
-        vn_encode_array_size(cs, scissorCount);
+        vn_encode_array_size(enc, scissorCount);
         for (uint32_t i = 0; i < scissorCount; i++)
-            vn_encode_VkRect2D(cs, &pScissors[i]);
+            vn_encode_VkRect2D(enc, &pScissors[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -6151,15 +6151,15 @@ static inline size_t vn_sizeof_vkCmdSetLineWidth(VkCommandBuffer commandBuffer, 
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdSetLineWidth(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, float lineWidth)
+static inline void vn_encode_vkCmdSetLineWidth(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, float lineWidth)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdSetLineWidth_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_float(cs, &lineWidth);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_float(enc, &lineWidth);
 }
 
 static inline size_t vn_sizeof_vkCmdSetLineWidth_reply(VkCommandBuffer commandBuffer, float lineWidth)
@@ -6197,17 +6197,17 @@ static inline size_t vn_sizeof_vkCmdSetDepthBias(VkCommandBuffer commandBuffer, 
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdSetDepthBias(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, float depthBiasConstantFactor, float depthBiasClamp, float depthBiasSlopeFactor)
+static inline void vn_encode_vkCmdSetDepthBias(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, float depthBiasConstantFactor, float depthBiasClamp, float depthBiasSlopeFactor)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdSetDepthBias_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_float(cs, &depthBiasConstantFactor);
-    vn_encode_float(cs, &depthBiasClamp);
-    vn_encode_float(cs, &depthBiasSlopeFactor);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_float(enc, &depthBiasConstantFactor);
+    vn_encode_float(enc, &depthBiasClamp);
+    vn_encode_float(enc, &depthBiasSlopeFactor);
 }
 
 static inline size_t vn_sizeof_vkCmdSetDepthBias_reply(VkCommandBuffer commandBuffer, float depthBiasConstantFactor, float depthBiasClamp, float depthBiasSlopeFactor)
@@ -6248,16 +6248,16 @@ static inline size_t vn_sizeof_vkCmdSetBlendConstants(VkCommandBuffer commandBuf
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdSetBlendConstants(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, const float blendConstants[4])
+static inline void vn_encode_vkCmdSetBlendConstants(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, const float blendConstants[4])
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdSetBlendConstants_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_array_size(cs, 4);
-    vn_encode_float_array(cs, blendConstants, 4);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_array_size(enc, 4);
+    vn_encode_float_array(enc, blendConstants, 4);
 }
 
 static inline size_t vn_sizeof_vkCmdSetBlendConstants_reply(VkCommandBuffer commandBuffer, const float blendConstants[4])
@@ -6294,16 +6294,16 @@ static inline size_t vn_sizeof_vkCmdSetDepthBounds(VkCommandBuffer commandBuffer
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdSetDepthBounds(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, float minDepthBounds, float maxDepthBounds)
+static inline void vn_encode_vkCmdSetDepthBounds(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, float minDepthBounds, float maxDepthBounds)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdSetDepthBounds_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_float(cs, &minDepthBounds);
-    vn_encode_float(cs, &maxDepthBounds);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_float(enc, &minDepthBounds);
+    vn_encode_float(enc, &maxDepthBounds);
 }
 
 static inline size_t vn_sizeof_vkCmdSetDepthBounds_reply(VkCommandBuffer commandBuffer, float minDepthBounds, float maxDepthBounds)
@@ -6342,16 +6342,16 @@ static inline size_t vn_sizeof_vkCmdSetStencilCompareMask(VkCommandBuffer comman
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdSetStencilCompareMask(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask, uint32_t compareMask)
+static inline void vn_encode_vkCmdSetStencilCompareMask(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask, uint32_t compareMask)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdSetStencilCompareMask_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkFlags(cs, &faceMask);
-    vn_encode_uint32_t(cs, &compareMask);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkFlags(enc, &faceMask);
+    vn_encode_uint32_t(enc, &compareMask);
 }
 
 static inline size_t vn_sizeof_vkCmdSetStencilCompareMask_reply(VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask, uint32_t compareMask)
@@ -6390,16 +6390,16 @@ static inline size_t vn_sizeof_vkCmdSetStencilWriteMask(VkCommandBuffer commandB
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdSetStencilWriteMask(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask, uint32_t writeMask)
+static inline void vn_encode_vkCmdSetStencilWriteMask(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask, uint32_t writeMask)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdSetStencilWriteMask_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkFlags(cs, &faceMask);
-    vn_encode_uint32_t(cs, &writeMask);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkFlags(enc, &faceMask);
+    vn_encode_uint32_t(enc, &writeMask);
 }
 
 static inline size_t vn_sizeof_vkCmdSetStencilWriteMask_reply(VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask, uint32_t writeMask)
@@ -6438,16 +6438,16 @@ static inline size_t vn_sizeof_vkCmdSetStencilReference(VkCommandBuffer commandB
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdSetStencilReference(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask, uint32_t reference)
+static inline void vn_encode_vkCmdSetStencilReference(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask, uint32_t reference)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdSetStencilReference_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkFlags(cs, &faceMask);
-    vn_encode_uint32_t(cs, &reference);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkFlags(enc, &faceMask);
+    vn_encode_uint32_t(enc, &reference);
 }
 
 static inline size_t vn_sizeof_vkCmdSetStencilReference_reply(VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask, uint32_t reference)
@@ -6502,31 +6502,31 @@ static inline size_t vn_sizeof_vkCmdBindDescriptorSets(VkCommandBuffer commandBu
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdBindDescriptorSets(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets, uint32_t dynamicOffsetCount, const uint32_t* pDynamicOffsets)
+static inline void vn_encode_vkCmdBindDescriptorSets(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets, uint32_t dynamicOffsetCount, const uint32_t* pDynamicOffsets)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdBindDescriptorSets_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkPipelineBindPoint(cs, &pipelineBindPoint);
-    vn_encode_VkPipelineLayout(cs, &layout);
-    vn_encode_uint32_t(cs, &firstSet);
-    vn_encode_uint32_t(cs, &descriptorSetCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkPipelineBindPoint(enc, &pipelineBindPoint);
+    vn_encode_VkPipelineLayout(enc, &layout);
+    vn_encode_uint32_t(enc, &firstSet);
+    vn_encode_uint32_t(enc, &descriptorSetCount);
     if (pDescriptorSets) {
-        vn_encode_array_size(cs, descriptorSetCount);
+        vn_encode_array_size(enc, descriptorSetCount);
         for (uint32_t i = 0; i < descriptorSetCount; i++)
-            vn_encode_VkDescriptorSet(cs, &pDescriptorSets[i]);
+            vn_encode_VkDescriptorSet(enc, &pDescriptorSets[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_uint32_t(cs, &dynamicOffsetCount);
+    vn_encode_uint32_t(enc, &dynamicOffsetCount);
     if (pDynamicOffsets) {
-        vn_encode_array_size(cs, dynamicOffsetCount);
-        vn_encode_uint32_t_array(cs, pDynamicOffsets, dynamicOffsetCount);
+        vn_encode_array_size(enc, dynamicOffsetCount);
+        vn_encode_uint32_t_array(enc, pDynamicOffsets, dynamicOffsetCount);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -6577,17 +6577,17 @@ static inline size_t vn_sizeof_vkCmdBindIndexBuffer(VkCommandBuffer commandBuffe
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdBindIndexBuffer(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType)
+static inline void vn_encode_vkCmdBindIndexBuffer(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdBindIndexBuffer_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkBuffer(cs, &buffer);
-    vn_encode_VkDeviceSize(cs, &offset);
-    vn_encode_VkIndexType(cs, &indexType);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkBuffer(enc, &buffer);
+    vn_encode_VkDeviceSize(enc, &offset);
+    vn_encode_VkIndexType(enc, &indexType);
 }
 
 static inline size_t vn_sizeof_vkCmdBindIndexBuffer_reply(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType)
@@ -6641,28 +6641,28 @@ static inline size_t vn_sizeof_vkCmdBindVertexBuffers(VkCommandBuffer commandBuf
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdBindVertexBuffers(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* pBuffers, const VkDeviceSize* pOffsets)
+static inline void vn_encode_vkCmdBindVertexBuffers(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* pBuffers, const VkDeviceSize* pOffsets)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdBindVertexBuffers_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &firstBinding);
-    vn_encode_uint32_t(cs, &bindingCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &firstBinding);
+    vn_encode_uint32_t(enc, &bindingCount);
     if (pBuffers) {
-        vn_encode_array_size(cs, bindingCount);
+        vn_encode_array_size(enc, bindingCount);
         for (uint32_t i = 0; i < bindingCount; i++)
-            vn_encode_VkBuffer(cs, &pBuffers[i]);
+            vn_encode_VkBuffer(enc, &pBuffers[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
     if (pOffsets) {
-        vn_encode_array_size(cs, bindingCount);
-        vn_encode_VkDeviceSize_array(cs, pOffsets, bindingCount);
+        vn_encode_array_size(enc, bindingCount);
+        vn_encode_VkDeviceSize_array(enc, pOffsets, bindingCount);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -6708,18 +6708,18 @@ static inline size_t vn_sizeof_vkCmdDraw(VkCommandBuffer commandBuffer, uint32_t
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdDraw(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
+static inline void vn_encode_vkCmdDraw(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdDraw_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &vertexCount);
-    vn_encode_uint32_t(cs, &instanceCount);
-    vn_encode_uint32_t(cs, &firstVertex);
-    vn_encode_uint32_t(cs, &firstInstance);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &vertexCount);
+    vn_encode_uint32_t(enc, &instanceCount);
+    vn_encode_uint32_t(enc, &firstVertex);
+    vn_encode_uint32_t(enc, &firstInstance);
 }
 
 static inline size_t vn_sizeof_vkCmdDraw_reply(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
@@ -6765,19 +6765,19 @@ static inline size_t vn_sizeof_vkCmdDrawIndexed(VkCommandBuffer commandBuffer, u
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdDrawIndexed(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
+static inline void vn_encode_vkCmdDrawIndexed(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdDrawIndexed_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &indexCount);
-    vn_encode_uint32_t(cs, &instanceCount);
-    vn_encode_uint32_t(cs, &firstIndex);
-    vn_encode_int32_t(cs, &vertexOffset);
-    vn_encode_uint32_t(cs, &firstInstance);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &indexCount);
+    vn_encode_uint32_t(enc, &instanceCount);
+    vn_encode_uint32_t(enc, &firstIndex);
+    vn_encode_int32_t(enc, &vertexOffset);
+    vn_encode_uint32_t(enc, &firstInstance);
 }
 
 static inline size_t vn_sizeof_vkCmdDrawIndexed_reply(VkCommandBuffer commandBuffer, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
@@ -6824,18 +6824,18 @@ static inline size_t vn_sizeof_vkCmdDrawIndirect(VkCommandBuffer commandBuffer, 
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdDrawIndirect(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride)
+static inline void vn_encode_vkCmdDrawIndirect(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdDrawIndirect_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkBuffer(cs, &buffer);
-    vn_encode_VkDeviceSize(cs, &offset);
-    vn_encode_uint32_t(cs, &drawCount);
-    vn_encode_uint32_t(cs, &stride);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkBuffer(enc, &buffer);
+    vn_encode_VkDeviceSize(enc, &offset);
+    vn_encode_uint32_t(enc, &drawCount);
+    vn_encode_uint32_t(enc, &stride);
 }
 
 static inline size_t vn_sizeof_vkCmdDrawIndirect_reply(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride)
@@ -6880,18 +6880,18 @@ static inline size_t vn_sizeof_vkCmdDrawIndexedIndirect(VkCommandBuffer commandB
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdDrawIndexedIndirect(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride)
+static inline void vn_encode_vkCmdDrawIndexedIndirect(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdDrawIndexedIndirect_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkBuffer(cs, &buffer);
-    vn_encode_VkDeviceSize(cs, &offset);
-    vn_encode_uint32_t(cs, &drawCount);
-    vn_encode_uint32_t(cs, &stride);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkBuffer(enc, &buffer);
+    vn_encode_VkDeviceSize(enc, &offset);
+    vn_encode_uint32_t(enc, &drawCount);
+    vn_encode_uint32_t(enc, &stride);
 }
 
 static inline size_t vn_sizeof_vkCmdDrawIndexedIndirect_reply(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride)
@@ -6935,17 +6935,17 @@ static inline size_t vn_sizeof_vkCmdDispatch(VkCommandBuffer commandBuffer, uint
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdDispatch(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
+static inline void vn_encode_vkCmdDispatch(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdDispatch_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &groupCountX);
-    vn_encode_uint32_t(cs, &groupCountY);
-    vn_encode_uint32_t(cs, &groupCountZ);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &groupCountX);
+    vn_encode_uint32_t(enc, &groupCountY);
+    vn_encode_uint32_t(enc, &groupCountZ);
 }
 
 static inline size_t vn_sizeof_vkCmdDispatch_reply(VkCommandBuffer commandBuffer, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
@@ -6986,16 +6986,16 @@ static inline size_t vn_sizeof_vkCmdDispatchIndirect(VkCommandBuffer commandBuff
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdDispatchIndirect(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset)
+static inline void vn_encode_vkCmdDispatchIndirect(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdDispatchIndirect_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkBuffer(cs, &buffer);
-    vn_encode_VkDeviceSize(cs, &offset);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkBuffer(enc, &buffer);
+    vn_encode_VkDeviceSize(enc, &offset);
 }
 
 static inline size_t vn_sizeof_vkCmdDispatchIndirect_reply(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset)
@@ -7042,23 +7042,23 @@ static inline size_t vn_sizeof_vkCmdCopyBuffer(VkCommandBuffer commandBuffer, Vk
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdCopyBuffer(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkBuffer dstBuffer, uint32_t regionCount, const VkBufferCopy* pRegions)
+static inline void vn_encode_vkCmdCopyBuffer(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkBuffer dstBuffer, uint32_t regionCount, const VkBufferCopy* pRegions)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdCopyBuffer_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkBuffer(cs, &srcBuffer);
-    vn_encode_VkBuffer(cs, &dstBuffer);
-    vn_encode_uint32_t(cs, &regionCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkBuffer(enc, &srcBuffer);
+    vn_encode_VkBuffer(enc, &dstBuffer);
+    vn_encode_uint32_t(enc, &regionCount);
     if (pRegions) {
-        vn_encode_array_size(cs, regionCount);
+        vn_encode_array_size(enc, regionCount);
         for (uint32_t i = 0; i < regionCount; i++)
-            vn_encode_VkBufferCopy(cs, &pRegions[i]);
+            vn_encode_VkBufferCopy(enc, &pRegions[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -7112,25 +7112,25 @@ static inline size_t vn_sizeof_vkCmdCopyImage(VkCommandBuffer commandBuffer, VkI
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdCopyImage(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageCopy* pRegions)
+static inline void vn_encode_vkCmdCopyImage(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageCopy* pRegions)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdCopyImage_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkImage(cs, &srcImage);
-    vn_encode_VkImageLayout(cs, &srcImageLayout);
-    vn_encode_VkImage(cs, &dstImage);
-    vn_encode_VkImageLayout(cs, &dstImageLayout);
-    vn_encode_uint32_t(cs, &regionCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkImage(enc, &srcImage);
+    vn_encode_VkImageLayout(enc, &srcImageLayout);
+    vn_encode_VkImage(enc, &dstImage);
+    vn_encode_VkImageLayout(enc, &dstImageLayout);
+    vn_encode_uint32_t(enc, &regionCount);
     if (pRegions) {
-        vn_encode_array_size(cs, regionCount);
+        vn_encode_array_size(enc, regionCount);
         for (uint32_t i = 0; i < regionCount; i++)
-            vn_encode_VkImageCopy(cs, &pRegions[i]);
+            vn_encode_VkImageCopy(enc, &pRegions[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -7189,27 +7189,27 @@ static inline size_t vn_sizeof_vkCmdBlitImage(VkCommandBuffer commandBuffer, VkI
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdBlitImage(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageBlit* pRegions, VkFilter filter)
+static inline void vn_encode_vkCmdBlitImage(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageBlit* pRegions, VkFilter filter)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdBlitImage_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkImage(cs, &srcImage);
-    vn_encode_VkImageLayout(cs, &srcImageLayout);
-    vn_encode_VkImage(cs, &dstImage);
-    vn_encode_VkImageLayout(cs, &dstImageLayout);
-    vn_encode_uint32_t(cs, &regionCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkImage(enc, &srcImage);
+    vn_encode_VkImageLayout(enc, &srcImageLayout);
+    vn_encode_VkImage(enc, &dstImage);
+    vn_encode_VkImageLayout(enc, &dstImageLayout);
+    vn_encode_uint32_t(enc, &regionCount);
     if (pRegions) {
-        vn_encode_array_size(cs, regionCount);
+        vn_encode_array_size(enc, regionCount);
         for (uint32_t i = 0; i < regionCount; i++)
-            vn_encode_VkImageBlit(cs, &pRegions[i]);
+            vn_encode_VkImageBlit(enc, &pRegions[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_VkFilter(cs, &filter);
+    vn_encode_VkFilter(enc, &filter);
 }
 
 static inline size_t vn_sizeof_vkCmdBlitImage_reply(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageBlit* pRegions, VkFilter filter)
@@ -7267,24 +7267,24 @@ static inline size_t vn_sizeof_vkCmdCopyBufferToImage(VkCommandBuffer commandBuf
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdCopyBufferToImage(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkBufferImageCopy* pRegions)
+static inline void vn_encode_vkCmdCopyBufferToImage(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkBufferImageCopy* pRegions)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdCopyBufferToImage_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkBuffer(cs, &srcBuffer);
-    vn_encode_VkImage(cs, &dstImage);
-    vn_encode_VkImageLayout(cs, &dstImageLayout);
-    vn_encode_uint32_t(cs, &regionCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkBuffer(enc, &srcBuffer);
+    vn_encode_VkImage(enc, &dstImage);
+    vn_encode_VkImageLayout(enc, &dstImageLayout);
+    vn_encode_uint32_t(enc, &regionCount);
     if (pRegions) {
-        vn_encode_array_size(cs, regionCount);
+        vn_encode_array_size(enc, regionCount);
         for (uint32_t i = 0; i < regionCount; i++)
-            vn_encode_VkBufferImageCopy(cs, &pRegions[i]);
+            vn_encode_VkBufferImageCopy(enc, &pRegions[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -7339,24 +7339,24 @@ static inline size_t vn_sizeof_vkCmdCopyImageToBuffer(VkCommandBuffer commandBuf
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdCopyImageToBuffer(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkBuffer dstBuffer, uint32_t regionCount, const VkBufferImageCopy* pRegions)
+static inline void vn_encode_vkCmdCopyImageToBuffer(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkBuffer dstBuffer, uint32_t regionCount, const VkBufferImageCopy* pRegions)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdCopyImageToBuffer_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkImage(cs, &srcImage);
-    vn_encode_VkImageLayout(cs, &srcImageLayout);
-    vn_encode_VkBuffer(cs, &dstBuffer);
-    vn_encode_uint32_t(cs, &regionCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkImage(enc, &srcImage);
+    vn_encode_VkImageLayout(enc, &srcImageLayout);
+    vn_encode_VkBuffer(enc, &dstBuffer);
+    vn_encode_uint32_t(enc, &regionCount);
     if (pRegions) {
-        vn_encode_array_size(cs, regionCount);
+        vn_encode_array_size(enc, regionCount);
         for (uint32_t i = 0; i < regionCount; i++)
-            vn_encode_VkBufferImageCopy(cs, &pRegions[i]);
+            vn_encode_VkBufferImageCopy(enc, &pRegions[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -7409,22 +7409,22 @@ static inline size_t vn_sizeof_vkCmdUpdateBuffer(VkCommandBuffer commandBuffer, 
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdUpdateBuffer(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dataSize, const void* pData)
+static inline void vn_encode_vkCmdUpdateBuffer(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dataSize, const void* pData)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdUpdateBuffer_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkBuffer(cs, &dstBuffer);
-    vn_encode_VkDeviceSize(cs, &dstOffset);
-    vn_encode_VkDeviceSize(cs, &dataSize);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkBuffer(enc, &dstBuffer);
+    vn_encode_VkDeviceSize(enc, &dstOffset);
+    vn_encode_VkDeviceSize(enc, &dataSize);
     if (pData) {
-        vn_encode_array_size(cs, dataSize);
-        vn_encode_blob_array(cs, pData, dataSize);
+        vn_encode_array_size(enc, dataSize);
+        vn_encode_blob_array(enc, pData, dataSize);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -7470,18 +7470,18 @@ static inline size_t vn_sizeof_vkCmdFillBuffer(VkCommandBuffer commandBuffer, Vk
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdFillBuffer(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize size, uint32_t data)
+static inline void vn_encode_vkCmdFillBuffer(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize size, uint32_t data)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdFillBuffer_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkBuffer(cs, &dstBuffer);
-    vn_encode_VkDeviceSize(cs, &dstOffset);
-    vn_encode_VkDeviceSize(cs, &size);
-    vn_encode_uint32_t(cs, &data);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkBuffer(enc, &dstBuffer);
+    vn_encode_VkDeviceSize(enc, &dstOffset);
+    vn_encode_VkDeviceSize(enc, &size);
+    vn_encode_uint32_t(enc, &data);
 }
 
 static inline size_t vn_sizeof_vkCmdFillBuffer_reply(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize size, uint32_t data)
@@ -7535,25 +7535,25 @@ static inline size_t vn_sizeof_vkCmdClearColorImage(VkCommandBuffer commandBuffe
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdClearColorImage(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkImage image, VkImageLayout imageLayout, const VkClearColorValue* pColor, uint32_t rangeCount, const VkImageSubresourceRange* pRanges)
+static inline void vn_encode_vkCmdClearColorImage(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkImage image, VkImageLayout imageLayout, const VkClearColorValue* pColor, uint32_t rangeCount, const VkImageSubresourceRange* pRanges)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdClearColorImage_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkImage(cs, &image);
-    vn_encode_VkImageLayout(cs, &imageLayout);
-    if (vn_encode_simple_pointer(cs, pColor))
-        vn_encode_VkClearColorValue(cs, pColor);
-    vn_encode_uint32_t(cs, &rangeCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkImage(enc, &image);
+    vn_encode_VkImageLayout(enc, &imageLayout);
+    if (vn_encode_simple_pointer(enc, pColor))
+        vn_encode_VkClearColorValue(enc, pColor);
+    vn_encode_uint32_t(enc, &rangeCount);
     if (pRanges) {
-        vn_encode_array_size(cs, rangeCount);
+        vn_encode_array_size(enc, rangeCount);
         for (uint32_t i = 0; i < rangeCount; i++)
-            vn_encode_VkImageSubresourceRange(cs, &pRanges[i]);
+            vn_encode_VkImageSubresourceRange(enc, &pRanges[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -7610,25 +7610,25 @@ static inline size_t vn_sizeof_vkCmdClearDepthStencilImage(VkCommandBuffer comma
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdClearDepthStencilImage(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkImage image, VkImageLayout imageLayout, const VkClearDepthStencilValue* pDepthStencil, uint32_t rangeCount, const VkImageSubresourceRange* pRanges)
+static inline void vn_encode_vkCmdClearDepthStencilImage(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkImage image, VkImageLayout imageLayout, const VkClearDepthStencilValue* pDepthStencil, uint32_t rangeCount, const VkImageSubresourceRange* pRanges)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdClearDepthStencilImage_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkImage(cs, &image);
-    vn_encode_VkImageLayout(cs, &imageLayout);
-    if (vn_encode_simple_pointer(cs, pDepthStencil))
-        vn_encode_VkClearDepthStencilValue(cs, pDepthStencil);
-    vn_encode_uint32_t(cs, &rangeCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkImage(enc, &image);
+    vn_encode_VkImageLayout(enc, &imageLayout);
+    if (vn_encode_simple_pointer(enc, pDepthStencil))
+        vn_encode_VkClearDepthStencilValue(enc, pDepthStencil);
+    vn_encode_uint32_t(enc, &rangeCount);
     if (pRanges) {
-        vn_encode_array_size(cs, rangeCount);
+        vn_encode_array_size(enc, rangeCount);
         for (uint32_t i = 0; i < rangeCount; i++)
-            vn_encode_VkImageSubresourceRange(cs, &pRanges[i]);
+            vn_encode_VkImageSubresourceRange(enc, &pRanges[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -7688,29 +7688,29 @@ static inline size_t vn_sizeof_vkCmdClearAttachments(VkCommandBuffer commandBuff
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdClearAttachments(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t attachmentCount, const VkClearAttachment* pAttachments, uint32_t rectCount, const VkClearRect* pRects)
+static inline void vn_encode_vkCmdClearAttachments(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t attachmentCount, const VkClearAttachment* pAttachments, uint32_t rectCount, const VkClearRect* pRects)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdClearAttachments_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &attachmentCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &attachmentCount);
     if (pAttachments) {
-        vn_encode_array_size(cs, attachmentCount);
+        vn_encode_array_size(enc, attachmentCount);
         for (uint32_t i = 0; i < attachmentCount; i++)
-            vn_encode_VkClearAttachment(cs, &pAttachments[i]);
+            vn_encode_VkClearAttachment(enc, &pAttachments[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_uint32_t(cs, &rectCount);
+    vn_encode_uint32_t(enc, &rectCount);
     if (pRects) {
-        vn_encode_array_size(cs, rectCount);
+        vn_encode_array_size(enc, rectCount);
         for (uint32_t i = 0; i < rectCount; i++)
-            vn_encode_VkClearRect(cs, &pRects[i]);
+            vn_encode_VkClearRect(enc, &pRects[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -7764,25 +7764,25 @@ static inline size_t vn_sizeof_vkCmdResolveImage(VkCommandBuffer commandBuffer, 
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdResolveImage(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageResolve* pRegions)
+static inline void vn_encode_vkCmdResolveImage(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageResolve* pRegions)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdResolveImage_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkImage(cs, &srcImage);
-    vn_encode_VkImageLayout(cs, &srcImageLayout);
-    vn_encode_VkImage(cs, &dstImage);
-    vn_encode_VkImageLayout(cs, &dstImageLayout);
-    vn_encode_uint32_t(cs, &regionCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkImage(enc, &srcImage);
+    vn_encode_VkImageLayout(enc, &srcImageLayout);
+    vn_encode_VkImage(enc, &dstImage);
+    vn_encode_VkImageLayout(enc, &dstImageLayout);
+    vn_encode_uint32_t(enc, &regionCount);
     if (pRegions) {
-        vn_encode_array_size(cs, regionCount);
+        vn_encode_array_size(enc, regionCount);
         for (uint32_t i = 0; i < regionCount; i++)
-            vn_encode_VkImageResolve(cs, &pRegions[i]);
+            vn_encode_VkImageResolve(enc, &pRegions[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -7830,16 +7830,16 @@ static inline size_t vn_sizeof_vkCmdSetEvent(VkCommandBuffer commandBuffer, VkEv
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdSetEvent(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkEvent event, VkPipelineStageFlags stageMask)
+static inline void vn_encode_vkCmdSetEvent(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkEvent event, VkPipelineStageFlags stageMask)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdSetEvent_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkEvent(cs, &event);
-    vn_encode_VkFlags(cs, &stageMask);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkEvent(enc, &event);
+    vn_encode_VkFlags(enc, &stageMask);
 }
 
 static inline size_t vn_sizeof_vkCmdSetEvent_reply(VkCommandBuffer commandBuffer, VkEvent event, VkPipelineStageFlags stageMask)
@@ -7878,16 +7878,16 @@ static inline size_t vn_sizeof_vkCmdResetEvent(VkCommandBuffer commandBuffer, Vk
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdResetEvent(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkEvent event, VkPipelineStageFlags stageMask)
+static inline void vn_encode_vkCmdResetEvent(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkEvent event, VkPipelineStageFlags stageMask)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdResetEvent_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkEvent(cs, &event);
-    vn_encode_VkFlags(cs, &stageMask);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkEvent(enc, &event);
+    vn_encode_VkFlags(enc, &stageMask);
 }
 
 static inline size_t vn_sizeof_vkCmdResetEvent_reply(VkCommandBuffer commandBuffer, VkEvent event, VkPipelineStageFlags stageMask)
@@ -7958,47 +7958,47 @@ static inline size_t vn_sizeof_vkCmdWaitEvents(VkCommandBuffer commandBuffer, ui
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdWaitEvents(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t eventCount, const VkEvent* pEvents, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask, uint32_t memoryBarrierCount, const VkMemoryBarrier* pMemoryBarriers, uint32_t bufferMemoryBarrierCount, const VkBufferMemoryBarrier* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount, const VkImageMemoryBarrier* pImageMemoryBarriers)
+static inline void vn_encode_vkCmdWaitEvents(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t eventCount, const VkEvent* pEvents, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask, uint32_t memoryBarrierCount, const VkMemoryBarrier* pMemoryBarriers, uint32_t bufferMemoryBarrierCount, const VkBufferMemoryBarrier* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount, const VkImageMemoryBarrier* pImageMemoryBarriers)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdWaitEvents_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &eventCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &eventCount);
     if (pEvents) {
-        vn_encode_array_size(cs, eventCount);
+        vn_encode_array_size(enc, eventCount);
         for (uint32_t i = 0; i < eventCount; i++)
-            vn_encode_VkEvent(cs, &pEvents[i]);
+            vn_encode_VkEvent(enc, &pEvents[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_VkFlags(cs, &srcStageMask);
-    vn_encode_VkFlags(cs, &dstStageMask);
-    vn_encode_uint32_t(cs, &memoryBarrierCount);
+    vn_encode_VkFlags(enc, &srcStageMask);
+    vn_encode_VkFlags(enc, &dstStageMask);
+    vn_encode_uint32_t(enc, &memoryBarrierCount);
     if (pMemoryBarriers) {
-        vn_encode_array_size(cs, memoryBarrierCount);
+        vn_encode_array_size(enc, memoryBarrierCount);
         for (uint32_t i = 0; i < memoryBarrierCount; i++)
-            vn_encode_VkMemoryBarrier(cs, &pMemoryBarriers[i]);
+            vn_encode_VkMemoryBarrier(enc, &pMemoryBarriers[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_uint32_t(cs, &bufferMemoryBarrierCount);
+    vn_encode_uint32_t(enc, &bufferMemoryBarrierCount);
     if (pBufferMemoryBarriers) {
-        vn_encode_array_size(cs, bufferMemoryBarrierCount);
+        vn_encode_array_size(enc, bufferMemoryBarrierCount);
         for (uint32_t i = 0; i < bufferMemoryBarrierCount; i++)
-            vn_encode_VkBufferMemoryBarrier(cs, &pBufferMemoryBarriers[i]);
+            vn_encode_VkBufferMemoryBarrier(enc, &pBufferMemoryBarriers[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_uint32_t(cs, &imageMemoryBarrierCount);
+    vn_encode_uint32_t(enc, &imageMemoryBarrierCount);
     if (pImageMemoryBarriers) {
-        vn_encode_array_size(cs, imageMemoryBarrierCount);
+        vn_encode_array_size(enc, imageMemoryBarrierCount);
         for (uint32_t i = 0; i < imageMemoryBarrierCount; i++)
-            vn_encode_VkImageMemoryBarrier(cs, &pImageMemoryBarriers[i]);
+            vn_encode_VkImageMemoryBarrier(enc, &pImageMemoryBarriers[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -8079,40 +8079,40 @@ static inline size_t vn_sizeof_vkCmdPipelineBarrier(VkCommandBuffer commandBuffe
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdPipelineBarrier(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask, VkDependencyFlags dependencyFlags, uint32_t memoryBarrierCount, const VkMemoryBarrier* pMemoryBarriers, uint32_t bufferMemoryBarrierCount, const VkBufferMemoryBarrier* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount, const VkImageMemoryBarrier* pImageMemoryBarriers)
+static inline void vn_encode_vkCmdPipelineBarrier(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask, VkDependencyFlags dependencyFlags, uint32_t memoryBarrierCount, const VkMemoryBarrier* pMemoryBarriers, uint32_t bufferMemoryBarrierCount, const VkBufferMemoryBarrier* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount, const VkImageMemoryBarrier* pImageMemoryBarriers)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdPipelineBarrier_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkFlags(cs, &srcStageMask);
-    vn_encode_VkFlags(cs, &dstStageMask);
-    vn_encode_VkFlags(cs, &dependencyFlags);
-    vn_encode_uint32_t(cs, &memoryBarrierCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkFlags(enc, &srcStageMask);
+    vn_encode_VkFlags(enc, &dstStageMask);
+    vn_encode_VkFlags(enc, &dependencyFlags);
+    vn_encode_uint32_t(enc, &memoryBarrierCount);
     if (pMemoryBarriers) {
-        vn_encode_array_size(cs, memoryBarrierCount);
+        vn_encode_array_size(enc, memoryBarrierCount);
         for (uint32_t i = 0; i < memoryBarrierCount; i++)
-            vn_encode_VkMemoryBarrier(cs, &pMemoryBarriers[i]);
+            vn_encode_VkMemoryBarrier(enc, &pMemoryBarriers[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_uint32_t(cs, &bufferMemoryBarrierCount);
+    vn_encode_uint32_t(enc, &bufferMemoryBarrierCount);
     if (pBufferMemoryBarriers) {
-        vn_encode_array_size(cs, bufferMemoryBarrierCount);
+        vn_encode_array_size(enc, bufferMemoryBarrierCount);
         for (uint32_t i = 0; i < bufferMemoryBarrierCount; i++)
-            vn_encode_VkBufferMemoryBarrier(cs, &pBufferMemoryBarriers[i]);
+            vn_encode_VkBufferMemoryBarrier(enc, &pBufferMemoryBarriers[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_uint32_t(cs, &imageMemoryBarrierCount);
+    vn_encode_uint32_t(enc, &imageMemoryBarrierCount);
     if (pImageMemoryBarriers) {
-        vn_encode_array_size(cs, imageMemoryBarrierCount);
+        vn_encode_array_size(enc, imageMemoryBarrierCount);
         for (uint32_t i = 0; i < imageMemoryBarrierCount; i++)
-            vn_encode_VkImageMemoryBarrier(cs, &pImageMemoryBarriers[i]);
+            vn_encode_VkImageMemoryBarrier(enc, &pImageMemoryBarriers[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -8167,17 +8167,17 @@ static inline size_t vn_sizeof_vkCmdBeginQuery(VkCommandBuffer commandBuffer, Vk
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdBeginQuery(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query, VkQueryControlFlags flags)
+static inline void vn_encode_vkCmdBeginQuery(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query, VkQueryControlFlags flags)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdBeginQuery_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkQueryPool(cs, &queryPool);
-    vn_encode_uint32_t(cs, &query);
-    vn_encode_VkFlags(cs, &flags);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkQueryPool(enc, &queryPool);
+    vn_encode_uint32_t(enc, &query);
+    vn_encode_VkFlags(enc, &flags);
 }
 
 static inline size_t vn_sizeof_vkCmdBeginQuery_reply(VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query, VkQueryControlFlags flags)
@@ -8218,16 +8218,16 @@ static inline size_t vn_sizeof_vkCmdEndQuery(VkCommandBuffer commandBuffer, VkQu
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdEndQuery(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query)
+static inline void vn_encode_vkCmdEndQuery(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdEndQuery_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkQueryPool(cs, &queryPool);
-    vn_encode_uint32_t(cs, &query);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkQueryPool(enc, &queryPool);
+    vn_encode_uint32_t(enc, &query);
 }
 
 static inline size_t vn_sizeof_vkCmdEndQuery_reply(VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query)
@@ -8267,17 +8267,17 @@ static inline size_t vn_sizeof_vkCmdResetQueryPool(VkCommandBuffer commandBuffer
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdResetQueryPool(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount)
+static inline void vn_encode_vkCmdResetQueryPool(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdResetQueryPool_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkQueryPool(cs, &queryPool);
-    vn_encode_uint32_t(cs, &firstQuery);
-    vn_encode_uint32_t(cs, &queryCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkQueryPool(enc, &queryPool);
+    vn_encode_uint32_t(enc, &firstQuery);
+    vn_encode_uint32_t(enc, &queryCount);
 }
 
 static inline size_t vn_sizeof_vkCmdResetQueryPool_reply(VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount)
@@ -8319,17 +8319,17 @@ static inline size_t vn_sizeof_vkCmdWriteTimestamp(VkCommandBuffer commandBuffer
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdWriteTimestamp(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage, VkQueryPool queryPool, uint32_t query)
+static inline void vn_encode_vkCmdWriteTimestamp(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage, VkQueryPool queryPool, uint32_t query)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdWriteTimestamp_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkPipelineStageFlagBits(cs, &pipelineStage);
-    vn_encode_VkQueryPool(cs, &queryPool);
-    vn_encode_uint32_t(cs, &query);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkPipelineStageFlagBits(enc, &pipelineStage);
+    vn_encode_VkQueryPool(enc, &queryPool);
+    vn_encode_uint32_t(enc, &query);
 }
 
 static inline size_t vn_sizeof_vkCmdWriteTimestamp_reply(VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage, VkQueryPool queryPool, uint32_t query)
@@ -8375,21 +8375,21 @@ static inline size_t vn_sizeof_vkCmdCopyQueryPoolResults(VkCommandBuffer command
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdCopyQueryPoolResults(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize stride, VkQueryResultFlags flags)
+static inline void vn_encode_vkCmdCopyQueryPoolResults(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize stride, VkQueryResultFlags flags)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdCopyQueryPoolResults_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkQueryPool(cs, &queryPool);
-    vn_encode_uint32_t(cs, &firstQuery);
-    vn_encode_uint32_t(cs, &queryCount);
-    vn_encode_VkBuffer(cs, &dstBuffer);
-    vn_encode_VkDeviceSize(cs, &dstOffset);
-    vn_encode_VkDeviceSize(cs, &stride);
-    vn_encode_VkFlags(cs, &flags);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkQueryPool(enc, &queryPool);
+    vn_encode_uint32_t(enc, &firstQuery);
+    vn_encode_uint32_t(enc, &queryCount);
+    vn_encode_VkBuffer(enc, &dstBuffer);
+    vn_encode_VkDeviceSize(enc, &dstOffset);
+    vn_encode_VkDeviceSize(enc, &stride);
+    vn_encode_VkFlags(enc, &flags);
 }
 
 static inline size_t vn_sizeof_vkCmdCopyQueryPoolResults_reply(VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize stride, VkQueryResultFlags flags)
@@ -8446,23 +8446,23 @@ static inline size_t vn_sizeof_vkCmdPushConstants(VkCommandBuffer commandBuffer,
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdPushConstants(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkPipelineLayout layout, VkShaderStageFlags stageFlags, uint32_t offset, uint32_t size, const void* pValues)
+static inline void vn_encode_vkCmdPushConstants(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkPipelineLayout layout, VkShaderStageFlags stageFlags, uint32_t offset, uint32_t size, const void* pValues)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdPushConstants_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkPipelineLayout(cs, &layout);
-    vn_encode_VkFlags(cs, &stageFlags);
-    vn_encode_uint32_t(cs, &offset);
-    vn_encode_uint32_t(cs, &size);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkPipelineLayout(enc, &layout);
+    vn_encode_VkFlags(enc, &stageFlags);
+    vn_encode_uint32_t(enc, &offset);
+    vn_encode_uint32_t(enc, &size);
     if (pValues) {
-        vn_encode_array_size(cs, size);
-        vn_encode_blob_array(cs, pValues, size);
+        vn_encode_array_size(enc, size);
+        vn_encode_blob_array(enc, pValues, size);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -8510,17 +8510,17 @@ static inline size_t vn_sizeof_vkCmdBeginRenderPass(VkCommandBuffer commandBuffe
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdBeginRenderPass(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin, VkSubpassContents contents)
+static inline void vn_encode_vkCmdBeginRenderPass(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin, VkSubpassContents contents)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdBeginRenderPass_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    if (vn_encode_simple_pointer(cs, pRenderPassBegin))
-        vn_encode_VkRenderPassBeginInfo(cs, pRenderPassBegin);
-    vn_encode_VkSubpassContents(cs, &contents);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    if (vn_encode_simple_pointer(enc, pRenderPassBegin))
+        vn_encode_VkRenderPassBeginInfo(enc, pRenderPassBegin);
+    vn_encode_VkSubpassContents(enc, &contents);
 }
 
 static inline size_t vn_sizeof_vkCmdBeginRenderPass_reply(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin, VkSubpassContents contents)
@@ -8558,15 +8558,15 @@ static inline size_t vn_sizeof_vkCmdNextSubpass(VkCommandBuffer commandBuffer, V
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdNextSubpass(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkSubpassContents contents)
+static inline void vn_encode_vkCmdNextSubpass(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkSubpassContents contents)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdNextSubpass_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkSubpassContents(cs, &contents);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkSubpassContents(enc, &contents);
 }
 
 static inline size_t vn_sizeof_vkCmdNextSubpass_reply(VkCommandBuffer commandBuffer, VkSubpassContents contents)
@@ -8601,14 +8601,14 @@ static inline size_t vn_sizeof_vkCmdEndRenderPass(VkCommandBuffer commandBuffer)
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdEndRenderPass(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer)
+static inline void vn_encode_vkCmdEndRenderPass(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdEndRenderPass_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
 }
 
 static inline size_t vn_sizeof_vkCmdEndRenderPass_reply(VkCommandBuffer commandBuffer)
@@ -8649,21 +8649,21 @@ static inline size_t vn_sizeof_vkCmdExecuteCommands(VkCommandBuffer commandBuffe
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdExecuteCommands(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t commandBufferCount, const VkCommandBuffer* pCommandBuffers)
+static inline void vn_encode_vkCmdExecuteCommands(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t commandBufferCount, const VkCommandBuffer* pCommandBuffers)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdExecuteCommands_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &commandBufferCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &commandBufferCount);
     if (pCommandBuffers) {
-        vn_encode_array_size(cs, commandBufferCount);
+        vn_encode_array_size(enc, commandBufferCount);
         for (uint32_t i = 0; i < commandBufferCount; i++)
-            vn_encode_VkCommandBuffer(cs, &pCommandBuffers[i]);
+            vn_encode_VkCommandBuffer(enc, &pCommandBuffers[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -8704,16 +8704,16 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceFeatures2(VkPhysicalDevice phy
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceFeatures2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures2* pFeatures)
+static inline void vn_encode_vkGetPhysicalDeviceFeatures2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures2* pFeatures)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceFeatures2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pFeatures))
-        vn_encode_VkPhysicalDeviceFeatures2_partial(cs, pFeatures);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pFeatures))
+        vn_encode_VkPhysicalDeviceFeatures2_partial(enc, pFeatures);
 }
 
 static inline size_t vn_sizeof_vkGetPhysicalDeviceFeatures2_reply(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures2* pFeatures)
@@ -8757,16 +8757,16 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceProperties2(VkPhysicalDevice p
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceProperties2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties2* pProperties)
+static inline void vn_encode_vkGetPhysicalDeviceProperties2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties2* pProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceProperties2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pProperties))
-        vn_encode_VkPhysicalDeviceProperties2_partial(cs, pProperties);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pProperties))
+        vn_encode_VkPhysicalDeviceProperties2_partial(enc, pProperties);
 }
 
 static inline size_t vn_sizeof_vkGetPhysicalDeviceProperties2_reply(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties2* pProperties)
@@ -8811,17 +8811,17 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceFormatProperties2(VkPhysicalDe
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceFormatProperties2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkFormat format, VkFormatProperties2* pFormatProperties)
+static inline void vn_encode_vkGetPhysicalDeviceFormatProperties2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkFormat format, VkFormatProperties2* pFormatProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceFormatProperties2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    vn_encode_VkFormat(cs, &format);
-    if (vn_encode_simple_pointer(cs, pFormatProperties))
-        vn_encode_VkFormatProperties2_partial(cs, pFormatProperties);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    vn_encode_VkFormat(enc, &format);
+    if (vn_encode_simple_pointer(enc, pFormatProperties))
+        vn_encode_VkFormatProperties2_partial(enc, pFormatProperties);
 }
 
 static inline size_t vn_sizeof_vkGetPhysicalDeviceFormatProperties2_reply(VkPhysicalDevice physicalDevice, VkFormat format, VkFormatProperties2* pFormatProperties)
@@ -8870,18 +8870,18 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceImageFormatProperties2(VkPhysi
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceImageFormatProperties2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const VkPhysicalDeviceImageFormatInfo2* pImageFormatInfo, VkImageFormatProperties2* pImageFormatProperties)
+static inline void vn_encode_vkGetPhysicalDeviceImageFormatProperties2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const VkPhysicalDeviceImageFormatInfo2* pImageFormatInfo, VkImageFormatProperties2* pImageFormatProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceImageFormatProperties2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pImageFormatInfo))
-        vn_encode_VkPhysicalDeviceImageFormatInfo2(cs, pImageFormatInfo);
-    if (vn_encode_simple_pointer(cs, pImageFormatProperties))
-        vn_encode_VkImageFormatProperties2_partial(cs, pImageFormatProperties);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pImageFormatInfo))
+        vn_encode_VkPhysicalDeviceImageFormatInfo2(enc, pImageFormatInfo);
+    if (vn_encode_simple_pointer(enc, pImageFormatProperties))
+        vn_encode_VkImageFormatProperties2_partial(enc, pImageFormatProperties);
 }
 
 static inline size_t vn_sizeof_vkGetPhysicalDeviceImageFormatProperties2_reply(VkPhysicalDevice physicalDevice, const VkPhysicalDeviceImageFormatInfo2* pImageFormatInfo, VkImageFormatProperties2* pImageFormatProperties)
@@ -8940,22 +8940,22 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceQueueFamilyProperties2(VkPhysi
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceQueueFamilyProperties2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, uint32_t* pQueueFamilyPropertyCount, VkQueueFamilyProperties2* pQueueFamilyProperties)
+static inline void vn_encode_vkGetPhysicalDeviceQueueFamilyProperties2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, uint32_t* pQueueFamilyPropertyCount, VkQueueFamilyProperties2* pQueueFamilyProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceQueueFamilyProperties2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pQueueFamilyPropertyCount))
-        vn_encode_uint32_t(cs, pQueueFamilyPropertyCount);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pQueueFamilyPropertyCount))
+        vn_encode_uint32_t(enc, pQueueFamilyPropertyCount);
     if (pQueueFamilyProperties) {
-        vn_encode_array_size(cs, *pQueueFamilyPropertyCount);
+        vn_encode_array_size(enc, *pQueueFamilyPropertyCount);
         for (uint32_t i = 0; i < *pQueueFamilyPropertyCount; i++)
-            vn_encode_VkQueueFamilyProperties2_partial(cs, &pQueueFamilyProperties[i]);
+            vn_encode_VkQueueFamilyProperties2_partial(enc, &pQueueFamilyProperties[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -9015,16 +9015,16 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceMemoryProperties2(VkPhysicalDe
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceMemoryProperties2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties2* pMemoryProperties)
+static inline void vn_encode_vkGetPhysicalDeviceMemoryProperties2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties2* pMemoryProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceMemoryProperties2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pMemoryProperties))
-        vn_encode_VkPhysicalDeviceMemoryProperties2_partial(cs, pMemoryProperties);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pMemoryProperties))
+        vn_encode_VkPhysicalDeviceMemoryProperties2_partial(enc, pMemoryProperties);
 }
 
 static inline size_t vn_sizeof_vkGetPhysicalDeviceMemoryProperties2_reply(VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties2* pMemoryProperties)
@@ -9078,24 +9078,24 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceSparseImageFormatProperties2(V
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const VkPhysicalDeviceSparseImageFormatInfo2* pFormatInfo, uint32_t* pPropertyCount, VkSparseImageFormatProperties2* pProperties)
+static inline void vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const VkPhysicalDeviceSparseImageFormatInfo2* pFormatInfo, uint32_t* pPropertyCount, VkSparseImageFormatProperties2* pProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceSparseImageFormatProperties2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pFormatInfo))
-        vn_encode_VkPhysicalDeviceSparseImageFormatInfo2(cs, pFormatInfo);
-    if (vn_encode_simple_pointer(cs, pPropertyCount))
-        vn_encode_uint32_t(cs, pPropertyCount);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pFormatInfo))
+        vn_encode_VkPhysicalDeviceSparseImageFormatInfo2(enc, pFormatInfo);
+    if (vn_encode_simple_pointer(enc, pPropertyCount))
+        vn_encode_uint32_t(enc, pPropertyCount);
     if (pProperties) {
-        vn_encode_array_size(cs, *pPropertyCount);
+        vn_encode_array_size(enc, *pPropertyCount);
         for (uint32_t i = 0; i < *pPropertyCount; i++)
-            vn_encode_VkSparseImageFormatProperties2_partial(cs, &pProperties[i]);
+            vn_encode_VkSparseImageFormatProperties2_partial(enc, &pProperties[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -9156,16 +9156,16 @@ static inline size_t vn_sizeof_vkTrimCommandPool(VkDevice device, VkCommandPool 
     return cmd_size;
 }
 
-static inline void vn_encode_vkTrimCommandPool(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkCommandPool commandPool, VkCommandPoolTrimFlags flags)
+static inline void vn_encode_vkTrimCommandPool(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkCommandPool commandPool, VkCommandPoolTrimFlags flags)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkTrimCommandPool_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkCommandPool(cs, &commandPool);
-    vn_encode_VkFlags(cs, &flags);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkCommandPool(enc, &commandPool);
+    vn_encode_VkFlags(enc, &flags);
 }
 
 static inline size_t vn_sizeof_vkTrimCommandPool_reply(VkDevice device, VkCommandPool commandPool, VkCommandPoolTrimFlags flags)
@@ -9208,18 +9208,18 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceExternalBufferProperties(VkPhy
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceExternalBufferProperties(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalBufferInfo* pExternalBufferInfo, VkExternalBufferProperties* pExternalBufferProperties)
+static inline void vn_encode_vkGetPhysicalDeviceExternalBufferProperties(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalBufferInfo* pExternalBufferInfo, VkExternalBufferProperties* pExternalBufferProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceExternalBufferProperties_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pExternalBufferInfo))
-        vn_encode_VkPhysicalDeviceExternalBufferInfo(cs, pExternalBufferInfo);
-    if (vn_encode_simple_pointer(cs, pExternalBufferProperties))
-        vn_encode_VkExternalBufferProperties_partial(cs, pExternalBufferProperties);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pExternalBufferInfo))
+        vn_encode_VkPhysicalDeviceExternalBufferInfo(enc, pExternalBufferInfo);
+    if (vn_encode_simple_pointer(enc, pExternalBufferProperties))
+        vn_encode_VkExternalBufferProperties_partial(enc, pExternalBufferProperties);
 }
 
 static inline size_t vn_sizeof_vkGetPhysicalDeviceExternalBufferProperties_reply(VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalBufferInfo* pExternalBufferInfo, VkExternalBufferProperties* pExternalBufferProperties)
@@ -9268,18 +9268,18 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceExternalSemaphoreProperties(Vk
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceExternalSemaphoreProperties(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalSemaphoreInfo* pExternalSemaphoreInfo, VkExternalSemaphoreProperties* pExternalSemaphoreProperties)
+static inline void vn_encode_vkGetPhysicalDeviceExternalSemaphoreProperties(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalSemaphoreInfo* pExternalSemaphoreInfo, VkExternalSemaphoreProperties* pExternalSemaphoreProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceExternalSemaphoreProperties_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pExternalSemaphoreInfo))
-        vn_encode_VkPhysicalDeviceExternalSemaphoreInfo(cs, pExternalSemaphoreInfo);
-    if (vn_encode_simple_pointer(cs, pExternalSemaphoreProperties))
-        vn_encode_VkExternalSemaphoreProperties_partial(cs, pExternalSemaphoreProperties);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pExternalSemaphoreInfo))
+        vn_encode_VkPhysicalDeviceExternalSemaphoreInfo(enc, pExternalSemaphoreInfo);
+    if (vn_encode_simple_pointer(enc, pExternalSemaphoreProperties))
+        vn_encode_VkExternalSemaphoreProperties_partial(enc, pExternalSemaphoreProperties);
 }
 
 static inline size_t vn_sizeof_vkGetPhysicalDeviceExternalSemaphoreProperties_reply(VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalSemaphoreInfo* pExternalSemaphoreInfo, VkExternalSemaphoreProperties* pExternalSemaphoreProperties)
@@ -9328,18 +9328,18 @@ static inline size_t vn_sizeof_vkGetPhysicalDeviceExternalFenceProperties(VkPhys
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetPhysicalDeviceExternalFenceProperties(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalFenceInfo* pExternalFenceInfo, VkExternalFenceProperties* pExternalFenceProperties)
+static inline void vn_encode_vkGetPhysicalDeviceExternalFenceProperties(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalFenceInfo* pExternalFenceInfo, VkExternalFenceProperties* pExternalFenceProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetPhysicalDeviceExternalFenceProperties_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkPhysicalDevice(cs, &physicalDevice);
-    if (vn_encode_simple_pointer(cs, pExternalFenceInfo))
-        vn_encode_VkPhysicalDeviceExternalFenceInfo(cs, pExternalFenceInfo);
-    if (vn_encode_simple_pointer(cs, pExternalFenceProperties))
-        vn_encode_VkExternalFenceProperties_partial(cs, pExternalFenceProperties);
+    vn_encode_VkPhysicalDevice(enc, &physicalDevice);
+    if (vn_encode_simple_pointer(enc, pExternalFenceInfo))
+        vn_encode_VkPhysicalDeviceExternalFenceInfo(enc, pExternalFenceInfo);
+    if (vn_encode_simple_pointer(enc, pExternalFenceProperties))
+        vn_encode_VkExternalFenceProperties_partial(enc, pExternalFenceProperties);
 }
 
 static inline size_t vn_sizeof_vkGetPhysicalDeviceExternalFenceProperties_reply(VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalFenceInfo* pExternalFenceInfo, VkExternalFenceProperties* pExternalFenceProperties)
@@ -9392,22 +9392,22 @@ static inline size_t vn_sizeof_vkEnumeratePhysicalDeviceGroups(VkInstance instan
     return cmd_size;
 }
 
-static inline void vn_encode_vkEnumeratePhysicalDeviceGroups(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkInstance instance, uint32_t* pPhysicalDeviceGroupCount, VkPhysicalDeviceGroupProperties* pPhysicalDeviceGroupProperties)
+static inline void vn_encode_vkEnumeratePhysicalDeviceGroups(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkInstance instance, uint32_t* pPhysicalDeviceGroupCount, VkPhysicalDeviceGroupProperties* pPhysicalDeviceGroupProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkEnumeratePhysicalDeviceGroups_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkInstance(cs, &instance);
-    if (vn_encode_simple_pointer(cs, pPhysicalDeviceGroupCount))
-        vn_encode_uint32_t(cs, pPhysicalDeviceGroupCount);
+    vn_encode_VkInstance(enc, &instance);
+    if (vn_encode_simple_pointer(enc, pPhysicalDeviceGroupCount))
+        vn_encode_uint32_t(enc, pPhysicalDeviceGroupCount);
     if (pPhysicalDeviceGroupProperties) {
-        vn_encode_array_size(cs, *pPhysicalDeviceGroupCount);
+        vn_encode_array_size(enc, *pPhysicalDeviceGroupCount);
         for (uint32_t i = 0; i < *pPhysicalDeviceGroupCount; i++)
-            vn_encode_VkPhysicalDeviceGroupProperties_partial(cs, &pPhysicalDeviceGroupProperties[i]);
+            vn_encode_VkPhysicalDeviceGroupProperties_partial(enc, &pPhysicalDeviceGroupProperties[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -9474,18 +9474,18 @@ static inline size_t vn_sizeof_vkGetDeviceGroupPeerMemoryFeatures(VkDevice devic
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetDeviceGroupPeerMemoryFeatures(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t heapIndex, uint32_t localDeviceIndex, uint32_t remoteDeviceIndex, VkPeerMemoryFeatureFlags* pPeerMemoryFeatures)
+static inline void vn_encode_vkGetDeviceGroupPeerMemoryFeatures(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t heapIndex, uint32_t localDeviceIndex, uint32_t remoteDeviceIndex, VkPeerMemoryFeatureFlags* pPeerMemoryFeatures)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetDeviceGroupPeerMemoryFeatures_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_uint32_t(cs, &heapIndex);
-    vn_encode_uint32_t(cs, &localDeviceIndex);
-    vn_encode_uint32_t(cs, &remoteDeviceIndex);
-    vn_encode_simple_pointer(cs, pPeerMemoryFeatures); /* out */
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_uint32_t(enc, &heapIndex);
+    vn_encode_uint32_t(enc, &localDeviceIndex);
+    vn_encode_uint32_t(enc, &remoteDeviceIndex);
+    vn_encode_simple_pointer(enc, pPeerMemoryFeatures); /* out */
 }
 
 static inline size_t vn_sizeof_vkGetDeviceGroupPeerMemoryFeatures_reply(VkDevice device, uint32_t heapIndex, uint32_t localDeviceIndex, uint32_t remoteDeviceIndex, VkPeerMemoryFeatureFlags* pPeerMemoryFeatures)
@@ -9540,21 +9540,21 @@ static inline size_t vn_sizeof_vkBindBufferMemory2(VkDevice device, uint32_t bin
     return cmd_size;
 }
 
-static inline void vn_encode_vkBindBufferMemory2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t bindInfoCount, const VkBindBufferMemoryInfo* pBindInfos)
+static inline void vn_encode_vkBindBufferMemory2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t bindInfoCount, const VkBindBufferMemoryInfo* pBindInfos)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkBindBufferMemory2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_uint32_t(cs, &bindInfoCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_uint32_t(enc, &bindInfoCount);
     if (pBindInfos) {
-        vn_encode_array_size(cs, bindInfoCount);
+        vn_encode_array_size(enc, bindInfoCount);
         for (uint32_t i = 0; i < bindInfoCount; i++)
-            vn_encode_VkBindBufferMemoryInfo(cs, &pBindInfos[i]);
+            vn_encode_VkBindBufferMemoryInfo(enc, &pBindInfos[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -9606,21 +9606,21 @@ static inline size_t vn_sizeof_vkBindImageMemory2(VkDevice device, uint32_t bind
     return cmd_size;
 }
 
-static inline void vn_encode_vkBindImageMemory2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t bindInfoCount, const VkBindImageMemoryInfo* pBindInfos)
+static inline void vn_encode_vkBindImageMemory2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, uint32_t bindInfoCount, const VkBindImageMemoryInfo* pBindInfos)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkBindImageMemory2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_uint32_t(cs, &bindInfoCount);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_uint32_t(enc, &bindInfoCount);
     if (pBindInfos) {
-        vn_encode_array_size(cs, bindInfoCount);
+        vn_encode_array_size(enc, bindInfoCount);
         for (uint32_t i = 0; i < bindInfoCount; i++)
-            vn_encode_VkBindImageMemoryInfo(cs, &pBindInfos[i]);
+            vn_encode_VkBindImageMemoryInfo(enc, &pBindInfos[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -9665,15 +9665,15 @@ static inline size_t vn_sizeof_vkCmdSetDeviceMask(VkCommandBuffer commandBuffer,
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdSetDeviceMask(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t deviceMask)
+static inline void vn_encode_vkCmdSetDeviceMask(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t deviceMask)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdSetDeviceMask_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &deviceMask);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &deviceMask);
 }
 
 static inline size_t vn_sizeof_vkCmdSetDeviceMask_reply(VkCommandBuffer commandBuffer, uint32_t deviceMask)
@@ -9714,20 +9714,20 @@ static inline size_t vn_sizeof_vkCmdDispatchBase(VkCommandBuffer commandBuffer, 
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdDispatchBase(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t baseGroupX, uint32_t baseGroupY, uint32_t baseGroupZ, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
+static inline void vn_encode_vkCmdDispatchBase(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t baseGroupX, uint32_t baseGroupY, uint32_t baseGroupZ, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdDispatchBase_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &baseGroupX);
-    vn_encode_uint32_t(cs, &baseGroupY);
-    vn_encode_uint32_t(cs, &baseGroupZ);
-    vn_encode_uint32_t(cs, &groupCountX);
-    vn_encode_uint32_t(cs, &groupCountY);
-    vn_encode_uint32_t(cs, &groupCountZ);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &baseGroupX);
+    vn_encode_uint32_t(enc, &baseGroupY);
+    vn_encode_uint32_t(enc, &baseGroupZ);
+    vn_encode_uint32_t(enc, &groupCountX);
+    vn_encode_uint32_t(enc, &groupCountY);
+    vn_encode_uint32_t(enc, &groupCountZ);
 }
 
 static inline size_t vn_sizeof_vkCmdDispatchBase_reply(VkCommandBuffer commandBuffer, uint32_t baseGroupX, uint32_t baseGroupY, uint32_t baseGroupZ, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
@@ -9781,20 +9781,20 @@ static inline size_t vn_sizeof_vkCreateDescriptorUpdateTemplate(VkDevice device,
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateDescriptorUpdateTemplate(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDescriptorUpdateTemplateCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorUpdateTemplate* pDescriptorUpdateTemplate)
+static inline void vn_encode_vkCreateDescriptorUpdateTemplate(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDescriptorUpdateTemplateCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorUpdateTemplate* pDescriptorUpdateTemplate)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateDescriptorUpdateTemplate_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkDescriptorUpdateTemplateCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkDescriptorUpdateTemplateCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pDescriptorUpdateTemplate))
-        vn_encode_VkDescriptorUpdateTemplate(cs, pDescriptorUpdateTemplate);
+    if (vn_encode_simple_pointer(enc, pDescriptorUpdateTemplate))
+        vn_encode_VkDescriptorUpdateTemplate(enc, pDescriptorUpdateTemplate);
 }
 
 static inline size_t vn_sizeof_vkCreateDescriptorUpdateTemplate_reply(VkDevice device, const VkDescriptorUpdateTemplateCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorUpdateTemplate* pDescriptorUpdateTemplate)
@@ -9849,16 +9849,16 @@ static inline size_t vn_sizeof_vkDestroyDescriptorUpdateTemplate(VkDevice device
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroyDescriptorUpdateTemplate(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDescriptorUpdateTemplate descriptorUpdateTemplate, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroyDescriptorUpdateTemplate(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkDescriptorUpdateTemplate descriptorUpdateTemplate, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyDescriptorUpdateTemplate_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkDescriptorUpdateTemplate(cs, &descriptorUpdateTemplate);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkDescriptorUpdateTemplate(enc, &descriptorUpdateTemplate);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -9902,18 +9902,18 @@ static inline size_t vn_sizeof_vkGetBufferMemoryRequirements2(VkDevice device, c
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetBufferMemoryRequirements2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkBufferMemoryRequirementsInfo2* pInfo, VkMemoryRequirements2* pMemoryRequirements)
+static inline void vn_encode_vkGetBufferMemoryRequirements2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkBufferMemoryRequirementsInfo2* pInfo, VkMemoryRequirements2* pMemoryRequirements)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetBufferMemoryRequirements2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pInfo))
-        vn_encode_VkBufferMemoryRequirementsInfo2(cs, pInfo);
-    if (vn_encode_simple_pointer(cs, pMemoryRequirements))
-        vn_encode_VkMemoryRequirements2_partial(cs, pMemoryRequirements);
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pInfo))
+        vn_encode_VkBufferMemoryRequirementsInfo2(enc, pInfo);
+    if (vn_encode_simple_pointer(enc, pMemoryRequirements))
+        vn_encode_VkMemoryRequirements2_partial(enc, pMemoryRequirements);
 }
 
 static inline size_t vn_sizeof_vkGetBufferMemoryRequirements2_reply(VkDevice device, const VkBufferMemoryRequirementsInfo2* pInfo, VkMemoryRequirements2* pMemoryRequirements)
@@ -9962,18 +9962,18 @@ static inline size_t vn_sizeof_vkGetImageMemoryRequirements2(VkDevice device, co
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetImageMemoryRequirements2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkImageMemoryRequirementsInfo2* pInfo, VkMemoryRequirements2* pMemoryRequirements)
+static inline void vn_encode_vkGetImageMemoryRequirements2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkImageMemoryRequirementsInfo2* pInfo, VkMemoryRequirements2* pMemoryRequirements)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetImageMemoryRequirements2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pInfo))
-        vn_encode_VkImageMemoryRequirementsInfo2(cs, pInfo);
-    if (vn_encode_simple_pointer(cs, pMemoryRequirements))
-        vn_encode_VkMemoryRequirements2_partial(cs, pMemoryRequirements);
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pInfo))
+        vn_encode_VkImageMemoryRequirementsInfo2(enc, pInfo);
+    if (vn_encode_simple_pointer(enc, pMemoryRequirements))
+        vn_encode_VkMemoryRequirements2_partial(enc, pMemoryRequirements);
 }
 
 static inline size_t vn_sizeof_vkGetImageMemoryRequirements2_reply(VkDevice device, const VkImageMemoryRequirementsInfo2* pInfo, VkMemoryRequirements2* pMemoryRequirements)
@@ -10029,24 +10029,24 @@ static inline size_t vn_sizeof_vkGetImageSparseMemoryRequirements2(VkDevice devi
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetImageSparseMemoryRequirements2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkImageSparseMemoryRequirementsInfo2* pInfo, uint32_t* pSparseMemoryRequirementCount, VkSparseImageMemoryRequirements2* pSparseMemoryRequirements)
+static inline void vn_encode_vkGetImageSparseMemoryRequirements2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkImageSparseMemoryRequirementsInfo2* pInfo, uint32_t* pSparseMemoryRequirementCount, VkSparseImageMemoryRequirements2* pSparseMemoryRequirements)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetImageSparseMemoryRequirements2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pInfo))
-        vn_encode_VkImageSparseMemoryRequirementsInfo2(cs, pInfo);
-    if (vn_encode_simple_pointer(cs, pSparseMemoryRequirementCount))
-        vn_encode_uint32_t(cs, pSparseMemoryRequirementCount);
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pInfo))
+        vn_encode_VkImageSparseMemoryRequirementsInfo2(enc, pInfo);
+    if (vn_encode_simple_pointer(enc, pSparseMemoryRequirementCount))
+        vn_encode_uint32_t(enc, pSparseMemoryRequirementCount);
     if (pSparseMemoryRequirements) {
-        vn_encode_array_size(cs, *pSparseMemoryRequirementCount);
+        vn_encode_array_size(enc, *pSparseMemoryRequirementCount);
         for (uint32_t i = 0; i < *pSparseMemoryRequirementCount; i++)
-            vn_encode_VkSparseImageMemoryRequirements2_partial(cs, &pSparseMemoryRequirements[i]);
+            vn_encode_VkSparseImageMemoryRequirements2_partial(enc, &pSparseMemoryRequirements[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -10114,20 +10114,20 @@ static inline size_t vn_sizeof_vkCreateSamplerYcbcrConversion(VkDevice device, c
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateSamplerYcbcrConversion(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkSamplerYcbcrConversionCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSamplerYcbcrConversion* pYcbcrConversion)
+static inline void vn_encode_vkCreateSamplerYcbcrConversion(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkSamplerYcbcrConversionCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSamplerYcbcrConversion* pYcbcrConversion)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateSamplerYcbcrConversion_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkSamplerYcbcrConversionCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkSamplerYcbcrConversionCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pYcbcrConversion))
-        vn_encode_VkSamplerYcbcrConversion(cs, pYcbcrConversion);
+    if (vn_encode_simple_pointer(enc, pYcbcrConversion))
+        vn_encode_VkSamplerYcbcrConversion(enc, pYcbcrConversion);
 }
 
 static inline size_t vn_sizeof_vkCreateSamplerYcbcrConversion_reply(VkDevice device, const VkSamplerYcbcrConversionCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSamplerYcbcrConversion* pYcbcrConversion)
@@ -10182,16 +10182,16 @@ static inline size_t vn_sizeof_vkDestroySamplerYcbcrConversion(VkDevice device, 
     return cmd_size;
 }
 
-static inline void vn_encode_vkDestroySamplerYcbcrConversion(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkSamplerYcbcrConversion ycbcrConversion, const VkAllocationCallbacks* pAllocator)
+static inline void vn_encode_vkDestroySamplerYcbcrConversion(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkSamplerYcbcrConversion ycbcrConversion, const VkAllocationCallbacks* pAllocator)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroySamplerYcbcrConversion_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkSamplerYcbcrConversion(cs, &ycbcrConversion);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkSamplerYcbcrConversion(enc, &ycbcrConversion);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
 }
 
@@ -10235,18 +10235,18 @@ static inline size_t vn_sizeof_vkGetDeviceQueue2(VkDevice device, const VkDevice
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetDeviceQueue2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDeviceQueueInfo2* pQueueInfo, VkQueue* pQueue)
+static inline void vn_encode_vkGetDeviceQueue2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDeviceQueueInfo2* pQueueInfo, VkQueue* pQueue)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetDeviceQueue2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pQueueInfo))
-        vn_encode_VkDeviceQueueInfo2(cs, pQueueInfo);
-    if (vn_encode_simple_pointer(cs, pQueue))
-        vn_encode_VkQueue(cs, pQueue);
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pQueueInfo))
+        vn_encode_VkDeviceQueueInfo2(enc, pQueueInfo);
+    if (vn_encode_simple_pointer(enc, pQueue))
+        vn_encode_VkQueue(enc, pQueue);
 }
 
 static inline size_t vn_sizeof_vkGetDeviceQueue2_reply(VkDevice device, const VkDeviceQueueInfo2* pQueueInfo, VkQueue* pQueue)
@@ -10295,18 +10295,18 @@ static inline size_t vn_sizeof_vkGetDescriptorSetLayoutSupport(VkDevice device, 
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetDescriptorSetLayoutSupport(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDescriptorSetLayoutCreateInfo* pCreateInfo, VkDescriptorSetLayoutSupport* pSupport)
+static inline void vn_encode_vkGetDescriptorSetLayoutSupport(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDescriptorSetLayoutCreateInfo* pCreateInfo, VkDescriptorSetLayoutSupport* pSupport)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetDescriptorSetLayoutSupport_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkDescriptorSetLayoutCreateInfo(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pSupport))
-        vn_encode_VkDescriptorSetLayoutSupport_partial(cs, pSupport);
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkDescriptorSetLayoutCreateInfo(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pSupport))
+        vn_encode_VkDescriptorSetLayoutSupport_partial(enc, pSupport);
 }
 
 static inline size_t vn_sizeof_vkGetDescriptorSetLayoutSupport_reply(VkDevice device, const VkDescriptorSetLayoutCreateInfo* pCreateInfo, VkDescriptorSetLayoutSupport* pSupport)
@@ -10358,20 +10358,20 @@ static inline size_t vn_sizeof_vkCreateRenderPass2(VkDevice device, const VkRend
     return cmd_size;
 }
 
-static inline void vn_encode_vkCreateRenderPass2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkRenderPassCreateInfo2* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkRenderPass* pRenderPass)
+static inline void vn_encode_vkCreateRenderPass2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkRenderPassCreateInfo2* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkRenderPass* pRenderPass)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateRenderPass2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pCreateInfo))
-        vn_encode_VkRenderPassCreateInfo2(cs, pCreateInfo);
-    if (vn_encode_simple_pointer(cs, pAllocator))
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkRenderPassCreateInfo2(enc, pCreateInfo);
+    if (vn_encode_simple_pointer(enc, pAllocator))
         assert(false);
-    if (vn_encode_simple_pointer(cs, pRenderPass))
-        vn_encode_VkRenderPass(cs, pRenderPass);
+    if (vn_encode_simple_pointer(enc, pRenderPass))
+        vn_encode_VkRenderPass(enc, pRenderPass);
 }
 
 static inline size_t vn_sizeof_vkCreateRenderPass2_reply(VkDevice device, const VkRenderPassCreateInfo2* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkRenderPass* pRenderPass)
@@ -10428,18 +10428,18 @@ static inline size_t vn_sizeof_vkCmdBeginRenderPass2(VkCommandBuffer commandBuff
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdBeginRenderPass2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin, const VkSubpassBeginInfo* pSubpassBeginInfo)
+static inline void vn_encode_vkCmdBeginRenderPass2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin, const VkSubpassBeginInfo* pSubpassBeginInfo)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdBeginRenderPass2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    if (vn_encode_simple_pointer(cs, pRenderPassBegin))
-        vn_encode_VkRenderPassBeginInfo(cs, pRenderPassBegin);
-    if (vn_encode_simple_pointer(cs, pSubpassBeginInfo))
-        vn_encode_VkSubpassBeginInfo(cs, pSubpassBeginInfo);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    if (vn_encode_simple_pointer(enc, pRenderPassBegin))
+        vn_encode_VkRenderPassBeginInfo(enc, pRenderPassBegin);
+    if (vn_encode_simple_pointer(enc, pSubpassBeginInfo))
+        vn_encode_VkSubpassBeginInfo(enc, pSubpassBeginInfo);
 }
 
 static inline size_t vn_sizeof_vkCmdBeginRenderPass2_reply(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin, const VkSubpassBeginInfo* pSubpassBeginInfo)
@@ -10482,18 +10482,18 @@ static inline size_t vn_sizeof_vkCmdNextSubpass2(VkCommandBuffer commandBuffer, 
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdNextSubpass2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, const VkSubpassBeginInfo* pSubpassBeginInfo, const VkSubpassEndInfo* pSubpassEndInfo)
+static inline void vn_encode_vkCmdNextSubpass2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, const VkSubpassBeginInfo* pSubpassBeginInfo, const VkSubpassEndInfo* pSubpassEndInfo)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdNextSubpass2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    if (vn_encode_simple_pointer(cs, pSubpassBeginInfo))
-        vn_encode_VkSubpassBeginInfo(cs, pSubpassBeginInfo);
-    if (vn_encode_simple_pointer(cs, pSubpassEndInfo))
-        vn_encode_VkSubpassEndInfo(cs, pSubpassEndInfo);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    if (vn_encode_simple_pointer(enc, pSubpassBeginInfo))
+        vn_encode_VkSubpassBeginInfo(enc, pSubpassBeginInfo);
+    if (vn_encode_simple_pointer(enc, pSubpassEndInfo))
+        vn_encode_VkSubpassEndInfo(enc, pSubpassEndInfo);
 }
 
 static inline size_t vn_sizeof_vkCmdNextSubpass2_reply(VkCommandBuffer commandBuffer, const VkSubpassBeginInfo* pSubpassBeginInfo, const VkSubpassEndInfo* pSubpassEndInfo)
@@ -10533,16 +10533,16 @@ static inline size_t vn_sizeof_vkCmdEndRenderPass2(VkCommandBuffer commandBuffer
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdEndRenderPass2(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, const VkSubpassEndInfo* pSubpassEndInfo)
+static inline void vn_encode_vkCmdEndRenderPass2(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, const VkSubpassEndInfo* pSubpassEndInfo)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdEndRenderPass2_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    if (vn_encode_simple_pointer(cs, pSubpassEndInfo))
-        vn_encode_VkSubpassEndInfo(cs, pSubpassEndInfo);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    if (vn_encode_simple_pointer(enc, pSubpassEndInfo))
+        vn_encode_VkSubpassEndInfo(enc, pSubpassEndInfo);
 }
 
 static inline size_t vn_sizeof_vkCmdEndRenderPass2_reply(VkCommandBuffer commandBuffer, const VkSubpassEndInfo* pSubpassEndInfo)
@@ -10579,16 +10579,16 @@ static inline size_t vn_sizeof_vkGetSemaphoreCounterValue(VkDevice device, VkSem
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetSemaphoreCounterValue(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkSemaphore semaphore, uint64_t* pValue)
+static inline void vn_encode_vkGetSemaphoreCounterValue(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkSemaphore semaphore, uint64_t* pValue)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetSemaphoreCounterValue_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkSemaphore(cs, &semaphore);
-    vn_encode_simple_pointer(cs, pValue); /* out */
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkSemaphore(enc, &semaphore);
+    vn_encode_simple_pointer(enc, pValue); /* out */
 }
 
 static inline size_t vn_sizeof_vkGetSemaphoreCounterValue_reply(VkDevice device, VkSemaphore semaphore, uint64_t* pValue)
@@ -10641,17 +10641,17 @@ static inline size_t vn_sizeof_vkWaitSemaphores(VkDevice device, const VkSemapho
     return cmd_size;
 }
 
-static inline void vn_encode_vkWaitSemaphores(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkSemaphoreWaitInfo* pWaitInfo, uint64_t timeout)
+static inline void vn_encode_vkWaitSemaphores(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkSemaphoreWaitInfo* pWaitInfo, uint64_t timeout)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkWaitSemaphores_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pWaitInfo))
-        vn_encode_VkSemaphoreWaitInfo(cs, pWaitInfo);
-    vn_encode_uint64_t(cs, &timeout);
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pWaitInfo))
+        vn_encode_VkSemaphoreWaitInfo(enc, pWaitInfo);
+    vn_encode_uint64_t(enc, &timeout);
 }
 
 static inline size_t vn_sizeof_vkWaitSemaphores_reply(VkDevice device, const VkSemaphoreWaitInfo* pWaitInfo, uint64_t timeout)
@@ -10697,16 +10697,16 @@ static inline size_t vn_sizeof_vkSignalSemaphore(VkDevice device, const VkSemaph
     return cmd_size;
 }
 
-static inline void vn_encode_vkSignalSemaphore(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkSemaphoreSignalInfo* pSignalInfo)
+static inline void vn_encode_vkSignalSemaphore(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkSemaphoreSignalInfo* pSignalInfo)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkSignalSemaphore_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pSignalInfo))
-        vn_encode_VkSemaphoreSignalInfo(cs, pSignalInfo);
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pSignalInfo))
+        vn_encode_VkSemaphoreSignalInfo(enc, pSignalInfo);
 }
 
 static inline size_t vn_sizeof_vkSignalSemaphore_reply(VkDevice device, const VkSemaphoreSignalInfo* pSignalInfo)
@@ -10753,20 +10753,20 @@ static inline size_t vn_sizeof_vkCmdDrawIndirectCount(VkCommandBuffer commandBuf
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdDrawIndirectCount(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount, uint32_t stride)
+static inline void vn_encode_vkCmdDrawIndirectCount(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount, uint32_t stride)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdDrawIndirectCount_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkBuffer(cs, &buffer);
-    vn_encode_VkDeviceSize(cs, &offset);
-    vn_encode_VkBuffer(cs, &countBuffer);
-    vn_encode_VkDeviceSize(cs, &countBufferOffset);
-    vn_encode_uint32_t(cs, &maxDrawCount);
-    vn_encode_uint32_t(cs, &stride);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkBuffer(enc, &buffer);
+    vn_encode_VkDeviceSize(enc, &offset);
+    vn_encode_VkBuffer(enc, &countBuffer);
+    vn_encode_VkDeviceSize(enc, &countBufferOffset);
+    vn_encode_uint32_t(enc, &maxDrawCount);
+    vn_encode_uint32_t(enc, &stride);
 }
 
 static inline size_t vn_sizeof_vkCmdDrawIndirectCount_reply(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount, uint32_t stride)
@@ -10817,20 +10817,20 @@ static inline size_t vn_sizeof_vkCmdDrawIndexedIndirectCount(VkCommandBuffer com
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdDrawIndexedIndirectCount(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount, uint32_t stride)
+static inline void vn_encode_vkCmdDrawIndexedIndirectCount(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount, uint32_t stride)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdDrawIndexedIndirectCount_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkBuffer(cs, &buffer);
-    vn_encode_VkDeviceSize(cs, &offset);
-    vn_encode_VkBuffer(cs, &countBuffer);
-    vn_encode_VkDeviceSize(cs, &countBufferOffset);
-    vn_encode_uint32_t(cs, &maxDrawCount);
-    vn_encode_uint32_t(cs, &stride);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkBuffer(enc, &buffer);
+    vn_encode_VkDeviceSize(enc, &offset);
+    vn_encode_VkBuffer(enc, &countBuffer);
+    vn_encode_VkDeviceSize(enc, &countBufferOffset);
+    vn_encode_uint32_t(enc, &maxDrawCount);
+    vn_encode_uint32_t(enc, &stride);
 }
 
 static inline size_t vn_sizeof_vkCmdDrawIndexedIndirectCount_reply(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount, uint32_t stride)
@@ -10896,34 +10896,34 @@ static inline size_t vn_sizeof_vkCmdBindTransformFeedbackBuffersEXT(VkCommandBuf
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdBindTransformFeedbackBuffersEXT(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* pBuffers, const VkDeviceSize* pOffsets, const VkDeviceSize* pSizes)
+static inline void vn_encode_vkCmdBindTransformFeedbackBuffersEXT(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* pBuffers, const VkDeviceSize* pOffsets, const VkDeviceSize* pSizes)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdBindTransformFeedbackBuffersEXT_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &firstBinding);
-    vn_encode_uint32_t(cs, &bindingCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &firstBinding);
+    vn_encode_uint32_t(enc, &bindingCount);
     if (pBuffers) {
-        vn_encode_array_size(cs, bindingCount);
+        vn_encode_array_size(enc, bindingCount);
         for (uint32_t i = 0; i < bindingCount; i++)
-            vn_encode_VkBuffer(cs, &pBuffers[i]);
+            vn_encode_VkBuffer(enc, &pBuffers[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
     if (pOffsets) {
-        vn_encode_array_size(cs, bindingCount);
-        vn_encode_VkDeviceSize_array(cs, pOffsets, bindingCount);
+        vn_encode_array_size(enc, bindingCount);
+        vn_encode_VkDeviceSize_array(enc, pOffsets, bindingCount);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
     if (pSizes) {
-        vn_encode_array_size(cs, bindingCount);
-        vn_encode_VkDeviceSize_array(cs, pSizes, bindingCount);
+        vn_encode_array_size(enc, bindingCount);
+        vn_encode_VkDeviceSize_array(enc, pSizes, bindingCount);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -10982,28 +10982,28 @@ static inline size_t vn_sizeof_vkCmdBeginTransformFeedbackEXT(VkCommandBuffer co
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdBeginTransformFeedbackEXT(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t firstCounterBuffer, uint32_t counterBufferCount, const VkBuffer* pCounterBuffers, const VkDeviceSize* pCounterBufferOffsets)
+static inline void vn_encode_vkCmdBeginTransformFeedbackEXT(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t firstCounterBuffer, uint32_t counterBufferCount, const VkBuffer* pCounterBuffers, const VkDeviceSize* pCounterBufferOffsets)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdBeginTransformFeedbackEXT_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &firstCounterBuffer);
-    vn_encode_uint32_t(cs, &counterBufferCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &firstCounterBuffer);
+    vn_encode_uint32_t(enc, &counterBufferCount);
     if (pCounterBuffers) {
-        vn_encode_array_size(cs, counterBufferCount);
+        vn_encode_array_size(enc, counterBufferCount);
         for (uint32_t i = 0; i < counterBufferCount; i++)
-            vn_encode_VkBuffer(cs, &pCounterBuffers[i]);
+            vn_encode_VkBuffer(enc, &pCounterBuffers[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
     if (pCounterBufferOffsets) {
-        vn_encode_array_size(cs, counterBufferCount);
-        vn_encode_VkDeviceSize_array(cs, pCounterBufferOffsets, counterBufferCount);
+        vn_encode_array_size(enc, counterBufferCount);
+        vn_encode_VkDeviceSize_array(enc, pCounterBufferOffsets, counterBufferCount);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -11060,28 +11060,28 @@ static inline size_t vn_sizeof_vkCmdEndTransformFeedbackEXT(VkCommandBuffer comm
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdEndTransformFeedbackEXT(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t firstCounterBuffer, uint32_t counterBufferCount, const VkBuffer* pCounterBuffers, const VkDeviceSize* pCounterBufferOffsets)
+static inline void vn_encode_vkCmdEndTransformFeedbackEXT(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t firstCounterBuffer, uint32_t counterBufferCount, const VkBuffer* pCounterBuffers, const VkDeviceSize* pCounterBufferOffsets)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdEndTransformFeedbackEXT_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &firstCounterBuffer);
-    vn_encode_uint32_t(cs, &counterBufferCount);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &firstCounterBuffer);
+    vn_encode_uint32_t(enc, &counterBufferCount);
     if (pCounterBuffers) {
-        vn_encode_array_size(cs, counterBufferCount);
+        vn_encode_array_size(enc, counterBufferCount);
         for (uint32_t i = 0; i < counterBufferCount; i++)
-            vn_encode_VkBuffer(cs, &pCounterBuffers[i]);
+            vn_encode_VkBuffer(enc, &pCounterBuffers[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
     if (pCounterBufferOffsets) {
-        vn_encode_array_size(cs, counterBufferCount);
-        vn_encode_VkDeviceSize_array(cs, pCounterBufferOffsets, counterBufferCount);
+        vn_encode_array_size(enc, counterBufferCount);
+        vn_encode_VkDeviceSize_array(enc, pCounterBufferOffsets, counterBufferCount);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
 }
 
@@ -11127,18 +11127,18 @@ static inline size_t vn_sizeof_vkCmdBeginQueryIndexedEXT(VkCommandBuffer command
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdBeginQueryIndexedEXT(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query, VkQueryControlFlags flags, uint32_t index)
+static inline void vn_encode_vkCmdBeginQueryIndexedEXT(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query, VkQueryControlFlags flags, uint32_t index)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdBeginQueryIndexedEXT_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkQueryPool(cs, &queryPool);
-    vn_encode_uint32_t(cs, &query);
-    vn_encode_VkFlags(cs, &flags);
-    vn_encode_uint32_t(cs, &index);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkQueryPool(enc, &queryPool);
+    vn_encode_uint32_t(enc, &query);
+    vn_encode_VkFlags(enc, &flags);
+    vn_encode_uint32_t(enc, &index);
 }
 
 static inline size_t vn_sizeof_vkCmdBeginQueryIndexedEXT_reply(VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query, VkQueryControlFlags flags, uint32_t index)
@@ -11182,17 +11182,17 @@ static inline size_t vn_sizeof_vkCmdEndQueryIndexedEXT(VkCommandBuffer commandBu
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdEndQueryIndexedEXT(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query, uint32_t index)
+static inline void vn_encode_vkCmdEndQueryIndexedEXT(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query, uint32_t index)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdEndQueryIndexedEXT_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_VkQueryPool(cs, &queryPool);
-    vn_encode_uint32_t(cs, &query);
-    vn_encode_uint32_t(cs, &index);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_VkQueryPool(enc, &queryPool);
+    vn_encode_uint32_t(enc, &query);
+    vn_encode_uint32_t(enc, &index);
 }
 
 static inline size_t vn_sizeof_vkCmdEndQueryIndexedEXT_reply(VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query, uint32_t index)
@@ -11237,20 +11237,20 @@ static inline size_t vn_sizeof_vkCmdDrawIndirectByteCountEXT(VkCommandBuffer com
     return cmd_size;
 }
 
-static inline void vn_encode_vkCmdDrawIndirectByteCountEXT(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t instanceCount, uint32_t firstInstance, VkBuffer counterBuffer, VkDeviceSize counterBufferOffset, uint32_t counterOffset, uint32_t vertexStride)
+static inline void vn_encode_vkCmdDrawIndirectByteCountEXT(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkCommandBuffer commandBuffer, uint32_t instanceCount, uint32_t firstInstance, VkBuffer counterBuffer, VkDeviceSize counterBufferOffset, uint32_t counterOffset, uint32_t vertexStride)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCmdDrawIndirectByteCountEXT_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkCommandBuffer(cs, &commandBuffer);
-    vn_encode_uint32_t(cs, &instanceCount);
-    vn_encode_uint32_t(cs, &firstInstance);
-    vn_encode_VkBuffer(cs, &counterBuffer);
-    vn_encode_VkDeviceSize(cs, &counterBufferOffset);
-    vn_encode_uint32_t(cs, &counterOffset);
-    vn_encode_uint32_t(cs, &vertexStride);
+    vn_encode_VkCommandBuffer(enc, &commandBuffer);
+    vn_encode_uint32_t(enc, &instanceCount);
+    vn_encode_uint32_t(enc, &firstInstance);
+    vn_encode_VkBuffer(enc, &counterBuffer);
+    vn_encode_VkDeviceSize(enc, &counterBufferOffset);
+    vn_encode_uint32_t(enc, &counterOffset);
+    vn_encode_uint32_t(enc, &vertexStride);
 }
 
 static inline size_t vn_sizeof_vkCmdDrawIndirectByteCountEXT_reply(VkCommandBuffer commandBuffer, uint32_t instanceCount, uint32_t firstInstance, VkBuffer counterBuffer, VkDeviceSize counterBufferOffset, uint32_t counterOffset, uint32_t vertexStride)
@@ -11299,17 +11299,17 @@ static inline size_t vn_sizeof_vkGetImageDrmFormatModifierPropertiesEXT(VkDevice
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetImageDrmFormatModifierPropertiesEXT(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImage image, VkImageDrmFormatModifierPropertiesEXT* pProperties)
+static inline void vn_encode_vkGetImageDrmFormatModifierPropertiesEXT(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, VkImage image, VkImageDrmFormatModifierPropertiesEXT* pProperties)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetImageDrmFormatModifierPropertiesEXT_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    vn_encode_VkImage(cs, &image);
-    if (vn_encode_simple_pointer(cs, pProperties))
-        vn_encode_VkImageDrmFormatModifierPropertiesEXT_partial(cs, pProperties);
+    vn_encode_VkDevice(enc, &device);
+    vn_encode_VkImage(enc, &image);
+    if (vn_encode_simple_pointer(enc, pProperties))
+        vn_encode_VkImageDrmFormatModifierPropertiesEXT_partial(enc, pProperties);
 }
 
 static inline size_t vn_sizeof_vkGetImageDrmFormatModifierPropertiesEXT_reply(VkDevice device, VkImage image, VkImageDrmFormatModifierPropertiesEXT* pProperties)
@@ -11361,16 +11361,16 @@ static inline size_t vn_sizeof_vkGetBufferOpaqueCaptureAddress(VkDevice device, 
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetBufferOpaqueCaptureAddress(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkBufferDeviceAddressInfo* pInfo)
+static inline void vn_encode_vkGetBufferOpaqueCaptureAddress(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkBufferDeviceAddressInfo* pInfo)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetBufferOpaqueCaptureAddress_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pInfo))
-        vn_encode_VkBufferDeviceAddressInfo(cs, pInfo);
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pInfo))
+        vn_encode_VkBufferDeviceAddressInfo(enc, pInfo);
 }
 
 static inline size_t vn_sizeof_vkGetBufferOpaqueCaptureAddress_reply(VkDevice device, const VkBufferDeviceAddressInfo* pInfo)
@@ -11414,16 +11414,16 @@ static inline size_t vn_sizeof_vkGetBufferDeviceAddress(VkDevice device, const V
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetBufferDeviceAddress(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkBufferDeviceAddressInfo* pInfo)
+static inline void vn_encode_vkGetBufferDeviceAddress(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkBufferDeviceAddressInfo* pInfo)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetBufferDeviceAddress_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pInfo))
-        vn_encode_VkBufferDeviceAddressInfo(cs, pInfo);
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pInfo))
+        vn_encode_VkBufferDeviceAddressInfo(enc, pInfo);
 }
 
 static inline size_t vn_sizeof_vkGetBufferDeviceAddress_reply(VkDevice device, const VkBufferDeviceAddressInfo* pInfo)
@@ -11467,16 +11467,16 @@ static inline size_t vn_sizeof_vkGetDeviceMemoryOpaqueCaptureAddress(VkDevice de
     return cmd_size;
 }
 
-static inline void vn_encode_vkGetDeviceMemoryOpaqueCaptureAddress(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDeviceMemoryOpaqueCaptureAddressInfo* pInfo)
+static inline void vn_encode_vkGetDeviceMemoryOpaqueCaptureAddress(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkDeviceMemoryOpaqueCaptureAddressInfo* pInfo)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkGetDeviceMemoryOpaqueCaptureAddress_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_VkDevice(cs, &device);
-    if (vn_encode_simple_pointer(cs, pInfo))
-        vn_encode_VkDeviceMemoryOpaqueCaptureAddressInfo(cs, pInfo);
+    vn_encode_VkDevice(enc, &device);
+    if (vn_encode_simple_pointer(enc, pInfo))
+        vn_encode_VkDeviceMemoryOpaqueCaptureAddressInfo(enc, pInfo);
 }
 
 static inline size_t vn_sizeof_vkGetDeviceMemoryOpaqueCaptureAddress_reply(VkDevice device, const VkDeviceMemoryOpaqueCaptureAddressInfo* pInfo)
@@ -11519,15 +11519,15 @@ static inline size_t vn_sizeof_vkSetReplyCommandStreamMESA(const VkCommandStream
     return cmd_size;
 }
 
-static inline void vn_encode_vkSetReplyCommandStreamMESA(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, const VkCommandStreamDescriptionMESA* pStream)
+static inline void vn_encode_vkSetReplyCommandStreamMESA(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, const VkCommandStreamDescriptionMESA* pStream)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkSetReplyCommandStreamMESA_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    if (vn_encode_simple_pointer(cs, pStream))
-        vn_encode_VkCommandStreamDescriptionMESA(cs, pStream);
+    if (vn_encode_simple_pointer(enc, pStream))
+        vn_encode_VkCommandStreamDescriptionMESA(enc, pStream);
 }
 
 static inline size_t vn_sizeof_vkSetReplyCommandStreamMESA_reply(const VkCommandStreamDescriptionMESA* pStream)
@@ -11560,14 +11560,14 @@ static inline size_t vn_sizeof_vkSeekReplyCommandStreamMESA(size_t position)
     return cmd_size;
 }
 
-static inline void vn_encode_vkSeekReplyCommandStreamMESA(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, size_t position)
+static inline void vn_encode_vkSeekReplyCommandStreamMESA(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, size_t position)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkSeekReplyCommandStreamMESA_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_size_t(cs, &position);
+    vn_encode_size_t(enc, &position);
 }
 
 static inline size_t vn_sizeof_vkSeekReplyCommandStreamMESA_reply(size_t position)
@@ -11622,36 +11622,36 @@ static inline size_t vn_sizeof_vkExecuteCommandStreamsMESA(uint32_t streamCount,
     return cmd_size;
 }
 
-static inline void vn_encode_vkExecuteCommandStreamsMESA(struct vn_cs *cs, VkCommandFlagsEXT cmd_flags, uint32_t streamCount, const VkCommandStreamDescriptionMESA* pStreams, const size_t* pReplyPositions, uint32_t dependencyCount, const VkCommandStreamDependencyMESA* pDependencies, VkCommandStreamExecutionFlagsMESA flags)
+static inline void vn_encode_vkExecuteCommandStreamsMESA(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, uint32_t streamCount, const VkCommandStreamDescriptionMESA* pStreams, const size_t* pReplyPositions, uint32_t dependencyCount, const VkCommandStreamDependencyMESA* pDependencies, VkCommandStreamExecutionFlagsMESA flags)
 {
     const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkExecuteCommandStreamsMESA_EXT;
 
-    vn_encode_VkCommandTypeEXT(cs, &cmd_type);
-    vn_encode_VkFlags(cs, &cmd_flags);
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
 
-    vn_encode_uint32_t(cs, &streamCount);
+    vn_encode_uint32_t(enc, &streamCount);
     if (pStreams) {
-        vn_encode_array_size(cs, streamCount);
+        vn_encode_array_size(enc, streamCount);
         for (uint32_t i = 0; i < streamCount; i++)
-            vn_encode_VkCommandStreamDescriptionMESA(cs, &pStreams[i]);
+            vn_encode_VkCommandStreamDescriptionMESA(enc, &pStreams[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
     if (pReplyPositions) {
-        vn_encode_array_size(cs, streamCount);
-        vn_encode_size_t_array(cs, pReplyPositions, streamCount);
+        vn_encode_array_size(enc, streamCount);
+        vn_encode_size_t_array(enc, pReplyPositions, streamCount);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_uint32_t(cs, &dependencyCount);
+    vn_encode_uint32_t(enc, &dependencyCount);
     if (pDependencies) {
-        vn_encode_array_size(cs, dependencyCount);
+        vn_encode_array_size(enc, dependencyCount);
         for (uint32_t i = 0; i < dependencyCount; i++)
-            vn_encode_VkCommandStreamDependencyMESA(cs, &pDependencies[i]);
+            vn_encode_VkCommandStreamDependencyMESA(enc, &pDependencies[i]);
     } else {
-        vn_encode_array_size(cs, 0);
+        vn_encode_array_size(enc, 0);
     }
-    vn_encode_VkFlags(cs, &flags);
+    vn_encode_VkFlags(enc, &flags);
 }
 
 static inline size_t vn_sizeof_vkExecuteCommandStreamsMESA_reply(uint32_t streamCount, const VkCommandStreamDescriptionMESA* pStreams, const size_t* pReplyPositions, uint32_t dependencyCount, const VkCommandStreamDependencyMESA* pDependencies, VkCommandStreamExecutionFlagsMESA flags)

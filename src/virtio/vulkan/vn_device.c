@@ -263,7 +263,7 @@ vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
                                    size_t size,
                                    void **ptr)
 {
-   struct vn_cs *cs = &instance->cs;
+   struct vn_cs_encoder *cs = &instance->cs;
 
    if (unlikely(instance->cs_reply.used + size > instance->cs_reply.size)) {
       if (!vn_instance_grow_cs_reply_bo_locked(instance, size))
@@ -293,7 +293,7 @@ vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
 static void
 vn_instance_flush_cs(struct vn_instance *instance)
 {
-   struct vn_cs *cs = vn_instance_lock_cs(instance);
+   struct vn_cs_encoder *cs = vn_instance_lock_cs(instance);
    if (vn_cs_has_out(cs))
       vn_instance_submit_cs_locked(instance, NULL, NULL);
    vn_instance_unlock_cs(instance);

@@ -18,9 +18,9 @@ vn_sizeof_uint64_t(const uint64_t *val)
 }
 
 static inline void
-vn_encode_uint64_t(struct vn_cs *cs, const uint64_t *val)
+vn_encode_uint64_t(struct vn_cs_encoder *enc, const uint64_t *val)
 {
-    vn_encode(cs, 8, val, sizeof(*val));
+    vn_encode(enc, 8, val, sizeof(*val));
 }
 
 static inline void
@@ -39,11 +39,11 @@ vn_sizeof_uint64_t_array(const uint64_t *val, uint32_t count)
 }
 
 static inline void
-vn_encode_uint64_t_array(struct vn_cs *cs, const uint64_t *val, uint32_t count)
+vn_encode_uint64_t_array(struct vn_cs_encoder *enc, const uint64_t *val, uint32_t count)
 {
     const size_t size = sizeof(*val) * count;
     assert(size >= count);
-    vn_encode(cs, size, val, size);
+    vn_encode(enc, size, val, size);
 }
 
 static inline void
@@ -64,9 +64,9 @@ vn_sizeof_int32_t(const int32_t *val)
 }
 
 static inline void
-vn_encode_int32_t(struct vn_cs *cs, const int32_t *val)
+vn_encode_int32_t(struct vn_cs_encoder *enc, const int32_t *val)
 {
-    vn_encode(cs, 4, val, sizeof(*val));
+    vn_encode(enc, 4, val, sizeof(*val));
 }
 
 static inline void
@@ -85,11 +85,11 @@ vn_sizeof_int32_t_array(const int32_t *val, uint32_t count)
 }
 
 static inline void
-vn_encode_int32_t_array(struct vn_cs *cs, const int32_t *val, uint32_t count)
+vn_encode_int32_t_array(struct vn_cs_encoder *enc, const int32_t *val, uint32_t count)
 {
     const size_t size = sizeof(*val) * count;
     assert(size >= count);
-    vn_encode(cs, size, val, size);
+    vn_encode(enc, size, val, size);
 }
 
 static inline void
@@ -110,9 +110,9 @@ vn_sizeof_VkStructureType(const VkStructureType *val)
 }
 
 static inline void
-vn_encode_VkStructureType(struct vn_cs *cs, const VkStructureType *val)
+vn_encode_VkStructureType(struct vn_cs_encoder *enc, const VkStructureType *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -130,10 +130,10 @@ vn_sizeof_size_t(const size_t *val)
 }
 
 static inline void
-vn_encode_size_t(struct vn_cs *cs, const size_t *val)
+vn_encode_size_t(struct vn_cs_encoder *enc, const size_t *val)
 {
     const uint64_t tmp = *val;
-    vn_encode_uint64_t(cs, &tmp);
+    vn_encode_uint64_t(enc, &tmp);
 }
 
 static inline void
@@ -151,13 +151,13 @@ vn_sizeof_size_t_array(const size_t *val, uint32_t count)
 }
 
 static inline void
-vn_encode_size_t_array(struct vn_cs *cs, const size_t *val, uint32_t count)
+vn_encode_size_t_array(struct vn_cs_encoder *enc, const size_t *val, uint32_t count)
 {
     if (sizeof(size_t) == sizeof(uint64_t)) {
-        vn_encode_uint64_t_array(cs, (const uint64_t *)val, count);
+        vn_encode_uint64_t_array(enc, (const uint64_t *)val, count);
     } else {
         for (uint32_t i = 0; i < count; i++)
-            vn_encode_size_t(cs, &val[i]);
+            vn_encode_size_t(enc, &val[i]);
     }
 }
 
@@ -181,9 +181,9 @@ vn_sizeof_blob_array(const void *val, size_t size)
 }
 
 static inline void
-vn_encode_blob_array(struct vn_cs *cs, const void *val, size_t size)
+vn_encode_blob_array(struct vn_cs_encoder *enc, const void *val, size_t size)
 {
-    vn_encode(cs, (size + 3) & ~3, val, size);
+    vn_encode(enc, (size + 3) & ~3, val, size);
 }
 
 static inline void
@@ -201,9 +201,9 @@ vn_sizeof_array_size(uint64_t size)
 }
 
 static inline void
-vn_encode_array_size(struct vn_cs *cs, uint64_t size)
+vn_encode_array_size(struct vn_cs_encoder *enc, uint64_t size)
 {
-    vn_encode_uint64_t(cs, &size);
+    vn_encode_uint64_t(enc, &size);
 }
 
 static inline uint64_t
@@ -235,9 +235,9 @@ vn_sizeof_simple_pointer(const void *val)
 }
 
 static inline bool
-vn_encode_simple_pointer(struct vn_cs *cs, const void *val)
+vn_encode_simple_pointer(struct vn_cs_encoder *enc, const void *val)
 {
-    vn_encode_array_size(cs, val ? 1 : 0);
+    vn_encode_array_size(enc, val ? 1 : 0);
     return val;
 }
 
@@ -257,9 +257,9 @@ vn_sizeof_uint32_t(const uint32_t *val)
 }
 
 static inline void
-vn_encode_uint32_t(struct vn_cs *cs, const uint32_t *val)
+vn_encode_uint32_t(struct vn_cs_encoder *enc, const uint32_t *val)
 {
-    vn_encode(cs, 4, val, sizeof(*val));
+    vn_encode(enc, 4, val, sizeof(*val));
 }
 
 static inline void
@@ -278,11 +278,11 @@ vn_sizeof_uint32_t_array(const uint32_t *val, uint32_t count)
 }
 
 static inline void
-vn_encode_uint32_t_array(struct vn_cs *cs, const uint32_t *val, uint32_t count)
+vn_encode_uint32_t_array(struct vn_cs_encoder *enc, const uint32_t *val, uint32_t count)
 {
     const size_t size = sizeof(*val) * count;
     assert(size >= count);
-    vn_encode(cs, size, val, size);
+    vn_encode(enc, size, val, size);
 }
 
 static inline void
@@ -303,9 +303,9 @@ vn_sizeof_float(const float *val)
 }
 
 static inline void
-vn_encode_float(struct vn_cs *cs, const float *val)
+vn_encode_float(struct vn_cs_encoder *enc, const float *val)
 {
-    vn_encode(cs, 4, val, sizeof(*val));
+    vn_encode(enc, 4, val, sizeof(*val));
 }
 
 static inline void
@@ -324,11 +324,11 @@ vn_sizeof_float_array(const float *val, uint32_t count)
 }
 
 static inline void
-vn_encode_float_array(struct vn_cs *cs, const float *val, uint32_t count)
+vn_encode_float_array(struct vn_cs_encoder *enc, const float *val, uint32_t count)
 {
     const size_t size = sizeof(*val) * count;
     assert(size >= count);
-    vn_encode(cs, size, val, size);
+    vn_encode(enc, size, val, size);
 }
 
 static inline void
@@ -349,9 +349,9 @@ vn_sizeof_uint8_t(const uint8_t *val)
 }
 
 static inline void
-vn_encode_uint8_t(struct vn_cs *cs, const uint8_t *val)
+vn_encode_uint8_t(struct vn_cs_encoder *enc, const uint8_t *val)
 {
-    vn_encode(cs, 4, val, sizeof(*val));
+    vn_encode(enc, 4, val, sizeof(*val));
 }
 
 static inline void
@@ -370,11 +370,11 @@ vn_sizeof_uint8_t_array(const uint8_t *val, uint32_t count)
 }
 
 static inline void
-vn_encode_uint8_t_array(struct vn_cs *cs, const uint8_t *val, uint32_t count)
+vn_encode_uint8_t_array(struct vn_cs_encoder *enc, const uint8_t *val, uint32_t count)
 {
     const size_t size = sizeof(*val) * count;
     assert(size >= count);
-    vn_encode(cs, (size + 3) & ~3, val, size);
+    vn_encode(enc, (size + 3) & ~3, val, size);
 }
 
 static inline void
@@ -394,9 +394,9 @@ vn_sizeof_VkSampleMask(const VkSampleMask *val)
 }
 
 static inline void
-vn_encode_VkSampleMask(struct vn_cs *cs, const VkSampleMask *val)
+vn_encode_VkSampleMask(struct vn_cs_encoder *enc, const VkSampleMask *val)
 {
-    vn_encode_uint32_t(cs, val);
+    vn_encode_uint32_t(enc, val);
 }
 
 static inline void
@@ -412,9 +412,9 @@ vn_sizeof_VkSampleMask_array(const VkSampleMask *val, uint32_t count)
 }
 
 static inline void
-vn_encode_VkSampleMask_array(struct vn_cs *cs, const VkSampleMask *val, uint32_t count)
+vn_encode_VkSampleMask_array(struct vn_cs_encoder *enc, const VkSampleMask *val, uint32_t count)
 {
-    vn_encode_uint32_t_array(cs, val, count);
+    vn_encode_uint32_t_array(enc, val, count);
 }
 
 static inline void
@@ -432,9 +432,9 @@ vn_sizeof_VkBool32(const VkBool32 *val)
 }
 
 static inline void
-vn_encode_VkBool32(struct vn_cs *cs, const VkBool32 *val)
+vn_encode_VkBool32(struct vn_cs_encoder *enc, const VkBool32 *val)
 {
-    vn_encode_uint32_t(cs, val);
+    vn_encode_uint32_t(enc, val);
 }
 
 static inline void
@@ -450,9 +450,9 @@ vn_sizeof_VkBool32_array(const VkBool32 *val, uint32_t count)
 }
 
 static inline void
-vn_encode_VkBool32_array(struct vn_cs *cs, const VkBool32 *val, uint32_t count)
+vn_encode_VkBool32_array(struct vn_cs_encoder *enc, const VkBool32 *val, uint32_t count)
 {
-    vn_encode_uint32_t_array(cs, val, count);
+    vn_encode_uint32_t_array(enc, val, count);
 }
 
 static inline void
@@ -470,9 +470,9 @@ vn_sizeof_VkFlags(const VkFlags *val)
 }
 
 static inline void
-vn_encode_VkFlags(struct vn_cs *cs, const VkFlags *val)
+vn_encode_VkFlags(struct vn_cs_encoder *enc, const VkFlags *val)
 {
-    vn_encode_uint32_t(cs, val);
+    vn_encode_uint32_t(enc, val);
 }
 
 static inline void
@@ -488,9 +488,9 @@ vn_sizeof_VkFlags_array(const VkFlags *val, uint32_t count)
 }
 
 static inline void
-vn_encode_VkFlags_array(struct vn_cs *cs, const VkFlags *val, uint32_t count)
+vn_encode_VkFlags_array(struct vn_cs_encoder *enc, const VkFlags *val, uint32_t count)
 {
-    vn_encode_uint32_t_array(cs, val, count);
+    vn_encode_uint32_t_array(enc, val, count);
 }
 
 static inline void
@@ -508,9 +508,9 @@ vn_sizeof_VkDeviceSize(const VkDeviceSize *val)
 }
 
 static inline void
-vn_encode_VkDeviceSize(struct vn_cs *cs, const VkDeviceSize *val)
+vn_encode_VkDeviceSize(struct vn_cs_encoder *enc, const VkDeviceSize *val)
 {
-    vn_encode_uint64_t(cs, val);
+    vn_encode_uint64_t(enc, val);
 }
 
 static inline void
@@ -526,9 +526,9 @@ vn_sizeof_VkDeviceSize_array(const VkDeviceSize *val, uint32_t count)
 }
 
 static inline void
-vn_encode_VkDeviceSize_array(struct vn_cs *cs, const VkDeviceSize *val, uint32_t count)
+vn_encode_VkDeviceSize_array(struct vn_cs_encoder *enc, const VkDeviceSize *val, uint32_t count)
 {
-    vn_encode_uint64_t_array(cs, val, count);
+    vn_encode_uint64_t_array(enc, val, count);
 }
 
 static inline void
@@ -546,9 +546,9 @@ vn_sizeof_VkDeviceAddress(const VkDeviceAddress *val)
 }
 
 static inline void
-vn_encode_VkDeviceAddress(struct vn_cs *cs, const VkDeviceAddress *val)
+vn_encode_VkDeviceAddress(struct vn_cs_encoder *enc, const VkDeviceAddress *val)
 {
-    vn_encode_uint64_t(cs, val);
+    vn_encode_uint64_t(enc, val);
 }
 
 static inline void
@@ -564,9 +564,9 @@ vn_sizeof_VkDeviceAddress_array(const VkDeviceAddress *val, uint32_t count)
 }
 
 static inline void
-vn_encode_VkDeviceAddress_array(struct vn_cs *cs, const VkDeviceAddress *val, uint32_t count)
+vn_encode_VkDeviceAddress_array(struct vn_cs_encoder *enc, const VkDeviceAddress *val, uint32_t count)
 {
-    vn_encode_uint64_t_array(cs, val, count);
+    vn_encode_uint64_t_array(enc, val, count);
 }
 
 static inline void
@@ -585,9 +585,9 @@ vn_sizeof_VkFramebufferCreateFlagBits(const VkFramebufferCreateFlagBits *val)
 }
 
 static inline void
-vn_encode_VkFramebufferCreateFlagBits(struct vn_cs *cs, const VkFramebufferCreateFlagBits *val)
+vn_encode_VkFramebufferCreateFlagBits(struct vn_cs_encoder *enc, const VkFramebufferCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -606,9 +606,9 @@ vn_sizeof_VkRenderPassCreateFlagBits(const VkRenderPassCreateFlagBits *val)
 }
 
 static inline void
-vn_encode_VkRenderPassCreateFlagBits(struct vn_cs *cs, const VkRenderPassCreateFlagBits *val)
+vn_encode_VkRenderPassCreateFlagBits(struct vn_cs_encoder *enc, const VkRenderPassCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -627,9 +627,9 @@ vn_sizeof_VkSamplerCreateFlagBits(const VkSamplerCreateFlagBits *val)
 }
 
 static inline void
-vn_encode_VkSamplerCreateFlagBits(struct vn_cs *cs, const VkSamplerCreateFlagBits *val)
+vn_encode_VkSamplerCreateFlagBits(struct vn_cs_encoder *enc, const VkSamplerCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -648,9 +648,9 @@ vn_sizeof_VkPipelineCacheCreateFlagBits(const VkPipelineCacheCreateFlagBits *val
 }
 
 static inline void
-vn_encode_VkPipelineCacheCreateFlagBits(struct vn_cs *cs, const VkPipelineCacheCreateFlagBits *val)
+vn_encode_VkPipelineCacheCreateFlagBits(struct vn_cs_encoder *enc, const VkPipelineCacheCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -669,9 +669,9 @@ vn_sizeof_VkPipelineShaderStageCreateFlagBits(const VkPipelineShaderStageCreateF
 }
 
 static inline void
-vn_encode_VkPipelineShaderStageCreateFlagBits(struct vn_cs *cs, const VkPipelineShaderStageCreateFlagBits *val)
+vn_encode_VkPipelineShaderStageCreateFlagBits(struct vn_cs_encoder *enc, const VkPipelineShaderStageCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -690,9 +690,9 @@ vn_sizeof_VkDescriptorSetLayoutCreateFlagBits(const VkDescriptorSetLayoutCreateF
 }
 
 static inline void
-vn_encode_VkDescriptorSetLayoutCreateFlagBits(struct vn_cs *cs, const VkDescriptorSetLayoutCreateFlagBits *val)
+vn_encode_VkDescriptorSetLayoutCreateFlagBits(struct vn_cs_encoder *enc, const VkDescriptorSetLayoutCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -711,9 +711,9 @@ vn_sizeof_VkDeviceQueueCreateFlagBits(const VkDeviceQueueCreateFlagBits *val)
 }
 
 static inline void
-vn_encode_VkDeviceQueueCreateFlagBits(struct vn_cs *cs, const VkDeviceQueueCreateFlagBits *val)
+vn_encode_VkDeviceQueueCreateFlagBits(struct vn_cs_encoder *enc, const VkDeviceQueueCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -732,9 +732,9 @@ vn_sizeof_VkQueueFlagBits(const VkQueueFlagBits *val)
 }
 
 static inline void
-vn_encode_VkQueueFlagBits(struct vn_cs *cs, const VkQueueFlagBits *val)
+vn_encode_VkQueueFlagBits(struct vn_cs_encoder *enc, const VkQueueFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -753,9 +753,9 @@ vn_sizeof_VkMemoryPropertyFlagBits(const VkMemoryPropertyFlagBits *val)
 }
 
 static inline void
-vn_encode_VkMemoryPropertyFlagBits(struct vn_cs *cs, const VkMemoryPropertyFlagBits *val)
+vn_encode_VkMemoryPropertyFlagBits(struct vn_cs_encoder *enc, const VkMemoryPropertyFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -774,9 +774,9 @@ vn_sizeof_VkMemoryHeapFlagBits(const VkMemoryHeapFlagBits *val)
 }
 
 static inline void
-vn_encode_VkMemoryHeapFlagBits(struct vn_cs *cs, const VkMemoryHeapFlagBits *val)
+vn_encode_VkMemoryHeapFlagBits(struct vn_cs_encoder *enc, const VkMemoryHeapFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -795,9 +795,9 @@ vn_sizeof_VkAccessFlagBits(const VkAccessFlagBits *val)
 }
 
 static inline void
-vn_encode_VkAccessFlagBits(struct vn_cs *cs, const VkAccessFlagBits *val)
+vn_encode_VkAccessFlagBits(struct vn_cs_encoder *enc, const VkAccessFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -816,9 +816,9 @@ vn_sizeof_VkBufferUsageFlagBits(const VkBufferUsageFlagBits *val)
 }
 
 static inline void
-vn_encode_VkBufferUsageFlagBits(struct vn_cs *cs, const VkBufferUsageFlagBits *val)
+vn_encode_VkBufferUsageFlagBits(struct vn_cs_encoder *enc, const VkBufferUsageFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -837,9 +837,9 @@ vn_sizeof_VkBufferCreateFlagBits(const VkBufferCreateFlagBits *val)
 }
 
 static inline void
-vn_encode_VkBufferCreateFlagBits(struct vn_cs *cs, const VkBufferCreateFlagBits *val)
+vn_encode_VkBufferCreateFlagBits(struct vn_cs_encoder *enc, const VkBufferCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -858,9 +858,9 @@ vn_sizeof_VkShaderStageFlagBits(const VkShaderStageFlagBits *val)
 }
 
 static inline void
-vn_encode_VkShaderStageFlagBits(struct vn_cs *cs, const VkShaderStageFlagBits *val)
+vn_encode_VkShaderStageFlagBits(struct vn_cs_encoder *enc, const VkShaderStageFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -879,9 +879,9 @@ vn_sizeof_VkImageUsageFlagBits(const VkImageUsageFlagBits *val)
 }
 
 static inline void
-vn_encode_VkImageUsageFlagBits(struct vn_cs *cs, const VkImageUsageFlagBits *val)
+vn_encode_VkImageUsageFlagBits(struct vn_cs_encoder *enc, const VkImageUsageFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -900,9 +900,9 @@ vn_sizeof_VkImageCreateFlagBits(const VkImageCreateFlagBits *val)
 }
 
 static inline void
-vn_encode_VkImageCreateFlagBits(struct vn_cs *cs, const VkImageCreateFlagBits *val)
+vn_encode_VkImageCreateFlagBits(struct vn_cs_encoder *enc, const VkImageCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -921,9 +921,9 @@ vn_sizeof_VkImageViewCreateFlagBits(const VkImageViewCreateFlagBits *val)
 }
 
 static inline void
-vn_encode_VkImageViewCreateFlagBits(struct vn_cs *cs, const VkImageViewCreateFlagBits *val)
+vn_encode_VkImageViewCreateFlagBits(struct vn_cs_encoder *enc, const VkImageViewCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -942,9 +942,9 @@ vn_sizeof_VkPipelineCreateFlagBits(const VkPipelineCreateFlagBits *val)
 }
 
 static inline void
-vn_encode_VkPipelineCreateFlagBits(struct vn_cs *cs, const VkPipelineCreateFlagBits *val)
+vn_encode_VkPipelineCreateFlagBits(struct vn_cs_encoder *enc, const VkPipelineCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -963,9 +963,9 @@ vn_sizeof_VkColorComponentFlagBits(const VkColorComponentFlagBits *val)
 }
 
 static inline void
-vn_encode_VkColorComponentFlagBits(struct vn_cs *cs, const VkColorComponentFlagBits *val)
+vn_encode_VkColorComponentFlagBits(struct vn_cs_encoder *enc, const VkColorComponentFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -984,9 +984,9 @@ vn_sizeof_VkFenceCreateFlagBits(const VkFenceCreateFlagBits *val)
 }
 
 static inline void
-vn_encode_VkFenceCreateFlagBits(struct vn_cs *cs, const VkFenceCreateFlagBits *val)
+vn_encode_VkFenceCreateFlagBits(struct vn_cs_encoder *enc, const VkFenceCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1005,9 +1005,9 @@ vn_sizeof_VkFormatFeatureFlagBits(const VkFormatFeatureFlagBits *val)
 }
 
 static inline void
-vn_encode_VkFormatFeatureFlagBits(struct vn_cs *cs, const VkFormatFeatureFlagBits *val)
+vn_encode_VkFormatFeatureFlagBits(struct vn_cs_encoder *enc, const VkFormatFeatureFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1026,9 +1026,9 @@ vn_sizeof_VkQueryControlFlagBits(const VkQueryControlFlagBits *val)
 }
 
 static inline void
-vn_encode_VkQueryControlFlagBits(struct vn_cs *cs, const VkQueryControlFlagBits *val)
+vn_encode_VkQueryControlFlagBits(struct vn_cs_encoder *enc, const VkQueryControlFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1047,9 +1047,9 @@ vn_sizeof_VkQueryResultFlagBits(const VkQueryResultFlagBits *val)
 }
 
 static inline void
-vn_encode_VkQueryResultFlagBits(struct vn_cs *cs, const VkQueryResultFlagBits *val)
+vn_encode_VkQueryResultFlagBits(struct vn_cs_encoder *enc, const VkQueryResultFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1068,9 +1068,9 @@ vn_sizeof_VkCommandPoolCreateFlagBits(const VkCommandPoolCreateFlagBits *val)
 }
 
 static inline void
-vn_encode_VkCommandPoolCreateFlagBits(struct vn_cs *cs, const VkCommandPoolCreateFlagBits *val)
+vn_encode_VkCommandPoolCreateFlagBits(struct vn_cs_encoder *enc, const VkCommandPoolCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1089,9 +1089,9 @@ vn_sizeof_VkCommandPoolResetFlagBits(const VkCommandPoolResetFlagBits *val)
 }
 
 static inline void
-vn_encode_VkCommandPoolResetFlagBits(struct vn_cs *cs, const VkCommandPoolResetFlagBits *val)
+vn_encode_VkCommandPoolResetFlagBits(struct vn_cs_encoder *enc, const VkCommandPoolResetFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1110,9 +1110,9 @@ vn_sizeof_VkCommandBufferResetFlagBits(const VkCommandBufferResetFlagBits *val)
 }
 
 static inline void
-vn_encode_VkCommandBufferResetFlagBits(struct vn_cs *cs, const VkCommandBufferResetFlagBits *val)
+vn_encode_VkCommandBufferResetFlagBits(struct vn_cs_encoder *enc, const VkCommandBufferResetFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1131,9 +1131,9 @@ vn_sizeof_VkCommandBufferUsageFlagBits(const VkCommandBufferUsageFlagBits *val)
 }
 
 static inline void
-vn_encode_VkCommandBufferUsageFlagBits(struct vn_cs *cs, const VkCommandBufferUsageFlagBits *val)
+vn_encode_VkCommandBufferUsageFlagBits(struct vn_cs_encoder *enc, const VkCommandBufferUsageFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1152,9 +1152,9 @@ vn_sizeof_VkQueryPipelineStatisticFlagBits(const VkQueryPipelineStatisticFlagBit
 }
 
 static inline void
-vn_encode_VkQueryPipelineStatisticFlagBits(struct vn_cs *cs, const VkQueryPipelineStatisticFlagBits *val)
+vn_encode_VkQueryPipelineStatisticFlagBits(struct vn_cs_encoder *enc, const VkQueryPipelineStatisticFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1173,9 +1173,9 @@ vn_sizeof_VkImageAspectFlagBits(const VkImageAspectFlagBits *val)
 }
 
 static inline void
-vn_encode_VkImageAspectFlagBits(struct vn_cs *cs, const VkImageAspectFlagBits *val)
+vn_encode_VkImageAspectFlagBits(struct vn_cs_encoder *enc, const VkImageAspectFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1194,9 +1194,9 @@ vn_sizeof_VkSparseMemoryBindFlagBits(const VkSparseMemoryBindFlagBits *val)
 }
 
 static inline void
-vn_encode_VkSparseMemoryBindFlagBits(struct vn_cs *cs, const VkSparseMemoryBindFlagBits *val)
+vn_encode_VkSparseMemoryBindFlagBits(struct vn_cs_encoder *enc, const VkSparseMemoryBindFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1215,9 +1215,9 @@ vn_sizeof_VkSparseImageFormatFlagBits(const VkSparseImageFormatFlagBits *val)
 }
 
 static inline void
-vn_encode_VkSparseImageFormatFlagBits(struct vn_cs *cs, const VkSparseImageFormatFlagBits *val)
+vn_encode_VkSparseImageFormatFlagBits(struct vn_cs_encoder *enc, const VkSparseImageFormatFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1236,9 +1236,9 @@ vn_sizeof_VkSubpassDescriptionFlagBits(const VkSubpassDescriptionFlagBits *val)
 }
 
 static inline void
-vn_encode_VkSubpassDescriptionFlagBits(struct vn_cs *cs, const VkSubpassDescriptionFlagBits *val)
+vn_encode_VkSubpassDescriptionFlagBits(struct vn_cs_encoder *enc, const VkSubpassDescriptionFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1257,9 +1257,9 @@ vn_sizeof_VkPipelineStageFlagBits(const VkPipelineStageFlagBits *val)
 }
 
 static inline void
-vn_encode_VkPipelineStageFlagBits(struct vn_cs *cs, const VkPipelineStageFlagBits *val)
+vn_encode_VkPipelineStageFlagBits(struct vn_cs_encoder *enc, const VkPipelineStageFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1278,9 +1278,9 @@ vn_sizeof_VkSampleCountFlagBits(const VkSampleCountFlagBits *val)
 }
 
 static inline void
-vn_encode_VkSampleCountFlagBits(struct vn_cs *cs, const VkSampleCountFlagBits *val)
+vn_encode_VkSampleCountFlagBits(struct vn_cs_encoder *enc, const VkSampleCountFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1299,9 +1299,9 @@ vn_sizeof_VkAttachmentDescriptionFlagBits(const VkAttachmentDescriptionFlagBits 
 }
 
 static inline void
-vn_encode_VkAttachmentDescriptionFlagBits(struct vn_cs *cs, const VkAttachmentDescriptionFlagBits *val)
+vn_encode_VkAttachmentDescriptionFlagBits(struct vn_cs_encoder *enc, const VkAttachmentDescriptionFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1320,9 +1320,9 @@ vn_sizeof_VkStencilFaceFlagBits(const VkStencilFaceFlagBits *val)
 }
 
 static inline void
-vn_encode_VkStencilFaceFlagBits(struct vn_cs *cs, const VkStencilFaceFlagBits *val)
+vn_encode_VkStencilFaceFlagBits(struct vn_cs_encoder *enc, const VkStencilFaceFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1341,9 +1341,9 @@ vn_sizeof_VkCullModeFlagBits(const VkCullModeFlagBits *val)
 }
 
 static inline void
-vn_encode_VkCullModeFlagBits(struct vn_cs *cs, const VkCullModeFlagBits *val)
+vn_encode_VkCullModeFlagBits(struct vn_cs_encoder *enc, const VkCullModeFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1362,9 +1362,9 @@ vn_sizeof_VkDescriptorPoolCreateFlagBits(const VkDescriptorPoolCreateFlagBits *v
 }
 
 static inline void
-vn_encode_VkDescriptorPoolCreateFlagBits(struct vn_cs *cs, const VkDescriptorPoolCreateFlagBits *val)
+vn_encode_VkDescriptorPoolCreateFlagBits(struct vn_cs_encoder *enc, const VkDescriptorPoolCreateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1383,9 +1383,9 @@ vn_sizeof_VkDependencyFlagBits(const VkDependencyFlagBits *val)
 }
 
 static inline void
-vn_encode_VkDependencyFlagBits(struct vn_cs *cs, const VkDependencyFlagBits *val)
+vn_encode_VkDependencyFlagBits(struct vn_cs_encoder *enc, const VkDependencyFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1404,9 +1404,9 @@ vn_sizeof_VkSubgroupFeatureFlagBits(const VkSubgroupFeatureFlagBits *val)
 }
 
 static inline void
-vn_encode_VkSubgroupFeatureFlagBits(struct vn_cs *cs, const VkSubgroupFeatureFlagBits *val)
+vn_encode_VkSubgroupFeatureFlagBits(struct vn_cs_encoder *enc, const VkSubgroupFeatureFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1425,9 +1425,9 @@ vn_sizeof_VkSemaphoreWaitFlagBits(const VkSemaphoreWaitFlagBits *val)
 }
 
 static inline void
-vn_encode_VkSemaphoreWaitFlagBits(struct vn_cs *cs, const VkSemaphoreWaitFlagBits *val)
+vn_encode_VkSemaphoreWaitFlagBits(struct vn_cs_encoder *enc, const VkSemaphoreWaitFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1446,9 +1446,9 @@ vn_sizeof_VkPeerMemoryFeatureFlagBits(const VkPeerMemoryFeatureFlagBits *val)
 }
 
 static inline void
-vn_encode_VkPeerMemoryFeatureFlagBits(struct vn_cs *cs, const VkPeerMemoryFeatureFlagBits *val)
+vn_encode_VkPeerMemoryFeatureFlagBits(struct vn_cs_encoder *enc, const VkPeerMemoryFeatureFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1467,9 +1467,9 @@ vn_sizeof_VkMemoryAllocateFlagBits(const VkMemoryAllocateFlagBits *val)
 }
 
 static inline void
-vn_encode_VkMemoryAllocateFlagBits(struct vn_cs *cs, const VkMemoryAllocateFlagBits *val)
+vn_encode_VkMemoryAllocateFlagBits(struct vn_cs_encoder *enc, const VkMemoryAllocateFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1488,9 +1488,9 @@ vn_sizeof_VkExternalMemoryHandleTypeFlagBits(const VkExternalMemoryHandleTypeFla
 }
 
 static inline void
-vn_encode_VkExternalMemoryHandleTypeFlagBits(struct vn_cs *cs, const VkExternalMemoryHandleTypeFlagBits *val)
+vn_encode_VkExternalMemoryHandleTypeFlagBits(struct vn_cs_encoder *enc, const VkExternalMemoryHandleTypeFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1509,9 +1509,9 @@ vn_sizeof_VkExternalMemoryFeatureFlagBits(const VkExternalMemoryFeatureFlagBits 
 }
 
 static inline void
-vn_encode_VkExternalMemoryFeatureFlagBits(struct vn_cs *cs, const VkExternalMemoryFeatureFlagBits *val)
+vn_encode_VkExternalMemoryFeatureFlagBits(struct vn_cs_encoder *enc, const VkExternalMemoryFeatureFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1530,9 +1530,9 @@ vn_sizeof_VkExternalSemaphoreHandleTypeFlagBits(const VkExternalSemaphoreHandleT
 }
 
 static inline void
-vn_encode_VkExternalSemaphoreHandleTypeFlagBits(struct vn_cs *cs, const VkExternalSemaphoreHandleTypeFlagBits *val)
+vn_encode_VkExternalSemaphoreHandleTypeFlagBits(struct vn_cs_encoder *enc, const VkExternalSemaphoreHandleTypeFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1551,9 +1551,9 @@ vn_sizeof_VkExternalSemaphoreFeatureFlagBits(const VkExternalSemaphoreFeatureFla
 }
 
 static inline void
-vn_encode_VkExternalSemaphoreFeatureFlagBits(struct vn_cs *cs, const VkExternalSemaphoreFeatureFlagBits *val)
+vn_encode_VkExternalSemaphoreFeatureFlagBits(struct vn_cs_encoder *enc, const VkExternalSemaphoreFeatureFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1572,9 +1572,9 @@ vn_sizeof_VkSemaphoreImportFlagBits(const VkSemaphoreImportFlagBits *val)
 }
 
 static inline void
-vn_encode_VkSemaphoreImportFlagBits(struct vn_cs *cs, const VkSemaphoreImportFlagBits *val)
+vn_encode_VkSemaphoreImportFlagBits(struct vn_cs_encoder *enc, const VkSemaphoreImportFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1593,9 +1593,9 @@ vn_sizeof_VkExternalFenceHandleTypeFlagBits(const VkExternalFenceHandleTypeFlagB
 }
 
 static inline void
-vn_encode_VkExternalFenceHandleTypeFlagBits(struct vn_cs *cs, const VkExternalFenceHandleTypeFlagBits *val)
+vn_encode_VkExternalFenceHandleTypeFlagBits(struct vn_cs_encoder *enc, const VkExternalFenceHandleTypeFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1614,9 +1614,9 @@ vn_sizeof_VkExternalFenceFeatureFlagBits(const VkExternalFenceFeatureFlagBits *v
 }
 
 static inline void
-vn_encode_VkExternalFenceFeatureFlagBits(struct vn_cs *cs, const VkExternalFenceFeatureFlagBits *val)
+vn_encode_VkExternalFenceFeatureFlagBits(struct vn_cs_encoder *enc, const VkExternalFenceFeatureFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1635,9 +1635,9 @@ vn_sizeof_VkFenceImportFlagBits(const VkFenceImportFlagBits *val)
 }
 
 static inline void
-vn_encode_VkFenceImportFlagBits(struct vn_cs *cs, const VkFenceImportFlagBits *val)
+vn_encode_VkFenceImportFlagBits(struct vn_cs_encoder *enc, const VkFenceImportFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1656,9 +1656,9 @@ vn_sizeof_VkDescriptorBindingFlagBits(const VkDescriptorBindingFlagBits *val)
 }
 
 static inline void
-vn_encode_VkDescriptorBindingFlagBits(struct vn_cs *cs, const VkDescriptorBindingFlagBits *val)
+vn_encode_VkDescriptorBindingFlagBits(struct vn_cs_encoder *enc, const VkDescriptorBindingFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1677,9 +1677,9 @@ vn_sizeof_VkResolveModeFlagBits(const VkResolveModeFlagBits *val)
 }
 
 static inline void
-vn_encode_VkResolveModeFlagBits(struct vn_cs *cs, const VkResolveModeFlagBits *val)
+vn_encode_VkResolveModeFlagBits(struct vn_cs_encoder *enc, const VkResolveModeFlagBits *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1698,9 +1698,9 @@ vn_sizeof_VkAttachmentLoadOp(const VkAttachmentLoadOp *val)
 }
 
 static inline void
-vn_encode_VkAttachmentLoadOp(struct vn_cs *cs, const VkAttachmentLoadOp *val)
+vn_encode_VkAttachmentLoadOp(struct vn_cs_encoder *enc, const VkAttachmentLoadOp *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1719,9 +1719,9 @@ vn_sizeof_VkAttachmentStoreOp(const VkAttachmentStoreOp *val)
 }
 
 static inline void
-vn_encode_VkAttachmentStoreOp(struct vn_cs *cs, const VkAttachmentStoreOp *val)
+vn_encode_VkAttachmentStoreOp(struct vn_cs_encoder *enc, const VkAttachmentStoreOp *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1740,9 +1740,9 @@ vn_sizeof_VkBlendFactor(const VkBlendFactor *val)
 }
 
 static inline void
-vn_encode_VkBlendFactor(struct vn_cs *cs, const VkBlendFactor *val)
+vn_encode_VkBlendFactor(struct vn_cs_encoder *enc, const VkBlendFactor *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1761,9 +1761,9 @@ vn_sizeof_VkBlendOp(const VkBlendOp *val)
 }
 
 static inline void
-vn_encode_VkBlendOp(struct vn_cs *cs, const VkBlendOp *val)
+vn_encode_VkBlendOp(struct vn_cs_encoder *enc, const VkBlendOp *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1782,9 +1782,9 @@ vn_sizeof_VkBorderColor(const VkBorderColor *val)
 }
 
 static inline void
-vn_encode_VkBorderColor(struct vn_cs *cs, const VkBorderColor *val)
+vn_encode_VkBorderColor(struct vn_cs_encoder *enc, const VkBorderColor *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1803,9 +1803,9 @@ vn_sizeof_VkPipelineCacheHeaderVersion(const VkPipelineCacheHeaderVersion *val)
 }
 
 static inline void
-vn_encode_VkPipelineCacheHeaderVersion(struct vn_cs *cs, const VkPipelineCacheHeaderVersion *val)
+vn_encode_VkPipelineCacheHeaderVersion(struct vn_cs_encoder *enc, const VkPipelineCacheHeaderVersion *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1824,9 +1824,9 @@ vn_sizeof_VkComponentSwizzle(const VkComponentSwizzle *val)
 }
 
 static inline void
-vn_encode_VkComponentSwizzle(struct vn_cs *cs, const VkComponentSwizzle *val)
+vn_encode_VkComponentSwizzle(struct vn_cs_encoder *enc, const VkComponentSwizzle *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1845,9 +1845,9 @@ vn_sizeof_VkCommandBufferLevel(const VkCommandBufferLevel *val)
 }
 
 static inline void
-vn_encode_VkCommandBufferLevel(struct vn_cs *cs, const VkCommandBufferLevel *val)
+vn_encode_VkCommandBufferLevel(struct vn_cs_encoder *enc, const VkCommandBufferLevel *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1866,9 +1866,9 @@ vn_sizeof_VkCompareOp(const VkCompareOp *val)
 }
 
 static inline void
-vn_encode_VkCompareOp(struct vn_cs *cs, const VkCompareOp *val)
+vn_encode_VkCompareOp(struct vn_cs_encoder *enc, const VkCompareOp *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1887,9 +1887,9 @@ vn_sizeof_VkDescriptorType(const VkDescriptorType *val)
 }
 
 static inline void
-vn_encode_VkDescriptorType(struct vn_cs *cs, const VkDescriptorType *val)
+vn_encode_VkDescriptorType(struct vn_cs_encoder *enc, const VkDescriptorType *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1905,9 +1905,9 @@ vn_sizeof_VkDescriptorType_array(const VkDescriptorType *val, uint32_t count)
 }
 
 static inline void
-vn_encode_VkDescriptorType_array(struct vn_cs *cs, const VkDescriptorType *val, uint32_t count)
+vn_encode_VkDescriptorType_array(struct vn_cs_encoder *enc, const VkDescriptorType *val, uint32_t count)
 {
-    vn_encode_int32_t_array(cs, (const int32_t *)val, count);
+    vn_encode_int32_t_array(enc, (const int32_t *)val, count);
 }
 
 static inline void
@@ -1926,9 +1926,9 @@ vn_sizeof_VkDynamicState(const VkDynamicState *val)
 }
 
 static inline void
-vn_encode_VkDynamicState(struct vn_cs *cs, const VkDynamicState *val)
+vn_encode_VkDynamicState(struct vn_cs_encoder *enc, const VkDynamicState *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1944,9 +1944,9 @@ vn_sizeof_VkDynamicState_array(const VkDynamicState *val, uint32_t count)
 }
 
 static inline void
-vn_encode_VkDynamicState_array(struct vn_cs *cs, const VkDynamicState *val, uint32_t count)
+vn_encode_VkDynamicState_array(struct vn_cs_encoder *enc, const VkDynamicState *val, uint32_t count)
 {
-    vn_encode_int32_t_array(cs, (const int32_t *)val, count);
+    vn_encode_int32_t_array(enc, (const int32_t *)val, count);
 }
 
 static inline void
@@ -1965,9 +1965,9 @@ vn_sizeof_VkPolygonMode(const VkPolygonMode *val)
 }
 
 static inline void
-vn_encode_VkPolygonMode(struct vn_cs *cs, const VkPolygonMode *val)
+vn_encode_VkPolygonMode(struct vn_cs_encoder *enc, const VkPolygonMode *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -1986,9 +1986,9 @@ vn_sizeof_VkFormat(const VkFormat *val)
 }
 
 static inline void
-vn_encode_VkFormat(struct vn_cs *cs, const VkFormat *val)
+vn_encode_VkFormat(struct vn_cs_encoder *enc, const VkFormat *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2004,9 +2004,9 @@ vn_sizeof_VkFormat_array(const VkFormat *val, uint32_t count)
 }
 
 static inline void
-vn_encode_VkFormat_array(struct vn_cs *cs, const VkFormat *val, uint32_t count)
+vn_encode_VkFormat_array(struct vn_cs_encoder *enc, const VkFormat *val, uint32_t count)
 {
-    vn_encode_int32_t_array(cs, (const int32_t *)val, count);
+    vn_encode_int32_t_array(enc, (const int32_t *)val, count);
 }
 
 static inline void
@@ -2025,9 +2025,9 @@ vn_sizeof_VkFrontFace(const VkFrontFace *val)
 }
 
 static inline void
-vn_encode_VkFrontFace(struct vn_cs *cs, const VkFrontFace *val)
+vn_encode_VkFrontFace(struct vn_cs_encoder *enc, const VkFrontFace *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2046,9 +2046,9 @@ vn_sizeof_VkImageLayout(const VkImageLayout *val)
 }
 
 static inline void
-vn_encode_VkImageLayout(struct vn_cs *cs, const VkImageLayout *val)
+vn_encode_VkImageLayout(struct vn_cs_encoder *enc, const VkImageLayout *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2067,9 +2067,9 @@ vn_sizeof_VkImageTiling(const VkImageTiling *val)
 }
 
 static inline void
-vn_encode_VkImageTiling(struct vn_cs *cs, const VkImageTiling *val)
+vn_encode_VkImageTiling(struct vn_cs_encoder *enc, const VkImageTiling *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2088,9 +2088,9 @@ vn_sizeof_VkImageType(const VkImageType *val)
 }
 
 static inline void
-vn_encode_VkImageType(struct vn_cs *cs, const VkImageType *val)
+vn_encode_VkImageType(struct vn_cs_encoder *enc, const VkImageType *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2109,9 +2109,9 @@ vn_sizeof_VkImageViewType(const VkImageViewType *val)
 }
 
 static inline void
-vn_encode_VkImageViewType(struct vn_cs *cs, const VkImageViewType *val)
+vn_encode_VkImageViewType(struct vn_cs_encoder *enc, const VkImageViewType *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2130,9 +2130,9 @@ vn_sizeof_VkSharingMode(const VkSharingMode *val)
 }
 
 static inline void
-vn_encode_VkSharingMode(struct vn_cs *cs, const VkSharingMode *val)
+vn_encode_VkSharingMode(struct vn_cs_encoder *enc, const VkSharingMode *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2151,9 +2151,9 @@ vn_sizeof_VkIndexType(const VkIndexType *val)
 }
 
 static inline void
-vn_encode_VkIndexType(struct vn_cs *cs, const VkIndexType *val)
+vn_encode_VkIndexType(struct vn_cs_encoder *enc, const VkIndexType *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2169,9 +2169,9 @@ vn_sizeof_VkIndexType_array(const VkIndexType *val, uint32_t count)
 }
 
 static inline void
-vn_encode_VkIndexType_array(struct vn_cs *cs, const VkIndexType *val, uint32_t count)
+vn_encode_VkIndexType_array(struct vn_cs_encoder *enc, const VkIndexType *val, uint32_t count)
 {
-    vn_encode_int32_t_array(cs, (const int32_t *)val, count);
+    vn_encode_int32_t_array(enc, (const int32_t *)val, count);
 }
 
 static inline void
@@ -2190,9 +2190,9 @@ vn_sizeof_VkLogicOp(const VkLogicOp *val)
 }
 
 static inline void
-vn_encode_VkLogicOp(struct vn_cs *cs, const VkLogicOp *val)
+vn_encode_VkLogicOp(struct vn_cs_encoder *enc, const VkLogicOp *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2211,9 +2211,9 @@ vn_sizeof_VkPhysicalDeviceType(const VkPhysicalDeviceType *val)
 }
 
 static inline void
-vn_encode_VkPhysicalDeviceType(struct vn_cs *cs, const VkPhysicalDeviceType *val)
+vn_encode_VkPhysicalDeviceType(struct vn_cs_encoder *enc, const VkPhysicalDeviceType *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2232,9 +2232,9 @@ vn_sizeof_VkPipelineBindPoint(const VkPipelineBindPoint *val)
 }
 
 static inline void
-vn_encode_VkPipelineBindPoint(struct vn_cs *cs, const VkPipelineBindPoint *val)
+vn_encode_VkPipelineBindPoint(struct vn_cs_encoder *enc, const VkPipelineBindPoint *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2253,9 +2253,9 @@ vn_sizeof_VkPrimitiveTopology(const VkPrimitiveTopology *val)
 }
 
 static inline void
-vn_encode_VkPrimitiveTopology(struct vn_cs *cs, const VkPrimitiveTopology *val)
+vn_encode_VkPrimitiveTopology(struct vn_cs_encoder *enc, const VkPrimitiveTopology *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2274,9 +2274,9 @@ vn_sizeof_VkQueryType(const VkQueryType *val)
 }
 
 static inline void
-vn_encode_VkQueryType(struct vn_cs *cs, const VkQueryType *val)
+vn_encode_VkQueryType(struct vn_cs_encoder *enc, const VkQueryType *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2295,9 +2295,9 @@ vn_sizeof_VkSubpassContents(const VkSubpassContents *val)
 }
 
 static inline void
-vn_encode_VkSubpassContents(struct vn_cs *cs, const VkSubpassContents *val)
+vn_encode_VkSubpassContents(struct vn_cs_encoder *enc, const VkSubpassContents *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2316,9 +2316,9 @@ vn_sizeof_VkResult(const VkResult *val)
 }
 
 static inline void
-vn_encode_VkResult(struct vn_cs *cs, const VkResult *val)
+vn_encode_VkResult(struct vn_cs_encoder *enc, const VkResult *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2334,9 +2334,9 @@ vn_sizeof_VkResult_array(const VkResult *val, uint32_t count)
 }
 
 static inline void
-vn_encode_VkResult_array(struct vn_cs *cs, const VkResult *val, uint32_t count)
+vn_encode_VkResult_array(struct vn_cs_encoder *enc, const VkResult *val, uint32_t count)
 {
-    vn_encode_int32_t_array(cs, (const int32_t *)val, count);
+    vn_encode_int32_t_array(enc, (const int32_t *)val, count);
 }
 
 static inline void
@@ -2355,9 +2355,9 @@ vn_sizeof_VkStencilOp(const VkStencilOp *val)
 }
 
 static inline void
-vn_encode_VkStencilOp(struct vn_cs *cs, const VkStencilOp *val)
+vn_encode_VkStencilOp(struct vn_cs_encoder *enc, const VkStencilOp *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2376,9 +2376,9 @@ vn_sizeof_VkSystemAllocationScope(const VkSystemAllocationScope *val)
 }
 
 static inline void
-vn_encode_VkSystemAllocationScope(struct vn_cs *cs, const VkSystemAllocationScope *val)
+vn_encode_VkSystemAllocationScope(struct vn_cs_encoder *enc, const VkSystemAllocationScope *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2397,9 +2397,9 @@ vn_sizeof_VkInternalAllocationType(const VkInternalAllocationType *val)
 }
 
 static inline void
-vn_encode_VkInternalAllocationType(struct vn_cs *cs, const VkInternalAllocationType *val)
+vn_encode_VkInternalAllocationType(struct vn_cs_encoder *enc, const VkInternalAllocationType *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2418,9 +2418,9 @@ vn_sizeof_VkSamplerAddressMode(const VkSamplerAddressMode *val)
 }
 
 static inline void
-vn_encode_VkSamplerAddressMode(struct vn_cs *cs, const VkSamplerAddressMode *val)
+vn_encode_VkSamplerAddressMode(struct vn_cs_encoder *enc, const VkSamplerAddressMode *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2439,9 +2439,9 @@ vn_sizeof_VkFilter(const VkFilter *val)
 }
 
 static inline void
-vn_encode_VkFilter(struct vn_cs *cs, const VkFilter *val)
+vn_encode_VkFilter(struct vn_cs_encoder *enc, const VkFilter *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2460,9 +2460,9 @@ vn_sizeof_VkSamplerMipmapMode(const VkSamplerMipmapMode *val)
 }
 
 static inline void
-vn_encode_VkSamplerMipmapMode(struct vn_cs *cs, const VkSamplerMipmapMode *val)
+vn_encode_VkSamplerMipmapMode(struct vn_cs_encoder *enc, const VkSamplerMipmapMode *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2481,9 +2481,9 @@ vn_sizeof_VkVertexInputRate(const VkVertexInputRate *val)
 }
 
 static inline void
-vn_encode_VkVertexInputRate(struct vn_cs *cs, const VkVertexInputRate *val)
+vn_encode_VkVertexInputRate(struct vn_cs_encoder *enc, const VkVertexInputRate *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2502,9 +2502,9 @@ vn_sizeof_VkObjectType(const VkObjectType *val)
 }
 
 static inline void
-vn_encode_VkObjectType(struct vn_cs *cs, const VkObjectType *val)
+vn_encode_VkObjectType(struct vn_cs_encoder *enc, const VkObjectType *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2523,9 +2523,9 @@ vn_sizeof_VkDescriptorUpdateTemplateType(const VkDescriptorUpdateTemplateType *v
 }
 
 static inline void
-vn_encode_VkDescriptorUpdateTemplateType(struct vn_cs *cs, const VkDescriptorUpdateTemplateType *val)
+vn_encode_VkDescriptorUpdateTemplateType(struct vn_cs_encoder *enc, const VkDescriptorUpdateTemplateType *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2544,9 +2544,9 @@ vn_sizeof_VkPointClippingBehavior(const VkPointClippingBehavior *val)
 }
 
 static inline void
-vn_encode_VkPointClippingBehavior(struct vn_cs *cs, const VkPointClippingBehavior *val)
+vn_encode_VkPointClippingBehavior(struct vn_cs_encoder *enc, const VkPointClippingBehavior *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2565,9 +2565,9 @@ vn_sizeof_VkSemaphoreType(const VkSemaphoreType *val)
 }
 
 static inline void
-vn_encode_VkSemaphoreType(struct vn_cs *cs, const VkSemaphoreType *val)
+vn_encode_VkSemaphoreType(struct vn_cs_encoder *enc, const VkSemaphoreType *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2586,9 +2586,9 @@ vn_sizeof_VkTessellationDomainOrigin(const VkTessellationDomainOrigin *val)
 }
 
 static inline void
-vn_encode_VkTessellationDomainOrigin(struct vn_cs *cs, const VkTessellationDomainOrigin *val)
+vn_encode_VkTessellationDomainOrigin(struct vn_cs_encoder *enc, const VkTessellationDomainOrigin *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2607,9 +2607,9 @@ vn_sizeof_VkSamplerYcbcrModelConversion(const VkSamplerYcbcrModelConversion *val
 }
 
 static inline void
-vn_encode_VkSamplerYcbcrModelConversion(struct vn_cs *cs, const VkSamplerYcbcrModelConversion *val)
+vn_encode_VkSamplerYcbcrModelConversion(struct vn_cs_encoder *enc, const VkSamplerYcbcrModelConversion *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2628,9 +2628,9 @@ vn_sizeof_VkSamplerYcbcrRange(const VkSamplerYcbcrRange *val)
 }
 
 static inline void
-vn_encode_VkSamplerYcbcrRange(struct vn_cs *cs, const VkSamplerYcbcrRange *val)
+vn_encode_VkSamplerYcbcrRange(struct vn_cs_encoder *enc, const VkSamplerYcbcrRange *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2649,9 +2649,9 @@ vn_sizeof_VkChromaLocation(const VkChromaLocation *val)
 }
 
 static inline void
-vn_encode_VkChromaLocation(struct vn_cs *cs, const VkChromaLocation *val)
+vn_encode_VkChromaLocation(struct vn_cs_encoder *enc, const VkChromaLocation *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2670,9 +2670,9 @@ vn_sizeof_VkSamplerReductionMode(const VkSamplerReductionMode *val)
 }
 
 static inline void
-vn_encode_VkSamplerReductionMode(struct vn_cs *cs, const VkSamplerReductionMode *val)
+vn_encode_VkSamplerReductionMode(struct vn_cs_encoder *enc, const VkSamplerReductionMode *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2691,9 +2691,9 @@ vn_sizeof_VkShaderFloatControlsIndependence(const VkShaderFloatControlsIndepende
 }
 
 static inline void
-vn_encode_VkShaderFloatControlsIndependence(struct vn_cs *cs, const VkShaderFloatControlsIndependence *val)
+vn_encode_VkShaderFloatControlsIndependence(struct vn_cs_encoder *enc, const VkShaderFloatControlsIndependence *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2712,9 +2712,9 @@ vn_sizeof_VkVendorId(const VkVendorId *val)
 }
 
 static inline void
-vn_encode_VkVendorId(struct vn_cs *cs, const VkVendorId *val)
+vn_encode_VkVendorId(struct vn_cs_encoder *enc, const VkVendorId *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2733,9 +2733,9 @@ vn_sizeof_VkDriverId(const VkDriverId *val)
 }
 
 static inline void
-vn_encode_VkDriverId(struct vn_cs *cs, const VkDriverId *val)
+vn_encode_VkDriverId(struct vn_cs_encoder *enc, const VkDriverId *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2754,9 +2754,9 @@ vn_sizeof_VkCommandFlagBitsEXT(const VkCommandFlagBitsEXT *val)
 }
 
 static inline void
-vn_encode_VkCommandFlagBitsEXT(struct vn_cs *cs, const VkCommandFlagBitsEXT *val)
+vn_encode_VkCommandFlagBitsEXT(struct vn_cs_encoder *enc, const VkCommandFlagBitsEXT *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void
@@ -2775,9 +2775,9 @@ vn_sizeof_VkCommandTypeEXT(const VkCommandTypeEXT *val)
 }
 
 static inline void
-vn_encode_VkCommandTypeEXT(struct vn_cs *cs, const VkCommandTypeEXT *val)
+vn_encode_VkCommandTypeEXT(struct vn_cs_encoder *enc, const VkCommandTypeEXT *val)
 {
-    vn_encode_int32_t(cs, (const int32_t *)val);
+    vn_encode_int32_t(enc, (const int32_t *)val);
 }
 
 static inline void

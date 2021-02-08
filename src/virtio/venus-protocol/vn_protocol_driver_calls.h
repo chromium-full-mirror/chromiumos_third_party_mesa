@@ -20,10 +20,10 @@ static inline VkResult vn_call_vkCreateInstance(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateInstance(instance_cs, cmd_flags, pCreateInfo, pAllocator, pInstance);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateInstance(enc, cmd_flags, pCreateInfo, pAllocator, pInstance);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -49,10 +49,10 @@ static inline void vn_async_vkCreateInstance(struct vn_instance *vn_instance, co
     const size_t cmd_size = vn_sizeof_vkCreateInstance(pCreateInfo, pAllocator, pInstance);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateInstance(cs, cmd_flags, pCreateInfo, pAllocator, pInstance);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateInstance(enc, cmd_flags, pCreateInfo, pAllocator, pInstance);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -68,10 +68,10 @@ static inline void vn_call_vkDestroyInstance(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyInstance(instance_cs, cmd_flags, instance, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyInstance(enc, cmd_flags, instance, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -94,10 +94,10 @@ static inline void vn_async_vkDestroyInstance(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkDestroyInstance(instance, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyInstance(cs, cmd_flags, instance, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyInstance(enc, cmd_flags, instance, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -113,10 +113,10 @@ static inline VkResult vn_call_vkEnumeratePhysicalDevices(struct vn_instance *vn
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkEnumeratePhysicalDevices(instance_cs, cmd_flags, instance, pPhysicalDeviceCount, pPhysicalDevices);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkEnumeratePhysicalDevices(enc, cmd_flags, instance, pPhysicalDeviceCount, pPhysicalDevices);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -142,10 +142,10 @@ static inline void vn_async_vkEnumeratePhysicalDevices(struct vn_instance *vn_in
     const size_t cmd_size = vn_sizeof_vkEnumeratePhysicalDevices(instance, pPhysicalDeviceCount, pPhysicalDevices);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkEnumeratePhysicalDevices(cs, cmd_flags, instance, pPhysicalDeviceCount, pPhysicalDevices);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkEnumeratePhysicalDevices(enc, cmd_flags, instance, pPhysicalDeviceCount, pPhysicalDevices);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -161,10 +161,10 @@ static inline void vn_call_vkGetPhysicalDeviceProperties(struct vn_instance *vn_
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceProperties(instance_cs, cmd_flags, physicalDevice, pProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceProperties(enc, cmd_flags, physicalDevice, pProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -187,10 +187,10 @@ static inline void vn_async_vkGetPhysicalDeviceProperties(struct vn_instance *vn
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceProperties(physicalDevice, pProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceProperties(cs, cmd_flags, physicalDevice, pProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceProperties(enc, cmd_flags, physicalDevice, pProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -206,10 +206,10 @@ static inline void vn_call_vkGetPhysicalDeviceQueueFamilyProperties(struct vn_in
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceQueueFamilyProperties(instance_cs, cmd_flags, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceQueueFamilyProperties(enc, cmd_flags, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -232,10 +232,10 @@ static inline void vn_async_vkGetPhysicalDeviceQueueFamilyProperties(struct vn_i
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceQueueFamilyProperties(cs, cmd_flags, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceQueueFamilyProperties(enc, cmd_flags, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -251,10 +251,10 @@ static inline void vn_call_vkGetPhysicalDeviceMemoryProperties(struct vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceMemoryProperties(instance_cs, cmd_flags, physicalDevice, pMemoryProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceMemoryProperties(enc, cmd_flags, physicalDevice, pMemoryProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -277,10 +277,10 @@ static inline void vn_async_vkGetPhysicalDeviceMemoryProperties(struct vn_instan
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceMemoryProperties(physicalDevice, pMemoryProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceMemoryProperties(cs, cmd_flags, physicalDevice, pMemoryProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceMemoryProperties(enc, cmd_flags, physicalDevice, pMemoryProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -296,10 +296,10 @@ static inline void vn_call_vkGetPhysicalDeviceFeatures(struct vn_instance *vn_in
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceFeatures(instance_cs, cmd_flags, physicalDevice, pFeatures);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceFeatures(enc, cmd_flags, physicalDevice, pFeatures);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -322,10 +322,10 @@ static inline void vn_async_vkGetPhysicalDeviceFeatures(struct vn_instance *vn_i
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceFeatures(physicalDevice, pFeatures);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceFeatures(cs, cmd_flags, physicalDevice, pFeatures);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceFeatures(enc, cmd_flags, physicalDevice, pFeatures);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -341,10 +341,10 @@ static inline void vn_call_vkGetPhysicalDeviceFormatProperties(struct vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceFormatProperties(instance_cs, cmd_flags, physicalDevice, format, pFormatProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceFormatProperties(enc, cmd_flags, physicalDevice, format, pFormatProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -367,10 +367,10 @@ static inline void vn_async_vkGetPhysicalDeviceFormatProperties(struct vn_instan
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceFormatProperties(physicalDevice, format, pFormatProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceFormatProperties(cs, cmd_flags, physicalDevice, format, pFormatProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceFormatProperties(enc, cmd_flags, physicalDevice, format, pFormatProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -386,10 +386,10 @@ static inline VkResult vn_call_vkGetPhysicalDeviceImageFormatProperties(struct v
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceImageFormatProperties(instance_cs, cmd_flags, physicalDevice, format, type, tiling, usage, flags, pImageFormatProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceImageFormatProperties(enc, cmd_flags, physicalDevice, format, type, tiling, usage, flags, pImageFormatProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -415,10 +415,10 @@ static inline void vn_async_vkGetPhysicalDeviceImageFormatProperties(struct vn_i
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceImageFormatProperties(physicalDevice, format, type, tiling, usage, flags, pImageFormatProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceImageFormatProperties(cs, cmd_flags, physicalDevice, format, type, tiling, usage, flags, pImageFormatProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceImageFormatProperties(enc, cmd_flags, physicalDevice, format, type, tiling, usage, flags, pImageFormatProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -434,10 +434,10 @@ static inline VkResult vn_call_vkCreateDevice(struct vn_instance *vn_instance, V
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateDevice(instance_cs, cmd_flags, physicalDevice, pCreateInfo, pAllocator, pDevice);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateDevice(enc, cmd_flags, physicalDevice, pCreateInfo, pAllocator, pDevice);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -463,10 +463,10 @@ static inline void vn_async_vkCreateDevice(struct vn_instance *vn_instance, VkPh
     const size_t cmd_size = vn_sizeof_vkCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateDevice(cs, cmd_flags, physicalDevice, pCreateInfo, pAllocator, pDevice);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateDevice(enc, cmd_flags, physicalDevice, pCreateInfo, pAllocator, pDevice);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -482,10 +482,10 @@ static inline void vn_call_vkDestroyDevice(struct vn_instance *vn_instance, VkDe
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyDevice(instance_cs, cmd_flags, device, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyDevice(enc, cmd_flags, device, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -508,10 +508,10 @@ static inline void vn_async_vkDestroyDevice(struct vn_instance *vn_instance, VkD
     const size_t cmd_size = vn_sizeof_vkDestroyDevice(device, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyDevice(cs, cmd_flags, device, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyDevice(enc, cmd_flags, device, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -527,10 +527,10 @@ static inline VkResult vn_call_vkEnumerateInstanceVersion(struct vn_instance *vn
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkEnumerateInstanceVersion(instance_cs, cmd_flags, pApiVersion);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkEnumerateInstanceVersion(enc, cmd_flags, pApiVersion);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -556,10 +556,10 @@ static inline void vn_async_vkEnumerateInstanceVersion(struct vn_instance *vn_in
     const size_t cmd_size = vn_sizeof_vkEnumerateInstanceVersion(pApiVersion);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkEnumerateInstanceVersion(cs, cmd_flags, pApiVersion);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkEnumerateInstanceVersion(enc, cmd_flags, pApiVersion);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -575,10 +575,10 @@ static inline VkResult vn_call_vkEnumerateInstanceLayerProperties(struct vn_inst
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkEnumerateInstanceLayerProperties(instance_cs, cmd_flags, pPropertyCount, pProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkEnumerateInstanceLayerProperties(enc, cmd_flags, pPropertyCount, pProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -604,10 +604,10 @@ static inline void vn_async_vkEnumerateInstanceLayerProperties(struct vn_instanc
     const size_t cmd_size = vn_sizeof_vkEnumerateInstanceLayerProperties(pPropertyCount, pProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkEnumerateInstanceLayerProperties(cs, cmd_flags, pPropertyCount, pProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkEnumerateInstanceLayerProperties(enc, cmd_flags, pPropertyCount, pProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -623,10 +623,10 @@ static inline VkResult vn_call_vkEnumerateInstanceExtensionProperties(struct vn_
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkEnumerateInstanceExtensionProperties(instance_cs, cmd_flags, pLayerName, pPropertyCount, pProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkEnumerateInstanceExtensionProperties(enc, cmd_flags, pLayerName, pPropertyCount, pProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -652,10 +652,10 @@ static inline void vn_async_vkEnumerateInstanceExtensionProperties(struct vn_ins
     const size_t cmd_size = vn_sizeof_vkEnumerateInstanceExtensionProperties(pLayerName, pPropertyCount, pProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkEnumerateInstanceExtensionProperties(cs, cmd_flags, pLayerName, pPropertyCount, pProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkEnumerateInstanceExtensionProperties(enc, cmd_flags, pLayerName, pPropertyCount, pProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -671,10 +671,10 @@ static inline VkResult vn_call_vkEnumerateDeviceLayerProperties(struct vn_instan
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkEnumerateDeviceLayerProperties(instance_cs, cmd_flags, physicalDevice, pPropertyCount, pProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkEnumerateDeviceLayerProperties(enc, cmd_flags, physicalDevice, pPropertyCount, pProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -700,10 +700,10 @@ static inline void vn_async_vkEnumerateDeviceLayerProperties(struct vn_instance 
     const size_t cmd_size = vn_sizeof_vkEnumerateDeviceLayerProperties(physicalDevice, pPropertyCount, pProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkEnumerateDeviceLayerProperties(cs, cmd_flags, physicalDevice, pPropertyCount, pProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkEnumerateDeviceLayerProperties(enc, cmd_flags, physicalDevice, pPropertyCount, pProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -719,10 +719,10 @@ static inline VkResult vn_call_vkEnumerateDeviceExtensionProperties(struct vn_in
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkEnumerateDeviceExtensionProperties(instance_cs, cmd_flags, physicalDevice, pLayerName, pPropertyCount, pProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkEnumerateDeviceExtensionProperties(enc, cmd_flags, physicalDevice, pLayerName, pPropertyCount, pProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -748,10 +748,10 @@ static inline void vn_async_vkEnumerateDeviceExtensionProperties(struct vn_insta
     const size_t cmd_size = vn_sizeof_vkEnumerateDeviceExtensionProperties(physicalDevice, pLayerName, pPropertyCount, pProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkEnumerateDeviceExtensionProperties(cs, cmd_flags, physicalDevice, pLayerName, pPropertyCount, pProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkEnumerateDeviceExtensionProperties(enc, cmd_flags, physicalDevice, pLayerName, pPropertyCount, pProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -767,10 +767,10 @@ static inline void vn_call_vkGetDeviceQueue(struct vn_instance *vn_instance, VkD
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetDeviceQueue(instance_cs, cmd_flags, device, queueFamilyIndex, queueIndex, pQueue);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetDeviceQueue(enc, cmd_flags, device, queueFamilyIndex, queueIndex, pQueue);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -793,10 +793,10 @@ static inline void vn_async_vkGetDeviceQueue(struct vn_instance *vn_instance, Vk
     const size_t cmd_size = vn_sizeof_vkGetDeviceQueue(device, queueFamilyIndex, queueIndex, pQueue);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetDeviceQueue(cs, cmd_flags, device, queueFamilyIndex, queueIndex, pQueue);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetDeviceQueue(enc, cmd_flags, device, queueFamilyIndex, queueIndex, pQueue);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -812,10 +812,10 @@ static inline VkResult vn_call_vkQueueSubmit(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkQueueSubmit(instance_cs, cmd_flags, queue, submitCount, pSubmits, fence);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkQueueSubmit(enc, cmd_flags, queue, submitCount, pSubmits, fence);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -841,10 +841,10 @@ static inline void vn_async_vkQueueSubmit(struct vn_instance *vn_instance, VkQue
     const size_t cmd_size = vn_sizeof_vkQueueSubmit(queue, submitCount, pSubmits, fence);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkQueueSubmit(cs, cmd_flags, queue, submitCount, pSubmits, fence);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkQueueSubmit(enc, cmd_flags, queue, submitCount, pSubmits, fence);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -860,10 +860,10 @@ static inline VkResult vn_call_vkQueueWaitIdle(struct vn_instance *vn_instance, 
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkQueueWaitIdle(instance_cs, cmd_flags, queue);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkQueueWaitIdle(enc, cmd_flags, queue);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -889,10 +889,10 @@ static inline void vn_async_vkQueueWaitIdle(struct vn_instance *vn_instance, VkQ
     const size_t cmd_size = vn_sizeof_vkQueueWaitIdle(queue);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkQueueWaitIdle(cs, cmd_flags, queue);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkQueueWaitIdle(enc, cmd_flags, queue);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -908,10 +908,10 @@ static inline VkResult vn_call_vkDeviceWaitIdle(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDeviceWaitIdle(instance_cs, cmd_flags, device);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDeviceWaitIdle(enc, cmd_flags, device);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -937,10 +937,10 @@ static inline void vn_async_vkDeviceWaitIdle(struct vn_instance *vn_instance, Vk
     const size_t cmd_size = vn_sizeof_vkDeviceWaitIdle(device);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDeviceWaitIdle(cs, cmd_flags, device);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDeviceWaitIdle(enc, cmd_flags, device);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -956,10 +956,10 @@ static inline VkResult vn_call_vkAllocateMemory(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkAllocateMemory(instance_cs, cmd_flags, device, pAllocateInfo, pAllocator, pMemory);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkAllocateMemory(enc, cmd_flags, device, pAllocateInfo, pAllocator, pMemory);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -985,10 +985,10 @@ static inline void vn_async_vkAllocateMemory(struct vn_instance *vn_instance, Vk
     const size_t cmd_size = vn_sizeof_vkAllocateMemory(device, pAllocateInfo, pAllocator, pMemory);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkAllocateMemory(cs, cmd_flags, device, pAllocateInfo, pAllocator, pMemory);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkAllocateMemory(enc, cmd_flags, device, pAllocateInfo, pAllocator, pMemory);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1004,10 +1004,10 @@ static inline void vn_call_vkFreeMemory(struct vn_instance *vn_instance, VkDevic
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkFreeMemory(instance_cs, cmd_flags, device, memory, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkFreeMemory(enc, cmd_flags, device, memory, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1030,10 +1030,10 @@ static inline void vn_async_vkFreeMemory(struct vn_instance *vn_instance, VkDevi
     const size_t cmd_size = vn_sizeof_vkFreeMemory(device, memory, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkFreeMemory(cs, cmd_flags, device, memory, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkFreeMemory(enc, cmd_flags, device, memory, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1049,10 +1049,10 @@ static inline void vn_call_vkUnmapMemory(struct vn_instance *vn_instance, VkDevi
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkUnmapMemory(instance_cs, cmd_flags, device, memory);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkUnmapMemory(enc, cmd_flags, device, memory);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1075,10 +1075,10 @@ static inline void vn_async_vkUnmapMemory(struct vn_instance *vn_instance, VkDev
     const size_t cmd_size = vn_sizeof_vkUnmapMemory(device, memory);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkUnmapMemory(cs, cmd_flags, device, memory);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkUnmapMemory(enc, cmd_flags, device, memory);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1094,10 +1094,10 @@ static inline VkResult vn_call_vkFlushMappedMemoryRanges(struct vn_instance *vn_
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkFlushMappedMemoryRanges(instance_cs, cmd_flags, device, memoryRangeCount, pMemoryRanges);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkFlushMappedMemoryRanges(enc, cmd_flags, device, memoryRangeCount, pMemoryRanges);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1123,10 +1123,10 @@ static inline void vn_async_vkFlushMappedMemoryRanges(struct vn_instance *vn_ins
     const size_t cmd_size = vn_sizeof_vkFlushMappedMemoryRanges(device, memoryRangeCount, pMemoryRanges);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkFlushMappedMemoryRanges(cs, cmd_flags, device, memoryRangeCount, pMemoryRanges);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkFlushMappedMemoryRanges(enc, cmd_flags, device, memoryRangeCount, pMemoryRanges);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1142,10 +1142,10 @@ static inline VkResult vn_call_vkInvalidateMappedMemoryRanges(struct vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkInvalidateMappedMemoryRanges(instance_cs, cmd_flags, device, memoryRangeCount, pMemoryRanges);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkInvalidateMappedMemoryRanges(enc, cmd_flags, device, memoryRangeCount, pMemoryRanges);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1171,10 +1171,10 @@ static inline void vn_async_vkInvalidateMappedMemoryRanges(struct vn_instance *v
     const size_t cmd_size = vn_sizeof_vkInvalidateMappedMemoryRanges(device, memoryRangeCount, pMemoryRanges);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkInvalidateMappedMemoryRanges(cs, cmd_flags, device, memoryRangeCount, pMemoryRanges);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkInvalidateMappedMemoryRanges(enc, cmd_flags, device, memoryRangeCount, pMemoryRanges);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1190,10 +1190,10 @@ static inline void vn_call_vkGetDeviceMemoryCommitment(struct vn_instance *vn_in
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetDeviceMemoryCommitment(instance_cs, cmd_flags, device, memory, pCommittedMemoryInBytes);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetDeviceMemoryCommitment(enc, cmd_flags, device, memory, pCommittedMemoryInBytes);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1216,10 +1216,10 @@ static inline void vn_async_vkGetDeviceMemoryCommitment(struct vn_instance *vn_i
     const size_t cmd_size = vn_sizeof_vkGetDeviceMemoryCommitment(device, memory, pCommittedMemoryInBytes);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetDeviceMemoryCommitment(cs, cmd_flags, device, memory, pCommittedMemoryInBytes);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetDeviceMemoryCommitment(enc, cmd_flags, device, memory, pCommittedMemoryInBytes);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1235,10 +1235,10 @@ static inline void vn_call_vkGetBufferMemoryRequirements(struct vn_instance *vn_
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetBufferMemoryRequirements(instance_cs, cmd_flags, device, buffer, pMemoryRequirements);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetBufferMemoryRequirements(enc, cmd_flags, device, buffer, pMemoryRequirements);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1261,10 +1261,10 @@ static inline void vn_async_vkGetBufferMemoryRequirements(struct vn_instance *vn
     const size_t cmd_size = vn_sizeof_vkGetBufferMemoryRequirements(device, buffer, pMemoryRequirements);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetBufferMemoryRequirements(cs, cmd_flags, device, buffer, pMemoryRequirements);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetBufferMemoryRequirements(enc, cmd_flags, device, buffer, pMemoryRequirements);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1280,10 +1280,10 @@ static inline VkResult vn_call_vkBindBufferMemory(struct vn_instance *vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkBindBufferMemory(instance_cs, cmd_flags, device, buffer, memory, memoryOffset);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkBindBufferMemory(enc, cmd_flags, device, buffer, memory, memoryOffset);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1309,10 +1309,10 @@ static inline void vn_async_vkBindBufferMemory(struct vn_instance *vn_instance, 
     const size_t cmd_size = vn_sizeof_vkBindBufferMemory(device, buffer, memory, memoryOffset);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkBindBufferMemory(cs, cmd_flags, device, buffer, memory, memoryOffset);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkBindBufferMemory(enc, cmd_flags, device, buffer, memory, memoryOffset);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1328,10 +1328,10 @@ static inline void vn_call_vkGetImageMemoryRequirements(struct vn_instance *vn_i
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetImageMemoryRequirements(instance_cs, cmd_flags, device, image, pMemoryRequirements);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetImageMemoryRequirements(enc, cmd_flags, device, image, pMemoryRequirements);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1354,10 +1354,10 @@ static inline void vn_async_vkGetImageMemoryRequirements(struct vn_instance *vn_
     const size_t cmd_size = vn_sizeof_vkGetImageMemoryRequirements(device, image, pMemoryRequirements);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetImageMemoryRequirements(cs, cmd_flags, device, image, pMemoryRequirements);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetImageMemoryRequirements(enc, cmd_flags, device, image, pMemoryRequirements);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1373,10 +1373,10 @@ static inline VkResult vn_call_vkBindImageMemory(struct vn_instance *vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkBindImageMemory(instance_cs, cmd_flags, device, image, memory, memoryOffset);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkBindImageMemory(enc, cmd_flags, device, image, memory, memoryOffset);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1402,10 +1402,10 @@ static inline void vn_async_vkBindImageMemory(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkBindImageMemory(device, image, memory, memoryOffset);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkBindImageMemory(cs, cmd_flags, device, image, memory, memoryOffset);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkBindImageMemory(enc, cmd_flags, device, image, memory, memoryOffset);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1421,10 +1421,10 @@ static inline void vn_call_vkGetImageSparseMemoryRequirements(struct vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetImageSparseMemoryRequirements(instance_cs, cmd_flags, device, image, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetImageSparseMemoryRequirements(enc, cmd_flags, device, image, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1447,10 +1447,10 @@ static inline void vn_async_vkGetImageSparseMemoryRequirements(struct vn_instanc
     const size_t cmd_size = vn_sizeof_vkGetImageSparseMemoryRequirements(device, image, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetImageSparseMemoryRequirements(cs, cmd_flags, device, image, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetImageSparseMemoryRequirements(enc, cmd_flags, device, image, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1466,10 +1466,10 @@ static inline void vn_call_vkGetPhysicalDeviceSparseImageFormatProperties(struct
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties(instance_cs, cmd_flags, physicalDevice, format, type, samples, usage, tiling, pPropertyCount, pProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties(enc, cmd_flags, physicalDevice, format, type, samples, usage, tiling, pPropertyCount, pProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1492,10 +1492,10 @@ static inline void vn_async_vkGetPhysicalDeviceSparseImageFormatProperties(struc
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceSparseImageFormatProperties(physicalDevice, format, type, samples, usage, tiling, pPropertyCount, pProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties(cs, cmd_flags, physicalDevice, format, type, samples, usage, tiling, pPropertyCount, pProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties(enc, cmd_flags, physicalDevice, format, type, samples, usage, tiling, pPropertyCount, pProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1511,10 +1511,10 @@ static inline VkResult vn_call_vkQueueBindSparse(struct vn_instance *vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkQueueBindSparse(instance_cs, cmd_flags, queue, bindInfoCount, pBindInfo, fence);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkQueueBindSparse(enc, cmd_flags, queue, bindInfoCount, pBindInfo, fence);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1540,10 +1540,10 @@ static inline void vn_async_vkQueueBindSparse(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkQueueBindSparse(queue, bindInfoCount, pBindInfo, fence);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkQueueBindSparse(cs, cmd_flags, queue, bindInfoCount, pBindInfo, fence);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkQueueBindSparse(enc, cmd_flags, queue, bindInfoCount, pBindInfo, fence);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1559,10 +1559,10 @@ static inline VkResult vn_call_vkCreateFence(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateFence(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pFence);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateFence(enc, cmd_flags, device, pCreateInfo, pAllocator, pFence);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1588,10 +1588,10 @@ static inline void vn_async_vkCreateFence(struct vn_instance *vn_instance, VkDev
     const size_t cmd_size = vn_sizeof_vkCreateFence(device, pCreateInfo, pAllocator, pFence);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateFence(cs, cmd_flags, device, pCreateInfo, pAllocator, pFence);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateFence(enc, cmd_flags, device, pCreateInfo, pAllocator, pFence);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1607,10 +1607,10 @@ static inline void vn_call_vkDestroyFence(struct vn_instance *vn_instance, VkDev
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyFence(instance_cs, cmd_flags, device, fence, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyFence(enc, cmd_flags, device, fence, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1633,10 +1633,10 @@ static inline void vn_async_vkDestroyFence(struct vn_instance *vn_instance, VkDe
     const size_t cmd_size = vn_sizeof_vkDestroyFence(device, fence, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyFence(cs, cmd_flags, device, fence, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyFence(enc, cmd_flags, device, fence, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1652,10 +1652,10 @@ static inline VkResult vn_call_vkResetFences(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkResetFences(instance_cs, cmd_flags, device, fenceCount, pFences);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkResetFences(enc, cmd_flags, device, fenceCount, pFences);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1681,10 +1681,10 @@ static inline void vn_async_vkResetFences(struct vn_instance *vn_instance, VkDev
     const size_t cmd_size = vn_sizeof_vkResetFences(device, fenceCount, pFences);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkResetFences(cs, cmd_flags, device, fenceCount, pFences);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkResetFences(enc, cmd_flags, device, fenceCount, pFences);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1700,10 +1700,10 @@ static inline VkResult vn_call_vkGetFenceStatus(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetFenceStatus(instance_cs, cmd_flags, device, fence);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetFenceStatus(enc, cmd_flags, device, fence);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1729,10 +1729,10 @@ static inline void vn_async_vkGetFenceStatus(struct vn_instance *vn_instance, Vk
     const size_t cmd_size = vn_sizeof_vkGetFenceStatus(device, fence);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetFenceStatus(cs, cmd_flags, device, fence);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetFenceStatus(enc, cmd_flags, device, fence);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1748,10 +1748,10 @@ static inline VkResult vn_call_vkWaitForFences(struct vn_instance *vn_instance, 
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkWaitForFences(instance_cs, cmd_flags, device, fenceCount, pFences, waitAll, timeout);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkWaitForFences(enc, cmd_flags, device, fenceCount, pFences, waitAll, timeout);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1777,10 +1777,10 @@ static inline void vn_async_vkWaitForFences(struct vn_instance *vn_instance, VkD
     const size_t cmd_size = vn_sizeof_vkWaitForFences(device, fenceCount, pFences, waitAll, timeout);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkWaitForFences(cs, cmd_flags, device, fenceCount, pFences, waitAll, timeout);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkWaitForFences(enc, cmd_flags, device, fenceCount, pFences, waitAll, timeout);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1796,10 +1796,10 @@ static inline VkResult vn_call_vkCreateSemaphore(struct vn_instance *vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateSemaphore(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pSemaphore);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateSemaphore(enc, cmd_flags, device, pCreateInfo, pAllocator, pSemaphore);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1825,10 +1825,10 @@ static inline void vn_async_vkCreateSemaphore(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkCreateSemaphore(device, pCreateInfo, pAllocator, pSemaphore);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateSemaphore(cs, cmd_flags, device, pCreateInfo, pAllocator, pSemaphore);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateSemaphore(enc, cmd_flags, device, pCreateInfo, pAllocator, pSemaphore);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1844,10 +1844,10 @@ static inline void vn_call_vkDestroySemaphore(struct vn_instance *vn_instance, V
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroySemaphore(instance_cs, cmd_flags, device, semaphore, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroySemaphore(enc, cmd_flags, device, semaphore, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1870,10 +1870,10 @@ static inline void vn_async_vkDestroySemaphore(struct vn_instance *vn_instance, 
     const size_t cmd_size = vn_sizeof_vkDestroySemaphore(device, semaphore, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroySemaphore(cs, cmd_flags, device, semaphore, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroySemaphore(enc, cmd_flags, device, semaphore, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1889,10 +1889,10 @@ static inline VkResult vn_call_vkCreateEvent(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateEvent(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pEvent);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateEvent(enc, cmd_flags, device, pCreateInfo, pAllocator, pEvent);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1918,10 +1918,10 @@ static inline void vn_async_vkCreateEvent(struct vn_instance *vn_instance, VkDev
     const size_t cmd_size = vn_sizeof_vkCreateEvent(device, pCreateInfo, pAllocator, pEvent);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateEvent(cs, cmd_flags, device, pCreateInfo, pAllocator, pEvent);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateEvent(enc, cmd_flags, device, pCreateInfo, pAllocator, pEvent);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1937,10 +1937,10 @@ static inline void vn_call_vkDestroyEvent(struct vn_instance *vn_instance, VkDev
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyEvent(instance_cs, cmd_flags, device, event, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyEvent(enc, cmd_flags, device, event, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -1963,10 +1963,10 @@ static inline void vn_async_vkDestroyEvent(struct vn_instance *vn_instance, VkDe
     const size_t cmd_size = vn_sizeof_vkDestroyEvent(device, event, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyEvent(cs, cmd_flags, device, event, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyEvent(enc, cmd_flags, device, event, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -1982,10 +1982,10 @@ static inline VkResult vn_call_vkGetEventStatus(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetEventStatus(instance_cs, cmd_flags, device, event);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetEventStatus(enc, cmd_flags, device, event);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2011,10 +2011,10 @@ static inline void vn_async_vkGetEventStatus(struct vn_instance *vn_instance, Vk
     const size_t cmd_size = vn_sizeof_vkGetEventStatus(device, event);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetEventStatus(cs, cmd_flags, device, event);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetEventStatus(enc, cmd_flags, device, event);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2030,10 +2030,10 @@ static inline VkResult vn_call_vkSetEvent(struct vn_instance *vn_instance, VkDev
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkSetEvent(instance_cs, cmd_flags, device, event);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkSetEvent(enc, cmd_flags, device, event);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2059,10 +2059,10 @@ static inline void vn_async_vkSetEvent(struct vn_instance *vn_instance, VkDevice
     const size_t cmd_size = vn_sizeof_vkSetEvent(device, event);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkSetEvent(cs, cmd_flags, device, event);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkSetEvent(enc, cmd_flags, device, event);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2078,10 +2078,10 @@ static inline VkResult vn_call_vkResetEvent(struct vn_instance *vn_instance, VkD
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkResetEvent(instance_cs, cmd_flags, device, event);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkResetEvent(enc, cmd_flags, device, event);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2107,10 +2107,10 @@ static inline void vn_async_vkResetEvent(struct vn_instance *vn_instance, VkDevi
     const size_t cmd_size = vn_sizeof_vkResetEvent(device, event);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkResetEvent(cs, cmd_flags, device, event);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkResetEvent(enc, cmd_flags, device, event);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2126,10 +2126,10 @@ static inline VkResult vn_call_vkCreateQueryPool(struct vn_instance *vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateQueryPool(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pQueryPool);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateQueryPool(enc, cmd_flags, device, pCreateInfo, pAllocator, pQueryPool);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2155,10 +2155,10 @@ static inline void vn_async_vkCreateQueryPool(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkCreateQueryPool(device, pCreateInfo, pAllocator, pQueryPool);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateQueryPool(cs, cmd_flags, device, pCreateInfo, pAllocator, pQueryPool);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateQueryPool(enc, cmd_flags, device, pCreateInfo, pAllocator, pQueryPool);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2174,10 +2174,10 @@ static inline void vn_call_vkDestroyQueryPool(struct vn_instance *vn_instance, V
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyQueryPool(instance_cs, cmd_flags, device, queryPool, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyQueryPool(enc, cmd_flags, device, queryPool, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2200,10 +2200,10 @@ static inline void vn_async_vkDestroyQueryPool(struct vn_instance *vn_instance, 
     const size_t cmd_size = vn_sizeof_vkDestroyQueryPool(device, queryPool, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyQueryPool(cs, cmd_flags, device, queryPool, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyQueryPool(enc, cmd_flags, device, queryPool, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2219,10 +2219,10 @@ static inline VkResult vn_call_vkGetQueryPoolResults(struct vn_instance *vn_inst
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetQueryPoolResults(instance_cs, cmd_flags, device, queryPool, firstQuery, queryCount, dataSize, pData, stride, flags);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetQueryPoolResults(enc, cmd_flags, device, queryPool, firstQuery, queryCount, dataSize, pData, stride, flags);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2248,10 +2248,10 @@ static inline void vn_async_vkGetQueryPoolResults(struct vn_instance *vn_instanc
     const size_t cmd_size = vn_sizeof_vkGetQueryPoolResults(device, queryPool, firstQuery, queryCount, dataSize, pData, stride, flags);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetQueryPoolResults(cs, cmd_flags, device, queryPool, firstQuery, queryCount, dataSize, pData, stride, flags);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetQueryPoolResults(enc, cmd_flags, device, queryPool, firstQuery, queryCount, dataSize, pData, stride, flags);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2267,10 +2267,10 @@ static inline void vn_call_vkResetQueryPool(struct vn_instance *vn_instance, VkD
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkResetQueryPool(instance_cs, cmd_flags, device, queryPool, firstQuery, queryCount);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkResetQueryPool(enc, cmd_flags, device, queryPool, firstQuery, queryCount);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2293,10 +2293,10 @@ static inline void vn_async_vkResetQueryPool(struct vn_instance *vn_instance, Vk
     const size_t cmd_size = vn_sizeof_vkResetQueryPool(device, queryPool, firstQuery, queryCount);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkResetQueryPool(cs, cmd_flags, device, queryPool, firstQuery, queryCount);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkResetQueryPool(enc, cmd_flags, device, queryPool, firstQuery, queryCount);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2312,10 +2312,10 @@ static inline VkResult vn_call_vkCreateBuffer(struct vn_instance *vn_instance, V
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateBuffer(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pBuffer);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateBuffer(enc, cmd_flags, device, pCreateInfo, pAllocator, pBuffer);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2341,10 +2341,10 @@ static inline void vn_async_vkCreateBuffer(struct vn_instance *vn_instance, VkDe
     const size_t cmd_size = vn_sizeof_vkCreateBuffer(device, pCreateInfo, pAllocator, pBuffer);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateBuffer(cs, cmd_flags, device, pCreateInfo, pAllocator, pBuffer);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateBuffer(enc, cmd_flags, device, pCreateInfo, pAllocator, pBuffer);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2360,10 +2360,10 @@ static inline void vn_call_vkDestroyBuffer(struct vn_instance *vn_instance, VkDe
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyBuffer(instance_cs, cmd_flags, device, buffer, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyBuffer(enc, cmd_flags, device, buffer, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2386,10 +2386,10 @@ static inline void vn_async_vkDestroyBuffer(struct vn_instance *vn_instance, VkD
     const size_t cmd_size = vn_sizeof_vkDestroyBuffer(device, buffer, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyBuffer(cs, cmd_flags, device, buffer, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyBuffer(enc, cmd_flags, device, buffer, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2405,10 +2405,10 @@ static inline VkResult vn_call_vkCreateBufferView(struct vn_instance *vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateBufferView(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pView);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateBufferView(enc, cmd_flags, device, pCreateInfo, pAllocator, pView);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2434,10 +2434,10 @@ static inline void vn_async_vkCreateBufferView(struct vn_instance *vn_instance, 
     const size_t cmd_size = vn_sizeof_vkCreateBufferView(device, pCreateInfo, pAllocator, pView);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateBufferView(cs, cmd_flags, device, pCreateInfo, pAllocator, pView);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateBufferView(enc, cmd_flags, device, pCreateInfo, pAllocator, pView);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2453,10 +2453,10 @@ static inline void vn_call_vkDestroyBufferView(struct vn_instance *vn_instance, 
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyBufferView(instance_cs, cmd_flags, device, bufferView, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyBufferView(enc, cmd_flags, device, bufferView, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2479,10 +2479,10 @@ static inline void vn_async_vkDestroyBufferView(struct vn_instance *vn_instance,
     const size_t cmd_size = vn_sizeof_vkDestroyBufferView(device, bufferView, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyBufferView(cs, cmd_flags, device, bufferView, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyBufferView(enc, cmd_flags, device, bufferView, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2498,10 +2498,10 @@ static inline VkResult vn_call_vkCreateImage(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateImage(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pImage);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateImage(enc, cmd_flags, device, pCreateInfo, pAllocator, pImage);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2527,10 +2527,10 @@ static inline void vn_async_vkCreateImage(struct vn_instance *vn_instance, VkDev
     const size_t cmd_size = vn_sizeof_vkCreateImage(device, pCreateInfo, pAllocator, pImage);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateImage(cs, cmd_flags, device, pCreateInfo, pAllocator, pImage);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateImage(enc, cmd_flags, device, pCreateInfo, pAllocator, pImage);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2546,10 +2546,10 @@ static inline void vn_call_vkDestroyImage(struct vn_instance *vn_instance, VkDev
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyImage(instance_cs, cmd_flags, device, image, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyImage(enc, cmd_flags, device, image, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2572,10 +2572,10 @@ static inline void vn_async_vkDestroyImage(struct vn_instance *vn_instance, VkDe
     const size_t cmd_size = vn_sizeof_vkDestroyImage(device, image, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyImage(cs, cmd_flags, device, image, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyImage(enc, cmd_flags, device, image, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2591,10 +2591,10 @@ static inline void vn_call_vkGetImageSubresourceLayout(struct vn_instance *vn_in
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetImageSubresourceLayout(instance_cs, cmd_flags, device, image, pSubresource, pLayout);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetImageSubresourceLayout(enc, cmd_flags, device, image, pSubresource, pLayout);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2617,10 +2617,10 @@ static inline void vn_async_vkGetImageSubresourceLayout(struct vn_instance *vn_i
     const size_t cmd_size = vn_sizeof_vkGetImageSubresourceLayout(device, image, pSubresource, pLayout);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetImageSubresourceLayout(cs, cmd_flags, device, image, pSubresource, pLayout);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetImageSubresourceLayout(enc, cmd_flags, device, image, pSubresource, pLayout);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2636,10 +2636,10 @@ static inline VkResult vn_call_vkCreateImageView(struct vn_instance *vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateImageView(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pView);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateImageView(enc, cmd_flags, device, pCreateInfo, pAllocator, pView);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2665,10 +2665,10 @@ static inline void vn_async_vkCreateImageView(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkCreateImageView(device, pCreateInfo, pAllocator, pView);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateImageView(cs, cmd_flags, device, pCreateInfo, pAllocator, pView);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateImageView(enc, cmd_flags, device, pCreateInfo, pAllocator, pView);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2684,10 +2684,10 @@ static inline void vn_call_vkDestroyImageView(struct vn_instance *vn_instance, V
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyImageView(instance_cs, cmd_flags, device, imageView, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyImageView(enc, cmd_flags, device, imageView, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2710,10 +2710,10 @@ static inline void vn_async_vkDestroyImageView(struct vn_instance *vn_instance, 
     const size_t cmd_size = vn_sizeof_vkDestroyImageView(device, imageView, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyImageView(cs, cmd_flags, device, imageView, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyImageView(enc, cmd_flags, device, imageView, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2729,10 +2729,10 @@ static inline VkResult vn_call_vkCreateShaderModule(struct vn_instance *vn_insta
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateShaderModule(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pShaderModule);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateShaderModule(enc, cmd_flags, device, pCreateInfo, pAllocator, pShaderModule);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2758,10 +2758,10 @@ static inline void vn_async_vkCreateShaderModule(struct vn_instance *vn_instance
     const size_t cmd_size = vn_sizeof_vkCreateShaderModule(device, pCreateInfo, pAllocator, pShaderModule);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateShaderModule(cs, cmd_flags, device, pCreateInfo, pAllocator, pShaderModule);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateShaderModule(enc, cmd_flags, device, pCreateInfo, pAllocator, pShaderModule);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2777,10 +2777,10 @@ static inline void vn_call_vkDestroyShaderModule(struct vn_instance *vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyShaderModule(instance_cs, cmd_flags, device, shaderModule, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyShaderModule(enc, cmd_flags, device, shaderModule, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2803,10 +2803,10 @@ static inline void vn_async_vkDestroyShaderModule(struct vn_instance *vn_instanc
     const size_t cmd_size = vn_sizeof_vkDestroyShaderModule(device, shaderModule, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyShaderModule(cs, cmd_flags, device, shaderModule, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyShaderModule(enc, cmd_flags, device, shaderModule, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2822,10 +2822,10 @@ static inline VkResult vn_call_vkCreatePipelineCache(struct vn_instance *vn_inst
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreatePipelineCache(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pPipelineCache);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreatePipelineCache(enc, cmd_flags, device, pCreateInfo, pAllocator, pPipelineCache);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2851,10 +2851,10 @@ static inline void vn_async_vkCreatePipelineCache(struct vn_instance *vn_instanc
     const size_t cmd_size = vn_sizeof_vkCreatePipelineCache(device, pCreateInfo, pAllocator, pPipelineCache);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreatePipelineCache(cs, cmd_flags, device, pCreateInfo, pAllocator, pPipelineCache);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreatePipelineCache(enc, cmd_flags, device, pCreateInfo, pAllocator, pPipelineCache);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2870,10 +2870,10 @@ static inline void vn_call_vkDestroyPipelineCache(struct vn_instance *vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyPipelineCache(instance_cs, cmd_flags, device, pipelineCache, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyPipelineCache(enc, cmd_flags, device, pipelineCache, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2896,10 +2896,10 @@ static inline void vn_async_vkDestroyPipelineCache(struct vn_instance *vn_instan
     const size_t cmd_size = vn_sizeof_vkDestroyPipelineCache(device, pipelineCache, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyPipelineCache(cs, cmd_flags, device, pipelineCache, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyPipelineCache(enc, cmd_flags, device, pipelineCache, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2915,10 +2915,10 @@ static inline VkResult vn_call_vkGetPipelineCacheData(struct vn_instance *vn_ins
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPipelineCacheData(instance_cs, cmd_flags, device, pipelineCache, pDataSize, pData);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPipelineCacheData(enc, cmd_flags, device, pipelineCache, pDataSize, pData);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2944,10 +2944,10 @@ static inline void vn_async_vkGetPipelineCacheData(struct vn_instance *vn_instan
     const size_t cmd_size = vn_sizeof_vkGetPipelineCacheData(device, pipelineCache, pDataSize, pData);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPipelineCacheData(cs, cmd_flags, device, pipelineCache, pDataSize, pData);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPipelineCacheData(enc, cmd_flags, device, pipelineCache, pDataSize, pData);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -2963,10 +2963,10 @@ static inline VkResult vn_call_vkMergePipelineCaches(struct vn_instance *vn_inst
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkMergePipelineCaches(instance_cs, cmd_flags, device, dstCache, srcCacheCount, pSrcCaches);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkMergePipelineCaches(enc, cmd_flags, device, dstCache, srcCacheCount, pSrcCaches);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -2992,10 +2992,10 @@ static inline void vn_async_vkMergePipelineCaches(struct vn_instance *vn_instanc
     const size_t cmd_size = vn_sizeof_vkMergePipelineCaches(device, dstCache, srcCacheCount, pSrcCaches);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkMergePipelineCaches(cs, cmd_flags, device, dstCache, srcCacheCount, pSrcCaches);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkMergePipelineCaches(enc, cmd_flags, device, dstCache, srcCacheCount, pSrcCaches);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3011,10 +3011,10 @@ static inline VkResult vn_call_vkCreateGraphicsPipelines(struct vn_instance *vn_
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateGraphicsPipelines(instance_cs, cmd_flags, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateGraphicsPipelines(enc, cmd_flags, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3040,9 +3040,9 @@ static inline void vn_async_vkCreateGraphicsPipelines(struct vn_instance *vn_ins
     const size_t cmd_size = vn_sizeof_vkCreateGraphicsPipelines(device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateGraphicsPipelines(cs, cmd_flags, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateGraphicsPipelines(enc, cmd_flags, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
 
     bool throttle = false;
     uint64_t throttle_sync_val;
@@ -3055,7 +3055,7 @@ static inline void vn_async_vkCreateGraphicsPipelines(struct vn_instance *vn_ins
                 vn_instance->cs_reply.bo, &throttle_sync_val);
     }
 
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 
@@ -3074,10 +3074,10 @@ static inline VkResult vn_call_vkCreateComputePipelines(struct vn_instance *vn_i
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateComputePipelines(instance_cs, cmd_flags, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateComputePipelines(enc, cmd_flags, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3103,9 +3103,9 @@ static inline void vn_async_vkCreateComputePipelines(struct vn_instance *vn_inst
     const size_t cmd_size = vn_sizeof_vkCreateComputePipelines(device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateComputePipelines(cs, cmd_flags, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateComputePipelines(enc, cmd_flags, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
 
     bool throttle = false;
     uint64_t throttle_sync_val;
@@ -3118,7 +3118,7 @@ static inline void vn_async_vkCreateComputePipelines(struct vn_instance *vn_inst
                 vn_instance->cs_reply.bo, &throttle_sync_val);
     }
 
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 
@@ -3137,10 +3137,10 @@ static inline void vn_call_vkDestroyPipeline(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyPipeline(instance_cs, cmd_flags, device, pipeline, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyPipeline(enc, cmd_flags, device, pipeline, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3163,10 +3163,10 @@ static inline void vn_async_vkDestroyPipeline(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkDestroyPipeline(device, pipeline, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyPipeline(cs, cmd_flags, device, pipeline, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyPipeline(enc, cmd_flags, device, pipeline, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3182,10 +3182,10 @@ static inline VkResult vn_call_vkCreatePipelineLayout(struct vn_instance *vn_ins
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreatePipelineLayout(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pPipelineLayout);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreatePipelineLayout(enc, cmd_flags, device, pCreateInfo, pAllocator, pPipelineLayout);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3211,10 +3211,10 @@ static inline void vn_async_vkCreatePipelineLayout(struct vn_instance *vn_instan
     const size_t cmd_size = vn_sizeof_vkCreatePipelineLayout(device, pCreateInfo, pAllocator, pPipelineLayout);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreatePipelineLayout(cs, cmd_flags, device, pCreateInfo, pAllocator, pPipelineLayout);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreatePipelineLayout(enc, cmd_flags, device, pCreateInfo, pAllocator, pPipelineLayout);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3230,10 +3230,10 @@ static inline void vn_call_vkDestroyPipelineLayout(struct vn_instance *vn_instan
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyPipelineLayout(instance_cs, cmd_flags, device, pipelineLayout, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyPipelineLayout(enc, cmd_flags, device, pipelineLayout, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3256,10 +3256,10 @@ static inline void vn_async_vkDestroyPipelineLayout(struct vn_instance *vn_insta
     const size_t cmd_size = vn_sizeof_vkDestroyPipelineLayout(device, pipelineLayout, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyPipelineLayout(cs, cmd_flags, device, pipelineLayout, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyPipelineLayout(enc, cmd_flags, device, pipelineLayout, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3275,10 +3275,10 @@ static inline VkResult vn_call_vkCreateSampler(struct vn_instance *vn_instance, 
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateSampler(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pSampler);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateSampler(enc, cmd_flags, device, pCreateInfo, pAllocator, pSampler);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3304,10 +3304,10 @@ static inline void vn_async_vkCreateSampler(struct vn_instance *vn_instance, VkD
     const size_t cmd_size = vn_sizeof_vkCreateSampler(device, pCreateInfo, pAllocator, pSampler);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateSampler(cs, cmd_flags, device, pCreateInfo, pAllocator, pSampler);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateSampler(enc, cmd_flags, device, pCreateInfo, pAllocator, pSampler);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3323,10 +3323,10 @@ static inline void vn_call_vkDestroySampler(struct vn_instance *vn_instance, VkD
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroySampler(instance_cs, cmd_flags, device, sampler, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroySampler(enc, cmd_flags, device, sampler, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3349,10 +3349,10 @@ static inline void vn_async_vkDestroySampler(struct vn_instance *vn_instance, Vk
     const size_t cmd_size = vn_sizeof_vkDestroySampler(device, sampler, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroySampler(cs, cmd_flags, device, sampler, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroySampler(enc, cmd_flags, device, sampler, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3368,10 +3368,10 @@ static inline VkResult vn_call_vkCreateDescriptorSetLayout(struct vn_instance *v
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateDescriptorSetLayout(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pSetLayout);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateDescriptorSetLayout(enc, cmd_flags, device, pCreateInfo, pAllocator, pSetLayout);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3397,10 +3397,10 @@ static inline void vn_async_vkCreateDescriptorSetLayout(struct vn_instance *vn_i
     const size_t cmd_size = vn_sizeof_vkCreateDescriptorSetLayout(device, pCreateInfo, pAllocator, pSetLayout);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateDescriptorSetLayout(cs, cmd_flags, device, pCreateInfo, pAllocator, pSetLayout);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateDescriptorSetLayout(enc, cmd_flags, device, pCreateInfo, pAllocator, pSetLayout);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3416,10 +3416,10 @@ static inline void vn_call_vkDestroyDescriptorSetLayout(struct vn_instance *vn_i
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyDescriptorSetLayout(instance_cs, cmd_flags, device, descriptorSetLayout, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyDescriptorSetLayout(enc, cmd_flags, device, descriptorSetLayout, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3442,10 +3442,10 @@ static inline void vn_async_vkDestroyDescriptorSetLayout(struct vn_instance *vn_
     const size_t cmd_size = vn_sizeof_vkDestroyDescriptorSetLayout(device, descriptorSetLayout, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyDescriptorSetLayout(cs, cmd_flags, device, descriptorSetLayout, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyDescriptorSetLayout(enc, cmd_flags, device, descriptorSetLayout, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3461,10 +3461,10 @@ static inline VkResult vn_call_vkCreateDescriptorPool(struct vn_instance *vn_ins
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateDescriptorPool(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pDescriptorPool);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateDescriptorPool(enc, cmd_flags, device, pCreateInfo, pAllocator, pDescriptorPool);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3490,10 +3490,10 @@ static inline void vn_async_vkCreateDescriptorPool(struct vn_instance *vn_instan
     const size_t cmd_size = vn_sizeof_vkCreateDescriptorPool(device, pCreateInfo, pAllocator, pDescriptorPool);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateDescriptorPool(cs, cmd_flags, device, pCreateInfo, pAllocator, pDescriptorPool);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateDescriptorPool(enc, cmd_flags, device, pCreateInfo, pAllocator, pDescriptorPool);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3509,10 +3509,10 @@ static inline void vn_call_vkDestroyDescriptorPool(struct vn_instance *vn_instan
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyDescriptorPool(instance_cs, cmd_flags, device, descriptorPool, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyDescriptorPool(enc, cmd_flags, device, descriptorPool, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3535,10 +3535,10 @@ static inline void vn_async_vkDestroyDescriptorPool(struct vn_instance *vn_insta
     const size_t cmd_size = vn_sizeof_vkDestroyDescriptorPool(device, descriptorPool, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyDescriptorPool(cs, cmd_flags, device, descriptorPool, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyDescriptorPool(enc, cmd_flags, device, descriptorPool, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3554,10 +3554,10 @@ static inline VkResult vn_call_vkResetDescriptorPool(struct vn_instance *vn_inst
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkResetDescriptorPool(instance_cs, cmd_flags, device, descriptorPool, flags);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkResetDescriptorPool(enc, cmd_flags, device, descriptorPool, flags);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3583,10 +3583,10 @@ static inline void vn_async_vkResetDescriptorPool(struct vn_instance *vn_instanc
     const size_t cmd_size = vn_sizeof_vkResetDescriptorPool(device, descriptorPool, flags);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkResetDescriptorPool(cs, cmd_flags, device, descriptorPool, flags);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkResetDescriptorPool(enc, cmd_flags, device, descriptorPool, flags);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3602,10 +3602,10 @@ static inline VkResult vn_call_vkAllocateDescriptorSets(struct vn_instance *vn_i
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkAllocateDescriptorSets(instance_cs, cmd_flags, device, pAllocateInfo, pDescriptorSets);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkAllocateDescriptorSets(enc, cmd_flags, device, pAllocateInfo, pDescriptorSets);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3631,10 +3631,10 @@ static inline void vn_async_vkAllocateDescriptorSets(struct vn_instance *vn_inst
     const size_t cmd_size = vn_sizeof_vkAllocateDescriptorSets(device, pAllocateInfo, pDescriptorSets);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkAllocateDescriptorSets(cs, cmd_flags, device, pAllocateInfo, pDescriptorSets);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkAllocateDescriptorSets(enc, cmd_flags, device, pAllocateInfo, pDescriptorSets);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3650,10 +3650,10 @@ static inline VkResult vn_call_vkFreeDescriptorSets(struct vn_instance *vn_insta
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkFreeDescriptorSets(instance_cs, cmd_flags, device, descriptorPool, descriptorSetCount, pDescriptorSets);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkFreeDescriptorSets(enc, cmd_flags, device, descriptorPool, descriptorSetCount, pDescriptorSets);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3679,10 +3679,10 @@ static inline void vn_async_vkFreeDescriptorSets(struct vn_instance *vn_instance
     const size_t cmd_size = vn_sizeof_vkFreeDescriptorSets(device, descriptorPool, descriptorSetCount, pDescriptorSets);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkFreeDescriptorSets(cs, cmd_flags, device, descriptorPool, descriptorSetCount, pDescriptorSets);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkFreeDescriptorSets(enc, cmd_flags, device, descriptorPool, descriptorSetCount, pDescriptorSets);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3698,10 +3698,10 @@ static inline void vn_call_vkUpdateDescriptorSets(struct vn_instance *vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkUpdateDescriptorSets(instance_cs, cmd_flags, device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkUpdateDescriptorSets(enc, cmd_flags, device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3724,10 +3724,10 @@ static inline void vn_async_vkUpdateDescriptorSets(struct vn_instance *vn_instan
     const size_t cmd_size = vn_sizeof_vkUpdateDescriptorSets(device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkUpdateDescriptorSets(cs, cmd_flags, device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkUpdateDescriptorSets(enc, cmd_flags, device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3743,10 +3743,10 @@ static inline VkResult vn_call_vkCreateFramebuffer(struct vn_instance *vn_instan
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateFramebuffer(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pFramebuffer);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateFramebuffer(enc, cmd_flags, device, pCreateInfo, pAllocator, pFramebuffer);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3772,10 +3772,10 @@ static inline void vn_async_vkCreateFramebuffer(struct vn_instance *vn_instance,
     const size_t cmd_size = vn_sizeof_vkCreateFramebuffer(device, pCreateInfo, pAllocator, pFramebuffer);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateFramebuffer(cs, cmd_flags, device, pCreateInfo, pAllocator, pFramebuffer);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateFramebuffer(enc, cmd_flags, device, pCreateInfo, pAllocator, pFramebuffer);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3791,10 +3791,10 @@ static inline void vn_call_vkDestroyFramebuffer(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyFramebuffer(instance_cs, cmd_flags, device, framebuffer, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyFramebuffer(enc, cmd_flags, device, framebuffer, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3817,10 +3817,10 @@ static inline void vn_async_vkDestroyFramebuffer(struct vn_instance *vn_instance
     const size_t cmd_size = vn_sizeof_vkDestroyFramebuffer(device, framebuffer, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyFramebuffer(cs, cmd_flags, device, framebuffer, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyFramebuffer(enc, cmd_flags, device, framebuffer, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3836,10 +3836,10 @@ static inline VkResult vn_call_vkCreateRenderPass(struct vn_instance *vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateRenderPass(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pRenderPass);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateRenderPass(enc, cmd_flags, device, pCreateInfo, pAllocator, pRenderPass);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3865,10 +3865,10 @@ static inline void vn_async_vkCreateRenderPass(struct vn_instance *vn_instance, 
     const size_t cmd_size = vn_sizeof_vkCreateRenderPass(device, pCreateInfo, pAllocator, pRenderPass);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateRenderPass(cs, cmd_flags, device, pCreateInfo, pAllocator, pRenderPass);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateRenderPass(enc, cmd_flags, device, pCreateInfo, pAllocator, pRenderPass);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3884,10 +3884,10 @@ static inline void vn_call_vkDestroyRenderPass(struct vn_instance *vn_instance, 
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyRenderPass(instance_cs, cmd_flags, device, renderPass, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyRenderPass(enc, cmd_flags, device, renderPass, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3910,10 +3910,10 @@ static inline void vn_async_vkDestroyRenderPass(struct vn_instance *vn_instance,
     const size_t cmd_size = vn_sizeof_vkDestroyRenderPass(device, renderPass, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyRenderPass(cs, cmd_flags, device, renderPass, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyRenderPass(enc, cmd_flags, device, renderPass, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3929,10 +3929,10 @@ static inline void vn_call_vkGetRenderAreaGranularity(struct vn_instance *vn_ins
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetRenderAreaGranularity(instance_cs, cmd_flags, device, renderPass, pGranularity);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetRenderAreaGranularity(enc, cmd_flags, device, renderPass, pGranularity);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -3955,10 +3955,10 @@ static inline void vn_async_vkGetRenderAreaGranularity(struct vn_instance *vn_in
     const size_t cmd_size = vn_sizeof_vkGetRenderAreaGranularity(device, renderPass, pGranularity);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetRenderAreaGranularity(cs, cmd_flags, device, renderPass, pGranularity);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetRenderAreaGranularity(enc, cmd_flags, device, renderPass, pGranularity);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -3974,10 +3974,10 @@ static inline VkResult vn_call_vkCreateCommandPool(struct vn_instance *vn_instan
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateCommandPool(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pCommandPool);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateCommandPool(enc, cmd_flags, device, pCreateInfo, pAllocator, pCommandPool);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4003,10 +4003,10 @@ static inline void vn_async_vkCreateCommandPool(struct vn_instance *vn_instance,
     const size_t cmd_size = vn_sizeof_vkCreateCommandPool(device, pCreateInfo, pAllocator, pCommandPool);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateCommandPool(cs, cmd_flags, device, pCreateInfo, pAllocator, pCommandPool);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateCommandPool(enc, cmd_flags, device, pCreateInfo, pAllocator, pCommandPool);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4022,10 +4022,10 @@ static inline void vn_call_vkDestroyCommandPool(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyCommandPool(instance_cs, cmd_flags, device, commandPool, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyCommandPool(enc, cmd_flags, device, commandPool, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4048,10 +4048,10 @@ static inline void vn_async_vkDestroyCommandPool(struct vn_instance *vn_instance
     const size_t cmd_size = vn_sizeof_vkDestroyCommandPool(device, commandPool, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyCommandPool(cs, cmd_flags, device, commandPool, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyCommandPool(enc, cmd_flags, device, commandPool, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4067,10 +4067,10 @@ static inline VkResult vn_call_vkResetCommandPool(struct vn_instance *vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkResetCommandPool(instance_cs, cmd_flags, device, commandPool, flags);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkResetCommandPool(enc, cmd_flags, device, commandPool, flags);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4096,10 +4096,10 @@ static inline void vn_async_vkResetCommandPool(struct vn_instance *vn_instance, 
     const size_t cmd_size = vn_sizeof_vkResetCommandPool(device, commandPool, flags);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkResetCommandPool(cs, cmd_flags, device, commandPool, flags);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkResetCommandPool(enc, cmd_flags, device, commandPool, flags);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4115,10 +4115,10 @@ static inline VkResult vn_call_vkAllocateCommandBuffers(struct vn_instance *vn_i
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkAllocateCommandBuffers(instance_cs, cmd_flags, device, pAllocateInfo, pCommandBuffers);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkAllocateCommandBuffers(enc, cmd_flags, device, pAllocateInfo, pCommandBuffers);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4144,10 +4144,10 @@ static inline void vn_async_vkAllocateCommandBuffers(struct vn_instance *vn_inst
     const size_t cmd_size = vn_sizeof_vkAllocateCommandBuffers(device, pAllocateInfo, pCommandBuffers);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkAllocateCommandBuffers(cs, cmd_flags, device, pAllocateInfo, pCommandBuffers);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkAllocateCommandBuffers(enc, cmd_flags, device, pAllocateInfo, pCommandBuffers);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4163,10 +4163,10 @@ static inline void vn_call_vkFreeCommandBuffers(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkFreeCommandBuffers(instance_cs, cmd_flags, device, commandPool, commandBufferCount, pCommandBuffers);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkFreeCommandBuffers(enc, cmd_flags, device, commandPool, commandBufferCount, pCommandBuffers);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4189,10 +4189,10 @@ static inline void vn_async_vkFreeCommandBuffers(struct vn_instance *vn_instance
     const size_t cmd_size = vn_sizeof_vkFreeCommandBuffers(device, commandPool, commandBufferCount, pCommandBuffers);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkFreeCommandBuffers(cs, cmd_flags, device, commandPool, commandBufferCount, pCommandBuffers);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkFreeCommandBuffers(enc, cmd_flags, device, commandPool, commandBufferCount, pCommandBuffers);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4208,10 +4208,10 @@ static inline VkResult vn_call_vkBeginCommandBuffer(struct vn_instance *vn_insta
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkBeginCommandBuffer(instance_cs, cmd_flags, commandBuffer, pBeginInfo);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkBeginCommandBuffer(enc, cmd_flags, commandBuffer, pBeginInfo);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4237,10 +4237,10 @@ static inline void vn_async_vkBeginCommandBuffer(struct vn_instance *vn_instance
     const size_t cmd_size = vn_sizeof_vkBeginCommandBuffer(commandBuffer, pBeginInfo);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkBeginCommandBuffer(cs, cmd_flags, commandBuffer, pBeginInfo);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkBeginCommandBuffer(enc, cmd_flags, commandBuffer, pBeginInfo);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4256,10 +4256,10 @@ static inline VkResult vn_call_vkEndCommandBuffer(struct vn_instance *vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkEndCommandBuffer(instance_cs, cmd_flags, commandBuffer);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkEndCommandBuffer(enc, cmd_flags, commandBuffer);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4285,10 +4285,10 @@ static inline void vn_async_vkEndCommandBuffer(struct vn_instance *vn_instance, 
     const size_t cmd_size = vn_sizeof_vkEndCommandBuffer(commandBuffer);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkEndCommandBuffer(cs, cmd_flags, commandBuffer);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkEndCommandBuffer(enc, cmd_flags, commandBuffer);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4304,10 +4304,10 @@ static inline VkResult vn_call_vkResetCommandBuffer(struct vn_instance *vn_insta
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkResetCommandBuffer(instance_cs, cmd_flags, commandBuffer, flags);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkResetCommandBuffer(enc, cmd_flags, commandBuffer, flags);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4333,10 +4333,10 @@ static inline void vn_async_vkResetCommandBuffer(struct vn_instance *vn_instance
     const size_t cmd_size = vn_sizeof_vkResetCommandBuffer(commandBuffer, flags);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkResetCommandBuffer(cs, cmd_flags, commandBuffer, flags);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkResetCommandBuffer(enc, cmd_flags, commandBuffer, flags);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4352,10 +4352,10 @@ static inline void vn_call_vkCmdBindPipeline(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdBindPipeline(instance_cs, cmd_flags, commandBuffer, pipelineBindPoint, pipeline);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdBindPipeline(enc, cmd_flags, commandBuffer, pipelineBindPoint, pipeline);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4378,10 +4378,10 @@ static inline void vn_async_vkCmdBindPipeline(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkCmdBindPipeline(commandBuffer, pipelineBindPoint, pipeline);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdBindPipeline(cs, cmd_flags, commandBuffer, pipelineBindPoint, pipeline);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdBindPipeline(enc, cmd_flags, commandBuffer, pipelineBindPoint, pipeline);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4397,10 +4397,10 @@ static inline void vn_call_vkCmdSetViewport(struct vn_instance *vn_instance, VkC
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdSetViewport(instance_cs, cmd_flags, commandBuffer, firstViewport, viewportCount, pViewports);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdSetViewport(enc, cmd_flags, commandBuffer, firstViewport, viewportCount, pViewports);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4423,10 +4423,10 @@ static inline void vn_async_vkCmdSetViewport(struct vn_instance *vn_instance, Vk
     const size_t cmd_size = vn_sizeof_vkCmdSetViewport(commandBuffer, firstViewport, viewportCount, pViewports);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdSetViewport(cs, cmd_flags, commandBuffer, firstViewport, viewportCount, pViewports);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdSetViewport(enc, cmd_flags, commandBuffer, firstViewport, viewportCount, pViewports);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4442,10 +4442,10 @@ static inline void vn_call_vkCmdSetScissor(struct vn_instance *vn_instance, VkCo
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdSetScissor(instance_cs, cmd_flags, commandBuffer, firstScissor, scissorCount, pScissors);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdSetScissor(enc, cmd_flags, commandBuffer, firstScissor, scissorCount, pScissors);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4468,10 +4468,10 @@ static inline void vn_async_vkCmdSetScissor(struct vn_instance *vn_instance, VkC
     const size_t cmd_size = vn_sizeof_vkCmdSetScissor(commandBuffer, firstScissor, scissorCount, pScissors);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdSetScissor(cs, cmd_flags, commandBuffer, firstScissor, scissorCount, pScissors);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdSetScissor(enc, cmd_flags, commandBuffer, firstScissor, scissorCount, pScissors);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4487,10 +4487,10 @@ static inline void vn_call_vkCmdSetLineWidth(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdSetLineWidth(instance_cs, cmd_flags, commandBuffer, lineWidth);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdSetLineWidth(enc, cmd_flags, commandBuffer, lineWidth);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4513,10 +4513,10 @@ static inline void vn_async_vkCmdSetLineWidth(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkCmdSetLineWidth(commandBuffer, lineWidth);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdSetLineWidth(cs, cmd_flags, commandBuffer, lineWidth);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdSetLineWidth(enc, cmd_flags, commandBuffer, lineWidth);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4532,10 +4532,10 @@ static inline void vn_call_vkCmdSetDepthBias(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdSetDepthBias(instance_cs, cmd_flags, commandBuffer, depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdSetDepthBias(enc, cmd_flags, commandBuffer, depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4558,10 +4558,10 @@ static inline void vn_async_vkCmdSetDepthBias(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkCmdSetDepthBias(commandBuffer, depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdSetDepthBias(cs, cmd_flags, commandBuffer, depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdSetDepthBias(enc, cmd_flags, commandBuffer, depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4577,10 +4577,10 @@ static inline void vn_call_vkCmdSetBlendConstants(struct vn_instance *vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdSetBlendConstants(instance_cs, cmd_flags, commandBuffer, blendConstants);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdSetBlendConstants(enc, cmd_flags, commandBuffer, blendConstants);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4603,10 +4603,10 @@ static inline void vn_async_vkCmdSetBlendConstants(struct vn_instance *vn_instan
     const size_t cmd_size = vn_sizeof_vkCmdSetBlendConstants(commandBuffer, blendConstants);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdSetBlendConstants(cs, cmd_flags, commandBuffer, blendConstants);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdSetBlendConstants(enc, cmd_flags, commandBuffer, blendConstants);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4622,10 +4622,10 @@ static inline void vn_call_vkCmdSetDepthBounds(struct vn_instance *vn_instance, 
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdSetDepthBounds(instance_cs, cmd_flags, commandBuffer, minDepthBounds, maxDepthBounds);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdSetDepthBounds(enc, cmd_flags, commandBuffer, minDepthBounds, maxDepthBounds);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4648,10 +4648,10 @@ static inline void vn_async_vkCmdSetDepthBounds(struct vn_instance *vn_instance,
     const size_t cmd_size = vn_sizeof_vkCmdSetDepthBounds(commandBuffer, minDepthBounds, maxDepthBounds);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdSetDepthBounds(cs, cmd_flags, commandBuffer, minDepthBounds, maxDepthBounds);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdSetDepthBounds(enc, cmd_flags, commandBuffer, minDepthBounds, maxDepthBounds);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4667,10 +4667,10 @@ static inline void vn_call_vkCmdSetStencilCompareMask(struct vn_instance *vn_ins
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdSetStencilCompareMask(instance_cs, cmd_flags, commandBuffer, faceMask, compareMask);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdSetStencilCompareMask(enc, cmd_flags, commandBuffer, faceMask, compareMask);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4693,10 +4693,10 @@ static inline void vn_async_vkCmdSetStencilCompareMask(struct vn_instance *vn_in
     const size_t cmd_size = vn_sizeof_vkCmdSetStencilCompareMask(commandBuffer, faceMask, compareMask);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdSetStencilCompareMask(cs, cmd_flags, commandBuffer, faceMask, compareMask);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdSetStencilCompareMask(enc, cmd_flags, commandBuffer, faceMask, compareMask);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4712,10 +4712,10 @@ static inline void vn_call_vkCmdSetStencilWriteMask(struct vn_instance *vn_insta
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdSetStencilWriteMask(instance_cs, cmd_flags, commandBuffer, faceMask, writeMask);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdSetStencilWriteMask(enc, cmd_flags, commandBuffer, faceMask, writeMask);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4738,10 +4738,10 @@ static inline void vn_async_vkCmdSetStencilWriteMask(struct vn_instance *vn_inst
     const size_t cmd_size = vn_sizeof_vkCmdSetStencilWriteMask(commandBuffer, faceMask, writeMask);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdSetStencilWriteMask(cs, cmd_flags, commandBuffer, faceMask, writeMask);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdSetStencilWriteMask(enc, cmd_flags, commandBuffer, faceMask, writeMask);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4757,10 +4757,10 @@ static inline void vn_call_vkCmdSetStencilReference(struct vn_instance *vn_insta
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdSetStencilReference(instance_cs, cmd_flags, commandBuffer, faceMask, reference);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdSetStencilReference(enc, cmd_flags, commandBuffer, faceMask, reference);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4783,10 +4783,10 @@ static inline void vn_async_vkCmdSetStencilReference(struct vn_instance *vn_inst
     const size_t cmd_size = vn_sizeof_vkCmdSetStencilReference(commandBuffer, faceMask, reference);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdSetStencilReference(cs, cmd_flags, commandBuffer, faceMask, reference);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdSetStencilReference(enc, cmd_flags, commandBuffer, faceMask, reference);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4802,10 +4802,10 @@ static inline void vn_call_vkCmdBindDescriptorSets(struct vn_instance *vn_instan
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdBindDescriptorSets(instance_cs, cmd_flags, commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdBindDescriptorSets(enc, cmd_flags, commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4828,10 +4828,10 @@ static inline void vn_async_vkCmdBindDescriptorSets(struct vn_instance *vn_insta
     const size_t cmd_size = vn_sizeof_vkCmdBindDescriptorSets(commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdBindDescriptorSets(cs, cmd_flags, commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdBindDescriptorSets(enc, cmd_flags, commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4847,10 +4847,10 @@ static inline void vn_call_vkCmdBindIndexBuffer(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdBindIndexBuffer(instance_cs, cmd_flags, commandBuffer, buffer, offset, indexType);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdBindIndexBuffer(enc, cmd_flags, commandBuffer, buffer, offset, indexType);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4873,10 +4873,10 @@ static inline void vn_async_vkCmdBindIndexBuffer(struct vn_instance *vn_instance
     const size_t cmd_size = vn_sizeof_vkCmdBindIndexBuffer(commandBuffer, buffer, offset, indexType);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdBindIndexBuffer(cs, cmd_flags, commandBuffer, buffer, offset, indexType);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdBindIndexBuffer(enc, cmd_flags, commandBuffer, buffer, offset, indexType);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4892,10 +4892,10 @@ static inline void vn_call_vkCmdBindVertexBuffers(struct vn_instance *vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdBindVertexBuffers(instance_cs, cmd_flags, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdBindVertexBuffers(enc, cmd_flags, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4918,10 +4918,10 @@ static inline void vn_async_vkCmdBindVertexBuffers(struct vn_instance *vn_instan
     const size_t cmd_size = vn_sizeof_vkCmdBindVertexBuffers(commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdBindVertexBuffers(cs, cmd_flags, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdBindVertexBuffers(enc, cmd_flags, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4937,10 +4937,10 @@ static inline void vn_call_vkCmdDraw(struct vn_instance *vn_instance, VkCommandB
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdDraw(instance_cs, cmd_flags, commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdDraw(enc, cmd_flags, commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -4963,10 +4963,10 @@ static inline void vn_async_vkCmdDraw(struct vn_instance *vn_instance, VkCommand
     const size_t cmd_size = vn_sizeof_vkCmdDraw(commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdDraw(cs, cmd_flags, commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdDraw(enc, cmd_flags, commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -4982,10 +4982,10 @@ static inline void vn_call_vkCmdDrawIndexed(struct vn_instance *vn_instance, VkC
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdDrawIndexed(instance_cs, cmd_flags, commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdDrawIndexed(enc, cmd_flags, commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5008,10 +5008,10 @@ static inline void vn_async_vkCmdDrawIndexed(struct vn_instance *vn_instance, Vk
     const size_t cmd_size = vn_sizeof_vkCmdDrawIndexed(commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdDrawIndexed(cs, cmd_flags, commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdDrawIndexed(enc, cmd_flags, commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5027,10 +5027,10 @@ static inline void vn_call_vkCmdDrawIndirect(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdDrawIndirect(instance_cs, cmd_flags, commandBuffer, buffer, offset, drawCount, stride);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdDrawIndirect(enc, cmd_flags, commandBuffer, buffer, offset, drawCount, stride);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5053,10 +5053,10 @@ static inline void vn_async_vkCmdDrawIndirect(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkCmdDrawIndirect(commandBuffer, buffer, offset, drawCount, stride);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdDrawIndirect(cs, cmd_flags, commandBuffer, buffer, offset, drawCount, stride);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdDrawIndirect(enc, cmd_flags, commandBuffer, buffer, offset, drawCount, stride);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5072,10 +5072,10 @@ static inline void vn_call_vkCmdDrawIndexedIndirect(struct vn_instance *vn_insta
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdDrawIndexedIndirect(instance_cs, cmd_flags, commandBuffer, buffer, offset, drawCount, stride);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdDrawIndexedIndirect(enc, cmd_flags, commandBuffer, buffer, offset, drawCount, stride);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5098,10 +5098,10 @@ static inline void vn_async_vkCmdDrawIndexedIndirect(struct vn_instance *vn_inst
     const size_t cmd_size = vn_sizeof_vkCmdDrawIndexedIndirect(commandBuffer, buffer, offset, drawCount, stride);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdDrawIndexedIndirect(cs, cmd_flags, commandBuffer, buffer, offset, drawCount, stride);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdDrawIndexedIndirect(enc, cmd_flags, commandBuffer, buffer, offset, drawCount, stride);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5117,10 +5117,10 @@ static inline void vn_call_vkCmdDispatch(struct vn_instance *vn_instance, VkComm
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdDispatch(instance_cs, cmd_flags, commandBuffer, groupCountX, groupCountY, groupCountZ);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdDispatch(enc, cmd_flags, commandBuffer, groupCountX, groupCountY, groupCountZ);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5143,10 +5143,10 @@ static inline void vn_async_vkCmdDispatch(struct vn_instance *vn_instance, VkCom
     const size_t cmd_size = vn_sizeof_vkCmdDispatch(commandBuffer, groupCountX, groupCountY, groupCountZ);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdDispatch(cs, cmd_flags, commandBuffer, groupCountX, groupCountY, groupCountZ);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdDispatch(enc, cmd_flags, commandBuffer, groupCountX, groupCountY, groupCountZ);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5162,10 +5162,10 @@ static inline void vn_call_vkCmdDispatchIndirect(struct vn_instance *vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdDispatchIndirect(instance_cs, cmd_flags, commandBuffer, buffer, offset);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdDispatchIndirect(enc, cmd_flags, commandBuffer, buffer, offset);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5188,10 +5188,10 @@ static inline void vn_async_vkCmdDispatchIndirect(struct vn_instance *vn_instanc
     const size_t cmd_size = vn_sizeof_vkCmdDispatchIndirect(commandBuffer, buffer, offset);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdDispatchIndirect(cs, cmd_flags, commandBuffer, buffer, offset);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdDispatchIndirect(enc, cmd_flags, commandBuffer, buffer, offset);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5207,10 +5207,10 @@ static inline void vn_call_vkCmdCopyBuffer(struct vn_instance *vn_instance, VkCo
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdCopyBuffer(instance_cs, cmd_flags, commandBuffer, srcBuffer, dstBuffer, regionCount, pRegions);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdCopyBuffer(enc, cmd_flags, commandBuffer, srcBuffer, dstBuffer, regionCount, pRegions);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5233,10 +5233,10 @@ static inline void vn_async_vkCmdCopyBuffer(struct vn_instance *vn_instance, VkC
     const size_t cmd_size = vn_sizeof_vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, regionCount, pRegions);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdCopyBuffer(cs, cmd_flags, commandBuffer, srcBuffer, dstBuffer, regionCount, pRegions);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdCopyBuffer(enc, cmd_flags, commandBuffer, srcBuffer, dstBuffer, regionCount, pRegions);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5252,10 +5252,10 @@ static inline void vn_call_vkCmdCopyImage(struct vn_instance *vn_instance, VkCom
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdCopyImage(instance_cs, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdCopyImage(enc, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5278,10 +5278,10 @@ static inline void vn_async_vkCmdCopyImage(struct vn_instance *vn_instance, VkCo
     const size_t cmd_size = vn_sizeof_vkCmdCopyImage(commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdCopyImage(cs, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdCopyImage(enc, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5297,10 +5297,10 @@ static inline void vn_call_vkCmdBlitImage(struct vn_instance *vn_instance, VkCom
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdBlitImage(instance_cs, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions, filter);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdBlitImage(enc, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions, filter);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5323,10 +5323,10 @@ static inline void vn_async_vkCmdBlitImage(struct vn_instance *vn_instance, VkCo
     const size_t cmd_size = vn_sizeof_vkCmdBlitImage(commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions, filter);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdBlitImage(cs, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions, filter);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdBlitImage(enc, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions, filter);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5342,10 +5342,10 @@ static inline void vn_call_vkCmdCopyBufferToImage(struct vn_instance *vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdCopyBufferToImage(instance_cs, cmd_flags, commandBuffer, srcBuffer, dstImage, dstImageLayout, regionCount, pRegions);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdCopyBufferToImage(enc, cmd_flags, commandBuffer, srcBuffer, dstImage, dstImageLayout, regionCount, pRegions);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5368,10 +5368,10 @@ static inline void vn_async_vkCmdCopyBufferToImage(struct vn_instance *vn_instan
     const size_t cmd_size = vn_sizeof_vkCmdCopyBufferToImage(commandBuffer, srcBuffer, dstImage, dstImageLayout, regionCount, pRegions);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdCopyBufferToImage(cs, cmd_flags, commandBuffer, srcBuffer, dstImage, dstImageLayout, regionCount, pRegions);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdCopyBufferToImage(enc, cmd_flags, commandBuffer, srcBuffer, dstImage, dstImageLayout, regionCount, pRegions);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5387,10 +5387,10 @@ static inline void vn_call_vkCmdCopyImageToBuffer(struct vn_instance *vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdCopyImageToBuffer(instance_cs, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstBuffer, regionCount, pRegions);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdCopyImageToBuffer(enc, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstBuffer, regionCount, pRegions);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5413,10 +5413,10 @@ static inline void vn_async_vkCmdCopyImageToBuffer(struct vn_instance *vn_instan
     const size_t cmd_size = vn_sizeof_vkCmdCopyImageToBuffer(commandBuffer, srcImage, srcImageLayout, dstBuffer, regionCount, pRegions);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdCopyImageToBuffer(cs, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstBuffer, regionCount, pRegions);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdCopyImageToBuffer(enc, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstBuffer, regionCount, pRegions);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5432,10 +5432,10 @@ static inline void vn_call_vkCmdUpdateBuffer(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdUpdateBuffer(instance_cs, cmd_flags, commandBuffer, dstBuffer, dstOffset, dataSize, pData);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdUpdateBuffer(enc, cmd_flags, commandBuffer, dstBuffer, dstOffset, dataSize, pData);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5458,10 +5458,10 @@ static inline void vn_async_vkCmdUpdateBuffer(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkCmdUpdateBuffer(commandBuffer, dstBuffer, dstOffset, dataSize, pData);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdUpdateBuffer(cs, cmd_flags, commandBuffer, dstBuffer, dstOffset, dataSize, pData);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdUpdateBuffer(enc, cmd_flags, commandBuffer, dstBuffer, dstOffset, dataSize, pData);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5477,10 +5477,10 @@ static inline void vn_call_vkCmdFillBuffer(struct vn_instance *vn_instance, VkCo
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdFillBuffer(instance_cs, cmd_flags, commandBuffer, dstBuffer, dstOffset, size, data);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdFillBuffer(enc, cmd_flags, commandBuffer, dstBuffer, dstOffset, size, data);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5503,10 +5503,10 @@ static inline void vn_async_vkCmdFillBuffer(struct vn_instance *vn_instance, VkC
     const size_t cmd_size = vn_sizeof_vkCmdFillBuffer(commandBuffer, dstBuffer, dstOffset, size, data);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdFillBuffer(cs, cmd_flags, commandBuffer, dstBuffer, dstOffset, size, data);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdFillBuffer(enc, cmd_flags, commandBuffer, dstBuffer, dstOffset, size, data);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5522,10 +5522,10 @@ static inline void vn_call_vkCmdClearColorImage(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdClearColorImage(instance_cs, cmd_flags, commandBuffer, image, imageLayout, pColor, rangeCount, pRanges);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdClearColorImage(enc, cmd_flags, commandBuffer, image, imageLayout, pColor, rangeCount, pRanges);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5548,10 +5548,10 @@ static inline void vn_async_vkCmdClearColorImage(struct vn_instance *vn_instance
     const size_t cmd_size = vn_sizeof_vkCmdClearColorImage(commandBuffer, image, imageLayout, pColor, rangeCount, pRanges);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdClearColorImage(cs, cmd_flags, commandBuffer, image, imageLayout, pColor, rangeCount, pRanges);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdClearColorImage(enc, cmd_flags, commandBuffer, image, imageLayout, pColor, rangeCount, pRanges);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5567,10 +5567,10 @@ static inline void vn_call_vkCmdClearDepthStencilImage(struct vn_instance *vn_in
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdClearDepthStencilImage(instance_cs, cmd_flags, commandBuffer, image, imageLayout, pDepthStencil, rangeCount, pRanges);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdClearDepthStencilImage(enc, cmd_flags, commandBuffer, image, imageLayout, pDepthStencil, rangeCount, pRanges);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5593,10 +5593,10 @@ static inline void vn_async_vkCmdClearDepthStencilImage(struct vn_instance *vn_i
     const size_t cmd_size = vn_sizeof_vkCmdClearDepthStencilImage(commandBuffer, image, imageLayout, pDepthStencil, rangeCount, pRanges);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdClearDepthStencilImage(cs, cmd_flags, commandBuffer, image, imageLayout, pDepthStencil, rangeCount, pRanges);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdClearDepthStencilImage(enc, cmd_flags, commandBuffer, image, imageLayout, pDepthStencil, rangeCount, pRanges);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5612,10 +5612,10 @@ static inline void vn_call_vkCmdClearAttachments(struct vn_instance *vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdClearAttachments(instance_cs, cmd_flags, commandBuffer, attachmentCount, pAttachments, rectCount, pRects);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdClearAttachments(enc, cmd_flags, commandBuffer, attachmentCount, pAttachments, rectCount, pRects);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5638,10 +5638,10 @@ static inline void vn_async_vkCmdClearAttachments(struct vn_instance *vn_instanc
     const size_t cmd_size = vn_sizeof_vkCmdClearAttachments(commandBuffer, attachmentCount, pAttachments, rectCount, pRects);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdClearAttachments(cs, cmd_flags, commandBuffer, attachmentCount, pAttachments, rectCount, pRects);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdClearAttachments(enc, cmd_flags, commandBuffer, attachmentCount, pAttachments, rectCount, pRects);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5657,10 +5657,10 @@ static inline void vn_call_vkCmdResolveImage(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdResolveImage(instance_cs, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdResolveImage(enc, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5683,10 +5683,10 @@ static inline void vn_async_vkCmdResolveImage(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkCmdResolveImage(commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdResolveImage(cs, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdResolveImage(enc, cmd_flags, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5702,10 +5702,10 @@ static inline void vn_call_vkCmdSetEvent(struct vn_instance *vn_instance, VkComm
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdSetEvent(instance_cs, cmd_flags, commandBuffer, event, stageMask);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdSetEvent(enc, cmd_flags, commandBuffer, event, stageMask);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5728,10 +5728,10 @@ static inline void vn_async_vkCmdSetEvent(struct vn_instance *vn_instance, VkCom
     const size_t cmd_size = vn_sizeof_vkCmdSetEvent(commandBuffer, event, stageMask);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdSetEvent(cs, cmd_flags, commandBuffer, event, stageMask);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdSetEvent(enc, cmd_flags, commandBuffer, event, stageMask);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5747,10 +5747,10 @@ static inline void vn_call_vkCmdResetEvent(struct vn_instance *vn_instance, VkCo
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdResetEvent(instance_cs, cmd_flags, commandBuffer, event, stageMask);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdResetEvent(enc, cmd_flags, commandBuffer, event, stageMask);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5773,10 +5773,10 @@ static inline void vn_async_vkCmdResetEvent(struct vn_instance *vn_instance, VkC
     const size_t cmd_size = vn_sizeof_vkCmdResetEvent(commandBuffer, event, stageMask);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdResetEvent(cs, cmd_flags, commandBuffer, event, stageMask);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdResetEvent(enc, cmd_flags, commandBuffer, event, stageMask);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5792,10 +5792,10 @@ static inline void vn_call_vkCmdWaitEvents(struct vn_instance *vn_instance, VkCo
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdWaitEvents(instance_cs, cmd_flags, commandBuffer, eventCount, pEvents, srcStageMask, dstStageMask, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdWaitEvents(enc, cmd_flags, commandBuffer, eventCount, pEvents, srcStageMask, dstStageMask, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5818,10 +5818,10 @@ static inline void vn_async_vkCmdWaitEvents(struct vn_instance *vn_instance, VkC
     const size_t cmd_size = vn_sizeof_vkCmdWaitEvents(commandBuffer, eventCount, pEvents, srcStageMask, dstStageMask, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdWaitEvents(cs, cmd_flags, commandBuffer, eventCount, pEvents, srcStageMask, dstStageMask, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdWaitEvents(enc, cmd_flags, commandBuffer, eventCount, pEvents, srcStageMask, dstStageMask, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5837,10 +5837,10 @@ static inline void vn_call_vkCmdPipelineBarrier(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdPipelineBarrier(instance_cs, cmd_flags, commandBuffer, srcStageMask, dstStageMask, dependencyFlags, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdPipelineBarrier(enc, cmd_flags, commandBuffer, srcStageMask, dstStageMask, dependencyFlags, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5863,10 +5863,10 @@ static inline void vn_async_vkCmdPipelineBarrier(struct vn_instance *vn_instance
     const size_t cmd_size = vn_sizeof_vkCmdPipelineBarrier(commandBuffer, srcStageMask, dstStageMask, dependencyFlags, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdPipelineBarrier(cs, cmd_flags, commandBuffer, srcStageMask, dstStageMask, dependencyFlags, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdPipelineBarrier(enc, cmd_flags, commandBuffer, srcStageMask, dstStageMask, dependencyFlags, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5882,10 +5882,10 @@ static inline void vn_call_vkCmdBeginQuery(struct vn_instance *vn_instance, VkCo
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdBeginQuery(instance_cs, cmd_flags, commandBuffer, queryPool, query, flags);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdBeginQuery(enc, cmd_flags, commandBuffer, queryPool, query, flags);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5908,10 +5908,10 @@ static inline void vn_async_vkCmdBeginQuery(struct vn_instance *vn_instance, VkC
     const size_t cmd_size = vn_sizeof_vkCmdBeginQuery(commandBuffer, queryPool, query, flags);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdBeginQuery(cs, cmd_flags, commandBuffer, queryPool, query, flags);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdBeginQuery(enc, cmd_flags, commandBuffer, queryPool, query, flags);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5927,10 +5927,10 @@ static inline void vn_call_vkCmdEndQuery(struct vn_instance *vn_instance, VkComm
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdEndQuery(instance_cs, cmd_flags, commandBuffer, queryPool, query);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdEndQuery(enc, cmd_flags, commandBuffer, queryPool, query);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5953,10 +5953,10 @@ static inline void vn_async_vkCmdEndQuery(struct vn_instance *vn_instance, VkCom
     const size_t cmd_size = vn_sizeof_vkCmdEndQuery(commandBuffer, queryPool, query);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdEndQuery(cs, cmd_flags, commandBuffer, queryPool, query);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdEndQuery(enc, cmd_flags, commandBuffer, queryPool, query);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -5972,10 +5972,10 @@ static inline void vn_call_vkCmdResetQueryPool(struct vn_instance *vn_instance, 
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdResetQueryPool(instance_cs, cmd_flags, commandBuffer, queryPool, firstQuery, queryCount);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdResetQueryPool(enc, cmd_flags, commandBuffer, queryPool, firstQuery, queryCount);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -5998,10 +5998,10 @@ static inline void vn_async_vkCmdResetQueryPool(struct vn_instance *vn_instance,
     const size_t cmd_size = vn_sizeof_vkCmdResetQueryPool(commandBuffer, queryPool, firstQuery, queryCount);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdResetQueryPool(cs, cmd_flags, commandBuffer, queryPool, firstQuery, queryCount);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdResetQueryPool(enc, cmd_flags, commandBuffer, queryPool, firstQuery, queryCount);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6017,10 +6017,10 @@ static inline void vn_call_vkCmdWriteTimestamp(struct vn_instance *vn_instance, 
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdWriteTimestamp(instance_cs, cmd_flags, commandBuffer, pipelineStage, queryPool, query);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdWriteTimestamp(enc, cmd_flags, commandBuffer, pipelineStage, queryPool, query);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6043,10 +6043,10 @@ static inline void vn_async_vkCmdWriteTimestamp(struct vn_instance *vn_instance,
     const size_t cmd_size = vn_sizeof_vkCmdWriteTimestamp(commandBuffer, pipelineStage, queryPool, query);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdWriteTimestamp(cs, cmd_flags, commandBuffer, pipelineStage, queryPool, query);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdWriteTimestamp(enc, cmd_flags, commandBuffer, pipelineStage, queryPool, query);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6062,10 +6062,10 @@ static inline void vn_call_vkCmdCopyQueryPoolResults(struct vn_instance *vn_inst
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdCopyQueryPoolResults(instance_cs, cmd_flags, commandBuffer, queryPool, firstQuery, queryCount, dstBuffer, dstOffset, stride, flags);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdCopyQueryPoolResults(enc, cmd_flags, commandBuffer, queryPool, firstQuery, queryCount, dstBuffer, dstOffset, stride, flags);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6088,10 +6088,10 @@ static inline void vn_async_vkCmdCopyQueryPoolResults(struct vn_instance *vn_ins
     const size_t cmd_size = vn_sizeof_vkCmdCopyQueryPoolResults(commandBuffer, queryPool, firstQuery, queryCount, dstBuffer, dstOffset, stride, flags);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdCopyQueryPoolResults(cs, cmd_flags, commandBuffer, queryPool, firstQuery, queryCount, dstBuffer, dstOffset, stride, flags);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdCopyQueryPoolResults(enc, cmd_flags, commandBuffer, queryPool, firstQuery, queryCount, dstBuffer, dstOffset, stride, flags);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6107,10 +6107,10 @@ static inline void vn_call_vkCmdPushConstants(struct vn_instance *vn_instance, V
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdPushConstants(instance_cs, cmd_flags, commandBuffer, layout, stageFlags, offset, size, pValues);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdPushConstants(enc, cmd_flags, commandBuffer, layout, stageFlags, offset, size, pValues);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6133,10 +6133,10 @@ static inline void vn_async_vkCmdPushConstants(struct vn_instance *vn_instance, 
     const size_t cmd_size = vn_sizeof_vkCmdPushConstants(commandBuffer, layout, stageFlags, offset, size, pValues);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdPushConstants(cs, cmd_flags, commandBuffer, layout, stageFlags, offset, size, pValues);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdPushConstants(enc, cmd_flags, commandBuffer, layout, stageFlags, offset, size, pValues);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6152,10 +6152,10 @@ static inline void vn_call_vkCmdBeginRenderPass(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdBeginRenderPass(instance_cs, cmd_flags, commandBuffer, pRenderPassBegin, contents);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdBeginRenderPass(enc, cmd_flags, commandBuffer, pRenderPassBegin, contents);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6178,10 +6178,10 @@ static inline void vn_async_vkCmdBeginRenderPass(struct vn_instance *vn_instance
     const size_t cmd_size = vn_sizeof_vkCmdBeginRenderPass(commandBuffer, pRenderPassBegin, contents);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdBeginRenderPass(cs, cmd_flags, commandBuffer, pRenderPassBegin, contents);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdBeginRenderPass(enc, cmd_flags, commandBuffer, pRenderPassBegin, contents);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6197,10 +6197,10 @@ static inline void vn_call_vkCmdNextSubpass(struct vn_instance *vn_instance, VkC
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdNextSubpass(instance_cs, cmd_flags, commandBuffer, contents);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdNextSubpass(enc, cmd_flags, commandBuffer, contents);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6223,10 +6223,10 @@ static inline void vn_async_vkCmdNextSubpass(struct vn_instance *vn_instance, Vk
     const size_t cmd_size = vn_sizeof_vkCmdNextSubpass(commandBuffer, contents);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdNextSubpass(cs, cmd_flags, commandBuffer, contents);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdNextSubpass(enc, cmd_flags, commandBuffer, contents);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6242,10 +6242,10 @@ static inline void vn_call_vkCmdEndRenderPass(struct vn_instance *vn_instance, V
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdEndRenderPass(instance_cs, cmd_flags, commandBuffer);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdEndRenderPass(enc, cmd_flags, commandBuffer);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6268,10 +6268,10 @@ static inline void vn_async_vkCmdEndRenderPass(struct vn_instance *vn_instance, 
     const size_t cmd_size = vn_sizeof_vkCmdEndRenderPass(commandBuffer);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdEndRenderPass(cs, cmd_flags, commandBuffer);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdEndRenderPass(enc, cmd_flags, commandBuffer);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6287,10 +6287,10 @@ static inline void vn_call_vkCmdExecuteCommands(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdExecuteCommands(instance_cs, cmd_flags, commandBuffer, commandBufferCount, pCommandBuffers);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdExecuteCommands(enc, cmd_flags, commandBuffer, commandBufferCount, pCommandBuffers);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6313,10 +6313,10 @@ static inline void vn_async_vkCmdExecuteCommands(struct vn_instance *vn_instance
     const size_t cmd_size = vn_sizeof_vkCmdExecuteCommands(commandBuffer, commandBufferCount, pCommandBuffers);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdExecuteCommands(cs, cmd_flags, commandBuffer, commandBufferCount, pCommandBuffers);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdExecuteCommands(enc, cmd_flags, commandBuffer, commandBufferCount, pCommandBuffers);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6332,10 +6332,10 @@ static inline void vn_call_vkGetPhysicalDeviceFeatures2(struct vn_instance *vn_i
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceFeatures2(instance_cs, cmd_flags, physicalDevice, pFeatures);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceFeatures2(enc, cmd_flags, physicalDevice, pFeatures);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6358,10 +6358,10 @@ static inline void vn_async_vkGetPhysicalDeviceFeatures2(struct vn_instance *vn_
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceFeatures2(physicalDevice, pFeatures);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceFeatures2(cs, cmd_flags, physicalDevice, pFeatures);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceFeatures2(enc, cmd_flags, physicalDevice, pFeatures);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6377,10 +6377,10 @@ static inline void vn_call_vkGetPhysicalDeviceProperties2(struct vn_instance *vn
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceProperties2(instance_cs, cmd_flags, physicalDevice, pProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceProperties2(enc, cmd_flags, physicalDevice, pProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6403,10 +6403,10 @@ static inline void vn_async_vkGetPhysicalDeviceProperties2(struct vn_instance *v
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceProperties2(physicalDevice, pProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceProperties2(cs, cmd_flags, physicalDevice, pProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceProperties2(enc, cmd_flags, physicalDevice, pProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6422,10 +6422,10 @@ static inline void vn_call_vkGetPhysicalDeviceFormatProperties2(struct vn_instan
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceFormatProperties2(instance_cs, cmd_flags, physicalDevice, format, pFormatProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceFormatProperties2(enc, cmd_flags, physicalDevice, format, pFormatProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6448,10 +6448,10 @@ static inline void vn_async_vkGetPhysicalDeviceFormatProperties2(struct vn_insta
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceFormatProperties2(physicalDevice, format, pFormatProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceFormatProperties2(cs, cmd_flags, physicalDevice, format, pFormatProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceFormatProperties2(enc, cmd_flags, physicalDevice, format, pFormatProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6467,10 +6467,10 @@ static inline VkResult vn_call_vkGetPhysicalDeviceImageFormatProperties2(struct 
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceImageFormatProperties2(instance_cs, cmd_flags, physicalDevice, pImageFormatInfo, pImageFormatProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceImageFormatProperties2(enc, cmd_flags, physicalDevice, pImageFormatInfo, pImageFormatProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6496,10 +6496,10 @@ static inline void vn_async_vkGetPhysicalDeviceImageFormatProperties2(struct vn_
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceImageFormatProperties2(physicalDevice, pImageFormatInfo, pImageFormatProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceImageFormatProperties2(cs, cmd_flags, physicalDevice, pImageFormatInfo, pImageFormatProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceImageFormatProperties2(enc, cmd_flags, physicalDevice, pImageFormatInfo, pImageFormatProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6515,10 +6515,10 @@ static inline void vn_call_vkGetPhysicalDeviceQueueFamilyProperties2(struct vn_i
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceQueueFamilyProperties2(instance_cs, cmd_flags, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceQueueFamilyProperties2(enc, cmd_flags, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6541,10 +6541,10 @@ static inline void vn_async_vkGetPhysicalDeviceQueueFamilyProperties2(struct vn_
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceQueueFamilyProperties2(physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceQueueFamilyProperties2(cs, cmd_flags, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceQueueFamilyProperties2(enc, cmd_flags, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6560,10 +6560,10 @@ static inline void vn_call_vkGetPhysicalDeviceMemoryProperties2(struct vn_instan
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceMemoryProperties2(instance_cs, cmd_flags, physicalDevice, pMemoryProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceMemoryProperties2(enc, cmd_flags, physicalDevice, pMemoryProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6586,10 +6586,10 @@ static inline void vn_async_vkGetPhysicalDeviceMemoryProperties2(struct vn_insta
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceMemoryProperties2(physicalDevice, pMemoryProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceMemoryProperties2(cs, cmd_flags, physicalDevice, pMemoryProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceMemoryProperties2(enc, cmd_flags, physicalDevice, pMemoryProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6605,10 +6605,10 @@ static inline void vn_call_vkGetPhysicalDeviceSparseImageFormatProperties2(struc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties2(instance_cs, cmd_flags, physicalDevice, pFormatInfo, pPropertyCount, pProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties2(enc, cmd_flags, physicalDevice, pFormatInfo, pPropertyCount, pProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6631,10 +6631,10 @@ static inline void vn_async_vkGetPhysicalDeviceSparseImageFormatProperties2(stru
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceSparseImageFormatProperties2(physicalDevice, pFormatInfo, pPropertyCount, pProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties2(cs, cmd_flags, physicalDevice, pFormatInfo, pPropertyCount, pProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceSparseImageFormatProperties2(enc, cmd_flags, physicalDevice, pFormatInfo, pPropertyCount, pProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6650,10 +6650,10 @@ static inline void vn_call_vkTrimCommandPool(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkTrimCommandPool(instance_cs, cmd_flags, device, commandPool, flags);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkTrimCommandPool(enc, cmd_flags, device, commandPool, flags);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6676,10 +6676,10 @@ static inline void vn_async_vkTrimCommandPool(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkTrimCommandPool(device, commandPool, flags);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkTrimCommandPool(cs, cmd_flags, device, commandPool, flags);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkTrimCommandPool(enc, cmd_flags, device, commandPool, flags);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6695,10 +6695,10 @@ static inline void vn_call_vkGetPhysicalDeviceExternalBufferProperties(struct vn
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceExternalBufferProperties(instance_cs, cmd_flags, physicalDevice, pExternalBufferInfo, pExternalBufferProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceExternalBufferProperties(enc, cmd_flags, physicalDevice, pExternalBufferInfo, pExternalBufferProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6721,10 +6721,10 @@ static inline void vn_async_vkGetPhysicalDeviceExternalBufferProperties(struct v
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceExternalBufferProperties(physicalDevice, pExternalBufferInfo, pExternalBufferProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceExternalBufferProperties(cs, cmd_flags, physicalDevice, pExternalBufferInfo, pExternalBufferProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceExternalBufferProperties(enc, cmd_flags, physicalDevice, pExternalBufferInfo, pExternalBufferProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6740,10 +6740,10 @@ static inline void vn_call_vkGetPhysicalDeviceExternalSemaphoreProperties(struct
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceExternalSemaphoreProperties(instance_cs, cmd_flags, physicalDevice, pExternalSemaphoreInfo, pExternalSemaphoreProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceExternalSemaphoreProperties(enc, cmd_flags, physicalDevice, pExternalSemaphoreInfo, pExternalSemaphoreProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6766,10 +6766,10 @@ static inline void vn_async_vkGetPhysicalDeviceExternalSemaphoreProperties(struc
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceExternalSemaphoreProperties(physicalDevice, pExternalSemaphoreInfo, pExternalSemaphoreProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceExternalSemaphoreProperties(cs, cmd_flags, physicalDevice, pExternalSemaphoreInfo, pExternalSemaphoreProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceExternalSemaphoreProperties(enc, cmd_flags, physicalDevice, pExternalSemaphoreInfo, pExternalSemaphoreProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6785,10 +6785,10 @@ static inline void vn_call_vkGetPhysicalDeviceExternalFenceProperties(struct vn_
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetPhysicalDeviceExternalFenceProperties(instance_cs, cmd_flags, physicalDevice, pExternalFenceInfo, pExternalFenceProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetPhysicalDeviceExternalFenceProperties(enc, cmd_flags, physicalDevice, pExternalFenceInfo, pExternalFenceProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6811,10 +6811,10 @@ static inline void vn_async_vkGetPhysicalDeviceExternalFenceProperties(struct vn
     const size_t cmd_size = vn_sizeof_vkGetPhysicalDeviceExternalFenceProperties(physicalDevice, pExternalFenceInfo, pExternalFenceProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetPhysicalDeviceExternalFenceProperties(cs, cmd_flags, physicalDevice, pExternalFenceInfo, pExternalFenceProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetPhysicalDeviceExternalFenceProperties(enc, cmd_flags, physicalDevice, pExternalFenceInfo, pExternalFenceProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6830,10 +6830,10 @@ static inline VkResult vn_call_vkEnumeratePhysicalDeviceGroups(struct vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkEnumeratePhysicalDeviceGroups(instance_cs, cmd_flags, instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkEnumeratePhysicalDeviceGroups(enc, cmd_flags, instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6859,10 +6859,10 @@ static inline void vn_async_vkEnumeratePhysicalDeviceGroups(struct vn_instance *
     const size_t cmd_size = vn_sizeof_vkEnumeratePhysicalDeviceGroups(instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkEnumeratePhysicalDeviceGroups(cs, cmd_flags, instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkEnumeratePhysicalDeviceGroups(enc, cmd_flags, instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6878,10 +6878,10 @@ static inline void vn_call_vkGetDeviceGroupPeerMemoryFeatures(struct vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetDeviceGroupPeerMemoryFeatures(instance_cs, cmd_flags, device, heapIndex, localDeviceIndex, remoteDeviceIndex, pPeerMemoryFeatures);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetDeviceGroupPeerMemoryFeatures(enc, cmd_flags, device, heapIndex, localDeviceIndex, remoteDeviceIndex, pPeerMemoryFeatures);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6904,10 +6904,10 @@ static inline void vn_async_vkGetDeviceGroupPeerMemoryFeatures(struct vn_instanc
     const size_t cmd_size = vn_sizeof_vkGetDeviceGroupPeerMemoryFeatures(device, heapIndex, localDeviceIndex, remoteDeviceIndex, pPeerMemoryFeatures);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetDeviceGroupPeerMemoryFeatures(cs, cmd_flags, device, heapIndex, localDeviceIndex, remoteDeviceIndex, pPeerMemoryFeatures);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetDeviceGroupPeerMemoryFeatures(enc, cmd_flags, device, heapIndex, localDeviceIndex, remoteDeviceIndex, pPeerMemoryFeatures);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6923,10 +6923,10 @@ static inline VkResult vn_call_vkBindBufferMemory2(struct vn_instance *vn_instan
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkBindBufferMemory2(instance_cs, cmd_flags, device, bindInfoCount, pBindInfos);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkBindBufferMemory2(enc, cmd_flags, device, bindInfoCount, pBindInfos);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -6952,10 +6952,10 @@ static inline void vn_async_vkBindBufferMemory2(struct vn_instance *vn_instance,
     const size_t cmd_size = vn_sizeof_vkBindBufferMemory2(device, bindInfoCount, pBindInfos);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkBindBufferMemory2(cs, cmd_flags, device, bindInfoCount, pBindInfos);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkBindBufferMemory2(enc, cmd_flags, device, bindInfoCount, pBindInfos);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -6971,10 +6971,10 @@ static inline VkResult vn_call_vkBindImageMemory2(struct vn_instance *vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkBindImageMemory2(instance_cs, cmd_flags, device, bindInfoCount, pBindInfos);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkBindImageMemory2(enc, cmd_flags, device, bindInfoCount, pBindInfos);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7000,10 +7000,10 @@ static inline void vn_async_vkBindImageMemory2(struct vn_instance *vn_instance, 
     const size_t cmd_size = vn_sizeof_vkBindImageMemory2(device, bindInfoCount, pBindInfos);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkBindImageMemory2(cs, cmd_flags, device, bindInfoCount, pBindInfos);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkBindImageMemory2(enc, cmd_flags, device, bindInfoCount, pBindInfos);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7019,10 +7019,10 @@ static inline void vn_call_vkCmdSetDeviceMask(struct vn_instance *vn_instance, V
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdSetDeviceMask(instance_cs, cmd_flags, commandBuffer, deviceMask);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdSetDeviceMask(enc, cmd_flags, commandBuffer, deviceMask);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7045,10 +7045,10 @@ static inline void vn_async_vkCmdSetDeviceMask(struct vn_instance *vn_instance, 
     const size_t cmd_size = vn_sizeof_vkCmdSetDeviceMask(commandBuffer, deviceMask);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdSetDeviceMask(cs, cmd_flags, commandBuffer, deviceMask);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdSetDeviceMask(enc, cmd_flags, commandBuffer, deviceMask);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7064,10 +7064,10 @@ static inline void vn_call_vkCmdDispatchBase(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdDispatchBase(instance_cs, cmd_flags, commandBuffer, baseGroupX, baseGroupY, baseGroupZ, groupCountX, groupCountY, groupCountZ);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdDispatchBase(enc, cmd_flags, commandBuffer, baseGroupX, baseGroupY, baseGroupZ, groupCountX, groupCountY, groupCountZ);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7090,10 +7090,10 @@ static inline void vn_async_vkCmdDispatchBase(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkCmdDispatchBase(commandBuffer, baseGroupX, baseGroupY, baseGroupZ, groupCountX, groupCountY, groupCountZ);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdDispatchBase(cs, cmd_flags, commandBuffer, baseGroupX, baseGroupY, baseGroupZ, groupCountX, groupCountY, groupCountZ);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdDispatchBase(enc, cmd_flags, commandBuffer, baseGroupX, baseGroupY, baseGroupZ, groupCountX, groupCountY, groupCountZ);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7109,10 +7109,10 @@ static inline VkResult vn_call_vkCreateDescriptorUpdateTemplate(struct vn_instan
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateDescriptorUpdateTemplate(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pDescriptorUpdateTemplate);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateDescriptorUpdateTemplate(enc, cmd_flags, device, pCreateInfo, pAllocator, pDescriptorUpdateTemplate);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7138,10 +7138,10 @@ static inline void vn_async_vkCreateDescriptorUpdateTemplate(struct vn_instance 
     const size_t cmd_size = vn_sizeof_vkCreateDescriptorUpdateTemplate(device, pCreateInfo, pAllocator, pDescriptorUpdateTemplate);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateDescriptorUpdateTemplate(cs, cmd_flags, device, pCreateInfo, pAllocator, pDescriptorUpdateTemplate);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateDescriptorUpdateTemplate(enc, cmd_flags, device, pCreateInfo, pAllocator, pDescriptorUpdateTemplate);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7157,10 +7157,10 @@ static inline void vn_call_vkDestroyDescriptorUpdateTemplate(struct vn_instance 
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroyDescriptorUpdateTemplate(instance_cs, cmd_flags, device, descriptorUpdateTemplate, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroyDescriptorUpdateTemplate(enc, cmd_flags, device, descriptorUpdateTemplate, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7183,10 +7183,10 @@ static inline void vn_async_vkDestroyDescriptorUpdateTemplate(struct vn_instance
     const size_t cmd_size = vn_sizeof_vkDestroyDescriptorUpdateTemplate(device, descriptorUpdateTemplate, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroyDescriptorUpdateTemplate(cs, cmd_flags, device, descriptorUpdateTemplate, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroyDescriptorUpdateTemplate(enc, cmd_flags, device, descriptorUpdateTemplate, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7202,10 +7202,10 @@ static inline void vn_call_vkGetBufferMemoryRequirements2(struct vn_instance *vn
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetBufferMemoryRequirements2(instance_cs, cmd_flags, device, pInfo, pMemoryRequirements);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetBufferMemoryRequirements2(enc, cmd_flags, device, pInfo, pMemoryRequirements);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7228,10 +7228,10 @@ static inline void vn_async_vkGetBufferMemoryRequirements2(struct vn_instance *v
     const size_t cmd_size = vn_sizeof_vkGetBufferMemoryRequirements2(device, pInfo, pMemoryRequirements);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetBufferMemoryRequirements2(cs, cmd_flags, device, pInfo, pMemoryRequirements);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetBufferMemoryRequirements2(enc, cmd_flags, device, pInfo, pMemoryRequirements);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7247,10 +7247,10 @@ static inline void vn_call_vkGetImageMemoryRequirements2(struct vn_instance *vn_
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetImageMemoryRequirements2(instance_cs, cmd_flags, device, pInfo, pMemoryRequirements);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetImageMemoryRequirements2(enc, cmd_flags, device, pInfo, pMemoryRequirements);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7273,10 +7273,10 @@ static inline void vn_async_vkGetImageMemoryRequirements2(struct vn_instance *vn
     const size_t cmd_size = vn_sizeof_vkGetImageMemoryRequirements2(device, pInfo, pMemoryRequirements);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetImageMemoryRequirements2(cs, cmd_flags, device, pInfo, pMemoryRequirements);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetImageMemoryRequirements2(enc, cmd_flags, device, pInfo, pMemoryRequirements);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7292,10 +7292,10 @@ static inline void vn_call_vkGetImageSparseMemoryRequirements2(struct vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetImageSparseMemoryRequirements2(instance_cs, cmd_flags, device, pInfo, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetImageSparseMemoryRequirements2(enc, cmd_flags, device, pInfo, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7318,10 +7318,10 @@ static inline void vn_async_vkGetImageSparseMemoryRequirements2(struct vn_instan
     const size_t cmd_size = vn_sizeof_vkGetImageSparseMemoryRequirements2(device, pInfo, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetImageSparseMemoryRequirements2(cs, cmd_flags, device, pInfo, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetImageSparseMemoryRequirements2(enc, cmd_flags, device, pInfo, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7337,10 +7337,10 @@ static inline VkResult vn_call_vkCreateSamplerYcbcrConversion(struct vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateSamplerYcbcrConversion(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pYcbcrConversion);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateSamplerYcbcrConversion(enc, cmd_flags, device, pCreateInfo, pAllocator, pYcbcrConversion);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7366,10 +7366,10 @@ static inline void vn_async_vkCreateSamplerYcbcrConversion(struct vn_instance *v
     const size_t cmd_size = vn_sizeof_vkCreateSamplerYcbcrConversion(device, pCreateInfo, pAllocator, pYcbcrConversion);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateSamplerYcbcrConversion(cs, cmd_flags, device, pCreateInfo, pAllocator, pYcbcrConversion);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateSamplerYcbcrConversion(enc, cmd_flags, device, pCreateInfo, pAllocator, pYcbcrConversion);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7385,10 +7385,10 @@ static inline void vn_call_vkDestroySamplerYcbcrConversion(struct vn_instance *v
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkDestroySamplerYcbcrConversion(instance_cs, cmd_flags, device, ycbcrConversion, pAllocator);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkDestroySamplerYcbcrConversion(enc, cmd_flags, device, ycbcrConversion, pAllocator);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7411,10 +7411,10 @@ static inline void vn_async_vkDestroySamplerYcbcrConversion(struct vn_instance *
     const size_t cmd_size = vn_sizeof_vkDestroySamplerYcbcrConversion(device, ycbcrConversion, pAllocator);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkDestroySamplerYcbcrConversion(cs, cmd_flags, device, ycbcrConversion, pAllocator);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkDestroySamplerYcbcrConversion(enc, cmd_flags, device, ycbcrConversion, pAllocator);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7430,10 +7430,10 @@ static inline void vn_call_vkGetDeviceQueue2(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetDeviceQueue2(instance_cs, cmd_flags, device, pQueueInfo, pQueue);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetDeviceQueue2(enc, cmd_flags, device, pQueueInfo, pQueue);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7456,10 +7456,10 @@ static inline void vn_async_vkGetDeviceQueue2(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkGetDeviceQueue2(device, pQueueInfo, pQueue);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetDeviceQueue2(cs, cmd_flags, device, pQueueInfo, pQueue);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetDeviceQueue2(enc, cmd_flags, device, pQueueInfo, pQueue);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7475,10 +7475,10 @@ static inline void vn_call_vkGetDescriptorSetLayoutSupport(struct vn_instance *v
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetDescriptorSetLayoutSupport(instance_cs, cmd_flags, device, pCreateInfo, pSupport);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetDescriptorSetLayoutSupport(enc, cmd_flags, device, pCreateInfo, pSupport);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7501,10 +7501,10 @@ static inline void vn_async_vkGetDescriptorSetLayoutSupport(struct vn_instance *
     const size_t cmd_size = vn_sizeof_vkGetDescriptorSetLayoutSupport(device, pCreateInfo, pSupport);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetDescriptorSetLayoutSupport(cs, cmd_flags, device, pCreateInfo, pSupport);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetDescriptorSetLayoutSupport(enc, cmd_flags, device, pCreateInfo, pSupport);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7520,10 +7520,10 @@ static inline VkResult vn_call_vkCreateRenderPass2(struct vn_instance *vn_instan
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCreateRenderPass2(instance_cs, cmd_flags, device, pCreateInfo, pAllocator, pRenderPass);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCreateRenderPass2(enc, cmd_flags, device, pCreateInfo, pAllocator, pRenderPass);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7549,10 +7549,10 @@ static inline void vn_async_vkCreateRenderPass2(struct vn_instance *vn_instance,
     const size_t cmd_size = vn_sizeof_vkCreateRenderPass2(device, pCreateInfo, pAllocator, pRenderPass);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCreateRenderPass2(cs, cmd_flags, device, pCreateInfo, pAllocator, pRenderPass);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCreateRenderPass2(enc, cmd_flags, device, pCreateInfo, pAllocator, pRenderPass);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7568,10 +7568,10 @@ static inline void vn_call_vkCmdBeginRenderPass2(struct vn_instance *vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdBeginRenderPass2(instance_cs, cmd_flags, commandBuffer, pRenderPassBegin, pSubpassBeginInfo);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdBeginRenderPass2(enc, cmd_flags, commandBuffer, pRenderPassBegin, pSubpassBeginInfo);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7594,10 +7594,10 @@ static inline void vn_async_vkCmdBeginRenderPass2(struct vn_instance *vn_instanc
     const size_t cmd_size = vn_sizeof_vkCmdBeginRenderPass2(commandBuffer, pRenderPassBegin, pSubpassBeginInfo);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdBeginRenderPass2(cs, cmd_flags, commandBuffer, pRenderPassBegin, pSubpassBeginInfo);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdBeginRenderPass2(enc, cmd_flags, commandBuffer, pRenderPassBegin, pSubpassBeginInfo);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7613,10 +7613,10 @@ static inline void vn_call_vkCmdNextSubpass2(struct vn_instance *vn_instance, Vk
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdNextSubpass2(instance_cs, cmd_flags, commandBuffer, pSubpassBeginInfo, pSubpassEndInfo);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdNextSubpass2(enc, cmd_flags, commandBuffer, pSubpassBeginInfo, pSubpassEndInfo);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7639,10 +7639,10 @@ static inline void vn_async_vkCmdNextSubpass2(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkCmdNextSubpass2(commandBuffer, pSubpassBeginInfo, pSubpassEndInfo);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdNextSubpass2(cs, cmd_flags, commandBuffer, pSubpassBeginInfo, pSubpassEndInfo);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdNextSubpass2(enc, cmd_flags, commandBuffer, pSubpassBeginInfo, pSubpassEndInfo);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7658,10 +7658,10 @@ static inline void vn_call_vkCmdEndRenderPass2(struct vn_instance *vn_instance, 
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdEndRenderPass2(instance_cs, cmd_flags, commandBuffer, pSubpassEndInfo);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdEndRenderPass2(enc, cmd_flags, commandBuffer, pSubpassEndInfo);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7684,10 +7684,10 @@ static inline void vn_async_vkCmdEndRenderPass2(struct vn_instance *vn_instance,
     const size_t cmd_size = vn_sizeof_vkCmdEndRenderPass2(commandBuffer, pSubpassEndInfo);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdEndRenderPass2(cs, cmd_flags, commandBuffer, pSubpassEndInfo);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdEndRenderPass2(enc, cmd_flags, commandBuffer, pSubpassEndInfo);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7703,10 +7703,10 @@ static inline VkResult vn_call_vkGetSemaphoreCounterValue(struct vn_instance *vn
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetSemaphoreCounterValue(instance_cs, cmd_flags, device, semaphore, pValue);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetSemaphoreCounterValue(enc, cmd_flags, device, semaphore, pValue);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7732,10 +7732,10 @@ static inline void vn_async_vkGetSemaphoreCounterValue(struct vn_instance *vn_in
     const size_t cmd_size = vn_sizeof_vkGetSemaphoreCounterValue(device, semaphore, pValue);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetSemaphoreCounterValue(cs, cmd_flags, device, semaphore, pValue);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetSemaphoreCounterValue(enc, cmd_flags, device, semaphore, pValue);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7751,10 +7751,10 @@ static inline VkResult vn_call_vkWaitSemaphores(struct vn_instance *vn_instance,
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkWaitSemaphores(instance_cs, cmd_flags, device, pWaitInfo, timeout);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkWaitSemaphores(enc, cmd_flags, device, pWaitInfo, timeout);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7780,10 +7780,10 @@ static inline void vn_async_vkWaitSemaphores(struct vn_instance *vn_instance, Vk
     const size_t cmd_size = vn_sizeof_vkWaitSemaphores(device, pWaitInfo, timeout);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkWaitSemaphores(cs, cmd_flags, device, pWaitInfo, timeout);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkWaitSemaphores(enc, cmd_flags, device, pWaitInfo, timeout);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7799,10 +7799,10 @@ static inline VkResult vn_call_vkSignalSemaphore(struct vn_instance *vn_instance
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkSignalSemaphore(instance_cs, cmd_flags, device, pSignalInfo);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkSignalSemaphore(enc, cmd_flags, device, pSignalInfo);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7828,10 +7828,10 @@ static inline void vn_async_vkSignalSemaphore(struct vn_instance *vn_instance, V
     const size_t cmd_size = vn_sizeof_vkSignalSemaphore(device, pSignalInfo);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkSignalSemaphore(cs, cmd_flags, device, pSignalInfo);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkSignalSemaphore(enc, cmd_flags, device, pSignalInfo);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7847,10 +7847,10 @@ static inline void vn_call_vkCmdDrawIndirectCount(struct vn_instance *vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdDrawIndirectCount(instance_cs, cmd_flags, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdDrawIndirectCount(enc, cmd_flags, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7873,10 +7873,10 @@ static inline void vn_async_vkCmdDrawIndirectCount(struct vn_instance *vn_instan
     const size_t cmd_size = vn_sizeof_vkCmdDrawIndirectCount(commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdDrawIndirectCount(cs, cmd_flags, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdDrawIndirectCount(enc, cmd_flags, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7892,10 +7892,10 @@ static inline void vn_call_vkCmdDrawIndexedIndirectCount(struct vn_instance *vn_
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdDrawIndexedIndirectCount(instance_cs, cmd_flags, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdDrawIndexedIndirectCount(enc, cmd_flags, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7918,10 +7918,10 @@ static inline void vn_async_vkCmdDrawIndexedIndirectCount(struct vn_instance *vn
     const size_t cmd_size = vn_sizeof_vkCmdDrawIndexedIndirectCount(commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdDrawIndexedIndirectCount(cs, cmd_flags, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdDrawIndexedIndirectCount(enc, cmd_flags, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7937,10 +7937,10 @@ static inline void vn_call_vkCmdBindTransformFeedbackBuffersEXT(struct vn_instan
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdBindTransformFeedbackBuffersEXT(instance_cs, cmd_flags, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets, pSizes);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdBindTransformFeedbackBuffersEXT(enc, cmd_flags, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets, pSizes);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -7963,10 +7963,10 @@ static inline void vn_async_vkCmdBindTransformFeedbackBuffersEXT(struct vn_insta
     const size_t cmd_size = vn_sizeof_vkCmdBindTransformFeedbackBuffersEXT(commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets, pSizes);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdBindTransformFeedbackBuffersEXT(cs, cmd_flags, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets, pSizes);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdBindTransformFeedbackBuffersEXT(enc, cmd_flags, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets, pSizes);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -7982,10 +7982,10 @@ static inline void vn_call_vkCmdBeginTransformFeedbackEXT(struct vn_instance *vn
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdBeginTransformFeedbackEXT(instance_cs, cmd_flags, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdBeginTransformFeedbackEXT(enc, cmd_flags, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -8008,10 +8008,10 @@ static inline void vn_async_vkCmdBeginTransformFeedbackEXT(struct vn_instance *v
     const size_t cmd_size = vn_sizeof_vkCmdBeginTransformFeedbackEXT(commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdBeginTransformFeedbackEXT(cs, cmd_flags, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdBeginTransformFeedbackEXT(enc, cmd_flags, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -8027,10 +8027,10 @@ static inline void vn_call_vkCmdEndTransformFeedbackEXT(struct vn_instance *vn_i
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdEndTransformFeedbackEXT(instance_cs, cmd_flags, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdEndTransformFeedbackEXT(enc, cmd_flags, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -8053,10 +8053,10 @@ static inline void vn_async_vkCmdEndTransformFeedbackEXT(struct vn_instance *vn_
     const size_t cmd_size = vn_sizeof_vkCmdEndTransformFeedbackEXT(commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdEndTransformFeedbackEXT(cs, cmd_flags, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdEndTransformFeedbackEXT(enc, cmd_flags, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -8072,10 +8072,10 @@ static inline void vn_call_vkCmdBeginQueryIndexedEXT(struct vn_instance *vn_inst
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdBeginQueryIndexedEXT(instance_cs, cmd_flags, commandBuffer, queryPool, query, flags, index);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdBeginQueryIndexedEXT(enc, cmd_flags, commandBuffer, queryPool, query, flags, index);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -8098,10 +8098,10 @@ static inline void vn_async_vkCmdBeginQueryIndexedEXT(struct vn_instance *vn_ins
     const size_t cmd_size = vn_sizeof_vkCmdBeginQueryIndexedEXT(commandBuffer, queryPool, query, flags, index);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdBeginQueryIndexedEXT(cs, cmd_flags, commandBuffer, queryPool, query, flags, index);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdBeginQueryIndexedEXT(enc, cmd_flags, commandBuffer, queryPool, query, flags, index);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -8117,10 +8117,10 @@ static inline void vn_call_vkCmdEndQueryIndexedEXT(struct vn_instance *vn_instan
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdEndQueryIndexedEXT(instance_cs, cmd_flags, commandBuffer, queryPool, query, index);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdEndQueryIndexedEXT(enc, cmd_flags, commandBuffer, queryPool, query, index);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -8143,10 +8143,10 @@ static inline void vn_async_vkCmdEndQueryIndexedEXT(struct vn_instance *vn_insta
     const size_t cmd_size = vn_sizeof_vkCmdEndQueryIndexedEXT(commandBuffer, queryPool, query, index);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdEndQueryIndexedEXT(cs, cmd_flags, commandBuffer, queryPool, query, index);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdEndQueryIndexedEXT(enc, cmd_flags, commandBuffer, queryPool, query, index);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -8162,10 +8162,10 @@ static inline void vn_call_vkCmdDrawIndirectByteCountEXT(struct vn_instance *vn_
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkCmdDrawIndirectByteCountEXT(instance_cs, cmd_flags, commandBuffer, instanceCount, firstInstance, counterBuffer, counterBufferOffset, counterOffset, vertexStride);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkCmdDrawIndirectByteCountEXT(enc, cmd_flags, commandBuffer, instanceCount, firstInstance, counterBuffer, counterBufferOffset, counterOffset, vertexStride);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -8188,10 +8188,10 @@ static inline void vn_async_vkCmdDrawIndirectByteCountEXT(struct vn_instance *vn
     const size_t cmd_size = vn_sizeof_vkCmdDrawIndirectByteCountEXT(commandBuffer, instanceCount, firstInstance, counterBuffer, counterBufferOffset, counterOffset, vertexStride);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkCmdDrawIndirectByteCountEXT(cs, cmd_flags, commandBuffer, instanceCount, firstInstance, counterBuffer, counterBufferOffset, counterOffset, vertexStride);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkCmdDrawIndirectByteCountEXT(enc, cmd_flags, commandBuffer, instanceCount, firstInstance, counterBuffer, counterBufferOffset, counterOffset, vertexStride);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -8207,10 +8207,10 @@ static inline VkResult vn_call_vkGetImageDrmFormatModifierPropertiesEXT(struct v
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetImageDrmFormatModifierPropertiesEXT(instance_cs, cmd_flags, device, image, pProperties);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetImageDrmFormatModifierPropertiesEXT(enc, cmd_flags, device, image, pProperties);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -8236,10 +8236,10 @@ static inline void vn_async_vkGetImageDrmFormatModifierPropertiesEXT(struct vn_i
     const size_t cmd_size = vn_sizeof_vkGetImageDrmFormatModifierPropertiesEXT(device, image, pProperties);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetImageDrmFormatModifierPropertiesEXT(cs, cmd_flags, device, image, pProperties);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetImageDrmFormatModifierPropertiesEXT(enc, cmd_flags, device, image, pProperties);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -8255,10 +8255,10 @@ static inline uint64_t vn_call_vkGetBufferOpaqueCaptureAddress(struct vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetBufferOpaqueCaptureAddress(instance_cs, cmd_flags, device, pInfo);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetBufferOpaqueCaptureAddress(enc, cmd_flags, device, pInfo);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -8284,10 +8284,10 @@ static inline void vn_async_vkGetBufferOpaqueCaptureAddress(struct vn_instance *
     const size_t cmd_size = vn_sizeof_vkGetBufferOpaqueCaptureAddress(device, pInfo);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetBufferOpaqueCaptureAddress(cs, cmd_flags, device, pInfo);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetBufferOpaqueCaptureAddress(enc, cmd_flags, device, pInfo);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -8303,10 +8303,10 @@ static inline VkDeviceAddress vn_call_vkGetBufferDeviceAddress(struct vn_instanc
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetBufferDeviceAddress(instance_cs, cmd_flags, device, pInfo);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetBufferDeviceAddress(enc, cmd_flags, device, pInfo);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -8332,10 +8332,10 @@ static inline void vn_async_vkGetBufferDeviceAddress(struct vn_instance *vn_inst
     const size_t cmd_size = vn_sizeof_vkGetBufferDeviceAddress(device, pInfo);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetBufferDeviceAddress(cs, cmd_flags, device, pInfo);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetBufferDeviceAddress(enc, cmd_flags, device, pInfo);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -8351,10 +8351,10 @@ static inline uint64_t vn_call_vkGetDeviceMemoryOpaqueCaptureAddress(struct vn_i
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkGetDeviceMemoryOpaqueCaptureAddress(instance_cs, cmd_flags, device, pInfo);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkGetDeviceMemoryOpaqueCaptureAddress(enc, cmd_flags, device, pInfo);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -8380,10 +8380,10 @@ static inline void vn_async_vkGetDeviceMemoryOpaqueCaptureAddress(struct vn_inst
     const size_t cmd_size = vn_sizeof_vkGetDeviceMemoryOpaqueCaptureAddress(device, pInfo);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkGetDeviceMemoryOpaqueCaptureAddress(cs, cmd_flags, device, pInfo);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkGetDeviceMemoryOpaqueCaptureAddress(enc, cmd_flags, device, pInfo);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -8399,10 +8399,10 @@ static inline void vn_call_vkSetReplyCommandStreamMESA(struct vn_instance *vn_in
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkSetReplyCommandStreamMESA(instance_cs, cmd_flags, pStream);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkSetReplyCommandStreamMESA(enc, cmd_flags, pStream);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -8425,10 +8425,10 @@ static inline void vn_async_vkSetReplyCommandStreamMESA(struct vn_instance *vn_i
     const size_t cmd_size = vn_sizeof_vkSetReplyCommandStreamMESA(pStream);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkSetReplyCommandStreamMESA(cs, cmd_flags, pStream);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkSetReplyCommandStreamMESA(enc, cmd_flags, pStream);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -8444,10 +8444,10 @@ static inline void vn_call_vkSeekReplyCommandStreamMESA(struct vn_instance *vn_i
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkSeekReplyCommandStreamMESA(instance_cs, cmd_flags, position);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkSeekReplyCommandStreamMESA(enc, cmd_flags, position);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -8470,10 +8470,10 @@ static inline void vn_async_vkSeekReplyCommandStreamMESA(struct vn_instance *vn_
     const size_t cmd_size = vn_sizeof_vkSeekReplyCommandStreamMESA(position);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkSeekReplyCommandStreamMESA(cs, cmd_flags, position);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkSeekReplyCommandStreamMESA(enc, cmd_flags, position);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }
@@ -8489,10 +8489,10 @@ static inline void vn_call_vkExecuteCommandStreamsMESA(struct vn_instance *vn_in
     uint64_t reply_sync_val;
 
     /* encode and submit */
-    struct vn_cs *instance_cs = vn_instance_lock_cs(vn_instance);
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
     reply_bo = vn_instance_get_cs_reply_bo_locked(vn_instance, reply_size, &reply_ptr);
-    if (likely(reply_bo && vn_cs_reserve_out(instance_cs, cmd_size))) {
-        vn_encode_vkExecuteCommandStreamsMESA(instance_cs, cmd_flags, streamCount, pStreams, pReplyPositions, dependencyCount, pDependencies, flags);
+    if (likely(reply_bo && vn_cs_reserve_out(enc, cmd_size))) {
+        vn_encode_vkExecuteCommandStreamsMESA(enc, cmd_flags, streamCount, pStreams, pReplyPositions, dependencyCount, pDependencies, flags);
         submitted = vn_instance_submit_cs_locked(vn_instance, reply_bo, &reply_sync_val);
     }
     vn_instance_unlock_cs(vn_instance);
@@ -8515,10 +8515,10 @@ static inline void vn_async_vkExecuteCommandStreamsMESA(struct vn_instance *vn_i
     const size_t cmd_size = vn_sizeof_vkExecuteCommandStreamsMESA(streamCount, pStreams, pReplyPositions, dependencyCount, pDependencies, flags);
     const VkCommandFlagsEXT cmd_flags = 0;
 
-    struct vn_cs *cs = vn_instance_lock_cs(vn_instance);
-    if (vn_cs_reserve_out(cs, cmd_size))
-        vn_encode_vkExecuteCommandStreamsMESA(cs, cmd_flags, streamCount, pStreams, pReplyPositions, dependencyCount, pDependencies, flags);
-    if (vn_cs_get_out_len(cs) > vn_instance->cs_implicit_flush_threshold)
+    struct vn_cs_encoder *enc = vn_instance_lock_cs(vn_instance);
+    if (vn_cs_reserve_out(enc, cmd_size))
+        vn_encode_vkExecuteCommandStreamsMESA(enc, cmd_flags, streamCount, pStreams, pReplyPositions, dependencyCount, pDependencies, flags);
+    if (vn_cs_get_out_len(enc) > vn_instance->cs_implicit_flush_threshold)
         vn_instance_submit_cs_locked(vn_instance, NULL, NULL);
     vn_instance_unlock_cs(vn_instance);
 }

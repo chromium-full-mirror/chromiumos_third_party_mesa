@@ -6,7 +6,7 @@
 #include "vn_cs.h"
 
 void
-vn_cs_init(struct vn_cs *cs,
+vn_cs_init(struct vn_cs_encoder *cs,
            const VkAllocationCallbacks *alloc,
            VkSystemAllocationScope alloc_scope,
            size_t out_min_size)
@@ -19,7 +19,7 @@ vn_cs_init(struct vn_cs *cs,
 }
 
 void
-vn_cs_fini(struct vn_cs *cs)
+vn_cs_fini(struct vn_cs_encoder *cs)
 {
    for (uint32_t i = 0; i < cs->out.iov_count; i++)
       vk_free(cs->allocator, cs->out.iovs[i].iov_base);
@@ -28,7 +28,7 @@ vn_cs_fini(struct vn_cs *cs)
 }
 
 static void
-vn_cs_reset_out(struct vn_cs *cs)
+vn_cs_reset_out(struct vn_cs_encoder *cs)
 {
    if (unlikely(!cs->out.iov_count))
       return;
@@ -53,7 +53,7 @@ vn_cs_reset_out(struct vn_cs *cs)
  * Reset a cs for reuse.
  */
 void
-vn_cs_reset(struct vn_cs *cs)
+vn_cs_reset(struct vn_cs_encoder *cs)
 {
    /* cs->error is sticky */
    vn_cs_reset_out(cs);
@@ -95,7 +95,7 @@ grow_buffer_size(size_t size, size_t used, size_t growth, size_t min_size)
 }
 
 static bool
-vn_cs_grow_out_iovs(struct vn_cs *cs)
+vn_cs_grow_out_iovs(struct vn_cs_encoder *cs)
 {
    const uint32_t iov_max =
       grow_array_size(cs->out.iov_max, cs->out.iov_count, 1, 4);
@@ -115,7 +115,7 @@ vn_cs_grow_out_iovs(struct vn_cs *cs)
 }
 
 static void
-vn_cs_set_out_iov_len(struct vn_cs *cs)
+vn_cs_set_out_iov_len(struct vn_cs_encoder *cs)
 {
    if (unlikely(!cs->out.iov_count))
       return;
@@ -133,7 +133,7 @@ vn_cs_set_out_iov_len(struct vn_cs *cs)
  * Add a new iovec to a cs.
  */
 bool
-vn_cs_reserve_out_internal(struct vn_cs *cs, size_t size)
+vn_cs_reserve_out_internal(struct vn_cs_encoder *cs, size_t size)
 {
    if (cs->out.iov_count >= cs->out.iov_max) {
       if (!vn_cs_grow_out_iovs(cs))
@@ -171,7 +171,7 @@ vn_cs_reserve_out_internal(struct vn_cs *cs, size_t size)
  * End command emission.
  */
 void
-vn_cs_end_out(struct vn_cs *cs)
+vn_cs_end_out(struct vn_cs_encoder *cs)
 {
    vn_cs_set_out_iov_len(cs);
 }

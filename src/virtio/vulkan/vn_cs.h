@@ -13,7 +13,7 @@ struct vn_cs_iovec {
    size_t iov_len;
 };
 
-struct vn_cs {
+struct vn_cs_encoder {
    const VkAllocationCallbacks *allocator;
    VkSystemAllocationScope alloc_scope;
 
@@ -39,19 +39,19 @@ struct vn_cs_decoder {
 };
 
 void
-vn_cs_init(struct vn_cs *cs,
+vn_cs_init(struct vn_cs_encoder *cs,
            const VkAllocationCallbacks *alloc,
            VkSystemAllocationScope alloc_scope,
            size_t out_min_size);
 
 void
-vn_cs_fini(struct vn_cs *cs);
+vn_cs_fini(struct vn_cs_encoder *cs);
 
 void
-vn_cs_reset(struct vn_cs *cs);
+vn_cs_reset(struct vn_cs_encoder *cs);
 
 static inline void
-vn_cs_set_error(struct vn_cs *cs)
+vn_cs_set_error(struct vn_cs_encoder *cs)
 {
    /* This is fatal and should be treated as VK_ERROR_DEVICE_LOST or even
     * abort().  Note that vn_cs_reset does not clear this.
@@ -60,25 +60,25 @@ vn_cs_set_error(struct vn_cs *cs)
 }
 
 static inline bool
-vn_cs_has_error(const struct vn_cs *cs)
+vn_cs_has_error(const struct vn_cs_encoder *cs)
 {
    return cs->error;
 }
 
 static inline bool
-vn_cs_has_out(const struct vn_cs *cs)
+vn_cs_has_out(const struct vn_cs_encoder *cs)
 {
    return cs->out.iov_count && cs->out.cur != cs->out.iovs[0].iov_base;
 }
 
 bool
-vn_cs_reserve_out_internal(struct vn_cs *cs, size_t size);
+vn_cs_reserve_out_internal(struct vn_cs_encoder *cs, size_t size);
 
 /**
  * Reserve space for commands.
  */
 static inline bool
-vn_cs_reserve_out(struct vn_cs *cs, size_t size)
+vn_cs_reserve_out(struct vn_cs_encoder *cs, size_t size)
 {
    if (unlikely(size > cs->out.end - cs->out.cur)) {
       if (!vn_cs_reserve_out_internal(cs, size)) {
@@ -92,7 +92,10 @@ vn_cs_reserve_out(struct vn_cs *cs, size_t size)
 }
 
 static inline void
-vn_cs_out(struct vn_cs *cs, size_t size, const void *val, size_t val_size)
+vn_cs_out(struct vn_cs_encoder *cs,
+          size_t size,
+          const void *val,
+          size_t val_size)
 {
    assert(val_size <= size);
    assert(size <= cs->out.end - cs->out.cur);
@@ -103,10 +106,10 @@ vn_cs_out(struct vn_cs *cs, size_t size, const void *val, size_t val_size)
 }
 
 void
-vn_cs_end_out(struct vn_cs *cs);
+vn_cs_end_out(struct vn_cs_encoder *cs);
 
 static inline size_t
-vn_cs_get_out_len(const struct vn_cs *cs)
+vn_cs_get_out_len(const struct vn_cs_encoder *cs)
 {
    if (unlikely(!cs->out.iov_count))
       return 0;

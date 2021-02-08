@@ -127,7 +127,7 @@ struct vn_renderer_submit_batch {
 };
 
 struct vn_renderer_submit {
-   const struct vn_cs *cs;
+   const struct vn_cs_encoder *cs;
 
    /* BOs to pin and to fence implicitly */
    struct vn_renderer_bo *const *bos;
@@ -220,7 +220,8 @@ vn_renderer_submit(struct vn_renderer *renderer,
 }
 
 static inline VkResult
-vn_renderer_submit_cs(struct vn_renderer *renderer, const struct vn_cs *cs)
+vn_renderer_submit_cs(struct vn_renderer *renderer,
+                      const struct vn_cs_encoder *cs)
 {
    const struct vn_renderer_submit submit = {
       .cs = cs,

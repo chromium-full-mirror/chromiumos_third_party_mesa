@@ -17,10 +17,10 @@ vn_sizeof_VkInstance(const VkInstance *val)
 }
 
 static inline void
-vn_encode_VkInstance(struct vn_cs *cs, const VkInstance *val)
+vn_encode_VkInstance(struct vn_cs_encoder *enc, const VkInstance *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -40,10 +40,10 @@ vn_sizeof_VkPhysicalDevice(const VkPhysicalDevice *val)
 }
 
 static inline void
-vn_encode_VkPhysicalDevice(struct vn_cs *cs, const VkPhysicalDevice *val)
+vn_encode_VkPhysicalDevice(struct vn_cs_encoder *enc, const VkPhysicalDevice *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -63,10 +63,10 @@ vn_sizeof_VkDevice(const VkDevice *val)
 }
 
 static inline void
-vn_encode_VkDevice(struct vn_cs *cs, const VkDevice *val)
+vn_encode_VkDevice(struct vn_cs_encoder *enc, const VkDevice *val)
 {
     const uint64_t id = vn_cs_device_load_id(val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -86,10 +86,10 @@ vn_sizeof_VkQueue(const VkQueue *val)
 }
 
 static inline void
-vn_encode_VkQueue(struct vn_cs *cs, const VkQueue *val)
+vn_encode_VkQueue(struct vn_cs_encoder *enc, const VkQueue *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -109,10 +109,10 @@ vn_sizeof_VkCommandBuffer(const VkCommandBuffer *val)
 }
 
 static inline void
-vn_encode_VkCommandBuffer(struct vn_cs *cs, const VkCommandBuffer *val)
+vn_encode_VkCommandBuffer(struct vn_cs_encoder *enc, const VkCommandBuffer *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -132,10 +132,10 @@ vn_sizeof_VkDeviceMemory(const VkDeviceMemory *val)
 }
 
 static inline void
-vn_encode_VkDeviceMemory(struct vn_cs *cs, const VkDeviceMemory *val)
+vn_encode_VkDeviceMemory(struct vn_cs_encoder *enc, const VkDeviceMemory *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -155,10 +155,10 @@ vn_sizeof_VkCommandPool(const VkCommandPool *val)
 }
 
 static inline void
-vn_encode_VkCommandPool(struct vn_cs *cs, const VkCommandPool *val)
+vn_encode_VkCommandPool(struct vn_cs_encoder *enc, const VkCommandPool *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -178,10 +178,10 @@ vn_sizeof_VkBuffer(const VkBuffer *val)
 }
 
 static inline void
-vn_encode_VkBuffer(struct vn_cs *cs, const VkBuffer *val)
+vn_encode_VkBuffer(struct vn_cs_encoder *enc, const VkBuffer *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -201,10 +201,10 @@ vn_sizeof_VkBufferView(const VkBufferView *val)
 }
 
 static inline void
-vn_encode_VkBufferView(struct vn_cs *cs, const VkBufferView *val)
+vn_encode_VkBufferView(struct vn_cs_encoder *enc, const VkBufferView *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -224,10 +224,10 @@ vn_sizeof_VkImage(const VkImage *val)
 }
 
 static inline void
-vn_encode_VkImage(struct vn_cs *cs, const VkImage *val)
+vn_encode_VkImage(struct vn_cs_encoder *enc, const VkImage *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -247,10 +247,10 @@ vn_sizeof_VkImageView(const VkImageView *val)
 }
 
 static inline void
-vn_encode_VkImageView(struct vn_cs *cs, const VkImageView *val)
+vn_encode_VkImageView(struct vn_cs_encoder *enc, const VkImageView *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -270,10 +270,10 @@ vn_sizeof_VkShaderModule(const VkShaderModule *val)
 }
 
 static inline void
-vn_encode_VkShaderModule(struct vn_cs *cs, const VkShaderModule *val)
+vn_encode_VkShaderModule(struct vn_cs_encoder *enc, const VkShaderModule *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -293,10 +293,10 @@ vn_sizeof_VkPipeline(const VkPipeline *val)
 }
 
 static inline void
-vn_encode_VkPipeline(struct vn_cs *cs, const VkPipeline *val)
+vn_encode_VkPipeline(struct vn_cs_encoder *enc, const VkPipeline *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -316,10 +316,10 @@ vn_sizeof_VkPipelineLayout(const VkPipelineLayout *val)
 }
 
 static inline void
-vn_encode_VkPipelineLayout(struct vn_cs *cs, const VkPipelineLayout *val)
+vn_encode_VkPipelineLayout(struct vn_cs_encoder *enc, const VkPipelineLayout *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -339,10 +339,10 @@ vn_sizeof_VkSampler(const VkSampler *val)
 }
 
 static inline void
-vn_encode_VkSampler(struct vn_cs *cs, const VkSampler *val)
+vn_encode_VkSampler(struct vn_cs_encoder *enc, const VkSampler *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -362,10 +362,10 @@ vn_sizeof_VkDescriptorSet(const VkDescriptorSet *val)
 }
 
 static inline void
-vn_encode_VkDescriptorSet(struct vn_cs *cs, const VkDescriptorSet *val)
+vn_encode_VkDescriptorSet(struct vn_cs_encoder *enc, const VkDescriptorSet *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -385,10 +385,10 @@ vn_sizeof_VkDescriptorSetLayout(const VkDescriptorSetLayout *val)
 }
 
 static inline void
-vn_encode_VkDescriptorSetLayout(struct vn_cs *cs, const VkDescriptorSetLayout *val)
+vn_encode_VkDescriptorSetLayout(struct vn_cs_encoder *enc, const VkDescriptorSetLayout *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -408,10 +408,10 @@ vn_sizeof_VkDescriptorPool(const VkDescriptorPool *val)
 }
 
 static inline void
-vn_encode_VkDescriptorPool(struct vn_cs *cs, const VkDescriptorPool *val)
+vn_encode_VkDescriptorPool(struct vn_cs_encoder *enc, const VkDescriptorPool *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -431,10 +431,10 @@ vn_sizeof_VkFence(const VkFence *val)
 }
 
 static inline void
-vn_encode_VkFence(struct vn_cs *cs, const VkFence *val)
+vn_encode_VkFence(struct vn_cs_encoder *enc, const VkFence *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -454,10 +454,10 @@ vn_sizeof_VkSemaphore(const VkSemaphore *val)
 }
 
 static inline void
-vn_encode_VkSemaphore(struct vn_cs *cs, const VkSemaphore *val)
+vn_encode_VkSemaphore(struct vn_cs_encoder *enc, const VkSemaphore *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -477,10 +477,10 @@ vn_sizeof_VkEvent(const VkEvent *val)
 }
 
 static inline void
-vn_encode_VkEvent(struct vn_cs *cs, const VkEvent *val)
+vn_encode_VkEvent(struct vn_cs_encoder *enc, const VkEvent *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -500,10 +500,10 @@ vn_sizeof_VkQueryPool(const VkQueryPool *val)
 }
 
 static inline void
-vn_encode_VkQueryPool(struct vn_cs *cs, const VkQueryPool *val)
+vn_encode_VkQueryPool(struct vn_cs_encoder *enc, const VkQueryPool *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -523,10 +523,10 @@ vn_sizeof_VkFramebuffer(const VkFramebuffer *val)
 }
 
 static inline void
-vn_encode_VkFramebuffer(struct vn_cs *cs, const VkFramebuffer *val)
+vn_encode_VkFramebuffer(struct vn_cs_encoder *enc, const VkFramebuffer *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -546,10 +546,10 @@ vn_sizeof_VkRenderPass(const VkRenderPass *val)
 }
 
 static inline void
-vn_encode_VkRenderPass(struct vn_cs *cs, const VkRenderPass *val)
+vn_encode_VkRenderPass(struct vn_cs_encoder *enc, const VkRenderPass *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -569,10 +569,10 @@ vn_sizeof_VkPipelineCache(const VkPipelineCache *val)
 }
 
 static inline void
-vn_encode_VkPipelineCache(struct vn_cs *cs, const VkPipelineCache *val)
+vn_encode_VkPipelineCache(struct vn_cs_encoder *enc, const VkPipelineCache *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -592,10 +592,10 @@ vn_sizeof_VkDescriptorUpdateTemplate(const VkDescriptorUpdateTemplate *val)
 }
 
 static inline void
-vn_encode_VkDescriptorUpdateTemplate(struct vn_cs *cs, const VkDescriptorUpdateTemplate *val)
+vn_encode_VkDescriptorUpdateTemplate(struct vn_cs_encoder *enc, const VkDescriptorUpdateTemplate *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
@@ -615,10 +615,10 @@ vn_sizeof_VkSamplerYcbcrConversion(const VkSamplerYcbcrConversion *val)
 }
 
 static inline void
-vn_encode_VkSamplerYcbcrConversion(struct vn_cs *cs, const VkSamplerYcbcrConversion *val)
+vn_encode_VkSamplerYcbcrConversion(struct vn_cs_encoder *enc, const VkSamplerYcbcrConversion *val)
 {
     const uint64_t id = vn_cs_object_load_id((const void *)val);
-    vn_encode_uint64_t(cs, &id);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void

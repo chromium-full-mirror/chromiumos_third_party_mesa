@@ -37,7 +37,7 @@ struct vn_instance {
    size_t cs_implicit_flush_threshold;
    uint32_t cs_throttle_pipeline_threshold;
    uint32_t cs_throttle_pipeline_count;
-   struct vn_cs cs;
+   struct vn_cs_encoder cs;
    struct {
       struct vn_renderer_bo *bo;
       size_t size;
@@ -401,14 +401,14 @@ struct vn_command_buffer {
    struct list_head head;
 
    enum vn_command_buffer_state state;
-   struct vn_cs cs;
+   struct vn_cs_encoder cs;
 };
 VK_DEFINE_HANDLE_CASTS(vn_command_buffer,
                        base.base,
                        VkCommandBuffer,
                        VK_OBJECT_TYPE_COMMAND_BUFFER)
 
-static inline struct vn_cs *
+static inline struct vn_cs_encoder *
 vn_instance_lock_cs(struct vn_instance *instance)
 {
    mtx_lock(&instance->cs_mutex);
@@ -425,7 +425,7 @@ vn_instance_submit_cs_locked(struct vn_instance *instance,
                              struct vn_renderer_bo *reply_bo,
                              uint64_t *reply_sync_val)
 {
-   struct vn_cs *cs = &instance->cs;
+   struct vn_cs_encoder *cs = &instance->cs;
 
    instance->cs_throttle_pipeline_count = 0;
 
