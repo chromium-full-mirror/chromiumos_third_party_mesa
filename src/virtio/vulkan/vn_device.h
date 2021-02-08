@@ -429,12 +429,12 @@ vn_instance_submit_cs_locked(struct vn_instance *instance,
 
    instance->cs_throttle_pipeline_count = 0;
 
-   if (unlikely(vn_cs_has_error(cs))) {
-      vn_cs_reset(cs);
+   if (unlikely(vn_cs_encoder_get_fatal(cs))) {
+      vn_cs_encoder_reset(cs);
       return false;
    }
 
-   vn_cs_end_out(cs);
+   vn_cs_encoder_end(cs);
 
    VkResult result;
    if (reply_bo) {
@@ -445,7 +445,7 @@ vn_instance_submit_cs_locked(struct vn_instance *instance,
          .bo_count = 1,
          .batches =
             &(const struct vn_renderer_submit_batch){
-               .cs_size = vn_cs_get_out_len(cs),
+               .cs_size = vn_cs_encoder_get_len(cs),
                .sync_queue_cpu = true,
                .syncs = &instance->cs_reply.sync,
                .sync_values = reply_sync_val,
@@ -458,7 +458,7 @@ vn_instance_submit_cs_locked(struct vn_instance *instance,
       result = vn_renderer_submit_cs(instance->renderer, cs);
    }
 
-   vn_cs_reset(cs);
+   vn_cs_encoder_reset(cs);
 
    return result == VK_SUCCESS;
 }

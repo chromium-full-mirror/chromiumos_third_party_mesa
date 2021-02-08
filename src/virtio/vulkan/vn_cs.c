@@ -6,10 +6,10 @@
 #include "vn_cs.h"
 
 void
-vn_cs_init(struct vn_cs_encoder *enc,
-           const VkAllocationCallbacks *alloc,
-           VkSystemAllocationScope alloc_scope,
-           size_t min_size)
+vn_cs_encoder_init(struct vn_cs_encoder *enc,
+                   const VkAllocationCallbacks *alloc,
+                   VkSystemAllocationScope alloc_scope,
+                   size_t min_size)
 {
    memset(enc, 0, sizeof(*enc));
    enc->allocator = alloc;
@@ -18,7 +18,7 @@ vn_cs_init(struct vn_cs_encoder *enc,
 }
 
 void
-vn_cs_fini(struct vn_cs_encoder *enc)
+vn_cs_encoder_fini(struct vn_cs_encoder *enc)
 {
    for (uint32_t i = 0; i < enc->iov_count; i++)
       vk_free(enc->allocator, enc->iovs[i].iov_base);
@@ -26,9 +26,14 @@ vn_cs_fini(struct vn_cs_encoder *enc)
       vk_free(enc->allocator, enc->iovs);
 }
 
-static void
-vn_cs_reset_out(struct vn_cs_encoder *enc)
+/**
+ * Reset a cs for reuse.
+ */
+void
+vn_cs_encoder_reset(struct vn_cs_encoder *enc)
 {
+   /* enc->error is sticky */
+
    if (unlikely(!enc->iov_count))
       return;
 
@@ -46,16 +51,6 @@ vn_cs_reset_out(struct vn_cs_encoder *enc)
 
    enc->cur = iov->iov_base;
    enc->end = iov->iov_base + enc->last_iov_size;
-}
-
-/**
- * Reset a cs for reuse.
- */
-void
-vn_cs_reset(struct vn_cs_encoder *enc)
-{
-   /* enc->error is sticky */
-   vn_cs_reset_out(enc);
 }
 
 static uint32_t
@@ -94,7 +89,7 @@ grow_buffer_size(size_t size, size_t used, size_t growth, size_t min_size)
 }
 
 static bool
-vn_cs_grow_out_iovs(struct vn_cs_encoder *enc)
+encoder_grow_iovs(struct vn_cs_encoder *enc)
 {
    const uint32_t iov_max =
       grow_array_size(enc->iov_max, enc->iov_count, 1, 4);
@@ -114,7 +109,7 @@ vn_cs_grow_out_iovs(struct vn_cs_encoder *enc)
 }
 
 static void
-vn_cs_set_out_iov_len(struct vn_cs_encoder *enc)
+encoder_set_iov_len(struct vn_cs_encoder *enc)
 {
    if (unlikely(!enc->iov_count))
       return;
@@ -132,10 +127,10 @@ vn_cs_set_out_iov_len(struct vn_cs_encoder *enc)
  * Add a new iovec to a cs.
  */
 bool
-vn_cs_reserve_out_internal(struct vn_cs_encoder *enc, size_t size)
+vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
 {
    if (enc->iov_count >= enc->iov_max) {
-      if (!vn_cs_grow_out_iovs(enc))
+      if (!encoder_grow_iovs(enc))
          return false;
       assert(enc->iov_count < enc->iov_max);
    }
@@ -150,7 +145,7 @@ vn_cs_reserve_out_internal(struct vn_cs_encoder *enc, size_t size)
    if (!base)
       return false;
 
-   vn_cs_set_out_iov_len(enc);
+   encoder_set_iov_len(enc);
 
    /* add a new iov */
    struct vn_cs_iovec *iov = &enc->iovs[enc->iov_count++];
@@ -169,7 +164,7 @@ vn_cs_reserve_out_internal(struct vn_cs_encoder *enc, size_t size)
  * End command emission.
  */
 void
-vn_cs_end_out(struct vn_cs_encoder *enc)
+vn_cs_encoder_end(struct vn_cs_encoder *enc)
 {
-   vn_cs_set_out_iov_len(enc);
+   encoder_set_iov_len(enc);
 }

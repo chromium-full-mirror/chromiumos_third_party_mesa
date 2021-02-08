@@ -488,7 +488,7 @@ submit_cmd2_sizes(const struct vn_renderer_submit *submit,
    *header_size = sizeof(uint32_t) +
                   sizeof(struct vcmd_submit_cmd2_batch) * submit->batch_count;
 
-   *cs_size = submit->cs ? vn_cs_get_out_len(submit->cs) : 0;
+   *cs_size = submit->cs ? vn_cs_encoder_get_len(submit->cs) : 0;
 
    *sync_size = 0;
    for (uint32_t i = 0; i < submit->batch_count; i++) {

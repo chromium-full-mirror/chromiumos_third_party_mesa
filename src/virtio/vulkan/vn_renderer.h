@@ -227,7 +227,7 @@ vn_renderer_submit_cs(struct vn_renderer *renderer,
       .cs = cs,
       .batches =
          &(const struct vn_renderer_submit_batch){
-            .cs_size = vn_cs_get_out_len(cs),
+            .cs_size = vn_cs_encoder_get_len(cs),
          },
       .batch_count = 1,
    };

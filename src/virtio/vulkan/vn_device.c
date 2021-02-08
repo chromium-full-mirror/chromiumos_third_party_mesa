@@ -186,8 +186,8 @@ vn_instance_init_renderer(struct vn_instance *instance)
    instance->cs_implicit_flush_threshold = 1 * 1024 * 1024;
    /* when a pipeline creation takes 100ms, this still takes 400ms... */
    instance->cs_throttle_pipeline_threshold = 4;
-   vn_cs_init(&instance->cs, alloc, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE,
-              16 * 1024);
+   vn_cs_encoder_init(&instance->cs, alloc,
+                      VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE, 16 * 1024);
 
    uint32_t renderer_version = 0;
    result = vn_call_vkEnumerateInstanceVersion(instance, &renderer_version);
@@ -274,14 +274,14 @@ vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
          .size = instance->cs_reply.size,
       };
       const size_t cmd_size = vn_sizeof_vkSetReplyCommandStreamMESA(&stream);
-      if (vn_cs_reserve_out(cs, cmd_size))
+      if (vn_cs_encoder_reserve(cs, cmd_size))
          vn_encode_vkSetReplyCommandStreamMESA(cs, 0, &stream);
    }
 
    /* TODO can we avoid this seek command? */
    const size_t offset = instance->cs_reply.used;
    const size_t cmd_size = vn_sizeof_vkSeekReplyCommandStreamMESA(offset);
-   if (vn_cs_reserve_out(cs, cmd_size))
+   if (vn_cs_encoder_reserve(cs, cmd_size))
       vn_encode_vkSeekReplyCommandStreamMESA(cs, 0, offset);
 
    *ptr = instance->cs_reply.ptr + offset;
@@ -294,7 +294,7 @@ static void
 vn_instance_flush_cs(struct vn_instance *instance)
 {
    struct vn_cs_encoder *cs = vn_instance_lock_cs(instance);
-   if (vn_cs_has_out(cs))
+   if (!vn_cs_encoder_is_empty(cs))
       vn_instance_submit_cs_locked(instance, NULL, NULL);
    vn_instance_unlock_cs(instance);
 }
@@ -1070,7 +1070,7 @@ fail:
 
    if (instance->renderer) {
       vn_renderer_destroy(instance->renderer, alloc);
-      vn_cs_fini(&instance->cs);
+      vn_cs_encoder_fini(&instance->cs);
    }
 
    mtx_destroy(&instance->cs_mutex);
@@ -1103,7 +1103,7 @@ vn_DestroyInstance(VkInstance _instance,
    vn_renderer_sync_destroy(instance->cs_reply.sync, alloc);
 
    vn_renderer_destroy(instance->renderer, alloc);
-   vn_cs_fini(&instance->cs);
+   vn_cs_encoder_fini(&instance->cs);
    mtx_destroy(&instance->cs_mutex);
    mtx_destroy(&instance->physical_device_mutex);
 
@@ -5530,7 +5530,7 @@ vn_DestroyCommandPool(VkDevice device,
 
    list_for_each_entry_safe (struct vn_command_buffer, cmd,
                              &pool->command_buffers, head) {
-      vn_cs_fini(&cmd->cs);
+      vn_cs_encoder_fini(&cmd->cs);
       vn_object_fini(&cmd->base);
       vk_free(alloc, cmd);
    }
@@ -5549,7 +5549,7 @@ vn_ResetCommandPool(VkDevice device,
 
    list_for_each_entry_safe (struct vn_command_buffer, cmd,
                              &pool->command_buffers, head) {
-      vn_cs_reset(&cmd->cs);
+      vn_cs_encoder_reset(&cmd->cs);
       cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
    }
 
@@ -5587,7 +5587,7 @@ vn_AllocateCommandBuffers(VkDevice device,
       if (!cmd) {
          for (uint32_t j = 0; j < i; j++) {
             cmd = vn_command_buffer_from_handle(pCommandBuffers[j]);
-            vn_cs_fini(&cmd->cs);
+            vn_cs_encoder_fini(&cmd->cs);
             list_del(&cmd->head);
             vk_free(alloc, cmd);
          }
@@ -5602,8 +5602,8 @@ vn_AllocateCommandBuffers(VkDevice device,
       list_addtail(&cmd->head, &pool->command_buffers);
 
       cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
-      vn_cs_init(&cmd->cs, alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
-                 16 * 1024);
+      vn_cs_encoder_init(&cmd->cs, alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
+                         16 * 1024);
 
       VkCommandBuffer cmd_handle = vn_command_buffer_to_handle(cmd);
       pCommandBuffers[i] = cmd_handle;
@@ -5635,7 +5635,7 @@ vn_FreeCommandBuffers(VkDevice device,
       if (!cmd)
          continue;
 
-      vn_cs_fini(&cmd->cs);
+      vn_cs_encoder_fini(&cmd->cs);
       list_del(&cmd->head);
 
       vn_object_fini(&cmd->base);
@@ -5650,7 +5650,7 @@ vn_ResetCommandBuffer(VkCommandBuffer commandBuffer,
    struct vn_command_buffer *cmd =
       vn_command_buffer_from_handle(commandBuffer);
 
-   vn_cs_reset(&cmd->cs);
+   vn_cs_encoder_reset(&cmd->cs);
    cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
 
    vn_async_vkResetCommandBuffer(cmd->device->instance, commandBuffer, flags);
@@ -5667,10 +5667,10 @@ vn_BeginCommandBuffer(VkCommandBuffer commandBuffer,
    struct vn_instance *instance = cmd->device->instance;
    size_t cmd_size;
 
-   vn_cs_reset(&cmd->cs);
+   vn_cs_encoder_reset(&cmd->cs);
 
    cmd_size = vn_sizeof_vkBeginCommandBuffer(commandBuffer, pBeginInfo);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size)) {
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size)) {
       cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
       return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
@@ -5691,15 +5691,15 @@ vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
    size_t cmd_size;
 
    cmd_size = vn_sizeof_vkEndCommandBuffer(commandBuffer);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size)) {
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size)) {
       cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
       return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
    vn_encode_vkEndCommandBuffer(&cmd->cs, 0, commandBuffer);
-   vn_cs_end_out(&cmd->cs);
+   vn_cs_encoder_end(&cmd->cs);
 
-   if (vn_cs_has_error(&cmd->cs)) {
+   if (vn_cs_encoder_get_fatal(&cmd->cs)) {
       cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
       return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
@@ -5707,7 +5707,7 @@ vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
    vn_instance_flush_cs(instance);
    vn_renderer_submit_cs(instance->renderer, &cmd->cs);
 
-   vn_cs_reset(&cmd->cs);
+   vn_cs_encoder_reset(&cmd->cs);
 
    cmd->state = VN_COMMAND_BUFFER_STATE_EXECUTABLE;
 
@@ -5725,7 +5725,7 @@ vn_CmdBindPipeline(VkCommandBuffer commandBuffer,
 
    cmd_size =
       vn_sizeof_vkCmdBindPipeline(commandBuffer, pipelineBindPoint, pipeline);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdBindPipeline(&cmd->cs, 0, commandBuffer, pipelineBindPoint,
@@ -5744,7 +5744,7 @@ vn_CmdSetViewport(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdSetViewport(commandBuffer, firstViewport,
                                          viewportCount, pViewports);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdSetViewport(&cmd->cs, 0, commandBuffer, firstViewport,
@@ -5763,7 +5763,7 @@ vn_CmdSetScissor(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdSetScissor(commandBuffer, firstScissor,
                                         scissorCount, pScissors);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdSetScissor(&cmd->cs, 0, commandBuffer, firstScissor,
@@ -5778,7 +5778,7 @@ vn_CmdSetLineWidth(VkCommandBuffer commandBuffer, float lineWidth)
    size_t cmd_size;
 
    cmd_size = vn_sizeof_vkCmdSetLineWidth(commandBuffer, lineWidth);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdSetLineWidth(&cmd->cs, 0, commandBuffer, lineWidth);
@@ -5797,7 +5797,7 @@ vn_CmdSetDepthBias(VkCommandBuffer commandBuffer,
    cmd_size =
       vn_sizeof_vkCmdSetDepthBias(commandBuffer, depthBiasConstantFactor,
                                   depthBiasClamp, depthBiasSlopeFactor);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdSetDepthBias(&cmd->cs, 0, commandBuffer,
@@ -5814,7 +5814,7 @@ vn_CmdSetBlendConstants(VkCommandBuffer commandBuffer,
    size_t cmd_size;
 
    cmd_size = vn_sizeof_vkCmdSetBlendConstants(commandBuffer, blendConstants);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdSetBlendConstants(&cmd->cs, 0, commandBuffer,
@@ -5832,7 +5832,7 @@ vn_CmdSetDepthBounds(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdSetDepthBounds(commandBuffer, minDepthBounds,
                                             maxDepthBounds);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdSetDepthBounds(&cmd->cs, 0, commandBuffer, minDepthBounds,
@@ -5850,7 +5850,7 @@ vn_CmdSetStencilCompareMask(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdSetStencilCompareMask(commandBuffer, faceMask,
                                                    compareMask);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdSetStencilCompareMask(&cmd->cs, 0, commandBuffer, faceMask,
@@ -5868,7 +5868,7 @@ vn_CmdSetStencilWriteMask(VkCommandBuffer commandBuffer,
 
    cmd_size =
       vn_sizeof_vkCmdSetStencilWriteMask(commandBuffer, faceMask, writeMask);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdSetStencilWriteMask(&cmd->cs, 0, commandBuffer, faceMask,
@@ -5886,7 +5886,7 @@ vn_CmdSetStencilReference(VkCommandBuffer commandBuffer,
 
    cmd_size =
       vn_sizeof_vkCmdSetStencilReference(commandBuffer, faceMask, reference);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdSetStencilReference(&cmd->cs, 0, commandBuffer, faceMask,
@@ -5910,7 +5910,7 @@ vn_CmdBindDescriptorSets(VkCommandBuffer commandBuffer,
    cmd_size = vn_sizeof_vkCmdBindDescriptorSets(
       commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount,
       pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdBindDescriptorSets(&cmd->cs, 0, commandBuffer,
@@ -5931,7 +5931,7 @@ vn_CmdBindIndexBuffer(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdBindIndexBuffer(commandBuffer, buffer, offset,
                                              indexType);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdBindIndexBuffer(&cmd->cs, 0, commandBuffer, buffer, offset,
@@ -5951,7 +5951,7 @@ vn_CmdBindVertexBuffers(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdBindVertexBuffers(
       commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdBindVertexBuffers(&cmd->cs, 0, commandBuffer, firstBinding,
@@ -5971,7 +5971,7 @@ vn_CmdDraw(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdDraw(commandBuffer, vertexCount, instanceCount,
                                   firstVertex, firstInstance);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdDraw(&cmd->cs, 0, commandBuffer, vertexCount, instanceCount,
@@ -5993,7 +5993,7 @@ vn_CmdDrawIndexed(VkCommandBuffer commandBuffer,
    cmd_size =
       vn_sizeof_vkCmdDrawIndexed(commandBuffer, indexCount, instanceCount,
                                  firstIndex, vertexOffset, firstInstance);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdDrawIndexed(&cmd->cs, 0, commandBuffer, indexCount,
@@ -6014,7 +6014,7 @@ vn_CmdDrawIndirect(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdDrawIndirect(commandBuffer, buffer, offset,
                                           drawCount, stride);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdDrawIndirect(&cmd->cs, 0, commandBuffer, buffer, offset,
@@ -6034,7 +6034,7 @@ vn_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdDrawIndexedIndirect(commandBuffer, buffer,
                                                  offset, drawCount, stride);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdDrawIndexedIndirect(&cmd->cs, 0, commandBuffer, buffer,
@@ -6057,7 +6057,7 @@ vn_CmdDrawIndirectCount(VkCommandBuffer commandBuffer,
    cmd_size = vn_sizeof_vkCmdDrawIndirectCount(commandBuffer, buffer, offset,
                                                countBuffer, countBufferOffset,
                                                maxDrawCount, stride);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdDrawIndirectCount(&cmd->cs, 0, commandBuffer, buffer,
@@ -6081,7 +6081,7 @@ vn_CmdDrawIndexedIndirectCount(VkCommandBuffer commandBuffer,
    cmd_size = vn_sizeof_vkCmdDrawIndexedIndirectCount(
       commandBuffer, buffer, offset, countBuffer, countBufferOffset,
       maxDrawCount, stride);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdDrawIndexedIndirectCount(
@@ -6101,7 +6101,7 @@ vn_CmdDispatch(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdDispatch(commandBuffer, groupCountX, groupCountY,
                                       groupCountZ);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdDispatch(&cmd->cs, 0, commandBuffer, groupCountX,
@@ -6118,7 +6118,7 @@ vn_CmdDispatchIndirect(VkCommandBuffer commandBuffer,
    size_t cmd_size;
 
    cmd_size = vn_sizeof_vkCmdDispatchIndirect(commandBuffer, buffer, offset);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdDispatchIndirect(&cmd->cs, 0, commandBuffer, buffer,
@@ -6138,7 +6138,7 @@ vn_CmdCopyBuffer(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer,
                                         regionCount, pRegions);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdCopyBuffer(&cmd->cs, 0, commandBuffer, srcBuffer, dstBuffer,
@@ -6161,7 +6161,7 @@ vn_CmdCopyImage(VkCommandBuffer commandBuffer,
    cmd_size = vn_sizeof_vkCmdCopyImage(commandBuffer, srcImage,
                                        srcImageLayout, dstImage,
                                        dstImageLayout, regionCount, pRegions);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdCopyImage(&cmd->cs, 0, commandBuffer, srcImage,
@@ -6186,7 +6186,7 @@ vn_CmdBlitImage(VkCommandBuffer commandBuffer,
    cmd_size = vn_sizeof_vkCmdBlitImage(
       commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout,
       regionCount, pRegions, filter);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdBlitImage(&cmd->cs, 0, commandBuffer, srcImage,
@@ -6209,7 +6209,7 @@ vn_CmdCopyBufferToImage(VkCommandBuffer commandBuffer,
    cmd_size =
       vn_sizeof_vkCmdCopyBufferToImage(commandBuffer, srcBuffer, dstImage,
                                        dstImageLayout, regionCount, pRegions);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdCopyBufferToImage(&cmd->cs, 0, commandBuffer, srcBuffer,
@@ -6232,7 +6232,7 @@ vn_CmdCopyImageToBuffer(VkCommandBuffer commandBuffer,
    cmd_size = vn_sizeof_vkCmdCopyImageToBuffer(commandBuffer, srcImage,
                                                srcImageLayout, dstBuffer,
                                                regionCount, pRegions);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdCopyImageToBuffer(&cmd->cs, 0, commandBuffer, srcImage,
@@ -6253,7 +6253,7 @@ vn_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdUpdateBuffer(commandBuffer, dstBuffer, dstOffset,
                                           dataSize, pData);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdUpdateBuffer(&cmd->cs, 0, commandBuffer, dstBuffer,
@@ -6273,7 +6273,7 @@ vn_CmdFillBuffer(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdFillBuffer(commandBuffer, dstBuffer, dstOffset,
                                         size, data);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdFillBuffer(&cmd->cs, 0, commandBuffer, dstBuffer, dstOffset,
@@ -6294,7 +6294,7 @@ vn_CmdClearColorImage(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdClearColorImage(
       commandBuffer, image, imageLayout, pColor, rangeCount, pRanges);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdClearColorImage(&cmd->cs, 0, commandBuffer, image,
@@ -6315,7 +6315,7 @@ vn_CmdClearDepthStencilImage(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdClearDepthStencilImage(
       commandBuffer, image, imageLayout, pDepthStencil, rangeCount, pRanges);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdClearDepthStencilImage(&cmd->cs, 0, commandBuffer, image,
@@ -6336,7 +6336,7 @@ vn_CmdClearAttachments(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdClearAttachments(
       commandBuffer, attachmentCount, pAttachments, rectCount, pRects);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdClearAttachments(&cmd->cs, 0, commandBuffer,
@@ -6360,7 +6360,7 @@ vn_CmdResolveImage(VkCommandBuffer commandBuffer,
    cmd_size = vn_sizeof_vkCmdResolveImage(
       commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout,
       regionCount, pRegions);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdResolveImage(&cmd->cs, 0, commandBuffer, srcImage,
@@ -6378,7 +6378,7 @@ vn_CmdSetEvent(VkCommandBuffer commandBuffer,
    size_t cmd_size;
 
    cmd_size = vn_sizeof_vkCmdSetEvent(commandBuffer, event, stageMask);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdSetEvent(&cmd->cs, 0, commandBuffer, event, stageMask);
@@ -6394,7 +6394,7 @@ vn_CmdResetEvent(VkCommandBuffer commandBuffer,
    size_t cmd_size;
 
    cmd_size = vn_sizeof_vkCmdResetEvent(commandBuffer, event, stageMask);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdResetEvent(&cmd->cs, 0, commandBuffer, event, stageMask);
@@ -6421,7 +6421,7 @@ vn_CmdWaitEvents(VkCommandBuffer commandBuffer,
       commandBuffer, eventCount, pEvents, srcStageMask, dstStageMask,
       memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount,
       pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    /* XXX VK_IMAGE_LAYOUT_PRESENT_SRC_KHR */
@@ -6453,7 +6453,7 @@ vn_CmdPipelineBarrier(VkCommandBuffer commandBuffer,
       commandBuffer, srcStageMask, dstStageMask, dependencyFlags,
       memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount,
       pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    /* XXX VK_IMAGE_LAYOUT_PRESENT_SRC_KHR */
@@ -6476,7 +6476,7 @@ vn_CmdBeginQuery(VkCommandBuffer commandBuffer,
 
    cmd_size =
       vn_sizeof_vkCmdBeginQuery(commandBuffer, queryPool, query, flags);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdBeginQuery(&cmd->cs, 0, commandBuffer, queryPool, query,
@@ -6493,7 +6493,7 @@ vn_CmdEndQuery(VkCommandBuffer commandBuffer,
    size_t cmd_size;
 
    cmd_size = vn_sizeof_vkCmdEndQuery(commandBuffer, queryPool, query);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdEndQuery(&cmd->cs, 0, commandBuffer, queryPool, query);
@@ -6511,7 +6511,7 @@ vn_CmdResetQueryPool(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdResetQueryPool(commandBuffer, queryPool,
                                             firstQuery, queryCount);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdResetQueryPool(&cmd->cs, 0, commandBuffer, queryPool,
@@ -6530,7 +6530,7 @@ vn_CmdWriteTimestamp(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdWriteTimestamp(commandBuffer, pipelineStage,
                                             queryPool, query);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdWriteTimestamp(&cmd->cs, 0, commandBuffer, pipelineStage,
@@ -6554,7 +6554,7 @@ vn_CmdCopyQueryPoolResults(VkCommandBuffer commandBuffer,
    cmd_size = vn_sizeof_vkCmdCopyQueryPoolResults(
       commandBuffer, queryPool, firstQuery, queryCount, dstBuffer, dstOffset,
       stride, flags);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdCopyQueryPoolResults(&cmd->cs, 0, commandBuffer, queryPool,
@@ -6576,7 +6576,7 @@ vn_CmdPushConstants(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdPushConstants(commandBuffer, layout, stageFlags,
                                            offset, size, pValues);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdPushConstants(&cmd->cs, 0, commandBuffer, layout,
@@ -6594,7 +6594,7 @@ vn_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdBeginRenderPass(commandBuffer, pRenderPassBegin,
                                              contents);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdBeginRenderPass(&cmd->cs, 0, commandBuffer,
@@ -6609,7 +6609,7 @@ vn_CmdNextSubpass(VkCommandBuffer commandBuffer, VkSubpassContents contents)
    size_t cmd_size;
 
    cmd_size = vn_sizeof_vkCmdNextSubpass(commandBuffer, contents);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdNextSubpass(&cmd->cs, 0, commandBuffer, contents);
@@ -6623,7 +6623,7 @@ vn_CmdEndRenderPass(VkCommandBuffer commandBuffer)
    size_t cmd_size;
 
    cmd_size = vn_sizeof_vkCmdEndRenderPass(commandBuffer);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdEndRenderPass(&cmd->cs, 0, commandBuffer);
@@ -6640,7 +6640,7 @@ vn_CmdBeginRenderPass2(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdBeginRenderPass2(commandBuffer, pRenderPassBegin,
                                               pSubpassBeginInfo);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdBeginRenderPass2(&cmd->cs, 0, commandBuffer,
@@ -6658,7 +6658,7 @@ vn_CmdNextSubpass2(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdNextSubpass2(commandBuffer, pSubpassBeginInfo,
                                           pSubpassEndInfo);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdNextSubpass2(&cmd->cs, 0, commandBuffer, pSubpassBeginInfo,
@@ -6674,7 +6674,7 @@ vn_CmdEndRenderPass2(VkCommandBuffer commandBuffer,
    size_t cmd_size;
 
    cmd_size = vn_sizeof_vkCmdEndRenderPass2(commandBuffer, pSubpassEndInfo);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdEndRenderPass2(&cmd->cs, 0, commandBuffer, pSubpassEndInfo);
@@ -6691,7 +6691,7 @@ vn_CmdExecuteCommands(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdExecuteCommands(
       commandBuffer, commandBufferCount, pCommandBuffers);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdExecuteCommands(&cmd->cs, 0, commandBuffer,
@@ -6706,7 +6706,7 @@ vn_CmdSetDeviceMask(VkCommandBuffer commandBuffer, uint32_t deviceMask)
    size_t cmd_size;
 
    cmd_size = vn_sizeof_vkCmdSetDeviceMask(commandBuffer, deviceMask);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdSetDeviceMask(&cmd->cs, 0, commandBuffer, deviceMask);
@@ -6728,7 +6728,7 @@ vn_CmdDispatchBase(VkCommandBuffer commandBuffer,
    cmd_size = vn_sizeof_vkCmdDispatchBase(commandBuffer, baseGroupX,
                                           baseGroupY, baseGroupZ, groupCountX,
                                           groupCountY, groupCountZ);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdDispatchBase(&cmd->cs, 0, commandBuffer, baseGroupX,
@@ -6749,7 +6749,7 @@ vn_CmdBeginQueryIndexedEXT(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdBeginQueryIndexedEXT(commandBuffer, queryPool,
                                                   query, flags, index);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdBeginQueryIndexedEXT(&cmd->cs, 0, commandBuffer, queryPool,
@@ -6768,7 +6768,7 @@ vn_CmdEndQueryIndexedEXT(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdEndQueryIndexedEXT(commandBuffer, queryPool,
                                                 query, index);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdEndQueryIndexedEXT(&cmd->cs, 0, commandBuffer, queryPool,
@@ -6789,7 +6789,7 @@ vn_CmdBindTransformFeedbackBuffersEXT(VkCommandBuffer commandBuffer,
 
    cmd_size = vn_sizeof_vkCmdBindTransformFeedbackBuffersEXT(
       commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets, pSizes);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdBindTransformFeedbackBuffersEXT(&cmd->cs, 0, commandBuffer,
@@ -6811,7 +6811,7 @@ vn_CmdBeginTransformFeedbackEXT(VkCommandBuffer commandBuffer,
    cmd_size = vn_sizeof_vkCmdBeginTransformFeedbackEXT(
       commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers,
       pCounterBufferOffsets);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdBeginTransformFeedbackEXT(
@@ -6833,7 +6833,7 @@ vn_CmdEndTransformFeedbackEXT(VkCommandBuffer commandBuffer,
    cmd_size = vn_sizeof_vkCmdEndTransformFeedbackEXT(
       commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers,
       pCounterBufferOffsets);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdEndTransformFeedbackEXT(
@@ -6857,7 +6857,7 @@ vn_CmdDrawIndirectByteCountEXT(VkCommandBuffer commandBuffer,
    cmd_size = vn_sizeof_vkCmdDrawIndirectByteCountEXT(
       commandBuffer, instanceCount, firstInstance, counterBuffer,
       counterBufferOffset, counterOffset, vertexStride);
-   if (!vn_cs_reserve_out(&cmd->cs, cmd_size))
+   if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size))
       return;
 
    vn_encode_vkCmdDrawIndirectByteCountEXT(
