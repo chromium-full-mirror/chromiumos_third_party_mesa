@@ -6,57 +6,56 @@
 #include "vn_cs.h"
 
 void
-vn_cs_init(struct vn_cs_encoder *cs,
+vn_cs_init(struct vn_cs_encoder *enc,
            const VkAllocationCallbacks *alloc,
            VkSystemAllocationScope alloc_scope,
-           size_t out_min_size)
+           size_t min_size)
 {
-   memset(cs, 0, sizeof(*cs));
-   cs->allocator = alloc;
-   cs->alloc_scope = alloc_scope;
-
-   cs->out.min_iov_size = out_min_size;
+   memset(enc, 0, sizeof(*enc));
+   enc->allocator = alloc;
+   enc->alloc_scope = alloc_scope;
+   enc->min_iov_size = min_size;
 }
 
 void
-vn_cs_fini(struct vn_cs_encoder *cs)
+vn_cs_fini(struct vn_cs_encoder *enc)
 {
-   for (uint32_t i = 0; i < cs->out.iov_count; i++)
-      vk_free(cs->allocator, cs->out.iovs[i].iov_base);
-   if (cs->out.iovs)
-      vk_free(cs->allocator, cs->out.iovs);
+   for (uint32_t i = 0; i < enc->iov_count; i++)
+      vk_free(enc->allocator, enc->iovs[i].iov_base);
+   if (enc->iovs)
+      vk_free(enc->allocator, enc->iovs);
 }
 
 static void
-vn_cs_reset_out(struct vn_cs_encoder *cs)
+vn_cs_reset_out(struct vn_cs_encoder *enc)
 {
-   if (unlikely(!cs->out.iov_count))
+   if (unlikely(!enc->iov_count))
       return;
 
    /* free all but the last iov */
-   for (uint32_t i = 0; i < cs->out.iov_count - 1; i++)
-      vk_free(cs->allocator, cs->out.iovs[i].iov_base);
+   for (uint32_t i = 0; i < enc->iov_count - 1; i++)
+      vk_free(enc->allocator, enc->iovs[i].iov_base);
 
    /* move the last iov to the beginning */
-   struct vn_cs_iovec *iov = &cs->out.iovs[0];
-   iov->iov_base = cs->out.iovs[cs->out.iov_count - 1].iov_base;
+   struct vn_cs_iovec *iov = &enc->iovs[0];
+   iov->iov_base = enc->iovs[enc->iov_count - 1].iov_base;
    iov->iov_len = 0;
-   cs->out.iov_count = 1;
+   enc->iov_count = 1;
 
-   cs->out.total_iov_len = 0;
+   enc->total_iov_len = 0;
 
-   cs->out.cur = iov->iov_base;
-   cs->out.end = iov->iov_base + cs->out.last_iov_size;
+   enc->cur = iov->iov_base;
+   enc->end = iov->iov_base + enc->last_iov_size;
 }
 
 /**
  * Reset a cs for reuse.
  */
 void
-vn_cs_reset(struct vn_cs_encoder *cs)
+vn_cs_reset(struct vn_cs_encoder *enc)
 {
-   /* cs->error is sticky */
-   vn_cs_reset_out(cs);
+   /* enc->error is sticky */
+   vn_cs_reset_out(enc);
 }
 
 static uint32_t
@@ -95,74 +94,73 @@ grow_buffer_size(size_t size, size_t used, size_t growth, size_t min_size)
 }
 
 static bool
-vn_cs_grow_out_iovs(struct vn_cs_encoder *cs)
+vn_cs_grow_out_iovs(struct vn_cs_encoder *enc)
 {
    const uint32_t iov_max =
-      grow_array_size(cs->out.iov_max, cs->out.iov_count, 1, 4);
+      grow_array_size(enc->iov_max, enc->iov_count, 1, 4);
    if (!iov_max)
       return false;
 
    void *iovs =
-      vk_realloc(cs->allocator, cs->out.iovs, sizeof(*cs->out.iovs) * iov_max,
-                 VN_DEFAULT_ALIGN, cs->alloc_scope);
+      vk_realloc(enc->allocator, enc->iovs, sizeof(*enc->iovs) * iov_max,
+                 VN_DEFAULT_ALIGN, enc->alloc_scope);
    if (!iovs)
       return false;
 
-   cs->out.iovs = iovs;
-   cs->out.iov_max = iov_max;
+   enc->iovs = iovs;
+   enc->iov_max = iov_max;
 
    return true;
 }
 
 static void
-vn_cs_set_out_iov_len(struct vn_cs_encoder *cs)
+vn_cs_set_out_iov_len(struct vn_cs_encoder *enc)
 {
-   if (unlikely(!cs->out.iov_count))
+   if (unlikely(!enc->iov_count))
       return;
 
-   struct vn_cs_iovec *iov = &cs->out.iovs[cs->out.iov_count - 1];
-   assert(!iov->iov_len && iov->iov_base <= cs->out.cur);
-   iov->iov_len = cs->out.cur - iov->iov_base;
-   assert(iov->iov_len <= cs->out.last_iov_size);
-   cs->out.total_iov_len += iov->iov_len;
+   struct vn_cs_iovec *iov = &enc->iovs[enc->iov_count - 1];
+   assert(!iov->iov_len && iov->iov_base <= enc->cur);
+   iov->iov_len = enc->cur - iov->iov_base;
+   assert(iov->iov_len <= enc->last_iov_size);
+   enc->total_iov_len += iov->iov_len;
 
-   cs->out.end = cs->out.cur;
+   enc->end = enc->cur;
 }
 
 /**
  * Add a new iovec to a cs.
  */
 bool
-vn_cs_reserve_out_internal(struct vn_cs_encoder *cs, size_t size)
+vn_cs_reserve_out_internal(struct vn_cs_encoder *enc, size_t size)
 {
-   if (cs->out.iov_count >= cs->out.iov_max) {
-      if (!vn_cs_grow_out_iovs(cs))
+   if (enc->iov_count >= enc->iov_max) {
+      if (!vn_cs_grow_out_iovs(enc))
          return false;
-      assert(cs->out.iov_count < cs->out.iov_max);
+      assert(enc->iov_count < enc->iov_max);
    }
 
-   const size_t iov_size =
-      grow_buffer_size(cs->out.last_iov_size, cs->out.last_iov_size, size,
-                       cs->out.min_iov_size);
+   const size_t iov_size = grow_buffer_size(
+      enc->last_iov_size, enc->last_iov_size, size, enc->min_iov_size);
    if (!iov_size)
       return false;
 
    void *base =
-      vk_alloc(cs->allocator, iov_size, VN_DEFAULT_ALIGN, cs->alloc_scope);
+      vk_alloc(enc->allocator, iov_size, VN_DEFAULT_ALIGN, enc->alloc_scope);
    if (!base)
       return false;
 
-   vn_cs_set_out_iov_len(cs);
+   vn_cs_set_out_iov_len(enc);
 
    /* add a new iov */
-   struct vn_cs_iovec *iov = &cs->out.iovs[cs->out.iov_count++];
+   struct vn_cs_iovec *iov = &enc->iovs[enc->iov_count++];
    iov->iov_base = base;
    iov->iov_len = 0;
-   cs->out.last_iov_size = iov_size;
+   enc->last_iov_size = iov_size;
 
    /* switch to the new iov */
-   cs->out.cur = iov->iov_base;
-   cs->out.end = iov->iov_base + cs->out.last_iov_size;
+   enc->cur = iov->iov_base;
+   enc->end = iov->iov_base + enc->last_iov_size;
 
    return true;
 }
@@ -171,7 +169,7 @@ vn_cs_reserve_out_internal(struct vn_cs_encoder *cs, size_t size)
  * End command emission.
  */
 void
-vn_cs_end_out(struct vn_cs_encoder *cs)
+vn_cs_end_out(struct vn_cs_encoder *enc)
 {
-   vn_cs_set_out_iov_len(cs);
+   vn_cs_set_out_iov_len(enc);
 }

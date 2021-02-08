@@ -418,8 +418,8 @@ sim_submit_alloc_cmd(const struct vn_cs_encoder *cs,
                      size_t offset,
                      size_t size)
 {
-   const struct vn_cs_iovec *iovs = cs->out.iovs;
-   const uint32_t iov_count = cs->out.iov_count;
+   const struct vn_cs_iovec *iovs = cs->iovs;
+   const uint32_t iov_count = cs->iov_count;
 
    /* seek to offset */
    uint32_t i;
