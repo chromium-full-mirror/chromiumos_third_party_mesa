@@ -24,10 +24,10 @@ vn_encode_VkInstance(struct vn_cs *cs, const VkInstance *val)
 }
 
 static inline void
-vn_decode_VkInstance(struct vn_cs *cs, VkInstance *val)
+vn_decode_VkInstance(struct vn_cs_decoder *dec, VkInstance *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -47,10 +47,10 @@ vn_encode_VkPhysicalDevice(struct vn_cs *cs, const VkPhysicalDevice *val)
 }
 
 static inline void
-vn_decode_VkPhysicalDevice(struct vn_cs *cs, VkPhysicalDevice *val)
+vn_decode_VkPhysicalDevice(struct vn_cs_decoder *dec, VkPhysicalDevice *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -70,10 +70,10 @@ vn_encode_VkDevice(struct vn_cs *cs, const VkDevice *val)
 }
 
 static inline void
-vn_decode_VkDevice(struct vn_cs *cs, VkDevice *val)
+vn_decode_VkDevice(struct vn_cs_decoder *dec, VkDevice *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_device_store_id(val, id);
 }
 
@@ -93,10 +93,10 @@ vn_encode_VkQueue(struct vn_cs *cs, const VkQueue *val)
 }
 
 static inline void
-vn_decode_VkQueue(struct vn_cs *cs, VkQueue *val)
+vn_decode_VkQueue(struct vn_cs_decoder *dec, VkQueue *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -116,10 +116,10 @@ vn_encode_VkCommandBuffer(struct vn_cs *cs, const VkCommandBuffer *val)
 }
 
 static inline void
-vn_decode_VkCommandBuffer(struct vn_cs *cs, VkCommandBuffer *val)
+vn_decode_VkCommandBuffer(struct vn_cs_decoder *dec, VkCommandBuffer *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -139,10 +139,10 @@ vn_encode_VkDeviceMemory(struct vn_cs *cs, const VkDeviceMemory *val)
 }
 
 static inline void
-vn_decode_VkDeviceMemory(struct vn_cs *cs, VkDeviceMemory *val)
+vn_decode_VkDeviceMemory(struct vn_cs_decoder *dec, VkDeviceMemory *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -162,10 +162,10 @@ vn_encode_VkCommandPool(struct vn_cs *cs, const VkCommandPool *val)
 }
 
 static inline void
-vn_decode_VkCommandPool(struct vn_cs *cs, VkCommandPool *val)
+vn_decode_VkCommandPool(struct vn_cs_decoder *dec, VkCommandPool *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -185,10 +185,10 @@ vn_encode_VkBuffer(struct vn_cs *cs, const VkBuffer *val)
 }
 
 static inline void
-vn_decode_VkBuffer(struct vn_cs *cs, VkBuffer *val)
+vn_decode_VkBuffer(struct vn_cs_decoder *dec, VkBuffer *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -208,10 +208,10 @@ vn_encode_VkBufferView(struct vn_cs *cs, const VkBufferView *val)
 }
 
 static inline void
-vn_decode_VkBufferView(struct vn_cs *cs, VkBufferView *val)
+vn_decode_VkBufferView(struct vn_cs_decoder *dec, VkBufferView *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -231,10 +231,10 @@ vn_encode_VkImage(struct vn_cs *cs, const VkImage *val)
 }
 
 static inline void
-vn_decode_VkImage(struct vn_cs *cs, VkImage *val)
+vn_decode_VkImage(struct vn_cs_decoder *dec, VkImage *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -254,10 +254,10 @@ vn_encode_VkImageView(struct vn_cs *cs, const VkImageView *val)
 }
 
 static inline void
-vn_decode_VkImageView(struct vn_cs *cs, VkImageView *val)
+vn_decode_VkImageView(struct vn_cs_decoder *dec, VkImageView *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -277,10 +277,10 @@ vn_encode_VkShaderModule(struct vn_cs *cs, const VkShaderModule *val)
 }
 
 static inline void
-vn_decode_VkShaderModule(struct vn_cs *cs, VkShaderModule *val)
+vn_decode_VkShaderModule(struct vn_cs_decoder *dec, VkShaderModule *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -300,10 +300,10 @@ vn_encode_VkPipeline(struct vn_cs *cs, const VkPipeline *val)
 }
 
 static inline void
-vn_decode_VkPipeline(struct vn_cs *cs, VkPipeline *val)
+vn_decode_VkPipeline(struct vn_cs_decoder *dec, VkPipeline *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -323,10 +323,10 @@ vn_encode_VkPipelineLayout(struct vn_cs *cs, const VkPipelineLayout *val)
 }
 
 static inline void
-vn_decode_VkPipelineLayout(struct vn_cs *cs, VkPipelineLayout *val)
+vn_decode_VkPipelineLayout(struct vn_cs_decoder *dec, VkPipelineLayout *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -346,10 +346,10 @@ vn_encode_VkSampler(struct vn_cs *cs, const VkSampler *val)
 }
 
 static inline void
-vn_decode_VkSampler(struct vn_cs *cs, VkSampler *val)
+vn_decode_VkSampler(struct vn_cs_decoder *dec, VkSampler *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -369,10 +369,10 @@ vn_encode_VkDescriptorSet(struct vn_cs *cs, const VkDescriptorSet *val)
 }
 
 static inline void
-vn_decode_VkDescriptorSet(struct vn_cs *cs, VkDescriptorSet *val)
+vn_decode_VkDescriptorSet(struct vn_cs_decoder *dec, VkDescriptorSet *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -392,10 +392,10 @@ vn_encode_VkDescriptorSetLayout(struct vn_cs *cs, const VkDescriptorSetLayout *v
 }
 
 static inline void
-vn_decode_VkDescriptorSetLayout(struct vn_cs *cs, VkDescriptorSetLayout *val)
+vn_decode_VkDescriptorSetLayout(struct vn_cs_decoder *dec, VkDescriptorSetLayout *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -415,10 +415,10 @@ vn_encode_VkDescriptorPool(struct vn_cs *cs, const VkDescriptorPool *val)
 }
 
 static inline void
-vn_decode_VkDescriptorPool(struct vn_cs *cs, VkDescriptorPool *val)
+vn_decode_VkDescriptorPool(struct vn_cs_decoder *dec, VkDescriptorPool *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -438,10 +438,10 @@ vn_encode_VkFence(struct vn_cs *cs, const VkFence *val)
 }
 
 static inline void
-vn_decode_VkFence(struct vn_cs *cs, VkFence *val)
+vn_decode_VkFence(struct vn_cs_decoder *dec, VkFence *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -461,10 +461,10 @@ vn_encode_VkSemaphore(struct vn_cs *cs, const VkSemaphore *val)
 }
 
 static inline void
-vn_decode_VkSemaphore(struct vn_cs *cs, VkSemaphore *val)
+vn_decode_VkSemaphore(struct vn_cs_decoder *dec, VkSemaphore *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -484,10 +484,10 @@ vn_encode_VkEvent(struct vn_cs *cs, const VkEvent *val)
 }
 
 static inline void
-vn_decode_VkEvent(struct vn_cs *cs, VkEvent *val)
+vn_decode_VkEvent(struct vn_cs_decoder *dec, VkEvent *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -507,10 +507,10 @@ vn_encode_VkQueryPool(struct vn_cs *cs, const VkQueryPool *val)
 }
 
 static inline void
-vn_decode_VkQueryPool(struct vn_cs *cs, VkQueryPool *val)
+vn_decode_VkQueryPool(struct vn_cs_decoder *dec, VkQueryPool *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -530,10 +530,10 @@ vn_encode_VkFramebuffer(struct vn_cs *cs, const VkFramebuffer *val)
 }
 
 static inline void
-vn_decode_VkFramebuffer(struct vn_cs *cs, VkFramebuffer *val)
+vn_decode_VkFramebuffer(struct vn_cs_decoder *dec, VkFramebuffer *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -553,10 +553,10 @@ vn_encode_VkRenderPass(struct vn_cs *cs, const VkRenderPass *val)
 }
 
 static inline void
-vn_decode_VkRenderPass(struct vn_cs *cs, VkRenderPass *val)
+vn_decode_VkRenderPass(struct vn_cs_decoder *dec, VkRenderPass *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -576,10 +576,10 @@ vn_encode_VkPipelineCache(struct vn_cs *cs, const VkPipelineCache *val)
 }
 
 static inline void
-vn_decode_VkPipelineCache(struct vn_cs *cs, VkPipelineCache *val)
+vn_decode_VkPipelineCache(struct vn_cs_decoder *dec, VkPipelineCache *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -599,10 +599,10 @@ vn_encode_VkDescriptorUpdateTemplate(struct vn_cs *cs, const VkDescriptorUpdateT
 }
 
 static inline void
-vn_decode_VkDescriptorUpdateTemplate(struct vn_cs *cs, VkDescriptorUpdateTemplate *val)
+vn_decode_VkDescriptorUpdateTemplate(struct vn_cs_decoder *dec, VkDescriptorUpdateTemplate *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 
@@ -622,10 +622,10 @@ vn_encode_VkSamplerYcbcrConversion(struct vn_cs *cs, const VkSamplerYcbcrConvers
 }
 
 static inline void
-vn_decode_VkSamplerYcbcrConversion(struct vn_cs *cs, VkSamplerYcbcrConversion *val)
+vn_decode_VkSamplerYcbcrConversion(struct vn_cs_decoder *dec, VkSamplerYcbcrConversion *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
+    vn_decode_uint64_t(dec, &id);
     vn_cs_object_store_id((void *)val, id);
 }
 

@@ -31,12 +31,11 @@ static inline VkResult vn_call_vkCreateInstance(struct vn_instance *vn_instance,
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateInstance_reply(&parser, pCreateInfo, pAllocator, pInstance);
+        ret = vn_decode_vkCreateInstance_reply(&dec, pCreateInfo, pAllocator, pInstance);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -79,12 +78,11 @@ static inline void vn_call_vkDestroyInstance(struct vn_instance *vn_instance, Vk
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyInstance_reply(&parser, instance, pAllocator);
+        vn_decode_vkDestroyInstance_reply(&dec, instance, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -126,12 +124,11 @@ static inline VkResult vn_call_vkEnumeratePhysicalDevices(struct vn_instance *vn
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkEnumeratePhysicalDevices_reply(&parser, instance, pPhysicalDeviceCount, pPhysicalDevices);
+        ret = vn_decode_vkEnumeratePhysicalDevices_reply(&dec, instance, pPhysicalDeviceCount, pPhysicalDevices);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -174,12 +171,11 @@ static inline void vn_call_vkGetPhysicalDeviceProperties(struct vn_instance *vn_
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceProperties_reply(&parser, physicalDevice, pProperties);
+        vn_decode_vkGetPhysicalDeviceProperties_reply(&dec, physicalDevice, pProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -220,12 +216,11 @@ static inline void vn_call_vkGetPhysicalDeviceQueueFamilyProperties(struct vn_in
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceQueueFamilyProperties_reply(&parser, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
+        vn_decode_vkGetPhysicalDeviceQueueFamilyProperties_reply(&dec, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -266,12 +261,11 @@ static inline void vn_call_vkGetPhysicalDeviceMemoryProperties(struct vn_instanc
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceMemoryProperties_reply(&parser, physicalDevice, pMemoryProperties);
+        vn_decode_vkGetPhysicalDeviceMemoryProperties_reply(&dec, physicalDevice, pMemoryProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -312,12 +306,11 @@ static inline void vn_call_vkGetPhysicalDeviceFeatures(struct vn_instance *vn_in
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceFeatures_reply(&parser, physicalDevice, pFeatures);
+        vn_decode_vkGetPhysicalDeviceFeatures_reply(&dec, physicalDevice, pFeatures);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -358,12 +351,11 @@ static inline void vn_call_vkGetPhysicalDeviceFormatProperties(struct vn_instanc
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceFormatProperties_reply(&parser, physicalDevice, format, pFormatProperties);
+        vn_decode_vkGetPhysicalDeviceFormatProperties_reply(&dec, physicalDevice, format, pFormatProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -405,12 +397,11 @@ static inline VkResult vn_call_vkGetPhysicalDeviceImageFormatProperties(struct v
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkGetPhysicalDeviceImageFormatProperties_reply(&parser, physicalDevice, format, type, tiling, usage, flags, pImageFormatProperties);
+        ret = vn_decode_vkGetPhysicalDeviceImageFormatProperties_reply(&dec, physicalDevice, format, type, tiling, usage, flags, pImageFormatProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -454,12 +445,11 @@ static inline VkResult vn_call_vkCreateDevice(struct vn_instance *vn_instance, V
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateDevice_reply(&parser, physicalDevice, pCreateInfo, pAllocator, pDevice);
+        ret = vn_decode_vkCreateDevice_reply(&dec, physicalDevice, pCreateInfo, pAllocator, pDevice);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -502,12 +492,11 @@ static inline void vn_call_vkDestroyDevice(struct vn_instance *vn_instance, VkDe
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyDevice_reply(&parser, device, pAllocator);
+        vn_decode_vkDestroyDevice_reply(&dec, device, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -549,12 +538,11 @@ static inline VkResult vn_call_vkEnumerateInstanceVersion(struct vn_instance *vn
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkEnumerateInstanceVersion_reply(&parser, pApiVersion);
+        ret = vn_decode_vkEnumerateInstanceVersion_reply(&dec, pApiVersion);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -598,12 +586,11 @@ static inline VkResult vn_call_vkEnumerateInstanceLayerProperties(struct vn_inst
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkEnumerateInstanceLayerProperties_reply(&parser, pPropertyCount, pProperties);
+        ret = vn_decode_vkEnumerateInstanceLayerProperties_reply(&dec, pPropertyCount, pProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -647,12 +634,11 @@ static inline VkResult vn_call_vkEnumerateInstanceExtensionProperties(struct vn_
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkEnumerateInstanceExtensionProperties_reply(&parser, pLayerName, pPropertyCount, pProperties);
+        ret = vn_decode_vkEnumerateInstanceExtensionProperties_reply(&dec, pLayerName, pPropertyCount, pProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -696,12 +682,11 @@ static inline VkResult vn_call_vkEnumerateDeviceLayerProperties(struct vn_instan
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkEnumerateDeviceLayerProperties_reply(&parser, physicalDevice, pPropertyCount, pProperties);
+        ret = vn_decode_vkEnumerateDeviceLayerProperties_reply(&dec, physicalDevice, pPropertyCount, pProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -745,12 +730,11 @@ static inline VkResult vn_call_vkEnumerateDeviceExtensionProperties(struct vn_in
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkEnumerateDeviceExtensionProperties_reply(&parser, physicalDevice, pLayerName, pPropertyCount, pProperties);
+        ret = vn_decode_vkEnumerateDeviceExtensionProperties_reply(&dec, physicalDevice, pLayerName, pPropertyCount, pProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -793,12 +777,11 @@ static inline void vn_call_vkGetDeviceQueue(struct vn_instance *vn_instance, VkD
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetDeviceQueue_reply(&parser, device, queueFamilyIndex, queueIndex, pQueue);
+        vn_decode_vkGetDeviceQueue_reply(&dec, device, queueFamilyIndex, queueIndex, pQueue);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -840,12 +823,11 @@ static inline VkResult vn_call_vkQueueSubmit(struct vn_instance *vn_instance, Vk
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkQueueSubmit_reply(&parser, queue, submitCount, pSubmits, fence);
+        ret = vn_decode_vkQueueSubmit_reply(&dec, queue, submitCount, pSubmits, fence);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -889,12 +871,11 @@ static inline VkResult vn_call_vkQueueWaitIdle(struct vn_instance *vn_instance, 
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkQueueWaitIdle_reply(&parser, queue);
+        ret = vn_decode_vkQueueWaitIdle_reply(&dec, queue);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -938,12 +919,11 @@ static inline VkResult vn_call_vkDeviceWaitIdle(struct vn_instance *vn_instance,
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkDeviceWaitIdle_reply(&parser, device);
+        ret = vn_decode_vkDeviceWaitIdle_reply(&dec, device);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -987,12 +967,11 @@ static inline VkResult vn_call_vkAllocateMemory(struct vn_instance *vn_instance,
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkAllocateMemory_reply(&parser, device, pAllocateInfo, pAllocator, pMemory);
+        ret = vn_decode_vkAllocateMemory_reply(&dec, device, pAllocateInfo, pAllocator, pMemory);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1035,12 +1014,11 @@ static inline void vn_call_vkFreeMemory(struct vn_instance *vn_instance, VkDevic
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkFreeMemory_reply(&parser, device, memory, pAllocator);
+        vn_decode_vkFreeMemory_reply(&dec, device, memory, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1081,12 +1059,11 @@ static inline void vn_call_vkUnmapMemory(struct vn_instance *vn_instance, VkDevi
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkUnmapMemory_reply(&parser, device, memory);
+        vn_decode_vkUnmapMemory_reply(&dec, device, memory);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1128,12 +1105,11 @@ static inline VkResult vn_call_vkFlushMappedMemoryRanges(struct vn_instance *vn_
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkFlushMappedMemoryRanges_reply(&parser, device, memoryRangeCount, pMemoryRanges);
+        ret = vn_decode_vkFlushMappedMemoryRanges_reply(&dec, device, memoryRangeCount, pMemoryRanges);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1177,12 +1153,11 @@ static inline VkResult vn_call_vkInvalidateMappedMemoryRanges(struct vn_instance
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkInvalidateMappedMemoryRanges_reply(&parser, device, memoryRangeCount, pMemoryRanges);
+        ret = vn_decode_vkInvalidateMappedMemoryRanges_reply(&dec, device, memoryRangeCount, pMemoryRanges);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1225,12 +1200,11 @@ static inline void vn_call_vkGetDeviceMemoryCommitment(struct vn_instance *vn_in
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetDeviceMemoryCommitment_reply(&parser, device, memory, pCommittedMemoryInBytes);
+        vn_decode_vkGetDeviceMemoryCommitment_reply(&dec, device, memory, pCommittedMemoryInBytes);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1271,12 +1245,11 @@ static inline void vn_call_vkGetBufferMemoryRequirements(struct vn_instance *vn_
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetBufferMemoryRequirements_reply(&parser, device, buffer, pMemoryRequirements);
+        vn_decode_vkGetBufferMemoryRequirements_reply(&dec, device, buffer, pMemoryRequirements);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1318,12 +1291,11 @@ static inline VkResult vn_call_vkBindBufferMemory(struct vn_instance *vn_instanc
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkBindBufferMemory_reply(&parser, device, buffer, memory, memoryOffset);
+        ret = vn_decode_vkBindBufferMemory_reply(&dec, device, buffer, memory, memoryOffset);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1366,12 +1338,11 @@ static inline void vn_call_vkGetImageMemoryRequirements(struct vn_instance *vn_i
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetImageMemoryRequirements_reply(&parser, device, image, pMemoryRequirements);
+        vn_decode_vkGetImageMemoryRequirements_reply(&dec, device, image, pMemoryRequirements);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1413,12 +1384,11 @@ static inline VkResult vn_call_vkBindImageMemory(struct vn_instance *vn_instance
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkBindImageMemory_reply(&parser, device, image, memory, memoryOffset);
+        ret = vn_decode_vkBindImageMemory_reply(&dec, device, image, memory, memoryOffset);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1461,12 +1431,11 @@ static inline void vn_call_vkGetImageSparseMemoryRequirements(struct vn_instance
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetImageSparseMemoryRequirements_reply(&parser, device, image, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
+        vn_decode_vkGetImageSparseMemoryRequirements_reply(&dec, device, image, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1507,12 +1476,11 @@ static inline void vn_call_vkGetPhysicalDeviceSparseImageFormatProperties(struct
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceSparseImageFormatProperties_reply(&parser, physicalDevice, format, type, samples, usage, tiling, pPropertyCount, pProperties);
+        vn_decode_vkGetPhysicalDeviceSparseImageFormatProperties_reply(&dec, physicalDevice, format, type, samples, usage, tiling, pPropertyCount, pProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1554,12 +1522,11 @@ static inline VkResult vn_call_vkQueueBindSparse(struct vn_instance *vn_instance
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkQueueBindSparse_reply(&parser, queue, bindInfoCount, pBindInfo, fence);
+        ret = vn_decode_vkQueueBindSparse_reply(&dec, queue, bindInfoCount, pBindInfo, fence);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1603,12 +1570,11 @@ static inline VkResult vn_call_vkCreateFence(struct vn_instance *vn_instance, Vk
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateFence_reply(&parser, device, pCreateInfo, pAllocator, pFence);
+        ret = vn_decode_vkCreateFence_reply(&dec, device, pCreateInfo, pAllocator, pFence);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1651,12 +1617,11 @@ static inline void vn_call_vkDestroyFence(struct vn_instance *vn_instance, VkDev
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyFence_reply(&parser, device, fence, pAllocator);
+        vn_decode_vkDestroyFence_reply(&dec, device, fence, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1698,12 +1663,11 @@ static inline VkResult vn_call_vkResetFences(struct vn_instance *vn_instance, Vk
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkResetFences_reply(&parser, device, fenceCount, pFences);
+        ret = vn_decode_vkResetFences_reply(&dec, device, fenceCount, pFences);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1747,12 +1711,11 @@ static inline VkResult vn_call_vkGetFenceStatus(struct vn_instance *vn_instance,
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkGetFenceStatus_reply(&parser, device, fence);
+        ret = vn_decode_vkGetFenceStatus_reply(&dec, device, fence);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1796,12 +1759,11 @@ static inline VkResult vn_call_vkWaitForFences(struct vn_instance *vn_instance, 
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkWaitForFences_reply(&parser, device, fenceCount, pFences, waitAll, timeout);
+        ret = vn_decode_vkWaitForFences_reply(&dec, device, fenceCount, pFences, waitAll, timeout);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1845,12 +1807,11 @@ static inline VkResult vn_call_vkCreateSemaphore(struct vn_instance *vn_instance
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateSemaphore_reply(&parser, device, pCreateInfo, pAllocator, pSemaphore);
+        ret = vn_decode_vkCreateSemaphore_reply(&dec, device, pCreateInfo, pAllocator, pSemaphore);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1893,12 +1854,11 @@ static inline void vn_call_vkDestroySemaphore(struct vn_instance *vn_instance, V
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroySemaphore_reply(&parser, device, semaphore, pAllocator);
+        vn_decode_vkDestroySemaphore_reply(&dec, device, semaphore, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1940,12 +1900,11 @@ static inline VkResult vn_call_vkCreateEvent(struct vn_instance *vn_instance, Vk
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateEvent_reply(&parser, device, pCreateInfo, pAllocator, pEvent);
+        ret = vn_decode_vkCreateEvent_reply(&dec, device, pCreateInfo, pAllocator, pEvent);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -1988,12 +1947,11 @@ static inline void vn_call_vkDestroyEvent(struct vn_instance *vn_instance, VkDev
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyEvent_reply(&parser, device, event, pAllocator);
+        vn_decode_vkDestroyEvent_reply(&dec, device, event, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2035,12 +1993,11 @@ static inline VkResult vn_call_vkGetEventStatus(struct vn_instance *vn_instance,
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkGetEventStatus_reply(&parser, device, event);
+        ret = vn_decode_vkGetEventStatus_reply(&dec, device, event);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2084,12 +2041,11 @@ static inline VkResult vn_call_vkSetEvent(struct vn_instance *vn_instance, VkDev
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkSetEvent_reply(&parser, device, event);
+        ret = vn_decode_vkSetEvent_reply(&dec, device, event);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2133,12 +2089,11 @@ static inline VkResult vn_call_vkResetEvent(struct vn_instance *vn_instance, VkD
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkResetEvent_reply(&parser, device, event);
+        ret = vn_decode_vkResetEvent_reply(&dec, device, event);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2182,12 +2137,11 @@ static inline VkResult vn_call_vkCreateQueryPool(struct vn_instance *vn_instance
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateQueryPool_reply(&parser, device, pCreateInfo, pAllocator, pQueryPool);
+        ret = vn_decode_vkCreateQueryPool_reply(&dec, device, pCreateInfo, pAllocator, pQueryPool);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2230,12 +2184,11 @@ static inline void vn_call_vkDestroyQueryPool(struct vn_instance *vn_instance, V
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyQueryPool_reply(&parser, device, queryPool, pAllocator);
+        vn_decode_vkDestroyQueryPool_reply(&dec, device, queryPool, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2277,12 +2230,11 @@ static inline VkResult vn_call_vkGetQueryPoolResults(struct vn_instance *vn_inst
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkGetQueryPoolResults_reply(&parser, device, queryPool, firstQuery, queryCount, dataSize, pData, stride, flags);
+        ret = vn_decode_vkGetQueryPoolResults_reply(&dec, device, queryPool, firstQuery, queryCount, dataSize, pData, stride, flags);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2325,12 +2277,11 @@ static inline void vn_call_vkResetQueryPool(struct vn_instance *vn_instance, VkD
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkResetQueryPool_reply(&parser, device, queryPool, firstQuery, queryCount);
+        vn_decode_vkResetQueryPool_reply(&dec, device, queryPool, firstQuery, queryCount);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2372,12 +2323,11 @@ static inline VkResult vn_call_vkCreateBuffer(struct vn_instance *vn_instance, V
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateBuffer_reply(&parser, device, pCreateInfo, pAllocator, pBuffer);
+        ret = vn_decode_vkCreateBuffer_reply(&dec, device, pCreateInfo, pAllocator, pBuffer);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2420,12 +2370,11 @@ static inline void vn_call_vkDestroyBuffer(struct vn_instance *vn_instance, VkDe
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyBuffer_reply(&parser, device, buffer, pAllocator);
+        vn_decode_vkDestroyBuffer_reply(&dec, device, buffer, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2467,12 +2416,11 @@ static inline VkResult vn_call_vkCreateBufferView(struct vn_instance *vn_instanc
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateBufferView_reply(&parser, device, pCreateInfo, pAllocator, pView);
+        ret = vn_decode_vkCreateBufferView_reply(&dec, device, pCreateInfo, pAllocator, pView);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2515,12 +2463,11 @@ static inline void vn_call_vkDestroyBufferView(struct vn_instance *vn_instance, 
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyBufferView_reply(&parser, device, bufferView, pAllocator);
+        vn_decode_vkDestroyBufferView_reply(&dec, device, bufferView, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2562,12 +2509,11 @@ static inline VkResult vn_call_vkCreateImage(struct vn_instance *vn_instance, Vk
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateImage_reply(&parser, device, pCreateInfo, pAllocator, pImage);
+        ret = vn_decode_vkCreateImage_reply(&dec, device, pCreateInfo, pAllocator, pImage);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2610,12 +2556,11 @@ static inline void vn_call_vkDestroyImage(struct vn_instance *vn_instance, VkDev
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyImage_reply(&parser, device, image, pAllocator);
+        vn_decode_vkDestroyImage_reply(&dec, device, image, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2656,12 +2601,11 @@ static inline void vn_call_vkGetImageSubresourceLayout(struct vn_instance *vn_in
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetImageSubresourceLayout_reply(&parser, device, image, pSubresource, pLayout);
+        vn_decode_vkGetImageSubresourceLayout_reply(&dec, device, image, pSubresource, pLayout);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2703,12 +2647,11 @@ static inline VkResult vn_call_vkCreateImageView(struct vn_instance *vn_instance
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateImageView_reply(&parser, device, pCreateInfo, pAllocator, pView);
+        ret = vn_decode_vkCreateImageView_reply(&dec, device, pCreateInfo, pAllocator, pView);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2751,12 +2694,11 @@ static inline void vn_call_vkDestroyImageView(struct vn_instance *vn_instance, V
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyImageView_reply(&parser, device, imageView, pAllocator);
+        vn_decode_vkDestroyImageView_reply(&dec, device, imageView, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2798,12 +2740,11 @@ static inline VkResult vn_call_vkCreateShaderModule(struct vn_instance *vn_insta
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateShaderModule_reply(&parser, device, pCreateInfo, pAllocator, pShaderModule);
+        ret = vn_decode_vkCreateShaderModule_reply(&dec, device, pCreateInfo, pAllocator, pShaderModule);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2846,12 +2787,11 @@ static inline void vn_call_vkDestroyShaderModule(struct vn_instance *vn_instance
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyShaderModule_reply(&parser, device, shaderModule, pAllocator);
+        vn_decode_vkDestroyShaderModule_reply(&dec, device, shaderModule, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2893,12 +2833,11 @@ static inline VkResult vn_call_vkCreatePipelineCache(struct vn_instance *vn_inst
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreatePipelineCache_reply(&parser, device, pCreateInfo, pAllocator, pPipelineCache);
+        ret = vn_decode_vkCreatePipelineCache_reply(&dec, device, pCreateInfo, pAllocator, pPipelineCache);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2941,12 +2880,11 @@ static inline void vn_call_vkDestroyPipelineCache(struct vn_instance *vn_instanc
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyPipelineCache_reply(&parser, device, pipelineCache, pAllocator);
+        vn_decode_vkDestroyPipelineCache_reply(&dec, device, pipelineCache, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -2988,12 +2926,11 @@ static inline VkResult vn_call_vkGetPipelineCacheData(struct vn_instance *vn_ins
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkGetPipelineCacheData_reply(&parser, device, pipelineCache, pDataSize, pData);
+        ret = vn_decode_vkGetPipelineCacheData_reply(&dec, device, pipelineCache, pDataSize, pData);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3037,12 +2974,11 @@ static inline VkResult vn_call_vkMergePipelineCaches(struct vn_instance *vn_inst
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkMergePipelineCaches_reply(&parser, device, dstCache, srcCacheCount, pSrcCaches);
+        ret = vn_decode_vkMergePipelineCaches_reply(&dec, device, dstCache, srcCacheCount, pSrcCaches);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3086,12 +3022,11 @@ static inline VkResult vn_call_vkCreateGraphicsPipelines(struct vn_instance *vn_
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateGraphicsPipelines_reply(&parser, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+        ret = vn_decode_vkCreateGraphicsPipelines_reply(&dec, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3150,12 +3085,11 @@ static inline VkResult vn_call_vkCreateComputePipelines(struct vn_instance *vn_i
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateComputePipelines_reply(&parser, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+        ret = vn_decode_vkCreateComputePipelines_reply(&dec, device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3213,12 +3147,11 @@ static inline void vn_call_vkDestroyPipeline(struct vn_instance *vn_instance, Vk
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyPipeline_reply(&parser, device, pipeline, pAllocator);
+        vn_decode_vkDestroyPipeline_reply(&dec, device, pipeline, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3260,12 +3193,11 @@ static inline VkResult vn_call_vkCreatePipelineLayout(struct vn_instance *vn_ins
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreatePipelineLayout_reply(&parser, device, pCreateInfo, pAllocator, pPipelineLayout);
+        ret = vn_decode_vkCreatePipelineLayout_reply(&dec, device, pCreateInfo, pAllocator, pPipelineLayout);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3308,12 +3240,11 @@ static inline void vn_call_vkDestroyPipelineLayout(struct vn_instance *vn_instan
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyPipelineLayout_reply(&parser, device, pipelineLayout, pAllocator);
+        vn_decode_vkDestroyPipelineLayout_reply(&dec, device, pipelineLayout, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3355,12 +3286,11 @@ static inline VkResult vn_call_vkCreateSampler(struct vn_instance *vn_instance, 
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateSampler_reply(&parser, device, pCreateInfo, pAllocator, pSampler);
+        ret = vn_decode_vkCreateSampler_reply(&dec, device, pCreateInfo, pAllocator, pSampler);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3403,12 +3333,11 @@ static inline void vn_call_vkDestroySampler(struct vn_instance *vn_instance, VkD
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroySampler_reply(&parser, device, sampler, pAllocator);
+        vn_decode_vkDestroySampler_reply(&dec, device, sampler, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3450,12 +3379,11 @@ static inline VkResult vn_call_vkCreateDescriptorSetLayout(struct vn_instance *v
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateDescriptorSetLayout_reply(&parser, device, pCreateInfo, pAllocator, pSetLayout);
+        ret = vn_decode_vkCreateDescriptorSetLayout_reply(&dec, device, pCreateInfo, pAllocator, pSetLayout);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3498,12 +3426,11 @@ static inline void vn_call_vkDestroyDescriptorSetLayout(struct vn_instance *vn_i
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyDescriptorSetLayout_reply(&parser, device, descriptorSetLayout, pAllocator);
+        vn_decode_vkDestroyDescriptorSetLayout_reply(&dec, device, descriptorSetLayout, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3545,12 +3472,11 @@ static inline VkResult vn_call_vkCreateDescriptorPool(struct vn_instance *vn_ins
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateDescriptorPool_reply(&parser, device, pCreateInfo, pAllocator, pDescriptorPool);
+        ret = vn_decode_vkCreateDescriptorPool_reply(&dec, device, pCreateInfo, pAllocator, pDescriptorPool);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3593,12 +3519,11 @@ static inline void vn_call_vkDestroyDescriptorPool(struct vn_instance *vn_instan
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyDescriptorPool_reply(&parser, device, descriptorPool, pAllocator);
+        vn_decode_vkDestroyDescriptorPool_reply(&dec, device, descriptorPool, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3640,12 +3565,11 @@ static inline VkResult vn_call_vkResetDescriptorPool(struct vn_instance *vn_inst
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkResetDescriptorPool_reply(&parser, device, descriptorPool, flags);
+        ret = vn_decode_vkResetDescriptorPool_reply(&dec, device, descriptorPool, flags);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3689,12 +3613,11 @@ static inline VkResult vn_call_vkAllocateDescriptorSets(struct vn_instance *vn_i
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkAllocateDescriptorSets_reply(&parser, device, pAllocateInfo, pDescriptorSets);
+        ret = vn_decode_vkAllocateDescriptorSets_reply(&dec, device, pAllocateInfo, pDescriptorSets);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3738,12 +3661,11 @@ static inline VkResult vn_call_vkFreeDescriptorSets(struct vn_instance *vn_insta
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkFreeDescriptorSets_reply(&parser, device, descriptorPool, descriptorSetCount, pDescriptorSets);
+        ret = vn_decode_vkFreeDescriptorSets_reply(&dec, device, descriptorPool, descriptorSetCount, pDescriptorSets);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3786,12 +3708,11 @@ static inline void vn_call_vkUpdateDescriptorSets(struct vn_instance *vn_instanc
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkUpdateDescriptorSets_reply(&parser, device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
+        vn_decode_vkUpdateDescriptorSets_reply(&dec, device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3833,12 +3754,11 @@ static inline VkResult vn_call_vkCreateFramebuffer(struct vn_instance *vn_instan
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateFramebuffer_reply(&parser, device, pCreateInfo, pAllocator, pFramebuffer);
+        ret = vn_decode_vkCreateFramebuffer_reply(&dec, device, pCreateInfo, pAllocator, pFramebuffer);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3881,12 +3801,11 @@ static inline void vn_call_vkDestroyFramebuffer(struct vn_instance *vn_instance,
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyFramebuffer_reply(&parser, device, framebuffer, pAllocator);
+        vn_decode_vkDestroyFramebuffer_reply(&dec, device, framebuffer, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3928,12 +3847,11 @@ static inline VkResult vn_call_vkCreateRenderPass(struct vn_instance *vn_instanc
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateRenderPass_reply(&parser, device, pCreateInfo, pAllocator, pRenderPass);
+        ret = vn_decode_vkCreateRenderPass_reply(&dec, device, pCreateInfo, pAllocator, pRenderPass);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -3976,12 +3894,11 @@ static inline void vn_call_vkDestroyRenderPass(struct vn_instance *vn_instance, 
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyRenderPass_reply(&parser, device, renderPass, pAllocator);
+        vn_decode_vkDestroyRenderPass_reply(&dec, device, renderPass, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4022,12 +3939,11 @@ static inline void vn_call_vkGetRenderAreaGranularity(struct vn_instance *vn_ins
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetRenderAreaGranularity_reply(&parser, device, renderPass, pGranularity);
+        vn_decode_vkGetRenderAreaGranularity_reply(&dec, device, renderPass, pGranularity);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4069,12 +3985,11 @@ static inline VkResult vn_call_vkCreateCommandPool(struct vn_instance *vn_instan
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateCommandPool_reply(&parser, device, pCreateInfo, pAllocator, pCommandPool);
+        ret = vn_decode_vkCreateCommandPool_reply(&dec, device, pCreateInfo, pAllocator, pCommandPool);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4117,12 +4032,11 @@ static inline void vn_call_vkDestroyCommandPool(struct vn_instance *vn_instance,
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyCommandPool_reply(&parser, device, commandPool, pAllocator);
+        vn_decode_vkDestroyCommandPool_reply(&dec, device, commandPool, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4164,12 +4078,11 @@ static inline VkResult vn_call_vkResetCommandPool(struct vn_instance *vn_instanc
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkResetCommandPool_reply(&parser, device, commandPool, flags);
+        ret = vn_decode_vkResetCommandPool_reply(&dec, device, commandPool, flags);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4213,12 +4126,11 @@ static inline VkResult vn_call_vkAllocateCommandBuffers(struct vn_instance *vn_i
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkAllocateCommandBuffers_reply(&parser, device, pAllocateInfo, pCommandBuffers);
+        ret = vn_decode_vkAllocateCommandBuffers_reply(&dec, device, pAllocateInfo, pCommandBuffers);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4261,12 +4173,11 @@ static inline void vn_call_vkFreeCommandBuffers(struct vn_instance *vn_instance,
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkFreeCommandBuffers_reply(&parser, device, commandPool, commandBufferCount, pCommandBuffers);
+        vn_decode_vkFreeCommandBuffers_reply(&dec, device, commandPool, commandBufferCount, pCommandBuffers);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4308,12 +4219,11 @@ static inline VkResult vn_call_vkBeginCommandBuffer(struct vn_instance *vn_insta
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkBeginCommandBuffer_reply(&parser, commandBuffer, pBeginInfo);
+        ret = vn_decode_vkBeginCommandBuffer_reply(&dec, commandBuffer, pBeginInfo);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4357,12 +4267,11 @@ static inline VkResult vn_call_vkEndCommandBuffer(struct vn_instance *vn_instanc
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkEndCommandBuffer_reply(&parser, commandBuffer);
+        ret = vn_decode_vkEndCommandBuffer_reply(&dec, commandBuffer);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4406,12 +4315,11 @@ static inline VkResult vn_call_vkResetCommandBuffer(struct vn_instance *vn_insta
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkResetCommandBuffer_reply(&parser, commandBuffer, flags);
+        ret = vn_decode_vkResetCommandBuffer_reply(&dec, commandBuffer, flags);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4454,12 +4362,11 @@ static inline void vn_call_vkCmdBindPipeline(struct vn_instance *vn_instance, Vk
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdBindPipeline_reply(&parser, commandBuffer, pipelineBindPoint, pipeline);
+        vn_decode_vkCmdBindPipeline_reply(&dec, commandBuffer, pipelineBindPoint, pipeline);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4500,12 +4407,11 @@ static inline void vn_call_vkCmdSetViewport(struct vn_instance *vn_instance, VkC
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdSetViewport_reply(&parser, commandBuffer, firstViewport, viewportCount, pViewports);
+        vn_decode_vkCmdSetViewport_reply(&dec, commandBuffer, firstViewport, viewportCount, pViewports);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4546,12 +4452,11 @@ static inline void vn_call_vkCmdSetScissor(struct vn_instance *vn_instance, VkCo
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdSetScissor_reply(&parser, commandBuffer, firstScissor, scissorCount, pScissors);
+        vn_decode_vkCmdSetScissor_reply(&dec, commandBuffer, firstScissor, scissorCount, pScissors);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4592,12 +4497,11 @@ static inline void vn_call_vkCmdSetLineWidth(struct vn_instance *vn_instance, Vk
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdSetLineWidth_reply(&parser, commandBuffer, lineWidth);
+        vn_decode_vkCmdSetLineWidth_reply(&dec, commandBuffer, lineWidth);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4638,12 +4542,11 @@ static inline void vn_call_vkCmdSetDepthBias(struct vn_instance *vn_instance, Vk
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdSetDepthBias_reply(&parser, commandBuffer, depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor);
+        vn_decode_vkCmdSetDepthBias_reply(&dec, commandBuffer, depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4684,12 +4587,11 @@ static inline void vn_call_vkCmdSetBlendConstants(struct vn_instance *vn_instanc
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdSetBlendConstants_reply(&parser, commandBuffer, blendConstants);
+        vn_decode_vkCmdSetBlendConstants_reply(&dec, commandBuffer, blendConstants);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4730,12 +4632,11 @@ static inline void vn_call_vkCmdSetDepthBounds(struct vn_instance *vn_instance, 
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdSetDepthBounds_reply(&parser, commandBuffer, minDepthBounds, maxDepthBounds);
+        vn_decode_vkCmdSetDepthBounds_reply(&dec, commandBuffer, minDepthBounds, maxDepthBounds);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4776,12 +4677,11 @@ static inline void vn_call_vkCmdSetStencilCompareMask(struct vn_instance *vn_ins
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdSetStencilCompareMask_reply(&parser, commandBuffer, faceMask, compareMask);
+        vn_decode_vkCmdSetStencilCompareMask_reply(&dec, commandBuffer, faceMask, compareMask);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4822,12 +4722,11 @@ static inline void vn_call_vkCmdSetStencilWriteMask(struct vn_instance *vn_insta
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdSetStencilWriteMask_reply(&parser, commandBuffer, faceMask, writeMask);
+        vn_decode_vkCmdSetStencilWriteMask_reply(&dec, commandBuffer, faceMask, writeMask);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4868,12 +4767,11 @@ static inline void vn_call_vkCmdSetStencilReference(struct vn_instance *vn_insta
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdSetStencilReference_reply(&parser, commandBuffer, faceMask, reference);
+        vn_decode_vkCmdSetStencilReference_reply(&dec, commandBuffer, faceMask, reference);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4914,12 +4812,11 @@ static inline void vn_call_vkCmdBindDescriptorSets(struct vn_instance *vn_instan
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdBindDescriptorSets_reply(&parser, commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
+        vn_decode_vkCmdBindDescriptorSets_reply(&dec, commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -4960,12 +4857,11 @@ static inline void vn_call_vkCmdBindIndexBuffer(struct vn_instance *vn_instance,
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdBindIndexBuffer_reply(&parser, commandBuffer, buffer, offset, indexType);
+        vn_decode_vkCmdBindIndexBuffer_reply(&dec, commandBuffer, buffer, offset, indexType);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5006,12 +4902,11 @@ static inline void vn_call_vkCmdBindVertexBuffers(struct vn_instance *vn_instanc
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdBindVertexBuffers_reply(&parser, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets);
+        vn_decode_vkCmdBindVertexBuffers_reply(&dec, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5052,12 +4947,11 @@ static inline void vn_call_vkCmdDraw(struct vn_instance *vn_instance, VkCommandB
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdDraw_reply(&parser, commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
+        vn_decode_vkCmdDraw_reply(&dec, commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5098,12 +4992,11 @@ static inline void vn_call_vkCmdDrawIndexed(struct vn_instance *vn_instance, VkC
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdDrawIndexed_reply(&parser, commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+        vn_decode_vkCmdDrawIndexed_reply(&dec, commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5144,12 +5037,11 @@ static inline void vn_call_vkCmdDrawIndirect(struct vn_instance *vn_instance, Vk
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdDrawIndirect_reply(&parser, commandBuffer, buffer, offset, drawCount, stride);
+        vn_decode_vkCmdDrawIndirect_reply(&dec, commandBuffer, buffer, offset, drawCount, stride);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5190,12 +5082,11 @@ static inline void vn_call_vkCmdDrawIndexedIndirect(struct vn_instance *vn_insta
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdDrawIndexedIndirect_reply(&parser, commandBuffer, buffer, offset, drawCount, stride);
+        vn_decode_vkCmdDrawIndexedIndirect_reply(&dec, commandBuffer, buffer, offset, drawCount, stride);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5236,12 +5127,11 @@ static inline void vn_call_vkCmdDispatch(struct vn_instance *vn_instance, VkComm
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdDispatch_reply(&parser, commandBuffer, groupCountX, groupCountY, groupCountZ);
+        vn_decode_vkCmdDispatch_reply(&dec, commandBuffer, groupCountX, groupCountY, groupCountZ);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5282,12 +5172,11 @@ static inline void vn_call_vkCmdDispatchIndirect(struct vn_instance *vn_instance
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdDispatchIndirect_reply(&parser, commandBuffer, buffer, offset);
+        vn_decode_vkCmdDispatchIndirect_reply(&dec, commandBuffer, buffer, offset);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5328,12 +5217,11 @@ static inline void vn_call_vkCmdCopyBuffer(struct vn_instance *vn_instance, VkCo
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdCopyBuffer_reply(&parser, commandBuffer, srcBuffer, dstBuffer, regionCount, pRegions);
+        vn_decode_vkCmdCopyBuffer_reply(&dec, commandBuffer, srcBuffer, dstBuffer, regionCount, pRegions);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5374,12 +5262,11 @@ static inline void vn_call_vkCmdCopyImage(struct vn_instance *vn_instance, VkCom
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdCopyImage_reply(&parser, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
+        vn_decode_vkCmdCopyImage_reply(&dec, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5420,12 +5307,11 @@ static inline void vn_call_vkCmdBlitImage(struct vn_instance *vn_instance, VkCom
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdBlitImage_reply(&parser, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions, filter);
+        vn_decode_vkCmdBlitImage_reply(&dec, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions, filter);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5466,12 +5352,11 @@ static inline void vn_call_vkCmdCopyBufferToImage(struct vn_instance *vn_instanc
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdCopyBufferToImage_reply(&parser, commandBuffer, srcBuffer, dstImage, dstImageLayout, regionCount, pRegions);
+        vn_decode_vkCmdCopyBufferToImage_reply(&dec, commandBuffer, srcBuffer, dstImage, dstImageLayout, regionCount, pRegions);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5512,12 +5397,11 @@ static inline void vn_call_vkCmdCopyImageToBuffer(struct vn_instance *vn_instanc
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdCopyImageToBuffer_reply(&parser, commandBuffer, srcImage, srcImageLayout, dstBuffer, regionCount, pRegions);
+        vn_decode_vkCmdCopyImageToBuffer_reply(&dec, commandBuffer, srcImage, srcImageLayout, dstBuffer, regionCount, pRegions);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5558,12 +5442,11 @@ static inline void vn_call_vkCmdUpdateBuffer(struct vn_instance *vn_instance, Vk
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdUpdateBuffer_reply(&parser, commandBuffer, dstBuffer, dstOffset, dataSize, pData);
+        vn_decode_vkCmdUpdateBuffer_reply(&dec, commandBuffer, dstBuffer, dstOffset, dataSize, pData);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5604,12 +5487,11 @@ static inline void vn_call_vkCmdFillBuffer(struct vn_instance *vn_instance, VkCo
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdFillBuffer_reply(&parser, commandBuffer, dstBuffer, dstOffset, size, data);
+        vn_decode_vkCmdFillBuffer_reply(&dec, commandBuffer, dstBuffer, dstOffset, size, data);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5650,12 +5532,11 @@ static inline void vn_call_vkCmdClearColorImage(struct vn_instance *vn_instance,
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdClearColorImage_reply(&parser, commandBuffer, image, imageLayout, pColor, rangeCount, pRanges);
+        vn_decode_vkCmdClearColorImage_reply(&dec, commandBuffer, image, imageLayout, pColor, rangeCount, pRanges);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5696,12 +5577,11 @@ static inline void vn_call_vkCmdClearDepthStencilImage(struct vn_instance *vn_in
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdClearDepthStencilImage_reply(&parser, commandBuffer, image, imageLayout, pDepthStencil, rangeCount, pRanges);
+        vn_decode_vkCmdClearDepthStencilImage_reply(&dec, commandBuffer, image, imageLayout, pDepthStencil, rangeCount, pRanges);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5742,12 +5622,11 @@ static inline void vn_call_vkCmdClearAttachments(struct vn_instance *vn_instance
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdClearAttachments_reply(&parser, commandBuffer, attachmentCount, pAttachments, rectCount, pRects);
+        vn_decode_vkCmdClearAttachments_reply(&dec, commandBuffer, attachmentCount, pAttachments, rectCount, pRects);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5788,12 +5667,11 @@ static inline void vn_call_vkCmdResolveImage(struct vn_instance *vn_instance, Vk
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdResolveImage_reply(&parser, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
+        vn_decode_vkCmdResolveImage_reply(&dec, commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5834,12 +5712,11 @@ static inline void vn_call_vkCmdSetEvent(struct vn_instance *vn_instance, VkComm
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdSetEvent_reply(&parser, commandBuffer, event, stageMask);
+        vn_decode_vkCmdSetEvent_reply(&dec, commandBuffer, event, stageMask);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5880,12 +5757,11 @@ static inline void vn_call_vkCmdResetEvent(struct vn_instance *vn_instance, VkCo
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdResetEvent_reply(&parser, commandBuffer, event, stageMask);
+        vn_decode_vkCmdResetEvent_reply(&dec, commandBuffer, event, stageMask);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5926,12 +5802,11 @@ static inline void vn_call_vkCmdWaitEvents(struct vn_instance *vn_instance, VkCo
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdWaitEvents_reply(&parser, commandBuffer, eventCount, pEvents, srcStageMask, dstStageMask, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+        vn_decode_vkCmdWaitEvents_reply(&dec, commandBuffer, eventCount, pEvents, srcStageMask, dstStageMask, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -5972,12 +5847,11 @@ static inline void vn_call_vkCmdPipelineBarrier(struct vn_instance *vn_instance,
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdPipelineBarrier_reply(&parser, commandBuffer, srcStageMask, dstStageMask, dependencyFlags, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+        vn_decode_vkCmdPipelineBarrier_reply(&dec, commandBuffer, srcStageMask, dstStageMask, dependencyFlags, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6018,12 +5892,11 @@ static inline void vn_call_vkCmdBeginQuery(struct vn_instance *vn_instance, VkCo
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdBeginQuery_reply(&parser, commandBuffer, queryPool, query, flags);
+        vn_decode_vkCmdBeginQuery_reply(&dec, commandBuffer, queryPool, query, flags);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6064,12 +5937,11 @@ static inline void vn_call_vkCmdEndQuery(struct vn_instance *vn_instance, VkComm
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdEndQuery_reply(&parser, commandBuffer, queryPool, query);
+        vn_decode_vkCmdEndQuery_reply(&dec, commandBuffer, queryPool, query);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6110,12 +5982,11 @@ static inline void vn_call_vkCmdResetQueryPool(struct vn_instance *vn_instance, 
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdResetQueryPool_reply(&parser, commandBuffer, queryPool, firstQuery, queryCount);
+        vn_decode_vkCmdResetQueryPool_reply(&dec, commandBuffer, queryPool, firstQuery, queryCount);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6156,12 +6027,11 @@ static inline void vn_call_vkCmdWriteTimestamp(struct vn_instance *vn_instance, 
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdWriteTimestamp_reply(&parser, commandBuffer, pipelineStage, queryPool, query);
+        vn_decode_vkCmdWriteTimestamp_reply(&dec, commandBuffer, pipelineStage, queryPool, query);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6202,12 +6072,11 @@ static inline void vn_call_vkCmdCopyQueryPoolResults(struct vn_instance *vn_inst
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdCopyQueryPoolResults_reply(&parser, commandBuffer, queryPool, firstQuery, queryCount, dstBuffer, dstOffset, stride, flags);
+        vn_decode_vkCmdCopyQueryPoolResults_reply(&dec, commandBuffer, queryPool, firstQuery, queryCount, dstBuffer, dstOffset, stride, flags);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6248,12 +6117,11 @@ static inline void vn_call_vkCmdPushConstants(struct vn_instance *vn_instance, V
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdPushConstants_reply(&parser, commandBuffer, layout, stageFlags, offset, size, pValues);
+        vn_decode_vkCmdPushConstants_reply(&dec, commandBuffer, layout, stageFlags, offset, size, pValues);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6294,12 +6162,11 @@ static inline void vn_call_vkCmdBeginRenderPass(struct vn_instance *vn_instance,
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdBeginRenderPass_reply(&parser, commandBuffer, pRenderPassBegin, contents);
+        vn_decode_vkCmdBeginRenderPass_reply(&dec, commandBuffer, pRenderPassBegin, contents);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6340,12 +6207,11 @@ static inline void vn_call_vkCmdNextSubpass(struct vn_instance *vn_instance, VkC
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdNextSubpass_reply(&parser, commandBuffer, contents);
+        vn_decode_vkCmdNextSubpass_reply(&dec, commandBuffer, contents);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6386,12 +6252,11 @@ static inline void vn_call_vkCmdEndRenderPass(struct vn_instance *vn_instance, V
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdEndRenderPass_reply(&parser, commandBuffer);
+        vn_decode_vkCmdEndRenderPass_reply(&dec, commandBuffer);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6432,12 +6297,11 @@ static inline void vn_call_vkCmdExecuteCommands(struct vn_instance *vn_instance,
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdExecuteCommands_reply(&parser, commandBuffer, commandBufferCount, pCommandBuffers);
+        vn_decode_vkCmdExecuteCommands_reply(&dec, commandBuffer, commandBufferCount, pCommandBuffers);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6478,12 +6342,11 @@ static inline void vn_call_vkGetPhysicalDeviceFeatures2(struct vn_instance *vn_i
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceFeatures2_reply(&parser, physicalDevice, pFeatures);
+        vn_decode_vkGetPhysicalDeviceFeatures2_reply(&dec, physicalDevice, pFeatures);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6524,12 +6387,11 @@ static inline void vn_call_vkGetPhysicalDeviceProperties2(struct vn_instance *vn
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceProperties2_reply(&parser, physicalDevice, pProperties);
+        vn_decode_vkGetPhysicalDeviceProperties2_reply(&dec, physicalDevice, pProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6570,12 +6432,11 @@ static inline void vn_call_vkGetPhysicalDeviceFormatProperties2(struct vn_instan
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceFormatProperties2_reply(&parser, physicalDevice, format, pFormatProperties);
+        vn_decode_vkGetPhysicalDeviceFormatProperties2_reply(&dec, physicalDevice, format, pFormatProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6617,12 +6478,11 @@ static inline VkResult vn_call_vkGetPhysicalDeviceImageFormatProperties2(struct 
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkGetPhysicalDeviceImageFormatProperties2_reply(&parser, physicalDevice, pImageFormatInfo, pImageFormatProperties);
+        ret = vn_decode_vkGetPhysicalDeviceImageFormatProperties2_reply(&dec, physicalDevice, pImageFormatInfo, pImageFormatProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6665,12 +6525,11 @@ static inline void vn_call_vkGetPhysicalDeviceQueueFamilyProperties2(struct vn_i
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceQueueFamilyProperties2_reply(&parser, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
+        vn_decode_vkGetPhysicalDeviceQueueFamilyProperties2_reply(&dec, physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6711,12 +6570,11 @@ static inline void vn_call_vkGetPhysicalDeviceMemoryProperties2(struct vn_instan
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceMemoryProperties2_reply(&parser, physicalDevice, pMemoryProperties);
+        vn_decode_vkGetPhysicalDeviceMemoryProperties2_reply(&dec, physicalDevice, pMemoryProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6757,12 +6615,11 @@ static inline void vn_call_vkGetPhysicalDeviceSparseImageFormatProperties2(struc
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceSparseImageFormatProperties2_reply(&parser, physicalDevice, pFormatInfo, pPropertyCount, pProperties);
+        vn_decode_vkGetPhysicalDeviceSparseImageFormatProperties2_reply(&dec, physicalDevice, pFormatInfo, pPropertyCount, pProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6803,12 +6660,11 @@ static inline void vn_call_vkTrimCommandPool(struct vn_instance *vn_instance, Vk
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkTrimCommandPool_reply(&parser, device, commandPool, flags);
+        vn_decode_vkTrimCommandPool_reply(&dec, device, commandPool, flags);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6849,12 +6705,11 @@ static inline void vn_call_vkGetPhysicalDeviceExternalBufferProperties(struct vn
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceExternalBufferProperties_reply(&parser, physicalDevice, pExternalBufferInfo, pExternalBufferProperties);
+        vn_decode_vkGetPhysicalDeviceExternalBufferProperties_reply(&dec, physicalDevice, pExternalBufferInfo, pExternalBufferProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6895,12 +6750,11 @@ static inline void vn_call_vkGetPhysicalDeviceExternalSemaphoreProperties(struct
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceExternalSemaphoreProperties_reply(&parser, physicalDevice, pExternalSemaphoreInfo, pExternalSemaphoreProperties);
+        vn_decode_vkGetPhysicalDeviceExternalSemaphoreProperties_reply(&dec, physicalDevice, pExternalSemaphoreInfo, pExternalSemaphoreProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6941,12 +6795,11 @@ static inline void vn_call_vkGetPhysicalDeviceExternalFenceProperties(struct vn_
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetPhysicalDeviceExternalFenceProperties_reply(&parser, physicalDevice, pExternalFenceInfo, pExternalFenceProperties);
+        vn_decode_vkGetPhysicalDeviceExternalFenceProperties_reply(&dec, physicalDevice, pExternalFenceInfo, pExternalFenceProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -6988,12 +6841,11 @@ static inline VkResult vn_call_vkEnumeratePhysicalDeviceGroups(struct vn_instanc
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkEnumeratePhysicalDeviceGroups_reply(&parser, instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties);
+        ret = vn_decode_vkEnumeratePhysicalDeviceGroups_reply(&dec, instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7036,12 +6888,11 @@ static inline void vn_call_vkGetDeviceGroupPeerMemoryFeatures(struct vn_instance
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetDeviceGroupPeerMemoryFeatures_reply(&parser, device, heapIndex, localDeviceIndex, remoteDeviceIndex, pPeerMemoryFeatures);
+        vn_decode_vkGetDeviceGroupPeerMemoryFeatures_reply(&dec, device, heapIndex, localDeviceIndex, remoteDeviceIndex, pPeerMemoryFeatures);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7083,12 +6934,11 @@ static inline VkResult vn_call_vkBindBufferMemory2(struct vn_instance *vn_instan
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkBindBufferMemory2_reply(&parser, device, bindInfoCount, pBindInfos);
+        ret = vn_decode_vkBindBufferMemory2_reply(&dec, device, bindInfoCount, pBindInfos);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7132,12 +6982,11 @@ static inline VkResult vn_call_vkBindImageMemory2(struct vn_instance *vn_instanc
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkBindImageMemory2_reply(&parser, device, bindInfoCount, pBindInfos);
+        ret = vn_decode_vkBindImageMemory2_reply(&dec, device, bindInfoCount, pBindInfos);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7180,12 +7029,11 @@ static inline void vn_call_vkCmdSetDeviceMask(struct vn_instance *vn_instance, V
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdSetDeviceMask_reply(&parser, commandBuffer, deviceMask);
+        vn_decode_vkCmdSetDeviceMask_reply(&dec, commandBuffer, deviceMask);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7226,12 +7074,11 @@ static inline void vn_call_vkCmdDispatchBase(struct vn_instance *vn_instance, Vk
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdDispatchBase_reply(&parser, commandBuffer, baseGroupX, baseGroupY, baseGroupZ, groupCountX, groupCountY, groupCountZ);
+        vn_decode_vkCmdDispatchBase_reply(&dec, commandBuffer, baseGroupX, baseGroupY, baseGroupZ, groupCountX, groupCountY, groupCountZ);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7273,12 +7120,11 @@ static inline VkResult vn_call_vkCreateDescriptorUpdateTemplate(struct vn_instan
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateDescriptorUpdateTemplate_reply(&parser, device, pCreateInfo, pAllocator, pDescriptorUpdateTemplate);
+        ret = vn_decode_vkCreateDescriptorUpdateTemplate_reply(&dec, device, pCreateInfo, pAllocator, pDescriptorUpdateTemplate);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7321,12 +7167,11 @@ static inline void vn_call_vkDestroyDescriptorUpdateTemplate(struct vn_instance 
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroyDescriptorUpdateTemplate_reply(&parser, device, descriptorUpdateTemplate, pAllocator);
+        vn_decode_vkDestroyDescriptorUpdateTemplate_reply(&dec, device, descriptorUpdateTemplate, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7367,12 +7212,11 @@ static inline void vn_call_vkGetBufferMemoryRequirements2(struct vn_instance *vn
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetBufferMemoryRequirements2_reply(&parser, device, pInfo, pMemoryRequirements);
+        vn_decode_vkGetBufferMemoryRequirements2_reply(&dec, device, pInfo, pMemoryRequirements);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7413,12 +7257,11 @@ static inline void vn_call_vkGetImageMemoryRequirements2(struct vn_instance *vn_
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetImageMemoryRequirements2_reply(&parser, device, pInfo, pMemoryRequirements);
+        vn_decode_vkGetImageMemoryRequirements2_reply(&dec, device, pInfo, pMemoryRequirements);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7459,12 +7302,11 @@ static inline void vn_call_vkGetImageSparseMemoryRequirements2(struct vn_instanc
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetImageSparseMemoryRequirements2_reply(&parser, device, pInfo, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
+        vn_decode_vkGetImageSparseMemoryRequirements2_reply(&dec, device, pInfo, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7506,12 +7348,11 @@ static inline VkResult vn_call_vkCreateSamplerYcbcrConversion(struct vn_instance
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateSamplerYcbcrConversion_reply(&parser, device, pCreateInfo, pAllocator, pYcbcrConversion);
+        ret = vn_decode_vkCreateSamplerYcbcrConversion_reply(&dec, device, pCreateInfo, pAllocator, pYcbcrConversion);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7554,12 +7395,11 @@ static inline void vn_call_vkDestroySamplerYcbcrConversion(struct vn_instance *v
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkDestroySamplerYcbcrConversion_reply(&parser, device, ycbcrConversion, pAllocator);
+        vn_decode_vkDestroySamplerYcbcrConversion_reply(&dec, device, ycbcrConversion, pAllocator);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7600,12 +7440,11 @@ static inline void vn_call_vkGetDeviceQueue2(struct vn_instance *vn_instance, Vk
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetDeviceQueue2_reply(&parser, device, pQueueInfo, pQueue);
+        vn_decode_vkGetDeviceQueue2_reply(&dec, device, pQueueInfo, pQueue);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7646,12 +7485,11 @@ static inline void vn_call_vkGetDescriptorSetLayoutSupport(struct vn_instance *v
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkGetDescriptorSetLayoutSupport_reply(&parser, device, pCreateInfo, pSupport);
+        vn_decode_vkGetDescriptorSetLayoutSupport_reply(&dec, device, pCreateInfo, pSupport);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7693,12 +7531,11 @@ static inline VkResult vn_call_vkCreateRenderPass2(struct vn_instance *vn_instan
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkCreateRenderPass2_reply(&parser, device, pCreateInfo, pAllocator, pRenderPass);
+        ret = vn_decode_vkCreateRenderPass2_reply(&dec, device, pCreateInfo, pAllocator, pRenderPass);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7741,12 +7578,11 @@ static inline void vn_call_vkCmdBeginRenderPass2(struct vn_instance *vn_instance
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdBeginRenderPass2_reply(&parser, commandBuffer, pRenderPassBegin, pSubpassBeginInfo);
+        vn_decode_vkCmdBeginRenderPass2_reply(&dec, commandBuffer, pRenderPassBegin, pSubpassBeginInfo);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7787,12 +7623,11 @@ static inline void vn_call_vkCmdNextSubpass2(struct vn_instance *vn_instance, Vk
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdNextSubpass2_reply(&parser, commandBuffer, pSubpassBeginInfo, pSubpassEndInfo);
+        vn_decode_vkCmdNextSubpass2_reply(&dec, commandBuffer, pSubpassBeginInfo, pSubpassEndInfo);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7833,12 +7668,11 @@ static inline void vn_call_vkCmdEndRenderPass2(struct vn_instance *vn_instance, 
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdEndRenderPass2_reply(&parser, commandBuffer, pSubpassEndInfo);
+        vn_decode_vkCmdEndRenderPass2_reply(&dec, commandBuffer, pSubpassEndInfo);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7880,12 +7714,11 @@ static inline VkResult vn_call_vkGetSemaphoreCounterValue(struct vn_instance *vn
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkGetSemaphoreCounterValue_reply(&parser, device, semaphore, pValue);
+        ret = vn_decode_vkGetSemaphoreCounterValue_reply(&dec, device, semaphore, pValue);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7929,12 +7762,11 @@ static inline VkResult vn_call_vkWaitSemaphores(struct vn_instance *vn_instance,
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkWaitSemaphores_reply(&parser, device, pWaitInfo, timeout);
+        ret = vn_decode_vkWaitSemaphores_reply(&dec, device, pWaitInfo, timeout);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -7978,12 +7810,11 @@ static inline VkResult vn_call_vkSignalSemaphore(struct vn_instance *vn_instance
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkSignalSemaphore_reply(&parser, device, pSignalInfo);
+        ret = vn_decode_vkSignalSemaphore_reply(&dec, device, pSignalInfo);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8026,12 +7857,11 @@ static inline void vn_call_vkCmdDrawIndirectCount(struct vn_instance *vn_instanc
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdDrawIndirectCount_reply(&parser, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
+        vn_decode_vkCmdDrawIndirectCount_reply(&dec, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8072,12 +7902,11 @@ static inline void vn_call_vkCmdDrawIndexedIndirectCount(struct vn_instance *vn_
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdDrawIndexedIndirectCount_reply(&parser, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
+        vn_decode_vkCmdDrawIndexedIndirectCount_reply(&dec, commandBuffer, buffer, offset, countBuffer, countBufferOffset, maxDrawCount, stride);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8118,12 +7947,11 @@ static inline void vn_call_vkCmdBindTransformFeedbackBuffersEXT(struct vn_instan
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdBindTransformFeedbackBuffersEXT_reply(&parser, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets, pSizes);
+        vn_decode_vkCmdBindTransformFeedbackBuffersEXT_reply(&dec, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets, pSizes);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8164,12 +7992,11 @@ static inline void vn_call_vkCmdBeginTransformFeedbackEXT(struct vn_instance *vn
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdBeginTransformFeedbackEXT_reply(&parser, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
+        vn_decode_vkCmdBeginTransformFeedbackEXT_reply(&dec, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8210,12 +8037,11 @@ static inline void vn_call_vkCmdEndTransformFeedbackEXT(struct vn_instance *vn_i
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdEndTransformFeedbackEXT_reply(&parser, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
+        vn_decode_vkCmdEndTransformFeedbackEXT_reply(&dec, commandBuffer, firstCounterBuffer, counterBufferCount, pCounterBuffers, pCounterBufferOffsets);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8256,12 +8082,11 @@ static inline void vn_call_vkCmdBeginQueryIndexedEXT(struct vn_instance *vn_inst
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdBeginQueryIndexedEXT_reply(&parser, commandBuffer, queryPool, query, flags, index);
+        vn_decode_vkCmdBeginQueryIndexedEXT_reply(&dec, commandBuffer, queryPool, query, flags, index);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8302,12 +8127,11 @@ static inline void vn_call_vkCmdEndQueryIndexedEXT(struct vn_instance *vn_instan
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdEndQueryIndexedEXT_reply(&parser, commandBuffer, queryPool, query, index);
+        vn_decode_vkCmdEndQueryIndexedEXT_reply(&dec, commandBuffer, queryPool, query, index);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8348,12 +8172,11 @@ static inline void vn_call_vkCmdDrawIndirectByteCountEXT(struct vn_instance *vn_
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkCmdDrawIndirectByteCountEXT_reply(&parser, commandBuffer, instanceCount, firstInstance, counterBuffer, counterBufferOffset, counterOffset, vertexStride);
+        vn_decode_vkCmdDrawIndirectByteCountEXT_reply(&dec, commandBuffer, instanceCount, firstInstance, counterBuffer, counterBufferOffset, counterOffset, vertexStride);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8395,12 +8218,11 @@ static inline VkResult vn_call_vkGetImageDrmFormatModifierPropertiesEXT(struct v
     /* decode reply */
     VkResult ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkGetImageDrmFormatModifierPropertiesEXT_reply(&parser, device, image, pProperties);
+        ret = vn_decode_vkGetImageDrmFormatModifierPropertiesEXT_reply(&dec, device, image, pProperties);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8444,12 +8266,11 @@ static inline uint64_t vn_call_vkGetBufferOpaqueCaptureAddress(struct vn_instanc
     /* decode reply */
     uint64_t ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkGetBufferOpaqueCaptureAddress_reply(&parser, device, pInfo);
+        ret = vn_decode_vkGetBufferOpaqueCaptureAddress_reply(&dec, device, pInfo);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8493,12 +8314,11 @@ static inline VkDeviceAddress vn_call_vkGetBufferDeviceAddress(struct vn_instanc
     /* decode reply */
     VkDeviceAddress ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkGetBufferDeviceAddress_reply(&parser, device, pInfo);
+        ret = vn_decode_vkGetBufferDeviceAddress_reply(&dec, device, pInfo);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8542,12 +8362,11 @@ static inline uint64_t vn_call_vkGetDeviceMemoryOpaqueCaptureAddress(struct vn_i
     /* decode reply */
     uint64_t ret = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        ret = vn_decode_vkGetDeviceMemoryOpaqueCaptureAddress_reply(&parser, device, pInfo);
+        ret = vn_decode_vkGetDeviceMemoryOpaqueCaptureAddress_reply(&dec, device, pInfo);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8590,12 +8409,11 @@ static inline void vn_call_vkSetReplyCommandStreamMESA(struct vn_instance *vn_in
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkSetReplyCommandStreamMESA_reply(&parser, pStream);
+        vn_decode_vkSetReplyCommandStreamMESA_reply(&dec, pStream);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8636,12 +8454,11 @@ static inline void vn_call_vkSeekReplyCommandStreamMESA(struct vn_instance *vn_i
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkSeekReplyCommandStreamMESA_reply(&parser, position);
+        vn_decode_vkSeekReplyCommandStreamMESA_reply(&dec, position);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
@@ -8682,12 +8499,11 @@ static inline void vn_call_vkExecuteCommandStreamsMESA(struct vn_instance *vn_in
 
     /* decode reply */
     if (likely(submitted)) {
-        struct vn_cs parser; /* TODO separate in/out support */
-        vn_cs_init(&parser, NULL, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND, 0);
-        vn_cs_set_in_data(&parser, reply_ptr, reply_size);
+        struct vn_cs_decoder dec;
+        vn_cs_decoder_init(&dec, reply_ptr, reply_size);
 
         vn_instance_wait_cs_reply(vn_instance, reply_sync_val);
-        vn_decode_vkExecuteCommandStreamsMESA_reply(&parser, streamCount, pStreams, pReplyPositions, dependencyCount, pDependencies, flags);
+        vn_decode_vkExecuteCommandStreamsMESA_reply(&dec, streamCount, pStreams, pReplyPositions, dependencyCount, pDependencies, flags);
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);
     } else if (reply_bo) {
         vn_instance_free_cs_reply_bo(vn_instance, reply_bo);

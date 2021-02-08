@@ -70,6 +70,7 @@ struct vn_command_pool;
 struct vn_command_buffer;
 
 struct vn_cs;
+struct vn_cs_decoder;
 struct vn_renderer;
 struct vn_renderer_bo;
 struct vn_renderer_sync;

@@ -28,12 +28,6 @@ vn_cs_fini(struct vn_cs *cs)
 }
 
 static void
-vn_cs_reset_in(struct vn_cs *cs)
-{
-   memset(&cs->in, 0, sizeof(cs->in));
-}
-
-static void
 vn_cs_reset_out(struct vn_cs *cs)
 {
    if (unlikely(!cs->out.iov_count))
@@ -62,15 +56,7 @@ void
 vn_cs_reset(struct vn_cs *cs)
 {
    /* cs->error is sticky */
-   vn_cs_reset_in(cs);
    vn_cs_reset_out(cs);
-}
-
-void
-vn_cs_set_in_data(struct vn_cs *cs, const void *data, size_t size)
-{
-   cs->in.cur = data;
-   cs->in.end = data + size;
 }
 
 static uint32_t

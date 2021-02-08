@@ -19,11 +19,6 @@ struct vn_cs {
 
    bool error;
 
-   struct vn_cs_in {
-      const void *cur;
-      const void *end;
-   } in;
-
    struct vn_cs_out {
       size_t min_iov_size;
 
@@ -36,6 +31,11 @@ struct vn_cs {
       void *cur;
       const void *end;
    } out;
+};
+
+struct vn_cs_decoder {
+   const void *cur;
+   const void *end;
 };
 
 void
@@ -63,38 +63,6 @@ static inline bool
 vn_cs_has_error(const struct vn_cs *cs)
 {
    return cs->error;
-}
-
-void
-vn_cs_set_in_data(struct vn_cs *cs, const void *data, size_t size);
-
-static inline void
-vn_cs_in(struct vn_cs *cs, size_t size, void *val, size_t val_size)
-{
-   assert(val_size <= size);
-
-   if (unlikely(size > cs->in.end - cs->in.cur)) {
-      vn_cs_set_error(cs);
-      memset(val, 0, val_size);
-      return;
-   }
-
-   /* we should not rely on the compiler to optimize away memcpy... */
-   memcpy(val, cs->in.cur, val_size);
-   cs->in.cur += size;
-}
-
-static inline void
-vn_cs_in_peek(struct vn_cs *cs, void *val, size_t val_size)
-{
-   if (unlikely(val_size > cs->in.end - cs->in.cur)) {
-      vn_cs_set_error(cs);
-      memset(val, 0, val_size);
-      return;
-   }
-
-   /* we should not rely on the compiler to optimize away memcpy... */
-   memcpy(val, cs->in.cur, val_size);
 }
 
 static inline bool
@@ -148,6 +116,51 @@ vn_cs_get_out_len(const struct vn_cs *cs)
    if (!iov->iov_len)
       len += cs->out.cur - iov->iov_base;
    return len;
+}
+
+static inline void
+vn_cs_decoder_init(struct vn_cs_decoder *dec, const void *data, size_t size)
+{
+   dec->cur = data;
+   dec->end = data + size;
+}
+
+static inline void
+vn_cs_decoder_set_fatal(struct vn_cs_decoder *dec)
+{
+   abort();
+}
+
+static inline void
+vn_cs_decoder_read(struct vn_cs_decoder *dec,
+                   size_t size,
+                   void *val,
+                   size_t val_size)
+{
+   assert(val_size <= size);
+
+   if (unlikely(size > dec->end - dec->cur)) {
+      vn_cs_decoder_set_fatal(dec);
+      memset(val, 0, val_size);
+      return;
+   }
+
+   /* we should not rely on the compiler to optimize away memcpy... */
+   memcpy(val, dec->cur, val_size);
+   dec->cur += size;
+}
+
+static inline void
+vn_cs_decoder_peek(struct vn_cs_decoder *dec, void *val, size_t val_size)
+{
+   if (unlikely(val_size > dec->end - dec->cur)) {
+      vn_cs_decoder_set_fatal(dec);
+      memset(val, 0, val_size);
+      return;
+   }
+
+   /* we should not rely on the compiler to optimize away memcpy... */
+   memcpy(val, dec->cur, val_size);
 }
 
 static inline vn_object_id
