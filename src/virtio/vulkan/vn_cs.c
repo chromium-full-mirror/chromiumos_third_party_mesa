@@ -32,12 +32,28 @@ vn_cs_encoder_add_buffer(struct vn_cs_encoder *enc, void *base, size_t size)
    /* add the buffer and make it current */
    struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count++];
    cur_buf->base = base;
-   cur_buf->size = 0;
+   cur_buf->committed_size = 0;
    enc->current_buffer_size = size;
 
    /* update the write pointer */
    enc->cur = base;
    enc->end = base + size;
+}
+
+static void
+vn_cs_encoder_commit_buffer(struct vn_cs_encoder *enc)
+{
+   struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count - 1];
+   assert(enc->cur >= cur_buf->base &&
+          enc->cur <= cur_buf->base + enc->current_buffer_size);
+
+   const size_t written_size = enc->cur - cur_buf->base;
+   if (cur_buf->committed_size) {
+      assert(cur_buf->committed_size == written_size);
+   } else {
+      cur_buf->committed_size = written_size;
+      enc->total_committed_size += written_size;
+   }
 }
 
 /**
@@ -60,7 +76,7 @@ vn_cs_encoder_reset(struct vn_cs_encoder *enc)
    enc->buffer_count = 0;
    vn_cs_encoder_add_buffer(enc, cur_buf->base, enc->current_buffer_size);
 
-   enc->total_buffer_size = 0;
+   enc->total_committed_size = 0;
 }
 
 static uint32_t
@@ -83,7 +99,7 @@ next_buffer_size(size_t cur_size, size_t min_size, size_t need)
 }
 
 static bool
-encoder_grow_buffer_array(struct vn_cs_encoder *enc)
+vn_cs_encoder_grow_buffer_array(struct vn_cs_encoder *enc)
 {
    const uint32_t buf_max = next_array_size(enc->buffer_max, 4);
    if (!buf_max)
@@ -101,21 +117,6 @@ encoder_grow_buffer_array(struct vn_cs_encoder *enc)
    return true;
 }
 
-static void
-encoder_set_size(struct vn_cs_encoder *enc)
-{
-   if (unlikely(!enc->buffer_count))
-      return;
-
-   struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count - 1];
-   assert(!cur_buf->size && cur_buf->base <= enc->cur);
-   cur_buf->size = enc->cur - cur_buf->base;
-   assert(cur_buf->size <= enc->current_buffer_size);
-   enc->total_buffer_size += cur_buf->size;
-
-   enc->end = enc->cur;
-}
-
 /**
  * Add a new vn_cs_buffer to a cs.
  */
@@ -123,7 +124,7 @@ bool
 vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
 {
    if (enc->buffer_count >= enc->buffer_max) {
-      if (!encoder_grow_buffer_array(enc))
+      if (!vn_cs_encoder_grow_buffer_array(enc))
          return false;
       assert(enc->buffer_count < enc->buffer_max);
    }
@@ -138,7 +139,8 @@ vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
    if (!base)
       return false;
 
-   encoder_set_size(enc);
+   if (likely(enc->buffer_count))
+      vn_cs_encoder_commit_buffer(enc);
 
    vn_cs_encoder_add_buffer(enc, base, buf_size);
 
@@ -146,10 +148,15 @@ vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
 }
 
 /*
- * End command emission.
+ * Commit written data.
  */
 void
-vn_cs_encoder_end(struct vn_cs_encoder *enc)
+vn_cs_encoder_commit(struct vn_cs_encoder *enc)
 {
-   encoder_set_size(enc);
+   if (likely(enc->buffer_count)) {
+      vn_cs_encoder_commit_buffer(enc);
+
+      /* trigger the slow path on next vn_cs_encoder_reserve */
+      enc->end = enc->cur;
+   }
 }

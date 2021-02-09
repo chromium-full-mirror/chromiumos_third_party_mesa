@@ -295,13 +295,13 @@ alloc_cs_data(const struct vn_cs_encoder *cs, size_t *size)
 {
    assert(cs->buffer_count);
    if (cs->buffer_count == 1) {
-      *size = cs->buffers[0].size;
+      *size = cs->buffers[0].committed_size;
       return cs->buffers[0].base;
    }
 
    size_t cs_size = 0;
    for (uint32_t i = 0; i < cs->buffer_count; i++)
-      cs_size += cs->buffers[i].size;
+      cs_size += cs->buffers[i].committed_size;
 
    void *cs_data = vk_alloc(cs->allocator, cs_size, VN_DEFAULT_ALIGN,
                             VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
@@ -311,8 +311,8 @@ alloc_cs_data(const struct vn_cs_encoder *cs, size_t *size)
    cs_size = 0;
    for (uint32_t i = 0; i < cs->buffer_count; i++) {
       const struct vn_cs_buffer *buf = &cs->buffers[i];
-      memcpy(cs_data + cs_size, buf->base, buf->size);
-      cs_size += buf->size;
+      memcpy(cs_data + cs_size, buf->base, buf->committed_size);
+      cs_size += buf->committed_size;
    }
 
    *size = cs_size;
@@ -340,7 +340,7 @@ vn_instance_submit_cs_locked(struct vn_instance *instance,
       return false;
    }
 
-   vn_cs_encoder_end(cs);
+   vn_cs_encoder_commit(cs);
 
    size_t cs_size;
    void *cs_data = alloc_cs_data(cs, &cs_size);
@@ -5786,7 +5786,7 @@ vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
    }
 
    vn_encode_vkEndCommandBuffer(&cmd->cs, 0, commandBuffer);
-   vn_cs_encoder_end(&cmd->cs);
+   vn_cs_encoder_commit(&cmd->cs);
 
    if (vn_cs_encoder_get_fatal(&cmd->cs)) {
       cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;

@@ -10,7 +10,7 @@
 
 struct vn_cs_buffer {
    void *base;
-   size_t size;
+   size_t committed_size;
 };
 
 struct vn_cs_encoder {
@@ -23,7 +23,7 @@ struct vn_cs_encoder {
    struct vn_cs_buffer *buffers;
    uint32_t buffer_count;
    uint32_t buffer_max;
-   size_t total_buffer_size;
+   size_t total_committed_size;
 
    /* the current buffer is buffers[buffer_count - 1].base */
    size_t current_buffer_size;
@@ -79,9 +79,9 @@ vn_cs_encoder_get_len(const struct vn_cs_encoder *enc)
    if (unlikely(!enc->buffer_count))
       return 0;
 
-   size_t len = enc->total_buffer_size;
+   size_t len = enc->total_committed_size;
    const struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count - 1];
-   if (!cur_buf->size)
+   if (!cur_buf->committed_size)
       len += enc->cur - cur_buf->base;
    return len;
 }
@@ -121,7 +121,7 @@ vn_cs_encoder_write(struct vn_cs_encoder *enc,
 }
 
 void
-vn_cs_encoder_end(struct vn_cs_encoder *enc);
+vn_cs_encoder_commit(struct vn_cs_encoder *enc);
 
 static inline void
 vn_cs_decoder_init(struct vn_cs_decoder *dec, const void *data, size_t size)
