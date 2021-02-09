@@ -488,14 +488,12 @@ submit_cmd2_sizes(const struct vn_renderer_submit *submit,
    *header_size = sizeof(uint32_t) +
                   sizeof(struct vcmd_submit_cmd2_batch) * submit->batch_count;
 
-   *cs_size = submit->cs ? vn_cs_encoder_get_len(submit->cs) : 0;
-
+   *cs_size = 0;
    *sync_size = 0;
    for (uint32_t i = 0; i < submit->batch_count; i++) {
       const struct vn_renderer_submit_batch *batch = &submit->batches[i];
-      assert(batch->cs_offset % sizeof(uint32_t) == 0);
       assert(batch->cs_size % sizeof(uint32_t) == 0);
-
+      *cs_size += batch->cs_size;
       *sync_size += (sizeof(uint32_t) + sizeof(uint64_t)) * batch->sync_count;
    }
 
@@ -523,13 +521,13 @@ vtest_vcmd_submit_cmd2(struct vtest *vtest,
 
    /* write batch count and batch headers */
    const uint32_t batch_count = submit->batch_count;
-   const size_t cs_offset = header_size;
+   size_t cs_offset = header_size;
    size_t sync_offset = cs_offset + cs_size;
    vtest_write(vtest, &batch_count, sizeof(batch_count));
    for (uint32_t i = 0; i < submit->batch_count; i++) {
       const struct vn_renderer_submit_batch *batch = &submit->batches[i];
       struct vcmd_submit_cmd2_batch dst = {
-         .cmd_offset = (cs_offset + batch->cs_offset) / sizeof(uint32_t),
+         .cmd_offset = cs_offset / sizeof(uint32_t),
          .cmd_size = batch->cs_size / sizeof(uint32_t),
          .sync_offset = sync_offset / sizeof(uint32_t),
          .sync_count = batch->sync_count,
@@ -541,15 +539,18 @@ vtest_vcmd_submit_cmd2(struct vtest *vtest,
       }
       vtest_write(vtest, &dst, sizeof(dst));
 
+      cs_offset += batch->cs_size;
       sync_offset +=
          (sizeof(uint32_t) + sizeof(uint64_t)) * batch->sync_count;
    }
 
    /* write cs */
    if (cs_size) {
-      const struct vn_cs_buffer *bufs = submit->cs->buffers;
-      for (uint32_t i = 0; i < submit->cs->buffer_count; i++)
-         vtest_write(vtest, bufs[i].base, bufs[i].size);
+      for (uint32_t i = 0; i < submit->batch_count; i++) {
+         const struct vn_renderer_submit_batch *batch = &submit->batches[i];
+         if (batch->cs_size)
+            vtest_write(vtest, batch->cs_data, batch->cs_size);
+      }
    }
 
    /* write syncs */

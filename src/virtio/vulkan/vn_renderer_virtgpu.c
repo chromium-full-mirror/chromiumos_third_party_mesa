@@ -413,50 +413,6 @@ sim_submit_signal_syncs(struct virtgpu *gpu,
    return 0;
 }
 
-static void *
-sim_submit_alloc_cmd(const struct vn_cs_encoder *cs,
-                     size_t offset,
-                     size_t size)
-{
-   const struct vn_cs_buffer *bufs = cs->buffers;
-   const uint32_t buf_count = cs->buffer_count;
-
-   /* seek to offset */
-   uint32_t i;
-   for (i = 0; i < buf_count; i++) {
-      if (offset < bufs[i].size)
-         break;
-      offset -= bufs[i].size;
-   }
-   if (i == buf_count)
-      return NULL;
-
-   void *cmd = malloc(size);
-   if (!cmd)
-      return NULL;
-
-   void *ptr = cmd;
-   while (size) {
-      const size_t s = MIN2(size, bufs[i].size - offset);
-      memcpy(ptr, bufs[i].base + offset, s);
-
-      ptr += s;
-      size -= s;
-
-      i++;
-      offset = 0;
-      if (i == buf_count)
-         break;
-   }
-
-   if (size) {
-      free(cmd);
-      return NULL;
-   }
-
-   return cmd;
-}
-
 static uint32_t *
 sim_submit_alloc_gem_handles(struct vn_renderer_bo *const *bos,
                              uint32_t bo_count)
@@ -489,27 +445,15 @@ sim_submit(struct virtgpu *gpu, const struct vn_renderer_submit *submit)
    for (uint32_t i = 0; i < submit->batch_count; i++) {
       const struct vn_renderer_submit_batch *batch = &submit->batches[i];
 
-      /* TODO zero-copy cs */
-      void *cmd = NULL;
-      if (batch->cs_size) {
-         cmd = sim_submit_alloc_cmd(submit->cs, batch->cs_offset,
-                                    batch->cs_size);
-         if (!cmd) {
-            ret = -1;
-            break;
-         }
-      }
-
       struct drm_virtgpu_execbuffer args = {
          .flags = batch->sync_count ? VIRTGPU_EXECBUF_FENCE_FD_OUT : 0,
          .size = batch->cs_size,
-         .command = (uintptr_t)cmd,
+         .command = (uintptr_t)batch->cs_data,
          .bo_handles = (uintptr_t)gem_handles,
          .num_bo_handles = submit->bo_count,
       };
 
       ret = drmIoctl(gpu->fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &args);
-      free(cmd);
       if (ret) {
          vn_log(gpu->instance, "failed to execbuffer: %s", strerror(errno));
          break;

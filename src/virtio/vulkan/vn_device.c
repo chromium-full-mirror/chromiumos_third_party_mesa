@@ -290,6 +290,42 @@ vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
    return vn_renderer_bo_ref(instance->cs_reply.bo);
 }
 
+static void *
+alloc_cs_data(const struct vn_cs_encoder *cs, size_t *size)
+{
+   assert(cs->buffer_count);
+   if (cs->buffer_count == 1) {
+      *size = cs->buffers[0].size;
+      return cs->buffers[0].base;
+   }
+
+   size_t cs_size = 0;
+   for (uint32_t i = 0; i < cs->buffer_count; i++)
+      cs_size += cs->buffers[i].size;
+
+   void *cs_data = vk_alloc(cs->allocator, cs_size, VN_DEFAULT_ALIGN,
+                            VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   if (!cs_data)
+      return NULL;
+
+   cs_size = 0;
+   for (uint32_t i = 0; i < cs->buffer_count; i++) {
+      const struct vn_cs_buffer *buf = &cs->buffers[i];
+      memcpy(cs_data + cs_size, buf->base, buf->size);
+      cs_size += buf->size;
+   }
+
+   *size = cs_size;
+   return cs_data;
+}
+
+static void
+free_cs_data(const struct vn_cs_encoder *cs, void *data)
+{
+   if (cs->buffer_count > 1)
+      vk_free(cs->allocator, data);
+}
+
 bool
 vn_instance_submit_cs_locked(struct vn_instance *instance,
                              struct vn_renderer_bo *reply_bo,
@@ -306,16 +342,23 @@ vn_instance_submit_cs_locked(struct vn_instance *instance,
 
    vn_cs_encoder_end(cs);
 
+   size_t cs_size;
+   void *cs_data = alloc_cs_data(cs, &cs_size);
+   if (!cs_data) {
+      vn_cs_encoder_reset(cs);
+      return false;
+   }
+
    VkResult result;
    if (reply_bo) {
       *reply_sync_val = ++instance->cs_reply.sync_value;
       const struct vn_renderer_submit submit = {
-         .cs = cs,
          .bos = &reply_bo,
          .bo_count = 1,
          .batches =
             &(const struct vn_renderer_submit_batch){
-               .cs_size = vn_cs_encoder_get_len(cs),
+               .cs_data = cs_data,
+               .cs_size = cs_size,
                .sync_queue_cpu = true,
                .syncs = &instance->cs_reply.sync,
                .sync_values = reply_sync_val,
@@ -325,8 +368,11 @@ vn_instance_submit_cs_locked(struct vn_instance *instance,
       };
       result = vn_renderer_submit(instance->renderer, &submit);
    } else {
-      result = vn_renderer_submit_cs(instance->renderer, cs);
+      result =
+         vn_renderer_submit_simple(instance->renderer, cs_data, cs_size);
    }
+
+   free_cs_data(cs, cs_data);
 
    vn_cs_encoder_reset(cs);
 
@@ -5747,8 +5793,17 @@ vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
       return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
+   size_t cs_size;
+   void *cs_data = alloc_cs_data(&cmd->cs, &cs_size);
+   if (!cs_data) {
+      cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
+      return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
    vn_instance_flush_cs(instance);
-   vn_renderer_submit_cs(instance->renderer, &cmd->cs);
+   vn_renderer_submit_simple(instance->renderer, cs_data, cs_size);
+
+   free_cs_data(&cmd->cs, cs_data);
 
    vn_cs_encoder_reset(&cmd->cs);
 
