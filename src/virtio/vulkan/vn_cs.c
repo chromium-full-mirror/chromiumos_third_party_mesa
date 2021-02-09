@@ -5,6 +5,9 @@
 
 #include "vn_cs.h"
 
+#include "vn_device.h"
+#include "vn_renderer.h"
+
 static void
 vn_cs_encoder_sanity_check(struct vn_cs_encoder *enc)
 {
@@ -29,11 +32,16 @@ vn_cs_encoder_sanity_check(struct vn_cs_encoder *enc)
 }
 
 static void
-vn_cs_encoder_add_buffer(struct vn_cs_encoder *enc, void *base, size_t size)
+vn_cs_encoder_add_buffer(struct vn_cs_encoder *enc,
+                         struct vn_renderer_bo *bo,
+                         void *base,
+                         size_t size)
 {
    /* add a buffer and make it current */
    assert(enc->buffer_count < enc->buffer_max);
    struct vn_cs_encoder_buffer *cur_buf = &enc->buffers[enc->buffer_count++];
+   /* bo ownership transferred */
+   cur_buf->bo = bo;
    cur_buf->base = base;
    cur_buf->committed_size = 0;
    enc->current_buffer_size = size;
@@ -66,19 +74,23 @@ vn_cs_encoder_gc_buffers(struct vn_cs_encoder *enc)
    struct vn_cs_encoder_buffer *cur_buf =
       &enc->buffers[enc->buffer_count - 1];
    for (uint32_t i = 0; i < enc->buffer_count - 1; i++)
-      free(enc->buffers[i].base);
+      vn_renderer_bo_unref(enc->buffers[i].bo);
 
    /* move the current buffer to the beginning */
    enc->buffer_count = 0;
-   vn_cs_encoder_add_buffer(enc, cur_buf->base, enc->current_buffer_size);
+   vn_cs_encoder_add_buffer(enc, cur_buf->bo, cur_buf->base,
+                            enc->current_buffer_size);
 
    enc->total_committed_size = 0;
 }
 
 void
-vn_cs_encoder_init_growable(struct vn_cs_encoder *enc, size_t min_size)
+vn_cs_encoder_init_growable(struct vn_cs_encoder *enc,
+                            struct vn_instance *instance,
+                            size_t min_size)
 {
    memset(enc, 0, sizeof(*enc));
+   enc->instance = instance;
    enc->min_buffer_size = min_size;
    enc->growable = true;
 }
@@ -90,7 +102,7 @@ vn_cs_encoder_fini(struct vn_cs_encoder *enc)
       return;
 
    for (uint32_t i = 0; i < enc->buffer_count; i++)
-      free(enc->buffers[i].base);
+      vn_renderer_bo_unref(enc->buffers[i].bo);
    if (enc->buffers)
       free(enc->buffers);
 }
@@ -102,7 +114,6 @@ void
 vn_cs_encoder_reset(struct vn_cs_encoder *enc)
 {
    /* enc->error is sticky */
-
    if (likely(enc->buffer_count))
       vn_cs_encoder_gc_buffers(enc);
 }
@@ -163,14 +174,22 @@ vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
    if (!buf_size)
       return false;
 
-   void *base = malloc(buf_size);
-   if (!base)
+   struct vn_renderer_bo *bo;
+   VkResult result =
+      vn_renderer_bo_create_cpu(enc->instance->renderer, buf_size, &bo);
+   if (result != VK_SUCCESS)
       return false;
+
+   void *base = vn_renderer_bo_map(bo);
+   if (!base) {
+      vn_renderer_bo_unref(bo);
+      return false;
+   }
 
    if (likely(enc->buffer_count))
       vn_cs_encoder_commit_buffer(enc);
 
-   vn_cs_encoder_add_buffer(enc, base, buf_size);
+   vn_cs_encoder_add_buffer(enc, bo, base, buf_size);
 
    vn_cs_encoder_sanity_check(enc);
 
