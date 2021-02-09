@@ -420,48 +420,10 @@ vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
                                    size_t size,
                                    void **ptr);
 
-static inline bool
+bool
 vn_instance_submit_cs_locked(struct vn_instance *instance,
                              struct vn_renderer_bo *reply_bo,
-                             uint64_t *reply_sync_val)
-{
-   struct vn_cs_encoder *cs = &instance->cs;
-
-   instance->cs_throttle_pipeline_count = 0;
-
-   if (unlikely(vn_cs_encoder_get_fatal(cs))) {
-      vn_cs_encoder_reset(cs);
-      return false;
-   }
-
-   vn_cs_encoder_end(cs);
-
-   VkResult result;
-   if (reply_bo) {
-      *reply_sync_val = ++instance->cs_reply.sync_value;
-      const struct vn_renderer_submit submit = {
-         .cs = cs,
-         .bos = &reply_bo,
-         .bo_count = 1,
-         .batches =
-            &(const struct vn_renderer_submit_batch){
-               .cs_size = vn_cs_encoder_get_len(cs),
-               .sync_queue_cpu = true,
-               .syncs = &instance->cs_reply.sync,
-               .sync_values = reply_sync_val,
-               .sync_count = 1,
-            },
-         .batch_count = 1,
-      };
-      result = vn_renderer_submit(instance->renderer, &submit);
-   } else {
-      result = vn_renderer_submit_cs(instance->renderer, cs);
-   }
-
-   vn_cs_encoder_reset(cs);
-
-   return result == VK_SUCCESS;
-}
+                             uint64_t *reply_sync_val);
 
 static inline void
 vn_instance_unlock_cs(struct vn_instance *instance)
