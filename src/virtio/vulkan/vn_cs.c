@@ -26,6 +26,20 @@ vn_cs_encoder_fini(struct vn_cs_encoder *enc)
       vk_free(enc->allocator, enc->buffers);
 }
 
+static void
+vn_cs_encoder_add_buffer(struct vn_cs_encoder *enc, void *base, size_t size)
+{
+   /* add the buffer and make it current */
+   struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count++];
+   cur_buf->base = base;
+   cur_buf->size = 0;
+   enc->current_buffer_size = size;
+
+   /* update the write pointer */
+   enc->cur = base;
+   enc->end = base + size;
+}
+
 /**
  * Reset a cs for reuse.
  */
@@ -37,20 +51,16 @@ vn_cs_encoder_reset(struct vn_cs_encoder *enc)
    if (unlikely(!enc->buffer_count))
       return;
 
-   /* free all but the last buffer */
+   /* free all but the current buffer */
+   struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count - 1];
    for (uint32_t i = 0; i < enc->buffer_count - 1; i++)
       vk_free(enc->allocator, enc->buffers[i].base);
 
-   /* move the last buffer to the beginning */
-   struct vn_cs_buffer *buf = &enc->buffers[0];
-   buf->base = enc->buffers[enc->buffer_count - 1].base;
-   buf->size = 0;
-   enc->buffer_count = 1;
+   /* move the current buffer to the beginning */
+   enc->buffer_count = 0;
+   vn_cs_encoder_add_buffer(enc, cur_buf->base, enc->current_buffer_size);
 
    enc->total_buffer_size = 0;
-
-   enc->cur = buf->base;
-   enc->end = buf->base + enc->last_buffer_size;
 }
 
 static uint32_t
@@ -97,11 +107,11 @@ encoder_set_size(struct vn_cs_encoder *enc)
    if (unlikely(!enc->buffer_count))
       return;
 
-   struct vn_cs_buffer *buf = &enc->buffers[enc->buffer_count - 1];
-   assert(!buf->size && buf->base <= enc->cur);
-   buf->size = enc->cur - buf->base;
-   assert(buf->size <= enc->last_buffer_size);
-   enc->total_buffer_size += buf->size;
+   struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count - 1];
+   assert(!cur_buf->size && cur_buf->base <= enc->cur);
+   cur_buf->size = enc->cur - cur_buf->base;
+   assert(cur_buf->size <= enc->current_buffer_size);
+   enc->total_buffer_size += cur_buf->size;
 
    enc->end = enc->cur;
 }
@@ -119,7 +129,7 @@ vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
    }
 
    const size_t buf_size =
-      next_buffer_size(enc->last_buffer_size, enc->min_buffer_size, size);
+      next_buffer_size(enc->current_buffer_size, enc->min_buffer_size, size);
    if (!buf_size)
       return false;
 
@@ -130,15 +140,7 @@ vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
 
    encoder_set_size(enc);
 
-   /* add a new buffer */
-   struct vn_cs_buffer *buf = &enc->buffers[enc->buffer_count++];
-   buf->base = base;
-   buf->size = 0;
-   enc->last_buffer_size = buf_size;
-
-   /* switch to the new buffer */
-   enc->cur = buf->base;
-   enc->end = buf->base + enc->last_buffer_size;
+   vn_cs_encoder_add_buffer(enc, base, buf_size);
 
    return true;
 }

@@ -23,9 +23,14 @@ struct vn_cs_encoder {
    struct vn_cs_buffer *buffers;
    uint32_t buffer_count;
    uint32_t buffer_max;
-   size_t last_buffer_size;
    size_t total_buffer_size;
 
+   /* the current buffer is buffers[buffer_count - 1].base */
+   size_t current_buffer_size;
+
+   /* cur is the write pointer.  When cur passes end, the slow path is
+    * triggered.
+    */
    void *cur;
    const void *end;
 };
@@ -75,9 +80,9 @@ vn_cs_encoder_get_len(const struct vn_cs_encoder *enc)
       return 0;
 
    size_t len = enc->total_buffer_size;
-   const struct vn_cs_buffer *buf = &enc->buffers[enc->buffer_count - 1];
-   if (!buf->size)
-      len += enc->cur - buf->base;
+   const struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count - 1];
+   if (!cur_buf->size)
+      len += enc->cur - cur_buf->base;
    return len;
 }
 
