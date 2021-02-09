@@ -54,45 +54,28 @@ vn_cs_encoder_reset(struct vn_cs_encoder *enc)
 }
 
 static uint32_t
-grow_array_size(uint32_t size,
-                uint32_t used,
-                uint32_t growth,
-                uint32_t min_size)
+next_array_size(uint32_t cur_size, uint32_t min_size)
 {
-   assert(size >= used && min_size);
-   if (!size)
-      size = min_size;
-
-   uint32_t new_size = size;
-   while (new_size - used < growth) {
-      new_size *= 2;
-      if (new_size < size)
-         return 0;
-   }
-   return new_size;
+   const uint32_t next_size = cur_size ? cur_size * 2 : min_size;
+   return next_size > cur_size ? next_size : 0;
 }
 
 static size_t
-grow_buffer_size(size_t size, size_t used, size_t growth, size_t min_size)
+next_buffer_size(size_t cur_size, size_t min_size, size_t need)
 {
-   assert(size >= used && min_size);
-   if (!size)
-      size = min_size;
-
-   size_t new_size = size;
-   while (new_size - used < growth) {
-      new_size *= 2;
-      if (new_size < size)
+   size_t next_size = cur_size ? cur_size * 2 : min_size;
+   while (next_size < need) {
+      next_size *= 2;
+      if (!next_size)
          return 0;
    }
-   return new_size;
+   return next_size;
 }
 
 static bool
-encoder_grow_buffers(struct vn_cs_encoder *enc)
+encoder_grow_buffer_array(struct vn_cs_encoder *enc)
 {
-   const uint32_t buf_max =
-      grow_array_size(enc->buffer_max, enc->buffer_count, 1, 4);
+   const uint32_t buf_max = next_array_size(enc->buffer_max, 4);
    if (!buf_max)
       return false;
 
@@ -130,14 +113,13 @@ bool
 vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
 {
    if (enc->buffer_count >= enc->buffer_max) {
-      if (!encoder_grow_buffers(enc))
+      if (!encoder_grow_buffer_array(enc))
          return false;
       assert(enc->buffer_count < enc->buffer_max);
    }
 
    const size_t buf_size =
-      grow_buffer_size(enc->last_buffer_size, enc->last_buffer_size, size,
-                       enc->min_buffer_size);
+      next_buffer_size(enc->last_buffer_size, enc->min_buffer_size, size);
    if (!buf_size)
       return false;
 
