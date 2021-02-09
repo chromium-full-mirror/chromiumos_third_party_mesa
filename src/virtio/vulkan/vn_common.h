@@ -69,7 +69,7 @@ struct vn_pipeline;
 struct vn_command_pool;
 struct vn_command_buffer;
 
-struct vn_cs;
+struct vn_cs_encoder;
 struct vn_cs_decoder;
 struct vn_renderer;
 struct vn_renderer_bo;
