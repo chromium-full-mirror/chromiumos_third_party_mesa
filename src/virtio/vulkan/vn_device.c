@@ -795,6 +795,7 @@ vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
       /* does not depend on renderer (e.g., WSI) */
       if (props->specVersion) {
          physical_dev->supported_extensions.extensions[i] = true;
+         physical_dev->extension_spec_versions[i] = props->specVersion;
          continue;
       }
 
@@ -2028,8 +2029,7 @@ vn_EnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice,
       if (physical_dev->supported_extensions.extensions[i]) {
          vk_outarray_append (&out, prop) {
             *prop = vn_device_extensions[i];
-            if (!prop->specVersion)
-               prop->specVersion = physical_dev->extension_spec_versions[i];
+            prop->specVersion = physical_dev->extension_spec_versions[i];
          }
       }
    }
