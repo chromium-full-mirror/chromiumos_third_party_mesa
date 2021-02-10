@@ -113,13 +113,14 @@ vn_log_result(struct vn_instance *instance,
 
 static_assert(sizeof(vn_object_id) >= sizeof(uintptr_t), "");
 
-static inline void
+static inline VkResult
 vn_device_base_init(struct vn_device_base *dev,
                     const VkDeviceCreateInfo *info,
                     const VkAllocationCallbacks *alloc)
 {
    vk_device_init(&dev->base, info, alloc, alloc);
    dev->id = (uintptr_t)dev;
+   return VK_SUCCESS;
 }
 
 static inline void

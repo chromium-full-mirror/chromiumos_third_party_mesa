@@ -2087,7 +2087,11 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
    if (!dev)
       return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_device_base_init(&dev->base, pCreateInfo, alloc);
+   result = vn_device_base_init(&dev->base, pCreateInfo, alloc);
+   if (result != VK_SUCCESS) {
+      vk_free(alloc, dev);
+      return vn_error(instance, result);
+   }
 
    dev->allocator = *alloc;
    dev->instance = instance;
@@ -2185,6 +2189,7 @@ fail:
       vk_free(alloc, (void *)pCreateInfo->ppEnabledExtensionNames);
 
    vk_free(alloc, dev->queues);
+   vn_device_base_fini(&dev->base);
    vk_free(alloc, dev);
    return vn_error(instance, result);
 }
