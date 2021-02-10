@@ -17,26 +17,6 @@ vn_entrypoints = custom_target(
   depend_files : vn_extensions_py,
 )
 
-vn_extensions_c = custom_target(
-  'vn_extensions.c',
-  input : ['vn_extensions_gen.py', vk_api_xml],
-  output : 'vn_extensions.c',
-  command : [
-    prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--out-c', '@OUTPUT@',
-  ],
-  depend_files : vn_extensions_py,
-)
-
-vn_extensions_h = custom_target(
-  'vn_extensions.h',
-  input : ['vn_extensions_gen.py', vk_api_xml],
-  output : 'vn_extensions.h',
-  command : [
-    prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--out-h', '@OUTPUT@',
-  ],
-  depend_files : vn_extensions_py,
-)
-
 virtio_icd = custom_target(
   'virtio_icd',
   input : 'vn_icd.py',
@@ -56,6 +36,7 @@ libvn_files = files(
   'vn_common.c',
   'vn_cs.c',
   'vn_device.c',
+  'vn_extensions.c',
   'vn_icd.c',
   'vn_renderer_virtgpu.c',
   'vn_renderer_vtest.c',
@@ -82,7 +63,7 @@ endif
 
 libvulkan_virtio = shared_library(
   'vulkan_virtio',
-  [libvn_files, vn_entrypoints, vn_extensions_c, vn_extensions_h],
+  [libvn_files, vn_entrypoints],
   include_directories : [
     inc_include, inc_src, inc_vulkan_wsi, inc_virtio,
   ],

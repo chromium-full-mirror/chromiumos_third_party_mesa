@@ -254,9 +254,4 @@ vn_get_device_entrypoint_index(const char *name);
 void *
 vn_lookup_entrypoint(const char *name);
 
-/* missing from vn_extensions.h */
-
-uint32_t
-vn_physical_device_api_version(struct vn_physical_device *physical_dev);
-
 #endif /* VN_COMMON_H */

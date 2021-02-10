@@ -23,6 +23,35 @@
  */
 #define VN_MIN_RENDERER_VERSION VK_API_VERSION_1_1
 
+/*
+ * Instance extensions add instance-level or physical-device-level
+ * functionalities.  It seems renderer support is either unnecessary or
+ * optional.  We should be able to advertise them or lie about them locally.
+ */
+static const struct vn_instance_extension_table
+   vn_instance_supported_extensions = {
+      /* promoted to VK_VERSION_1_1 */
+      .KHR_device_group_creation = true,
+      .KHR_external_fence_capabilities = true,
+      .KHR_external_memory_capabilities = true,
+      .KHR_external_semaphore_capabilities = true,
+      .KHR_get_physical_device_properties2 = true,
+
+      /* WSI */
+      .KHR_get_surface_capabilities2 = true,
+      .KHR_surface = true,
+      .KHR_surface_protected_capabilities = true,
+#ifdef VK_USE_PLATFORM_WAYLAND_KHR
+      .KHR_wayland_surface = true,
+#endif
+#ifdef VK_USE_PLATFORM_XCB_KHR
+      .KHR_xcb_surface = true,
+#endif
+#ifdef VK_USE_PLATFORM_XLIB_KHR
+      .KHR_xlib_surface = true,
+#endif
+   };
+
 static uint32_t
 get_instance_api_version(const VkInstanceCreateInfo *create_info)
 {
@@ -59,7 +88,7 @@ vn_instance_init_extensions(struct vn_instance *instance,
 {
    for (uint32_t i = 0; i < count; i++) {
       const int index = get_instance_extension_index(names[i]);
-      if (index < 0 || !vn_instance_extensions_supported.extensions[index])
+      if (index < 0 || !vn_instance_supported_extensions.extensions[index])
          return VK_ERROR_EXTENSION_NOT_PRESENT;
       instance->enabled_extensions.extensions[index] = true;
    }
@@ -643,10 +672,11 @@ vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
          local_props.maintenance_3.maxMemoryAllocationSize;
    }
 
-   const uint32_t max_api_version =
-      vn_physical_device_api_version(physical_dev);
-   if (props->apiVersion > max_api_version)
-      props->apiVersion = max_api_version;
+   const uint32_t version_override = vk_get_version_override();
+   if (version_override)
+      props->apiVersion = version_override;
+   if (props->apiVersion > VK_HEADER_VERSION_COMPLETE)
+      props->apiVersion = VK_HEADER_VERSION_COMPLETE;
 
    props->driverVersion = vk_get_driver_version();
    props->vendorID = instance->renderer_info.pci.vendor_id;
@@ -733,6 +763,72 @@ vn_physical_device_init_memory_properties(
    }
 }
 
+static void
+vn_physical_device_get_supported_extensions(
+   const struct vn_physical_device *device,
+   struct vn_device_extension_table *supported,
+   struct vn_device_extension_table *recognized)
+{
+   *supported = (struct vn_device_extension_table){
+      /* WSI */
+      .KHR_incremental_present = true,
+      .KHR_swapchain = true,
+      .KHR_swapchain_mutable_format = true,
+   };
+
+   *recognized = (struct vn_device_extension_table){
+      /* promoted to VK_VERSION_1_1 */
+      .KHR_16bit_storage = true,
+      .KHR_bind_memory2 = true,
+      .KHR_dedicated_allocation = true,
+      .KHR_descriptor_update_template = true,
+      .KHR_device_group = true,
+      .KHR_external_fence = true,
+      .KHR_external_memory = true,
+      .KHR_external_semaphore = true,
+      .KHR_get_memory_requirements2 = true,
+      .KHR_maintenance1 = true,
+      .KHR_maintenance2 = true,
+      .KHR_maintenance3 = true,
+      .KHR_multiview = true,
+      .KHR_relaxed_block_layout = true,
+      .KHR_sampler_ycbcr_conversion = true,
+      .KHR_shader_draw_parameters = true,
+      .KHR_storage_buffer_storage_class = true,
+      .KHR_variable_pointers = true,
+
+      /* promoted to VK_VERSION_1_2 */
+      .KHR_8bit_storage = true,
+      .KHR_buffer_device_address = true,
+      .KHR_create_renderpass2 = true,
+      .KHR_depth_stencil_resolve = true,
+      .KHR_draw_indirect_count = true,
+      .KHR_driver_properties = true,
+      .KHR_image_format_list = true,
+      .KHR_imageless_framebuffer = true,
+      .KHR_sampler_mirror_clamp_to_edge = true,
+      .KHR_separate_depth_stencil_layouts = true,
+      .KHR_shader_atomic_int64 = true,
+      .KHR_shader_float16_int8 = true,
+      .KHR_shader_float_controls = true,
+      .KHR_shader_subgroup_extended_types = true,
+      .KHR_spirv_1_4 = true,
+      .KHR_timeline_semaphore = true,
+      .KHR_uniform_buffer_standard_layout = true,
+      .KHR_vulkan_memory_model = true,
+      .EXT_descriptor_indexing = true,
+      .EXT_host_query_reset = true,
+      .EXT_sampler_filter_minmax = true,
+      .EXT_scalar_block_layout = true,
+      .EXT_separate_stencil_usage = true,
+      .EXT_shader_viewport_index_layer = true,
+
+      /* EXT */
+      .EXT_image_drm_format_modifier = true,
+      .EXT_transform_feedback = true,
+   };
+}
+
 static VkResult
 vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
 {
@@ -764,7 +860,9 @@ vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
    }
 
    struct vn_device_extension_table supported;
-   vn_physical_device_get_supported_extensions(physical_dev, &supported);
+   struct vn_device_extension_table recognized;
+   vn_physical_device_get_supported_extensions(physical_dev, &supported,
+                                               &recognized);
 
    physical_dev->extension_spec_versions =
       vk_zalloc(alloc,
@@ -788,16 +886,16 @@ vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
          }
       }
 
-      /* no driver support */
-      if (!supported.extensions[i])
-         continue;
-
       /* does not depend on renderer (e.g., WSI) */
-      if (props->specVersion) {
+      if (supported.extensions[i]) {
          physical_dev->supported_extensions.extensions[i] = true;
          physical_dev->extension_spec_versions[i] = props->specVersion;
          continue;
       }
+
+      /* no driver support */
+      if (!recognized.extensions[i])
+         continue;
 
       /* check renderer support */
       if (!renderer_props)
@@ -1039,7 +1137,12 @@ vn_device_init_dispatch(struct vn_device *dev)
 
 /* instance commands */
 
-/* vn_EnumerateInstanceVersion is generated */
+VkResult
+vn_EnumerateInstanceVersion(uint32_t *pApiVersion)
+{
+   *pApiVersion = VK_HEADER_VERSION_COMPLETE;
+   return VK_SUCCESS;
+}
 
 VkResult
 vn_EnumerateInstanceExtensionProperties(const char *pLayerName,
@@ -1049,25 +1152,9 @@ vn_EnumerateInstanceExtensionProperties(const char *pLayerName,
    if (pLayerName)
       return vn_error(NULL, VK_ERROR_LAYER_NOT_PRESENT);
 
-   /*
-    * Instance extensions add instance-level or physical-device-level
-    * functionalities.  Currently, there are
-    *
-    *  - VK_KHR_surface and related extensions
-    *  - VK_KHR_display and related extensions
-    *  - VK_EXT_debug_{report,utils}
-    *  - VK_EXT_validation_{flags,features}
-    *  - promoted to core
-    *    - VK_KHR_get_physical_device_properties2
-    *    - VK_KHR_device_group_creation
-    *    - VK_KHR_external_{memory,semaphore,fence}_capabilities
-    *
-    * It seems renderer support is either unnecessary or optional.  We should
-    * be able to advertise them or lie about them locally.
-    */
    VK_OUTARRAY_MAKE(out, pProperties, pPropertyCount);
    for (uint32_t i = 0; i < VN_INSTANCE_EXTENSION_COUNT; i++) {
-      if (vn_instance_extensions_supported.extensions[i]) {
+      if (vn_instance_supported_extensions.extensions[i]) {
          vk_outarray_append (&out, prop) {
             *prop = vn_instance_extensions[i];
          }
