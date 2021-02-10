@@ -21,7 +21,7 @@ vn_CreateWaylandSurfaceKHR(VkInstance _instance,
 {
    struct vn_instance *instance = vn_instance_from_handle(_instance);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &instance->allocator;
+      pAllocator ? pAllocator : &instance->base.base.alloc;
 
    VkResult result = wsi_create_wl_surface(alloc, pCreateInfo, pSurface);
 

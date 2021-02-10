@@ -26,11 +26,13 @@
 #include "util/macros.h"
 #include "vk_alloc.h"
 #include "vk_debug_report.h"
+#include "vk_device.h"
+#include "vk_instance.h"
 #include "vk_object.h"
+#include "vk_physical_device.h"
 #include "vk_util.h"
 
 #include "vn_entrypoints.h"
-#include "vn_extensions.h"
 
 #define VN_DEFAULT_ALIGN 8
 
@@ -86,13 +88,13 @@ typedef uint64_t vn_object_id;
 
 /* base class of vn_instance */
 struct vn_instance_base {
-   struct vk_object_base base;
+   struct vk_instance base;
    vn_object_id id;
 };
 
 /* base class of vn_physical_device */
 struct vn_physical_device_base {
-   struct vk_object_base base;
+   struct vk_physical_device base;
    vn_object_id id;
 };
 
@@ -126,42 +128,56 @@ vn_log_result(struct vn_instance *instance,
 static_assert(sizeof(vn_object_id) >= sizeof(uintptr_t), "");
 
 static inline VkResult
-vn_instance_base_init(struct vn_instance_base *instance)
+vn_instance_base_init(
+   struct vn_instance_base *instance,
+   const struct vk_instance_extension_table *supported_extensions,
+   const struct vk_instance_dispatch_table *dispatch_table,
+   const VkInstanceCreateInfo *info,
+   const VkAllocationCallbacks *alloc)
 {
-   vk_object_base_init(NULL, &instance->base, VK_OBJECT_TYPE_INSTANCE);
+   VkResult result = vk_instance_init(&instance->base, supported_extensions,
+                                      dispatch_table, info, alloc);
    instance->id = (uintptr_t)instance;
-   return VK_SUCCESS;
+   return result;
 }
 
 static inline void
 vn_instance_base_fini(struct vn_instance_base *instance)
 {
-   vk_object_base_finish(&instance->base);
+   vk_instance_finish(&instance->base);
 }
 
 static inline VkResult
-vn_physical_device_base_init(struct vn_physical_device_base *physical_dev)
+vn_physical_device_base_init(
+   struct vn_physical_device_base *physical_dev,
+   struct vn_instance_base *instance,
+   const struct vk_device_extension_table *supported_extensions,
+   const struct vk_physical_device_dispatch_table *dispatch_table)
 {
-   vk_object_base_init(NULL, &physical_dev->base,
-                       VK_OBJECT_TYPE_PHYSICAL_DEVICE);
+   VkResult result =
+      vk_physical_device_init(&physical_dev->base, &instance->base,
+                              supported_extensions, dispatch_table);
    physical_dev->id = (uintptr_t)physical_dev;
-   return VK_SUCCESS;
+   return result;
 }
 
 static inline void
 vn_physical_device_base_fini(struct vn_physical_device_base *physical_dev)
 {
-   vk_object_base_finish(&physical_dev->base);
+   vk_physical_device_finish(&physical_dev->base);
 }
 
 static inline VkResult
 vn_device_base_init(struct vn_device_base *dev,
+                    struct vn_physical_device_base *physical_dev,
+                    const struct vk_device_dispatch_table *dispatch_table,
                     const VkDeviceCreateInfo *info,
                     const VkAllocationCallbacks *alloc)
 {
-   vk_device_init(&dev->base, info, alloc, alloc);
+   VkResult result = vk_device_init(&dev->base, &physical_dev->base,
+                                    dispatch_table, info, alloc);
    dev->id = (uintptr_t)dev;
-   return VK_SUCCESS;
+   return result;
 }
 
 static inline void
@@ -220,38 +236,5 @@ vn_object_get_id(const void *obj, VkObjectType type)
       return ((struct vn_object_base *)obj)->id;
    }
 }
-
-/* missing from vn_entrypoints.h */
-
-bool
-vn_instance_entrypoint_is_enabled(
-   int index,
-   uint32_t core_version,
-   const struct vn_instance_extension_table *instance);
-
-bool
-vn_physical_device_entrypoint_is_enabled(
-   int index,
-   uint32_t core_version,
-   const struct vn_instance_extension_table *instance);
-
-bool
-vn_device_entrypoint_is_enabled(
-   int index,
-   uint32_t core_version,
-   const struct vn_instance_extension_table *instance,
-   const struct vn_device_extension_table *device);
-
-int
-vn_get_instance_entrypoint_index(const char *name);
-
-int
-vn_get_physical_device_entrypoint_index(const char *name);
-
-int
-vn_get_device_entrypoint_index(const char *name);
-
-void *
-vn_lookup_entrypoint(const char *name);
 
 #endif /* VN_COMMON_H */

@@ -28,7 +28,7 @@
  * functionalities.  It seems renderer support is either unnecessary or
  * optional.  We should be able to advertise them or lie about them locally.
  */
-static const struct vn_instance_extension_table
+static const struct vk_instance_extension_table
    vn_instance_supported_extensions = {
       /* promoted to VK_VERSION_1_1 */
       .KHR_device_group_creation = true,
@@ -52,106 +52,10 @@ static const struct vn_instance_extension_table
 #endif
    };
 
-static uint32_t
-get_instance_api_version(const VkInstanceCreateInfo *create_info)
-{
-   return (create_info->pApplicationInfo &&
-           create_info->pApplicationInfo->apiVersion)
-             ? create_info->pApplicationInfo->apiVersion
-             : VK_API_VERSION_1_0;
-}
-
-static int
-get_instance_extension_index(const char *name)
-{
-   for (int i = 0; i < VN_INSTANCE_EXTENSION_COUNT; i++) {
-      if (!strcmp(name, vn_instance_extensions[i].extensionName))
-         return i;
-   }
-   return -1;
-}
-
-static int
-get_device_extension_index(const char *name)
-{
-   for (int i = 0; i < VN_DEVICE_EXTENSION_COUNT; i++) {
-      if (!strcmp(name, vn_device_extensions[i].extensionName))
-         return i;
-   }
-   return -1;
-}
-
-static VkResult
-vn_instance_init_extensions(struct vn_instance *instance,
-                            const char *const *names,
-                            uint32_t count)
-{
-   for (uint32_t i = 0; i < count; i++) {
-      const int index = get_instance_extension_index(names[i]);
-      if (index < 0 || !vn_instance_supported_extensions.extensions[index])
-         return VK_ERROR_EXTENSION_NOT_PRESENT;
-      instance->enabled_extensions.extensions[index] = true;
-   }
-   return VK_SUCCESS;
-}
-
-static void
-vn_instance_init_dispatch(struct vn_instance *instance)
-{
-   uint32_t count = ARRAY_SIZE(vn_instance_dispatch_table.entrypoints);
-   void *const *from = vn_instance_dispatch_table.entrypoints;
-   void **to = instance->dispatch.entrypoints;
-   for (uint32_t i = 0; i < count; i++) {
-      to[i] = vn_instance_entrypoint_is_enabled(i, instance->api_version,
-                                                &instance->enabled_extensions)
-                 ? from[i]
-                 : NULL;
-   }
-
-   count = ARRAY_SIZE(vn_physical_device_dispatch_table.entrypoints);
-   from = vn_physical_device_dispatch_table.entrypoints;
-   to = instance->physical_device_dispatch.entrypoints;
-   for (uint32_t i = 0; i < count; i++) {
-      to[i] = vn_physical_device_entrypoint_is_enabled(
-                 i, instance->api_version, &instance->enabled_extensions)
-                 ? from[i]
-                 : NULL;
-   }
-
-   count = ARRAY_SIZE(vn_device_dispatch_table.entrypoints);
-   from = vn_device_dispatch_table.entrypoints;
-   to = instance->device_dispatch.entrypoints;
-   for (uint32_t i = 0; i < count; i++) {
-      to[i] =
-         vn_device_entrypoint_is_enabled(i, instance->api_version,
-                                         &instance->enabled_extensions, NULL)
-            ? from[i]
-            : NULL;
-   }
-}
-
-static PFN_vkVoidFunction
-vn_instance_get_dispatch(struct vn_instance *instance, const char *name)
-{
-   int idx = vn_get_instance_entrypoint_index(name);
-   if (idx >= 0)
-      return instance->dispatch.entrypoints[idx];
-
-   idx = vn_get_physical_device_entrypoint_index(name);
-   if (idx >= 0)
-      return instance->physical_device_dispatch.entrypoints[idx];
-
-   idx = vn_get_device_entrypoint_index(name);
-   if (idx >= 0)
-      return instance->device_dispatch.entrypoints[idx];
-
-   return NULL;
-}
-
 static VkResult
 vn_instance_init_renderer(struct vn_instance *instance)
 {
-   const VkAllocationCallbacks *alloc = &instance->allocator;
+   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
 
    VkResult result = vn_renderer_create(instance, alloc, &instance->renderer);
    if (result != VK_SUCCESS)
@@ -236,8 +140,8 @@ vn_instance_init_renderer(struct vn_instance *instance)
    }
 
    instance->renderer_version =
-      instance->api_version > VN_MIN_RENDERER_VERSION
-         ? instance->api_version
+      instance->base.base.app_info.api_version > VN_MIN_RENDERER_VERSION
+         ? instance->base.base.app_info.api_version
          : VN_MIN_RENDERER_VERSION;
 
    if (VN_DEBUG(INIT)) {
@@ -254,7 +158,7 @@ static bool
 vn_instance_grow_cs_reply_bo_locked(struct vn_instance *instance, size_t size)
 {
    const size_t min_bo_size = 1 << 20;
-   const VkAllocationCallbacks *alloc = &instance->allocator;
+   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
 
    size_t bo_size =
       instance->cs_reply.size ? instance->cs_reply.size : min_bo_size;
@@ -704,7 +608,7 @@ vn_physical_device_init_queue_family_properties(
    struct vn_physical_device *physical_dev)
 {
    struct vn_instance *instance = physical_dev->instance;
-   const VkAllocationCallbacks *alloc = &instance->allocator;
+   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
    uint32_t count;
 
    vn_call_vkGetPhysicalDeviceQueueFamilyProperties2(
@@ -766,17 +670,17 @@ vn_physical_device_init_memory_properties(
 static void
 vn_physical_device_get_supported_extensions(
    const struct vn_physical_device *device,
-   struct vn_device_extension_table *supported,
-   struct vn_device_extension_table *recognized)
+   struct vk_device_extension_table *supported,
+   struct vk_device_extension_table *recognized)
 {
-   *supported = (struct vn_device_extension_table){
+   *supported = (struct vk_device_extension_table){
       /* WSI */
       .KHR_incremental_present = true,
       .KHR_swapchain = true,
       .KHR_swapchain_mutable_format = true,
    };
 
-   *recognized = (struct vn_device_extension_table){
+   *recognized = (struct vk_device_extension_table){
       /* promoted to VK_VERSION_1_1 */
       .KHR_16bit_storage = true,
       .KHR_bind_memory2 = true,
@@ -833,7 +737,7 @@ static VkResult
 vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
 {
    struct vn_instance *instance = physical_dev->instance;
-   const VkAllocationCallbacks *alloc = &instance->allocator;
+   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
 
    /* get renderer extensions */
    uint32_t count;
@@ -859,23 +763,23 @@ vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
       }
    }
 
-   struct vn_device_extension_table supported;
-   struct vn_device_extension_table recognized;
+   struct vk_device_extension_table supported;
+   struct vk_device_extension_table recognized;
    vn_physical_device_get_supported_extensions(physical_dev, &supported,
                                                &recognized);
 
    physical_dev->extension_spec_versions =
       vk_zalloc(alloc,
                 sizeof(*physical_dev->extension_spec_versions) *
-                   VN_DEVICE_EXTENSION_COUNT,
+                   VK_DEVICE_EXTENSION_COUNT,
                 VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
    if (!physical_dev->extension_spec_versions) {
       vk_free(alloc, exts);
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
 
-   for (uint32_t i = 0; i < VN_DEVICE_EXTENSION_COUNT; i++) {
-      const VkExtensionProperties *props = &vn_device_extensions[i];
+   for (uint32_t i = 0; i < VK_DEVICE_EXTENSION_COUNT; i++) {
+      const VkExtensionProperties *props = &vk_device_extensions[i];
       const VkExtensionProperties *renderer_props = NULL;
 
       for (uint32_t j = 0; j < count; j++) {
@@ -888,7 +792,7 @@ vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
 
       /* does not depend on renderer (e.g., WSI) */
       if (supported.extensions[i]) {
-         physical_dev->supported_extensions.extensions[i] = true;
+         physical_dev->base.base.supported_extensions.extensions[i] = true;
          physical_dev->extension_spec_versions[i] = props->specVersion;
          continue;
       }
@@ -907,7 +811,7 @@ vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
       if (!spec_version)
          continue;
 
-      physical_dev->supported_extensions.extensions[i] = true;
+      physical_dev->base.base.supported_extensions.extensions[i] = true;
       physical_dev->extension_spec_versions[i] =
          MIN2(renderer_props->specVersion, spec_version);
    }
@@ -949,7 +853,7 @@ static VkResult
 vn_physical_device_init(struct vn_physical_device *physical_dev)
 {
    struct vn_instance *instance = physical_dev->instance;
-   const VkAllocationCallbacks *alloc = &instance->allocator;
+   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
 
    VkResult result = vn_physical_device_init_version(physical_dev);
    if (result != VK_SUCCESS)
@@ -985,7 +889,7 @@ static void
 vn_physical_device_fini(struct vn_physical_device *physical_dev)
 {
    struct vn_instance *instance = physical_dev->instance;
-   const VkAllocationCallbacks *alloc = &instance->allocator;
+   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
 
    vn_wsi_fini(physical_dev);
    vk_free(alloc, physical_dev->extension_spec_versions);
@@ -997,7 +901,7 @@ vn_physical_device_fini(struct vn_physical_device *physical_dev)
 static VkResult
 vn_instance_enumerate_physical_devices(struct vn_instance *instance)
 {
-   const VkAllocationCallbacks *alloc = &instance->allocator;
+   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
    struct vn_physical_device *physical_devs = NULL;
    VkResult result;
 
@@ -1033,7 +937,11 @@ vn_instance_enumerate_physical_devices(struct vn_instance *instance)
    for (uint32_t i = 0; i < count; i++) {
       struct vn_physical_device *physical_dev = &physical_devs[i];
 
-      result = vn_physical_device_base_init(&physical_dev->base);
+      struct vk_physical_device_dispatch_table dispatch_table;
+      vk_physical_device_dispatch_table_from_entrypoints(
+         &dispatch_table, &vn_physical_device_entrypoints, true);
+      result = vn_physical_device_base_init(
+         &physical_dev->base, &instance->base, NULL, &dispatch_table);
       if (result != VK_SUCCESS) {
          count = i;
          goto out;
@@ -1103,38 +1011,6 @@ out:
    return result;
 }
 
-static VkResult
-vn_device_enable_extensions(struct vn_device *dev,
-                            const char *const *names,
-                            uint32_t count)
-{
-   for (uint32_t i = 0; i < count; i++) {
-      const int index = get_device_extension_index(names[i]);
-      if (index < 0 ||
-          !dev->physical_device->supported_extensions.extensions[index])
-         return VK_ERROR_EXTENSION_NOT_PRESENT;
-      dev->enabled_extensions.extensions[index] = true;
-   }
-   return VK_SUCCESS;
-}
-
-static void
-vn_device_init_dispatch(struct vn_device *dev)
-{
-   struct vn_instance *instance = dev->instance;
-   const uint32_t count = ARRAY_SIZE(vn_device_dispatch_table.entrypoints);
-   void *const *from = vn_device_dispatch_table.entrypoints;
-   void **to = dev->dispatch.entrypoints;
-
-   for (uint32_t i = 0; i < count; i++) {
-      to[i] = vn_device_entrypoint_is_enabled(i, instance->api_version,
-                                              &instance->enabled_extensions,
-                                              &dev->enabled_extensions)
-                 ? from[i]
-                 : NULL;
-   }
-}
-
 /* instance commands */
 
 VkResult
@@ -1152,16 +1028,8 @@ vn_EnumerateInstanceExtensionProperties(const char *pLayerName,
    if (pLayerName)
       return vn_error(NULL, VK_ERROR_LAYER_NOT_PRESENT);
 
-   VK_OUTARRAY_MAKE(out, pProperties, pPropertyCount);
-   for (uint32_t i = 0; i < VN_INSTANCE_EXTENSION_COUNT; i++) {
-      if (vn_instance_supported_extensions.extensions[i]) {
-         vk_outarray_append (&out, prop) {
-            *prop = vn_instance_extensions[i];
-         }
-      }
-   }
-
-   return vk_outarray_status(&out);
+   return vk_enumerate_instance_extension_properties(
+      &vn_instance_supported_extensions, pPropertyCount, pProperties);
 }
 
 VkResult
@@ -1189,19 +1057,22 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    if (!instance)
       return vn_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   result = vn_instance_base_init(&instance->base);
+   struct vk_instance_dispatch_table dispatch_table;
+   vk_instance_dispatch_table_from_entrypoints(
+      &dispatch_table, &vn_instance_entrypoints, true);
+   result = vn_instance_base_init(&instance->base,
+                                  &vn_instance_supported_extensions,
+                                  &dispatch_table, pCreateInfo, alloc);
    if (result != VK_SUCCESS) {
       vk_free(alloc, instance);
       return vn_error(NULL, result);
    }
 
-   instance->allocator = *alloc;
-   instance->api_version = get_instance_api_version(pCreateInfo);
-
    mtx_init(&instance->cs_mutex, mtx_plain);
    mtx_init(&instance->physical_device_mutex, mtx_plain);
 
-   if (!vn_icd_supports_api_version(instance->api_version)) {
+   if (!vn_icd_supports_api_version(
+          instance->base.base.app_info.api_version)) {
       result = VK_ERROR_INCOMPATIBLE_DRIVER;
       goto fail;
    }
@@ -1210,14 +1081,6 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       result = VK_ERROR_LAYER_NOT_PRESENT;
       goto fail;
    }
-
-   result = vn_instance_init_extensions(instance,
-                                        pCreateInfo->ppEnabledExtensionNames,
-                                        pCreateInfo->enabledExtensionCount);
-   if (result != VK_SUCCESS)
-      goto fail;
-
-   vn_instance_init_dispatch(instance);
 
    result = vn_instance_init_renderer(instance);
    if (result != VK_SUCCESS)
@@ -1234,7 +1097,8 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
       .apiVersion = instance->renderer_version,
    };
-   if (instance->api_version < instance->renderer_version) {
+   if (instance->base.base.app_info.api_version <
+       instance->renderer_version) {
       if (pCreateInfo->pApplicationInfo) {
          local_app_info = *pCreateInfo->pApplicationInfo;
          local_app_info.apiVersion = instance->renderer_version;
@@ -1278,7 +1142,7 @@ vn_DestroyInstance(VkInstance _instance,
 {
    struct vn_instance *instance = vn_instance_from_handle(_instance);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &instance->allocator;
+      pAllocator ? pAllocator : &instance->base.base.alloc;
 
    if (!instance)
       return;
@@ -1306,31 +1170,9 @@ vn_DestroyInstance(VkInstance _instance,
 PFN_vkVoidFunction
 vn_GetInstanceProcAddr(VkInstance _instance, const char *pName)
 {
-   static const struct {
-      const char *name;
-      PFN_vkVoidFunction command;
-   } instance_commands[] = {
-      { "vkGetInstanceProcAddr", (PFN_vkVoidFunction)vn_GetInstanceProcAddr },
-      { "vkEnumerateInstanceVersion",
-        (PFN_vkVoidFunction)vn_EnumerateInstanceVersion },
-      { "vkEnumerateInstanceExtensionProperties",
-        (PFN_vkVoidFunction)vn_EnumerateInstanceExtensionProperties },
-      { "vkEnumerateInstanceLayerProperties",
-        (PFN_vkVoidFunction)vn_EnumerateInstanceLayerProperties },
-      { "vkCreateInstance", (PFN_vkVoidFunction)vn_CreateInstance },
-   };
    struct vn_instance *instance = vn_instance_from_handle(_instance);
-
-   assert(pName);
-   for (uint32_t i = 0; i < ARRAY_SIZE(instance_commands); i++) {
-      if (!strcmp(instance_commands[i].name, pName))
-         return instance_commands[i].command;
-   }
-
-   if (!instance)
-      return NULL;
-
-   return vn_instance_get_dispatch(instance, pName);
+   return vk_instance_get_proc_addr(&instance->base.base,
+                                    &vn_instance_entrypoints, pName);
 }
 
 /* physical device commands */
@@ -1364,7 +1206,7 @@ vn_EnumeratePhysicalDeviceGroups(
    VkPhysicalDeviceGroupProperties *pPhysicalDeviceGroupProperties)
 {
    struct vn_instance *instance = vn_instance_from_handle(_instance);
-   const VkAllocationCallbacks *alloc = &instance->allocator;
+   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
    struct vn_physical_device_base *dummy = NULL;
    VkResult result;
 
@@ -1391,7 +1233,7 @@ vn_EnumeratePhysicalDeviceGroups(
          for (uint32_t j = 0; j < VK_MAX_DEVICE_GROUP_SIZE; j++) {
             struct vn_physical_device_base *obj =
                &dummy[VK_MAX_DEVICE_GROUP_SIZE * i + j];
-            obj->base.type = VK_OBJECT_TYPE_PHYSICAL_DEVICE;
+            obj->base.base.type = VK_OBJECT_TYPE_PHYSICAL_DEVICE;
             props->physicalDevices[j] = (VkPhysicalDevice)obj;
          }
       }
@@ -2112,10 +1954,10 @@ vn_EnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice,
       return vn_error(physical_dev->instance, VK_ERROR_LAYER_NOT_PRESENT);
 
    VK_OUTARRAY_MAKE(out, pProperties, pPropertyCount);
-   for (uint32_t i = 0; i < VN_DEVICE_EXTENSION_COUNT; i++) {
-      if (physical_dev->supported_extensions.extensions[i]) {
+   for (uint32_t i = 0; i < VK_DEVICE_EXTENSION_COUNT; i++) {
+      if (physical_dev->base.base.supported_extensions.extensions[i]) {
          vk_outarray_append (&out, prop) {
-            *prop = vn_device_extensions[i];
+            *prop = vk_device_extensions[i];
             prop->specVersion = physical_dev->extension_spec_versions[i];
          }
       }
@@ -2180,7 +2022,7 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
       vn_physical_device_from_handle(physicalDevice);
    struct vn_instance *instance = physical_dev->instance;
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &instance->allocator;
+      pAllocator ? pAllocator : &instance->base.base.alloc;
    struct vn_device *dev;
    VkResult result;
 
@@ -2189,23 +2031,18 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
    if (!dev)
       return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   result = vn_device_base_init(&dev->base, pCreateInfo, alloc);
+   struct vk_device_dispatch_table dispatch_table;
+   vk_device_dispatch_table_from_entrypoints(&dispatch_table,
+                                             &vn_device_entrypoints, true);
+   result = vn_device_base_init(&dev->base, &physical_dev->base,
+                                &dispatch_table, pCreateInfo, alloc);
    if (result != VK_SUCCESS) {
       vk_free(alloc, dev);
       return vn_error(instance, result);
    }
 
-   dev->allocator = *alloc;
    dev->instance = instance;
    dev->physical_device = physical_dev;
-
-   result =
-      vn_device_enable_extensions(dev, pCreateInfo->ppEnabledExtensionNames,
-                                  pCreateInfo->enabledExtensionCount);
-   if (result != VK_SUCCESS)
-      goto fail;
-
-   vn_device_init_dispatch(dev);
 
    VkDeviceCreateInfo local_create_info;
    if (physical_dev->wsi_device.supports_modifiers) {
@@ -2301,7 +2138,7 @@ vn_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator)
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!dev)
       return;
@@ -2323,14 +2160,7 @@ PFN_vkVoidFunction
 vn_GetDeviceProcAddr(VkDevice device, const char *pName)
 {
    struct vn_device *dev = vn_device_from_handle(device);
-
-   assert(device && pName);
-
-   int idx = vn_get_device_entrypoint_index(pName);
-   if (idx < 0)
-      return NULL;
-
-   return dev->dispatch.entrypoints[idx];
+   return vk_device_get_proc_addr(&dev->base.base, pName);
 }
 
 void
@@ -2523,7 +2353,7 @@ static VkResult
 vn_queue_submission_alloc_storage(struct vn_queue_submission *submit)
 {
    struct vn_queue *queue = vn_queue_from_handle(submit->queue);
-   const VkAllocationCallbacks *alloc = &queue->device->allocator;
+   const VkAllocationCallbacks *alloc = &queue->device->base.base.alloc;
    size_t alloc_size = 0;
    size_t semaphores_offset = 0;
    size_t syncs_offset = 0;
@@ -2774,7 +2604,7 @@ static void
 vn_queue_submission_cleanup(struct vn_queue_submission *submit)
 {
    struct vn_queue *queue = vn_queue_from_handle(submit->queue);
-   const VkAllocationCallbacks *alloc = &queue->device->allocator;
+   const VkAllocationCallbacks *alloc = &queue->device->base.base.alloc;
 
    vk_free(alloc, submit->temp.storage);
 }
@@ -3094,7 +2924,7 @@ vn_CreateFence(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_fence *fence = vk_zalloc(alloc, sizeof(*fence), VN_DEFAULT_ALIGN,
                                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -3127,7 +2957,7 @@ vn_DestroyFence(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_fence *fence = vn_fence_from_handle(_fence);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!fence)
       return;
@@ -3202,7 +3032,7 @@ vn_WaitForFences(VkDevice device,
                  uint64_t timeout)
 {
    struct vn_device *dev = vn_device_from_handle(device);
-   const VkAllocationCallbacks *alloc = &dev->allocator;
+   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
 
    struct vn_renderer_sync *local_syncs[8];
    uint64_t local_sync_vals[8];
@@ -3337,7 +3167,7 @@ vn_CreateSemaphore(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_semaphore *sem = vk_zalloc(alloc, sizeof(*sem), VN_DEFAULT_ALIGN,
                                         VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -3379,7 +3209,7 @@ vn_DestroySemaphore(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_semaphore *sem = vn_semaphore_from_handle(semaphore);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!sem)
       return;
@@ -3436,7 +3266,7 @@ vn_WaitSemaphores(VkDevice device,
                   uint64_t timeout)
 {
    struct vn_device *dev = vn_device_from_handle(device);
-   const VkAllocationCallbacks *alloc = &dev->allocator;
+   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
 
    struct vn_renderer_sync *local_syncs[8];
    struct vn_renderer_sync **syncs = local_syncs;
@@ -3481,7 +3311,7 @@ vn_AllocateMemory(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_device_memory *mem =
       vk_zalloc(alloc, sizeof(*mem), VN_DEFAULT_ALIGN,
@@ -3536,7 +3366,7 @@ vn_FreeMemory(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_device_memory *mem = vn_device_memory_from_handle(memory);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!mem)
       return;
@@ -3665,7 +3495,7 @@ vn_CreateBuffer(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_buffer *buf = vk_zalloc(alloc, sizeof(*buf), VN_DEFAULT_ALIGN,
                                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -3711,7 +3541,7 @@ vn_DestroyBuffer(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_buffer *buf = vn_buffer_from_handle(buffer);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!buf)
       return;
@@ -3816,7 +3646,7 @@ vn_CreateBufferView(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_buffer_view *view =
       vk_zalloc(alloc, sizeof(*view), VN_DEFAULT_ALIGN,
@@ -3843,7 +3673,7 @@ vn_DestroyBufferView(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_buffer_view *view = vn_buffer_view_from_handle(bufferView);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!view)
       return;
@@ -3864,7 +3694,7 @@ vn_CreateImage(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    /* TODO wsi_create_native_image uses modifiers or set wsi_info->scanout to
     * true.  Instead of forcing VK_IMAGE_TILING_LINEAR, we should ask wsi to
@@ -3983,7 +3813,7 @@ vn_DestroyImage(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_image *img = vn_image_from_handle(image);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!img)
       return;
@@ -4143,7 +3973,7 @@ vn_CreateImageView(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_image_view *view =
       vk_zalloc(alloc, sizeof(*view), VN_DEFAULT_ALIGN,
@@ -4170,7 +4000,7 @@ vn_DestroyImageView(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_image_view *view = vn_image_view_from_handle(imageView);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!view)
       return;
@@ -4191,7 +4021,7 @@ vn_CreateSampler(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_sampler *sampler =
       vk_zalloc(alloc, sizeof(*sampler), VN_DEFAULT_ALIGN,
@@ -4218,7 +4048,7 @@ vn_DestroySampler(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_sampler *sampler = vn_sampler_from_handle(_sampler);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!sampler)
       return;
@@ -4240,7 +4070,7 @@ vn_CreateSamplerYcbcrConversion(
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_sampler_ycbcr_conversion *conv =
       vk_zalloc(alloc, sizeof(*conv), VN_DEFAULT_ALIGN,
@@ -4270,7 +4100,7 @@ vn_DestroySamplerYcbcrConversion(VkDevice device,
    struct vn_sampler_ycbcr_conversion *conv =
       vn_sampler_ycbcr_conversion_from_handle(ycbcrConversion);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!conv)
       return;
@@ -4306,7 +4136,7 @@ vn_CreateDescriptorSetLayout(
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    uint32_t max_binding = 0;
    VkDescriptorSetLayoutBinding *local_bindings = NULL;
@@ -4394,7 +4224,7 @@ vn_DestroyDescriptorSetLayout(VkDevice device,
    struct vn_descriptor_set_layout *layout =
       vn_descriptor_set_layout_from_handle(descriptorSetLayout);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!layout)
       return;
@@ -4416,7 +4246,7 @@ vn_CreateDescriptorPool(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_descriptor_pool *pool =
       vk_zalloc(alloc, sizeof(*pool), VN_DEFAULT_ALIGN,
@@ -4715,7 +4545,7 @@ vn_UpdateDescriptorSets(VkDevice device,
                         const VkCopyDescriptorSet *pDescriptorCopies)
 {
    struct vn_device *dev = vn_device_from_handle(device);
-   const VkAllocationCallbacks *alloc = &dev->allocator;
+   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
 
    struct vn_update_descriptor_sets *update =
       vn_update_descriptor_sets_parse_writes(descriptorWriteCount,
@@ -4840,7 +4670,7 @@ vn_CreateDescriptorUpdateTemplate(
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    const size_t templ_size =
       offsetof(struct vn_descriptor_update_template,
@@ -4880,7 +4710,7 @@ vn_DestroyDescriptorUpdateTemplate(
    struct vn_descriptor_update_template *templ =
       vn_descriptor_update_template_from_handle(descriptorUpdateTemplate);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!templ)
       return;
@@ -4986,7 +4816,7 @@ vn_CreateRenderPass(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_render_pass *pass =
       vk_zalloc(alloc, sizeof(*pass), VN_DEFAULT_ALIGN,
@@ -5015,7 +4845,7 @@ vn_CreateRenderPass2(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_render_pass *pass =
       vk_zalloc(alloc, sizeof(*pass), VN_DEFAULT_ALIGN,
@@ -5044,7 +4874,7 @@ vn_DestroyRenderPass(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_render_pass *pass = vn_render_pass_from_handle(renderPass);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!pass)
       return;
@@ -5081,7 +4911,7 @@ vn_CreateFramebuffer(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_framebuffer *fb = vk_zalloc(alloc, sizeof(*fb), VN_DEFAULT_ALIGN,
                                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -5107,7 +4937,7 @@ vn_DestroyFramebuffer(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_framebuffer *fb = vn_framebuffer_from_handle(framebuffer);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!fb)
       return;
@@ -5128,7 +4958,7 @@ vn_CreateEvent(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_event *ev = vk_zalloc(alloc, sizeof(*ev), VN_DEFAULT_ALIGN,
                                    VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -5154,7 +4984,7 @@ vn_DestroyEvent(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_event *ev = vn_event_from_handle(event);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!ev)
       return;
@@ -5208,7 +5038,7 @@ vn_CreateQueryPool(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_query_pool *pool =
       vk_zalloc(alloc, sizeof(*pool), VN_DEFAULT_ALIGN,
@@ -5381,7 +5211,7 @@ vn_CreateShaderModule(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_shader_module *mod =
       vk_zalloc(alloc, sizeof(*mod), VN_DEFAULT_ALIGN,
@@ -5408,7 +5238,7 @@ vn_DestroyShaderModule(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_shader_module *mod = vn_shader_module_from_handle(shaderModule);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!mod)
       return;
@@ -5429,7 +5259,7 @@ vn_CreatePipelineLayout(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_pipeline_layout *layout =
       vk_zalloc(alloc, sizeof(*layout), VN_DEFAULT_ALIGN,
@@ -5458,7 +5288,7 @@ vn_DestroyPipelineLayout(VkDevice device,
    struct vn_pipeline_layout *layout =
       vn_pipeline_layout_from_handle(pipelineLayout);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!layout)
       return;
@@ -5480,7 +5310,7 @@ vn_CreatePipelineCache(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_pipeline_cache *cache =
       vk_zalloc(alloc, sizeof(*cache), VN_DEFAULT_ALIGN,
@@ -5517,7 +5347,7 @@ vn_DestroyPipelineCache(VkDevice device,
    struct vn_pipeline_cache *cache =
       vn_pipeline_cache_from_handle(pipelineCache);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!cache)
       return;
@@ -5601,7 +5431,7 @@ vn_CreateGraphicsPipelines(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    for (uint32_t i = 0; i < createInfoCount; i++) {
       struct vn_pipeline *pipeline =
@@ -5638,7 +5468,7 @@ vn_CreateComputePipelines(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    for (uint32_t i = 0; i < createInfoCount; i++) {
       struct vn_pipeline *pipeline =
@@ -5673,7 +5503,7 @@ vn_DestroyPipeline(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_pipeline *pipeline = vn_pipeline_from_handle(_pipeline);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    if (!pipeline)
       return;
@@ -5694,7 +5524,7 @@ vn_CreateCommandPool(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    struct vn_command_pool *pool =
       vk_zalloc(alloc, sizeof(*pool), VN_DEFAULT_ALIGN,

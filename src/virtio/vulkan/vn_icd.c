@@ -38,13 +38,8 @@ PFN_vkVoidFunction
 vk_icdGetPhysicalDeviceProcAddr(VkInstance _instance, const char *pName)
 {
    struct vn_instance *instance = vn_instance_from_handle(_instance);
-   assert(instance && pName);
-
-   int idx = vn_get_physical_device_entrypoint_index(pName);
-   if (idx < 0)
-      return NULL;
-
-   return instance->physical_device_dispatch.entrypoints[idx];
+   return vk_instance_get_physical_device_proc_addr(&instance->base.base,
+                                                    pName);
 }
 
 bool

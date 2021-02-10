@@ -15,20 +15,25 @@
 static PFN_vkVoidFunction
 vn_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
 {
-   return vn_lookup_entrypoint(pName);
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+   return vk_instance_get_proc_addr_unchecked(
+      &physical_dev->instance->base.base, pName);
 }
 
 VkResult
 vn_wsi_init(struct vn_physical_device *physical_dev)
 {
-   const VkAllocationCallbacks *alloc = &physical_dev->instance->allocator;
+   const VkAllocationCallbacks *alloc =
+      &physical_dev->instance->base.base.alloc;
    VkResult result = wsi_device_init(
       &physical_dev->wsi_device, vn_physical_device_to_handle(physical_dev),
       vn_wsi_proc_addr, alloc, -1, NULL, false);
    if (result != VK_SUCCESS)
       return result;
 
-   if (physical_dev->supported_extensions.EXT_image_drm_format_modifier)
+   if (physical_dev->base.base.supported_extensions
+          .EXT_image_drm_format_modifier)
       physical_dev->wsi_device.supports_modifiers = true;
 
    return VK_SUCCESS;
@@ -37,7 +42,8 @@ vn_wsi_init(struct vn_physical_device *physical_dev)
 void
 vn_wsi_fini(struct vn_physical_device *physical_dev)
 {
-   const VkAllocationCallbacks *alloc = &physical_dev->instance->allocator;
+   const VkAllocationCallbacks *alloc =
+      &physical_dev->instance->base.base.alloc;
    wsi_device_finish(&physical_dev->wsi_device, alloc);
 }
 
@@ -51,7 +57,7 @@ vn_DestroySurfaceKHR(VkInstance _instance,
    struct vn_instance *instance = vn_instance_from_handle(_instance);
    ICD_FROM_HANDLE(VkIcdSurfaceBase, surf, surface);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &instance->allocator;
+      pAllocator ? pAllocator : &instance->base.base.alloc;
 
    vk_free(alloc, surf);
 }
@@ -196,7 +202,7 @@ vn_CreateSwapchainKHR(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    VkResult result =
       wsi_common_create_swapchain(&dev->physical_device->wsi_device, device,
@@ -212,7 +218,7 @@ vn_DestroySwapchainKHR(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->allocator;
+      pAllocator ? pAllocator : &dev->base.base.alloc;
 
    wsi_common_destroy_swapchain(device, swapchain, alloc);
 }

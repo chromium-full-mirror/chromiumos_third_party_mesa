@@ -20,15 +20,6 @@
 struct vn_instance {
    struct vn_instance_base base;
 
-   VkAllocationCallbacks allocator;
-
-   uint32_t api_version;
-   struct vn_instance_extension_table enabled_extensions;
-
-   struct vn_instance_dispatch_table dispatch;
-   struct vn_physical_device_dispatch_table physical_device_dispatch;
-   struct vn_device_dispatch_table device_dispatch;
-
    struct vn_renderer *renderer;
    struct vn_renderer_info renderer_info;
    uint32_t renderer_version;
@@ -53,7 +44,7 @@ struct vn_instance {
    uint32_t physical_device_count;
 };
 VK_DEFINE_HANDLE_CASTS(vn_instance,
-                       base.base,
+                       base.base.base,
                        VkInstance,
                        VK_OBJECT_TYPE_INSTANCE)
 
@@ -63,9 +54,8 @@ struct vn_physical_device {
    struct vn_instance *instance;
 
    uint32_t renderer_version;
-   struct vn_device_extension_table renderer_extensions;
+   struct vk_device_extension_table renderer_extensions;
 
-   struct vn_device_extension_table supported_extensions;
    uint32_t *extension_spec_versions;
 
    VkPhysicalDeviceFeatures2 features;
@@ -88,20 +78,15 @@ struct vn_physical_device {
    struct wsi_device wsi_device;
 };
 VK_DEFINE_HANDLE_CASTS(vn_physical_device,
-                       base.base,
+                       base.base.base,
                        VkPhysicalDevice,
                        VK_OBJECT_TYPE_PHYSICAL_DEVICE)
 
 struct vn_device {
    struct vn_device_base base;
 
-   VkAllocationCallbacks allocator;
-
    struct vn_instance *instance;
    struct vn_physical_device *physical_device;
-   struct vn_device_extension_table enabled_extensions;
-
-   struct vn_device_dispatch_table dispatch;
 
    struct vn_queue *queues;
    uint32_t queue_count;
@@ -449,7 +434,7 @@ static inline void
 vn_instance_free_cs_reply_bo(struct vn_instance *instance,
                              struct vn_renderer_bo *bo)
 {
-   const VkAllocationCallbacks *alloc = &instance->allocator;
+   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
    vn_renderer_bo_unref(bo, alloc);
 }
 
