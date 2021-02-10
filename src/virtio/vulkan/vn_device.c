@@ -1101,7 +1101,11 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    if (!instance)
       return vn_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vn_object_base_init(&instance->base, VK_OBJECT_TYPE_INSTANCE, NULL);
+   result = vn_instance_base_init(&instance->base);
+   if (result != VK_SUCCESS) {
+      vk_free(alloc, instance);
+      return vn_error(NULL, result);
+   }
 
    instance->allocator = *alloc;
    instance->api_version = get_instance_api_version(pCreateInfo);
@@ -1173,6 +1177,8 @@ fail:
 
    mtx_destroy(&instance->cs_mutex);
    mtx_destroy(&instance->physical_device_mutex);
+
+   vn_instance_base_fini(&instance->base);
    vk_free(alloc, instance);
 
    return vn_error(NULL, result);
@@ -1205,7 +1211,7 @@ vn_DestroyInstance(VkInstance _instance,
    mtx_destroy(&instance->cs_mutex);
    mtx_destroy(&instance->physical_device_mutex);
 
-   vn_object_base_fini(&instance->base);
+   vn_instance_base_fini(&instance->base);
    vk_free(alloc, instance);
 }
 

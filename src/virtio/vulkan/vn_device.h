@@ -18,7 +18,7 @@
 #include "vn_wsi.h"
 
 struct vn_instance {
-   struct vn_object_base base;
+   struct vn_instance_base base;
 
    VkAllocationCallbacks allocator;
 
