@@ -21,9 +21,10 @@ vn_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
 VkResult
 vn_wsi_init(struct vn_physical_device *physical_dev)
 {
+   const VkAllocationCallbacks *alloc = &physical_dev->instance->allocator;
    VkResult result = wsi_device_init(
       &physical_dev->wsi_device, vn_physical_device_to_handle(physical_dev),
-      vn_wsi_proc_addr, &physical_dev->instance->allocator, -1, NULL, false);
+      vn_wsi_proc_addr, alloc, -1, NULL, false);
    if (result != VK_SUCCESS)
       return result;
 
@@ -36,8 +37,8 @@ vn_wsi_init(struct vn_physical_device *physical_dev)
 void
 vn_wsi_fini(struct vn_physical_device *physical_dev)
 {
-   wsi_device_finish(&physical_dev->wsi_device,
-                     &physical_dev->instance->allocator);
+   const VkAllocationCallbacks *alloc = &physical_dev->instance->allocator;
+   wsi_device_finish(&physical_dev->wsi_device, alloc);
 }
 
 /* surface commands */
