@@ -892,13 +892,14 @@ vn_physical_device_fini(struct vn_physical_device *physical_dev)
    vk_free(alloc, physical_dev->extension_spec_versions);
    vk_free(alloc, physical_dev->queue_family_properties);
 
-   vn_object_base_fini(&physical_dev->base);
+   vn_physical_device_base_fini(&physical_dev->base);
 }
 
 static VkResult
 vn_instance_enumerate_physical_devices(struct vn_instance *instance)
 {
    const VkAllocationCallbacks *alloc = &instance->allocator;
+   struct vn_physical_device *physical_devs = NULL;
    VkResult result;
 
    mtx_lock(&instance->physical_device_mutex);
@@ -914,7 +915,7 @@ vn_instance_enumerate_physical_devices(struct vn_instance *instance)
    if (result != VK_SUCCESS || !count)
       goto out;
 
-   struct vn_physical_device *physical_devs =
+   physical_devs =
       vk_zalloc(alloc, sizeof(*physical_devs) * count, VN_DEFAULT_ALIGN,
                 VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
    if (!physical_devs) {
@@ -926,7 +927,6 @@ vn_instance_enumerate_physical_devices(struct vn_instance *instance)
       vk_alloc(alloc, sizeof(*handles) * count, VN_DEFAULT_ALIGN,
                VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
    if (!handles) {
-      vk_free(alloc, physical_devs);
       result = VK_ERROR_OUT_OF_HOST_MEMORY;
       goto out;
    }
@@ -934,8 +934,12 @@ vn_instance_enumerate_physical_devices(struct vn_instance *instance)
    for (uint32_t i = 0; i < count; i++) {
       struct vn_physical_device *physical_dev = &physical_devs[i];
 
-      vn_object_base_init(&physical_dev->base, VK_OBJECT_TYPE_PHYSICAL_DEVICE,
-                          NULL);
+      result = vn_physical_device_base_init(&physical_dev->base);
+      if (result != VK_SUCCESS) {
+         count = i;
+         goto out;
+      }
+
       physical_dev->instance = instance;
 
       handles[i] = vn_physical_device_to_handle(physical_dev);
@@ -945,10 +949,8 @@ vn_instance_enumerate_physical_devices(struct vn_instance *instance)
       instance, vn_instance_to_handle(instance), &count, handles);
    vk_free(alloc, handles);
 
-   if (result != VK_SUCCESS) {
-      vk_free(alloc, physical_devs);
+   if (result != VK_SUCCESS)
       goto out;
-   }
 
    uint32_t sync_queue_base = 0;
    uint32_t i = 0;
@@ -978,6 +980,7 @@ vn_instance_enumerate_physical_devices(struct vn_instance *instance)
       }
 
       if (result != VK_SUCCESS) {
+         vn_physical_device_base_fini(&physical_devs[i].base);
          memmove(&physical_devs[i], &physical_devs[i + 1],
                  sizeof(*physical_devs) * (count - i - 1));
          count--;
@@ -991,6 +994,12 @@ vn_instance_enumerate_physical_devices(struct vn_instance *instance)
    instance->physical_device_count = count;
 
 out:
+   if (result != VK_SUCCESS && physical_devs) {
+      for (uint32_t i = 0; i < count; i++)
+         vn_physical_device_base_fini(&physical_devs[i].base);
+      vk_free(alloc, physical_devs);
+   }
+
    mtx_unlock(&instance->physical_device_mutex);
    return result;
 }
@@ -1262,7 +1271,7 @@ vn_EnumeratePhysicalDeviceGroups(
 {
    struct vn_instance *instance = vn_instance_from_handle(_instance);
    const VkAllocationCallbacks *alloc = &instance->allocator;
-   struct vn_object_base *dummy = NULL;
+   struct vn_physical_device_base *dummy = NULL;
    VkResult result;
 
    result = vn_instance_enumerate_physical_devices(instance);
@@ -1286,7 +1295,7 @@ vn_EnumeratePhysicalDeviceGroups(
             &pPhysicalDeviceGroupProperties[i];
 
          for (uint32_t j = 0; j < VK_MAX_DEVICE_GROUP_SIZE; j++) {
-            struct vn_object_base *obj =
+            struct vn_physical_device_base *obj =
                &dummy[VK_MAX_DEVICE_GROUP_SIZE * i + j];
             obj->base.type = VK_OBJECT_TYPE_PHYSICAL_DEVICE;
             props->physicalDevices[j] = (VkPhysicalDevice)obj;

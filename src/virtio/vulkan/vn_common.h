@@ -84,6 +84,12 @@ enum vn_debug {
 
 typedef uint64_t vn_object_id;
 
+/* base class of vn_physical_device */
+struct vn_physical_device_base {
+   struct vk_object_base base;
+   vn_object_id id;
+};
+
 /* base class of vn_device */
 struct vn_device_base {
    struct vk_device base;
@@ -112,6 +118,21 @@ vn_log_result(struct vn_instance *instance,
               const char *where);
 
 static_assert(sizeof(vn_object_id) >= sizeof(uintptr_t), "");
+
+static inline VkResult
+vn_physical_device_base_init(struct vn_physical_device_base *physical_dev)
+{
+   vk_object_base_init(NULL, &physical_dev->base,
+                       VK_OBJECT_TYPE_PHYSICAL_DEVICE);
+   physical_dev->id = (uintptr_t)physical_dev;
+   return VK_SUCCESS;
+}
+
+static inline void
+vn_physical_device_base_fini(struct vn_physical_device_base *physical_dev)
+{
+   vk_object_base_finish(&physical_dev->base);
+}
 
 static inline VkResult
 vn_device_base_init(struct vn_device_base *dev,
@@ -149,6 +170,9 @@ vn_object_set_id(void *obj, vn_object_id id, VkObjectType type)
 {
    assert(((const struct vk_object_base *)obj)->type == type);
    switch (type) {
+   case VK_OBJECT_TYPE_PHYSICAL_DEVICE:
+      ((struct vn_physical_device_base *)obj)->id = id;
+      break;
    case VK_OBJECT_TYPE_DEVICE:
       ((struct vn_device_base *)obj)->id = id;
       break;
@@ -163,6 +187,8 @@ vn_object_get_id(const void *obj, VkObjectType type)
 {
    assert(((const struct vk_object_base *)obj)->type == type);
    switch (type) {
+   case VK_OBJECT_TYPE_PHYSICAL_DEVICE:
+      return ((struct vn_physical_device_base *)obj)->id;
    case VK_OBJECT_TYPE_DEVICE:
       return ((struct vn_device_base *)obj)->id;
    default:

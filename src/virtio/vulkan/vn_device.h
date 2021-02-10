@@ -58,7 +58,7 @@ VK_DEFINE_HANDLE_CASTS(vn_instance,
                        VK_OBJECT_TYPE_INSTANCE)
 
 struct vn_physical_device {
-   struct vn_object_base base;
+   struct vn_physical_device_base base;
 
    struct vn_instance *instance;
 
