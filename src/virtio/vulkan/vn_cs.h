@@ -169,35 +169,15 @@ vn_cs_decoder_peek(struct vn_cs_decoder *dec, void *val, size_t val_size)
 }
 
 static inline vn_object_id
-vn_cs_object_load_id(const void *obj_handle)
+vn_cs_handle_load_id(const void **handle, VkObjectType type)
 {
-   const struct vn_object *obj =
-      vn_object_from_handle(*(const void **)obj_handle);
-   return obj ? obj->id : 0;
+   return *handle ? vn_object_get_id(*handle, type) : 0;
 }
 
 static inline void
-vn_cs_object_store_id(void *obj_handle, vn_object_id id)
+vn_cs_handle_store_id(void **handle, vn_object_id id, VkObjectType type)
 {
-   struct vn_object *obj = vn_object_from_handle(*(void **)obj_handle);
-   assert(obj && (!obj->id || obj->id == id));
-   obj->id = id;
-}
-
-static inline vn_object_id
-vn_cs_device_load_id(const VkDevice *dev_handle)
-{
-   const struct vn_device_object *dev =
-      vn_device_object_from_handle(*dev_handle);
-   return dev ? dev->id : 0;
-}
-
-static inline void
-vn_cs_device_store_id(VkDevice *dev_handle, vn_object_id id)
-{
-   struct vn_device_object *dev = vn_device_object_from_handle(*dev_handle);
-   assert(dev && (!dev->id || dev->id == id));
-   dev->id = id;
+   vn_object_set_id(*handle, id, type);
 }
 
 #endif /* VN_CS_H */

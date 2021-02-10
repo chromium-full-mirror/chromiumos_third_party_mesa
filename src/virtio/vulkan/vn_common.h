@@ -84,15 +84,15 @@ enum vn_debug {
 
 typedef uint64_t vn_object_id;
 
-/* base class of all driver objects except for vn_device */
-struct vn_object {
-   struct vk_object_base base;
+/* base class of vn_device */
+struct vn_device_base {
+   struct vk_device base;
    vn_object_id id;
 };
 
-/* base class of vn_device */
-struct vn_device_object {
-   struct vk_device base;
+/* base class of other driver objects */
+struct vn_object_base {
+   struct vk_object_base base;
    vn_object_id id;
 };
 
@@ -111,36 +111,62 @@ vn_log_result(struct vn_instance *instance,
               VkResult result,
               const char *where);
 
-void
-vn_object_init(struct vn_object *obj,
-               VkObjectType type,
-               struct vn_device_object *dev);
+static_assert(sizeof(vn_object_id) >= sizeof(uintptr_t), "");
 
-void
-vn_object_fini(struct vn_object *obj);
-
-void
-vn_device_object_init(struct vn_device_object *dev,
-                      const VkDeviceCreateInfo *info,
-                      const VkAllocationCallbacks *alloc);
-
-void
-vn_device_object_fini(struct vn_device_object *dev);
-
-static inline struct vn_object *
-vn_object_from_handle(const void *handle)
+static inline void
+vn_device_base_init(struct vn_device_base *dev,
+                    const VkDeviceCreateInfo *info,
+                    const VkAllocationCallbacks *alloc)
 {
-   struct vn_object *obj = (struct vn_object *)handle;
-   assert(!obj || obj->base.type != VK_OBJECT_TYPE_DEVICE);
-   return obj;
+   vk_device_init(&dev->base, info, alloc, alloc);
+   dev->id = (uintptr_t)dev;
 }
 
-static inline struct vn_device_object *
-vn_device_object_from_handle(const VkDevice handle)
+static inline void
+vn_device_base_fini(struct vn_device_base *dev)
 {
-   struct vn_device_object *dev = (struct vn_device_object *)handle;
-   assert(!dev || dev->base.base.type == VK_OBJECT_TYPE_DEVICE);
-   return dev;
+   vk_device_finish(&dev->base);
+}
+
+static inline void
+vn_object_base_init(struct vn_object_base *obj,
+                    VkObjectType type,
+                    struct vn_device_base *dev)
+{
+   vk_object_base_init(&dev->base, &obj->base, type);
+   obj->id = (uintptr_t)obj;
+}
+
+static inline void
+vn_object_base_fini(struct vn_object_base *obj)
+{
+   vk_object_base_finish(&obj->base);
+}
+
+static inline void
+vn_object_set_id(void *obj, vn_object_id id, VkObjectType type)
+{
+   assert(((const struct vk_object_base *)obj)->type == type);
+   switch (type) {
+   case VK_OBJECT_TYPE_DEVICE:
+      ((struct vn_device_base *)obj)->id = id;
+      break;
+   default:
+      ((struct vn_object_base *)obj)->id = id;
+      break;
+   }
+}
+
+static inline vn_object_id
+vn_object_get_id(const void *obj, VkObjectType type)
+{
+   assert(((const struct vk_object_base *)obj)->type == type);
+   switch (type) {
+   case VK_OBJECT_TYPE_DEVICE:
+      return ((struct vn_device_base *)obj)->id;
+   default:
+      return ((struct vn_object_base *)obj)->id;
+   }
 }
 
 /* missing from vn_entrypoints.h */
