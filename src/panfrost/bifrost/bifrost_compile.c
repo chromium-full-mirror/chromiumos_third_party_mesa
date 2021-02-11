@@ -42,14 +42,16 @@ static const struct debug_named_value bifrost_debug_options[] = {
         {"shaders",   BIFROST_DBG_SHADERS,	"Dump shaders in NIR and MIR"},
         {"shaderdb",  BIFROST_DBG_SHADERDB,	"Print statistics"},
         {"verbose",   BIFROST_DBG_VERBOSE,	"Disassemble verbosely"},
+        {"internal",  BIFROST_DBG_INTERNAL,	"Dump even internal shaders"},
+        {"nosched",   BIFROST_DBG_NOSCHED, 	"Force trivial scheduling"},
         DEBUG_NAMED_VALUE_END
 };
 
 DEBUG_GET_ONCE_FLAGS_OPTION(bifrost_debug, "BIFROST_MESA_DEBUG", bifrost_debug_options, 0)
 
-/* How many bytes are prefetched by the Bifrost shader core. Past the end of
- * the shader, this range must contain valid instructions or zero. */
-#define BIFROST_SHADER_PREFETCH 96
+/* How many bytes are prefetched by the Bifrost shader core. From the final
+ * clause of the shader, this range must be valid instructions or zero. */
+#define BIFROST_SHADER_PREFETCH 128
 
 /* TODO: This is not thread safe!! */
 static unsigned SHADER_DB_COUNT = 0;
@@ -60,15 +62,6 @@ int bifrost_debug = 0;
 		do { if (bifrost_debug & BIFROST_DBG_MSGS) \
 			fprintf(stderr, "%s:%d: "fmt, \
 				__FUNCTION__, __LINE__, ##__VA_ARGS__); } while (0)
-
-static inline bi_builder
-bi_init_builder(bi_context *ctx)
-{
-        return (bi_builder) {
-                .shader = ctx,
-                .cursor = bi_after_block(ctx->current_block)
-        };
-}
 
 static bi_block *emit_cf_list(bi_context *ctx, struct exec_list *list);
 
@@ -389,8 +382,12 @@ bi_emit_fragment_out(bi_builder *b, nir_intrinsic_instr *instr)
                         (T == nir_type_float32) ? bi_word(rgba, 3) :
                         bi_dontcare();
 
-                bi_atest_to(b, bi_register(60), bi_register(60), alpha);
+                bi_instr *atest = bi_atest_to(b, bi_register(60),
+                                bi_register(60), alpha);
                 b->shader->emitted_atest = true;
+
+                /* Pseudo-source to encode in the tuple */
+                atest->src[2] = bi_fau(BIR_FAU_ATEST_PARAM, false);
         }
 
         if (emit_zs) {
@@ -547,6 +544,82 @@ bi_emit_store(bi_builder *b, nir_intrinsic_instr *instr, enum bi_seg seg)
                     seg);
 }
 
+/* Exchanges the staging register with memory */
+
+static void
+bi_emit_axchg(bi_builder *b, nir_intrinsic_instr *instr, enum bi_seg seg)
+{
+        assert(seg == BI_SEG_NONE || seg == BI_SEG_WLS);
+
+        bi_index addr = bi_src_index(&instr->src[0]);
+        bi_index data = bi_src_index(&instr->src[1]);
+
+        unsigned sz = nir_src_bit_size(instr->src[1]);
+        assert(sz == 32 || sz == 64);
+
+        bi_index data_words[] = {
+                bi_word(data, 0),
+                bi_word(data, 1),
+        };
+
+        bi_index inout = bi_temp_reg(b->shader);
+        bi_make_vec_to(b, inout, data_words, NULL, sz / 32, 32);
+
+        bi_axchg_to(b, sz, inout, inout,
+                        bi_word(addr, 0),
+                        (seg == BI_SEG_NONE) ? bi_word(addr, 1) : bi_zero(),
+                        seg);
+
+        bi_index inout_words[] = {
+                bi_word(inout, 0),
+                bi_word(inout, 1),
+        };
+
+        bi_make_vec_to(b, bi_dest_index(&instr->dest), inout_words, NULL, sz / 32, 32);
+}
+
+/* Exchanges the second staging register with memory if comparison with first
+ * staging register passes */
+
+static void
+bi_emit_acmpxchg(bi_builder *b, nir_intrinsic_instr *instr, enum bi_seg seg)
+{
+        assert(seg == BI_SEG_NONE || seg == BI_SEG_WLS);
+
+        bi_index addr = bi_src_index(&instr->src[0]);
+
+        /* hardware is swapped from NIR */
+        bi_index src0 = bi_src_index(&instr->src[2]);
+        bi_index src1 = bi_src_index(&instr->src[1]);
+
+        unsigned sz = nir_src_bit_size(instr->src[1]);
+        assert(sz == 32 || sz == 64);
+
+        bi_index data_words[] = {
+                bi_word(src0, 0),
+                sz == 32 ? bi_word(src1, 0) : bi_word(src0, 1),
+
+                /* 64-bit */
+                bi_word(src1, 0),
+                bi_word(src1, 1),
+        };
+
+        bi_index inout = bi_temp_reg(b->shader);
+        bi_make_vec_to(b, inout, data_words, NULL, 2 * (sz / 32), 32);
+
+        bi_acmpxchg_to(b, sz, inout, inout,
+                        bi_word(addr, 0),
+                        (seg == BI_SEG_NONE) ? bi_word(addr, 1) : bi_zero(),
+                        seg);
+
+        bi_index inout_words[] = {
+                bi_word(inout, 0),
+                bi_word(inout, 1),
+        };
+
+        bi_make_vec_to(b, bi_dest_index(&instr->dest), inout_words, NULL, sz / 32, 32);
+}
+
 static void
 bi_load_sysval(bi_builder *b, nir_instr *instr,
                 unsigned nr_components, unsigned offset)
@@ -660,6 +733,22 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
 
         case nir_intrinsic_store_shared:
                 bi_emit_store(b, instr, BI_SEG_WLS);
+                break;
+
+        case nir_intrinsic_global_atomic_exchange:
+                bi_emit_axchg(b, instr, BI_SEG_NONE);
+                break;
+
+        case nir_intrinsic_shared_atomic_exchange:
+                bi_emit_axchg(b, instr, BI_SEG_WLS);
+                break;
+
+        case nir_intrinsic_global_atomic_comp_swap:
+                bi_emit_acmpxchg(b, instr, BI_SEG_NONE);
+                break;
+
+        case nir_intrinsic_shared_atomic_comp_swap:
+                bi_emit_acmpxchg(b, instr, BI_SEG_WLS);
                 break;
 
         case nir_intrinsic_load_frag_coord:
@@ -882,6 +971,110 @@ bi_cmpf_nir(nir_op op)
         }
 }
 
+/* Convenience for lowered transcendentals */
+
+static bi_index
+bi_fmul_f32(bi_builder *b, bi_index s0, bi_index s1)
+{
+        return bi_fma_f32(b, s0, s1, bi_imm_f32(-0.0f), BI_ROUND_NONE);
+}
+
+/* Approximate with FRCP_APPROX.f32 and apply a single iteration of
+ * Newton-Raphson to improve precision */
+
+static void
+bi_lower_frcp_32(bi_builder *b, bi_index dst, bi_index s0)
+{
+        bi_index x1 = bi_frcp_approx_f32(b, s0);
+        bi_index m  = bi_frexpm_f32(b, s0, false, false);
+        bi_index e  = bi_frexpe_f32(b, bi_neg(s0), false, false);
+        bi_index t1 = bi_fma_rscale_f32(b, m, bi_neg(x1), bi_imm_f32(1.0),
+                        bi_zero(), BI_ROUND_NONE, BI_SPECIAL_N);
+        bi_fma_rscale_f32_to(b, dst, t1, x1, x1, e,
+                        BI_ROUND_NONE, BI_SPECIAL_NONE);
+}
+
+static void
+bi_lower_frsq_32(bi_builder *b, bi_index dst, bi_index s0)
+{
+        bi_index x1 = bi_frsq_approx_f32(b, s0);
+        bi_index m  = bi_frexpm_f32(b, s0, false, true);
+        bi_index e  = bi_frexpe_f32(b, bi_neg(s0), false, true);
+        bi_index t1 = bi_fmul_f32(b, x1, x1);
+        bi_index t2 = bi_fma_rscale_f32(b, m, bi_neg(t1), bi_imm_f32(1.0),
+                        bi_imm_u32(-1), BI_ROUND_NONE, BI_SPECIAL_N);
+        bi_fma_rscale_f32_to(b, dst, t2, x1, x1, e,
+                        BI_ROUND_NONE, BI_SPECIAL_N);
+}
+
+/* More complex transcendentals, see
+ * https://gitlab.freedesktop.org/panfrost/mali-isa-docs/-/blob/master/Bifrost.adoc
+ * for documentation */
+
+static void
+bi_lower_fexp2_32(bi_builder *b, bi_index dst, bi_index s0)
+{
+        bi_index t1 = bi_temp(b->shader);
+        bi_instr *t1_instr = bi_fadd_f32_to(b, t1,
+                        s0, bi_imm_u32(0x49400000), BI_ROUND_NONE);
+        t1_instr->clamp = BI_CLAMP_CLAMP_0_INF;
+
+        bi_index t2 = bi_fadd_f32(b, t1, bi_imm_u32(0xc9400000), BI_ROUND_NONE);
+
+        bi_instr *a2 = bi_fadd_f32_to(b, bi_temp(b->shader),
+                        s0, bi_neg(t2), BI_ROUND_NONE);
+        a2->clamp = BI_CLAMP_CLAMP_M1_1;
+
+        bi_index a1t = bi_fexp_table_u4(b, t1, BI_ADJ_NONE);
+        bi_index t3 = bi_isub_u32(b, t1, bi_imm_u32(0x49400000), false);
+        bi_index a1i = bi_arshift_i32(b, t3, bi_null(), bi_imm_u8(4));
+        bi_index p1 = bi_fma_f32(b, a2->dest[0], bi_imm_u32(0x3d635635),
+                        bi_imm_u32(0x3e75fffa), BI_ROUND_NONE);
+        bi_index p2 = bi_fma_f32(b, p1, a2->dest[0],
+                        bi_imm_u32(0x3f317218), BI_ROUND_NONE);
+        bi_index p3 = bi_fmul_f32(b, a2->dest[0], p2);
+        bi_instr *x = bi_fma_rscale_f32_to(b, bi_temp(b->shader),
+                        p3, a1t, a1t, a1i, BI_ROUND_NONE, BI_SPECIAL_NONE);
+        x->clamp = BI_CLAMP_CLAMP_0_INF;
+
+        bi_instr *max = bi_fmax_f32_to(b, dst, x->dest[0], s0);
+        max->sem = BI_SEM_NAN_PROPAGATE;
+}
+
+static void
+bi_lower_flog2_32(bi_builder *b, bi_index dst, bi_index s0)
+{
+        /* s0 = a1 * 2^e, with a1 in [0.75, 1.5) */
+        bi_index a1 = bi_frexpm_f32(b, s0, true, false);
+        bi_index ei = bi_frexpe_f32(b, s0, true, false);
+        bi_index ef = bi_s32_to_f32(b, ei, BI_ROUND_RTZ);
+
+        /* xt estimates -log(r1), a coarse approximation of log(a1) */
+        bi_index r1 = bi_flog_table_f32(b, s0, BI_MODE_RED, BI_PRECISION_NONE);
+        bi_index xt = bi_flog_table_f32(b, s0, BI_MODE_BASE2, BI_PRECISION_NONE);
+
+        /* log(s0) = log(a1 * 2^e) = e + log(a1) = e + log(a1 * r1) -
+         * log(r1), so let x1 = e - log(r1) ~= e + xt and x2 = log(a1 * r1),
+         * and then log(s0) = x1 + x2 */
+        bi_index x1 = bi_fadd_f32(b, ef, xt, BI_ROUND_NONE);
+
+        /* Since a1 * r1 is close to 1, x2 = log(a1 * r1) may be computed by
+         * polynomial approximation around 1. The series is expressed around
+         * 1, so set y = (a1 * r1) - 1.0 */
+        bi_index y = bi_fma_f32(b, a1, r1, bi_imm_f32(-1.0), BI_ROUND_NONE);
+
+        /* x2 = log_2(1 + y) = log_e(1 + y) * (1/log_e(2)), so approximate
+         * log_e(1 + y) by the Taylor series (lower precision than the blob):
+         * y - y^2/2 + O(y^3) = y(1 - y/2) + O(y^3) */
+        bi_index loge = bi_fmul_f32(b, y,
+                bi_fma_f32(b, y, bi_imm_f32(-0.5), bi_imm_f32(1.0), BI_ROUND_NONE));
+
+        bi_index x2 = bi_fmul_f32(b, loge, bi_imm_f32(1.0 / logf(2.0)));
+
+        /* log(s0) = x1 + x2 */
+        bi_fadd_f32_to(b, dst, x1, x2, BI_ROUND_NONE);
+}
+
 static void
 bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
 {
@@ -1008,8 +1201,12 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
                 break;
 
         case nir_op_fexp2: {
-                /* TODO G71 */
                 assert(sz == 32); /* should've been lowered */
+
+                if (b->shader->quirks & BIFROST_NO_FP32_TRANSCENDENTALS) {
+                        bi_lower_fexp2_32(b, dst, s0);
+                        break;
+                }
 
                 /* multiply by 1.0 * 2*24 */
                 bi_index scale = bi_fma_rscale_f32(b, s0, bi_imm_f32(1.0f),
@@ -1021,8 +1218,13 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
         }
 
         case nir_op_flog2: {
-                /* TODO G71 */
                 assert(sz == 32); /* should've been lowered */
+
+                if (b->shader->quirks & BIFROST_NO_FP32_TRANSCENDENTALS) {
+                        bi_lower_flog2_32(b, dst, s0);
+                        break;
+                }
+
                 bi_index frexp = bi_frexpe_f32(b, s0, true, false);
                 bi_index frexpi = bi_s32_to_f32(b, frexp, BI_ROUND_RTZ);
                 bi_index add = bi_fadd_lscale_f32(b, bi_imm_f32(-1.0f), s0);
@@ -1306,11 +1508,17 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
                 break;
 
         case nir_op_frsq:
-                bi_frsq_to(b, sz, dst, s0);
+                if (sz == 32 && b->shader->quirks & BIFROST_NO_FP32_TRANSCENDENTALS)
+                        bi_lower_frsq_32(b, dst, s0);
+                else
+                        bi_frsq_to(b, sz, dst, s0);
                 break;
 
         case nir_op_frcp:
-                bi_frcp_to(b, sz, dst, s0);
+                if (sz == 32 && b->shader->quirks & BIFROST_NO_FP32_TRANSCENDENTALS)
+                        bi_lower_frcp_32(b, dst, s0);
+                else
+                        bi_frcp_to(b, sz, dst, s0);
                 break;
 
         default:
@@ -1462,22 +1670,17 @@ bi_emit_cube_coord(bi_builder *b, bi_index coord,
                     bi_index *face, bi_index *s, bi_index *t)
 {
         /* Compute max { |x|, |y|, |z| } */
-        bi_index cubeface1 = bi_cubeface1(b, coord,
+        bi_instr *cubeface = bi_cubeface_to(b, bi_temp(b->shader), coord,
                         bi_word(coord, 1), bi_word(coord, 2));
-
-        /* Calculate packed exponent / face / infinity. In reality this reads
-         * the destination from cubeface1 but that's handled by lowering */
-        bi_instr *cubeface2 = bi_cubeface1_to(b, bi_temp(b->shader), coord,
-                        bi_word(coord, 1), bi_word(coord, 2));
-        cubeface2->op = BI_OPCODE_CUBEFACE2; /* XXX: DEEP VOODOO */
+        cubeface->dest[1] = bi_temp(b->shader);
 
         /* Select coordinates */
 
         bi_index ssel = bi_cube_ssel(b, bi_word(coord, 2), coord,
-                        cubeface2->dest[0]);
+                        cubeface->dest[1]);
 
         bi_index tsel = bi_cube_tsel(b, bi_word(coord, 1), bi_word(coord, 2),
-                        cubeface2->dest[0]);
+                        cubeface->dest[1]);
 
         /* The OpenGL ES specification requires us to transform an input vector
          * (x, y, z) to the coordinate, given the selected S/T:
@@ -1493,7 +1696,7 @@ bi_emit_cube_coord(bi_builder *b, bi_index coord,
          * Take the reciprocal of max{x, y, z}
          */
 
-        bi_index rcp = bi_frcp_f32(b, cubeface1);
+        bi_index rcp = bi_frcp_f32(b, cubeface->dest[0]);
 
         /* Calculate 0.5 * (1.0 / max{x, y, z}) */
         bi_index fma1 = bi_fma_f32(b, rcp, bi_imm_f32(0.5f), bi_zero(),
@@ -1515,7 +1718,7 @@ bi_emit_cube_coord(bi_builder *b, bi_index coord,
          * because the TEXS_CUBE and TEXC instructions expect the face index to
          * be at this position.
          */
-        *face = cubeface2->dest[0];
+        *face = cubeface->dest[1];
 }
 
 /* Emits a cube map descriptor, returning lower 32-bits and putting upper
@@ -1785,10 +1988,8 @@ bi_is_simple_tex(nir_tex_instr *instr)
         if (instr->op != nir_texop_tex && instr->op != nir_texop_txl)
                 return false;
 
-        nir_alu_type base = nir_alu_type_get_base_type(instr->dest_type);
-        unsigned sz = nir_dest_bit_size(instr->dest);
-
-        if (!(base == nir_type_float && (sz == 16 || sz == 32)))
+        if (instr->dest_type != nir_type_float32 &&
+            instr->dest_type != nir_type_float16)
                 return false;
 
         if (instr->is_shadow || instr->is_array)
@@ -1905,7 +2106,7 @@ emit_block(bi_context *ctx, nir_block *block)
         list_addtail(&ctx->current_block->base.link, &ctx->blocks);
         list_inithead(&ctx->current_block->base.instructions);
 
-        bi_builder _b = bi_init_builder(ctx);
+        bi_builder _b = bi_init_builder(ctx, bi_after_block(ctx->current_block));
 
         nir_foreach_instr(instr, block) {
                 bi_emit_instr(&_b, instr);
@@ -1939,7 +2140,7 @@ emit_if(bi_context *ctx, nir_if *nif)
         bi_block *before_block = ctx->current_block;
 
         /* Speculatively emit the branch, but we can't fill it in until later */
-        bi_builder _b = bi_init_builder(ctx);
+        bi_builder _b = bi_init_builder(ctx, bi_after_block(ctx->current_block));
         bi_instr *then_branch = bi_branch(&_b, &nif->condition, true);
 
         /* Emit the two subblocks. */
@@ -1993,7 +2194,7 @@ emit_loop(bi_context *ctx, nir_loop *nloop)
         emit_cf_list(ctx, &nloop->body);
 
         /* Branch back to loop back */
-        bi_builder _b = bi_init_builder(ctx);
+        bi_builder _b = bi_init_builder(ctx, bi_after_block(ctx->current_block));
         bi_jump(&_b, ctx->continue_block);
         pan_block_add_successor(&start_block->base, &ctx->continue_block->base);
         pan_block_add_successor(&ctx->current_block->base, &ctx->continue_block->base);
@@ -2041,7 +2242,7 @@ emit_cf_list(bi_context *ctx, struct exec_list *list)
 /* shader-db stuff */
 
 static void
-bi_print_stats(bi_context *ctx, FILE *fp)
+bi_print_stats(bi_context *ctx, unsigned size, FILE *fp)
 {
         unsigned nr_clauses = 0, nr_tuples = 0, nr_ins = 0;
 
@@ -2051,13 +2252,13 @@ bi_print_stats(bi_context *ctx, FILE *fp)
 
                 bi_foreach_clause_in_block(block, clause) {
                         nr_clauses++;
-                        nr_tuples += clause->bundle_count;
+                        nr_tuples += clause->tuple_count;
 
-                        for (unsigned i = 0; i < clause->bundle_count; ++i) {
-                                if (clause->bundles[i].fma)
+                        for (unsigned i = 0; i < clause->tuple_count; ++i) {
+                                if (clause->tuples[i].fma)
                                         nr_ins++;
 
-                                if (clause->bundles[i].add)
+                                if (clause->tuples[i].add)
                                         nr_ins++;
                         }
                 }
@@ -2075,14 +2276,14 @@ bi_print_stats(bi_context *ctx, FILE *fp)
 
         fprintf(stderr, "shader%d:%s - %s shader: "
                         "%u inst, %u nops, %u clauses, "
-                        "%u threads, %u loops, "
+                        "%u quadwords, %u threads, %u loops, "
                         "%u:%u spills:fills\n",
                         SHADER_DB_COUNT++,
                         ctx->nir->info.label ?: "",
                         ctx->is_blend ? "PAN_SHADER_BLEND" :
                         gl_shader_stage_name(ctx->stage),
                         nr_ins, nr_nops, nr_clauses,
-                        nr_threads,
+                        size / 16, nr_threads,
                         ctx->loop_count,
                         ctx->spills, ctx->fills);
 }
@@ -2130,7 +2331,7 @@ bi_lower_constant(bi_builder *b, bi_instr *ins, unsigned s, uint32_t *accum, uns
 static void
 bi_lower_fau(bi_context *ctx, bi_block *block)
 {
-        bi_builder b = bi_init_builder(ctx);
+        bi_builder b = bi_init_builder(ctx, bi_after_block(ctx->current_block));
 
         bi_foreach_instr_in_block_safe(block, _ins) {
                 bi_instr *ins = (bi_instr *) _ins;
@@ -2282,6 +2483,28 @@ bifrost_nir_lower_i8_fragout(nir_shader *shader)
                         NULL);
 }
 
+/* Dead code elimination for branches at the end of a block - only one branch
+ * per block is legal semantically, but unreachable jumps can be generated */
+
+static void
+bi_cull_dead_branch(bi_block *block)
+{
+        bool branched = false;
+        ASSERTED bool was_jump = false;
+
+        bi_foreach_instr_in_block_safe(block, ins) {
+                if (!ins->branch_target) continue;
+
+                if (branched) {
+                        assert(was_jump);
+                        bi_remove_instruction(ins);
+                }
+
+                branched = true;
+                was_jump = ins->op == BI_OPCODE_JUMP;
+        }
+}
+
 panfrost_program *
 bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
                            const struct panfrost_compile_inputs *inputs)
@@ -2327,7 +2550,10 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
 
         NIR_PASS_V(nir, pan_nir_reorder_writeout);
 
-        if (bifrost_debug & BIFROST_DBG_SHADERS && !nir->info.internal) {
+        bool skip_internal = nir->info.internal;
+        skip_internal &= !(bifrost_debug & BIFROST_DBG_INTERNAL);
+
+        if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal) {
                 nir_print_shader(nir, stdout);
         }
 
@@ -2341,7 +2567,9 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
                 if (!func->impl)
                         continue;
 
-                ctx->impl = func->impl;
+                ctx->ssa_alloc += func->impl->ssa_alloc;
+                ctx->reg_alloc += func->impl->reg_alloc;
+
                 emit_cf_list(ctx, &func->impl->body);
                 break; /* TODO: Multi-function shaders */
         }
@@ -2354,6 +2582,8 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
                 /* Name blocks now that we're done emitting so the order is
                  * consistent */
                 block->base.name = block_source_count++;
+
+                bi_cull_dead_branch(block);
         }
 
         bool progress = false;
@@ -2363,7 +2593,7 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
 
                 bi_foreach_block(ctx, _block) {
                         bi_block *block = (bi_block *) _block;
-                        progress |= bi_opt_dead_code_eliminate(ctx, block);
+                        progress |= bi_opt_dead_code_eliminate(ctx, block, false);
                 }
         } while(progress);
 
@@ -2372,33 +2602,44 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
                 bi_lower_fau(ctx, block);
         }
 
-        if (bifrost_debug & BIFROST_DBG_SHADERS && !nir->info.internal)
+        if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal)
                 bi_print_shader(ctx, stdout);
         bi_schedule(ctx);
         bi_register_allocate(ctx);
-        if (bifrost_debug & BIFROST_DBG_SHADERS && !nir->info.internal)
+        if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal)
                 bi_print_shader(ctx, stdout);
 
         util_dynarray_init(&program->compiled, NULL);
-        bi_pack(ctx, &program->compiled);
+        unsigned final_clause = bi_pack(ctx, &program->compiled);
+
+        /* If we need to wait for ATEST or BLEND in the first clause, pass the
+         * corresponding bits through to the renderer state descriptor */
+        pan_block *first_block = list_first_entry(&ctx->blocks, pan_block, link);
+        bi_clause *first_clause = bi_next_clause(ctx, first_block, NULL);
+
+        unsigned first_deps = first_clause ? first_clause->dependencies : 0;
+        program->wait_6 = (first_deps & (1 << 6));
+        program->wait_7 = (first_deps & (1 << 7));
 
         memcpy(program->blend_ret_offsets, ctx->blend_ret_offsets, sizeof(program->blend_ret_offsets));
 
-        if (bifrost_debug & BIFROST_DBG_SHADERS && !nir->info.internal) {
+        if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal) {
                 disassemble_bifrost(stdout, program->compiled.data,
                                 program->compiled.size,
                                 bifrost_debug & BIFROST_DBG_VERBOSE);
         }
 
         /* Pad the shader with enough zero bytes to trick the prefetcher */
-        memset(util_dynarray_grow(&program->compiled, uint8_t, BIFROST_SHADER_PREFETCH),
-               0, BIFROST_SHADER_PREFETCH);
+        unsigned prefetch_size = BIFROST_SHADER_PREFETCH - final_clause;
+
+        memset(util_dynarray_grow(&program->compiled, uint8_t, prefetch_size),
+               0, prefetch_size);
 
         program->tls_size = ctx->tls_size;
 
         if ((bifrost_debug & BIFROST_DBG_SHADERDB || inputs->shaderdb) &&
-            !nir->info.internal) {
-                bi_print_stats(ctx, stderr);
+            !skip_internal) {
+                bi_print_stats(ctx, program->compiled.size, stderr);
         }
 
         ralloc_free(ctx);

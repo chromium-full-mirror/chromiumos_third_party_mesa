@@ -147,7 +147,6 @@ static bool si_upload_descriptors(struct si_context *sctx, struct si_descriptors
       si_resource_reference(&desc->buffer, NULL);
       desc->gpu_list = NULL;
       desc->gpu_address = si_desc_extract_buffer_address(descriptor);
-      si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
       return true;
    }
 
@@ -174,8 +173,6 @@ static bool si_upload_descriptors(struct si_context *sctx, struct si_descriptors
    assert(desc->buffer->flags & RADEON_FLAG_32BIT);
    assert((desc->buffer->gpu_address >> 32) == sctx->screen->info.address32_hi);
    assert((desc->gpu_address >> 32) == sctx->screen->info.address32_hi);
-
-   si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
    return true;
 }
 
@@ -573,12 +570,14 @@ static void si_update_shader_needs_decompress_mask(struct si_context *sctx, unsi
 }
 
 static void si_set_sampler_views(struct pipe_context *ctx, enum pipe_shader_type shader,
-                                 unsigned start, unsigned count, struct pipe_sampler_view **views)
+                                 unsigned start, unsigned count,
+                                 unsigned unbind_num_trailing_slots,
+                                 struct pipe_sampler_view **views)
 {
    struct si_context *sctx = (struct si_context *)ctx;
    int i;
 
-   if (!count || shader >= SI_NUM_SHADERS)
+   if ((!count && !unbind_num_trailing_slots) || shader >= SI_NUM_SHADERS)
       return;
 
    if (views) {
@@ -588,6 +587,9 @@ static void si_set_sampler_views(struct pipe_context *ctx, enum pipe_shader_type
       for (i = 0; i < count; i++)
          si_set_sampler_view(sctx, shader, start + i, NULL, false);
    }
+
+   for (; i < count + unbind_num_trailing_slots; i++)
+      si_set_sampler_view(sctx, shader, start + i, NULL, false);
 
    si_update_shader_needs_decompress_mask(sctx, shader);
 }
@@ -803,6 +805,7 @@ static void si_set_shader_image(struct si_context *ctx, unsigned shader, unsigne
 
 static void si_set_shader_images(struct pipe_context *pipe, enum pipe_shader_type shader,
                                  unsigned start_slot, unsigned count,
+                                 unsigned unbind_num_trailing_slots,
                                  const struct pipe_image_view *views)
 {
    struct si_context *ctx = (struct si_context *)pipe;
@@ -810,10 +813,10 @@ static void si_set_shader_images(struct pipe_context *pipe, enum pipe_shader_typ
 
    assert(shader < SI_NUM_SHADERS);
 
-   if (!count)
+   if (!count && !unbind_num_trailing_slots)
       return;
 
-   assert(start_slot + count <= SI_NUM_IMAGES);
+   assert(start_slot + count + unbind_num_trailing_slots <= SI_NUM_IMAGES);
 
    if (views) {
       for (i = 0, slot = start_slot; i < count; ++i, ++slot)
@@ -822,6 +825,9 @@ static void si_set_shader_images(struct pipe_context *pipe, enum pipe_shader_typ
       for (i = 0, slot = start_slot; i < count; ++i, ++slot)
          si_set_shader_image(ctx, shader, slot, NULL, false);
    }
+
+   for (i = 0; i < unbind_num_trailing_slots; ++i, ++slot)
+      si_set_shader_image(ctx, shader, slot, NULL, false);
 
    if (shader == PIPE_SHADER_COMPUTE &&
        ctx->cs_shader_state.program &&
@@ -1093,7 +1099,7 @@ static void si_upload_const_buffer(struct si_context *sctx, struct si_resource *
 }
 
 static void si_set_constant_buffer(struct si_context *sctx, struct si_buffer_resources *buffers,
-                                   unsigned descriptors_idx, uint slot,
+                                   unsigned descriptors_idx, uint slot, bool take_ownership,
                                    const struct pipe_constant_buffer *input)
 {
    struct si_descriptors *descs = &sctx->descriptors[descriptors_idx];
@@ -1116,11 +1122,16 @@ static void si_set_constant_buffer(struct si_context *sctx, struct si_buffer_res
                                 input->buffer_size, &buffer_offset);
          if (!buffer) {
             /* Just unbind on failure. */
-            si_set_constant_buffer(sctx, buffers, descriptors_idx, slot, NULL);
+            si_set_constant_buffer(sctx, buffers, descriptors_idx, slot, false, NULL);
             return;
          }
       } else {
-         pipe_resource_reference(&buffer, input->buffer);
+         if (take_ownership) {
+            pipe_resource_reference(&buffer, NULL);
+            buffer = input->buffer;
+         } else {
+            pipe_resource_reference(&buffer, input->buffer);
+         }
          buffer_offset = input->buffer_offset;
       }
 
@@ -1157,7 +1168,8 @@ static void si_set_constant_buffer(struct si_context *sctx, struct si_buffer_res
 }
 
 static void si_pipe_set_constant_buffer(struct pipe_context *ctx, enum pipe_shader_type shader,
-                                        uint slot, const struct pipe_constant_buffer *input)
+                                        uint slot, bool take_ownership,
+                                        const struct pipe_constant_buffer *input)
 {
    struct si_context *sctx = (struct si_context *)ctx;
 
@@ -1182,7 +1194,8 @@ static void si_pipe_set_constant_buffer(struct pipe_context *ctx, enum pipe_shad
 
    slot = si_get_constbuf_slot(slot);
    si_set_constant_buffer(sctx, &sctx->const_and_shader_buffers[shader],
-                          si_const_and_shader_buffer_descriptors_idx(shader), slot, input);
+                          si_const_and_shader_buffer_descriptors_idx(shader), slot,
+                          take_ownership, input);
 }
 
 static void si_set_inlinable_constants(struct pipe_context *ctx,
@@ -1303,7 +1316,7 @@ void si_get_shader_buffers(struct si_context *sctx, enum pipe_shader_type shader
 void si_set_internal_const_buffer(struct si_context *sctx, uint slot,
                                   const struct pipe_constant_buffer *input)
 {
-   si_set_constant_buffer(sctx, &sctx->internal_bindings, SI_DESCS_INTERNAL, slot, input);
+   si_set_constant_buffer(sctx, &sctx->internal_bindings, SI_DESCS_INTERNAL, slot, false, input);
 }
 
 void si_set_internal_shader_buffer(struct si_context *sctx, uint slot,
@@ -2008,36 +2021,9 @@ void si_emit_graphics_shader_pointers(struct si_context *sctx)
                                        sh_base[PIPE_SHADER_TESS_CTRL]);
    si_emit_consecutive_shader_pointers(sctx, SI_DESCS_SHADER_MASK(GEOMETRY),
                                        sh_base[PIPE_SHADER_GEOMETRY]);
+   radeon_end();
 
    sctx->shader_pointers_dirty &= ~u_bit_consecutive(SI_DESCS_INTERNAL, SI_DESCS_FIRST_COMPUTE);
-
-   if (sctx->vertex_buffer_pointer_dirty && sctx->num_vertex_elements) {
-      /* Find the location of the VB descriptor pointer. */
-      unsigned sh_dw_offset = SI_VS_NUM_USER_SGPR;
-      if (sctx->chip_class >= GFX9) {
-         if (sctx->tes_shader.cso)
-            sh_dw_offset = GFX9_TCS_NUM_USER_SGPR;
-         else if (sctx->gs_shader.cso)
-            sh_dw_offset = GFX9_VSGS_NUM_USER_SGPR;
-      }
-
-      unsigned sh_offset = sh_base[PIPE_SHADER_VERTEX] + sh_dw_offset * 4;
-      radeon_set_sh_reg_seq(cs, sh_offset, 1);
-      radeon_emit_32bit_pointer(
-         sctx->screen, cs, sctx->vb_descriptors_buffer->gpu_address + sctx->vb_descriptors_offset);
-      sctx->vertex_buffer_pointer_dirty = false;
-   }
-
-   if (sctx->vertex_buffer_user_sgprs_dirty && sctx->num_vertex_elements &&
-       sctx->screen->num_vbos_in_user_sgprs) {
-      unsigned num_desc = MIN2(sctx->num_vertex_elements, sctx->screen->num_vbos_in_user_sgprs);
-      unsigned sh_offset = sh_base[PIPE_SHADER_VERTEX] + SI_SGPR_VS_VB_DESCRIPTOR_FIRST * 4;
-
-      radeon_set_sh_reg_seq(cs, sh_offset, num_desc * 4);
-      radeon_emit_array(cs, sctx->vb_descriptor_user_sgprs, num_desc * 4);
-      sctx->vertex_buffer_user_sgprs_dirty = false;
-   }
-   radeon_end();
 
    if (sctx->graphics_bindless_pointer_dirty) {
       si_emit_global_shader_pointers(sctx, &sctx->bindless_descriptors);
@@ -2180,6 +2166,7 @@ static unsigned si_create_bindless_descriptor(struct si_context *sctx, uint32_t 
    /* Make sure to re-emit the shader pointers for all stages. */
    sctx->graphics_bindless_pointer_dirty = true;
    sctx->compute_bindless_pointer_dirty = true;
+   si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
 
    return desc_slot;
 }
@@ -2605,20 +2592,20 @@ static bool si_upload_shader_descriptors(struct si_context *sctx, unsigned mask)
 {
    unsigned dirty = sctx->descriptors_dirty & mask;
 
-   /* Assume nothing will go wrong: */
-   sctx->shader_pointers_dirty |= dirty;
+   if (dirty) {
+      unsigned iter_mask = dirty;
 
-   while (dirty) {
-      unsigned i = u_bit_scan(&dirty);
+      do {
+         if (!si_upload_descriptors(sctx, &sctx->descriptors[u_bit_scan(&iter_mask)]))
+            return false;
+      } while (iter_mask);
 
-      if (!si_upload_descriptors(sctx, &sctx->descriptors[i]))
-         return false;
+      sctx->descriptors_dirty &= ~dirty;
+      sctx->shader_pointers_dirty |= dirty;
+      si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
    }
 
-   sctx->descriptors_dirty &= ~mask;
-
    si_upload_bindless_descriptors(sctx);
-
    return true;
 }
 

@@ -6,188 +6,157 @@
 #include "vn_cs.h"
 
 void
-vn_cs_init(struct vn_cs *cs,
-           const VkAllocationCallbacks *alloc,
-           VkSystemAllocationScope alloc_scope,
-           size_t out_min_size)
+vn_cs_encoder_init(struct vn_cs_encoder *enc,
+                   const VkAllocationCallbacks *alloc,
+                   VkSystemAllocationScope alloc_scope,
+                   size_t min_size)
 {
-   memset(cs, 0, sizeof(*cs));
-   cs->allocator = alloc;
-   cs->alloc_scope = alloc_scope;
-
-   cs->out.min_iov_size = out_min_size;
+   memset(enc, 0, sizeof(*enc));
+   enc->allocator = alloc;
+   enc->alloc_scope = alloc_scope;
+   enc->min_buffer_size = min_size;
 }
 
 void
-vn_cs_fini(struct vn_cs *cs)
+vn_cs_encoder_fini(struct vn_cs_encoder *enc)
 {
-   for (uint32_t i = 0; i < cs->out.iov_count; i++)
-      vk_free(cs->allocator, cs->out.iovs[i].iov_base);
-   if (cs->out.iovs)
-      vk_free(cs->allocator, cs->out.iovs);
+   for (uint32_t i = 0; i < enc->buffer_count; i++)
+      vk_free(enc->allocator, enc->buffers[i].base);
+   if (enc->buffers)
+      vk_free(enc->allocator, enc->buffers);
 }
 
 static void
-vn_cs_reset_in(struct vn_cs *cs)
+vn_cs_encoder_add_buffer(struct vn_cs_encoder *enc, void *base, size_t size)
 {
-   memset(&cs->in, 0, sizeof(cs->in));
+   /* add the buffer and make it current */
+   struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count++];
+   cur_buf->base = base;
+   cur_buf->committed_size = 0;
+   enc->current_buffer_size = size;
+
+   /* update the write pointer */
+   enc->cur = base;
+   enc->end = base + size;
 }
 
 static void
-vn_cs_reset_out(struct vn_cs *cs)
+vn_cs_encoder_commit_buffer(struct vn_cs_encoder *enc)
 {
-   if (unlikely(!cs->out.iov_count))
-      return;
+   struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count - 1];
+   assert(enc->cur >= cur_buf->base &&
+          enc->cur <= cur_buf->base + enc->current_buffer_size);
 
-   /* free all but the last iov */
-   for (uint32_t i = 0; i < cs->out.iov_count - 1; i++)
-      vk_free(cs->allocator, cs->out.iovs[i].iov_base);
-
-   /* move the last iov to the beginning */
-   struct vn_cs_iovec *iov = &cs->out.iovs[0];
-   iov->iov_base = cs->out.iovs[cs->out.iov_count - 1].iov_base;
-   iov->iov_len = 0;
-   cs->out.iov_count = 1;
-
-   cs->out.total_iov_len = 0;
-
-   cs->out.cur = iov->iov_base;
-   cs->out.end = iov->iov_base + cs->out.last_iov_size;
+   const size_t written_size = enc->cur - cur_buf->base;
+   if (cur_buf->committed_size) {
+      assert(cur_buf->committed_size == written_size);
+   } else {
+      cur_buf->committed_size = written_size;
+      enc->total_committed_size += written_size;
+   }
 }
 
 /**
  * Reset a cs for reuse.
  */
 void
-vn_cs_reset(struct vn_cs *cs)
+vn_cs_encoder_reset(struct vn_cs_encoder *enc)
 {
-   /* cs->error is sticky */
-   vn_cs_reset_in(cs);
-   vn_cs_reset_out(cs);
-}
+   /* enc->error is sticky */
 
-void
-vn_cs_set_in_data(struct vn_cs *cs, const void *data, size_t size)
-{
-   assert(size >= cs->in.reserved);
+   if (unlikely(!enc->buffer_count))
+      return;
 
-   cs->in.cur = data;
-   cs->in.end = data + size;
+   /* free all but the current buffer */
+   struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count - 1];
+   for (uint32_t i = 0; i < enc->buffer_count - 1; i++)
+      vk_free(enc->allocator, enc->buffers[i].base);
+
+   /* move the current buffer to the beginning */
+   enc->buffer_count = 0;
+   vn_cs_encoder_add_buffer(enc, cur_buf->base, enc->current_buffer_size);
+
+   enc->total_committed_size = 0;
 }
 
 static uint32_t
-grow_array_size(uint32_t size,
-                uint32_t used,
-                uint32_t growth,
-                uint32_t min_size)
+next_array_size(uint32_t cur_size, uint32_t min_size)
 {
-   assert(size >= used && min_size);
-   if (!size)
-      size = min_size;
-
-   uint32_t new_size = size;
-   while (new_size - used < growth) {
-      new_size *= 2;
-      if (new_size < size)
-         return 0;
-   }
-   return new_size;
+   const uint32_t next_size = cur_size ? cur_size * 2 : min_size;
+   return next_size > cur_size ? next_size : 0;
 }
 
 static size_t
-grow_buffer_size(size_t size, size_t used, size_t growth, size_t min_size)
+next_buffer_size(size_t cur_size, size_t min_size, size_t need)
 {
-   assert(size >= used && min_size);
-   if (!size)
-      size = min_size;
-
-   size_t new_size = size;
-   while (new_size - used < growth) {
-      new_size *= 2;
-      if (new_size < size)
+   size_t next_size = cur_size ? cur_size * 2 : min_size;
+   while (next_size < need) {
+      next_size *= 2;
+      if (!next_size)
          return 0;
    }
-   return new_size;
+   return next_size;
 }
 
 static bool
-vn_cs_grow_out_iovs(struct vn_cs *cs)
+vn_cs_encoder_grow_buffer_array(struct vn_cs_encoder *enc)
 {
-   const uint32_t iov_max =
-      grow_array_size(cs->out.iov_max, cs->out.iov_count, 1, 4);
-   if (!iov_max)
+   const uint32_t buf_max = next_array_size(enc->buffer_max, 4);
+   if (!buf_max)
       return false;
 
-   void *iovs =
-      vk_realloc(cs->allocator, cs->out.iovs, sizeof(*cs->out.iovs) * iov_max,
-                 VN_DEFAULT_ALIGN, cs->alloc_scope);
-   if (!iovs)
+   void *bufs = vk_realloc(enc->allocator, enc->buffers,
+                           sizeof(*enc->buffers) * buf_max, VN_DEFAULT_ALIGN,
+                           enc->alloc_scope);
+   if (!bufs)
       return false;
 
-   cs->out.iovs = iovs;
-   cs->out.iov_max = iov_max;
+   enc->buffers = bufs;
+   enc->buffer_max = buf_max;
 
    return true;
 }
 
-static void
-vn_cs_set_out_iov_len(struct vn_cs *cs)
-{
-   if (unlikely(!cs->out.iov_count))
-      return;
-
-   struct vn_cs_iovec *iov = &cs->out.iovs[cs->out.iov_count - 1];
-   assert(!iov->iov_len && iov->iov_base <= cs->out.cur);
-   iov->iov_len = cs->out.cur - iov->iov_base;
-   assert(iov->iov_len <= cs->out.last_iov_size);
-   cs->out.total_iov_len += iov->iov_len;
-
-   cs->out.end = cs->out.cur;
-}
-
 /**
- * Add a new iovec to a cs.
+ * Add a new vn_cs_buffer to a cs.
  */
 bool
-vn_cs_reserve_out_internal(struct vn_cs *cs, size_t size)
+vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
 {
-   if (cs->out.iov_count >= cs->out.iov_max) {
-      if (!vn_cs_grow_out_iovs(cs))
+   if (enc->buffer_count >= enc->buffer_max) {
+      if (!vn_cs_encoder_grow_buffer_array(enc))
          return false;
-      assert(cs->out.iov_count < cs->out.iov_max);
+      assert(enc->buffer_count < enc->buffer_max);
    }
 
-   const size_t iov_size =
-      grow_buffer_size(cs->out.last_iov_size, cs->out.last_iov_size, size,
-                       cs->out.min_iov_size);
-   if (!iov_size)
+   const size_t buf_size =
+      next_buffer_size(enc->current_buffer_size, enc->min_buffer_size, size);
+   if (!buf_size)
       return false;
 
    void *base =
-      vk_alloc(cs->allocator, iov_size, VN_DEFAULT_ALIGN, cs->alloc_scope);
+      vk_alloc(enc->allocator, buf_size, VN_DEFAULT_ALIGN, enc->alloc_scope);
    if (!base)
       return false;
 
-   vn_cs_set_out_iov_len(cs);
+   if (likely(enc->buffer_count))
+      vn_cs_encoder_commit_buffer(enc);
 
-   /* add a new iov */
-   struct vn_cs_iovec *iov = &cs->out.iovs[cs->out.iov_count++];
-   iov->iov_base = base;
-   iov->iov_len = 0;
-   cs->out.last_iov_size = iov_size;
-
-   /* switch to the new iov */
-   cs->out.cur = iov->iov_base;
-   cs->out.end = iov->iov_base + cs->out.last_iov_size;
+   vn_cs_encoder_add_buffer(enc, base, buf_size);
 
    return true;
 }
 
 /*
- * End command emission.
+ * Commit written data.
  */
 void
-vn_cs_end_out(struct vn_cs *cs)
+vn_cs_encoder_commit(struct vn_cs_encoder *enc)
 {
-   vn_cs_set_out_iov_len(cs);
+   if (likely(enc->buffer_count)) {
+      vn_cs_encoder_commit_buffer(enc);
+
+      /* trigger the slow path on next vn_cs_encoder_reserve */
+      enc->end = enc->cur;
+   }
 }

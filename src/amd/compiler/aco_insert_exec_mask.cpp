@@ -53,14 +53,10 @@ struct wqm_ctx {
    std::vector<uint16_t> defined_in;
    std::vector<bool> needs_wqm;
    std::vector<bool> branch_wqm; /* true if the branch condition in this block should be in wqm */
-   bool loop;
-   bool wqm;
    wqm_ctx(Program* program_) : program(program_),
                                defined_in(program->peekAllocationId(), 0xFFFF),
                                needs_wqm(program->peekAllocationId()),
-                               branch_wqm(program->blocks.size()),
-                               loop(false),
-                               wqm(false)
+                               branch_wqm(program->blocks.size())
    {
       for (unsigned i = 0; i < program->blocks.size(); i++)
          worklist.insert(i);
@@ -144,34 +140,6 @@ void get_block_needs(wqm_ctx &ctx, exec_ctx &exec_ctx, Block* block)
 
    std::vector<WQMState> instr_needs(block->instructions.size());
 
-   if (block->kind & block_kind_top_level) {
-      if (ctx.loop && ctx.wqm) {
-         unsigned block_idx = block->index + 1;
-         while (!(ctx.program->blocks[block_idx].kind & block_kind_top_level)) {
-            /* flag all break conditions as WQM:
-             * the conditions might be computed outside the nested CF */
-            if (ctx.program->blocks[block_idx].kind & block_kind_break)
-               mark_block_wqm(ctx, block_idx);
-            /* flag all blocks as WQM to ensure we enter all (nested) loops in WQM */
-            exec_ctx.info[block_idx].block_needs |= WQM;
-            block_idx++;
-         }
-      } else if (ctx.loop && !ctx.wqm) {
-         /* Ensure a branch never results in an exec mask with only helper
-          * invocations (which can cause a loop to repeat infinitively if it's
-          * break branches are done in exact). */
-         unsigned block_idx = block->index;
-         do {
-            if ((ctx.program->blocks[block_idx].kind & block_kind_branch))
-               exec_ctx.info[block_idx].block_needs |= Exact_Branch;
-            block_idx++;
-         } while (!(ctx.program->blocks[block_idx].kind & block_kind_top_level));
-      }
-
-      ctx.loop = false;
-      ctx.wqm = false;
-   }
-
    for (int i = block->instructions.size() - 1; i >= 0; --i) {
       aco_ptr<Instruction>& instr = block->instructions[i];
 
@@ -231,10 +199,51 @@ void get_block_needs(wqm_ctx &ctx, exec_ctx &exec_ctx, Block* block)
    if (info.block_needs & WQM && !(block->kind & block_kind_top_level)) {
       for (unsigned pred_idx : block->logical_preds)
          mark_block_wqm(ctx, pred_idx);
-      ctx.wqm = true;
    }
-   if (block->kind & block_kind_loop_header)
-      ctx.loop = true;
+}
+
+void handle_exact_loops(wqm_ctx& ctx, exec_ctx& exec_ctx, unsigned preheader)
+{
+   unsigned header = preheader + 1;
+   assert(exec_ctx.program->blocks[header].kind & block_kind_loop_header);
+
+   unsigned exit = header + 1;
+   for (; exit < exec_ctx.program->blocks.size(); exit++) {
+      Block& exit_block = exec_ctx.program->blocks[exit];
+      if ((exit_block.kind & block_kind_loop_exit) && exit_block.loop_nest_depth == 0)
+         break;
+   }
+   assert(exit != exec_ctx.program->blocks.size());
+
+   int parent_branch = preheader;
+   unsigned rel_branch_depth = 0;
+   for (; parent_branch >= 0; parent_branch--) {
+      Block& branch = exec_ctx.program->blocks[parent_branch];
+      if (branch.kind & block_kind_branch) {
+         if (rel_branch_depth == 0)
+            break;
+         rel_branch_depth--;
+      }
+
+      /* top-level blocks should never have empty exact exec masks */
+      if (branch.kind & block_kind_top_level)
+         return;
+
+      if (branch.kind & block_kind_merge)
+         rel_branch_depth++;
+   }
+   assert(parent_branch >= 0);
+
+   Block& branch = exec_ctx.program->blocks[parent_branch];
+   assert(branch.kind & block_kind_branch);
+   if (ctx.branch_wqm[parent_branch]) {
+      /* The branch can't be done in Exact because some other blocks in it
+       * are in WQM. So instead, ensure that the loop breaks are done in WQM. */
+      for (unsigned pred_idx : exec_ctx.program->blocks[exit].logical_preds)
+         mark_block_wqm(ctx, pred_idx);
+   } else {
+      exec_ctx.info[parent_branch].block_needs |= Exact_Branch;
+   }
 }
 
 void calculate_wqm_needs(exec_ctx& exec_ctx)
@@ -245,7 +254,27 @@ void calculate_wqm_needs(exec_ctx& exec_ctx)
       unsigned block_index = *std::prev(ctx.worklist.end());
       ctx.worklist.erase(std::prev(ctx.worklist.end()));
 
-      get_block_needs(ctx, exec_ctx, &exec_ctx.program->blocks[block_index]);
+      Block& block = exec_ctx.program->blocks[block_index];
+      get_block_needs(ctx, exec_ctx, &block);
+
+      /* If an outer loop and it's nested loops does not need WQM,
+       * add_branch_code() will ensure that it enters in Exact. We have to
+       * ensure that the exact exec mask is not empty by adding Exact_Branch to
+       * the outer divergent branch.
+       *
+       * If the loop or a nested loop needs WQM, branch_wqm will be true for the
+       * preheader.
+       */
+      if (block.kind & block_kind_top_level && block.index != exec_ctx.program->blocks.size() - 1) {
+         unsigned preheader = block.index;
+         do {
+            Block& preheader_block = exec_ctx.program->blocks[preheader];
+            if ((preheader_block.kind & block_kind_loop_preheader) &&
+                preheader_block.loop_nest_depth == 0 && !ctx.branch_wqm[preheader])
+               handle_exact_loops(ctx, exec_ctx, preheader);
+            preheader++;
+         } while (!(exec_ctx.program->blocks[preheader].kind & block_kind_top_level));
+      }
    }
 
    uint8_t ever_again_needs = 0;

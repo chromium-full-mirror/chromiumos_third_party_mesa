@@ -50,7 +50,7 @@ si_thread_trace_init_bo(struct si_context *sctx)
    /* Compute total size of the thread trace BO for 4 SEs. */
    size = align64(sizeof(struct ac_thread_trace_info) * 4,
                   1 << SQTT_BUFFER_ALIGN_SHIFT);
-   size += sctx->thread_trace->buffer_size * 4;
+   size += sctx->thread_trace->buffer_size * 4ll;
 
    sctx->thread_trace->bo =
       ws->buffer_create(ws, size, 4096,
@@ -560,16 +560,22 @@ si_init_thread_trace(struct si_context *sctx)
    sctx->thread_trace->buffer_size = debug_get_num_option("AMD_THREAD_TRACE_BUFFER_SIZE", 1024) * 1024;
    sctx->thread_trace->start_frame = 10;
 
-   const char *trigger_file = getenv("AMD_THREAD_TRACE_TRIGGER");
-   if (trigger_file) {
-      sctx->thread_trace->trigger_file = strdup(trigger_file);
-      sctx->thread_trace->start_frame = -1;
+   const char *trigger = getenv("AMD_THREAD_TRACE_TRIGGER");
+   if (trigger) {
+      sctx->thread_trace->start_frame = atoi(trigger);
+      if (sctx->thread_trace->start_frame <= 0) {
+         /* This isn't a frame number, must be a file */
+         sctx->thread_trace->trigger_file = strdup(trigger);
+         sctx->thread_trace->start_frame = -1;
+      }
    }
 
    if (!si_thread_trace_init_bo(sctx))
       return false;
 
    si_thread_trace_init_cs(sctx);
+
+   sctx->sqtt_next_event = EventInvalid;
 
    return true;
 }
@@ -691,6 +697,7 @@ si_emit_spi_config_cntl(struct si_context* sctx,
    radeon_end();
 }
 
+static uint32_t num_events = 0;
 void
 si_sqtt_write_event_marker(struct si_context* sctx, struct radeon_cmdbuf *rcs,
                            enum rgp_sqtt_marker_event_type api_type,
@@ -698,11 +705,10 @@ si_sqtt_write_event_marker(struct si_context* sctx, struct radeon_cmdbuf *rcs,
                            uint32_t instance_offset_user_data,
                            uint32_t draw_index_user_data)
 {
-   static uint32_t num_events = 0;
    struct rgp_sqtt_marker_event marker = {0};
 
    marker.identifier = RGP_SQTT_MARKER_IDENTIFIER_EVENT;
-   marker.api_type = api_type;
+   marker.api_type = api_type == EventInvalid ? EventCmdDraw : api_type;
    marker.cmd_id = num_events++;
    marker.cb_id = 0;
 
@@ -720,4 +726,55 @@ si_sqtt_write_event_marker(struct si_context* sctx, struct radeon_cmdbuf *rcs,
    marker.draw_index_reg_idx = draw_index_user_data;
 
    si_emit_thread_trace_userdata(sctx, rcs, &marker, sizeof(marker) / 4);
+
+   sctx->sqtt_next_event = EventInvalid;
+}
+
+void
+si_write_event_with_dims_marker(struct si_context* sctx, struct radeon_cmdbuf *rcs,
+                                enum rgp_sqtt_marker_event_type api_type,
+                                uint32_t x, uint32_t y, uint32_t z)
+{
+   struct rgp_sqtt_marker_event_with_dims marker = {0};
+
+   marker.event.identifier = RGP_SQTT_MARKER_IDENTIFIER_EVENT;
+   marker.event.api_type = api_type;
+   marker.event.cmd_id = num_events++;
+   marker.event.cb_id = 0;
+   marker.event.has_thread_dims = 1;
+
+   marker.thread_x = x;
+   marker.thread_y = y;
+   marker.thread_z = z;
+
+   si_emit_thread_trace_userdata(sctx, rcs, &marker, sizeof(marker) / 4);
+   sctx->sqtt_next_event = EventInvalid;
+}
+
+void
+si_write_user_event(struct si_context* sctx, struct radeon_cmdbuf *rcs,
+                    enum rgp_sqtt_marker_user_event_type type,
+                    const char *str, int len)
+{
+   if (type == UserEventPop) {
+      assert (str == NULL);
+      struct rgp_sqtt_marker_user_event marker = { 0 };
+      marker.identifier = RGP_SQTT_MARKER_IDENTIFIER_USER_EVENT;
+      marker.data_type = type;
+
+      si_emit_thread_trace_userdata(sctx, rcs, &marker, sizeof(marker) / 4);
+   } else {
+      assert (str != NULL);
+      struct rgp_sqtt_marker_user_event_with_length marker = { 0 };
+      marker.user_event.identifier = RGP_SQTT_MARKER_IDENTIFIER_USER_EVENT;
+      marker.user_event.data_type = type;
+      marker.length = align(len, 4);
+
+      uint8_t *buffer = alloca(sizeof(marker) + marker.length);
+      memset(buffer, 0, sizeof(marker) + marker.length);
+      memcpy(buffer, &marker, sizeof(marker));
+      memcpy(buffer + sizeof(marker), str, len);
+
+      si_emit_thread_trace_userdata(sctx, rcs, buffer, sizeof(marker) / 4 + marker.length / 4);
+   }
 }

@@ -512,6 +512,7 @@ vir_compile_init(const struct v3d_compiler *compiler,
                                       void *debug_output_data),
                  void *debug_output_data,
                  int program_id, int variant_id,
+                 bool disable_tmu_pipelining,
                  bool fallback_scheduler)
 {
         struct v3d_compile *c = rzalloc(NULL, struct v3d_compile);
@@ -526,6 +527,7 @@ vir_compile_init(const struct v3d_compiler *compiler,
         c->debug_output_data = debug_output_data;
         c->compilation_result = V3D_COMPILATION_SUCCEEDED;
         c->fallback_scheduler = fallback_scheduler;
+        c->disable_tmu_pipelining = disable_tmu_pipelining;
 
         s = nir_shader_clone(c, s);
         c->s = s;
@@ -538,6 +540,8 @@ vir_compile_init(const struct v3d_compiler *compiler,
 
         c->def_ht = _mesa_hash_table_create(c, _mesa_hash_pointer,
                                             _mesa_key_pointer_equal);
+
+        c->tmu.outstanding_regs = _mesa_pointer_set_create(c);
 
         return c;
 }
@@ -640,16 +644,18 @@ v3d_vs_set_prog_data(struct v3d_compile *c,
                 prog_data->vpm_input_size += c->vattr_sizes[i];
         }
 
-        prog_data->uses_vid = (c->s->info.system_values_read &
-                               (1ull << SYSTEM_VALUE_VERTEX_ID |
-                                1ull << SYSTEM_VALUE_VERTEX_ID_ZERO_BASE));
+        prog_data->uses_vid = BITSET_TEST(c->s->info.system_values_read,
+                                          SYSTEM_VALUE_VERTEX_ID) ||
+                              BITSET_TEST(c->s->info.system_values_read,
+                                          SYSTEM_VALUE_VERTEX_ID_ZERO_BASE);
 
-        prog_data->uses_biid = (c->s->info.system_values_read &
-                                (1ull << SYSTEM_VALUE_BASE_INSTANCE));
+        prog_data->uses_biid = BITSET_TEST(c->s->info.system_values_read,
+                                           SYSTEM_VALUE_BASE_INSTANCE);
 
-        prog_data->uses_iid = (c->s->info.system_values_read &
-                               (1ull << SYSTEM_VALUE_INSTANCE_ID |
-                                1ull << SYSTEM_VALUE_INSTANCE_INDEX));
+        prog_data->uses_iid = BITSET_TEST(c->s->info.system_values_read,
+                                          SYSTEM_VALUE_INSTANCE_ID) ||
+                              BITSET_TEST(c->s->info.system_values_read,
+                                          SYSTEM_VALUE_INSTANCE_INDEX);
 
         if (prog_data->uses_vid)
                 prog_data->vpm_input_size++;
@@ -703,8 +709,8 @@ v3d_gs_set_prog_data(struct v3d_compile *c,
          * it after reading it if necessary, so it doesn't add to the VPM
          * size requirements.
          */
-        prog_data->uses_pid = (c->s->info.system_values_read &
-                               (1ull << SYSTEM_VALUE_PRIMITIVE_ID));
+        prog_data->uses_pid = BITSET_TEST(c->s->info.system_values_read,
+                                          SYSTEM_VALUE_PRIMITIVE_ID);
 
         /* Output segment size is in sectors (8 rows of 32 bits per channel) */
         prog_data->vpm_output_size = align(c->vpm_output_size, 8) / 8;
@@ -954,9 +960,6 @@ v3d_nir_lower_gs_late(struct v3d_compile *c)
 static void
 v3d_nir_lower_vs_late(struct v3d_compile *c)
 {
-        if (c->vs_key->clamp_color)
-                NIR_PASS_V(c->s, nir_lower_clamp_color_outputs);
-
         if (c->key->ucp_enables) {
                 NIR_PASS_V(c->s, nir_lower_clip_vs, c->key->ucp_enables,
                            false, false, NULL);
@@ -971,12 +974,6 @@ v3d_nir_lower_vs_late(struct v3d_compile *c)
 static void
 v3d_nir_lower_fs_late(struct v3d_compile *c)
 {
-        if (c->fs_key->light_twoside)
-                NIR_PASS_V(c->s, nir_lower_two_sided_color, true);
-
-        if (c->fs_key->clamp_color)
-                NIR_PASS_V(c->s, nir_lower_clamp_color_outputs);
-
         /* In OpenGL the fragment shader can't read gl_ClipDistance[], but
          * Vulkan allows it, in which case the SPIR-V compiler will declare
          * VARING_SLOT_CLIP_DIST0 as compact array variable. Pass true as
@@ -987,9 +984,6 @@ v3d_nir_lower_fs_late(struct v3d_compile *c)
         if (c->key->ucp_enables)
                 NIR_PASS_V(c->s, nir_lower_clip_fs, c->key->ucp_enables, true);
 
-        /* Note: FS input scalarizing must happen after
-         * nir_lower_two_sided_color, which only handles a vec4 at a time.
-         */
         NIR_PASS_V(c->s, nir_lower_io_to_scalar, nir_var_shader_in);
 }
 
@@ -1154,6 +1148,8 @@ v3d_attempt_compile(struct v3d_compile *c)
         }
 
         NIR_PASS_V(c->s, nir_lower_bool_to_int32);
+        nir_convert_to_lcssa(c->s, true, true);
+        NIR_PASS_V(c->s, nir_divergence_analysis);
         NIR_PASS_V(c->s, nir_convert_from_ssa, true);
 
         struct nir_schedule_options schedule_options = {
@@ -1231,22 +1227,32 @@ uint64_t *v3d_compile(const struct v3d_compiler *compiler,
 {
         struct v3d_compile *c;
 
-        for (int i = 0; true; i++) {
+        static const char *strategies[] = {
+                "default",
+                "disable TMU pipelining",
+                "fallback scheduler"
+        };
+
+        for (int i = 0; i < ARRAY_SIZE(strategies); i++) {
                 c = vir_compile_init(compiler, key, s,
                                      debug_output, debug_output_data,
                                      program_id, variant_id,
-                                     i > 0 /* fallback_scheduler */);
+                                     i > 0, /* Disable TMU pipelining */
+                                     i > 1  /* Fallback_scheduler */);
 
                 v3d_attempt_compile(c);
 
-                if (i > 0 ||
+                if (i >= ARRAY_SIZE(strategies) - 1 ||
                     c->compilation_result !=
-                    V3D_COMPILATION_FAILED_REGISTER_ALLOCATION)
+                    V3D_COMPILATION_FAILED_REGISTER_ALLOCATION) {
                         break;
+                }
 
+                /* Fallback strategy */
                 char *debug_msg;
                 int ret = asprintf(&debug_msg,
-                                   "Using fallback scheduler for %s",
+                                   "Falling back to strategy '%s' for %s",
+                                   strategies[i + 1],
                                    vir_get_stage_name(c));
 
                 if (ret >= 0) {
@@ -1258,6 +1264,23 @@ uint64_t *v3d_compile(const struct v3d_compiler *compiler,
                 }
 
                 vir_compile_destroy(c);
+        }
+
+        if (unlikely(V3D_DEBUG & V3D_DEBUG_PERF) &&
+            c->compilation_result !=
+            V3D_COMPILATION_FAILED_REGISTER_ALLOCATION &&
+            c->spills > 0) {
+                char *debug_msg;
+                int ret = asprintf(&debug_msg,
+                                   "Compiled %s with %d spills and %d fills",
+                                   vir_get_stage_name(c),
+                                   c->spills, c->fills);
+                fprintf(stderr, "%s\n", debug_msg);
+
+                if (ret >= 0) {
+                        c->debug_output(debug_msg, c->debug_output_data);
+                        free(debug_msg);
+                }
         }
 
         struct v3d_prog_data *prog_data;

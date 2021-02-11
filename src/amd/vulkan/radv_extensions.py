@@ -116,12 +116,14 @@ EXTENSIONS = [
     Extension('VK_KHR_variable_pointers',                 1, True),
     Extension('VK_KHR_vulkan_memory_model',               3, True),
     Extension('VK_KHR_wayland_surface',                   6, 'VK_USE_PLATFORM_WAYLAND_KHR'),
+    Extension('VK_KHR_workgroup_memory_explicit_layout',  1, True),
     Extension('VK_KHR_xcb_surface',                       6, 'VK_USE_PLATFORM_XCB_KHR'),
     Extension('VK_KHR_xlib_surface',                      6, 'VK_USE_PLATFORM_XLIB_KHR'),
+    Extension('VK_KHR_zero_initialize_workgroup_memory',  1, True),
     Extension('VK_EXT_4444_formats',                      1, True),
     Extension('VK_EXT_acquire_xlib_display',              1, 'VK_USE_PLATFORM_XLIB_XRANDR_EXT'),
     Extension('VK_EXT_buffer_device_address',             2, True),
-    Extension('VK_EXT_calibrated_timestamps',             1, True),
+    Extension('VK_EXT_calibrated_timestamps',             1, 'RADV_SUPPORT_CALIBRATED_TIMESTAMPS'),
     Extension('VK_EXT_conditional_rendering',             2, True),
     Extension('VK_EXT_conservative_rasterization',        1, 'device->rad_info.chip_class >= GFX9'),
     Extension('VK_EXT_custom_border_color',               12, True),
@@ -138,6 +140,7 @@ EXTENSIONS = [
     Extension('VK_EXT_external_memory_host',              1, 'device->rad_info.has_userptr'),
     Extension('VK_EXT_global_priority',                   2, 'device->rad_info.has_ctx_priority'),
     Extension('VK_EXT_host_query_reset',                  1, True),
+    Extension('VK_EXT_image_drm_format_modifier',         1, 'device->rad_info.chip_class >= GFX9'),
     Extension('VK_EXT_image_robustness',                  1, True),
     Extension('VK_EXT_index_type_uint8',                  1, 'device->rad_info.chip_class >= GFX8'),
     Extension('VK_EXT_inline_uniform_block',              1, True),
@@ -232,4 +235,5 @@ if __name__ == '__main__':
                         dest='xml_files')
     args = parser.parse_args()
 
-    gen_extensions('radv', args.xml_files, API_VERSIONS, MAX_API_VERSION, EXTENSIONS, args.out_c, args.out_h)
+    gen_extensions('radv', args.xml_files, API_VERSIONS, MAX_API_VERSION,
+                   EXTENSIONS, args.out_c, args.out_h)

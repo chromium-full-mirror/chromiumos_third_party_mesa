@@ -8,8 +8,6 @@
 
 #include "vn_common.h"
 
-#include "vn_cs.h"
-
 struct vn_renderer_info {
    struct {
       uint16_t vendor_id;
@@ -47,7 +45,7 @@ struct vn_renderer_bo {
    /* import a VkDeviceMemory as the storage */
    VkResult (*init_gpu)(struct vn_renderer_bo *bo,
                         VkDeviceSize size,
-                        vn_cs_object_id mem_id,
+                        vn_object_id mem_id,
                         VkMemoryPropertyFlags flags,
                         VkExternalMemoryHandleTypeFlags external_handles);
 
@@ -99,8 +97,8 @@ struct vn_renderer_sync {
 };
 
 struct vn_renderer_submit_batch {
-   size_t cs_offset;
-   size_t cs_size;
+   const void *cs_data;
+   const size_t cs_size;
 
    /*
     * Submit cs to the virtual sync queue identified by sync_queue_index.  The
@@ -116,7 +114,7 @@ struct vn_renderer_submit_batch {
     * and sync_queue_index/sync_queue_id are ignored.  TODO revisit this later
     */
    uint32_t sync_queue_index;
-   vn_cs_object_id sync_queue_id;
+   vn_object_id sync_queue_id;
    bool sync_queue_cpu;
 
    /* syncs to update when the virtual sync queue is signaled */
@@ -127,8 +125,6 @@ struct vn_renderer_submit_batch {
 };
 
 struct vn_renderer_submit {
-   const struct vn_cs *cs;
-
    /* BOs to pin and to fence implicitly */
    struct vn_renderer_bo *const *bos;
    uint32_t bo_count;
@@ -226,13 +222,15 @@ vn_renderer_submit(struct vn_renderer *renderer,
 }
 
 static inline VkResult
-vn_renderer_submit_cs(struct vn_renderer *renderer, const struct vn_cs *cs)
+vn_renderer_submit_simple(struct vn_renderer *renderer,
+                          const void *cs_data,
+                          size_t cs_size)
 {
    const struct vn_renderer_submit submit = {
-      .cs = cs,
       .batches =
          &(const struct vn_renderer_submit_batch){
-            .cs_size = vn_cs_get_out_len(cs),
+            .cs_data = cs_data,
+            .cs_size = cs_size,
          },
       .batch_count = 1,
    };
@@ -273,7 +271,7 @@ vn_renderer_bo_create_cpu(struct vn_renderer *renderer,
 static inline VkResult
 vn_renderer_bo_create_gpu(struct vn_renderer *renderer,
                           VkDeviceSize size,
-                          vn_cs_object_id mem_id,
+                          vn_object_id mem_id,
                           VkMemoryPropertyFlags flags,
                           VkExternalMemoryHandleTypeFlags external_handles,
                           const VkAllocationCallbacks *alloc,

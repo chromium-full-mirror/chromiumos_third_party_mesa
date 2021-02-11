@@ -91,6 +91,7 @@ nv50_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 {
    const uint16_t class_3d = nouveau_screen(pscreen)->class_3d;
    struct nouveau_device *dev = nouveau_screen(pscreen)->device;
+   static bool debug_cap_printed[PIPE_CAP_LAST] = {};
 
    switch (param) {
    /* non-boolean caps */
@@ -237,6 +238,7 @@ nv50_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TWO_SIDED_COLOR:
    case PIPE_CAP_CLIP_PLANES:
    case PIPE_CAP_PACKED_STREAM_OUTPUT:
+   case PIPE_CAP_CLEAR_SCISSORED:
       return 1;
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
       return 1; /* class_3d >= NVA0_3D_CLASS; */
@@ -367,8 +369,8 @@ nv50_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_GLSL_ZERO_INIT:
    case PIPE_CAP_BLEND_EQUATION_ADVANCED:
    case PIPE_CAP_NO_CLIP_ON_COPY_TEX:
-   case PIPE_CAP_CLEAR_SCISSORED: /* TODO */
    case PIPE_CAP_DEVICE_PROTECTED_CONTENT:
+   case PIPE_CAP_NIR_IMAGES_AS_DEREF:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:
@@ -389,7 +391,10 @@ nv50_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 0;
 
    default:
-      debug_printf("%s: unhandled cap %d\n", __func__, param);
+      if (!debug_cap_printed[param]) {
+         debug_printf("%s: unhandled cap %d\n", __func__, param);
+         debug_cap_printed[param] = true;
+      }
       /* fallthrough */
    /* caps where we want the default value */
    case PIPE_CAP_DMABUF:

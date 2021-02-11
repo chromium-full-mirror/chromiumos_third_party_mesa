@@ -400,8 +400,10 @@ preprocess_nir(nir_shader *nir,
    NIR_PASS_V(nir, nir_lower_var_copies);
 
    NIR_PASS_V(nir, nir_lower_indirect_derefs, nir_var_shader_in |
-              nir_var_shader_out |
-              nir_var_function_temp, UINT32_MAX);
+              nir_var_shader_out, UINT32_MAX);
+
+   NIR_PASS_V(nir, nir_lower_indirect_derefs,
+              nir_var_function_temp, 2);
 
    NIR_PASS_V(nir, nir_lower_array_deref_of_vec,
               nir_var_mem_ubo | nir_var_mem_ssbo,
@@ -1104,9 +1106,6 @@ pipeline_populate_v3d_fs_key(struct v3d_fs_key *key,
    key->is_lines = (topology >= PIPE_PRIM_LINES &&
                     topology <= PIPE_PRIM_LINE_STRIP);
 
-   /* Vulkan doesn't appear to specify (anv does the same) */
-   key->clamp_color = false;
-
    const VkPipelineColorBlendStateCreateInfo *cb_info =
       pCreateInfo->pColorBlendState;
 
@@ -1134,10 +1133,6 @@ pipeline_populate_v3d_fs_key(struct v3d_fs_key *key,
          key->sample_alpha_to_one = ms_info->alphaToOneEnable;
       }
    }
-
-   /* Vulkan doesn't support alpha test */
-   key->alpha_test = false;
-   key->alpha_test_func = COMPARE_FUNC_NEVER;
 
    /* This is intended for V3D versions before 4.1, otherwise we just use the
     * tile buffer load/store swap R/B bit.
@@ -1193,15 +1188,6 @@ pipeline_populate_v3d_fs_key(struct v3d_fs_key *key,
          key->point_coord_upper_left = true;
       }
    }
-
-   /* FIXME: we understand that this is used on GL to configure fixed-function
-    * two side lighting support, and not make sense for Vulkan. Need to
-    * confirm though.
-    */
-   key->light_twoside = false;
-
-   /* FIXME: ditto, although for flat lighting. Again, neet to confirm.*/
-   key->shade_model_flat = false;
 }
 
 static void
@@ -1213,9 +1199,6 @@ pipeline_populate_v3d_vs_key(struct v3d_vs_key *key,
 
    const bool rba = p_stage->pipeline->device->features.robustBufferAccess;
    pipeline_populate_v3d_key(&key->base, p_stage, 0, rba);
-
-   /* Vulkan doesn't appear to specify (anv does the same) */
-   key->clamp_color = false;
 
    /* Vulkan specifies a point size per vertex, so true for if the prim are
     * points, like on ES2)
@@ -2140,6 +2123,8 @@ pipeline_init_dynamic_state(
           !(dynamic_states & V3DV_DYNAMIC_DEPTH_BIAS)) {
          dynamic->depth_bias.constant_factor =
             pRasterizationState->depthBiasConstantFactor;
+         dynamic->depth_bias.depth_bias_clamp =
+            pRasterizationState->depthBiasClamp;
          dynamic->depth_bias.slope_factor =
             pRasterizationState->depthBiasSlopeFactor;
       }
@@ -2991,7 +2976,11 @@ v3dv_CreateGraphicsPipelines(VkDevice _device,
                              const VkAllocationCallbacks *pAllocator,
                              VkPipeline *pPipelines)
 {
+   V3DV_FROM_HANDLE(v3dv_device, device, _device);
    VkResult result = VK_SUCCESS;
+
+   if (unlikely(V3D_DEBUG & V3D_DEBUG_SHADERS))
+      mtx_lock(&device->pdevice->mutex);
 
    for (uint32_t i = 0; i < count; i++) {
       VkResult local_result;
@@ -3007,6 +2996,9 @@ v3dv_CreateGraphicsPipelines(VkDevice _device,
          pPipelines[i] = VK_NULL_HANDLE;
       }
    }
+
+   if (unlikely(V3D_DEBUG & V3D_DEBUG_SHADERS))
+      mtx_unlock(&device->pdevice->mutex);
 
    return result;
 }
@@ -3144,7 +3136,11 @@ v3dv_CreateComputePipelines(VkDevice _device,
                             const VkAllocationCallbacks *pAllocator,
                             VkPipeline *pPipelines)
 {
+   V3DV_FROM_HANDLE(v3dv_device, device, _device);
    VkResult result = VK_SUCCESS;
+
+   if (unlikely(V3D_DEBUG & V3D_DEBUG_SHADERS))
+      mtx_lock(&device->pdevice->mutex);
 
    for (uint32_t i = 0; i < createInfoCount; i++) {
       VkResult local_result;
@@ -3159,6 +3155,9 @@ v3dv_CreateComputePipelines(VkDevice _device,
          pPipelines[i] = VK_NULL_HANDLE;
       }
    }
+
+   if (unlikely(V3D_DEBUG & V3D_DEBUG_SHADERS))
+      mtx_unlock(&device->pdevice->mutex);
 
    return result;
 }

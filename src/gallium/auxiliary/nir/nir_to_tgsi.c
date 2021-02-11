@@ -1371,7 +1371,7 @@ static void
 ntt_emit_image_load_store(struct ntt_compile *c, nir_intrinsic_instr *instr)
 {
    unsigned op;
-   struct ureg_src srcs[3];
+   struct ureg_src srcs[4];
    int num_src = 0;
    enum glsl_sampler_dim dim = nir_intrinsic_image_dim(instr);
    bool is_array = nir_intrinsic_image_array(instr);
@@ -2041,13 +2041,13 @@ ntt_emit_texture(struct ntt_compile *c, nir_tex_instr *instr)
 
    enum tgsi_return_type tex_type;
    switch (instr->dest_type) {
-   case nir_type_float:
+   case nir_type_float32:
       tex_type = TGSI_RETURN_TYPE_FLOAT;
       break;
-   case nir_type_int:
+   case nir_type_int32:
       tex_type = TGSI_RETURN_TYPE_SINT;
       break;
-   case nir_type_uint:
+   case nir_type_uint32:
       tex_type = TGSI_RETURN_TYPE_UINT;
       break;
    default:
@@ -2789,7 +2789,7 @@ nir_to_tgsi(struct nir_shader *s,
        * gl-2.1-polygon-stipple-fs on softpipe.
        */
       if ((s->info.inputs_read & VARYING_BIT_POS) ||
-          (s->info.system_values_read & (1ull << SYSTEM_VALUE_FRAG_COORD))) {
+          BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_FRAG_COORD)) {
          ureg_property(c->ureg, TGSI_PROPERTY_FS_COORD_ORIGIN,
                        s->info.fs.origin_upper_left ?
                        TGSI_FS_COORD_ORIGIN_UPPER_LEFT :

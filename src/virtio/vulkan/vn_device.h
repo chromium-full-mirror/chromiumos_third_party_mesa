@@ -18,16 +18,7 @@
 #include "vn_wsi.h"
 
 struct vn_instance {
-   struct vn_cs_object base;
-
-   VkAllocationCallbacks allocator;
-
-   uint32_t api_version;
-   struct vn_instance_extension_table enabled_extensions;
-
-   struct vn_instance_dispatch_table dispatch;
-   struct vn_physical_device_dispatch_table physical_device_dispatch;
-   struct vn_device_dispatch_table device_dispatch;
+   struct vn_instance_base base;
 
    struct vn_renderer *renderer;
    struct vn_renderer_info renderer_info;
@@ -37,7 +28,7 @@ struct vn_instance {
    size_t cs_implicit_flush_threshold;
    uint32_t cs_throttle_pipeline_threshold;
    uint32_t cs_throttle_pipeline_count;
-   struct vn_cs cs;
+   struct vn_cs_encoder cs;
    struct {
       struct vn_renderer_bo *bo;
       size_t size;
@@ -53,19 +44,18 @@ struct vn_instance {
    uint32_t physical_device_count;
 };
 VK_DEFINE_HANDLE_CASTS(vn_instance,
-                       base.base,
+                       base.base.base,
                        VkInstance,
                        VK_OBJECT_TYPE_INSTANCE)
 
 struct vn_physical_device {
-   struct vn_cs_object base;
+   struct vn_physical_device_base base;
 
    struct vn_instance *instance;
 
    uint32_t renderer_version;
-   struct vn_device_extension_table renderer_extensions;
+   struct vk_device_extension_table renderer_extensions;
 
-   struct vn_device_extension_table supported_extensions;
    uint32_t *extension_spec_versions;
 
    VkPhysicalDeviceFeatures2 features;
@@ -88,20 +78,15 @@ struct vn_physical_device {
    struct wsi_device wsi_device;
 };
 VK_DEFINE_HANDLE_CASTS(vn_physical_device,
-                       base.base,
+                       base.base.base,
                        VkPhysicalDevice,
                        VK_OBJECT_TYPE_PHYSICAL_DEVICE)
 
 struct vn_device {
-   struct vn_cs_device base;
-
-   VkAllocationCallbacks allocator;
+   struct vn_device_base base;
 
    struct vn_instance *instance;
    struct vn_physical_device *physical_device;
-   struct vn_device_extension_table enabled_extensions;
-
-   struct vn_device_dispatch_table dispatch;
 
    struct vn_queue *queues;
    uint32_t queue_count;
@@ -112,7 +97,7 @@ VK_DEFINE_HANDLE_CASTS(vn_device,
                        VK_OBJECT_TYPE_DEVICE)
 
 struct vn_queue {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 
    struct vn_device *device;
    uint32_t family;
@@ -150,7 +135,7 @@ struct vn_sync_payload {
 };
 
 struct vn_fence {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 
    struct vn_sync_payload *payload;
 
@@ -163,7 +148,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_fence,
                                VK_OBJECT_TYPE_FENCE)
 
 struct vn_semaphore {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 
    VkSemaphoreType type;
 
@@ -178,7 +163,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_semaphore,
                                VK_OBJECT_TYPE_SEMAPHORE)
 
 struct vn_device_memory {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 
    VkDeviceSize size;
 
@@ -192,7 +177,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_device_memory,
                                VK_OBJECT_TYPE_DEVICE_MEMORY)
 
 struct vn_buffer {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 
    VkMemoryRequirements2 memory_requirements;
    VkMemoryDedicatedRequirements dedicated_requirements;
@@ -203,7 +188,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_buffer,
                                VK_OBJECT_TYPE_BUFFER)
 
 struct vn_buffer_view {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_buffer_view,
                                base.base,
@@ -211,7 +196,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_buffer_view,
                                VK_OBJECT_TYPE_BUFFER_VIEW)
 
 struct vn_image {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 
    VkMemoryRequirements2 memory_requirements[4];
    VkMemoryDedicatedRequirements dedicated_requirements[4];
@@ -222,7 +207,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_image,
                                VK_OBJECT_TYPE_IMAGE)
 
 struct vn_image_view {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_image_view,
                                base.base,
@@ -230,7 +215,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_image_view,
                                VK_OBJECT_TYPE_IMAGE_VIEW)
 
 struct vn_sampler {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_sampler,
                                base.base,
@@ -238,7 +223,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_sampler,
                                VK_OBJECT_TYPE_SAMPLER)
 
 struct vn_sampler_ycbcr_conversion {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_sampler_ycbcr_conversion,
                                base.base,
@@ -250,7 +235,7 @@ struct vn_descriptor_set_layout_binding {
 };
 
 struct vn_descriptor_set_layout {
-   struct vn_cs_object base;
+   struct vn_object_base base;
    struct vn_descriptor_set_layout_binding bindings[];
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_descriptor_set_layout,
@@ -259,7 +244,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_descriptor_set_layout,
                                VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)
 
 struct vn_descriptor_pool {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 
    VkAllocationCallbacks allocator;
    struct list_head descriptor_sets;
@@ -278,7 +263,7 @@ struct vn_update_descriptor_sets {
 };
 
 struct vn_descriptor_set {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 
    const struct vn_descriptor_set_layout *layout;
    struct list_head head;
@@ -294,7 +279,7 @@ struct vn_descriptor_update_template_entry {
 };
 
 struct vn_descriptor_update_template {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 
    mtx_t mutex;
    struct vn_update_descriptor_sets *update;
@@ -307,7 +292,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_descriptor_update_template,
                                VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE)
 
 struct vn_render_pass {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 
    VkExtent2D granularity;
 };
@@ -317,7 +302,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_render_pass,
                                VK_OBJECT_TYPE_RENDER_PASS)
 
 struct vn_framebuffer {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_framebuffer,
                                base.base,
@@ -325,7 +310,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_framebuffer,
                                VK_OBJECT_TYPE_FRAMEBUFFER)
 
 struct vn_event {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_event,
                                base.base,
@@ -333,7 +318,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_event,
                                VK_OBJECT_TYPE_EVENT)
 
 struct vn_query_pool {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 
    VkAllocationCallbacks allocator;
    uint32_t result_array_size;
@@ -344,7 +329,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_query_pool,
                                VK_OBJECT_TYPE_QUERY_POOL)
 
 struct vn_shader_module {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_shader_module,
                                base.base,
@@ -352,7 +337,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_shader_module,
                                VK_OBJECT_TYPE_SHADER_MODULE)
 
 struct vn_pipeline_layout {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_pipeline_layout,
                                base.base,
@@ -360,7 +345,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_pipeline_layout,
                                VK_OBJECT_TYPE_PIPELINE_LAYOUT)
 
 struct vn_pipeline_cache {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_pipeline_cache,
                                base.base,
@@ -368,7 +353,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_pipeline_cache,
                                VK_OBJECT_TYPE_PIPELINE_CACHE)
 
 struct vn_pipeline {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_pipeline,
                                base.base,
@@ -376,7 +361,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vn_pipeline,
                                VK_OBJECT_TYPE_PIPELINE)
 
 struct vn_command_pool {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 
    VkAllocationCallbacks allocator;
    struct list_head command_buffers;
@@ -394,21 +379,21 @@ enum vn_command_buffer_state {
 };
 
 struct vn_command_buffer {
-   struct vn_cs_object base;
+   struct vn_object_base base;
 
    struct vn_device *device;
 
    struct list_head head;
 
    enum vn_command_buffer_state state;
-   struct vn_cs cs;
+   struct vn_cs_encoder cs;
 };
 VK_DEFINE_HANDLE_CASTS(vn_command_buffer,
                        base.base,
                        VkCommandBuffer,
                        VK_OBJECT_TYPE_COMMAND_BUFFER)
 
-static inline struct vn_cs *
+static inline struct vn_cs_encoder *
 vn_instance_lock_cs(struct vn_instance *instance)
 {
    mtx_lock(&instance->cs_mutex);
@@ -420,48 +405,10 @@ vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
                                    size_t size,
                                    void **ptr);
 
-static inline bool
+bool
 vn_instance_submit_cs_locked(struct vn_instance *instance,
                              struct vn_renderer_bo *reply_bo,
-                             uint64_t *reply_sync_val)
-{
-   struct vn_cs *cs = &instance->cs;
-
-   instance->cs_throttle_pipeline_count = 0;
-
-   if (unlikely(vn_cs_has_error(cs))) {
-      vn_cs_reset(cs);
-      return false;
-   }
-
-   vn_cs_end_out(cs);
-
-   VkResult result;
-   if (reply_bo) {
-      *reply_sync_val = ++instance->cs_reply.sync_value;
-      const struct vn_renderer_submit submit = {
-         .cs = cs,
-         .bos = &reply_bo,
-         .bo_count = 1,
-         .batches =
-            &(const struct vn_renderer_submit_batch){
-               .cs_size = vn_cs_get_out_len(cs),
-               .sync_queue_cpu = true,
-               .syncs = &instance->cs_reply.sync,
-               .sync_values = reply_sync_val,
-               .sync_count = 1,
-            },
-         .batch_count = 1,
-      };
-      result = vn_renderer_submit(instance->renderer, &submit);
-   } else {
-      result = vn_renderer_submit_cs(instance->renderer, cs);
-   }
-
-   vn_cs_reset(cs);
-
-   return result == VK_SUCCESS;
-}
+                             uint64_t *reply_sync_val);
 
 static inline void
 vn_instance_unlock_cs(struct vn_instance *instance)
@@ -487,7 +434,8 @@ static inline void
 vn_instance_free_cs_reply_bo(struct vn_instance *instance,
                              struct vn_renderer_bo *bo)
 {
-   vn_renderer_bo_unref(bo, &instance->allocator);
+   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
+   vn_renderer_bo_unref(bo, alloc);
 }
 
 void

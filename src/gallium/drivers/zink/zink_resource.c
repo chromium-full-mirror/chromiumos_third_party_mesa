@@ -109,7 +109,7 @@ resource_create(struct pipe_screen *pscreen,
    res->base.screen = pscreen;
 
    VkMemoryRequirements reqs = {};
-   VkMemoryPropertyFlags flags = 0;
+   VkMemoryPropertyFlags flags;
 
    res->internal_format = templ->format;
    if (templ->target == PIPE_BUFFER) {
@@ -166,11 +166,12 @@ resource_create(struct pipe_screen *pscreen,
       }
 
       vkGetBufferMemoryRequirements(screen->dev, res->buffer, &reqs);
-      flags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+      flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
    } else {
       res->format = zink_get_format(screen, templ->format);
 
       VkImageCreateInfo ici = {};
+      VkExternalMemoryImageCreateInfo emici = {};
       ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
       ici.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
 
@@ -219,6 +220,12 @@ resource_create(struct pipe_screen *pscreen,
       if (templ->bind & (PIPE_BIND_DISPLAY_TARGET |
                          PIPE_BIND_SHARED)) {
          ici.tiling = VK_IMAGE_TILING_LINEAR;
+      }
+
+      if (templ->bind & PIPE_BIND_SHARED) {
+         emici.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+         emici.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+         ici.pNext = &emici;
       }
 
       if (templ->usage == PIPE_USAGE_STAGING)
@@ -278,10 +285,13 @@ resource_create(struct pipe_screen *pscreen,
 
       vkGetImageMemoryRequirements(screen->dev, res->image, &reqs);
       if (templ->usage == PIPE_USAGE_STAGING || (screen->winsys && (templ->bind & (PIPE_BIND_SCANOUT|PIPE_BIND_DISPLAY_TARGET|PIPE_BIND_SHARED))))
-        flags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+        flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
       else
-        flags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
    }
+
+   if (templ->flags & PIPE_RESOURCE_FLAG_MAP_COHERENT)
+      flags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
    VkMemoryAllocateInfo mai = {};
    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -501,11 +511,11 @@ zink_transfer_copy_bufimage(struct zink_context *ctx,
    return true;
 }
 
-static uint32_t
-get_resource_usage(struct zink_resource *res)
+uint32_t
+zink_get_resource_usage(struct zink_resource *res)
 {
    uint32_t batch_uses = 0;
-   for (unsigned i = 0; i < 4; i++)
+   for (unsigned i = 0; i < ARRAY_SIZE(res->batch_uses); i++)
       batch_uses |= p_atomic_read(&res->batch_uses[i]) << i;
    return batch_uses;
 }
@@ -521,7 +531,7 @@ zink_transfer_map(struct pipe_context *pctx,
    struct zink_context *ctx = zink_context(pctx);
    struct zink_screen *screen = zink_screen(pctx->screen);
    struct zink_resource *res = zink_resource(pres);
-   uint32_t batch_uses = get_resource_usage(res);
+   uint32_t batch_uses = zink_get_resource_usage(res);
 
    struct zink_transfer *trans = slab_alloc(&ctx->transfer_pool);
    if (!trans)
@@ -544,6 +554,9 @@ zink_transfer_map(struct pipe_context *pctx,
              * TODO: optimize/fix this to be much less obtrusive
              * mesa/mesa#2966
              */
+            if (batch_uses & ((ZINK_RESOURCE_ACCESS_READ << ZINK_COMPUTE_BATCH_ID) |
+                              ZINK_RESOURCE_ACCESS_WRITE << ZINK_COMPUTE_BATCH_ID))
+               zink_wait_on_batch(ctx, ZINK_COMPUTE_BATCH_ID);
             zink_fence_wait(pctx);
          }
       }
@@ -605,6 +618,9 @@ zink_transfer_map(struct pipe_context *pctx,
          struct zink_resource *staging_res = zink_resource(trans->staging_res);
 
          if (usage & PIPE_MAP_READ) {
+            /* TODO: can probably just do a full cs copy if it's already in a cs batch */
+            if (batch_uses & (ZINK_RESOURCE_ACCESS_WRITE << ZINK_COMPUTE_BATCH_ID))
+               zink_wait_on_batch(ctx, ZINK_COMPUTE_BATCH_ID);
             struct zink_context *ctx = zink_context(pctx);
             bool ret = zink_transfer_copy_bufimage(ctx, res,
                                                    staging_res, trans,
@@ -624,8 +640,11 @@ zink_transfer_map(struct pipe_context *pctx,
 
       } else {
          assert(!res->optimal_tiling);
-         if (batch_uses >= ZINK_RESOURCE_ACCESS_WRITE)
+         if (batch_uses >= ZINK_RESOURCE_ACCESS_WRITE) {
+            if (batch_uses & (ZINK_RESOURCE_ACCESS_WRITE << ZINK_COMPUTE_BATCH_ID))
+               zink_wait_on_batch(ctx, ZINK_COMPUTE_BATCH_ID);
             zink_fence_wait(pctx);
+         }
          VkResult result = vkMapMemory(screen->dev, res->mem, res->offset, res->size, 0, &ptr);
          if (result != VK_SUCCESS)
             return NULL;
@@ -646,6 +665,8 @@ zink_transfer_map(struct pipe_context *pctx,
          ptr = ((uint8_t *)ptr) + offset;
       }
    }
+   if ((usage & PIPE_MAP_PERSISTENT) && !(usage & PIPE_MAP_COHERENT))
+      res->persistent_maps++;
 
    *transfer = &trans->base;
    return ptr;
@@ -665,15 +686,20 @@ zink_transfer_unmap(struct pipe_context *pctx,
 
       if (trans->base.usage & PIPE_MAP_WRITE) {
          struct zink_context *ctx = zink_context(pctx);
-         uint32_t batch_uses = get_resource_usage(res);
-         if (batch_uses >= ZINK_RESOURCE_ACCESS_WRITE)
+         uint32_t batch_uses = zink_get_resource_usage(res);
+         if (batch_uses >= ZINK_RESOURCE_ACCESS_WRITE) {
+            if (batch_uses & (ZINK_RESOURCE_ACCESS_WRITE << ZINK_COMPUTE_BATCH_ID))
+               zink_wait_on_batch(ctx, ZINK_COMPUTE_BATCH_ID);
             zink_fence_wait(pctx);
+         }
          zink_transfer_copy_bufimage(ctx, res, staging_res, trans, true);
       }
 
       pipe_resource_reference(&trans->staging_res, NULL);
    } else
       vkUnmapMemory(screen->dev, res->mem);
+   if ((trans->base.usage & PIPE_MAP_PERSISTENT) && !(trans->base.usage & PIPE_MAP_COHERENT))
+      res->persistent_maps--;
 
    pipe_resource_reference(&trans->base.resource, NULL);
    slab_free(&ctx->transfer_pool, ptrans);

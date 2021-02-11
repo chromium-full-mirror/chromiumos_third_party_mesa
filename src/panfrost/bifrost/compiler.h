@@ -232,6 +232,16 @@ bi_is_equiv(bi_index left, bi_index right)
                 (left.value == right.value);
 }
 
+/* A stronger equivalence relation that requires the indices access the
+ * same offset, useful for RA/scheduling to see what registers will
+ * correspond to */
+
+static inline bool
+bi_is_word_equiv(bi_index left, bi_index right)
+{
+        return bi_is_equiv(left, right) && left.offset == right.offset;
+}
+
 #define BI_MAX_DESTS 2
 #define BI_MAX_SRCS 4
 
@@ -294,14 +304,11 @@ typedef struct {
                 enum bi_atom_opc atom_opc; /* atomics */
                 enum bi_func func; /* FPOW_SC_DET */
                 enum bi_function function; /* LD_VAR_FLAT */
-                enum bi_mode mode; /* FLOG_TABLE */
                 enum bi_mux mux; /* MUX */
-                enum bi_precision precision; /* FLOG_TABLE */
                 enum bi_sem sem; /* FMAX, FMIN */
                 enum bi_source source; /* LD_GCLK */
                 bool scale; /* VN_ASST2, FSINCOS_OFFSET */
                 bool offset; /* FSIN_TABLE, FOCS_TABLE */
-                bool divzero; /* FRSQ_APPROX, FRSQ */
                 bool mask; /* CLZ */
                 bool threads; /* IMULD, IMOV_FMA */
                 bool combine; /* BRANCHC */
@@ -364,10 +371,16 @@ typedef struct {
                         bool sqrt; /* FREXPM */
                         bool log; /* FREXPM */
                 };
+
+                struct {
+                        enum bi_mode mode; /* FLOG_TABLE */
+                        enum bi_precision precision; /* FLOG_TABLE */
+                        bool divzero; /* FRSQ_APPROX, FRSQ */
+                };
         };
 } bi_instr;
 
-/* Represents the assignment of slots for a given bi_bundle */
+/* Represents the assignment of slots for a given bi_tuple */
 
 typedef struct {
         /* Register to assign to each slot */
@@ -386,9 +399,9 @@ typedef struct {
         bool first_instruction;
 } bi_registers;
 
-/* A bi_bundle contains two paired instruction pointers. If a slot is unfilled,
+/* A bi_tuple contains two paired instruction pointers. If a slot is unfilled,
  * leave it NULL; the emitter will fill in a nop. Instructions reference
- * registers via slots which are assigned per bundle.
+ * registers via slots which are assigned per tuple.
  */
 
 typedef struct {
@@ -396,7 +409,7 @@ typedef struct {
         bi_registers regs;
         bi_instr *fma;
         bi_instr *add;
-} bi_bundle;
+} bi_tuple;
 
 struct bi_block;
 
@@ -406,11 +419,9 @@ typedef struct {
         /* Link back up for branch calculations */
         struct bi_block *block;
 
-        /* A clause can have 8 instructions in bundled FMA/ADD sense, so there
-         * can be 8 bundles. */
-
-        unsigned bundle_count;
-        bi_bundle bundles[8];
+        /* Architectural limit of 8 tuples/clause */
+        unsigned tuple_count;
+        bi_tuple tuples[8];
 
         /* For scoreboarding -- the clause ID (this is not globally unique!)
          * and its dependencies in terms of other clauses, computed during
@@ -436,13 +447,16 @@ typedef struct {
 
         /* Constants read by this clause. ISA limit. Must satisfy:
          *
-         *      constant_count + bundle_count <= 13
+         *      constant_count + tuple_count <= 13
          *
-         * Also implicitly constant_count <= bundle_count since a bundle only
+         * Also implicitly constant_count <= tuple_count since a tuple only
          * reads a single constant.
          */
         uint64_t constants[8];
         unsigned constant_count;
+
+        /* Index of a constant to be PC-relative */
+        unsigned pcrel_idx;
 
         /* Branches encode a constant offset relative to the program counter
          * with some magic flags. By convention, if there is a branch, its
@@ -450,8 +464,8 @@ typedef struct {
          */
         bool branch_constant;
 
-        /* What type of high latency instruction is here, basically */
-        unsigned message_type;
+        /* Unique in a clause */
+        enum bifrost_message_type message_type;
 } bi_clause;
 
 typedef struct bi_block {
@@ -484,7 +498,6 @@ typedef struct {
        uint64_t blend_desc;
 
        /* During NIR->BIR */
-       nir_function_impl *impl;
        bi_block *current_block;
        bi_block *after_block;
        bi_block *break_block;
@@ -493,7 +506,8 @@ typedef struct {
        nir_alu_type *blend_types;
 
        /* For creating temporaries */
-       unsigned temp_alloc;
+       unsigned ssa_alloc;
+       unsigned reg_alloc;
 
        /* Analysis results */
        bool has_liveness;
@@ -540,24 +554,20 @@ bi_fau(enum bir_fau value, bool hi)
 static inline unsigned
 bi_max_temp(bi_context *ctx)
 {
-        unsigned alloc = MAX2(ctx->impl->reg_alloc, ctx->impl->ssa_alloc);
-        return ((alloc + 2 + ctx->temp_alloc) << 1);
+        return (MAX2(ctx->reg_alloc, ctx->ssa_alloc) + 2) << 1;
 }
 
 static inline bi_index
 bi_temp(bi_context *ctx)
 {
-        unsigned alloc = (ctx->impl->ssa_alloc + ctx->temp_alloc++);
-        return bi_get_index(alloc, false, 0);
+        return bi_get_index(ctx->ssa_alloc++, false, 0);
 }
 
 static inline bi_index
 bi_temp_reg(bi_context *ctx)
 {
-        unsigned alloc = (ctx->impl->reg_alloc + ctx->temp_alloc++);
-        return bi_get_index(alloc, true, 0);
+        return bi_get_index(ctx->reg_alloc++, true, 0);
 }
-
 
 /* Inline constants automatically, will be lowered out by bi_lower_fau where a
  * constant is not allowed. load_const_to_scalar gaurantees that this makes
@@ -637,6 +647,9 @@ bi_node_to_index(unsigned node, unsigned node_count)
 #define bi_foreach_clause_in_block(block, v) \
         list_for_each_entry(bi_clause, v, &(block)->clauses, link)
 
+#define bi_foreach_clause_in_block_rev(block, v) \
+        list_for_each_entry_rev(bi_clause, v, &(block)->clauses, link)
+
 #define bi_foreach_clause_in_block_safe(block, v) \
         list_for_each_entry_safe(bi_clause, v, &(block)->clauses, link)
 
@@ -654,6 +667,11 @@ bi_node_to_index(unsigned node, unsigned node_count)
         bi_foreach_block(ctx, v_block) \
                 bi_foreach_instr_in_block_safe((bi_block *) v_block, v)
 
+#define bi_foreach_instr_in_tuple(tuple, v) \
+        for (bi_instr *v = tuple->fma ?: tuple->add; \
+                        v != NULL; \
+                        v = (v == tuple->add) ? NULL : tuple->add)
+
 /* Based on set_foreach, expanded with automatic type casts */
 
 #define bi_foreach_predecessor(blk, v) \
@@ -667,6 +685,13 @@ bi_node_to_index(unsigned node, unsigned node_count)
 
 #define bi_foreach_src(ins, v) \
         for (unsigned v = 0; v < ARRAY_SIZE(ins->src); ++v)
+
+#define bi_foreach_dest(ins, v) \
+        for (unsigned v = 0; v < ARRAY_SIZE(ins->dest); ++v)
+
+#define bi_foreach_instr_and_src_in_tuple(tuple, ins, s) \
+        bi_foreach_instr_in_tuple(tuple, ins) \
+                bi_foreach_src(ins, s)
 
 static inline bi_instr *
 bi_prev_op(bi_instr *ins)
@@ -689,27 +714,36 @@ pan_next_block(pan_block *block)
 /* BIR manipulation */
 
 bool bi_has_arg(bi_instr *ins, bi_index arg);
+unsigned bi_count_read_registers(bi_instr *ins, unsigned src);
 uint16_t bi_bytemask_of_read_components(bi_instr *ins, bi_index node);
 unsigned bi_writemask(bi_instr *ins);
+bi_clause * bi_next_clause(bi_context *ctx, pan_block *block, bi_clause *clause);
+bool bi_side_effects(enum bi_opcode op);
 
 void bi_print_instr(bi_instr *I, FILE *fp);
 void bi_print_slots(bi_registers *regs, FILE *fp);
-void bi_print_bundle(bi_bundle *bundle, FILE *fp);
+void bi_print_tuple(bi_tuple *tuple, FILE *fp);
 void bi_print_clause(bi_clause *clause, FILE *fp);
 void bi_print_block(bi_block *block, FILE *fp);
 void bi_print_shader(bi_context *ctx, FILE *fp);
 
 /* BIR passes */
 
-bool bi_opt_dead_code_eliminate(bi_context *ctx, bi_block *block);
+bool bi_opt_dead_code_eliminate(bi_context *ctx, bi_block *block, bool soft);
 void bi_schedule(bi_context *ctx);
 void bi_register_allocate(bi_context *ctx);
+
+/* Test suite */
+int bi_test_scheduler(void);
+int bi_test_packing(void);
+int bi_test_packing_formats(void);
 
 bi_clause *
 bi_singleton(void *memctx, bi_instr *ins,
                 bi_block *block,
                 unsigned scoreboard_id,
                 unsigned dependencies,
+                uint64_t combined_constant,
                 bool osrb);
 
 /* Liveness */
@@ -720,13 +754,36 @@ void bi_invalidate_liveness(bi_context *ctx);
 
 /* Layout */
 
-bool bi_can_insert_bundle(bi_clause *clause, bool constant);
+bool bi_can_insert_tuple(bi_clause *clause, bool constant);
 unsigned bi_clause_quadwords(bi_clause *clause);
 signed bi_block_offset(bi_context *ctx, bi_clause *start, bi_block *target);
+bool bi_ec0_packed(unsigned tuple_count);
+
+static inline bool
+bi_is_terminal_block(bi_block *block)
+{
+        return block->base.successors[0] == NULL &&
+               block->base.successors[1] == NULL &&
+               list_is_empty(&block->clauses);
+}
 
 /* Code emit */
 
-void bi_pack(bi_context *ctx, struct util_dynarray *emission);
+/* Returns the size of the final clause */
+unsigned bi_pack(bi_context *ctx, struct util_dynarray *emission);
+
+struct bi_packed_tuple {
+        uint64_t lo;
+        uint64_t hi;
+};
+
+void
+bi_pack_format(struct util_dynarray *emission,
+                unsigned index,
+                struct bi_packed_tuple *tuples,
+                ASSERTED unsigned tuple_count,
+                uint64_t header, uint64_t ec0,
+                unsigned m0, bool z);
 
 unsigned bi_pack_fma(bi_instr *I,
                 enum bifrost_packed_src src0,
@@ -783,12 +840,77 @@ bi_after_instr(bi_instr *instr)
     };
 }
 
+/* Invariant: a tuple must be nonempty UNLESS it is the last tuple of a clause,
+ * in which case there must exist a nonempty penultimate tuple */
+
+ATTRIBUTE_RETURNS_NONNULL static inline bi_instr *
+bi_first_instr_in_clause(bi_clause *clause)
+{
+        bi_tuple tuple = clause->tuples[0];
+        bi_instr *instr = tuple.fma ?: tuple.add;
+
+        assert(instr != NULL);
+        return instr;
+}
+
+ATTRIBUTE_RETURNS_NONNULL static inline bi_instr *
+bi_last_instr_in_clause(bi_clause *clause)
+{
+        bi_tuple tuple = clause->tuples[clause->tuple_count - 1];
+        bi_instr *instr = tuple.add ?: tuple.fma;
+
+        if (!instr) {
+                assert(clause->tuple_count >= 2);
+                tuple = clause->tuples[clause->tuple_count - 2];
+                instr = tuple.add ?: tuple.fma;
+        }
+
+        assert(instr != NULL);
+        return instr;
+}
+
+/* Implemented by expanding bi_foreach_instr_in_block_from(_rev) with the start
+ * (end) of the clause and adding a condition for the clause boundary */
+
+#define bi_foreach_instr_in_clause(block, clause, pos) \
+   for (bi_instr *pos = LIST_ENTRY(bi_instr, bi_first_instr_in_clause(clause), link); \
+	(&pos->link != &(block)->base.instructions) \
+                && (pos != bi_next_op(bi_last_instr_in_clause(clause))); \
+	pos = LIST_ENTRY(bi_instr, pos->link.next, link))
+
+#define bi_foreach_instr_in_clause_rev(block, clause, pos) \
+   for (bi_instr *pos = LIST_ENTRY(bi_instr, bi_last_instr_in_clause(clause), link); \
+	(&pos->link != &(block)->base.instructions) \
+	        && pos != bi_prev_op(bi_first_instr_in_clause(clause)); \
+	pos = LIST_ENTRY(bi_instr, pos->link.prev, link))
+
+static inline bi_cursor
+bi_before_clause(bi_clause *clause)
+{
+    return bi_before_instr(bi_first_instr_in_clause(clause));
+}
+
+static inline bi_cursor
+bi_after_clause(bi_clause *clause)
+{
+    return bi_after_instr(bi_last_instr_in_clause(clause));
+}
+
 /* IR builder in terms of cursor infrastructure */
 
 typedef struct {
     bi_context *shader;
     bi_cursor cursor;
 } bi_builder;
+
+static inline bi_builder
+bi_init_builder(bi_context *ctx, bi_cursor cursor)
+{
+        return (bi_builder) {
+                .shader = ctx,
+                .cursor = cursor
+        };
+}
 
 /* Insert an instruction at the cursor and move the cursor */
 

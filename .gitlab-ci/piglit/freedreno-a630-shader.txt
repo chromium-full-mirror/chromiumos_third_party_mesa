@@ -931,10 +931,7 @@ spec/glsl-1.10/execution/fs-dfdy-accuracy: warn
 spec/glsl-1.10/execution/vsfs-unused-array-member: crash
 spec/glsl-1.10/preprocessor/extension-defined-test: skip
 spec/glsl-1.10/preprocessor/extension-if-1: skip
-spec/glsl-1.20/execution/clipping/fixed-clip-enables: fail
-spec/glsl-1.20/execution/clipping/vs-clip-vertex-enables: fail
 spec/glsl-1.30/execution/clipping/vs-clip-distance-deadcode: crash
-spec/glsl-1.30/execution/clipping/vs-clip-distance-enables: fail
 spec/glsl-1.30/execution/fs-large-local-array-vec2: crash
 spec/glsl-1.30/execution/fs-large-local-array-vec3: crash
 spec/glsl-1.30/execution/fs-large-local-array-vec4: crash
@@ -1001,7 +998,6 @@ spec/glsl-1.50/execution/variable-indexing/gs-input-array-vec3-index-rd: crash
 spec/glsl-1.50/execution/variable-indexing/gs-input-array-vec4-index-rd: fail
 spec/glsl-1.50/execution/variable-indexing/gs-output-array-vec3-index-wr: fail
 spec/glsl-1.50/execution/variable-indexing/gs-output-array-vec4-index-wr: crash
-spec/glsl-1.50/execution/variable-indexing/vs-output-array-vec2-index-wr-before-gs: fail
 spec/glsl-1.50/execution/variable-indexing/vs-output-array-vec3-index-wr-before-gs: fail
 spec/glsl-1.50/execution/variable-indexing/vs-output-array-vec4-index-wr-before-gs: fail
 spec/glsl-es-3.10/execution/cs-image-atomic-if-else-2: fail
@@ -1129,7 +1125,7 @@ summary:
        name:  results
        ----  --------
        pass:     8878
-       fail:       33
+       fail:       29
       crash:       95
        skip:      997
     timeout:        0
@@ -1140,4 +1136,4 @@ summary:
     changes:        0
       fixes:        0
 regressions:        0
-      total:    10005
+      total:    10001

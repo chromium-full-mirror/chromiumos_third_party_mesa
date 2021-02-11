@@ -44,17 +44,20 @@ qinst_writes_tmu(struct qinst *inst)
 static bool
 is_end_of_tmu_sequence(struct qinst *inst, struct qblock *block)
 {
-        if (inst->qpu.type == V3D_QPU_INSTR_TYPE_ALU &&
-            inst->qpu.alu.add.op == V3D_QPU_A_TMUWT)
-                return true;
-
-        if (!inst->qpu.sig.ldtmu)
+        if (!inst->qpu.sig.ldtmu &&
+            !(inst->qpu.type == V3D_QPU_INSTR_TYPE_ALU &&
+              inst->qpu.alu.add.op != V3D_QPU_A_TMUWT)) {
                 return false;
+        }
 
         list_for_each_entry_from(struct qinst, scan_inst, inst->link.next,
                                  &block->instructions, link) {
-                if (scan_inst->qpu.sig.ldtmu)
+                if (scan_inst->qpu.sig.ldtmu ||
+                    (inst->qpu.type == V3D_QPU_INSTR_TYPE_ALU &&
+                     inst->qpu.alu.add.op == V3D_QPU_A_TMUWT)) {
                         return false;
+                }
+
                 if (qinst_writes_tmu(scan_inst))
                         return true;
         }
@@ -734,9 +737,12 @@ v3d_register_allocate(struct v3d_compile *c, bool *spilled)
                                 break;
 
                         /* Don't emit spills using the TMU until we've dropped
-                         * thread count first.
+                         * thread count first. Also, don't spill if we have
+                         * enabled TMU pipelining, as that can make TMU spilling
+                         * pretty terrible.
                          */
-                        if (is_uniform || thread_index == 0) {
+                        if (is_uniform ||
+                            (thread_index == 0 && c->disable_tmu_pipelining)) {
                                 v3d_spill_reg(c, map[node].temp);
 
                                 /* Ask the outer loop to call back in. */

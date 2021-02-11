@@ -718,6 +718,12 @@ typedef struct nir_register {
    /* The bit-size of each channel; must be one of 8, 16, 32, or 64 */
    uint8_t bit_size;
 
+   /**
+    * True if this register may have different values in different SIMD
+    * invocations of the shader.
+    */
+   bool divergent;
+
    /** generic register index. */
    unsigned index;
 
@@ -967,8 +973,7 @@ nir_src_is_const(nir_src src)
 static inline bool
 nir_src_is_divergent(nir_src src)
 {
-   assert(src.is_ssa);
-   return src.ssa->divergent;
+   return src.is_ssa ? src.ssa->divergent : src.reg.reg->divergent;
 }
 
 static inline unsigned
@@ -986,8 +991,7 @@ nir_dest_num_components(nir_dest dest)
 static inline bool
 nir_dest_is_divergent(nir_dest dest)
 {
-   assert(dest.is_ssa);
-   return dest.ssa.divergent;
+   return dest.is_ssa ? dest.ssa.divergent : dest.reg.reg->divergent;
 }
 
 /* Are all components the same, ie. .xxxx */
@@ -2783,6 +2787,7 @@ typedef struct {
    nir_loop_info *info;
    nir_loop_control control;
    bool partially_unrolled;
+   bool divergent;
 } nir_loop;
 
 /**
@@ -3857,8 +3862,32 @@ NIR_SRC_AS_(deref, nir_deref_instr, nir_instr_type_deref, nir_instr_as_deref)
 bool nir_src_is_dynamically_uniform(nir_src src);
 bool nir_srcs_equal(nir_src src1, nir_src src2);
 bool nir_instrs_equal(const nir_instr *instr1, const nir_instr *instr2);
+
+static inline void
+nir_instr_rewrite_src_ssa(ASSERTED nir_instr *instr,
+                          nir_src *src, nir_ssa_def *new_ssa)
+{
+   assert(src->parent_instr == instr);
+   assert(src->is_ssa && src->ssa);
+   list_del(&src->use_link);
+   src->ssa = new_ssa;
+   list_addtail(&src->use_link, &new_ssa->uses);
+}
+
 void nir_instr_rewrite_src(nir_instr *instr, nir_src *src, nir_src new_src);
 void nir_instr_move_src(nir_instr *dest_instr, nir_src *dest, nir_src *src);
+
+static inline void
+nir_if_rewrite_condition_ssa(ASSERTED nir_if *if_stmt,
+                             nir_src *src, nir_ssa_def *new_ssa)
+{
+   assert(src->parent_if == if_stmt);
+   assert(src->is_ssa && src->ssa);
+   list_del(&src->use_link);
+   src->ssa = new_ssa;
+   list_addtail(&src->use_link, &new_ssa->if_uses);
+}
+
 void nir_if_rewrite_condition(nir_if *if_stmt, nir_src new_src);
 void nir_instr_rewrite_dest(nir_instr *instr, nir_dest *dest,
                             nir_dest new_dest);
@@ -3879,6 +3908,7 @@ nir_ssa_dest_init_for_type(nir_instr *instr, nir_dest *dest,
                      glsl_get_bit_size(type), name);
 }
 void nir_ssa_def_rewrite_uses(nir_ssa_def *def, nir_src new_src);
+void nir_ssa_def_rewrite_uses_ssa(nir_ssa_def *def, nir_ssa_def *new_ssa);
 void nir_ssa_def_rewrite_uses_after(nir_ssa_def *def, nir_src new_src,
                                     nir_instr *after_me);
 
@@ -4130,6 +4160,14 @@ typedef nir_ssa_def *(*nir_lower_instr_cb)(struct nir_builder *,
  */
 #define NIR_LOWER_INSTR_PROGRESS ((nir_ssa_def *)(uintptr_t)1)
 
+/**
+ * Special return value for nir_lower_instr_cb when some progress occurred
+ * that should remove the current instruction that doesn't create an output
+ * (like a store)
+ */
+
+#define NIR_LOWER_INSTR_PROGRESS_REPLACE ((nir_ssa_def *)(uintptr_t)2)
+
 /** Iterate over all the instructions in a nir_function_impl and lower them
  *  using the provided callbacks
  *
@@ -4304,9 +4342,6 @@ nir_gather_explicit_io_initializers(nir_shader *shader,
                                     void *dst, size_t dst_size,
                                     nir_variable_mode mode);
 
-bool nir_lower_mem_constant_vars(nir_shader *shader,
-                                 glsl_type_size_align_func type_info);
-
 bool nir_lower_vec3_to_vec4(nir_shader *shader, nir_variable_mode modes);
 
 typedef enum {
@@ -4472,10 +4507,20 @@ bool nir_lower_vars_to_ssa(nir_shader *shader);
 
 bool nir_remove_dead_derefs(nir_shader *shader);
 bool nir_remove_dead_derefs_impl(nir_function_impl *impl);
+
+typedef struct nir_remove_dead_variables_options {
+   bool (*can_remove_var)(nir_variable *var, void *data);
+   void *can_remove_var_data;
+} nir_remove_dead_variables_options;
+
 bool nir_remove_dead_variables(nir_shader *shader, nir_variable_mode modes,
-                               bool (*can_remove_var)(nir_variable *var));
+                               const nir_remove_dead_variables_options *options);
+
 bool nir_lower_variable_initializers(nir_shader *shader,
                                      nir_variable_mode modes);
+bool nir_zero_initialize_shared_memory(nir_shader *shader,
+                                       const unsigned shared_size,
+                                       const unsigned chunk_size);
 
 bool nir_move_vec_src_uses_to_dest(nir_shader *shader);
 bool nir_lower_vec_to_movs(nir_shader *shader, nir_instr_writemask_filter_cb cb,
@@ -4867,6 +4912,9 @@ bool nir_lower_pack(nir_shader *shader);
 void nir_lower_mediump_outputs(nir_shader *nir);
 
 bool nir_lower_point_size(nir_shader *shader, float min, float max);
+
+void nir_lower_texcoord_replace(nir_shader *s, unsigned coord_replace,
+                                bool point_coord_is_sysval);
 
 typedef enum {
    nir_lower_interpolation_at_sample = (1 << 1),

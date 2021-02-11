@@ -33,15 +33,19 @@ struct zink_batch;
 #include <vulkan/vulkan.h>
 
 #define ZINK_RESOURCE_ACCESS_READ 1
-#define ZINK_RESOURCE_ACCESS_WRITE 16
+#define ZINK_RESOURCE_ACCESS_WRITE 32
 
 struct zink_resource {
    struct pipe_resource base;
 
    enum pipe_format internal_format:16;
 
+   VkPipelineStageFlagBits access_stage;
    union {
-      VkBuffer buffer;
+      struct {
+         VkAccessFlags access;
+         VkBuffer buffer;
+      };
       struct {
          VkFormat format;
          VkImage image;
@@ -55,9 +59,10 @@ struct zink_resource {
 
    struct sw_displaytarget *dt;
    unsigned dt_stride;
+   unsigned persistent_maps; //if nonzero, requires vkFlushMappedMemoryRanges during batch use
 
    /* this has to be atomic for fence access, so we can't use a bitmask and make everything neat */
-   uint8_t batch_uses[4];
+   uint8_t batch_uses[5]; //ZINK_NUM_BATCHES
    bool needs_xfb_barrier;
 };
 
@@ -85,4 +90,7 @@ zink_get_depth_stencil_resources(struct pipe_resource *res,
 
 void
 zink_resource_setup_transfer_layouts(struct zink_batch *batch, struct zink_resource *src, struct zink_resource *dst);
+
+uint32_t
+zink_get_resource_usage(struct zink_resource *res);
 #endif

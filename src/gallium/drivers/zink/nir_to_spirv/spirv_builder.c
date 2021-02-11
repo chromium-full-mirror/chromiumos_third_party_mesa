@@ -160,6 +160,18 @@ spirv_builder_emit_exec_mode_literal(struct spirv_builder *b, SpvId entry_point,
 }
 
 void
+spirv_builder_emit_exec_mode_literal3(struct spirv_builder *b, SpvId entry_point,
+                                     SpvExecutionMode exec_mode, uint32_t param[3])
+{
+   spirv_buffer_prepare(&b->exec_modes, b->mem_ctx, 6);
+   spirv_buffer_emit_word(&b->exec_modes, SpvOpExecutionMode | (6 << 16));
+   spirv_buffer_emit_word(&b->exec_modes, entry_point);
+   spirv_buffer_emit_word(&b->exec_modes, exec_mode);
+   for (unsigned i = 0; i < 3; i++)
+      spirv_buffer_emit_word(&b->exec_modes, param[i]);
+}
+
+void
 spirv_builder_emit_exec_mode(struct spirv_builder *b, SpvId entry_point,
                              SpvExecutionMode exec_mode)
 {
@@ -404,6 +416,18 @@ spirv_builder_emit_store(struct spirv_builder *b, SpvId pointer, SpvId object)
    spirv_buffer_prepare(&b->instructions, b->mem_ctx, 3);
    spirv_buffer_emit_word(&b->instructions, SpvOpStore | (3 << 16));
    spirv_buffer_emit_word(&b->instructions, pointer);
+   spirv_buffer_emit_word(&b->instructions, object);
+}
+
+void
+spirv_builder_emit_atomic_store(struct spirv_builder *b, SpvId pointer, SpvScope scope,
+                                SpvMemorySemanticsMask semantics, SpvId object)
+{
+   spirv_buffer_prepare(&b->instructions, b->mem_ctx, 5);
+   spirv_buffer_emit_word(&b->instructions, SpvOpAtomicStore | (5 << 16));
+   spirv_buffer_emit_word(&b->instructions, pointer);
+   spirv_buffer_emit_word(&b->instructions, spirv_builder_const_uint(b, 32, scope));
+   spirv_buffer_emit_word(&b->instructions, spirv_builder_const_uint(b, 32, semantics));
    spirv_buffer_emit_word(&b->instructions, object);
 }
 
@@ -675,6 +699,13 @@ spirv_builder_emit_kill(struct spirv_builder *b)
 {
    spirv_buffer_prepare(&b->instructions, b->mem_ctx, 1);
    spirv_buffer_emit_word(&b->instructions, SpvOpKill | (1 << 16));
+}
+
+SpvId
+spirv_builder_emit_vote(struct spirv_builder *b, SpvOp op, SpvId src)
+{
+   return spirv_builder_emit_binop(b, op, spirv_builder_type_bool(b),
+                                   spirv_builder_const_uint(b, 32, SpvScopeWorkgroup), src);
 }
 
 SpvId

@@ -78,17 +78,11 @@ iris_lost_context_state(struct iris_batch *batch)
     * we do need to inform the context of batch catastrophe.  We know the
     * batch is one of our context's, so hackily claw our way back.
     */
-   struct iris_context *ice = NULL;
+   struct iris_context *ice = batch->ice;
 
    if (batch->name == IRIS_BATCH_RENDER) {
-      ice = container_of(batch, struct iris_context, batches[IRIS_BATCH_RENDER]);
-      assert(&ice->batches[IRIS_BATCH_RENDER] == batch);
-
       batch->screen->vtbl.init_render_context(batch);
    } else if (batch->name == IRIS_BATCH_COMPUTE) {
-      ice = container_of(batch, struct iris_context, batches[IRIS_BATCH_COMPUTE]);
-      assert(&ice->batches[IRIS_BATCH_COMPUTE] == batch);
-
       batch->screen->vtbl.init_compute_context(batch);
    } else {
       unreachable("unhandled batch reset");
@@ -97,6 +91,7 @@ iris_lost_context_state(struct iris_batch *batch)
    ice->state.dirty = ~0ull;
    ice->state.stage_dirty = ~0ull;
    ice->state.current_hash_scale = 0;
+   memset(&ice->shaders.urb, 0, sizeof(ice->shaders.urb));
    memset(ice->state.last_block, 0, sizeof(ice->state.last_block));
    memset(ice->state.last_grid, 0, sizeof(ice->state.last_grid));
    batch->last_surface_base_address = ~0ull;
@@ -245,6 +240,9 @@ iris_destroy_context(struct pipe_context *ctx)
    screen->vtbl.destroy_state(ice);
    iris_destroy_program_cache(ice);
    iris_destroy_border_color_pool(ice);
+   if (screen->measure.config)
+      iris_destroy_ctx_measure(ice);
+
    u_upload_destroy(ice->state.surface_uploader);
    u_upload_destroy(ice->state.dynamic_uploader);
    u_upload_destroy(ice->query_buffer_uploader);

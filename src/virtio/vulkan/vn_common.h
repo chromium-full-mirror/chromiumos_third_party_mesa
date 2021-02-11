@@ -26,11 +26,13 @@
 #include "util/macros.h"
 #include "vk_alloc.h"
 #include "vk_debug_report.h"
+#include "vk_device.h"
+#include "vk_instance.h"
 #include "vk_object.h"
+#include "vk_physical_device.h"
 #include "vk_util.h"
 
 #include "vn_entrypoints.h"
-#include "vn_extensions.h"
 
 #define VN_DEFAULT_ALIGN 8
 
@@ -69,7 +71,8 @@ struct vn_pipeline;
 struct vn_command_pool;
 struct vn_command_buffer;
 
-struct vn_cs;
+struct vn_cs_encoder;
+struct vn_cs_decoder;
 struct vn_renderer;
 struct vn_renderer_bo;
 struct vn_renderer_sync;
@@ -81,6 +84,32 @@ enum vn_debug {
    VN_DEBUG_WSI = 1ull << 3,
 
    VN_DEBUG_DRM = 1ull << 31,
+};
+
+typedef uint64_t vn_object_id;
+
+/* base class of vn_instance */
+struct vn_instance_base {
+   struct vk_instance base;
+   vn_object_id id;
+};
+
+/* base class of vn_physical_device */
+struct vn_physical_device_base {
+   struct vk_physical_device base;
+   vn_object_id id;
+};
+
+/* base class of vn_device */
+struct vn_device_base {
+   struct vk_device base;
+   vn_object_id id;
+};
+
+/* base class of other driver objects */
+struct vn_object_base {
+   struct vk_object_base base;
+   vn_object_id id;
 };
 
 extern uint64_t vn_debug;
@@ -98,51 +127,116 @@ vn_log_result(struct vn_instance *instance,
               VkResult result,
               const char *where);
 
-/* missing from vn_entrypoints.h */
+static_assert(sizeof(vn_object_id) >= sizeof(uintptr_t), "");
 
-bool
-vn_instance_entrypoint_is_enabled(
-   int index,
-   uint32_t core_version,
-   const struct vn_instance_extension_table *instance);
+static inline VkResult
+vn_instance_base_init(
+   struct vn_instance_base *instance,
+   const struct vk_instance_extension_table *supported_extensions,
+   const struct vk_instance_dispatch_table *dispatch_table,
+   const VkInstanceCreateInfo *info,
+   const VkAllocationCallbacks *alloc)
+{
+   VkResult result = vk_instance_init(&instance->base, supported_extensions,
+                                      dispatch_table, info, alloc);
+   instance->id = (uintptr_t)instance;
+   return result;
+}
 
-bool
-vn_physical_device_entrypoint_is_enabled(
-   int index,
-   uint32_t core_version,
-   const struct vn_instance_extension_table *instance);
+static inline void
+vn_instance_base_fini(struct vn_instance_base *instance)
+{
+   vk_instance_finish(&instance->base);
+}
 
-bool
-vn_device_entrypoint_is_enabled(
-   int index,
-   uint32_t core_version,
-   const struct vn_instance_extension_table *instance,
-   const struct vn_device_extension_table *device);
+static inline VkResult
+vn_physical_device_base_init(
+   struct vn_physical_device_base *physical_dev,
+   struct vn_instance_base *instance,
+   const struct vk_device_extension_table *supported_extensions,
+   const struct vk_physical_device_dispatch_table *dispatch_table)
+{
+   VkResult result =
+      vk_physical_device_init(&physical_dev->base, &instance->base,
+                              supported_extensions, dispatch_table);
+   physical_dev->id = (uintptr_t)physical_dev;
+   return result;
+}
 
-int
-vn_get_instance_entrypoint_index(const char *name);
+static inline void
+vn_physical_device_base_fini(struct vn_physical_device_base *physical_dev)
+{
+   vk_physical_device_finish(&physical_dev->base);
+}
 
-int
-vn_get_physical_device_entrypoint_index(const char *name);
+static inline VkResult
+vn_device_base_init(struct vn_device_base *dev,
+                    struct vn_physical_device_base *physical_dev,
+                    const struct vk_device_dispatch_table *dispatch_table,
+                    const VkDeviceCreateInfo *info,
+                    const VkAllocationCallbacks *alloc)
+{
+   VkResult result = vk_device_init(&dev->base, &physical_dev->base,
+                                    dispatch_table, info, alloc);
+   dev->id = (uintptr_t)dev;
+   return result;
+}
 
-int
-vn_get_device_entrypoint_index(const char *name);
+static inline void
+vn_device_base_fini(struct vn_device_base *dev)
+{
+   vk_device_finish(&dev->base);
+}
 
-const char *
-vn_get_instance_entry_name(int index);
+static inline void
+vn_object_base_init(struct vn_object_base *obj,
+                    VkObjectType type,
+                    struct vn_device_base *dev)
+{
+   vk_object_base_init(&dev->base, &obj->base, type);
+   obj->id = (uintptr_t)obj;
+}
 
-const char *
-vn_get_physical_device_entry_name(int index);
+static inline void
+vn_object_base_fini(struct vn_object_base *obj)
+{
+   vk_object_base_finish(&obj->base);
+}
 
-const char *
-vn_get_device_entry_name(int index);
+static inline void
+vn_object_set_id(void *obj, vn_object_id id, VkObjectType type)
+{
+   assert(((const struct vk_object_base *)obj)->type == type);
+   switch (type) {
+   case VK_OBJECT_TYPE_INSTANCE:
+      ((struct vn_instance_base *)obj)->id = id;
+      break;
+   case VK_OBJECT_TYPE_PHYSICAL_DEVICE:
+      ((struct vn_physical_device_base *)obj)->id = id;
+      break;
+   case VK_OBJECT_TYPE_DEVICE:
+      ((struct vn_device_base *)obj)->id = id;
+      break;
+   default:
+      ((struct vn_object_base *)obj)->id = id;
+      break;
+   }
+}
 
-void *
-vn_lookup_entrypoint(const char *name);
-
-/* missing from vn_extensions.h */
-
-uint32_t
-vn_physical_device_api_version(struct vn_physical_device *physical_dev);
+static inline vn_object_id
+vn_object_get_id(const void *obj, VkObjectType type)
+{
+   assert(((const struct vk_object_base *)obj)->type == type);
+   switch (type) {
+   case VK_OBJECT_TYPE_INSTANCE:
+      return ((struct vn_instance_base *)obj)->id;
+   case VK_OBJECT_TYPE_PHYSICAL_DEVICE:
+      return ((struct vn_physical_device_base *)obj)->id;
+   case VK_OBJECT_TYPE_DEVICE:
+      return ((struct vn_device_base *)obj)->id;
+   default:
+      return ((struct vn_object_base *)obj)->id;
+   }
+}
 
 #endif /* VN_COMMON_H */

@@ -226,6 +226,7 @@ zink_screen_init_compiler(struct zink_screen *screen)
       .lower_doubles_options = ~nir_lower_fp64_full_software,
       .has_fsub = true,
       .has_isub = true,
+      .lower_mul_2x32_64 = true,
    };
 
    screen->nir_options = default_options;
@@ -313,17 +314,6 @@ update_so_info(struct zink_shader *sh,
    }
 }
 
-static bool
-last_vertex_stage(struct zink_shader *zs)
-{
-   assert(zs->nir->info.stage != MESA_SHADER_FRAGMENT);
-   if (zs->has_geometry_shader)
-      return zs->nir->info.stage == MESA_SHADER_GEOMETRY;
-   if (zs->has_tess_shader)
-      return zs->nir->info.stage == MESA_SHADER_TESS_EVAL;
-   return true;
-}
-
 VkShaderModule
 zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, struct zink_shader_key *key,
                     unsigned char *shader_slot_map, unsigned char *shader_slots_reserved)
@@ -332,15 +322,17 @@ zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, struct z
    void *streamout = NULL;
    nir_shader *nir = zs->nir;
    /* TODO: use a separate mem ctx here for ralloc */
-   if (zs->nir->info.stage != MESA_SHADER_FRAGMENT) {
-      if (last_vertex_stage(zs)) {
+   if (zs->nir->info.stage < MESA_SHADER_FRAGMENT) {
+      if (zink_vs_key(key)->last_vertex_stage) {
          if (zs->streamout.so_info_slots)
             streamout = &zs->streamout;
 
-         nir = nir_shader_clone(NULL, zs->nir);
-         NIR_PASS_V(nir, nir_lower_clip_halfz);
+         if (!zink_vs_key(key)->clip_halfz) {
+            nir = nir_shader_clone(NULL, zs->nir);
+            NIR_PASS_V(nir, nir_lower_clip_halfz);
+         }
       }
-   } else {
+   } else if (zs->nir->info.stage == MESA_SHADER_FRAGMENT) {
       if (!zink_fs_key(key)->samples &&
           nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK)) {
          nir = nir_shader_clone(NULL, zs->nir);
@@ -462,6 +454,7 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
    /* need to set up var->data.binding for UBOs, which means we need to start at
     * the "first" UBO, which is at the end of the list
     */
+   int ssbo_array_index = 0;
    foreach_list_typed_reverse(nir_variable, var, node, &nir->variables) {
       if (_nir_shader_variable_has_mode(var, nir_var_uniform |
                                         nir_var_mem_ubo |
@@ -492,14 +485,26 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
                ret->num_bindings++;
             }
          } else if (var->data.mode == nir_var_mem_ssbo) {
-            int binding = zink_binding(nir->info.stage,
-                                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                       var->data.binding);
-            ret->bindings[ret->num_bindings].index = var->data.binding;
-            ret->bindings[ret->num_bindings].binding = binding;
-            ret->bindings[ret->num_bindings].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            ret->bindings[ret->num_bindings].size = 1;
-            ret->num_bindings++;
+            /* same-ish mechanics as ubos */
+            bool bo_array = glsl_type_is_array(var->type) && glsl_type_is_interface(glsl_without_array(var->type));
+            if (var->data.location && !bo_array)
+               continue;
+            if (!var->data.explicit_binding) {
+               var->data.binding = ssbo_array_index;
+            }
+            for (unsigned i = 0; i < (bo_array ? glsl_get_aoa_size(var->type) : 1); i++) {
+               int binding = zink_binding(nir->info.stage,
+                                          VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                          var->data.binding + i);
+               if (strcmp(glsl_get_type_name(var->interface_type), "counters"))
+                  ret->bindings[ret->num_bindings].index = ssbo_array_index++;
+               else
+                  ret->bindings[ret->num_bindings].index = var->data.binding;
+               ret->bindings[ret->num_bindings].binding = binding;
+               ret->bindings[ret->num_bindings].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+               ret->bindings[ret->num_bindings].size = 1;
+               ret->num_bindings++;
+            }
          } else {
             assert(var->data.mode == nir_var_uniform);
             const struct glsl_type *type = glsl_without_array(var->type);
@@ -537,13 +542,20 @@ zink_shader_free(struct zink_context *ctx, struct zink_shader *shader)
 {
    struct zink_screen *screen = zink_screen(ctx->base.screen);
    set_foreach(shader->programs, entry) {
-      struct zink_gfx_program *prog = (void*)entry->key;
-      _mesa_hash_table_remove_key(ctx->program_cache, prog->shaders);
-      prog->shaders[pipe_shader_type_from_mesa(shader->nir->info.stage)] = NULL;
-      if (shader->nir->info.stage == MESA_SHADER_TESS_EVAL && shader->generated)
+      if (shader->nir->info.stage == MESA_SHADER_COMPUTE) {
+         struct zink_compute_program *comp = (void*)entry->key;
+         _mesa_hash_table_remove_key(ctx->compute_program_cache, &comp->shader->shader_id);
+         comp->shader = NULL;
+         zink_compute_program_reference(screen, &comp, NULL);
+      } else {
+         struct zink_gfx_program *prog = (void*)entry->key;
+         _mesa_hash_table_remove_key(ctx->program_cache, prog->shaders);
+         prog->shaders[pipe_shader_type_from_mesa(shader->nir->info.stage)] = NULL;
+         if (shader->nir->info.stage == MESA_SHADER_TESS_EVAL && shader->generated)
             /* automatically destroy generated tcs shaders when tes is destroyed */
             zink_shader_free(ctx, shader->generated);
-      zink_gfx_program_reference(screen, &prog, NULL);
+         zink_gfx_program_reference(screen, &prog, NULL);
+      }
    }
    _mesa_set_destroy(shader->programs, NULL);
    free(shader->streamout.so_info_slots);

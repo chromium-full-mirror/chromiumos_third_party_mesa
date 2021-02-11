@@ -47,6 +47,7 @@
 #include "common/gen_decoder.h"
 #include "common/gen_gem.h"
 #include "common/gen_l3_config.h"
+#include "common/intel_measure.h"
 #include "dev/gen_device_info.h"
 #include "blorp/blorp.h"
 #include "compiler/brw_compiler.h"
@@ -62,7 +63,9 @@
 #include "util/xmlconfig.h"
 #include "vk_alloc.h"
 #include "vk_debug_report.h"
-#include "vk_object.h"
+#include "vk_device.h"
+#include "vk_instance.h"
+#include "vk_physical_device.h"
 
 /* Pre-declarations needed for WSI entrypoints */
 struct wl_surface;
@@ -88,7 +91,6 @@ struct gen_perf_query_result;
 
 #include "anv_android.h"
 #include "anv_entrypoints.h"
-#include "anv_extensions.h"
 #include "isl/isl.h"
 
 #include "dev/gen_debug.h"
@@ -189,6 +191,7 @@ struct gen_perf_query_result;
 #define ANV_SSBO_ALIGNMENT 4
 #define ANV_SSBO_BOUNDS_CHECK_ALIGNMENT 4
 #define MAX_VIEWS_FOR_PRIMITIVE_REPLICATION 16
+#define MAX_SAMPLE_LOCATIONS 16
 
 /* From the Skylake PRM Vol. 7 "Binding Table Surface State Model":
  *
@@ -359,128 +362,25 @@ static inline uintptr_t anv_pack_ptr(void *ptr, int bits, int flags)
         (b) = __builtin_ffs(__dword) - 1, __dword;      \
         __dword &= ~(1 << (b)))
 
-/* Mapping from anv object to VkDebugReportObjectTypeEXT. New types need
- * to be added here in order to utilize mapping in debug/error/perf macros.
- */
-#define REPORT_OBJECT_TYPE(o)                                                      \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_instance*),              \
-   VK_DEBUG_REPORT_OBJECT_TYPE_INSTANCE_EXT,                                       \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_physical_device*),       \
-   VK_DEBUG_REPORT_OBJECT_TYPE_PHYSICAL_DEVICE_EXT,                                \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_device*),                \
-   VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_EXT,                                         \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), const struct anv_device*),          \
-   VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_EXT,                                         \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_queue*),                 \
-   VK_DEBUG_REPORT_OBJECT_TYPE_QUEUE_EXT,                                          \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_semaphore*),             \
-   VK_DEBUG_REPORT_OBJECT_TYPE_SEMAPHORE_EXT,                                      \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_cmd_buffer*),            \
-   VK_DEBUG_REPORT_OBJECT_TYPE_COMMAND_BUFFER_EXT,                                 \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_fence*),                 \
-   VK_DEBUG_REPORT_OBJECT_TYPE_FENCE_EXT,                                          \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_device_memory*),         \
-   VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_MEMORY_EXT,                                  \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_buffer*),                \
-   VK_DEBUG_REPORT_OBJECT_TYPE_BUFFER_EXT,                                         \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_image*),                 \
-   VK_DEBUG_REPORT_OBJECT_TYPE_IMAGE_EXT,                                          \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), const struct anv_image*),           \
-   VK_DEBUG_REPORT_OBJECT_TYPE_IMAGE_EXT,                                          \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_event*),                 \
-   VK_DEBUG_REPORT_OBJECT_TYPE_EVENT_EXT,                                          \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_query_pool*),            \
-   VK_DEBUG_REPORT_OBJECT_TYPE_QUERY_POOL_EXT,                                     \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_buffer_view*),           \
-   VK_DEBUG_REPORT_OBJECT_TYPE_BUFFER_VIEW_EXT,                                    \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_image_view*),            \
-   VK_DEBUG_REPORT_OBJECT_TYPE_IMAGE_VIEW_EXT,                                     \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_shader_module*),         \
-   VK_DEBUG_REPORT_OBJECT_TYPE_SHADER_MODULE_EXT,                                  \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_pipeline_cache*),        \
-   VK_DEBUG_REPORT_OBJECT_TYPE_PIPELINE_CACHE_EXT,                                 \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_pipeline_layout*),       \
-   VK_DEBUG_REPORT_OBJECT_TYPE_PIPELINE_LAYOUT_EXT,                                \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_render_pass*),           \
-   VK_DEBUG_REPORT_OBJECT_TYPE_RENDER_PASS_EXT,                                    \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_pipeline*),              \
-   VK_DEBUG_REPORT_OBJECT_TYPE_PIPELINE_EXT,                                       \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_descriptor_set_layout*), \
-   VK_DEBUG_REPORT_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT_EXT,                          \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_sampler*),               \
-   VK_DEBUG_REPORT_OBJECT_TYPE_SAMPLER_EXT,                                        \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_descriptor_pool*),       \
-   VK_DEBUG_REPORT_OBJECT_TYPE_DESCRIPTOR_POOL_EXT,                                \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_descriptor_set*),        \
-   VK_DEBUG_REPORT_OBJECT_TYPE_DESCRIPTOR_SET_EXT,                                 \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_framebuffer*),           \
-   VK_DEBUG_REPORT_OBJECT_TYPE_FRAMEBUFFER_EXT,                                    \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_cmd_pool*),              \
-   VK_DEBUG_REPORT_OBJECT_TYPE_COMMAND_POOL_EXT,                                   \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct anv_surface*),               \
-   VK_DEBUG_REPORT_OBJECT_TYPE_SURFACE_KHR_EXT,                                    \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct wsi_swapchain*),             \
-   VK_DEBUG_REPORT_OBJECT_TYPE_SWAPCHAIN_KHR_EXT,                                  \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), struct vk_debug_callback*),         \
-   VK_DEBUG_REPORT_OBJECT_TYPE_DEBUG_REPORT_CALLBACK_EXT_EXT,                      \
-   __builtin_choose_expr (                                                         \
-   __builtin_types_compatible_p (__typeof (o), void*),                             \
-   VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT,                                        \
-   /* The void expression results in a compile-time error                          \
-      when assigning the result to something.  */                                  \
-   (void)0)))))))))))))))))))))))))))))))
-
 /* Whenever we generate an error, pass it through this function. Useful for
  * debugging, where we can break on it. Only call at error site, not when
  * propagating errors. Might be useful to plug in a stack trace here.
  */
 
-VkResult __vk_errorv(struct anv_instance *instance, const void *object,
-                     VkDebugReportObjectTypeEXT type, VkResult error,
+VkResult __vk_errorv(struct anv_instance *instance,
+                     const struct vk_object_base *object, VkResult error,
                      const char *file, int line, const char *format,
                      va_list args);
 
-VkResult __vk_errorf(struct anv_instance *instance, const void *object,
-                     VkDebugReportObjectTypeEXT type, VkResult error,
+VkResult __vk_errorf(struct anv_instance *instance,
+                     const struct vk_object_base *object, VkResult error,
                      const char *file, int line, const char *format, ...)
-   anv_printflike(7, 8);
+   anv_printflike(6, 7);
 
 #ifdef DEBUG
-#define vk_error(error) __vk_errorf(NULL, NULL,\
-                                    VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT,\
-                                    error, __FILE__, __LINE__, NULL)
+#define vk_error(error) __vk_errorf(NULL, NULL, error, __FILE__, __LINE__, NULL)
 #define vk_errorfi(instance, obj, error, format, ...)\
-    __vk_errorf(instance, obj, REPORT_OBJECT_TYPE(obj), error,\
+    __vk_errorf(instance, obj, error,\
                 __FILE__, __LINE__, format, ## __VA_ARGS__)
 #define vk_errorf(device, obj, error, format, ...)\
    vk_errorfi(anv_device_instance_or_null(device),\
@@ -515,10 +415,10 @@ static inline VkResult __dummy_vk_error(VkResult error, UNUSED const void *ignor
 #define anv_debug_ignored_stype(sType) \
    mesa_logd("%s: ignored VkStructureType %u\n", __func__, (sType))
 
-void __anv_perf_warn(struct anv_device *device, const void *object,
-                     VkDebugReportObjectTypeEXT type, const char *file,
-                     int line, const char *format, ...)
-   anv_printflike(6, 7);
+void __anv_perf_warn(struct anv_device *device,
+                     const struct vk_object_base *object,
+                     const char *file, int line, const char *format, ...)
+   anv_printflike(5, 6);
 void anv_loge(const char *format, ...) anv_printflike(1, 2);
 void anv_loge_v(const char *format, va_list va);
 
@@ -542,7 +442,7 @@ void anv_loge_v(const char *format, va_list va);
    do { \
       static bool reported = false; \
       if (!reported && (INTEL_DEBUG & DEBUG_PERF)) { \
-         __anv_perf_warn(instance, obj, REPORT_OBJECT_TYPE(obj), __FILE__, __LINE__,\
+         __anv_perf_warn(instance, obj, __FILE__, __LINE__,\
                          format, ##__VA_ARGS__); \
          reported = true; \
       } \
@@ -1032,6 +932,17 @@ struct anv_bo_cache {
 VkResult anv_bo_cache_init(struct anv_bo_cache *cache);
 void anv_bo_cache_finish(struct anv_bo_cache *cache);
 
+struct anv_queue_family {
+   /* Standard bits passed on to the client */
+   VkQueueFlags   queueFlags;
+   uint32_t       queueCount;
+
+   /* Driver internal information */
+   enum drm_i915_gem_engine_class engine_class;
+};
+
+#define ANV_MAX_QUEUE_FAMILIES 1
+
 struct anv_memory_type {
    /* Standard bits passed on to the client */
    VkMemoryPropertyFlags   propertyFlags;
@@ -1051,7 +962,7 @@ struct anv_memory_heap {
 };
 
 struct anv_physical_device {
-    struct vk_object_base                       base;
+    struct vk_physical_device                   vk;
 
     /* Link in anv_instance::physical_devices */
     struct list_head                            link;
@@ -1079,6 +990,11 @@ struct anv_physical_device {
     struct brw_compiler *                       compiler;
     struct isl_device                           isl_dev;
     struct gen_perf_config *                    perf;
+    /*
+     * Number of commands required to implement a performance query begin +
+     * end.
+     */
+    uint32_t                                    n_perf_query_commands;
     int                                         cmd_parser_version;
     bool                                        has_softpin;
     bool                                        has_exec_async;
@@ -1123,10 +1039,13 @@ struct anv_physical_device {
 
     bool                                        always_flush_cache;
 
-    struct anv_device_extension_table           supported_extensions;
-
     uint32_t                                    eu_total;
     uint32_t                                    subslice_total;
+
+    struct {
+      uint32_t                                  family_count;
+      struct anv_queue_family                   families[ANV_MAX_QUEUE_FAMILIES];
+    } queue;
 
     struct {
       uint32_t                                  type_count;
@@ -1145,6 +1064,10 @@ struct anv_physical_device {
     struct wsi_device                       wsi_device;
     int                                         local_fd;
     int                                         master_fd;
+    struct drm_i915_query_engine_info *         engine_info;
+
+    void (*cmd_emit_timestamp)(struct anv_batch *, struct anv_bo *, uint32_t );
+    struct intel_measure_device                 measure_device;
 };
 
 struct anv_app_info {
@@ -1156,23 +1079,12 @@ struct anv_app_info {
 };
 
 struct anv_instance {
-    struct vk_object_base                       base;
-
-    VkAllocationCallbacks                       alloc;
-
-    struct anv_app_info                         app_info;
-
-    struct anv_instance_extension_table         enabled_extensions;
-    struct anv_instance_dispatch_table          dispatch;
-    struct anv_physical_device_dispatch_table   physical_device_dispatch;
-    struct anv_device_dispatch_table            device_dispatch;
+    struct vk_instance                          vk;
 
     bool                                        physical_devices_enumerated;
     struct list_head                            physical_devices;
 
     bool                                        pipeline_cache_enabled;
-
-    struct vk_debug_report_instance             debug_report_callbacks;
 
     struct driOptionCache                       dri_options;
     struct driOptionCache                       available_dri_options;
@@ -1180,10 +1092,6 @@ struct anv_instance {
 
 VkResult anv_init_wsi(struct anv_physical_device *physical_device);
 void anv_finish_wsi(struct anv_physical_device *physical_device);
-
-uint32_t anv_physical_device_api_version(struct anv_physical_device *dev);
-bool anv_physical_device_extension_supported(struct anv_physical_device *dev,
-                                             const char *name);
 
 struct anv_queue_submit {
    struct anv_cmd_buffer *                   cmd_buffer;
@@ -1239,11 +1147,14 @@ struct anv_queue_submit {
 };
 
 struct anv_queue {
-    struct vk_object_base                       base;
+   struct vk_object_base                     base;
 
    struct anv_device *                       device;
 
    VkDeviceQueueCreateFlags                  flags;
+   struct anv_queue_family *                 family;
+
+   uint32_t                                  exec_flags;
 
    /* Set once from the device api calls. */
    bool                                      lost_signaled;
@@ -1359,8 +1270,6 @@ struct anv_device {
     bool                                        can_chain_batches;
     bool                                        robust_buffer_access;
     bool                                        has_thread_submit;
-    struct anv_device_extension_table           enabled_extensions;
-    struct anv_device_dispatch_table            dispatch;
 
     pthread_mutex_t                             vma_mutex;
     struct util_vma_heap                        vma_lo;
@@ -1405,7 +1314,8 @@ struct anv_device {
 
     struct anv_state                            slice_hash;
 
-    struct anv_queue                            queue;
+    uint32_t                                    queue_count;
+    struct anv_queue  *                         queues;
 
     struct anv_scratch_pool                     scratch_pool;
 
@@ -1572,7 +1482,9 @@ VkResult anv_device_bo_busy(struct anv_device *device, struct anv_bo *bo);
 VkResult anv_device_wait(struct anv_device *device, struct anv_bo *bo,
                          int64_t timeout);
 
-VkResult anv_queue_init(struct anv_device *device, struct anv_queue *queue);
+VkResult anv_queue_init(struct anv_device *device, struct anv_queue *queue,
+                        uint32_t exec_flags,
+                        const VkDeviceQueueCreateInfo *pCreateInfo);
 void anv_queue_finish(struct anv_queue *queue);
 
 VkResult anv_queue_execbuf_locked(struct anv_queue *queue, struct anv_queue_submit *submit);
@@ -1595,6 +1507,10 @@ int anv_gem_execbuffer(struct anv_device *device,
 int anv_gem_set_tiling(struct anv_device *device, uint32_t gem_handle,
                        uint32_t stride, uint32_t tiling);
 int anv_gem_create_context(struct anv_device *device);
+int anv_gem_create_context_engines(struct anv_device *device,
+                                   const struct drm_i915_query_engine_info *info,
+                                   int num_engines,
+                                   uint16_t *engine_classes);
 bool anv_gem_has_context_priority(int fd);
 int anv_gem_destroy_context(struct anv_device *device, int context);
 int anv_gem_set_context_param(int fd, int context, uint32_t param,
@@ -1605,8 +1521,8 @@ int anv_gem_get_param(int fd, uint32_t param);
 uint64_t anv_gem_get_drm_cap(int fd, uint32_t capability);
 int anv_gem_get_tiling(struct anv_device *device, uint32_t gem_handle);
 bool anv_gem_get_bit6_swizzle(int fd, uint32_t tiling);
-int anv_gem_gpu_get_reset_stats(struct anv_device *device,
-                                uint32_t *active, uint32_t *pending);
+int anv_gem_context_get_reset_stats(int fd, int context,
+                                    uint32_t *active, uint32_t *pending);
 int anv_gem_handle_to_fd(struct anv_device *device, uint32_t gem_handle);
 int anv_gem_reg_read(int fd, uint32_t offset, uint64_t *result);
 uint32_t anv_gem_fd_to_handle(struct anv_device *device, int fd);
@@ -1637,6 +1553,11 @@ int anv_gem_syncobj_timeline_signal(struct anv_device *device,
 int anv_gem_syncobj_timeline_query(struct anv_device *device,
                                    const uint32_t *handles, uint64_t *points,
                                    uint32_t num_items);
+int anv_i915_query(int fd, uint64_t query_id, void *buffer,
+                   int32_t *buffer_len);
+struct drm_i915_query_engine_info *anv_gem_get_engine_info(int fd);
+int anv_gem_count_engines(const struct drm_i915_query_engine_info *info,
+                          uint16_t engine_class);
 
 uint64_t anv_vma_alloc(struct anv_device *device,
                        uint64_t size, uint64_t align,
@@ -2372,6 +2293,7 @@ enum anv_cmd_dirty_bits {
    ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE    = 1 << 21, /* VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE_EXT */
    ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE         = 1 << 22, /* VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT */
    ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP                  = 1 << 23, /* VK_DYNAMIC_STATE_STENCIL_OP_EXT */
+   ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS            = 1 << 24, /* VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT */
 };
 typedef uint32_t anv_cmd_dirty_mask_t;
 
@@ -2395,7 +2317,8 @@ typedef uint32_t anv_cmd_dirty_mask_t;
     ANV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP |            \
     ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE |    \
     ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE |         \
-    ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP)
+    ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP |                  \
+    ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS)
 
 static inline enum anv_cmd_dirty_bits
 anv_cmd_dirty_bit_for_vk_dynamic_state(VkDynamicState vk_state)
@@ -2443,6 +2366,8 @@ anv_cmd_dirty_bit_for_vk_dynamic_state(VkDynamicState vk_state)
       return ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE;
    case VK_DYNAMIC_STATE_STENCIL_OP_EXT:
       return ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP;
+   case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT:
+      return ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS;
    default:
       assert(!"Unsupported dynamic state");
       return 0;
@@ -2769,6 +2694,11 @@ struct anv_dynamic_state {
       uint16_t                                  pattern;
    } line_stipple;
 
+   struct {
+      uint32_t                                  samples;
+      VkSampleLocationEXT                       locations[MAX_SAMPLE_LOCATIONS];
+   } sample_locations;
+
    VkCullModeFlags                              cull_mode;
    VkFrontFace                                  front_face;
    VkPrimitiveTopology                          primitive_topology;
@@ -3015,6 +2945,8 @@ enum anv_cmd_buffer_exec_mode {
    ANV_CMD_BUFFER_EXEC_MODE_CALL_AND_RETURN,
 };
 
+struct anv_measure_batch;
+
 struct anv_cmd_buffer {
    struct vk_object_base                        base;
 
@@ -3069,6 +3001,22 @@ struct anv_cmd_buffer {
 
    /* Set by SetPerformanceMarkerINTEL, written into queries by CmdBeginQuery */
    uint64_t                                     intel_perf_marker;
+
+   struct anv_measure_batch *measure;
+
+   /**
+    * KHR_performance_query requires self modifying command buffers and this
+    * array has the location of modifying commands to the query begin and end
+    * instructions storing performance counters. The array length is
+    * anv_physical_device::n_perf_query_commands.
+    */
+   struct gen_mi_address_token                  *self_mod_locations;
+
+   /**
+    * Index tracking which of the self_mod_locations items have already been
+    * used.
+    */
+   uint32_t                                      perf_reloc_idx;
 };
 
 VkResult anv_cmd_buffer_init_batch_bo_chain(struct anv_cmd_buffer *cmd_buffer);
@@ -4425,9 +4373,6 @@ struct anv_render_pass {
 
 #define ANV_PIPELINE_STATISTICS_MASK 0x000007ff
 
-#define OA_SNAPSHOT_SIZE (256)
-#define ANV_KHR_PERF_QUERY_SIZE (ALIGN(sizeof(uint64_t), 64) + 2 * OA_SNAPSHOT_SIZE)
-
 struct anv_query_pool {
    struct vk_object_base                        base;
 
@@ -4439,18 +4384,20 @@ struct anv_query_pool {
    uint32_t                                     slots;
    struct anv_bo *                              bo;
 
-   /* Perf queries : */
-   struct anv_bo                                reset_bo;
+   /* KHR perf queries : */
+   uint32_t                                     pass_size;
+   uint32_t                                     data_offset;
+   uint32_t                                     snapshot_size;
    uint32_t                                     n_counters;
    struct gen_perf_counter_pass                *counter_pass;
    uint32_t                                     n_passes;
    struct gen_perf_query_info                 **pass_query;
 };
 
-static inline uint32_t khr_perf_query_preamble_offset(struct anv_query_pool *pool,
+static inline uint32_t khr_perf_query_preamble_offset(const struct anv_query_pool *pool,
                                                       uint32_t pass)
 {
-   return pass * ANV_KHR_PERF_QUERY_SIZE + 8;
+   return pool->pass_size * pass + 8;
 }
 
 int anv_get_instance_entrypoint_index(const char *name);
@@ -4463,39 +4410,17 @@ const char *anv_get_device_entry_name(int index);
 
 bool
 anv_instance_entrypoint_is_enabled(int index, uint32_t core_version,
-                                   const struct anv_instance_extension_table *instance);
+                                   const struct vk_instance_extension_table *instance);
 bool
 anv_physical_device_entrypoint_is_enabled(int index, uint32_t core_version,
-                                          const struct anv_instance_extension_table *instance);
+                                          const struct vk_instance_extension_table *instance);
 bool
 anv_device_entrypoint_is_enabled(int index, uint32_t core_version,
-                                 const struct anv_instance_extension_table *instance,
-                                 const struct anv_device_extension_table *device);
+                                 const struct vk_instance_extension_table *instance,
+                                 const struct vk_device_extension_table *device);
 
-void *anv_resolve_device_entrypoint(const struct gen_device_info *devinfo,
-                                    uint32_t index);
-void *anv_lookup_entrypoint(const struct gen_device_info *devinfo,
-                            const char *name);
-
-void anv_dump_image_to_ppm(struct anv_device *device,
-                           struct anv_image *image, unsigned miplevel,
-                           unsigned array_layer, VkImageAspectFlagBits aspect,
-                           const char *filename);
-
-enum anv_dump_action {
-   ANV_DUMP_FRAMEBUFFERS_BIT = 0x1,
-};
-
-#ifdef DEBUG
-PUBLIC
-#endif
-void anv_dump_start(struct anv_device *device, enum anv_dump_action actions);
-#ifdef DEBUG
-PUBLIC
-#endif
-void anv_dump_finish(void);
-
-void anv_dump_add_attachments(struct anv_cmd_buffer *cmd_buffer);
+const struct vk_device_dispatch_table *
+anv_get_device_dispatch_table(const struct gen_device_info *devinfo);
 
 static inline uint32_t
 anv_get_subpass_id(const struct anv_cmd_state * const cmd_state)
@@ -4520,7 +4445,7 @@ struct anv_performance_configuration_intel {
    uint64_t                   config_id;
 };
 
-struct gen_perf_config *anv_get_perf(const struct gen_device_info *devinfo, int fd);
+void anv_physical_device_init_perf(struct anv_physical_device *device, int fd);
 void anv_device_perf_init(struct anv_device *device);
 void anv_perf_write_pass_results(struct gen_perf_config *perf,
                                  struct anv_query_pool *pool, uint32_t pass,
@@ -4533,8 +4458,8 @@ void anv_perf_write_pass_results(struct gen_perf_config *perf,
 VK_DEFINE_HANDLE_CASTS(anv_cmd_buffer, base, VkCommandBuffer,
                        VK_OBJECT_TYPE_COMMAND_BUFFER)
 VK_DEFINE_HANDLE_CASTS(anv_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
-VK_DEFINE_HANDLE_CASTS(anv_instance, base, VkInstance, VK_OBJECT_TYPE_INSTANCE)
-VK_DEFINE_HANDLE_CASTS(anv_physical_device, base, VkPhysicalDevice,
+VK_DEFINE_HANDLE_CASTS(anv_instance, vk.base, VkInstance, VK_OBJECT_TYPE_INSTANCE)
+VK_DEFINE_HANDLE_CASTS(anv_physical_device, vk.base, VkPhysicalDevice,
                        VK_OBJECT_TYPE_PHYSICAL_DEVICE)
 VK_DEFINE_HANDLE_CASTS(anv_queue, base, VkQueue, VK_OBJECT_TYPE_QUEUE)
 
@@ -4585,6 +4510,38 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(anv_ycbcr_conversion, base,
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_performance_configuration_intel, base,
                                VkPerformanceConfigurationINTEL,
                                VK_OBJECT_TYPE_PERFORMANCE_CONFIGURATION_INTEL)
+
+#define anv_genX(devinfo, thing) ({             \
+   __typeof(&gen9_##thing) genX_thing;          \
+   switch ((devinfo)->gen) {                    \
+   case 7:                                      \
+      if ((devinfo)->is_haswell) {              \
+         genX_thing = &gen75_##thing;           \
+      } else {                                  \
+         genX_thing = &gen7_##thing;            \
+      }                                         \
+      break;                                    \
+   case 8:                                      \
+      genX_thing = &gen8_##thing;               \
+      break;                                    \
+   case 9:                                      \
+      genX_thing = &gen9_##thing;               \
+      break;                                    \
+   case 11:                                     \
+      genX_thing = &gen11_##thing;              \
+      break;                                    \
+   case 12:                                     \
+      if (gen_device_info_is_12hp(devinfo)) {   \
+         genX_thing = &gen125_##thing;          \
+      } else {                                  \
+         genX_thing = &gen12_##thing;           \
+      }                                         \
+      break;                                    \
+   default:                                     \
+      assert(!"Unknown hardware generation");   \
+   }                                            \
+   genX_thing;                                  \
+})
 
 /* Gen-specific function declarations */
 #ifdef genX

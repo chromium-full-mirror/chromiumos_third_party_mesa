@@ -1985,8 +1985,9 @@ lower_explicit_io_array_length(nir_builder *b, nir_intrinsic_instr *intrin,
    nir_ssa_def *addr = &deref->dest.ssa;
    nir_ssa_def *index = addr_to_index(b, addr, addr_format);
    nir_ssa_def *offset = addr_to_offset(b, addr, addr_format);
+   unsigned access = nir_intrinsic_access(intrin);
 
-   nir_ssa_def *arr_size = nir_get_ssbo_size(b, index);
+   nir_ssa_def *arr_size = nir_get_ssbo_size(b, index, .access=access);
    arr_size = nir_imax(b, nir_isub(b, arr_size, offset), nir_imm_int(b, 0u));
    arr_size = nir_idiv(b, arr_size, nir_imm_int(b, stride));
 
@@ -2002,7 +2003,7 @@ lower_explicit_io_mode_check(nir_builder *b, nir_intrinsic_instr *intrin,
       /* If the address format is always global, then the driver can use
        * global addresses regardless of the mode.  In that case, don't create
        * a check, just whack the intrinsic to addr_mode_is and delegate to the
-       * driver lowering that.
+       * driver lowering.
        */
       intrin->intrinsic = nir_intrinsic_addr_mode_is;
       return;
@@ -2137,8 +2138,8 @@ nir_lower_explicit_io_impl(nir_function_impl *impl, nir_variable_mode modes,
  * the deref chain.
  *
  * This pass is also capable of handling OpenCL generic pointers.  If the
- * address mode is global, it will lowering any ambiguous (more than one mode)
- * access to global and passing through the deref_mode_is run-time checks as
+ * address mode is global, it will lower any ambiguous (more than one mode)
+ * access to global and pass through the deref_mode_is run-time checks as
  * addr_mode_is.  This assumes the driver has somehow mapped shared and
  * scratch memory to the global address space.  For other modes such as
  * 62bit_generic, there is an enum embedded in the address and we lower
@@ -2302,8 +2303,12 @@ nir_lower_vars_to_explicit_types(nir_shader *shader,
 
    if (modes & nir_var_uniform)
       progress |= lower_vars_to_explicit(shader, &shader->variables, nir_var_uniform, type_info);
-   if (modes & nir_var_mem_shared)
+
+   if (modes & nir_var_mem_shared) {
+      assert(!shader->info.cs.shared_memory_explicit_layout);
       progress |= lower_vars_to_explicit(shader, &shader->variables, nir_var_mem_shared, type_info);
+   }
+
    if (modes & nir_var_shader_temp)
       progress |= lower_vars_to_explicit(shader, &shader->variables, nir_var_shader_temp, type_info);
    if (modes & nir_var_mem_constant)

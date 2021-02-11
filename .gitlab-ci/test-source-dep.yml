@@ -30,7 +30,23 @@
       - src/include/**/*
       - src/loader/**/*
       - src/mapi/**/*
-      - src/mesa/**/*
+      - src/mesa/*
+      - src/mesa/drivers/*
+      - src/mesa/drivers/common/**/*
+      - src/mesa/drivers/dri/*
+      - src/mesa/drivers/dri/common/**/*
+      - src/mesa/main/**/*
+      - src/mesa/math/**/*
+      - src/mesa/program/**/*
+      - src/mesa/sparc/**/*
+      - src/mesa/state_tracker/**/*
+      - src/mesa/swrast/**/*
+      - src/mesa/swrast_setup/**/*
+      - src/mesa/tnl/**/*
+      - src/mesa/tnl_dd/**/*
+      - src/mesa/vbo/**/*
+      - src/mesa/x86/**/*
+      - src/mesa/x86-64/**/*
       - src/util/**/*
 
 # Gallium core source file dependencies
@@ -76,7 +92,9 @@
       when: on_success
     - changes: &llvmpipe_file_list
       - src/gallium/drivers/llvmpipe/**/*
+      - src/gallium/frontends/lavapipe/**/*
       - src/gallium/winsys/sw/**/*
+      - ci-expects/llvmpipe/*
       when: on_success
     - when: never
 
@@ -129,6 +147,7 @@
       - src/freedreno/vulkan/**/*
       - src/gallium/drivers/freedreno/**/*
       - src/gallium/winsys/freedreno/**/*
+      - ci-expects/freedreno/*
       when: on_success
     - when: never
 
@@ -146,11 +165,12 @@
       - src/gallium/drivers/panfrost/**/*
       - src/gallium/winsys/panfrost/**/*
       - src/panfrost/**/*
+      - ci-expects/panfrost/*
       when: on_success
     - when: never
 
 .vc4-rules:
-  stage: raspberrypi
+  stage: broadcom
   rules:
     - *ignore_scheduled_pipelines
     - changes:
@@ -164,6 +184,7 @@
       - src/gallium/drivers/vc4/**/*
       - src/gallium/winsys/kmsro/**/*
       - src/gallium/winsys/vc4/**/*
+      - ci-expects/vc4/*
       when: on_success
     - when: never
 
@@ -181,6 +202,7 @@
       - src/gallium/drivers/lima/**/*
       - src/gallium/winsys/lima/**/*
       - src/lima/**/*
+      - ci-expects/lima/*
       when: on_success
     - when: never
 
@@ -193,6 +215,7 @@
     - changes:
       - src/amd/**/*
       - src/vulkan/**/*
+      - ci-expects/radv/*
       when: on_success
     - when: never
 
@@ -212,6 +235,7 @@
     - changes:
       - src/gallium/drivers/virgl/**/*
       - src/gallium/winsys/virgl/**/*
+      - ci-expects/virgl/*
       when: on_success
     - when: never
 
@@ -233,6 +257,7 @@
       - src/amd/common/**/*
       - src/amd/llvm/**/*
       - src/amd/registers/**/*
+      - ci-expects/radeonsi/*
       when: on_success
     - when: never
 
@@ -267,5 +292,23 @@
         *gallium_core_file_list
       when: on_success
     - changes: *d3d12_file_list
+      when: on_success
+    - when: never
+
+.zink-rules:
+  stage: layered-backends
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes:
+        *llvmpipe_file_list
+      when: on_success
+    - changes:
+      - src/gallium/drivers/zink/**/*
       when: on_success
     - when: never

@@ -28,13 +28,12 @@
 #include <string.h>
 #include "pan_bo.h"
 #include "pan_context.h"
+#include "pan_shader.h"
 #include "pan_util.h"
 #include "panfrost-quirks.h"
 
 #include "compiler/nir/nir.h"
 #include "nir/tgsi_to_nir.h"
-#include "midgard/midgard_compile.h"
-#include "bifrost/bifrost_compile.h"
 #include "util/u_dynarray.h"
 #include "util/u_upload_mgr.h"
 
@@ -62,9 +61,9 @@ pan_prepare_midgard_props(struct panfrost_shader_state *state,
 
 static void
 pan_prepare_bifrost_props(struct panfrost_shader_state *state,
+                          panfrost_program *program,
                           gl_shader_stage stage)
 {
-
         switch (stage) {
         case MESA_SHADER_VERTEX:
                 pan_prepare(&state->properties, RENDERER_PROPERTIES);
@@ -91,6 +90,8 @@ pan_prepare_bifrost_props(struct panfrost_shader_state *state,
                 }
                 state->properties.uniform_buffer_count = state->ubo_count;
                 state->properties.bifrost.shader_modifies_coverage = state->can_discard;
+                state->properties.bifrost.shader_wait_dependency_6 = program->wait_6;
+                state->properties.bifrost.shader_wait_dependency_7 = program->wait_7;
 
                 pan_prepare(&state->preload, PRELOAD);
                 state->preload.uniform_count = state->uniform_count;
@@ -135,7 +136,7 @@ pan_upload_shader_descriptor(struct panfrost_context *ctx,
                 cfg.shader = state->shader;
                 cfg.properties = state->properties;
 
-                if (dev->quirks & IS_BIFROST)
+                if (pan_is_bifrost(dev))
                         cfg.preload = state->preload;
         }
 
@@ -272,10 +273,7 @@ panfrost_shader_compile(struct panfrost_context *ctx,
 
         panfrost_program *program;
 
-        if (dev->quirks & IS_BIFROST)
-                program = bifrost_compile_shader_nir(NULL, s, &inputs);
-        else
-                program = midgard_compile_shader_nir(NULL, s, &inputs);
+        program = panfrost_compile_shader(dev, NULL, s, &inputs);
 
         /* Prepare the compiled binary for upload */
         mali_ptr shader = 0;
@@ -290,7 +288,7 @@ panfrost_shader_compile(struct panfrost_context *ctx,
 
         /* Midgard needs the first tag on the bottom nibble */
 
-        if (!(dev->quirks & IS_BIFROST)) {
+        if (!pan_is_bifrost(dev)) {
                 /* If size = 0, we tag as "end-of-shader" */
 
                 if (size)
@@ -302,14 +300,15 @@ panfrost_shader_compile(struct panfrost_context *ctx,
         state->sysval_count = program->sysval_count;
         memcpy(state->sysval, program->sysvals, sizeof(state->sysval[0]) * state->sysval_count);
 
-        bool vertex_id = s->info.system_values_read & (1 << SYSTEM_VALUE_VERTEX_ID);
-        bool instance_id = s->info.system_values_read & (1 << SYSTEM_VALUE_INSTANCE_ID);
+        bool vertex_id = BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_VERTEX_ID);
+        bool instance_id = BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_INSTANCE_ID);
 
         state->writes_global = s->info.writes_memory;
 
         switch (stage) {
         case MESA_SHADER_VERTEX:
-                attribute_count = util_bitcount64(s->info.inputs_read);
+                attribute_count = util_bitcount64(s->info.inputs_read) +
+                                  util_bitcount(s->info.images_used);
                 varying_count = util_bitcount64(s->info.outputs_written);
 
                 if (vertex_id)
@@ -328,6 +327,7 @@ panfrost_shader_compile(struct panfrost_context *ctx,
                                                     program->blend_ret_offsets[i];
                         assert(!(state->blend_ret_addrs[i] & 0x7));
                 }
+                attribute_count = util_bitcount(s->info.images_used);
                 varying_count = util_bitcount64(s->info.inputs_read);
                 if (s->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_DEPTH))
                         state->writes_depth = true;
@@ -349,7 +349,7 @@ panfrost_shader_compile(struct panfrost_context *ctx,
                         s->info.fs.uses_demote;
                 break;
         case MESA_SHADER_COMPUTE:
-                /* TODO: images */
+                attribute_count = util_bitcount(s->info.images_used);
                 state->shared_size = s->info.cs.shared_size;
                 break;
         default:
@@ -361,10 +361,10 @@ panfrost_shader_compile(struct panfrost_context *ctx,
         state->stack_size = program->tls_size;
 
         state->reads_frag_coord = (s->info.inputs_read & (1 << VARYING_SLOT_POS)) ||
-                                  (s->info.system_values_read & (1 << SYSTEM_VALUE_FRAG_COORD));
+                                  BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_FRAG_COORD);
         state->reads_point_coord = s->info.inputs_read & (1 << VARYING_SLOT_PNTC);
         state->reads_face = (s->info.inputs_read & (1 << VARYING_SLOT_FACE)) ||
-                            (s->info.system_values_read & (1 << SYSTEM_VALUE_FRONT_FACE));
+                            BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_FRONT_FACE);
         state->writes_point_size = s->info.outputs_written & (1 << VARYING_SLOT_PSIZ);
 
         if (outputs_written)
@@ -375,7 +375,7 @@ panfrost_shader_compile(struct panfrost_context *ctx,
         state->uniform_count = MIN2(s->num_uniforms + program->sysval_count, program->uniform_cutoff);
         state->work_reg_count = program->work_register_count;
 
-        if (dev->quirks & IS_BIFROST)
+        if (pan_is_bifrost(dev))
                 for (unsigned i = 0; i < ARRAY_SIZE(state->blend_types); i++)
                         state->blend_types[i] = bifrost_blend_type_from_nir(program->blend_types[i]);
 
@@ -405,7 +405,7 @@ panfrost_shader_compile(struct panfrost_context *ctx,
          * "no uniform, no UBO" case though, otherwise sysval passed through
          * uniforms won't work correctly.
          */
-        if (dev->quirks & IS_BIFROST)
+        if (pan_is_bifrost(dev))
                 state->ubo_count = MAX2(s->info.num_ubos, 1);
         else
                 state->ubo_count = s->info.num_ubos + 1;
@@ -417,8 +417,8 @@ panfrost_shader_compile(struct panfrost_context *ctx,
         state->shader.texture_count = s->info.num_textures;
         state->shader.sampler_count = s->info.num_textures;
 
-        if (dev->quirks & IS_BIFROST)
-                pan_prepare_bifrost_props(state, stage);
+        if (pan_is_bifrost(dev))
+                pan_prepare_bifrost_props(state, program, stage);
         else
                 pan_prepare_midgard_props(state, stage);
 

@@ -43,6 +43,7 @@
 #endif
 
 struct fd_resource;
+struct fd_batch_key;
 
 /* A batch tracks everything about a cmdstream batch/submit, including the
  * ringbuffers used for binning, draw, and gmem cmds, list of associated
@@ -206,13 +207,11 @@ struct fd_batch {
 	 */
 	struct fd_hw_sample *sample_cache[MAX_HW_SAMPLE_PROVIDERS];
 
-	/* which sample providers were active in the current batch: */
-	uint32_t active_providers;
+	/* which sample providers were used in the current batch: */
+	uint32_t query_providers_used;
 
-	/* tracking for current stage, to know when to start/stop
-	 * any active queries:
-	 */
-	enum fd_render_stage stage;
+	/* which sample providers are currently enabled in the batch: */
+	uint32_t query_providers_active;
 
 	/* list of samples in current batch: */
 	struct util_dynarray samples;
@@ -229,7 +228,7 @@ struct fd_batch {
 	struct set *resources;
 
 	/** key in batch-cache (if not null): */
-	const void *key;
+	const struct fd_batch_key *key;
 	uint32_t hash;
 
 	/** set of dependent batches.. holds refs to dependent batches: */
@@ -327,15 +326,24 @@ fd_batch_lock_submit(struct fd_batch *batch)
 	return ret;
 }
 
-static inline void
-fd_batch_set_stage(struct fd_batch *batch, enum fd_render_stage stage)
+/* Since we reorder batches and can pause/resume queries (notably for disabling
+ * queries dueing some meta operations), we update the current query state for
+ * the batch before each draw.
+ */
+static inline void fd_batch_update_queries(struct fd_batch *batch)
 {
 	struct fd_context *ctx = batch->ctx;
 
-	if (ctx->query_set_stage)
-		ctx->query_set_stage(batch, stage);
+	if (ctx->query_update_batch)
+		ctx->query_update_batch(batch, false);
+}
 
-	batch->stage = stage;
+static inline void fd_batch_finish_queries(struct fd_batch *batch)
+{
+	struct fd_context *ctx = batch->ctx;
+
+	if (ctx->query_update_batch)
+		ctx->query_update_batch(batch, true);
 }
 
 static inline void

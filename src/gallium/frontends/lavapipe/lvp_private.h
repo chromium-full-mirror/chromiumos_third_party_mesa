@@ -52,7 +52,9 @@ typedef uint32_t xcb_window_t;
 
 #include "lvp_extensions.h"
 #include "lvp_entrypoints.h"
-#include "vk_object.h"
+#include "vk_device.h"
+#include "vk_instance.h"
+#include "vk_physical_device.h"
 
 #include "wsi_common.h"
 
@@ -76,14 +78,12 @@ const char *lvp_get_physical_device_entry_name(int index);
 const char *lvp_get_device_entry_name(int index);
 
 bool lvp_instance_entrypoint_is_enabled(int index, uint32_t core_version,
-                                         const struct lvp_instance_extension_table *instance);
+                                         const struct vk_instance_extension_table *instance);
 bool lvp_physical_device_entrypoint_is_enabled(int index, uint32_t core_version,
-                                                const struct lvp_instance_extension_table *instance);
+                                                const struct vk_instance_extension_table *instance);
 bool lvp_device_entrypoint_is_enabled(int index, uint32_t core_version,
-                                       const struct lvp_instance_extension_table *instance,
-                                       const struct lvp_device_extension_table *device);
-
-void *lvp_lookup_entrypoint(const char *name);
+                                       const struct vk_instance_extension_table *instance,
+                                       const struct vk_device_extension_table *device);
 
 #define LVP_DEFINE_HANDLE_CASTS(__lvp_type, __VkType)                      \
                                                                            \
@@ -202,21 +202,17 @@ mesa_to_vk_shader_stage(gl_shader_stage mesa_stage)
         __tmp &= ~(1 << (stage)))
 
 struct lvp_physical_device {
-   VK_LOADER_DATA                              _loader_data;
-   struct lvp_instance *                       instance;
+   struct vk_physical_device vk;
 
    struct pipe_loader_device *pld;
    struct pipe_screen *pscreen;
    uint32_t max_images;
 
    struct wsi_device                       wsi_device;
-   struct lvp_device_extension_table supported_extensions;
 };
 
 struct lvp_instance {
-   struct vk_object_base base;
-
-   VkAllocationCallbacks alloc;
+   struct vk_instance vk;
 
    uint32_t apiVersion;
    int physicalDeviceCount;
@@ -226,17 +222,12 @@ struct lvp_instance {
 
    struct pipe_loader_device *devs;
    int num_devices;
-
-   struct lvp_instance_extension_table enabled_extensions;
-   struct lvp_instance_dispatch_table dispatch;
-   struct lvp_physical_device_dispatch_table physical_device_dispatch;
-   struct lvp_device_dispatch_table device_dispatch;
 };
 
 VkResult lvp_init_wsi(struct lvp_physical_device *physical_device);
 void lvp_finish_wsi(struct lvp_physical_device *physical_device);
 
-bool lvp_instance_extension_supported(const char *name);
+extern const struct vk_instance_extension_table lvp_instance_extensions_supported;
 uint32_t lvp_physical_device_api_version(struct lvp_physical_device *dev);
 bool lvp_physical_device_extension_supported(struct lvp_physical_device *dev,
                                               const char *name);
@@ -276,8 +267,6 @@ struct lvp_device {
    struct pipe_screen *pscreen;
 
    mtx_t fence_lock;
-   struct lvp_device_extension_table enabled_extensions;
-   struct lvp_device_dispatch_table dispatch;
 };
 
 void lvp_device_get_cache_uuid(void *uuid);
@@ -664,6 +653,8 @@ enum lvp_cmds {
    LVP_CMD_BEGIN_TRANSFORM_FEEDBACK,
    LVP_CMD_END_TRANSFORM_FEEDBACK,
    LVP_CMD_DRAW_INDIRECT_BYTE_COUNT,
+   LVP_CMD_BEGIN_CONDITIONAL_RENDERING,
+   LVP_CMD_END_CONDITIONAL_RENDERING,
 };
 
 struct lvp_cmd_bind_pipeline {
@@ -987,6 +978,12 @@ struct lvp_cmd_draw_indirect_byte_count {
    uint32_t vertex_stride;
 };
 
+struct lvp_cmd_begin_conditional_rendering {
+   struct lvp_buffer *buffer;
+   VkDeviceSize offset;
+   bool inverted;
+};
+
 struct lvp_cmd_buffer_entry {
    struct list_head cmd_link;
    uint32_t cmd_type;
@@ -1033,6 +1030,7 @@ struct lvp_cmd_buffer_entry {
       struct lvp_cmd_begin_transform_feedback begin_transform_feedback;
       struct lvp_cmd_end_transform_feedback end_transform_feedback;
       struct lvp_cmd_draw_indirect_byte_count draw_indirect_byte_count;
+      struct lvp_cmd_begin_conditional_rendering begin_conditional_rendering;
    } u;
 };
 

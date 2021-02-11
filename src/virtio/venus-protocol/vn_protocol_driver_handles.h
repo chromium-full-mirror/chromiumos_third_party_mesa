@@ -17,18 +17,18 @@ vn_sizeof_VkInstance(const VkInstance *val)
 }
 
 static inline void
-vn_encode_VkInstance(struct vn_cs *cs, const VkInstance *val)
+vn_encode_VkInstance(struct vn_cs_encoder *enc, const VkInstance *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_INSTANCE);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkInstance(struct vn_cs *cs, VkInstance *val)
+vn_decode_VkInstance(struct vn_cs_decoder *dec, VkInstance *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_INSTANCE);
 }
 
 /* VK_DEFINE_HANDLE(VkPhysicalDevice) */
@@ -40,18 +40,18 @@ vn_sizeof_VkPhysicalDevice(const VkPhysicalDevice *val)
 }
 
 static inline void
-vn_encode_VkPhysicalDevice(struct vn_cs *cs, const VkPhysicalDevice *val)
+vn_encode_VkPhysicalDevice(struct vn_cs_encoder *enc, const VkPhysicalDevice *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_PHYSICAL_DEVICE);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkPhysicalDevice(struct vn_cs *cs, VkPhysicalDevice *val)
+vn_decode_VkPhysicalDevice(struct vn_cs_decoder *dec, VkPhysicalDevice *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_PHYSICAL_DEVICE);
 }
 
 /* VK_DEFINE_HANDLE(VkDevice) */
@@ -63,18 +63,18 @@ vn_sizeof_VkDevice(const VkDevice *val)
 }
 
 static inline void
-vn_encode_VkDevice(struct vn_cs *cs, const VkDevice *val)
+vn_encode_VkDevice(struct vn_cs_encoder *enc, const VkDevice *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, true);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_DEVICE);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkDevice(struct vn_cs *cs, VkDevice *val)
+vn_decode_VkDevice(struct vn_cs_decoder *dec, VkDevice *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, true);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_DEVICE);
 }
 
 /* VK_DEFINE_HANDLE(VkQueue) */
@@ -86,18 +86,18 @@ vn_sizeof_VkQueue(const VkQueue *val)
 }
 
 static inline void
-vn_encode_VkQueue(struct vn_cs *cs, const VkQueue *val)
+vn_encode_VkQueue(struct vn_cs_encoder *enc, const VkQueue *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_QUEUE);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkQueue(struct vn_cs *cs, VkQueue *val)
+vn_decode_VkQueue(struct vn_cs_decoder *dec, VkQueue *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_QUEUE);
 }
 
 /* VK_DEFINE_HANDLE(VkCommandBuffer) */
@@ -109,18 +109,18 @@ vn_sizeof_VkCommandBuffer(const VkCommandBuffer *val)
 }
 
 static inline void
-vn_encode_VkCommandBuffer(struct vn_cs *cs, const VkCommandBuffer *val)
+vn_encode_VkCommandBuffer(struct vn_cs_encoder *enc, const VkCommandBuffer *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_COMMAND_BUFFER);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkCommandBuffer(struct vn_cs *cs, VkCommandBuffer *val)
+vn_decode_VkCommandBuffer(struct vn_cs_decoder *dec, VkCommandBuffer *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_COMMAND_BUFFER);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDeviceMemory) */
@@ -132,18 +132,18 @@ vn_sizeof_VkDeviceMemory(const VkDeviceMemory *val)
 }
 
 static inline void
-vn_encode_VkDeviceMemory(struct vn_cs *cs, const VkDeviceMemory *val)
+vn_encode_VkDeviceMemory(struct vn_cs_encoder *enc, const VkDeviceMemory *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_DEVICE_MEMORY);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkDeviceMemory(struct vn_cs *cs, VkDeviceMemory *val)
+vn_decode_VkDeviceMemory(struct vn_cs_decoder *dec, VkDeviceMemory *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_DEVICE_MEMORY);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkCommandPool) */
@@ -155,18 +155,18 @@ vn_sizeof_VkCommandPool(const VkCommandPool *val)
 }
 
 static inline void
-vn_encode_VkCommandPool(struct vn_cs *cs, const VkCommandPool *val)
+vn_encode_VkCommandPool(struct vn_cs_encoder *enc, const VkCommandPool *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_COMMAND_POOL);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkCommandPool(struct vn_cs *cs, VkCommandPool *val)
+vn_decode_VkCommandPool(struct vn_cs_decoder *dec, VkCommandPool *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_COMMAND_POOL);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkBuffer) */
@@ -178,18 +178,18 @@ vn_sizeof_VkBuffer(const VkBuffer *val)
 }
 
 static inline void
-vn_encode_VkBuffer(struct vn_cs *cs, const VkBuffer *val)
+vn_encode_VkBuffer(struct vn_cs_encoder *enc, const VkBuffer *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_BUFFER);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkBuffer(struct vn_cs *cs, VkBuffer *val)
+vn_decode_VkBuffer(struct vn_cs_decoder *dec, VkBuffer *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_BUFFER);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkBufferView) */
@@ -201,18 +201,18 @@ vn_sizeof_VkBufferView(const VkBufferView *val)
 }
 
 static inline void
-vn_encode_VkBufferView(struct vn_cs *cs, const VkBufferView *val)
+vn_encode_VkBufferView(struct vn_cs_encoder *enc, const VkBufferView *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_BUFFER_VIEW);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkBufferView(struct vn_cs *cs, VkBufferView *val)
+vn_decode_VkBufferView(struct vn_cs_decoder *dec, VkBufferView *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_BUFFER_VIEW);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkImage) */
@@ -224,18 +224,18 @@ vn_sizeof_VkImage(const VkImage *val)
 }
 
 static inline void
-vn_encode_VkImage(struct vn_cs *cs, const VkImage *val)
+vn_encode_VkImage(struct vn_cs_encoder *enc, const VkImage *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_IMAGE);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkImage(struct vn_cs *cs, VkImage *val)
+vn_decode_VkImage(struct vn_cs_decoder *dec, VkImage *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_IMAGE);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkImageView) */
@@ -247,18 +247,18 @@ vn_sizeof_VkImageView(const VkImageView *val)
 }
 
 static inline void
-vn_encode_VkImageView(struct vn_cs *cs, const VkImageView *val)
+vn_encode_VkImageView(struct vn_cs_encoder *enc, const VkImageView *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_IMAGE_VIEW);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkImageView(struct vn_cs *cs, VkImageView *val)
+vn_decode_VkImageView(struct vn_cs_decoder *dec, VkImageView *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_IMAGE_VIEW);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkShaderModule) */
@@ -270,18 +270,18 @@ vn_sizeof_VkShaderModule(const VkShaderModule *val)
 }
 
 static inline void
-vn_encode_VkShaderModule(struct vn_cs *cs, const VkShaderModule *val)
+vn_encode_VkShaderModule(struct vn_cs_encoder *enc, const VkShaderModule *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_SHADER_MODULE);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkShaderModule(struct vn_cs *cs, VkShaderModule *val)
+vn_decode_VkShaderModule(struct vn_cs_decoder *dec, VkShaderModule *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_SHADER_MODULE);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkPipeline) */
@@ -293,18 +293,18 @@ vn_sizeof_VkPipeline(const VkPipeline *val)
 }
 
 static inline void
-vn_encode_VkPipeline(struct vn_cs *cs, const VkPipeline *val)
+vn_encode_VkPipeline(struct vn_cs_encoder *enc, const VkPipeline *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_PIPELINE);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkPipeline(struct vn_cs *cs, VkPipeline *val)
+vn_decode_VkPipeline(struct vn_cs_decoder *dec, VkPipeline *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_PIPELINE);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkPipelineLayout) */
@@ -316,18 +316,18 @@ vn_sizeof_VkPipelineLayout(const VkPipelineLayout *val)
 }
 
 static inline void
-vn_encode_VkPipelineLayout(struct vn_cs *cs, const VkPipelineLayout *val)
+vn_encode_VkPipelineLayout(struct vn_cs_encoder *enc, const VkPipelineLayout *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_PIPELINE_LAYOUT);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkPipelineLayout(struct vn_cs *cs, VkPipelineLayout *val)
+vn_decode_VkPipelineLayout(struct vn_cs_decoder *dec, VkPipelineLayout *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_PIPELINE_LAYOUT);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkSampler) */
@@ -339,18 +339,18 @@ vn_sizeof_VkSampler(const VkSampler *val)
 }
 
 static inline void
-vn_encode_VkSampler(struct vn_cs *cs, const VkSampler *val)
+vn_encode_VkSampler(struct vn_cs_encoder *enc, const VkSampler *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_SAMPLER);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkSampler(struct vn_cs *cs, VkSampler *val)
+vn_decode_VkSampler(struct vn_cs_decoder *dec, VkSampler *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_SAMPLER);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorSet) */
@@ -362,18 +362,18 @@ vn_sizeof_VkDescriptorSet(const VkDescriptorSet *val)
 }
 
 static inline void
-vn_encode_VkDescriptorSet(struct vn_cs *cs, const VkDescriptorSet *val)
+vn_encode_VkDescriptorSet(struct vn_cs_encoder *enc, const VkDescriptorSet *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_DESCRIPTOR_SET);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkDescriptorSet(struct vn_cs *cs, VkDescriptorSet *val)
+vn_decode_VkDescriptorSet(struct vn_cs_decoder *dec, VkDescriptorSet *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_DESCRIPTOR_SET);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorSetLayout) */
@@ -385,18 +385,18 @@ vn_sizeof_VkDescriptorSetLayout(const VkDescriptorSetLayout *val)
 }
 
 static inline void
-vn_encode_VkDescriptorSetLayout(struct vn_cs *cs, const VkDescriptorSetLayout *val)
+vn_encode_VkDescriptorSetLayout(struct vn_cs_encoder *enc, const VkDescriptorSetLayout *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkDescriptorSetLayout(struct vn_cs *cs, VkDescriptorSetLayout *val)
+vn_decode_VkDescriptorSetLayout(struct vn_cs_decoder *dec, VkDescriptorSetLayout *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorPool) */
@@ -408,18 +408,18 @@ vn_sizeof_VkDescriptorPool(const VkDescriptorPool *val)
 }
 
 static inline void
-vn_encode_VkDescriptorPool(struct vn_cs *cs, const VkDescriptorPool *val)
+vn_encode_VkDescriptorPool(struct vn_cs_encoder *enc, const VkDescriptorPool *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_DESCRIPTOR_POOL);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkDescriptorPool(struct vn_cs *cs, VkDescriptorPool *val)
+vn_decode_VkDescriptorPool(struct vn_cs_decoder *dec, VkDescriptorPool *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_DESCRIPTOR_POOL);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkFence) */
@@ -431,18 +431,18 @@ vn_sizeof_VkFence(const VkFence *val)
 }
 
 static inline void
-vn_encode_VkFence(struct vn_cs *cs, const VkFence *val)
+vn_encode_VkFence(struct vn_cs_encoder *enc, const VkFence *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_FENCE);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkFence(struct vn_cs *cs, VkFence *val)
+vn_decode_VkFence(struct vn_cs_decoder *dec, VkFence *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_FENCE);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkSemaphore) */
@@ -454,18 +454,18 @@ vn_sizeof_VkSemaphore(const VkSemaphore *val)
 }
 
 static inline void
-vn_encode_VkSemaphore(struct vn_cs *cs, const VkSemaphore *val)
+vn_encode_VkSemaphore(struct vn_cs_encoder *enc, const VkSemaphore *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_SEMAPHORE);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkSemaphore(struct vn_cs *cs, VkSemaphore *val)
+vn_decode_VkSemaphore(struct vn_cs_decoder *dec, VkSemaphore *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_SEMAPHORE);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkEvent) */
@@ -477,18 +477,18 @@ vn_sizeof_VkEvent(const VkEvent *val)
 }
 
 static inline void
-vn_encode_VkEvent(struct vn_cs *cs, const VkEvent *val)
+vn_encode_VkEvent(struct vn_cs_encoder *enc, const VkEvent *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_EVENT);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkEvent(struct vn_cs *cs, VkEvent *val)
+vn_decode_VkEvent(struct vn_cs_decoder *dec, VkEvent *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_EVENT);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkQueryPool) */
@@ -500,18 +500,18 @@ vn_sizeof_VkQueryPool(const VkQueryPool *val)
 }
 
 static inline void
-vn_encode_VkQueryPool(struct vn_cs *cs, const VkQueryPool *val)
+vn_encode_VkQueryPool(struct vn_cs_encoder *enc, const VkQueryPool *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_QUERY_POOL);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkQueryPool(struct vn_cs *cs, VkQueryPool *val)
+vn_decode_VkQueryPool(struct vn_cs_decoder *dec, VkQueryPool *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_QUERY_POOL);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkFramebuffer) */
@@ -523,18 +523,18 @@ vn_sizeof_VkFramebuffer(const VkFramebuffer *val)
 }
 
 static inline void
-vn_encode_VkFramebuffer(struct vn_cs *cs, const VkFramebuffer *val)
+vn_encode_VkFramebuffer(struct vn_cs_encoder *enc, const VkFramebuffer *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_FRAMEBUFFER);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkFramebuffer(struct vn_cs *cs, VkFramebuffer *val)
+vn_decode_VkFramebuffer(struct vn_cs_decoder *dec, VkFramebuffer *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_FRAMEBUFFER);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkRenderPass) */
@@ -546,18 +546,18 @@ vn_sizeof_VkRenderPass(const VkRenderPass *val)
 }
 
 static inline void
-vn_encode_VkRenderPass(struct vn_cs *cs, const VkRenderPass *val)
+vn_encode_VkRenderPass(struct vn_cs_encoder *enc, const VkRenderPass *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_RENDER_PASS);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkRenderPass(struct vn_cs *cs, VkRenderPass *val)
+vn_decode_VkRenderPass(struct vn_cs_decoder *dec, VkRenderPass *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_RENDER_PASS);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkPipelineCache) */
@@ -569,18 +569,18 @@ vn_sizeof_VkPipelineCache(const VkPipelineCache *val)
 }
 
 static inline void
-vn_encode_VkPipelineCache(struct vn_cs *cs, const VkPipelineCache *val)
+vn_encode_VkPipelineCache(struct vn_cs_encoder *enc, const VkPipelineCache *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_PIPELINE_CACHE);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkPipelineCache(struct vn_cs *cs, VkPipelineCache *val)
+vn_decode_VkPipelineCache(struct vn_cs_decoder *dec, VkPipelineCache *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_PIPELINE_CACHE);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorUpdateTemplate) */
@@ -592,18 +592,18 @@ vn_sizeof_VkDescriptorUpdateTemplate(const VkDescriptorUpdateTemplate *val)
 }
 
 static inline void
-vn_encode_VkDescriptorUpdateTemplate(struct vn_cs *cs, const VkDescriptorUpdateTemplate *val)
+vn_encode_VkDescriptorUpdateTemplate(struct vn_cs_encoder *enc, const VkDescriptorUpdateTemplate *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkDescriptorUpdateTemplate(struct vn_cs *cs, VkDescriptorUpdateTemplate *val)
+vn_decode_VkDescriptorUpdateTemplate(struct vn_cs_decoder *dec, VkDescriptorUpdateTemplate *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE);
 }
 
 /* VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkSamplerYcbcrConversion) */
@@ -615,18 +615,18 @@ vn_sizeof_VkSamplerYcbcrConversion(const VkSamplerYcbcrConversion *val)
 }
 
 static inline void
-vn_encode_VkSamplerYcbcrConversion(struct vn_cs *cs, const VkSamplerYcbcrConversion *val)
+vn_encode_VkSamplerYcbcrConversion(struct vn_cs_encoder *enc, const VkSamplerYcbcrConversion *val)
 {
-    const uint64_t id = vn_cs_handle_load_id((const void *)val, false);
-    vn_encode_uint64_t(cs, &id);
+    const uint64_t id = vn_cs_handle_load_id((const void **)val, VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION);
+    vn_encode_uint64_t(enc, &id);
 }
 
 static inline void
-vn_decode_VkSamplerYcbcrConversion(struct vn_cs *cs, VkSamplerYcbcrConversion *val)
+vn_decode_VkSamplerYcbcrConversion(struct vn_cs_decoder *dec, VkSamplerYcbcrConversion *val)
 {
     uint64_t id;
-    vn_decode_uint64_t(cs, &id);
-    vn_cs_handle_store_id((void *)val, id, false);
+    vn_decode_uint64_t(dec, &id);
+    vn_cs_handle_store_id((void **)val, id, VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION);
 }
 
 #endif /* VN_PROTOCOL_DRIVER_HANDLES_H */

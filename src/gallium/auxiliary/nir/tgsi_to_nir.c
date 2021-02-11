@@ -268,14 +268,14 @@ ttn_emit_declaration(struct ttn_compile *c)
 
       switch (sview->ReturnTypeX) {
       case TGSI_RETURN_TYPE_SINT:
-         type = nir_type_int;
+         type = nir_type_int32;
          break;
       case TGSI_RETURN_TYPE_UINT:
-         type = nir_type_uint;
+         type = nir_type_uint32;
          break;
       case TGSI_RETURN_TYPE_FLOAT:
       default:
-         type = nir_type_float;
+         type = nir_type_float32;
          break;
       }
 
@@ -414,6 +414,11 @@ ttn_emit_declaration(struct ttn_compile *c)
                   var->data.location = FRAG_RESULT_STENCIL;
                   var->type = glsl_int_type();
                   break;
+               case TGSI_SEMANTIC_SAMPLEMASK:
+                  var->data.location = FRAG_RESULT_SAMPLE_MASK;
+                  var->type = glsl_int_type();
+                  break;
+
                default:
                   fprintf(stderr, "Bad TGSI semantic: %d/%d\n",
                           decl->Semantic.Name, decl->Semantic.Index);
@@ -643,6 +648,10 @@ ttn_src_for_file_and_index(struct ttn_compile *c, unsigned file, unsigned index,
          op = nir_intrinsic_load_tess_level_outer_default;
          load = nir_load_tess_level_outer_default(b);
          break;
+      case TGSI_SEMANTIC_SAMPLEID:
+         op = nir_intrinsic_load_sample_id;
+         load = nir_load_sample_id(b);
+         break;
       default:
          unreachable("bad system value");
       }
@@ -653,8 +662,8 @@ ttn_src_for_file_and_index(struct ttn_compile *c, unsigned file, unsigned index,
          load = nir_swizzle(b, load, SWIZ(X, Y, Z, Z), 4);
 
       src = nir_src_for_ssa(load);
-      b->shader->info.system_values_read |=
-         (1ull << nir_system_value_from_intrinsic(op));
+      BITSET_SET(b->shader->info.system_values_read,
+                 nir_system_value_from_intrinsic(op));
 
       break;
    }
@@ -679,6 +688,16 @@ ttn_src_for_file_and_index(struct ttn_compile *c, unsigned file, unsigned index,
                                                       c->inputs[index]);
          return nir_src_for_ssa(nir_load_deref(&c->build, deref));
       }
+      break;
+
+   case TGSI_FILE_OUTPUT:
+      if (c->scan->processor == PIPE_SHADER_FRAGMENT) {
+         c->outputs[index]->data.fb_fetch_output = 1;
+         nir_deref_instr *deref = nir_build_deref_var(&c->build,
+                                                      c->outputs[index]);
+         return nir_src_for_ssa(nir_load_deref(&c->build, deref));
+      }
+      unreachable("unsupported output read");
       break;
 
    case TGSI_FILE_CONSTANT: {
@@ -1421,11 +1440,11 @@ ttn_tex(struct ttn_compile *c, nir_alu_dest dest, nir_ssa_def **src)
    sview = tgsi_inst->Src[samp].Register.Index;
 
    if (op == nir_texop_lod) {
-      instr->dest_type = nir_type_float;
+      instr->dest_type = nir_type_float32;
    } else if (sview < c->num_samp_types) {
       instr->dest_type = c->samp_types[sview];
    } else {
-      instr->dest_type = nir_type_float;
+      instr->dest_type = nir_type_float32;
    }
 
    nir_variable *var =
@@ -1781,6 +1800,7 @@ ttn_mem(struct ttn_compile *c, nir_alu_dest dest, nir_ssa_def **src)
 static const nir_op op_trans[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_ARL] = 0,
    [TGSI_OPCODE_MOV] = nir_op_mov,
+   [TGSI_OPCODE_FBFETCH] = nir_op_mov,
    [TGSI_OPCODE_LIT] = 0,
    [TGSI_OPCODE_RCP] = nir_op_frcp,
    [TGSI_OPCODE_RSQ] = nir_op_frsq,
@@ -2212,6 +2232,8 @@ ttn_add_output_stores(struct ttn_compile *c)
             store_value = nir_channel(b, store_value, 2);
          else if (var->data.location == FRAG_RESULT_STENCIL)
             store_value = nir_channel(b, store_value, 1);
+         else if (var->data.location == FRAG_RESULT_SAMPLE_MASK)
+            store_value = nir_channel(b, store_value, 0);
       } else {
          /* FOGC and PSIZ are scalar values */
          if (var->data.location == VARYING_SLOT_FOGC ||
@@ -2360,6 +2382,9 @@ ttn_compile_init(const void *tgsi_tokens,
       case TGSI_PROPERTY_CS_USER_DATA_COMPONENTS_AMD:
          if (s->info.stage == MESA_SHADER_COMPUTE)
             s->info.cs.user_data_components_amd = value;
+         break;
+      case TGSI_PROPERTY_NUM_CLIPDIST_ENABLED:
+         s->info.clip_distance_array_size = value;
          break;
       default:
          if (value) {

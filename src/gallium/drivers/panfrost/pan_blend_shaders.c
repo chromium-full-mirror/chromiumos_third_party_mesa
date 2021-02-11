@@ -25,10 +25,9 @@
 
 #include <stdio.h>
 #include "pan_blend_shaders.h"
+#include "pan_shader.h"
 #include "pan_util.h"
 #include "panfrost-quirks.h"
-#include "midgard/midgard_compile.h"
-#include "bifrost/bifrost_compile.h"
 #include "compiler/nir/nir_builder.h"
 #include "nir/nir_lower_blend.h"
 #include "panfrost/util/pan_lower_framebuffer.h"
@@ -206,7 +205,7 @@ panfrost_create_blend_shader(struct panfrost_context *ctx,
 
         nir_lower_blend_options options = nir_make_options(&state->base, key->rt);
         options.format = key->format;
-        options.is_bifrost = !!(dev->quirks & IS_BIFROST);
+        options.is_bifrost = pan_is_bifrost(dev);
         options.src1 = s_src[1];
 
         if (T == nir_type_float16)
@@ -298,13 +297,12 @@ panfrost_compile_blend_shader(struct panfrost_blend_shader *shader,
 
         panfrost_program *program;
 
-        if (dev->quirks & IS_BIFROST) {
+        if (pan_is_bifrost(dev)) {
                 inputs.blend.bifrost_blend_desc =
                         bifrost_get_blend_desc(dev, shader->key.format, shader->key.rt);
-                program = bifrost_compile_shader_nir(NULL, shader->nir, &inputs);
-	} else {
-                program = midgard_compile_shader_nir(NULL, shader->nir, &inputs);
         }
+
+        program = panfrost_compile_shader(dev, NULL, shader->nir, &inputs);
 
         /* Allow us to patch later */
         shader->first_tag = program->first_tag;

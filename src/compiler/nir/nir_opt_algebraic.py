@@ -40,6 +40,9 @@ c = 'c'
 d = 'd'
 e = 'e'
 
+signed_zero_inf_nan_preserve_16 = 'nir_is_float_control_signed_zero_inf_nan_preserve(info->float_controls_execution_mode, 16)'
+signed_zero_inf_nan_preserve_32 = 'nir_is_float_control_signed_zero_inf_nan_preserve(info->float_controls_execution_mode, 32)'
+
 # Written in the form (<search>, <replace>) where <search> is an expression
 # and <replace> is either an expression or a value.  An expression is
 # defined as a tuple of the form ([~]<op>, <src0>, <src1>, <src2>, <src3>)
@@ -124,6 +127,11 @@ optimizations = [
    (('f2b', ('fneg', a)), ('f2b', a)),
    (('i2b', ('ineg', a)), ('i2b', a)),
    (('~fadd', a, 0.0), a),
+   # a+0.0 is 'a' unless 'a' is denormal or -0.0. If it's only used by a
+   # floating point instruction, they should flush any input denormals and we
+   # can replace -0.0 with 0.0 if the float execution mode allows it.
+   (('fadd(is_only_used_as_float)', 'a@16', 0.0), a, '!'+signed_zero_inf_nan_preserve_16),
+   (('fadd(is_only_used_as_float)', 'a@32', 0.0), a, '!'+signed_zero_inf_nan_preserve_32),
    (('iadd', a, 0), a),
    (('usadd_4x8', a, 0), a),
    (('usadd_4x8', a, ~0), ~0),
@@ -139,10 +147,17 @@ optimizations = [
    (('~fadd', a, ('fadd', ('fneg', a), b)), b),
    (('fadd', ('fsat', a), ('fsat', ('fneg', a))), ('fsat', ('fabs', a))),
    (('~fmul', a, 0.0), 0.0),
+   # The only effect a*0.0 should have is when 'a' is infinity, -0.0 or NaN
+   (('fmul', 'a@16', 0.0), 0.0, '!'+signed_zero_inf_nan_preserve_16),
+   (('fmul', 'a@32', 0.0), 0.0, '!'+signed_zero_inf_nan_preserve_32),
    (('imul', a, 0), 0),
    (('umul_unorm_4x8', a, 0), 0),
    (('umul_unorm_4x8', a, ~0), a),
    (('~fmul', a, 1.0), a),
+   # The only effect a*1.0 can have is flushing denormals. If it's only used by
+   # a floating point instruction, they should flush any input denormals and
+   # this multiplication isn't needed.
+   (('fmul(is_only_used_as_float)', a, 1.0), a),
    (('imul', a, 1), a),
    (('fmul', a, -1.0), ('fneg', a)),
    (('imul', a, -1), ('ineg', a)),
@@ -153,7 +168,11 @@ optimizations = [
    (('fmul', ('fsign', a), ('fmul', a, a)), ('fmul', ('fabs', a), a)),
    (('fmul', ('fmul', ('fsign', a), a), a), ('fmul', ('fabs', a), a)),
    (('~ffma', 0.0, a, b), b),
+   (('ffma@16(is_only_used_as_float)', 0.0, a, b), b, '!'+signed_zero_inf_nan_preserve_16),
+   (('ffma@32(is_only_used_as_float)', 0.0, a, b), b, '!'+signed_zero_inf_nan_preserve_32),
    (('~ffma', a, b, 0.0), ('fmul', a, b)),
+   (('ffma@16', a, b, 0.0), ('fmul', a, b), '!'+signed_zero_inf_nan_preserve_16),
+   (('ffma@32', a, b, 0.0), ('fmul', a, b), '!'+signed_zero_inf_nan_preserve_32),
    (('ffma', 1.0, a, b), ('fadd', a, b)),
    (('ffma', -1.0, a, b), ('fadd', ('fneg', a), b)),
    (('~flrp', a, b, 0.0), a),
@@ -273,17 +292,27 @@ for s in [8, 16, 32, 64]:
 # Optimize a pattern of address calculation created by DXVK where the offset is
 # divided by 4 and then multipled by 4. This can be turned into an iand and the
 # additions before can be reassociated to CSE the iand instruction.
+
+for size, mask in ((8, 0xff), (16, 0xffff), (32, 0xffffffff), (64, 0xffffffffffffffff)):
+    a_sz = 'a@{}'.format(size)
+
+    optimizations.extend([
+       # 'a >> #b << #b' -> 'a & ~((1 << #b) - 1)'
+       (('ishl', ('ushr', a_sz, '#b'), b), ('iand', a, ('ishl', mask, b))),
+       (('ishl', ('ishr', a_sz, '#b'), b), ('iand', a, ('ishl', mask, b))),
+
+       # This does not trivially work with ishr.
+       (('ushr', ('ishl', a_sz, '#b'), b), ('iand', a, ('ushr', mask, b))),
+    ])
+
 for log2 in range(1, 7): # powers of two from 2 to 64
    v = 1 << log2
    mask = 0xffffffff & ~(v - 1)
    b_is_multiple = '#b(is_unsigned_multiple_of_{})'.format(v)
 
    optimizations.extend([
-       # 'a >> #b << #b' -> 'a & ~((1 << #b) - 1)'
-       (('ishl', ('ushr', a, log2), log2), ('iand', a, mask)),
-
        # Reassociate for improved CSE
-       (('iand', ('iadd', a, b_is_multiple), mask), ('iadd', ('iand', a, mask), b)),
+       (('iand@32', ('iadd@32', a, b_is_multiple), mask), ('iadd', ('iand', a, mask), b)),
    ])
 
 # To save space in the state tables, reduce to the set that is known to help.
@@ -358,8 +387,12 @@ optimizations.extend([
    (('fneu', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('fneu', a, b)),
 
    (('fge', ('fsat(is_used_once)', a), 1.0), ('fge', a, 1.0)),
-   (('flt', ('fsat(is_used_once)', a), 1.0), ('flt', a, 1.0)),
-   (('fge', 0.0, ('fsat(is_used_once)', a)), ('fge', 0.0, a)),
+   # flt(fsat(a), 1.0) is inexact because it returns True if a is NaN
+   # (fsat(NaN) is 0), while flt(a, 1.0) always returns FALSE.
+   (('~flt', ('fsat(is_used_once)', a), 1.0), ('flt', a, 1.0)),
+   # fge(0.0, fsat(a)) is inexact because it returns True if a is NaN
+   # (fsat(NaN) is 0), while fge(0.0, a) always returns FALSE.
+   (('~fge', 0.0, ('fsat(is_used_once)', a)), ('fge', 0.0, a)),
    (('flt', 0.0, ('fsat(is_used_once)', a)), ('flt', 0.0, a)),
 
    # 0.0 >= b2f(a)
@@ -433,7 +466,7 @@ optimizations.extend([
    (('ine', ('iadd', a, b), a), ('ine', b, 0)),
 
    (('feq', ('b2f', 'a@1'), 0.0), ('inot', a)),
-   (('~fneu', ('b2f', 'a@1'), 0.0), a),
+   (('fneu', ('b2f', 'a@1'), 0.0), a),
    (('ieq', ('b2i', 'a@1'), 0),   ('inot', a)),
    (('ine', ('b2i', 'a@1'), 0),   a),
 
@@ -2120,10 +2153,15 @@ late_optimizations = [
    # new patterns like these.  The patterns that compare with zero are removed
    # because they are unlikely to be created in by anything in
    # late_optimizations.
-   (('flt', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('flt', a, b)),
+
+   # flt(fsat(a), b > 0 && b < 1) is inexact if a is NaN (fsat(NaN) is 0)
+   # because it returns True while flt(a, b) always returns False.
+   (('~flt', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('flt', a, b)),
    (('flt', '#b(is_gt_0_and_lt_1)', ('fsat(is_used_once)', a)), ('flt', b, a)),
    (('fge', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('fge', a, b)),
-   (('fge', '#b(is_gt_0_and_lt_1)', ('fsat(is_used_once)', a)), ('fge', b, a)),
+   # fge(b > 0 && b < 1, fsat(a)) is inexact if a is NaN (fsat(NaN) is 0)
+   # because it returns True while fge(b, a) always returns False.
+   (('~fge', '#b(is_gt_0_and_lt_1)', ('fsat(is_used_once)', a)), ('fge', b, a)),
    (('feq', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('feq', a, b)),
    (('fneu', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('fneu', a, b)),
 

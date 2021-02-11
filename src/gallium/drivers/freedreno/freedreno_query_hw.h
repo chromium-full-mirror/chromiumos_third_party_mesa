@@ -71,8 +71,8 @@
 struct fd_hw_sample_provider {
 	unsigned query_type;
 
-	/* stages applicable to the query type: */
-	enum fd_render_stage active;
+	/* Set if the provider should still count while !ctx->active_queries */
+	bool always;
 
 	/* Optional hook for enabling a counter.  Guaranteed to happen
 	 * at least once before the first ->get_sample() in a batch.
@@ -144,7 +144,7 @@ void __fd_hw_sample_destroy(struct fd_context *ctx, struct fd_hw_sample *samp);
 void fd_hw_query_prepare(struct fd_batch *batch, uint32_t num_tiles);
 void fd_hw_query_prepare_tile(struct fd_batch *batch, uint32_t n,
 		struct fd_ringbuffer *ring);
-void fd_hw_query_set_stage(struct fd_batch *batch, enum fd_render_stage stage);
+void fd_hw_query_update_batch(struct fd_batch *batch, bool end_batch);
 void fd_hw_query_enable(struct fd_batch *batch, struct fd_ringbuffer *ring);
 void fd_hw_query_register_provider(struct pipe_context *pctx,
 		const struct fd_hw_sample_provider *provider);

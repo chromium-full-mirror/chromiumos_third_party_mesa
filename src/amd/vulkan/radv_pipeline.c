@@ -2229,8 +2229,6 @@ gfx10_get_ngg_info(const struct radv_pipeline_key *key,
 		ngg->vgt_esgs_ring_itemsize = 1;
 	}
 
-	pipeline->graphics.esgs_ring_size = ngg->esgs_ring_size;
-
 	assert(ngg->hw_max_esverts >= min_esverts); /* HW limitation */
 }
 
@@ -4161,7 +4159,7 @@ radv_pipeline_generate_depth_stencil_state(struct radeon_cmdbuf *ctx_cs,
 		db_render_override2 |= S_028010_DECOMPRESS_Z_ON_FLUSH(attachment->samples > 2);
 
 		if (pipeline->device->physical_device->rad_info.chip_class >= GFX10_3)
-			db_render_override2 |= S_028010_CENTROID_COMPUTATION_MODE(2);
+			db_render_override2 |= S_028010_CENTROID_COMPUTATION_MODE(1);
 	}
 
 	if (attachment && extra) {

@@ -90,10 +90,7 @@ st_update_fp( struct st_context *st )
 
    if (st->shader_has_one_variant[MESA_SHADER_FRAGMENT] &&
        !stfp->ati_fs && /* ATI_fragment_shader always has multiple variants */
-       !stfp->Base.ExternalSamplersUsed && /* external samplers need variants */
-       stfp->variants &&
-       !st_fp_variant(stfp->variants)->key.drawpixels &&
-       !st_fp_variant(stfp->variants)->key.bitmap) {
+       !stfp->Base.ExternalSamplersUsed /* external samplers need variants */) {
       shader = stfp->variants->driver_shader;
    } else {
       struct st_fp_variant_key key;
@@ -114,6 +111,11 @@ st_update_fp( struct st_context *st )
       /* _NEW_LIGHT | _NEW_PROGRAM */
       key.lower_two_sided_color = st->lower_two_sided_color &&
          _mesa_vertex_program_two_side_enabled(st->ctx);
+
+      /* _NEW_POINT | _NEW_PROGRAM */
+      if (st->lower_texcoord_replace && st->ctx->Point.PointSprite &&
+          st->ctx->Point.CoordReplace)
+         key.lower_texcoord_replace = st->ctx->Point.CoordReplace;
 
       /* gl_driver_flags::NewFragClamp */
       key.clamp_color = st->clamp_frag_color_in_shader &&
@@ -170,9 +172,7 @@ st_update_vp( struct st_context *st )
    assert(stvp->Base.Target == GL_VERTEX_PROGRAM_ARB);
 
    if (st->shader_has_one_variant[MESA_SHADER_VERTEX] &&
-       stvp->variants &&
-       st_common_variant(stvp->variants)->key.passthrough_edgeflags == st->vertdata_edgeflags &&
-       !st_common_variant(stvp->variants)->key.is_draw_shader) {
+       !st->vertdata_edgeflags) {
       st->vp_variant = st_common_variant(stvp->variants);
    } else {
       struct st_common_variant_key key;
@@ -244,7 +244,7 @@ st_update_common_program(struct st_context *st, struct gl_program *prog,
    stp = st_program(prog);
    st_reference_prog(st, dst, stp);
 
-   if (st->shader_has_one_variant[prog->info.stage] && stp->variants)
+   if (st->shader_has_one_variant[prog->info.stage])
       return stp->variants->driver_shader;
 
    struct st_common_variant_key key;

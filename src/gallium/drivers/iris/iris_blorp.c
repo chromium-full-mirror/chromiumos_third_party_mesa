@@ -360,6 +360,9 @@ iris_blorp_exec(struct blorp_batch *blorp_batch,
    ice->state.dirty |= ~skip_bits;
    ice->state.stage_dirty |= ~skip_stage_bits;
 
+   for (int i = 0; i < ARRAY_SIZE(ice->shaders.urb.size); i++)
+      ice->shaders.urb.size[i] = 0;
+
    if (params->src.enabled)
       iris_bo_bump_seqno(params->src.addr.buffer, batch->next_seqno,
                          IRIS_DOMAIN_OTHER_READ);
@@ -372,6 +375,19 @@ iris_blorp_exec(struct blorp_batch *blorp_batch,
    if (params->stencil.enabled)
       iris_bo_bump_seqno(params->stencil.addr.buffer, batch->next_seqno,
                          IRIS_DOMAIN_DEPTH_WRITE);
+}
+
+static void
+blorp_measure_start(struct blorp_batch *blorp_batch,
+                    const struct blorp_params *params)
+{
+   struct iris_context *ice = blorp_batch->blorp->driver_ctx;
+   struct iris_batch *batch = blorp_batch->driver_batch;
+
+   if (batch->measure == NULL)
+      return;
+
+   iris_measure_snapshot(ice, batch, params->snapshot_type, NULL, NULL, NULL);
 }
 
 void

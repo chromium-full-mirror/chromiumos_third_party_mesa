@@ -207,7 +207,7 @@ void r600_draw_rectangle(struct blitter_context *blitter,
 	vbuffer.stride = 2 * 4 * sizeof(float); /* vertex size */
 	vbuffer.buffer_offset = offset;
 
-	rctx->b.set_vertex_buffers(&rctx->b, blitter->vb_slot, 1, &vbuffer);
+	rctx->b.set_vertex_buffers(&rctx->b, blitter->vb_slot, 1, 0, false, &vbuffer);
 	util_draw_arrays_instanced(&rctx->b, R600_PRIM_RECTANGLE_LIST, 0, 3,
 				   0, num_instances);
 	pipe_resource_reference(&buf, NULL);
@@ -228,8 +228,8 @@ static void r600_dma_emit_wait_idle(struct r600_common_context *rctx)
 void r600_need_dma_space(struct r600_common_context *ctx, unsigned num_dw,
                          struct r600_resource *dst, struct r600_resource *src)
 {
-	uint64_t vram = ctx->dma.cs.used_vram;
-	uint64_t gtt = ctx->dma.cs.used_gart;
+	uint64_t vram = (uint64_t)ctx->dma.cs.used_vram_kb * 1024;
+	uint64_t gtt = (uint64_t)ctx->dma.cs.used_gart_kb * 1024;
 
 	if (dst) {
 		vram += dst->vram_usage;
@@ -264,7 +264,7 @@ void r600_need_dma_space(struct r600_common_context *ctx, unsigned num_dw,
 	 */
 	num_dw++; /* for emit_wait_idle below */
 	if (!ctx->ws->cs_check_space(&ctx->dma.cs, num_dw, false) ||
-	    ctx->dma.cs.used_vram + ctx->dma.cs.used_gart > 64 * 1024 * 1024 ||
+	    ctx->dma.cs.used_vram_kb + ctx->dma.cs.used_gart_kb > 64 * 1024 ||
 	    !radeon_cs_memory_below_limit(ctx->screen, &ctx->dma.cs, vram, gtt)) {
 		ctx->dma.flush(ctx, PIPE_FLUSH_ASYNC, NULL);
 		assert((num_dw + ctx->dma.cs.current.cdw) <= ctx->dma.cs.current.max_dw);

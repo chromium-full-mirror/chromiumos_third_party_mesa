@@ -97,12 +97,13 @@ fd_set_min_samples(struct pipe_context *pctx, unsigned min_samples)
 static void
 fd_set_constant_buffer(struct pipe_context *pctx,
 		enum pipe_shader_type shader, uint index,
+		bool take_ownership,
 		const struct pipe_constant_buffer *cb)
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct fd_constbuf_stateobj *so = &ctx->constbuf[shader];
 
-	util_copy_constant_buffer(&so->cb[index], cb);
+	util_copy_constant_buffer(&so->cb[index], cb, take_ownership);
 
 	/* Note that gallium frontends can unbind constant buffers by
 	 * passing NULL here.
@@ -164,6 +165,7 @@ void
 fd_set_shader_images(struct pipe_context *pctx,
 		enum pipe_shader_type shader,
 		unsigned start, unsigned count,
+		unsigned unbind_num_trailing_slots,
 		const struct pipe_image_view *images)
 {
 	struct fd_context *ctx = fd_context(pctx);
@@ -205,6 +207,11 @@ fd_set_shader_images(struct pipe_context *pctx,
 		so->enabled_mask &= ~mask;
 	}
 
+	for (unsigned i = 0; i < unbind_num_trailing_slots; i++)
+		pipe_resource_reference(&so->si[i + start + count].resource, NULL);
+
+	so->enabled_mask &= ~(BITFIELD_MASK(unbind_num_trailing_slots) << (start + count));
+
 	ctx->dirty_shader[shader] |= FD_DIRTY_SHADER_IMAGE;
 	ctx->dirty |= FD_DIRTY_IMAGE;
 }
@@ -244,10 +251,11 @@ fd_set_framebuffer_state(struct pipe_context *pctx,
 		fd_batch_reference(&old_batch, ctx->batch);
 
 		if (likely(old_batch))
-			fd_batch_set_stage(old_batch, FD_STAGE_NULL);
+			fd_batch_finish_queries(old_batch);
 
 		fd_batch_reference(&ctx->batch, NULL);
 		fd_context_all_dirty(ctx);
+		ctx->update_active_queries = true;
 
 		if (old_batch && old_batch->blit && !old_batch->back_blit) {
 			/* for blits, there is not really much point in hanging on
@@ -324,14 +332,13 @@ fd_set_viewport_states(struct pipe_context *pctx,
 		swap(miny, maxy);
 	}
 
-	debug_assert(miny >= 0);
-	debug_assert(maxy >= 0);
+	const float max_dims = ctx->screen->gpu_id >= 400 ? 16384.f : 4096.f;
 
-	/* Convert to integer and round up the max bounds. */
-	scissor->minx = minx;
-	scissor->miny = miny;
-	scissor->maxx = ceilf(maxx);
-	scissor->maxy = ceilf(maxy);
+	/* Clamp, convert to integer and round up the max bounds. */
+	scissor->minx = CLAMP(minx, 0.f, max_dims);
+	scissor->miny = CLAMP(miny, 0.f, max_dims);
+	scissor->maxx = CLAMP(ceilf(maxx), 0.f, max_dims);
+	scissor->maxy = CLAMP(ceilf(maxy), 0.f, max_dims);
 
 	ctx->dirty |= FD_DIRTY_VIEWPORT;
 }
@@ -339,6 +346,8 @@ fd_set_viewport_states(struct pipe_context *pctx,
 static void
 fd_set_vertex_buffers(struct pipe_context *pctx,
 		unsigned start_slot, unsigned count,
+		unsigned unbind_num_trailing_slots,
+		bool take_ownership,
 		const struct pipe_vertex_buffer *vb)
 {
 	struct fd_context *ctx = fd_context(pctx);
@@ -362,7 +371,9 @@ fd_set_vertex_buffers(struct pipe_context *pctx,
 		}
 	}
 
-	util_set_vertex_buffers_mask(so->vb, &so->enabled_mask, vb, start_slot, count);
+	util_set_vertex_buffers_mask(so->vb, &so->enabled_mask, vb, start_slot,
+				     count, unbind_num_trailing_slots,
+				     take_ownership);
 	so->count = util_last_bit(so->enabled_mask);
 
 	if (!vb)

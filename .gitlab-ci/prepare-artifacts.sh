@@ -18,20 +18,20 @@ if [ -n "$CROSS" ]; then
 else
     STRIP="strip"
 fi
-find install -name \*.so -exec $STRIP {} \;
+if [ -z "$ARTIFACTS_DEBUG_SYMBOLS"]; then
+    find install -name \*.so -exec $STRIP {} \;
+fi
 
 # Test runs don't pull down the git tree, so put the dEQP helper
 # script and associated bits there.
 echo "$(cat VERSION) (git-$(git rev-parse HEAD | cut -b -10))" >> install/VERSION
 cp -Rp .gitlab-ci/bare-metal install/
-cp -Rp .gitlab-ci/deqp* install/
 cp -Rp .gitlab-ci/piglit install/
-cp -Rp .gitlab-ci/traces*.yml install/
 cp -Rp .gitlab-ci/fossils.yml install/
 cp -Rp .gitlab-ci/fossils install/
 cp -Rp .gitlab-ci/fossilize-runner.sh install/
 cp -Rp .gitlab-ci/deqp-runner.sh install/
-cp -Rp .gitlab-ci/deqp-*.txt install/
+cp -Rp ci-expects/*/* install/
 
 # Tar up the install dir so that symlinks and hardlinks aren't each
 # packed separately in the zip file.

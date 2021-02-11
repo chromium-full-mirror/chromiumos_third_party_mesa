@@ -30,10 +30,9 @@
 #include "pan_cmdstream.h"
 #include "panfrost-quirks.h"
 #include "pan_bo.h"
+#include "pan_shader.h"
 #include "util/u_memory.h"
 #include "nir_serialize.h"
-#include "midgard/midgard_compile.h"
-#include "bifrost/bifrost_compile.h"
 
 /* Compute CSOs are tracked like graphics shader CSOs, but are
  * considerably simpler. We do not implement multiple
@@ -65,8 +64,7 @@ panfrost_create_compute_state(
                 blob_reader_init(&reader, hdr->blob, hdr->num_bytes);
 
                 const struct nir_shader_compiler_options *options =
-                        (dev->quirks & IS_BIFROST) ? &bifrost_nir_options
-                                                   : &midgard_nir_options;
+                        panfrost_get_shader_options(dev);
 
                 so->cbase.prog = nir_deserialize(NULL, options, &reader);
                 so->cbase.ir_type = PIPE_SHADER_IR_NIR;
@@ -128,7 +126,7 @@ panfrost_launch_grid(struct pipe_context *pipe,
         };
 
         if (info->input)
-                pipe->set_constant_buffer(pipe, PIPE_SHADER_COMPUTE, 0, &ubuf);
+                pipe->set_constant_buffer(pipe, PIPE_SHADER_COMPUTE, 0, false, &ubuf);
 
         /* Invoke according to the grid info */
 
@@ -150,9 +148,10 @@ panfrost_launch_grid(struct pipe_context *pipe,
 
         pan_section_pack(t.cpu, COMPUTE_JOB, DRAW, cfg) {
                 cfg.draw_descriptor_is_64b = true;
-                if (!(dev->quirks & IS_BIFROST))
+                if (!pan_is_bifrost(dev))
                         cfg.texture_descriptor_is_64b = true;
                 cfg.state = panfrost_emit_compute_shader_meta(batch, PIPE_SHADER_COMPUTE);
+                cfg.attributes = panfrost_emit_image_attribs(batch, &cfg.attribute_buffers, PIPE_SHADER_COMPUTE);
                 cfg.thread_storage = panfrost_emit_shared_memory(batch, info);
                 cfg.uniform_buffers = panfrost_emit_const_buf(batch,
                                 PIPE_SHADER_COMPUTE, &cfg.push_uniforms);
