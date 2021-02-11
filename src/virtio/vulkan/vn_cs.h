@@ -27,6 +27,7 @@
 
 struct vn_cs_encoder_buffer {
    struct vn_renderer_bo *bo;
+   size_t offset;
    void *base;
    size_t committed_size;
 };
