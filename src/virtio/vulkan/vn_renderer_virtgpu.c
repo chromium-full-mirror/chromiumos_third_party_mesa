@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/mman.h>
@@ -16,7 +17,6 @@
 #define VIRGL_RENDERER_UNSTABLE_APIS
 #include "virtio-gpu/virglrenderer_hw.h"
 
-#include "vn_device.h"
 #include "vn_renderer.h"
 
 /* XXX WIP kernel uapi */

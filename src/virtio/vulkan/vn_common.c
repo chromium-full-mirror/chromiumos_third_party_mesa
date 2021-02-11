@@ -11,7 +11,6 @@
 #include "vn_common.h"
 
 #include <stdarg.h>
-#include <stdio.h>
 
 #include "util/debug.h"
 #include "util/log.h"
