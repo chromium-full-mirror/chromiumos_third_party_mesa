@@ -31,6 +31,7 @@
 #include "util/os_time.h"
 #include "common/gen_l3_config.h"
 #include "common/gen_disasm.h"
+#include "common/gen_sample_positions.h"
 #include "anv_private.h"
 #include "compiler/brw_nir.h"
 #include "anv_nir.h"
@@ -112,10 +113,8 @@ static void anv_spirv_nir_debug(void *private_data,
 
    snprintf(buffer, sizeof(buffer), "SPIR-V offset %lu: %s", (unsigned long) spirv_offset, message);
 
-   vk_debug_report(&instance->debug_report_callbacks,
-                   vk_flags[level],
-                   VK_DEBUG_REPORT_OBJECT_TYPE_SHADER_MODULE_EXT,
-                   (uint64_t) (uintptr_t) debug_data->module,
+   vk_debug_report(&instance->vk, vk_flags[level],
+                   &debug_data->module->base,
                    0, 0, "anv", buffer);
 }
 
@@ -217,6 +216,7 @@ anv_shader_compile_to_nir(struct anv_device *device,
          .variable_pointers = true,
          .vk_memory_model = true,
          .vk_memory_model_device_scope = true,
+         .workgroup_memory_explicit_layout = true,
       },
       .ubo_addr_format = nir_address_format_32bit_index_offset,
       .ssbo_addr_format =
@@ -1402,12 +1402,10 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
           */
          assert(found < __builtin_popcount(pipeline->active_stages));
 
-         vk_debug_report(&pipeline->base.device->physical->instance->debug_report_callbacks,
+         vk_debug_report(&pipeline->base.device->physical->instance->vk,
                          VK_DEBUG_REPORT_WARNING_BIT_EXT |
                          VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT,
-                         VK_DEBUG_REPORT_OBJECT_TYPE_PIPELINE_CACHE_EXT,
-                         (uint64_t)(uintptr_t)cache,
-                         0, 0, "anv",
+                         &cache->base, 0, 0, "anv",
                          "Found a partial pipeline in the cache.  This is "
                          "most likely caused by an incomplete pipeline cache "
                          "import or export");
@@ -1743,10 +1741,29 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
 
       anv_pipeline_lower_nir(&pipeline->base, mem_ctx, &stage, layout);
 
-      NIR_PASS_V(stage.nir, nir_lower_vars_to_explicit_types,
-                 nir_var_mem_shared, shared_type_info);
+      if (!stage.nir->info.cs.shared_memory_explicit_layout) {
+         NIR_PASS_V(stage.nir, nir_lower_vars_to_explicit_types,
+                    nir_var_mem_shared, shared_type_info);
+      }
+
       NIR_PASS_V(stage.nir, nir_lower_explicit_io,
                  nir_var_mem_shared, nir_address_format_32bit_offset);
+
+      if (stage.nir->info.cs.zero_initialize_shared_memory &&
+          stage.nir->info.cs.shared_size > 0) {
+         /* The effective Shared Local Memory size is at least 1024 bytes and
+          * is always rounded to a power of two, so it is OK to align the size
+          * used by the shader to chunk_size -- which does simplify the logic.
+          */
+         const unsigned chunk_size = 16;
+         const unsigned shared_size = ALIGN(stage.nir->info.cs.shared_size, chunk_size);
+         assert(shared_size <=
+                calculate_gen_slm_size(compiler->devinfo->gen, stage.nir->info.cs.shared_size));
+
+         NIR_PASS_V(stage.nir, nir_zero_initialize_shared_memory,
+                    shared_size, chunk_size);
+      }
+
       NIR_PASS_V(stage.nir, brw_nir_lower_cs_intrinsics);
 
       stage.num_stats = 1;
@@ -2037,6 +2054,34 @@ copy_non_dynamic_state(struct anv_graphics_pipeline *pipeline,
       if (states & ANV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE) {
          dynamic->line_stipple.factor = line_state->lineStippleFactor;
          dynamic->line_stipple.pattern = line_state->lineStipplePattern;
+      }
+   }
+
+   if (states & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS) {
+      const VkPipelineMultisampleStateCreateInfo *ms_info =
+         pCreateInfo->pMultisampleState;
+      const VkPipelineSampleLocationsStateCreateInfoEXT *sl_info = ms_info ?
+         vk_find_struct_const(ms_info, PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT) : NULL;
+
+      if (sl_info) {
+         dynamic->sample_locations.samples =
+            sl_info->sampleLocationsInfo.sampleLocationsCount;
+         const VkSampleLocationEXT *positions =
+            sl_info->sampleLocationsInfo.pSampleLocations;
+         for (uint32_t i = 0; i < dynamic->sample_locations.samples; i++) {
+            dynamic->sample_locations.locations[i].x = positions[i].x;
+            dynamic->sample_locations.locations[i].y = positions[i].y;
+         }
+
+      } else {
+         dynamic->sample_locations.samples =
+            ms_info ? ms_info->rasterizationSamples : 1;
+         const struct gen_sample_position *positions =
+            gen_get_sample_positions(dynamic->sample_locations.samples);
+         for (uint32_t i = 0; i < dynamic->sample_locations.samples; i++) {
+            dynamic->sample_locations.locations[i].x = positions[i].x;
+            dynamic->sample_locations.locations[i].y = positions[i].y;
+         }
       }
    }
 

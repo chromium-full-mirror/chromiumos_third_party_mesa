@@ -91,7 +91,13 @@ panfrost_query_core_count(int fd)
         unsigned mask = panfrost_query_raw(fd,
                         DRM_PANFROST_PARAM_SHADER_PRESENT, false, 0xffff);
 
-        return util_bitcount(mask);
+        /* Some cores might be absent. For TLS computation purposes, we care
+         * about the greatest ID + 1, which equals the core count if all cores
+         * are present, but allocates space for absent cores if needed.
+         * util_last_bit is defined to return the greatest bit set + 1, which
+         * is exactly what we need. */
+
+        return util_last_bit(mask);
 }
 
 /* Architectural maximums, since this register may be not implemented
@@ -247,11 +253,14 @@ panfrost_open_device(void *memctx, int fd, struct panfrost_device *dev)
 
         dev->tiler_heap = panfrost_bo_create(dev, 4096 * 4096,
                         PAN_BO_INVISIBLE | PAN_BO_GROWABLE);
+
+        pthread_mutex_init(&dev->submit_lock, NULL);
 }
 
 void
 panfrost_close_device(struct panfrost_device *dev)
 {
+        pthread_mutex_destroy(&dev->submit_lock);
         panfrost_bo_unreference(dev->blit_shaders.bo);
         panfrost_bo_unreference(dev->tiler_heap);
         panfrost_bo_cache_evict_all(dev);

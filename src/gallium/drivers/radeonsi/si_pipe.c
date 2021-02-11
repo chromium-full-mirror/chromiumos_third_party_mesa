@@ -213,7 +213,7 @@ static void si_destroy_context(struct pipe_context *context)
    if (sctx->cs_preamble_gs_rings)
       si_pm4_free_state(sctx, sctx->cs_preamble_gs_rings, ~0);
    for (i = 0; i < ARRAY_SIZE(sctx->vgt_shader_config); i++)
-      si_pm4_delete_state(sctx, vgt_shader_config, sctx->vgt_shader_config[i]);
+      si_pm4_free_state(sctx, sctx->vgt_shader_config[i], SI_STATE_IDX(vgt_shader_config));
 
    if (sctx->fixed_func_tcs_shader.cso)
       sctx->b.delete_tcs_state(&sctx->b, sctx->fixed_func_tcs_shader.cso);
@@ -385,6 +385,9 @@ static void si_emit_string_marker(struct pipe_context *ctx, const char *string, 
    struct si_context *sctx = (struct si_context *)ctx;
 
    dd_parse_apitrace_marker(string, len, &sctx->apitrace_call_number);
+
+   if (sctx->thread_trace_enabled)
+      si_write_user_event(sctx, &sctx->gfx_cs, UserEventTrigger, string, len);
 
    if (sctx->log)
       u_log_printf(sctx->log, "\nString marker: %*s\n", len, string);
@@ -652,7 +655,7 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
       unsigned start_shader = sctx->has_graphics ? 0 : PIPE_SHADER_COMPUTE;
       for (shader = start_shader; shader < SI_NUM_SHADERS; shader++) {
          for (i = 0; i < SI_NUM_CONST_BUFFERS; i++) {
-            sctx->b.set_constant_buffer(&sctx->b, shader, i, &sctx->null_const_buf);
+            sctx->b.set_constant_buffer(&sctx->b, shader, i, false, &sctx->null_const_buf);
          }
       }
 

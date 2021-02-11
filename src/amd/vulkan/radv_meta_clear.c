@@ -699,7 +699,8 @@ static bool depth_view_can_fast_clear(struct radv_cmd_buffer *cmd_buffer,
 	      clear_value.depth != 1.0) ||
 	     ((aspects & VK_IMAGE_ASPECT_STENCIL_BIT) && clear_value.stencil != 0)))
 		return false;
-	if (iview->base_mip == 0 &&
+	if (radv_htile_enabled(iview->image, iview->base_mip) &&
+	    iview->base_mip == 0 &&
 	    iview->base_layer == 0 &&
 	    iview->layer_count == iview->image->info.array_size &&
 	    radv_layout_is_htile_compressed(cmd_buffer->device, iview->image, layout, in_render_loop, queue_mask) &&
@@ -721,7 +722,7 @@ pick_depthstencil_pipeline(struct radv_cmd_buffer *cmd_buffer,
 {
 	bool fast = depth_view_can_fast_clear(cmd_buffer, iview, aspects, layout,
 	                                      in_render_loop, clear_rect, clear_value);
-	bool unrestricted = cmd_buffer->device->enabled_extensions.EXT_depth_range_unrestricted;
+	bool unrestricted = cmd_buffer->device->vk.enabled_extensions.EXT_depth_range_unrestricted;
 	int index = DEPTH_CLEAR_SLOW;
 	VkPipeline *pipeline;
 
@@ -806,7 +807,7 @@ emit_depthstencil_clear(struct radv_cmd_buffer *cmd_buffer,
 	if (!(aspects & VK_IMAGE_ASPECT_DEPTH_BIT))
 		clear_value.depth = 1.0f;
 
-	if (cmd_buffer->device->enabled_extensions.EXT_depth_range_unrestricted) {
+	if (cmd_buffer->device->vk.enabled_extensions.EXT_depth_range_unrestricted) {
 		radv_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer),
 				      device->meta_state.clear_depth_unrestricted_p_layout,
 				      VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4,
@@ -1052,12 +1053,12 @@ radv_fast_clear_depth(struct radv_cmd_buffer *cmd_buffer,
 		*pre_flush |= cmd_buffer->state.flush_bits;
 	}
 
-	struct VkImageSubresourceRange range = {
+	VkImageSubresourceRange range = {
 		.aspectMask = aspects,
-		.baseMipLevel = 0,
-		.levelCount = VK_REMAINING_MIP_LEVELS,
-		.baseArrayLayer = 0,
-		.layerCount = VK_REMAINING_ARRAY_LAYERS,
+		.baseMipLevel = iview->base_mip,
+		.levelCount = iview->level_count,
+		.baseArrayLayer = iview->base_layer,
+		.layerCount = iview->layer_count,
 	};
 
 	flush_bits = radv_clear_htile(cmd_buffer, iview->image, &range, clear_word);
@@ -1454,22 +1455,51 @@ radv_clear_htile(struct radv_cmd_buffer *cmd_buffer,
 		 const VkImageSubresourceRange *range,
 		 uint32_t value)
 {
-	unsigned layer_count = radv_get_layerCount(image, range);
-	uint64_t size = image->planes[0].surface.htile_slice_size * layer_count;
-	uint64_t offset = image->offset + image->planes[0].surface.htile_offset +
-	                  image->planes[0].surface.htile_slice_size * range->baseArrayLayer;
-	uint32_t htile_mask, flush_bits;
+	uint32_t level_count = radv_get_levelCount(image, range);
+	uint32_t flush_bits = 0;
+	uint32_t htile_mask;
 
 	htile_mask = radv_get_htile_mask(cmd_buffer->device, image, range->aspectMask);
 
-	if (htile_mask == UINT_MAX) {
-		/* Clear the whole HTILE buffer. */
-		flush_bits = radv_fill_buffer(cmd_buffer, image, image->bo, offset,
-					      size, value);
+	if (level_count != image->info.levels) {
+		assert(cmd_buffer->device->physical_device->rad_info.chip_class >= GFX10);
+
+		/* Clear individuals levels separately. */
+		for (uint32_t l = 0; l < level_count; l++) {
+			uint32_t level = range->baseMipLevel + l;
+			uint64_t offset = image->offset + image->planes[0].surface.htile_offset +
+					  image->planes[0].surface.u.gfx9.htile_levels[level].offset;
+			uint32_t size = image->planes[0].surface.u.gfx9.htile_levels[level].size;
+
+			/* Do not clear this level if it can be compressed. */
+			if (!size)
+				continue;
+
+			if (htile_mask == UINT_MAX) {
+				/* Clear the whole HTILE buffer. */
+				flush_bits = radv_fill_buffer(cmd_buffer, image, image->bo, offset,
+							      size, value);
+			} else {
+				/* Only clear depth or stencil bytes in the HTILE buffer. */
+				flush_bits = clear_htile_mask(cmd_buffer, image, image->bo, offset,
+							      size, value, htile_mask);
+			}
+		}
 	} else {
-		/* Only clear depth or stencil bytes in the HTILE buffer. */
-		flush_bits = clear_htile_mask(cmd_buffer, image, image->bo, offset,
-					      size, value, htile_mask);
+		unsigned layer_count = radv_get_layerCount(image, range);
+		uint64_t size = image->planes[0].surface.htile_slice_size * layer_count;
+		uint64_t offset = image->offset + image->planes[0].surface.htile_offset +
+		                  image->planes[0].surface.htile_slice_size * range->baseArrayLayer;
+
+		if (htile_mask == UINT_MAX) {
+			/* Clear the whole HTILE buffer. */
+			flush_bits = radv_fill_buffer(cmd_buffer, image, image->bo, offset,
+						      size, value);
+		} else {
+			/* Only clear depth or stencil bytes in the HTILE buffer. */
+			flush_bits = clear_htile_mask(cmd_buffer, image, image->bo, offset,
+						      size, value, htile_mask);
+		}
 	}
 
 	return flush_bits;

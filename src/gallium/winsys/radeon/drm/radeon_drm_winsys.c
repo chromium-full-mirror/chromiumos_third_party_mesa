@@ -368,6 +368,9 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    if (ws->info.drm_minor < 49)
       ws->info.vram_vis_size = MIN2(ws->info.vram_vis_size, 256*1024*1024);
 
+   ws->info.gart_size_kb = DIV_ROUND_UP(ws->info.gart_size, 1024);
+   ws->info.vram_size_kb = DIV_ROUND_UP(ws->info.vram_size, 1024);
+
    /* Radeon allocates all buffers contiguously, which makes large allocations
     * unlikely to succeed. */
    if (ws->info.has_dedicated_vram)
@@ -727,6 +730,8 @@ static uint64_t radeon_query_value(struct radeon_winsys *rws,
    case RADEON_VRAM_VIS_USAGE:
    case RADEON_GFX_BO_LIST_COUNTER:
    case RADEON_GFX_IB_SIZE_COUNTER:
+   case RADEON_SLAB_WASTED_VRAM:
+   case RADEON_SLAB_WASTED_GTT:
       return 0; /* unimplemented */
    case RADEON_VRAM_USAGE:
       radeon_get_drm_value(ws->fd, RADEON_INFO_VRAM_USAGE,
@@ -856,7 +861,7 @@ radeon_drm_winsys_create(int fd, const struct pipe_screen_config *config,
        */
       if (!pb_slabs_init(&ws->bo_slabs,
                          RADEON_SLAB_MIN_SIZE_LOG2, RADEON_SLAB_MAX_SIZE_LOG2,
-                         RADEON_MAX_SLAB_HEAPS,
+                         RADEON_MAX_SLAB_HEAPS, false,
                          ws,
                          radeon_bo_can_reclaim_slab,
                          radeon_bo_slab_alloc,

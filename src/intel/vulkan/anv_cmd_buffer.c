@@ -28,6 +28,7 @@
 #include <fcntl.h>
 
 #include "anv_private.h"
+#include "anv_measure.h"
 
 #include "vk_format_info.h"
 #include "vk_util.h"
@@ -188,6 +189,14 @@ anv_dynamic_state_copy(struct anv_dynamic_state *dest,
    ANV_CMP_COPY(dyn_vbo_stride, ANV_CMD_DIRTY_DYNAMIC_VERTEX_INPUT_BINDING_STRIDE);
    ANV_CMP_COPY(dyn_vbo_size, ANV_CMD_DIRTY_DYNAMIC_VERTEX_INPUT_BINDING_STRIDE);
 
+   if (copy_mask & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS) {
+      dest->sample_locations.samples = src->sample_locations.samples;
+      typed_memcpy(dest->sample_locations.locations,
+                   src->sample_locations.locations,
+                   dest->sample_locations.samples);
+      changed |= ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS;
+   }
+
 #undef ANV_CMP_COPY
 
    return changed;
@@ -270,9 +279,13 @@ static VkResult anv_create_cmd_buffer(
    anv_state_stream_init(&cmd_buffer->general_state_stream,
                          &device->general_state_pool, 16384);
 
+   cmd_buffer->self_mod_locations = NULL;
+
    anv_cmd_state_init(cmd_buffer);
 
    list_addtail(&cmd_buffer->pool_link, &pool->cmd_buffers);
+
+   anv_measure_init(cmd_buffer);
 
    *pCommandBuffer = anv_cmd_buffer_to_handle(cmd_buffer);
 
@@ -315,6 +328,8 @@ VkResult anv_AllocateCommandBuffers(
 static void
 anv_cmd_buffer_destroy(struct anv_cmd_buffer *cmd_buffer)
 {
+   anv_measure_destroy(cmd_buffer);
+
    list_del(&cmd_buffer->pool_link);
 
    anv_cmd_buffer_fini_batch_bo_chain(cmd_buffer);
@@ -324,6 +339,8 @@ anv_cmd_buffer_destroy(struct anv_cmd_buffer *cmd_buffer)
    anv_state_stream_finish(&cmd_buffer->general_state_stream);
 
    anv_cmd_state_finish(cmd_buffer);
+
+   vk_free(&cmd_buffer->pool->alloc, cmd_buffer->self_mod_locations);
 
    vk_object_base_finish(&cmd_buffer->base);
    vk_free(&cmd_buffer->pool->alloc, cmd_buffer);
@@ -365,6 +382,7 @@ anv_cmd_buffer_reset(struct anv_cmd_buffer *cmd_buffer)
    anv_state_stream_init(&cmd_buffer->general_state_stream,
                          &cmd_buffer->device->general_state_pool, 16384);
 
+   anv_measure_reset(cmd_buffer);
    return VK_SUCCESS;
 }
 
@@ -376,41 +394,11 @@ VkResult anv_ResetCommandBuffer(
    return anv_cmd_buffer_reset(cmd_buffer);
 }
 
-#define anv_genX_call(devinfo, func, ...)          \
-   switch ((devinfo)->gen) {                       \
-   case 7:                                         \
-      if ((devinfo)->is_haswell) {                 \
-         gen75_##func(__VA_ARGS__);                \
-      } else {                                     \
-         gen7_##func(__VA_ARGS__);                 \
-      }                                            \
-      break;                                       \
-   case 8:                                         \
-      gen8_##func(__VA_ARGS__);                    \
-      break;                                       \
-   case 9:                                         \
-      gen9_##func(__VA_ARGS__);                    \
-      break;                                       \
-   case 11:                                        \
-      gen11_##func(__VA_ARGS__);                   \
-      break;                                       \
-   case 12:                                        \
-      if (gen_device_info_is_12hp(devinfo)) {      \
-         gen125_##func(__VA_ARGS__);               \
-      } else {                                     \
-         gen12_##func(__VA_ARGS__);                \
-      }                                            \
-      break;                                       \
-   default:                                        \
-      assert(!"Unknown hardware generation");      \
-   }
-
 void
 anv_cmd_buffer_emit_state_base_address(struct anv_cmd_buffer *cmd_buffer)
 {
-   anv_genX_call(&cmd_buffer->device->info,
-                 cmd_buffer_emit_state_base_address,
-                 cmd_buffer);
+   const struct gen_device_info *devinfo = &cmd_buffer->device->info;
+   anv_genX(devinfo, cmd_buffer_emit_state_base_address)(cmd_buffer);
 }
 
 void
@@ -422,18 +410,18 @@ anv_cmd_buffer_mark_image_written(struct anv_cmd_buffer *cmd_buffer,
                                   uint32_t base_layer,
                                   uint32_t layer_count)
 {
-   anv_genX_call(&cmd_buffer->device->info,
-                 cmd_buffer_mark_image_written,
-                 cmd_buffer, image, aspect, aux_usage,
-                 level, base_layer, layer_count);
+   const struct gen_device_info *devinfo = &cmd_buffer->device->info;
+   anv_genX(devinfo, cmd_buffer_mark_image_written)(cmd_buffer, image,
+                                                    aspect, aux_usage,
+                                                    level, base_layer,
+                                                    layer_count);
 }
 
 void
 anv_cmd_emit_conditional_render_predicate(struct anv_cmd_buffer *cmd_buffer)
 {
-   anv_genX_call(&cmd_buffer->device->info,
-                 cmd_emit_conditional_render_predicate,
-                 cmd_buffer);
+   const struct gen_device_info *devinfo = &cmd_buffer->device->info;
+   anv_genX(devinfo, cmd_emit_conditional_render_predicate)(cmd_buffer);
 }
 
 static bool
@@ -685,6 +673,22 @@ void anv_CmdSetStencilReference(
       cmd_buffer->state.gfx.dynamic.stencil_reference.back = reference;
 
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_STENCIL_REFERENCE;
+}
+
+void anv_CmdSetSampleLocationsEXT(
+    VkCommandBuffer                             commandBuffer,
+    const VkSampleLocationsInfoEXT*             pSampleLocationsInfo)
+{
+   ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
+
+   struct anv_dynamic_state *dyn_state = &cmd_buffer->state.gfx.dynamic;
+   uint32_t samples = pSampleLocationsInfo->sampleLocationsPerPixel;
+
+   dyn_state->sample_locations.samples = samples;
+   typed_memcpy(dyn_state->sample_locations.locations,
+                pSampleLocationsInfo->pSampleLocations, samples);
+
+   cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS;
 }
 
 void anv_CmdSetLineStippleEXT(

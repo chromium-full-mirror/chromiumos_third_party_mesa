@@ -970,8 +970,13 @@ struct gl_texture_object_attrib
    GLenum Swizzle[4];          /**< GL_EXT_texture_swizzle */
    GLushort _Swizzle;          /**< same as Swizzle, but SWIZZLE_* format */
    GLenum16 DepthMode;         /**< GL_ARB_depth_texture */
-   bool StencilSampling;       /**< Should we sample stencil instead of depth? */
+   GLenum16 ImageFormatCompatibilityType; /**< GL_ARB_shader_image_load_store */
+   GLushort MinLayer;          /**< GL_ARB_texture_view */
+   GLushort NumLayers;         /**< GL_ARB_texture_view */
    GLboolean GenerateMipmap;   /**< GL_SGIS_generate_mipmap */
+   GLbyte ImmutableLevels;     /**< ES 3.0 / ARB_texture_view */
+   GLubyte MinLevel;           /**< GL_ARB_texture_view */
+   GLubyte NumLevels;          /**< GL_ARB_texture_view */
 };
 
 /**
@@ -1013,7 +1018,6 @@ struct gl_texture_object
    GLbyte _MaxLevel;           /**< actual max mipmap level (q in the spec) */
    GLfloat _MaxLambda;         /**< = _MaxLevel - BaseLevel (q - p in spec) */
    GLint CropRect[4];          /**< GL_OES_draw_texture */
-   GLbyte ImmutableLevels;     /**< ES 3.0 / ARB_texture_view */
    GLboolean _BaseComplete;    /**< Is the base texture level valid? */
    GLboolean _MipmapComplete;  /**< Is the whole mipmap valid? */
    GLboolean _IsIntegerFormat; /**< Does the texture store integer values? */
@@ -1025,24 +1029,20 @@ struct gl_texture_object
    GLboolean _IsHalfFloat;     /**< GL_OES_half_float_texture */
    bool HandleAllocated;       /**< GL_ARB_bindless_texture */
 
+   /* This should not be restored by glPopAttrib: */
+   bool StencilSampling;       /**< Should we sample stencil instead of depth? */
+
    /** GL_OES_EGL_image_external */
    GLubyte RequiredTextureImageUnits;
 
-   GLubyte MinLevel;            /**< GL_ARB_texture_view */
-   GLubyte NumLevels;           /**< GL_ARB_texture_view */
-   GLushort MinLayer;            /**< GL_ARB_texture_view */
-   GLushort NumLayers;           /**< GL_ARB_texture_view */
-
    /** GL_EXT_memory_object */
    GLenum16 TextureTiling;
-
-   /** GL_ARB_shader_image_load_store */
-   GLenum16 ImageFormatCompatibilityType;
 
    /** GL_ARB_texture_buffer_object */
    GLenum16 BufferObjectFormat;
    /** Equivalent Mesa format for BufferObjectFormat. */
    mesa_format _BufferObjectFormat;
+   /* TODO: BufferObject->Name should be restored by glPopAttrib(GL_TEXTURE_BIT); */
    struct gl_buffer_object *BufferObject;
 
    /** GL_ARB_texture_buffer_range */
@@ -1402,6 +1402,34 @@ struct gl_buffer_object
    GLint RefCount;
    GLuint Name;
    GLchar *Label;       /**< GL_KHR_debug */
+
+   /**
+    * The context that holds a global buffer reference for the lifetime of
+    * the GL buffer ID to skip refcounting for all its private bind points.
+    * Other contexts must still do refcounting as usual. Shared binding points
+    * like TBO within gl_texture_object are always refcounted.
+    *
+    * Implementation details:
+    * - Only the context that creates the buffer ("creating context") skips
+    *   refcounting.
+    * - Only buffers represented by an OpenGL buffer ID skip refcounting.
+    *   Other internal buffers don't. (glthread requires refcounting for
+    *   internal buffers, etc.)
+    * - glDeleteBuffers removes the global buffer reference and increments
+    *   RefCount for all private bind points where the deleted buffer is bound
+    *   (e.g. unbound VAOs that are not changed by glDeleteBuffers),
+    *   effectively enabling refcounting for that context. This is the main
+    *   point where the global buffer reference is removed.
+    * - glDeleteBuffers called from a different context adds the buffer into
+    *   the ZombieBufferObjects list, which is a way to notify the creating
+    *   context that it should remove its global buffer reference to allow
+    *   freeing the buffer. The creating context walks over that list in a few
+    *   GL functions.
+    * - xxxDestroyContext walks over all buffers and removes its global
+    *   reference from those buffers that it created.
+    */
+   struct gl_context *Ctx;
+
    GLenum16 Usage;      /**< GL_STREAM_DRAW_ARB, GL_STREAM_READ_ARB, etc. */
    GLbitfield StorageFlags; /**< GL_MAP_PERSISTENT_BIT, etc. */
    GLsizeiptrARB Size;  /**< Size of buffer storage in bytes */
@@ -3401,6 +3429,19 @@ struct gl_shared_state
 
    struct _mesa_HashTable *BufferObjects;
 
+   /* Buffer objects released by a different context than the one that
+    * created them. Since the creating context holds one global buffer
+    * reference for each buffer it created and skips reference counting,
+    * deleting a buffer by another context can't touch the buffer reference
+    * held by the context that created it. Only the creating context can
+    * remove its global buffer reference.
+    *
+    * This list contains all buffers that were deleted by a different context
+    * than the one that created them. This list should be probed by all
+    * contexts regularly and remove references of those buffers that they own.
+    */
+   struct set *ZombieBufferObjects;
+
    /** Table of both gl_shader and gl_shader_program objects */
    struct _mesa_HashTable *ShaderObjects;
 
@@ -5048,20 +5089,19 @@ struct gl_enable_attrib_node
 struct gl_texture_attrib_node
 {
    GLuint CurrentUnit;   /**< GL_ACTIVE_TEXTURE */
+   GLuint NumTexSaved;
    GLbitfield8 _TexGenEnabled;
    GLbitfield8 _GenFlags;
    struct gl_fixedfunc_texture_unit FixedFuncUnit[MAX_TEXTURE_COORD_UNITS];
    GLfloat LodBias[MAX_TEXTURE_UNITS];
 
-   /** to save per texture object state (wrap modes, filters, etc): */
-   struct gl_texture_object SavedObj[MAX_TEXTURE_UNITS][NUM_TEXTURE_TARGETS];
+   /** Saved default texture object state. */
+   struct gl_texture_object SavedDefaultObj[NUM_TEXTURE_TARGETS];
 
-   /* We need to keep a reference to the shared state.  That's where the
-    * default texture objects are kept.  We don't want that state to be
-    * freed while the attribute stack contains pointers to any default
-    * texture objects.
+   /* For saving per texture object state (wrap modes, filters, etc),
+    * SavedObj[][].Target is unused, so the value is invalid.
     */
-   struct gl_shared_state *SharedRef;
+   struct gl_texture_object SavedObj[MAX_TEXTURE_UNITS][NUM_TEXTURE_TARGETS];
 };
 
 
@@ -5071,6 +5111,7 @@ struct gl_texture_attrib_node
 struct gl_attrib_node
 {
    GLbitfield Mask;
+   GLbitfield OldPopAttribStateMask;
    struct gl_accum_attrib Accum;
    struct gl_colorbuffer_attrib Color;
    struct gl_current_attrib Current;
@@ -5388,6 +5429,7 @@ struct gl_context
 
    GLenum16 RenderMode;      /**< either GL_RENDER, GL_SELECT, GL_FEEDBACK */
    GLbitfield NewState;      /**< bitwise-or of _NEW_* flags */
+   GLbitfield PopAttribState; /**< Updated state since glPushAttrib */
    uint64_t NewDriverState;  /**< bitwise-or of flags from DriverFlags */
 
    struct gl_driver_flags DriverFlags;

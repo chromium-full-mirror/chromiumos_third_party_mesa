@@ -675,6 +675,7 @@ static const struct gen_device_info gen_device_info_kbl_gt1 = {
     * leading to some vertices to go missing if we use too much URB.
     */
    .urb.max_entries[MESA_SHADER_VERTEX] = 928,
+   .urb.max_entries[MESA_SHADER_GEOMETRY] = 256,
    .simulator_id = 16,
 };
 
@@ -947,18 +948,22 @@ static const struct gen_device_info gen_device_info_ehl_2x4 = {
 
 static const struct gen_device_info gen_device_info_tgl_gt1 = {
    GEN12_GT_FEATURES(1),
+   .is_tigerlake = true,
 };
 
 static const struct gen_device_info gen_device_info_tgl_gt2 = {
    GEN12_GT_FEATURES(2),
+   .is_tigerlake = true,
 };
 
 static const struct gen_device_info gen_device_info_rkl_gt05 = {
    GEN12_GT05_FEATURES,
+   .is_rocketlake = true,
 };
 
 static const struct gen_device_info gen_device_info_rkl_gt1 = {
    GEN12_GT_FEATURES(1),
+   .is_rocketlake = true,
 };
 
 static const struct gen_device_info gen_device_info_adl_gt05 = {

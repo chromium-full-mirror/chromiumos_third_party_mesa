@@ -264,7 +264,7 @@ sample_plane(nir_builder *b, nir_tex_instr *tex, int plane,
    plane_tex->src[tex->num_srcs].src_type = nir_tex_src_plane;
    plane_tex->op = nir_texop_tex;
    plane_tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
-   plane_tex->dest_type = nir_type_float;
+   plane_tex->dest_type = nir_type_float | nir_dest_bit_size(tex->dest);
    plane_tex->coord_components = 2;
 
    plane_tex->texture_index = tex->texture_index;
@@ -732,7 +732,7 @@ get_zero_or_one(nir_builder *b, nir_alu_type type, uint8_t swizzle_val)
       v[0].u32 = v[1].u32 = v[2].u32 = v[3].u32 = 0;
    } else {
       assert(swizzle_val == 5);
-      if (type == nir_type_float)
+      if (type == nir_type_float32)
          v[0].f32 = v[1].f32 = v[2].f32 = v[3].f32 = 1.0;
       else
          v[0].u32 = v[1].u32 = v[2].u32 = v[3].u32 = 1;

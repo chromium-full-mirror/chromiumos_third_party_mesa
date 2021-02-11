@@ -55,25 +55,6 @@
 static bool
 panfrost_should_checksum(const struct panfrost_device *dev, const struct panfrost_resource *pres);
 
-bool
-pan_render_condition_check(struct pipe_context *pctx)
-{
-	struct panfrost_context *ctx = pan_context(pctx);
-
-	if (!ctx->cond_query)
-		return true;
-
-	union pipe_query_result res = { 0 };
-	bool wait =
-		ctx->cond_mode != PIPE_RENDER_COND_NO_WAIT &&
-		ctx->cond_mode != PIPE_RENDER_COND_BY_REGION_NO_WAIT;
-
-	if (pctx->get_query_result(pctx, (struct pipe_query *) ctx->cond_query, wait, &res))
-			return (bool)res.u64 != ctx->cond_cond;
-
-	return true;
-}
-
 static struct pipe_resource *
 panfrost_resource_from_handle(struct pipe_screen *pscreen,
                               const struct pipe_resource *templat,
@@ -243,7 +224,7 @@ panfrost_create_surface(struct pipe_context *pipe,
 {
         struct pipe_surface *ps = NULL;
 
-        ps = rzalloc(pipe, struct pipe_surface);
+        ps = CALLOC_STRUCT(pipe_surface);
 
         if (ps) {
                 pipe_reference_init(&ps->reference, 1);
@@ -279,7 +260,7 @@ panfrost_surface_destroy(struct pipe_context *pipe,
 {
         assert(surf->texture);
         pipe_resource_reference(&surf->texture, NULL);
-        ralloc_free(surf);
+        free(surf);
 }
 
 static struct pipe_resource *
@@ -1112,6 +1093,55 @@ panfrost_ptr_map(struct pipe_context *pctx,
                        + transfer->base.box.y * rsrc->layout.slices[level].line_stride
                        + transfer->base.box.x * bytes_per_pixel;
         }
+}
+
+void
+pan_resource_modifier_convert(struct panfrost_context *ctx,
+                              struct panfrost_resource *rsrc,
+                              uint64_t modifier)
+{
+        assert(!rsrc->modifier_constant);
+
+        struct pipe_resource *tmp_prsrc =
+                panfrost_resource_create_with_modifier(
+                        ctx->base.screen, &rsrc->base, modifier);
+        struct panfrost_resource *tmp_rsrc = pan_resource(tmp_prsrc);
+
+        struct pipe_blit_info blit = {0};
+
+        unsigned depth = rsrc->base.target == PIPE_TEXTURE_3D ?
+                rsrc->base.depth0 : rsrc->base.array_size;
+
+        struct pipe_box box =
+                { 0, 0, 0, rsrc->base.width0, rsrc->base.height0, depth };
+
+        for (int i = 0; i <= rsrc->base.last_level; i++) {
+                if (!rsrc->layout.slices[i].initialized)
+                        continue;
+
+                blit.dst.resource = &tmp_rsrc->base;
+                blit.dst.format   = pan_blit_format(tmp_rsrc->base.format);
+                blit.dst.level    = i;
+                blit.dst.box      = box;
+                blit.src.resource = &rsrc->base;
+                blit.src.format   = pan_blit_format(rsrc->base.format);
+                blit.src.level    = i;
+                blit.src.box      = box;
+                blit.mask = util_format_get_mask(blit.dst.format);
+                blit.filter = PIPE_TEX_FILTER_NEAREST;
+
+                panfrost_blit(&ctx->base, &blit);
+        }
+
+        panfrost_bo_unreference(rsrc->bo);
+        if (rsrc->checksum_bo)
+                panfrost_bo_unreference(rsrc->checksum_bo);
+
+        rsrc->bo = tmp_rsrc->bo;
+        panfrost_bo_reference(rsrc->bo);
+
+        panfrost_resource_setup(pan_device(ctx->base.screen), rsrc, NULL, modifier);
+        pipe_resource_reference(&tmp_prsrc, NULL);
 }
 
 static bool

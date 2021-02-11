@@ -92,17 +92,20 @@ iris_update_draw_info(struct iris_context *ice,
       const struct shader_info *tcs_info =
          iris_get_shader_info(ice, MESA_SHADER_TESS_CTRL);
       if (tcs_info &&
-          tcs_info->system_values_read & (1ull << SYSTEM_VALUE_VERTICES_IN)) {
+          BITSET_TEST(tcs_info->system_values_read, SYSTEM_VALUE_VERTICES_IN)) {
          ice->state.stage_dirty |= IRIS_STAGE_DIRTY_CONSTANTS_TCS;
          ice->state.shaders[MESA_SHADER_TESS_CTRL].sysvals_need_upload = true;
       }
    }
 
+   /* Track restart_index changes only if primitive_restart is true */
+   const unsigned cut_index = info->primitive_restart ? info->restart_index :
+                                                        ice->state.cut_index;
    if (ice->state.primitive_restart != info->primitive_restart ||
-       ice->state.cut_index != info->restart_index) {
+       ice->state.cut_index != cut_index) {
       ice->state.dirty |= IRIS_DIRTY_VF;
       ice->state.primitive_restart = info->primitive_restart;
-      ice->state.cut_index = info->restart_index;
+      ice->state.cut_index = cut_index;
    }
 }
 

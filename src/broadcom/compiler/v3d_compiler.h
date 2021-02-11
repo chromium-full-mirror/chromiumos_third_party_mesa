@@ -42,6 +42,25 @@
 #include "qpu/qpu_instr.h"
 #include "pipe/p_state.h"
 
+/**
+ * Maximum number of outstanding TMU operations we can queue for execution.
+ *
+ * This is mostly limited by the size of the TMU fifos. The Input and Config
+ * fifos can stall, but we prefer that than injecting TMU flushes manually
+ * in the driver, so we can ignore these, but we can't overflow the Output fifo,
+ * which has 16 / threads per-thread entries, meaning that the maximum number
+ * of outstanding LDTMUs we can ever have is 8, for a 2-way threaded shader.
+ * This means that at most we can have 8 outstanding TMU loads, if each load
+ * is just one component.
+ *
+ * NOTE: we could actually have a larger value here because TMU stores don't
+ * consume any entries in the Output fifo (so we could have any number of
+ * outstanding stores) and the driver keeps track of used Output fifo entries
+ * and will flush if we ever needs more than 8, but since loads are much more
+ * common than stores, it is probably not worth it.
+ */
+#define MAX_TMU_QUEUE_SIZE 8
+
 struct nir_builder;
 
 struct v3d_fs_inputs {
@@ -261,8 +280,6 @@ enum quniform_contents {
         QUNIFORM_IMAGE_DEPTH,
         QUNIFORM_IMAGE_ARRAY_SIZE,
 
-        QUNIFORM_ALPHA_REF,
-
         QUNIFORM_LINE_WIDTH,
 
         /* The line width sent to hardware. This includes the expanded width
@@ -367,15 +384,11 @@ struct v3d_fs_key {
         bool is_points;
         bool is_lines;
         bool line_smoothing;
-        bool alpha_test;
         bool point_coord_upper_left;
-        bool light_twoside;
         bool msaa;
         bool sample_coverage;
         bool sample_alpha_to_coverage;
         bool sample_alpha_to_one;
-        bool clamp_color;
-        bool shade_model_flat;
         /* Mask of which color render targets are present. */
         uint8_t cbufs;
         uint8_t swap_color_rb;
@@ -395,7 +408,6 @@ struct v3d_fs_key {
                 const uint8_t *swizzle;
         } color_fmt[V3D_MAX_DRAW_BUFFERS];
 
-        uint8_t alpha_test_func;
         uint8_t logicop_func;
         uint32_t point_sprite_mask;
 
@@ -455,6 +467,12 @@ struct qblock {
         uint32_t start_uniform;
         /** Offset within the uniform stream of the branch instruction */
         uint32_t branch_uniform;
+
+        /**
+         * Has the terminating branch of this block already been emitted
+         * by a break or continue?
+         */
+        bool branch_emitted;
 
         /** @{ used by v3d_vir_live_variables.c */
         BITSET_WORD *def;
@@ -560,6 +578,23 @@ struct v3d_compile {
         struct qinst **defs;
         uint32_t defs_array_size;
 
+        /* TMU pipelining tracking */
+        struct {
+                /* NIR registers that have been updated with a TMU operation
+                 * that has not been flushed yet.
+                 */
+                struct set *outstanding_regs;
+
+                uint32_t output_fifo_size;
+
+                struct {
+                        nir_dest *dest;
+                        uint8_t num_components;
+                        uint8_t component_mask;
+                } flush[MAX_TMU_QUEUE_SIZE];
+                uint32_t flush_count;
+        } tmu;
+
         /**
          * Inputs to the shader, arranged by TGSI declaration order.
          *
@@ -601,6 +636,12 @@ struct v3d_compile {
          * register allocation has failed once.
          */
         bool fallback_scheduler;
+
+        /* Disable TMU pipelining. This may increase the chances of being able
+         * to compile shaders with high register pressure that require to emit
+         * TMU spills.
+         */
+        bool disable_tmu_pipelining;
 
         /* State for whether we're executing on each channel currently.  0 if
          * yes, otherwise a block number + 1 that the channel jumped to.
@@ -912,6 +953,10 @@ uint8_t vir_channels_written(struct qinst *inst);
 struct qreg ntq_get_src(struct v3d_compile *c, nir_src src, int i);
 void ntq_store_dest(struct v3d_compile *c, nir_dest *dest, int chan,
                     struct qreg result);
+bool ntq_tmu_fifo_overflow(struct v3d_compile *c, uint32_t components);
+void ntq_add_pending_tmu_flush(struct v3d_compile *c, nir_dest *dest,
+                               uint32_t component_mask);
+void ntq_flush_tmu(struct v3d_compile *c);
 void vir_emit_thrsw(struct v3d_compile *c);
 
 void vir_dump(struct v3d_compile *c);

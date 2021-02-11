@@ -75,6 +75,8 @@ struct si_state_rasterizer {
    unsigned pa_cl_clip_cntl;
    float line_width;
    float max_point_size;
+   unsigned ngg_cull_flags : 8;
+   unsigned ngg_cull_flags_y_inverted : 8;
    unsigned sprite_coord_enable : 8;
    unsigned clip_plane_enable : 8;
    unsigned half_pixel_center : 1;
@@ -482,14 +484,6 @@ struct si_buffer_resources {
          (sctx)->dirty_states |= SI_STATE_BIT(member);                                             \
       else                                                                                         \
          (sctx)->dirty_states &= ~SI_STATE_BIT(member);                                            \
-   } while (0)
-
-#define si_pm4_delete_state(sctx, member, value)                                                   \
-   do {                                                                                            \
-      if ((sctx)->queued.named.member == (value)) {                                                \
-         (sctx)->queued.named.member = NULL;                                                       \
-      }                                                                                            \
-      si_pm4_free_state(sctx, (struct si_pm4_state *)(value), SI_STATE_IDX(member));               \
    } while (0)
 
 /* si_descriptors.c */

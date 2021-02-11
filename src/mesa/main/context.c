@@ -181,7 +181,7 @@ _mesa_notifySwapBuffers(struct gl_context *ctx)
 {
    if (MESA_VERBOSE & VERBOSE_SWAPBUFFERS)
       _mesa_debug(ctx, "SwapBuffers\n");
-   FLUSH_VERTICES(ctx, 0);
+   FLUSH_VERTICES(ctx, 0, 0);
    if (ctx->Driver.Flush) {
       ctx->Driver.Flush(ctx);
    }
@@ -1346,7 +1346,6 @@ _mesa_free_context_data(struct gl_context *ctx, bool destroy_debug_output)
    _mesa_reference_vao(ctx, &ctx->Array._DrawVAO, NULL);
 
    _mesa_free_attrib_data(ctx);
-   _mesa_free_buffer_objects(ctx);
    _mesa_free_eval_data( ctx );
    _mesa_free_texture_data( ctx );
    _mesa_free_image_textures(ctx);
@@ -1366,6 +1365,11 @@ _mesa_free_context_data(struct gl_context *ctx, bool destroy_debug_output)
    _mesa_reference_buffer_object(ctx, &ctx->Unpack.BufferObj, NULL);
    _mesa_reference_buffer_object(ctx, &ctx->DefaultPacking.BufferObj, NULL);
    _mesa_reference_buffer_object(ctx, &ctx->Array.ArrayBufferObj, NULL);
+
+   /* This must be called after all buffers are unbound because global buffer
+    * references that this context holds will be removed.
+    */
+   _mesa_free_buffer_objects(ctx);
 
    /* free dispatch tables */
    free(ctx->BeginEnd);
@@ -1401,23 +1405,6 @@ _mesa_free_context_data(struct gl_context *ctx, bool destroy_debug_output)
    }
 
    free(ctx->Const.SpirVExtensions);
-}
-
-
-/**
- * Destroy a struct gl_context structure.
- *
- * \param ctx GL context.
- *
- * Calls _mesa_free_context_data() and frees the gl_context object itself.
- */
-void
-_mesa_destroy_context( struct gl_context *ctx )
-{
-   if (ctx) {
-      _mesa_free_context_data(ctx, true);
-      free( (void *) ctx );
-   }
 }
 
 
@@ -1868,7 +1855,7 @@ _mesa_get_dispatch(struct gl_context *ctx)
 void
 _mesa_flush(struct gl_context *ctx)
 {
-   FLUSH_VERTICES( ctx, 0 );
+   FLUSH_VERTICES(ctx, 0, 0);
    if (ctx->Driver.Flush) {
       ctx->Driver.Flush(ctx);
    }
@@ -1888,7 +1875,7 @@ _mesa_Finish(void)
    GET_CURRENT_CONTEXT(ctx);
    ASSERT_OUTSIDE_BEGIN_END(ctx);
 
-   FLUSH_VERTICES(ctx, 0);
+   FLUSH_VERTICES(ctx, 0, 0);
 
    if (ctx->Driver.Finish) {
       ctx->Driver.Finish(ctx);

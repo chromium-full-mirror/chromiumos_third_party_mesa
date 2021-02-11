@@ -136,20 +136,20 @@ static void emit_compute_state(struct rendering_state *state)
    if (state->iv_dirty[PIPE_SHADER_COMPUTE]) {
       state->pctx->set_shader_images(state->pctx, PIPE_SHADER_COMPUTE,
                                      0, state->num_shader_images[PIPE_SHADER_COMPUTE],
-                                     state->iv[PIPE_SHADER_COMPUTE]);
+                                     0, state->iv[PIPE_SHADER_COMPUTE]);
       state->iv_dirty[PIPE_SHADER_COMPUTE] = false;
    }
 
    if (state->pcbuf_dirty[PIPE_SHADER_COMPUTE]) {
       state->pctx->set_constant_buffer(state->pctx, PIPE_SHADER_COMPUTE,
-                                       0, &state->pc_buffer[PIPE_SHADER_COMPUTE]);
+                                       0, false, &state->pc_buffer[PIPE_SHADER_COMPUTE]);
       state->pcbuf_dirty[PIPE_SHADER_COMPUTE] = false;
    }
 
    if (state->constbuf_dirty[PIPE_SHADER_COMPUTE]) {
       for (unsigned i = 0; i < state->num_const_bufs[PIPE_SHADER_COMPUTE]; i++)
          state->pctx->set_constant_buffer(state->pctx, PIPE_SHADER_COMPUTE,
-                                          i + 1, &state->const_buffer[PIPE_SHADER_COMPUTE][i]);
+                                          i + 1, false, &state->const_buffer[PIPE_SHADER_COMPUTE][i]);
       state->constbuf_dirty[PIPE_SHADER_COMPUTE] = false;
    }
 
@@ -162,7 +162,7 @@ static void emit_compute_state(struct rendering_state *state)
 
    if (state->sv_dirty[PIPE_SHADER_COMPUTE]) {
       state->pctx->set_sampler_views(state->pctx, PIPE_SHADER_COMPUTE, 0, state->num_sampler_views[PIPE_SHADER_COMPUTE],
-                                     state->sv[PIPE_SHADER_COMPUTE]);
+                                     0, state->sv[PIPE_SHADER_COMPUTE]);
       state->sv_dirty[PIPE_SHADER_COMPUTE] = false;
    }
 
@@ -237,7 +237,7 @@ static void emit_state(struct rendering_state *state)
 
    if (state->vb_dirty) {
       state->pctx->set_vertex_buffers(state->pctx, state->start_vb,
-                                      state->num_vb, state->vb);
+                                      state->num_vb, 0, false, state->vb);
       state->vb_dirty = false;
    }
 
@@ -258,7 +258,7 @@ static void emit_state(struct rendering_state *state)
       if (state->constbuf_dirty[sh]) {
          for (unsigned idx = 0; idx < state->num_const_bufs[sh]; idx++)
             state->pctx->set_constant_buffer(state->pctx, sh,
-                                             idx + 1, &state->const_buffer[sh][idx]);
+                                             idx + 1, false, &state->const_buffer[sh][idx]);
       }
       state->constbuf_dirty[sh] = false;
    }
@@ -266,7 +266,7 @@ static void emit_state(struct rendering_state *state)
    for (sh = 0; sh < PIPE_SHADER_TYPES; sh++) {
       if (state->pcbuf_dirty[sh]) {
          state->pctx->set_constant_buffer(state->pctx, sh,
-                                          0, &state->pc_buffer[sh]);
+                                          0, false, &state->pc_buffer[sh]);
       }
    }
 
@@ -281,7 +281,7 @@ static void emit_state(struct rendering_state *state)
    for (sh = 0; sh < PIPE_SHADER_TYPES; sh++) {
       if (state->iv_dirty[sh]) {
          state->pctx->set_shader_images(state->pctx, sh,
-                                        0, state->num_shader_images[sh],
+                                        0, state->num_shader_images[sh], 0,
                                         state->iv[sh]);
       }
    }
@@ -292,7 +292,7 @@ static void emit_state(struct rendering_state *state)
          continue;
 
       state->pctx->set_sampler_views(state->pctx, sh, 0, state->num_sampler_views[sh],
-                                     state->sv[sh]);
+                                     0, state->sv[sh]);
       state->sv_dirty[sh] = false;
    }
 
@@ -1096,25 +1096,36 @@ static void handle_descriptor_sets(struct lvp_cmd_buffer_entry *cmd,
    }
 }
 
+static struct pipe_surface *create_img_surface(struct rendering_state *state,
+                                               struct lvp_image_view *imgv,
+                                               VkFormat format, int width,
+                                               int height,
+                                               int base_layer, int layer_count)
+{
+   struct pipe_surface template;
+
+   memset(&template, 0, sizeof(struct pipe_surface));
+
+   template.format = vk_format_to_pipe(format);
+   template.width = width;
+   template.height = height;
+   template.u.tex.first_layer = imgv->subresourceRange.baseArrayLayer + base_layer;
+   template.u.tex.last_layer = imgv->subresourceRange.baseArrayLayer + layer_count;
+   template.u.tex.level = imgv->subresourceRange.baseMipLevel;
+
+   if (template.format == PIPE_FORMAT_NONE)
+      return NULL;
+   return state->pctx->create_surface(state->pctx,
+                                      imgv->image->bo, &template);
+
+}
 static void add_img_view_surface(struct rendering_state *state,
                                  struct lvp_image_view *imgv, VkFormat format, int width, int height)
 {
    if (!imgv->surface) {
-      struct pipe_surface template;
-
-      memset(&template, 0, sizeof(struct pipe_surface));
-
-      template.format = vk_format_to_pipe(format);
-      template.width = width;
-      template.height = height;
-      template.u.tex.first_layer = imgv->subresourceRange.baseArrayLayer;
-      template.u.tex.last_layer = imgv->subresourceRange.baseArrayLayer + lvp_get_layerCount(imgv->image, &imgv->subresourceRange) - 1;
-      template.u.tex.level = imgv->subresourceRange.baseMipLevel;
-
-      if (template.format == PIPE_FORMAT_NONE)
-         return;
-      imgv->surface = state->pctx->create_surface(state->pctx,
-                                                  imgv->image->bo, &template);
+      imgv->surface = create_img_surface(state, imgv, format,
+                                         width, height,
+                                         0, lvp_get_layerCount(imgv->image, &imgv->subresourceRange) - 1);
    }
 }
 
@@ -2254,25 +2265,50 @@ static void handle_clear_attachments(struct lvp_cmd_buffer_entry *cmd,
             continue;
          imgv = state->vk_framebuffer->attachments[ds_att->attachment];
       }
-      uint32_t col_val[4];
-      if (util_format_is_depth_or_stencil(imgv->pformat)) {
-         int64_t val = util_pack64_z_stencil(imgv->pformat, att->clearValue.depthStencil.depth, att->clearValue.depthStencil.stencil);
-         memcpy(col_val, &val, 8);
-      } else
-         pack_clear_color(imgv->pformat, &att->clearValue.color, col_val);
-      for (uint32_t r = 0; r < cmd->u.clear_attachments.rect_count; r++) {
-         struct pipe_box box;
-         VkClearRect *rect = &cmd->u.clear_attachments.rects[r];
-         box.x = rect->rect.offset.x;
-         box.y = rect->rect.offset.y;
-         box.z = imgv->subresourceRange.baseArrayLayer + rect->baseArrayLayer;
-         box.width = rect->rect.extent.width;
-         box.height = rect->rect.extent.height;
-         box.depth = rect->layerCount;
+      union pipe_color_union col_val;
+      double dclear_val = 0;
+      uint32_t sclear_val = 0;
+      uint32_t ds_clear_flags = 0;
+      if (att->aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) {
+         ds_clear_flags |= PIPE_CLEAR_DEPTH;
+         dclear_val = att->clearValue.depthStencil.depth;
+      }
+      if (att->aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) {
+         ds_clear_flags |= PIPE_CLEAR_STENCIL;
+         sclear_val = att->clearValue.depthStencil.stencil;
+      }
+      if (att->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) {
+         for (unsigned i = 0; i < 4; i++)
+            col_val.ui[i] = att->clearValue.color.uint32[i];
+      }
 
-         state->pctx->clear_texture(state->pctx, imgv->image->bo,
-                                    imgv->subresourceRange.baseMipLevel,
-                                    &box, col_val);
+      for (uint32_t r = 0; r < cmd->u.clear_attachments.rect_count; r++) {
+
+         VkClearRect *rect = &cmd->u.clear_attachments.rects[r];
+         struct pipe_surface *clear_surf = create_img_surface(state,
+                                                              imgv,
+                                                              imgv->format,
+                                                              state->framebuffer.width,
+                                                              state->framebuffer.height,
+                                                              rect->baseArrayLayer,
+                                                              rect->baseArrayLayer + rect->layerCount - 1);
+
+         if (ds_clear_flags) {
+            state->pctx->clear_depth_stencil(state->pctx,
+                                             clear_surf,
+                                             ds_clear_flags,
+                                             dclear_val, sclear_val,
+                                             rect->rect.offset.x, rect->rect.offset.y,
+                                             rect->rect.extent.width, rect->rect.extent.height,
+                                             true);
+         } else {
+            state->pctx->clear_render_target(state->pctx, clear_surf,
+                                             &col_val,
+                                             rect->rect.offset.x, rect->rect.offset.y,
+                                             rect->rect.extent.width, rect->rect.extent.height,
+                                             true);
+         }
+         state->pctx->surface_destroy(state->pctx, clear_surf);
       }
    }
 }
@@ -2504,6 +2540,21 @@ static void handle_draw_indirect_byte_count(struct lvp_cmd_buffer_entry *cmd,
    state->pctx->draw_vbo(state->pctx, &state->info, &state->indirect_info, &state->draw, 1);
 }
 
+static void handle_begin_conditional_rendering(struct lvp_cmd_buffer_entry *cmd,
+                                               struct rendering_state *state)
+{
+   struct lvp_cmd_begin_conditional_rendering *bcr = &cmd->u.begin_conditional_rendering;
+   state->pctx->render_condition_mem(state->pctx,
+                                     bcr->buffer->bo,
+                                     bcr->buffer->offset + bcr->offset,
+                                     bcr->inverted);
+}
+
+static void handle_end_conditional_rendering(struct rendering_state *state)
+{
+   state->pctx->render_condition_mem(state->pctx, NULL, 0, false);
+}
+
 static void lvp_execute_cmd_buffer(struct lvp_cmd_buffer *cmd_buffer,
                                    struct rendering_state *state)
 {
@@ -2670,6 +2721,12 @@ static void lvp_execute_cmd_buffer(struct lvp_cmd_buffer *cmd_buffer,
       case LVP_CMD_DRAW_INDIRECT_BYTE_COUNT:
          emit_state(state);
          handle_draw_indirect_byte_count(cmd, state);
+	 break;
+      case LVP_CMD_BEGIN_CONDITIONAL_RENDERING:
+         handle_begin_conditional_rendering(cmd, state);
+         break;
+      case LVP_CMD_END_CONDITIONAL_RENDERING:
+         handle_end_conditional_rendering(state);
          break;
       }
    }
@@ -2698,7 +2755,7 @@ VkResult lvp_execute_cmds(struct lvp_device *device,
    }
    state.start_vb = -1;
    state.num_vb = 0;
-   state.pctx->set_vertex_buffers(state.pctx, 0, PIPE_MAX_ATTRIBS, NULL);
+   state.pctx->set_vertex_buffers(state.pctx, 0, 0, PIPE_MAX_ATTRIBS, false, NULL);
    state.pctx->bind_vertex_elements_state(state.pctx, NULL);
    state.pctx->bind_vs_state(state.pctx, NULL);
    state.pctx->bind_fs_state(state.pctx, NULL);
@@ -2735,7 +2792,11 @@ VkResult lvp_execute_cmds(struct lvp_device *device,
       }
       state.pctx->bind_sampler_states(state.pctx, s, 0, PIPE_MAX_SAMPLERS, state.ss_cso[s]);
 
-      state.pctx->set_shader_images(state.pctx, s, 0, device->physical_device->max_images, NULL);
+      state.pctx->set_shader_images(state.pctx, s, 0, 0, device->physical_device->max_images, NULL);
+
+      state.pctx->set_constant_buffer(state.pctx, s, 0, false, NULL);
+      for (unsigned idx = 0; idx < state.num_const_bufs[s]; idx++)
+         state.pctx->set_constant_buffer(state.pctx, s, idx + 1, false, NULL);
    }
 
    free(state.pending_clear_aspects);

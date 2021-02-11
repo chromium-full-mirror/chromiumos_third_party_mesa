@@ -11,6 +11,7 @@ bifrost_FILES := \
         bifrost/bi_ra.c \
         bifrost/bi_opt_dce.c \
         bifrost/bi_quirks.h \
+        bifrost/bi_test_pack.c \
         bifrost/bir.c \
         bifrost/compiler.h \
         bifrost/cmdline.c
@@ -37,6 +38,7 @@ lib_FILES := \
         lib/pan_pool.h \
         lib/pan_props.c \
         lib/pan_sampler.c \
+        lib/pan_shader.h \
         lib/pan_scoreboard.c \
         lib/pan_scoreboard.h \
         lib/pan_tiler.c \
@@ -58,6 +60,7 @@ midgard_FILES := \
         midgard/midgard_liveness.c \
         midgard/midgard_helper_invocations.c \
         midgard/midgard_nir.h \
+        midgard/midgard_nir_lower_image_bitsize.c \
         midgard/midgard_ops.c \
         midgard/midgard_ops.h \
         midgard/midgard_opt_copy_prop.c \

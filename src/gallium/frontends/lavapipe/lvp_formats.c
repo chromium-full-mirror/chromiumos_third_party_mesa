@@ -24,6 +24,8 @@
 #include "lvp_private.h"
 #include "util/format/u_format.h"
 #include "util/u_math.h"
+#include "vk_util.h"
+
 #define COMMON_NAME(x) [VK_FORMAT_##x] = PIPE_FORMAT_##x
 
 #define FLOAT_NAME(x) [VK_FORMAT_##x##_SFLOAT] = PIPE_FORMAT_##x##_FLOAT
@@ -234,19 +236,7 @@ lvp_physical_device_get_format_properties(struct lvp_physical_device *physical_d
    return;
 }
 
-void lvp_GetPhysicalDeviceFormatProperties(
-    VkPhysicalDevice                            physicalDevice,
-    VkFormat                                    format,
-    VkFormatProperties*                         pFormatProperties)
-{
-   LVP_FROM_HANDLE(lvp_physical_device, physical_device, physicalDevice);
-
-   lvp_physical_device_get_format_properties(physical_device,
-                                             format,
-                                             pFormatProperties);
-}
-
-void lvp_GetPhysicalDeviceFormatProperties2(
+VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFormatProperties2(
         VkPhysicalDevice                            physicalDevice,
         VkFormat                                    format,
         VkFormatProperties2*                        pFormatProperties)
@@ -380,47 +370,52 @@ static VkResult lvp_get_image_format_properties(struct lvp_physical_device *phys
    return VK_ERROR_FORMAT_NOT_SUPPORTED;
 }
 
-VkResult lvp_GetPhysicalDeviceImageFormatProperties(
-    VkPhysicalDevice                            physicalDevice,
-    VkFormat                                    format,
-    VkImageType                                 type,
-    VkImageTiling                               tiling,
-    VkImageUsageFlags                           usage,
-    VkImageCreateFlags                          createFlags,
-    VkImageFormatProperties*                    pImageFormatProperties)
-{
-   LVP_FROM_HANDLE(lvp_physical_device, physical_device, physicalDevice);
-
-   const VkPhysicalDeviceImageFormatInfo2 info = {
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
-      .pNext = NULL,
-      .format = format,
-      .type = type,
-      .tiling = tiling,
-      .usage = usage,
-      .flags = createFlags,
-   };
-
-   return lvp_get_image_format_properties(physical_device, &info,
-                                           pImageFormatProperties);
-}
-
-VkResult lvp_GetPhysicalDeviceImageFormatProperties2(
+VKAPI_ATTR VkResult VKAPI_CALL lvp_GetPhysicalDeviceImageFormatProperties2(
         VkPhysicalDevice                            physicalDevice,
         const VkPhysicalDeviceImageFormatInfo2     *base_info,
         VkImageFormatProperties2                   *base_props)
 {
    LVP_FROM_HANDLE(lvp_physical_device, physical_device, physicalDevice);
+   const VkPhysicalDeviceExternalImageFormatInfo *external_info = NULL;
+   VkExternalImageFormatProperties *external_props = NULL;
    VkResult result;
    result = lvp_get_image_format_properties(physical_device, base_info,
                                              &base_props->imageFormatProperties);
    if (result != VK_SUCCESS)
       return result;
 
+   vk_foreach_struct_const(s, base_info->pNext) {
+      switch (s->sType) {
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO:
+         external_info = (const void *) s;
+         break;
+      default:
+         break;
+      }
+   }
+
+   /* Extract output structs */
+   vk_foreach_struct(s, base_props->pNext) {
+      switch (s->sType) {
+      case VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES:
+         external_props = (void *) s;
+         break;
+      default:
+         break;
+      }
+   }
+
+   if (external_info && external_info->handleType != 0) {
+      external_props->externalMemoryProperties = (VkExternalMemoryProperties) {
+         .externalMemoryFeatures = 0,
+         .exportFromImportedHandleTypes = 0,
+         .compatibleHandleTypes = 0,
+      };
+   }
    return VK_SUCCESS;
 }
 
-void lvp_GetPhysicalDeviceSparseImageFormatProperties(
+VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceSparseImageFormatProperties(
     VkPhysicalDevice                            physicalDevice,
     VkFormat                                    format,
     VkImageType                                 type,
@@ -434,7 +429,7 @@ void lvp_GetPhysicalDeviceSparseImageFormatProperties(
    *pNumProperties = 0;
 }
 
-void lvp_GetPhysicalDeviceSparseImageFormatProperties2(
+VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceSparseImageFormatProperties2(
         VkPhysicalDevice                            physicalDevice,
         const VkPhysicalDeviceSparseImageFormatInfo2 *pFormatInfo,
         uint32_t                                   *pPropertyCount,
@@ -442,4 +437,16 @@ void lvp_GetPhysicalDeviceSparseImageFormatProperties2(
 {
         /* Sparse images are not yet supported. */
         *pPropertyCount = 0;
+}
+
+VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceExternalBufferProperties(
+   VkPhysicalDevice                            physicalDevice,
+   const VkPhysicalDeviceExternalBufferInfo    *pExternalBufferInfo,
+   VkExternalBufferProperties                  *pExternalBufferProperties)
+{
+   pExternalBufferProperties->externalMemoryProperties = (VkExternalMemoryProperties) {
+      .externalMemoryFeatures = 0,
+      .exportFromImportedHandleTypes = 0,
+      .compatibleHandleTypes = 0,
+   };
 }

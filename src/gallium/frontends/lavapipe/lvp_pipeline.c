@@ -40,7 +40,7 @@
       dst = temp;                                                \
    } while(0)
 
-VkResult lvp_CreateShaderModule(
+VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateShaderModule(
    VkDevice                                    _device,
    const VkShaderModuleCreateInfo*             pCreateInfo,
    const VkAllocationCallbacks*                pAllocator,
@@ -69,7 +69,7 @@ VkResult lvp_CreateShaderModule(
 
 }
 
-void lvp_DestroyShaderModule(
+VKAPI_ATTR void VKAPI_CALL lvp_DestroyShaderModule(
    VkDevice                                    _device,
    VkShaderModule                              _module,
    const VkAllocationCallbacks*                pAllocator)
@@ -83,7 +83,7 @@ void lvp_DestroyShaderModule(
    vk_free2(&device->vk.alloc, pAllocator, module);
 }
 
-void lvp_DestroyPipeline(
+VKAPI_ATTR void VKAPI_CALL lvp_DestroyPipeline(
    VkDevice                                    _device,
    VkPipeline                                  _pipeline,
    const VkAllocationCallbacks*                pAllocator)
@@ -511,6 +511,7 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
          .transform_feedback = true,
          .geometry_streams = true,
          .device_group = true,
+         .draw_parameters = true,
       },
       .ubo_addr_format = nir_address_format_32bit_index_offset,
       .ssbo_addr_format = nir_address_format_32bit_index_offset,
@@ -792,8 +793,8 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
 
    if (pipeline->pipeline_nir[MESA_SHADER_FRAGMENT]) {
       if (pipeline->pipeline_nir[MESA_SHADER_FRAGMENT]->info.fs.uses_sample_qualifier ||
-          pipeline->pipeline_nir[MESA_SHADER_FRAGMENT]->info.system_values_read & (SYSTEM_BIT_SAMPLE_ID |
-                                                                                   SYSTEM_BIT_SAMPLE_POS))
+          BITSET_TEST(pipeline->pipeline_nir[MESA_SHADER_FRAGMENT]->info.system_values_read, SYSTEM_VALUE_SAMPLE_ID) ||
+          BITSET_TEST(pipeline->pipeline_nir[MESA_SHADER_FRAGMENT]->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS))
          pipeline->force_min_sample = true;
    }
    if (pipeline->pipeline_nir[MESA_SHADER_TESS_CTRL]) {
@@ -859,7 +860,7 @@ lvp_graphics_pipeline_create(
    return VK_SUCCESS;
 }
 
-VkResult lvp_CreateGraphicsPipelines(
+VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateGraphicsPipelines(
    VkDevice                                    _device,
    VkPipelineCache                             pipelineCache,
    uint32_t                                    count,
@@ -947,7 +948,7 @@ lvp_compute_pipeline_create(
    return VK_SUCCESS;
 }
 
-VkResult lvp_CreateComputePipelines(
+VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateComputePipelines(
    VkDevice                                    _device,
    VkPipelineCache                             pipelineCache,
    uint32_t                                    count,

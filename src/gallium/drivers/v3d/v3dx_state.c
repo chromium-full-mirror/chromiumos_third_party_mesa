@@ -290,13 +290,17 @@ v3d_set_viewport_states(struct pipe_context *pctx,
 static void
 v3d_set_vertex_buffers(struct pipe_context *pctx,
                        unsigned start_slot, unsigned count,
+                       unsigned unbind_num_trailing_slots,
+                       bool take_ownership,
                        const struct pipe_vertex_buffer *vb)
 {
         struct v3d_context *v3d = v3d_context(pctx);
         struct v3d_vertexbuf_stateobj *so = &v3d->vertexbuf;
 
         util_set_vertex_buffers_mask(so->vb, &so->enabled_mask, vb,
-                                     start_slot, count);
+                                     start_slot, count,
+                                     unbind_num_trailing_slots,
+                                     take_ownership);
         so->count = util_last_bit(so->enabled_mask);
 
         v3d->dirty |= VC5_DIRTY_VTXBUF;
@@ -446,12 +450,13 @@ v3d_vertex_state_bind(struct pipe_context *pctx, void *hwcso)
 
 static void
 v3d_set_constant_buffer(struct pipe_context *pctx, uint shader, uint index,
+                        bool take_ownership,
                         const struct pipe_constant_buffer *cb)
 {
         struct v3d_context *v3d = v3d_context(pctx);
         struct v3d_constbuf_stateobj *so = &v3d->constbuf[shader];
 
-        util_copy_constant_buffer(&so->cb[index], cb);
+        util_copy_constant_buffer(&so->cb[index], cb, take_ownership);
 
         /* Note that the gallium frontend can unbind constant buffers by
          * passing NULL here.
@@ -1153,6 +1158,7 @@ static void
 v3d_set_sampler_views(struct pipe_context *pctx,
                       enum pipe_shader_type shader,
                       unsigned start, unsigned nr,
+                      unsigned unbind_num_trailing_slots,
                       struct pipe_sampler_view **views)
 {
         struct v3d_context *v3d = v3d_context(pctx);
@@ -1344,6 +1350,7 @@ static void
 v3d_set_shader_images(struct pipe_context *pctx,
                       enum pipe_shader_type shader,
                       unsigned start, unsigned count,
+                      unsigned unbind_num_trailing_slots,
                       const struct pipe_image_view *images)
 {
         struct v3d_context *v3d = v3d_context(pctx);
@@ -1389,6 +1396,11 @@ v3d_set_shader_images(struct pipe_context *pctx,
         }
 
         v3d->dirty |= VC5_DIRTY_SHADER_IMAGE;
+
+        if (unbind_num_trailing_slots) {
+                v3d_set_shader_images(pctx, shader, start + count,
+                                      unbind_num_trailing_slots, 0, NULL);
+        }
 }
 
 void

@@ -2298,12 +2298,6 @@ vc4_shader_ntq(struct vc4_context *vc4, enum qstage stage,
 
         NIR_PASS_V(c->s, nir_lower_tex, &tex_options);
 
-        if (c->fs_key && c->fs_key->light_twoside)
-                NIR_PASS_V(c->s, nir_lower_two_sided_color, true);
-
-        if (c->vs_key && c->vs_key->clamp_color)
-                NIR_PASS_V(c->s, nir_lower_clamp_color_outputs);
-
         if (c->key->ucp_enables) {
                 if (stage == QSTAGE_FRAG) {
                         NIR_PASS_V(c->s, nir_lower_clip_fs,
@@ -2742,10 +2736,6 @@ vc4_update_compiled_fs(struct vc4_context *vc4, uint8_t prim_mode)
         key->stencil_full_writemasks = vc4->zsa->stencil_uniforms[2] != 0;
         key->depth_enabled = (vc4->zsa->base.depth_enabled ||
                               key->stencil_enabled);
-        if (vc4->zsa->base.alpha_enabled)
-                key->alpha_test_func = vc4->zsa->base.alpha_func;
-        else
-                key->alpha_test_func = COMPARE_FUNC_ALWAYS;
 
         if (key->is_points) {
                 key->point_sprite_mask =
@@ -2756,7 +2746,6 @@ vc4_update_compiled_fs(struct vc4_context *vc4, uint8_t prim_mode)
         }
 
         key->ubo_1_size = vc4->constbuf[PIPE_SHADER_FRAGMENT].cb[1].buffer_size;
-        key->light_twoside = vc4->rasterizer->base.light_twoside;
 
         struct vc4_compiled_shader *old_fs = vc4->prog.fs;
         vc4->prog.fs = vc4_get_compiled_shader(vc4, QSTAGE_FRAG, &key->base);
@@ -2793,7 +2782,6 @@ vc4_update_compiled_vs(struct vc4_context *vc4, uint8_t prim_mode)
         vc4_setup_shared_key(vc4, &key->base, &vc4->verttex);
         key->base.shader_state = vc4->prog.bind_vs;
         key->fs_inputs = vc4->prog.fs->fs_inputs;
-        key->clamp_color = vc4->rasterizer->base.clamp_vertex_color;
 
         for (int i = 0; i < ARRAY_SIZE(key->attr_formats); i++)
                 key->attr_formats[i] = vc4->vtx->pipe[i].src_format;

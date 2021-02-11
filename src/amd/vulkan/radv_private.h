@@ -31,7 +31,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
-#include <pthread.h>
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
@@ -44,7 +43,10 @@
 #endif
 
 #include "c11/threads.h"
+#ifndef _WIN32
 #include <amdgpu.h>
+#include <xf86drm.h>
+#endif
 #include "compiler/shader_enums.h"
 #include "util/cnd_monotonic.h"
 #include "util/macros.h"
@@ -53,8 +55,10 @@
 #include "util/xmlconfig.h"
 #include "vk_alloc.h"
 #include "vk_debug_report.h"
-#include "vk_object.h"
+#include "vk_device.h"
+#include "vk_instance.h"
 #include "vk_format.h"
+#include "vk_physical_device.h"
 
 #include "radv_radeon_winsys.h"
 #include "ac_binary.h"
@@ -85,7 +89,6 @@ typedef uint32_t xcb_window_t;
 #include "radv_entrypoints.h"
 
 #include "wsi_common.h"
-#include "wsi_common_display.h"
 
 /* Helper to determine if we should compile
  * any of the Android AHB support.
@@ -97,6 +100,12 @@ typedef uint32_t xcb_window_t;
 #define RADV_SUPPORT_ANDROID_HARDWARE_BUFFER 1
 #else
 #define RADV_SUPPORT_ANDROID_HARDWARE_BUFFER 0
+#endif
+
+#ifdef _WIN32
+#define RADV_SUPPORT_CALIBRATED_TIMESTAMPS 0
+#else
+#define RADV_SUPPORT_CALIBRATED_TIMESTAMPS 1
 #endif
 
 #ifdef _WIN32
@@ -245,18 +254,6 @@ void radv_logi_v(const char *format, va_list va);
 } while (0)
 #endif
 
-#define stub_return(v)					\
-	do {						\
-		radv_finishme("stub %s", __func__);	\
-		return (v);				\
-	} while (0)
-
-#define stub()						\
-	do {						\
-		radv_finishme("stub %s", __func__);	\
-		return;					\
-	} while (0)
-
 int radv_get_instance_entrypoint_index(const char *name);
 int radv_get_device_entrypoint_index(const char *name);
 int radv_get_physical_device_entrypoint_index(const char *name);
@@ -265,18 +262,8 @@ const char *radv_get_instance_entry_name(int index);
 const char *radv_get_physical_device_entry_name(int index);
 const char *radv_get_device_entry_name(int index);
 
-bool radv_instance_entrypoint_is_enabled(int index, uint32_t core_version,
-					 const struct radv_instance_extension_table *instance);
-bool radv_physical_device_entrypoint_is_enabled(int index, uint32_t core_version,
-						const struct radv_instance_extension_table *instance);
-bool radv_device_entrypoint_is_enabled(int index, uint32_t core_version,
-				       const struct radv_instance_extension_table *instance,
-				       const struct radv_device_extension_table *device);
-
-void *radv_lookup_entrypoint(const char *name);
-
 struct radv_physical_device {
-	VK_LOADER_DATA                              _loader_data;
+	struct vk_physical_device                   vk;
 
 	/* Link in radv_instance::physical_devices */
 	struct list_head                            link;
@@ -323,32 +310,18 @@ struct radv_physical_device {
 	enum radeon_bo_flag memory_flags[VK_MAX_MEMORY_TYPES];
 	unsigned heaps;
 
+#ifndef _WIN32
 	drmPciBusInfo bus_info;
-
-	struct radv_device_extension_table supported_extensions;
+#endif
 };
 
 struct radv_instance {
-	struct vk_object_base                       base;
+	struct vk_instance                          vk;
 
 	VkAllocationCallbacks                       alloc;
 
-	uint32_t                                    apiVersion;
-
-	char *                                      applicationName;
-	uint32_t                                    applicationVersion;
-	char *                                      engineName;
-	uint32_t                                    engineVersion;
-
 	uint64_t debug_flags;
 	uint64_t perftest_flags;
-
-	struct vk_debug_report_instance             debug_report_callbacks;
-
-	struct radv_instance_extension_table enabled_extensions;
-	struct radv_instance_dispatch_table          dispatch;
-	struct radv_physical_device_dispatch_table   physical_device_dispatch;
-	struct radv_device_dispatch_table            device_dispatch;
 
 	bool                                        physical_devices_enumerated;
 	struct list_head                            physical_devices;
@@ -365,11 +338,7 @@ struct radv_instance {
 
 VkResult radv_init_wsi(struct radv_physical_device *physical_device);
 void radv_finish_wsi(struct radv_physical_device *physical_device);
-
-bool radv_instance_extension_supported(const char *name);
 uint32_t radv_physical_device_api_version(struct radv_physical_device *dev);
-bool radv_physical_device_extension_supported(struct radv_physical_device *dev,
-					      const char *name);
 
 struct cache_entry;
 
@@ -694,12 +663,14 @@ struct radv_meta_state {
 
 #define RADV_MAX_QUEUE_FAMILIES 3
 
+#define RADV_NUM_HW_CTX (RADEON_CTX_PRIORITY_REALTIME + 1)
+
 struct radv_deferred_queue_submission;
 
 enum ring_type radv_queue_family_to_ring(int f);
 
 struct radv_queue {
-	VK_LOADER_DATA                              _loader_data;
+	struct vk_object_base                       base;
 	struct radv_device *                         device;
 	struct radeon_winsys_ctx                    *hw_ctx;
 	enum radeon_ctx_priority                     priority;
@@ -742,17 +713,6 @@ struct radv_queue {
 	bool cond_created;
 };
 
-struct radv_bo_list {
-	struct radv_winsys_bo_list list;
-	unsigned capacity;
-	struct u_rwlock rwlock;
-};
-
-VkResult radv_bo_list_add(struct radv_device *device,
-			  struct radeon_winsys_bo *bo);
-void radv_bo_list_remove(struct radv_device *device,
-			 struct radeon_winsys_bo *bo);
-
 #define RADV_BORDER_COLOR_COUNT       4096
 #define RADV_BORDER_COLOR_BUFFER_SIZE (sizeof(VkClearColorValue) * RADV_BORDER_COLOR_COUNT)
 
@@ -773,6 +733,7 @@ struct radv_device {
 	struct radv_instance *                       instance;
 	struct radeon_winsys *ws;
 
+	struct radeon_winsys_ctx *hw_ctx[RADV_NUM_HW_CTX];
 	struct radv_meta_state                       meta_state;
 
 	struct radv_queue *queues[RADV_MAX_QUEUE_FAMILIES];
@@ -823,9 +784,6 @@ struct radv_device {
 	/* For detecting VM faults reported by dmesg. */
 	uint64_t dmesg_timestamp;
 
-	struct radv_device_extension_table enabled_extensions;
-	struct radv_device_dispatch_table dispatch;
-
 	/* Whether the app has enabled the robustBufferAccess/robustBufferAccess2 features. */
 	bool robust_buffer_access;
 	bool robust_buffer_access2;
@@ -837,8 +795,6 @@ struct radv_device {
 
 	/* Whether the driver uses a global BO list. */
 	bool use_global_bo_list;
-
-	struct radv_bo_list bo_list;
 
 	/* Whether anisotropy is forced with RADV_TEX_ANISO (-1 is disabled). */
 	int force_aniso;
@@ -902,7 +858,7 @@ struct radv_descriptor_range {
 	uint32_t size;
 };
 
-struct radv_descriptor_set {
+struct radv_descriptor_set_header {
 	struct vk_object_base base;
 	const struct radv_descriptor_set_layout *layout;
 	uint32_t size;
@@ -912,13 +868,17 @@ struct radv_descriptor_set {
 	uint64_t va;
 	uint32_t *mapped_ptr;
 	struct radv_descriptor_range *dynamic_descriptors;
+};
 
-	struct radeon_winsys_bo *descriptors[0];
+struct radv_descriptor_set {
+	struct radv_descriptor_set_header header;
+
+	struct radeon_winsys_bo *descriptors[];
 };
 
 struct radv_push_descriptor_set
 {
-	struct radv_descriptor_set set;
+	struct radv_descriptor_set_header set;
 	uint32_t capacity;
 };
 
@@ -1454,7 +1414,7 @@ struct radv_cmd_buffer {
 
 	uint8_t push_constants[MAX_PUSH_CONSTANTS_SIZE];
 	VkShaderStageFlags push_constant_stages;
-	struct radv_descriptor_set meta_push_descriptors;
+	struct radv_descriptor_set_header meta_push_descriptors;
 
 	struct radv_descriptor_state descriptors[MAX_BIND_POINTS];
 
@@ -1880,7 +1840,6 @@ bool radv_device_supports_etc(struct radv_physical_device *physical_device);
 struct radv_image_plane {
 	VkFormat format;
 	struct radeon_surf surface;
-	uint64_t offset;
 };
 
 struct radv_image {
@@ -2022,7 +1981,8 @@ radv_image_has_htile(const struct radv_image *image)
 static inline bool
 radv_htile_enabled(const struct radv_image *image, unsigned level)
 {
-	return radv_image_has_htile(image) && level == 0;
+	return radv_image_has_htile(image) &&
+	       level < image->planes[0].surface.num_htile_levels;
 }
 
 /**
@@ -2205,12 +2165,18 @@ struct radv_image_create_info {
 VkResult
 radv_image_create_layout(struct radv_device *device,
                          struct radv_image_create_info create_info,
+                         const struct VkImageDrmFormatModifierExplicitCreateInfoEXT *mod_info,
                          struct radv_image *image);
 
 VkResult radv_image_create(VkDevice _device,
 			   const struct radv_image_create_info *info,
 			   const VkAllocationCallbacks* alloc,
 			   VkImage *pImage);
+
+bool
+radv_are_formats_dcc_compatible(const struct radv_physical_device *pdev,
+                                const void *pNext, VkFormat format,
+                                VkImageCreateFlags flags);
 
 bool vi_alpha_is_on_msb(struct radv_device *device, VkFormat format);
 

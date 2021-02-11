@@ -25,6 +25,7 @@
 #include <stdbool.h>
 
 #include "anv_private.h"
+#include "anv_measure.h"
 #include "vk_format_info.h"
 #include "vk_util.h"
 #include "util/fast_idiv_by_const.h"
@@ -367,7 +368,7 @@ anv_can_fast_clear_color_view(struct anv_device * device,
    if (isl_color_value_requires_conversion(clear_color,
                                            &iview->image->planes[0].surface.isl,
                                            &iview->planes[0].isl)) {
-      anv_perf_warn(device, iview,
+      anv_perf_warn(device, &iview->base,
                     "Cannot fast-clear to colors which would require "
                     "format conversion on resolve");
       return false;
@@ -382,7 +383,7 @@ anv_can_fast_clear_color_view(struct anv_device * device,
     */
    if (iview->planes[0].isl.base_level > 0 ||
        iview->planes[0].isl.base_array_layer > 0) {
-      anv_perf_warn(device, iview->image,
+      anv_perf_warn(device, &iview->image->base,
                     "Rendering with multi-lod or multi-layer framebuffer "
                     "with LOAD_OP_LOAD and baseMipLevel > 0 or "
                     "baseArrayLayer > 0.  Not fast clearing.");
@@ -390,7 +391,7 @@ anv_can_fast_clear_color_view(struct anv_device * device,
    }
 
    if (num_layers > 1) {
-      anv_perf_warn(device, iview->image,
+      anv_perf_warn(device, &iview->image->base,
                     "Rendering to a multi-layer framebuffer with "
                     "LOAD_OP_CLEAR.  Only fast-clearing the first slice");
    }
@@ -462,8 +463,10 @@ anv_image_init_aux_tt(struct anv_cmd_buffer *cmd_buffer,
 {
    uint32_t plane = anv_image_aspect_to_plane(image->aspects, aspect);
 
+   const struct anv_surface *surface = &image->planes[plane].surface;
    uint64_t base_address =
-      anv_address_physical(image->planes[plane].address);
+      anv_address_physical(anv_address_add(image->planes[plane].address,
+                                           surface->offset));
 
    const struct isl_surf *isl_surf = &image->planes[plane].surface.isl;
    uint64_t format_bits = gen_aux_map_format_bits_for_isl_surf(isl_surf);
@@ -1231,6 +1234,17 @@ transition_color_buffer(struct anv_cmd_buffer *cmd_buffer,
             uint32_t level_layer_count =
                MIN2(layer_count, aux_layers - base_layer);
 
+            /* If will_full_fast_clear is set, the caller promises to
+             * fast-clear the largest portion of the specified range as it can.
+             * For color images, that means only the first LOD and array slice.
+             */
+            if (level == 0 && base_layer == 0 && will_full_fast_clear) {
+               base_layer++;
+               level_layer_count--;
+               if (level_layer_count == 0)
+                  continue;
+            }
+
             anv_image_ccs_op(cmd_buffer, image,
                              image->planes[plane].surface.isl.format,
                              ISL_SWIZZLE_IDENTITY,
@@ -1245,10 +1259,16 @@ transition_color_buffer(struct anv_cmd_buffer *cmd_buffer,
          }
       } else {
          if (image->samples == 4 || image->samples == 16) {
-            anv_perf_warn(cmd_buffer->device, image,
+            anv_perf_warn(cmd_buffer->device, &image->base,
                           "Doing a potentially unnecessary fast-clear to "
                           "define an MCS buffer.");
          }
+
+         /* If will_full_fast_clear is set, the caller promises to fast-clear
+          * the largest portion of the specified range as it can.
+          */
+         if (will_full_fast_clear)
+            return;
 
          assert(base_level == 0 && level_count == 1);
          anv_image_mcs_op(cmd_buffer, image,
@@ -1747,6 +1767,8 @@ genX(EndCommandBuffer)(
 
    if (anv_batch_has_error(&cmd_buffer->batch))
       return cmd_buffer->batch.status;
+
+   anv_measure_endcommandbuffer(cmd_buffer);
 
    /* We want every command buffer to start with the PMA fix in a known state,
     * so we disable it at the end of the command buffer.
@@ -3221,7 +3243,7 @@ cmd_buffer_emit_push_constant_all(struct anv_cmd_buffer *cmd_buffer,
    const struct anv_cmd_graphics_state *gfx_state = &cmd_buffer->state.gfx;
    const struct anv_graphics_pipeline *pipeline = gfx_state->pipeline;
 
-   static const uint32_t push_constant_opcodes[] = {
+   static const UNUSED uint32_t push_constant_opcodes[] = {
       [MESA_SHADER_VERTEX]                      = 21,
       [MESA_SHADER_TESS_CTRL]                   = 25, /* HS */
       [MESA_SHADER_TESS_EVAL]                   = 26, /* DS */
@@ -3758,6 +3780,14 @@ void genX(CmdDraw)(
    if (anv_batch_has_error(&cmd_buffer->batch))
       return;
 
+   const uint32_t count = (vertexCount *
+                           instanceCount *
+                           (pipeline->use_primitive_replication ?
+                            1 : anv_subpass_view_count(cmd_buffer->state.subpass)));
+   anv_measure_snapshot(cmd_buffer,
+                        INTEL_SNAPSHOT_DRAW,
+                        "draw", count);
+
    genX(cmd_buffer_flush_state)(cmd_buffer);
 
    if (cmd_buffer->state.conditional_render_enabled)
@@ -3808,6 +3838,15 @@ void genX(CmdDrawIndexed)(
 
    if (anv_batch_has_error(&cmd_buffer->batch))
       return;
+
+   const uint32_t count = (indexCount *
+                           instanceCount *
+                           (pipeline->use_primitive_replication ?
+                            1 : anv_subpass_view_count(cmd_buffer->state.subpass)));
+   anv_measure_snapshot(cmd_buffer,
+                        INTEL_SNAPSHOT_DRAW,
+                        "draw indexed",
+                        count);
 
    genX(cmd_buffer_flush_state)(cmd_buffer);
 
@@ -3873,6 +3912,11 @@ void genX(CmdDrawIndirectByteCountEXT)(
 
    if (anv_batch_has_error(&cmd_buffer->batch))
       return;
+
+   anv_measure_snapshot(cmd_buffer,
+                        INTEL_SNAPSHOT_DRAW,
+                        "draw indirect byte count",
+                        instanceCount);
 
    genX(cmd_buffer_flush_state)(cmd_buffer);
 
@@ -4488,7 +4532,7 @@ verify_cmd_parser(const struct anv_device *device,
                   const char *function)
 {
    if (device->physical->cmd_parser_version < required_version) {
-      return vk_errorf(device, device->physical,
+      return vk_errorf(device, &device->physical->vk.base,
                        VK_ERROR_FEATURE_NOT_PRESENT,
                        "cmd parser version %d is required for %s",
                        required_version, function);
@@ -4639,6 +4683,13 @@ void genX(CmdDispatchBase)(
    if (anv_batch_has_error(&cmd_buffer->batch))
       return;
 
+   anv_measure_snapshot(cmd_buffer,
+                        INTEL_SNAPSHOT_COMPUTE,
+                        "compute",
+                        groupCountX * groupCountY * groupCountZ *
+                        prog_data->local_size[0] * prog_data->local_size[1] *
+                        prog_data->local_size[2]);
+
    if (prog_data->uses_num_work_groups) {
       struct anv_state state =
          anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, 12, 4);
@@ -4690,6 +4741,11 @@ void genX(CmdDispatchIndirect)(
                          "vkCmdDispatchIndirect") != VK_SUCCESS)
       return;
 #endif
+
+   anv_measure_snapshot(cmd_buffer,
+                        INTEL_SNAPSHOT_COMPUTE,
+                        "compute indirect",
+                        0);
 
    if (prog_data->uses_num_work_groups) {
       cmd_buffer->state.compute.num_workgroups = addr;
@@ -6066,6 +6122,8 @@ void genX(CmdBeginRenderPass)(
    cmd_buffer->state.pass = pass;
    cmd_buffer->state.render_area = pRenderPassBegin->renderArea;
 
+   anv_measure_beginrenderpass(cmd_buffer);
+
    result = genX(cmd_buffer_setup_attachments)(cmd_buffer, pass,
                                                framebuffer,
                                                pRenderPassBegin);
@@ -6123,10 +6181,6 @@ void genX(CmdEndRenderPass)(
    cmd_buffer_end_subpass(cmd_buffer);
 
    cmd_buffer->state.hiz_enabled = false;
-
-#ifndef NDEBUG
-   anv_dump_add_attachments(cmd_buffer);
-#endif
 
    /* Remove references to render pass specific state. This enables us to
     * detect whether or not we're in a renderpass.
@@ -6380,4 +6434,14 @@ VkResult genX(CmdSetPerformanceStreamMarkerINTEL)(
    /* TODO: Waiting on the register to write, might depend on generation. */
 
    return VK_SUCCESS;
+}
+
+void genX(cmd_emit_timestamp)(struct anv_batch *batch,
+                              struct anv_bo *bo,
+                              uint32_t offset) {
+   anv_batch_emit(batch, GENX(PIPE_CONTROL), pc) {
+      pc.CommandStreamerStallEnable = true;
+      pc.PostSyncOperation       = WriteTimestamp;
+      pc.Address = (struct anv_address) {bo, offset};
+   }
 }

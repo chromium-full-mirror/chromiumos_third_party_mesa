@@ -44,6 +44,7 @@
 #include "drm-uapi/panfrost_drm.h"
 
 #include "pan_bo.h"
+#include "pan_shader.h"
 #include "pan_screen.h"
 #include "pan_resource.h"
 #include "pan_public.h"
@@ -51,8 +52,6 @@
 #include "decode.h"
 
 #include "pan_context.h"
-#include "midgard/midgard_compile.h"
-#include "bifrost/bifrost_compile.h"
 #include "panfrost-quirks.h"
 
 static const struct debug_named_value panfrost_debug_options[] = {
@@ -103,8 +102,6 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         bool has_mrt = !(dev->quirks & MIDGARD_SFBD);
 
         /* Bifrost is WIP */
-        bool is_bifrost = (dev->quirks & IS_BIFROST);
-
         switch (param) {
         case PIPE_CAP_NPOT_TEXTURES:
         case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
@@ -225,7 +222,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
         case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
         case PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL:
-                return is_bifrost;
+                return pan_is_bifrost(dev);
 
         case PIPE_CAP_SEAMLESS_CUBE_MAP:
         case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
@@ -285,6 +282,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_PSIZ_CLAMPED:
                 return 1;
 
+        case PIPE_CAP_NIR_IMAGES_AS_DEREF:
+                return 0;
+
         default:
                 return u_pipe_screen_get_param_defaults(screen, param);
         }
@@ -299,7 +299,6 @@ panfrost_get_shader_param(struct pipe_screen *screen,
         bool is_deqp = dev->debug & PAN_DBG_DEQP;
         bool is_fp16 = dev->debug & PAN_DBG_FP16;
         bool is_nofp16 = dev->debug & PAN_DBG_NOFP16;
-        bool is_bifrost = dev->quirks & IS_BIFROST;
 
         if (shader != PIPE_SHADER_VERTEX &&
             shader != PIPE_SHADER_FRAGMENT &&
@@ -357,7 +356,7 @@ panfrost_get_shader_param(struct pipe_screen *screen,
 
         case PIPE_SHADER_CAP_FP16:
         case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
-                return (!is_nofp16 && !is_bifrost) || is_fp16;
+                return (!is_nofp16 && !pan_is_bifrost(dev)) || is_fp16;
 
         case PIPE_SHADER_CAP_FP16_DERIVATIVES:
         case PIPE_SHADER_CAP_INT16:
@@ -383,8 +382,11 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                 return 32;
 
         case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
-        case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
                 return is_deqp ? 8 : 0;
+
+        case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
+                return pan_is_bifrost(dev) ? 0 : PIPE_MAX_SHADER_IMAGES;
+
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
                 return 0;
@@ -761,10 +763,7 @@ panfrost_screen_get_compiler_options(struct pipe_screen *pscreen,
                                      enum pipe_shader_ir ir,
                                      enum pipe_shader_type shader)
 {
-        if (pan_device(pscreen)->quirks & IS_BIFROST)
-                return &bifrost_nir_options;
-        else
-                return &midgard_nir_options;
+        return panfrost_get_shader_options(pan_device(pscreen));
 }
 
 struct pipe_screen *

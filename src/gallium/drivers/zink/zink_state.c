@@ -65,7 +65,7 @@ zink_create_vertex_elements_state(struct pipe_context *pctx,
       assert(elem->instance_divisor <= screen->info.vdiv_props.maxVertexAttribDivisor);
 
       ves->hw_state.attribs[i].binding = binding;
-      ves->hw_state.attribs[i].location = i; // TODO: unsure
+      ves->hw_state.attribs[i].location = i;
       ves->hw_state.attribs[i].format = zink_get_format(screen,
                                                         elem->src_format);
       assert(ves->hw_state.attribs[i].format != VK_FORMAT_UNDEFINED);
@@ -464,6 +464,7 @@ static void
 zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
 {
    struct zink_context *ctx = zink_context(pctx);
+   bool clip_halfz = ctx->rast_state ? ctx->rast_state->base.clip_halfz : false;
    ctx->rast_state = cso;
 
    if (ctx->rast_state) {
@@ -471,6 +472,9 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
          ctx->gfx_pipeline_state.rast_state = &ctx->rast_state->hw_state;
          ctx->gfx_pipeline_state.dirty = true;
       }
+
+      if (clip_halfz != ctx->rast_state->base.clip_halfz)
+         ctx->last_vertex_stage_dirty = true;
 
       if (ctx->line_width != ctx->rast_state->line_width) {
          ctx->line_width = ctx->rast_state->line_width;

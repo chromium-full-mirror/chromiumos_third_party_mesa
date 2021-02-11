@@ -91,7 +91,6 @@ batch_init(struct fd_batch *batch)
 	batch->num_bins_per_pipe = 0;
 	batch->prim_strm_bits = 0;
 	batch->draw_strm_bits = 0;
-	batch->stage = FD_STAGE_NULL;
 
 	fd_reset_wfi(batch);
 
@@ -343,7 +342,7 @@ batch_flush(struct fd_batch *batch)
 	/* close out the draw cmds by making sure any active queries are
 	 * paused:
 	 */
-	fd_batch_set_stage(batch, FD_STAGE_NULL);
+	fd_batch_finish_queries(batch);
 
 	batch_flush_reset_dependencies(batch, true);
 
@@ -427,7 +426,6 @@ flush_write_batch(struct fd_resource *rsc)
 	fd_batch_flush(b);
 	fd_screen_lock(b->ctx->screen);
 
-	fd_bc_invalidate_batch(b, false);
 	fd_batch_reference_locked(&b, NULL);
 }
 
@@ -451,14 +449,20 @@ fd_batch_resource_write(struct fd_batch *batch, struct fd_resource *rsc)
 {
 	fd_screen_assert_locked(batch->ctx->screen);
 
+	DBG("%p: write %p", batch, rsc);
+
+	/* Must do this before the early out, so we unset a previous resource
+	 * invalidate (which may have left the write_batch state in place).
+	 */
+	rsc->valid = true;
+
+	if (rsc->write_batch == batch)
+		return;
+
 	fd_batch_write_prep(batch, rsc);
 
 	if (rsc->stencil)
 		fd_batch_resource_write(batch, rsc->stencil);
-
-	DBG("%p: write %p", batch, rsc);
-
-	rsc->valid = true;
 
 	/* note, invalidate write batch, to avoid further writes to rsc
 	 * resulting in a write-after-read hazard.
@@ -468,7 +472,7 @@ fd_batch_resource_write(struct fd_batch *batch, struct fd_resource *rsc)
 		struct fd_batch_cache *cache = &batch->ctx->screen->batch_cache;
 		struct fd_batch *dep;
 
-		if (rsc->write_batch && rsc->write_batch != batch)
+		if (rsc->write_batch)
 			flush_write_batch(rsc);
 
 		foreach_batch(dep, cache, rsc->batch_mask) {
@@ -516,6 +520,13 @@ fd_batch_check_size(struct fd_batch *batch)
 	debug_assert(!batch->flushed);
 
 	if (unlikely(fd_mesa_debug & FD_DBG_FLUSH)) {
+		fd_batch_flush(batch);
+		return;
+	}
+
+	/* Place a reasonable upper bound on prim/draw stream buffer size: */
+	const unsigned limit_bits = 8 * 8 * 1024 * 1024;
+	if ((batch->prim_strm_bits > limit_bits) || (batch->draw_strm_bits > limit_bits)) {
 		fd_batch_flush(batch);
 		return;
 	}

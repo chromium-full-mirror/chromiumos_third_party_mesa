@@ -32,8 +32,6 @@ sys.path.append(VULKAN_UTIL)
 
 from vk_extensions import *
 
-API_PATCH_VERSION = 145
-
 # Supported API versions.  Each one is the maximum patch version for the given
 # version.  Version come in increasing order and each version is available if
 # it's provided "enable" condition is true and all previous versions are
@@ -119,8 +117,10 @@ EXTENSIONS = [
     Extension('VK_KHR_variable_pointers',                 1, True),
     Extension('VK_KHR_vulkan_memory_model',               3, True),
     Extension('VK_KHR_wayland_surface',                   6, 'VK_USE_PLATFORM_WAYLAND_KHR'),
+    Extension('VK_KHR_workgroup_memory_explicit_layout',  1, True),
     Extension('VK_KHR_xcb_surface',                       6, 'VK_USE_PLATFORM_XCB_KHR'),
     Extension('VK_KHR_xlib_surface',                      6, 'VK_USE_PLATFORM_XLIB_KHR'),
+    Extension('VK_KHR_zero_initialize_workgroup_memory',  1, True),
     Extension('VK_EXT_4444_formats',                      1, True),
     Extension('VK_EXT_acquire_xlib_display',              1, 'VK_USE_PLATFORM_XLIB_XRANDR_EXT'),
     Extension('VK_EXT_buffer_device_address',             2, 'device->has_a64_buffer_access'),
@@ -154,6 +154,7 @@ EXTENSIONS = [
     Extension('VK_EXT_private_data',                      1, True),
     Extension('VK_EXT_queue_family_foreign',              1, 'ANDROID'),
     Extension('VK_EXT_robustness2',                       1, True),
+    Extension('VK_EXT_sample_locations',                  1, True),
     Extension('VK_EXT_sampler_filter_minmax',             2, 'device->info.gen >= 9'),
     Extension('VK_EXT_scalar_block_layout',               1, True),
     Extension('VK_EXT_separate_stencil_usage',            1, True),
@@ -201,6 +202,5 @@ for i in range(len(EXTENSIONS) - 1):
 MAX_API_VERSION = VkVersion('0.0.0')
 for version in API_VERSIONS:
     version.version = VkVersion(version.version)
-    version.version.patch = API_PATCH_VERSION
     assert version.version > MAX_API_VERSION
     MAX_API_VERSION = version.version

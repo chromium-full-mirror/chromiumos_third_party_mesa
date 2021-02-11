@@ -161,7 +161,7 @@ intel_dri2_flush_with_flags(__DRIcontext *cPriv,
 
    _mesa_glthread_finish(ctx);
 
-   FLUSH_VERTICES(ctx, 0);
+   FLUSH_VERTICES(ctx, 0, 0);
 
    if (flags & __DRI2_FLUSH_DRAWABLE)
       intel_resolve_for_dri2_flush(brw, dPriv);
@@ -2491,6 +2491,27 @@ set_max_gl_versions(struct intel_screen *screen)
       break;
    default:
       unreachable("unrecognized intel_screen::gen");
+   }
+
+   /* OpenGL 3.3+ requires GL_ARB_blend_func_extended.  Don't advertise those
+    * versions if driconf disables the extension.
+    */
+   if (driQueryOptionb(&screen->optionCache, "disable_blend_func_extended")) {
+      dri_screen->max_gl_core_version =
+         MIN2(32, dri_screen->max_gl_core_version);
+      dri_screen->max_gl_compat_version =
+         MIN2(32, dri_screen->max_gl_compat_version);
+   }
+
+   /* Using the `allow_higher_compat_version` option during context creation
+    * means that an application that doesn't request a specific version can be
+    * given a version higher than 3.0.  However, an application still cannot
+    * request a higher version.  For that to work, max_gl_compat_version must
+    * be set.
+    */
+   if (dri_screen->max_gl_compat_version < dri_screen->max_gl_core_version) {
+      if (driQueryOptionb(&screen->optionCache, "allow_higher_compat_version"))
+         dri_screen->max_gl_compat_version = dri_screen->max_gl_core_version;
    }
 }
 

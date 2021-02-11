@@ -136,8 +136,6 @@ panfrost_mfbd_rt_set_buf(struct pipe_surface *surf,
                          struct MALI_RENDER_TARGET *rt)
 {
         struct panfrost_device *dev = pan_device(surf->context->screen);
-        bool is_bifrost = dev->quirks & IS_BIFROST;
-        unsigned version = dev->gpu_id >> 12;
         struct panfrost_resource *rsrc = pan_resource(surf->texture);
         unsigned level = surf->u.tex.level;
         unsigned first_layer = surf->u.tex.first_layer;
@@ -161,7 +159,7 @@ panfrost_mfbd_rt_set_buf(struct pipe_surface *surf,
         if (rsrc->layout.modifier == DRM_FORMAT_MOD_LINEAR) {
                 mali_ptr base = panfrost_get_texture_address(rsrc, level, first_layer, 0);
 
-                if (version >= 7)
+                if (dev->arch >= 7)
                         rt->bifrost_v7.writeback_block_format = MALI_BLOCK_FORMAT_V7_LINEAR;
                 else
                         rt->midgard.writeback_block_format = MALI_BLOCK_FORMAT_LINEAR;
@@ -172,7 +170,7 @@ panfrost_mfbd_rt_set_buf(struct pipe_surface *surf,
         } else if (rsrc->layout.modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED) {
                 mali_ptr base = panfrost_get_texture_address(rsrc, level, first_layer, 0);
 
-                if (version >= 7)
+                if (dev->arch >= 7)
                         rt->bifrost_v7.writeback_block_format = MALI_BLOCK_FORMAT_V7_TILED_U_INTERLEAVED;
                 else
                         rt->midgard.writeback_block_format = MALI_BLOCK_FORMAT_TILED_U_INTERLEAVED;
@@ -183,12 +181,12 @@ panfrost_mfbd_rt_set_buf(struct pipe_surface *surf,
         } else if (drm_is_afbc(rsrc->layout.modifier)) {
                 const struct panfrost_slice *slice = &rsrc->layout.slices[level];
 
-                if (version >= 7)
+                if (dev->arch >= 7)
                         rt->bifrost_v7.writeback_block_format = MALI_BLOCK_FORMAT_V7_AFBC;
                 else
                         rt->midgard.writeback_block_format = MALI_BLOCK_FORMAT_AFBC;
 
-                if (is_bifrost) {
+                if (pan_is_bifrost(dev)) {
                         rt->afbc.row_stride = slice->afbc.row_stride /
                                               AFBC_HEADER_BYTES_PER_TILE;
                         rt->bifrost_afbc.afbc_wide_block_enable =
@@ -216,7 +214,6 @@ panfrost_mfbd_emit_rt(struct panfrost_batch *batch,
                       unsigned rt_offset, unsigned rt_idx)
 {
         struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
-        unsigned version = dev->gpu_id >> 12;
 
         pan_pack(rtp, RENDER_TARGET, rt) {
                 rt.clean_pixel_write_enable = true;
@@ -228,7 +225,7 @@ panfrost_mfbd_emit_rt(struct panfrost_batch *batch,
                 } else {
                         rt.internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8;
                         rt.internal_buffer_offset = rt_offset;
-                        if (version >= 7) {
+                        if (dev->arch >= 7) {
                                 rt.bifrost_v7.writeback_block_format = MALI_BLOCK_FORMAT_V7_TILED_U_INTERLEAVED;
                                 rt.dithering_enable = true;
                         }
@@ -261,8 +258,6 @@ panfrost_mfbd_zs_crc_ext_set_bufs(struct panfrost_batch *batch,
                                   struct panfrost_slice **checksum_slice)
 {
         struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
-        bool is_bifrost = dev->quirks & IS_BIFROST;
-        unsigned version = dev->gpu_id >> 12;
 
         /* Checksumming only works with a single render target */
         if (batch->key.nr_cbufs == 1) {
@@ -281,7 +276,7 @@ panfrost_mfbd_zs_crc_ext_set_bufs(struct panfrost_batch *batch,
                         else
                                 ext->crc_base = rsrc->bo->ptr.gpu + slice->crc.offset;
 
-                        if ((batch->clear & PIPE_CLEAR_COLOR0) && version >= 7) {
+                        if ((batch->clear & PIPE_CLEAR_COLOR0) && dev->arch >= 7) {
                                 ext->crc_clear_color = batch->clear_color[0][0] |
                                                       0xc000000000000000 |
                                                       ((uint64_t)batch->clear_color[0][0] & 0xffff) << 32;
@@ -303,7 +298,7 @@ panfrost_mfbd_zs_crc_ext_set_bufs(struct panfrost_batch *batch,
         unsigned first_layer = zs_surf->u.tex.first_layer;
         assert(zs_surf->u.tex.last_layer == first_layer);
 
-        if (version < 7)
+        if (dev->arch < 7)
                 ext->zs_msaa = nr_samples > 1 ? MALI_MSAA_LAYERED : MALI_MSAA_SINGLE;
         else
                 ext->zs_msaa_v7 = nr_samples > 1 ? MALI_MSAA_LAYERED : MALI_MSAA_SINGLE;
@@ -315,12 +310,12 @@ panfrost_mfbd_zs_crc_ext_set_bufs(struct panfrost_batch *batch,
                                            &ext->zs_afbc_header,
                                            &ext->zs_afbc_body);
 
-                if (version >= 7)
+                if (dev->arch >= 7)
                         ext->zs_block_format_v7 = MALI_BLOCK_FORMAT_V7_AFBC;
                 else
                         ext->zs_block_format = MALI_BLOCK_FORMAT_AFBC;
 
-                if (is_bifrost) {
+                if (pan_is_bifrost(dev)) {
                         ext->zs_afbc_row_stride = slice->afbc.row_stride /
                                                   AFBC_HEADER_BYTES_PER_TILE;
 		} else {
@@ -344,12 +339,12 @@ panfrost_mfbd_zs_crc_ext_set_bufs(struct panfrost_batch *batch,
                         rsrc->layout.slices[level].surface_stride : 0;
 
                 if (rsrc->layout.modifier == DRM_FORMAT_MOD_LINEAR) {
-                        if (version >= 7)
+                        if (dev->arch >= 7)
                                 ext->zs_block_format_v7 = MALI_BLOCK_FORMAT_V7_LINEAR;
                         else
                                 ext->zs_block_format = MALI_BLOCK_FORMAT_LINEAR;
                 } else {
-                        if (version >= 7)
+                        if (dev->arch >= 7)
                                 ext->zs_block_format_v7 = MALI_BLOCK_FORMAT_V7_TILED_U_INTERLEAVED;
                         else
                                 ext->zs_block_format = MALI_BLOCK_FORMAT_TILED_U_INTERLEAVED;
@@ -376,7 +371,7 @@ panfrost_mfbd_zs_crc_ext_set_bufs(struct panfrost_batch *batch,
                  */
                 ext->zs_write_format = MALI_ZS_FORMAT_D32;
                 ext->s_write_format = MALI_S_FORMAT_S8;
-                if (version < 7) {
+                if (dev->arch < 7) {
                         ext->s_block_format = ext->zs_block_format;
                         ext->s_msaa = ext->zs_msaa;
                 } else {
@@ -520,7 +515,7 @@ panfrost_attach_mfbd(struct panfrost_batch *batch, unsigned vertex_count)
 
         panfrost_mfbd_emit_local_storage(batch, fb);
 
-        if (dev->quirks & IS_BIFROST)
+        if (pan_is_bifrost(dev))
                 return;
 
         pan_section_pack(fb, MULTI_TARGET_FRAMEBUFFER, PARAMETERS, params) {
@@ -611,7 +606,7 @@ panfrost_mfbd_fragment(struct panfrost_batch *batch, bool has_draws)
                 }
         }
 
-        if (dev->quirks & IS_BIFROST)
+        if (pan_is_bifrost(dev))
                 panfrost_mfbd_emit_bifrost_parameters(batch, fb);
         else
                 panfrost_mfbd_emit_local_storage(batch, fb);
@@ -665,7 +660,7 @@ panfrost_mfbd_fragment(struct panfrost_batch *batch, bool has_draws)
                 }
         }
 
-        if (dev->quirks & IS_BIFROST)
+        if (pan_is_bifrost(dev))
                 panfrost_mfbd_emit_bifrost_tiler(batch, fb, vertex_count);
         else
                 panfrost_mfbd_emit_midgard_tiler(batch, fb, vertex_count);

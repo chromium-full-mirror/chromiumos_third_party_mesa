@@ -385,7 +385,6 @@ iris_resource_disable_aux(struct iris_resource *res)
    res->aux.usage = ISL_AUX_USAGE_NONE;
    res->aux.possible_usages = 1 << ISL_AUX_USAGE_NONE;
    res->aux.sampler_usages = 1 << ISL_AUX_USAGE_NONE;
-   res->aux.has_hiz = 0;
    res->aux.surf.size_B = 0;
    res->aux.bo = NULL;
    res->aux.extra_aux.surf.size_B = 0;
@@ -686,16 +685,8 @@ iris_resource_configure_aux(struct iris_screen *screen,
 
    res->aux.usage = util_last_bit(res->aux.possible_usages) - 1;
 
-   res->aux.sampler_usages = res->aux.possible_usages;
-
-   /* We don't always support sampling with hiz. But when we do, it must be
-    * single sampled.
-    */
-   if (!devinfo->has_sample_with_hiz || res->surf.samples > 1)
-      res->aux.sampler_usages &= ~(1 << ISL_AUX_USAGE_HIZ);
-
-   /* ISL_AUX_USAGE_HIZ_CCS doesn't support sampling at all */
-   res->aux.sampler_usages &= ~(1 << ISL_AUX_USAGE_HIZ_CCS);
+   if (!has_hiz || iris_sample_with_depth_aux(devinfo, res))
+      res->aux.sampler_usages = res->aux.possible_usages;
 
    enum isl_aux_state initial_state;
    assert(!res->aux.bo);
@@ -759,19 +750,6 @@ iris_resource_configure_aux(struct iris_screen *screen,
    res->aux.state = create_aux_state_map(res, initial_state);
    if (!res->aux.state)
       return false;
-
-   if (isl_aux_usage_has_hiz(res->aux.usage)) {
-      for (unsigned level = 0; level < res->surf.levels; ++level) {
-         uint32_t width = u_minify(res->surf.phys_level0_sa.width, level);
-         uint32_t height = u_minify(res->surf.phys_level0_sa.height, level);
-
-         /* Disable HiZ for LOD > 0 unless the width/height are 8x4 aligned.
-          * For LOD == 0, we can grow the dimensions to make it work.
-          */
-         if (level == 0 || ((width & 7) == 0 && (height & 3) == 0))
-            res->aux.has_hiz |= 1 << level;
-      }
-   }
 
    return true;
 }
@@ -1165,6 +1143,20 @@ iris_flush_resource(struct pipe_context *ctx, struct pipe_resource *resource)
                                 0, INTEL_REMAINING_LAYERS,
                                 mod ? mod->aux_usage : ISL_AUX_USAGE_NONE,
                                 mod ? mod->supports_clear_color : false);
+
+   if (!res->mod_info && res->aux.usage != ISL_AUX_USAGE_NONE) {
+      /* flush_resource may be used to prepare an image for sharing external
+       * to the driver (e.g. via eglCreateImage). To account for this, make
+       * sure to get rid of any compression that a consumer wouldn't know how
+       * to handle.
+       */
+      for (int i = 0; i < IRIS_BATCH_COUNT; i++) {
+         if (iris_batch_references(&ice->batches[i], res->bo))
+            iris_batch_flush(&ice->batches[i]);
+      }
+
+      iris_resource_disable_aux(res);
+   }
 }
 
 static void

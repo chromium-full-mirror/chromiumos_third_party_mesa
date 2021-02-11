@@ -1060,7 +1060,7 @@ tu6_blit_image(struct tu_cmd_buffer *cmd,
                const VkImageBlit *info,
                VkFilter filter)
 {
-   const struct blit_ops *ops = &r3d_ops;
+   const struct blit_ops *ops = &r2d_ops;
    struct tu_cs *cs = &cmd->cs;
    bool z_scale = false;
    uint32_t layers = info->dstOffsets[1].z - info->dstOffsets[0].z;
@@ -2392,7 +2392,8 @@ tu_emit_blit(struct tu_cmd_buffer *cmd,
       .unk0 = !resolve,
       .gmem = !resolve,
       /* "integer" bit disables msaa resolve averaging */
-      .integer = vk_format_is_int(attachment->format)));
+      .integer = vk_format_is_int(attachment->format) |
+         vk_format_is_depth_or_stencil(attachment->format)));
 
    tu_cs_emit_pkt4(cs, REG_A6XX_RB_BLIT_DST_INFO, 4);
    if (separate_stencil) {
@@ -2550,10 +2551,18 @@ tu_store_gmem_attachment(struct tu_cmd_buffer *cmd,
       (x2 % phys_dev->info.gmem_align_w && x2 != iview->extent.width) ||
       y1 % phys_dev->info.gmem_align_h || (y2 % phys_dev->info.gmem_align_h && need_y2_align);
 
+   /* D32_SFLOAT_S8_UINT is quite special format: it has two planes,
+    * one for depth and other for stencil. When resolving a MSAA
+    * D32_SFLOAT_S8_UINT to S8_UINT, we need to take that into account.
+    */
+   bool resolve_d32s8_s8 =
+      src->format == VK_FORMAT_D32_SFLOAT_S8_UINT &&
+      dst->format == VK_FORMAT_S8_UINT;
+
    /* use fast path when render area is aligned, except for unsupported resolve cases */
    if (!unaligned && (a == gmem_a || blit_can_resolve(dst->format))) {
       if (dst->store)
-         tu_emit_blit(cmd, cs, iview, src, true, false);
+         tu_emit_blit(cmd, cs, iview, src, true, resolve_d32s8_s8);
       if (dst->store_stencil)
          tu_emit_blit(cmd, cs, iview, src, true, true);
       return;
@@ -2574,7 +2583,7 @@ tu_store_gmem_attachment(struct tu_cmd_buffer *cmd,
       format = VK_FORMAT_D32_SFLOAT;
 
    if (dst->store) {
-      store_cp_blit(cmd, cs, iview, src->samples, false, format,
+      store_cp_blit(cmd, cs, iview, src->samples, resolve_d32s8_s8, format,
                     src->gmem_offset, src->cpp);
    }
    if (dst->store_stencil) {

@@ -308,14 +308,18 @@ panfrost_get_fresh_batch_for_fbo(struct panfrost_context *ctx)
          * Note that it's perfectly fine to re-use a batch with an
          * existing clear, we'll just update it with the new clear request.
          */
-        if (!batch->scoreboard.first_job)
+        if (!batch->scoreboard.first_job) {
+                ctx->batch = batch;
                 return batch;
+        }
 
         /* Otherwise, we need to freeze the existing one and instantiate a new
          * one.
          */
         panfrost_freeze_batch(batch);
-        return panfrost_get_batch(ctx, &ctx->pipe_framebuffer);
+        batch = panfrost_get_batch(ctx, &ctx->pipe_framebuffer);
+        ctx->batch = batch;
+        return batch;
 }
 
 static void
@@ -734,7 +738,7 @@ panfrost_batch_reserve_framebuffer(struct panfrost_batch *batch)
          * full framebuffer descriptor on Midgard) */
 
         if (!batch->framebuffer.gpu) {
-                unsigned size = (dev->quirks & IS_BIFROST) ?
+                unsigned size = pan_is_bifrost(dev) ?
                         MALI_LOCAL_STORAGE_LENGTH :
                         (dev->quirks & MIDGARD_SFBD) ?
                         MALI_SINGLE_TARGET_FRAMEBUFFER_LENGTH :
@@ -743,7 +747,7 @@ panfrost_batch_reserve_framebuffer(struct panfrost_batch *batch)
                 batch->framebuffer = panfrost_pool_alloc_aligned(&batch->pool, size, 64);
 
                 /* Tag the pointer */
-                if (!(dev->quirks & (MIDGARD_SFBD | IS_BIFROST)))
+                if (!pan_is_bifrost(dev) && !(dev->quirks & MIDGARD_SFBD))
                         batch->framebuffer.gpu |= MALI_FBD_TAG_IS_MFBD;
         }
 
@@ -862,7 +866,7 @@ panfrost_load_surface(struct panfrost_batch *batch, struct pipe_surface *surf, u
         }
 
         unsigned vertex_count = rsrc->damage.inverted_len * 6;
-        if (batch->pool.dev->quirks & IS_BIFROST) {
+        if (pan_is_bifrost(batch->pool.dev)) {
                 mali_ptr tiler =
                         panfrost_batch_get_bifrost_tiler(batch, vertex_count);
                 panfrost_load_bifrost(&batch->pool, &batch->scoreboard,
@@ -978,8 +982,11 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
         panfrost_pool_get_bo_handles(&batch->invisible_pool, bo_handles + submit.bo_handle_count);
         submit.bo_handle_count += panfrost_pool_num_bos(&batch->invisible_pool);
 
-        /* Used by all tiler jobs (XXX: skip for compute-only) */
-        if (!(reqs & PANFROST_JD_REQ_FS))
+        /* Add the tiler heap to the list of accessed BOs if the batch has at
+         * least one tiler job. Tiler heap is written by tiler jobs and read
+         * by fragment jobs (the polygon list is coming from this heap).
+         */
+        if (batch->scoreboard.first_tiler)
                 bo_handles[submit.bo_handle_count++] = dev->tiler_heap->gem_handle;
 
         submit.bo_handles = (u64) (uintptr_t) bo_handles;
@@ -1004,7 +1011,7 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
 
                 /* Trace gets priority over sync */
                 bool minimal = !(dev->debug & PAN_DBG_TRACE);
-                pandecode_jc(submit.jc, dev->quirks & IS_BIFROST, dev->gpu_id, minimal);
+                pandecode_jc(submit.jc, pan_is_bifrost(dev), dev->gpu_id, minimal);
         }
 
         return 0;
@@ -1017,9 +1024,18 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
 static int
 panfrost_batch_submit_jobs(struct panfrost_batch *batch, uint32_t in_sync, uint32_t out_sync)
 {
+        struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
         bool has_draws = batch->scoreboard.first_job;
-        bool has_frag = batch->scoreboard.tiler_dep || batch->clear;
+        bool has_tiler = batch->scoreboard.first_tiler;
+        bool has_frag = has_tiler || batch->clear;
         int ret = 0;
+
+        /* Take the submit lock to make sure no tiler jobs from other context
+         * are inserted between our tiler and fragment jobs, failing to do that
+         * might result in tiler heap corruption.
+         */
+        if (has_tiler)
+                pthread_mutex_lock(&dev->submit_lock);
 
         if (has_draws) {
                 ret = panfrost_batch_submit_ioctl(batch, batch->scoreboard.first_job,
@@ -1035,13 +1051,15 @@ panfrost_batch_submit_jobs(struct panfrost_batch *batch, uint32_t in_sync, uint3
                  * *only* clears, since otherwise the tiler structures will be
                  * uninitialized leading to faults (or state leaks) */
 
-                mali_ptr fragjob = panfrost_fragment_job(batch,
-                                batch->scoreboard.tiler_dep != 0);
+                mali_ptr fragjob = panfrost_fragment_job(batch, has_tiler);
                 ret = panfrost_batch_submit_ioctl(batch, fragjob,
                                                   PANFROST_JD_REQ_FS, 0,
                                                   out_sync);
                 assert(!ret);
         }
+
+        if (has_tiler)
+                pthread_mutex_unlock(&dev->submit_lock);
 
         return ret;
 }
@@ -1299,11 +1317,9 @@ pan_pack_color(uint32_t *packed, const union pipe_color_union *color, enum pipe_
                         pan_pack_color_32(packed, out.ui[0] | (out.ui[0] << 16));
                 else if (size == 3 || size == 4)
                         pan_pack_color_32(packed, out.ui[0]);
-                else if (size == 6)
-                        pan_pack_color_64(packed, out.ui[0], out.ui[1] | (out.ui[1] << 16)); /* RGB16F -- RGBB */
-                else if (size == 8)
+                else if (size == 6 || size == 8)
                         pan_pack_color_64(packed, out.ui[0], out.ui[1]);
-                else if (size == 16)
+                else if (size == 12 || size == 16)
                         memcpy(packed, out.ui, 16);
                 else
                         unreachable("Unknown generic format size packing clear colour");

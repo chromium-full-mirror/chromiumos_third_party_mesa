@@ -326,30 +326,36 @@ void cso_destroy_context( struct cso_context *ctx )
                                                 PIPE_SHADER_CAP_MAX_SHADER_BUFFERS);
             int maxcb = scr->get_shader_param(scr, sh,
                                               PIPE_SHADER_CAP_MAX_CONST_BUFFERS);
+            int maximg = scr->get_shader_param(scr, sh,
+                                              PIPE_SHADER_CAP_MAX_SHADER_IMAGES);
             assert(maxsam <= PIPE_MAX_SAMPLERS);
             assert(maxview <= PIPE_MAX_SHADER_SAMPLER_VIEWS);
             assert(maxssbo <= PIPE_MAX_SHADER_BUFFERS);
             assert(maxcb <= PIPE_MAX_CONSTANT_BUFFERS);
+            assert(maximg <= PIPE_MAX_SHADER_IMAGES);
             if (maxsam > 0) {
                ctx->pipe->bind_sampler_states(ctx->pipe, sh, 0, maxsam, zeros);
             }
             if (maxview > 0) {
-               ctx->pipe->set_sampler_views(ctx->pipe, sh, 0, maxview, views);
+               ctx->pipe->set_sampler_views(ctx->pipe, sh, 0, maxview, 0, views);
             }
             if (maxssbo > 0) {
                ctx->pipe->set_shader_buffers(ctx->pipe, sh, 0, maxssbo, ssbos, 0);
             }
+            if (maximg > 0) {
+               ctx->pipe->set_shader_images(ctx->pipe, sh, 0, 0, maximg, NULL);
+            }
             for (int i = 0; i < maxcb; i++) {
-               ctx->pipe->set_constant_buffer(ctx->pipe, sh, i, NULL);
+               ctx->pipe->set_constant_buffer(ctx->pipe, sh, i, false, NULL);
             }
          }
       }
 
       ctx->pipe->bind_depth_stencil_alpha_state( ctx->pipe, NULL );
       ctx->pipe->bind_fs_state( ctx->pipe, NULL );
-      ctx->pipe->set_constant_buffer(ctx->pipe, PIPE_SHADER_FRAGMENT, 0, NULL);
+      ctx->pipe->set_constant_buffer(ctx->pipe, PIPE_SHADER_FRAGMENT, 0, false, NULL);
       ctx->pipe->bind_vs_state( ctx->pipe, NULL );
-      ctx->pipe->set_constant_buffer(ctx->pipe, PIPE_SHADER_VERTEX, 0, NULL);
+      ctx->pipe->set_constant_buffer(ctx->pipe, PIPE_SHADER_VERTEX, 0, false, NULL);
       if (ctx->has_geometry_shader) {
          ctx->pipe->bind_gs_state(ctx->pipe, NULL);
       }
@@ -1021,12 +1027,12 @@ void cso_set_vertex_buffers(struct cso_context *ctx,
       return;
 
    if (vbuf) {
-      u_vbuf_set_vertex_buffers(vbuf, start_slot, count, buffers);
+      u_vbuf_set_vertex_buffers(vbuf, start_slot, count, 0, false, buffers);
       return;
    }
 
    struct pipe_context *pipe = ctx->pipe;
-   pipe->set_vertex_buffers(pipe, start_slot, count, buffers);
+   pipe->set_vertex_buffers(pipe, start_slot, count, 0, false, buffers);
 }
 
 /**
@@ -1046,8 +1052,9 @@ cso_set_vertex_buffers_and_elements(struct cso_context *ctx,
                                     const struct cso_velems_state *velems,
                                     unsigned vb_count,
                                     unsigned unbind_trailing_vb_count,
-                                    const struct pipe_vertex_buffer *vbuffers,
-                                    bool uses_user_vertex_buffers)
+                                    bool take_ownership,
+                                    bool uses_user_vertex_buffers,
+                                    const struct pipe_vertex_buffer *vbuffers)
 {
    struct u_vbuf *vbuf = ctx->vbuf;
    struct pipe_context *pipe = ctx->pipe;
@@ -1057,18 +1064,19 @@ cso_set_vertex_buffers_and_elements(struct cso_context *ctx,
          /* Unbind all buffers in cso_context, because we'll use u_vbuf. */
          unsigned unbind_vb_count = vb_count + unbind_trailing_vb_count;
          if (unbind_vb_count)
-            pipe->set_vertex_buffers(pipe, 0, unbind_vb_count, NULL);
+            pipe->set_vertex_buffers(pipe, 0, 0, unbind_vb_count, false, NULL);
 
          /* Unset this to make sure the CSO is re-bound on the next use. */
          ctx->velements = NULL;
          ctx->vbuf_current = vbuf;
-      } else if (unbind_trailing_vb_count) {
-         u_vbuf_set_vertex_buffers(vbuf, vb_count, unbind_trailing_vb_count,
-                                   NULL);
+         unbind_trailing_vb_count = 0;
       }
 
-      if (vb_count)
-         u_vbuf_set_vertex_buffers(vbuf, 0, vb_count, vbuffers);
+      if (vb_count || unbind_trailing_vb_count) {
+         u_vbuf_set_vertex_buffers(vbuf, 0, vb_count,
+                                   unbind_trailing_vb_count,
+                                   take_ownership, vbuffers);
+      }
       u_vbuf_set_vertex_elements(vbuf, velems);
       return;
    }
@@ -1077,17 +1085,18 @@ cso_set_vertex_buffers_and_elements(struct cso_context *ctx,
       /* Unbind all buffers in u_vbuf, because we'll use cso_context. */
       unsigned unbind_vb_count = vb_count + unbind_trailing_vb_count;
       if (unbind_vb_count)
-         u_vbuf_set_vertex_buffers(vbuf, 0, unbind_vb_count, NULL);
+         u_vbuf_set_vertex_buffers(vbuf, 0, 0, unbind_vb_count, false, NULL);
 
       /* Unset this to make sure the CSO is re-bound on the next use. */
       u_vbuf_unset_vertex_elements(vbuf);
       ctx->vbuf_current = NULL;
-   } else if (unbind_trailing_vb_count) {
-      pipe->set_vertex_buffers(pipe, vb_count, unbind_trailing_vb_count, NULL);
+      unbind_trailing_vb_count = 0;
    }
 
-   if (vb_count)
-      pipe->set_vertex_buffers(pipe, 0, vb_count, vbuffers);
+   if (vb_count || unbind_trailing_vb_count) {
+      pipe->set_vertex_buffers(pipe, 0, vb_count, unbind_trailing_vb_count,
+                               take_ownership, vbuffers);
+   }
    cso_set_vertex_elements_direct(ctx, velems);
 }
 
@@ -1426,9 +1435,14 @@ cso_multi_draw(struct cso_context *cso,
    struct u_vbuf *vbuf = cso->vbuf_current;
 
    if (vbuf) {
+      /* Increase refcount to be able to use take_index_buffer_ownership with
+       * all draws.
+       */
+      if (num_draws > 1 && info->take_index_buffer_ownership)
+         p_atomic_add(&info->index.resource->reference.count, num_draws - 1);
+
       for (unsigned i = 0; i < num_draws; i++) {
-         if (draws[i].count)
-            u_vbuf_draw_vbo(vbuf, info, NULL, draws[i]);
+         u_vbuf_draw_vbo(vbuf, info, NULL, draws[i]);
 
          if (info->increment_draw_id)
             info->drawid++;

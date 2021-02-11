@@ -4647,7 +4647,6 @@ lower_fb_write_logical_send(const fs_builder &bld, fs_inst *inst,
       load->dst = payload;
 
       uint32_t msg_ctl = brw_fb_write_msg_control(inst, prog_data);
-      uint32_t ex_desc = 0;
 
       inst->desc =
          (inst->group / 16) << 11 | /* rt slot group */
@@ -4655,6 +4654,7 @@ lower_fb_write_logical_send(const fs_builder &bld, fs_inst *inst,
                            GEN6_DATAPORT_WRITE_MESSAGE_RENDER_TARGET_WRITE,
                            inst->last_rt, false);
 
+      uint32_t ex_desc = 0;
       if (devinfo->gen >= 11) {
          /* Set the "Render Target Index" and "Src0 Alpha Present" fields
           * in the extended message descriptor, in lieu of using a header.
@@ -4664,12 +4664,13 @@ lower_fb_write_logical_send(const fs_builder &bld, fs_inst *inst,
          if (key->nr_color_regions == 0)
             ex_desc |= 1 << 20; /* Null Render Target */
       }
+      inst->ex_desc = ex_desc;
 
       inst->opcode = SHADER_OPCODE_SEND;
       inst->resize_sources(3);
       inst->sfid = GEN6_SFID_DATAPORT_RENDER_CACHE;
-      inst->src[0] = brw_imm_ud(inst->desc);
-      inst->src[1] = brw_imm_ud(ex_desc);
+      inst->src[0] = brw_imm_ud(0);
+      inst->src[1] = brw_imm_ud(0);
       inst->src[2] = payload;
       inst->mlen = regs_written(load);
       inst->ex_mlen = 0;
@@ -5488,7 +5489,7 @@ static void
 setup_surface_descriptors(const fs_builder &bld, fs_inst *inst, uint32_t desc,
                           const fs_reg &surface, const fs_reg &surface_handle)
 {
-   const gen_device_info *devinfo = bld.shader->devinfo;
+   const ASSERTED gen_device_info *devinfo = bld.shader->devinfo;
 
    /* We must have exactly one of surface and surface_handle */
    assert((surface.file == BAD_FILE) != (surface_handle.file == BAD_FILE));
@@ -8584,7 +8585,7 @@ fs_visitor::run_fs(bool allow_spilling, bool do_rep_send)
          emit_shader_time_begin();
 
       if (nir->info.inputs_read > 0 ||
-          (nir->info.system_values_read & (1ull << SYSTEM_VALUE_FRAG_COORD)) ||
+          BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_FRAG_COORD) ||
           (nir->info.outputs_read > 0 && !wm_key->coherent_fb_fetch)) {
          if (devinfo->gen < 6)
             emit_interpolation_setup_gen4();
@@ -8965,7 +8966,7 @@ brw_nir_populate_wm_prog_data(const nir_shader *shader,
                               struct brw_wm_prog_data *prog_data)
 {
    prog_data->uses_src_depth = prog_data->uses_src_w =
-      shader->info.system_values_read & BITFIELD64_BIT(SYSTEM_VALUE_FRAG_COORD);
+      BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_FRAG_COORD);
 
    /* key->alpha_test_func means simulating alpha testing via discards,
     * so the shader definitely kills pixels.
@@ -8981,14 +8982,14 @@ brw_nir_populate_wm_prog_data(const nir_shader *shader,
    prog_data->persample_dispatch =
       key->multisample_fbo &&
       (key->persample_interp ||
-       (shader->info.system_values_read & (SYSTEM_BIT_SAMPLE_ID |
-                                            SYSTEM_BIT_SAMPLE_POS)) ||
+       BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_ID) ||
+       BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS) ||
        shader->info.fs.uses_sample_qualifier ||
        shader->info.outputs_read);
 
    if (devinfo->gen >= 6) {
       prog_data->uses_sample_mask =
-         shader->info.system_values_read & SYSTEM_BIT_SAMPLE_MASK_IN;
+         BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_MASK_IN);
 
       /* From the Ivy Bridge PRM documentation for 3DSTATE_PS:
        *
@@ -9000,7 +9001,7 @@ brw_nir_populate_wm_prog_data(const nir_shader *shader,
        * persample dispatch, we hard-code it to 0.5.
        */
       prog_data->uses_pos_offset = prog_data->persample_dispatch &&
-         (shader->info.system_values_read & SYSTEM_BIT_SAMPLE_POS);
+         BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS);
    }
 
    prog_data->has_render_target_reads = shader->info.outputs_read != 0ull;
