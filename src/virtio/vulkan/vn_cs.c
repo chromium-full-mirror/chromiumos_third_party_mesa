@@ -6,9 +6,33 @@
 #include "vn_cs.h"
 
 static void
+vn_cs_encoder_sanity_check(struct vn_cs_encoder *enc)
+{
+   assert(enc->buffer_count <= enc->buffer_max);
+
+   size_t total_committed_size = 0;
+   for (uint32_t i = 0; i < enc->buffer_count; i++)
+      total_committed_size += enc->buffers[i].committed_size;
+   assert(enc->total_committed_size == total_committed_size);
+
+   if (enc->buffer_count) {
+      const struct vn_cs_buffer *cur_buf =
+         &enc->buffers[enc->buffer_count - 1];
+      assert(cur_buf->base <= enc->cur && enc->cur <= enc->end &&
+             enc->end <= cur_buf->base + enc->current_buffer_size);
+      if (cur_buf->committed_size)
+         assert(enc->cur == enc->end);
+   } else {
+      assert(!enc->current_buffer_size);
+      assert(!enc->cur && !enc->end);
+   }
+}
+
+static void
 vn_cs_encoder_add_buffer(struct vn_cs_encoder *enc, void *base, size_t size)
 {
-   /* add the buffer and make it current */
+   /* add a buffer and make it current */
+   assert(enc->buffer_count < enc->buffer_max);
    struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count++];
    cur_buf->base = base;
    cur_buf->committed_size = 0;
@@ -22,10 +46,8 @@ vn_cs_encoder_add_buffer(struct vn_cs_encoder *enc, void *base, size_t size)
 static void
 vn_cs_encoder_commit_buffer(struct vn_cs_encoder *enc)
 {
+   assert(enc->buffer_count);
    struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count - 1];
-   assert(enc->cur >= cur_buf->base &&
-          enc->cur <= cur_buf->base + enc->current_buffer_size);
-
    const size_t written_size = enc->cur - cur_buf->base;
    if (cur_buf->committed_size) {
       assert(cur_buf->committed_size == written_size);
@@ -144,6 +166,8 @@ vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
 
    vn_cs_encoder_add_buffer(enc, base, buf_size);
 
+   vn_cs_encoder_sanity_check(enc);
+
    return true;
 }
 
@@ -159,4 +183,6 @@ vn_cs_encoder_commit(struct vn_cs_encoder *enc)
       /* trigger the slow path on next vn_cs_encoder_reserve */
       enc->end = enc->cur;
    }
+
+   vn_cs_encoder_sanity_check(enc);
 }
