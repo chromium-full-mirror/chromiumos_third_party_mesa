@@ -33,6 +33,7 @@ struct vtest_bo {
 
    uint32_t blob_flags;
    VkDeviceSize size;
+   /* might be closed after mmap */
    int res_fd;
 
    void *res_ptr;
@@ -688,6 +689,7 @@ vtest_bo_map(struct vn_renderer_bo *_bo)
    struct vtest_bo *bo = (struct vtest_bo *)_bo;
    struct vtest *vtest = bo->vtest;
    const bool mappable = bo->blob_flags & VCMD_BLOB_FLAG_MAPPABLE;
+   const bool shareable = bo->blob_flags & VCMD_BLOB_FLAG_SHAREABLE;
 
    /* not thread-safe but is fine */
    if (!bo->res_ptr && mappable) {
@@ -704,6 +706,11 @@ vtest_bo_map(struct vn_renderer_bo *_bo)
                 bo->size, strerror(errno));
       } else {
          bo->res_ptr = ptr;
+         /* we don't need the fd anymore */
+         if (!shareable) {
+            close(bo->res_fd);
+            bo->res_fd = -1;
+         }
       }
    }
 
@@ -774,7 +781,8 @@ vtest_bo_destroy(struct vn_renderer_bo *_bo,
    if (bo->base.res_id) {
       if (bo->res_ptr)
          munmap(bo->res_ptr, bo->size);
-      close(bo->res_fd);
+      if (bo->res_fd >= 0)
+         close(bo->res_fd);
 
       mtx_lock(&vtest->sock_mutex);
       vtest_vcmd_resource_unref(vtest, bo->base.res_id);
