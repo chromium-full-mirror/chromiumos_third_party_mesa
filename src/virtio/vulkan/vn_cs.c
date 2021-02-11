@@ -5,27 +5,6 @@
 
 #include "vn_cs.h"
 
-void
-vn_cs_encoder_init(struct vn_cs_encoder *enc,
-                   const VkAllocationCallbacks *alloc,
-                   VkSystemAllocationScope alloc_scope,
-                   size_t min_size)
-{
-   memset(enc, 0, sizeof(*enc));
-   enc->allocator = alloc;
-   enc->alloc_scope = alloc_scope;
-   enc->min_buffer_size = min_size;
-}
-
-void
-vn_cs_encoder_fini(struct vn_cs_encoder *enc)
-{
-   for (uint32_t i = 0; i < enc->buffer_count; i++)
-      vk_free(enc->allocator, enc->buffers[i].base);
-   if (enc->buffers)
-      vk_free(enc->allocator, enc->buffers);
-}
-
 static void
 vn_cs_encoder_add_buffer(struct vn_cs_encoder *enc, void *base, size_t size)
 {
@@ -54,6 +33,27 @@ vn_cs_encoder_commit_buffer(struct vn_cs_encoder *enc)
       cur_buf->committed_size = written_size;
       enc->total_committed_size += written_size;
    }
+}
+
+void
+vn_cs_encoder_init(struct vn_cs_encoder *enc,
+                   const VkAllocationCallbacks *alloc,
+                   VkSystemAllocationScope alloc_scope,
+                   size_t min_size)
+{
+   memset(enc, 0, sizeof(*enc));
+   enc->allocator = alloc;
+   enc->alloc_scope = alloc_scope;
+   enc->min_buffer_size = min_size;
+}
+
+void
+vn_cs_encoder_fini(struct vn_cs_encoder *enc)
+{
+   for (uint32_t i = 0; i < enc->buffer_count; i++)
+      vk_free(enc->allocator, enc->buffers[i].base);
+   if (enc->buffers)
+      vk_free(enc->allocator, enc->buffers);
 }
 
 /**
