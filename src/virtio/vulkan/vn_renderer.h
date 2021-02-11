@@ -98,7 +98,7 @@ struct vn_renderer_sync {
 
 struct vn_renderer_submit_batch {
    const void *cs_data;
-   const size_t cs_size;
+   size_t cs_size;
 
    /*
     * Submit cs to the virtual sync queue identified by sync_queue_index.  The
@@ -213,22 +213,6 @@ vn_renderer_submit(struct vn_renderer *renderer,
                    const struct vn_renderer_submit *submit)
 {
    return renderer->submit(renderer, submit);
-}
-
-static inline VkResult
-vn_renderer_submit_simple(struct vn_renderer *renderer,
-                          const void *cs_data,
-                          size_t cs_size)
-{
-   const struct vn_renderer_submit submit = {
-      .batches =
-         &(const struct vn_renderer_submit_batch){
-            .cs_data = cs_data,
-            .cs_size = cs_size,
-         },
-      .batch_count = 1,
-   };
-   return vn_renderer_submit(renderer, &submit);
 }
 
 static inline VkResult
