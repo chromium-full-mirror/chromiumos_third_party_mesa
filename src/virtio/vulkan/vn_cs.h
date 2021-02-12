@@ -46,6 +46,26 @@ vn_cs_encoder_init(struct vn_cs_encoder *enc,
                    VkSystemAllocationScope alloc_scope,
                    size_t min_size);
 
+static inline void
+vn_cs_encoder_init_external(struct vn_cs_encoder *enc,
+                            void *storage,
+                            size_t size,
+                            struct vn_cs_buffer *buf)
+{
+   *enc = (struct vn_cs_encoder){
+      .buffers = buf,
+      .buffer_count = 1,
+      .buffer_max = 1,
+      .current_buffer_size = size,
+      .cur = storage,
+      .end = storage + size,
+   };
+
+   *buf = (struct vn_cs_buffer){
+      .base = storage,
+   };
+}
+
 void
 vn_cs_encoder_fini(struct vn_cs_encoder *enc);
 

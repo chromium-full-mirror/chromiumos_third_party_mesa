@@ -88,6 +88,9 @@ vn_cs_encoder_init(struct vn_cs_encoder *enc,
 void
 vn_cs_encoder_fini(struct vn_cs_encoder *enc)
 {
+   if (unlikely(!enc->allocator))
+      return;
+
    for (uint32_t i = 0; i < enc->buffer_count; i++)
       vk_free(enc->allocator, enc->buffers[i].base);
    if (enc->buffers)
@@ -150,6 +153,9 @@ vn_cs_encoder_grow_buffer_array(struct vn_cs_encoder *enc)
 bool
 vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
 {
+   if (unlikely(!enc->allocator))
+      return false;
+
    if (enc->buffer_count >= enc->buffer_max) {
       if (!vn_cs_encoder_grow_buffer_array(enc))
          return false;
