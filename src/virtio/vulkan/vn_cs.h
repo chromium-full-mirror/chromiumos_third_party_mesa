@@ -35,7 +35,7 @@ struct vn_cs_encoder_buffer {
 struct vn_cs_encoder {
    struct vn_instance *instance; /* TODO bo cache */
    size_t min_buffer_size;
-   bool growable;
+   bool indirect;
 
    bool fatal_error;
 
@@ -60,7 +60,7 @@ struct vn_cs_decoder {
 };
 
 void
-vn_cs_encoder_init_growable(struct vn_cs_encoder *enc,
+vn_cs_encoder_init_indirect(struct vn_cs_encoder *enc,
                             struct vn_instance *instance,
                             size_t min_size);
 

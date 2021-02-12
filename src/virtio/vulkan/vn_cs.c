@@ -88,20 +88,20 @@ vn_cs_encoder_gc_buffers(struct vn_cs_encoder *enc)
 }
 
 void
-vn_cs_encoder_init_growable(struct vn_cs_encoder *enc,
+vn_cs_encoder_init_indirect(struct vn_cs_encoder *enc,
                             struct vn_instance *instance,
                             size_t min_size)
 {
    memset(enc, 0, sizeof(*enc));
    enc->instance = instance;
    enc->min_buffer_size = min_size;
-   enc->growable = true;
+   enc->indirect = true;
 }
 
 void
 vn_cs_encoder_fini(struct vn_cs_encoder *enc)
 {
-   if (unlikely(!enc->growable))
+   if (unlikely(!enc->indirect))
       return;
 
    for (uint32_t i = 0; i < enc->buffer_count; i++)
@@ -163,7 +163,7 @@ vn_cs_encoder_grow_buffer_array(struct vn_cs_encoder *enc)
 bool
 vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
 {
-   if (unlikely(!enc->growable))
+   if (unlikely(!enc->indirect))
       return false;
 
    if (enc->buffer_count >= enc->buffer_max) {

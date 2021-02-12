@@ -119,7 +119,7 @@ vn_instance_init_cs(struct vn_instance *instance)
    instance->cs_implicit_flush_threshold = 1 * 1024 * 1024;
    /* when a pipeline creation takes 100ms, this still takes 400ms... */
    instance->cs_throttle_pipeline_threshold = 4;
-   vn_cs_encoder_init_growable(&instance->cs, instance, 64 * 1024);
+   vn_cs_encoder_init_indirect(&instance->cs, instance, 64 * 1024);
 
    return VK_SUCCESS;
 }
@@ -218,47 +218,96 @@ struct vn_instance_submission {
    struct vn_renderer_sync *syncs[1];
    uint64_t sync_values[1];
 
-   struct vn_renderer_bo *local_bos[1];
+   uint32_t local_cs_data[64];
+   struct vn_renderer_bo *local_bos[8];
 };
 
 static void *
-vn_instance_submission_alloc_cs_data(struct vn_instance_submission *submit,
-                                     const struct vn_cs_encoder *cs,
-                                     size_t *cs_size)
+vn_instance_submission_indirect_cs(struct vn_instance_submission *submit,
+                                   const struct vn_cs_encoder *cs,
+                                   size_t *cs_size)
 {
-   size_t size = vn_cs_encoder_get_len(cs);
-   void *data = malloc(size);
-   if (!data)
-      return NULL;
-
-   size = 0;
-   for (uint32_t i = 0; i < cs->buffer_count; i++) {
-      const struct vn_cs_encoder_buffer *buf = &cs->buffers[i];
-      memcpy(data + size, buf->base, buf->committed_size);
-      size += buf->committed_size;
+   VkCommandStreamDescriptionMESA local_descs[8];
+   VkCommandStreamDescriptionMESA *descs = local_descs;
+   if (cs->buffer_count > ARRAY_SIZE(local_descs)) {
+      descs =
+         malloc(sizeof(VkCommandStreamDescriptionMESA) * cs->buffer_count);
+      if (!descs)
+         return NULL;
    }
 
-   *cs_size = size;
-   return data;
+   uint32_t desc_count = 0;
+   for (uint32_t i = 0; i < cs->buffer_count; i++) {
+      const struct vn_cs_encoder_buffer *buf = &cs->buffers[i];
+      if (buf->committed_size) {
+         descs[desc_count++] = (VkCommandStreamDescriptionMESA){
+            .resourceId = buf->bo->res_id,
+            .offset = buf->offset,
+            .size = buf->committed_size,
+         };
+      }
+   }
+
+   const size_t exec_size = vn_sizeof_vkExecuteCommandStreamsMESA(
+      desc_count, descs, NULL, 0, NULL, 0);
+   void *exec_data = submit->local_cs_data;
+   if (exec_size > sizeof(submit->local_cs_data)) {
+      exec_data = malloc(exec_size);
+      if (!exec_data)
+         goto out;
+   }
+
+   struct vn_cs_encoder local_enc =
+      VN_CS_ENCODER_INITIALIZER(exec_data, exec_size);
+   vn_encode_vkExecuteCommandStreamsMESA(&local_enc, 0, desc_count, descs,
+                                         NULL, 0, NULL, 0);
+
+   *cs_size = vn_cs_encoder_get_len(&local_enc);
+
+out:
+   if (descs != local_descs)
+      free(descs);
+
+   return exec_data;
+}
+
+static void *
+vn_instance_submission_direct_cs(struct vn_instance_submission *submit,
+                                 const struct vn_cs_encoder *cs,
+                                 size_t *cs_size)
+{
+   if (cs->buffer_count == 1) {
+      *cs_size = cs->buffers[0].committed_size;
+      return cs->buffers[0].base;
+   }
+
+   assert(vn_cs_encoder_get_len(cs) <= sizeof(submit->local_cs_data));
+   void *dst = submit->local_cs_data;
+   for (uint32_t i = 0; i < cs->buffer_count; i++) {
+      const struct vn_cs_encoder_buffer *buf = &cs->buffers[i];
+      memcpy(dst, buf->base, buf->committed_size);
+      dst += buf->committed_size;
+   }
+
+   *cs_size = dst - (void *)submit->local_cs_data;
+   return submit->local_cs_data;
 }
 
 static VkResult
 vn_instance_submission_prepare_batch(struct vn_instance_submission *submit,
                                      const struct vn_cs_encoder *cs,
                                      struct vn_renderer_sync *sync,
-                                     uint64_t sync_val)
+                                     uint64_t sync_val,
+                                     bool direct)
 {
    void *cs_data;
    size_t cs_size;
-   if (cs->buffer_count > 1) {
-      cs_data = vn_instance_submission_alloc_cs_data(submit, cs, &cs_size);
-      if (!cs_data)
-         return VK_ERROR_OUT_OF_HOST_MEMORY;
-   } else {
-      assert(cs->buffer_count == 1);
-      cs_data = cs->buffers[0].base;
-      cs_size = cs->buffers[0].committed_size;
-   }
+   if (direct)
+      cs_data = vn_instance_submission_direct_cs(submit, cs, &cs_size);
+   else
+      cs_data = vn_instance_submission_indirect_cs(submit, cs, &cs_size);
+   if (!cs_data)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    const uint32_t sync_count = sync ? 1 : 0;
    assert(sync_count <= ARRAY_SIZE(submit->syncs));
@@ -282,9 +331,11 @@ vn_instance_submission_prepare_batch(struct vn_instance_submission *submit,
 static VkResult
 vn_instance_submission_prepare_submit(struct vn_instance_submission *submit,
                                       const struct vn_cs_encoder *cs,
-                                      struct vn_renderer_bo *extra_bo)
+                                      struct vn_renderer_bo *extra_bo,
+                                      bool direct)
 {
-   const uint32_t bo_count = extra_bo ? 1 : 0;
+   const uint32_t bo_count =
+      (direct ? 0 : cs->buffer_count) + (extra_bo ? 1 : 0);
    struct vn_renderer_bo **bos = submit->local_bos;
    if (unlikely(bo_count > ARRAY_SIZE(submit->local_bos))) {
       bos = malloc(sizeof(*bos) * bo_count);
@@ -292,8 +343,12 @@ vn_instance_submission_prepare_submit(struct vn_instance_submission *submit,
          return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
 
+   if (!direct) {
+      for (uint32_t i = 0; i < cs->buffer_count; i++)
+         bos[i] = cs->buffers[i].bo;
+   }
    if (extra_bo)
-      bos[0] = extra_bo;
+      bos[bo_count - 1] = extra_bo;
 
    submit->submit = (struct vn_renderer_submit){
       .bos = bos,
@@ -311,7 +366,8 @@ vn_instance_submission_cleanup(struct vn_instance_submission *submit,
 {
    if (submit->submit.bos != submit->local_bos)
       free((void *)submit->submit.bos);
-   if (submit->batch.cs_data != cs->buffers[0].base)
+   if (submit->batch.cs_data != submit->local_cs_data &&
+       submit->batch.cs_data != cs->buffers[0].base)
       free((void *)submit->batch.cs_data);
 }
 
@@ -320,14 +376,16 @@ vn_instance_submission_prepare(struct vn_instance_submission *submit,
                                const struct vn_cs_encoder *cs,
                                struct vn_renderer_sync *sync,
                                uint64_t sync_val,
-                               struct vn_renderer_bo *extra_bo)
+                               struct vn_renderer_bo *extra_bo,
+                               bool direct)
 {
    VkResult result =
-      vn_instance_submission_prepare_submit(submit, cs, extra_bo);
+      vn_instance_submission_prepare_submit(submit, cs, extra_bo, direct);
    if (result != VK_SUCCESS)
       return result;
 
-   result = vn_instance_submission_prepare_batch(submit, cs, sync, sync_val);
+   result = vn_instance_submission_prepare_batch(submit, cs, sync, sync_val,
+                                                 direct);
    if (result != VK_SUCCESS) {
       if (submit->submit.bos != submit->local_bos)
          free((void *)submit->submit.bos);
@@ -335,6 +393,13 @@ vn_instance_submission_prepare(struct vn_instance_submission *submit,
    }
 
    return VK_SUCCESS;
+}
+
+static bool
+vn_instance_submission_can_direct(const struct vn_cs_encoder *cs)
+{
+   struct vn_instance_submission submit;
+   return vn_cs_encoder_get_len(cs) <= sizeof(submit.local_cs_data);
 }
 
 bool
@@ -354,6 +419,8 @@ vn_instance_submit_cs_locked(struct vn_instance *instance,
 
    vn_cs_encoder_commit(cs);
 
+   const bool direct = vn_instance_submission_can_direct(cs);
+
    struct vn_renderer_sync *sync;
    uint64_t sync_val;
    if (reply_bo) {
@@ -366,8 +433,8 @@ vn_instance_submit_cs_locked(struct vn_instance *instance,
    }
 
    struct vn_instance_submission submit;
-   result =
-      vn_instance_submission_prepare(&submit, cs, sync, sync_val, reply_bo);
+   result = vn_instance_submission_prepare(&submit, cs, sync, sync_val,
+                                           reply_bo, direct);
    if (result != VK_SUCCESS)
       goto out;
 
@@ -5814,7 +5881,7 @@ vn_AllocateCommandBuffers(VkDevice device,
       list_addtail(&cmd->head, &pool->command_buffers);
 
       cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
-      vn_cs_encoder_init_growable(&cmd->cs, dev->instance, 16 * 1024);
+      vn_cs_encoder_init_indirect(&cmd->cs, dev->instance, 16 * 1024);
 
       VkCommandBuffer cmd_handle = vn_command_buffer_to_handle(cmd);
       pCommandBuffers[i] = cmd_handle;
@@ -5915,9 +5982,10 @@ vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
       return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
+   const bool direct = vn_instance_submission_can_direct(&cmd->cs);
    struct vn_instance_submission submit;
-   VkResult result =
-      vn_instance_submission_prepare(&submit, &cmd->cs, NULL, 0, NULL);
+   VkResult result = vn_instance_submission_prepare(&submit, &cmd->cs, NULL,
+                                                    0, NULL, direct);
    if (result != VK_SUCCESS) {
       cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
       return vn_error(instance, result);
