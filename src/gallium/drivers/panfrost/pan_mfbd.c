@@ -492,8 +492,11 @@ panfrost_mfbd_emit_midgard_tiler(struct panfrost_batch *batch, void *fb,
 static void
 panfrost_mfbd_emit_bifrost_parameters(struct panfrost_batch *batch, void *fb)
 {
+        struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
+
         pan_section_pack(fb, MULTI_TARGET_FRAMEBUFFER, BIFROST_PARAMETERS, params) {
-                params.sample_locations = panfrost_emit_sample_locations(batch);
+                unsigned samples = util_framebuffer_get_num_samples(&batch->key);
+                params.sample_locations = panfrost_sample_positions(dev, panfrost_sample_pattern(samples));
         }
 }
 
@@ -527,6 +530,8 @@ panfrost_attach_mfbd(struct panfrost_batch *batch, unsigned vertex_count)
                         pan_internal_cbuf_size(batch, &params.effective_tile_size);
                 params.tie_break_rule = MALI_TIE_BREAK_RULE_MINUS_180_IN_0_OUT;
                 params.render_target_count = MAX2(batch->key.nr_cbufs, 1);
+                params.sample_count = util_framebuffer_get_num_samples(&batch->key);
+                params.sample_pattern = panfrost_sample_pattern(params.sample_count);
         }
 
         panfrost_mfbd_emit_midgard_tiler(batch, fb, vertex_count);
@@ -552,26 +557,10 @@ panfrost_mfbd_fragment(struct panfrost_batch *batch, bool has_draws)
                 rts = fb + MALI_MULTI_TARGET_FRAMEBUFFER_LENGTH;
         }
 
-        /* When scanning out, the depth buffer is immediately invalidated, so
-         * we don't need to waste bandwidth writing it out. This can improve
-         * performance substantially (Z24X8_UNORM 1080p @ 60fps is 475 MB/s of
-         * memory bandwidth!).
-         *
-         * The exception is ReadPixels, but this is not supported on GLES so we
-         * can safely ignore it. */
-
-        if (panfrost_batch_is_scanout(batch))
-                batch->requirements &= ~PAN_REQ_DEPTH_WRITE;
-
         struct panfrost_slice *checksum_slice = NULL;
 
-        if (zs_crc_ext) {
-                if (batch->key.zsbuf &&
-                    MAX2(batch->key.zsbuf->nr_samples, batch->key.zsbuf->nr_samples) > 1)
-                        batch->requirements |= PAN_REQ_MSAA;
-
+        if (zs_crc_ext)
                 panfrost_mfbd_emit_zs_crc_ext(batch, zs_crc_ext, &checksum_slice);
-        }
 
         /* We always upload at least one dummy GL_NONE render target */
 
@@ -593,9 +582,6 @@ panfrost_mfbd_fragment(struct panfrost_batch *batch, bool has_draws)
 
                 if (surf) {
                         unsigned samples = MAX2(surf->nr_samples, surf->texture->nr_samples);
-
-                        if (samples > 1)
-                                batch->requirements |= PAN_REQ_MSAA;
 
                         rt_offset += pan_bytes_per_pixel_tib(surf->format) * tib_size *
                                 MAX2(samples, 1);
@@ -628,11 +614,8 @@ panfrost_mfbd_fragment(struct panfrost_batch *batch, bool has_draws)
 
                 params.color_buffer_allocation = internal_cbuf_size;
 
-                if (batch->requirements & PAN_REQ_MSAA) {
-                        /* MSAA 4x */
-                        params.sample_count = 4;
-                        params.sample_pattern = MALI_SAMPLE_PATTERN_ROTATED_4X_GRID;
-                }
+                params.sample_count = util_framebuffer_get_num_samples(&batch->key);
+                params.sample_pattern = panfrost_sample_pattern(params.sample_count);
 
                 if (batch->key.zsbuf &&
                     ((batch->clear | batch->draws) & PIPE_CLEAR_DEPTHSTENCIL)) {

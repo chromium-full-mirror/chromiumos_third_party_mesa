@@ -84,6 +84,17 @@ vir_has_side_effects(struct v3d_compile *c, struct qinst *inst)
                 return true;
         }
 
+        /* ldunifa works like ldunif: it reads an element and advances the
+         * pointer, so each read has a side effect (we don't care for ldunif
+         * because we reconstruct the uniform stream buffer after compiling
+         * with the surviving uniforms), so allowing DCE to remove
+         * one would break follow-up loads. We could fix this by emiting a
+         * unifa for each ldunifa, but each unifa requires 3 delay slots
+         * before a ldunifa, so that would be quite expensive.
+         */
+        if (inst->qpu.sig.ldunifa || inst->qpu.sig.ldunifarf)
+                return true;
+
         return false;
 }
 
@@ -130,10 +141,10 @@ vir_is_mul(struct qinst *inst)
 }
 
 bool
-vir_is_tex(struct qinst *inst)
+vir_is_tex(const struct v3d_device_info *devinfo, struct qinst *inst)
 {
         if (inst->dst.file == QFILE_MAGIC)
-                return v3d_qpu_magic_waddr_is_tmu(inst->dst.index);
+                return v3d_qpu_magic_waddr_is_tmu(devinfo, inst->dst.index);
 
         if (inst->qpu.type == V3D_QPU_INSTR_TYPE_ALU &&
             inst->qpu.alu.add.op == V3D_QPU_A_TMUWT) {
@@ -232,8 +243,9 @@ vir_set_cond(struct qinst *inst, enum v3d_qpu_cond cond)
 }
 
 void
-vir_set_pf(struct qinst *inst, enum v3d_qpu_pf pf)
+vir_set_pf(struct v3d_compile *c, struct qinst *inst, enum v3d_qpu_pf pf)
 {
+        c->flags_temp = -1;
         if (vir_is_add(inst)) {
                 inst->qpu.flags.apf = pf;
         } else {
@@ -243,8 +255,9 @@ vir_set_pf(struct qinst *inst, enum v3d_qpu_pf pf)
 }
 
 void
-vir_set_uf(struct qinst *inst, enum v3d_qpu_uf uf)
+vir_set_uf(struct v3d_compile *c, struct qinst *inst, enum v3d_qpu_uf uf)
 {
+        c->flags_temp = -1;
         if (vir_is_add(inst)) {
                 inst->qpu.flags.auf = uf;
         } else {
@@ -542,6 +555,7 @@ vir_compile_init(const struct v3d_compiler *compiler,
                                             _mesa_key_pointer_equal);
 
         c->tmu.outstanding_regs = _mesa_pointer_set_create(c);
+        c->flags_temp = -1;
 
         return c;
 }

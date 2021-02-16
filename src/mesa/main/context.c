@@ -93,6 +93,7 @@
 #include "debug_output.h"
 #include "depth.h"
 #include "dlist.h"
+#include "draw_validate.h"
 #include "eval.h"
 #include "extensions.h"
 #include "fbobject.h"
@@ -880,7 +881,7 @@ init_attrib_groups(struct gl_context *ctx)
    ctx->NewDriverState = ~0;
    ctx->ErrorValue = GL_NO_ERROR;
    ctx->ShareGroupReset = false;
-   ctx->varying_vp_inputs = VERT_BIT_ALL;
+   ctx->VertexProgram._VaryingInputs = VERT_BIT_ALL;
    ctx->IntelBlackholeRender = env_var_as_boolean("INTEL_BLACKHOLE_DEFAULT", false);
 
    return GL_TRUE;
@@ -1246,6 +1247,7 @@ _mesa_initialize_context(struct gl_context *ctx,
    if (ctx->VertexProgram._MaintainTnlProgram) {
       /* this is required... */
       ctx->FragmentProgram._MaintainTexEnvProgram = GL_TRUE;
+      _mesa_reset_vertex_processing_mode(ctx);
    }
 
    /* Mesa core handles all the formats that mesa core knows about.
@@ -1286,6 +1288,7 @@ _mesa_initialize_context(struct gl_context *ctx,
    case API_OPENGLES2:
       ctx->FragmentProgram._MaintainTexEnvProgram = GL_TRUE;
       ctx->VertexProgram._MaintainTnlProgram = GL_TRUE;
+      _mesa_reset_vertex_processing_mode(ctx);
       break;
    }
 
@@ -1745,6 +1748,7 @@ _mesa_make_current( struct gl_context *newCtx,
              */
             _mesa_update_draw_buffers(newCtx);
             _mesa_update_allow_draw_out_of_order(newCtx);
+            _mesa_update_valid_to_render_state(newCtx);
          }
          if (!newCtx->ReadBuffer || _mesa_is_winsys_fbo(newCtx->ReadBuffer)) {
             _mesa_reference_framebuffer(&newCtx->ReadBuffer, readBuffer);

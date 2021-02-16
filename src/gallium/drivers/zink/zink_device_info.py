@@ -26,7 +26,7 @@
 from mako.template import Template
 from mako.lookup import TemplateLookup
 from os import path
-from zink_extensions import Extension,Version
+from zink_extensions import Extension,ExtensionRegistry,Version
 import sys
 
 # constructor: 
@@ -68,6 +68,8 @@ EXTENSIONS = [
     Extension("VK_KHR_driver_properties",
         alias="driver",
         properties=True),
+    Extension("VK_KHR_draw_indirect_count"),
+    Extension("VK_KHR_shader_draw_parameters"),
     Extension("VK_EXT_conditional_rendering",
         alias="cond_render", 
         features=True, 
@@ -114,6 +116,7 @@ EXTENSIONS = [
         alias="stencil_export"),
     Extension("VK_EXTX_portability_subset",
         alias="portability_subset_extx",
+        nonstandard=True,
         properties=True,
         features=True,
         guard=True),
@@ -139,7 +142,6 @@ VERSIONS = [
 # This is basically generated_code.replace(key, value).
 REPLACEMENTS = {
     "ROBUSTNESS2": "ROBUSTNESS_2",
-    "PropertiesProperties": "Properties",
     "PROPERTIES_PROPERTIES": "PROPERTIES",
 }
 
@@ -208,10 +210,10 @@ struct zink_device_info {
 %for ext in extensions:
 <%helpers:guard ext="${ext}">
 %if ext.has_features:
-   VkPhysicalDevice${ext.name_in_camel_case()}Features${ext.vendor()} ${ext.field("feats")};
+   ${ext.physical_device_struct("Features")} ${ext.field("feats")};
 %endif
 %if ext.has_properties:
-   VkPhysicalDevice${ext.name_in_camel_case()}Properties${ext.vendor()} ${ext.field("props")};
+   ${ext.physical_device_struct("Properties")} ${ext.field("props")};
 %endif
 </%helpers:guard>
 %endfor
@@ -261,9 +263,25 @@ zink_get_physical_device_info(struct zink_screen *screen)
          for (uint32_t i = 0; i < num_extensions; ++i) {
          %for ext in extensions:
          <%helpers:guard ext="${ext}">
+         %if ext.core_since:
+         %for version in versions:
+         %if ext.core_since.struct_version == version.struct_version:
+            if (${version.version()} > info->device_version) {
+               if (!strcmp(extensions[i].extensionName, "${ext.name}")) {
+                  support_${ext.name_with_vendor()} = true;
+               }
+        %if not (ext.has_features or ext.has_properties):
+            } else {
+               info->have_${ext.name_with_vendor()} = true;
+        %endif
+            }
+         %endif
+         %endfor
+         %else:
             if (!strcmp(extensions[i].extensionName, "${ext.name}")) {
                support_${ext.name_with_vendor()} = true;
             }
+         %endif
          </%helpers:guard>
          %endfor
          }
@@ -345,7 +363,7 @@ zink_get_physical_device_info(struct zink_screen *screen)
             conditions += "&& (" + cond + ")\\n"
     conditions = conditions.strip()
 %>\
-      info->have_${ext.name_with_vendor()} = support_${ext.name_with_vendor()}
+      info->have_${ext.name_with_vendor()} |= support_${ext.name_with_vendor()}
          ${conditions};
 </%helpers:guard>
         %endfor
@@ -388,16 +406,57 @@ if __name__ == "__main__":
     try:
         header_path = sys.argv[1]
         impl_path = sys.argv[2]
+        vkxml_path = sys.argv[3]
 
         header_path = path.abspath(header_path)
         impl_path = path.abspath(impl_path)
+        vkxml_path = path.abspath(vkxml_path)
     except:
-        print("usage: %s <path to .h> <path to .c>" % sys.argv[0])
+        print("usage: %s <path to .h> <path to .c> <path to vk.xml>" % sys.argv[0])
         exit(1)
+
+    registry = ExtensionRegistry(vkxml_path)
 
     extensions = EXTENSIONS
     versions = VERSIONS
     replacement = REPLACEMENTS
+
+    # Perform extension validation and set core_since for the extension if available
+    error_count = 0
+    for ext in extensions:
+        if not registry.in_registry(ext.name):
+            # disable validation for nonstandard extensions
+            if ext.is_nonstandard:
+                continue
+
+            error_count += 1
+            print("The extension {} is not registered in vk.xml - a typo?".format(ext.name))
+            continue
+
+        entry = registry.get_registry_entry(ext.name)
+
+        if entry.ext_type != "device":
+            error_count += 1
+            print("The extension {} is {} extension - expected a device extension.".format(ext.name, entry.ext_type))
+            continue
+
+        if ext.has_features:
+            if not (entry.features_struct and ext.physical_device_struct("Features") == entry.features_struct):
+                error_count += 1
+                print("The extension {} does not provide a features struct.".format(ext.name))
+
+        if ext.has_properties:
+            if not (entry.properties_struct and ext.physical_device_struct("Properties") == entry.properties_struct):
+                error_count += 1
+                print("The extension {} does not provide a properties struct.".format(ext.name))
+                print(entry.properties_struct, ext.physical_device_struct("Properties"))
+
+        if entry.promoted_in:
+            ext.core_since = Version((*entry.promoted_in, 0))
+
+    if error_count > 0:
+        print("zink_device_info.py: Found {} error(s) in total. Quitting.".format(error_count))
+        exit(1)
 
     lookup = TemplateLookup()
     lookup.put_string("helpers", include_template)

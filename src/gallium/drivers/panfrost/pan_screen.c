@@ -114,6 +114,8 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
         case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
         case PIPE_CAP_FRONTEND_NOOP:
+        case PIPE_CAP_SAMPLE_SHADING:
+        case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
                 return 1;
 
         case PIPE_CAP_MAX_RENDER_TARGETS:
@@ -123,10 +125,6 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
         case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
                 return 1;
-
-        case PIPE_CAP_SAMPLE_SHADING:
-                /* WIP */
-                return is_gl3 ? 1 : 0;
 
         case PIPE_CAP_OCCLUSION_QUERY:
         case PIPE_CAP_PRIMITIVE_RESTART:
@@ -177,7 +175,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
                 return is_gl3 ? 330 : 140;
         case PIPE_CAP_ESSL_FEATURE_LEVEL:
-                return 300;
+                return (is_deqp && pan_is_bifrost(dev)) ? 320 : 310;
 
         case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
                 return 16;
@@ -382,10 +380,10 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                 return 32;
 
         case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
-                return is_deqp ? 8 : 0;
+                return is_deqp ? 16 : 0;
 
         case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
-                return pan_is_bifrost(dev) ? 0 : PIPE_MAX_SHADER_IMAGES;
+                return (pan_is_bifrost(dev) && !is_deqp) ? 0 : PIPE_MAX_SHADER_IMAGES;
 
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
@@ -467,12 +465,23 @@ panfrost_is_format_supported( struct pipe_screen *screen,
         if (!format_desc)
                 return false;
 
-        /* MSAA 4x supported, but no more. Technically some revisions of the
-         * hardware can go up to 16x but we don't support higher modes yet.
-         * MSAA 2x is notably not supported and gets rounded up to MSAA 4x. */
+        /* MSAA 2x gets rounded up to 4x. MSAA 8x/16x only supported on v5+.
+         * TODO: Advertise on v5 */
 
-        if (!(sample_count == 0 || sample_count == 1 || sample_count == 4))
+        switch (sample_count) {
+        case 0:
+        case 1:
+        case 4:
+                break;
+        case 8:
+        case 16:
+                if (dev->arch < 6)
+                        return false;
+                else
+                        break;
+        default:
                 return false;
+        }
 
         if (MAX2(sample_count, 1) != MAX2(storage_sample_count, 1))
                 return false;
@@ -763,7 +772,7 @@ panfrost_screen_get_compiler_options(struct pipe_screen *pscreen,
                                      enum pipe_shader_ir ir,
                                      enum pipe_shader_type shader)
 {
-        return panfrost_get_shader_options(pan_device(pscreen));
+        return pan_shader_get_compiler_options(pan_device(pscreen));
 }
 
 struct pipe_screen *
@@ -776,9 +785,10 @@ panfrost_create_screen(int fd, struct renderonly *ro)
                 return NULL;
 
         struct panfrost_device *dev = pan_device(&screen->base);
-        panfrost_open_device(screen, fd, dev);
 
+        /* Debug must be set first for pandecode to work correctly */
         dev->debug = debug_get_flags_option("PAN_MESA_DEBUG", panfrost_debug_options, 0);
+        panfrost_open_device(screen, fd, dev);
 
         if (dev->debug & PAN_DBG_NO_AFBC)
                 dev->quirks |= MIDGARD_NO_AFBC;
@@ -811,9 +821,6 @@ panfrost_create_screen(int fd, struct renderonly *ro)
                 panfrost_destroy_screen(&(screen->base));
                 return NULL;
         }
-
-        if (dev->debug & (PAN_DBG_TRACE | PAN_DBG_SYNC))
-                pandecode_initialize(!(dev->debug & PAN_DBG_TRACE));
 
         screen->base.destroy = panfrost_destroy_screen;
 

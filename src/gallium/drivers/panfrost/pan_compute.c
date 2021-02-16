@@ -64,14 +64,14 @@ panfrost_create_compute_state(
                 blob_reader_init(&reader, hdr->blob, hdr->num_bytes);
 
                 const struct nir_shader_compiler_options *options =
-                        panfrost_get_shader_options(dev);
+                        pan_shader_get_compiler_options(dev);
 
                 so->cbase.prog = nir_deserialize(NULL, options, &reader);
                 so->cbase.ir_type = PIPE_SHADER_IR_NIR;
         }
 
         panfrost_shader_compile(ctx, so->cbase.ir_type, so->cbase.prog,
-                                MESA_SHADER_COMPUTE, v, NULL);
+                                MESA_SHADER_COMPUTE, v);
 
         return so;
 }
@@ -80,11 +80,7 @@ static void
 panfrost_bind_compute_state(struct pipe_context *pipe, void *cso)
 {
         struct panfrost_context *ctx = pan_context(pipe);
-
-        struct panfrost_shader_variants *variants =
-                (struct panfrost_shader_variants *) cso;
-
-        ctx->shader[PIPE_SHADER_COMPUTE] = variants;
+        ctx->shader[PIPE_SHADER_COMPUTE] = cso;
 }
 
 static void
@@ -103,13 +99,13 @@ panfrost_launch_grid(struct pipe_context *pipe,
 {
         struct panfrost_context *ctx = pan_context(pipe);
         struct panfrost_device *dev = pan_device(pipe->screen);
-
-        /* TODO: Do we want a special compute-only batch? */
         struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
+
+        /* TODO: Indirect compute dispatch */
+        assert(!info->indirect);
 
         ctx->compute_grid = info;
 
-        /* TODO: Stub */
         struct panfrost_ptr t =
                 panfrost_pool_alloc_aligned(&batch->pool,
                                             MALI_COMPUTE_JOB_LENGTH,

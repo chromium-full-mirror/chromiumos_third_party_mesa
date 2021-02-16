@@ -34,6 +34,7 @@
 #include "clip.h"
 #include "context.h"
 #include "debug_output.h"
+#include "draw_validate.h"
 #include "enable.h"
 #include "errors.h"
 #include "light.h"
@@ -439,6 +440,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
                ctx->PopAttribState |= GL_ENABLE_BIT;
                ctx->Color.BlendEnabled = newEnabled;
                _mesa_update_allow_draw_out_of_order(ctx);
+               _mesa_update_valid_to_render_state(ctx);
             }
          }
          break;
@@ -607,6 +609,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          ctx->NewDriverState |=
             ctx->DriverFlags.NewIntelConservativeRasterization;
          ctx->IntelConservativeRasterization = state;
+         _mesa_update_valid_to_render_state(ctx);
          break;
       case GL_CONSERVATIVE_RASTERIZATION_NV:
          if (!_mesa_has_NV_conservative_raster(ctx))
@@ -1090,6 +1093,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          FLUSH_VERTICES(ctx, _NEW_PROGRAM, GL_ENABLE_BIT);
          ctx->VertexProgram.Enabled = state;
          _mesa_update_vertex_processing_mode(ctx);
+         _mesa_update_valid_to_render_state(ctx);
          break;
       case GL_VERTEX_PROGRAM_POINT_SIZE_ARB:
          /* This was added with ARB_vertex_program, but it is also used with
@@ -1145,6 +1149,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             return;
          FLUSH_VERTICES(ctx, _NEW_PROGRAM, GL_ENABLE_BIT);
          ctx->FragmentProgram.Enabled = state;
+         _mesa_update_valid_to_render_state(ctx);
          break;
 
       /* GL_EXT_depth_bounds_test */
@@ -1401,6 +1406,7 @@ _mesa_set_enablei(struct gl_context *ctx, GLenum cap,
          ctx->PopAttribState |= GL_ENABLE_BIT;
          ctx->Color.BlendEnabled = enabled;
          _mesa_update_allow_draw_out_of_order(ctx);
+         _mesa_update_valid_to_render_state(ctx);
       }
       break;
    case GL_SCISSOR_TEST:

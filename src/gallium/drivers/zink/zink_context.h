@@ -156,6 +156,8 @@ struct zink_context {
    float line_width;
    float blend_constants[4];
 
+   bool drawid_broken;
+
    struct pipe_stencil_ref stencil_ref;
 
    union {
@@ -204,6 +206,9 @@ zink_fence_wait(struct pipe_context *ctx);
 
 void
 zink_wait_on_batch(struct zink_context *ctx, int batch_id);
+
+void
+zink_flush_compute(struct zink_context *ctx);
 
 bool
 zink_resource_access_is_write(VkAccessFlags flags);

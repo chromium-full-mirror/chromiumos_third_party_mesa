@@ -199,6 +199,17 @@ bi_neg(bi_index idx)
         return idx;
 }
 
+/* Replaces an index, preserving any modifiers */
+
+static inline bi_index
+bi_replace_index(bi_index old, bi_index replacement)
+{
+        replacement.abs = old.abs;
+        replacement.neg = old.neg;
+        replacement.swizzle = old.swizzle;
+        return replacement;
+}
+
 /* For bitwise instructions */
 #define bi_not(x) bi_neg(x)
 
@@ -218,6 +229,12 @@ static inline bool
 bi_is_null(bi_index idx)
 {
         return idx.type == BI_INDEX_NULL;
+}
+
+static inline bool
+bi_is_ssa(bi_index idx)
+{
+        return idx.type == BI_INDEX_NORMAL && !idx.reg;
 }
 
 /* Compares equivalence as references. Does not compare offsets, swizzles, or
@@ -477,25 +494,14 @@ typedef struct bi_block {
 } bi_block;
 
 typedef struct {
+       const struct panfrost_compile_inputs *inputs;
        nir_shader *nir;
+       struct pan_shader_info *info;
        gl_shader_stage stage;
        struct list_head blocks; /* list of bi_block */
-       struct panfrost_sysvals sysvals;
+       struct hash_table_u64 *sysval_to_id;
        uint32_t quirks;
        unsigned arch;
-       unsigned tls_size;
-
-       /* Is internally a blend shader? Depends on stage == FRAGMENT */
-       bool is_blend;
-
-       /* Blend constants */
-       float blend_constants[4];
-
-       /* Blend return offsets */
-       uint32_t blend_ret_offsets[8];
-
-       /* Blend tile buffer conversion desc */
-       uint64_t blend_desc;
 
        /* During NIR->BIR */
        bi_block *current_block;
@@ -503,7 +509,6 @@ typedef struct {
        bi_block *break_block;
        bi_block *continue_block;
        bool emitted_atest;
-       nir_alu_type *blend_types;
 
        /* For creating temporaries */
        unsigned ssa_alloc;
@@ -729,7 +734,9 @@ void bi_print_shader(bi_context *ctx, FILE *fp);
 
 /* BIR passes */
 
+bool bi_opt_copy_prop(bi_context *ctx);
 bool bi_opt_dead_code_eliminate(bi_context *ctx, bi_block *block, bool soft);
+void bi_opt_push_ubo(bi_context *ctx);
 void bi_schedule(bi_context *ctx);
 void bi_register_allocate(bi_context *ctx);
 
@@ -764,7 +771,7 @@ bi_is_terminal_block(bi_block *block)
 {
         return block->base.successors[0] == NULL &&
                block->base.successors[1] == NULL &&
-               list_is_empty(&block->clauses);
+               list_is_empty(&block->base.instructions);
 }
 
 /* Code emit */

@@ -674,6 +674,12 @@ mir_choose_instruction(
         unsigned max_active = 0;
         unsigned max_distance = 36;
 
+#ifndef NDEBUG
+        /* Force in-order scheduling */
+        if (midgard_debug & MIDGARD_DBG_INORDER)
+                max_distance = 1;
+#endif
+
         BITSET_FOREACH_SET(i, worklist, count) {
                 max_active = MAX2(max_active, i);
         }
@@ -1150,7 +1156,7 @@ mir_schedule_alu(
          * this will be in sadd, we boost this to prevent scheduling csel into
          * smul */
 
-        if (writeout && (branch->constants.u32[0] || ctx->is_blend)) {
+        if (writeout && (branch->constants.u32[0] || ctx->inputs->is_blend)) {
                 sadd = ralloc(ctx, midgard_instruction);
                 *sadd = v_mov(~0, make_compiler_temp(ctx));
                 sadd->unit = UNIT_SADD;
@@ -1177,11 +1183,11 @@ mir_schedule_alu(
          * they are paired with MRT or not so they always need this, at least
          * on MFBD GPUs. */
 
-        if (writeout && (ctx->is_blend || ctx->writeout_branch[1])) {
+        if (writeout && (ctx->inputs->is_blend || ctx->writeout_branch[1])) {
                 vadd = ralloc(ctx, midgard_instruction);
                 *vadd = v_mov(~0, make_compiler_temp(ctx));
 
-                if (!ctx->is_blend) {
+                if (!ctx->inputs->is_blend) {
                         vadd->op = midgard_alu_op_iadd;
                         vadd->src[0] = SSA_FIXED_REGISTER(31);
                         vadd->src_types[0] = nir_type_uint32;

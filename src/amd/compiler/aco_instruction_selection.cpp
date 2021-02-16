@@ -192,13 +192,8 @@ static Temp emit_bpermute(isel_context *ctx, Builder &bld, Temp index, Temp data
 
       return bld.pseudo(aco_opcode::p_bpermute, bld.def(v1), bld.def(bld.lm), bld.def(bld.lm, vcc), index_op, input_data);
    } else if (ctx->options->chip_class >= GFX10 && ctx->program->wave_size == 64) {
-      /* GFX10 wave64 mode: emulate full-wave bpermute */
-      if (!ctx->has_gfx10_wave64_bpermute) {
-         ctx->has_gfx10_wave64_bpermute = true;
-         ctx->program->config->num_shared_vgprs = 8; /* Shared VGPRs are allocated in groups of 8 */
-         ctx->program->vgpr_limit -= 4; /* We allocate 8 shared VGPRs, so we'll have 4 fewer normal VGPRs */
-      }
 
+      /* GFX10 wave64 mode: emulate full-wave bpermute */
       Temp index_is_lo = bld.vopc(aco_opcode::v_cmp_ge_u32, bld.def(bld.lm), Operand(31u), index);
       Builder::Result index_is_lo_split = bld.pseudo(aco_opcode::p_split_vector, bld.def(s1), bld.def(s1), index_is_lo);
       Temp index_is_lo_n1 = bld.sop1(aco_opcode::s_not_b32, bld.def(s1), bld.def(s1, scc), index_is_lo_split.def(1).getTemp());
@@ -209,6 +204,10 @@ static Temp emit_bpermute(isel_context *ctx, Builder &bld, Temp index, Temp data
       index_x4.setLateKill(true);
       input_data.setLateKill(true);
       same_half.setLateKill(true);
+
+      /* We need one pair of shared VGPRs:
+       * Note, that these have twice the allocation granularity of normal VGPRs */
+      ctx->program->config->num_shared_vgprs = 2 * ctx->program->dev.vgpr_alloc_granule;
 
       return bld.pseudo(aco_opcode::p_bpermute, bld.def(v1), bld.def(s2), bld.def(s1, scc), index_x4, input_data, same_half);
    } else {
@@ -4638,7 +4637,7 @@ void emit_interp_instr(isel_context *ctx, unsigned idx, unsigned component, Temp
    Builder bld(ctx->program, ctx->block);
 
    if (dst.regClass() == v2b) {
-      if (ctx->program->has_16bank_lds) {
+      if (ctx->program->dev.has_16bank_lds) {
          assert(ctx->options->chip_class <= GFX8);
          Builder::Result interp_p1 =
             bld.vintrp(aco_opcode::v_interp_mov_f32, bld.def(v1),
@@ -4664,7 +4663,7 @@ void emit_interp_instr(isel_context *ctx, unsigned idx, unsigned component, Temp
          bld.vintrp(aco_opcode::v_interp_p1_f32, bld.def(v1), coord1,
                     bld.m0(prim_mask), idx, component);
 
-      if (ctx->program->has_16bank_lds)
+      if (ctx->program->dev.has_16bank_lds)
          interp_p1.instr->operands[0].setLateKill(true);
 
       bld.vintrp(aco_opcode::v_interp_p2_f32, Definition(dst), coord2,
@@ -11153,7 +11152,7 @@ Pseudo_instruction *add_startpgm(struct isel_context *ctx)
       }
    }
 
-   aco_ptr<Pseudo_instruction> startpgm{create_instruction<Pseudo_instruction>(aco_opcode::p_startpgm, Format::PSEUDO, 0, arg_count + 1)};
+   aco_ptr<Pseudo_instruction> startpgm{create_instruction<Pseudo_instruction>(aco_opcode::p_startpgm, Format::PSEUDO, 0, arg_count)};
    for (unsigned i = 0, arg = 0; i < ctx->args->ac.arg_count; i++) {
       if (ctx->args->ac.args[i].skip)
          continue;
@@ -11168,7 +11167,6 @@ Pseudo_instruction *add_startpgm(struct isel_context *ctx)
       startpgm->definitions[arg].setFixed(PhysReg{file == AC_ARG_SGPR ? reg : reg + 256});
       arg++;
    }
-   startpgm->definitions[arg_count] = Definition{ctx->program->allocateId(ctx->program->lane_mask), exec, ctx->program->lane_mask};
    Pseudo_instruction *instr = startpgm.get();
    ctx->block->instructions.push_back(std::move(startpgm));
 
@@ -11216,7 +11214,7 @@ void split_arguments(isel_context *ctx, Pseudo_instruction *startpgm)
    /* Split all arguments except for the first (ring_offsets) and the last
     * (exec) so that the dead channels don't stay live throughout the program.
     */
-   for (int i = 1; i < startpgm->definitions.size() - 1; i++) {
+   for (int i = 1; i < startpgm->definitions.size(); i++) {
       if (startpgm->definitions[i].regClass().size() > 1) {
          emit_split_vector(ctx, startpgm->definitions[i].getTemp(),
                            startpgm->definitions[i].regClass().size());
@@ -12248,7 +12246,7 @@ void select_trap_handler_shader(Program *program, struct nir_shader *shader,
    assert(args->options->chip_class == GFX8);
 
    init_program(program, compute_cs, args->shader_info,
-                args->options->chip_class, args->options->family, config);
+                args->options->chip_class, args->options->family, args->options->wgp_mode, config);
 
    isel_context ctx = {};
    ctx.program = program;

@@ -120,8 +120,8 @@ resource_create(struct pipe_screen *pscreen,
       bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                   VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-      /* apparently gallium thinks this is the jack-of-all-trades bind type */
-      if (templ->bind & PIPE_BIND_SAMPLER_VIEW) {
+      /* apparently gallium thinks these are the jack-of-all-trades bind types */
+      if (templ->bind & (PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_QUERY_BUFFER)) {
          bci.usage |= VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
@@ -217,15 +217,13 @@ resource_create(struct pipe_screen *pscreen,
           templ->target == PIPE_TEXTURE_CUBE_ARRAY)
          ici.arrayLayers *= 6;
 
-      if (templ->bind & (PIPE_BIND_DISPLAY_TARGET |
-                         PIPE_BIND_SHARED)) {
-         ici.tiling = VK_IMAGE_TILING_LINEAR;
-      }
-
       if (templ->bind & PIPE_BIND_SHARED) {
          emici.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
          emici.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
          ici.pNext = &emici;
+
+         /* TODO: deal with DRM modifiers here */
+         ici.tiling = VK_IMAGE_TILING_LINEAR;
       }
 
       if (templ->usage == PIPE_USAGE_STAGING)
@@ -284,7 +282,7 @@ resource_create(struct pipe_screen *pscreen,
       res->aspect = aspect_from_format(templ->format);
 
       vkGetImageMemoryRequirements(screen->dev, res->image, &reqs);
-      if (templ->usage == PIPE_USAGE_STAGING || (screen->winsys && (templ->bind & (PIPE_BIND_SCANOUT|PIPE_BIND_DISPLAY_TARGET|PIPE_BIND_SHARED))))
+      if (templ->usage == PIPE_USAGE_STAGING)
         flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
       else
         flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -297,6 +295,13 @@ resource_create(struct pipe_screen *pscreen,
    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
    mai.allocationSize = reqs.size;
    mai.memoryTypeIndex = get_memory_type_index(screen, &reqs, flags);
+
+   if (templ->target != PIPE_BUFFER) {
+      VkMemoryType mem_type =
+         screen->info.mem_props.memoryTypes[mai.memoryTypeIndex];
+      res->host_visible = mem_type.propertyFlags &
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+   }
 
    VkExportMemoryAllocateInfo emai = {};
    if (templ->bind & PIPE_BIND_SHARED) {
@@ -344,9 +349,7 @@ resource_create(struct pipe_screen *pscreen,
    else
       vkBindImageMemory(screen->dev, res->image, res->mem, res->offset);
 
-   if (screen->winsys && (templ->bind & (PIPE_BIND_DISPLAY_TARGET |
-                                         PIPE_BIND_SCANOUT |
-                                         PIPE_BIND_SHARED))) {
+   if (screen->winsys && (templ->bind & PIPE_BIND_DISPLAY_TARGET)) {
       struct sw_winsys *winsys = screen->winsys;
       res->dt = winsys->displaytarget_create(screen->winsys,
                                              res->base.bind,
@@ -589,7 +592,7 @@ zink_transfer_map(struct pipe_context *pctx,
       trans->base.layer_stride = 0;
       ptr = ((uint8_t *)ptr) + box->x;
    } else {
-      if (res->optimal_tiling || ((res->base.usage != PIPE_USAGE_STAGING))) {
+      if (res->optimal_tiling || !res->host_visible) {
          enum pipe_format format = pres->format;
          if (usage & PIPE_MAP_DEPTH_ONLY)
             format = util_format_get_depth_only(pres->format);

@@ -163,12 +163,15 @@ create_gfx_pipeline_layout(VkDevice dev, VkDescriptorSetLayout dsl)
    plci.setLayoutCount = 1;
 
 
-   VkPushConstantRange pcr = {};
-   pcr.stageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-   pcr.offset = 0;
-   pcr.size = sizeof(float) * 6;
-   plci.pushConstantRangeCount = 1;
-   plci.pPushConstantRanges = &pcr;
+   VkPushConstantRange pcr[2] = {};
+   pcr[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+   pcr[0].offset = offsetof(struct zink_push_constant, draw_mode_is_indexed);
+   pcr[0].size = 2 * sizeof(unsigned);
+   pcr[1].stageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+   pcr[1].offset = offsetof(struct zink_push_constant, default_inner_level);
+   pcr[1].size = sizeof(float) * 6;
+   plci.pushConstantRangeCount = 2;
+   plci.pPushConstantRanges = &pcr[0];
 
    VkPipelineLayout layout;
    if (vkCreatePipelineLayout(dev, &plci, NULL, &layout) != VK_SUCCESS) {
@@ -211,6 +214,7 @@ shader_key_vs_gen(struct zink_context *ctx, struct zink_shader *zs,
    switch (zs->nir->info.stage) {
    case MESA_SHADER_VERTEX:
       vs_key->last_vertex_stage = !shaders[PIPE_SHADER_TESS_EVAL] && !shaders[PIPE_SHADER_GEOMETRY];
+      vs_key->push_drawid = ctx->drawid_broken;
       break;
    case MESA_SHADER_TESS_EVAL:
       vs_key->last_vertex_stage = !shaders[PIPE_SHADER_GEOMETRY];
@@ -847,7 +851,7 @@ zink_create_tes_state(struct pipe_context *pctx,
    else
       nir = (struct nir_shader *)shader->ir.nir;
 
-   return zink_shader_create(zink_screen(pctx->screen), nir, NULL);
+   return zink_shader_create(zink_screen(pctx->screen), nir, &shader->stream_output);
 }
 
 static void
@@ -855,8 +859,14 @@ zink_bind_tes_state(struct pipe_context *pctx,
                    void *cso)
 {
    struct zink_context *ctx = zink_context(pctx);
-   if (!!ctx->gfx_stages[PIPE_SHADER_TESS_EVAL] != !!cso)
+   if (!!ctx->gfx_stages[PIPE_SHADER_TESS_EVAL] != !!cso) {
+      if (!cso) {
+         /* if unsetting a TESS that uses a generated TCS, ensure the TCS is unset */
+         if (ctx->gfx_stages[PIPE_SHADER_TESS_EVAL]->generated)
+            ctx->gfx_stages[PIPE_SHADER_TESS_CTRL] = NULL;
+      }
       ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_VERTEX);
+   }
    bind_stage(ctx, PIPE_SHADER_TESS_EVAL, cso);
 }
 
