@@ -73,12 +73,12 @@ void
 vn_cs_encoder_reset(struct vn_cs_encoder *enc);
 
 static inline void
-vn_cs_encoder_set_fatal(struct vn_cs_encoder *enc)
+vn_cs_encoder_set_fatal(const struct vn_cs_encoder *enc)
 {
    /* This is fatal and should be treated as VK_ERROR_DEVICE_LOST or even
     * abort().  Note that vn_cs_encoder_reset does not clear this.
     */
-   enc->fatal_error = true;
+   ((struct vn_cs_encoder *)enc)->fatal_error = true;
 }
 
 static inline bool
@@ -151,7 +151,7 @@ vn_cs_decoder_init(struct vn_cs_decoder *dec, const void *data, size_t size)
 }
 
 static inline void
-vn_cs_decoder_set_fatal(struct vn_cs_decoder *dec)
+vn_cs_decoder_set_fatal(const struct vn_cs_decoder *dec)
 {
    abort();
 }
@@ -176,7 +176,9 @@ vn_cs_decoder_read(struct vn_cs_decoder *dec,
 }
 
 static inline void
-vn_cs_decoder_peek(struct vn_cs_decoder *dec, void *val, size_t val_size)
+vn_cs_decoder_peek(const struct vn_cs_decoder *dec,
+                   void *val,
+                   size_t val_size)
 {
    if (unlikely(val_size > dec->end - dec->cur)) {
       vn_cs_decoder_set_fatal(dec);
