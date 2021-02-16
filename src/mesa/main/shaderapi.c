@@ -38,6 +38,7 @@
 
 #include "main/glheader.h"
 #include "main/context.h"
+#include "draw_validate.h"
 #include "main/enums.h"
 #include "main/glspirv.h"
 #include "main/hash.h"
@@ -1393,6 +1394,7 @@ link_program(struct gl_context *ctx, struct gl_shader_program *shProg,
    }
 
    _mesa_update_vertex_processing_mode(ctx);
+   _mesa_update_valid_to_render_state(ctx);
 
    shProg->BinaryRetrievableHint = shProg->BinaryRetrievableHintPending;
 
@@ -1488,6 +1490,7 @@ _mesa_active_program(struct gl_context *ctx, struct gl_shader_program *shProg,
 
    if (ctx->Shader.ActiveProgram != shProg) {
       _mesa_reference_shader_program(ctx, &ctx->Shader.ActiveProgram, shProg);
+      _mesa_update_valid_to_render_state(ctx);
    }
 }
 
@@ -2582,6 +2585,7 @@ _mesa_use_program(struct gl_context *ctx, gl_shader_stage stage,
       _mesa_reference_program(ctx, target, prog);
       _mesa_update_allow_draw_out_of_order(ctx);
       _mesa_update_primitive_id_is_unused(ctx);
+      _mesa_update_valid_to_render_state(ctx);
       if (stage == MESA_SHADER_VERTEX)
          _mesa_update_vertex_processing_mode(ctx);
       return;

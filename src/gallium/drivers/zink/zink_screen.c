@@ -174,6 +174,18 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
    case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
+   case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
+   case PIPE_CAP_QUERY_BUFFER_OBJECT:
+   case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
+   case PIPE_CAP_CLIP_HALFZ:
+   case PIPE_CAP_TGSI_TXQS:
+   case PIPE_CAP_TEXTURE_BARRIER:
+   case PIPE_CAP_TGSI_VOTE:
+   case PIPE_CAP_DRAW_PARAMETERS:
+   case PIPE_CAP_POLYGON_OFFSET_CLAMP:
+   case PIPE_CAP_QUERY_SO_OVERFLOW:
+   case PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE:
+   case PIPE_CAP_GL_SPIRV:
       return 1;
 
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
@@ -183,10 +195,11 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return screen->info.feats.features.multiDrawIndirect;
 
    case PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS:
-      return screen->instance_info.have_KHR_draw_indirect_count;
+      return screen->info.have_KHR_draw_indirect_count;
 
    case PIPE_CAP_START_INSTANCE:
-      return screen->info.feats11.shaderDrawParameters;
+      return (screen->info.have_vulkan12 && screen->info.feats11.shaderDrawParameters) ||
+              screen->info.have_KHR_shader_draw_parameters;
 
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
       return screen->info.have_EXT_vertex_attribute_divisor;
@@ -270,7 +283,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
       return 130;
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
-      return 430;
+      return 460;
 
    case PIPE_CAP_COMPUTE:
       return 1;
@@ -348,11 +361,6 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
       return 1;
-
-#if 0 /* TODO: Enable me */
-   case PIPE_CAP_CLIP_HALFZ:
-      return 1;
-#endif
 
    case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
    case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
@@ -848,25 +856,18 @@ zink_flush_frontbuffer(struct pipe_screen *pscreen,
    void *map = winsys->displaytarget_map(winsys, res->dt, 0);
 
    if (map) {
-      VkImageSubresource isr = {};
-      isr.aspectMask = res->aspect;
-      isr.mipLevel = level;
-      isr.arrayLayer = layer;
-      VkSubresourceLayout layout;
-      vkGetImageSubresourceLayout(screen->dev, res->image, &isr, &layout);
-
-      void *ptr;
-      VkResult result = vkMapMemory(screen->dev, res->mem, res->offset, res->size, 0, &ptr);
-      if (result != VK_SUCCESS) {
-         debug_printf("failed to map memory for display\n");
-         return;
+      struct pipe_transfer *transfer = NULL;
+      void *res_map = pipe_transfer_map(pcontext, pres, level, layer, PIPE_MAP_READ, 0, 0,
+                                        u_minify(pres->width0, level),
+                                        u_minify(pres->height0, level),
+                                        &transfer);
+      if (res_map) {
+         util_copy_rect((ubyte*)map, pres->format, res->dt_stride, 0, 0,
+                        transfer->box.width, transfer->box.height,
+                        (const ubyte*)res_map, transfer->stride, 0, 0);
+         pipe_transfer_unmap(pcontext, transfer);
       }
-      for (int i = 0; i < pres->height0; ++i) {
-         uint8_t *src = (uint8_t *)ptr + i * layout.rowPitch;
-         uint8_t *dst = (uint8_t *)map + i * res->dt_stride;
-         memcpy(dst, src, res->dt_stride);
-      }
-      vkUnmapMemory(screen->dev, res->mem);
+      winsys->displaytarget_unmap(winsys, res->dt);
    }
 
    winsys->displaytarget_unmap(winsys, res->dt);
@@ -950,6 +951,11 @@ load_device_extensions(struct zink_screen *screen)
    if (screen->info.have_EXT_conditional_rendering) {
       GET_PROC_ADDR(CmdBeginConditionalRenderingEXT);
       GET_PROC_ADDR(CmdEndConditionalRenderingEXT);
+   }
+
+   if (screen->info.have_KHR_draw_indirect_count) {
+      GET_PROC_ADDR(CmdDrawIndexedIndirectCount);
+      GET_PROC_ADDR(CmdDrawIndirectCount);
    }
 
    if (screen->info.have_EXT_calibrated_timestamps) {

@@ -493,6 +493,7 @@ radv_thread_trace_init_cs(struct radv_device *device)
 static bool
 radv_thread_trace_init_bo(struct radv_device *device)
 {
+	unsigned max_se = device->physical_device->rad_info.max_se;
 	struct radeon_winsys *ws = device->ws;
 	uint64_t size;
 
@@ -502,10 +503,10 @@ radv_thread_trace_init_bo(struct radv_device *device)
 	device->thread_trace.buffer_size = align64(device->thread_trace.buffer_size,
 	                                           1u << SQTT_BUFFER_ALIGN_SHIFT);
 
-	/* Compute total size of the thread trace BO for 4 SEs. */
-	size = align64(sizeof(struct ac_thread_trace_info) * 4,
+	/* Compute total size of the thread trace BO for all SEs. */
+	size = align64(sizeof(struct ac_thread_trace_info) * max_se,
 		       1 << SQTT_BUFFER_ALIGN_SHIFT);
-	size += device->thread_trace.buffer_size * 4ll;
+	size += device->thread_trace.buffer_size * max_se;
 
 	device->thread_trace.bo = ws->buffer_create(ws, size, 4096,
 						    RADEON_DOMAIN_VRAM,
@@ -547,6 +548,25 @@ radv_thread_trace_finish(struct radv_device *device)
 		if (device->thread_trace.stop_cs[i])
 			ws->cs_destroy(device->thread_trace.stop_cs[i]);
 	}
+}
+
+static bool
+radv_thread_trace_resize_bo(struct radv_device *device, uint32_t expected_size)
+{
+	/* Resize the trace buffer BO by 150% of the expected size to be sure
+	 * it will be enough.
+	 */
+	device->thread_trace.buffer_size = expected_size * 1.50;
+
+	/* Cleanup and re-initialize thread trace. */
+	radv_thread_trace_finish(device);
+	if (!radv_thread_trace_init(device))
+		return false;
+
+	fprintf(stderr, "The thread trace buffer has been resized to %d KB "
+			"per SE ! Please try again.\n",
+		device->thread_trace.buffer_size / 1024);
+	return true;
 }
 
 bool
@@ -593,11 +613,14 @@ radv_get_thread_trace(struct radv_queue *queue,
 
 			fprintf(stderr, "Failed to get the thread trace "
 					"because the buffer is too small. The "
-					"hardware needs %d KB but the "
+					"hardware needs %d KB per SE but the "
 					"buffer size is %d KB.\n",
 					expected_size, available_size);
-			fprintf(stderr, "Please update the buffer size with "
-					"RADV_THREAD_TRACE_BUFFER_SIZE=<size_in_bytes>\n");
+			if (!radv_thread_trace_resize_bo(device, expected_size * 1024)) {
+				fprintf(stderr, "Failed to resize the thread "
+						"trace buffer.\n");
+				abort();
+			}
 			return false;
 		}
 

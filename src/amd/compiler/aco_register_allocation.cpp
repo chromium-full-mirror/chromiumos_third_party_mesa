@@ -73,8 +73,10 @@ struct ra_ctx {
    std::unordered_map<unsigned, Instruction*> vectors;
    std::unordered_map<unsigned, Instruction*> split_vectors;
    aco_ptr<Instruction> pseudo_dummy;
-   unsigned max_used_sgpr = 0;
-   unsigned max_used_vgpr = 0;
+   uint16_t max_used_sgpr = 0;
+   uint16_t max_used_vgpr = 0;
+   uint16_t sgpr_limit;
+   uint16_t vgpr_limit;
    std::bitset<64> defs_done; /* see MAX_ARGS in aco_instruction_selection_setup.cpp */
 
    ra_test_policy policy;
@@ -89,6 +91,8 @@ struct ra_ctx {
         policy(policy_)
    {
       pseudo_dummy.reset(create_instruction<Instruction>(aco_opcode::p_parallelcopy, Format::PSEUDO, 0, 0));
+      sgpr_limit = get_addr_sgpr_from_waves(program, program->min_waves);
+      vgpr_limit = get_addr_sgpr_from_waves(program, program->min_waves);
    }
 };
 
@@ -588,7 +592,7 @@ std::pair<unsigned, unsigned> get_subdword_definition_info(Program *program, con
    case aco_opcode::global_load_short_d16:
    case aco_opcode::ds_read_u8_d16:
    case aco_opcode::ds_read_u16_d16:
-      if (chip >= GFX9 && !program->sram_ecc_enabled)
+      if (chip >= GFX9 && !program->dev.sram_ecc_enabled)
          return std::make_pair(2u, 2u);
       else
          return std::make_pair(2u, 4u);
@@ -650,14 +654,14 @@ void add_subdword_definition(Program *program, aco_ptr<Instruction>& instr, unsi
 
 void adjust_max_used_regs(ra_ctx& ctx, RegClass rc, unsigned reg)
 {
-   unsigned max_addressible_sgpr = ctx.program->sgpr_limit;
+   uint16_t max_addressible_sgpr = ctx.sgpr_limit;
    unsigned size = rc.size();
    if (rc.type() == RegType::vgpr) {
       assert(reg >= 256);
-      unsigned hi = reg - 256 + size - 1;
+      uint16_t hi = reg - 256 + size - 1;
       ctx.max_used_vgpr = std::max(ctx.max_used_vgpr, hi);
    } else if (reg + rc.size() <= max_addressible_sgpr) {
-      unsigned hi = reg + size - 1;
+      uint16_t hi = reg + size - 1;
       ctx.max_used_sgpr = std::max(ctx.max_used_sgpr, std::min(hi, max_addressible_sgpr));
    }
 }
@@ -1223,7 +1227,10 @@ bool get_reg_specified(ra_ctx& ctx,
 
    PhysRegInterval reg_win = { reg, rc.size() };
    PhysRegInterval bounds = get_reg_bounds(ctx.program, rc.type());
-   if (!bounds.contains(reg_win))
+   PhysRegInterval vcc_win = { vcc, 2 };
+   /* VCC is outside the bounds */
+   bool is_vcc = rc.type() == RegType::sgpr && vcc_win.contains(reg_win);
+   if (!bounds.contains(reg_win) && !is_vcc)
       return false;
 
    if (rc.is_subdword()) {
@@ -1241,11 +1248,9 @@ bool get_reg_specified(ra_ctx& ctx,
 }
 
 bool increase_register_file(ra_ctx& ctx, RegType type) {
-   uint16_t max_addressible_sgpr = ctx.program->sgpr_limit;
-   uint16_t max_addressible_vgpr = ctx.program->vgpr_limit;
-   if (type == RegType::vgpr && ctx.program->max_reg_demand.vgpr < max_addressible_vgpr) {
+   if (type == RegType::vgpr && ctx.program->max_reg_demand.vgpr < ctx.vgpr_limit) {
       update_vgpr_sgpr_demand(ctx.program, RegisterDemand(ctx.program->max_reg_demand.vgpr + 1, ctx.program->max_reg_demand.sgpr));
-   } else if (type == RegType::sgpr && ctx.program->max_reg_demand.sgpr < max_addressible_sgpr) {
+   } else if (type == RegType::sgpr && ctx.program->max_reg_demand.sgpr < ctx.sgpr_limit) {
       update_vgpr_sgpr_demand(ctx.program,  RegisterDemand(ctx.program->max_reg_demand.vgpr, ctx.program->max_reg_demand.sgpr + 1));
    } else {
       return false;
@@ -2051,36 +2056,6 @@ void register_allocation(Program *program, std::vector<IDSet>& live_out_per_bloc
       /* this is a slight adjustment from the paper as we already have phi nodes:
        * We consider them incomplete phis and only handle the definition. */
 
-      /* handle fixed phi definitions */
-      for (instr_it = block.instructions.begin(); instr_it != block.instructions.end(); ++instr_it) {
-         aco_ptr<Instruction>& phi = *instr_it;
-         if (!is_phi(phi))
-            break;
-         Definition& definition = phi->definitions[0];
-         if (!definition.isFixed())
-            continue;
-
-         /* check if a dead exec mask phi is needed */
-         if (definition.isKill()) {
-            for (Operand& op : phi->operands) {
-               assert(op.isTemp());
-               if (!ctx.assignments[op.tempId()].assigned ||
-                   ctx.assignments[op.tempId()].reg != exec) {
-                   definition.setKill(false);
-                   break;
-               }
-            }
-         }
-
-         if (definition.isKill())
-            continue;
-
-         assert(definition.physReg() == exec);
-         assert(!register_file.test(definition.physReg(), definition.bytes()));
-         register_file.fill(definition);
-         ctx.assignments[definition.tempId()] = {definition.physReg(), definition.regClass()};
-      }
-
       /* look up the affinities */
       for (instr_it = block.instructions.begin(); instr_it != block.instructions.end(); ++instr_it) {
          aco_ptr<Instruction>& phi = *instr_it;
@@ -2404,9 +2379,9 @@ void register_allocation(Program *program, std::vector<IDSet>& live_out_per_bloc
                continue;
 
             /* find free reg */
-            if (definition->hasHint() && register_file[definition->physReg()] == 0)
+            if (definition->hasHint() && get_reg_specified(ctx, register_file, definition->regClass(), instr, definition->physReg())) {
                definition->setFixed(definition->physReg());
-            else if (instr->opcode == aco_opcode::p_split_vector) {
+            } else if (instr->opcode == aco_opcode::p_split_vector) {
                PhysReg reg = instr->operands[0].physReg();
                for (unsigned j = 0; j < i; j++)
                   reg.reg_b += instr->definitions[j].bytes();
@@ -2677,11 +2652,8 @@ void register_allocation(Program *program, std::vector<IDSet>& live_out_per_bloc
    }
 
    /* num_gpr = rnd_up(max_used_gpr + 1) */
-   program->config->num_vgprs = align(ctx.max_used_vgpr + 1, 4);
-   if (program->family == CHIP_TONGA || program->family == CHIP_ICELAND) /* workaround hardware bug */
-      program->config->num_sgprs = get_sgpr_alloc(program, program->sgpr_limit);
-   else
-      program->config->num_sgprs = align(ctx.max_used_sgpr + 1 + get_extra_sgprs(program), 8);
+   program->config->num_vgprs = get_vgpr_alloc(program, ctx.max_used_vgpr + 1);
+   program->config->num_sgprs = get_sgpr_alloc(program, ctx.max_used_sgpr + 1);
 }
 
 }

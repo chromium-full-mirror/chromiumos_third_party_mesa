@@ -51,7 +51,6 @@
 
 #include "midgard_pack.h"
 #include "pan_screen.h"
-#include "pan_blending.h"
 #include "pan_blend_shaders.h"
 #include "pan_cmdstream.h"
 #include "pan_util.h"
@@ -150,7 +149,7 @@ panfrost_writes_point_size(struct panfrost_context *ctx)
         assert(ctx->shader[PIPE_SHADER_VERTEX]);
         struct panfrost_shader_state *vs = panfrost_get_shader_state(ctx, PIPE_SHADER_VERTEX);
 
-        return vs->writes_point_size && ctx->active_prim == PIPE_PRIM_POINTS;
+        return vs->info.vs.writes_point_size && ctx->active_prim == PIPE_PRIM_POINTS;
 }
 
 /* The entire frame is in memory -- send it off to the kernel! */
@@ -739,12 +738,11 @@ panfrost_create_shader_state(
                 struct panfrost_context *ctx = pan_context(pctx);
 
                 struct panfrost_shader_state state = { 0 };
-                uint64_t outputs_written;
 
                 panfrost_shader_compile(ctx, PIPE_SHADER_IR_NIR,
                                         so->base.ir.nir,
                                         tgsi_processor_to_shader_stage(stage),
-                                        &state, &outputs_written);
+                                        &state);
         }
 
         return so;
@@ -821,11 +819,12 @@ panfrost_variant_matches(
 {
         struct panfrost_device *dev = pan_device(ctx->base.screen);
 
-        if (variant->outputs_read) {
+        if (variant->info.stage == MESA_SHADER_FRAGMENT &&
+            variant->info.fs.outputs_read) {
                 struct pipe_framebuffer_state *fb = &ctx->pipe_framebuffer;
 
                 unsigned i;
-                BITSET_FOREACH_SET(i, &variant->outputs_read, 8) {
+                BITSET_FOREACH_SET(i, &variant->info.fs.outputs_read, 8) {
                         enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
 
                         if ((fb->nr_cbufs > i) && fb->cbufs[i])
@@ -963,15 +962,12 @@ panfrost_bind_shader_state(
         /* We finally have a variant, so compile it */
 
         if (!shader_state->compiled) {
-                uint64_t outputs_written = 0;
-
                 panfrost_shader_compile(ctx, variants->base.type,
                                         variants->base.type == PIPE_SHADER_IR_NIR ?
                                         variants->base.ir.nir :
                                         variants->base.tokens,
                                         tgsi_processor_to_shader_stage(type),
-                                        shader_state,
-                                        &outputs_written);
+                                        shader_state);
 
                 shader_state->compiled = true;
 
@@ -980,7 +976,8 @@ panfrost_bind_shader_state(
 
                 shader_state->stream_output = variants->base.stream_output;
                 shader_state->so_mask =
-                        update_so_info(&shader_state->stream_output, outputs_written);
+                        update_so_info(&shader_state->stream_output,
+                                       shader_state->info.outputs_written);
         }
 }
 
@@ -1251,7 +1248,8 @@ panfrost_set_framebuffer_state(struct pipe_context *pctx,
          * keyed to the framebuffer format (due to EXT_framebuffer_fetch) */
         struct panfrost_shader_variants *fs = ctx->shader[PIPE_SHADER_FRAGMENT];
 
-        if (fs && fs->variant_count && fs->variants[fs->active_variant].outputs_read)
+        if (fs && fs->variant_count &&
+            fs->variants[fs->active_variant].info.fs.outputs_read)
                 ctx->base.bind_fs_state(&ctx->base, fs);
 }
 
@@ -1340,6 +1338,17 @@ panfrost_set_min_samples(struct pipe_context *pipe,
         ctx->min_samples = min_samples;
 }
 
+static void
+panfrost_get_sample_position(struct pipe_context *context,
+                             unsigned sample_count,
+                             unsigned sample_index,
+                             float *out_value)
+{
+        panfrost_query_sample_position(
+                        panfrost_sample_pattern(sample_count),
+                        sample_index,
+                        out_value);
+}
 
 static void
 panfrost_set_clip_state(struct pipe_context *pipe,
@@ -1701,6 +1710,7 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
 
         gallium->set_sample_mask = panfrost_set_sample_mask;
         gallium->set_min_samples = panfrost_set_min_samples;
+        gallium->get_sample_position = panfrost_get_sample_position;
 
         gallium->set_clip_state = panfrost_set_clip_state;
         gallium->set_viewport_states = panfrost_set_viewport_states;

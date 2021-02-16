@@ -459,7 +459,7 @@ radv_reset_cmd_buffer(struct radv_cmd_buffer *cmd_buffer)
 		unsigned fence_offset, eop_bug_offset;
 		void *fence_ptr;
 
-		radv_cmd_buffer_upload_alloc(cmd_buffer, 8, 8, &fence_offset,
+		radv_cmd_buffer_upload_alloc(cmd_buffer, 8, &fence_offset,
 					     &fence_ptr);
 		memset(fence_ptr, 0, 8);
 
@@ -469,7 +469,7 @@ radv_reset_cmd_buffer(struct radv_cmd_buffer *cmd_buffer)
 
 		if (cmd_buffer->device->physical_device->rad_info.chip_class == GFX9) {
 			/* Allocate a buffer for the EOP bug on GFX9. */
-			radv_cmd_buffer_upload_alloc(cmd_buffer, 16 * num_db, 8,
+			radv_cmd_buffer_upload_alloc(cmd_buffer, 16 * num_db,
 						     &eop_bug_offset, &fence_ptr);
 			memset(fence_ptr, 0, 16 * num_db);
 			cmd_buffer->gfx9_eop_bug_va =
@@ -548,14 +548,21 @@ radv_cmd_buffer_resize_upload_buf(struct radv_cmd_buffer *cmd_buffer,
 
 bool
 radv_cmd_buffer_upload_alloc(struct radv_cmd_buffer *cmd_buffer,
-			     unsigned size,
-			     unsigned alignment,
-			     unsigned *out_offset,
-			     void **ptr)
+			     unsigned size, unsigned *out_offset, void **ptr)
 {
-	assert(util_is_power_of_two_nonzero(alignment));
+	assert(size % 4 == 0);
 
-	uint64_t offset = align(cmd_buffer->upload.offset, alignment);
+	struct radeon_info *rad_info = &cmd_buffer->device->physical_device->rad_info;
+
+	/* Align to the scalar cache line size if it results in this allocation
+	 * being placed in less of them.
+	 */
+	unsigned offset = cmd_buffer->upload.offset;
+	unsigned line_size = rad_info->chip_class >= GFX10 ? 64 : 32;
+	unsigned gap = align(offset, line_size) - offset;
+	if ((size & (line_size - 1)) > gap)
+		offset = align(offset, line_size);
+
 	if (offset + size > cmd_buffer->upload.size) {
 		if (!radv_cmd_buffer_resize_upload_buf(cmd_buffer, size))
 			return false;
@@ -571,13 +578,11 @@ radv_cmd_buffer_upload_alloc(struct radv_cmd_buffer *cmd_buffer,
 
 bool
 radv_cmd_buffer_upload_data(struct radv_cmd_buffer *cmd_buffer,
-			    unsigned size, unsigned alignment,
-			    const void *data, unsigned *out_offset)
+			    unsigned size, const void *data, unsigned *out_offset)
 {
 	uint8_t *ptr;
 
-	if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size, alignment,
-					  out_offset, (void **)&ptr))
+	if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size, out_offset, (void **)&ptr))
 		return false;
 
 	if (ptr)
@@ -2634,7 +2639,7 @@ radv_flush_push_descriptors(struct radv_cmd_buffer *cmd_buffer,
 		(struct radv_descriptor_set *)&descriptors_state->push_set.set;
 	unsigned bo_offset;
 
-	if (!radv_cmd_buffer_upload_data(cmd_buffer, set->header.size, 32,
+	if (!radv_cmd_buffer_upload_data(cmd_buffer, set->header.size,
 					 set->header.mapped_ptr,
 					 &bo_offset))
 		return;
@@ -2653,8 +2658,7 @@ radv_flush_indirect_descriptor_sets(struct radv_cmd_buffer *cmd_buffer,
 	uint32_t offset;
 	void *ptr;
 
-	if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size,
-					  256, &offset, &ptr))
+	if (!radv_cmd_buffer_upload_alloc(cmd_buffer, size, &offset, &ptr))
 		return;
 
 	for (unsigned i = 0; i < MAX_SETS; i++) {
@@ -2798,8 +2802,7 @@ radv_flush_constants(struct radv_cmd_buffer *cmd_buffer,
 
 	if (need_push_constants) {
 		if (!radv_cmd_buffer_upload_alloc(cmd_buffer, layout->push_constant_size +
-						  16 * layout->dynamic_offset_count,
-						  256, &offset, &ptr))
+						  16 * layout->dynamic_offset_count, &offset, &ptr))
 			return;
 
 		memcpy(ptr, cmd_buffer->push_constants, layout->push_constant_size);
@@ -2847,7 +2850,7 @@ radv_flush_vertex_descriptors(struct radv_cmd_buffer *cmd_buffer,
 		uint64_t va;
 
 		/* allocate some descriptor state for vertex buffers */
-		if (!radv_cmd_buffer_upload_alloc(cmd_buffer, count * 16, 256,
+		if (!radv_cmd_buffer_upload_alloc(cmd_buffer, count * 16,
 						  &vb_offset, &vb_ptr))
 			return;
 
@@ -2970,7 +2973,7 @@ radv_flush_streamout_descriptors(struct radv_cmd_buffer *cmd_buffer)
 
 		/* Allocate some descriptor state for streamout buffers. */
 		if (!radv_cmd_buffer_upload_alloc(cmd_buffer,
-						  MAX_SO_BUFFERS * 16, 256,
+						  MAX_SO_BUFFERS * 16,
 						  &so_offset, &so_ptr))
 			return;
 
@@ -3277,41 +3280,45 @@ radv_image_is_pipe_misaligned(const struct radv_device *device,
 {
 	struct radeon_info *rad_info = &device->physical_device->rad_info;
 	unsigned log2_samples = util_logbase2(image->info.samples);
-	unsigned log2_bpp = util_logbase2(vk_format_get_blocksize(image->vk_format));
-	unsigned log2_bpp_and_samples;
 
 	assert(rad_info->chip_class >= GFX10);
 
-	if (rad_info->chip_class >= GFX10_3) {
-		log2_bpp_and_samples = log2_bpp + log2_samples;
-	} else {
-		if (vk_format_is_depth(image->vk_format) &&
-		     image->info.array_size >= 8) {
-			log2_bpp = 2;
+	for (unsigned i = 0; i < image->plane_count; ++i) {
+		VkFormat fmt = vk_format_get_plane_format(image->vk_format, i);
+		unsigned log2_bpp = util_logbase2(vk_format_get_blocksize(fmt));
+		unsigned log2_bpp_and_samples;
+
+		if (rad_info->chip_class >= GFX10_3) {
+			log2_bpp_and_samples = log2_bpp + log2_samples;
+		} else {
+			if (vk_format_is_depth(image->vk_format) &&
+			    image->info.array_size >= 8) {
+				log2_bpp = 2;
+			}
+
+			log2_bpp_and_samples = MIN2(6, log2_bpp + log2_samples);
 		}
 
-		log2_bpp_and_samples = MIN2(6, log2_bpp + log2_samples);
-	}
+		unsigned num_pipes = G_0098F8_NUM_PIPES(rad_info->gb_addr_config);
+		int overlap = MAX2(0, log2_bpp_and_samples + num_pipes - 8);
 
-	unsigned num_pipes = G_0098F8_NUM_PIPES(rad_info->gb_addr_config);
-	int overlap = MAX2(0, log2_bpp_and_samples + num_pipes - 8);
+		if (vk_format_is_depth(image->vk_format)) {
+			if (radv_image_is_tc_compat_htile(image) && overlap) {
+				return true;
+			}
+		} else {
+			unsigned max_compressed_frags = G_0098F8_MAX_COMPRESSED_FRAGS(rad_info->gb_addr_config);
+			int log2_samples_frag_diff = MAX2(0, log2_samples - max_compressed_frags);
+			int samples_overlap = MIN2(log2_samples, overlap);
 
-	if (vk_format_is_depth(image->vk_format)) {
-		if (radv_image_is_tc_compat_htile(image) && overlap) {
-			return true;
-		}
-	} else {
-		unsigned max_compressed_frags = G_0098F8_MAX_COMPRESSED_FRAGS(rad_info->gb_addr_config);
-		int log2_samples_frag_diff = MAX2(0, log2_samples - max_compressed_frags);
-		int samples_overlap = MIN2(log2_samples, overlap);
-
-		/* TODO: It shouldn't be necessary if the image has DCC but
-		 * not readable by shader.
-		 */
-		if ((radv_image_has_dcc(image) ||
-		     radv_image_is_tc_compat_cmask(image)) &&
-		     (samples_overlap > log2_samples_frag_diff)) {
-			return true;
+			/* TODO: It shouldn't be necessary if the image has DCC but
+			 * not readable by shader.
+			 */
+			if ((radv_image_has_dcc(image) ||
+			     radv_image_is_tc_compat_cmask(image)) &&
+			    (samples_overlap > log2_samples_frag_diff)) {
+				return true;
+			}
 		}
 	}
 
@@ -4237,9 +4244,8 @@ void radv_meta_push_descriptor_set(
 	push_set->header.size = layout->set[set].layout->size;
 	push_set->header.layout = layout->set[set].layout;
 
-	if (!radv_cmd_buffer_upload_alloc(cmd_buffer, push_set->header.size, 32,
-	                                  &bo_offset,
-	                                  (void**) &push_set->header.mapped_ptr))
+	if (!radv_cmd_buffer_upload_alloc(cmd_buffer, push_set->header.size,
+	                                  &bo_offset, (void**) &push_set->header.mapped_ptr))
 		return;
 
 	push_set->header.va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
@@ -4476,6 +4482,8 @@ void radv_CmdBindPipeline(
 		assert(!"invalid bind point");
 		break;
 	}
+
+	radv_describe_pipeline_bind(cmd_buffer, pipelineBindPoint, pipeline);
 }
 
 void radv_CmdSetViewport(
@@ -6789,7 +6797,7 @@ void radv_CmdBeginConditionalRenderingEXT(
 		 * Based on the conditionalrender demo, it's faster to do the
 		 * COPY_DATA in ME  (+ sync PFP) instead of PFP.
 		 */
-		radv_cmd_buffer_upload_data(cmd_buffer, 8, 16, &pred_value, &pred_offset);
+		radv_cmd_buffer_upload_data(cmd_buffer, 8, &pred_value, &pred_offset);
 
 		pred_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + pred_offset;
 

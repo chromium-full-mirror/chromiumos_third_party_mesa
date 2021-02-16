@@ -53,9 +53,6 @@ DEBUG_GET_ONCE_FLAGS_OPTION(bifrost_debug, "BIFROST_MESA_DEBUG", bifrost_debug_o
  * clause of the shader, this range must be valid instructions or zero. */
 #define BIFROST_SHADER_PREFETCH 128
 
-/* TODO: This is not thread safe!! */
-static unsigned SHADER_DB_COUNT = 0;
-
 int bifrost_debug = 0;
 
 #define DBG(fmt, ...) \
@@ -88,7 +85,7 @@ bi_emit_jump(bi_builder *b, nir_jump_instr *instr)
 static void
 bi_emit_ld_tile(bi_builder *b, nir_intrinsic_instr *instr)
 {
-        assert(b->shader->is_blend);
+        assert(b->shader->inputs->is_blend);
 
         /* We want to load the current pixel.
          * FIXME: The sample to load is currently hardcoded to 0. This should
@@ -98,13 +95,14 @@ bi_emit_ld_tile(bi_builder *b, nir_intrinsic_instr *instr)
                 .y = BIFROST_CURRENT_PIXEL,
         };
 
+        uint64_t blend_desc = b->shader->inputs->blend.bifrost_blend_desc;
         uint32_t indices = 0;
         memcpy(&indices, &pix, sizeof(indices));
 
         bi_ld_tile_to(b, bi_dest_index(&instr->dest), bi_imm_u32(indices),
                 bi_register(60), /* coverage bitmap, TODO ra */
                 /* Only keep the conversion part of the blend descriptor. */
-                bi_imm_u32(b->shader->blend_desc >> 32),
+                bi_imm_u32(blend_desc >> 32),
                 (instr->num_components - 1));
 
 }
@@ -294,6 +292,39 @@ bi_make_vec_to(bi_builder *b, bi_index final_dst,
         }
 }
 
+static bi_instr *
+bi_load_sysval_to(bi_builder *b, bi_index dest, int sysval,
+                unsigned nr_components, unsigned offset)
+{
+        unsigned uniform =
+                pan_lookup_sysval(b->shader->sysval_to_id,
+                                  &b->shader->info->sysvals,
+                                  sysval);
+        unsigned idx = (uniform * 16) + offset;
+
+        return bi_load_to(b, nr_components * 32, dest,
+                        bi_imm_u32(idx),
+                        bi_imm_u32(b->shader->nir->info.num_ubos), BI_SEG_UBO);
+}
+
+static void
+bi_load_sysval_nir(bi_builder *b, nir_intrinsic_instr *intr,
+                unsigned nr_components, unsigned offset)
+{
+        bi_load_sysval_to(b, bi_dest_index(&intr->dest),
+                        panfrost_sysval_for_instr(&intr->instr, NULL),
+                        nr_components, offset);
+}
+
+static bi_index
+bi_load_sysval(bi_builder *b, int sysval,
+                unsigned nr_components, unsigned offset)
+{
+        bi_index tmp = bi_temp(b->shader);
+        bi_load_sysval_to(b, tmp, sysval, nr_components, offset);
+        return tmp;
+}
+
 static void
 bi_emit_load_blend_input(bi_builder *b, nir_intrinsic_instr *instr)
 {
@@ -318,13 +349,15 @@ bi_emit_load_blend_input(bi_builder *b, nir_intrinsic_instr *instr)
 static void
 bi_emit_blend_op(bi_builder *b, bi_index rgba, nir_alu_type T, unsigned rt)
 {
-        if (b->shader->is_blend) {
+        if (b->shader->inputs->is_blend) {
+                uint64_t blend_desc = b->shader->inputs->blend.bifrost_blend_desc;
+
                 /* Blend descriptor comes from the compile inputs */
                 /* Put the result in r0 */
                 bi_blend_to(b, bi_register(0), rgba,
                                 bi_register(60) /* TODO RA */,
-                                bi_imm_u32(b->shader->blend_desc & 0xffffffff),
-                                bi_imm_u32(b->shader->blend_desc >> 32));
+                                bi_imm_u32(blend_desc & 0xffffffff),
+                                bi_imm_u32(blend_desc >> 32));
         } else {
                 /* Blend descriptor comes from the FAU RAM. By convention, the
                  * return address is stored in r48 and will be used by the
@@ -336,8 +369,20 @@ bi_emit_blend_op(bi_builder *b, bi_index rgba, nir_alu_type T, unsigned rt)
         }
 
         assert(rt < 8);
-        assert(b->shader->blend_types);
-        b->shader->blend_types[rt] = T;
+        b->shader->info->bifrost.blend[rt].type = T;
+}
+
+/* Blend shaders do not need to run ATEST since they are dependent on a
+ * fragment shader that runs it. Blit shaders may not need to run ATEST, since
+ * ATEST is not needed if early-z is forced, alpha-to-coverage is disabled, and
+ * there are no writes to the coverage mask. The latter two are satisfied for
+ * all blit shaders, so we just care about early-z, which blit shaders force
+ * iff they do not write depth or stencil */
+
+static bool
+bi_skip_atest(bi_context *ctx, bool emit_zs)
+{
+        return (ctx->inputs->is_blit && !emit_zs) || ctx->inputs->is_blend;
 }
 
 static void
@@ -357,15 +402,28 @@ bi_emit_fragment_out(bi_builder *b, nir_intrinsic_instr *instr)
                                 nir_var_shader_out, nir_intrinsic_base(instr));
         assert(var);
 
+        unsigned loc = var->data.location;
+        bi_index src0 = bi_src_index(&instr->src[0]);
+
+        /* By ISA convention, the coverage mask is stored in R60. The store
+         * itself will be handled by a subsequent ATEST instruction */
+        if (loc == FRAG_RESULT_SAMPLE_MASK) {
+                bi_index orig = bi_register(60);
+                bi_index msaa = bi_load_sysval(b, PAN_SYSVAL_MULTISAMPLED, 1, 0);
+                bi_index new = bi_lshift_and_i32(b, orig, src0, bi_imm_u8(0));
+                bi_mux_i32_to(b, orig, orig, new, msaa, BI_MUX_INT_ZERO);
+                return;
+        }
+
+
         /* Dual-source blending is implemented by putting the color in
          * registers r4-r7. */
         if (var->data.index) {
-                bi_index color = bi_src_index(&instr->src[0]);
                 unsigned count = nir_src_num_components(instr->src[0]);
 
                 for (unsigned i = 0; i < count; ++i)
                         bi_mov_i32_to(b, bi_register(4 + i),
-                                      bi_word(color, i));
+                                      bi_word(src0, i));
                 return;
         }
 
@@ -373,7 +431,8 @@ bi_emit_fragment_out(bi_builder *b, nir_intrinsic_instr *instr)
          * value, but render target #0 might not be floating point. However the
          * alpha value is only used for alpha-to-coverage, a stage which is
          * skipped for pure integer framebuffers, so the issue is moot. */
-        if (!b->shader->emitted_atest && !b->shader->is_blend) {
+
+        if (!b->shader->emitted_atest && !bi_skip_atest(b->shader, emit_zs)) {
                 nir_alu_type T = nir_intrinsic_src_type(instr);
 
                 bi_index rgba = bi_src_index(&instr->src[0]);
@@ -406,7 +465,6 @@ bi_emit_fragment_out(bi_builder *b, nir_intrinsic_instr *instr)
         }
 
         if (emit_blend) {
-                unsigned loc = var->data.location;
                 assert(loc == FRAG_RESULT_COLOR || loc >= FRAG_RESULT_DATA0);
 
                 unsigned rt = loc == FRAG_RESULT_COLOR ? 0 :
@@ -428,7 +486,7 @@ bi_emit_fragment_out(bi_builder *b, nir_intrinsic_instr *instr)
                 bi_emit_blend_op(b, color, nir_intrinsic_src_type(instr), rt);
         }
 
-        if (b->shader->is_blend) {
+        if (b->shader->inputs->is_blend) {
                 /* Jump back to the fragment shader, return address is stored
                  * in r48 (see above).
                  */
@@ -489,29 +547,10 @@ bi_emit_load_ubo(bi_builder *b, nir_intrinsic_instr *instr)
 
         bool offset_is_const = nir_src_is_const(*offset);
         bi_index dyn_offset = bi_src_index(offset);
-        uint32_t const_offset = 0;
-
+        uint32_t const_offset = offset_is_const ? nir_src_as_uint(*offset) : 0;
         bool kernel_input = (instr->intrinsic == nir_intrinsic_load_kernel_input);
 
-        /* We may need to offset UBO loads by however many sysvals we have */
-        unsigned sysval_offset = 16 * b->shader->sysvals.sysval_count;
-
-        if (nir_src_is_const(*offset))
-                const_offset = nir_src_as_uint(*offset);
-
-        if ((kernel_input ||
-             (nir_src_is_const(instr->src[0]) &&
-              nir_src_as_uint(instr->src[0]) == 0)) &&
-            b->shader->sysvals.sysval_count) {
-                if (offset_is_const) {
-                        const_offset += sysval_offset;
-                } else {
-                        dyn_offset = bi_iadd_u32(b, dyn_offset,
-                                        bi_imm_u32(sysval_offset), false);
-                }
-        }
-
-        bi_load_to(b, instr->num_components * 32,
+        bi_load_to(b, instr->num_components * nir_dest_bit_size(instr->dest),
                         bi_dest_index(&instr->dest), offset_is_const ?
                         bi_imm_u32(const_offset) : dyn_offset,
                         kernel_input ? bi_zero() : bi_src_index(&instr->src[0]),
@@ -620,24 +659,6 @@ bi_emit_acmpxchg(bi_builder *b, nir_intrinsic_instr *instr, enum bi_seg seg)
         bi_make_vec_to(b, bi_dest_index(&instr->dest), inout_words, NULL, sz / 32, 32);
 }
 
-static void
-bi_load_sysval(bi_builder *b, nir_instr *instr,
-                unsigned nr_components, unsigned offset)
-{
-        nir_dest nir_dest;
-
-        /* Figure out which uniform this is */
-        int sysval = panfrost_sysval_for_instr(instr, &nir_dest);
-        void *val = _mesa_hash_table_u64_search(b->shader->sysvals.sysval_to_id, sysval);
-
-        /* Sysvals are prefix uniforms */
-        unsigned uniform = ((uintptr_t) val) - 1;
-        unsigned idx = (uniform * 16) + offset;
-
-        bi_load_to(b, nr_components * 32, bi_dest_index(&nir_dest),
-                        bi_imm_u32(idx), bi_zero(), BI_SEG_UBO);
-}
-
 /* gl_FragCoord.xy = u16_to_f32(R59.xy) + 0.5
  * gl_FragCoord.z = ld_vary(fragz)
  * gl_FragCoord.w = ld_vary(fragw)
@@ -681,7 +702,7 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
                 break;
         case nir_intrinsic_load_interpolated_input:
         case nir_intrinsic_load_input:
-                if (b->shader->is_blend)
+                if (b->shader->inputs->is_blend)
                         bi_emit_load_blend_input(b, instr);
                 else if (stage == MESA_SHADER_FRAGMENT)
                         bi_emit_load_vary(b, instr);
@@ -778,15 +799,15 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
                 break;
 
         case nir_intrinsic_load_ssbo_address:
-                bi_load_sysval(b, &instr->instr, 2, 0);
+                bi_load_sysval_nir(b, instr, 2, 0);
                 break;
 
         case nir_intrinsic_load_work_dim:
-                bi_load_sysval(b, &instr->instr, 1, 0);
+                bi_load_sysval_nir(b, instr, 1, 0);
                 break;
 
         case nir_intrinsic_get_ssbo_size:
-                bi_load_sysval(b, &instr->instr, 1, 8);
+                bi_load_sysval_nir(b, instr, 1, 8);
                 break;
 
         case nir_intrinsic_load_viewport_scale:
@@ -794,32 +815,46 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
         case nir_intrinsic_load_num_work_groups:
         case nir_intrinsic_load_sampler_lod_parameters_pan:
         case nir_intrinsic_load_local_group_size:
-                bi_load_sysval(b, &instr->instr, 3, 0);
+                bi_load_sysval_nir(b, instr, 3, 0);
                 break;
         case nir_intrinsic_load_blend_const_color_r_float:
                 bi_mov_i32_to(b, dst,
-                                bi_imm_f32(b->shader->blend_constants[0]));
+                                bi_imm_f32(b->shader->inputs->blend.constants[0]));
                 break;
 
         case nir_intrinsic_load_blend_const_color_g_float:
                 bi_mov_i32_to(b, dst,
-                                bi_imm_f32(b->shader->blend_constants[1]));
+                                bi_imm_f32(b->shader->inputs->blend.constants[1]));
                 break;
 
         case nir_intrinsic_load_blend_const_color_b_float:
                 bi_mov_i32_to(b, dst,
-                                bi_imm_f32(b->shader->blend_constants[2]));
+                                bi_imm_f32(b->shader->inputs->blend.constants[2]));
                 break;
 
         case nir_intrinsic_load_blend_const_color_a_float:
                 bi_mov_i32_to(b, dst,
-                                bi_imm_f32(b->shader->blend_constants[3]));
+                                bi_imm_f32(b->shader->inputs->blend.constants[3]));
                 break;
 
-	case nir_intrinsic_load_sample_id: {
-                /* r61[16:23] contains the sampleID, mask it out */
+	case nir_intrinsic_load_sample_positions_pan:
+                bi_mov_i32_to(b, bi_word(dst, 0),
+                                bi_fau(BIR_FAU_SAMPLE_POS_ARRAY, false));
+                bi_mov_i32_to(b, bi_word(dst, 1),
+                                bi_fau(BIR_FAU_SAMPLE_POS_ARRAY, true));
+                break;
 
-                bi_rshift_and_i32_to(b, dst, bi_register(61), bi_imm_u32(0xff),
+	case nir_intrinsic_load_sample_mask_in:
+                /* r61[0:15] contains the coverage bitmap */
+                bi_u16_to_u32_to(b, dst, bi_half(bi_register(61), false));
+                break;
+
+        case nir_intrinsic_load_sample_id: {
+                /* r61[16:23] contains the sampleID, mask it out. Upper bits
+                 * seem to read garbage (despite being architecturally defined
+                 * as zero), so use a 5-bit mask instead of 8-bits */
+
+                bi_rshift_and_i32_to(b, dst, bi_register(61), bi_imm_u32(0x1f),
                                 bi_imm_u8(16));
                 break;
         }
@@ -1305,11 +1340,10 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
 
         case nir_op_fddx:
         case nir_op_fddy: {
-                bi_index cur_lane = bi_mov_i32(b, bi_fau(BIR_FAU_LANE_ID, false));
-
-                bi_index lane1 = bi_lshift_and_i32(b, cur_lane,
+                bi_index lane1 = bi_lshift_and_i32(b,
+                                bi_fau(BIR_FAU_LANE_ID, false),
                                 bi_imm_u32(instr->op == nir_op_fddx ? 2 : 1),
-                                bi_byte(bi_zero(), 0));
+                                bi_imm_u8(0));
 
                 bi_index lane2 = bi_iadd_u32(b, lane1,
                                 bi_imm_u32(instr->op == nir_op_fddx ? 1 : 2),
@@ -1520,6 +1554,30 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
                 else
                         bi_frcp_to(b, sz, dst, s0);
                 break;
+
+        case nir_op_uclz:
+                bi_clz_to(b, sz, dst, s0, false);
+                break;
+
+        case nir_op_bit_count:
+                bi_popcount_i32_to(b, dst, s0);
+                break;
+
+        case nir_op_bitfield_reverse:
+                bi_bitrev_i32_to(b, dst, s0);
+                break;
+
+        case nir_op_ufind_msb: {
+                bi_index clz = bi_clz(b, src_sz, s0, false);
+
+                if (sz == 8)
+                        clz = bi_byte(clz, 0);
+                else if (sz == 16)
+                        clz = bi_half(clz, false);
+
+                bi_isub_u32_to(b, dst, bi_imm_u32(src_sz - 1), clz, false);
+                break;
+        }
 
         default:
                 fprintf(stderr, "Unhandled ALU op %s\n", nir_op_infos[instr->op].name);
@@ -1795,18 +1853,6 @@ bi_emit_texc(bi_builder *b, nir_tex_instr *instr)
         /* TODO: support more with other encodings */
         assert(instr->sampler_index < 16);
 
-        /* TODO: support more ops */
-        switch (instr->op) {
-        case nir_texop_tex:
-        case nir_texop_txl:
-        case nir_texop_txb:
-        case nir_texop_txf:
-        case nir_texop_txf_ms:
-                break;
-        default:
-                unreachable("Unsupported texture op");
-        }
-
         struct bifrost_texture_operation desc = {
                 .sampler_index_or_mode = instr->sampler_index,
                 .index = instr->texture_index,
@@ -1825,8 +1871,9 @@ bi_emit_texc(bi_builder *b, nir_tex_instr *instr)
                 desc.lod_or_fetch = BIFROST_LOD_MODE_COMPUTE;
                 break;
         case BIFROST_TEX_OP_FETCH:
-                /* TODO: gathers */
-                desc.lod_or_fetch = BIFROST_TEXTURE_FETCH_TEXEL;
+                desc.lod_or_fetch = instr->op == nir_texop_tg4 ?
+                        BIFROST_TEXTURE_FETCH_GATHER4_R + instr->component :
+                        BIFROST_TEXTURE_FETCH_TEXEL;
                 break;
         default:
                 unreachable("texture op unsupported");
@@ -2034,13 +2081,16 @@ bi_emit_tex(bi_builder *b, nir_tex_instr *instr)
 {
         switch (instr->op) {
         case nir_texop_txs:
-                bi_load_sysval(b, &instr->instr, 4, 0);
+                bi_load_sysval_to(b, bi_dest_index(&instr->dest),
+                                panfrost_sysval_for_instr(&instr->instr, NULL),
+                                4, 0);
                 return;
         case nir_texop_tex:
         case nir_texop_txl:
         case nir_texop_txb:
         case nir_texop_txf:
         case nir_texop_txf_ms:
+        case nir_texop_tg4:
                 break;
         default:
                 unreachable("Invalid texture operation");
@@ -2274,13 +2324,12 @@ bi_print_stats(bi_context *ctx, unsigned size, FILE *fp)
 
         /* Dump stats */
 
-        fprintf(stderr, "shader%d:%s - %s shader: "
+        fprintf(stderr, "%s - %s shader: "
                         "%u inst, %u nops, %u clauses, "
                         "%u quadwords, %u threads, %u loops, "
                         "%u:%u spills:fills\n",
-                        SHADER_DB_COUNT++,
                         ctx->nir->info.label ?: "",
-                        ctx->is_blend ? "PAN_SHADER_BLEND" :
+                        ctx->inputs->is_blend ? "PAN_SHADER_BLEND" :
                         gl_shader_stage_name(ctx->stage),
                         nr_ins, nr_nops, nr_clauses,
                         size / 16, nr_threads,
@@ -2292,57 +2341,6 @@ static int
 glsl_type_size(const struct glsl_type *type, bool bindless)
 {
         return glsl_count_attribute_slots(type, false);
-}
-
-static unsigned
-bi_lower_constant(bi_builder *b, bi_instr *ins, unsigned s, uint32_t *accum, unsigned cwords, bool allow_constant)
-{
-        uint32_t value = ins->src[s].value;
-
-        /* Staging registers can't have constants */
-        allow_constant &= !(s == 0 && bi_opcode_props[ins->op].sr_read);
-
-        /* If we're allowed any inline constants, see if this one works */
-        if (allow_constant) {
-                for (unsigned i = 0; i < cwords; ++i) {
-                        if (value == accum[i])
-                                return cwords;
-                }
-
-                if (value == 0 && !bi_opcode_props[ins->op].add)
-                        return cwords;
-
-                if (cwords < 2) {
-                        accum[cwords] = value;
-                        return cwords + 1;
-                }
-        }
-
-        /* should be const folded */
-        assert(!ins->src[s].abs && !ins->src[s].neg);
-        enum bi_swizzle old_swizzle = ins->src[s].swizzle;
-
-        b->cursor = bi_before_instr(ins);
-        ins->src[s] = bi_mov_i32(b, bi_imm_u32(value));
-        ins->src[s].swizzle = old_swizzle;
-        return cwords;
-}
-
-static void
-bi_lower_fau(bi_context *ctx, bi_block *block)
-{
-        bi_builder b = bi_init_builder(ctx, bi_after_block(ctx->current_block));
-
-        bi_foreach_instr_in_block_safe(block, _ins) {
-                bi_instr *ins = (bi_instr *) _ins;
-                uint32_t constants[2];
-                unsigned cwords = 0;
-
-                bi_foreach_src(ins, s) {
-                        if (ins->src[s].type == BI_INDEX_CONSTANT)
-                                cwords = bi_lower_constant(&b, ins, s, constants, cwords, true);
-                }
-        }
 }
 
 static void
@@ -2358,10 +2356,12 @@ bi_optimize_nir(nir_shader *nir)
                 .lower_txs_lod = true,
                 .lower_txp = ~0,
                 .lower_tex_without_implicit_lod = true,
+                .lower_tg4_broadcom_swizzle = true,
                 .lower_txd = true,
         };
 
         NIR_PASS(progress, nir, pan_nir_lower_64bit_intrin);
+        NIR_PASS(progress, nir, pan_lower_helper_invocation);
 
         NIR_PASS(progress, nir, nir_lower_int64);
 
@@ -2484,10 +2484,12 @@ bifrost_nir_lower_i8_fragout(nir_shader *shader)
 }
 
 /* Dead code elimination for branches at the end of a block - only one branch
- * per block is legal semantically, but unreachable jumps can be generated */
+ * per block is legal semantically, but unreachable jumps can be generated.
+ * Likewise we can generate jumps to the terminal block which need to be
+ * lowered away to a jump to #0x0, which induces successful termination. */
 
 static void
-bi_cull_dead_branch(bi_block *block)
+bi_lower_branch(bi_block *block)
 {
         bool branched = false;
         ASSERTED bool was_jump = false;
@@ -2496,31 +2498,36 @@ bi_cull_dead_branch(bi_block *block)
                 if (!ins->branch_target) continue;
 
                 if (branched) {
-                        assert(was_jump);
+                        assert(was_jump && (ins->op == BI_OPCODE_JUMP));
                         bi_remove_instruction(ins);
+                        break;
                 }
 
                 branched = true;
                 was_jump = ins->op == BI_OPCODE_JUMP;
+
+                if (bi_is_terminal_block(ins->branch_target))
+                        ins->branch_target = NULL;
         }
 }
 
-panfrost_program *
-bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
-                           const struct panfrost_compile_inputs *inputs)
+void
+bifrost_compile_shader_nir(nir_shader *nir,
+                           const struct panfrost_compile_inputs *inputs,
+                           struct util_dynarray *binary,
+                           struct pan_shader_info *info)
 {
-        panfrost_program *program = rzalloc(mem_ctx, panfrost_program);
-
         bifrost_debug = debug_get_option_bifrost_debug();
 
         bi_context *ctx = rzalloc(NULL, bi_context);
+        ctx->sysval_to_id = panfrost_init_sysvals(&info->sysvals, ctx);
+
+        ctx->inputs = inputs;
         ctx->nir = nir;
+        ctx->info = info;
         ctx->stage = nir->info.stage;
         ctx->quirks = bifrost_get_quirks(inputs->gpu_id);
         ctx->arch = inputs->gpu_id >> 12;
-        ctx->is_blend = inputs->is_blend;
-        ctx->blend_desc = inputs->blend.bifrost_blend_desc;
-        memcpy(ctx->blend_constants, inputs->blend.constants, sizeof(ctx->blend_constants));
         list_inithead(&ctx->blocks);
 
         /* Lower gl_Position pre-optimisation, but after lowering vars to ssa
@@ -2542,6 +2549,7 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
                         glsl_type_size, 0);
         NIR_PASS_V(nir, nir_lower_ssbo);
         NIR_PASS_V(nir, pan_nir_lower_zs_store);
+        NIR_PASS_V(nir, pan_lower_sample_pos);
         NIR_PASS_V(nir, bifrost_nir_lower_i8_fragout);
         // TODO: re-enable when fp16 is flipped on
         // NIR_PASS_V(nir, nir_lower_mediump_outputs);
@@ -2557,11 +2565,7 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
                 nir_print_shader(nir, stdout);
         }
 
-        panfrost_nir_assign_sysvals(&ctx->sysvals, ctx, nir);
-        program->sysval_count = ctx->sysvals.sysval_count;
-        memcpy(program->sysvals, ctx->sysvals.sysvals, sizeof(ctx->sysvals.sysvals[0]) * ctx->sysvals.sysval_count);
-        ctx->blend_types = program->blend_types;
-        ctx->tls_size = nir->scratch_size;
+        info->tls_size = nir->scratch_size;
 
         nir_foreach_function(func, nir) {
                 if (!func->impl)
@@ -2583,24 +2587,24 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
                  * consistent */
                 block->base.name = block_source_count++;
 
-                bi_cull_dead_branch(block);
+                bi_lower_branch(block);
         }
+
+        /* Runs before copy prop */
+        bi_opt_push_ubo(ctx);
 
         bool progress = false;
 
         do {
                 progress = false;
 
+                progress |= bi_opt_copy_prop(ctx);
+
                 bi_foreach_block(ctx, _block) {
                         bi_block *block = (bi_block *) _block;
                         progress |= bi_opt_dead_code_eliminate(ctx, block, false);
                 }
         } while(progress);
-
-        bi_foreach_block(ctx, _block) {
-                bi_block *block = (bi_block *) _block;
-                bi_lower_fau(ctx, block);
-        }
 
         if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal)
                 bi_print_shader(ctx, stdout);
@@ -2609,8 +2613,7 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
         if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal)
                 bi_print_shader(ctx, stdout);
 
-        util_dynarray_init(&program->compiled, NULL);
-        unsigned final_clause = bi_pack(ctx, &program->compiled);
+        unsigned final_clause = bi_pack(ctx, binary);
 
         /* If we need to wait for ATEST or BLEND in the first clause, pass the
          * corresponding bits through to the renderer state descriptor */
@@ -2618,31 +2621,28 @@ bifrost_compile_shader_nir(void *mem_ctx, nir_shader *nir,
         bi_clause *first_clause = bi_next_clause(ctx, first_block, NULL);
 
         unsigned first_deps = first_clause ? first_clause->dependencies : 0;
-        program->wait_6 = (first_deps & (1 << 6));
-        program->wait_7 = (first_deps & (1 << 7));
-
-        memcpy(program->blend_ret_offsets, ctx->blend_ret_offsets, sizeof(program->blend_ret_offsets));
+        info->bifrost.wait_6 = (first_deps & (1 << 6));
+        info->bifrost.wait_7 = (first_deps & (1 << 7));
 
         if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal) {
-                disassemble_bifrost(stdout, program->compiled.data,
-                                program->compiled.size,
-                                bifrost_debug & BIFROST_DBG_VERBOSE);
+                disassemble_bifrost(stdout, binary->data, binary->size,
+                                    bifrost_debug & BIFROST_DBG_VERBOSE);
         }
 
-        /* Pad the shader with enough zero bytes to trick the prefetcher */
+        /* Pad the shader with enough zero bytes to trick the prefetcher,
+         * unless we're compiling an empty shader (in which case we don't pad
+         * so the size remains 0) */
         unsigned prefetch_size = BIFROST_SHADER_PREFETCH - final_clause;
 
-        memset(util_dynarray_grow(&program->compiled, uint8_t, prefetch_size),
-               0, prefetch_size);
-
-        program->tls_size = ctx->tls_size;
+        if (binary->size) {
+                memset(util_dynarray_grow(binary, uint8_t, prefetch_size),
+                       0, prefetch_size);
+        }
 
         if ((bifrost_debug & BIFROST_DBG_SHADERDB || inputs->shaderdb) &&
             !skip_internal) {
-                bi_print_stats(ctx, program->compiled.size, stderr);
+                bi_print_stats(ctx, binary->size, stderr);
         }
 
         ralloc_free(ctx);
-
-        return program;
 }

@@ -735,6 +735,13 @@ struct v3d_compile {
         struct qblock *cur_block;
         struct qblock *loop_cont_block;
         struct qblock *loop_break_block;
+        /**
+         * Which temp, if any, do we currently have in the flags?
+         * This is set when processing a comparison instruction, and
+         * reset to -1 by anything else that touches the flags.
+         */
+        int32_t flags_temp;
+        enum v3d_qpu_cond flags_cond;
 
         uint64_t *qpu_insts;
         uint32_t qpu_inst_count;
@@ -929,8 +936,8 @@ struct v3d_qpu_instr v3d_qpu_nop(void);
 struct qreg vir_emit_def(struct v3d_compile *c, struct qinst *inst);
 struct qinst *vir_emit_nondef(struct v3d_compile *c, struct qinst *inst);
 void vir_set_cond(struct qinst *inst, enum v3d_qpu_cond cond);
-void vir_set_pf(struct qinst *inst, enum v3d_qpu_pf pf);
-void vir_set_uf(struct qinst *inst, enum v3d_qpu_uf uf);
+void vir_set_pf(struct v3d_compile *c, struct qinst *inst, enum v3d_qpu_pf pf);
+void vir_set_uf(struct v3d_compile *c, struct qinst *inst, enum v3d_qpu_uf uf);
 void vir_set_unpack(struct qinst *inst, int src,
                     enum v3d_qpu_input_unpack unpack);
 void vir_set_pack(struct qinst *inst, enum v3d_qpu_output_pack pack);
@@ -943,7 +950,7 @@ bool vir_has_side_effects(struct v3d_compile *c, struct qinst *inst);
 bool vir_get_add_op(struct qinst *inst, enum v3d_qpu_add_op *op);
 bool vir_get_mul_op(struct qinst *inst, enum v3d_qpu_mul_op *op);
 bool vir_is_raw_mov(struct qinst *inst);
-bool vir_is_tex(struct qinst *inst);
+bool vir_is_tex(const struct v3d_device_info *devinfo, struct qinst *inst);
 bool vir_is_add(struct qinst *inst);
 bool vir_is_mul(struct qinst *inst);
 bool vir_writes_r3(const struct v3d_device_info *devinfo, struct qinst *inst);

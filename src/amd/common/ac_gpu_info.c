@@ -236,39 +236,6 @@ static uint64_t fix_vram_size(uint64_t size)
    return align64(size, 256 * 1024 * 1024);
 }
 
-static uint32_t get_l2_cache_size(enum radeon_family family)
-{
-   switch (family) {
-   case CHIP_KABINI:
-   case CHIP_STONEY:
-      return 128 * 1024;
-   case CHIP_OLAND:
-   case CHIP_HAINAN:
-   case CHIP_ICELAND:
-      return 256 * 1024;
-   case CHIP_PITCAIRN:
-   case CHIP_VERDE:
-   case CHIP_BONAIRE:
-   case CHIP_KAVERI:
-   case CHIP_POLARIS12:
-   case CHIP_CARRIZO:
-      return 512 * 1024;
-   case CHIP_TAHITI:
-   case CHIP_TONGA:
-      return 768 * 1024;
-      break;
-   case CHIP_HAWAII:
-   case CHIP_POLARIS11:
-      return 1024 * 1024;
-   case CHIP_FIJI:
-   case CHIP_POLARIS10:
-      return 2048 * 1024;
-      break;
-   default:
-      return 4096 * 1024;
-   }
-}
-
 static bool
 has_tmz_support(amdgpu_device_handle dev,
                 struct radeon_info *info,
@@ -628,9 +595,6 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
    info->vram_bit_width = amdinfo->vram_bit_width;
    info->ce_ram_size = amdinfo->ce_ram_size;
 
-   info->l2_cache_size = get_l2_cache_size(info->family);
-   info->l1_cache_size = 16384;
-
    /* Set which chips have uncached device memory. */
    info->has_l2_uncached = info->chip_class >= GFX9;
 
@@ -640,7 +604,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
    /* convert the shader/memory clocks from KHz to MHz */
    info->max_shader_clock = amdinfo->max_engine_clk / 1000;
    info->max_memory_clock = amdinfo->max_memory_clk / 1000;
-   info->num_tcc_blocks = device_info.num_tcc_blocks;
+   info->max_tcc_blocks = device_info.num_tcc_blocks;
    info->max_se = amdinfo->num_shader_engines;
    info->max_sa_per_se = amdinfo->num_shader_arrays_per_engine;
    info->has_hw_decode = (uvd.available_rings != 0) || (vcn_dec.available_rings != 0) ||
@@ -702,13 +666,45 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
 
       if (info->drm_minor >= 35) {
          info->tcc_harvested = device_info.tcc_disabled_mask != 0;
+         info->num_tcc_blocks = info->max_tcc_blocks - util_bitcount64(device_info.tcc_disabled_mask);
       } else {
          /* This is a hack, but it's all we can do without a kernel upgrade. */
-         info->tcc_harvested = (info->vram_size / info->num_tcc_blocks) != 512 * 1024 * 1024;
+         info->tcc_harvested = (info->vram_size / info->max_tcc_blocks) != 512 * 1024 * 1024;
       }
    } else {
       info->tcc_cache_line_size = 64;
+      info->num_tcc_blocks = info->max_tcc_blocks;
    }
+
+   switch (info->family) {
+   case CHIP_TAHITI:
+   case CHIP_PITCAIRN:
+   case CHIP_OLAND:
+   case CHIP_HAWAII:
+   case CHIP_KABINI:
+   case CHIP_TONGA:
+   case CHIP_STONEY:
+   case CHIP_RAVEN2:
+      info->l2_cache_size = info->num_tcc_blocks * 64 * 1024;
+      break;
+   case CHIP_VERDE:
+   case CHIP_HAINAN:
+   case CHIP_BONAIRE:
+   case CHIP_KAVERI:
+   case CHIP_ICELAND:
+   case CHIP_CARRIZO:
+   case CHIP_FIJI:
+   case CHIP_POLARIS12:
+   case CHIP_VEGAM:
+      info->l2_cache_size = info->num_tcc_blocks * 128 * 1024;
+      break;
+   default:
+      info->l2_cache_size = info->num_tcc_blocks * 256 * 1024;
+      break;
+   }
+
+   info->l1_cache_size = 16384;
+
    info->mc_arb_ramcfg = amdinfo->mc_arb_ramcfg;
    info->gb_addr_config = amdinfo->gb_addr_cfg;
    if (info->chip_class >= GFX9) {
@@ -726,7 +722,11 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
     * LDS is 128KB in WGP mode and 64KB in CU mode. Assume the WGP mode is used.
     */
    info->lds_size_per_workgroup = info->chip_class >= GFX10 ? 128 * 1024 : 64 * 1024;
-   info->lds_granularity = info->chip_class >= GFX7 ? 128 * 4 : 64 * 4;
+   /* lds_encode_granularity is the block size used for encoding registers.
+    * lds_alloc_granularity is what the hardware will align the LDS size to.
+    */
+   info->lds_encode_granularity = info->chip_class >= GFX7 ? 128 * 4 : 64 * 4;
+   info->lds_alloc_granularity = info->chip_class >= GFX10_3 ? 256 * 4 : info->lds_encode_granularity;
 
    assert(util_is_power_of_two_or_zero(dma.available_rings + 1));
    assert(util_is_power_of_two_or_zero(compute.available_rings + 1));
@@ -927,10 +927,6 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
       }
    }
 
-   /* The number of SDPs is the same as the number of TCCs for now. */
-   if (info->chip_class >= GFX10)
-      info->num_sdp_interfaces = device_info.num_tcc_blocks;
-
    if (info->chip_class >= GFX10_3)
       info->max_wave64_per_simd = 16;
    else if (info->chip_class == GFX10)
@@ -1060,13 +1056,14 @@ void ac_print_gpu_info(struct radeon_info *info, FILE *f)
    fprintf(f, "    has_dedicated_vram = %u\n", info->has_dedicated_vram);
    fprintf(f, "    all_vram_visible = %u\n", info->all_vram_visible);
    fprintf(f, "    smart_access_memory = %u\n", info->smart_access_memory);
-   fprintf(f, "    num_sdp_interfaces = %u\n", info->num_sdp_interfaces);
+   fprintf(f, "    max_tcc_blocks = %i\n", info->max_tcc_blocks);
    fprintf(f, "    num_tcc_blocks = %i\n", info->num_tcc_blocks);
    fprintf(f, "    tcc_cache_line_size = %u\n", info->tcc_cache_line_size);
    fprintf(f, "    tcc_harvested = %u\n", info->tcc_harvested);
    fprintf(f, "    pc_lines = %u\n", info->pc_lines);
    fprintf(f, "    lds_size_per_workgroup = %u\n", info->lds_size_per_workgroup);
-   fprintf(f, "    lds_granularity = %i\n", info->lds_granularity);
+   fprintf(f, "    lds_alloc_granularity = %i\n", info->lds_alloc_granularity);
+   fprintf(f, "    lds_encode_granularity = %i\n", info->lds_encode_granularity);
    fprintf(f, "    max_memory_clock = %i\n", info->max_memory_clock);
    fprintf(f, "    ce_ram_size = %i\n", info->ce_ram_size);
    fprintf(f, "    l1_cache_size = %i\n", info->l1_cache_size);
@@ -1136,6 +1133,7 @@ void ac_print_gpu_info(struct radeon_info *info, FILE *f)
    fprintf(f, "    min_wave64_vgpr_alloc = %i\n", info->min_wave64_vgpr_alloc);
    fprintf(f, "    max_vgpr_alloc = %i\n", info->max_vgpr_alloc);
    fprintf(f, "    wave64_vgpr_alloc_granularity = %i\n", info->wave64_vgpr_alloc_granularity);
+   fprintf(f, "    use_late_alloc = %i\n", info->use_late_alloc);
 
    fprintf(f, "Render backend info:\n");
    fprintf(f, "    pa_sc_tile_steering_override = 0x%x\n", info->pa_sc_tile_steering_override);

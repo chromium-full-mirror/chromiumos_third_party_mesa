@@ -78,7 +78,7 @@ struct ntv_context {
    unsigned char *shader_slot_map;
    unsigned char shader_slots_reserved;
 
-   SpvId front_face_var, instance_id_var, vertex_id_var, base_instance_var,
+   SpvId front_face_var, instance_id_var, vertex_id_var,
          primitive_id_var, invocation_id_var, // geometry
          sample_mask_type, sample_id_var, sample_pos_var, sample_mask_in_var,
          tess_patch_vertices_in, tess_coord_var, // tess
@@ -86,7 +86,8 @@ struct ntv_context {
          workgroup_id_var, num_workgroups_var,
          local_invocation_id_var, global_invocation_id_var,
          local_invocation_index_var, helper_invocation_var,
-         shared_block_var;
+         shared_block_var,
+         base_vertex_var, base_instance_var, draw_id_var;
 };
 
 static SpvId
@@ -413,9 +414,9 @@ handle_handle_slot(struct ntv_context *ctx, struct nir_variable *var, bool outpu
    if (var->data.patch) {
       assert(var->data.location >= VARYING_SLOT_PATCH0);
       return var->data.location - VARYING_SLOT_PATCH0;
-   } else if ((output && ctx->stage == MESA_SHADER_TESS_CTRL) ||
-              (!output && ctx->stage == MESA_SHADER_TESS_EVAL)) {
-      assert(var->data.location >= VARYING_SLOT_VAR0);
+   } else if (var->data.location >= VARYING_SLOT_VAR0 &&
+              ((output && ctx->stage == MESA_SHADER_TESS_CTRL) ||
+              (!output && ctx->stage == MESA_SHADER_TESS_EVAL))) {
       return var->data.location - VARYING_SLOT_VAR0;
    }
    return handle_slot(ctx, var->data.location);
@@ -434,8 +435,12 @@ input_var_init(struct ntv_context *ctx, struct nir_variable *var)
 
    if (var->name)
       spirv_builder_emit_name(&ctx->builder, var_id, var->name);
-   if (var->data.mode == nir_var_mem_push_const)
+   if (var->data.mode == nir_var_mem_push_const) {
       ctx->push_const_var = var_id;
+
+      assert(ctx->num_entry_ifaces < ARRAY_SIZE(ctx->entry_ifaces));
+      ctx->entry_ifaces[ctx->num_entry_ifaces++] = var_id;
+   }
    return var_id;
 }
 
@@ -829,6 +834,8 @@ emit_image(struct ntv_context *ctx, struct nir_variable *var)
       _mesa_hash_table_insert(ctx->image_vars, key, var);
       emit_access_decorations(ctx, var, var_id);
    }
+   assert(ctx->num_entry_ifaces < ARRAY_SIZE(ctx->entry_ifaces));
+   ctx->entry_ifaces[ctx->num_entry_ifaces++] = var_id;
 
    spirv_builder_emit_descriptor_set(&ctx->builder, var_id, 0);
    int binding = zink_binding(ctx->stage,
@@ -949,6 +956,8 @@ emit_bo(struct ntv_context *ctx, struct nir_variable *var)
          assert(ctx->num_ubos < ARRAY_SIZE(ctx->ubos));
          ctx->ubos[ctx->num_ubos++] = var_id;
       }
+      assert(ctx->num_entry_ifaces < ARRAY_SIZE(ctx->entry_ifaces));
+      ctx->entry_ifaces[ctx->num_entry_ifaces++] = var_id;
 
       spirv_builder_emit_descriptor_set(&ctx->builder, var_id, 0);
       int binding = zink_binding(ctx->stage,
@@ -1867,6 +1876,8 @@ emit_alu(struct ntv_context *ctx, nir_alu_instr *alu)
       unreachable("unsupported opcode");
       return;
    }
+   if (alu->exact)
+      spirv_builder_emit_decoration(&ctx->builder, result, SpvDecorationNoContraction);
 
    store_alu_result(ctx, alu, result);
 }
@@ -2150,7 +2161,6 @@ emit_store_shared(struct ntv_context *ctx, nir_intrinsic_instr *intr)
    }
 }
 
-/* FIXME: this is currently VERY specific to injected TCS usage */
 static void
 emit_load_push_const(struct ntv_context *ctx, nir_intrinsic_instr *intr)
 {
@@ -2168,8 +2178,6 @@ emit_load_push_const(struct ntv_context *ctx, nir_intrinsic_instr *intr)
 
    /* destination type for the load */
    SpvId type = get_dest_uvec_type(ctx, &intr->dest);
-   /* an id of an array member in bytes */
-   SpvId uint_size = emit_uint_const(ctx, 32, sizeof(uint32_t));
    SpvId one = emit_uint_const(ctx, 32, 1);
 
    /* we grab a single array member at a time, so it's a pointer to a uint */
@@ -2177,12 +2185,9 @@ emit_load_push_const(struct ntv_context *ctx, nir_intrinsic_instr *intr)
                                                    SpvStorageClassPushConstant,
                                                    load_type);
 
-   SpvId member = emit_uint_const(ctx, 32, 0);
-   /* this is the offset (in bytes) that we're accessing:
-    * it may be a const value or it may be dynamic in the shader
-    */
-   SpvId offset = get_src(ctx, &intr->src[0]);
-   offset = emit_binop(ctx, SpvOpUDiv, uint_type, offset, uint_size);
+   SpvId member = get_src(ctx, &intr->src[0]);
+   /* reuse the offset from ZINK_PUSH_CONST_OFFSET */
+   SpvId offset = emit_uint_const(ctx, 32, 0);
    /* OpAccessChain takes an array of indices that drill into a hierarchy based on the type:
     * index 0 is accessing 'base'
     * index 1 is accessing 'base[index 1]'
@@ -2610,6 +2615,14 @@ emit_intrinsic(struct ntv_context *ctx, nir_intrinsic_instr *intr)
       emit_load_uint_input(ctx, intr, &ctx->instance_id_var, "gl_InstanceId", SpvBuiltInInstanceIndex);
       break;
 
+   case nir_intrinsic_load_base_vertex:
+      emit_load_uint_input(ctx, intr, &ctx->base_vertex_var, "gl_BaseVertex", SpvBuiltInBaseVertex);
+      break;
+
+   case nir_intrinsic_load_draw_id:
+      emit_load_uint_input(ctx, intr, &ctx->draw_id_var, "gl_DrawID", SpvBuiltInDrawIndex);
+      break;
+
    case nir_intrinsic_load_vertex_id:
       emit_load_uint_input(ctx, intr, &ctx->vertex_id_var, "gl_VertexId", SpvBuiltInVertexIndex);
       break;
@@ -2676,6 +2689,12 @@ emit_intrinsic(struct ntv_context *ctx, nir_intrinsic_instr *intr)
       spirv_builder_emit_memory_barrier(&ctx->builder, SpvScopeWorkgroup,
                                         SpvMemorySemanticsImageMemoryMask | SpvMemorySemanticsUniformMemoryMask |
                                         SpvMemorySemanticsMakeVisibleMask  | SpvMemorySemanticsAcquireReleaseMask);
+      break;
+
+   case nir_intrinsic_group_memory_barrier:
+      spirv_builder_emit_memory_barrier(&ctx->builder, SpvScopeWorkgroup,
+                                        SpvMemorySemanticsWorkgroupMemoryMask |
+                                        SpvMemorySemanticsAcquireReleaseMask);
       break;
 
    case nir_intrinsic_memory_barrier_shared:
@@ -2850,8 +2869,9 @@ emit_intrinsic(struct ntv_context *ctx, nir_intrinsic_instr *intr)
 static void
 emit_undef(struct ntv_context *ctx, nir_ssa_undef_instr *undef)
 {
-   SpvId type = get_uvec_type(ctx, undef->def.bit_size,
-                              undef->def.num_components);
+   SpvId type = undef->def.bit_size == 1 ? get_bvec_type(ctx, undef->def.num_components) :
+                                           get_uvec_type(ctx, undef->def.bit_size,
+                                                         undef->def.num_components);
 
    store_ssa_def(ctx, &undef->def,
                  spirv_builder_emit_undef(&ctx->builder, type));
@@ -3783,8 +3803,8 @@ nir_to_spirv(struct nir_shader *s, const struct zink_so_info *so_info,
 
    emit_cf_list(&ctx, &entry->body);
 
-   /* vertex shader emits copied xfb outputs at the end of the shader */
-   if (so_info && ctx.stage == MESA_SHADER_VERTEX)
+   /* vertex/tess shader emits copied xfb outputs at the end of the shader */
+   if (so_info && (ctx.stage == MESA_SHADER_VERTEX || ctx.stage == MESA_SHADER_TESS_EVAL))
       emit_so_outputs(&ctx, so_info);
 
    spirv_builder_return(&ctx.builder); // doesn't belong here, but whatevz

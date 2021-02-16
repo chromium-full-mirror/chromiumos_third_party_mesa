@@ -1,5 +1,5 @@
 variables:
-  MESA_LAVA_TAG: "2021-02-10-zink"
+  MESA_LAVA_TAG: "2020-02-16-iris"
 
 .kernel+rootfs:
   stage: container-2
@@ -133,11 +133,11 @@ kernel+rootfs_armhf:
     TEST_SUITE: "deqp"
   extends:
     - .use-x86_build-base # for same $MESA_BASE_TAG as in kernel+rootfs_amd64
-    - .use-arm_build
+    - .use-arm_build # ARM because it must match the architecture of the runner
     - .lava-test
   needs:
     - kernel+rootfs_amd64
-    - arm_build
+    - arm_build # ARM because it must match the architecture of the runner
     - meson-testing
 
 .lava-traces-base:
@@ -359,5 +359,40 @@ radeonsi-stoney-traces:amd64:
     BOOT_METHOD: depthcharge
     KERNEL_IMAGE_TYPE: ""
     ENV_VARS: "EGL_PLATFORM=surfaceless PIGLIT_PROFILES=replay PIGLIT_HTML_SUMMARY=0 PIGLIT_JUNIT_RESULTS=1"
+  tags:
+    - mesa-ci-aarch64-lava-collabora
+
+.iris-traces:amd64:
+  extends:
+    - .lava-piglit-traces:amd64
+    - .iris-rules
+  variables:
+    ENV_VARS: "EGL_PLATFORM=surfaceless PIGLIT_PROFILES=replay PIGLIT_HTML_SUMMARY=0 PIGLIT_JUNIT_RESULTS=1"
+
+iris-apl-traces:amd64:
+  extends:
+    - .iris-traces:amd64
+    - .test-manual
+  variables:
+    DEVICE_TYPE: asus-C523NA-A20057-coral
+    DTB: ""
+    GPU_VERSION: intel-apl
+    DRIVER_NAME: iris
+    BOOT_METHOD: depthcharge
+    KERNEL_IMAGE_TYPE: ""
+  tags:
+    - mesa-ci-aarch64-lava-collabora
+
+iris-glk-traces:amd64:
+  extends:
+    - .iris-traces:amd64
+    - .test-manual
+  variables:
+    DEVICE_TYPE: hp-x360-12b-n4000-octopus
+    DTB: ""
+    GPU_VERSION: intel-glk
+    DRIVER_NAME: iris
+    BOOT_METHOD: depthcharge
+    KERNEL_IMAGE_TYPE: ""
   tags:
     - mesa-ci-aarch64-lava-collabora

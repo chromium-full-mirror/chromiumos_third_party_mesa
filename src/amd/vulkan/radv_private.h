@@ -69,7 +69,6 @@
 #include "ac_llvm_util.h"
 #include "radv_constants.h"
 #include "radv_descriptor_set.h"
-#include "radv_extensions.h"
 #include "sid.h"
 #include "ac_sqtt.h"
 
@@ -338,7 +337,6 @@ struct radv_instance {
 
 VkResult radv_init_wsi(struct radv_physical_device *physical_device);
 void radv_finish_wsi(struct radv_physical_device *physical_device);
-uint32_t radv_physical_device_api_version(struct radv_physical_device *dev);
 
 struct cache_entry;
 
@@ -1504,17 +1502,13 @@ void si_cp_dma_wait_for_idle(struct radv_cmd_buffer *cmd_buffer);
 void radv_set_db_count_control(struct radv_cmd_buffer *cmd_buffer);
 bool
 radv_cmd_buffer_upload_alloc(struct radv_cmd_buffer *cmd_buffer,
-			     unsigned size,
-			     unsigned alignment,
-			     unsigned *out_offset,
-			     void **ptr);
+			     unsigned size, unsigned *out_offset, void **ptr);
 void
 radv_cmd_buffer_set_subpass(struct radv_cmd_buffer *cmd_buffer,
 			    const struct radv_subpass *subpass);
 bool
 radv_cmd_buffer_upload_data(struct radv_cmd_buffer *cmd_buffer,
-			    unsigned size, unsigned alignmnet,
-			    const void *data, unsigned *out_offset);
+			    unsigned size, const void *data, unsigned *out_offset);
 
 void radv_cmd_buffer_clear_subpass(struct radv_cmd_buffer *cmd_buffer);
 void radv_cmd_buffer_resolve_subpass(struct radv_cmd_buffer *cmd_buffer);
@@ -1810,23 +1804,23 @@ struct radv_binning_settings
 radv_get_binning_settings(const struct radv_physical_device *pdev);
 
 struct vk_format_description;
-uint32_t radv_translate_buffer_dataformat(const struct vk_format_description *desc,
+uint32_t radv_translate_buffer_dataformat(const struct util_format_description *desc,
 					  int first_non_void);
-uint32_t radv_translate_buffer_numformat(const struct vk_format_description *desc,
+uint32_t radv_translate_buffer_numformat(const struct util_format_description *desc,
 					 int first_non_void);
 bool radv_is_buffer_format_supported(VkFormat format, bool *scaled);
 uint32_t radv_translate_colorformat(VkFormat format);
 uint32_t radv_translate_color_numformat(VkFormat format,
-					const struct vk_format_description *desc,
+					const struct util_format_description *desc,
 					int first_non_void);
 uint32_t radv_colorformat_endian_swap(uint32_t colorformat);
 unsigned radv_translate_colorswap(VkFormat format, bool do_endian_swap);
 uint32_t radv_translate_dbformat(VkFormat format);
 uint32_t radv_translate_tex_dataformat(VkFormat format,
-				       const struct vk_format_description *desc,
+				       const struct util_format_description *desc,
 				       int first_non_void);
 uint32_t radv_translate_tex_numformat(VkFormat format,
-				      const struct vk_format_description *desc,
+				      const struct util_format_description *desc,
 				      int first_non_void);
 bool radv_format_pack_clear_color(VkFormat format,
 				  uint32_t clear_vals[2],
@@ -2604,6 +2598,9 @@ void radv_describe_barrier_end(struct radv_cmd_buffer *cmd_buffer);
 void radv_describe_barrier_end_delayed(struct radv_cmd_buffer *cmd_buffer);
 void radv_describe_layout_transition(struct radv_cmd_buffer *cmd_buffer,
 				     const struct radv_barrier_data *barrier);
+void radv_describe_pipeline_bind(struct radv_cmd_buffer *cmd_buffer,
+				 VkPipelineBindPoint pipelineBindPoint,
+				 struct radv_pipeline *pipeline);
 
 struct radeon_winsys_sem;
 

@@ -36,6 +36,7 @@
 #include "buffers.h"
 #include "context.h"
 #include "debug_output.h"
+#include "draw_validate.h"
 #include "enums.h"
 #include "fbobject.h"
 #include "formats.h"
@@ -716,6 +717,8 @@ fbo_incomplete(struct gl_context *ctx, const char *msg, int index)
    if (MESA_DEBUG_FLAGS & DEBUG_INCOMPLETE_FBO) {
       _mesa_debug(NULL, "FBO Incomplete: %s [%d]\n", msg, index);
    }
+
+   _mesa_update_valid_to_render_state(ctx);
 }
 
 
@@ -3137,6 +3140,7 @@ _mesa_bind_framebuffers(struct gl_context *ctx,
 
       _mesa_reference_framebuffer(&ctx->DrawBuffer, newDrawFb);
       _mesa_update_allow_draw_out_of_order(ctx);
+      _mesa_update_valid_to_render_state(ctx);
    }
 
    if ((bindDrawBuf || bindReadBuf) && ctx->Driver.BindFramebuffer) {

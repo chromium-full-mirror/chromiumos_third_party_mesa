@@ -458,7 +458,7 @@ static unsigned radv_choose_spi_color_format(const struct radv_device *device,
 					     bool blend_enable,
 					     bool blend_need_alpha)
 {
-	const struct vk_format_description *desc = vk_format_description(vk_format);
+	const struct util_format_description *desc = vk_format_description(vk_format);
 	bool use_rbplus = device->physical_device->rad_info.rbplus_allowed;
 	struct ac_spi_color_formats formats = {0};
 	unsigned format, ntype, swap;
@@ -484,7 +484,7 @@ static unsigned radv_choose_spi_color_format(const struct radv_device *device,
 static bool
 format_is_int8(VkFormat format)
 {
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 	int channel =  vk_format_get_first_non_void_channel(format);
 
 	return channel >= 0 && desc->channel[channel].pure_integer &&
@@ -494,7 +494,7 @@ format_is_int8(VkFormat format)
 static bool
 format_is_int10(VkFormat format)
 {
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 
 	if (desc->nr_channels != 4)
 		return false;
@@ -2569,7 +2569,7 @@ radv_generate_graphics_pipeline_key(const struct radv_pipeline *pipeline,
 	for (unsigned i = 0; i < input_state->vertexAttributeDescriptionCount; ++i) {
 		const VkVertexInputAttributeDescription *desc =
 			&input_state->pVertexAttributeDescriptions[i];
-		const struct vk_format_description *format_desc;
+		const struct util_format_description *format_desc;
 		unsigned location = desc->location;
 		unsigned binding = desc->binding;
 		unsigned num_format, data_format;
@@ -3935,7 +3935,7 @@ radv_gfx10_compute_bin_size(const struct radv_pipeline *pipeline, const VkGraphi
 	const unsigned fmask_tag_count = 44;
 
 	const unsigned rb_count = pipeline->device->physical_device->rad_info.max_render_backends;
-	const unsigned pipe_count = MAX2(rb_count, pipeline->device->physical_device->rad_info.num_sdp_interfaces);
+	const unsigned pipe_count = MAX2(rb_count, pipeline->device->physical_device->rad_info.num_tcc_blocks);
 
 	const unsigned db_tag_part = (db_tag_count * rb_count / pipe_count) * db_tag_size * pipe_count;
 	const unsigned color_tag_part = (color_tag_count * rb_count / pipe_count) * color_tag_size * pipe_count;

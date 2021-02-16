@@ -495,8 +495,7 @@ update_descriptors(struct zink_context *ctx, struct zink_screen *screen, bool is
       ctx->base.flush(&ctx->base, NULL, PIPE_FLUSH_HINT_FINISH);
    else {
       /* flush compute batch */
-      zink_end_batch(ctx, &ctx->compute_batch);
-      zink_start_batch(ctx, &ctx->compute_batch);
+      zink_flush_compute(ctx);
    }
 }
 
@@ -577,6 +576,11 @@ zink_draw_vbo(struct pipe_context *pctx,
    }
    if (ctx->gfx_pipeline_state.vertices_per_patch != dinfo->vertices_per_patch)
       ctx->gfx_pipeline_state.dirty = true;
+   bool drawid_broken = ctx->drawid_broken;
+   ctx->drawid_broken = BITSET_TEST(ctx->gfx_stages[PIPE_SHADER_VERTEX]->nir->info.system_values_read, SYSTEM_VALUE_DRAW_ID) &&
+                        (!dindirect || !dindirect->buffer);
+   if (drawid_broken != ctx->drawid_broken)
+      ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_VERTEX);
    ctx->gfx_pipeline_state.vertices_per_patch = dinfo->vertices_per_patch;
    struct zink_gfx_program *gfx_program = get_gfx_program(ctx);
    if (!gfx_program)
@@ -707,9 +711,21 @@ zink_draw_vbo(struct pipe_context *pctx,
 
    zink_bind_vertex_buffers(batch, ctx);
 
+   if (BITSET_TEST(ctx->gfx_stages[PIPE_SHADER_VERTEX]->nir->info.system_values_read, SYSTEM_VALUE_BASE_VERTEX)) {
+      unsigned draw_mode_is_indexed = dinfo->index_size > 0;
+      vkCmdPushConstants(batch->cmdbuf, gfx_program->layout, VK_SHADER_STAGE_VERTEX_BIT,
+                         offsetof(struct zink_push_constant, draw_mode_is_indexed), sizeof(unsigned),
+                         &draw_mode_is_indexed);
+   }
+   if (ctx->drawid_broken) {
+      unsigned draw_id = dinfo->drawid;
+      vkCmdPushConstants(batch->cmdbuf, gfx_program->layout, VK_SHADER_STAGE_VERTEX_BIT,
+                         offsetof(struct zink_push_constant, draw_id), sizeof(unsigned),
+                         &draw_id);
+   }
    if (gfx_program->shaders[PIPE_SHADER_TESS_CTRL] && gfx_program->shaders[PIPE_SHADER_TESS_CTRL]->is_generated)
       vkCmdPushConstants(batch->cmdbuf, gfx_program->layout, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
-                         0, sizeof(float) * 6,
+                         offsetof(struct zink_push_constant, default_inner_level), sizeof(float) * 6,
                          &ctx->tess_levels[0]);
 
    zink_query_update_gs_states(ctx);
@@ -717,13 +733,15 @@ zink_draw_vbo(struct pipe_context *pctx,
    if (ctx->num_so_targets) {
       for (unsigned i = 0; i < ctx->num_so_targets; i++) {
          struct zink_so_target *t = zink_so_target(ctx->so_targets[i]);
-         if (t && t->counter_buffer_valid) {
+         counter_buffers[i] = VK_NULL_HANDLE;
+         if (t) {
             struct zink_resource *res = zink_resource(t->counter_buffer);
             zink_batch_reference_resource_rw(batch, res, true);
-            counter_buffers[i] = res->buffer;
-            counter_buffer_offsets[i] = t->counter_buffer_offset;
-         } else
-            counter_buffers[i] = VK_NULL_HANDLE;
+            if (t->counter_buffer_valid) {
+               counter_buffers[i] = res->buffer;
+               counter_buffer_offsets[i] = t->counter_buffer_offset;
+            }
+         }
       }
       screen->vk_CmdBeginTransformFeedbackEXT(batch->cmdbuf, 0, ctx->num_so_targets, counter_buffers, counter_buffer_offsets);
    }

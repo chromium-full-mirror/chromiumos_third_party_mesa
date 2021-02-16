@@ -442,11 +442,11 @@ radv_get_surface_flags(struct radv_device *device,
 	uint64_t flags;
 	unsigned array_mode = radv_choose_tiling(device, pCreateInfo, image_format);
 	VkFormat format = vk_format_get_plane_format(image_format, plane_id);
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 	bool is_depth, is_stencil;
 
-	is_depth = vk_format_has_depth(desc);
-	is_stencil = vk_format_has_stencil(desc);
+	is_depth = util_format_has_depth(desc);
+	is_stencil = util_format_has_stencil(desc);
 
 	flags = RADEON_SURF_SET(array_mode, MODE);
 
@@ -519,26 +519,26 @@ si_tile_mode_index(const struct radv_image_plane *plane, unsigned level, bool st
 static unsigned radv_map_swizzle(unsigned swizzle)
 {
 	switch (swizzle) {
-	case VK_SWIZZLE_Y:
+	case PIPE_SWIZZLE_Y:
 		return V_008F0C_SQ_SEL_Y;
-	case VK_SWIZZLE_Z:
+	case PIPE_SWIZZLE_Z:
 		return V_008F0C_SQ_SEL_Z;
-	case VK_SWIZZLE_W:
+	case PIPE_SWIZZLE_W:
 		return V_008F0C_SQ_SEL_W;
-	case VK_SWIZZLE_0:
+	case PIPE_SWIZZLE_0:
 		return V_008F0C_SQ_SEL_0;
-	case VK_SWIZZLE_1:
+	case PIPE_SWIZZLE_1:
 		return V_008F0C_SQ_SEL_1;
-	default: /* VK_SWIZZLE_X */
+	default: /* PIPE_SWIZZLE_X */
 		return V_008F0C_SQ_SEL_X;
 	}
 }
 
 static void
-radv_compose_swizzle(const struct vk_format_description *desc,
-		     const VkComponentMapping *mapping, enum vk_swizzle swizzle[4])
+radv_compose_swizzle(const struct util_format_description *desc,
+		     const VkComponentMapping *mapping, enum pipe_swizzle swizzle[4])
 {
-	if (desc->format == VK_FORMAT_R64_UINT || desc->format == VK_FORMAT_R64_SINT) {
+	if (desc->format == PIPE_FORMAT_R64_UINT || desc->format == PIPE_FORMAT_R64_SINT) {
 		/* 64-bit formats only support storage images and storage images
 		 * require identity component mappings. We use 32-bit
 		 * instructions to access 64-bit images, so we need a special
@@ -548,15 +548,17 @@ radv_compose_swizzle(const struct vk_format_description *desc,
 		 * by loads to create the w component, which has to be 0 for
 		 * NULL descriptors.
 		 */
-		swizzle[0] = VK_SWIZZLE_X;
-		swizzle[1] = VK_SWIZZLE_Y;
-		swizzle[2] = VK_SWIZZLE_1;
-		swizzle[3] = VK_SWIZZLE_0;
+		swizzle[0] = PIPE_SWIZZLE_X;
+		swizzle[1] = PIPE_SWIZZLE_Y;
+		swizzle[2] = PIPE_SWIZZLE_1;
+		swizzle[3] = PIPE_SWIZZLE_0;
 	} else if (!mapping) {
 		for (unsigned i = 0; i < 4; i++)
 			swizzle[i] = desc->swizzle[i];
-	} else if (desc->colorspace == VK_FORMAT_COLORSPACE_ZS) {
-		const unsigned char swizzle_xxxx[4] = {0, 0, 0, 0};
+	} else if (desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS) {
+		const unsigned char swizzle_xxxx[4] = {
+			PIPE_SWIZZLE_X, PIPE_SWIZZLE_0, PIPE_SWIZZLE_0, PIPE_SWIZZLE_1
+		};
 		vk_format_compose_swizzles(mapping, swizzle_xxxx, swizzle);
 	} else {
 		vk_format_compose_swizzles(mapping, desc->swizzle, swizzle);
@@ -571,13 +573,13 @@ radv_make_buffer_descriptor(struct radv_device *device,
 			    unsigned range,
 			    uint32_t *state)
 {
-	const struct vk_format_description *desc;
+	const struct util_format_description *desc;
 	unsigned stride;
 	uint64_t gpu_address = radv_buffer_get_va(buffer->bo);
 	uint64_t va = gpu_address + buffer->offset;
 	unsigned num_format, data_format;
 	int first_non_void;
-	enum vk_swizzle swizzle[4];
+	enum pipe_swizzle swizzle[4];
 	desc = vk_format_description(vk_format);
 	first_non_void = vk_format_get_first_non_void_channel(vk_format);
 	stride = desc->block.bits / 8;
@@ -770,29 +772,29 @@ static unsigned radv_tex_dim(VkImageType image_type, VkImageViewType view_type,
 	}
 }
 
-static unsigned gfx9_border_color_swizzle(const enum vk_swizzle swizzle[4])
+static unsigned gfx9_border_color_swizzle(const enum pipe_swizzle swizzle[4])
 {
 	unsigned bc_swizzle = V_008F20_BC_SWIZZLE_XYZW;
 
-	if (swizzle[3] == VK_SWIZZLE_X) {
+	if (swizzle[3] == PIPE_SWIZZLE_X) {
 		/* For the pre-defined border color values (white, opaque
 		 * black, transparent black), the only thing that matters is
 		 * that the alpha channel winds up in the correct place
 		 * (because the RGB channels are all the same) so either of
 		 * these enumerations will work.
 		 */
-		if (swizzle[2] == VK_SWIZZLE_Y)
+		if (swizzle[2] == PIPE_SWIZZLE_Y)
 			bc_swizzle = V_008F20_BC_SWIZZLE_WZYX;
 		else
 			bc_swizzle = V_008F20_BC_SWIZZLE_WXYZ;
-	} else if (swizzle[0] == VK_SWIZZLE_X) {
-		if (swizzle[1] == VK_SWIZZLE_Y)
+	} else if (swizzle[0] == PIPE_SWIZZLE_X) {
+		if (swizzle[1] == PIPE_SWIZZLE_Y)
 			bc_swizzle = V_008F20_BC_SWIZZLE_XYZW;
 		else
 			bc_swizzle = V_008F20_BC_SWIZZLE_XWYZ;
-	} else if (swizzle[1] == VK_SWIZZLE_X) {
+	} else if (swizzle[1] == PIPE_SWIZZLE_X) {
 		bc_swizzle = V_008F20_BC_SWIZZLE_YXWZ;
-	} else if (swizzle[2] == VK_SWIZZLE_X) {
+	} else if (swizzle[2] == PIPE_SWIZZLE_X) {
 		bc_swizzle = V_008F20_BC_SWIZZLE_ZYXW;
 	}
 
@@ -801,10 +803,10 @@ static unsigned gfx9_border_color_swizzle(const enum vk_swizzle swizzle[4])
 
 bool vi_alpha_is_on_msb(struct radv_device *device, VkFormat format)
 {
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 
 	if (device->physical_device->rad_info.chip_class >= GFX10 && desc->nr_channels == 1)
-		return desc->swizzle[3] == VK_SWIZZLE_X;
+		return desc->swizzle[3] == PIPE_SWIZZLE_X;
 
 	return radv_translate_colorswap(format, false) <= 1;
 }
@@ -824,8 +826,8 @@ gfx10_make_texture_descriptor(struct radv_device *device,
 			   uint32_t *state,
 			   uint32_t *fmask_state)
 {
-	const struct vk_format_description *desc;
-	enum vk_swizzle swizzle[4];
+	const struct util_format_description *desc;
+	enum pipe_swizzle swizzle[4];
 	unsigned img_format;
 	unsigned type;
 
@@ -954,8 +956,8 @@ si_make_texture_descriptor(struct radv_device *device,
 			   uint32_t *state,
 			   uint32_t *fmask_state)
 {
-	const struct vk_format_description *desc;
-	enum vk_swizzle swizzle[4];
+	const struct util_format_description *desc;
+	enum pipe_swizzle swizzle[4];
 	int first_non_void;
 	unsigned num_format, data_format, type;
 
@@ -1370,14 +1372,8 @@ radv_image_create_layout(struct radv_device *device,
 		uint64_t offset;
 		unsigned stride;
 
-		if (plane) {
-			const struct vk_format_description *desc = vk_format_description(image->vk_format);
-			assert(info.width % desc->width_divisor == 0);
-			assert(info.height % desc->height_divisor == 0);
-
-			info.width /= desc->width_divisor;
-			info.height /= desc->height_divisor;
-		}
+		info.width = vk_format_get_plane_width(image->vk_format, plane, info.width);
+		info.height = vk_format_get_plane_height(image->vk_format, plane, info.height);
 
 		if (create_info.no_metadata_planes || image->plane_count > 1) {
 			image->planes[plane].surface.flags |= RADEON_SURF_DISABLE_DCC |
@@ -1470,7 +1466,7 @@ radv_image_print_info(struct radv_device *device, struct radv_image *image)
 	for (unsigned i = 0; i < image->plane_count; ++i) {
 		const struct radv_image_plane *plane = &image->planes[i];
 		const struct radeon_surf *surf = &plane->surface;
-		const struct vk_format_description *desc =
+		const struct util_format_description *desc =
 			vk_format_description(plane->format);
 		uint64_t offset = ac_surface_get_plane_offset(device->physical_device->rad_info.chip_class,
 		                                              &plane->surface, 0, 0);
@@ -1647,8 +1643,11 @@ radv_image_create(VkDevice _device,
 		return VK_SUCCESS;
 	}
 
-	ASSERTED VkResult result = radv_image_create_layout(device, *create_info, explicit_mod, image);
-	assert(result == VK_SUCCESS);
+	VkResult result = radv_image_create_layout(device, *create_info, explicit_mod, image);
+	if (result != VK_SUCCESS) {
+		radv_destroy_image(device, alloc, image);
+		return result;
+	}
 
 	if (image->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) {
 		image->alignment = MAX2(image->alignment, 4096);
@@ -1682,7 +1681,6 @@ radv_image_view_make_descriptor(struct radv_image_view *iview,
 {
 	struct radv_image *image = iview->image;
 	struct radv_image_plane *plane = &image->planes[plane_id];
-	const struct vk_format_description *format_desc = vk_format_description(image->vk_format);
 	bool is_stencil = iview->aspect_mask == VK_IMAGE_ASPECT_STENCIL_BIT;
 	uint32_t blk_w;
 	union radv_descriptor *descriptor;
@@ -1707,8 +1705,8 @@ radv_image_view_make_descriptor(struct radv_image_view *iview,
 				     hw_level, hw_level + iview->level_count - 1,
 				     iview->base_layer,
 				     iview->base_layer + iview->layer_count - 1,
-				     iview->extent.width  / (plane_id ? format_desc->width_divisor : 1),
-				     iview->extent.height  / (plane_id ? format_desc->height_divisor : 1),
+				     vk_format_get_plane_width(image->vk_format, plane_id, iview->extent.width),
+				     vk_format_get_plane_height(image->vk_format, plane_id, iview->extent.height),
 				     iview->extent.depth,
 				     descriptor->plane_descriptors[descriptor_plane_id],
 				     descriptor_plane_id ? NULL : descriptor->fmask_descriptor);

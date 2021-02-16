@@ -405,7 +405,7 @@ static void ac_fill_sqtt_asic_info(struct radeon_info *rad_info,
    chunk->max_memory_clock = rad_info->max_memory_clock * 1000000;
    chunk->memory_ops_per_clock = 0;
    chunk->memory_chip_type = ac_vram_type_to_sqtt_memory_type(rad_info->vram_type);
-   chunk->lds_granularity = rad_info->lds_granularity;
+   chunk->lds_granularity = rad_info->lds_encode_granularity;
 
    for (unsigned se = 0; se < 4; se++) {
       for (unsigned sa = 0; sa < 2; sa++) {
@@ -650,9 +650,9 @@ int ac_dump_thread_trace(struct radeon_info *info, const struct ac_thread_trace 
    t = time(NULL);
    now = *localtime(&t);
 
-   snprintf(filename, sizeof(filename), "/tmp/%s_%04d.%02d.%02d_%02d.%02d.rgp",
+   snprintf(filename, sizeof(filename), "/tmp/%s_%04d.%02d.%02d_%02d.%02d.%02d.rgp",
             util_get_process_name(), 1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour,
-            now.tm_min);
+            now.tm_min, now.tm_sec);
 
    f = fopen(filename, "w+");
    if (!f)
