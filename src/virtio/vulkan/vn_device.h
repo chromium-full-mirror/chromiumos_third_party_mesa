@@ -20,6 +20,9 @@
 struct vn_instance {
    struct vn_instance_base base;
 
+   struct driOptionCache dri_options;
+   struct driOptionCache available_dri_options;
+
    struct vn_renderer *renderer;
    struct vn_renderer_info renderer_info;
    uint32_t renderer_version;

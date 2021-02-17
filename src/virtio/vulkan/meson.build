@@ -45,6 +45,7 @@ vn_deps = [
   dep_thread,
   idep_mesautil,
   idep_vulkan_util,
+  idep_xmlconfig,
 ]
 
 vn_flags = [

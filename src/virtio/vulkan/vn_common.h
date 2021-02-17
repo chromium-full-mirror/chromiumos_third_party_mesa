@@ -24,6 +24,7 @@
 #include "c11/threads.h"
 #include "util/list.h"
 #include "util/macros.h"
+#include "util/xmlconfig.h"
 #include "vk_alloc.h"
 #include "vk_debug_report.h"
 #include "vk_device.h"

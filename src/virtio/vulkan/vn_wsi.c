@@ -28,7 +28,8 @@ vn_wsi_init(struct vn_physical_device *physical_dev)
       &physical_dev->instance->base.base.alloc;
    VkResult result = wsi_device_init(
       &physical_dev->wsi_device, vn_physical_device_to_handle(physical_dev),
-      vn_wsi_proc_addr, alloc, -1, NULL, false);
+      vn_wsi_proc_addr, alloc, -1, &physical_dev->instance->dri_options,
+      false);
    if (result != VK_SUCCESS)
       return result;
 

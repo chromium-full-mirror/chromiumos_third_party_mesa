@@ -13,6 +13,7 @@
 #include <stdio.h>
 
 #include "git_sha1.h"
+#include "util/driconf.h"
 #include "util/mesa-sha1.h"
 #include "venus-protocol/vn_protocol_driver.h"
 
@@ -51,6 +52,19 @@ static const struct vk_instance_extension_table
       .KHR_xlib_surface = true,
 #endif
    };
+
+static const driOptionDescription vn_dri_options[] = {
+   /* clang-format off */
+   DRI_CONF_SECTION_PERFORMANCE
+      DRI_CONF_VK_X11_ENSURE_MIN_IMAGE_COUNT(false)
+      DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
+      DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
+   DRI_CONF_SECTION_END
+   DRI_CONF_SECTION_DEBUG
+      DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST(false)
+   DRI_CONF_SECTION_END
+   /* clang-format on */
+};
 
 static VkResult
 vn_instance_init_renderer(struct vn_instance *instance)
@@ -1193,6 +1207,15 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    if (result != VK_SUCCESS)
       return result;
 
+   driParseOptionInfo(&instance->available_dri_options, vn_dri_options,
+                      ARRAY_SIZE(vn_dri_options));
+   driParseConfigFiles(&instance->dri_options,
+                       &instance->available_dri_options, 0, "venus", NULL,
+                       instance->base.base.app_info.app_name,
+                       instance->base.base.app_info.app_version,
+                       instance->base.base.app_info.engine_name,
+                       instance->base.base.app_info.engine_version);
+
    *pInstance = instance_handle;
 
    return VK_SUCCESS;
@@ -1243,6 +1266,9 @@ vn_DestroyInstance(VkInstance _instance,
    vn_cs_encoder_fini(&instance->cs);
    mtx_destroy(&instance->cs_mutex);
    mtx_destroy(&instance->physical_device_mutex);
+
+   driDestroyOptionCache(&instance->dri_options);
+   driDestroyOptionInfo(&instance->available_dri_options);
 
    vn_instance_base_fini(&instance->base);
    vk_free(alloc, instance);
