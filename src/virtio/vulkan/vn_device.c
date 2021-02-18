@@ -67,6 +67,68 @@ static const driOptionDescription vn_dri_options[] = {
 };
 
 static VkResult
+vn_instance_init_version(struct vn_instance *instance)
+{
+   uint32_t renderer_version = 0;
+   VkResult result =
+      vn_call_vkEnumerateInstanceVersion(instance, &renderer_version);
+   if (result != VK_SUCCESS) {
+      if (VN_DEBUG(INIT))
+         vn_log(instance, "failed to enumerate renderer instance version");
+      return result;
+   }
+
+   if (renderer_version < VN_MIN_RENDERER_VERSION) {
+      if (VN_DEBUG(INIT)) {
+         vn_log(instance, "unsupported renderer instance version %d.%d",
+                VK_VERSION_MAJOR(instance->renderer_version),
+                VK_VERSION_MINOR(instance->renderer_version));
+      }
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   instance->renderer_version =
+      instance->base.base.app_info.api_version > VN_MIN_RENDERER_VERSION
+         ? instance->base.base.app_info.api_version
+         : VN_MIN_RENDERER_VERSION;
+
+   if (VN_DEBUG(INIT)) {
+      vn_log(instance, "vk instance version %d.%d.%d",
+             VK_VERSION_MAJOR(instance->renderer_version),
+             VK_VERSION_MINOR(instance->renderer_version),
+             VK_VERSION_PATCH(instance->renderer_version));
+   }
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+vn_instance_init_cs(struct vn_instance *instance)
+{
+   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
+
+   /* reply bo will be allocated on demand by
+    * vn_instance_get_cs_reply_bo_locked
+    */
+   VkResult result = vn_renderer_sync_create_cpu(
+      instance->renderer, alloc, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE,
+      &instance->cs_reply.sync);
+   if (result != VK_SUCCESS) {
+      if (VN_DEBUG(INIT))
+         vn_log(instance, "failed to create reply sync");
+      return result;
+   }
+
+   instance->cs_implicit_flush_threshold = 1 * 1024 * 1024;
+   /* when a pipeline creation takes 100ms, this still takes 400ms... */
+   instance->cs_throttle_pipeline_threshold = 4;
+   vn_cs_encoder_init(&instance->cs, alloc,
+                      VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE, 16 * 1024);
+
+   return VK_SUCCESS;
+}
+
+static VkResult
 vn_instance_init_renderer(struct vn_instance *instance)
 {
    const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
@@ -116,53 +178,6 @@ vn_instance_init_renderer(struct vn_instance *instance)
          instance->renderer_info.vk_ext_command_serialization_spec_version);
       vn_log(instance, "VK_MESA_venus_protocol spec version %d",
              instance->renderer_info.vk_mesa_venus_protocol_spec_version);
-   }
-
-   /* reply bo will be allocated on demand by
-    * vn_instance_get_cs_reply_bo_locked
-    */
-   result = vn_renderer_sync_create_cpu(instance->renderer, alloc,
-                                        VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE,
-                                        &instance->cs_reply.sync);
-   if (result != VK_SUCCESS) {
-      if (VN_DEBUG(INIT))
-         vn_log(instance, "failed to create reply sync");
-      return result;
-   }
-
-   instance->cs_implicit_flush_threshold = 1 * 1024 * 1024;
-   /* when a pipeline creation takes 100ms, this still takes 400ms... */
-   instance->cs_throttle_pipeline_threshold = 4;
-   vn_cs_encoder_init(&instance->cs, alloc,
-                      VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE, 16 * 1024);
-
-   uint32_t renderer_version = 0;
-   result = vn_call_vkEnumerateInstanceVersion(instance, &renderer_version);
-   if (result != VK_SUCCESS) {
-      if (VN_DEBUG(INIT))
-         vn_log(instance, "failed to enumerate renderer instance version");
-      return result;
-   }
-
-   if (renderer_version < VN_MIN_RENDERER_VERSION) {
-      if (VN_DEBUG(INIT)) {
-         vn_log(instance, "unsupported renderer instance version %d.%d",
-                VK_VERSION_MAJOR(instance->renderer_version),
-                VK_VERSION_MINOR(instance->renderer_version));
-      }
-      return VK_ERROR_INITIALIZATION_FAILED;
-   }
-
-   instance->renderer_version =
-      instance->base.base.app_info.api_version > VN_MIN_RENDERER_VERSION
-         ? instance->base.base.app_info.api_version
-         : VN_MIN_RENDERER_VERSION;
-
-   if (VN_DEBUG(INIT)) {
-      vn_log(instance, "vk instance version %d.%d.%d",
-             VK_VERSION_MAJOR(instance->renderer_version),
-             VK_VERSION_MINOR(instance->renderer_version),
-             VK_VERSION_PATCH(instance->renderer_version));
    }
 
    return VK_SUCCESS;
@@ -1178,6 +1193,14 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    }
 
    result = vn_instance_init_renderer(instance);
+   if (result != VK_SUCCESS)
+      goto fail;
+
+   result = vn_instance_init_cs(instance);
+   if (result != VK_SUCCESS)
+      goto fail;
+
+   result = vn_instance_init_version(instance);
    if (result != VK_SUCCESS)
       goto fail;
 
