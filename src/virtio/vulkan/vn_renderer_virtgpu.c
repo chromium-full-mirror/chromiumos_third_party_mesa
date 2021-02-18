@@ -13,7 +13,6 @@
 #include <xf86drm.h>
 
 #include "drm-uapi/virtgpu_drm.h"
-#include "util/os_time.h"
 #define VIRGL_RENDERER_UNSTABLE_APIS
 #include "virtio-gpu/virglrenderer_hw.h"
 
