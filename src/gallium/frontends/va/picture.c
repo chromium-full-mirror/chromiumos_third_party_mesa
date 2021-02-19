@@ -158,24 +158,11 @@ handlePictureParameterBuffer(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *
          context->templat.level = u_get_h264_level(context->templat.width,
             context->templat.height, &context->templat.max_references);
 
-      /* Limiting number of parallel HW decoder instances to 8/10 because of
-      * high memory occupied by vp9 DPB calculation for each decoder inst.
-      * For example 16P meet call with current dpb logic occupies almost
-      * 2.19GB (16*4096 * 3000 * 3 / 2 * max_ref_frames) even for lower
-      * resolutions. With this patch 8/10 instances uses HW decoder and
-      * remaining uses SW decoder. We can revert this change once we have
-      * dynamic DPB support added for vp9  */
-      if (format == PIPE_VIDEO_FORMAT_VP9 && drv->num_supported_vp9_codec_inst == 0)
-         return VA_STATUS_ERROR_MAX_NUM_EXCEEDED;
-
       context->decoder = drv->pipe->create_video_codec(drv->pipe,
          &context->templat);
 
       if (!context->decoder)
          return VA_STATUS_ERROR_ALLOCATION_FAILED;
-
-      if (format == PIPE_VIDEO_FORMAT_VP9)
-         drv->num_supported_vp9_codec_inst--;
 
       context->needs_begin_frame = true;
    }
