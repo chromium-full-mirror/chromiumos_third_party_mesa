@@ -39,6 +39,7 @@ struct vn_instance {
       uint64_t id;
 
       struct vn_cs_encoder upload;
+      uint32_t command_dropped;
    } ring;
 
    struct {
@@ -47,16 +48,6 @@ struct vn_instance {
       size_t used;
       void *ptr;
    } reply;
-
-   mtx_t cs_mutex;
-   size_t cs_implicit_flush_threshold;
-   uint32_t cs_throttle_pipeline_threshold;
-   uint32_t cs_throttle_pipeline_count;
-   struct vn_cs_encoder cs;
-   struct {
-      struct vn_renderer_sync *sync;
-      uint64_t sync_value;
-   } cs_reply;
 
    mtx_t physical_device_mutex;
    struct vn_physical_device *physical_devices;
@@ -412,53 +403,24 @@ VK_DEFINE_HANDLE_CASTS(vn_command_buffer,
                        VkCommandBuffer,
                        VK_OBJECT_TYPE_COMMAND_BUFFER)
 
-static inline struct vn_cs_encoder *
-vn_instance_lock_cs(struct vn_instance *instance)
-{
-   mtx_lock(&instance->cs_mutex);
-   return &instance->cs;
-}
-
 VkResult
 vn_instance_submit_roundtrip(struct vn_instance *instance,
                              uint32_t *roundtrip_seqno);
 
-struct vn_renderer_bo *
-vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
-                                   size_t size,
-                                   void **ptr);
+struct vn_instance_submit_command {
+   /* empty command implies errors */
+   struct vn_cs_encoder command;
+   /* non-zero implies waiting */
+   size_t reply_size;
 
-bool
-vn_instance_submit_cs_locked(struct vn_instance *instance,
-                             struct vn_renderer_bo *reply_bo,
-                             uint64_t *reply_sync_val);
+   /* when reply_size is non-zero, NULL can be returned on errors */
+   struct vn_renderer_bo *reply_bo;
+   struct vn_cs_decoder reply;
+};
 
-static inline void
-vn_instance_unlock_cs(struct vn_instance *instance)
-{
-   assert(mtx_trylock(&instance->cs_mutex) == thrd_busy);
-   mtx_unlock(&instance->cs_mutex);
-}
-
-static inline void
-vn_instance_wait_cs_reply(struct vn_instance *instance,
-                          uint64_t reply_sync_val)
-{
-   const struct vn_renderer_wait wait = {
-      .timeout = UINT64_MAX,
-      .syncs = &instance->cs_reply.sync,
-      .sync_values = &reply_sync_val,
-      .sync_count = 1,
-   };
-   vn_renderer_wait(instance->renderer, &wait);
-}
-
-static inline void
-vn_instance_free_cs_reply_bo(struct vn_instance *instance,
-                             struct vn_renderer_bo *bo)
-{
-   vn_renderer_bo_unref(bo);
-}
+void
+vn_instance_submit_command(struct vn_instance *instance,
+                           struct vn_instance_submit_command *submit);
 
 void
 vn_fence_signal_wsi(struct vn_device *dev, struct vn_fence *fence);
