@@ -221,6 +221,22 @@ vn_renderer_submit(struct vn_renderer *renderer,
 }
 
 static inline VkResult
+vn_renderer_submit_simple(struct vn_renderer *renderer,
+                          const void *cs_data,
+                          size_t cs_size)
+{
+   const struct vn_renderer_submit submit = {
+      .batches =
+         &(const struct vn_renderer_submit_batch){
+            .cs_data = cs_data,
+            .cs_size = cs_size,
+         },
+      .batch_count = 1,
+   };
+   return vn_renderer_submit(renderer, &submit);
+}
+
+static inline VkResult
 vn_renderer_wait(struct vn_renderer *renderer,
                  const struct vn_renderer_wait *wait)
 {
