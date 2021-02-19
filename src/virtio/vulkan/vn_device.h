@@ -15,6 +15,7 @@
 
 #include "vn_cs.h"
 #include "vn_renderer.h"
+#include "vn_ring.h"
 #include "vn_wsi.h"
 
 struct vn_instance {
@@ -26,6 +27,10 @@ struct vn_instance {
    struct vn_renderer *renderer;
    struct vn_renderer_info renderer_info;
    uint32_t renderer_version;
+
+   struct vn_renderer_bo *ring_bo;
+   struct vn_ring ring;
+   uint64_t ring_id;
 
    mtx_t cs_mutex;
    size_t cs_implicit_flush_threshold;

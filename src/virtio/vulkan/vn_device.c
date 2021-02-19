@@ -129,6 +129,37 @@ vn_instance_init_cs(struct vn_instance *instance)
 }
 
 static VkResult
+vn_instance_init_ring(struct vn_instance *instance)
+{
+   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
+
+   struct vn_ring_layout layout;
+   vn_ring_get_layout(0, &layout);
+
+   void *ring_ptr;
+   VkResult result = vn_renderer_bo_create_cpu(
+      instance->renderer, layout.bo_size, alloc,
+      VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE, &instance->ring_bo);
+   if (result == VK_SUCCESS) {
+      ring_ptr = vn_renderer_bo_map(instance->ring_bo);
+      if (!ring_ptr)
+         result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   }
+   if (result != VK_SUCCESS) {
+      if (VN_DEBUG(INIT))
+         vn_log(instance, "failed to allocate/map ring bo");
+      return result;
+   }
+
+   vn_ring_init(&instance->ring, &layout, ring_ptr, alloc);
+
+   instance->ring_id = (uintptr_t)&instance->ring;
+   /* TODO tell the renderer about the ring */
+
+   return VK_SUCCESS;
+}
+
+static VkResult
 vn_instance_init_renderer(struct vn_instance *instance)
 {
    const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
@@ -1196,6 +1227,10 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    if (result != VK_SUCCESS)
       goto fail;
 
+   result = vn_instance_init_ring(instance);
+   if (result != VK_SUCCESS)
+      goto fail;
+
    result = vn_instance_init_cs(instance);
    if (result != VK_SUCCESS)
       goto fail;
@@ -1249,6 +1284,9 @@ fail:
    if (instance->cs_reply.sync)
       vn_renderer_sync_destroy(instance->cs_reply.sync, alloc);
 
+   if (instance->ring_bo)
+      vn_renderer_bo_unref(instance->ring_bo, alloc);
+
    if (instance->renderer) {
       vn_renderer_destroy(instance->renderer, alloc);
       vn_cs_encoder_fini(&instance->cs);
@@ -1285,8 +1323,13 @@ vn_DestroyInstance(VkInstance _instance,
    vn_renderer_bo_unref(instance->cs_reply.bo, alloc);
    vn_renderer_sync_destroy(instance->cs_reply.sync, alloc);
 
-   vn_renderer_destroy(instance->renderer, alloc);
    vn_cs_encoder_fini(&instance->cs);
+
+   vn_ring_fini(&instance->ring);
+   vn_renderer_bo_unref(instance->ring_bo, alloc);
+
+   vn_renderer_destroy(instance->renderer, alloc);
+
    mtx_destroy(&instance->cs_mutex);
    mtx_destroy(&instance->physical_device_mutex);
 
