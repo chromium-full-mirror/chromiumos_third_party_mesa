@@ -8,7 +8,7 @@
 
 #include "vn_common.h"
 
-struct vn_cs_buffer {
+struct vn_cs_encoder_buffer {
    void *base;
    size_t committed_size;
 };
@@ -20,7 +20,7 @@ struct vn_cs_encoder {
 
    bool fatal_error;
 
-   struct vn_cs_buffer *buffers;
+   struct vn_cs_encoder_buffer *buffers;
    uint32_t buffer_count;
    uint32_t buffer_max;
    size_t total_committed_size;
@@ -50,7 +50,7 @@ static inline void
 vn_cs_encoder_init_external(struct vn_cs_encoder *enc,
                             void *storage,
                             size_t size,
-                            struct vn_cs_buffer *buf)
+                            struct vn_cs_encoder_buffer *buf)
 {
    *enc = (struct vn_cs_encoder){
       .buffers = buf,
@@ -61,7 +61,7 @@ vn_cs_encoder_init_external(struct vn_cs_encoder *enc,
       .end = storage + size,
    };
 
-   *buf = (struct vn_cs_buffer){
+   *buf = (struct vn_cs_encoder_buffer){
       .base = storage,
    };
 }
@@ -100,7 +100,8 @@ vn_cs_encoder_get_len(const struct vn_cs_encoder *enc)
       return 0;
 
    size_t len = enc->total_committed_size;
-   const struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count - 1];
+   const struct vn_cs_encoder_buffer *cur_buf =
+      &enc->buffers[enc->buffer_count - 1];
    if (!cur_buf->committed_size)
       len += enc->cur - cur_buf->base;
    return len;

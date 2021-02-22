@@ -306,7 +306,7 @@ vn_renderer_submission_alloc_cs_data(struct vn_renderer_submission *submit,
 
    size = 0;
    for (uint32_t i = 0; i < cs->buffer_count; i++) {
-      const struct vn_cs_buffer *buf = &cs->buffers[i];
+      const struct vn_cs_encoder_buffer *buf = &cs->buffers[i];
       memcpy(data + size, buf->base, buf->committed_size);
       size += buf->committed_size;
    }

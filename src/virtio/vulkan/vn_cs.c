@@ -16,7 +16,7 @@ vn_cs_encoder_sanity_check(struct vn_cs_encoder *enc)
    assert(enc->total_committed_size == total_committed_size);
 
    if (enc->buffer_count) {
-      const struct vn_cs_buffer *cur_buf =
+      const struct vn_cs_encoder_buffer *cur_buf =
          &enc->buffers[enc->buffer_count - 1];
       assert(cur_buf->base <= enc->cur && enc->cur <= enc->end &&
              enc->end <= cur_buf->base + enc->current_buffer_size);
@@ -33,7 +33,7 @@ vn_cs_encoder_add_buffer(struct vn_cs_encoder *enc, void *base, size_t size)
 {
    /* add a buffer and make it current */
    assert(enc->buffer_count < enc->buffer_max);
-   struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count++];
+   struct vn_cs_encoder_buffer *cur_buf = &enc->buffers[enc->buffer_count++];
    cur_buf->base = base;
    cur_buf->committed_size = 0;
    enc->current_buffer_size = size;
@@ -47,7 +47,8 @@ static void
 vn_cs_encoder_commit_buffer(struct vn_cs_encoder *enc)
 {
    assert(enc->buffer_count);
-   struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count - 1];
+   struct vn_cs_encoder_buffer *cur_buf =
+      &enc->buffers[enc->buffer_count - 1];
    const size_t written_size = enc->cur - cur_buf->base;
    if (cur_buf->committed_size) {
       assert(cur_buf->committed_size == written_size);
@@ -62,7 +63,8 @@ vn_cs_encoder_gc_buffers(struct vn_cs_encoder *enc)
 {
    /* free all but the current buffer */
    assert(enc->buffer_count);
-   struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count - 1];
+   struct vn_cs_encoder_buffer *cur_buf =
+      &enc->buffers[enc->buffer_count - 1];
    for (uint32_t i = 0; i < enc->buffer_count - 1; i++)
       vk_free(enc->allocator, enc->buffers[i].base);
 
@@ -148,7 +150,7 @@ vn_cs_encoder_grow_buffer_array(struct vn_cs_encoder *enc)
 }
 
 /**
- * Add a new vn_cs_buffer to a cs.
+ * Add a new vn_cs_encoder_buffer to a cs.
  */
 bool
 vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
