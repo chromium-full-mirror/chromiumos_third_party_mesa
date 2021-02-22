@@ -8,6 +8,18 @@
 
 #include "vn_common.h"
 
+/* encoder initializer for using an external storage */
+#define VN_CS_ENCODER_EXTERNAL_STORAGE(storage, size)                        \
+   (struct vn_cs_encoder)                                                    \
+   {                                                                         \
+      .buffers =                                                             \
+         &(struct vn_cs_encoder_buffer){                                     \
+            .base = storage,                                                 \
+         },                                                                  \
+      .buffer_count = 1, .buffer_max = 1, .current_buffer_size = size,       \
+      .cur = storage, .end = storage + size,                                 \
+   }
+
 struct vn_cs_encoder_buffer {
    void *base;
    size_t committed_size;
@@ -45,26 +57,6 @@ vn_cs_encoder_init(struct vn_cs_encoder *enc,
                    const VkAllocationCallbacks *alloc,
                    VkSystemAllocationScope alloc_scope,
                    size_t min_size);
-
-static inline void
-vn_cs_encoder_init_external(struct vn_cs_encoder *enc,
-                            void *storage,
-                            size_t size,
-                            struct vn_cs_encoder_buffer *buf)
-{
-   *enc = (struct vn_cs_encoder){
-      .buffers = buf,
-      .buffer_count = 1,
-      .buffer_max = 1,
-      .current_buffer_size = size,
-      .cur = storage,
-      .end = storage + size,
-   };
-
-   *buf = (struct vn_cs_encoder_buffer){
-      .base = storage,
-   };
-}
 
 void
 vn_cs_encoder_fini(struct vn_cs_encoder *enc);
