@@ -123,7 +123,7 @@ vn_instance_init_cs(struct vn_instance *instance)
    /* when a pipeline creation takes 100ms, this still takes 400ms... */
    instance->cs_throttle_pipeline_threshold = 4;
    vn_cs_encoder_init(&instance->cs, alloc,
-                      VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE, 16 * 1024);
+                      VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE, 64 * 1024);
 
    return VK_SUCCESS;
 }
