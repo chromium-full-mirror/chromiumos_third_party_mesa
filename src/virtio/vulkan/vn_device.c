@@ -283,7 +283,7 @@ vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
    return vn_renderer_bo_ref(instance->cs_reply.bo);
 }
 
-struct vn_renderer_submission {
+struct vn_instance_submission {
    struct vn_renderer_submit submit;
 
    struct vn_renderer_submit_batch batch;
@@ -294,7 +294,7 @@ struct vn_renderer_submission {
 };
 
 static void *
-vn_renderer_submission_alloc_cs_data(struct vn_renderer_submission *submit,
+vn_instance_submission_alloc_cs_data(struct vn_instance_submission *submit,
                                      const struct vn_cs_encoder *cs,
                                      size_t *cs_size)
 {
@@ -316,7 +316,7 @@ vn_renderer_submission_alloc_cs_data(struct vn_renderer_submission *submit,
 }
 
 static VkResult
-vn_renderer_submission_prepare_batch(struct vn_renderer_submission *submit,
+vn_instance_submission_prepare_batch(struct vn_instance_submission *submit,
                                      const struct vn_cs_encoder *cs,
                                      struct vn_renderer_sync *sync,
                                      uint64_t sync_val)
@@ -324,7 +324,7 @@ vn_renderer_submission_prepare_batch(struct vn_renderer_submission *submit,
    void *cs_data;
    size_t cs_size;
    if (cs->buffer_count > 1) {
-      cs_data = vn_renderer_submission_alloc_cs_data(submit, cs, &cs_size);
+      cs_data = vn_instance_submission_alloc_cs_data(submit, cs, &cs_size);
       if (!cs_data)
          return VK_ERROR_OUT_OF_HOST_MEMORY;
    } else {
@@ -353,7 +353,7 @@ vn_renderer_submission_prepare_batch(struct vn_renderer_submission *submit,
 }
 
 static VkResult
-vn_renderer_submission_prepare_submit(struct vn_renderer_submission *submit,
+vn_instance_submission_prepare_submit(struct vn_instance_submission *submit,
                                       const struct vn_cs_encoder *cs,
                                       struct vn_renderer_bo *extra_bo)
 {
@@ -380,7 +380,7 @@ vn_renderer_submission_prepare_submit(struct vn_renderer_submission *submit,
 }
 
 static void
-vn_renderer_submission_cleanup(struct vn_renderer_submission *submit,
+vn_instance_submission_cleanup(struct vn_instance_submission *submit,
                                const struct vn_cs_encoder *cs)
 {
    if (submit->submit.bos != submit->local_bos)
@@ -390,18 +390,18 @@ vn_renderer_submission_cleanup(struct vn_renderer_submission *submit,
 }
 
 static VkResult
-vn_renderer_submission_prepare(struct vn_renderer_submission *submit,
+vn_instance_submission_prepare(struct vn_instance_submission *submit,
                                const struct vn_cs_encoder *cs,
                                struct vn_renderer_sync *sync,
                                uint64_t sync_val,
                                struct vn_renderer_bo *extra_bo)
 {
    VkResult result =
-      vn_renderer_submission_prepare_submit(submit, cs, extra_bo);
+      vn_instance_submission_prepare_submit(submit, cs, extra_bo);
    if (result != VK_SUCCESS)
       return result;
 
-   result = vn_renderer_submission_prepare_batch(submit, cs, sync, sync_val);
+   result = vn_instance_submission_prepare_batch(submit, cs, sync, sync_val);
    if (result != VK_SUCCESS) {
       if (submit->submit.bos != submit->local_bos)
          vk_free(cs->allocator, (void *)submit->submit.bos);
@@ -439,14 +439,14 @@ vn_instance_submit_cs_locked(struct vn_instance *instance,
       sync_val = 0;
    }
 
-   struct vn_renderer_submission submit;
+   struct vn_instance_submission submit;
    result =
-      vn_renderer_submission_prepare(&submit, cs, sync, sync_val, reply_bo);
+      vn_instance_submission_prepare(&submit, cs, sync, sync_val, reply_bo);
    if (result != VK_SUCCESS)
       goto out;
 
    result = vn_renderer_submit(instance->renderer, &submit.submit);
-   vn_renderer_submission_cleanup(&submit, cs);
+   vn_instance_submission_cleanup(&submit, cs);
 
 out:
    vn_cs_encoder_reset(cs);
@@ -5912,9 +5912,9 @@ vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
       return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
-   struct vn_renderer_submission submit;
+   struct vn_instance_submission submit;
    VkResult result =
-      vn_renderer_submission_prepare(&submit, &cmd->cs, NULL, 0, NULL);
+      vn_instance_submission_prepare(&submit, &cmd->cs, NULL, 0, NULL);
    if (result != VK_SUCCESS) {
       cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
       return vn_error(instance, result);
@@ -5923,7 +5923,7 @@ vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
    vn_instance_flush_cs(instance);
    vn_renderer_submit(instance->renderer, &submit.submit);
 
-   vn_renderer_submission_cleanup(&submit, &cmd->cs);
+   vn_instance_submission_cleanup(&submit, &cmd->cs);
 
    vn_cs_encoder_reset(&cmd->cs);
 
