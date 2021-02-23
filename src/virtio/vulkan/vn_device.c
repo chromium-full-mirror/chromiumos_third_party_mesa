@@ -1263,7 +1263,7 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    result =
       vn_call_vkCreateInstance(instance, pCreateInfo, NULL, &instance_handle);
    if (result != VK_SUCCESS)
-      return result;
+      goto fail;
 
    driParseOptionInfo(&instance->available_dri_options, vn_dri_options,
                       ARRAY_SIZE(vn_dri_options));
@@ -1288,8 +1288,8 @@ fail:
       vn_renderer_bo_unref(instance->ring_bo, alloc);
 
    if (instance->renderer) {
-      vn_renderer_destroy(instance->renderer, alloc);
       vn_cs_encoder_fini(&instance->cs);
+      vn_renderer_destroy(instance->renderer, alloc);
    }
 
    mtx_destroy(&instance->cs_mutex);
