@@ -206,9 +206,11 @@ vn_ring_submit(struct vn_ring *ring,
    return notify;
 }
 
+/**
+ * This is thread-safe.
+ */
 void
-vn_ring_wait(struct vn_ring *ring, uint32_t seqno)
+vn_ring_wait(const struct vn_ring *ring, uint32_t seqno)
 {
-   const uint32_t cur_seqno = vn_ring_wait_seqno(ring, seqno);
-   vn_ring_retire_submits(ring, cur_seqno);
+   vn_ring_wait_seqno(ring, seqno);
 }

@@ -90,6 +90,6 @@ vn_ring_submit(struct vn_ring *ring,
                uint32_t *seqno);
 
 void
-vn_ring_wait(struct vn_ring *ring, uint32_t seqno);
+vn_ring_wait(const struct vn_ring *ring, uint32_t seqno);
 
 #endif /* VN_RING_H */
