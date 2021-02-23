@@ -46,7 +46,7 @@ vn_ring_write_buffer(struct vn_ring *ring, const void *data, size_t size)
 {
    assert(ring->cur + size - vn_ring_load_head(ring) <= VN_RING_BUFFER_SIZE);
 
-   const size_t offset = ring->cur % VN_RING_BUFFER_MASK;
+   const size_t offset = ring->cur & VN_RING_BUFFER_MASK;
    if (offset + size <= VN_RING_BUFFER_SIZE) {
       memcpy(ring->shared.buffer + offset, data, size);
    } else {
