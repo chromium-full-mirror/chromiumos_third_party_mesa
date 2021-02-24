@@ -127,8 +127,9 @@ vn_instance_init_cs(struct vn_instance *instance)
 static VkResult
 vn_instance_init_ring(struct vn_instance *instance)
 {
+   const size_t extra_size = 0;
    struct vn_ring_layout layout;
-   vn_ring_get_layout(0, &layout);
+   vn_ring_get_layout(extra_size, &layout);
 
    void *ring_ptr;
    VkResult result = vn_renderer_bo_create_cpu(
@@ -143,6 +144,8 @@ vn_instance_init_ring(struct vn_instance *instance)
          vn_log(instance, "failed to allocate/map ring bo");
       return result;
    }
+
+   mtx_init(&instance->ring_mutex, mtx_plain);
 
    vn_ring_init(&instance->ring, &layout, ring_ptr);
 
@@ -1273,8 +1276,11 @@ fail:
    if (instance->cs_reply.sync)
       vn_renderer_sync_destroy(instance->cs_reply.sync);
 
-   if (instance->ring_bo)
+   if (instance->ring_bo) {
       vn_renderer_bo_unref(instance->ring_bo);
+      vn_ring_fini(&instance->ring);
+      mtx_destroy(&instance->ring_mutex);
+   }
 
    if (instance->renderer) {
       vn_cs_encoder_fini(&instance->cs);
@@ -1315,6 +1321,7 @@ vn_DestroyInstance(VkInstance _instance,
    vn_cs_encoder_fini(&instance->cs);
 
    vn_ring_fini(&instance->ring);
+   mtx_destroy(&instance->ring_mutex);
    vn_renderer_bo_unref(instance->ring_bo);
 
    vn_renderer_destroy(instance->renderer, alloc);

@@ -46,6 +46,7 @@ struct vn_ring_shared {
    volatile atomic_uint *tail;
    const volatile atomic_uint *status;
    void *buffer;
+   void *extra;
 };
 
 struct vn_ring_submit {

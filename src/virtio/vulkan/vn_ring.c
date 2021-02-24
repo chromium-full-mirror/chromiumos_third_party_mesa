@@ -159,6 +159,7 @@ vn_ring_init(struct vn_ring *ring,
    ring->shared.tail = shared + layout->tail_offset;
    ring->shared.status = shared + layout->status_offset;
    ring->shared.buffer = shared + layout->buffer_offset;
+   ring->shared.extra = shared + layout->extra_offset;
 
    list_inithead(&ring->submits);
    list_inithead(&ring->free_submits);
