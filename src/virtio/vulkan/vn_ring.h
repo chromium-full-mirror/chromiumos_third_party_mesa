@@ -59,8 +59,6 @@ struct vn_ring_submit {
 };
 
 struct vn_ring {
-   const VkAllocationCallbacks *allocator;
-
    struct vn_ring_shared shared;
    uint32_t cur;
 
@@ -74,8 +72,7 @@ vn_ring_get_layout(size_t extra_size, struct vn_ring_layout *layout);
 void
 vn_ring_init(struct vn_ring *ring,
              const struct vn_ring_layout *layout,
-             void *shared,
-             const VkAllocationCallbacks *alloc);
+             void *shared);
 
 void
 vn_ring_fini(struct vn_ring *ring);

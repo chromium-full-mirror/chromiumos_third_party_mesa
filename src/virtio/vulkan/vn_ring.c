@@ -150,13 +150,10 @@ vn_ring_get_layout(size_t extra_size, struct vn_ring_layout *layout)
 void
 vn_ring_init(struct vn_ring *ring,
              const struct vn_ring_layout *layout,
-             void *shared,
-             const VkAllocationCallbacks *alloc)
+             void *shared)
 {
    memset(ring, 0, sizeof(*ring));
    memset(shared, 0, layout->bo_size);
-
-   ring->allocator = alloc;
 
    ring->shared.head = shared + layout->head_offset;
    ring->shared.tail = shared + layout->tail_offset;
@@ -175,7 +172,7 @@ vn_ring_fini(struct vn_ring *ring)
 
    list_for_each_entry_safe (struct vn_ring_submit, submit,
                              &ring->free_submits, head)
-      vk_free(ring->allocator, submit);
+      free(submit);
 }
 
 struct vn_ring_submit *
@@ -191,9 +188,7 @@ vn_ring_get_submit(struct vn_ring *ring, uint32_t bo_count)
       list_del(&submit->head);
    } else {
       bo_count = MAX2(bo_count, min_bo_count);
-      submit = vk_alloc(
-         ring->allocator, sizeof(*submit) + sizeof(submit->bos[0]) * bo_count,
-         VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+      submit = malloc(sizeof(*submit) + sizeof(submit->bos[0]) * bo_count);
    }
 
    return submit;

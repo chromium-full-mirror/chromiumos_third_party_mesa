@@ -127,8 +127,6 @@ vn_instance_init_cs(struct vn_instance *instance)
 static VkResult
 vn_instance_init_ring(struct vn_instance *instance)
 {
-   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
-
    struct vn_ring_layout layout;
    vn_ring_get_layout(0, &layout);
 
@@ -146,7 +144,7 @@ vn_instance_init_ring(struct vn_instance *instance)
       return result;
    }
 
-   vn_ring_init(&instance->ring, &layout, ring_ptr, alloc);
+   vn_ring_init(&instance->ring, &layout, ring_ptr);
 
    instance->ring_id = (uintptr_t)&instance->ring;
    /* TODO tell the renderer about the ring */
