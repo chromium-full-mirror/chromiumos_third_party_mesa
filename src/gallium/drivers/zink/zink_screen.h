@@ -30,6 +30,8 @@
 #include "pipe/p_screen.h"
 #include "util/slab.h"
 #include "compiler/nir/nir.h"
+#include "util/disk_cache.h"
+#include "util/log.h"
 
 #include <vulkan/vulkan.h>
 
@@ -51,6 +53,10 @@ struct zink_screen {
    struct sw_winsys *winsys;
 
    struct slab_parent_pool transfer_pool;
+   VkPipelineCache pipeline_cache;
+   size_t pipeline_cache_size;
+   struct disk_cache *disk_cache;
+   cache_key disk_cache_key;
 
    unsigned shader_id;
 
@@ -72,8 +78,6 @@ struct zink_screen {
    VkDebugUtilsMessengerEXT debugUtilsCallbackHandle;
 
    uint32_t cur_custom_border_color_samplers;
-
-   uint32_t loader_version;
 
    bool needs_mesa_wsi;
 
@@ -112,6 +116,10 @@ struct zink_screen {
    PFN_vkUseIOSurfaceMVK vk_UseIOSurfaceMVK;
    PFN_vkGetIOSurfaceMVK vk_GetIOSurfaceMVK;
 #endif
+
+   struct {
+      bool dual_color_blend_by_location;
+   } driconf;
 };
 
 static inline struct zink_screen *
@@ -129,7 +137,7 @@ zink_is_depth_format_supported(struct zink_screen *screen, VkFormat format);
 #define GET_PROC_ADDR(x) do {                                               \
       screen->vk_##x = (PFN_vk##x)vkGetDeviceProcAddr(screen->dev, "vk"#x); \
       if (!screen->vk_##x) {                                                \
-         debug_printf("vkGetDeviceProcAddr failed: vk"#x"\n");              \
+         mesa_loge("ZINK: vkGetDeviceProcAddr failed: vk"#x"\n");           \
          return false;                                                      \
       } \
    } while (0)
@@ -137,11 +145,15 @@ zink_is_depth_format_supported(struct zink_screen *screen, VkFormat format);
 #define GET_PROC_ADDR_INSTANCE(x) do {                                          \
       screen->vk_##x = (PFN_vk##x)vkGetInstanceProcAddr(screen->instance, "vk"#x); \
       if (!screen->vk_##x) {                                                \
-         debug_printf("GetInstanceProcAddr failed: vk"#x"\n");        \
+         mesa_loge("ZINK: GetInstanceProcAddr failed: vk"#x"\n");           \
          return false;                                                      \
       } \
    } while (0)
 
+#define GET_PROC_ADDR_DEVICE_LOCAL(x) PFN_vk##x vk_##x = (PFN_vk##x)vkGetDeviceProcAddr(screen->dev, "vk"#x)
 #define GET_PROC_ADDR_INSTANCE_LOCAL(instance, x) PFN_vk##x vk_##x = (PFN_vk##x)vkGetInstanceProcAddr(instance, "vk"#x)
+
+void
+zink_screen_update_pipeline_cache(struct zink_screen *screen);
 
 #endif

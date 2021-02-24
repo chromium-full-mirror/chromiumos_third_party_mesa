@@ -26,13 +26,13 @@
 from mako.template import Template
 from os import path
 from xml.etree import ElementTree
-from zink_extensions import Extension,Layer,Version
+from zink_extensions import Extension,Layer,ExtensionRegistry,Version
 import sys
 
 # constructor: Extension(name, core_since=None, functions=[])
 # The attributes:
 #  - core_since: the Vulkan version where this extension is promoted to core.
-#                When screen->loader_version is greater than or equal to this
+#                When instance_info->loader_version is greater than or equal to this
 #                instance_info.have_{name} is set to true unconditionally. This
 #                is done because loading extensions that are promoted to core is
 #                considered to be an error.
@@ -42,13 +42,11 @@ import sys
 #               will be added by the codegen accordingly.
 EXTENSIONS = [
     Extension("VK_EXT_debug_utils"),
-    Extension("VK_KHR_maintenance2"),
     Extension("VK_KHR_get_physical_device_properties2",
         functions=["GetPhysicalDeviceFeatures2", "GetPhysicalDeviceProperties2"]),
-    Extension("VK_KHR_draw_indirect_count",
-        functions=["CmdDrawIndexedIndirectCount", "CmdDrawIndirectCount"]),
     Extension("VK_KHR_external_memory_capabilities"),
-    Extension("VK_MVK_moltenvk"),
+    Extension("VK_MVK_moltenvk",
+        nonstandard=True),
 ]
 
 # constructor: Layer(name, conditions=[])
@@ -81,6 +79,8 @@ header_code = """
 struct zink_screen;
 
 struct zink_instance_info {
+   uint32_t loader_version;
+
 %for ext in extensions:
    bool have_${ext.name_with_vendor()};
 %endfor
@@ -91,7 +91,7 @@ struct zink_instance_info {
 };
 
 VkInstance
-zink_create_instance(struct zink_screen *screen);
+zink_create_instance(struct zink_instance_info *instance_info);
 
 bool
 zink_load_instance_extensions(struct zink_screen *screen);
@@ -104,7 +104,7 @@ impl_code = """
 #include "zink_screen.h"
 
 VkInstance
-zink_create_instance(struct zink_screen *screen)
+zink_create_instance(struct zink_instance_info *instance_info)
 {
    /* reserve one slot for MoltenVK */
    const char *layers[${len(extensions) + 1}] = { 0 };
@@ -139,7 +139,7 @@ zink_create_instance(struct zink_screen *screen)
                     extensions[num_extensions++] = ${ext.extension_name_literal()};
                 }
             %else:
-                if (screen->loader_version < ${ext.core_since.version()}) {
+                if (instance_info->loader_version < ${ext.core_since.version()}) {
                    if (!strcmp(extension_props[i].extensionName, ${ext.extension_name_literal()})) {
                         have_${ext.name_with_vendor()} = true;
                         extensions[num_extensions++] = ${ext.extension_name_literal()};
@@ -186,7 +186,7 @@ zink_create_instance(struct zink_screen *screen)
     }
 
 %for ext in extensions:
-   screen->instance_info.have_${ext.name_with_vendor()} = have_${ext.name_with_vendor()};
+   instance_info->have_${ext.name_with_vendor()} = have_${ext.name_with_vendor()};
 %endfor
 
 %for layer in layers:
@@ -199,7 +199,7 @@ zink_create_instance(struct zink_screen *screen)
 %>\
    if (have_layer_${layer.pure_name()} ${conditions}) {
       layers[num_layers++] = ${layer.extension_name_literal()};
-      screen->instance_info.have_layer_${layer.pure_name()} = true;
+      instance_info->have_layer_${layer.pure_name()} = true;
    }
 %endfor
 
@@ -213,7 +213,7 @@ zink_create_instance(struct zink_screen *screen)
       ai.pApplicationName = "unknown";
 
    ai.pEngineName = "mesa zink";
-   ai.apiVersion = screen->loader_version;
+   ai.apiVersion = instance_info->loader_version;
 
    VkInstanceCreateInfo ici = {};
    ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -235,7 +235,7 @@ bool
 zink_load_instance_extensions(struct zink_screen *screen)
 {
    if (zink_debug & ZINK_DEBUG_VALIDATION) {
-      printf("zink: Loader %d.%d.%d \\n", VK_VERSION_MAJOR(screen->loader_version), VK_VERSION_MINOR(screen->loader_version), VK_VERSION_PATCH(screen->loader_version));
+      printf("zink: Loader %d.%d.%d \\n", VK_VERSION_MAJOR(screen->instance_info.loader_version), VK_VERSION_MINOR(screen->instance_info.loader_version), VK_VERSION_PATCH(screen->instance_info.loader_version));
    }
 
 %for ext in extensions:
@@ -248,7 +248,7 @@ zink_load_instance_extensions(struct zink_screen *screen)
    }
 %elif bool(ext.instance_funcs):
    if (screen->instance_info.have_${ext.name_with_vendor()}) {
-      if (screen->loader_version < ${ext.core_since.version()}) {
+      if (screen->instance_info.loader_version < ${ext.core_since.version()}) {
       %for func in ext.instance_funcs:
          GET_PROC_ADDR_INSTANCE_LOCAL(screen->instance, ${func}${ext.vendor()});
          screen->vk_${func} = vk_${func}${ext.vendor()};
@@ -274,33 +274,6 @@ def replace_code(code: str, replacement: dict):
     return code
 
 
-# Parses e.g. "VK_VERSION_x_y" to integer tuple (x, y)
-# For any erroneous inputs, None is returned
-def parse_promotedto(promotedto: str):
-   result = None
-
-   if promotedto and promotedto.startswith("VK_VERSION_"):
-      (major, minor) = promotedto.split('_')[-2:]
-      result = (int(major), int(minor))
-
-   return result
-
-def parse_vkxml(path: str):
-    vkxml = ElementTree.parse(path)
-    all_extensions = dict()
-
-    for ext in vkxml.findall("extensions/extension"):
-        name = ext.get("name")
-        promotedto = parse_promotedto(ext.get("promotedto"))
-        
-        if not name:
-            print("found malformed extension entry in vk.xml")
-            exit(1)
-
-        all_extensions[name] = promotedto
-
-    return all_extensions
-
 if __name__ == "__main__":
     try:
         header_path = sys.argv[1]
@@ -314,19 +287,43 @@ if __name__ == "__main__":
         print("usage: %s <path to .h> <path to .c> <path to vk.xml>" % sys.argv[0])
         exit(1)
 
-    all_extensions = parse_vkxml(vkxml_path)
+    registry = ExtensionRegistry(vkxml_path)
 
     extensions = EXTENSIONS
     layers = LAYERS
     replacement = REPLACEMENTS
 
+    # Perform extension validation and set core_since for the extension if available
+    error_count = 0
     for ext in extensions:
-        if ext.name not in all_extensions:
-            print("the extension {} is not registered in vk.xml - a typo?".format(ext.name))
-            exit(1)
+        if not registry.in_registry(ext.name):
+            # disable validation for nonstandard extensions
+            if ext.is_nonstandard:
+                continue
+
+            error_count += 1
+            print("The extension {} is not registered in vk.xml - a typo?".format(ext.name))
+            continue
         
-        if all_extensions[ext.name] is not None:
-            ext.core_since = Version((*all_extensions[ext.name], 0))
+        entry = registry.get_registry_entry(ext.name)
+
+        if entry.ext_type != "instance":
+            error_count += 1
+            print("The extension {} is {} extension - expected an instance extension.".format(ext.name, entry.ext_type))
+            continue
+
+        if entry.commands and ext.instance_funcs:
+            for func in map(lambda f: "vk" + f + ext.vendor(), ext.instance_funcs):
+                if func not in entry.commands:
+                    error_count += 1
+                    print("The instance function {} is not added by the extension {}.".format(func, ext.name))
+
+        if entry.promoted_in:
+            ext.core_since = Version((*entry.promoted_in, 0))
+
+    if error_count > 0:
+        print("zink_instance.py: Found {} error(s) in total. Quitting.".format(error_count))
+        exit(1)
 
     with open(header_path, "w") as header_file:
         header = Template(header_code).render(extensions=extensions, layers=layers).strip()

@@ -2167,6 +2167,7 @@ vtn_handle_constant(struct vtn_builder *b, SpvOp opcode,
 
    case SpvOpConstantNull:
       val->constant = vtn_null_constant(b, val->type);
+      val->is_null_constant = true;
       break;
 
    default:
@@ -4187,6 +4188,13 @@ vtn_handle_entry_point(struct vtn_builder *b, const uint32_t *w,
 
    vtn_assert(b->entry_point == NULL);
    b->entry_point = entry_point;
+
+   /* Entry points enumerate which global variables are used. */
+   size_t start = 3 + name_words;
+   b->interface_ids_count = count - start;
+   b->interface_ids = ralloc_array(b, uint32_t, b->interface_ids_count);
+   memcpy(b->interface_ids, &w[start], b->interface_ids_count * 4);
+   qsort(b->interface_ids, b->interface_ids_count, 4, cmp_uint32_t);
 }
 
 static bool
@@ -5716,8 +5724,10 @@ vtn_create_builder(const uint32_t *words, size_t word_count,
       vtn_err("words[0] was 0x%x, want 0x%x", words[0], SpvMagicNumber);
       goto fail;
    }
-   if (words[1] < 0x10000) {
-      vtn_err("words[1] was 0x%x, want >= 0x10000", words[1]);
+
+   b->version = words[1];
+   if (b->version < 0x10000) {
+      vtn_err("version was 0x%x, want >= 0x10000", b->version);
       goto fail;
    }
 
@@ -5743,7 +5753,7 @@ vtn_create_builder(const uint32_t *words, size_t word_count,
    b->value_id_bound = value_id_bound;
    b->values = rzalloc_array(b, struct vtn_value, value_id_bound);
 
-   if (b->options->environment == NIR_SPIRV_VULKAN)
+   if (b->options->environment == NIR_SPIRV_VULKAN && b->version < 0x10400)
       b->vars_used_indirectly = _mesa_pointer_set_create(b);
 
    return b;
@@ -5756,7 +5766,7 @@ static nir_function *
 vtn_emit_kernel_entry_point_wrapper(struct vtn_builder *b,
                                     nir_function *entry_point)
 {
-   vtn_assert(entry_point == b->entry_point->func->impl->function);
+   vtn_assert(entry_point == b->entry_point->func->nir_func);
    vtn_fail_if(!entry_point->name, "entry points are required to have a name");
    const char *func_name =
       ralloc_asprintf(b->shader, "__wrapped_%s", entry_point->name);
@@ -5949,7 +5959,7 @@ spirv_to_nir(const uint32_t *words, size_t word_count,
 
    if (!options->create_library) {
       vtn_assert(b->entry_point->value_type == vtn_value_type_function);
-      nir_function *entry_point = b->entry_point->func->impl->function;
+      nir_function *entry_point = b->entry_point->func->nir_func;
       vtn_assert(entry_point);
 
       /* post process entry_points with input params */
@@ -5963,27 +5973,40 @@ spirv_to_nir(const uint32_t *words, size_t word_count,
    nir_lower_goto_ifs(b->shader);
 
    /* A SPIR-V module can have multiple shaders stages and also multiple
-    * shaders of the same stage.  Global variables are declared per-module, so
-    * they are all collected when parsing a single shader.  These dead
-    * variables can result in invalid NIR, e.g.
+    * shaders of the same stage.  Global variables are declared per-module.
     *
-    * - TCS outputs must be per-vertex arrays (or decorated 'patch'), while VS
-    *   output variables wouldn't be;
-    * - Two vertex shaders have two different typed blocks associated to the
-    *   same Binding.
-    *
-    * Before cleaning the dead variables, we must lower any constant
-    * initializers on outputs so nir_remove_dead_variables sees that they're
-    * written to.
+    * Starting in SPIR-V 1.4 the list of global variables is part of
+    * OpEntryPoint, so only valid ones will be created.  Previous versions
+    * only have Input and Output variables listed, so remove dead variables to
+    * clean up the remaining ones.
     */
-   nir_lower_variable_initializers(b->shader, nir_var_shader_out |
-                                              nir_var_system_value);
-   const nir_remove_dead_variables_options dead_opts = {
-      .can_remove_var = can_remove,
-      .can_remove_var_data = b->vars_used_indirectly,
-   };
-   nir_remove_dead_variables(b->shader, ~nir_var_function_temp,
-                             b->vars_used_indirectly ? &dead_opts : NULL);
+   if (!options->create_library && b->version < 0x10400) {
+      const nir_remove_dead_variables_options dead_opts = {
+         .can_remove_var = can_remove,
+         .can_remove_var_data = b->vars_used_indirectly,
+      };
+      nir_remove_dead_variables(b->shader, ~(nir_var_function_temp |
+                                             nir_var_shader_out |
+                                             nir_var_shader_in |
+                                             nir_var_system_value),
+                                b->vars_used_indirectly ? &dead_opts : NULL);
+   }
+
+   nir_foreach_variable_in_shader(var, b->shader) {
+      switch (var->data.mode) {
+      case nir_var_mem_ubo:
+         b->shader->info.num_ubos++;
+         break;
+      case nir_var_mem_ssbo:
+         b->shader->info.num_ssbos++;
+         break;
+      case nir_var_mem_push_const:
+         vtn_assert(b->shader->num_uniforms == 0);
+         b->shader->num_uniforms =
+            glsl_get_explicit_size(glsl_without_array(var->type), false);
+         break;
+      }
+   }
 
    /* We sometimes generate bogus derefs that, while never used, give the
     * validator a bit of heartburn.  Run dead code to get rid of them.

@@ -26,6 +26,8 @@
 #include "zink_context.h"
 #include "zink_screen.h"
 
+#include "compiler/shader_enums.h"
+#include "util/u_dual_blend.h"
 #include "util/u_memory.h"
 
 #include <math.h>
@@ -65,7 +67,7 @@ zink_create_vertex_elements_state(struct pipe_context *pctx,
       assert(elem->instance_divisor <= screen->info.vdiv_props.maxVertexAttribDivisor);
 
       ves->hw_state.attribs[i].binding = binding;
-      ves->hw_state.attribs[i].location = i; // TODO: unsure
+      ves->hw_state.attribs[i].location = i;
       ves->hw_state.attribs[i].format = zink_get_format(screen,
                                                         elem->src_format);
       assert(ves->hw_state.attribs[i].format != VK_FORMAT_UNDEFINED);
@@ -275,6 +277,7 @@ zink_create_blend_state(struct pipe_context *pctx,
 
       cso->attachments[i] = att;
    }
+   cso->dual_src_blend = util_blend_state_is_dual(blend_state, 0);
 
    return cso;
 }

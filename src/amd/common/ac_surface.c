@@ -2458,7 +2458,7 @@ int ac_compute_surface(struct ac_addrlib *addrlib, const struct radeon_info *inf
    if (r)
       return r;
 
-   if (info->chip_class >= GFX9)
+   if (info->family_id >= FAMILY_AI)
       r = gfx9_compute_surface(addrlib, info, config, mode, surf);
    else
       r = gfx6_compute_surface(addrlib->handle, info, config, mode, surf);
@@ -2678,9 +2678,9 @@ static uint32_t ac_get_umd_metadata_word1(const struct radeon_info *info)
 /* This should be called after ac_compute_surface. */
 bool ac_surface_set_umd_metadata(const struct radeon_info *info, struct radeon_surf *surf,
                                  unsigned num_storage_samples, unsigned num_mipmap_levels,
-                                 unsigned size_metadata, uint32_t metadata[64])
+                                 unsigned size_metadata, const uint32_t metadata[64])
 {
-   uint32_t *desc = &metadata[2];
+   const uint32_t *desc = &metadata[2];
    uint64_t offset;
 
    if (surf->modifier != DRM_FORMAT_MOD_INVALID)
@@ -2972,6 +2972,28 @@ uint64_t ac_surface_get_plane_stride(enum chip_class chip_class,
    default:
       unreachable("Invalid plane index");
    }
+}
+
+uint64_t ac_surface_get_plane_size(const struct radeon_surf *surf,
+                                   unsigned plane)
+{
+   switch (plane) {
+   case 0:
+      return surf->surf_size;
+   case 1:
+      return surf->display_dcc_offset ?
+             surf->u.gfx9.display_dcc_size : surf->dcc_size;
+   case 2:
+      return surf->dcc_size;
+   default:
+      unreachable("Invalid plane index");
+   }
+}
+
+uint32_t ac_surface_get_retile_map_size(const struct radeon_surf *surf)
+{
+   return surf->u.gfx9.dcc_retile_num_elements *
+          (surf->u.gfx9.dcc_retile_use_uint16 ? 2 : 4);
 }
 
 void ac_surface_print_info(FILE *out, const struct radeon_info *info,

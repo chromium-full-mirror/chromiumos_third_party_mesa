@@ -232,10 +232,8 @@ vtn_variable_resource_index(struct vtn_builder *b, struct vtn_variable *var,
 {
    vtn_assert(b->options->environment == NIR_SPIRV_VULKAN);
 
-   if (!desc_array_index) {
-      vtn_assert(var->type->base_type != vtn_base_type_array);
+   if (!desc_array_index)
       desc_array_index = nir_imm_int(&b->nb, 0);
-   }
 
    if (b->vars_used_indirectly) {
       vtn_assert(var->var);
@@ -1752,7 +1750,7 @@ vtn_get_call_payload_for_location(struct vtn_builder *b, uint32_t location_id)
 static void
 vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
                     struct vtn_type *ptr_type, SpvStorageClass storage_class,
-                    nir_constant *const_initializer, nir_variable *var_initializer)
+                    struct vtn_value *initializer)
 {
    vtn_assert(ptr_type->base_type == vtn_base_type_pointer);
    struct vtn_type *type = ptr_type->deref;
@@ -1767,7 +1765,6 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
    case vtn_variable_mode_ubo:
       /* There's no other way to get vtn_variable_mode_ubo */
       vtn_assert(without_array->block);
-      b->shader->info.num_ubos++;
       break;
    case vtn_variable_mode_ssbo:
       if (storage_class == SpvStorageClassStorageBuffer &&
@@ -1785,19 +1782,6 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
                      "have a struct type with the Block decoration");
          }
       }
-      b->shader->info.num_ssbos++;
-      break;
-   case vtn_variable_mode_uniform:
-      if (without_array->base_type == vtn_base_type_image) {
-         if (glsl_type_is_image(without_array->glsl_image))
-            b->shader->info.num_images++;
-         else if (glsl_type_is_sampler(without_array->glsl_image))
-            b->shader->info.num_textures++;
-      }
-      break;
-   case vtn_variable_mode_push_constant:
-      b->shader->num_uniforms =
-         glsl_get_explicit_size(without_array->type, false);
       break;
 
    case vtn_variable_mode_generic:
@@ -1984,14 +1968,88 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
       unreachable("Should have been caught before");
    }
 
-   /* We can only have one type of initializer */
-   assert(!(const_initializer && var_initializer));
-   if (const_initializer) {
-      var->var->constant_initializer =
-         nir_constant_clone(const_initializer, var->var);
+   if (initializer) {
+      switch (storage_class) {
+      case SpvStorageClassWorkgroup:
+         /* VK_KHR_zero_initialize_workgroup_memory. */
+         vtn_fail_if(b->options->environment != NIR_SPIRV_VULKAN,
+                     "Only Vulkan supports variable initializer "
+                     "for Workgroup variable %u",
+                     vtn_id_for_value(b, val));
+         vtn_fail_if(initializer->value_type != vtn_value_type_constant ||
+                     !initializer->is_null_constant,
+                     "Workgroup variable %u can only have OpConstantNull "
+                     "as initializer, but have %u instead",
+                     vtn_id_for_value(b, val),
+                     vtn_id_for_value(b, initializer));
+         b->shader->info.cs.zero_initialize_shared_memory = true;
+         break;
+
+      case SpvStorageClassUniformConstant:
+         vtn_fail_if(b->options->environment != NIR_SPIRV_OPENGL &&
+                     b->options->environment != NIR_SPIRV_OPENCL,
+                     "Only OpenGL and OpenCL support variable initializer "
+                     "for UniformConstant variable %u\n",
+                     vtn_id_for_value(b, val));
+         vtn_fail_if(initializer->value_type != vtn_value_type_constant,
+                     "UniformConstant variable %u can only have a constant "
+                     "initializer, but have %u instead",
+                     vtn_id_for_value(b, val),
+                     vtn_id_for_value(b, initializer));
+         break;
+
+      case SpvStorageClassOutput:
+      case SpvStorageClassPrivate:
+         vtn_assert(b->options->environment != NIR_SPIRV_OPENCL);
+         /* These can have any initializer. */
+         break;
+
+      case SpvStorageClassFunction:
+         /* These can have any initializer. */
+         break;
+
+      case SpvStorageClassCrossWorkgroup:
+         vtn_assert(b->options->environment == NIR_SPIRV_OPENCL);
+         vtn_fail("Initializer for CrossWorkgroup variable %u "
+                  "not yet supported in Mesa.",
+                  vtn_id_for_value(b, val));
+         break;
+
+      default: {
+         const enum nir_spirv_execution_environment env =
+            b->options->environment;
+         const char *env_name =
+            env == NIR_SPIRV_VULKAN ? "Vulkan" :
+            env == NIR_SPIRV_OPENCL ? "OpenCL" :
+            env == NIR_SPIRV_OPENGL ? "OpenGL" :
+            NULL;
+         vtn_assert(env_name);
+         vtn_fail("In %s, any OpVariable with an Initializer operand "
+                  "must have %s%s%s, or Function as "
+                  "its Storage Class operand.  Variable %u has an "
+                  "Initializer but its Storage Class is %s.",
+                  env_name,
+                  env == NIR_SPIRV_VULKAN ? "Private, Output, Workgroup" : "",
+                  env == NIR_SPIRV_OPENCL ? "CrossWorkgroup, UniformConstant" : "",
+                  env == NIR_SPIRV_OPENGL ? "Private, Output, UniformConstant" : "",
+                  vtn_id_for_value(b, val),
+                  spirv_storageclass_to_string(storage_class));
+         }
+      }
+
+      switch (initializer->value_type) {
+      case vtn_value_type_constant:
+         var->var->constant_initializer =
+            nir_constant_clone(initializer->constant, var->var);
+         break;
+      case vtn_value_type_pointer:
+         var->var->pointer_initializer = initializer->pointer->var->var;
+         break;
+      default:
+         vtn_fail("SPIR-V variable initializer %u must be constant or pointer",
+                  vtn_id_for_value(b, initializer));
+      }
    }
-   if (var_initializer)
-      var->var->pointer_initializer = var_initializer;
 
    if (var->mode == vtn_variable_mode_uniform ||
        var->mode == vtn_variable_mode_ssbo) {
@@ -2225,27 +2283,26 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
    case SpvOpVariable: {
       struct vtn_type *ptr_type = vtn_get_type(b, w[1]);
 
-      struct vtn_value *val = vtn_push_value(b, w[2], vtn_value_type_pointer);
-
       SpvStorageClass storage_class = w[3];
-      nir_constant *const_initializer = NULL;
-      nir_variable *var_initializer = NULL;
-      if (count > 4) {
-         struct vtn_value *init = vtn_untyped_value(b, w[4]);
-         switch (init->value_type) {
-         case vtn_value_type_constant:
-            const_initializer = init->constant;
+
+      const bool is_global = storage_class != SpvStorageClassFunction;
+      const bool is_io = storage_class == SpvStorageClassInput ||
+                         storage_class == SpvStorageClassOutput;
+
+      /* Skip global variables that are not used by the entrypoint.  Before
+       * SPIR-V 1.4 the interface is only used for I/O variables, so extra
+       * variables will still need to be removed later.
+       */
+      if (!b->options->create_library &&
+          (is_io || (b->version >= 0x10400 && is_global))) {
+         if (!bsearch(&w[2], b->interface_ids, b->interface_ids_count, 4, cmp_uint32_t))
             break;
-         case vtn_value_type_pointer:
-            var_initializer = init->pointer->var->var;
-            break;
-         default:
-            vtn_fail("SPIR-V variable initializer %u must be constant or pointer",
-               w[4]);
-         }
       }
 
-      vtn_create_variable(b, val, ptr_type, storage_class, const_initializer, var_initializer);
+      struct vtn_value *val = vtn_push_value(b, w[2], vtn_value_type_pointer);
+      struct vtn_value *initializer = count > 4 ? vtn_untyped_value(b, w[4]) : NULL;
+
+      vtn_create_variable(b, val, ptr_type, storage_class, initializer);
 
       break;
    }
@@ -2265,7 +2322,7 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
       ptr_type->type = nir_address_format_to_glsl_type(
          vtn_mode_to_address_format(b, vtn_variable_mode_function));
 
-      vtn_create_variable(b, val, ptr_type, ptr_type->storage_class, NULL, NULL);
+      vtn_create_variable(b, val, ptr_type, ptr_type->storage_class, NULL);
 
       nir_variable *nir_var = val->pointer->var->var;
       nir_var->data.sampler.is_inline_sampler = true;

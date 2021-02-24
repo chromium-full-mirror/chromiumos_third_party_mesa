@@ -68,6 +68,7 @@
  */
 static void
 rebind_resource_in_ctx(struct fd_context *ctx, struct fd_resource *rsc)
+	assert_dt
 {
 	struct pipe_resource *prsc = &rsc->base;
 
@@ -152,6 +153,7 @@ rebind_resource_in_ctx(struct fd_context *ctx, struct fd_resource *rsc)
 
 static void
 rebind_resource(struct fd_resource *rsc)
+	assert_dt
 {
 	struct fd_screen *screen = fd_screen(rsc->base.screen);
 
@@ -173,6 +175,25 @@ fd_resource_set_bo(struct fd_resource *rsc, struct fd_bo *bo)
 
 	rsc->bo = bo;
 	rsc->seqno = p_atomic_inc_return(&screen->rsc_seqno);
+}
+
+int
+__fd_resource_wait(struct fd_context *ctx, struct fd_resource *rsc,
+		unsigned op, const char *func)
+{
+	if (op & DRM_FREEDRENO_PREP_NOSYNC)
+		return fd_bo_cpu_prep(rsc->bo, ctx->pipe, op);
+
+	int64_t elapsed = -os_time_get_nano();
+	int ret = fd_bo_cpu_prep(rsc->bo, ctx->pipe, op);
+
+	elapsed += os_time_get_nano();
+	if (elapsed > 10000) /* 0.01ms */ {
+		perf_debug_ctx(ctx, "%s: a busy \"%"PRSC_FMT"\" BO stalled and took %.03f ms.\n",
+				func, PRSC_ARGS(&rsc->base), 1000000 * (double)elapsed);
+	}
+
+	return ret;
 }
 
 static void
@@ -213,6 +234,7 @@ realloc_bo(struct fd_resource *rsc, uint32_t size)
 
 static void
 do_blit(struct fd_context *ctx, const struct pipe_blit_info *blit, bool fallback)
+	assert_dt
 {
 	struct pipe_context *pctx = &ctx->base;
 
@@ -238,6 +260,7 @@ flush_resource(struct fd_context *ctx, struct fd_resource *rsc, unsigned usage);
 static bool
 fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 		unsigned level, const struct pipe_box *box, uint64_t modifier)
+	assert_dt
 {
 	struct pipe_context *pctx = &ctx->base;
 	struct pipe_resource *prsc = &rsc->base;
@@ -346,6 +369,10 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 		blit.src.field = (val);      \
 	} while (0)
 
+	/* Disable occlusion queries during shadow blits. */
+	bool saved_active_queries = ctx->active_queries;
+	pctx->set_active_query_state(pctx, false);
+
 	/* blit the other levels in their entirety: */
 	for (unsigned l = 0; l <= prsc->last_level; l++) {
 		if (box && l == level)
@@ -396,6 +423,8 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 			unreachable("TODO");
 		}
 	}
+
+	pctx->set_active_query_state(pctx, saved_active_queries);
 
 	ctx->in_shadow = false;
 
@@ -466,6 +495,7 @@ fd_alloc_staging(struct fd_context *ctx, struct fd_resource *rsc,
 
 static void
 fd_blit_from_staging(struct fd_context *ctx, struct fd_transfer *trans)
+	assert_dt
 {
 	struct pipe_resource *dst = trans->base.resource;
 	struct pipe_blit_info blit = {};
@@ -486,6 +516,7 @@ fd_blit_from_staging(struct fd_context *ctx, struct fd_transfer *trans)
 
 static void
 fd_blit_to_staging(struct fd_context *ctx, struct fd_transfer *trans)
+	assert_dt
 {
 	struct pipe_resource *src = trans->base.resource;
 	struct pipe_blit_info blit = {};
@@ -518,6 +549,7 @@ static void fd_resource_transfer_flush_region(struct pipe_context *pctx,
 
 static void
 flush_resource(struct fd_context *ctx, struct fd_resource *rsc, unsigned usage)
+	assert_dt
 {
 	struct fd_batch *write_batch = NULL;
 
@@ -558,6 +590,7 @@ flush_resource(struct fd_context *ctx, struct fd_resource *rsc, unsigned usage)
 
 static void
 fd_flush_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
+	in_dt
 {
 	flush_resource(fd_context(pctx), fd_resource(prsc), PIPE_MAP_READ);
 }
@@ -565,6 +598,7 @@ fd_flush_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
 static void
 fd_resource_transfer_unmap(struct pipe_context *pctx,
 		struct pipe_transfer *ptrans)
+	in_dt  /* TODO for threaded-ctx we'll need to split out unsynchronized path */
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct fd_resource *rsc = fd_resource(ptrans->resource);
@@ -588,19 +622,48 @@ fd_resource_transfer_unmap(struct pipe_context *pctx,
 	slab_free(&ctx->transfer_pool, ptrans);
 }
 
+static unsigned
+translate_usage(unsigned usage)
+{
+	uint32_t op = 0;
+
+	if (usage & PIPE_MAP_READ)
+		op |= DRM_FREEDRENO_PREP_READ;
+
+	if (usage & PIPE_MAP_WRITE)
+		op |= DRM_FREEDRENO_PREP_WRITE;
+
+	return op;
+}
+
+static void
+invalidate_resource(struct fd_resource *rsc, unsigned usage)
+	assert_dt
+{
+	bool needs_flush = pending(rsc, !!(usage & PIPE_MAP_WRITE));
+	unsigned op = translate_usage(usage);
+
+	if (needs_flush || fd_resource_busy(rsc, op)) {
+		rebind_resource(rsc);
+		realloc_bo(rsc, fd_bo_size(rsc->bo));
+	} else {
+		util_range_set_empty(&rsc->valid_buffer_range);
+	}
+}
+
 static void *
 fd_resource_transfer_map(struct pipe_context *pctx,
 		struct pipe_resource *prsc,
 		unsigned level, unsigned usage,
 		const struct pipe_box *box,
 		struct pipe_transfer **pptrans)
+	in_dt  /* TODO for threaded-ctx we'll need to split out unsynchronized path */
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct fd_resource *rsc = fd_resource(prsc);
 	struct fd_transfer *trans;
 	struct pipe_transfer *ptrans;
 	enum pipe_format format = prsc->format;
-	uint32_t op = 0;
 	uint32_t offset;
 	char *buf;
 	int ret = 0;
@@ -651,7 +714,7 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 			if (usage & PIPE_MAP_READ) {
 				fd_blit_to_staging(ctx, trans);
 
-				fd_bo_cpu_prep(staging_rsc->bo, ctx->pipe,
+				fd_resource_wait(ctx, staging_rsc,
 						DRM_FREEDRENO_PREP_READ);
 			}
 
@@ -666,22 +729,20 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 		}
 	}
 
+	/* Sometimes games do silly things like MapBufferRange(UNSYNC|DISCARD_x)
+	 * In this case, the the UNSYNC is a bit redundant, but the games rely
+	 * on us rebinding/replacing the backing storage rather than going down
+	 * the UNSYNC path (ie. honoring DISCARD_x first before UNSYNC).  So
+	 * since we handle DISCARD_RANGE inside the !UNSYNC path:
+	 */
+	if (usage & (PIPE_MAP_DISCARD_RANGE | PIPE_MAP_DISCARD_WHOLE_RESOURCE))
+		usage &= ~PIPE_MAP_UNSYNCHRONIZED;
+
 	if (ctx->in_shadow && !(usage & PIPE_MAP_READ))
 		usage |= PIPE_MAP_UNSYNCHRONIZED;
 
-	if (usage & PIPE_MAP_READ)
-		op |= DRM_FREEDRENO_PREP_READ;
-
-	if (usage & PIPE_MAP_WRITE)
-		op |= DRM_FREEDRENO_PREP_WRITE;
-
-	bool needs_flush = pending(rsc, !!(usage & PIPE_MAP_WRITE));
-
 	if (usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) {
-		if (needs_flush || fd_resource_busy(rsc, op)) {
-			rebind_resource(rsc);
-			realloc_bo(rsc, fd_bo_size(rsc->bo));
-		}
+		invalidate_resource(rsc, usage);
 	} else if ((usage & PIPE_MAP_WRITE) &&
 			   prsc->target == PIPE_BUFFER &&
 			   !util_ranges_intersect(&rsc->valid_buffer_range,
@@ -702,6 +763,9 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 			/* if only thing pending is a back-blit, we can discard it: */
 			fd_batch_reset(write_batch);
 		}
+
+		unsigned op = translate_usage(usage);
+		bool needs_flush = pending(rsc, !!(usage & PIPE_MAP_WRITE));
 
 		/* If the GPU is writing to the resource, or if it is reading from the
 		 * resource and we're trying to write to it, flush the renders.
@@ -773,7 +837,7 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 		 * completed.
 		 */
 		if (busy) {
-			ret = fd_bo_cpu_prep(rsc->bo, ctx->pipe, op);
+			ret = fd_resource_wait(ctx, rsc, op);
 			if (ret)
 				goto fail;
 		}
@@ -1174,19 +1238,20 @@ fd_render_condition_check(struct pipe_context *pctx)
 
 static void
 fd_invalidate_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct fd_resource *rsc = fd_resource(prsc);
 
-	/*
-	 * TODO I guess we could track that the resource is invalidated and
-	 * use that as a hint to realloc rather than stall in _transfer_map(),
-	 * even in the non-DISCARD_WHOLE_RESOURCE case?
-	 *
-	 * Note: we set dirty bits to trigger invalidate logic fd_draw_vbo
-	 */
+	if (prsc->target == PIPE_BUFFER) {
+		/* Handle the glInvalidateBufferData() case:
+		 */
+		invalidate_resource(rsc, PIPE_MAP_READ | PIPE_MAP_WRITE);
+	} else if (rsc->write_batch) {
+		/* Handle the glInvalidateFramebuffer() case, telling us that
+		 * we can skip resolve.
+		 */
 
-	if (rsc->write_batch) {
 		struct fd_batch *batch = rsc->write_batch;
 		struct pipe_framebuffer_state *pfb = &batch->framebuffer;
 
@@ -1413,6 +1478,7 @@ fd_get_sample_position(struct pipe_context *context,
 
 static void
 fd_blit_pipe(struct pipe_context *pctx, const struct pipe_blit_info *blit_info)
+	in_dt
 {
 	/* wrap fd_blit to return void */
 	fd_blit(pctx, blit_info);

@@ -87,6 +87,8 @@ struct radeon_info {
    /* Memory info. */
    uint32_t pte_fragment_size;
    uint32_t gart_page_size;
+   uint32_t gart_size_kb;
+   uint32_t vram_size_kb;
    uint64_t gart_size;
    uint64_t vram_size;
    uint64_t vram_vis_size;
@@ -102,13 +104,14 @@ struct radeon_info {
    bool smart_access_memory;
    bool has_l2_uncached;
    bool r600_has_virtual_memory;
-   uint32_t num_sdp_interfaces;
+   uint32_t max_tcc_blocks;
    uint32_t num_tcc_blocks;
    uint32_t tcc_cache_line_size;
    bool tcc_harvested;
    unsigned pc_lines;
    uint32_t lds_size_per_workgroup;
-   uint32_t lds_granularity;
+   uint32_t lds_alloc_granularity;
+   uint32_t lds_encode_granularity;
    uint32_t max_memory_clock;
    uint32_t ce_ram_size;
    uint32_t l1_cache_size;

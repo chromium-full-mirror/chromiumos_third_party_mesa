@@ -32,6 +32,7 @@
 #include "intel/isl/isl.h"
 #include "iris_bufmgr.h"
 #include "iris_binder.h"
+#include "iris_measure.h"
 #include "iris_resource.h"
 
 struct gen_l3_config;
@@ -109,7 +110,7 @@ struct iris_vtable {
                                      uint32_t report_id);
 
    unsigned (*derived_program_state_size)(enum iris_program_cache_id id);
-   void (*store_derived_program_state)(struct iris_context *ice,
+   void (*store_derived_program_state)(const struct gen_device_info *devinfo,
                                        enum iris_program_cache_id cache_id,
                                        struct iris_compiled_shader *shader);
    uint32_t *(*create_so_decl_list)(const struct pipe_stream_output_info *sol,
@@ -218,6 +219,8 @@ struct iris_screen {
    struct iris_address workaround_address;
 
    struct disk_cache *disk_cache;
+
+   struct intel_measure_device measure;
 };
 
 struct pipe_screen *

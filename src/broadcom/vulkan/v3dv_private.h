@@ -36,7 +36,9 @@
 #include <vulkan/vk_icd.h>
 #include <vk_enum_to_str.h>
 
-#include "vk_object.h"
+#include "vk_device.h"
+#include "vk_instance.h"
+#include "vk_physical_device.h"
 
 #include <xf86drm.h>
 
@@ -125,12 +127,7 @@ struct v3dv_instance;
 struct v3d_simulator_file;
 
 struct v3dv_physical_device {
-   struct vk_object_base base;
-
-   struct v3dv_instance *instance;
-
-   struct v3dv_device_extension_table supported_extensions;
-   struct v3dv_physical_device_dispatch_table dispatch;
+   struct vk_physical_device vk;
 
    char *name;
    int32_t render_fd;
@@ -175,29 +172,11 @@ void v3dv_meta_blit_finish(struct v3dv_device *device);
 void v3dv_meta_texel_buffer_copy_init(struct v3dv_device *device);
 void v3dv_meta_texel_buffer_copy_finish(struct v3dv_device *device);
 
-struct v3dv_app_info {
-   const char *app_name;
-   uint32_t app_version;
-   const char *engine_name;
-   uint32_t engine_version;
-   uint32_t api_version;
-};
-
 struct v3dv_instance {
-   struct vk_object_base base;
-
-   VkAllocationCallbacks alloc;
-
-   struct v3dv_app_info app_info;
-
-   struct v3dv_instance_extension_table enabled_extensions;
-   struct v3dv_instance_dispatch_table dispatch;
-   struct v3dv_device_dispatch_table device_dispatch;
+   struct vk_instance vk;
 
    int physicalDeviceCount;
    struct v3dv_physical_device physicalDevice;
-
-   struct vk_debug_report_instance debug_report_callbacks;
 
    bool pipeline_cache_enabled;
    bool default_pipeline_cache_enabled;
@@ -249,7 +228,8 @@ struct v3dv_queue {
 };
 
 #define V3DV_META_BLIT_CACHE_KEY_SIZE              (4 * sizeof(uint32_t))
-#define V3DV_META_TEXEL_BUFFER_COPY_CACHE_KEY_SIZE (1 * sizeof(uint32_t))
+#define V3DV_META_TEXEL_BUFFER_COPY_CACHE_KEY_SIZE (2 * sizeof(uint32_t) + \
+                                                    sizeof(VkComponentMapping))
 
 struct v3dv_meta_color_clear_pipeline {
    VkPipeline pipeline;
@@ -301,9 +281,6 @@ struct v3dv_device {
 
    struct v3dv_instance *instance;
    struct v3dv_physical_device *pdevice;
-
-   struct v3dv_device_extension_table enabled_extensions;
-   struct v3dv_device_dispatch_table dispatch;
 
    struct v3d_device_info devinfo;
    struct v3dv_queue queue;
@@ -747,6 +724,7 @@ struct v3dv_dynamic_state {
 
    struct {
       float constant_factor;
+      float depth_bias_clamp;
       float slope_factor;
    } depth_bias;
 
@@ -1832,28 +1810,6 @@ v3dv_get_internal_depth_type(VkFormat format)
 uint32_t v3dv_physical_device_api_version(struct v3dv_physical_device *dev);
 uint32_t v3dv_physical_device_vendor_id(struct v3dv_physical_device *dev);
 uint32_t v3dv_physical_device_device_id(struct v3dv_physical_device *dev);
-
-int v3dv_get_instance_entrypoint_index(const char *name);
-int v3dv_get_device_entrypoint_index(const char *name);
-int v3dv_get_physical_device_entrypoint_index(const char *name);
-
-const char *v3dv_get_instance_entry_name(int index);
-const char *v3dv_get_physical_device_entry_name(int index);
-const char *v3dv_get_device_entry_name(int index);
-
-bool
-v3dv_instance_entrypoint_is_enabled(int index, uint32_t core_version,
-                                    const struct v3dv_instance_extension_table *instance);
-bool
-v3dv_physical_device_entrypoint_is_enabled(int index, uint32_t core_version,
-                                           const struct v3dv_instance_extension_table *instance);
-bool
-v3dv_device_entrypoint_is_enabled(int index, uint32_t core_version,
-                                  const struct v3dv_instance_extension_table *instance,
-                                  const struct v3dv_device_extension_table *device);
-
-void *v3dv_lookup_entrypoint(const struct v3d_device_info *devinfo,
-                             const char *name);
 
 VkResult __vk_errorf(struct v3dv_instance *instance, VkResult error,
                      const char *file, int line,

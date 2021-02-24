@@ -144,6 +144,9 @@ void
 spirv_builder_emit_exec_mode_literal(struct spirv_builder *b, SpvId entry_point,
                                      SpvExecutionMode exec_mode, uint32_t param);
 void
+spirv_builder_emit_exec_mode_literal3(struct spirv_builder *b, SpvId entry_point,
+                                     SpvExecutionMode exec_mode, uint32_t param[3]);
+void
 spirv_builder_emit_exec_mode(struct spirv_builder *b, SpvId entry_point,
                              SpvExecutionMode exec_mode);
 
@@ -253,6 +256,8 @@ spirv_builder_set_phi_operand(struct spirv_builder *b, size_t position,
 void
 spirv_builder_emit_kill(struct spirv_builder *b);
 
+SpvId
+spirv_builder_emit_vote(struct spirv_builder *b, SpvOp op, SpvId src);
 
 SpvId
 spirv_builder_emit_image_sample(struct spirv_builder *b,

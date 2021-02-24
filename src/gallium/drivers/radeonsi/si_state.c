@@ -81,8 +81,8 @@ static void si_emit_cb_render_state(struct si_context *sctx)
     *
     * Reproducible with Unigine Heaven 4.0 and drirc missing.
     */
-   if (blend->dual_src_blend && sctx->ps_shader.cso &&
-       (sctx->ps_shader.cso->info.colors_written & 0x3) != 0x3)
+   if (blend->dual_src_blend && sctx->shader.ps.cso &&
+       (sctx->shader.ps.cso->info.colors_written & 0x3) != 0x3)
       cb_target_mask = 0;
 
    /* GFX9: Flush DFSM when CB_TARGET_MASK changes.
@@ -121,7 +121,7 @@ static void si_emit_cb_render_state(struct si_context *sctx)
    /* RB+ register settings. */
    if (sctx->screen->info.rbplus_allowed) {
       unsigned spi_shader_col_format =
-         sctx->ps_shader.cso ? sctx->ps_shader.current->key.part.ps.epilog.spi_shader_col_format
+         sctx->shader.ps.cso ? sctx->shader.ps.current->key.part.ps.epilog.spi_shader_col_format
                              : 0;
       unsigned sx_ps_downconvert = 0;
       unsigned sx_blend_opt_epsilon = 0;
@@ -673,7 +673,7 @@ static void si_delete_blend_state(struct pipe_context *ctx, void *state)
    if (sctx->queued.named.blend == state)
       si_bind_blend_state(ctx, sctx->noop_blend);
 
-   si_pm4_delete_state(sctx, blend, (struct si_state_blend *)state);
+   si_pm4_free_state(sctx, (struct si_pm4_state*)state, SI_STATE_IDX(blend));
 }
 
 static void si_set_blend_color(struct pipe_context *ctx, const struct pipe_blend_color *state)
@@ -881,6 +881,30 @@ static void *si_create_rs_state(struct pipe_context *ctx, const struct pipe_rast
                          S_028810_DX_RASTERIZATION_KILL(state->rasterizer_discard) |
                          S_028810_DX_LINEAR_ATTR_CLIP_ENA(1);
 
+   if (rs->rasterizer_discard) {
+      rs->ngg_cull_flags = SI_NGG_CULL_FRONT_FACE | SI_NGG_CULL_BACK_FACE;
+      rs->ngg_cull_flags_y_inverted = rs->ngg_cull_flags;
+   } else {
+      /* Polygon mode can't use view and small primitive culling,
+       * because it draws points or lines where the culling depends
+       * on the point or line width.
+       */
+      if (!rs->polygon_mode_enabled) {
+         rs->ngg_cull_flags |= SI_NGG_CULL_VIEW_SMALLPRIMS;
+         rs->ngg_cull_flags_y_inverted |= SI_NGG_CULL_VIEW_SMALLPRIMS;
+      }
+
+      if (rs->cull_front) {
+         rs->ngg_cull_flags |= SI_NGG_CULL_FRONT_FACE;
+         rs->ngg_cull_flags_y_inverted |= SI_NGG_CULL_BACK_FACE;
+      }
+
+      if (rs->cull_back) {
+         rs->ngg_cull_flags |= SI_NGG_CULL_BACK_FACE;
+         rs->ngg_cull_flags_y_inverted |= SI_NGG_CULL_FRONT_FACE;
+      }
+   }
+
    si_pm4_set_reg(
       pm4, R_0286D4_SPI_INTERP_CONTROL_0,
       S_0286D4_FLAT_SHADE_ENA(1) | S_0286D4_PNT_SPRITE_ENA(state->point_quad_rasterization) |
@@ -1040,7 +1064,7 @@ static void si_delete_rs_state(struct pipe_context *ctx, void *state)
       si_bind_rs_state(ctx, sctx->discard_rasterizer_state);
 
    FREE(rs->pm4_poly_offset);
-   si_pm4_delete_state(sctx, rasterizer, rs);
+   si_pm4_free_state(sctx, &rs->pm4, SI_STATE_IDX(rasterizer));
 }
 
 /*
@@ -1265,7 +1289,7 @@ static void si_delete_dsa_state(struct pipe_context *ctx, void *state)
    if (sctx->queued.named.dsa == state)
       si_bind_dsa_state(ctx, sctx->noop_dsa);
 
-   si_pm4_delete_state(sctx, dsa, (struct si_state_dsa *)state);
+   si_pm4_free_state(sctx, (struct si_pm4_state*)state, SI_STATE_IDX(dsa));
 }
 
 static void *si_create_db_flush_dsa(struct si_context *sctx)
@@ -2931,17 +2955,19 @@ static void si_emit_framebuffer_state(struct si_context *sctx)
 
       tex = (struct si_texture *)cb->base.texture;
       radeon_add_to_buffer_list(
-         sctx, &sctx->gfx_cs, &tex->buffer, RADEON_USAGE_READWRITE,
+         sctx, &sctx->gfx_cs, &tex->buffer, RADEON_USAGE_READWRITE | RADEON_USAGE_NEEDS_IMPLICIT_SYNC,
          tex->buffer.b.b.nr_samples > 1 ? RADEON_PRIO_COLOR_BUFFER_MSAA : RADEON_PRIO_COLOR_BUFFER);
 
       if (tex->cmask_buffer && tex->cmask_buffer != &tex->buffer) {
-         radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, tex->cmask_buffer, RADEON_USAGE_READWRITE,
+         radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, tex->cmask_buffer,
+                                   RADEON_USAGE_READWRITE | RADEON_USAGE_NEEDS_IMPLICIT_SYNC,
                                    RADEON_PRIO_SEPARATE_META);
       }
 
       if (tex->dcc_separate_buffer)
          radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, tex->dcc_separate_buffer,
-                                   RADEON_USAGE_READWRITE, RADEON_PRIO_SEPARATE_META);
+                                   RADEON_USAGE_READWRITE | RADEON_USAGE_NEEDS_IMPLICIT_SYNC,
+                                   RADEON_PRIO_SEPARATE_META);
 
       /* Compute mutable surface parameters. */
       cb_color_base = tex->buffer.gpu_address >> 8;
@@ -3363,8 +3389,8 @@ static bool si_out_of_order_rasterization(struct si_context *sctx)
 
       /* The set of PS invocations is always order invariant,
        * except when early Z/S tests are requested. */
-      if (sctx->ps_shader.cso && sctx->ps_shader.cso->info.base.writes_memory &&
-          sctx->ps_shader.cso->info.base.fs.early_fragment_tests &&
+      if (sctx->shader.ps.cso && sctx->shader.ps.cso->info.base.writes_memory &&
+          sctx->shader.ps.cso->info.base.fs.early_fragment_tests &&
           !dsa_order_invariant.pass_set)
          return false;
 

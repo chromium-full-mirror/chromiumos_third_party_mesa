@@ -292,17 +292,27 @@ for s in [8, 16, 32, 64]:
 # Optimize a pattern of address calculation created by DXVK where the offset is
 # divided by 4 and then multipled by 4. This can be turned into an iand and the
 # additions before can be reassociated to CSE the iand instruction.
+
+for size, mask in ((8, 0xff), (16, 0xffff), (32, 0xffffffff), (64, 0xffffffffffffffff)):
+    a_sz = 'a@{}'.format(size)
+
+    optimizations.extend([
+       # 'a >> #b << #b' -> 'a & ~((1 << #b) - 1)'
+       (('ishl', ('ushr', a_sz, '#b'), b), ('iand', a, ('ishl', mask, b))),
+       (('ishl', ('ishr', a_sz, '#b'), b), ('iand', a, ('ishl', mask, b))),
+
+       # This does not trivially work with ishr.
+       (('ushr', ('ishl', a_sz, '#b'), b), ('iand', a, ('ushr', mask, b))),
+    ])
+
 for log2 in range(1, 7): # powers of two from 2 to 64
    v = 1 << log2
    mask = 0xffffffff & ~(v - 1)
    b_is_multiple = '#b(is_unsigned_multiple_of_{})'.format(v)
 
    optimizations.extend([
-       # 'a >> #b << #b' -> 'a & ~((1 << #b) - 1)'
-       (('ishl', ('ushr', a, log2), log2), ('iand', a, mask)),
-
        # Reassociate for improved CSE
-       (('iand', ('iadd', a, b_is_multiple), mask), ('iadd', ('iand', a, mask), b)),
+       (('iand@32', ('iadd@32', a, b_is_multiple), mask), ('iadd', ('iand', a, mask), b)),
    ])
 
 # To save space in the state tables, reduce to the set that is known to help.
@@ -394,21 +404,17 @@ optimizations.extend([
    (('fge', ('fneg', ('b2f', 'a@1')), 0.0), ('inot', a)),
 
    (('fneu', ('fadd', ('b2f', 'a@1'), ('b2f', 'b@1')), 0.0), ('ior', a, b)),
-   (('fneu', ('fmax', ('b2f', 'a@1'), ('b2f', 'b@1')), 0.0), ('ior', a, b)),
    (('fneu', ('bcsel', a, 1.0, ('b2f', 'b@1'))   , 0.0), ('ior', a, b)),
    (('fneu', ('b2f', 'a@1'), ('fneg', ('b2f', 'b@1'))),      ('ior', a, b)),
    (('fneu', ('fmul', ('b2f', 'a@1'), ('b2f', 'b@1')), 0.0), ('iand', a, b)),
-   (('fneu', ('fmin', ('b2f', 'a@1'), ('b2f', 'b@1')), 0.0), ('iand', a, b)),
    (('fneu', ('bcsel', a, ('b2f', 'b@1'), 0.0)   , 0.0), ('iand', a, b)),
    (('fneu', ('fadd', ('b2f', 'a@1'), ('fneg', ('b2f', 'b@1'))), 0.0), ('ixor', a, b)),
    (('fneu',          ('b2f', 'a@1') ,          ('b2f', 'b@1') ),      ('ixor', a, b)),
    (('fneu', ('fneg', ('b2f', 'a@1')), ('fneg', ('b2f', 'b@1'))),      ('ixor', a, b)),
    (('feq', ('fadd', ('b2f', 'a@1'), ('b2f', 'b@1')), 0.0), ('inot', ('ior', a, b))),
-   (('feq', ('fmax', ('b2f', 'a@1'), ('b2f', 'b@1')), 0.0), ('inot', ('ior', a, b))),
    (('feq', ('bcsel', a, 1.0, ('b2f', 'b@1'))   , 0.0), ('inot', ('ior', a, b))),
    (('feq', ('b2f', 'a@1'), ('fneg', ('b2f', 'b@1'))),      ('inot', ('ior', a, b))),
    (('feq', ('fmul', ('b2f', 'a@1'), ('b2f', 'b@1')), 0.0), ('inot', ('iand', a, b))),
-   (('feq', ('fmin', ('b2f', 'a@1'), ('b2f', 'b@1')), 0.0), ('inot', ('iand', a, b))),
    (('feq', ('bcsel', a, ('b2f', 'b@1'), 0.0)   , 0.0), ('inot', ('iand', a, b))),
    (('feq', ('fadd', ('b2f', 'a@1'), ('fneg', ('b2f', 'b@1'))), 0.0), ('ieq', a, b)),
    (('feq',          ('b2f', 'a@1') ,          ('b2f', 'b@1') ),      ('ieq', a, b)),
@@ -456,7 +462,7 @@ optimizations.extend([
    (('ine', ('iadd', a, b), a), ('ine', b, 0)),
 
    (('feq', ('b2f', 'a@1'), 0.0), ('inot', a)),
-   (('~fneu', ('b2f', 'a@1'), 0.0), a),
+   (('fneu', ('b2f', 'a@1'), 0.0), a),
    (('ieq', ('b2i', 'a@1'), 0),   ('inot', a)),
    (('ine', ('b2i', 'a@1'), 0),   a),
 
@@ -502,10 +508,11 @@ optimizations.extend([
    # a != fsat(a)
    (('ior', ('flt', a, 0.0), ('flt', 1.0, a)), ('fneu', a, ('fsat', a)), '!options->lower_fsat'),
 
+   # Note: fmin(-a, -b) == -fmax(a, b)
    (('fmax',                        ('b2f(is_used_once)', 'a@1'),           ('b2f', 'b@1')),           ('b2f', ('ior', a, b))),
-   (('fmax', ('fneg(is_used_once)', ('b2f(is_used_once)', 'a@1')), ('fneg', ('b2f', 'b@1'))), ('fneg', ('b2f', ('ior', a, b)))),
+   (('fmax', ('fneg(is_used_once)', ('b2f(is_used_once)', 'a@1')), ('fneg', ('b2f', 'b@1'))), ('fneg', ('b2f', ('iand', a, b)))),
    (('fmin',                        ('b2f(is_used_once)', 'a@1'),           ('b2f', 'b@1')),           ('b2f', ('iand', a, b))),
-   (('fmin', ('fneg(is_used_once)', ('b2f(is_used_once)', 'a@1')), ('fneg', ('b2f', 'b@1'))), ('fneg', ('b2f', ('iand', a, b)))),
+   (('fmin', ('fneg(is_used_once)', ('b2f(is_used_once)', 'a@1')), ('fneg', ('b2f', 'b@1'))), ('fneg', ('b2f', ('ior', a, b)))),
 
    # fmin(b2f(a), b)
    # bcsel(a, fmin(b2f(a), b), fmin(b2f(a), b))
@@ -547,6 +554,12 @@ optimizations.extend([
    (('fmin', ('fmin', a, b), b), ('fmin', a, b)),
    (('umin', ('umin', a, b), b), ('umin', a, b)),
    (('imin', ('imin', a, b), b), ('imin', a, b)),
+   (('fmax', ('fmax', ('fmax', a, b), c), a), ('fmax', ('fmax', a, b), c)),
+   (('umax', ('umax', ('umax', a, b), c), a), ('umax', ('umax', a, b), c)),
+   (('imax', ('imax', ('imax', a, b), c), a), ('imax', ('imax', a, b), c)),
+   (('fmin', ('fmin', ('fmin', a, b), c), a), ('fmin', ('fmin', a, b), c)),
+   (('umin', ('umin', ('umin', a, b), c), a), ('umin', ('umin', a, b), c)),
+   (('imin', ('imin', ('imin', a, b), c), a), ('imin', ('imin', a, b), c)),
 ])
 
 # Integer sizes
@@ -1807,6 +1820,45 @@ optimizations += [
     (('i2i8', ('iand', 'a@64', 0xff)), ('u2u8', a)),
 ]
 
+# Some operations such as iadd have the property that the bottom N bits of the
+# output only depends on the bottom N bits of each of the inputs so we can
+# remove casts
+for N in [16, 32]:
+    for M in [8, 16]:
+        if M >= N:
+            continue
+
+        aN = 'a@' + str(N)
+        u2uM = 'u2u{0}'.format(M)
+        i2iM = 'i2i{0}'.format(M)
+
+        for x in ['u', 'i']:
+            x2xN = '{0}2{0}{1}'.format(x, N)
+            extract_xM = 'extract_{0}{1}'.format(x, M)
+
+            x2xN_M_bits = '{0}(only_lower_{1}_bits_used)'.format(x2xN, M)
+            extract_xM_M_bits = \
+                '{0}(only_lower_{1}_bits_used)'.format(extract_xM, M)
+            optimizations += [
+                ((x2xN_M_bits, (u2uM, aN)), a),
+                ((extract_xM_M_bits, aN, 0), a),
+            ]
+
+            bcsel_M_bits = 'bcsel(only_lower_{0}_bits_used)'.format(M)
+            optimizations += [
+                ((bcsel_M_bits, c, (x2xN, (u2uM, aN)), b), ('bcsel', c, a, b)),
+                ((bcsel_M_bits, c, (x2xN, (i2iM, aN)), b), ('bcsel', c, a, b)),
+                ((bcsel_M_bits, c, (extract_xM, aN, 0), b), ('bcsel', c, a, b)),
+            ]
+
+            for op in ['iadd', 'imul', 'iand', 'ior', 'ixor']:
+                op_M_bits = '{0}(only_lower_{1}_bits_used)'.format(op, M)
+                optimizations += [
+                    ((op_M_bits, (x2xN, (u2uM, aN)), b), (op, a, b)),
+                    ((op_M_bits, (x2xN, (i2iM, aN)), b), (op, a, b)),
+                    ((op_M_bits, (extract_xM, aN, 0), b), (op, a, b)),
+                ]
+
 def fexp2i(exp, bits):
    # Generate an expression which constructs value 2.0^exp or 0.0.
    #
@@ -2250,6 +2302,8 @@ late_optimizations = [
     ('ffma', a, b, ('ffma', c, d, ('ffma', e, 'f', 'g'))), '(info->stage != MESA_SHADER_VERTEX && info->stage != MESA_SHADER_GEOMETRY) && !options->intel_vec4'),
    (('~fadd', ('ffma(is_used_once)', a, b, ('fmul', 'c(is_not_const_and_not_fsign)', 'd(is_not_const_and_not_fsign)') ), 'e(is_not_const)'),
     ('ffma', a, b, ('ffma', c, d, e)), '(info->stage != MESA_SHADER_VERTEX && info->stage != MESA_SHADER_GEOMETRY) && !options->intel_vec4'),
+   (('~fadd', ('fneg', ('ffma(is_used_once)', a, b, ('ffma', c, d, ('fmul', 'e(is_not_const_and_not_fsign)', 'f(is_not_const_and_not_fsign)')))), 'g(is_not_const)'),
+    ('ffma', ('fneg', a), b, ('ffma', ('fneg', c), d, ('ffma', ('fneg', e), 'f', 'g'))), '(info->stage != MESA_SHADER_VERTEX && info->stage != MESA_SHADER_GEOMETRY) && !options->intel_vec4'),
 
    # Section 8.8 (Integer Functions) of the GLSL 4.60 spec says:
    #
@@ -2283,6 +2337,29 @@ late_optimizations = [
    (('ishr', a, -32), a),
    (('ushr', a, 0), a),
 ]
+
+# A few more extract cases we'd rather leave late
+for N in [16, 32]:
+    aN = 'a@{0}'.format(N)
+    u2uM = 'u2u{0}'.format(M)
+    i2iM = 'i2i{0}'.format(M)
+
+    for x in ['u', 'i']:
+        x2xN = '{0}2{0}{1}'.format(x, N)
+        extract_x8 = 'extract_{0}8'.format(x)
+        extract_x16 = 'extract_{0}16'.format(x)
+
+        late_optimizations.extend([
+            ((x2xN, ('u2u8', aN)), (extract_x8, a, 0), '!options->lower_extract_byte'),
+            ((x2xN, ('i2i8', aN)), (extract_x8, a, 0), '!options->lower_extract_byte'),
+        ])
+
+        if N > 16:
+            late_optimizations.extend([
+                ((x2xN, ('u2u16', aN)), (extract_x16, a, 0), '!options->lower_extract_word'),
+                ((x2xN, ('i2i16', aN)), (extract_x16, a, 0), '!options->lower_extract_word'),
+            ])
+
 
 # Integer sizes
 for s in [8, 16, 32, 64]:

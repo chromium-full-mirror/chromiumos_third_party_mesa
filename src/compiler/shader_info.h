@@ -226,6 +226,10 @@ typedef struct shader_info {
    /* Whether gl_Layer is viewport-relative */
    bool layer_viewport_relative:1;
 
+   /* Whether explicit barriers are used */
+   bool uses_control_barrier : 1;
+   bool uses_memory_barrier : 1;
+
    union {
       struct {
          /* Which inputs are doubles */
@@ -367,6 +371,8 @@ typedef struct shader_info {
           * shader.  From NV_compute_shader_derivatives.
           */
          enum gl_derivative_group derivative_group:2;
+
+         bool zero_initialize_shared_memory;
 
          /**
           * Size of shared variables accessed by the compute shader.

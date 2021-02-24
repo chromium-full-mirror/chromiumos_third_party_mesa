@@ -31,17 +31,12 @@
 #include "si_shader_internal.h"
 #include "tgsi/tgsi_from_mesa.h"
 
-static const nir_deref_instr *tex_get_texture_deref(nir_tex_instr *instr)
+static const nir_src *get_texture_src(nir_tex_instr *instr, nir_tex_src_type type)
 {
    for (unsigned i = 0; i < instr->num_srcs; i++) {
-      switch (instr->src[i].src_type) {
-      case nir_tex_src_texture_deref:
-         return nir_src_as_deref(instr->src[i].src);
-      default:
-         break;
-      }
+      if (instr->src[i].src_type == type)
+         return &instr->src[i].src;
    }
-
    return NULL;
 }
 
@@ -178,22 +173,124 @@ static void scan_io_usage(struct si_shader_info *info, nir_intrinsic_instr *intr
    }
 }
 
+static bool is_bindless_handle_indirect(nir_instr *src)
+{
+   /* Check if the bindless handle comes from indirect load_ubo. */
+   if (src->type == nir_instr_type_intrinsic &&
+       nir_instr_as_intrinsic(src)->intrinsic == nir_intrinsic_load_ubo) {
+      if (!nir_src_is_const(nir_instr_as_intrinsic(src)->src[0]))
+         return true;
+   } else {
+      /* Some other instruction. Return the worst-case result. */
+      return true;
+   }
+   return false;
+}
+
 static void scan_instruction(const struct nir_shader *nir, struct si_shader_info *info,
                              nir_instr *instr)
 {
    if (instr->type == nir_instr_type_tex) {
       nir_tex_instr *tex = nir_instr_as_tex(instr);
-      const nir_deref_instr *deref = tex_get_texture_deref(tex);
-      nir_variable *var = deref ? nir_deref_instr_get_variable(deref) : NULL;
+      const nir_src *handle = get_texture_src(tex, nir_tex_src_texture_handle);
 
-      if (var) {
-         if (var->data.mode != nir_var_uniform || var->data.bindless)
-            info->uses_bindless_samplers = true;
+      /* Gather the types of used VMEM instructions that return something. */
+      switch (tex->op) {
+      case nir_texop_tex:
+      case nir_texop_txb:
+      case nir_texop_txl:
+      case nir_texop_txd:
+      case nir_texop_lod:
+      case nir_texop_tg4:
+         info->uses_vmem_return_type_sampler_or_bvh = true;
+         break;
+      default:
+         info->uses_vmem_return_type_other = true;
+         break;
+      }
+
+      if (handle) {
+         info->uses_bindless_samplers = true;
+
+         if (is_bindless_handle_indirect(handle->ssa->parent_instr))
+            info->uses_indirect_descriptor = true;
+      } else {
+         const nir_src *deref = get_texture_src(tex, nir_tex_src_texture_deref);
+
+         if (nir_deref_instr_has_indirect(nir_src_as_deref(*deref)))
+            info->uses_indirect_descriptor = true;
       }
    } else if (instr->type == nir_instr_type_intrinsic) {
       nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+      const char *intr_name = nir_intrinsic_infos[intr->intrinsic].name;
+      bool is_ssbo = strstr(intr_name, "ssbo");
+      bool is_image = strstr(intr_name, "image_deref");
+      bool is_bindless_image = strstr(intr_name, "bindless_image");
+
+      /* Gather the types of used VMEM instructions that return something. */
+      if (nir_intrinsic_infos[intr->intrinsic].has_dest) {
+         switch (intr->intrinsic) {
+         case nir_intrinsic_load_ubo:
+            if (!nir_src_is_const(intr->src[1]))
+               info->uses_vmem_return_type_other = true;
+            break;
+
+         case nir_intrinsic_load_barycentric_at_sample: /* This loads sample positions. */
+         case nir_intrinsic_load_tess_level_outer: /* TES input read from memory */
+         case nir_intrinsic_load_tess_level_inner: /* TES input read from memory */
+            info->uses_vmem_return_type_other = true;
+            break;
+
+         case nir_intrinsic_load_input:
+         case nir_intrinsic_load_input_vertex:
+         case nir_intrinsic_load_per_vertex_input:
+            if (nir->info.stage == MESA_SHADER_VERTEX ||
+                nir->info.stage == MESA_SHADER_TESS_EVAL)
+               info->uses_vmem_return_type_other = true;
+            break;
+
+         default:
+            if (is_image ||
+                is_bindless_image ||
+                is_ssbo ||
+                strstr(intr_name, "global") ||
+                strstr(intr_name, "scratch"))
+               info->uses_vmem_return_type_other = true;
+            break;
+         }
+      }
+
+      if (is_bindless_image)
+         info->uses_bindless_images = true;
+
+      if (strstr(intr_name, "image_atomic") ||
+          strstr(intr_name, "image_store") ||
+          strstr(intr_name, "image_deref_atomic") ||
+          strstr(intr_name, "image_deref_store") ||
+          strstr(intr_name, "ssbo_atomic") ||
+          intr->intrinsic == nir_intrinsic_store_ssbo)
+         info->num_memory_stores++;
+
+
+      if (is_image && nir_deref_instr_has_indirect(nir_src_as_deref(intr->src[0])))
+         info->uses_indirect_descriptor = true;
+
+      if (is_bindless_image && is_bindless_handle_indirect(intr->src[0].ssa->parent_instr))
+         info->uses_indirect_descriptor = true;
+
+      if (intr->intrinsic != nir_intrinsic_store_ssbo && is_ssbo &&
+          !nir_src_is_const(intr->src[0]))
+         info->uses_indirect_descriptor = true;
 
       switch (intr->intrinsic) {
+      case nir_intrinsic_store_ssbo:
+         if (!nir_src_is_const(intr->src[1]))
+            info->uses_indirect_descriptor = true;
+         break;
+      case nir_intrinsic_load_ubo:
+         if (!nir_src_is_const(intr->src[0]))
+            info->uses_indirect_descriptor = true;
+         break;
       case nir_intrinsic_load_local_invocation_id:
       case nir_intrinsic_load_work_group_id: {
          unsigned mask = nir_ssa_def_components_read(&intr->dest.ssa);
@@ -207,60 +304,6 @@ static void scan_instruction(const struct nir_shader *nir, struct si_shader_info
          }
          break;
       }
-      case nir_intrinsic_bindless_image_load:
-      case nir_intrinsic_bindless_image_size:
-      case nir_intrinsic_bindless_image_samples:
-         info->uses_bindless_images = true;
-         break;
-      case nir_intrinsic_bindless_image_store:
-         info->uses_bindless_images = true;
-         info->num_memory_stores++;
-         break;
-      case nir_intrinsic_image_deref_store:
-         info->num_memory_stores++;
-         break;
-      case nir_intrinsic_bindless_image_atomic_add:
-      case nir_intrinsic_bindless_image_atomic_imin:
-      case nir_intrinsic_bindless_image_atomic_umin:
-      case nir_intrinsic_bindless_image_atomic_imax:
-      case nir_intrinsic_bindless_image_atomic_umax:
-      case nir_intrinsic_bindless_image_atomic_and:
-      case nir_intrinsic_bindless_image_atomic_or:
-      case nir_intrinsic_bindless_image_atomic_xor:
-      case nir_intrinsic_bindless_image_atomic_exchange:
-      case nir_intrinsic_bindless_image_atomic_comp_swap:
-      case nir_intrinsic_bindless_image_atomic_inc_wrap:
-      case nir_intrinsic_bindless_image_atomic_dec_wrap:
-         info->uses_bindless_images = true;
-         info->num_memory_stores++;
-         break;
-      case nir_intrinsic_image_deref_atomic_add:
-      case nir_intrinsic_image_deref_atomic_imin:
-      case nir_intrinsic_image_deref_atomic_umin:
-      case nir_intrinsic_image_deref_atomic_imax:
-      case nir_intrinsic_image_deref_atomic_umax:
-      case nir_intrinsic_image_deref_atomic_and:
-      case nir_intrinsic_image_deref_atomic_or:
-      case nir_intrinsic_image_deref_atomic_xor:
-      case nir_intrinsic_image_deref_atomic_exchange:
-      case nir_intrinsic_image_deref_atomic_comp_swap:
-      case nir_intrinsic_image_deref_atomic_inc_wrap:
-      case nir_intrinsic_image_deref_atomic_dec_wrap:
-         info->num_memory_stores++;
-         break;
-      case nir_intrinsic_store_ssbo:
-      case nir_intrinsic_ssbo_atomic_add:
-      case nir_intrinsic_ssbo_atomic_imin:
-      case nir_intrinsic_ssbo_atomic_umin:
-      case nir_intrinsic_ssbo_atomic_imax:
-      case nir_intrinsic_ssbo_atomic_umax:
-      case nir_intrinsic_ssbo_atomic_and:
-      case nir_intrinsic_ssbo_atomic_or:
-      case nir_intrinsic_ssbo_atomic_xor:
-      case nir_intrinsic_ssbo_atomic_exchange:
-      case nir_intrinsic_ssbo_atomic_comp_swap:
-         info->num_memory_stores++;
-         break;
       case nir_intrinsic_load_color0:
       case nir_intrinsic_load_color1: {
          unsigned index = intr->intrinsic == nir_intrinsic_load_color1;
@@ -550,6 +593,19 @@ void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool first)
    NIR_PASS_V(nir, nir_lower_var_copies);
 }
 
+void si_nir_late_opts(nir_shader *nir)
+{
+   bool more_late_algebraic = true;
+   while (more_late_algebraic) {
+      more_late_algebraic = false;
+      NIR_PASS(more_late_algebraic, nir, nir_opt_algebraic_late);
+      NIR_PASS_V(nir, nir_opt_constant_folding);
+      NIR_PASS_V(nir, nir_copy_prop);
+      NIR_PASS_V(nir, nir_opt_dce);
+      NIR_PASS_V(nir, nir_opt_cse);
+   }
+}
+
 static int type_size_vec4(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_attribute_slots(type, false);
@@ -765,15 +821,7 @@ static void si_lower_nir(struct si_screen *sscreen, struct nir_shader *nir)
       si_nir_opts(sscreen, nir, false);
 
    /* Run late optimizations to fuse ffma. */
-   bool more_late_algebraic = true;
-   while (more_late_algebraic) {
-      more_late_algebraic = false;
-      NIR_PASS(more_late_algebraic, nir, nir_opt_algebraic_late);
-      NIR_PASS_V(nir, nir_opt_constant_folding);
-      NIR_PASS_V(nir, nir_copy_prop);
-      NIR_PASS_V(nir, nir_opt_dce);
-      NIR_PASS_V(nir, nir_opt_cse);
-   }
+   si_nir_late_opts(nir);
 
    NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
 

@@ -47,14 +47,35 @@
 #endif
 
 static void
+resource_sync_writes_from_batch_id(struct zink_context *ctx, uint32_t batch_uses, unsigned cur_batch)
+{
+   if (batch_uses & ZINK_RESOURCE_ACCESS_WRITE << ZINK_COMPUTE_BATCH_ID)
+      zink_wait_on_batch(ctx, ZINK_COMPUTE_BATCH_ID);
+   batch_uses &= ~(ZINK_RESOURCE_ACCESS_WRITE << ZINK_COMPUTE_BATCH_ID);
+   if (!batch_uses)
+      return;
+   for (unsigned i = 0; i < ZINK_NUM_BATCHES + 1; i++) {
+      /* loop backwards and sync with highest batch id that has writes */
+      if (batch_uses & (ZINK_RESOURCE_ACCESS_WRITE << cur_batch)) {
+          zink_wait_on_batch(ctx, cur_batch);
+          break;
+      }
+      cur_batch--;
+      if (cur_batch > ZINK_COMPUTE_BATCH_ID - 1) // underflowed past max batch id
+         cur_batch = ZINK_COMPUTE_BATCH_ID - 1;
+   }
+}
+
+static void
 zink_resource_destroy(struct pipe_screen *pscreen,
                       struct pipe_resource *pres)
 {
    struct zink_screen *screen = zink_screen(pscreen);
    struct zink_resource *res = zink_resource(pres);
-   if (pres->target == PIPE_BUFFER)
+   if (pres->target == PIPE_BUFFER) {
       vkDestroyBuffer(screen->dev, res->buffer, NULL);
-   else
+      util_range_destroy(&res->valid_buffer_range);
+   } else
       vkDestroyImage(screen->dev, res->image, NULL);
 
    vkFreeMemory(screen->dev, res->mem, NULL);
@@ -109,7 +130,7 @@ resource_create(struct pipe_screen *pscreen,
    res->base.screen = pscreen;
 
    VkMemoryRequirements reqs = {};
-   VkMemoryPropertyFlags flags = 0;
+   VkMemoryPropertyFlags flags;
 
    res->internal_format = templ->format;
    if (templ->target == PIPE_BUFFER) {
@@ -118,10 +139,14 @@ resource_create(struct pipe_screen *pscreen,
       bci.size = templ->width0;
 
       bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                  VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                  VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
-      /* apparently gallium thinks this is the jack-of-all-trades bind type */
-      if (templ->bind & PIPE_BIND_SAMPLER_VIEW) {
+      if (templ->usage != PIPE_USAGE_STAGING)
+         bci.usage |= VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
+
+      /* apparently gallium thinks these are the jack-of-all-trades bind types */
+      if (templ->bind & (PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_QUERY_BUFFER)) {
          bci.usage |= VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
@@ -130,9 +155,7 @@ resource_create(struct pipe_screen *pscreen,
                       VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT;
          VkFormatProperties props;
          vkGetPhysicalDeviceFormatProperties(screen->pdev, zink_get_format(screen, templ->format), &props);
-         if (props.bufferFeatures & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
-            bci.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-         if (props.bufferFeatures & VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT)
+         if (props.bufferFeatures & VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT)
             bci.usage |= VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
       }
 
@@ -166,7 +189,7 @@ resource_create(struct pipe_screen *pscreen,
       }
 
       vkGetBufferMemoryRequirements(screen->dev, res->buffer, &reqs);
-      flags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+      flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
    } else {
       res->format = zink_get_format(screen, templ->format);
 
@@ -217,15 +240,13 @@ resource_create(struct pipe_screen *pscreen,
           templ->target == PIPE_TEXTURE_CUBE_ARRAY)
          ici.arrayLayers *= 6;
 
-      if (templ->bind & (PIPE_BIND_DISPLAY_TARGET |
-                         PIPE_BIND_SHARED)) {
-         ici.tiling = VK_IMAGE_TILING_LINEAR;
-      }
-
       if (templ->bind & PIPE_BIND_SHARED) {
          emici.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
          emici.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
          ici.pNext = &emici;
+
+         /* TODO: deal with DRM modifiers here */
+         ici.tiling = VK_IMAGE_TILING_LINEAR;
       }
 
       if (templ->usage == PIPE_USAGE_STAGING)
@@ -284,16 +305,26 @@ resource_create(struct pipe_screen *pscreen,
       res->aspect = aspect_from_format(templ->format);
 
       vkGetImageMemoryRequirements(screen->dev, res->image, &reqs);
-      if (templ->usage == PIPE_USAGE_STAGING || (screen->winsys && (templ->bind & (PIPE_BIND_SCANOUT|PIPE_BIND_DISPLAY_TARGET|PIPE_BIND_SHARED))))
-        flags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+      if (templ->usage == PIPE_USAGE_STAGING)
+        flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
       else
-        flags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
    }
+
+   if (templ->flags & PIPE_RESOURCE_FLAG_MAP_COHERENT)
+      flags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
    VkMemoryAllocateInfo mai = {};
    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
    mai.allocationSize = reqs.size;
    mai.memoryTypeIndex = get_memory_type_index(screen, &reqs, flags);
+
+   if (templ->target != PIPE_BUFFER) {
+      VkMemoryType mem_type =
+         screen->info.mem_props.memoryTypes[mai.memoryTypeIndex];
+      res->host_visible = mem_type.propertyFlags &
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+   }
 
    VkExportMemoryAllocateInfo emai = {};
    if (templ->bind & PIPE_BIND_SHARED) {
@@ -336,14 +367,13 @@ resource_create(struct pipe_screen *pscreen,
    res->offset = 0;
    res->size = reqs.size;
 
-   if (templ->target == PIPE_BUFFER)
+   if (templ->target == PIPE_BUFFER) {
       vkBindBufferMemory(screen->dev, res->buffer, res->mem, res->offset);
-   else
+      util_range_init(&res->valid_buffer_range);
+   } else
       vkBindImageMemory(screen->dev, res->image, res->mem, res->offset);
 
-   if (screen->winsys && (templ->bind & (PIPE_BIND_DISPLAY_TARGET |
-                                         PIPE_BIND_SCANOUT |
-                                         PIPE_BIND_SHARED))) {
+   if (screen->winsys && (templ->bind & PIPE_BIND_DISPLAY_TARGET)) {
       struct sw_winsys *winsys = screen->winsys;
       res->dt = winsys->displaytarget_create(screen->winsys,
                                              res->base.bind,
@@ -440,15 +470,9 @@ zink_transfer_copy_bufimage(struct zink_context *ctx,
    struct zink_batch *batch = zink_batch_no_rp(ctx);
 
    if (buf2img) {
-      if (res->layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-         zink_resource_barrier(batch->cmdbuf, res, res->aspect,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-      }
+      zink_resource_image_barrier(ctx, batch, res, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 0);
    } else {
-      if (res->layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-         zink_resource_barrier(batch->cmdbuf, res, res->aspect,
-                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-      }
+      zink_resource_image_barrier(ctx, batch, res, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, 0);
    }
 
    VkBufferImageCopy copyRegion = {};
@@ -508,11 +532,11 @@ zink_transfer_copy_bufimage(struct zink_context *ctx,
    return true;
 }
 
-static uint32_t
-get_resource_usage(struct zink_resource *res)
+uint32_t
+zink_get_resource_usage(struct zink_resource *res)
 {
    uint32_t batch_uses = 0;
-   for (unsigned i = 0; i < 4; i++)
+   for (unsigned i = 0; i < ARRAY_SIZE(res->batch_uses); i++)
       batch_uses |= p_atomic_read(&res->batch_uses[i]) << i;
    return batch_uses;
 }
@@ -528,7 +552,7 @@ zink_transfer_map(struct pipe_context *pctx,
    struct zink_context *ctx = zink_context(pctx);
    struct zink_screen *screen = zink_screen(pctx->screen);
    struct zink_resource *res = zink_resource(pres);
-   uint32_t batch_uses = get_resource_usage(res);
+   uint32_t batch_uses = zink_get_resource_usage(res);
 
    struct zink_transfer *trans = slab_alloc(&ctx->transfer_pool);
    if (!trans)
@@ -545,14 +569,24 @@ zink_transfer_map(struct pipe_context *pctx,
    void *ptr;
    if (pres->target == PIPE_BUFFER) {
       if (!(usage & PIPE_MAP_UNSYNCHRONIZED)) {
-         if ((usage & PIPE_MAP_READ && batch_uses >= ZINK_RESOURCE_ACCESS_WRITE) ||
-             (usage & PIPE_MAP_WRITE && batch_uses)) {
-            /* need to wait for rendering to finish
-             * TODO: optimize/fix this to be much less obtrusive
-             * mesa/mesa#2966
-             */
-            zink_fence_wait(pctx);
+         if (util_ranges_intersect(&res->valid_buffer_range, box->x, box->x + box->width)) {
+            /* special case compute reads since they aren't handled by zink_fence_wait() */
+            if (usage & PIPE_MAP_WRITE && (batch_uses & (ZINK_RESOURCE_ACCESS_READ << ZINK_COMPUTE_BATCH_ID)))
+               zink_wait_on_batch(ctx, ZINK_COMPUTE_BATCH_ID);
+            batch_uses &= ~(ZINK_RESOURCE_ACCESS_READ << ZINK_COMPUTE_BATCH_ID);
+            if (usage & PIPE_MAP_READ && batch_uses >= ZINK_RESOURCE_ACCESS_WRITE)
+               resource_sync_writes_from_batch_id(ctx, batch_uses, zink_curr_batch(ctx)->batch_id);
+            else if (usage & PIPE_MAP_WRITE && batch_uses) {
+               /* need to wait for all rendering to finish
+                * TODO: optimize/fix this to be much less obtrusive
+                * mesa/mesa#2966
+                */
+
+               zink_fence_wait(pctx);
+            }
          }
+         if (usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE)
+            util_range_set_empty(&res->valid_buffer_range);
       }
 
 
@@ -582,8 +616,10 @@ zink_transfer_map(struct pipe_context *pctx,
       trans->base.stride = 0;
       trans->base.layer_stride = 0;
       ptr = ((uint8_t *)ptr) + box->x;
+      if (usage & PIPE_MAP_WRITE)
+         util_range_add(&res->base, &res->valid_buffer_range, box->x, box->x + box->width);
    } else {
-      if (res->optimal_tiling || ((res->base.usage != PIPE_USAGE_STAGING))) {
+      if (res->optimal_tiling || !res->host_visible) {
          enum pipe_format format = pres->format;
          if (usage & PIPE_MAP_DEPTH_ONLY)
             format = util_format_get_depth_only(pres->format);
@@ -612,6 +648,10 @@ zink_transfer_map(struct pipe_context *pctx,
          struct zink_resource *staging_res = zink_resource(trans->staging_res);
 
          if (usage & PIPE_MAP_READ) {
+            /* TODO: can probably just do a full cs copy if it's already in a cs batch */
+            if (batch_uses & (ZINK_RESOURCE_ACCESS_WRITE << ZINK_COMPUTE_BATCH_ID))
+               /* don't actually have to stall here, only ensure batch is submitted */
+               zink_flush_compute(ctx);
             struct zink_context *ctx = zink_context(pctx);
             bool ret = zink_transfer_copy_bufimage(ctx, res,
                                                    staging_res, trans,
@@ -631,8 +671,16 @@ zink_transfer_map(struct pipe_context *pctx,
 
       } else {
          assert(!res->optimal_tiling);
-         if (batch_uses >= ZINK_RESOURCE_ACCESS_WRITE)
-            zink_fence_wait(pctx);
+         /* special case compute reads since they aren't handled by zink_fence_wait() */
+         if (batch_uses & (ZINK_RESOURCE_ACCESS_READ << ZINK_COMPUTE_BATCH_ID))
+            zink_wait_on_batch(ctx, ZINK_COMPUTE_BATCH_ID);
+         batch_uses &= ~(ZINK_RESOURCE_ACCESS_READ << ZINK_COMPUTE_BATCH_ID);
+         if (batch_uses >= ZINK_RESOURCE_ACCESS_WRITE) {
+            if (usage & PIPE_MAP_READ)
+               resource_sync_writes_from_batch_id(ctx, batch_uses, zink_curr_batch(ctx)->batch_id);
+            else
+               zink_fence_wait(pctx);
+         }
          VkResult result = vkMapMemory(screen->dev, res->mem, res->offset, res->size, 0, &ptr);
          if (result != VK_SUCCESS)
             return NULL;
@@ -653,9 +701,40 @@ zink_transfer_map(struct pipe_context *pctx,
          ptr = ((uint8_t *)ptr) + offset;
       }
    }
+   if ((usage & PIPE_MAP_PERSISTENT) && !(usage & PIPE_MAP_COHERENT))
+      res->persistent_maps++;
 
    *transfer = &trans->base;
    return ptr;
+}
+
+static void
+zink_transfer_flush_region(struct pipe_context *pctx,
+                           struct pipe_transfer *ptrans,
+                           const struct pipe_box *box)
+{
+   struct zink_context *ctx = zink_context(pctx);
+   struct zink_resource *res = zink_resource(ptrans->resource);
+   struct zink_transfer *trans = (struct zink_transfer *)ptrans;
+
+   if (trans->base.usage & PIPE_MAP_WRITE) {
+      if (trans->staging_res) {
+         uint32_t batch_uses = zink_get_resource_usage(res);
+         if (batch_uses & (ZINK_RESOURCE_ACCESS_WRITE << ZINK_COMPUTE_BATCH_ID)) {
+            /* don't actually have to stall here, only ensure batch is submitted */
+            zink_flush_compute(ctx);
+            batch_uses &= ~(ZINK_RESOURCE_ACCESS_WRITE << ZINK_COMPUTE_BATCH_ID);
+            batch_uses &= ~(ZINK_RESOURCE_ACCESS_READ << ZINK_COMPUTE_BATCH_ID);
+         }
+
+         struct zink_resource *staging_res = zink_resource(trans->staging_res);
+         zink_transfer_copy_bufimage(ctx, res, staging_res, trans, true);
+         if (batch_uses)
+            pctx->flush(pctx, NULL, 0);
+      }
+      if (res->base.target == PIPE_BUFFER)
+         util_range_add(&res->base, &res->valid_buffer_range, box->x, box->x + box->width);
+   }
 }
 
 static void
@@ -669,19 +748,16 @@ zink_transfer_unmap(struct pipe_context *pctx,
    if (trans->staging_res) {
       struct zink_resource *staging_res = zink_resource(trans->staging_res);
       vkUnmapMemory(screen->dev, staging_res->mem);
-
-      if (trans->base.usage & PIPE_MAP_WRITE) {
-         struct zink_context *ctx = zink_context(pctx);
-         uint32_t batch_uses = get_resource_usage(res);
-         if (batch_uses >= ZINK_RESOURCE_ACCESS_WRITE)
-            zink_fence_wait(pctx);
-         zink_transfer_copy_bufimage(ctx, res, staging_res, trans, true);
-      }
-
-      pipe_resource_reference(&trans->staging_res, NULL);
    } else
       vkUnmapMemory(screen->dev, res->mem);
+   if ((trans->base.usage & PIPE_MAP_PERSISTENT) && !(trans->base.usage & PIPE_MAP_COHERENT))
+      res->persistent_maps--;
+   if (!(trans->base.usage & (PIPE_MAP_FLUSH_EXPLICIT | PIPE_MAP_COHERENT))) {
+      zink_transfer_flush_region(pctx, ptrans, &ptrans->box);
+   }
 
+   if (trans->staging_res)
+      pipe_resource_reference(&trans->staging_res, NULL);
    pipe_resource_reference(&trans->base.resource, NULL);
    slab_free(&ctx->transfer_pool, ptrans);
 }
@@ -700,7 +776,7 @@ zink_resource_get_separate_stencil(struct pipe_resource *pres)
 }
 
 void
-zink_resource_setup_transfer_layouts(struct zink_batch *batch, struct zink_resource *src, struct zink_resource *dst)
+zink_resource_setup_transfer_layouts(struct zink_context *ctx, struct zink_resource *src, struct zink_resource *dst)
 {
    if (src == dst) {
       /* The Vulkan 1.1 specification says the following about valid usage
@@ -719,16 +795,20 @@ zink_resource_setup_transfer_layouts(struct zink_batch *batch, struct zink_resou
        * VK_IMAGE_LAYOUT_GENERAL. And since this isn't a present-related
        * operation, VK_IMAGE_LAYOUT_GENERAL seems most appropriate.
        */
-      zink_resource_barrier(batch->cmdbuf, src, src->aspect,
-                            VK_IMAGE_LAYOUT_GENERAL);
+      zink_resource_image_barrier(ctx, NULL, src,
+                                  VK_IMAGE_LAYOUT_GENERAL,
+                                  VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT);
    } else {
-      if (src->layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
-         zink_resource_barrier(batch->cmdbuf, src, src->aspect,
-                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+      zink_resource_image_barrier(ctx, NULL, src,
+                                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                  VK_ACCESS_TRANSFER_READ_BIT,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-      if (dst->layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
-         zink_resource_barrier(batch->cmdbuf, dst, dst->aspect,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+      zink_resource_image_barrier(ctx, NULL, dst,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                  VK_ACCESS_TRANSFER_WRITE_BIT,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT);
    }
 }
 
@@ -772,7 +852,7 @@ static const struct u_transfer_vtbl transfer_vtbl = {
    .resource_destroy      = zink_resource_destroy,
    .transfer_map          = zink_transfer_map,
    .transfer_unmap        = zink_transfer_unmap,
-   .transfer_flush_region = u_default_transfer_flush_region,
+   .transfer_flush_region = zink_transfer_flush_region,
    .get_internal_format   = zink_resource_get_internal_format,
    .set_stencil           = zink_resource_set_separate_stencil,
    .get_stencil           = zink_resource_get_separate_stencil,

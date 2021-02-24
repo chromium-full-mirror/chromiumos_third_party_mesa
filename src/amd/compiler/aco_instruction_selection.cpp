@@ -192,13 +192,8 @@ static Temp emit_bpermute(isel_context *ctx, Builder &bld, Temp index, Temp data
 
       return bld.pseudo(aco_opcode::p_bpermute, bld.def(v1), bld.def(bld.lm), bld.def(bld.lm, vcc), index_op, input_data);
    } else if (ctx->options->chip_class >= GFX10 && ctx->program->wave_size == 64) {
-      /* GFX10 wave64 mode: emulate full-wave bpermute */
-      if (!ctx->has_gfx10_wave64_bpermute) {
-         ctx->has_gfx10_wave64_bpermute = true;
-         ctx->program->config->num_shared_vgprs = 8; /* Shared VGPRs are allocated in groups of 8 */
-         ctx->program->vgpr_limit -= 4; /* We allocate 8 shared VGPRs, so we'll have 4 fewer normal VGPRs */
-      }
 
+      /* GFX10 wave64 mode: emulate full-wave bpermute */
       Temp index_is_lo = bld.vopc(aco_opcode::v_cmp_ge_u32, bld.def(bld.lm), Operand(31u), index);
       Builder::Result index_is_lo_split = bld.pseudo(aco_opcode::p_split_vector, bld.def(s1), bld.def(s1), index_is_lo);
       Temp index_is_lo_n1 = bld.sop1(aco_opcode::s_not_b32, bld.def(s1), bld.def(s1, scc), index_is_lo_split.def(1).getTemp());
@@ -209,6 +204,10 @@ static Temp emit_bpermute(isel_context *ctx, Builder &bld, Temp index, Temp data
       index_x4.setLateKill(true);
       input_data.setLateKill(true);
       same_half.setLateKill(true);
+
+      /* We need one pair of shared VGPRs:
+       * Note, that these have twice the allocation granularity of normal VGPRs */
+      ctx->program->config->num_shared_vgprs = 2 * ctx->program->dev.vgpr_alloc_granule;
 
       return bld.pseudo(aco_opcode::p_bpermute, bld.def(v1), bld.def(s2), bld.def(s1, scc), index_x4, input_data, same_half);
    } else {
@@ -3467,31 +3466,35 @@ Temp lds_load_callback(Builder& bld, const LoadEmitInfo &info,
    bool large_ds_read = bld.program->chip_class >= GFX7;
    bool usable_read2 = bld.program->chip_class >= GFX7;
 
+   bool aligned2 = align % 2 == 0;
+   bool aligned4 = align % 4 == 0;
+   bool aligned8 = bld.program->dev.has_unaligned_lds_access ? aligned4 : (align % 8 == 0);
+   bool aligned16 = bld.program->dev.has_unaligned_lds_access ? aligned4 : (align % 16 == 0);
+
    bool read2 = false;
    unsigned size = 0;
    aco_opcode op;
-   //TODO: use ds_read_u8_d16_hi/ds_read_u16_d16_hi if beneficial
-   if (bytes_needed >= 16 && align % 16 == 0 && large_ds_read) {
+   if (bytes_needed >= 16 && aligned16 && large_ds_read) {
       size = 16;
       op = aco_opcode::ds_read_b128;
-   } else if (bytes_needed >= 16 && align % 8 == 0 && const_offset % 8 == 0 && usable_read2) {
+   } else if (bytes_needed >= 16 && aligned8 && const_offset % 8 == 0 && usable_read2) {
       size = 16;
       read2 = true;
       op = aco_opcode::ds_read2_b64;
-   } else if (bytes_needed >= 12 && align % 16 == 0 && large_ds_read) {
+   } else if (bytes_needed >= 12 && aligned16 && large_ds_read) {
       size = 12;
       op = aco_opcode::ds_read_b96;
-   } else if (bytes_needed >= 8 && align % 8 == 0) {
+   } else if (bytes_needed >= 8 && aligned8) {
       size = 8;
       op = aco_opcode::ds_read_b64;
-   } else if (bytes_needed >= 8 && align % 4 == 0 && const_offset % 4 == 0) {
+   } else if (bytes_needed >= 8 && aligned4 && const_offset % 4 == 0) {
       size = 8;
       read2 = true;
       op = aco_opcode::ds_read2_b32;
-   } else if (bytes_needed >= 4 && align % 4 == 0) {
+   } else if (bytes_needed >= 4 && aligned4) {
       size = 4;
       op = aco_opcode::ds_read_b32;
-   } else if (bytes_needed >= 2 && align % 2 == 0) {
+   } else if (bytes_needed >= 2 && aligned2) {
       size = 2;
       op = aco_opcode::ds_read_u16;
    } else {
@@ -3855,8 +3858,8 @@ void store_lds(isel_context *ctx, unsigned elem_size_bytes, Temp data, uint32_t 
 
       bool aligned2 = offset % 2 == 0 && align % 2 == 0;
       bool aligned4 = offset % 4 == 0 && align % 4 == 0;
-      bool aligned8 = offset % 8 == 0 && align % 8 == 0;
-      bool aligned16 = offset % 16 == 0 && align % 16 == 0;
+      bool aligned8 = bld.program->dev.has_unaligned_lds_access ? aligned4 : (offset % 8 == 0 && align % 8 == 0);
+      bool aligned16 = bld.program->dev.has_unaligned_lds_access ? aligned4 : (offset % 16 == 0 && align % 16 == 0);
 
       //TODO: use ds_write_b8_d16_hi/ds_write_b16_d16_hi if beneficial
       aco_opcode op = aco_opcode::num_opcodes;
@@ -4638,7 +4641,7 @@ void emit_interp_instr(isel_context *ctx, unsigned idx, unsigned component, Temp
    Builder bld(ctx->program, ctx->block);
 
    if (dst.regClass() == v2b) {
-      if (ctx->program->has_16bank_lds) {
+      if (ctx->program->dev.has_16bank_lds) {
          assert(ctx->options->chip_class <= GFX8);
          Builder::Result interp_p1 =
             bld.vintrp(aco_opcode::v_interp_mov_f32, bld.def(v1),
@@ -4664,7 +4667,7 @@ void emit_interp_instr(isel_context *ctx, unsigned idx, unsigned component, Temp
          bld.vintrp(aco_opcode::v_interp_p1_f32, bld.def(v1), coord1,
                     bld.m0(prim_mask), idx, component);
 
-      if (ctx->program->has_16bank_lds)
+      if (ctx->program->dev.has_16bank_lds)
          interp_p1.instr->operands[0].setLateKill(true);
 
       bld.vintrp(aco_opcode::v_interp_p2_f32, Definition(dst), coord2,
@@ -4854,14 +4857,13 @@ Temp adjust_vertex_fetch_alpha(isel_context *ctx, unsigned adjustment, Temp alph
     * and happen to contain 0, 1, 2, 3 as the two LSBs of the
     * exponent.
     */
-   alpha = bld.vop2(aco_opcode::v_lshlrev_b32, bld.def(v1), Operand(adjustment == AC_FETCH_FORMAT_SNORM ? 7u : 30u), alpha);
-   alpha = bld.vop2(aco_opcode::v_ashrrev_i32, bld.def(v1), Operand(30u), alpha);
+   unsigned offset = adjustment == AC_FETCH_FORMAT_SNORM ? 23u : 0u;
+   alpha = bld.vop3(aco_opcode::v_bfe_i32, bld.def(v1), alpha, Operand(offset), Operand(2u));
 
    /* Convert back to the right type. */
    if (adjustment == AC_FETCH_FORMAT_SNORM) {
       alpha = bld.vop1(aco_opcode::v_cvt_f32_i32, bld.def(v1), alpha);
-      Temp clamp = bld.vopc(aco_opcode::v_cmp_le_f32, bld.hint_vcc(bld.def(bld.lm)), Operand(0xbf800000u), alpha);
-      alpha = bld.vop2(aco_opcode::v_cndmask_b32, bld.def(v1), Operand(0xbf800000u), alpha, clamp);
+      alpha = bld.vop2(aco_opcode::v_max_f32, bld.def(v1), Operand(0xbf800000u), alpha);
    } else if (adjustment == AC_FETCH_FORMAT_SSCALED) {
       alpha = bld.vop1(aco_opcode::v_cvt_f32_i32, bld.def(v1), alpha);
    }
@@ -8558,14 +8560,10 @@ void visit_intrinsic(isel_context *ctx, nir_intrinsic_instr *instr)
       emit_wqm(bld, wqm_tmp, dst);
       break;
    }
-   case nir_intrinsic_load_helper_invocation: {
-      Temp dst = get_ssa_temp(ctx, &instr->dest.ssa);
-      bld.pseudo(aco_opcode::p_load_helper, Definition(dst));
-      ctx->block->kind |= block_kind_needs_lowering;
-      ctx->program->needs_exact = true;
-      break;
-   }
+   case nir_intrinsic_load_helper_invocation:
    case nir_intrinsic_is_helper_invocation: {
+      /* load_helper() after demote() get lowered to is_helper().
+       * Otherwise, these two behave the same. */
       Temp dst = get_ssa_temp(ctx, &instr->dest.ssa);
       bld.pseudo(aco_opcode::p_is_helper, Definition(dst));
       ctx->block->kind |= block_kind_needs_lowering;
@@ -11154,7 +11152,7 @@ Pseudo_instruction *add_startpgm(struct isel_context *ctx)
       }
    }
 
-   aco_ptr<Pseudo_instruction> startpgm{create_instruction<Pseudo_instruction>(aco_opcode::p_startpgm, Format::PSEUDO, 0, arg_count + 1)};
+   aco_ptr<Pseudo_instruction> startpgm{create_instruction<Pseudo_instruction>(aco_opcode::p_startpgm, Format::PSEUDO, 0, arg_count)};
    for (unsigned i = 0, arg = 0; i < ctx->args->ac.arg_count; i++) {
       if (ctx->args->ac.args[i].skip)
          continue;
@@ -11169,7 +11167,6 @@ Pseudo_instruction *add_startpgm(struct isel_context *ctx)
       startpgm->definitions[arg].setFixed(PhysReg{file == AC_ARG_SGPR ? reg : reg + 256});
       arg++;
    }
-   startpgm->definitions[arg_count] = Definition{ctx->program->allocateId(ctx->program->lane_mask), exec, ctx->program->lane_mask};
    Pseudo_instruction *instr = startpgm.get();
    ctx->block->instructions.push_back(std::move(startpgm));
 
@@ -11217,7 +11214,7 @@ void split_arguments(isel_context *ctx, Pseudo_instruction *startpgm)
    /* Split all arguments except for the first (ring_offsets) and the last
     * (exec) so that the dead channels don't stay live throughout the program.
     */
-   for (int i = 1; i < startpgm->definitions.size() - 1; i++) {
+   for (int i = 1; i < startpgm->definitions.size(); i++) {
       if (startpgm->definitions[i].regClass().size() > 1) {
          emit_split_vector(ctx, startpgm->definitions[i].getTemp(),
                            startpgm->definitions[i].regClass().size());
@@ -12249,7 +12246,7 @@ void select_trap_handler_shader(Program *program, struct nir_shader *shader,
    assert(args->options->chip_class == GFX8);
 
    init_program(program, compute_cs, args->shader_info,
-                args->options->chip_class, args->options->family, config);
+                args->options->chip_class, args->options->family, args->options->wgp_mode, config);
 
    isel_context ctx = {};
    ctx.program = program;

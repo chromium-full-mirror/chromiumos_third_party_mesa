@@ -55,140 +55,6 @@ bi_pack_header(bi_clause *clause, bi_clause *next_1, bi_clause *next_2, bool tdd
         return u;
 }
 
-/* The uniform/constant slot allows loading a contiguous 64-bit immediate or
- * pushed uniform per tuple. Figure out which one we need in the tuple (the
- * scheduler needs to ensure we only have one type per tuple), validate
- * everything, and rewrite away the register/uniform indices to use 3-bit
- * sources directly. */
-
-static unsigned
-bi_lookup_constant(bi_clause *clause, uint32_t cons, bool *hi)
-{
-        for (unsigned i = 0; i < clause->constant_count; ++i) {
-                /* Try to apply to top or to bottom */
-                uint64_t top = clause->constants[i];
-
-                /* Constant slots can actually be used by a different
-                 * tuples if the 60 upper bits match since the 4 LSB are
-                 * encoded in the tuple itself. Let's not bother about this
-                 * case until we start scheduling more than one tuple per
-                 * clause.
-                 */
-                if (cons == (uint32_t) top)
-                        return i;
-
-                if (cons == (top >> 32ul)) {
-                        *hi = true;
-                        return i;
-                }
-        }
-
-        unreachable("Invalid constant accessed");
-}
-
-static unsigned
-bi_constant_field(unsigned idx)
-{
-        assert(idx <= 5);
-
-        const unsigned values[] = {
-                4, 5, 6, 7, 2, 3
-        };
-
-        return values[idx] << 4;
-}
-
-static bool
-bi_assign_fau_idx_single(bi_registers *regs,
-                         bi_clause *clause,
-                         bi_instr *ins,
-                         bool assigned,
-                         bool fast_zero)
-{
-        if (!ins)
-                return assigned;
-
-        if (ins->op == BI_OPCODE_ATEST) {
-                /* ATEST FAU index must point to the ATEST parameter datum slot */
-                assert(!assigned && !clause->branch_constant);
-                regs->fau_idx = BIR_FAU_ATEST_PARAM;
-                return true;
-        }
-
-        if (ins->branch_target && clause->branch_constant) {
-                /* By convention branch constant is last XXX: this whole thing
-                 * is a hack, FIXME */
-                unsigned idx = clause->constant_count - 1;
-
-                /* We can only jump to clauses which are qword aligned so the
-                 * bottom 4-bits of the offset are necessarily 0 */
-                unsigned lo = 0;
-
-                /* Build the constant */
-                unsigned C = bi_constant_field(idx) | lo;
-
-                if (assigned && regs->fau_idx != C)
-                        unreachable("Mismatched fau_idx: branch");
-
-                bi_foreach_src(ins, s) {
-                        if (ins->src[s].type == BI_INDEX_CONSTANT)
-                                ins->src[s] = bi_passthrough(BIFROST_SRC_FAU_HI);
-                }
-
-                regs->fau_idx = C;
-                return true;
-        }
-
-        bi_foreach_src(ins, s) {
-                if (ins->src[s].type == BI_INDEX_CONSTANT) {
-                        bool hi = false;
-                        uint32_t cons = ins->src[s].value;
-                        unsigned swizzle = ins->src[s].swizzle;
-
-                        /* FMA can encode zero for free */
-                        if (cons == 0 && fast_zero) {
-                                assert(!ins->src[s].abs && !ins->src[s].neg);
-                                ins->src[s] = bi_passthrough(BIFROST_SRC_STAGE);
-                                ins->src[s].swizzle = swizzle;
-                                continue;
-                        }
-
-                        unsigned idx = bi_lookup_constant(clause, cons, &hi);
-                        unsigned lo = clause->constants[idx] & 0xF;
-                        unsigned f = bi_constant_field(idx) | lo;
-
-                        if (assigned && regs->fau_idx != f)
-                                unreachable("Mismatched uniform/const field: imm");
-
-                        regs->fau_idx = f;
-                        ins->src[s] = bi_passthrough(hi ? BIFROST_SRC_FAU_HI : BIFROST_SRC_FAU_LO);
-                        ins->src[s].swizzle = swizzle;
-                        assigned = true;
-                } else if (ins->src[s].type == BI_INDEX_FAU) {
-                        bool hi = ins->src[s].offset > 0;
-
-                        assert(!assigned || regs->fau_idx == ins->src[s].value);
-                        assert(ins->src[s].swizzle == BI_SWIZZLE_H01);
-                        regs->fau_idx = ins->src[s].value;
-                        ins->src[s] = bi_passthrough(hi ? BIFROST_SRC_FAU_HI :
-                                        BIFROST_SRC_FAU_LO);
-                        assigned = true;
-                }
-        }
-
-        return assigned;
-}
-
-static void
-bi_assign_fau_idx(bi_clause *clause,
-                  bi_tuple *tuple)
-{
-        bool assigned =
-                bi_assign_fau_idx_single(&tuple->regs, clause, tuple->fma, false, true);
-
-        bi_assign_fau_idx_single(&tuple->regs, clause, tuple->add, assigned, false);
-}
-
 /* Assigns a slot for reading, before anything is written */
 
 static void
@@ -403,40 +269,6 @@ bi_flip_slots(bi_registers *regs)
 
 }
 
-/* Lower CUBEFACE2 to a CUBEFACE1/CUBEFACE2. This is a hack so the scheduler
- * doesn't have to worry about this while we're just packing singletons */
-
-static void
-bi_lower_cubeface2(bi_context *ctx, bi_tuple *tuple)
-{
-        bi_instr *old = tuple->add;
-
-        /* Filter for +CUBEFACE2 */
-        if (!old || old->op != BI_OPCODE_CUBEFACE2)
-                return;
-
-        /* This won't be used once we emit non-singletons, for now this is just
-         * a fact of our scheduler and allows us to clobber FMA */
-        assert(!tuple->fma);
-
-        /* Construct an FMA op */
-        bi_instr *new = rzalloc(ctx, bi_instr);
-        new->op = BI_OPCODE_CUBEFACE1;
-        /* no dest, just a temporary */
-        new->src[0] = old->src[0];
-        new->src[1] = old->src[1];
-        new->src[2] = old->src[2];
-
-        /* Emit the instruction */
-        list_addtail(&new->link, &old->link);
-        tuple->fma = new;
-
-        /* Now replace the sources of the CUBEFACE2 with a single passthrough
-         * from the CUBEFACE1 (and a side-channel) */
-        old->src[0] = bi_passthrough(BIFROST_SRC_STAGE);
-        old->src[1] = old->src[2] = bi_null();
-}
-
 static inline enum bifrost_packed_src
 bi_get_src_slot(bi_registers *regs, unsigned reg)
 {
@@ -474,7 +306,7 @@ static struct bi_packed_tuple
 bi_pack_tuple(bi_clause *clause, bi_tuple *tuple, bi_tuple *prev, bool first_tuple, gl_shader_stage stage)
 {
         bi_assign_slots(tuple, prev);
-        bi_assign_fau_idx(clause, tuple);
+        tuple->regs.fau_idx = tuple->fau_idx;
         tuple->regs.first_instruction = first_tuple;
 
         bi_flip_slots(&tuple->regs);
@@ -498,9 +330,10 @@ bi_pack_tuple(bi_clause *clause, bi_tuple *tuple, bi_tuple *prev, bool first_tup
         if (tuple->add) {
                 bi_instr *add = tuple->add;
 
-                bool sr_write = bi_opcode_props[add->op].sr_write;
+                bool sr_write = bi_opcode_props[add->op].sr_write &&
+                        !bi_is_null(add->dest[0]);
 
-                if (sr_read) {
+                if (sr_read && !bi_is_null(add->src[0])) {
                         assert(add->src[0].type == BI_INDEX_REGISTER);
                         clause->staging_register = add->src[0].value;
 
@@ -520,36 +353,54 @@ bi_pack_tuple(bi_clause *clause, bi_tuple *tuple, bi_tuple *prev, bool first_tup
         return packed;
 }
 
-/* Packs the next two constants as a dedicated constant quadword at the end of
- * the clause, returning the number packed. There are two cases to consider:
- *
- * Case #1: Branching is not used. For a single constant copy the upper nibble
- * over, easy.
- *
- * Case #2: Branching is used. For a single constant, it suffices to set the
- * upper nibble to 4 and leave the latter constant 0, which matches what the
- * blob does.
- *
- * Extending to multiple constants is considerably more tricky and left for
- * future work.
+/* A block contains at most one PC-relative constant, from a terminal branch.
+ * Find the last instruction and if it is a relative branch, fix up the
+ * PC-relative constant to contain the absolute offset. This occurs at pack
+ * time instead of schedule time because the number of quadwords between each
+ * block is not known until after all other passes have finished.
  */
 
-static unsigned
-bi_pack_constants(bi_context *ctx, bi_clause *clause,
-                unsigned word_idx, bool ec0_packed,
+static void
+bi_assign_branch_offset(bi_context *ctx, bi_block *block)
+{
+        if (list_is_empty(&block->clauses))
+                return;
+
+        bi_clause *clause = list_last_entry(&block->clauses, bi_clause, link);
+        bi_instr *br = bi_last_instr_in_clause(clause);
+
+        if (!br->branch_target)
+                return;
+
+        /* Put it in the high place */
+        int32_t qwords = bi_block_offset(ctx, clause, br->branch_target);
+        int32_t bytes = qwords * 16;
+
+        /* Copy so we can toy with the sign without undefined behaviour */
+        uint32_t raw = 0;
+        memcpy(&raw, &bytes, sizeof(raw));
+
+        /* Clear off top bits for A1/B1 bits */
+        raw &= ~0xF0000000;
+
+        /* Put in top 32-bits */
+        assert(clause->pcrel_idx < 8);
+        clause->constants[clause->pcrel_idx] |= ((uint64_t) raw) << 32ull;
+}
+
+static void
+bi_pack_constants(unsigned tuple_count, uint64_t *constants,
+                unsigned word_idx, unsigned constant_words, bool ec0_packed,
                 struct util_dynarray *emission)
 {
         unsigned index = (word_idx << 1) + ec0_packed;
 
-        /* After these two, are we done? Determines tag */
-        bool done = clause->constant_count <= (index + 2);
-
-        /* Is the constant we're packing for a branch? */
-        bool branches = clause->branch_constant && done;
+        /* Do more constants follow */
+        bool more = (word_idx + 1) < constant_words;
 
         /* Indexed first by tuple count and second by constant word number,
          * indicates the position in the clause */
-        unsigned pos[8][3] = {
+        unsigned pos_lookup[8][3] = {
                 { 0 },
                 { 1 },
                 { 3 },
@@ -560,52 +411,20 @@ bi_pack_constants(bi_context *ctx, bi_clause *clause,
                 { 9, 12 }
         };
 
-        /* Compute branch offset instead of a dummy 0 */
-        if (branches) {
-                bi_instr *br = clause->tuples[clause->tuple_count - 1].add;
-                assert(br && br->branch_target);
-
-                /* Put it in the high place */
-                int32_t qwords = bi_block_offset(ctx, clause, br->branch_target);
-                int32_t bytes = qwords * 16;
-
-                /* Copy so we get proper sign behaviour */
-                uint32_t raw = 0;
-                memcpy(&raw, &bytes, sizeof(raw));
-
-                /* Clear off top bits for the magic bits */
-                raw &= ~0xF0000000;
-
-                /* Put in top 32-bits */
-                clause->constants[index + 0] = ((uint64_t) raw) << 32ull;
-        }
-
-        uint64_t hi = clause->constants[index + 0] >> 60ull;
+        /* Compute the pos, and check everything is reasonable */
+        assert((tuple_count - 1) < 8);
+        assert(word_idx < 3);
+        unsigned pos = pos_lookup[tuple_count - 1][word_idx];
+        assert(pos != 0 || (tuple_count == 1 && word_idx == 0));
 
         struct bifrost_fmt_constant quad = {
-                .pos = pos[clause->tuple_count - 1][word_idx], /* TODO */
-                .tag = done ? BIFROST_FMTC_FINAL : BIFROST_FMTC_CONSTANTS,
-                .imm_1 = clause->constants[index + 0] >> 4,
-                .imm_2 = ((hi < 8) ? (hi << 60ull) : 0) >> 4,
+                .pos = pos,
+                .tag = more ? BIFROST_FMTC_CONSTANTS : BIFROST_FMTC_FINAL,
+                .imm_1 = constants[index + 0] >> 4,
+                .imm_2 = constants[index + 1] >> 4,
         };
 
-        if (branches) {
-                /* Branch offsets are less than 60-bits so this should work at
-                 * least for now */
-                quad.imm_1 |= (4ull << 60ull) >> 4;
-                assert (hi == 0);
-        }
-
-        /* XXX: On G71, Connor observed that the difference of the top 4 bits
-         * of the second constant with the first must be less than 8, otherwise
-         * we have to swap them. On G52, I'm able to reproduce a similar issue
-         * but with a different workaround (modeled above with a single
-         * constant, unclear how to workaround for multiple constants.) Further
-         * investigation needed. Possibly an errata. XXX */
-
         util_dynarray_append(emission, struct bifrost_fmt_constant, quad);
-
-        return 2;
 }
 
 static inline uint8_t
@@ -806,9 +625,6 @@ bi_pack_clause(bi_context *ctx, bi_clause *clause,
                 struct util_dynarray *emission, gl_shader_stage stage,
                 bool tdd)
 {
-        /* TODO After the deadline lowering */
-        bi_lower_cubeface2(ctx, &clause->tuples[0]);
-
         struct bi_packed_tuple ins[8] = { 0 };
 
         for (unsigned i = 0; i < clause->tuple_count; ++i) {
@@ -817,11 +633,7 @@ bi_pack_clause(bi_context *ctx, bi_clause *clause,
                                 &clause->tuples[prev], i == 0, stage);
         }
 
-        bool ec0_packed =
-                (clause->tuple_count == 3) ||
-                (clause->tuple_count == 5) ||
-                (clause->tuple_count == 6) ||
-                (clause->tuple_count == 8);
+        bool ec0_packed = bi_ec0_packed(clause->tuple_count);
 
         if (ec0_packed)
                 clause->constant_count = MAX2(clause->constant_count, 1);
@@ -831,7 +643,7 @@ bi_pack_clause(bi_context *ctx, bi_clause *clause,
 
         uint64_t header = bi_pack_header(clause, next_1, next_2, tdd);
         uint64_t ec0 = (clause->constants[0] >> 4);
-        unsigned m0 = 0; /* TODO: set me so we don't break branches */
+        unsigned m0 = (clause->pcrel_idx == 0) ? 4 : 0;
 
         unsigned counts[8] = {
                 1, 2, 3, 3, 4, 5, 5, 6
@@ -867,8 +679,8 @@ bi_pack_clause(bi_context *ctx, bi_clause *clause,
         /* Pack the remaining constants */
 
         for (unsigned pos = 0; pos < constant_quads; ++pos) {
-                bi_pack_constants(ctx, clause, pos, ec0_packed,
-                                emission);
+                bi_pack_constants(clause->tuple_count, clause->constants,
+                                pos, constant_quads, ec0_packed, emission);
         }
 }
 
@@ -891,7 +703,7 @@ bi_collect_blend_ret_addr(bi_context *ctx, struct util_dynarray *emission,
                           const bi_clause *clause)
 {
         /* No need to collect return addresses when we're in a blend shader. */
-        if (ctx->is_blend)
+        if (ctx->inputs->is_blend)
                 return;
 
         const bi_tuple *tuple = &clause->tuples[clause->tuple_count - 1];
@@ -902,20 +714,24 @@ bi_collect_blend_ret_addr(bi_context *ctx, struct util_dynarray *emission,
 
 
         unsigned loc = tuple->regs.fau_idx - BIR_FAU_BLEND_0;
-        assert(loc < ARRAY_SIZE(ctx->blend_ret_offsets));
-        assert(!ctx->blend_ret_offsets[loc]);
-        ctx->blend_ret_offsets[loc] =
+        assert(loc < ARRAY_SIZE(ctx->info->bifrost.blend));
+        assert(!ctx->info->bifrost.blend[loc].return_offset);
+        ctx->info->bifrost.blend[loc].return_offset =
                 util_dynarray_num_elements(emission, uint8_t);
-        assert(!(ctx->blend_ret_offsets[loc] & 0x7));
+        assert(!(ctx->info->bifrost.blend[loc].return_offset & 0x7));
 }
 
-void
+unsigned
 bi_pack(bi_context *ctx, struct util_dynarray *emission)
 {
         bool tdd = bi_terminate_discarded_threads(ctx);
 
+        unsigned previous_size = emission->size;
+
         bi_foreach_block(ctx, _block) {
                 bi_block *block = (bi_block *) _block;
+
+                bi_assign_branch_offset(ctx, block);
 
                 /* Passthrough the first clause of where we're branching to for
                  * the last clause of the block (the clause with the branch) */
@@ -932,12 +748,16 @@ bi_pack(bi_context *ctx, struct util_dynarray *emission)
                         bi_clause *next = bi_next_clause(ctx, _block, clause);
                         bi_clause *next_2 = is_last ? succ_clause : NULL;
 
+                        previous_size = emission->size;
+
                         bi_pack_clause(ctx, clause, next, next_2, emission, ctx->stage, tdd);
 
                         if (!is_last)
                                 bi_collect_blend_ret_addr(ctx, emission, clause);
                 }
         }
+
+        return emission->size - previous_size;
 }
 
 #ifndef NDEBUG

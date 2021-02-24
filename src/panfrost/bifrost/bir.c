@@ -92,29 +92,13 @@ bi_count_read_registers(bi_instr *ins, unsigned s)
                 return 1;
 }
 
-uint16_t
-bi_bytemask_of_read_components(bi_instr *ins, bi_index node)
-{
-        uint16_t mask = 0x0;
-
-        bi_foreach_src(ins, s) {
-                if (!bi_is_equiv(ins->src[s], node)) continue;
-
-                unsigned count = bi_count_read_registers(ins, s);
-                unsigned rmask = (1 << (4 * count)) - 1;
-                mask |= (rmask << (4 * node.offset));
-        }
-
-        return mask;
-}
-
 unsigned
-bi_writemask(bi_instr *ins)
+bi_writemask(bi_instr *ins, unsigned d)
 {
         /* Assume we write a scalar */
         unsigned mask = 0xF;
 
-        if (bi_opcode_props[ins->op].sr_write) {
+        if (d == 0 && bi_opcode_props[ins->op].sr_write) {
                 unsigned count = bi_count_staging_registers(ins);
 
                 /* TODO: this special case is even more special, TEXC has a
@@ -125,7 +109,7 @@ bi_writemask(bi_instr *ins)
                 mask = (1 << (count * 4)) - 1;
         }
 
-        unsigned shift = ins->dest[0].offset * 4; /* 32-bit words */
+        unsigned shift = ins->dest[d].offset * 4; /* 32-bit words */
         return (mask << shift);
 }
 
@@ -151,4 +135,42 @@ bi_next_clause(bi_context *ctx, pan_block *block, bi_clause *clause)
         }
 
         return NULL;
+}
+
+/* Does an instruction have a side effect not captured by its register
+ * destination? Applies to certain message-passing instructions, +DISCARD, and
+ * branching only, used in dead code elimation. Branches are characterized by
+ * `last` which applies to them and some atomics, +BARRIER, +BLEND which
+ * implies no loss of generality */
+
+bool
+bi_side_effects(enum bi_opcode op)
+{
+        if (bi_opcode_props[op].last || op == BI_OPCODE_DISCARD_F32)
+                return true;
+
+        switch (bi_opcode_props[op].message) {
+        case BIFROST_MESSAGE_NONE:
+        case BIFROST_MESSAGE_VARYING:
+        case BIFROST_MESSAGE_ATTRIBUTE:
+        case BIFROST_MESSAGE_TEX:
+        case BIFROST_MESSAGE_VARTEX:
+        case BIFROST_MESSAGE_LOAD:
+        case BIFROST_MESSAGE_64BIT:
+                return false;
+
+        case BIFROST_MESSAGE_STORE:
+        case BIFROST_MESSAGE_ATOMIC:
+        case BIFROST_MESSAGE_BARRIER:
+        case BIFROST_MESSAGE_BLEND:
+        case BIFROST_MESSAGE_Z_STENCIL:
+        case BIFROST_MESSAGE_ATEST:
+        case BIFROST_MESSAGE_JOB:
+                return true;
+
+        case BIFROST_MESSAGE_TILE:
+                return (op != BI_OPCODE_LD_TILE);
+        }
+
+        unreachable("Invalid message type");
 }

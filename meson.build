@@ -449,7 +449,9 @@ endif
 
 # Android uses emutls for versions <= P/28. For USE_ELF_TLS we need ELF TLS.
 use_elf_tls = false
-if not ['windows', 'freebsd', 'openbsd', 'haiku'].contains(host_machine.system()) and (not with_platform_android or get_option('platform-sdk-version') >= 29)
+if (not ['freebsd', 'openbsd', 'haiku'].contains(host_machine.system()) and
+    (not with_platform_android or get_option('platform-sdk-version') >= 29) and
+    (not with_platform_windows or not with_shared_glapi))
   pre_args += '-DUSE_ELF_TLS'
   use_elf_tls = true
 endif
@@ -1040,6 +1042,7 @@ else
     '-Werror=incompatible-pointer-types',
     '-Werror=int-conversion',
     '-Wimplicit-fallthrough',
+    '-Werror=thread-safety',
     '-Wno-missing-field-initializers',
     '-Wno-format-truncation',
     '-fno-math-errno',
@@ -1514,7 +1517,7 @@ endif
 if with_microsoft_clc
   llvm_modules += ['target', 'linker', 'irreader', 'option', 'libdriver']
 endif
-if with_tests
+if with_tests or with_gallium_softpipe
   llvm_modules += 'native'
 endif
 

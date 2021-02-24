@@ -75,6 +75,8 @@ struct si_state_rasterizer {
    unsigned pa_cl_clip_cntl;
    float line_width;
    float max_point_size;
+   unsigned ngg_cull_flags : 8;
+   unsigned ngg_cull_flags_y_inverted : 8;
    unsigned sprite_coord_enable : 8;
    unsigned clip_plane_enable : 8;
    unsigned half_pixel_center : 1;
@@ -484,19 +486,11 @@ struct si_buffer_resources {
          (sctx)->dirty_states &= ~SI_STATE_BIT(member);                                            \
    } while (0)
 
-#define si_pm4_delete_state(sctx, member, value)                                                   \
-   do {                                                                                            \
-      if ((sctx)->queued.named.member == (value)) {                                                \
-         (sctx)->queued.named.member = NULL;                                                       \
-      }                                                                                            \
-      si_pm4_free_state(sctx, (struct si_pm4_state *)(value), SI_STATE_IDX(member));               \
-   } while (0)
-
 /* si_descriptors.c */
 void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture *tex,
                                     const struct legacy_surf_level *base_level_info,
                                     unsigned base_level, unsigned first_level, unsigned block_width,
-                                    bool is_stencil, bool force_dcc_off, uint32_t *state);
+                                    bool is_stencil, uint16_t access, uint32_t *state);
 void si_update_ps_colorbuf0_slot(struct si_context *sctx);
 void si_get_pipe_constant_buffer(struct si_context *sctx, uint shader, uint slot,
                                  struct pipe_constant_buffer *cbuf);
@@ -571,6 +565,7 @@ bool si_shader_cache_load_shader(struct si_screen *sscreen, unsigned char ir_sha
                                  struct si_shader *shader);
 void si_shader_cache_insert_shader(struct si_screen *sscreen, unsigned char ir_sha1_cache_key[20],
                                    struct si_shader *shader, bool insert_into_disk_cache);
+bool si_shader_mem_ordered(struct si_shader *shader);
 bool si_update_shaders(struct si_context *sctx);
 void si_init_screen_live_shader_cache(struct si_screen *sscreen);
 void si_init_shader_functions(struct si_context *sctx);

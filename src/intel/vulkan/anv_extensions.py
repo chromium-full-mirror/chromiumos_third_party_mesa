@@ -32,8 +32,6 @@ sys.path.append(VULKAN_UTIL)
 
 from vk_extensions import *
 
-API_PATCH_VERSION = 145
-
 # Supported API versions.  Each one is the maximum patch version for the given
 # version.  Version come in increasing order and each version is available if
 # it's provided "enable" condition is true and all previous versions are
@@ -122,6 +120,7 @@ EXTENSIONS = [
     Extension('VK_KHR_workgroup_memory_explicit_layout',  1, True),
     Extension('VK_KHR_xcb_surface',                       6, 'VK_USE_PLATFORM_XCB_KHR'),
     Extension('VK_KHR_xlib_surface',                      6, 'VK_USE_PLATFORM_XLIB_KHR'),
+    Extension('VK_KHR_zero_initialize_workgroup_memory',  1, True),
     Extension('VK_EXT_4444_formats',                      1, True),
     Extension('VK_EXT_acquire_xlib_display',              1, 'VK_USE_PLATFORM_XLIB_XRANDR_EXT'),
     Extension('VK_EXT_buffer_device_address',             2, 'device->has_a64_buffer_access'),
@@ -203,6 +202,5 @@ for i in range(len(EXTENSIONS) - 1):
 MAX_API_VERSION = VkVersion('0.0.0')
 for version in API_VERSIONS:
     version.version = VkVersion(version.version)
-    version.version.patch = API_PATCH_VERSION
     assert version.version > MAX_API_VERSION
     MAX_API_VERSION = version.version

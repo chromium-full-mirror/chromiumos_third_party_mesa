@@ -281,8 +281,8 @@ bool ShaderFromNirProcessor::process_uniforms(nir_variable *uniform)
    auto type = uniform->type->is_array() ? uniform->type->without_array(): uniform->type;
    if (type->is_image() || uniform->data.mode == nir_var_mem_ssbo) {
       sh_info().uses_images = 1;
-      if (uniform->type->is_array())
-         sh_info().indirect_files |= TGSI_FILE_IMAGE;
+      if (uniform->type->is_array() && ! (uniform->data.mode == nir_var_mem_ssbo))
+         sh_info().indirect_files |= 1 << TGSI_FILE_IMAGE;
    }
 
    if (uniform->type->is_image()) {
@@ -679,6 +679,8 @@ bool ShaderFromNirProcessor::emit_intrinsic_instruction(nir_intrinsic_instr* ins
    case nir_intrinsic_memory_barrier_image:
    case nir_intrinsic_group_memory_barrier:
       return emit_barrier(instr);
+   case nir_intrinsic_memory_barrier_atomic_counter:
+      return true;
    case nir_intrinsic_shared_atomic_add:
    case nir_intrinsic_shared_atomic_and:
    case nir_intrinsic_shared_atomic_or:
@@ -893,7 +895,7 @@ bool ShaderFromNirProcessor::emit_load_ubo_vec4(nir_intrinsic_instr* instr)
       FetchInstruction *ir;
       if (bufid) {
          ir = new FetchInstruction(vc_fetch, no_index_offset, trgt, addr, 0,
-                                              1, nullptr, bim_none);
+                                              1 + bufid->u32, nullptr, bim_none);
       } else {
          PValue bufid = from_nir(instr->src[0], 0, 0);
          ir = new FetchInstruction(vc_fetch, no_index_offset, trgt, addr, 0,

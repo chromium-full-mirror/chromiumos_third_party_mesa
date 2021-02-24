@@ -28,12 +28,14 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <assert.h>
 
 #define BIFROST_DBG_MSGS        0x0001
 #define BIFROST_DBG_SHADERS     0x0002
 #define BIFROST_DBG_SHADERDB    0x0004
 #define BIFROST_DBG_VERBOSE     0x0008
 #define BIFROST_DBG_INTERNAL    0x0010
+#define BIFROST_DBG_NOSCHED     0x0020
 
 extern int bifrost_debug;
 
@@ -110,6 +112,12 @@ enum bifrost_flow {
 
         /* Write elision, no reconvergence */
         BIFROST_FLOW_WE = 7,
+};
+
+enum bifrost_slot {
+        /* 0-5 are general purpose */
+        BIFROST_SLOT_ELDEST_DEPTH = 6,
+        BIFROST_SLOT_ELDEST_COLOUR = 7,
 };
 
 struct bifrost_header {
@@ -210,57 +218,6 @@ struct bifrost_regs {
         unsigned reg1 : 6;
         unsigned ctrl : 4;
 } __attribute__((packed));
-
-enum bifrost_branch_cond {
-        BR_COND_LT = 0,
-        BR_COND_LE = 1,
-        BR_COND_GE = 2,
-        BR_COND_GT = 3,
-        // Equal vs. not-equal determined by src0/src1 comparison
-        BR_COND_EQ = 4,
-        // floating-point comparisons
-        // Becomes UNE when you flip the arguments
-        BR_COND_OEQ = 5,
-        // TODO what happens when you flip the arguments?
-        BR_COND_OGT = 6,
-        BR_COND_OLT = 7,
-};
-
-enum bifrost_branch_code {
-        BR_ALWAYS = 63,
-};
-
-#define BIFROST_ADD_OP_BRANCH (0x0d000 >> 12)
-
-struct bifrost_branch {
-        unsigned src0 : 3;
-
-        /* For BR_SIZE_ZERO, upper two bits become ctrl */
-        unsigned src1 : 3;
-
-        /* Offset source -- always uniform/const but
-         * theoretically could support indirect jumps? */
-        unsigned src2 : 3;
-
-        enum bifrost_branch_cond cond : 3;
-        enum branch_bit_size size : 3;
-
-        unsigned op : 5;
-};
-
-/* Clause packing */
-
-struct bifrost_fmt1 {
-        unsigned ins_0 : 3;
-        unsigned tag : 5;
-        uint64_t ins_1 : 64;
-        unsigned ins_2 : 11;
-        uint64_t header : 45;
-} __attribute__((packed));
-
-#define BIFROST_FMT1_INSTRUCTIONS    0b00101
-#define BIFROST_FMT1_FINAL           0b01001
-#define BIFROST_FMT1_CONSTANTS       0b00001
 
 #define BIFROST_FMTC_CONSTANTS       0b0011
 #define BIFROST_FMTC_FINAL           0b0111
@@ -601,5 +558,19 @@ struct bi_constants {
         /* Associated modifier derived from M values */
         enum bi_constmod mods[6];
 };
+
+/* FAU selectors for constants are out-of-order, construct the top bits
+ * here given a embedded constant index in a clause */
+
+static inline unsigned
+bi_constant_field(unsigned idx)
+{
+        const unsigned values[] = {
+                4, 5, 6, 7, 2, 3
+        };
+
+        assert(idx <= 5);
+        return values[idx] << 4;
+}
 
 #endif

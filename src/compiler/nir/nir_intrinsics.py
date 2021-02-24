@@ -815,8 +815,8 @@ system_value("user_data_amd", 4)
 # These set up the barycentric coordinates for a particular interpolation.
 # The first four are for the simple cases: pixel, centroid, per-sample
 # (at gl_SampleID), or pull model (1/W, 1/I, 1/J) at the pixel center. The next
-# three two handle interpolating at a specified sample location, or
-# interpolating with a vec2 offset,
+# two handle interpolating at a specified sample location, or interpolating
+# with a vec2 offset,
 #
 # The interp_mode index should be either the INTERP_MODE_SMOOTH or
 # INTERP_MODE_NOPERSPECTIVE enum values.
@@ -847,6 +847,13 @@ intrinsic("load_sample_pos_from_id", src_comp=[1], dest_comp=2,
 
 # Loads what I believe is the primitive size, for scaling ij to pixel size:
 intrinsic("load_size_ir3", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
+
+# Load texture scaling values:
+#
+# Takes a sampler # and returns 1/size values for multiplying to normalize
+# texture coordinates.  Used for lowering rect textures.
+intrinsic("load_texture_rect_scaling", src_comp=[1], dest_comp=2,
+          flags=[CAN_ELIMINATE, CAN_REORDER])
 
 # Fragment shader input interpolation delta intrinsic.
 #
@@ -1100,6 +1107,9 @@ load("raw_output_pan", [1], [BASE], [CAN_ELIMINATE, CAN_REORDER])
 # Loads the sampler paramaters <min_lod, max_lod, lod_bias>
 # src[] = { sampler_index }
 load("sampler_lod_parameters_pan", [1], flags=[CAN_ELIMINATE, CAN_REORDER])
+
+# Loads the sample position array on Bifrost, in a packed Arm-specific format
+system_value("sample_positions_pan", 1, bit_sizes=[64])
 
 # R600 specific instrincs
 #

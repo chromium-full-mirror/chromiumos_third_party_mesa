@@ -571,6 +571,9 @@ anv_get_image_format_features(const struct gen_device_info *devinfo,
                VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
                VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 
+      if (aspects & VK_IMAGE_ASPECT_DEPTH_BIT)
+         flags |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+
       if ((aspects & VK_IMAGE_ASPECT_DEPTH_BIT) && devinfo->gen >= 9)
          flags |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT_EXT;
 
@@ -986,7 +989,8 @@ anv_get_image_format_properties(
        * non-mipmapped single-sample) 2D images.
        */
       if (info->type != VK_IMAGE_TYPE_2D) {
-         vk_errorfi(instance, physical_device, VK_ERROR_FORMAT_NOT_SUPPORTED,
+         vk_errorfi(instance, &physical_device->vk.base,
+                    VK_ERROR_FORMAT_NOT_SUPPORTED,
                     "VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT "
                     "requires VK_IMAGE_TYPE_2D");
          goto unsupported;
@@ -1277,7 +1281,7 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
       goto fail;
 
    bool ahw_supported =
-      physical_device->supported_extensions.ANDROID_external_memory_android_hardware_buffer;
+      physical_device->vk.supported_extensions.ANDROID_external_memory_android_hardware_buffer;
 
    if (ahw_supported && android_usage) {
       android_usage->androidHardwareBufferUsage =
@@ -1364,7 +1368,7 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
           * and therefore requires explicit memory layout.
           */
          if (!tiling_has_explicit_layout) {
-            result = vk_errorfi(instance, physical_device,
+            result = vk_errorfi(instance, &physical_device->vk.base,
                                 VK_ERROR_FORMAT_NOT_SUPPORTED,
                                 "VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT "
                                 "requires VK_IMAGE_TILING_LINEAR or "
@@ -1384,7 +1388,7 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
           * and therefore requires explicit memory layout.
           */
          if (!tiling_has_explicit_layout) {
-            result = vk_errorfi(instance, physical_device,
+            result = vk_errorfi(instance, &physical_device->vk.base,
                                 VK_ERROR_FORMAT_NOT_SUPPORTED,
                                 "VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT "
                                 "requires VK_IMAGE_TILING_LINEAR or "
@@ -1414,7 +1418,7 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
           *    vkGetPhysicalDeviceImageFormatProperties2 returns
           *    VK_ERROR_FORMAT_NOT_SUPPORTED.
           */
-         result = vk_errorfi(physical_device->instance, physical_device,
+         result = vk_errorfi(instance, &physical_device->vk.base,
                              VK_ERROR_FORMAT_NOT_SUPPORTED,
                              "unsupported VkExternalMemoryTypeFlagBits 0x%x",
                              external_info->handleType);
@@ -1494,7 +1498,7 @@ void anv_GetPhysicalDeviceExternalBufferProperties(
       pExternalBufferProperties->externalMemoryProperties = userptr_props;
       return;
    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID:
-      if (physical_device->supported_extensions.ANDROID_external_memory_android_hardware_buffer) {
+      if (physical_device->vk.supported_extensions.ANDROID_external_memory_android_hardware_buffer) {
          pExternalBufferProperties->externalMemoryProperties = android_buffer_props;
          return;
       }

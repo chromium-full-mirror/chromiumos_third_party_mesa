@@ -24,12 +24,16 @@
 #include "vk_deferred_operation.h"
 
 #include "vk_alloc.h"
+#include "vk_common_entrypoints.h"
+#include "vk_device.h"
 
-VkResult
-vk_create_deferred_operation(struct vk_device *device,
-                             const VkAllocationCallbacks *pAllocator,
-                             VkDeferredOperationKHR *pDeferredOperation)
+VKAPI_ATTR VkResult VKAPI_CALL
+vk_common_CreateDeferredOperationKHR(VkDevice _device,
+                                     const VkAllocationCallbacks *pAllocator,
+                                     VkDeferredOperationKHR *pDeferredOperation)
 {
+   VK_FROM_HANDLE(vk_device, device, _device);
+
    struct vk_deferred_operation *op =
       vk_alloc2(&device->alloc, pAllocator, sizeof(*op), 8,
                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -44,37 +48,38 @@ vk_create_deferred_operation(struct vk_device *device,
    return VK_SUCCESS;
 }
 
-void
-vk_destroy_deferred_operation(struct vk_device *device,
-                              VkDeferredOperationKHR operation,
-                              const VkAllocationCallbacks *pAllocator)
+VKAPI_ATTR void VKAPI_CALL
+vk_common_DestroyDeferredOperationKHR(VkDevice _device,
+                                      VkDeferredOperationKHR operation,
+                                      const VkAllocationCallbacks *pAllocator)
 {
-   if (operation == VK_NULL_HANDLE)
-      return;
-
+   VK_FROM_HANDLE(vk_device, device, _device);
    VK_FROM_HANDLE(vk_deferred_operation, op, operation);
+
+   if (op == NULL)
+      return;
 
    vk_object_base_finish(&op->base);
    vk_free2(&device->alloc, pAllocator, op);
 }
 
-uint32_t
-vk_get_deferred_operation_max_concurrency(UNUSED struct vk_device *device,
-                                          UNUSED VkDeferredOperationKHR operation)
+VKAPI_ATTR uint32_t VKAPI_CALL
+vk_common_GetDeferredOperationMaxConcurrencyKHR(UNUSED VkDevice device,
+                                                UNUSED VkDeferredOperationKHR operation)
 {
    return 1;
 }
 
-VkResult
-vk_get_deferred_operation_result(UNUSED struct vk_device *device,
-                                 UNUSED VkDeferredOperationKHR operation)
+VKAPI_ATTR VkResult VKAPI_CALL
+vk_common_GetDeferredOperationResultKHR(UNUSED VkDevice device,
+                                        UNUSED VkDeferredOperationKHR operation)
 {
    return VK_SUCCESS;
 }
 
-VkResult
-vk_deferred_operation_join(UNUSED struct vk_device *device,
-                           UNUSED VkDeferredOperationKHR operation)
+VKAPI_ATTR VkResult VKAPI_CALL
+vk_common_DeferredOperationJoinKHR(UNUSED VkDevice device,
+                                   UNUSED VkDeferredOperationKHR operation)
 {
    return VK_SUCCESS;
 }

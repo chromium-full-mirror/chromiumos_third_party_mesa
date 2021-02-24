@@ -147,7 +147,6 @@ static bool si_upload_descriptors(struct si_context *sctx, struct si_descriptors
       si_resource_reference(&desc->buffer, NULL);
       desc->gpu_list = NULL;
       desc->gpu_address = si_desc_extract_buffer_address(descriptor);
-      si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
       return true;
    }
 
@@ -174,8 +173,6 @@ static bool si_upload_descriptors(struct si_context *sctx, struct si_descriptors
    assert(desc->buffer->flags & RADEON_FLAG_32BIT);
    assert((desc->buffer->gpu_address >> 32) == sctx->screen->info.address32_hi);
    assert((desc->gpu_address >> 32) == sctx->screen->info.address32_hi);
-
-   si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
    return true;
 }
 
@@ -299,7 +296,7 @@ static void si_set_buf_desc_address(struct si_resource *buf, uint64_t offset, ui
 void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture *tex,
                                     const struct legacy_surf_level *base_level_info,
                                     unsigned base_level, unsigned first_level, unsigned block_width,
-                                    bool is_stencil, bool force_dcc_off, uint32_t *state)
+                                    bool is_stencil, uint16_t access, uint32_t *state)
 {
    uint64_t va, meta_va = 0;
 
@@ -333,7 +330,7 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
    if (sscreen->info.chip_class >= GFX8) {
       state[6] &= C_008F28_COMPRESSION_EN;
 
-      if (!force_dcc_off && vi_dcc_enabled(tex, first_level)) {
+      if (!(access & SI_IMAGE_ACCESS_DCC_OFF) && vi_dcc_enabled(tex, first_level)) {
          meta_va =
             (!tex->dcc_separate_buffer ? tex->buffer.gpu_address : 0) + tex->surface.dcc_offset;
 
@@ -366,7 +363,8 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
          state[3] |= S_00A00C_SW_MODE(tex->surface.u.gfx9.surf.swizzle_mode);
       }
 
-      state[6] &= C_00A018_META_DATA_ADDRESS_LO & C_00A018_META_PIPE_ALIGNED;
+      state[6] &= C_00A018_META_DATA_ADDRESS_LO & C_00A018_META_PIPE_ALIGNED &
+                  C_00A018_WRITE_COMPRESS_ENABLE;
 
       if (meta_va) {
          struct gfx9_surf_meta_flags meta = {
@@ -378,7 +376,8 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
             meta = tex->surface.u.gfx9.dcc;
 
          state[6] |= S_00A018_META_PIPE_ALIGNED(meta.pipe_aligned) |
-                     S_00A018_META_DATA_ADDRESS_LO(meta_va >> 8);
+                     S_00A018_META_DATA_ADDRESS_LO(meta_va >> 8) |
+                     S_00A018_WRITE_COMPRESS_ENABLE((access & SI_IMAGE_ACCESS_DCC_WRITE) != 0);
       }
 
       state[7] = meta_va >> 16;
@@ -468,7 +467,7 @@ static void si_set_sampler_view_desc(struct si_context *sctx, struct si_sampler_
 
       si_set_mutable_tex_desc_fields(sctx->screen, tex, sview->base_level_info, sview->base_level,
                                      sview->base.u.tex.first_level, sview->block_width,
-                                     is_separate_stencil, false, desc);
+                                     is_separate_stencil, 0, desc);
    }
 
    if (!is_buffer && tex->surface.fmask_size) {
@@ -719,7 +718,7 @@ static void si_set_shader_image_desc(struct si_context *ctx, const struct pipe_i
 
       if (uses_dcc && !skip_decompress &&
           !(access & SI_IMAGE_ACCESS_DCC_OFF) &&
-          (access & PIPE_IMAGE_ACCESS_WRITE ||
+          ((!(access & SI_IMAGE_ACCESS_DCC_WRITE) && (access & PIPE_IMAGE_ACCESS_WRITE)) ||
            !vi_dcc_formats_compatible(screen, res->b.b.format, view->format))) {
          /* If DCC can't be disabled, at least decompress it.
           * The decompression is relatively cheap if the surface
@@ -754,8 +753,8 @@ static void si_set_shader_image_desc(struct si_context *ctx, const struct pipe_i
          screen, tex, false, res->b.b.target, view->format, swizzle, hw_level, hw_level,
          view->u.tex.first_layer, view->u.tex.last_layer, width, height, depth, desc, fmask_desc);
       si_set_mutable_tex_desc_fields(screen, tex, &tex->surface.u.legacy.level[level], level, level,
-                                     util_format_get_blockwidth(view->format), false,
-                                     view->access & SI_IMAGE_ACCESS_DCC_OFF, desc);
+                                     util_format_get_blockwidth(view->format),
+                                     false, view->access, desc);
    }
 }
 
@@ -872,7 +871,7 @@ void si_update_ps_colorbuf0_slot(struct si_context *sctx)
       return;
 
    /* See whether FBFETCH is used and color buffer 0 is set. */
-   if (sctx->ps_shader.cso && sctx->ps_shader.cso->info.base.fs.uses_fbfetch_output &&
+   if (sctx->shader.ps.cso && sctx->shader.ps.cso->info.base.fs.uses_fbfetch_output &&
        sctx->framebuffer.state.nr_cbufs && sctx->framebuffer.state.cbufs[0])
       surf = sctx->framebuffer.state.cbufs[0];
 
@@ -1937,15 +1936,15 @@ void si_shader_change_notify(struct si_context *sctx)
 {
    si_set_user_data_base(sctx, PIPE_SHADER_VERTEX,
                          si_get_user_data_base(sctx->chip_class,
-                                               sctx->tes_shader.cso ? TESS_ON : TESS_OFF,
-                                               sctx->gs_shader.cso ? GS_ON : GS_OFF,
+                                               sctx->shader.tes.cso ? TESS_ON : TESS_OFF,
+                                               sctx->shader.gs.cso ? GS_ON : GS_OFF,
                                                sctx->ngg ? NGG_ON : NGG_OFF,
                                                PIPE_SHADER_VERTEX));
 
    si_set_user_data_base(sctx, PIPE_SHADER_TESS_EVAL,
                          si_get_user_data_base(sctx->chip_class,
-                                               sctx->tes_shader.cso ? TESS_ON : TESS_OFF,
-                                               sctx->gs_shader.cso ? GS_ON : GS_OFF,
+                                               sctx->shader.tes.cso ? TESS_ON : TESS_OFF,
+                                               sctx->shader.gs.cso ? GS_ON : GS_OFF,
                                                sctx->ngg ? NGG_ON : NGG_OFF,
                                                PIPE_SHADER_TESS_EVAL));
 }
@@ -2024,36 +2023,9 @@ void si_emit_graphics_shader_pointers(struct si_context *sctx)
                                        sh_base[PIPE_SHADER_TESS_CTRL]);
    si_emit_consecutive_shader_pointers(sctx, SI_DESCS_SHADER_MASK(GEOMETRY),
                                        sh_base[PIPE_SHADER_GEOMETRY]);
+   radeon_end();
 
    sctx->shader_pointers_dirty &= ~u_bit_consecutive(SI_DESCS_INTERNAL, SI_DESCS_FIRST_COMPUTE);
-
-   if (sctx->vertex_buffer_pointer_dirty && sctx->num_vertex_elements) {
-      /* Find the location of the VB descriptor pointer. */
-      unsigned sh_dw_offset = SI_VS_NUM_USER_SGPR;
-      if (sctx->chip_class >= GFX9) {
-         if (sctx->tes_shader.cso)
-            sh_dw_offset = GFX9_TCS_NUM_USER_SGPR;
-         else if (sctx->gs_shader.cso)
-            sh_dw_offset = GFX9_VSGS_NUM_USER_SGPR;
-      }
-
-      unsigned sh_offset = sh_base[PIPE_SHADER_VERTEX] + sh_dw_offset * 4;
-      radeon_set_sh_reg_seq(cs, sh_offset, 1);
-      radeon_emit_32bit_pointer(
-         sctx->screen, cs, sctx->vb_descriptors_buffer->gpu_address + sctx->vb_descriptors_offset);
-      sctx->vertex_buffer_pointer_dirty = false;
-   }
-
-   if (sctx->vertex_buffer_user_sgprs_dirty && sctx->num_vertex_elements &&
-       sctx->screen->num_vbos_in_user_sgprs) {
-      unsigned num_desc = MIN2(sctx->num_vertex_elements, sctx->screen->num_vbos_in_user_sgprs);
-      unsigned sh_offset = sh_base[PIPE_SHADER_VERTEX] + SI_SGPR_VS_VB_DESCRIPTOR_FIRST * 4;
-
-      radeon_set_sh_reg_seq(cs, sh_offset, num_desc * 4);
-      radeon_emit_array(cs, sctx->vb_descriptor_user_sgprs, num_desc * 4);
-      sctx->vertex_buffer_user_sgprs_dirty = false;
-   }
-   radeon_end();
 
    if (sctx->graphics_bindless_pointer_dirty) {
       si_emit_global_shader_pointers(sctx, &sctx->bindless_descriptors);
@@ -2196,6 +2168,7 @@ static unsigned si_create_bindless_descriptor(struct si_context *sctx, uint32_t 
    /* Make sure to re-emit the shader pointers for all stages. */
    sctx->graphics_bindless_pointer_dirty = true;
    sctx->compute_bindless_pointer_dirty = true;
+   si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
 
    return desc_slot;
 }
@@ -2621,20 +2594,20 @@ static bool si_upload_shader_descriptors(struct si_context *sctx, unsigned mask)
 {
    unsigned dirty = sctx->descriptors_dirty & mask;
 
-   /* Assume nothing will go wrong: */
-   sctx->shader_pointers_dirty |= dirty;
+   if (dirty) {
+      unsigned iter_mask = dirty;
 
-   while (dirty) {
-      unsigned i = u_bit_scan(&dirty);
+      do {
+         if (!si_upload_descriptors(sctx, &sctx->descriptors[u_bit_scan(&iter_mask)]))
+            return false;
+      } while (iter_mask);
 
-      if (!si_upload_descriptors(sctx, &sctx->descriptors[i]))
-         return false;
+      sctx->descriptors_dirty &= ~dirty;
+      sctx->shader_pointers_dirty |= dirty;
+      si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
    }
 
-   sctx->descriptors_dirty &= ~mask;
-
    si_upload_bindless_descriptors(sctx);
-
    return true;
 }
 
@@ -2680,25 +2653,19 @@ void si_release_all_descriptors(struct si_context *sctx)
 bool si_gfx_resources_check_encrypted(struct si_context *sctx)
 {
    bool use_encrypted_bo = false;
-   struct si_shader_ctx_state *current_shader[SI_NUM_SHADERS] = {
-      [PIPE_SHADER_VERTEX] = &sctx->vs_shader,
-      [PIPE_SHADER_TESS_CTRL] = &sctx->tcs_shader,
-      [PIPE_SHADER_TESS_EVAL] = &sctx->tes_shader,
-      [PIPE_SHADER_GEOMETRY] = &sctx->gs_shader,
-      [PIPE_SHADER_FRAGMENT] = &sctx->ps_shader,
-   };
 
    for (unsigned i = 0; i < SI_NUM_GRAPHICS_SHADERS && !use_encrypted_bo; i++) {
-      if (!current_shader[i]->cso)
+      struct si_shader_ctx_state *current_shader = &sctx->shaders[i];
+      if (!current_shader->cso)
          continue;
 
       use_encrypted_bo |=
          si_buffer_resources_check_encrypted(sctx, &sctx->const_and_shader_buffers[i]);
       use_encrypted_bo |=
          si_sampler_views_check_encrypted(sctx, &sctx->samplers[i],
-                                          current_shader[i]->cso->info.base.textures_used);
+                                          current_shader->cso->info.base.textures_used);
       use_encrypted_bo |= si_image_views_check_encrypted(sctx, &sctx->images[i],
-                                          u_bit_consecutive(0, current_shader[i]->cso->info.base.num_images));
+                                          u_bit_consecutive(0, current_shader->cso->info.base.num_images));
    }
    use_encrypted_bo |= si_buffer_resources_check_encrypted(sctx, &sctx->internal_bindings);
 

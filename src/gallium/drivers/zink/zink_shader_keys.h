@@ -29,6 +29,7 @@
 struct zink_vs_key {
    unsigned shader_id;
    bool clip_halfz;
+   bool push_drawid;
    bool last_vertex_stage;
 };
 
@@ -36,6 +37,7 @@ struct zink_fs_key {
    unsigned shader_id;
    //bool flat_shade;
    bool samples;
+   bool force_dual_color_blend;
 };
 
 struct zink_tcs_key {

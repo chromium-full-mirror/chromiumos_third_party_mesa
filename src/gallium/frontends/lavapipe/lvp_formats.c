@@ -111,7 +111,16 @@ static enum pipe_format format_to_vk_table[VK_FORMAT_ASTC_12x12_SRGB_BLOCK + 1] 
    [VK_FORMAT_A8B8G8R8_SRGB_PACK32] = PIPE_FORMAT_R8G8B8A8_SRGB,
 
    [VK_FORMAT_A2B10G10R10_UNORM_PACK32] = PIPE_FORMAT_R10G10B10A2_UNORM,
+   [VK_FORMAT_A2B10G10R10_SNORM_PACK32] = PIPE_FORMAT_R10G10B10A2_SNORM,
+   [VK_FORMAT_A2R10G10B10_UNORM_PACK32] = PIPE_FORMAT_B10G10R10A2_UNORM,
+   [VK_FORMAT_A2R10G10B10_SNORM_PACK32] = PIPE_FORMAT_B10G10R10A2_SNORM,
+
    [VK_FORMAT_A2B10G10R10_UINT_PACK32] = PIPE_FORMAT_R10G10B10A2_UINT,
+   [VK_FORMAT_A2R10G10B10_UINT_PACK32] = PIPE_FORMAT_B10G10R10A2_UINT,
+   [VK_FORMAT_A2B10G10R10_USCALED_PACK32] = PIPE_FORMAT_R10G10B10A2_USCALED,
+   [VK_FORMAT_A2B10G10R10_SSCALED_PACK32] = PIPE_FORMAT_R10G10B10A2_SSCALED,
+   [VK_FORMAT_A2R10G10B10_USCALED_PACK32] = PIPE_FORMAT_B10G10R10A2_USCALED,
+   [VK_FORMAT_A2R10G10B10_SSCALED_PACK32] = PIPE_FORMAT_B10G10R10A2_SSCALED,
 
    [VK_FORMAT_B10G11R11_UFLOAT_PACK32] = PIPE_FORMAT_R11G11B10_FLOAT,
    [VK_FORMAT_E5B9G9R9_UFLOAT_PACK32] = PIPE_FORMAT_R9G9B9E5_FLOAT,
@@ -224,10 +233,13 @@ lvp_physical_device_get_format_properties(struct lvp_physical_device *physical_d
    if (pformat == PIPE_FORMAT_R11G11B10_FLOAT || pformat == PIPE_FORMAT_R9G9B9E5_FLOAT)
      features |= VK_FORMAT_FEATURE_BLIT_SRC_BIT;
 
-   features |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+   if (features && buffer_features != VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)
+      features |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
    if (pformat == PIPE_FORMAT_B5G6R5_UNORM)
      features |= VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
-   if ((pformat != PIPE_FORMAT_R9G9B9E5_FLOAT) && util_format_get_nr_components(pformat) != 3) {
+   if ((pformat != PIPE_FORMAT_R9G9B9E5_FLOAT) && util_format_get_nr_components(pformat) != 3 &&
+       pformat != PIPE_FORMAT_R10G10B10A2_SNORM && pformat != PIPE_FORMAT_B10G10R10A2_SNORM &&
+       pformat != PIPE_FORMAT_B10G10R10A2_UNORM) {
       features |= VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
    }
    out_properties->linearTilingFeatures = features;
@@ -236,19 +248,7 @@ lvp_physical_device_get_format_properties(struct lvp_physical_device *physical_d
    return;
 }
 
-void lvp_GetPhysicalDeviceFormatProperties(
-    VkPhysicalDevice                            physicalDevice,
-    VkFormat                                    format,
-    VkFormatProperties*                         pFormatProperties)
-{
-   LVP_FROM_HANDLE(lvp_physical_device, physical_device, physicalDevice);
-
-   lvp_physical_device_get_format_properties(physical_device,
-                                             format,
-                                             pFormatProperties);
-}
-
-void lvp_GetPhysicalDeviceFormatProperties2(
+VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFormatProperties2(
         VkPhysicalDevice                            physicalDevice,
         VkFormat                                    format,
         VkFormatProperties2*                        pFormatProperties)
@@ -382,32 +382,7 @@ static VkResult lvp_get_image_format_properties(struct lvp_physical_device *phys
    return VK_ERROR_FORMAT_NOT_SUPPORTED;
 }
 
-VkResult lvp_GetPhysicalDeviceImageFormatProperties(
-    VkPhysicalDevice                            physicalDevice,
-    VkFormat                                    format,
-    VkImageType                                 type,
-    VkImageTiling                               tiling,
-    VkImageUsageFlags                           usage,
-    VkImageCreateFlags                          createFlags,
-    VkImageFormatProperties*                    pImageFormatProperties)
-{
-   LVP_FROM_HANDLE(lvp_physical_device, physical_device, physicalDevice);
-
-   const VkPhysicalDeviceImageFormatInfo2 info = {
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
-      .pNext = NULL,
-      .format = format,
-      .type = type,
-      .tiling = tiling,
-      .usage = usage,
-      .flags = createFlags,
-   };
-
-   return lvp_get_image_format_properties(physical_device, &info,
-                                           pImageFormatProperties);
-}
-
-VkResult lvp_GetPhysicalDeviceImageFormatProperties2(
+VKAPI_ATTR VkResult VKAPI_CALL lvp_GetPhysicalDeviceImageFormatProperties2(
         VkPhysicalDevice                            physicalDevice,
         const VkPhysicalDeviceImageFormatInfo2     *base_info,
         VkImageFormatProperties2                   *base_props)
@@ -452,7 +427,7 @@ VkResult lvp_GetPhysicalDeviceImageFormatProperties2(
    return VK_SUCCESS;
 }
 
-void lvp_GetPhysicalDeviceSparseImageFormatProperties(
+VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceSparseImageFormatProperties(
     VkPhysicalDevice                            physicalDevice,
     VkFormat                                    format,
     VkImageType                                 type,
@@ -466,7 +441,7 @@ void lvp_GetPhysicalDeviceSparseImageFormatProperties(
    *pNumProperties = 0;
 }
 
-void lvp_GetPhysicalDeviceSparseImageFormatProperties2(
+VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceSparseImageFormatProperties2(
         VkPhysicalDevice                            physicalDevice,
         const VkPhysicalDeviceSparseImageFormatInfo2 *pFormatInfo,
         uint32_t                                   *pPropertyCount,
@@ -476,7 +451,7 @@ void lvp_GetPhysicalDeviceSparseImageFormatProperties2(
         *pPropertyCount = 0;
 }
 
-void lvp_GetPhysicalDeviceExternalBufferProperties(
+VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceExternalBufferProperties(
    VkPhysicalDevice                            physicalDevice,
    const VkPhysicalDeviceExternalBufferInfo    *pExternalBufferInfo,
    VkExternalBufferProperties                  *pExternalBufferProperties)

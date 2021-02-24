@@ -33,23 +33,33 @@
 
 #include "util/mesa-sha1.h"
 
-struct gen_perf_config *
-anv_get_perf(const struct gen_device_info *devinfo, int fd)
+void
+anv_physical_device_init_perf(struct anv_physical_device *device, int fd)
 {
+   const struct gen_device_info *devinfo = &device->info;
+
+   device->perf = NULL;
+
    /* We need self modifying batches. The i915 parser prevents it on
     * Gen7.5 :( maybe one day.
     */
    if (devinfo->gen < 8)
-      return NULL;
+      return;
 
    struct gen_perf_config *perf = gen_perf_new(NULL);
 
-   gen_perf_init_metrics(perf, devinfo, fd, false /* pipeline statistics */);
+   gen_perf_init_metrics(perf, &device->info, fd, false /* pipeline statistics */);
 
    if (!perf->n_queries) {
-      if (perf->platform_supported)
-         mesa_logw("Performance support disabled, "
-                   "consider sysctl dev.i915.perf_stream_paranoid=0\n");
+      if (perf->platform_supported) {
+         static bool warned_once = false;
+
+         if (!warned_once) {
+            mesa_logw("Performance support disabled, "
+                      "consider sysctl dev.i915.perf_stream_paranoid=0\n");
+            warned_once = true;
+         }
+      }
       goto err;
    }
 
@@ -61,11 +71,35 @@ anv_get_perf(const struct gen_device_info *devinfo, int fd)
          goto err;
    }
 
-   return perf;
+   device->perf = perf;
+
+   /* Compute the number of commands we need to implement a performance
+    * query.
+    */
+   const struct gen_perf_query_field_layout *layout = &perf->query_layout;
+   device->n_perf_query_commands = 0;
+   for (uint32_t f = 0; f < layout->n_fields; f++) {
+      struct gen_perf_query_field *field = &layout->fields[f];
+
+      switch (field->type) {
+      case GEN_PERF_QUERY_FIELD_TYPE_MI_RPC:
+         device->n_perf_query_commands++;
+         break;
+      case GEN_PERF_QUERY_FIELD_TYPE_SRM_PERFCNT:
+      case GEN_PERF_QUERY_FIELD_TYPE_SRM_RPSTAT:
+      case GEN_PERF_QUERY_FIELD_TYPE_SRM_OA_B:
+      case GEN_PERF_QUERY_FIELD_TYPE_SRM_OA_C:
+         device->n_perf_query_commands += field->size / 4;
+         break;
+      }
+   }
+   device->n_perf_query_commands *= 2; /* Begin & End */
+   device->n_perf_query_commands += 1; /* availability */
+
+   return;
 
  err:
    ralloc_free(perf);
-   return NULL;
 }
 
 void
@@ -421,13 +455,13 @@ anv_perf_write_pass_results(struct gen_perf_config *perf,
             results[c].uint64 =
                counter_pass->counter->oa_counter_read_uint64(perf,
                                                              counter_pass->query,
-                                                             accumulated_results->accumulator);
+                                                             accumulated_results);
             break;
          case GEN_PERF_COUNTER_DATA_TYPE_FLOAT:
             results[c].float32 =
                counter_pass->counter->oa_counter_read_float(perf,
                                                             counter_pass->query,
-                                                            accumulated_results->accumulator);
+                                                            accumulated_results);
             break;
          default:
             /* So far we aren't using uint32, double or bool32... */

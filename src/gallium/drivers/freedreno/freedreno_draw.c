@@ -44,6 +44,7 @@
 
 static void
 resource_read(struct fd_batch *batch, struct pipe_resource *prsc)
+	assert_dt
 {
 	if (!prsc)
 		return;
@@ -52,6 +53,7 @@ resource_read(struct fd_batch *batch, struct pipe_resource *prsc)
 
 static void
 resource_written(struct fd_batch *batch, struct pipe_resource *prsc)
+	assert_dt
 {
 	if (!prsc)
 		return;
@@ -60,6 +62,7 @@ resource_written(struct fd_batch *batch, struct pipe_resource *prsc)
 
 static void
 batch_draw_tracking_for_dirty_bits(struct fd_batch *batch)
+	assert_dt
 {
 	struct fd_context *ctx = batch->ctx;
 	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
@@ -191,13 +194,14 @@ batch_draw_tracking_for_dirty_bits(struct fd_batch *batch)
 static void
 batch_draw_tracking(struct fd_batch *batch, const struct pipe_draw_info *info,
                     const struct pipe_draw_indirect_info *indirect)
+	assert_dt
 {
 	struct fd_context *ctx = batch->ctx;
 
 	/* NOTE: needs to be before resource_written(batch->query_buf), otherwise
 	 * query_buf may not be created yet.
 	 */
-	fd_batch_set_stage(batch, FD_STAGE_DRAW);
+	fd_batch_update_queries(batch);
 
 	/*
 	 * Figure out the buffers/features we need:
@@ -213,8 +217,12 @@ batch_draw_tracking(struct fd_batch *batch, const struct pipe_draw_info *info,
 		resource_read(batch, info->index.resource);
 
 	/* Mark indirect draw buffer as being read */
-	if (indirect && indirect->buffer)
-		resource_read(batch, indirect->buffer);
+	if (indirect) {
+		if (indirect->buffer)
+			resource_read(batch, indirect->buffer);
+		if (indirect->count_from_stream_output)
+			resource_read(batch, fd_stream_output_target(indirect->count_from_stream_output)->offset_buf);
+	}
 
 	resource_written(batch, batch->query_buf);
 
@@ -229,20 +237,21 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
             const struct pipe_draw_indirect_info *indirect,
             const struct pipe_draw_start_count *draws,
             unsigned num_draws)
+	in_dt
 {
 	if (num_draws > 1) {
-           struct pipe_draw_info tmp_info = *info;
+		struct pipe_draw_info tmp_info = *info;
 
-           for (unsigned i = 0; i < num_draws; i++) {
-              fd_draw_vbo(pctx, &tmp_info, indirect, &draws[i], 1);
-              if (tmp_info.increment_draw_id)
-                 tmp_info.drawid++;
-           }
-           return;
+		for (unsigned i = 0; i < num_draws; i++) {
+			fd_draw_vbo(pctx, &tmp_info, indirect, &draws[i], 1);
+			if (tmp_info.increment_draw_id)
+				tmp_info.drawid++;
+		}
+		return;
 	}
 
-        if (!indirect && (!draws[0].count || !info->instance_count))
-           return;
+	if (!indirect && (!draws[0].count || !info->instance_count))
+		return;
 
 	struct fd_context *ctx = fd_context(pctx);
 
@@ -281,7 +290,7 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 	if (info->index_size) {
 		if (info->has_user_indices) {
 			if (!util_upload_index_buffer(pctx, info, &draws[0],
-                                                      &indexbuf, &index_offset, 4))
+					&indexbuf, &index_offset, 4))
 				return;
 			new_info = *info;
 			new_info.index.resource = indexbuf;
@@ -372,6 +381,7 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
 static void
 batch_clear_tracking(struct fd_batch *batch, unsigned buffers)
+	assert_dt
 {
 	struct fd_context *ctx = batch->ctx;
 	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
@@ -424,6 +434,7 @@ fd_clear(struct pipe_context *pctx, unsigned buffers,
 		const struct pipe_scissor_state *scissor_state,
 		const union pipe_color_union *color, double depth,
 		unsigned stencil)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 
@@ -469,7 +480,7 @@ fd_clear(struct pipe_context *pctx, unsigned buffers,
 	bool fallback = true;
 
 	if (ctx->clear) {
-		fd_batch_set_stage(batch, FD_STAGE_CLEAR);
+		fd_batch_update_queries(batch);
 
 		if (ctx->clear(ctx, buffers, color, depth, stencil)) {
 			if (fd_mesa_debug & FD_DBG_DCLEAR)
@@ -510,6 +521,7 @@ fd_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *ps,
 
 static void
 fd_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	const struct fd_shaderbuf_stateobj *so = &ctx->shaderbuf[PIPE_SHADER_COMPUTE];

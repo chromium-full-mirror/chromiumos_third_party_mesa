@@ -113,10 +113,8 @@ static void anv_spirv_nir_debug(void *private_data,
 
    snprintf(buffer, sizeof(buffer), "SPIR-V offset %lu: %s", (unsigned long) spirv_offset, message);
 
-   vk_debug_report(&instance->debug_report_callbacks,
-                   vk_flags[level],
-                   VK_DEBUG_REPORT_OBJECT_TYPE_SHADER_MODULE_EXT,
-                   (uint64_t) (uintptr_t) debug_data->module,
+   vk_debug_report(&instance->vk, vk_flags[level],
+                   &debug_data->module->base,
                    0, 0, "anv", buffer);
 }
 
@@ -1404,12 +1402,10 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
           */
          assert(found < __builtin_popcount(pipeline->active_stages));
 
-         vk_debug_report(&pipeline->base.device->physical->instance->debug_report_callbacks,
+         vk_debug_report(&pipeline->base.device->physical->instance->vk,
                          VK_DEBUG_REPORT_WARNING_BIT_EXT |
                          VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT,
-                         VK_DEBUG_REPORT_OBJECT_TYPE_PIPELINE_CACHE_EXT,
-                         (uint64_t)(uintptr_t)cache,
-                         0, 0, "anv",
+                         &cache->base, 0, 0, "anv",
                          "Found a partial pipeline in the cache.  This is "
                          "most likely caused by an incomplete pipeline cache "
                          "import or export");
@@ -1752,6 +1748,22 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
 
       NIR_PASS_V(stage.nir, nir_lower_explicit_io,
                  nir_var_mem_shared, nir_address_format_32bit_offset);
+
+      if (stage.nir->info.cs.zero_initialize_shared_memory &&
+          stage.nir->info.cs.shared_size > 0) {
+         /* The effective Shared Local Memory size is at least 1024 bytes and
+          * is always rounded to a power of two, so it is OK to align the size
+          * used by the shader to chunk_size -- which does simplify the logic.
+          */
+         const unsigned chunk_size = 16;
+         const unsigned shared_size = ALIGN(stage.nir->info.cs.shared_size, chunk_size);
+         assert(shared_size <=
+                calculate_gen_slm_size(compiler->devinfo->gen, stage.nir->info.cs.shared_size));
+
+         NIR_PASS_V(stage.nir, nir_zero_initialize_shared_memory,
+                    shared_size, chunk_size);
+      }
+
       NIR_PASS_V(stage.nir, brw_nir_lower_cs_intrinsics);
 
       stage.num_stats = 1;

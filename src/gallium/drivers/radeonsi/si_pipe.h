@@ -99,7 +99,6 @@ extern "C" {
 #define SI_CONTEXT_VGT_FLUSH          (1 << 15)
 #define SI_CONTEXT_VGT_STREAMOUT_SYNC (1 << 16)
 
-#define SI_PREFETCH_VBO_DESCRIPTORS (1 << 0)
 #define SI_PREFETCH_LS              (1 << 1)
 #define SI_PREFETCH_HS              (1 << 2)
 #define SI_PREFETCH_ES              (1 << 3)
@@ -164,6 +163,7 @@ enum si_clear_code
 
 #define SI_IMAGE_ACCESS_AS_BUFFER (1 << 7)
 #define SI_IMAGE_ACCESS_DCC_OFF   (1 << 8)
+#define SI_IMAGE_ACCESS_DCC_WRITE (1 << 9)
 
 /* Debug flags. */
 enum
@@ -227,6 +227,8 @@ enum
    DBG_NO_HYPERZ,
    DBG_NO_2D_TILING,
    DBG_NO_TILING,
+   DBG_NO_DISPLAY_TILING,
+   DBG_NO_DISPLAY_DCC,
    DBG_NO_DCC,
    DBG_NO_DCC_CLEAR,
    DBG_NO_DCC_FB,
@@ -284,8 +286,8 @@ struct si_resource {
    struct pb_buffer *buf;
    uint64_t gpu_address;
    /* Memory usage if the buffer placement is optimal. */
-   uint64_t vram_usage;
-   uint64_t gart_usage;
+   uint32_t vram_usage_kb;
+   uint32_t gart_usage_kb;
 
    /* Resource properties. */
    uint64_t bo_size;
@@ -977,8 +979,8 @@ struct si_context {
    unsigned last_num_draw_calls;
    unsigned flags; /* flush flags */
    /* Current unaccounted memory usage. */
-   uint64_t vram;
-   uint64_t gtt;
+   uint32_t vram_kb;
+   uint32_t gtt_kb;
 
    /* Compute-based primitive discard. */
    unsigned prim_discard_vertex_count_threshold;
@@ -1041,11 +1043,16 @@ struct si_context {
    struct si_pm4_state *vgt_shader_config[SI_NUM_VGT_STAGES_STATES];
 
    /* shaders */
-   struct si_shader_ctx_state ps_shader;
-   struct si_shader_ctx_state gs_shader;
-   struct si_shader_ctx_state vs_shader;
-   struct si_shader_ctx_state tcs_shader;
-   struct si_shader_ctx_state tes_shader;
+   union {
+      struct {
+         struct si_shader_ctx_state vs;
+         struct si_shader_ctx_state ps;
+         struct si_shader_ctx_state gs;
+         struct si_shader_ctx_state tcs;
+         struct si_shader_ctx_state tes;
+      } shader;
+      struct si_shader_ctx_state shaders[SI_NUM_GRAPHICS_SHADERS];
+   };
    struct si_shader_ctx_state cs_prim_discard_state;
    struct si_cs_shader_state cs_shader_state;
 
@@ -1260,6 +1267,8 @@ struct si_context {
    struct list_head shader_query_buffers;
    unsigned num_active_shader_queries;
 
+   bool force_cb_shader_coherent;
+
    /* Statistics gathering for the DCC enablement heuristic. It can't be
     * in si_texture because si_texture can be shared by multiple
     * contexts. This is for back buffers only. We shouldn't get too many
@@ -1352,9 +1361,14 @@ unsigned si_get_flush_flags(struct si_context *sctx, enum si_coherency coher,
                             enum si_cache_policy cache_policy);
 void si_launch_grid_internal(struct si_context *sctx, struct pipe_grid_info *info,
                                     void *restore_cs, unsigned flags);
+enum si_clear_method {
+  SI_CP_DMA_CLEAR_METHOD,
+  SI_COMPUTE_CLEAR_METHOD,
+  SI_AUTO_SELECT_CLEAR_METHOD
+};
 void si_clear_buffer(struct si_context *sctx, struct pipe_resource *dst, uint64_t offset,
                      uint64_t size, uint32_t *clear_value, uint32_t clear_value_size,
-                     enum si_coherency coher, bool force_cpdma);
+                     enum si_coherency coher, enum si_clear_method method);
 void si_screen_clear_buffer(struct si_screen *sscreen, struct pipe_resource *dst, uint64_t offset,
                             uint64_t size, unsigned value);
 void si_copy_buffer(struct si_context *sctx, struct pipe_resource *dst, struct pipe_resource *src,
@@ -1635,8 +1649,8 @@ static inline void si_context_add_resource_size(struct si_context *sctx, struct 
 {
    if (r) {
       /* Add memory usage for need_gfx_cs_space */
-      sctx->vram += si_resource(r)->vram_usage;
-      sctx->gtt += si_resource(r)->gart_usage;
+      sctx->vram_kb += si_resource(r)->vram_usage_kb;
+      sctx->gtt_kb += si_resource(r)->gart_usage_kb;
    }
 }
 
@@ -1683,17 +1697,17 @@ static ALWAYS_INLINE struct si_shader_ctx_state *
 si_get_vs_inline(struct si_context *sctx, enum si_has_tess has_tess, enum si_has_gs has_gs)
 {
    if (has_gs)
-      return &sctx->gs_shader;
+      return &sctx->shader.gs;
    if (has_tess)
-      return &sctx->tes_shader;
+      return &sctx->shader.tes;
 
-   return &sctx->vs_shader;
+   return &sctx->shader.vs;
 }
 
 static inline struct si_shader_ctx_state *si_get_vs(struct si_context *sctx)
 {
-   return si_get_vs_inline(sctx, sctx->tes_shader.cso ? TESS_ON : TESS_OFF,
-                           sctx->gs_shader.cso ? GS_ON : GS_OFF);
+   return si_get_vs_inline(sctx, sctx->shader.tes.cso ? TESS_ON : TESS_OFF,
+                           sctx->shader.gs.cso ? GS_ON : GS_OFF);
 }
 
 static inline struct si_shader_info *si_get_vs_info(struct si_context *sctx)
@@ -1739,6 +1753,7 @@ static inline void si_make_CB_shader_coherent(struct si_context *sctx, unsigned 
                                               bool shaders_read_metadata, bool dcc_pipe_aligned)
 {
    sctx->flags |= SI_CONTEXT_FLUSH_AND_INV_CB | SI_CONTEXT_INV_VCACHE;
+   sctx->force_cb_shader_coherent = false;
 
    if (sctx->chip_class >= GFX10) {
       if (sctx->screen->info.tcc_harvested)
@@ -1818,7 +1833,7 @@ static inline unsigned si_get_total_colormask(struct si_context *sctx)
    if (sctx->queued.named.rasterizer->rasterizer_discard)
       return 0;
 
-   struct si_shader_selector *ps = sctx->ps_shader.cso;
+   struct si_shader_selector *ps = sctx->shader.ps.cso;
    if (!ps)
       return 0;
 
@@ -1864,17 +1879,17 @@ static inline bool util_rast_prim_is_triangles(unsigned prim)
  * \param gtt       GTT memory size not added to the buffer list yet
  */
 static inline bool radeon_cs_memory_below_limit(struct si_screen *screen, struct radeon_cmdbuf *cs,
-                                                uint64_t vram, uint64_t gtt)
+                                                uint32_t vram_kb, uint32_t gtt_kb)
 {
-   vram += cs->used_vram;
-   gtt += cs->used_gart;
+   vram_kb += cs->used_vram_kb;
+   gtt_kb += cs->used_gart_kb;
 
    /* Anything that goes above the VRAM size should go to GTT. */
-   if (vram > screen->info.vram_size)
-      gtt += vram - screen->info.vram_size;
+   if (vram_kb > screen->info.vram_size_kb)
+      gtt_kb += vram_kb - screen->info.vram_size_kb;
 
-   /* Now we just need to check if we have enough GTT. */
-   return gtt < screen->info.gart_size * 0.7;
+   /* Now we just need to check if we have enough GTT (the limit is 75% of max). */
+   return gtt_kb < screen->info.gart_size_kb / 4 * 3;
 }
 
 /**
@@ -1918,8 +1933,8 @@ static inline void radeon_add_to_gfx_buffer_list_check_mem(struct si_context *sc
                                                            bool check_mem)
 {
    if (check_mem &&
-       !radeon_cs_memory_below_limit(sctx->screen, &sctx->gfx_cs, sctx->vram + bo->vram_usage,
-                                     sctx->gtt + bo->gart_usage))
+       !radeon_cs_memory_below_limit(sctx->screen, &sctx->gfx_cs, sctx->vram_kb + bo->vram_usage_kb,
+                                     sctx->gtt_kb + bo->gart_usage_kb))
       si_flush_gfx_cs(sctx, RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
 
    radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, bo, usage, priority);
@@ -1961,8 +1976,8 @@ static inline unsigned si_get_shader_wave_size(struct si_shader *shader)
 static inline void si_select_draw_vbo(struct si_context *sctx)
 {
    sctx->b.draw_vbo = sctx->draw_vbo[sctx->chip_class - GFX6]
-                                    [!!sctx->tes_shader.cso]
-                                    [!!sctx->gs_shader.cso]
+                                    [!!sctx->shader.tes.cso]
+                                    [!!sctx->shader.gs.cso]
                                     [sctx->ngg]
                                     [si_compute_prim_discard_enabled(sctx)];
    assert(sctx->b.draw_vbo);

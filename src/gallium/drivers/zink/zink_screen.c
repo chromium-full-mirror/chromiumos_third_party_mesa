@@ -40,6 +40,7 @@
 #include "util/u_screen.h"
 #include "util/u_string.h"
 #include "util/u_transfer_helper.h"
+#include "util/xmlconfig.h"
 
 #include "frontend/sw_winsys.h"
 
@@ -93,6 +94,101 @@ get_video_mem(struct zink_screen *screen)
    return (int)(size >> 20);
 }
 
+static void
+disk_cache_init(struct zink_screen *screen)
+{
+#ifdef ENABLE_SHADER_CACHE
+   static char buf[1000];
+   snprintf(buf, sizeof(buf), "zink_%x04x", screen->info.props.vendorID);
+
+   screen->disk_cache = disk_cache_create(buf, screen->info.props.deviceName, 0);
+   if (screen->disk_cache)
+      disk_cache_compute_key(screen->disk_cache, buf, strlen(buf), screen->disk_cache_key);
+#endif
+}
+
+void
+zink_screen_update_pipeline_cache(struct zink_screen *screen)
+{
+   size_t size = 0;
+
+   if (!screen->disk_cache)
+      return;
+   if (vkGetPipelineCacheData(screen->dev, screen->pipeline_cache, &size, NULL) != VK_SUCCESS)
+      return;
+   if (screen->pipeline_cache_size == size)
+      return;
+   void *data = malloc(size);
+   if (!data)
+      return;
+   if (vkGetPipelineCacheData(screen->dev, screen->pipeline_cache, &size, data) == VK_SUCCESS) {
+      screen->pipeline_cache_size = size;
+      disk_cache_put(screen->disk_cache, screen->disk_cache_key, data, size, NULL);
+   }
+   free(data);
+}
+
+static int
+zink_get_compute_param(struct pipe_screen *pscreen, enum pipe_shader_ir ir_type,
+                       enum pipe_compute_cap param, void *ret)
+{
+   struct zink_screen *screen = zink_screen(pscreen);
+#define RET(x) do {                  \
+   if (ret)                          \
+      memcpy(ret, x, sizeof(x));     \
+   return sizeof(x);                 \
+} while (0)
+
+   switch (param) {
+   case PIPE_COMPUTE_CAP_ADDRESS_BITS:
+      RET((uint32_t []){ 32 });
+
+   case PIPE_COMPUTE_CAP_IR_TARGET:
+      if (ret)
+         strcpy(ret, "nir");
+      return 4;
+
+   case PIPE_COMPUTE_CAP_GRID_DIMENSION:
+      RET((uint64_t []) { 3 });
+
+   case PIPE_COMPUTE_CAP_MAX_GRID_SIZE:
+      RET(((uint64_t []) { screen->info.props.limits.maxComputeWorkGroupCount[0],
+                           screen->info.props.limits.maxComputeWorkGroupCount[1],
+                           screen->info.props.limits.maxComputeWorkGroupCount[2] }));
+
+   case PIPE_COMPUTE_CAP_MAX_BLOCK_SIZE:
+      /* MaxComputeWorkGroupSize[0..2] */
+      RET(((uint64_t []) {screen->info.props.limits.maxComputeWorkGroupSize[0],
+                          screen->info.props.limits.maxComputeWorkGroupSize[1],
+                          screen->info.props.limits.maxComputeWorkGroupSize[2]}));
+
+   case PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK:
+   case PIPE_COMPUTE_CAP_MAX_VARIABLE_THREADS_PER_BLOCK:
+      RET((uint64_t []) { screen->info.props.limits.maxComputeWorkGroupInvocations });
+
+   case PIPE_COMPUTE_CAP_MAX_LOCAL_SIZE:
+      RET((uint64_t []) { screen->info.props.limits.maxComputeSharedMemorySize });
+
+   case PIPE_COMPUTE_CAP_IMAGES_SUPPORTED:
+      RET((uint32_t []) { 1 });
+
+   case PIPE_COMPUTE_CAP_SUBGROUP_SIZE:
+      RET((uint32_t []) { screen->info.props11.subgroupSize });
+
+   case PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE:
+   case PIPE_COMPUTE_CAP_MAX_CLOCK_FREQUENCY:
+   case PIPE_COMPUTE_CAP_MAX_COMPUTE_UNITS:
+   case PIPE_COMPUTE_CAP_MAX_GLOBAL_SIZE:
+   case PIPE_COMPUTE_CAP_MAX_PRIVATE_SIZE:
+   case PIPE_COMPUTE_CAP_MAX_INPUT_SIZE:
+      // XXX: I think these are for Clover...
+      return 0;
+
+   default:
+      unreachable("unknown compute param");
+   }
+}
+
 static int
 zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 {
@@ -112,6 +208,19 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
+   case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
+   case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
+   case PIPE_CAP_QUERY_BUFFER_OBJECT:
+   case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
+   case PIPE_CAP_CLIP_HALFZ:
+   case PIPE_CAP_TGSI_TXQS:
+   case PIPE_CAP_TEXTURE_BARRIER:
+   case PIPE_CAP_TGSI_VOTE:
+   case PIPE_CAP_DRAW_PARAMETERS:
+   case PIPE_CAP_POLYGON_OFFSET_CLAMP:
+   case PIPE_CAP_QUERY_SO_OVERFLOW:
+   case PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE:
+   case PIPE_CAP_GL_SPIRV:
       return 1;
 
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
@@ -121,10 +230,11 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return screen->info.feats.features.multiDrawIndirect;
 
    case PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS:
-      return screen->instance_info.have_KHR_draw_indirect_count;
+      return screen->info.have_KHR_draw_indirect_count;
 
    case PIPE_CAP_START_INSTANCE:
-      return screen->info.feats11.shaderDrawParameters;
+      return (screen->info.have_vulkan12 && screen->info.feats11.shaderDrawParameters) ||
+              screen->info.have_KHR_shader_draw_parameters;
 
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
       return screen->info.have_EXT_vertex_attribute_divisor;
@@ -159,6 +269,9 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_TEXTURE_SWIZZLE:
       return 1;
+
+   case PIPE_CAP_GL_CLAMP:
+      return 0;
 
    case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
       return screen->info.props.limits.maxImageDimension2D;
@@ -208,12 +321,10 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
       return 130;
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
-      return 420;
+      return 460;
 
-#if 0 /* TODO: Enable me */
    case PIPE_CAP_COMPUTE:
       return 1;
-#endif
 
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
       return screen->info.props.limits.minUniformBufferOffsetAlignment;
@@ -289,16 +400,8 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
       return 1;
 
-#if 0 /* TODO: Enable me */
-   case PIPE_CAP_CLIP_HALFZ:
-      return 1;
-#endif
-
    case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
    case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
-      return 1;
-
-   case PIPE_CAP_SHAREABLE_SHADERS:
       return 1;
 
    case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
@@ -327,7 +430,10 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 0;
 
    case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
-      return 65536;
+      /* 16777216 (1<<24) is required by GL spec, 1<<27 is required by VK spec */
+      assert(screen->info.props.limits.maxStorageBufferRange >= 1 << 27);
+      /* but Gallium can't handle values that are too big, so clamp to VK spec minimum */
+      return 1 << 27;
 
    case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
    case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
@@ -335,9 +441,6 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT:
    case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
-      return 0;
-
-   case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
       return 0;
 
    case PIPE_CAP_NIR_COMPACT_ARRAYS:
@@ -378,13 +481,19 @@ zink_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
    switch (param) {
    case PIPE_CAPF_MAX_LINE_WIDTH:
    case PIPE_CAPF_MAX_LINE_WIDTH_AA:
+      if (!screen->info.feats.features.wideLines)
+         return 1.0f;
       return screen->info.props.limits.lineWidthRange[1];
 
    case PIPE_CAPF_MAX_POINT_WIDTH:
    case PIPE_CAPF_MAX_POINT_WIDTH_AA:
+      if (!screen->info.feats.features.largePoints)
+         return 1.0f;
       return screen->info.props.limits.pointSizeRange[1];
 
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
+      if (!screen->info.feats.features.samplerAnisotropy)
+         return 1.0f;
       return screen->info.props.limits.maxSamplerAnisotropy;
 
    case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
@@ -397,7 +506,7 @@ zink_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
    }
 
    /* should only get here on unhandled cases */
-   return 0.0;
+   return 0.0f;
 }
 
 static int
@@ -417,7 +526,7 @@ zink_get_shader_param(struct pipe_screen *pscreen,
       case PIPE_SHADER_TESS_EVAL:
          if (screen->info.have_KHR_vulkan_memory_model &&
              screen->info.feats.features.tessellationShader &&
-             screen->instance_info.have_KHR_maintenance2)
+             screen->info.have_KHR_maintenance2)
             return INT_MAX;
          break;
 
@@ -426,6 +535,8 @@ zink_get_shader_param(struct pipe_screen *pscreen,
             return INT_MAX;
          break;
 
+      case PIPE_SHADER_COMPUTE:
+         return INT_MAX;
       default:
          break;
       }
@@ -488,7 +599,10 @@ zink_get_shader_param(struct pipe_screen *pscreen,
    }
 
    case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
-      return 65536;
+      /* 16384 required by GL spec, this is the minimum required by VK spec */
+      assert(screen->info.props.limits.maxUniformBufferRange >= 16384);
+      /* but Gallium can't handle values that are too big */
+      return MIN2(screen->info.props.limits.maxUniformBufferRange, 1 << 31);
 
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
       return  MIN2(screen->info.props.limits.maxPerStageDescriptorUniformBuffers,
@@ -663,8 +777,16 @@ zink_is_format_supported(struct pipe_screen *pscreen,
         return false;
 
       if (bind & PIPE_BIND_SAMPLER_VIEW &&
-          !(props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
-         return false;
+         !(props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
+            return false;
+
+      if ((bind & PIPE_BIND_SAMPLER_VIEW) || (bind & PIPE_BIND_RENDER_TARGET)) {
+         /* if this is a 3-component texture, force gallium to give us 4 components by rejecting this one */
+         const struct util_format_description *desc = util_format_description(format);
+         if (desc->nr_channels == 3 &&
+             (desc->block.bits == 24 || desc->block.bits == 48 || desc->block.bits == 96))
+            return false;
+      }
 
       if (bind & PIPE_BIND_DEPTH_STENCIL &&
           !(props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
@@ -691,6 +813,13 @@ zink_destroy_screen(struct pipe_screen *pscreen)
    }
 
    u_transfer_helper_destroy(pscreen->transfer_helper);
+   zink_screen_update_pipeline_cache(screen);
+#ifdef ENABLE_SHADER_CACHE
+   if (screen->disk_cache)
+      disk_cache_wait_for_idle(screen->disk_cache);
+#endif
+   disk_cache_destroy(screen->disk_cache);
+   vkDestroyPipelineCache(screen->dev, screen->pipeline_cache, NULL);
 
    vkDestroyDevice(screen->dev, NULL);
    vkDestroyInstance(screen->instance, NULL);
@@ -703,19 +832,33 @@ static VkPhysicalDevice
 choose_pdev(const VkInstance instance)
 {
    uint32_t i, pdev_count;
-   VkPhysicalDevice *pdevs, pdev;
-   vkEnumeratePhysicalDevices(instance, &pdev_count, NULL);
+   VkPhysicalDevice *pdevs, pdev = NULL;
+   VkResult result = vkEnumeratePhysicalDevices(instance, &pdev_count, NULL);
+   if (result != VK_SUCCESS)
+      return VK_NULL_HANDLE;
+
    assert(pdev_count > 0);
 
    pdevs = malloc(sizeof(*pdevs) * pdev_count);
-   vkEnumeratePhysicalDevices(instance, &pdev_count, pdevs);
+   result = vkEnumeratePhysicalDevices(instance, &pdev_count, pdevs);
+   assert(result == VK_SUCCESS);
    assert(pdev_count > 0);
 
-   pdev = pdevs[0];
    for (i = 0; i < pdev_count; ++i) {
       VkPhysicalDeviceProperties props;
       vkGetPhysicalDeviceProperties(pdevs[i], &props);
-      if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+
+#ifdef ZINK_WITH_SWRAST_VK
+      char *use_lavapipe = getenv("ZINK_USE_LAVAPIPE");
+      if (use_lavapipe) {
+         if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+            pdev = pdevs[i];
+            break;
+         } else
+            continue;
+      }
+#endif
+      if (props.deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) {
          pdev = pdevs[i];
          break;
       }
@@ -761,25 +904,18 @@ zink_flush_frontbuffer(struct pipe_screen *pscreen,
    void *map = winsys->displaytarget_map(winsys, res->dt, 0);
 
    if (map) {
-      VkImageSubresource isr = {};
-      isr.aspectMask = res->aspect;
-      isr.mipLevel = level;
-      isr.arrayLayer = layer;
-      VkSubresourceLayout layout;
-      vkGetImageSubresourceLayout(screen->dev, res->image, &isr, &layout);
-
-      void *ptr;
-      VkResult result = vkMapMemory(screen->dev, res->mem, res->offset, res->size, 0, &ptr);
-      if (result != VK_SUCCESS) {
-         debug_printf("failed to map memory for display\n");
-         return;
+      struct pipe_transfer *transfer = NULL;
+      void *res_map = pipe_transfer_map(pcontext, pres, level, layer, PIPE_MAP_READ, 0, 0,
+                                        u_minify(pres->width0, level),
+                                        u_minify(pres->height0, level),
+                                        &transfer);
+      if (res_map) {
+         util_copy_rect((ubyte*)map, pres->format, res->dt_stride, 0, 0,
+                        transfer->box.width, transfer->box.height,
+                        (const ubyte*)res_map, transfer->stride, 0, 0);
+         pipe_transfer_unmap(pcontext, transfer);
       }
-      for (int i = 0; i < pres->height0; ++i) {
-         uint8_t *src = (uint8_t *)ptr + i * layout.rowPitch;
-         uint8_t *dst = (uint8_t *)map + i * res->dt_stride;
-         memcpy(dst, src, res->dt_stride);
-      }
-      vkUnmapMemory(screen->dev, res->mem);
+      winsys->displaytarget_unmap(winsys, res->dt);
    }
 
    winsys->displaytarget_unmap(winsys, res->dt);
@@ -819,6 +955,11 @@ zink_get_format(struct zink_screen *screen, enum pipe_format format)
 {
    VkFormat ret = zink_pipe_format_to_vk_format(emulate_x8(format));
 
+   if (format == PIPE_FORMAT_X24S8_UINT)
+      /* valid when using aspects to extract stencil,
+       * fails format test because it's emulated */
+      ret = VK_FORMAT_D24_UNORM_S8_UINT;
+
    if (ret == VK_FORMAT_X8_D24_UNORM_PACK32 &&
        !screen->have_X8_D24_UNORM_PACK32) {
       assert(zink_is_depth_format_supported(screen, VK_FORMAT_D32_SFLOAT));
@@ -837,11 +978,6 @@ zink_get_format(struct zink_screen *screen, enum pipe_format format)
        (ret == VK_FORMAT_A4R4G4B4_UNORM_PACK16_EXT &&
         !screen->info.format_4444_feats.formatA4R4G4B4))
       return VK_FORMAT_UNDEFINED;
-
-   if (format == PIPE_FORMAT_X24S8_UINT)
-      /* valid when using aspects to extract stencil,
-       * fails format test because it's emulated */
-      return VK_FORMAT_X8_D24_UNORM_PACK32;
 
    return ret;
 }
@@ -863,6 +999,13 @@ load_device_extensions(struct zink_screen *screen)
    if (screen->info.have_EXT_conditional_rendering) {
       GET_PROC_ADDR(CmdBeginConditionalRenderingEXT);
       GET_PROC_ADDR(CmdEndConditionalRenderingEXT);
+   }
+
+   if (screen->info.have_KHR_draw_indirect_count) {
+      GET_PROC_ADDR_DEVICE_LOCAL(CmdDrawIndexedIndirectCountKHR);
+      screen->vk_CmdDrawIndexedIndirectCount = vk_CmdDrawIndexedIndirectCountKHR;
+      GET_PROC_ADDR_DEVICE_LOCAL(CmdDrawIndirectCountKHR);
+      screen->vk_CmdDrawIndirectCount = vk_CmdDrawIndirectCountKHR;
    }
 
    if (screen->info.have_EXT_calibrated_timestamps) {
@@ -930,9 +1073,6 @@ create_debug(struct zink_screen *screen)
 {
    GET_PROC_ADDR_INSTANCE(CreateDebugUtilsMessengerEXT);
    GET_PROC_ADDR_INSTANCE(DestroyDebugUtilsMessengerEXT);
-
-   if (!screen->vk_CreateDebugUtilsMessengerEXT || !screen->vk_DestroyDebugUtilsMessengerEXT)
-      return false;
 
    VkDebugUtilsMessengerCreateInfoEXT vkDebugUtilsMessengerCreateInfoEXT = {
        VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
@@ -1077,8 +1217,9 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
 
    zink_debug = debug_get_option_zink_debug();
 
-   screen->loader_version = zink_get_loader_version();
-   screen->instance = zink_create_instance(screen);
+   screen->instance_info.loader_version = zink_get_loader_version();
+   screen->instance = zink_create_instance(&screen->instance_info);
+
    if (!screen->instance)
       goto fail;
 
@@ -1089,6 +1230,9 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
       debug_printf("ZINK: failed to setup debug utils\n");
 
    screen->pdev = choose_pdev(screen->instance);
+   if (screen->pdev == VK_NULL_HANDLE)
+      goto fail;
+
    update_queue_props(screen);
 
    screen->have_X8_D24_UNORM_PACK32 = zink_is_depth_format_supported(screen,
@@ -1118,6 +1262,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    screen->base.get_name = zink_get_name;
    screen->base.get_vendor = zink_get_vendor;
    screen->base.get_device_vendor = zink_get_device_vendor;
+   screen->base.get_compute_param = zink_get_compute_param;
    screen->base.get_param = zink_get_param;
    screen->base.get_paramf = zink_get_paramf;
    screen->base.get_shader_param = zink_get_shader_param;
@@ -1131,8 +1276,28 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    zink_screen_fence_init(&screen->base);
 
    zink_screen_init_compiler(screen);
+   disk_cache_init(screen);
+
+   VkPipelineCacheCreateInfo pcci;
+   pcci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+   pcci.pNext = NULL;
+   /* we're single-threaded now, so we don't need synchronization */
+   pcci.flags = screen->info.have_EXT_pipeline_creation_cache_control ? VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT_EXT : 0;
+   pcci.initialDataSize = 0;
+   pcci.pInitialData = NULL;
+   if (screen->disk_cache) {
+      pcci.pInitialData = disk_cache_get(screen->disk_cache, screen->disk_cache_key, &screen->pipeline_cache_size);
+      pcci.initialDataSize = screen->pipeline_cache_size;
+   }
+   vkCreatePipelineCache(screen->dev, &pcci, NULL, &screen->pipeline_cache);
+   free((void*)pcci.pInitialData);
 
    slab_create_parent(&screen->transfer_pool, sizeof(struct zink_transfer), 16);
+
+#if WITH_XMLCONFIG
+   if (config)
+      screen->driconf.dual_color_blend_by_location = driQueryOptionb(config->options, "dual_color_blend_by_location");
+#endif
 
    return screen;
 
@@ -1144,10 +1309,41 @@ fail:
 struct pipe_screen *
 zink_create_screen(struct sw_winsys *winsys)
 {
-   struct zink_screen *ret = zink_internal_create_screen(NULL);
+#ifdef ZINK_WITH_SWRAST_VK
+   char *use_lavapipe = getenv("ZINK_USE_LAVAPIPE"), *gallium_driver = NULL;
+   if (use_lavapipe) {
+      /**
+      * HACK: Temorarily unset $GALLIUM_DRIVER to prevent Lavapipe from
+      * recursively trying to use zink as the gallium driver.
+      *
+      * This is not thread-safe, so if an application creates another
+      * context in another thread at the same time, well, we're out of
+      * luck!
+      */
+      gallium_driver = getenv("GALLIUM_DRIVER");
+#ifdef _WIN32
+      _putenv("GALLIUM_DRIVER=llvmpipe");
+#else
+      setenv("GALLIUM_DRIVER", "llvmpipe", 1);
+#endif
+   }
+#endif
 
+   struct zink_screen *ret = zink_internal_create_screen(NULL);
    if (ret)
       ret->winsys = winsys;
+
+#ifdef ZINK_WITH_SWRAST_VK
+   if (gallium_driver) {
+#ifdef _WIN32
+      char envstr[64] = "";
+      snprintf(envstr, 64, "GALLIUM_DRIVER=%s", gallium_driver);
+      _putenv(envstr);
+#else
+      setenv("GALLIUM_DRIVER", gallium_driver, 1);
+#endif
+   }
+#endif
 
    return &ret->base;
 }

@@ -189,8 +189,6 @@ void next_uses_per_block(spill_ctx& ctx, unsigned block_idx, std::set<uint32_t>&
                              block->logical_preds[i] :
                              block->linear_preds[i];
          if (instr->operands[i].isTemp()) {
-            if (instr->operands[i].getTemp() == ctx.program->blocks[pred_idx].live_out_exec)
-               continue;
             if (ctx.next_use_distances_end[pred_idx].find(instr->operands[i].getTemp()) == ctx.next_use_distances_end[pred_idx].end() ||
                 ctx.next_use_distances_end[pred_idx][instr->operands[i].getTemp()] != std::pair<uint32_t, uint32_t>{block_idx, 0})
                worklist.insert(pred_idx);
@@ -208,8 +206,6 @@ void next_uses_per_block(spill_ctx& ctx, unsigned block_idx, std::set<uint32_t>&
       uint32_t dom = pair.second.first;
       std::vector<unsigned>& preds = temp.is_linear() ? block->linear_preds : block->logical_preds;
       for (unsigned pred_idx : preds) {
-         if (temp == ctx.program->blocks[pred_idx].live_out_exec)
-            continue;
          if (ctx.program->blocks[pred_idx].loop_nest_depth > block->loop_nest_depth)
             distance += 0xFFFF;
          if (ctx.next_use_distances_end[pred_idx].find(temp) != ctx.next_use_distances_end[pred_idx].end()) {
@@ -254,7 +250,7 @@ bool should_rematerialize(aco_ptr<Instruction>& instr)
 
    for (const Operand& op : instr->operands) {
       /* TODO: rematerialization using temporaries isn't yet supported */
-      if (op.isTemp())
+      if (!op.isConstant())
          return false;
    }
 
@@ -607,9 +603,10 @@ RegisterDemand init_live_in_vars(spill_ctx& ctx, Block* block, unsigned block_id
       bool spill = true;
 
       for (unsigned i = 0; i < phi->operands.size(); i++) {
-         if (phi->operands[i].isUndefined())
+         assert(!phi->operands[i].isConstant());
+         // TODO: in theory, we can spill phis with exec operands and temp definitions
+         if (!phi->definitions[0].isTemp() || !phi->operands[i].isTemp())
             continue;
-         assert(phi->operands[i].isTemp());
          if (ctx.spills_exit[preds[i]].find(phi->operands[i].getTemp()) == ctx.spills_exit[preds[i]].end())
             spill = false;
          else
@@ -819,7 +816,8 @@ void add_coupling_code(spill_ctx& ctx, Block* block, unsigned block_idx)
          break;
 
       /* if the phi is not spilled, add to instructions */
-      if (ctx.spills_entry[block_idx].find(phi->definitions[0].getTemp()) == ctx.spills_entry[block_idx].end()) {
+      if (!phi->definitions[0].isTemp() ||
+          ctx.spills_entry[block_idx].find(phi->definitions[0].getTemp()) == ctx.spills_entry[block_idx].end()) {
          instructions.emplace_back(std::move(phi));
          continue;
       }
@@ -933,7 +931,7 @@ void add_coupling_code(spill_ctx& ctx, Block* block, unsigned block_idx)
    /* iterate phis for which operands to reload */
    for (aco_ptr<Instruction>& phi : instructions) {
       assert(phi->opcode == aco_opcode::p_phi || phi->opcode == aco_opcode::p_linear_phi);
-      assert(ctx.spills_entry[block_idx].find(phi->definitions[0].getTemp()) == ctx.spills_entry[block_idx].end());
+      assert(!phi->definitions[0].isTemp() || ctx.spills_entry[block_idx].find(phi->definitions[0].getTemp()) == ctx.spills_entry[block_idx].end());
 
       std::vector<unsigned>& preds = phi->opcode == aco_opcode::p_phi ? block->logical_preds : block->linear_preds;
       for (unsigned i = 0; i < phi->operands.size(); i++) {
@@ -1774,14 +1772,16 @@ void spill(Program* program, live& live_vars)
 
    /* calculate target register demand */
    RegisterDemand register_target = program->max_reg_demand;
-   if (register_target.sgpr > program->sgpr_limit)
-      register_target.vgpr += (register_target.sgpr - program->sgpr_limit + program->wave_size - 1 + 32) / program->wave_size;
-   register_target.sgpr = program->sgpr_limit;
+   uint16_t sgpr_limit = get_addr_sgpr_from_waves(program, program->min_waves);
+   uint16_t vgpr_limit = get_addr_vgpr_from_waves(program, program->min_waves);
+   if (register_target.sgpr > sgpr_limit)
+      register_target.vgpr += (register_target.sgpr - sgpr_limit + program->wave_size - 1 + 32) / program->wave_size;
+   register_target.sgpr = sgpr_limit;
 
-   if (register_target.vgpr > program->vgpr_limit)
-      register_target.sgpr = program->sgpr_limit - 5;
+   if (register_target.vgpr > vgpr_limit)
+      register_target.sgpr = sgpr_limit - 5;
    int spills_to_vgpr = (program->max_reg_demand.sgpr - register_target.sgpr + program->wave_size - 1 + 32) / program->wave_size;
-   register_target.vgpr = program->vgpr_limit - spills_to_vgpr;
+   register_target.vgpr = vgpr_limit - spills_to_vgpr;
 
    /* initialize ctx */
    spill_ctx ctx(register_target, program, live_vars.register_demand);

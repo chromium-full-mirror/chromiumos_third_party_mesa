@@ -195,7 +195,7 @@ setup_render_state(struct gl_context *ctx,
       GLfloat colorSave[4];
       COPY_4V(colorSave, ctx->Current.Attrib[VERT_ATTRIB_COLOR0]);
       COPY_4V(ctx->Current.Attrib[VERT_ATTRIB_COLOR0], color);
-      st_upload_constants(st, &st->fp->Base);
+      st_upload_constants(st, &st->fp->Base, MESA_SHADER_FRAGMENT);
       COPY_4V(ctx->Current.Attrib[VERT_ATTRIB_COLOR0], colorSave);
    }
 
@@ -770,6 +770,7 @@ st_DrawAtlasBitmaps(struct gl_context *ctx,
       /* Update the raster position */
       ctx->Current.RasterPos[0] += xmove;
       ctx->Current.RasterPos[1] += ymove;
+      ctx->PopAttribState |= GL_CURRENT_BIT;
    }
 
    u_upload_unmap(pipe->stream_uploader);

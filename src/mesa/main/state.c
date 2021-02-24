@@ -143,7 +143,7 @@ _mesa_update_allow_draw_out_of_order(struct gl_context *ctx)
     * vertices.
     */
    if (previous_state && !ctx->_AllowDrawOutOfOrder)
-      FLUSH_VERTICES(ctx, 0);
+      FLUSH_VERTICES(ctx, 0, 0);
 }
 
 
@@ -544,52 +544,6 @@ _mesa_update_state( struct gl_context *ctx )
 }
 
 
-
-
-/**
- * Want to figure out which fragment program inputs are actually
- * constant/current values from ctx->Current.  These should be
- * referenced as a tracked state variable rather than a fragment
- * program input, to save the overhead of putting a constant value in
- * every submitted vertex, transferring it to hardware, interpolating
- * it across the triangle, etc...
- *
- * When there is a VP bound, just use vp->outputs.  But when we're
- * generating vp from fixed function state, basically want to
- * calculate:
- *
- * vp_out_2_fp_in( vp_in_2_vp_out( varying_inputs ) | 
- *                 potential_vp_outputs )
- *
- * Where potential_vp_outputs is calculated by looking at enabled
- * texgen, etc.
- * 
- * The generated fragment program should then only declare inputs that
- * may vary or otherwise differ from the ctx->Current values.
- * Otherwise, the fp should track them as state values instead.
- */
-static void
-set_varying_vp_inputs(struct gl_context *ctx, GLbitfield varying_inputs)
-{
-   /*
-    * The gl_context::varying_vp_inputs value is only used when in
-    * VP_MODE_FF mode.
-    */
-   if (VP_MODE_FF != ctx->VertexProgram._VPMode)
-      return;
-
-   /* Only fixed-func generated programs ever uses varying_vp_inputs. */
-   if (!ctx->VertexProgram._MaintainTnlProgram &&
-       !ctx->FragmentProgram._MaintainTexEnvProgram)
-      return;
-
-   if (ctx->varying_vp_inputs != varying_inputs) {
-      ctx->varying_vp_inputs = varying_inputs;
-      ctx->NewState |= _NEW_VARYING_VP_INPUTS;
-   }
-}
-
-
 /**
  * Used by drivers to tell core Mesa that the driver is going to
  * install/ use its own vertex program.  In particular, this will
@@ -622,11 +576,56 @@ set_vertex_processing_mode(struct gl_context *ctx, gl_vertex_processing_mode m)
    /* Finally memorize the value */
    ctx->VertexProgram._VPMode = m;
 
+   /* The gl_context::VertexProgram._VaryingInputs value is only used when in
+    * VP_MODE_FF mode and the fixed-func pipeline is emulated by shaders.
+    */
+   ctx->VertexProgram._VPModeOptimizesConstantAttribs =
+      m == VP_MODE_FF &&
+      ctx->VertexProgram._MaintainTnlProgram &&
+      ctx->FragmentProgram._MaintainTexEnvProgram;
+
+   /* Set a filter mask for the net enabled vao arrays.
+    * This is to mask out arrays that would otherwise supersede required current
+    * values for the fixed function shaders for example.
+    */
+   switch (m) {
+   case VP_MODE_FF:
+      /* When no vertex program is active (or the vertex program is generated
+       * from fixed-function state).  We put the material values into the
+       * generic slots.  Since the vao has no material arrays, mute these
+       * slots from the enabled arrays so that the current material values
+       * are pulled instead of the vao arrays.
+       */
+      ctx->VertexProgram._VPModeInputFilter = VERT_BIT_FF_ALL;
+      break;
+
+   case VP_MODE_SHADER:
+      /* There are no shaders in OpenGL ES 1.x, so this code path should be
+       * impossible to reach.  The meta code is careful to not use shaders in
+       * ES1.
+       */
+      assert(ctx->API != API_OPENGLES);
+
+      /* Other parts of the code assume that inputs[VERT_ATTRIB_POS] through
+       * inputs[VERT_ATTRIB_FF_MAX] will be non-NULL.  However, in OpenGL
+       * ES 2.0+ or OpenGL core profile, none of these arrays should ever
+       * be enabled.
+       */
+      if (ctx->API == API_OPENGL_COMPAT)
+         ctx->VertexProgram._VPModeInputFilter = VERT_BIT_ALL;
+      else
+         ctx->VertexProgram._VPModeInputFilter = VERT_BIT_GENERIC_ALL;
+      break;
+
+   default:
+      assert(0);
+   }
+
    /* Since we only track the varying inputs while being in fixed function
     * vertex processing mode, we may need to recheck for the
     * _NEW_VARYING_VP_INPUTS bit.
     */
-   set_varying_vp_inputs(ctx, ctx->Array._DrawVAOEnabledAttribs);
+   _mesa_set_varying_vp_inputs(ctx, ctx->Array._DrawVAOEnabledAttribs);
 }
 
 
@@ -649,41 +648,9 @@ _mesa_update_vertex_processing_mode(struct gl_context *ctx)
 }
 
 
-/**
- * Set the _DrawVAO and the net enabled arrays.
- * The vao->_Enabled bitmask is transformed due to position/generic0
- * as stored in vao->_AttributeMapMode. Then the filter bitmask is applied
- * to filter out arrays unwanted for the currently executed draw operation.
- * For example, the generic attributes are masked out form the _DrawVAO's
- * enabled arrays when a fixed function array draw is executed.
- */
 void
-_mesa_set_draw_vao(struct gl_context *ctx, struct gl_vertex_array_object *vao,
-                   GLbitfield filter)
+_mesa_reset_vertex_processing_mode(struct gl_context *ctx)
 {
-   struct gl_vertex_array_object **ptr = &ctx->Array._DrawVAO;
-   bool new_array = false;
-   if (*ptr != vao) {
-      _mesa_reference_vao_(ctx, ptr, vao);
-
-      new_array = true;
-   }
-
-   if (vao->NewArrays) {
-      _mesa_update_vao_derived_arrays(ctx, vao);
-      vao->NewArrays = 0;
-
-      new_array = true;
-   }
-
-   /* May shuffle the position and generic0 bits around, filter out unwanted */
-   const GLbitfield enabled = filter & _mesa_get_vao_vp_inputs(vao);
-   if (ctx->Array._DrawVAOEnabledAttribs != enabled)
-      new_array = true;
-
-   if (new_array)
-      ctx->NewDriverState |= ctx->DriverFlags.NewArray;
-
-   ctx->Array._DrawVAOEnabledAttribs = enabled;
-   set_varying_vp_inputs(ctx, enabled);
+   ctx->VertexProgram._VPMode = -1; /* force the update */
+   _mesa_update_vertex_processing_mode(ctx);
 }

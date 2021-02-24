@@ -783,6 +783,15 @@ st_create_vp_variant(struct st_context *st,
          finalize = true;
       }
 
+      if (st->emulate_gl_clamp &&
+          (key->gl_clamp[0] || key->gl_clamp[1] || key->gl_clamp[2])) {
+         nir_lower_tex_options tex_opts = {0};
+         tex_opts.saturate_s = key->gl_clamp[0];
+         tex_opts.saturate_t = key->gl_clamp[1];
+         tex_opts.saturate_r = key->gl_clamp[2];
+         NIR_PASS_V(state.ir.nir, nir_lower_tex, &tex_opts);
+      }
+
       if (finalize || !st->allow_st_finalize_nir_twice) {
          st_finalize_nir(st, &stvp->Base, stvp->shader_program, state.ir.nir,
                          true, false);
@@ -847,6 +856,21 @@ st_create_vp_variant(struct st_context *st,
    return vpv;
 }
 
+static void
+st_add_variant(struct st_variant **list, struct st_variant *v)
+{
+   struct st_variant *first = *list;
+
+   /* Make sure that the default variant stays the first in the list, and insert
+    * any later variants in as the second entry.
+    */
+   if (first) {
+      v->next = first->next;
+      first->next = v;
+   } else {
+      *list = v;
+   }
+}
 
 /**
  * Find/create a vertex program variant.
@@ -881,9 +905,7 @@ st_get_vp_variant(struct st_context *st,
             vpv->vert_attrib_mask |= 1u << attr;
          }
 
-         /* insert into list */
-         vpv->base.next = stp->variants;
-         stp->variants = &vpv->base;
+         st_add_variant(&stp->variants, &vpv->base);
       }
    }
 
@@ -1297,6 +1319,16 @@ st_create_fp_variant(struct st_context *st,
          finalize = true;
       }
 
+      if (st->emulate_gl_clamp &&
+          (key->gl_clamp[0] || key->gl_clamp[1] || key->gl_clamp[2])) {
+         nir_lower_tex_options tex_opts = {0};
+         tex_opts.saturate_s = key->gl_clamp[0];
+         tex_opts.saturate_t = key->gl_clamp[1];
+         tex_opts.saturate_r = key->gl_clamp[2];
+         NIR_PASS_V(state.ir.nir, nir_lower_tex, &tex_opts);
+         finalize = true;
+      }
+
       assert(!(key->bitmap && key->drawpixels));
 
       /* glBitmap */
@@ -1547,25 +1579,7 @@ st_get_fp_variant(struct st_context *st,
       if (fpv) {
          fpv->base.st = key->st;
 
-         if (key->bitmap || key->drawpixels) {
-            /* Regular variants should always come before the
-             * bitmap & drawpixels variants, (unless there
-             * are no regular variants) so that
-             * st_update_fp can take a fast path when
-             * shader_has_one_variant is set.
-             */
-            if (!stfp->variants) {
-               stfp->variants = &fpv->base;
-            } else {
-               /* insert into list after the first one */
-               fpv->base.next = stfp->variants->next;
-               stfp->variants->next = &fpv->base;
-            }
-         } else {
-            /* insert into list */
-            fpv->base.next = stfp->variants;
-            stfp->variants = &fpv->base;
-         }
+         st_add_variant(&stfp->variants, &fpv->base);
       }
    }
 
@@ -1829,9 +1843,7 @@ st_get_common_variant(struct st_context *st,
          st_common_variant(v)->key = *key;
          v->st = key->st;
 
-         /* insert into list */
-         v->next = prog->variants;
-         prog->variants = v;
+         st_add_variant(&prog->variants, v);
       }
    }
 
@@ -2035,8 +2047,6 @@ st_finalize_program(struct st_context *st, struct gl_program *prog)
       st_serialize_nir(st_program(prog));
    }
 
-   /* Create Gallium shaders now instead of on demand. */
-   if (ST_DEBUG & DEBUG_PRECOMPILE ||
-       st->shader_has_one_variant[prog->info.stage])
-      st_precompile_shader_variant(st, prog);
+   /* Always create the default variant of the program. */
+   st_precompile_shader_variant(st, prog);
 }

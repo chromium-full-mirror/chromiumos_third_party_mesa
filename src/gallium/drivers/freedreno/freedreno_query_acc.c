@@ -34,6 +34,7 @@
 
 static void
 fd_acc_destroy_query(struct fd_context *ctx, struct fd_query *q)
+	assert_dt
 {
 	struct fd_acc_query *aq = fd_acc_query(q);
 
@@ -69,6 +70,7 @@ realloc_query_bo(struct fd_context *ctx, struct fd_acc_query *aq)
 
 static void
 fd_acc_query_pause(struct fd_acc_query *aq)
+	assert_dt
 {
 	const struct fd_acc_sample_provider *p = aq->provider;
 
@@ -81,6 +83,7 @@ fd_acc_query_pause(struct fd_acc_query *aq)
 
 static void
 fd_acc_query_resume(struct fd_acc_query *aq, struct fd_batch *batch)
+	assert_dt
 {
 	const struct fd_acc_sample_provider *p = aq->provider;
 
@@ -94,6 +97,7 @@ fd_acc_query_resume(struct fd_acc_query *aq, struct fd_batch *batch)
 
 static void
 fd_acc_begin_query(struct fd_context *ctx, struct fd_query *q)
+	assert_dt
 {
 	struct fd_acc_query *aq = fd_acc_query(q);
 
@@ -122,6 +126,7 @@ fd_acc_begin_query(struct fd_context *ctx, struct fd_query *q)
 
 static void
 fd_acc_end_query(struct fd_context *ctx, struct fd_query *q)
+	assert_dt
 {
 	struct fd_acc_query *aq = fd_acc_query(q);
 
@@ -158,12 +163,15 @@ fd_acc_get_query_result(struct fd_context *ctx, struct fd_query *q,
 			 * wait to flush unnecessarily but we also don't want to
 			 * spin forever:
 			 */
-			if (aq->no_wait_cnt++ > 5)
+			if (aq->no_wait_cnt++ > 5) {
+				fd_context_access_begin(ctx);
 				fd_batch_flush(rsc->write_batch);
+				fd_context_access_end(ctx);
+			}
 			return false;
 		}
 
-		ret = fd_bo_cpu_prep(rsc->bo, ctx->pipe,
+		ret = fd_resource_wait(ctx, rsc,
 				DRM_FREEDRENO_PREP_READ | DRM_FREEDRENO_PREP_NOSYNC);
 		if (ret)
 			return false;
@@ -171,11 +179,14 @@ fd_acc_get_query_result(struct fd_context *ctx, struct fd_query *q,
 		fd_bo_cpu_fini(rsc->bo);
 	}
 
-	if (rsc->write_batch)
+	if (rsc->write_batch) {
+		fd_context_access_begin(ctx);
 		fd_batch_flush(rsc->write_batch);
+		fd_context_access_end(ctx);
+	}
 
 	/* get the result: */
-	fd_bo_cpu_prep(rsc->bo, ctx->pipe, DRM_FREEDRENO_PREP_READ);
+	fd_resource_wait(ctx, rsc, DRM_FREEDRENO_PREP_READ);
 
 	void *ptr = fd_bo_map(rsc->bo);
 	p->result(aq, ptr, result);
@@ -235,16 +246,16 @@ fd_acc_create_query(struct fd_context *ctx, unsigned query_type,
  * batch reordering).
  */
 void
-fd_acc_query_set_stage(struct fd_batch *batch, enum fd_render_stage stage)
+fd_acc_query_update_batch(struct fd_batch *batch, bool disable_all)
 {
 	struct fd_context *ctx = batch->ctx;
 
-	if (stage != batch->stage || ctx->update_active_queries) {
+	if (disable_all || ctx->update_active_queries) {
 		struct fd_acc_query *aq;
 		LIST_FOR_EACH_ENTRY(aq, &ctx->acc_active_queries, node) {
 			bool batch_change = aq->batch != batch;
 			bool was_active = aq->batch != NULL;
-			bool now_active = stage != FD_STAGE_NULL &&
+			bool now_active = !disable_all &&
 				(ctx->active_queries || aq->provider->always);
 
 			if (was_active && (!now_active || batch_change))

@@ -62,7 +62,10 @@ struct gen_device_info
    bool is_geminilake;
    bool is_coffeelake;
    bool is_elkhartlake;
+   bool is_tigerlake;
+   bool is_rocketlake;
    bool is_dg1;
+   bool is_alderlake;
 
    bool has_hiz_and_separate_stencil;
    bool must_use_separate_stencil;
@@ -308,7 +311,7 @@ gen_device_info_eu_available(const struct gen_device_info *devinfo,
 }
 
 static inline unsigned
-gen_device_info_num_dual_subslices(const struct gen_device_info *devinfo)
+gen_device_info_num_dual_subslices(UNUSED const struct gen_device_info *devinfo)
 {
    unreachable("TODO");
 }

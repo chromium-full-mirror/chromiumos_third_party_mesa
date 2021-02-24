@@ -58,6 +58,7 @@ enum iris_batch_name {
 #define IRIS_BATCH_COUNT 2
 
 struct iris_batch {
+   struct iris_context *ice;
    struct iris_screen *screen;
    struct pipe_debug_callback *dbg;
    struct pipe_device_reset_callback *reset;
@@ -168,6 +169,7 @@ struct iris_batch {
    uint32_t sync_region_depth;
 
    uint32_t last_aux_map_state;
+   struct iris_measure_batch *measure;
 };
 
 void iris_init_batch(struct iris_context *ice,

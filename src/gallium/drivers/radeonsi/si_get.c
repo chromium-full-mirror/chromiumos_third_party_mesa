@@ -105,7 +105,6 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
    case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
    case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
-   case PIPE_CAP_SHAREABLE_SHADERS:
    case PIPE_CAP_DEPTH_BOUNDS_TEST:
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
    case PIPE_CAP_TEXTURE_QUERY_LOD:
@@ -833,8 +832,8 @@ static void si_query_memory_info(struct pipe_screen *screen, struct pipe_memory_
    struct radeon_winsys *ws = sscreen->ws;
    unsigned vram_usage, gtt_usage;
 
-   info->total_device_memory = sscreen->info.vram_size / 1024;
-   info->total_staging_memory = sscreen->info.gart_size / 1024;
+   info->total_device_memory = sscreen->info.vram_size_kb;
+   info->total_staging_memory = sscreen->info.gart_size_kb;
 
    /* The real TTM memory usage is somewhat random, because:
     *

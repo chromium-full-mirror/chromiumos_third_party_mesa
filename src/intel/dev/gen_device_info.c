@@ -948,26 +948,32 @@ static const struct gen_device_info gen_device_info_ehl_2x4 = {
 
 static const struct gen_device_info gen_device_info_tgl_gt1 = {
    GEN12_GT_FEATURES(1),
+   .is_tigerlake = true,
 };
 
 static const struct gen_device_info gen_device_info_tgl_gt2 = {
    GEN12_GT_FEATURES(2),
+   .is_tigerlake = true,
 };
 
 static const struct gen_device_info gen_device_info_rkl_gt05 = {
    GEN12_GT05_FEATURES,
+   .is_rocketlake = true,
 };
 
 static const struct gen_device_info gen_device_info_rkl_gt1 = {
    GEN12_GT_FEATURES(1),
+   .is_rocketlake = true,
 };
 
 static const struct gen_device_info gen_device_info_adl_gt05 = {
    GEN12_GT05_FEATURES,
+   .is_alderlake = true,
 };
 
 static const struct gen_device_info gen_device_info_adl_gt1 = {
    GEN12_GT_FEATURES(1),
+   .is_alderlake = true,
 };
 
 #define GEN12_DG1_FEATURES                      \

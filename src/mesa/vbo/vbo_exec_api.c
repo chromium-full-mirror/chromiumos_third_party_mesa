@@ -224,10 +224,13 @@ vbo_exec_copy_to_current(struct vbo_exec_context *exec)
           * that doesn't get used (eg light positions).
           */
          if (i >= VBO_ATTRIB_MAT_FRONT_AMBIENT &&
-             i <= VBO_ATTRIB_MAT_BACK_INDEXES)
+             i <= VBO_ATTRIB_MAT_BACK_INDEXES) {
             ctx->NewState |= _NEW_LIGHT;
+            ctx->PopAttribState |= GL_LIGHTING_BIT;
+         }
 
          ctx->NewState |= _NEW_CURRENT_ATTRIB;
+         ctx->PopAttribState |= GL_CURRENT_BIT;
       }
    }
 
@@ -819,11 +822,12 @@ vbo_exec_Begin(GLenum mode)
       return;
    }
 
-   if (!_mesa_valid_prim_mode(ctx, mode, "glBegin")) {
-      return;
-   }
+   if (ctx->NewState)
+      _mesa_update_state(ctx);
 
-   if (!_mesa_valid_to_render(ctx, "glBegin")) {
+   GLenum error = _mesa_valid_prim_mode(ctx, mode);
+   if (error != GL_NO_ERROR) {
+      _mesa_error(ctx, error, "glBegin");
       return;
    }
 

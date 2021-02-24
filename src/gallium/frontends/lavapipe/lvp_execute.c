@@ -1043,14 +1043,14 @@ static void handle_compute_descriptor_sets(struct lvp_cmd_buffer_entry *cmd,
    int i;
 
    for (i = 0; i < bds->first; i++) {
-      increment_dyn_info(dyn_info, bds->layout->set[i].layout, false);
+      increment_dyn_info(dyn_info, bds->set_layout[i], false);
    }
    for (i = 0; i < bds->count; i++) {
       const struct lvp_descriptor_set *set = bds->sets[i];
 
       if (set->layout->shader_stages & VK_SHADER_STAGE_COMPUTE_BIT)
          handle_set_stage(state, dyn_info, set, MESA_SHADER_COMPUTE, PIPE_SHADER_COMPUTE);
-      increment_dyn_info(dyn_info, bds->layout->set[bds->first + i].layout, true);
+      increment_dyn_info(dyn_info, bds->set_layout[bds->first + i], true);
    }
 }
 
@@ -1072,7 +1072,7 @@ static void handle_descriptor_sets(struct lvp_cmd_buffer_entry *cmd,
    }
 
    for (i = 0; i < bds->first; i++) {
-      increment_dyn_info(&dyn_info, bds->layout->set[i].layout, false);
+      increment_dyn_info(&dyn_info, bds->set_layout[i], false);
    }
 
    for (i = 0; i < bds->count; i++) {
@@ -1092,7 +1092,7 @@ static void handle_descriptor_sets(struct lvp_cmd_buffer_entry *cmd,
 
       if (set->layout->shader_stages & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
          handle_set_stage(state, &dyn_info, set, MESA_SHADER_TESS_EVAL, PIPE_SHADER_TESS_EVAL);
-      increment_dyn_info(&dyn_info, bds->layout->set[bds->first + i].layout, true);
+      increment_dyn_info(&dyn_info, bds->set_layout[bds->first + i], true);
    }
 }
 
@@ -1159,9 +1159,6 @@ static void render_subpass_clear(struct rendering_state *state)
 {
    const struct lvp_subpass *subpass = &state->pass->subpasses[state->subpass];
 
-   if (!subpass_needs_clear(state))
-      return;
-
    for (unsigned i = 0; i < subpass->color_count; i++) {
       uint32_t a = subpass->color_attachments[i].attachment;
 
@@ -1206,13 +1203,17 @@ static void render_subpass_clear(struct rendering_state *state)
          uint32_t sclear_val = 0;
          uint32_t ds_clear_flags = 0;
 
-         if (util_format_has_stencil(desc) && att->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+         if ((util_format_has_stencil(desc) && att->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) ||
+             (util_format_is_depth_and_stencil(imgv->surface->format) && att->stencil_load_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE)) {
             ds_clear_flags |= PIPE_CLEAR_STENCIL;
-            sclear_val = state->attachments[ds].clear_value.depthStencil.stencil;
+            if (att->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
+               sclear_val = state->attachments[ds].clear_value.depthStencil.stencil;
          }
-         if (util_format_has_depth(desc) && att->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+         if ((util_format_has_depth(desc) && att->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) ||
+             (util_format_is_depth_and_stencil(imgv->surface->format) && att->load_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE)) {
             ds_clear_flags |= PIPE_CLEAR_DEPTH;
-            dclear_val = state->attachments[ds].clear_value.depthStencil.depth;
+            if (att->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
+               dclear_val = state->attachments[ds].clear_value.depthStencil.depth;
          }
 
          if (ds_clear_flags)
@@ -1227,6 +1228,84 @@ static void render_subpass_clear(struct rendering_state *state)
       }
    }
 
+}
+
+static void render_subpass_clear_fast(struct rendering_state *state)
+{
+   /* attempt to use the clear interface first, then fallback to per-attchment clears */
+   const struct lvp_subpass *subpass = &state->pass->subpasses[state->subpass];
+   bool has_color_value = false;
+   uint32_t buffers = 0;
+   VkClearValue color_value = {0};
+   double dclear_val = 0;
+   uint32_t sclear_val = 0;
+
+   /*
+    * the state tracker clear interface only works if all the attachments have the same
+    * clear color.
+    */
+   /* llvmpipe doesn't support scissored clears yet */
+   if (state->render_area.offset.x || state->render_area.offset.y)
+      goto slow_clear;
+
+   if (state->render_area.extent.width != state->framebuffer.width ||
+       state->render_area.extent.height != state->framebuffer.height)
+      goto slow_clear;
+
+   for (unsigned i = 0; i < subpass->color_count; i++) {
+      uint32_t a = subpass->color_attachments[i].attachment;
+
+      if (!attachment_needs_clear(state, a))
+         continue;
+
+      if (has_color_value) {
+         if (memcmp(&color_value, &state->attachments[a].clear_value, sizeof(VkClearValue)))
+            goto slow_clear;
+      } else {
+         memcpy(&color_value, &state->attachments[a].clear_value, sizeof(VkClearValue));
+         has_color_value = true;
+      }
+   }
+
+   for (unsigned i = 0; i < subpass->color_count; i++) {
+      uint32_t a = subpass->color_attachments[i].attachment;
+
+      if (!attachment_needs_clear(state, a))
+         continue;
+      buffers |= (PIPE_CLEAR_COLOR0 << i);
+      state->pending_clear_aspects[a] = 0;
+   }
+
+   if (subpass->depth_stencil_attachment &&
+       attachment_needs_clear(state, subpass->depth_stencil_attachment->attachment)) {
+      uint32_t ds = subpass->depth_stencil_attachment->attachment;
+
+      struct lvp_render_pass_attachment *att = &state->pass->attachments[ds];
+      struct lvp_image_view *imgv = state->vk_framebuffer->attachments[ds];
+      const struct util_format_description *desc = util_format_description(imgv->surface->format);
+
+      /* also clear stencil for don't care to avoid RMW */
+      if ((util_format_has_stencil(desc) && att->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) ||
+          (util_format_is_depth_and_stencil(imgv->surface->format) && att->stencil_load_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE))
+         buffers |= PIPE_CLEAR_STENCIL;
+      if (util_format_has_depth(desc) && att->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
+         buffers |= PIPE_CLEAR_DEPTH;
+
+      dclear_val = state->attachments[ds].clear_value.depthStencil.depth;
+      sclear_val = state->attachments[ds].clear_value.depthStencil.stencil;
+      state->pending_clear_aspects[ds] = 0;
+   }
+
+   union pipe_color_union col_val;
+   for (unsigned i = 0; i < 4; i++)
+      col_val.ui[i] = color_value.color.uint32[i];
+
+   state->pctx->clear(state->pctx, buffers,
+                      NULL, &col_val,
+                      dclear_val, sclear_val);
+   return;
+slow_clear:
+   render_subpass_clear(state);
 }
 
 static void render_pass_resolve(struct rendering_state *state)
@@ -1270,8 +1349,6 @@ static void begin_render_subpass(struct rendering_state *state,
 {
    state->subpass = subpass_idx;
 
-   render_subpass_clear(state);
-
    state->framebuffer.nr_cbufs = 0;
 
    const struct lvp_subpass *subpass = &state->pass->subpasses[subpass_idx];
@@ -1299,6 +1376,9 @@ static void begin_render_subpass(struct rendering_state *state,
 
    state->pctx->set_framebuffer_state(state->pctx,
                                       &state->framebuffer);
+
+   if (subpass_needs_clear(state))
+      render_subpass_clear_fast(state);
 }
 
 static void handle_begin_render_pass(struct lvp_cmd_buffer_entry *cmd,
@@ -2130,7 +2210,7 @@ static void handle_copy_query_pool_results(struct lvp_cmd_buffer_entry *cmd,
             struct pipe_transfer *src_t;
             uint32_t *map;
 
-            struct pipe_box box = {};
+            struct pipe_box box = {0};
             box.width = copycmd->stride * copycmd->query_count;
             box.height = 1;
             box.depth = 1;
@@ -2492,6 +2572,9 @@ static void handle_begin_transform_feedback(struct lvp_cmd_buffer_entry *cmd,
    memset(offsets, 0, sizeof(uint32_t)*4);
 
    for (unsigned i = 0; i < btf->counter_buffer_count; i++) {
+      if (!btf->counter_buffers[i])
+         continue;
+
       pipe_buffer_read(state->pctx,
                        btf->counter_buffers[i]->bo,
                        btf->counter_buffer_offsets[i],
@@ -2509,6 +2592,9 @@ static void handle_end_transform_feedback(struct lvp_cmd_buffer_entry *cmd,
 
    if (etf->counter_buffer_count) {
       for (unsigned i = 0; i < etf->counter_buffer_count; i++) {
+         if (!etf->counter_buffers[i])
+            continue;
+
          uint32_t offset;
          offset = state->pctx->stream_output_target_offset(state->so_targets[i]);
 
@@ -2744,6 +2830,7 @@ VkResult lvp_execute_cmds(struct lvp_device *device,
    state.blend_dirty = true;
    state.dsa_dirty = true;
    state.rs_dirty = true;
+   state.vp_dirty = true;
    /* create a gallium context */
    lvp_execute_cmd_buffer(cmd_buffer, &state);
 
@@ -2793,6 +2880,10 @@ VkResult lvp_execute_cmds(struct lvp_device *device,
       state.pctx->bind_sampler_states(state.pctx, s, 0, PIPE_MAX_SAMPLERS, state.ss_cso[s]);
 
       state.pctx->set_shader_images(state.pctx, s, 0, 0, device->physical_device->max_images, NULL);
+
+      state.pctx->set_constant_buffer(state.pctx, s, 0, false, NULL);
+      for (unsigned idx = 0; idx < state.num_const_bufs[s]; idx++)
+         state.pctx->set_constant_buffer(state.pctx, s, idx + 1, false, NULL);
    }
 
    free(state.pending_clear_aspects);

@@ -42,11 +42,10 @@ bi_mark_sr_live(bi_block *block, bi_clause *clause, unsigned node_count, uint16_
         bi_foreach_instr_in_clause(block, clause, ins) {
                 if (!bi_opcode_props[ins->op].sr_write) continue;
 
-                bi_foreach_dest(ins, d) {
-                        unsigned node = bi_get_node(ins->dest[d]);
-                        if (node < node_count)
-                                live[node] = bi_writemask(ins);
-                }
+                /* Set liveness for dest 0 which is the staging register */
+                unsigned node = bi_get_node(ins->dest[0]);
+                if (node < node_count)
+                        live[node] = bi_writemask(ins, 0);
 
                 break;
         }
@@ -63,10 +62,10 @@ bi_mark_interference(bi_block *block, bi_clause *clause, struct lcra_state *l, u
                         if (bi_get_node(ins->dest[d]) >= node_count)
                                 continue;
 
-                        for (unsigned i = 1; i < node_count; ++i) {
+                        for (unsigned i = 0; i < node_count; ++i) {
                                 if (live[i]) {
                                         lcra_add_node_interference(l, bi_get_node(ins->dest[d]),
-                                                        bi_writemask(ins), i, live[i]);
+                                                        bi_writemask(ins, d), i, live[i]);
                                 }
                         }
                 }
@@ -74,7 +73,7 @@ bi_mark_interference(bi_block *block, bi_clause *clause, struct lcra_state *l, u
                 if (!is_blend && ins->op == BI_OPCODE_BLEND) {
                         /* Add blend shader interference: blend shaders might
                          * clobber r0-r15. */
-                        for (unsigned i = 1; i < node_count; ++i) {
+                        for (unsigned i = 0; i < node_count; ++i) {
                                 if (!live[i])
                                         continue;
 
@@ -104,7 +103,8 @@ bi_compute_interference(bi_context *ctx, struct lcra_state *l)
 
                 bi_foreach_clause_in_block_rev(blk, clause) {
                         bi_mark_sr_live(blk, clause, node_count, live);
-                        bi_mark_interference(blk, clause, l, live, node_count, ctx->is_blend);
+                        bi_mark_interference(blk, clause, l, live, node_count,
+                                             ctx->inputs->is_blend);
                 }
 
                 free(live);
@@ -130,7 +130,7 @@ bi_allocate_registers(bi_context *ctx, bool *success)
         for (unsigned i = 0; i < 4; i++)
                 l->solutions[node_count + i] = i * 16;
 
-        if (ctx->is_blend) {
+        if (ctx->inputs->is_blend) {
                 /* R0-R3 are reserved for the blend input */
                 l->class_start[BI_REG_CLASS_WORK] = 0;
                 l->class_size[BI_REG_CLASS_WORK] = 16 * 4;
@@ -145,7 +145,8 @@ bi_allocate_registers(bi_context *ctx, bool *success)
                         unsigned dest = bi_get_node(ins->dest[d]);
 
                         /* Blend shaders expect the src colour to be in r0-r3 */
-                        if (ins->op == BI_OPCODE_BLEND && !ctx->is_blend) {
+                        if (ins->op == BI_OPCODE_BLEND &&
+                            !ctx->inputs->is_blend) {
                                 unsigned node = bi_get_node(ins->src[0]);
                                 assert(node < node_count);
                                 l->solutions[node] = 0;
@@ -227,18 +228,6 @@ bi_rewrite_index_src_single(bi_instr *ins, bi_index old, bi_index new)
         }
 }
 
-static void
-bi_rewrite_index_dst_single(bi_instr *ins, bi_index old, bi_index new)
-{
-        bi_foreach_dest(ins, i) {
-                if (bi_is_equiv(ins->dest[i], old)) {
-                        ins->dest[i].type = new.type;
-                        ins->dest[i].reg = new.reg;
-                        ins->dest[i].value = new.value;
-                }
-        }
-}
-
 /* If register allocation fails, find the best spill node */
 
 static signed
@@ -247,9 +236,9 @@ bi_choose_spill_node(bi_context *ctx, struct lcra_state *l)
         /* Pick a node satisfying bi_spill_register's preconditions */
 
         bi_foreach_instr_global(ctx, ins) {
-                if (ins->no_spill || ins->dest[0].offset || !bi_is_null(ins->dest[1])) {
-                        for (unsigned d = 0; d < ARRAY_SIZE(ins->dest); ++d)
-                                lcra_set_node_spill_cost(l, bi_get_node(ins->dest[0]), -1);
+                bi_foreach_dest(ins, d) {
+                        if (ins->no_spill || ins->dest[d].offset)
+                                lcra_set_node_spill_cost(l, bi_get_node(ins->dest[d]), -1);
                 }
         }
 
@@ -266,11 +255,14 @@ bi_spill_dest(bi_builder *b, bi_index index, bi_index temp, uint32_t offset,
 {
         b->cursor = bi_after_clause(clause);
 
-        bi_instr *st = bi_store_to(b, channels * 32, bi_null(),
-                        temp, bi_imm_u32(offset), bi_zero(), BI_SEG_TL);
+        /* setup FAU as [offset][0] */
+        bi_instr *st = bi_store(b, channels * 32, temp,
+                        bi_passthrough(BIFROST_SRC_FAU_LO),
+                        bi_passthrough(BIFROST_SRC_FAU_HI),
+                        BI_SEG_TL);
 
         bi_clause *singleton = bi_singleton(b->shader, st, block, 0, (1 << 0),
-                        true);
+                        offset, true);
 
         list_add(&singleton->link, &clause->link);
         b->shader->spills++;
@@ -281,12 +273,14 @@ bi_fill_src(bi_builder *b, bi_index index, bi_index temp, uint32_t offset,
                 bi_clause *clause, bi_block *block, unsigned channels)
 {
         b->cursor = bi_before_clause(clause);
-        bi_instr *ld = bi_load_to(b, channels * 32, temp, bi_imm_u32(offset),
-                        bi_zero(), BI_SEG_TL);
+        bi_instr *ld = bi_load_to(b, channels * 32, temp,
+                        bi_passthrough(BIFROST_SRC_FAU_LO),
+                        bi_passthrough(BIFROST_SRC_FAU_HI),
+                        BI_SEG_TL);
         ld->no_spill = true;
 
         bi_clause *singleton = bi_singleton(b->shader, ld, block, 0,
-                        (1 << 0), true);
+                        (1 << 0), offset, true);
 
         list_addtail(&singleton->link, &clause->link);
         b->shader->fills++;
@@ -299,12 +293,18 @@ bi_clause_mark_spill(bi_context *ctx, bi_block *block,
         unsigned channels = 0;
 
         bi_foreach_instr_in_clause(block, clause, ins) {
-                if (!bi_is_equiv(ins->dest[0], index)) continue;
-                if (bi_is_null(*temp)) *temp = bi_temp_reg(ctx);
-                ins->no_spill = true;
-                bi_rewrite_index_dst_single(ins, index, *temp);
-                unsigned newc = util_last_bit(bi_writemask(ins)) >> 2;
-                channels = MAX2(channels, newc);
+                bi_foreach_dest(ins, d) {
+                        if (!bi_is_equiv(ins->dest[d], index)) continue;
+                        if (bi_is_null(*temp)) *temp = bi_temp_reg(ctx);
+                        ins->no_spill = true;
+
+                        unsigned offset = ins->dest[d].offset;
+                        ins->dest[d] = bi_replace_index(ins->dest[d], *temp);
+                        ins->dest[d].offset = offset;
+
+                        unsigned newc = util_last_bit(bi_writemask(ins, d)) >> 2;
+                        channels = MAX2(channels, newc);
+                }
         }
 
         return channels;
@@ -381,7 +381,7 @@ bi_register_allocate(bi_context *ctx)
         unsigned iter_count = 1000; /* max iterations */
 
         /* Number of bytes of memory we've spilled into */
-        unsigned spill_count = ctx->tls_size;
+        unsigned spill_count = ctx->info->tls_size;
 
         do {
                 if (l) {
@@ -403,7 +403,7 @@ bi_register_allocate(bi_context *ctx)
 
         assert(success);
 
-        ctx->tls_size = spill_count;
+        ctx->info->tls_size = spill_count;
         bi_install_registers(ctx, l);
 
         lcra_free(l);

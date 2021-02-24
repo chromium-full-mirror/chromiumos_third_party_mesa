@@ -3255,7 +3255,7 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 				break;
 			ir3_context_error(ctx, "unknown %s shader output name: %s\n",
 					_mesa_shader_stage_to_string(ctx->so->type),
-					gl_varying_slot_name(slot));
+					gl_varying_slot_name_for_stage(slot, ctx->so->type));
 		}
 	} else {
 		ir3_context_error(ctx, "unknown shader type: %d\n", ctx->so->type);
@@ -3413,6 +3413,7 @@ emit_instructions(struct ir3_context *ctx)
 		ctx->s->info.clip_distance_array_size;
 
 	ctx->so->pvtmem_size = ctx->s->scratch_size;
+	ctx->so->shared_size = ctx->s->shared_size;
 
 	/* NOTE: need to do something more clever when we support >1 fxn */
 	nir_foreach_register (reg, &fxn->registers) {

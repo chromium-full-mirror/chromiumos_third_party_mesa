@@ -32,6 +32,7 @@
 #include <xf86drm.h>
 
 #include "anv_private.h"
+#include "anv_measure.h"
 #include "util/debug.h"
 #include "util/build_id.h"
 #include "util/disk_cache.h"
@@ -48,6 +49,7 @@
 #include "common/gen_defines.h"
 #include "common/gen_uuid.h"
 #include "compiler/glsl_types.h"
+#include "perf/gen_perf.h"
 
 #include "genxml/gen7_pack.h"
 
@@ -83,7 +85,7 @@ compiler_debug_log(void *data, const char *fmt, ...)
    struct anv_device *device = (struct anv_device *)data;
    struct anv_instance *instance = device->physical->instance;
 
-   if (list_is_empty(&instance->debug_report_callbacks.callbacks))
+   if (list_is_empty(&instance->vk.debug_report.callbacks))
       return;
 
    va_list args;
@@ -91,10 +93,9 @@ compiler_debug_log(void *data, const char *fmt, ...)
    (void) vsnprintf(str, MAX_DEBUG_MESSAGE_LENGTH, fmt, args);
    va_end(args);
 
-   vk_debug_report(&instance->debug_report_callbacks,
+   vk_debug_report(&instance->vk,
                    VK_DEBUG_REPORT_DEBUG_BIT_EXT,
-                   VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT,
-                   0, 0, 0, "anv", str);
+                   NULL, 0, 0, "anv", str);
 }
 
 static void
@@ -132,6 +133,186 @@ anv_compute_heap_size(int fd, uint64_t gtt_size)
    uint64_t available_gtt = gtt_size * 3 / 4;
 
    return MIN2(available_ram, available_gtt);
+}
+
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || \
+    defined(VK_USE_PLATFORM_XCB_KHR) || \
+    defined(VK_USE_PLATFORM_XLIB_KHR) || \
+    defined(VK_USE_PLATFORM_DISPLAY_KHR)
+#define ANV_USE_WSI_PLATFORM
+#endif
+
+#ifdef ANDROID
+#define ANV_API_VERSION VK_MAKE_VERSION(1, 1, VK_HEADER_VERSION)
+#else
+#define ANV_API_VERSION VK_MAKE_VERSION(1, 2, VK_HEADER_VERSION)
+#endif
+
+VkResult anv_EnumerateInstanceVersion(
+    uint32_t*                                   pApiVersion)
+{
+    *pApiVersion = ANV_API_VERSION;
+    return VK_SUCCESS;
+}
+
+static const struct vk_instance_extension_table instance_extensions = {
+   .KHR_device_group_creation                = true,
+   .KHR_external_fence_capabilities          = true,
+   .KHR_external_memory_capabilities         = true,
+   .KHR_external_semaphore_capabilities      = true,
+   .KHR_get_physical_device_properties2      = true,
+   .EXT_debug_report                         = true,
+
+#ifdef ANV_USE_WSI_PLATFORM
+   .KHR_get_surface_capabilities2            = true,
+   .KHR_surface                              = true,
+   .KHR_surface_protected_capabilities       = true,
+#endif
+#ifdef VK_USE_PLATFORM_WAYLAND_KHR
+   .KHR_wayland_surface                      = true,
+#endif
+#ifdef VK_USE_PLATFORM_XCB_KHR
+   .KHR_xcb_surface                          = true,
+#endif
+#ifdef VK_USE_PLATFORM_XLIB_KHR
+   .KHR_xlib_surface                         = true,
+#endif
+#ifdef VK_USE_PLATFORM_XLIB_XRANDR_EXT
+   .EXT_acquire_xlib_display                 = true,
+#endif
+#ifdef VK_USE_PLATFORM_DISPLAY_KHR
+   .KHR_display                              = true,
+   .KHR_get_display_properties2              = true,
+   .EXT_direct_mode_display                  = true,
+   .EXT_display_surface_counter              = true,
+#endif
+};
+
+static void
+get_device_extensions(const struct anv_physical_device *device,
+                      struct vk_device_extension_table *ext)
+{
+   *ext = (struct vk_device_extension_table) {
+      .KHR_8bit_storage                      = device->info.gen >= 8,
+      .KHR_16bit_storage                     = device->info.gen >= 8,
+      .KHR_bind_memory2                      = true,
+      .KHR_buffer_device_address             = device->has_a64_buffer_access,
+      .KHR_copy_commands2                    = true,
+      .KHR_create_renderpass2                = true,
+      .KHR_dedicated_allocation              = true,
+      .KHR_deferred_host_operations          = true,
+      .KHR_depth_stencil_resolve             = true,
+      .KHR_descriptor_update_template        = true,
+      .KHR_device_group                      = true,
+      .KHR_draw_indirect_count               = true,
+      .KHR_driver_properties                 = true,
+      .KHR_external_fence                    = device->has_syncobj_wait,
+      .KHR_external_fence_fd                 = device->has_syncobj_wait,
+      .KHR_external_memory                   = true,
+      .KHR_external_memory_fd                = true,
+      .KHR_external_semaphore                = true,
+      .KHR_external_semaphore_fd             = true,
+      .KHR_get_memory_requirements2          = true,
+      .KHR_image_format_list                 = true,
+      .KHR_imageless_framebuffer             = true,
+#ifdef ANV_USE_WSI_PLATFORM
+      .KHR_incremental_present               = true,
+#endif
+      .KHR_maintenance1                      = true,
+      .KHR_maintenance2                      = true,
+      .KHR_maintenance3                      = true,
+      .KHR_multiview                         = true,
+      .KHR_performance_query =
+         device->use_softpin && device->perf &&
+         (device->perf->i915_perf_version >= 3 ||
+          INTEL_DEBUG & DEBUG_NO_OACONFIG) &&
+         device->use_call_secondary,
+      .KHR_pipeline_executable_properties    = true,
+      .KHR_push_descriptor                   = true,
+      .KHR_relaxed_block_layout              = true,
+      .KHR_sampler_mirror_clamp_to_edge      = true,
+      .KHR_sampler_ycbcr_conversion          = true,
+      .KHR_separate_depth_stencil_layouts    = true,
+      .KHR_shader_atomic_int64               = device->info.gen >= 9 &&
+                                               device->use_softpin,
+      .KHR_shader_clock                      = true,
+      .KHR_shader_draw_parameters            = true,
+      .KHR_shader_float16_int8               = device->info.gen >= 8,
+      .KHR_shader_float_controls             = device->info.gen >= 8,
+      .KHR_shader_non_semantic_info          = true,
+      .KHR_shader_subgroup_extended_types    = device->info.gen >= 8,
+      .KHR_shader_terminate_invocation       = true,
+      .KHR_spirv_1_4                         = true,
+      .KHR_storage_buffer_storage_class      = true,
+#ifdef ANV_USE_WSI_PLATFORM
+      .KHR_swapchain                         = true,
+      .KHR_swapchain_mutable_format          = true,
+#endif
+      .KHR_timeline_semaphore                = true,
+      .KHR_uniform_buffer_standard_layout    = true,
+      .KHR_variable_pointers                 = true,
+      .KHR_vulkan_memory_model               = true,
+      .KHR_workgroup_memory_explicit_layout  = true,
+      .KHR_zero_initialize_workgroup_memory  = true,
+      .EXT_4444_formats                      = true,
+      .EXT_buffer_device_address             = device->has_a64_buffer_access,
+      .EXT_calibrated_timestamps             = device->has_reg_timestamp,
+      .EXT_conditional_rendering             = device->info.gen >= 8 ||
+                                               device->info.is_haswell,
+      .EXT_custom_border_color               = device->info.gen >= 8,
+      .EXT_depth_clip_enable                 = true,
+      .EXT_descriptor_indexing               = device->has_a64_buffer_access &&
+                                               device->has_bindless_images,
+#ifdef VK_USE_PLATFORM_DISPLAY_KHR
+      .EXT_display_control                   = true,
+#endif
+      .EXT_extended_dynamic_state            = true,
+      .EXT_external_memory_dma_buf           = true,
+      .EXT_external_memory_host              = true,
+      .EXT_fragment_shader_interlock         = device->info.gen >= 9,
+      .EXT_global_priority                   = device->has_context_priority,
+      .EXT_host_query_reset                  = true,
+      .EXT_image_robustness                  = true,
+      .EXT_index_type_uint8                  = true,
+      .EXT_inline_uniform_block              = true,
+      .EXT_line_rasterization                = true,
+      .EXT_memory_budget                     = device->has_mem_available,
+      .EXT_pci_bus_info                      = true,
+      .EXT_pipeline_creation_cache_control   = true,
+      .EXT_pipeline_creation_feedback        = true,
+      .EXT_post_depth_coverage               = device->info.gen >= 9,
+      .EXT_private_data                      = true,
+#ifdef ANDROID
+      .EXT_queue_family_foreign              = ANDROID,
+#endif
+      .EXT_robustness2                       = true,
+      .EXT_sample_locations                  = true,
+      .EXT_sampler_filter_minmax             = device->info.gen >= 9,
+      .EXT_scalar_block_layout               = true,
+      .EXT_separate_stencil_usage            = true,
+      .EXT_shader_atomic_float               = true,
+      .EXT_shader_demote_to_helper_invocation = true,
+      .EXT_shader_stencil_export             = device->info.gen >= 9,
+      .EXT_shader_subgroup_ballot            = true,
+      .EXT_shader_subgroup_vote              = true,
+      .EXT_shader_viewport_index_layer       = true,
+      .EXT_subgroup_size_control             = true,
+      .EXT_texel_buffer_alignment            = true,
+      .EXT_transform_feedback                = true,
+      .EXT_vertex_attribute_divisor          = true,
+      .EXT_ycbcr_image_arrays                = true,
+#ifdef ANDROID
+      .ANDROID_external_memory_android_hardware_buffer = true,
+      .ANDROID_native_buffer                 = true,
+#endif
+      .GOOGLE_decorate_string                = true,
+      .GOOGLE_hlsl_functionality1            = true,
+      .GOOGLE_user_type                      = true,
+      .INTEL_performance_query               = device->perf &&
+                                               device->perf->i915_perf_version >= 3,
+      .INTEL_shader_integer_functions2       = device->info.gen >= 8,
+      .NV_compute_shader_derivatives         = true,
+   };
 }
 
 static VkResult
@@ -296,27 +477,106 @@ anv_physical_device_free_disk_cache(struct anv_physical_device *device)
 #endif
 }
 
+/* The ANV_QUEUE_OVERRIDE environment variable is a comma separated list of
+ * queue overrides.
+ *
+ * To override the number queues:
+ *  * "gc" is for graphics queues with compute support
+ *  * "g" is for graphics queues with no compute support
+ *  * "c" is for compute queues with no graphics support
+ *
+ * For example, ANV_QUEUE_OVERRIDE=gc=2,c=1 would override the number of
+ * advertised queues to be 2 queues with graphics+compute support, and 1 queue
+ * with compute-only support.
+ *
+ * ANV_QUEUE_OVERRIDE=c=1 would override the number of advertised queues to
+ * include 1 queue with compute-only support, but it will not change the
+ * number of graphics+compute queues.
+ *
+ * ANV_QUEUE_OVERRIDE=gc=0,c=1 would override the number of advertised queues
+ * to include 1 queue with compute-only support, and it would override the
+ * number of graphics+compute queues to be 0.
+ */
+static void
+anv_override_engine_counts(int *gc_count, int *g_count, int *c_count)
+{
+   int gc_override = -1;
+   int g_override = -1;
+   int c_override = -1;
+   char *env = getenv("ANV_QUEUE_OVERRIDE");
+
+   if (env == NULL)
+      return;
+
+   env = strdup(env);
+   char *save = NULL;
+   char *next = strtok_r(env, ",", &save);
+   while (next != NULL) {
+      if (strncmp(next, "gc=", 3) == 0) {
+         gc_override = strtol(next + 3, NULL, 0);
+      } else if (strncmp(next, "g=", 2) == 0) {
+         g_override = strtol(next + 2, NULL, 0);
+      } else if (strncmp(next, "c=", 2) == 0) {
+         c_override = strtol(next + 2, NULL, 0);
+      } else {
+         mesa_logw("Ignoring unsupported ANV_QUEUE_OVERRIDE token: %s", next);
+      }
+      next = strtok_r(NULL, ",", &save);
+   }
+   free(env);
+   if (gc_override >= 0)
+      *gc_count = gc_override;
+   if (g_override >= 0)
+      *g_count = g_override;
+   if (*g_count > 0 && *gc_count <= 0 && (gc_override >= 0 || g_override >= 0))
+      mesa_logw("ANV_QUEUE_OVERRIDE: gc=0 with g > 0 violates the "
+                "Vulkan specification");
+   if (c_override >= 0)
+      *c_count = c_override;
+}
+
 static void
 anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
 {
    uint32_t family_count = 0;
 
    if (pdevice->engine_info) {
-      int render_count = anv_gem_count_engines(pdevice->engine_info,
-                                               I915_ENGINE_CLASS_RENDER);
-      if (render_count > 0) {
+      int gc_count =
+         anv_gem_count_engines(pdevice->engine_info, I915_ENGINE_CLASS_RENDER);
+      int g_count = 0;
+      int c_count = 0;
+
+      anv_override_engine_counts(&gc_count, &g_count, &c_count);
+
+      if (gc_count > 0) {
          pdevice->queue.families[family_count++] = (struct anv_queue_family) {
             .queueFlags = VK_QUEUE_GRAPHICS_BIT |
                           VK_QUEUE_COMPUTE_BIT |
                           VK_QUEUE_TRANSFER_BIT,
-            .queueCount = render_count,
+            .queueCount = gc_count,
+            .engine_class = I915_ENGINE_CLASS_RENDER,
+         };
+      }
+      if (g_count > 0) {
+         pdevice->queue.families[family_count++] = (struct anv_queue_family) {
+            .queueFlags = VK_QUEUE_GRAPHICS_BIT |
+                          VK_QUEUE_TRANSFER_BIT,
+            .queueCount = g_count,
+            .engine_class = I915_ENGINE_CLASS_RENDER,
+         };
+      }
+      if (c_count > 0) {
+         pdevice->queue.families[family_count++] = (struct anv_queue_family) {
+            .queueFlags = VK_QUEUE_COMPUTE_BIT |
+                          VK_QUEUE_TRANSFER_BIT,
+            .queueCount = c_count,
             .engine_class = I915_ENGINE_CLASS_RENDER,
          };
       }
       /* Increase count below when other families are added as a reminder to
        * increase the ANV_MAX_QUEUE_FAMILIES value.
        */
-      STATIC_ASSERT(ANV_MAX_QUEUE_FAMILIES >= 1);
+      STATIC_ASSERT(ANV_MAX_QUEUE_FAMILIES >= 3);
    } else {
       /* Default to a single render queue */
       pdevice->queue.families[family_count++] = (struct anv_queue_family) {
@@ -378,14 +638,24 @@ anv_physical_device_try_create(struct anv_instance *instance,
    }
 
    struct anv_physical_device *device =
-      vk_alloc(&instance->alloc, sizeof(*device), 8,
-               VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+      vk_zalloc(&instance->vk.alloc, sizeof(*device), 8,
+                VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
    if (device == NULL) {
       result = vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
       goto fail_fd;
    }
 
-   vk_object_base_init(NULL, &device->base, VK_OBJECT_TYPE_PHYSICAL_DEVICE);
+   struct vk_physical_device_dispatch_table dispatch_table;
+   vk_physical_device_dispatch_table_from_entrypoints(
+      &dispatch_table, &anv_physical_device_entrypoints, true);
+
+   result = vk_physical_device_init(&device->vk, &instance->vk,
+                                    NULL, /* We set up extensions later */
+                                    &dispatch_table);
+   if (result != VK_SUCCESS) {
+      vk_error(result);
+      goto fail_alloc;
+   }
    device->instance = instance;
 
    assert(strlen(path) < ARRAY_SIZE(device->path));
@@ -411,7 +681,7 @@ anv_physical_device_try_create(struct anv_instance *instance,
          result = vk_errorfi(device->instance, NULL,
                              VK_ERROR_INITIALIZATION_FAILED,
                              "failed to get command parser version");
-         goto fail_alloc;
+         goto fail_base;
       }
    }
 
@@ -419,14 +689,14 @@ anv_physical_device_try_create(struct anv_instance *instance,
       result = vk_errorfi(device->instance, NULL,
                           VK_ERROR_INITIALIZATION_FAILED,
                           "kernel missing gem wait");
-      goto fail_alloc;
+      goto fail_base;
    }
 
    if (!anv_gem_get_param(fd, I915_PARAM_HAS_EXECBUF2)) {
       result = vk_errorfi(device->instance, NULL,
                           VK_ERROR_INITIALIZATION_FAILED,
                           "kernel missing execbuf2");
-      goto fail_alloc;
+      goto fail_base;
    }
 
    if (!device->info.has_llc &&
@@ -434,7 +704,7 @@ anv_physical_device_try_create(struct anv_instance *instance,
       result = vk_errorfi(device->instance, NULL,
                           VK_ERROR_INITIALIZATION_FAILED,
                           "kernel missing wc mmap");
-      goto fail_alloc;
+      goto fail_base;
    }
 
    device->has_softpin = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_SOFTPIN);
@@ -451,7 +721,7 @@ anv_physical_device_try_create(struct anv_instance *instance,
 
    result = anv_physical_device_init_heaps(device, fd);
    if (result != VK_SUCCESS)
-      goto fail_alloc;
+      goto fail_base;
 
    device->use_softpin = device->has_softpin &&
                          device->supports_48bit_addresses;
@@ -539,7 +809,7 @@ anv_physical_device_try_create(struct anv_instance *instance,
    device->compiler = brw_compiler_create(NULL, &device->info);
    if (device->compiler == NULL) {
       result = vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
-      goto fail_alloc;
+      goto fail_base;
    }
    device->compiler->shader_debug_log = compiler_debug_log;
    device->compiler->shader_perf_log = compiler_perf_log;
@@ -572,7 +842,7 @@ anv_physical_device_try_create(struct anv_instance *instance,
 
    anv_physical_device_init_disk_cache(device);
 
-   if (instance->enabled_extensions.KHR_display) {
+   if (instance->vk.enabled_extensions.KHR_display) {
       master_fd = open(primary_path, O_RDWR | O_CLOEXEC);
       if (master_fd >= 0) {
          /* prod the device with a GETPARAM call which will fail if
@@ -593,11 +863,11 @@ anv_physical_device_try_create(struct anv_instance *instance,
    if (result != VK_SUCCESS)
       goto fail_engine_info;
 
-   device->perf = anv_get_perf(&device->info, fd);
+   anv_physical_device_init_perf(device, fd);
 
-   anv_physical_device_get_supported_extensions(device,
-                                                &device->supported_extensions);
+   anv_measure_device_init(device);
 
+   get_device_extensions(device, &device->vk.supported_extensions);
 
    device->local_fd = fd;
 
@@ -610,8 +880,10 @@ fail_engine_info:
    anv_physical_device_free_disk_cache(device);
 fail_compiler:
    ralloc_free(device->compiler);
+fail_base:
+   vk_physical_device_finish(&device->vk);
 fail_alloc:
-   vk_free(&instance->alloc, device);
+   vk_free(&instance->vk.alloc, device);
 fail_fd:
    close(fd);
    if (master_fd != -1)
@@ -623,6 +895,7 @@ static void
 anv_physical_device_destroy(struct anv_physical_device *device)
 {
    anv_finish_wsi(device);
+   anv_measure_device_destroy(device);
    free(device->engine_info);
    anv_physical_device_free_disk_cache(device);
    ralloc_free(device->compiler);
@@ -630,8 +903,8 @@ anv_physical_device_destroy(struct anv_physical_device *device)
    close(device->local_fd);
    if (device->master_fd >= 0)
       close(device->master_fd);
-   vk_object_base_finish(&device->base);
-   vk_free(&device->instance->alloc, device);
+   vk_physical_device_finish(&device->vk);
+   vk_free(&device->instance->vk.alloc, device);
 }
 
 static void *
@@ -666,17 +939,11 @@ VkResult anv_EnumerateInstanceExtensionProperties(
     uint32_t*                                   pPropertyCount,
     VkExtensionProperties*                      pProperties)
 {
-   VK_OUTARRAY_MAKE(out, pProperties, pPropertyCount);
+   if (pLayerName)
+      return vk_error(VK_ERROR_LAYER_NOT_PRESENT);
 
-   for (int i = 0; i < ANV_INSTANCE_EXTENSION_COUNT; i++) {
-      if (anv_instance_extensions_supported.extensions[i]) {
-         vk_outarray_append(&out, prop) {
-            *prop = anv_instance_extensions[i];
-         }
-      }
-   }
-
-   return vk_outarray_status(&out);
+   return vk_enumerate_instance_extension_properties(
+      &instance_extensions, pPropertyCount, pProperties);
 }
 
 static void
@@ -686,10 +953,10 @@ anv_init_dri_options(struct anv_instance *instance)
                       ARRAY_SIZE(anv_dri_options));
    driParseConfigFiles(&instance->dri_options,
                        &instance->available_dri_options, 0, "anv", NULL,
-                       instance->app_info.app_name,
-                       instance->app_info.app_version,
-                       instance->app_info.engine_name,
-                       instance->app_info.engine_version);
+                       instance->vk.app_info.app_name,
+                       instance->vk.app_info.app_version,
+                       instance->vk.app_info.engine_name,
+                       instance->vk.app_info.engine_version);
 }
 
 VkResult anv_CreateInstance(
@@ -702,105 +969,27 @@ VkResult anv_CreateInstance(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
 
-   struct anv_instance_extension_table enabled_extensions = {};
-   for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
-      int idx;
-      for (idx = 0; idx < ANV_INSTANCE_EXTENSION_COUNT; idx++) {
-         if (strcmp(pCreateInfo->ppEnabledExtensionNames[i],
-                    anv_instance_extensions[idx].extensionName) == 0)
-            break;
-      }
+   if (pAllocator == NULL)
+      pAllocator = &default_alloc;
 
-      if (idx >= ANV_INSTANCE_EXTENSION_COUNT)
-         return vk_error(VK_ERROR_EXTENSION_NOT_PRESENT);
-
-      if (!anv_instance_extensions_supported.extensions[idx])
-         return vk_error(VK_ERROR_EXTENSION_NOT_PRESENT);
-
-      enabled_extensions.extensions[idx] = true;
-   }
-
-   instance = vk_alloc2(&default_alloc, pAllocator, sizeof(*instance), 8,
-                         VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+   instance = vk_alloc(pAllocator, sizeof(*instance), 8,
+                       VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
    if (!instance)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vk_object_base_init(NULL, &instance->base, VK_OBJECT_TYPE_INSTANCE);
+   struct vk_instance_dispatch_table dispatch_table;
+   vk_instance_dispatch_table_from_entrypoints(
+      &dispatch_table, &anv_instance_entrypoints, true);
 
-   if (pAllocator)
-      instance->alloc = *pAllocator;
-   else
-      instance->alloc = default_alloc;
-
-   instance->app_info = (struct anv_app_info) { .api_version = 0 };
-   if (pCreateInfo->pApplicationInfo) {
-      const VkApplicationInfo *app = pCreateInfo->pApplicationInfo;
-
-      instance->app_info.app_name =
-         vk_strdup(&instance->alloc, app->pApplicationName,
-                   VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
-      instance->app_info.app_version = app->applicationVersion;
-
-      instance->app_info.engine_name =
-         vk_strdup(&instance->alloc, app->pEngineName,
-                   VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
-      instance->app_info.engine_version = app->engineVersion;
-
-      instance->app_info.api_version = app->apiVersion;
-   }
-
-   if (instance->app_info.api_version == 0)
-      instance->app_info.api_version = VK_API_VERSION_1_0;
-
-   instance->enabled_extensions = enabled_extensions;
-
-   for (unsigned i = 0; i < ARRAY_SIZE(instance->dispatch.entrypoints); i++) {
-      /* Vulkan requires that entrypoints for extensions which have not been
-       * enabled must not be advertised.
-       */
-      if (!anv_instance_entrypoint_is_enabled(i, instance->app_info.api_version,
-                                              &instance->enabled_extensions)) {
-         instance->dispatch.entrypoints[i] = NULL;
-      } else {
-         instance->dispatch.entrypoints[i] =
-            anv_instance_dispatch_table.entrypoints[i];
-      }
-   }
-
-   for (unsigned i = 0; i < ARRAY_SIZE(instance->physical_device_dispatch.entrypoints); i++) {
-      /* Vulkan requires that entrypoints for extensions which have not been
-       * enabled must not be advertised.
-       */
-      if (!anv_physical_device_entrypoint_is_enabled(i, instance->app_info.api_version,
-                                                     &instance->enabled_extensions)) {
-         instance->physical_device_dispatch.entrypoints[i] = NULL;
-      } else {
-         instance->physical_device_dispatch.entrypoints[i] =
-            anv_physical_device_dispatch_table.entrypoints[i];
-      }
-   }
-
-   for (unsigned i = 0; i < ARRAY_SIZE(instance->device_dispatch.entrypoints); i++) {
-      /* Vulkan requires that entrypoints for extensions which have not been
-       * enabled must not be advertised.
-       */
-      if (!anv_device_entrypoint_is_enabled(i, instance->app_info.api_version,
-                                            &instance->enabled_extensions, NULL)) {
-         instance->device_dispatch.entrypoints[i] = NULL;
-      } else {
-         instance->device_dispatch.entrypoints[i] =
-            anv_device_dispatch_table.entrypoints[i];
-      }
+   result = vk_instance_init(&instance->vk, &instance_extensions,
+                             &dispatch_table, pCreateInfo, pAllocator);
+   if (result != VK_SUCCESS) {
+      vk_free(pAllocator, instance);
+      return vk_error(result);
    }
 
    instance->physical_devices_enumerated = false;
    list_inithead(&instance->physical_devices);
-
-   result = vk_debug_report_instance_init(&instance->debug_report_callbacks);
-   if (result != VK_SUCCESS) {
-      vk_free2(&default_alloc, pAllocator, instance);
-      return vk_error(result);
-   }
 
    instance->pipeline_cache_enabled =
       env_var_as_boolean("ANV_ENABLE_PIPELINE_CACHE", true);
@@ -829,20 +1018,15 @@ void anv_DestroyInstance(
                             &instance->physical_devices, link)
       anv_physical_device_destroy(pdevice);
 
-   vk_free(&instance->alloc, (char *)instance->app_info.app_name);
-   vk_free(&instance->alloc, (char *)instance->app_info.engine_name);
-
    VG(VALGRIND_DESTROY_MEMPOOL(instance));
-
-   vk_debug_report_instance_destroy(&instance->debug_report_callbacks);
 
    glsl_type_singleton_decref();
 
    driDestroyOptionCache(&instance->dri_options);
    driDestroyOptionInfo(&instance->available_dri_options);
 
-   vk_object_base_finish(&instance->base);
-   vk_free(&instance->alloc, instance);
+   vk_instance_finish(&instance->vk);
+   vk_free(&instance->vk.alloc, instance);
 }
 
 static VkResult
@@ -1000,7 +1184,7 @@ void anv_GetPhysicalDeviceFeatures(
       pdevice->compiler->scalar_stage[MESA_SHADER_VERTEX] &&
       pdevice->compiler->scalar_stage[MESA_SHADER_GEOMETRY];
 
-   struct anv_app_info *app_info = &pdevice->instance->app_info;
+   struct vk_app_info *app_info = &pdevice->instance->vk.app_info;
 
    /* The new DOOM and Wolfenstein games require depthBounds without
     * checking for it.  They seem to run fine without it so just claim it's
@@ -1517,6 +1701,13 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ZERO_INITIALIZE_WORKGROUP_MEMORY_FEATURES_KHR: {
+         VkPhysicalDeviceZeroInitializeWorkgroupMemoryFeaturesKHR *features =
+            (VkPhysicalDeviceZeroInitializeWorkgroupMemoryFeaturesKHR *)ext;
+         features->shaderZeroInitializeWorkgroupMemory = true;
+         break;
+      }
+
       default:
          anv_debug_ignored_stype(ext->sType);
          break;
@@ -1688,7 +1879,7 @@ void anv_GetPhysicalDeviceProperties(
    };
 
    *pProperties = (VkPhysicalDeviceProperties) {
-      .apiVersion = anv_physical_device_api_version(pdevice),
+      .apiVersion = ANV_API_VERSION,
       .driverVersion = vk_get_driver_version(),
       .vendorID = 0x8086,
       .deviceID = pdevice->info.chipset_id,
@@ -2396,46 +2587,9 @@ PFN_vkVoidFunction anv_GetInstanceProcAddr(
     const char*                                 pName)
 {
    ANV_FROM_HANDLE(anv_instance, instance, _instance);
-
-   /* The Vulkan 1.0 spec for vkGetInstanceProcAddr has a table of exactly
-    * when we have to return valid function pointers, NULL, or it's left
-    * undefined.  See the table for exact details.
-    */
-   if (pName == NULL)
-      return NULL;
-
-#define LOOKUP_ANV_ENTRYPOINT(entrypoint) \
-   if (strcmp(pName, "vk" #entrypoint) == 0) \
-      return (PFN_vkVoidFunction)anv_##entrypoint
-
-   LOOKUP_ANV_ENTRYPOINT(EnumerateInstanceExtensionProperties);
-   LOOKUP_ANV_ENTRYPOINT(EnumerateInstanceLayerProperties);
-   LOOKUP_ANV_ENTRYPOINT(EnumerateInstanceVersion);
-   LOOKUP_ANV_ENTRYPOINT(CreateInstance);
-
-   /* GetInstanceProcAddr() can also be called with a NULL instance.
-    * See https://gitlab.khronos.org/vulkan/vulkan/issues/2057
-    */
-   LOOKUP_ANV_ENTRYPOINT(GetInstanceProcAddr);
-
-#undef LOOKUP_ANV_ENTRYPOINT
-
-   if (instance == NULL)
-      return NULL;
-
-   int idx = anv_get_instance_entrypoint_index(pName);
-   if (idx >= 0)
-      return instance->dispatch.entrypoints[idx];
-
-   idx = anv_get_physical_device_entrypoint_index(pName);
-   if (idx >= 0)
-      return instance->physical_device_dispatch.entrypoints[idx];
-
-   idx = anv_get_device_entrypoint_index(pName);
-   if (idx >= 0)
-      return instance->device_dispatch.entrypoints[idx];
-
-   return NULL;
+   return vk_instance_get_proc_addr(&instance->vk,
+                                    &anv_instance_entrypoints,
+                                    pName);
 }
 
 /* With version 1+ of the loader interface the ICD should expose
@@ -2454,22 +2608,6 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(
    return anv_GetInstanceProcAddr(instance, pName);
 }
 
-PFN_vkVoidFunction anv_GetDeviceProcAddr(
-    VkDevice                                    _device,
-    const char*                                 pName)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-
-   if (!device || !pName)
-      return NULL;
-
-   int idx = anv_get_device_entrypoint_index(pName);
-   if (idx < 0)
-      return NULL;
-
-   return device->dispatch.entrypoints[idx];
-}
-
 /* With version 4+ of the loader interface the ICD should expose
  * vk_icdGetPhysicalDeviceProcAddr()
  */
@@ -2483,53 +2621,7 @@ PFN_vkVoidFunction vk_icdGetPhysicalDeviceProcAddr(
     const char* pName)
 {
    ANV_FROM_HANDLE(anv_instance, instance, _instance);
-
-   if (!pName || !instance)
-      return NULL;
-
-   int idx = anv_get_physical_device_entrypoint_index(pName);
-   if (idx < 0)
-      return NULL;
-
-   return instance->physical_device_dispatch.entrypoints[idx];
-}
-
-
-VkResult
-anv_CreateDebugReportCallbackEXT(VkInstance _instance,
-                                 const VkDebugReportCallbackCreateInfoEXT* pCreateInfo,
-                                 const VkAllocationCallbacks* pAllocator,
-                                 VkDebugReportCallbackEXT* pCallback)
-{
-   ANV_FROM_HANDLE(anv_instance, instance, _instance);
-   return vk_create_debug_report_callback(&instance->debug_report_callbacks,
-                                          pCreateInfo, pAllocator, &instance->alloc,
-                                          pCallback);
-}
-
-void
-anv_DestroyDebugReportCallbackEXT(VkInstance _instance,
-                                  VkDebugReportCallbackEXT _callback,
-                                  const VkAllocationCallbacks* pAllocator)
-{
-   ANV_FROM_HANDLE(anv_instance, instance, _instance);
-   vk_destroy_debug_report_callback(&instance->debug_report_callbacks,
-                                    _callback, pAllocator, &instance->alloc);
-}
-
-void
-anv_DebugReportMessageEXT(VkInstance _instance,
-                          VkDebugReportFlagsEXT flags,
-                          VkDebugReportObjectTypeEXT objectType,
-                          uint64_t object,
-                          size_t location,
-                          int32_t messageCode,
-                          const char* pLayerPrefix,
-                          const char* pMessage)
-{
-   ANV_FROM_HANDLE(anv_instance, instance, _instance);
-   vk_debug_report(&instance->debug_report_callbacks, flags, objectType,
-                   object, location, messageCode, pLayerPrefix, pMessage);
+   return vk_instance_get_physical_device_proc_addr(&instance->vk, pName);
 }
 
 static struct anv_state
@@ -2598,26 +2690,6 @@ anv_device_init_trivial_batch(struct anv_device *device)
       gen_clflush_range(batch.start, batch.next - batch.start);
 
    return VK_SUCCESS;
-}
-
-VkResult anv_EnumerateDeviceExtensionProperties(
-    VkPhysicalDevice                            physicalDevice,
-    const char*                                 pLayerName,
-    uint32_t*                                   pPropertyCount,
-    VkExtensionProperties*                      pProperties)
-{
-   ANV_FROM_HANDLE(anv_physical_device, device, physicalDevice);
-   VK_OUTARRAY_MAKE(out, pProperties, pPropertyCount);
-
-   for (int i = 0; i < ANV_DEVICE_EXTENSION_COUNT; i++) {
-      if (device->supported_extensions.extensions[i]) {
-         vk_outarray_append(&out, prop) {
-            *prop = anv_device_extensions[i];
-         }
-      }
-   }
-
-   return vk_outarray_status(&out);
 }
 
 static int
@@ -2786,24 +2858,6 @@ VkResult anv_CreateDevice(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
 
-   struct anv_device_extension_table enabled_extensions = { };
-   for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
-      int idx;
-      for (idx = 0; idx < ANV_DEVICE_EXTENSION_COUNT; idx++) {
-         if (strcmp(pCreateInfo->ppEnabledExtensionNames[i],
-                    anv_device_extensions[idx].extensionName) == 0)
-            break;
-      }
-
-      if (idx >= ANV_DEVICE_EXTENSION_COUNT)
-         return vk_error(VK_ERROR_EXTENSION_NOT_PRESENT);
-
-      if (!physical_device->supported_extensions.extensions[idx])
-         return vk_error(VK_ERROR_EXTENSION_NOT_PRESENT);
-
-      enabled_extensions.extensions[idx] = true;
-   }
-
    /* Check enabled features */
    bool robust_buffer_access = false;
    if (pCreateInfo->pEnabledFeatures) {
@@ -2854,14 +2908,24 @@ VkResult anv_CreateDevice(
       queue_priority ? queue_priority->globalPriority :
          VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_EXT;
 
-   device = vk_alloc2(&physical_device->instance->alloc, pAllocator,
+   device = vk_alloc2(&physical_device->instance->vk.alloc, pAllocator,
                        sizeof(*device), 8,
                        VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
    if (!device)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vk_device_init(&device->vk, pCreateInfo,
-                  &physical_device->instance->alloc, pAllocator);
+   struct vk_device_dispatch_table dispatch_table;
+   vk_device_dispatch_table_from_entrypoints(&dispatch_table,
+      anv_genX(&physical_device->info, device_entrypoints), true);
+   vk_device_dispatch_table_from_entrypoints(&dispatch_table,
+      &anv_device_entrypoints, false);
+
+   result = vk_device_init(&device->vk, &physical_device->vk,
+                           &dispatch_table, pCreateInfo, pAllocator);
+   if (result != VK_SUCCESS) {
+      vk_error(result);
+      goto fail_alloc;
+   }
 
    if (INTEL_DEBUG & DEBUG_BATCH) {
       const unsigned decode_flags =
@@ -3003,22 +3067,6 @@ VkResult anv_CreateDevice(
    device->can_chain_batches = device->info.gen >= 8;
 
    device->robust_buffer_access = robust_buffer_access;
-   device->enabled_extensions = enabled_extensions;
-
-   const struct anv_instance *instance = physical_device->instance;
-   for (unsigned i = 0; i < ARRAY_SIZE(device->dispatch.entrypoints); i++) {
-      /* Vulkan requires that entrypoints for extensions which have not been
-       * enabled must not be advertised.
-       */
-      if (!anv_device_entrypoint_is_enabled(i, instance->app_info.api_version,
-                                            &instance->enabled_extensions,
-                                            &device->enabled_extensions)) {
-         device->dispatch.entrypoints[i] = NULL;
-      } else {
-         device->dispatch.entrypoints[i] =
-            anv_resolve_device_entrypoint(&device->info, i);
-      }
-   }
 
    if (pthread_mutex_init(&device->mutex, NULL) != 0) {
       result = vk_error(VK_ERROR_INITIALIZATION_FAILED);
@@ -3147,33 +3195,7 @@ VkResult anv_CreateDevice(
 
    anv_scratch_pool_init(device, &device->scratch_pool);
 
-   switch (device->info.gen) {
-   case 7:
-      if (!device->info.is_haswell)
-         result = gen7_init_device_state(device);
-      else
-         result = gen75_init_device_state(device);
-      break;
-   case 8:
-      result = gen8_init_device_state(device);
-      break;
-   case 9:
-      result = gen9_init_device_state(device);
-      break;
-   case 11:
-      result = gen11_init_device_state(device);
-      break;
-   case 12:
-      if (gen_device_info_is_12hp(&device->info))
-         result = gen125_init_device_state(device);
-      else
-         result = gen12_init_device_state(device);
-      break;
-   default:
-      /* Shouldn't get here as we don't create physical devices for any other
-       * gens. */
-      unreachable("unhandled gen");
-   }
+   result = anv_genX(&device->info, init_device_state)(device);
    if (result != VK_SUCCESS)
       goto fail_clear_value_bo;
 
@@ -3238,6 +3260,8 @@ VkResult anv_CreateDevice(
  fail_fd:
    close(device->fd);
  fail_device:
+   vk_device_finish(&device->vk);
+ fail_alloc:
    vk_free(&device->vk.alloc, device);
 
    return result;
@@ -3326,37 +3350,6 @@ VkResult anv_EnumerateInstanceLayerProperties(
    return vk_error(VK_ERROR_LAYER_NOT_PRESENT);
 }
 
-VkResult anv_EnumerateDeviceLayerProperties(
-    VkPhysicalDevice                            physicalDevice,
-    uint32_t*                                   pPropertyCount,
-    VkLayerProperties*                          pProperties)
-{
-   if (pProperties == NULL) {
-      *pPropertyCount = 0;
-      return VK_SUCCESS;
-   }
-
-   /* None supported at this time */
-   return vk_error(VK_ERROR_LAYER_NOT_PRESENT);
-}
-
-void anv_GetDeviceQueue(
-    VkDevice                                    _device,
-    uint32_t                                    queueFamilyIndex,
-    uint32_t                                    queueIndex,
-    VkQueue*                                    pQueue)
-{
-   const VkDeviceQueueInfo2 info = {
-      .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2,
-      .pNext = NULL,
-      .flags = 0,
-      .queueFamilyIndex = queueFamilyIndex,
-      .queueIndex = queueIndex,
-   };
-
-   anv_GetDeviceQueue2(_device, &info, pQueue);
-}
-
 void anv_GetDeviceQueue2(
     VkDevice                                    _device,
     const VkDeviceQueueInfo2*                   pQueueInfo,
@@ -3400,8 +3393,7 @@ _anv_device_report_lost(struct anv_device *device)
    for (uint32_t i = 0; i < device->queue_count; i++) {
       struct anv_queue *queue = &device->queues[i];
       if (queue->lost) {
-         __vk_errorf(device->physical->instance, device,
-                     VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_EXT,
+         __vk_errorf(device->physical->instance, &device->vk.base,
                      VK_ERROR_DEVICE_LOST,
                      queue->error_file, queue->error_line,
                      "%s", queue->error_msg);
@@ -3424,8 +3416,7 @@ _anv_device_set_lost(struct anv_device *device,
    device->lost_reported = true;
 
    va_start(ap, msg);
-   err = __vk_errorv(device->physical->instance, device,
-                     VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_EXT,
+   err = __vk_errorv(device->physical->instance, &device->vk.base,
                      VK_ERROR_DEVICE_LOST, file, line, msg, ap);
    va_end(ap);
 
@@ -3781,7 +3772,8 @@ VkResult anv_AllocateMemory(
        * this sort of attack but only if it can trust the buffer size.
        */
       if (mem->bo->size < aligned_alloc_size) {
-         result = vk_errorf(device, device, VK_ERROR_INVALID_EXTERNAL_HANDLE,
+         result = vk_errorf(device, &device->vk.base,
+                            VK_ERROR_INVALID_EXTERNAL_HANDLE,
                             "aligned allocationSize too large for "
                             "VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT: "
                             "%"PRIu64"B > %"PRIu64"B",
@@ -3847,7 +3839,8 @@ VkResult anv_AllocateMemory(
                                       i915_tiling);
          if (ret) {
             anv_device_release_bo(device, mem->bo);
-            result = vk_errorf(device, device, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+            result = vk_errorf(device, &device->vk.base,
+                               VK_ERROR_OUT_OF_DEVICE_MEMORY,
                                "failed to set BO tiling: %m");
             goto fail;
          }
@@ -3859,7 +3852,8 @@ VkResult anv_AllocateMemory(
    if (mem_heap_used > mem_heap->size) {
       p_atomic_add(&mem_heap->used, -mem->bo->size);
       anv_device_release_bo(device, mem->bo);
-      result = vk_errorf(device, device, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+      result = vk_errorf(device, &device->vk.base,
+                         VK_ERROR_OUT_OF_DEVICE_MEMORY,
                          "Out of heap memory");
       goto fail;
    }
@@ -4115,13 +4109,13 @@ VkResult anv_InvalidateMappedMemoryRanges(
    return VK_SUCCESS;
 }
 
-void anv_GetBufferMemoryRequirements(
+void anv_GetBufferMemoryRequirements2(
     VkDevice                                    _device,
-    VkBuffer                                    _buffer,
-    VkMemoryRequirements*                       pMemoryRequirements)
+    const VkBufferMemoryRequirementsInfo2*      pInfo,
+    VkMemoryRequirements2*                      pMemoryRequirements)
 {
-   ANV_FROM_HANDLE(anv_buffer, buffer, _buffer);
    ANV_FROM_HANDLE(anv_device, device, _device);
+   ANV_FROM_HANDLE(anv_buffer, buffer, pInfo->buffer);
 
    /* The Vulkan spec (git aaed022) says:
     *
@@ -4138,8 +4132,8 @@ void anv_GetBufferMemoryRequirements(
    if (buffer->usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)
       alignment = MAX2(alignment, ANV_UBO_ALIGNMENT);
 
-   pMemoryRequirements->size = buffer->size;
-   pMemoryRequirements->alignment = alignment;
+   pMemoryRequirements->memoryRequirements.size = buffer->size;
+   pMemoryRequirements->memoryRequirements.alignment = alignment;
 
    /* Storage and Uniform buffers should have their size aligned to
     * 32-bits to avoid boundary checks when last DWord is not complete.
@@ -4149,18 +4143,9 @@ void anv_GetBufferMemoryRequirements(
    if (device->robust_buffer_access &&
        (buffer->usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT ||
         buffer->usage & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
-      pMemoryRequirements->size = align_u64(buffer->size, 4);
+      pMemoryRequirements->memoryRequirements.size = align_u64(buffer->size, 4);
 
-   pMemoryRequirements->memoryTypeBits = memory_types;
-}
-
-void anv_GetBufferMemoryRequirements2(
-    VkDevice                                    _device,
-    const VkBufferMemoryRequirementsInfo2*      pInfo,
-    VkMemoryRequirements2*                      pMemoryRequirements)
-{
-   anv_GetBufferMemoryRequirements(_device, pInfo->buffer,
-                                   &pMemoryRequirements->memoryRequirements);
+   pMemoryRequirements->memoryRequirements.memoryTypeBits = memory_types;
 
    vk_foreach_struct(ext, pMemoryRequirements->pNext) {
       switch (ext->sType) {
@@ -4178,13 +4163,13 @@ void anv_GetBufferMemoryRequirements2(
    }
 }
 
-void anv_GetImageMemoryRequirements(
+void anv_GetImageMemoryRequirements2(
     VkDevice                                    _device,
-    VkImage                                     _image,
-    VkMemoryRequirements*                       pMemoryRequirements)
+    const VkImageMemoryRequirementsInfo2*       pInfo,
+    VkMemoryRequirements2*                      pMemoryRequirements)
 {
-   ANV_FROM_HANDLE(anv_image, image, _image);
    ANV_FROM_HANDLE(anv_device, device, _device);
+   ANV_FROM_HANDLE(anv_image, image, pInfo->image);
 
    /* The Vulkan spec (git aaed022) says:
     *
@@ -4197,21 +4182,9 @@ void anv_GetImageMemoryRequirements(
     */
    uint32_t memory_types = (1ull << device->physical->memory.type_count) - 1;
 
-   pMemoryRequirements->size = image->size;
-   pMemoryRequirements->alignment = image->alignment;
-   pMemoryRequirements->memoryTypeBits = memory_types;
-}
-
-void anv_GetImageMemoryRequirements2(
-    VkDevice                                    _device,
-    const VkImageMemoryRequirementsInfo2*       pInfo,
-    VkMemoryRequirements2*                      pMemoryRequirements)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   ANV_FROM_HANDLE(anv_image, image, pInfo->image);
-
-   anv_GetImageMemoryRequirements(_device, pInfo->image,
-                                  &pMemoryRequirements->memoryRequirements);
+   pMemoryRequirements->memoryRequirements.size = image->size;
+   pMemoryRequirements->memoryRequirements.alignment = image->alignment;
+   pMemoryRequirements->memoryRequirements.memoryTypeBits = memory_types;
 
    vk_foreach_struct_const(ext, pInfo->pNext) {
       switch (ext->sType) {
@@ -4316,23 +4289,6 @@ anv_bind_buffer_memory(const VkBindBufferMemoryInfo *pBindInfo)
    } else {
       buffer->address = ANV_NULL_ADDRESS;
    }
-}
-
-VkResult anv_BindBufferMemory(
-    VkDevice                                    device,
-    VkBuffer                                    buffer,
-    VkDeviceMemory                              memory,
-    VkDeviceSize                                memoryOffset)
-{
-   anv_bind_buffer_memory(
-      &(VkBindBufferMemoryInfo) {
-         .sType         = VK_STRUCTURE_TYPE_BIND_BUFFER_MEMORY_INFO,
-         .buffer        = buffer,
-         .memory        = memory,
-         .memoryOffset  = memoryOffset,
-      });
-
-   return VK_SUCCESS;
 }
 
 VkResult anv_BindBufferMemory2(
@@ -4466,6 +4422,7 @@ VkResult anv_CreateBuffer(
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &buffer->base, VK_OBJECT_TYPE_BUFFER);
+   buffer->create_flags = pCreateInfo->flags;
    buffer->size = pCreateInfo->size;
    buffer->usage = pCreateInfo->usage;
    buffer->address = ANV_NULL_ADDRESS;
@@ -4530,7 +4487,8 @@ anv_fill_buffer_surface_state(struct anv_device *device, struct anv_state state,
 {
    isl_buffer_fill_state(&device->isl_dev, state.map,
                          .address = anv_address_physical(address),
-                         .mocs = isl_mocs(&device->isl_dev, usage),
+                         .mocs = isl_mocs(&device->isl_dev, usage,
+                                          address.bo && address.bo->is_external),
                          .size_B = range,
                          .format = format,
                          .swizzle = ISL_SWIZZLE_IDENTITY,
@@ -4836,93 +4794,4 @@ vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t* pSupportedVersion)
     */
    *pSupportedVersion = MIN2(*pSupportedVersion, 4u);
    return VK_SUCCESS;
-}
-
-VkResult anv_CreatePrivateDataSlotEXT(
-    VkDevice                                    _device,
-    const VkPrivateDataSlotCreateInfoEXT*       pCreateInfo,
-    const VkAllocationCallbacks*                pAllocator,
-    VkPrivateDataSlotEXT*                       pPrivateDataSlot)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   return vk_private_data_slot_create(&device->vk, pCreateInfo, pAllocator,
-                                      pPrivateDataSlot);
-}
-
-void anv_DestroyPrivateDataSlotEXT(
-    VkDevice                                    _device,
-    VkPrivateDataSlotEXT                        privateDataSlot,
-    const VkAllocationCallbacks*                pAllocator)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   vk_private_data_slot_destroy(&device->vk, privateDataSlot, pAllocator);
-}
-
-VkResult anv_SetPrivateDataEXT(
-    VkDevice                                    _device,
-    VkObjectType                                objectType,
-    uint64_t                                    objectHandle,
-    VkPrivateDataSlotEXT                        privateDataSlot,
-    uint64_t                                    data)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   return vk_object_base_set_private_data(&device->vk,
-                                          objectType, objectHandle,
-                                          privateDataSlot, data);
-}
-
-void anv_GetPrivateDataEXT(
-    VkDevice                                    _device,
-    VkObjectType                                objectType,
-    uint64_t                                    objectHandle,
-    VkPrivateDataSlotEXT                        privateDataSlot,
-    uint64_t*                                   pData)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   vk_object_base_get_private_data(&device->vk,
-                                   objectType, objectHandle,
-                                   privateDataSlot, pData);
-}
-
-VkResult anv_CreateDeferredOperationKHR(
-    VkDevice                                    _device,
-    const VkAllocationCallbacks*                pAllocator,
-    VkDeferredOperationKHR*                     pDeferredOperation)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   return vk_create_deferred_operation(&device->vk, pAllocator,
-                                       pDeferredOperation);
-}
-
-void anv_DestroyDeferredOperationKHR(
-    VkDevice                                    _device,
-    VkDeferredOperationKHR                      operation,
-    const VkAllocationCallbacks*                pAllocator)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   vk_destroy_deferred_operation(&device->vk, operation, pAllocator);
-}
-
-uint32_t anv_GetDeferredOperationMaxConcurrencyKHR(
-    VkDevice                                    _device,
-    VkDeferredOperationKHR                      operation)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   return vk_get_deferred_operation_max_concurrency(&device->vk, operation);
-}
-
-VkResult anv_GetDeferredOperationResultKHR(
-    VkDevice                                    _device,
-    VkDeferredOperationKHR                      operation)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   return vk_get_deferred_operation_result(&device->vk, operation);
-}
-
-VkResult anv_DeferredOperationJoinKHR(
-    VkDevice                                    _device,
-    VkDeferredOperationKHR                      operation)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   return vk_deferred_operation_join(&device->vk, operation);
 }

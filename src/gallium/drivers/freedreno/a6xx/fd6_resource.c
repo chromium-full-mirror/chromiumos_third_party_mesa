@@ -111,6 +111,7 @@ can_do_ubwc(struct pipe_resource *prsc)
 void
 fd6_validate_format(struct fd_context *ctx, struct fd_resource *rsc,
 		enum pipe_format format)
+	in_dt  /* TODO this will be re-worked with threaded-ctx, this is just temporary */
 {
 	if (!rsc->layout.ubwc)
 		return;
@@ -137,7 +138,7 @@ setup_lrz(struct fd_resource *rsc)
 	switch (rsc->base.nr_samples) {
 	case 4:
 		width0 *= 2;
-		/* fallthru */
+		FALLTHROUGH;
 	case 2:
 		height0 *= 2;
 	}

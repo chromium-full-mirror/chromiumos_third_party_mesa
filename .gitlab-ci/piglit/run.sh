@@ -2,9 +2,9 @@
 
 set -ex
 
-INSTALL="$(pwd)/install"
+INSTALL=$(realpath -s "$PWD"/install)
 
-RESULTS="$(pwd)/results"
+RESULTS=$(realpath -s "$PWD"/results)
 mkdir -p "$RESULTS"
 
 # Set up the driver environment.
@@ -25,10 +25,6 @@ if [ "$VK_DRIVER" ]; then
     export VK_ICD_FILENAMES="$INSTALL/share/vulkan/icd.d/${VK_DRIVER}_icd.x86_64.json"
 
     if [ "x$PIGLIT_PROFILES" = "xreplay" ]; then
-        # Set environment for VulkanTools' VK_LAYER_LUNARG_screenshot layer.
-        export VK_LAYER_PATH="$VK_LAYER_PATH:/VulkanTools/build/etc/vulkan/explicit_layer.d"
-        export __LD_LIBRARY_PATH="$__LD_LIBRARY_PATH:/VulkanTools/build/lib"
-
         # Set environment for Wine.
         export WINEDEBUG="-all"
         export WINEPREFIX="/dxvk-wine64"
@@ -107,6 +103,10 @@ else
         fi
     elif [ "x$PIGLIT_PLATFORM" = "xgbm" ]; then
         SANITY_MESA_VERSION_CMD="$SANITY_MESA_VERSION_CMD --platform gbm --api gl"
+    elif [ "x$PIGLIT_PLATFORM" = "xmixed_glx_egl" ]; then
+        # It is assumed that you have already brought up your X server before
+        # calling this script.
+        SANITY_MESA_VERSION_CMD="$SANITY_MESA_VERSION_CMD --platform glx --api gl"
     else
         SANITY_MESA_VERSION_CMD="$SANITY_MESA_VERSION_CMD --platform glx --api gl --profile core"
         RUN_CMD_WRAPPER="xvfb-run --server-args=\"-noreset\" sh -c"
@@ -114,6 +114,10 @@ else
 fi
 
 SANITY_MESA_VERSION_CMD="$SANITY_MESA_VERSION_CMD | tee /tmp/version.txt | grep \"Mesa $MESA_VERSION\(\s\|$\)\""
+
+if [ "$ZINK_USE_LAVAPIPE" ]; then
+    export VK_ICD_FILENAMES="$INSTALL/share/vulkan/icd.d/lvp_icd.x86_64.json"
+fi
 
 rm -rf results
 cd /piglit
@@ -165,7 +169,12 @@ replay_minio_upload_images() {
             __PIGLIT_TESTCASE_CLASSNAME="piglit\.trace\.$PIGLIT_REPLAY_DEVICE_NAME\.$(dirname $__TRACE | sed 's%/%\\.%g;s@%@\\%@')"
             __PIGLIT_TESTCASE_NAME="$(basename $__TRACE | sed 's%\.%_%g;s@%@\\%@')"
             __DASHBOARD_URL="https://tracie.freedesktop.org/dashboard/imagediff/${CI_PROJECT_PATH}/${CI_JOB_ID}/${__TRACE}"
-            sed '\%<testcase classname="'"${__PIGLIT_TESTCASE_CLASSNAME}"'" name="'"${__PIGLIT_TESTCASE_NAME}"'" status="fail"%,\%</system-out><failure type="fail"/></testcase>%{s%</system-out><failure type="fail"/></testcase>%</system-out><failure type="fail">To view the image differences visit: '"${__DASHBOARD_URL}"'</failure></testcase>%}' \
+            __START_TEST_PATTERN='<testcase classname="'"${__PIGLIT_TESTCASE_CLASSNAME}"'" name="'"${__PIGLIT_TESTCASE_NAME}"'" status="fail"'
+            __REPLACE_TEST_PATTERN='</system-out><failure type="fail"/></testcase>'
+            # Replace in the range between __START_TEST_PATTERN and
+            # __REPLACE_TEST_PATTERN leaving __START_TEST_PATTERN out
+            # from the substitution
+            sed '\%'"${__START_TEST_PATTERN}"'%,\%'"${__REPLACE_TEST_PATTERN}"'%{\%'"${__START_TEST_PATTERN}"'%b;s%'"${__REPLACE_TEST_PATTERN}"'%</system-out><failure type="fail">To view the image differences visit: '"${__DASHBOARD_URL}"'</failure></testcase>%}' \
                 -i "$RESULTS"/junit.xml
         fi
 
@@ -182,9 +191,11 @@ if [ $? -ne 0 ]; then
     printf "%s\n" "Found $(cat /tmp/version.txt), expected $MESA_VERSION"
 fi
 
+ARTIFACTS_BASE_URL="https://${CI_PROJECT_ROOT_NAMESPACE}.${CI_PAGES_DOMAIN}/-/${CI_PROJECT_NAME}/-/jobs/${CI_JOB_ID}/artifacts"
+
 if [ ${PIGLIT_JUNIT_RESULTS:-0} -eq 1 ]; then
     ./piglit summary aggregate "$RESULTS" -o junit.xml
-    FAILURE_MESSAGE=$(printf "${FAILURE_MESSAGE}\n%s" "Check the JUnit report for failures at: ${CI_JOB_URL}/artifacts/file/results/junit.xml")
+    FAILURE_MESSAGE=$(printf "${FAILURE_MESSAGE}\n%s" "Check the JUnit report for failures at: ${ARTIFACTS_BASE_URL}/results/junit.xml")
 fi
 
 PIGLIT_RESULTS="${PIGLIT_RESULTS:-$PIGLIT_PROFILES}"
@@ -212,7 +223,7 @@ if [ "x$PIGLIT_PROFILES" = "xreplay" ] \
         "minio://${MINIO_HOST}${__MINIO_PATH}/${__MINIO_TRACES_PREFIX}/junit.xml"
 fi
 
-cp "$INSTALL/piglit/$PIGLIT_RESULTS.txt" \
+cp "$INSTALL/$PIGLIT_RESULTS.txt" \
    ".gitlab-ci/piglit/$PIGLIT_RESULTS.txt.baseline"
 if diff -q ".gitlab-ci/piglit/$PIGLIT_RESULTS.txt.baseline" $RESULTSFILE; then
     exit 0
@@ -220,18 +231,18 @@ fi
 
 if [ ${PIGLIT_HTML_SUMMARY:-1} -eq 1 ]; then
     ./piglit summary html --exclude-details=pass \
-        "$OLDPWD"/summary "$RESULTS"/results.json.bz2
+        "$RESULTS"/summary "$RESULTS"/results.json.bz2
 
     if [ "x$PIGLIT_PROFILES" = "xreplay" ]; then
-        find "$OLDPWD"/summary -type f -name "*.html" -print0 \
+        find "$RESULTS"/summary -type f -name "*.html" -print0 \
             | xargs -0 sed -i 's%<img src="file://'"${RESULTS}"'.*-\([0-9a-f]*\)\.png%<img src="https://'"${MINIO_HOST}${PIGLIT_REPLAY_ARTIFACTS_BASE_URL}"'/traces/\1.png%g'
-        find "$OLDPWD"/summary -type f -name "*.html" -print0 \
+        find "$RESULTS"/summary -type f -name "*.html" -print0 \
             | xargs -0 sed -i 's%<img src="file://%<img src="https://'"${MINIO_HOST}${PIGLIT_REPLAY_REFERENCE_IMAGES_BASE_URL}"'/%g'
     fi
 
-    FAILURE_MESSAGE=$(printf "${FAILURE_MESSAGE}\n%s" "Check the HTML summary for problems at: ${CI_JOB_URL}/artifacts/file/summary/problems.html")
+    FAILURE_MESSAGE=$(printf "${FAILURE_MESSAGE}\n%s" "Check the HTML summary for problems at: ${ARTIFACTS_BASE_URL}/results/summary/problems.html")
 fi
 
 quiet print_red printf "%s\n" "$FAILURE_MESSAGE"
-quiet print_red diff -u ".gitlab-ci/piglit/$PIGLIT_RESULTS.txt.baseline" $RESULTSFILE
+quiet diff --color=always -u ".gitlab-ci/piglit/$PIGLIT_RESULTS.txt.baseline" $RESULTSFILE
 exit 1

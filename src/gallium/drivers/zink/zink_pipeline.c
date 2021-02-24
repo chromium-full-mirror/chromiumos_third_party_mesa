@@ -125,8 +125,8 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    depth_stencil_state.depthWriteEnable = state->depth_stencil_alpha_state->depth_write;
 
    VkDynamicState dynamicStateEnables[] = {
-      VK_DYNAMIC_STATE_VIEWPORT,
-      VK_DYNAMIC_STATE_SCISSOR,
+      screen->info.have_EXT_extended_dynamic_state ? VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT_EXT : VK_DYNAMIC_STATE_VIEWPORT,
+      screen->info.have_EXT_extended_dynamic_state ? VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT_EXT : VK_DYNAMIC_STATE_SCISSOR,
       VK_DYNAMIC_STATE_LINE_WIDTH,
       VK_DYNAMIC_STATE_DEPTH_BIAS,
       VK_DYNAMIC_STATE_BLEND_CONSTANTS,
@@ -181,9 +181,35 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    pci.stageCount = num_stages;
 
    VkPipeline pipeline;
-   if (vkCreateGraphicsPipelines(screen->dev, VK_NULL_HANDLE, 1, &pci,
+   if (vkCreateGraphicsPipelines(screen->dev, screen->pipeline_cache, 1, &pci,
                                  NULL, &pipeline) != VK_SUCCESS) {
       debug_printf("vkCreateGraphicsPipelines failed\n");
+      return VK_NULL_HANDLE;
+   }
+
+   return pipeline;
+}
+
+VkPipeline
+zink_create_compute_pipeline(struct zink_screen *screen, struct zink_compute_program *comp, struct zink_compute_pipeline_state *state)
+{
+   VkComputePipelineCreateInfo pci = {};
+   pci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+   pci.flags = VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+   pci.layout = comp->layout;
+
+   VkPipelineShaderStageCreateInfo stage = {};
+   stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+   stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+   stage.module = comp->module->shader;
+   stage.pName = "main";
+
+   pci.stage = stage;
+
+   VkPipeline pipeline;
+   if (vkCreateComputePipelines(screen->dev, screen->pipeline_cache, 1, &pci,
+                                 NULL, &pipeline) != VK_SUCCESS) {
+      debug_printf("vkCreateComputePipelines failed\n");
       return VK_NULL_HANDLE;
    }
 

@@ -55,25 +55,6 @@
 static bool
 panfrost_should_checksum(const struct panfrost_device *dev, const struct panfrost_resource *pres);
 
-bool
-pan_render_condition_check(struct pipe_context *pctx)
-{
-	struct panfrost_context *ctx = pan_context(pctx);
-
-	if (!ctx->cond_query)
-		return true;
-
-	union pipe_query_result res = { 0 };
-	bool wait =
-		ctx->cond_mode != PIPE_RENDER_COND_NO_WAIT &&
-		ctx->cond_mode != PIPE_RENDER_COND_BY_REGION_NO_WAIT;
-
-	if (pctx->get_query_result(pctx, (struct pipe_query *) ctx->cond_query, wait, &res))
-			return (bool)res.u64 != ctx->cond_cond;
-
-	return true;
-}
-
 static struct pipe_resource *
 panfrost_resource_from_handle(struct pipe_screen *pscreen,
                               const struct pipe_resource *templat,
@@ -533,7 +514,7 @@ panfrost_should_afbc(struct panfrost_device *dev, const struct panfrost_resource
                 return false;
 
         /* Only a small selection of formats are AFBC'able */
-        if (!panfrost_format_supports_afbc(pres->internal_format))
+        if (!panfrost_format_supports_afbc(dev, pres->internal_format))
                 return false;
 
         /* AFBC does not support layered (GLES3 style) multisampling. Use
@@ -734,21 +715,6 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
                          uint64_t modifier)
 {
         struct panfrost_device *dev = pan_device(screen);
-
-        /* Make sure we're familiar */
-        switch (template->target) {
-        case PIPE_BUFFER:
-        case PIPE_TEXTURE_1D:
-        case PIPE_TEXTURE_2D:
-        case PIPE_TEXTURE_3D:
-        case PIPE_TEXTURE_CUBE:
-        case PIPE_TEXTURE_RECT:
-        case PIPE_TEXTURE_1D_ARRAY:
-        case PIPE_TEXTURE_2D_ARRAY:
-                break;
-        default:
-                unreachable("Unknown texture target\n");
-        }
 
         if (dev->ro && (template->bind &
             (PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)))

@@ -18,7 +18,6 @@
       - .gitlab-ci/**/*
       - include/**/*
       - meson.build
-      - SConstruct
       - src/*
       - src/compiler/**/*
       - src/drm-shim/**/*
@@ -163,6 +162,7 @@
       - src/gallium/drivers/panfrost/**/*
       - src/gallium/winsys/panfrost/**/*
       - src/panfrost/**/*
+      - ci-expects/panfrost/*
       when: on_success
     - when: never
 
@@ -184,6 +184,36 @@
       when: on_success
     - when: never
 
+.v3d-rules:
+  stage: broadcom
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes:
+      - src/broadcom/**/*
+      - src/gallium/drivers/v3d/**/*
+      - src/gallium/winsys/kmsro/**/*
+      - src/gallium/winsys/v3d/**/*
+      when: on_success
+    - when: never
+
+.v3dv-rules:
+  stage: broadcom
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+      - src/broadcom/**/*
+      when: on_success
+    - when: never
+
 .lima-rules:
   stage: arm
   rules:
@@ -198,6 +228,7 @@
       - src/gallium/drivers/lima/**/*
       - src/gallium/winsys/lima/**/*
       - src/lima/**/*
+      - ci-expects/lima/*
       when: on_success
     - when: never
 
@@ -250,6 +281,24 @@
       - src/amd/common/**/*
       - src/amd/llvm/**/*
       - src/amd/registers/**/*
+      - ci-expects/radeonsi/*
+      when: on_success
+    - when: never
+
+.iris-rules:
+  stage: intel
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes:
+      - src/gallium/drivers/iris/**/*
+      - src/gallium/winsys/iris/**/*
+      - src/intel/**/*
       when: on_success
     - when: never
 
@@ -284,5 +333,23 @@
         *gallium_core_file_list
       when: on_success
     - changes: *d3d12_file_list
+      when: on_success
+    - when: never
+
+.zink-rules:
+  stage: layered-backends
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes:
+        *llvmpipe_file_list
+      when: on_success
+    - changes:
+      - src/gallium/drivers/zink/**/*
       when: on_success
     - when: never

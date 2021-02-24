@@ -91,7 +91,6 @@ batch_init(struct fd_batch *batch)
 	batch->num_bins_per_pipe = 0;
 	batch->prim_strm_bits = 0;
 	batch->draw_strm_bits = 0;
-	batch->stage = FD_STAGE_NULL;
 
 	fd_reset_wfi(batch);
 
@@ -226,14 +225,27 @@ batch_fini(struct fd_batch *batch)
 }
 
 static void
-batch_flush_reset_dependencies(struct fd_batch *batch, bool flush)
+batch_flush_dependencies(struct fd_batch *batch)
+	assert_dt
 {
 	struct fd_batch_cache *cache = &batch->ctx->screen->batch_cache;
 	struct fd_batch *dep;
 
-	foreach_batch(dep, cache, batch->dependents_mask) {
-		if (flush)
-			fd_batch_flush(dep);
+	foreach_batch (dep, cache, batch->dependents_mask) {
+		fd_batch_flush(dep);
+		fd_batch_reference(&dep, NULL);
+	}
+
+	batch->dependents_mask = 0;
+}
+
+static void
+batch_reset_dependencies(struct fd_batch *batch)
+{
+	struct fd_batch_cache *cache = &batch->ctx->screen->batch_cache;
+	struct fd_batch *dep;
+
+	foreach_batch (dep, cache, batch->dependents_mask) {
 		fd_batch_reference(&dep, NULL);
 	}
 
@@ -257,6 +269,7 @@ batch_reset_resources_locked(struct fd_batch *batch)
 
 static void
 batch_reset_resources(struct fd_batch *batch)
+	assert_dt
 {
 	fd_screen_lock(batch->ctx->screen);
 	batch_reset_resources_locked(batch);
@@ -265,10 +278,11 @@ batch_reset_resources(struct fd_batch *batch)
 
 static void
 batch_reset(struct fd_batch *batch)
+	assert_dt
 {
 	DBG("%p", batch);
 
-	batch_flush_reset_dependencies(batch, false);
+	batch_reset_dependencies(batch);
 	batch_reset_resources(batch);
 
 	batch_fini(batch);
@@ -302,7 +316,7 @@ __fd_batch_destroy(struct fd_batch *batch)
 	_mesa_set_destroy(batch->resources, NULL);
 
 	fd_screen_unlock(ctx->screen);
-	batch_flush_reset_dependencies(batch, false);
+	batch_reset_dependencies(batch);
 	debug_assert(batch->dependents_mask == 0);
 
 	util_copy_framebuffer_state(&batch->framebuffer, NULL);
@@ -332,6 +346,7 @@ fd_batch_get_prologue(struct fd_batch *batch)
 /* Only called from fd_batch_flush() */
 static void
 batch_flush(struct fd_batch *batch)
+	assert_dt
 {
 	DBG("%p: needs_flush=%d", batch, batch->needs_flush);
 
@@ -343,9 +358,9 @@ batch_flush(struct fd_batch *batch)
 	/* close out the draw cmds by making sure any active queries are
 	 * paused:
 	 */
-	fd_batch_set_stage(batch, FD_STAGE_NULL);
+	fd_batch_finish_queries(batch);
 
-	batch_flush_reset_dependencies(batch, true);
+	batch_flush_dependencies(batch);
 
 	batch->flushed = true;
 	if (batch == batch->ctx->batch)
@@ -419,6 +434,7 @@ fd_batch_add_dep(struct fd_batch *batch, struct fd_batch *dep)
 
 static void
 flush_write_batch(struct fd_resource *rsc)
+	assert_dt
 {
 	struct fd_batch *b = NULL;
 	fd_batch_reference_locked(&b, rsc->write_batch);
@@ -521,6 +537,13 @@ fd_batch_check_size(struct fd_batch *batch)
 	debug_assert(!batch->flushed);
 
 	if (unlikely(fd_mesa_debug & FD_DBG_FLUSH)) {
+		fd_batch_flush(batch);
+		return;
+	}
+
+	/* Place a reasonable upper bound on prim/draw stream buffer size: */
+	const unsigned limit_bits = 8 * 8 * 1024 * 1024;
+	if ((batch->prim_strm_bits > limit_bits) || (batch->draw_strm_bits > limit_bits)) {
 		fd_batch_flush(batch);
 		return;
 	}
