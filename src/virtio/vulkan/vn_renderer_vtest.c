@@ -772,8 +772,7 @@ vtest_bo_init_cpu(struct vn_renderer_bo *_bo, VkDeviceSize size)
 }
 
 static void
-vtest_bo_destroy(struct vn_renderer_bo *_bo,
-                 const VkAllocationCallbacks *alloc)
+vtest_bo_destroy(struct vn_renderer_bo *_bo)
 {
    struct vtest_bo *bo = (struct vtest_bo *)_bo;
    struct vtest *vtest = bo->vtest;
@@ -789,18 +788,15 @@ vtest_bo_destroy(struct vn_renderer_bo *_bo,
       mtx_unlock(&vtest->sock_mutex);
    }
 
-   vk_free(alloc, bo);
+   free(bo);
 }
 
 static struct vn_renderer_bo *
-vtest_bo_create(struct vn_renderer *renderer,
-                const VkAllocationCallbacks *alloc,
-                VkSystemAllocationScope alloc_scope)
+vtest_bo_create(struct vn_renderer *renderer)
 {
    struct vtest *vtest = (struct vtest *)renderer;
 
-   struct vtest_bo *bo =
-      vk_zalloc(alloc, sizeof(*bo), VN_DEFAULT_ALIGN, alloc_scope);
+   struct vtest_bo *bo = calloc(1, sizeof(*bo));
    if (!bo)
       return NULL;
 

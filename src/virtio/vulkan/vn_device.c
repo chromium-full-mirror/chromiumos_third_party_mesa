@@ -138,8 +138,7 @@ vn_instance_init_ring(struct vn_instance *instance)
 
    void *ring_ptr;
    VkResult result = vn_renderer_bo_create_cpu(
-      instance->renderer, layout.bo_size, alloc,
-      VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE, &instance->ring_bo);
+      instance->renderer, layout.bo_size, &instance->ring_bo);
    if (result == VK_SUCCESS) {
       ring_ptr = vn_renderer_bo_map(instance->ring_bo);
       if (!ring_ptr)
@@ -218,7 +217,6 @@ static bool
 vn_instance_grow_cs_reply_bo_locked(struct vn_instance *instance, size_t size)
 {
    const size_t min_bo_size = 1 << 20;
-   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
 
    size_t bo_size =
       instance->cs_reply.size ? instance->cs_reply.size : min_bo_size;
@@ -230,19 +228,18 @@ vn_instance_grow_cs_reply_bo_locked(struct vn_instance *instance, size_t size)
 
    struct vn_renderer_bo *bo;
    VkResult result =
-      vn_renderer_bo_create_cpu(instance->renderer, bo_size, alloc,
-                                VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE, &bo);
+      vn_renderer_bo_create_cpu(instance->renderer, bo_size, &bo);
    if (result != VK_SUCCESS)
       return false;
 
    void *ptr = vn_renderer_bo_map(bo);
    if (!ptr) {
-      vn_renderer_bo_unref(bo, alloc);
+      vn_renderer_bo_unref(bo);
       return false;
    }
 
    if (instance->cs_reply.bo)
-      vn_renderer_bo_unref(instance->cs_reply.bo, alloc);
+      vn_renderer_bo_unref(instance->cs_reply.bo);
    instance->cs_reply.bo = bo;
    instance->cs_reply.size = bo_size;
    instance->cs_reply.used = 0;
@@ -1280,12 +1277,12 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
 
 fail:
    if (instance->cs_reply.bo)
-      vn_renderer_bo_unref(instance->cs_reply.bo, alloc);
+      vn_renderer_bo_unref(instance->cs_reply.bo);
    if (instance->cs_reply.sync)
       vn_renderer_sync_destroy(instance->cs_reply.sync, alloc);
 
    if (instance->ring_bo)
-      vn_renderer_bo_unref(instance->ring_bo, alloc);
+      vn_renderer_bo_unref(instance->ring_bo);
 
    if (instance->renderer) {
       vn_cs_encoder_fini(&instance->cs);
@@ -1320,13 +1317,13 @@ vn_DestroyInstance(VkInstance _instance,
 
    vn_call_vkDestroyInstance(instance, _instance, NULL);
 
-   vn_renderer_bo_unref(instance->cs_reply.bo, alloc);
+   vn_renderer_bo_unref(instance->cs_reply.bo);
    vn_renderer_sync_destroy(instance->cs_reply.sync, alloc);
 
    vn_cs_encoder_fini(&instance->cs);
 
    vn_ring_fini(&instance->ring);
-   vn_renderer_bo_unref(instance->ring_bo, alloc);
+   vn_renderer_bo_unref(instance->ring_bo);
 
    vn_renderer_destroy(instance->renderer, alloc);
 
@@ -3520,7 +3517,7 @@ vn_AllocateMemory(VkDevice device,
       result = vn_renderer_bo_create_gpu(
          dev->instance->renderer, mem->size, mem->base.id,
          mem_type->propertyFlags, export_info ? export_info->handleTypes : 0,
-         alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, &mem->bo);
+         &mem->bo);
       if (result != VK_SUCCESS) {
          vn_async_vkFreeMemory(dev->instance, device, mem_handle, NULL);
          vk_free(alloc, mem);
@@ -3549,7 +3546,7 @@ vn_FreeMemory(VkDevice device,
    vn_async_vkFreeMemory(dev->instance, device, memory, NULL);
 
    if (mem->bo)
-      vn_renderer_bo_unref(mem->bo, alloc);
+      vn_renderer_bo_unref(mem->bo);
 
    vn_object_base_fini(&mem->base);
    vk_free(alloc, mem);

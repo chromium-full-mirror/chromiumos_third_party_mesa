@@ -442,8 +442,7 @@ static inline void
 vn_instance_free_cs_reply_bo(struct vn_instance *instance,
                              struct vn_renderer_bo *bo)
 {
-   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
-   vn_renderer_bo_unref(bo, alloc);
+   vn_renderer_bo_unref(bo);
 }
 
 void

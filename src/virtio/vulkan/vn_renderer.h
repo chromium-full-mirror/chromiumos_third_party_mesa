@@ -36,8 +36,7 @@ struct vn_renderer_bo {
 
    uint32_t res_id;
 
-   void (*destroy)(struct vn_renderer_bo *bo,
-                   const VkAllocationCallbacks *alloc);
+   void (*destroy)(struct vn_renderer_bo *bo);
 
    /* allocate a CPU shared memory as the storage */
    VkResult (*init_cpu)(struct vn_renderer_bo *bo, VkDeviceSize size);
@@ -165,9 +164,7 @@ struct vn_renderer {
    VkResult (*wait)(struct vn_renderer *renderer,
                     const struct vn_renderer_wait *wait);
 
-   struct vn_renderer_bo *(*bo_create)(struct vn_renderer *renderer,
-                                       const VkAllocationCallbacks *alloc,
-                                       VkSystemAllocationScope alloc_scope);
+   struct vn_renderer_bo *(*bo_create)(struct vn_renderer *renderer);
 
    struct vn_renderer_sync *(*sync_create)(
       struct vn_renderer *renderer,
@@ -246,18 +243,15 @@ vn_renderer_wait(struct vn_renderer *renderer,
 static inline VkResult
 vn_renderer_bo_create_cpu(struct vn_renderer *renderer,
                           VkDeviceSize size,
-                          const VkAllocationCallbacks *alloc,
-                          VkSystemAllocationScope alloc_scope,
                           struct vn_renderer_bo **_bo)
 {
-   struct vn_renderer_bo *bo =
-      renderer->bo_create(renderer, alloc, alloc_scope);
+   struct vn_renderer_bo *bo = renderer->bo_create(renderer);
    if (!bo)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    VkResult result = bo->init_cpu(bo, size);
    if (result != VK_SUCCESS) {
-      bo->destroy(bo, alloc);
+      bo->destroy(bo);
       return result;
    }
 
@@ -273,18 +267,15 @@ vn_renderer_bo_create_gpu(struct vn_renderer *renderer,
                           vn_object_id mem_id,
                           VkMemoryPropertyFlags flags,
                           VkExternalMemoryHandleTypeFlags external_handles,
-                          const VkAllocationCallbacks *alloc,
-                          VkSystemAllocationScope alloc_scope,
                           struct vn_renderer_bo **_bo)
 {
-   struct vn_renderer_bo *bo =
-      renderer->bo_create(renderer, alloc, alloc_scope);
+   struct vn_renderer_bo *bo = renderer->bo_create(renderer);
    if (!bo)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    VkResult result = bo->init_gpu(bo, size, mem_id, flags, external_handles);
    if (result != VK_SUCCESS) {
-      bo->destroy(bo, alloc);
+      bo->destroy(bo);
       return result;
    }
 
@@ -305,8 +296,7 @@ vn_renderer_bo_ref(struct vn_renderer_bo *bo)
 }
 
 static inline void
-vn_renderer_bo_unref(struct vn_renderer_bo *bo,
-                     const VkAllocationCallbacks *alloc)
+vn_renderer_bo_unref(struct vn_renderer_bo *bo)
 {
    const int old =
       atomic_fetch_sub_explicit(&bo->refcount, 1, memory_order_release);
@@ -314,7 +304,7 @@ vn_renderer_bo_unref(struct vn_renderer_bo *bo,
 
    if (old == 1) {
       atomic_thread_fence(memory_order_acquire);
-      bo->destroy(bo, alloc);
+      bo->destroy(bo);
    }
 }
 

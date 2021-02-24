@@ -959,8 +959,7 @@ virtgpu_bo_init_cpu(struct vn_renderer_bo *_bo, VkDeviceSize size)
 }
 
 static void
-virtgpu_bo_destroy(struct vn_renderer_bo *_bo,
-                   const VkAllocationCallbacks *alloc)
+virtgpu_bo_destroy(struct vn_renderer_bo *_bo)
 {
    struct virtgpu_bo *bo = (struct virtgpu_bo *)_bo;
    struct virtgpu *gpu = bo->gpu;
@@ -971,18 +970,15 @@ virtgpu_bo_destroy(struct vn_renderer_bo *_bo,
       virtgpu_ioctl_gem_close(gpu, bo->gem_handle);
    }
 
-   vk_free(alloc, bo);
+   free(bo);
 }
 
 static struct vn_renderer_bo *
-virtgpu_bo_create(struct vn_renderer *renderer,
-                  const VkAllocationCallbacks *alloc,
-                  VkSystemAllocationScope alloc_scope)
+virtgpu_bo_create(struct vn_renderer *renderer)
 {
    struct virtgpu *gpu = (struct virtgpu *)renderer;
 
-   struct virtgpu_bo *bo =
-      vk_zalloc(alloc, sizeof(*bo), VN_DEFAULT_ALIGN, alloc_scope);
+   struct virtgpu_bo *bo = calloc(1, sizeof(*bo));
    if (!bo)
       return NULL;
 

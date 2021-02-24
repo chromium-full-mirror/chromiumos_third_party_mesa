@@ -82,7 +82,7 @@ vn_ring_retire_submits(struct vn_ring *ring, uint32_t seqno)
          break;
 
       for (uint32_t i = 0; i < submit->bo_count; i++)
-         vn_renderer_bo_unref(submit->bos[i], ring->allocator);
+         vn_renderer_bo_unref(submit->bos[i]);
 
       list_del(&submit->head);
       list_add(&submit->head, &ring->free_submits);
