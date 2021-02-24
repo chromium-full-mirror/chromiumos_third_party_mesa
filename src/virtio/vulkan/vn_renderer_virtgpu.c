@@ -837,26 +837,22 @@ virtgpu_sync_init(struct vn_renderer_sync *_sync,
 }
 
 static void
-virtgpu_sync_destroy(struct vn_renderer_sync *_sync,
-                     const VkAllocationCallbacks *alloc)
+virtgpu_sync_destroy(struct vn_renderer_sync *_sync)
 {
    struct virtgpu_sync *sync = (struct virtgpu_sync *)_sync;
 
    if (sync->syncobj_handle)
       virtgpu_sync_release(&sync->base);
 
-   vk_free(alloc, sync);
+   free(sync);
 }
 
 static struct vn_renderer_sync *
-virtgpu_sync_create(struct vn_renderer *renderer,
-                    const VkAllocationCallbacks *alloc,
-                    VkSystemAllocationScope alloc_scope)
+virtgpu_sync_create(struct vn_renderer *renderer)
 {
    struct virtgpu *gpu = (struct virtgpu *)renderer;
 
-   struct virtgpu_sync *sync =
-      vk_zalloc(alloc, sizeof(*sync), VN_DEFAULT_ALIGN, alloc_scope);
+   struct virtgpu_sync *sync = calloc(1, sizeof(*sync));
    if (!sync)
       return NULL;
 

@@ -110,9 +110,8 @@ vn_instance_init_cs(struct vn_instance *instance)
    /* reply bo will be allocated on demand by
     * vn_instance_get_cs_reply_bo_locked
     */
-   VkResult result = vn_renderer_sync_create_cpu(
-      instance->renderer, alloc, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE,
-      &instance->cs_reply.sync);
+   VkResult result = vn_renderer_sync_create_cpu(instance->renderer,
+                                                 &instance->cs_reply.sync);
    if (result != VK_SUCCESS) {
       if (VN_DEBUG(INIT))
          vn_log(instance, "failed to create reply sync");
@@ -1279,7 +1278,7 @@ fail:
    if (instance->cs_reply.bo)
       vn_renderer_bo_unref(instance->cs_reply.bo);
    if (instance->cs_reply.sync)
-      vn_renderer_sync_destroy(instance->cs_reply.sync, alloc);
+      vn_renderer_sync_destroy(instance->cs_reply.sync);
 
    if (instance->ring_bo)
       vn_renderer_bo_unref(instance->ring_bo);
@@ -1318,7 +1317,7 @@ vn_DestroyInstance(VkInstance _instance,
    vn_call_vkDestroyInstance(instance, _instance, NULL);
 
    vn_renderer_bo_unref(instance->cs_reply.bo);
-   vn_renderer_sync_destroy(instance->cs_reply.sync, alloc);
+   vn_renderer_sync_destroy(instance->cs_reply.sync);
 
    vn_cs_encoder_fini(&instance->cs);
 
@@ -2173,9 +2172,8 @@ vn_queue_init(struct vn_device *dev,
 
    queue->sync_queue_index = sync_queue_index;
 
-   VkResult result = vn_renderer_sync_create_cpu(
-      dev->instance->renderer, alloc, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE,
-      &queue->idle_sync);
+   VkResult result =
+      vn_renderer_sync_create_cpu(dev->instance->renderer, &queue->idle_sync);
    if (result != VK_SUCCESS)
       return result;
 
@@ -2282,7 +2280,7 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
    if (queue_count < dev->queue_count) {
       for (uint32_t i = 0; i < queue_count; i++) {
          struct vn_queue *queue = &dev->queues[i];
-         vn_renderer_sync_destroy(queue->idle_sync, alloc);
+         vn_renderer_sync_destroy(queue->idle_sync);
       }
       vn_call_vkDestroyDevice(instance, dev_handle, NULL);
       goto fail;
@@ -2319,7 +2317,7 @@ vn_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator)
 
    for (uint32_t i = 0; i < dev->queue_count; i++) {
       struct vn_queue *queue = &dev->queues[i];
-      vn_renderer_sync_destroy(queue->idle_sync, alloc);
+      vn_renderer_sync_destroy(queue->idle_sync);
       vn_object_base_fini(&queue->base);
    }
    vk_free(alloc, dev->queues);
@@ -3051,18 +3049,16 @@ vn_fence_init_payloads(struct vn_device *dev,
                        const VkAllocationCallbacks *alloc)
 {
    struct vn_renderer_sync *perm_sync;
-   VkResult result = vn_renderer_sync_create_fence(
-      dev->instance->renderer, signaled, 0, alloc,
-      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, &perm_sync);
+   VkResult result = vn_renderer_sync_create_fence(dev->instance->renderer,
+                                                   signaled, 0, &perm_sync);
    if (result != VK_SUCCESS)
       return result;
 
    struct vn_renderer_sync *temp_sync;
-   result = vn_renderer_sync_create_empty(dev->instance->renderer, alloc,
-                                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
-                                          &temp_sync);
+   result =
+      vn_renderer_sync_create_empty(dev->instance->renderer, &temp_sync);
    if (result != VK_SUCCESS) {
-      vn_renderer_sync_destroy(perm_sync, alloc);
+      vn_renderer_sync_destroy(perm_sync);
       return result;
    }
 
@@ -3138,8 +3134,8 @@ vn_DestroyFence(VkDevice device,
 
    vn_sync_payload_release(dev, &fence->permanent);
    vn_sync_payload_release(dev, &fence->temporary);
-   vn_renderer_sync_destroy(fence->permanent.sync, alloc);
-   vn_renderer_sync_destroy(fence->temporary.sync, alloc);
+   vn_renderer_sync_destroy(fence->permanent.sync);
+   vn_renderer_sync_destroy(fence->temporary.sync);
 
    vn_object_base_fini(&fence->base);
    vk_free(alloc, fence);
@@ -3275,23 +3271,21 @@ vn_semaphore_init_payloads(struct vn_device *dev,
    struct vn_renderer_sync *perm_sync;
    VkResult result;
    if (sem->type == VK_SEMAPHORE_TYPE_TIMELINE) {
-      result = vn_renderer_sync_create_semaphore(
-         dev->instance->renderer, VK_SEMAPHORE_TYPE_TIMELINE, initial_val, 0,
-         alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, &perm_sync);
+      result = vn_renderer_sync_create_semaphore(dev->instance->renderer,
+                                                 VK_SEMAPHORE_TYPE_TIMELINE,
+                                                 initial_val, 0, &perm_sync);
    } else {
-      result = vn_renderer_sync_create_empty(
-         dev->instance->renderer, alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
-         &perm_sync);
+      result =
+         vn_renderer_sync_create_empty(dev->instance->renderer, &perm_sync);
    }
    if (result != VK_SUCCESS)
       return result;
 
    struct vn_renderer_sync *temp_sync;
-   result = vn_renderer_sync_create_empty(dev->instance->renderer, alloc,
-                                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
-                                          &temp_sync);
+   result =
+      vn_renderer_sync_create_empty(dev->instance->renderer, &temp_sync);
    if (result != VK_SUCCESS) {
-      vn_renderer_sync_destroy(perm_sync, alloc);
+      vn_renderer_sync_destroy(perm_sync);
       return result;
    }
 
@@ -3390,8 +3384,8 @@ vn_DestroySemaphore(VkDevice device,
 
    vn_sync_payload_release(dev, &sem->permanent);
    vn_sync_payload_release(dev, &sem->temporary);
-   vn_renderer_sync_destroy(sem->permanent.sync, alloc);
-   vn_renderer_sync_destroy(sem->temporary.sync, alloc);
+   vn_renderer_sync_destroy(sem->permanent.sync);
+   vn_renderer_sync_destroy(sem->temporary.sync);
 
    vn_object_base_fini(&sem->base);
    vk_free(alloc, sem);
