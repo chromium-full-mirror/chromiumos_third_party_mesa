@@ -2229,7 +2229,9 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
       }
       if (!found) {
          const uint32_t name_count = pCreateInfo->enabledExtensionCount + 1;
-         const char **names = malloc(sizeof(*names) * name_count);
+         const char **names =
+            vk_alloc(alloc, sizeof(*names) * name_count, VN_DEFAULT_ALIGN,
+                     VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
          if (!names) {
             result = VK_ERROR_OUT_OF_HOST_MEMORY;
             goto fail;
