@@ -12,6 +12,7 @@
 #define VN_CS_ENCODER_EXTERNAL_STORAGE(storage, size)                        \
    (struct vn_cs_encoder)                                                    \
    {                                                                         \
+      .external_storage = true,                                              \
       .buffers =                                                             \
          &(struct vn_cs_encoder_buffer){                                     \
             .base = storage,                                                 \
@@ -26,9 +27,8 @@ struct vn_cs_encoder_buffer {
 };
 
 struct vn_cs_encoder {
-   const VkAllocationCallbacks *allocator;
-   VkSystemAllocationScope alloc_scope;
    size_t min_buffer_size;
+   bool external_storage;
 
    bool fatal_error;
 
@@ -53,10 +53,7 @@ struct vn_cs_decoder {
 };
 
 void
-vn_cs_encoder_init(struct vn_cs_encoder *enc,
-                   const VkAllocationCallbacks *alloc,
-                   VkSystemAllocationScope alloc_scope,
-                   size_t min_size);
+vn_cs_encoder_init(struct vn_cs_encoder *enc, size_t min_size);
 
 void
 vn_cs_encoder_fini(struct vn_cs_encoder *enc);

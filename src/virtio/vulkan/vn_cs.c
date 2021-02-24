@@ -66,7 +66,7 @@ vn_cs_encoder_gc_buffers(struct vn_cs_encoder *enc)
    struct vn_cs_encoder_buffer *cur_buf =
       &enc->buffers[enc->buffer_count - 1];
    for (uint32_t i = 0; i < enc->buffer_count - 1; i++)
-      vk_free(enc->allocator, enc->buffers[i].base);
+      free(enc->buffers[i].base);
 
    /* move the current buffer to the beginning */
    enc->buffer_count = 0;
@@ -76,27 +76,22 @@ vn_cs_encoder_gc_buffers(struct vn_cs_encoder *enc)
 }
 
 void
-vn_cs_encoder_init(struct vn_cs_encoder *enc,
-                   const VkAllocationCallbacks *alloc,
-                   VkSystemAllocationScope alloc_scope,
-                   size_t min_size)
+vn_cs_encoder_init(struct vn_cs_encoder *enc, size_t min_size)
 {
    memset(enc, 0, sizeof(*enc));
-   enc->allocator = alloc;
-   enc->alloc_scope = alloc_scope;
    enc->min_buffer_size = min_size;
 }
 
 void
 vn_cs_encoder_fini(struct vn_cs_encoder *enc)
 {
-   if (unlikely(!enc->allocator))
+   if (unlikely(enc->external_storage))
       return;
 
    for (uint32_t i = 0; i < enc->buffer_count; i++)
-      vk_free(enc->allocator, enc->buffers[i].base);
+      free(enc->buffers[i].base);
    if (enc->buffers)
-      vk_free(enc->allocator, enc->buffers);
+      free(enc->buffers);
 }
 
 /**
@@ -137,9 +132,7 @@ vn_cs_encoder_grow_buffer_array(struct vn_cs_encoder *enc)
    if (!buf_max)
       return false;
 
-   void *bufs = vk_realloc(enc->allocator, enc->buffers,
-                           sizeof(*enc->buffers) * buf_max, VN_DEFAULT_ALIGN,
-                           enc->alloc_scope);
+   void *bufs = realloc(enc->buffers, sizeof(*enc->buffers) * buf_max);
    if (!bufs)
       return false;
 
@@ -155,7 +148,7 @@ vn_cs_encoder_grow_buffer_array(struct vn_cs_encoder *enc)
 bool
 vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
 {
-   if (unlikely(!enc->allocator))
+   if (unlikely(enc->external_storage))
       return false;
 
    if (enc->buffer_count >= enc->buffer_max) {
@@ -169,8 +162,7 @@ vn_cs_encoder_reserve_internal(struct vn_cs_encoder *enc, size_t size)
    if (!buf_size)
       return false;
 
-   void *base =
-      vk_alloc(enc->allocator, buf_size, VN_DEFAULT_ALIGN, enc->alloc_scope);
+   void *base = malloc(buf_size);
    if (!base)
       return false;
 

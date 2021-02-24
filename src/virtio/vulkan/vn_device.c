@@ -105,8 +105,6 @@ vn_instance_init_version(struct vn_instance *instance)
 static VkResult
 vn_instance_init_cs(struct vn_instance *instance)
 {
-   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
-
    /* reply bo will be allocated on demand by
     * vn_instance_get_cs_reply_bo_locked
     */
@@ -121,8 +119,7 @@ vn_instance_init_cs(struct vn_instance *instance)
    instance->cs_implicit_flush_threshold = 1 * 1024 * 1024;
    /* when a pipeline creation takes 100ms, this still takes 400ms... */
    instance->cs_throttle_pipeline_threshold = 4;
-   vn_cs_encoder_init(&instance->cs, alloc,
-                      VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE, 64 * 1024);
+   vn_cs_encoder_init(&instance->cs, 64 * 1024);
 
    return VK_SUCCESS;
 }
@@ -295,8 +292,7 @@ vn_instance_submission_alloc_cs_data(struct vn_instance_submission *submit,
                                      size_t *cs_size)
 {
    size_t size = vn_cs_encoder_get_len(cs);
-   void *data =
-      vk_alloc(cs->allocator, size, VN_DEFAULT_ALIGN, cs->alloc_scope);
+   void *data = malloc(size);
    if (!data)
       return NULL;
 
@@ -356,8 +352,7 @@ vn_instance_submission_prepare_submit(struct vn_instance_submission *submit,
    const uint32_t bo_count = extra_bo ? 1 : 0;
    struct vn_renderer_bo **bos = submit->local_bos;
    if (unlikely(bo_count > ARRAY_SIZE(submit->local_bos))) {
-      bos = vk_alloc(cs->allocator, sizeof(*bos) * bo_count, VN_DEFAULT_ALIGN,
-                     cs->alloc_scope);
+      bos = malloc(sizeof(*bos) * bo_count);
       if (!bos)
          return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
@@ -380,9 +375,9 @@ vn_instance_submission_cleanup(struct vn_instance_submission *submit,
                                const struct vn_cs_encoder *cs)
 {
    if (submit->submit.bos != submit->local_bos)
-      vk_free(cs->allocator, (void *)submit->submit.bos);
+      free((void *)submit->submit.bos);
    if (submit->batch.cs_data != cs->buffers[0].base)
-      vk_free(cs->allocator, (void *)submit->batch.cs_data);
+      free((void *)submit->batch.cs_data);
 }
 
 static VkResult
@@ -400,7 +395,7 @@ vn_instance_submission_prepare(struct vn_instance_submission *submit,
    result = vn_instance_submission_prepare_batch(submit, cs, sync, sync_val);
    if (result != VK_SUCCESS) {
       if (submit->submit.bos != submit->local_bos)
-         vk_free(cs->allocator, (void *)submit->submit.bos);
+         free((void *)submit->submit.bos);
       return result;
    }
 
@@ -5803,8 +5798,7 @@ vn_AllocateCommandBuffers(VkDevice device,
       list_addtail(&cmd->head, &pool->command_buffers);
 
       cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
-      vn_cs_encoder_init(&cmd->cs, alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
-                         16 * 1024);
+      vn_cs_encoder_init(&cmd->cs, 16 * 1024);
 
       VkCommandBuffer cmd_handle = vn_command_buffer_to_handle(cmd);
       pCommandBuffers[i] = cmd_handle;
