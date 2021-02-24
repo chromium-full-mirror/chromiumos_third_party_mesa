@@ -83,9 +83,9 @@ vn_ring_retire_submits(struct vn_ring *ring, uint32_t seqno)
 
       for (uint32_t i = 0; i < submit->bo_count; i++)
          vn_renderer_bo_unref(submit->bos[i], ring->allocator);
-      /* TODO return to a free pool */
+
       list_del(&submit->head);
-      vk_free(ring->allocator, submit);
+      list_add(&submit->head, &ring->free_submits);
    }
 }
 
@@ -164,6 +164,7 @@ vn_ring_init(struct vn_ring *ring,
    ring->shared.buffer = shared + layout->buffer_offset;
 
    list_inithead(&ring->submits);
+   list_inithead(&ring->free_submits);
 }
 
 void
@@ -171,17 +172,30 @@ vn_ring_fini(struct vn_ring *ring)
 {
    vn_ring_retire_submits(ring, ring->cur);
    assert(list_is_empty(&ring->submits));
+
+   list_for_each_entry_safe (struct vn_ring_submit, submit,
+                             &ring->free_submits, head)
+      vk_free(ring->allocator, submit);
 }
 
 struct vn_ring_submit *
 vn_ring_get_submit(struct vn_ring *ring, uint32_t bo_count)
 {
+   const uint32_t min_bo_count = 2;
    struct vn_ring_submit *submit;
 
-   /* TODO cache */
-   submit = vk_alloc(ring->allocator,
-                     sizeof(*submit) + sizeof(submit->bos[0]) * bo_count,
-                     VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+   /* TODO this could be simplified if we could omit bo_count */
+   if (bo_count <= min_bo_count && !list_is_empty(&ring->free_submits)) {
+      submit =
+         list_first_entry(&ring->free_submits, struct vn_ring_submit, head);
+      list_del(&submit->head);
+   } else {
+      bo_count = MAX2(bo_count, min_bo_count);
+      submit = vk_alloc(
+         ring->allocator, sizeof(*submit) + sizeof(submit->bos[0]) * bo_count,
+         VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+   }
+
    return submit;
 }
 

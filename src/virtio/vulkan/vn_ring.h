@@ -65,6 +65,7 @@ struct vn_ring {
    uint32_t cur;
 
    struct list_head submits;
+   struct list_head free_submits;
 };
 
 void
