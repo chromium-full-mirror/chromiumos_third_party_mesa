@@ -28,10 +28,12 @@ struct vn_instance {
    struct vn_renderer_info renderer_info;
    uint32_t renderer_version;
 
-   mtx_t ring_mutex;
-   struct vn_renderer_bo *ring_bo;
-   struct vn_ring ring;
-   uint64_t ring_id;
+   struct {
+      mtx_t mutex;
+      struct vn_renderer_bo *bo;
+      struct vn_ring ring;
+      uint64_t id;
+   } ring;
 
    mtx_t cs_mutex;
    size_t cs_implicit_flush_threshold;

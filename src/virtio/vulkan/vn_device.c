@@ -133,9 +133,9 @@ vn_instance_init_ring(struct vn_instance *instance)
 
    void *ring_ptr;
    VkResult result = vn_renderer_bo_create_cpu(
-      instance->renderer, layout.bo_size, &instance->ring_bo);
+      instance->renderer, layout.bo_size, &instance->ring.bo);
    if (result == VK_SUCCESS) {
-      ring_ptr = vn_renderer_bo_map(instance->ring_bo);
+      ring_ptr = vn_renderer_bo_map(instance->ring.bo);
       if (!ring_ptr)
          result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
    }
@@ -145,11 +145,12 @@ vn_instance_init_ring(struct vn_instance *instance)
       return result;
    }
 
-   mtx_init(&instance->ring_mutex, mtx_plain);
+   mtx_init(&instance->ring.mutex, mtx_plain);
 
-   vn_ring_init(&instance->ring, &layout, ring_ptr);
+   struct vn_ring *ring = &instance->ring.ring;
+   vn_ring_init(ring, &layout, ring_ptr);
 
-   instance->ring_id = (uintptr_t)&instance->ring;
+   instance->ring.id = (uintptr_t)ring;
    /* TODO tell the renderer about the ring */
 
    return VK_SUCCESS;
@@ -1276,10 +1277,10 @@ fail:
    if (instance->cs_reply.sync)
       vn_renderer_sync_destroy(instance->cs_reply.sync);
 
-   if (instance->ring_bo) {
-      vn_renderer_bo_unref(instance->ring_bo);
-      vn_ring_fini(&instance->ring);
-      mtx_destroy(&instance->ring_mutex);
+   if (instance->ring.bo) {
+      vn_renderer_bo_unref(instance->ring.bo);
+      vn_ring_fini(&instance->ring.ring);
+      mtx_destroy(&instance->ring.mutex);
    }
 
    if (instance->renderer) {
@@ -1320,9 +1321,9 @@ vn_DestroyInstance(VkInstance _instance,
 
    vn_cs_encoder_fini(&instance->cs);
 
-   vn_ring_fini(&instance->ring);
-   mtx_destroy(&instance->ring_mutex);
-   vn_renderer_bo_unref(instance->ring_bo);
+   vn_ring_fini(&instance->ring.ring);
+   mtx_destroy(&instance->ring.mutex);
+   vn_renderer_bo_unref(instance->ring.bo);
 
    vn_renderer_destroy(instance->renderer, alloc);
 
