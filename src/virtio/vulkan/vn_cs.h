@@ -8,8 +8,7 @@
 
 #include "vn_common.h"
 
-/* encoder initializer for using an external storage */
-#define VN_CS_ENCODER_EXTERNAL_STORAGE(storage, size)                        \
+#define VN_CS_ENCODER_INITIALIZER(storage, size)                             \
    (struct vn_cs_encoder)                                                    \
    {                                                                         \
       .buffers =                                                             \
@@ -17,7 +16,13 @@
             .base = storage,                                                 \
          },                                                                  \
       .buffer_count = 1, .buffer_max = 1, .current_buffer_size = size,       \
-      .cur = storage, .end = storage + size,                                 \
+      .cur = storage, .end = (const void *)(storage) + (size),               \
+   }
+
+#define VN_CS_DECODER_INITIALIZER(storage, size)                             \
+   (struct vn_cs_decoder)                                                    \
+   {                                                                         \
+      .cur = storage, .end = (const void *)(storage) + (size),               \
    }
 
 struct vn_cs_encoder_buffer {
@@ -135,8 +140,7 @@ vn_cs_encoder_commit(struct vn_cs_encoder *enc);
 static inline void
 vn_cs_decoder_init(struct vn_cs_decoder *dec, const void *data, size_t size)
 {
-   dec->cur = data;
-   dec->end = data + size;
+   *dec = VN_CS_DECODER_INITIALIZER(data, size);
 }
 
 static inline void
