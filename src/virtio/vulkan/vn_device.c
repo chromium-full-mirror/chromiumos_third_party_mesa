@@ -119,7 +119,7 @@ vn_instance_init_cs(struct vn_instance *instance)
    instance->cs_implicit_flush_threshold = 1 * 1024 * 1024;
    /* when a pipeline creation takes 100ms, this still takes 400ms... */
    instance->cs_throttle_pipeline_threshold = 4;
-   vn_cs_encoder_init(&instance->cs, 64 * 1024);
+   vn_cs_encoder_init_growable(&instance->cs, 64 * 1024);
 
    return VK_SUCCESS;
 }
@@ -5803,7 +5803,7 @@ vn_AllocateCommandBuffers(VkDevice device,
       list_addtail(&cmd->head, &pool->command_buffers);
 
       cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
-      vn_cs_encoder_init(&cmd->cs, 16 * 1024);
+      vn_cs_encoder_init_growable(&cmd->cs, 16 * 1024);
 
       VkCommandBuffer cmd_handle = vn_command_buffer_to_handle(cmd);
       pCommandBuffers[i] = cmd_handle;
