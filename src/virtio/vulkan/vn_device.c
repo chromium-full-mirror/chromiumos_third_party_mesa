@@ -151,7 +151,27 @@ vn_instance_init_ring(struct vn_instance *instance)
    vn_ring_init(ring, &layout, ring_ptr);
 
    instance->ring.id = (uintptr_t)ring;
-   /* TODO tell the renderer about the ring */
+
+   const struct VkRingCreateInfoMESA info = {
+      .sType = VK_STRUCTURE_TYPE_RING_CREATE_INFO_MESA,
+      .resourceId = instance->ring.bo->res_id,
+      .size = layout.bo_size,
+      .idleTimeout = 50ull * 1000 * 1000,
+      .headOffset = layout.head_offset,
+      .tailOffset = layout.tail_offset,
+      .statusOffset = layout.status_offset,
+      .bufferOffset = layout.buffer_offset,
+      .bufferSize = layout.buffer_size,
+      .extraOffset = layout.extra_offset,
+      .extraSize = layout.extra_size,
+   };
+
+   uint32_t create_ring_data[64];
+   struct vn_cs_encoder local_enc =
+      VN_CS_ENCODER_INITIALIZER(create_ring_data, sizeof(create_ring_data));
+   vn_encode_vkCreateRingMESA(&local_enc, 0, instance->ring.id, &info);
+   vn_renderer_submit_simple(instance->renderer, create_ring_data,
+                             vn_cs_encoder_get_len(&local_enc));
 
    return VK_SUCCESS;
 }
@@ -1354,6 +1374,13 @@ fail:
       vn_renderer_bo_unref(instance->reply.bo);
 
    if (instance->ring.bo) {
+      uint32_t destroy_ring_data[4];
+      struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER(
+         destroy_ring_data, sizeof(destroy_ring_data));
+      vn_encode_vkDestroyRingMESA(&local_enc, 0, instance->ring.id);
+      vn_renderer_submit_simple(instance->renderer, destroy_ring_data,
+                                vn_cs_encoder_get_len(&local_enc));
+
       vn_renderer_bo_unref(instance->ring.bo);
       vn_ring_fini(&instance->ring.ring);
       mtx_destroy(&instance->ring.mutex);
@@ -1397,6 +1424,13 @@ vn_DestroyInstance(VkInstance _instance,
    vn_cs_encoder_fini(&instance->cs);
 
    vn_renderer_bo_unref(instance->reply.bo);
+
+   uint32_t destroy_ring_data[4];
+   struct vn_cs_encoder local_enc =
+      VN_CS_ENCODER_INITIALIZER(destroy_ring_data, sizeof(destroy_ring_data));
+   vn_encode_vkDestroyRingMESA(&local_enc, 0, instance->ring.id);
+   vn_renderer_submit_simple(instance->renderer, destroy_ring_data,
+                             vn_cs_encoder_get_len(&local_enc));
 
    vn_ring_fini(&instance->ring.ring);
    mtx_destroy(&instance->ring.mutex);
