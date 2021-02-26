@@ -127,7 +127,8 @@ vn_instance_init_cs(struct vn_instance *instance)
 static VkResult
 vn_instance_init_ring(struct vn_instance *instance)
 {
-   const size_t extra_size = 0;
+   /* 32-bit seqno for renderer roundtrips */
+   const size_t extra_size = sizeof(uint32_t);
    struct vn_ring_layout layout;
    vn_ring_get_layout(extra_size, &layout);
 
@@ -185,6 +186,9 @@ vn_instance_init_renderer(struct vn_instance *instance)
    if (result != VK_SUCCESS)
       return result;
 
+   mtx_init(&instance->roundtrip_mutex, mtx_plain);
+   instance->roundtrip_next = 1;
+
    vn_renderer_get_info(instance->renderer, &instance->renderer_info);
 
    uint32_t version = vn_info_wire_format_version();
@@ -229,6 +233,50 @@ vn_instance_init_renderer(struct vn_instance *instance)
    }
 
    return VK_SUCCESS;
+}
+
+VkResult
+vn_instance_submit_roundtrip(struct vn_instance *instance,
+                             uint32_t *roundtrip_seqno)
+{
+   uint32_t write_ring_extra_data[8];
+   struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER(
+      write_ring_extra_data, sizeof(write_ring_extra_data));
+
+   /* submit a vkWriteRingExtraMESA through the renderer */
+   mtx_lock(&instance->roundtrip_mutex);
+   const uint32_t seqno = instance->roundtrip_next++;
+   vn_encode_vkWriteRingExtraMESA(&local_enc, 0, instance->ring.id, 0, seqno);
+   VkResult result =
+      vn_renderer_submit_simple(instance->renderer, write_ring_extra_data,
+                                vn_cs_encoder_get_len(&local_enc));
+   mtx_unlock(&instance->roundtrip_mutex);
+
+   *roundtrip_seqno = seqno;
+   return result;
+}
+
+static void
+vn_instance_wait_roundtrip(struct vn_instance *instance,
+                           uint32_t roundtrip_seqno)
+{
+   const struct vn_ring *ring = &instance->ring.ring;
+   const volatile atomic_uint *ptr = ring->shared.extra;
+   uint32_t iter = 0;
+   do {
+      const uint32_t cur = atomic_load_explicit(ptr, memory_order_acquire);
+      if (cur >= roundtrip_seqno || roundtrip_seqno - cur >= INT32_MAX)
+         break;
+      vn_relax(&iter);
+   } while (true);
+}
+
+static void
+vn_instance_roundtrip(struct vn_instance *instance)
+{
+   uint32_t roundtrip_seqno;
+   if (vn_instance_submit_roundtrip(instance, &roundtrip_seqno) == VK_SUCCESS)
+      vn_instance_wait_roundtrip(instance, roundtrip_seqno);
 }
 
 struct vn_instance_submission {
@@ -458,6 +506,7 @@ vn_instance_submit_cs_locked(struct vn_instance *instance,
    if (result != VK_SUCCESS)
       goto out;
 
+   vn_instance_wait_roundtrip(instance, cs->current_buffer_roundtrip);
    result = vn_renderer_submit(instance->renderer, &submit.submit);
    vn_instance_submission_cleanup(&submit, cs);
 
@@ -519,6 +568,8 @@ vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
    if (unlikely(instance->reply.used + size > instance->reply.size)) {
       if (!vn_instance_grow_reply_bo_locked(instance, size))
          return NULL;
+
+      vn_instance_roundtrip(instance);
 
       const struct VkCommandStreamDescriptionMESA stream = {
          .resourceId = instance->reply.bo->res_id,
@@ -1388,6 +1439,7 @@ fail:
 
    if (instance->renderer) {
       vn_cs_encoder_fini(&instance->cs);
+      mtx_destroy(&instance->roundtrip_mutex);
       vn_renderer_destroy(instance->renderer, alloc);
    }
 
@@ -1436,6 +1488,7 @@ vn_DestroyInstance(VkInstance _instance,
    mtx_destroy(&instance->ring.mutex);
    vn_renderer_bo_unref(instance->ring.bo);
 
+   mtx_destroy(&instance->roundtrip_mutex);
    vn_renderer_destroy(instance->renderer, alloc);
 
    mtx_destroy(&instance->cs_mutex);
@@ -2936,6 +2989,7 @@ vn_QueueSubmit(VkQueue _queue,
             .batch_count = 1,
          };
          vn_renderer_submit(renderer, &dst);
+         vn_instance_roundtrip(dev->instance);
 
          sync_base += submit.temp.batch_sync_counts[i];
       }
@@ -2963,6 +3017,7 @@ vn_QueueSubmit(VkQueue _queue,
             .batch_count = 1,
          };
          vn_renderer_submit(renderer, &dst);
+         vn_instance_roundtrip(dev->instance);
       }
    } else {
       result = vn_call_vkQueueSubmit(dev->instance, submit.queue,
@@ -2989,6 +3044,7 @@ vn_QueueSubmit(VkQueue _queue,
             .batch_count = 1,
          };
          vn_renderer_submit(renderer, &dst);
+         vn_instance_roundtrip(dev->instance);
       }
    }
 
@@ -3050,6 +3106,7 @@ vn_QueueBindSparse(VkQueue _queue,
             .batch_count = 1,
          };
          vn_renderer_submit(renderer, &dst);
+         vn_instance_roundtrip(dev->instance);
 
          sync_base += submit.temp.batch_sync_counts[i];
       }
@@ -3075,6 +3132,7 @@ vn_QueueBindSparse(VkQueue _queue,
             .batch_count = 1,
          };
          vn_renderer_submit(renderer, &dst);
+         vn_instance_roundtrip(dev->instance);
       }
    } else {
       result = vn_call_vkQueueBindSparse(
@@ -3099,6 +3157,7 @@ vn_QueueBindSparse(VkQueue _queue,
             .batch_count = 1,
          };
          vn_renderer_submit(renderer, &dst);
+         vn_instance_roundtrip(dev->instance);
       }
    }
 
@@ -3629,6 +3688,7 @@ vn_AllocateMemory(VkDevice device,
          vk_free(alloc, mem);
          return vn_error(dev->instance, result);
       }
+      vn_instance_roundtrip(dev->instance);
    }
 
    *pMemory = mem_handle;
@@ -6026,6 +6086,7 @@ vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
    }
 
    vn_instance_flush_cs(instance);
+   vn_instance_wait_roundtrip(instance, cmd->cs.current_buffer_roundtrip);
    vn_renderer_submit(instance->renderer, &submit.submit);
 
    vn_instance_submission_cleanup(&submit, &cmd->cs);

@@ -28,6 +28,10 @@ struct vn_instance {
    struct vn_renderer_info renderer_info;
    uint32_t renderer_version;
 
+   /* to synchronize renderer/ring */
+   mtx_t roundtrip_mutex;
+   uint32_t roundtrip_next;
+
    struct {
       mtx_t mutex;
       struct vn_renderer_bo *bo;
@@ -412,6 +416,10 @@ vn_instance_lock_cs(struct vn_instance *instance)
    mtx_lock(&instance->cs_mutex);
    return &instance->cs;
 }
+
+VkResult
+vn_instance_submit_roundtrip(struct vn_instance *instance,
+                             uint32_t *roundtrip_seqno);
 
 struct vn_renderer_bo *
 vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
