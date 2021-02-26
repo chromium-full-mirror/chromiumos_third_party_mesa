@@ -3050,9 +3050,9 @@ static inline void vn_async_vkCreateGraphicsPipelines(struct vn_instance *vn_ins
     if (vn_instance->cs_throttle_pipeline_count >
         vn_instance->cs_throttle_pipeline_threshold) {
         /* TODO refactor vn_instance_submit_cs_locked */
-        assert(vn_instance->cs_reply.bo);
+        assert(vn_instance->reply.bo);
         throttle = vn_instance_submit_cs_locked(vn_instance,
-                vn_instance->cs_reply.bo, &throttle_sync_val);
+                vn_instance->reply.bo, &throttle_sync_val);
     }
 
     if (vn_cs_encoder_get_len(enc) > vn_instance->cs_implicit_flush_threshold)
@@ -3113,9 +3113,9 @@ static inline void vn_async_vkCreateComputePipelines(struct vn_instance *vn_inst
     if (vn_instance->cs_throttle_pipeline_count >
         vn_instance->cs_throttle_pipeline_threshold) {
         /* TODO refactor vn_instance_submit_cs_locked */
-        assert(vn_instance->cs_reply.bo);
+        assert(vn_instance->reply.bo);
         throttle = vn_instance_submit_cs_locked(vn_instance,
-                vn_instance->cs_reply.bo, &throttle_sync_val);
+                vn_instance->reply.bo, &throttle_sync_val);
     }
 
     if (vn_cs_encoder_get_len(enc) > vn_instance->cs_implicit_flush_threshold)

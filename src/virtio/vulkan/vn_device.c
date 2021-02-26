@@ -211,73 +211,6 @@ vn_instance_init_renderer(struct vn_instance *instance)
    return VK_SUCCESS;
 }
 
-static bool
-vn_instance_grow_cs_reply_bo_locked(struct vn_instance *instance, size_t size)
-{
-   const size_t min_bo_size = 1 << 20;
-
-   size_t bo_size =
-      instance->cs_reply.size ? instance->cs_reply.size : min_bo_size;
-   while (bo_size < size) {
-      bo_size <<= 1;
-      if (!bo_size)
-         return false;
-   }
-
-   struct vn_renderer_bo *bo;
-   VkResult result =
-      vn_renderer_bo_create_cpu(instance->renderer, bo_size, &bo);
-   if (result != VK_SUCCESS)
-      return false;
-
-   void *ptr = vn_renderer_bo_map(bo);
-   if (!ptr) {
-      vn_renderer_bo_unref(bo);
-      return false;
-   }
-
-   if (instance->cs_reply.bo)
-      vn_renderer_bo_unref(instance->cs_reply.bo);
-   instance->cs_reply.bo = bo;
-   instance->cs_reply.size = bo_size;
-   instance->cs_reply.used = 0;
-   instance->cs_reply.ptr = ptr;
-
-   return true;
-}
-
-struct vn_renderer_bo *
-vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
-                                   size_t size,
-                                   void **ptr)
-{
-   struct vn_cs_encoder *cs = &instance->cs;
-
-   if (unlikely(instance->cs_reply.used + size > instance->cs_reply.size)) {
-      if (!vn_instance_grow_cs_reply_bo_locked(instance, size))
-         return NULL;
-
-      const struct VkCommandStreamDescriptionMESA stream = {
-         .resourceId = instance->cs_reply.bo->res_id,
-         .size = instance->cs_reply.size,
-      };
-      const size_t cmd_size = vn_sizeof_vkSetReplyCommandStreamMESA(&stream);
-      if (vn_cs_encoder_reserve(cs, cmd_size))
-         vn_encode_vkSetReplyCommandStreamMESA(cs, 0, &stream);
-   }
-
-   /* TODO can we avoid this seek command? */
-   const size_t offset = instance->cs_reply.used;
-   const size_t cmd_size = vn_sizeof_vkSeekReplyCommandStreamMESA(offset);
-   if (vn_cs_encoder_reserve(cs, cmd_size))
-      vn_encode_vkSeekReplyCommandStreamMESA(cs, 0, offset);
-
-   *ptr = instance->cs_reply.ptr + offset;
-   instance->cs_reply.used += size;
-
-   return vn_renderer_bo_ref(instance->cs_reply.bo);
-}
-
 struct vn_instance_submission {
    struct vn_renderer_submit submit;
 
@@ -453,6 +386,72 @@ vn_instance_flush_cs(struct vn_instance *instance)
    if (!vn_cs_encoder_is_empty(cs))
       vn_instance_submit_cs_locked(instance, NULL, NULL);
    vn_instance_unlock_cs(instance);
+}
+
+static bool
+vn_instance_grow_reply_bo_locked(struct vn_instance *instance, size_t size)
+{
+   const size_t min_bo_size = 1 << 20;
+
+   size_t bo_size = instance->reply.size ? instance->reply.size : min_bo_size;
+   while (bo_size < size) {
+      bo_size <<= 1;
+      if (!bo_size)
+         return false;
+   }
+
+   struct vn_renderer_bo *bo;
+   VkResult result =
+      vn_renderer_bo_create_cpu(instance->renderer, bo_size, &bo);
+   if (result != VK_SUCCESS)
+      return false;
+
+   void *ptr = vn_renderer_bo_map(bo);
+   if (!ptr) {
+      vn_renderer_bo_unref(bo);
+      return false;
+   }
+
+   if (instance->reply.bo)
+      vn_renderer_bo_unref(instance->reply.bo);
+   instance->reply.bo = bo;
+   instance->reply.size = bo_size;
+   instance->reply.used = 0;
+   instance->reply.ptr = ptr;
+
+   return true;
+}
+
+struct vn_renderer_bo *
+vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
+                                   size_t size,
+                                   void **ptr)
+{
+   struct vn_cs_encoder *cs = &instance->cs;
+
+   if (unlikely(instance->reply.used + size > instance->reply.size)) {
+      if (!vn_instance_grow_reply_bo_locked(instance, size))
+         return NULL;
+
+      const struct VkCommandStreamDescriptionMESA stream = {
+         .resourceId = instance->reply.bo->res_id,
+         .size = instance->reply.size,
+      };
+      const size_t cmd_size = vn_sizeof_vkSetReplyCommandStreamMESA(&stream);
+      if (vn_cs_encoder_reserve(cs, cmd_size))
+         vn_encode_vkSetReplyCommandStreamMESA(cs, 0, &stream);
+   }
+
+   /* TODO can we avoid this seek command? */
+   const size_t offset = instance->reply.used;
+   const size_t cmd_size = vn_sizeof_vkSeekReplyCommandStreamMESA(offset);
+   if (vn_cs_encoder_reserve(cs, cmd_size))
+      vn_encode_vkSeekReplyCommandStreamMESA(cs, 0, offset);
+
+   *ptr = instance->reply.ptr + offset;
+   instance->reply.used += size;
+
+   return vn_renderer_bo_ref(instance->reply.bo);
 }
 
 static struct vn_physical_device *
@@ -1272,10 +1271,11 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    return VK_SUCCESS;
 
 fail:
-   if (instance->cs_reply.bo)
-      vn_renderer_bo_unref(instance->cs_reply.bo);
    if (instance->cs_reply.sync)
       vn_renderer_sync_destroy(instance->cs_reply.sync);
+
+   if (instance->reply.bo)
+      vn_renderer_bo_unref(instance->reply.bo);
 
    if (instance->ring.bo) {
       vn_renderer_bo_unref(instance->ring.bo);
@@ -1316,10 +1316,11 @@ vn_DestroyInstance(VkInstance _instance,
 
    vn_call_vkDestroyInstance(instance, _instance, NULL);
 
-   vn_renderer_bo_unref(instance->cs_reply.bo);
    vn_renderer_sync_destroy(instance->cs_reply.sync);
 
    vn_cs_encoder_fini(&instance->cs);
+
+   vn_renderer_bo_unref(instance->reply.bo);
 
    vn_ring_fini(&instance->ring.ring);
    mtx_destroy(&instance->ring.mutex);

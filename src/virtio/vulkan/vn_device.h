@@ -35,17 +35,19 @@ struct vn_instance {
       uint64_t id;
    } ring;
 
+   struct {
+      struct vn_renderer_bo *bo;
+      size_t size;
+      size_t used;
+      void *ptr;
+   } reply;
+
    mtx_t cs_mutex;
    size_t cs_implicit_flush_threshold;
    uint32_t cs_throttle_pipeline_threshold;
    uint32_t cs_throttle_pipeline_count;
    struct vn_cs_encoder cs;
    struct {
-      struct vn_renderer_bo *bo;
-      size_t size;
-      size_t used;
-      void *ptr;
-
       struct vn_renderer_sync *sync;
       uint64_t sync_value;
    } cs_reply;
