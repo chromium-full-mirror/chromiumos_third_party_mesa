@@ -21382,6 +21382,81 @@ vn_encode_VkCommandStreamDependencyMESA(struct vn_cs_encoder *enc, const VkComma
     vn_encode_uint32_t(enc, &val->dstCommandStream);
 }
 
+/* struct VkRingCreateInfoMESA chain */
+
+static inline size_t
+vn_sizeof_VkRingCreateInfoMESA_pnext(const void *val)
+{
+    /* no known/supported struct */
+    return vn_sizeof_simple_pointer(NULL);
+}
+
+static inline size_t
+vn_sizeof_VkRingCreateInfoMESA_self(const VkRingCreateInfoMESA *val)
+{
+    size_t size = 0;
+    /* skip val->{sType,pNext} */
+    size += vn_sizeof_VkFlags(&val->flags);
+    size += vn_sizeof_uint32_t(&val->resourceId);
+    size += vn_sizeof_size_t(&val->offset);
+    size += vn_sizeof_size_t(&val->size);
+    size += vn_sizeof_uint64_t(&val->idleTimeout);
+    size += vn_sizeof_size_t(&val->headOffset);
+    size += vn_sizeof_size_t(&val->tailOffset);
+    size += vn_sizeof_size_t(&val->statusOffset);
+    size += vn_sizeof_size_t(&val->bufferOffset);
+    size += vn_sizeof_size_t(&val->bufferSize);
+    size += vn_sizeof_size_t(&val->extraOffset);
+    size += vn_sizeof_size_t(&val->extraSize);
+    return size;
+}
+
+static inline size_t
+vn_sizeof_VkRingCreateInfoMESA(const VkRingCreateInfoMESA *val)
+{
+    size_t size = 0;
+
+    size += vn_sizeof_VkStructureType(&val->sType);
+    size += vn_sizeof_VkRingCreateInfoMESA_pnext(val->pNext);
+    size += vn_sizeof_VkRingCreateInfoMESA_self(val);
+
+    return size;
+}
+
+static inline void
+vn_encode_VkRingCreateInfoMESA_pnext(struct vn_cs_encoder *enc, const void *val)
+{
+    /* no known/supported struct */
+    vn_encode_simple_pointer(enc, NULL);
+}
+
+static inline void
+vn_encode_VkRingCreateInfoMESA_self(struct vn_cs_encoder *enc, const VkRingCreateInfoMESA *val)
+{
+    /* skip val->{sType,pNext} */
+    vn_encode_VkFlags(enc, &val->flags);
+    vn_encode_uint32_t(enc, &val->resourceId);
+    vn_encode_size_t(enc, &val->offset);
+    vn_encode_size_t(enc, &val->size);
+    vn_encode_uint64_t(enc, &val->idleTimeout);
+    vn_encode_size_t(enc, &val->headOffset);
+    vn_encode_size_t(enc, &val->tailOffset);
+    vn_encode_size_t(enc, &val->statusOffset);
+    vn_encode_size_t(enc, &val->bufferOffset);
+    vn_encode_size_t(enc, &val->bufferSize);
+    vn_encode_size_t(enc, &val->extraOffset);
+    vn_encode_size_t(enc, &val->extraSize);
+}
+
+static inline void
+vn_encode_VkRingCreateInfoMESA(struct vn_cs_encoder *enc, const VkRingCreateInfoMESA *val)
+{
+    assert(val->sType == VK_STRUCTURE_TYPE_RING_CREATE_INFO_MESA);
+    vn_encode_VkStructureType(enc, &(VkStructureType){ VK_STRUCTURE_TYPE_RING_CREATE_INFO_MESA });
+    vn_encode_VkRingCreateInfoMESA_pnext(enc, val->pNext);
+    vn_encode_VkRingCreateInfoMESA_self(enc, val);
+}
+
 /*
  * Helpers for manual serialization
  */

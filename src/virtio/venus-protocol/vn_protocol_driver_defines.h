@@ -12,6 +12,9 @@
 
 #include "vn_protocol_driver_cs.h"
 
+/* VkStructureType */
+#define VK_STRUCTURE_TYPE_RING_CREATE_INFO_MESA ((VkStructureType)1000384000)
+
 typedef enum VkCommandTypeEXT {
     VK_COMMAND_TYPE_vkCreateInstance_EXT = 0,
     VK_COMMAND_TYPE_vkDestroyInstance_EXT = 1,
@@ -243,6 +246,10 @@ typedef enum VkCommandTypeEXT {
     VK_COMMAND_TYPE_vkSetReplyCommandStreamMESA_EXT = 178,
     VK_COMMAND_TYPE_vkSeekReplyCommandStreamMESA_EXT = 179,
     VK_COMMAND_TYPE_vkExecuteCommandStreamsMESA_EXT = 180,
+    VK_COMMAND_TYPE_vkCreateRingMESA_EXT = 188,
+    VK_COMMAND_TYPE_vkDestroyRingMESA_EXT = 189,
+    VK_COMMAND_TYPE_vkNotifyRingMESA_EXT = 190,
+    VK_COMMAND_TYPE_vkWriteRingExtraMESA_EXT = 191,
 } VkCommandTypeEXT;
 
 typedef enum VkCommandFlagBitsEXT {
@@ -252,6 +259,10 @@ typedef enum VkCommandFlagBitsEXT {
 typedef VkFlags VkCommandFlagsEXT;
 
 typedef VkFlags VkCommandStreamExecutionFlagsMESA;
+
+typedef VkFlags VkRingCreateFlagsMESA;
+
+typedef VkFlags VkRingNotifyFlagsMESA;
 
 typedef struct VkCommandStreamDescriptionMESA {
     uint32_t resourceId;
@@ -263,5 +274,22 @@ typedef struct VkCommandStreamDependencyMESA {
     uint32_t srcCommandStream;
     uint32_t dstCommandStream;
 } VkCommandStreamDependencyMESA;
+
+typedef struct VkRingCreateInfoMESA {
+    VkStructureType sType;
+    const void* pNext;
+    VkRingCreateFlagsMESA flags;
+    uint32_t resourceId;
+    size_t offset;
+    size_t size;
+    uint64_t idleTimeout;
+    size_t headOffset;
+    size_t tailOffset;
+    size_t statusOffset;
+    size_t bufferOffset;
+    size_t bufferSize;
+    size_t extraOffset;
+    size_t extraSize;
+} VkRingCreateInfoMESA;
 
 #endif /* VN_PROTOCOL_DRIVER_DEFINES_H */
