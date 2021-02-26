@@ -37,6 +37,8 @@ struct vn_instance {
       struct vn_renderer_bo *bo;
       struct vn_ring ring;
       uint64_t id;
+
+      struct vn_cs_encoder upload;
    } ring;
 
    struct {

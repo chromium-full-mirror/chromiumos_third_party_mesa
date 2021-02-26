@@ -174,6 +174,9 @@ vn_instance_init_ring(struct vn_instance *instance)
    vn_renderer_submit_simple(instance->renderer, create_ring_data,
                              vn_cs_encoder_get_len(&local_enc));
 
+   vn_cs_encoder_init_indirect(&instance->ring.upload, instance,
+                               1 * 1024 * 1024);
+
    return VK_SUCCESS;
 }
 
@@ -470,6 +473,28 @@ vn_instance_submission_can_direct(const struct vn_cs_encoder *cs)
    return vn_cs_encoder_get_len(cs) <= sizeof(submit.local_cs_data);
 }
 
+static struct vn_cs_encoder *
+vn_instance_ring_cs_upload_locked(struct vn_instance *instance,
+                                  const struct vn_cs_encoder *cs)
+{
+   assert(!cs->indirect && cs->buffer_count == 1);
+   const void *cs_data = cs->buffers[0].base;
+   const size_t cs_size = cs->total_committed_size;
+   assert(cs_size == vn_cs_encoder_get_len(cs));
+
+   struct vn_cs_encoder *upload = &instance->ring.upload;
+   vn_cs_encoder_reset(upload);
+
+   if (!vn_cs_encoder_reserve(upload, cs_size))
+      return NULL;
+
+   vn_cs_encoder_write(upload, cs_size, cs_data, cs_size);
+   vn_cs_encoder_commit(upload);
+   vn_instance_wait_roundtrip(instance, upload->current_buffer_roundtrip);
+
+   return upload;
+}
+
 bool
 vn_instance_submit_cs_locked(struct vn_instance *instance,
                              struct vn_renderer_bo *reply_bo,
@@ -488,6 +513,14 @@ vn_instance_submit_cs_locked(struct vn_instance *instance,
    vn_cs_encoder_commit(cs);
 
    const bool direct = vn_instance_submission_can_direct(cs);
+   if (!direct && !cs->indirect) {
+      cs = vn_instance_ring_cs_upload_locked(instance, cs);
+      if (!cs) {
+         result = VK_ERROR_OUT_OF_HOST_MEMORY;
+         goto out;
+      }
+      assert(cs->indirect);
+   }
 
    struct vn_renderer_sync *sync;
    uint64_t sync_val;
@@ -1432,6 +1465,7 @@ fail:
       vn_renderer_submit_simple(instance->renderer, destroy_ring_data,
                                 vn_cs_encoder_get_len(&local_enc));
 
+      vn_cs_encoder_fini(&instance->ring.upload);
       vn_renderer_bo_unref(instance->ring.bo);
       vn_ring_fini(&instance->ring.ring);
       mtx_destroy(&instance->ring.mutex);
@@ -1484,6 +1518,7 @@ vn_DestroyInstance(VkInstance _instance,
    vn_renderer_submit_simple(instance->renderer, destroy_ring_data,
                              vn_cs_encoder_get_len(&local_enc));
 
+   vn_cs_encoder_fini(&instance->ring.upload);
    vn_ring_fini(&instance->ring.ring);
    mtx_destroy(&instance->ring.mutex);
    vn_renderer_bo_unref(instance->ring.bo);
