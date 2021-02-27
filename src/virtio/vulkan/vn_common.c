@@ -69,12 +69,14 @@ vn_log_result(struct vn_instance *instance,
 void
 vn_relax(uint32_t *iter)
 {
-   const uint32_t busy_wait_order = 8;
-   const uint32_t base_sleep_us = 1;
+   const uint32_t busy_wait_order = 4;
+   const uint32_t base_sleep_us = 10;
 
    (*iter)++;
-   if (*iter < (1 << busy_wait_order))
+   if (*iter < (1 << busy_wait_order)) {
+      thrd_yield();
       return;
+   }
 
    const uint32_t shift = util_last_bit(*iter) - busy_wait_order - 1;
    os_time_sleep(base_sleep_us << shift);
