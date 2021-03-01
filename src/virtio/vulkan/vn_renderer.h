@@ -21,6 +21,7 @@ struct vn_renderer_info {
    } pci;
 
    bool has_cache_management;
+   bool has_timeline_sync;
 
    uint32_t max_sync_queue_count;
 

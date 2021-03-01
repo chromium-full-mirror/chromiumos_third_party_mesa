@@ -1030,10 +1030,12 @@ virtgpu_get_info(struct vn_renderer *renderer, struct vn_renderer_info *info)
    info->pci.device = gpu->bus_info.dev;
    info->pci.function = gpu->bus_info.func;
 
-   /* Kernel makes every mapping coherent.  We are better of filtering
+   /* Kernel makes every mapping coherent.  We are better off filtering
     * incoherent memory types out than silently making them coherent.
     */
    info->has_cache_management = false;
+   /* TODO drm_syncobj */
+   info->has_timeline_sync = false;
 
    info->max_sync_queue_count = gpu->max_sync_queue_count;
 
