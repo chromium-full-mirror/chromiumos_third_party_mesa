@@ -163,7 +163,7 @@ static void make_state_key( struct gl_context *ctx, struct state_key *key )
    key->need_eye_coords = ctx->_NeedEyeCoords;
 
    key->fragprog_inputs_read = fp->info.inputs_read;
-   key->varying_vp_inputs = ctx->varying_vp_inputs;
+   key->varying_vp_inputs = ctx->VertexProgram._VaryingInputs;
 
    if (ctx->RenderMode == GL_FEEDBACK) {
       /* make sure the vertprog emits color and tex0 */
@@ -1107,6 +1107,44 @@ static void build_lighting( struct tnl_program *p )
       return;
    }
 
+   /* Declare light products first to place them sequentially next to each
+    * other for optimal constant uploads.
+    */
+   struct ureg lightprod_front[MAX_LIGHTS][3];
+   struct ureg lightprod_back[MAX_LIGHTS][3];
+
+   for (i = 0; i < MAX_LIGHTS; i++) {
+      if (p->state->unit[i].light_enabled) {
+         lightprod_front[i][0] = get_lightprod(p, i, 0, STATE_AMBIENT);
+         if (twoside)
+            lightprod_back[i][0] = get_lightprod(p, i, 1, STATE_AMBIENT);
+
+         lightprod_front[i][1] = get_lightprod(p, i, 0, STATE_DIFFUSE);
+         if (twoside)
+            lightprod_back[i][1] = get_lightprod(p, i, 1, STATE_DIFFUSE);
+
+         lightprod_front[i][2] = get_lightprod(p, i, 0, STATE_SPECULAR);
+         if (twoside)
+            lightprod_back[i][2] = get_lightprod(p, i, 1, STATE_SPECULAR);
+      }
+   }
+
+   /* Add more variables now that we'll use later, so that they are nicely
+    * sorted in the parameter list.
+    */
+   for (i = 0; i < MAX_LIGHTS; i++) {
+      if (p->state->unit[i].light_enabled) {
+         if (p->state->unit[i].light_eyepos3_is_zero)
+            register_param2(p, STATE_LIGHT_POSITION_NORMALIZED, i);
+         else
+            register_param2(p, STATE_LIGHT_POSITION, i);
+      }
+   }
+   for (i = 0; i < MAX_LIGHTS; i++) {
+      if (p->state->unit[i].light_enabled)
+         register_param3(p, STATE_LIGHT, i, STATE_ATTENUATION);
+   }
+
    for (i = 0; i < MAX_LIGHTS; i++) {
       if (p->state->unit[i].light_enabled) {
 	 struct ureg half = undef;
@@ -1171,9 +1209,9 @@ static void build_lighting( struct tnl_program *p )
 	 /* Front face lighting:
 	  */
 	 {
-	    struct ureg ambient = get_lightprod(p, i, 0, STATE_AMBIENT);
-	    struct ureg diffuse = get_lightprod(p, i, 0, STATE_DIFFUSE);
-	    struct ureg specular = get_lightprod(p, i, 0, STATE_SPECULAR);
+	    struct ureg ambient = lightprod_front[i][0];
+	    struct ureg diffuse = lightprod_front[i][1];
+	    struct ureg specular = lightprod_front[i][2];
 	    struct ureg res0, res1;
 	    GLuint mask0, mask1;
 
@@ -1226,9 +1264,9 @@ static void build_lighting( struct tnl_program *p )
 	 /* Back face lighting:
 	  */
 	 if (twoside) {
-	    struct ureg ambient = get_lightprod(p, i, 1, STATE_AMBIENT);
-	    struct ureg diffuse = get_lightprod(p, i, 1, STATE_DIFFUSE);
-	    struct ureg specular = get_lightprod(p, i, 1, STATE_SPECULAR);
+	    struct ureg ambient = lightprod_back[i][0];
+	    struct ureg diffuse = lightprod_back[i][1];
+	    struct ureg specular = lightprod_back[i][2];
 	    struct ureg res0, res1;
 	    GLuint mask0, mask1;
 
@@ -1659,7 +1697,7 @@ _mesa_get_fixed_func_vertex_program(struct gl_context *ctx)
    struct gl_program *prog;
    struct state_key key;
 
-   /* We only update ctx->varying_vp_inputs when in VP_MODE_FF _VPMode */
+   /* We only update ctx->VertexProgram._VaryingInputs when in VP_MODE_FF _VPMode */
    assert(VP_MODE_FF == ctx->VertexProgram._VPMode);
 
    /* Grab all the relevant state and put it in a single structure:

@@ -227,7 +227,9 @@ static int si_init_surface(struct si_screen *sscreen, struct radeon_surf *surfac
     * If it's not present, it will be disabled by
     * si_get_opaque_metadata later.
     */
-   if (!is_imported && (sscreen->debug_flags & DBG(NO_DCC)))
+   if (!is_imported &&
+       (sscreen->debug_flags & DBG(NO_DCC) ||
+	(ptex->bind & PIPE_BIND_SCANOUT && sscreen->debug_flags & DBG(NO_DISPLAY_DCC))))
       flags |= RADEON_SURF_DISABLE_DCC;
 
    if (is_scanout) {
@@ -514,7 +516,7 @@ static void si_set_tex_bo_metadata(struct si_screen *sscreen, struct si_texture 
                                     res->last_level, 0, is_array ? res->array_size - 1 : 0,
                                     res->width0, res->height0, res->depth0, desc, NULL);
    si_set_mutable_tex_desc_fields(sscreen, tex, &tex->surface.u.legacy.level[0], 0, 0,
-                                  tex->surface.blk_w, false, false, desc);
+                                  tex->surface.blk_w, false, 0, desc);
 
    ac_surface_get_umd_metadata(&sscreen->info, &tex->surface,
                                tex->buffer.b.b.last_level + 1,
@@ -646,8 +648,8 @@ static bool si_texture_get_handle(struct pipe_screen *screen, struct pipe_contex
          --plane;
       }
 
-         res = si_resource(resource);
-         tex = (struct si_texture *)resource;
+      res = si_resource(resource);
+      tex = (struct si_texture *)resource;
 
       /* This is not supported now, but it might be required for OpenCL
        * interop in the future.
@@ -1075,9 +1077,7 @@ static struct si_texture *si_texture_create_object(struct pipe_screen *screen,
        * Use a staging buffer for the upload, because
        * the buffer backing the texture is unmappable.
        */
-      bool use_uint16 = tex->surface.u.gfx9.dcc_retile_use_uint16;
-      unsigned num_elements = tex->surface.u.gfx9.dcc_retile_num_elements;
-      unsigned dcc_retile_map_size = num_elements * (use_uint16 ? 2 : 4);
+      uint32_t dcc_retile_map_size = ac_surface_get_retile_map_size(&tex->surface);
 
       tex->dcc_retile_buffer = si_aligned_buffer_create(screen,
                                                         SI_RESOURCE_FLAG_DRIVER_INTERNAL, PIPE_USAGE_DEFAULT,
@@ -1160,7 +1160,8 @@ static enum radeon_surf_mode si_choose_tiling(struct si_screen *sscreen,
     * Compressed textures and DB surfaces must always be tiled.
     */
    if (!force_tiling && !is_depth_stencil && !util_format_is_compressed(templ->format)) {
-      if (sscreen->debug_flags & DBG(NO_TILING))
+      if (sscreen->debug_flags & DBG(NO_TILING) ||
+	  (templ->bind & PIPE_BIND_SCANOUT && sscreen->debug_flags & DBG(NO_DISPLAY_TILING)))
          return RADEON_SURF_MODE_LINEAR_ALIGNED;
 
       /* Tiling doesn't work with the 422 (SUBSAMPLED) formats. */

@@ -32,6 +32,7 @@
 #include "framebuffer.h"
 #include "image.h"
 #include "pbo.h"
+#include "pixel.h"
 #include "state.h"
 #include "glformats.h"
 #include "fbobject.h"
@@ -72,9 +73,15 @@ _mesa_DrawPixels( GLsizei width, GLsizei height,
     */
    _mesa_set_vp_override(ctx, GL_TRUE);
 
-   /* Note: this call does state validation */
-   if (!_mesa_valid_to_render(ctx, "glDrawPixels")) {
-      goto end;      /* the error code was recorded */
+   if (ctx->NewState & _NEW_PIXEL)
+      _mesa_update_pixel(ctx);
+
+   if (ctx->NewState)
+      _mesa_update_state(ctx);
+
+   if (!ctx->DrawPixValid) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "glDrawPixels");
+      goto end;
    }
 
    /* GL 3.0 introduced a new restriction on glDrawPixels() over what was in
@@ -238,9 +245,15 @@ _mesa_CopyPixels( GLint srcx, GLint srcy, GLsizei width, GLsizei height,
     */
    _mesa_set_vp_override(ctx, GL_TRUE);
 
-   /* Note: this call does state validation */
-   if (!_mesa_valid_to_render(ctx, "glCopyPixels")) {
-      goto end;      /* the error code was recorded */
+   if (ctx->NewState & _NEW_PIXEL)
+      _mesa_update_pixel(ctx);
+
+   if (ctx->NewState)
+      _mesa_update_state(ctx);
+
+   if (!ctx->DrawPixValid) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "glCopyPixels");
+      goto end;
    }
 
    /* Check read buffer's status (draw buffer was already checked) */
@@ -321,9 +334,14 @@ _mesa_Bitmap( GLsizei width, GLsizei height,
       return;    /* do nothing */
    }
 
-   /* Note: this call does state validation */
-   if (!_mesa_valid_to_render(ctx, "glBitmap")) {
-      /* the error code was recorded */
+   if (ctx->NewState & _NEW_PIXEL)
+      _mesa_update_pixel(ctx);
+
+   if (ctx->NewState)
+      _mesa_update_state(ctx);
+
+   if (!ctx->DrawPixValid) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "glBitmap");
       return;
    }
 

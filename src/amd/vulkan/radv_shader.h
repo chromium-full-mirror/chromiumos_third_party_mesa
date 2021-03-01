@@ -146,6 +146,7 @@ struct radv_nir_compiler_options {
 	bool use_ngg_streamout;
 	bool enable_mrt_output_nan_fixup;
 	bool disable_optimizations; /* only used by ACO */
+	bool wgp_mode;
 	enum radeon_family family;
 	enum chip_class chip_class;
 	uint32_t tess_offchip_block_dw_size;
@@ -398,6 +399,7 @@ struct radv_shader_variant {
 	struct radeon_winsys_bo *bo;
 	uint64_t bo_offset;
 	struct ac_shader_config config;
+	uint8_t *code_ptr;
 	uint32_t code_size;
 	uint32_t exec_size;
 	struct radv_shader_info info;

@@ -479,8 +479,7 @@ emit_color_clear(struct radv_cmd_buffer *cmd_buffer,
 	radv_CmdSetScissor(radv_cmd_buffer_to_handle(cmd_buffer), 0, 1, &clear_rect->rect);
 
 	if (view_mask) {
-		unsigned i;
-		for_each_bit(i, view_mask)
+		u_foreach_bit(i, view_mask)
 			radv_CmdDraw(cmd_buffer_h, 3, 1, 0, i);
 	} else {
 		radv_CmdDraw(cmd_buffer_h, 3, clear_rect->layerCount, 0, clear_rect->baseArrayLayer);
@@ -866,8 +865,7 @@ emit_depthstencil_clear(struct radv_cmd_buffer *cmd_buffer,
 	radv_CmdSetScissor(radv_cmd_buffer_to_handle(cmd_buffer), 0, 1, &clear_rect->rect);
 
 	if (view_mask) {
-		unsigned i;
-		for_each_bit(i, view_mask)
+		u_foreach_bit(i, view_mask)
 			radv_CmdDraw(cmd_buffer_h, 3, 1, 0, i);
 	} else {
 		radv_CmdDraw(cmd_buffer_h, 3, clear_rect->layerCount, 0, clear_rect->baseArrayLayer);
@@ -1528,12 +1526,12 @@ static void vi_get_fast_clear_parameters(struct radv_device *device,
 
 	*reset_value = RADV_DCC_CLEAR_REG;
 
-	const struct vk_format_description *desc = vk_format_description(view_format);
+	const struct util_format_description *desc = vk_format_description(view_format);
 	if (view_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
 	    view_format == VK_FORMAT_R5G6B5_UNORM_PACK16 ||
 	    view_format == VK_FORMAT_B5G6R5_UNORM_PACK16)
 		extra_channel = -1;
-	else if (desc->layout == VK_FORMAT_LAYOUT_PLAIN) {
+	else if (desc->layout == UTIL_FORMAT_LAYOUT_PLAIN) {
 		if (vi_alpha_is_on_msb(device, view_format))
 			extra_channel = desc->nr_channels - 1;
 		else
@@ -1542,13 +1540,13 @@ static void vi_get_fast_clear_parameters(struct radv_device *device,
 		return;
 
 	for (int i = 0; i < 4; i++) {
-		int index = desc->swizzle[i] - VK_SWIZZLE_X;
-		if (desc->swizzle[i] < VK_SWIZZLE_X ||
-		    desc->swizzle[i] > VK_SWIZZLE_W)
+		int index = desc->swizzle[i] - PIPE_SWIZZLE_X;
+		if (desc->swizzle[i] < PIPE_SWIZZLE_X ||
+		    desc->swizzle[i] > PIPE_SWIZZLE_W)
 			continue;
 
 		if (desc->channel[i].pure_integer &&
-		    desc->channel[i].type == VK_FORMAT_TYPE_SIGNED) {
+		    desc->channel[i].type == UTIL_FORMAT_TYPE_SIGNED) {
 			/* Use the maximum value for clamping the clear color. */
 			int max = u_bit_consecutive(0, desc->channel[i].size - 1);
 
@@ -1556,7 +1554,7 @@ static void vi_get_fast_clear_parameters(struct radv_device *device,
 			if (clear_value->int32[i] != 0 && MIN2(clear_value->int32[i], max) != max)
 				return;
 		} else if (desc->channel[i].pure_integer &&
-			   desc->channel[i].type == VK_FORMAT_TYPE_UNSIGNED) {
+			   desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED) {
 			/* Use the maximum value for clamping the clear color. */
 			unsigned max = u_bit_consecutive(0, desc->channel[i].size);
 
@@ -1586,9 +1584,9 @@ static void vi_get_fast_clear_parameters(struct radv_device *device,
 
 	for (int i = 0; i < 4; ++i)
 		if (values[i] != main_value &&
-		    desc->swizzle[i] - VK_SWIZZLE_X != extra_channel &&
-		    desc->swizzle[i] >= VK_SWIZZLE_X &&
-		    desc->swizzle[i] <= VK_SWIZZLE_W)
+		    desc->swizzle[i] - PIPE_SWIZZLE_X != extra_channel &&
+		    desc->swizzle[i] >= PIPE_SWIZZLE_X &&
+		    desc->swizzle[i] <= PIPE_SWIZZLE_W)
 			return;
 
 	*can_avoid_fast_clear_elim = true;

@@ -281,8 +281,8 @@ bool ShaderFromNirProcessor::process_uniforms(nir_variable *uniform)
    auto type = uniform->type->is_array() ? uniform->type->without_array(): uniform->type;
    if (type->is_image() || uniform->data.mode == nir_var_mem_ssbo) {
       sh_info().uses_images = 1;
-      if (uniform->type->is_array())
-         sh_info().indirect_files |= TGSI_FILE_IMAGE;
+      if (uniform->type->is_array() && ! (uniform->data.mode == nir_var_mem_ssbo))
+         sh_info().indirect_files |= 1 << TGSI_FILE_IMAGE;
    }
 
    if (uniform->type->is_image()) {
@@ -679,6 +679,8 @@ bool ShaderFromNirProcessor::emit_intrinsic_instruction(nir_intrinsic_instr* ins
    case nir_intrinsic_memory_barrier_image:
    case nir_intrinsic_group_memory_barrier:
       return emit_barrier(instr);
+   case nir_intrinsic_memory_barrier_atomic_counter:
+      return true;
    case nir_intrinsic_shared_atomic_add:
    case nir_intrinsic_shared_atomic_and:
    case nir_intrinsic_shared_atomic_or:
@@ -797,7 +799,7 @@ GPRVector ShaderFromNirProcessor::vec_from_nir_with_fetch_constant(const nir_src
    std::array<bool,4> used_swizzles = {false, false, false, false};
 
    /* Check whether all sources come from a GPR, and,
-    * if requested, whether they are swizzled as epected */
+    * if requested, whether they are swizzled as expected */
 
    for (int i = 0; i < 4 && use_same; ++i)  {
       if ((1 << i) & mask) {

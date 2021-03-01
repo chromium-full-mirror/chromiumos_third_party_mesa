@@ -188,22 +188,22 @@ static void si_emit_derived_tess_state(struct si_context *sctx,
    /* The TES pointer will only be used for sctx->last_tcs.
     * It would be wrong to think that TCS = TES. */
    struct si_shader_selector *tcs =
-      sctx->tcs_shader.cso ? sctx->tcs_shader.cso : sctx->tes_shader.cso;
+      sctx->shader.tcs.cso ? sctx->shader.tcs.cso : sctx->shader.tes.cso;
    unsigned tess_uses_primid = sctx->ia_multi_vgt_param_key.u.tess_uses_prim_id;
    bool has_primid_instancing_bug = sctx->chip_class == GFX6 && sctx->screen->info.max_se == 1;
    unsigned tes_sh_base = sctx->shader_pointers.sh_base[PIPE_SHADER_TESS_EVAL];
 
    /* Since GFX9 has merged LS-HS in the TCS state, set LS = TCS. */
    if (sctx->chip_class >= GFX9) {
-      if (sctx->tcs_shader.cso)
-         ls_current = sctx->tcs_shader.current;
+      if (sctx->shader.tcs.cso)
+         ls_current = sctx->shader.tcs.current;
       else
          ls_current = sctx->fixed_func_tcs_shader.current;
 
       ls = ls_current->key.part.tcs.ls;
    } else {
-      ls_current = sctx->vs_shader.current;
-      ls = sctx->vs_shader.cso;
+      ls_current = sctx->shader.vs.current;
+      ls = sctx->shader.vs.cso;
    }
 
    if (sctx->last_ls == ls_current && sctx->last_tcs == tcs &&
@@ -224,7 +224,7 @@ static void si_emit_derived_tess_state(struct si_context *sctx,
    unsigned num_tcs_inputs = util_last_bit64(ls->outputs_written);
    unsigned num_tcs_output_cp, num_tcs_outputs, num_tcs_patch_outputs;
 
-   if (sctx->tcs_shader.cso) {
+   if (sctx->shader.tcs.cso) {
       num_tcs_outputs = util_last_bit64(tcs->outputs_written);
       num_tcs_output_cp = tcs->info.base.tess.tcs_vertices_out;
       num_tcs_patch_outputs = util_last_bit64(tcs->patch_outputs_written);
@@ -264,21 +264,35 @@ static void si_emit_derived_tess_state(struct si_context *sctx,
       lds_per_patch = MAX2(input_patch_size, output_patch_size);
    }
 
-   /* Ensure that we only need one wave per SIMD so we don't need to check
-    * resource usage. Also ensures that the number of tcs in and out
-    * vertices per threadgroup are at most 256.
+   /* Ensure that we only need 4 waves per CU, so that we don't need to check
+    * resource usage (such as whether we have enough VGPRs to fit the whole
+    * threadgroup into the CU). It also ensures that the number of tcs in and out
+    * vertices per threadgroup are at most 256, which is the hw limit.
     */
    unsigned max_verts_per_patch = MAX2(num_tcs_input_cp, num_tcs_output_cp);
    *num_patches = 256 / max_verts_per_patch;
 
+   /* Not necessary for correctness, but higher numbers are slower.
+    * The hardware can do more, but the radeonsi shader constant is
+    * limited to 6 bits.
+    */
+   *num_patches = MIN2(*num_patches, 64); /* e.g. 64 triangles in exactly 3 waves */
+
+   /* When distributed tessellation is unsupported, switch between SEs
+    * at a higher frequency to manually balance the workload between SEs.
+    */
+   if (!sctx->screen->info.has_distributed_tess && sctx->screen->info.max_se > 1)
+      *num_patches = MIN2(*num_patches, 16); /* recommended */
+
+   /* Make sure the output data fits in the offchip buffer */
+   *num_patches =
+      MIN2(*num_patches, (sctx->screen->tess_offchip_block_dw_size * 4) / output_patch_size);
+
    /* Make sure that the data fits in LDS. This assumes the shaders only
     * use LDS for the inputs and outputs.
     *
-    * While GFX7 can use 64K per threadgroup, there is a hang on Stoney
-    * with 2 CUs if we use more than 32K. The closed Vulkan driver also
-    * uses 32K at most on all GCN chips.
-    *
-    * Use 16K so that we can fit 2 workgroups on the same CU.
+    * The maximum allowed LDS size is 32K. Higher numbers can hang.
+    * Use 16K as the maximum, so that we can fit 2 workgroups on the same CU.
     */
    ASSERTED unsigned max_lds_size = 32 * 1024; /* hw limit */
    unsigned target_lds_size = 16 * 1024; /* target at least 2 workgroups per CU, 16K each */
@@ -286,25 +300,8 @@ static void si_emit_derived_tess_state(struct si_context *sctx,
    *num_patches = MAX2(*num_patches, 1);
    assert(*num_patches * lds_per_patch <= max_lds_size);
 
-   /* Make sure the output data fits in the offchip buffer */
-   *num_patches =
-      MIN2(*num_patches, (sctx->screen->tess_offchip_block_dw_size * 4) / output_patch_size);
-
-   /* Not necessary for correctness, but improves performance.
-    * The hardware can do more, but the radeonsi shader constant is
-    * limited to 6 bits.
-    */
-   *num_patches = MIN2(*num_patches, 64); /* triangles: 3 full waves */
-
-   /* When distributed tessellation is unsupported, switch between SEs
-    * at a higher frequency to compensate for it.
-    */
-   if (!sctx->screen->info.has_distributed_tess && sctx->screen->info.max_se > 1)
-      *num_patches = MIN2(*num_patches, 16); /* recommended */
-
-   /* Make sure that vector lanes are reasonably occupied. It probably
-    * doesn't matter much because this is LS-HS, and TES is likely to
-    * occupy significantly more CUs.
+   /* Make sure that vector lanes are fully occupied by cutting off the last wave
+    * if it's only partially filled.
     */
    unsigned temp_verts_per_tg = *num_patches * max_verts_per_patch;
    unsigned wave_size = sctx->screen->ge_wave_size;
@@ -777,7 +774,7 @@ static void si_emit_vs_state(struct si_context *sctx, unsigned index_size)
       return;
    }
 
-   if (sctx->vs_shader.cso->info.uses_base_vertex) {
+   if (sctx->shader.vs.cso->info.uses_base_vertex) {
       sctx->current_vs_state &= C_VS_STATE_INDEXED;
       sctx->current_vs_state |= S_VS_STATE_INDEXED(!!index_size);
    }
@@ -879,7 +876,7 @@ static void gfx10_emit_ge_cntl(struct si_context *sctx, unsigned num_patches)
          primgroup_size = num_patches; /* must be a multiple of NUM_PATCHES */
          vertgroup_size = 0;
       } else if (HAS_GS) {
-         unsigned vgt_gs_onchip_cntl = sctx->gs_shader.current->ctx_reg.gs.vgt_gs_onchip_cntl;
+         unsigned vgt_gs_onchip_cntl = sctx->shader.gs.current->ctx_reg.gs.vgt_gs_onchip_cntl;
          primgroup_size = G_028A44_GS_PRIMS_PER_SUBGRP(vgt_gs_onchip_cntl);
          vertgroup_size = G_028A44_ES_VERTS_PER_SUBGRP(vgt_gs_onchip_cntl);
       } else {
@@ -1115,7 +1112,7 @@ static void si_emit_draw_packets(struct si_context *sctx, const struct pipe_draw
          radeon_emit(cs, (sh_base_reg + SI_SGPR_BASE_VERTEX * 4 - SI_SH_REG_OFFSET) >> 2);
          radeon_emit(cs, (sh_base_reg + SI_SGPR_START_INSTANCE * 4 - SI_SH_REG_OFFSET) >> 2);
          radeon_emit(cs, ((sh_base_reg + SI_SGPR_DRAWID * 4 - SI_SH_REG_OFFSET) >> 2) |
-                            S_2C3_DRAW_INDEX_ENABLE(sctx->vs_shader.cso->info.uses_drawid) |
+                            S_2C3_DRAW_INDEX_ENABLE(sctx->shader.vs.cso->info.uses_drawid) |
                             S_2C3_COUNT_INDIRECT_ENABLE(!!indirect->indirect_draw_count));
          radeon_emit(cs, indirect->draw_count);
          radeon_emit(cs, count_va);
@@ -1580,7 +1577,7 @@ static bool si_all_vs_resources_read_only(struct si_context *sctx, struct pipe_r
    struct radeon_cmdbuf *cs = &sctx->gfx_cs;
    struct si_descriptors *buffers =
       &sctx->descriptors[si_const_and_shader_buffer_descriptors_idx(PIPE_SHADER_VERTEX)];
-   struct si_shader_selector *vs = sctx->vs_shader.cso;
+   struct si_shader_selector *vs = sctx->shader.vs.cso;
    struct si_vertex_elements *velems = sctx->vertex_elements;
    unsigned num_velems = velems->count;
    unsigned num_images = vs->info.base.num_images;
@@ -1712,7 +1709,7 @@ static void si_draw_vbo(struct pipe_context *ctx,
    }
 
    if (HAS_TESS) {
-      struct si_shader_selector *tcs = sctx->tcs_shader.cso;
+      struct si_shader_selector *tcs = sctx->shader.tcs.cso;
 
       /* The rarely occuring tcs == NULL case is not optimized. */
       bool same_patch_vertices =
@@ -1752,9 +1749,9 @@ static void si_draw_vbo(struct pipe_context *ctx,
    if (GFX_VERSION <= GFX7 && unlikely(!indirect && !instance_count))
       return;
 
-   struct si_shader_selector *vs = sctx->vs_shader.cso;
+   struct si_shader_selector *vs = sctx->shader.vs.cso;
    if (unlikely(!vs || sctx->num_vertex_elements < vs->num_vs_inputs ||
-                !sctx->ps_shader.cso || (HAS_TESS != (prim == PIPE_PRIM_PATCHES)))) {
+                !sctx->shader.ps.cso || (HAS_TESS != (prim == PIPE_PRIM_PATCHES)))) {
       assert(0);
       return;
    }
@@ -1888,7 +1885,7 @@ static void si_draw_vbo(struct pipe_context *ctx,
                (instance_count <= USHRT_MAX && index_size && index_size <= 2) ||
                pd_msg("instance_count too large or index_size == 4 or DrawArraysInstanced"))) &&
        ((info->drawid == 0 && (num_draws == 1 || !info->increment_draw_id)) ||
-        !sctx->vs_shader.cso->info.uses_drawid || pd_msg("draw_id > 0")) &&
+        !sctx->shader.vs.cso->info.uses_drawid || pd_msg("draw_id > 0")) &&
        (!sctx->render_cond || pd_msg("render condition")) &&
        /* Forced enablement ignores pipeline statistics queries. */
        (sctx->screen->debug_flags & (DBG(PD) | DBG(ALWAYS_PD)) ||
@@ -1897,7 +1894,7 @@ static void si_draw_vbo(struct pipe_context *ctx,
        (!sctx->vertex_elements->instance_divisor_is_fetched || pd_msg("loads instance divisors")) &&
        (!HAS_TESS || pd_msg("uses tess")) &&
        (!HAS_GS || pd_msg("uses GS")) &&
-       (!sctx->ps_shader.cso->info.uses_primid || pd_msg("PS uses PrimID")) &&
+       (!sctx->shader.ps.cso->info.uses_primid || pd_msg("PS uses PrimID")) &&
        !rs->polygon_mode_enabled &&
 #if SI_PRIM_DISCARD_DEBUG /* same as cso->prim_discard_cs_allowed */
        (!sctx->vs_shader.cso->info.uses_bindless_images || pd_msg("uses bindless images")) &&
@@ -1907,7 +1904,7 @@ static void si_draw_vbo(struct pipe_context *ctx,
        !sctx->vs_shader.cso->info.base.vs.window_space_position &&
        !sctx->vs_shader.cso->so.num_outputs &&
 #else
-       (sctx->vs_shader.cso->prim_discard_cs_allowed ||
+       (sctx->shader.vs.cso->prim_discard_cs_allowed ||
         pd_msg("VS shader uses unsupported features")) &&
 #endif
        /* Check that all buffers are used for read only, because compute

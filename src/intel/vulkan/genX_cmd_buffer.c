@@ -61,7 +61,7 @@ genX(cmd_buffer_emit_state_base_address)(struct anv_cmd_buffer *cmd_buffer)
 {
    struct anv_device *device = cmd_buffer->device;
    UNUSED const struct gen_device_info *devinfo = &device->info;
-   uint32_t mocs = isl_mocs(&device->isl_dev, 0);
+   uint32_t mocs = isl_mocs(&device->isl_dev, 0, false);
 
    /* If we are emitting a new state base address we probably need to re-emit
     * binding tables.
@@ -2430,7 +2430,6 @@ void genX(CmdPipelineBarrier)(
       if (range->aspectMask & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) {
          VkImageAspectFlags color_aspects =
             anv_image_expand_aspects(image, range->aspectMask);
-         uint32_t aspect_bit;
          anv_foreach_image_aspect_bit(aspect_bit, image, color_aspects) {
             transition_color_buffer(cmd_buffer, image, 1UL << aspect_bit,
                                     range->baseMipLevel,
@@ -3171,7 +3170,7 @@ cmd_buffer_emit_push_constant(struct anv_cmd_buffer *cmd_buffer,
           * same bit of memory for both scanout and a UBO is nuts.  Let's not
           * bother and assume it's all internal.
           */
-         c.MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0);
+         c.MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0, false);
 #endif
 
 #if GEN_GEN >= 8 || GEN_IS_HASWELL
@@ -3235,7 +3234,7 @@ cmd_buffer_emit_push_constant_all(struct anv_cmd_buffer *cmd_buffer,
    if (buffer_count == 0) {
       anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_CONSTANT_ALL), c) {
          c.ShaderUpdateEnable = shader_mask;
-         c.MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0);
+         c.MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0, false);
       }
       return;
    }
@@ -3267,7 +3266,7 @@ cmd_buffer_emit_push_constant_all(struct anv_cmd_buffer *cmd_buffer,
                         GENX(3DSTATE_CONSTANT_ALL),
                         .ShaderUpdateEnable = shader_mask,
                         .PointerBufferMask = buffer_mask,
-                        .MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0));
+                        .MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0, false));
 
    for (int i = 0; i < buffer_count; i++) {
       const struct anv_push_range *range = &bind_map->push_ranges[i];
@@ -3471,8 +3470,8 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
 
       p = anv_batch_emitn(&cmd_buffer->batch, num_dwords,
                           GENX(3DSTATE_VERTEX_BUFFERS));
-      uint32_t vb, i = 0;
-      for_each_bit(vb, vb_emit) {
+      uint32_t i = 0;
+      u_foreach_bit(vb, vb_emit) {
          struct anv_buffer *buffer = cmd_buffer->state.vertex_bindings[vb].buffer;
          uint32_t offset = cmd_buffer->state.vertex_bindings[vb].offset;
 
@@ -3563,7 +3562,7 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
 #endif
 
             if (cmd_buffer->state.xfb_enabled && xfb->buffer && xfb->size != 0) {
-               sob.MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0);
+               sob.MOCS = anv_mocs(cmd_buffer->device, xfb->buffer->address.bo, 0);
                sob.SurfaceBaseAddress = anv_address_add(xfb->buffer->address,
                                                         xfb->offset);
 #if GEN_GEN >= 8
@@ -5511,8 +5510,7 @@ cmd_buffer_begin_subpass(struct anv_cmd_buffer *cmd_buffer,
             uint32_t pending_clear_mask =
                get_multiview_subpass_clear_mask(cmd_state, att_state);
 
-            uint32_t layer_idx;
-            for_each_bit(layer_idx, pending_clear_mask) {
+            u_foreach_bit(layer_idx, pending_clear_mask) {
                uint32_t layer =
                   iview->planes[0].isl.base_array_layer + layer_idx;
 
@@ -5551,8 +5549,7 @@ cmd_buffer_begin_subpass(struct anv_cmd_buffer *cmd_buffer,
             uint32_t pending_clear_mask =
               get_multiview_subpass_clear_mask(cmd_state, att_state);
 
-            uint32_t layer_idx;
-            for_each_bit(layer_idx, pending_clear_mask) {
+            u_foreach_bit(layer_idx, pending_clear_mask) {
                uint32_t layer =
                   iview->planes[0].isl.base_array_layer + layer_idx;
 

@@ -163,6 +163,7 @@ enum si_clear_code
 
 #define SI_IMAGE_ACCESS_AS_BUFFER (1 << 7)
 #define SI_IMAGE_ACCESS_DCC_OFF   (1 << 8)
+#define SI_IMAGE_ACCESS_DCC_WRITE (1 << 9)
 
 /* Debug flags. */
 enum
@@ -226,6 +227,8 @@ enum
    DBG_NO_HYPERZ,
    DBG_NO_2D_TILING,
    DBG_NO_TILING,
+   DBG_NO_DISPLAY_TILING,
+   DBG_NO_DISPLAY_DCC,
    DBG_NO_DCC,
    DBG_NO_DCC_CLEAR,
    DBG_NO_DCC_FB,
@@ -1040,11 +1043,16 @@ struct si_context {
    struct si_pm4_state *vgt_shader_config[SI_NUM_VGT_STAGES_STATES];
 
    /* shaders */
-   struct si_shader_ctx_state ps_shader;
-   struct si_shader_ctx_state gs_shader;
-   struct si_shader_ctx_state vs_shader;
-   struct si_shader_ctx_state tcs_shader;
-   struct si_shader_ctx_state tes_shader;
+   union {
+      struct {
+         struct si_shader_ctx_state vs;
+         struct si_shader_ctx_state ps;
+         struct si_shader_ctx_state gs;
+         struct si_shader_ctx_state tcs;
+         struct si_shader_ctx_state tes;
+      } shader;
+      struct si_shader_ctx_state shaders[SI_NUM_GRAPHICS_SHADERS];
+   };
    struct si_shader_ctx_state cs_prim_discard_state;
    struct si_cs_shader_state cs_shader_state;
 
@@ -1259,6 +1267,8 @@ struct si_context {
    struct list_head shader_query_buffers;
    unsigned num_active_shader_queries;
 
+   bool force_cb_shader_coherent;
+
    /* Statistics gathering for the DCC enablement heuristic. It can't be
     * in si_texture because si_texture can be shared by multiple
     * contexts. This is for back buffers only. We shouldn't get too many
@@ -1351,9 +1361,14 @@ unsigned si_get_flush_flags(struct si_context *sctx, enum si_coherency coher,
                             enum si_cache_policy cache_policy);
 void si_launch_grid_internal(struct si_context *sctx, struct pipe_grid_info *info,
                                     void *restore_cs, unsigned flags);
+enum si_clear_method {
+  SI_CP_DMA_CLEAR_METHOD,
+  SI_COMPUTE_CLEAR_METHOD,
+  SI_AUTO_SELECT_CLEAR_METHOD
+};
 void si_clear_buffer(struct si_context *sctx, struct pipe_resource *dst, uint64_t offset,
                      uint64_t size, uint32_t *clear_value, uint32_t clear_value_size,
-                     enum si_coherency coher, bool force_cpdma);
+                     enum si_coherency coher, enum si_clear_method method);
 void si_screen_clear_buffer(struct si_screen *sscreen, struct pipe_resource *dst, uint64_t offset,
                             uint64_t size, unsigned value);
 void si_copy_buffer(struct si_context *sctx, struct pipe_resource *dst, struct pipe_resource *src,
@@ -1682,17 +1697,17 @@ static ALWAYS_INLINE struct si_shader_ctx_state *
 si_get_vs_inline(struct si_context *sctx, enum si_has_tess has_tess, enum si_has_gs has_gs)
 {
    if (has_gs)
-      return &sctx->gs_shader;
+      return &sctx->shader.gs;
    if (has_tess)
-      return &sctx->tes_shader;
+      return &sctx->shader.tes;
 
-   return &sctx->vs_shader;
+   return &sctx->shader.vs;
 }
 
 static inline struct si_shader_ctx_state *si_get_vs(struct si_context *sctx)
 {
-   return si_get_vs_inline(sctx, sctx->tes_shader.cso ? TESS_ON : TESS_OFF,
-                           sctx->gs_shader.cso ? GS_ON : GS_OFF);
+   return si_get_vs_inline(sctx, sctx->shader.tes.cso ? TESS_ON : TESS_OFF,
+                           sctx->shader.gs.cso ? GS_ON : GS_OFF);
 }
 
 static inline struct si_shader_info *si_get_vs_info(struct si_context *sctx)
@@ -1738,6 +1753,7 @@ static inline void si_make_CB_shader_coherent(struct si_context *sctx, unsigned 
                                               bool shaders_read_metadata, bool dcc_pipe_aligned)
 {
    sctx->flags |= SI_CONTEXT_FLUSH_AND_INV_CB | SI_CONTEXT_INV_VCACHE;
+   sctx->force_cb_shader_coherent = false;
 
    if (sctx->chip_class >= GFX10) {
       if (sctx->screen->info.tcc_harvested)
@@ -1817,7 +1833,7 @@ static inline unsigned si_get_total_colormask(struct si_context *sctx)
    if (sctx->queued.named.rasterizer->rasterizer_discard)
       return 0;
 
-   struct si_shader_selector *ps = sctx->ps_shader.cso;
+   struct si_shader_selector *ps = sctx->shader.ps.cso;
    if (!ps)
       return 0;
 
@@ -1960,8 +1976,8 @@ static inline unsigned si_get_shader_wave_size(struct si_shader *shader)
 static inline void si_select_draw_vbo(struct si_context *sctx)
 {
    sctx->b.draw_vbo = sctx->draw_vbo[sctx->chip_class - GFX6]
-                                    [!!sctx->tes_shader.cso]
-                                    [!!sctx->gs_shader.cso]
+                                    [!!sctx->shader.tes.cso]
+                                    [!!sctx->shader.gs.cso]
                                     [sctx->ngg]
                                     [si_compute_prim_discard_enabled(sctx)];
    assert(sctx->b.draw_vbo);

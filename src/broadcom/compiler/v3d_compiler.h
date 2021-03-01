@@ -361,9 +361,6 @@ struct v3d_key {
         void *shader_state;
         struct {
                 uint8_t swizzle[4];
-                bool clamp_s:1;
-                bool clamp_t:1;
-                bool clamp_r:1;
         } tex[V3D_MAX_TEXTURE_SAMPLERS];
         struct {
                 uint8_t return_size;
@@ -643,6 +640,22 @@ struct v3d_compile {
          */
         bool disable_tmu_pipelining;
 
+        /* Emits ldunif for each new uniform, even if the uniform was already
+         * emitted in the same block. Useful to compile shaders with high
+         * register pressure or to disable the optimization during uniform
+         * spills.
+         */
+        bool disable_ldunif_opt;
+
+        /* Last UBO index and offset used with a unifa/ldunifa sequence and the
+         * block where it was emitted. This is used to skip unifa writes (and
+         * their 3 delay slot) when the next UBO load reads right after the
+         * previous one in the same block.
+         */
+        struct qblock *last_unifa_block;
+        int32_t last_unifa_index;
+        uint32_t last_unifa_offset;
+
         /* State for whether we're executing on each channel currently.  0 if
          * yes, otherwise a block number + 1 that the channel jumped to.
          */
@@ -735,6 +748,13 @@ struct v3d_compile {
         struct qblock *cur_block;
         struct qblock *loop_cont_block;
         struct qblock *loop_break_block;
+        /**
+         * Which temp, if any, do we currently have in the flags?
+         * This is set when processing a comparison instruction, and
+         * reset to -1 by anything else that touches the flags.
+         */
+        int32_t flags_temp;
+        enum v3d_qpu_cond flags_cond;
 
         uint64_t *qpu_insts;
         uint32_t qpu_inst_count;
@@ -929,8 +949,8 @@ struct v3d_qpu_instr v3d_qpu_nop(void);
 struct qreg vir_emit_def(struct v3d_compile *c, struct qinst *inst);
 struct qinst *vir_emit_nondef(struct v3d_compile *c, struct qinst *inst);
 void vir_set_cond(struct qinst *inst, enum v3d_qpu_cond cond);
-void vir_set_pf(struct qinst *inst, enum v3d_qpu_pf pf);
-void vir_set_uf(struct qinst *inst, enum v3d_qpu_uf uf);
+void vir_set_pf(struct v3d_compile *c, struct qinst *inst, enum v3d_qpu_pf pf);
+void vir_set_uf(struct v3d_compile *c, struct qinst *inst, enum v3d_qpu_uf uf);
 void vir_set_unpack(struct qinst *inst, int src,
                     enum v3d_qpu_input_unpack unpack);
 void vir_set_pack(struct qinst *inst, enum v3d_qpu_output_pack pack);
@@ -943,7 +963,7 @@ bool vir_has_side_effects(struct v3d_compile *c, struct qinst *inst);
 bool vir_get_add_op(struct qinst *inst, enum v3d_qpu_add_op *op);
 bool vir_get_mul_op(struct qinst *inst, enum v3d_qpu_mul_op *op);
 bool vir_is_raw_mov(struct qinst *inst);
-bool vir_is_tex(struct qinst *inst);
+bool vir_is_tex(const struct v3d_device_info *devinfo, struct qinst *inst);
 bool vir_is_add(struct qinst *inst);
 bool vir_is_mul(struct qinst *inst);
 bool vir_writes_r3(const struct v3d_device_info *devinfo, struct qinst *inst);
@@ -974,6 +994,7 @@ bool vir_opt_peephole_sf(struct v3d_compile *c);
 bool vir_opt_redundant_flags(struct v3d_compile *c);
 bool vir_opt_small_immediates(struct v3d_compile *c);
 bool vir_opt_vpm(struct v3d_compile *c);
+bool vir_opt_constant_alu(struct v3d_compile *c);
 void v3d_nir_lower_blend(nir_shader *s, struct v3d_compile *c);
 void v3d_nir_lower_io(nir_shader *s, struct v3d_compile *c);
 void v3d_nir_lower_line_smooth(nir_shader *shader);

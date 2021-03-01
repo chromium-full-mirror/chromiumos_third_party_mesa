@@ -914,8 +914,7 @@ _mesa_MatrixMultTransposedEXT( GLenum matrixMode, const GLdouble *m )
  *
  * \param ctx GL context.
  *
- * Calls _math_matrix_analyse() with the top-matrix of the projection matrix
- * stack, and recomputes user clip positions if necessary.
+ * Recomputes user clip positions if necessary.
  *
  * \note This routine references __struct gl_contextRec::Tranform attribute
  * values to compute userclip positions in clip space, but is only called on
@@ -925,41 +924,23 @@ _mesa_MatrixMultTransposedEXT( GLenum matrixMode, const GLdouble *m )
 static void
 update_projection( struct gl_context *ctx )
 {
-   GLbitfield mask;
-
-   _math_matrix_analyse( ctx->ProjectionMatrixStack.Top );
-
    /* Recompute clip plane positions in clipspace.  This is also done
     * in _mesa_ClipPlane().
     */
-   mask = ctx->Transform.ClipPlanesEnabled;
-   while (mask) {
-      const int p = u_bit_scan(&mask);
+   GLbitfield mask = ctx->Transform.ClipPlanesEnabled;
 
-      _mesa_transform_vector( ctx->Transform._ClipUserPlane[p],
-                              ctx->Transform.EyeUserPlane[p],
-                              ctx->ProjectionMatrixStack.Top->inv );
+   if (mask) {
+      /* make sure the inverse is up to date */
+      _math_matrix_analyse(ctx->ProjectionMatrixStack.Top);
+
+      do {
+         const int p = u_bit_scan(&mask);
+
+         _mesa_transform_vector(ctx->Transform._ClipUserPlane[p],
+                                ctx->Transform.EyeUserPlane[p],
+                                ctx->ProjectionMatrixStack.Top->inv);
+      } while (mask);
    }
-}
-
-
-/**
- * Calculate the combined modelview-projection matrix.
- *
- * \param ctx GL context.
- *
- * Multiplies the top matrices of the projection and model view stacks into
- * __struct gl_contextRec::_ModelProjectMatrix via _math_matrix_mul_matrix()
- * and analyzes the resulting matrix via _math_matrix_analyse().
- */
-static void
-calculate_model_project_matrix( struct gl_context *ctx )
-{
-   _math_matrix_mul_matrix( &ctx->_ModelProjectMatrix,
-                            ctx->ProjectionMatrixStack.Top,
-                            ctx->ModelviewMatrixStack.Top );
-
-   _math_matrix_analyse( &ctx->_ModelProjectMatrix );
 }
 
 
@@ -982,10 +963,10 @@ void _mesa_update_modelview_project( struct gl_context *ctx, GLuint new_state )
    if (new_state & _NEW_PROJECTION)
       update_projection( ctx );
 
-   /* Keep ModelviewProject up to date always to allow tnl
-    * implementations that go model->clip even when eye is required.
-    */
-   calculate_model_project_matrix(ctx);
+   /* Calculate ModelViewMatrix * ProjectionMatrix. */
+   _math_matrix_mul_matrix(&ctx->_ModelProjectMatrix,
+                           ctx->ProjectionMatrixStack.Top,
+                           ctx->ModelviewMatrixStack.Top);
 }
 
 /*@}*/

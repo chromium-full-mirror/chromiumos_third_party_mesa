@@ -1651,8 +1651,8 @@ gl_nir_link_uniforms(struct gl_context *ctx,
 
          int location = var->data.location;
 
-         struct gl_uniform_block *blocks;
-         int num_blocks;
+         struct gl_uniform_block *blocks = NULL;
+         int num_blocks = 0;
          int buffer_block_index = -1;
          if (!prog->data->spirv && state.var_is_in_block) {
             /* If the uniform is inside a uniform block determine its block index by
@@ -1729,7 +1729,7 @@ gl_nir_link_uniforms(struct gl_context *ctx,
             }
          }
 
-         if (!prog->data->spirv && state.var_is_in_block) {
+         if (blocks && !prog->data->spirv && state.var_is_in_block) {
             if (glsl_without_array(state.current_var->type) != state.current_var->interface_type) {
                /* this is nested at some offset inside the block */
                bool found = false;

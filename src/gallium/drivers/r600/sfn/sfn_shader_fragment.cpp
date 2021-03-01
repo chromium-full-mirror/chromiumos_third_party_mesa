@@ -48,7 +48,8 @@ FragmentShaderFromNir::FragmentShaderFromNir(const nir_shader& nir,
    m_front_face_loaded(false),
    m_depth_exports(0),
    m_apply_sample_mask(key.ps.apply_sample_id_mask),
-   m_dual_source_blend(key.ps.dual_source_blend)
+   m_dual_source_blend(key.ps.dual_source_blend),
+   m_pos_input(nullptr)
 {
    for (auto&  i: m_interpolator) {
       i.enabled = false;
@@ -67,7 +68,7 @@ bool FragmentShaderFromNir::do_process_inputs(nir_variable *input)
 
 bool FragmentShaderFromNir::do_emit_load_deref(const nir_variable *in_var, nir_intrinsic_instr* instr)
 {
-   assert(0 && "all input derefs should have benn lowered");
+   assert(0 && "all input derefs should have been lowered");
    return false;
 }
 

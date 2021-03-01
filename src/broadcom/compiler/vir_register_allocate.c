@@ -34,15 +34,17 @@
 #define PHYS_COUNT    64
 
 static inline bool
-qinst_writes_tmu(struct qinst *inst)
+qinst_writes_tmu(const struct v3d_device_info *devinfo,
+                 struct qinst *inst)
 {
         return (inst->dst.file == QFILE_MAGIC &&
-                v3d_qpu_magic_waddr_is_tmu(inst->dst.index)) ||
+                v3d_qpu_magic_waddr_is_tmu(devinfo, inst->dst.index)) ||
                 inst->qpu.sig.wrtmuc;
 }
 
 static bool
-is_end_of_tmu_sequence(struct qinst *inst, struct qblock *block)
+is_end_of_tmu_sequence(const struct v3d_device_info *devinfo,
+                       struct qinst *inst, struct qblock *block)
 {
         if (!inst->qpu.sig.ldtmu &&
             !(inst->qpu.type == V3D_QPU_INSTR_TYPE_ALU &&
@@ -58,7 +60,7 @@ is_end_of_tmu_sequence(struct qinst *inst, struct qblock *block)
                         return false;
                 }
 
-                if (qinst_writes_tmu(scan_inst))
+                if (qinst_writes_tmu(devinfo, scan_inst))
                         return true;
         }
 
@@ -149,10 +151,10 @@ v3d_choose_spill_node(struct v3d_compile *c, struct ra_graph *g,
                          * final LDTMU or TMUWT from that TMU setup.  We
                          * penalize spills during that time.
                          */
-                        if (is_end_of_tmu_sequence(inst, block))
+                        if (is_end_of_tmu_sequence(c->devinfo, inst, block))
                                 in_tmu_operation = false;
 
-                        if (qinst_writes_tmu(inst))
+                        if (qinst_writes_tmu(c->devinfo, inst))
                                 in_tmu_operation = true;
                 }
         }
@@ -257,6 +259,10 @@ v3d_spill_reg(struct v3d_compile *c, int spill_temp)
                 uniform_index = orig_unif->uniform;
         }
 
+        /* We must disable the ldunif optimization if we are spilling uniforms */
+        bool had_disable_ldunif_opt = c->disable_ldunif_opt;
+        c->disable_ldunif_opt = true;
+
         struct qinst *start_of_tmu_sequence = NULL;
         struct qinst *postponed_spill = NULL;
         vir_for_each_block(block, c) {
@@ -268,7 +274,7 @@ v3d_spill_reg(struct v3d_compile *c, int spill_temp)
                          * move the fill up to not intrude in the middle of the TMU
                          * sequence.
                          */
-                        if (is_end_of_tmu_sequence(inst, block)) {
+                        if (is_end_of_tmu_sequence(c->devinfo, inst, block)) {
                                 if (postponed_spill) {
                                         v3d_emit_tmu_spill(c, postponed_spill,
                                                            inst, spill_offset);
@@ -278,8 +284,10 @@ v3d_spill_reg(struct v3d_compile *c, int spill_temp)
                                 postponed_spill = NULL;
                         }
 
-                        if (!start_of_tmu_sequence && qinst_writes_tmu(inst))
+                        if (!start_of_tmu_sequence &&
+                            qinst_writes_tmu(c->devinfo, inst)) {
                                 start_of_tmu_sequence = inst;
+                        }
 
                         /* fills */
                         for (int i = 0; i < vir_get_nsrc(inst); i++) {
@@ -356,6 +364,8 @@ v3d_spill_reg(struct v3d_compile *c, int spill_temp)
          */
         for (int i = start_num_temps; i < c->num_temps; i++)
                 BITSET_CLEAR(c->spillable, i);
+
+        c->disable_ldunif_opt = had_disable_ldunif_opt;
 }
 
 struct v3d_ra_select_callback_data {
@@ -490,6 +500,17 @@ get_spill_batch_size(struct v3d_compile *c)
     * time at the expense of over-spilling.
     */
    return 20;
+}
+
+/* Don't emit spills using the TMU until we've dropped thread count first. Also,
+ * don't spill if we have enabled any other optimization that can lead to
+ * higher register pressure, such as TMU pipelining, we rather recompile without
+ * the optimization in that case.
+ */
+static inline bool
+tmu_spilling_allowed(struct v3d_compile *c, int thread_index)
+{
+        return thread_index == 0 && c->disable_tmu_pipelining;
 }
 
 #define CLASS_BIT_PHYS			(1 << 0)
@@ -736,13 +757,7 @@ v3d_register_allocate(struct v3d_compile *c, bool *spilled)
                         if (i > 0 && !is_uniform)
                                 break;
 
-                        /* Don't emit spills using the TMU until we've dropped
-                         * thread count first. Also, don't spill if we have
-                         * enabled TMU pipelining, as that can make TMU spilling
-                         * pretty terrible.
-                         */
-                        if (is_uniform ||
-                            (thread_index == 0 && c->disable_tmu_pipelining)) {
+                        if (is_uniform || tmu_spilling_allowed(c, thread_index)) {
                                 v3d_spill_reg(c, map[node].temp);
 
                                 /* Ask the outer loop to call back in. */

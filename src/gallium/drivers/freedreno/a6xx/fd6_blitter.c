@@ -432,6 +432,7 @@ emit_blit_buffer(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
 static void
 fd6_clear_ubwc(struct fd_batch *batch, struct fd_resource *rsc)
+	assert_dt
 {
 	struct fd_ringbuffer *ring = fd_batch_get_prologue(batch);
 	union pipe_color_union color = {};
@@ -561,7 +562,7 @@ emit_blit_dst(struct fd_ringbuffer *ring, struct pipe_resource *prsc, enum pipe_
 	OUT_RING(ring, 0x00000000);
 
 	if (ubwc_enabled) {
-		OUT_PKT4(ring, REG_A6XX_RB_2D_DST_FLAGS_LO, 6);
+		OUT_PKT4(ring, REG_A6XX_RB_2D_DST_FLAGS, 6);
 		fd6_emit_flag_reference(ring, dst, level, layer);
 		OUT_RING(ring, 0x00000000);
 		OUT_RING(ring, 0x00000000);
@@ -613,7 +614,7 @@ emit_blit_src(struct fd_ringbuffer *ring, const struct pipe_blit_info *info, uns
 	OUT_RING(ring, 0x00000000);
 
 	if (subwc_enabled) {
-		OUT_PKT4(ring, REG_A6XX_SP_PS_2D_SRC_FLAGS_LO, 6);
+		OUT_PKT4(ring, REG_A6XX_SP_PS_2D_SRC_FLAGS, 6);
 		fd6_emit_flag_reference(ring, src, info->src.level, layer);
 		OUT_RING(ring, 0x00000000);
 		OUT_RING(ring, 0x00000000);
@@ -859,6 +860,7 @@ fd6_resolve_tile(struct fd_batch *batch, struct fd_ringbuffer *ring,
 
 static bool
 handle_rgba_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
+	assert_dt
 {
 	struct fd_batch *batch;
 
@@ -934,6 +936,7 @@ handle_rgba_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
  */
 static bool
 do_rewritten_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
+	assert_dt
 {
 	bool success = handle_rgba_blit(ctx, info);
 	if (!success)
@@ -948,6 +951,7 @@ do_rewritten_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
  */
 static bool
 handle_zs_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
+	assert_dt
 {
 	struct pipe_blit_info blit = *info;
 
@@ -1027,6 +1031,7 @@ handle_zs_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
 
 static bool
 handle_compressed_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
+	assert_dt
 {
 	struct pipe_blit_info blit = *info;
 
@@ -1074,6 +1079,7 @@ handle_compressed_blit(struct fd_context *ctx, const struct pipe_blit_info *info
 
 static bool
 fd6_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
+	assert_dt
 {
 	if (info->mask & PIPE_MASK_ZS)
 		return handle_zs_blit(ctx, info);
@@ -1086,10 +1092,11 @@ fd6_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
 
 void
 fd6_blitter_init(struct pipe_context *pctx)
+	disable_thread_safety_analysis
 {
 	fd_context(pctx)->clear_ubwc = fd6_clear_ubwc;
 
-	if (fd_mesa_debug & FD_DBG_NOBLIT)
+	if (FD_DBG(NOBLIT))
 		return;
 
 	fd_context(pctx)->blit = fd6_blit;

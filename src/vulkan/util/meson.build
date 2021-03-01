@@ -80,7 +80,7 @@ vk_extensions = custom_target(
     prog_python, '@INPUT0@', '--xml', '@INPUT1@',
     '--out-c', '@OUTPUT0@', '--out-h', '@OUTPUT1@'
   ],
-  dependencies : ['vk_extensions.py'],
+  depend_files : files('vk_extensions.py'),
 )
 
 libvulkan_util = static_library(
@@ -99,9 +99,16 @@ idep_vulkan_util_headers = declare_dependency(
   include_directories : include_directories('.')
 )
 
-idep_vulkan_util = declare_dependency(
-  # Instruct users of this library to link with --whole-archive.  Otherwise,
-  # our weak function overloads may not resolve properly.
-  link_whole : libvulkan_util,
-  dependencies : idep_vulkan_util_headers
-)
+if with_platform_windows
+  idep_vulkan_util = declare_dependency(
+    link_with : libvulkan_util,
+    dependencies : idep_vulkan_util_headers
+  )
+else
+  idep_vulkan_util = declare_dependency(
+    # Instruct users of this library to link with --whole-archive.  Otherwise,
+    # our weak function overloads may not resolve properly.
+    link_whole : libvulkan_util,
+    dependencies : idep_vulkan_util_headers
+  )
+endif

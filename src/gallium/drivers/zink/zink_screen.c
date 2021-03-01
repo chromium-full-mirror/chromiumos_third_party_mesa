@@ -40,6 +40,7 @@
 #include "util/u_screen.h"
 #include "util/u_string.h"
 #include "util/u_transfer_helper.h"
+#include "util/xmlconfig.h"
 
 #include "frontend/sw_winsys.h"
 
@@ -91,6 +92,40 @@ get_video_mem(struct zink_screen *screen)
          size += screen->info.mem_props.memoryHeaps[i].size;
    }
    return (int)(size >> 20);
+}
+
+static void
+disk_cache_init(struct zink_screen *screen)
+{
+#ifdef ENABLE_SHADER_CACHE
+   static char buf[1000];
+   snprintf(buf, sizeof(buf), "zink_%x04x", screen->info.props.vendorID);
+
+   screen->disk_cache = disk_cache_create(buf, screen->info.props.deviceName, 0);
+   if (screen->disk_cache)
+      disk_cache_compute_key(screen->disk_cache, buf, strlen(buf), screen->disk_cache_key);
+#endif
+}
+
+void
+zink_screen_update_pipeline_cache(struct zink_screen *screen)
+{
+   size_t size = 0;
+
+   if (!screen->disk_cache)
+      return;
+   if (vkGetPipelineCacheData(screen->dev, screen->pipeline_cache, &size, NULL) != VK_SUCCESS)
+      return;
+   if (screen->pipeline_cache_size == size)
+      return;
+   void *data = malloc(size);
+   if (!data)
+      return;
+   if (vkGetPipelineCacheData(screen->dev, screen->pipeline_cache, &size, data) == VK_SUCCESS) {
+      screen->pipeline_cache_size = size;
+      disk_cache_put(screen->disk_cache, screen->disk_cache_key, data, size, NULL);
+   }
+   free(data);
 }
 
 static int
@@ -174,6 +209,18 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
    case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
+   case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
+   case PIPE_CAP_QUERY_BUFFER_OBJECT:
+   case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
+   case PIPE_CAP_CLIP_HALFZ:
+   case PIPE_CAP_TGSI_TXQS:
+   case PIPE_CAP_TEXTURE_BARRIER:
+   case PIPE_CAP_TGSI_VOTE:
+   case PIPE_CAP_DRAW_PARAMETERS:
+   case PIPE_CAP_POLYGON_OFFSET_CLAMP:
+   case PIPE_CAP_QUERY_SO_OVERFLOW:
+   case PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE:
+   case PIPE_CAP_GL_SPIRV:
       return 1;
 
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
@@ -183,10 +230,11 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return screen->info.feats.features.multiDrawIndirect;
 
    case PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS:
-      return screen->instance_info.have_KHR_draw_indirect_count;
+      return screen->info.have_KHR_draw_indirect_count;
 
    case PIPE_CAP_START_INSTANCE:
-      return screen->info.feats11.shaderDrawParameters;
+      return (screen->info.have_vulkan12 && screen->info.feats11.shaderDrawParameters) ||
+              screen->info.have_KHR_shader_draw_parameters;
 
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
       return screen->info.have_EXT_vertex_attribute_divisor;
@@ -216,11 +264,22 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_MULTISAMPLE:
       return 1;
 
+   case PIPE_CAP_POINT_SPRITE:
+      return 1;
+
    case PIPE_CAP_SAMPLE_SHADING:
       return screen->info.feats.features.sampleRateShading;
 
    case PIPE_CAP_TEXTURE_SWIZZLE:
       return 1;
+
+   case PIPE_CAP_GL_CLAMP:
+      return 0;
+
+   case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
+      return screen->info.driver_props.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA_KHR ||
+             screen->info.driver_props.driverID == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS_KHR ?
+             0 : PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_NV50;
 
    case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
       return screen->info.props.limits.maxImageDimension2D;
@@ -251,6 +310,9 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_DEPTH_CLIP_DISABLE:
       return screen->info.feats.features.depthClamp;
 
+   case PIPE_CAP_SHADER_STENCIL_EXPORT:
+      return screen->info.have_EXT_shader_stencil_export;
+
    case PIPE_CAP_TGSI_INSTANCEID:
    case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
@@ -270,7 +332,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
       return 130;
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
-      return 430;
+      return 460;
 
    case PIPE_CAP_COMPUTE:
       return 1;
@@ -349,16 +411,8 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
       return 1;
 
-#if 0 /* TODO: Enable me */
-   case PIPE_CAP_CLIP_HALFZ:
-      return 1;
-#endif
-
    case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
    case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
-      return 1;
-
-   case PIPE_CAP_SHAREABLE_SHADERS:
       return 1;
 
    case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
@@ -387,7 +441,10 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 0;
 
    case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
-      return 65536;
+      /* 1<<27 is required by VK spec */
+      assert(screen->info.props.limits.maxStorageBufferRange >= 1 << 27);
+      /* but Gallium can't handle values that are too big, so clamp to VK spec minimum */
+      return 1 << 27;
 
    case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
    case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
@@ -478,8 +535,7 @@ zink_get_shader_param(struct pipe_screen *pscreen,
          return INT_MAX;
       case PIPE_SHADER_TESS_CTRL:
       case PIPE_SHADER_TESS_EVAL:
-         if (screen->info.have_KHR_vulkan_memory_model &&
-             screen->info.feats.features.tessellationShader &&
+         if (screen->info.feats.features.tessellationShader &&
              screen->info.have_KHR_maintenance2)
             return INT_MAX;
          break;
@@ -520,6 +576,12 @@ zink_get_shader_param(struct pipe_screen *pscreen,
          max = screen->info.props.limits.maxGeometryInputComponents;
          break;
       case PIPE_SHADER_FRAGMENT:
+         /* intel drivers report fewer components, but it's a value that's compatible
+          * with what we need for GL, so we can still force a conformant value here
+          */
+         if (screen->info.driver_props.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA_KHR ||
+             screen->info.driver_props.driverID == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS_KHR)
+            return 32;
          max = screen->info.props.limits.maxFragmentInputComponents / 4;
          break;
       default:
@@ -553,7 +615,10 @@ zink_get_shader_param(struct pipe_screen *pscreen,
    }
 
    case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
-      return 65536;
+      /* At least 16384 is guaranteed by VK spec */
+      assert(screen->info.props.limits.maxUniformBufferRange >= 16384);
+      /* but Gallium can't handle values that are too big */
+      return MIN2(screen->info.props.limits.maxUniformBufferRange, 1 << 31);
 
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
       return  MIN2(screen->info.props.limits.maxPerStageDescriptorUniformBuffers,
@@ -710,8 +775,7 @@ zink_is_format_supported(struct pipe_screen *pscreen,
       }
    }
 
-   VkFormatProperties props;
-   vkGetPhysicalDeviceFormatProperties(screen->pdev, vkformat, &props);
+   VkFormatProperties props = screen->format_props[format];
 
    if (target == PIPE_BUFFER) {
       if (bind & PIPE_BIND_VERTEX_BUFFER &&
@@ -764,6 +828,13 @@ zink_destroy_screen(struct pipe_screen *pscreen)
    }
 
    u_transfer_helper_destroy(pscreen->transfer_helper);
+   zink_screen_update_pipeline_cache(screen);
+#ifdef ENABLE_SHADER_CACHE
+   if (screen->disk_cache)
+      disk_cache_wait_for_idle(screen->disk_cache);
+#endif
+   disk_cache_destroy(screen->disk_cache);
+   vkDestroyPipelineCache(screen->dev, screen->pipeline_cache, NULL);
 
    vkDestroyDevice(screen->dev, NULL);
    vkDestroyInstance(screen->instance, NULL);
@@ -848,25 +919,18 @@ zink_flush_frontbuffer(struct pipe_screen *pscreen,
    void *map = winsys->displaytarget_map(winsys, res->dt, 0);
 
    if (map) {
-      VkImageSubresource isr = {};
-      isr.aspectMask = res->aspect;
-      isr.mipLevel = level;
-      isr.arrayLayer = layer;
-      VkSubresourceLayout layout;
-      vkGetImageSubresourceLayout(screen->dev, res->image, &isr, &layout);
-
-      void *ptr;
-      VkResult result = vkMapMemory(screen->dev, res->mem, res->offset, res->size, 0, &ptr);
-      if (result != VK_SUCCESS) {
-         debug_printf("failed to map memory for display\n");
-         return;
+      struct pipe_transfer *transfer = NULL;
+      void *res_map = pipe_transfer_map(pcontext, pres, level, layer, PIPE_MAP_READ, 0, 0,
+                                        u_minify(pres->width0, level),
+                                        u_minify(pres->height0, level),
+                                        &transfer);
+      if (res_map) {
+         util_copy_rect((ubyte*)map, pres->format, res->dt_stride, 0, 0,
+                        transfer->box.width, transfer->box.height,
+                        (const ubyte*)res_map, transfer->stride, 0, 0);
+         pipe_transfer_unmap(pcontext, transfer);
       }
-      for (int i = 0; i < pres->height0; ++i) {
-         uint8_t *src = (uint8_t *)ptr + i * layout.rowPitch;
-         uint8_t *dst = (uint8_t *)map + i * res->dt_stride;
-         memcpy(dst, src, res->dt_stride);
-      }
-      vkUnmapMemory(screen->dev, res->mem);
+      winsys->displaytarget_unmap(winsys, res->dt);
    }
 
    winsys->displaytarget_unmap(winsys, res->dt);
@@ -905,6 +969,9 @@ VkFormat
 zink_get_format(struct zink_screen *screen, enum pipe_format format)
 {
    VkFormat ret = zink_pipe_format_to_vk_format(emulate_x8(format));
+
+   if (format == PIPE_FORMAT_X32_S8X24_UINT)
+      return VK_FORMAT_D32_SFLOAT_S8_UINT;
 
    if (format == PIPE_FORMAT_X24S8_UINT)
       /* valid when using aspects to extract stencil,
@@ -952,6 +1019,13 @@ load_device_extensions(struct zink_screen *screen)
       GET_PROC_ADDR(CmdEndConditionalRenderingEXT);
    }
 
+   if (screen->info.have_KHR_draw_indirect_count) {
+      GET_PROC_ADDR_DEVICE_LOCAL(CmdDrawIndexedIndirectCountKHR);
+      screen->vk_CmdDrawIndexedIndirectCount = vk_CmdDrawIndexedIndirectCountKHR;
+      GET_PROC_ADDR_DEVICE_LOCAL(CmdDrawIndirectCountKHR);
+      screen->vk_CmdDrawIndirectCount = vk_CmdDrawIndirectCountKHR;
+   }
+
    if (screen->info.have_EXT_calibrated_timestamps) {
       GET_PROC_ADDR_INSTANCE(GetPhysicalDeviceCalibrateableTimeDomainsEXT);
       GET_PROC_ADDR(GetCalibratedTimestampsEXT);
@@ -977,6 +1051,7 @@ load_device_extensions(struct zink_screen *screen)
    if (screen->info.have_EXT_extended_dynamic_state) {
       GET_PROC_ADDR(CmdSetViewportWithCountEXT);
       GET_PROC_ADDR(CmdSetScissorWithCountEXT);
+      GET_PROC_ADDR(CmdBindVertexBuffers2EXT);
    }
 
    screen->have_triangle_fans = true;
@@ -1017,9 +1092,6 @@ create_debug(struct zink_screen *screen)
 {
    GET_PROC_ADDR_INSTANCE(CreateDebugUtilsMessengerEXT);
    GET_PROC_ADDR_INSTANCE(DestroyDebugUtilsMessengerEXT);
-
-   if (!screen->vk_CreateDebugUtilsMessengerEXT || !screen->vk_DestroyDebugUtilsMessengerEXT)
-      return false;
 
    VkDebugUtilsMessengerCreateInfoEXT vkDebugUtilsMessengerCreateInfoEXT = {
        VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
@@ -1102,6 +1174,17 @@ check_device_needs_mesa_wsi(struct zink_screen *screen)
        screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_RADV_KHR
       ) {
       screen->needs_mesa_wsi = true;
+       }
+}
+
+static void
+populate_format_props(struct zink_screen *screen)
+{
+   for (unsigned i = 0; i < PIPE_FORMAT_COUNT; i++) {
+      VkFormat format = zink_get_format(screen, i);
+      if (!format)
+         continue;
+      vkGetPhysicalDeviceFormatProperties(screen->pdev, format, &screen->format_props[i]);
    }
 }
 
@@ -1223,8 +1306,29 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    zink_screen_fence_init(&screen->base);
 
    zink_screen_init_compiler(screen);
+   disk_cache_init(screen);
+   populate_format_props(screen);
+
+   VkPipelineCacheCreateInfo pcci;
+   pcci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+   pcci.pNext = NULL;
+   /* we're single-threaded now, so we don't need synchronization */
+   pcci.flags = screen->info.have_EXT_pipeline_creation_cache_control ? VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT_EXT : 0;
+   pcci.initialDataSize = 0;
+   pcci.pInitialData = NULL;
+   if (screen->disk_cache) {
+      pcci.pInitialData = disk_cache_get(screen->disk_cache, screen->disk_cache_key, &screen->pipeline_cache_size);
+      pcci.initialDataSize = screen->pipeline_cache_size;
+   }
+   vkCreatePipelineCache(screen->dev, &pcci, NULL, &screen->pipeline_cache);
+   free((void*)pcci.pInitialData);
 
    slab_create_parent(&screen->transfer_pool, sizeof(struct zink_transfer), 16);
+
+#if WITH_XMLCONFIG
+   if (config)
+      screen->driconf.dual_color_blend_by_location = driQueryOptionb(config->options, "dual_color_blend_by_location");
+#endif
 
    return screen;
 

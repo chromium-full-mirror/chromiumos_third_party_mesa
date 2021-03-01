@@ -84,6 +84,9 @@ amd_common_files = files(
   'ac_sqtt.h',
   'ac_rgp.c',
   'ac_rgp.h',
+  'ac_msgpack.c',
+  'ac_msgpack.h',
+  'ac_rgp_elf_object_pack.c',
 )
 
 libamd_common = static_library(

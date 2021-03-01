@@ -477,27 +477,106 @@ anv_physical_device_free_disk_cache(struct anv_physical_device *device)
 #endif
 }
 
+/* The ANV_QUEUE_OVERRIDE environment variable is a comma separated list of
+ * queue overrides.
+ *
+ * To override the number queues:
+ *  * "gc" is for graphics queues with compute support
+ *  * "g" is for graphics queues with no compute support
+ *  * "c" is for compute queues with no graphics support
+ *
+ * For example, ANV_QUEUE_OVERRIDE=gc=2,c=1 would override the number of
+ * advertised queues to be 2 queues with graphics+compute support, and 1 queue
+ * with compute-only support.
+ *
+ * ANV_QUEUE_OVERRIDE=c=1 would override the number of advertised queues to
+ * include 1 queue with compute-only support, but it will not change the
+ * number of graphics+compute queues.
+ *
+ * ANV_QUEUE_OVERRIDE=gc=0,c=1 would override the number of advertised queues
+ * to include 1 queue with compute-only support, and it would override the
+ * number of graphics+compute queues to be 0.
+ */
+static void
+anv_override_engine_counts(int *gc_count, int *g_count, int *c_count)
+{
+   int gc_override = -1;
+   int g_override = -1;
+   int c_override = -1;
+   char *env = getenv("ANV_QUEUE_OVERRIDE");
+
+   if (env == NULL)
+      return;
+
+   env = strdup(env);
+   char *save = NULL;
+   char *next = strtok_r(env, ",", &save);
+   while (next != NULL) {
+      if (strncmp(next, "gc=", 3) == 0) {
+         gc_override = strtol(next + 3, NULL, 0);
+      } else if (strncmp(next, "g=", 2) == 0) {
+         g_override = strtol(next + 2, NULL, 0);
+      } else if (strncmp(next, "c=", 2) == 0) {
+         c_override = strtol(next + 2, NULL, 0);
+      } else {
+         mesa_logw("Ignoring unsupported ANV_QUEUE_OVERRIDE token: %s", next);
+      }
+      next = strtok_r(NULL, ",", &save);
+   }
+   free(env);
+   if (gc_override >= 0)
+      *gc_count = gc_override;
+   if (g_override >= 0)
+      *g_count = g_override;
+   if (*g_count > 0 && *gc_count <= 0 && (gc_override >= 0 || g_override >= 0))
+      mesa_logw("ANV_QUEUE_OVERRIDE: gc=0 with g > 0 violates the "
+                "Vulkan specification");
+   if (c_override >= 0)
+      *c_count = c_override;
+}
+
 static void
 anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
 {
    uint32_t family_count = 0;
 
    if (pdevice->engine_info) {
-      int render_count = anv_gem_count_engines(pdevice->engine_info,
-                                               I915_ENGINE_CLASS_RENDER);
-      if (render_count > 0) {
+      int gc_count =
+         anv_gem_count_engines(pdevice->engine_info, I915_ENGINE_CLASS_RENDER);
+      int g_count = 0;
+      int c_count = 0;
+
+      anv_override_engine_counts(&gc_count, &g_count, &c_count);
+
+      if (gc_count > 0) {
          pdevice->queue.families[family_count++] = (struct anv_queue_family) {
             .queueFlags = VK_QUEUE_GRAPHICS_BIT |
                           VK_QUEUE_COMPUTE_BIT |
                           VK_QUEUE_TRANSFER_BIT,
-            .queueCount = render_count,
+            .queueCount = gc_count,
+            .engine_class = I915_ENGINE_CLASS_RENDER,
+         };
+      }
+      if (g_count > 0) {
+         pdevice->queue.families[family_count++] = (struct anv_queue_family) {
+            .queueFlags = VK_QUEUE_GRAPHICS_BIT |
+                          VK_QUEUE_TRANSFER_BIT,
+            .queueCount = g_count,
+            .engine_class = I915_ENGINE_CLASS_RENDER,
+         };
+      }
+      if (c_count > 0) {
+         pdevice->queue.families[family_count++] = (struct anv_queue_family) {
+            .queueFlags = VK_QUEUE_COMPUTE_BIT |
+                          VK_QUEUE_TRANSFER_BIT,
+            .queueCount = c_count,
             .engine_class = I915_ENGINE_CLASS_RENDER,
          };
       }
       /* Increase count below when other families are added as a reminder to
        * increase the ANV_MAX_QUEUE_FAMILIES value.
        */
-      STATIC_ASSERT(ANV_MAX_QUEUE_FAMILIES >= 1);
+      STATIC_ASSERT(ANV_MAX_QUEUE_FAMILIES >= 3);
    } else {
       /* Default to a single render queue */
       pdevice->queue.families[family_count++] = (struct anv_queue_family) {
@@ -4343,6 +4422,7 @@ VkResult anv_CreateBuffer(
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &buffer->base, VK_OBJECT_TYPE_BUFFER);
+   buffer->create_flags = pCreateInfo->flags;
    buffer->size = pCreateInfo->size;
    buffer->usage = pCreateInfo->usage;
    buffer->address = ANV_NULL_ADDRESS;
@@ -4407,7 +4487,8 @@ anv_fill_buffer_surface_state(struct anv_device *device, struct anv_state state,
 {
    isl_buffer_fill_state(&device->isl_dev, state.map,
                          .address = anv_address_physical(address),
-                         .mocs = isl_mocs(&device->isl_dev, usage),
+                         .mocs = isl_mocs(&device->isl_dev, usage,
+                                          address.bo && address.bo->is_external),
                          .size_B = range,
                          .format = format,
                          .swizzle = ISL_SWIZZLE_IDENTITY,

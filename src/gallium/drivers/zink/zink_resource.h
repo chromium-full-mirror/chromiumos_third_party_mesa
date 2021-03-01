@@ -27,8 +27,10 @@
 struct pipe_screen;
 struct sw_displaytarget;
 struct zink_batch;
+struct zink_context;
 
 #include "util/u_transfer.h"
+#include "util/u_range.h"
 
 #include <vulkan/vulkan.h>
 
@@ -41,10 +43,11 @@ struct zink_resource {
    enum pipe_format internal_format:16;
 
    VkPipelineStageFlagBits access_stage;
+   VkAccessFlags access;
    union {
       struct {
-         VkAccessFlags access;
          VkBuffer buffer;
+         struct util_range valid_buffer_range;
       };
       struct {
          VkFormat format;
@@ -52,6 +55,7 @@ struct zink_resource {
          VkImageLayout layout;
          VkImageAspectFlags aspect;
          bool optimal_tiling;
+         bool host_visible;
       };
    };
    VkDeviceMemory mem;
@@ -63,7 +67,6 @@ struct zink_resource {
 
    /* this has to be atomic for fence access, so we can't use a bitmask and make everything neat */
    uint8_t batch_uses[5]; //ZINK_NUM_BATCHES
-   bool needs_xfb_barrier;
 };
 
 struct zink_transfer {
@@ -89,7 +92,7 @@ zink_get_depth_stencil_resources(struct pipe_resource *res,
                                  struct zink_resource **out_s);
 
 void
-zink_resource_setup_transfer_layouts(struct zink_batch *batch, struct zink_resource *src, struct zink_resource *dst);
+zink_resource_setup_transfer_layouts(struct zink_context *ctx, struct zink_resource *src, struct zink_resource *dst);
 
 uint32_t
 zink_get_resource_usage(struct zink_resource *res);

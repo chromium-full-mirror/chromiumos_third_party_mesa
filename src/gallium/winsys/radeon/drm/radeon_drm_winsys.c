@@ -491,25 +491,25 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    switch (ws->info.family) {
    case CHIP_HAINAN:
    case CHIP_KABINI:
-      ws->info.num_tcc_blocks = 2;
+      ws->info.max_tcc_blocks = 2;
       break;
    case CHIP_VERDE:
    case CHIP_OLAND:
    case CHIP_BONAIRE:
    case CHIP_KAVERI:
-      ws->info.num_tcc_blocks = 4;
+      ws->info.max_tcc_blocks = 4;
       break;
    case CHIP_PITCAIRN:
-      ws->info.num_tcc_blocks = 8;
+      ws->info.max_tcc_blocks = 8;
       break;
    case CHIP_TAHITI:
-      ws->info.num_tcc_blocks = 12;
+      ws->info.max_tcc_blocks = 12;
       break;
    case CHIP_HAWAII:
-      ws->info.num_tcc_blocks = 16;
+      ws->info.max_tcc_blocks = 16;
       break;
    default:
-      ws->info.num_tcc_blocks = 0;
+      ws->info.max_tcc_blocks = 0;
       break;
    }
 
@@ -809,8 +809,8 @@ static void radeon_pin_threads_to_L3_cache(struct radeon_winsys *ws,
 
    if (util_queue_is_initialized(&rws->cs_queue)) {
       util_set_thread_affinity(rws->cs_queue.threads[0],
-                               util_cpu_caps.L3_affinity_mask[cache],
-                               NULL, util_cpu_caps.num_cpu_mask_bits);
+                               util_get_cpu_caps()->L3_affinity_mask[cache],
+                               NULL, util_get_cpu_caps()->num_cpu_mask_bits);
    }
 }
 

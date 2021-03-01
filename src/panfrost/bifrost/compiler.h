@@ -32,6 +32,7 @@
 #include "compiler/nir/nir.h"
 #include "panfrost/util/pan_ir.h"
 #include "util/u_math.h"
+#include "util/half_float.h"
 
 /* Swizzles across bytes in a 32-bit word. Expresses swz in the XML directly.
  * To express widen, use the correpsonding replicated form, i.e. H01 = identity
@@ -199,6 +200,17 @@ bi_neg(bi_index idx)
         return idx;
 }
 
+/* Replaces an index, preserving any modifiers */
+
+static inline bi_index
+bi_replace_index(bi_index old, bi_index replacement)
+{
+        replacement.abs = old.abs;
+        replacement.neg = old.neg;
+        replacement.swizzle = old.swizzle;
+        return replacement;
+}
+
 /* For bitwise instructions */
 #define bi_not(x) bi_neg(x)
 
@@ -214,10 +226,22 @@ bi_imm_u16(uint16_t imm)
         return bi_half(bi_imm_u32(imm), false);
 }
 
+static inline bi_index
+bi_imm_f16(float imm)
+{
+        return bi_imm_u16(_mesa_float_to_half(imm));
+}
+
 static inline bool
 bi_is_null(bi_index idx)
 {
         return idx.type == BI_INDEX_NULL;
+}
+
+static inline bool
+bi_is_ssa(bi_index idx)
+{
+        return idx.type == BI_INDEX_NORMAL && !idx.reg;
 }
 
 /* Compares equivalence as references. Does not compare offsets, swizzles, or
@@ -269,6 +293,9 @@ typedef struct {
          * useless double fills */
         bool no_spill;
 
+        /* Override table, inducing a DTSEL_IMM pair if nonzero */
+        enum bi_table table;
+
         /* Everything after this MUST NOT be accessed directly, since
          * interpretation depends on opcodes */
 
@@ -285,7 +312,6 @@ typedef struct {
                 uint32_t shift;
                 uint32_t fill;
                 uint32_t index;
-                uint32_t table;
                 uint32_t attribute_index;
 
                 struct {
@@ -466,6 +492,7 @@ typedef struct {
 
         /* Unique in a clause */
         enum bifrost_message_type message_type;
+        bi_instr *message;
 } bi_clause;
 
 typedef struct bi_block {
@@ -477,25 +504,14 @@ typedef struct bi_block {
 } bi_block;
 
 typedef struct {
+       const struct panfrost_compile_inputs *inputs;
        nir_shader *nir;
+       struct pan_shader_info *info;
        gl_shader_stage stage;
        struct list_head blocks; /* list of bi_block */
-       struct panfrost_sysvals sysvals;
+       struct hash_table_u64 *sysval_to_id;
        uint32_t quirks;
        unsigned arch;
-       unsigned tls_size;
-
-       /* Is internally a blend shader? Depends on stage == FRAGMENT */
-       bool is_blend;
-
-       /* Blend constants */
-       float blend_constants[4];
-
-       /* Blend return offsets */
-       uint32_t blend_ret_offsets[8];
-
-       /* Blend tile buffer conversion desc */
-       uint64_t blend_desc;
 
        /* During NIR->BIR */
        bi_block *current_block;
@@ -503,7 +519,6 @@ typedef struct {
        bi_block *break_block;
        bi_block *continue_block;
        bool emitted_atest;
-       nir_alu_type *blend_types;
 
        /* For creating temporaries */
        unsigned ssa_alloc;
@@ -576,7 +591,7 @@ bi_temp_reg(bi_context *ctx)
 static inline bi_index
 bi_src_index(nir_src *src)
 {
-        if (nir_src_is_const(*src))
+        if (nir_src_is_const(*src) && nir_src_bit_size(*src) <= 32)
                 return bi_imm_u32(nir_src_as_uint(*src));
         else if (src->is_ssa)
                 return bi_get_index(src->ssa->index, false, 0);
@@ -715,8 +730,7 @@ pan_next_block(pan_block *block)
 
 bool bi_has_arg(bi_instr *ins, bi_index arg);
 unsigned bi_count_read_registers(bi_instr *ins, unsigned src);
-uint16_t bi_bytemask_of_read_components(bi_instr *ins, bi_index node);
-unsigned bi_writemask(bi_instr *ins);
+unsigned bi_writemask(bi_instr *ins, unsigned dest);
 bi_clause * bi_next_clause(bi_context *ctx, pan_block *block, bi_clause *clause);
 bool bi_side_effects(enum bi_opcode op);
 
@@ -729,8 +743,11 @@ void bi_print_shader(bi_context *ctx, FILE *fp);
 
 /* BIR passes */
 
-bool bi_opt_dead_code_eliminate(bi_context *ctx, bi_block *block, bool soft);
+bool bi_opt_copy_prop(bi_context *ctx);
+bool bi_opt_dead_code_eliminate(bi_context *ctx, bool soft);
+void bi_opt_push_ubo(bi_context *ctx);
 void bi_schedule(bi_context *ctx);
+void bi_assign_scoreboard(bi_context *ctx);
 void bi_register_allocate(bi_context *ctx);
 
 /* Test suite */
@@ -759,12 +776,16 @@ unsigned bi_clause_quadwords(bi_clause *clause);
 signed bi_block_offset(bi_context *ctx, bi_clause *start, bi_block *target);
 bool bi_ec0_packed(unsigned tuple_count);
 
+/* Check if there are no more instructions starting with a given block, this
+ * needs to recurse in case a shader ends with multiple empty blocks */
+
 static inline bool
 bi_is_terminal_block(bi_block *block)
 {
-        return block->base.successors[0] == NULL &&
-               block->base.successors[1] == NULL &&
-               list_is_empty(&block->clauses);
+        return (block == NULL) ||
+                (list_is_empty(&block->base.instructions) &&
+                 bi_is_terminal_block((bi_block *) block->base.successors[0]) &&
+                 bi_is_terminal_block((bi_block *) block->base.successors[1]));
 }
 
 /* Code emit */

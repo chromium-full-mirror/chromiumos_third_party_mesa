@@ -399,12 +399,9 @@ struct gl_colorbuffer_attrib
       GLenum16 DstA;               /**< Alpha blend dest term */
       GLenum16 EquationRGB;        /**< GL_ADD, GL_SUBTRACT, etc. */
       GLenum16 EquationA;          /**< GL_ADD, GL_SUBTRACT, etc. */
-      /**
-       * Set if any blend factor uses SRC1.  Computed at the time blend factors
-       * get set.
-       */
-      GLboolean _UsesDualSrc;
    } Blend[MAX_DRAW_BUFFERS];
+   /** Bitfield of color buffers with enabled dual source blending. */
+   GLbitfield _BlendUsesDualSrc;
    /** Are the blend func terms currently different for each buffer/target? */
    GLboolean _BlendFuncPerBuffer;
    /** Are the blend equations currently different for each buffer/target? */
@@ -496,7 +493,7 @@ struct gl_depthbuffer_attrib
    GLboolean Test;		/**< Depth buffering enabled flag */
    GLboolean Mask;		/**< Depth buffer writable? */
    GLboolean BoundsTest;        /**< GL_EXT_depth_bounds_test */
-   GLfloat BoundsMin, BoundsMax;/**< GL_EXT_depth_bounds_test */
+   GLclampd BoundsMin, BoundsMax;/**< GL_EXT_depth_bounds_test */
 };
 
 
@@ -1661,6 +1658,9 @@ struct gl_vertex_array_object
    /** Denotes the way the position/generic0 attribute is mapped */
    gl_attribute_map_mode _AttributeMapMode;
 
+   /** "Enabled" with the position/generic0 attribute aliasing resolved */
+   GLbitfield _EnabledWithMapMode;
+
    /** Mask of VERT_BIT_* values indicating changed/dirty arrays */
    GLbitfield NewArrays;
 
@@ -2385,6 +2385,8 @@ struct gl_vertex_program_state
 
    GLboolean _Overriden;
 
+   bool _VPModeOptimizesConstantAttribs;
+
    /**
     * If we have a vertex program, a TNL program or no program at all.
     * Note that this value should be kept up to date all the time,
@@ -2395,6 +2397,9 @@ struct gl_vertex_program_state
     * vertex program which are heavyweight already.
     */
    gl_vertex_processing_mode _VPMode;
+
+   GLbitfield _VaryingInputs;  /**< mask of VERT_BIT_* flags */
+   GLbitfield _VPModeInputFilter;
 };
 
 /**
@@ -3236,6 +3241,7 @@ struct gl_pipeline_object
    GLbitfield Flags;         /**< Mask of GLSL_x flags */
    GLboolean EverBound;      /**< Has the pipeline object been created */
    GLboolean Validated;      /**< Pipeline Validation status */
+   GLboolean UserValidated;  /**< Validation status initiated by the user */
 
    GLchar *InfoLog;
 };
@@ -4625,10 +4631,10 @@ struct gl_matrix_stack
 #define _NEW_TEXTURE_MATRIX    (1u << 2)   /**< gl_context::TextureMatrix */
 #define _NEW_COLOR             (1u << 3)   /**< gl_context::Color */
 #define _NEW_DEPTH             (1u << 4)   /**< gl_context::Depth */
-/* gap */
+#define _NEW_TNL_SPACES        (1u << 5)  /**< _mesa_update_tnl_spaces */
 #define _NEW_FOG               (1u << 6)   /**< gl_context::Fog */
 #define _NEW_HINT              (1u << 7)   /**< gl_context::Hint */
-#define _NEW_LIGHT             (1u << 8)   /**< gl_context::Light */
+#define _NEW_LIGHT_CONSTANTS   (1u << 8)   /**< gl_context::Light */
 #define _NEW_LINE              (1u << 9)   /**< gl_context::Line */
 #define _NEW_PIXEL             (1u << 10)  /**< gl_context::Pixel */
 #define _NEW_POINT             (1u << 11)  /**< gl_context::Point */
@@ -4640,7 +4646,7 @@ struct gl_matrix_stack
 #define _NEW_TRANSFORM         (1u << 17)  /**< gl_context::Transform */
 #define _NEW_VIEWPORT          (1u << 18)  /**< gl_context::Viewport */
 #define _NEW_TEXTURE_STATE     (1u << 19)  /**< gl_context::Texture (states only) */
-/* gap */
+#define _NEW_LIGHT_STATE       (1u << 20)  /**< gl_context::Light */
 #define _NEW_RENDERMODE        (1u << 21)  /**< gl_context::RenderMode, etc */
 #define _NEW_BUFFERS           (1u << 22)  /**< gl_context::Visual, DrawBuffer, */
 #define _NEW_CURRENT_ATTRIB    (1u << 23)  /**< gl_context::Current */
@@ -4648,21 +4654,30 @@ struct gl_matrix_stack
 #define _NEW_TRACK_MATRIX      (1u << 25)  /**< gl_context::VertexProgram */
 #define _NEW_PROGRAM           (1u << 26)  /**< New program/shader state */
 #define _NEW_PROGRAM_CONSTANTS (1u << 27)
-/* gap */
+#define _NEW_FF_VERT_PROGRAM   (1u << 28)
 #define _NEW_FRAG_CLAMP        (1u << 29)
-/* gap, re-use for core Mesa state only; use ctx->DriverFlags otherwise */
-#define _NEW_VARYING_VP_INPUTS (1u << 31) /**< gl_context::varying_vp_inputs */
+#define _NEW_MATERIAL          (1u << 30)  /**< gl_context::Light.Material */
+#define _NEW_FF_FRAG_PROGRAM   (1u << 31)
 #define _NEW_ALL ~0
 /*@}*/
 
 
 /**
- * Composite state flags
+ * Composite state flags, deprecated and inefficient, do not use.
  */
 /*@{*/
-#define _NEW_TEXTURE   (_NEW_TEXTURE_OBJECT | _NEW_TEXTURE_STATE)
+#define _NEW_LIGHT     (_NEW_LIGHT_CONSTANTS |  /* state parameters */ \
+                        _NEW_LIGHT_STATE |      /* rasterizer state */ \
+                        _NEW_MATERIAL |         /* light materials */ \
+                        _NEW_FF_VERT_PROGRAM | \
+                        _NEW_FF_FRAG_PROGRAM)
 
-#define _MESA_NEW_NEED_EYE_COORDS         (_NEW_LIGHT |		\
+#define _NEW_TEXTURE   (_NEW_TEXTURE_OBJECT | _NEW_TEXTURE_STATE | \
+                        _NEW_FF_VERT_PROGRAM | _NEW_FF_FRAG_PROGRAM)
+
+#define _MESA_NEW_NEED_EYE_COORDS         (_NEW_FF_VERT_PROGRAM | \
+                                           _NEW_FF_FRAG_PROGRAM | \
+                                           _NEW_LIGHT_CONSTANTS | \
                                            _NEW_TEXTURE_STATE |	\
                                            _NEW_POINT |		\
                                            _NEW_PROGRAM |	\
@@ -4873,6 +4888,9 @@ struct gl_driver_flags
 
    /** Programmable sample location state for gl_context::DrawBuffer */
    uint64_t NewSampleLocations;
+
+   /** For GL_CLAMP emulation */
+   uint64_t NewSamplersWithClamp;
 };
 
 struct gl_buffer_binding
@@ -5090,8 +5108,6 @@ struct gl_texture_attrib_node
 {
    GLuint CurrentUnit;   /**< GL_ACTIVE_TEXTURE */
    GLuint NumTexSaved;
-   GLbitfield8 _TexGenEnabled;
-   GLbitfield8 _GenFlags;
    struct gl_fixedfunc_texture_unit FixedFuncUnit[MAX_TEXTURE_COORD_UNITS];
    GLfloat LodBias[MAX_TEXTURE_UNITS];
 
@@ -5219,6 +5235,32 @@ struct gl_context
 
    /** Core/Driver constants */
    struct gl_constants Const;
+
+   /**
+    * Bitmask of valid primitive types supported by this context type,
+    * GL version, and extensions, not taking current states into account.
+    * Current states can further reduce the final bitmask at draw time.
+    */
+   GLbitfield SupportedPrimMask;
+
+   /**
+    * Bitmask of valid primitive types depending on current states (such as
+    * shaders). This is 0 if the current states should result in
+    * GL_INVALID_OPERATION in draw calls.
+    */
+   GLbitfield ValidPrimMask;
+
+   GLenum16 DrawGLError; /**< GL error to return from draw calls */
+
+   /**
+    * Same as ValidPrimMask, but should be applied to glDrawElements*.
+    */
+   GLbitfield ValidPrimMaskIndexed;
+
+   /**
+    * Whether DrawPixels/CopyPixels/Bitmap are valid to render.
+    */
+   bool DrawPixValid;
 
    /** \name The various 4x4 matrix stacks */
    /*@{*/
@@ -5439,8 +5481,6 @@ struct gl_context
    /* Is gl_PrimitiveID unused by the current shaders? */
    bool _PrimitiveIDIsUnused;
 
-   GLbitfield varying_vp_inputs;  /**< mask of VERT_BIT_* flags */
-
    /** \name Derived state */
    GLbitfield _ImageTransferState;/**< bitwise-or of IMAGE_*_BIT flags */
    GLfloat _EyeZDir[3];
@@ -5572,7 +5612,6 @@ enum _verbose
    VERBOSE_PRIMS		= 0x0400,
    VERBOSE_VERTS		= 0x0800,
    VERBOSE_DISASSEM		= 0x1000,
-   VERBOSE_DRAW                 = 0x2000,
    VERBOSE_SWAPBUFFERS          = 0x4000
 };
 

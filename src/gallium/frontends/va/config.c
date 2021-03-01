@@ -214,8 +214,10 @@ vlVaCreateConfig(VADriverContextP ctx, VAProfile profile, VAEntrypoint entrypoin
       return VA_STATUS_ERROR_ALLOCATION_FAILED;
 
    if (profile == VAProfileNone) {
-      if (entrypoint != VAEntrypointVideoProc)
+      if (entrypoint != VAEntrypointVideoProc) {
+         FREE(config);
          return VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
+      }
 
       config->entrypoint = PIPE_VIDEO_ENTRYPOINT_UNKNOWN;
       config->profile = PIPE_VIDEO_PROFILE_UNKNOWN;
@@ -319,7 +321,8 @@ vlVaCreateConfig(VADriverContextP ctx, VAProfile profile, VAEntrypoint entrypoin
          }
       }
       if (attrib_list[i].type == VAConfigAttribEncPackedHeaders) {
-         if (attrib_list[i].value != 0) {
+         if (attrib_list[i].value > 1 ||
+             config->entrypoint != PIPE_VIDEO_ENTRYPOINT_ENCODE) {
             FREE(config);
             return VA_STATUS_ERROR_INVALID_VALUE;
          }

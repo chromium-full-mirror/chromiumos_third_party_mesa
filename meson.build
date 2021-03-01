@@ -450,7 +450,9 @@ endif
 
 # Android uses emutls for versions <= P/28. For USE_ELF_TLS we need ELF TLS.
 use_elf_tls = false
-if not ['windows', 'freebsd', 'openbsd', 'haiku'].contains(host_machine.system()) and (not with_platform_android or get_option('platform-sdk-version') >= 29)
+if (not ['freebsd', 'openbsd', 'haiku'].contains(host_machine.system()) and
+    (not with_platform_android or get_option('platform-sdk-version') >= 29) and
+    (not with_platform_windows or not with_shared_glapi))
   pre_args += '-DUSE_ELF_TLS'
   use_elf_tls = true
 endif
@@ -1041,6 +1043,7 @@ else
     '-Werror=incompatible-pointer-types',
     '-Werror=int-conversion',
     '-Wimplicit-fallthrough',
+    '-Werror=thread-safety',
     '-Wno-missing-field-initializers',
     '-Wno-format-truncation',
     '-fno-math-errno',
@@ -1422,6 +1425,15 @@ endif
 # it's not linux and wont
 dep_m = cc.find_library('m', required : false)
 
+if host_machine.system() == 'windows'
+  dep_regex = meson.get_compiler('c').find_library('regex', required : false)
+  if not dep_regex.found()
+    dep_regex = declare_dependency(compile_args : ['-DNO_REGEX'])
+  endif
+else
+  dep_regex = null_dep
+endif
+
 if with_platform_haiku
   dep_network = cc.find_library('network')
 endif
@@ -1515,7 +1527,7 @@ endif
 if with_microsoft_clc
   llvm_modules += ['target', 'linker', 'irreader', 'option', 'libdriver']
 endif
-if with_tests
+if with_tests or with_gallium_softpipe
   llvm_modules += 'native'
 endif
 
@@ -1563,6 +1575,7 @@ endif
 
 dep_llvm = null_dep
 with_llvm = false
+draw_with_llvm = get_option('draw-use-llvm')
 if _llvm != 'disabled'
   dep_llvm = dependency(
     'llvm',
@@ -1584,6 +1597,12 @@ if with_llvm
   pre_args += '-DLLVM_AVAILABLE'
   pre_args += '-DMESA_LLVM_VERSION_STRING="@0@"'.format(dep_llvm.version())
   pre_args += '-DLLVM_IS_SHARED=@0@'.format(_shared_llvm.to_int())
+
+  if draw_with_llvm
+    pre_args += '-DDRAW_LLVM_AVAILABLE'
+  elif with_gallium_swr
+    error('SWR requires LLVM draw support.')
+  endif
 
   # LLVM can be built without rtti, turning off rtti changes the ABI of C++
   # programs, so we need to build all C++ code in mesa without rtti as well to
@@ -1616,6 +1635,8 @@ elif with_gallium_opencl
   error('The OpenCL "Clover" state tracker requires LLVM, but LLVM is disabled.')
 elif with_microsoft_clc
   error('The Microsoft CLC compiler requires LLVM, but LLVM is disabled.')
+else
+  draw_with_llvm = false
 endif
 
 with_opencl_spirv = (_opencl != 'disabled' and get_option('opencl-spirv')) or with_microsoft_clc

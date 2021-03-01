@@ -209,14 +209,13 @@ tu6_emit_zs(struct tu_cmd_buffer *cmd,
    tu_cs_emit_regs(cs,
                    A6XX_GRAS_SU_DEPTH_BUFFER_INFO(.depth_format = fmt));
 
-   tu_cs_emit_pkt4(cs, REG_A6XX_RB_DEPTH_FLAG_BUFFER_BASE_LO, 3);
+   tu_cs_emit_pkt4(cs, REG_A6XX_RB_DEPTH_FLAG_BUFFER_BASE, 3);
    tu_cs_image_flag_ref(cs, iview, 0);
 
    tu_cs_emit_regs(cs, A6XX_GRAS_LRZ_BUFFER_BASE(.bo = iview->image->bo,
                                                  .bo_offset = iview->image->bo_offset + iview->image->lrz_offset),
                    A6XX_GRAS_LRZ_BUFFER_PITCH(.pitch = iview->image->lrz_pitch),
-                   A6XX_GRAS_LRZ_FAST_CLEAR_BUFFER_BASE_LO(0),
-                   A6XX_GRAS_LRZ_FAST_CLEAR_BUFFER_BASE_HI(0));
+                   A6XX_GRAS_LRZ_FAST_CLEAR_BUFFER_BASE());
 
    if (attachment->format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
        attachment->format == VK_FORMAT_S8_UINT) {
@@ -258,7 +257,7 @@ tu6_emit_mrt(struct tu_cmd_buffer *cmd,
       tu_cs_emit_regs(cs,
                       A6XX_SP_FS_MRT_REG(i, .dword = iview->SP_FS_MRT_REG));
 
-      tu_cs_emit_pkt4(cs, REG_A6XX_RB_MRT_FLAG_BUFFER_ADDR_LO(i), 3);
+      tu_cs_emit_pkt4(cs, REG_A6XX_RB_MRT_FLAG_BUFFER_ADDR(i), 3);
       tu_cs_image_flag_ref(cs, iview, 0);
    }
 
@@ -746,9 +745,9 @@ tu6_init_hw(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
    tu_cs_emit_write_reg(cs, REG_A6XX_RB_UNKNOWN_8E04, 0x00100000);
    tu_cs_emit_write_reg(cs, REG_A6XX_SP_UNKNOWN_AE04, 0x8);
    tu_cs_emit_write_reg(cs, REG_A6XX_SP_UNKNOWN_AE00, 0);
-   tu_cs_emit_write_reg(cs, REG_A6XX_SP_UNKNOWN_AE0F, 0x3f);
-   tu_cs_emit_write_reg(cs, REG_A6XX_SP_UNKNOWN_B605, 0x44);
-   tu_cs_emit_write_reg(cs, REG_A6XX_SP_UNKNOWN_B600, 0x100000);
+   tu_cs_emit_write_reg(cs, REG_A6XX_SP_PERFCTR_ENABLE, 0x3f);
+   tu_cs_emit_write_reg(cs, REG_A6XX_TPL1_UNKNOWN_B605, 0x44);
+   tu_cs_emit_write_reg(cs, REG_A6XX_TPL1_UNKNOWN_B600, 0x100000);
    tu_cs_emit_write_reg(cs, REG_A6XX_HLSQ_UNKNOWN_BE00, 0x80);
    tu_cs_emit_write_reg(cs, REG_A6XX_HLSQ_UNKNOWN_BE01, 0);
 
@@ -1104,8 +1103,7 @@ tu_emit_input_attachments(struct tu_cmd_buffer *cmd,
                   CP_LOAD_STATE6_0_NUM_UNIT(subpass->input_count * 2));
    tu_cs_emit_qw(&cs, texture.iova);
 
-   tu_cs_emit_pkt4(&cs, REG_A6XX_SP_FS_TEX_CONST_LO, 2);
-   tu_cs_emit_qw(&cs, texture.iova);
+   tu_cs_emit_regs(&cs, A6XX_SP_FS_TEX_CONST(.qword = texture.iova));
 
    tu_cs_emit_regs(&cs, A6XX_SP_FS_TEX_COUNT(subpass->input_count * 2));
 
@@ -1432,6 +1430,7 @@ tu_AllocateCommandBuffers(VkDevice _device,
 
          result = tu_reset_cmd_buffer(cmd_buffer);
          cmd_buffer->level = pAllocateInfo->level;
+         vk_object_base_reset(&cmd_buffer->base);
 
          pCommandBuffers[i] = tu_cmd_buffer_to_handle(cmd_buffer);
       } else {
@@ -1604,8 +1603,7 @@ tu_CmdBindVertexBuffers2EXT(VkCommandBuffer commandBuffer,
 
    for (uint32_t i = 0; i < MAX_VBS; i++) {
       tu_cs_emit_regs(&cs,
-                      A6XX_VFD_FETCH_BASE_LO(i, cmd->state.vb[i].base),
-                      A6XX_VFD_FETCH_BASE_HI(i, cmd->state.vb[i].base >> 32),
+                      A6XX_VFD_FETCH_BASE(i, .qword = cmd->state.vb[i].base),
                       A6XX_VFD_FETCH_SIZE(i, cmd->state.vb[i].size));
    }
 
@@ -2111,7 +2109,6 @@ tu_CmdBindPipeline(VkCommandBuffer commandBuffer,
    if (!(cmd->state.dirty & TU_CMD_DIRTY_DRAW_STATE)) {
       struct tu_cs *cs = &cmd->draw_cs;
       uint32_t mask = ~pipeline->dynamic_state_mask & BITFIELD_MASK(TU_DYNAMIC_STATE_COUNT);
-      uint32_t i;
 
       tu_cs_emit_pkt7(cs, CP_SET_DRAW_STATE, 3 * (6 + util_bitcount(mask)));
       tu_cs_emit_draw_state(cs, TU_DRAW_STATE_PROGRAM, pipeline->program.state);
@@ -2121,7 +2118,7 @@ tu_CmdBindPipeline(VkCommandBuffer commandBuffer,
       tu_cs_emit_draw_state(cs, TU_DRAW_STATE_RAST, pipeline->rast_state);
       tu_cs_emit_draw_state(cs, TU_DRAW_STATE_BLEND, pipeline->blend_state);
 
-      for_each_bit(i, mask)
+      u_foreach_bit(i, mask)
          tu_cs_emit_draw_state(cs, TU_DRAW_STATE_DYNAMIC + i, pipeline->dynamic_state[i]);
    }
 
@@ -3355,8 +3352,7 @@ tu6_draw_common(struct tu_cmd_buffer *cmd,
        */
       tu_cs_emit_wfi(cs);
 
-      tu_cs_emit_pkt4(cs, REG_A6XX_PC_TESSFACTOR_ADDR_LO, 2);
-      tu_cs_emit_qw(cs, tess_factor_iova);
+      tu_cs_emit_regs(cs, A6XX_PC_TESSFACTOR_ADDR(.qword = tess_factor_iova));
 
       tu_cs_emit_pkt7(cs, CP_SET_SUBDRAW_SIZE, 1);
       tu_cs_emit(cs, draw_count);

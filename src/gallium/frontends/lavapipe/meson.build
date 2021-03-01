@@ -55,6 +55,11 @@ if with_platform_wayland
   liblvp_files += files('lvp_wsi_wayland.c')
 endif
 
+if with_platform_windows
+  lvp_flags += '-DVK_USE_PLATFORM_WIN32_KHR'
+  liblvp_files += files('lvp_wsi_win32.c')
+endif
+
 liblavapipe_st = static_library(
   'lavapipe_st',
   [liblvp_files, lvp_entrypoints, lvp_extensions_c, sha1_h],
@@ -62,5 +67,5 @@ liblavapipe_st = static_library(
   c_args : [ lvp_flags ],
   gnu_symbol_visibility : 'hidden',
   include_directories : [ inc_include, inc_src, inc_util, inc_gallium, inc_compiler, inc_gallium_aux, inc_vulkan_wsi ],
-  dependencies : [ idep_nir, idep_mesautil, idep_vulkan_util ]
+  dependencies : [ idep_nir, idep_mesautil, idep_vulkan_util, lvp_deps ]
 )

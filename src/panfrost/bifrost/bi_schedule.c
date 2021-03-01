@@ -113,6 +113,42 @@ struct bi_clause_state {
         struct bi_const_state consts[8];
 };
 
+/* Determines messsage type by checking the table and a few special cases. Only
+ * case missing is tilebuffer instructions that access depth/stencil, which
+ * require a Z_STENCIL message (to implement
+ * ARM_shader_framebuffer_fetch_depth_stencil) */
+
+static enum bifrost_message_type
+bi_message_type_for_instr(bi_instr *ins)
+{
+        enum bifrost_message_type msg = bi_opcode_props[ins->op].message;
+        bool ld_var_special = (ins->op == BI_OPCODE_LD_VAR_SPECIAL);
+
+        if (ld_var_special && ins->varying_name == BI_VARYING_NAME_FRAG_Z)
+                return BIFROST_MESSAGE_Z_STENCIL;
+
+        if (msg == BIFROST_MESSAGE_LOAD && ins->seg == BI_SEG_UBO)
+                return BIFROST_MESSAGE_ATTRIBUTE;
+
+        return msg;
+}
+
+/* Attribute, texture, and UBO load (attribute message) instructions support
+ * bindless, so just check the message type */
+
+ASSERTED static bool
+bi_supports_dtsel(bi_instr *ins)
+{
+        switch (bi_message_type_for_instr(ins)) {
+        case BIFROST_MESSAGE_ATTRIBUTE:
+                return ins->op != BI_OPCODE_LD_GCLK_U64;
+        case BIFROST_MESSAGE_TEX:
+                return true;
+        default:
+                return false;
+        }
+}
+
 /* Scheduler pseudoinstruction lowerings to enable instruction pairings.
  * Currently only support CUBEFACE -> *CUBEFACE1/+CUBEFACE2
  */
@@ -134,6 +170,83 @@ bi_lower_cubeface(bi_context *ctx,
         pinstr->src[2] = bi_null();
 
         return cubeface1;
+}
+
+/* Psuedo arguments are (rbase, address lo, address hi). We need *ATOM_C.i32 to
+ * have the arguments (address lo, address hi, rbase), and +ATOM_CX to have the
+ * arguments (rbase, address lo, address hi, rbase) */
+
+static bi_instr *
+bi_lower_atom_c(bi_context *ctx, struct bi_clause_state *clause, struct
+                bi_tuple_state *tuple)
+{
+        bi_instr *pinstr = tuple->add;
+        bi_builder b = bi_init_builder(ctx, bi_before_instr(pinstr));
+        bi_instr *atom_c = bi_atom_c_return_i32(&b, 
+                        pinstr->src[1], pinstr->src[2], pinstr->src[0],
+                        pinstr->atom_opc);
+
+        if (bi_is_null(pinstr->dest[0]))
+                atom_c->op = BI_OPCODE_ATOM_C_I32;
+
+        pinstr->op = BI_OPCODE_ATOM_CX;
+        pinstr->src[3] = atom_c->src[2];
+
+        return atom_c;
+}
+
+static bi_instr *
+bi_lower_atom_c1(bi_context *ctx, struct bi_clause_state *clause, struct
+                bi_tuple_state *tuple)
+{
+        bi_instr *pinstr = tuple->add;
+        bi_builder b = bi_init_builder(ctx, bi_before_instr(pinstr));
+        bi_instr *atom_c = bi_atom_c1_return_i32(&b,
+                        pinstr->src[0], pinstr->src[1], pinstr->atom_opc);
+
+        if (bi_is_null(pinstr->dest[0]))
+                atom_c->op = BI_OPCODE_ATOM_C1_I32;
+
+        pinstr->op = BI_OPCODE_ATOM_CX;
+        pinstr->src[2] = pinstr->src[1];
+        pinstr->src[1] = pinstr->src[0];
+        pinstr->src[3] = bi_dontcare();
+        pinstr->src[0] = pinstr->dest[0];
+
+        return atom_c;
+}
+
+static bi_instr *
+bi_lower_seg_add(bi_context *ctx,
+                struct bi_clause_state *clause, struct bi_tuple_state *tuple)
+{
+        bi_instr *pinstr = tuple->add;
+        bi_builder b = bi_init_builder(ctx, bi_before_instr(pinstr));
+
+        bi_instr *fma = bi_seg_add_to(&b, bi_word(pinstr->dest[0], 0),
+                        pinstr->src[0], pinstr->preserve_null, pinstr->seg);
+
+        pinstr->op = BI_OPCODE_SEG_ADD;
+        pinstr->dest[0] = bi_word(pinstr->dest[0], 1);
+        pinstr->src[0] = pinstr->src[1];
+        pinstr->src[1] = bi_null();
+
+        return fma;
+}
+
+static bi_instr *
+bi_lower_dtsel(bi_context *ctx,
+                struct bi_clause_state *clause, struct bi_tuple_state *tuple)
+{
+        bi_instr *add = tuple->add;
+        bi_builder b = bi_init_builder(ctx, bi_before_instr(add));
+
+        bi_instr *dtsel = bi_dtsel_imm_to(&b, bi_temp(b.shader),
+                        add->src[0], add->table);
+        add->src[0] = dtsel->dest[0];
+
+        assert(bi_supports_dtsel(add));
+        return dtsel;
 }
 
 /* Flatten linked list to array for O(1) indexing */
@@ -185,26 +298,6 @@ bi_update_worklist(struct bi_worklist st, unsigned idx)
 {
         if (idx >= 1)
                 BITSET_SET(st.worklist, idx - 1);
-}
-
-/* Determines messsage type by checking the table and a few special cases. Only
- * case missing is tilebuffer instructions that access depth/stencil, which
- * require a Z_STENCIL message (to implement
- * ARM_shader_framebuffer_fetch_depth_stencil) */
-
-static enum bifrost_message_type
-bi_message_type_for_instr(bi_instr *ins)
-{
-        enum bifrost_message_type msg = bi_opcode_props[ins->op].message;
-        bool ld_var_special = (ins->op == BI_OPCODE_LD_VAR_SPECIAL);
-
-        if (ld_var_special && ins->varying_name == BI_VARYING_NAME_FRAG_Z)
-                return BIFROST_MESSAGE_Z_STENCIL;
-
-        if (msg == BIFROST_MESSAGE_LOAD && ins->seg == BI_SEG_UBO)
-                return BIFROST_MESSAGE_ATTRIBUTE;
-
-        return msg;
 }
 
 /* To work out the back-to-back flag, we need to detect branches and
@@ -279,6 +372,7 @@ bi_singleton(void *memctx, bi_instr *ins,
 
         u->next_clause_prefetch = (ins->op != BI_OPCODE_JUMP);
         u->message_type = bi_message_type_for_instr(ins);
+        u->message = u->message_type ? ins : NULL;
         u->block = block;
 
         return u;
@@ -423,8 +517,9 @@ bi_space_for_more_constants(struct bi_clause_state *clause)
 }
 
 /* Updates the FAU assignment for a tuple. A valid FAU assignment must be
- * possible (as a precondition); this is gauranteed per-instruction by
- * bi_lower_fau and per-tuple by bi_instr_schedulable */
+ * possible (as a precondition), though not necessarily on the selected unit;
+ * this is gauranteed per-instruction by bi_lower_fau and per-tuple by
+ * bi_instr_schedulable */
 
 static bool
 bi_update_fau(struct bi_clause_state *clause,
@@ -435,6 +530,7 @@ bi_update_fau(struct bi_clause_state *clause,
         uint32_t copied_constants[2], copied_count;
         unsigned *constant_count = &tuple->constant_count;
         uint32_t *constants = tuple->constants;
+        enum bir_fau fau = tuple->fau;
 
         if (!destructive) {
                 memcpy(copied_constants, tuple->constants,
@@ -450,7 +546,7 @@ bi_update_fau(struct bi_clause_state *clause,
 
                 if (src.type == BI_INDEX_FAU) {
                         bool no_constants = *constant_count == 0;
-                        bool no_other_fau = (tuple->fau == src.value) || !tuple->fau;
+                        bool no_other_fau = (fau == src.value) || !fau;
                         bool mergable = no_constants && no_other_fau;
 
                         if (destructive) {
@@ -459,6 +555,8 @@ bi_update_fau(struct bi_clause_state *clause,
                         } else if (!mergable) {
                                 return false;
                         }
+
+                        fau = src.value;
                 } else if (src.type == BI_INDEX_CONSTANT) {
                         /* No need to reserve space if we have a fast 0 */
                         if (src.value == 0 && fma && bi_reads_zero(instr))
@@ -478,7 +576,7 @@ bi_update_fau(struct bi_clause_state *clause,
                         if (found && !pcrel)
                                 continue;
 
-                        bool no_fau = (*constant_count > 0) || !tuple->fau;
+                        bool no_fau = (*constant_count > 0) || !fau;
                         bool mergable = no_fau && ((*constant_count) < 2);
 
                         if (destructive) {
@@ -784,6 +882,14 @@ bi_take_instr(bi_context *ctx, struct bi_worklist st,
 
         if (tuple->add && tuple->add->op == BI_OPCODE_CUBEFACE)
                 return bi_lower_cubeface(ctx, clause, tuple);
+        else if (tuple->add && tuple->add->op == BI_OPCODE_PATOM_C_I32)
+                return bi_lower_atom_c(ctx, clause, tuple);
+        else if (tuple->add && tuple->add->op == BI_OPCODE_PATOM_C1_I32)
+                return bi_lower_atom_c1(ctx, clause, tuple);
+        else if (tuple->add && tuple->add->op == BI_OPCODE_SEG_ADD_I64)
+                return bi_lower_seg_add(ctx, clause, tuple);
+        else if (tuple->add && tuple->add->table)
+                return bi_lower_dtsel(ctx, clause, tuple);
 
         unsigned idx = bi_choose_index(st, clause, tuple, fma);
 
@@ -852,8 +958,10 @@ bi_rewrite_fau_to_pass(bi_tuple *tuple)
         bi_foreach_instr_and_src_in_tuple(tuple, ins, s) {
                 if (ins->src[s].type != BI_INDEX_FAU) continue;
 
-                ins->src[s] = bi_passthrough(ins->src[s].offset ?
+                bi_index pass = bi_passthrough(ins->src[s].offset ?
                                 BIFROST_SRC_FAU_HI : BIFROST_SRC_FAU_LO);
+
+                ins->src[s] = bi_replace_index(ins->src[s], pass);
         }
 }
 
@@ -1207,14 +1315,25 @@ bi_schedule_clause(bi_context *ctx, bi_block *block, struct bi_worklist st)
 
                         if (!clause->message_type) {
                                 clause->message_type = msg;
+                                clause->message = tuple->add;
                                 clause_state.message = true;
                         }
 
-                        if (tuple->add->op == BI_OPCODE_ATEST)
-                                clause->dependencies |= (1 << 6);
-
-                        if (tuple->add->op == BI_OPCODE_BLEND)
-                                clause->dependencies |= (1 << 6) | (1 << 7);
+                        switch (tuple->add->op) {
+                        case BI_OPCODE_ATEST:
+                                clause->dependencies |= (1 << BIFROST_SLOT_ELDEST_DEPTH);
+                                break;
+                        case BI_OPCODE_LD_TILE:
+                                if (!ctx->inputs->is_blend)
+                                        clause->dependencies |= (1 << BIFROST_SLOT_ELDEST_COLOUR);
+                                break;
+                        case BI_OPCODE_BLEND:
+                                clause->dependencies |= (1 << BIFROST_SLOT_ELDEST_DEPTH);
+                                clause->dependencies |= (1 << BIFROST_SLOT_ELDEST_COLOUR);
+                                break;
+                        default:
+                                break;
+                        }
                 }
 
                 clause_state.consts[idx] = bi_get_const_state(&tuple_state);
@@ -1397,14 +1516,88 @@ bi_schedule_block(bi_context *ctx, bi_block *block)
         bi_free_worklist(st);
 }
 
+static bool
+bi_check_fau_src(bi_instr *ins, unsigned s, uint32_t *constants, unsigned *cwords, bi_index *fau)
+{
+        bi_index src = ins->src[s];
+
+        /* Staging registers can't have FAU accesses */
+        if (s == 0 && bi_opcode_props[ins->op].sr_read)
+                return (src.type != BI_INDEX_CONSTANT) && (src.type != BI_INDEX_FAU);
+
+        if (src.type == BI_INDEX_CONSTANT) {
+                /* Allow fast zero */
+                if (src.value == 0 && bi_opcode_props[ins->op].fma && bi_reads_zero(ins))
+                        return true;
+
+                if (!bi_is_null(*fau))
+                        return false;
+
+                /* Else, try to inline a constant */
+                for (unsigned i = 0; i < *cwords; ++i) {
+                        if (src.value == constants[i])
+                                return true;
+                }
+
+                if (*cwords >= 2)
+                        return false;
+
+                constants[(*cwords)++] = src.value;
+        } else if (src.type == BI_INDEX_FAU) {
+                if (*cwords != 0)
+                        return false;
+
+                /* Can only read from one pair of FAU words */
+                if (!bi_is_null(*fau) && (src.value != fau->value))
+                        return false;
+
+                /* If there is a target, we'll need a PC-relative constant */
+                if (ins->branch_target)
+                        return false;
+
+                *fau = src;
+        }
+
+        return true;
+}
+
+static void
+bi_lower_fau(bi_context *ctx, bi_block *block)
+{
+        bi_builder b = bi_init_builder(ctx, bi_after_block(ctx->current_block));
+
+        bi_foreach_instr_in_block_safe(block, _ins) {
+                bi_instr *ins = (bi_instr *) _ins;
+
+                uint32_t constants[2];
+                unsigned cwords = 0;
+                bi_index fau = bi_null();
+
+                /* ATEST must have the ATEST datum encoded, not any other
+                 * uniform. See to it this is the case. */
+                if (ins->op == BI_OPCODE_ATEST)
+                        fau = ins->src[2];
+
+                bi_foreach_src(ins, s) {
+                        if (bi_check_fau_src(ins, s, constants, &cwords, &fau)) continue;
+
+                        b.cursor = bi_before_instr(ins);
+                        bi_index copy = bi_mov_i32(&b, ins->src[s]);
+                        ins->src[s] = bi_replace_index(ins->src[s], copy);
+                }
+        }
+}
+
 void
 bi_schedule(bi_context *ctx)
 {
         bi_foreach_block(ctx, block) {
                 bi_block *bblock = (bi_block *) block;
+                bi_lower_fau(ctx, bblock);
                 bi_schedule_block(ctx, bblock);
-                bi_opt_dead_code_eliminate(ctx, bblock, true);
         }
+
+        bi_opt_dead_code_eliminate(ctx, true);
 }
 
 #ifndef NDEBUG

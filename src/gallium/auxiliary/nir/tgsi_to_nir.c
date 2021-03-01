@@ -758,7 +758,7 @@ ttn_src_for_file_and_index(struct ttn_compile *c, unsigned file, unsigned index,
          nir_intrinsic_set_base(load, index);
          if (indirect) {
             offset = ttn_src_for_indirect(c, indirect);
-            nir_intrinsic_set_range(load, c->ubo_sizes[0] - index);
+            nir_intrinsic_set_range(load, c->build.shader->num_uniforms * 16 - index);
          } else {
             offset = nir_imm_int(b, 0);
             nir_intrinsic_set_range(load, 1);
@@ -1709,6 +1709,8 @@ ttn_mem(struct ttn_compile *c, nir_alu_dest dest, nir_ssa_def **src)
       case TGSI_OPCODE_STORE:
          op = nir_intrinsic_store_ssbo;
          break;
+      default:
+         unreachable("unexpected buffer opcode");
       }
 
       add_ssbo_var(c, resource_index);
@@ -1738,6 +1740,8 @@ ttn_mem(struct ttn_compile *c, nir_alu_dest dest, nir_ssa_def **src)
       case TGSI_OPCODE_STORE:
          op = nir_intrinsic_image_deref_store;
          break;
+      default:
+         unreachable("unexpected file opcode");
       }
 
       instr = nir_intrinsic_instr_create(b->shader, op);
@@ -2486,6 +2490,11 @@ ttn_finalize_nir(struct ttn_compile *c, struct pipe_screen *screen)
    NIR_PASS_V(nir, nir_lower_var_copies);
    NIR_PASS_V(nir, nir_lower_system_values);
    NIR_PASS_V(nir, nir_lower_compute_system_values, NULL);
+
+   if (!screen->get_param(screen, PIPE_CAP_TEXRECT)) {
+      const struct nir_lower_tex_options opts = { .lower_rect = true, };
+      NIR_PASS_V(nir, nir_lower_tex, &opts);
+   }
 
    if (nir->options->lower_uniforms_to_ubo)
       NIR_PASS_V(nir, nir_lower_uniforms_to_ubo, 16);

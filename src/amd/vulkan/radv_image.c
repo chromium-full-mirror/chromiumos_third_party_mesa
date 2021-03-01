@@ -424,7 +424,8 @@ radv_patch_image_from_extra_info(struct radv_device *device,
 
 		if (radv_surface_has_scanout(device, create_info)) {
 			image->planes[plane].surface.flags |= RADEON_SURF_SCANOUT;
-			image->planes[plane].surface.flags |= RADEON_SURF_DISABLE_DCC;
+			if (device->instance->debug_flags & RADV_DEBUG_NO_DISPLAY_DCC)
+				image->planes[plane].surface.flags |= RADEON_SURF_DISABLE_DCC;
 
 			image->info.surf_index = NULL;
 		}
@@ -442,11 +443,11 @@ radv_get_surface_flags(struct radv_device *device,
 	uint64_t flags;
 	unsigned array_mode = radv_choose_tiling(device, pCreateInfo, image_format);
 	VkFormat format = vk_format_get_plane_format(image_format, plane_id);
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 	bool is_depth, is_stencil;
 
-	is_depth = vk_format_has_depth(desc);
-	is_stencil = vk_format_has_stencil(desc);
+	is_depth = util_format_has_depth(desc);
+	is_stencil = util_format_has_stencil(desc);
 
 	flags = RADEON_SURF_SET(array_mode, MODE);
 
@@ -519,26 +520,26 @@ si_tile_mode_index(const struct radv_image_plane *plane, unsigned level, bool st
 static unsigned radv_map_swizzle(unsigned swizzle)
 {
 	switch (swizzle) {
-	case VK_SWIZZLE_Y:
+	case PIPE_SWIZZLE_Y:
 		return V_008F0C_SQ_SEL_Y;
-	case VK_SWIZZLE_Z:
+	case PIPE_SWIZZLE_Z:
 		return V_008F0C_SQ_SEL_Z;
-	case VK_SWIZZLE_W:
+	case PIPE_SWIZZLE_W:
 		return V_008F0C_SQ_SEL_W;
-	case VK_SWIZZLE_0:
+	case PIPE_SWIZZLE_0:
 		return V_008F0C_SQ_SEL_0;
-	case VK_SWIZZLE_1:
+	case PIPE_SWIZZLE_1:
 		return V_008F0C_SQ_SEL_1;
-	default: /* VK_SWIZZLE_X */
+	default: /* PIPE_SWIZZLE_X */
 		return V_008F0C_SQ_SEL_X;
 	}
 }
 
 static void
-radv_compose_swizzle(const struct vk_format_description *desc,
-		     const VkComponentMapping *mapping, enum vk_swizzle swizzle[4])
+radv_compose_swizzle(const struct util_format_description *desc,
+		     const VkComponentMapping *mapping, enum pipe_swizzle swizzle[4])
 {
-	if (desc->format == VK_FORMAT_R64_UINT || desc->format == VK_FORMAT_R64_SINT) {
+	if (desc->format == PIPE_FORMAT_R64_UINT || desc->format == PIPE_FORMAT_R64_SINT) {
 		/* 64-bit formats only support storage images and storage images
 		 * require identity component mappings. We use 32-bit
 		 * instructions to access 64-bit images, so we need a special
@@ -548,15 +549,17 @@ radv_compose_swizzle(const struct vk_format_description *desc,
 		 * by loads to create the w component, which has to be 0 for
 		 * NULL descriptors.
 		 */
-		swizzle[0] = VK_SWIZZLE_X;
-		swizzle[1] = VK_SWIZZLE_Y;
-		swizzle[2] = VK_SWIZZLE_1;
-		swizzle[3] = VK_SWIZZLE_0;
+		swizzle[0] = PIPE_SWIZZLE_X;
+		swizzle[1] = PIPE_SWIZZLE_Y;
+		swizzle[2] = PIPE_SWIZZLE_1;
+		swizzle[3] = PIPE_SWIZZLE_0;
 	} else if (!mapping) {
 		for (unsigned i = 0; i < 4; i++)
 			swizzle[i] = desc->swizzle[i];
-	} else if (desc->colorspace == VK_FORMAT_COLORSPACE_ZS) {
-		const unsigned char swizzle_xxxx[4] = {0, 0, 0, 0};
+	} else if (desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS) {
+		const unsigned char swizzle_xxxx[4] = {
+			PIPE_SWIZZLE_X, PIPE_SWIZZLE_0, PIPE_SWIZZLE_0, PIPE_SWIZZLE_1
+		};
 		vk_format_compose_swizzles(mapping, swizzle_xxxx, swizzle);
 	} else {
 		vk_format_compose_swizzles(mapping, desc->swizzle, swizzle);
@@ -571,13 +574,13 @@ radv_make_buffer_descriptor(struct radv_device *device,
 			    unsigned range,
 			    uint32_t *state)
 {
-	const struct vk_format_description *desc;
+	const struct util_format_description *desc;
 	unsigned stride;
 	uint64_t gpu_address = radv_buffer_get_va(buffer->bo);
 	uint64_t va = gpu_address + buffer->offset;
 	unsigned num_format, data_format;
 	int first_non_void;
-	enum vk_swizzle swizzle[4];
+	enum pipe_swizzle swizzle[4];
 	desc = vk_format_description(vk_format);
 	first_non_void = vk_format_get_first_non_void_channel(vk_format);
 	stride = desc->block.bits / 8;
@@ -770,29 +773,29 @@ static unsigned radv_tex_dim(VkImageType image_type, VkImageViewType view_type,
 	}
 }
 
-static unsigned gfx9_border_color_swizzle(const enum vk_swizzle swizzle[4])
+static unsigned gfx9_border_color_swizzle(const enum pipe_swizzle swizzle[4])
 {
 	unsigned bc_swizzle = V_008F20_BC_SWIZZLE_XYZW;
 
-	if (swizzle[3] == VK_SWIZZLE_X) {
+	if (swizzle[3] == PIPE_SWIZZLE_X) {
 		/* For the pre-defined border color values (white, opaque
 		 * black, transparent black), the only thing that matters is
 		 * that the alpha channel winds up in the correct place
 		 * (because the RGB channels are all the same) so either of
 		 * these enumerations will work.
 		 */
-		if (swizzle[2] == VK_SWIZZLE_Y)
+		if (swizzle[2] == PIPE_SWIZZLE_Y)
 			bc_swizzle = V_008F20_BC_SWIZZLE_WZYX;
 		else
 			bc_swizzle = V_008F20_BC_SWIZZLE_WXYZ;
-	} else if (swizzle[0] == VK_SWIZZLE_X) {
-		if (swizzle[1] == VK_SWIZZLE_Y)
+	} else if (swizzle[0] == PIPE_SWIZZLE_X) {
+		if (swizzle[1] == PIPE_SWIZZLE_Y)
 			bc_swizzle = V_008F20_BC_SWIZZLE_XYZW;
 		else
 			bc_swizzle = V_008F20_BC_SWIZZLE_XWYZ;
-	} else if (swizzle[1] == VK_SWIZZLE_X) {
+	} else if (swizzle[1] == PIPE_SWIZZLE_X) {
 		bc_swizzle = V_008F20_BC_SWIZZLE_YXWZ;
-	} else if (swizzle[2] == VK_SWIZZLE_X) {
+	} else if (swizzle[2] == PIPE_SWIZZLE_X) {
 		bc_swizzle = V_008F20_BC_SWIZZLE_ZYXW;
 	}
 
@@ -801,10 +804,10 @@ static unsigned gfx9_border_color_swizzle(const enum vk_swizzle swizzle[4])
 
 bool vi_alpha_is_on_msb(struct radv_device *device, VkFormat format)
 {
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 
 	if (device->physical_device->rad_info.chip_class >= GFX10 && desc->nr_channels == 1)
-		return desc->swizzle[3] == VK_SWIZZLE_X;
+		return desc->swizzle[3] == PIPE_SWIZZLE_X;
 
 	return radv_translate_colorswap(format, false) <= 1;
 }
@@ -824,8 +827,8 @@ gfx10_make_texture_descriptor(struct radv_device *device,
 			   uint32_t *state,
 			   uint32_t *fmask_state)
 {
-	const struct vk_format_description *desc;
-	enum vk_swizzle swizzle[4];
+	const struct util_format_description *desc;
+	enum pipe_swizzle swizzle[4];
 	unsigned img_format;
 	unsigned type;
 
@@ -954,8 +957,8 @@ si_make_texture_descriptor(struct radv_device *device,
 			   uint32_t *state,
 			   uint32_t *fmask_state)
 {
-	const struct vk_format_description *desc;
-	enum vk_swizzle swizzle[4];
+	const struct util_format_description *desc;
+	enum pipe_swizzle swizzle[4];
 	int first_non_void;
 	unsigned num_format, data_format, type;
 
@@ -1180,24 +1183,9 @@ radv_query_opaque_metadata(struct radv_device *device,
 			   struct radeon_bo_metadata *md)
 {
 	static const VkComponentMapping fixedmapping;
-	uint32_t desc[8], i;
+	uint32_t desc[8];
 
 	assert(image->plane_count == 1);
-
-	/* Metadata image format format version 1:
-	 * [0] = 1 (metadata format identifier)
-	 * [1] = (VENDOR_ID << 16) | PCI_ID
-	 * [2:9] = image descriptor for the whole resource
-	 *         [2] is always 0, because the base address is cleared
-	 *         [9] is the DCC offset bits [39:8] from the beginning of
-	 *             the buffer
-	 * [10:10+LAST_LEVEL] = mipmap level offset bits [39:8] for each level
-	 */
-	md->metadata[0] = 1; /* metadata image format version 1 */
-
-	/* TILE_MODE_INDEX is ambiguous without a PCI ID. */
-	md->metadata[1] = si_get_bo_metadata_word1(device);
-
 
 	radv_make_texture_descriptor(device, image, false,
 				     (VkImageViewType)image->type, image->vk_format,
@@ -1210,21 +1198,8 @@ radv_query_opaque_metadata(struct radv_device *device,
 	si_set_mutable_tex_desc_fields(device, image, &image->planes[0].surface.u.legacy.level[0], 0, 0, 0,
 				       image->planes[0].surface.blk_w, false, false, false, desc);
 
-	/* Clear the base address and set the relative DCC offset. */
-	desc[0] = 0;
-	desc[1] &= C_008F14_BASE_ADDRESS_HI;
-	desc[7] = image->planes[0].surface.dcc_offset >> 8;
-
-	/* Dwords [2:9] contain the image descriptor. */
-	memcpy(&md->metadata[2], desc, sizeof(desc));
-
-	/* Dwords [10:..] contain the mipmap level offsets. */
-	if (device->physical_device->rad_info.chip_class <= GFX8) {
-		for (i = 0; i <= image->info.levels - 1; i++)
-			md->metadata[10+i] = image->planes[0].surface.u.legacy.level[i].offset >> 8;
-		md->size_metadata = (11 + image->info.levels - 1) * 4;
-	} else
-		md->size_metadata = 10 * 4;
+	ac_surface_get_umd_metadata(&device->physical_device->rad_info, &image->planes[0].surface,
+				    image->info.levels, desc, &md->size_metadata, md->metadata);
 }
 
 void
@@ -1237,7 +1212,14 @@ radv_init_metadata(struct radv_device *device,
 	memset(metadata, 0, sizeof(*metadata));
 
 	if (device->physical_device->rad_info.chip_class >= GFX9) {
+		uint64_t dcc_offset = image->offset + (surface->display_dcc_offset ?
+			surface->display_dcc_offset : surface->dcc_offset);
 		metadata->u.gfx9.swizzle_mode = surface->u.gfx9.surf.swizzle_mode;
+		metadata->u.gfx9.dcc_offset_256b = dcc_offset >> 8;
+		metadata->u.gfx9.dcc_pitch_max = surface->u.gfx9.display_dcc_pitch_max;
+		metadata->u.gfx9.dcc_independent_64b_blocks = surface->u.gfx9.dcc.independent_64B_blocks;
+		metadata->u.gfx9.dcc_independent_128b_blocks = surface->u.gfx9.dcc.independent_128B_blocks;
+		metadata->u.gfx9.dcc_max_compressed_block_size = surface->u.gfx9.dcc.max_compressed_block_size;
 		metadata->u.gfx9.scanout = (surface->flags & RADEON_SURF_SCANOUT) != 0;
 	} else {
 		metadata->u.legacy.microtile = surface->u.legacy.level[0].mode >= RADEON_SURF_MODE_1D ?
@@ -1346,6 +1328,36 @@ radv_image_reset_layout(struct radv_image *image)
 	}
 }
 
+static VkResult
+radv_image_init_retile_map(struct radv_device *device, struct radv_image *image)
+{
+	/* If we do a relayout we have to free the old buffer. */
+	if(image->retile_map)
+		device->ws->buffer_destroy(device->ws, image->retile_map);
+
+	image->retile_map = NULL;
+	if (!radv_image_has_dcc(image) || !image->planes[0].surface.display_dcc_offset ||
+	    image->planes[0].surface.display_dcc_offset == image->planes[0].surface.dcc_offset)
+		return VK_SUCCESS;
+
+	uint32_t retile_map_size = ac_surface_get_retile_map_size(&image->planes[0].surface);
+	image->retile_map = device->ws->buffer_create(device->ws, retile_map_size, 4096,
+						      RADEON_DOMAIN_VRAM, RADEON_FLAG_READ_ONLY |
+						                          RADEON_FLAG_NO_INTERPROCESS_SHARING,
+						      RADV_BO_PRIORITY_METADATA);
+	if (!image->retile_map) {
+		return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+	}
+	void *data = device->ws->buffer_map(image->retile_map);
+	if (!data) {
+		device->ws->buffer_destroy(device->ws, image->retile_map);
+		return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+	}
+
+	memcpy(data, image->planes[0].surface.u.gfx9.dcc_retile_map, retile_map_size);
+	return VK_SUCCESS;
+}
+
 VkResult
 radv_image_create_layout(struct radv_device *device,
                          struct radv_image_create_info create_info,
@@ -1370,14 +1382,8 @@ radv_image_create_layout(struct radv_device *device,
 		uint64_t offset;
 		unsigned stride;
 
-		if (plane) {
-			const struct vk_format_description *desc = vk_format_description(image->vk_format);
-			assert(info.width % desc->width_divisor == 0);
-			assert(info.height % desc->height_divisor == 0);
-
-			info.width /= desc->width_divisor;
-			info.height /= desc->height_divisor;
-		}
+		info.width = vk_format_get_plane_width(image->vk_format, plane, info.width);
+		info.height = vk_format_get_plane_height(image->vk_format, plane, info.height);
 
 		if (create_info.no_metadata_planes || image->plane_count > 1) {
 			image->planes[plane].surface.flags |= RADEON_SURF_DISABLE_DCC |
@@ -1387,8 +1393,16 @@ radv_image_create_layout(struct radv_device *device,
 
 		device->ws->surface_init(device->ws, &info, &image->planes[plane].surface);
 
-		if (!create_info.no_metadata_planes && image->plane_count == 1 &&
-		    !mod_info)
+		if (create_info.bo_metadata && !mod_info &&
+		    !ac_surface_set_umd_metadata(&device->physical_device->rad_info,
+		                                 &image->planes[plane].surface,
+		                                 image_info.storage_samples, image_info.levels,
+		                                 create_info.bo_metadata->size_metadata,
+		                                 create_info.bo_metadata->metadata))
+			return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+
+		if (!create_info.no_metadata_planes && !create_info.bo_metadata &&
+		    image->plane_count == 1 && !mod_info)
 			radv_image_alloc_single_sample_cmask(device, image, &image->planes[plane].surface);
 
 		if (mod_info) {
@@ -1435,6 +1449,10 @@ radv_image_create_layout(struct radv_device *device,
 
 	radv_image_alloc_values(device, image);
 
+	result = radv_image_init_retile_map(device, image);
+	if (result != VK_SUCCESS)
+		return result;
+
 	assert(image->planes[0].surface.surf_size);
 	assert(image->planes[0].surface.modifier == DRM_FORMAT_MOD_INVALID ||
 	       ac_modifier_has_dcc(image->planes[0].surface.modifier) == radv_image_has_dcc(image));
@@ -1448,6 +1466,9 @@ radv_destroy_image(struct radv_device *device,
 {
 	if ((image->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) && image->bo)
 		device->ws->buffer_destroy(device->ws, image->bo);
+
+	if(image->retile_map)
+		device->ws->buffer_destroy(device->ws, image->retile_map);
 
 	if (image->owned_memory != VK_NULL_HANDLE) {
 		RADV_FROM_HANDLE(radv_device_memory, mem, image->owned_memory);
@@ -1470,7 +1491,7 @@ radv_image_print_info(struct radv_device *device, struct radv_image *image)
 	for (unsigned i = 0; i < image->plane_count; ++i) {
 		const struct radv_image_plane *plane = &image->planes[i];
 		const struct radeon_surf *surf = &plane->surface;
-		const struct vk_format_description *desc =
+		const struct util_format_description *desc =
 			vk_format_description(plane->format);
 		uint64_t offset = ac_surface_get_plane_offset(device->physical_device->rad_info.chip_class,
 		                                              &plane->surface, 0, 0);
@@ -1647,8 +1668,11 @@ radv_image_create(VkDevice _device,
 		return VK_SUCCESS;
 	}
 
-	ASSERTED VkResult result = radv_image_create_layout(device, *create_info, explicit_mod, image);
-	assert(result == VK_SUCCESS);
+	VkResult result = radv_image_create_layout(device, *create_info, explicit_mod, image);
+	if (result != VK_SUCCESS) {
+		radv_destroy_image(device, alloc, image);
+		return result;
+	}
 
 	if (image->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) {
 		image->alignment = MAX2(image->alignment, 4096);
@@ -1682,7 +1706,6 @@ radv_image_view_make_descriptor(struct radv_image_view *iview,
 {
 	struct radv_image *image = iview->image;
 	struct radv_image_plane *plane = &image->planes[plane_id];
-	const struct vk_format_description *format_desc = vk_format_description(image->vk_format);
 	bool is_stencil = iview->aspect_mask == VK_IMAGE_ASPECT_STENCIL_BIT;
 	uint32_t blk_w;
 	union radv_descriptor *descriptor;
@@ -1707,8 +1730,8 @@ radv_image_view_make_descriptor(struct radv_image_view *iview,
 				     hw_level, hw_level + iview->level_count - 1,
 				     iview->base_layer,
 				     iview->base_layer + iview->layer_count - 1,
-				     iview->extent.width  / (plane_id ? format_desc->width_divisor : 1),
-				     iview->extent.height  / (plane_id ? format_desc->height_divisor : 1),
+				     vk_format_get_plane_width(image->vk_format, plane_id, iview->extent.width),
+				     vk_format_get_plane_height(image->vk_format, plane_id, iview->extent.height),
 				     iview->extent.depth,
 				     descriptor->plane_descriptors[descriptor_plane_id],
 				     descriptor_plane_id ? NULL : descriptor->fmask_descriptor);

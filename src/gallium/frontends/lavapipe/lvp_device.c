@@ -180,6 +180,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_DestroyInstance(
    vk_free(&instance->vk.alloc, instance);
 }
 
+#ifndef _WIN32
 static void lvp_get_image(struct dri_drawable *dri_drawable,
                           int x, int y, unsigned width, unsigned height, unsigned stride,
                           void *data)
@@ -205,6 +206,37 @@ static struct drisw_loader_funcs lvp_sw_lf = {
    .put_image = lvp_put_image,
    .put_image2 = lvp_put_image2,
 };
+#endif
+
+static VkResult
+lvp_enumerate_physical_devices(struct lvp_instance *instance)
+{
+   VkResult result;
+
+   if (instance->physicalDeviceCount != -1)
+      return VK_SUCCESS;
+
+   /* sw only for now */
+   instance->num_devices = pipe_loader_sw_probe(NULL, 0);
+
+   assert(instance->num_devices == 1);
+
+#ifdef _WIN32
+   pipe_loader_sw_probe_null(&instance->devs);
+#else
+   pipe_loader_sw_probe_dri(&instance->devs, &lvp_sw_lf);
+#endif
+
+   result = lvp_physical_device_init(&instance->physicalDevice,
+                                     instance, &instance->devs[0]);
+   if (result == VK_ERROR_INCOMPATIBLE_DRIVER) {
+      instance->physicalDeviceCount = 0;
+   } else if (result == VK_SUCCESS) {
+      instance->physicalDeviceCount = 1;
+   }
+
+   return result;
+}
 
 VKAPI_ATTR VkResult VKAPI_CALL lvp_EnumeratePhysicalDevices(
    VkInstance                                  _instance,
@@ -214,26 +246,9 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_EnumeratePhysicalDevices(
    LVP_FROM_HANDLE(lvp_instance, instance, _instance);
    VkResult result;
 
-   if (instance->physicalDeviceCount < 0) {
-
-      /* sw only for now */
-      instance->num_devices = pipe_loader_sw_probe(NULL, 0);
-
-      assert(instance->num_devices == 1);
-
-      pipe_loader_sw_probe_dri(&instance->devs, &lvp_sw_lf);
-
-
-      result = lvp_physical_device_init(&instance->physicalDevice,
-                                        instance, &instance->devs[0]);
-      if (result == VK_ERROR_INCOMPATIBLE_DRIVER) {
-         instance->physicalDeviceCount = 0;
-      } else if (result == VK_SUCCESS) {
-         instance->physicalDeviceCount = 1;
-      } else {
-         return result;
-      }
-   }
+   result = lvp_enumerate_physical_devices(instance);
+   if (result != VK_SUCCESS)
+      return result;
 
    if (!pPhysicalDevices) {
       *pPhysicalDeviceCount = instance->physicalDeviceCount;
@@ -245,6 +260,30 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_EnumeratePhysicalDevices(
    }
 
    return VK_SUCCESS;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lvp_EnumeratePhysicalDeviceGroups(
+   VkInstance                                 _instance,
+   uint32_t*                                   pPhysicalDeviceGroupCount,
+   VkPhysicalDeviceGroupProperties*            pPhysicalDeviceGroupProperties)
+{
+   LVP_FROM_HANDLE(lvp_instance, instance, _instance);
+   VK_OUTARRAY_MAKE_TYPED(VkPhysicalDeviceGroupProperties, out,
+                          pPhysicalDeviceGroupProperties,
+                          pPhysicalDeviceGroupCount);
+
+   VkResult result = lvp_enumerate_physical_devices(instance);
+   if (result != VK_SUCCESS)
+      return result;
+
+   vk_outarray_append_typed(VkPhysicalDeviceGroupProperties, &out, p) {
+      p->physicalDeviceCount = 1;
+      memset(p->physicalDevices, 0, sizeof(p->physicalDevices));
+      p->physicalDevices[0] = lvp_physical_device_to_handle(&instance->physicalDevice);
+      p->subsetAllocation = false;
+   }
+
+   return vk_outarray_status(&out);
 }
 
 VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures(
@@ -415,7 +454,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceProperties(VkPhysicalDevice phys
       .bufferImageGranularity                   = 64, /* A cache line */
       .sparseAddressSpaceSize                   = 0,
       .maxBoundDescriptorSets                   = MAX_SETS,
-      .maxPerStageDescriptorSamplers            = 32,
+      .maxPerStageDescriptorSamplers            = pdevice->pscreen->get_shader_param(pdevice->pscreen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS),
       .maxPerStageDescriptorUniformBuffers      = pdevice->pscreen->get_shader_param(pdevice->pscreen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_MAX_CONST_BUFFERS),
       .maxPerStageDescriptorStorageBuffers      = pdevice->pscreen->get_shader_param(pdevice->pscreen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_MAX_SHADER_BUFFERS),
       .maxPerStageDescriptorSampledImages       = pdevice->pscreen->get_shader_param(pdevice->pscreen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS),
@@ -677,6 +716,12 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL lvp_GetInstanceProcAddr(
                                     &lvp_instance_entrypoints,
                                     pName);
 }
+
+/* Windows will use a dll definition file to avoid build errors. */
+#ifdef _WIN32
+#undef PUBLIC
+#define PUBLIC
+#endif
 
 /* The loader wants us to expose a second GetInstanceProcAddr function
  * to work around certain LD_PRELOAD issues seen in apps.
@@ -964,13 +1009,8 @@ static VkResult queue_wait_idle(struct lvp_queue *queue, uint64_t timeout)
       while (p_atomic_read(&queue->count))
          os_time_sleep(100);
    else {
-      struct timespec t, current;
-      clock_gettime(CLOCK_MONOTONIC, &current);
-      timespec_add_nsec(&t, &current, timeout);
-      bool timedout = false;
-      while (p_atomic_read(&queue->count) && !(timedout = timespec_passed(CLOCK_MONOTONIC, &t)))
-         os_time_sleep(10);
-      if (timedout)
+      int64_t atime = os_time_get_absolute_timeout(timeout);
+      if (!os_wait_until_zero_abs_timeout(&queue->count, atime))
          return VK_TIMEOUT;
    }
    return VK_SUCCESS;
@@ -1063,7 +1103,7 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_MapMemory(
 
    map = device->pscreen->map_memory(device->pscreen, mem->pmem);
 
-   *ppData = map + offset;
+   *ppData = (char *)map + offset;
    return VK_SUCCESS;
 }
 
@@ -1669,4 +1709,43 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceExternalSemaphoreProperties(
    pExternalSemaphoreProperties->exportFromImportedHandleTypes = 0;
    pExternalSemaphoreProperties->compatibleHandleTypes = 0;
    pExternalSemaphoreProperties->externalSemaphoreFeatures = 0;
+}
+
+static const VkTimeDomainEXT lvp_time_domains[] = {
+        VK_TIME_DOMAIN_DEVICE_EXT,
+        VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT,
+};
+
+VKAPI_ATTR VkResult VKAPI_CALL lvp_GetPhysicalDeviceCalibrateableTimeDomainsEXT(
+   VkPhysicalDevice physicalDevice,
+   uint32_t *pTimeDomainCount,
+   VkTimeDomainEXT *pTimeDomains)
+{
+   int d;
+   VK_OUTARRAY_MAKE_TYPED(VkTimeDomainEXT, out, pTimeDomains,
+                          pTimeDomainCount);
+
+   for (d = 0; d < ARRAY_SIZE(lvp_time_domains); d++) {
+      vk_outarray_append_typed(VkTimeDomainEXT, &out, i) {
+         *i = lvp_time_domains[d];
+      }
+    }
+
+    return vk_outarray_status(&out);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lvp_GetCalibratedTimestampsEXT(
+   VkDevice device,
+   uint32_t timestampCount,
+   const VkCalibratedTimestampInfoEXT *pTimestampInfos,
+   uint64_t *pTimestamps,
+   uint64_t *pMaxDeviation)
+{
+   *pMaxDeviation = 1;
+
+   uint64_t now = os_time_get_nano();
+   for (unsigned i = 0; i < timestampCount; i++) {
+      pTimestamps[i] = now;
+   }
+   return VK_SUCCESS;
 }

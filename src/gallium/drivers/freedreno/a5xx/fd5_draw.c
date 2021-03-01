@@ -43,6 +43,7 @@
 static void
 draw_impl(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		struct fd5_emit *emit, unsigned index_offset)
+	assert_dt
 {
 	const struct pipe_draw_info *info = emit->info;
 	enum pc_di_primtype primtype = ctx->primtypes[info->mode];
@@ -72,6 +73,7 @@ draw_impl(struct fd_context *ctx, struct fd_ringbuffer *ring,
  */
 static void
 fixup_shader_state(struct fd_context *ctx, struct ir3_shader_key *key)
+	assert_dt
 {
 	struct fd5_context *fd5_ctx = fd5_context(ctx);
 	struct ir3_shader_key *last_key = &fd5_ctx->last_key;
@@ -96,6 +98,7 @@ fd5_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
              const struct pipe_draw_indirect_info *indirect,
              const struct pipe_draw_start_count *draw,
              unsigned index_offset)
+	in_dt
 {
 	struct fd5_context *fd5_ctx = fd5_context(ctx);
 	struct fd5_emit emit = {
@@ -103,26 +106,14 @@ fd5_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 		.vtx  = &ctx->vtx,
 		.prog = &ctx->prog,
 		.info = info,
-                .indirect = indirect,
-                .draw = draw,
+		.indirect = indirect,
+		.draw = draw,
 		.key = {
-			.color_two_side = ctx->rasterizer->light_twoside,
-			.vclamp_color = ctx->rasterizer->clamp_vertex_color,
-			.fclamp_color = ctx->rasterizer->clamp_fragment_color,
 			.rasterflat = ctx->rasterizer->flatshade,
 			.ucp_enables = ctx->rasterizer->clip_plane_enable,
-			.has_per_samp = (fd5_ctx->fsaturate || fd5_ctx->vsaturate ||
-					fd5_ctx->fastc_srgb || fd5_ctx->vastc_srgb),
-			.vsaturate_s = fd5_ctx->vsaturate_s,
-			.vsaturate_t = fd5_ctx->vsaturate_t,
-			.vsaturate_r = fd5_ctx->vsaturate_r,
-			.fsaturate_s = fd5_ctx->fsaturate_s,
-			.fsaturate_t = fd5_ctx->fsaturate_t,
-			.fsaturate_r = fd5_ctx->fsaturate_r,
+			.has_per_samp = fd5_ctx->fastc_srgb || fd5_ctx->vastc_srgb,
 			.vastc_srgb = fd5_ctx->vastc_srgb,
 			.fastc_srgb = fd5_ctx->fastc_srgb,
-			.vsamples = ctx->tex[PIPE_SHADER_VERTEX].samples,
-			.fsamples = ctx->tex[PIPE_SHADER_FRAGMENT].samples,
 		},
 		.rasterflat = ctx->rasterizer->flatshade,
 		.sprite_coord_enable = ctx->rasterizer->sprite_coord_enable,
@@ -261,6 +252,7 @@ fd5_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 static bool
 fd5_clear(struct fd_context *ctx, unsigned buffers,
 		const union pipe_color_union *color, double depth, unsigned stencil)
+	assert_dt
 {
 	struct fd_ringbuffer *ring = ctx->batch->draw;
 	struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
@@ -372,6 +364,7 @@ fd5_clear(struct fd_context *ctx, unsigned buffers,
 
 void
 fd5_draw_init(struct pipe_context *pctx)
+	disable_thread_safety_analysis
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->draw_vbo = fd5_draw_vbo;

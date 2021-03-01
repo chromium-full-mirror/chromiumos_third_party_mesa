@@ -78,6 +78,7 @@ default_src_texture(struct pipe_sampler_view *src_templ,
 
 static void
 fd_blitter_pipe_begin(struct fd_context *ctx, bool render_cond, bool discard)
+	assert_dt
 {
 	fd_fence_ref(&ctx->last_fence, NULL);
 
@@ -118,6 +119,7 @@ fd_blitter_pipe_begin(struct fd_context *ctx, bool render_cond, bool discard)
 
 static void
 fd_blitter_pipe_end(struct fd_context *ctx)
+	assert_dt
 {
 	ctx->in_discard_blit = false;
 }
@@ -238,13 +240,13 @@ fd_blitter_clear(struct pipe_context *pctx, unsigned buffers,
 
 	struct pipe_draw_info info = {
 		.mode = PIPE_PRIM_MAX,    /* maps to DI_PT_RECTLIST */
-                .index_bounds_valid = true,
+		.index_bounds_valid = true,
 		.max_index = 1,
 		.instance_count = MAX2(1, pfb->layers),
 	};
-        struct pipe_draw_start_count draw = {
-                .count = 2,
-        };
+	struct pipe_draw_start_count draw = {
+		.count = 2,
+	};
 	pctx->draw_vbo(pctx, &info, NULL, &draw, 1);
 
 	/* We expect that this should not have triggered a change in pfb: */
@@ -303,6 +305,7 @@ fd_blitter_pipe_copy_region(struct fd_context *ctx,
 		struct pipe_resource *src,
 		unsigned src_level,
 		const struct pipe_box *src_box)
+	assert_dt
 {
 	/* not until we allow rendertargets to be buffers */
 	if (dst->target == PIPE_BUFFER || src->target == PIPE_BUFFER)

@@ -36,6 +36,7 @@
 #include "buffers.h"
 #include "context.h"
 #include "debug_output.h"
+#include "draw_validate.h"
 #include "enums.h"
 #include "fbobject.h"
 #include "formats.h"
@@ -716,6 +717,8 @@ fbo_incomplete(struct gl_context *ctx, const char *msg, int index)
    if (MESA_DEBUG_FLAGS & DEBUG_INCOMPLETE_FBO) {
       _mesa_debug(NULL, "FBO Incomplete: %s [%d]\n", msg, index);
    }
+
+   _mesa_update_valid_to_render_state(ctx);
 }
 
 
@@ -917,6 +920,21 @@ test_attachment_completeness(const struct gl_context *ctx, GLenum format,
          att->Complete = GL_FALSE;
          return;
       }
+
+      /* Mutable non base level texture as framebuffer attachment
+       * must be mipmap complete.
+       */
+      if (texImage->Level > texObj->Attrib.BaseLevel &&
+          !texObj->_MipmapComplete) {
+         /* Test if texture has become mipmap complete meanwhile. */
+         _mesa_test_texobj_completeness(ctx, att->Texture);
+         if (!texObj->_MipmapComplete) {
+            att_incomplete("texture attachment not mipmap complete");
+            att->Complete = GL_FALSE;
+            return;
+         }
+      }
+
       if (texImage->Width < 1 || texImage->Height < 1) {
          att_incomplete("teximage width/height=0");
          att->Complete = GL_FALSE;
@@ -3137,6 +3155,7 @@ _mesa_bind_framebuffers(struct gl_context *ctx,
 
       _mesa_reference_framebuffer(&ctx->DrawBuffer, newDrawFb);
       _mesa_update_allow_draw_out_of_order(ctx);
+      _mesa_update_valid_to_render_state(ctx);
    }
 
    if ((bindDrawBuf || bindReadBuf) && ctx->Driver.BindFramebuffer) {

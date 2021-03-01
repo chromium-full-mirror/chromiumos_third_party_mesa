@@ -47,6 +47,7 @@
 
 #include "c11/threads.h"
 #include "main/macros.h"
+#include "util/bitscan.h"
 #include "util/list.h"
 #include "util/log.h"
 #include "util/macros.h"
@@ -118,10 +119,6 @@ typedef uint32_t xcb_window_t;
 #define A6XX_TEX_CONST_DWORDS 16
 #define A6XX_TEX_SAMP_DWORDS 4
 
-#define for_each_bit(b, dword)                                               \
-   for (uint32_t __dword = (dword);                                          \
-        (b) = __builtin_ffs(__dword) - 1, __dword; __dword &= ~(1 << (b)))
-
 #define COND(bool, val) ((bool) ? (val) : 0)
 #define BIT(bit) (1u << (bit))
 
@@ -174,6 +171,23 @@ __tu_finishme(const char *file, int line, const char *format, ...)
       tu_finishme("stub %s", __func__);                                      \
    } while (0)
 
+struct tu_memory_heap {
+   /* Standard bits passed on to the client */
+   VkDeviceSize      size;
+   VkMemoryHeapFlags flags;
+
+   /** Copied from ANV:
+    *
+    * Driver-internal book-keeping.
+    *
+    * Align it to 64 bits to make atomic operations faster on 32 bit platforms.
+    */
+   VkDeviceSize      used __attribute__ ((aligned (8)));
+};
+
+uint64_t
+tu_get_system_heap_size(void);
+
 struct tu_physical_device
 {
    struct vk_physical_device vk;
@@ -203,6 +217,8 @@ struct tu_physical_device
     * the pipeline cache defined by apps.
     */
    struct disk_cache *disk_cache;
+
+   struct tu_memory_heap heap;
 };
 
 enum tu_debug_flags

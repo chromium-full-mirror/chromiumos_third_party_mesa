@@ -15,21 +15,14 @@
 #include "util/set.h"
 
 void
-zink_batch_release(struct zink_screen *screen, struct zink_batch *batch)
+zink_reset_batch(struct zink_context *ctx, struct zink_batch *batch)
 {
-   zink_fence_reference(screen, &batch->fence, NULL);
+   struct zink_screen *screen = zink_screen(ctx->base.screen);
+   batch->descs_used = 0;
 
-   zink_framebuffer_reference(screen, &batch->fb, NULL);
-   set_foreach(batch->programs, entry) {
-      if (batch->batch_id == ZINK_COMPUTE_BATCH_ID) {
-         struct zink_compute_program *comp = (struct zink_compute_program*)entry->key;
-         zink_compute_program_reference(screen, &comp, NULL);
-      } else {
-         struct zink_gfx_program *prog = (struct zink_gfx_program*)entry->key;
-         zink_gfx_program_reference(screen, &prog, NULL);
-      }
-   }
-   _mesa_set_clear(batch->programs, NULL);
+   // cmdbuf hasn't been submitted before
+   if (batch->submitted)
+      zink_fence_finish(screen, &ctx->base, batch->fence, PIPE_TIMEOUT_INFINITE);
 
    /* unref all used resources */
    set_foreach(batch->resources, entry) {
@@ -56,30 +49,36 @@ zink_batch_release(struct zink_screen *screen, struct zink_batch *batch)
    }
    util_dynarray_clear(&batch->zombie_samplers);
    util_dynarray_clear(&batch->persistent_resources);
-}
 
-static void
-reset_batch(struct zink_context *ctx, struct zink_batch *batch)
-{
-   struct zink_screen *screen = zink_screen(ctx->base.screen);
-   batch->descs_left = ZINK_BATCH_DESC_SIZE;
+   set_foreach(batch->programs, entry) {
+      if (batch->batch_id == ZINK_COMPUTE_BATCH_ID) {
+         struct zink_compute_program *comp = (struct zink_compute_program*)entry->key;
+         zink_compute_program_reference(screen, &comp, NULL);
+      } else {
+         struct zink_gfx_program *prog = (struct zink_gfx_program*)entry->key;
+         zink_gfx_program_reference(screen, &prog, NULL);
+      }
+   }
+   _mesa_set_clear(batch->programs, NULL);
 
-   // cmdbuf hasn't been submitted before
-   if (!batch->fence)
-      return;
-
-   zink_fence_finish(screen, batch->fence, PIPE_TIMEOUT_INFINITE);
-   zink_batch_release(screen, batch);
+   set_foreach(batch->fbs, entry) {
+      struct zink_framebuffer *fb = (void*)entry->key;
+      zink_framebuffer_reference(screen, &fb, NULL);
+      _mesa_set_remove(batch->fbs, entry);
+   }
 
    if (vkResetDescriptorPool(screen->dev, batch->descpool, 0) != VK_SUCCESS)
       fprintf(stderr, "vkResetDescriptorPool failed\n");
-   batch->has_draw = false;
+
+   if (vkResetCommandPool(screen->dev, batch->cmdpool, 0) != VK_SUCCESS)
+      fprintf(stderr, "vkResetCommandPool failed\n");
+   batch->submitted = batch->has_work = false;
 }
 
 void
 zink_start_batch(struct zink_context *ctx, struct zink_batch *batch)
 {
-   reset_batch(ctx, batch);
+   zink_reset_batch(ctx, batch);
 
    VkCommandBufferBeginInfo cbbi = {};
    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -87,14 +86,14 @@ zink_start_batch(struct zink_context *ctx, struct zink_batch *batch)
    if (vkBeginCommandBuffer(batch->cmdbuf, &cbbi) != VK_SUCCESS)
       debug_printf("vkBeginCommandBuffer failed\n");
 
-   if (!ctx->queries_disabled && batch->batch_id != ZINK_COMPUTE_BATCH_ID)
+   if (!ctx->queries_disabled)
       zink_resume_queries(ctx, batch);
 }
 
 void
 zink_end_batch(struct zink_context *ctx, struct zink_batch *batch)
 {
-   if (!ctx->queries_disabled && batch->batch_id != ZINK_COMPUTE_BATCH_ID)
+   if (!ctx->queries_disabled)
       zink_suspend_queries(ctx, batch);
 
    if (vkEndCommandBuffer(batch->cmdbuf) != VK_SUCCESS) {
@@ -102,10 +101,8 @@ zink_end_batch(struct zink_context *ctx, struct zink_batch *batch)
       return;
    }
 
-   assert(batch->fence == NULL);
-   batch->fence = zink_create_fence(ctx->base.screen, batch);
-   if (!batch->fence)
-      return;
+   vkResetFences(zink_screen(ctx->base.screen)->dev, 1, &batch->fence->fence);
+   zink_fence_init(batch->fence, batch);
 
    util_dynarray_foreach(&batch->persistent_resources, struct zink_resource*, res) {
        struct zink_screen *screen = zink_screen(ctx->base.screen);
@@ -138,6 +135,7 @@ zink_end_batch(struct zink_context *ctx, struct zink_batch *batch)
          ctx->reset.reset(ctx->reset.data, PIPE_GUILTY_CONTEXT_RESET);
       }
    }
+   batch->submitted = true;
 }
 
 /* returns either the compute batch id or 0 (gfx batch id) based on whether a resource
@@ -179,12 +177,14 @@ zink_batch_reference_resource_rw(struct zink_batch *batch, struct zink_resource 
    if (res->persistent_maps)
       util_dynarray_append(&batch->persistent_resources, struct zink_resource*, res);
    /* the batch_uses value for this batch is guaranteed to not be in use now because
-    * reset_batch() waits on the fence and removes access before resetting
+    * zink_reset_batch() waits on the fence and removes access before resetting
     */
    res->batch_uses[batch->batch_id] |= mask;
 
    if (stencil)
       stencil->batch_uses[batch->batch_id] |= mask;
+
+   batch->has_work = true;
    return batch_to_flush;
 }
 
@@ -197,17 +197,29 @@ zink_batch_reference_sampler_view(struct zink_batch *batch,
       entry = _mesa_set_add(batch->sampler_views, sv);
       pipe_reference(NULL, &sv->base.reference);
    }
+   batch->has_work = true;
+}
+
+void
+zink_batch_reference_framebuffer(struct zink_batch *batch,
+                                 struct zink_framebuffer *fb)
+{
+   bool found;
+   _mesa_set_search_or_add(batch->fbs, fb, &found);
+   if (!found)
+      pipe_reference(NULL, &fb->reference);
 }
 
 void
 zink_batch_reference_program(struct zink_batch *batch,
-                             struct pipe_reference *prog)
+                             struct zink_program *pg)
 {
-   struct set_entry *entry = _mesa_set_search(batch->programs, prog);
+   struct set_entry *entry = _mesa_set_search(batch->programs, pg);
    if (!entry) {
-      entry = _mesa_set_add(batch->programs, prog);
-      pipe_reference(NULL, prog);
+      entry = _mesa_set_add(batch->programs, pg);
+      pipe_reference(NULL, &pg->reference);
    }
+   batch->has_work = true;
 }
 
 void
@@ -220,4 +232,5 @@ zink_batch_reference_surface(struct zink_batch *batch,
       entry = _mesa_set_add(batch->surfaces, surf);
       pipe_reference(NULL, &surf->reference);
    }
+   batch->has_work = true;
 }

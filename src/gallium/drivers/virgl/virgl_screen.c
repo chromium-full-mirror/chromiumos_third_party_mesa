@@ -318,6 +318,8 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 1;
    case PIPE_CAP_UMA:
    case PIPE_CAP_VIDEO_MEMORY:
+      if (vscreen->caps.caps.v2.capability_bits_v2 & VIRGL_CAP_V2_VIDEO_MEMORY)
+         return vscreen->caps.caps.v2.max_video_memory;
       return 0;
    case PIPE_CAP_NATIVE_FENCE_FD:
       return vscreen->vws->supports_fences;
@@ -326,6 +328,11 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
             (vscreen->caps.caps.v2.host_feature_check_version < 1);
    case PIPE_CAP_TGSI_SKIP_SHRINK_IO_ARRAYS:
       return vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_INDIRECT_INPUT_ADDR;
+   case PIPE_CAP_SHAREABLE_SHADERS:
+      /* Shader creation emits the shader through the context's command buffer
+       * in virgl_encode_shader_state().
+       */
+      return 0;
    default:
       return u_pipe_screen_get_param_defaults(screen, param);
    }

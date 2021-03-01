@@ -428,15 +428,11 @@ ir3_setup_used_key(struct ir3_shader *shader)
 		key->ucp_enables = 0xff;
 
 	if (info->stage == MESA_SHADER_FRAGMENT) {
-		key->fsaturate_s = ~0;
-		key->fsaturate_t = ~0;
-		key->fsaturate_r = ~0;
 		key->fastc_srgb = ~0;
 		key->fsamples = ~0;
 
 		if (info->inputs_read & VARYING_BITS_COLOR) {
 			key->rasterflat = true;
-			key->color_two_side = true;
 		}
 
 		if (info->inputs_read & VARYING_BIT_LAYER) {
@@ -447,12 +443,6 @@ ir3_setup_used_key(struct ir3_shader *shader)
 			key->view_zero = true;
 		}
 
-		if ((info->outputs_written & ~(FRAG_RESULT_DEPTH |
-								FRAG_RESULT_STENCIL |
-								FRAG_RESULT_SAMPLE_MASK)) != 0) {
-			key->fclamp_color = true;
-		}
-
 		/* Only used for deciding on behavior of
 		 * nir_intrinsic_load_barycentric_sample
 		 */
@@ -461,13 +451,7 @@ ir3_setup_used_key(struct ir3_shader *shader)
 		key->tessellation = ~0;
 		key->has_gs = true;
 
-		if (info->outputs_written & VARYING_BITS_COLOR)
-			key->vclamp_color = true;
-
 		if (info->stage == MESA_SHADER_VERTEX) {
-			key->vsaturate_s = ~0;
-			key->vsaturate_t = ~0;
-			key->vsaturate_r = ~0;
 			key->vastc_srgb = ~0;
 			key->vsamples = ~0;
 		}
@@ -590,7 +574,7 @@ input_name(struct ir3_shader_variant *so, int i)
 	} else if (so->type == MESA_SHADER_VERTEX) {
 		return gl_vert_attrib_name(so->inputs[i].slot);
 	} else {
-		return gl_varying_slot_name(so->inputs[i].slot);
+		return gl_varying_slot_name_for_stage(so->inputs[i].slot, so->type);
 	}
 }
 
@@ -608,7 +592,7 @@ output_name(struct ir3_shader_variant *so, int i)
 		case VARYING_SLOT_TCS_HEADER_IR3:
 			return "TCS_HEADER";
 		default:
-			return gl_varying_slot_name(so->outputs[i].slot);
+			return gl_varying_slot_name_for_stage(so->outputs[i].slot, so->type);
 		}
 	}
 }

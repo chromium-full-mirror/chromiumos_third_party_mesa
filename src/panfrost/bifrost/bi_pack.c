@@ -330,9 +330,10 @@ bi_pack_tuple(bi_clause *clause, bi_tuple *tuple, bi_tuple *prev, bool first_tup
         if (tuple->add) {
                 bi_instr *add = tuple->add;
 
-                bool sr_write = bi_opcode_props[add->op].sr_write;
+                bool sr_write = bi_opcode_props[add->op].sr_write &&
+                        !bi_is_null(add->dest[0]);
 
-                if (sr_read) {
+                if (sr_read && !bi_is_null(add->src[0])) {
                         assert(add->src[0].type == BI_INDEX_REGISTER);
                         clause->staging_register = add->src[0].value;
 
@@ -702,7 +703,7 @@ bi_collect_blend_ret_addr(bi_context *ctx, struct util_dynarray *emission,
                           const bi_clause *clause)
 {
         /* No need to collect return addresses when we're in a blend shader. */
-        if (ctx->is_blend)
+        if (ctx->inputs->is_blend)
                 return;
 
         const bi_tuple *tuple = &clause->tuples[clause->tuple_count - 1];
@@ -713,11 +714,11 @@ bi_collect_blend_ret_addr(bi_context *ctx, struct util_dynarray *emission,
 
 
         unsigned loc = tuple->regs.fau_idx - BIR_FAU_BLEND_0;
-        assert(loc < ARRAY_SIZE(ctx->blend_ret_offsets));
-        assert(!ctx->blend_ret_offsets[loc]);
-        ctx->blend_ret_offsets[loc] =
+        assert(loc < ARRAY_SIZE(ctx->info->bifrost.blend));
+        assert(!ctx->info->bifrost.blend[loc].return_offset);
+        ctx->info->bifrost.blend[loc].return_offset =
                 util_dynarray_num_elements(emission, uint8_t);
-        assert(!(ctx->blend_ret_offsets[loc] & 0x7));
+        assert(!(ctx->info->bifrost.blend[loc].return_offset & 0x7));
 }
 
 unsigned

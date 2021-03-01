@@ -84,6 +84,17 @@ vir_has_side_effects(struct v3d_compile *c, struct qinst *inst)
                 return true;
         }
 
+        /* ldunifa works like ldunif: it reads an element and advances the
+         * pointer, so each read has a side effect (we don't care for ldunif
+         * because we reconstruct the uniform stream buffer after compiling
+         * with the surviving uniforms), so allowing DCE to remove
+         * one would break follow-up loads. We could fix this by emiting a
+         * unifa for each ldunifa, but each unifa requires 3 delay slots
+         * before a ldunifa, so that would be quite expensive.
+         */
+        if (inst->qpu.sig.ldunifa || inst->qpu.sig.ldunifarf)
+                return true;
+
         return false;
 }
 
@@ -130,10 +141,10 @@ vir_is_mul(struct qinst *inst)
 }
 
 bool
-vir_is_tex(struct qinst *inst)
+vir_is_tex(const struct v3d_device_info *devinfo, struct qinst *inst)
 {
         if (inst->dst.file == QFILE_MAGIC)
-                return v3d_qpu_magic_waddr_is_tmu(inst->dst.index);
+                return v3d_qpu_magic_waddr_is_tmu(devinfo, inst->dst.index);
 
         if (inst->qpu.type == V3D_QPU_INSTR_TYPE_ALU &&
             inst->qpu.alu.add.op == V3D_QPU_A_TMUWT) {
@@ -232,8 +243,9 @@ vir_set_cond(struct qinst *inst, enum v3d_qpu_cond cond)
 }
 
 void
-vir_set_pf(struct qinst *inst, enum v3d_qpu_pf pf)
+vir_set_pf(struct v3d_compile *c, struct qinst *inst, enum v3d_qpu_pf pf)
 {
+        c->flags_temp = -1;
         if (vir_is_add(inst)) {
                 inst->qpu.flags.apf = pf;
         } else {
@@ -243,8 +255,9 @@ vir_set_pf(struct qinst *inst, enum v3d_qpu_pf pf)
 }
 
 void
-vir_set_uf(struct qinst *inst, enum v3d_qpu_uf uf)
+vir_set_uf(struct v3d_compile *c, struct qinst *inst, enum v3d_qpu_uf uf)
 {
+        c->flags_temp = -1;
         if (vir_is_add(inst)) {
                 inst->qpu.flags.auf = uf;
         } else {
@@ -542,6 +555,7 @@ vir_compile_init(const struct v3d_compiler *compiler,
                                             _mesa_key_pointer_equal);
 
         c->tmu.outstanding_regs = _mesa_pointer_set_create(c);
+        c->flags_temp = -1;
 
         return c;
 }
@@ -572,13 +586,6 @@ v3d_lower_nir(struct v3d_compile *c)
         for (int i = 0; i < c->key->num_tex_used; i++) {
                 for (int j = 0; j < 4; j++)
                         tex_options.swizzles[i][j] = c->key->tex[i].swizzle[j];
-
-                if (c->key->tex[i].clamp_s)
-                        tex_options.saturate_s |= 1 << i;
-                if (c->key->tex[i].clamp_t)
-                        tex_options.saturate_t |= 1 << i;
-                if (c->key->tex[i].clamp_r)
-                        tex_options.saturate_r |= 1 << i;
         }
 
         assert(c->key->num_samplers_used <= ARRAY_SIZE(c->key->sampler));
@@ -1196,7 +1203,7 @@ v3d_prog_data_size(gl_shader_stage stage)
 int v3d_shaderdb_dump(struct v3d_compile *c,
 		      char **shaderdb_str)
 {
-        if (c == NULL)
+        if (c == NULL || c->compilation_result != V3D_COMPILATION_SUCCEEDED)
                 return -1;
 
         return asprintf(shaderdb_str,
@@ -1389,14 +1396,68 @@ vir_get_uniform_index(struct v3d_compile *c,
         return uniform;
 }
 
+/* Looks back into the current block to find the ldunif that wrote the uniform
+ * at the requested index. If it finds it, it returns true and writes the
+ * destination register of the ldunif instruction to 'unif'.
+ *
+ * This can impact register pressure and end up leading to worse code, so we
+ * limit the number of instructions we are willing to look back through to
+ * strike a good balance.
+ */
+static bool
+try_opt_ldunif(struct v3d_compile *c, uint32_t index, struct qreg *unif)
+{
+        uint32_t count = 20;
+        struct qinst *prev_inst = NULL;
+        list_for_each_entry_from_rev(struct qinst, inst, c->cursor.link->prev,
+                                     &c->cur_block->instructions, link) {
+                if ((inst->qpu.sig.ldunif || inst->qpu.sig.ldunifrf) &&
+                    inst->uniform == index) {
+                        prev_inst = inst;
+                        break;
+                }
+
+                if (--count == 0)
+                        break;
+        }
+
+        if (!prev_inst)
+                return false;
+
+
+        list_for_each_entry_from(struct qinst, inst, prev_inst->link.next,
+                                 &c->cur_block->instructions, link) {
+                if (inst->dst.file == prev_inst->dst.file &&
+                    inst->dst.index == prev_inst->dst.index) {
+                        return false;
+                }
+        }
+
+        *unif = prev_inst->dst;
+        return true;
+}
+
 struct qreg
 vir_uniform(struct v3d_compile *c,
             enum quniform_contents contents,
             uint32_t data)
 {
+        const int num_uniforms = c->num_uniforms;
+        const int index = vir_get_uniform_index(c, contents, data);
+
+        /* If this is not the first time we see this uniform try to reuse the
+         * result of the last ldunif that loaded it.
+         */
+        const bool is_new_uniform = num_uniforms != c->num_uniforms;
+        if (!is_new_uniform && !c->disable_ldunif_opt) {
+                struct qreg ldunif_dst;
+                if (try_opt_ldunif(c, index, &ldunif_dst))
+                        return ldunif_dst;
+        }
+
         struct qinst *inst = vir_NOP(c);
         inst->qpu.sig.ldunif = true;
-        inst->uniform = vir_get_uniform_index(c, contents, data);
+        inst->uniform = index;
         inst->dst = vir_get_temp(c);
         c->defs[inst->dst.index] = inst;
         return inst->dst;
@@ -1429,6 +1490,7 @@ vir_optimize(struct v3d_compile *c)
                 OPTPASS(vir_opt_redundant_flags);
                 OPTPASS(vir_opt_dead_code);
                 OPTPASS(vir_opt_small_immediates);
+                OPTPASS(vir_opt_constant_alu);
 
                 if (!progress)
                         break;

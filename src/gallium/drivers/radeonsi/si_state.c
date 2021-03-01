@@ -81,8 +81,8 @@ static void si_emit_cb_render_state(struct si_context *sctx)
     *
     * Reproducible with Unigine Heaven 4.0 and drirc missing.
     */
-   if (blend->dual_src_blend && sctx->ps_shader.cso &&
-       (sctx->ps_shader.cso->info.colors_written & 0x3) != 0x3)
+   if (blend->dual_src_blend && sctx->shader.ps.cso &&
+       (sctx->shader.ps.cso->info.colors_written & 0x3) != 0x3)
       cb_target_mask = 0;
 
    /* GFX9: Flush DFSM when CB_TARGET_MASK changes.
@@ -121,7 +121,7 @@ static void si_emit_cb_render_state(struct si_context *sctx)
    /* RB+ register settings. */
    if (sctx->screen->info.rbplus_allowed) {
       unsigned spi_shader_col_format =
-         sctx->ps_shader.cso ? sctx->ps_shader.current->key.part.ps.epilog.spi_shader_col_format
+         sctx->shader.ps.cso ? sctx->shader.ps.current->key.part.ps.epilog.spi_shader_col_format
                              : 0;
       unsigned sx_ps_downconvert = 0;
       unsigned sx_blend_opt_epsilon = 0;
@@ -2955,17 +2955,19 @@ static void si_emit_framebuffer_state(struct si_context *sctx)
 
       tex = (struct si_texture *)cb->base.texture;
       radeon_add_to_buffer_list(
-         sctx, &sctx->gfx_cs, &tex->buffer, RADEON_USAGE_READWRITE,
+         sctx, &sctx->gfx_cs, &tex->buffer, RADEON_USAGE_READWRITE | RADEON_USAGE_NEEDS_IMPLICIT_SYNC,
          tex->buffer.b.b.nr_samples > 1 ? RADEON_PRIO_COLOR_BUFFER_MSAA : RADEON_PRIO_COLOR_BUFFER);
 
       if (tex->cmask_buffer && tex->cmask_buffer != &tex->buffer) {
-         radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, tex->cmask_buffer, RADEON_USAGE_READWRITE,
+         radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, tex->cmask_buffer,
+                                   RADEON_USAGE_READWRITE | RADEON_USAGE_NEEDS_IMPLICIT_SYNC,
                                    RADEON_PRIO_SEPARATE_META);
       }
 
       if (tex->dcc_separate_buffer)
          radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, tex->dcc_separate_buffer,
-                                   RADEON_USAGE_READWRITE, RADEON_PRIO_SEPARATE_META);
+                                   RADEON_USAGE_READWRITE | RADEON_USAGE_NEEDS_IMPLICIT_SYNC,
+                                   RADEON_PRIO_SEPARATE_META);
 
       /* Compute mutable surface parameters. */
       cb_color_base = tex->buffer.gpu_address >> 8;
@@ -3387,8 +3389,8 @@ static bool si_out_of_order_rasterization(struct si_context *sctx)
 
       /* The set of PS invocations is always order invariant,
        * except when early Z/S tests are requested. */
-      if (sctx->ps_shader.cso && sctx->ps_shader.cso->info.base.writes_memory &&
-          sctx->ps_shader.cso->info.base.fs.early_fragment_tests &&
+      if (sctx->shader.ps.cso && sctx->shader.ps.cso->info.base.writes_memory &&
+          sctx->shader.ps.cso->info.base.fs.early_fragment_tests &&
           !dsa_order_invariant.pass_set)
          return false;
 

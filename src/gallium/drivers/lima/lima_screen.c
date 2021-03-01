@@ -101,6 +101,7 @@ lima_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_UMA:
    case PIPE_CAP_NATIVE_FENCE_FD:
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
+   case PIPE_CAP_TEXTURE_SWIZZLE:
       return 1;
 
    /* Unimplemented, but for exporting OpenGL 2.0 */
@@ -142,6 +143,7 @@ lima_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 0;
 
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
+   case PIPE_CAP_SHAREABLE_SHADERS:
       return 0;
 
    case PIPE_CAP_ALPHA_TEST:
@@ -246,6 +248,7 @@ get_fragment_shader_param(struct lima_screen *screen,
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
       return 1;
 
+   case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
    case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
       return 16; /* need investigate */
 

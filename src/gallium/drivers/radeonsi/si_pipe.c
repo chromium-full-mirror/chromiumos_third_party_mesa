@@ -106,6 +106,8 @@ static const struct debug_named_value radeonsi_debug_options[] = {
    {"nohyperz", DBG(NO_HYPERZ), "Disable Hyper-Z"},
    {"no2d", DBG(NO_2D_TILING), "Disable 2D tiling"},
    {"notiling", DBG(NO_TILING), "Disable tiling"},
+   {"nodisplaytiling", DBG(NO_DISPLAY_TILING), "Disable display tiling"},
+   {"nodisplaydcc", DBG(NO_DISPLAY_DCC), "Disable display DCC"},
    {"nodcc", DBG(NO_DCC), "Disable DCC."},
    {"nodccclear", DBG(NO_DCC_CLEAR), "Disable DCC fast clear."},
    {"nodccfb", DBG(NO_DCC_FB), "Disable separate DCC on the main framebuffer"},
@@ -729,7 +731,7 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
        */
       uint32_t clear_value = 0;
       si_clear_buffer(sctx, sctx->null_const_buf.buffer, 0, sctx->null_const_buf.buffer->width0,
-                      &clear_value, 4, SI_COHERENCY_SHADER, true);
+                      &clear_value, 4, SI_COHERENCY_SHADER, SI_CP_DMA_CLEAR_METHOD);
    }
 
    sctx->initial_gfx_cs_size = sctx->gfx_cs.current.cdw;
