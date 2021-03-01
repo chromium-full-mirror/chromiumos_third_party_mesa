@@ -710,10 +710,14 @@ vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
    }
 
    const uint32_t version_override = vk_get_version_override();
-   if (version_override)
+   if (version_override) {
       props->apiVersion = version_override;
-   if (props->apiVersion > VK_HEADER_VERSION_COMPLETE)
-      props->apiVersion = VK_HEADER_VERSION_COMPLETE;
+   } else {
+      if (props->apiVersion > VK_HEADER_VERSION_COMPLETE)
+         props->apiVersion = VK_HEADER_VERSION_COMPLETE;
+      if (props->apiVersion > vn_info_vk_xml_version())
+         props->apiVersion = vn_info_vk_xml_version();
+   }
 
    props->driverVersion = vk_get_driver_version();
    props->vendorID = instance->renderer_info.pci.vendor_id;
