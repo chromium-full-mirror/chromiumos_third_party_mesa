@@ -339,6 +339,11 @@ sim_syncobj_wait(struct virtgpu *gpu,
          sim_syncobj_update_point_locked(syncobj, poll_timeout);
 
       if (syncobj->point < point) {
+         if (wait->wait_any && i < wait->sync_count - 1 &&
+             syncobj->pending_fd < 0) {
+            mtx_unlock(&syncobj->mutex);
+            continue;
+         }
          errno = ETIME;
          mtx_unlock(&syncobj->mutex);
          return -1;
