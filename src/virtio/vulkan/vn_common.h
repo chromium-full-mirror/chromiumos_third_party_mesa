@@ -12,6 +12,7 @@
 #define VN_COMMON_H
 
 #include <assert.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdatomic.h>
 #include <stdbool.h>
