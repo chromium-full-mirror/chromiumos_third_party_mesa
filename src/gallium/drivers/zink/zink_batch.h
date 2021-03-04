@@ -34,9 +34,9 @@ struct pipe_reference;
 struct zink_context;
 struct zink_fence;
 struct zink_framebuffer;
+struct zink_program;
 struct zink_render_pass;
 struct zink_resource;
-struct zink_screen;
 struct zink_sampler_view;
 struct zink_surface;
 
@@ -44,12 +44,14 @@ struct zink_surface;
 
 struct zink_batch {
    unsigned batch_id : 3;
+   VkCommandPool cmdpool;
    VkCommandBuffer cmdbuf;
    VkDescriptorPool descpool;
-   int descs_left;
+   unsigned short max_descs; //set if the device gives oom when allocating a new desc set
+   unsigned short descs_used; //number of descriptors currently allocated
    struct zink_fence *fence;
 
-   struct zink_framebuffer *fb;
+   struct set *fbs;
    struct set *programs;
 
    struct set *resources;
@@ -60,15 +62,16 @@ struct zink_batch {
    struct util_dynarray zombie_samplers;
 
    struct set *active_queries; /* zink_query objects which were active at some point in this batch */
-
-   bool has_draw;
+   bool has_work;
+   bool submitted;
    bool in_rp; //renderpass is currently active
 };
 
-/* release all resources attached to batch */
 void
-zink_batch_release(struct zink_screen *screen, struct zink_batch *batch);
-
+zink_reset_batch(struct zink_context *ctx, struct zink_batch *batch);
+void
+zink_batch_reference_framebuffer(struct zink_batch *batch,
+                                 struct zink_framebuffer *fb);
 void
 zink_start_batch(struct zink_context *ctx, struct zink_batch *batch);
 
@@ -86,7 +89,7 @@ zink_batch_reference_sampler_view(struct zink_batch *batch,
 
 void
 zink_batch_reference_program(struct zink_batch *batch,
-                             struct pipe_reference *prog);
+                             struct zink_program *pg);
 
 void
 zink_batch_reference_surface(struct zink_batch *batch,

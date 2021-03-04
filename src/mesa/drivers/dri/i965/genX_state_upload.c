@@ -1176,8 +1176,8 @@ set_depth_stencil_bits(struct brw_context *brw, DEPTH_STENCIL_GENXML *ds)
    struct gl_context *ctx = &brw->ctx;
 
    /* _NEW_BUFFERS */
-   struct intel_renderbuffer *depth_irb =
-      intel_get_renderbuffer(ctx->DrawBuffer, BUFFER_DEPTH);
+   struct brw_renderbuffer *depth_irb =
+      brw_get_renderbuffer(ctx->DrawBuffer, BUFFER_DEPTH);
 
    /* _NEW_DEPTH */
    struct gl_depthbuffer_attrib *depth = &ctx->Depth;
@@ -1189,7 +1189,7 @@ set_depth_stencil_bits(struct brw_context *brw, DEPTH_STENCIL_GENXML *ds)
    if (depth->Test && depth_irb) {
       ds->DepthTestEnable = true;
       ds->DepthBufferWriteEnable = brw_depth_writes_enabled(brw);
-      ds->DepthTestFunction = intel_translate_compare_func(depth->Func);
+      ds->DepthTestFunction = brw_translate_compare_func(depth->Func);
    }
 
    if (brw->stencil_enabled) {
@@ -1198,13 +1198,13 @@ set_depth_stencil_bits(struct brw_context *brw, DEPTH_STENCIL_GENXML *ds)
       ds->StencilTestMask = stencil->ValueMask[0] & 0xff;
 
       ds->StencilTestFunction =
-         intel_translate_compare_func(stencil->Function[0]);
+         brw_translate_compare_func(stencil->Function[0]);
       ds->StencilFailOp =
-         intel_translate_stencil_op(stencil->FailFunc[0]);
+         brw_translate_stencil_op(stencil->FailFunc[0]);
       ds->StencilPassDepthPassOp =
-         intel_translate_stencil_op(stencil->ZPassFunc[0]);
+         brw_translate_stencil_op(stencil->ZPassFunc[0]);
       ds->StencilPassDepthFailOp =
-         intel_translate_stencil_op(stencil->ZFailFunc[0]);
+         brw_translate_stencil_op(stencil->ZFailFunc[0]);
 
       ds->StencilBufferWriteEnable = brw->stencil_write_enabled;
 
@@ -1214,13 +1214,13 @@ set_depth_stencil_bits(struct brw_context *brw, DEPTH_STENCIL_GENXML *ds)
          ds->BackfaceStencilTestMask = stencil->ValueMask[b] & 0xff;
 
          ds->BackfaceStencilTestFunction =
-            intel_translate_compare_func(stencil->Function[b]);
+            brw_translate_compare_func(stencil->Function[b]);
          ds->BackfaceStencilFailOp =
-            intel_translate_stencil_op(stencil->FailFunc[b]);
+            brw_translate_stencil_op(stencil->FailFunc[b]);
          ds->BackfaceStencilPassDepthPassOp =
-            intel_translate_stencil_op(stencil->ZPassFunc[b]);
+            brw_translate_stencil_op(stencil->ZPassFunc[b]);
          ds->BackfaceStencilPassDepthFailOp =
-            intel_translate_stencil_op(stencil->ZFailFunc[b]);
+            brw_translate_stencil_op(stencil->ZFailFunc[b]);
       }
 
 #if GEN_GEN <= 5 || GEN_GEN >= 9
@@ -2979,7 +2979,7 @@ genX(upload_blend_state)(struct brw_context *brw)
          if (ctx->Color.AlphaEnabled) {
             blend.AlphaTestEnable = true;
             blend.AlphaTestFunction =
-               intel_translate_compare_func(ctx->Color.AlphaFunc);
+               brw_translate_compare_func(ctx->Color.AlphaFunc);
          }
 
          if (ctx->Color.DitherFlag) {
@@ -3146,8 +3146,8 @@ genX(upload_push_constant_packets)(struct brw_context *brw)
 
                assert(binding->Offset % 32 == 0);
 
-               struct brw_bo *bo = intel_bufferobj_buffer(brw,
-                  intel_buffer_object(binding->BufferObject),
+               struct brw_bo *bo = brw_bufferobj_buffer(brw,
+                  brw_buffer_object(binding->BufferObject),
                   binding->Offset, range->length * 32, false);
 
                pkt.ConstantBody.ReadLength[n] = range->length;
@@ -3369,7 +3369,7 @@ genX(upload_color_calc_state)(struct brw_context *brw)
           ctx->DrawBuffer->_NumColorDrawBuffers <= 1) {
          cc.AlphaTestEnable = true;
          cc.AlphaTestFunction =
-            intel_translate_compare_func(ctx->Color.AlphaFunc);
+            brw_translate_compare_func(ctx->Color.AlphaFunc);
       }
 
       cc.ColorDitherEnable = ctx->Color.DitherFlag;
@@ -3684,8 +3684,8 @@ genX(upload_3dstate_so_buffers)(struct brw_context *brw)
     * gl_transform_feedback_object.
     */
    for (int i = 0; i < 4; i++) {
-      struct intel_buffer_object *bufferobj =
-         intel_buffer_object(xfb_obj->Buffers[i]);
+      struct brw_buffer_object *bufferobj =
+         brw_buffer_object(xfb_obj->Buffers[i]);
       uint32_t start = xfb_obj->Offset[i];
       uint32_t end = ALIGN(start + xfb_obj->Size[i], 4);
       uint32_t const size = end - start;
@@ -3699,7 +3699,7 @@ genX(upload_3dstate_so_buffers)(struct brw_context *brw)
 
       assert(start % 4 == 0);
       struct brw_bo *bo =
-         intel_bufferobj_buffer(brw, bufferobj, start, size, true);
+         brw_bufferobj_buffer(brw, bufferobj, start, size, true);
       assert(end <= bo->size);
 
       brw_batch_emit(brw, GENX(3DSTATE_SO_BUFFER), sob) {
@@ -5300,7 +5300,7 @@ genX(update_sampler_state)(struct brw_context *brw,
 
    samp_st.ShadowFunction =
       sampler->Attrib.CompareMode == GL_COMPARE_R_TO_TEXTURE_ARB ?
-      intel_translate_shadow_compare_func(sampler->Attrib.CompareFunc) : 0;
+      brw_translate_shadow_compare_func(sampler->Attrib.CompareFunc) : 0;
 
 #if GEN_GEN >= 7
    /* Set shadow function. */
@@ -5652,9 +5652,9 @@ genX(init_atoms)(struct brw_context *brw)
       &genX(cc_vp),
 
       &gen6_urb,
-      &genX(blend_state),		/* must do before cc unit */
-      &genX(color_calc_state),	/* must do before cc unit */
-      &genX(depth_stencil_state),	/* must do before cc unit */
+      &genX(blend_state),         /* must do before cc unit */
+      &genX(color_calc_state),    /* must do before cc unit */
+      &genX(depth_stencil_state), /* must do before cc unit */
 
       &genX(vs_push_constants), /* Before vs_state */
       &genX(gs_push_constants), /* Before gs_state */
@@ -5722,10 +5722,10 @@ genX(init_atoms)(struct brw_context *brw)
 #if GEN_IS_HASWELL
       &genX(cc_and_blend_state),
 #else
-      &genX(blend_state),		/* must do before cc unit */
-      &genX(color_calc_state),	/* must do before cc unit */
+      &genX(blend_state),         /* must do before cc unit */
+      &genX(color_calc_state),    /* must do before cc unit */
 #endif
-      &genX(depth_stencil_state),	/* must do before cc unit */
+      &genX(depth_stencil_state), /* must do before cc unit */
 
       &brw_vs_image_surfaces, /* Before vs push/pull constants and binding table */
       &brw_tcs_image_surfaces, /* Before tcs push/pull constants and binding table */

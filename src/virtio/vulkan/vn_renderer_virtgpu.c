@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/mman.h>
@@ -12,11 +13,9 @@
 #include <xf86drm.h>
 
 #include "drm-uapi/virtgpu_drm.h"
-#include "util/os_time.h"
 #define VIRGL_RENDERER_UNSTABLE_APIS
 #include "virtio-gpu/virglrenderer_hw.h"
 
-#include "vn_device.h"
 #include "vn_renderer.h"
 
 /* XXX WIP kernel uapi */
@@ -340,6 +339,11 @@ sim_syncobj_wait(struct virtgpu *gpu,
          sim_syncobj_update_point_locked(syncobj, poll_timeout);
 
       if (syncobj->point < point) {
+         if (wait->wait_any && i < wait->sync_count - 1 &&
+             syncobj->pending_fd < 0) {
+            mtx_unlock(&syncobj->mutex);
+            continue;
+         }
          errno = ETIME;
          mtx_unlock(&syncobj->mutex);
          return -1;
@@ -838,26 +842,22 @@ virtgpu_sync_init(struct vn_renderer_sync *_sync,
 }
 
 static void
-virtgpu_sync_destroy(struct vn_renderer_sync *_sync,
-                     const VkAllocationCallbacks *alloc)
+virtgpu_sync_destroy(struct vn_renderer_sync *_sync)
 {
    struct virtgpu_sync *sync = (struct virtgpu_sync *)_sync;
 
    if (sync->syncobj_handle)
       virtgpu_sync_release(&sync->base);
 
-   vk_free(alloc, sync);
+   free(sync);
 }
 
 static struct vn_renderer_sync *
-virtgpu_sync_create(struct vn_renderer *renderer,
-                    const VkAllocationCallbacks *alloc,
-                    VkSystemAllocationScope alloc_scope)
+virtgpu_sync_create(struct vn_renderer *renderer)
 {
    struct virtgpu *gpu = (struct virtgpu *)renderer;
 
-   struct virtgpu_sync *sync =
-      vk_zalloc(alloc, sizeof(*sync), VN_DEFAULT_ALIGN, alloc_scope);
+   struct virtgpu_sync *sync = calloc(1, sizeof(*sync));
    if (!sync)
       return NULL;
 
@@ -960,8 +960,7 @@ virtgpu_bo_init_cpu(struct vn_renderer_bo *_bo, VkDeviceSize size)
 }
 
 static void
-virtgpu_bo_destroy(struct vn_renderer_bo *_bo,
-                   const VkAllocationCallbacks *alloc)
+virtgpu_bo_destroy(struct vn_renderer_bo *_bo)
 {
    struct virtgpu_bo *bo = (struct virtgpu_bo *)_bo;
    struct virtgpu *gpu = bo->gpu;
@@ -972,18 +971,15 @@ virtgpu_bo_destroy(struct vn_renderer_bo *_bo,
       virtgpu_ioctl_gem_close(gpu, bo->gem_handle);
    }
 
-   vk_free(alloc, bo);
+   free(bo);
 }
 
 static struct vn_renderer_bo *
-virtgpu_bo_create(struct vn_renderer *renderer,
-                  const VkAllocationCallbacks *alloc,
-                  VkSystemAllocationScope alloc_scope)
+virtgpu_bo_create(struct vn_renderer *renderer)
 {
    struct virtgpu *gpu = (struct virtgpu *)renderer;
 
-   struct virtgpu_bo *bo =
-      vk_zalloc(alloc, sizeof(*bo), VN_DEFAULT_ALIGN, alloc_scope);
+   struct virtgpu_bo *bo = calloc(1, sizeof(*bo));
    if (!bo)
       return NULL;
 
@@ -1039,10 +1035,12 @@ virtgpu_get_info(struct vn_renderer *renderer, struct vn_renderer_info *info)
    info->pci.device = gpu->bus_info.dev;
    info->pci.function = gpu->bus_info.func;
 
-   /* Kernel makes every mapping coherent.  We are better of filtering
+   /* Kernel makes every mapping coherent.  We are better off filtering
     * incoherent memory types out than silently making them coherent.
     */
    info->has_cache_management = false;
+   /* TODO drm_syncobj */
+   info->has_timeline_sync = false;
 
    info->max_sync_queue_count = gpu->max_sync_queue_count;
 

@@ -26,6 +26,8 @@
 #include "zink_context.h"
 #include "zink_screen.h"
 
+#include "compiler/shader_enums.h"
+#include "util/u_dual_blend.h"
 #include "util/u_memory.h"
 
 #include <math.h>
@@ -275,6 +277,7 @@ zink_create_blend_state(struct pipe_context *pctx,
 
       cso->attachments[i] = att;
    }
+   cso->dual_src_blend = util_blend_state_is_dual(blend_state, 0);
 
    return cso;
 }
@@ -465,6 +468,7 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
 {
    struct zink_context *ctx = zink_context(pctx);
    bool clip_halfz = ctx->rast_state ? ctx->rast_state->base.clip_halfz : false;
+   bool point_quad_rasterization = ctx->rast_state ? ctx->rast_state->base.point_quad_rasterization : false;
    ctx->rast_state = cso;
 
    if (ctx->rast_state) {
@@ -480,6 +484,8 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
          ctx->line_width = ctx->rast_state->line_width;
          ctx->gfx_pipeline_state.dirty = true;
       }
+      if (ctx->rast_state->base.point_quad_rasterization != point_quad_rasterization)
+         ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_FRAGMENT);
    }
 }
 

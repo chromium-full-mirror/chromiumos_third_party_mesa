@@ -113,6 +113,42 @@ struct bi_clause_state {
         struct bi_const_state consts[8];
 };
 
+/* Determines messsage type by checking the table and a few special cases. Only
+ * case missing is tilebuffer instructions that access depth/stencil, which
+ * require a Z_STENCIL message (to implement
+ * ARM_shader_framebuffer_fetch_depth_stencil) */
+
+static enum bifrost_message_type
+bi_message_type_for_instr(bi_instr *ins)
+{
+        enum bifrost_message_type msg = bi_opcode_props[ins->op].message;
+        bool ld_var_special = (ins->op == BI_OPCODE_LD_VAR_SPECIAL);
+
+        if (ld_var_special && ins->varying_name == BI_VARYING_NAME_FRAG_Z)
+                return BIFROST_MESSAGE_Z_STENCIL;
+
+        if (msg == BIFROST_MESSAGE_LOAD && ins->seg == BI_SEG_UBO)
+                return BIFROST_MESSAGE_ATTRIBUTE;
+
+        return msg;
+}
+
+/* Attribute, texture, and UBO load (attribute message) instructions support
+ * bindless, so just check the message type */
+
+ASSERTED static bool
+bi_supports_dtsel(bi_instr *ins)
+{
+        switch (bi_message_type_for_instr(ins)) {
+        case BIFROST_MESSAGE_ATTRIBUTE:
+                return ins->op != BI_OPCODE_LD_GCLK_U64;
+        case BIFROST_MESSAGE_TEX:
+                return true;
+        default:
+                return false;
+        }
+}
+
 /* Scheduler pseudoinstruction lowerings to enable instruction pairings.
  * Currently only support CUBEFACE -> *CUBEFACE1/+CUBEFACE2
  */
@@ -134,6 +170,83 @@ bi_lower_cubeface(bi_context *ctx,
         pinstr->src[2] = bi_null();
 
         return cubeface1;
+}
+
+/* Psuedo arguments are (rbase, address lo, address hi). We need *ATOM_C.i32 to
+ * have the arguments (address lo, address hi, rbase), and +ATOM_CX to have the
+ * arguments (rbase, address lo, address hi, rbase) */
+
+static bi_instr *
+bi_lower_atom_c(bi_context *ctx, struct bi_clause_state *clause, struct
+                bi_tuple_state *tuple)
+{
+        bi_instr *pinstr = tuple->add;
+        bi_builder b = bi_init_builder(ctx, bi_before_instr(pinstr));
+        bi_instr *atom_c = bi_atom_c_return_i32(&b, 
+                        pinstr->src[1], pinstr->src[2], pinstr->src[0],
+                        pinstr->atom_opc);
+
+        if (bi_is_null(pinstr->dest[0]))
+                atom_c->op = BI_OPCODE_ATOM_C_I32;
+
+        pinstr->op = BI_OPCODE_ATOM_CX;
+        pinstr->src[3] = atom_c->src[2];
+
+        return atom_c;
+}
+
+static bi_instr *
+bi_lower_atom_c1(bi_context *ctx, struct bi_clause_state *clause, struct
+                bi_tuple_state *tuple)
+{
+        bi_instr *pinstr = tuple->add;
+        bi_builder b = bi_init_builder(ctx, bi_before_instr(pinstr));
+        bi_instr *atom_c = bi_atom_c1_return_i32(&b,
+                        pinstr->src[0], pinstr->src[1], pinstr->atom_opc);
+
+        if (bi_is_null(pinstr->dest[0]))
+                atom_c->op = BI_OPCODE_ATOM_C1_I32;
+
+        pinstr->op = BI_OPCODE_ATOM_CX;
+        pinstr->src[2] = pinstr->src[1];
+        pinstr->src[1] = pinstr->src[0];
+        pinstr->src[3] = bi_dontcare();
+        pinstr->src[0] = pinstr->dest[0];
+
+        return atom_c;
+}
+
+static bi_instr *
+bi_lower_seg_add(bi_context *ctx,
+                struct bi_clause_state *clause, struct bi_tuple_state *tuple)
+{
+        bi_instr *pinstr = tuple->add;
+        bi_builder b = bi_init_builder(ctx, bi_before_instr(pinstr));
+
+        bi_instr *fma = bi_seg_add_to(&b, bi_word(pinstr->dest[0], 0),
+                        pinstr->src[0], pinstr->preserve_null, pinstr->seg);
+
+        pinstr->op = BI_OPCODE_SEG_ADD;
+        pinstr->dest[0] = bi_word(pinstr->dest[0], 1);
+        pinstr->src[0] = pinstr->src[1];
+        pinstr->src[1] = bi_null();
+
+        return fma;
+}
+
+static bi_instr *
+bi_lower_dtsel(bi_context *ctx,
+                struct bi_clause_state *clause, struct bi_tuple_state *tuple)
+{
+        bi_instr *add = tuple->add;
+        bi_builder b = bi_init_builder(ctx, bi_before_instr(add));
+
+        bi_instr *dtsel = bi_dtsel_imm_to(&b, bi_temp(b.shader),
+                        add->src[0], add->table);
+        add->src[0] = dtsel->dest[0];
+
+        assert(bi_supports_dtsel(add));
+        return dtsel;
 }
 
 /* Flatten linked list to array for O(1) indexing */
@@ -185,26 +298,6 @@ bi_update_worklist(struct bi_worklist st, unsigned idx)
 {
         if (idx >= 1)
                 BITSET_SET(st.worklist, idx - 1);
-}
-
-/* Determines messsage type by checking the table and a few special cases. Only
- * case missing is tilebuffer instructions that access depth/stencil, which
- * require a Z_STENCIL message (to implement
- * ARM_shader_framebuffer_fetch_depth_stencil) */
-
-static enum bifrost_message_type
-bi_message_type_for_instr(bi_instr *ins)
-{
-        enum bifrost_message_type msg = bi_opcode_props[ins->op].message;
-        bool ld_var_special = (ins->op == BI_OPCODE_LD_VAR_SPECIAL);
-
-        if (ld_var_special && ins->varying_name == BI_VARYING_NAME_FRAG_Z)
-                return BIFROST_MESSAGE_Z_STENCIL;
-
-        if (msg == BIFROST_MESSAGE_LOAD && ins->seg == BI_SEG_UBO)
-                return BIFROST_MESSAGE_ATTRIBUTE;
-
-        return msg;
 }
 
 /* To work out the back-to-back flag, we need to detect branches and
@@ -279,6 +372,7 @@ bi_singleton(void *memctx, bi_instr *ins,
 
         u->next_clause_prefetch = (ins->op != BI_OPCODE_JUMP);
         u->message_type = bi_message_type_for_instr(ins);
+        u->message = u->message_type ? ins : NULL;
         u->block = block;
 
         return u;
@@ -788,6 +882,14 @@ bi_take_instr(bi_context *ctx, struct bi_worklist st,
 
         if (tuple->add && tuple->add->op == BI_OPCODE_CUBEFACE)
                 return bi_lower_cubeface(ctx, clause, tuple);
+        else if (tuple->add && tuple->add->op == BI_OPCODE_PATOM_C_I32)
+                return bi_lower_atom_c(ctx, clause, tuple);
+        else if (tuple->add && tuple->add->op == BI_OPCODE_PATOM_C1_I32)
+                return bi_lower_atom_c1(ctx, clause, tuple);
+        else if (tuple->add && tuple->add->op == BI_OPCODE_SEG_ADD_I64)
+                return bi_lower_seg_add(ctx, clause, tuple);
+        else if (tuple->add && tuple->add->table)
+                return bi_lower_dtsel(ctx, clause, tuple);
 
         unsigned idx = bi_choose_index(st, clause, tuple, fma);
 
@@ -1213,14 +1315,25 @@ bi_schedule_clause(bi_context *ctx, bi_block *block, struct bi_worklist st)
 
                         if (!clause->message_type) {
                                 clause->message_type = msg;
+                                clause->message = tuple->add;
                                 clause_state.message = true;
                         }
 
-                        if (tuple->add->op == BI_OPCODE_ATEST)
-                                clause->dependencies |= (1 << 6);
-
-                        if (tuple->add->op == BI_OPCODE_BLEND)
-                                clause->dependencies |= (1 << 6) | (1 << 7);
+                        switch (tuple->add->op) {
+                        case BI_OPCODE_ATEST:
+                                clause->dependencies |= (1 << BIFROST_SLOT_ELDEST_DEPTH);
+                                break;
+                        case BI_OPCODE_LD_TILE:
+                                if (!ctx->inputs->is_blend)
+                                        clause->dependencies |= (1 << BIFROST_SLOT_ELDEST_COLOUR);
+                                break;
+                        case BI_OPCODE_BLEND:
+                                clause->dependencies |= (1 << BIFROST_SLOT_ELDEST_DEPTH);
+                                clause->dependencies |= (1 << BIFROST_SLOT_ELDEST_COLOUR);
+                                break;
+                        default:
+                                break;
+                        }
                 }
 
                 clause_state.consts[idx] = bi_get_const_state(&tuple_state);
@@ -1482,8 +1595,9 @@ bi_schedule(bi_context *ctx)
                 bi_block *bblock = (bi_block *) block;
                 bi_lower_fau(ctx, bblock);
                 bi_schedule_block(ctx, bblock);
-                bi_opt_dead_code_eliminate(ctx, bblock, true);
         }
+
+        bi_opt_dead_code_eliminate(ctx, true);
 }
 
 #ifndef NDEBUG

@@ -35,42 +35,48 @@ libvn_files = files(
   'vn_cs.c',
   'vn_device.c',
   'vn_icd.c',
+  'vn_ring.c',
   'vn_renderer_virtgpu.c',
   'vn_renderer_vtest.c',
   'vn_wsi.c',
 )
 
-vn_deps = [dep_libdrm]
-vn_flags = []
+vn_deps = [
+  dep_libdrm,
+  dep_thread,
+  idep_mesautil,
+  idep_vulkan_util,
+  idep_xmlconfig,
+]
+
+vn_flags = [
+  no_override_init_args,
+]
 
 if with_platform_wayland
+  libvn_files += files('vn_wsi_wayland.c')
   vn_deps += dep_wayland_client
   vn_flags += '-DVK_USE_PLATFORM_WAYLAND_KHR'
-  libvn_files += files('vn_wsi_wayland.c')
 endif
 
 if with_platform_x11
+  libvn_files += files('vn_wsi_x11.c')
   vn_deps += dep_xcb_dri3
   vn_flags += [
     '-DVK_USE_PLATFORM_XCB_KHR',
     '-DVK_USE_PLATFORM_XLIB_KHR',
   ]
-  libvn_files += files('vn_wsi_x11.c')
 endif
 
 libvulkan_virtio = shared_library(
   'vulkan_virtio',
-  [libvn_files, vn_entrypoints],
+  [libvn_files, vn_entrypoints, sha1_h],
   include_directories : [
     inc_include, inc_src, inc_vulkan_wsi, inc_virtio,
   ],
-  link_with : [
-    libvulkan_wsi,
-  ],
-  dependencies : [
-    dep_thread, idep_mesautil, idep_vulkan_util, vn_deps,
-  ],
-  c_args : [no_override_init_args, vn_flags],
+  link_with : [libvulkan_wsi],
+  dependencies : [vn_deps],
+  c_args : [vn_flags],
   link_args : [ld_args_bsymbolic, ld_args_gc_sections],
   gnu_symbol_visibility : 'hidden',
   install : true,

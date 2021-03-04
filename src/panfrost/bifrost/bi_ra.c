@@ -42,11 +42,10 @@ bi_mark_sr_live(bi_block *block, bi_clause *clause, unsigned node_count, uint16_
         bi_foreach_instr_in_clause(block, clause, ins) {
                 if (!bi_opcode_props[ins->op].sr_write) continue;
 
-                bi_foreach_dest(ins, d) {
-                        unsigned node = bi_get_node(ins->dest[d]);
-                        if (node < node_count)
-                                live[node] = bi_writemask(ins);
-                }
+                /* Set liveness for dest 0 which is the staging register */
+                unsigned node = bi_get_node(ins->dest[0]);
+                if (node < node_count)
+                        live[node] = bi_writemask(ins, 0);
 
                 break;
         }
@@ -63,10 +62,10 @@ bi_mark_interference(bi_block *block, bi_clause *clause, struct lcra_state *l, u
                         if (bi_get_node(ins->dest[d]) >= node_count)
                                 continue;
 
-                        for (unsigned i = 1; i < node_count; ++i) {
+                        for (unsigned i = 0; i < node_count; ++i) {
                                 if (live[i]) {
                                         lcra_add_node_interference(l, bi_get_node(ins->dest[d]),
-                                                        bi_writemask(ins), i, live[i]);
+                                                        bi_writemask(ins, d), i, live[i]);
                                 }
                         }
                 }
@@ -74,7 +73,7 @@ bi_mark_interference(bi_block *block, bi_clause *clause, struct lcra_state *l, u
                 if (!is_blend && ins->op == BI_OPCODE_BLEND) {
                         /* Add blend shader interference: blend shaders might
                          * clobber r0-r15. */
-                        for (unsigned i = 1; i < node_count; ++i) {
+                        for (unsigned i = 0; i < node_count; ++i) {
                                 if (!live[i])
                                         continue;
 
@@ -229,18 +228,6 @@ bi_rewrite_index_src_single(bi_instr *ins, bi_index old, bi_index new)
         }
 }
 
-static void
-bi_rewrite_index_dst_single(bi_instr *ins, bi_index old, bi_index new)
-{
-        bi_foreach_dest(ins, i) {
-                if (bi_is_equiv(ins->dest[i], old)) {
-                        ins->dest[i].type = new.type;
-                        ins->dest[i].reg = new.reg;
-                        ins->dest[i].value = new.value;
-                }
-        }
-}
-
 /* If register allocation fails, find the best spill node */
 
 static signed
@@ -249,9 +236,9 @@ bi_choose_spill_node(bi_context *ctx, struct lcra_state *l)
         /* Pick a node satisfying bi_spill_register's preconditions */
 
         bi_foreach_instr_global(ctx, ins) {
-                if (ins->no_spill || ins->dest[0].offset || !bi_is_null(ins->dest[1])) {
-                        for (unsigned d = 0; d < ARRAY_SIZE(ins->dest); ++d)
-                                lcra_set_node_spill_cost(l, bi_get_node(ins->dest[0]), -1);
+                bi_foreach_dest(ins, d) {
+                        if (ins->no_spill || ins->dest[d].offset)
+                                lcra_set_node_spill_cost(l, bi_get_node(ins->dest[d]), -1);
                 }
         }
 
@@ -269,7 +256,7 @@ bi_spill_dest(bi_builder *b, bi_index index, bi_index temp, uint32_t offset,
         b->cursor = bi_after_clause(clause);
 
         /* setup FAU as [offset][0] */
-        bi_instr *st = bi_store_to(b, channels * 32, bi_null(), temp,
+        bi_instr *st = bi_store(b, channels * 32, temp,
                         bi_passthrough(BIFROST_SRC_FAU_LO),
                         bi_passthrough(BIFROST_SRC_FAU_HI),
                         BI_SEG_TL);
@@ -306,12 +293,18 @@ bi_clause_mark_spill(bi_context *ctx, bi_block *block,
         unsigned channels = 0;
 
         bi_foreach_instr_in_clause(block, clause, ins) {
-                if (!bi_is_equiv(ins->dest[0], index)) continue;
-                if (bi_is_null(*temp)) *temp = bi_temp_reg(ctx);
-                ins->no_spill = true;
-                bi_rewrite_index_dst_single(ins, index, *temp);
-                unsigned newc = util_last_bit(bi_writemask(ins)) >> 2;
-                channels = MAX2(channels, newc);
+                bi_foreach_dest(ins, d) {
+                        if (!bi_is_equiv(ins->dest[d], index)) continue;
+                        if (bi_is_null(*temp)) *temp = bi_temp_reg(ctx);
+                        ins->no_spill = true;
+
+                        unsigned offset = ins->dest[d].offset;
+                        ins->dest[d] = bi_replace_index(ins->dest[d], *temp);
+                        ins->dest[d].offset = offset;
+
+                        unsigned newc = util_last_bit(bi_writemask(ins, d)) >> 2;
+                        channels = MAX2(channels, newc);
+                }
         }
 
         return channels;

@@ -324,6 +324,13 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
    case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
       return 0;
+
+   case PIPE_CAP_SHAREABLE_SHADERS:
+      /* Can't expose shareable shaders because the draw shaders reference the
+       * draw module's state, which is per-context.
+       */
+      return 0;
+
    case PIPE_CAP_MAX_GS_INVOCATIONS:
       return 32;
    case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
@@ -696,8 +703,7 @@ llvmpipe_is_format_supported( struct pipe_screen *_screen,
    }
 
    if (format_desc->layout == UTIL_FORMAT_LAYOUT_ASTC ||
-       format_desc->layout == UTIL_FORMAT_LAYOUT_ATC ||
-       format_desc->layout == UTIL_FORMAT_LAYOUT_FXT1) {
+       format_desc->layout == UTIL_FORMAT_LAYOUT_ATC) {
       /* Software decoding is not hooked up. */
       return false;
    }
@@ -924,7 +930,7 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
 
    screen->allow_cl = !!getenv("LP_CL");
    screen->use_tgsi = (LP_DEBUG & DEBUG_TGSI_IR);
-   screen->num_threads = util_cpu_caps.nr_cpus > 1 ? util_cpu_caps.nr_cpus : 0;
+   screen->num_threads = util_get_cpu_caps()->nr_cpus > 1 ? util_get_cpu_caps()->nr_cpus : 0;
 #ifdef EMBEDDED_DEVICE
    screen->num_threads = 0;
 #endif

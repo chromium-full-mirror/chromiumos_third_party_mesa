@@ -52,6 +52,7 @@
 #include "blorp/blorp.h"
 #include "compiler/brw_compiler.h"
 #include "util/bitset.h"
+#include "util/bitscan.h"
 #include "util/macros.h"
 #include "util/hash_table.h"
 #include "util/list.h"
@@ -356,11 +357,6 @@ static inline uintptr_t anv_pack_ptr(void *ptr, int bits, int flags)
    uintptr_t mask = (1ull << bits) - 1;
    return value | (mask & flags);
 }
-
-#define for_each_bit(b, dword)                          \
-   for (uint32_t __dword = (dword);                     \
-        (b) = __builtin_ffs(__dword) - 1, __dword;      \
-        __dword &= ~(1 << (b)))
 
 /* Whenever we generate an error, pass it through this function. Useful for
  * debugging, where we can break on it. Only call at error site, not when
@@ -1094,7 +1090,9 @@ VkResult anv_init_wsi(struct anv_physical_device *physical_device);
 void anv_finish_wsi(struct anv_physical_device *physical_device);
 
 struct anv_queue_submit {
-   struct anv_cmd_buffer *                   cmd_buffer;
+   struct anv_cmd_buffer **                  cmd_buffers;
+   uint32_t                                  cmd_buffer_count;
+   uint32_t                                  cmd_buffer_array_length;
 
    uint32_t                                  fence_count;
    uint32_t                                  fence_array_length;
@@ -1136,6 +1134,7 @@ struct anv_queue_submit {
    uintptr_t *                               fence_bos;
 
    int                                       perf_query_pass;
+   struct anv_query_pool *                   perf_query_pool;
 
    const VkAllocationCallbacks *             alloc;
    VkSystemAllocationScope                   alloc_scope;
@@ -1373,10 +1372,7 @@ anv_mocs(const struct anv_device *device,
          const struct anv_bo *bo,
          isl_surf_usage_flags_t usage)
 {
-   if (bo->is_external)
-      return device->isl_dev.mocs.external;
-
-   return isl_mocs(&device->isl_dev, usage);
+   return isl_mocs(&device->isl_dev, usage, bo && bo->is_external);
 }
 
 void anv_device_init_blorp(struct anv_device *device);
@@ -1593,6 +1589,14 @@ struct anv_batch_bo {
 
    /* Bytes actually consumed in this batch BO */
    uint32_t                                     length;
+
+   /* When this batch BO is used as part of a primary batch buffer, this
+    * tracked whether it is chained to another primary batch buffer.
+    *
+    * If this is the case, the relocation list's last entry points the
+    * location of the MI_BATCH_BUFFER_START chaining to the next batch.
+    */
+   bool                                         chained;
 
    struct anv_reloc_list                        relocs;
 };
@@ -2249,6 +2253,7 @@ struct anv_buffer {
    struct anv_device *                          device;
    VkDeviceSize                                 size;
 
+   VkBufferCreateFlags                          create_flags;
    VkBufferUsageFlags                           usage;
 
    /* Set when bound */
@@ -2444,8 +2449,7 @@ anv_pipe_flush_bits_for_access_flags(struct anv_device *device,
 {
    enum anv_pipe_bits pipe_bits = 0;
 
-   unsigned b;
-   for_each_bit(b, flags) {
+   u_foreach_bit(b, flags) {
       switch ((VkAccessFlagBits)(1 << b)) {
       case VK_ACCESS_SHADER_WRITE_BIT:
          /* We're transitioning a buffer that was previously used as write
@@ -2505,8 +2509,7 @@ anv_pipe_invalidate_bits_for_access_flags(struct anv_device *device,
 {
    enum anv_pipe_bits pipe_bits = 0;
 
-   unsigned b;
-   for_each_bit(b, flags) {
+   u_foreach_bit(b, flags) {
       switch ((VkAccessFlagBits)(1 << b)) {
       case VK_ACCESS_INDIRECT_COMMAND_READ_BIT:
          /* Indirect draw commands take a buffer as input that we're going to
@@ -2932,6 +2935,8 @@ struct anv_cmd_pool {
    struct vk_object_base                        base;
    VkAllocationCallbacks                        alloc;
    struct list_head                             cmd_buffers;
+
+   VkCommandPoolCreateFlags                     flags;
 };
 
 #define ANV_CMD_BUFFER_BATCH_SIZE 8192
@@ -2956,6 +2961,12 @@ struct anv_cmd_buffer {
    struct list_head                             pool_link;
 
    struct anv_batch                             batch;
+
+   /* Pointer to the location in the batch where MI_BATCH_BUFFER_END was
+    * recorded upon calling vkEndCommandBuffer(). This is useful if we need to
+    * rewrite the end to chain multiple batch together at vkQueueSubmit().
+    */
+   void *                                       batch_end;
 
    /* Fields required for the actual chain of anv_batch_bo's.
     *
@@ -3018,6 +3029,18 @@ struct anv_cmd_buffer {
     */
    uint32_t                                      perf_reloc_idx;
 };
+
+/* Determine whether we can chain a given cmd_buffer to another one. We need
+ * softpin and we also need to make sure that we can edit the end of the batch
+ * to point to next one, which requires the command buffer to not be used
+ * simultaneously.
+ */
+static inline bool
+anv_cmd_buffer_is_chainable(struct anv_cmd_buffer *cmd_buffer)
+{
+   return cmd_buffer->device->physical->use_softpin &&
+      !(cmd_buffer->usage_flags & VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT);
+}
 
 VkResult anv_cmd_buffer_init_batch_bo_chain(struct anv_cmd_buffer *cmd_buffer);
 void anv_cmd_buffer_fini_batch_bo_chain(struct anv_cmd_buffer *cmd_buffer);
@@ -3618,7 +3641,7 @@ anv_plane_to_aspect(VkImageAspectFlags image_aspects,
 }
 
 #define anv_foreach_image_aspect_bit(b, image, aspects) \
-   for_each_bit(b, anv_image_expand_aspects(image, aspects))
+   u_foreach_bit(b, anv_image_expand_aspects(image, aspects))
 
 const struct anv_format *
 anv_get_format(VkFormat format);

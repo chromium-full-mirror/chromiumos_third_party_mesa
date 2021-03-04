@@ -71,7 +71,7 @@ static void
 draw_emit_indirect(struct fd_ringbuffer *ring,
 				   struct CP_DRAW_INDX_OFFSET_0 *draw0,
 				   const struct pipe_draw_info *info,
-                   const struct pipe_draw_indirect_info *indirect,
+				   const struct pipe_draw_indirect_info *indirect,
 				   unsigned index_offset)
 {
 	struct fd_resource *ind = fd_resource(indirect->buffer);
@@ -101,7 +101,7 @@ static void
 draw_emit(struct fd_ringbuffer *ring,
 		  struct CP_DRAW_INDX_OFFSET_0 *draw0,
 		  const struct pipe_draw_info *info,
-                  const struct pipe_draw_start_count *draw,
+		  const struct pipe_draw_start_count *draw,
 		  unsigned index_offset)
 {
 	if (info->index_size) {
@@ -134,6 +134,7 @@ draw_emit(struct fd_ringbuffer *ring,
  */
 static void
 fixup_shader_state(struct fd_context *ctx, struct ir3_shader_key *key)
+	assert_dt
 {
 	struct fd6_context *fd6_ctx = fd6_context(ctx);
 	struct ir3_shader_key *last_key = &fd6_ctx->last_key;
@@ -155,6 +156,7 @@ fixup_shader_state(struct fd_context *ctx, struct ir3_shader_key *key)
 
 static void
 fixup_draw_state(struct fd_context *ctx, struct fd6_emit *emit)
+	assert_dt
 {
 	if (ctx->last.dirty ||
 			(ctx->last.primitive_restart != emit->primitive_restart)) {
@@ -169,35 +171,24 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
              const struct pipe_draw_indirect_info *indirect,
              const struct pipe_draw_start_count *draw,
              unsigned index_offset)
+	assert_dt
 {
 	struct fd6_context *fd6_ctx = fd6_context(ctx);
-	struct ir3_shader *gs = ctx->prog.gs;
+	struct shader_info *gs_info = ir3_get_shader_info(ctx->prog.gs);
 	struct fd6_emit emit = {
 		.ctx = ctx,
 		.vtx  = &ctx->vtx,
 		.info = info,
-                .indirect = indirect,
-                .draw = draw,
+		.indirect = indirect,
+		.draw = draw,
 		.key = {
 			.vs = ctx->prog.vs,
 			.gs = ctx->prog.gs,
 			.fs = ctx->prog.fs,
 			.key = {
-				.color_two_side = ctx->rasterizer->light_twoside,
-				.vclamp_color = ctx->rasterizer->clamp_vertex_color,
-				.fclamp_color = ctx->rasterizer->clamp_fragment_color,
 				.rasterflat = ctx->rasterizer->flatshade,
 				.ucp_enables = ctx->rasterizer->clip_plane_enable,
-				.has_per_samp = (fd6_ctx->fsaturate || fd6_ctx->vsaturate),
-				.vsaturate_s = fd6_ctx->vsaturate_s,
-				.vsaturate_t = fd6_ctx->vsaturate_t,
-				.vsaturate_r = fd6_ctx->vsaturate_r,
-				.fsaturate_s = fd6_ctx->fsaturate_s,
-				.fsaturate_t = fd6_ctx->fsaturate_t,
-				.fsaturate_r = fd6_ctx->fsaturate_r,
-				.layer_zero = !gs || !(gs->nir->info.outputs_written & VARYING_BIT_LAYER),
-				.vsamples = ctx->tex[PIPE_SHADER_VERTEX].samples,
-				.fsamples = ctx->tex[PIPE_SHADER_FRAGMENT].samples,
+				.layer_zero = !gs_info || !(gs_info->outputs_written & VARYING_BIT_LAYER),
 				.sample_shading = (ctx->min_samples > 1),
 				.msaa = (ctx->framebuffer.samples > 1),
 			},
@@ -218,7 +209,7 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 		if (!(ctx->prog.hs && ctx->prog.ds))
 			return false;
 
-		shader_info *ds_info = &emit.key.ds->nir->info;
+		struct shader_info *ds_info = ir3_get_shader_info(emit.key.ds);
 		emit.key.key.tessellation = ir3_tess_mode(ds_info->tess.primitive_mode);
 	}
 
@@ -511,6 +502,7 @@ static bool is_z32(enum pipe_format format)
 static bool
 fd6_clear(struct fd_context *ctx, unsigned buffers,
 		const union pipe_color_union *color, double depth, unsigned stencil)
+	assert_dt
 {
 	struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
 	const bool has_depth = pfb->zsbuf;
@@ -527,7 +519,7 @@ fd6_clear(struct fd_context *ctx, unsigned buffers,
 	if (ctx->batch->num_draws > 0)
 		return false;
 
-	foreach_bit(i, color_buffers)
+	u_foreach_bit(i, color_buffers)
 		ctx->batch->clear_color[i] = *color;
 	if (buffers & PIPE_CLEAR_DEPTH)
 		ctx->batch->clear_depth = depth;
@@ -550,6 +542,7 @@ fd6_clear(struct fd_context *ctx, unsigned buffers,
 
 void
 fd6_draw_init(struct pipe_context *pctx)
+	disable_thread_safety_analysis
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->draw_vbo = fd6_draw_vbo;

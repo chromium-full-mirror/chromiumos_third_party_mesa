@@ -39,7 +39,7 @@ setup_lrz(struct fd_resource *rsc)
 	switch (rsc->base.nr_samples) {
 	case 4:
 		lrz_pitch *= 2;
-		/* fallthrough */
+		FALLTHROUGH;
 	case 2:
 		lrz_height *= 2;
 	}
@@ -59,7 +59,7 @@ fd5_setup_slices(struct fd_resource *rsc)
 {
 	struct pipe_resource *prsc = &rsc->base;
 
-	if ((fd_mesa_debug & FD_DBG_LRZ) && has_depth(rsc->base.format))
+	if (FD_DBG(LRZ) && has_depth(rsc->base.format))
 		setup_lrz(rsc);
 
 	fdl5_layout(&rsc->layout, prsc->format, fd_resource_nr_samples(prsc),

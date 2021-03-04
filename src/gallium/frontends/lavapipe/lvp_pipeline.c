@@ -437,13 +437,11 @@ shared_var_info(const struct glsl_type *type, unsigned *size, unsigned *align)
       *align = comp_size;
 }
 
-#define OPT(pass, ...) ({                                       \
-         bool this_progress = false;                            \
-         NIR_PASS(this_progress, nir, pass, ##__VA_ARGS__);     \
-         if (this_progress)                                     \
-            progress = true;                                    \
-         this_progress;                                         \
-      })
+#define OPT(pass, ...) do {                                       \
+         bool this_progress = false;                              \
+         NIR_PASS(this_progress, nir, pass, ##__VA_ARGS__);       \
+         progress |= this_progress;                               \
+      } while(0)
 
 static void
 lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
@@ -467,9 +465,9 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
       for (uint32_t i = 0; i < num_spec_entries; i++) {
          VkSpecializationMapEntry entry = spec_info->pMapEntries[i];
          const void *data =
-            spec_info->pData + entry.offset;
-         assert((const void *)(data + entry.size) <=
-                spec_info->pData + spec_info->dataSize);
+            (char *)spec_info->pData + entry.offset;
+         assert((const char *)((char *)data + entry.size) <=
+                (char *)spec_info->pData + spec_info->dataSize);
 
          spec_entries[i].id = entry.constantID;
          switch (entry.size) {
@@ -587,11 +585,11 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
    do {
       progress = false;
 
-      progress |= OPT(nir_lower_flrp, 32|64, true);
-      progress |= OPT(nir_split_array_vars, nir_var_function_temp);
-      progress |= OPT(nir_shrink_vec_array_vars, nir_var_function_temp);
-      progress |= OPT(nir_opt_deref);
-      progress |= OPT(nir_lower_vars_to_ssa);
+      OPT(nir_lower_flrp, 32|64, true);
+      OPT(nir_split_array_vars, nir_var_function_temp);
+      OPT(nir_shrink_vec_array_vars, nir_var_function_temp);
+      OPT(nir_opt_deref);
+      OPT(nir_lower_vars_to_ssa);
 
       progress |= nir_copy_prop(nir);
       progress |= nir_opt_dce(nir);
@@ -698,13 +696,13 @@ lvp_pipeline_compile(struct lvp_pipeline *pipeline,
    struct lvp_device *device = pipeline->device;
    device->physical_device->pscreen->finalize_nir(device->physical_device->pscreen, pipeline->pipeline_nir[stage], true);
    if (stage == MESA_SHADER_COMPUTE) {
-      struct pipe_compute_state shstate = {};
+      struct pipe_compute_state shstate = {0};
       shstate.prog = (void *)pipeline->pipeline_nir[MESA_SHADER_COMPUTE];
       shstate.ir_type = PIPE_SHADER_IR_NIR;
       shstate.req_local_mem = pipeline->pipeline_nir[MESA_SHADER_COMPUTE]->info.cs.shared_size;
       pipeline->shader_cso[PIPE_SHADER_COMPUTE] = device->queue.ctx->create_compute_state(device->queue.ctx, &shstate);
    } else {
-      struct pipe_shader_state shstate = {};
+      struct pipe_shader_state shstate = {0};
       fill_shader_prog(&shstate, stage, pipeline);
 
       nir_xfb_info *xfb_info = NULL;
@@ -800,7 +798,11 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
    if (pipeline->pipeline_nir[MESA_SHADER_TESS_CTRL]) {
       nir_lower_patch_vertices(pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL], pipeline->pipeline_nir[MESA_SHADER_TESS_CTRL]->info.tess.tcs_vertices_out, NULL);
       merge_tess_info(&pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL]->info, &pipeline->pipeline_nir[MESA_SHADER_TESS_CTRL]->info);
-      pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL]->info.tess.ccw = !pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL]->info.tess.ccw;
+      const VkPipelineTessellationDomainOriginStateCreateInfo *domain_origin_state =
+         vk_find_struct_const(pCreateInfo->pTessellationState,
+                              PIPELINE_TESSELLATION_DOMAIN_ORIGIN_STATE_CREATE_INFO);
+      if (!domain_origin_state || domain_origin_state->domainOrigin == VK_TESSELLATION_DOMAIN_ORIGIN_UPPER_LEFT)
+         pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL]->info.tess.ccw = !pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL]->info.tess.ccw;
    }
 
 
@@ -818,7 +820,7 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
                                                      "dummy_frag");
 
       pipeline->pipeline_nir[MESA_SHADER_FRAGMENT] = b.shader;
-      struct pipe_shader_state shstate = {};
+      struct pipe_shader_state shstate = {0};
       shstate.type = PIPE_SHADER_IR_NIR;
       shstate.ir.nir = pipeline->pipeline_nir[MESA_SHADER_FRAGMENT];
       pipeline->shader_cso[PIPE_SHADER_FRAGMENT] = device->queue.ctx->create_fs_state(device->queue.ctx, &shstate);

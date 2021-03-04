@@ -361,9 +361,6 @@ struct v3d_key {
         void *shader_state;
         struct {
                 uint8_t swizzle[4];
-                bool clamp_s:1;
-                bool clamp_t:1;
-                bool clamp_r:1;
         } tex[V3D_MAX_TEXTURE_SAMPLERS];
         struct {
                 uint8_t return_size;
@@ -642,6 +639,22 @@ struct v3d_compile {
          * TMU spills.
          */
         bool disable_tmu_pipelining;
+
+        /* Emits ldunif for each new uniform, even if the uniform was already
+         * emitted in the same block. Useful to compile shaders with high
+         * register pressure or to disable the optimization during uniform
+         * spills.
+         */
+        bool disable_ldunif_opt;
+
+        /* Last UBO index and offset used with a unifa/ldunifa sequence and the
+         * block where it was emitted. This is used to skip unifa writes (and
+         * their 3 delay slot) when the next UBO load reads right after the
+         * previous one in the same block.
+         */
+        struct qblock *last_unifa_block;
+        int32_t last_unifa_index;
+        uint32_t last_unifa_offset;
 
         /* State for whether we're executing on each channel currently.  0 if
          * yes, otherwise a block number + 1 that the channel jumped to.
@@ -981,6 +994,7 @@ bool vir_opt_peephole_sf(struct v3d_compile *c);
 bool vir_opt_redundant_flags(struct v3d_compile *c);
 bool vir_opt_small_immediates(struct v3d_compile *c);
 bool vir_opt_vpm(struct v3d_compile *c);
+bool vir_opt_constant_alu(struct v3d_compile *c);
 void v3d_nir_lower_blend(nir_shader *s, struct v3d_compile *c);
 void v3d_nir_lower_io(nir_shader *s, struct v3d_compile *c);
 void v3d_nir_lower_line_smooth(nir_shader *shader);

@@ -328,8 +328,8 @@ struct pipe_depth_stencil_alpha_state
    unsigned depth_bounds_test:1;     /**< depth bounds test enabled? */
 
    float alpha_ref_value;            /**< reference value */
-   float depth_bounds_min;           /**< minimum depth bound */
-   float depth_bounds_max;           /**< maximum depth bound */
+   double depth_bounds_min;          /**< minimum depth bound */
+   double depth_bounds_max;          /**< maximum depth bound */
 };
 
 
@@ -412,6 +412,7 @@ struct pipe_sampler_state
    unsigned normalized_coords:1; /**< Are coords normalized to [0,1]? */
    unsigned max_anisotropy:5;
    unsigned seamless_cube_map:1;
+   unsigned border_color_is_integer:1;
    float lod_bias;               /**< LOD/lambda bias */
    float min_lod, max_lod;       /**< LOD clamp range, after bias */
    union pipe_color_union border_color;

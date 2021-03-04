@@ -2049,6 +2049,9 @@ typedef struct {
    /* gather component selector */
    unsigned component : 2;
 
+   /* Validation needs to know this for gradient component count */
+   unsigned array_is_lowered_cube : 1;
+
    /* gather offsets */
    int8_t tg4_offsets[4][2];
 
@@ -2268,7 +2271,8 @@ nir_tex_instr_src_size(const nir_tex_instr *instr, unsigned src)
 
    if (instr->src[src].src_type == nir_tex_src_ddx ||
        instr->src[src].src_type == nir_tex_src_ddy) {
-      if (instr->is_array)
+
+      if (instr->is_array && !instr->array_is_lowered_cube)
          return instr->coord_components - 1;
       else
          return instr->coord_components;
@@ -3387,6 +3391,10 @@ typedef struct nir_shader_compiler_options {
     * iadd(x, ineg(y)). If true, driver should call nir_opt_algebraic_late(). */
    bool has_isub;
 
+   /** Backend supports txs, if not nir_lower_tex(..) uses txs-free variants
+    * for rect texture lowering. */
+   bool has_txs;
+
    /* Whether to generate only scoped_barrier intrinsics instead of the set of
     * memory and control barrier intrinsics based on GLSL.
     */
@@ -3861,8 +3869,8 @@ typedef bool (*nir_foreach_dest_cb)(nir_dest *dest, void *state);
 typedef bool (*nir_foreach_src_cb)(nir_src *src, void *state);
 bool nir_foreach_ssa_def(nir_instr *instr, nir_foreach_ssa_def_cb cb,
                          void *state);
-bool nir_foreach_dest(nir_instr *instr, nir_foreach_dest_cb cb, void *state);
-bool nir_foreach_src(nir_instr *instr, nir_foreach_src_cb cb, void *state);
+static inline bool nir_foreach_dest(nir_instr *instr, nir_foreach_dest_cb cb, void *state);
+static inline bool nir_foreach_src(nir_instr *instr, nir_foreach_src_cb cb, void *state);
 bool nir_foreach_phi_src_leaving_block(nir_block *instr,
                                        nir_foreach_src_cb cb,
                                        void *state);
@@ -3936,6 +3944,12 @@ void nir_ssa_def_rewrite_uses_after(nir_ssa_def *def, nir_src new_src,
                                     nir_instr *after_me);
 
 nir_component_mask_t nir_ssa_def_components_read(const nir_ssa_def *def);
+
+static inline bool
+nir_ssa_def_is_unused(nir_ssa_def *ssa)
+{
+   return list_is_empty(&ssa->uses) && list_is_empty(&ssa->if_uses);
+}
 
 
 /** Returns the next block, disregarding structure
@@ -4937,7 +4951,7 @@ void nir_lower_mediump_outputs(nir_shader *nir);
 bool nir_lower_point_size(nir_shader *shader, float min, float max);
 
 void nir_lower_texcoord_replace(nir_shader *s, unsigned coord_replace,
-                                bool point_coord_is_sysval);
+                                bool point_coord_is_sysval, bool yinvert);
 
 typedef enum {
    nir_lower_interpolation_at_sample = (1 << 1),
@@ -5165,6 +5179,8 @@ bool
 nir_addition_might_overflow(nir_shader *shader, struct hash_table *range_ht,
                             nir_ssa_scalar ssa, unsigned const_val,
                             const nir_unsigned_upper_bound_config *config);
+
+#include "nir_inline_helpers.h"
 
 #ifdef __cplusplus
 } /* extern "C" */

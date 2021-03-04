@@ -479,6 +479,8 @@ get_register_queries_function(const struct gen_device_info *devinfo)
       return gen_oa_register_queries_rkl;
    if (devinfo->is_dg1)
       return gen_oa_register_queries_dg1;
+   if (devinfo->is_alderlake)
+      return gen_oa_register_queries_adl;
 
    return NULL;
 }
@@ -1142,8 +1144,12 @@ gen_perf_query_result_read_perfcnts(struct gen_perf_query_result *result,
                                     const uint64_t *end)
 {
    for (uint32_t i = 0; i < 2; i++) {
-      result->accumulator[query->perfcnt_offset + i] =
-         (end[i] & PERF_CNT_VALUE_MASK) - (start[i] & PERF_CNT_VALUE_MASK);
+      uint64_t v0 = start[i] & PERF_CNT_VALUE_MASK;
+      uint64_t v1 = end[i] & PERF_CNT_VALUE_MASK;
+
+      result->accumulator[query->perfcnt_offset + i] = v0 > v1 ?
+         (PERF_CNT_VALUE_MASK + 1 + v1 - v0) :
+         (v1 - v0);
    }
 }
 

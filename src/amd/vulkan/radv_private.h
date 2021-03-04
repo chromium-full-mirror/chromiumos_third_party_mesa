@@ -48,6 +48,7 @@
 #include <xf86drm.h>
 #endif
 #include "compiler/shader_enums.h"
+#include "util/bitscan.h"
 #include "util/cnd_monotonic.h"
 #include "util/macros.h"
 #include "util/list.h"
@@ -191,11 +192,6 @@ radv_clear_mask(uint32_t *inout_mask, uint32_t clear_mask)
 		return false;
 	}
 }
-
-#define for_each_bit(b, dword)                          \
-	for (uint32_t __dword = (dword);		\
-	     (b) = ffs(__dword) - 1, __dword;	\
-	     __dword &= ~(1 << (b)))
 
 /* Whenever we generate an error, pass it through this function. Useful for
  * debugging, where we can break on it. Only call at error site, not when
@@ -652,6 +648,12 @@ struct radv_meta_state {
 		VkPipelineLayout p_layout;
 		VkPipeline pipeline[MAX_SAMPLES_LOG2];
 	} fmask_expand;
+
+	struct {
+		VkDescriptorSetLayout ds_layout;
+		VkPipelineLayout p_layout;
+		VkPipeline pipeline;
+	} dcc_retile;
 };
 
 /* queue types */
@@ -1191,6 +1193,9 @@ radv_get_debug_option_name(int id);
 const char *
 radv_get_perftest_option_name(int id);
 
+int
+radv_get_int_debug_option(const char *name, int default_value);
+
 struct radv_color_buffer_info {
 	uint64_t cb_color_base;
 	uint64_t cb_color_cmask;
@@ -1227,7 +1232,6 @@ struct radv_ds_buffer_info {
 	uint32_t pa_su_poly_offset_db_fmt_cntl;
 	uint32_t db_z_info2; /* GFX9 only */
 	uint32_t db_stencil_info2; /* GFX9 only */
-	float offset_scale;
 };
 
 void
@@ -1334,7 +1338,6 @@ struct radv_cmd_state {
 	bool                                         perfect_occlusion_queries_enabled;
 	unsigned                                     active_pipeline_queries;
 	unsigned                                     active_pipeline_gds_queries;
-	float					     offset_scale;
 	uint32_t                                      trace_id;
 	uint32_t                                      last_ia_multi_vgt_param;
 
@@ -1749,6 +1752,9 @@ struct radv_pipeline {
 
 	/* Not NULL if graphics pipeline uses streamout. */
 	struct radv_shader_variant *streamout_shader;
+
+	/* Unique pipeline hash identifier. */
+	uint64_t pipeline_hash;
 };
 
 static inline bool radv_pipeline_has_gs(const struct radv_pipeline *pipeline)
@@ -1864,6 +1870,15 @@ struct radv_image {
 	uint64_t fce_pred_offset;
 	uint64_t dcc_pred_offset;
 
+	/* On some GPUs DCC needs different tiling of the metadata for
+	 * rendering and for display, so we're stuck with having the metadata
+	 * two times and then occasionally copying one into the other.
+	 * 
+	 * The retile map is an array of (src index, dst index) pairs to
+	 * determine how it should be copied between the two.
+	 */
+	struct radeon_winsys_bo *retile_map;
+
 	/*
 	 * Metadata for the TC-compat zrange workaround. If the 32-bit value
 	 * stored at this offset is UINT_MAX, the driver will emit
@@ -1927,7 +1942,7 @@ radv_image_has_fmask(const struct radv_image *image)
 static inline bool
 radv_image_has_dcc(const struct radv_image *image)
 {
-	return image->planes[0].surface.dcc_size;
+	return image->planes[0].surface.dcc_offset;
 }
 
 /**
@@ -2592,15 +2607,14 @@ void radv_describe_dispatch(struct radv_cmd_buffer *cmd_buffer, int x, int y, in
 void radv_describe_begin_render_pass_clear(struct radv_cmd_buffer *cmd_buffer,
 					   VkImageAspectFlagBits aspects);
 void radv_describe_end_render_pass_clear(struct radv_cmd_buffer *cmd_buffer);
+void radv_describe_begin_render_pass_resolve(struct radv_cmd_buffer *cmd_buffer);
+void radv_describe_end_render_pass_resolve(struct radv_cmd_buffer *cmd_buffer);
 void radv_describe_barrier_start(struct radv_cmd_buffer *cmd_buffer,
 				 enum rgp_barrier_reason reason);
 void radv_describe_barrier_end(struct radv_cmd_buffer *cmd_buffer);
 void radv_describe_barrier_end_delayed(struct radv_cmd_buffer *cmd_buffer);
 void radv_describe_layout_transition(struct radv_cmd_buffer *cmd_buffer,
 				     const struct radv_barrier_data *barrier);
-void radv_describe_pipeline_bind(struct radv_cmd_buffer *cmd_buffer,
-				 VkPipelineBindPoint pipelineBindPoint,
-				 struct radv_pipeline *pipeline);
 
 struct radeon_winsys_sem;
 

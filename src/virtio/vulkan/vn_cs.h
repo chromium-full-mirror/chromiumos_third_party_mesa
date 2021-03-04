@@ -8,19 +8,35 @@
 
 #include "vn_common.h"
 
-struct vn_cs_buffer {
+#define VN_CS_ENCODER_INITIALIZER(storage, size)                             \
+   (struct vn_cs_encoder)                                                    \
+   {                                                                         \
+      .buffers =                                                             \
+         &(struct vn_cs_encoder_buffer){                                     \
+            .base = storage,                                                 \
+         },                                                                  \
+      .buffer_count = 1, .buffer_max = 1, .current_buffer_size = size,       \
+      .cur = storage, .end = (const void *)(storage) + (size),               \
+   }
+
+#define VN_CS_DECODER_INITIALIZER(storage, size)                             \
+   (struct vn_cs_decoder)                                                    \
+   {                                                                         \
+      .cur = storage, .end = (const void *)(storage) + (size),               \
+   }
+
+struct vn_cs_encoder_buffer {
    void *base;
    size_t committed_size;
 };
 
 struct vn_cs_encoder {
-   const VkAllocationCallbacks *allocator;
-   VkSystemAllocationScope alloc_scope;
    size_t min_buffer_size;
+   bool growable;
 
    bool fatal_error;
 
-   struct vn_cs_buffer *buffers;
+   struct vn_cs_encoder_buffer *buffers;
    uint32_t buffer_count;
    uint32_t buffer_max;
    size_t total_committed_size;
@@ -41,10 +57,7 @@ struct vn_cs_decoder {
 };
 
 void
-vn_cs_encoder_init(struct vn_cs_encoder *enc,
-                   const VkAllocationCallbacks *alloc,
-                   VkSystemAllocationScope alloc_scope,
-                   size_t min_size);
+vn_cs_encoder_init_growable(struct vn_cs_encoder *enc, size_t min_size);
 
 void
 vn_cs_encoder_fini(struct vn_cs_encoder *enc);
@@ -53,12 +66,12 @@ void
 vn_cs_encoder_reset(struct vn_cs_encoder *enc);
 
 static inline void
-vn_cs_encoder_set_fatal(struct vn_cs_encoder *enc)
+vn_cs_encoder_set_fatal(const struct vn_cs_encoder *enc)
 {
    /* This is fatal and should be treated as VK_ERROR_DEVICE_LOST or even
     * abort().  Note that vn_cs_encoder_reset does not clear this.
     */
-   enc->fatal_error = true;
+   ((struct vn_cs_encoder *)enc)->fatal_error = true;
 }
 
 static inline bool
@@ -80,7 +93,8 @@ vn_cs_encoder_get_len(const struct vn_cs_encoder *enc)
       return 0;
 
    size_t len = enc->total_committed_size;
-   const struct vn_cs_buffer *cur_buf = &enc->buffers[enc->buffer_count - 1];
+   const struct vn_cs_encoder_buffer *cur_buf =
+      &enc->buffers[enc->buffer_count - 1];
    if (!cur_buf->committed_size)
       len += enc->cur - cur_buf->base;
    return len;
@@ -126,12 +140,11 @@ vn_cs_encoder_commit(struct vn_cs_encoder *enc);
 static inline void
 vn_cs_decoder_init(struct vn_cs_decoder *dec, const void *data, size_t size)
 {
-   dec->cur = data;
-   dec->end = data + size;
+   *dec = VN_CS_DECODER_INITIALIZER(data, size);
 }
 
 static inline void
-vn_cs_decoder_set_fatal(struct vn_cs_decoder *dec)
+vn_cs_decoder_set_fatal(const struct vn_cs_decoder *dec)
 {
    abort();
 }
@@ -156,7 +169,9 @@ vn_cs_decoder_read(struct vn_cs_decoder *dec,
 }
 
 static inline void
-vn_cs_decoder_peek(struct vn_cs_decoder *dec, void *val, size_t val_size)
+vn_cs_decoder_peek(const struct vn_cs_decoder *dec,
+                   void *val,
+                   size_t val_size)
 {
    if (unlikely(val_size > dec->end - dec->cur)) {
       vn_cs_decoder_set_fatal(dec);

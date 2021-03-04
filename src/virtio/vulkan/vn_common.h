@@ -12,6 +12,7 @@
 #define VN_COMMON_H
 
 #include <assert.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -22,8 +23,11 @@
 #include <vulkan/vulkan.h>
 
 #include "c11/threads.h"
+#include "util/bitscan.h"
 #include "util/list.h"
 #include "util/macros.h"
+#include "util/os_time.h"
+#include "util/xmlconfig.h"
 #include "vk_alloc.h"
 #include "vk_debug_report.h"
 #include "vk_device.h"
@@ -126,6 +130,9 @@ VkResult
 vn_log_result(struct vn_instance *instance,
               VkResult result,
               const char *where);
+
+void
+vn_relax(uint32_t *iter);
 
 static_assert(sizeof(vn_object_id) >= sizeof(uintptr_t), "");
 

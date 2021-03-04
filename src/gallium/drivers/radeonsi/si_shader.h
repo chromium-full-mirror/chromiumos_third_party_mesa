@@ -394,6 +394,10 @@ struct si_shader_info {
    bool writes_layer;
    bool uses_bindless_samplers;
    bool uses_bindless_images;
+   bool uses_indirect_descriptor;
+
+   bool uses_vmem_return_type_sampler_or_bvh;
+   bool uses_vmem_return_type_other; /* all other VMEM loads and atomics with return */
 
    /** Whether all codepaths write tess factors in all invocations. */
    bool tessfactors_are_def_in_all_invocs;
@@ -877,6 +881,7 @@ struct si_shader *si_generate_gs_copy_shader(struct si_screen *sscreen,
 /* si_shader_nir.c */
 void si_nir_scan_shader(const struct nir_shader *nir, struct si_shader_info *info);
 void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool first);
+void si_nir_late_opts(nir_shader *nir);
 void si_finalize_nir(struct pipe_screen *screen, void *nirptr, bool optimize);
 
 /* si_state_shaders.c */

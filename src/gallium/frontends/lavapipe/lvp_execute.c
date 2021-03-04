@@ -762,6 +762,15 @@ static void fill_sampler_stage(struct rendering_state *state,
    state->ss_dirty[p_stage] = true;
 }
 
+#define fix_depth_swizzle(x) do { \
+  if (x > PIPE_SWIZZLE_X && x < PIPE_SWIZZLE_0) \
+    x = PIPE_SWIZZLE_0;				\
+  } while (0)
+#define fix_depth_swizzle_a(x) do { \
+  if (x > PIPE_SWIZZLE_X && x < PIPE_SWIZZLE_0) \
+    x = PIPE_SWIZZLE_1;				\
+  } while (0)
+
 static void fill_sampler_view_stage(struct rendering_state *state,
                                     struct dyn_info *dyn_info,
                                     gl_shader_stage stage,
@@ -807,10 +816,20 @@ static void fill_sampler_view_stage(struct rendering_state *state,
    if (iv->components.a != VK_COMPONENT_SWIZZLE_IDENTITY)
       templ.swizzle_a = vk_conv_swizzle(iv->components.a);
 
-   if (util_format_is_depth_or_stencil(templ.format)) {
-      templ.swizzle_r = PIPE_SWIZZLE_X;
-      templ.swizzle_g = PIPE_SWIZZLE_0;
-      templ.swizzle_b = PIPE_SWIZZLE_0;
+   /* depth stencil swizzles need special handling to pass VK CTS
+    * but also for zink GL tests.
+    * piping A swizzle into R fixes GL_ALPHA depth texture mode
+    * only swizzling from R/0/1 (for alpha) fixes VK CTS tests
+    * and a bunch of zink tests.
+   */
+   if (iv->subresourceRange.aspectMask == VK_IMAGE_ASPECT_DEPTH_BIT ||
+       iv->subresourceRange.aspectMask == VK_IMAGE_ASPECT_STENCIL_BIT) {
+      if (templ.swizzle_a == PIPE_SWIZZLE_X)
+         templ.swizzle_r = PIPE_SWIZZLE_X;
+      fix_depth_swizzle(templ.swizzle_r);
+      fix_depth_swizzle(templ.swizzle_g);
+      fix_depth_swizzle(templ.swizzle_b);
+      fix_depth_swizzle_a(templ.swizzle_a);
    }
 
    if (state->sv[p_stage][sv_idx])
@@ -1043,14 +1062,14 @@ static void handle_compute_descriptor_sets(struct lvp_cmd_buffer_entry *cmd,
    int i;
 
    for (i = 0; i < bds->first; i++) {
-      increment_dyn_info(dyn_info, bds->layout->set[i].layout, false);
+      increment_dyn_info(dyn_info, bds->set_layout[i], false);
    }
    for (i = 0; i < bds->count; i++) {
       const struct lvp_descriptor_set *set = bds->sets[i];
 
       if (set->layout->shader_stages & VK_SHADER_STAGE_COMPUTE_BIT)
          handle_set_stage(state, dyn_info, set, MESA_SHADER_COMPUTE, PIPE_SHADER_COMPUTE);
-      increment_dyn_info(dyn_info, bds->layout->set[bds->first + i].layout, true);
+      increment_dyn_info(dyn_info, bds->set_layout[bds->first + i], true);
    }
 }
 
@@ -1072,7 +1091,7 @@ static void handle_descriptor_sets(struct lvp_cmd_buffer_entry *cmd,
    }
 
    for (i = 0; i < bds->first; i++) {
-      increment_dyn_info(&dyn_info, bds->layout->set[i].layout, false);
+      increment_dyn_info(&dyn_info, bds->set_layout[i], false);
    }
 
    for (i = 0; i < bds->count; i++) {
@@ -1092,7 +1111,7 @@ static void handle_descriptor_sets(struct lvp_cmd_buffer_entry *cmd,
 
       if (set->layout->shader_stages & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
          handle_set_stage(state, &dyn_info, set, MESA_SHADER_TESS_EVAL, PIPE_SHADER_TESS_EVAL);
-      increment_dyn_info(&dyn_info, bds->layout->set[bds->first + i].layout, true);
+      increment_dyn_info(&dyn_info, bds->set_layout[bds->first + i], true);
    }
 }
 
@@ -1159,9 +1178,6 @@ static void render_subpass_clear(struct rendering_state *state)
 {
    const struct lvp_subpass *subpass = &state->pass->subpasses[state->subpass];
 
-   if (!subpass_needs_clear(state))
-      return;
-
    for (unsigned i = 0; i < subpass->color_count; i++) {
       uint32_t a = subpass->color_attachments[i].attachment;
 
@@ -1206,13 +1222,17 @@ static void render_subpass_clear(struct rendering_state *state)
          uint32_t sclear_val = 0;
          uint32_t ds_clear_flags = 0;
 
-         if (util_format_has_stencil(desc) && att->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+         if ((util_format_has_stencil(desc) && att->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) ||
+             (util_format_is_depth_and_stencil(imgv->surface->format) && att->stencil_load_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE)) {
             ds_clear_flags |= PIPE_CLEAR_STENCIL;
-            sclear_val = state->attachments[ds].clear_value.depthStencil.stencil;
+            if (att->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
+               sclear_val = state->attachments[ds].clear_value.depthStencil.stencil;
          }
-         if (util_format_has_depth(desc) && att->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+         if ((util_format_has_depth(desc) && att->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) ||
+             (util_format_is_depth_and_stencil(imgv->surface->format) && att->load_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE)) {
             ds_clear_flags |= PIPE_CLEAR_DEPTH;
-            dclear_val = state->attachments[ds].clear_value.depthStencil.depth;
+            if (att->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
+               dclear_val = state->attachments[ds].clear_value.depthStencil.depth;
          }
 
          if (ds_clear_flags)
@@ -1227,6 +1247,84 @@ static void render_subpass_clear(struct rendering_state *state)
       }
    }
 
+}
+
+static void render_subpass_clear_fast(struct rendering_state *state)
+{
+   /* attempt to use the clear interface first, then fallback to per-attchment clears */
+   const struct lvp_subpass *subpass = &state->pass->subpasses[state->subpass];
+   bool has_color_value = false;
+   uint32_t buffers = 0;
+   VkClearValue color_value = {0};
+   double dclear_val = 0;
+   uint32_t sclear_val = 0;
+
+   /*
+    * the state tracker clear interface only works if all the attachments have the same
+    * clear color.
+    */
+   /* llvmpipe doesn't support scissored clears yet */
+   if (state->render_area.offset.x || state->render_area.offset.y)
+      goto slow_clear;
+
+   if (state->render_area.extent.width != state->framebuffer.width ||
+       state->render_area.extent.height != state->framebuffer.height)
+      goto slow_clear;
+
+   for (unsigned i = 0; i < subpass->color_count; i++) {
+      uint32_t a = subpass->color_attachments[i].attachment;
+
+      if (!attachment_needs_clear(state, a))
+         continue;
+
+      if (has_color_value) {
+         if (memcmp(&color_value, &state->attachments[a].clear_value, sizeof(VkClearValue)))
+            goto slow_clear;
+      } else {
+         memcpy(&color_value, &state->attachments[a].clear_value, sizeof(VkClearValue));
+         has_color_value = true;
+      }
+   }
+
+   for (unsigned i = 0; i < subpass->color_count; i++) {
+      uint32_t a = subpass->color_attachments[i].attachment;
+
+      if (!attachment_needs_clear(state, a))
+         continue;
+      buffers |= (PIPE_CLEAR_COLOR0 << i);
+      state->pending_clear_aspects[a] = 0;
+   }
+
+   if (subpass->depth_stencil_attachment &&
+       attachment_needs_clear(state, subpass->depth_stencil_attachment->attachment)) {
+      uint32_t ds = subpass->depth_stencil_attachment->attachment;
+
+      struct lvp_render_pass_attachment *att = &state->pass->attachments[ds];
+      struct lvp_image_view *imgv = state->vk_framebuffer->attachments[ds];
+      const struct util_format_description *desc = util_format_description(imgv->surface->format);
+
+      /* also clear stencil for don't care to avoid RMW */
+      if ((util_format_has_stencil(desc) && att->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) ||
+          (util_format_is_depth_and_stencil(imgv->surface->format) && att->stencil_load_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE))
+         buffers |= PIPE_CLEAR_STENCIL;
+      if (util_format_has_depth(desc) && att->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
+         buffers |= PIPE_CLEAR_DEPTH;
+
+      dclear_val = state->attachments[ds].clear_value.depthStencil.depth;
+      sclear_val = state->attachments[ds].clear_value.depthStencil.stencil;
+      state->pending_clear_aspects[ds] = 0;
+   }
+
+   union pipe_color_union col_val;
+   for (unsigned i = 0; i < 4; i++)
+      col_val.ui[i] = color_value.color.uint32[i];
+
+   state->pctx->clear(state->pctx, buffers,
+                      NULL, &col_val,
+                      dclear_val, sclear_val);
+   return;
+slow_clear:
+   render_subpass_clear(state);
 }
 
 static void render_pass_resolve(struct rendering_state *state)
@@ -1270,8 +1368,6 @@ static void begin_render_subpass(struct rendering_state *state,
 {
    state->subpass = subpass_idx;
 
-   render_subpass_clear(state);
-
    state->framebuffer.nr_cbufs = 0;
 
    const struct lvp_subpass *subpass = &state->pass->subpasses[subpass_idx];
@@ -1299,6 +1395,9 @@ static void begin_render_subpass(struct rendering_state *state,
 
    state->pctx->set_framebuffer_state(state->pctx,
                                       &state->framebuffer);
+
+   if (subpass_needs_clear(state))
+      render_subpass_clear_fast(state);
 }
 
 static void handle_begin_render_pass(struct lvp_cmd_buffer_entry *cmd,
@@ -2130,7 +2229,7 @@ static void handle_copy_query_pool_results(struct lvp_cmd_buffer_entry *cmd,
             struct pipe_transfer *src_t;
             uint32_t *map;
 
-            struct pipe_box box = {};
+            struct pipe_box box = {0};
             box.width = copycmd->stride * copycmd->query_count;
             box.height = 1;
             box.depth = 1;
@@ -2750,6 +2849,7 @@ VkResult lvp_execute_cmds(struct lvp_device *device,
    state.blend_dirty = true;
    state.dsa_dirty = true;
    state.rs_dirty = true;
+   state.vp_dirty = true;
    /* create a gallium context */
    lvp_execute_cmd_buffer(cmd_buffer, &state);
 

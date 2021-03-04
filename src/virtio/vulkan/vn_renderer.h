@@ -21,6 +21,7 @@ struct vn_renderer_info {
    } pci;
 
    bool has_cache_management;
+   bool has_timeline_sync;
 
    uint32_t max_sync_queue_count;
 
@@ -36,8 +37,7 @@ struct vn_renderer_bo {
 
    uint32_t res_id;
 
-   void (*destroy)(struct vn_renderer_bo *bo,
-                   const VkAllocationCallbacks *alloc);
+   void (*destroy)(struct vn_renderer_bo *bo);
 
    /* allocate a CPU shared memory as the storage */
    VkResult (*init_cpu)(struct vn_renderer_bo *bo, VkDeviceSize size);
@@ -74,8 +74,7 @@ struct vn_renderer_bo {
 struct vn_renderer_sync {
    uint32_t sync_id;
 
-   void (*destroy)(struct vn_renderer_sync *sync,
-                   const VkAllocationCallbacks *alloc);
+   void (*destroy)(struct vn_renderer_sync *sync);
 
    /* a sync can be initialized/released multiple times */
    VkResult (*init)(struct vn_renderer_sync *sync,
@@ -98,7 +97,7 @@ struct vn_renderer_sync {
 
 struct vn_renderer_submit_batch {
    const void *cs_data;
-   const size_t cs_size;
+   size_t cs_size;
 
    /*
     * Submit cs to the virtual sync queue identified by sync_queue_index.  The
@@ -125,7 +124,12 @@ struct vn_renderer_submit_batch {
 };
 
 struct vn_renderer_submit {
-   /* BOs to pin and to fence implicitly */
+   /* BOs to pin and to fence implicitly
+    *
+    * TODO track all bos and automatically pin them.  We don't do it yet
+    * because each vn_command_buffer owns a bo.  We can probably make do by
+    * returning the bos to a bo cache and exclude bo cache from pinning.
+    */
    struct vn_renderer_bo *const *bos;
    uint32_t bo_count;
 
@@ -160,14 +164,9 @@ struct vn_renderer {
    VkResult (*wait)(struct vn_renderer *renderer,
                     const struct vn_renderer_wait *wait);
 
-   struct vn_renderer_bo *(*bo_create)(struct vn_renderer *renderer,
-                                       const VkAllocationCallbacks *alloc,
-                                       VkSystemAllocationScope alloc_scope);
+   struct vn_renderer_bo *(*bo_create)(struct vn_renderer *renderer);
 
-   struct vn_renderer_sync *(*sync_create)(
-      struct vn_renderer *renderer,
-      const VkAllocationCallbacks *alloc,
-      VkSystemAllocationScope alloc_scope);
+   struct vn_renderer_sync *(*sync_create)(struct vn_renderer *renderer);
 };
 
 VkResult
@@ -247,18 +246,15 @@ vn_renderer_wait(struct vn_renderer *renderer,
 static inline VkResult
 vn_renderer_bo_create_cpu(struct vn_renderer *renderer,
                           VkDeviceSize size,
-                          const VkAllocationCallbacks *alloc,
-                          VkSystemAllocationScope alloc_scope,
                           struct vn_renderer_bo **_bo)
 {
-   struct vn_renderer_bo *bo =
-      renderer->bo_create(renderer, alloc, alloc_scope);
+   struct vn_renderer_bo *bo = renderer->bo_create(renderer);
    if (!bo)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    VkResult result = bo->init_cpu(bo, size);
    if (result != VK_SUCCESS) {
-      bo->destroy(bo, alloc);
+      bo->destroy(bo);
       return result;
    }
 
@@ -274,18 +270,15 @@ vn_renderer_bo_create_gpu(struct vn_renderer *renderer,
                           vn_object_id mem_id,
                           VkMemoryPropertyFlags flags,
                           VkExternalMemoryHandleTypeFlags external_handles,
-                          const VkAllocationCallbacks *alloc,
-                          VkSystemAllocationScope alloc_scope,
                           struct vn_renderer_bo **_bo)
 {
-   struct vn_renderer_bo *bo =
-      renderer->bo_create(renderer, alloc, alloc_scope);
+   struct vn_renderer_bo *bo = renderer->bo_create(renderer);
    if (!bo)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    VkResult result = bo->init_gpu(bo, size, mem_id, flags, external_handles);
    if (result != VK_SUCCESS) {
-      bo->destroy(bo, alloc);
+      bo->destroy(bo);
       return result;
    }
 
@@ -306,8 +299,7 @@ vn_renderer_bo_ref(struct vn_renderer_bo *bo)
 }
 
 static inline void
-vn_renderer_bo_unref(struct vn_renderer_bo *bo,
-                     const VkAllocationCallbacks *alloc)
+vn_renderer_bo_unref(struct vn_renderer_bo *bo)
 {
    const int old =
       atomic_fetch_sub_explicit(&bo->refcount, 1, memory_order_release);
@@ -315,7 +307,7 @@ vn_renderer_bo_unref(struct vn_renderer_bo *bo,
 
    if (old == 1) {
       atomic_thread_fence(memory_order_acquire);
-      bo->destroy(bo, alloc);
+      bo->destroy(bo);
    }
 }
 
@@ -349,12 +341,9 @@ vn_renderer_bo_invalidate(struct vn_renderer_bo *bo,
 
 static inline VkResult
 vn_renderer_sync_create_cpu(struct vn_renderer *renderer,
-                            const VkAllocationCallbacks *alloc,
-                            VkSystemAllocationScope alloc_scope,
                             struct vn_renderer_sync **_sync)
 {
-   struct vn_renderer_sync *sync =
-      renderer->sync_create(renderer, alloc, alloc_scope);
+   struct vn_renderer_sync *sync = renderer->sync_create(renderer);
    if (!sync)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
@@ -363,7 +352,7 @@ vn_renderer_sync_create_cpu(struct vn_renderer *renderer,
    const bool binary = false;
    VkResult result = sync->init(sync, initial_val, shareable, binary);
    if (result != VK_SUCCESS) {
-      sync->destroy(sync, alloc);
+      sync->destroy(sync);
       return result;
    }
 
@@ -375,12 +364,9 @@ static inline VkResult
 vn_renderer_sync_create_fence(struct vn_renderer *renderer,
                               bool signaled,
                               VkExternalFenceHandleTypeFlags external_handles,
-                              const VkAllocationCallbacks *alloc,
-                              VkSystemAllocationScope alloc_scope,
                               struct vn_renderer_sync **_sync)
 {
-   struct vn_renderer_sync *sync =
-      renderer->sync_create(renderer, alloc, alloc_scope);
+   struct vn_renderer_sync *sync = renderer->sync_create(renderer);
    if (!sync)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
@@ -389,7 +375,7 @@ vn_renderer_sync_create_fence(struct vn_renderer *renderer,
    const bool binary = true;
    VkResult result = sync->init(sync, initial_val, shareable, binary);
    if (result != VK_SUCCESS) {
-      sync->destroy(sync, alloc);
+      sync->destroy(sync);
       return result;
    }
 
@@ -403,12 +389,9 @@ vn_renderer_sync_create_semaphore(
    VkSemaphoreType type,
    uint64_t initial_val,
    VkExternalSemaphoreHandleTypeFlags external_handles,
-   const VkAllocationCallbacks *alloc,
-   VkSystemAllocationScope alloc_scope,
    struct vn_renderer_sync **_sync)
 {
-   struct vn_renderer_sync *sync =
-      renderer->sync_create(renderer, alloc, alloc_scope);
+   struct vn_renderer_sync *sync = renderer->sync_create(renderer);
    if (!sync)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
@@ -416,7 +399,7 @@ vn_renderer_sync_create_semaphore(
    const bool binary = type == VK_SEMAPHORE_TYPE_BINARY;
    VkResult result = sync->init(sync, initial_val, shareable, binary);
    if (result != VK_SUCCESS) {
-      sync->destroy(sync, alloc);
+      sync->destroy(sync);
       return result;
    }
 
@@ -426,12 +409,9 @@ vn_renderer_sync_create_semaphore(
 
 static inline VkResult
 vn_renderer_sync_create_empty(struct vn_renderer *renderer,
-                              const VkAllocationCallbacks *alloc,
-                              VkSystemAllocationScope alloc_scope,
                               struct vn_renderer_sync **_sync)
 {
-   struct vn_renderer_sync *sync =
-      renderer->sync_create(renderer, alloc, alloc_scope);
+   struct vn_renderer_sync *sync = renderer->sync_create(renderer);
    if (!sync)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
@@ -442,10 +422,9 @@ vn_renderer_sync_create_empty(struct vn_renderer *renderer,
 }
 
 static inline void
-vn_renderer_sync_destroy(struct vn_renderer_sync *sync,
-                         const VkAllocationCallbacks *alloc)
+vn_renderer_sync_destroy(struct vn_renderer_sync *sync)
 {
-   sync->destroy(sync, alloc);
+   sync->destroy(sync);
 }
 
 static inline void

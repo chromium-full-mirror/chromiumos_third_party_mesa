@@ -1232,6 +1232,10 @@ radv_shader_variant_create(struct radv_device *device,
 			unsigned encode_granularity = device->physical_device->rad_info.lds_encode_granularity;
 			config.lds_size = align(rtld_binary.lds_size, encode_granularity) / encode_granularity;
 		}
+		if (!config.lds_size && binary->stage == MESA_SHADER_TESS_CTRL) {
+			/* This is used for reporting LDS statistics */
+			config.lds_size = binary->info.tcs.num_lds_blocks;
+		}
 
 		variant->code_size = rtld_binary.rx_size;
 		variant->exec_size = rtld_binary.exec_size;
@@ -1284,6 +1288,7 @@ radv_shader_variant_create(struct radv_device *device,
 			variant->disasm_string[disasm_size] = 0;
 		}
 
+		variant->code_ptr = dest_ptr;
 		ac_rtld_close(&rtld_binary);
 	} else {
 		struct radv_shader_binary_legacy* bin = (struct radv_shader_binary_legacy *)binary;
@@ -1294,6 +1299,7 @@ radv_shader_variant_create(struct radv_device *device,
 		for (unsigned i = 0; i < DEBUGGER_NUM_MARKERS; i++)
 			ptr32[i] = DEBUGGER_END_OF_CODE_MARKER;
 
+		variant->code_ptr = dest_ptr;
 		variant->ir_string = bin->ir_size ? strdup((const char*)(bin->data + bin->stats_size + bin->code_size)) : NULL;
 		variant->disasm_string = bin->disasm_size ? strdup((const char*)(bin->data + bin->stats_size + bin->code_size + bin->ir_size)) : NULL;
 

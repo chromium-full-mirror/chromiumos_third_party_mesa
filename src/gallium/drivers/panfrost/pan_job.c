@@ -569,22 +569,27 @@ panfrost_batch_add_resource_bos(struct panfrost_batch *batch,
                 panfrost_batch_add_bo(batch, rsrc->separate_stencil->bo, flags);
 }
 
+/* Adds the BO backing surface to a batch if the surface is non-null */
+
 static void
-panfrost_batch_add_fbo_bos(struct panfrost_batch *batch)
+panfrost_batch_add_surface(struct panfrost_batch *batch, struct pipe_surface *surf)
 {
         uint32_t flags = PAN_BO_ACCESS_SHARED | PAN_BO_ACCESS_WRITE |
                          PAN_BO_ACCESS_VERTEX_TILER |
                          PAN_BO_ACCESS_FRAGMENT;
-
-        for (unsigned i = 0; i < batch->key.nr_cbufs; ++i) {
-                struct panfrost_resource *rsrc = pan_resource(batch->key.cbufs[i]->texture);
+        if (surf) {
+                struct panfrost_resource *rsrc = pan_resource(surf->texture);
                 panfrost_batch_add_resource_bos(batch, rsrc, flags);
         }
 
-        if (batch->key.zsbuf) {
-                struct panfrost_resource *rsrc = pan_resource(batch->key.zsbuf->texture);
-                panfrost_batch_add_resource_bos(batch, rsrc, flags);
-        }
+}
+static void
+panfrost_batch_add_fbo_bos(struct panfrost_batch *batch)
+{
+        for (unsigned i = 0; i < batch->key.nr_cbufs; ++i)
+                panfrost_batch_add_surface(batch, batch->key.cbufs[i]);
+
+        panfrost_batch_add_surface(batch, batch->key.zsbuf);
 }
 
 struct panfrost_bo *
@@ -788,7 +793,8 @@ panfrost_load_surface(struct panfrost_batch *batch, struct pipe_surface *surf, u
                                                     rsrc->damage.extent.maxy);
         }
 
-        enum pipe_format format = rsrc->base.format;
+        /* Note: this may not equal surf->texture->format, we reinterpret */
+        enum pipe_format format = surf->format;
 
         if (loc == FRAG_RESULT_DEPTH) {
                 if (!util_format_has_depth(util_format_description(format)))
@@ -829,10 +835,10 @@ panfrost_load_surface(struct panfrost_batch *batch, struct pipe_surface *surf, u
         mali_ptr blend_shader = 0;
 
         if (loc >= FRAG_RESULT_DATA0 &&
-            !panfrost_blend_format(rsrc->base.format).internal) {
+            !panfrost_blend_format(format).internal) {
                 struct panfrost_blend_shader *b =
                         panfrost_get_blend_shader(batch->ctx, batch->ctx->blit_blend,
-                                                  rsrc->base.format,
+                                                  format,
                                                   rsrc->base.nr_samples,
                                                   loc - FRAG_RESULT_DATA0,
                                                   NULL);

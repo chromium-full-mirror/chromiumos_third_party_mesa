@@ -65,7 +65,7 @@ static bi_block *emit_cf_list(bi_context *ctx, struct exec_list *list);
 static void
 bi_emit_jump(bi_builder *b, nir_jump_instr *instr)
 {
-        bi_instr *branch = bi_jump_to(b, bi_null(), bi_zero());
+        bi_instr *branch = bi_jump(b, bi_zero());
 
         switch (instr->type) {
         case nir_jump_break:
@@ -82,29 +82,59 @@ bi_emit_jump(bi_builder *b, nir_jump_instr *instr)
         b->shader->current_block->base.unconditional_jumps = true;
 }
 
-static void
-bi_emit_ld_tile(bi_builder *b, nir_intrinsic_instr *instr)
+static bi_index
+bi_varying_src0_for_barycentric(bi_builder *b, nir_intrinsic_instr *intr)
 {
-        assert(b->shader->inputs->is_blend);
+        switch (intr->intrinsic) {
+        case nir_intrinsic_load_barycentric_centroid:
+        case nir_intrinsic_load_barycentric_sample:
+                return bi_register(61);
 
-        /* We want to load the current pixel.
-         * FIXME: The sample to load is currently hardcoded to 0. This should
-         * be addressed for multi-sample FBs.
+        /* Need to put the sample ID in the top 16-bits */
+        case nir_intrinsic_load_barycentric_at_sample:
+                return bi_mkvec_v2i16(b, bi_half(bi_dontcare(), false),
+                                bi_half(bi_src_index(&intr->src[0]), false));
+
+        /* Interpret as 8:8 signed fixed point positions in pixels along X and
+         * Y axes respectively, relative to top-left of pixel. In NIR, (0, 0)
+         * is the center of the pixel so we first fixup and then convert. For
+         * fp16 input:
+         *
+         * f2i16(((x, y) + (0.5, 0.5)) * 2**8) =
+         * f2i16((256 * (x, y)) + (128, 128)) =
+         * V2F16_TO_V2S16(FMA.v2f16((x, y), #256, #128))
+         *
+         * For fp32 input, that lacks enough precision for MSAA 16x, but the
+         * idea is the same. FIXME: still doesn't pass
          */
-        struct bifrost_pixel_indices pix = {
-                .y = BIFROST_CURRENT_PIXEL,
-        };
+        case nir_intrinsic_load_barycentric_at_offset: {
+                bi_index offset = bi_src_index(&intr->src[0]);
+                bi_index f16 = bi_null();
+                unsigned sz = nir_src_bit_size(intr->src[0]);
 
-        uint64_t blend_desc = b->shader->inputs->blend.bifrost_blend_desc;
-        uint32_t indices = 0;
-        memcpy(&indices, &pix, sizeof(indices));
+                if (sz == 16) {
+                        f16 = bi_fma_v2f16(b, offset, bi_imm_f16(256.0),
+                                        bi_imm_f16(128.0), BI_ROUND_NONE);
+                } else {
+                        assert(sz == 32);
+                        bi_index f[2];
+                        for (unsigned i = 0; i < 2; ++i) {
+                                f[i] = bi_fadd_rscale_f32(b,
+                                                bi_word(offset, i),
+                                                bi_imm_f32(0.5), bi_imm_u32(8),
+                                                BI_ROUND_NONE, BI_SPECIAL_NONE);
+                        }
 
-        bi_ld_tile_to(b, bi_dest_index(&instr->dest), bi_imm_u32(indices),
-                bi_register(60), /* coverage bitmap, TODO ra */
-                /* Only keep the conversion part of the blend descriptor. */
-                bi_imm_u32(blend_desc >> 32),
-                (instr->num_components - 1));
+                        f16 = bi_v2f32_to_v2f16(b, f[0], f[1], BI_ROUND_NONE);
+                }
 
+                return bi_v2f16_to_v2s16(b, f16, BI_ROUND_RTZ);
+        }
+
+        case nir_intrinsic_load_barycentric_pixel:
+        default:
+                return bi_dontcare();
+        }
 }
 
 static enum bi_sample
@@ -114,7 +144,10 @@ bi_interp_for_intrinsic(nir_intrinsic_op op)
         case nir_intrinsic_load_barycentric_centroid:
                 return BI_SAMPLE_CENTROID;
         case nir_intrinsic_load_barycentric_sample:
+        case nir_intrinsic_load_barycentric_at_sample:
                 return BI_SAMPLE_SAMPLE;
+        case nir_intrinsic_load_barycentric_at_offset:
+                return BI_SAMPLE_EXPLICIT;
         case nir_intrinsic_load_barycentric_pixel:
         default:
                 return BI_SAMPLE_CENTER;
@@ -190,21 +223,17 @@ bi_emit_load_vary(bi_builder *b, nir_intrinsic_instr *instr)
         enum bi_register_format regfmt = BI_REGISTER_FORMAT_AUTO;
         enum bi_vecsize vecsize = instr->num_components - 1;
         bool smooth = instr->intrinsic == nir_intrinsic_load_interpolated_input;
+        bi_index src0 = bi_null();
 
         if (smooth) {
                 nir_intrinsic_instr *parent = nir_src_as_intrinsic(instr->src[0]);
                 assert(parent);
 
                 sample = bi_interp_for_intrinsic(parent->intrinsic);
+                src0 = bi_varying_src0_for_barycentric(b, parent);
         } else {
                 regfmt = bi_reg_fmt_for_nir(nir_intrinsic_dest_type(instr));
         }
-
-        /* Ignored for non-conditional center and retrieve modes (use an
-         * efficient encoding), otherwise R61 for sample mask XXX RA */
-
-        bi_index src0 = (sample == BI_SAMPLE_CENTER) ? bi_dontcare() :
-                bi_register(61);
 
         nir_src *offset = nir_get_io_offset_src(instr);
         unsigned imm_index = 0;
@@ -441,6 +470,10 @@ bi_emit_fragment_out(bi_builder *b, nir_intrinsic_instr *instr)
                         (T == nir_type_float32) ? bi_word(rgba, 3) :
                         bi_dontcare();
 
+                /* Don't read out-of-bounds */
+                if (nir_src_num_components(instr->src[0]) < 4)
+                        alpha = bi_imm_f32(1.0);
+
                 bi_instr *atest = bi_atest_to(b, bi_register(60),
                                 bi_register(60), alpha);
                 b->shader->emitted_atest = true;
@@ -474,7 +507,12 @@ bi_emit_fragment_out(bi_builder *b, nir_intrinsic_instr *instr)
                 /* Explicit copy since BLEND inputs are precoloured to R0-R3,
                  * TODO: maybe schedule around this or implement in RA as a
                  * spill */
-                if (rt > 0) {
+                bool has_mrt = false;
+
+                nir_foreach_shader_out_variable(var, b->shader->nir)
+                        has_mrt |= (var->data.location > FRAG_RESULT_DATA0);
+
+                if (has_mrt) {
                         bi_index srcs[4] = { color, color, color, color };
                         unsigned channels[4] = { 0, 1, 2, 3 };
                         color = bi_temp(b->shader);
@@ -490,7 +528,7 @@ bi_emit_fragment_out(bi_builder *b, nir_intrinsic_instr *instr)
                 /* Jump back to the fragment shader, return address is stored
                  * in r48 (see above).
                  */
-                bi_jump_to(b, bi_null(), bi_register(48));
+                bi_jump(b, bi_register(48));
         }
 }
 
@@ -530,19 +568,14 @@ bi_emit_store_vary(bi_builder *b, nir_intrinsic_instr *instr)
         unsigned nr = util_last_bit(nir_intrinsic_write_mask(instr));
         assert(nr > 0 && nr <= nir_intrinsic_src_components(instr, 0));
 
-        bi_st_cvt_to(b, bi_null(), bi_src_index(&instr->src[0]),
-                        address, bi_word(address, 1), bi_word(address, 2),
+        bi_st_cvt(b, bi_src_index(&instr->src[0]), address,
+                        bi_word(address, 1), bi_word(address, 2),
                         regfmt, nr - 1);
 }
 
 static void
 bi_emit_load_ubo(bi_builder *b, nir_intrinsic_instr *instr)
 {
-        /* nir_lower_uniforms_to_ubo() should have been called, reserving
-         * UBO #0 for uniforms even if the shaders doesn't have uniforms.
-         */
-        assert(b->shader->nir->info.first_ubo_is_default_ubo);
-
         nir_src *offset = nir_get_io_offset_src(instr);
 
         bool offset_is_const = nir_src_is_const(*offset);
@@ -576,8 +609,7 @@ bi_emit_load(bi_builder *b, nir_intrinsic_instr *instr, enum bi_seg seg)
 static void
 bi_emit_store(bi_builder *b, nir_intrinsic_instr *instr, enum bi_seg seg)
 {
-        bi_store_to(b, instr->num_components * nir_src_bit_size(instr->src[0]),
-                    bi_null(),
+        bi_store(b, instr->num_components * nir_src_bit_size(instr->src[0]),
                     bi_src_index(&instr->src[0]),
                     bi_src_index(&instr->src[1]), bi_addr_high(&instr->src[1]),
                     seg);
@@ -586,15 +618,14 @@ bi_emit_store(bi_builder *b, nir_intrinsic_instr *instr, enum bi_seg seg)
 /* Exchanges the staging register with memory */
 
 static void
-bi_emit_axchg(bi_builder *b, nir_intrinsic_instr *instr, enum bi_seg seg)
+bi_emit_axchg_to(bi_builder *b, bi_index dst, bi_index addr, nir_src *arg, enum bi_seg seg)
 {
         assert(seg == BI_SEG_NONE || seg == BI_SEG_WLS);
 
-        bi_index addr = bi_src_index(&instr->src[0]);
-        bi_index data = bi_src_index(&instr->src[1]);
-
-        unsigned sz = nir_src_bit_size(instr->src[1]);
+        unsigned sz = nir_src_bit_size(*arg);
         assert(sz == 32 || sz == 64);
+
+        bi_index data = bi_src_index(arg);
 
         bi_index data_words[] = {
                 bi_word(data, 0),
@@ -614,24 +645,22 @@ bi_emit_axchg(bi_builder *b, nir_intrinsic_instr *instr, enum bi_seg seg)
                 bi_word(inout, 1),
         };
 
-        bi_make_vec_to(b, bi_dest_index(&instr->dest), inout_words, NULL, sz / 32, 32);
+        bi_make_vec_to(b, dst, inout_words, NULL, sz / 32, 32);
 }
 
 /* Exchanges the second staging register with memory if comparison with first
  * staging register passes */
 
 static void
-bi_emit_acmpxchg(bi_builder *b, nir_intrinsic_instr *instr, enum bi_seg seg)
+bi_emit_acmpxchg_to(bi_builder *b, bi_index dst, bi_index addr, nir_src *arg_1, nir_src *arg_2, enum bi_seg seg)
 {
         assert(seg == BI_SEG_NONE || seg == BI_SEG_WLS);
 
-        bi_index addr = bi_src_index(&instr->src[0]);
-
         /* hardware is swapped from NIR */
-        bi_index src0 = bi_src_index(&instr->src[2]);
-        bi_index src1 = bi_src_index(&instr->src[1]);
+        bi_index src0 = bi_src_index(arg_2);
+        bi_index src1 = bi_src_index(arg_1);
 
-        unsigned sz = nir_src_bit_size(instr->src[1]);
+        unsigned sz = nir_src_bit_size(*arg_1);
         assert(sz == 32 || sz == 64);
 
         bi_index data_words[] = {
@@ -656,7 +685,185 @@ bi_emit_acmpxchg(bi_builder *b, nir_intrinsic_instr *instr, enum bi_seg seg)
                 bi_word(inout, 1),
         };
 
-        bi_make_vec_to(b, bi_dest_index(&instr->dest), inout_words, NULL, sz / 32, 32);
+        bi_make_vec_to(b, dst, inout_words, NULL, sz / 32, 32);
+}
+
+/* Extracts an atomic opcode */
+
+static enum bi_atom_opc
+bi_atom_opc_for_nir(nir_op op)
+{
+        switch (op) {
+        case nir_intrinsic_global_atomic_add:
+        case nir_intrinsic_shared_atomic_add:
+        case nir_intrinsic_image_atomic_add:
+                return BI_ATOM_OPC_AADD;
+
+        case nir_intrinsic_global_atomic_imin:
+        case nir_intrinsic_shared_atomic_imin:
+        case nir_intrinsic_image_atomic_imin:
+                return BI_ATOM_OPC_ASMIN;
+
+        case nir_intrinsic_global_atomic_umin:
+        case nir_intrinsic_shared_atomic_umin:
+        case nir_intrinsic_image_atomic_umin:
+                return BI_ATOM_OPC_AUMIN;
+
+        case nir_intrinsic_global_atomic_imax:
+        case nir_intrinsic_shared_atomic_imax:
+        case nir_intrinsic_image_atomic_imax:
+                return BI_ATOM_OPC_ASMAX;
+
+        case nir_intrinsic_global_atomic_umax:
+        case nir_intrinsic_shared_atomic_umax:
+        case nir_intrinsic_image_atomic_umax:
+                return BI_ATOM_OPC_AUMAX;
+
+        case nir_intrinsic_global_atomic_and:
+        case nir_intrinsic_shared_atomic_and:
+        case nir_intrinsic_image_atomic_and:
+                return BI_ATOM_OPC_AAND;
+
+        case nir_intrinsic_global_atomic_or:
+        case nir_intrinsic_shared_atomic_or:
+        case nir_intrinsic_image_atomic_or:
+                return BI_ATOM_OPC_AOR;
+
+        case nir_intrinsic_global_atomic_xor:
+        case nir_intrinsic_shared_atomic_xor:
+        case nir_intrinsic_image_atomic_xor:
+                return BI_ATOM_OPC_AXOR;
+
+        default:
+                unreachable("Unexpected computational atomic");
+        }
+}
+
+/* Optimized unary atomics are available with an implied #1 argument */
+
+static bool
+bi_promote_atom_c1(enum bi_atom_opc op, bi_index arg, enum bi_atom_opc *out)
+{
+        /* Check we have a compatible constant */
+        if (arg.type != BI_INDEX_CONSTANT)
+                return false;
+
+        if (!(arg.value == 1 || (arg.value == -1 && op == BI_ATOM_OPC_AADD)))
+                return false;
+
+        /* Check for a compatible operation */
+        switch (op) {
+        case BI_ATOM_OPC_AADD:
+                *out = (arg.value == 1) ? BI_ATOM_OPC_AINC : BI_ATOM_OPC_ADEC;
+                return true;
+        case BI_ATOM_OPC_ASMAX:
+                *out = BI_ATOM_OPC_ASMAX1;
+                return true;
+        case BI_ATOM_OPC_AUMAX:
+                *out = BI_ATOM_OPC_AUMAX1;
+                return true;
+        case BI_ATOM_OPC_AOR:
+                *out = BI_ATOM_OPC_AOR1;
+                return true;
+        default:
+                return false;
+        }
+}
+
+/* Coordinates are 16-bit integers in Bifrost but 32-bit in NIR */
+
+static bi_index
+bi_emit_image_coord(bi_builder *b, bi_index coord)
+{
+        return bi_mkvec_v2i16(b,
+                        bi_half(bi_word(coord, 0), false),
+                        bi_half(bi_word(coord, 1), false));
+}
+
+static void
+bi_emit_image_load(bi_builder *b, nir_intrinsic_instr *instr)
+{
+        enum glsl_sampler_dim dim = nir_intrinsic_image_dim(instr);
+        ASSERTED unsigned nr_dim = glsl_get_sampler_dim_coordinate_components(dim);
+
+        bi_index coords = bi_src_index(&instr->src[1]);
+        /* TODO: MSAA */
+        assert(nr_dim != GLSL_SAMPLER_DIM_MS && "MSAA'd images not supported");
+
+        bi_ld_attr_tex_to(b, bi_dest_index(&instr->dest),
+                          bi_emit_image_coord(b, coords),
+                          bi_emit_image_coord(b, bi_word(coords, 2)),
+                          bi_src_index(&instr->src[0]),
+                          bi_reg_fmt_for_nir(nir_intrinsic_dest_type(instr)),
+                          instr->num_components - 1);
+}
+
+static bi_index
+bi_emit_lea_image(bi_builder *b, nir_intrinsic_instr *instr)
+{
+        enum glsl_sampler_dim dim = nir_intrinsic_image_dim(instr);
+        ASSERTED unsigned nr_dim = glsl_get_sampler_dim_coordinate_components(dim);
+
+        /* TODO: MSAA */
+        assert(nr_dim != GLSL_SAMPLER_DIM_MS && "MSAA'd images not supported");
+
+        enum bi_register_format type = (instr->intrinsic == nir_intrinsic_image_store) ?
+                bi_reg_fmt_for_nir(nir_intrinsic_src_type(instr)) :
+                BI_REGISTER_FORMAT_AUTO;
+
+        bi_index coords = bi_src_index(&instr->src[1]);
+        bi_index xy = bi_emit_image_coord(b, coords);
+        bi_index zw = bi_emit_image_coord(b, bi_word(coords, 2));
+
+        bi_instr *I = bi_lea_attr_tex_to(b, bi_temp(b->shader), xy, zw,
+                        bi_src_index(&instr->src[0]), type);
+
+        /* LEA_ATTR_TEX defaults to the secondary attribute table, but our ABI
+         * has all images in the primary attribute table */
+        I->table = BI_TABLE_ATTRIBUTE_1;
+
+        return I->dest[0];
+}
+
+static void
+bi_emit_image_store(bi_builder *b, nir_intrinsic_instr *instr)
+{
+        bi_index addr = bi_emit_lea_image(b, instr);
+
+        bi_st_cvt(b, bi_src_index(&instr->src[3]),
+                     addr, bi_word(addr, 1), bi_word(addr, 2),
+                     bi_reg_fmt_for_nir(nir_intrinsic_src_type(instr)),
+                     instr->num_components - 1);
+}
+
+static void
+bi_emit_atomic_i32_to(bi_builder *b, bi_index dst,
+                bi_index addr, bi_index arg, nir_op intrinsic)
+{
+        /* ATOM_C.i32 takes a vector with {arg, coalesced}, ATOM_C1.i32 doesn't
+         * take any vector but can still output in RETURN mode */
+        bi_index sr = bi_temp_reg(b->shader);
+
+        enum bi_atom_opc opc = bi_atom_opc_for_nir(intrinsic);
+        enum bi_atom_opc post_opc = opc;
+
+        bi_instr *I;
+
+        /* Generate either ATOM_C or ATOM_C1 as required */
+        if (bi_promote_atom_c1(opc, arg, &opc)) {
+                I = bi_patom_c1_i32_to(b, sr, bi_word(addr, 0),
+                                bi_word(addr, 1), opc);
+        } else {
+                bi_mov_i32_to(b, sr, arg);
+                I = bi_patom_c_i32_to(b, sr, sr, bi_word(addr, 0),
+                                bi_word(addr, 1), opc);
+
+        }
+
+        I->sr_count = 2;
+
+        /* Post-process it */
+        bi_atom_post_i32_to(b, dst, bi_word(sr, 0), bi_word(sr, 1), post_opc);
 }
 
 /* gl_FragCoord.xy = u16_to_f32(R59.xy) + 0.5
@@ -688,6 +895,42 @@ bi_emit_load_frag_coord(bi_builder *b, nir_intrinsic_instr *instr)
 }
 
 static void
+bi_emit_ld_tile(bi_builder *b, nir_intrinsic_instr *instr)
+{
+        unsigned rt = b->shader->inputs->blend.rt;
+
+        /* Get the render target */
+        if (!b->shader->inputs->is_blend) {
+                const nir_variable *var =
+                        nir_find_variable_with_driver_location(b->shader->nir,
+                                        nir_var_shader_out, nir_intrinsic_base(instr));
+                unsigned loc = var->data.location;
+                assert(loc == FRAG_RESULT_COLOR || loc >= FRAG_RESULT_DATA0);
+                rt = loc == FRAG_RESULT_COLOR ? 0 :
+                        (loc - FRAG_RESULT_DATA0);
+        }
+
+        /* We want to load the current pixel.
+         * FIXME: The sample to load is currently hardcoded to 0. This should
+         * be addressed for multi-sample FBs.
+         */
+        struct bifrost_pixel_indices pix = {
+                .y = BIFROST_CURRENT_PIXEL,
+                .rt = rt
+        };
+
+        bi_index desc = b->shader->inputs->is_blend ?
+                bi_imm_u32(b->shader->inputs->blend.bifrost_blend_desc >> 32) :
+                bi_load_sysval(b, PAN_SYSVAL(RT_CONVERSION, rt), 1, 0);
+
+        uint32_t indices = 0;
+        memcpy(&indices, &pix, sizeof(indices));
+
+        bi_ld_tile_to(b, bi_dest_index(&instr->dest), bi_imm_u32(indices),
+                        bi_register(60), desc, (instr->num_components - 1));
+}
+
+static void
 bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
 {
         bi_index dst = nir_intrinsic_infos[instr->intrinsic].has_dest ?
@@ -698,6 +941,8 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
         case nir_intrinsic_load_barycentric_pixel:
         case nir_intrinsic_load_barycentric_centroid:
         case nir_intrinsic_load_barycentric_sample:
+        case nir_intrinsic_load_barycentric_at_sample:
+        case nir_intrinsic_load_barycentric_at_offset:
                 /* handled later via load_vary */
                 break;
         case nir_intrinsic_load_interpolated_input:
@@ -756,20 +1001,106 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
                 bi_emit_store(b, instr, BI_SEG_WLS);
                 break;
 
+        /* Blob doesn't seem to do anything for memory barriers, note +BARRIER
+         * is illegal in fragment shaders */
+        case nir_intrinsic_memory_barrier:
+        case nir_intrinsic_memory_barrier_buffer:
+        case nir_intrinsic_memory_barrier_image:
+        case nir_intrinsic_memory_barrier_shared:
+        case nir_intrinsic_group_memory_barrier:
+                break;
+
+        case nir_intrinsic_control_barrier:
+                assert(b->shader->stage != MESA_SHADER_FRAGMENT);
+                bi_barrier(b);
+                break;
+
+        case nir_intrinsic_shared_atomic_add:
+        case nir_intrinsic_shared_atomic_imin:
+        case nir_intrinsic_shared_atomic_umin:
+        case nir_intrinsic_shared_atomic_imax:
+        case nir_intrinsic_shared_atomic_umax:
+        case nir_intrinsic_shared_atomic_and:
+        case nir_intrinsic_shared_atomic_or:
+        case nir_intrinsic_shared_atomic_xor: {
+                assert(nir_src_bit_size(instr->src[1]) == 32);
+
+                bi_index addr = bi_seg_add_i64(b, bi_src_index(&instr->src[0]),
+                                bi_zero(), false, BI_SEG_WLS);
+
+                bi_emit_atomic_i32_to(b, dst, addr, bi_src_index(&instr->src[1]),
+                                instr->intrinsic);
+                break;
+        }
+
+        case nir_intrinsic_image_atomic_add:
+        case nir_intrinsic_image_atomic_imin:
+        case nir_intrinsic_image_atomic_umin:
+        case nir_intrinsic_image_atomic_imax:
+        case nir_intrinsic_image_atomic_umax:
+        case nir_intrinsic_image_atomic_and:
+        case nir_intrinsic_image_atomic_or:
+        case nir_intrinsic_image_atomic_xor:
+                assert(nir_src_bit_size(instr->src[3]) == 32);
+
+                bi_emit_atomic_i32_to(b, dst,
+                                bi_emit_lea_image(b, instr),
+                                bi_src_index(&instr->src[3]),
+                                instr->intrinsic);
+                break;
+
+        case nir_intrinsic_global_atomic_add:
+        case nir_intrinsic_global_atomic_imin:
+        case nir_intrinsic_global_atomic_umin:
+        case nir_intrinsic_global_atomic_imax:
+        case nir_intrinsic_global_atomic_umax:
+        case nir_intrinsic_global_atomic_and:
+        case nir_intrinsic_global_atomic_or:
+        case nir_intrinsic_global_atomic_xor:
+                assert(nir_src_bit_size(instr->src[1]) == 32);
+
+                bi_emit_atomic_i32_to(b, dst,
+                                bi_src_index(&instr->src[0]),
+                                bi_src_index(&instr->src[1]),
+                                instr->intrinsic);
+                break;
+
+        case nir_intrinsic_image_load:
+                bi_emit_image_load(b, instr);
+                break;
+
+        case nir_intrinsic_image_store:
+                bi_emit_image_store(b, instr);
+                break;
+
         case nir_intrinsic_global_atomic_exchange:
-                bi_emit_axchg(b, instr, BI_SEG_NONE);
+                bi_emit_axchg_to(b, dst, bi_src_index(&instr->src[0]),
+                                &instr->src[1], BI_SEG_NONE);
+                break;
+
+        case nir_intrinsic_image_atomic_exchange:
+                bi_emit_axchg_to(b, dst, bi_emit_lea_image(b, instr),
+                                &instr->src[3], BI_SEG_NONE);
                 break;
 
         case nir_intrinsic_shared_atomic_exchange:
-                bi_emit_axchg(b, instr, BI_SEG_WLS);
+                bi_emit_axchg_to(b, dst, bi_src_index(&instr->src[0]),
+                                &instr->src[1], BI_SEG_WLS);
                 break;
 
         case nir_intrinsic_global_atomic_comp_swap:
-                bi_emit_acmpxchg(b, instr, BI_SEG_NONE);
+                bi_emit_acmpxchg_to(b, dst, bi_src_index(&instr->src[0]),
+                                &instr->src[1], &instr->src[2], BI_SEG_NONE);
+                break;
+
+        case nir_intrinsic_image_atomic_comp_swap:
+                bi_emit_acmpxchg_to(b, dst, bi_emit_lea_image(b, instr),
+                                &instr->src[3], &instr->src[4], BI_SEG_NONE);
                 break;
 
         case nir_intrinsic_shared_atomic_comp_swap:
-                bi_emit_acmpxchg(b, instr, BI_SEG_WLS);
+                bi_emit_acmpxchg_to(b, dst, bi_src_index(&instr->src[0]),
+                                &instr->src[1], &instr->src[2], BI_SEG_WLS);
                 break;
 
         case nir_intrinsic_load_frag_coord:
@@ -789,13 +1120,12 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
                 if (sz == 16)
                         src = bi_half(src, false);
 
-                bi_discard_f32_to(b, bi_null(), src, bi_zero(), BI_CMPF_NE);
+                bi_discard_f32(b, src, bi_zero(), BI_CMPF_NE);
                 break;
         }
 
         case nir_intrinsic_discard:
-                bi_discard_f32_to(b, bi_null(), bi_zero(), bi_zero(),
-                                BI_CMPF_EQ);
+                bi_discard_f32(b, bi_zero(), bi_zero(), BI_CMPF_EQ);
                 break;
 
         case nir_intrinsic_load_ssbo_address:
@@ -817,6 +1147,12 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
         case nir_intrinsic_load_local_group_size:
                 bi_load_sysval_nir(b, instr, 3, 0);
                 break;
+
+        case nir_intrinsic_image_size:
+                bi_load_sysval_nir(b, instr,
+                                nir_dest_num_components(instr->dest), 0);
+                break;
+
         case nir_intrinsic_load_blend_const_color_r_float:
                 bi_mov_i32_to(b, dst,
                                 bi_imm_f32(b->shader->inputs->blend.constants[0]));
@@ -894,6 +1230,10 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
         case nir_intrinsic_load_global_invocation_id_zero_base:
                 for (unsigned i = 0; i < 3; ++i)
                         bi_mov_i32_to(b, bi_word(dst, i), bi_register(60 + i));
+                break;
+
+        case nir_intrinsic_shader_clock:
+                bi_ld_gclk_u64_to(b, dst, BI_SOURCE_CYCLE_COUNTER);
                 break;
 
         default:
@@ -1728,9 +2068,9 @@ bi_emit_cube_coord(bi_builder *b, bi_index coord,
                     bi_index *face, bi_index *s, bi_index *t)
 {
         /* Compute max { |x|, |y|, |z| } */
-        bi_instr *cubeface = bi_cubeface_to(b, bi_temp(b->shader), coord,
+        bi_instr *cubeface = bi_cubeface_to(b, bi_temp(b->shader),
+                        bi_temp(b->shader), coord,
                         bi_word(coord, 1), bi_word(coord, 2));
-        cubeface->dest[1] = bi_temp(b->shader);
 
         /* Select coordinates */
 
@@ -1854,9 +2194,6 @@ bi_emit_texc(bi_builder *b, nir_tex_instr *instr)
         assert(instr->sampler_index < 16);
 
         struct bifrost_texture_operation desc = {
-                .sampler_index_or_mode = instr->sampler_index,
-                .index = instr->texture_index,
-                .immediate_indices = 1, /* TODO */
                 .op = bi_tex_op(instr->op),
                 .offset_or_bias_disable = false, /* TODO */
                 .shadow_or_clamp_disable = instr->is_shadow,
@@ -1965,6 +2302,16 @@ bi_emit_texc(bi_builder *b, nir_tex_instr *instr)
                         dregs[BIFROST_TEX_DREG_SHADOW] = index;
                         break;
 
+                case nir_tex_src_texture_offset:
+                        assert(instr->texture_index == 0);
+                        dregs[BIFROST_TEX_DREG_TEXTURE] = index;
+                        break;
+
+                case nir_tex_src_sampler_offset:
+                        assert(instr->sampler_index == 0);
+                        dregs[BIFROST_TEX_DREG_SAMPLER] = index;
+                        break;
+
                 default:
                         unreachable("Unhandled src type in texc emit");
                 }
@@ -1973,6 +2320,43 @@ bi_emit_texc(bi_builder *b, nir_tex_instr *instr)
         if (desc.op == BIFROST_TEX_OP_FETCH && bi_is_null(dregs[BIFROST_TEX_DREG_LOD])) {
                 dregs[BIFROST_TEX_DREG_LOD] =
                         bi_emit_texc_lod_cube(b, bi_zero());
+        }
+
+        /* Choose an index mode */
+
+        bool direct_tex = bi_is_null(dregs[BIFROST_TEX_DREG_TEXTURE]);
+        bool direct_samp = bi_is_null(dregs[BIFROST_TEX_DREG_SAMPLER]);
+        bool direct = direct_tex && direct_samp;
+
+        desc.immediate_indices = direct && (instr->sampler_index < 16);
+
+        if (desc.immediate_indices) {
+                desc.sampler_index_or_mode = instr->sampler_index;
+                desc.index = instr->texture_index;
+        } else {
+                enum bifrost_index mode = 0;
+
+                if (direct && instr->sampler_index == instr->texture_index) {
+                        mode = BIFROST_INDEX_IMMEDIATE_SHARED;
+                        desc.index = instr->texture_index;
+                } else if (direct) {
+                        mode = BIFROST_INDEX_IMMEDIATE_SAMPLER;
+                        desc.index = instr->sampler_index;
+                        dregs[BIFROST_TEX_DREG_TEXTURE] = bi_mov_i32(b,
+                                        bi_imm_u32(instr->texture_index));
+                } else if (direct_tex) {
+                        assert(!direct_samp);
+                        mode = BIFROST_INDEX_IMMEDIATE_TEXTURE;
+                        desc.index = instr->texture_index;
+                } else if (direct_samp) {
+                        assert(!direct_tex);
+                        mode = BIFROST_INDEX_IMMEDIATE_SAMPLER;
+                        desc.index = instr->sampler_index;
+                } else {
+                        mode = BIFROST_INDEX_REGISTER;
+                }
+
+                desc.sampler_index_or_mode = mode | (0x3 << 2);
         }
 
         /* Allocate staging registers contiguously by compacting the array.
@@ -2166,24 +2550,6 @@ emit_block(bi_context *ctx, nir_block *block)
         return ctx->current_block;
 }
 
-/* Emits a direct branch based on a given condition. TODO: try to unwrap the
- * condition to optimize */
-
-static bi_instr *
-bi_branch(bi_builder *b, nir_src *condition, bool invert)
-{
-        return bi_branchz_i32_to(b, bi_null(), bi_src_index(condition),
-                        bi_zero(), invert ? BI_CMPF_EQ : BI_CMPF_NE);
-}
-
-static bi_instr *
-bi_jump(bi_builder *b, bi_block *target)
-{
-        bi_instr *I = bi_jump_to(b, bi_null(), bi_zero());
-        I->branch_target = target;
-        return I;
-}
-
 static void
 emit_if(bi_context *ctx, nir_if *nif)
 {
@@ -2191,7 +2557,8 @@ emit_if(bi_context *ctx, nir_if *nif)
 
         /* Speculatively emit the branch, but we can't fill it in until later */
         bi_builder _b = bi_init_builder(ctx, bi_after_block(ctx->current_block));
-        bi_instr *then_branch = bi_branch(&_b, &nif->condition, true);
+        bi_instr *then_branch = bi_branchz_i32(&_b,
+                        bi_src_index(&nif->condition), bi_zero(), BI_CMPF_EQ);
 
         /* Emit the two subblocks. */
         bi_block *then_block = emit_cf_list(ctx, &nif->then_list);
@@ -2217,7 +2584,8 @@ emit_if(bi_context *ctx, nir_if *nif)
 
                 /* Emit a jump from the end of the then block to the end of the else */
                 _b.cursor = bi_after_block(end_then_block);
-                bi_instr *then_exit = bi_jump(&_b, ctx->after_block);
+                bi_instr *then_exit = bi_jump(&_b, bi_zero());
+                then_exit->branch_target = ctx->after_block;
 
                 pan_block_add_successor(&end_then_block->base, &then_exit->branch_target->base);
                 pan_block_add_successor(&end_else_block->base, &ctx->after_block->base); /* fallthrough */
@@ -2245,7 +2613,8 @@ emit_loop(bi_context *ctx, nir_loop *nloop)
 
         /* Branch back to loop back */
         bi_builder _b = bi_init_builder(ctx, bi_after_block(ctx->current_block));
-        bi_jump(&_b, ctx->continue_block);
+        bi_instr *I = bi_jump(&_b, bi_zero());
+        I->branch_target = ctx->continue_block;
         pan_block_add_successor(&start_block->base, &ctx->continue_block->base);
         pan_block_add_successor(&ctx->current_block->base, &ctx->continue_block->base);
 
@@ -2430,6 +2799,12 @@ bi_optimize_nir(nir_shader *nir)
         NIR_PASS(progress, nir, nir_lower_bool_to_int32);
         NIR_PASS(progress, nir, bifrost_nir_lower_algebraic_late);
         NIR_PASS(progress, nir, nir_lower_alu_to_scalar, NULL, NULL);
+
+        /* Backend scheduler is purely local, so do some global optimizations
+         * to reduce register pressure */
+        NIR_PASS_V(nir, nir_opt_sink, nir_move_const_undef);
+        NIR_PASS_V(nir, nir_opt_move, nir_move_const_undef);
+
         NIR_PASS(progress, nir, nir_lower_load_const_to_scalar);
 
         /* Take us out of SSA */
@@ -2500,7 +2875,7 @@ bi_lower_branch(bi_block *block)
                 if (branched) {
                         assert(was_jump && (ins->op == BI_OPCODE_JUMP));
                         bi_remove_instruction(ins);
-                        break;
+                        continue;
                 }
 
                 branched = true;
@@ -2508,6 +2883,13 @@ bi_lower_branch(bi_block *block)
 
                 if (bi_is_terminal_block(ins->branch_target))
                         ins->branch_target = NULL;
+
+                /* If there is nowhere to go, there is no point in branching */
+                if (bi_is_terminal_block((bi_block *) block->base.successors[0]) &&
+                        bi_is_terminal_block((bi_block *) block->base.successors[1]) &&
+                        ins->branch_target == NULL) {
+                        bi_remove_instruction(ins);
+                }
         }
 }
 
@@ -2586,8 +2968,6 @@ bifrost_compile_shader_nir(nir_shader *nir,
                 /* Name blocks now that we're done emitting so the order is
                  * consistent */
                 block->base.name = block_source_count++;
-
-                bi_lower_branch(block);
         }
 
         /* Runs before copy prop */
@@ -2599,16 +2979,18 @@ bifrost_compile_shader_nir(nir_shader *nir,
                 progress = false;
 
                 progress |= bi_opt_copy_prop(ctx);
-
-                bi_foreach_block(ctx, _block) {
-                        bi_block *block = (bi_block *) _block;
-                        progress |= bi_opt_dead_code_eliminate(ctx, block, false);
-                }
+                progress |= bi_opt_dead_code_eliminate(ctx, false);
         } while(progress);
+
+        bi_foreach_block(ctx, _block) {
+                bi_block *block = (bi_block *) _block;
+                bi_lower_branch(block);
+        }
 
         if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal)
                 bi_print_shader(ctx, stdout);
         bi_schedule(ctx);
+        bi_assign_scoreboard(ctx);
         bi_register_allocate(ctx);
         if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal)
                 bi_print_shader(ctx, stdout);

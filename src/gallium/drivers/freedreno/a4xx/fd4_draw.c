@@ -43,6 +43,7 @@
 static void
 draw_impl(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		struct fd4_emit *emit, unsigned index_offset)
+	assert_dt
 {
 	const struct pipe_draw_info *info = emit->info;
 	enum pc_di_primtype primtype = ctx->primtypes[info->mode];
@@ -77,6 +78,7 @@ draw_impl(struct fd_context *ctx, struct fd_ringbuffer *ring,
  */
 static void
 fixup_shader_state(struct fd_context *ctx, struct ir3_shader_key *key)
+	assert_dt
 {
 	struct fd4_context *fd4_ctx = fd4_context(ctx);
 	struct ir3_shader_key *last_key = &fd4_ctx->last_key;
@@ -101,6 +103,7 @@ fd4_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
              const struct pipe_draw_indirect_info *indirect,
              const struct pipe_draw_start_count *draw,
              unsigned index_offset)
+	in_dt
 {
 	struct fd4_context *fd4_ctx = fd4_context(ctx);
 	struct fd4_emit emit = {
@@ -108,22 +111,12 @@ fd4_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 		.vtx  = &ctx->vtx,
 		.prog = &ctx->prog,
 		.info = info,
-                .indirect = indirect,
-                .draw = draw,
+		.indirect = indirect,
+		.draw = draw,
 		.key = {
-			.color_two_side = ctx->rasterizer->light_twoside,
-			.vclamp_color = ctx->rasterizer->clamp_vertex_color,
-			.fclamp_color = ctx->rasterizer->clamp_fragment_color,
 			.rasterflat = ctx->rasterizer->flatshade,
 			.ucp_enables = ctx->rasterizer->clip_plane_enable,
-			.has_per_samp = (fd4_ctx->fsaturate || fd4_ctx->vsaturate ||
-					fd4_ctx->fastc_srgb || fd4_ctx->vastc_srgb),
-			.vsaturate_s = fd4_ctx->vsaturate_s,
-			.vsaturate_t = fd4_ctx->vsaturate_t,
-			.vsaturate_r = fd4_ctx->vsaturate_r,
-			.fsaturate_s = fd4_ctx->fsaturate_s,
-			.fsaturate_t = fd4_ctx->fsaturate_t,
-			.fsaturate_r = fd4_ctx->fsaturate_r,
+			.has_per_samp = fd4_ctx->fastc_srgb || fd4_ctx->vastc_srgb,
 			.vastc_srgb = fd4_ctx->vastc_srgb,
 			.fastc_srgb = fd4_ctx->fastc_srgb,
 		},
@@ -183,6 +176,7 @@ fd4_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 
 void
 fd4_draw_init(struct pipe_context *pctx)
+	disable_thread_safety_analysis
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->draw_vbo = fd4_draw_vbo;

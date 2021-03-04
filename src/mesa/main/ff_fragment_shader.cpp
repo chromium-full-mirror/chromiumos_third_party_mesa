@@ -179,7 +179,6 @@ static GLbitfield filter_fp_input_mask( GLbitfield fp_inputs,
       /* Fixed function vertex logic */
       GLbitfield possible_inputs = 0;
 
-      /* _NEW_VARYING_VP_INPUTS */
       GLbitfield varying_inputs = ctx->VertexProgram._VaryingInputs;
       /* We only update ctx->VertexProgram._VaryingInputs when in VP_MODE_FF _VPMode */
       assert(VP_MODE_FF == ctx->VertexProgram._VPMode);
@@ -193,7 +192,6 @@ static GLbitfield filter_fp_input_mask( GLbitfield fp_inputs,
          possible_inputs = VARYING_BITS_TEX_ANY;
       }
       else {
-         /* _NEW_TEXTURE_STATE */
          const GLbitfield possible_tex_inputs =
                ctx->Texture._TexGenEnabled |
                ctx->Texture._TexMatEnabled |
@@ -205,7 +203,6 @@ static GLbitfield filter_fp_input_mask( GLbitfield fp_inputs,
       /* First look at what values may be computed by the generated
        * vertex program:
        */
-      /* _NEW_LIGHT */
       if (ctx->Light.Enabled) {
          possible_inputs |= VARYING_BIT_COL0;
 
@@ -267,7 +264,7 @@ static GLuint make_state_key( struct gl_context *ctx,  struct state_key *key )
 
    memset(key, 0, sizeof(*key));
 
-   /* _NEW_TEXTURE_OBJECT */
+   /* _NEW_TEXTURE_OBJECT | _NEW_TEXTURE_STATE */
    mask = ctx->Texture._EnabledCoordUnits;
    int i = -1;
    while (mask) {
@@ -305,7 +302,7 @@ static GLuint make_state_key( struct gl_context *ctx,  struct state_key *key )
 
    key->nr_enabled_units = i + 1;
 
-   /* _NEW_LIGHT | _NEW_FOG */
+   /* _NEW_FOG */
    if (texenv_doing_secondary_color(ctx)) {
       key->separate_specular = 1;
       inputs_referenced |= VARYING_BIT_COL1;

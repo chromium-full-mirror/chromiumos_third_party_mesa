@@ -66,6 +66,7 @@ static const struct debug_named_value panfrost_debug_options[] = {
         {"gl3",       PAN_DBG_GL3,      "Enable experimental GL 3.x implementation, up to 3.3"},
         {"noafbc",    PAN_DBG_NO_AFBC,  "Disable AFBC support"},
         {"nocrc",     PAN_DBG_NO_CRC,   "Disable transaction elimination"},
+        {"msaa16",    PAN_DBG_MSAA16,   "Enable MSAA 8x and 16x support"},
         DEBUG_NAMED_VALUE_END
 };
 
@@ -116,6 +117,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_FRONTEND_NOOP:
         case PIPE_CAP_SAMPLE_SHADING:
         case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
+        case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
                 return 1;
 
         case PIPE_CAP_MAX_RENDER_TARGETS:
@@ -133,6 +135,13 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
         case PIPE_CAP_ANISOTROPIC_FILTER:
                 return !!(dev->quirks & HAS_ANISOTROPIC);
+
+        /* Compile side is done for Bifrost, Midgard TODO. Needs some kernel
+         * work to turn on, since CYCLE_COUNT_START needs to be issued. In
+         * kbase, userspace requests this via BASE_JD_REQ_PERMON. There is not
+         * yet way to request this with mainline TODO */
+        case PIPE_CAP_TGSI_CLOCK:
+                return 0;
 
         case PIPE_CAP_TGSI_INSTANCEID:
         case PIPE_CAP_TEXTURE_MULTISAMPLE:
@@ -152,12 +161,16 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_UMA:
         case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
         case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
-        case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
         case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
         case PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED:
         case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
         case PIPE_CAP_TEXTURE_BUFFER_SAMPLER:
                 return 1;
+
+        /* We need this for OES_copy_image, but currently there are some awful
+         * interactions with AFBC that need to be worked out. */
+        case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
+                return 0;
 
         case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
                 return 4;
@@ -189,8 +202,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
                 return 65536;
 
+        /* Must be at least 64 for correct behaviour */
         case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
-                return 16;
+                return 64;
 
         case PIPE_CAP_QUERY_TIMESTAMP:
                 return is_gl3;
@@ -281,6 +295,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return 1;
 
         case PIPE_CAP_NIR_IMAGES_AS_DEREF:
+                return 0;
+
+        case PIPE_CAP_SHAREABLE_SHADERS:
                 return 0;
 
         default:
@@ -466,7 +483,7 @@ panfrost_is_format_supported( struct pipe_screen *screen,
                 return false;
 
         /* MSAA 2x gets rounded up to 4x. MSAA 8x/16x only supported on v5+.
-         * TODO: Advertise on v5 */
+         * TODO: debug MSAA 8x/16x */
 
         switch (sample_count) {
         case 0:
@@ -475,10 +492,10 @@ panfrost_is_format_supported( struct pipe_screen *screen,
                 break;
         case 8:
         case 16:
-                if (dev->arch < 6)
-                        return false;
-                else
+                if (dev->debug & PAN_DBG_MSAA16)
                         break;
+                else
+                        return false;
         default:
                 return false;
         }
@@ -531,11 +548,11 @@ panfrost_walk_dmabuf_modifiers(struct pipe_screen *screen,
                 int *external_only, int *out_count, uint64_t test_modifier)
 {
         /* Query AFBC status */
-        bool afbc = panfrost_format_supports_afbc(format);
+        struct panfrost_device *dev = pan_device(screen);
+        bool afbc = panfrost_format_supports_afbc(dev, format);
         bool ytr = panfrost_afbc_can_ytr(format);
 
         /* Don't advertise AFBC before T760 */
-        struct panfrost_device *dev = pan_device(screen);
         afbc &= !(dev->quirks & MIDGARD_NO_AFBC);
 
         /* XXX: AFBC scanout is broken on mainline RK3399 with older kernels */

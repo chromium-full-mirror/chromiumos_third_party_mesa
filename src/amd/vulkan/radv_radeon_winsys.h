@@ -141,6 +141,11 @@ struct radeon_bo_metadata {
 			/* surface flags */
 			unsigned swizzle_mode:5;
 			bool scanout;
+			uint32_t dcc_offset_256b;
+			uint32_t dcc_pitch_max;
+			bool dcc_independent_64b_blocks;
+			bool dcc_independent_128b_blocks;
+			unsigned dcc_max_compressed_block_size;
 		} gfx9;
 	} u;
 
@@ -192,6 +197,7 @@ enum {
 	/* virtual buffers have 0 priority since the priority is not used. */
 	RADV_BO_PRIORITY_VIRTUAL = 0,
 
+	RADV_BO_PRIORITY_METADATA = 10,
 	/* This should be considerably lower than most of the stuff below,
 	 * but how much lower is hard to say since we don't know application
 	 * assignments. Put it pretty high since it is GTT anyway. */

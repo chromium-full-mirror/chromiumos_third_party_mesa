@@ -15,14 +15,32 @@
 
 #include "vn_cs.h"
 #include "vn_renderer.h"
+#include "vn_ring.h"
 #include "vn_wsi.h"
 
 struct vn_instance {
    struct vn_instance_base base;
 
+   struct driOptionCache dri_options;
+   struct driOptionCache available_dri_options;
+
    struct vn_renderer *renderer;
    struct vn_renderer_info renderer_info;
    uint32_t renderer_version;
+
+   struct {
+      mtx_t mutex;
+      struct vn_renderer_bo *bo;
+      struct vn_ring ring;
+      uint64_t id;
+   } ring;
+
+   struct {
+      struct vn_renderer_bo *bo;
+      size_t size;
+      size_t used;
+      void *ptr;
+   } reply;
 
    mtx_t cs_mutex;
    size_t cs_implicit_flush_threshold;
@@ -30,11 +48,6 @@ struct vn_instance {
    uint32_t cs_throttle_pipeline_count;
    struct vn_cs_encoder cs;
    struct {
-      struct vn_renderer_bo *bo;
-      size_t size;
-      size_t used;
-      void *ptr;
-
       struct vn_renderer_sync *sync;
       uint64_t sync_value;
    } cs_reply;
@@ -434,8 +447,7 @@ static inline void
 vn_instance_free_cs_reply_bo(struct vn_instance *instance,
                              struct vn_renderer_bo *bo)
 {
-   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
-   vn_renderer_bo_unref(bo, alloc);
+   vn_renderer_bo_unref(bo);
 }
 
 void

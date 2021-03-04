@@ -273,7 +273,7 @@ static void si_compute_do_clear_or_copy(struct si_context *sctx, struct pipe_res
 
 void si_clear_buffer(struct si_context *sctx, struct pipe_resource *dst, uint64_t offset,
                      uint64_t size, uint32_t *clear_value, uint32_t clear_value_size,
-                     enum si_coherency coher, bool force_cpdma)
+                     enum si_coherency coher, enum si_clear_method method)
 {
    if (!size)
       return;
@@ -345,8 +345,12 @@ void si_clear_buffer(struct si_context *sctx, struct pipe_resource *dst, uint64_
          compute_min_size = 32 * 1024;
       }
 
-      if (clear_value_size > 4 || (!force_cpdma && clear_value_size == 4 && offset % 4 == 0 &&
-                                   size > compute_min_size)) {
+      if (method == SI_AUTO_SELECT_CLEAR_METHOD && (
+           clear_value_size > 4 ||
+           (clear_value_size == 4 && offset % 4 == 0 && size > compute_min_size))) {
+         method = SI_COMPUTE_CLEAR_METHOD;
+      }
+      if (method == SI_COMPUTE_CLEAR_METHOD) {
          si_compute_do_clear_or_copy(sctx, dst, offset, NULL, 0, aligned_size, clear_value,
                                      clear_value_size, coher);
       } else {
@@ -385,7 +389,7 @@ static void si_pipe_clear_buffer(struct pipe_context *ctx, struct pipe_resource 
                                  int clear_value_size)
 {
    si_clear_buffer((struct si_context *)ctx, dst, offset, size, (uint32_t *)clear_value,
-                   clear_value_size, SI_COHERENCY_SHADER, false);
+                   clear_value_size, SI_COHERENCY_SHADER, SI_AUTO_SELECT_CLEAR_METHOD);
 }
 
 void si_copy_buffer(struct si_context *sctx, struct pipe_resource *dst, struct pipe_resource *src,
@@ -533,6 +537,8 @@ void si_compute_copy_image(struct si_context *sctx, struct pipe_resource *dst, u
 
    if (is_dcc_decompress)
       image[1].access |= SI_IMAGE_ACCESS_DCC_OFF;
+   else if (sctx->chip_class >= GFX10)
+      image[1].access |= SI_IMAGE_ACCESS_DCC_WRITE;
 
    ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 2, 0, image);
 
@@ -642,7 +648,7 @@ void si_retile_dcc(struct si_context *sctx, struct si_texture *tex)
 
    img[0].format = use_uint16 ? PIPE_FORMAT_R16G16B16A16_UINT : PIPE_FORMAT_R32G32B32A32_UINT;
    img[0].u.buf.offset = 0;
-   img[0].u.buf.size = num_elements * (use_uint16 ? 2 : 4);
+   img[0].u.buf.size = ac_surface_get_retile_map_size(&tex->surface);
 
    img[1].format = PIPE_FORMAT_R8_UINT;
    img[1].u.buf.offset = tex->surface.dcc_offset;
@@ -759,7 +765,7 @@ void si_compute_expand_fmask(struct pipe_context *ctx, struct pipe_resource *tex
    si_clear_buffer(sctx, tex, stex->surface.fmask_offset, stex->surface.fmask_size,
                    (uint32_t *)&fmask_expand_values[log_fragments][log_samples - 1],
                    log_fragments >= 2 && log_samples == 4 ? 8 : 4,
-                   SI_COHERENCY_SHADER, false);
+                   SI_COHERENCY_SHADER, SI_AUTO_SELECT_CLEAR_METHOD);
 }
 
 void si_init_compute_blit_functions(struct si_context *sctx)

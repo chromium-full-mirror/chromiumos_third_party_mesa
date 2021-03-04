@@ -932,6 +932,19 @@ backend_instruction::is_control_flow() const
 }
 
 bool
+backend_instruction::uses_indirect_addressing() const
+{
+   switch (opcode) {
+   case SHADER_OPCODE_BROADCAST:
+   case SHADER_OPCODE_CLUSTER_BROADCAST:
+   case SHADER_OPCODE_MOV_INDIRECT:
+      return true;
+   default:
+      return false;
+   }
+}
+
+bool
 backend_instruction::can_do_source_mods() const
 {
    switch (opcode) {
@@ -949,6 +962,7 @@ backend_instruction::can_do_source_mods() const
    case SHADER_OPCODE_BROADCAST:
    case SHADER_OPCODE_CLUSTER_BROADCAST:
    case SHADER_OPCODE_MOV_INDIRECT:
+   case SHADER_OPCODE_SHUFFLE:
       return false;
    default:
       return true;

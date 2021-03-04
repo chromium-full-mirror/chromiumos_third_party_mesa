@@ -26,8 +26,6 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
-#include <strings.h>
-#include <pthread.h>
 #include <assert.h>
 #include <stdint.h>
 
@@ -67,7 +65,11 @@ extern "C" {
 #define MAX_PUSH_CONSTANTS_SIZE 128
 #define MAX_PUSH_DESCRIPTORS 32
 
+#ifdef _WIN32
+#define lvp_printflike(a, b)
+#else
 #define lvp_printflike(a, b) __attribute__((__format__(__printf__, a, b)))
+#endif
 
 int lvp_get_instance_entrypoint_index(const char *name);
 int lvp_get_device_entrypoint_index(const char *name);
@@ -198,7 +200,7 @@ mesa_to_vk_shader_stage(gl_shader_stage mesa_stage)
 #define lvp_foreach_stage(stage, stage_bits)                         \
    for (gl_shader_stage stage,                                       \
         __tmp = (gl_shader_stage)((stage_bits) & LVP_STAGE_MASK);    \
-        stage = __builtin_ffs(__tmp) - 1, __tmp;                     \
+        stage = ffs(__tmp) - 1, __tmp;                     \
         __tmp &= ~(1 << (stage)))
 
 struct lvp_physical_device {
@@ -242,7 +244,7 @@ struct lvp_queue {
    mtx_t m;
    cnd_t new_work;
    struct list_head workqueue;
-   uint32_t count;
+   volatile int count;
 };
 
 struct lvp_queue_work {
@@ -416,6 +418,11 @@ struct lvp_descriptor_set_binding_layout {
 
 struct lvp_descriptor_set_layout {
    struct vk_object_base base;
+
+   const VkAllocationCallbacks *alloc;
+   /* Descriptor set layouts can be destroyed at almost any time */
+   uint32_t ref_cnt;
+
    /* Number of bindings in this descriptor set */
    uint16_t binding_count;
 
@@ -440,6 +447,25 @@ struct lvp_descriptor_set_layout {
    struct lvp_descriptor_set_binding_layout binding[0];
 };
 
+void lvp_descriptor_set_layout_destroy(struct lvp_device *device,
+                                       struct lvp_descriptor_set_layout *layout);
+
+static inline void
+lvp_descriptor_set_layout_ref(struct lvp_descriptor_set_layout *layout)
+{
+   assert(layout && layout->ref_cnt >= 1);
+   p_atomic_inc(&layout->ref_cnt);
+}
+
+static inline void
+lvp_descriptor_set_layout_unref(struct lvp_device *device,
+                                struct lvp_descriptor_set_layout *layout)
+{
+   assert(layout && layout->ref_cnt >= 1);
+   if (p_atomic_dec_zero(&layout->ref_cnt))
+      lvp_descriptor_set_layout_destroy(device, layout);
+}
+
 union lvp_descriptor_info {
    struct {
       struct lvp_sampler *sampler;
@@ -462,7 +488,7 @@ struct lvp_descriptor {
 
 struct lvp_descriptor_set {
    struct vk_object_base base;
-   const struct lvp_descriptor_set_layout *layout;
+   struct lvp_descriptor_set_layout *layout;
    struct list_head link;
    struct lvp_descriptor descriptors[0];
 };
@@ -488,7 +514,7 @@ struct lvp_descriptor_update_template {
 
 VkResult
 lvp_descriptor_set_create(struct lvp_device *device,
-                          const struct lvp_descriptor_set_layout *layout,
+                          struct lvp_descriptor_set_layout *layout,
                           struct lvp_descriptor_set **out_set);
 
 void
@@ -700,7 +726,7 @@ struct lvp_cmd_set_stencil_vals {
 
 struct lvp_cmd_bind_descriptor_sets {
    VkPipelineBindPoint bind_point;
-   struct lvp_pipeline_layout *layout;
+   struct lvp_descriptor_set_layout *set_layout[MAX_SETS];
    uint32_t first;
    uint32_t count;
    struct lvp_descriptor_set **sets;

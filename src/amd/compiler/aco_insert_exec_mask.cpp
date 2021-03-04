@@ -43,7 +43,6 @@ enum mask_type : uint8_t {
    mask_type_exact = 1 << 1,
    mask_type_wqm = 1 << 2,
    mask_type_loop = 1 << 3, /* active lanes of a loop */
-   mask_type_initial = 1 << 4, /* initially active lanes */
 };
 
 struct wqm_ctx {
@@ -144,7 +143,8 @@ void get_block_needs(wqm_ctx &ctx, exec_ctx &exec_ctx, Block* block)
       aco_ptr<Instruction>& instr = block->instructions[i];
 
       WQMState needs = needs_exact(instr) ? Exact : Unspecified;
-      bool propagate_wqm = instr->opcode == aco_opcode::p_wqm;
+      bool propagate_wqm = instr->opcode == aco_opcode::p_wqm ||
+                           instr->opcode == aco_opcode::p_as_uniform;
       bool preserve_wqm = instr->opcode == aco_opcode::p_discard_if;
       bool pred_by_exec = needs_exec_mask(instr.get());
       for (const Definition& definition : instr->definitions) {
@@ -386,7 +386,7 @@ unsigned add_coupling_code(exec_ctx& ctx, Block* block,
       }
 
       if (ctx.handle_wqm) {
-         ctx.info[0].exec.emplace_back(Temp(0, bld.lm), mask_type_global | mask_type_exact | mask_type_initial);
+         ctx.info[0].exec.emplace_back(Temp(0, bld.lm), mask_type_global | mask_type_exact);
          /* if this block only needs WQM, initialize already */
          if (ctx.info[0].block_needs == WQM)
             transition_to_WQM(ctx, bld, 0);
@@ -696,7 +696,7 @@ void process_instructions(exec_ctx& ctx, Block* block,
          state = Exact;
       }
 
-      if (instr->opcode == aco_opcode::p_is_helper || instr->opcode == aco_opcode::p_load_helper) {
+      if (instr->opcode == aco_opcode::p_is_helper) {
          Definition dst = instr->definitions[0];
          assert(dst.size() == bld.lm.size());
          if (state == Exact) {
@@ -705,19 +705,6 @@ void process_instructions(exec_ctx& ctx, Block* block,
             instr->definitions[0] = dst;
          } else {
             std::pair<Temp, uint8_t>& exact_mask = ctx.info[block->index].exec[0];
-            if (instr->opcode == aco_opcode::p_load_helper &&
-                !(ctx.info[block->index].exec[0].second & mask_type_initial)) {
-               /* find last initial exact mask */
-               for (int i = block->index; i >= 0; i--) {
-                  if (ctx.program->blocks[i].kind & block_kind_top_level &&
-                      ctx.info[i].exec[0].second & mask_type_initial) {
-                     exact_mask = ctx.info[i].exec[0];
-                     break;
-                  }
-               }
-            }
-
-            assert(instr->opcode == aco_opcode::p_is_helper || exact_mask.second & mask_type_initial);
             assert(exact_mask.second & mask_type_exact);
 
             instr.reset(create_instruction<SOP2_instruction>(bld.w64or32(Builder::s_andn2), Format::SOP2, 2, 2));
@@ -729,7 +716,6 @@ void process_instructions(exec_ctx& ctx, Block* block,
       } else if (instr->opcode == aco_opcode::p_demote_to_helper) {
          /* turn demote into discard_if with only exact masks */
          assert((ctx.info[block->index].exec[0].second & (mask_type_exact | mask_type_global)) == (mask_type_exact | mask_type_global));
-         ctx.info[block->index].exec[0].second &= ~mask_type_initial;
 
          int num;
          Temp cond, exit_cond;

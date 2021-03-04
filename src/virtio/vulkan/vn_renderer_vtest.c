@@ -9,7 +9,6 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <poll.h>
-#include <stdio.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -34,6 +33,7 @@ struct vtest_bo {
 
    uint32_t blob_flags;
    VkDeviceSize size;
+   /* might be closed after mmap */
    int res_fd;
 
    void *res_ptr;
@@ -632,26 +632,22 @@ vtest_sync_init(struct vn_renderer_sync *_sync,
 }
 
 static void
-vtest_sync_destroy(struct vn_renderer_sync *_sync,
-                   const VkAllocationCallbacks *alloc)
+vtest_sync_destroy(struct vn_renderer_sync *_sync)
 {
    struct vtest_sync *sync = (struct vtest_sync *)_sync;
 
    if (sync->base.sync_id)
       vtest_sync_release(&sync->base);
 
-   vk_free(alloc, sync);
+   free(sync);
 }
 
 static struct vn_renderer_sync *
-vtest_sync_create(struct vn_renderer *renderer,
-                  const VkAllocationCallbacks *alloc,
-                  VkSystemAllocationScope alloc_scope)
+vtest_sync_create(struct vn_renderer *renderer)
 {
    struct vtest *vtest = (struct vtest *)renderer;
 
-   struct vtest_sync *sync =
-      vk_zalloc(alloc, sizeof(*sync), VN_DEFAULT_ALIGN, alloc_scope);
+   struct vtest_sync *sync = calloc(1, sizeof(*sync));
    if (!sync)
       return NULL;
 
@@ -689,6 +685,7 @@ vtest_bo_map(struct vn_renderer_bo *_bo)
    struct vtest_bo *bo = (struct vtest_bo *)_bo;
    struct vtest *vtest = bo->vtest;
    const bool mappable = bo->blob_flags & VCMD_BLOB_FLAG_MAPPABLE;
+   const bool shareable = bo->blob_flags & VCMD_BLOB_FLAG_SHAREABLE;
 
    /* not thread-safe but is fine */
    if (!bo->res_ptr && mappable) {
@@ -705,6 +702,11 @@ vtest_bo_map(struct vn_renderer_bo *_bo)
                 bo->size, strerror(errno));
       } else {
          bo->res_ptr = ptr;
+         /* we don't need the fd anymore */
+         if (!shareable) {
+            close(bo->res_fd);
+            bo->res_fd = -1;
+         }
       }
    }
 
@@ -766,8 +768,7 @@ vtest_bo_init_cpu(struct vn_renderer_bo *_bo, VkDeviceSize size)
 }
 
 static void
-vtest_bo_destroy(struct vn_renderer_bo *_bo,
-                 const VkAllocationCallbacks *alloc)
+vtest_bo_destroy(struct vn_renderer_bo *_bo)
 {
    struct vtest_bo *bo = (struct vtest_bo *)_bo;
    struct vtest *vtest = bo->vtest;
@@ -775,25 +776,23 @@ vtest_bo_destroy(struct vn_renderer_bo *_bo,
    if (bo->base.res_id) {
       if (bo->res_ptr)
          munmap(bo->res_ptr, bo->size);
-      close(bo->res_fd);
+      if (bo->res_fd >= 0)
+         close(bo->res_fd);
 
       mtx_lock(&vtest->sock_mutex);
       vtest_vcmd_resource_unref(vtest, bo->base.res_id);
       mtx_unlock(&vtest->sock_mutex);
    }
 
-   vk_free(alloc, bo);
+   free(bo);
 }
 
 static struct vn_renderer_bo *
-vtest_bo_create(struct vn_renderer *renderer,
-                const VkAllocationCallbacks *alloc,
-                VkSystemAllocationScope alloc_scope)
+vtest_bo_create(struct vn_renderer *renderer)
 {
    struct vtest *vtest = (struct vtest *)renderer;
 
-   struct vtest_bo *bo =
-      vk_zalloc(alloc, sizeof(*bo), VN_DEFAULT_ALIGN, alloc_scope);
+   struct vtest_bo *bo = calloc(1, sizeof(*bo));
    if (!bo)
       return NULL;
 
@@ -896,6 +895,7 @@ vtest_get_info(struct vn_renderer *renderer, struct vn_renderer_info *info)
    info->pci.device_id = VTEST_PCI_DEVICE_ID;
 
    info->has_cache_management = false;
+   info->has_timeline_sync = true;
 
    info->max_sync_queue_count = vtest->max_sync_queue_count;
 

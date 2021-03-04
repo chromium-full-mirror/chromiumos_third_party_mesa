@@ -86,6 +86,7 @@ struct ntv_context {
          workgroup_id_var, num_workgroups_var,
          local_invocation_id_var, global_invocation_id_var,
          local_invocation_index_var, helper_invocation_var,
+         local_group_size_var,
          shared_block_var,
          base_vertex_var, base_instance_var, draw_id_var;
 };
@@ -575,6 +576,10 @@ emit_output(struct ntv_context *ctx, struct nir_variable *var)
 
          case FRAG_RESULT_SAMPLE_MASK:
             spirv_builder_emit_builtin(&ctx->builder, var_id, SpvBuiltInSampleMask);
+            break;
+
+         case FRAG_RESULT_STENCIL:
+            spirv_builder_emit_builtin(&ctx->builder, var_id, SpvBuiltInFragStencilRefEXT);
             break;
 
          default:
@@ -2691,6 +2696,12 @@ emit_intrinsic(struct ntv_context *ctx, nir_intrinsic_instr *intr)
                                         SpvMemorySemanticsMakeVisibleMask  | SpvMemorySemanticsAcquireReleaseMask);
       break;
 
+   case nir_intrinsic_memory_barrier_image:
+      spirv_builder_emit_memory_barrier(&ctx->builder, SpvScopeDevice,
+                                        SpvMemorySemanticsImageMemoryMask |
+                                        SpvMemorySemanticsAcquireReleaseMask);
+      break;
+
    case nir_intrinsic_group_memory_barrier:
       spirv_builder_emit_memory_barrier(&ctx->builder, SpvScopeWorkgroup,
                                         SpvMemorySemanticsWorkgroupMemoryMask |
@@ -2844,6 +2855,12 @@ emit_intrinsic(struct ntv_context *ctx, nir_intrinsic_instr *intr)
       emit_load_uint_input(ctx, intr, &ctx->local_invocation_index_var, "gl_LocalInvocationIndex", SpvBuiltInLocalInvocationIndex);
       break;
 
+   case nir_intrinsic_load_local_group_size: {
+      assert(ctx->local_group_size_var);
+      store_dest(ctx, &intr->dest, ctx->local_group_size_var, nir_type_uint);
+      break;
+   }
+
    case nir_intrinsic_load_shared:
       emit_load_shared(ctx, intr);
       break;
@@ -2920,7 +2937,8 @@ emit_tex(struct ntv_context *ctx, nir_tex_instr *tex)
           tex->op == nir_texop_txs ||
           tex->op == nir_texop_lod ||
           tex->op == nir_texop_tg4 ||
-          tex->op == nir_texop_texture_samples);
+          tex->op == nir_texop_texture_samples ||
+          tex->op == nir_texop_query_levels);
    assert(tex->texture_index == tex->sampler_index);
 
    SpvId coord = 0, proj = 0, bias = 0, lod = 0, dref = 0, dx = 0, dy = 0,
@@ -3046,6 +3064,13 @@ emit_tex(struct ntv_context *ctx, nir_tex_instr *tex)
       SpvId result = spirv_builder_emit_image_query_size(&ctx->builder,
                                                          dest_type, image,
                                                          lod);
+      store_dest(ctx, &tex->dest, result, tex->dest_type);
+      return;
+   }
+   if (tex->op == nir_texop_query_levels) {
+      SpvId image = spirv_builder_emit_image(&ctx->builder, image_type, load);
+      SpvId result = spirv_builder_emit_image_query_levels(&ctx->builder,
+                                                         dest_type, image);
       store_dest(ctx, &tex->dest, result, tex->dest_type);
       return;
    }
@@ -3623,8 +3648,8 @@ nir_to_spirv(struct nir_shader *s, const struct zink_so_info *so_info,
    ctx.GLSL_std_450 = spirv_builder_import(&ctx.builder, "GLSL.std.450");
    spirv_builder_emit_source(&ctx.builder, SpvSourceLanguageUnknown, 0);
 
-   if (s->info.stage == MESA_SHADER_TESS_CTRL || s->info.num_images) {
-      /* this is required for correct barrier and io semantics */
+   if (s->info.num_images) {
+      /* this is required for correct io semantics */
       spirv_builder_emit_extension(&ctx.builder, "SPV_KHR_vulkan_memory_model");
       spirv_builder_emit_cap(&ctx.builder, SpvCapabilityVulkanMemoryModel);
       spirv_builder_emit_cap(&ctx.builder, SpvCapabilityVulkanMemoryModelDeviceScope);
@@ -3643,6 +3668,11 @@ nir_to_spirv(struct nir_shader *s, const struct zink_so_info *so_info,
    } else
       spirv_builder_emit_mem_model(&ctx.builder, SpvAddressingModelLogical,
                                    SpvMemoryModelGLSL450);
+
+   if (s->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_STENCIL)) {
+      spirv_builder_emit_extension(&ctx.builder, "SPV_EXT_shader_stencil_export");
+      spirv_builder_emit_cap(&ctx.builder, SpvCapabilityStencilExportEXT);
+   }
 
    SpvExecutionModel exec_model;
    switch (s->info.stage) {
@@ -3709,6 +3739,9 @@ nir_to_spirv(struct nir_shader *s, const struct zink_so_info *so_info,
       if (s->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_DEPTH))
          spirv_builder_emit_exec_mode(&ctx.builder, entry_point,
                                       get_depth_layout_mode(s->info.fs.depth_layout));
+      if (s->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_STENCIL))
+         spirv_builder_emit_exec_mode(&ctx.builder, entry_point,
+                                      SpvExecutionModeStencilRefReplacingEXT);
       if (s->info.fs.early_fragment_tests)
          spirv_builder_emit_exec_mode(&ctx.builder, entry_point,
                                       SpvExecutionModeEarlyFragmentTests);
@@ -3748,6 +3781,21 @@ nir_to_spirv(struct nir_shader *s, const struct zink_so_info *so_info,
                                                (uint32_t)s->info.cs.local_size[2]});
       if (s->info.cs.shared_size)
          create_shared_block(&ctx, s->info.cs.shared_size);
+
+      if (BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_LOCAL_GROUP_SIZE)) {
+         SpvId sizes[3];
+         uint32_t ids[] = {ZINK_WORKGROUP_SIZE_X, ZINK_WORKGROUP_SIZE_Y, ZINK_WORKGROUP_SIZE_Z};
+         const char *names[] = {"x", "y", "z"};
+         for (int i = 0; i < 3; i ++) {
+            sizes[i] = spirv_builder_spec_const_uint(&ctx.builder, 32);
+            spirv_builder_emit_specid(&ctx.builder, sizes[i], ids[i]);
+            spirv_builder_emit_name(&ctx.builder, sizes[i], names[i]);
+         }
+         SpvId var_type = get_uvec_type(&ctx, 32, 3);
+         ctx.local_group_size_var = spirv_builder_spec_const_composite(&ctx.builder, var_type, sizes, 3);
+         spirv_builder_emit_name(&ctx.builder, ctx.local_group_size_var, "gl_LocalGroupSize");
+         spirv_builder_emit_builtin(&ctx.builder, ctx.local_group_size_var, SpvBuiltInWorkgroupSize);
+      }
       break;
    default:
       break;

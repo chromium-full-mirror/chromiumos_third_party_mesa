@@ -259,6 +259,10 @@ v3d_spill_reg(struct v3d_compile *c, int spill_temp)
                 uniform_index = orig_unif->uniform;
         }
 
+        /* We must disable the ldunif optimization if we are spilling uniforms */
+        bool had_disable_ldunif_opt = c->disable_ldunif_opt;
+        c->disable_ldunif_opt = true;
+
         struct qinst *start_of_tmu_sequence = NULL;
         struct qinst *postponed_spill = NULL;
         vir_for_each_block(block, c) {
@@ -360,6 +364,8 @@ v3d_spill_reg(struct v3d_compile *c, int spill_temp)
          */
         for (int i = start_num_temps; i < c->num_temps; i++)
                 BITSET_CLEAR(c->spillable, i);
+
+        c->disable_ldunif_opt = had_disable_ldunif_opt;
 }
 
 struct v3d_ra_select_callback_data {
@@ -494,6 +500,17 @@ get_spill_batch_size(struct v3d_compile *c)
     * time at the expense of over-spilling.
     */
    return 20;
+}
+
+/* Don't emit spills using the TMU until we've dropped thread count first. Also,
+ * don't spill if we have enabled any other optimization that can lead to
+ * higher register pressure, such as TMU pipelining, we rather recompile without
+ * the optimization in that case.
+ */
+static inline bool
+tmu_spilling_allowed(struct v3d_compile *c, int thread_index)
+{
+        return thread_index == 0 && c->disable_tmu_pipelining;
 }
 
 #define CLASS_BIT_PHYS			(1 << 0)
@@ -740,13 +757,7 @@ v3d_register_allocate(struct v3d_compile *c, bool *spilled)
                         if (i > 0 && !is_uniform)
                                 break;
 
-                        /* Don't emit spills using the TMU until we've dropped
-                         * thread count first. Also, don't spill if we have
-                         * enabled TMU pipelining, as that can make TMU spilling
-                         * pretty terrible.
-                         */
-                        if (is_uniform ||
-                            (thread_index == 0 && c->disable_tmu_pipelining)) {
+                        if (is_uniform || tmu_spilling_allowed(c, thread_index)) {
                                 v3d_spill_reg(c, map[node].temp);
 
                                 /* Ask the outer loop to call back in. */

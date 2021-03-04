@@ -55,6 +55,7 @@ enum {
         PAN_SYSVAL_IMAGE_SIZE = 10,
         PAN_SYSVAL_SAMPLE_POSITIONS = 11,
         PAN_SYSVAL_MULTISAMPLED = 12,
+        PAN_SYSVAL_RT_CONVERSION = 13,
 };
 
 #define PAN_TXS_SYSVAL_ID(texidx, dim, is_array)          \
@@ -145,7 +146,6 @@ struct bifrost_shader_info {
 };
 
 struct midgard_shader_info {
-        unsigned uniform_cutoff;
         unsigned first_tag;
 };
 
@@ -164,12 +164,14 @@ struct pan_shader_info {
                         bool can_discard;
                         bool writes_depth;
                         bool writes_stencil;
+                        bool writes_coverage;
                         bool sidefx;
                         bool reads_sample_id;
                         bool reads_sample_pos;
                         bool reads_sample_mask_in;
                         bool reads_helper_invocation;
                         bool sample_shading;
+                        bool early_fragment_tests;
                         BITSET_WORD outputs_read;
                 } fs;
 

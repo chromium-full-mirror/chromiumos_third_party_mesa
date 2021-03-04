@@ -13,6 +13,7 @@
 #include <stdio.h>
 
 #include "git_sha1.h"
+#include "util/driconf.h"
 #include "util/mesa-sha1.h"
 #include "venus-protocol/vn_protocol_driver.h"
 
@@ -51,6 +52,109 @@ static const struct vk_instance_extension_table
       .KHR_xlib_surface = true,
 #endif
    };
+
+static const driOptionDescription vn_dri_options[] = {
+   /* clang-format off */
+   DRI_CONF_SECTION_PERFORMANCE
+      DRI_CONF_VK_X11_ENSURE_MIN_IMAGE_COUNT(false)
+      DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
+      DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
+   DRI_CONF_SECTION_END
+   DRI_CONF_SECTION_DEBUG
+      DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST(false)
+   DRI_CONF_SECTION_END
+   /* clang-format on */
+};
+
+static VkResult
+vn_instance_init_version(struct vn_instance *instance)
+{
+   uint32_t renderer_version = 0;
+   VkResult result =
+      vn_call_vkEnumerateInstanceVersion(instance, &renderer_version);
+   if (result != VK_SUCCESS) {
+      if (VN_DEBUG(INIT))
+         vn_log(instance, "failed to enumerate renderer instance version");
+      return result;
+   }
+
+   if (renderer_version < VN_MIN_RENDERER_VERSION) {
+      if (VN_DEBUG(INIT)) {
+         vn_log(instance, "unsupported renderer instance version %d.%d",
+                VK_VERSION_MAJOR(instance->renderer_version),
+                VK_VERSION_MINOR(instance->renderer_version));
+      }
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   instance->renderer_version =
+      instance->base.base.app_info.api_version > VN_MIN_RENDERER_VERSION
+         ? instance->base.base.app_info.api_version
+         : VN_MIN_RENDERER_VERSION;
+
+   if (VN_DEBUG(INIT)) {
+      vn_log(instance, "vk instance version %d.%d.%d",
+             VK_VERSION_MAJOR(instance->renderer_version),
+             VK_VERSION_MINOR(instance->renderer_version),
+             VK_VERSION_PATCH(instance->renderer_version));
+   }
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+vn_instance_init_cs(struct vn_instance *instance)
+{
+   /* reply bo will be allocated on demand by
+    * vn_instance_get_cs_reply_bo_locked
+    */
+   VkResult result = vn_renderer_sync_create_cpu(instance->renderer,
+                                                 &instance->cs_reply.sync);
+   if (result != VK_SUCCESS) {
+      if (VN_DEBUG(INIT))
+         vn_log(instance, "failed to create reply sync");
+      return result;
+   }
+
+   instance->cs_implicit_flush_threshold = 1 * 1024 * 1024;
+   /* when a pipeline creation takes 100ms, this still takes 400ms... */
+   instance->cs_throttle_pipeline_threshold = 4;
+   vn_cs_encoder_init_growable(&instance->cs, 64 * 1024);
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+vn_instance_init_ring(struct vn_instance *instance)
+{
+   const size_t extra_size = 0;
+   struct vn_ring_layout layout;
+   vn_ring_get_layout(extra_size, &layout);
+
+   void *ring_ptr;
+   VkResult result = vn_renderer_bo_create_cpu(
+      instance->renderer, layout.bo_size, &instance->ring.bo);
+   if (result == VK_SUCCESS) {
+      ring_ptr = vn_renderer_bo_map(instance->ring.bo);
+      if (!ring_ptr)
+         result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   }
+   if (result != VK_SUCCESS) {
+      if (VN_DEBUG(INIT))
+         vn_log(instance, "failed to allocate/map ring bo");
+      return result;
+   }
+
+   mtx_init(&instance->ring.mutex, mtx_plain);
+
+   struct vn_ring *ring = &instance->ring.ring;
+   vn_ring_init(ring, &layout, ring_ptr);
+
+   instance->ring.id = (uintptr_t)ring;
+   /* TODO tell the renderer about the ring */
+
+   return VK_SUCCESS;
+}
 
 static VkResult
 vn_instance_init_renderer(struct vn_instance *instance)
@@ -104,64 +208,192 @@ vn_instance_init_renderer(struct vn_instance *instance)
              instance->renderer_info.vk_mesa_venus_protocol_spec_version);
    }
 
-   /* reply bo will be allocated on demand by
-    * vn_instance_get_cs_reply_bo_locked
-    */
-   result = vn_renderer_sync_create_cpu(instance->renderer, alloc,
-                                        VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE,
-                                        &instance->cs_reply.sync);
-   if (result != VK_SUCCESS) {
-      if (VN_DEBUG(INIT))
-         vn_log(instance, "failed to create reply sync");
+   return VK_SUCCESS;
+}
+
+struct vn_instance_submission {
+   struct vn_renderer_submit submit;
+
+   struct vn_renderer_submit_batch batch;
+   struct vn_renderer_sync *syncs[1];
+   uint64_t sync_values[1];
+
+   struct vn_renderer_bo *local_bos[1];
+};
+
+static void *
+vn_instance_submission_alloc_cs_data(struct vn_instance_submission *submit,
+                                     const struct vn_cs_encoder *cs,
+                                     size_t *cs_size)
+{
+   size_t size = vn_cs_encoder_get_len(cs);
+   void *data = malloc(size);
+   if (!data)
+      return NULL;
+
+   size = 0;
+   for (uint32_t i = 0; i < cs->buffer_count; i++) {
+      const struct vn_cs_encoder_buffer *buf = &cs->buffers[i];
+      memcpy(data + size, buf->base, buf->committed_size);
+      size += buf->committed_size;
+   }
+
+   *cs_size = size;
+   return data;
+}
+
+static VkResult
+vn_instance_submission_prepare_batch(struct vn_instance_submission *submit,
+                                     const struct vn_cs_encoder *cs,
+                                     struct vn_renderer_sync *sync,
+                                     uint64_t sync_val)
+{
+   void *cs_data;
+   size_t cs_size;
+   if (cs->buffer_count > 1) {
+      cs_data = vn_instance_submission_alloc_cs_data(submit, cs, &cs_size);
+      if (!cs_data)
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+   } else {
+      assert(cs->buffer_count == 1);
+      cs_data = cs->buffers[0].base;
+      cs_size = cs->buffers[0].committed_size;
+   }
+
+   const uint32_t sync_count = sync ? 1 : 0;
+   assert(sync_count <= ARRAY_SIZE(submit->syncs));
+   if (sync) {
+      submit->syncs[0] = sync;
+      submit->sync_values[0] = sync_val;
+   }
+
+   submit->batch = (struct vn_renderer_submit_batch){
+      .cs_data = cs_data,
+      .cs_size = cs_size,
+      .sync_queue_cpu = true,
+      .syncs = submit->syncs,
+      .sync_values = submit->sync_values,
+      .sync_count = sync_count,
+   };
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+vn_instance_submission_prepare_submit(struct vn_instance_submission *submit,
+                                      const struct vn_cs_encoder *cs,
+                                      struct vn_renderer_bo *extra_bo)
+{
+   const uint32_t bo_count = extra_bo ? 1 : 0;
+   struct vn_renderer_bo **bos = submit->local_bos;
+   if (unlikely(bo_count > ARRAY_SIZE(submit->local_bos))) {
+      bos = malloc(sizeof(*bos) * bo_count);
+      if (!bos)
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+
+   if (extra_bo)
+      bos[0] = extra_bo;
+
+   submit->submit = (struct vn_renderer_submit){
+      .bos = bos,
+      .bo_count = bo_count,
+      .batches = &submit->batch,
+      .batch_count = 1,
+   };
+
+   return VK_SUCCESS;
+}
+
+static void
+vn_instance_submission_cleanup(struct vn_instance_submission *submit,
+                               const struct vn_cs_encoder *cs)
+{
+   if (submit->submit.bos != submit->local_bos)
+      free((void *)submit->submit.bos);
+   if (submit->batch.cs_data != cs->buffers[0].base)
+      free((void *)submit->batch.cs_data);
+}
+
+static VkResult
+vn_instance_submission_prepare(struct vn_instance_submission *submit,
+                               const struct vn_cs_encoder *cs,
+                               struct vn_renderer_sync *sync,
+                               uint64_t sync_val,
+                               struct vn_renderer_bo *extra_bo)
+{
+   VkResult result =
+      vn_instance_submission_prepare_submit(submit, cs, extra_bo);
+   if (result != VK_SUCCESS)
       return result;
-   }
 
-   instance->cs_implicit_flush_threshold = 1 * 1024 * 1024;
-   /* when a pipeline creation takes 100ms, this still takes 400ms... */
-   instance->cs_throttle_pipeline_threshold = 4;
-   vn_cs_encoder_init(&instance->cs, alloc,
-                      VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE, 16 * 1024);
-
-   uint32_t renderer_version = 0;
-   result = vn_call_vkEnumerateInstanceVersion(instance, &renderer_version);
+   result = vn_instance_submission_prepare_batch(submit, cs, sync, sync_val);
    if (result != VK_SUCCESS) {
-      if (VN_DEBUG(INIT))
-         vn_log(instance, "failed to enumerate renderer instance version");
+      if (submit->submit.bos != submit->local_bos)
+         free((void *)submit->submit.bos);
       return result;
-   }
-
-   if (renderer_version < VN_MIN_RENDERER_VERSION) {
-      if (VN_DEBUG(INIT)) {
-         vn_log(instance, "unsupported renderer instance version %d.%d",
-                VK_VERSION_MAJOR(instance->renderer_version),
-                VK_VERSION_MINOR(instance->renderer_version));
-      }
-      return VK_ERROR_INITIALIZATION_FAILED;
-   }
-
-   instance->renderer_version =
-      instance->base.base.app_info.api_version > VN_MIN_RENDERER_VERSION
-         ? instance->base.base.app_info.api_version
-         : VN_MIN_RENDERER_VERSION;
-
-   if (VN_DEBUG(INIT)) {
-      vn_log(instance, "vk instance version %d.%d.%d",
-             VK_VERSION_MAJOR(instance->renderer_version),
-             VK_VERSION_MINOR(instance->renderer_version),
-             VK_VERSION_PATCH(instance->renderer_version));
    }
 
    return VK_SUCCESS;
 }
 
+bool
+vn_instance_submit_cs_locked(struct vn_instance *instance,
+                             struct vn_renderer_bo *reply_bo,
+                             uint64_t *reply_sync_val)
+{
+   struct vn_cs_encoder *cs = &instance->cs;
+   VkResult result;
+
+   instance->cs_throttle_pipeline_count = 0;
+
+   if (unlikely(vn_cs_encoder_get_fatal(cs))) {
+      result = VK_ERROR_UNKNOWN;
+      goto out;
+   }
+
+   vn_cs_encoder_commit(cs);
+
+   struct vn_renderer_sync *sync;
+   uint64_t sync_val;
+   if (reply_bo) {
+      sync = instance->cs_reply.sync;
+      sync_val = ++instance->cs_reply.sync_value;
+      *reply_sync_val = sync_val;
+   } else {
+      sync = NULL;
+      sync_val = 0;
+   }
+
+   struct vn_instance_submission submit;
+   result =
+      vn_instance_submission_prepare(&submit, cs, sync, sync_val, reply_bo);
+   if (result != VK_SUCCESS)
+      goto out;
+
+   result = vn_renderer_submit(instance->renderer, &submit.submit);
+   vn_instance_submission_cleanup(&submit, cs);
+
+out:
+   vn_cs_encoder_reset(cs);
+   return result == VK_SUCCESS;
+}
+
+static void
+vn_instance_flush_cs(struct vn_instance *instance)
+{
+   struct vn_cs_encoder *cs = vn_instance_lock_cs(instance);
+   if (!vn_cs_encoder_is_empty(cs))
+      vn_instance_submit_cs_locked(instance, NULL, NULL);
+   vn_instance_unlock_cs(instance);
+}
+
 static bool
-vn_instance_grow_cs_reply_bo_locked(struct vn_instance *instance, size_t size)
+vn_instance_grow_reply_bo_locked(struct vn_instance *instance, size_t size)
 {
    const size_t min_bo_size = 1 << 20;
-   const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
 
-   size_t bo_size =
-      instance->cs_reply.size ? instance->cs_reply.size : min_bo_size;
+   size_t bo_size = instance->reply.size ? instance->reply.size : min_bo_size;
    while (bo_size < size) {
       bo_size <<= 1;
       if (!bo_size)
@@ -170,23 +402,22 @@ vn_instance_grow_cs_reply_bo_locked(struct vn_instance *instance, size_t size)
 
    struct vn_renderer_bo *bo;
    VkResult result =
-      vn_renderer_bo_create_cpu(instance->renderer, bo_size, alloc,
-                                VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE, &bo);
+      vn_renderer_bo_create_cpu(instance->renderer, bo_size, &bo);
    if (result != VK_SUCCESS)
       return false;
 
    void *ptr = vn_renderer_bo_map(bo);
    if (!ptr) {
-      vn_renderer_bo_unref(bo, alloc);
+      vn_renderer_bo_unref(bo);
       return false;
    }
 
-   if (instance->cs_reply.bo)
-      vn_renderer_bo_unref(instance->cs_reply.bo, alloc);
-   instance->cs_reply.bo = bo;
-   instance->cs_reply.size = bo_size;
-   instance->cs_reply.used = 0;
-   instance->cs_reply.ptr = ptr;
+   if (instance->reply.bo)
+      vn_renderer_bo_unref(instance->reply.bo);
+   instance->reply.bo = bo;
+   instance->reply.size = bo_size;
+   instance->reply.used = 0;
+   instance->reply.ptr = ptr;
 
    return true;
 }
@@ -198,13 +429,13 @@ vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
 {
    struct vn_cs_encoder *cs = &instance->cs;
 
-   if (unlikely(instance->cs_reply.used + size > instance->cs_reply.size)) {
-      if (!vn_instance_grow_cs_reply_bo_locked(instance, size))
+   if (unlikely(instance->reply.used + size > instance->reply.size)) {
+      if (!vn_instance_grow_reply_bo_locked(instance, size))
          return NULL;
 
       const struct VkCommandStreamDescriptionMESA stream = {
-         .resourceId = instance->cs_reply.bo->res_id,
-         .size = instance->cs_reply.size,
+         .resourceId = instance->reply.bo->res_id,
+         .size = instance->reply.size,
       };
       const size_t cmd_size = vn_sizeof_vkSetReplyCommandStreamMESA(&stream);
       if (vn_cs_encoder_reserve(cs, cmd_size))
@@ -212,113 +443,15 @@ vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
    }
 
    /* TODO can we avoid this seek command? */
-   const size_t offset = instance->cs_reply.used;
+   const size_t offset = instance->reply.used;
    const size_t cmd_size = vn_sizeof_vkSeekReplyCommandStreamMESA(offset);
    if (vn_cs_encoder_reserve(cs, cmd_size))
       vn_encode_vkSeekReplyCommandStreamMESA(cs, 0, offset);
 
-   *ptr = instance->cs_reply.ptr + offset;
-   instance->cs_reply.used += size;
+   *ptr = instance->reply.ptr + offset;
+   instance->reply.used += size;
 
-   return vn_renderer_bo_ref(instance->cs_reply.bo);
-}
-
-static void *
-alloc_cs_data(const struct vn_cs_encoder *cs, size_t *size)
-{
-   assert(cs->buffer_count);
-   if (cs->buffer_count == 1) {
-      *size = cs->buffers[0].committed_size;
-      return cs->buffers[0].base;
-   }
-
-   size_t cs_size = 0;
-   for (uint32_t i = 0; i < cs->buffer_count; i++)
-      cs_size += cs->buffers[i].committed_size;
-
-   void *cs_data = vk_alloc(cs->allocator, cs_size, VN_DEFAULT_ALIGN,
-                            VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
-   if (!cs_data)
-      return NULL;
-
-   cs_size = 0;
-   for (uint32_t i = 0; i < cs->buffer_count; i++) {
-      const struct vn_cs_buffer *buf = &cs->buffers[i];
-      memcpy(cs_data + cs_size, buf->base, buf->committed_size);
-      cs_size += buf->committed_size;
-   }
-
-   *size = cs_size;
-   return cs_data;
-}
-
-static void
-free_cs_data(const struct vn_cs_encoder *cs, void *data)
-{
-   if (cs->buffer_count > 1)
-      vk_free(cs->allocator, data);
-}
-
-bool
-vn_instance_submit_cs_locked(struct vn_instance *instance,
-                             struct vn_renderer_bo *reply_bo,
-                             uint64_t *reply_sync_val)
-{
-   struct vn_cs_encoder *cs = &instance->cs;
-
-   instance->cs_throttle_pipeline_count = 0;
-
-   if (unlikely(vn_cs_encoder_get_fatal(cs))) {
-      vn_cs_encoder_reset(cs);
-      return false;
-   }
-
-   vn_cs_encoder_commit(cs);
-
-   size_t cs_size;
-   void *cs_data = alloc_cs_data(cs, &cs_size);
-   if (!cs_data) {
-      vn_cs_encoder_reset(cs);
-      return false;
-   }
-
-   VkResult result;
-   if (reply_bo) {
-      *reply_sync_val = ++instance->cs_reply.sync_value;
-      const struct vn_renderer_submit submit = {
-         .bos = &reply_bo,
-         .bo_count = 1,
-         .batches =
-            &(const struct vn_renderer_submit_batch){
-               .cs_data = cs_data,
-               .cs_size = cs_size,
-               .sync_queue_cpu = true,
-               .syncs = &instance->cs_reply.sync,
-               .sync_values = reply_sync_val,
-               .sync_count = 1,
-            },
-         .batch_count = 1,
-      };
-      result = vn_renderer_submit(instance->renderer, &submit);
-   } else {
-      result =
-         vn_renderer_submit_simple(instance->renderer, cs_data, cs_size);
-   }
-
-   free_cs_data(cs, cs_data);
-
-   vn_cs_encoder_reset(cs);
-
-   return result == VK_SUCCESS;
-}
-
-static void
-vn_instance_flush_cs(struct vn_instance *instance)
-{
-   struct vn_cs_encoder *cs = vn_instance_lock_cs(instance);
-   if (!vn_cs_encoder_is_empty(cs))
-      vn_instance_submit_cs_locked(instance, NULL, NULL);
-   vn_instance_unlock_cs(instance);
+   return vn_renderer_bo_ref(instance->reply.bo);
 }
 
 static struct vn_physical_device *
@@ -577,10 +710,17 @@ vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
    }
 
    const uint32_t version_override = vk_get_version_override();
-   if (version_override)
+   if (version_override) {
       props->apiVersion = version_override;
-   if (props->apiVersion > VK_HEADER_VERSION_COMPLETE)
-      props->apiVersion = VK_HEADER_VERSION_COMPLETE;
+   } else {
+      if (props->apiVersion > VK_HEADER_VERSION_COMPLETE)
+         props->apiVersion = VK_HEADER_VERSION_COMPLETE;
+      if (props->apiVersion > vn_info_vk_xml_version())
+         props->apiVersion = vn_info_vk_xml_version();
+      if (!instance->renderer_info.has_timeline_sync &&
+          props->apiVersion >= VK_API_VERSION_1_2)
+         props->apiVersion = VK_MAKE_VERSION(1, 1, 130);
+   }
 
    props->driverVersion = vk_get_driver_version();
    props->vendorID = instance->renderer_info.pci.vendor_id;
@@ -767,6 +907,8 @@ vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
    struct vk_device_extension_table recognized;
    vn_physical_device_get_supported_extensions(physical_dev, &supported,
                                                &recognized);
+   if (!instance->renderer_info.has_timeline_sync)
+      recognized.KHR_timeline_semaphore = false;
 
    physical_dev->extension_spec_versions =
       vk_zalloc(alloc,
@@ -1086,6 +1228,18 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    if (result != VK_SUCCESS)
       goto fail;
 
+   result = vn_instance_init_ring(instance);
+   if (result != VK_SUCCESS)
+      goto fail;
+
+   result = vn_instance_init_cs(instance);
+   if (result != VK_SUCCESS)
+      goto fail;
+
+   result = vn_instance_init_version(instance);
+   if (result != VK_SUCCESS)
+      goto fail;
+
    VkInstanceCreateInfo local_create_info;
    local_create_info = *pCreateInfo;
    local_create_info.ppEnabledExtensionNames = NULL;
@@ -1110,21 +1264,37 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    result =
       vn_call_vkCreateInstance(instance, pCreateInfo, NULL, &instance_handle);
    if (result != VK_SUCCESS)
-      return result;
+      goto fail;
+
+   driParseOptionInfo(&instance->available_dri_options, vn_dri_options,
+                      ARRAY_SIZE(vn_dri_options));
+   driParseConfigFiles(&instance->dri_options,
+                       &instance->available_dri_options, 0, "venus", NULL,
+                       instance->base.base.app_info.app_name,
+                       instance->base.base.app_info.app_version,
+                       instance->base.base.app_info.engine_name,
+                       instance->base.base.app_info.engine_version);
 
    *pInstance = instance_handle;
 
    return VK_SUCCESS;
 
 fail:
-   if (instance->cs_reply.bo)
-      vn_renderer_bo_unref(instance->cs_reply.bo, alloc);
    if (instance->cs_reply.sync)
-      vn_renderer_sync_destroy(instance->cs_reply.sync, alloc);
+      vn_renderer_sync_destroy(instance->cs_reply.sync);
+
+   if (instance->reply.bo)
+      vn_renderer_bo_unref(instance->reply.bo);
+
+   if (instance->ring.bo) {
+      vn_renderer_bo_unref(instance->ring.bo);
+      vn_ring_fini(&instance->ring.ring);
+      mtx_destroy(&instance->ring.mutex);
+   }
 
    if (instance->renderer) {
-      vn_renderer_destroy(instance->renderer, alloc);
       vn_cs_encoder_fini(&instance->cs);
+      vn_renderer_destroy(instance->renderer, alloc);
    }
 
    mtx_destroy(&instance->cs_mutex);
@@ -1155,13 +1325,23 @@ vn_DestroyInstance(VkInstance _instance,
 
    vn_call_vkDestroyInstance(instance, _instance, NULL);
 
-   vn_renderer_bo_unref(instance->cs_reply.bo, alloc);
-   vn_renderer_sync_destroy(instance->cs_reply.sync, alloc);
+   vn_renderer_sync_destroy(instance->cs_reply.sync);
+
+   vn_cs_encoder_fini(&instance->cs);
+
+   vn_renderer_bo_unref(instance->reply.bo);
+
+   vn_ring_fini(&instance->ring.ring);
+   mtx_destroy(&instance->ring.mutex);
+   vn_renderer_bo_unref(instance->ring.bo);
 
    vn_renderer_destroy(instance->renderer, alloc);
-   vn_cs_encoder_fini(&instance->cs);
+
    mtx_destroy(&instance->cs_mutex);
    mtx_destroy(&instance->physical_device_mutex);
+
+   driDestroyOptionCache(&instance->dri_options);
+   driDestroyOptionInfo(&instance->available_dri_options);
 
    vn_instance_base_fini(&instance->base);
    vk_free(alloc, instance);
@@ -2003,9 +2183,8 @@ vn_queue_init(struct vn_device *dev,
 
    queue->sync_queue_index = sync_queue_index;
 
-   VkResult result = vn_renderer_sync_create_cpu(
-      dev->instance->renderer, alloc, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE,
-      &queue->idle_sync);
+   VkResult result =
+      vn_renderer_sync_create_cpu(dev->instance->renderer, &queue->idle_sync);
    if (result != VK_SUCCESS)
       return result;
 
@@ -2056,7 +2235,9 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
       }
       if (!found) {
          const uint32_t name_count = pCreateInfo->enabledExtensionCount + 1;
-         const char **names = malloc(sizeof(*names) * name_count);
+         const char **names =
+            vk_alloc(alloc, sizeof(*names) * name_count, VN_DEFAULT_ALIGN,
+                     VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
          if (!names) {
             result = VK_ERROR_OUT_OF_HOST_MEMORY;
             goto fail;
@@ -2110,7 +2291,7 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
    if (queue_count < dev->queue_count) {
       for (uint32_t i = 0; i < queue_count; i++) {
          struct vn_queue *queue = &dev->queues[i];
-         vn_renderer_sync_destroy(queue->idle_sync, alloc);
+         vn_renderer_sync_destroy(queue->idle_sync);
       }
       vn_call_vkDestroyDevice(instance, dev_handle, NULL);
       goto fail;
@@ -2147,7 +2328,7 @@ vn_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator)
 
    for (uint32_t i = 0; i < dev->queue_count; i++) {
       struct vn_queue *queue = &dev->queues[i];
-      vn_renderer_sync_destroy(queue->idle_sync, alloc);
+      vn_renderer_sync_destroy(queue->idle_sync);
       vn_object_base_fini(&queue->base);
    }
    vk_free(alloc, dev->queues);
@@ -2879,18 +3060,16 @@ vn_fence_init_payloads(struct vn_device *dev,
                        const VkAllocationCallbacks *alloc)
 {
    struct vn_renderer_sync *perm_sync;
-   VkResult result = vn_renderer_sync_create_fence(
-      dev->instance->renderer, signaled, 0, alloc,
-      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, &perm_sync);
+   VkResult result = vn_renderer_sync_create_fence(dev->instance->renderer,
+                                                   signaled, 0, &perm_sync);
    if (result != VK_SUCCESS)
       return result;
 
    struct vn_renderer_sync *temp_sync;
-   result = vn_renderer_sync_create_empty(dev->instance->renderer, alloc,
-                                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
-                                          &temp_sync);
+   result =
+      vn_renderer_sync_create_empty(dev->instance->renderer, &temp_sync);
    if (result != VK_SUCCESS) {
-      vn_renderer_sync_destroy(perm_sync, alloc);
+      vn_renderer_sync_destroy(perm_sync);
       return result;
    }
 
@@ -2966,8 +3145,8 @@ vn_DestroyFence(VkDevice device,
 
    vn_sync_payload_release(dev, &fence->permanent);
    vn_sync_payload_release(dev, &fence->temporary);
-   vn_renderer_sync_destroy(fence->permanent.sync, alloc);
-   vn_renderer_sync_destroy(fence->temporary.sync, alloc);
+   vn_renderer_sync_destroy(fence->permanent.sync);
+   vn_renderer_sync_destroy(fence->temporary.sync);
 
    vn_object_base_fini(&fence->base);
    vk_free(alloc, fence);
@@ -3103,23 +3282,21 @@ vn_semaphore_init_payloads(struct vn_device *dev,
    struct vn_renderer_sync *perm_sync;
    VkResult result;
    if (sem->type == VK_SEMAPHORE_TYPE_TIMELINE) {
-      result = vn_renderer_sync_create_semaphore(
-         dev->instance->renderer, VK_SEMAPHORE_TYPE_TIMELINE, initial_val, 0,
-         alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, &perm_sync);
+      result = vn_renderer_sync_create_semaphore(dev->instance->renderer,
+                                                 VK_SEMAPHORE_TYPE_TIMELINE,
+                                                 initial_val, 0, &perm_sync);
    } else {
-      result = vn_renderer_sync_create_empty(
-         dev->instance->renderer, alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
-         &perm_sync);
+      result =
+         vn_renderer_sync_create_empty(dev->instance->renderer, &perm_sync);
    }
    if (result != VK_SUCCESS)
       return result;
 
    struct vn_renderer_sync *temp_sync;
-   result = vn_renderer_sync_create_empty(dev->instance->renderer, alloc,
-                                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
-                                          &temp_sync);
+   result =
+      vn_renderer_sync_create_empty(dev->instance->renderer, &temp_sync);
    if (result != VK_SUCCESS) {
-      vn_renderer_sync_destroy(perm_sync, alloc);
+      vn_renderer_sync_destroy(perm_sync);
       return result;
    }
 
@@ -3218,8 +3395,8 @@ vn_DestroySemaphore(VkDevice device,
 
    vn_sync_payload_release(dev, &sem->permanent);
    vn_sync_payload_release(dev, &sem->temporary);
-   vn_renderer_sync_destroy(sem->permanent.sync, alloc);
-   vn_renderer_sync_destroy(sem->temporary.sync, alloc);
+   vn_renderer_sync_destroy(sem->permanent.sync);
+   vn_renderer_sync_destroy(sem->temporary.sync);
 
    vn_object_base_fini(&sem->base);
    vk_free(alloc, sem);
@@ -3345,7 +3522,7 @@ vn_AllocateMemory(VkDevice device,
       result = vn_renderer_bo_create_gpu(
          dev->instance->renderer, mem->size, mem->base.id,
          mem_type->propertyFlags, export_info ? export_info->handleTypes : 0,
-         alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, &mem->bo);
+         &mem->bo);
       if (result != VK_SUCCESS) {
          vn_async_vkFreeMemory(dev->instance, device, mem_handle, NULL);
          vk_free(alloc, mem);
@@ -3374,7 +3551,7 @@ vn_FreeMemory(VkDevice device,
    vn_async_vkFreeMemory(dev->instance, device, memory, NULL);
 
    if (mem->bo)
-      vn_renderer_bo_unref(mem->bo, alloc);
+      vn_renderer_bo_unref(mem->bo);
 
    vn_object_base_fini(&mem->base);
    vk_free(alloc, mem);
@@ -5637,8 +5814,7 @@ vn_AllocateCommandBuffers(VkDevice device,
       list_addtail(&cmd->head, &pool->command_buffers);
 
       cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
-      vn_cs_encoder_init(&cmd->cs, alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
-                         16 * 1024);
+      vn_cs_encoder_init_growable(&cmd->cs, 16 * 1024);
 
       VkCommandBuffer cmd_handle = vn_command_buffer_to_handle(cmd);
       pCommandBuffers[i] = cmd_handle;
@@ -5739,17 +5915,18 @@ vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
       return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
-   size_t cs_size;
-   void *cs_data = alloc_cs_data(&cmd->cs, &cs_size);
-   if (!cs_data) {
+   struct vn_instance_submission submit;
+   VkResult result =
+      vn_instance_submission_prepare(&submit, &cmd->cs, NULL, 0, NULL);
+   if (result != VK_SUCCESS) {
       cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
-      return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vn_error(instance, result);
    }
 
    vn_instance_flush_cs(instance);
-   vn_renderer_submit_simple(instance->renderer, cs_data, cs_size);
+   vn_renderer_submit(instance->renderer, &submit.submit);
 
-   free_cs_data(&cmd->cs, cs_data);
+   vn_instance_submission_cleanup(&submit, &cmd->cs);
 
    vn_cs_encoder_reset(&cmd->cs);
 
