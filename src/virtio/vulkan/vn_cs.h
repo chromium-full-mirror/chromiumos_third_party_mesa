@@ -26,13 +26,16 @@
    }
 
 struct vn_cs_encoder_buffer {
+   struct vn_renderer_bo *bo;
+   size_t offset;
    void *base;
    size_t committed_size;
 };
 
 struct vn_cs_encoder {
+   struct vn_instance *instance; /* TODO bo cache */
    size_t min_buffer_size;
-   bool growable;
+   bool indirect;
 
    bool fatal_error;
 
@@ -41,8 +44,9 @@ struct vn_cs_encoder {
    uint32_t buffer_max;
    size_t total_committed_size;
 
-   /* the current buffer is buffers[buffer_count - 1].base */
+   /* the current buffer is buffers[buffer_count - 1].bo */
    size_t current_buffer_size;
+   uint32_t current_buffer_roundtrip;
 
    /* cur is the write pointer.  When cur passes end, the slow path is
     * triggered.
@@ -57,7 +61,9 @@ struct vn_cs_decoder {
 };
 
 void
-vn_cs_encoder_init_growable(struct vn_cs_encoder *enc, size_t min_size);
+vn_cs_encoder_init_indirect(struct vn_cs_encoder *enc,
+                            struct vn_instance *instance,
+                            size_t min_size);
 
 void
 vn_cs_encoder_fini(struct vn_cs_encoder *enc);

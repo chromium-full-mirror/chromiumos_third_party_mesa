@@ -103,31 +103,10 @@ vn_instance_init_version(struct vn_instance *instance)
 }
 
 static VkResult
-vn_instance_init_cs(struct vn_instance *instance)
-{
-   /* reply bo will be allocated on demand by
-    * vn_instance_get_cs_reply_bo_locked
-    */
-   VkResult result = vn_renderer_sync_create_cpu(instance->renderer,
-                                                 &instance->cs_reply.sync);
-   if (result != VK_SUCCESS) {
-      if (VN_DEBUG(INIT))
-         vn_log(instance, "failed to create reply sync");
-      return result;
-   }
-
-   instance->cs_implicit_flush_threshold = 1 * 1024 * 1024;
-   /* when a pipeline creation takes 100ms, this still takes 400ms... */
-   instance->cs_throttle_pipeline_threshold = 4;
-   vn_cs_encoder_init_growable(&instance->cs, 64 * 1024);
-
-   return VK_SUCCESS;
-}
-
-static VkResult
 vn_instance_init_ring(struct vn_instance *instance)
 {
-   const size_t extra_size = 0;
+   /* 32-bit seqno for renderer roundtrips */
+   const size_t extra_size = sizeof(uint32_t);
    struct vn_ring_layout layout;
    vn_ring_get_layout(extra_size, &layout);
 
@@ -151,7 +130,30 @@ vn_instance_init_ring(struct vn_instance *instance)
    vn_ring_init(ring, &layout, ring_ptr);
 
    instance->ring.id = (uintptr_t)ring;
-   /* TODO tell the renderer about the ring */
+
+   const struct VkRingCreateInfoMESA info = {
+      .sType = VK_STRUCTURE_TYPE_RING_CREATE_INFO_MESA,
+      .resourceId = instance->ring.bo->res_id,
+      .size = layout.bo_size,
+      .idleTimeout = 50ull * 1000 * 1000,
+      .headOffset = layout.head_offset,
+      .tailOffset = layout.tail_offset,
+      .statusOffset = layout.status_offset,
+      .bufferOffset = layout.buffer_offset,
+      .bufferSize = layout.buffer_size,
+      .extraOffset = layout.extra_offset,
+      .extraSize = layout.extra_size,
+   };
+
+   uint32_t create_ring_data[64];
+   struct vn_cs_encoder local_enc =
+      VN_CS_ENCODER_INITIALIZER(create_ring_data, sizeof(create_ring_data));
+   vn_encode_vkCreateRingMESA(&local_enc, 0, instance->ring.id, &info);
+   vn_renderer_submit_simple(instance->renderer, create_ring_data,
+                             vn_cs_encoder_get_len(&local_enc));
+
+   vn_cs_encoder_init_indirect(&instance->ring.upload, instance,
+                               1 * 1024 * 1024);
 
    return VK_SUCCESS;
 }
@@ -164,6 +166,9 @@ vn_instance_init_renderer(struct vn_instance *instance)
    VkResult result = vn_renderer_create(instance, alloc, &instance->renderer);
    if (result != VK_SUCCESS)
       return result;
+
+   mtx_init(&instance->roundtrip_mutex, mtx_plain);
+   instance->roundtrip_next = 1;
 
    vn_renderer_get_info(instance->renderer, &instance->renderer_info);
 
@@ -211,181 +216,264 @@ vn_instance_init_renderer(struct vn_instance *instance)
    return VK_SUCCESS;
 }
 
+VkResult
+vn_instance_submit_roundtrip(struct vn_instance *instance,
+                             uint32_t *roundtrip_seqno)
+{
+   uint32_t write_ring_extra_data[8];
+   struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER(
+      write_ring_extra_data, sizeof(write_ring_extra_data));
+
+   /* submit a vkWriteRingExtraMESA through the renderer */
+   mtx_lock(&instance->roundtrip_mutex);
+   const uint32_t seqno = instance->roundtrip_next++;
+   vn_encode_vkWriteRingExtraMESA(&local_enc, 0, instance->ring.id, 0, seqno);
+   VkResult result =
+      vn_renderer_submit_simple(instance->renderer, write_ring_extra_data,
+                                vn_cs_encoder_get_len(&local_enc));
+   mtx_unlock(&instance->roundtrip_mutex);
+
+   *roundtrip_seqno = seqno;
+   return result;
+}
+
+static void
+vn_instance_wait_roundtrip(struct vn_instance *instance,
+                           uint32_t roundtrip_seqno)
+{
+   const struct vn_ring *ring = &instance->ring.ring;
+   const volatile atomic_uint *ptr = ring->shared.extra;
+   uint32_t iter = 0;
+   do {
+      const uint32_t cur = atomic_load_explicit(ptr, memory_order_acquire);
+      if (cur >= roundtrip_seqno || roundtrip_seqno - cur >= INT32_MAX)
+         break;
+      vn_relax(&iter);
+   } while (true);
+}
+
+static void
+vn_instance_roundtrip(struct vn_instance *instance)
+{
+   uint32_t roundtrip_seqno;
+   if (vn_instance_submit_roundtrip(instance, &roundtrip_seqno) == VK_SUCCESS)
+      vn_instance_wait_roundtrip(instance, roundtrip_seqno);
+}
+
 struct vn_instance_submission {
-   struct vn_renderer_submit submit;
+   uint32_t local_cs_data[64];
 
-   struct vn_renderer_submit_batch batch;
-   struct vn_renderer_sync *syncs[1];
-   uint64_t sync_values[1];
-
-   struct vn_renderer_bo *local_bos[1];
+   void *cs_data;
+   size_t cs_size;
+   struct vn_ring_submit *submit;
 };
 
 static void *
-vn_instance_submission_alloc_cs_data(struct vn_instance_submission *submit,
-                                     const struct vn_cs_encoder *cs,
-                                     size_t *cs_size)
+vn_instance_submission_indirect_cs(struct vn_instance_submission *submit,
+                                   const struct vn_cs_encoder *cs,
+                                   size_t *cs_size)
 {
-   size_t size = vn_cs_encoder_get_len(cs);
-   void *data = malloc(size);
-   if (!data)
-      return NULL;
+   VkCommandStreamDescriptionMESA local_descs[8];
+   VkCommandStreamDescriptionMESA *descs = local_descs;
+   if (cs->buffer_count > ARRAY_SIZE(local_descs)) {
+      descs =
+         malloc(sizeof(VkCommandStreamDescriptionMESA) * cs->buffer_count);
+      if (!descs)
+         return NULL;
+   }
 
-   size = 0;
+   uint32_t desc_count = 0;
    for (uint32_t i = 0; i < cs->buffer_count; i++) {
       const struct vn_cs_encoder_buffer *buf = &cs->buffers[i];
-      memcpy(data + size, buf->base, buf->committed_size);
-      size += buf->committed_size;
+      if (buf->committed_size) {
+         descs[desc_count++] = (VkCommandStreamDescriptionMESA){
+            .resourceId = buf->bo->res_id,
+            .offset = buf->offset,
+            .size = buf->committed_size,
+         };
+      }
    }
 
-   *cs_size = size;
-   return data;
+   const size_t exec_size = vn_sizeof_vkExecuteCommandStreamsMESA(
+      desc_count, descs, NULL, 0, NULL, 0);
+   void *exec_data = submit->local_cs_data;
+   if (exec_size > sizeof(submit->local_cs_data)) {
+      exec_data = malloc(exec_size);
+      if (!exec_data)
+         goto out;
+   }
+
+   struct vn_cs_encoder local_enc =
+      VN_CS_ENCODER_INITIALIZER(exec_data, exec_size);
+   vn_encode_vkExecuteCommandStreamsMESA(&local_enc, 0, desc_count, descs,
+                                         NULL, 0, NULL, 0);
+
+   *cs_size = vn_cs_encoder_get_len(&local_enc);
+
+out:
+   if (descs != local_descs)
+      free(descs);
+
+   return exec_data;
 }
 
-static VkResult
-vn_instance_submission_prepare_batch(struct vn_instance_submission *submit,
-                                     const struct vn_cs_encoder *cs,
-                                     struct vn_renderer_sync *sync,
-                                     uint64_t sync_val)
+static void *
+vn_instance_submission_direct_cs(struct vn_instance_submission *submit,
+                                 const struct vn_cs_encoder *cs,
+                                 size_t *cs_size)
 {
-   void *cs_data;
-   size_t cs_size;
-   if (cs->buffer_count > 1) {
-      cs_data = vn_instance_submission_alloc_cs_data(submit, cs, &cs_size);
-      if (!cs_data)
-         return VK_ERROR_OUT_OF_HOST_MEMORY;
-   } else {
-      assert(cs->buffer_count == 1);
-      cs_data = cs->buffers[0].base;
-      cs_size = cs->buffers[0].committed_size;
+   if (cs->buffer_count == 1) {
+      *cs_size = cs->buffers[0].committed_size;
+      return cs->buffers[0].base;
    }
 
-   const uint32_t sync_count = sync ? 1 : 0;
-   assert(sync_count <= ARRAY_SIZE(submit->syncs));
-   if (sync) {
-      submit->syncs[0] = sync;
-      submit->sync_values[0] = sync_val;
+   assert(vn_cs_encoder_get_len(cs) <= sizeof(submit->local_cs_data));
+   void *dst = submit->local_cs_data;
+   for (uint32_t i = 0; i < cs->buffer_count; i++) {
+      const struct vn_cs_encoder_buffer *buf = &cs->buffers[i];
+      memcpy(dst, buf->base, buf->committed_size);
+      dst += buf->committed_size;
    }
 
-   submit->batch = (struct vn_renderer_submit_batch){
-      .cs_data = cs_data,
-      .cs_size = cs_size,
-      .sync_queue_cpu = true,
-      .syncs = submit->syncs,
-      .sync_values = submit->sync_values,
-      .sync_count = sync_count,
-   };
-
-   return VK_SUCCESS;
+   *cs_size = dst - (void *)submit->local_cs_data;
+   return submit->local_cs_data;
 }
 
-static VkResult
-vn_instance_submission_prepare_submit(struct vn_instance_submission *submit,
-                                      const struct vn_cs_encoder *cs,
-                                      struct vn_renderer_bo *extra_bo)
+static struct vn_ring_submit *
+vn_instance_submission_get_ring_submit(struct vn_ring *ring,
+                                       const struct vn_cs_encoder *cs,
+                                       struct vn_renderer_bo *extra_bo,
+                                       bool direct)
 {
-   const uint32_t bo_count = extra_bo ? 1 : 0;
-   struct vn_renderer_bo **bos = submit->local_bos;
-   if (unlikely(bo_count > ARRAY_SIZE(submit->local_bos))) {
-      bos = malloc(sizeof(*bos) * bo_count);
-      if (!bos)
-         return VK_ERROR_OUT_OF_HOST_MEMORY;
-   }
+   const uint32_t bo_count =
+      (direct ? 0 : cs->buffer_count) + (extra_bo ? 1 : 0);
+   struct vn_ring_submit *submit = vn_ring_get_submit(ring, bo_count);
+   if (!submit)
+      return NULL;
 
+   submit->bo_count = bo_count;
+   if (!direct) {
+      for (uint32_t i = 0; i < cs->buffer_count; i++)
+         submit->bos[i] = vn_renderer_bo_ref(cs->buffers[i].bo);
+   }
    if (extra_bo)
-      bos[0] = extra_bo;
+      submit->bos[bo_count - 1] = vn_renderer_bo_ref(extra_bo);
 
-   submit->submit = (struct vn_renderer_submit){
-      .bos = bos,
-      .bo_count = bo_count,
-      .batches = &submit->batch,
-      .batch_count = 1,
-   };
-
-   return VK_SUCCESS;
+   return submit;
 }
 
 static void
 vn_instance_submission_cleanup(struct vn_instance_submission *submit,
                                const struct vn_cs_encoder *cs)
 {
-   if (submit->submit.bos != submit->local_bos)
-      free((void *)submit->submit.bos);
-   if (submit->batch.cs_data != cs->buffers[0].base)
-      free((void *)submit->batch.cs_data);
+   if (submit->cs_data != submit->local_cs_data &&
+       submit->cs_data != cs->buffers[0].base)
+      free(submit->cs_data);
 }
 
 static VkResult
 vn_instance_submission_prepare(struct vn_instance_submission *submit,
                                const struct vn_cs_encoder *cs,
-                               struct vn_renderer_sync *sync,
-                               uint64_t sync_val,
-                               struct vn_renderer_bo *extra_bo)
+                               struct vn_ring *ring,
+                               struct vn_renderer_bo *extra_bo,
+                               bool direct)
 {
-   VkResult result =
-      vn_instance_submission_prepare_submit(submit, cs, extra_bo);
-   if (result != VK_SUCCESS)
-      return result;
+   if (direct) {
+      submit->cs_data =
+         vn_instance_submission_direct_cs(submit, cs, &submit->cs_size);
+   } else {
+      submit->cs_data =
+         vn_instance_submission_indirect_cs(submit, cs, &submit->cs_size);
+   }
+   if (!submit->cs_data)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
 
-   result = vn_instance_submission_prepare_batch(submit, cs, sync, sync_val);
-   if (result != VK_SUCCESS) {
-      if (submit->submit.bos != submit->local_bos)
-         free((void *)submit->submit.bos);
-      return result;
+   submit->submit =
+      vn_instance_submission_get_ring_submit(ring, cs, extra_bo, direct);
+   if (!submit->submit) {
+      vn_instance_submission_cleanup(submit, cs);
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
 
    return VK_SUCCESS;
 }
 
-bool
-vn_instance_submit_cs_locked(struct vn_instance *instance,
-                             struct vn_renderer_bo *reply_bo,
-                             uint64_t *reply_sync_val)
+static bool
+vn_instance_submission_can_direct(const struct vn_cs_encoder *cs)
 {
-   struct vn_cs_encoder *cs = &instance->cs;
-   VkResult result;
+   struct vn_instance_submission submit;
+   return vn_cs_encoder_get_len(cs) <= sizeof(submit.local_cs_data);
+}
 
-   instance->cs_throttle_pipeline_count = 0;
+static struct vn_cs_encoder *
+vn_instance_ring_cs_upload_locked(struct vn_instance *instance,
+                                  const struct vn_cs_encoder *cs)
+{
+   assert(!cs->indirect && cs->buffer_count == 1);
+   const void *cs_data = cs->buffers[0].base;
+   const size_t cs_size = cs->total_committed_size;
+   assert(cs_size == vn_cs_encoder_get_len(cs));
 
-   if (unlikely(vn_cs_encoder_get_fatal(cs))) {
-      result = VK_ERROR_UNKNOWN;
-      goto out;
-   }
+   struct vn_cs_encoder *upload = &instance->ring.upload;
+   vn_cs_encoder_reset(upload);
 
-   vn_cs_encoder_commit(cs);
+   if (!vn_cs_encoder_reserve(upload, cs_size))
+      return NULL;
 
-   struct vn_renderer_sync *sync;
-   uint64_t sync_val;
-   if (reply_bo) {
-      sync = instance->cs_reply.sync;
-      sync_val = ++instance->cs_reply.sync_value;
-      *reply_sync_val = sync_val;
-   } else {
-      sync = NULL;
-      sync_val = 0;
+   vn_cs_encoder_write(upload, cs_size, cs_data, cs_size);
+   vn_cs_encoder_commit(upload);
+   vn_instance_wait_roundtrip(instance, upload->current_buffer_roundtrip);
+
+   return upload;
+}
+
+static VkResult
+vn_instance_ring_submit_locked(struct vn_instance *instance,
+                               const struct vn_cs_encoder *cs,
+                               struct vn_renderer_bo *extra_bo,
+                               uint32_t *ring_seqno)
+{
+   struct vn_ring *ring = &instance->ring.ring;
+
+   const bool direct = vn_instance_submission_can_direct(cs);
+   if (!direct && !cs->indirect) {
+      cs = vn_instance_ring_cs_upload_locked(instance, cs);
+      if (!cs)
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      assert(cs->indirect);
    }
 
    struct vn_instance_submission submit;
-   result =
-      vn_instance_submission_prepare(&submit, cs, sync, sync_val, reply_bo);
+   VkResult result =
+      vn_instance_submission_prepare(&submit, cs, ring, extra_bo, direct);
    if (result != VK_SUCCESS)
-      goto out;
+      return result;
 
-   result = vn_renderer_submit(instance->renderer, &submit.submit);
+   uint32_t seqno;
+   const bool notify = vn_ring_submit(ring, submit.submit, submit.cs_data,
+                                      submit.cs_size, &seqno);
+   if (notify) {
+      uint32_t notify_ring_data[8];
+      struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER(
+         notify_ring_data, sizeof(notify_ring_data));
+      vn_encode_vkNotifyRingMESA(&local_enc, 0, instance->ring.id, seqno, 0);
+      vn_renderer_submit_simple(instance->renderer, notify_ring_data,
+                                vn_cs_encoder_get_len(&local_enc));
+   }
+
    vn_instance_submission_cleanup(&submit, cs);
 
-out:
-   vn_cs_encoder_reset(cs);
-   return result == VK_SUCCESS;
+   if (ring_seqno)
+      *ring_seqno = seqno;
+
+   return VK_SUCCESS;
 }
 
 static void
-vn_instance_flush_cs(struct vn_instance *instance)
+vn_instance_ring_wait(struct vn_instance *instance)
 {
-   struct vn_cs_encoder *cs = vn_instance_lock_cs(instance);
-   if (!vn_cs_encoder_is_empty(cs))
-      vn_instance_submit_cs_locked(instance, NULL, NULL);
-   vn_instance_unlock_cs(instance);
+   struct vn_ring *ring = &instance->ring.ring;
+   vn_ring_wait_all(ring);
 }
 
 static bool
@@ -422,36 +510,81 @@ vn_instance_grow_reply_bo_locked(struct vn_instance *instance, size_t size)
    return true;
 }
 
-struct vn_renderer_bo *
-vn_instance_get_cs_reply_bo_locked(struct vn_instance *instance,
-                                   size_t size,
-                                   void **ptr)
+static struct vn_renderer_bo *
+vn_instance_get_reply_bo_locked(struct vn_instance *instance,
+                                size_t size,
+                                void **ptr)
 {
-   struct vn_cs_encoder *cs = &instance->cs;
-
    if (unlikely(instance->reply.used + size > instance->reply.size)) {
       if (!vn_instance_grow_reply_bo_locked(instance, size))
          return NULL;
 
+      uint32_t set_reply_command_stream_data[16];
+      struct vn_cs_encoder local_enc =
+         VN_CS_ENCODER_INITIALIZER(set_reply_command_stream_data,
+                                   sizeof(set_reply_command_stream_data));
       const struct VkCommandStreamDescriptionMESA stream = {
          .resourceId = instance->reply.bo->res_id,
          .size = instance->reply.size,
       };
-      const size_t cmd_size = vn_sizeof_vkSetReplyCommandStreamMESA(&stream);
-      if (vn_cs_encoder_reserve(cs, cmd_size))
-         vn_encode_vkSetReplyCommandStreamMESA(cs, 0, &stream);
+      vn_encode_vkSetReplyCommandStreamMESA(&local_enc, 0, &stream);
+      vn_cs_encoder_commit(&local_enc);
+
+      vn_instance_roundtrip(instance);
+      vn_instance_ring_submit_locked(instance, &local_enc, NULL, NULL);
    }
 
-   /* TODO can we avoid this seek command? */
+   /* TODO avoid this seek command and go lock-free? */
+   uint32_t seek_reply_command_stream_data[8];
+   struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER(
+      seek_reply_command_stream_data, sizeof(seek_reply_command_stream_data));
    const size_t offset = instance->reply.used;
-   const size_t cmd_size = vn_sizeof_vkSeekReplyCommandStreamMESA(offset);
-   if (vn_cs_encoder_reserve(cs, cmd_size))
-      vn_encode_vkSeekReplyCommandStreamMESA(cs, 0, offset);
+   vn_encode_vkSeekReplyCommandStreamMESA(&local_enc, 0, offset);
+   vn_cs_encoder_commit(&local_enc);
+   vn_instance_ring_submit_locked(instance, &local_enc, NULL, NULL);
 
    *ptr = instance->reply.ptr + offset;
    instance->reply.used += size;
 
    return vn_renderer_bo_ref(instance->reply.bo);
+}
+
+void
+vn_instance_submit_command(struct vn_instance *instance,
+                           struct vn_instance_submit_command *submit)
+{
+   void *reply_ptr;
+   submit->reply_bo = NULL;
+
+   mtx_lock(&instance->ring.mutex);
+
+   if (vn_cs_encoder_is_empty(&submit->command))
+      goto fail;
+   vn_cs_encoder_commit(&submit->command);
+
+   if (submit->reply_size) {
+      submit->reply_bo = vn_instance_get_reply_bo_locked(
+         instance, submit->reply_size, &reply_ptr);
+      if (!submit->reply_bo)
+         goto fail;
+   }
+
+   uint32_t ring_seqno;
+   VkResult result = vn_instance_ring_submit_locked(
+      instance, &submit->command, submit->reply_bo, &ring_seqno);
+
+   mtx_unlock(&instance->ring.mutex);
+
+   submit->reply = VN_CS_DECODER_INITIALIZER(reply_ptr, submit->reply_size);
+
+   if (submit->reply_size && result == VK_SUCCESS)
+      vn_ring_wait(&instance->ring.ring, ring_seqno);
+
+   return;
+
+fail:
+   instance->ring.command_dropped++;
+   mtx_unlock(&instance->ring.mutex);
 }
 
 static struct vn_physical_device *
@@ -1210,7 +1343,6 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       return vn_error(NULL, result);
    }
 
-   mtx_init(&instance->cs_mutex, mtx_plain);
    mtx_init(&instance->physical_device_mutex, mtx_plain);
 
    if (!vn_icd_supports_api_version(
@@ -1229,10 +1361,6 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       goto fail;
 
    result = vn_instance_init_ring(instance);
-   if (result != VK_SUCCESS)
-      goto fail;
-
-   result = vn_instance_init_cs(instance);
    if (result != VK_SUCCESS)
       goto fail;
 
@@ -1280,24 +1408,28 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    return VK_SUCCESS;
 
 fail:
-   if (instance->cs_reply.sync)
-      vn_renderer_sync_destroy(instance->cs_reply.sync);
-
    if (instance->reply.bo)
       vn_renderer_bo_unref(instance->reply.bo);
 
    if (instance->ring.bo) {
+      uint32_t destroy_ring_data[4];
+      struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER(
+         destroy_ring_data, sizeof(destroy_ring_data));
+      vn_encode_vkDestroyRingMESA(&local_enc, 0, instance->ring.id);
+      vn_renderer_submit_simple(instance->renderer, destroy_ring_data,
+                                vn_cs_encoder_get_len(&local_enc));
+
+      vn_cs_encoder_fini(&instance->ring.upload);
       vn_renderer_bo_unref(instance->ring.bo);
       vn_ring_fini(&instance->ring.ring);
       mtx_destroy(&instance->ring.mutex);
    }
 
    if (instance->renderer) {
-      vn_cs_encoder_fini(&instance->cs);
+      mtx_destroy(&instance->roundtrip_mutex);
       vn_renderer_destroy(instance->renderer, alloc);
    }
 
-   mtx_destroy(&instance->cs_mutex);
    mtx_destroy(&instance->physical_device_mutex);
 
    vn_instance_base_fini(&instance->base);
@@ -1325,19 +1457,23 @@ vn_DestroyInstance(VkInstance _instance,
 
    vn_call_vkDestroyInstance(instance, _instance, NULL);
 
-   vn_renderer_sync_destroy(instance->cs_reply.sync);
-
-   vn_cs_encoder_fini(&instance->cs);
-
    vn_renderer_bo_unref(instance->reply.bo);
 
+   uint32_t destroy_ring_data[4];
+   struct vn_cs_encoder local_enc =
+      VN_CS_ENCODER_INITIALIZER(destroy_ring_data, sizeof(destroy_ring_data));
+   vn_encode_vkDestroyRingMESA(&local_enc, 0, instance->ring.id);
+   vn_renderer_submit_simple(instance->renderer, destroy_ring_data,
+                             vn_cs_encoder_get_len(&local_enc));
+
+   vn_cs_encoder_fini(&instance->ring.upload);
    vn_ring_fini(&instance->ring.ring);
    mtx_destroy(&instance->ring.mutex);
    vn_renderer_bo_unref(instance->ring.bo);
 
+   mtx_destroy(&instance->roundtrip_mutex);
    vn_renderer_destroy(instance->renderer, alloc);
 
-   mtx_destroy(&instance->cs_mutex);
    mtx_destroy(&instance->physical_device_mutex);
 
    driDestroyOptionCache(&instance->dri_options);
@@ -2821,7 +2957,7 @@ vn_QueueSubmit(VkQueue _queue,
       for (uint32_t i = 0; i < submit.batch_count - 1; i++) {
          vn_async_vkQueueSubmit(dev->instance, submit.queue, 1,
                                 &submit.submit_batches[i], VK_NULL_HANDLE);
-         vn_instance_flush_cs(dev->instance);
+         vn_instance_ring_wait(dev->instance);
 
          const struct vn_renderer_submit dst = {
             .batches =
@@ -2835,6 +2971,7 @@ vn_QueueSubmit(VkQueue _queue,
             .batch_count = 1,
          };
          vn_renderer_submit(renderer, &dst);
+         vn_instance_roundtrip(dev->instance);
 
          sync_base += submit.temp.batch_sync_counts[i];
       }
@@ -2862,6 +2999,7 @@ vn_QueueSubmit(VkQueue _queue,
             .batch_count = 1,
          };
          vn_renderer_submit(renderer, &dst);
+         vn_instance_roundtrip(dev->instance);
       }
    } else {
       result = vn_call_vkQueueSubmit(dev->instance, submit.queue,
@@ -2888,6 +3026,7 @@ vn_QueueSubmit(VkQueue _queue,
             .batch_count = 1,
          };
          vn_renderer_submit(renderer, &dst);
+         vn_instance_roundtrip(dev->instance);
       }
    }
 
@@ -2935,7 +3074,7 @@ vn_QueueBindSparse(VkQueue _queue,
          vn_async_vkQueueBindSparse(dev->instance, submit.queue, 1,
                                     &submit.bind_sparse_batches[i],
                                     VK_NULL_HANDLE);
-         vn_instance_flush_cs(dev->instance);
+         vn_instance_ring_wait(dev->instance);
 
          const struct vn_renderer_submit dst = {
             .batches =
@@ -2949,6 +3088,7 @@ vn_QueueBindSparse(VkQueue _queue,
             .batch_count = 1,
          };
          vn_renderer_submit(renderer, &dst);
+         vn_instance_roundtrip(dev->instance);
 
          sync_base += submit.temp.batch_sync_counts[i];
       }
@@ -2974,6 +3114,7 @@ vn_QueueBindSparse(VkQueue _queue,
             .batch_count = 1,
          };
          vn_renderer_submit(renderer, &dst);
+         vn_instance_roundtrip(dev->instance);
       }
    } else {
       result = vn_call_vkQueueBindSparse(
@@ -2998,6 +3139,7 @@ vn_QueueBindSparse(VkQueue _queue,
             .batch_count = 1,
          };
          vn_renderer_submit(renderer, &dst);
+         vn_instance_roundtrip(dev->instance);
       }
    }
 
@@ -3013,9 +3155,8 @@ vn_QueueWaitIdle(VkQueue _queue)
    struct vn_device *dev = queue->device;
    struct vn_renderer *renderer = dev->instance->renderer;
 
-   vn_instance_flush_cs(dev->instance);
+   vn_instance_ring_wait(dev->instance);
 
-   /* TODO merge with vn_instance_flush_cs above */
    const uint64_t val = ++queue->idle_sync_value;
    const struct vn_renderer_submit submit = {
       .batches =
@@ -3423,13 +3564,10 @@ vn_SignalSemaphore(VkDevice device, const VkSemaphoreSignalInfo *pSignalInfo)
    struct vn_sync_payload *payload = sem->payload;
 
    /* TODO if the semaphore is shared-by-ref, this needs to be synchronous */
-   if (false) {
+   if (false)
       vn_call_vkSignalSemaphore(dev->instance, device, pSignalInfo);
-   } else {
+   else
       vn_async_vkSignalSemaphore(dev->instance, device, pSignalInfo);
-      /* wake up any waiter */
-      vn_instance_flush_cs(dev->instance);
-   }
 
    assert(payload->type == VN_SYNC_TYPE_SYNC);
    vn_renderer_sync_write(payload->sync, pSignalInfo->value);
@@ -3528,6 +3666,7 @@ vn_AllocateMemory(VkDevice device,
          vk_free(alloc, mem);
          return vn_error(dev->instance, result);
       }
+      vn_instance_roundtrip(dev->instance);
    }
 
    *pMemory = mem_handle;
@@ -5814,7 +5953,7 @@ vn_AllocateCommandBuffers(VkDevice device,
       list_addtail(&cmd->head, &pool->command_buffers);
 
       cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
-      vn_cs_encoder_init_growable(&cmd->cs, 16 * 1024);
+      vn_cs_encoder_init_indirect(&cmd->cs, dev->instance, 16 * 1024);
 
       VkCommandBuffer cmd_handle = vn_command_buffer_to_handle(cmd);
       pCommandBuffers[i] = cmd_handle;
@@ -5915,18 +6054,15 @@ vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
       return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
-   struct vn_instance_submission submit;
+   vn_instance_wait_roundtrip(instance, cmd->cs.current_buffer_roundtrip);
+   mtx_lock(&instance->ring.mutex);
    VkResult result =
-      vn_instance_submission_prepare(&submit, &cmd->cs, NULL, 0, NULL);
+      vn_instance_ring_submit_locked(instance, &cmd->cs, NULL, NULL);
+   mtx_unlock(&instance->ring.mutex);
    if (result != VK_SUCCESS) {
       cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
       return vn_error(instance, result);
    }
-
-   vn_instance_flush_cs(instance);
-   vn_renderer_submit(instance->renderer, &submit.submit);
-
-   vn_instance_submission_cleanup(&submit, &cmd->cs);
 
    vn_cs_encoder_reset(&cmd->cs);
 

@@ -11683,4 +11683,187 @@ static inline void vn_decode_vkExecuteCommandStreamsMESA_reply(struct vn_cs_deco
     /* skip flags */
 }
 
+static inline size_t vn_sizeof_vkCreateRingMESA(uint64_t ring, const VkRingCreateInfoMESA* pCreateInfo)
+{
+    const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateRingMESA_EXT;
+    const VkFlags cmd_flags = 0;
+    size_t cmd_size = vn_sizeof_VkCommandTypeEXT(&cmd_type) + vn_sizeof_VkFlags(&cmd_flags);
+
+    cmd_size += vn_sizeof_uint64_t(&ring);
+    cmd_size += vn_sizeof_simple_pointer(pCreateInfo);
+    if (pCreateInfo)
+        cmd_size += vn_sizeof_VkRingCreateInfoMESA(pCreateInfo);
+
+    return cmd_size;
+}
+
+static inline void vn_encode_vkCreateRingMESA(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, uint64_t ring, const VkRingCreateInfoMESA* pCreateInfo)
+{
+    const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateRingMESA_EXT;
+
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
+
+    vn_encode_uint64_t(enc, &ring);
+    if (vn_encode_simple_pointer(enc, pCreateInfo))
+        vn_encode_VkRingCreateInfoMESA(enc, pCreateInfo);
+}
+
+static inline size_t vn_sizeof_vkCreateRingMESA_reply(uint64_t ring, const VkRingCreateInfoMESA* pCreateInfo)
+{
+    const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkCreateRingMESA_EXT;
+    size_t cmd_size = vn_sizeof_VkCommandTypeEXT(&cmd_type);
+
+    /* skip ring */
+    /* skip pCreateInfo */
+
+    return cmd_size;
+}
+
+static inline void vn_decode_vkCreateRingMESA_reply(struct vn_cs_decoder *dec, uint64_t ring, const VkRingCreateInfoMESA* pCreateInfo)
+{
+    VkCommandTypeEXT command_type;
+    vn_decode_VkCommandTypeEXT(dec, &command_type);
+    assert(command_type == VK_COMMAND_TYPE_vkCreateRingMESA_EXT);
+
+    /* skip ring */
+    /* skip pCreateInfo */
+}
+
+static inline size_t vn_sizeof_vkDestroyRingMESA(uint64_t ring)
+{
+    const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyRingMESA_EXT;
+    const VkFlags cmd_flags = 0;
+    size_t cmd_size = vn_sizeof_VkCommandTypeEXT(&cmd_type) + vn_sizeof_VkFlags(&cmd_flags);
+
+    cmd_size += vn_sizeof_uint64_t(&ring);
+
+    return cmd_size;
+}
+
+static inline void vn_encode_vkDestroyRingMESA(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, uint64_t ring)
+{
+    const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyRingMESA_EXT;
+
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
+
+    vn_encode_uint64_t(enc, &ring);
+}
+
+static inline size_t vn_sizeof_vkDestroyRingMESA_reply(uint64_t ring)
+{
+    const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkDestroyRingMESA_EXT;
+    size_t cmd_size = vn_sizeof_VkCommandTypeEXT(&cmd_type);
+
+    /* skip ring */
+
+    return cmd_size;
+}
+
+static inline void vn_decode_vkDestroyRingMESA_reply(struct vn_cs_decoder *dec, uint64_t ring)
+{
+    VkCommandTypeEXT command_type;
+    vn_decode_VkCommandTypeEXT(dec, &command_type);
+    assert(command_type == VK_COMMAND_TYPE_vkDestroyRingMESA_EXT);
+
+    /* skip ring */
+}
+
+static inline size_t vn_sizeof_vkNotifyRingMESA(uint64_t ring, uint32_t seqno, VkRingNotifyFlagsMESA flags)
+{
+    const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkNotifyRingMESA_EXT;
+    const VkFlags cmd_flags = 0;
+    size_t cmd_size = vn_sizeof_VkCommandTypeEXT(&cmd_type) + vn_sizeof_VkFlags(&cmd_flags);
+
+    cmd_size += vn_sizeof_uint64_t(&ring);
+    cmd_size += vn_sizeof_uint32_t(&seqno);
+    cmd_size += vn_sizeof_VkFlags(&flags);
+
+    return cmd_size;
+}
+
+static inline void vn_encode_vkNotifyRingMESA(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, uint64_t ring, uint32_t seqno, VkRingNotifyFlagsMESA flags)
+{
+    const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkNotifyRingMESA_EXT;
+
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
+
+    vn_encode_uint64_t(enc, &ring);
+    vn_encode_uint32_t(enc, &seqno);
+    vn_encode_VkFlags(enc, &flags);
+}
+
+static inline size_t vn_sizeof_vkNotifyRingMESA_reply(uint64_t ring, uint32_t seqno, VkRingNotifyFlagsMESA flags)
+{
+    const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkNotifyRingMESA_EXT;
+    size_t cmd_size = vn_sizeof_VkCommandTypeEXT(&cmd_type);
+
+    /* skip ring */
+    /* skip seqno */
+    /* skip flags */
+
+    return cmd_size;
+}
+
+static inline void vn_decode_vkNotifyRingMESA_reply(struct vn_cs_decoder *dec, uint64_t ring, uint32_t seqno, VkRingNotifyFlagsMESA flags)
+{
+    VkCommandTypeEXT command_type;
+    vn_decode_VkCommandTypeEXT(dec, &command_type);
+    assert(command_type == VK_COMMAND_TYPE_vkNotifyRingMESA_EXT);
+
+    /* skip ring */
+    /* skip seqno */
+    /* skip flags */
+}
+
+static inline size_t vn_sizeof_vkWriteRingExtraMESA(uint64_t ring, size_t offset, uint32_t value)
+{
+    const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkWriteRingExtraMESA_EXT;
+    const VkFlags cmd_flags = 0;
+    size_t cmd_size = vn_sizeof_VkCommandTypeEXT(&cmd_type) + vn_sizeof_VkFlags(&cmd_flags);
+
+    cmd_size += vn_sizeof_uint64_t(&ring);
+    cmd_size += vn_sizeof_size_t(&offset);
+    cmd_size += vn_sizeof_uint32_t(&value);
+
+    return cmd_size;
+}
+
+static inline void vn_encode_vkWriteRingExtraMESA(struct vn_cs_encoder *enc, VkCommandFlagsEXT cmd_flags, uint64_t ring, size_t offset, uint32_t value)
+{
+    const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkWriteRingExtraMESA_EXT;
+
+    vn_encode_VkCommandTypeEXT(enc, &cmd_type);
+    vn_encode_VkFlags(enc, &cmd_flags);
+
+    vn_encode_uint64_t(enc, &ring);
+    vn_encode_size_t(enc, &offset);
+    vn_encode_uint32_t(enc, &value);
+}
+
+static inline size_t vn_sizeof_vkWriteRingExtraMESA_reply(uint64_t ring, size_t offset, uint32_t value)
+{
+    const VkCommandTypeEXT cmd_type = VK_COMMAND_TYPE_vkWriteRingExtraMESA_EXT;
+    size_t cmd_size = vn_sizeof_VkCommandTypeEXT(&cmd_type);
+
+    /* skip ring */
+    /* skip offset */
+    /* skip value */
+
+    return cmd_size;
+}
+
+static inline void vn_decode_vkWriteRingExtraMESA_reply(struct vn_cs_decoder *dec, uint64_t ring, size_t offset, uint32_t value)
+{
+    VkCommandTypeEXT command_type;
+    vn_decode_VkCommandTypeEXT(dec, &command_type);
+    assert(command_type == VK_COMMAND_TYPE_vkWriteRingExtraMESA_EXT);
+
+    /* skip ring */
+    /* skip offset */
+    /* skip value */
+}
+
 #endif /* VN_PROTOCOL_DRIVER_COMMANDS_H */
