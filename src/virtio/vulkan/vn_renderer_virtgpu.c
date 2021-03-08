@@ -916,6 +916,21 @@ virtgpu_bo_export_dmabuf(struct vn_renderer_bo *_bo)
              : -1;
 }
 
+static uint32_t
+virtgpu_bo_blob_flags(VkMemoryPropertyFlags flags,
+                      VkExternalMemoryHandleTypeFlags external_handles)
+{
+   uint32_t blob_flags = 0;
+   if (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+      blob_flags |= VIRTGPU_BLOB_FLAG_USE_MAPPABLE;
+   if (external_handles)
+      blob_flags |= VIRTGPU_BLOB_FLAG_USE_SHAREABLE;
+   if (external_handles & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+      blob_flags |= VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE;
+
+   return blob_flags;
+}
+
 static VkResult
 virtgpu_bo_init_gpu(struct vn_renderer_bo *_bo,
                     VkDeviceSize size,
@@ -926,13 +941,7 @@ virtgpu_bo_init_gpu(struct vn_renderer_bo *_bo,
    struct virtgpu_bo *bo = (struct virtgpu_bo *)_bo;
    struct virtgpu *gpu = bo->gpu;
 
-   if (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
-      bo->blob_flags |= VIRTGPU_BLOB_FLAG_USE_MAPPABLE;
-   if (external_handles)
-      bo->blob_flags |= VIRTGPU_BLOB_FLAG_USE_SHAREABLE;
-   if (external_handles & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
-      bo->blob_flags |= VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE;
-
+   bo->blob_flags = virtgpu_bo_blob_flags(flags, external_handles);
    bo->size = size;
 
    /* TODO work around KVM_SET_USER_MEMORY_REGION slot limit */

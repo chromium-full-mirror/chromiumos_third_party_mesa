@@ -723,6 +723,21 @@ vtest_bo_export_dmabuf(struct vn_renderer_bo *_bo)
    return shareable ? os_dupfd_cloexec(bo->res_fd) : -1;
 }
 
+static uint32_t
+vtest_bo_blob_flags(VkMemoryPropertyFlags flags,
+                    VkExternalMemoryHandleTypeFlags external_handles)
+{
+   uint32_t blob_flags = 0;
+   if (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+      blob_flags |= VCMD_BLOB_FLAG_MAPPABLE;
+   if (external_handles)
+      blob_flags |= VCMD_BLOB_FLAG_SHAREABLE;
+   if (external_handles & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+      blob_flags |= VCMD_BLOB_FLAG_CROSS_DEVICE;
+
+   return blob_flags;
+}
+
 static VkResult
 vtest_bo_init_gpu(struct vn_renderer_bo *_bo,
                   VkDeviceSize size,
@@ -733,13 +748,7 @@ vtest_bo_init_gpu(struct vn_renderer_bo *_bo,
    struct vtest_bo *bo = (struct vtest_bo *)_bo;
    struct vtest *vtest = bo->vtest;
 
-   if (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
-      bo->blob_flags |= VCMD_BLOB_FLAG_MAPPABLE;
-   if (external_handles)
-      bo->blob_flags |= VCMD_BLOB_FLAG_SHAREABLE;
-   if (external_handles & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
-      bo->blob_flags |= VCMD_BLOB_FLAG_CROSS_DEVICE;
-
+   bo->blob_flags = vtest_bo_blob_flags(flags, external_handles);
    bo->size = size;
 
    mtx_lock(&vtest->sock_mutex);
