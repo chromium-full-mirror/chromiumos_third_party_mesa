@@ -812,6 +812,7 @@ vtest_bo_create(struct vn_renderer *renderer)
    bo->base.destroy = vtest_bo_destroy;
    bo->base.init_cpu = vtest_bo_init_cpu;
    bo->base.init_gpu = vtest_bo_init_gpu;
+   bo->base.init_dmabuf = NULL;
    bo->base.export_dmabuf = vtest_bo_export_dmabuf;
    bo->base.map = vtest_bo_map;
    bo->base.flush = vtest_bo_flush;
@@ -904,6 +905,7 @@ vtest_get_info(struct vn_renderer *renderer, struct vn_renderer_info *info)
    info->pci.vendor_id = VTEST_PCI_VENDOR_ID;
    info->pci.device_id = VTEST_PCI_DEVICE_ID;
 
+   info->has_dmabuf_import = false;
    info->has_cache_management = false;
    info->has_timeline_sync = true;
 

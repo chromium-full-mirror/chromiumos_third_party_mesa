@@ -578,6 +578,18 @@ virtgpu_ioctl_resource_create_blob(struct virtgpu *gpu,
    return args.bo_handle;
 }
 
+static int
+virtgpu_ioctl_resource_info(struct virtgpu *gpu,
+                            uint32_t gem_handle,
+                            struct drm_virtgpu_resource_info *info)
+{
+   *info = (struct drm_virtgpu_resource_info){
+      .bo_handle = gem_handle,
+   };
+
+   return virtgpu_ioctl(gpu, DRM_IOCTL_VIRTGPU_RESOURCE_INFO, info);
+}
+
 static void
 virtgpu_ioctl_gem_close(struct virtgpu *gpu, uint32_t gem_handle)
 {
@@ -601,6 +613,17 @@ virtgpu_ioctl_prime_handle_to_fd(struct virtgpu *gpu,
 
    const int ret = virtgpu_ioctl(gpu, DRM_IOCTL_PRIME_HANDLE_TO_FD, &args);
    return ret ? -1 : args.fd;
+}
+
+static uint32_t
+virtgpu_ioctl_prime_fd_to_handle(struct virtgpu *gpu, int fd)
+{
+   struct drm_prime_handle args = {
+      .fd = fd,
+   };
+
+   const int ret = virtgpu_ioctl(gpu, DRM_IOCTL_PRIME_FD_TO_HANDLE, &args);
+   return ret ? 0 : args.handle;
 }
 
 static void *
@@ -932,6 +955,35 @@ virtgpu_bo_blob_flags(VkMemoryPropertyFlags flags,
 }
 
 static VkResult
+virtgpu_bo_init_dmabuf(struct vn_renderer_bo *_bo,
+                       VkDeviceSize size,
+                       int fd,
+                       VkMemoryPropertyFlags flags,
+                       VkExternalMemoryHandleTypeFlags external_handles)
+{
+   struct virtgpu_bo *bo = (struct virtgpu_bo *)_bo;
+   struct virtgpu *gpu = bo->gpu;
+
+   const uint32_t gem_handle = virtgpu_ioctl_prime_fd_to_handle(gpu, fd);
+   if (!gem_handle)
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+
+   struct drm_virtgpu_resource_info info;
+   if (virtgpu_ioctl_resource_info(gpu, gem_handle, &info) ||
+       info.blob_mem != VIRTGPU_BLOB_MEM_HOST3D || info.size < size) {
+      virtgpu_ioctl_gem_close(gpu, gem_handle);
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+   }
+
+   bo->blob_flags = virtgpu_bo_blob_flags(flags, external_handles);
+   bo->size = size ? size : info.size;
+   bo->gem_handle = gem_handle;
+   bo->base.res_id = info.res_handle;
+
+   return VK_SUCCESS;
+}
+
+static VkResult
 virtgpu_bo_init_gpu(struct vn_renderer_bo *_bo,
                     VkDeviceSize size,
                     vn_object_id mem_id,
@@ -997,6 +1049,7 @@ virtgpu_bo_create(struct vn_renderer *renderer)
    bo->base.destroy = virtgpu_bo_destroy;
    bo->base.init_cpu = virtgpu_bo_init_cpu;
    bo->base.init_gpu = virtgpu_bo_init_gpu;
+   bo->base.init_dmabuf = virtgpu_bo_init_dmabuf;
    bo->base.export_dmabuf = virtgpu_bo_export_dmabuf;
    bo->base.map = virtgpu_bo_map;
    bo->base.flush = virtgpu_bo_flush;
@@ -1044,6 +1097,7 @@ virtgpu_get_info(struct vn_renderer *renderer, struct vn_renderer_info *info)
    info->pci.device = gpu->bus_info.dev;
    info->pci.function = gpu->bus_info.func;
 
+   info->has_dmabuf_import = true;
    /* Kernel makes every mapping coherent.  We are better off filtering
     * incoherent memory types out than silently making them coherent.
     */

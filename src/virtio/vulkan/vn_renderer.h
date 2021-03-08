@@ -20,6 +20,7 @@ struct vn_renderer_info {
       uint8_t function;
    } pci;
 
+   bool has_dmabuf_import;
    bool has_cache_management;
    bool has_timeline_sync;
 
@@ -49,7 +50,13 @@ struct vn_renderer_bo {
                         VkMemoryPropertyFlags flags,
                         VkExternalMemoryHandleTypeFlags external_handles);
 
-   /* TODO import */
+   /* import a dmabuf as the storage */
+   VkResult (*init_dmabuf)(struct vn_renderer_bo *bo,
+                           VkDeviceSize size,
+                           int fd,
+                           VkMemoryPropertyFlags flags,
+                           VkExternalMemoryHandleTypeFlags external_handles);
+
    int (*export_dmabuf)(struct vn_renderer_bo *bo);
 
    /* map is not thread-safe */
@@ -271,6 +278,30 @@ vn_renderer_bo_create_gpu(struct vn_renderer *renderer,
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    VkResult result = bo->init_gpu(bo, size, mem_id, flags, external_handles);
+   if (result != VK_SUCCESS) {
+      bo->destroy(bo);
+      return result;
+   }
+
+   atomic_init(&bo->refcount, 1);
+
+   *_bo = bo;
+   return VK_SUCCESS;
+}
+
+static inline VkResult
+vn_renderer_bo_create_dmabuf(struct vn_renderer *renderer,
+                             VkDeviceSize size,
+                             int fd,
+                             VkMemoryPropertyFlags flags,
+                             VkExternalMemoryHandleTypeFlags external_handles,
+                             struct vn_renderer_bo **_bo)
+{
+   struct vn_renderer_bo *bo = renderer->bo_create(renderer);
+   if (!bo)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   VkResult result = bo->init_dmabuf(bo, size, fd, flags, external_handles);
    if (result != VK_SUCCESS) {
       bo->destroy(bo);
       return result;
