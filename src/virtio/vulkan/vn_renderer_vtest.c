@@ -15,6 +15,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "util/os_file.h"
 #include "util/u_process.h"
 #define VIRGL_RENDERER_UNSTABLE_APIS
 #include "virtio-gpu/virglrenderer_hw.h"
@@ -719,7 +720,7 @@ vtest_bo_export_dmabuf(struct vn_renderer_bo *_bo)
    const struct vtest_bo *bo = (struct vtest_bo *)_bo;
    /* this suffices because vtest_bo_init_cpu does not set the bit */
    const bool shareable = bo->blob_flags & VCMD_BLOB_FLAG_SHAREABLE;
-   return shareable ? dup(bo->res_fd) : -1;
+   return shareable ? os_dupfd_cloexec(bo->res_fd) : -1;
 }
 
 static VkResult
