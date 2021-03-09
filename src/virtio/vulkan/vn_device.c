@@ -2191,6 +2191,65 @@ vn_queue_init(struct vn_device *dev,
    return VK_SUCCESS;
 }
 
+static const char **
+merge_extension_names(const char *const *exts,
+                      uint32_t ext_count,
+                      const char *const *extra_exts,
+                      uint32_t extra_count,
+                      const VkAllocationCallbacks *alloc,
+                      uint32_t *merged_count)
+{
+   const char **merged =
+      vk_alloc(alloc, sizeof(*merged) * (ext_count + extra_count),
+               VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   if (!merged)
+      return NULL;
+
+   memcpy(merged, exts, sizeof(*exts) * ext_count);
+
+   uint32_t count = ext_count;
+   for (uint32_t i = 0; i < extra_count; i++) {
+      bool found = false;
+      for (uint32_t j = 0; j < ext_count; j++) {
+         if (!strcmp(exts[j], extra_exts[i])) {
+            found = true;
+            break;
+         }
+      }
+
+      if (!found)
+         merged[count++] = extra_exts[i];
+   }
+
+   *merged_count = count;
+   return merged;
+}
+
+static const VkDeviceCreateInfo *
+vn_device_fix_create_info(const struct vn_physical_device *physical_dev,
+                          const VkDeviceCreateInfo *dev_info,
+                          const VkAllocationCallbacks *alloc,
+                          VkDeviceCreateInfo *local_info)
+{
+   const char *extra_exts[8];
+   uint32_t extra_count = 0;
+
+   if (physical_dev->wsi_device.supports_modifiers)
+      extra_exts[extra_count++] = "VK_EXT_image_drm_format_modifier";
+
+   if (!extra_count)
+      return dev_info;
+
+   *local_info = *dev_info;
+   local_info->ppEnabledExtensionNames = merge_extension_names(
+      dev_info->ppEnabledExtensionNames, dev_info->enabledExtensionCount,
+      extra_exts, extra_count, alloc, &local_info->enabledExtensionCount);
+   if (!local_info->ppEnabledExtensionNames)
+      return NULL;
+
+   return local_info;
+}
+
 VkResult
 vn_CreateDevice(VkPhysicalDevice physicalDevice,
                 const VkDeviceCreateInfo *pCreateInfo,
@@ -2224,34 +2283,11 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
    dev->physical_device = physical_dev;
 
    VkDeviceCreateInfo local_create_info;
-   if (physical_dev->wsi_device.supports_modifiers) {
-      bool found = false;
-      for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
-         const char *name = pCreateInfo->ppEnabledExtensionNames[i];
-         if (!strcmp(name, "VK_EXT_image_drm_format_modifier")) {
-            found = true;
-            break;
-         }
-      }
-      if (!found) {
-         const uint32_t name_count = pCreateInfo->enabledExtensionCount + 1;
-         const char **names =
-            vk_alloc(alloc, sizeof(*names) * name_count, VN_DEFAULT_ALIGN,
-                     VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
-         if (!names) {
-            result = VK_ERROR_OUT_OF_HOST_MEMORY;
-            goto fail;
-         }
-
-         memcpy(names, pCreateInfo->ppEnabledExtensionNames,
-                sizeof(*names) * (name_count - 1));
-         names[name_count - 1] = "VK_EXT_image_drm_format_modifier";
-
-         local_create_info = *pCreateInfo;
-         local_create_info.enabledExtensionCount = name_count;
-         local_create_info.ppEnabledExtensionNames = names;
-         pCreateInfo = &local_create_info;
-      }
+   pCreateInfo = vn_device_fix_create_info(physical_dev, pCreateInfo, alloc,
+                                           &local_create_info);
+   if (!pCreateInfo) {
+      result = VK_ERROR_OUT_OF_HOST_MEMORY;
+      goto fail;
    }
 
    for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; i++)
