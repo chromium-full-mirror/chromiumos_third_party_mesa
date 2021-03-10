@@ -304,6 +304,45 @@ sim_syncobj_signal(struct virtgpu *gpu,
 }
 
 static int
+sim_syncobj_submit(struct virtgpu *gpu,
+                   uint32_t syncobj_handle,
+                   int sync_fd,
+                   uint64_t point,
+                   bool cpu)
+{
+   struct sim_syncobj *syncobj = sim_syncobj_lookup(gpu, syncobj_handle);
+   if (!syncobj)
+      return -1;
+
+   int pending_fd = dup(sync_fd);
+   if (pending_fd < 0) {
+      vn_log(gpu->instance, "failed to dup sync fd");
+      return -1;
+   }
+
+   mtx_lock(&syncobj->mutex);
+
+   if (syncobj->pending_fd >= 0) {
+      mtx_unlock(&syncobj->mutex);
+
+      /* TODO */
+      vn_log(gpu->instance, "sorry, no simulated timeline semaphore");
+      close(pending_fd);
+      return -1;
+   }
+   if (syncobj->point >= point)
+      vn_log(gpu->instance, "non-monotonic signaling");
+
+   syncobj->pending_fd = pending_fd;
+   syncobj->pending_point = point;
+   syncobj->pending_cpu = cpu;
+
+   mtx_unlock(&syncobj->mutex);
+
+   return 0;
+}
+
+static int
 timeout_to_poll_timeout(uint64_t timeout)
 {
    const uint64_t ns_per_ms = 1000000;
@@ -376,36 +415,11 @@ sim_submit_signal_syncs(struct virtgpu *gpu,
       struct virtgpu_sync *sync = (struct virtgpu_sync *)syncs[i];
       const uint64_t pending_point = sync_values[i];
 
-#ifdef SIMULATE_SUBMIT
-      struct sim_syncobj *syncobj =
-         sim_syncobj_lookup(gpu, sync->syncobj_handle);
-      if (!syncobj)
-         return -1;
-
-      int pending_fd = dup(sync_fd);
-      if (pending_fd < 0) {
-         vn_log(gpu->instance, "failed to dup sync fd");
-         return -1;
-      }
-
-      mtx_lock(&syncobj->mutex);
-
-      if (syncobj->pending_fd >= 0) {
-         mtx_unlock(&syncobj->mutex);
-
-         /* TODO */
-         vn_log(gpu->instance, "sorry, no simulated timeline semaphore");
-         close(pending_fd);
-         return -1;
-      }
-      if (syncobj->point >= pending_point)
-         vn_log(gpu->instance, "non-monotonic signaling");
-
-      syncobj->pending_fd = pending_fd;
-      syncobj->pending_point = pending_point;
-      syncobj->pending_cpu = cpu;
-
-      mtx_unlock(&syncobj->mutex);
+#ifdef SIMULATE_SYNCOBJ
+      int ret = sim_syncobj_submit(gpu, sync->syncobj_handle, sync_fd,
+                                   pending_point, cpu);
+      if (ret)
+         return ret;
 #else
       /* we can in theory do a DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE followed by a
        * DRM_IOCTL_SYNCOBJ_TRANSFER
