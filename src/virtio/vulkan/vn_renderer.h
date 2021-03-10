@@ -23,6 +23,7 @@ struct vn_renderer_info {
    bool has_dmabuf_import;
    bool has_cache_management;
    bool has_timeline_sync;
+   bool has_external_sync;
 
    uint32_t max_sync_queue_count;
 
@@ -88,9 +89,12 @@ struct vn_renderer_sync {
                     uint64_t initial_val,
                     bool shareable,
                     bool binary);
+   VkResult (*init_syncobj)(struct vn_renderer_sync *sync,
+                            int fd,
+                            bool sync_file);
    void (*release)(struct vn_renderer_sync *sync);
 
-   /* TODO export/import */
+   int (*export_syncobj)(struct vn_renderer_sync *sync, bool sync_file);
 
    /* reset the counter */
    VkResult (*reset)(struct vn_renderer_sync *sync, uint64_t initial_val);
@@ -452,10 +456,33 @@ vn_renderer_sync_destroy(struct vn_renderer_sync *sync)
    sync->destroy(sync);
 }
 
+static inline VkResult
+vn_renderer_sync_init_signaled(struct vn_renderer_sync *sync)
+{
+   const uint64_t initial_val = 1;
+   const bool shareable = false;
+   const bool binary = true;
+   return sync->init(sync, initial_val, shareable, binary);
+}
+
+static inline VkResult
+vn_renderer_sync_init_syncobj(struct vn_renderer_sync *sync,
+                              int fd,
+                              bool sync_file)
+{
+   return sync->init_syncobj(sync, fd, sync_file);
+}
+
 static inline void
 vn_renderer_sync_release(struct vn_renderer_sync *sync)
 {
    sync->release(sync);
+}
+
+static inline int
+vn_renderer_sync_export_syncobj(struct vn_renderer_sync *sync, bool sync_file)
+{
+   return sync->export_syncobj(sync, sync_file);
 }
 
 static inline VkResult

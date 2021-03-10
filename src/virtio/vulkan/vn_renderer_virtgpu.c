@@ -111,6 +111,8 @@ static struct {
    mtx_t mutex;
    struct hash_table *syncobjs;
    struct util_idalloc ida;
+
+   int signaled_fd;
 } sim;
 
 struct sim_syncobj {
@@ -144,6 +146,19 @@ sim_syncobj_create(struct virtgpu *gpu, bool signaled)
 
       util_idalloc_init(&sim.ida);
       util_idalloc_resize(&sim.ida, 32);
+
+      struct drm_virtgpu_execbuffer args = {
+         .flags = VIRTGPU_EXECBUF_FENCE_FD_OUT,
+      };
+      int ret = drmIoctl(gpu->fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &args);
+      if (ret || args.fence_fd < 0) {
+         _mesa_hash_table_destroy(sim.syncobjs, NULL);
+         sim.syncobjs = NULL;
+         mtx_unlock(&sim.mutex);
+         return 0;
+      }
+
+      sim.signaled_fd = args.fence_fd;
    }
 
    const unsigned syncobj_handle = util_idalloc_alloc(&sim.ida) + 1;
@@ -397,6 +412,37 @@ sim_syncobj_wait(struct virtgpu *gpu,
    }
 
    return 0;
+}
+
+static int
+sim_syncobj_export(struct virtgpu *gpu, uint32_t syncobj_handle)
+{
+   struct sim_syncobj *syncobj = sim_syncobj_lookup(gpu, syncobj_handle);
+   if (!syncobj)
+      return -1;
+
+   int fd = -1;
+   mtx_lock(&syncobj->mutex);
+   if (syncobj->pending_fd >= 0)
+      fd = dup(syncobj->pending_fd);
+   else
+      fd = dup(sim.signaled_fd);
+   mtx_unlock(&syncobj->mutex);
+
+   return fd;
+}
+
+static uint32_t
+sim_syncobj_import(struct virtgpu *gpu, uint32_t syncobj_handle, int fd)
+{
+   struct sim_syncobj *syncobj = sim_syncobj_lookup(gpu, syncobj_handle);
+   if (!syncobj)
+      return 0;
+
+   if (sim_syncobj_submit(gpu, syncobj_handle, fd, 1, false))
+      return 0;
+
+   return syncobj_handle;
 }
 
 #endif /* SIMULATE_SYNCOBJ */
@@ -690,6 +736,51 @@ virtgpu_ioctl_syncobj_destroy(struct virtgpu *gpu, uint32_t syncobj_handle)
 }
 
 static int
+virtgpu_ioctl_syncobj_handle_to_fd(struct virtgpu *gpu,
+                                   uint32_t syncobj_handle,
+                                   bool sync_file)
+{
+#ifdef SIMULATE_SYNCOBJ
+   return sync_file ? sim_syncobj_export(gpu, syncobj_handle) : -1;
+#endif
+
+   struct drm_syncobj_handle args = {
+      .handle = syncobj_handle,
+      .flags =
+         sync_file ? DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE : 0,
+   };
+
+   int ret = virtgpu_ioctl(gpu, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &args);
+   if (ret)
+      return -1;
+
+   return args.fd;
+}
+
+static uint32_t
+virtgpu_ioctl_syncobj_fd_to_handle(struct virtgpu *gpu,
+                                   int fd,
+                                   uint32_t syncobj_handle)
+{
+#ifdef SIMULATE_SYNCOBJ
+   return syncobj_handle ? sim_syncobj_import(gpu, syncobj_handle, fd) : 0;
+#endif
+
+   struct drm_syncobj_handle args = {
+      .handle = syncobj_handle,
+      .flags =
+         syncobj_handle ? DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_IMPORT_SYNC_FILE : 0,
+      .fd = fd,
+   };
+
+   int ret = virtgpu_ioctl(gpu, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &args);
+   if (ret)
+      return 0;
+
+   return args.handle;
+}
+
+static int
 virtgpu_ioctl_syncobj_reset(struct virtgpu *gpu, uint32_t syncobj_handle)
 {
 #ifdef SIMULATE_SYNCOBJ
@@ -831,6 +922,16 @@ virtgpu_sync_reset(struct vn_renderer_sync *_sync, uint64_t initial_val)
    return ret ? VK_ERROR_OUT_OF_DEVICE_MEMORY : VK_SUCCESS;
 }
 
+static int
+virtgpu_sync_export_syncobj(struct vn_renderer_sync *_sync, bool sync_file)
+{
+   struct virtgpu_sync *sync = (struct virtgpu_sync *)_sync;
+   struct virtgpu *gpu = (struct virtgpu *)sync->gpu;
+
+   return virtgpu_ioctl_syncobj_handle_to_fd(gpu, sync->syncobj_handle,
+                                             sync_file);
+}
+
 static void
 virtgpu_sync_release(struct vn_renderer_sync *_sync)
 {
@@ -841,6 +942,35 @@ virtgpu_sync_release(struct vn_renderer_sync *_sync)
 
    sync->syncobj_handle = 0;
    sync->base.sync_id = 0;
+}
+
+static VkResult
+virtgpu_sync_init_syncobj(struct vn_renderer_sync *_sync,
+                          int fd,
+                          bool sync_file)
+{
+   struct virtgpu_sync *sync = (struct virtgpu_sync *)_sync;
+   struct virtgpu *gpu = (struct virtgpu *)sync->gpu;
+
+   uint32_t syncobj_handle;
+   if (sync_file) {
+      syncobj_handle = virtgpu_ioctl_syncobj_create(gpu, false);
+      if (!syncobj_handle)
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      if (!virtgpu_ioctl_syncobj_fd_to_handle(gpu, fd, syncobj_handle)) {
+         virtgpu_ioctl_syncobj_destroy(gpu, syncobj_handle);
+         return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+      }
+   } else {
+      syncobj_handle = virtgpu_ioctl_syncobj_fd_to_handle(gpu, fd, 0);
+      if (!syncobj_handle)
+         return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+   }
+
+   sync->syncobj_handle = syncobj_handle;
+   sync->base.sync_id = 0; /* TODO */
+
+   return VK_SUCCESS;
 }
 
 static VkResult
@@ -902,7 +1032,9 @@ virtgpu_sync_create(struct vn_renderer *renderer)
 
    sync->base.destroy = virtgpu_sync_destroy;
    sync->base.init = virtgpu_sync_init;
+   sync->base.init_syncobj = virtgpu_sync_init_syncobj;
    sync->base.release = virtgpu_sync_release;
+   sync->base.export_syncobj = virtgpu_sync_export_syncobj;
    sync->base.reset = virtgpu_sync_reset;
    sync->base.read = virtgpu_sync_read;
    sync->base.write = virtgpu_sync_write;
@@ -1118,6 +1250,7 @@ virtgpu_get_info(struct vn_renderer *renderer, struct vn_renderer_info *info)
    info->has_cache_management = false;
    /* TODO drm_syncobj */
    info->has_timeline_sync = false;
+   info->has_external_sync = false;
 
    info->max_sync_queue_count = gpu->max_sync_queue_count;
 

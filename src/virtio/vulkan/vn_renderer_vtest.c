@@ -656,7 +656,9 @@ vtest_sync_create(struct vn_renderer *renderer)
 
    sync->base.destroy = vtest_sync_destroy;
    sync->base.init = vtest_sync_init;
+   sync->base.init_syncobj = NULL;
    sync->base.release = vtest_sync_release;
+   sync->base.export_syncobj = NULL;
    sync->base.reset = vtest_sync_reset;
    sync->base.read = vtest_sync_read;
    sync->base.write = vtest_sync_write;
@@ -908,6 +910,7 @@ vtest_get_info(struct vn_renderer *renderer, struct vn_renderer_info *info)
    info->has_dmabuf_import = false;
    info->has_cache_management = false;
    info->has_timeline_sync = true;
+   info->has_external_sync = false;
 
    info->max_sync_queue_count = vtest->max_sync_queue_count;
 
