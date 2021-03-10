@@ -88,6 +88,8 @@ struct vn_physical_device {
 
    VkPhysicalDeviceMemoryProperties2 memory_properties;
 
+   VkExternalFenceHandleTypeFlags external_fence_handles;
+
    struct wsi_device wsi_device;
 };
 VK_DEFINE_HANDLE_CASTS(vn_physical_device,

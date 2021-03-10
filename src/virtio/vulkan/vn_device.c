@@ -808,6 +808,30 @@ vn_physical_device_init_memory_properties(
 }
 
 static void
+vn_physical_device_init_external_fence_handles(
+   struct vn_physical_device *physical_dev)
+{
+   if (!physical_dev->instance->renderer_info.has_external_sync)
+      return;
+
+   /* In the current model, a vn_fence can be implemented entirely on top of
+    * vn_renderer_sync.  All operations can go through the renderer sync.
+    *
+    * The current code still creates a host-side VkFence, which can be
+    * eliminated.  The renderer also lacks proper external sync (i.e.,
+    * drm_syncobj) support and we can only support handle types with copy
+    * transference (i.e., sync fds).
+    *
+    * We are considering creating a vn_renderer_sync from a host-side VkFence
+    * instead, similar to how a vn_renderer_bo is created from a host-side
+    * VkDeviceMemory.  That will require tons of works on the host side, but
+    * should allow us to get rid of ring<->renderer syncs in vkQueueSubmit.
+    */
+   physical_dev->external_fence_handles =
+      VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
+}
+
+static void
 vn_physical_device_get_supported_extensions(
    const struct vn_physical_device *device,
    struct vk_device_extension_table *supported,
@@ -1014,6 +1038,8 @@ vn_physical_device_init(struct vn_physical_device *physical_dev)
       goto fail;
 
    vn_physical_device_init_memory_properties(physical_dev);
+
+   vn_physical_device_init_external_fence_handles(physical_dev);
 
    result = vn_wsi_init(physical_dev);
    if (result != VK_SUCCESS)
@@ -2101,10 +2127,24 @@ vn_GetPhysicalDeviceExternalFenceProperties(
    const VkPhysicalDeviceExternalFenceInfo *pExternalFenceInfo,
    VkExternalFenceProperties *pExternalFenceProperties)
 {
-   pExternalFenceProperties->compatibleHandleTypes =
-      pExternalFenceInfo->handleType;
-   pExternalFenceProperties->exportFromImportedHandleTypes = 0;
-   pExternalFenceProperties->externalFenceFeatures = 0;
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   if (pExternalFenceInfo->handleType &
+       physical_dev->external_fence_handles) {
+      pExternalFenceProperties->compatibleHandleTypes =
+         physical_dev->external_fence_handles;
+      pExternalFenceProperties->exportFromImportedHandleTypes =
+         physical_dev->external_fence_handles;
+      pExternalFenceProperties->externalFenceFeatures =
+         VK_EXTERNAL_FENCE_FEATURE_EXPORTABLE_BIT |
+         VK_EXTERNAL_FENCE_FEATURE_IMPORTABLE_BIT;
+   } else {
+      pExternalFenceProperties->compatibleHandleTypes =
+         pExternalFenceInfo->handleType;
+      pExternalFenceProperties->exportFromImportedHandleTypes = 0;
+      pExternalFenceProperties->externalFenceFeatures = 0;
+   }
 }
 
 void
@@ -3141,6 +3181,13 @@ vn_CreateFence(VkDevice device,
    const VkAllocationCallbacks *alloc =
       pAllocator ? pAllocator : &dev->base.base.alloc;
 
+   VkFenceCreateInfo local_create_info;
+   if (vk_find_struct_const(pCreateInfo->pNext, EXPORT_FENCE_CREATE_INFO)) {
+      local_create_info = *pCreateInfo;
+      local_create_info.pNext = NULL;
+      pCreateInfo = &local_create_info;
+   }
+
    struct vn_fence *fence = vk_zalloc(alloc, sizeof(*fence), VN_DEFAULT_ALIGN,
                                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!fence)
@@ -3305,6 +3352,64 @@ vn_WaitForFences(VkDevice device,
    }
 
    return vn_result(dev->instance, result);
+}
+
+VkResult
+vn_ImportFenceFdKHR(VkDevice device,
+                    const VkImportFenceFdInfoKHR *pImportFenceFdInfo)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_fence *fence = vn_fence_from_handle(pImportFenceFdInfo->fence);
+   const bool sync_file = pImportFenceFdInfo->handleType ==
+                          VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
+   const int fd = pImportFenceFdInfo->fd;
+   struct vn_sync_payload *payload =
+      pImportFenceFdInfo->flags & VK_FENCE_IMPORT_TEMPORARY_BIT
+         ? &fence->temporary
+         : &fence->permanent;
+
+   if (payload->type == VN_SYNC_TYPE_SYNC)
+      vn_renderer_sync_release(payload->sync);
+
+   VkResult result;
+   if (sync_file && fd < 0)
+      result = vn_renderer_sync_init_signaled(payload->sync);
+   else
+      result = vn_renderer_sync_init_syncobj(payload->sync, fd, sync_file);
+
+   if (result != VK_SUCCESS)
+      return vn_error(dev->instance, result);
+
+   payload->type = VN_SYNC_TYPE_SYNC;
+   fence->payload = payload;
+
+   if (fd >= 0)
+      close(fd);
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_GetFenceFdKHR(VkDevice device,
+                 const VkFenceGetFdInfoKHR *pGetFdInfo,
+                 int *pFd)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_fence *fence = vn_fence_from_handle(pGetFdInfo->fence);
+   const bool sync_file =
+      pGetFdInfo->handleType == VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
+   struct vn_sync_payload *payload = fence->payload;
+
+   assert(payload->type == VN_SYNC_TYPE_SYNC);
+   int fd = vn_renderer_sync_export_syncobj(payload->sync, sync_file);
+   if (fd < 0)
+      return vn_error(dev->instance, VK_ERROR_TOO_MANY_OBJECTS);
+
+   if (sync_file)
+      vn_ResetFences(device, 1, &pGetFdInfo->fence);
+
+   *pFd = fd;
+   return VK_SUCCESS;
 }
 
 /* semaphore commands */
