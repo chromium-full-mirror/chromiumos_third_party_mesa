@@ -808,6 +808,24 @@ vn_physical_device_init_memory_properties(
 }
 
 static void
+vn_physical_device_init_external_memory_handles(
+   struct vn_physical_device *physical_dev)
+{
+   if (!physical_dev->instance->renderer_info.has_dmabuf_import)
+      return;
+
+   /* We have export support but we don't advertise it.  It is for WSI only at
+    * the moment.  For import support, we need to be able to serialize
+    * vkGetMemoryFdPropertiesKHR and VkImportMemoryFdInfoKHR.  We can
+    * serialize fd to bo->res_id, but we probably want to add new
+    * commands/structs first (using VK_MESA_venus_protocol).
+    *
+    * We also create a BO when a vn_device_memory is mappable.  We don't know
+    * which handle type the renderer uses.  That seems fine though.
+    */
+}
+
+static void
 vn_physical_device_init_external_fence_handles(
    struct vn_physical_device *physical_dev)
 {
@@ -1068,6 +1086,7 @@ vn_physical_device_init(struct vn_physical_device *physical_dev)
 
    vn_physical_device_init_memory_properties(physical_dev);
 
+   vn_physical_device_init_external_memory_handles(physical_dev);
    vn_physical_device_init_external_fence_handles(physical_dev);
    vn_physical_device_init_external_semaphore_handles(physical_dev);
 
@@ -2105,17 +2124,32 @@ vn_GetPhysicalDeviceImageFormatProperties2(
    struct vn_physical_device *physical_dev =
       vn_physical_device_from_handle(physicalDevice);
 
+   const VkPhysicalDeviceExternalImageFormatInfo *external_info =
+      vk_find_struct_const(pImageFormatInfo->pNext,
+                           PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
+   if (external_info && !external_info->handleType)
+      external_info = NULL;
+
+   if (external_info &&
+       !(external_info->handleType & physical_dev->external_memory_handles))
+      return vn_error(physical_dev->instance, VK_ERROR_FORMAT_NOT_SUPPORTED);
+
    VkResult result;
    /* TODO per-device cache */
    result = vn_call_vkGetPhysicalDeviceImageFormatProperties2(
       physical_dev->instance, physicalDevice, pImageFormatInfo,
       pImageFormatProperties);
 
-   VkExternalImageFormatProperties *props = vk_find_struct(
-      pImageFormatProperties->pNext, EXTERNAL_IMAGE_FORMAT_PROPERTIES);
-   if (props) {
-      memset(&props->externalMemoryProperties, 0,
-             sizeof(props->externalMemoryProperties));
+   if (result == VK_SUCCESS && external_info) {
+      VkExternalImageFormatProperties *img_props = vk_find_struct(
+         pImageFormatProperties->pNext, EXTERNAL_IMAGE_FORMAT_PROPERTIES);
+      VkExternalMemoryProperties *mem_props =
+         &img_props->externalMemoryProperties;
+
+      mem_props->compatibleHandleTypes &=
+         physical_dev->external_memory_handles;
+      mem_props->exportFromImportedHandleTypes &=
+         physical_dev->external_memory_handles;
    }
 
    return vn_result(physical_dev->instance, result);
@@ -2143,12 +2177,27 @@ vn_GetPhysicalDeviceExternalBufferProperties(
    const VkPhysicalDeviceExternalBufferInfo *pExternalBufferInfo,
    VkExternalBufferProperties *pExternalBufferProperties)
 {
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
    VkExternalMemoryProperties *props =
       &pExternalBufferProperties->externalMemoryProperties;
 
-   props->compatibleHandleTypes = pExternalBufferInfo->handleType;
-   props->exportFromImportedHandleTypes = 0;
-   props->externalMemoryFeatures = 0;
+   if (!(pExternalBufferInfo->handleType &
+         physical_dev->external_memory_handles)) {
+      props->compatibleHandleTypes = pExternalBufferInfo->handleType;
+      props->exportFromImportedHandleTypes = 0;
+      props->externalMemoryFeatures = 0;
+      return;
+   }
+
+   /* TODO per-device cache */
+   vn_call_vkGetPhysicalDeviceExternalBufferProperties(
+      physical_dev->instance, physicalDevice, pExternalBufferInfo,
+      pExternalBufferProperties);
+
+   props->compatibleHandleTypes &= physical_dev->external_memory_handles;
+   props->exportFromImportedHandleTypes &=
+      physical_dev->external_memory_handles;
 }
 
 void
@@ -3750,13 +3799,15 @@ vn_AllocateMemory(VkDevice device,
       &dev->physical_device->memory_properties.memoryProperties;
    const VkMemoryType *mem_type =
       &mem_props->memoryTypes[pAllocateInfo->memoryTypeIndex];
+   const VkImportMemoryFdInfoKHR *import_info =
+      vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
    const VkExportMemoryAllocateInfo *export_info =
       vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
    if (export_info && !export_info->handleTypes)
       export_info = NULL;
    const bool need_bo =
       (mem_type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
-      export_info;
+      import_info || export_info;
 
    struct vn_device_memory *mem =
       vk_zalloc(alloc, sizeof(*mem), VN_DEFAULT_ALIGN,
@@ -3767,16 +3818,39 @@ vn_AllocateMemory(VkDevice device,
    vn_object_base_init(&mem->base, VK_OBJECT_TYPE_DEVICE_MEMORY, &dev->base);
 
    VkDeviceMemory mem_handle = vn_device_memory_to_handle(mem);
-   VkResult result = vn_call_vkAllocateMemory(
-      dev->instance, device, pAllocateInfo, NULL, &mem_handle);
-   if (result != VK_SUCCESS) {
-      vk_free(alloc, mem);
-      return vn_error(dev->instance, result);
+   VkResult result;
+   if (import_info) {
+      struct vn_renderer_bo *bo;
+      result = vn_renderer_bo_create_dmabuf(
+         dev->instance->renderer, pAllocateInfo->allocationSize,
+         import_info->fd, mem_type->propertyFlags,
+         export_info ? export_info->handleTypes : 0, &bo);
+      if (result != VK_SUCCESS) {
+         vk_free(alloc, mem);
+         return vn_error(dev->instance, result);
+      }
+
+      /* TODO create host-side memory from bo->res_id */
+      result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+      if (result != VK_SUCCESS) {
+         vn_renderer_bo_unref(bo);
+         vk_free(alloc, mem);
+         return vn_error(dev->instance, result);
+      }
+
+      mem->bo = bo;
+   } else {
+      result = vn_call_vkAllocateMemory(dev->instance, device, pAllocateInfo,
+                                        NULL, &mem_handle);
+      if (result != VK_SUCCESS) {
+         vk_free(alloc, mem);
+         return vn_error(dev->instance, result);
+      }
    }
 
    mem->size = pAllocateInfo->allocationSize;
 
-   if (need_bo) {
+   if (need_bo && !mem->bo) {
       result = vn_renderer_bo_create_gpu(
          dev->instance->renderer, mem->size, mem->base.id,
          mem_type->propertyFlags, export_info ? export_info->handleTypes : 0,
@@ -3910,14 +3984,34 @@ vn_GetMemoryFdKHR(VkDevice device,
    struct vn_device_memory *mem =
       vn_device_memory_from_handle(pGetFdInfo->memory);
 
-   /* XXX this is only for WSI */
-   assert(pGetFdInfo->handleType ==
-          VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+   assert(mem->bo);
    *pFd = vn_renderer_bo_export_dmabuf(mem->bo);
    if (*pFd < 0)
       return vn_error(dev->instance, VK_ERROR_TOO_MANY_OBJECTS);
 
    return VK_SUCCESS;
+}
+
+VkResult
+vn_GetMemoryFdPropertiesKHR(VkDevice device,
+                            VkExternalMemoryHandleTypeFlagBits handleType,
+                            int fd,
+                            VkMemoryFdPropertiesKHR *pMemoryFdProperties)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   struct vn_renderer_bo *bo;
+   VkResult result = vn_renderer_bo_create_dmabuf(dev->instance->renderer, 0,
+                                                  fd, 0, handleType, &bo);
+   if (result != VK_SUCCESS)
+      return vn_error(dev->instance, result);
+
+   /* TODO call into the host with bo->res_id */
+   result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+
+   vn_renderer_bo_unref(bo);
+
+   return result;
 }
 
 /* buffer commands */

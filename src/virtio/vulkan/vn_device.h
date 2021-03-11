@@ -88,6 +88,7 @@ struct vn_physical_device {
 
    VkPhysicalDeviceMemoryProperties2 memory_properties;
 
+   VkExternalMemoryHandleTypeFlags external_memory_handles;
    VkExternalFenceHandleTypeFlags external_fence_handles;
    VkExternalSemaphoreHandleTypeFlags external_binary_semaphore_handles;
    VkExternalSemaphoreHandleTypeFlags external_timeline_semaphore_handles;
