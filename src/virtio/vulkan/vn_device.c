@@ -832,6 +832,35 @@ vn_physical_device_init_external_fence_handles(
 }
 
 static void
+vn_physical_device_init_external_semaphore_handles(
+   struct vn_physical_device *physical_dev)
+{
+   /* In the current model, it is not possible to support external semaphores.
+    * At least an external semaphore cannot be waited on GPU in the host but
+    * can only be waited on CPU in the guest.
+    *
+    * A binary vn_semaphore is implemented solely on top of a host-side binary
+    * VkSemaphore.  There is no CPU operation against binary semaphroes and
+    * there is no need for vn_renderer_sync.
+    *
+    * A timeline vn_semaphore is implemented on top of both a host-side
+    * timeline VkSemaphore and a vn_renderer_sync.  Whenever a timeline
+    * vn_semaphore is updated, we make sure both the host-side timeline
+    * VkSemaphore and the vn_renderer_sync are updated.  This allows us to use
+    * whichever is more convenient depending on the operations: the host-side
+    * timeline VkSemaphore for GPU waits and the vn_renderer_sync for CPU
+    * waits/gets.
+    *
+    * To support external semaphores, we should create a vn_renderer_sync from
+    * a host-side VkSemaphore instead, similar to how a vn_renderer_bo is
+    * created from a host-side VkDeviceMemory.  The reasons to make a similar
+    * move for fences apply to timeline semaphores as well.  Besides, the
+    * external handle (drm_syncobj or sync file) needs to carry the necessary
+    * information to identify the host-side semaphore.
+    */
+}
+
+static void
 vn_physical_device_get_supported_extensions(
    const struct vn_physical_device *device,
    struct vk_device_extension_table *supported,
@@ -1040,6 +1069,7 @@ vn_physical_device_init(struct vn_physical_device *physical_dev)
    vn_physical_device_init_memory_properties(physical_dev);
 
    vn_physical_device_init_external_fence_handles(physical_dev);
+   vn_physical_device_init_external_semaphore_handles(physical_dev);
 
    result = vn_wsi_init(physical_dev);
    if (result != VK_SUCCESS)
@@ -2153,10 +2183,30 @@ vn_GetPhysicalDeviceExternalSemaphoreProperties(
    const VkPhysicalDeviceExternalSemaphoreInfo *pExternalSemaphoreInfo,
    VkExternalSemaphoreProperties *pExternalSemaphoreProperties)
 {
-   pExternalSemaphoreProperties->compatibleHandleTypes =
-      pExternalSemaphoreInfo->handleType;
-   pExternalSemaphoreProperties->exportFromImportedHandleTypes = 0;
-   pExternalSemaphoreProperties->externalSemaphoreFeatures = 0;
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   const VkSemaphoreTypeCreateInfoKHR *type_info = vk_find_struct_const(
+      pExternalSemaphoreInfo->pNext, SEMAPHORE_TYPE_CREATE_INFO_KHR);
+   const VkSemaphoreType sem_type =
+      type_info ? type_info->semaphoreType : VK_SEMAPHORE_TYPE_BINARY;
+   const VkExternalSemaphoreHandleTypeFlags valid_handles =
+      sem_type == VK_SEMAPHORE_TYPE_BINARY
+         ? physical_dev->external_binary_semaphore_handles
+         : physical_dev->external_timeline_semaphore_handles;
+   if (pExternalSemaphoreInfo->handleType & valid_handles) {
+      pExternalSemaphoreProperties->compatibleHandleTypes = valid_handles;
+      pExternalSemaphoreProperties->exportFromImportedHandleTypes =
+         valid_handles;
+      pExternalSemaphoreProperties->externalSemaphoreFeatures =
+         VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT |
+         VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT;
+   } else {
+      pExternalSemaphoreProperties->compatibleHandleTypes =
+         pExternalSemaphoreInfo->handleType;
+      pExternalSemaphoreProperties->exportFromImportedHandleTypes = 0;
+      pExternalSemaphoreProperties->externalSemaphoreFeatures = 0;
+   }
 }
 
 /* device commands */
@@ -3617,6 +3667,71 @@ vn_WaitSemaphores(VkDevice device,
       vk_free(alloc, syncs);
 
    return vn_result(dev->instance, result);
+}
+
+VkResult
+vn_ImportSemaphoreFdKHR(
+   VkDevice device, const VkImportSemaphoreFdInfoKHR *pImportSemaphoreFdInfo)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_semaphore *sem =
+      vn_semaphore_from_handle(pImportSemaphoreFdInfo->semaphore);
+   const bool sync_file = pImportSemaphoreFdInfo->handleType ==
+                          VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+   const int fd = pImportSemaphoreFdInfo->fd;
+   struct vn_sync_payload *payload =
+      pImportSemaphoreFdInfo->flags & VK_SEMAPHORE_IMPORT_TEMPORARY_BIT
+         ? &sem->temporary
+         : &sem->permanent;
+
+   if (payload->type == VN_SYNC_TYPE_SYNC)
+      vn_renderer_sync_release(payload->sync);
+
+   VkResult result;
+   if (sync_file && fd < 0)
+      result = vn_renderer_sync_init_signaled(payload->sync);
+   else
+      result = vn_renderer_sync_init_syncobj(payload->sync, fd, sync_file);
+
+   if (result != VK_SUCCESS)
+      return vn_error(dev->instance, result);
+
+   /* TODO import into the host-side semaphore */
+
+   payload->type = VN_SYNC_TYPE_SYNC;
+   sem->payload = payload;
+
+   if (fd >= 0)
+      close(fd);
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_GetSemaphoreFdKHR(VkDevice device,
+                     const VkSemaphoreGetFdInfoKHR *pGetFdInfo,
+                     int *pFd)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_semaphore *sem = vn_semaphore_from_handle(pGetFdInfo->semaphore);
+   const bool sync_file =
+      pGetFdInfo->handleType == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+   struct vn_sync_payload *payload = sem->payload;
+
+   assert(payload->type == VN_SYNC_TYPE_SYNC);
+   int fd = vn_renderer_sync_export_syncobj(payload->sync, sync_file);
+   if (fd < 0)
+      return vn_error(dev->instance, VK_ERROR_TOO_MANY_OBJECTS);
+
+   if (sync_file) {
+      vn_sync_payload_release(dev, &sem->temporary);
+      vn_renderer_sync_reset(sem->permanent.sync, 0);
+      sem->payload = &sem->permanent;
+      /* TODO reset the host-side semaphore */
+   }
+
+   *pFd = fd;
+   return VK_SUCCESS;
 }
 
 /* device memory commands */
