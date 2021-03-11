@@ -3746,6 +3746,18 @@ vn_AllocateMemory(VkDevice device,
    const VkAllocationCallbacks *alloc =
       pAllocator ? pAllocator : &dev->base.base.alloc;
 
+   const VkPhysicalDeviceMemoryProperties *mem_props =
+      &dev->physical_device->memory_properties.memoryProperties;
+   const VkMemoryType *mem_type =
+      &mem_props->memoryTypes[pAllocateInfo->memoryTypeIndex];
+   const VkExportMemoryAllocateInfo *export_info =
+      vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
+   if (export_info && !export_info->handleTypes)
+      export_info = NULL;
+   const bool need_bo =
+      (mem_type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
+      export_info;
+
    struct vn_device_memory *mem =
       vk_zalloc(alloc, sizeof(*mem), VN_DEFAULT_ALIGN,
                 VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -3764,17 +3776,7 @@ vn_AllocateMemory(VkDevice device,
 
    mem->size = pAllocateInfo->allocationSize;
 
-   /* check if a bo is needed */
-   const VkPhysicalDeviceMemoryProperties *mem_props =
-      &dev->physical_device->memory_properties.memoryProperties;
-   const VkMemoryType *mem_type =
-      &mem_props->memoryTypes[pAllocateInfo->memoryTypeIndex];
-   const VkExportMemoryAllocateInfo *export_info =
-      vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
-   if (export_info && !export_info->handleTypes)
-      export_info = NULL;
-   if ((mem_type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
-       export_info) {
+   if (need_bo) {
       result = vn_renderer_bo_create_gpu(
          dev->instance->renderer, mem->size, mem->base.id,
          mem_type->propertyFlags, export_info ? export_info->handleTypes : 0,
