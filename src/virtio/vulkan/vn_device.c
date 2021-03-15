@@ -2330,6 +2330,18 @@ vn_queue_init(struct vn_device *dev,
    return VK_SUCCESS;
 }
 
+static bool
+find_extension_names(const char *const *exts,
+                     uint32_t ext_count,
+                     const char *name)
+{
+   for (uint32_t i = 0; i < ext_count; i++) {
+      if (!strcmp(exts[i], name))
+         return true;
+   }
+   return false;
+}
+
 static const char **
 merge_extension_names(const char *const *exts,
                       uint32_t ext_count,
@@ -2348,15 +2360,7 @@ merge_extension_names(const char *const *exts,
 
    uint32_t count = ext_count;
    for (uint32_t i = 0; i < extra_count; i++) {
-      bool found = false;
-      for (uint32_t j = 0; j < ext_count; j++) {
-         if (!strcmp(exts[j], extra_exts[i])) {
-            found = true;
-            break;
-         }
-      }
-
-      if (!found)
+      if (!find_extension_names(exts, ext_count, extra_exts[i]))
          merged[count++] = extra_exts[i];
    }
 
