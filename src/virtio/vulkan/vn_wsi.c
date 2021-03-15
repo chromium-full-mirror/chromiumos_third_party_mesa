@@ -12,6 +12,47 @@
 
 #include "vn_device.h"
 
+/* The common WSI support makes some assumptions about the driver.
+ *
+ * In wsi_device_init, it assumes VK_EXT_pci_bus_info is available.  In
+ * wsi_create_native_image and wsi_create_prime_image, it assumes
+ * VK_KHR_external_memory_fd and VK_EXT_external_memory_dma_buf are enabled.
+ *
+ * In wsi_create_native_image, if wsi_device::supports_modifiers is set and
+ * the window system supports modifiers, it assumes
+ * VK_EXT_image_drm_format_modifier is enabled.  Otherwise, it assumes that
+ * wsi_image_create_info can be chained to VkImageCreateInfo and
+ * vkGetImageSubresourceLayout can be called even the tiling is
+ * VK_IMAGE_TILING_OPTIMAL.
+ *
+ * Together, it knows how to share dma-bufs, with explicit or implicit
+ * modifiers, to the window system.
+ *
+ * For venus, we use explicit modifiers when the renderer and the window
+ * system support them.  Otherwise, we have to fall back to
+ * VK_IMAGE_TILING_LINEAR (or trigger the prime blit path).  But the fallback
+ * can be problematic when the memory is scanned out directly and special
+ * requirements (e.g., alignments) must be met.
+ *
+ * The common WSI support makes other assumptions about the driver to support
+ * implicit fencing.  In wsi_create_native_image and wsi_create_prime_image,
+ * it assumes wsi_memory_allocate_info can be chained to VkMemoryAllocateInfo.
+ * In wsi_common_queue_present, it assumes wsi_memory_signal_submit_info can
+ * be chained to VkSubmitInfo.  Finally, in wsi_common_acquire_next_image2, it
+ * calls wsi_device::signal_semaphore_for_memory, and
+ * wsi_device::signal_fence_for_memory if the driver provides them.
+ *
+ * Some drivers use wsi_memory_allocate_info to set up implicit fencing.
+ * Others use wsi_memory_signal_submit_info to set up implicit IN-fences and
+ * use wsi_device::signal_*_for_memory to set up implicit OUT-fences.
+ *
+ * For venus, implicit fencing is broken (and there is no explicit fencing
+ * support yet).  The kernel driver assumes everything is in the same fence
+ * context and no synchronization is needed.  It should be fixed for
+ * correctness, but it is still not ideal.  venus requires explicit fencing
+ * (and renderer-side synchronization) to work well.
+ */
+
 static PFN_vkVoidFunction
 vn_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
 {
