@@ -653,7 +653,7 @@ render_sysmem(struct fd_batch *batch)
 static void
 flush_ring(struct fd_batch *batch)
 {
-	uint32_t timestamp;
+	uint32_t timestamp = 0;
 	int out_fence_fd = -1;
 
 	if (unlikely(fd_mesa_debug & FD_DBG_NOHW))
