@@ -3373,8 +3373,10 @@ vn_QueueSubmit(VkQueue _queue,
    if (submit.batch_count == 1) {
       const struct wsi_memory_signal_submit_info *info = vk_find_struct_const(
          submit.submit_batches[0].pNext, WSI_MEMORY_SIGNAL_SUBMIT_INFO_MESA);
-      if (info)
+      if (info) {
          wsi_mem = vn_device_memory_from_handle(info->memory);
+         assert(!wsi_mem->base_memory && wsi_mem->base_bo);
+      }
    }
 
    /* TODO this should be one trip to the renderer */
@@ -3413,7 +3415,7 @@ vn_QueueSubmit(VkQueue _queue,
 
       if (sync_base < submit.sync_count || wsi_mem) {
          const struct vn_renderer_submit dst = {
-            .bos = wsi_mem ? &wsi_mem->bo : NULL,
+            .bos = wsi_mem ? &wsi_mem->base_bo : NULL,
             .bo_count = wsi_mem ? 1 : 0,
             .batches =
                &(const struct vn_renderer_submit_batch){
@@ -3439,7 +3441,7 @@ vn_QueueSubmit(VkQueue _queue,
       if (submit.sync_count || wsi_mem) {
          struct vn_renderer *renderer = dev->instance->renderer;
          const struct vn_renderer_submit dst = {
-            .bos = wsi_mem ? &wsi_mem->bo : NULL,
+            .bos = wsi_mem ? &wsi_mem->base_bo : NULL,
             .bo_count = wsi_mem ? 1 : 0,
             .batches =
                &(const struct vn_renderer_submit_batch){
@@ -4227,7 +4229,7 @@ vn_AllocateMemory(VkDevice device,
          return vn_error(dev->instance, result);
       }
 
-      mem->bo = bo;
+      mem->base_bo = bo;
    } else {
       result = vn_call_vkAllocateMemory(dev->instance, device, pAllocateInfo,
                                         NULL, &mem_handle);
@@ -4239,11 +4241,11 @@ vn_AllocateMemory(VkDevice device,
 
    mem->size = pAllocateInfo->allocationSize;
 
-   if (need_bo && !mem->bo) {
+   if (need_bo && !mem->base_bo) {
       result = vn_renderer_bo_create_gpu(
          dev->instance->renderer, mem->size, mem->base.id,
          mem_type->propertyFlags, export_info ? export_info->handleTypes : 0,
-         &mem->bo);
+         &mem->base_bo);
       if (result != VK_SUCCESS) {
          vn_async_vkFreeMemory(dev->instance, device, mem_handle, NULL);
          vk_free(alloc, mem);
@@ -4271,8 +4273,8 @@ vn_FreeMemory(VkDevice device,
 
    vn_async_vkFreeMemory(dev->instance, device, memory, NULL);
 
-   if (mem->bo)
-      vn_renderer_bo_unref(mem->bo);
+   if (mem->base_bo)
+      vn_renderer_bo_unref(mem->base_bo);
 
    vn_object_base_fini(&mem->base);
    vk_free(alloc, mem);
@@ -4283,7 +4285,9 @@ vn_GetDeviceMemoryOpaqueCaptureAddress(
    VkDevice device, const VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo)
 {
    struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_device_memory *mem = vn_device_memory_from_handle(pInfo->memory);
 
+   assert(!mem->base_memory);
    return vn_call_vkGetDeviceMemoryOpaqueCaptureAddress(dev->instance, device,
                                                         pInfo);
 }
@@ -4299,13 +4303,13 @@ vn_MapMemory(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_device_memory *mem = vn_device_memory_from_handle(memory);
 
-   void *ptr = vn_renderer_bo_map(mem->bo);
+   void *ptr = vn_renderer_bo_map(mem->base_bo);
    if (!ptr)
       return vn_error(dev->instance, VK_ERROR_MEMORY_MAP_FAILED);
 
    mem->map_end = size == VK_WHOLE_SIZE ? mem->size : offset + size;
 
-   *ppData = ptr + offset;
+   *ppData = ptr + mem->base_offset + offset;
 
    return VK_SUCCESS;
 }
@@ -4328,7 +4332,8 @@ vn_FlushMappedMemoryRanges(VkDevice device,
       const VkDeviceSize size = range->size == VK_WHOLE_SIZE
                                    ? mem->map_end - range->offset
                                    : range->size;
-      vn_renderer_bo_flush(mem->bo, range->offset, size);
+      vn_renderer_bo_flush(mem->base_bo, mem->base_offset + range->offset,
+                           size);
    }
 
    return VK_SUCCESS;
@@ -4347,7 +4352,8 @@ vn_InvalidateMappedMemoryRanges(VkDevice device,
       const VkDeviceSize size = range->size == VK_WHOLE_SIZE
                                    ? mem->map_end - range->offset
                                    : range->size;
-      vn_renderer_bo_invalidate(mem->bo, range->offset, size);
+      vn_renderer_bo_invalidate(mem->base_bo,
+                                mem->base_offset + range->offset, size);
    }
 
    return VK_SUCCESS;
@@ -4359,7 +4365,9 @@ vn_GetDeviceMemoryCommitment(VkDevice device,
                              VkDeviceSize *pCommittedMemoryInBytes)
 {
    struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_device_memory *mem = vn_device_memory_from_handle(memory);
 
+   assert(!mem->base_memory);
    vn_call_vkGetDeviceMemoryCommitment(dev->instance, device, memory,
                                        pCommittedMemoryInBytes);
 }
@@ -4373,8 +4381,8 @@ vn_GetMemoryFdKHR(VkDevice device,
    struct vn_device_memory *mem =
       vn_device_memory_from_handle(pGetFdInfo->memory);
 
-   assert(mem->bo);
-   *pFd = vn_renderer_bo_export_dmabuf(mem->bo);
+   assert(!mem->base_memory && mem->base_bo);
+   *pFd = vn_renderer_bo_export_dmabuf(mem->base_bo);
    if (*pFd < 0)
       return vn_error(dev->instance, VK_ERROR_TOO_MANY_OBJECTS);
 
@@ -4534,6 +4542,12 @@ vn_BindBufferMemory(VkDevice device,
                     VkDeviceSize memoryOffset)
 {
    struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_device_memory *mem = vn_device_memory_from_handle(memory);
+
+   if (mem->base_memory) {
+      memory = vn_device_memory_to_handle(mem->base_memory);
+      memoryOffset += mem->base_offset;
+   }
 
    vn_async_vkBindBufferMemory(dev->instance, device, buffer, memory,
                                memoryOffset);
@@ -4547,9 +4561,36 @@ vn_BindBufferMemory2(VkDevice device,
                      const VkBindBufferMemoryInfo *pBindInfos)
 {
    struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
+
+   VkBindBufferMemoryInfo *local_infos = NULL;
+   for (uint32_t i = 0; i < bindInfoCount; i++) {
+      const VkBindBufferMemoryInfo *info = &pBindInfos[i];
+      struct vn_device_memory *mem =
+         vn_device_memory_from_handle(info->memory);
+      if (!mem->base_memory)
+         continue;
+
+      if (!local_infos) {
+         const size_t size = sizeof(*local_infos) * bindInfoCount;
+         local_infos = vk_alloc(alloc, size, VN_DEFAULT_ALIGN,
+                                VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+         if (!local_infos)
+            return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+         memcpy(local_infos, pBindInfos, size);
+      }
+
+      local_infos[i].memory = vn_device_memory_to_handle(mem->base_memory);
+      local_infos[i].memoryOffset += mem->base_offset;
+   }
+   if (local_infos)
+      pBindInfos = local_infos;
 
    vn_async_vkBindBufferMemory2(dev->instance, device, bindInfoCount,
                                 pBindInfos);
+
+   vk_free(alloc, local_infos);
 
    return VK_SUCCESS;
 }
@@ -4835,6 +4876,12 @@ vn_BindImageMemory(VkDevice device,
                    VkDeviceSize memoryOffset)
 {
    struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_device_memory *mem = vn_device_memory_from_handle(memory);
+
+   if (mem->base_memory) {
+      memory = vn_device_memory_to_handle(mem->base_memory);
+      memoryOffset += mem->base_offset;
+   }
 
    vn_async_vkBindImageMemory(dev->instance, device, image, memory,
                               memoryOffset);
@@ -4848,9 +4895,37 @@ vn_BindImageMemory2(VkDevice device,
                     const VkBindImageMemoryInfo *pBindInfos)
 {
    struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
+
+   VkBindImageMemoryInfo *local_infos = NULL;
+   for (uint32_t i = 0; i < bindInfoCount; i++) {
+      const VkBindImageMemoryInfo *info = &pBindInfos[i];
+      struct vn_device_memory *mem =
+         vn_device_memory_from_handle(info->memory);
+      /* TODO handle VkBindImageMemorySwapchainInfoKHR */
+      if (!mem || !mem->base_memory)
+         continue;
+
+      if (!local_infos) {
+         const size_t size = sizeof(*local_infos) * bindInfoCount;
+         local_infos = vk_alloc(alloc, size, VN_DEFAULT_ALIGN,
+                                VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+         if (!local_infos)
+            return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+         memcpy(local_infos, pBindInfos, size);
+      }
+
+      local_infos[i].memory = vn_device_memory_to_handle(mem->base_memory);
+      local_infos[i].memoryOffset += mem->base_offset;
+   }
+   if (local_infos)
+      pBindInfos = local_infos;
 
    vn_async_vkBindImageMemory2(dev->instance, device, bindInfoCount,
                                pBindInfos);
+
+   vk_free(alloc, local_infos);
 
    return VK_SUCCESS;
 }

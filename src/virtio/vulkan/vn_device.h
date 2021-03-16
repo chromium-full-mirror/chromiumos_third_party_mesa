@@ -185,8 +185,12 @@ struct vn_device_memory {
 
    VkDeviceSize size;
 
+   /* non-NULL when suballocated */
+   struct vn_device_memory *base_memory;
    /* non-NULL when mappable or external */
-   struct vn_renderer_bo *bo;
+   struct vn_renderer_bo *base_bo;
+   VkDeviceSize base_offset;
+
    VkDeviceSize map_end;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_device_memory,
