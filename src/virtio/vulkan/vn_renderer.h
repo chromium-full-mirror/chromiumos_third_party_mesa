@@ -327,7 +327,7 @@ vn_renderer_bo_ref(struct vn_renderer_bo *bo)
    return bo;
 }
 
-static inline void
+static inline bool
 vn_renderer_bo_unref(struct vn_renderer_bo *bo)
 {
    const int old =
@@ -337,7 +337,10 @@ vn_renderer_bo_unref(struct vn_renderer_bo *bo)
    if (old == 1) {
       atomic_thread_fence(memory_order_acquire);
       bo->destroy(bo);
+      return true;
    }
+
+   return false;
 }
 
 static inline int

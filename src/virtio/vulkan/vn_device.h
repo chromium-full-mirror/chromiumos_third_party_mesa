@@ -100,6 +100,12 @@ VK_DEFINE_HANDLE_CASTS(vn_physical_device,
                        VkPhysicalDevice,
                        VK_OBJECT_TYPE_PHYSICAL_DEVICE)
 
+struct vn_device_memory_pool {
+   mtx_t mutex;
+   struct vn_device_memory *memory;
+   VkDeviceSize used;
+};
+
 struct vn_device {
    struct vn_device_base base;
 
@@ -108,6 +114,8 @@ struct vn_device {
 
    struct vn_queue *queues;
    uint32_t queue_count;
+
+   struct vn_device_memory_pool memory_pools[VK_MAX_MEMORY_TYPES];
 };
 VK_DEFINE_HANDLE_CASTS(vn_device,
                        base.base.base,
