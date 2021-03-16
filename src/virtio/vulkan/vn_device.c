@@ -4176,6 +4176,70 @@ vn_GetSemaphoreFdKHR(VkDevice device,
 
 /* device memory commands */
 
+static VkResult
+vn_device_memory_simple_alloc(struct vn_device *dev,
+                              uint32_t mem_type_index,
+                              VkDeviceSize size,
+                              struct vn_device_memory **out_mem)
+{
+   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
+
+   struct vn_device_memory *mem =
+      vk_zalloc(alloc, sizeof(*mem), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   if (!mem)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   vn_object_base_init(&mem->base, VK_OBJECT_TYPE_DEVICE_MEMORY, &dev->base);
+   mem->size = size;
+
+   VkDeviceMemory mem_handle = vn_device_memory_to_handle(mem);
+   VkResult result = vn_call_vkAllocateMemory(
+      dev->instance, vn_device_to_handle(dev),
+      &(const VkMemoryAllocateInfo){
+         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+         .allocationSize = size,
+         .memoryTypeIndex = mem_type_index,
+      },
+      NULL, &mem_handle);
+   if (result != VK_SUCCESS) {
+      vk_free(alloc, mem);
+      return result;
+   }
+
+   const VkPhysicalDeviceMemoryProperties *mem_props =
+      &dev->physical_device->memory_properties.memoryProperties;
+   const VkMemoryType *mem_type = &mem_props->memoryTypes[mem_type_index];
+   result = vn_renderer_bo_create_gpu(dev->instance->renderer, mem->size,
+                                      mem->base.id, mem_type->propertyFlags,
+                                      0, &mem->base_bo);
+   if (result != VK_SUCCESS) {
+      vn_async_vkFreeMemory(dev->instance, vn_device_to_handle(dev),
+                            mem_handle, NULL);
+      vk_free(alloc, mem);
+      return result;
+   }
+   vn_instance_roundtrip(dev->instance);
+
+   *out_mem = mem;
+
+   return VK_SUCCESS;
+}
+
+static void
+vn_device_memory_simple_free(struct vn_device *dev,
+                             struct vn_device_memory *mem)
+{
+   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
+
+   vn_renderer_bo_unref(mem->base_bo);
+
+   vn_async_vkFreeMemory(dev->instance, vn_device_to_handle(dev),
+                         vn_device_memory_to_handle(mem), NULL);
+   vn_object_base_fini(&mem->base);
+   vk_free(alloc, mem);
+}
+
 VkResult
 vn_AllocateMemory(VkDevice device,
                   const VkMemoryAllocateInfo *pAllocateInfo,
@@ -4196,9 +4260,13 @@ vn_AllocateMemory(VkDevice device,
       vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
    if (export_info && !export_info->handleTypes)
       export_info = NULL;
+
    const bool need_bo =
       (mem_type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
       import_info || export_info;
+   const bool suballocate =
+      need_bo && !pAllocateInfo->pNext &&
+      !(mem_type->propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT);
 
    struct vn_device_memory *mem =
       vk_zalloc(alloc, sizeof(*mem), VN_DEFAULT_ALIGN,
@@ -4207,6 +4275,7 @@ vn_AllocateMemory(VkDevice device,
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vn_object_base_init(&mem->base, VK_OBJECT_TYPE_DEVICE_MEMORY, &dev->base);
+   mem->size = pAllocateInfo->allocationSize;
 
    VkDeviceMemory mem_handle = vn_device_memory_to_handle(mem);
    VkResult result;
@@ -4230,6 +4299,14 @@ vn_AllocateMemory(VkDevice device,
       }
 
       mem->base_bo = bo;
+   } else if (suballocate) {
+      result = vn_device_memory_simple_alloc(
+         dev, pAllocateInfo->memoryTypeIndex, mem->size, &mem->base_memory);
+      if (result != VK_SUCCESS) {
+         vk_free(alloc, mem);
+         return vn_error(dev->instance, result);
+      }
+      mem->base_bo = vn_renderer_bo_ref(mem->base_memory->base_bo);
    } else {
       result = vn_call_vkAllocateMemory(dev->instance, device, pAllocateInfo,
                                         NULL, &mem_handle);
@@ -4238,8 +4315,6 @@ vn_AllocateMemory(VkDevice device,
          return vn_error(dev->instance, result);
       }
    }
-
-   mem->size = pAllocateInfo->allocationSize;
 
    if (need_bo && !mem->base_bo) {
       result = vn_renderer_bo_create_gpu(
@@ -4271,10 +4346,14 @@ vn_FreeMemory(VkDevice device,
    if (!mem)
       return;
 
-   vn_async_vkFreeMemory(dev->instance, device, memory, NULL);
-
-   if (mem->base_bo)
+   if (mem->base_memory) {
       vn_renderer_bo_unref(mem->base_bo);
+      vn_device_memory_simple_free(dev, mem->base_memory);
+   } else {
+      if (mem->base_bo)
+         vn_renderer_bo_unref(mem->base_bo);
+      vn_async_vkFreeMemory(dev->instance, device, memory, NULL);
+   }
 
    vn_object_base_fini(&mem->base);
    vk_free(alloc, mem);
