@@ -4230,7 +4230,6 @@ vn_device_memory_simple_alloc(struct vn_device *dev,
       vk_free(alloc, mem);
       return result;
    }
-   vn_instance_roundtrip(dev->instance);
 
    *out_mem = mem;
 
