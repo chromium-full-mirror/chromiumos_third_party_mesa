@@ -180,10 +180,11 @@ vn_cs_decoder_read(struct vn_cs_decoder *dec,
 
 static inline void
 vn_cs_decoder_peek(const struct vn_cs_decoder *dec,
+                   size_t size,
                    void *val,
                    size_t val_size)
 {
-   vn_cs_decoder_peek_internal(dec, val_size, val, val_size);
+   vn_cs_decoder_peek_internal(dec, size, val, val_size);
 }
 
 static inline vn_object_id
