@@ -149,23 +149,33 @@ vn_cs_decoder_set_fatal(const struct vn_cs_decoder *dec)
    abort();
 }
 
-static inline void
-vn_cs_decoder_read(struct vn_cs_decoder *dec,
-                   size_t size,
-                   void *val,
-                   size_t val_size)
+static inline bool
+vn_cs_decoder_peek_internal(const struct vn_cs_decoder *dec,
+                            size_t size,
+                            void *val,
+                            size_t val_size)
 {
    assert(val_size <= size);
 
    if (unlikely(size > dec->end - dec->cur)) {
       vn_cs_decoder_set_fatal(dec);
       memset(val, 0, val_size);
-      return;
+      return false;
    }
 
    /* we should not rely on the compiler to optimize away memcpy... */
    memcpy(val, dec->cur, val_size);
-   dec->cur += size;
+   return true;
+}
+
+static inline void
+vn_cs_decoder_read(struct vn_cs_decoder *dec,
+                   size_t size,
+                   void *val,
+                   size_t val_size)
+{
+   if (vn_cs_decoder_peek_internal(dec, size, val, val_size))
+      dec->cur += size;
 }
 
 static inline void
@@ -173,14 +183,7 @@ vn_cs_decoder_peek(const struct vn_cs_decoder *dec,
                    void *val,
                    size_t val_size)
 {
-   if (unlikely(val_size > dec->end - dec->cur)) {
-      vn_cs_decoder_set_fatal(dec);
-      memset(val, 0, val_size);
-      return;
-   }
-
-   /* we should not rely on the compiler to optimize away memcpy... */
-   memcpy(val, dec->cur, val_size);
+   vn_cs_decoder_peek_internal(dec, val_size, val, val_size);
 }
 
 static inline vn_object_id
