@@ -1648,7 +1648,7 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
                   VkInstance *pInstance)
 {
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &vn_default_allocator;
+      pAllocator ? pAllocator : vn_default_allocator();
    struct vn_instance *instance;
    VkResult result;
 
