@@ -610,6 +610,24 @@ vn_physical_device_init_features(struct vn_physical_device *physical_dev)
       VkPhysicalDeviceProtectedMemoryFeatures protected_memory;
       VkPhysicalDeviceSamplerYcbcrConversionFeatures sampler_ycbcr_conversion;
       VkPhysicalDeviceShaderDrawParametersFeatures shader_draw_parameters;
+
+      /* Vulkan 1.2 */
+      VkPhysicalDevice8BitStorageFeatures eight_bit_storage;
+      VkPhysicalDeviceShaderAtomicInt64Features shader_atomic_int64;
+      VkPhysicalDeviceShaderFloat16Int8Features shader_float16_int8;
+      VkPhysicalDeviceDescriptorIndexingFeatures descriptor_indexing;
+      VkPhysicalDeviceScalarBlockLayoutFeatures scalar_block_layout;
+      VkPhysicalDeviceImagelessFramebufferFeatures imageless_framebuffer;
+      VkPhysicalDeviceUniformBufferStandardLayoutFeatures
+         uniform_buffer_standard_layout;
+      VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures
+         shader_subgroup_extended_types;
+      VkPhysicalDeviceSeparateDepthStencilLayoutsFeatures
+         separate_depth_stencil_layouts;
+      VkPhysicalDeviceHostQueryResetFeatures host_query_reset;
+      VkPhysicalDeviceTimelineSemaphoreFeatures timeline_semaphore;
+      VkPhysicalDeviceBufferDeviceAddressFeatures buffer_device_address;
+      VkPhysicalDeviceVulkanMemoryModelFeatures vulkan_memory_model;
    } local_feats;
 
    physical_dev->features.sType =
@@ -646,7 +664,58 @@ vn_physical_device_init_features(struct vn_physical_device *physical_dev)
          &local_feats.shader_draw_parameters;
       local_feats.shader_draw_parameters.sType =
          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES;
-      local_feats.shader_draw_parameters.pNext = NULL;
+      local_feats.shader_draw_parameters.pNext =
+         &local_feats.eight_bit_storage;
+
+      local_feats.eight_bit_storage.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
+      local_feats.eight_bit_storage.pNext = &local_feats.shader_atomic_int64;
+      local_feats.shader_atomic_int64.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES;
+      local_feats.shader_atomic_int64.pNext =
+         &local_feats.shader_float16_int8;
+      local_feats.shader_float16_int8.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+      local_feats.shader_float16_int8.pNext =
+         &local_feats.descriptor_indexing;
+      local_feats.descriptor_indexing.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+      local_feats.descriptor_indexing.pNext =
+         &local_feats.scalar_block_layout;
+      local_feats.scalar_block_layout.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
+      local_feats.scalar_block_layout.pNext =
+         &local_feats.imageless_framebuffer;
+      local_feats.imageless_framebuffer.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES;
+      local_feats.imageless_framebuffer.pNext =
+         &local_feats.uniform_buffer_standard_layout;
+      local_feats.uniform_buffer_standard_layout.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFORM_BUFFER_STANDARD_LAYOUT_FEATURES;
+      local_feats.uniform_buffer_standard_layout.pNext =
+         &local_feats.shader_subgroup_extended_types;
+      local_feats.shader_subgroup_extended_types.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES;
+      local_feats.shader_subgroup_extended_types.pNext =
+         &local_feats.separate_depth_stencil_layouts;
+      local_feats.separate_depth_stencil_layouts.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SEPARATE_DEPTH_STENCIL_LAYOUTS_FEATURES;
+      local_feats.separate_depth_stencil_layouts.pNext =
+         &local_feats.host_query_reset;
+      local_feats.host_query_reset.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES;
+      local_feats.host_query_reset.pNext = &local_feats.timeline_semaphore;
+      local_feats.timeline_semaphore.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+      local_feats.timeline_semaphore.pNext =
+         &local_feats.buffer_device_address;
+      local_feats.buffer_device_address.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+      local_feats.buffer_device_address.pNext =
+         &local_feats.vulkan_memory_model;
+      local_feats.vulkan_memory_model.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES;
+      local_feats.vulkan_memory_model.pNext = NULL;
    }
 
    if (physical_dev->renderer_extensions.EXT_transform_feedback) {
@@ -662,8 +731,12 @@ vn_physical_device_init_features(struct vn_physical_device *physical_dev)
       instance, vn_physical_device_to_handle(physical_dev),
       &physical_dev->features);
 
+   const struct vk_device_extension_table *exts =
+      &physical_dev->renderer_extensions;
    struct VkPhysicalDeviceVulkan11Features *vk11_feats =
       &physical_dev->vulkan_1_1_features;
+   struct VkPhysicalDeviceVulkan12Features *vk12_feats =
+      &physical_dev->vulkan_1_2_features;
 
    if (physical_dev->renderer_version < VK_API_VERSION_1_2) {
       vk11_feats->storageBuffer16BitAccess =
@@ -694,6 +767,147 @@ vn_physical_device_init_features(struct vn_physical_device *physical_dev)
 
       vk11_feats->shaderDrawParameters =
          local_feats.shader_draw_parameters.shaderDrawParameters;
+
+      vk12_feats->samplerMirrorClampToEdge =
+         exts->KHR_sampler_mirror_clamp_to_edge;
+      vk12_feats->drawIndirectCount = exts->KHR_draw_indirect_count;
+
+      if (exts->KHR_8bit_storage) {
+         vk12_feats->storageBuffer8BitAccess =
+            local_feats.eight_bit_storage.storageBuffer8BitAccess;
+         vk12_feats->uniformAndStorageBuffer8BitAccess =
+            local_feats.eight_bit_storage.uniformAndStorageBuffer8BitAccess;
+         vk12_feats->storagePushConstant8 =
+            local_feats.eight_bit_storage.storagePushConstant8;
+      }
+      if (exts->KHR_shader_atomic_int64) {
+         vk12_feats->shaderBufferInt64Atomics =
+            local_feats.shader_atomic_int64.shaderBufferInt64Atomics;
+         vk12_feats->shaderSharedInt64Atomics =
+            local_feats.shader_atomic_int64.shaderSharedInt64Atomics;
+      }
+      if (exts->KHR_shader_float16_int8) {
+         vk12_feats->shaderFloat16 =
+            local_feats.shader_float16_int8.shaderFloat16;
+         vk12_feats->shaderInt8 = local_feats.shader_float16_int8.shaderInt8;
+      }
+      if (exts->EXT_descriptor_indexing) {
+         vk12_feats->descriptorIndexing = true;
+         vk12_feats->shaderInputAttachmentArrayDynamicIndexing =
+            local_feats.descriptor_indexing
+               .shaderInputAttachmentArrayDynamicIndexing;
+         vk12_feats->shaderUniformTexelBufferArrayDynamicIndexing =
+            local_feats.descriptor_indexing
+               .shaderUniformTexelBufferArrayDynamicIndexing;
+         vk12_feats->shaderStorageTexelBufferArrayDynamicIndexing =
+            local_feats.descriptor_indexing
+               .shaderStorageTexelBufferArrayDynamicIndexing;
+         vk12_feats->shaderUniformBufferArrayNonUniformIndexing =
+            local_feats.descriptor_indexing
+               .shaderUniformBufferArrayNonUniformIndexing;
+         vk12_feats->shaderSampledImageArrayNonUniformIndexing =
+            local_feats.descriptor_indexing
+               .shaderSampledImageArrayNonUniformIndexing;
+         vk12_feats->shaderStorageBufferArrayNonUniformIndexing =
+            local_feats.descriptor_indexing
+               .shaderStorageBufferArrayNonUniformIndexing;
+         vk12_feats->shaderStorageImageArrayNonUniformIndexing =
+            local_feats.descriptor_indexing
+               .shaderStorageImageArrayNonUniformIndexing;
+         vk12_feats->shaderInputAttachmentArrayNonUniformIndexing =
+            local_feats.descriptor_indexing
+               .shaderInputAttachmentArrayNonUniformIndexing;
+         vk12_feats->shaderUniformTexelBufferArrayNonUniformIndexing =
+            local_feats.descriptor_indexing
+               .shaderUniformTexelBufferArrayNonUniformIndexing;
+         vk12_feats->shaderStorageTexelBufferArrayNonUniformIndexing =
+            local_feats.descriptor_indexing
+               .shaderStorageTexelBufferArrayNonUniformIndexing;
+         vk12_feats->descriptorBindingUniformBufferUpdateAfterBind =
+            local_feats.descriptor_indexing
+               .descriptorBindingUniformBufferUpdateAfterBind;
+         vk12_feats->descriptorBindingSampledImageUpdateAfterBind =
+            local_feats.descriptor_indexing
+               .descriptorBindingSampledImageUpdateAfterBind;
+         vk12_feats->descriptorBindingStorageImageUpdateAfterBind =
+            local_feats.descriptor_indexing
+               .descriptorBindingStorageImageUpdateAfterBind;
+         vk12_feats->descriptorBindingStorageBufferUpdateAfterBind =
+            local_feats.descriptor_indexing
+               .descriptorBindingStorageBufferUpdateAfterBind;
+         vk12_feats->descriptorBindingUniformTexelBufferUpdateAfterBind =
+            local_feats.descriptor_indexing
+               .descriptorBindingUniformTexelBufferUpdateAfterBind;
+         vk12_feats->descriptorBindingStorageTexelBufferUpdateAfterBind =
+            local_feats.descriptor_indexing
+               .descriptorBindingStorageTexelBufferUpdateAfterBind;
+         vk12_feats->descriptorBindingUpdateUnusedWhilePending =
+            local_feats.descriptor_indexing
+               .descriptorBindingUpdateUnusedWhilePending;
+         vk12_feats->descriptorBindingPartiallyBound =
+            local_feats.descriptor_indexing.descriptorBindingPartiallyBound;
+         vk12_feats->descriptorBindingVariableDescriptorCount =
+            local_feats.descriptor_indexing
+               .descriptorBindingVariableDescriptorCount;
+         vk12_feats->runtimeDescriptorArray =
+            local_feats.descriptor_indexing.runtimeDescriptorArray;
+      }
+
+      vk12_feats->samplerFilterMinmax = exts->EXT_sampler_filter_minmax;
+
+      if (exts->EXT_scalar_block_layout) {
+         vk12_feats->scalarBlockLayout =
+            local_feats.scalar_block_layout.scalarBlockLayout;
+      }
+      if (exts->KHR_imageless_framebuffer) {
+         vk12_feats->imagelessFramebuffer =
+            local_feats.imageless_framebuffer.imagelessFramebuffer;
+      }
+      if (exts->KHR_uniform_buffer_standard_layout) {
+         vk12_feats->uniformBufferStandardLayout =
+            local_feats.uniform_buffer_standard_layout
+               .uniformBufferStandardLayout;
+      }
+      if (exts->KHR_shader_subgroup_extended_types) {
+         vk12_feats->shaderSubgroupExtendedTypes =
+            local_feats.shader_subgroup_extended_types
+               .shaderSubgroupExtendedTypes;
+      }
+      if (exts->KHR_separate_depth_stencil_layouts) {
+         vk12_feats->separateDepthStencilLayouts =
+            local_feats.separate_depth_stencil_layouts
+               .separateDepthStencilLayouts;
+      }
+      if (exts->EXT_host_query_reset) {
+         vk12_feats->hostQueryReset =
+            local_feats.host_query_reset.hostQueryReset;
+      }
+      if (exts->KHR_timeline_semaphore) {
+         vk12_feats->timelineSemaphore =
+            local_feats.timeline_semaphore.timelineSemaphore;
+      }
+      if (exts->KHR_buffer_device_address) {
+         vk12_feats->bufferDeviceAddress =
+            local_feats.buffer_device_address.bufferDeviceAddress;
+         vk12_feats->bufferDeviceAddressCaptureReplay =
+            local_feats.buffer_device_address.bufferDeviceAddressCaptureReplay;
+         vk12_feats->bufferDeviceAddressMultiDevice =
+            local_feats.buffer_device_address.bufferDeviceAddressMultiDevice;
+      }
+      if (exts->KHR_vulkan_memory_model) {
+         vk12_feats->vulkanMemoryModel =
+            local_feats.vulkan_memory_model.vulkanMemoryModel;
+         vk12_feats->vulkanMemoryModelDeviceScope =
+            local_feats.vulkan_memory_model.vulkanMemoryModelDeviceScope;
+         vk12_feats->vulkanMemoryModelAvailabilityVisibilityChains =
+            local_feats.vulkan_memory_model
+               .vulkanMemoryModelAvailabilityVisibilityChains;
+      }
+
+      vk12_feats->shaderOutputViewportIndex =
+         exts->EXT_shader_viewport_index_layer;
+      vk12_feats->shaderOutputLayer = exts->EXT_shader_viewport_index_layer;
+      vk12_feats->subgroupBroadcastDynamicId = false;
    }
 }
 
@@ -751,6 +965,14 @@ vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
       VkPhysicalDeviceMultiviewProperties multiview;
       VkPhysicalDeviceProtectedMemoryProperties protected_memory;
       VkPhysicalDeviceMaintenance3Properties maintenance_3;
+
+      /* Vulkan 1.2 */
+      VkPhysicalDeviceDriverProperties driver;
+      VkPhysicalDeviceFloatControlsProperties float_controls;
+      VkPhysicalDeviceDescriptorIndexingProperties descriptor_indexing;
+      VkPhysicalDeviceDepthStencilResolveProperties depth_stencil_resolve;
+      VkPhysicalDeviceSamplerFilterMinmaxProperties sampler_filter_minmax;
+      VkPhysicalDeviceTimelineSemaphoreProperties timeline_semaphore;
    } local_props;
 
    physical_dev->properties.sType =
@@ -784,7 +1006,29 @@ vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
       local_props.protected_memory.pNext = &local_props.maintenance_3;
       local_props.maintenance_3.sType =
          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES;
-      local_props.maintenance_3.pNext = NULL;
+      local_props.maintenance_3.pNext = &local_props.driver;
+
+      local_props.driver.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+      local_props.driver.pNext = &local_props.float_controls;
+      local_props.float_controls.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES;
+      local_props.float_controls.pNext = &local_props.descriptor_indexing;
+      local_props.descriptor_indexing.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES;
+      local_props.descriptor_indexing.pNext =
+         &local_props.depth_stencil_resolve;
+      local_props.depth_stencil_resolve.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES;
+      local_props.depth_stencil_resolve.pNext =
+         &local_props.sampler_filter_minmax;
+      local_props.sampler_filter_minmax.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_FILTER_MINMAX_PROPERTIES;
+      local_props.sampler_filter_minmax.pNext =
+         &local_props.timeline_semaphore;
+      local_props.timeline_semaphore.sType =
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_PROPERTIES;
+      local_props.timeline_semaphore.pNext = NULL;
    }
 
    if (physical_dev->renderer_extensions.EXT_transform_feedback) {
@@ -800,6 +1044,8 @@ vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
       instance, vn_physical_device_to_handle(physical_dev),
       &physical_dev->properties);
 
+   const struct vk_device_extension_table *exts =
+      &physical_dev->renderer_extensions;
    struct VkPhysicalDeviceProperties *props =
       &physical_dev->properties.properties;
    struct VkPhysicalDeviceVulkan11Properties *vk11_props =
@@ -840,6 +1086,145 @@ vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
          local_props.maintenance_3.maxPerSetDescriptors;
       vk11_props->maxMemoryAllocationSize =
          local_props.maintenance_3.maxMemoryAllocationSize;
+
+      if (exts->KHR_driver_properties) {
+         vk12_props->driverID = local_props.driver.driverID;
+         memcpy(vk12_props->driverName, local_props.driver.driverName,
+                VK_MAX_DRIVER_NAME_SIZE);
+         memcpy(vk12_props->driverInfo, local_props.driver.driverInfo,
+                VK_MAX_DRIVER_INFO_SIZE);
+         vk12_props->conformanceVersion =
+            local_props.driver.conformanceVersion;
+      }
+      if (exts->KHR_shader_float_controls) {
+         vk12_props->denormBehaviorIndependence =
+            local_props.float_controls.denormBehaviorIndependence;
+         vk12_props->roundingModeIndependence =
+            local_props.float_controls.roundingModeIndependence;
+         vk12_props->shaderSignedZeroInfNanPreserveFloat16 =
+            local_props.float_controls.shaderSignedZeroInfNanPreserveFloat16;
+         vk12_props->shaderSignedZeroInfNanPreserveFloat32 =
+            local_props.float_controls.shaderSignedZeroInfNanPreserveFloat32;
+         vk12_props->shaderSignedZeroInfNanPreserveFloat64 =
+            local_props.float_controls.shaderSignedZeroInfNanPreserveFloat64;
+         vk12_props->shaderDenormPreserveFloat16 =
+            local_props.float_controls.shaderDenormPreserveFloat16;
+         vk12_props->shaderDenormPreserveFloat32 =
+            local_props.float_controls.shaderDenormPreserveFloat32;
+         vk12_props->shaderDenormPreserveFloat64 =
+            local_props.float_controls.shaderDenormPreserveFloat64;
+         vk12_props->shaderDenormFlushToZeroFloat16 =
+            local_props.float_controls.shaderDenormFlushToZeroFloat16;
+         vk12_props->shaderDenormFlushToZeroFloat32 =
+            local_props.float_controls.shaderDenormFlushToZeroFloat32;
+         vk12_props->shaderDenormFlushToZeroFloat64 =
+            local_props.float_controls.shaderDenormFlushToZeroFloat64;
+         vk12_props->shaderRoundingModeRTEFloat16 =
+            local_props.float_controls.shaderRoundingModeRTEFloat16;
+         vk12_props->shaderRoundingModeRTEFloat32 =
+            local_props.float_controls.shaderRoundingModeRTEFloat32;
+         vk12_props->shaderRoundingModeRTEFloat64 =
+            local_props.float_controls.shaderRoundingModeRTEFloat64;
+         vk12_props->shaderRoundingModeRTZFloat16 =
+            local_props.float_controls.shaderRoundingModeRTZFloat16;
+         vk12_props->shaderRoundingModeRTZFloat32 =
+            local_props.float_controls.shaderRoundingModeRTZFloat32;
+         vk12_props->shaderRoundingModeRTZFloat64 =
+            local_props.float_controls.shaderRoundingModeRTZFloat64;
+      }
+      if (exts->EXT_descriptor_indexing) {
+         vk12_props->maxUpdateAfterBindDescriptorsInAllPools =
+            local_props.descriptor_indexing
+               .maxUpdateAfterBindDescriptorsInAllPools;
+         vk12_props->shaderUniformBufferArrayNonUniformIndexingNative =
+            local_props.descriptor_indexing
+               .shaderUniformBufferArrayNonUniformIndexingNative;
+         vk12_props->shaderSampledImageArrayNonUniformIndexingNative =
+            local_props.descriptor_indexing
+               .shaderSampledImageArrayNonUniformIndexingNative;
+         vk12_props->shaderStorageBufferArrayNonUniformIndexingNative =
+            local_props.descriptor_indexing
+               .shaderStorageBufferArrayNonUniformIndexingNative;
+         vk12_props->shaderStorageImageArrayNonUniformIndexingNative =
+            local_props.descriptor_indexing
+               .shaderStorageImageArrayNonUniformIndexingNative;
+         vk12_props->shaderInputAttachmentArrayNonUniformIndexingNative =
+            local_props.descriptor_indexing
+               .shaderInputAttachmentArrayNonUniformIndexingNative;
+         vk12_props->robustBufferAccessUpdateAfterBind =
+            local_props.descriptor_indexing.robustBufferAccessUpdateAfterBind;
+         vk12_props->quadDivergentImplicitLod =
+            local_props.descriptor_indexing.quadDivergentImplicitLod;
+         vk12_props->maxPerStageDescriptorUpdateAfterBindSamplers =
+            local_props.descriptor_indexing
+               .maxPerStageDescriptorUpdateAfterBindSamplers;
+         vk12_props->maxPerStageDescriptorUpdateAfterBindUniformBuffers =
+            local_props.descriptor_indexing
+               .maxPerStageDescriptorUpdateAfterBindUniformBuffers;
+         vk12_props->maxPerStageDescriptorUpdateAfterBindStorageBuffers =
+            local_props.descriptor_indexing
+               .maxPerStageDescriptorUpdateAfterBindStorageBuffers;
+         vk12_props->maxPerStageDescriptorUpdateAfterBindSampledImages =
+            local_props.descriptor_indexing
+               .maxPerStageDescriptorUpdateAfterBindSampledImages;
+         vk12_props->maxPerStageDescriptorUpdateAfterBindStorageImages =
+            local_props.descriptor_indexing
+               .maxPerStageDescriptorUpdateAfterBindStorageImages;
+         vk12_props->maxPerStageDescriptorUpdateAfterBindInputAttachments =
+            local_props.descriptor_indexing
+               .maxPerStageDescriptorUpdateAfterBindInputAttachments;
+         vk12_props->maxPerStageUpdateAfterBindResources =
+            local_props.descriptor_indexing
+               .maxPerStageUpdateAfterBindResources;
+         vk12_props->maxDescriptorSetUpdateAfterBindSamplers =
+            local_props.descriptor_indexing
+               .maxDescriptorSetUpdateAfterBindSamplers;
+         vk12_props->maxDescriptorSetUpdateAfterBindUniformBuffers =
+            local_props.descriptor_indexing
+               .maxDescriptorSetUpdateAfterBindUniformBuffers;
+         vk12_props->maxDescriptorSetUpdateAfterBindUniformBuffersDynamic =
+            local_props.descriptor_indexing
+               .maxDescriptorSetUpdateAfterBindUniformBuffersDynamic;
+         vk12_props->maxDescriptorSetUpdateAfterBindStorageBuffers =
+            local_props.descriptor_indexing
+               .maxDescriptorSetUpdateAfterBindStorageBuffers;
+         vk12_props->maxDescriptorSetUpdateAfterBindStorageBuffersDynamic =
+            local_props.descriptor_indexing
+               .maxDescriptorSetUpdateAfterBindStorageBuffersDynamic;
+         vk12_props->maxDescriptorSetUpdateAfterBindSampledImages =
+            local_props.descriptor_indexing
+               .maxDescriptorSetUpdateAfterBindSampledImages;
+         vk12_props->maxDescriptorSetUpdateAfterBindStorageImages =
+            local_props.descriptor_indexing
+               .maxDescriptorSetUpdateAfterBindStorageImages;
+         vk12_props->maxDescriptorSetUpdateAfterBindInputAttachments =
+            local_props.descriptor_indexing
+               .maxDescriptorSetUpdateAfterBindInputAttachments;
+      }
+      if (exts->KHR_depth_stencil_resolve) {
+         vk12_props->supportedDepthResolveModes =
+            local_props.depth_stencil_resolve.supportedDepthResolveModes;
+         vk12_props->supportedStencilResolveModes =
+            local_props.depth_stencil_resolve.supportedStencilResolveModes;
+         vk12_props->independentResolveNone =
+            local_props.depth_stencil_resolve.independentResolveNone;
+         vk12_props->independentResolve =
+            local_props.depth_stencil_resolve.independentResolve;
+      }
+      if (exts->EXT_sampler_filter_minmax) {
+         vk12_props->filterMinmaxSingleComponentFormats =
+            local_props.sampler_filter_minmax
+               .filterMinmaxSingleComponentFormats;
+         vk12_props->filterMinmaxImageComponentMapping =
+            local_props.sampler_filter_minmax
+               .filterMinmaxImageComponentMapping;
+      }
+      if (exts->KHR_timeline_semaphore) {
+         vk12_props->maxTimelineSemaphoreValueDifference =
+            local_props.timeline_semaphore.maxTimelineSemaphoreValueDifference;
+      }
+
+      vk12_props->framebufferIntegerColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
    }
 
    const uint32_t version_override = vk_get_version_override();
@@ -938,6 +1323,77 @@ vn_physical_device_init_memory_properties(
             props->memoryTypes[i].propertyFlags &= ~host_flags;
       }
    }
+}
+
+static void
+vn_physical_device_init_external_memory_handles(
+   struct vn_physical_device *physical_dev)
+{
+   if (!physical_dev->instance->renderer_info.has_dmabuf_import)
+      return;
+
+   /* We have export support but we don't advertise it.  It is for WSI only at
+    * the moment.  For import support, we need to be able to serialize
+    * vkGetMemoryFdPropertiesKHR and VkImportMemoryFdInfoKHR.  We can
+    * serialize fd to bo->res_id, but we probably want to add new
+    * commands/structs first (using VK_MESA_venus_protocol).
+    *
+    * We also create a BO when a vn_device_memory is mappable.  We don't know
+    * which handle type the renderer uses.  That seems fine though.
+    */
+}
+
+static void
+vn_physical_device_init_external_fence_handles(
+   struct vn_physical_device *physical_dev)
+{
+   if (!physical_dev->instance->renderer_info.has_external_sync)
+      return;
+
+   /* In the current model, a vn_fence can be implemented entirely on top of
+    * vn_renderer_sync.  All operations can go through the renderer sync.
+    *
+    * The current code still creates a host-side VkFence, which can be
+    * eliminated.  The renderer also lacks proper external sync (i.e.,
+    * drm_syncobj) support and we can only support handle types with copy
+    * transference (i.e., sync fds).
+    *
+    * We are considering creating a vn_renderer_sync from a host-side VkFence
+    * instead, similar to how a vn_renderer_bo is created from a host-side
+    * VkDeviceMemory.  That will require tons of works on the host side, but
+    * should allow us to get rid of ring<->renderer syncs in vkQueueSubmit.
+    */
+   physical_dev->external_fence_handles =
+      VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
+}
+
+static void
+vn_physical_device_init_external_semaphore_handles(
+   struct vn_physical_device *physical_dev)
+{
+   /* In the current model, it is not possible to support external semaphores.
+    * At least an external semaphore cannot be waited on GPU in the host but
+    * can only be waited on CPU in the guest.
+    *
+    * A binary vn_semaphore is implemented solely on top of a host-side binary
+    * VkSemaphore.  There is no CPU operation against binary semaphroes and
+    * there is no need for vn_renderer_sync.
+    *
+    * A timeline vn_semaphore is implemented on top of both a host-side
+    * timeline VkSemaphore and a vn_renderer_sync.  Whenever a timeline
+    * vn_semaphore is updated, we make sure both the host-side timeline
+    * VkSemaphore and the vn_renderer_sync are updated.  This allows us to use
+    * whichever is more convenient depending on the operations: the host-side
+    * timeline VkSemaphore for GPU waits and the vn_renderer_sync for CPU
+    * waits/gets.
+    *
+    * To support external semaphores, we should create a vn_renderer_sync from
+    * a host-side VkSemaphore instead, similar to how a vn_renderer_bo is
+    * created from a host-side VkDeviceMemory.  The reasons to make a similar
+    * move for fences apply to timeline semaphores as well.  Besides, the
+    * external handle (drm_syncobj or sync file) needs to carry the necessary
+    * information to identify the host-side semaphore.
+    */
 }
 
 static void
@@ -1148,6 +1604,10 @@ vn_physical_device_init(struct vn_physical_device *physical_dev)
 
    vn_physical_device_init_memory_properties(physical_dev);
 
+   vn_physical_device_init_external_memory_handles(physical_dev);
+   vn_physical_device_init_external_fence_handles(physical_dev);
+   vn_physical_device_init_external_semaphore_handles(physical_dev);
+
    result = vn_wsi_init(physical_dev);
    if (result != VK_SUCCESS)
       goto fail;
@@ -1321,7 +1781,7 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
                   VkInstance *pInstance)
 {
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &vn_default_allocator;
+      pAllocator ? pAllocator : vn_default_allocator();
    struct vn_instance *instance;
    VkResult result;
 
@@ -2185,17 +2645,32 @@ vn_GetPhysicalDeviceImageFormatProperties2(
    struct vn_physical_device *physical_dev =
       vn_physical_device_from_handle(physicalDevice);
 
+   const VkPhysicalDeviceExternalImageFormatInfo *external_info =
+      vk_find_struct_const(pImageFormatInfo->pNext,
+                           PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
+   if (external_info && !external_info->handleType)
+      external_info = NULL;
+
+   if (external_info &&
+       !(external_info->handleType & physical_dev->external_memory_handles))
+      return vn_error(physical_dev->instance, VK_ERROR_FORMAT_NOT_SUPPORTED);
+
    VkResult result;
    /* TODO per-device cache */
    result = vn_call_vkGetPhysicalDeviceImageFormatProperties2(
       physical_dev->instance, physicalDevice, pImageFormatInfo,
       pImageFormatProperties);
 
-   VkExternalImageFormatProperties *props = vk_find_struct(
-      pImageFormatProperties->pNext, EXTERNAL_IMAGE_FORMAT_PROPERTIES);
-   if (props) {
-      memset(&props->externalMemoryProperties, 0,
-             sizeof(props->externalMemoryProperties));
+   if (result == VK_SUCCESS && external_info) {
+      VkExternalImageFormatProperties *img_props = vk_find_struct(
+         pImageFormatProperties->pNext, EXTERNAL_IMAGE_FORMAT_PROPERTIES);
+      VkExternalMemoryProperties *mem_props =
+         &img_props->externalMemoryProperties;
+
+      mem_props->compatibleHandleTypes &=
+         physical_dev->external_memory_handles;
+      mem_props->exportFromImportedHandleTypes &=
+         physical_dev->external_memory_handles;
    }
 
    return vn_result(physical_dev->instance, result);
@@ -2223,12 +2698,27 @@ vn_GetPhysicalDeviceExternalBufferProperties(
    const VkPhysicalDeviceExternalBufferInfo *pExternalBufferInfo,
    VkExternalBufferProperties *pExternalBufferProperties)
 {
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
    VkExternalMemoryProperties *props =
       &pExternalBufferProperties->externalMemoryProperties;
 
-   props->compatibleHandleTypes = pExternalBufferInfo->handleType;
-   props->exportFromImportedHandleTypes = 0;
-   props->externalMemoryFeatures = 0;
+   if (!(pExternalBufferInfo->handleType &
+         physical_dev->external_memory_handles)) {
+      props->compatibleHandleTypes = pExternalBufferInfo->handleType;
+      props->exportFromImportedHandleTypes = 0;
+      props->externalMemoryFeatures = 0;
+      return;
+   }
+
+   /* TODO per-device cache */
+   vn_call_vkGetPhysicalDeviceExternalBufferProperties(
+      physical_dev->instance, physicalDevice, pExternalBufferInfo,
+      pExternalBufferProperties);
+
+   props->compatibleHandleTypes &= physical_dev->external_memory_handles;
+   props->exportFromImportedHandleTypes &=
+      physical_dev->external_memory_handles;
 }
 
 void
@@ -2237,10 +2727,24 @@ vn_GetPhysicalDeviceExternalFenceProperties(
    const VkPhysicalDeviceExternalFenceInfo *pExternalFenceInfo,
    VkExternalFenceProperties *pExternalFenceProperties)
 {
-   pExternalFenceProperties->compatibleHandleTypes =
-      pExternalFenceInfo->handleType;
-   pExternalFenceProperties->exportFromImportedHandleTypes = 0;
-   pExternalFenceProperties->externalFenceFeatures = 0;
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   if (pExternalFenceInfo->handleType &
+       physical_dev->external_fence_handles) {
+      pExternalFenceProperties->compatibleHandleTypes =
+         physical_dev->external_fence_handles;
+      pExternalFenceProperties->exportFromImportedHandleTypes =
+         physical_dev->external_fence_handles;
+      pExternalFenceProperties->externalFenceFeatures =
+         VK_EXTERNAL_FENCE_FEATURE_EXPORTABLE_BIT |
+         VK_EXTERNAL_FENCE_FEATURE_IMPORTABLE_BIT;
+   } else {
+      pExternalFenceProperties->compatibleHandleTypes =
+         pExternalFenceInfo->handleType;
+      pExternalFenceProperties->exportFromImportedHandleTypes = 0;
+      pExternalFenceProperties->externalFenceFeatures = 0;
+   }
 }
 
 void
@@ -2249,10 +2753,30 @@ vn_GetPhysicalDeviceExternalSemaphoreProperties(
    const VkPhysicalDeviceExternalSemaphoreInfo *pExternalSemaphoreInfo,
    VkExternalSemaphoreProperties *pExternalSemaphoreProperties)
 {
-   pExternalSemaphoreProperties->compatibleHandleTypes =
-      pExternalSemaphoreInfo->handleType;
-   pExternalSemaphoreProperties->exportFromImportedHandleTypes = 0;
-   pExternalSemaphoreProperties->externalSemaphoreFeatures = 0;
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   const VkSemaphoreTypeCreateInfoKHR *type_info = vk_find_struct_const(
+      pExternalSemaphoreInfo->pNext, SEMAPHORE_TYPE_CREATE_INFO_KHR);
+   const VkSemaphoreType sem_type =
+      type_info ? type_info->semaphoreType : VK_SEMAPHORE_TYPE_BINARY;
+   const VkExternalSemaphoreHandleTypeFlags valid_handles =
+      sem_type == VK_SEMAPHORE_TYPE_BINARY
+         ? physical_dev->external_binary_semaphore_handles
+         : physical_dev->external_timeline_semaphore_handles;
+   if (pExternalSemaphoreInfo->handleType & valid_handles) {
+      pExternalSemaphoreProperties->compatibleHandleTypes = valid_handles;
+      pExternalSemaphoreProperties->exportFromImportedHandleTypes =
+         valid_handles;
+      pExternalSemaphoreProperties->externalSemaphoreFeatures =
+         VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT |
+         VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT;
+   } else {
+      pExternalSemaphoreProperties->compatibleHandleTypes =
+         pExternalSemaphoreInfo->handleType;
+      pExternalSemaphoreProperties->exportFromImportedHandleTypes = 0;
+      pExternalSemaphoreProperties->externalSemaphoreFeatures = 0;
+   }
 }
 
 /* device commands */
@@ -2327,6 +2851,69 @@ vn_queue_init(struct vn_device *dev,
    return VK_SUCCESS;
 }
 
+static bool
+find_extension_names(const char *const *exts,
+                     uint32_t ext_count,
+                     const char *name)
+{
+   for (uint32_t i = 0; i < ext_count; i++) {
+      if (!strcmp(exts[i], name))
+         return true;
+   }
+   return false;
+}
+
+static const char **
+merge_extension_names(const char *const *exts,
+                      uint32_t ext_count,
+                      const char *const *extra_exts,
+                      uint32_t extra_count,
+                      const VkAllocationCallbacks *alloc,
+                      uint32_t *merged_count)
+{
+   const char **merged =
+      vk_alloc(alloc, sizeof(*merged) * (ext_count + extra_count),
+               VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   if (!merged)
+      return NULL;
+
+   memcpy(merged, exts, sizeof(*exts) * ext_count);
+
+   uint32_t count = ext_count;
+   for (uint32_t i = 0; i < extra_count; i++) {
+      if (!find_extension_names(exts, ext_count, extra_exts[i]))
+         merged[count++] = extra_exts[i];
+   }
+
+   *merged_count = count;
+   return merged;
+}
+
+static const VkDeviceCreateInfo *
+vn_device_fix_create_info(const struct vn_physical_device *physical_dev,
+                          const VkDeviceCreateInfo *dev_info,
+                          const VkAllocationCallbacks *alloc,
+                          VkDeviceCreateInfo *local_info)
+{
+   const char *extra_exts[8];
+   uint32_t extra_count = 0;
+
+   if (physical_dev->wsi_device.supports_modifiers)
+      extra_exts[extra_count++] = "VK_EXT_image_drm_format_modifier";
+
+   if (!extra_count)
+      return dev_info;
+
+   *local_info = *dev_info;
+   local_info->ppEnabledExtensionNames = merge_extension_names(
+      dev_info->ppEnabledExtensionNames, dev_info->enabledExtensionCount,
+      extra_exts, extra_count, alloc, &local_info->enabledExtensionCount);
+   if (!local_info->ppEnabledExtensionNames)
+      return NULL;
+
+   return local_info;
+}
+
 VkResult
 vn_CreateDevice(VkPhysicalDevice physicalDevice,
                 const VkDeviceCreateInfo *pCreateInfo,
@@ -2360,34 +2947,11 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
    dev->physical_device = physical_dev;
 
    VkDeviceCreateInfo local_create_info;
-   if (physical_dev->wsi_device.supports_modifiers) {
-      bool found = false;
-      for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
-         const char *name = pCreateInfo->ppEnabledExtensionNames[i];
-         if (!strcmp(name, "VK_EXT_image_drm_format_modifier")) {
-            found = true;
-            break;
-         }
-      }
-      if (!found) {
-         const uint32_t name_count = pCreateInfo->enabledExtensionCount + 1;
-         const char **names =
-            vk_alloc(alloc, sizeof(*names) * name_count, VN_DEFAULT_ALIGN,
-                     VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
-         if (!names) {
-            result = VK_ERROR_OUT_OF_HOST_MEMORY;
-            goto fail;
-         }
-
-         memcpy(names, pCreateInfo->ppEnabledExtensionNames,
-                sizeof(*names) * (name_count - 1));
-         names[name_count - 1] = "VK_EXT_image_drm_format_modifier";
-
-         local_create_info = *pCreateInfo;
-         local_create_info.enabledExtensionCount = name_count;
-         local_create_info.ppEnabledExtensionNames = names;
-         pCreateInfo = &local_create_info;
-      }
+   pCreateInfo = vn_device_fix_create_info(physical_dev, pCreateInfo, alloc,
+                                           &local_create_info);
+   if (!pCreateInfo) {
+      result = VK_ERROR_OUT_OF_HOST_MEMORY;
+      goto fail;
    }
 
    for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; i++)
@@ -2433,6 +2997,11 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
       goto fail;
    }
 
+   for (uint32_t i = 0; i < ARRAY_SIZE(dev->memory_pools); i++) {
+      struct vn_device_memory_pool *pool = &dev->memory_pools[i];
+      mtx_init(&pool->mutex, mtx_plain);
+   }
+
    *pDevice = dev_handle;
 
    if (pCreateInfo == &local_create_info)
@@ -2450,6 +3019,9 @@ fail:
    return vn_error(instance, result);
 }
 
+static void
+vn_device_memory_pool_fini(struct vn_device *dev, uint32_t mem_type_index);
+
 void
 vn_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator)
 {
@@ -2459,6 +3031,9 @@ vn_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator)
 
    if (!dev)
       return;
+
+   for (uint32_t i = 0; i < ARRAY_SIZE(dev->memory_pools); i++)
+      vn_device_memory_pool_fini(dev, i);
 
    vn_async_vkDestroyDevice(dev->instance, device, NULL);
 
@@ -2945,8 +3520,10 @@ vn_QueueSubmit(VkQueue _queue,
    if (submit.batch_count == 1) {
       const struct wsi_memory_signal_submit_info *info = vk_find_struct_const(
          submit.submit_batches[0].pNext, WSI_MEMORY_SIGNAL_SUBMIT_INFO_MESA);
-      if (info)
+      if (info) {
          wsi_mem = vn_device_memory_from_handle(info->memory);
+         assert(!wsi_mem->base_memory && wsi_mem->base_bo);
+      }
    }
 
    /* TODO this should be one trip to the renderer */
@@ -2986,7 +3563,7 @@ vn_QueueSubmit(VkQueue _queue,
 
       if (sync_base < submit.sync_count || wsi_mem) {
          const struct vn_renderer_submit dst = {
-            .bos = wsi_mem ? &wsi_mem->bo : NULL,
+            .bos = wsi_mem ? &wsi_mem->base_bo : NULL,
             .bo_count = wsi_mem ? 1 : 0,
             .batches =
                &(const struct vn_renderer_submit_batch){
@@ -3013,7 +3590,7 @@ vn_QueueSubmit(VkQueue _queue,
       if (submit.sync_count || wsi_mem) {
          struct vn_renderer *renderer = dev->instance->renderer;
          const struct vn_renderer_submit dst = {
-            .bos = wsi_mem ? &wsi_mem->bo : NULL,
+            .bos = wsi_mem ? &wsi_mem->base_bo : NULL,
             .bo_count = wsi_mem ? 1 : 0,
             .batches =
                &(const struct vn_renderer_submit_batch){
@@ -3034,15 +3611,15 @@ vn_QueueSubmit(VkQueue _queue,
     * It is guest-only and the guest kernel does not wait.  We need kernel
     * support, or better yet, an explicit fence that the host is aware of.
     *
-    * That said, I am not ready to vkQueueWaitIdle yet.  And there is a WSI
-    * server that actually waits.
-    *
     * vn_AcquireNextImage2KHR is also broken.
     */
-   if (wsi_mem && false) {
-      if (VN_DEBUG(WSI))
+   if (wsi_mem && VN_DEBUG(WSI)) {
+      static uint32_t ratelimit;
+      if (ratelimit < 10) {
          vn_log(dev->instance, "forcing vkQueueWaitIdle before presenting");
-      vn_call_vkQueueWaitIdle(dev->instance, submit.queue);
+         ratelimit++;
+      }
+      vn_QueueWaitIdle(submit.queue);
    }
 
    vn_queue_submission_cleanup(&submit);
@@ -3246,6 +3823,13 @@ vn_CreateFence(VkDevice device,
    const VkAllocationCallbacks *alloc =
       pAllocator ? pAllocator : &dev->base.base.alloc;
 
+   VkFenceCreateInfo local_create_info;
+   if (vk_find_struct_const(pCreateInfo->pNext, EXPORT_FENCE_CREATE_INFO)) {
+      local_create_info = *pCreateInfo;
+      local_create_info.pNext = NULL;
+      pCreateInfo = &local_create_info;
+   }
+
    struct vn_fence *fence = vk_zalloc(alloc, sizeof(*fence), VN_DEFAULT_ALIGN,
                                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!fence)
@@ -3410,6 +3994,64 @@ vn_WaitForFences(VkDevice device,
    }
 
    return vn_result(dev->instance, result);
+}
+
+VkResult
+vn_ImportFenceFdKHR(VkDevice device,
+                    const VkImportFenceFdInfoKHR *pImportFenceFdInfo)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_fence *fence = vn_fence_from_handle(pImportFenceFdInfo->fence);
+   const bool sync_file = pImportFenceFdInfo->handleType ==
+                          VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
+   const int fd = pImportFenceFdInfo->fd;
+   struct vn_sync_payload *payload =
+      pImportFenceFdInfo->flags & VK_FENCE_IMPORT_TEMPORARY_BIT
+         ? &fence->temporary
+         : &fence->permanent;
+
+   if (payload->type == VN_SYNC_TYPE_SYNC)
+      vn_renderer_sync_release(payload->sync);
+
+   VkResult result;
+   if (sync_file && fd < 0)
+      result = vn_renderer_sync_init_signaled(payload->sync);
+   else
+      result = vn_renderer_sync_init_syncobj(payload->sync, fd, sync_file);
+
+   if (result != VK_SUCCESS)
+      return vn_error(dev->instance, result);
+
+   payload->type = VN_SYNC_TYPE_SYNC;
+   fence->payload = payload;
+
+   if (fd >= 0)
+      close(fd);
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_GetFenceFdKHR(VkDevice device,
+                 const VkFenceGetFdInfoKHR *pGetFdInfo,
+                 int *pFd)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_fence *fence = vn_fence_from_handle(pGetFdInfo->fence);
+   const bool sync_file =
+      pGetFdInfo->handleType == VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
+   struct vn_sync_payload *payload = fence->payload;
+
+   assert(payload->type == VN_SYNC_TYPE_SYNC);
+   int fd = vn_renderer_sync_export_syncobj(payload->sync, sync_file);
+   if (fd < 0)
+      return vn_error(dev->instance, VK_ERROR_TOO_MANY_OBJECTS);
+
+   if (sync_file)
+      vn_ResetFences(device, 1, &pGetFdInfo->fence);
+
+   *pFd = fd;
+   return VK_SUCCESS;
 }
 
 /* semaphore commands */
@@ -3616,7 +4258,224 @@ vn_WaitSemaphores(VkDevice device,
    return vn_result(dev->instance, result);
 }
 
+VkResult
+vn_ImportSemaphoreFdKHR(
+   VkDevice device, const VkImportSemaphoreFdInfoKHR *pImportSemaphoreFdInfo)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_semaphore *sem =
+      vn_semaphore_from_handle(pImportSemaphoreFdInfo->semaphore);
+   const bool sync_file = pImportSemaphoreFdInfo->handleType ==
+                          VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+   const int fd = pImportSemaphoreFdInfo->fd;
+   struct vn_sync_payload *payload =
+      pImportSemaphoreFdInfo->flags & VK_SEMAPHORE_IMPORT_TEMPORARY_BIT
+         ? &sem->temporary
+         : &sem->permanent;
+
+   if (payload->type == VN_SYNC_TYPE_SYNC)
+      vn_renderer_sync_release(payload->sync);
+
+   VkResult result;
+   if (sync_file && fd < 0)
+      result = vn_renderer_sync_init_signaled(payload->sync);
+   else
+      result = vn_renderer_sync_init_syncobj(payload->sync, fd, sync_file);
+
+   if (result != VK_SUCCESS)
+      return vn_error(dev->instance, result);
+
+   /* TODO import into the host-side semaphore */
+
+   payload->type = VN_SYNC_TYPE_SYNC;
+   sem->payload = payload;
+
+   if (fd >= 0)
+      close(fd);
+
+   return VK_SUCCESS;
+}
+
+VkResult
+vn_GetSemaphoreFdKHR(VkDevice device,
+                     const VkSemaphoreGetFdInfoKHR *pGetFdInfo,
+                     int *pFd)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_semaphore *sem = vn_semaphore_from_handle(pGetFdInfo->semaphore);
+   const bool sync_file =
+      pGetFdInfo->handleType == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+   struct vn_sync_payload *payload = sem->payload;
+
+   assert(payload->type == VN_SYNC_TYPE_SYNC);
+   int fd = vn_renderer_sync_export_syncobj(payload->sync, sync_file);
+   if (fd < 0)
+      return vn_error(dev->instance, VK_ERROR_TOO_MANY_OBJECTS);
+
+   if (sync_file) {
+      vn_sync_payload_release(dev, &sem->temporary);
+      vn_renderer_sync_reset(sem->permanent.sync, 0);
+      sem->payload = &sem->permanent;
+      /* TODO reset the host-side semaphore */
+   }
+
+   *pFd = fd;
+   return VK_SUCCESS;
+}
+
 /* device memory commands */
+
+static VkResult
+vn_device_memory_simple_alloc(struct vn_device *dev,
+                              uint32_t mem_type_index,
+                              VkDeviceSize size,
+                              struct vn_device_memory **out_mem)
+{
+   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
+
+   struct vn_device_memory *mem =
+      vk_zalloc(alloc, sizeof(*mem), VN_DEFAULT_ALIGN,
+                VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   if (!mem)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   vn_object_base_init(&mem->base, VK_OBJECT_TYPE_DEVICE_MEMORY, &dev->base);
+   mem->size = size;
+
+   VkDeviceMemory mem_handle = vn_device_memory_to_handle(mem);
+   VkResult result = vn_call_vkAllocateMemory(
+      dev->instance, vn_device_to_handle(dev),
+      &(const VkMemoryAllocateInfo){
+         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+         .allocationSize = size,
+         .memoryTypeIndex = mem_type_index,
+      },
+      NULL, &mem_handle);
+   if (result != VK_SUCCESS) {
+      vk_free(alloc, mem);
+      return result;
+   }
+
+   const VkPhysicalDeviceMemoryProperties *mem_props =
+      &dev->physical_device->memory_properties.memoryProperties;
+   const VkMemoryType *mem_type = &mem_props->memoryTypes[mem_type_index];
+   result = vn_renderer_bo_create_gpu(dev->instance->renderer, mem->size,
+                                      mem->base.id, mem_type->propertyFlags,
+                                      0, &mem->base_bo);
+   if (result != VK_SUCCESS) {
+      vn_async_vkFreeMemory(dev->instance, vn_device_to_handle(dev),
+                            mem_handle, NULL);
+      vk_free(alloc, mem);
+      return result;
+   }
+   vn_instance_roundtrip(dev->instance);
+
+   *out_mem = mem;
+
+   return VK_SUCCESS;
+}
+
+static void
+vn_device_memory_simple_free(struct vn_device *dev,
+                             struct vn_device_memory *mem)
+{
+   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
+
+   if (mem->base_bo)
+      vn_renderer_bo_unref(mem->base_bo);
+
+   vn_async_vkFreeMemory(dev->instance, vn_device_to_handle(dev),
+                         vn_device_memory_to_handle(mem), NULL);
+   vn_object_base_fini(&mem->base);
+   vk_free(alloc, mem);
+}
+
+static void
+vn_device_memory_pool_fini(struct vn_device *dev, uint32_t mem_type_index)
+{
+   struct vn_device_memory_pool *pool = &dev->memory_pools[mem_type_index];
+   if (pool->memory)
+      vn_device_memory_simple_free(dev, pool->memory);
+   mtx_destroy(&pool->mutex);
+}
+
+static VkResult
+vn_device_memory_pool_grow_locked(struct vn_device *dev,
+                                  uint32_t mem_type_index,
+                                  VkDeviceSize size)
+{
+   struct vn_device_memory *mem;
+   VkResult result =
+      vn_device_memory_simple_alloc(dev, mem_type_index, size, &mem);
+   if (result != VK_SUCCESS)
+      return result;
+
+   struct vn_device_memory_pool *pool = &dev->memory_pools[mem_type_index];
+   if (pool->memory) {
+      const bool bo_destroyed = vn_renderer_bo_unref(pool->memory->base_bo);
+      pool->memory->base_bo = NULL;
+
+      /* we use pool->memory's base_bo to keep it alive */
+      if (bo_destroyed)
+         vn_device_memory_simple_free(dev, pool->memory);
+   }
+
+   pool->memory = mem;
+   pool->used = 0;
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+vn_device_memory_pool_alloc(struct vn_device *dev,
+                            uint32_t mem_type_index,
+                            VkDeviceSize size,
+                            struct vn_device_memory **base_mem,
+                            struct vn_renderer_bo **base_bo,
+                            VkDeviceSize *base_offset)
+{
+   /* We should not support suballocations because apps can do better and we
+    * also don't know the alignment requirements.  But each BO takes up a
+    * precious KVM memslot currently and some CTS tests exhausts them...
+    */
+   const VkDeviceSize pool_size = 16 * 1024 * 1024;
+   const VkDeviceSize pool_align = 4096; /* XXX */
+   struct vn_device_memory_pool *pool = &dev->memory_pools[mem_type_index];
+
+   assert(size <= pool_size);
+
+   mtx_lock(&pool->mutex);
+
+   if (!pool->memory || pool->used + size > pool_size) {
+      VkResult result =
+         vn_device_memory_pool_grow_locked(dev, mem_type_index, pool_size);
+      if (result != VK_SUCCESS) {
+         mtx_unlock(&pool->mutex);
+         return result;
+      }
+   }
+
+   /* we use base_bo to keep base_mem alive */
+   *base_mem = pool->memory;
+   *base_bo = vn_renderer_bo_ref(pool->memory->base_bo);
+
+   *base_offset = pool->used;
+   pool->used += align64(size, pool_align);
+
+   mtx_unlock(&pool->mutex);
+
+   return VK_SUCCESS;
+}
+
+static void
+vn_device_memory_pool_free(struct vn_device *dev,
+                           struct vn_device_memory *base_mem,
+                           struct vn_renderer_bo *base_bo)
+{
+   /* we use base_bo to keep base_mem alive */
+   if (vn_renderer_bo_unref(base_bo))
+      vn_device_memory_simple_free(dev, base_mem);
+}
 
 VkResult
 vn_AllocateMemory(VkDevice device,
@@ -3628,6 +4487,25 @@ vn_AllocateMemory(VkDevice device,
    const VkAllocationCallbacks *alloc =
       pAllocator ? pAllocator : &dev->base.base.alloc;
 
+   const VkPhysicalDeviceMemoryProperties *mem_props =
+      &dev->physical_device->memory_properties.memoryProperties;
+   const VkMemoryType *mem_type =
+      &mem_props->memoryTypes[pAllocateInfo->memoryTypeIndex];
+   const VkImportMemoryFdInfoKHR *import_info =
+      vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
+   const VkExportMemoryAllocateInfo *export_info =
+      vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
+   if (export_info && !export_info->handleTypes)
+      export_info = NULL;
+
+   const bool need_bo =
+      (mem_type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
+      import_info || export_info;
+   const bool suballocate =
+      need_bo && !pAllocateInfo->pNext &&
+      !(mem_type->propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) &&
+      pAllocateInfo->allocationSize <= 64 * 1024;
+
    struct vn_device_memory *mem =
       vk_zalloc(alloc, sizeof(*mem), VN_DEFAULT_ALIGN,
                 VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -3635,32 +4513,52 @@ vn_AllocateMemory(VkDevice device,
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vn_object_base_init(&mem->base, VK_OBJECT_TYPE_DEVICE_MEMORY, &dev->base);
-
-   VkDeviceMemory mem_handle = vn_device_memory_to_handle(mem);
-   VkResult result = vn_call_vkAllocateMemory(
-      dev->instance, device, pAllocateInfo, NULL, &mem_handle);
-   if (result != VK_SUCCESS) {
-      vk_free(alloc, mem);
-      return vn_error(dev->instance, result);
-   }
-
    mem->size = pAllocateInfo->allocationSize;
 
-   /* check if a bo is needed */
-   const VkPhysicalDeviceMemoryProperties *mem_props =
-      &dev->physical_device->memory_properties.memoryProperties;
-   const VkMemoryType *mem_type =
-      &mem_props->memoryTypes[pAllocateInfo->memoryTypeIndex];
-   const VkExportMemoryAllocateInfo *export_info =
-      vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
-   if (export_info && !export_info->handleTypes)
-      export_info = NULL;
-   if ((mem_type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
-       export_info) {
+   VkDeviceMemory mem_handle = vn_device_memory_to_handle(mem);
+   VkResult result;
+   if (import_info) {
+      struct vn_renderer_bo *bo;
+      result = vn_renderer_bo_create_dmabuf(
+         dev->instance->renderer, pAllocateInfo->allocationSize,
+         import_info->fd, mem_type->propertyFlags,
+         export_info ? export_info->handleTypes : 0, &bo);
+      if (result != VK_SUCCESS) {
+         vk_free(alloc, mem);
+         return vn_error(dev->instance, result);
+      }
+
+      /* TODO create host-side memory from bo->res_id */
+      result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+      if (result != VK_SUCCESS) {
+         vn_renderer_bo_unref(bo);
+         vk_free(alloc, mem);
+         return vn_error(dev->instance, result);
+      }
+
+      mem->base_bo = bo;
+   } else if (suballocate) {
+      result = vn_device_memory_pool_alloc(
+         dev, pAllocateInfo->memoryTypeIndex, mem->size, &mem->base_memory,
+         &mem->base_bo, &mem->base_offset);
+      if (result != VK_SUCCESS) {
+         vk_free(alloc, mem);
+         return vn_error(dev->instance, result);
+      }
+   } else {
+      result = vn_call_vkAllocateMemory(dev->instance, device, pAllocateInfo,
+                                        NULL, &mem_handle);
+      if (result != VK_SUCCESS) {
+         vk_free(alloc, mem);
+         return vn_error(dev->instance, result);
+      }
+   }
+
+   if (need_bo && !mem->base_bo) {
       result = vn_renderer_bo_create_gpu(
          dev->instance->renderer, mem->size, mem->base.id,
          mem_type->propertyFlags, export_info ? export_info->handleTypes : 0,
-         &mem->bo);
+         &mem->base_bo);
       if (result != VK_SUCCESS) {
          vn_async_vkFreeMemory(dev->instance, device, mem_handle, NULL);
          vk_free(alloc, mem);
@@ -3687,10 +4585,13 @@ vn_FreeMemory(VkDevice device,
    if (!mem)
       return;
 
-   vn_async_vkFreeMemory(dev->instance, device, memory, NULL);
-
-   if (mem->bo)
-      vn_renderer_bo_unref(mem->bo);
+   if (mem->base_memory) {
+      vn_device_memory_pool_free(dev, mem->base_memory, mem->base_bo);
+   } else {
+      if (mem->base_bo)
+         vn_renderer_bo_unref(mem->base_bo);
+      vn_async_vkFreeMemory(dev->instance, device, memory, NULL);
+   }
 
    vn_object_base_fini(&mem->base);
    vk_free(alloc, mem);
@@ -3701,7 +4602,9 @@ vn_GetDeviceMemoryOpaqueCaptureAddress(
    VkDevice device, const VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo)
 {
    struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_device_memory *mem = vn_device_memory_from_handle(pInfo->memory);
 
+   assert(!mem->base_memory);
    return vn_call_vkGetDeviceMemoryOpaqueCaptureAddress(dev->instance, device,
                                                         pInfo);
 }
@@ -3717,13 +4620,13 @@ vn_MapMemory(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_device_memory *mem = vn_device_memory_from_handle(memory);
 
-   void *ptr = vn_renderer_bo_map(mem->bo);
+   void *ptr = vn_renderer_bo_map(mem->base_bo);
    if (!ptr)
       return vn_error(dev->instance, VK_ERROR_MEMORY_MAP_FAILED);
 
    mem->map_end = size == VK_WHOLE_SIZE ? mem->size : offset + size;
 
-   *ppData = ptr + offset;
+   *ppData = ptr + mem->base_offset + offset;
 
    return VK_SUCCESS;
 }
@@ -3746,7 +4649,8 @@ vn_FlushMappedMemoryRanges(VkDevice device,
       const VkDeviceSize size = range->size == VK_WHOLE_SIZE
                                    ? mem->map_end - range->offset
                                    : range->size;
-      vn_renderer_bo_flush(mem->bo, range->offset, size);
+      vn_renderer_bo_flush(mem->base_bo, mem->base_offset + range->offset,
+                           size);
    }
 
    return VK_SUCCESS;
@@ -3765,7 +4669,8 @@ vn_InvalidateMappedMemoryRanges(VkDevice device,
       const VkDeviceSize size = range->size == VK_WHOLE_SIZE
                                    ? mem->map_end - range->offset
                                    : range->size;
-      vn_renderer_bo_invalidate(mem->bo, range->offset, size);
+      vn_renderer_bo_invalidate(mem->base_bo,
+                                mem->base_offset + range->offset, size);
    }
 
    return VK_SUCCESS;
@@ -3777,7 +4682,9 @@ vn_GetDeviceMemoryCommitment(VkDevice device,
                              VkDeviceSize *pCommittedMemoryInBytes)
 {
    struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_device_memory *mem = vn_device_memory_from_handle(memory);
 
+   assert(!mem->base_memory);
    vn_call_vkGetDeviceMemoryCommitment(dev->instance, device, memory,
                                        pCommittedMemoryInBytes);
 }
@@ -3791,14 +4698,34 @@ vn_GetMemoryFdKHR(VkDevice device,
    struct vn_device_memory *mem =
       vn_device_memory_from_handle(pGetFdInfo->memory);
 
-   /* XXX this is only for WSI */
-   assert(pGetFdInfo->handleType ==
-          VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
-   *pFd = vn_renderer_bo_export_dmabuf(mem->bo);
+   assert(!mem->base_memory && mem->base_bo);
+   *pFd = vn_renderer_bo_export_dmabuf(mem->base_bo);
    if (*pFd < 0)
       return vn_error(dev->instance, VK_ERROR_TOO_MANY_OBJECTS);
 
    return VK_SUCCESS;
+}
+
+VkResult
+vn_GetMemoryFdPropertiesKHR(VkDevice device,
+                            VkExternalMemoryHandleTypeFlagBits handleType,
+                            int fd,
+                            VkMemoryFdPropertiesKHR *pMemoryFdProperties)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   struct vn_renderer_bo *bo;
+   VkResult result = vn_renderer_bo_create_dmabuf(dev->instance->renderer, 0,
+                                                  fd, 0, handleType, &bo);
+   if (result != VK_SUCCESS)
+      return vn_error(dev->instance, result);
+
+   /* TODO call into the host with bo->res_id */
+   result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+
+   vn_renderer_bo_unref(bo);
+
+   return result;
 }
 
 /* buffer commands */
@@ -3932,6 +4859,12 @@ vn_BindBufferMemory(VkDevice device,
                     VkDeviceSize memoryOffset)
 {
    struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_device_memory *mem = vn_device_memory_from_handle(memory);
+
+   if (mem->base_memory) {
+      memory = vn_device_memory_to_handle(mem->base_memory);
+      memoryOffset += mem->base_offset;
+   }
 
    vn_async_vkBindBufferMemory(dev->instance, device, buffer, memory,
                                memoryOffset);
@@ -3945,9 +4878,36 @@ vn_BindBufferMemory2(VkDevice device,
                      const VkBindBufferMemoryInfo *pBindInfos)
 {
    struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
+
+   VkBindBufferMemoryInfo *local_infos = NULL;
+   for (uint32_t i = 0; i < bindInfoCount; i++) {
+      const VkBindBufferMemoryInfo *info = &pBindInfos[i];
+      struct vn_device_memory *mem =
+         vn_device_memory_from_handle(info->memory);
+      if (!mem->base_memory)
+         continue;
+
+      if (!local_infos) {
+         const size_t size = sizeof(*local_infos) * bindInfoCount;
+         local_infos = vk_alloc(alloc, size, VN_DEFAULT_ALIGN,
+                                VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+         if (!local_infos)
+            return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+         memcpy(local_infos, pBindInfos, size);
+      }
+
+      local_infos[i].memory = vn_device_memory_to_handle(mem->base_memory);
+      local_infos[i].memoryOffset += mem->base_offset;
+   }
+   if (local_infos)
+      pBindInfos = local_infos;
 
    vn_async_vkBindBufferMemory2(dev->instance, device, bindInfoCount,
                                 pBindInfos);
+
+   vk_free(alloc, local_infos);
 
    return VK_SUCCESS;
 }
@@ -4233,6 +5193,12 @@ vn_BindImageMemory(VkDevice device,
                    VkDeviceSize memoryOffset)
 {
    struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_device_memory *mem = vn_device_memory_from_handle(memory);
+
+   if (mem->base_memory) {
+      memory = vn_device_memory_to_handle(mem->base_memory);
+      memoryOffset += mem->base_offset;
+   }
 
    vn_async_vkBindImageMemory(dev->instance, device, image, memory,
                               memoryOffset);
@@ -4246,9 +5212,37 @@ vn_BindImageMemory2(VkDevice device,
                     const VkBindImageMemoryInfo *pBindInfos)
 {
    struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
+
+   VkBindImageMemoryInfo *local_infos = NULL;
+   for (uint32_t i = 0; i < bindInfoCount; i++) {
+      const VkBindImageMemoryInfo *info = &pBindInfos[i];
+      struct vn_device_memory *mem =
+         vn_device_memory_from_handle(info->memory);
+      /* TODO handle VkBindImageMemorySwapchainInfoKHR */
+      if (!mem || !mem->base_memory)
+         continue;
+
+      if (!local_infos) {
+         const size_t size = sizeof(*local_infos) * bindInfoCount;
+         local_infos = vk_alloc(alloc, size, VN_DEFAULT_ALIGN,
+                                VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+         if (!local_infos)
+            return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+         memcpy(local_infos, pBindInfos, size);
+      }
+
+      local_infos[i].memory = vn_device_memory_to_handle(mem->base_memory);
+      local_infos[i].memoryOffset += mem->base_offset;
+   }
+   if (local_infos)
+      pBindInfos = local_infos;
 
    vn_async_vkBindImageMemory2(dev->instance, device, bindInfoCount,
                                pBindInfos);
+
+   vk_free(alloc, local_infos);
 
    return VK_SUCCESS;
 }

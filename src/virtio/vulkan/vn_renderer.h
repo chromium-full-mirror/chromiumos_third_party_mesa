@@ -20,8 +20,10 @@ struct vn_renderer_info {
       uint8_t function;
    } pci;
 
+   bool has_dmabuf_import;
    bool has_cache_management;
    bool has_timeline_sync;
+   bool has_external_sync;
 
    uint32_t max_sync_queue_count;
 
@@ -49,7 +51,13 @@ struct vn_renderer_bo {
                         VkMemoryPropertyFlags flags,
                         VkExternalMemoryHandleTypeFlags external_handles);
 
-   /* TODO import */
+   /* import a dmabuf as the storage */
+   VkResult (*init_dmabuf)(struct vn_renderer_bo *bo,
+                           VkDeviceSize size,
+                           int fd,
+                           VkMemoryPropertyFlags flags,
+                           VkExternalMemoryHandleTypeFlags external_handles);
+
    int (*export_dmabuf)(struct vn_renderer_bo *bo);
 
    /* map is not thread-safe */
@@ -81,9 +89,12 @@ struct vn_renderer_sync {
                     uint64_t initial_val,
                     bool shareable,
                     bool binary);
+   VkResult (*init_syncobj)(struct vn_renderer_sync *sync,
+                            int fd,
+                            bool sync_file);
    void (*release)(struct vn_renderer_sync *sync);
 
-   /* TODO export/import */
+   int (*export_syncobj)(struct vn_renderer_sync *sync, bool sync_file);
 
    /* reset the counter */
    VkResult (*reset)(struct vn_renderer_sync *sync, uint64_t initial_val);
@@ -288,6 +299,30 @@ vn_renderer_bo_create_gpu(struct vn_renderer *renderer,
    return VK_SUCCESS;
 }
 
+static inline VkResult
+vn_renderer_bo_create_dmabuf(struct vn_renderer *renderer,
+                             VkDeviceSize size,
+                             int fd,
+                             VkMemoryPropertyFlags flags,
+                             VkExternalMemoryHandleTypeFlags external_handles,
+                             struct vn_renderer_bo **_bo)
+{
+   struct vn_renderer_bo *bo = renderer->bo_create(renderer);
+   if (!bo)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   VkResult result = bo->init_dmabuf(bo, size, fd, flags, external_handles);
+   if (result != VK_SUCCESS) {
+      bo->destroy(bo);
+      return result;
+   }
+
+   atomic_init(&bo->refcount, 1);
+
+   *_bo = bo;
+   return VK_SUCCESS;
+}
+
 static inline struct vn_renderer_bo *
 vn_renderer_bo_ref(struct vn_renderer_bo *bo)
 {
@@ -298,7 +333,7 @@ vn_renderer_bo_ref(struct vn_renderer_bo *bo)
    return bo;
 }
 
-static inline void
+static inline bool
 vn_renderer_bo_unref(struct vn_renderer_bo *bo)
 {
    const int old =
@@ -308,7 +343,10 @@ vn_renderer_bo_unref(struct vn_renderer_bo *bo)
    if (old == 1) {
       atomic_thread_fence(memory_order_acquire);
       bo->destroy(bo);
+      return true;
    }
+
+   return false;
 }
 
 static inline int
@@ -427,10 +465,33 @@ vn_renderer_sync_destroy(struct vn_renderer_sync *sync)
    sync->destroy(sync);
 }
 
+static inline VkResult
+vn_renderer_sync_init_signaled(struct vn_renderer_sync *sync)
+{
+   const uint64_t initial_val = 1;
+   const bool shareable = false;
+   const bool binary = true;
+   return sync->init(sync, initial_val, shareable, binary);
+}
+
+static inline VkResult
+vn_renderer_sync_init_syncobj(struct vn_renderer_sync *sync,
+                              int fd,
+                              bool sync_file)
+{
+   return sync->init_syncobj(sync, fd, sync_file);
+}
+
 static inline void
 vn_renderer_sync_release(struct vn_renderer_sync *sync)
 {
    sync->release(sync);
+}
+
+static inline int
+vn_renderer_sync_export_syncobj(struct vn_renderer_sync *sync, bool sync_file)
+{
+   return sync->export_syncobj(sync, sync_file);
 }
 
 static inline VkResult

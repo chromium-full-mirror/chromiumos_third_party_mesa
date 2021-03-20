@@ -15,6 +15,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "util/os_file.h"
 #include "util/u_process.h"
 #define VIRGL_RENDERER_UNSTABLE_APIS
 #include "virtio-gpu/virglrenderer_hw.h"
@@ -655,7 +656,9 @@ vtest_sync_create(struct vn_renderer *renderer)
 
    sync->base.destroy = vtest_sync_destroy;
    sync->base.init = vtest_sync_init;
+   sync->base.init_syncobj = NULL;
    sync->base.release = vtest_sync_release;
+   sync->base.export_syncobj = NULL;
    sync->base.reset = vtest_sync_reset;
    sync->base.read = vtest_sync_read;
    sync->base.write = vtest_sync_write;
@@ -719,7 +722,22 @@ vtest_bo_export_dmabuf(struct vn_renderer_bo *_bo)
    const struct vtest_bo *bo = (struct vtest_bo *)_bo;
    /* this suffices because vtest_bo_init_cpu does not set the bit */
    const bool shareable = bo->blob_flags & VCMD_BLOB_FLAG_SHAREABLE;
-   return shareable ? dup(bo->res_fd) : -1;
+   return shareable ? os_dupfd_cloexec(bo->res_fd) : -1;
+}
+
+static uint32_t
+vtest_bo_blob_flags(VkMemoryPropertyFlags flags,
+                    VkExternalMemoryHandleTypeFlags external_handles)
+{
+   uint32_t blob_flags = 0;
+   if (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+      blob_flags |= VCMD_BLOB_FLAG_MAPPABLE;
+   if (external_handles)
+      blob_flags |= VCMD_BLOB_FLAG_SHAREABLE;
+   if (external_handles & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+      blob_flags |= VCMD_BLOB_FLAG_CROSS_DEVICE;
+
+   return blob_flags;
 }
 
 static VkResult
@@ -732,13 +750,7 @@ vtest_bo_init_gpu(struct vn_renderer_bo *_bo,
    struct vtest_bo *bo = (struct vtest_bo *)_bo;
    struct vtest *vtest = bo->vtest;
 
-   if (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
-      bo->blob_flags |= VCMD_BLOB_FLAG_MAPPABLE;
-   if (external_handles)
-      bo->blob_flags |= VCMD_BLOB_FLAG_SHAREABLE;
-   if (external_handles & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
-      bo->blob_flags |= VCMD_BLOB_FLAG_CROSS_DEVICE;
-
+   bo->blob_flags = vtest_bo_blob_flags(flags, external_handles);
    bo->size = size;
 
    mtx_lock(&vtest->sock_mutex);
@@ -802,6 +814,7 @@ vtest_bo_create(struct vn_renderer *renderer)
    bo->base.destroy = vtest_bo_destroy;
    bo->base.init_cpu = vtest_bo_init_cpu;
    bo->base.init_gpu = vtest_bo_init_gpu;
+   bo->base.init_dmabuf = NULL;
    bo->base.export_dmabuf = vtest_bo_export_dmabuf;
    bo->base.map = vtest_bo_map;
    bo->base.flush = vtest_bo_flush;
@@ -894,8 +907,10 @@ vtest_get_info(struct vn_renderer *renderer, struct vn_renderer_info *info)
    info->pci.vendor_id = VTEST_PCI_VENDOR_ID;
    info->pci.device_id = VTEST_PCI_DEVICE_ID;
 
+   info->has_dmabuf_import = false;
    info->has_cache_management = false;
    info->has_timeline_sync = true;
+   info->has_external_sync = false;
 
    info->max_sync_queue_count = vtest->max_sync_queue_count;
 
