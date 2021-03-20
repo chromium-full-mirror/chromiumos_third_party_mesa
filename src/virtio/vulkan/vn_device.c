@@ -3472,15 +3472,15 @@ vn_QueueSubmit(VkQueue _queue,
     * It is guest-only and the guest kernel does not wait.  We need kernel
     * support, or better yet, an explicit fence that the host is aware of.
     *
-    * That said, I am not ready to vkQueueWaitIdle yet.  And there is a WSI
-    * server that actually waits.
-    *
     * vn_AcquireNextImage2KHR is also broken.
     */
-   if (wsi_mem && false) {
-      if (VN_DEBUG(WSI))
+   if (wsi_mem && VN_DEBUG(WSI)) {
+      static uint32_t ratelimit;
+      if (ratelimit < 10) {
          vn_log(dev->instance, "forcing vkQueueWaitIdle before presenting");
-      vn_call_vkQueueWaitIdle(dev->instance, submit.queue);
+         ratelimit++;
+      }
+      vn_QueueWaitIdle(submit.queue);
    }
 
    vn_queue_submission_cleanup(&submit);
