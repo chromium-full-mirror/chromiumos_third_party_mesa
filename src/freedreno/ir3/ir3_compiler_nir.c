@@ -40,6 +40,15 @@
 #include "ir3_context.h"
 
 void
+ir3_handle_nonuniform(struct ir3_instruction *instr, nir_intrinsic_instr *intrin)
+{
+	if (nir_intrinsic_has_access(intrin) &&
+			(nir_intrinsic_access(intrin) & ACCESS_NON_UNIFORM)) {
+		instr->flags |= IR3_INSTR_NONUNIF;
+	}
+}
+
+void
 ir3_handle_bindless_cat6(struct ir3_instruction *instr, nir_src rsrc)
 {
 	nir_intrinsic_instr *intrin = ir3_bindless_resource(rsrc);
@@ -420,17 +429,10 @@ emit_alu(struct ir3_context *ctx, nir_alu_instr *alu)
 		 * (sat) bit, we can just fold the (sat) flag back to the
 		 * src instruction and create a mov.  This is easier for cp
 		 * to eliminate.
-		 *
-		 * NOTE: a3xx definitely seen not working with flat bary.f. Same test
-		 * uses ldlv on a4xx+, so not definitive. Seems rare enough to apply
-		 * everywhere.
-		 *
-		 * TODO probably opc_cat==4 is ok too
 		 */
 		if (alu->src[0].src.is_ssa &&
-				src[0]->opc != OPC_BARY_F &&
-				(list_length(&alu->src[0].src.ssa->uses) == 1) &&
-				((opc_cat(src[0]->opc) == 2) || (opc_cat(src[0]->opc) == 3))) {
+				is_sat_compatible(src[0]->opc) &&
+				(list_length(&alu->src[0].src.ssa->uses) == 1)) {
 			src[0]->flags |= IR3_INSTR_SAT;
 			dst[0] = ir3_MOV(b, src[0], dst_type);
 		} else {
@@ -741,6 +743,7 @@ emit_intrinsic_load_ubo_ldc(struct ir3_context *ctx, nir_intrinsic_instr *intr,
 	ir3_handle_bindless_cat6(ldc, intr->src[0]);
 	if (ldc->flags & IR3_INSTR_B)
 		ctx->so->bindless_ubo = true;
+	ir3_handle_nonuniform(ldc, intr);
 
 	ir3_split_dest(b, dst, ldc, 0, ncomp);
 }
@@ -1233,6 +1236,8 @@ emit_intrinsic_load_image(struct ir3_context *ctx, nir_intrinsic_instr *intr,
 	sam = emit_sam(ctx, OPC_ISAM, info, type, 0b1111,
 				   ir3_create_collect(ctx, coords, ncoords), NULL);
 
+	ir3_handle_nonuniform(sam, intr);
+
 	sam->barrier_class = IR3_BARRIER_IMAGE_R;
 	sam->barrier_conflict = IR3_BARRIER_IMAGE_W;
 
@@ -1269,29 +1274,6 @@ emit_intrinsic_image_size_tex(struct ir3_context *ctx, nir_intrinsic_instr *intr
 	struct ir3_instruction *tmp[4];
 
 	ir3_split_dest(b, tmp, sam, 0, 4);
-
-	/* get_size instruction returns size in bytes instead of texels
-	 * for imageBuffer, so we need to divide it by the pixel size
-	 * of the image format.
-	 *
-	 * TODO: This is at least true on a5xx. Check other gens.
-	 */
-	if (nir_intrinsic_image_dim(intr) == GLSL_SAMPLER_DIM_BUF) {
-		/* Since all the possible values the divisor can take are
-		 * power-of-two (4, 8, or 16), the division is implemented
-		 * as a shift-right.
-		 * During shader setup, the log2 of the image format's
-		 * bytes-per-pixel should have been emitted in 2nd slot of
-		 * image_dims. See ir3_shader::emit_image_dims().
-		 */
-		const struct ir3_const_state *const_state =
-				ir3_const_state(ctx->so);
-		unsigned cb = regid(const_state->offsets.image_dims, 0) +
-			const_state->image_dims.off[nir_src_as_uint(intr->src[0])];
-		struct ir3_instruction *aux = create_uniform(b, cb + 1);
-
-		tmp[0] = ir3_SHR_B(b, tmp[0], 0, aux, 0);
-	}
 
 	for (unsigned i = 0; i < ncoords; i++)
 		dst[i] = tmp[i];
@@ -1478,10 +1460,24 @@ emit_intrinsic_barycentric(struct ir3_context *ctx, nir_intrinsic_instr *intr,
 	gl_system_value sysval = nir_intrinsic_barycentric_sysval(intr);
 
 	if (!ctx->so->key.msaa) {
-		if (sysval == SYSTEM_VALUE_BARYCENTRIC_PERSP_SAMPLE)
+		switch (sysval) {
+		case SYSTEM_VALUE_BARYCENTRIC_PERSP_SAMPLE:
 			sysval = SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL;
-		if (sysval == SYSTEM_VALUE_BARYCENTRIC_LINEAR_SAMPLE)
+			break;
+		case SYSTEM_VALUE_BARYCENTRIC_PERSP_CENTROID:
+			if (ctx->compiler->gpu_id < 600)
+				sysval = SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL;
+			break;
+		case SYSTEM_VALUE_BARYCENTRIC_LINEAR_SAMPLE:
 			sysval = SYSTEM_VALUE_BARYCENTRIC_LINEAR_PIXEL;
+			break;
+		case SYSTEM_VALUE_BARYCENTRIC_LINEAR_CENTROID:
+			if (ctx->compiler->gpu_id < 600)
+				sysval = SYSTEM_VALUE_BARYCENTRIC_LINEAR_PIXEL;
+			break;
+		default:
+			break;
+		}
 	}
 
 	enum ir3_bary bary = sysval - SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL;
@@ -1917,12 +1913,18 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		ir3_split_dest(b, dst, ctx->local_invocation_id, 0, 3);
 		break;
 	case nir_intrinsic_load_work_group_id:
+	case nir_intrinsic_load_work_group_id_zero_base:
 		if (!ctx->work_group_id) {
 			ctx->work_group_id =
 				create_sysval_input(ctx, SYSTEM_VALUE_WORK_GROUP_ID, 0x7);
 			ctx->work_group_id->regs[0]->flags |= IR3_REG_SHARED;
 		}
 		ir3_split_dest(b, dst, ctx->work_group_id, 0, 3);
+		break;
+	case nir_intrinsic_load_base_work_group_id:
+		for (int i = 0; i < dest_components; i++) {
+			dst[i] = create_driver_param(ctx, IR3_DP_BASE_GROUP_X + i);
+		}
 		break;
 	case nir_intrinsic_load_num_work_groups:
 		for (int i = 0; i < dest_components; i++) {
@@ -1956,6 +1958,9 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		cond->regs[0]->flags &= ~IR3_REG_SSA;
 
 		kill = ir3_KILL(b, cond, 0);
+		/* Side-effects should not be moved on a different side of the kill */
+		kill->barrier_class = IR3_BARRIER_IMAGE_W | IR3_BARRIER_BUFFER_W;
+		kill->barrier_conflict = IR3_BARRIER_IMAGE_W | IR3_BARRIER_BUFFER_W;
 		kill->regs[1]->num = regid(REG_P0, 0);
 		array_insert(ctx->ir, ctx->ir->predicates, kill);
 
@@ -2112,6 +2117,9 @@ get_tex_samp_tex_src(struct ir3_context *ctx, nir_tex_instr *tex)
 	if (texture_idx >= 0 || sampler_idx >= 0) {
 		/* Bindless case */
 		info.flags |= IR3_INSTR_B;
+
+		if (tex->texture_non_uniform || tex->sampler_non_uniform)
+			info.flags |= IR3_INSTR_NONUNIF;
 
 		/* Gather information required to determine which encoding to
 		 * choose as well as for prefetch.
@@ -2588,7 +2596,17 @@ emit_tex_txs(struct ir3_context *ctx, nir_tex_instr *tex)
 
 	lod = ir3_get_src(ctx, &tex->src[lod_idx].src)[0];
 
-	sam = emit_sam(ctx, OPC_GETSIZE, info, dst_type, 0b1111, lod, NULL);
+	if (tex->sampler_dim != GLSL_SAMPLER_DIM_BUF) {
+		sam = emit_sam(ctx, OPC_GETSIZE, info, dst_type, 0b1111, lod, NULL);
+	} else {
+		/*
+		 * The maximum value which OPC_GETSIZE could return for one dimension
+		 * is 0x007ff0, however sampler buffer could be much bigger.
+		 * Blob uses OPC_GETBUF for them.
+		 */
+		sam = emit_sam(ctx, OPC_GETBUF, info, dst_type, 0b1111, NULL, NULL);
+	}
+
 	ir3_split_dest(b, dst, sam, 0, 4);
 
 	/* Array size actually ends up in .w rather than .z. This doesn't
@@ -3402,13 +3420,10 @@ emit_instructions(struct ir3_context *ctx)
 	 * it is write-only we don't have to count it, but after lowering derefs
 	 * is too late to compact indices for that.
 	 */
-	ctx->so->num_samp = util_last_bit(ctx->s->info.textures_used) + ctx->s->info.num_images;
+	ctx->so->num_samp = BITSET_LAST_BIT(ctx->s->info.textures_used) + ctx->s->info.num_images;
 
-	/* Save off clip+cull information. Note that in OpenGL clip planes may
-	 * be individually enabled/disabled, so we can't use the
-	 * clip_distance_array_size for them.
-	 */
-	ctx->so->clip_mask = ctx->so->key.ucp_enables;
+	/* Save off clip+cull information. */
+	ctx->so->clip_mask = MASK(ctx->s->info.clip_distance_array_size);
 	ctx->so->cull_mask = MASK(ctx->s->info.cull_distance_array_size) <<
 		ctx->s->info.clip_distance_array_size;
 
@@ -3890,6 +3905,13 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 	if (so->type == MESA_SHADER_FRAGMENT &&
 			ctx->s->info.fs.needs_quad_helper_invocations)
 		so->need_pixlod = true;
+
+	if (so->type == MESA_SHADER_COMPUTE) {
+		so->local_size[0] = ctx->s->info.cs.local_size[0];
+		so->local_size[1] = ctx->s->info.cs.local_size[1];
+		so->local_size[2] = ctx->s->info.cs.local_size[2];
+		so->local_size_variable = ctx->s->info.cs.local_size_variable;
+	}
 
 out:
 	if (ret) {

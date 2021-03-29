@@ -47,10 +47,12 @@
 
 #include "c11/threads.h"
 #include "main/macros.h"
+#include "util/bitscan.h"
 #include "util/list.h"
 #include "util/log.h"
 #include "util/macros.h"
 #include "util/u_atomic.h"
+#include "util/u_dynarray.h"
 #include "vk_alloc.h"
 #include "vk_debug_report.h"
 #include "vk_device.h"
@@ -58,6 +60,7 @@
 #include "vk_extensions.h"
 #include "vk_instance.h"
 #include "vk_physical_device.h"
+#include "vk_shader_module.h"
 #include "wsi_common.h"
 
 #include "ir3/ir3_compiler.h"
@@ -117,10 +120,6 @@ typedef uint32_t xcb_window_t;
 
 #define A6XX_TEX_CONST_DWORDS 16
 #define A6XX_TEX_SAMP_DWORDS 4
-
-#define for_each_bit(b, dword)                                               \
-   for (uint32_t __dword = (dword);                                          \
-        (b) = __builtin_ffs(__dword) - 1, __dword; __dword &= ~(1 << (b)))
 
 #define COND(bool, val) ((bool) ? (val) : 0)
 #define BIT(bit) (1u << (bit))
@@ -228,7 +227,6 @@ enum tu_debug_flags
 {
    TU_DEBUG_STARTUP = 1 << 0,
    TU_DEBUG_NIR = 1 << 1,
-   TU_DEBUG_IR3 = 1 << 2,
    TU_DEBUG_NOBIN = 1 << 3,
    TU_DEBUG_SYSMEM = 1 << 4,
    TU_DEBUG_FORCEBIN = 1 << 5,
@@ -1022,14 +1020,6 @@ struct tu_event
    struct tu_bo bo;
 };
 
-struct tu_shader_module
-{
-   struct vk_object_base base;
-
-   uint32_t code_size;
-   uint32_t code[];
-};
-
 struct tu_push_constant_range
 {
    uint32_t lo;
@@ -1073,6 +1063,17 @@ struct tu_program_descriptor_linkage
    uint32_t constlen;
 
    struct tu_push_constant_range push_consts;
+};
+
+struct tu_pipeline_executable {
+   gl_shader_stage stage;
+
+   struct ir3_info stats;
+   bool is_binning;
+
+   char *nir_from_spirv;
+   char *nir_final;
+   char *disasm;
 };
 
 struct tu_pipeline
@@ -1141,6 +1142,10 @@ struct tu_pipeline
    } compute;
 
    struct tu_lrz_pipeline lrz;
+
+   void *executables_mem_ctx;
+   /* tu_pipeline_executable */
+   struct util_dynarray executables;
 };
 
 void
@@ -1285,6 +1290,8 @@ struct tu_image
    uint32_t lrz_height;
    uint32_t lrz_pitch;
    uint32_t lrz_offset;
+
+   bool shareable;
 };
 
 static inline uint32_t
@@ -1631,7 +1638,6 @@ TU_DEFINE_NONDISP_HANDLE_CASTS(tu_query_pool, VkQueryPool)
 TU_DEFINE_NONDISP_HANDLE_CASTS(tu_render_pass, VkRenderPass)
 TU_DEFINE_NONDISP_HANDLE_CASTS(tu_sampler, VkSampler)
 TU_DEFINE_NONDISP_HANDLE_CASTS(tu_sampler_ycbcr_conversion, VkSamplerYcbcrConversion)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_shader_module, VkShaderModule)
 
 /* for TU_FROM_HANDLE with both VkFence and VkSemaphore: */
 #define tu_syncobj_from_handle(x) ((struct tu_syncobj*) (uintptr_t) (x))

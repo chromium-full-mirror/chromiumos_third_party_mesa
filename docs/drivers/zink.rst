@@ -29,7 +29,6 @@ Here's a list of those requirements:
 
   * ``logicOp``
   * ``depthClamp``
-  * ``depthBiasClamp``
   * ``fillModeNonSolid``
   * ``wideLines``
   * ``largePoints``
@@ -113,11 +112,11 @@ supported:
   * `VK_KHR_maintenance2`_
   * `VK_KHR_vulkan_memory_model`
 
-* Formats features:
+* Formats requiring ``VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT``:
 
-   * ```VK_FORMAT_R32G32B32_SFLOAT```: ```VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT```
-   * ```VK_FORMAT_R32G32B32_SINT```: ```VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT```
-   * ```VK_FORMAT_R32G32B32_UINT```: ```VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT```
+      * ``VK_FORMAT_R32G32B32_SFLOAT``
+      * ``VK_FORMAT_R32G32B32_SINT``
+      * ``VK_FORMAT_R32G32B32_UINT``
 
 OpenGL 4.1
 ^^^^^^^^^^
@@ -131,14 +130,17 @@ are required:
 OpenGL 4.2
 ^^^^^^^^^^
 
-For OpenGL 4.2 support, the following additional
-requirements needs to be supported:
+For OpenGL 4.2 support, the following additional requirements needs to be
+supported:
 
 * For Vulkan 1.2 and above:
   
   * ``VkPhysicalDeviceVulkan11Features``:
 
     * ``shaderDrawParameters``
+    * ``vertexPipelineStoresAndAtomics``
+    * ``fragmentStoresAndAtomics``
+    * ``textureCompressionBC``
 
 * For Vulkan 1.1 and below:
 
@@ -146,13 +148,71 @@ requirements needs to be supported:
 
     * `VK_KHR_shader_draw_parameters`_
 
+* Formats requiring ``VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT``:
 
-* Formats features:
+   * ``VK_FORMAT_BC7_UNORM_BLOCK``
+   * ``VK_FORMAT_BC7_SRGB_BLOCK``
+   * ``VK_FORMAT_BC6H_SFLOAT_BLOCK``
+   * ``VK_FORMAT_BC6H_UFLOAT_BLOCK``
 
-   * ```VK_FORMAT_BC7_UNORM_BLOCK```: ```VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT```
-   * ```VK_FORMAT_BC7_SRGB_BLOCK```: ```VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT```
-   * ```VK_FORMAT_BC6H_SFLOAT_BLOCK```: ```VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT```
-   * ```VK_FORMAT_BC6H_UFLOAT_BLOCK```: ```VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT```
+OpenGL 4.3
+^^^^^^^^^^
+
+For OpenGL 4.3 support, the following additional requirements needs to be
+supported:
+
+* ``VkPhysicalDeviceFeatures``:
+
+  * ``robustBufferAccess``
+  * ``multiViewport``
+
+* Formats requiring ``VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT``:
+
+   * ``VK_FORMAT_R8G8B8A8_UNORM``
+   * ``VK_FORMAT_R8G8B8A8_SRGB``
+   * ``VK_FORMAT_R16_UNORM``
+   * ``VK_FORMAT_R16G16_UNORM``
+   * ``VK_FORMAT_R16_SNORM``
+   * ``VK_FORMAT_R16G16_SNORM``
+   * ``VK_FORMAT_D32_SFLOAT_S8_UINT``
+
+OpenGL 4.4
+^^^^^^^^^^
+
+For OpenGL 4.4 support, the following additional requirements needs to be
+supported:
+
+* Formats requiring ``VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT``:
+
+  * ``VK_FORMAT_B10G11R11_UFLOAT_PACK32``
+
+* Device extensions:
+
+  * `VK_KHR_sampler_mirror_clamp_to_edge`_
+
+OpenGL 4.5
+^^^^^^^^^^
+
+For OpenGL 4.5 support, the following additional ``VkPhysicalDeviceFeatures``
+are required to be supported
+
+* ``shaderCullDistance``
+
+OpenGL 4.6
+^^^^^^^^^^
+
+For OpenGL 4.6 support, the following additional ``VkPhysicalDeviceFeatures``
+are required to be supported
+
+* ``VkPhysicalDeviceFeatures``:
+
+  * ``samplerAnisotropy``
+  * ``pipelineStatisticsQuery``
+  * ``depthBiasClamp``
+
+* Device extensions:
+
+  * `VK_KHR_draw_indirect_count`_
 
 Debugging
 ---------
@@ -203,3 +263,5 @@ questions, don't hesitate to visit `#zink on FreeNode
 .. _VK_KHR_maintenance2: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_maintenance2.html
 .. _VK_KHR_vulkan_memory_model: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_vulkan_memory_model.html
 .. _VK_KHR_shader_draw_parameters: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_shader_draw_parameters.html
+.. _VK_KHR_draw_indirect_count: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_draw_indirect_count.html
+.. _VK_KHR_sampler_mirror_clamp_to_edge: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_sampler_mirror_clamp_to_edge.html

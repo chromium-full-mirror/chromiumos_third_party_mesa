@@ -227,6 +227,10 @@ void si_shader_cache_insert_shader(struct si_screen *sscreen, unsigned char ir_s
    void *hw_binary;
    struct hash_entry *entry;
    uint8_t key[CACHE_KEY_SIZE];
+   bool memory_cache_full = sscreen->shader_cache_size >= sscreen->shader_cache_max_size;
+
+   if (!insert_into_disk_cache && memory_cache_full)
+      return;
 
    entry = _mesa_hash_table_search(sscreen->shader_cache, ir_sha1_cache_key);
    if (entry)
@@ -236,16 +240,24 @@ void si_shader_cache_insert_shader(struct si_screen *sscreen, unsigned char ir_s
    if (!hw_binary)
       return;
 
-   if (_mesa_hash_table_insert(sscreen->shader_cache, mem_dup(ir_sha1_cache_key, 20), hw_binary) ==
-       NULL) {
-      FREE(hw_binary);
-      return;
+   if (!memory_cache_full) {
+      if (_mesa_hash_table_insert(sscreen->shader_cache,
+                                  mem_dup(ir_sha1_cache_key, 20),
+                                  hw_binary) == NULL) {
+          FREE(hw_binary);
+          return;
+      }
+      /* The size is stored at the start of the binary */
+      sscreen->shader_cache_size += *(uint32_t*)hw_binary;
    }
 
    if (sscreen->disk_shader_cache && insert_into_disk_cache) {
       disk_cache_compute_key(sscreen->disk_shader_cache, ir_sha1_cache_key, 20, key);
       disk_cache_put(sscreen->disk_shader_cache, key, hw_binary, *((uint32_t *)hw_binary), NULL);
    }
+
+   if (memory_cache_full)
+      FREE(hw_binary);
 }
 
 bool si_shader_cache_load_shader(struct si_screen *sscreen, unsigned char ir_sha1_cache_key[20],
@@ -314,6 +326,9 @@ bool si_init_shader_cache(struct si_screen *sscreen)
    (void)simple_mtx_init(&sscreen->shader_cache_mutex, mtx_plain);
    sscreen->shader_cache =
       _mesa_hash_table_create(NULL, si_shader_cache_key_hash, si_shader_cache_key_equals);
+   sscreen->shader_cache_size = 0;
+   /* Maximum size: 64MB on 32 bits, 1GB else */
+   sscreen->shader_cache_max_size = ((sizeof(void *) == 4) ? 64 : 1024) * 1024 * 1024;
 
    return sscreen->shader_cache != NULL;
 }
@@ -1172,7 +1187,7 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
    unsigned wave_size = si_get_shader_wave_size(shader);
 
    si_pm4_set_reg(pm4, R_00B320_SPI_SHADER_PGM_LO_ES, va >> 8);
-   si_pm4_set_reg(pm4, R_00B324_SPI_SHADER_PGM_HI_ES, va >> 40);
+   si_pm4_set_reg(pm4, R_00B324_SPI_SHADER_PGM_HI_ES, S_00B324_MEM_BASE(va >> 40));
    si_pm4_set_reg(
       pm4, R_00B228_SPI_SHADER_PGM_RSRC1_GS,
       S_00B228_VGPRS((shader->config.num_vgprs - 1) / (wave_size == 32 ? 8 : 4)) |
@@ -2621,7 +2636,7 @@ void si_get_active_slot_masks(const struct si_shader_info *info, uint64_t *const
    /* two 8-byte images share one 16-byte slot */
    num_images = align(info->base.num_images, 2);
    num_msaa_images = align(util_last_bit(info->base.msaa_images), 2);
-   num_samplers = util_last_bit(info->base.textures_used);
+   num_samplers = BITSET_LAST_BIT(info->base.textures_used);
 
    /* The layout is: sb[last] ... sb[0], cb[0] ... cb[last] */
    start = si_get_shaderbuf_slot(num_shaderbufs - 1);
@@ -3279,12 +3294,13 @@ static void si_destroy_shader_selector(struct pipe_context *ctx, void *cso)
    struct si_context *sctx = (struct si_context *)ctx;
    struct si_shader_selector *sel = (struct si_shader_selector *)cso;
    struct si_shader *p = sel->first_variant, *c;
+   enum pipe_shader_type type = pipe_shader_type_from_mesa(sel->info.stage);
 
    util_queue_drop_job(&sctx->screen->shader_compiler_queue, &sel->ready);
 
-   if (sctx->shaders[sel->info.stage].cso == sel) {
-      sctx->shaders[sel->info.stage].cso = NULL;
-      sctx->shaders[sel->info.stage].current = NULL;
+   if (sctx->shaders[type].cso == sel) {
+      sctx->shaders[type].cso = NULL;
+      sctx->shaders[type].current = NULL;
    }
 
    while (p) {
@@ -4158,6 +4174,31 @@ bool si_update_shaders(struct si_context *sctx)
             si_mark_atom_dirty(sctx, &sctx->atoms.s.db_render_state);
          }
       }
+   }
+
+   if (sctx->screen->debug_flags & DBG(SQTT)) {
+      /* Pretend the bound shaders form a vk pipeline */
+      uint32_t pipeline_code_hash = 0;
+      uint64_t base_address = ~0;
+
+      for (int i = 0; i < SI_NUM_GRAPHICS_SHADERS; i++) {
+         struct si_shader *shader = sctx->shaders[i].current;
+         if (sctx->shaders[i].cso && shader) {
+            pipeline_code_hash = _mesa_hash_data_with_seed(
+               shader->binary.elf_buffer,
+               shader->binary.elf_size,
+               pipeline_code_hash);
+            base_address = MIN2(base_address,
+                                shader->bo->gpu_address);
+         }
+      }
+
+      struct ac_thread_trace_data *thread_trace_data = sctx->thread_trace;
+      if (!si_sqtt_pipeline_is_registered(thread_trace_data, pipeline_code_hash)) {
+         si_sqtt_register_pipeline(sctx, pipeline_code_hash, base_address);
+      }
+
+      si_sqtt_describe_pipeline_bind(sctx, pipeline_code_hash);
    }
 
    if (si_pm4_state_enabled_and_changed(sctx, ls) || si_pm4_state_enabled_and_changed(sctx, hs) ||

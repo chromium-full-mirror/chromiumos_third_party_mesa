@@ -332,7 +332,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 
 	bool sample_shading = fs->per_samp | key->sample_shading;
 
-	fssz = THREAD128;
+	fssz = fs->info.double_threadsize ? THREAD128 : THREAD64;
 
 	pos_regid = ir3_find_output_regid(vs, VARYING_SLOT_POS);
 	psize_regid = ir3_find_output_regid(vs, VARYING_SLOT_PSIZ);
@@ -450,20 +450,12 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 			 COND(fs_has_dual_src_color,
 					A6XX_SP_FS_OUTPUT_CNTL0_DUAL_COLOR_IN_ENABLE));
 
-	enum a6xx_threadsize vssz;
-	if (ds || hs) {
-		vssz = THREAD64;
-	} else {
-		vssz = THREAD128;
-	}
-
 	OUT_PKT4(ring, REG_A6XX_SP_VS_CTRL_REG0, 1);
-	OUT_RING(ring, A6XX_SP_VS_CTRL_REG0_THREADSIZE(vssz) |
+	OUT_RING(ring,
 			A6XX_SP_VS_CTRL_REG0_FULLREGFOOTPRINT(vs->info.max_reg + 1) |
 			A6XX_SP_VS_CTRL_REG0_HALFREGFOOTPRINT(vs->info.max_half_reg + 1) |
 			COND(vs->mergedregs, A6XX_SP_VS_CTRL_REG0_MERGEDREGS) |
-			A6XX_SP_VS_CTRL_REG0_BRANCHSTACK(vs->branchstack) |
-			COND(vs->need_pixlod, A6XX_SP_VS_CTRL_REG0_PIXLODENABLE));
+			A6XX_SP_VS_CTRL_REG0_BRANCHSTACK(vs->branchstack));
 
 	fd6_emit_shader(ctx, ring, vs);
 	fd6_emit_immediates(ctx->screen, vs, ring);
@@ -577,25 +569,23 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 	}
 
 	if (hs) {
+		assert(vs->mergedregs == hs->mergedregs);
 		OUT_PKT4(ring, REG_A6XX_SP_HS_CTRL_REG0, 1);
-		OUT_RING(ring, A6XX_SP_HS_CTRL_REG0_THREADSIZE(THREAD64) |
+		OUT_RING(ring,
 			A6XX_SP_HS_CTRL_REG0_FULLREGFOOTPRINT(hs->info.max_reg + 1) |
 			A6XX_SP_HS_CTRL_REG0_HALFREGFOOTPRINT(hs->info.max_half_reg + 1) |
-			COND(hs->mergedregs, A6XX_SP_HS_CTRL_REG0_MERGEDREGS) |
-			A6XX_SP_HS_CTRL_REG0_BRANCHSTACK(hs->branchstack) |
-			COND(hs->need_pixlod, A6XX_SP_HS_CTRL_REG0_PIXLODENABLE));
+			A6XX_SP_HS_CTRL_REG0_BRANCHSTACK(hs->branchstack));
 
 		fd6_emit_shader(ctx, ring, hs);
 		fd6_emit_immediates(ctx->screen, hs, ring);
 		fd6_emit_link_map(ctx->screen, vs, hs, ring);
 
 		OUT_PKT4(ring, REG_A6XX_SP_DS_CTRL_REG0, 1);
-		OUT_RING(ring, A6XX_SP_DS_CTRL_REG0_THREADSIZE(THREAD64) |
+		OUT_RING(ring,
 			A6XX_SP_DS_CTRL_REG0_FULLREGFOOTPRINT(ds->info.max_reg + 1) |
 			A6XX_SP_DS_CTRL_REG0_HALFREGFOOTPRINT(ds->info.max_half_reg + 1) |
 			COND(ds->mergedregs, A6XX_SP_DS_CTRL_REG0_MERGEDREGS) |
-			A6XX_SP_DS_CTRL_REG0_BRANCHSTACK(ds->branchstack) |
-			COND(ds->need_pixlod, A6XX_SP_DS_CTRL_REG0_PIXLODENABLE));
+			A6XX_SP_DS_CTRL_REG0_BRANCHSTACK(ds->branchstack));
 
 		fd6_emit_shader(ctx, ring, ds);
 		fd6_emit_immediates(ctx->screen, ds, ring);
@@ -719,7 +709,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 	OUT_RING(ring, 0xfc);              /* XXX */
 
 	OUT_PKT4(ring, REG_A6XX_HLSQ_FS_CNTL_0, 1);
-	OUT_RING(ring, A6XX_HLSQ_FS_CNTL_0_THREADSIZE(THREAD128) |
+	OUT_RING(ring, A6XX_HLSQ_FS_CNTL_0_THREADSIZE(fssz) |
 			       COND(enable_varyings, A6XX_HLSQ_FS_CNTL_0_VARYINGS));
 
 	OUT_PKT4(ring, REG_A6XX_SP_FS_CTRL_REG0, 1);
@@ -804,13 +794,12 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 			 A6XX_VPC_VS_PACK_STRIDE_IN_VPC(l.max_loc));
 
 	if (gs) {
+		assert(gs->mergedregs == (ds ? ds->mergedregs : vs->mergedregs));
 		OUT_PKT4(ring, REG_A6XX_SP_GS_CTRL_REG0, 1);
-		OUT_RING(ring, A6XX_SP_GS_CTRL_REG0_THREADSIZE(THREAD64) |
+		OUT_RING(ring,
 			A6XX_SP_GS_CTRL_REG0_FULLREGFOOTPRINT(gs->info.max_reg + 1) |
 			A6XX_SP_GS_CTRL_REG0_HALFREGFOOTPRINT(gs->info.max_half_reg + 1) |
-			COND(gs->mergedregs, A6XX_SP_GS_CTRL_REG0_MERGEDREGS) |
-			A6XX_SP_GS_CTRL_REG0_BRANCHSTACK(gs->branchstack) |
-			COND(gs->need_pixlod, A6XX_SP_GS_CTRL_REG0_PIXLODENABLE));
+			A6XX_SP_GS_CTRL_REG0_BRANCHSTACK(gs->branchstack));
 
 		fd6_emit_shader(ctx, ring, gs);
 		fd6_emit_immediates(ctx->screen, gs, ring);
@@ -1072,6 +1061,8 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
 	struct fd_context *ctx = fd_context(data);
 	struct fd6_program_state *state = CALLOC_STRUCT(fd6_program_state);
 
+	tc_assert_driver_thread(ctx->tc);
+
 	/* if we have streamout, use full VS in binning pass, as the
 	 * binning pass VS will have outputs on other than position/psize
 	 * stripped out:
@@ -1103,6 +1094,11 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
 	setup_stateobj(state->stateobj, ctx, state, key, false);
 	state->interp_stateobj = create_interp_stateobj(ctx, state);
 
+	struct ir3_stream_output_info *stream_output =
+			&fd6_last_shader(state)->shader->stream_output;
+	if (stream_output->num_outputs > 0)
+		state->stream_output = stream_output;
+
 	return &state->base;
 }
 
@@ -1123,44 +1119,14 @@ static const struct ir3_cache_funcs cache_funcs = {
 	.destroy_state = fd6_program_destroy,
 };
 
-static void *
-fd6_shader_state_create(struct pipe_context *pctx, const struct pipe_shader_state *cso)
-{
-	return ir3_shader_state_create(pctx, cso);
-}
-
-static void
-fd6_shader_state_delete(struct pipe_context *pctx, void *hwcso)
-{
-	struct fd_context *ctx = fd_context(pctx);
-	ir3_cache_invalidate(fd6_context(ctx)->shader_cache, hwcso);
-	ir3_shader_state_delete(pctx, hwcso);
-}
-
 void
 fd6_prog_init(struct pipe_context *pctx)
 {
 	struct fd_context *ctx = fd_context(pctx);
 
-	fd6_context(ctx)->shader_cache = ir3_cache_create(&cache_funcs, ctx);
+	ctx->shader_cache = ir3_cache_create(&cache_funcs, ctx);
 
-	pctx->create_vs_state = fd6_shader_state_create;
-	pctx->delete_vs_state = fd6_shader_state_delete;
-
-	pctx->create_tcs_state = fd6_shader_state_create;
-	pctx->delete_tcs_state = fd6_shader_state_delete;
-
-	pctx->create_tes_state = fd6_shader_state_create;
-	pctx->delete_tes_state = fd6_shader_state_delete;
-
-	pctx->create_gs_state = fd6_shader_state_create;
-	pctx->delete_gs_state = fd6_shader_state_delete;
-
-	pctx->create_gs_state = fd6_shader_state_create;
-	pctx->delete_gs_state = fd6_shader_state_delete;
-
-	pctx->create_fs_state = fd6_shader_state_create;
-	pctx->delete_fs_state = fd6_shader_state_delete;
+	ir3_prog_init(pctx);
 
 	fd_prog_init(pctx);
 }

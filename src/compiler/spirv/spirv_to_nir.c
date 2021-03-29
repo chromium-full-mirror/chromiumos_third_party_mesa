@@ -2175,7 +2175,10 @@ vtn_handle_constant(struct vtn_builder *b, SpvOp opcode,
    }
 
    /* Now that we have the value, update the workgroup size if needed */
-   vtn_foreach_decoration(b, val, handle_workgroup_size_decoration_cb, NULL);
+   if (b->entry_point_stage == MESA_SHADER_COMPUTE ||
+       b->entry_point_stage == MESA_SHADER_KERNEL)
+      vtn_foreach_decoration(b, val, handle_workgroup_size_decoration_cb,
+                             NULL);
 }
 
 static void
@@ -3042,6 +3045,8 @@ fill_common_atomic_sources(struct vtn_builder *b, SpvOp opcode,
    case SpvOpAtomicOr:
    case SpvOpAtomicXor:
    case SpvOpAtomicFAddEXT:
+   case SpvOpAtomicFMinEXT:
+   case SpvOpAtomicFMaxEXT:
       src[0] = nir_src_for_ssa(vtn_get_nir_ssa(b, w[6]));
       break;
 
@@ -3051,28 +3056,28 @@ fill_common_atomic_sources(struct vtn_builder *b, SpvOp opcode,
 }
 
 static nir_ssa_def *
-get_image_coord(struct vtn_builder *b, uint32_t value)
-{
-   nir_ssa_def *coord = vtn_get_nir_ssa(b, value);
-
-   /* The image_load_store intrinsics assume a 4-dim coordinate */
-   unsigned swizzle[4];
-   for (unsigned i = 0; i < 4; i++)
-      swizzle[i] = MIN2(i, coord->num_components - 1);
-
-   return nir_swizzle(&b->nb, coord, swizzle, 4);
-}
-
-static nir_ssa_def *
 expand_to_vec4(nir_builder *b, nir_ssa_def *value)
 {
+   nir_ssa_def *components[4];
    if (value->num_components == 4)
       return value;
 
-   unsigned swiz[4];
-   for (unsigned i = 0; i < 4; i++)
-      swiz[i] = i < value->num_components ? i : 0;
-   return nir_swizzle(b, value, swiz, 4);
+   nir_ssa_def *undef = nir_ssa_undef(b, 1, value->bit_size);
+   for (unsigned i = 0; i < 4; i++) {
+      if (i < value->num_components)
+         components[i] = nir_channel(b, value, i);
+      else
+         components[i] = undef;
+   }
+   return nir_vec(b, components, 4);
+}
+
+static nir_ssa_def *
+get_image_coord(struct vtn_builder *b, uint32_t value)
+{
+   nir_ssa_def *coord = vtn_get_nir_ssa(b, value);
+   /* The image_load_store intrinsics assume a 4-dim coordinate */
+   return expand_to_vec4(&b->nb, coord);
 }
 
 static void
@@ -3116,6 +3121,8 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
    case SpvOpAtomicOr:
    case SpvOpAtomicXor:
    case SpvOpAtomicFAddEXT:
+   case SpvOpAtomicFMinEXT:
+   case SpvOpAtomicFMaxEXT:
       res_val = vtn_value(b, w[3], vtn_value_type_image_pointer);
       image = *res_val->image;
       scope = vtn_constant_uint(b, w[4]);
@@ -3140,6 +3147,7 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
       break;
 
    case SpvOpImageQuerySize:
+   case SpvOpImageQuerySamples:
       res_val = vtn_untyped_value(b, w[3]);
       image.image = vtn_get_image(b, w[3], &access);
       image.coord = NULL;
@@ -3269,8 +3277,11 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
    OP(AtomicOr,                  atomic_or)
    OP(AtomicXor,                 atomic_xor)
    OP(AtomicFAddEXT,             atomic_fadd)
+   OP(AtomicFMinEXT,             atomic_fmin)
+   OP(AtomicFMaxEXT,             atomic_fmax)
    OP(ImageQueryFormat,          format)
    OP(ImageQueryOrder,           order)
+   OP(ImageQuerySamples,         samples)
 #undef OP
    default:
       vtn_fail_with_opcode("Invalid image opcode", opcode);
@@ -3281,6 +3292,7 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
    intrin->src[0] = nir_src_for_ssa(&image.image->dest.ssa);
 
    switch (opcode) {
+   case SpvOpImageQuerySamples:
    case SpvOpImageQuerySize:
    case SpvOpImageQuerySizeLod:
    case SpvOpImageQueryFormat:
@@ -3312,6 +3324,7 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
    nir_intrinsic_set_access(intrin, access);
 
    switch (opcode) {
+   case SpvOpImageQuerySamples:
    case SpvOpImageQueryFormat:
    case SpvOpImageQueryOrder:
       /* No additional sources */
@@ -3367,6 +3380,8 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
    case SpvOpAtomicOr:
    case SpvOpAtomicXor:
    case SpvOpAtomicFAddEXT:
+   case SpvOpAtomicFMinEXT:
+   case SpvOpAtomicFMaxEXT:
       fill_common_atomic_sources(b, opcode, w, &intrin->src[3]);
       break;
 
@@ -3485,6 +3500,8 @@ get_deref_nir_atomic_op(struct vtn_builder *b, SpvOp opcode)
    OP(AtomicOr,                  atomic_or)
    OP(AtomicXor,                 atomic_xor)
    OP(AtomicFAddEXT,             atomic_fadd)
+   OP(AtomicFMinEXT,             atomic_fmin)
+   OP(AtomicFMaxEXT,             atomic_fmax)
 #undef OP
    default:
       vtn_fail_with_opcode("Invalid shared atomic", opcode);
@@ -3522,6 +3539,8 @@ vtn_handle_atomics(struct vtn_builder *b, SpvOp opcode,
    case SpvOpAtomicOr:
    case SpvOpAtomicXor:
    case SpvOpAtomicFAddEXT:
+   case SpvOpAtomicFMinEXT:
+   case SpvOpAtomicFMaxEXT:
       ptr = vtn_value(b, w[3], vtn_value_type_pointer)->pointer;
       scope = vtn_constant_uint(b, w[4]);
       semantics = vtn_constant_uint(b, w[5]);
@@ -3615,6 +3634,8 @@ vtn_handle_atomics(struct vtn_builder *b, SpvOp opcode,
       case SpvOpAtomicOr:
       case SpvOpAtomicXor:
       case SpvOpAtomicFAddEXT:
+      case SpvOpAtomicFMinEXT:
+      case SpvOpAtomicFMaxEXT:
          fill_common_atomic_sources(b, opcode, w, &atomic->src[1]);
          break;
 
@@ -4569,6 +4590,18 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
          spv_check_supported(storage_16bit, cap);
          break;
 
+      case SpvCapabilityAtomicFloat16MinMaxEXT:
+         spv_check_supported(float16_atomic_min_max, cap);
+         break;
+
+      case SpvCapabilityAtomicFloat32MinMaxEXT:
+         spv_check_supported(float32_atomic_min_max, cap);
+         break;
+
+      case SpvCapabilityAtomicFloat64MinMaxEXT:
+         spv_check_supported(float64_atomic_min_max, cap);
+         break;
+
       default:
          vtn_fail("Unhandled capability: %s (%u)",
                   spirv_capability_to_string(cap), cap);
@@ -5330,7 +5363,6 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
    case SpvOpImageSparseDrefGather:
    case SpvOpImageQueryLod:
    case SpvOpImageQueryLevels:
-   case SpvOpImageQuerySamples:
       vtn_handle_texture(b, opcode, w, count);
       break;
 
@@ -5343,6 +5375,7 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
       vtn_handle_image(b, opcode, w, count);
       break;
 
+   case SpvOpImageQuerySamples:
    case SpvOpImageQuerySizeLod:
    case SpvOpImageQuerySize: {
       struct vtn_type *image_type = vtn_get_value_type(b, w[3]);
@@ -5376,7 +5409,9 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
    case SpvOpAtomicAnd:
    case SpvOpAtomicOr:
    case SpvOpAtomicXor:
-   case SpvOpAtomicFAddEXT: {
+   case SpvOpAtomicFAddEXT:
+   case SpvOpAtomicFMinEXT:
+   case SpvOpAtomicFMaxEXT: {
       struct vtn_value *pointer = vtn_untyped_value(b, w[3]);
       if (pointer->value_type == vtn_value_type_image_pointer) {
          vtn_handle_image(b, opcode, w, count);
@@ -5922,6 +5957,7 @@ spirv_to_nir(const uint32_t *words, size_t word_count,
                                  vtn_handle_execution_mode_id, NULL);
 
    if (b->workgroup_size_builtin) {
+      vtn_assert(stage == MESA_SHADER_COMPUTE || stage == MESA_SHADER_KERNEL);
       vtn_assert(b->workgroup_size_builtin->type->type ==
                  glsl_vector_type(GLSL_TYPE_UINT, 3));
 

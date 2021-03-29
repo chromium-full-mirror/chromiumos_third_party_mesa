@@ -112,6 +112,8 @@ extern "C" {
 #define SI_MAP_BUFFER_ALIGNMENT           64
 #define SI_MAX_VARIABLE_THREADS_PER_BLOCK 1024
 
+#define SI_CONTEXT_FLAG_AUX               (1u << 31)
+
 #define SI_RESOURCE_FLAG_FORCE_LINEAR      (PIPE_RESOURCE_FLAG_DRV_PRIV << 0)
 #define SI_RESOURCE_FLAG_FLUSHED_DEPTH     (PIPE_RESOURCE_FLAG_DRV_PRIV << 1)
 #define SI_RESOURCE_FLAG_FORCE_MSAA_TILING (PIPE_RESOURCE_FLAG_DRV_PRIV << 2)
@@ -353,6 +355,8 @@ struct si_texture {
    unsigned cb_color_info; /* fast clear enable bit */
    unsigned color_clear_value[2];
    unsigned last_msaa_resolve_target_micro_mode;
+   bool swap_rgb_to_bgr_on_next_clear;
+   bool swap_rgb_to_bgr;
    unsigned num_level0_transfers;
    unsigned plane_index; /* other planes are different pipe_resources */
    unsigned num_planes;
@@ -643,6 +647,9 @@ struct si_screen {
     */
    simple_mtx_t shader_cache_mutex;
    struct hash_table *shader_cache;
+   /* Maximum and current size */
+   uint32_t shader_cache_size;
+   uint32_t shader_cache_max_size;
 
    /* Shader cache of live shaders. */
    struct util_live_shader_cache live_shader_cache;
@@ -674,7 +681,6 @@ struct si_sampler_view {
    ubyte base_level;
    ubyte block_width;
    bool is_stencil_sampler;
-   bool is_integer;
    bool dcc_incompatible;
 };
 
@@ -685,7 +691,6 @@ struct si_sampler_state {
    unsigned magic;
 #endif
    uint32_t val[4];
-   uint32_t integer_val[4];
    uint32_t upgraded_depth_val[4];
 };
 
@@ -1051,6 +1056,7 @@ struct si_context {
          struct si_shader_ctx_state tcs;
          struct si_shader_ctx_state tes;
       } shader;
+      /* indexed access using pipe_shader_type (not by MESA_SHADER_*) */
       struct si_shader_ctx_state shaders[SI_NUM_GRAPHICS_SHADERS];
    };
    struct si_shader_ctx_state cs_prim_discard_state;
@@ -1303,6 +1309,8 @@ struct si_context {
    struct pipe_fence_handle *last_sqtt_fence;
    enum rgp_sqtt_marker_event_type sqtt_next_event;
    bool thread_trace_enabled;
+
+   unsigned context_flags;
 };
 
 /* si_blit.c */
@@ -1579,6 +1587,10 @@ void si_sqtt_write_event_marker(struct si_context* sctx, struct radeon_cmdbuf *r
                                 uint32_t vertex_offset_user_data,
                                 uint32_t instance_offset_user_data,
                                 uint32_t draw_index_user_data);
+bool si_sqtt_register_pipeline(struct si_context* sctx, uint64_t pipeline_hash, uint64_t base_address);
+bool si_sqtt_pipeline_is_registered(struct ac_thread_trace_data *thread_trace_data,
+                                    uint64_t pipeline_hash);
+void si_sqtt_describe_pipeline_bind(struct si_context* sctx, uint64_t pipeline_hash);
 void
 si_write_event_with_dims_marker(struct si_context* sctx, struct radeon_cmdbuf *rcs,
                                 enum rgp_sqtt_marker_event_type api_type,
@@ -1756,7 +1768,7 @@ static inline void si_make_CB_shader_coherent(struct si_context *sctx, unsigned 
    sctx->force_cb_shader_coherent = false;
 
    if (sctx->chip_class >= GFX10) {
-      if (sctx->screen->info.tcc_harvested)
+      if (sctx->screen->info.tcc_rb_non_coherent)
          sctx->flags |= SI_CONTEXT_INV_L2;
       else if (shaders_read_metadata)
          sctx->flags |= SI_CONTEXT_INV_L2_METADATA;
@@ -1781,7 +1793,7 @@ static inline void si_make_DB_shader_coherent(struct si_context *sctx, unsigned 
    sctx->flags |= SI_CONTEXT_FLUSH_AND_INV_DB | SI_CONTEXT_INV_VCACHE;
 
    if (sctx->chip_class >= GFX10) {
-      if (sctx->screen->info.tcc_harvested)
+      if (sctx->screen->info.tcc_rb_non_coherent)
          sctx->flags |= SI_CONTEXT_INV_L2;
       else if (shaders_read_metadata)
          sctx->flags |= SI_CONTEXT_INV_L2_METADATA;

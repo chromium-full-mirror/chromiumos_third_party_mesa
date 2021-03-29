@@ -29,6 +29,8 @@ files_vulkan_util = files(
   'vk_debug_report.h',
   'vk_deferred_operation.c',
   'vk_deferred_operation.h',
+  'vk_descriptors.c',
+  'vk_descriptors.h',
   'vk_device.c',
   'vk_device.h',
   'vk_format.c',
@@ -38,6 +40,9 @@ files_vulkan_util = files(
   'vk_object.h',
   'vk_physical_device.c',
   'vk_physical_device.h',
+  'vk_render_pass.c',
+  'vk_shader_module.c',
+  'vk_shader_module.h',
   'vk_util.c',
   'vk_util.h',
 )
@@ -89,6 +94,8 @@ libvulkan_util = static_library(
    vk_enum_to_str, vk_extensions],
   include_directories : [inc_include, inc_src, inc_gallium],
   dependencies : [vulkan_wsi_deps, idep_mesautil],
+  # For glsl_type_singleton
+  link_with : libcompiler,
   c_args : [vulkan_wsi_args],
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
@@ -99,9 +106,16 @@ idep_vulkan_util_headers = declare_dependency(
   include_directories : include_directories('.')
 )
 
-idep_vulkan_util = declare_dependency(
-  # Instruct users of this library to link with --whole-archive.  Otherwise,
-  # our weak function overloads may not resolve properly.
-  link_whole : libvulkan_util,
-  dependencies : idep_vulkan_util_headers
-)
+if with_platform_windows
+  idep_vulkan_util = declare_dependency(
+    link_with : libvulkan_util,
+    dependencies : idep_vulkan_util_headers
+  )
+else
+  idep_vulkan_util = declare_dependency(
+    # Instruct users of this library to link with --whole-archive.  Otherwise,
+    # our weak function overloads may not resolve properly.
+    link_whole : libvulkan_util,
+    dependencies : idep_vulkan_util_headers
+  )
+endif

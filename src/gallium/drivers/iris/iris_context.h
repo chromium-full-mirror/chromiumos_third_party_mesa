@@ -28,9 +28,10 @@
 #include "util/set.h"
 #include "util/slab.h"
 #include "util/u_debug.h"
+#include "util/u_threaded_context.h"
 #include "intel/blorp/blorp.h"
 #include "intel/dev/gen_debug.h"
-#include "intel/common/gen_l3_config.h"
+#include "intel/common/intel_l3_config.h"
 #include "intel/compiler/brw_compiler.h"
 #include "iris_batch.h"
 #include "iris_binder.h"
@@ -537,8 +538,8 @@ struct iris_stream_output_target {
    /** Stride (bytes-per-vertex) during this transform feedback operation */
    uint16_t stride;
 
-   /** Has 3DSTATE_SO_BUFFER actually been emitted, zeroing the offsets? */
-   bool zeroed;
+   /** Does the next 3DSTATE_SO_BUFFER need to zero the offsets? */
+   bool zero_offset;
 };
 
 /**
@@ -562,6 +563,7 @@ struct iris_border_color_pool {
  */
 struct iris_context {
    struct pipe_context ctx;
+   struct threaded_context *thrctx;
 
    /** A debug callback for KHR_debug output. */
    struct pipe_debug_callback dbg;
@@ -574,6 +576,9 @@ struct iris_context {
 
    /** Slab allocator for iris_transfer_map objects. */
    struct slab_child_pool transfer_pool;
+
+   /** Slab allocator for threaded_context's iris_transfer_map objects */
+   struct slab_child_pool transfer_pool_unsync;
 
    struct blorp_context blorp;
 
@@ -638,7 +643,10 @@ struct iris_context {
          bool constrained;
       } urb;
 
-      struct u_upload_mgr *uploader;
+      /** Uploader for shader assembly from the driver thread */
+      struct u_upload_mgr *uploader_driver;
+      /** Uploader for shader assembly from the threaded context */
+      struct u_upload_mgr *uploader_unsync;
       struct hash_table *cache;
 
       /** Is a GS or TES outputting points or lines? */
@@ -710,7 +718,7 @@ struct iris_context {
       /** Aux usage of the fb's depth buffer (which may or may not exist). */
       enum isl_aux_usage hiz_usage;
 
-      enum gen_urb_deref_block_size urb_deref_block_size;
+      enum intel_urb_deref_block_size urb_deref_block_size;
 
       /** Are depth writes enabled?  (Depth buffer may or may not exist.) */
       bool depth_writes_enabled;

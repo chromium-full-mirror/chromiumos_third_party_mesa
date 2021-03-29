@@ -117,11 +117,13 @@ prepare_draw(struct st_context *st, struct gl_context *ctx)
       int cpu = util_get_current_cpu();
       if (cpu >= 0) {
          struct pipe_context *pipe = st->pipe;
-         unsigned L3_cache = util_cpu_caps.cpu_to_L3[cpu];
+         uint16_t L3_cache = util_get_cpu_caps()->cpu_to_L3[cpu];
 
-         pipe->set_context_param(pipe,
-                                 PIPE_CONTEXT_PARAM_PIN_THREADS_TO_L3_CACHE,
-                                 L3_cache);
+         if (L3_cache != U_CPU_INVALID_L3) {
+            pipe->set_context_param(pipe,
+                                    PIPE_CONTEXT_PARAM_PIN_THREADS_TO_L3_CACHE,
+                                    L3_cache);
+         }
       }
    }
 }
@@ -161,6 +163,7 @@ st_draw_vbo(struct gl_context *ctx,
    info.instance_count = num_instances;
    info.take_index_buffer_ownership = false;
    info._pad = 0;
+   info.view_mask = 0;
 
    if (ib) {
       struct gl_buffer_object *bufobj = ib->obj;

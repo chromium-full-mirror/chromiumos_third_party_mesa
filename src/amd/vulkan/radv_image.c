@@ -38,6 +38,13 @@
 
 #include "gfx10_format_table.h"
 
+
+static const VkImageUsageFlagBits RADV_IMAGE_USAGE_WRITE_BITS =
+	VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+	VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+	VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+	VK_IMAGE_USAGE_STORAGE_BIT;
+
 static unsigned
 radv_choose_tiling(struct radv_device *device,
 		   const VkImageCreateInfo *pCreateInfo,
@@ -82,11 +89,6 @@ radv_use_tc_compat_htile_for_image(struct radv_device *device,
 	if (pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR)
 		return false;
 
-	if (pCreateInfo->mipLevels > 1 &&
-	    (device->physical_device->rad_info.chip_class < GFX10 ||
-	     pCreateInfo->arrayLayers > 1))
-		return false;
-
 	/* Do not enable TC-compatible HTILE if the image isn't readable by a
 	 * shader because no texture fetches will happen.
 	 */
@@ -95,13 +97,13 @@ radv_use_tc_compat_htile_for_image(struct radv_device *device,
 				    VK_IMAGE_USAGE_TRANSFER_SRC_BIT)))
 		return false;
 
-	/* FIXME: for some reason TC compat with 2/4/8 samples breaks
-	 * some cts tests - disable for now.
-	 */
-	if (pCreateInfo->samples >= 2 && format == VK_FORMAT_D32_SFLOAT_S8_UINT)
-		return false;
-
 	if (device->physical_device->rad_info.chip_class < GFX9) {
+		/* TC-compat HTILE for MSAA depth/stencil images is broken
+		 * on GFX8 because the tiling doesn't match.
+		 */
+		if (pCreateInfo->samples >= 2 && format == VK_FORMAT_D32_SFLOAT_S8_UINT)
+			return false;
+
 		/* GFX9+ supports compression for both 32-bit and 16-bit depth
 		 * surfaces, while GFX8 only supports 32-bit natively. Though,
 		 * the driver allows TC-compat HTILE for 16-bit depth surfaces
@@ -188,6 +190,31 @@ radv_are_formats_dcc_compatible(const struct radv_physical_device *pdev,
 }
 
 static bool
+radv_formats_is_atomic_allowed(const void *pNext, VkFormat format,
+                               VkImageCreateFlags flags)
+{
+	if (radv_is_atomic_format_supported(format))
+		return true;
+
+	if (flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) {
+		const struct VkImageFormatListCreateInfo *format_list =
+			(const struct  VkImageFormatListCreateInfo *)
+				vk_find_struct_const(pNext,
+						     IMAGE_FORMAT_LIST_CREATE_INFO);
+
+		/* We have to ignore the existence of the list if viewFormatCount = 0 */
+		if (format_list && format_list->viewFormatCount) {
+			for (unsigned i = 0; i < format_list->viewFormatCount; ++i) {
+				if (radv_is_atomic_format_supported(format_list->pViewFormats[i]))
+					return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+static bool
 radv_use_dcc_for_image(struct radv_device *device,
 		       const struct radv_image *image,
 		       const VkImageCreateInfo *pCreateInfo,
@@ -200,11 +227,19 @@ radv_use_dcc_for_image(struct radv_device *device,
 	if (device->instance->debug_flags & RADV_DEBUG_NO_DCC)
 		return false;
 
-	if (image->shareable)
+	if (image->shareable && image->tiling != VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)
 		return false;
 
-	/* TODO: Enable DCC for storage images. */
-	if ((pCreateInfo->usage & VK_IMAGE_USAGE_STORAGE_BIT))
+	/*
+	 * TODO: Enable DCC for storage images on GFX9 and earlier.
+	 *
+	 * Also disable DCC with atomics because even when DCC stores are
+	 * supported atomics will always decompress. So if we are
+	 * decompressing a lot anyway we might as well not have DCC.
+	 */
+	if ((pCreateInfo->usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
+	    (!radv_image_use_dcc_image_stores(device, image) ||
+	     radv_formats_is_atomic_allowed(pCreateInfo->pNext, format, pCreateInfo->flags)))
 		return false;
 
 	if (pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR)
@@ -214,33 +249,64 @@ radv_use_dcc_for_image(struct radv_device *device,
 	    vk_format_get_plane_count(format) > 1)
 		return false;
 
-	if (!radv_image_use_fast_clear_for_image(device, image))
-		return false;
-
-	/* FIXME: DCC for 3D images with mimaps are broken on GFX10+. */
-        if (pCreateInfo->mipLevels > 1 &&
-           pCreateInfo->imageType == VK_IMAGE_TYPE_3D &&
-           device->physical_device->rad_info.chip_class >= GFX10)
-                return false;
-
-	/* FIXME: Fix DCC layers and mipmaps on GFX9. */
-	if ((pCreateInfo->arrayLayers > 1 || pCreateInfo->mipLevels > 1) &&
-	    device->physical_device->rad_info.chip_class == GFX9)
+	if (!radv_image_use_fast_clear_for_image(device, image) &&
+	    image->tiling != VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)
 		return false;
 
 	/* Do not enable DCC for mipmapped arrays because performance is worse. */
 	if (pCreateInfo->arrayLayers > 1 && pCreateInfo->mipLevels > 1)
 		return false;
 
-	/* TODO: Fix and enable DCC MSAA on older chips. */
-	if (pCreateInfo->samples > 1 &&
-	    !device->physical_device->dcc_msaa_allowed &&
-	     device->physical_device->rad_info.chip_class < GFX10)
-		return false;
+	if (device->physical_device->rad_info.chip_class < GFX10) {
+		/* TODO: Add support for DCC MSAA on GFX8-9. */
+		if (pCreateInfo->samples > 1 &&
+		    !device->physical_device->dcc_msaa_allowed)
+			return false;
+
+		/* TODO: Add support for DCC layers/mipmaps on GFX9. */
+		if ((pCreateInfo->arrayLayers > 1 || pCreateInfo->mipLevels > 1) &&
+		     device->physical_device->rad_info.chip_class == GFX9)
+			return false;
+	}
 
 	return radv_are_formats_dcc_compatible(device->physical_device,
 	                                       pCreateInfo->pNext, format,
 	                                       pCreateInfo->flags);
+}
+
+/*
+ * Whether to enable image stores with DCC compression for this image. If
+ * this function returns false the image subresource should be decompressed
+ * before using it with image stores.
+ *
+ * Note that this can have mixed performance implications, see
+ * https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/6796#note_643299
+ *
+ * This function assumes the image uses DCC compression.
+ */
+bool radv_image_use_dcc_image_stores(const struct radv_device *device,
+				     const struct radv_image *image)
+{
+	/*
+	 * TODO: Enable on more HW. DIMGREY and VANGOGH need a workaround and
+	 * we need more perf analysis.
+	 * https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/6796#note_643853
+	 *
+	 * DCC with MSAA > 2 samples results in CTS failures (some of dEQP-VK.pipeline.multisample.storage_image.*).
+	 */
+	return device->physical_device->rad_info.chip_class == GFX10 && image->info.samples <= 2;
+}
+
+/*
+ * Whether to use a predicate to determine whether DCC is in a compressed
+ * state. This can be used to avoid decompressing an image multiple times.
+ *
+ * This function assumes the image uses DCC compression.
+ */
+bool radv_image_use_dcc_predication(const struct radv_device *device,
+				    const struct radv_image *image)
+{
+	return !radv_image_use_dcc_image_stores(device, image);
 }
 
 static inline bool
@@ -273,20 +339,31 @@ static bool
 radv_use_tc_compat_cmask_for_image(struct radv_device *device,
 				   struct radv_image *image)
 {
-	if (!(device->instance->perftest_flags & RADV_PERFTEST_TC_COMPAT_CMASK))
-		return false;
-
 	/* TC-compat CMASK is only available for GFX8+. */
 	if (device->physical_device->rad_info.chip_class < GFX8)
+		return false;
+
+	if (device->instance->debug_flags & RADV_DEBUG_NO_TC_COMPAT_CMASK)
+		return false;
+
+	/* TODO: Enable TC-compat CMASK on GFX8-9. */
+	if (device->physical_device->rad_info.chip_class < GFX10 &&
+	    !(device->instance->perftest_flags & RADV_PERFTEST_TC_COMPAT_CMASK))
 		return false;
 
 	if (image->usage & VK_IMAGE_USAGE_STORAGE_BIT)
 		return false;
 
-	if (radv_image_has_dcc(image))
+	/* Do not enable TC-compatible if the image isn't readable by a shader
+	 * because no texture fetches will happen.
+	 */
+	if (!(image->usage & (VK_IMAGE_USAGE_SAMPLED_BIT |
+			      VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
+			      VK_IMAGE_USAGE_TRANSFER_SRC_BIT)))
 		return false;
 
-	if (!radv_image_has_cmask(image))
+	/* If the image doesn't have FMASK, it can't be fetchable. */
+	if (!radv_image_has_fmask(image))
 		return false;
 
 	return true;
@@ -424,6 +501,8 @@ radv_patch_image_from_extra_info(struct radv_device *device,
 
 		if (radv_surface_has_scanout(device, create_info)) {
 			image->planes[plane].surface.flags |= RADEON_SURF_SCANOUT;
+			if (device->instance->debug_flags & RADV_DEBUG_NO_DISPLAY_DCC)
+				image->planes[plane].surface.flags |= RADEON_SURF_DISABLE_DCC;
 
 			image->info.surf_index = NULL;
 		}
@@ -474,11 +553,14 @@ radv_get_surface_flags(struct radv_device *device,
 
 	if (is_depth) {
 		flags |= RADEON_SURF_ZBUFFER;
-		if (!radv_use_htile_for_image(device, image) ||
-		    (device->instance->debug_flags & RADV_DEBUG_NO_HIZ))
+
+		if (radv_use_htile_for_image(device, image) &&
+		    !(device->instance->debug_flags & RADV_DEBUG_NO_HIZ)) {
+			if (radv_use_tc_compat_htile_for_image(device, pCreateInfo, image_format))
+				flags |= RADEON_SURF_TC_COMPATIBLE_HTILE;
+		} else {
 			flags |= RADEON_SURF_NO_HTILE;
-		if (radv_use_tc_compat_htile_for_image(device, pCreateInfo, image_format))
-			flags |= RADEON_SURF_TC_COMPATIBLE_HTILE;
+		}
 	}
 
 	if (is_stencil)
@@ -699,6 +781,9 @@ si_set_mutable_tex_desc_fields(struct radv_device *device,
 			if (plane->surface.dcc_offset)
 				meta = plane->surface.u.gfx9.dcc;
 
+			if (radv_dcc_enabled(image, first_level))
+				state[6] |= S_00A018_WRITE_COMPRESS_ENABLE(1);
+
 			state[6] |= S_00A018_META_PIPE_ALIGNED(meta.pipe_aligned) |
 				    S_00A018_META_DATA_ADDRESS_LO(meta_va >> 8);
 		}
@@ -879,7 +964,7 @@ gfx10_make_texture_descriptor(struct radv_device *device,
 
 	if (radv_dcc_enabled(image, first_level)) {
 		state[6] |= S_00A018_MAX_UNCOMPRESSED_BLOCK_SIZE(V_028C78_MAX_BLOCK_SIZE_256B) |
-			    S_00A018_MAX_COMPRESSED_BLOCK_SIZE(V_028C78_MAX_BLOCK_SIZE_128B) |
+			    S_00A018_MAX_COMPRESSED_BLOCK_SIZE(image->planes[0].surface.u.gfx9.dcc.max_compressed_block_size) |
 			    S_00A018_ALPHA_IS_ON_MSB(vi_alpha_is_on_msb(device, vk_format));
 	}
 
@@ -1273,7 +1358,7 @@ radv_image_alloc_values(const struct radv_device *device, struct radv_image *ima
 		image->size += 8 * image->info.levels;
 	}
 
-	if (radv_image_has_dcc(image)) {
+	if (radv_image_use_dcc_predication(device, image)) {
 		image->dcc_pred_offset = image->size;
 		image->size += 8 * image->info.levels;
 	}
@@ -1371,7 +1456,7 @@ radv_image_create_layout(struct radv_device *device,
 	if (result != VK_SUCCESS)
 		return result;
 
-	assert(!mod_info || mod_info->drmFormatModifierPlaneCount == image->plane_count);
+	assert(!mod_info || mod_info->drmFormatModifierPlaneCount >= image->plane_count);
 
 	radv_image_reset_layout(image);
 
@@ -1741,13 +1826,16 @@ radv_image_view_make_descriptor(struct radv_image_view *iview,
 		else
 			base_level_info = &plane->surface.u.legacy.level[iview->base_mip];
 	}
+
+	if (is_storage_image && !radv_image_use_dcc_image_stores(device, image))
+		disable_compression = true;
 	si_set_mutable_tex_desc_fields(device, image,
 				       base_level_info,
 				       plane_id,
 				       iview->base_mip,
 				       iview->base_mip,
 				       blk_w, is_stencil, is_storage_image,
-				       is_storage_image || disable_compression,
+				       disable_compression,
 				       descriptor->plane_descriptors[descriptor_plane_id]);
 }
 
@@ -2011,6 +2099,9 @@ bool radv_layout_can_fast_clear(const struct radv_device *device,
 	    !radv_layout_dcc_compressed(device, image, layout, in_render_loop, queue_mask))
 		return false;
 
+	if (!(image->usage & RADV_IMAGE_USAGE_WRITE_BITS))
+		return false;
+
 	return layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL &&
 	       queue_mask == (1u << RADV_QUEUE_GENERAL);
 }
@@ -2021,10 +2112,16 @@ bool radv_layout_dcc_compressed(const struct radv_device *device,
 				bool in_render_loop,
 			        unsigned queue_mask)
 {
-	/* Don't compress compute transfer dst, as image stores are not supported. */
+	/* If the image is read-only, we can always just keep it compressed */
+	if (!(image->usage & RADV_IMAGE_USAGE_WRITE_BITS) &&
+	    radv_image_has_dcc(image))
+		return false;
+
+	/* Don't compress compute transfer dst when image stores are not supported. */
 	if ((layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ||
 	     layout == VK_IMAGE_LAYOUT_GENERAL) &&
-	    (queue_mask & (1u << RADV_QUEUE_COMPUTE)))
+	    (queue_mask & (1u << RADV_QUEUE_COMPUTE)) &&
+	    !radv_image_use_dcc_image_stores(device, image))
 		return false;
 
 	return radv_image_has_dcc(image) &&

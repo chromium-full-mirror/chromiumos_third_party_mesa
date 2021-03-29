@@ -325,6 +325,8 @@ static bi_instr *
 bi_load_sysval_to(bi_builder *b, bi_index dest, int sysval,
                 unsigned nr_components, unsigned offset)
 {
+        unsigned sysval_ubo =
+                MAX2(b->shader->inputs->sysval_ubo, b->shader->nir->info.num_ubos);
         unsigned uniform =
                 pan_lookup_sysval(b->shader->sysval_to_id,
                                   &b->shader->info->sysvals,
@@ -333,7 +335,7 @@ bi_load_sysval_to(bi_builder *b, bi_index dest, int sysval,
 
         return bi_load_to(b, nr_components * 32, dest,
                         bi_imm_u32(idx),
-                        bi_imm_u32(b->shader->nir->info.num_ubos), BI_SEG_UBO);
+                        bi_imm_u32(sysval_ubo), BI_SEG_UBO);
 }
 
 static void
@@ -691,7 +693,7 @@ bi_emit_acmpxchg_to(bi_builder *b, bi_index dst, bi_index addr, nir_src *arg_1, 
 /* Extracts an atomic opcode */
 
 static enum bi_atom_opc
-bi_atom_opc_for_nir(nir_op op)
+bi_atom_opc_for_nir(nir_intrinsic_op op)
 {
         switch (op) {
         case nir_intrinsic_global_atomic_add:
@@ -838,7 +840,7 @@ bi_emit_image_store(bi_builder *b, nir_intrinsic_instr *instr)
 
 static void
 bi_emit_atomic_i32_to(bi_builder *b, bi_index dst,
-                bi_index addr, bi_index arg, nir_op intrinsic)
+                bi_index addr, bi_index arg, nir_intrinsic_op intrinsic)
 {
         /* ATOM_C.i32 takes a vector with {arg, coalesced}, ATOM_C1.i32 doesn't
          * take any vector but can still output in RETURN mode */
@@ -1450,6 +1452,54 @@ bi_lower_flog2_32(bi_builder *b, bi_index dst, bi_index s0)
         bi_fadd_f32_to(b, dst, x1, x2, BI_ROUND_NONE);
 }
 
+/* Bifrost has extremely coarse tables for approximating sin/cos, accessible as
+ * FSIN/COS_TABLE.u6, which multiplies the bottom 6-bits by pi/32 and
+ * calculates the results. We use them to calculate sin/cos via a Taylor
+ * approximation:
+ *
+ * f(x + e) = f(x) + e f'(x) + (e^2)/2 f''(x)
+ * sin(x + e) = sin(x) + e cos(x) - (e^2)/2 sin(x)
+ * cos(x + e) = cos(x) - e sin(x) - (e^2)/2 cos(x)
+ */
+
+#define TWO_OVER_PI  bi_imm_f32(2.0f / 3.14159f)
+#define MPI_OVER_TWO bi_imm_f32(-3.14159f / 2.0)
+#define SINCOS_BIAS  bi_imm_u32(0x49400000)
+
+static void
+bi_lower_fsincos_32(bi_builder *b, bi_index dst, bi_index s0, bool cos)
+{
+        /* bottom 6-bits of result times pi/32 approximately s0 mod 2pi */
+        bi_index x_u6 = bi_fma_f32(b, s0, TWO_OVER_PI, SINCOS_BIAS, BI_ROUND_NONE);
+
+        /* Approximate domain error (small) */
+        bi_index e = bi_fma_f32(b, bi_fadd_f32(b, x_u6, bi_neg(SINCOS_BIAS),
+                                BI_ROUND_NONE),
+                        MPI_OVER_TWO, s0, BI_ROUND_NONE);
+
+        /* Lookup sin(x), cos(x) */
+        bi_index sinx = bi_fsin_table_u6(b, x_u6, false);
+        bi_index cosx = bi_fcos_table_u6(b, x_u6, false);
+
+        /* e^2 / 2 */
+        bi_index e2_over_2 = bi_fma_rscale_f32(b, e, e, bi_neg(bi_zero()),
+                        bi_imm_u32(-1), BI_ROUND_NONE, BI_SPECIAL_NONE);
+
+        /* (-e^2)/2 f''(x) */
+        bi_index quadratic = bi_fma_f32(b, bi_neg(e2_over_2),
+                        cos ? cosx : sinx,
+                        bi_neg(bi_zero()),  BI_ROUND_NONE);
+
+        /* e f'(x) - (e^2/2) f''(x) */
+        bi_instr *I = bi_fma_f32_to(b, bi_temp(b->shader), e,
+                        cos ? bi_neg(sinx) : cosx,
+                        quadratic, BI_ROUND_NONE);
+        I->clamp = BI_CLAMP_CLAMP_M1_1;
+
+        /* f(x) + e f'(x) - (e^2/2) f''(x) */
+        bi_fadd_f32_to(b, dst, I->dest[0], cos ? cosx : sinx, BI_ROUND_NONE);
+}
+
 static void
 bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
 {
@@ -1575,6 +1625,14 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
                 bi_fadd_to(b, sz, dst, bi_abs(s0), bi_zero(), BI_ROUND_NONE);
                 break;
 
+        case nir_op_fsin:
+                bi_lower_fsincos_32(b, dst, s0, false);
+                break;
+
+        case nir_op_fcos:
+                bi_lower_fsincos_32(b, dst, s0, true);
+                break;
+
         case nir_op_fexp2: {
                 assert(sz == 32); /* should've been lowered */
 
@@ -1614,7 +1672,7 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
                 if (sz == 8)
                         bi_mux_v4i8_to(b, dst, s2, s1, s0, BI_MUX_INT_ZERO);
                 else
-                        bi_csel_to(b, sz, dst, s0, bi_zero(), s1, s2, BI_CMPF_NE);
+                        bi_csel_to(b, nir_type_float, sz, dst, s0, bi_zero(), s1, s2, BI_CMPF_NE);
                 break;
 
         case nir_op_ishl:
@@ -1834,27 +1892,35 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
                 break;
 
         case nir_op_iadd:
-                bi_iadd_to(b, sz, dst, s0, s1, false);
+                bi_iadd_to(b, nir_type_int, sz, dst, s0, s1, false);
                 break;
 
         case nir_op_iadd_sat:
-                bi_iadd_to(b, sz, dst, s0, s1, true);
+                bi_iadd_to(b, nir_type_int, sz, dst, s0, s1, true);
+                break;
+
+        case nir_op_uadd_sat:
+                bi_iadd_to(b, nir_type_uint, sz, dst, s0, s1, true);
                 break;
 
         case nir_op_ihadd:
-                bi_hadd_to(b, sz, dst, s0, s1, BI_ROUND_RTN);
+                bi_hadd_to(b, nir_type_int, sz, dst, s0, s1, BI_ROUND_RTN);
                 break;
 
         case nir_op_irhadd:
-                bi_hadd_to(b, sz, dst, s0, s1, BI_ROUND_RTP);
+                bi_hadd_to(b, nir_type_int, sz, dst, s0, s1, BI_ROUND_RTP);
                 break;
 
         case nir_op_isub:
-                bi_isub_to(b, sz, dst, s0, s1, false);
+                bi_isub_to(b, nir_type_int, sz, dst, s0, s1, false);
                 break;
 
         case nir_op_isub_sat:
-                bi_isub_to(b, sz, dst, s0, s1, true);
+                bi_isub_to(b, nir_type_int, sz, dst, s0, s1, true);
+                break;
+
+        case nir_op_usub_sat:
+                bi_isub_to(b, nir_type_uint, sz, dst, s0, s1, true);
                 break;
 
         case nir_op_imul:
@@ -2719,7 +2785,6 @@ bi_optimize_nir(nir_shader *nir)
         unsigned lower_flrp = 16 | 32 | 64;
 
         NIR_PASS(progress, nir, nir_lower_regs_to_ssa);
-        NIR_PASS(progress, nir, nir_lower_idiv, nir_lower_idiv_fast);
 
         nir_lower_tex_options lower_tex_options = {
                 .lower_txs_lod = true,
@@ -2733,6 +2798,8 @@ bi_optimize_nir(nir_shader *nir)
         NIR_PASS(progress, nir, pan_lower_helper_invocation);
 
         NIR_PASS(progress, nir, nir_lower_int64);
+
+        NIR_PASS(progress, nir, nir_lower_idiv, nir_lower_idiv_fast);
 
         NIR_PASS(progress, nir, nir_lower_tex, &lower_tex_options);
         NIR_PASS(progress, nir, nir_lower_alu_to_scalar, NULL, NULL);
@@ -2883,13 +2950,6 @@ bi_lower_branch(bi_block *block)
 
                 if (bi_is_terminal_block(ins->branch_target))
                         ins->branch_target = NULL;
-
-                /* If there is nowhere to go, there is no point in branching */
-                if (bi_is_terminal_block((bi_block *) block->base.successors[0]) &&
-                        bi_is_terminal_block((bi_block *) block->base.successors[1]) &&
-                        ins->branch_target == NULL) {
-                        bi_remove_instruction(ins);
-                }
         }
 }
 

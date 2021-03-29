@@ -99,8 +99,8 @@ key_alloc(unsigned num_surfs)
 	return key;
 }
 
-static uint32_t
-key_hash(const void *_key)
+uint32_t
+fd_batch_key_hash(const void *_key)
 {
 	const struct fd_batch_key *key = _key;
 	uint32_t hash = 0;
@@ -109,8 +109,8 @@ key_hash(const void *_key)
 	return hash;
 }
 
-static bool
-key_equals(const void *_a, const void *_b)
+bool
+fd_batch_key_equals(const void *_a, const void *_b)
 {
 	const struct fd_batch_key *a = _a;
 	const struct fd_batch_key *b = _b;
@@ -118,10 +118,19 @@ key_equals(const void *_a, const void *_b)
 		(memcmp(a->surf, b->surf, sizeof(a->surf[0]) * a->num_surfs) == 0);
 }
 
+struct fd_batch_key *
+fd_batch_key_clone(void *mem_ctx, const struct fd_batch_key *key)
+{
+	unsigned sz = sizeof(struct fd_batch_key) + (sizeof(key->surf[0]) * key->num_surfs);
+	struct fd_batch_key *new_key = rzalloc_size(mem_ctx, sz);
+	memcpy(new_key, key, sz);
+	return new_key;
+}
+
 void
 fd_bc_init(struct fd_batch_cache *cache)
 {
-	cache->ht = _mesa_hash_table_create(NULL, key_hash, key_equals);
+	cache->ht = _mesa_hash_table_create(NULL, fd_batch_key_hash, fd_batch_key_equals);
 }
 
 void
@@ -280,7 +289,7 @@ fd_bc_invalidate_batch(struct fd_batch *batch, bool remove)
 	DBG("%p: key=%p", batch, batch->key);
 	for (unsigned idx = 0; idx < key->num_surfs; idx++) {
 		struct fd_resource *rsc = fd_resource(key->surf[idx].texture);
-		rsc->bc_batch_mask &= ~(1 << batch->idx);
+		rsc->track->bc_batch_mask &= ~(1 << batch->idx);
 	}
 
 	struct hash_entry *entry =
@@ -294,25 +303,25 @@ fd_bc_invalidate_batch(struct fd_batch *batch, bool remove)
 void
 fd_bc_invalidate_resource(struct fd_resource *rsc, bool destroy)
 {
-	struct fd_screen *screen = fd_screen(rsc->base.screen);
+	struct fd_screen *screen = fd_screen(rsc->b.b.screen);
 	struct fd_batch *batch;
 
 	fd_screen_lock(screen);
 
 	if (destroy) {
-		foreach_batch(batch, &screen->batch_cache, rsc->batch_mask) {
+		foreach_batch (batch, &screen->batch_cache, rsc->track->batch_mask) {
 			struct set_entry *entry = _mesa_set_search(batch->resources, rsc);
 			_mesa_set_remove(batch->resources, entry);
 		}
-		rsc->batch_mask = 0;
+		rsc->track->batch_mask = 0;
 
-		fd_batch_reference_locked(&rsc->write_batch, NULL);
+		fd_batch_reference_locked(&rsc->track->write_batch, NULL);
 	}
 
-	foreach_batch(batch, &screen->batch_cache, rsc->bc_batch_mask)
+	foreach_batch (batch, &screen->batch_cache, rsc->track->bc_batch_mask)
 		fd_bc_invalidate_batch(batch, false);
 
-	rsc->bc_batch_mask = 0;
+	rsc->track->bc_batch_mask = 0;
 
 	fd_screen_unlock(screen);
 }
@@ -420,7 +429,7 @@ batch_from_key(struct fd_batch_cache *cache, struct fd_batch_key *key,
 	assert_dt
 {
 	struct fd_batch *batch = NULL;
-	uint32_t hash = key_hash(key);
+	uint32_t hash = fd_batch_key_hash(key);
 	struct hash_entry *entry =
 		_mesa_hash_table_search_pre_hashed(cache->ht, hash, key);
 
@@ -459,7 +468,7 @@ batch_from_key(struct fd_batch_cache *cache, struct fd_batch_key *key,
 
 	for (unsigned idx = 0; idx < key->num_surfs; idx++) {
 		struct fd_resource *rsc = fd_resource(key->surf[idx].texture);
-		rsc->bc_batch_mask = (1 << batch->idx);
+		rsc->track->bc_batch_mask = (1 << batch->idx);
 	}
 
 	return batch;

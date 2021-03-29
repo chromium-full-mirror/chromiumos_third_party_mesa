@@ -586,13 +586,6 @@ v3d_lower_nir(struct v3d_compile *c)
         for (int i = 0; i < c->key->num_tex_used; i++) {
                 for (int j = 0; j < 4; j++)
                         tex_options.swizzles[i][j] = c->key->tex[i].swizzle[j];
-
-                if (c->key->tex[i].clamp_s)
-                        tex_options.saturate_s |= 1 << i;
-                if (c->key->tex[i].clamp_t)
-                        tex_options.saturate_t |= 1 << i;
-                if (c->key->tex[i].clamp_r)
-                        tex_options.saturate_r |= 1 << i;
         }
 
         assert(c->key->num_samplers_used <= ARRAY_SIZE(c->key->sampler));
@@ -656,6 +649,14 @@ v3d_vs_set_prog_data(struct v3d_compile *c,
         for (int i = 0; i < ARRAY_SIZE(prog_data->vattr_sizes); i++) {
                 prog_data->vattr_sizes[i] = c->vattr_sizes[i];
                 prog_data->vpm_input_size += c->vattr_sizes[i];
+        }
+
+        memset(prog_data->driver_location_map, -1,
+               sizeof(prog_data->driver_location_map));
+
+        nir_foreach_shader_in_variable(var, c->s) {
+                prog_data->driver_location_map[var->data.location] =
+                        var->data.driver_location;
         }
 
         prog_data->uses_vid = BITSET_TEST(c->s->info.system_values_read,
@@ -793,6 +794,10 @@ v3d_cs_set_prog_data(struct v3d_compile *c,
                      struct v3d_compute_prog_data *prog_data)
 {
         prog_data->shared_size = c->s->info.cs.shared_size;
+
+        prog_data->local_size[0] = c->s->info.cs.local_size[0];
+        prog_data->local_size[1] = c->s->info.cs.local_size[1];
+        prog_data->local_size[2] = c->s->info.cs.local_size[2];
 }
 
 static void
@@ -1079,6 +1084,21 @@ v3d_intrinsic_dependency_cb(nir_intrinsic_instr *intr,
         return false;
 }
 
+static bool
+should_split_wrmask(const nir_instr *instr, const void *data)
+{
+        nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+        switch (intr->intrinsic) {
+        case nir_intrinsic_store_ssbo:
+        case nir_intrinsic_store_shared:
+        case nir_intrinsic_store_global:
+        case nir_intrinsic_store_scratch:
+                return true;
+        default:
+                return false;
+        }
+}
+
 static void
 v3d_attempt_compile(struct v3d_compile *c)
 {
@@ -1143,6 +1163,8 @@ v3d_attempt_compile(struct v3d_compile *c)
            NIR_PASS_V(c->s, nir_copy_prop);
            NIR_PASS_V(c->s, v3d_nir_lower_robust_buffer_access, c);
         }
+
+        NIR_PASS_V(c->s, nir_lower_wrmasks, should_split_wrmask, c->s);
 
         v3d_optimize_nir(c->s);
 

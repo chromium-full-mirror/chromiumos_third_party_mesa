@@ -323,10 +323,14 @@ brw_instruction_name(const struct gen_device_info *devinfo, enum opcode op)
       return "a64_byte_scattered_write_logical";
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_LOGICAL:
       return "a64_untyped_atomic_logical";
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT16_LOGICAL:
+      return "a64_untyped_atomic_int16_logical";
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL:
       return "a64_untyped_atomic_int64_logical";
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT_LOGICAL:
-      return "a64_untyped_atomic_float_logical";
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL:
+      return "a64_untyped_atomic_float16_logical";
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
+      return "a64_untyped_atomic_float32_logical";
    case SHADER_OPCODE_TYPED_ATOMIC_LOGICAL:
       return "typed_atomic_logical";
    case SHADER_OPCODE_TYPED_SURFACE_READ_LOGICAL:
@@ -715,7 +719,8 @@ backend_shader::backend_shader(const struct brw_compiler *compiler,
                                void *log_data,
                                void *mem_ctx,
                                const nir_shader *shader,
-                               struct brw_stage_prog_data *stage_prog_data)
+                               struct brw_stage_prog_data *stage_prog_data,
+                               bool debug_enabled)
    : compiler(compiler),
      log_data(log_data),
      devinfo(compiler->devinfo),
@@ -723,9 +728,9 @@ backend_shader::backend_shader(const struct brw_compiler *compiler,
      stage_prog_data(stage_prog_data),
      mem_ctx(mem_ctx),
      cfg(NULL), idom_analysis(this),
-     stage(shader->info.stage)
+     stage(shader->info.stage),
+     debug_enabled(debug_enabled)
 {
-   debug_enabled = INTEL_DEBUG & intel_debug_flag_for_shader_stage(stage);
    stage_name = _mesa_shader_stage_to_string(stage);
    stage_abbrev = _mesa_shader_stage_to_abbrev(stage);
 }
@@ -1101,8 +1106,10 @@ backend_instruction::has_side_effects() const
    case SHADER_OPCODE_A64_UNTYPED_WRITE_LOGICAL:
    case SHADER_OPCODE_A64_BYTE_SCATTERED_WRITE_LOGICAL:
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT16_LOGICAL:
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL:
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
    case SHADER_OPCODE_BYTE_SCATTERED_WRITE_LOGICAL:
    case SHADER_OPCODE_DWORD_SCATTERED_WRITE_LOGICAL:
    case SHADER_OPCODE_TYPED_ATOMIC_LOGICAL:
@@ -1306,6 +1313,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
 {
    const struct gen_device_info *devinfo = compiler->devinfo;
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_TESS_EVAL];
+   const bool debug_enabled = INTEL_DEBUG & DEBUG_TES;
    const unsigned *assembly;
 
    prog_data->base.base.stage = MESA_SHADER_TESS_EVAL;
@@ -1316,7 +1324,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
    brw_nir_apply_key(nir, compiler, &key->base, 8, is_scalar);
    brw_nir_lower_tes_inputs(nir, input_vue_map);
    brw_nir_lower_vue_outputs(nir);
-   brw_postprocess_nir(nir, compiler, is_scalar);
+   brw_postprocess_nir(nir, compiler, is_scalar, debug_enabled);
 
    brw_compute_vue_map(devinfo, &prog_data->base.vue_map,
                        nir->info.outputs_written,
@@ -1376,7 +1384,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
                              : BRW_TESS_OUTPUT_TOPOLOGY_TRI_CCW;
    }
 
-   if (INTEL_DEBUG & DEBUG_TES) {
+   if (unlikely(debug_enabled)) {
       fprintf(stderr, "TES Input ");
       brw_print_vue_map(stderr, input_vue_map, MESA_SHADER_TESS_EVAL);
       fprintf(stderr, "TES Output ");
@@ -1399,7 +1407,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
 
       fs_generator g(compiler, log_data, mem_ctx,
                      &prog_data->base.base, false, MESA_SHADER_TESS_EVAL);
-      if (INTEL_DEBUG & DEBUG_TES) {
+      if (unlikely(debug_enabled)) {
          g.enable_debug(ralloc_asprintf(mem_ctx,
                                         "%s tessellation evaluation shader %s",
                                         nir->info.label ? nir->info.label
@@ -1415,20 +1423,20 @@ brw_compile_tes(const struct brw_compiler *compiler,
       assembly = g.get_assembly();
    } else {
       brw::vec4_tes_visitor v(compiler, log_data, key, prog_data,
-			      nir, mem_ctx, shader_time_index);
+                              nir, mem_ctx, shader_time_index, debug_enabled);
       if (!v.run()) {
 	 if (error_str)
 	    *error_str = ralloc_strdup(mem_ctx, v.fail_msg);
 	 return NULL;
       }
 
-      if (INTEL_DEBUG & DEBUG_TES)
+      if (unlikely(debug_enabled))
 	 v.dump_instructions();
 
       assembly = brw_vec4_generate_assembly(compiler, log_data, mem_ctx, nir,
                                             &prog_data->base, v.cfg,
                                             v.performance_analysis.require(),
-                                            stats);
+                                            stats, debug_enabled);
    }
 
    return assembly;

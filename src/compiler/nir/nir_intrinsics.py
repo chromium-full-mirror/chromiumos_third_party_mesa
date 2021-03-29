@@ -213,6 +213,12 @@ index("nir_alu_type", "dest_type")
 # The swizzle mask for quad_swizzle_amd & masked_swizzle_amd
 index("unsigned", "swizzle_mask")
 
+# Whether the load_buffer_amd/store_buffer_amd is swizzled
+index("bool", "is_swizzled")
+
+# The SLC ("system level coherent") bit of load_buffer_amd/store_buffer_amd
+index("bool", "slc_amd")
+
 # Separate source/dest access flags for copies
 index("enum gl_access_qualifier", "dst_access")
 index("enum gl_access_qualifier", "src_access")
@@ -539,6 +545,8 @@ image("atomic_xor",  src_comp=[4, 1, 1], dest_comp=1)
 image("atomic_exchange",  src_comp=[4, 1, 1], dest_comp=1)
 image("atomic_comp_swap", src_comp=[4, 1, 1, 1], dest_comp=1)
 image("atomic_fadd",  src_comp=[4, 1, 1], dest_comp=1)
+image("atomic_fmin",  src_comp=[4, 1, 1], dest_comp=1)
+image("atomic_fmax",  src_comp=[4, 1, 1], dest_comp=1)
 image("size",    dest_comp=0, src_comp=[1], flags=[CAN_ELIMINATE, CAN_REORDER])
 image("samples", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
 image("atomic_inc_wrap",  src_comp=[4, 1, 1], dest_comp=1)
@@ -931,6 +939,12 @@ load("global", [1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
 # src[] = { address }.
 load("global_constant", [1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET],
      [CAN_ELIMINATE, CAN_REORDER])
+# src[] = { base_address, offset }.
+load("global_constant_offset", [1, 1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET],
+     [CAN_ELIMINATE, CAN_REORDER])
+# src[] = { base_address, offset, bound }.
+load("global_constant_bounded", [1, 1, 1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET],
+     [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { address }.
 load("kernel_input", [1], [BASE, RANGE, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { offset }.
@@ -1119,11 +1133,38 @@ system_value("tcs_out_param_base_r600", 4)
 system_value("tcs_rel_patch_id_r600", 1)
 system_value("tcs_tess_factor_base_r600", 1)
 
+# the tess coords come as xy only, z has to be calculated
+system_value("tess_coord_r600", 2)
+
 # load as many components as needed giving per-component addresses
-intrinsic("load_local_shared_r600", src_comp=[0], dest_comp=0, indices = [COMPONENT], flags = [CAN_ELIMINATE, CAN_REORDER])
+intrinsic("load_local_shared_r600", src_comp=[0], dest_comp=0, indices = [], flags = [CAN_ELIMINATE])
 
 store("local_shared_r600", [1], [WRITE_MASK])
 store("tf_r600", [])
+
+# AMD GCN/RDNA specific intrinsics
+
+# src[] = { descriptor, base address, scalar offset }
+intrinsic("load_buffer_amd", src_comp=[4, 1, 1], dest_comp=0, indices=[BASE, IS_SWIZZLED, SLC_AMD, MEMORY_MODES], flags=[CAN_ELIMINATE])
+# src[] = { store value, descriptor, base address, scalar offset }
+intrinsic("store_buffer_amd", src_comp=[0, 4, 1, 1], indices=[BASE, WRITE_MASK, IS_SWIZZLED, SLC_AMD, MEMORY_MODES])
+
+# Descriptor where TCS outputs are stored for TES
+system_value("ring_tess_offchip_amd", 4)
+system_value("ring_tess_offchip_offset_amd", 1)
+# Descriptor where TCS outputs are stored for the HW tessellator
+system_value("ring_tess_factors_amd", 4)
+system_value("ring_tess_factors_offset_amd", 1)
+# Descriptor where ES outputs are stored for GS to read on GFX6-8
+system_value("ring_esgs_amd", 4)
+system_value("ring_es2gs_offset_amd", 1)
+
+# Number of patches processed by each TCS workgroup
+system_value("tcs_num_patches_amd", 1)
+# Relative tessellation patch ID within the current workgroup
+system_value("tess_rel_patch_id_amd", 1)
+# Vertex offsets used for GS per-vertex inputs
+system_value("gs_vertex_offset_amd", 1, [BASE])
 
 # V3D-specific instrinc for tile buffer color reads.
 #
@@ -1158,9 +1199,11 @@ image("store_raw_intel", src_comp=[1, 0])
 
 # Intrinsic to load a block of at least 32B of constant data from a 64-bit
 # global memory address.  The memory address must be uniform and 32B-aligned.
-# src[] = { address }.
-intrinsic("load_global_const_block_intel", src_comp=[1], dest_comp=0, bit_sizes=[32],
-          indices=[BASE], flags=[CAN_ELIMINATE, CAN_REORDER])
+# The second source is a predicate which indicates whether or not to actually
+# do the load.
+# src[] = { address, predicate }.
+intrinsic("load_global_const_block_intel", src_comp=[1, 1], dest_comp=0,
+          bit_sizes=[32], indices=[BASE], flags=[CAN_ELIMINATE, CAN_REORDER])
 
 # Number of data items being operated on for a SIMD program.
 system_value("simd_width_intel", 1)
@@ -1168,6 +1211,11 @@ system_value("simd_width_intel", 1)
 # Load a relocatable 32-bit value
 intrinsic("load_reloc_const_intel", dest_comp=1, bit_sizes=[32],
           indices=[PARAM_IDX], flags=[CAN_ELIMINATE, CAN_REORDER])
+
+# 64-bit global address for a Vulkan descriptor set
+# src[0] = { set }
+intrinsic("load_desc_set_address_intel", dest_comp=1, bit_sizes=[64],
+          src_comp=[1], flags=[CAN_ELIMINATE, CAN_REORDER])
 
 # OpSubgroupBlockReadINTEL and OpSubgroupBlockWriteINTEL from SPV_INTEL_subgroups.
 intrinsic("load_deref_block_intel", dest_comp=0, src_comp=[-1],

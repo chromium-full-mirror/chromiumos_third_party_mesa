@@ -41,9 +41,10 @@ vec4_tcs_visitor::vec4_tcs_visitor(const struct brw_compiler *compiler,
                                    const nir_shader *nir,
                                    void *mem_ctx,
                                    int shader_time_index,
+                                   bool debug_enabled,
                                    const struct brw_vue_map *input_vue_map)
    : vec4_visitor(compiler, log_data, &key->base.tex, &prog_data->base,
-                  nir, mem_ctx, false, shader_time_index),
+                  nir, mem_ctx, false, shader_time_index, debug_enabled),
      input_vue_map(input_vue_map), key(key)
 {
 }
@@ -368,6 +369,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    const struct gen_device_info *devinfo = compiler->devinfo;
    struct brw_vue_prog_data *vue_prog_data = &prog_data->base;
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_TESS_CTRL];
+   const bool debug_enabled = INTEL_DEBUG & DEBUG_TCS;
    const unsigned *assembly;
 
    vue_prog_data->base.stage = MESA_SHADER_TESS_CTRL;
@@ -389,7 +391,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    if (key->quads_workaround)
       brw_nir_apply_tcs_quads_workaround(nir);
 
-   brw_postprocess_nir(nir, compiler, is_scalar);
+   brw_postprocess_nir(nir, compiler, is_scalar, debug_enabled);
 
    bool has_primitive_id =
       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_PRIMITIVE_ID);
@@ -448,7 +450,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
     */
    vue_prog_data->urb_read_length = 0;
 
-   if (INTEL_DEBUG & DEBUG_TCS) {
+   if (unlikely(debug_enabled)) {
       fprintf(stderr, "TCS Input ");
       brw_print_vue_map(stderr, &input_vue_map, MESA_SHADER_TESS_CTRL);
       fprintf(stderr, "TCS Output ");
@@ -458,7 +460,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    if (is_scalar) {
       fs_visitor v(compiler, log_data, mem_ctx, &key->base,
                    &prog_data->base.base, nir, 8,
-                   shader_time_index, &input_vue_map);
+                   shader_time_index, debug_enabled, &input_vue_map);
       if (!v.run_tcs()) {
          if (error_str)
             *error_str = ralloc_strdup(mem_ctx, v.fail_msg);
@@ -469,7 +471,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
 
       fs_generator g(compiler, log_data, mem_ctx,
                      &prog_data->base.base, false, MESA_SHADER_TESS_CTRL);
-      if (INTEL_DEBUG & DEBUG_TCS) {
+      if (unlikely(debug_enabled)) {
          g.enable_debug(ralloc_asprintf(mem_ctx,
                                         "%s tessellation control shader %s",
                                         nir->info.label ? nir->info.label
@@ -485,7 +487,8 @@ brw_compile_tcs(const struct brw_compiler *compiler,
       assembly = g.get_assembly();
    } else {
       brw::vec4_tcs_visitor v(compiler, log_data, key, prog_data,
-                         nir, mem_ctx, shader_time_index, &input_vue_map);
+                              nir, mem_ctx, shader_time_index,
+                              debug_enabled, &input_vue_map);
       if (!v.run()) {
          if (error_str)
             *error_str = ralloc_strdup(mem_ctx, v.fail_msg);
@@ -499,7 +502,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
       assembly = brw_vec4_generate_assembly(compiler, log_data, mem_ctx, nir,
                                             &prog_data->base, v.cfg,
                                             v.performance_analysis.require(),
-                                            stats);
+                                            stats, debug_enabled);
    }
 
    return assembly;

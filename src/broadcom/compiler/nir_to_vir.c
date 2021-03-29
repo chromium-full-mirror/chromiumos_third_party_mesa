@@ -549,87 +549,88 @@ ntq_emit_tmu_general(struct v3d_compile *c, nir_intrinsic_instr *instr,
         const uint32_t dest_components = nir_intrinsic_dest_components(instr);
         uint32_t base_const_offset = const_offset;
         uint32_t writemask = is_store ? nir_intrinsic_write_mask(instr) : 0;
-        do {
-                uint32_t tmu_writes = 0;
-                for (enum emit_mode mode = MODE_COUNT; mode != MODE_LAST; mode++) {
-                        assert(mode == MODE_COUNT || tmu_writes > 0);
+        uint32_t tmu_writes = 0;
+        for (enum emit_mode mode = MODE_COUNT; mode != MODE_LAST; mode++) {
+                assert(mode == MODE_COUNT || tmu_writes > 0);
 
-                        if (is_store) {
-                                emit_tmu_general_store_writes(c, mode, instr,
-                                                              base_const_offset,
-                                                              &writemask,
-                                                              &const_offset,
-                                                              &tmu_writes);
-                        } else if (!is_load && !atomic_add_replaced) {
-                                 emit_tmu_general_atomic_writes(c, mode, instr,
-                                                                tmu_op,
-                                                                has_index,
-                                                                &tmu_writes);
-                        }
+                if (is_store) {
+                        emit_tmu_general_store_writes(c, mode, instr,
+                                                      base_const_offset,
+                                                      &writemask,
+                                                      &const_offset,
+                                                      &tmu_writes);
+                } else if (!is_load && !atomic_add_replaced) {
+                         emit_tmu_general_atomic_writes(c, mode, instr,
+                                                        tmu_op, has_index,
+                                                        &tmu_writes);
+                }
 
-                        /* The spec says that for atomics, the TYPE field is
-                         * ignored, but that doesn't seem to be the case for
-                         * CMPXCHG.  Just use the number of tmud writes we did
-                         * to decide the type (or choose "32bit" for atomic
-                         * reads, which has been fine).
-                         */
-                        uint32_t config = 0;
-                        if (mode == MODE_EMIT) {
-                                uint32_t num_components;
-                                if (is_load || atomic_add_replaced)
-                                        num_components = instr->num_components;
-                                else {
-                                        assert(tmu_writes > 0);
-                                        num_components = tmu_writes - 1;
-                                }
-
-                                uint32_t perquad =
-                                        is_load && !vir_in_nonuniform_control_flow(c)
-                                        ? GENERAL_TMU_LOOKUP_PER_QUAD
-                                        : GENERAL_TMU_LOOKUP_PER_PIXEL;
-                                config = 0xffffff00 | tmu_op << 3 | perquad;
-
-                                if (num_components == 1) {
-                                        config |= GENERAL_TMU_LOOKUP_TYPE_32BIT_UI;
-                                } else {
-                                        config |= GENERAL_TMU_LOOKUP_TYPE_VEC2 +
-                                                  num_components - 2;
-                                }
-                        }
-
-                        emit_tmu_general_address_write(c, mode, instr, config,
-                                                       dynamic_src,
-                                                       offset_src,
-                                                       base_offset,
-                                                       const_offset,
-                                                       &tmu_writes);
-
-                        assert(tmu_writes > 0);
-                        if (mode == MODE_COUNT) {
-                                /* Make sure we won't exceed the 16-entry TMU
-                                 * fifo if each thread is storing at the same
-                                 * time.
-                                 */
-                                while (tmu_writes > 16 / c->threads)
-                                        c->threads /= 2;
-
-                                /* If pipelining this TMU operation would
-                                 * overflow TMU fifos, we need to flush.
-                                 */
-                                if (ntq_tmu_fifo_overflow(c, dest_components))
-                                        ntq_flush_tmu(c);
+                /* The spec says that for atomics, the TYPE field is
+                 * ignored, but that doesn't seem to be the case for
+                 * CMPXCHG.  Just use the number of tmud writes we did
+                 * to decide the type (or choose "32bit" for atomic
+                 * reads, which has been fine).
+                 */
+                uint32_t config = 0;
+                if (mode == MODE_EMIT) {
+                        uint32_t num_components;
+                        if (is_load || atomic_add_replaced) {
+                                num_components = instr->num_components;
                         } else {
-                                /* Delay emission of the thread switch and
-                                 * LDTMU/TMUWT until we really need to do it to
-                                 * improve pipelining.
-                                 */
-                                const uint32_t component_mask =
-                                        (1 << dest_components) - 1;
-                                ntq_add_pending_tmu_flush(c, &instr->dest,
-                                                          component_mask);
+                                assert(tmu_writes > 0);
+                                num_components = tmu_writes - 1;
+                        }
+
+                        uint32_t perquad =
+                                is_load && !vir_in_nonuniform_control_flow(c)
+                                ? GENERAL_TMU_LOOKUP_PER_QUAD
+                                : GENERAL_TMU_LOOKUP_PER_PIXEL;
+                        config = 0xffffff00 | tmu_op << 3 | perquad;
+
+                        if (num_components == 1) {
+                                config |= GENERAL_TMU_LOOKUP_TYPE_32BIT_UI;
+                        } else {
+                                config |= GENERAL_TMU_LOOKUP_TYPE_VEC2 +
+                                          num_components - 2;
                         }
                 }
-        } while (is_store && writemask != 0);
+
+                emit_tmu_general_address_write(c, mode, instr, config,
+                                               dynamic_src, offset_src,
+                                               base_offset, const_offset,
+                                               &tmu_writes);
+
+                assert(tmu_writes > 0);
+                if (mode == MODE_COUNT) {
+                        /* Make sure we won't exceed the 16-entry TMU
+                         * fifo if each thread is storing at the same
+                         * time.
+                         */
+                        while (tmu_writes > 16 / c->threads)
+                                c->threads /= 2;
+
+                        /* If pipelining this TMU operation would
+                         * overflow TMU fifos, we need to flush.
+                         */
+                        if (ntq_tmu_fifo_overflow(c, dest_components))
+                                ntq_flush_tmu(c);
+                } else {
+                        /* Delay emission of the thread switch and
+                         * LDTMU/TMUWT until we really need to do it to
+                         * improve pipelining.
+                         */
+                        const uint32_t component_mask =
+                                (1 << dest_components) - 1;
+                        ntq_add_pending_tmu_flush(c, &instr->dest,
+                                                  component_mask);
+                }
+        }
+
+        /* nir_lower_wrmasks should've ensured that any writemask on a store
+         * operation only has consecutive bits set, in which case we should've
+         * processed the full writemask above.
+         */
+        assert(writemask == 0);
 }
 
 static struct qreg *
@@ -922,16 +923,39 @@ emit_fragcoord_input(struct v3d_compile *c, int attr)
 }
 
 static struct qreg
+emit_smooth_varying(struct v3d_compile *c,
+                    struct qreg vary, struct qreg w, struct qreg r5)
+{
+        return vir_FADD(c, vir_FMUL(c, vary, w), r5);
+}
+
+static struct qreg
+emit_noperspective_varying(struct v3d_compile *c,
+                           struct qreg vary, struct qreg r5)
+{
+        return vir_FADD(c, vir_MOV(c, vary), r5);
+}
+
+static struct qreg
+emit_flat_varying(struct v3d_compile *c,
+                  struct qreg vary, struct qreg r5)
+{
+        vir_MOV_dest(c, c->undef, vary);
+        return vir_MOV(c, r5);
+}
+
+static struct qreg
 emit_fragment_varying(struct v3d_compile *c, nir_variable *var,
                       int8_t input_idx, uint8_t swizzle, int array_index)
 {
         struct qreg r3 = vir_reg(QFILE_MAGIC, V3D_QPU_WADDR_R3);
         struct qreg r5 = vir_reg(QFILE_MAGIC, V3D_QPU_WADDR_R5);
 
+        struct qinst *ldvary = NULL;
         struct qreg vary;
         if (c->devinfo->ver >= 41) {
-                struct qinst *ldvary = vir_add_inst(V3D_QPU_A_NOP, c->undef,
-                                                    c->undef, c->undef);
+                ldvary = vir_add_inst(V3D_QPU_A_NOP, c->undef,
+                                      c->undef, c->undef);
                 ldvary->qpu.sig.ldvary = true;
                 vary = vir_emit_def(c, ldvary);
         } else {
@@ -943,10 +967,10 @@ emit_fragment_varying(struct v3d_compile *c, nir_variable *var,
          * GLSL's interpolateAt functions if the shader uses them.
          */
         if (input_idx >= 0) {
-           assert(var);
-           c->interp[input_idx].vp = vary;
-           c->interp[input_idx].C = vir_MOV(c, r5);
-           c->interp[input_idx].mode = var->data.interpolation;
+                assert(var);
+                c->interp[input_idx].vp = vary;
+                c->interp[input_idx].C = vir_MOV(c, r5);
+                c->interp[input_idx].mode = var->data.interpolation;
         }
 
         /* For gl_PointCoord input or distance along a line, we'll be called
@@ -955,7 +979,7 @@ emit_fragment_varying(struct v3d_compile *c, nir_variable *var,
          */
         if (!var) {
                 assert(input_idx < 0);
-                return vir_FADD(c, vir_FMUL(c, vary, c->payload_w), r5);
+                return emit_smooth_varying(c, vary, c->payload_w, r5);
         }
 
         int i = c->num_inputs++;
@@ -969,22 +993,21 @@ emit_fragment_varying(struct v3d_compile *c, nir_variable *var,
         case INTERP_MODE_SMOOTH:
                 if (var->data.centroid) {
                         BITSET_SET(c->centroid_flags, i);
-                        result = vir_FADD(c, vir_FMUL(c, vary,
-                                                      c->payload_w_centroid), r5);
+                        result = emit_smooth_varying(c, vary,
+                                                     c->payload_w_centroid, r5);
                 } else {
-                        result = vir_FADD(c, vir_FMUL(c, vary, c->payload_w), r5);
+                        result = emit_smooth_varying(c, vary, c->payload_w, r5);
                 }
                 break;
 
         case INTERP_MODE_NOPERSPECTIVE:
                 BITSET_SET(c->noperspective_flags, i);
-                result = vir_FADD(c, vir_MOV(c, vary), r5);
+                result = emit_noperspective_varying(c, vary, r5);
                 break;
 
         case INTERP_MODE_FLAT:
                 BITSET_SET(c->flat_shade_flags, i);
-                vir_MOV_dest(c, c->undef, vary);
-                result = vir_MOV(c, r5);
+                result = emit_flat_varying(c, vary, r5);
                 break;
 
         default:
@@ -1723,6 +1746,33 @@ emit_geom_end(struct v3d_compile *c)
                 vir_VPMWT(c);
 }
 
+static bool
+mem_vectorize_callback(unsigned align_mul, unsigned align_offset,
+                       unsigned bit_size,
+                       unsigned num_components,
+                       nir_intrinsic_instr *low,
+                       nir_intrinsic_instr *high,
+                       void *data)
+{
+        /* Our backend is 32-bit only at present */
+        if (bit_size != 32)
+                return false;
+
+        if (align_mul % 4 != 0 || align_offset % 4 != 0)
+                return false;
+
+        /* Vector accesses wrap at 16-byte boundaries so we can't vectorize
+         * if the resulting vector crosses a 16-byte boundary.
+         */
+        assert(util_is_power_of_two_nonzero(align_mul));
+        align_mul = MIN2(align_mul, 16);
+        align_offset &= 0xf;
+        if (16 - align_mul + align_offset + num_components * 4 > 16)
+                return false;
+
+        return true;
+}
+
 void
 v3d_optimize_nir(struct nir_shader *s)
 {
@@ -1747,6 +1797,15 @@ v3d_optimize_nir(struct nir_shader *s)
                 NIR_PASS(progress, s, nir_opt_algebraic);
                 NIR_PASS(progress, s, nir_opt_constant_folding);
 
+                nir_load_store_vectorize_options vectorize_opts = {
+                        .modes = nir_var_mem_ssbo | nir_var_mem_ubo |
+                                 nir_var_mem_push_const | nir_var_mem_shared |
+                                 nir_var_mem_global,
+                        .callback = mem_vectorize_callback,
+                        .robust_modes = 0,
+                };
+                NIR_PASS(progress, s, nir_opt_load_store_vectorize, &vectorize_opts);
+
                 if (lower_flrp != 0) {
                         bool lower_flrp_progress = false;
 
@@ -1765,7 +1824,13 @@ v3d_optimize_nir(struct nir_shader *s)
                 }
 
                 NIR_PASS(progress, s, nir_opt_undef);
+                NIR_PASS(progress, s, nir_lower_undef_to_zero);
         } while (progress);
+
+        nir_move_options sink_opts =
+                nir_move_const_undef | nir_move_comparisons | nir_move_copies |
+                nir_move_load_ubo;
+        NIR_PASS(progress, s, nir_opt_sink, sink_opts);
 
         NIR_PASS(progress, s, nir_opt_move, nir_move_load_ubo);
 }
@@ -2092,18 +2157,6 @@ ntq_emit_load_const(struct v3d_compile *c, nir_load_const_instr *instr)
                 qregs[i] = vir_uniform_ui(c, instr->value[i].u32);
 
         _mesa_hash_table_insert(c->def_ht, &instr->def, qregs);
-}
-
-static void
-ntq_emit_ssa_undef(struct v3d_compile *c, nir_ssa_undef_instr *instr)
-{
-        struct qreg *qregs = ntq_init_ssa_def(c, &instr->def);
-
-        /* VIR needs there to be *some* value, so pick 0 (same as for
-         * ntq_setup_registers().
-         */
-        for (int i = 0; i < instr->def.num_components; i++)
-                qregs[i] = vir_uniform_ui(c, 0);
 }
 
 static void
@@ -2576,6 +2629,19 @@ ntq_emit_load_interpolated_input(struct v3d_compile *c,
 }
 
 static void
+emit_ldunifa(struct v3d_compile *c, struct qreg *result)
+{
+        struct qinst *ldunifa =
+                vir_add_inst(V3D_QPU_A_NOP, c->undef, c->undef, c->undef);
+        ldunifa->qpu.sig.ldunifa = true;
+        if (result)
+                *result = vir_emit_def(c, ldunifa);
+        else
+                vir_emit_nondef(c, ldunifa);
+        c->last_unifa_offset += 4;
+}
+
+static void
 ntq_emit_load_ubo_unifa(struct v3d_compile *c, nir_intrinsic_instr *instr)
 {
         bool dynamic_src = !nir_src_is_const(instr->src[1]);
@@ -2593,12 +2659,15 @@ ntq_emit_load_ubo_unifa(struct v3d_compile *c, nir_intrinsic_instr *instr)
          * constant offset loads.
          */
         bool skip_unifa = false;
+        uint32_t ldunifa_skips = 0;
         if (dynamic_src) {
                 c->last_unifa_block = NULL;
         } else if (c->cur_block == c->last_unifa_block &&
                    c->last_unifa_index == index &&
-                   c->last_unifa_offset == const_offset) {
+                   c->last_unifa_offset <= const_offset &&
+                   c->last_unifa_offset + 12 >= const_offset) {
                 skip_unifa = true;
+                ldunifa_skips = (const_offset - c->last_unifa_offset) / 4;
         } else {
                 c->last_unifa_block = c->cur_block;
                 c->last_unifa_index = index;
@@ -2617,15 +2686,15 @@ ntq_emit_load_ubo_unifa(struct v3d_compile *c, nir_intrinsic_instr *instr)
                         vir_ADD_dest(c, unifa, base_offset,
                                      ntq_get_src(c, instr->src[1], 0));
                 }
+        } else {
+                for (int i = 0; i < ldunifa_skips; i++)
+                        emit_ldunifa(c, NULL);
         }
 
         for (uint32_t i = 0; i < nir_intrinsic_dest_components(instr); i++) {
-                struct qinst *ldunifa =
-                        vir_add_inst(V3D_QPU_A_NOP, c->undef, c->undef, c->undef);
-                ldunifa->qpu.sig.ldunifa = true;
-                struct qreg data = vir_emit_def(c, ldunifa);
+                struct qreg data;
+                emit_ldunifa(c, &data);
                 ntq_store_dest(c, &instr->dest, i, vir_MOV(c, data));
-                c->last_unifa_offset += 4;
         }
 }
 
@@ -3304,7 +3373,7 @@ ntq_emit_instr(struct v3d_compile *c, nir_instr *instr)
                 break;
 
         case nir_instr_type_ssa_undef:
-                ntq_emit_ssa_undef(c, nir_instr_as_ssa_undef(instr));
+                unreachable("Should've been lowered by nir_lower_undef_to_zero");
                 break;
 
         case nir_instr_type_tex:

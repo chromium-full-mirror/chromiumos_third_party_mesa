@@ -296,6 +296,8 @@ enum sqtt_memory_type
    SQTT_MEMORY_TYPE_HBM = 0x20,
    SQTT_MEMORY_TYPE_HBM2 = 0x21,
    SQTT_MEMORY_TYPE_HBM3 = 0x22,
+   SQTT_MEMORY_TYPE_LPDDR4 = 0x30,
+   SQTT_MEMORY_TYPE_LPDDR5 = 0x31,
 };
 
 struct sqtt_file_chunk_asic_info {
@@ -386,6 +388,31 @@ static enum sqtt_memory_type ac_vram_type_to_sqtt_memory_type(uint32_t vram_type
       return SQTT_MEMORY_TYPE_HBM;
    case AMDGPU_VRAM_TYPE_GDDR6:
       return SQTT_MEMORY_TYPE_GDDR6;
+   case AMDGPU_VRAM_TYPE_DDR5:
+      return SQTT_MEMORY_TYPE_LPDDR5;
+   case AMDGPU_VRAM_TYPE_GDDR1:
+   case AMDGPU_VRAM_TYPE_GDDR3:
+   case AMDGPU_VRAM_TYPE_GDDR4:
+   default:
+      unreachable("Invalid vram type");
+   }
+}
+
+static uint32_t ac_memory_ops_per_clock(uint32_t vram_type)
+{
+   switch (vram_type) {
+   case AMDGPU_VRAM_TYPE_UNKNOWN:
+      return 0;
+   case AMDGPU_VRAM_TYPE_DDR2:
+   case AMDGPU_VRAM_TYPE_DDR3:
+   case AMDGPU_VRAM_TYPE_DDR4:
+   case AMDGPU_VRAM_TYPE_HBM:
+      return 2;
+   case AMDGPU_VRAM_TYPE_DDR5:
+   case AMDGPU_VRAM_TYPE_GDDR5:
+      return 4;
+   case AMDGPU_VRAM_TYPE_GDDR6:
+      return 16;
    case AMDGPU_VRAM_TYPE_GDDR1:
    case AMDGPU_VRAM_TYPE_GDDR3:
    case AMDGPU_VRAM_TYPE_GDDR4:
@@ -450,18 +477,24 @@ static void ac_fill_sqtt_asic_info(struct radeon_info *rad_info,
    chunk->l2_cache_size = rad_info->l2_cache_size;
    chunk->l1_cache_size = rad_info->l1_cache_size;
    chunk->lds_size = rad_info->lds_size_per_workgroup;
+   if (rad_info->chip_class >= GFX10) {
+      /* RGP expects the LDS size in CU mode. */
+      chunk->lds_size /= 2;
+   }
 
    strncpy(chunk->gpu_name, rad_info->name, SQTT_GPU_NAME_MAX_SIZE - 1);
 
    chunk->alu_per_clock = 0.0;
    chunk->texture_per_clock = 0.0;
-   chunk->prims_per_clock = 0.0;
+   chunk->prims_per_clock = rad_info->max_se;
+   if (rad_info->chip_class == GFX10)
+      chunk->prims_per_clock *= 2;
    chunk->pixels_per_clock = 0.0;
 
    chunk->gpu_timestamp_frequency = rad_info->clock_crystal_freq * 1000;
    chunk->max_shader_core_clock = rad_info->max_shader_clock * 1000000;
    chunk->max_memory_clock = rad_info->max_memory_clock * 1000000;
-   chunk->memory_ops_per_clock = 0;
+   chunk->memory_ops_per_clock = ac_memory_ops_per_clock(rad_info->vram_type);
    chunk->memory_chip_type = ac_vram_type_to_sqtt_memory_type(rad_info->vram_type);
    chunk->lds_granularity = rad_info->lds_encode_granularity;
 

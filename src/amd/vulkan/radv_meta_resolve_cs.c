@@ -78,8 +78,8 @@ build_resolve_compute_shader(struct radv_device *dev, bool is_integer, bool is_s
 						       "meta_resolve_cs-%d-%s",
 						       samples,
 						       is_integer ? "int" : (is_srgb ? "srgb" : "float"));
-	b.shader->info.cs.local_size[0] = 16;
-	b.shader->info.cs.local_size[1] = 16;
+	b.shader->info.cs.local_size[0] = 8;
+	b.shader->info.cs.local_size[1] = 8;
 	b.shader->info.cs.local_size[2] = 1;
 
 	nir_variable *input_img = nir_variable_create(b.shader, nir_var_uniform,
@@ -158,8 +158,8 @@ build_depth_stencil_resolve_compute_shader(struct radv_device *dev, int samples,
 						       "meta_resolve_cs_%s-%s-%d",
 						       index == DEPTH_RESOLVE ? "depth" : "stencil",
 						       get_resolve_mode_str(resolve_mode), samples);
-	b.shader->info.cs.local_size[0] = 16;
-	b.shader->info.cs.local_size[1] = 16;
+	b.shader->info.cs.local_size[0] = 8;
+	b.shader->info.cs.local_size[1] = 8;
 	b.shader->info.cs.local_size[2] = 1;
 
 	nir_variable *input_img = nir_variable_create(b.shader, nir_var_uniform,
@@ -325,7 +325,7 @@ create_resolve_pipeline(struct radv_device *device,
 			VkPipeline *pipeline)
 {
 	VkResult result;
-	struct radv_shader_module cs = { .nir = NULL };
+ 
 
 	mtx_lock(&device->meta_state.mtx);
 	if (*pipeline) {
@@ -333,14 +333,14 @@ create_resolve_pipeline(struct radv_device *device,
 		return VK_SUCCESS;
 	}
 
-	cs.nir = build_resolve_compute_shader(device, is_integer, is_srgb, samples);
+	nir_shader *cs = build_resolve_compute_shader(device, is_integer, is_srgb, samples);
 
 	/* compute shader */
 
 	VkPipelineShaderStageCreateInfo pipeline_shader_stage = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-		.module = radv_shader_module_to_handle(&cs),
+		.module = vk_shader_module_handle_from_nir(cs),
 		.pName = "main",
 		.pSpecializationInfo = NULL,
 	};
@@ -359,11 +359,11 @@ create_resolve_pipeline(struct radv_device *device,
 	if (result != VK_SUCCESS)
 		goto fail;
 
-	ralloc_free(cs.nir);
+	ralloc_free(cs);
 	mtx_unlock(&device->meta_state.mtx);
 	return VK_SUCCESS;
 fail:
-	ralloc_free(cs.nir);
+	ralloc_free(cs);
 	mtx_unlock(&device->meta_state.mtx);
 	return result;
 }
@@ -376,7 +376,6 @@ create_depth_stencil_resolve_pipeline(struct radv_device *device,
 				      VkPipeline *pipeline)
 {
 	VkResult result;
-	struct radv_shader_module cs = { .nir = NULL };
 
 	mtx_lock(&device->meta_state.mtx);
 	if (*pipeline) {
@@ -384,14 +383,14 @@ create_depth_stencil_resolve_pipeline(struct radv_device *device,
 		return VK_SUCCESS;
 	}
 
-	cs.nir = build_depth_stencil_resolve_compute_shader(device, samples,
+	nir_shader *cs = build_depth_stencil_resolve_compute_shader(device, samples,
 							    index, resolve_mode);
 
 	/* compute shader */
 	VkPipelineShaderStageCreateInfo pipeline_shader_stage = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-		.module = radv_shader_module_to_handle(&cs),
+		.module = vk_shader_module_handle_from_nir(cs),
 		.pName = "main",
 		.pSpecializationInfo = NULL,
 	};
@@ -410,11 +409,11 @@ create_depth_stencil_resolve_pipeline(struct radv_device *device,
 	if (result != VK_SUCCESS)
 		goto fail;
 
-	ralloc_free(cs.nir);
+	ralloc_free(cs);
 	mtx_unlock(&device->meta_state.mtx);
 	return VK_SUCCESS;
 fail:
-	ralloc_free(cs.nir);
+	ralloc_free(cs);
 	mtx_unlock(&device->meta_state.mtx);
 	return result;
 }

@@ -480,8 +480,8 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
    util_cpu_detect();
    info->smart_access_memory = info->all_vram_visible &&
                                info->chip_class >= GFX10_3 &&
-                               util_cpu_caps.family >= CPU_AMD_ZEN3 &&
-                               util_cpu_caps.family < CPU_AMD_LAST;
+                               util_get_cpu_caps()->family >= CPU_AMD_ZEN3 &&
+                               util_get_cpu_caps()->family < CPU_AMD_LAST;
 
    /* Set chip identification. */
    info->pci_id = amdinfo->asic_id; /* TODO: is this correct? */
@@ -531,6 +531,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
       identify_chip(VEGA12);
       identify_chip(VEGA20);
       identify_chip(ARCTURUS);
+      identify_chip(ALDEBARAN);
       break;
    case FAMILY_RV:
       identify_chip(RAVEN);
@@ -641,6 +642,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
    info->mid_command_buffer_preemption_enabled = amdinfo->ids_flags & AMDGPU_IDS_FLAGS_PREEMPTION;
    info->has_tmz_support = has_tmz_support(dev, info, amdinfo);
    info->kernel_has_modifiers = info->chip_class >= GFX9 && info->drm_minor >= 40;
+   info->has_graphics = gfx.available_rings > 0;
 
    info->pa_sc_tile_steering_override = device_info.pa_sc_tile_steering_override;
    info->max_render_backends = amdinfo->rb_pipes;
@@ -665,16 +667,23 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
       info->tcc_cache_line_size = 128;
 
       if (info->drm_minor >= 35) {
-         info->tcc_harvested = device_info.tcc_disabled_mask != 0;
          info->num_tcc_blocks = info->max_tcc_blocks - util_bitcount64(device_info.tcc_disabled_mask);
       } else {
          /* This is a hack, but it's all we can do without a kernel upgrade. */
-         info->tcc_harvested = (info->vram_size / info->max_tcc_blocks) != 512 * 1024 * 1024;
+         info->num_tcc_blocks = info->vram_size / (512 * 1024 * 1024);
+         if (info->num_tcc_blocks > info->max_tcc_blocks)
+            info->num_tcc_blocks /= 2;
       }
    } else {
-      info->tcc_cache_line_size = 64;
+      if (!info->has_graphics && info->family >= CHIP_ALDEBARAN)
+         info->tcc_cache_line_size = 128;
+      else
+         info->tcc_cache_line_size = 64;
+
       info->num_tcc_blocks = info->max_tcc_blocks;
    }
+
+   info->tcc_rb_non_coherent = !util_is_power_of_two_or_zero(info->num_tcc_blocks);
 
    switch (info->family) {
    case CHIP_TAHITI:
@@ -731,7 +740,6 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
    assert(util_is_power_of_two_or_zero(dma.available_rings + 1));
    assert(util_is_power_of_two_or_zero(compute.available_rings + 1));
 
-   info->has_graphics = gfx.available_rings > 0;
    info->num_rings[RING_GFX] = util_bitcount(gfx.available_rings);
    info->num_rings[RING_COMPUTE] = util_bitcount(compute.available_rings);
    info->num_rings[RING_DMA] = util_bitcount(dma.available_rings);
@@ -796,6 +804,9 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
       info->family == CHIP_VEGA10 || info->family == CHIP_RAVEN;
 
    info->has_ls_vgpr_init_bug = info->family == CHIP_VEGA10 || info->family == CHIP_RAVEN;
+
+   /* Drawing from 0-sized index buffers causes hangs on Navi10/14. */
+   info->has_zero_index_buffer_bug = info->family == CHIP_NAVI10 || info->family == CHIP_NAVI14;
 
    /* Support for GFX10.3 was added with F32_ME_FEATURE_VERSION_31 but the
     * firmware version wasn't bumped.
@@ -887,7 +898,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
 
    info->has_gds_ordered_append = info->chip_class >= GFX7 && info->drm_minor >= 29;
 
-   if (info->chip_class >= GFX9) {
+   if (info->chip_class >= GFX9 && info->has_graphics) {
       unsigned pc_lines = 0;
 
       switch (info->family) {
@@ -911,8 +922,6 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
          break;
       case CHIP_VANGOGH:
          pc_lines = 256;
-         break;
-      case CHIP_ARCTURUS:
          break;
       default:
          assert(0);
@@ -954,11 +963,18 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
       info->use_late_alloc = info->family != CHIP_KABINI;
    }
 
+   info->has_3d_cube_border_color_mipmap = info->has_graphics || info->family == CHIP_ARCTURUS;
    info->max_sgpr_alloc = info->family == CHIP_TONGA || info->family == CHIP_ICELAND ? 96 : 104;
 
-   info->min_wave64_vgpr_alloc = 4;
-   info->max_vgpr_alloc = 256;
-   info->wave64_vgpr_alloc_granularity = 4;
+   if (!info->has_graphics && info->family >= CHIP_ALDEBARAN) {
+      info->min_wave64_vgpr_alloc = 8;
+      info->max_vgpr_alloc = 512;
+      info->wave64_vgpr_alloc_granularity = 8;
+   } else {
+      info->min_wave64_vgpr_alloc = 4;
+      info->max_vgpr_alloc = 256;
+      info->wave64_vgpr_alloc_granularity = 4;
+   }
 
    info->num_physical_wave64_vgprs_per_simd = info->chip_class >= GFX10 ? 512 : 256;
    info->num_simd_per_compute_unit = info->chip_class >= GFX10 ? 2 : 4;
@@ -1035,6 +1051,7 @@ void ac_print_gpu_info(struct radeon_info *info, FILE *f)
    fprintf(f, "    has_msaa_sample_loc_bug = %i\n", info->has_msaa_sample_loc_bug);
    fprintf(f, "    has_ls_vgpr_init_bug = %i\n", info->has_ls_vgpr_init_bug);
    fprintf(f, "    has_32bit_predication = %i\n", info->has_32bit_predication);
+   fprintf(f, "    has_3d_cube_border_color_mipmap = %i\n", info->has_3d_cube_border_color_mipmap);
 
    fprintf(f, "Display features:\n");
    fprintf(f, "    use_display_dcc_unaligned = %u\n", info->use_display_dcc_unaligned);
@@ -1059,7 +1076,7 @@ void ac_print_gpu_info(struct radeon_info *info, FILE *f)
    fprintf(f, "    max_tcc_blocks = %i\n", info->max_tcc_blocks);
    fprintf(f, "    num_tcc_blocks = %i\n", info->num_tcc_blocks);
    fprintf(f, "    tcc_cache_line_size = %u\n", info->tcc_cache_line_size);
-   fprintf(f, "    tcc_harvested = %u\n", info->tcc_harvested);
+   fprintf(f, "    tcc_rb_non_coherent = %u\n", info->tcc_rb_non_coherent);
    fprintf(f, "    pc_lines = %u\n", info->pc_lines);
    fprintf(f, "    lds_size_per_workgroup = %u\n", info->lds_size_per_workgroup);
    fprintf(f, "    lds_alloc_granularity = %i\n", info->lds_alloc_granularity);

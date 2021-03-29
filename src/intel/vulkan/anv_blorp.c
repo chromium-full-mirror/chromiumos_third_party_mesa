@@ -96,29 +96,27 @@ anv_device_init_blorp(struct anv_device *device)
    device->blorp.compiler = device->physical->compiler;
    device->blorp.lookup_shader = lookup_blorp_shader;
    device->blorp.upload_shader = upload_blorp_shader;
-   switch (device->info.gen) {
-   case 7:
-      if (device->info.is_haswell) {
-         device->blorp.exec = gen75_blorp_exec;
-      } else {
-         device->blorp.exec = gen7_blorp_exec;
-      }
+   switch (device->info.genx10) {
+   case 70:
+      device->blorp.exec = gen7_blorp_exec;
       break;
-   case 8:
+   case 75:
+      device->blorp.exec = gen75_blorp_exec;
+      break;
+   case 80:
       device->blorp.exec = gen8_blorp_exec;
       break;
-   case 9:
+   case 90:
       device->blorp.exec = gen9_blorp_exec;
       break;
-   case 11:
+   case 110:
       device->blorp.exec = gen11_blorp_exec;
       break;
-   case 12:
-      if (gen_device_info_is_12hp(&device->info)) {
-         device->blorp.exec = gen125_blorp_exec;
-      } else {
-         device->blorp.exec = gen12_blorp_exec;
-      }
+   case 120:
+      device->blorp.exec = gen12_blorp_exec;
+      break;
+   case 125:
+      device->blorp.exec = gen125_blorp_exec;
       break;
    default:
       unreachable("Unknown hardware generation");
@@ -219,25 +217,34 @@ get_blorp_surf_for_anv_image(const struct anv_device *device,
       (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) ?
       ISL_SURF_USAGE_RENDER_TARGET_BIT : ISL_SURF_USAGE_TEXTURE_BIT;
 
-   const struct anv_surface *surface = &image->planes[plane].surface;
+   const struct anv_surface *surface = &image->planes[plane].primary_surface;
+   const struct anv_address address =
+      anv_image_address(image, &surface->memory_range);
+
    *blorp_surf = (struct blorp_surf) {
       .surf = &surface->isl,
       .addr = {
-         .buffer = image->planes[plane].address.bo,
-         .offset = image->planes[plane].address.offset + surface->offset,
-         .mocs = anv_mocs(device, image->planes[plane].address.bo, mocs_usage),
+         .buffer = address.bo,
+         .offset = address.offset,
+         .mocs = anv_mocs(device, address.bo, mocs_usage),
       },
    };
 
    if (aux_usage != ISL_AUX_USAGE_NONE) {
       const struct anv_surface *aux_surface = &image->planes[plane].aux_surface;
-      blorp_surf->aux_surf = &aux_surface->isl,
-      blorp_surf->aux_addr = (struct blorp_address) {
-         .buffer = image->planes[plane].address.bo,
-         .offset = image->planes[plane].address.offset + aux_surface->offset,
-         .mocs = anv_mocs(device, image->planes[plane].address.bo, 0),
-      };
+      const struct anv_address aux_address =
+         anv_image_address(image, &aux_surface->memory_range);
+
       blorp_surf->aux_usage = aux_usage;
+      blorp_surf->aux_surf = &aux_surface->isl;
+
+      if (!anv_address_is_null(aux_address)) {
+         blorp_surf->aux_addr = (struct blorp_address) {
+            .buffer = aux_address.bo,
+            .offset = aux_address.offset,
+            .mocs = anv_mocs(device, aux_address.bo, 0),
+         };
+      }
 
       /* If we're doing a partial resolve, then we need the indirect clear
        * color.  If we are doing a fast clear and want to store/update the
@@ -278,17 +285,19 @@ get_blorp_surf_for_anv_shadow_image(const struct anv_device *device,
 {
 
    uint32_t plane = anv_image_aspect_to_plane(image->aspects, aspect);
-   if (image->planes[plane].shadow_surface.isl.size_B == 0)
+   if (!anv_surface_is_valid(&image->planes[plane].shadow_surface))
       return false;
 
+   const struct anv_surface *surface = &image->planes[plane].shadow_surface;
+   const struct anv_address address =
+      anv_image_address(image, &surface->memory_range);
+
    *blorp_surf = (struct blorp_surf) {
-      .surf = &image->planes[plane].shadow_surface.isl,
+      .surf = &surface->isl,
       .addr = {
-         .buffer = image->planes[plane].address.bo,
-         .offset = image->planes[plane].address.offset +
-                   image->planes[plane].shadow_surface.offset,
-         .mocs = anv_mocs(device, image->planes[plane].address.bo,
-                          ISL_SURF_USAGE_RENDER_TARGET_BIT),
+         .buffer = address.bo,
+         .offset = address.offset,
+         .mocs = anv_mocs(device, address.bo, ISL_SURF_USAGE_RENDER_TARGET_BIT),
       },
    };
 
@@ -338,7 +347,6 @@ copy_image(struct anv_cmd_buffer *cmd_buffer,
    assert(anv_image_aspects_compatible(src_mask, dst_mask));
 
    if (util_bitcount(src_mask) > 1) {
-      uint32_t aspect_bit;
       anv_foreach_image_aspect_bit(aspect_bit, src_image, src_mask) {
          struct blorp_surf src_surf, dst_surf;
          get_blorp_surf_for_anv_image(cmd_buffer->device,
@@ -680,7 +688,6 @@ blit_image(struct anv_cmd_buffer *cmd_buffer,
    assert(anv_image_aspects_compatible(src_res->aspectMask,
                                        dst_res->aspectMask));
 
-   uint32_t aspect_bit;
    anv_foreach_image_aspect_bit(aspect_bit, src_image, src_res->aspectMask) {
       get_blorp_surf_for_anv_image(cmd_buffer->device,
                                    src_image, 1U << aspect_bit,
@@ -1223,8 +1230,7 @@ clear_color_attachment(struct anv_cmd_buffer *cmd_buffer,
 
    /* If multiview is enabled we ignore baseArrayLayer and layerCount */
    if (subpass->view_mask) {
-      uint32_t view_idx;
-      for_each_bit(view_idx, subpass->view_mask) {
+      u_foreach_bit(view_idx, subpass->view_mask) {
          for (uint32_t r = 0; r < rectCount; ++r) {
             const VkOffset2D offset = pRects[r].rect.offset;
             const VkExtent2D extent = pRects[r].rect.extent;
@@ -1291,8 +1297,7 @@ clear_depth_stencil_attachment(struct anv_cmd_buffer *cmd_buffer,
 
    /* If multiview is enabled we ignore baseArrayLayer and layerCount */
    if (subpass->view_mask) {
-      uint32_t view_idx;
-      for_each_bit(view_idx, subpass->view_mask) {
+      u_foreach_bit(view_idx, subpass->view_mask) {
          for (uint32_t r = 0; r < rectCount; ++r) {
             const VkOffset2D offset = pRects[r].rect.offset;
             const VkExtent2D extent = pRects[r].rect.extent;
@@ -1456,7 +1461,6 @@ resolve_image(struct anv_cmd_buffer *cmd_buffer,
    const uint32_t layer_count =
       anv_get_layerCount(dst_image, &region->dstSubresource);
 
-   uint32_t aspect_bit;
    anv_foreach_image_aspect_bit(aspect_bit, src_image,
                                 region->srcSubresource.aspectMask) {
       enum isl_aux_usage src_aux_usage =

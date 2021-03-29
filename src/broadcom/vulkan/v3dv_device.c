@@ -37,7 +37,6 @@
 #include "broadcom/cle/v3dx_pack.h"
 
 #include "compiler/v3d_compiler.h"
-#include "compiler/glsl_types.h"
 
 #include "drm-uapi/v3d_drm.h"
 #include "format/u_format.h"
@@ -45,6 +44,7 @@
 
 #include "util/build_id.h"
 #include "util/debug.h"
+#include "util/u_cpu_detect.h"
 
 #ifdef VK_USE_PLATFORM_XCB_KHR
 #include <xcb/xcb.h>
@@ -165,7 +165,7 @@ v3dv_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       }
    }
 
-   glsl_type_singleton_init_or_ref();
+   util_cpu_detect();
 
    VG(VALGRIND_CREATE_MEMPOOL(instance, 0, false));
 
@@ -175,10 +175,21 @@ v3dv_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
 }
 
 static void
+v3dv_physical_device_free_disk_cache(struct v3dv_physical_device *device)
+{
+#ifdef ENABLE_SHADER_CACHE
+   if (device->disk_cache)
+      disk_cache_destroy(device->disk_cache);
+#else
+   assert(device->disk_cache == NULL);
+#endif
+}
+
+static void
 physical_device_finish(struct v3dv_physical_device *device)
 {
    v3dv_wsi_finish(device);
-
+   v3dv_physical_device_free_disk_cache(device);
    v3d_compiler_free(device->compiler);
 
    close(device->render_fd);
@@ -213,8 +224,6 @@ v3dv_DestroyInstance(VkInstance _instance,
    }
 
    VG(VALGRIND_DESTROY_MEMPOOL(instance));
-
-   glsl_type_singleton_decref();
 
    vk_instance_finish(&instance->vk);
    vk_free(&instance->vk.alloc, instance);
@@ -253,6 +262,7 @@ create_display_fd_xcb(VkIcdSurfaceBase *surface)
    int fd = -1;
 
    xcb_connection_t *conn;
+   xcb_dri3_open_reply_t *reply = NULL;
    if (surface) {
       if (surface->platform == VK_ICD_WSI_PLATFORM_XLIB)
          conn = XGetXCBConnection(((VkIcdSurfaceXlib *)surface)->dpy);
@@ -270,7 +280,6 @@ create_display_fd_xcb(VkIcdSurfaceBase *surface)
    xcb_screen_t *screen = iter.data;
 
    xcb_dri3_open_cookie_t cookie;
-   xcb_dri3_open_reply_t *reply;
    cookie = xcb_dri3_open(conn, screen->root, None);
    reply = xcb_dri3_open_reply(conn, cookie, NULL);
    if (!reply)
@@ -553,6 +562,8 @@ init_uuids(struct v3dv_physical_device *device)
                        "build-id too short.  It needs to be a SHA");
    }
 
+   memcpy(device->driver_build_sha1, build_id_data(note), 20);
+
    uint32_t vendor_id = v3dv_physical_device_vendor_id(device);
    uint32_t device_id = v3dv_physical_device_device_id(device);
 
@@ -589,6 +600,20 @@ init_uuids(struct v3dv_physical_device *device)
    return VK_SUCCESS;
 }
 
+static void
+v3dv_physical_device_init_disk_cache(struct v3dv_physical_device *device)
+{
+#ifdef ENABLE_SHADER_CACHE
+   char timestamp[41];
+   _mesa_sha1_format(timestamp, device->driver_build_sha1);
+
+   assert(device->name);
+   device->disk_cache = disk_cache_create(device->name, timestamp, 0);
+#else
+   device->disk_cache = NULL;
+#endif
+}
+
 static VkResult
 physical_device_init(struct v3dv_physical_device *device,
                      struct v3dv_instance *instance,
@@ -613,6 +638,7 @@ physical_device_init(struct v3dv_physical_device *device,
    const char *path = drm_render_device->nodes[DRM_NODE_RENDER];
    render_fd = open(path, O_RDWR | O_CLOEXEC);
    if (render_fd < 0) {
+      fprintf(stderr, "Opening %s failed: %s\n", path, strerror(errno));
       result = VK_ERROR_INCOMPATIBLE_DRIVER;
       goto fail;
    }
@@ -667,8 +693,12 @@ physical_device_init(struct v3dv_physical_device *device,
    device->compiler = v3d_compiler_init(&device->devinfo);
    device->next_program_id = 0;
 
-   asprintf(&device->name, "V3D %d.%d",
-            device->devinfo.ver / 10, device->devinfo.ver % 10);
+   ASSERTED int len =
+      asprintf(&device->name, "V3D %d.%d",
+               device->devinfo.ver / 10, device->devinfo.ver % 10);
+   assert(len != -1);
+
+   v3dv_physical_device_init_disk_cache(device);
 
    /* Setup available memory heaps and types */
    VkPhysicalDeviceMemoryProperties *mem = &device->memory;
@@ -1432,6 +1462,8 @@ v3dv_CreateDevice(VkPhysicalDevice physicalDevice,
    v3dv_bo_cache_init(device);
    v3dv_pipeline_cache_init(&device->default_pipeline_cache, device,
                             device->instance->default_pipeline_cache_enabled);
+   device->default_attribute_float =
+      v3dv_pipeline_create_default_attribute_values(device, NULL);
 
    *pDevice = v3dv_device_to_handle(device);
 
@@ -1456,6 +1488,11 @@ v3dv_DestroyDevice(VkDevice _device,
    drmSyncobjDestroy(device->pdevice->render_fd, device->last_job_sync);
    destroy_device_meta(device);
    v3dv_pipeline_cache_finish(&device->default_pipeline_cache);
+
+   if (device->default_attribute_float) {
+      v3dv_bo_free(device, device->default_attribute_float);
+      device->default_attribute_float = NULL;
+   }
 
    /* Bo cache should be removed the last, as any other object could be
     * freeing their private bos

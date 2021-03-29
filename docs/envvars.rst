@@ -579,6 +579,8 @@ RADV driver environment variables
       disable compute queue
    ``nodcc``
       disable Delta Color Compression (DCC) on images
+   ``nodisplaydcc``
+      disable Delta Color Compression (DCC) on displayable images
    ``nodynamicbounds``
       do not check OOB access for dynamic descriptors
    ``nofastclears``
@@ -593,10 +595,14 @@ RADV driver environment variables
       disable NGG for GFX10+
    ``nooutoforder``
       disable out-of-order rasterization
+   ``notccompatcmask``
+      disable TC-compat CMASK for MSAA surfaces
    ``nothreadllvm``
       disable LLVM threaded compilation
    ``noumr``
       disable UMR dumps during GPU hang detection (only with RADV_DEBUG=hang)
+   ``novrsflatshading``
+      disable VRS for flat shading (only on GFX10.3+)
    ``preoptir``
       dump LLVM IR before any optimizations
    ``shaders``
@@ -636,6 +642,8 @@ RADV driver environment variables
       disable optimizations that get enabled when all VRAM is CPU visible.
    ``pswave32``
       enable wave32 for pixel shaders (GFX10+)
+   ``sam``
+      enable optimizations to move more driver internal objects to VRAM.
    ``tccompatcmask``
       enable TC-compat cmask for MSAA images
 
@@ -659,6 +667,10 @@ RADV driver environment variables
       disable various optimizations
    ``noscheduling``
       disable instructions scheduling
+   ``perfinfo``
+      print information used to calculate some pipeline statistics
+   ``liveinfo``
+      print liveness and register demand information before scheduling
 
 radeonsi driver environment variables
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

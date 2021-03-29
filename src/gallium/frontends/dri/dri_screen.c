@@ -99,8 +99,12 @@ dri_fill_st_options(struct dri_screen *screen)
       driQueryOptionb(optionCache, "allow_draw_out_of_order");
    options->allow_incorrect_primitive_id =
       driQueryOptionb(optionCache, "allow_incorrect_primitive_id");
+   options->ignore_map_unsynchronized =
+      driQueryOptionb(optionCache, "ignore_map_unsynchronized");
    options->force_gl_names_reuse =
       driQueryOptionb(optionCache, "force_gl_names_reuse");
+   options->transcode_etc =
+      driQueryOptionb(optionCache, "transcode_etc");
 
    char *vendor_str = driQueryOptionstr(optionCache, "force_gl_vendor");
    /* not an empty string */

@@ -190,7 +190,8 @@ static void si_create_compute_state_async(void *job, int thread_index)
       bool scratch_enabled = shader->config.scratch_bytes_per_wave > 0;
 
       shader->config.rsrc1 = S_00B848_VGPRS((shader->config.num_vgprs - 1) /
-                                            (sscreen->compute_wave_size == 32 ? 8 : 4)) |
+                                            ((sscreen->compute_wave_size == 32 ||
+                                              sscreen->info.wave64_vgpr_alloc_granularity == 8) ? 8 : 4)) |
                              S_00B848_DX10_CLAMP(1) |
                              S_00B848_MEM_ORDERED(si_shader_mem_ordered(shader)) |
                              S_00B848_WGP_MODE(sscreen->info.chip_class >= GFX10) |
@@ -347,8 +348,6 @@ static void si_set_global_binding(struct pipe_context *ctx, unsigned first, unsi
 
 void si_emit_initial_compute_regs(struct si_context *sctx, struct radeon_cmdbuf *cs)
 {
-   uint64_t bc_va = sctx->border_color_buffer->gpu_address;
-
    radeon_begin(cs);
    radeon_set_sh_reg_seq(cs, R_00B858_COMPUTE_STATIC_THREAD_MGMT_SE0, 2);
    /* R_00B858_COMPUTE_STATIC_THREAD_MGMT_SE0 / SE1,
@@ -366,8 +365,11 @@ void si_emit_initial_compute_regs(struct si_context *sctx, struct radeon_cmdbuf 
        */
       radeon_set_sh_reg(cs, R_00B82C_COMPUTE_MAX_WAVE_ID, 0x190 /* Default value */);
 
-      if (sctx->screen->info.si_TA_CS_BC_BASE_ADDR_allowed)
+      if (sctx->screen->info.si_TA_CS_BC_BASE_ADDR_allowed) {
+         uint64_t bc_va = sctx->border_color_buffer->gpu_address;
+
          radeon_set_config_reg(cs, R_00950C_TA_CS_BC_BASE_ADDR, bc_va >> 8);
+      }
    }
 
    if (sctx->chip_class >= GFX7) {
@@ -383,9 +385,14 @@ void si_emit_initial_compute_regs(struct si_context *sctx, struct radeon_cmdbuf 
       }
 
       /* Set the pointer to border colors. */
-      radeon_set_uconfig_reg_seq(cs, R_030E00_TA_CS_BC_BASE_ADDR, 2, false);
-      radeon_emit(cs, bc_va >> 8);                    /* R_030E00_TA_CS_BC_BASE_ADDR */
-      radeon_emit(cs, S_030E04_ADDRESS(bc_va >> 40)); /* R_030E04_TA_CS_BC_BASE_ADDR_HI */
+      /* Aldebaran doesn't support border colors. */
+      if (sctx->border_color_buffer) {
+         uint64_t bc_va = sctx->border_color_buffer->gpu_address;
+
+         radeon_set_uconfig_reg_seq(cs, R_030E00_TA_CS_BC_BASE_ADDR, 2, false);
+         radeon_emit(cs, bc_va >> 8);                    /* R_030E00_TA_CS_BC_BASE_ADDR */
+         radeon_emit(cs, S_030E04_ADDRESS(bc_va >> 40)); /* R_030E04_TA_CS_BC_BASE_ADDR_HI */
+      }
    }
 
    /* cs_preamble_state initializes this for the gfx queue, so only do this
@@ -837,7 +844,7 @@ static bool si_check_needs_implicit_sync(struct si_context *sctx)
     */
    struct si_shader_info *info = &sctx->cs_shader_state.program->sel.info;
    struct si_samplers *samplers = &sctx->samplers[PIPE_SHADER_COMPUTE];
-   unsigned mask = samplers->enabled_mask & info->base.textures_used;
+   unsigned mask = samplers->enabled_mask & info->base.textures_used[0];
 
    while (mask) {
       int i = u_bit_scan(&mask);
@@ -850,7 +857,7 @@ static bool si_check_needs_implicit_sync(struct si_context *sctx)
    }
 
    struct si_images *images = &sctx->images[PIPE_SHADER_COMPUTE];
-   mask = u_bit_consecutive(0, info->base.num_images);
+   mask = u_bit_consecutive(0, info->base.num_images) & images->enabled_mask;
 
    while (mask) {
       int i = u_bit_scan(&mask);

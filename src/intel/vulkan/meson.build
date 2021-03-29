@@ -98,6 +98,7 @@ libanv_files = files(
   'anv_nir_apply_pipeline_layout.c',
   'anv_nir_compute_push_layout.c',
   'anv_nir_lower_multiview.c',
+  'anv_nir_lower_ubo_loads.c',
   'anv_nir_lower_ycbcr_textures.c',
   'anv_pass.c',
   'anv_perf.c',
@@ -107,7 +108,6 @@ libanv_files = files(
   'anv_queue.c',
   'anv_util.c',
   'anv_wsi.c',
-  'vk_format_info.h',
 )
 
 anv_deps = [

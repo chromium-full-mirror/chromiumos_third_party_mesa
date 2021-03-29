@@ -428,15 +428,23 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
       state[4] &= C_008F20_PITCH;
       state[4] |= S_008F20_PITCH(pitch - 1);
    }
+
+   if (tex->swap_rgb_to_bgr) {
+      unsigned swizzle_x = G_008F1C_DST_SEL_X(state[3]);
+      unsigned swizzle_z = G_008F1C_DST_SEL_Z(state[3]);
+
+      state[3] &= C_008F1C_DST_SEL_X;
+      state[3] |= S_008F1C_DST_SEL_X(swizzle_z);
+      state[3] &= C_008F1C_DST_SEL_Z;
+      state[3] |= S_008F1C_DST_SEL_Z(swizzle_x);
+   }
 }
 
 static void si_set_sampler_state_desc(struct si_sampler_state *sstate,
                                       struct si_sampler_view *sview, struct si_texture *tex,
                                       uint32_t *desc)
 {
-   if (sview && sview->is_integer)
-      memcpy(desc, sstate->integer_val, 4 * 4);
-   else if (tex && tex->upgraded_depth && (!sview || !sview->is_stencil_sampler))
+   if (tex && tex->upgraded_depth && sview && !sview->is_stencil_sampler)
       memcpy(desc, sstate->upgraded_depth_val, 4 * 4);
    else
       memcpy(desc, sstate->val, 4 * 4);
@@ -2663,7 +2671,7 @@ bool si_gfx_resources_check_encrypted(struct si_context *sctx)
          si_buffer_resources_check_encrypted(sctx, &sctx->const_and_shader_buffers[i]);
       use_encrypted_bo |=
          si_sampler_views_check_encrypted(sctx, &sctx->samplers[i],
-                                          current_shader->cso->info.base.textures_used);
+                                          current_shader->cso->info.base.textures_used[0]);
       use_encrypted_bo |= si_image_views_check_encrypted(sctx, &sctx->images[i],
                                           u_bit_consecutive(0, current_shader->cso->info.base.num_images));
    }
@@ -2743,7 +2751,7 @@ bool si_compute_resources_check_encrypted(struct si_context *sctx)
     * or all writable buffers are encrypted.
     */
    return si_buffer_resources_check_encrypted(sctx, &sctx->const_and_shader_buffers[sh]) ||
-          si_sampler_views_check_encrypted(sctx, &sctx->samplers[sh], info->base.textures_used) ||
+          si_sampler_views_check_encrypted(sctx, &sctx->samplers[sh], info->base.textures_used[0]) ||
           si_image_views_check_encrypted(sctx, &sctx->images[sh], u_bit_consecutive(0, info->base.num_images)) ||
           si_buffer_resources_check_encrypted(sctx, &sctx->internal_bindings);
 }

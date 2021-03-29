@@ -28,6 +28,7 @@
 #include "blorp_priv.h"
 #include "compiler/brw_compiler.h"
 #include "compiler/brw_nir.h"
+#include "dev/gen_debug.h"
 
 const char *
 blorp_shader_type_to_name(enum blorp_shader_type type)
@@ -216,12 +217,18 @@ blorp_compile_fs(struct blorp_context *blorp, void *mem_ctx,
       wm_key->input_slots_valid = nir->info.inputs_read | VARYING_BIT_POS;
    }
 
-   const unsigned *program =
-      brw_compile_fs(compiler, blorp->driver_ctx, mem_ctx, wm_key,
-                     wm_prog_data, nir, -1, -1, -1, false, use_repclear,
-                     NULL, NULL, NULL);
+   struct brw_compile_fs_params params = {
+      .nir = nir,
+      .key = wm_key,
+      .prog_data = wm_prog_data,
 
-   return program;
+      .use_rep_send = use_repclear,
+      .log_data = blorp->driver_ctx,
+
+      .debug_flag = DEBUG_BLORP,
+   };
+
+   return brw_compile_fs(compiler, mem_ctx, &params);
 }
 
 const unsigned *
@@ -247,11 +254,16 @@ blorp_compile_vs(struct blorp_context *blorp, void *mem_ctx,
 
    struct brw_vs_prog_key vs_key = { 0, };
 
-   const unsigned *program =
-      brw_compile_vs(compiler, blorp->driver_ctx, mem_ctx,
-                     &vs_key, vs_prog_data, nir, -1, NULL, NULL);
+   struct brw_compile_vs_params params = {
+      .nir = nir,
+      .key = &vs_key,
+      .prog_data = vs_prog_data,
+      .log_data = blorp->driver_ctx,
 
-   return program;
+      .debug_flag = DEBUG_BLORP,
+   };
+
+   return brw_compile_vs(compiler, mem_ctx, &params);
 }
 
 struct blorp_sf_key {

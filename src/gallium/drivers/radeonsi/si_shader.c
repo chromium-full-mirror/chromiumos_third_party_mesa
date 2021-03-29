@@ -738,7 +738,10 @@ void si_init_shader_args(struct si_shader_context *ctx, bool ngg_cull_shader)
          ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->args.tg_size);
 
       /* Hardware VGPRs. */
-      ac_add_arg(&ctx->args, AC_ARG_VGPR, 3, AC_ARG_INT, &ctx->args.local_invocation_ids);
+      if (!ctx->screen->info.has_graphics && ctx->screen->info.family >= CHIP_ALDEBARAN)
+         ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_INT, &ctx->args.local_invocation_ids);
+      else
+         ac_add_arg(&ctx->args, AC_ARG_VGPR, 3, AC_ARG_INT, &ctx->args.local_invocation_ids);
       break;
    default:
       assert(0 && "unimplemented shader");
@@ -874,12 +877,19 @@ bool si_shader_binary_upload(struct si_screen *sscreen, struct si_shader *shader
    if (!u.rx_ptr)
       return false;
 
-   bool ok = ac_rtld_upload(&u);
+   int size = ac_rtld_upload(&u);
+
+   if (sscreen->debug_flags & DBG(SQTT)) {
+      /* Remember the uploaded code */
+      shader->binary.uploaded_code_size = size;
+      shader->binary.uploaded_code = malloc(size);
+      memcpy(shader->binary.uploaded_code, u.rx_ptr, size);
+   }
 
    sscreen->ws->buffer_unmap(shader->bo->buf);
    ac_rtld_close(&binary);
 
-   return ok;
+   return size >= 0;
 }
 
 static void si_shader_dump_disassembly(struct si_screen *screen,
@@ -2143,6 +2153,10 @@ void si_shader_binary_clean(struct si_shader_binary *binary)
 
    free(binary->llvm_ir_string);
    binary->llvm_ir_string = NULL;
+
+   free(binary->uploaded_code);
+   binary->uploaded_code = NULL;
+   binary->uploaded_code_size = 0;
 }
 
 void si_shader_destroy(struct si_shader *shader)

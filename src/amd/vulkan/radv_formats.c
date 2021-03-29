@@ -486,7 +486,8 @@ static bool radv_is_sampler_format_supported(VkFormat format, bool *linear_sampl
 	const struct util_format_description *desc = vk_format_description(format);
 	uint32_t num_format;
 	if (!desc || format == VK_FORMAT_UNDEFINED ||
-	    format == VK_FORMAT_R64_UINT || format == VK_FORMAT_R64_SINT)
+	    format == VK_FORMAT_R64_UINT || format == VK_FORMAT_R64_SINT ||
+	    format == VK_FORMAT_R64_SFLOAT)
 		return false;
 	num_format = radv_translate_tex_numformat(format, desc,
 						  vk_format_get_first_non_void_channel(format));
@@ -506,6 +507,15 @@ static bool radv_is_sampler_format_supported(VkFormat format, bool *linear_sampl
 					     vk_format_get_first_non_void_channel(format)) != ~0U;
 }
 
+bool
+radv_is_atomic_format_supported(VkFormat format)
+{
+	return format == VK_FORMAT_R32_UINT ||
+		format == VK_FORMAT_R32_SINT ||
+		format == VK_FORMAT_R32_SFLOAT ||
+		format == VK_FORMAT_R64_UINT ||
+		format == VK_FORMAT_R64_SINT;
+}
 
 static bool radv_is_storage_image_format_supported(struct radv_physical_device *physical_device,
 						   VkFormat format)
@@ -718,8 +728,11 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
 			if (radv_is_filter_minmax_format_supported(format))
 				 tiled |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT;
 
+			if (vk_format_has_depth(format))
+				tiled |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+
 			/* Don't support blitting surfaces with depth/stencil. */
-			if (vk_format_is_depth(format) && vk_format_is_stencil(format))
+			if (vk_format_has_depth(format) && vk_format_has_stencil(format))
 				tiled &= ~VK_FORMAT_FEATURE_BLIT_DST_BIT;
 
 			/* Don't support linear depth surfaces */
@@ -771,11 +784,7 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
 		          VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 	}
 
-	if (format == VK_FORMAT_R32_UINT ||
-	    format == VK_FORMAT_R32_SINT ||
-	    format == VK_FORMAT_R32_SFLOAT ||
-	    format == VK_FORMAT_R64_UINT ||
-	    format == VK_FORMAT_R64_SINT) {
+	if (radv_is_atomic_format_supported(format)) {
 		buffer |= VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_ATOMIC_BIT;
 		linear |= VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT;
 		tiled |= VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT;
@@ -1124,8 +1133,8 @@ void radv_GetPhysicalDeviceFormatProperties(
 }
 
 static const struct ac_modifier_options radv_modifier_options = {
-	.dcc = false,
-	.dcc_retile = false,
+	.dcc = true,
+	.dcc_retile = true,
 };
 
 static VkFormatFeatureFlags
@@ -1147,9 +1156,12 @@ radv_get_modifier_flags(struct radv_physical_device *dev,
 		return 0;
 
 	if (ac_modifier_has_dcc(modifier)) {
-		features &= ~VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+		features &= ~(VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+	                      VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+	                      VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+	                      VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
 
-		if (dev->instance->debug_flags & RADV_DEBUG_NO_DCC)
+		if (dev->instance->debug_flags & (RADV_DEBUG_NO_DCC | RADV_DEBUG_NO_DISPLAY_DCC))
 			return 0;
 	}
 

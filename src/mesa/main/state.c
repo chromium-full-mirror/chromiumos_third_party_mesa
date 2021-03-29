@@ -435,12 +435,16 @@ _mesa_update_state_locked( struct gl_context *ctx )
 {
    GLbitfield new_state = ctx->NewState;
    GLbitfield new_prog_state = 0x0;
-   const GLbitfield computed_states = ~(_NEW_CURRENT_ATTRIB | _NEW_LINE);
+   const GLbitfield checked_states =
+      _NEW_BUFFERS | _NEW_MODELVIEW | _NEW_PROJECTION | _NEW_TEXTURE_MATRIX |
+      _NEW_TEXTURE_OBJECT | _NEW_TEXTURE_STATE | _NEW_PROGRAM |
+      _NEW_LIGHT_CONSTANTS | _NEW_POINT | _NEW_FF_VERT_PROGRAM |
+      _NEW_FF_FRAG_PROGRAM | _NEW_TNL_SPACES;
 
    /* we can skip a bunch of state validation checks if the dirty
     * state matches one or more bits in 'computed_states'.
     */
-   if ((new_state & computed_states) == 0)
+   if (!(new_state & checked_states))
       goto out;
 
    if (MESA_VERBOSE & VERBOSE_STATE)
@@ -452,44 +456,20 @@ _mesa_update_state_locked( struct gl_context *ctx )
    /* Handle Core and Compatibility contexts separately. */
    if (ctx->API == API_OPENGL_COMPAT ||
        ctx->API == API_OPENGLES) {
-      GLbitfield prog_flags = _NEW_PROGRAM;
-
-      if (new_state & _NEW_PROGRAM)
-         update_fixed_func_program_usage(ctx);
-
-      /* Determine which states affect fixed-func vertex/fragment program. */
-      if (ctx->FragmentProgram._UsesTexEnvProgram) {
-         prog_flags |= (_NEW_BUFFERS | _NEW_TEXTURE_OBJECT | _NEW_FOG |
-                        _NEW_VARYING_VP_INPUTS | _NEW_LIGHT | _NEW_POINT |
-                        _NEW_RENDERMODE | _NEW_COLOR | _NEW_TEXTURE_STATE);
-      }
-
-      if (ctx->VertexProgram._UsesTnlProgram) {
-         prog_flags |= (_NEW_VARYING_VP_INPUTS | _NEW_TEXTURE_OBJECT |
-                        _NEW_TEXTURE_MATRIX | _NEW_TRANSFORM | _NEW_POINT |
-                        _NEW_FOG | _NEW_LIGHT | _NEW_TEXTURE_STATE |
-                        _MESA_NEW_NEED_EYE_COORDS);
-      }
-
-      /*
-       * Now update derived state info
-       */
+      /* Update derived state. */
       if (new_state & (_NEW_MODELVIEW|_NEW_PROJECTION))
          _mesa_update_modelview_project( ctx, new_state );
 
       if (new_state & _NEW_TEXTURE_MATRIX)
-         _mesa_update_texture_matrices(ctx);
+         new_state |= _mesa_update_texture_matrices(ctx);
 
       if (new_state & (_NEW_TEXTURE_OBJECT | _NEW_TEXTURE_STATE | _NEW_PROGRAM))
-         _mesa_update_texture_state(ctx);
+         new_state |= _mesa_update_texture_state(ctx);
 
-      if (new_state & _NEW_LIGHT)
-         _mesa_update_lighting(ctx);
+      if (new_state & _NEW_LIGHT_CONSTANTS)
+         new_state |= _mesa_update_lighting(ctx);
 
-      if (new_state & _NEW_PIXEL)
-         _mesa_update_pixel( ctx );
-
-      /* ctx->_NeedEyeCoords is now up to date.
+      /* ctx->_NeedEyeCoords is determined here.
        *
        * If the truth value of this variable has changed, update for the
        * new lighting space and recompute the positions of lights and the
@@ -498,8 +478,25 @@ _mesa_update_state_locked( struct gl_context *ctx )
        * If the lighting space hasn't changed, may still need to recompute
        * light positions & normal transforms for other reasons.
        */
-      if (new_state & _MESA_NEW_NEED_EYE_COORDS)
-         _mesa_update_tnl_spaces( ctx, new_state );
+      if (new_state & (_NEW_TNL_SPACES | _NEW_LIGHT_CONSTANTS |
+                       _NEW_MODELVIEW)) {
+         if (_mesa_update_tnl_spaces(ctx, new_state))
+            new_state |= _NEW_FF_VERT_PROGRAM;
+      }
+
+      if (new_state & _NEW_PROGRAM)
+         update_fixed_func_program_usage(ctx);
+
+      /* Determine which states affect fixed-func vertex/fragment program. */
+      GLbitfield prog_flags = _NEW_PROGRAM;
+
+      if (ctx->FragmentProgram._UsesTexEnvProgram) {
+         prog_flags |= _NEW_BUFFERS | _NEW_TEXTURE_OBJECT |
+                       _NEW_FF_FRAG_PROGRAM | _NEW_TEXTURE_STATE;
+      }
+
+      if (ctx->VertexProgram._UsesTnlProgram)
+         prog_flags |= _NEW_FF_VERT_PROGRAM;
 
       if (new_state & prog_flags) {
          /* When we generate programs from fixed-function vertex/fragment state
@@ -622,8 +619,8 @@ set_vertex_processing_mode(struct gl_context *ctx, gl_vertex_processing_mode m)
    }
 
    /* Since we only track the varying inputs while being in fixed function
-    * vertex processing mode, we may need to recheck for the
-    * _NEW_VARYING_VP_INPUTS bit.
+    * vertex processing mode, we may need to update fixed-func shaders
+    * for zero-stride vertex attribs.
     */
    _mesa_set_varying_vp_inputs(ctx, ctx->Array._DrawVAOEnabledAttribs);
 }

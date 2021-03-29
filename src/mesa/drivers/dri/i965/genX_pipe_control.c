@@ -230,7 +230,7 @@ genX(emit_raw_pipe_control)(struct brw_context *brw, uint32_t flags,
       flags |= PIPE_CONTROL_CS_STALL;
    }
 
-   if (GEN_IS_HASWELL) {
+   if (GEN_VERSIONx10 == 75) {
       /* From the PIPE_CONTROL page itself:
        *
        *    "HSW - Programming Note: PIPECONTROL with RO Cache Invalidation:
@@ -407,7 +407,7 @@ genX(emit_raw_pipe_control)(struct brw_context *brw, uint32_t flags,
     * don't skip the ones with only read-cache-invalidate bits set.  This
     * may or may not be a problem...
     */
-   if (GEN_GEN == 7 && !GEN_IS_HASWELL) {
+   if (GEN_VERSIONx10 == 70) {
       if (flags & PIPE_CONTROL_CS_STALL) {
          /* If we're doing a CS stall, reset the counter and carry on. */
          brw->pipe_controls_since_last_cs_stall = 0;
@@ -492,14 +492,14 @@ genX(emit_raw_pipe_control)(struct brw_context *brw, uint32_t flags,
       pc.InstructionCacheInvalidateEnable =
          flags & PIPE_CONTROL_INSTRUCTION_INVALIDATE;
       pc.NotifyEnable = flags & PIPE_CONTROL_NOTIFY_ENABLE;
-   #if GEN_GEN >= 5 || GEN_IS_G4X
+   #if GEN_GEN >= 45
       pc.IndirectStatePointersDisable =
          flags & PIPE_CONTROL_INDIRECT_STATE_POINTERS_DISABLE;
    #endif
    #if GEN_GEN >= 6
       pc.TextureCacheInvalidationEnable =
          flags & PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE;
-   #elif GEN_GEN == 5 || GEN_IS_G4X
+   #elif GEN_GEN == 5 || GEN_VERSIONx10 == 45
       pc.TextureCacheFlushEnable =
          flags & PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE;
    #endif

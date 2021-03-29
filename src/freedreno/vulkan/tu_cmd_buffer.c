@@ -2109,7 +2109,6 @@ tu_CmdBindPipeline(VkCommandBuffer commandBuffer,
    if (!(cmd->state.dirty & TU_CMD_DIRTY_DRAW_STATE)) {
       struct tu_cs *cs = &cmd->draw_cs;
       uint32_t mask = ~pipeline->dynamic_state_mask & BITFIELD_MASK(TU_DYNAMIC_STATE_COUNT);
-      uint32_t i;
 
       tu_cs_emit_pkt7(cs, CP_SET_DRAW_STATE, 3 * (6 + util_bitcount(mask)));
       tu_cs_emit_draw_state(cs, TU_DRAW_STATE_PROGRAM, pipeline->program.state);
@@ -2119,7 +2118,7 @@ tu_CmdBindPipeline(VkCommandBuffer commandBuffer,
       tu_cs_emit_draw_state(cs, TU_DRAW_STATE_RAST, pipeline->rast_state);
       tu_cs_emit_draw_state(cs, TU_DRAW_STATE_BLEND, pipeline->blend_state);
 
-      for_each_bit(i, mask)
+      u_foreach_bit(i, mask)
          tu_cs_emit_draw_state(cs, TU_DRAW_STATE_DYNAMIC + i, pipeline->dynamic_state[i]);
    }
 
@@ -3809,15 +3808,19 @@ tu_emit_compute_driver_params(struct tu_cmd_buffer *cmd,
    if (link->constlen <= offset)
       return;
 
+   uint32_t num_consts = MIN2(const_state->num_driver_params,
+                              (link->constlen - offset) * 4);
+
    if (!info->indirect) {
-      uint32_t driver_params[4] = {
+      uint32_t driver_params[8] = {
          [IR3_DP_NUM_WORK_GROUPS_X] = info->blocks[0],
          [IR3_DP_NUM_WORK_GROUPS_Y] = info->blocks[1],
          [IR3_DP_NUM_WORK_GROUPS_Z] = info->blocks[2],
+         [IR3_DP_BASE_GROUP_X] = info->offsets[0],
+         [IR3_DP_BASE_GROUP_Y] = info->offsets[1],
+         [IR3_DP_BASE_GROUP_Z] = info->offsets[2],
       };
 
-      uint32_t num_consts = MIN2(const_state->num_driver_params,
-                                 (link->constlen - offset) * 4);
       assert(num_consts <= ARRAY_SIZE(driver_params));
 
       /* push constants */
@@ -3864,6 +3867,21 @@ tu_emit_compute_driver_params(struct tu_cmd_buffer *cmd,
                   CP_LOAD_STATE6_0_STATE_BLOCK(tu6_stage2shadersb(type)) |
                   CP_LOAD_STATE6_0_NUM_UNIT(1));
       tu_cs_emit_qw(cs, global_iova(cmd, cs_indirect_xyz[0]));
+   }
+
+   /* Zeroing of IR3_DP_BASE_GROUP_X/Y/Z for indirect dispatch */
+   if (info->indirect && num_consts > IR3_DP_BASE_GROUP_X) {
+      assert(num_consts == align(IR3_DP_BASE_GROUP_Z, 4));
+
+      tu_cs_emit_pkt7(cs, tu6_stage2opcode(type), 7);
+      tu_cs_emit(cs, CP_LOAD_STATE6_0_DST_OFF(offset + (IR3_DP_BASE_GROUP_X / 4)) |
+                 CP_LOAD_STATE6_0_STATE_TYPE(ST6_CONSTANTS) |
+                 CP_LOAD_STATE6_0_STATE_SRC(SS6_DIRECT) |
+                 CP_LOAD_STATE6_0_STATE_BLOCK(tu6_stage2shadersb(type)) |
+                 CP_LOAD_STATE6_0_NUM_UNIT(1));
+      tu_cs_emit_qw(cs, 0);
+      for (uint32_t i = 0; i < 4; i++)
+         tu_cs_emit(cs, 0);
    }
 }
 

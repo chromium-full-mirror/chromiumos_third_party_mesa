@@ -31,7 +31,7 @@ cp -Rp .gitlab-ci/fossils.yml install/
 cp -Rp .gitlab-ci/fossils install/
 cp -Rp .gitlab-ci/fossilize-runner.sh install/
 cp -Rp .gitlab-ci/deqp-runner.sh install/
-cp -Rp ci-expects/*/* install/
+cp -Rp .gitlab-ci/deqp-*.txt install/
 find . -path \*/ci/\*.txt \
     -o -path \*/ci/\*traces\*.yml \
     | xargs -I '{}' cp -p '{}' install/

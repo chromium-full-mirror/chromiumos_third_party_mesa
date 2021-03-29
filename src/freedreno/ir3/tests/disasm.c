@@ -134,6 +134,9 @@ static const struct test {
 	INSTR_6XX(a0c00f00_04400002, "sam (f16)(xyzw)hr0.x, hr0.y, s#2, t#2"),
 	INSTR_6XX(a6c02f00_00000000, "rgetinfo (u16)(xyzw)hr0.x"),
 	INSTR_6XX(a3482f08_c0000000, "getinfo.base0 (u16)(xyzw)hr2.x, t#0"),
+	/* dEQP-GLES31.functional.texture.texture_buffer.render.as_fragment_texture.buffer_size_65536 */
+	INSTR_5XX(a2c03102_00000000, "getbuf (u32)(x)r0.z, t#0"),
+	INSTR_6XX(a0c81f00_e0200005, "sam.base0 (f32)(xyzw)r0.x, r0.z, s#1, a1.x"),
 
 
 	/* cat6 */
@@ -304,6 +307,17 @@ static const struct test {
 	INSTR_6XX(a0c81f07_0100000b, "sam.s2en (f32)(xyzw)r1.w, r1.y, hr2.x"), /* sam.s2en.mode0 (f32)(xyzw)r1.w, r1.y, hr2.x */
 	/* dEQP-GLES31.functional.shaders.opaque_type_indexing.sampler.dynamically_uniform.fragment.sampler2d */
 	INSTR_6XX(a0c81f07_8100000b, "sam.s2en.uniform (f32)(xyzw)r1.w, r1.y, hr2.x", .parse_fail=true), /* sam.s2en.mode4 (f32)(xyzw)r1.w, r1.y, hr2.x */
+
+	/* NonUniform: */
+	/* dEQP-VK.descriptor_indexing.storage_buffer */
+	INSTR_6XX(c0260c0a_0a61b180, "ldib.b.untyped.1d.u32.4.nonuniform.base0 r2.z, r2.z, r1.z"),
+	INSTR_6XX(d0260e0a_09677180, "(sy)stib.b.untyped.1d.u32.4.nonuniform.base0 r2.z, r2.y, r1.w"),
+	/* dEQP-VK.descriptor_indexing.uniform_texel_buffer */
+	INSTR_6XX(a0481f00_40000405, "isaml.s2en.nonuniform.base0 (f32)(xyzw)r0.x, r0.z, r0.z, r0.x"),
+	/* dEQP-VK.descriptor_indexing.storage_image */
+	INSTR_6XX(d0360c04_02640b81, "(sy)atomic.b.add.typed.2d.u32.1.nonuniform.base0 r1.x, r0.z, r1.z"),
+	/* dEQP-VK.descriptor_indexing.sampler */
+	INSTR_6XX(a0c81f00_40000005, "sam.s2en.nonuniform.base0 (f32)(xyzw)r0.x, r0.z, r0.x"),
 
 	/* Custom test since we've never seen the blob emit these. */
 	INSTR_6XX(c0260004_00490000, "getspid.u32 r1.x"),

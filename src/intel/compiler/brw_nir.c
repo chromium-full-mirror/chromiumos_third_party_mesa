@@ -75,7 +75,7 @@ remap_tess_levels(nir_builder *b, nir_intrinsic_instr *intr,
       if (nir_intrinsic_infos[intr->intrinsic].has_dest) {
          b->cursor = nir_before_instr(&intr->instr);
          nir_ssa_def *undef = nir_ssa_undef(b, 1, 32);
-         nir_ssa_def_rewrite_uses(&intr->dest.ssa, nir_src_for_ssa(undef));
+         nir_ssa_def_rewrite_uses(&intr->dest.ssa, undef);
       }
       nir_instr_remove(&intr->instr);
    }
@@ -258,7 +258,7 @@ brw_nir_lower_vs_inputs(nir_shader *nir,
                nir_builder_instr_insert(&b, &load->instr);
 
                nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                        nir_src_for_ssa(&load->dest.ssa));
+                                        &load->dest.ssa);
                nir_instr_remove(&intrin->instr);
                break;
             }
@@ -594,7 +594,7 @@ brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
       if (is_scalar) {
          OPT(nir_lower_alu_to_scalar, NULL, NULL);
       } else {
-         OPT(nir_opt_shrink_vectors);
+         OPT(nir_opt_shrink_vectors, true);
       }
 
       OPT(nir_copy_prop);
@@ -1077,11 +1077,9 @@ nir_shader_has_local_variables(const nir_shader *nir)
  */
 void
 brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
-                    bool is_scalar)
+                    bool is_scalar, bool debug_enabled)
 {
    const struct gen_device_info *devinfo = compiler->devinfo;
-   bool debug_enabled =
-      (INTEL_DEBUG & intel_debug_flag_for_shader_stage(nir->info.stage));
 
    UNUSED bool progress; /* Written by OPT */
 

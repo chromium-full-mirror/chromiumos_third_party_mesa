@@ -1866,6 +1866,20 @@ out_unknown:
    return ~0;
 }
 
+static unsigned is_wrap_mode_legal(struct si_screen *screen, unsigned wrap)
+{
+   if (!screen->info.has_3d_cube_border_color_mipmap) {
+      switch (wrap) {
+      case PIPE_TEX_WRAP_CLAMP:
+      case PIPE_TEX_WRAP_CLAMP_TO_BORDER:
+      case PIPE_TEX_WRAP_MIRROR_CLAMP:
+      case PIPE_TEX_WRAP_MIRROR_CLAMP_TO_BORDER:
+         return false;
+      }
+   }
+   return true;
+}
+
 static unsigned si_tex_wrap(unsigned wrap)
 {
    switch (wrap) {
@@ -2168,6 +2182,10 @@ static bool si_is_format_supported(struct pipe_screen *screen, enum pipe_format 
       PRINT_ERR("radeonsi: unsupported texture type %d\n", target);
       return false;
    }
+
+   if ((target == PIPE_TEXTURE_3D || target == PIPE_TEXTURE_CUBE) &&
+        !sscreen->info.has_3d_cube_border_color_mipmap)
+      return NULL;
 
    if (MAX2(1, sample_count) < MAX2(1, storage_sample_count))
       return false;
@@ -2976,6 +2994,20 @@ static void si_emit_framebuffer_state(struct si_context *sctx)
       cb_dcc_base = 0;
       cb_color_info = cb->cb_color_info | tex->cb_color_info;
       cb_color_attrib = cb->cb_color_attrib;
+
+      if (tex->swap_rgb_to_bgr) {
+         /* Swap R and B channels. */
+         static unsigned rgb_to_bgr[4] = {
+            [V_028C70_SWAP_STD] = V_028C70_SWAP_ALT,
+            [V_028C70_SWAP_ALT] = V_028C70_SWAP_STD,
+            [V_028C70_SWAP_STD_REV] = V_028C70_SWAP_ALT_REV,
+            [V_028C70_SWAP_ALT_REV] = V_028C70_SWAP_STD_REV,
+         };
+         unsigned swap = rgb_to_bgr[G_028C70_COMP_SWAP(cb_color_info)];
+
+         cb_color_info &= C_028C70_COMP_SWAP;
+         cb_color_info |= S_028C70_COMP_SWAP(swap);
+      }
 
       if (cb->base.u.tex.level > 0)
          cb_color_info &= C_028C70_FAST_CLEAR;
@@ -4325,20 +4357,6 @@ struct pipe_sampler_view *si_create_sampler_view_custom(struct pipe_context *ctx
       sctx->screen, tex, true, state->target, pipe_format, state_swizzle, first_level, last_level,
       state->u.tex.first_layer, last_layer, width, height, depth, view->state, view->fmask_state);
 
-   const struct util_format_description *desc = util_format_description(pipe_format);
-   view->is_integer = false;
-
-   for (unsigned i = 0; i < desc->nr_channels; ++i) {
-      if (desc->channel[i].type == UTIL_FORMAT_TYPE_VOID)
-         continue;
-
-      /* Whether the number format is {U,S}{SCALED,INT} */
-      view->is_integer = (desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED ||
-                          desc->channel[i].type == UTIL_FORMAT_TYPE_SIGNED) &&
-                         (desc->channel[i].pure_integer || !desc->channel[i].normalized);
-      break;
-   }
-
    view->base_level_info = &surflevel[base_level];
    view->base_level = base_level;
    view->block_width = util_format_get_blockwidth(pipe_format);
@@ -4468,6 +4486,17 @@ static void *si_create_sampler_state(struct pipe_context *ctx,
       return NULL;
    }
 
+   /* Validate inputs. */
+   if (!is_wrap_mode_legal(sscreen, state->wrap_s) ||
+       !is_wrap_mode_legal(sscreen, state->wrap_t) ||
+       !is_wrap_mode_legal(sscreen, state->wrap_r) ||
+       (!sscreen->info.has_3d_cube_border_color_mipmap &&
+        (state->min_mip_filter != PIPE_TEX_MIPFILTER_NONE ||
+         state->max_anisotropy > 0))) {
+      assert(0);
+      return NULL;
+   }
+
 #ifndef NDEBUG
    rstate->magic = SI_SAMPLER_STATE_MAGIC;
 #endif
@@ -4488,7 +4517,8 @@ static void *si_create_sampler_state(struct pipe_context *ctx,
                      S_008F38_XY_MIN_FILTER(si_tex_filter(state->min_img_filter, max_aniso)) |
                      S_008F38_MIP_FILTER(si_tex_mipfilter(state->min_mip_filter)) |
                      S_008F38_MIP_POINT_PRECLAMP(0));
-   rstate->val[3] = si_translate_border_color(sctx, state, &state->border_color, false);
+   rstate->val[3] = si_translate_border_color(sctx, state, &state->border_color,
+                                              state->border_color_is_integer);
 
    if (sscreen->info.chip_class >= GFX10) {
       rstate->val[2] |= S_008F38_ANISO_OVERRIDE_GFX10(1);
@@ -4497,10 +4527,6 @@ static void *si_create_sampler_state(struct pipe_context *ctx,
                         S_008F38_FILTER_PREC_FIX(1) |
                         S_008F38_ANISO_OVERRIDE_GFX8(sctx->chip_class >= GFX8);
    }
-
-   /* Create sampler resource for integer textures. */
-   memcpy(rstate->integer_val, rstate->val, sizeof(rstate->val));
-   rstate->integer_val[3] = si_translate_border_color(sctx, state, &state->border_color, true);
 
    /* Create sampler resource for upgraded depth textures. */
    memcpy(rstate->upgraded_depth_val, rstate->val, sizeof(rstate->val));

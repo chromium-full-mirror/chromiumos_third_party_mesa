@@ -73,6 +73,12 @@ lvp_image_create(VkDevice _device,
       if (pCreateInfo->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
          template.bind |= PIPE_BIND_DEPTH_STENCIL;
 
+      if (pCreateInfo->usage & VK_IMAGE_USAGE_SAMPLED_BIT)
+         template.bind |= PIPE_BIND_SAMPLER_VIEW;
+
+      if (pCreateInfo->usage & VK_IMAGE_USAGE_STORAGE_BIT)
+         template.bind |= PIPE_BIND_SHADER_IMAGE;
+
       template.format = vk_format_to_pipe(pCreateInfo->format);
       template.width0 = pCreateInfo->extent.width;
       template.height0 = pCreateInfo->extent.height;
@@ -266,6 +272,12 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateBuffer(
       template.height0 = 1;
       template.depth0 = 1;
       template.array_size = 1;
+      if (buffer->usage & VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT)
+         template.bind |= PIPE_BIND_SAMPLER_VIEW;
+      if (buffer->usage & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
+         template.bind |= PIPE_BIND_SHADER_BUFFER;
+      if (buffer->usage & VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT)
+         template.bind |= PIPE_BIND_SHADER_IMAGE;
       template.flags = PIPE_RESOURCE_FLAG_DONT_OVER_ALLOCATE;
       buffer->bo = device->pscreen->resource_create_unbacked(device->pscreen,
                                                              &template,
@@ -294,6 +306,29 @@ VKAPI_ATTR void VKAPI_CALL lvp_DestroyBuffer(
    pipe_resource_reference(&buffer->bo, NULL);
    vk_object_base_finish(&buffer->base);
    vk_free2(&device->vk.alloc, pAllocator, buffer);
+}
+
+VKAPI_ATTR VkDeviceAddress VKAPI_CALL lvp_GetBufferDeviceAddress(
+   VkDevice                                    device,
+   const VkBufferDeviceAddressInfoKHR*         pInfo)
+{
+   LVP_FROM_HANDLE(lvp_buffer, buffer, pInfo->buffer);
+
+   return (VkDeviceAddress)(uintptr_t)buffer->pmem;
+}
+
+VKAPI_ATTR uint64_t VKAPI_CALL lvp_GetBufferOpaqueCaptureAddress(
+    VkDevice                                    device,
+    const VkBufferDeviceAddressInfoKHR*         pInfo)
+{
+   return 0;
+}
+
+VKAPI_ATTR uint64_t VKAPI_CALL lvp_GetDeviceMemoryOpaqueCaptureAddress(
+    VkDevice                                    device,
+    const VkDeviceMemoryOpaqueCaptureAddressInfoKHR* pInfo)
+{
+   return 0;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

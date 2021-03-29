@@ -1860,7 +1860,6 @@ spec/egl_nok_swap_region/basic: skip
 spec/egl_nok_texture_from_pixmap/basic: skip
 spec/ext_demote_to_helper_invocation/execution/demote: skip
 spec/ext_demote_to_helper_invocation/execution/demote_with_derivatives: skip
-spec/ext_depth_bounds_test/depth_bounds: skip
 spec/ext_direct_state_access/indexed-state-queries 12/getdoublei_vext: skip
 spec/ext_direct_state_access/indexed-state-queries 12/getfloati_vext: skip
 spec/ext_direct_state_access/indexed-state-queries 12/getpointeri_vext: skip
@@ -2691,7 +2690,6 @@ spec/ext_window_rectangles/render: skip
 spec/ext_window_rectangles/render_gles3: skip
 spec/glsl-1.10/execution/fs-dfdx-accuracy: warn
 spec/glsl-1.10/execution/fs-dfdy-accuracy: warn
-spec/glsl-1.10/execution/gl_lightsource_indirect: crash
 spec/glsl-1.10/preprocessor/extension-defined-test: skip
 spec/glsl-1.10/preprocessor/extension-if-1: skip
 spec/glsl-1.30/execution/tex-miplevel-selection texturegrad 1d: fail
@@ -3055,19 +3053,3 @@ spec/oes_texture_view/texsubimage-levels pbo: skip
 wgl/wgl-multi-context-single-window: skip
 wgl/wgl-multi-window-single-context: skip
 wgl/wgl-sanity: skip
-summary:
-       name:  results
-       ----  --------
-       pass:    26873
-       fail:      404
-      crash:       31
-       skip:     2593
-    timeout:        0
-       warn:        4
- incomplete:        0
- dmesg-warn:        0
- dmesg-fail:        0
-    changes:        0
-      fixes:        0
-regressions:        0
-      total:    29930

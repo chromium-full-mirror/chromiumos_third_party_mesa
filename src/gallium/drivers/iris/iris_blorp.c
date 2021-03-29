@@ -41,7 +41,7 @@
 #include "iris_context.h"
 
 #include "util/u_upload_mgr.h"
-#include "intel/common/gen_l3_config.h"
+#include "intel/common/intel_l3_config.h"
 
 #include "blorp/blorp_genX_exec.h"
 
@@ -245,7 +245,7 @@ blorp_flush_range(UNUSED struct blorp_batch *blorp_batch,
     */
 }
 
-static const struct gen_l3_config *
+static const struct intel_l3_config *
 blorp_get_l3_config(struct blorp_batch *blorp_batch)
 {
    struct iris_batch *batch = blorp_batch->driver_batch;
@@ -275,7 +275,7 @@ iris_blorp_exec(struct blorp_batch *blorp_batch,
 #endif
 
    /* Flush the render cache in cases where the same surface is reinterpreted
-    * with a differernt format, which blorp does for stencil and depth data
+    * with a different format, which blorp does for stencil and depth data
     * among other things.  Invalidation of sampler caches and flushing of any
     * caches which had previously written the source surfaces should already
     * have been handled by the caller.

@@ -147,7 +147,7 @@ st_update_fp( struct st_context *st )
       if (st->lower_alpha_test && _mesa_is_alpha_test_enabled(st->ctx))
          key.lower_alpha_func = st->ctx->Color.AlphaFunc;
 
-      /* _NEW_LIGHT | _NEW_PROGRAM */
+      /* _NEW_LIGHT_STATE | _NEW_PROGRAM */
       key.lower_two_sided_color = st->lower_two_sided_color &&
          _mesa_vertex_program_two_side_enabled(st->ctx);
 
@@ -261,7 +261,7 @@ st_update_vp( struct st_context *st )
       update_gl_clamp(st, st->ctx->VertexProgram._Current, key.gl_clamp);
 
       simple_mtx_lock(&st->ctx->Shared->Mutex);
-      st->vp_variant = st_get_vp_variant(st, stvp, &key);
+      st->vp_variant = st_get_common_variant(st, stvp, &key);
       simple_mtx_unlock(&st->ctx->Shared->Mutex);
    }
 
@@ -328,7 +328,7 @@ st_update_common_program(struct st_context *st, struct gl_program *prog,
    update_gl_clamp(st, prog, key.gl_clamp);
 
    simple_mtx_lock(&st->ctx->Shared->Mutex);
-   void *result = st_get_common_variant(st, stp, &key)->driver_shader;
+   void *result = st_get_common_variant(st, stp, &key)->base.driver_shader;
    simple_mtx_unlock(&st->ctx->Shared->Mutex);
 
    return result;

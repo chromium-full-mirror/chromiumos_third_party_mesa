@@ -360,6 +360,7 @@ radv_handle_thread_trace(VkQueue _queue)
 	RADV_FROM_HANDLE(radv_queue, queue, _queue);
 	static bool thread_trace_enabled = false;
 	static uint64_t num_frames = 0;
+	bool resize_trigger = false;
 
 	if (thread_trace_enabled) {
 		struct ac_thread_trace thread_trace = {0};
@@ -370,11 +371,19 @@ radv_handle_thread_trace(VkQueue _queue)
 		/* TODO: Do something better than this whole sync. */
 		radv_QueueWaitIdle(_queue);
 
-		if (radv_get_thread_trace(queue, &thread_trace))
+		if (radv_get_thread_trace(queue, &thread_trace)) {
 			ac_dump_thread_trace(&queue->device->physical_device->rad_info,
 					     &thread_trace,
 					     &queue->device->thread_trace);
-	} else {
+		} else {
+			/* Trigger a new capture if the driver failed to get
+			 * the trace because the buffer was too small.
+			 */
+			resize_trigger = true;
+		}
+	}
+
+	if (!thread_trace_enabled) {
 		bool frame_trigger = num_frames == queue->device->thread_trace.start_frame;
 		bool file_trigger = false;
 #ifndef _WIN32
@@ -390,7 +399,7 @@ radv_handle_thread_trace(VkQueue _queue)
 		}
 #endif
 
-		if (frame_trigger || file_trigger) {
+		if (frame_trigger || file_trigger || resize_trigger) {
 			/* FIXME: SQTT on compute hangs. */
 			if (queue->queue_family_index == RADV_QUEUE_COMPUTE) {
 				fprintf(stderr, "RADV: Capturing a SQTT trace on the compute "
@@ -423,13 +432,16 @@ VkResult sqtt_QueuePresentKHR(
 	return VK_SUCCESS;
 }
 
-#define EVENT_MARKER(cmd_name, ...) \
+#define EVENT_MARKER_ALIAS(cmd_name, api_name, ...) \
 	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer); \
-	radv_write_begin_general_api_marker(cmd_buffer, ApiCmd##cmd_name); \
-	cmd_buffer->state.current_event_type = EventCmd##cmd_name; \
+	radv_write_begin_general_api_marker(cmd_buffer, ApiCmd##api_name); \
+	cmd_buffer->state.current_event_type = EventCmd##api_name; \
 	radv_Cmd##cmd_name(__VA_ARGS__); \
 	cmd_buffer->state.current_event_type = EventInternalUnknown; \
-	radv_write_end_general_api_marker(cmd_buffer, ApiCmd##cmd_name);
+	radv_write_end_general_api_marker(cmd_buffer, ApiCmd##api_name);
+
+#define EVENT_MARKER(cmd_name, ...) \
+	EVENT_MARKER_ALIAS(cmd_name, cmd_name, __VA_ARGS__);
 
 void sqtt_CmdDraw(
 	VkCommandBuffer                             commandBuffer,
@@ -519,15 +531,12 @@ void sqtt_CmdDispatchIndirect(
 	EVENT_MARKER(DispatchIndirect, commandBuffer, buffer, offset);
 }
 
-void sqtt_CmdCopyBuffer(
+void sqtt_CmdCopyBuffer2KHR(
 	VkCommandBuffer                             commandBuffer,
-	VkBuffer                                    srcBuffer,
-	VkBuffer                                    destBuffer,
-	uint32_t                                    regionCount,
-	const VkBufferCopy*                         pRegions)
+	const VkCopyBufferInfo2KHR*                 pCopyBufferInfo)
 {
-	EVENT_MARKER(CopyBuffer, commandBuffer, srcBuffer, destBuffer,
-		     regionCount, pRegions);
+	EVENT_MARKER_ALIAS(CopyBuffer2KHR, CopyBuffer, commandBuffer,
+			   pCopyBufferInfo);
 }
 
 void sqtt_CmdFillBuffer(
@@ -552,55 +561,36 @@ void sqtt_CmdUpdateBuffer(
 		     dataSize, pData);
 }
 
-void sqtt_CmdCopyImage(
+void sqtt_CmdCopyImage2KHR(
 	VkCommandBuffer                             commandBuffer,
-	VkImage                                     srcImage,
-	VkImageLayout                               srcImageLayout,
-	VkImage                                     destImage,
-	VkImageLayout                               destImageLayout,
-	uint32_t                                    regionCount,
-	const VkImageCopy*                          pRegions)
+	const VkCopyImageInfo2KHR*                  pCopyImageInfo)
 {
-	EVENT_MARKER(CopyImage, commandBuffer, srcImage, srcImageLayout,
-		     destImage, destImageLayout, regionCount, pRegions);
+	EVENT_MARKER_ALIAS(CopyImage2KHR, CopyImage, commandBuffer,
+			   pCopyImageInfo);
 }
 
-void sqtt_CmdCopyBufferToImage(
+void sqtt_CmdCopyBufferToImage2KHR(
 	VkCommandBuffer                             commandBuffer,
-	VkBuffer                                    srcBuffer,
-	VkImage                                     destImage,
-	VkImageLayout                               destImageLayout,
-	uint32_t                                    regionCount,
-	const VkBufferImageCopy*                    pRegions)
+	const VkCopyBufferToImageInfo2KHR*          pCopyBufferToImageInfo)
 {
-	EVENT_MARKER(CopyBufferToImage, commandBuffer, srcBuffer, destImage,
-		     destImageLayout, regionCount, pRegions);
+	EVENT_MARKER_ALIAS(CopyBufferToImage2KHR, CopyBufferToImage,
+			   commandBuffer, pCopyBufferToImageInfo);
 }
 
-void sqtt_CmdCopyImageToBuffer(
+void sqtt_CmdCopyImageToBuffer2KHR(
 	VkCommandBuffer                             commandBuffer,
-	VkImage                                     srcImage,
-	VkImageLayout                               srcImageLayout,
-	VkBuffer                                    destBuffer,
-	uint32_t                                    regionCount,
-	const VkBufferImageCopy*                    pRegions)
+	const VkCopyImageToBufferInfo2KHR*          pCopyImageToBufferInfo)
 {
-	EVENT_MARKER(CopyImageToBuffer, commandBuffer, srcImage, srcImageLayout,
-		     destBuffer, regionCount, pRegions);
+	EVENT_MARKER_ALIAS(CopyImageToBuffer2KHR, CopyImageToBuffer,
+			   commandBuffer, pCopyImageToBufferInfo);
 }
 
-void sqtt_CmdBlitImage(
+void sqtt_CmdBlitImage2KHR(
 	VkCommandBuffer                             commandBuffer,
-	VkImage                                     srcImage,
-	VkImageLayout                               srcImageLayout,
-	VkImage                                     destImage,
-	VkImageLayout                               destImageLayout,
-	uint32_t                                    regionCount,
-	const VkImageBlit*                          pRegions,
-	VkFilter                                    filter)
+	const VkBlitImageInfo2KHR*                  pBlitImageInfo)
 {
-	EVENT_MARKER(BlitImage, commandBuffer, srcImage, srcImageLayout,
-		     destImage, destImageLayout, regionCount, pRegions, filter);
+	EVENT_MARKER_ALIAS(BlitImage2KHR, BlitImage, commandBuffer,
+			   pBlitImageInfo);
 }
 
 void sqtt_CmdClearColorImage(
@@ -638,17 +628,12 @@ void sqtt_CmdClearAttachments(
 		     pAttachments, rectCount, pRects);
 }
 
-void sqtt_CmdResolveImage(
+void sqtt_CmdResolveImage2KHR(
 	VkCommandBuffer                             commandBuffer,
-	VkImage                                     src_image_h,
-	VkImageLayout                               src_image_layout,
-	VkImage                                     dest_image_h,
-	VkImageLayout                               dest_image_layout,
-	uint32_t                                    region_count,
-	const VkImageResolve*                       regions)
+	const VkResolveImageInfo2KHR*               pResolveImageInfo)
 {
-	EVENT_MARKER(ResolveImage, commandBuffer, src_image_h, src_image_layout,
-		     dest_image_h, dest_image_layout, region_count, regions);
+	EVENT_MARKER_ALIAS(ResolveImage2KHR, ResolveImage, commandBuffer,
+			   pResolveImageInfo);
 }
 
 void sqtt_CmdWaitEvents(VkCommandBuffer commandBuffer,
@@ -715,11 +700,14 @@ void sqtt_CmdCopyQueryPoolResults(
 }
 
 #undef EVENT_MARKER
-#define API_MARKER(cmd_name, ...) \
+#define API_MARKER_ALIAS(cmd_name, api_name, ...) \
 	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer); \
-	radv_write_begin_general_api_marker(cmd_buffer, ApiCmd##cmd_name); \
+	radv_write_begin_general_api_marker(cmd_buffer, ApiCmd##api_name); \
 	radv_Cmd##cmd_name(__VA_ARGS__); \
-	radv_write_end_general_api_marker(cmd_buffer, ApiCmd##cmd_name);
+	radv_write_end_general_api_marker(cmd_buffer, ApiCmd##api_name);
+
+#define API_MARKER(cmd_name, ...) \
+	API_MARKER_ALIAS(cmd_name, cmd_name, __VA_ARGS__);
 
 static bool
 radv_sqtt_dump_pipeline()
@@ -813,25 +801,30 @@ void sqtt_CmdPushConstants(
 		   size, pValues);
 }
 
-void sqtt_CmdBeginRenderPass(
+void sqtt_CmdBeginRenderPass2(
 	VkCommandBuffer                             commandBuffer,
-	const VkRenderPassBeginInfo*                pRenderPassBegin,
-	VkSubpassContents                           contents)
+	const VkRenderPassBeginInfo*                pRenderPassBeginInfo,
+	const VkSubpassBeginInfo*                   pSubpassBeginInfo)
 {
-	API_MARKER(BeginRenderPass, commandBuffer, pRenderPassBegin, contents);
+	API_MARKER_ALIAS(BeginRenderPass2, BeginRenderPass, commandBuffer,
+			 pRenderPassBeginInfo, pSubpassBeginInfo);
 }
 
-void sqtt_CmdNextSubpass(
+void sqtt_CmdNextSubpass2(
 	VkCommandBuffer                             commandBuffer,
-	VkSubpassContents                           contents)
+	const VkSubpassBeginInfo*                   pSubpassBeginInfo,
+	const VkSubpassEndInfo*                     pSubpassEndInfo)
 {
-	API_MARKER(NextSubpass, commandBuffer, contents);
+	API_MARKER_ALIAS(NextSubpass2, NextSubpass, commandBuffer,
+			 pSubpassBeginInfo, pSubpassEndInfo);
 }
 
-void sqtt_CmdEndRenderPass(
-	VkCommandBuffer                             commandBuffer)
+void sqtt_CmdEndRenderPass2(
+	VkCommandBuffer                             commandBuffer,
+	const VkSubpassEndInfo*                     pSubpassEndInfo)
 {
-	API_MARKER(EndRenderPass, commandBuffer);
+	API_MARKER_ALIAS(EndRenderPass2, EndRenderPass, commandBuffer,
+			 pSubpassEndInfo);
 }
 
 void sqtt_CmdExecuteCommands(
@@ -1000,71 +993,6 @@ radv_mesa_to_rgp_shader_stage(struct radv_pipeline *pipeline,
 }
 
 static VkResult
-radv_add_pso_correlation(struct radv_device *device,
-			 struct radv_pipeline *pipeline)
-{
-	struct ac_thread_trace_data *thread_trace_data = &device->thread_trace;
-	struct rgp_pso_correlation *pso_correlation = &thread_trace_data->rgp_pso_correlation;
-	struct rgp_pso_correlation_record *record;
-
-	record = malloc(sizeof(struct rgp_pso_correlation_record));
-	if (!record)
-		return VK_ERROR_OUT_OF_HOST_MEMORY;
-
-	record->api_pso_hash = pipeline->pipeline_hash;
-	record->pipeline_hash[0] = pipeline->pipeline_hash;
-	record->pipeline_hash[1] = pipeline->pipeline_hash;
-	memset(record->api_level_obj_name, 0, sizeof(record->api_level_obj_name));
-
-	simple_mtx_lock(&thread_trace_data->rgp_pso_correlation.lock);
-	list_addtail(&record->list, &pso_correlation->record);
-	pso_correlation->record_count++;
-	simple_mtx_unlock(&thread_trace_data->rgp_pso_correlation.lock);
-
-	return VK_SUCCESS;
-}
-
-static VkResult
-radv_add_code_object_loader_event(struct radv_device *device,
-				  struct radv_pipeline *pipeline)
-{
-	struct ac_thread_trace_data *thread_trace_data = &device->thread_trace;
-	struct rgp_loader_events *loader_events = &thread_trace_data->rgp_loader_events;
-	struct rgp_loader_events_record *record;
-	uint64_t base_va = ~0;
-
-	record = malloc(sizeof(struct rgp_loader_events_record));
-	if (!record)
-		return VK_ERROR_OUT_OF_HOST_MEMORY;
-
-	/* Find the lowest shader BO VA. */
-	for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
-		struct radv_shader_variant *shader = pipeline->shaders[i];
-		uint64_t va;
-
-		if (!shader)
-			continue;
-
-		va = radv_buffer_get_va(shader->bo) + shader->bo_offset;
-		base_va = MIN2(base_va, va);
-	}
-
-	record->loader_event_type = RGP_LOAD_TO_GPU_MEMORY;
-	record->reserved = 0;
-	record->base_address = base_va & 0xffffffffffff;
-	record->code_object_hash[0] = pipeline->pipeline_hash;
-	record->code_object_hash[1] = pipeline->pipeline_hash;
-	record->time_stamp = os_time_get_nano();
-
-	simple_mtx_lock(&loader_events->lock);
-	list_addtail(&record->list, &loader_events->record);
-	loader_events->record_count++;
-	simple_mtx_unlock(&loader_events->lock);
-
-	return VK_SUCCESS;
-}
-
-static VkResult
 radv_add_code_object(struct radv_device *device,
 		     struct radv_pipeline *pipeline)
 {
@@ -1125,15 +1053,30 @@ static VkResult
 radv_register_pipeline(struct radv_device *device,
 		       struct radv_pipeline *pipeline)
 {
-	VkResult result;
+	bool result;
+	uint64_t base_va = ~0;
 
-	result = radv_add_pso_correlation(device, pipeline);
-	if (result != VK_SUCCESS)
-		return result;
+	result = ac_sqtt_add_pso_correlation(&device->thread_trace, pipeline->pipeline_hash);
+	if (!result)
+		return VK_ERROR_OUT_OF_HOST_MEMORY;
 
-	result = radv_add_code_object_loader_event(device, pipeline);
-	if (result != VK_SUCCESS)
-		return result;
+	/* Find the lowest shader BO VA. */
+	for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
+		struct radv_shader_variant *shader = pipeline->shaders[i];
+		uint64_t va;
+
+		if (!shader)
+			continue;
+
+		va = radv_buffer_get_va(shader->bo) + shader->bo_offset;
+		base_va = MIN2(base_va, va);
+	}
+
+	result = ac_sqtt_add_code_object_loader_event(&device->thread_trace,
+						      pipeline->pipeline_hash,
+						      base_va);
+	if (!result)
+		return VK_ERROR_OUT_OF_HOST_MEMORY;
 
 	result = radv_add_code_object(device, pipeline);
 	if (result != VK_SUCCESS)

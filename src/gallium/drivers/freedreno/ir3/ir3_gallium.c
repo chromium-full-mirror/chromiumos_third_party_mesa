@@ -38,6 +38,7 @@
 #include "freedreno_context.h"
 #include "freedreno_util.h"
 
+#include "ir3/ir3_cache.h"
 #include "ir3/ir3_shader.h"
 #include "ir3/ir3_gallium.h"
 #include "ir3/ir3_compiler.h"
@@ -67,20 +68,21 @@ struct ir3_shader_state {
 static bool
 initial_variants_synchronous(struct fd_context *ctx)
 {
-	return unlikely(ctx->debug.debug_message && (fd_mesa_debug & FD_DBG_SHADERDB));
+	return unlikely(ctx->debug.debug_message) ||
+			FD_DBG(SHADERDB) || FD_DBG(SERIALC);
 }
 
 static void
 dump_shader_info(struct ir3_shader_variant *v, struct pipe_debug_callback *debug)
 {
-	if (!unlikely(fd_mesa_debug & FD_DBG_SHADERDB))
+	if (!FD_DBG(SHADERDB))
 		return;
 
 	pipe_debug_message(debug, SHADER_INFO,
 			"%s shader: %u inst, %u nops, %u non-nops, %u mov, %u cov, "
 			"%u dwords, %u last-baryf, %u half, %u full, %u constlen, "
 			"%u cat0, %u cat1, %u cat2, %u cat3, %u cat4, %u cat5, %u cat6, %u cat7, "
-			"%u sstall, %u (ss), %u (sy), %d max_sun, %d loops\n",
+			"%u sstall, %u (ss), %u (sy), %d waves, %d max_sun, %d loops\n",
 			ir3_shader_stage(v),
 			v->info.instrs_count,
 			v->info.nops_count,
@@ -102,6 +104,7 @@ dump_shader_info(struct ir3_shader_variant *v, struct pipe_debug_callback *debug
 			v->info.instrs_per_cat[7],
 			v->info.sstall,
 			v->info.ss, v->info.sy,
+			v->info.max_waves,
 			v->max_sun, v->loops);
 }
 
@@ -137,16 +140,14 @@ ir3_shader_variant(struct ir3_shader *shader, struct ir3_shader_key key,
 	 */
 	ir3_key_clear_unused(&key, shader);
 
-	v = ir3_shader_get_variant(shader, &key, binning_pass, &created);
+	v = ir3_shader_get_variant(shader, &key, binning_pass, false, &created);
 
 	if (created) {
 		if (shader->initial_variants_done) {
 			pipe_debug_message(debug, SHADER_INFO,
-					"%s shader: recompiling at draw time: global 0x%08x, vsats %x/%x/%x, fsats %x/%x/%x, vfsamples %x/%x, astc %x/%x\n",
+					"%s shader: recompiling at draw time: global 0x%08x, vfsamples %x/%x, astc %x/%x\n",
 					ir3_shader_stage(v),
 					key.global,
-					key.vsaturate_s, key.vsaturate_t, key.vsaturate_r,
-					key.fsaturate_s, key.fsaturate_t, key.fsaturate_r,
 					key.vsamples, key.fsamples,
 					key.vastc_srgb, key.fastc_srgb);
 
@@ -389,9 +390,12 @@ ir3_shader_state_create(struct pipe_context *pctx, const struct pipe_shader_stat
 void
 ir3_shader_state_delete(struct pipe_context *pctx, void *_hwcso)
 {
-	struct fd_screen *screen = fd_context(pctx)->screen;
+	struct fd_context *ctx = fd_context(pctx);
+	struct fd_screen *screen = ctx->screen;
 	struct ir3_shader_state *hwcso = _hwcso;
 	struct ir3_shader *so = hwcso->shader;
+
+	ir3_cache_invalidate(ctx->shader_cache, hwcso);
 
 	/* util_queue_drop_job() guarantees that either:
 	 *  1) job did not execute
@@ -424,8 +428,16 @@ ir3_get_shader(struct ir3_shader_state *hwcso)
 {
 	if (!hwcso)
 		return NULL;
-	util_queue_fence_wait(&hwcso->ready);
-	return hwcso->shader;
+
+	struct ir3_shader *shader = hwcso->shader;
+	perf_time(1000, "waited for %s:%s:%s variants",
+			_mesa_shader_stage_to_abbrev(shader->type),
+			shader->nir->info.name, shader->nir->info.label) {
+		/* wait for initial variants to compile: */
+		util_queue_fence_wait(&hwcso->ready);
+	}
+
+	return shader;
 }
 
 struct shader_info *
@@ -434,6 +446,32 @@ ir3_get_shader_info(struct ir3_shader_state *hwcso)
 	if (!hwcso)
 		return NULL;
 	return &hwcso->shader->nir->info;
+}
+
+/* fixup dirty shader state in case some "unrelated" (from the state-
+ * tracker's perspective) state change causes us to switch to a
+ * different variant.
+ */
+void
+ir3_fixup_shader_state(struct pipe_context *pctx, struct ir3_shader_key *key)
+{
+	struct fd_context *ctx = fd_context(pctx);
+
+	if (!ir3_shader_key_equal(ctx->last.key, key)) {
+		if (ir3_shader_key_changes_fs(ctx->last.key, key)) {
+			fd_context_dirty_shader(ctx, PIPE_SHADER_FRAGMENT, FD_DIRTY_SHADER_PROG);
+		}
+
+		if (ir3_shader_key_changes_vs(ctx->last.key, key)) {
+			fd_context_dirty_shader(ctx, PIPE_SHADER_VERTEX, FD_DIRTY_SHADER_PROG);
+		}
+
+		/* NOTE: currently only a6xx has gs/tess, but needs no
+		 * gs/tess specific lowering.
+		 */
+
+		*ctx->last.key = *key;
+	}
 }
 
 static void
@@ -517,4 +555,47 @@ ir3_screen_fini(struct pipe_screen *pscreen)
 	util_queue_destroy(&screen->compile_queue);
 	ir3_compiler_destroy(screen->compiler);
 	screen->compiler = NULL;
+}
+
+void
+ir3_update_max_tf_vtx(struct fd_context *ctx, const struct ir3_shader_variant *v)
+{
+	struct fd_streamout_stateobj *so = &ctx->streamout;
+	struct ir3_stream_output_info *info = &v->shader->stream_output;
+	uint32_t maxvtxcnt = 0x7fffffff;
+
+	if (v->shader->stream_output.num_outputs == 0)
+		ctx->streamout.max_tf_vtx = 0;
+	if (so->num_targets == 0)
+		ctx->streamout.max_tf_vtx = 0;
+
+	/* offset to write to is:
+	 *
+	 *   total_vtxcnt = vtxcnt + offsets[i]
+	 *   offset = total_vtxcnt * stride[i]
+	 *
+	 *   offset =   vtxcnt * stride[i]       ; calculated in shader
+	 *            + offsets[i] * stride[i]   ; calculated at emit_tfbos()
+	 *
+	 * assuming for each vtx, each target buffer will have data written
+	 * up to 'offset + stride[i]', that leaves maxvtxcnt as:
+	 *
+	 *   buffer_size = (maxvtxcnt * stride[i]) + stride[i]
+	 *   maxvtxcnt   = (buffer_size - stride[i]) / stride[i]
+	 *
+	 * but shader is actually doing a less-than (rather than less-than-
+	 * equal) check, so we can drop the -stride[i].
+	 *
+	 * TODO is assumption about `offset + stride[i]` legit?
+	 */
+	for (unsigned i = 0; i < so->num_targets; i++) {
+		struct pipe_stream_output_target *target = so->targets[i];
+		unsigned stride = info->stride[i] * 4;   /* convert dwords->bytes */
+		if (target) {
+			uint32_t max = target->buffer_size / stride;
+			maxvtxcnt = MIN2(maxvtxcnt, max);
+		}
+	}
+
+	ctx->streamout.max_tf_vtx = maxvtxcnt;
 }

@@ -29,6 +29,12 @@
 
 #define SQTT_BUFFER_ALIGN_SHIFT 12
 
+static bool
+radv_se_is_disabled(struct radv_device *device, unsigned se)
+{
+	/* No active CU on the SE means it is disabled. */
+	return device->physical_device->rad_info.cu_mask[se][0] == 0;
+}
 
 static void
 radv_emit_thread_trace_start(struct radv_device *device,
@@ -36,14 +42,19 @@ radv_emit_thread_trace_start(struct radv_device *device,
 			     uint32_t queue_family_index)
 {
 	uint32_t shifted_size = device->thread_trace.buffer_size >> SQTT_BUFFER_ALIGN_SHIFT;
-	unsigned max_se = device->physical_device->rad_info.max_se;
+	struct radeon_info *rad_info = &device->physical_device->rad_info;
+	unsigned max_se = rad_info->max_se;
 
 	assert(device->physical_device->rad_info.chip_class >= GFX8);
 
 	for (unsigned se = 0; se < max_se; se++) {
 		uint64_t va = radv_buffer_get_va(device->thread_trace.bo);
-		uint64_t data_va = ac_thread_trace_get_data_va(&device->thread_trace, va, se);
+		uint64_t data_va = ac_thread_trace_get_data_va(rad_info, &device->thread_trace, va, se);
 		uint64_t shifted_va = data_va >> SQTT_BUFFER_ALIGN_SHIFT;
+		int first_active_cu = ffs(device->physical_device->rad_info.cu_mask[se][0]);
+
+		if (radv_se_is_disabled(device, se))
+			continue;
 
 		/* Target SEx and SH0. */
 		radeon_set_uconfig_reg(cs, R_030800_GRBM_GFX_INDEX,
@@ -63,20 +74,21 @@ radv_emit_thread_trace_start(struct radv_device *device,
 			radeon_set_privileged_config_reg(cs, R_008D14_SQ_THREAD_TRACE_MASK,
 							 S_008D14_WTYPE_INCLUDE(0x7f) | /* all shader stages */
 							 S_008D14_SA_SEL(0) |
-							 S_008D14_WGP_SEL(0) |
+							 S_008D14_WGP_SEL(first_active_cu / 2) |
 							 S_008D14_SIMD_SEL(0));
 
 			uint32_t thread_trace_token_mask =
 				S_008D18_REG_INCLUDE(V_008D18_REG_INCLUDE_SQDEC |
 						     V_008D18_REG_INCLUDE_SHDEC |
 						     V_008D18_REG_INCLUDE_GFXUDEC |
-						     V_008D18_REG_INCLUDE_CONTEXT |
 						     V_008D18_REG_INCLUDE_COMP |
 						     V_008D18_REG_INCLUDE_CONTEXT |
 						     V_008D18_REG_INCLUDE_CONFIG);
 
-			if (device->physical_device->rad_info.chip_class < GFX10_3)
-				thread_trace_token_mask |= S_008D18_TOKEN_EXCLUDE(V_008D18_TOKEN_EXCLUDE_PERF);
+			/* Performance counters with SQTT are considered
+			 * deprecated.
+			 */
+			thread_trace_token_mask |= S_008D18_TOKEN_EXCLUDE(V_008D18_TOKEN_EXCLUDE_PERF);
 
 			radeon_set_privileged_config_reg(cs, R_008D18_SQ_THREAD_TRACE_TOKEN_MASK,
 							 thread_trace_token_mask);
@@ -111,7 +123,7 @@ radv_emit_thread_trace_start(struct radv_device *device,
 			radeon_set_uconfig_reg(cs, R_030CD4_SQ_THREAD_TRACE_CTRL,
 					       S_030CD4_RESET_BUFFER(1));
 
-			uint32_t thread_trace_mask = S_030CC8_CU_SEL(2) |
+			uint32_t thread_trace_mask = S_030CC8_CU_SEL(first_active_cu) |
 						     S_030CC8_SH_SEL(0) |
 						     S_030CC8_SIMD_EN(0xf) |
 						     S_030CC8_VM_ID_MASK(0) |
@@ -264,6 +276,9 @@ radv_emit_thread_trace_stop(struct radv_device *device,
 	radeon_emit(cs, EVENT_TYPE(V_028A90_THREAD_TRACE_FINISH) | EVENT_INDEX(0));
 
 	for (unsigned se = 0; se < max_se; se++) {
+		if (radv_se_is_disabled(device, se))
+			continue;
+
 		/* Target SEi and SH0. */
 		radeon_set_uconfig_reg(cs, R_030800_GRBM_GFX_INDEX,
 				       S_030800_SE_INDEX(se) |
@@ -411,7 +426,7 @@ radv_thread_trace_init_bo(struct radv_device *device)
 	/* Compute total size of the thread trace BO for all SEs. */
 	size = align64(sizeof(struct ac_thread_trace_info) * max_se,
 		       1 << SQTT_BUFFER_ALIGN_SHIFT);
-	size += device->thread_trace.buffer_size * max_se;
+	size += device->thread_trace.buffer_size * (uint64_t)max_se;
 
 	device->thread_trace.bo = ws->buffer_create(ws, size, 4096,
 						    RADEON_DOMAIN_VRAM,
@@ -434,9 +449,9 @@ radv_thread_trace_init(struct radv_device *device)
 {
 	struct ac_thread_trace_data *thread_trace_data = &device->thread_trace;
 
-	/* Default buffer size set to 1MB per SE. */
+	/* Default buffer size set to 32MB per SE. */
 	device->thread_trace.buffer_size =
-		radv_get_int_debug_option("RADV_THREAD_TRACE_BUFFER_SIZE", 1024 * 1024);
+		radv_get_int_debug_option("RADV_THREAD_TRACE_BUFFER_SIZE", 32 * 1024 * 1024);
 	device->thread_trace.start_frame = radv_get_int_debug_option("RADV_THREAD_TRACE", -1);
 
 	const char *trigger_file = getenv("RADV_THREAD_TRACE_TRIGGER");
@@ -485,26 +500,22 @@ radv_thread_trace_finish(struct radv_device *device)
 }
 
 static bool
-radv_thread_trace_resize_bo(struct radv_device *device, uint32_t expected_size)
+radv_thread_trace_resize_bo(struct radv_device *device)
 {
 	struct radeon_winsys *ws = device->ws;
 
 	/* Destroy the previous thread trace BO. */
 	ws->buffer_destroy(ws, device->thread_trace.bo);
 
-	/* Resize the trace buffer BO by 150% of the expected size to be sure
-	 * it will be enough.
-	 */
-	device->thread_trace.buffer_size = expected_size * 1.50;
+	/* Double the size of the thread trace buffer per SE. */
+	device->thread_trace.buffer_size *= 2;
+
+	fprintf(stderr, "Failed to get the thread trace because the buffer "
+			"was too small, resizing to %d KB\n",
+		device->thread_trace.buffer_size / 1024);
 
 	/* Re-create the thread trace BO. */
-	if (!radv_thread_trace_init_bo(device))
-		return false;
-
-	fprintf(stderr, "The thread trace buffer has been resized to %d KB "
-			"per SE ! Please try again.\n",
-		device->thread_trace.buffer_size / 1024);
-	return true;
+	return radv_thread_trace_init_bo(device);
 }
 
 bool
@@ -624,33 +635,27 @@ radv_get_thread_trace(struct radv_queue *queue,
 		      struct ac_thread_trace *thread_trace)
 {
 	struct radv_device *device = queue->device;
-	unsigned max_se = device->physical_device->rad_info.max_se;
+	struct radeon_info *rad_info = &device->physical_device->rad_info;
+	unsigned max_se = rad_info->max_se;
 	void *thread_trace_ptr = device->thread_trace.ptr;
 
 	memset(thread_trace, 0, sizeof(*thread_trace));
-	thread_trace->num_traces = max_se;
 
 	for (unsigned se = 0; se < max_se; se++) {
 		uint64_t info_offset = ac_thread_trace_get_info_offset(se);
-		uint64_t data_offset = ac_thread_trace_get_data_offset(&device->thread_trace, se);
+		uint64_t data_offset = ac_thread_trace_get_data_offset(rad_info, &device->thread_trace, se);
 		void *info_ptr = (uint8_t *)thread_trace_ptr + info_offset;
 		void *data_ptr = (uint8_t *)thread_trace_ptr + data_offset;
 		struct ac_thread_trace_info *info =
 			(struct ac_thread_trace_info *)info_ptr;
 		struct ac_thread_trace_se thread_trace_se = {0};
+		int first_active_cu = ffs(device->physical_device->rad_info.cu_mask[se][0]);
 
-		if (!ac_is_thread_trace_complete(&device->physical_device->rad_info, info)) {
-			uint32_t expected_size =
-				ac_get_expected_buffer_size(&device->physical_device->rad_info, info);
-			uint32_t available_size =
-				(info->cur_offset * 32) / 1024;
+		if (radv_se_is_disabled(device, se))
+			continue;
 
-			fprintf(stderr, "Failed to get the thread trace "
-					"because the buffer is too small. The "
-					"hardware needs %d KB per SE but the "
-					"buffer size is %d KB.\n",
-					expected_size, available_size);
-			if (!radv_thread_trace_resize_bo(device, expected_size * 1024)) {
+		if (!ac_is_thread_trace_complete(&device->physical_device->rad_info, &device->thread_trace, info)) {
+			if (!radv_thread_trace_resize_bo(device)) {
 				fprintf(stderr, "Failed to resize the thread "
 						"trace buffer.\n");
 				abort();
@@ -661,9 +666,15 @@ radv_get_thread_trace(struct radv_queue *queue,
 		thread_trace_se.data_ptr = data_ptr;
 		thread_trace_se.info = *info;
 		thread_trace_se.shader_engine = se;
+
+		/* RGP seems to expect units of WGP on GFX10+. */
+		thread_trace_se.compute_unit =
+			device->physical_device->rad_info.chip_class >= GFX10 ? (first_active_cu / 2) : first_active_cu;
+
 		thread_trace_se.compute_unit = 0;
 
-		thread_trace->traces[se] = thread_trace_se;
+		thread_trace->traces[thread_trace->num_traces] = thread_trace_se;
+		thread_trace->num_traces++;
 	}
 
 	return true;

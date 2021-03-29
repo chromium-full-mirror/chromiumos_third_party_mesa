@@ -303,21 +303,9 @@ bool ShaderFromNir::emit_instruction(nir_instr *instr)
 
 bool ShaderFromNir::process_declaration()
 {
-   // scan declarations
-   nir_foreach_shader_in_variable(variable, sh) {
-      if (!impl->process_inputs(variable)) {
-         fprintf(stderr, "R600: error parsing input variable %s\n", variable->name);
-         return false;
-      }
-   }
 
-   // scan declarations
-   nir_foreach_shader_out_variable(variable, sh) {
-      if (!impl->process_outputs(variable)) {
-         fprintf(stderr, "R600: error parsing outputs variable %s\n", variable->name);
-         return false;
-      }
-   }
+   if (!impl->scan_inputs_read(sh))
+      return false;
 
    // scan declarations
    nir_foreach_variable_with_modes(variable, sh, nir_var_uniform |
@@ -695,7 +683,7 @@ r600_lower_shared_io_impl(nir_function *func)
             load->src[0] = nir_src_for_ssa(addr);
             nir_ssa_dest_init(&load->instr, &load->dest,
                               load->num_components, 32, NULL);
-            nir_ssa_def_rewrite_uses(&op->dest.ssa, nir_src_for_ssa(&load->dest.ssa));
+            nir_ssa_def_rewrite_uses(&op->dest.ssa, &load->dest.ssa);
             nir_builder_instr_insert(&b, &load->instr);
          } else {
             nir_ssa_def *addr = op->src[1].ssa;
@@ -840,6 +828,7 @@ bool r600_lower_to_scalar_instr_filter(const nir_instr *instr, const void *)
    case nir_op_fdot2:
    case nir_op_fdot3:
    case nir_op_fdot4:
+   case nir_op_cube_r600:
       return false;
    case nir_op_bany_fnequal2:
    case nir_op_ball_fequal2:
@@ -874,6 +863,10 @@ int r600_shader_from_nir(struct r600_context *rctx,
 
    NIR_PASS_V(sel->nir, nir_lower_vars_to_ssa);
    NIR_PASS_V(sel->nir, nir_lower_regs_to_ssa);
+   NIR_PASS_V(sel->nir, nir_lower_idiv,
+              sel->nir->info.stage == MESA_SHADER_COMPUTE ?
+                 nir_lower_idiv_precise : nir_lower_idiv_fast);
+   NIR_PASS_V(sel->nir, r600_lower_alu);
    NIR_PASS_V(sel->nir, nir_lower_phis_to_scalar);
 
    if (lower_64bit)
@@ -890,19 +883,45 @@ int r600_shader_from_nir(struct r600_context *rctx,
    };
    NIR_PASS_V(sel->nir, nir_lower_tex, &lower_tex_options);
    NIR_PASS_V(sel->nir, r600::r600_nir_lower_txl_txf_array_or_cube);
+   NIR_PASS_V(sel->nir, r600::r600_nir_lower_cube_to_2darray);
 
-   NIR_PASS_V(sel->nir, r600_nir_lower_int_tg4);
    NIR_PASS_V(sel->nir, r600_nir_lower_pack_unpack_2x16);
 
-   nir_variable_mode io_modes = nir_var_uniform;
-   if (sel->nir->info.stage != MESA_SHADER_VERTEX)
-      io_modes |= nir_var_shader_in;
+   if (sel->nir->info.stage == MESA_SHADER_VERTEX)
+      NIR_PASS_V(sel->nir, r600_vectorize_vs_inputs);
 
-   if (sel->nir->info.stage != MESA_SHADER_FRAGMENT)
+   if (sel->nir->info.stage == MESA_SHADER_FRAGMENT) {
+      NIR_PASS_V(sel->nir, r600_lower_fs_out_to_vector);
+   }
+
+   nir_variable_mode io_modes = nir_var_uniform | nir_var_shader_in;
+
+   //if (sel->nir->info.stage != MESA_SHADER_FRAGMENT)
       io_modes |= nir_var_shader_out;
+
+   if (sel->nir->info.stage == MESA_SHADER_FRAGMENT) {
+
+      /* Lower IO to temporaries late, because otherwise we get into trouble
+       * with the glsl 4.40 interpolateAt swizzle tests. There seems to be a bug
+       * somewhere that results in the input alweas reading from the same temp
+       * regardless of interpolation when the lowering is done early */
+      NIR_PASS_V(sel->nir, nir_lower_io_to_temporaries, nir_shader_get_entrypoint(sel->nir),
+              true, true);
+
+      /* Since we're doing nir_lower_io_to_temporaries late, we need
+       * to lower all the copy_deref's introduced by
+       * lower_io_to_temporaries before calling nir_lower_io.
+       */
+      NIR_PASS_V(sel->nir, nir_split_var_copies);
+      NIR_PASS_V(sel->nir, nir_lower_var_copies);
+      NIR_PASS_V(sel->nir, nir_lower_global_vars_to_local);
+   }
 
    NIR_PASS_V(sel->nir, nir_lower_io, io_modes, r600_glsl_type_size,
                  nir_lower_io_lower_64bit_to_32);
+
+   if (sel->nir->info.stage == MESA_SHADER_FRAGMENT)
+      NIR_PASS_V(sel->nir, r600_lower_fs_pos_input);
 
    /**/
    if (lower_64bit)
@@ -921,15 +940,7 @@ int r600_shader_from_nir(struct r600_context *rctx,
    NIR_PASS_V(sel->nir, nir_copy_prop);
    NIR_PASS_V(sel->nir, nir_opt_dce);
 
-   if (sel->nir->info.stage == MESA_SHADER_VERTEX)
-      NIR_PASS_V(sel->nir, r600_vectorize_vs_inputs);
-
-   if (sel->nir->info.stage == MESA_SHADER_FRAGMENT) {
-      NIR_PASS_V(sel->nir, r600_lower_fs_pos_input);
-      NIR_PASS_V(sel->nir, r600_lower_fs_out_to_vector);
-   }
-
-	auto sh = nir_shader_clone(sel->nir, sel->nir);
+   auto sh = nir_shader_clone(sel->nir, sel->nir);
 
    if (sh->info.stage == MESA_SHADER_TESS_CTRL ||
        sh->info.stage == MESA_SHADER_TESS_EVAL ||
@@ -942,6 +953,10 @@ int r600_shader_from_nir(struct r600_context *rctx,
    if (sh->info.stage == MESA_SHADER_TESS_CTRL)
       NIR_PASS_V(sh, r600_append_tcs_TF_emission,
                  (pipe_prim_type)key->tcs.prim_mode);
+
+   if (sh->info.stage == MESA_SHADER_TESS_EVAL)
+      NIR_PASS_V(sh, r600_lower_tess_coord,
+                 static_cast<pipe_prim_type>(sh->info.tess.primitive_mode));
 
    NIR_PASS_V(sh, nir_lower_ubo_vec4);
    if (lower_64bit)
@@ -964,6 +979,7 @@ int r600_shader_from_nir(struct r600_context *rctx,
    while (optimize_once(sh, true));
 
    NIR_PASS_V(sh, nir_lower_bool_to_int32);
+   NIR_PASS_V(sh, r600_nir_lower_int_tg4);
    NIR_PASS_V(sh, nir_opt_algebraic_late);
 
    if (sh->info.stage == MESA_SHADER_FRAGMENT)

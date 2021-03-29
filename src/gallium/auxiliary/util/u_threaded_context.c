@@ -30,6 +30,7 @@
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_upload_mgr.h"
+#include "util/log.h"
 #include "compiler/shader_info.h"
 
 /* 0 = disabled, 1 = assertions, 2 = printfs */
@@ -42,7 +43,7 @@
 #endif
 
 #if TC_DEBUG >= 2
-#define tc_printf printf
+#define tc_printf mesa_logi
 #define tc_asprintf asprintf
 #define tc_strcmp strcmp
 #else
@@ -82,8 +83,24 @@ tc_debug_check(struct threaded_context *tc)
 {
    for (unsigned i = 0; i < TC_MAX_BATCHES; i++) {
       tc_batch_check(&tc->batch_slots[i]);
-      tc_assert(tc->batch_slots[i].pipe == tc->pipe);
+      tc_assert(tc->batch_slots[i].tc == tc);
    }
+}
+
+static void
+tc_set_driver_thread(struct threaded_context *tc)
+{
+#ifndef NDEBUG
+   tc->driver_thread = util_get_thread_id();
+#endif
+}
+
+static void
+tc_clear_driver_thread(struct threaded_context *tc)
+{
+#ifndef NDEBUG
+   memset(&tc->driver_thread, 0, sizeof(tc->driver_thread));
+#endif
 }
 
 /* We don't want to read or write min_index and max_index, because
@@ -148,10 +165,11 @@ static void
 tc_batch_execute(void *job, UNUSED int thread_index)
 {
    struct tc_batch *batch = job;
-   struct pipe_context *pipe = batch->pipe;
+   struct pipe_context *pipe = batch->tc->pipe;
    struct tc_call *last = &batch->call[batch->num_total_call_slots];
 
    tc_batch_check(batch);
+   tc_set_driver_thread(batch->tc);
 
    assert(!batch->token);
 
@@ -210,6 +228,7 @@ tc_batch_execute(void *job, UNUSED int thread_index)
       iter += iter->num_call_slots;
    }
 
+   tc_clear_driver_thread(batch->tc);
    tc_batch_check(batch);
    batch->num_total_call_slots = 0;
 }
@@ -330,7 +349,7 @@ _tc_sync(struct threaded_context *tc, UNUSED const char *info, UNUSED const char
       p_atomic_inc(&tc->num_syncs);
 
       if (tc_strcmp(func, "tc_destroy") != 0) {
-         tc_printf("sync %s %s\n", func, info);
+         tc_printf("sync %s %s", func, info);
 	  }
    }
 
@@ -544,11 +563,17 @@ tc_get_query_result(struct pipe_context *_pipe,
    struct threaded_context *tc = threaded_context(_pipe);
    struct threaded_query *tq = threaded_query(query);
    struct pipe_context *pipe = tc->pipe;
+   bool flushed = tq->flushed;
 
-   if (!tq->flushed)
+   if (!flushed) {
       tc_sync_msg(tc, wait ? "wait" : "nowait");
+      tc_set_driver_thread(tc);
+   }
 
    bool success = pipe->get_query_result(pipe, query, wait, result);
+
+   if (!flushed)
+      tc_clear_driver_thread(tc);
 
    if (success) {
       tq->flushed = true;
@@ -1319,7 +1344,6 @@ tc_create_stream_output_target(struct pipe_context *_pipe,
    struct threaded_resource *tres = threaded_resource(res);
    struct pipe_stream_output_target *view;
 
-   tc_sync(threaded_context(_pipe));
    util_range_add(&tres->b, &tres->valid_buffer_range, buffer_offset,
                   buffer_offset + buffer_size);
 
@@ -1691,12 +1715,18 @@ tc_transfer_map(struct pipe_context *_pipe,
       tc_sync_msg(tc, resource->target != PIPE_BUFFER ? "  texture" :
                       usage & PIPE_MAP_DISCARD_RANGE ? "  discard_range" :
                       usage & PIPE_MAP_READ ? "  read" : "  staging conflict");
+      tc_set_driver_thread(tc);
    }
 
    tc->bytes_mapped_estimate += box->width;
 
-   return pipe->transfer_map(pipe, tres->latest ? tres->latest : resource,
+   void *ret = pipe->transfer_map(pipe, tres->latest ? tres->latest : resource,
                              level, usage, box, transfer);
+
+   if (!(usage & TC_TRANSFER_MAP_THREADED_UNSYNC))
+      tc_clear_driver_thread(tc);
+
+   return ret;
 }
 
 struct tc_transfer_flush_region {
@@ -1991,8 +2021,10 @@ tc_texture_subdata(struct pipe_context *_pipe,
       struct pipe_context *pipe = tc->pipe;
 
       tc_sync(tc);
+      tc_set_driver_thread(tc);
       pipe->texture_subdata(pipe, resource, level, usage, box, data,
                             stride, layer_stride);
+      tc_clear_driver_thread(tc);
    }
 }
 
@@ -2200,8 +2232,8 @@ tc_set_context_param(struct pipe_context *_pipe,
    if (param == PIPE_CONTEXT_PARAM_PIN_THREADS_TO_L3_CACHE) {
       /* Pin the gallium thread as requested. */
       util_set_thread_affinity(tc->queue.threads[0],
-                               util_cpu_caps.L3_affinity_mask[value],
-                               NULL, util_cpu_caps.num_cpu_mask_bits);
+                               util_get_cpu_caps()->L3_affinity_mask[value],
+                               NULL, util_get_cpu_caps()->num_cpu_mask_bits);
 
       /* Execute this immediately (without enqueuing).
        * It's required to be thread-safe.
@@ -2319,7 +2351,9 @@ out_of_memory:
 
    if (!(flags & PIPE_FLUSH_DEFERRED))
       tc_flush_queries(tc);
+   tc_set_driver_thread(tc);
    pipe->flush(pipe, fence, flags);
+   tc_clear_driver_thread(tc);
 }
 
 static void
@@ -2982,7 +3016,7 @@ threaded_context_create(struct pipe_context *pipe,
 
    util_cpu_detect();
 
-   if (!debug_get_bool_option("GALLIUM_THREAD", util_cpu_caps.nr_cpus > 1))
+   if (!debug_get_bool_option("GALLIUM_THREAD", util_get_cpu_caps()->nr_cpus > 1))
       return pipe;
 
    tc = os_malloc_aligned(sizeof(struct threaded_context), 16);
@@ -3034,7 +3068,7 @@ threaded_context_create(struct pipe_context *pipe,
 
    for (unsigned i = 0; i < TC_MAX_BATCHES; i++) {
       tc->batch_slots[i].sentinel = TC_SENTINEL;
-      tc->batch_slots[i].pipe = pipe;
+      tc->batch_slots[i].tc = tc;
       util_queue_fence_init(&tc->batch_slots[i].fence);
    }
 

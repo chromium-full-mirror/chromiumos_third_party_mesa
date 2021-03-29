@@ -515,6 +515,8 @@ schedule_node::set_latency_gen7(bool is_haswell)
          case GEN9_DATAPORT_DC_PORT1_UNTYPED_ATOMIC_FLOAT_OP:
          case GEN8_DATAPORT_DC_PORT1_A64_UNTYPED_ATOMIC_OP:
          case GEN9_DATAPORT_DC_PORT1_A64_UNTYPED_ATOMIC_FLOAT_OP:
+         case GEN12_DATAPORT_DC_PORT1_A64_UNTYPED_ATOMIC_HALF_INT_OP:
+         case GEN12_DATAPORT_DC_PORT1_A64_UNTYPED_ATOMIC_HALF_FLOAT_OP:
             /* See also GEN7_DATAPORT_DC_UNTYPED_ATOMIC_OP */
             latency = 14000;
             break;
@@ -1198,9 +1200,12 @@ fs_instruction_scheduler::calculate_deps()
          }
       } else if (inst->dst.file == FIXED_GRF) {
          if (post_reg_alloc) {
-            for (unsigned r = 0; r < regs_written(inst); r++)
+            for (unsigned r = 0; r < regs_written(inst); r++) {
+               add_dep(last_grf_write[inst->dst.nr + r], n);
                last_grf_write[inst->dst.nr + r] = n;
+            }
          } else {
+            add_dep(last_fixed_grf_write, n);
             last_fixed_grf_write = n;
          }
       } else if (inst->dst.is_accumulator()) {
@@ -1428,6 +1433,7 @@ vec4_instruction_scheduler::calculate_deps()
          add_dep(last_mrf_write[inst->dst.nr], n);
          last_mrf_write[inst->dst.nr] = n;
      } else if (inst->dst.file == FIXED_GRF) {
+         add_dep(last_fixed_grf_write, n);
          last_fixed_grf_write = n;
       } else if (inst->dst.is_accumulator()) {
          add_dep(last_accumulator_write, n);

@@ -257,8 +257,6 @@ _mesa_PushAttrib(GLbitfield mask)
 
       /* copy/save the bulk of texture state here */
       head->Texture.CurrentUnit = ctx->Texture.CurrentUnit;
-      head->Texture._TexGenEnabled = ctx->Texture._TexGenEnabled;
-      head->Texture._GenFlags = ctx->Texture._GenFlags;
       memcpy(&head->Texture.FixedFuncUnit, &ctx->Texture.FixedFuncUnit,
              sizeof(ctx->Texture.FixedFuncUnit));
 
@@ -700,11 +698,6 @@ pop_texture_group(struct gl_context *ctx, struct gl_texture_attrib_node *texstat
       copy_texture_attribs(dst, src, tex);
    }
 
-   if (!ctx->Driver.TexEnv && !ctx->Driver.TexGen) {
-      ctx->Texture._TexGenEnabled = texstate->_TexGenEnabled;
-      ctx->Texture._GenFlags = texstate->_GenFlags;
-   }
-
    _mesa_ActiveTexture(GL_TEXTURE0_ARB + texstate->CurrentUnit);
    _mesa_unlock_context_textures(ctx);
 }
@@ -903,8 +896,7 @@ _mesa_PopAttrib(void)
    if (mask & GL_CURRENT_BIT) {
       memcpy(&ctx->Current, &attr->Current,
              sizeof(struct gl_current_attrib));
-      /* Set _NEW_LIGHT because current attribs may reference materials. */
-      ctx->NewState |= _NEW_CURRENT_ATTRIB | _NEW_LIGHT;
+      ctx->NewState |= _NEW_CURRENT_ATTRIB;
    }
 
    if (mask & GL_DEPTH_BUFFER_BIT) {
@@ -919,41 +911,8 @@ _mesa_PopAttrib(void)
       }
    }
 
-   if (mask & GL_ENABLE_BIT) {
+   if (mask & GL_ENABLE_BIT)
       pop_enable_group(ctx, &attr->Enable);
-      ctx->NewState |= _NEW_COLOR |
-                       _NEW_DEPTH |
-                       _NEW_FOG |
-                       _NEW_LIGHT |
-                       _NEW_LINE |
-                       _NEW_POINT |
-                       _NEW_POLYGON |
-                       _NEW_SCISSOR |
-                       _NEW_TRANSFORM |
-                       _NEW_TEXTURE_STATE |
-                       _NEW_BUFFERS |
-                       _NEW_MULTISAMPLE |
-                       _NEW_PROGRAM |
-                       _NEW_FRAG_CLAMP;
-      ctx->NewDriverState |= ctx->DriverFlags.NewAlphaTest |
-                             ctx->DriverFlags.NewBlend |
-                             ctx->DriverFlags.NewClipPlaneEnable |
-                             ctx->DriverFlags.NewDepth |
-                             ctx->DriverFlags.NewDepthClamp |
-                             ctx->DriverFlags.NewFragClamp |
-                             ctx->DriverFlags.NewFramebufferSRGB |
-                             ctx->DriverFlags.NewLineState |
-                             ctx->DriverFlags.NewLogicOp |
-                             ctx->DriverFlags.NewMultisampleEnable |
-                             ctx->DriverFlags.NewPolygonState |
-                             ctx->DriverFlags.NewSampleAlphaToXEnable |
-                             ctx->DriverFlags.NewSampleMask |
-                             ctx->DriverFlags.NewSampleShading |
-                             ctx->DriverFlags.NewScissorTest |
-                             ctx->DriverFlags.NewStencil |
-                             ctx->DriverFlags.NewNvConservativeRasterization |
-                             ctx->DriverFlags.NewTileRasterOrder;
-   }
 
    if (mask & GL_EVAL_BIT) {
       memcpy(&ctx->Eval, &attr->Eval, sizeof(struct gl_eval_attrib));
@@ -1036,14 +995,20 @@ _mesa_PopAttrib(void)
                            (GLfloat) attr->Light.Model.ColorControl);
       } else {
          /* Fast path for other drivers. */
-         ctx->NewState |= _NEW_LIGHT;
+         ctx->NewState |= _NEW_LIGHT_CONSTANTS | _NEW_FF_VERT_PROGRAM;
 
          memcpy(ctx->Light.LightSource, attr->Light.LightSource,
                 sizeof(attr->Light.LightSource));
-         memcpy(&ctx->Light.Light, &attr->Light.Light,
-                sizeof(attr->Light.Light));
          memcpy(&ctx->Light.Model, &attr->Light.Model,
                 sizeof(attr->Light.Model));
+
+         for (i = 0; i < ctx->Const.MaxLights; i++) {
+            TEST_AND_UPDATE(ctx->Light.Light[i].Enabled,
+                            attr->Light.Light[i].Enabled,
+                            GL_LIGHT0 + i);
+            memcpy(&ctx->Light.Light[i], &attr->Light.Light[i],
+                   sizeof(struct gl_light));
+         }
       }
       /* shade model */
       TEST_AND_CALL1(Light.ShadeModel, ShadeModel);
@@ -1052,8 +1017,8 @@ _mesa_PopAttrib(void)
                      ColorMaterial);
       TEST_AND_UPDATE(ctx->Light.ColorMaterialEnabled,
                       attr->Light.ColorMaterialEnabled, GL_COLOR_MATERIAL);
-      /* Materials - they might be used by current attribs. */
-      ctx->NewState |= _NEW_CURRENT_ATTRIB;
+      /* Shininess material is used by the fixed-func vertex program. */
+      ctx->NewState |= _NEW_MATERIAL | _NEW_FF_VERT_PROGRAM;
       memcpy(&ctx->Light.Material, &attr->Light.Material,
              sizeof(struct gl_material));
       if (ctx->Extensions.ARB_color_buffer_float) {
@@ -1090,7 +1055,7 @@ _mesa_PopAttrib(void)
       }
       if (ctx->Extensions.ARB_point_sprite) {
          if (ctx->Point.CoordReplace != attr->Point.CoordReplace) {
-            ctx->NewState |= _NEW_POINT;
+            ctx->NewState |= _NEW_POINT | _NEW_FF_VERT_PROGRAM;
             ctx->Point.CoordReplace = attr->Point.CoordReplace;
 
             if (ctx->Driver.TexEnv) {
@@ -1245,7 +1210,8 @@ _mesa_PopAttrib(void)
 
    if (mask & GL_TEXTURE_BIT) {
       pop_texture_group(ctx, &attr->Texture);
-      ctx->NewState |= _NEW_TEXTURE_OBJECT | _NEW_TEXTURE_STATE;
+      ctx->NewState |= _NEW_TEXTURE_OBJECT | _NEW_TEXTURE_STATE |
+                       _NEW_FF_VERT_PROGRAM | _NEW_FF_FRAG_PROGRAM;
    }
 
    if (mask & GL_VIEWPORT_BIT) {

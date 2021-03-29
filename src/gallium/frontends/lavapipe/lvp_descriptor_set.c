@@ -22,6 +22,7 @@
  */
 
 #include "lvp_private.h"
+#include "vk_descriptors.h"
 #include "vk_util.h"
 #include "u_math.h"
 
@@ -39,7 +40,21 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDescriptorSetLayout(
    uint32_t immutable_sampler_count = 0;
    for (uint32_t j = 0; j < pCreateInfo->bindingCount; j++) {
       max_binding = MAX2(max_binding, pCreateInfo->pBindings[j].binding);
-      if (pCreateInfo->pBindings[j].pImmutableSamplers)
+      /* From the Vulkan 1.1.97 spec for VkDescriptorSetLayoutBinding:
+       *
+       *    "If descriptorType specifies a VK_DESCRIPTOR_TYPE_SAMPLER or
+       *    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER type descriptor, then
+       *    pImmutableSamplers can be used to initialize a set of immutable
+       *    samplers. [...]  If descriptorType is not one of these descriptor
+       *    types, then pImmutableSamplers is ignored.
+       *
+       * We need to be careful here and only parse pImmutableSamplers if we
+       * have one of the right descriptor types.
+       */
+      VkDescriptorType desc_type = pCreateInfo->pBindings[j].descriptorType;
+      if ((desc_type == VK_DESCRIPTOR_TYPE_SAMPLER ||
+           desc_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) &&
+          pCreateInfo->pBindings[j].pImmutableSamplers)
          immutable_sampler_count += pCreateInfo->pBindings[j].descriptorCount;
    }
 
@@ -59,14 +74,22 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDescriptorSetLayout(
    struct lvp_sampler **samplers =
       (struct lvp_sampler **)&set_layout->binding[max_binding + 1];
 
+   set_layout->alloc = pAllocator;
    set_layout->binding_count = max_binding + 1;
    set_layout->shader_stages = 0;
    set_layout->size = 0;
 
-   uint32_t dynamic_offset_count = 0;
+   VkDescriptorSetLayoutBinding *bindings = vk_create_sorted_bindings(pCreateInfo->pBindings,
+                                                                      pCreateInfo->bindingCount);
+   if (!bindings) {
+      vk_object_base_finish(&set_layout->base);
+      vk_free2(&device->vk.alloc, pAllocator, set_layout);
+      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
 
+   uint32_t dynamic_offset_count = 0;
    for (uint32_t j = 0; j < pCreateInfo->bindingCount; j++) {
-      const VkDescriptorSetLayoutBinding *binding = &pCreateInfo->pBindings[j];
+      const VkDescriptorSetLayoutBinding *binding = bindings + j;
       uint32_t b = binding->binding;
 
       set_layout->binding[b].array_size = binding->descriptorCount;
@@ -94,6 +117,14 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDescriptorSetLayout(
          lvp_foreach_stage(s, binding->stageFlags) {
             set_layout->binding[b].stage[s].sampler_index = set_layout->stage[s].sampler_count;
             set_layout->stage[s].sampler_count += binding->descriptorCount;
+         }
+         if (binding->pImmutableSamplers) {
+            set_layout->binding[b].immutable_samplers = samplers;
+            samplers += binding->descriptorCount;
+
+            for (uint32_t i = 0; i < binding->descriptorCount; i++)
+               set_layout->binding[b].immutable_samplers[i] =
+                  lvp_sampler_from_handle(binding->pImmutableSamplers[i]);
          }
          break;
       default:
@@ -136,17 +167,6 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDescriptorSetLayout(
          break;
       }
 
-      if (binding->pImmutableSamplers) {
-         set_layout->binding[b].immutable_samplers = samplers;
-         samplers += binding->descriptorCount;
-
-         for (uint32_t i = 0; i < binding->descriptorCount; i++)
-            set_layout->binding[b].immutable_samplers[i] =
-               lvp_sampler_from_handle(binding->pImmutableSamplers[i]);
-      } else {
-         set_layout->binding[b].immutable_samplers = NULL;
-      }
-
       set_layout->shader_stages |= binding->stageFlags;
    }
 
@@ -163,7 +183,7 @@ lvp_descriptor_set_layout_destroy(struct lvp_device *device,
 {
    assert(layout->ref_cnt == 0);
    vk_object_base_finish(&layout->base);
-   vk_free(&device->vk.alloc, layout);
+   vk_free2(&device->vk.alloc, layout->alloc, layout);
 }
 
 VKAPI_ATTR void VKAPI_CALL lvp_DestroyDescriptorSetLayout(
@@ -523,7 +543,6 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDescriptorUpdateTemplate(VkDevice _devi
                                             VkDescriptorUpdateTemplate *pDescriptorUpdateTemplate)
 {
    LVP_FROM_HANDLE(lvp_device, device, _device);
-   LVP_FROM_HANDLE(lvp_descriptor_set_layout, set_layout, pCreateInfo->descriptorSetLayout);
    const uint32_t entry_count = pCreateInfo->descriptorUpdateEntryCount;
    const size_t size = sizeof(struct lvp_descriptor_update_template) +
       sizeof(VkDescriptorUpdateTemplateEntry) * entry_count;
@@ -538,10 +557,13 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDescriptorUpdateTemplate(VkDevice _devi
                        VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE);
 
    templ->type = pCreateInfo->templateType;
-   templ->descriptor_set_layout = set_layout;
    templ->bind_point = pCreateInfo->pipelineBindPoint;
    templ->set = pCreateInfo->set;
-   templ->pipeline_layout = lvp_pipeline_layout_from_handle(pCreateInfo->pipelineLayout);
+   /* This parameter is ignored if templateType is not VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_PUSH_DESCRIPTORS_KHR */
+   if (pCreateInfo->templateType == VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_PUSH_DESCRIPTORS_KHR)
+      templ->pipeline_layout = lvp_pipeline_layout_from_handle(pCreateInfo->pipelineLayout);
+   else
+      templ->pipeline_layout = NULL;
    templ->entry_count = entry_count;
 
    VkDescriptorUpdateTemplateEntry *entries = (VkDescriptorUpdateTemplateEntry *)(templ + 1);
@@ -584,11 +606,12 @@ VKAPI_ATTR void VKAPI_CALL lvp_UpdateDescriptorSetWithTemplate(VkDevice _device,
       struct lvp_descriptor *desc =
          &set->descriptors[bind_layout->descriptor_index];
       for (j = 0; j < entry->descriptorCount; ++j) {
+         unsigned idx = j + entry->dstArrayElement;
          switch (entry->descriptorType) {
          case VK_DESCRIPTOR_TYPE_SAMPLER: {
             LVP_FROM_HANDLE(lvp_sampler, sampler,
                             *(VkSampler *)pSrc);
-            desc[j] = (struct lvp_descriptor) {
+            desc[idx] = (struct lvp_descriptor) {
                .type = VK_DESCRIPTOR_TYPE_SAMPLER,
                .info.sampler = sampler,
             };
@@ -596,7 +619,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_UpdateDescriptorSetWithTemplate(VkDevice _device,
          }
          case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: {
             VkDescriptorImageInfo *info = (VkDescriptorImageInfo *)pSrc;
-            desc[j] = (struct lvp_descriptor) {
+            desc[idx] = (struct lvp_descriptor) {
                .type = entry->descriptorType,
                .info.iview = lvp_image_view_from_handle(info->imageView),
                .info.sampler = lvp_sampler_from_handle(info->sampler),
@@ -608,7 +631,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_UpdateDescriptorSetWithTemplate(VkDevice _device,
          case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
             LVP_FROM_HANDLE(lvp_image_view, iview,
                             ((VkDescriptorImageInfo *)pSrc)->imageView);
-            desc[j] = (struct lvp_descriptor) {
+            desc[idx] = (struct lvp_descriptor) {
                .type = entry->descriptorType,
                .info.iview = iview,
             };
@@ -618,7 +641,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_UpdateDescriptorSetWithTemplate(VkDevice _device,
          case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: {
             LVP_FROM_HANDLE(lvp_buffer_view, bview,
                             *(VkBufferView *)pSrc);
-            desc[j] = (struct lvp_descriptor) {
+            desc[idx] = (struct lvp_descriptor) {
                .type = entry->descriptorType,
                .info.buffer_view = bview,
             };
@@ -630,7 +653,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_UpdateDescriptorSetWithTemplate(VkDevice _device,
          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: {
             VkDescriptorBufferInfo *info = (VkDescriptorBufferInfo *)pSrc;
-            desc[j] = (struct lvp_descriptor) {
+            desc[idx] = (struct lvp_descriptor) {
                .type = entry->descriptorType,
                .info.offset = info->offset,
                .info.buffer = lvp_buffer_from_handle(info->buffer),

@@ -26,6 +26,7 @@
 #include "pipe/p_state.h"
 #include "util/u_inlines.h"
 #include "util/u_range.h"
+#include "util/u_threaded_context.h"
 #include "intel/isl/isl.h"
 #include "iris_bufmgr.h"
 
@@ -50,7 +51,7 @@ struct iris_format_info {
  * They contain the storage (BO) and layout information (ISL surface).
  */
 struct iris_resource {
-   struct pipe_resource base;
+   struct threaded_resource base;
    enum pipe_format internal_format;
 
    /**
@@ -261,7 +262,7 @@ struct iris_surface {
  * Transfer object - information about a buffer mapping.
  */
 struct iris_transfer {
-   struct pipe_transfer base;
+   struct threaded_transfer base;
    struct pipe_debug_callback *dbg;
    void *buffer;
    void *ptr;
@@ -310,6 +311,11 @@ union isl_color_value
 iris_resource_get_clear_color(const struct iris_resource *res,
                               struct iris_bo **clear_color_bo,
                               uint64_t *clear_color_offset);
+
+void iris_replace_buffer_storage(struct pipe_context *ctx,
+                                 struct pipe_resource *dst,
+                                 struct pipe_resource *src);
+
 
 void iris_init_screen_resource_functions(struct pipe_screen *pscreen);
 

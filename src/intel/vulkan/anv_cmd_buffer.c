@@ -30,7 +30,6 @@
 #include "anv_private.h"
 #include "anv_measure.h"
 
-#include "vk_format_info.h"
 #include "vk_util.h"
 
 /** \file anv_cmd_buffer.c
@@ -1068,7 +1067,7 @@ anv_cmd_buffer_cs_push_constants(struct anv_cmd_buffer *cmd_buffer)
    const unsigned aligned_total_push_constants_size =
       ALIGN(total_push_constants_size, push_constant_alignment);
    struct anv_state state;
-   if (devinfo->gen > 12 || gen_device_info_is_12hp(devinfo)) {
+   if (devinfo->genx10 >= 125) {
       state = anv_state_stream_alloc(&cmd_buffer->general_state_stream,
                                      aligned_total_push_constants_size,
                                      push_constant_alignment);
@@ -1270,7 +1269,8 @@ anv_cmd_buffer_push_descriptor_set(struct anv_cmd_buffer *cmd_buffer,
        */
       struct anv_state desc_mem =
          anv_state_stream_alloc(&cmd_buffer->dynamic_state_stream,
-                                layout->descriptor_buffer_size, 32);
+                                anv_descriptor_set_layout_descriptor_buffer_size(layout, 0),
+                                ANV_UBO_ALIGNMENT);
       if (set->desc_mem.alloc_size) {
          /* TODO: Do we really need to copy all the time? */
          memcpy(desc_mem.map, set->desc_mem.map,

@@ -31,7 +31,7 @@
 
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
-#include "common/gen_guardband.h"
+#include "common/intel_guardband.h"
 
 #if GEN_GEN == 8
 void
@@ -71,15 +71,15 @@ gen8_cmd_buffer_emit_viewport(struct anv_cmd_buffer *cmd_buffer)
           * framebuffer at the time we emit the packet.  Otherwise, we have
           * fall back to a worst-case guardband of [-1, 1].
           */
-         gen_calculate_guardband_size(fb->width, fb->height,
-                                      sfv.ViewportMatrixElementm00,
-                                      sfv.ViewportMatrixElementm11,
-                                      sfv.ViewportMatrixElementm30,
-                                      sfv.ViewportMatrixElementm31,
-                                      &sfv.XMinClipGuardband,
-                                      &sfv.XMaxClipGuardband,
-                                      &sfv.YMinClipGuardband,
-                                      &sfv.YMaxClipGuardband);
+         intel_calculate_guardband_size(fb->width, fb->height,
+                                        sfv.ViewportMatrixElementm00,
+                                        sfv.ViewportMatrixElementm11,
+                                        sfv.ViewportMatrixElementm30,
+                                        sfv.ViewportMatrixElementm31,
+                                        &sfv.XMinClipGuardband,
+                                        &sfv.XMaxClipGuardband,
+                                        &sfv.YMinClipGuardband,
+                                        &sfv.YMaxClipGuardband);
       }
 
       GENX(SF_CLIP_VIEWPORT_pack)(NULL, sf_clip_state.map + i * 64, &sfv);

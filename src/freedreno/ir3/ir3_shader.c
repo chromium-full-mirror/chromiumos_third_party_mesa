@@ -166,6 +166,9 @@ void * ir3_shader_assemble(struct ir3_shader_variant *v)
 	 */
 	v->constlen = MAX2(v->constlen, info->max_const + 1);
 
+	if (v->constlen > ir3_const_state(v)->offsets.driver_param)
+		v->need_driver_params = true;
+
 	/* On a4xx and newer, constlen must be a multiple of 16 dwords even though
 	 * uploads are in units of 4 dwords. Round it up here to make calculations
 	 * regarding the shared constlen simpler.
@@ -224,7 +227,7 @@ assemble_variant(struct ir3_shader_variant *v)
 	v->bin = ir3_shader_assemble(v);
 
 	bool dbg_enabled = shader_debug_enabled(v->shader->type);
-	if (dbg_enabled || ir3_shader_override_path) {
+	if (dbg_enabled || ir3_shader_override_path || v->disasm_info.write_disasm) {
 		unsigned char sha1[21];
 		char sha1buf[41];
 
@@ -233,6 +236,24 @@ assemble_variant(struct ir3_shader_variant *v)
 
 		bool shader_overridden =
 			ir3_shader_override_path && try_override_shader_variant(v, sha1buf);
+
+		if (v->disasm_info.write_disasm) {
+			char *stream_data = NULL;
+			size_t stream_size = 0;
+			FILE *stream = open_memstream(&stream_data, &stream_size);
+
+			fprintf(stream, "Native code%s for unnamed %s shader %s with sha1 %s:\n",
+				shader_overridden ? " (overridden)" : "",
+				ir3_shader_stage(v), v->shader->nir->info.name, sha1buf);
+			ir3_shader_disasm(v, v->bin, stream);
+
+			fclose(stream);
+
+			v->disasm_info.disasm = ralloc_size(v->shader, stream_size + 1);
+			memcpy(v->disasm_info.disasm, stream_data, stream_size);
+			v->disasm_info.disasm[stream_size] = 0;
+			free(stream_data);
+		}
 
 		if (dbg_enabled || shader_overridden) {
 			fprintf(stdout, "Native code%s for unnamed %s shader %s with sha1 %s:\n",
@@ -312,17 +333,21 @@ needs_binning_variant(struct ir3_shader_variant *v)
 }
 
 static struct ir3_shader_variant *
-create_variant(struct ir3_shader *shader, const struct ir3_shader_key *key)
+create_variant(struct ir3_shader *shader, const struct ir3_shader_key *key,
+				bool write_disasm)
 {
 	struct ir3_shader_variant *v = alloc_variant(shader, key, NULL);
 
 	if (!v)
 		goto fail;
 
+	v->disasm_info.write_disasm = write_disasm;
+
 	if (needs_binning_variant(v)) {
 		v->binning = alloc_variant(shader, key, v);
 		if (!v->binning)
 			goto fail;
+		v->binning->disasm_info.write_disasm = write_disasm;
 	}
 
 	if (ir3_disk_cache_retrieve(shader->compiler, v))
@@ -334,6 +359,10 @@ create_variant(struct ir3_shader *shader, const struct ir3_shader_key *key)
 		if (ir3_shader_debug & IR3_DBG_DISASM) {
 			printf("dump nir%d: type=%d", shader->id, shader->type);
 			nir_print_shader(shader->nir, stdout);
+		}
+
+		if (v->disasm_info.write_disasm) {
+			v->disasm_info.nir = nir_shader_as_str(shader->nir, shader);
 		}
 
 		shader->nir_finalized = true;
@@ -368,14 +397,14 @@ shader_variant(struct ir3_shader *shader, const struct ir3_shader_key *key)
 
 struct ir3_shader_variant *
 ir3_shader_get_variant(struct ir3_shader *shader, const struct ir3_shader_key *key,
-		bool binning_pass, bool *created)
+		bool binning_pass, bool write_disasm, bool *created)
 {
 	mtx_lock(&shader->variants_lock);
 	struct ir3_shader_variant *v = shader_variant(shader, key);
 
 	if (!v) {
 		/* compile new variant if it doesn't exist already: */
-		v = create_variant(shader, key);
+		v = create_variant(shader, key, write_disasm);
 		if (v) {
 			v->next = shader->variants;
 			shader->variants = v;
@@ -428,15 +457,11 @@ ir3_setup_used_key(struct ir3_shader *shader)
 		key->ucp_enables = 0xff;
 
 	if (info->stage == MESA_SHADER_FRAGMENT) {
-		key->fsaturate_s = ~0;
-		key->fsaturate_t = ~0;
-		key->fsaturate_r = ~0;
 		key->fastc_srgb = ~0;
 		key->fsamples = ~0;
 
 		if (info->inputs_read & VARYING_BITS_COLOR) {
 			key->rasterflat = true;
-			key->color_two_side = true;
 		}
 
 		if (info->inputs_read & VARYING_BIT_LAYER) {
@@ -447,27 +472,19 @@ ir3_setup_used_key(struct ir3_shader *shader)
 			key->view_zero = true;
 		}
 
-		if ((info->outputs_written & ~(FRAG_RESULT_DEPTH |
-								FRAG_RESULT_STENCIL |
-								FRAG_RESULT_SAMPLE_MASK)) != 0) {
-			key->fclamp_color = true;
-		}
-
 		/* Only used for deciding on behavior of
-		 * nir_intrinsic_load_barycentric_sample
+		 * nir_intrinsic_load_barycentric_sample, or the centroid demotion
+		 * on older HW.
 		 */
-		key->msaa = info->fs.uses_sample_qualifier;
+		key->msaa = info->fs.uses_sample_qualifier ||
+					(shader->compiler->gpu_id < 600 &&
+					 (BITSET_TEST(info->system_values_read, SYSTEM_VALUE_BARYCENTRIC_PERSP_CENTROID) ||
+					  BITSET_TEST(info->system_values_read, SYSTEM_VALUE_BARYCENTRIC_LINEAR_CENTROID)));
 	} else {
 		key->tessellation = ~0;
 		key->has_gs = true;
 
-		if (info->outputs_written & VARYING_BITS_COLOR)
-			key->vclamp_color = true;
-
 		if (info->stage == MESA_SHADER_VERTEX) {
-			key->vsaturate_s = ~0;
-			key->vsaturate_t = ~0;
-			key->vsaturate_r = ~0;
 			key->vastc_srgb = ~0;
 			key->vsamples = ~0;
 		}

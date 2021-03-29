@@ -45,9 +45,12 @@ struct spirv_supported_capabilities {
    bool descriptor_indexing;
    bool device_group;
    bool draw_parameters;
+   bool float16_atomic_min_max;
    bool float32_atomic_add;
+   bool float32_atomic_min_max;
    bool float64;
    bool float64_atomic_add;
+   bool float64_atomic_min_max;
    bool fragment_shader_sample_interlock;
    bool fragment_shader_pixel_interlock;
    bool fragment_shading_rate;
@@ -165,10 +168,10 @@ typedef struct shader_info {
    uint64_t patch_outputs_accessed_indirectly;
 
    /** Bitfield of which textures are used */
-   uint32_t textures_used;
+   BITSET_DECLARE(textures_used, 32);
 
    /** Bitfield of which textures are used by texelFetch() */
-   uint32_t textures_used_by_txf;
+   BITSET_DECLARE(textures_used_by_txf, 32);
 
    /** Bitfield of which images are used */
    uint32_t images_used;

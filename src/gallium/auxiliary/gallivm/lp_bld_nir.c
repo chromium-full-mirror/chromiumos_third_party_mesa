@@ -78,6 +78,7 @@ static LLVMValueRef cast_type(struct lp_build_nir_context *bld_base, LLVMValueRe
          return LLVMBuildBitCast(builder, val, bld_base->uint8_bld.vec_type, "");
       case 16:
          return LLVMBuildBitCast(builder, val, bld_base->uint16_bld.vec_type, "");
+      case 1:
       case 32:
          return LLVMBuildBitCast(builder, val, bld_base->uint_bld.vec_type, "");
       case 64:
@@ -113,14 +114,16 @@ static unsigned glsl_sampler_to_pipe(int sampler_dim, bool is_array)
       pipe_target = is_array ? PIPE_TEXTURE_1D_ARRAY : PIPE_TEXTURE_1D;
       break;
    case GLSL_SAMPLER_DIM_2D:
-   case GLSL_SAMPLER_DIM_SUBPASS:
       pipe_target = is_array ? PIPE_TEXTURE_2D_ARRAY : PIPE_TEXTURE_2D;
+      break;
+   case GLSL_SAMPLER_DIM_SUBPASS:
+   case GLSL_SAMPLER_DIM_SUBPASS_MS:
+      pipe_target = PIPE_TEXTURE_2D_ARRAY;
       break;
    case GLSL_SAMPLER_DIM_3D:
       pipe_target = PIPE_TEXTURE_3D;
       break;
    case GLSL_SAMPLER_DIM_MS:
-   case GLSL_SAMPLER_DIM_SUBPASS_MS:
       pipe_target = is_array ? PIPE_TEXTURE_2D_ARRAY : PIPE_TEXTURE_2D;
       break;
    case GLSL_SAMPLER_DIM_CUBE:
@@ -875,7 +878,7 @@ static LLVMValueRef do_alu_action(struct lp_build_nir_context *bld_base,
       break;
    case nir_op_pack_64_2x32_split: {
       LLVMValueRef tmp = merge_64bit(bld_base, src[0], src[1]);
-      result = LLVMBuildBitCast(builder, tmp, bld_base->dbl_bld.vec_type, "");
+      result = LLVMBuildBitCast(builder, tmp, bld_base->uint64_bld.vec_type, "");
       break;
    }
    case nir_op_u2f32:
@@ -1677,6 +1680,7 @@ static void visit_intrinsic(struct lp_build_nir_context *bld_base,
    case nir_intrinsic_load_sample_id:
    case nir_intrinsic_load_sample_pos:
    case nir_intrinsic_load_sample_mask_in:
+   case nir_intrinsic_load_view_index:
       bld_base->sysval_intrin(bld_base, instr, result);
       break;
    case nir_intrinsic_load_helper_invocation:
@@ -2208,7 +2212,7 @@ handle_shader_output_decl(struct lp_build_nir_context *bld_base,
 static LLVMTypeRef get_register_type(struct lp_build_nir_context *bld_base,
                                      nir_register *reg)
 {
-   struct lp_build_context *int_bld = get_int_bld(bld_base, true, reg->bit_size);
+   struct lp_build_context *int_bld = get_int_bld(bld_base, true, reg->bit_size == 1 ? 32 : reg->bit_size);
 
    LLVMTypeRef type = int_bld->vec_type;
    if (reg->num_array_elems)
@@ -2285,7 +2289,7 @@ void lp_build_opt_nir(struct nir_shader *nir)
    NIR_PASS_V(nir, nir_lower_frexp);
 
    NIR_PASS_V(nir, nir_lower_flrp, 16|32|64, true);
-
+   NIR_PASS_V(nir, nir_lower_fp16_casts);
    do {
       progress = false;
       NIR_PASS_V(nir, nir_opt_constant_folding);

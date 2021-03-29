@@ -593,8 +593,6 @@ surface_from_external_memory(VADriverContextP ctx, vlVaSurface *surface,
    res_templ.last_level = 0;
    res_templ.depth0 = 1;
    res_templ.array_size = 1;
-   res_templ.width0 = memory_attribute->width;
-   res_templ.height0 = memory_attribute->height;
    res_templ.bind = PIPE_BIND_SAMPLER_VIEW;
    res_templ.usage = PIPE_USAGE_DEFAULT;
 
@@ -602,6 +600,7 @@ surface_from_external_memory(VADriverContextP ctx, vlVaSurface *surface,
    whandle.type = WINSYS_HANDLE_TYPE_FD;
    whandle.handle = memory_attribute->buffers[index];
    whandle.modifier = DRM_FORMAT_MOD_INVALID;
+   whandle.format = templat->buffer_format;
 
    // Create a resource for each plane.
    memset(resources, 0, sizeof resources);
@@ -611,6 +610,11 @@ surface_from_external_memory(VADriverContextP ctx, vlVaSurface *surface,
          result = VA_STATUS_ERROR_INVALID_PARAMETER;
          goto fail;
       }
+
+      res_templ.width0 = util_format_get_plane_width(templat->buffer_format, i,
+                                                     memory_attribute->width);
+      res_templ.height0 = util_format_get_plane_height(templat->buffer_format, i,
+                                                       memory_attribute->height);
 
       whandle.stride = memory_attribute->pitches[i];
       whandle.offset = memory_attribute->offsets[i];
@@ -1113,7 +1117,7 @@ vlVaExportSurfaceHandle(VADriverContextP ctx,
 
    if (flags & VA_EXPORT_SURFACE_COMPOSED_LAYERS) {
       uint32_t drm_format = pipe_format_to_drm_format(surf->buffer->buffer_format);
-      if (drm_format == DRM_FORMAT_MOD_INVALID) {
+      if (drm_format == DRM_FORMAT_INVALID) {
          ret = VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE;
          goto fail;
       }

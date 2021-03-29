@@ -108,7 +108,7 @@ fs_visitor::nir_setup_uniforms()
    uniforms = nir->num_uniforms / 4;
 
    if ((stage == MESA_SHADER_COMPUTE || stage == MESA_SHADER_KERNEL) &&
-       devinfo->gen <= 12 && !gen_device_info_is_12hp(devinfo)) {
+       devinfo->genx10 < 125) {
       /* Add uniforms for builtins after regular NIR uniforms. */
       assert(uniforms == prog_data->nr_params);
 
@@ -1918,7 +1918,7 @@ fs_visitor::get_nir_src(const nir_src &src)
 {
    fs_reg reg;
    if (src.is_ssa) {
-      if (src.ssa->parent_instr->type == nir_instr_type_ssa_undef) {
+      if (nir_src_is_undef(src)) {
          const brw_reg_type reg_type =
             brw_reg_type_from_bit_size(src.ssa->bit_size, BRW_REGISTER_TYPE_D);
          reg = bld.vgrf(reg_type, src.ssa->num_components);
@@ -3675,7 +3675,7 @@ fs_visitor::nir_emit_cs_intrinsic(const fs_builder &bld,
       break;
 
    case nir_intrinsic_load_subgroup_id:
-      if (devinfo->gen > 12 || gen_device_info_is_12hp(devinfo))
+      if (devinfo->genx10 >= 125)
          bld.AND(retype(dest, BRW_REGISTER_TYPE_UD),
                  retype(brw_vec1_grf(0, 2), BRW_REGISTER_TYPE_UD),
                  brw_imm_ud(INTEL_MASK(7, 0)));
@@ -4665,12 +4665,43 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
       assert(instr->num_components == 8 || instr->num_components == 16);
 
       const fs_builder ubld = bld.exec_all().group(instr->num_components, 0);
-      fs_reg tmp = ubld.vgrf(BRW_REGISTER_TYPE_UD);
-      ubld.emit(SHADER_OPCODE_A64_OWORD_BLOCK_READ_LOGICAL,
-                tmp,
-                bld.emit_uniformize(get_nir_src(instr->src[0])), /* Address */
-                fs_reg(), /* No source data */
-                brw_imm_ud(instr->num_components));
+      fs_reg load_val;
+
+      bool is_pred_const = nir_src_is_const(instr->src[1]);
+      if (is_pred_const && nir_src_as_uint(instr->src[1]) == 0) {
+         /* In this case, we don't want the UBO load at all.  We really
+          * shouldn't get here but it's possible.
+          */
+         load_val = brw_imm_ud(0);
+      } else {
+         /* The uniform process may stomp the flag so do this first */
+         fs_reg addr = bld.emit_uniformize(get_nir_src(instr->src[0]));
+
+         load_val = ubld.vgrf(BRW_REGISTER_TYPE_UD);
+
+         /* If the predicate is constant and we got here, then it's non-zero
+          * and we don't need the predicate at all.
+          */
+         if (!is_pred_const) {
+            /* Load the predicate */
+            fs_reg pred = bld.emit_uniformize(get_nir_src(instr->src[1]));
+            fs_inst *mov = ubld.MOV(bld.null_reg_d(), pred);
+            mov->conditional_mod = BRW_CONDITIONAL_NZ;
+
+            /* Stomp the destination with 0 if we're OOB */
+            mov = ubld.MOV(load_val, brw_imm_ud(0));
+            mov->predicate = BRW_PREDICATE_NORMAL;
+            mov->predicate_inverse = true;
+         }
+
+         fs_inst *load = ubld.emit(SHADER_OPCODE_A64_OWORD_BLOCK_READ_LOGICAL,
+                                   load_val, addr,
+                                   fs_reg(), /* No source data */
+                                   brw_imm_ud(instr->num_components));
+
+         if (!is_pred_const)
+            load->predicate = BRW_PREDICATE_NORMAL;
+      }
 
       /* From the HW perspective, we just did a single SIMD16 instruction
        * which loaded a dword in each SIMD channel.  From NIR's perspective,
@@ -4681,7 +4712,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
        */
       for (unsigned i = 0; i < instr->num_components; i++) {
          bld.MOV(retype(offset(dest, bld, i), BRW_REGISTER_TYPE_UD),
-                 component(tmp, i));
+                 component(load_val, i));
       }
       break;
    }
@@ -5655,6 +5686,18 @@ fs_visitor::nir_emit_shared_atomic_float(const fs_builder &bld,
             dest, srcs, SURFACE_LOGICAL_NUM_SRCS);
 }
 
+static fs_reg
+expand_to_32bit(const fs_builder &bld, const fs_reg &src)
+{
+   if (type_sz(src.type) == 2) {
+      fs_reg src32 = bld.vgrf(BRW_REGISTER_TYPE_UD);
+      bld.MOV(src32, retype(src, BRW_REGISTER_TYPE_UW));
+      return src32;
+   } else {
+      return src;
+   }
+}
+
 void
 fs_visitor::nir_emit_global_atomic(const fs_builder &bld,
                                    int op, nir_intrinsic_instr *instr)
@@ -5667,22 +5710,36 @@ fs_visitor::nir_emit_global_atomic(const fs_builder &bld,
 
    fs_reg data;
    if (op != BRW_AOP_INC && op != BRW_AOP_DEC && op != BRW_AOP_PREDEC)
-      data = get_nir_src(instr->src[1]);
+      data = expand_to_32bit(bld, get_nir_src(instr->src[1]));
 
    if (op == BRW_AOP_CMPWR) {
       fs_reg tmp = bld.vgrf(data.type, 2);
-      fs_reg sources[2] = { data, get_nir_src(instr->src[2]) };
+      fs_reg sources[2] = {
+         data,
+         expand_to_32bit(bld, get_nir_src(instr->src[2]))
+      };
       bld.LOAD_PAYLOAD(tmp, sources, 2, 0);
       data = tmp;
    }
 
-   if (nir_dest_bit_size(instr->dest) == 64) {
-      bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL,
-               dest, addr, data, brw_imm_ud(op));
-   } else {
-      assert(nir_dest_bit_size(instr->dest) == 32);
+   switch (nir_dest_bit_size(instr->dest)) {
+   case 16: {
+      fs_reg dest32 = bld.vgrf(BRW_REGISTER_TYPE_UD);
+      bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT16_LOGICAL,
+               dest32, addr, data, brw_imm_ud(op));
+      bld.MOV(retype(dest, BRW_REGISTER_TYPE_UW), dest32);
+      break;
+   }
+   case 32:
       bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_LOGICAL,
                dest, addr, data, brw_imm_ud(op));
+      break;
+   case 64:
+      bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL,
+               dest, addr, data, brw_imm_ud(op));
+      break;
+   default:
+      unreachable("Unsupported bit size");
    }
 }
 
@@ -5696,17 +5753,33 @@ fs_visitor::nir_emit_global_atomic_float(const fs_builder &bld,
    fs_reg addr = get_nir_src(instr->src[0]);
 
    assert(op != BRW_AOP_INC && op != BRW_AOP_DEC && op != BRW_AOP_PREDEC);
-   fs_reg data = get_nir_src(instr->src[1]);
+   fs_reg data = expand_to_32bit(bld, get_nir_src(instr->src[1]));
 
    if (op == BRW_AOP_FCMPWR) {
       fs_reg tmp = bld.vgrf(data.type, 2);
-      fs_reg sources[2] = { data, get_nir_src(instr->src[2]) };
+      fs_reg sources[2] = {
+         data,
+         expand_to_32bit(bld, get_nir_src(instr->src[2]))
+      };
       bld.LOAD_PAYLOAD(tmp, sources, 2, 0);
       data = tmp;
    }
 
-   bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT_LOGICAL,
-            dest, addr, data, brw_imm_ud(op));
+   switch (nir_dest_bit_size(instr->dest)) {
+   case 16: {
+      fs_reg dest32 = bld.vgrf(BRW_REGISTER_TYPE_UD);
+      bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL,
+               dest32, addr, data, brw_imm_ud(op));
+      bld.MOV(retype(dest, BRW_REGISTER_TYPE_UW), dest32);
+      break;
+   }
+   case 32:
+      bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL,
+               dest, addr, data, brw_imm_ud(op));
+      break;
+   default:
+      unreachable("Unsupported bit size");
+   }
 }
 
 void
@@ -5962,7 +6035,7 @@ fs_visitor::nir_emit_texture(const fs_builder &bld, nir_tex_instr *instr)
    if (instr->op == nir_texop_tg4 && devinfo->gen == 6)
       emit_gen6_gather_wa(key_tex->gen6_gather_wa[texture], dst);
 
-   fs_reg nir_dest[4];
+   fs_reg nir_dest[5];
    for (unsigned i = 0; i < dest_size; i++)
       nir_dest[i] = offset(dst, bld, i);
 

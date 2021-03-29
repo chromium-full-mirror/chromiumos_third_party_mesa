@@ -53,7 +53,6 @@ typedef void* drmDevicePtr;
 #include "util/mesa-sha1.h"
 #include "util/timespec.h"
 #include "util/u_atomic.h"
-#include "compiler/glsl_types.h"
 #include "util/driconf.h"
 
 /* The number of IBs per submit isn't infinite, it depends on the ring type
@@ -796,6 +795,9 @@ static const struct debug_control radv_debug_options[] = {
 	{"img", RADV_DEBUG_IMG},
 	{"noumr", RADV_DEBUG_NO_UMR},
 	{"invariantgeom", RADV_DEBUG_INVARIANT_GEOM},
+	{"nodisplaydcc", RADV_DEBUG_NO_DISPLAY_DCC},
+	{"notccompatcmask", RADV_DEBUG_NO_TC_COMPAT_CMASK},
+	{"novrsflatshading", RADV_DEBUG_NO_VRS_FLAT_SHADING},
 	{NULL, 0}
 };
 
@@ -816,6 +818,7 @@ static const struct debug_control radv_perftest_options[] = {
 	{"gewave32", RADV_PERFTEST_GE_WAVE_32},
 	{"dfsm", RADV_PERFTEST_DFSM},
 	{"nosam", RADV_PERFTEST_NO_SAM},
+	{"sam", RADV_PERFTEST_SAM},
 	{NULL, 0}
 };
 
@@ -883,6 +886,10 @@ radv_handle_per_app_options(struct radv_instance *instance,
 		driQueryOptionb(&instance->dri_options,
 				"radv_enable_mrt_output_nan_fixup");
 
+	instance->disable_shrink_image_store =
+		driQueryOptionb(&instance->dri_options,
+				"radv_disable_shrink_image_store");
+
 	if (driQueryOptionb(&instance->dri_options, "radv_no_dynamic_bounds"))
 		instance->debug_flags |= RADV_DEBUG_NO_DYNAMIC_BOUNDS;
 }
@@ -895,6 +902,7 @@ static const driOptionDescription radv_dri_options[] = {
 		DRI_CONF_VK_X11_ENSURE_MIN_IMAGE_COUNT(false)
 		DRI_CONF_RADV_REPORT_LLVM9_VERSION_STRING(false)
 		DRI_CONF_RADV_ENABLE_MRT_OUTPUT_NAN_FIXUP(false)
+		DRI_CONF_RADV_DISABLE_SHRINK_IMAGE_STORE(false)
 		DRI_CONF_RADV_NO_DYNAMIC_BOUNDS(false)
 		DRI_CONF_RADV_OVERRIDE_UNIFORM_OFFSET_ALIGNMENT(0)
 	DRI_CONF_SECTION_END
@@ -975,8 +983,6 @@ VkResult radv_CreateInstance(
 	instance->physical_devices_enumerated = false;
 	list_inithead(&instance->physical_devices);
 
-	glsl_type_singleton_init_or_ref();
-
 	VG(VALGRIND_CREATE_MEMPOOL(instance, 0, false));
 
 	radv_init_dri_options(instance);
@@ -1002,8 +1008,6 @@ void radv_DestroyInstance(
 	}
 
 	VG(VALGRIND_DESTROY_MEMPOOL(instance));
-
-	glsl_type_singleton_decref();
 
 	driDestroyOptionCache(&instance->dri_options);
 	driDestroyOptionInfo(&instance->available_dri_options);
@@ -1944,7 +1948,7 @@ radv_get_physical_device_properties_1_2(struct radv_physical_device *pdevice,
 	p->shaderStorageBufferArrayNonUniformIndexingNative = false;
 	p->shaderStorageImageArrayNonUniformIndexingNative = false;
 	p->shaderInputAttachmentArrayNonUniformIndexingNative = false;
-	p->robustBufferAccessUpdateAfterBind = false;
+	p->robustBufferAccessUpdateAfterBind = true;
 	p->quadDivergentImplicitLod = false;
 
 	size_t max_descriptor_set_size = ((1ull << 31) - 16 * MAX_DYNAMIC_BUFFERS -
@@ -2178,7 +2182,7 @@ void radv_GetPhysicalDeviceProperties2(
 			properties->extraPrimitiveOverestimationSizeGranularity = 0;
 			properties->primitiveUnderestimation = false;
 			properties->conservativePointAndLineRasterization = false;
-			properties->degenerateTrianglesRasterized = false;
+			properties->degenerateTrianglesRasterized = true;
 			properties->degenerateLinesRasterized = false;
 			properties->fullyCoveredFragmentShaderInputVariable = false;
 			properties->conservativeRasterizationPostDepthCoverage = false;
@@ -6976,10 +6980,12 @@ radv_initialise_color_surface(struct radv_device *device,
 			 */
 			cb->cb_color_info |= S_028C70_FMASK_COMPRESS_1FRAG_ONLY(1);
 
-			/* Set CMASK into a tiling format that allows the
-			 * texture block to read it.
-			 */
-			cb->cb_color_info |= S_028C70_CMASK_ADDR_TYPE(2);
+			if (device->physical_device->rad_info.chip_class == GFX8) {
+				/* Set CMASK into a tiling format that allows
+				 * the texture block to read it.
+				 */
+				cb->cb_color_info |= S_028C70_CMASK_ADDR_TYPE(2);
+			}
 		}
 	}
 
@@ -7083,18 +7089,15 @@ radv_initialise_ds_surface(struct radv_device *device,
 	case VK_FORMAT_D24_UNORM_S8_UINT:
 	case VK_FORMAT_X8_D24_UNORM_PACK32:
 		ds->pa_su_poly_offset_db_fmt_cntl = S_028B78_POLY_OFFSET_NEG_NUM_DB_BITS(-24);
-		ds->offset_scale = 2.0f;
 		break;
 	case VK_FORMAT_D16_UNORM:
 	case VK_FORMAT_D16_UNORM_S8_UINT:
 		ds->pa_su_poly_offset_db_fmt_cntl = S_028B78_POLY_OFFSET_NEG_NUM_DB_BITS(-16);
-		ds->offset_scale = 4.0f;
 		break;
 	case VK_FORMAT_D32_SFLOAT:
 	case VK_FORMAT_D32_SFLOAT_S8_UINT:
 		ds->pa_su_poly_offset_db_fmt_cntl = S_028B78_POLY_OFFSET_NEG_NUM_DB_BITS(-23) |
 			S_028B78_POLY_OFFSET_DB_IS_FLOAT_FMT(1);
-		ds->offset_scale = 1.0f;
 		break;
 	case VK_FORMAT_S8_UINT:
 		stencil_only = true;

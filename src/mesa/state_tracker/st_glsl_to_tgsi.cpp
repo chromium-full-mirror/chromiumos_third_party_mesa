@@ -4868,7 +4868,7 @@ count_resources(glsl_to_tgsi_visitor *v, gl_program *prog)
 {
    v->samplers_used = 0;
    v->images_used = 0;
-   prog->info.textures_used_by_txf = 0;
+   BITSET_ZERO(prog->info.textures_used_by_txf);
 
    foreach_in_list(glsl_to_tgsi_instruction, inst, &v->instructions) {
       if (inst->info->is_tex) {
@@ -4882,7 +4882,7 @@ count_resources(glsl_to_tgsi_visitor *v, gl_program *prog)
                st_translate_texture_target(inst->tex_target, inst->tex_shadow);
 
             if (inst->op == TGSI_OPCODE_TXF || inst->op == TGSI_OPCODE_TXF_LZ) {
-               prog->info.textures_used_by_txf |= 1u << idx;
+               BITSET_SET(prog->info.textures_used_by_txf, idx);
             }
          }
       }
@@ -7237,14 +7237,7 @@ get_mesa_program_tgsi(struct gl_context *ctx,
     * storage is only associated with the original parameter list.
     * This should be enough for Bitmap and DrawPixels constants.
     */
-   _mesa_reserve_parameter_storage(prog->Parameters, 8, 8);
-   _mesa_disallow_parameter_storage_realloc(prog->Parameters);
-
-   /* This has to be done last.  Any operation the can cause
-    * prog->ParameterValues to get reallocated (e.g., anything that adds a
-    * program constant) has to happen before creating this linkage.
-    */
-   _mesa_associate_uniform_storage(ctx, shader_program, prog);
+   _mesa_ensure_and_associate_uniform_storage(ctx, shader_program, prog, 8);
    if (!shader_program->data->LinkStatus) {
       free_glsl_to_tgsi_visitor(v);
       _mesa_reference_program(ctx, &shader->Program, NULL);

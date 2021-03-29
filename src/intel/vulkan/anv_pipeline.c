@@ -29,9 +29,9 @@
 
 #include "util/mesa-sha1.h"
 #include "util/os_time.h"
-#include "common/gen_l3_config.h"
-#include "common/gen_disasm.h"
-#include "common/gen_sample_positions.h"
+#include "common/intel_l3_config.h"
+#include "common/intel_disasm.h"
+#include "common/intel_sample_positions.h"
 #include "anv_private.h"
 #include "compiler/brw_nir.h"
 #include "anv_nir.h"
@@ -43,57 +43,11 @@
 #include "program/prog_instruction.h"
 
 // Shader functions
-
-VkResult anv_CreateShaderModule(
-    VkDevice                                    _device,
-    const VkShaderModuleCreateInfo*             pCreateInfo,
-    const VkAllocationCallbacks*                pAllocator,
-    VkShaderModule*                             pShaderModule)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   struct anv_shader_module *module;
-
-   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
-   assert(pCreateInfo->flags == 0);
-
-   module = vk_alloc2(&device->vk.alloc, pAllocator,
-                       sizeof(*module) + pCreateInfo->codeSize, 8,
-                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-   if (module == NULL)
-      return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
-
-   vk_object_base_init(&device->vk, &module->base,
-                       VK_OBJECT_TYPE_SHADER_MODULE);
-   module->size = pCreateInfo->codeSize;
-   memcpy(module->data, pCreateInfo->pCode, module->size);
-
-   _mesa_sha1_compute(module->data, module->size, module->sha1);
-
-   *pShaderModule = anv_shader_module_to_handle(module);
-
-   return VK_SUCCESS;
-}
-
-void anv_DestroyShaderModule(
-    VkDevice                                    _device,
-    VkShaderModule                              _module,
-    const VkAllocationCallbacks*                pAllocator)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   ANV_FROM_HANDLE(anv_shader_module, module, _module);
-
-   if (!module)
-      return;
-
-   vk_object_base_finish(&module->base);
-   vk_free2(&device->vk.alloc, pAllocator, module);
-}
-
 #define SPIR_V_MAGIC_NUMBER 0x07230203
 
 struct anv_spirv_debug_data {
    struct anv_device *device;
-   const struct anv_shader_module *module;
+   const struct vk_shader_module *module;
 };
 
 static void anv_spirv_nir_debug(void *private_data,
@@ -124,7 +78,7 @@ static void anv_spirv_nir_debug(void *private_data,
 static nir_shader *
 anv_shader_compile_to_nir(struct anv_device *device,
                           void *mem_ctx,
-                          const struct anv_shader_module *module,
+                          const struct vk_shader_module *module,
                           const char *entrypoint_name,
                           gl_shader_stage stage,
                           const VkSpecializationInfo *spec_info)
@@ -218,7 +172,8 @@ anv_shader_compile_to_nir(struct anv_device *device,
          .vk_memory_model_device_scope = true,
          .workgroup_memory_explicit_layout = true,
       },
-      .ubo_addr_format = nir_address_format_32bit_index_offset,
+      .ubo_addr_format =
+         anv_nir_ubo_addr_format(pdevice, device->robust_buffer_access),
       .ssbo_addr_format =
           anv_nir_ssbo_addr_format(pdevice, device->robust_buffer_access),
       .phys_ssbo_addr_format = nir_address_format_64bit_global,
@@ -590,7 +545,7 @@ populate_cs_prog_key(const struct gen_device_info *devinfo,
 struct anv_pipeline_stage {
    gl_shader_stage stage;
 
-   const struct anv_shader_module *module;
+   const struct vk_shader_module *module;
    const char *entrypoint;
    const VkSpecializationInfo *spec_info;
 
@@ -621,7 +576,7 @@ struct anv_pipeline_stage {
 };
 
 static void
-anv_pipeline_hash_shader(const struct anv_shader_module *module,
+anv_pipeline_hash_shader(const struct vk_shader_module *module,
                          const char *entrypoint,
                          gl_shader_stage stage,
                          const VkSpecializationInfo *spec_info,
@@ -743,6 +698,13 @@ anv_pipeline_lower_nir(struct anv_pipeline *pipeline,
    nir_shader *nir = stage->nir;
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+      /* Check if sample shading is enabled in the shader and toggle
+       * it on for the pipeline independent if sampleShadingEnable is set.
+       */
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+      if (nir->info.fs.uses_sample_shading)
+         anv_pipeline_to_graphics(pipeline)->sample_shading_enable = true;
+
       NIR_PASS_V(nir, nir_lower_wpos_center,
                  anv_pipeline_to_graphics(pipeline)->sample_shading_enable);
       NIR_PASS_V(nir, nir_lower_input_attachments,
@@ -774,12 +736,20 @@ anv_pipeline_lower_nir(struct anv_pipeline *pipeline,
                                  layout, nir, &stage->bind_map);
 
    NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_ubo,
-              nir_address_format_32bit_index_offset);
+              anv_nir_ubo_addr_format(pdevice,
+                 pipeline->device->robust_buffer_access));
    NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_ssbo,
               anv_nir_ssbo_addr_format(pdevice,
                  pipeline->device->robust_buffer_access));
 
+   /* First run copy-prop to get rid of all of the vec() that address
+    * calculations often create and then constant-fold so that, when we
+    * get to anv_nir_lower_ubo_loads, we can detect constant offsets.
+    */
+   NIR_PASS_V(nir, nir_copy_prop);
    NIR_PASS_V(nir, nir_opt_constant_folding);
+
+   NIR_PASS_V(nir, anv_nir_lower_ubo_loads);
 
    /* We don't support non-uniform UBOs and non-uniform SSBO access is
     * handled naturally by falling back to A64 messages.
@@ -822,11 +792,16 @@ anv_pipeline_compile_vs(const struct brw_compiler *compiler,
                        pos_slots);
 
    vs_stage->num_stats = 1;
-   vs_stage->code = brw_compile_vs(compiler, pipeline->base.device, mem_ctx,
-                                   &vs_stage->key.vs,
-                                   &vs_stage->prog_data.vs,
-                                   vs_stage->nir, -1,
-                                   vs_stage->stats, NULL);
+
+   struct brw_compile_vs_params params = {
+      .nir = vs_stage->nir,
+      .key = &vs_stage->key.vs,
+      .prog_data = &vs_stage->prog_data.vs,
+      .stats = vs_stage->stats,
+      .log_data = pipeline->base.device,
+   };
+
+   vs_stage->code = brw_compile_vs(compiler, mem_ctx, &params);
 }
 
 static void
@@ -1075,12 +1050,17 @@ anv_pipeline_compile_fs(const struct brw_compiler *compiler,
    fs_stage->key.wm.input_slots_valid =
       prev_stage->prog_data.vue.vue_map.slots_valid;
 
-   fs_stage->code = brw_compile_fs(compiler, device, mem_ctx,
-                                   &fs_stage->key.wm,
-                                   &fs_stage->prog_data.wm,
-                                   fs_stage->nir, -1, -1, -1,
-                                   true, false, NULL,
-                                   fs_stage->stats, NULL);
+   struct brw_compile_fs_params params = {
+      .nir = fs_stage->nir,
+      .key = &fs_stage->key.wm,
+      .prog_data = &fs_stage->prog_data.wm,
+
+      .allow_spilling = true,
+      .stats = fs_stage->stats,
+      .log_data = device,
+   };
+
+   fs_stage->code = brw_compile_fs(compiler, mem_ctx, &params);
 
    fs_stage->num_stats = (uint32_t)fs_stage->prog_data.wm.dispatch_8 +
                          (uint32_t)fs_stage->prog_data.wm.dispatch_16 +
@@ -1112,20 +1092,7 @@ anv_pipeline_add_executable(struct anv_pipeline *pipeline,
    if (stage->nir &&
        (pipeline->flags &
         VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR)) {
-      char *stream_data = NULL;
-      size_t stream_size = 0;
-      FILE *stream = open_memstream(&stream_data, &stream_size);
-
-      nir_print_shader(stage->nir, stream);
-
-      fclose(stream);
-
-      /* Copy it to a ralloc'd thing */
-      nir = ralloc_size(pipeline->mem_ctx, stream_size + 1);
-      memcpy(nir, stream_data, stream_size);
-      nir[stream_size] = 0;
-
-      free(stream_data);
+      nir = nir_shader_as_str(stage->nir, pipeline->mem_ctx);
    }
 
    char *disasm = NULL;
@@ -1189,8 +1156,8 @@ anv_pipeline_add_executable(struct anv_pipeline *pipeline,
       /* Creating this is far cheaper than it looks.  It's perfectly fine to
        * do it for every binary.
        */
-      gen_disassemble(&pipeline->device->info,
-                      stage->code, code_offset, stream);
+      intel_disassemble(&pipeline->device->info,
+                        stage->code, code_offset, stream);
 
       fclose(stream);
 
@@ -1290,7 +1257,7 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
       int64_t stage_start = os_time_get_nano();
 
       stages[stage].stage = stage;
-      stages[stage].module = anv_shader_module_from_handle(sinfo->module);
+      stages[stage].module = vk_shader_module_from_handle(sinfo->module);
       stages[stage].entrypoint = sinfo->pName;
       stages[stage].spec_info = sinfo->pSpecializationInfo;
       anv_pipeline_hash_shader(stages[stage].module,
@@ -1659,7 +1626,7 @@ VkResult
 anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
                         struct anv_pipeline_cache *cache,
                         const VkComputePipelineCreateInfo *info,
-                        const struct anv_shader_module *module,
+                        const struct vk_shader_module *module,
                         const char *entrypoint,
                         const VkSpecializationInfo *spec_info)
 {
@@ -1767,9 +1734,16 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
       NIR_PASS_V(stage.nir, brw_nir_lower_cs_intrinsics);
 
       stage.num_stats = 1;
-      stage.code = brw_compile_cs(compiler, pipeline->base.device, mem_ctx,
-                                  &stage.key.cs, &stage.prog_data.cs,
-                                  stage.nir, -1, stage.stats, NULL);
+
+      struct brw_compile_cs_params params = {
+         .nir = stage.nir,
+         .key = &stage.key.cs,
+         .prog_data = &stage.prog_data.cs,
+         .stats = stage.stats,
+         .log_data = pipeline->base.device,
+      };
+
+      stage.code = brw_compile_cs(compiler, mem_ctx, &params);
       if (stage.code == NULL) {
          ralloc_free(mem_ctx);
          return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -2076,8 +2050,8 @@ copy_non_dynamic_state(struct anv_graphics_pipeline *pipeline,
       } else {
          dynamic->sample_locations.samples =
             ms_info ? ms_info->rasterizationSamples : 1;
-         const struct gen_sample_position *positions =
-            gen_get_sample_positions(dynamic->sample_locations.samples);
+         const struct intel_sample_position *positions =
+            intel_get_sample_positions(dynamic->sample_locations.samples);
          for (uint32_t i = 0; i < dynamic->sample_locations.samples; i++) {
             dynamic->sample_locations.locations[i].x = positions[i].x;
             dynamic->sample_locations.locations[i].y = positions[i].y;
@@ -2156,10 +2130,10 @@ anv_pipeline_setup_l3_config(struct anv_pipeline *pipeline, bool needs_slm)
 {
    const struct gen_device_info *devinfo = &pipeline->device->info;
 
-   const struct gen_l3_weights w =
-      gen_get_default_l3_weights(devinfo, true, needs_slm);
+   const struct intel_l3_weights w =
+      intel_get_default_l3_weights(devinfo, true, needs_slm);
 
-   pipeline->l3_config = gen_get_l3_config(devinfo, w);
+   pipeline->l3_config = intel_get_l3_config(devinfo, w);
 }
 
 VkResult

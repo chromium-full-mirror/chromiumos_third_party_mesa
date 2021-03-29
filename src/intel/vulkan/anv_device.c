@@ -45,10 +45,9 @@
 #include "git_sha1.h"
 #include "vk_util.h"
 #include "vk_deferred_operation.h"
-#include "common/gen_aux_map.h"
-#include "common/gen_defines.h"
-#include "common/gen_uuid.h"
-#include "compiler/glsl_types.h"
+#include "common/intel_aux_map.h"
+#include "common/intel_defines.h"
+#include "common/intel_uuid.h"
 #include "perf/gen_perf.h"
 
 #include "genxml/gen7_pack.h"
@@ -315,6 +314,26 @@ get_device_extensions(const struct anv_physical_device *device,
    };
 }
 
+static void
+anv_init_meminfo(struct anv_physical_device *device, int fd)
+{
+   uint64_t heap_size = anv_compute_heap_size(fd, device->gtt_size);
+
+   if (heap_size > (2ull << 30) && !device->supports_48bit_addresses) {
+      /* When running with an overridden PCI ID, we may get a GTT size from
+       * the kernel that is greater than 2 GiB but the execbuf check for 48bit
+       * address support can still fail.  Just clamp the address space size to
+       * 2 GiB if we don't have 48-bit support.
+       */
+      mesa_logw("%s:%d: The kernel reported a GTT size larger than 2 GiB but "
+                "not support for 48-bit addresses",
+                __FILE__, __LINE__);
+      heap_size = 2ull << 30;
+   }
+
+   device->sys.size = heap_size;
+}
+
 static VkResult
 anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
 {
@@ -340,60 +359,88 @@ anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
                                       device->has_softpin &&
                                       device->gtt_size > (4ULL << 30 /* GiB */);
 
-   uint64_t heap_size = anv_compute_heap_size(fd, device->gtt_size);
+   anv_init_meminfo(device, fd);
+   assert(device->sys.size != 0);
 
-   if (heap_size > (2ull << 30) && !device->supports_48bit_addresses) {
-      /* When running with an overridden PCI ID, we may get a GTT size from
-       * the kernel that is greater than 2 GiB but the execbuf check for 48bit
-       * address support can still fail.  Just clamp the address space size to
-       * 2 GiB if we don't have 48-bit support.
+   if (device->vram.size > 0) {
+      /* We can create 2 different heaps when we have local memory support,
+       * first heap with local memory size and second with system memory size.
        */
-      mesa_logw("%s:%d: The kernel reported a GTT size larger than 2 GiB but "
-                        "not support for 48-bit addresses",
-                        __FILE__, __LINE__);
-      heap_size = 2ull << 30;
-   }
+      device->memory.heap_count = 2;
+      device->memory.heaps[0] = (struct anv_memory_heap) {
+         .size = device->vram.size,
+         .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
+         .is_local_mem = true,
+      };
+      device->memory.heaps[1] = (struct anv_memory_heap) {
+         .size = device->sys.size,
+         .flags = 0,
+         .is_local_mem = false,
+      };
 
-   device->memory.heap_count = 1;
-   device->memory.heaps[0] = (struct anv_memory_heap) {
-      .size = heap_size,
-      .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
-   };
+      device->memory.type_count = 3;
+      device->memory.types[0] = (struct anv_memory_type) {
+         .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+         .heapIndex = 0,
+      };
+      device->memory.types[1] = (struct anv_memory_type) {
+         .propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                          VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+         .heapIndex = 1,
+      };
+      device->memory.types[2] = (struct anv_memory_type) {
+         .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+         .heapIndex = 0,
+      };
+   } else if (device->info.has_llc) {
+      device->memory.heap_count = 1;
+      device->memory.heaps[0] = (struct anv_memory_heap) {
+         .size = device->sys.size,
+         .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
+         .is_local_mem = false,
+      };
 
-   uint32_t type_count = 0;
-   for (uint32_t heap = 0; heap < device->memory.heap_count; heap++) {
-      if (device->info.has_llc) {
-         /* Big core GPUs share LLC with the CPU and thus one memory type can be
-          * both cached and coherent at the same time.
-          */
-         device->memory.types[type_count++] = (struct anv_memory_type) {
-            .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-                             VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
-            .heapIndex = heap,
-         };
-      } else {
-         /* The spec requires that we expose a host-visible, coherent memory
-          * type, but Atom GPUs don't share LLC. Thus we offer two memory types
-          * to give the application a choice between cached, but not coherent and
-          * coherent but uncached (WC though).
-          */
-         device->memory.types[type_count++] = (struct anv_memory_type) {
-            .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            .heapIndex = heap,
-         };
-         device->memory.types[type_count++] = (struct anv_memory_type) {
-            .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                             VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
-            .heapIndex = heap,
-         };
-      }
+      /* Big core GPUs share LLC with the CPU and thus one memory type can be
+       * both cached and coherent at the same time.
+       */
+      device->memory.type_count = 1;
+      device->memory.types[0] = (struct anv_memory_type) {
+         .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                          VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+         .heapIndex = 0,
+      };
+   } else {
+      device->memory.heap_count = 1;
+      device->memory.heaps[0] = (struct anv_memory_heap) {
+         .size = device->sys.size,
+         .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
+         .is_local_mem = false,
+      };
+
+      /* The spec requires that we expose a host-visible, coherent memory
+       * type, but Atom GPUs don't share LLC. Thus we offer two memory types
+       * to give the application a choice between cached, but not coherent and
+       * coherent but uncached (WC though).
+       */
+      device->memory.type_count = 2;
+      device->memory.types[0] = (struct anv_memory_type) {
+         .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                          VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+         .heapIndex = 0,
+      };
+      device->memory.types[1] = (struct anv_memory_type) {
+         .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+         .heapIndex = 0,
+      };
    }
-   device->memory.type_count = type_count;
 
    return VK_SUCCESS;
 }
@@ -440,8 +487,8 @@ anv_physical_device_init_uuids(struct anv_physical_device *device)
    _mesa_sha1_final(&sha1_ctx, sha1);
    memcpy(device->pipeline_cache_uuid, sha1, VK_UUID_SIZE);
 
-   gen_uuid_compute_driver_id(device->driver_uuid, &device->info, VK_UUID_SIZE);
-   gen_uuid_compute_device_id(device->device_uuid, &device->isl_dev, VK_UUID_SIZE);
+   intel_uuid_compute_driver_id(device->driver_uuid, &device->info, VK_UUID_SIZE);
+   intel_uuid_compute_device_id(device->device_uuid, &device->isl_dev, VK_UUID_SIZE);
 
    return VK_SUCCESS;
 }
@@ -719,6 +766,10 @@ anv_physical_device_try_create(struct anv_instance *instance,
 
    device->has_context_priority = anv_gem_has_context_priority(fd);
 
+   /* Initialize memory regions struct to 0. */
+   memset(&device->vram, 0, sizeof(device->vram));
+   memset(&device->sys, 0, sizeof(device->sys));
+
    result = anv_physical_device_init_heaps(device, fd);
    if (result != VK_SUCCESS)
       goto fail_base;
@@ -780,23 +831,10 @@ anv_physical_device_try_create(struct anv_instance *instance,
       anv_gem_get_param(fd, I915_PARAM_MMAP_GTT_VERSION) >= 4;
 
    /* GENs prior to 8 do not support EU/Subslice info */
-   if (device->info.gen >= 8) {
-      device->subslice_total = anv_gem_get_param(fd, I915_PARAM_SUBSLICE_TOTAL);
-      device->eu_total = anv_gem_get_param(fd, I915_PARAM_EU_TOTAL);
+   device->subslice_total = gen_device_info_subslice_total(&device->info);
+   device->eu_total = gen_device_info_eu_total(&device->info);
 
-      /* Without this information, we cannot get the right Braswell
-       * brandstrings, and we have to use conservative numbers for GPGPU on
-       * many platforms, but otherwise, things will just work.
-       */
-      if (device->subslice_total < 1 || device->eu_total < 1) {
-         mesa_logw("Kernel 4.1 required to properly query GPU properties");
-      }
-   } else if (device->info.gen == 7) {
-      device->subslice_total = 1 << (device->info.gt - 1);
-   }
-
-   if (device->info.is_cherryview &&
-       device->subslice_total > 0 && device->eu_total > 0) {
+   if (device->info.is_cherryview) {
       /* Logical CS threads = EUs per subslice * num threads per EU */
       uint32_t max_cs_threads =
          device->eu_total / device->subslice_total * device->info.num_thread_per_eu;
@@ -870,6 +908,8 @@ anv_physical_device_try_create(struct anv_instance *instance,
    get_device_extensions(device, &device->vk.supported_extensions);
 
    device->local_fd = fd;
+
+   anv_genX(&device->info, init_physical_device_state)(device);
 
    *device_out = device;
 
@@ -994,8 +1034,6 @@ VkResult anv_CreateInstance(
    instance->pipeline_cache_enabled =
       env_var_as_boolean("ANV_ENABLE_PIPELINE_CACHE", true);
 
-   glsl_type_singleton_init_or_ref();
-
    VG(VALGRIND_CREATE_MEMPOOL(instance, 0, false));
 
    anv_init_dri_options(instance);
@@ -1019,8 +1057,6 @@ void anv_DestroyInstance(
       anv_physical_device_destroy(pdevice);
 
    VG(VALGRIND_DESTROY_MEMPOOL(instance));
-
-   glsl_type_singleton_decref();
 
    driDestroyOptionCache(&instance->dri_options);
    driDestroyOptionInfo(&instance->available_dri_options);
@@ -2670,7 +2706,7 @@ anv_device_init_border_colors(struct anv_device *device)
 static VkResult
 anv_device_init_trivial_batch(struct anv_device *device)
 {
-   VkResult result = anv_device_alloc_bo(device, 4096,
+   VkResult result = anv_device_alloc_bo(device, "trivial-batch", 4096,
                                          ANV_BO_ALLOC_MAPPED,
                                          0 /* explicit_address */,
                                          &device->trivial_batch_bo);
@@ -2697,13 +2733,13 @@ vk_priority_to_gen(int priority)
 {
    switch (priority) {
    case VK_QUEUE_GLOBAL_PRIORITY_LOW_EXT:
-      return GEN_CONTEXT_LOW_PRIORITY;
+      return INTEL_CONTEXT_LOW_PRIORITY;
    case VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_EXT:
-      return GEN_CONTEXT_MEDIUM_PRIORITY;
+      return INTEL_CONTEXT_MEDIUM_PRIORITY;
    case VK_QUEUE_GLOBAL_PRIORITY_HIGH_EXT:
-      return GEN_CONTEXT_HIGH_PRIORITY;
+      return INTEL_CONTEXT_HIGH_PRIORITY;
    case VK_QUEUE_GLOBAL_PRIORITY_REALTIME_EXT:
-      return GEN_CONTEXT_REALTIME_PRIORITY;
+      return INTEL_CONTEXT_REALTIME_PRIORITY;
    default:
       unreachable("Invalid priority");
    }
@@ -2712,7 +2748,7 @@ vk_priority_to_gen(int priority)
 static VkResult
 anv_device_init_hiz_clear_value_bo(struct anv_device *device)
 {
-   VkResult result = anv_device_alloc_bo(device, 4096,
+   VkResult result = anv_device_alloc_bo(device, "hiz-clear-value", 4096,
                                          ANV_BO_ALLOC_MAPPED,
                                          0 /* explicit_address */,
                                          &device->hiz_clear_bo);
@@ -2731,14 +2767,14 @@ anv_device_init_hiz_clear_value_bo(struct anv_device *device)
 }
 
 static bool
-get_bo_from_pool(struct gen_batch_decode_bo *ret,
+get_bo_from_pool(struct intel_batch_decode_bo *ret,
                  struct anv_block_pool *pool,
                  uint64_t address)
 {
    anv_block_pool_foreach_bo(bo, pool) {
-      uint64_t bo_address = gen_48b_address(bo->offset);
+      uint64_t bo_address = intel_48b_address(bo->offset);
       if (address >= bo_address && address < (bo_address + bo->size)) {
-         *ret = (struct gen_batch_decode_bo) {
+         *ret = (struct intel_batch_decode_bo) {
             .addr = bo_address,
             .size = bo->size,
             .map = bo->map,
@@ -2750,11 +2786,11 @@ get_bo_from_pool(struct gen_batch_decode_bo *ret,
 }
 
 /* Finding a buffer for batch decoding */
-static struct gen_batch_decode_bo
+static struct intel_batch_decode_bo
 decode_get_bo(void *v_batch, bool ppgtt, uint64_t address)
 {
    struct anv_device *device = v_batch;
-   struct gen_batch_decode_bo ret_bo = {};
+   struct intel_batch_decode_bo ret_bo = {};
 
    assert(ppgtt);
 
@@ -2768,7 +2804,7 @@ decode_get_bo(void *v_batch, bool ppgtt, uint64_t address)
       return ret_bo;
 
    if (!device->cmd_buffer_being_decoded)
-      return (struct gen_batch_decode_bo) { };
+      return (struct intel_batch_decode_bo) { };
 
    struct anv_batch_bo **bo;
 
@@ -2777,7 +2813,7 @@ decode_get_bo(void *v_batch, bool ppgtt, uint64_t address)
       uint64_t bo_address = (*bo)->bo->offset & (~0ull >> 16);
 
       if (address >= bo_address && address < bo_address + (*bo)->bo->size) {
-         return (struct gen_batch_decode_bo) {
+         return (struct intel_batch_decode_bo) {
             .addr = bo_address,
             .size = (*bo)->bo->size,
             .map = (*bo)->bo->map,
@@ -2785,18 +2821,18 @@ decode_get_bo(void *v_batch, bool ppgtt, uint64_t address)
       }
    }
 
-   return (struct gen_batch_decode_bo) { };
+   return (struct intel_batch_decode_bo) { };
 }
 
-struct gen_aux_map_buffer {
-   struct gen_buffer base;
+struct intel_aux_map_buffer {
+   struct intel_buffer base;
    struct anv_state state;
 };
 
-static struct gen_buffer *
-gen_aux_map_buffer_alloc(void *driver_ctx, uint32_t size)
+static struct intel_buffer *
+intel_aux_map_buffer_alloc(void *driver_ctx, uint32_t size)
 {
-   struct gen_aux_map_buffer *buf = malloc(sizeof(struct gen_aux_map_buffer));
+   struct intel_aux_map_buffer *buf = malloc(sizeof(struct intel_aux_map_buffer));
    if (!buf)
       return NULL;
 
@@ -2815,9 +2851,9 @@ gen_aux_map_buffer_alloc(void *driver_ctx, uint32_t size)
 }
 
 static void
-gen_aux_map_buffer_free(void *driver_ctx, struct gen_buffer *buffer)
+intel_aux_map_buffer_free(void *driver_ctx, struct intel_buffer *buffer)
 {
-   struct gen_aux_map_buffer *buf = (struct gen_aux_map_buffer*)buffer;
+   struct intel_aux_map_buffer *buf = (struct intel_aux_map_buffer*)buffer;
    struct anv_device *device = (struct anv_device*)driver_ctx;
    struct anv_state_pool *pool = &device->dynamic_state_pool;
    anv_state_pool_free(pool, buf->state);
@@ -2825,8 +2861,8 @@ gen_aux_map_buffer_free(void *driver_ctx, struct gen_buffer *buffer)
 }
 
 static struct gen_mapped_pinned_buffer_alloc aux_map_allocator = {
-   .alloc = gen_aux_map_buffer_alloc,
-   .free = gen_aux_map_buffer_free,
+   .alloc = intel_aux_map_buffer_alloc,
+   .free = intel_aux_map_buffer_free,
 };
 
 static VkResult
@@ -2929,15 +2965,15 @@ VkResult anv_CreateDevice(
 
    if (INTEL_DEBUG & DEBUG_BATCH) {
       const unsigned decode_flags =
-         GEN_BATCH_DECODE_FULL |
-         ((INTEL_DEBUG & DEBUG_COLOR) ? GEN_BATCH_DECODE_IN_COLOR : 0) |
-         GEN_BATCH_DECODE_OFFSETS |
-         GEN_BATCH_DECODE_FLOATS;
+         INTEL_BATCH_DECODE_FULL |
+         ((INTEL_DEBUG & DEBUG_COLOR) ? INTEL_BATCH_DECODE_IN_COLOR : 0) |
+         INTEL_BATCH_DECODE_OFFSETS |
+         INTEL_BATCH_DECODE_FLOATS;
 
-      gen_batch_decode_ctx_init(&device->decoder_ctx,
-                                &physical_device->info,
-                                stderr, decode_flags, NULL,
-                                decode_get_bo, NULL, device);
+      intel_batch_decode_ctx_init(&device->decoder_ctx,
+                                  &physical_device->info,
+                                  stderr, decode_flags, NULL,
+                                  decode_get_bo, NULL, device);
    }
 
    device->physical = physical_device;
@@ -3094,18 +3130,20 @@ VkResult anv_CreateDevice(
    if (result != VK_SUCCESS)
       goto fail_queue_cond;
 
-   anv_bo_pool_init(&device->batch_bo_pool, device);
+   anv_bo_pool_init(&device->batch_bo_pool, device, "batch");
 
    /* Because scratch is also relative to General State Base Address, we leave
     * the base address 0 and start the pool memory at an offset.  This way we
     * get the correct offsets in the anv_states that get allocated from it.
     */
    result = anv_state_pool_init(&device->general_state_pool, device,
+                                "general pool",
                                 0, GENERAL_STATE_POOL_MIN_ADDRESS, 16384);
    if (result != VK_SUCCESS)
       goto fail_batch_bo_pool;
 
    result = anv_state_pool_init(&device->dynamic_state_pool, device,
+                                "dynamic pool",
                                 DYNAMIC_STATE_POOL_MIN_ADDRESS, 0, 16384);
    if (result != VK_SUCCESS)
       goto fail_general_state_pool;
@@ -3124,11 +3162,13 @@ VkResult anv_CreateDevice(
    }
 
    result = anv_state_pool_init(&device->instruction_state_pool, device,
+                                "instruction pool",
                                 INSTRUCTION_STATE_POOL_MIN_ADDRESS, 0, 16384);
    if (result != VK_SUCCESS)
       goto fail_dynamic_state_pool;
 
    result = anv_state_pool_init(&device->surface_state_pool, device,
+                                "surface state pool",
                                 SURFACE_STATE_POOL_MIN_ADDRESS, 0, 4096);
    if (result != VK_SUCCESS)
       goto fail_instruction_state_pool;
@@ -3138,6 +3178,7 @@ VkResult anv_CreateDevice(
                                (int64_t)SURFACE_STATE_POOL_MIN_ADDRESS;
       assert(INT32_MIN < bt_pool_offset && bt_pool_offset < 0);
       result = anv_state_pool_init(&device->binding_table_pool, device,
+                                   "binding table pool",
                                    SURFACE_STATE_POOL_MIN_ADDRESS,
                                    bt_pool_offset, 4096);
       if (result != VK_SUCCESS)
@@ -3145,13 +3186,13 @@ VkResult anv_CreateDevice(
    }
 
    if (device->info.has_aux_map) {
-      device->aux_map_ctx = gen_aux_map_init(device, &aux_map_allocator,
-                                             &physical_device->info);
+      device->aux_map_ctx = intel_aux_map_init(device, &aux_map_allocator,
+                                               &physical_device->info);
       if (!device->aux_map_ctx)
          goto fail_binding_table_pool;
    }
 
-   result = anv_device_alloc_bo(device, 4096,
+   result = anv_device_alloc_bo(device, "workaround", 4096,
                                 ANV_BO_ALLOC_CAPTURE | ANV_BO_ALLOC_MAPPED /* flags */,
                                 0 /* explicit_address */,
                                 &device->workaround_bo);
@@ -3222,7 +3263,7 @@ VkResult anv_CreateDevice(
    anv_device_release_bo(device, device->workaround_bo);
  fail_surface_aux_map_pool:
    if (device->info.has_aux_map) {
-      gen_aux_map_finish(device->aux_map_ctx);
+      intel_aux_map_finish(device->aux_map_ctx);
       device->aux_map_ctx = NULL;
    }
  fail_binding_table_pool:
@@ -3298,7 +3339,7 @@ void anv_DestroyDevice(
       anv_device_release_bo(device, device->hiz_clear_bo);
 
    if (device->info.has_aux_map) {
-      gen_aux_map_finish(device->aux_map_ctx);
+      intel_aux_map_finish(device->aux_map_ctx);
       device->aux_map_ctx = NULL;
    }
 
@@ -3329,7 +3370,7 @@ void anv_DestroyDevice(
    anv_gem_destroy_context(device, device->context_id);
 
    if (INTEL_DEBUG & DEBUG_BATCH)
-      gen_batch_decode_ctx_finish(&device->decoder_ctx);
+      intel_batch_decode_ctx_finish(&device->decoder_ctx);
 
    close(device->fd);
 
@@ -3575,15 +3616,15 @@ anv_vma_alloc(struct anv_device *device,
 done:
    pthread_mutex_unlock(&device->vma_mutex);
 
-   assert(addr == gen_48b_address(addr));
-   return gen_canonical_address(addr);
+   assert(addr == intel_48b_address(addr));
+   return intel_canonical_address(addr);
 }
 
 void
 anv_vma_free(struct anv_device *device,
              uint64_t address, uint64_t size)
 {
-   const uint64_t addr_48b = gen_48b_address(address);
+   const uint64_t addr_48b = intel_48b_address(address);
 
    pthread_mutex_lock(&device->vma_mutex);
 
@@ -3820,7 +3861,7 @@ VkResult anv_AllocateMemory(
 
    /* Regular allocate (not importing memory). */
 
-   result = anv_device_alloc_bo(device, pAllocateInfo->allocationSize,
+   result = anv_device_alloc_bo(device, "user", pAllocateInfo->allocationSize,
                                 alloc_flags, client_address, &mem->bo);
    if (result != VK_SUCCESS)
       goto fail;
@@ -3833,9 +3874,9 @@ VkResult anv_AllocateMemory(
        */
       if (image->needs_set_tiling) {
          const uint32_t i915_tiling =
-            isl_tiling_to_i915_tiling(image->planes[0].surface.isl.tiling);
+            isl_tiling_to_i915_tiling(image->planes[0].primary_surface.isl.tiling);
          int ret = anv_gem_set_tiling(device, mem->bo->gem_handle,
-                                      image->planes[0].surface.isl.row_pitch_B,
+                                      image->planes[0].primary_surface.isl.row_pitch_B,
                                       i915_tiling);
          if (ret) {
             anv_device_release_bo(device, mem->bo);
@@ -4163,108 +4204,6 @@ void anv_GetBufferMemoryRequirements2(
    }
 }
 
-void anv_GetImageMemoryRequirements2(
-    VkDevice                                    _device,
-    const VkImageMemoryRequirementsInfo2*       pInfo,
-    VkMemoryRequirements2*                      pMemoryRequirements)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   ANV_FROM_HANDLE(anv_image, image, pInfo->image);
-
-   /* The Vulkan spec (git aaed022) says:
-    *
-    *    memoryTypeBits is a bitfield and contains one bit set for every
-    *    supported memory type for the resource. The bit `1<<i` is set if and
-    *    only if the memory type `i` in the VkPhysicalDeviceMemoryProperties
-    *    structure for the physical device is supported.
-    *
-    * All types are currently supported for images.
-    */
-   uint32_t memory_types = (1ull << device->physical->memory.type_count) - 1;
-
-   pMemoryRequirements->memoryRequirements.size = image->size;
-   pMemoryRequirements->memoryRequirements.alignment = image->alignment;
-   pMemoryRequirements->memoryRequirements.memoryTypeBits = memory_types;
-
-   vk_foreach_struct_const(ext, pInfo->pNext) {
-      switch (ext->sType) {
-      case VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO: {
-         const VkImagePlaneMemoryRequirementsInfo *plane_reqs =
-            (const VkImagePlaneMemoryRequirementsInfo *) ext;
-         uint32_t plane = anv_image_aspect_to_plane(image->aspects,
-                                                    plane_reqs->planeAspect);
-
-         assert(image->planes[plane].offset == 0);
-
-         /* The Vulkan spec (git aaed022) says:
-          *
-          *    memoryTypeBits is a bitfield and contains one bit set for every
-          *    supported memory type for the resource. The bit `1<<i` is set
-          *    if and only if the memory type `i` in the
-          *    VkPhysicalDeviceMemoryProperties structure for the physical
-          *    device is supported.
-          *
-          * All types are currently supported for images.
-          */
-         pMemoryRequirements->memoryRequirements.memoryTypeBits =
-               (1ull << device->physical->memory.type_count) - 1;
-
-         pMemoryRequirements->memoryRequirements.size = image->planes[plane].size;
-         pMemoryRequirements->memoryRequirements.alignment =
-            image->planes[plane].alignment;
-         break;
-      }
-
-      default:
-         anv_debug_ignored_stype(ext->sType);
-         break;
-      }
-   }
-
-   vk_foreach_struct(ext, pMemoryRequirements->pNext) {
-      switch (ext->sType) {
-      case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS: {
-         VkMemoryDedicatedRequirements *requirements = (void *)ext;
-         if (image->needs_set_tiling || image->external_format) {
-            /* If we need to set the tiling for external consumers, we need a
-             * dedicated allocation.
-             *
-             * See also anv_AllocateMemory.
-             */
-            requirements->prefersDedicatedAllocation = true;
-            requirements->requiresDedicatedAllocation = true;
-         } else {
-            requirements->prefersDedicatedAllocation = false;
-            requirements->requiresDedicatedAllocation = false;
-         }
-         break;
-      }
-
-      default:
-         anv_debug_ignored_stype(ext->sType);
-         break;
-      }
-   }
-}
-
-void anv_GetImageSparseMemoryRequirements(
-    VkDevice                                    device,
-    VkImage                                     image,
-    uint32_t*                                   pSparseMemoryRequirementCount,
-    VkSparseImageMemoryRequirements*            pSparseMemoryRequirements)
-{
-   *pSparseMemoryRequirementCount = 0;
-}
-
-void anv_GetImageSparseMemoryRequirements2(
-    VkDevice                                    device,
-    const VkImageSparseMemoryRequirementsInfo2* pInfo,
-    uint32_t*                                   pSparseMemoryRequirementCount,
-    VkSparseImageMemoryRequirements2*           pSparseMemoryRequirements)
-{
-   *pSparseMemoryRequirementCount = 0;
-}
-
 void anv_GetDeviceMemoryCommitment(
     VkDevice                                    device,
     VkDeviceMemory                              memory,
@@ -4475,7 +4414,7 @@ uint64_t anv_GetDeviceMemoryOpaqueCaptureAddress(
    assert(memory->bo->flags & EXEC_OBJECT_PINNED);
    assert(memory->bo->has_client_visible_address);
 
-   return gen_48b_address(memory->bo->offset);
+   return intel_48b_address(memory->bo->offset);
 }
 
 void

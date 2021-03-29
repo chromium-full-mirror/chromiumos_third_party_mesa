@@ -72,9 +72,6 @@ _mesa_copy_texture_state( const struct gl_context *src, struct gl_context *dst )
    assert(dst);
 
    dst->Texture.CurrentUnit = src->Texture.CurrentUnit;
-   dst->Texture._GenFlags = src->Texture._GenFlags;
-   dst->Texture._TexGenEnabled = src->Texture._TexGenEnabled;
-   dst->Texture._TexMatEnabled = src->Texture._TexMatEnabled;
 
    /* per-unit state */
    for (u = 0; u < src->Const.MaxCombinedTextureImageUnits; u++) {
@@ -390,10 +387,11 @@ _mesa_ClientActiveTexture(GLenum texture)
  *
  * \param ctx GL context.
  */
-void
+GLbitfield
 _mesa_update_texture_matrices(struct gl_context *ctx)
 {
    GLuint u;
+   GLbitfield old_texmat_enabled = ctx->Texture._TexMatEnabled;
 
    ctx->Texture._TexMatEnabled = 0x0;
 
@@ -407,6 +405,11 @@ _mesa_update_texture_matrices(struct gl_context *ctx)
 	    ctx->Texture._TexMatEnabled |= ENABLE_TEXMAT(u);
       }
    }
+
+   if (old_texmat_enabled != ctx->Texture._TexMatEnabled)
+      return _NEW_FF_VERT_PROGRAM | _NEW_FF_FRAG_PROGRAM;
+
+   return 0;
 }
 
 
@@ -882,7 +885,7 @@ fix_missing_textures_for_atifs(struct gl_context *ctx,
  *
  * \param ctx GL context.
  */
-void
+GLbitfield
 _mesa_update_texture_state(struct gl_context *ctx)
 {
    struct gl_program *prog[MESA_SHADER_STAGES];
@@ -899,6 +902,11 @@ _mesa_update_texture_state(struct gl_context *ctx)
 
    /* TODO: only set this if there are actual changes */
    ctx->NewState |= _NEW_TEXTURE_OBJECT | _NEW_TEXTURE_STATE;
+
+   GLbitfield old_genflags = ctx->Texture._GenFlags;
+   GLbitfield old_enabled_coord_units = ctx->Texture._EnabledCoordUnits;
+   GLbitfield old_texgen_enabled = ctx->Texture._TexGenEnabled;
+   GLbitfield old_texmat_enabled = ctx->Texture._TexMatEnabled;
 
    ctx->Texture._GenFlags = 0x0;
    ctx->Texture._TexMatEnabled = 0x0;
@@ -938,6 +946,19 @@ _mesa_update_texture_state(struct gl_context *ctx)
 
    if (!prog[MESA_SHADER_FRAGMENT] || !prog[MESA_SHADER_VERTEX])
       update_texgen(ctx);
+
+   GLbitfield new_state = 0;
+
+   if (old_enabled_coord_units != ctx->Texture._EnabledCoordUnits ||
+       old_texgen_enabled != ctx->Texture._TexGenEnabled ||
+       old_texmat_enabled != ctx->Texture._TexMatEnabled) {
+      new_state |= _NEW_FF_VERT_PROGRAM | _NEW_FF_FRAG_PROGRAM;
+   }
+
+   if (old_genflags != ctx->Texture._GenFlags)
+      new_state |= _NEW_TNL_SPACES;
+
+   return new_state;
 }
 
 

@@ -43,10 +43,11 @@ vec4_gs_visitor::vec4_gs_visitor(const struct brw_compiler *compiler,
                                  const nir_shader *shader,
                                  void *mem_ctx,
                                  bool no_spills,
-                                 int shader_time_index)
+                                 int shader_time_index,
+                                 bool debug_enabled)
    : vec4_visitor(compiler, log_data, &c->key.base.tex,
                   &prog_data->base, shader,  mem_ctx,
-                  no_spills, shader_time_index),
+                  no_spills, shader_time_index, debug_enabled),
      c(c),
      gs_prog_data(prog_data)
 {
@@ -597,6 +598,7 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
    c.key = *key;
 
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_GEOMETRY];
+   const bool debug_enabled = INTEL_DEBUG & DEBUG_GS;
 
    prog_data->base.base.stage = MESA_SHADER_GEOMETRY;
 
@@ -616,7 +618,7 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
    brw_nir_apply_key(nir, compiler, &key->base, 8, is_scalar);
    brw_nir_lower_vue_inputs(nir, &c.input_vue_map);
    brw_nir_lower_vue_outputs(nir);
-   brw_postprocess_nir(nir, compiler, is_scalar);
+   brw_postprocess_nir(nir, compiler, is_scalar, debug_enabled);
 
    prog_data->base.clip_distance_mask =
       ((1 << nir->info.clip_distance_array_size) - 1);
@@ -810,7 +812,7 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
    /* Now that prog_data setup is done, we are ready to actually compile the
     * program.
     */
-   if (INTEL_DEBUG & DEBUG_GS) {
+   if (unlikely(debug_enabled)) {
       fprintf(stderr, "GS Input ");
       brw_print_vue_map(stderr, &c.input_vue_map, MESA_SHADER_GEOMETRY);
       fprintf(stderr, "GS Output ");
@@ -819,14 +821,14 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
 
    if (is_scalar) {
       fs_visitor v(compiler, log_data, mem_ctx, &c, prog_data, nir,
-                   shader_time_index);
+                   shader_time_index, debug_enabled);
       if (v.run_gs()) {
          prog_data->base.dispatch_mode = DISPATCH_MODE_SIMD8;
          prog_data->base.base.dispatch_grf_start_reg = v.payload.num_regs;
 
          fs_generator g(compiler, log_data, mem_ctx,
                         &prog_data->base.base, false, MESA_SHADER_GEOMETRY);
-         if (INTEL_DEBUG & DEBUG_GS) {
+         if (unlikely(debug_enabled)) {
             const char *label =
                nir->info.label ? nir->info.label : "unnamed";
             char *name = ralloc_asprintf(mem_ctx, "%s geometry shader %s",
@@ -855,7 +857,8 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
          prog_data->base.dispatch_mode = DISPATCH_MODE_4X2_DUAL_OBJECT;
 
          brw::vec4_gs_visitor v(compiler, log_data, &c, prog_data, nir,
-                           mem_ctx, true /* no_spills */, shader_time_index);
+                                mem_ctx, true /* no_spills */,
+                                shader_time_index, debug_enabled);
 
          /* Backup 'nr_params' and 'param' as they can be modified by the
           * the DUAL_OBJECT visitor. If it fails, we will run the fallback
@@ -874,7 +877,7 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
                                               nir, &prog_data->base,
                                               v.cfg,
                                               v.performance_analysis.require(),
-                                              stats);
+                                              stats, debug_enabled);
          } else {
             /* These variables could be modified by the execution of the GS
              * visitor if it packed the uniforms in the push constant buffer.
@@ -925,12 +928,12 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
 
    if (compiler->devinfo->gen >= 7)
       gs = new brw::vec4_gs_visitor(compiler, log_data, &c, prog_data,
-                               nir, mem_ctx, false /* no_spills */,
-                               shader_time_index);
+                                    nir, mem_ctx, false /* no_spills */,
+                                    shader_time_index, debug_enabled);
    else
       gs = new brw::gen6_gs_visitor(compiler, log_data, &c, prog_data, prog,
-                               nir, mem_ctx, false /* no_spills */,
-                               shader_time_index);
+                                    nir, mem_ctx, false /* no_spills */,
+                                    shader_time_index, debug_enabled);
 
    if (!gs->run()) {
       if (error_str)
@@ -939,7 +942,7 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
       ret = brw_vec4_generate_assembly(compiler, log_data, mem_ctx, nir,
                                        &prog_data->base, gs->cfg,
                                        gs->performance_analysis.require(),
-                                       stats);
+                                       stats, debug_enabled);
    }
 
    delete gs;

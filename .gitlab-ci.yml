@@ -21,10 +21,15 @@ include:
   - local: 'src/amd/ci/gitlab-ci.yml'
   - local: 'src/broadcom/ci/gitlab-ci.yml'
   - local: 'src/freedreno/ci/gitlab-ci.yml'
+  - local: 'src/gallium/drivers/iris/ci/gitlab-ci.yml'
+  - local: 'src/gallium/drivers/lima/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/llvmpipe/ci/gitlab-ci.yml'
+  - local: 'src/gallium/drivers/panfrost/ci/gitlab-ci.yml'
+  - local: 'src/gallium/drivers/radeonsi/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/softpipe/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/virgl/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/zink/ci/gitlab-ci.yml'
+  - local: 'src/gallium/frontends/lavapipe/ci/gitlab-ci.yml'
 
 stages:
   - sanity
@@ -193,6 +198,7 @@ success:
       # https://gitlab.com/gitlab-org/gitlab-ce/commit/8788fb925706cad594adf6917a6c5f6587dd1521
       - artifacts
       - _build/meson-logs/*.txt
+      - _build/meson-logs/strace
 
 
 # Docker image tag helper templates
@@ -307,7 +313,7 @@ x86_build:
   extends:
     - .use-x86_build-base
   variables:
-    MESA_IMAGE_TAG: &x86_build "2021-02-08-container-reorg"
+    MESA_IMAGE_TAG: &x86_build "2021-02-19-strace"
 
 .use-x86_build:
   extends:
@@ -407,13 +413,13 @@ x86_test-base:
 x86_test-gl:
   extends: .use-x86_test-base
   variables:
-    MESA_IMAGE_TAG: &x86_test-gl "2021-02-17-gfxreconstruct-master"
+    MESA_IMAGE_TAG: &x86_test-gl "2021-03-16-piglit-runner"
 
 # Debian 10 based x86 test image for VK
 x86_test-vk:
   extends: .use-x86_test-base
   variables:
-    MESA_IMAGE_TAG: &x86_test-vk "2021-02-17-gfxreconstruct-master"
+    MESA_IMAGE_TAG: &x86_test-vk "2021-03-16-piglit-runner"
 
 # Debian 10 based ARM build image
 arm_build:
@@ -455,7 +461,7 @@ arm64_test:
   extends:
     - .use-arm_test-base
   variables:
-    MESA_IMAGE_TAG: &arm64_test "2021-02-18-kernel"
+    MESA_IMAGE_TAG: &arm64_test "2021-03-17-waffle-dep"
 
 .use-arm64_test:
   extends:
@@ -472,7 +478,7 @@ armhf_test:
   extends:
     - .use-arm_test-base
   variables:
-    MESA_IMAGE_TAG: &armhf_test "2021-02-18-kernel"
+    MESA_IMAGE_TAG: &armhf_test "2021-03-17-waffle-dep"
 
 .use-armhf_test:
   extends:
@@ -501,7 +507,7 @@ armhf_test:
     - .set-image
   variables:
     MESA_IMAGE_PATH: "windows/x64_build"
-    MESA_IMAGE_TAG: "2021-01-29"
+    MESA_IMAGE_TAG: "2021-03-15-tls"
     MESA_UPSTREAM_IMAGE: "$CI_REGISTRY/$FDO_UPSTREAM_REPO/$MESA_IMAGE_PATH:${MESA_IMAGE_TAG}--${MESA_TEMPLATES_COMMIT}"
 
 windows_build_vs2019:
@@ -582,6 +588,7 @@ sanity:
     when: always
     paths:
       - _build/meson-logs/*.txt
+      - _build/meson-logs/strace
       # scons:
       - build/*/config.log
       - shader-db
@@ -621,7 +628,7 @@ sanity:
   variables:
     LLVM_VERSION: 10
   script:
-    - .gitlab-ci/meson-build.sh
+    - .gitlab-ci/meson/build.sh
 
 .scons-build:
   extends:
@@ -648,10 +655,11 @@ meson-testing:
     VULKAN_DRIVERS: "swrast,amd"
     BUILDTYPE: "debugoptimized"
     EXTRA_OPTION: >
+      -D valgrind=false
       -D werror=true
     MINIO_ARTIFACT_NAME: mesa-amd64
   script:
-    - .gitlab-ci/meson-build.sh
+    - .gitlab-ci/meson/build.sh
     - .gitlab-ci/prepare-artifacts.sh
 
 meson-testing-asan:
@@ -660,6 +668,7 @@ meson-testing-asan:
   variables:
     EXTRA_OPTION: >
       -D b_sanitize=address
+      -D valgrind=false
     MINIO_ARTIFACT_NAME: ""
     ARTIFACTS_DEBUG_SYMBOLS: 1
 
@@ -680,16 +689,14 @@ meson-clover-testing:
     GALLIUM_DRIVERS: "swrast"
     BUILDTYPE: "debugoptimized"
     EXTRA_OPTION: >
+      -D valgrind=false
       -D werror=true
   script:
-    - .gitlab-ci/meson-build.sh
+    - .gitlab-ci/meson/build.sh
     - .gitlab-ci/prepare-artifacts.sh
 
 meson-gallium:
   extends: .meson-build
-  tags:
-    # i965_asm tests randomly time out on packet runners
-    - gstreamer
   variables:
     UNWIND: "enabled"
     DRI_LOADERS: >
@@ -714,7 +721,7 @@ meson-gallium:
       -D tools=all
       -D werror=true
   script:
-    - .gitlab-ci/meson-build.sh
+    - .gitlab-ci/meson/build.sh
     - .gitlab-ci/run-shader-db.sh
     - src/freedreno/.gitlab-ci/run-fdtools.sh
 
@@ -746,7 +753,7 @@ meson-release:
       -D tools=all
       -D werror=true
   script:
-    - .gitlab-ci/meson-build.sh
+    - .gitlab-ci/meson/build.sh
 
 meson-android:
   extends:
@@ -763,6 +770,7 @@ meson-android:
       -D android-stub=true
       -D llvm=disabled
       -D platform-sdk-version=26
+      -D valgrind=false
     GALLIUM_ST: >
       -D dri3=disabled
       -D gallium-vdpau=disabled
@@ -773,14 +781,14 @@ meson-android:
       -D gallium-nine=false
       -D gallium-opencl=disabled
     LLVM_VERSION: ""
+    PKG_CONFIG_LIBDIR: "/disable/non/android/system/pc/files"
   script:
-    # arm64 build: Can't build v3d/vc4 because they require expat for v3d_decode.
-    - PKG_CONFIG_PATH=/usr/local/lib/aarch64-linux-android/pkgconfig/:/android-ndk-r21d/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/pkgconfig/ CROSS=aarch64-linux-android GALLIUM_DRIVERS=etnaviv,freedreno,lima,panfrost VULKAN_DRIVERS=freedreno .gitlab-ci/meson-build.sh
+    - PKG_CONFIG_PATH=/usr/local/lib/aarch64-linux-android/pkgconfig/:/android-ndk-r21d/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/pkgconfig/ CROSS=aarch64-linux-android GALLIUM_DRIVERS=etnaviv,freedreno,lima,panfrost,vc4,v3d VULKAN_DRIVERS=freedreno,broadcom .gitlab-ci/meson/build.sh
     # x86_64 build:
     # Can't do Intel because gen_decoder.c currently requires libexpat, which
     # is not a dependency that AOSP wants to accept.  Can't do Radeon because
     # it requires LLVM, which we don't have an Android build of.
-    # - PKG_CONFIG_PATH=/usr/local/lib/x86_64-linux-android/pkgconfig/ CROSS=x86_64-linux-android GALLIUM_DRIVERS=iris VULKAN_DRIVERS=intel .gitlab-ci/meson-build.sh
+    # - PKG_CONFIG_PATH=/usr/local/lib/x86_64-linux-android/pkgconfig/ CROSS=x86_64-linux-android GALLIUM_DRIVERS=iris VULKAN_DRIVERS=intel .gitlab-ci/meson/build.sh
 
 .meson-cross:
   extends:
@@ -826,9 +834,10 @@ meson-armhf:
     LLVM_VERSION: "7"
     EXTRA_OPTION: >
       -D llvm=disabled
+      -D valgrind=false
     MINIO_ARTIFACT_NAME: mesa-armhf
   script:
-    - .gitlab-ci/meson-build.sh
+    - .gitlab-ci/meson/build.sh
     - .gitlab-ci/prepare-artifacts.sh
 
 meson-arm64:
@@ -839,9 +848,10 @@ meson-arm64:
     VULKAN_DRIVERS: "freedreno,broadcom"
     EXTRA_OPTION: >
       -D llvm=disabled
+      -D valgrind=false
     MINIO_ARTIFACT_NAME: mesa-arm64
   script:
-    - .gitlab-ci/meson-build.sh
+    - .gitlab-ci/meson/build.sh
     - .gitlab-ci/prepare-artifacts.sh
 
 meson-arm64-asan:
@@ -851,6 +861,7 @@ meson-arm64-asan:
     EXTRA_OPTION: >
       -D llvm=disabled
       -D b_sanitize=address
+      -D valgrind=false
     ARTIFACTS_DEBUG_SYMBOLS: 1
     MINIO_ARTIFACT_NAME: mesa-arm64-asan
     MESON_TEST_ARGS: "--no-suite mesa:compiler"
@@ -865,7 +876,7 @@ meson-arm64-build-test:
       -Dtools=panfrost
       -D werror=true
   script:
-    - .gitlab-ci/meson-build.sh
+    - .gitlab-ci/meson/build.sh
 
 meson-clang:
   extends: .meson-build
@@ -905,7 +916,7 @@ test-d3d12-windows:
     GIT_STRATEGY: none # testing doesn't build anything from source
     GALLIUM_DRIVER: d3d12
     PIGLIT_PROFILE: quick_gl
-    PIGLIT_OPTIONS: -x nv_copy_depth_to_color -x repeat-wait -x arb_timer_query@timestamp-get
+    PIGLIT_TESTS: -x nv_copy_depth_to_color -x repeat-wait -x arb_timer_query@timestamp-get
   script:
     - . _install/piglit_run.ps1
   artifacts:
@@ -940,11 +951,12 @@ meson-clover:
       -D gallium-nine=false
       -D gallium-opencl=icd
     EXTRA_OPTION: >
+      -D valgrind=false
       -D werror=true
   script:
-    - LLVM_VERSION=8 .gitlab-ci/meson-build.sh
-    - LLVM_VERSION=9 .gitlab-ci/meson-build.sh
-    - .gitlab-ci/meson-build.sh
+    - LLVM_VERSION=8 .gitlab-ci/meson/build.sh
+    - LLVM_VERSION=9 .gitlab-ci/meson/build.sh
+    - .gitlab-ci/meson/build.sh
 
 meson-vulkan:
   extends: .meson-build
@@ -971,8 +983,7 @@ meson-vulkan:
     UBSAN_OPTIONS: "print_stacktrace=1"
     VULKAN_DRIVERS: intel,amd,freedreno,broadcom
     EXTRA_OPTION: >
-      -D vulkan-overlay-layer=true
-      -D vulkan-device-select-layer=true
+      -D vulkan-layers=device-select,overlay
       -D build-aco-tests=true
       -D werror=true
 
@@ -986,8 +997,7 @@ meson-i386:
     GALLIUM_DRIVERS: "iris,nouveau,r300,r600,radeonsi,swrast,virgl,zink"
     DRI_DRIVERS: "i915,i965,r100,r200,nouveau"
     EXTRA_OPTION: >
-      -D vulkan-overlay-layer=true
-      -D vulkan-device-select-layer=true
+      -D vulkan-layers=device-select,overlay
       -D werror=true
 
 meson-s390x:
@@ -1023,6 +1033,7 @@ meson-mingw32-x86_64:
     GALLIUM_DRIVERS: "swrast"
     EXTRA_OPTION: >
       -Dllvm=disabled
+      -Dzlib=disabled
       -Dosmesa=true
       --cross-file=.gitlab-ci/x86_64-w64-mingw32
 

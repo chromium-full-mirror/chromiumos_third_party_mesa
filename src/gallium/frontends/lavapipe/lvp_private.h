@@ -48,11 +48,11 @@ typedef uint32_t xcb_window_t;
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_icd.h>
 
-#include "lvp_extensions.h"
 #include "lvp_entrypoints.h"
 #include "vk_device.h"
 #include "vk_instance.h"
 #include "vk_physical_device.h"
+#include "vk_shader_module.h"
 
 #include "wsi_common.h"
 
@@ -87,70 +87,13 @@ bool lvp_device_entrypoint_is_enabled(int index, uint32_t core_version,
                                        const struct vk_instance_extension_table *instance,
                                        const struct vk_device_extension_table *device);
 
-#define LVP_DEFINE_HANDLE_CASTS(__lvp_type, __VkType)                      \
-                                                                           \
-   static inline struct __lvp_type *                                       \
-   __lvp_type ## _from_handle(__VkType _handle)                            \
-   {                                                                       \
-      return (struct __lvp_type *) _handle;                                \
-   }                                                                       \
-                                                                           \
-   static inline __VkType                                                  \
-   __lvp_type ## _to_handle(struct __lvp_type *_obj)                       \
-   {                                                                       \
-      return (__VkType) _obj;                                              \
-   }
-
-#define LVP_DEFINE_NONDISP_HANDLE_CASTS(__lvp_type, __VkType)              \
-                                                                           \
-   static inline struct __lvp_type *                                       \
-   __lvp_type ## _from_handle(__VkType _handle)                            \
-   {                                                                       \
-      return (struct __lvp_type *)(uintptr_t) _handle;                     \
-   }                                                                       \
-                                                                           \
-   static inline __VkType                                                  \
-   __lvp_type ## _to_handle(struct __lvp_type *_obj)                       \
-   {                                                                       \
-      return (__VkType)(uintptr_t) _obj;                                   \
-   }
-
-#define LVP_FROM_HANDLE(__lvp_type, __name, __handle) \
-   struct __lvp_type *__name = __lvp_type ## _from_handle(__handle)
-
-LVP_DEFINE_HANDLE_CASTS(lvp_cmd_buffer, VkCommandBuffer)
-LVP_DEFINE_HANDLE_CASTS(lvp_device, VkDevice)
-LVP_DEFINE_HANDLE_CASTS(lvp_instance, VkInstance)
-LVP_DEFINE_HANDLE_CASTS(lvp_physical_device, VkPhysicalDevice)
-LVP_DEFINE_HANDLE_CASTS(lvp_queue, VkQueue)
-
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_cmd_pool, VkCommandPool)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_buffer, VkBuffer)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_buffer_view, VkBufferView)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_descriptor_pool, VkDescriptorPool)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_descriptor_set, VkDescriptorSet)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_descriptor_set_layout, VkDescriptorSetLayout)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_descriptor_update_template, VkDescriptorUpdateTemplate)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_device_memory, VkDeviceMemory)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_event, VkEvent)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_framebuffer, VkFramebuffer)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_image, VkImage)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_image_view, VkImageView);
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_pipeline_cache, VkPipelineCache)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_pipeline, VkPipeline)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_pipeline_layout, VkPipelineLayout)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_query_pool, VkQueryPool)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_render_pass, VkRenderPass)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_sampler, VkSampler)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_shader_module, VkShaderModule)
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_fence, VkFence);
-LVP_DEFINE_NONDISP_HANDLE_CASTS(lvp_semaphore, VkSemaphore);
 
 /* Whenever we generate an error, pass it through this function. Useful for
  * debugging, where we can break on it. Only call at error site, not when
  * propagating errors. Might be useful to plug in a stack trace here.
  */
 
+struct lvp_instance;
 VkResult __vk_errorf(struct lvp_instance *instance, VkResult error, const char *file, int line, const char *format, ...);
 
 #define LVP_DEBUG_ALL_ENTRYPOINTS (1 << 0)
@@ -175,12 +118,6 @@ void __lvp_finishme(const char *file, int line, const char *format, ...)
       lvp_finishme("stub %s", __func__); \
       return; \
    } while (0)
-
-struct lvp_shader_module {
-   struct vk_object_base base;
-   uint32_t                                     size;
-   char                                         data[0];
-};
 
 static inline gl_shader_stage
 vk_to_mesa_shader_stage(VkShaderStageFlagBits vk_stage)
@@ -229,13 +166,11 @@ struct lvp_instance {
 VkResult lvp_init_wsi(struct lvp_physical_device *physical_device);
 void lvp_finish_wsi(struct lvp_physical_device *physical_device);
 
-extern const struct vk_instance_extension_table lvp_instance_extensions_supported;
-uint32_t lvp_physical_device_api_version(struct lvp_physical_device *dev);
 bool lvp_physical_device_extension_supported(struct lvp_physical_device *dev,
                                               const char *name);
 
 struct lvp_queue {
-   VK_LOADER_DATA                              _loader_data;
+   struct vk_object_base base;
    VkDeviceQueueCreateFlags flags;
    struct lvp_device *                         device;
    struct pipe_context *ctx;
@@ -284,7 +219,6 @@ struct lvp_device_memory {
 struct lvp_image {
    struct vk_object_base base;
    VkImageType type;
-   VkFormat vk_format;
    VkDeviceSize size;
    uint32_t alignment;
    struct pipe_resource *bo;
@@ -356,6 +290,8 @@ struct lvp_subpass {
    bool                                         has_color_att;
 
    VkSampleCountFlagBits                        max_sample_count;
+
+   uint32_t                                     view_mask;
 };
 
 struct lvp_render_pass_attachment {
@@ -383,6 +319,7 @@ struct lvp_render_pass {
 struct lvp_sampler {
    struct vk_object_base base;
    VkSamplerCreateInfo create_info;
+   VkSamplerReductionMode reduction_mode;
    uint32_t state[4];
 };
 
@@ -419,6 +356,7 @@ struct lvp_descriptor_set_binding_layout {
 struct lvp_descriptor_set_layout {
    struct vk_object_base base;
 
+   const VkAllocationCallbacks *alloc;
    /* Descriptor set layouts can be destroyed at almost any time */
    uint32_t ref_cnt;
 
@@ -505,7 +443,6 @@ struct lvp_descriptor_update_template {
    uint32_t entry_count;
    uint32_t set;
    VkDescriptorUpdateTemplateType type;
-   struct lvp_descriptor_set_layout *descriptor_set_layout;
    VkPipelineBindPoint bind_point;
    struct lvp_pipeline_layout *pipeline_layout;
    VkDescriptorUpdateTemplateEntry entry[0];
@@ -566,12 +503,13 @@ struct lvp_semaphore {
 
 struct lvp_buffer {
    struct vk_object_base base;
-   struct lvp_device *                          device;
+
    VkDeviceSize                                 size;
 
    VkBufferUsageFlags                           usage;
    VkDeviceSize                                 offset;
 
+   struct pipe_memory_allocation *pmem;
    struct pipe_resource *bo;
    uint64_t total_size;
 };
@@ -621,9 +559,60 @@ struct lvp_cmd_buffer {
    struct list_head                             pool_link;
 
    struct list_head                             cmds;
+   struct list_head                            *last_emit;
 
    uint8_t push_constants[MAX_PUSH_CONSTANTS_SIZE];
 };
+
+
+#define LVP_FROM_HANDLE(__lvp_type, __name, __handle) \
+   struct __lvp_type *__name = __lvp_type ## _from_handle(__handle)
+
+VK_DEFINE_HANDLE_CASTS(lvp_cmd_buffer, base, VkCommandBuffer,
+                       VK_OBJECT_TYPE_COMMAND_BUFFER)
+VK_DEFINE_HANDLE_CASTS(lvp_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
+VK_DEFINE_HANDLE_CASTS(lvp_instance, vk.base, VkInstance, VK_OBJECT_TYPE_INSTANCE)
+VK_DEFINE_HANDLE_CASTS(lvp_physical_device, vk.base, VkPhysicalDevice,
+                       VK_OBJECT_TYPE_PHYSICAL_DEVICE)
+VK_DEFINE_HANDLE_CASTS(lvp_queue, base, VkQueue, VK_OBJECT_TYPE_QUEUE)
+
+   VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_cmd_pool, base,VkCommandPool,
+                                  VK_OBJECT_TYPE_COMMAND_POOL)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_buffer, base, VkBuffer,
+                               VK_OBJECT_TYPE_BUFFER)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_buffer_view, base, VkBufferView,
+                               VK_OBJECT_TYPE_BUFFER_VIEW)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_descriptor_pool, base, VkDescriptorPool,
+                               VK_OBJECT_TYPE_DESCRIPTOR_POOL)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_descriptor_set, base, VkDescriptorSet,
+                               VK_OBJECT_TYPE_DESCRIPTOR_SET)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_descriptor_set_layout, base, VkDescriptorSetLayout,
+                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_descriptor_update_template, base, VkDescriptorUpdateTemplate,
+                               VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_device_memory, base, VkDeviceMemory,
+                               VK_OBJECT_TYPE_DEVICE_MEMORY)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_event, base, VkEvent, VK_OBJECT_TYPE_EVENT)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_framebuffer, base, VkFramebuffer,
+                               VK_OBJECT_TYPE_FRAMEBUFFER)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_image, base, VkImage, VK_OBJECT_TYPE_IMAGE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_image_view, base, VkImageView,
+                               VK_OBJECT_TYPE_IMAGE_VIEW);
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_pipeline_cache, base, VkPipelineCache,
+                               VK_OBJECT_TYPE_PIPELINE_CACHE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_pipeline, base, VkPipeline,
+                               VK_OBJECT_TYPE_PIPELINE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_pipeline_layout, base, VkPipelineLayout,
+                               VK_OBJECT_TYPE_PIPELINE_LAYOUT)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_query_pool, base, VkQueryPool,
+                               VK_OBJECT_TYPE_QUERY_POOL)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_render_pass, base, VkRenderPass,
+                               VK_OBJECT_TYPE_RENDER_PASS)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_sampler, base, VkSampler,
+                               VK_OBJECT_TYPE_SAMPLER)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_fence, base, VkFence, VK_OBJECT_TYPE_FENCE);
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_semaphore, base, VkSemaphore,
+                               VK_OBJECT_TYPE_SEMAPHORE);
 
 /* in same order and buffer building commands in spec. */
 enum lvp_cmds {
@@ -680,6 +669,15 @@ enum lvp_cmds {
    LVP_CMD_DRAW_INDIRECT_BYTE_COUNT,
    LVP_CMD_BEGIN_CONDITIONAL_RENDERING,
    LVP_CMD_END_CONDITIONAL_RENDERING,
+   LVP_CMD_SET_CULL_MODE,
+   LVP_CMD_SET_FRONT_FACE,
+   LVP_CMD_SET_PRIMITIVE_TOPOLOGY,
+   LVP_CMD_SET_DEPTH_TEST_ENABLE,
+   LVP_CMD_SET_DEPTH_WRITE_ENABLE,
+   LVP_CMD_SET_DEPTH_COMPARE_OP,
+   LVP_CMD_SET_DEPTH_BOUNDS_TEST_ENABLE,
+   LVP_CMD_SET_STENCIL_TEST_ENABLE,
+   LVP_CMD_SET_STENCIL_OP,
 };
 
 struct lvp_cmd_bind_pipeline {
@@ -744,21 +742,24 @@ struct lvp_cmd_bind_vertex_buffers {
    uint32_t binding_count;
    struct lvp_buffer **buffers;
    const VkDeviceSize *offsets;
+   const VkDeviceSize *sizes;
+   const VkDeviceSize *strides;
 };
 
 struct lvp_cmd_draw {
-   uint32_t vertex_count;
    uint32_t instance_count;
-   uint32_t first_vertex;
    uint32_t first_instance;
+   uint32_t draw_count;
+   struct pipe_draw_start_count draws[0];
 };
 
 struct lvp_cmd_draw_indexed {
-   uint32_t index_count;
    uint32_t instance_count;
-   uint32_t first_index;
    uint32_t vertex_offset;
    uint32_t first_instance;
+   bool calc_start;
+   uint32_t draw_count;
+   struct pipe_draw_start_count draws[0];
 };
 
 struct lvp_cmd_draw_indirect {
@@ -1009,6 +1010,46 @@ struct lvp_cmd_begin_conditional_rendering {
    bool inverted;
 };
 
+struct lvp_cmd_set_cull_mode {
+   VkCullModeFlags cull_mode;
+};
+
+struct lvp_cmd_set_front_face {
+   VkFrontFace front_face;
+};
+
+struct lvp_cmd_set_primitive_topology {
+   VkPrimitiveTopology prim;
+};
+
+struct lvp_cmd_set_depth_test_enable {
+   VkBool32 depth_test_enable;
+};
+
+struct lvp_cmd_set_depth_write_enable {
+   VkBool32 depth_write_enable;
+};
+
+struct lvp_cmd_set_depth_bounds_test_enable {
+   VkBool32 depth_bounds_test_enable;
+};
+
+struct lvp_cmd_set_depth_compare_op {
+   VkCompareOp depth_op;
+};
+
+struct lvp_cmd_set_stencil_test_enable {
+   VkBool32 stencil_test_enable;
+};
+
+struct lvp_cmd_set_stencil_op {
+   VkStencilFaceFlags face_mask;
+   VkStencilOp fail_op;
+   VkStencilOp pass_op;
+   VkStencilOp depth_fail_op;
+   VkCompareOp compare_op;
+};
+
 struct lvp_cmd_buffer_entry {
    struct list_head cmd_link;
    uint32_t cmd_type;
@@ -1056,6 +1097,15 @@ struct lvp_cmd_buffer_entry {
       struct lvp_cmd_end_transform_feedback end_transform_feedback;
       struct lvp_cmd_draw_indirect_byte_count draw_indirect_byte_count;
       struct lvp_cmd_begin_conditional_rendering begin_conditional_rendering;
+      struct lvp_cmd_set_cull_mode set_cull_mode;
+      struct lvp_cmd_set_front_face set_front_face;
+      struct lvp_cmd_set_primitive_topology set_primitive_topology;
+      struct lvp_cmd_set_depth_test_enable set_depth_test_enable;
+      struct lvp_cmd_set_depth_write_enable set_depth_write_enable;
+      struct lvp_cmd_set_depth_compare_op set_depth_compare_op;
+      struct lvp_cmd_set_depth_bounds_test_enable set_depth_bounds_test_enable;
+      struct lvp_cmd_set_stencil_test_enable set_stencil_test_enable;
+      struct lvp_cmd_set_stencil_op set_stencil_op;
    } u;
 };
 

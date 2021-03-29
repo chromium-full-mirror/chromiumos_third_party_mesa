@@ -131,15 +131,15 @@ batch_draw_tracking_for_dirty_bits(struct fd_batch *batch)
 	if (ctx->dirty_shader[PIPE_SHADER_FRAGMENT] & FD_DIRTY_SHADER_SSBO) {
 		const struct fd_shaderbuf_stateobj *so = &ctx->shaderbuf[PIPE_SHADER_FRAGMENT];
 
-		foreach_bit (i, so->enabled_mask & so->writable_mask)
+		u_foreach_bit (i, so->enabled_mask & so->writable_mask)
 			resource_written(batch, so->sb[i].buffer);
 
-		foreach_bit (i, so->enabled_mask & ~so->writable_mask)
+		u_foreach_bit (i, so->enabled_mask & ~so->writable_mask)
 			resource_read(batch, so->sb[i].buffer);
 	}
 
 	if (ctx->dirty_shader[PIPE_SHADER_FRAGMENT] & FD_DIRTY_SHADER_IMAGE) {
-		foreach_bit (i, ctx->shaderimg[PIPE_SHADER_FRAGMENT].enabled_mask) {
+		u_foreach_bit (i, ctx->shaderimg[PIPE_SHADER_FRAGMENT].enabled_mask) {
 			struct pipe_image_view *img =
 					&ctx->shaderimg[PIPE_SHADER_FRAGMENT].si[i];
 			if (img->access & PIPE_IMAGE_ACCESS_WRITE)
@@ -149,33 +149,26 @@ batch_draw_tracking_for_dirty_bits(struct fd_batch *batch)
 		}
 	}
 
-	if (ctx->dirty_shader[PIPE_SHADER_VERTEX] & FD_DIRTY_SHADER_CONST) {
-		foreach_bit (i, ctx->constbuf[PIPE_SHADER_VERTEX].enabled_mask)
-			resource_read(batch, ctx->constbuf[PIPE_SHADER_VERTEX].cb[i].buffer);
-	}
+	u_foreach_bit (s, ctx->bound_shader_stages) {
+		/* Mark constbuf as being read: */
+		if (ctx->dirty_shader[s] & FD_DIRTY_SHADER_CONST) {
+			u_foreach_bit (i, ctx->constbuf[s].enabled_mask)
+					resource_read(batch, ctx->constbuf[s].cb[i].buffer);
+		}
 
-	if (ctx->dirty_shader[PIPE_SHADER_FRAGMENT] & FD_DIRTY_SHADER_CONST) {
-		foreach_bit (i, ctx->constbuf[PIPE_SHADER_FRAGMENT].enabled_mask)
-			resource_read(batch, ctx->constbuf[PIPE_SHADER_FRAGMENT].cb[i].buffer);
+		/* Mark textures as being read */
+		if (ctx->dirty_shader[s] & FD_DIRTY_SHADER_TEX) {
+			u_foreach_bit (i, ctx->tex[s].valid_textures)
+				resource_read(batch, ctx->tex[s].textures[i]->texture);
+		}
 	}
 
 	/* Mark VBOs as being read */
 	if (ctx->dirty & FD_DIRTY_VTXBUF) {
-		foreach_bit (i, ctx->vtx.vertexbuf.enabled_mask) {
+		u_foreach_bit (i, ctx->vtx.vertexbuf.enabled_mask) {
 			assert(!ctx->vtx.vertexbuf.vb[i].is_user_buffer);
 			resource_read(batch, ctx->vtx.vertexbuf.vb[i].buffer.resource);
 		}
-	}
-
-	/* Mark textures as being read */
-	if (ctx->dirty_shader[PIPE_SHADER_VERTEX] & FD_DIRTY_SHADER_TEX) {
-		foreach_bit (i, ctx->tex[PIPE_SHADER_VERTEX].valid_textures)
-			resource_read(batch, ctx->tex[PIPE_SHADER_VERTEX].textures[i]->texture);
-	}
-
-	if (ctx->dirty_shader[PIPE_SHADER_FRAGMENT] & FD_DIRTY_SHADER_TEX) {
-		foreach_bit (i, ctx->tex[PIPE_SHADER_FRAGMENT].valid_textures)
-			resource_read(batch, ctx->tex[PIPE_SHADER_FRAGMENT].textures[i]->texture);
 	}
 
 	/* Mark streamout buffers as being written.. */
@@ -209,7 +202,7 @@ batch_draw_tracking(struct fd_batch *batch, const struct pipe_draw_info *info,
 
 	fd_screen_lock(ctx->screen);
 
-	if (ctx->dirty)
+	if (ctx->dirty & FD_DIRTY_RESOURCE)
 		batch_draw_tracking_for_dirty_bits(batch);
 
 	/* Mark index buffer as being read */
@@ -233,42 +226,62 @@ batch_draw_tracking(struct fd_batch *batch, const struct pipe_draw_info *info,
 }
 
 static void
+update_draw_stats(struct fd_context *ctx, const struct pipe_draw_info *info,
+		const struct pipe_draw_start_count *draws, unsigned num_draws)
+	assert_dt
+{
+	ctx->stats.draw_calls++;
+
+	if (ctx->screen->gpu_id < 600) {
+		/* Counting prims in sw doesn't work for GS and tesselation. For older
+		 * gens we don't have those stages and don't have the hw counters enabled,
+		 * so keep the count accurate for non-patch geometry.
+		 */
+		unsigned prims = 0;
+		if ((info->mode != PIPE_PRIM_PATCHES) &&
+				(info->mode != PIPE_PRIM_MAX)) {
+			for (unsigned i = 0; i < num_draws; i++) {
+				prims += u_reduced_prims_for_vertices(info->mode, draws[i].count);
+			}
+		}
+
+		ctx->stats.prims_generated += prims;
+
+		if (ctx->streamout.num_targets > 0) {
+			/* Clip the prims we're writing to the size of the SO buffers. */
+			enum pipe_prim_type tf_prim = u_decomposed_prim(info->mode);
+			unsigned verts_written = u_vertices_for_prims(tf_prim, prims);
+			unsigned remaining_vert_space = ctx->streamout.max_tf_vtx - ctx->streamout.verts_written;
+			if (verts_written > remaining_vert_space) {
+				verts_written = remaining_vert_space;
+				u_trim_pipe_prim(tf_prim, &remaining_vert_space);
+			}
+			ctx->streamout.verts_written += verts_written;
+
+			ctx->stats.prims_emitted += u_reduced_prims_for_vertices(tf_prim, verts_written);
+		}
+	}
+}
+
+static void
 fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
-            const struct pipe_draw_indirect_info *indirect,
-            const struct pipe_draw_start_count *draws,
-            unsigned num_draws)
+		const struct pipe_draw_indirect_info *indirect,
+		const struct pipe_draw_start_count *draws,
+		unsigned num_draws)
 	in_dt
 {
-	if (num_draws > 1) {
-		struct pipe_draw_info tmp_info = *info;
-
-		for (unsigned i = 0; i < num_draws; i++) {
-			fd_draw_vbo(pctx, &tmp_info, indirect, &draws[i], 1);
-			if (tmp_info.increment_draw_id)
-				tmp_info.drawid++;
-		}
-		return;
-	}
-
-	if (!indirect && (!draws[0].count || !info->instance_count))
-		return;
-
 	struct fd_context *ctx = fd_context(pctx);
 
 	/* for debugging problems with indirect draw, it is convenient
 	 * to be able to emulate it, to determine if game is feeding us
 	 * bogus data:
 	 */
-	if (indirect && indirect->buffer && (fd_mesa_debug & FD_DBG_NOINDR)) {
+	if (indirect && indirect->buffer && FD_DBG(NOINDR)) {
+		/* num_draws is only applicable for direct draws: */
+		assert(num_draws == 1);
 		util_draw_indirect(pctx, info, indirect);
 		return;
 	}
-
-	if (info->mode != PIPE_PRIM_MAX &&
-	    !indirect &&
-	    !info->primitive_restart &&
-	    !u_trim_pipe_prim(info->mode, (unsigned*)&draws[0].count))
-		return;
 
 	/* TODO: push down the region versions into the tiles */
 	if (!fd_render_condition_check(pctx))
@@ -279,7 +292,7 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 		if (ctx->streamout.num_targets > 0)
 			mesa_loge("stream-out with emulated prims");
 		util_primconvert_save_rasterizer_state(ctx->primconvert, ctx->rasterizer);
-		util_primconvert_draw_vbo(ctx->primconvert, info, &draws[0]);
+		util_primconvert_draw_vbo(ctx->primconvert, info, indirect, draws, num_draws);
 		return;
 	}
 
@@ -289,6 +302,10 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 	struct pipe_draw_info new_info;
 	if (info->index_size) {
 		if (info->has_user_indices) {
+			if (num_draws > 1) {
+				util_draw_multi(pctx, info, indirect, draws, num_draws);
+				return;
+			}
 			if (!util_upload_index_buffer(pctx, info, &draws[0],
 					&indexbuf, &index_offset, 4))
 				return;
@@ -299,6 +316,11 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 		} else {
 			indexbuf = info->index.resource;
 		}
+	}
+
+	if ((ctx->streamout.num_targets > 0) && (num_draws > 1)) {
+		util_draw_multi(pctx, info, indirect, draws, num_draws);
+		return;
 	}
 
 	struct fd_batch *batch = fd_context_batch(ctx);
@@ -325,29 +347,6 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 	batch->back_blit = ctx->in_shadow;
 	batch->num_draws++;
 
-	/* Counting prims in sw doesn't work for GS and tesselation. For older
-	 * gens we don't have those stages and don't have the hw counters enabled,
-	 * so keep the count accurate for non-patch geometry.
-	 */
-	unsigned prims;
-	if ((info->mode != PIPE_PRIM_PATCHES) &&
-			(info->mode != PIPE_PRIM_MAX))
-		prims = u_reduced_prims_for_vertices(info->mode, draws[0].count);
-	else
-		prims = 0;
-
-	ctx->stats.draw_calls++;
-
-	/* TODO prims_emitted should be clipped when the stream-out buffer is
-	 * not large enough.  See max_tf_vtx().. probably need to move that
-	 * into common code.  Although a bit more annoying since a2xx doesn't
-	 * use ir3 so no common way to get at the pipe_stream_output_info
-	 * which is needed for this calculation.
-	 */
-	if (ctx->streamout.num_targets > 0)
-		ctx->stats.prims_emitted += prims;
-	ctx->stats.prims_generated += prims;
-
 	/* Clearing last_fence must come after the batch dependency tracking
 	 * (resource_read()/resource_written()), as that can trigger a flush,
 	 * re-populating last_fence
@@ -360,15 +359,24 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 		util_format_short_name(pipe_surface_format(pfb->cbufs[0])),
 		util_format_short_name(pipe_surface_format(pfb->zsbuf)));
 
-	if (ctx->draw_vbo(ctx, info, indirect, &draws[0], index_offset))
-		batch->needs_flush = true;
+	batch->cost += ctx->draw_cost;
 
-	batch->num_vertices += draws[0].count * info->instance_count;
+	for (unsigned i = 0; i < num_draws; i++) {
+		if (ctx->draw_vbo(ctx, info, indirect, &draws[i], index_offset))
+			batch->needs_flush = true;
 
-	for (unsigned i = 0; i < ctx->streamout.num_targets; i++)
+		batch->num_vertices += draws[i].count * info->instance_count;
+	}
+
+	if (unlikely(ctx->stats_users > 0))
+		update_draw_stats(ctx, info, draws, num_draws);
+
+	for (unsigned i = 0; i < ctx->streamout.num_targets; i++) {
+		assert(num_draws == 1);
 		ctx->streamout.offsets[i] += draws[0].count;
+	}
 
-	if (fd_mesa_debug & FD_DBG_DDRAW)
+	if (FD_DBG(DDRAW))
 		fd_context_all_dirty(ctx);
 
 	fd_batch_unlock_submit(batch);
@@ -483,7 +491,7 @@ fd_clear(struct pipe_context *pctx, unsigned buffers,
 		fd_batch_update_queries(batch);
 
 		if (ctx->clear(ctx, buffers, color, depth, stencil)) {
-			if (fd_mesa_debug & FD_DBG_DCLEAR)
+			if (FD_DBG(DCLEAR))
 				fd_context_all_dirty(ctx);
 
 			fallback = false;
@@ -535,13 +543,13 @@ fd_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
 	fd_screen_lock(ctx->screen);
 
 	/* Mark SSBOs */
-	foreach_bit (i, so->enabled_mask & so->writable_mask)
+	u_foreach_bit (i, so->enabled_mask & so->writable_mask)
 		resource_written(batch, so->sb[i].buffer);
 
-	foreach_bit (i, so->enabled_mask & ~so->writable_mask)
+	u_foreach_bit (i, so->enabled_mask & ~so->writable_mask)
 		resource_read(batch, so->sb[i].buffer);
 
-	foreach_bit(i, ctx->shaderimg[PIPE_SHADER_COMPUTE].enabled_mask) {
+	u_foreach_bit(i, ctx->shaderimg[PIPE_SHADER_COMPUTE].enabled_mask) {
 		struct pipe_image_view *img =
 			&ctx->shaderimg[PIPE_SHADER_COMPUTE].si[i];
 		if (img->access & PIPE_IMAGE_ACCESS_WRITE)
@@ -551,17 +559,17 @@ fd_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
 	}
 
 	/* UBO's are read */
-	foreach_bit(i, ctx->constbuf[PIPE_SHADER_COMPUTE].enabled_mask)
+	u_foreach_bit(i, ctx->constbuf[PIPE_SHADER_COMPUTE].enabled_mask)
 		resource_read(batch, ctx->constbuf[PIPE_SHADER_COMPUTE].cb[i].buffer);
 
 	/* Mark textures as being read */
-	foreach_bit(i, ctx->tex[PIPE_SHADER_COMPUTE].valid_textures)
+	u_foreach_bit(i, ctx->tex[PIPE_SHADER_COMPUTE].valid_textures)
 		resource_read(batch, ctx->tex[PIPE_SHADER_COMPUTE].textures[i]->texture);
 
 	/* For global buffers, we don't really know if read or written, so assume
 	 * the worst:
 	 */
-	foreach_bit(i, ctx->global_bindings.enabled_mask)
+	u_foreach_bit(i, ctx->global_bindings.enabled_mask)
 		resource_written(batch, ctx->global_bindings.buf[i]);
 
 	if (info->indirect)

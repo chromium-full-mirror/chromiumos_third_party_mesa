@@ -304,21 +304,22 @@ Khronos, ARB, and OES extensions that are not part of any OpenGL or OpenGL ES ve
   GL_ARB_fragment_shader_interlock                      DONE (i965)
   GL_ARB_gpu_shader_int64                               DONE (i965/gen8+, nvc0, radeonsi, softpipe, llvmpipe, zink)
   GL_ARB_parallel_shader_compile                        DONE (all drivers)
-  GL_ARB_post_depth_coverage                            DONE (i965, nvc0, radeonsi, llvmpipe)
+  GL_ARB_post_depth_coverage                            DONE (i965, nvc0, radeonsi, llvmpipe, zink)
   GL_ARB_robustness_isolation                           not started
   GL_ARB_sample_locations                               DONE (nvc0)
   GL_ARB_seamless_cubemap_per_texture                   DONE (etnaviv/SEAMLESS_CUBE_MAP, freedreno, i965, nvc0, r600, radeonsi, softpipe, swr, virgl)
   GL_ARB_shader_ballot                                  DONE (i965/gen8+, nvc0, radeonsi)
   GL_ARB_shader_clock                                   DONE (i965/gen7+, nv50, nvc0, r600, radeonsi, virgl)
-  GL_ARB_shader_stencil_export                          DONE (i965/gen9+, r600, radeonsi, softpipe, llvmpipe, swr, virgl, panfrost)
+  GL_ARB_shader_stencil_export                          DONE (i965/gen9+, r600, radeonsi, softpipe, llvmpipe, swr, virgl, panfrost, zink)
   GL_ARB_shader_viewport_layer_array                    DONE (i965/gen6+, nvc0, radeonsi)
   GL_ARB_shading_language_include                       DONE
   GL_ARB_sparse_buffer                                  DONE (radeonsi/CIK+)
   GL_ARB_sparse_texture                                 not started
   GL_ARB_sparse_texture2                                not started
   GL_ARB_sparse_texture_clamp                           not started
-  GL_ARB_texture_filter_minmax                          not started
+  GL_ARB_texture_filter_minmax                          DONE (nvc0/gm200+)
   GL_EXT_color_buffer_half_float                        DONE (gallium drivers supporting required formats)
+  GL_EXT_depth_bounds_test                              DONE (i965/gen12+, nv50, nvc0, radeonsi, softpipe, swr, zink)
   GL_EXT_memory_object                                  DONE (radeonsi)
   GL_EXT_memory_object_fd                               DONE (radeonsi)
   GL_EXT_memory_object_win32                            not started
@@ -416,45 +417,45 @@ we DO NOT WANT implementations of these extensions for Mesa.
   GL_ARB_shadow_ambient                                 Superseded by GL_ARB_fragment_program
   GL_ARB_vertex_blend                                   Superseded by GL_ARB_vertex_program
 
-Vulkan 1.0 -- all DONE: anv, radv, v3dv
+Vulkan 1.0 -- all DONE: anv, lvp, radv, tu, v3dv
 
 Vulkan 1.1 -- all DONE: anv, radv
 
-  VK_KHR_16bit_storage                                  DONE (anv/gen8+, radv)
-  VK_KHR_bind_memory2                                   DONE (anv, radv)
-  VK_KHR_dedicated_allocation                           DONE (anv, radv)
-  VK_KHR_descriptor_update_template                     DONE (anv, radv)
-  VK_KHR_device_group                                   not started
-  VK_KHR_device_group_creation                          not started
-  VK_KHR_external_fence                                 DONE (anv, radv)
-  VK_KHR_external_fence_capabilities                    DONE (anv, radv)
-  VK_KHR_external_memory                                DONE (anv, radv, v3dv)
-  VK_KHR_external_memory_capabilities                   DONE (anv, radv, v3dv)
-  VK_KHR_external_semaphore                             DONE (anv, radv)
-  VK_KHR_external_semaphore_capabilities                DONE (anv, radv)
-  VK_KHR_get_memory_requirements2                       DONE (anv, radv)
-  VK_KHR_get_physical_device_properties2                DONE (anv, radv, v3dv)
-  VK_KHR_maintenance1                                   DONE (anv, radv, v3dv)
-  VK_KHR_maintenance2                                   DONE (anv, radv)
-  VK_KHR_maintenance3                                   DONE (anv, radv)
-  VK_KHR_multiview                                      DONE (anv, radv)
-  VK_KHR_relaxed_block_layout                           DONE (anv, radv)
-  VK_KHR_sampler_ycbcr_conversion                       DONE (anv, radv)
-  VK_KHR_shader_draw_parameters                         DONE (anv, radv)
-  VK_KHR_storage_buffer_storage_class                   DONE (anv, radv)
-  VK_KHR_variable_pointers                              DONE (anv, radv)
+  VK_KHR_16bit_storage                                  DONE (anv/gen8+, lvp, radv)
+  VK_KHR_bind_memory2                                   DONE (anv, lvp, radv, tu)
+  VK_KHR_dedicated_allocation                           DONE (anv, lvp, radv, tu)
+  VK_KHR_descriptor_update_template                     DONE (anv, lvp, radv, tu)
+  VK_KHR_device_group                                   DONE (lvp, tu)
+  VK_KHR_device_group_creation                          DONE (lvp, tu)
+  VK_KHR_external_fence                                 DONE (anv, lvp, radv, tu)
+  VK_KHR_external_fence_capabilities                    DONE (anv, lvp, radv, tu)
+  VK_KHR_external_memory                                DONE (anv, lvp, radv, tu, v3dv)
+  VK_KHR_external_memory_capabilities                   DONE (anv, lvp, radv, tu, v3dv)
+  VK_KHR_external_semaphore                             DONE (anv, lvp, radv, tu)
+  VK_KHR_external_semaphore_capabilities                DONE (anv, lvp, radv, tu)
+  VK_KHR_get_memory_requirements2                       DONE (anv, lvp, radv, tu)
+  VK_KHR_get_physical_device_properties2                DONE (anv, lvp, radv, tu, v3dv)
+  VK_KHR_maintenance1                                   DONE (anv, lvp, radv, tu, v3dv)
+  VK_KHR_maintenance2                                   DONE (anv, lvp, radv, tu)
+  VK_KHR_maintenance3                                   DONE (anv, lvp, radv, tu)
+  VK_KHR_multiview                                      DONE (anv, lvp, radv, tu)
+  VK_KHR_relaxed_block_layout                           DONE (anv, lvp, radv)
+  VK_KHR_sampler_ycbcr_conversion                       DONE (anv, radv, tu)
+  VK_KHR_shader_draw_parameters                         DONE (anv, lvp, radv, tu)
+  VK_KHR_storage_buffer_storage_class                   DONE (anv, lvp, radv, tu)
+  VK_KHR_variable_pointers                              DONE (anv, lvp, radv, tu)
 
 Vulkan 1.2 -- all DONE: anv
 
-  VK_KHR_8bit_storage                                   DONE (anv/gen8+, radv)
-  VK_KHR_buffer_device_address                          DONE (anv/gen8+, radv)
-  VK_KHR_create_renderpass2                             DONE (anv, radv)
-  VK_KHR_depth_stencil_resolve                          DONE (anv, radv)
-  VK_KHR_draw_indirect_count                            DONE (anv, radv)
-  VK_KHR_driver_properties                              DONE (anv, radv)
-  VK_KHR_image_format_list                              DONE (anv, radv)
+  VK_KHR_8bit_storage                                   DONE (anv/gen8+, lvp, radv)
+  VK_KHR_buffer_device_address                          DONE (anv/gen8+, lvp, radv)
+  VK_KHR_create_renderpass2                             DONE (anv, lvp, radv, tu)
+  VK_KHR_depth_stencil_resolve                          DONE (anv, radv, tu)
+  VK_KHR_draw_indirect_count                            DONE (anv, lvp, radv, tu)
+  VK_KHR_driver_properties                              DONE (anv, lvp, radv)
+  VK_KHR_image_format_list                              DONE (anv, radv, tu)
   VK_KHR_imageless_framebuffer                          DONE (anv, radv)
-  VK_KHR_sampler_mirror_clamp_to_edge                   DONE (anv, radv)
+  VK_KHR_sampler_mirror_clamp_to_edge                   DONE (anv, lvp, radv, tu)
   VK_KHR_separate_depth_stencil_layouts                 DONE (anv, radv)
   VK_KHR_shader_atomic_int64                            DONE (anv/gen9+, radv)
   VK_KHR_shader_float16_int8                            DONE (anv/gen8+, radv)
@@ -462,48 +463,193 @@ Vulkan 1.2 -- all DONE: anv
   VK_KHR_shader_subgroup_extended_types                 DONE (anv/gen8+, radv)
   VK_KHR_spirv_1_4                                      DONE (anv, radv)
   VK_KHR_timeline_semaphore                             DONE (anv, radv)
-  VK_KHR_uniform_buffer_standard_layout                 DONE (anv, radv)
+  VK_KHR_uniform_buffer_standard_layout                 DONE (anv, lvp, radv)
   VK_KHR_vulkan_memory_model                            DONE (anv, radv)
-  VK_EXT_descriptor_indexing                            DONE (anv/gen9+, radv)
-  VK_EXT_host_query_reset                               DONE (anv, radv)
-  VK_EXT_sampler_filter_minmax                          DONE (anv/gen9+, radv)
-  VK_EXT_scalar_block_layout                            DONE (anv, radv/gfx7+)
+  VK_EXT_descriptor_indexing                            DONE (anv/gen9+, radv, tu)
+  VK_EXT_host_query_reset                               DONE (anv, lvp, radv, tu)
+  VK_EXT_sampler_filter_minmax                          DONE (anv/gen9+, lvp, radv, tu)
+  VK_EXT_scalar_block_layout                            DONE (anv, lvp, radv/gfx7+)
   VK_EXT_separate_stencil_usage                         DONE (anv)
-  VK_EXT_shader_viewport_index_layer                    DONE (anv, radv)
+  VK_EXT_shader_viewport_index_layer                    DONE (anv, lvp, radv, tu)
 
 Khronos extensions that are not part of any Vulkan version:
 
   VK_KHR_android_surface                                not started
-  VK_KHR_copy_commands2                                 DONE (anv, radv)
-  VK_KHR_display                                        DONE (anv, radv, v3dv)
+  VK_KHR_copy_commands2                                 DONE (anv, lvp, radv)
+  VK_KHR_display                                        DONE (anv, lvp, radv, tu, v3dv)
   VK_KHR_display_swapchain                              not started
-  VK_KHR_external_fence_fd                              DONE (anv, radv)
+  VK_KHR_external_fence_fd                              DONE (anv, radv, tu)
   VK_KHR_external_fence_win32                           not started
-  VK_KHR_external_memory_fd                             DONE (anv, radv, v3dv)
+  VK_KHR_external_memory_fd                             DONE (anv, radv, tu, v3dv)
   VK_KHR_external_memory_win32                          not started
-  VK_KHR_external_semaphore_fd                          DONE (anv, radv)
+  VK_KHR_external_semaphore_fd                          DONE (anv, radv, tu)
   VK_KHR_external_semaphore_win32                       not started
   VK_KHR_fragment_shading_rate                          not started
-  VK_KHR_get_display_properties2                        DONE (anv, radv)
-  VK_KHR_get_surface_capabilities2                      DONE (anv, radv)
-  VK_KHR_incremental_present                            DONE (anv, radv)
-  VK_KHR_performance_query                              DONE (anv/gen8+)
-  VK_KHR_pipeline_executable_properties                 DONE (anv, radv)
-  VK_KHR_push_descriptor                                DONE (anv, radv)
-  VK_EXT_sample_locations                               DONE (anv, radv)
+  VK_KHR_get_display_properties2                        DONE (anv, lvp, radv, tu)
+  VK_KHR_get_surface_capabilities2                      DONE (anv, lvp, radv, tu)
+  VK_KHR_incremental_present                            DONE (anv, lvp, radv, tu)
+  VK_KHR_performance_query                              DONE (anv/gen8+, tu)
+  VK_KHR_pipeline_executable_properties                 DONE (anv, radv, tu)
+  VK_KHR_push_descriptor                                DONE (anv, lvp, radv, tu)
+  VK_EXT_sample_locations                               DONE (anv, radv, tu/a650)
   VK_KHR_shader_clock                                   DONE (anv, radv)
   VK_KHR_shader_non_semantic_info                       DONE (anv, radv)
   VK_KHR_shader_terminate_invocation                    DONE (anv, radv)
   VK_KHR_shared_presentable_image                       not started
-  VK_KHR_surface                                        DONE (anv, radv, v3dv)
-  VK_KHR_surface_protected_capabilities                 DONE (anv, radv)
-  VK_KHR_swapchain                                      DONE (anv, radv, v3dv)
+  VK_KHR_surface                                        DONE (anv, lvp, radv, tu, v3dv)
+  VK_KHR_surface_protected_capabilities                 DONE (anv, lvp, radv)
+  VK_KHR_swapchain                                      DONE (anv, lvp, radv, tu, v3dv)
   VK_KHR_swapchain_mutable_format                       DONE (anv, radv)
-  VK_KHR_wayland_surface                                DONE (anv, radv, v3dv)
+  VK_KHR_wayland_surface                                DONE (anv, lvp, radv, tu, v3dv)
   VK_KHR_win32_keyed_mutex                              not started
-  VK_KHR_win32_surface                                  not started
-  VK_KHR_xcb_surface                                    DONE (anv, radv, v3dv)
-  VK_KHR_xlib_surface                                   DONE (anv, radv, v3dv)
+  VK_KHR_win32_surface                                  DONE (lvp)
+  VK_KHR_xcb_surface                                    DONE (anv, lvp, radv, tu, v3dv)
+  VK_KHR_xlib_surface                                   DONE (anv, lvp, radv, tu, v3dv)
+
+
+OpenCL 1.0 -- all DONE:
+
+  Image support                                         in progress
+
+
+OpenCL 1.1 -- all DONE:
+
+  Additional queries for clGetDeviceInfo                DONE (nvc0, r600, radeonsi)
+  CL_CONTEXT_NUM_DEVICES for clGetContextInfo           DONE
+  Optional image formats                                not started
+  clCreateSubBuffer                                     DONE
+  Read from, write to, copy rectangular regions         DONE
+  clSetMemObjectDestructorCallback                      DONE
+  Control OpenCL C version when building                DONE
+  Query for preferred work-group size multiple          DONE (nvc0, r600, radeonsi)
+  Support user events                                   DONE
+  clSetEventCallback                                    DONE
+  Minimum requirement changes for clGetDeviceInfo       DONE (nvc0, r600, radeonsi)
+  Arg prerequisite change for clEnqueueNDRangeKernel    DONE ()
+  3-component vector data types                         DONE (nvc0, r600, radeonsi)
+  cl_khr_byte_addressable_store                         DONE (nvc0, r600, radeonsi)
+  cl_khr_global_int32_base_atomics                      DONE (nvc0, r600, radeonsi)
+  cl_khr_global_int32_extended_atomics                  DONE (nvc0, r600, radeonsi)
+  cl_khr_local_int32_base_atomics                       DONE (nvc0, r600, radeonsi)
+  cl_khr_local_int32_extended_atomics                   DONE (nvc0, r600, radeonsi)
+
+
+OpenCL 1.2 -- all DONE:
+
+  Custom devices                                        DONE
+  Built-in kernels                                      DONE ()
+  Device partitioning                                   DONE ()
+  Separate compilation and linking of programs          DONE
+  Extend cl_mem_flags                                   DONE
+  clEnqueueFillBuffer, clEnqueueFillImage               DONE
+  Add CL_MAP_WRITE_INVALIDATE_REGION to cl_map_flags    DONE
+  New image types                                       not started
+  clCreateImage                                         DONE
+  clEnqueueMigrateMemObjects                            DONE
+  Retrieve kernels information from a program           DONE
+  clGetKernelArgInfo                                    DONE
+  clEnqueueMarkerWithWaitList                           DONE
+  clEnqueueBarrierWithWaitList                          DONE
+  clUnloadPlatformCompiler                              DONE
+  cl_khr_fp64                                           DONE (nvc0, r600, radeonsi)
+  printf                                                DONE (nvc0)
+  CL_KERNEL_ATTRIBUTES for clGetKernelInfo              DONE
+
+
+OpenCL 2.0 -- all DONE:
+
+  Shared virtual memory                                 DONE (nvc0)
+  Device queues                                         not started
+  - cl_khr_create_command_queue                         not started
+  - Additional queries for clGetDeviceInfo              not started
+  Pipes                                                 not started
+  Extended 2D images creation                           not started
+  - cl_khr_image2d_from_buffer                          not started
+  - cl_khr_depth_images                                 not started
+  - from sRGB images                                    not started
+  clCreateSamplerWithProperties                         not started
+  cl_khr_3d_image_writes                                not started
+
+
+OpenCL 2.1 -- all DONE:
+
+  Sub groups                                            not started
+  - cl_khr_subgroups                                    not started
+  - Additional queries for clGetDeviceInfo              not started
+  cl_khr_il_program                                     DONE (nvc0)
+  Device and host timer synchronization                 not started
+  clEnqueueSVMMigrateMem                                not started
+  clCloneKernel                                         not started
+  Default device command queue                          not started
+
+
+OpenCL 2.2 -- all DONE:
+
+  clSetProgramSpecializationConstant                    not started
+  clSetProgramReleaseCallback                           not started
+  Initialization and clean-up kernels                   not started
+  CL_MAX_SIZE_RESTRICTION_EXCEEDED for clSetKernelArg   not started
+  Support SPIR-V 1.1 and 1.2                            not started
+
+
+OpenCL 3.0 -- all DONE
+
+  Optional device capabilities queries                  in progress
+  cl_khr_extended_versioning                            DONE
+  clSetContextDestructorCallback                        DONE
+  clCreateBufferWithProperties                          DONE
+  clCreateImageWithProperties                           DONE
+  Query properties arrays                               in progress
+  Supported OpenCL C versions and features queries      DONE
+  CL_COMMAND_SVM_MIGRATE_MEM for clGetEventInfo         not started
+  Latest conformance version passed for devices         not started
+
+
+Khronos, and EXT extensions that are not part of any OpenCL version:
+
+  cl_ext_atomic_counters_32                             not started
+  cl_ext_atomic_counters_64                             not started
+  cl_ext_device_fission                                 not started
+  cl_ext_migrate_memobject                              not started
+  cl_khr_async_work_group_copy_fence                    not started
+  cl_khr_d3d10_sharing                                  not started
+  cl_khr_d3d11_sharing                                  not started
+  cl_khr_device_enqueue_local_arg_types                 not started
+  cl_khr_dx9_media_sharing                              not started
+  cl_khr_egl_event                                      not started
+  cl_khr_egl_image                                      not started
+  cl_khr_extended_async_copies                          not started
+  cl_khr_fp16                                           DONE ()
+  cl_khr_gl_depth_images                                not started
+  cl_khr_gl_event                                       not started
+  cl_khr_gl_msaa_sharing                                not started
+  cl_khr_gl_sharing                                     not started
+  cl_khr_icd                                            DONE
+  cl_khr_initialize_memory                              not started
+  cl_khr_int64_base_atomics                             DONE ()
+  cl_khr_int64_extended_atomics                         DONE ()
+  cl_khr_mipmap_image                                   not started
+  cl_khr_mipmap_image_writes                            not started
+  cl_khr_priority_hints                                 not started
+  cl_khr_select_fprounding_mode                         not started
+  cl_khr_spir                                           not started
+  cl_khr_srgb_image_writes                              not started
+  cl_khr_subgroup_named_barrier                         not started
+  cl_khr_subgroups                                      not started
+  cl_khr_terminate_context                              not started
+  cl_khr_throttle_hints                                 not started
+
+
+Vendor specific extensions that are not part of any OpenCL version:
+
+  cl_arm_shared_virtual_memory                          DONE (nvc0)
+
+
+The following extensions are not part of any OpenCL version, and we DO NOT WANT
+implementations of these extensions for Mesa.
+
+  cl_nv_d3d10_sharing                                   Superseded by cl_khr_d3d10_sharing
+  cl_nv_d3d11_sharing                                   Superseded by cl_khr_d3d10_sharing
 
 
 A graphical representation of this information can be found at

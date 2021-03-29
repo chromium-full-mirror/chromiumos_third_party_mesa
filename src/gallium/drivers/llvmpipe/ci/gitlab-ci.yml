@@ -16,7 +16,7 @@ llvmpipe-piglit-cl:
     LP_NUM_THREADS: 1
     PIGLIT_PROFILES: cl
     PIGLIT_RESULTS: "llvmpipe-cl"
-    PIGLIT_OPTIONS: >
+    PIGLIT_TESTS: >
       -x bswap -x phatk -x clz-optimizations
   script:
     - install/piglit/run_cl.sh
@@ -31,6 +31,10 @@ llvmpipe-piglit-quick_gl:
     LP_NUM_THREADS: 0
     PIGLIT_OPTIONS: >
       --process-isolation false
+    # Can't run gl-2.0-edgeflag* because of assertion failures on loading from
+    # disk cache which flake depending on which one runs first
+    PIGLIT_TESTS: >
+      -x gl-2.0-edgeflag
       -x egl_ext_device_
       -x egl_ext_platform_device
       -x ext_timer_query@time-elapsed
@@ -86,14 +90,3 @@ llvmpipe-gles2:
     - .test-gl
     - .deqp-test
     - .llvmpipe-test
-
-lavapipe-vk:
-  stage: software-renderer
-  extends:
-    - .test-vk
-    - .llvmpipe-rules
-    - .deqp-test-vk
-  variables:
-    GPU_VERSION: lvp
-    VK_DRIVER: lvp
-    DEQP_FRACTION: 10

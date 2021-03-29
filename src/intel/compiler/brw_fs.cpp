@@ -682,7 +682,7 @@ fs_visitor::vfail(const char *format, va_list va)
 
    this->fail_msg = msg;
 
-   if (debug_enabled) {
+   if (unlikely(debug_enabled)) {
       fprintf(stderr, "%s",  msg);
    }
 }
@@ -859,6 +859,7 @@ fs_inst::components_read(unsigned i) const
       return i == 1 ? src[2].ud : 1;
 
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT16_LOGICAL:
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL:
       assert(src[2].file == IMM);
       if (i == 1) {
@@ -878,7 +879,8 @@ fs_inst::components_read(unsigned i) const
          return 1;
       }
 
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
       assert(src[2].file == IMM);
       if (i == 1) {
          /* Data source */
@@ -1621,8 +1623,7 @@ fs_visitor::assign_curb_setup()
 
    uint64_t used = 0;
 
-   if (stage == MESA_SHADER_COMPUTE &&
-       (devinfo->gen > 12 || gen_device_info_is_12hp(devinfo))) {
+   if (stage == MESA_SHADER_COMPUTE && devinfo->genx10 >= 125) {
       fs_builder ubld = bld.exec_all().group(8, 0).at(
          cfg->first_block(), cfg->first_block()->start());
 
@@ -1632,7 +1633,7 @@ fs_visitor::assign_curb_setup()
       fs_reg base_addr = ubld.vgrf(BRW_REGISTER_TYPE_UD);
       ubld.group(1, 0).AND(base_addr,
                            retype(brw_vec1_grf(0, 0), BRW_REGISTER_TYPE_UD),
-                           brw_imm_ud(0xffffffc0));
+                           brw_imm_ud(INTEL_MASK(31, 6)));
 
       fs_reg header0 = ubld.vgrf(BRW_REGISTER_TYPE_UD);
       ubld.MOV(header0, brw_imm_ud(0));
@@ -2269,7 +2270,7 @@ get_subgroup_id_param_index(const gen_device_info *devinfo,
    if (prog_data->nr_params == 0)
       return -1;
 
-   if (devinfo->gen > 12 || gen_device_info_is_12hp(devinfo))
+   if (devinfo->genx10 >= 125)
       return -1;
 
    /* The local thread id is always the last parameter in the list */
@@ -5970,15 +5971,28 @@ lower_a64_logical_send(const fs_builder &bld, fs_inst *inst)
                                             !inst->dst.is_null());
       break;
 
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT16_LOGICAL:
+      desc = brw_dp_a64_untyped_atomic_desc(devinfo, inst->exec_size, 16,
+                                            arg,   /* atomic_op */
+                                            !inst->dst.is_null());
+      break;
+
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL:
       desc = brw_dp_a64_untyped_atomic_desc(devinfo, inst->exec_size, 64,
                                             arg,   /* atomic_op */
                                             !inst->dst.is_null());
       break;
 
-
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL:
       desc = brw_dp_a64_untyped_atomic_float_desc(devinfo, inst->exec_size,
+                                                  16, /* bit_size */
+                                                  arg,   /* atomic_op */
+                                                  !inst->dst.is_null());
+      break;
+
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
+      desc = brw_dp_a64_untyped_atomic_float_desc(devinfo, inst->exec_size,
+                                                  32, /* bit_size */
                                                   arg,   /* atomic_op */
                                                   !inst->dst.is_null());
       break;
@@ -6355,8 +6369,10 @@ fs_visitor::lower_logical_sends()
       case SHADER_OPCODE_A64_BYTE_SCATTERED_WRITE_LOGICAL:
       case SHADER_OPCODE_A64_BYTE_SCATTERED_READ_LOGICAL:
       case SHADER_OPCODE_A64_UNTYPED_ATOMIC_LOGICAL:
+      case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT16_LOGICAL:
       case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL:
-      case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT_LOGICAL:
+      case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL:
+      case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
          lower_a64_logical_send(ibld, inst);
          break;
 
@@ -6969,8 +6985,10 @@ get_lowered_simd_width(const struct gen_device_info *devinfo,
       return inst->exec_size;
 
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT16_LOGICAL:
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL:
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
       return 8;
 
    case SHADER_OPCODE_URB_READ_SIMD8:
@@ -8954,7 +8972,7 @@ brw_nir_demote_sample_qualifiers(nir_shader *nir)
                nir_load_barycentric(&b, nir_intrinsic_load_barycentric_centroid,
                                     nir_intrinsic_interp_mode(intrin));
             nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                     nir_src_for_ssa(centroid));
+                                     centroid);
             nir_instr_remove(instr);
             progress = true;
          }
@@ -9037,17 +9055,17 @@ brw_register_blocks(int reg_count)
 }
 
 const unsigned *
-brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
+brw_compile_fs(const struct brw_compiler *compiler,
                void *mem_ctx,
-               const struct brw_wm_prog_key *key,
-               struct brw_wm_prog_data *prog_data,
-               nir_shader *nir,
-               int shader_time_index8, int shader_time_index16,
-               int shader_time_index32, bool allow_spilling,
-               bool use_rep_send, struct brw_vue_map *vue_map,
-               struct brw_compile_stats *stats,
-               char **error_str)
+               struct brw_compile_fs_params *params)
 {
+   struct nir_shader *nir = params->nir;
+   const struct brw_wm_prog_key *key = params->key;
+   struct brw_wm_prog_data *prog_data = params->prog_data;
+   bool allow_spilling = params->allow_spilling;
+   const bool debug_enabled =
+      INTEL_DEBUG & (params->debug_flag ? params->debug_flag : DEBUG_WM);
+
    prog_data->base.stage = MESA_SHADER_FRAGMENT;
 
    const struct gen_device_info *devinfo = compiler->devinfo;
@@ -9058,7 +9076,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
    brw_nir_lower_fs_outputs(nir);
 
    if (devinfo->gen < 6)
-      brw_setup_vue_interpolation(vue_map, nir, prog_data);
+      brw_setup_vue_interpolation(params->vue_map, nir, prog_data);
 
    /* From the SKL PRM, Volume 7, "Alpha Coverage":
     *  "If Pixel Shader outputs oMask, AlphaToCoverage is disabled in
@@ -9076,7 +9094,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
    if (!key->multisample_fbo)
       NIR_PASS_V(nir, brw_nir_demote_sample_qualifiers);
    NIR_PASS_V(nir, brw_nir_move_interpolation_to_top);
-   brw_postprocess_nir(nir, compiler, true);
+   brw_postprocess_nir(nir, compiler, true, debug_enabled);
 
    brw_nir_populate_wm_prog_data(nir, compiler->devinfo, key, prog_data);
 
@@ -9085,12 +9103,12 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
    float throughput = 0;
    bool has_spilled = false;
 
-   v8 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
-                       &prog_data->base, nir, 8, shader_time_index8);
+   v8 = new fs_visitor(compiler, params->log_data, mem_ctx, &key->base,
+                       &prog_data->base, nir, 8,
+                       params->shader_time ? params->shader_time_index8 : -1,
+                       debug_enabled);
    if (!v8->run_fs(allow_spilling, false /* do_rep_send */)) {
-      if (error_str)
-         *error_str = ralloc_strdup(mem_ctx, v8->fail_msg);
-
+      params->error_str = ralloc_strdup(mem_ctx, v8->fail_msg);
       delete v8;
       return NULL;
    } else if (!(INTEL_DEBUG & DEBUG_NO8)) {
@@ -9108,20 +9126,22 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
     */
    if (devinfo->gen == 8 && prog_data->dual_src_blend &&
        !(INTEL_DEBUG & DEBUG_NO8)) {
-      assert(!use_rep_send);
+      assert(!params->use_rep_send);
       v8->limit_dispatch_width(8, "gen8 workaround: "
                                "using SIMD8 when dual src blending.\n");
    }
 
    if (!has_spilled &&
        v8->max_dispatch_width >= 16 &&
-       (!(INTEL_DEBUG & DEBUG_NO16) || use_rep_send)) {
+       (!(INTEL_DEBUG & DEBUG_NO16) || params->use_rep_send)) {
       /* Try a SIMD16 compile */
-      v16 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
-                           &prog_data->base, nir, 16, shader_time_index16);
+      v16 = new fs_visitor(compiler, params->log_data, mem_ctx, &key->base,
+                           &prog_data->base, nir, 16,
+                           params->shader_time ? params->shader_time_index16 : -1,
+                           debug_enabled);
       v16->import_uniforms(v8);
-      if (!v16->run_fs(allow_spilling, use_rep_send)) {
-         compiler->shader_perf_log(log_data,
+      if (!v16->run_fs(allow_spilling, params->use_rep_send)) {
+         compiler->shader_perf_log(params->log_data,
                                    "SIMD16 shader failed to compile: %s",
                                    v16->fail_msg);
       } else {
@@ -9139,22 +9159,24 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
 
    /* Currently, the compiler only supports SIMD32 on SNB+ */
    if (!has_spilled &&
-       v8->max_dispatch_width >= 32 && !use_rep_send &&
+       v8->max_dispatch_width >= 32 && !params->use_rep_send &&
        devinfo->gen >= 6 && !simd16_failed &&
        !(INTEL_DEBUG & DEBUG_NO32)) {
       /* Try a SIMD32 compile */
-      v32 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
-                           &prog_data->base, nir, 32, shader_time_index32);
+      v32 = new fs_visitor(compiler, params->log_data, mem_ctx, &key->base,
+                           &prog_data->base, nir, 32,
+                           params->shader_time ? params->shader_time_index32 : -1,
+                           debug_enabled);
       v32->import_uniforms(v8);
       if (!v32->run_fs(allow_spilling, false)) {
-         compiler->shader_perf_log(log_data,
+         compiler->shader_perf_log(params->log_data,
                                    "SIMD32 shader failed to compile: %s",
                                    v32->fail_msg);
       } else {
          const performance &perf = v32->performance_analysis.require();
 
          if (!(INTEL_DEBUG & DEBUG_DO32) && throughput >= perf.throughput) {
-            compiler->shader_perf_log(log_data, "SIMD32 shader inefficient\n");
+            compiler->shader_perf_log(params->log_data, "SIMD32 shader inefficient\n");
          } else {
             simd32_cfg = v32->cfg;
             prog_data->dispatch_grf_start_reg_32 = v32->payload.num_regs;
@@ -9165,7 +9187,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
    }
 
    /* When the caller requests a repclear shader, they want SIMD16-only */
-   if (use_rep_send)
+   if (params->use_rep_send)
       simd8_cfg = NULL;
 
    /* Prior to Iron Lake, the PS had a single shader offset with a jump table
@@ -9218,15 +9240,17 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
          simd16_cfg = NULL;
    }
 
-   fs_generator g(compiler, log_data, mem_ctx, &prog_data->base,
+   fs_generator g(compiler, params->log_data, mem_ctx, &prog_data->base,
                   v8->runtime_check_aads_emit, MESA_SHADER_FRAGMENT);
 
-   if (INTEL_DEBUG & DEBUG_WM) {
+   if (unlikely(debug_enabled)) {
       g.enable_debug(ralloc_asprintf(mem_ctx, "%s fragment shader %s",
                                      nir->info.label ?
                                         nir->info.label : "unnamed",
                                      nir->info.name));
    }
+
+   struct brw_compile_stats *stats = params->stats;
 
    if (simd8_cfg) {
       prog_data->dispatch_8 = true;
@@ -9388,7 +9412,8 @@ compile_cs_to_nir(const struct brw_compiler *compiler,
                   void *mem_ctx,
                   const struct brw_cs_prog_key *key,
                   const nir_shader *src_shader,
-                  unsigned dispatch_width)
+                  unsigned dispatch_width,
+                  bool debug_enabled)
 {
    nir_shader *shader = nir_shader_clone(mem_ctx, src_shader);
    brw_nir_apply_key(shader, compiler, &key->base, dispatch_width, true);
@@ -9399,21 +9424,23 @@ compile_cs_to_nir(const struct brw_compiler *compiler,
    NIR_PASS_V(shader, nir_opt_constant_folding);
    NIR_PASS_V(shader, nir_opt_dce);
 
-   brw_postprocess_nir(shader, compiler, true);
+   brw_postprocess_nir(shader, compiler, true, debug_enabled);
 
    return shader;
 }
 
 const unsigned *
-brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
+brw_compile_cs(const struct brw_compiler *compiler,
                void *mem_ctx,
-               const struct brw_cs_prog_key *key,
-               struct brw_cs_prog_data *prog_data,
-               const nir_shader *nir,
-               int shader_time_index,
-               struct brw_compile_stats *stats,
-               char **error_str)
+               struct brw_compile_cs_params *params)
 {
+   const nir_shader *nir = params->nir;
+   const struct brw_cs_prog_key *key = params->key;
+   struct brw_cs_prog_data *prog_data = params->prog_data;
+   int shader_time_index = params->shader_time ? params->shader_time_index : -1;
+
+   const bool debug_enabled = INTEL_DEBUG & DEBUG_CS;
+
    prog_data->base.stage = MESA_SHADER_COMPUTE;
    prog_data->base.total_shared = nir->info.cs.shared_size;
 
@@ -9455,10 +9482,8 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
              required_dispatch_width == 32);
       if (required_dispatch_width < min_dispatch_width ||
           required_dispatch_width > max_dispatch_width) {
-         if (error_str) {
-            *error_str = ralloc_strdup(mem_ctx,
-                                       "Cannot satisfy explicit subgroup size");
-         }
+         params->error_str = ralloc_strdup(mem_ctx,
+                                           "Cannot satisfy explicit subgroup size");
          return NULL;
       }
       min_dispatch_width = max_dispatch_width = required_dispatch_width;
@@ -9472,13 +9497,12 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
    if (!(INTEL_DEBUG & DEBUG_NO8) &&
        min_dispatch_width <= 8 && max_dispatch_width >= 8) {
       nir_shader *nir8 = compile_cs_to_nir(compiler, mem_ctx, key,
-                                           nir, 8);
-      v8 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
+                                           nir, 8, debug_enabled);
+      v8 = new fs_visitor(compiler, params->log_data, mem_ctx, &key->base,
                           &prog_data->base,
-                          nir8, 8, shader_time_index);
+                          nir8, 8, shader_time_index, debug_enabled);
       if (!v8->run_cs(true /* allow_spilling */)) {
-         if (error_str)
-            *error_str = ralloc_strdup(mem_ctx, v8->fail_msg);
+         params->error_str = ralloc_strdup(mem_ctx, v8->fail_msg);
          delete v8;
          return NULL;
       }
@@ -9498,25 +9522,23 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
        min_dispatch_width <= 16 && max_dispatch_width >= 16) {
       /* Try a SIMD16 compile */
       nir_shader *nir16 = compile_cs_to_nir(compiler, mem_ctx, key,
-                                            nir, 16);
-      v16 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
+                                            nir, 16, debug_enabled);
+      v16 = new fs_visitor(compiler, params->log_data, mem_ctx, &key->base,
                            &prog_data->base,
-                           nir16, 16, shader_time_index);
+                           nir16, 16, shader_time_index, debug_enabled);
       if (v8)
          v16->import_uniforms(v8);
 
       const bool allow_spilling = generate_all || v == NULL;
       if (!v16->run_cs(allow_spilling)) {
-         compiler->shader_perf_log(log_data,
+         compiler->shader_perf_log(params->log_data,
                                    "SIMD16 shader failed to compile: %s",
                                    v16->fail_msg);
          if (!v) {
             assert(v8 == NULL);
-            if (error_str) {
-               *error_str = ralloc_asprintf(
-                  mem_ctx, "Not enough threads for SIMD8 and "
-                  "couldn't generate SIMD16: %s", v16->fail_msg);
-            }
+            params->error_str = ralloc_asprintf(
+               mem_ctx, "Not enough threads for SIMD8 and "
+               "couldn't generate SIMD16: %s", v16->fail_msg);
             delete v16;
             return NULL;
          }
@@ -9546,10 +9568,10 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
        min_dispatch_width <= 32 && max_dispatch_width >= 32) {
       /* Try a SIMD32 compile */
       nir_shader *nir32 = compile_cs_to_nir(compiler, mem_ctx, key,
-                                            nir, 32);
-      v32 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
+                                            nir, 32, debug_enabled);
+      v32 = new fs_visitor(compiler, params->log_data, mem_ctx, &key->base,
                            &prog_data->base,
-                           nir32, 32, shader_time_index);
+                           nir32, 32, shader_time_index, debug_enabled);
       if (v8)
          v32->import_uniforms(v8);
       else if (v16)
@@ -9557,17 +9579,15 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
 
       const bool allow_spilling = generate_all || v == NULL;
       if (!v32->run_cs(allow_spilling)) {
-         compiler->shader_perf_log(log_data,
+         compiler->shader_perf_log(params->log_data,
                                    "SIMD32 shader failed to compile: %s",
                                    v32->fail_msg);
          if (!v) {
             assert(v8 == NULL);
             assert(v16 == NULL);
-            if (error_str) {
-               *error_str = ralloc_asprintf(
-                  mem_ctx, "Not enough threads for SIMD16 and "
-                  "couldn't generate SIMD32: %s", v32->fail_msg);
-            }
+            params->error_str = ralloc_asprintf(
+               mem_ctx, "Not enough threads for SIMD16 and "
+               "couldn't generate SIMD32: %s", v32->fail_msg);
             delete v32;
             return NULL;
          }
@@ -9581,11 +9601,9 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
    }
 
    if (unlikely(!v) && (INTEL_DEBUG & (DEBUG_NO8 | DEBUG_NO16 | DEBUG_NO32))) {
-      if (error_str) {
-         *error_str =
-            ralloc_strdup(mem_ctx,
-                          "Cannot satisfy INTEL_DEBUG flags SIMD restrictions");
-      }
+      params->error_str =
+         ralloc_strdup(mem_ctx,
+                       "Cannot satisfy INTEL_DEBUG flags SIMD restrictions");
       return NULL;
    }
 
@@ -9593,9 +9611,9 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
 
    const unsigned *ret = NULL;
 
-   fs_generator g(compiler, log_data, mem_ctx, &prog_data->base,
+   fs_generator g(compiler, params->log_data, mem_ctx, &prog_data->base,
                   v->runtime_check_aads_emit, MESA_SHADER_COMPUTE);
-   if (INTEL_DEBUG & DEBUG_CS) {
+   if (unlikely(debug_enabled)) {
       char *name = ralloc_asprintf(mem_ctx, "%s compute shader %s",
                                    nir->info.label ?
                                    nir->info.label : "unnamed",
@@ -9603,6 +9621,7 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
       g.enable_debug(name);
    }
 
+   struct brw_compile_stats *stats = params->stats;
    if (generate_all) {
       if (prog_data->prog_mask & (1 << 0)) {
          assert(v8);
@@ -9691,12 +9710,14 @@ brw_compile_bs(const struct brw_compiler *compiler, void *log_data,
                struct brw_compile_stats *stats,
                char **error_str)
 {
+   const bool debug_enabled = INTEL_DEBUG & DEBUG_RT;
+
    prog_data->base.stage = shader->info.stage;
    prog_data->stack_size = shader->scratch_size;
 
    const unsigned max_dispatch_width = 16;
    brw_nir_apply_key(shader, compiler, &key->base, max_dispatch_width, true);
-   brw_postprocess_nir(shader, compiler, true);
+   brw_postprocess_nir(shader, compiler, true, debug_enabled);
 
    fs_visitor *v = NULL, *v8 = NULL, *v16 = NULL;
    bool has_spilled = false;
@@ -9704,7 +9725,7 @@ brw_compile_bs(const struct brw_compiler *compiler, void *log_data,
    if (likely(!(INTEL_DEBUG & DEBUG_NO8))) {
       v8 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
                           &prog_data->base, shader,
-                          8, -1 /* shader time */);
+                          8, -1 /* shader time */, debug_enabled);
       const bool allow_spilling = true;
       if (!v8->run_bs(allow_spilling)) {
          if (error_str)
@@ -9722,7 +9743,7 @@ brw_compile_bs(const struct brw_compiler *compiler, void *log_data,
    if (!has_spilled && likely(!(INTEL_DEBUG & DEBUG_NO16))) {
       v16 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
                            &prog_data->base, shader,
-                           16, -1 /* shader time */);
+                           16, -1 /* shader time */, debug_enabled);
       const bool allow_spilling = (v == NULL);
       if (!v16->run_bs(allow_spilling)) {
          compiler->shader_perf_log(log_data,
@@ -9759,7 +9780,7 @@ brw_compile_bs(const struct brw_compiler *compiler, void *log_data,
 
    fs_generator g(compiler, log_data, mem_ctx, &prog_data->base,
                   v->runtime_check_aads_emit, shader->info.stage);
-   if (INTEL_DEBUG & DEBUG_RT) {
+   if (unlikely(debug_enabled)) {
       char *name = ralloc_asprintf(mem_ctx, "%s %s shader %s",
                                    shader->info.label ?
                                       shader->info.label : "unnamed",

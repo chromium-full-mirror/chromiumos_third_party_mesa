@@ -688,7 +688,7 @@ panfrost_batch_get_bifrost_tiler(struct panfrost_batch *batch, unsigned vertex_c
 
         struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
         struct panfrost_ptr t =
-                panfrost_pool_alloc_aligned(&batch->pool, MALI_BIFROST_TILER_HEAP_LENGTH, 64);
+                panfrost_pool_alloc_desc(&batch->pool, BIFROST_TILER_HEAP);
 
         pan_pack(t.cpu, BIFROST_TILER_HEAP, heap) {
                 heap.size = dev->tiler_heap->size;
@@ -699,7 +699,7 @@ panfrost_batch_get_bifrost_tiler(struct panfrost_batch *batch, unsigned vertex_c
 
         mali_ptr heap = t.gpu;
 
-        t = panfrost_pool_alloc_aligned(&batch->pool, MALI_BIFROST_TILER_LENGTH, 64);
+        t = panfrost_pool_alloc_desc(&batch->pool, BIFROST_TILER);
         pan_pack(t.cpu, BIFROST_TILER, tiler) {
                 tiler.hierarchy_mask = 0x28;
                 tiler.fb_width = batch->key.width;
@@ -747,17 +747,21 @@ panfrost_batch_reserve_framebuffer(struct panfrost_batch *batch)
          * full framebuffer descriptor on Midgard) */
 
         if (!batch->framebuffer.gpu) {
-                unsigned size = pan_is_bifrost(dev) ?
-                        MALI_LOCAL_STORAGE_LENGTH :
-                        (dev->quirks & MIDGARD_SFBD) ?
-                        MALI_SINGLE_TARGET_FRAMEBUFFER_LENGTH :
-                        MALI_MULTI_TARGET_FRAMEBUFFER_LENGTH;
-
-                batch->framebuffer = panfrost_pool_alloc_aligned(&batch->pool, size, 64);
-
-                /* Tag the pointer */
-                if (!pan_is_bifrost(dev) && !(dev->quirks & MIDGARD_SFBD))
+                if (pan_is_bifrost(dev)) {
+                        batch->framebuffer =
+                                panfrost_pool_alloc_desc(&batch->pool,
+                                                         LOCAL_STORAGE);
+                } else if (dev->quirks & MIDGARD_SFBD) {
+                        batch->framebuffer =
+                                panfrost_pool_alloc_desc(&batch->pool,
+                                                         SINGLE_TARGET_FRAMEBUFFER);
+                } else {
+                        batch->framebuffer =
+                                panfrost_pool_alloc_desc(&batch->pool,
+                                                         MULTI_TARGET_FRAMEBUFFER);
+                        /* Tag the pointer */
                         batch->framebuffer.gpu |= MALI_FBD_TAG_IS_MFBD;
+                }
         }
 
         return batch->framebuffer.gpu;
@@ -836,23 +840,45 @@ panfrost_load_surface(struct panfrost_batch *batch, struct pipe_surface *surf, u
 
         if (loc >= FRAG_RESULT_DATA0 &&
             !panfrost_blend_format(format).internal) {
-                struct panfrost_blend_shader *b =
-                        panfrost_get_blend_shader(batch->ctx, batch->ctx->blit_blend,
-                                                  format,
-                                                  rsrc->base.nr_samples,
-                                                  loc - FRAG_RESULT_DATA0,
-                                                  NULL);
+                struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
+                struct panfrost_bo *bo =
+                        panfrost_batch_create_bo(batch, 4096,
+                                                 PAN_BO_EXECUTE,
+                                                 PAN_BO_ACCESS_PRIVATE |
+                                                 PAN_BO_ACCESS_READ |
+                                                 PAN_BO_ACCESS_FRAGMENT);
+                unsigned rt = loc - FRAG_RESULT_DATA0;
+                struct pan_blend_state blend_state = {
+                        .rt_count = rt + 1,
+                };
 
-                struct panfrost_bo *bo = panfrost_batch_create_bo(batch, b->size,
-                   PAN_BO_EXECUTE,
-                   PAN_BO_ACCESS_PRIVATE |
-                   PAN_BO_ACCESS_READ |
-                   PAN_BO_ACCESS_FRAGMENT);
+                blend_state.rts[rt] = (struct pan_blend_rt_state) {
+                        .format = format,
+                        .nr_samples = rsrc->base.nr_samples,
+                        .equation = {
+                                .blend_enable = true,
+                                .rgb_src_factor = BLEND_FACTOR_ZERO,
+                                .rgb_invert_src_factor = true,
+                                .rgb_dst_factor = BLEND_FACTOR_ZERO,
+                                .rgb_func = BLEND_FUNC_ADD,
+                                .alpha_src_factor = BLEND_FACTOR_ZERO,
+                                .alpha_invert_src_factor = true,
+                                .alpha_dst_factor = BLEND_FACTOR_ZERO,
+                                .alpha_func = BLEND_FUNC_ADD,
+                                .color_mask = 0xf,
+                        },
+                };
 
-                memcpy(bo->ptr.cpu, b->buffer, b->size);
-                assert(b->work_count <= 4);
+                pthread_mutex_lock(&dev->blend_shaders.lock);
+                struct pan_blend_shader_variant *b =
+                        pan_blend_get_shader_locked(dev, &blend_state,
+                                                    loc - FRAG_RESULT_DATA0);
+
+                assert(b->work_reg_count <= 4);
+                memcpy(bo->ptr.cpu, b->binary.data, b->binary.size);
 
                 blend_shader = bo->ptr.gpu | b->first_tag;
+                pthread_mutex_unlock(&dev->blend_shaders.lock);
         }
 
         struct panfrost_ptr transfer = panfrost_pool_alloc_aligned(&batch->pool,

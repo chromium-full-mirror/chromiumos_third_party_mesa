@@ -178,6 +178,7 @@ vbo_exec_copy_to_current(struct vbo_exec_context *exec)
    struct gl_context *ctx = gl_context_from_vbo_exec(exec);
    struct vbo_context *vbo = vbo_context(ctx);
    GLbitfield64 enabled = exec->vtx.enabled & (~BITFIELD64_BIT(VBO_ATTRIB_POS));
+   bool color0_changed = false;
 
    while (enabled) {
       const int i = u_bit_scan64(&enabled);
@@ -187,11 +188,7 @@ vbo_exec_copy_to_current(struct vbo_exec_context *exec)
        */
       GLfloat *current = (GLfloat *)vbo->current[i].Ptr;
       fi_type tmp[8]; /* space for doubles */
-      int dmul = 1;
-
-      if (exec->vtx.attr[i].type == GL_DOUBLE ||
-          exec->vtx.attr[i].type == GL_UNSIGNED_INT64_ARB)
-         dmul = 2;
+      int dmul_shift = 0;
 
       assert(exec->vtx.attr[i].size);
 
@@ -199,6 +196,7 @@ vbo_exec_copy_to_current(struct vbo_exec_context *exec)
           exec->vtx.attr[i].type == GL_UNSIGNED_INT64_ARB) {
          memset(tmp, 0, sizeof(tmp));
          memcpy(tmp, exec->vtx.attrptr[i], exec->vtx.attr[i].size * sizeof(GLfloat));
+         dmul_shift = 1;
       } else {
          COPY_CLEAN_4V_TYPE_AS_UNION(tmp,
                                      exec->vtx.attr[i].size,
@@ -206,38 +204,41 @@ vbo_exec_copy_to_current(struct vbo_exec_context *exec)
                                      exec->vtx.attr[i].type);
       }
 
-      if (exec->vtx.attr[i].type != vbo->current[i].Format.Type ||
-          memcmp(current, tmp, 4 * sizeof(GLfloat) * dmul) != 0) {
-         memcpy(current, tmp, 4 * sizeof(GLfloat) * dmul);
+      if (memcmp(current, tmp, 4 * sizeof(GLfloat) << dmul_shift) != 0) {
+         memcpy(current, tmp, 4 * sizeof(GLfloat) << dmul_shift);
 
-         /* Given that we explicitly state size here, there is no need
-          * for the COPY_CLEAN above, could just copy 16 bytes and be
-          * done.  The only problem is when Mesa accesses ctx->Current
-          * directly.
-          */
-         /* Size here is in components - not bytes */
-         vbo_set_vertex_format(&vbo->current[i].Format,
-                               exec->vtx.attr[i].size / dmul,
-                               exec->vtx.attr[i].type);
+         if (i == VBO_ATTRIB_COLOR0)
+            color0_changed = true;
 
-         /* This triggers rather too much recalculation of Mesa state
-          * that doesn't get used (eg light positions).
-          */
-         if (i >= VBO_ATTRIB_MAT_FRONT_AMBIENT &&
-             i <= VBO_ATTRIB_MAT_BACK_INDEXES) {
-            ctx->NewState |= _NEW_LIGHT;
+         if (i >= VBO_ATTRIB_MAT_FRONT_AMBIENT) {
+            ctx->NewState |= _NEW_MATERIAL;
             ctx->PopAttribState |= GL_LIGHTING_BIT;
-         }
 
-         ctx->NewState |= _NEW_CURRENT_ATTRIB;
-         ctx->PopAttribState |= GL_CURRENT_BIT;
+            /* The fixed-func vertex program uses this. */
+            if (i == VBO_ATTRIB_MAT_FRONT_SHININESS ||
+                i == VBO_ATTRIB_MAT_BACK_SHININESS)
+               ctx->NewState |= _NEW_FF_VERT_PROGRAM;
+         } else {
+            ctx->NewState |= _NEW_CURRENT_ATTRIB;
+            ctx->PopAttribState |= GL_CURRENT_BIT;
+         }
+      }
+
+      /* Given that we explicitly state size here, there is no need
+       * for the COPY_CLEAN above, could just copy 16 bytes and be
+       * done.  The only problem is when Mesa accesses ctx->Current
+       * directly.
+       */
+      /* Size here is in components - not bytes */
+      if (exec->vtx.attr[i].type != vbo->current[i].Format.Type ||
+          (exec->vtx.attr[i].size >> dmul_shift) != vbo->current[i].Format.Size) {
+         vbo_set_vertex_format(&vbo->current[i].Format,
+                               exec->vtx.attr[i].size >> dmul_shift,
+                               exec->vtx.attr[i].type);
       }
    }
 
-   /* Colormaterial -- this kindof sucks.
-    */
-   if (ctx->Light.ColorMaterialEnabled &&
-       exec->vtx.attr[VBO_ATTRIB_COLOR0].size) {
+   if (color0_changed && ctx->Light.ColorMaterialEnabled) {
       _mesa_update_color_material(ctx,
                                   ctx->Current.Attrib[VBO_ATTRIB_COLOR0]);
    }

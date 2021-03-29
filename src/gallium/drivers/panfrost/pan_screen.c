@@ -683,7 +683,13 @@ panfrost_get_compute_param(struct pipe_screen *pscreen, enum pipe_shader_ir ir_t
 static void
 panfrost_destroy_screen(struct pipe_screen *pscreen)
 {
-        panfrost_close_device(pan_device(pscreen));
+        struct panfrost_device *dev = pan_device(pscreen);
+
+        pan_blend_shaders_cleanup(dev);
+
+        if (dev->ro)
+                dev->ro->destroy(dev->ro);
+        panfrost_close_device(dev);
         ralloc_free(pscreen);
 }
 
@@ -810,16 +816,7 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         if (dev->debug & PAN_DBG_NO_AFBC)
                 dev->quirks |= MIDGARD_NO_AFBC;
 
-        if (ro) {
-                dev->ro = renderonly_dup(ro);
-                if (!dev->ro) {
-                        if (dev->debug & PAN_DBG_MSGS)
-                                fprintf(stderr, "Failed to dup renderonly object\n");
-
-                        free(screen);
-                        return NULL;
-                }
-        }
+        dev->ro = ro;
 
         /* Check if we're loading against a supported GPU model. */
 
@@ -861,6 +858,7 @@ panfrost_create_screen(int fd, struct renderonly *ro)
 
         panfrost_resource_screen_init(&screen->base);
         panfrost_init_blit_shaders(dev);
+        pan_blend_shaders_init(dev);
 
         return &screen->base;
 }

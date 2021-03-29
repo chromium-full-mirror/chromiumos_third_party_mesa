@@ -26,11 +26,11 @@
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
 
-#include "common/gen_l3_config.h"
-#include "common/gen_sample_positions.h"
+#include "common/intel_l3_config.h"
+#include "common/intel_sample_positions.h"
 #include "nir/nir_xfb_info.h"
 #include "vk_util.h"
-#include "vk_format_info.h"
+#include "vk_format.h"
 
 static uint32_t
 vertex_element_comp_control(enum isl_format format, unsigned comp)
@@ -263,24 +263,24 @@ emit_vertex_input(struct anv_graphics_pipeline *pipeline,
 
 void
 genX(emit_urb_setup)(struct anv_device *device, struct anv_batch *batch,
-                     const struct gen_l3_config *l3_config,
+                     const struct intel_l3_config *l3_config,
                      VkShaderStageFlags active_stages,
                      const unsigned entry_size[4],
-                     enum gen_urb_deref_block_size *deref_block_size)
+                     enum intel_urb_deref_block_size *deref_block_size)
 {
    const struct gen_device_info *devinfo = &device->info;
 
    unsigned entries[4];
    unsigned start[4];
    bool constrained;
-   gen_get_urb_config(devinfo, l3_config,
-                      active_stages &
-                         VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
-                      active_stages & VK_SHADER_STAGE_GEOMETRY_BIT,
-                      entry_size, entries, start, deref_block_size,
-                      &constrained);
+   intel_get_urb_config(devinfo, l3_config,
+                        active_stages &
+                           VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+                        active_stages & VK_SHADER_STAGE_GEOMETRY_BIT,
+                        entry_size, entries, start, deref_block_size,
+                        &constrained);
 
-#if GEN_GEN == 7 && !GEN_IS_HASWELL
+#if GEN_VERSIONx10 == 70
    /* From the IVB PRM Vol. 2, Part 1, Section 3.2.1:
     *
     *    "A PIPE_CONTROL with Post-Sync Operation set to 1h and a depth stall
@@ -308,7 +308,7 @@ genX(emit_urb_setup)(struct anv_device *device, struct anv_batch *batch,
 
 static void
 emit_urb_setup(struct anv_graphics_pipeline *pipeline,
-               enum gen_urb_deref_block_size *deref_block_size)
+               enum intel_urb_deref_block_size *deref_block_size)
 {
    unsigned entry_size[4];
    for (int i = MESA_SHADER_VERTEX; i <= MESA_SHADER_GEOMETRY; i++) {
@@ -585,7 +585,7 @@ emit_rs_state(struct anv_graphics_pipeline *pipeline,
               const uint32_t dynamic_states,
               const struct anv_render_pass *pass,
               const struct anv_subpass *subpass,
-              enum gen_urb_deref_block_size urb_deref_block_size)
+              enum intel_urb_deref_block_size urb_deref_block_size)
 {
    struct GENX(3DSTATE_SF) sf = {
       GENX(3DSTATE_SF_header),
@@ -599,7 +599,7 @@ emit_rs_state(struct anv_graphics_pipeline *pipeline,
    sf.VertexSubPixelPrecisionSelect = _8Bit;
    sf.AALineDistanceMode = true;
 
-#if GEN_IS_HASWELL
+#if GEN_VERSIONx10 == 75
    sf.LineStippleEnable = line_info && line_info->stippledLineEnable;
 #endif
 
@@ -1555,12 +1555,6 @@ get_sampler_count(const struct anv_shader_bin *bin)
    return MIN2(count_by_4, 4);
 }
 
-static uint32_t
-get_binding_table_entry_count(const struct anv_shader_bin *bin)
-{
-   return DIV_ROUND_UP(bin->bind_map.surface_count, 32);
-}
-
 static struct anv_address
 get_scratch_address(struct anv_pipeline *pipeline,
                     gl_shader_stage stage,
@@ -1610,7 +1604,7 @@ emit_3dstate_vs(struct anv_graphics_pipeline *pipeline)
        * programming 0xB000[30] to '1'.
        */
       vs.SamplerCount               = GEN_GEN == 11 ? 0 : get_sampler_count(vs_bin);
-      vs.BindingTableEntryCount     = get_binding_table_entry_count(vs_bin);
+      vs.BindingTableEntryCount     = vs_bin->bind_map.surface_count;
       vs.FloatingPointMode          = IEEE754;
       vs.IllegalOpcodeExceptionEnable = false;
       vs.SoftwareExceptionEnable    = false;
@@ -1682,7 +1676,7 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
       hs.KernelStartPointer = tcs_bin->kernel.offset;
       /* WA_1606682166 */
       hs.SamplerCount = GEN_GEN == 11 ? 0 : get_sampler_count(tcs_bin);
-      hs.BindingTableEntryCount = get_binding_table_entry_count(tcs_bin);
+      hs.BindingTableEntryCount = tcs_bin->bind_map.surface_count;
 
 #if GEN_GEN >= 12
       /* GEN:BUG:1604578095:
@@ -1760,7 +1754,7 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
       ds.KernelStartPointer = tes_bin->kernel.offset;
       /* WA_1606682166 */
       ds.SamplerCount = GEN_GEN == 11 ? 0 : get_sampler_count(tes_bin);
-      ds.BindingTableEntryCount = get_binding_table_entry_count(tes_bin);
+      ds.BindingTableEntryCount = tes_bin->bind_map.surface_count;
       ds.MaximumNumberofThreads = devinfo->max_tes_threads - 1;
 
       ds.ComputeWCoordinateEnable =
@@ -1818,7 +1812,7 @@ emit_3dstate_gs(struct anv_graphics_pipeline *pipeline)
       gs.VectorMaskEnable        = false;
       /* WA_1606682166 */
       gs.SamplerCount            = GEN_GEN == 11 ? 0 : get_sampler_count(gs_bin);
-      gs.BindingTableEntryCount  = get_binding_table_entry_count(gs_bin);
+      gs.BindingTableEntryCount  = gs_bin->bind_map.surface_count;
       gs.IncludeVertexHandles    = gs_prog_data->base.include_vue_handles;
       gs.IncludePrimitiveID      = gs_prog_data->include_primitive_id;
 
@@ -2053,7 +2047,7 @@ emit_3dstate_ps(struct anv_graphics_pipeline *pipeline,
       ps.VectorMaskEnable           = GEN_GEN >= 8;
       /* WA_1606682166 */
       ps.SamplerCount               = GEN_GEN == 11 ? 0 : get_sampler_count(fs_bin);
-      ps.BindingTableEntryCount     = get_binding_table_entry_count(fs_bin);
+      ps.BindingTableEntryCount     = fs_bin->bind_map.surface_count;
       ps.PushConstantEnable         = wm_prog_data->base.nr_params > 0 ||
                                       wm_prog_data->base.ubo_ranges[0].length;
       ps.PositionXYOffsetSelect     = wm_prog_data->uses_pos_offset ?
@@ -2064,7 +2058,7 @@ emit_3dstate_ps(struct anv_graphics_pipeline *pipeline,
       ps.DualSourceBlendEnable      = dual_src_blend;
 #endif
 
-#if GEN_IS_HASWELL
+#if GEN_VERSIONx10 == 75
       /* Haswell requires the sample mask to be set in this packet as well
        * as in 3DSTATE_SAMPLE_MASK; the values should match.
        */
@@ -2205,8 +2199,8 @@ emit_3dstate_primitive_replication(struct anv_graphics_pipeline *pipeline)
       pr.ReplicaMask = (1 << view_count) - 1;
       pr.ReplicationCount = view_count - 1;
 
-      int i = 0, view_index;
-      for_each_bit(view_index, view_mask) {
+      int i = 0;
+      u_foreach_bit(view_index, view_mask) {
          pr.RTAIOffset[i] = view_index;
          i++;
       }
@@ -2280,7 +2274,7 @@ genX(graphics_pipeline_create)(
             anv_cmd_dirty_bit_for_vk_dynamic_state(dyn_info->pDynamicStates[i]);
    }
 
-   enum gen_urb_deref_block_size urb_deref_block_size;
+   enum intel_urb_deref_block_size urb_deref_block_size;
    emit_urb_setup(pipeline, &urb_deref_block_size);
 
    assert(pCreateInfo->pVertexInputState);
@@ -2347,7 +2341,7 @@ genX(graphics_pipeline_create)(
    return pipeline->base.batch.status;
 }
 
-#if GEN_GEN > 12 || GEN_IS_GEN12HP
+#if GEN_VERSIONx10 >= 125
 
 static void
 emit_compute_state(struct anv_compute_pipeline *pipeline,
@@ -2372,7 +2366,7 @@ emit_compute_state(struct anv_compute_pipeline *pipeline,
    }
 }
 
-#else /* #if GEN_GEN > 12 || GEN_IS_GEN12HP */
+#else /* #if GEN_VERSIONx10 >= 125 */
 
 static void
 emit_compute_state(struct anv_compute_pipeline *pipeline,
@@ -2420,7 +2414,7 @@ emit_compute_state(struct anv_compute_pipeline *pipeline,
              */
             vfe.PerThreadScratchSpace =
                ffs(cs_bin->prog_data->total_scratch) - 11;
-         } else if (GEN_IS_HASWELL) {
+         } else if (GEN_VERSIONx10 == 75) {
             /* Haswell's Per Thread Scratch Space is in the range [0, 10]
              * where 0 = 2k, 1 = 4k, 2 = 8k, ..., 10 = 2M.
              */
@@ -2453,11 +2447,11 @@ emit_compute_state(struct anv_compute_pipeline *pipeline,
       .SharedLocalMemorySize  =
          encode_slm_size(GEN_GEN, cs_prog_data->base.total_shared),
 
-#if !GEN_IS_HASWELL
+#if GEN_VERSIONx10 != 75
       .ConstantURBEntryReadOffset = 0,
 #endif
       .ConstantURBEntryReadLength = cs_prog_data->push.per_thread.regs,
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GEN_VERSIONx10 >= 75
       .CrossThreadConstantDataReadLength =
          cs_prog_data->push.cross_thread.regs,
 #endif
@@ -2481,7 +2475,7 @@ emit_compute_state(struct anv_compute_pipeline *pipeline,
                                         &desc);
 }
 
-#endif /* #if GEN_GEN > 12 || GEN_IS_GEN12HP */
+#endif /* #if GEN_VERSIONx10 >= 125 */
 
 static VkResult
 compute_pipeline_create(
@@ -2520,7 +2514,7 @@ compute_pipeline_create(
    pipeline->cs = NULL;
 
    assert(pCreateInfo->stage.stage == VK_SHADER_STAGE_COMPUTE_BIT);
-   ANV_FROM_HANDLE(anv_shader_module, module,  pCreateInfo->stage.module);
+   VK_FROM_HANDLE(vk_shader_module, module,  pCreateInfo->stage.module);
    result = anv_pipeline_compile_cs(pipeline, cache, pCreateInfo, module,
                                     pCreateInfo->stage.pName,
                                     pCreateInfo->stage.pSpecializationInfo);

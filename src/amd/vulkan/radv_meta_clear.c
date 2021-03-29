@@ -96,9 +96,6 @@ create_pipeline(struct radv_device *device,
 	VkDevice device_h = radv_device_to_handle(device);
 	VkResult result;
 
-	struct radv_shader_module vs_m = { .nir = vs_nir };
-	struct radv_shader_module fs_m = { .nir = fs_nir };
-
 	result = radv_graphics_pipeline_create(device_h,
 					       radv_pipeline_cache_to_handle(&device->meta_state.cache),
 					       &(VkGraphicsPipelineCreateInfo) {
@@ -108,13 +105,13 @@ create_pipeline(struct radv_device *device,
 							       {
 								       .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 								       .stage = VK_SHADER_STAGE_VERTEX_BIT,
-								       .module = radv_shader_module_to_handle(&vs_m),
+								       .module = vk_shader_module_handle_from_nir(vs_nir),
 								       .pName = "main",
 							       },
 							       {
 								       .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 								       .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-								       .module = radv_shader_module_to_handle(&fs_m),
+								       .module = vk_shader_module_handle_from_nir(fs_nir),
 								       .pName = "main",
 							       },
 						       },
@@ -194,11 +191,12 @@ create_color_renderpass(struct radv_device *device,
 		return VK_SUCCESS;
 	}
 
-	VkResult result = radv_CreateRenderPass(radv_device_to_handle(device),
-				       &(VkRenderPassCreateInfo) {
-					       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+	VkResult result = radv_CreateRenderPass2(radv_device_to_handle(device),
+				       &(VkRenderPassCreateInfo2) {
+					       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2,
 						       .attachmentCount = 1,
-						       .pAttachments = &(VkAttachmentDescription) {
+						       .pAttachments = &(VkAttachmentDescription2) {
+						       .sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2,
 						       .format = vk_format,
 						       .samples = samples,
 						       .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
@@ -207,16 +205,19 @@ create_color_renderpass(struct radv_device *device,
 						       .finalLayout = VK_IMAGE_LAYOUT_GENERAL,
 					       },
 						       .subpassCount = 1,
-								.pSubpasses = &(VkSubpassDescription) {
+								.pSubpasses = &(VkSubpassDescription2) {
+						       .sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2,
 						       .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
 						       .inputAttachmentCount = 0,
 						       .colorAttachmentCount = 1,
-						       .pColorAttachments = &(VkAttachmentReference) {
+						       .pColorAttachments = &(VkAttachmentReference2) {
+							       .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
 							       .attachment = 0,
 							       .layout = VK_IMAGE_LAYOUT_GENERAL,
 						       },
 						       .pResolveAttachments = NULL,
-						       .pDepthStencilAttachment = &(VkAttachmentReference) {
+						       .pDepthStencilAttachment = &(VkAttachmentReference2) {
+							       .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
 							       .attachment = VK_ATTACHMENT_UNUSED,
 							       .layout = VK_IMAGE_LAYOUT_GENERAL,
 						       },
@@ -224,8 +225,9 @@ create_color_renderpass(struct radv_device *device,
 						       .pPreserveAttachments = NULL,
 					       },
 							.dependencyCount = 2,
-							.pDependencies = (VkSubpassDependency[]) {
+							.pDependencies = (VkSubpassDependency2[]) {
 								{
+									.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 									.srcSubpass = VK_SUBPASS_EXTERNAL,
 									.dstSubpass = 0,
 									.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -235,6 +237,7 @@ create_color_renderpass(struct radv_device *device,
 									.dependencyFlags = 0
 								},
 								{
+									.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 									.srcSubpass = 0,
 									.dstSubpass = VK_SUBPASS_EXTERNAL,
 									.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -479,8 +482,7 @@ emit_color_clear(struct radv_cmd_buffer *cmd_buffer,
 	radv_CmdSetScissor(radv_cmd_buffer_to_handle(cmd_buffer), 0, 1, &clear_rect->rect);
 
 	if (view_mask) {
-		unsigned i;
-		for_each_bit(i, view_mask)
+		u_foreach_bit(i, view_mask)
 			radv_CmdDraw(cmd_buffer_h, 3, 1, 0, i);
 	} else {
 		radv_CmdDraw(cmd_buffer_h, 3, clear_rect->layerCount, 0, clear_rect->baseArrayLayer);
@@ -554,11 +556,12 @@ create_depthstencil_renderpass(struct radv_device *device,
 		return VK_SUCCESS;
 	}
 
-	VkResult result = radv_CreateRenderPass(radv_device_to_handle(device),
-				       &(VkRenderPassCreateInfo) {
-					       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+	VkResult result = radv_CreateRenderPass2(radv_device_to_handle(device),
+				       &(VkRenderPassCreateInfo2) {
+					       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2,
 						       .attachmentCount = 1,
-						       .pAttachments = &(VkAttachmentDescription) {
+						       .pAttachments = &(VkAttachmentDescription2) {
+						       .sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2,
 						       .format = VK_FORMAT_D32_SFLOAT_S8_UINT,
 						       .samples = samples,
 						       .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
@@ -567,13 +570,15 @@ create_depthstencil_renderpass(struct radv_device *device,
 						       .finalLayout = VK_IMAGE_LAYOUT_GENERAL,
 					       },
 						       .subpassCount = 1,
-								.pSubpasses = &(VkSubpassDescription) {
+								.pSubpasses = &(VkSubpassDescription2) {
+						       .sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2,
 						       .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
 						       .inputAttachmentCount = 0,
 						       .colorAttachmentCount = 0,
 						       .pColorAttachments = NULL,
 						       .pResolveAttachments = NULL,
-						       .pDepthStencilAttachment = &(VkAttachmentReference) {
+						       .pDepthStencilAttachment = &(VkAttachmentReference2) {
+							       .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
 							       .attachment = 0,
 							       .layout = VK_IMAGE_LAYOUT_GENERAL,
 						       },
@@ -581,8 +586,9 @@ create_depthstencil_renderpass(struct radv_device *device,
 						       .pPreserveAttachments = NULL,
 					       },
 							.dependencyCount = 2,
-							.pDependencies = (VkSubpassDependency[]) {
+							.pDependencies = (VkSubpassDependency2[]) {
 								{
+									.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 									.srcSubpass = VK_SUBPASS_EXTERNAL,
 									.dstSubpass = 0,
 									.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -592,6 +598,7 @@ create_depthstencil_renderpass(struct radv_device *device,
 									.dependencyFlags = 0
 								},
 								{
+									.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 									.srcSubpass = 0,
 									.dstSubpass = VK_SUBPASS_EXTERNAL,
 									.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -866,8 +873,7 @@ emit_depthstencil_clear(struct radv_cmd_buffer *cmd_buffer,
 	radv_CmdSetScissor(radv_cmd_buffer_to_handle(cmd_buffer), 0, 1, &clear_rect->rect);
 
 	if (view_mask) {
-		unsigned i;
-		for_each_bit(i, view_mask)
+		u_foreach_bit(i, view_mask)
 			radv_CmdDraw(cmd_buffer_h, 3, 1, 0, i);
 	} else {
 		radv_CmdDraw(cmd_buffer_h, 3, clear_rect->layerCount, 0, clear_rect->baseArrayLayer);
@@ -1119,10 +1125,8 @@ static VkResult
 init_meta_clear_htile_mask_state(struct radv_device *device)
 {
 	struct radv_meta_state *state = &device->meta_state;
-	struct radv_shader_module cs = { .nir = NULL };
 	VkResult result;
-
-	cs.nir = build_clear_htile_mask_shader();
+	nir_shader *cs = build_clear_htile_mask_shader();
 
 	VkDescriptorSetLayoutCreateInfo ds_layout_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -1164,7 +1168,7 @@ init_meta_clear_htile_mask_state(struct radv_device *device)
 	VkPipelineShaderStageCreateInfo shader_stage = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-		.module = radv_shader_module_to_handle(&cs),
+		.module = vk_shader_module_handle_from_nir(cs),
 		.pName = "main",
 		.pSpecializationInfo = NULL,
 	};
@@ -1181,10 +1185,10 @@ init_meta_clear_htile_mask_state(struct radv_device *device)
 					     1, &pipeline_info, NULL,
 					     &state->clear_htile_mask_pipeline);
 
-	ralloc_free(cs.nir);
+	ralloc_free(cs);
 	return result;
 fail:
-	ralloc_free(cs.nir);
+	ralloc_free(cs);
 	return result;
 }
 
@@ -1361,18 +1365,11 @@ radv_clear_cmask(struct radv_cmd_buffer *cmd_buffer,
 		 const VkImageSubresourceRange *range, uint32_t value)
 {
 	uint64_t offset = image->offset + image->planes[0].surface.cmask_offset;
+	unsigned slice_size = image->planes[0].surface.cmask_slice_size;
 	uint64_t size;
 
-	if (cmd_buffer->device->physical_device->rad_info.chip_class >= GFX9) {
-		/* TODO: clear layers. */
-		size = image->planes[0].surface.cmask_size;
-	} else {
-		unsigned cmask_slice_size =
-			image->planes[0].surface.cmask_slice_size;
-
-		offset += cmask_slice_size * range->baseArrayLayer;
-		size = cmask_slice_size * radv_get_layerCount(image, range);
-	}
+	offset += slice_size * range->baseArrayLayer;
+	size = slice_size * radv_get_layerCount(image, range);
 
 	return radv_fill_buffer(cmd_buffer, image, image->bo, offset, size, value);
 }
@@ -1728,8 +1725,6 @@ radv_fast_clear_color(struct radv_cmd_buffer *cmd_buffer,
 		if (radv_image_has_cmask(iview->image)) {
 			flush_bits = radv_clear_cmask(cmd_buffer, iview->image,
 						      &range, cmask_clear_value);
-
-			need_decompress_pass = true;
 		}
 
 		if (!can_avoid_fast_clear_elim)
@@ -2006,7 +2001,8 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer,
 			       &cmd_buffer->pool->alloc,
 			       &fb);
 
-	VkAttachmentDescription att_desc = {
+	VkAttachmentDescription2 att_desc = {
+		.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2,
 		.format = iview.vk_format,
 		.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
 		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -2016,7 +2012,8 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer,
 		.finalLayout = image_layout,
 	};
 
-	VkSubpassDescription subpass_desc = {
+	VkSubpassDescription2 subpass_desc = {
+		.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2,
 		.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
 		.inputAttachmentCount = 0,
 		.colorAttachmentCount = 0,
@@ -2027,7 +2024,8 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer,
 		.pPreserveAttachments = NULL,
 	};
 
-	const VkAttachmentReference att_ref = {
+	const VkAttachmentReference2 att_ref = {
+		.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
 		.attachment = 0,
 		.layout = image_layout,
 	};
@@ -2040,16 +2038,17 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer,
 	}
 
 	VkRenderPass pass;
-	radv_CreateRenderPass(device_h,
-			      &(VkRenderPassCreateInfo) {
-				      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+	radv_CreateRenderPass2(device_h,
+			      &(VkRenderPassCreateInfo2) {
+				      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2,
 					      .attachmentCount = 1,
 					      .pAttachments = &att_desc,
 					      .subpassCount = 1,
 					      .pSubpasses = &subpass_desc,
 					      .dependencyCount = 2,
-					      .pDependencies = (VkSubpassDependency[]) {
+						.pDependencies = (VkSubpassDependency2[]) {
 							{
+								.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 								.srcSubpass = VK_SUBPASS_EXTERNAL,
 								.dstSubpass = 0,
 								.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -2059,6 +2058,7 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer,
 								.dependencyFlags = 0
 							},
 							{
+								.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 								.srcSubpass = 0,
 								.dstSubpass = VK_SUBPASS_EXTERNAL,
 								.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -2217,11 +2217,6 @@ radv_cmd_clear_image(struct radv_cmd_buffer *cmd_buffer,
 		internal_clear_value.color.uint32[0] = (r << 4) | (g & 0xf);
 	}
 
-	if (format == VK_FORMAT_R32G32B32_UINT ||
-	    format == VK_FORMAT_R32G32B32_SINT ||
-	    format == VK_FORMAT_R32G32B32_SFLOAT)
-		cs = true;
-
 	for (uint32_t r = 0; r < range_count; r++) {
 		const VkImageSubresourceRange *range = &ranges[r];
 
@@ -2248,6 +2243,7 @@ radv_cmd_clear_image(struct radv_cmd_buffer *cmd_buffer,
 					surf.level = range->baseMipLevel + l;
 					surf.layer = range->baseArrayLayer + s;
 					surf.aspect_mask = range->aspectMask;
+					surf.disable_compression = true;
 					radv_meta_clear_image_cs(cmd_buffer, &surf,
 								 &internal_clear_value.color);
 				} else {
@@ -2270,7 +2266,10 @@ void radv_CmdClearColorImage(
 	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
 	RADV_FROM_HANDLE(radv_image, image, image_h);
 	struct radv_meta_saved_state saved_state;
-	bool cs = cmd_buffer->queue_family_index == RADV_QUEUE_COMPUTE;
+	bool cs;
+
+	cs = cmd_buffer->queue_family_index == RADV_QUEUE_COMPUTE ||
+	     !radv_image_is_renderable(cmd_buffer->device, image);
 
 	if (cs) {
 		radv_meta_save(&saved_state, cmd_buffer,
