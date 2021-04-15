@@ -27,7 +27,6 @@
 #include "r600_pipe_common.h"
 #include "r600_cs.h"
 #include "tgsi/tgsi_parse.h"
-#include "compiler/nir/nir.h"
 #include "util/list.h"
 #include "util/u_draw_quad.h"
 #include "util/u_memory.h"
@@ -488,7 +487,7 @@ static enum pipe_reset_status r600_get_reset_status(struct pipe_context *ctx)
 {
 	struct r600_common_context *rctx = (struct r600_common_context *)ctx;
 
-	return rctx->ws->ctx_query_reset_status(rctx->ctx);
+	return rctx->ws->ctx_query_reset_status(rctx->ctx, false, NULL);
 }
 
 static void r600_set_debug_callback(struct pipe_context *ctx,
@@ -573,7 +572,7 @@ static bool r600_resource_commit(struct pipe_context *pctx,
 
 	assert(resource->target == PIPE_BUFFER);
 
-	return ctx->ws->buffer_commit(res->buf, box->x, box->width, commit);
+	return ctx->ws->buffer_commit(ctx->ws, res->buf, box->x, box->width, commit);
 }
 
 bool r600_common_context_init(struct r600_common_context *rctx,
@@ -1170,67 +1169,16 @@ struct pipe_resource *r600_resource_create_common(struct pipe_screen *screen,
 	}
 }
 
-const struct nir_shader_compiler_options r600_nir_fs_options = {
-	.fuse_ffma16 = true,
-	.fuse_ffma32 = true,
-	.fuse_ffma64 = true,
-	.lower_scmp = true,
-	.lower_flrp32 = true,
-	.lower_flrp64 = true,
-	.lower_fpow = true,
-	.lower_fdiv = true,
-        .lower_isign = true,
-        .lower_fsign = true,
-	.lower_fmod = true,
-	.lower_doubles_options = nir_lower_fp64_full_software,
-	.lower_int64_options = ~0,
-	.lower_extract_byte = true,
-	.lower_extract_word = true,
-        .lower_rotate = true,
-	.max_unroll_iterations = 32,
-	.lower_all_io_to_temps = true,
-	.vectorize_io = true,
-	.has_umad24 = true,
-	.has_umul24 = true,
-	.use_interpolated_input_intrinsics = true,
-	.has_fsub = true,
-	.has_isub = true,
-};
-
-const struct nir_shader_compiler_options r600_nir_options = {
-	.fuse_ffma16 = true,
-	.fuse_ffma32 = true,
-	.fuse_ffma64 = true,
-	.lower_scmp = true,
-	.lower_flrp32 = true,
-	.lower_flrp64 = true,
-	.lower_fpow = true,
-	.lower_fdiv = true,
-	.lower_fmod = true,
-	.lower_doubles_options = nir_lower_fp64_full_software,
-	.lower_int64_options = ~0,
-	.lower_extract_byte = true,
-	.lower_extract_word = true,
-        .lower_rotate = true,
-	.max_unroll_iterations = 32,
-	.vectorize_io = true,
-	.has_umad24 = true,
-	.has_umul24 = true,
-	.has_fsub = true,
-	.has_isub = true,
-};
-
-
 static const void *
 r600_get_compiler_options(struct pipe_screen *screen,
 			  enum pipe_shader_ir ir,
 			  enum pipe_shader_type shader)
 {
-	assert(ir == PIPE_SHADER_IR_NIR);
-	if (shader == PIPE_SHADER_FRAGMENT)
-	   return &r600_nir_fs_options;
-	else
-	   return &r600_nir_options;
+       assert(ir == PIPE_SHADER_IR_NIR);
+
+       struct r600_common_screen *rscreen = (struct r600_common_screen *)screen;
+
+       return &rscreen->nir_options;
 }
 
 bool r600_common_screen_init(struct r600_common_screen *rscreen,
@@ -1352,6 +1300,40 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		printf("enabled_rb_mask = 0x%x\n", rscreen->info.enabled_rb_mask);
 		printf("max_alignment = %u\n", (unsigned)rscreen->info.max_alignment);
 	}
+
+	const struct nir_shader_compiler_options nir_options = {
+		.fuse_ffma16 = true,
+		.fuse_ffma32 = true,
+		.fuse_ffma64 = true,
+		.lower_flrp32 = true,
+		.lower_flrp64 = true,
+		.lower_fpow = true,
+		.lower_fdiv = true,
+		.lower_isign = true,
+		.lower_fsign = true,
+		.lower_fmod = true,
+		.lower_doubles_options = nir_lower_fp64_full_software,
+		.lower_int64_options = ~0,
+		.lower_extract_byte = true,
+		.lower_extract_word = true,
+		.lower_rotate = true,
+		.max_unroll_iterations = 32,
+		.lower_interpolate_at = true,
+		.vectorize_io = true,
+		.has_umad24 = true,
+		.has_umul24 = true,
+		.use_interpolated_input_intrinsics = true,
+		.has_fsub = true,
+		.has_isub = true,
+		.lower_iabs = true,
+		.lower_bitfield_extract = true,
+		.lower_bitfield_insert_to_bitfield_select = true,
+		.has_fused_comp_and_csel = true,
+		.lower_find_msb_to_reverse = true,
+	};
+
+	rscreen->nir_options = nir_options;
+
 	return true;
 }
 

@@ -168,11 +168,17 @@ bi_word(bi_index idx, unsigned component)
 
 /* Helps construct swizzles */
 static inline bi_index
-bi_half(bi_index idx, bool upper)
+bi_swz_16(bi_index idx, bool x, bool y)
 {
         assert(idx.swizzle == BI_SWIZZLE_H01);
-        idx.swizzle = upper ? BI_SWIZZLE_H11 : BI_SWIZZLE_H00;
+        idx.swizzle = BI_SWIZZLE_H00 | (x << 1) | y;
         return idx;
+}
+
+static inline bi_index
+bi_half(bi_index idx, bool upper)
+{
+        return bi_swz_16(idx, upper, upper);
 }
 
 static inline bi_index
@@ -187,7 +193,6 @@ bi_byte(bi_index idx, unsigned lane)
 static inline bi_index
 bi_abs(bi_index idx)
 {
-        assert(idx.type != BI_INDEX_CONSTANT);
         idx.abs = true;
         return idx;
 }
@@ -195,7 +200,6 @@ bi_abs(bi_index idx)
 static inline bi_index
 bi_neg(bi_index idx)
 {
-        assert(idx.type != BI_INDEX_CONSTANT);
         idx.neg ^= true;
         return idx;
 }
@@ -635,6 +639,9 @@ bi_node_to_index(unsigned node, unsigned node_count)
 #define bi_foreach_block(ctx, v) \
         list_for_each_entry(pan_block, v, &ctx->blocks, link)
 
+#define bi_foreach_block_rev(ctx, v) \
+        list_for_each_entry_rev(pan_block, v, &ctx->blocks, link)
+
 #define bi_foreach_block_from(ctx, from, v) \
         list_for_each_entry_from(pan_block, v, from, &ctx->blocks, link)
 
@@ -743,9 +750,10 @@ void bi_print_shader(bi_context *ctx, FILE *fp);
 
 /* BIR passes */
 
-bool bi_opt_copy_prop(bi_context *ctx);
-bool bi_opt_dead_code_eliminate(bi_context *ctx, bool soft);
+void bi_opt_copy_prop(bi_context *ctx);
+void bi_opt_dead_code_eliminate(bi_context *ctx, bool soft);
 void bi_opt_push_ubo(bi_context *ctx);
+void bi_lower_swizzle(bi_context *ctx);
 void bi_schedule(bi_context *ctx);
 void bi_assign_scoreboard(bi_context *ctx);
 void bi_register_allocate(bi_context *ctx);

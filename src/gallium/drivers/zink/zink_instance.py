@@ -43,8 +43,8 @@ import sys
 EXTENSIONS = [
     Extension("VK_EXT_debug_utils"),
     Extension("VK_KHR_get_physical_device_properties2",
-        functions=["GetPhysicalDeviceFeatures2", "GetPhysicalDeviceProperties2"]),
-    Extension("VK_KHR_external_memory_capabilities"),
+        functions=["GetPhysicalDeviceFeatures2", "GetPhysicalDeviceProperties2",
+                   "GetPhysicalDeviceFormatProperties2", "GetPhysicalDeviceImageFormatProperties2"]),
     Extension("VK_MVK_moltenvk",
         nonstandard=True),
 ]
@@ -107,10 +107,10 @@ VkInstance
 zink_create_instance(struct zink_instance_info *instance_info)
 {
    /* reserve one slot for MoltenVK */
-   const char *layers[${len(extensions) + 1}] = { 0 };
+   const char *layers[${len(layers) + 1}] = { 0 };
    uint32_t num_layers = 0;
    
-   const char *extensions[${len(layers) + 1}] = { 0 };
+   const char *extensions[${len(extensions) + 1}] = { 0 };
    uint32_t num_extensions = 0;
 
 %for ext in extensions:
@@ -133,21 +133,10 @@ zink_create_instance(struct zink_instance_info *instance_info)
            if (vkEnumerateInstanceExtensionProperties(NULL, &extension_count, extension_props) == VK_SUCCESS) {
               for (uint32_t i = 0; i < extension_count; i++) {
         %for ext in extensions:
-            %if not ext.core_since:
                 if (!strcmp(extension_props[i].extensionName, ${ext.extension_name_literal()})) {
                     have_${ext.name_with_vendor()} = true;
                     extensions[num_extensions++] = ${ext.extension_name_literal()};
                 }
-            %else:
-                if (instance_info->loader_version < ${ext.core_since.version()}) {
-                   if (!strcmp(extension_props[i].extensionName, ${ext.extension_name_literal()})) {
-                        have_${ext.name_with_vendor()} = true;
-                        extensions[num_extensions++] = ${ext.extension_name_literal()};
-                   }
-                 } else {
-                    have_${ext.name_with_vendor()} = true;
-                 }
-            %endif
         %endfor
               }
            }
@@ -248,10 +237,11 @@ zink_load_instance_extensions(struct zink_screen *screen)
    }
 %elif bool(ext.instance_funcs):
    if (screen->instance_info.have_${ext.name_with_vendor()}) {
-      if (screen->instance_info.loader_version < ${ext.core_since.version()}) {
+      if (screen->vk_version < ${ext.core_since.version()}) {
       %for func in ext.instance_funcs:
          GET_PROC_ADDR_INSTANCE_LOCAL(screen->instance, ${func}${ext.vendor()});
          screen->vk_${func} = vk_${func}${ext.vendor()};
+         if (!screen->vk_${func}) return false;
       %endfor
       } else {
       %for func in ext.instance_funcs:

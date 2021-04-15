@@ -33,10 +33,8 @@
 #ifndef FOSSILIZE_DB_H
 #define FOSSILIZE_DB_H
 
-#ifdef HAVE_ZSTD
 #ifdef HAVE_FLOCK
 #define FOZ_DB_UTIL 1
-#endif
 #endif
 
 #include <stdbool.h>
@@ -84,7 +82,7 @@ struct foz_db {
 };
 
 bool
-foz_prepare(struct foz_db *foz_db, char *filename);
+foz_prepare(struct foz_db *foz_db, char *cache_path);
 
 void
 foz_destroy(struct foz_db *foz_db);

@@ -333,7 +333,7 @@ lower_ubo_load_to_uniform(nir_intrinsic_instr *instr, nir_builder *b,
 		nir_load_uniform(b, instr->num_components, instr->dest.ssa.bit_size, uniform_offset, .base = const_offset);
 
 	nir_ssa_def_rewrite_uses(&instr->dest.ssa,
-							 nir_src_for_ssa(uniform));
+							 uniform);
 
 	nir_instr_remove(&instr->instr);
 
@@ -470,7 +470,7 @@ fixup_load_uniform_instr(struct nir_builder *b, nir_instr *instr, void *arg)
 	if (nir_src_is_const(intr->src[0]))
 		return NULL;
 
-	const unsigned base_offset_limit = (1 << 10);  /* 10 bits */
+	const unsigned base_offset_limit = (1 << 9);  /* 9 bits */
 	unsigned base_offset = nir_intrinsic_base(intr);
 
 	/* Or cases were base offset is lower than the hw limit: */

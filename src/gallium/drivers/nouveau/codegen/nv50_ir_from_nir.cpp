@@ -1292,7 +1292,7 @@ Converter::parseNIR()
       info->prop.cp.numThreads[0] = nir->info.cs.local_size[0];
       info->prop.cp.numThreads[1] = nir->info.cs.local_size[1];
       info->prop.cp.numThreads[2] = nir->info.cs.local_size[2];
-      info_out->bin.smemSize += nir->info.cs.shared_size;
+      info_out->bin.smemSize += nir->info.shared_size;
       break;
    case Program::TYPE_FRAGMENT:
       info_out->prop.fp.earlyFragTests = nir->info.fs.early_fragment_tests;
@@ -2222,7 +2222,7 @@ Converter::visit(nir_intrinsic_instr *insn)
          break;
       case nir_intrinsic_bindless_image_samples:
          mask = 0x8;
-         /* fallthrough */
+         FALLTHROUGH;
       case nir_intrinsic_image_samples:
          ty = TYPE_U32;
          bindless = op == nir_intrinsic_bindless_image_samples;
@@ -3139,7 +3139,11 @@ Converter::run()
    /*TODO: improve this lowering/optimisation loop so that we can use
     *      nir_opt_idiv_const effectively before this.
     */
-   NIR_PASS(progress, nir, nir_lower_idiv, nir_lower_idiv_precise);
+   nir_lower_idiv_options idiv_options = {
+      .imprecise_32bit_lowering = false,
+      .allow_fp16 = true,
+   };
+   NIR_PASS(progress, nir, nir_lower_idiv, &idiv_options);
 
    do {
       progress = false;

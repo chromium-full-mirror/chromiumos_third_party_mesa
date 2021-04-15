@@ -41,7 +41,7 @@
 #include "iris_context.h"
 
 #include "util/u_upload_mgr.h"
-#include "intel/common/gen_l3_config.h"
+#include "intel/common/intel_l3_config.h"
 
 #include "blorp/blorp_genX_exec.h"
 
@@ -200,7 +200,7 @@ blorp_vf_invalidate_for_vb_48b_transitions(struct blorp_batch *blorp_batch,
                                            UNUSED uint32_t *sizes,
                                            unsigned num_vbs)
 {
-#if GEN_GEN < 11
+#if GFX_VER < 11
    struct iris_context *ice = blorp_batch->blorp->driver_ctx;
    struct iris_batch *batch = blorp_batch->driver_batch;
    bool need_invalidate = false;
@@ -245,7 +245,7 @@ blorp_flush_range(UNUSED struct blorp_batch *blorp_batch,
     */
 }
 
-static const struct gen_l3_config *
+static const struct intel_l3_config *
 blorp_get_l3_config(struct blorp_batch *blorp_batch)
 {
    struct iris_batch *batch = blorp_batch->driver_batch;
@@ -259,7 +259,7 @@ iris_blorp_exec(struct blorp_batch *blorp_batch,
    struct iris_context *ice = blorp_batch->blorp->driver_ctx;
    struct iris_batch *batch = blorp_batch->driver_batch;
 
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
    /* The PIPE_CONTROL command description says:
     *
     *    "Whenever a Binding Table Index (BTI) used by a Render Target Message
@@ -274,21 +274,19 @@ iris_blorp_exec(struct blorp_batch *blorp_batch,
                                 PIPE_CONTROL_STALL_AT_SCOREBOARD);
 #endif
 
-   /* Flush the render cache in cases where the same surface is reinterpreted
-    * with a differernt format, which blorp does for stencil and depth data
-    * among other things.  Invalidation of sampler caches and flushing of any
-    * caches which had previously written the source surfaces should already
-    * have been handled by the caller.
+   /* Flush the render cache in cases where the same surface is used with
+    * different aux modes, which can lead to GPU hangs.  Invalidation of
+    * sampler caches and flushing of any caches which had previously written
+    * the source surfaces should already have been handled by the caller.
     */
    if (params->dst.enabled) {
       iris_cache_flush_for_render(batch, params->dst.addr.buffer,
-                                  params->dst.view.format,
                                   params->dst.aux_usage);
    }
 
    iris_require_command_space(batch, 1400);
 
-#if GEN_GEN == 8
+#if GFX_VER == 8
    genX(update_pma_fix)(ice, batch, false);
 #endif
 
@@ -298,7 +296,7 @@ iris_blorp_exec(struct blorp_batch *blorp_batch,
                               params->y1 - params->y0, scale);
    }
 
-#if GEN_GEN >= 12
+#if GFX_VER >= 12
    genX(invalidate_aux_map_state)(batch);
 #endif
 

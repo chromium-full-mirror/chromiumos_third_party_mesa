@@ -299,10 +299,10 @@ tex_cache_flush_hack(struct iris_batch *batch,
     * If the BO hasn't been referenced yet this batch, we assume that the
     * texture cache doesn't contain any relevant data nor need flushing.
     *
-    * Icelake (Gen11+) claims to fix this issue, but seems to still have
+    * Icelake (Gfx11+) claims to fix this issue, but seems to still have
     * issues with ASTC formats.
     */
-   bool need_flush = devinfo->gen >= 11 ?
+   bool need_flush = devinfo->ver >= 11 ?
                      is_astc(surf_format) != is_astc(view_format) :
                      view_format != surf_format;
    if (!need_flush)
@@ -488,10 +488,10 @@ iris_blit(struct pipe_context *ctx, const struct pipe_blit_info *info)
 
       struct blorp_surf src_surf, dst_surf;
       iris_blorp_surf_for_resource(&screen->isl_dev,  &src_surf,
-                                   &src_res->base, src_aux_usage,
+                                   &src_res->base.b, src_aux_usage,
                                    info->src.level, false);
       iris_blorp_surf_for_resource(&screen->isl_dev, &dst_surf,
-                                   &dst_res->base, dst_aux_usage,
+                                   &dst_res->base.b, dst_aux_usage,
                                    info->dst.level, true);
 
       iris_resource_prepare_render(ice, dst_res, info->dst.level,
@@ -503,8 +503,8 @@ iris_blit(struct pipe_context *ctx, const struct pipe_blit_info *info)
       if (iris_batch_references(batch, src_res->bo))
          tex_cache_flush_hack(batch, src_fmt.fmt, src_res->surf.format);
 
-      if (dst_res->base.target == PIPE_BUFFER) {
-         util_range_add(&dst_res->base, &dst_res->valid_buffer_range,
+      if (dst_res->base.b.target == PIPE_BUFFER) {
+         util_range_add(&dst_res->base.b, &dst_res->valid_buffer_range,
                         dst_x0, dst_x1);
       }
 
@@ -572,14 +572,14 @@ get_copy_region_aux_settings(struct iris_context *ice,
    case ISL_AUX_USAGE_MCS:
    case ISL_AUX_USAGE_MCS_CCS:
    case ISL_AUX_USAGE_CCS_E:
-   case ISL_AUX_USAGE_GEN12_CCS_E:
+   case ISL_AUX_USAGE_GFX12_CCS_E:
       *out_aux_usage = res->aux.usage;
 
       /* blorp_copy may reinterpret the surface format and has limited support
        * for adjusting the clear color, so clear support may only be enabled
        * in some cases:
        *
-       * - On gen11+, the clear color is indirect and comes in two forms: a
+       * - On gfx11+, the clear color is indirect and comes in two forms: a
        *   32bpc representation used for rendering and a pixel representation
        *   used for sampling. blorp_copy doesn't change indirect clear colors,
        *   so clears are only supported in the sampling case.
@@ -590,7 +590,7 @@ get_copy_region_aux_settings(struct iris_context *ice,
        *   blorp_copy isn't guaranteed to access the same components as the
        *   original format (e.g. A8_UNORM/R8_UINT).
        */
-      *out_clear_supported = (devinfo->gen >= 11 && !is_render_target) ||
+      *out_clear_supported = (devinfo->ver >= 11 && !is_render_target) ||
                              (res->aux.clear_color.u32[0] == 0 &&
                               res->aux.clear_color.u32[1] == 0 &&
                               res->aux.clear_color.u32[2] == 0 &&
@@ -638,7 +638,7 @@ iris_copy_region(struct blorp_context *blorp,
       tex_cache_flush_hack(batch, ISL_FORMAT_UNSUPPORTED, src_res->surf.format);
 
    if (dst->target == PIPE_BUFFER)
-      util_range_add(&dst_res->base, &dst_res->valid_buffer_range, dstx, dstx + src_box->width);
+      util_range_add(&dst_res->base.b, &dst_res->valid_buffer_range, dstx, dstx + src_box->width);
 
    if (dst->target == PIPE_BUFFER && src->target == PIPE_BUFFER) {
       struct blorp_address src_addr = {
@@ -766,8 +766,8 @@ iris_resource_copy_region(struct pipe_context *ctx,
       iris_get_depth_stencil_resources(p_src, &junk, &s_src_res);
       iris_get_depth_stencil_resources(p_dst, &junk, &s_dst_res);
 
-      iris_copy_region(&ice->blorp, batch, &s_dst_res->base, dst_level, dstx,
-                       dsty, dstz, &s_src_res->base, src_level, src_box);
+      iris_copy_region(&ice->blorp, batch, &s_dst_res->base.b, dst_level, dstx,
+                       dsty, dstz, &s_src_res->base.b, src_level, src_box);
    }
 
    iris_flush_and_dirty_for_history(ice, batch, dst,

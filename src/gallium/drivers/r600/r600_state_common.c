@@ -29,6 +29,7 @@
 #include "r600d.h"
 
 #include "util/format/u_format_s3tc.h"
+#include "util/u_draw.h"
 #include "util/u_index_modify.h"
 #include "util/u_memory.h"
 #include "util/u_upload_mgr.h"
@@ -2078,14 +2079,8 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
                           unsigned num_draws)
 {
 	if (num_draws > 1) {
-           struct pipe_draw_info tmp_info = *info;
-
-           for (unsigned i = 0; i < num_draws; i++) {
-              r600_draw_vbo(ctx, &tmp_info, indirect, &draws[i], 1);
-              if (tmp_info.increment_draw_id)
-                 tmp_info.drawid++;
-           }
-           return;
+		util_draw_multi(ctx, info, indirect, draws, num_draws);
+		return;
 	}
 
 	struct r600_context *rctx = (struct r600_context *)ctx;
@@ -2230,7 +2225,7 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 		}
 		index_bias = info->index_bias;
 	} else {
-		index_bias = draws[0].start;
+		index_bias = indirect ? 0 : draws[0].start;
 	}
 
 	/* Set the index offset and primitive restart. */
@@ -2827,7 +2822,7 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 		case PIPE_FORMAT_RGTC1_SNORM:
 		case PIPE_FORMAT_LATC1_SNORM:
 			word4 |= sign_bit[0];
-			/* fallthrough */
+			FALLTHROUGH;
 		case PIPE_FORMAT_RGTC1_UNORM:
 		case PIPE_FORMAT_LATC1_UNORM:
 			result = FMT_BC4;
@@ -2835,7 +2830,7 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 		case PIPE_FORMAT_RGTC2_SNORM:
 		case PIPE_FORMAT_LATC2_SNORM:
 			word4 |= sign_bit[0] | sign_bit[1];
-			/* fallthrough */
+			FALLTHROUGH;
 		case PIPE_FORMAT_RGTC2_UNORM:
 		case PIPE_FORMAT_LATC2_UNORM:
 			result = FMT_BC5;
@@ -2881,7 +2876,7 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 				goto out_word4;
 			case PIPE_FORMAT_BPTC_RGB_FLOAT:
 				word4 |= sign_bit[0] | sign_bit[1] | sign_bit[2];
-				/* fall through */
+				FALLTHROUGH;
 			case PIPE_FORMAT_BPTC_RGB_UFLOAT:
 				result = FMT_BC6;
 				goto out_word4;

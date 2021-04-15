@@ -133,7 +133,7 @@ create_plane_tex_instr_implicit(struct ycbcr_state *state,
                                                            plane_format));
             break;
          }
-         /* fall through */
+         FALLTHROUGH;
       default:
          nir_src_copy(&tex->src[i].src, &old_tex->src[i].src, tex);
          break;
@@ -324,7 +324,7 @@ try_lower_tex_ycbcr(const struct anv_pipeline_layout *layout,
                                         swizzled_bpcs);
    }
 
-   nir_ssa_def_rewrite_uses(&tex->dest.ssa, nir_src_for_ssa(result));
+   nir_ssa_def_rewrite_uses(&tex->dest.ssa, result);
    nir_instr_remove(&tex->instr);
 
    return true;

@@ -28,9 +28,10 @@
 #include "util/set.h"
 #include "util/slab.h"
 #include "util/u_debug.h"
+#include "util/u_threaded_context.h"
 #include "intel/blorp/blorp.h"
 #include "intel/dev/gen_debug.h"
-#include "intel/common/gen_l3_config.h"
+#include "intel/common/intel_l3_config.h"
 #include "intel/compiler/brw_compiler.h"
 #include "iris_batch.h"
 #include "iris_binder.h"
@@ -335,6 +336,7 @@ enum pipe_control_flags
 #define PIPE_CONTROL_CACHE_FLUSH_BITS \
    (PIPE_CONTROL_DEPTH_CACHE_FLUSH |  \
     PIPE_CONTROL_DATA_CACHE_FLUSH |   \
+    PIPE_CONTROL_TILE_CACHE_FLUSH |   \
     PIPE_CONTROL_RENDER_TARGET_FLUSH)
 
 #define PIPE_CONTROL_CACHE_INVALIDATE_BITS  \
@@ -537,8 +539,8 @@ struct iris_stream_output_target {
    /** Stride (bytes-per-vertex) during this transform feedback operation */
    uint16_t stride;
 
-   /** Has 3DSTATE_SO_BUFFER actually been emitted, zeroing the offsets? */
-   bool zeroed;
+   /** Does the next 3DSTATE_SO_BUFFER need to zero the offsets? */
+   bool zero_offset;
 };
 
 /**
@@ -562,6 +564,7 @@ struct iris_border_color_pool {
  */
 struct iris_context {
    struct pipe_context ctx;
+   struct threaded_context *thrctx;
 
    /** A debug callback for KHR_debug output. */
    struct pipe_debug_callback dbg;
@@ -574,6 +577,9 @@ struct iris_context {
 
    /** Slab allocator for iris_transfer_map objects. */
    struct slab_child_pool transfer_pool;
+
+   /** Slab allocator for threaded_context's iris_transfer_map objects */
+   struct slab_child_pool transfer_pool_unsync;
 
    struct blorp_context blorp;
 
@@ -638,7 +644,10 @@ struct iris_context {
          bool constrained;
       } urb;
 
-      struct u_upload_mgr *uploader;
+      /** Uploader for shader assembly from the driver thread */
+      struct u_upload_mgr *uploader_driver;
+      /** Uploader for shader assembly from the threaded context */
+      struct u_upload_mgr *uploader_unsync;
       struct hash_table *cache;
 
       /** Is a GS or TES outputting points or lines? */
@@ -710,7 +719,7 @@ struct iris_context {
       /** Aux usage of the fb's depth buffer (which may or may not exist). */
       enum isl_aux_usage hiz_usage;
 
-      enum gen_urb_deref_block_size urb_deref_block_size;
+      enum intel_urb_deref_block_size urb_deref_block_size;
 
       /** Are depth writes enabled?  (Depth buffer may or may not exist.) */
       bool depth_writes_enabled;
@@ -976,7 +985,6 @@ void iris_postdraw_update_resolve_tracking(struct iris_context *ice,
                                            struct iris_batch *batch);
 void iris_cache_flush_for_render(struct iris_batch *batch,
                                  struct iris_bo *bo,
-                                 enum isl_format format,
                                  enum isl_aux_usage aux_usage);
 int iris_get_driver_query_info(struct pipe_screen *pscreen, unsigned index,
                                struct pipe_driver_query_info *info);
@@ -985,7 +993,7 @@ int iris_get_driver_query_group_info(struct pipe_screen *pscreen,
                                      struct pipe_driver_query_group_info *info);
 
 /* iris_state.c */
-void gen9_toggle_preemption(struct iris_context *ice,
+void gfx9_toggle_preemption(struct iris_context *ice,
                             struct iris_batch *batch,
                             const struct pipe_draw_info *draw);
 
@@ -994,34 +1002,34 @@ void gen9_toggle_preemption(struct iris_context *ice,
 #ifdef genX
 #  include "iris_genx_protos.h"
 #else
-#  define genX(x) gen4_##x
+#  define genX(x) gfx4_##x
 #  include "iris_genx_protos.h"
 #  undef genX
-#  define genX(x) gen5_##x
+#  define genX(x) gfx5_##x
 #  include "iris_genx_protos.h"
 #  undef genX
-#  define genX(x) gen6_##x
+#  define genX(x) gfx6_##x
 #  include "iris_genx_protos.h"
 #  undef genX
-#  define genX(x) gen7_##x
+#  define genX(x) gfx7_##x
 #  include "iris_genx_protos.h"
 #  undef genX
-#  define genX(x) gen75_##x
+#  define genX(x) gfx75_##x
 #  include "iris_genx_protos.h"
 #  undef genX
-#  define genX(x) gen8_##x
+#  define genX(x) gfx8_##x
 #  include "iris_genx_protos.h"
 #  undef genX
-#  define genX(x) gen9_##x
+#  define genX(x) gfx9_##x
 #  include "iris_genx_protos.h"
 #  undef genX
-#  define genX(x) gen11_##x
+#  define genX(x) gfx11_##x
 #  include "iris_genx_protos.h"
 #  undef genX
-#  define genX(x) gen12_##x
+#  define genX(x) gfx12_##x
 #  include "iris_genx_protos.h"
 #  undef genX
-#  define genX(x) gen125_##x
+#  define genX(x) gfx125_##x
 #  include "iris_genx_protos.h"
 #  undef genX
 #endif

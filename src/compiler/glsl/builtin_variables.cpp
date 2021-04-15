@@ -772,10 +772,12 @@ builtin_variable_generator::generate_constants()
          add_const("gl_MaxDualSourceDrawBuffersEXT",
                    state->Const.MaxDualSourceDrawBuffers);
       }
-   } else {
-      /* Note: gl_MaxVaryingFloats was deprecated in GLSL 1.30+, but not
-       * removed
-       */
+   }
+
+   /* gl_MaxVaryingFloats was deprecated in GLSL 1.30+, and was moved to
+    * compat profile in GLSL 4.20. GLSL ES never supported this constant.
+    */
+   if (compatibility || !state->is_version(420, 100))  {
       add_const("gl_MaxVaryingFloats", state->ctx->Const.MaxVarying * 4);
    }
 
@@ -1480,7 +1482,7 @@ builtin_variable_generator::add_varying(int slot, const glsl_type *type,
    case MESA_SHADER_TESS_EVAL:
    case MESA_SHADER_GEOMETRY:
       this->per_vertex_in.add_field(slot, type, precision, name, interp);
-      /* FALLTHROUGH */
+      FALLTHROUGH;
    case MESA_SHADER_VERTEX:
       this->per_vertex_out.add_field(slot, type, precision, name, interp);
       break;

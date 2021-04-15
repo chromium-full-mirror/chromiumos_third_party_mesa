@@ -27,6 +27,7 @@
 #include "util/list.h"
 #include "util/macros.h"
 #include "util/os_time.h"
+#include "util/u_math.h"
 #include "util/xmlconfig.h"
 #include "vk_alloc.h"
 #include "vk_debug_report.h"
@@ -40,7 +41,7 @@
 
 #define VN_DEFAULT_ALIGN 8
 
-#define VN_DEBUG(category) unlikely(vn_debug &VN_DEBUG_##category)
+#define VN_DEBUG(category) unlikely(vn_debug & VN_DEBUG_##category)
 
 #define vn_error(instance, error)                                            \
    (VN_DEBUG(RESULT) ? vn_log_result((instance), (error), __func__) : (error))

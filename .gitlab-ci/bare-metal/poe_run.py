@@ -34,6 +34,11 @@ class PoERun:
         self.powerdown = args.powerdown
         self.ser = SerialBuffer(args.dev, "results/serial-output.txt", "", args.timeout)
 
+    def print_error(self, message):
+        RED = '\033[0;31m'
+        NO_COLOR = '\033[0m'
+        print(RED + message + NO_COLOR)
+
     def logged_system(self, cmd):
         print("Running '{}'".format(cmd))
         return os.system(cmd)
@@ -49,8 +54,7 @@ class PoERun:
                 break
 
         if not boot_detected:
-            print("Something wrong; couldn't detect the boot start up sequence")
-            self.logged_system(self.powerdown)
+            self.print_error("Something wrong; couldn't detect the boot start up sequence")
             return 2
 
         for line in self.ser.lines():
@@ -59,7 +63,7 @@ class PoERun:
 
             # Binning memory problems
             if re.search("binner overflow mem", line):
-                print("Memory overflow in the binner; GPU hang")
+                self.print_error("Memory overflow in the binner; GPU hang")
                 return 1
 
             result = re.search("bare-metal result: (\S*)", line)
@@ -69,8 +73,8 @@ class PoERun:
                 else:
                     return 1
 
-        print("Reached the end of the CPU serial log without finding a result")
-        return 1
+        self.print_error("Reached the end of the CPU serial log without finding a result")
+        return 2
 
 def main():
     parser = argparse.ArgumentParser()

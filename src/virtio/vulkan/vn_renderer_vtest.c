@@ -536,7 +536,7 @@ vtest_vcmd_submit_cmd2(struct vtest *vtest,
       if (!batch->sync_queue_cpu) {
          dst.flags = VCMD_SUBMIT_CMD2_FLAG_SYNC_QUEUE;
          dst.sync_queue_index = batch->sync_queue_index;
-         dst.sync_queue_id = batch->sync_queue_id;
+         dst.sync_queue_id = batch->vk_queue_id;
       }
       vtest_write(vtest, &dst, sizeof(dst));
 
@@ -619,8 +619,7 @@ vtest_sync_release(struct vn_renderer_sync *_sync)
 static VkResult
 vtest_sync_init(struct vn_renderer_sync *_sync,
                 uint64_t initial_val,
-                bool shareable,
-                bool binary)
+                uint32_t flags)
 {
    struct vtest_sync *sync = (struct vtest_sync *)_sync;
    struct vtest *vtest = sync->vtest;
@@ -654,14 +653,14 @@ vtest_sync_create(struct vn_renderer *renderer)
 
    sync->vtest = vtest;
 
-   sync->base.destroy = vtest_sync_destroy;
-   sync->base.init = vtest_sync_init;
-   sync->base.init_syncobj = NULL;
-   sync->base.release = vtest_sync_release;
-   sync->base.export_syncobj = NULL;
-   sync->base.reset = vtest_sync_reset;
-   sync->base.read = vtest_sync_read;
-   sync->base.write = vtest_sync_write;
+   sync->base.ops.destroy = vtest_sync_destroy;
+   sync->base.ops.init = vtest_sync_init;
+   sync->base.ops.init_syncobj = NULL;
+   sync->base.ops.release = vtest_sync_release;
+   sync->base.ops.export_syncobj = NULL;
+   sync->base.ops.reset = vtest_sync_reset;
+   sync->base.ops.read = vtest_sync_read;
+   sync->base.ops.write = vtest_sync_write;
 
    return &sync->base;
 }
@@ -811,14 +810,14 @@ vtest_bo_create(struct vn_renderer *renderer)
    bo->vtest = vtest;
    bo->res_fd = -1;
 
-   bo->base.destroy = vtest_bo_destroy;
-   bo->base.init_cpu = vtest_bo_init_cpu;
-   bo->base.init_gpu = vtest_bo_init_gpu;
-   bo->base.init_dmabuf = NULL;
-   bo->base.export_dmabuf = vtest_bo_export_dmabuf;
-   bo->base.map = vtest_bo_map;
-   bo->base.flush = vtest_bo_flush;
-   bo->base.invalidate = vtest_bo_invalidate;
+   bo->base.ops.destroy = vtest_bo_destroy;
+   bo->base.ops.init_cpu = vtest_bo_init_cpu;
+   bo->base.ops.init_gpu = vtest_bo_init_gpu;
+   bo->base.ops.init_dmabuf = NULL;
+   bo->base.ops.export_dmabuf = vtest_bo_export_dmabuf;
+   bo->base.ops.map = vtest_bo_map;
+   bo->base.ops.flush = vtest_bo_flush;
+   bo->base.ops.invalidate = vtest_bo_invalidate;
 
    return &bo->base;
 }
@@ -909,8 +908,8 @@ vtest_get_info(struct vn_renderer *renderer, struct vn_renderer_info *info)
 
    info->has_dmabuf_import = false;
    info->has_cache_management = false;
-   info->has_timeline_sync = true;
    info->has_external_sync = false;
+   info->has_implicit_fencing = false;
 
    info->max_sync_queue_count = vtest->max_sync_queue_count;
 
@@ -1011,12 +1010,12 @@ vtest_init(struct vtest *vtest)
 
    vtest_vcmd_context_init(vtest, vtest->capset.id);
 
-   vtest->base.destroy = vtest_destroy;
-   vtest->base.get_info = vtest_get_info;
-   vtest->base.submit = vtest_submit;
-   vtest->base.wait = vtest_wait;
-   vtest->base.bo_create = vtest_bo_create;
-   vtest->base.sync_create = vtest_sync_create;
+   vtest->base.ops.destroy = vtest_destroy;
+   vtest->base.ops.get_info = vtest_get_info;
+   vtest->base.ops.submit = vtest_submit;
+   vtest->base.ops.wait = vtest_wait;
+   vtest->base.ops.bo_create = vtest_bo_create;
+   vtest->base.ops.sync_create = vtest_sync_create;
 
    return VK_SUCCESS;
 }

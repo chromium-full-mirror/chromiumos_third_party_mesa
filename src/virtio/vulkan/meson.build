@@ -31,14 +31,22 @@ virtio_icd = custom_target(
 )
 
 libvn_files = files(
+  'vn_buffer.c',
+  'vn_command_buffer.c',
   'vn_common.c',
   'vn_cs.c',
+  'vn_descriptor_set.c',
   'vn_device.c',
+  'vn_device_memory.c',
   'vn_icd.c',
+  'vn_image.c',
+  'vn_pipeline.c',
+  'vn_query_pool.c',
+  'vn_queue.c',
+  'vn_render_pass.c',
   'vn_ring.c',
   'vn_renderer_virtgpu.c',
   'vn_renderer_vtest.c',
-  'vn_wsi.c',
 )
 
 vn_deps = [
@@ -52,6 +60,14 @@ vn_deps = [
 vn_flags = [
   no_override_init_args,
 ]
+
+vn_libs = []
+
+if with_platform_wayland or with_platform_x11
+  libvn_files += files('vn_wsi.c')
+  vn_flags += '-DVN_USE_WSI_PLATFORM'
+  vn_libs += libvulkan_wsi
+endif
 
 if with_platform_wayland
   libvn_files += files('vn_wsi_wayland.c')
@@ -68,13 +84,17 @@ if with_platform_x11
   ]
 endif
 
+if with_platform_android
+  libvn_files += files('vn_android.c')
+endif
+
 libvulkan_virtio = shared_library(
   'vulkan_virtio',
   [libvn_files, vn_entrypoints, sha1_h],
   include_directories : [
     inc_include, inc_src, inc_vulkan_wsi, inc_virtio,
   ],
-  link_with : [libvulkan_wsi],
+  link_with : vn_libs,
   dependencies : [vn_deps],
   c_args : [vn_flags],
   link_args : [ld_args_bsymbolic, ld_args_gc_sections],

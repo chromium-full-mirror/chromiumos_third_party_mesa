@@ -164,6 +164,7 @@ i915_get_shader_param(struct pipe_screen *screen,
       case PIPE_SHADER_CAP_INT64_ATOMICS:
       case PIPE_SHADER_CAP_FP16:
       case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+      case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
       case PIPE_SHADER_CAP_INT16:
       case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
          return 0;
@@ -311,12 +312,12 @@ i915_get_paramf(struct pipe_screen *screen, enum pipe_capf cap)
 {
    switch(cap) {
    case PIPE_CAPF_MAX_LINE_WIDTH:
-      /* fall-through */
+      FALLTHROUGH;
    case PIPE_CAPF_MAX_LINE_WIDTH_AA:
       return 7.5;
 
    case PIPE_CAPF_MAX_POINT_WIDTH:
-      /* fall-through */
+      FALLTHROUGH;
    case PIPE_CAPF_MAX_POINT_WIDTH_AA:
       return 255.0;
 
@@ -327,9 +328,9 @@ i915_get_paramf(struct pipe_screen *screen, enum pipe_capf cap)
       return 16.0;
 
    case PIPE_CAPF_MIN_CONSERVATIVE_RASTER_DILATE:
-      /* fall-through */
+      FALLTHROUGH;
    case PIPE_CAPF_MAX_CONSERVATIVE_RASTER_DILATE:
-      /* fall-through */
+      FALLTHROUGH;
    case PIPE_CAPF_CONSERVATIVE_RASTER_DILATE_GRANULARITY:
       return 0.0f;
 

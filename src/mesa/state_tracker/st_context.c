@@ -518,7 +518,7 @@ st_init_driver_flags(struct st_context *st)
    f->NewScissorTest = ST_NEW_SCISSOR | ST_NEW_RASTERIZER;
 
    if (st->lower_alpha_test)
-      f->NewAlphaTest = ST_NEW_FS_STATE;
+      f->NewAlphaTest = ST_NEW_FS_STATE | ST_NEW_FS_CONSTANTS;
    else
       f->NewAlphaTest = ST_NEW_DSA;
 
@@ -677,6 +677,10 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    st->has_etc2 = screen->is_format_supported(screen, PIPE_FORMAT_ETC2_RGB8,
                                               PIPE_TEXTURE_2D, 0, 0,
                                               PIPE_BIND_SAMPLER_VIEW);
+   st->transcode_etc = options->transcode_etc &&
+                       screen->is_format_supported(screen, PIPE_FORMAT_DXT1_SRGBA,
+                                                   PIPE_TEXTURE_2D, 0, 0,
+                                                   PIPE_BIND_SAMPLER_VIEW);
    st->has_astc_2d_ldr =
       screen->is_format_supported(screen, PIPE_FORMAT_ASTC_4x4_SRGB,
                                   PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_SAMPLER_VIEW);
@@ -827,11 +831,15 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    st->shader_has_one_variant[MESA_SHADER_TESS_EVAL] =
          st->has_shareable_shaders &&
          !st->clamp_frag_depth_in_shader &&
-         !st->clamp_vert_color_in_shader;
+         !st->clamp_vert_color_in_shader &&
+         !st->lower_point_size &&
+         !st->lower_ucp;
+
    st->shader_has_one_variant[MESA_SHADER_GEOMETRY] =
          st->has_shareable_shaders &&
          !st->clamp_frag_depth_in_shader &&
          !st->clamp_vert_color_in_shader &&
+         !st->lower_point_size &&
          !st->lower_ucp;
    st->shader_has_one_variant[MESA_SHADER_COMPUTE] = st->has_shareable_shaders;
 

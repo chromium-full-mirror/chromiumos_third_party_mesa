@@ -139,6 +139,7 @@ static const nir_shader_compiler_options options_a6xx = {
 		 */
 		.lower_int64_options = (nir_lower_int64_options)~0,
 		.lower_uniforms_to_ubo = true,
+		.lower_device_index_to_zero = true,
 };
 
 const nir_shader_compiler_options *
@@ -189,7 +190,7 @@ ir3_nir_should_vectorize_mem(unsigned align_mul, unsigned align_offset,
 #define OPT_V(nir, pass, ...) NIR_PASS_V(nir, pass, ##__VA_ARGS__)
 
 void
-ir3_optimize_loop(nir_shader *s)
+ir3_optimize_loop(struct ir3_compiler *compiler, nir_shader *s)
 {
 	bool progress;
 	unsigned lower_flrp =
@@ -226,7 +227,7 @@ ir3_optimize_loop(nir_shader *s)
 		nir_load_store_vectorize_options vectorize_opts = {
 		   .modes = nir_var_mem_ubo,
 		   .callback = ir3_nir_should_vectorize_mem,
-		   .robust_modes = 0,
+		   .robust_modes = compiler->robust_ubo_access ? nir_var_mem_ubo : 0,
 		};
 		progress |= OPT(s, nir_opt_load_store_vectorize, &vectorize_opts);
 
@@ -314,15 +315,19 @@ ir3_finalize_nir(struct ir3_compiler *compiler, nir_shader *s)
 	if (compiler->gpu_id < 500)
 		OPT_V(s, ir3_nir_lower_tg4_to_tex);
 
-	ir3_optimize_loop(s);
+	ir3_optimize_loop(compiler, s);
 
 	/* do idiv lowering after first opt loop to get a chance to propagate
 	 * constants for divide by immed power-of-two:
 	 */
-	const bool idiv_progress = OPT(s, nir_lower_idiv, nir_lower_idiv_fast);
+	nir_lower_idiv_options idiv_options = {
+		.imprecise_32bit_lowering = true,
+		.allow_fp16 = true,
+	};
+	const bool idiv_progress = OPT(s, nir_lower_idiv, &idiv_options);
 
 	if (idiv_progress)
-		ir3_optimize_loop(s);
+		ir3_optimize_loop(compiler, s);
 
 	OPT_V(s, nir_remove_dead_variables, nir_var_function_temp, NULL);
 
@@ -332,7 +337,17 @@ ir3_finalize_nir(struct ir3_compiler *compiler, nir_shader *s)
 		debug_printf("----------------------\n");
 	}
 
+	/* st_program.c's parameter list optimization requires that future nir
+	 * variants don't reallocate the uniform storage, so we have to remove
+	 * uniforms that occupy storage.  But we don't want to remove samplers,
+	 * because they're needed for YUV variant lowering.
+	 */
 	nir_foreach_uniform_variable_safe(var, s) {
+      if (var->data.mode == nir_var_uniform &&
+          (glsl_type_get_image_count(var->type) ||
+           glsl_type_get_sampler_count(var->type)))
+         continue;
+
 		exec_node_remove(&var->node);
 	}
 	nir_validate_shader(s, "after uniform var removal");
@@ -362,7 +377,7 @@ ir3_nir_post_finalize(struct ir3_compiler *compiler, nir_shader *s)
 	if (compiler->gpu_id >= 600 &&
 			s->info.stage == MESA_SHADER_FRAGMENT &&
 			!(ir3_shader_debug & IR3_DBG_NOFP16)) {
-		NIR_PASS_V(s, nir_lower_mediump_outputs);
+		NIR_PASS_V(s, nir_lower_mediump_io, nir_var_shader_out, 0, false);
 	}
 
 	/* we cannot ensure that ir3_finalize_nir() is only called once, so
@@ -370,7 +385,7 @@ ir3_nir_post_finalize(struct ir3_compiler *compiler, nir_shader *s)
 	 */
 	OPT_V(s, ir3_nir_apply_trig_workarounds);
 
-	ir3_optimize_loop(s);
+	ir3_optimize_loop(compiler, s);
 }
 
 static bool
@@ -411,7 +426,7 @@ ir3_nir_lower_view_layer_id(nir_shader *nir, bool layer_zero, bool view_zero)
 				b.cursor = nir_before_instr(&intrin->instr);
 				nir_ssa_def *zero = nir_imm_int(&b, 0);
 				nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-										 nir_src_for_ssa(zero));
+										 zero);
 				nir_instr_remove(&intrin->instr);
 				progress = true;
 			}
@@ -518,14 +533,14 @@ ir3_nir_lower_variant(struct ir3_shader_variant *so, nir_shader *s)
 	OPT_V(s, ir3_nir_lower_io_offsets, so->shader->compiler->gpu_id);
 
 	if (progress)
-		ir3_optimize_loop(s);
+		ir3_optimize_loop(so->shader->compiler, s);
 
 	/* Fixup indirect load_uniform's which end up with a const base offset
 	 * which is too large to encode.  Do this late(ish) so we actually
 	 * can differentiate indirect vs non-indirect.
 	 */
 	if (OPT(s, ir3_nir_fixup_load_uniform))
-		ir3_optimize_loop(s);
+		ir3_optimize_loop(so->shader->compiler, s);
 
 	/* Do late algebraic optimization to turn add(a, neg(b)) back into
 	* subs, then the mandatory cleanup after algebraic.  Note that it may
@@ -629,6 +644,10 @@ ir3_nir_scan_driver_consts(nir_shader *shader,
 				case nir_intrinsic_load_local_group_size:
 					layout->num_driver_params =
 						MAX2(layout->num_driver_params, IR3_DP_LOCAL_GROUP_SIZE_Z + 1);
+					break;
+				case nir_intrinsic_load_base_work_group_id:
+					layout->num_driver_params =
+						MAX2(layout->num_driver_params, IR3_DP_BASE_GROUP_Z + 1);
 					break;
 				default:
 					break;

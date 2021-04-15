@@ -412,10 +412,17 @@ bi_must_not_last(bi_instr *ins)
         return !bi_is_null(ins->dest[0]) && !bi_is_null(ins->dest[1]);
 }
 
+/* Check for a message-passing instruction. +DISCARD.f32 is special-cased; we
+ * treat it as a message-passing instruction for the purpose of scheduling
+ * despite no passing no logical message. Otherwise invalid encoding faults may
+ * be raised for unknown reasons (possibly an errata).
+ */
+
 ASSERTED static bool
 bi_must_message(bi_instr *ins)
 {
-        return bi_opcode_props[ins->op].message != BIFROST_MESSAGE_NONE;
+        return (bi_opcode_props[ins->op].message != BIFROST_MESSAGE_NONE) ||
+                (ins->op == BI_OPCODE_DISCARD_F32);
 }
 
 static bool
@@ -968,16 +975,13 @@ bi_rewrite_fau_to_pass(bi_tuple *tuple)
 static void
 bi_rewrite_zero(bi_instr *ins, bool fma)
 {
+        bi_index zero = bi_passthrough(fma ? BIFROST_SRC_STAGE : BIFROST_SRC_FAU_LO);
+
         bi_foreach_src(ins, s) {
                 bi_index src = ins->src[s];
-                unsigned swizzle = src.swizzle;
 
-                if (src.type == BI_INDEX_CONSTANT && src.value == 0) {
-                        assert(!src.abs && !src.neg);
-                        ins->src[s] = bi_passthrough(
-                                        fma ? BIFROST_SRC_STAGE : BIFROST_SRC_FAU_LO);
-                        ins->src[s].swizzle = swizzle;
-                }
+                if (src.type == BI_INDEX_CONSTANT && src.value == 0)
+                        ins->src[s] = bi_replace_index(src, zero);
         }
 }
 
@@ -990,7 +994,6 @@ bi_rewrite_constants_to_pass(bi_tuple *tuple, uint64_t constant, bool pcrel)
                 if (ins->src[s].type != BI_INDEX_CONSTANT) continue;
 
                 uint32_t cons = ins->src[s].value;
-                unsigned swizzle = ins->src[s].swizzle;
 
                 ASSERTED bool lo = (cons == (constant & 0xffffffff));
                 bool hi = (cons == (constant >> 32ull));
@@ -1009,9 +1012,9 @@ bi_rewrite_constants_to_pass(bi_tuple *tuple, uint64_t constant, bool pcrel)
 
                 assert(lo || hi);
 
-                ins->src[s] = bi_passthrough(hi ?
-                                BIFROST_SRC_FAU_HI : BIFROST_SRC_FAU_LO);
-                ins->src[s].swizzle = swizzle;
+                ins->src[s] = bi_replace_index(ins->src[s],
+                                bi_passthrough(hi ?  BIFROST_SRC_FAU_HI :
+                                        BIFROST_SRC_FAU_LO));
         }
 }
 
@@ -1308,16 +1311,13 @@ bi_schedule_clause(bi_context *ctx, bi_block *block, struct bi_worklist st)
                 tuple->add = tuple_state.add;
 
                 /* We may have a message, but only one per clause */
-                if (tuple->add) {
-                        enum bifrost_message_type msg =
-                                bi_message_type_for_instr(tuple->add);
-                        assert(!(msg && clause->message_type));
+                if (tuple->add && bi_must_message(tuple->add)) {
+                        assert(!clause_state.message);
+                        clause_state.message = true;
 
-                        if (!clause->message_type) {
-                                clause->message_type = msg;
-                                clause->message = tuple->add;
-                                clause_state.message = true;
-                        }
+                        clause->message_type =
+                                bi_message_type_for_instr(tuple->add);
+                        clause->message = tuple->add;
 
                         switch (tuple->add->op) {
                         case BI_OPCODE_ATEST:
@@ -1658,7 +1658,7 @@ bi_test_units(bi_builder *b)
                 assert(bi_reads_t(load, i));
         }
 
-        bi_instr *blend = bi_blend_to(b, TMP(), TMP(), TMP(), TMP(), TMP());
+        bi_instr *blend = bi_blend_to(b, TMP(), TMP(), TMP(), TMP(), TMP(), 4);
         assert(!bi_can_fma(load));
         assert(bi_can_add(load));
         assert(bi_must_last(blend));

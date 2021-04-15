@@ -276,6 +276,8 @@ LoadPropagation::visit(BasicBlock *bb)
 
          if (!ld || ld->fixed || (ld->op != OP_LOAD && ld->op != OP_MOV))
             continue;
+         if (ld->op == OP_LOAD && ld->subOp == NV50_IR_SUBOP_LOAD_LOCKED)
+            continue;
          if (!targ->insnCanLoad(i, s, ld))
             continue;
 
@@ -590,7 +592,7 @@ ConstantFolding::expr(Instruction *i,
             res.data.s32 = ((int64_t)a->data.s32 * b->data.s32) >> 32;
             break;
          }
-         /* fallthrough */
+         FALLTHROUGH;
       case TYPE_U32:
          if (i->subOp == NV50_IR_SUBOP_MUL_HIGH) {
             res.data.u32 = ((uint64_t)a->data.u32 * b->data.u32) >> 32;
@@ -832,7 +834,7 @@ ConstantFolding::expr(Instruction *i,
             res.data.s32 = ((int64_t)a->data.s32 * b->data.s32 >> 32) + c->data.s32;
             break;
          }
-         /* fallthrough */
+         FALLTHROUGH;
       case TYPE_U32:
          if (i->subOp == NV50_IR_SUBOP_MUL_HIGH) {
             res.data.u32 = ((uint64_t)a->data.u32 * b->data.u32 >> 32) + c->data.u32;
@@ -1191,7 +1193,7 @@ ConstantFolding::opnd(Instruction *i, ImmediateValue &imm0, int s)
       if (imm0.isInteger(0) && s == 0 && typeSizeof(i->dType) == 8 &&
           !isFloatType(i->dType))
          break;
-      /* fallthrough */
+      FALLTHROUGH;
    case OP_ADD:
       if (i->usesFlags())
          break;
@@ -3928,7 +3930,10 @@ DeadCodeElim::visit(BasicBlock *bb)
          if (i->op == OP_ATOM ||
              i->op == OP_SUREDP ||
              i->op == OP_SUREDB) {
-            i->setDef(0, NULL);
+            const Target *targ = prog->getTarget();
+            if (targ->getChipset() >= NVISA_GF100_CHIPSET ||
+                i->subOp != NV50_IR_SUBOP_ATOM_CAS)
+               i->setDef(0, NULL);
             if (i->op == OP_ATOM && i->subOp == NV50_IR_SUBOP_ATOM_EXCH) {
                i->cache = CACHE_CV;
                i->op = OP_STORE;

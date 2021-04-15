@@ -35,6 +35,8 @@ files_mesa_util = files(
   'build_id.h',
   'cnd_monotonic.h',
   'compiler.h',
+  'compress.c',
+  'compress.h',
   'crc32.c',
   'crc32.h',
   'dag.c',
@@ -381,6 +383,7 @@ if with_tests
     env: ['BUILD_FULL_PATH='+process_test_exe_full_path]
   )
 
+  subdir('tests/cache')
   subdir('tests/fast_idiv_by_const')
   subdir('tests/fast_urem_by_const')
   subdir('tests/hash_table')

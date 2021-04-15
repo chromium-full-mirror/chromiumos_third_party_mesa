@@ -31,7 +31,7 @@ cp -Rp .gitlab-ci/fossils.yml install/
 cp -Rp .gitlab-ci/fossils install/
 cp -Rp .gitlab-ci/fossilize-runner.sh install/
 cp -Rp .gitlab-ci/deqp-runner.sh install/
-cp -Rp ci-expects/*/* install/
+cp -Rp .gitlab-ci/deqp-*.txt install/
 find . -path \*/ci/\*.txt \
     -o -path \*/ci/\*traces\*.yml \
     | xargs -I '{}' cp -p '{}' install/
@@ -44,7 +44,7 @@ tar -cf artifacts/install.tar install
 if [ -n "$MINIO_ARTIFACT_NAME" ]; then
     # Pass needed files to the test stage
     cp $CI_PROJECT_DIR/.gitlab-ci/generate_lava.py artifacts/.
-    cp $CI_PROJECT_DIR/.gitlab-ci/lava-*.yml.jinja2 artifacts/.
+    cp $CI_PROJECT_DIR/.gitlab-ci/lava.yml.jinja2 artifacts/.
 
     MINIO_ARTIFACT_NAME="$MINIO_ARTIFACT_NAME.tar.gz"
     gzip -c artifacts/install.tar > ${MINIO_ARTIFACT_NAME}
