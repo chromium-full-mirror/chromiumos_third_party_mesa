@@ -23,7 +23,7 @@
  */
 
 #include "util/ralloc.h"
-#include "util/u_half.h"
+#include "util/half_float.h"
 #include "util/bitscan.h"
 
 #include "ppir.h"
@@ -568,7 +568,7 @@ static void ppir_codegen_encode_store_temp(ppir_node *node, void *code)
 static void ppir_codegen_encode_const(ppir_const *constant, uint16_t *code)
 {
    for (int i = 0; i < constant->num; i++)
-      code[i] = util_float_to_half(constant->value[i].f);
+      code[i] = _mesa_float_to_half(constant->value[i].f);
 }
 
 static void ppir_codegen_encode_discard(ppir_node *node, void *code)
@@ -813,7 +813,7 @@ bool ppir_codegen_prog(ppir_compiler *comp)
       ralloc_free(comp->prog->shader);
 
    comp->prog->shader = prog;
-   comp->prog->shader_size = size * sizeof(uint32_t);
+   comp->prog->state.shader_size = size * sizeof(uint32_t);
 
    if (lima_debug & LIMA_DEBUG_PP)
       ppir_codegen_print_prog(comp);

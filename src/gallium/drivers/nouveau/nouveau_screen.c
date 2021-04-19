@@ -234,9 +234,10 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
       size = sizeof(nvc0_data);
    }
 
+   bool enable_svm = debug_get_bool_option("NOUVEAU_SVM", false);
    screen->has_svm = false;
    /* we only care about HMM with OpenCL enabled */
-   if (dev->chipset > 0x130 && screen->force_enable_cl) {
+   if (dev->chipset > 0x130 && screen->force_enable_cl && enable_svm) {
       /* Before being able to enable SVM we need to carve out some memory for
        * driver bo allocations. Let's just base the size on the available VRAM.
        *
@@ -261,7 +262,7 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
          }
 
          struct drm_nouveau_svm_init svm_args = {
-            .unmanaged_addr = (uint64_t)screen->svm_cutout,
+            .unmanaged_addr = (uintptr_t)screen->svm_cutout,
             .unmanaged_size = screen->svm_cutout_size,
          };
 
@@ -272,6 +273,18 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
             os_munmap(screen->svm_cutout, screen->svm_cutout_size);
          break;
       } while ((start + screen->svm_cutout_size) < BITFIELD64_MASK(limit_bit));
+   }
+
+   switch (dev->chipset) {
+   case 0x0ea: /* TK1, GK20A */
+   case 0x12b: /* TX1, GM20B */
+   case 0x13b: /* TX2, GP10B */
+      screen->tegra_sector_layout = true;
+      break;
+   default:
+      /* Xavier's GPU and everything else */
+      screen->tegra_sector_layout = false;
+      break;
    }
 
    /*

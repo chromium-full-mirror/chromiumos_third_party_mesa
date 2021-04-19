@@ -128,6 +128,7 @@ void lp_setup_reset( struct lp_setup_context *setup )
       setup->constants[i].stored_size = 0;
       setup->constants[i].stored_data = NULL;
    }
+
    setup->fs.stored = NULL;
    setup->dirty = ~0;
 
@@ -624,7 +625,6 @@ lp_setup_set_fs_variant( struct lp_setup_context *setup,
 {
    LP_DBG(DEBUG_SETUP, "%s %p\n", __FUNCTION__,
           variant);
-   /* FIXME: reference count */
 
    setup->fs.current.variant = variant;
    setup->dirty |= LP_SETUP_NEW_FS;
@@ -642,10 +642,10 @@ lp_setup_set_fs_constants(struct lp_setup_context *setup,
    assert(num <= ARRAY_SIZE(setup->constants));
 
    for (i = 0; i < num; ++i) {
-      util_copy_constant_buffer(&setup->constants[i].current, &buffers[i]);
+      util_copy_constant_buffer(&setup->constants[i].current, &buffers[i], false);
    }
    for (; i < ARRAY_SIZE(setup->constants); i++) {
-      util_copy_constant_buffer(&setup->constants[i].current, NULL);
+      util_copy_constant_buffer(&setup->constants[i].current, NULL, false);
    }
    setup->dirty |= LP_SETUP_NEW_CONSTANTS;
 }
@@ -1006,7 +1006,7 @@ lp_setup_set_fragment_sampler_views(struct lp_setup_context *setup,
             struct llvmpipe_screen *screen = llvmpipe_screen(res->screen);
             struct sw_winsys *winsys = screen->winsys;
             jit_tex->base = winsys->displaytarget_map(winsys, lp_tex->dt,
-                                                         PIPE_TRANSFER_READ);
+                                                         PIPE_MAP_READ);
             jit_tex->row_stride[0] = lp_tex->row_stride[0];
             jit_tex->img_stride[0] = lp_tex->img_stride[0];
             jit_tex->mip_offsets[0] = 0;
@@ -1182,6 +1182,12 @@ try_update_scene_state( struct lp_setup_context *setup )
       setup->dirty |= LP_SETUP_NEW_FS;
    }
 
+   struct llvmpipe_context *llvmpipe = llvmpipe_context(setup->pipe);
+   if (llvmpipe->dirty & LP_NEW_FS_CONSTANTS)
+      lp_setup_set_fs_constants(llvmpipe->setup,
+                                ARRAY_SIZE(llvmpipe->constants[PIPE_SHADER_FRAGMENT]),
+                                llvmpipe->constants[PIPE_SHADER_FRAGMENT]);
+
    if (setup->dirty & LP_SETUP_NEW_CONSTANTS) {
       for (i = 0; i < ARRAY_SIZE(setup->constants); ++i) {
          struct pipe_resource *buffer = setup->constants[i].current.buffer;
@@ -1280,9 +1286,14 @@ try_update_scene_state( struct lp_setup_context *setup )
             return FALSE;
          }
 
-         memcpy(stored,
-                &setup->fs.current,
-                sizeof setup->fs.current);
+         memcpy(&stored->jit_context,
+                &setup->fs.current.jit_context,
+                sizeof setup->fs.current.jit_context);
+         stored->variant = setup->fs.current.variant;
+
+         if (!lp_scene_add_frag_shader_reference(scene,
+                                                 setup->fs.current.variant))
+            return FALSE;
          setup->fs.stored = stored;
          
          /* The scene now references the textures in the rasterization
@@ -1509,7 +1520,6 @@ void
 lp_setup_begin_query(struct lp_setup_context *setup,
                      struct llvmpipe_query *pq)
 {
-
    set_scene_state(setup, SETUP_ACTIVE, "begin_query");
 
    if (!(pq->type == PIPE_QUERY_OCCLUSION_COUNTER ||

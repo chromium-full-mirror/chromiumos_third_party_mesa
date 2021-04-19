@@ -28,7 +28,6 @@
 #include "freedreno_blitter.h"
 #include "freedreno_draw.h"
 #include "freedreno_fence.h"
-#include "freedreno_log.h"
 #include "freedreno_program.h"
 #include "freedreno_resource.h"
 #include "freedreno_texture.h"
@@ -37,24 +36,60 @@
 #include "freedreno_query.h"
 #include "freedreno_query_hw.h"
 #include "freedreno_util.h"
+#include "ir3/ir3_cache.h"
 #include "util/u_upload_mgr.h"
-
-#if DETECT_OS_ANDROID
-#include "util/u_process.h"
-#include <sys/stat.h>
-#include <sys/types.h>
-#endif
 
 static void
 fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
 		unsigned flags)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct pipe_fence_handle *fence = NULL;
-	// TODO we want to lookup batch if it exists, but not create one if not.
-	struct fd_batch *batch = fd_context_batch(ctx);
+	struct fd_batch *batch = NULL;
 
-	DBG("%p: flush: flags=%x\n", ctx->batch, flags);
+	/* We want to lookup current batch if it exists, but not create a new
+	 * one if not (unless we need a fence)
+	 */
+	fd_batch_reference(&batch, ctx->batch);
+
+	DBG("%p: flush: flags=%x", batch, flags);
+
+	if (fencep && !batch) {
+		batch = fd_context_batch(ctx);
+	} else if (!batch) {
+		fd_bc_dump(ctx->screen, "%p: NULL batch, remaining:\n", ctx);
+		return;
+	}
+
+	/* With TC_FLUSH_ASYNC, the fence will have been pre-created from
+	 * the front-end thread.  But not yet associated with a batch,
+	 * because we cannot safely access ctx->batch outside of the driver
+	 * thread.  So instead, replace the existing batch->fence with the
+	 * one created earlier
+	 */
+	if ((flags & TC_FLUSH_ASYNC) && fencep) {
+		/* We don't currently expect async+flush in the fence-fd
+		 * case.. for that to work properly we'd need TC to tell
+		 * us in the create_fence callback that it needs an fd.
+		 */
+		assert(!(flags & PIPE_FLUSH_FENCE_FD));
+
+		fd_fence_set_batch(*fencep, batch);
+		fd_fence_ref(&batch->fence, *fencep);
+
+		/* We (a) cannot substitute the provided fence with last_fence,
+		 * and (b) need fd_fence_populate() to be eventually called on
+		 * the fence that was pre-created in frontend-thread:
+		 */
+		fd_fence_ref(&ctx->last_fence, NULL);
+
+		/* async flush is not compatible with deferred flush, since
+		 * nothing triggers the batch flush which fence_flush() would
+		 * be waiting for
+		 */
+		flags &= ~PIPE_FLUSH_DEFERRED;
+	}
 
 	/* In some sequence of events, we can end up with a last_fence that is
 	 * not an "fd" fence, which results in eglDupNativeFenceFDANDROID()
@@ -71,11 +106,6 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
 		fd_fence_ref(&fence, ctx->last_fence);
 		fd_bc_dump(ctx->screen, "%p: reuse last_fence, remaining:\n", ctx);
 		goto out;
-	}
-
-	if (!batch) {
-		fd_bc_dump(ctx->screen, "%p: NULL batch, remaining:\n", ctx);
-		return;
 	}
 
 	/* Take a ref to the batch's fence (batch can be unref'd when flushed: */
@@ -105,12 +135,15 @@ out:
 
 	fd_fence_ref(&fence, NULL);
 
-	if (flags & PIPE_FLUSH_END_OF_FRAME)
-		fd_log_eof(ctx);
+	fd_batch_reference(&batch, NULL);
+
+	u_trace_context_process(&ctx->trace_context,
+		!!(flags & PIPE_FLUSH_END_OF_FRAME));
 }
 
 static void
 fd_texture_barrier(struct pipe_context *pctx, unsigned flags)
+	in_dt
 {
 	if (flags == PIPE_TEXTURE_BARRIER_FRAMEBUFFER) {
 		struct fd_context *ctx = fd_context(pctx);
@@ -188,19 +221,98 @@ fd_emit_string5(struct fd_ringbuffer *ring,
  */
 static void
 fd_emit_string_marker(struct pipe_context *pctx, const char *string, int len)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 
 	if (!ctx->batch)
 		return;
 
+	struct fd_batch *batch = fd_context_batch_locked(ctx);
+
 	ctx->batch->needs_flush = true;
 
 	if (ctx->screen->gpu_id >= 500) {
-		fd_emit_string5(ctx->batch->draw, string, len);
+		fd_emit_string5(batch->draw, string, len);
 	} else {
-		fd_emit_string(ctx->batch->draw, string, len);
+		fd_emit_string(batch->draw, string, len);
 	}
+
+	fd_batch_unlock_submit(batch);
+	fd_batch_reference(&batch, NULL);
+}
+
+/**
+ * If we have a pending fence_server_sync() (GPU side sync), flush now.
+ * The alternative to try to track this with batch dependencies gets
+ * hairy quickly.
+ *
+ * Call this before switching to a different batch, to handle this case.
+ */
+void
+fd_context_switch_from(struct fd_context *ctx)
+{
+	if (ctx->batch && (ctx->batch->in_fence_fd != -1))
+		fd_batch_flush(ctx->batch);
+}
+
+/**
+ * If there is a pending fence-fd that we need to sync on, this will
+ * transfer the reference to the next batch we are going to render
+ * to.
+ */
+void
+fd_context_switch_to(struct fd_context *ctx, struct fd_batch *batch)
+{
+	if (ctx->in_fence_fd != -1) {
+		sync_accumulate("freedreno", &batch->in_fence_fd, ctx->in_fence_fd);
+		close(ctx->in_fence_fd);
+		ctx->in_fence_fd = -1;
+	}
+}
+
+/**
+ * Return a reference to the current batch, caller must unref.
+ */
+struct fd_batch *
+fd_context_batch(struct fd_context *ctx)
+{
+	struct fd_batch *batch = NULL;
+
+	tc_assert_driver_thread(ctx->tc);
+
+	fd_batch_reference(&batch, ctx->batch);
+
+	if (unlikely(!batch)) {
+		batch = fd_batch_from_fb(&ctx->screen->batch_cache, ctx, &ctx->framebuffer);
+		util_copy_framebuffer_state(&batch->framebuffer, &ctx->framebuffer);
+		fd_batch_reference(&ctx->batch, batch);
+		fd_context_all_dirty(ctx);
+	}
+	fd_context_switch_to(ctx, batch);
+
+	return batch;
+}
+
+/**
+ * Return a locked reference to the current batch.  A batch with emit
+ * lock held is protected against flushing while the lock is held.
+ * The emit-lock should be acquired before screen-lock.  The emit-lock
+ * should be held while emitting cmdstream.
+ */
+struct fd_batch *
+fd_context_batch_locked(struct fd_context *ctx)
+{
+	struct fd_batch *batch = NULL;
+
+	while (!batch) {
+		batch = fd_context_batch(ctx);
+		if (!fd_batch_lock_submit(batch)) {
+			fd_batch_reference(&batch, NULL);
+		}
+	}
+
+	return batch;
 }
 
 void
@@ -215,10 +327,15 @@ fd_context_destroy(struct pipe_context *pctx)
 	list_del(&ctx->node);
 	fd_screen_unlock(ctx->screen);
 
-	fd_log_process(ctx, true);
-	assert(list_is_empty(&ctx->log_chunks));
-
 	fd_fence_ref(&ctx->last_fence, NULL);
+
+	if (ctx->in_fence_fd != -1)
+		close(ctx->in_fence_fd);
+
+	for (i = 0; i < ARRAY_SIZE(ctx->pvtmem); i++) {
+		if (ctx->pvtmem[i].bo)
+			fd_bo_del(ctx->pvtmem[i].bo);
+	}
 
 	util_copy_framebuffer_state(&ctx->framebuffer, NULL);
 	fd_batch_reference(&ctx->batch, NULL);  /* unref current batch */
@@ -232,13 +349,15 @@ fd_context_destroy(struct pipe_context *pctx)
 	if (pctx->stream_uploader)
 		u_upload_destroy(pctx->stream_uploader);
 
-	if (ctx->clear_rs_state)
-		pctx->delete_rasterizer_state(pctx, ctx->clear_rs_state);
+	for (i = 0; i < ARRAY_SIZE(ctx->clear_rs_state); i++)
+		if (ctx->clear_rs_state[i])
+			pctx->delete_rasterizer_state(pctx, ctx->clear_rs_state[i]);
 
 	if (ctx->primconvert)
 		util_primconvert_destroy(ctx->primconvert);
 
 	slab_destroy_child(&ctx->transfer_pool);
+	slab_destroy_child(&ctx->transfer_pool_unsync);
 
 	for (i = 0; i < ARRAY_SIZE(ctx->vsc_pipe_bo); i++) {
 		if (!ctx->vsc_pipe_bo[i])
@@ -249,10 +368,16 @@ fd_context_destroy(struct pipe_context *pctx)
 	fd_device_del(ctx->dev);
 	fd_pipe_del(ctx->pipe);
 
-	mtx_destroy(&ctx->gmem_lock);
+	simple_mtx_destroy(&ctx->gmem_lock);
 
-	if (fd_mesa_debug & (FD_DBG_BSTAT | FD_DBG_MSGS)) {
-		printf("batch_total=%u, batch_sysmem=%u, batch_gmem=%u, batch_nondraw=%u, batch_restore=%u\n",
+	u_trace_context_fini(&ctx->trace_context);
+
+	fd_autotune_fini(&ctx->autotune);
+
+	ir3_cache_destroy(ctx->shader_cache);
+
+	if (FD_DBG(BSTAT) || FD_DBG(MSGS)) {
+		mesa_logi("batch_total=%u, batch_sysmem=%u, batch_gmem=%u, batch_nondraw=%u, batch_restore=%u\n",
 			(uint32_t)ctx->stats.batch_total, (uint32_t)ctx->stats.batch_sysmem,
 			(uint32_t)ctx->stats.batch_gmem, (uint32_t)ctx->stats.batch_nondraw,
 			(uint32_t)ctx->stats.batch_restore);
@@ -290,6 +415,11 @@ fd_get_device_reset_status(struct pipe_context *pctx)
 	int global_faults  = fd_get_reset_count(ctx, false);
 	enum pipe_reset_status status;
 
+	/* Not called in driver thread, but threaded_context syncs
+	 * before calling this:
+	 */
+	fd_context_access_begin(ctx);
+
 	if (context_faults != ctx->context_reset_count) {
 		status = PIPE_GUILTY_CONTEXT_RESET;
 	} else if (global_faults != ctx->global_reset_count) {
@@ -301,7 +431,50 @@ fd_get_device_reset_status(struct pipe_context *pctx)
 	ctx->context_reset_count = context_faults;
 	ctx->global_reset_count = global_faults;
 
+	fd_context_access_end(ctx);
+
 	return status;
+}
+
+static void
+fd_trace_record_ts(struct u_trace *ut, struct pipe_resource *timestamps,
+		unsigned idx)
+{
+	struct fd_batch *batch = container_of(ut, struct fd_batch, trace);
+	struct fd_ringbuffer *ring = batch->nondraw ? batch->draw : batch->gmem;
+
+	if (ring->cur == batch->last_timestamp_cmd) {
+		uint64_t *ts = fd_bo_map(fd_resource(timestamps)->bo);
+		ts[idx] = U_TRACE_NO_TIMESTAMP;
+		return;
+	}
+
+	unsigned ts_offset = idx * sizeof(uint64_t);
+	batch->ctx->record_timestamp(ring, fd_resource(timestamps)->bo, ts_offset);
+	batch->last_timestamp_cmd = ring->cur;
+}
+
+static uint64_t
+fd_trace_read_ts(struct u_trace_context *utctx,
+		struct pipe_resource *timestamps, unsigned idx)
+{
+	struct fd_context *ctx = container_of(utctx, struct fd_context, trace_context);
+	struct fd_bo *ts_bo = fd_resource(timestamps)->bo;
+
+	/* Only need to stall on results for the first entry: */
+	if (idx == 0) {
+		int ret = fd_bo_cpu_prep(ts_bo, ctx->pipe, DRM_FREEDRENO_PREP_READ);
+		if (ret)
+			return U_TRACE_NO_TIMESTAMP;
+	}
+
+	uint64_t *ts = fd_bo_map(ts_bo);
+
+	/* Don't translate the no-timestamp marker: */
+	if (ts[idx] == U_TRACE_NO_TIMESTAMP)
+		return U_TRACE_NO_TIMESTAMP;
+
+	return ctx->ts_to_ns(ts[idx]);
 }
 
 /* TODO we could combine a few of these small buffers (solid_vbuf,
@@ -383,6 +556,7 @@ fd_context_cleanup_common_vbos(struct fd_context *ctx)
 struct pipe_context *
 fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 		const uint8_t *primtypes, void *priv, unsigned flags)
+	disable_thread_safety_analysis
 {
 	struct fd_screen *screen = fd_screen(pscreen);
 	struct pipe_context *pctx;
@@ -390,15 +564,23 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 	int i;
 
 	/* lower numerical value == higher priority: */
-	if (fd_mesa_debug & FD_DBG_HIPRIO)
+	if (FD_DBG(HIPRIO))
 		prio = 0;
 	else if (flags & PIPE_CONTEXT_HIGH_PRIORITY)
 		prio = 0;
 	else if (flags & PIPE_CONTEXT_LOW_PRIORITY)
 		prio = 2;
 
+	/* Some of the stats will get printed out at context destroy, so
+	 * make sure they are collected:
+	 */
+	if (FD_DBG(BSTAT) || FD_DBG(MSGS))
+		ctx->stats_users++;
+
 	ctx->screen = screen;
 	ctx->pipe = fd_pipe_new2(screen->dev, FD_PIPE_3D, prio);
+
+	ctx->in_fence_fd = -1;
 
 	if (fd_device_version(screen->dev) >= FD_VERSION_ROBUSTNESS) {
 		ctx->context_reset_count = fd_get_reset_count(ctx, true);
@@ -407,11 +589,11 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 
 	ctx->primtypes = primtypes;
 	ctx->primtype_mask = 0;
-	for (i = 0; i < PIPE_PRIM_MAX; i++)
+	for (i = 0; i <= PIPE_PRIM_MAX; i++)
 		if (primtypes[i])
 			ctx->primtype_mask |= (1 << i);
 
-	(void) mtx_init(&ctx->gmem_lock, mtx_plain);
+	simple_mtx_init(&ctx->gmem_lock, mtx_plain);
 
 	/* need some sane default in case gallium frontends don't
 	 * set some state:
@@ -428,6 +610,7 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 	pctx->get_device_reset_status = fd_get_device_reset_status;
 	pctx->create_fence_fd = fd_create_fence_fd;
 	pctx->fence_server_sync = fd_fence_server_sync;
+	pctx->fence_server_signal = fd_fence_server_signal;
 	pctx->texture_barrier = fd_texture_barrier;
 	pctx->memory_barrier = fd_memory_barrier;
 
@@ -437,6 +620,7 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 	pctx->const_uploader = pctx->stream_uploader;
 
 	slab_create_child(&ctx->transfer_pool, &screen->transfer_pool);
+	slab_create_child(&ctx->transfer_pool_unsync, &screen->transfer_pool);
 
 	fd_draw_init(pctx);
 	fd_resource_context_init(pctx);
@@ -454,37 +638,48 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 
 	list_inithead(&ctx->hw_active_queries);
 	list_inithead(&ctx->acc_active_queries);
-	list_inithead(&ctx->log_chunks);
 
 	fd_screen_lock(ctx->screen);
+	ctx->seqno = ++screen->ctx_seqno;
 	list_add(&ctx->node, &ctx->screen->context_list);
 	fd_screen_unlock(ctx->screen);
 
 	ctx->current_scissor = &ctx->disabled_scissor;
 
-	ctx->log_out = stdout;
+	u_trace_context_init(&ctx->trace_context, pctx,
+			fd_trace_record_ts, fd_trace_read_ts);
 
-	if ((fd_mesa_debug & FD_DBG_LOG) &&
-			!(ctx->record_timestamp && ctx->ts_to_ns)) {
-		printf("logging not supported!\n");
-		fd_mesa_debug &= ~FD_DBG_LOG;
-	}
-
-#if DETECT_OS_ANDROID
-	if (fd_mesa_debug & FD_DBG_LOG) {
-		static unsigned idx = 0;
-		char *p;
-		asprintf(&p, "/data/fdlog/%s-%d.log", util_get_process_name(), idx++);
-
-		FILE *f = fopen(p, "w");
-		if (f)
-			ctx->log_out = f;
-	}
-#endif
+	fd_autotune_init(&ctx->autotune, screen->dev);
 
 	return pctx;
 
 fail:
 	pctx->destroy(pctx);
 	return NULL;
+}
+
+struct pipe_context *
+fd_context_init_tc(struct pipe_context *pctx, unsigned flags)
+{
+	struct fd_context *ctx = fd_context(pctx);
+
+	if (!(flags & PIPE_CONTEXT_PREFER_THREADED))
+		return pctx;
+
+	/* Clover (compute-only) is unsupported. */
+	if (flags & PIPE_CONTEXT_COMPUTE_ONLY)
+		return pctx;
+
+	struct pipe_context *tc = threaded_context_create(pctx,
+			&ctx->screen->transfer_pool,
+			fd_replace_buffer_storage,
+			fd_fence_create_unflushed,
+			&ctx->tc);
+
+	uint64_t total_ram;
+	if (tc && tc != pctx && os_get_total_physical_memory(&total_ram)) {
+		((struct threaded_context *) tc)->bytes_mapped_limit = total_ram / 16;
+	}
+
+	return tc;
 }

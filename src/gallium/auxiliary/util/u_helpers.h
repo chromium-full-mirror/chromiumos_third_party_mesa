@@ -40,12 +40,16 @@ extern "C" {
 void util_set_vertex_buffers_mask(struct pipe_vertex_buffer *dst,
                                   uint32_t *enabled_buffers,
                                   const struct pipe_vertex_buffer *src,
-                                  unsigned start_slot, unsigned count);
+                                  unsigned start_slot, unsigned count,
+                                  unsigned unbind_num_trailing_slots,
+                                  bool take_ownership);
 
 void util_set_vertex_buffers_count(struct pipe_vertex_buffer *dst,
                                    unsigned *dst_count,
                                    const struct pipe_vertex_buffer *src,
-                                   unsigned start_slot, unsigned count);
+                                   unsigned start_slot, unsigned count,
+                                   unsigned unbind_num_trailing_slots,
+                                   bool take_ownership);
 
 void util_set_shader_buffers_mask(struct pipe_shader_buffer *dst,
                                   uint32_t *enabled_buffers,
@@ -54,6 +58,7 @@ void util_set_shader_buffers_mask(struct pipe_shader_buffer *dst,
 
 bool util_upload_index_buffer(struct pipe_context *pipe,
                               const struct pipe_draw_info *info,
+                              const struct pipe_draw_start_count *draw,
                               struct pipe_resource **out_buffer,
                               unsigned *out_offset, unsigned alignment);
 
@@ -74,10 +79,6 @@ util_varying_is_point_coord(gl_varying_slot slot, uint32_t sprite_coord_enable)
 
    return false;
 }
-
-void
-util_pin_driver_threads_to_random_L3(struct pipe_context *ctx,
-                                     thrd_t *upper_thread);
 
 struct pipe_query *
 util_begin_pipestat_query(struct pipe_context *ctx);

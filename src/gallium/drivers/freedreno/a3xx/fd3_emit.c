@@ -101,7 +101,7 @@ fd3_emit_const_bo(struct fd_ringbuffer *ring, const struct ir3_shader_variant *v
 
 static void
 fd3_emit_const_ptrs(struct fd_ringbuffer *ring, gl_shader_stage type,
-		uint32_t regid, uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
+		uint32_t regid, uint32_t num, struct fd_bo **bos, uint32_t *offsets)
 {
 	uint32_t anum = align(num, 4);
 	uint32_t i;
@@ -117,8 +117,8 @@ fd3_emit_const_ptrs(struct fd_ringbuffer *ring, gl_shader_stage type,
 			CP_LOAD_STATE_1_STATE_TYPE(ST_CONSTANTS));
 
 	for (i = 0; i < num; i++) {
-		if (prscs[i]) {
-			OUT_RELOC(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
+		if (bos[i]) {
+			OUT_RELOC(ring, bos[i], offsets[i], 0, 0);
 		} else {
 			OUT_RING(ring, 0xbad00000 | (i << 16));
 		}
@@ -137,11 +137,11 @@ is_stateobj(struct fd_ringbuffer *ring)
 static void
 emit_const_ptrs(struct fd_ringbuffer *ring,
 		const struct ir3_shader_variant *v, uint32_t dst_offset,
-		uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
+		uint32_t num, struct fd_bo **bos, uint32_t *offsets)
 {
 	/* TODO inline this */
 	assert(dst_offset + num <= v->constlen * 4);
-	fd3_emit_const_ptrs(ring, v->type, dst_offset, num, prscs, offsets);
+	fd3_emit_const_ptrs(ring, v->type, dst_offset, num, bos, offsets);
 }
 
 #define VERT_TEX_OFF    0
@@ -228,7 +228,7 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 					fd3_pipe_sampler_view(tex->textures[i]) :
 					&dummy_view;
 			struct fd_resource *rsc = fd_resource(view->base.texture);
-			if (rsc && rsc->base.target == PIPE_BUFFER) {
+			if (rsc && rsc->b.b.target == PIPE_BUFFER) {
 				OUT_RELOC(ring, rsc->bo, view->base.u.buf.offset, 0, 0);
 				j = 1;
 			} else {
@@ -326,7 +326,7 @@ fd3_emit_gmem_restore_tex(struct fd_ringbuffer *ring,
 		 */
 		if (rsc->stencil && i == 0) {
 			rsc = rsc->stencil;
-			format = fd_gmem_restore_format(rsc->base.format);
+			format = fd_gmem_restore_format(rsc->b.b.format);
 		}
 
 		/* note: PIPE_BUFFER disallowed for surfaces */
@@ -612,7 +612,7 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		val |= COND(fp->writes_pos, A3XX_GRAS_CL_CLIP_CNTL_ZCLIP_DISABLE);
 		val |= COND(fp->fragcoord_compmask != 0, A3XX_GRAS_CL_CLIP_CNTL_ZCOORD |
 				A3XX_GRAS_CL_CLIP_CNTL_WCOORD);
-		if (!emit->key.ucp_enables)
+		if (!emit->key.key.ucp_enables)
 			val |= A3XX_GRAS_CL_CLIP_CNTL_NUM_USER_CLIP_PLANES(
 					MIN2(util_bitcount(planes), 6));
 		OUT_PKT0(ring, REG_A3XX_GRAS_CL_CLIP_CNTL, 1);
@@ -623,7 +623,7 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		uint32_t planes = ctx->rasterizer->clip_plane_enable;
 		int count = 0;
 
-		if (emit->key.ucp_enables)
+		if (emit->key.key.ucp_enables)
 			planes = 0;
 
 		while (planes && count < 6) {
@@ -746,8 +746,8 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 	OUT_PKT3(ring, CP_EVENT_WRITE, 1);
 	OUT_RING(ring, HLSQ_FLUSH);
 
-	if (emit->prog == &ctx->prog) { /* evil hack to deal sanely with clear path */
-		ir3_emit_vs_consts(vp, ring, ctx, emit->info);
+	if (!emit->skip_consts) {
+		ir3_emit_vs_consts(vp, ring, ctx, emit->info, emit->indirect, emit->draw);
 		if (!emit->binning_pass)
 			ir3_emit_fs_consts(fp, ring, ctx);
 	}

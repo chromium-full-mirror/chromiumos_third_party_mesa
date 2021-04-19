@@ -324,6 +324,7 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
    }
 
    struct vtn_ssa_value *dest = vtn_create_ssa_value(b, dest_type);
+   vtn_handle_no_contraction(b, vtn_untyped_value(b, w[2]));
    switch (entrypoint) {
    case GLSLstd450Radians:
       dest->def = nir_radians(nb, src[0]);
@@ -339,8 +340,11 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
       nir_ssa_def *sign = nir_fsign(nb, src[0]);
       nir_ssa_def *abs = nir_fabs(nb, src[0]);
       dest->def = nir_fmul(nb, sign, nir_ffract(nb, abs));
-      nir_store_deref(nb, vtn_nir_deref(b, w[6]),
-                      nir_fmul(nb, sign, nir_ffloor(nb, abs)), 0xf);
+
+      struct vtn_pointer *i_ptr = vtn_value(b, w[6], vtn_value_type_pointer)->pointer;
+      struct vtn_ssa_value *whole = vtn_create_ssa_value(b, i_ptr->type->type);
+      whole->def = nir_fmul(nb, sign, nir_ffloor(nb, abs));
+      vtn_variable_store(b, whole, i_ptr, 0);
       break;
    }
 
@@ -526,9 +530,12 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
       break;
 
    case GLSLstd450Frexp: {
-      nir_ssa_def *exponent = nir_frexp_exp(nb, src[0]);
       dest->def = nir_frexp_sig(nb, src[0]);
-      nir_store_deref(nb, vtn_nir_deref(b, w[6]), exponent, 0xf);
+
+      struct vtn_pointer *i_ptr = vtn_value(b, w[6], vtn_value_type_pointer)->pointer;
+      struct vtn_ssa_value *exp = vtn_create_ssa_value(b, i_ptr->type->type);
+      exp->def = nir_frexp_exp(nb, src[0]);
+      vtn_variable_store(b, exp, i_ptr, 0);
       break;
    }
 
@@ -544,12 +551,13 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
          b->shader->info.float_controls_execution_mode;
       bool exact;
       nir_op op = vtn_nir_alu_op_for_spirv_glsl_opcode(b, entrypoint, execution_mode, &exact);
-      b->nb.exact = exact;
+      /* don't override explicit decoration */
+      b->nb.exact |= exact;
       dest->def = nir_build_alu(&b->nb, op, src[0], src[1], src[2], NULL);
-      b->nb.exact = false;
       break;
    }
    }
+   b->nb.exact = false;
 
    vtn_push_ssa_value(b, w[2], dest);
 }

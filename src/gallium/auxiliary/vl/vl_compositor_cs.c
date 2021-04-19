@@ -597,7 +597,7 @@ cs_launch(struct vl_compositor *c,
    image.shader_access = image.access = PIPE_IMAGE_ACCESS_READ_WRITE;
    image.format = c->fb_state.cbufs[0]->texture->format;
 
-   ctx->set_shader_images(c->pipe, PIPE_SHADER_COMPUTE, 0, 1, &image);
+   ctx->set_shader_images(c->pipe, PIPE_SHADER_COMPUTE, 0, 1, 0, &image);
 
    /* Bind compute shader */
    ctx->bind_compute_state(ctx, cs);
@@ -654,7 +654,7 @@ set_viewport(struct vl_compositor_state *s,
    assert(s && drawn);
 
    void *ptr = pipe_buffer_map(s->pipe, s->shader_params,
-                               PIPE_TRANSFER_READ | PIPE_TRANSFER_WRITE,
+                               PIPE_MAP_READ | PIPE_MAP_WRITE,
                                &buf_transfer);
 
    if (!ptr)
@@ -711,11 +711,11 @@ draw_layers(struct vl_compositor       *c,
 
          drawn.area = calc_drawn_area(s, layer);
          drawn.scale_x = layer->viewport.scale[0] /
-                  (float)layer->sampler_views[0]->texture->width0 *
+                  (float)layer->sampler_views[0]->texture->width0 * 
                   (layer->src.br.x - layer->src.tl.x);
          drawn.scale_y = layer->viewport.scale[1] /
-                  ((float)layer->sampler_views[0]->texture->height0 *
-                   (s->interlaced ? 2.0 : 1.0) *
+                  ((float)layer->sampler_views[0]->texture->height0 * 
+                   (s->interlaced ? 2.0 : 1.0) * 
                    (layer->src.br.y - layer->src.tl.y));
 
          drawn.translate_x = (int)layer->viewport.translate[0];
@@ -727,14 +727,14 @@ draw_layers(struct vl_compositor       *c,
          c->pipe->bind_sampler_states(c->pipe, PIPE_SHADER_COMPUTE, 0,
                         num_sampler_views, layer->samplers);
          c->pipe->set_sampler_views(c->pipe, PIPE_SHADER_COMPUTE, 0,
-                        num_sampler_views, samplers);
+                        num_sampler_views, 0, samplers);
 
          cs_launch(c, layer->cs, &(drawn.area));
 
          /* Unbind. */
-         c->pipe->set_shader_images(c->pipe, PIPE_SHADER_COMPUTE, 0, 1, NULL);
-         c->pipe->set_constant_buffer(c->pipe, PIPE_SHADER_COMPUTE, 0, NULL);
-         c->pipe->set_sampler_views(c->pipe, PIPE_SHADER_FRAGMENT, 0,
+         c->pipe->set_shader_images(c->pipe, PIPE_SHADER_COMPUTE, 0, 0, 1, NULL);
+         c->pipe->set_constant_buffer(c->pipe, PIPE_SHADER_COMPUTE, 0, false, NULL);
+         c->pipe->set_sampler_views(c->pipe, PIPE_SHADER_FRAGMENT, 0, 0,
                         num_sampler_views, NULL);
          c->pipe->bind_compute_state(c->pipe, NULL);
          c->pipe->bind_sampler_states(c->pipe, PIPE_SHADER_COMPUTE, 0,

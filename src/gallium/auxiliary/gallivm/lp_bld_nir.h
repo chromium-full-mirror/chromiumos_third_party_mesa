@@ -86,6 +86,7 @@ struct lp_build_nir_context
    void (*atomic_global)(struct lp_build_nir_context *bld_base,
                          nir_intrinsic_op op,
                          unsigned addr_bit_size,
+                         unsigned val_bit_size,
                          LLVMValueRef addr,
                          LLVMValueRef val, LLVMValueRef val2,
                          LLVMValueRef *result);
@@ -100,6 +101,7 @@ struct lp_build_nir_context
 
    void (*atomic_mem)(struct lp_build_nir_context *bld_base,
                       nir_intrinsic_op op,
+                      unsigned bit_size,
                       LLVMValueRef index, LLVMValueRef offset,
                       LLVMValueRef val, LLVMValueRef val2,
                       LLVMValueRef *result);
@@ -110,8 +112,8 @@ struct lp_build_nir_context
                     struct lp_img_params *params);
    void (*image_size)(struct lp_build_nir_context *bld_base,
                       struct lp_sampler_size_query_params *params);
-   LLVMValueRef (*get_buffer_size)(struct lp_build_nir_context *bld_base,
-                                   LLVMValueRef index);
+   LLVMValueRef (*get_ssbo_size)(struct lp_build_nir_context *bld_base,
+                                 LLVMValueRef index);
 
    void (*load_var)(struct lp_build_nir_context *bld_base,
                     nir_variable_mode deref_mode,
@@ -147,6 +149,15 @@ struct lp_build_nir_context
                      LLVMValueRef reg_storage,
                      LLVMValueRef dst[NIR_MAX_VEC_COMPONENTS]);
 
+   void (*load_scratch)(struct lp_build_nir_context *bld_base,
+                        unsigned nc, unsigned bit_size,
+                        LLVMValueRef offset,
+                        LLVMValueRef result[NIR_MAX_VEC_COMPONENTS]);
+   void (*store_scratch)(struct lp_build_nir_context *bld_base,
+                         unsigned writemask, unsigned nc,
+                         unsigned bit_size, LLVMValueRef offset,
+                         LLVMValueRef val);
+
    void (*emit_var_decl)(struct lp_build_nir_context *bld_base,
                          nir_variable *var);
 
@@ -174,6 +185,12 @@ struct lp_build_nir_context
    void (*end_primitive)(struct lp_build_nir_context *bld_base, uint32_t stream_id);
 
    void (*vote)(struct lp_build_nir_context *bld_base, LLVMValueRef src, nir_intrinsic_instr *instr, LLVMValueRef dst[4]);
+   void (*elect)(struct lp_build_nir_context *bld_base, LLVMValueRef dst[4]);
+   void (*reduce)(struct lp_build_nir_context *bld_base, LLVMValueRef src, nir_intrinsic_instr *instr, LLVMValueRef dst[4]);
+   void (*ballot)(struct lp_build_nir_context *bld_base, LLVMValueRef src, nir_intrinsic_instr *instr, LLVMValueRef dst[4]);
+   void (*read_invocation)(struct lp_build_nir_context *bld_base,
+                           LLVMValueRef src, unsigned bit_size, LLVMValueRef invoc,
+                           LLVMValueRef dst[4]);
    void (*helper_invocation)(struct lp_build_nir_context *bld_base, LLVMValueRef *dst);
 
    void (*interp_at)(struct lp_build_nir_context *bld_base,
@@ -209,6 +226,8 @@ struct lp_build_nir_soa_context
    LLVMValueRef ssbo_sizes[LP_MAX_TGSI_SHADER_BUFFERS];
 
    LLVMValueRef shared_ptr;
+   LLVMValueRef scratch_ptr;
+   unsigned scratch_size;
 
    const struct lp_build_coro_suspend_info *coro;
 
@@ -259,6 +278,17 @@ lp_nir_array_build_gather_values(LLVMBuilderRef builder,
    return arr;
 }
 
+static inline struct lp_build_context *get_flt_bld(struct lp_build_nir_context *bld_base,
+                                                   unsigned op_bit_size)
+{
+   switch (op_bit_size) {
+   case 64:
+      return &bld_base->dbl_bld;
+   default:
+   case 32:
+      return &bld_base->base;
+   }
+}
 
 static inline struct lp_build_context *get_int_bld(struct lp_build_nir_context *bld_base,
                                                    bool is_unsigned,

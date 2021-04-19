@@ -52,6 +52,7 @@ enum viv_features_word {
    viv_chipMinorFeatures4 = 5,
    viv_chipMinorFeatures5 = 6,
    viv_chipMinorFeatures6 = 7,
+   viv_chipMinorFeatures7 = 8,
    VIV_FEATURES_WORD_COUNT /* Must be last */
 };
 
@@ -97,7 +98,7 @@ etna_screen(struct pipe_screen *pscreen)
 
 struct etna_bo *
 etna_screen_bo_from_handle(struct pipe_screen *pscreen,
-                           struct winsys_handle *whandle, unsigned *out_stride);
+                           struct winsys_handle *whandle);
 
 struct pipe_screen *
 etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,

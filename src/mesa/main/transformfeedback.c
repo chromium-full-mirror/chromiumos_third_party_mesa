@@ -33,6 +33,7 @@
 
 #include "buffers.h"
 #include "context.h"
+#include "draw_validate.h"
 #include "hash.h"
 #include "macros.h"
 #include "mtypes.h"
@@ -52,7 +53,7 @@ struct using_program_tuple
 };
 
 static void
-active_xfb_object_references_program(GLuint key, void *data, void *user_data)
+active_xfb_object_references_program(void *data, void *user_data)
 {
    struct using_program_tuple *callback_data = user_data;
    struct gl_transform_feedback_object *obj = data;
@@ -78,7 +79,7 @@ _mesa_transform_feedback_is_using_program(struct gl_context *ctx,
                         active_xfb_object_references_program, &callback_data);
 
    /* Also check DefaultObject, as it's not in the Objects hash table. */
-   active_xfb_object_references_program(0, ctx->TransformFeedback.DefaultObject,
+   active_xfb_object_references_program(ctx->TransformFeedback.DefaultObject,
                                         &callback_data);
 
    return callback_data.found;
@@ -153,7 +154,7 @@ _mesa_init_transform_feedback(struct gl_context *ctx)
  * Callback for _mesa_HashDeleteAll().
  */
 static void
-delete_cb(GLuint key, void *data, void *userData)
+delete_cb(void *data, void *userData)
 {
    struct gl_context *ctx = (struct gl_context *) userData;
    struct gl_transform_feedback_object *obj =
@@ -455,7 +456,7 @@ begin_transform_feedback(struct gl_context *ctx, GLenum mode, bool no_error)
       }
    }
 
-   FLUSH_VERTICES(ctx, 0);
+   FLUSH_VERTICES(ctx, 0, 0);
    ctx->NewDriverState |= ctx->DriverFlags.NewTransformFeedback;
 
    obj->Active = GL_TRUE;
@@ -483,6 +484,7 @@ begin_transform_feedback(struct gl_context *ctx, GLenum mode, bool no_error)
 
    assert(ctx->Driver.BeginTransformFeedback);
    ctx->Driver.BeginTransformFeedback(ctx, mode, obj);
+   _mesa_update_valid_to_render_state(ctx);
 }
 
 
@@ -506,7 +508,7 @@ static void
 end_transform_feedback(struct gl_context *ctx,
                        struct gl_transform_feedback_object *obj)
 {
-   FLUSH_VERTICES(ctx, 0);
+   FLUSH_VERTICES(ctx, 0, 0);
    ctx->NewDriverState |= ctx->DriverFlags.NewTransformFeedback;
 
    assert(ctx->Driver.EndTransformFeedback);
@@ -516,6 +518,7 @@ end_transform_feedback(struct gl_context *ctx,
    ctx->TransformFeedback.CurrentObject->Active = GL_FALSE;
    ctx->TransformFeedback.CurrentObject->Paused = GL_FALSE;
    ctx->TransformFeedback.CurrentObject->EndedAnytime = GL_TRUE;
+   _mesa_update_valid_to_render_state(ctx);
 }
 
 
@@ -1026,11 +1029,11 @@ _mesa_GetTransformFeedbackVarying(GLuint program, GLuint index,
    if (type)
       _mesa_program_resource_prop((struct gl_shader_program *) shProg,
                                   res, index, GL_TYPE, (GLint*) type,
-                                  "glGetTransformFeedbackVarying");
+                                  false, "glGetTransformFeedbackVarying");
    if (size)
       _mesa_program_resource_prop((struct gl_shader_program *) shProg,
                                   res, index, GL_ARRAY_SIZE, (GLint*) size,
-                                  "glGetTransformFeedbackVarying");
+                                  false, "glGetTransformFeedbackVarying");
 }
 
 
@@ -1054,7 +1057,6 @@ static void
 create_transform_feedbacks(struct gl_context *ctx, GLsizei n, GLuint *ids,
                            bool dsa)
 {
-   GLuint first;
    const char* func;
 
    if (dsa)
@@ -1070,20 +1072,17 @@ create_transform_feedbacks(struct gl_context *ctx, GLsizei n, GLuint *ids,
    if (!ids)
       return;
 
-   /* we don't need contiguous IDs, but this might be faster */
-   first = _mesa_HashFindFreeKeyBlock(ctx->TransformFeedback.Objects, n);
-   if (first) {
+   if (_mesa_HashFindFreeKeys(ctx->TransformFeedback.Objects, ids, n)) {
       GLsizei i;
       for (i = 0; i < n; i++) {
          struct gl_transform_feedback_object *obj
-            = ctx->Driver.NewTransformFeedback(ctx, first + i);
+            = ctx->Driver.NewTransformFeedback(ctx, ids[i]);
          if (!obj) {
             _mesa_error(ctx, GL_OUT_OF_MEMORY, "%s", func);
             return;
          }
-         ids[i] = first + i;
-         _mesa_HashInsertLocked(ctx->TransformFeedback.Objects, first + i,
-                                obj);
+         _mesa_HashInsertLocked(ctx->TransformFeedback.Objects, ids[i],
+                                obj, true);
          if (dsa) {
             /* this is normally done at bind time in the non-dsa case */
             obj->EverBound = GL_TRUE;
@@ -1253,13 +1252,14 @@ static void
 pause_transform_feedback(struct gl_context *ctx,
                          struct gl_transform_feedback_object *obj)
 {
-   FLUSH_VERTICES(ctx, 0);
+   FLUSH_VERTICES(ctx, 0, 0);
    ctx->NewDriverState |= ctx->DriverFlags.NewTransformFeedback;
 
    assert(ctx->Driver.PauseTransformFeedback);
    ctx->Driver.PauseTransformFeedback(ctx, obj);
 
    obj->Paused = GL_TRUE;
+   _mesa_update_valid_to_render_state(ctx);
 }
 
 
@@ -1297,13 +1297,14 @@ static void
 resume_transform_feedback(struct gl_context *ctx,
                           struct gl_transform_feedback_object *obj)
 {
-   FLUSH_VERTICES(ctx, 0);
+   FLUSH_VERTICES(ctx, 0, 0);
    ctx->NewDriverState |= ctx->DriverFlags.NewTransformFeedback;
 
    obj->Paused = GL_FALSE;
 
    assert(ctx->Driver.ResumeTransformFeedback);
    ctx->Driver.ResumeTransformFeedback(ctx, obj);
+   _mesa_update_valid_to_render_state(ctx);
 }
 
 

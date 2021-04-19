@@ -1,3 +1,0 @@
-# This subset of CTS seems to randomly hangs on RAVEN only.
-# This needs to be investigated and fixed!
-dEQP-VK.synchronization.*

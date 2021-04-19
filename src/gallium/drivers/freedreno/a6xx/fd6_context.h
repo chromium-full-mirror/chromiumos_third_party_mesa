@@ -70,23 +70,7 @@ struct fd6_context {
 	struct u_upload_mgr *border_color_uploader;
 	struct pipe_resource *border_color_buf;
 
-	/* if *any* of bits are set in {v,f}saturate_{s,t,r} */
-	bool vsaturate, fsaturate;
-
-	/* bitmask of sampler which needs coords clamped for vertex
-	 * shader:
-	 */
-	uint16_t vsaturate_s, vsaturate_t, vsaturate_r;
-
-	/* bitmask of sampler which needs coords clamped for frag
-	 * shader:
-	 */
-	uint16_t fsaturate_s, fsaturate_t, fsaturate_r;
-
-	/* some state changes require a different shader variant.  Keep
-	 * track of this so we know when we need to re-emit shader state
-	 * due to variant change.  See fixup_shader_state()
-	 */
+	/* storage for ctx->last.key: */
 	struct ir3_shader_key last_key;
 
 	/* Is there current VS driver-param state set? */
@@ -95,27 +79,11 @@ struct fd6_context {
 	/* number of active samples-passed queries: */
 	int samples_passed_queries;
 
-	/* maps per-shader-stage state plus variant key to hw
-	 * program stateobj:
-	 */
-	struct ir3_cache *shader_cache;
-
 	/* cached stateobjs to avoid hashtable lookup when not dirty: */
 	const struct fd6_program_state *prog;
 
 	uint16_t tex_seqno;
 	struct hash_table *tex_cache;
-
-	/* collection of magic register values which differ between
-	 * various different a6xx
-	 */
-	struct {
-		uint32_t RB_UNKNOWN_8E04_blit;    /* value for CP_BLIT's */
-		uint32_t RB_CCU_CNTL_bypass;      /* for sysmem rendering */
-		uint32_t RB_CCU_CNTL_gmem;        /* for GMEM rendering */
-		uint32_t PC_UNKNOWN_9805;
-		uint32_t SP_UNKNOWN_A0F8;
-	} magic;
 
 	struct {
 		/* previous binning/draw lrz state, which is a function of multiple
@@ -156,17 +124,12 @@ struct fd6_control {
 static inline void
 emit_marker6(struct fd_ringbuffer *ring, int scratch_idx)
 {
-	extern unsigned marker_cnt;
+	extern int32_t marker_cnt;
 	unsigned reg = REG_A6XX_CP_SCRATCH_REG(scratch_idx);
-#ifdef DEBUG
-#  define __EMIT_MARKER 1
-#else
-#  define __EMIT_MARKER 0
-#endif
 	if (__EMIT_MARKER) {
 		OUT_WFI5(ring);
 		OUT_PKT4(ring, reg, 1);
-		OUT_RING(ring, ++marker_cnt);
+		OUT_RING(ring, p_atomic_inc_return(&marker_cnt));
 	}
 }
 

@@ -305,7 +305,7 @@ static bool ppir_emit_intrinsic(ppir_block *block, nir_instr *ni)
          op = ppir_op_load_frontface;
          break;
       default:
-         assert(0);
+         unreachable("bad intrinsic");
          break;
       }
 
@@ -778,6 +778,7 @@ static ppir_compiler *ppir_compiler_create(void *prog, unsigned num_reg, unsigne
 
    list_inithead(&comp->block_list);
    list_inithead(&comp->reg_list);
+   comp->reg_num = 0;
    comp->blocks = _mesa_hash_table_u64_create(prog);
 
    comp->var_nodes = (ppir_node **)(comp + 1);
@@ -833,13 +834,13 @@ static void ppir_print_shader_db(struct nir_shader *nir, ppir_compiler *comp,
 {
    const struct shader_info *info = &nir->info;
    char *shaderdb;
-   int ret = asprintf(&shaderdb,
-                      "%s shader: %d inst, %d loops, %d:%d spills:fills\n",
-                      gl_shader_stage_name(info->stage),
-                      comp->cur_instr_index,
-                      comp->num_loops,
-                      comp->num_spills,
-                      comp->num_fills);
+   ASSERTED int ret = asprintf(&shaderdb,
+                               "%s shader: %d inst, %d loops, %d:%d spills:fills\n",
+                               gl_shader_stage_name(info->stage),
+                               comp->cur_instr_index,
+                               comp->num_loops,
+                               comp->num_spills,
+                               comp->num_fills);
    assert(ret >= 0);
 
    if (lima_debug & LIMA_DEBUG_SHADERDB)
@@ -873,7 +874,7 @@ static void ppir_add_write_after_read_deps(ppir_compiler *comp)
    }
 }
 
-bool ppir_compile_nir(struct lima_fs_shader_state *prog, struct nir_shader *nir,
+bool ppir_compile_nir(struct lima_fs_compiled_shader *prog, struct nir_shader *nir,
                       struct ra_regs *ra,
                       struct pipe_debug_callback *debug)
 {
@@ -937,6 +938,7 @@ bool ppir_compile_nir(struct lima_fs_shader_state *prog, struct nir_shader *nir,
       r->num_components = reg->num_components;
       r->is_head = false;
       list_addtail(&r->list, &comp->reg_list);
+      comp->reg_num++;
    }
 
    if (!ppir_emit_cf_list(comp, &func->body))

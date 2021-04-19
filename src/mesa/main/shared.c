@@ -85,6 +85,8 @@ _mesa_alloc_shared_state(struct gl_context *ctx)
    shared->ShaderObjects = _mesa_NewHashTable();
 
    shared->BufferObjects = _mesa_NewHashTable();
+   shared->ZombieBufferObjects = _mesa_set_create(NULL, _mesa_hash_pointer,
+                                                  _mesa_key_pointer_equal);
 
    /* GL_ARB_sampler_objects */
    shared->SamplerObjects = _mesa_NewHashTable();
@@ -146,7 +148,7 @@ _mesa_alloc_shared_state(struct gl_context *ctx)
  * Callback for deleting a display list.  Called by _mesa_HashDeleteAll().
  */
 static void
-delete_displaylist_cb(GLuint id, void *data, void *userData)
+delete_displaylist_cb(void *data, void *userData)
 {
    struct gl_display_list *list = (struct gl_display_list *) data;
    struct gl_context *ctx = (struct gl_context *) userData;
@@ -158,7 +160,7 @@ delete_displaylist_cb(GLuint id, void *data, void *userData)
  * Callback for deleting a bitmap atlas.  Called by _mesa_HashDeleteAll().
  */
 static void
-delete_bitmap_atlas_cb(GLuint id, void *data, void *userData)
+delete_bitmap_atlas_cb(void *data, void *userData)
 {
    struct gl_bitmap_atlas *atlas = (struct gl_bitmap_atlas *) data;
    struct gl_context *ctx = (struct gl_context *) userData;
@@ -170,7 +172,7 @@ delete_bitmap_atlas_cb(GLuint id, void *data, void *userData)
  * Callback for deleting a texture object.  Called by _mesa_HashDeleteAll().
  */
 static void
-delete_texture_cb(GLuint id, void *data, void *userData)
+delete_texture_cb(void *data, void *userData)
 {
    struct gl_texture_object *texObj = (struct gl_texture_object *) data;
    struct gl_context *ctx = (struct gl_context *) userData;
@@ -182,7 +184,7 @@ delete_texture_cb(GLuint id, void *data, void *userData)
  * Callback for deleting a program object.  Called by _mesa_HashDeleteAll().
  */
 static void
-delete_program_cb(GLuint id, void *data, void *userData)
+delete_program_cb(void *data, void *userData)
 {
    struct gl_program *prog = (struct gl_program *) data;
    struct gl_context *ctx = (struct gl_context *) userData;
@@ -199,7 +201,7 @@ delete_program_cb(GLuint id, void *data, void *userData)
  * Called by _mesa_HashDeleteAll().
  */
 static void
-delete_fragshader_cb(GLuint id, void *data, void *userData)
+delete_fragshader_cb(void *data, void *userData)
 {
    struct ati_fragment_shader *shader = (struct ati_fragment_shader *) data;
    struct gl_context *ctx = (struct gl_context *) userData;
@@ -211,7 +213,7 @@ delete_fragshader_cb(GLuint id, void *data, void *userData)
  * Callback for deleting a buffer object.  Called by _mesa_HashDeleteAll().
  */
 static void
-delete_bufferobj_cb(GLuint id, void *data, void *userData)
+delete_bufferobj_cb(void *data, void *userData)
 {
    struct gl_buffer_object *bufObj = (struct gl_buffer_object *) data;
    struct gl_context *ctx = (struct gl_context *) userData;
@@ -226,7 +228,7 @@ delete_bufferobj_cb(GLuint id, void *data, void *userData)
  * to avoid memory access error.
  */
 static void
-free_shader_program_data_cb(GLuint id, void *data, void *userData)
+free_shader_program_data_cb(void *data, void *userData)
 {
    struct gl_context *ctx = (struct gl_context *) userData;
    struct gl_shader_program *shProg = (struct gl_shader_program *) data;
@@ -242,7 +244,7 @@ free_shader_program_data_cb(GLuint id, void *data, void *userData)
  * Called by _mesa_HashDeleteAll().
  */
 static void
-delete_shader_cb(GLuint id, void *data, void *userData)
+delete_shader_cb(void *data, void *userData)
 {
    struct gl_context *ctx = (struct gl_context *) userData;
    struct gl_shader *sh = (struct gl_shader *) data;
@@ -261,7 +263,7 @@ delete_shader_cb(GLuint id, void *data, void *userData)
  * Callback for deleting a framebuffer object.  Called by _mesa_HashDeleteAll()
  */
 static void
-delete_framebuffer_cb(GLuint id, void *data, void *userData)
+delete_framebuffer_cb(void *data, UNUSED void *userData)
 {
    struct gl_framebuffer *fb = (struct gl_framebuffer *) data;
    /* The fact that the framebuffer is in the hashtable means its refcount
@@ -282,7 +284,7 @@ delete_framebuffer_cb(GLuint id, void *data, void *userData)
  * Callback for deleting a renderbuffer object. Called by _mesa_HashDeleteAll()
  */
 static void
-delete_renderbuffer_cb(GLuint id, void *data, void *userData)
+delete_renderbuffer_cb(void *data, void *userData)
 {
    struct gl_context *ctx = (struct gl_context *) userData;
    struct gl_renderbuffer *rb = (struct gl_renderbuffer *) data;
@@ -296,7 +298,7 @@ delete_renderbuffer_cb(GLuint id, void *data, void *userData)
  * Callback for deleting a sampler object. Called by _mesa_HashDeleteAll()
  */
 static void
-delete_sampler_object_cb(GLuint id, void *data, void *userData)
+delete_sampler_object_cb(void *data, void *userData)
 {
    struct gl_context *ctx = (struct gl_context *) userData;
    struct gl_sampler_object *sampObj = (struct gl_sampler_object *) data;
@@ -307,7 +309,7 @@ delete_sampler_object_cb(GLuint id, void *data, void *userData)
  * Callback for deleting a memory object.  Called by _mesa_HashDeleteAll().
  */
 static void
-delete_memory_object_cb(GLuint id, void *data, void *userData)
+delete_memory_object_cb(void *data, void *userData)
 {
    struct gl_memory_object *memObj = (struct gl_memory_object *) data;
    struct gl_context *ctx = (struct gl_context *) userData;
@@ -318,7 +320,7 @@ delete_memory_object_cb(GLuint id, void *data, void *userData)
  * Callback for deleting a memory object.  Called by _mesa_HashDeleteAll().
  */
 static void
-delete_semaphore_object_cb(GLuint id, void *data, void *userData)
+delete_semaphore_object_cb(void *data, void *userData)
 {
    struct gl_semaphore_object *semObj = (struct gl_semaphore_object *) data;
    struct gl_context *ctx = (struct gl_context *) userData;
@@ -389,6 +391,13 @@ free_shared_state(struct gl_context *ctx, struct gl_shared_state *shared)
    if (shared->BufferObjects) {
       _mesa_HashDeleteAll(shared->BufferObjects, delete_bufferobj_cb, ctx);
       _mesa_DeleteHashTable(shared->BufferObjects);
+   }
+
+   if (shared->ZombieBufferObjects) {
+      set_foreach(shared->ZombieBufferObjects, entry) {
+         assert(!"ZombieBufferObjects should be empty");
+      }
+      _mesa_set_destroy(shared->ZombieBufferObjects, NULL);
    }
 
    if (shared->FrameBuffers) {

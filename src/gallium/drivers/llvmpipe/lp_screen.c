@@ -74,7 +74,6 @@ static const struct debug_named_value lp_debug_flags[] = {
    { "fs", DEBUG_FS, NULL },
    { "cs", DEBUG_CS, NULL },
    { "tgsi_ir", DEBUG_TGSI_IR, NULL },
-   { "cl", DEBUG_CL, NULL },
    { "cache_stats", DEBUG_CACHE_STATS, NULL },
    DEBUG_NAMED_VALUE_END
 };
@@ -224,8 +223,9 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 64;
    case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
       return 1;
+   /* Adressing that many 64bpp texels fits in an i32 so this is a reasonable value */
    case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
-      return 65536;
+      return 134217728;
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
       return 16;
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
@@ -234,6 +234,7 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return PIPE_MAX_VIEWPORTS;
    case PIPE_CAP_ENDIANNESS:
       return PIPE_ENDIAN_NATIVE;
+   case PIPE_CAP_TGSI_TES_LAYER_VIEWPORT:
    case PIPE_CAP_TGSI_VS_LAYER_VIEWPORT:
       return 1;
    case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
@@ -325,6 +326,13 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
    case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
       return 0;
+
+   case PIPE_CAP_SHAREABLE_SHADERS:
+      /* Can't expose shareable shaders because the draw shaders reference the
+       * draw module's state, which is per-context.
+       */
+      return 0;
+
    case PIPE_CAP_MAX_GS_INVOCATIONS:
       return 32;
    case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
@@ -333,11 +341,13 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_TG4_COMPONENT_IN_SWIZZLE:
    case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
       return 1;
+   case PIPE_CAP_SAMPLER_REDUCTION_MINMAX:
    case PIPE_CAP_TGSI_TXQS:
    case PIPE_CAP_TGSI_VOTE:
    case PIPE_CAP_LOAD_CONSTBUF:
    case PIPE_CAP_TEXTURE_MULTISAMPLE:
    case PIPE_CAP_SAMPLE_SHADING:
+   case PIPE_CAP_GL_SPIRV:
    case PIPE_CAP_POST_DEPTH_COVERAGE:
    case PIPE_CAP_PACKED_UNIFORMS: {
       struct llvmpipe_screen *lscreen = llvmpipe_screen(screen);
@@ -357,9 +367,9 @@ llvmpipe_get_shader_param(struct pipe_screen *screen,
    switch(shader)
    {
    case PIPE_SHADER_COMPUTE:
-      if ((LP_DEBUG & DEBUG_CL) && param == PIPE_SHADER_CAP_SUPPORTED_IRS)
+      if ((lscreen->allow_cl) && param == PIPE_SHADER_CAP_SUPPORTED_IRS)
          return (1 << PIPE_SHADER_IR_TGSI) | (1 << PIPE_SHADER_IR_NIR) | (1 << PIPE_SHADER_IR_NIR_SERIALIZED);
-      /* fallthrough */
+      FALLTHROUGH;
    case PIPE_SHADER_FRAGMENT:
       if (param == PIPE_SHADER_CAP_PREFERRED_IR) {
          if (lscreen->use_tgsi)
@@ -371,13 +381,13 @@ llvmpipe_get_shader_param(struct pipe_screen *screen,
       default:
          return gallivm_get_shader_param(param);
       }
-      /* fallthrough */
+      FALLTHROUGH;
    case PIPE_SHADER_TESS_CTRL:
    case PIPE_SHADER_TESS_EVAL:
       /* Tessellation shader needs llvm coroutines support */
       if (!GALLIVM_HAVE_CORO || lscreen->use_tgsi)
          return 0;
-      /* fallthrough */
+      FALLTHROUGH;
    case PIPE_SHADER_VERTEX:
    case PIPE_SHADER_GEOMETRY:
       if (param == PIPE_SHADER_CAP_PREFERRED_IR) {
@@ -415,11 +425,11 @@ llvmpipe_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
 {
    switch (param) {
    case PIPE_CAPF_MAX_LINE_WIDTH:
-      /* fall-through */
+      FALLTHROUGH;
    case PIPE_CAPF_MAX_LINE_WIDTH_AA:
       return 255.0; /* arbitrary */
    case PIPE_CAPF_MAX_POINT_WIDTH:
-      /* fall-through */
+      FALLTHROUGH;
    case PIPE_CAPF_MAX_POINT_WIDTH_AA:
       return LP_MAX_POINT_WIDTH; /* arbitrary */
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
@@ -508,7 +518,7 @@ llvmpipe_get_compute_param(struct pipe_screen *_screen,
    case PIPE_COMPUTE_CAP_IMAGES_SUPPORTED:
       if (ret) {
          uint32_t *images = ret;
-         *images = 0;
+         *images = LP_MAX_TGSI_SHADER_IMAGES;
       }
       return sizeof(uint32_t);
    case PIPE_COMPUTE_CAP_MAX_VARIABLE_THREADS_PER_BLOCK:
@@ -548,26 +558,40 @@ static const struct nir_shader_compiler_options gallivm_nir_options = {
    .lower_fsat = true,
    .lower_bitfield_insert_to_shifts = true,
    .lower_bitfield_extract_to_shifts = true,
-   .lower_sub = true,
-   .lower_ffma = true,
+   .lower_fdot = true,
+   .lower_fdph = true,
+   .lower_ffma16 = true,
+   .lower_ffma32 = true,
+   .lower_ffma64 = true,
    .lower_fmod = true,
    .lower_hadd = true,
    .lower_add_sat = true,
+   .lower_ldexp = true,
    .lower_pack_snorm_2x16 = true,
    .lower_pack_snorm_4x8 = true,
    .lower_pack_unorm_2x16 = true,
    .lower_pack_unorm_4x8 = true,
+   .lower_pack_half_2x16 = true,
+   .lower_pack_split = true,
    .lower_unpack_snorm_2x16 = true,
    .lower_unpack_snorm_4x8 = true,
    .lower_unpack_unorm_2x16 = true,
    .lower_unpack_unorm_4x8 = true,
+   .lower_unpack_half_2x16 = true,
    .lower_extract_byte = true,
    .lower_extract_word = true,
    .lower_rotate = true,
+   .lower_uadd_carry = true,
+   .lower_usub_borrow = true,
+   .lower_mul_2x32_64 = true,
    .lower_ifind_msb = true,
    .max_unroll_iterations = 32,
    .use_interpolated_input_intrinsics = true,
    .lower_to_scalar = true,
+   .lower_cs_local_index_from_id = true,
+   .lower_uniforms_to_ubo = true,
+   .lower_vector_cmp = true,
+   .lower_device_index_to_zero = true,
 };
 
 static void
@@ -664,6 +688,10 @@ llvmpipe_is_format_supported( struct pipe_screen *_screen,
       }
    }
 
+   if (!(bind & PIPE_BIND_VERTEX_BUFFER) &&
+       util_format_is_scaled(format))
+      return false;
+
    if (bind & PIPE_BIND_DISPLAY_TARGET) {
       if(!winsys->is_displaytarget_format_supported(winsys, bind, format))
          return false;
@@ -678,8 +706,7 @@ llvmpipe_is_format_supported( struct pipe_screen *_screen,
    }
 
    if (format_desc->layout == UTIL_FORMAT_LAYOUT_ASTC ||
-       format_desc->layout == UTIL_FORMAT_LAYOUT_ATC ||
-       format_desc->layout == UTIL_FORMAT_LAYOUT_FXT1) {
+       format_desc->layout == UTIL_FORMAT_LAYOUT_ATC) {
       /* Software decoding is not hooked up. */
       return false;
    }
@@ -701,6 +728,7 @@ llvmpipe_is_format_supported( struct pipe_screen *_screen,
 
 static void
 llvmpipe_flush_frontbuffer(struct pipe_screen *_screen,
+                           struct pipe_context *_pipe,
                            struct pipe_resource *resource,
                            unsigned level, unsigned layer,
                            void *context_private,
@@ -903,8 +931,9 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
    screen->base.get_disk_shader_cache = lp_get_disk_shader_cache;
    llvmpipe_init_screen_resource_funcs(&screen->base);
 
+   screen->allow_cl = !!getenv("LP_CL");
    screen->use_tgsi = (LP_DEBUG & DEBUG_TGSI_IR);
-   screen->num_threads = util_cpu_caps.nr_cpus > 1 ? util_cpu_caps.nr_cpus : 0;
+   screen->num_threads = util_get_cpu_caps()->nr_cpus > 1 ? util_get_cpu_caps()->nr_cpus : 0;
 #ifdef EMBEDDED_DEVICE
    screen->num_threads = 0;
 #endif

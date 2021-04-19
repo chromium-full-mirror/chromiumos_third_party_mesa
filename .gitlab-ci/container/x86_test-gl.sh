@@ -10,61 +10,72 @@ STABLE_EPHEMERAL=" \
       autoconf \
       automake \
       ccache \
+      clang-11 \
       cmake \
       g++ \
+      libclang-cpp11-dev \
       libgbm-dev \
       libgles2-mesa-dev \
-      libpcre3-dev \
+      libllvmspirvlib-dev \
       libpciaccess-dev \
-      libpng-dev \
+      libudev-dev \
       libvulkan-dev \
       libwaffle-dev \
-      libxcb-keysyms1-dev \
+      libwayland-dev \
+      libx11-xcb-dev \
       libxkbcommon-dev \
       libxrender-dev \
+      llvm-11-dev \
+      llvm-spirv \
       make \
       meson \
+      ocl-icd-opencl-dev \
       patch \
       pkg-config \
       python3-distutils \
-      python3.7-dev \
       wget \
       xz-utils \
       "
 
 apt-get install -y --no-remove \
-      $STABLE_EPHEMERAL
+      $STABLE_EPHEMERAL \
+      apitrace \
+      clinfo \
+      libclang-common-11-dev \
+      libclang-cpp11 \
+      libegl1 \
+      libllvmspirvlib11 \
+      libxcb-shm0 \
+      ocl-icd-libopencl1 \
+      python3-lxml \
+      python3-renderdoc \
+      python3-simplejson \
+      spirv-tools
 
 
 . .gitlab-ci/container/container_pre_build.sh
 
-############### Build virglrenderer
-
-. .gitlab-ci/build-virglrenderer.sh
-
-############### Build piglit
-
-. .gitlab-ci/build-piglit.sh
-
-############### Build dEQP runner
-
-. .gitlab-ci/build-cts-runner.sh
-
-############### Build dEQP GL
-
-. .gitlab-ci/build-deqp-gl.sh
-
-############### Build apitrace
-
-. .gitlab-ci/build-apitrace.sh
-
-############### Build renderdoc
-
-. .gitlab-ci/build-renderdoc.sh
 
 ############### Build libdrm
 
-. .gitlab-ci/build-libdrm.sh
+. .gitlab-ci/container/build-libdrm.sh
+
+############### Build libclc
+
+. .gitlab-ci/container/build-libclc.sh
+
+############### Build virglrenderer
+
+. .gitlab-ci/container/build-virglrenderer.sh
+
+############### Build piglit
+
+INCLUDE_OPENCL_TESTS=1 . .gitlab-ci/container/build-piglit.sh
+
+############### Build dEQP GL
+
+DEQP_TARGET=surfaceless . .gitlab-ci/container/build-deqp.sh
+
 
 ############### Uninstall the build software
 

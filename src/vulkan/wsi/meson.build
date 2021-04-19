@@ -20,6 +20,10 @@
 
 files_vulkan_wsi = files('wsi_common.c')
 
+if dep_libdrm.found()
+  files_vulkan_wsi += files('wsi_common_drm.c')
+endif
+
 if with_platform_x11
   files_vulkan_wsi += files('wsi_common_x11.c')
 endif
@@ -32,6 +36,10 @@ if with_platform_wayland
     linux_dmabuf_unstable_v1_client_protocol_h,
     linux_dmabuf_unstable_v1_protocol_c,
   ]
+endif
+
+if with_platform_windows
+  files_vulkan_wsi += files('wsi_common_win32.c')
 endif
 
 if system_has_kms_drm and not with_platform_android

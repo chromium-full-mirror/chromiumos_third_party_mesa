@@ -16,10 +16,8 @@ Compiling and Installing
 Build system
 ^^^^^^^^^^^^
 
--  `meson <https://mesonbuild.com>`__ is required when building on \*nix
-   platforms and is supported on windows.
--  `SCons <http://www.scons.org/>`__ is an alternative for building on
-   Windows and Linux.
+-  `Meson <https://mesonbuild.com>`__ is required when building on \*nix
+   platforms and on Windows.
 -  Android Build system when building as native Android component. Meson
    is used when when building ARC.
 
@@ -30,23 +28,21 @@ The following compilers are known to work, if you know of others or
 you're willing to maintain support for other compiler get in touch.
 
 -  GCC 4.2.0 or later (some parts of Mesa may require later versions)
--  clang - exact minimum requirement is currently unknown.
+-  Clang - exact minimum requirement is currently unknown.
 -  Microsoft Visual Studio 2015 or later is required, for building on
    Windows.
 
 Third party/extra tools.
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
--  `Python <https://www.python.org/>`__ - Python is required. When
-   building with scons 2.7 is required. When building with meson 3.5 or
-   newer is required.
+-  `Python <https://www.python.org/>`__ - Python 3.5 or newer is required.
 -  `Python Mako module <http://www.makotemplates.org/>`__ - Python Mako
    module is required. Version 0.8.0 or later should work.
--  lex / yacc - for building the Mesa IR and GLSL compiler.
+-  Lex / Yacc - for building the Mesa IR and GLSL compiler.
 
-   On Linux systems, flex and bison versions 2.5.35 and 2.4.1,
+   On Linux systems, Flex and Bison versions 2.5.35 and 2.4.1,
    respectively, (or later) should work. On Windows with MinGW, install
-   flex and bison with:
+   Flex and Bison with:
 
    ::
 
@@ -57,15 +53,15 @@ Third party/extra tools.
 
 .. note::
 
-   Some versions can be buggy (eg. flex 2.6.2) so do try others
+   Some versions can be buggy (e.g. Flex 2.6.2) so do try others
    if things fail.
 
 1.2 Requirements
 ~~~~~~~~~~~~~~~~
 
 The requirements depends on the features selected at configure stage.
-Check/install the respective -devel package as prompted by the configure
-error message.
+Check/install the respective development package as prompted by the
+configure error message.
 
 Here are some common ways to retrieve most/all of the dependencies based
 on the packaging tool used by your distro.
@@ -94,7 +90,7 @@ The general approach is:
      ninja -C builddir/
      sudo ninja -C builddir/ install
 
-On windows you can also use the visual studio backend
+On Windows you can also use the Visual Studio backend
 
 ::
 
@@ -105,37 +101,7 @@ On windows you can also use the visual studio backend
 Please read the :doc:`detailed meson instructions <meson>` for more
 information
 
-3. Building with SCons (Windows/Linux)
---------------------------------------
-
-To build Mesa with SCons on Linux or Windows do
-
-::
-
-       scons
-
-The build output will be placed in
-build/\ *platform*-*machine*-*debug*/..., where *platform* is for
-example linux or windows, *machine* is x86 or x86_64, optionally
-followed by -debug for debug builds.
-
-To build Mesa with SCons for Windows on Linux using the MinGW
-crosscompiler toolchain do
-
-::
-
-       scons platform=windows toolchain=crossmingw machine=x86 libgl-gdi
-
-This will create:
-
--  build/windows-x86-debug/gallium/targets/libgl-gdi/opengl32.dll — Mesa
-   + Gallium + softpipe (or llvmpipe), binary compatible with Windows's
-   opengl32.dll
-
-Put them all in the same directory to test them. Additional information
-is available in `README.WIN32 <README.WIN32>`__.
-
-4. Building with AOSP (Android)
+3. Building with AOSP (Android)
 -------------------------------
 
 Currently one can build Mesa for Android as part of the AOSP project,
@@ -148,7 +114,7 @@ the libGLES_mesa library.
 FINISHME: Improve on the instructions add references to Rob H
 repos/Jenkins, Android-x86 and/or other resources.
 
-5. Library Information
+4. Library Information
 ----------------------
 
 When compilation has finished, look in the top-level ``lib/`` (or
@@ -179,7 +145,7 @@ If you built the DRI hardware drivers, you'll also see the DRI drivers:
 If you built with Gallium support, look in lib/gallium/ for
 Gallium-based versions of libGL and device drivers.
 
-6. Building OpenGL programs with pkg-config
+5. Building OpenGL programs with pkg-config
 -------------------------------------------
 
 Running ``ninja install`` will install package configuration files for
