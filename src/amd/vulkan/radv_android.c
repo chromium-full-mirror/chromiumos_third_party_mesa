@@ -378,17 +378,6 @@ radv_AcquireImageANDROID(VkDevice device, VkImage image_h, int nativeFenceFd, Vk
 {
    VkResult semaphore_result = VK_SUCCESS, fence_result = VK_SUCCESS;
 
-   /* Workaround: If we don't wait on the CPU here fences can get stuck. Details
-    * are still TBD but from a historical similar issue this is likely due to
-    * rendering too far ahead and getting cycles with implicit sync.
-    */
-   if (nativeFenceFd >= 0) {
-      if (sync_wait(nativeFenceFd, -1) < 0) {
-         close(nativeFenceFd);
-         return VK_ERROR_DEVICE_LOST;
-      }
-   }
-
    if (semaphore != VK_NULL_HANDLE) {
       int semaphore_fd = nativeFenceFd >= 0 ? os_dupfd_cloexec(nativeFenceFd) : nativeFenceFd;
       semaphore_result = radv_ImportSemaphoreFdKHR(
