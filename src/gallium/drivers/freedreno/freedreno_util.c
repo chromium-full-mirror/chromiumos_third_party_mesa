@@ -29,7 +29,7 @@
 
 #include "freedreno_util.h"
 
-int32_t marker_cnt;
+unsigned marker_cnt;
 
 enum adreno_rb_depth_format
 fd_pipe2depth(enum pipe_format format)

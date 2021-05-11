@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python2
 ##########################################################################
 # 
 # Copyright 2008-2013, VMware, Inc.
@@ -58,7 +58,8 @@ PIPE_SHADER_TYPES    = 4
 
 def serialize(obj):
     '''JSON serializer function for non-standard Python objects.'''
-    if isinstance(obj, bytearray) or isinstance(obj, bytes):
+
+    if isinstance(obj, bytearray):
         # TODO: Decide on a single way of dumping blobs
         if False:
             # Don't dump full blobs, but merely a description of their size and
@@ -71,10 +72,10 @@ def serialize(obj):
             # Dump blobs as an array of 16byte hexadecimals
             res = []
             for i in range(0, len(obj), 16):
-                res.append(obj[i : i + 16].hex())
+                res.append(binascii.b2a_hex(obj[i: i+16]))
             return res
         # Dump blobs as a single hexadecimal string
-        return obj.hex()
+        return binascii.b2a_hex(obj)
 
     # If the object has a __json__ method, use it.
     try:
@@ -206,7 +207,7 @@ class Screen(Dispatcher):
     def resource_destroy(self, resource):
         self.interpreter.unregister_object(resource)
 
-    def fence_finish(self, fence, timeout=None, ctx=None):
+    def fence_finish(self, fence, timeout=None):
         pass
     
     def fence_signalled(self, fence):
@@ -472,7 +473,7 @@ class Context(Dispatcher):
 
         count = min(info.count, self.MAX_ELEMENTS)
         indices = []
-        for i in range(info.start, info.start + count):
+        for i in xrange(info.start, info.start + count):
             offset = self._state.index_buffer.offset + i*index_size
             if offset + index_size > len(data):
                 index = 0
@@ -491,7 +492,7 @@ class Context(Dispatcher):
 
         count = min(count, self.MAX_ELEMENTS)
         vertices = []
-        for index in range(start, start + count):
+        for index in xrange(start, start + count):
             if index >= start + 16:
                 sys.stdout.write('\t...\n')
                 break
@@ -668,7 +669,7 @@ class Context(Dispatcher):
         # Return a fake fence
         return self.interpreter.call_no
 
-    def clear(self, buffers, color, depth, stencil, scissor_state=None):
+    def clear(self, buffers, color, depth, stencil):
         pass
         
     def clear_render_target(self, dst, rgba, dstx, dsty, width, height):
@@ -716,13 +717,11 @@ class Interpreter(parser.TraceDumper):
             ('pipe_screen', 'get_param'),
             ('pipe_screen', 'get_paramf'),
             ('pipe_screen', 'get_shader_param'),
-            ('pipe_screen', 'get_disk_shader_cache'),
             ('pipe_context', 'clear_render_target'), # XXX workaround trace bugs
-            ('pipe_context', 'flush_resource'),
     ))
 
     def __init__(self, stream, options):
-        parser.TraceDumper.__init__(self, stream, options, sys.stderr)
+        parser.TraceDumper.__init__(self, stream, sys.stderr)
         self.options = options
         self.objects = {}
         self.result = None
@@ -768,7 +767,7 @@ class Interpreter(parser.TraceDumper):
             args = args[1:]
         else:
             obj = self.globl
-
+            
         method = getattr(obj, call.method)
         ret = method(**dict(args))
         
@@ -794,10 +793,10 @@ class Main(parser.Main):
         '''Custom options.'''
 
         optparser = parser.Main.get_optparser(self)
-        optparser.add_argument("-v", "--verbose", action="count", default=0, dest="verbosity", help="increase verbosity level")
-        optparser.add_argument("-q", "--quiet", action="store_const", const=0, dest="verbosity", help="no messages")
-        optparser.add_argument("-c", "--call", action="store", type=int, dest="call", default=0xffffffff, help="dump on this call")
-        optparser.add_argument("-d", "--draw", action="store", type=int, dest="draw", default=0xffffffff, help="dump on this draw")
+        optparser.add_option("-q", "--quiet", action="store_const", const=0, dest="verbosity", help="no messages")
+        optparser.add_option("-v", "--verbose", action="count", dest="verbosity", default=0, help="increase verbosity level")
+        optparser.add_option("-c", "--call", action="store", type="int", dest="call", default=0xffffffff, help="dump on this call")
+        optparser.add_option("-d", "--draw", action="store", type="int", dest="draw", default=0xffffffff, help="dump on this draw")
         return optparser
 
     def process_arg(self, stream, options):

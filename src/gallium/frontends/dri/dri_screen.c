@@ -51,6 +51,7 @@
 
 const __DRIconfigOptionsExtension gallium_config_options = {
    .base = { __DRI_CONFIG_OPTIONS, 2 },
+   .xml = gallium_driinfo_xml,
    .getXml = pipe_loader_get_driinfo_xml
 };
 
@@ -95,16 +96,10 @@ dri_fill_st_options(struct dri_screen *screen)
       driQueryOptionb(optionCache, "force_glsl_abs_sqrt");
    options->allow_glsl_cross_stage_interpolation_mismatch =
       driQueryOptionb(optionCache, "allow_glsl_cross_stage_interpolation_mismatch");
+   options->allow_glsl_layout_qualifier_on_function_parameters =
+      driQueryOptionb(optionCache, "allow_glsl_layout_qualifier_on_function_parameters");
    options->allow_draw_out_of_order =
       driQueryOptionb(optionCache, "allow_draw_out_of_order");
-   options->allow_incorrect_primitive_id =
-      driQueryOptionb(optionCache, "allow_incorrect_primitive_id");
-   options->ignore_map_unsynchronized =
-      driQueryOptionb(optionCache, "ignore_map_unsynchronized");
-   options->force_gl_names_reuse =
-      driQueryOptionb(optionCache, "force_gl_names_reuse");
-   options->transcode_etc =
-      driQueryOptionb(optionCache, "transcode_etc");
 
    char *vendor_str = driQueryOptionstr(optionCache, "force_gl_vendor");
    /* not an empty string */
@@ -167,12 +162,6 @@ dri_fill_in_modes(struct dri_screen *screen)
 
       /* Required by Android, for HAL_PIXEL_FORMAT_RGBX_8888. */
       MESA_FORMAT_R8G8B8X8_UNORM,
-
-      /* Required by Android, for HAL_PIXEL_FORMAT_RGBA_8888. */
-      MESA_FORMAT_R8G8B8A8_SRGB,
-
-      /* Required by Android, for HAL_PIXEL_FORMAT_RGBX_8888. */
-      MESA_FORMAT_R8G8B8X8_SRGB,
    };
    static const enum pipe_format pipe_formats[] = {
       PIPE_FORMAT_B10G10R10A2_UNORM,
@@ -188,8 +177,6 @@ dri_fill_in_modes(struct dri_screen *screen)
       PIPE_FORMAT_R16G16B16X16_FLOAT,
       PIPE_FORMAT_RGBA8888_UNORM,
       PIPE_FORMAT_RGBX8888_UNORM,
-      PIPE_FORMAT_RGBA8888_SRGB,
-      PIPE_FORMAT_RGBX8888_SRGB,
    };
    mesa_format format;
    __DRIconfig **configs = NULL;
@@ -280,9 +267,7 @@ dri_fill_in_modes(struct dri_screen *screen)
       /* Expose only BGRA ordering if the loader doesn't support RGBA ordering. */
       if (!allow_rgba_ordering &&
           (mesa_formats[format] == MESA_FORMAT_R8G8B8A8_UNORM ||
-           mesa_formats[format] == MESA_FORMAT_R8G8B8X8_UNORM ||
-           mesa_formats[format] == MESA_FORMAT_R8G8B8A8_SRGB  ||
-           mesa_formats[format] == MESA_FORMAT_R8G8B8X8_SRGB))
+           mesa_formats[format] == MESA_FORMAT_R8G8B8X8_UNORM))
          continue;
 
       if (!allow_rgb10 &&
@@ -320,7 +305,7 @@ dri_fill_in_modes(struct dri_screen *screen)
                                         depth_buffer_factor, back_buffer_modes,
                                         ARRAY_SIZE(back_buffer_modes),
                                         msaa_modes, 1,
-                                        GL_TRUE, !mixed_color_depth);
+                                        GL_TRUE, !mixed_color_depth, GL_FALSE);
          configs = driConcatConfigs(configs, new_configs);
 
          /* Multi-sample configs without an accumulation buffer. */
@@ -330,7 +315,7 @@ dri_fill_in_modes(struct dri_screen *screen)
                                            depth_buffer_factor, back_buffer_modes,
                                            ARRAY_SIZE(back_buffer_modes),
                                            msaa_modes+1, num_msaa_modes-1,
-                                           GL_FALSE, !mixed_color_depth);
+                                           GL_FALSE, !mixed_color_depth, GL_FALSE);
             configs = driConcatConfigs(configs, new_configs);
          }
       }
@@ -354,8 +339,10 @@ dri_fill_st_visual(struct st_visual *stvis,
 {
    memset(stvis, 0, sizeof(*stvis));
 
-   if (!mode)
+   if (!mode) {
+      stvis->no_config = true;
       return;
+   }
 
    /* Deduce the color format. */
    switch (mode->redMask) {
@@ -423,7 +410,7 @@ dri_fill_st_visual(struct st_visual *stvis,
       return;
    }
 
-   if (mode->samples > 0) {
+   if (mode->sampleBuffers) {
       stvis->samples = mode->samples;
    }
 

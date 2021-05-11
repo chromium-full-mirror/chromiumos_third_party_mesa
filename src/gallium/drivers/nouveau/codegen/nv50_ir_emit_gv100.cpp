@@ -350,20 +350,11 @@ CodeEmitterGV100::emitS2R()
    emitGPR (16, insn->def(0));
 }
 
-void
-gv100_selpFlip(const FixupEntry *entry, uint32_t *code, const FixupData& data)
+static void
+selpFlip(const FixupEntry *entry, uint32_t *code, const FixupData& data)
 {
    int loc = entry->loc;
-   bool val = false;
-   switch (entry->ipa) {
-   case 0:
-      val = data.force_persample_interp;
-      break;
-   case 1:
-      val = data.msaa;
-      break;
-   }
-   if (val)
+   if (data.force_persample_interp)
       code[loc + 2] |= 1 << 26;
    else
       code[loc + 2] &= ~(1 << 26);
@@ -375,8 +366,8 @@ CodeEmitterGV100::emitSEL()
    emitFormA(0x007, FA_RRR | FA_RIR | FA_RCR, __(0), __(1), EMPTY);
    emitNOT  (90, insn->src(2));
    emitPRED (87, insn->src(2));
-   if (insn->subOp >= 1)
-      addInterp(insn->subOp - 1, 0, gv100_selpFlip);
+   if (insn->subOp == 1)
+      addInterp(0, 0, selpFlip);
 }
 
 void
@@ -871,8 +862,7 @@ CodeEmitterGV100::emitATOM()
    }
 
    emitPRED (81);
-   emitField(79, 2, 2); // .INVALID0/./.STRONG/.INVALID3
-   emitField(77, 2, 3); // .CTA/.SM/.GPU/.SYS
+   emitField(79, 2, 1);
    emitField(72, 1, insn->src(0).getIndirect(0)->getSize() == 8);
    emitGPR  (32, insn->src(1));
    emitADDR (24, 40, 24, 0, insn->src(0));
@@ -920,8 +910,8 @@ CodeEmitterGV100::emitATOMS()
    emitGPR  (16, insn->def(0));
 }
 
-void
-gv100_interpApply(const FixupEntry *entry, uint32_t *code, const FixupData& data)
+static void
+interpApply(const FixupEntry *entry, uint32_t *code, const FixupData& data)
 {
    int ipa = entry->ipa;
    int loc = entry->loc;
@@ -937,7 +927,7 @@ gv100_interpApply(const FixupEntry *entry, uint32_t *code, const FixupData& data
    case NV50_IR_INTERP_DEFAULT : sample = 0; break;
    case NV50_IR_INTERP_CENTROID: sample = 1; break;
    case NV50_IR_INTERP_OFFSET  : sample = 2; break;
-   default: unreachable("invalid sample mode");
+   default: assert(!"invalid sample mode");
    }
 
    int interp;
@@ -946,7 +936,7 @@ gv100_interpApply(const FixupEntry *entry, uint32_t *code, const FixupData& data
    case NV50_IR_INTERP_PERSPECTIVE: interp = 0; break;
    case NV50_IR_INTERP_FLAT       : interp = 1; break;
    case NV50_IR_INTERP_SC         : interp = 2; break;
-   default: unreachable("invalid ipa mode");
+   default: assert(!"invalid ipa mode");
    }
 
    code[loc + 2] &= ~(0xf << 12);
@@ -981,10 +971,10 @@ CodeEmitterGV100::emitIPA()
 
    if (insn->getSampleMode() != NV50_IR_INTERP_OFFSET) {
       emitGPR  (32);
-      addInterp(insn->ipa, 0xff, gv100_interpApply);
+      addInterp(insn->ipa, 0xff, interpApply);
    } else {
       emitGPR  (32, insn->src(1));
-      addInterp(insn->ipa, insn->getSrc(1)->reg.data.id, gv100_interpApply);
+      addInterp(insn->ipa, insn->getSrc(1)->reg.data.id, interpApply);
    }
 
    assert(!insn->src(0).isIndirect(0));
@@ -1110,7 +1100,7 @@ CodeEmitterGV100::emitRED()
    emitField(87, 3, insn->subOp);
    emitField(84, 3, 1); // 0=.EF, 1=, 2=.EL, 3=.LU, 4=.EU, 5=.NA
    emitField(79, 2, 2); // .INVALID0/./.STRONG/.INVALID3
-   emitField(77, 2, 3); // .CTA/.SM/.GPU/.SYS
+   emitField(77, 2, 2); // .CTA/.SM/.GPU/.SYS
    emitField(73, 3, dType);
    emitField(72, 1, insn->src(0).getIndirect(0)->getSize() == 8);
    emitGPR  (32, insn->src(1));
@@ -2053,7 +2043,7 @@ CodeEmitterGV100::prepareEmission(Program *prog)
 }
 
 CodeEmitterGV100::CodeEmitterGV100(TargetGV100 *target)
-   : CodeEmitter(target), prog(NULL), targ(target), insn(NULL)
+   : CodeEmitter(target), targ(target)
 {
    code = NULL;
    codeSize = codeSizeLimit = 0;

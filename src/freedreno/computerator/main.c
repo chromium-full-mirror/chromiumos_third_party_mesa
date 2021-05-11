@@ -238,7 +238,7 @@ main(int argc, char **argv)
 		}
 	}
 
-	int fd = drmOpenWithType("msm", NULL, DRM_NODE_RENDER);
+	int fd = drmOpen("msm", NULL);
 	if (fd < 0)
 		err(1, "could not open drm device");
 

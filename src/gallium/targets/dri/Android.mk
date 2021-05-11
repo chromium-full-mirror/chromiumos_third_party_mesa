@@ -43,8 +43,7 @@ LOCAL_SHARED_LIBRARIES := \
 	libdl \
 	libglapi \
 	libz \
-	liblog \
-	libsync
+	liblog
 
 # If Android version >=8 MESA should static link libexpat else should dynamic link
 ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 27; echo $$?), 0)
@@ -57,17 +56,15 @@ endif
 
 LOCAL_STATIC_LIBRARIES += \
 	libetnaviv_drm \
-	libfreedreno_common \
 	libfreedreno_drm \
 	libfreedreno_ir2 \
 	libfreedreno_ir3 \
 	libfreedreno_perfcntrs \
 	libmesa_gallium \
-	libpanfrost_lib \
 	libpanfrost_bifrost \
-	libpanfrost_bifrost_disasm \
+	libpanfrost_decode \
+	libpanfrost_encoder \
 	libpanfrost_midgard \
-	libpanfrost_midgard_disasm \
 	libpanfrost_shared \
 	libpanfrost_util \
 
@@ -90,8 +87,6 @@ LOCAL_WHOLE_STATIC_LIBRARIES := \
 	libmesa_pipe_loader \
 	libmesa_util \
 	libmesa_loader
-
-LOCAL_SHARED_LIBRARIES += libcutils
 
 # sort GALLIUM_SHARED_LIBS to remove any duplicates
 LOCAL_SHARED_LIBRARIES += $(sort $(GALLIUM_SHARED_LIBS))

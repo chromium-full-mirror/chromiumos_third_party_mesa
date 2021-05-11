@@ -43,10 +43,12 @@ init_block(nir_block *block, nir_function_impl *impl)
    block->num_dom_children = 0;
 
    /* See nir_block_dominates */
-   block->dom_pre_index = UINT32_MAX;
-   block->dom_post_index = 0;
+   block->dom_pre_index = INT16_MAX;
+   block->dom_post_index = -1;
 
-   _mesa_set_clear(block->dom_frontier, NULL);
+   set_foreach(block->dom_frontier, entry) {
+      _mesa_set_remove(block->dom_frontier, entry);
+   }
 
    return true;
 }
@@ -129,18 +131,18 @@ calc_dom_children(nir_function_impl* impl)
 {
    void *mem_ctx = ralloc_parent(impl);
 
-   nir_foreach_block_unstructured(block, impl) {
+   nir_foreach_block(block, impl) {
       if (block->imm_dom)
          block->imm_dom->num_dom_children++;
    }
 
-   nir_foreach_block_unstructured(block, impl) {
+   nir_foreach_block(block, impl) {
       block->dom_children = ralloc_array(mem_ctx, nir_block *,
                                          block->num_dom_children);
       block->num_dom_children = 0;
    }
 
-   nir_foreach_block_unstructured(block, impl) {
+   nir_foreach_block(block, impl) {
       if (block->imm_dom) {
          block->imm_dom->dom_children[block->imm_dom->num_dom_children++]
             = block;
@@ -149,11 +151,8 @@ calc_dom_children(nir_function_impl* impl)
 }
 
 static void
-calc_dfs_indicies(nir_block *block, uint32_t *index)
+calc_dfs_indicies(nir_block *block, unsigned *index)
 {
-   /* UINT32_MAX has special meaning. See nir_block_dominates. */
-   assert(*index < UINT32_MAX - 2);
-
    block->dom_pre_index = (*index)++;
 
    for (unsigned i = 0; i < block->num_dom_children; i++)
@@ -171,20 +170,20 @@ nir_calc_dominance_impl(nir_function_impl *impl)
    nir_metadata_require(impl, nir_metadata_block_index);
 
 
-   nir_foreach_block_unstructured(block, impl) {
+   nir_foreach_block(block, impl) {
       init_block(block, impl);
    }
 
    bool progress = true;
    while (progress) {
       progress = false;
-      nir_foreach_block_unstructured(block, impl) {
+      nir_foreach_block(block, impl) {
          if (block != nir_start_block(impl))
             progress |= calc_dominance(block);
       }
    }
 
-   nir_foreach_block_unstructured(block, impl) {
+   nir_foreach_block(block, impl) {
       calc_dom_frontier(block);
    }
 
@@ -193,7 +192,7 @@ nir_calc_dominance_impl(nir_function_impl *impl)
 
    calc_dom_children(impl);
 
-   uint32_t dfs_index = 1;
+   unsigned dfs_index = 0;
    calc_dfs_indicies(start_block, &dfs_index);
 }
 
@@ -255,8 +254,8 @@ nir_block_dominates(nir_block *parent, nir_block *child)
    assert(nir_cf_node_get_function(&parent->cf_node)->valid_metadata &
           nir_metadata_dominance);
 
-   /* If a block is unreachable, then nir_block::dom_pre_index == UINT32_MAX
-    * and nir_block::dom_post_index == 0.  This allows us to trivially handle
+   /* If a block is unreachable, then nir_block::dom_pre_index == INT16_MAX
+    * and nir_block::dom_post_index == -1.  This allows us to trivially handle
     * unreachable blocks here with zero extra work.
     */
    return child->dom_pre_index >= parent->dom_pre_index &&
@@ -282,7 +281,7 @@ nir_dump_dom_tree_impl(nir_function_impl *impl, FILE *fp)
 {
    fprintf(fp, "digraph doms_%s {\n", impl->function->name);
 
-   nir_foreach_block_unstructured(block, impl) {
+   nir_foreach_block(block, impl) {
       if (block->imm_dom)
          fprintf(fp, "\t%u -> %u\n", block->imm_dom->index, block->index);
    }
@@ -302,7 +301,7 @@ nir_dump_dom_tree(nir_shader *shader, FILE *fp)
 void
 nir_dump_dom_frontier_impl(nir_function_impl *impl, FILE *fp)
 {
-   nir_foreach_block_unstructured(block, impl) {
+   nir_foreach_block(block, impl) {
       fprintf(fp, "DF(%u) = {", block->index);
       set_foreach(block->dom_frontier, entry) {
          nir_block *df = (nir_block *) entry->key;
@@ -326,7 +325,7 @@ nir_dump_cfg_impl(nir_function_impl *impl, FILE *fp)
 {
    fprintf(fp, "digraph cfg_%s {\n", impl->function->name);
 
-   nir_foreach_block_unstructured(block, impl) {
+   nir_foreach_block(block, impl) {
       if (block->successors[0])
          fprintf(fp, "\t%u -> %u\n", block->index, block->successors[0]->index);
       if (block->successors[1])

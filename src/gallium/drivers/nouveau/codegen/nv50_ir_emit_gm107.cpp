@@ -949,20 +949,11 @@ CodeEmitterGM107::emitI2I()
    emitGPR  (0x00, insn->def(0));
 }
 
-void
-gm107_selpFlip(const FixupEntry *entry, uint32_t *code, const FixupData& data)
+static void
+selpFlip(const FixupEntry *entry, uint32_t *code, const FixupData& data)
 {
    int loc = entry->loc;
-   bool val = false;
-   switch (entry->ipa) {
-   case 0:
-      val = data.force_persample_interp;
-      break;
-   case 1:
-      val = data.msaa;
-      break;
-   }
-   if (val)
+   if (data.force_persample_interp)
       code[loc + 1] |= 1 << 10;
    else
       code[loc + 1] &= ~(1 << 10);
@@ -994,8 +985,8 @@ CodeEmitterGM107::emitSEL()
    emitGPR (0x08, insn->src(0));
    emitGPR (0x00, insn->def(0));
 
-   if (insn->subOp >= 1) {
-      addInterp(insn->subOp - 1, 0, gm107_selpFlip);
+   if (insn->subOp == 1) {
+      addInterp(0, 0, selpFlip);
    }
 }
 
@@ -2565,8 +2556,8 @@ CodeEmitterGM107::emitAL2P()
    emitGPR  (0x00, insn->def(0));
 }
 
-void
-gm107_interpApply(const FixupEntry *entry, uint32_t *code, const FixupData& data)
+static void
+interpApply(const FixupEntry *entry, uint32_t *code, const FixupData& data)
 {
    int ipa = entry->ipa;
    int reg = entry->reg;
@@ -2626,12 +2617,12 @@ CodeEmitterGM107::emitIPA()
       emitGPR(0x14, insn->src(1));
       if (insn->getSampleMode() == NV50_IR_INTERP_OFFSET)
          emitGPR(0x27, insn->src(2));
-      addInterp(insn->ipa, insn->getSrc(1)->reg.data.id, gm107_interpApply);
+      addInterp(insn->ipa, insn->getSrc(1)->reg.data.id, interpApply);
    } else {
       if (insn->getSampleMode() == NV50_IR_INTERP_OFFSET)
          emitGPR(0x27, insn->src(1));
       emitGPR(0x14);
-      addInterp(insn->ipa, 0xff, gm107_interpApply);
+      addInterp(insn->ipa, 0xff, interpApply);
    }
 
    if (insn->getSampleMode() != NV50_IR_INTERP_OFFSET)
@@ -4486,10 +4477,7 @@ CodeEmitterGM107::prepareEmission(Program *prog)
 CodeEmitterGM107::CodeEmitterGM107(const TargetGM107 *target)
    : CodeEmitter(target),
      targGM107(target),
-     progType(Program::TYPE_VERTEX),
-     insn(NULL),
-     writeIssueDelays(target->hasSWSched),
-     data(NULL)
+     writeIssueDelays(target->hasSWSched)
 {
    code = NULL;
    codeSize = codeSizeLimit = 0;

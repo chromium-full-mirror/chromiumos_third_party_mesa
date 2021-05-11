@@ -330,7 +330,7 @@
     <param name="w" type="GLuint"/>
   </function>
 
-  <function name="VertexAttribI1iv" exec="dynamic">
+  <function name="VertexAttribI1iv">
     <param name="index" type="GLuint"/>
     <param name="v" type="const GLint *" count="1"/>
   </function>
@@ -350,7 +350,7 @@
     <param name="v" type="const GLint *"/>
   </function>
 
-  <function name="VertexAttribI1uiv" exec="dynamic">
+  <function name="VertexAttribI1uiv">
     <param name="index" type="GLuint"/>
     <param name="v" type="const GLuint *" count="1"/>
   </function>
@@ -370,22 +370,22 @@
     <param name="v" type="const GLuint *"/>
   </function>
 
-  <function name="VertexAttribI4bv" exec="dynamic">
+  <function name="VertexAttribI4bv">
     <param name="index" type="GLuint"/>
     <param name="v" type="const GLbyte *" count="4"/>
   </function>
 
-  <function name="VertexAttribI4sv" exec="dynamic">
+  <function name="VertexAttribI4sv">
     <param name="index" type="GLuint"/>
     <param name="v" type="const GLshort *" count="4"/>
   </function>
 
-  <function name="VertexAttribI4ubv" exec="dynamic">
+  <function name="VertexAttribI4ubv">
     <param name="index" type="GLuint"/>
     <param name="v" type="const GLubyte *" count="4"/>
   </function>
 
-  <function name="VertexAttribI4usv" exec="dynamic">
+  <function name="VertexAttribI4usv">
     <param name="index" type="GLuint"/>
     <param name="v" type="const GLushort *" count="4"/>
   </function>
@@ -626,8 +626,7 @@
   <enum name="TEXTURE_SWIZZLE_A"                value="0x8E45"/>
   <enum name="TEXTURE_SWIZZLE_RGBA"             value="0x8E46"/>
 
-  <function name="VertexAttribDivisor" es2="3.0" no_error="true"
-            marshal_call_after="if (COMPAT) _mesa_glthread_AttribDivisor(ctx, NULL, VERT_ATTRIB_GENERIC(index), divisor);">
+  <function name="VertexAttribDivisor" es2="3.0" no_error="true">
     <param name="index" type="GLuint"/>
     <param name="divisor" type="GLuint"/>
   </function>

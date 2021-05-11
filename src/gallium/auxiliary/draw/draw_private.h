@@ -46,7 +46,7 @@
 
 #include "tgsi/tgsi_scan.h"
 
-#ifdef DRAW_LLVM_AVAILABLE
+#ifdef LLVM_AVAILABLE
 struct gallivm_state;
 #endif
 
@@ -198,8 +198,6 @@ struct draw_context
          unsigned min_index;
          unsigned max_index;
          unsigned drawid;
-         bool increment_draw_id;
-         unsigned viewid;
          
          /** vertex arrays */
          struct draw_vertex_buffer vbuffer[PIPE_MAX_ATTRIBS];
@@ -267,7 +265,7 @@ struct draw_context
    void *rast_handle;
 
    /** Rasterizer CSOs without culling/stipple/etc */
-   void *rasterizer_no_cull[2][2][2];
+   void *rasterizer_no_cull[2][2];
 
    struct pipe_viewport_state viewports[PIPE_MAX_VIEWPORTS];
    boolean identity_viewport;
@@ -538,7 +536,8 @@ void draw_do_flush( struct draw_context *draw, unsigned flags );
 
 void *
 draw_get_rasterizer_no_cull( struct draw_context *draw,
-                             const struct pipe_rasterizer_state *rast );
+                             boolean scissor,
+                             boolean flatshade );
 
 void
 draw_stats_clipper_primitives(struct draw_context *draw,

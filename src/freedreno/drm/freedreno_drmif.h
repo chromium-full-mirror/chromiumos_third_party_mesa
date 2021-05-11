@@ -31,10 +31,6 @@
 
 #include "util/u_debug.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 struct fd_bo;
 struct fd_pipe;
 struct fd_device;
@@ -98,11 +94,8 @@ enum fd_version {
 	FD_VERSION_BO_IOVA = 3,            /* supports fd_bo_get/put_iova() */
 	FD_VERSION_SOFTPIN = 4,            /* adds softpin, bo name, and dump flag */
 	FD_VERSION_ROBUSTNESS = 5,         /* adds FD_NR_FAULTS and FD_PP_PGTABLE */
-	FD_VERSION_MEMORY_FD = 2,          /* supports shared memory objects */
 };
 enum fd_version fd_device_version(struct fd_device *dev);
-
-bool fd_has_syncobj(struct fd_device *dev);
 
 /* pipe functions:
  */
@@ -175,9 +168,5 @@ uint32_t fd_bo_size(struct fd_bo *bo);
 void * fd_bo_map(struct fd_bo *bo);
 int fd_bo_cpu_prep(struct fd_bo *bo, struct fd_pipe *pipe, uint32_t op);
 void fd_bo_cpu_fini(struct fd_bo *bo);
-
-#ifdef __cplusplus
-} /* end of extern "C" */
-#endif
 
 #endif /* FREEDRENO_DRMIF_H_ */

@@ -33,6 +33,8 @@
 #include "freedreno_drmif.h"
 #include "freedreno_priv.h"
 
+static pthread_mutex_t table_lock = PTHREAD_MUTEX_INITIALIZER;
+
 struct fd_device * kgsl_device_new(int fd);
 struct fd_device * msm_device_new(int fd);
 
@@ -108,11 +110,7 @@ struct fd_device * fd_device_ref(struct fd_device *dev)
 static void fd_device_del_impl(struct fd_device *dev)
 {
 	int close_fd = dev->closefd ? dev->fd : -1;
-
-	simple_mtx_assert_locked(&table_lock);
-
 	fd_bo_cache_cleanup(&dev->bo_cache, 0);
-	fd_bo_cache_cleanup(&dev->ring_cache, 0);
 	_mesa_hash_table_destroy(dev->handle_table, NULL);
 	_mesa_hash_table_destroy(dev->name_table, NULL);
 	dev->funcs->destroy(dev);
@@ -122,18 +120,18 @@ static void fd_device_del_impl(struct fd_device *dev)
 
 void fd_device_del_locked(struct fd_device *dev)
 {
-	if (!p_atomic_dec_zero(&dev->refcnt))
+	if (!atomic_dec_and_test(&dev->refcnt))
 		return;
 	fd_device_del_impl(dev);
 }
 
 void fd_device_del(struct fd_device *dev)
 {
-	if (!p_atomic_dec_zero(&dev->refcnt))
+	if (!atomic_dec_and_test(&dev->refcnt))
 		return;
-	simple_mtx_lock(&table_lock);
+	pthread_mutex_lock(&table_lock);
 	fd_device_del_impl(dev);
-	simple_mtx_unlock(&table_lock);
+	pthread_mutex_unlock(&table_lock);
 }
 
 int fd_device_fd(struct fd_device *dev)
@@ -154,12 +152,4 @@ bool fd_dbg(void)
 		dbg = getenv("LIBGL_DEBUG") ? 1 : -1;
 
 	return dbg == 1;
-}
-
-bool fd_has_syncobj(struct fd_device *dev)
-{
-	uint64_t value;
-	if (drmGetCap(dev->fd, DRM_CAP_SYNCOBJ, &value))
-		return false;
-	return value && dev->version >= FD_VERSION_FENCE_FD;
 }

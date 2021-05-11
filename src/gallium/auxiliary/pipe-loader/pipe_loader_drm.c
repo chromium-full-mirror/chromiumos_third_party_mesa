@@ -46,7 +46,6 @@
 #include "util/u_memory.h"
 #include "util/u_dl.h"
 #include "util/u_debug.h"
-#include "util/xmlconfig.h"
 
 #define DRM_RENDER_NODE_DEV_NAME_FORMAT "%s/renderD%d"
 #define DRM_RENDER_NODE_MAX_NODES 63
@@ -67,25 +66,88 @@ struct pipe_loader_drm_device {
 static const struct pipe_loader_ops pipe_loader_drm_ops;
 
 #ifdef GALLIUM_STATIC_TARGETS
-static const struct drm_driver_descriptor *driver_descriptors[] = {
-   &i915_driver_descriptor,
-   &iris_driver_descriptor,
-   &nouveau_driver_descriptor,
-   &r300_driver_descriptor,
-   &r600_driver_descriptor,
-   &radeonsi_driver_descriptor,
-   &vmwgfx_driver_descriptor,
-   &kgsl_driver_descriptor,
-   &msm_driver_descriptor,
-   &virtio_gpu_driver_descriptor,
-   &v3d_driver_descriptor,
-   &vc4_driver_descriptor,
-   &panfrost_driver_descriptor,
-   &etnaviv_driver_descriptor,
-   &tegra_driver_descriptor,
-   &lima_driver_descriptor,
-   &zink_driver_descriptor,
+static const struct drm_driver_descriptor driver_descriptors[] = {
+    {
+        .driver_name = "i915",
+        .create_screen = pipe_i915_create_screen,
+    },
+    {
+        .driver_name = "iris",
+        .create_screen = pipe_iris_create_screen,
+        .driconf_xml = &iris_driconf_xml,
+    },
+    {
+        .driver_name = "nouveau",
+        .create_screen = pipe_nouveau_create_screen,
+    },
+    {
+        .driver_name = "r300",
+        .create_screen = pipe_r300_create_screen,
+    },
+    {
+        .driver_name = "r600",
+        .create_screen = pipe_r600_create_screen,
+    },
+    {
+        .driver_name = "radeonsi",
+        .create_screen = pipe_radeonsi_create_screen,
+        .driconf_xml = &radeonsi_driconf_xml,
+    },
+    {
+        .driver_name = "vmwgfx",
+        .create_screen = pipe_vmwgfx_create_screen,
+    },
+    {
+        .driver_name = "kgsl",
+        .create_screen = pipe_freedreno_create_screen,
+    },
+    {
+        .driver_name = "msm",
+        .create_screen = pipe_freedreno_create_screen,
+    },
+    {
+        .driver_name = "virtio_gpu",
+        .create_screen = pipe_virgl_create_screen,
+        .driconf_xml = &virgl_driconf_xml,
+    },
+    {
+        .driver_name = "v3d",
+        .create_screen = pipe_v3d_create_screen,
+        .driconf_xml = &v3d_driconf_xml,
+    },
+    {
+        .driver_name = "vc4",
+        .create_screen = pipe_vc4_create_screen,
+        .driconf_xml = &v3d_driconf_xml,
+    },
+    {
+        .driver_name = "panfrost",
+        .create_screen = pipe_panfrost_create_screen,
+    },
+    {
+        .driver_name = "etnaviv",
+        .create_screen = pipe_etna_create_screen,
+    },
+    {
+        .driver_name = "tegra",
+        .create_screen = pipe_tegra_create_screen,
+    },
+    {
+        .driver_name = "lima",
+        .create_screen = pipe_lima_create_screen,
+    },
+    {
+        .driver_name = "zink",
+        .create_screen = pipe_zink_create_screen,
+    },
 };
+
+static const struct drm_driver_descriptor default_driver_descriptor = {
+        .driver_name = "kmsro",
+        .create_screen = pipe_kmsro_create_screen,
+        .driconf_xml = &v3d_driconf_xml,
+};
+
 #endif
 
 static const struct drm_driver_descriptor *
@@ -93,16 +155,12 @@ get_driver_descriptor(const char *driver_name, struct util_dl_library **plib)
 {
 #ifdef GALLIUM_STATIC_TARGETS
    for (int i = 0; i < ARRAY_SIZE(driver_descriptors); i++) {
-      if (strcmp(driver_descriptors[i]->driver_name, driver_name) == 0)
-         return driver_descriptors[i];
+      if (strcmp(driver_descriptors[i].driver_name, driver_name) == 0)
+         return &driver_descriptors[i];
    }
-   return &kmsro_driver_descriptor;
+   return &default_driver_descriptor;
 #else
-   const char *search_dir = getenv("GALLIUM_PIPE_SEARCH_DIR");
-   if (search_dir == NULL)
-      search_dir = PIPE_SEARCH_DIR;
-
-   *plib = pipe_loader_find_module(driver_name, search_dir);
+   *plib = pipe_loader_find_module(driver_name, PIPE_SEARCH_DIR);
    if (!*plib)
       return NULL;
 
@@ -155,10 +213,6 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd)
    plib = &ddev->lib;
 #endif
    ddev->dd = get_driver_descriptor(ddev->base.driver_name, plib);
-
-   /* vgem is a virtual device; don't try using it with kmsro */
-   if (strcmp(ddev->base.driver_name, "vgem") == 0)
-      goto fail;
 
    /* kmsro supports lots of drivers, try as a fallback */
    if (!ddev->dd)
@@ -250,13 +304,15 @@ pipe_loader_drm_release(struct pipe_loader_device **dev)
    pipe_loader_base_release(dev);
 }
 
-static const struct driOptionDescription *
-pipe_loader_drm_get_driconf(struct pipe_loader_device *dev, unsigned *count)
+static const char *
+pipe_loader_drm_get_driconf_xml(struct pipe_loader_device *dev)
 {
    struct pipe_loader_drm_device *ddev = pipe_loader_drm_device(dev);
 
-   *count = ddev->dd->driconf_count;
-   return ddev->dd->driconf;
+   if (!ddev->dd->driconf_xml)
+      return NULL;
+
+   return *ddev->dd->driconf_xml;
 }
 
 static struct pipe_screen *
@@ -268,30 +324,24 @@ pipe_loader_drm_create_screen(struct pipe_loader_device *dev,
    return ddev->dd->create_screen(ddev->fd, config);
 }
 
-const struct driOptionDescription *
-pipe_loader_drm_get_driconf_by_name(const char *driver_name, unsigned *count)
+char *
+pipe_loader_drm_get_driinfo_xml(const char *driver_name)
 {
-   driOptionDescription *driconf = NULL;
+   char *xml = NULL;
    struct util_dl_library *lib = NULL;
    const struct drm_driver_descriptor *dd =
       get_driver_descriptor(driver_name, &lib);
 
-   if (!dd) {
-      *count = 0;
-   } else {
-      *count = dd->driconf_count;
-      size_t size = sizeof(*driconf) * *count;
-      driconf = malloc(size);
-      memcpy(driconf, dd->driconf, size);
-   }
+   if (dd && dd->driconf_xml && *dd->driconf_xml)
+      xml = strdup(*dd->driconf_xml);
+
    if (lib)
       util_dl_close(lib);
-
-   return driconf;
+   return xml;
 }
 
 static const struct pipe_loader_ops pipe_loader_drm_ops = {
    .create_screen = pipe_loader_drm_create_screen,
-   .get_driconf = pipe_loader_drm_get_driconf,
+   .get_driconf_xml = pipe_loader_drm_get_driconf_xml,
    .release = pipe_loader_drm_release
 };

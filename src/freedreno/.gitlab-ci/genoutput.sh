@@ -10,12 +10,11 @@ set -e
 # input/output directories:
 base=src/freedreno
 traces=$base/.gitlab-ci/traces
-reference=$base/.gitlab-ci/reference
 output=$base/.gitlab-ci/out
 
 # use the --update arg to update reference output:
 if [ "$1" = "--update" ]; then
-	output=$reference
+	output=src/freedreno/.gitlab-ci/reference
 fi
 
 mkdir -p $output
@@ -23,18 +22,15 @@ mkdir -p $output
 # binary locations:
 cffdump=./install/bin/cffdump
 crashdec=./install/bin/crashdec
-asm=./install/bin/afuc-asm
-disasm=./install/bin/afuc-disasm
 
 # helper to filter out paths that can change depending on
-# who is building and assert messages that can change
-# depending on unrelated code changes:
+# who is building:
 basepath=`dirname $0`
 basepath=`dirname $basepath`
 basepath=`pwd $basepath`
 filter() {
 	out=$1
-	grep -vF "$basepath" | sed "s/.*: Assertion /Assertion /" > $out
+	grep -vF "$basepath" > $out
 }
 
 #
@@ -54,5 +50,3 @@ $cffdump --script $base/decode/scripts/parse-submits.lua $traces/shadow.rd.gz | 
 
 $crashdec -sf $traces/crash.devcore | filter $output/crash.log
 
-$asm -g 6 $traces/afuc_test.asm $output/afuc_test.fw
-$disasm -g 6 $reference/afuc_test.fw | filter $output/afuc_test.asm

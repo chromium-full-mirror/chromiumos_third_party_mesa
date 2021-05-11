@@ -47,8 +47,7 @@ protected:
                   void *log_data,
                   void *mem_ctx,
                   const nir_shader *shader,
-                  struct brw_stage_prog_data *stage_prog_data,
-                  bool debug_enabled);
+                  struct brw_stage_prog_data *stage_prog_data);
 
 public:
    virtual ~backend_shader();
@@ -70,7 +69,8 @@ public:
    exec_list instructions;
 
    cfg_t *cfg;
-   brw_analysis<brw::idom_tree, backend_shader> idom_analysis;
+   BRW_ANALYSIS(idom_analysis, brw::idom_tree,
+                const backend_shader *) idom_analysis;
 
    gl_shader_stage stage;
    bool debug_enabled;

@@ -35,7 +35,7 @@
 #define COND(bool, val) ((bool) ? (val) : 0)
 
 #define DBG(fmt, ...) \
-		do { mesa_logd("%s:%d: "fmt, \
+		do { debug_printf("%s:%d: "fmt "\n", \
 				__FUNCTION__, __LINE__, ##__VA_ARGS__); } while (0)
 
 /**
@@ -83,7 +83,7 @@ struct ir3_context {
 	struct ir3_instruction *frag_face, *frag_coord;
 
 	/* For vertex shaders, keep track of the system values sources */
-	struct ir3_instruction *vertex_id, *basevertex, *instance_id, *base_instance, *draw_id, *view_index;
+	struct ir3_instruction *vertex_id, *basevertex, *instance_id, *base_instance, *draw_id;
 
 	/* For fragment shaders: */
 	struct ir3_instruction *samp_id, *samp_mask_in;
@@ -183,7 +183,6 @@ struct ir3_instruction * ir3_create_collect(struct ir3_context *ctx,
 void ir3_split_dest(struct ir3_block *block, struct ir3_instruction **dst,
 		struct ir3_instruction *src, unsigned base, unsigned n);
 void ir3_handle_bindless_cat6(struct ir3_instruction *instr, nir_src rsrc);
-void ir3_handle_nonuniform(struct ir3_instruction *instr, nir_intrinsic_instr *intrin);
 void emit_intrinsic_image_size_tex(struct ir3_context *ctx, nir_intrinsic_instr *intr,
 		struct ir3_instruction **dst);
 

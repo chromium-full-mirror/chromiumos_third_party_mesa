@@ -32,8 +32,10 @@ include $(CLEAR_VARS)
 
 LOCAL_MODULE := libmesa_aco
 
+# filter-out compiler/aco_instruction_selection_setup.cpp because
+# it's already included by compiler/aco_instruction_selection.cpp
 LOCAL_SRC_FILES := \
-	$(ACO_FILES)
+	$(filter-out compiler/aco_instruction_selection_setup.cpp, $(ACO_FILES))
 
 LOCAL_CFLAGS += -DFORCE_BUILD_AMDGPU   # instructs LLVM to declare LLVMInitializeAMDGPU* functions
 

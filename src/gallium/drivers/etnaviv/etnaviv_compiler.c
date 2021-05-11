@@ -27,11 +27,10 @@
 #include "etnaviv_compiler.h"
 #include "etnaviv_compiler_nir.h"
 #include "etnaviv_debug.h"
-#include "etnaviv_disk_cache.h"
 #include "util/ralloc.h"
 
 struct etna_compiler *
-etna_compiler_create(const char *renderer)
+etna_compiler_create(void)
 {
    struct etna_compiler *compiler = rzalloc(NULL, struct etna_compiler);
 
@@ -43,8 +42,6 @@ etna_compiler_create(const char *renderer)
       ralloc_free((void *)compiler);
       compiler = NULL;
    }
-
-   etna_disk_cache_init(compiler, renderer);
 
    return compiler;
 }

@@ -86,16 +86,14 @@ static LLVMValueRef load_const_buffer_desc_fast_path(struct si_shader_context *c
    return ac_build_gather_values(&ctx->ac, desc_elems, 4);
 }
 
-static LLVMValueRef load_ubo(struct ac_shader_abi *abi,
-                             unsigned desc_set, unsigned binding,
-                             bool valid_binding, LLVMValueRef index)
+static LLVMValueRef load_ubo(struct ac_shader_abi *abi, LLVMValueRef index)
 {
    struct si_shader_context *ctx = si_shader_context_from_abi(abi);
    struct si_shader_selector *sel = ctx->shader->selector;
 
    LLVMValueRef ptr = ac_get_arg(&ctx->ac, ctx->const_and_shader_buffers);
 
-   if (sel->info.base.num_ubos == 1 && sel->info.base.num_ssbos == 0) {
+   if (sel->info.const_buffers_declared == 1 && sel->info.shader_buffers_declared == 0) {
       return load_const_buffer_desc_fast_path(ctx);
    }
 
@@ -106,7 +104,7 @@ static LLVMValueRef load_ubo(struct ac_shader_abi *abi,
    return ac_build_load_to_sgpr(&ctx->ac, ptr, index);
 }
 
-static LLVMValueRef load_ssbo(struct ac_shader_abi *abi, LLVMValueRef index, bool write, bool non_uniform)
+static LLVMValueRef load_ssbo(struct ac_shader_abi *abi, LLVMValueRef index, bool write)
 {
    struct si_shader_context *ctx = si_shader_context_from_abi(abi);
 
@@ -171,7 +169,7 @@ static LLVMValueRef si_load_image_desc(struct si_shader_context *ctx, LLVMValueR
    else
       rsrc = ac_build_load_to_sgpr(&ctx->ac, list, index);
 
-   if (desc_type == AC_DESC_IMAGE && uses_store && ctx->ac.chip_class <= GFX9)
+   if (desc_type == AC_DESC_IMAGE && uses_store)
       rsrc = force_dcc_off(ctx, rsrc);
    return rsrc;
 }

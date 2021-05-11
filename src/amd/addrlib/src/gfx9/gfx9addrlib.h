@@ -62,8 +62,7 @@ struct Gfx9ChipSettings
         // Display engine IP version name
         UINT_32 isDce12             : 1;
         UINT_32 isDcn1              : 1;
-        UINT_32 isDcn2              : 1;
-        UINT_32 reserved1           : 29;
+        UINT_32 reserved1           : 30;
 
         // Misc configuration bits
         UINT_32 metaBaseAlignFix    : 1;
@@ -216,16 +215,6 @@ const UINT_32 Dcn1Bpp64SwModeMask = (1u << ADDR_SW_4KB_D)    |
                                     (1u << ADDR_SW_64KB_D_X) |
                                     Dcn1NonBpp64SwModeMask;
 
-const UINT_32 Dcn2NonBpp64SwModeMask = (1u << ADDR_SW_LINEAR)   |
-                                       (1u << ADDR_SW_64KB_S)   |
-                                       (1u << ADDR_SW_64KB_S_T) |
-                                       (1u << ADDR_SW_64KB_S_X);
-
-const UINT_32 Dcn2Bpp64SwModeMask = (1u << ADDR_SW_64KB_D)   |
-                                    (1u << ADDR_SW_64KB_D_T) |
-                                    (1u << ADDR_SW_64KB_D_X) |
-                                    Dcn2NonBpp64SwModeMask;
-
 /**
 ************************************************************************************************************************
 * @brief GFX9 meta equation parameters
@@ -325,10 +314,7 @@ protected:
         const ADDR2_COMPUTE_HTILE_COORDFROMADDR_INPUT* pIn,
         ADDR2_COMPUTE_HTILE_COORDFROMADDR_OUTPUT*      pOut);
 
-    virtual ADDR_E_RETURNCODE HwlSupportComputeDccAddrFromCoord(
-        const ADDR2_COMPUTE_DCC_ADDRFROMCOORD_INPUT* pIn);
-
-    virtual VOID HwlComputeDccAddrFromCoord(
+    virtual ADDR_E_RETURNCODE HwlComputeDccAddrFromCoord(
         const ADDR2_COMPUTE_DCC_ADDRFROMCOORD_INPUT* pIn,
         ADDR2_COMPUTE_DCC_ADDRFROMCOORD_OUTPUT*      pOut);
 

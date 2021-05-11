@@ -50,6 +50,7 @@
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "st_program.h"
+#include "st_mesa_to_tgsi.h"
 #include "st_format.h"
 #include "st_glsl_to_tgsi_temprename.h"
 
@@ -291,7 +292,7 @@ public:
    virtual void visit(ir_barrier *);
    /*@}*/
 
-   void ATTRIBUTE_NOINLINE visit_expression(ir_expression *, st_src_reg *);
+   void visit_expression(ir_expression *, st_src_reg *) ATTRIBUTE_NOINLINE;
 
    void visit_atomic_counter_intrinsic(ir_call *);
    void visit_ssbo_intrinsic(ir_call *);
@@ -429,85 +430,6 @@ swizzle_for_size(int size)
 
    assert((size >= 1) && (size <= 4));
    return size_swizzles[size - 1];
-}
-
-
-/**
- * Map mesa texture target to TGSI texture target.
- */
-static enum tgsi_texture_type
-st_translate_texture_target(gl_texture_index textarget, GLboolean shadow)
-{
-   if (shadow) {
-      switch (textarget) {
-      case TEXTURE_1D_INDEX:
-         return TGSI_TEXTURE_SHADOW1D;
-      case TEXTURE_2D_INDEX:
-         return TGSI_TEXTURE_SHADOW2D;
-      case TEXTURE_RECT_INDEX:
-         return TGSI_TEXTURE_SHADOWRECT;
-      case TEXTURE_1D_ARRAY_INDEX:
-         return TGSI_TEXTURE_SHADOW1D_ARRAY;
-      case TEXTURE_2D_ARRAY_INDEX:
-         return TGSI_TEXTURE_SHADOW2D_ARRAY;
-      case TEXTURE_CUBE_INDEX:
-         return TGSI_TEXTURE_SHADOWCUBE;
-      case TEXTURE_CUBE_ARRAY_INDEX:
-         return TGSI_TEXTURE_SHADOWCUBE_ARRAY;
-      default:
-         break;
-      }
-   }
-
-   switch (textarget) {
-   case TEXTURE_2D_MULTISAMPLE_INDEX:
-      return TGSI_TEXTURE_2D_MSAA;
-   case TEXTURE_2D_MULTISAMPLE_ARRAY_INDEX:
-      return TGSI_TEXTURE_2D_ARRAY_MSAA;
-   case TEXTURE_BUFFER_INDEX:
-      return TGSI_TEXTURE_BUFFER;
-   case TEXTURE_1D_INDEX:
-      return TGSI_TEXTURE_1D;
-   case TEXTURE_2D_INDEX:
-      return TGSI_TEXTURE_2D;
-   case TEXTURE_3D_INDEX:
-      return TGSI_TEXTURE_3D;
-   case TEXTURE_CUBE_INDEX:
-      return TGSI_TEXTURE_CUBE;
-   case TEXTURE_CUBE_ARRAY_INDEX:
-      return TGSI_TEXTURE_CUBE_ARRAY;
-   case TEXTURE_RECT_INDEX:
-      return TGSI_TEXTURE_RECT;
-   case TEXTURE_1D_ARRAY_INDEX:
-      return TGSI_TEXTURE_1D_ARRAY;
-   case TEXTURE_2D_ARRAY_INDEX:
-      return TGSI_TEXTURE_2D_ARRAY;
-   case TEXTURE_EXTERNAL_INDEX:
-      return TGSI_TEXTURE_2D;
-   default:
-      debug_assert(!"unexpected texture target index");
-      return TGSI_TEXTURE_1D;
-   }
-}
-
-
-/**
- * Map GLSL base type to TGSI return type.
- */
-static enum tgsi_return_type
-st_translate_texture_type(enum glsl_base_type type)
-{
-   switch (type) {
-   case GLSL_TYPE_INT:
-      return TGSI_RETURN_TYPE_SINT;
-   case GLSL_TYPE_UINT:
-      return TGSI_RETURN_TYPE_UINT;
-   case GLSL_TYPE_FLOAT:
-      return TGSI_RETURN_TYPE_FLOAT;
-   default:
-      assert(!"unexpected texture type");
-      return TGSI_RETURN_TYPE_UNKNOWN;
-   }
 }
 
 
@@ -1623,7 +1545,7 @@ glsl_to_tgsi_visitor::visit_expression(ir_expression* ir, st_src_reg *op)
        * It is then multiplied with the source operand of DDY.
        */
       static const gl_state_index16 transform_y_state[STATE_LENGTH]
-         = { STATE_FB_WPOS_Y_TRANSFORM };
+         = { STATE_INTERNAL, STATE_FB_WPOS_Y_TRANSFORM };
 
       unsigned transform_y_index =
          _mesa_add_state_reference(this->prog->Parameters,
@@ -2235,7 +2157,7 @@ glsl_to_tgsi_visitor::visit_expression(ir_expression* ir, st_src_reg *op)
    case ir_binop_interpolate_at_offset: {
       /* The y coordinate needs to be flipped for the default fb */
       static const gl_state_index16 transform_y_state[STATE_LENGTH]
-         = { STATE_FB_WPOS_Y_TRANSFORM };
+         = { STATE_INTERNAL, STATE_FB_WPOS_Y_TRANSFORM };
 
       unsigned transform_y_index =
          _mesa_add_state_reference(this->prog->Parameters,
@@ -3263,7 +3185,6 @@ glsl_to_tgsi_visitor::visit(ir_assignment *ir)
               ir->rhs == ((glsl_to_tgsi_instruction *)this->instructions.get_tail())->ir &&
               !((glsl_to_tgsi_instruction *)this->instructions.get_tail())->is_64bit_expanded &&
               type_size(ir->lhs->type) == 1 &&
-              !ir->lhs->type->is_64bit() &&
               l.writemask == ((glsl_to_tgsi_instruction *)this->instructions.get_tail())->dst[0].writemask) {
       /* To avoid emitting an extra MOV when assigning an expression to a
        * variable, emit the last instruction of the expression again, but
@@ -4868,7 +4789,7 @@ count_resources(glsl_to_tgsi_visitor *v, gl_program *prog)
 {
    v->samplers_used = 0;
    v->images_used = 0;
-   BITSET_ZERO(prog->info.textures_used_by_txf);
+   prog->info.textures_used_by_txf = 0;
 
    foreach_in_list(glsl_to_tgsi_instruction, inst, &v->instructions) {
       if (inst->info->is_tex) {
@@ -4882,7 +4803,7 @@ count_resources(glsl_to_tgsi_visitor *v, gl_program *prog)
                st_translate_texture_target(inst->tex_target, inst->tex_shadow);
 
             if (inst->op == TGSI_OPCODE_TXF || inst->op == TGSI_OPCODE_TXF_LZ) {
-               BITSET_SET(prog->info.textures_used_by_txf, idx);
+               prog->info.textures_used_by_txf |= 1u << idx;
             }
          }
       }
@@ -6478,7 +6399,7 @@ emit_wpos(struct st_context *st,
           struct ureg_program *ureg,
           int wpos_transform_const)
 {
-   struct pipe_screen *pscreen = st->screen;
+   struct pipe_screen *pscreen = st->pipe->screen;
    GLfloat adjX = 0.0f;
    GLfloat adjY[2] = { 0.0f, 0.0f };
    boolean invert = FALSE;
@@ -6599,6 +6520,17 @@ emit_face_var(struct gl_context *ctx, struct st_translate *t)
    t->inputs[t->inputMapping[VARYING_SLOT_FACE]] = ureg_src(face_temp);
 }
 
+static void
+emit_compute_block_size(const struct gl_program *prog,
+                        struct ureg_program *ureg) {
+   ureg_property(ureg, TGSI_PROPERTY_CS_FIXED_BLOCK_WIDTH,
+                 prog->info.cs.local_size[0]);
+   ureg_property(ureg, TGSI_PROPERTY_CS_FIXED_BLOCK_HEIGHT,
+                 prog->info.cs.local_size[1]);
+   ureg_property(ureg, TGSI_PROPERTY_CS_FIXED_BLOCK_DEPTH,
+                 prog->info.cs.local_size[2]);
+}
+
 struct sort_inout_decls {
    bool operator()(const struct inout_decl &a, const struct inout_decl &b) const {
       return mapping[a.mesa_index] < mapping[b.mesa_index];
@@ -6620,6 +6552,26 @@ sort_inout_decls_by_slot(struct inout_decl *decls,
    sort_inout_decls sorter;
    sorter.mapping = mapping;
    std::sort(decls, decls + count, sorter);
+}
+
+static enum tgsi_interpolate_mode
+st_translate_interp(enum glsl_interp_mode glsl_qual, GLuint varying)
+{
+   switch (glsl_qual) {
+   case INTERP_MODE_NONE:
+      if (varying == VARYING_SLOT_COL0 || varying == VARYING_SLOT_COL1)
+         return TGSI_INTERPOLATE_COLOR;
+      return TGSI_INTERPOLATE_PERSPECTIVE;
+   case INTERP_MODE_SMOOTH:
+      return TGSI_INTERPOLATE_PERSPECTIVE;
+   case INTERP_MODE_FLAT:
+      return TGSI_INTERPOLATE_CONSTANT;
+   case INTERP_MODE_NOPERSPECTIVE:
+      return TGSI_INTERPOLATE_LINEAR;
+   default:
+      assert(0 && "unexpected interp mode in st_translate_interp()");
+      return TGSI_INTERPOLATE_PERSPECTIVE;
+   }
 }
 
 /**
@@ -6659,20 +6611,18 @@ st_translate_program(
    const ubyte outputSemanticName[],
    const ubyte outputSemanticIndex[])
 {
-   struct pipe_screen *screen = st_context(ctx)->screen;
+   struct pipe_screen *screen = st_context(ctx)->pipe->screen;
    struct st_translate *t;
    unsigned i;
-   struct gl_program_constants *prog_const =
-      &ctx->Const.Program[program->shader->Stage];
+   struct gl_program_constants *frag_const =
+      &ctx->Const.Program[MESA_SHADER_FRAGMENT];
    enum pipe_error ret = PIPE_OK;
 
    assert(numInputs <= ARRAY_SIZE(t->inputs));
    assert(numOutputs <= ARRAY_SIZE(t->outputs));
 
    ASSERT_BITFIELD_SIZE(st_src_reg, type, GLSL_TYPE_ERROR);
-   ASSERT_BITFIELD_SIZE(st_src_reg, file, PROGRAM_FILE_MAX);
    ASSERT_BITFIELD_SIZE(st_dst_reg, type, GLSL_TYPE_ERROR);
-   ASSERT_BITFIELD_SIZE(st_dst_reg, file, PROGRAM_FILE_MAX);
    ASSERT_BITFIELD_SIZE(glsl_to_tgsi_instruction, tex_type, GLSL_TYPE_ERROR);
    ASSERT_BITFIELD_SIZE(glsl_to_tgsi_instruction, image_format, PIPE_FORMAT_COUNT);
    ASSERT_BITFIELD_SIZE(glsl_to_tgsi_instruction, tex_target,
@@ -6730,9 +6680,7 @@ st_translate_program(
             assert(interpMode);
             interp_mode = interpMode[slot] != TGSI_INTERPOLATE_COUNT ?
                (enum tgsi_interpolate_mode) interpMode[slot] :
-               tgsi_get_interp_mode(decl->interp,
-                                    inputSlotToAttr[slot] == VARYING_SLOT_COL0 ||
-                                    inputSlotToAttr[slot] == VARYING_SLOT_COL1);
+               st_translate_interp(decl->interp, inputSlotToAttr[slot]);
 
             interp_location = (enum tgsi_interpolate_loc) decl->interp_loc;
          }
@@ -6814,6 +6762,14 @@ st_translate_program(
    }
 
    if (procType == PIPE_SHADER_FRAGMENT) {
+      if (program->shader->Program->info.fs.early_fragment_tests ||
+          program->shader->Program->info.fs.post_depth_coverage) {
+         ureg_property(ureg, TGSI_PROPERTY_FS_EARLY_DEPTH_STENCIL, 1);
+
+         if (program->shader->Program->info.fs.post_depth_coverage)
+            ureg_property(ureg, TGSI_PROPERTY_FS_POST_DEPTH_COVERAGE, 1);
+      }
+
       if (proginfo->info.inputs_read & VARYING_BIT_POS) {
           /* Must do this after setting up t->inputs. */
           emit_wpos(st_context(ctx), t, proginfo, ureg,
@@ -6876,6 +6832,13 @@ st_translate_program(
       }
    }
 
+   if (procType == PIPE_SHADER_COMPUTE) {
+      emit_compute_block_size(proginfo, ureg);
+   }
+
+   if (program->shader->Program->info.layer_viewport_relative)
+      ureg_property(ureg, TGSI_PROPERTY_LAYER_VIEWPORT_RELATIVE, 1);
+
    /* Declare address register.
     */
    if (program->num_address_regs > 0) {
@@ -6886,41 +6849,49 @@ st_translate_program(
 
    /* Declare misc input registers
     */
-   BITSET_FOREACH_SET(i, proginfo->info.system_values_read, SYSTEM_VALUE_MAX) {
-      enum tgsi_semantic semName = tgsi_get_sysval_semantic(i);
+   {
+      GLbitfield64 sysInputs = proginfo->info.system_values_read;
 
-      t->systemValues[i] = ureg_DECL_system_value(ureg, semName, 0);
+      for (i = 0; sysInputs; i++) {
+         if (sysInputs & (1ull << i)) {
+            enum tgsi_semantic semName = tgsi_get_sysval_semantic(i);
 
-      if (semName == TGSI_SEMANTIC_INSTANCEID ||
-          semName == TGSI_SEMANTIC_VERTEXID) {
-         /* From Gallium perspective, these system values are always
-          * integer, and require native integer support.  However, if
-          * native integer is supported on the vertex stage but not the
-          * pixel stage (e.g, i915g + draw), Mesa will generate IR that
-          * assumes these system values are floats. To resolve the
-          * inconsistency, we insert a U2F.
-          */
-         struct st_context *st = st_context(ctx);
-         struct pipe_screen *pscreen = st->screen;
-         assert(procType == PIPE_SHADER_VERTEX);
-         assert(pscreen->get_shader_param(pscreen, PIPE_SHADER_VERTEX, PIPE_SHADER_CAP_INTEGERS));
-         (void) pscreen;
-         if (!ctx->Const.NativeIntegers) {
-            struct ureg_dst temp = ureg_DECL_local_temporary(t->ureg);
-            ureg_U2F(t->ureg, ureg_writemask(temp, TGSI_WRITEMASK_X),
-                     t->systemValues[i]);
-            t->systemValues[i] = ureg_scalar(ureg_src(temp), 0);
+            t->systemValues[i] = ureg_DECL_system_value(ureg, semName, 0);
+
+            if (semName == TGSI_SEMANTIC_INSTANCEID ||
+                semName == TGSI_SEMANTIC_VERTEXID) {
+               /* From Gallium perspective, these system values are always
+                * integer, and require native integer support.  However, if
+                * native integer is supported on the vertex stage but not the
+                * pixel stage (e.g, i915g + draw), Mesa will generate IR that
+                * assumes these system values are floats. To resolve the
+                * inconsistency, we insert a U2F.
+                */
+               struct st_context *st = st_context(ctx);
+               struct pipe_screen *pscreen = st->pipe->screen;
+               assert(procType == PIPE_SHADER_VERTEX);
+               assert(pscreen->get_shader_param(pscreen, PIPE_SHADER_VERTEX, PIPE_SHADER_CAP_INTEGERS));
+               (void) pscreen;
+               if (!ctx->Const.NativeIntegers) {
+                  struct ureg_dst temp = ureg_DECL_local_temporary(t->ureg);
+                  ureg_U2F(t->ureg, ureg_writemask(temp, TGSI_WRITEMASK_X),
+                           t->systemValues[i]);
+                  t->systemValues[i] = ureg_scalar(ureg_src(temp), 0);
+               }
+            }
+
+            if (procType == PIPE_SHADER_FRAGMENT &&
+                semName == TGSI_SEMANTIC_POSITION)
+               emit_wpos(st_context(ctx), t, proginfo, ureg,
+                         program->wpos_transform_const);
+
+            if (procType == PIPE_SHADER_FRAGMENT &&
+                semName == TGSI_SEMANTIC_SAMPLEPOS)
+               emit_samplepos_adjustment(t, program->wpos_transform_const);
+
+            sysInputs &= ~(1ull << i);
          }
       }
-
-      if (procType == PIPE_SHADER_FRAGMENT &&
-          semName == TGSI_SEMANTIC_POSITION)
-         emit_wpos(st_context(ctx), t, proginfo, ureg,
-                   program->wpos_transform_const);
-
-      if (procType == PIPE_SHADER_FRAGMENT &&
-          semName == TGSI_SEMANTIC_SAMPLEPOS)
-         emit_samplepos_adjustment(t, program->wpos_transform_const);
    }
 
    t->array_sizes = program->array_sizes;
@@ -6942,7 +6913,7 @@ st_translate_program(
       t->num_constants = proginfo->Parameters->NumParameters;
 
       for (i = 0; i < proginfo->Parameters->NumParameters; i++) {
-         unsigned pvo = proginfo->Parameters->Parameters[i].ValueOffset;
+         unsigned pvo = proginfo->Parameters->ParameterValueOffset[i];
 
          switch (proginfo->Parameters->Parameters[i].Type) {
          case PROGRAM_STATE_VAR:
@@ -6999,7 +6970,7 @@ st_translate_program(
    assert(i == program->num_immediates);
 
    /* texture samplers */
-   for (i = 0; i < prog_const->MaxTextureImageUnits; i++) {
+   for (i = 0; i < frag_const->MaxTextureImageUnits; i++) {
       if (program->samplers_used & (1u << i)) {
          enum tgsi_return_type type =
             st_translate_texture_type(program->sampler_types[i]);
@@ -7020,7 +6991,7 @@ st_translate_program(
             unsigned index = (prog->info.num_ssbos +
                               prog->sh.AtomicBuffers[i]->Binding);
             assert(prog->sh.AtomicBuffers[i]->Binding <
-                   prog_const->MaxAtomicBuffers);
+                   frag_const->MaxAtomicBuffers);
             t->buffers[index] = ureg_DECL_buffer(ureg, index, true);
          }
       } else {
@@ -7033,7 +7004,7 @@ st_translate_program(
          }
       }
 
-      assert(prog->info.num_ssbos <= prog_const->MaxShaderStorageBlocks);
+      assert(prog->info.num_ssbos <= frag_const->MaxShaderStorageBlocks);
       for (i = 0; i < prog->info.num_ssbos; i++) {
          t->buffers[i] = ureg_DECL_buffer(ureg, i, false);
       }
@@ -7056,6 +7027,25 @@ st_translate_program(
     */
    foreach_in_list(glsl_to_tgsi_instruction, inst, &program->instructions)
       compile_tgsi_instruction(t, inst);
+
+   /* Set the next shader stage hint for VS and TES. */
+   switch (procType) {
+   case PIPE_SHADER_VERTEX:
+   case PIPE_SHADER_TESS_EVAL:
+      if (program->shader_program->SeparateShader)
+         break;
+
+      for (i = program->shader->Stage+1; i <= MESA_SHADER_FRAGMENT; i++) {
+         if (program->shader_program->_LinkedShaders[i]) {
+            ureg_set_next_shader_processor(
+                  ureg, pipe_shader_type_from_mesa((gl_shader_stage)i));
+            break;
+         }
+      }
+      break;
+   default:
+      ; /* nothing - silence compiler warning */
+   }
 
 out:
    if (t) {
@@ -7086,7 +7076,7 @@ get_mesa_program_tgsi(struct gl_context *ctx,
    struct gl_program *prog;
    struct gl_shader_compiler_options *options =
          &ctx->Const.ShaderCompilerOptions[shader->Stage];
-   struct pipe_screen *pscreen = st_context(ctx)->screen;
+   struct pipe_screen *pscreen = ctx->st->pipe->screen;
    enum pipe_shader_type ptarget = pipe_shader_type_from_mesa(shader->Stage);
    unsigned skip_merge_registers;
 
@@ -7223,10 +7213,10 @@ get_mesa_program_tgsi(struct gl_context *ctx,
    /* This must be done before the uniform storage is associated. */
    if (shader->Stage == MESA_SHADER_FRAGMENT &&
        (prog->info.inputs_read & VARYING_BIT_POS ||
-        BITSET_TEST(prog->info.system_values_read, SYSTEM_VALUE_FRAG_COORD) ||
-        BITSET_TEST(prog->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS))) {
+        prog->info.system_values_read & (1ull << SYSTEM_VALUE_FRAG_COORD) ||
+        prog->info.system_values_read & (1ull << SYSTEM_VALUE_SAMPLE_POS))) {
       static const gl_state_index16 wposTransformState[STATE_LENGTH] = {
-         STATE_FB_WPOS_Y_TRANSFORM
+         STATE_INTERNAL, STATE_FB_WPOS_Y_TRANSFORM
       };
 
       v->wpos_transform_const = _mesa_add_state_reference(prog->Parameters,
@@ -7237,7 +7227,13 @@ get_mesa_program_tgsi(struct gl_context *ctx,
     * storage is only associated with the original parameter list.
     * This should be enough for Bitmap and DrawPixels constants.
     */
-   _mesa_ensure_and_associate_uniform_storage(ctx, shader_program, prog, 8);
+   _mesa_reserve_parameter_storage(prog->Parameters, 8);
+
+   /* This has to be done last.  Any operation the can cause
+    * prog->ParameterValues to get reallocated (e.g., anything that adds a
+    * program constant) has to happen before creating this linkage.
+    */
+   _mesa_associate_uniform_storage(ctx, shader_program, prog);
    if (!shader_program->data->LinkStatus) {
       free_glsl_to_tgsi_visitor(v);
       _mesa_reference_program(ctx, &shader->Program, NULL);
@@ -7309,7 +7305,7 @@ has_unsupported_control_flow(exec_list *ir,
 GLboolean
 st_link_tgsi(struct gl_context *ctx, struct gl_shader_program *prog)
 {
-   struct pipe_screen *pscreen = st_context(ctx)->screen;
+   struct pipe_screen *pscreen = ctx->st->pipe->screen;
 
    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
       struct gl_linked_shader *shader = prog->_LinkedShaders[i];

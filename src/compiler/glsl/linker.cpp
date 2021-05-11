@@ -332,7 +332,7 @@ public:
         invalid_stream_id(0),
         invalid_stream_id_from_emit_vertex(false),
         end_primitive_found(false),
-        used_streams(0)
+        uses_non_zero_stream(false)
    {
       /* empty */
    }
@@ -353,7 +353,8 @@ public:
          return visit_stop;
       }
 
-      used_streams |= 1 << stream_id;
+      if (stream_id != 0)
+         uses_non_zero_stream = true;
 
       return visit_continue;
    }
@@ -376,7 +377,8 @@ public:
          return visit_stop;
       }
 
-      used_streams |= 1 << stream_id;
+      if (stream_id != 0)
+         uses_non_zero_stream = true;
 
       return visit_continue;
    }
@@ -397,9 +399,9 @@ public:
       return invalid_stream_id;
    }
 
-   unsigned active_stream_mask()
+   bool uses_streams()
    {
-      return used_streams;
+      return uses_non_zero_stream;
    }
 
    bool uses_end_primitive()
@@ -412,7 +414,7 @@ private:
    int invalid_stream_id;
    bool invalid_stream_id_from_emit_vertex;
    bool end_primitive_found;
-   unsigned used_streams;
+   bool uses_non_zero_stream;
 };
 
 /* Class that finds array derefs and check if indexes are dynamic. */
@@ -498,7 +500,6 @@ linker_warning(gl_shader_program *prog, const char *fmt, ...)
  */
 long
 parse_program_resource_name(const GLchar *name,
-                            const size_t len,
                             const GLchar **out_base_name_end)
 {
    /* Section 7.3.1 ("Program Interfaces") of the OpenGL 4.3 spec says:
@@ -509,6 +510,7 @@ parse_program_resource_name(const GLchar *name,
     *     string will not include white space anywhere in the string."
     */
 
+   const size_t len = strlen(name);
    *out_base_name_end = name + len;
 
    if (len == 0 || name[len-1] != ']')
@@ -809,7 +811,7 @@ validate_geometry_shader_emissions(struct gl_context *ctx,
                       emit_vertex.error_stream(),
                       ctx->Const.MaxVertexStreams - 1);
       }
-      prog->Geom.ActiveStreamMask = emit_vertex.active_stream_mask();
+      prog->Geom.UsesStreams = emit_vertex.uses_streams();
       prog->Geom.UsesEndPrimitive = emit_vertex.uses_end_primitive();
 
       /* From the ARB_gpu_shader5 spec:
@@ -832,11 +834,11 @@ validate_geometry_shader_emissions(struct gl_context *ctx,
        * Since we can call EmitVertex() and EndPrimitive() when we output
        * primitives other than points, calling EmitStreamVertex(0) or
        * EmitEndPrimitive(0) should not produce errors. This it also what Nvidia
-       * does. We can use prog->Geom.ActiveStreamMask to check whether only the
-       * first (zero) stream is active.
+       * does. Currently we only set prog->Geom.UsesStreams to TRUE when
+       * EmitStreamVertex() or EmitEndPrimitive() are called with a non-zero
        * stream.
        */
-      if (prog->Geom.ActiveStreamMask & ~(1 << 0) &&
+      if (prog->Geom.UsesStreams &&
           sh->Program->info.gs.output_primitive != GL_POINTS) {
          linker_error(prog, "EmitStreamVertex(n) and EndStreamPrimitive(n) "
                       "with n>0 requires point output\n");

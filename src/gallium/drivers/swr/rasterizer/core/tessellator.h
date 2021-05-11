@@ -166,6 +166,10 @@ INLINE HANDLE SWR_API
     }
 
     HANDLE tsCtx = pContextMem;
+    if (!tsCtx)
+    {
+        return tsCtx;
+    }
 
     SWR_TS* pTessellator = new (tsCtx) SWR_TS();
     SWR_ASSERT(pTessellator == tsCtx);

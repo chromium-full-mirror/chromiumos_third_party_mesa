@@ -37,19 +37,35 @@
 #include "util/algorithm.hpp"
 
 #include <llvm/Config/llvm-config.h>
+#if LLVM_VERSION_MAJOR < 4
+#include <llvm/Bitcode/ReaderWriter.h>
+#else
+#include <llvm/Bitcode/BitcodeReader.h>
+#include <llvm/Bitcode/BitcodeWriter.h>
+#endif
 
-#include <llvm/ADT/Triple.h>
-#include <llvm/Analysis/TargetLibraryInfo.h>
-#include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/Linker/Linker.h>
-#include <llvm/Target/TargetMachine.h>
 #include <llvm/Transforms/IPO.h>
 #include <llvm/Transforms/Utils/Cloning.h>
+#include <llvm/Target/TargetMachine.h>
+#if LLVM_VERSION_MAJOR >= 4
+#include <llvm/Support/Error.h>
+#else
+#include <llvm/Support/ErrorOr.h>
+#endif
+
+#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/Analysis/TargetLibraryInfo.h>
 
 #include <clang/Basic/TargetInfo.h>
 #include <clang/Frontend/CompilerInstance.h>
-#include <clang/Lex/PreprocessorOptions.h>
+
+#if LLVM_VERSION_MAJOR >= 8
+#include <clang/Basic/CodeGenOptions.h>
+#else
+#include <clang/Frontend/CodeGenOptions.h>
+#endif
 
 #if LLVM_VERSION_MAJOR >= 10
 #include <llvm/Support/CodeGen.h>
@@ -70,11 +86,103 @@ namespace clover {
          typedef ::llvm::TargetMachine::CodeGenFileType CodeGenFileType;
 #endif
 
+         template<typename T, typename AS>
+         unsigned target_address_space(const T &target, const AS lang_as) {
+            const auto &map = target.getAddressSpaceMap();
+#if LLVM_VERSION_MAJOR >= 5
+            return map[static_cast<unsigned>(lang_as)];
+#else
+            return map[lang_as - clang::LangAS::Offset];
+#endif
+         }
+
 #if LLVM_VERSION_MAJOR >= 10
          const clang::InputKind ik_opencl = clang::Language::OpenCL;
-#else
+#elif LLVM_VERSION_MAJOR >= 5
          const clang::InputKind ik_opencl = clang::InputKind::OpenCL;
+#else
+         const clang::InputKind ik_opencl = clang::IK_OpenCL;
 #endif
+
+#if LLVM_VERSION_MAJOR >= 5
+         const clang::LangStandard::Kind lang_opencl10 = clang::LangStandard::lang_opencl10;
+#else
+         const clang::LangStandard::Kind lang_opencl10 = clang::LangStandard::lang_opencl;
+#endif
+
+         inline void
+         add_link_bitcode_file(clang::CodeGenOptions &opts,
+                               const std::string &path) {
+#if LLVM_VERSION_MAJOR >= 5
+            clang::CodeGenOptions::BitcodeFileToLink F;
+
+            F.Filename = path;
+            F.PropagateAttrs = true;
+            F.LinkFlags = ::llvm::Linker::Flags::None;
+            opts.LinkBitcodeFiles.emplace_back(F);
+#else
+            opts.LinkBitcodeFiles.emplace_back(::llvm::Linker::Flags::None, path);
+#endif
+         }
+
+#if LLVM_VERSION_MAJOR >= 6
+         const auto default_code_model = ::llvm::None;
+#else
+         const auto default_code_model = ::llvm::CodeModel::Default;
+#endif
+
+         template<typename M, typename F> void
+         handle_module_error(M &mod, const F &f) {
+#if LLVM_VERSION_MAJOR >= 4
+            if (::llvm::Error err = mod.takeError())
+               ::llvm::handleAllErrors(std::move(err), [&](::llvm::ErrorInfoBase &eib) {
+                     f(eib.message());
+                  });
+#else
+            if (!mod)
+               f(mod.getError().message());
+#endif
+         }
+
+         template<typename T> void
+         set_diagnostic_handler(::llvm::LLVMContext &ctx,
+                                T *diagnostic_handler, void *data) {
+#if LLVM_VERSION_MAJOR >= 6
+            ctx.setDiagnosticHandlerCallBack(diagnostic_handler, data);
+#else
+            ctx.setDiagnosticHandler(diagnostic_handler, data);
+#endif
+         }
+
+         inline std::unique_ptr< ::llvm::Module>
+         clone_module(const ::llvm::Module &mod)
+         {
+#if LLVM_VERSION_MAJOR >= 7
+            return ::llvm::CloneModule(mod);
+#else
+            return ::llvm::CloneModule(&mod);
+#endif
+         }
+
+         template<typename T> void
+         write_bitcode_to_file(const ::llvm::Module &mod, T &os)
+         {
+#if LLVM_VERSION_MAJOR >= 7
+            ::llvm::WriteBitcodeToFile(mod, os);
+#else
+            ::llvm::WriteBitcodeToFile(&mod, os);
+#endif
+         }
+
+         template<typename TM, typename PM, typename OS, typename FT>
+         bool add_passes_to_emit_file(TM &tm, PM &pm, OS &os, FT &ft)
+         {
+#if LLVM_VERSION_MAJOR >= 7
+            return tm.addPassesToEmitFile(pm, os, nullptr, ft);
+#else
+            return tm.addPassesToEmitFile(pm, os, ft);
+#endif
+         }
 
          template<typename T> inline bool
          create_compiler_invocation_from_args(clang::CompilerInvocation &cinv,
@@ -90,18 +198,16 @@ namespace clover {
 #endif
          }
 
-         static inline void
-         compiler_set_lang_defaults(std::unique_ptr<clang::CompilerInstance> &c,
-                                    clang::InputKind ik, const ::llvm::Triple& triple,
-                                    clang::LangStandard::Kind d)
-         {
-            c->getInvocation().setLangDefaults(c->getLangOpts(), ik, triple,
-#if LLVM_VERSION_MAJOR >= 12
-                                               c->getPreprocessorOpts().Includes,
+         template<typename T, typename M>
+         T get_abi_type(const T &arg_type, const M &mod) {
+#if LLVM_VERSION_MAJOR >= 7
+            return arg_type;
 #else
-                                               c->getPreprocessorOpts(),
+            ::llvm::DataLayout dl(&mod);
+            const unsigned arg_store_size = dl.getTypeStoreSize(arg_type);
+            return !arg_type->isIntegerTy() ? arg_type :
+               dl.getSmallestLegalIntType(mod.getContext(), arg_store_size * 8);
 #endif
-                                               d);
          }
       }
    }

@@ -19,19 +19,46 @@
 # SOFTWARE.
 
 radv_entrypoints = custom_target(
-  'radv_entrypoints',
-  input : [vk_entrypoints_gen, vk_api_xml],
+  'radv_entrypoints.[ch]',
+  input : ['radv_entrypoints_gen.py', vk_api_xml],
   output : ['radv_entrypoints.h', 'radv_entrypoints.c'],
   command : [
-    prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--proto', '--weak',
-    '--out-h', '@OUTPUT0@', '--out-c', '@OUTPUT1@', '--prefix', 'radv',
-    '--device-prefix', 'sqtt',
+    prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--outdir',
+    meson.current_build_dir()
   ],
-  depend_files : vk_entrypoints_gen_depend_files,
+  depend_files : files('radv_extensions.py'),
+)
+
+radv_extensions_c = custom_target(
+  'radv_extensions.c',
+  input : ['radv_extensions.py', vk_api_xml],
+  output : ['radv_extensions.c', 'radv_extensions.h'],
+  command : [
+    prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--out-c', '@OUTPUT0@',
+    '--out-h', '@OUTPUT1@'
+  ],
+)
+
+amd_vk_format_table_c = custom_target(
+  'amd_vk_format_table.c',
+  input : ['vk_format_table.py', 'vk_format_layout.csv'],
+  output : 'vk_format_table.c',
+  command : [prog_python, '@INPUT@'],
+  depend_files : files('vk_format_parse.py'),
+  capture : true,
 )
 
 libradv_files = files(
   'layers/radv_sqtt_layer.c',
+  'winsys/amdgpu/radv_amdgpu_bo.c',
+  'winsys/amdgpu/radv_amdgpu_bo.h',
+  'winsys/amdgpu/radv_amdgpu_cs.c',
+  'winsys/amdgpu/radv_amdgpu_cs.h',
+  'winsys/amdgpu/radv_amdgpu_surface.c',
+  'winsys/amdgpu/radv_amdgpu_surface.h',
+  'winsys/amdgpu/radv_amdgpu_winsys.c',
+  'winsys/amdgpu/radv_amdgpu_winsys.h',
+  'winsys/amdgpu/radv_amdgpu_winsys_public.h',
   'winsys/null/radv_null_bo.c',
   'winsys/null/radv_null_bo.h',
   'winsys/null/radv_null_cs.c',
@@ -57,8 +84,6 @@ libradv_files = files(
   'radv_meta_bufimage.c',
   'radv_meta_clear.c',
   'radv_meta_copy.c',
-  'radv_meta_copy_vrs_htile.c',
-  'radv_meta_dcc_retile.c',
   'radv_meta_decompress.c',
   'radv_meta_fast_clear.c',
   'radv_meta_fmask_expand.c',
@@ -72,6 +97,7 @@ libradv_files = files(
   'radv_pipeline_cache.c',
   'radv_private.h',
   'radv_radeon_winsys.h',
+  'radv_rgp.c',
   'radv_shader.c',
   'radv_shader.h',
   'radv_shader_args.c',
@@ -81,27 +107,14 @@ libradv_files = files(
   'radv_sqtt.c',
   'radv_query.c',
   'radv_util.c',
+  'radv_util.h',
   'radv_wsi.c',
   'si_cmd_buffer.c',
   'vk_format.h',
 )
 
-if not with_platform_windows
-  libradv_files += files(
-    'winsys/amdgpu/radv_amdgpu_bo.c',
-    'winsys/amdgpu/radv_amdgpu_bo.h',
-    'winsys/amdgpu/radv_amdgpu_cs.c',
-    'winsys/amdgpu/radv_amdgpu_cs.h',
-    'winsys/amdgpu/radv_amdgpu_surface.c',
-    'winsys/amdgpu/radv_amdgpu_surface.h',
-    'winsys/amdgpu/radv_amdgpu_winsys.c',
-    'winsys/amdgpu/radv_amdgpu_winsys.h',
-    'winsys/amdgpu/radv_amdgpu_winsys_public.h',
-  )
-endif
-
 radv_deps = []
-radv_flags = cc.get_supported_arguments(['-Wimplicit-fallthrough', '-Wshadow'])
+radv_flags = []
 
 if with_platform_x11
   radv_deps += dep_xcb_dri3
@@ -124,7 +137,7 @@ if system_has_kms_drm and not with_platform_android
 endif
 
 if with_xlib_lease
-  radv_deps += [dep_xlib_xrandr]
+  radv_deps += [dep_xcb_xrandr, dep_xlib_xrandr]
   radv_flags += '-DVK_USE_PLATFORM_XLIB_XRANDR_EXT'
 endif
 
@@ -132,13 +145,6 @@ if with_platform_android
   radv_deps += dep_android
   radv_flags += [
     '-DVK_USE_PLATFORM_ANDROID_KHR'
-  ]
-endif
-
-if with_platform_windows
-  radv_flags += [
-    '-DVK_USE_PLATFORM_WIN32_KHR',
-    '-DVK_NO_PROTOTYPES',
   ]
 endif
 
@@ -154,7 +160,7 @@ endif
 
 libvulkan_radeon = shared_library(
   'vulkan_radeon',
-  [libradv_files, radv_entrypoints, sha1_h],
+  [libradv_files, radv_entrypoints, radv_extensions_c, amd_vk_format_table_c, sha1_h],
   include_directories : [
     inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_amd, inc_amd_common, inc_amd_common_llvm, inc_compiler, inc_util, inc_vulkan_wsi,
   ],
@@ -190,25 +196,17 @@ if with_symbols_check
   )
 endif
 
-icd_lib_path = join_paths(get_option('prefix'), get_option('libdir'))
-icd_file_name = 'libvulkan_radeon.so'
-if with_platform_windows
-  icd_lib_path = '.'
-  icd_file_name = 'vulkan_radeon.dll'
-endif
-
 radeon_icd = custom_target(
   'radeon_icd',
-  input : [vk_icd_gen, vk_api_xml],
+  input : 'radv_icd.py',
   output : 'radeon_icd.@0@.json'.format(host_machine.cpu()),
   command : [
-    prog_python, '@INPUT0@',
-    '--api-version', '1.2', '--xml', '@INPUT1@',
-    '--lib-path', join_paths(icd_lib_path, icd_file_name),
+    prog_python, '@INPUT@',
+    '--lib-path', join_paths(get_option('prefix'), get_option('libdir')),
     '--out', '@OUTPUT@',
   ],
+  depend_files : files('radv_extensions.py'),
   build_by_default : true,
   install_dir : with_vulkan_icd_dir,
   install : true,
 )
-

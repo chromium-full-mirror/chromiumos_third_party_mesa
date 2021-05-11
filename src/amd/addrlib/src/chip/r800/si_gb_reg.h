@@ -38,10 +38,12 @@
 //
 // Make sure the necessary endian defines are there.
 //
-#if defined(LITTLEENDIAN_CPU)
-#elif defined(BIGENDIAN_CPU)
-#else
-#error "BIGENDIAN_CPU or LITTLEENDIAN_CPU must be defined"
+#include "util/u_endian.h"
+
+#if UTIL_ARCH_LITTLE_ENDIAN
+#define LITTLEENDIAN_CPU
+#elif UTIL_ARCH_BIG_ENDIAN
+#define BIGENDIAN_CPU
 #endif
 
 /*
@@ -112,7 +114,7 @@ typedef union {
           unsigned int num_banks                      : 2;
           unsigned int micro_tile_mode_new            : 3;
           unsigned int sample_split                   : 2;
-          unsigned int alt_pipe_config                : 5;
+          unsigned int                                : 5;
      } GB_TILE_MODE_T;
 
      typedef struct _GB_MACROTILE_MODE_T {
@@ -120,16 +122,13 @@ typedef union {
           unsigned int bank_height                    : 2;
           unsigned int macro_tile_aspect              : 2;
           unsigned int num_banks                      : 2;
-          unsigned int alt_bank_height                : 2;
-          unsigned int alt_macro_tile_aspect          : 2;
-          unsigned int alt_num_banks                  : 2;
-          unsigned int                                : 18;
+          unsigned int                                : 24;
      } GB_MACROTILE_MODE_T;
 
 #elif          defined(BIGENDIAN_CPU)
 
      typedef struct _GB_TILE_MODE_T {
-          unsigned int alt_pipe_config                : 5;
+          unsigned int                                : 5;
           unsigned int sample_split                   : 2;
           unsigned int micro_tile_mode_new            : 3;
           unsigned int num_banks                      : 2;
@@ -143,10 +142,7 @@ typedef union {
      } GB_TILE_MODE_T;
 
      typedef struct _GB_MACROTILE_MODE_T {
-          unsigned int                                : 18;
-          unsigned int alt_num_banks                  : 2;
-          unsigned int alt_macro_tile_aspect          : 2;
-          unsigned int alt_bank_height                : 2;
+          unsigned int                                : 24;
           unsigned int num_banks                      : 2;
           unsigned int macro_tile_aspect              : 2;
           unsigned int bank_height                    : 2;

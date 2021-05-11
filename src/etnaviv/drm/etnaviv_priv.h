@@ -34,6 +34,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <assert.h>
 
@@ -41,7 +42,6 @@
 
 #include "util/list.h"
 #include "util/macros.h"
-#include "util/simple_mtx.h"
 #include "util/timespec.h"
 #include "util/u_atomic.h"
 #include "util/u_debug.h"
@@ -50,7 +50,7 @@
 #include "etnaviv_drmif.h"
 #include "drm-uapi/etnaviv_drm.h"
 
-extern simple_mtx_t etna_drm_table_lock;
+extern pthread_mutex_t etna_drm_table_lock;
 
 struct etna_bo_bucket {
 	uint32_t size;
@@ -217,7 +217,7 @@ static inline void get_abs_timeout(struct drm_etnaviv_timespec *tv, uint64_t ns)
 }
 
 #if HAVE_VALGRIND
-#  include <memcheck.h>
+#  include <valgrind/memcheck.h>
 
 /*
  * For tracking the backing memory (if valgrind enabled, we force a mmap

@@ -27,17 +27,16 @@
 #ifndef GFX10_FORMAT_TABLE_H
 #define GFX10_FORMAT_TABLE_H
 
+#include <stdbool.h>
 #include "pipe/p_format.h"
 
-#include <stdbool.h>
-
 struct gfx10_format {
-   unsigned img_format : 9;
+    unsigned img_format:9;
 
-   /* Various formats are only supported with workarounds for vertex fetch,
-    * and some 32_32_32 formats are supported natively, but only for buffers
-    * (possibly with some image support, actually, but no filtering). */
-   bool buffers_only : 1;
+    /* Various formats are only supported with workarounds for vertex fetch,
+     * and some 32_32_32 formats are supported natively, but only for buffers
+     * (possibly with some image support, actually, but no filtering). */
+    bool buffers_only:1;
 };
 
 extern const struct gfx10_format gfx10_format_table[PIPE_FORMAT_COUNT];

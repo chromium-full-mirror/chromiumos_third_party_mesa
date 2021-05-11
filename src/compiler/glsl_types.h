@@ -27,7 +27,6 @@
 
 #include <string.h>
 #include <assert.h>
-#include <stdio.h>
 
 #include "shader_enums.h"
 #include "c11/threads.h"
@@ -36,7 +35,7 @@
 #include "util/macros.h"
 
 #ifdef __cplusplus
-#include "mesa/main/config.h"
+#include "main/config.h"
 #endif
 
 struct glsl_type;
@@ -56,9 +55,6 @@ glsl_type_singleton_decref();
 
 extern void
 _mesa_glsl_initialize_types(struct _mesa_glsl_parse_state *state);
-
-void
-glsl_print_type(FILE *f, const struct glsl_type *t);
 
 void encode_type_to_blob(struct blob *blob, const struct glsl_type *type);
 
@@ -218,27 +214,6 @@ glsl_unsigned_base_type_of(enum glsl_base_type type)
    }
 }
 
-static inline enum glsl_base_type
-glsl_signed_base_type_of(enum glsl_base_type type)
-{
-   switch (type) {
-   case GLSL_TYPE_UINT:
-      return GLSL_TYPE_INT;
-   case GLSL_TYPE_UINT8:
-      return GLSL_TYPE_INT8;
-   case GLSL_TYPE_UINT16:
-      return GLSL_TYPE_INT16;
-   case GLSL_TYPE_UINT64:
-      return GLSL_TYPE_INT64;
-   default:
-      assert(type == GLSL_TYPE_INT ||
-             type == GLSL_TYPE_INT8 ||
-             type == GLSL_TYPE_INT16 ||
-             type == GLSL_TYPE_INT64);
-      return type;
-   }
-}
-
 enum glsl_sampler_dim {
    GLSL_SAMPLER_DIM_1D = 0,
    GLSL_SAMPLER_DIM_2D,
@@ -288,7 +263,7 @@ enum {
 
 #include "GL/gl.h"
 #include "util/ralloc.h"
-#include "mesa/main/menums.h" /* for gl_texture_index, C++'s enum rules are broken */
+#include "main/menums.h" /* for gl_texture_index, C++'s enum rules are broken */
 
 struct glsl_type {
    GLenum gl_type;
@@ -352,13 +327,6 @@ public:
     * explicit stride.
     */
    unsigned explicit_stride;
-
-   /**
-    * Explicit alignment. This is used to communicate explicit alignment
-    * constraints. Should be 0 if the type has no explicit alignment
-    * constraint.
-    */
-   unsigned explicit_alignment;
 
    /**
     * Subtype of composite data types.
@@ -448,8 +416,7 @@ public:
    static const glsl_type *get_instance(unsigned base_type, unsigned rows,
                                         unsigned columns,
                                         unsigned explicit_stride = 0,
-                                        bool row_major = false,
-                                        unsigned explicit_alignment = 0);
+                                        bool row_major = false);
 
    /**
     * Get the instance of a sampler type
@@ -475,8 +442,7 @@ public:
    static const glsl_type *get_struct_instance(const glsl_struct_field *fields,
 					       unsigned num_fields,
 					       const char *name,
-					       bool packed = false,
-					       unsigned explicit_alignment = 0);
+					       bool packed = false);
 
    /**
     * Get the instance of an interface block type
@@ -520,8 +486,6 @@ public:
     * might occupy.
     */
    unsigned component_slots() const;
-
-   unsigned component_slots_aligned(unsigned offset) const;
 
    /**
     * Calculate offset between the base location of the struct in
@@ -640,7 +604,7 @@ public:
     *    possible following the alignment required by the size/align func.
     *
     *  - All composite types (structures, matrices, and arrays) have an
-    *    alignment equal to the highest alignment of any member of the composite.
+    *    alignment equal to the highest alighment of any member of the composite.
     *
     * The types returned by this function are likely not suitable for most UBO
     * or SSBO layout because they do not add the extra array and substructure
@@ -648,8 +612,6 @@ public:
     */
    const glsl_type *get_explicit_type_for_size_align(glsl_type_size_align_func type_info,
                                                      unsigned *size, unsigned *align) const;
-
-   const glsl_type *replace_vec3_with_vec4() const;
 
    /**
     * Alignment in bytes of the start of this type in OpenCL memory.
@@ -796,7 +758,7 @@ public:
     */
    bool is_integer_16_32() const
    {
-      return is_integer_16() || is_integer_32();
+      return is_integer_16() || is_integer_32() || is_integer_64();
    }
 
    /**
@@ -1059,11 +1021,11 @@ public:
          return 0;
 
       unsigned size = length;
-      const glsl_type *array_base_type = fields.array;
+      const glsl_type *base_type = fields.array;
 
-      while (array_base_type->is_array()) {
-         size = size * array_base_type->length;
-         array_base_type = array_base_type->fields.array;
+      while (base_type->is_array()) {
+         size = size * base_type->length;
+         base_type = base_type->fields.array;
       }
       return size;
    }
@@ -1141,21 +1103,10 @@ public:
       if (!is_matrix())
          return error_type;
 
-      if (interface_row_major) {
-         /* If we're row-major, the vector element stride is the same as the
-          * matrix stride and we have no alignment (i.e. component-aligned).
-          */
-         return get_instance(base_type, vector_elements, 1,
-                             explicit_stride, false, 0);
-      } else {
-         /* Otherwise, the vector is tightly packed (stride=0).  For
-          * alignment, we treat a matrix as an array of columns make the same
-          * assumption that the alignment of the column is the same as the
-          * alignment of the whole matrix.
-          */
-         return get_instance(base_type, vector_elements, 1,
-                             0, false, explicit_alignment);
-      }
+      if (explicit_stride && interface_row_major)
+         return get_instance(base_type, vector_elements, 1, explicit_stride);
+      else
+         return get_instance(base_type, vector_elements, 1);
    }
 
    /**
@@ -1281,8 +1232,7 @@ private:
    glsl_type(GLenum gl_type,
              glsl_base_type base_type, unsigned vector_elements,
              unsigned matrix_columns, const char *name,
-             unsigned explicit_stride = 0, bool row_major = false,
-             unsigned explicit_alignment = 0);
+             unsigned explicit_stride = 0, bool row_major = false);
 
    /** Constructor for sampler or image types */
    glsl_type(GLenum gl_type, glsl_base_type base_type,
@@ -1291,8 +1241,7 @@ private:
 
    /** Constructor for record types */
    glsl_type(const glsl_struct_field *fields, unsigned num_fields,
-	     const char *name, bool packed = false,
-	     unsigned explicit_alignment = 0);
+	     const char *name, bool packed = false);
 
    /** Constructor for interface types */
    glsl_type(const glsl_struct_field *fields, unsigned num_fields,

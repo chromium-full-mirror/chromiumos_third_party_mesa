@@ -168,10 +168,6 @@ util_make_tess_ctrl_passthrough_shader(struct pipe_context *pipe,
                                        const ubyte *tes_semantic_names,
                                        const ubyte *tes_semantic_indexes,
                                        const unsigned vertices_per_patch);
-
-void *
-util_make_fs_stencil_blit(struct pipe_context *pipe, bool msaa_src);
-
 #ifdef __cplusplus
 }
 #endif

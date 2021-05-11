@@ -8,15 +8,9 @@ export CCACHE_DIR=/cache/mesa/ccache
 export PATH=/usr/lib/ccache:$PATH
 
 # CMake ignores $PATH, so we have to force CC/GCC to the ccache versions.
+# Watch out, you can't have spaces in here because the renderdoc build fails.
 export CC="/usr/lib/ccache/gcc"
 export CXX="/usr/lib/ccache/g++"
-
-# Force linkers to gold, since it's so much faster for building.  We can't use
-# lld because we're on old debian and it's buggy.  ming fails meson builds
-# with it with "meson.build:21:0: ERROR: Unable to determine dynamic linker"
-find /usr/bin -name \*-ld -o -name ld | \
-    grep -v mingw | \
-    xargs -n 1 -I '{}' ln -sf '{}.gold' '{}'
 
 ccache --show-stats
 

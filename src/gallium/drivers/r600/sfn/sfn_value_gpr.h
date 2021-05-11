@@ -54,8 +54,6 @@ public:
 
    void set_as_input(){ m_input = true; }
    bool is_input() const {return  m_input; }
-   void set_keep_alive() { m_keep_alive = true; }
-   bool keep_alive() const {return  m_keep_alive; }
    void set_pin_to_channel() override { m_pin_to_channel = true;}
    bool pin_to_channel()  const { return m_pin_to_channel;}
 
@@ -67,10 +65,7 @@ private:
    bool m_base_offset;
    bool m_input;
    bool m_pin_to_channel;
-   bool m_keep_alive;
 };
-
-using PGPRValue = std::shared_ptr<GPRValue>;
 
 class GPRVector : public Value {
 public:
@@ -106,7 +101,6 @@ public:
    PValue z() const {return m_elms[2];}
    PValue w() const {return m_elms[3];}
 
-   Values& values() { return m_elms;}
 
 private:
    void do_print(std::ostream& os) const override;
@@ -126,8 +120,6 @@ public:
    GPRArray(int base, int size, int comp_mask, int frac);
 
    uint32_t sel() const override;
-
-   uint32_t mask() const { return m_component_mask; };
 
    size_t size() const {return m_values.size();}
 

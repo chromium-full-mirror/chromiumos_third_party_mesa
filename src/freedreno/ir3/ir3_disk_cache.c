@@ -126,8 +126,8 @@ retrieve_variant(struct blob_reader *blob, struct ir3_shader_variant *v)
 	 * pointers need special handling:
 	 */
 
-	v->bin = rzalloc_size(v, v->info.size);
-	blob_copy_bytes(blob, v->bin, v->info.size);
+	v->bin = rzalloc_size(v, 4 * v->info.sizedwords);
+	blob_copy_bytes(blob, v->bin, 4 * v->info.sizedwords);
 
 	if (!v->binning_pass) {
 		blob_copy_bytes(blob, v->const_state, sizeof(*v->const_state));
@@ -147,9 +147,7 @@ store_variant(struct blob *blob, struct ir3_shader_variant *v)
 	 * pointers need special handling:
 	 */
 
-	blob_write_bytes(blob, v->bin, v->info.size);
-
-	/* No saving constant_data, it's already baked into bin at this point. */
+	blob_write_bytes(blob, v->bin, 4 * v->info.sizedwords);
 
 	if (!v->binning_pass) {
 		blob_write_bytes(blob, v->const_state, sizeof(*v->const_state));

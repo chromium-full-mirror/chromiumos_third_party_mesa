@@ -46,6 +46,7 @@ static const struct gen_info {
    { "glk", },
    { "cfl", },
    { "whl", },
+   { "cnl", },
    { "icl", },
    { "tgl", },
 };
@@ -109,7 +110,7 @@ validate(struct brw_codegen *p)
                                         p->next_insn_offset, disasm);
 
    if (print) {
-      dump_assembly(p->store, 0, p->next_insn_offset, disasm, NULL);
+      dump_assembly(p->store, disasm, NULL);
    }
    ralloc_free(disasm);
 
@@ -152,10 +153,10 @@ TEST_P(validation_test, src1_null_reg)
 
 TEST_P(validation_test, math_src0_null_reg)
 {
-   if (devinfo.ver >= 6) {
-      gfx6_math(p, g0, BRW_MATH_FUNCTION_SIN, null, null);
+   if (devinfo.gen >= 6) {
+      gen6_math(p, g0, BRW_MATH_FUNCTION_SIN, null, null);
    } else {
-      gfx4_math(p, g0, BRW_MATH_FUNCTION_SIN, 0, null, BRW_MATH_PRECISION_FULL);
+      gen4_math(p, g0, BRW_MATH_FUNCTION_SIN, 0, null, BRW_MATH_PRECISION_FULL);
    }
 
    EXPECT_FALSE(validate(p));
@@ -163,12 +164,12 @@ TEST_P(validation_test, math_src0_null_reg)
 
 TEST_P(validation_test, math_src1_null_reg)
 {
-   if (devinfo.ver >= 6) {
-      gfx6_math(p, g0, BRW_MATH_FUNCTION_POW, g0, null);
+   if (devinfo.gen >= 6) {
+      gen6_math(p, g0, BRW_MATH_FUNCTION_POW, g0, null);
       EXPECT_FALSE(validate(p));
    } else {
-      /* Math instructions on Gfx4/5 are actually SEND messages with payloads.
-       * src1 is an immediate message descriptor set by gfx4_math.
+      /* Math instructions on Gen4/5 are actually SEND messages with payloads.
+       * src1 is an immediate message descriptor set by gen4_math.
        */
    }
 }
@@ -178,11 +179,11 @@ TEST_P(validation_test, opcode46)
    /* opcode 46 is "push" on Gen 4 and 5
     *              "fork" on Gen 6
     *              reserved on Gen 7
-    *              "goto" on Gfx8+
+    *              "goto" on Gen8+
     */
    brw_next_insn(p, brw_opcode_decode(&devinfo, 46));
 
-   if (devinfo.ver == 7) {
+   if (devinfo.gen == 7) {
       EXPECT_FALSE(validate(p));
    } else {
       EXPECT_TRUE(validate(p));
@@ -231,14 +232,14 @@ TEST_P(validation_test, invalid_exec_size_encoding)
 
 TEST_P(validation_test, invalid_file_encoding)
 {
-   /* Register file on Gfx12 is only one bit */
-   if (devinfo.ver >= 12)
+   /* Register file on Gen12 is only one bit */
+   if (devinfo.gen >= 12)
       return;
 
    brw_MOV(p, g0, g0);
    brw_inst_set_dst_file_type(&devinfo, last_inst, BRW_MESSAGE_REGISTER_FILE, BRW_REGISTER_TYPE_F);
 
-   if (devinfo.ver > 6) {
+   if (devinfo.gen > 6) {
       EXPECT_FALSE(validate(p));
    } else {
       EXPECT_TRUE(validate(p));
@@ -246,14 +247,14 @@ TEST_P(validation_test, invalid_file_encoding)
 
    clear_instructions(p);
 
-   if (devinfo.ver < 6) {
-      gfx4_math(p, g0, BRW_MATH_FUNCTION_SIN, 0, g0, BRW_MATH_PRECISION_FULL);
+   if (devinfo.gen < 6) {
+      gen4_math(p, g0, BRW_MATH_FUNCTION_SIN, 0, g0, BRW_MATH_PRECISION_FULL);
    } else {
-      gfx6_math(p, g0, BRW_MATH_FUNCTION_SIN, g0, null);
+      gen6_math(p, g0, BRW_MATH_FUNCTION_SIN, g0, null);
    }
    brw_inst_set_src0_file_type(&devinfo, last_inst, BRW_MESSAGE_REGISTER_FILE, BRW_REGISTER_TYPE_F);
 
-   if (devinfo.ver > 6) {
+   if (devinfo.gen > 6) {
       EXPECT_FALSE(validate(p));
    } else {
       EXPECT_TRUE(validate(p));
@@ -269,7 +270,7 @@ TEST_P(validation_test, invalid_type_encoding)
 
    for (unsigned i = 0; i < ARRAY_SIZE(files); i++) {
       const enum brw_reg_file file = files[i];
-      const int num_bits = devinfo.ver >= 8 ? 4 : 3;
+      const int num_bits = devinfo.gen >= 8 ? 4 : 3;
       const int num_encodings = 1 << num_bits;
 
       /* The data types are encoded into <num_bits> bits to be used in hardware
@@ -282,10 +283,10 @@ TEST_P(validation_test, invalid_type_encoding)
          enum brw_reg_type type;
          bool expected_result;
       } test_case[] = {
-         { BRW_REGISTER_TYPE_NF, devinfo.ver == 11 && file != IMM },
-         { BRW_REGISTER_TYPE_DF, devinfo.has_64bit_float && (devinfo.ver >= 8 || file != IMM) },
+         { BRW_REGISTER_TYPE_NF, devinfo.gen == 11 && file != IMM },
+         { BRW_REGISTER_TYPE_DF, devinfo.has_64bit_float && (devinfo.gen >= 8 || file != IMM) },
          { BRW_REGISTER_TYPE_F,  true },
-         { BRW_REGISTER_TYPE_HF, devinfo.ver >= 8 },
+         { BRW_REGISTER_TYPE_HF, devinfo.gen >= 8 },
          { BRW_REGISTER_TYPE_VF, file == IMM },
          { BRW_REGISTER_TYPE_Q,  devinfo.has_64bit_int },
          { BRW_REGISTER_TYPE_UQ, devinfo.has_64bit_int },
@@ -296,7 +297,7 @@ TEST_P(validation_test, invalid_type_encoding)
          { BRW_REGISTER_TYPE_B,  file == FIXED_GRF },
          { BRW_REGISTER_TYPE_UB, file == FIXED_GRF },
          { BRW_REGISTER_TYPE_V,  file == IMM },
-         { BRW_REGISTER_TYPE_UV, devinfo.ver >= 6 && file == IMM },
+         { BRW_REGISTER_TYPE_UV, devinfo.gen >= 6 && file == IMM },
       };
 
       /* Initially assume all hardware encodings are invalid */
@@ -373,11 +374,11 @@ TEST_P(validation_test, invalid_type_encoding)
 
 TEST_P(validation_test, invalid_type_encoding_3src_a16)
 {
-   /* 3-src instructions in align16 mode only supported on Gfx6-10 */
-   if (devinfo.ver < 6 || devinfo.ver > 10)
+   /* 3-src instructions in align16 mode only supported on Gen6-10 */
+   if (devinfo.gen < 6 || devinfo.gen > 10)
       return;
 
-   const int num_bits = devinfo.ver >= 8 ? 3 : 2;
+   const int num_bits = devinfo.gen >= 8 ? 3 : 2;
    const int num_encodings = 1 << num_bits;
 
    /* The data types are encoded into <num_bits> bits to be used in hardware
@@ -390,11 +391,11 @@ TEST_P(validation_test, invalid_type_encoding_3src_a16)
       enum brw_reg_type type;
       bool expected_result;
    } test_case[] = {
-      { BRW_REGISTER_TYPE_DF, devinfo.ver >= 7  },
+      { BRW_REGISTER_TYPE_DF, devinfo.gen >= 7  },
       { BRW_REGISTER_TYPE_F,  true },
-      { BRW_REGISTER_TYPE_HF, devinfo.ver >= 8  },
-      { BRW_REGISTER_TYPE_D,  devinfo.ver >= 7  },
-      { BRW_REGISTER_TYPE_UD, devinfo.ver >= 7  },
+      { BRW_REGISTER_TYPE_HF, devinfo.gen >= 8  },
+      { BRW_REGISTER_TYPE_D,  devinfo.gen >= 7  },
+      { BRW_REGISTER_TYPE_UD, devinfo.gen >= 7  },
    };
 
    /* Initially assume all hardware encodings are invalid */
@@ -445,7 +446,7 @@ TEST_P(validation_test, invalid_type_encoding_3src_a16)
 
          clear_instructions(p);
 
-         if (devinfo.ver == 6)
+         if (devinfo.gen == 6)
             break;
       }
    }
@@ -453,8 +454,8 @@ TEST_P(validation_test, invalid_type_encoding_3src_a16)
 
 TEST_P(validation_test, invalid_type_encoding_3src_a1)
 {
-   /* 3-src instructions in align1 mode only supported on Gfx10+ */
-   if (devinfo.ver < 10)
+   /* 3-src instructions in align1 mode only supported on Gen10+ */
+   if (devinfo.gen < 10)
       return;
 
    const int num_bits = 3 + 1 /* for exec_type */;
@@ -472,7 +473,7 @@ TEST_P(validation_test, invalid_type_encoding_3src_a1)
       bool expected_result;
    } test_case[] = {
 #define E(x) ((unsigned)BRW_ALIGN1_3SRC_EXEC_TYPE_##x)
-      { BRW_REGISTER_TYPE_NF, E(FLOAT), devinfo.ver == 11 },
+      { BRW_REGISTER_TYPE_NF, E(FLOAT), devinfo.gen == 11 },
       { BRW_REGISTER_TYPE_DF, E(FLOAT), devinfo.has_64bit_float },
       { BRW_REGISTER_TYPE_F,  E(FLOAT), true  },
       { BRW_REGISTER_TYPE_HF, E(FLOAT), true  },
@@ -482,10 +483,10 @@ TEST_P(validation_test, invalid_type_encoding_3src_a1)
       { BRW_REGISTER_TYPE_UW, E(INT),   true  },
 
       /* There are no ternary instructions that can operate on B-type sources
-       * on Gfx11-12. Src1/Src2 cannot be B-typed either.
+       * on Gen11-12. Src1/Src2 cannot be B-typed either.
        */
-      { BRW_REGISTER_TYPE_B,  E(INT),   false },
-      { BRW_REGISTER_TYPE_UB, E(INT),   false },
+      { BRW_REGISTER_TYPE_B,  E(INT),   devinfo.gen == 10 },
+      { BRW_REGISTER_TYPE_UB, E(INT),   devinfo.gen == 10 },
    };
 
    /* Initially assume all hardware encodings are invalid */
@@ -551,24 +552,24 @@ TEST_P(validation_test, invalid_type_encoding_3src_a1)
 
 TEST_P(validation_test, 3src_inst_access_mode)
 {
-   /* 3-src instructions only supported on Gfx6+ */
-   if (devinfo.ver < 6)
+   /* 3-src instructions only supported on Gen6+ */
+   if (devinfo.gen < 6)
       return;
 
-   /* No access mode bit on Gfx12+ */
-   if (devinfo.ver >= 12)
+   /* No access mode bit on Gen12+ */
+   if (devinfo.gen >= 12)
       return;
 
    const struct {
       unsigned mode;
       bool expected_result;
    } test_case[] = {
-      { BRW_ALIGN_1,  devinfo.ver >= 10 },
-      { BRW_ALIGN_16, devinfo.ver <= 10 },
+      { BRW_ALIGN_1,  devinfo.gen >= 10 },
+      { BRW_ALIGN_16, devinfo.gen <= 10 },
    };
 
    for (unsigned i = 0; i < ARRAY_SIZE(test_case); i++) {
-      if (devinfo.ver < 10)
+      if (devinfo.gen < 10)
          brw_set_default_access_mode(p, BRW_ALIGN_16);
 
       brw_MAD(p, g0, g0, g0, g0);
@@ -750,8 +751,8 @@ TEST_P(validation_test, dst_horizontal_stride_0)
 
    clear_instructions(p);
 
-   /* Align16 does not exist on Gfx11+ */
-   if (devinfo.ver >= 11)
+   /* Align16 does not exist on Gen11+ */
+   if (devinfo.gen >= 11)
       return;
 
    brw_set_default_access_mode(p, BRW_ALIGN_16);
@@ -801,8 +802,8 @@ TEST_P(validation_test, must_not_cross_grf_boundary_in_a_width)
 /* Destination Horizontal must be 1 in Align16 */
 TEST_P(validation_test, dst_hstride_on_align16_must_be_1)
 {
-   /* Align16 does not exist on Gfx11+ */
-   if (devinfo.ver >= 11)
+   /* Align16 does not exist on Gen11+ */
+   if (devinfo.gen >= 11)
       return;
 
    brw_set_default_access_mode(p, BRW_ALIGN_16);
@@ -823,8 +824,8 @@ TEST_P(validation_test, dst_hstride_on_align16_must_be_1)
 /* VertStride must be 0 or 4 in Align16 */
 TEST_P(validation_test, vstride_on_align16_must_be_0_or_4)
 {
-   /* Align16 does not exist on Gfx11+ */
-   if (devinfo.ver >= 11)
+   /* Align16 does not exist on Gen11+ */
+   if (devinfo.gen >= 11)
       return;
 
    const struct {
@@ -833,7 +834,7 @@ TEST_P(validation_test, vstride_on_align16_must_be_0_or_4)
    } vstride[] = {
       { BRW_VERTICAL_STRIDE_0, true },
       { BRW_VERTICAL_STRIDE_1, false },
-      { BRW_VERTICAL_STRIDE_2, devinfo.is_haswell || devinfo.ver >= 8 },
+      { BRW_VERTICAL_STRIDE_2, devinfo.is_haswell || devinfo.gen >= 8 },
       { BRW_VERTICAL_STRIDE_4, true },
       { BRW_VERTICAL_STRIDE_8, false },
       { BRW_VERTICAL_STRIDE_16, false },
@@ -988,7 +989,7 @@ TEST_P(validation_test, src_region_spans_two_regs_dst_region_spans_one)
    brw_inst_set_src1_width(&devinfo, last_inst, BRW_WIDTH_2);
    brw_inst_set_src1_hstride(&devinfo, last_inst, BRW_HORIZONTAL_STRIDE_1);
 
-   if (devinfo.ver >= 9) {
+   if (devinfo.gen >= 9) {
       EXPECT_TRUE(validate(p));
    } else {
       EXPECT_FALSE(validate(p));
@@ -1000,7 +1001,7 @@ TEST_P(validation_test, dst_elements_must_be_evenly_split_between_registers)
    brw_ADD(p, g0, g0, g0);
    brw_inst_set_dst_da1_subreg_nr(&devinfo, last_inst, 4);
 
-   if (devinfo.ver >= 9) {
+   if (devinfo.gen >= 9) {
       EXPECT_TRUE(validate(p));
    } else {
       EXPECT_FALSE(validate(p));
@@ -1015,14 +1016,14 @@ TEST_P(validation_test, dst_elements_must_be_evenly_split_between_registers)
 
    clear_instructions(p);
 
-   if (devinfo.ver >= 6) {
-      gfx6_math(p, g0, BRW_MATH_FUNCTION_SIN, g0, null);
+   if (devinfo.gen >= 6) {
+      gen6_math(p, g0, BRW_MATH_FUNCTION_SIN, g0, null);
 
       EXPECT_TRUE(validate(p));
 
       clear_instructions(p);
 
-      gfx6_math(p, g0, BRW_MATH_FUNCTION_SIN, g0, null);
+      gen6_math(p, g0, BRW_MATH_FUNCTION_SIN, g0, null);
       brw_inst_set_dst_da1_subreg_nr(&devinfo, last_inst, 4);
 
       EXPECT_FALSE(validate(p));
@@ -1042,7 +1043,7 @@ TEST_P(validation_test, two_src_two_dst_source_offsets_must_be_same)
    brw_inst_set_src1_width(&devinfo, last_inst, BRW_WIDTH_4);
    brw_inst_set_src1_hstride(&devinfo, last_inst, BRW_HORIZONTAL_STRIDE_1);
 
-   if (devinfo.ver <= 7) {
+   if (devinfo.gen <= 7) {
       EXPECT_FALSE(validate(p));
    } else {
       EXPECT_TRUE(validate(p));
@@ -1075,7 +1076,7 @@ TEST_P(validation_test, two_src_two_dst_each_dst_must_be_derived_from_one_src)
    brw_inst_set_src0_width(&devinfo, last_inst, BRW_WIDTH_4);
    brw_inst_set_src0_hstride(&devinfo, last_inst, BRW_HORIZONTAL_STRIDE_1);
 
-   if (devinfo.ver <= 7) {
+   if (devinfo.gen <= 7) {
       EXPECT_FALSE(validate(p));
    } else {
       EXPECT_TRUE(validate(p));
@@ -1090,7 +1091,7 @@ TEST_P(validation_test, two_src_two_dst_each_dst_must_be_derived_from_one_src)
    brw_inst_set_src0_width(&devinfo, last_inst, BRW_WIDTH_2);
    brw_inst_set_src0_hstride(&devinfo, last_inst, BRW_HORIZONTAL_STRIDE_1);
 
-   if (devinfo.ver <= 7) {
+   if (devinfo.gen <= 7) {
       EXPECT_FALSE(validate(p));
    } else {
       EXPECT_TRUE(validate(p));
@@ -1128,7 +1129,7 @@ TEST_P(validation_test, one_src_two_dst)
    brw_inst_set_src1_width(&devinfo, last_inst, BRW_WIDTH_1);
    brw_inst_set_src1_hstride(&devinfo, last_inst, BRW_HORIZONTAL_STRIDE_0);
 
-   if (devinfo.ver >= 8) {
+   if (devinfo.gen >= 8) {
       EXPECT_TRUE(validate(p));
    } else {
       EXPECT_FALSE(validate(p));
@@ -1146,7 +1147,7 @@ TEST_P(validation_test, one_src_two_dst)
    brw_inst_set_src0_hstride(&devinfo, last_inst, BRW_HORIZONTAL_STRIDE_0);
    brw_inst_set_src1_file_type(&devinfo, last_inst, BRW_GENERAL_REGISTER_FILE, BRW_REGISTER_TYPE_W);
 
-   if (devinfo.ver >= 8) {
+   if (devinfo.gen >= 8) {
       EXPECT_TRUE(validate(p));
    } else {
       EXPECT_FALSE(validate(p));
@@ -1234,7 +1235,7 @@ TEST_P(validation_test, byte_destination_relaxed_alignment)
    brw_inst_set_dst_hstride(&devinfo, last_inst, BRW_HORIZONTAL_STRIDE_2);
    brw_inst_set_dst_da1_subreg_nr(&devinfo, last_inst, 1);
 
-   if (devinfo.ver > 4 || devinfo.is_g4x) {
+   if (devinfo.gen > 4 || devinfo.is_g4x) {
       EXPECT_TRUE(validate(p));
    } else {
       EXPECT_FALSE(validate(p));
@@ -1281,7 +1282,7 @@ TEST_P(validation_test, byte_64bit_conversion)
 #undef INST
    };
 
-   if (devinfo.ver < 8)
+   if (devinfo.gen < 8)
       return;
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
@@ -1310,7 +1311,7 @@ TEST_P(validation_test, half_float_conversion)
       unsigned dst_stride;
       unsigned dst_subnr;
       bool expected_result_bdw;
-      bool expected_result_chv_gfx9;
+      bool expected_result_chv_gen9;
    } inst[] = {
 #define INST_C(dst_type, src_type, dst_stride, dst_subnr, expected_result)  \
       {                                                                     \
@@ -1322,14 +1323,14 @@ TEST_P(validation_test, half_float_conversion)
          expected_result,                                                   \
       }
 #define INST_S(dst_type, src_type, dst_stride, dst_subnr,                   \
-               expected_result_bdw, expected_result_chv_gfx9)               \
+               expected_result_bdw, expected_result_chv_gen9)               \
       {                                                                     \
          BRW_REGISTER_TYPE_##dst_type,                                      \
          BRW_REGISTER_TYPE_##src_type,                                      \
          BRW_HORIZONTAL_STRIDE_##dst_stride,                                \
          dst_subnr,                                                         \
          expected_result_bdw,                                               \
-         expected_result_chv_gfx9,                                          \
+         expected_result_chv_gen9,                                          \
       }
 
       /* MOV to half-float destination */
@@ -1383,7 +1384,7 @@ TEST_P(validation_test, half_float_conversion)
 #undef INST_S
    };
 
-   if (devinfo.ver < 8)
+   if (devinfo.gen < 8)
       return;
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
@@ -1416,8 +1417,8 @@ TEST_P(validation_test, half_float_conversion)
          brw_inst_set_src0_hstride(&devinfo, last_inst, BRW_HORIZONTAL_STRIDE_1);
       }
 
-      if (devinfo.is_cherryview || devinfo.ver >= 9)
-         EXPECT_EQ(inst[i].expected_result_chv_gfx9, validate(p));
+      if (devinfo.is_cherryview || devinfo.gen >= 9)
+         EXPECT_EQ(inst[i].expected_result_chv_gen9, validate(p));
       else
          EXPECT_EQ(inst[i].expected_result_bdw, validate(p));
 
@@ -1470,7 +1471,7 @@ TEST_P(validation_test, mixed_float_source_indirect_addressing)
 #undef INST
    };
 
-   if (devinfo.ver < 8)
+   if (devinfo.gen < 8)
       return;
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
@@ -1524,7 +1525,7 @@ TEST_P(validation_test, mixed_float_align1_simd16)
 #undef INST
    };
 
-   if (devinfo.ver < 8)
+   if (devinfo.gen < 8)
       return;
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
@@ -1591,7 +1592,7 @@ TEST_P(validation_test, mixed_float_align1_packed_fp16_dst_acc_read_offset_0)
 #undef INST
    };
 
-   if (devinfo.ver < 8)
+   if (devinfo.gen < 8)
       return;
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
@@ -1603,7 +1604,7 @@ TEST_P(validation_test, mixed_float_align1_packed_fp16_dst_acc_read_offset_0)
 
       brw_inst_set_src0_da1_subreg_nr(&devinfo, last_inst, inst[i].subnr);
 
-      if (devinfo.is_cherryview || devinfo.ver >= 9)
+      if (devinfo.is_cherryview || devinfo.gen >= 9)
          EXPECT_EQ(inst[i].expected_result_chv_skl, validate(p));
       else
          EXPECT_EQ(inst[i].expected_result_bdw, validate(p));
@@ -1667,7 +1668,7 @@ TEST_P(validation_test, mixed_float_fp16_dest_with_acc)
 #undef INST
    };
 
-   if (devinfo.ver < 8)
+   if (devinfo.gen < 8)
       return;
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
@@ -1686,7 +1687,7 @@ TEST_P(validation_test, mixed_float_fp16_dest_with_acc)
 
       brw_inst_set_dst_hstride(&devinfo, last_inst, inst[i].dst_stride);
 
-      if (devinfo.is_cherryview || devinfo.ver >= 9)
+      if (devinfo.is_cherryview || devinfo.gen >= 9)
          EXPECT_EQ(inst[i].expected_result_chv_skl, validate(p));
       else
          EXPECT_EQ(inst[i].expected_result_bdw, validate(p));
@@ -1733,12 +1734,12 @@ TEST_P(validation_test, mixed_float_align1_math_strided_fp16_inputs)
 #undef INST
    };
 
-   /* No half-float math in gfx8 */
-   if (devinfo.ver < 9)
+   /* No half-float math in gen8 */
+   if (devinfo.gen < 9)
       return;
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
-      gfx6_math(p, retype(g0, inst[i].dst_type),
+      gen6_math(p, retype(g0, inst[i].dst_type),
                    BRW_MATH_FUNCTION_POW,
                    retype(g0, inst[i].src0_type),
                    retype(g0, inst[i].src1_type));
@@ -1809,7 +1810,7 @@ TEST_P(validation_test, mixed_float_align1_packed_fp16_dst)
 #undef INST
    };
 
-   if (devinfo.ver < 8)
+   if (devinfo.gen < 8)
       return;
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
@@ -1830,7 +1831,7 @@ TEST_P(validation_test, mixed_float_align1_packed_fp16_dst)
 
       brw_inst_set_exec_size(&devinfo, last_inst, inst[i].exec_size);
 
-      if (devinfo.is_cherryview || devinfo.ver >= 9)
+      if (devinfo.is_cherryview || devinfo.gen >= 9)
          EXPECT_EQ(inst[i].expected_result_chv_skl, validate(p));
       else
          EXPECT_EQ(inst[i].expected_result_bdw, validate(p));
@@ -1878,7 +1879,7 @@ TEST_P(validation_test, mixed_float_align16_packed_data)
 #undef INST
    };
 
-   if (devinfo.ver < 8 || devinfo.ver >= 11)
+   if (devinfo.gen < 8 || devinfo.gen >= 11)
       return;
 
    brw_set_default_access_mode(p, BRW_ALIGN_16);
@@ -1929,7 +1930,7 @@ TEST_P(validation_test, mixed_float_align16_no_simd16)
 #undef INST
    };
 
-   if (devinfo.ver < 8 || devinfo.ver >= 11)
+   if (devinfo.gen < 8 || devinfo.gen >= 11)
       return;
 
    brw_set_default_access_mode(p, BRW_ALIGN_16);
@@ -1980,7 +1981,7 @@ TEST_P(validation_test, mixed_float_align16_no_acc_read)
 #undef INST
    };
 
-   if (devinfo.ver < 8 || devinfo.ver >= 11)
+   if (devinfo.gen < 8 || devinfo.gen >= 11)
       return;
 
    brw_set_default_access_mode(p, BRW_ALIGN_16);
@@ -2034,14 +2035,14 @@ TEST_P(validation_test, mixed_float_align16_math_packed_format)
 #undef INST
    };
 
-   /* Align16 Math for mixed float mode is not supported in gfx8 */
-   if (devinfo.ver < 9 || devinfo.ver >= 11)
+   /* Align16 Math for mixed float mode is not supported in gen8 */
+   if (devinfo.gen < 9 || devinfo.gen >= 11)
       return;
 
    brw_set_default_access_mode(p, BRW_ALIGN_16);
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
-      gfx6_math(p, retype(g0, inst[i].dst_type),
+      gen6_math(p, retype(g0, inst[i].dst_type),
                    BRW_MATH_FUNCTION_POW,
                    retype(g0, inst[i].src0_type),
                    retype(g0, inst[i].src1_type));
@@ -2078,8 +2079,8 @@ TEST_P(validation_test, vector_immediate_destination_alignment)
    };
 
    for (unsigned i = 0; i < ARRAY_SIZE(move); i++) {
-      /* UV type is Gfx6+ */
-      if (devinfo.ver < 6 &&
+      /* UV type is Gen6+ */
+      if (devinfo.gen < 6 &&
           move[i].src_type == BRW_REGISTER_TYPE_UV)
          continue;
 
@@ -2120,8 +2121,8 @@ TEST_P(validation_test, vector_immediate_destination_stride)
    };
 
    for (unsigned i = 0; i < ARRAY_SIZE(move); i++) {
-      /* UV type is Gfx6+ */
-      if (devinfo.ver < 6 &&
+      /* UV type is Gen6+ */
+      if (devinfo.gen < 6 &&
           move[i].src_type == BRW_REGISTER_TYPE_UV)
          continue;
 
@@ -2271,12 +2272,12 @@ TEST_P(validation_test, qword_low_power_align1_regioning_restrictions)
 #undef INST
    };
 
-   /* These restrictions only apply to Gfx8+ */
-   if (devinfo.ver < 8)
+   /* These restrictions only apply to Gen8+ */
+   if (devinfo.gen < 8)
       return;
 
-   /* NoDDChk/NoDDClr does not exist on Gfx12+ */
-   if (devinfo.ver >= 12)
+   /* NoDDChk/NoDDClr does not exist on Gen12+ */
+   if (devinfo.gen >= 12)
       return;
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
@@ -2407,8 +2408,8 @@ TEST_P(validation_test, qword_low_power_no_indirect_addressing)
 #undef INST
    };
 
-   /* These restrictions only apply to Gfx8+ */
-   if (devinfo.ver < 8)
+   /* These restrictions only apply to Gen8+ */
+   if (devinfo.gen < 8)
       return;
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
@@ -2555,8 +2556,8 @@ TEST_P(validation_test, qword_low_power_no_64bit_arf)
 #undef INST
    };
 
-   /* These restrictions only apply to Gfx8+ */
-   if (devinfo.ver < 8)
+   /* These restrictions only apply to Gen8+ */
+   if (devinfo.gen < 8)
       return;
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
@@ -2660,12 +2661,12 @@ TEST_P(validation_test, align16_64_bit_integer)
 #undef INST
    };
 
-   /* 64-bit integer types exist on Gfx8+ */
-   if (devinfo.ver < 8)
+   /* 64-bit integer types exist on Gen8+ */
+   if (devinfo.gen < 8)
       return;
 
-   /* Align16 does not exist on Gfx11+ */
-   if (devinfo.ver >= 11)
+   /* Align16 does not exist on Gen11+ */
+   if (devinfo.gen >= 11)
       return;
 
    brw_set_default_access_mode(p, BRW_ALIGN_16);
@@ -2768,12 +2769,12 @@ TEST_P(validation_test, qword_low_power_no_depctrl)
 #undef INST
    };
 
-   /* These restrictions only apply to Gfx8+ */
-   if (devinfo.ver < 8)
+   /* These restrictions only apply to Gen8+ */
+   if (devinfo.gen < 8)
       return;
 
-   /* NoDDChk/NoDDClr does not exist on Gfx12+ */
-   if (devinfo.ver >= 12)
+   /* NoDDChk/NoDDClr does not exist on Gen12+ */
+   if (devinfo.gen >= 12)
       return;
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
@@ -2819,7 +2820,7 @@ TEST_P(validation_test, qword_low_power_no_depctrl)
    }
 }
 
-TEST_P(validation_test, gfx11_no_byte_src_1_2)
+TEST_P(validation_test, gen11_no_byte_src_1_2)
 {
    static const struct {
       enum opcode opcode;
@@ -2887,7 +2888,7 @@ TEST_P(validation_test, gfx11_no_byte_src_1_2)
 
    for (unsigned i = 0; i < ARRAY_SIZE(inst); i++) {
       /* Skip instruction not meant for this gen. */
-      if (devinfo.ver != inst[i].gen)
+      if (devinfo.gen != inst[i].gen)
          continue;
 
       brw_push_insn_state(p);

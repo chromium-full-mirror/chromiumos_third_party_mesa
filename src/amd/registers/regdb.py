@@ -213,7 +213,7 @@ class RegisterDatabase(object):
         Perform some basic canonicalization:
         - enum entries are sorted by value
         - register type fields are sorted by starting bit
-        - __register_mappings is sorted by offset
+        - __register_mappings is sorted by name
         - the chips field of register mappings is sorted
 
         Lazily computes the set of all chips mentioned by register mappings.
@@ -230,10 +230,10 @@ class RegisterDatabase(object):
         self.__regmap_by_addr = defaultdict(list)
         self.__chips = set()
 
-        # Merge register mappings using sort order and garbage collect enums
+        # Merge regiseter mappings using sort order and garbage collect enums
         # and register types.
         old_register_mappings = self.__register_mappings
-        old_register_mappings.sort(key=lambda regmap: regmap.map.at)
+        old_register_mappings.sort(key=lambda regmap: regmap.name)
 
         self.__register_mappings = []
         for regmap in old_register_mappings:

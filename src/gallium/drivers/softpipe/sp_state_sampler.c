@@ -100,7 +100,6 @@ softpipe_set_sampler_views(struct pipe_context *pipe,
                            enum pipe_shader_type shader,
                            unsigned start,
                            unsigned num,
-                           unsigned unbind_num_trailing_slots,
                            struct pipe_sampler_view **views)
 {
    struct softpipe_context *softpipe = softpipe_context(pipe);
@@ -134,12 +133,6 @@ softpipe_set_sampler_views(struct pipe_context *pipe,
       else {
          memset(sp_sviewdst, 0,  sizeof(*sp_sviewsrc));
       }
-   }
-   for (; i < num + unbind_num_trailing_slots; i++) {
-      struct pipe_sampler_view **pview = &softpipe->sampler_views[shader][start + i];
-      pipe_sampler_view_reference(pview, NULL);
-      sp_tex_tile_cache_set_sampler_view(softpipe->tex_cache[shader][start + i],
-                                         NULL);
    }
 
 
@@ -261,7 +254,7 @@ prepare_shader_sampling(
             struct softpipe_screen *screen = softpipe_screen(tex->screen);
             struct sw_winsys *winsys = screen->winsys;
             addr = winsys->displaytarget_map(winsys, sp_tex->dt,
-                                             PIPE_MAP_READ);
+                                             PIPE_TRANSFER_READ);
             row_stride[0] = sp_tex->stride[0];
             img_stride[0] = sp_tex->img_stride[0];
             mip_offsets[0] = 0;

@@ -23,6 +23,7 @@
  */
 
 #include "pipe/p_defines.h"
+#include "util/u_blit.h"
 #include "util/u_memory.h"
 #include "util/format/u_format.h"
 #include "util/u_inlines.h"
@@ -122,7 +123,7 @@ v3d_resource_transfer_unmap(struct pipe_context *pctx,
                 struct v3d_resource *rsc = v3d_resource(ptrans->resource);
                 struct v3d_resource_slice *slice = &rsc->slices[ptrans->level];
 
-                if (ptrans->usage & PIPE_MAP_WRITE) {
+                if (ptrans->usage & PIPE_TRANSFER_WRITE) {
                         for (int z = 0; z < ptrans->box.depth; z++) {
                                 void *dst = rsc->bo->map +
                                         v3d_layer_offset(&rsc->base,
@@ -147,29 +148,6 @@ v3d_resource_transfer_unmap(struct pipe_context *pctx,
 }
 
 static void
-rebind_sampler_views(struct v3d_context *v3d,
-                     struct v3d_resource *rsc)
-{
-        for (int st = 0; st < PIPE_SHADER_TYPES; st++) {
-                struct v3d_texture_stateobj *tex = v3d->tex + st;
-
-                for (unsigned i = 0; i < tex->num_textures; i++) {
-                        struct pipe_sampler_view *psview = tex->textures[i];
-
-                        if (psview->texture != &rsc->base)
-                                continue;
-
-                        struct v3d_sampler_view *sview =
-                                v3d_sampler_view(psview);
-
-                        v3d_create_texture_shader_state_bo(v3d, sview);
-
-                        v3d_flag_dirty_sampler_state(v3d, st);
-                }
-        }
-}
-
-static void
 v3d_map_usage_prep(struct pipe_context *pctx,
                    struct pipe_resource *prsc,
                    unsigned usage)
@@ -177,7 +155,7 @@ v3d_map_usage_prep(struct pipe_context *pctx,
         struct v3d_context *v3d = v3d_context(pctx);
         struct v3d_resource *rsc = v3d_resource(prsc);
 
-        if (usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) {
+        if (usage & PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE) {
                 if (v3d_resource_bo_alloc(rsc)) {
                         /* If it might be bound as one of our vertex buffers
                          * or UBOs, make sure we re-emit vertex buffer state
@@ -187,8 +165,6 @@ v3d_map_usage_prep(struct pipe_context *pctx,
                                 v3d->dirty |= VC5_DIRTY_VTXBUF;
                         if (prsc->bind & PIPE_BIND_CONSTANT_BUFFER)
                                 v3d->dirty |= VC5_DIRTY_CONSTBUF;
-                        if (prsc->bind & PIPE_BIND_SAMPLER_VIEW)
-                                rebind_sampler_views(v3d, rsc);
                 } else {
                         /* If we failed to reallocate, flush users so that we
                          * don't violate any syncing requirements.
@@ -197,12 +173,12 @@ v3d_map_usage_prep(struct pipe_context *pctx,
                                                         V3D_FLUSH_DEFAULT,
                                                         false);
                 }
-        } else if (!(usage & PIPE_MAP_UNSYNCHRONIZED)) {
+        } else if (!(usage & PIPE_TRANSFER_UNSYNCHRONIZED)) {
                 /* If we're writing and the buffer is being used by the CL, we
                  * have to flush the CL first.  If we're only reading, we need
                  * to flush if the CL has written our buffer.
                  */
-                if (usage & PIPE_MAP_WRITE) {
+                if (usage & PIPE_TRANSFER_WRITE) {
                         v3d_flush_jobs_reading_resource(v3d, prsc,
                                                         V3D_FLUSH_ALWAYS,
                                                         false);
@@ -213,7 +189,7 @@ v3d_map_usage_prep(struct pipe_context *pctx,
                 }
         }
 
-        if (usage & PIPE_MAP_WRITE) {
+        if (usage & PIPE_TRANSFER_WRITE) {
                 rsc->writes++;
                 rsc->initialized_buffers = ~0;
         }
@@ -239,8 +215,8 @@ v3d_resource_transfer_map(struct pipe_context *pctx,
         /* Upgrade DISCARD_RANGE to WHOLE_RESOURCE if the whole resource is
          * being mapped.
          */
-        if ((usage & PIPE_MAP_DISCARD_RANGE) &&
-            !(usage & PIPE_MAP_UNSYNCHRONIZED) &&
+        if ((usage & PIPE_TRANSFER_DISCARD_RANGE) &&
+            !(usage & PIPE_TRANSFER_UNSYNCHRONIZED) &&
             !(prsc->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT) &&
             prsc->last_level == 0 &&
             prsc->width0 == box->width &&
@@ -248,7 +224,7 @@ v3d_resource_transfer_map(struct pipe_context *pctx,
             prsc->depth0 == box->depth &&
             prsc->array_size == 1 &&
             rsc->bo->private) {
-                usage |= PIPE_MAP_DISCARD_WHOLE_RESOURCE;
+                usage |= PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE;
         }
 
         v3d_map_usage_prep(pctx, prsc, usage);
@@ -272,7 +248,7 @@ v3d_resource_transfer_map(struct pipe_context *pctx,
          * need to do syncing stuff here yet.
          */
 
-        if (usage & PIPE_MAP_UNSYNCHRONIZED)
+        if (usage & PIPE_TRANSFER_UNSYNCHRONIZED)
                 buf = v3d_bo_map_unsynchronized(rsc->bo);
         else
                 buf = v3d_bo_map(rsc->bo);
@@ -296,7 +272,7 @@ v3d_resource_transfer_map(struct pipe_context *pctx,
                 /* No direct mappings of tiled, since we need to manually
                  * tile/untile.
                  */
-                if (usage & PIPE_MAP_DIRECTLY)
+                if (usage & PIPE_TRANSFER_MAP_DIRECTLY)
                         return NULL;
 
                 ptrans->stride = ptrans->box.width * rsc->cpp;
@@ -304,7 +280,7 @@ v3d_resource_transfer_map(struct pipe_context *pctx,
 
                 trans->map = malloc(ptrans->layer_stride * ptrans->box.depth);
 
-                if (usage & PIPE_MAP_READ) {
+                if (usage & PIPE_TRANSFER_READ) {
                         for (int z = 0; z < ptrans->box.depth; z++) {
                                 void *src = rsc->bo->map +
                                         v3d_layer_offset(&rsc->base,
@@ -361,11 +337,11 @@ v3d_texture_subdata(struct pipe_context *pctx,
          * texture.  Note that gallium's texture_subdata may be called with
          * obvious usage flags missing!
          */
-        v3d_map_usage_prep(pctx, prsc, usage | (PIPE_MAP_WRITE |
-                                                PIPE_MAP_DISCARD_RANGE));
+        v3d_map_usage_prep(pctx, prsc, usage | (PIPE_TRANSFER_WRITE |
+                                                PIPE_TRANSFER_DISCARD_RANGE));
 
         void *buf;
-        if (usage & PIPE_MAP_UNSYNCHRONIZED)
+        if (usage & PIPE_TRANSFER_UNSYNCHRONIZED)
                 buf = v3d_bo_map_unsynchronized(rsc->bo);
         else
                 buf = v3d_bo_map(rsc->bo);
@@ -616,7 +592,7 @@ v3d_setup_slices(struct v3d_resource *rsc, uint32_t winsys_stride,
 
                 /* The HW aligns level 1's base to a page if any of level 1 or
                  * below could be UIF XOR.  The lower levels then inherit the
-                 * alignment for as long as necessary, thanks to being power of
+                 * alignment for as long as necesary, thanks to being power of
                  * two aligned.
                  */
                 if (i == 1 &&
@@ -864,18 +840,10 @@ v3d_resource_from_handle(struct pipe_screen *pscreen,
                 rsc->tiled = screen->ro == NULL;
                 break;
         default:
-                switch(fourcc_mod_broadcom_mod(whandle->modifier)) {
-                case DRM_FORMAT_MOD_BROADCOM_SAND128:
-                        rsc->tiled = false;
-                        rsc->sand_col128_stride =
-                                fourcc_mod_broadcom_param(whandle->modifier);
-                        break;
-                default:
-                        fprintf(stderr,
-                                "Attempt to import unsupported modifier 0x%llx\n",
-                                (long long)whandle->modifier);
-                        goto fail;
-                }
+                fprintf(stderr,
+                        "Attempt to import unsupported modifier 0x%llx\n",
+                        (long long)whandle->modifier);
+                goto fail;
         }
 
         switch (whandle->type) {

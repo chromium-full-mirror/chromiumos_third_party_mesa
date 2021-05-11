@@ -31,7 +31,6 @@
 #include "main/glheader.h"
 #include "main/bufferobj.h"
 #include "main/context.h"
-#include "main/enable.h"
 #include "main/mesa_private.h"
 #include "main/macros.h"
 #include "main/light.h"
@@ -44,8 +43,7 @@
 
 static void
 copy_vao(struct gl_context *ctx, const struct gl_vertex_array_object *vao,
-         GLbitfield mask, GLbitfield state, GLbitfield pop_state,
-         int shift, fi_type **data, bool *color0_changed)
+         GLbitfield mask, GLbitfield state, int shift, fi_type **data)
 {
    struct vbo_context *vbo = vbo_context(ctx);
 
@@ -53,39 +51,29 @@ copy_vao(struct gl_context *ctx, const struct gl_vertex_array_object *vao,
    while (mask) {
       const int i = u_bit_scan(&mask);
       const struct gl_array_attributes *attrib = &vao->VertexAttrib[i];
-      unsigned current_index = shift + i;
-      struct gl_array_attributes *currval = &vbo->current[current_index];
+      struct gl_array_attributes *currval = &vbo->current[shift + i];
       const GLubyte size = attrib->Format.Size;
       const GLenum16 type = attrib->Format.Type;
       fi_type tmp[8];
-      int dmul_shift = 0;
+      int dmul = 1;
 
       if (type == GL_DOUBLE ||
-          type == GL_UNSIGNED_INT64_ARB) {
-         dmul_shift = 1;
-         memcpy(tmp, *data, size * 2 * sizeof(GLfloat));
-      } else {
+          type == GL_UNSIGNED_INT64_ARB)
+         dmul = 2;
+
+      if (dmul == 2)
+         memcpy(tmp, *data, size * dmul * sizeof(GLfloat));
+      else
          COPY_CLEAN_4V_TYPE_AS_UNION(tmp, size, *data, type);
-      }
-
-      if (memcmp(currval->Ptr, tmp, 4 * sizeof(GLfloat) << dmul_shift) != 0) {
-         memcpy((fi_type*)currval->Ptr, tmp, 4 * sizeof(GLfloat) << dmul_shift);
-
-         if (current_index == VBO_ATTRIB_COLOR0)
-            *color0_changed = true;
-
-         /* The fixed-func vertex program uses this. */
-         if (current_index == VBO_ATTRIB_MAT_FRONT_SHININESS ||
-             current_index == VBO_ATTRIB_MAT_BACK_SHININESS)
-            ctx->NewState |= _NEW_FF_VERT_PROGRAM;
-
-         ctx->NewState |= state;
-         ctx->PopAttribState |= pop_state;
-      }
 
       if (type != currval->Format.Type ||
-          (size >> dmul_shift) != currval->Format.Size)
-         vbo_set_vertex_format(&currval->Format, size >> dmul_shift, type);
+          memcmp(currval->Ptr, tmp, 4 * sizeof(GLfloat) * dmul) != 0) {
+         memcpy((fi_type*)currval->Ptr, tmp, 4 * sizeof(GLfloat) * dmul);
+
+         vbo_set_vertex_format(&currval->Format, size, type);
+
+         ctx->NewState |= state;
+      }
 
       *data += size;
    }
@@ -103,17 +91,16 @@ playback_copy_to_current(struct gl_context *ctx,
       return;
 
    fi_type *data = node->current_data;
-   bool color0_changed = false;
-
    /* Copy conventional attribs and generics except pos */
    copy_vao(ctx, node->VAO[VP_MODE_SHADER], ~VERT_BIT_POS & VERT_BIT_ALL,
-            _NEW_CURRENT_ATTRIB, GL_CURRENT_BIT, 0, &data, &color0_changed);
+            _NEW_CURRENT_ATTRIB, 0, &data);
    /* Copy materials */
    copy_vao(ctx, node->VAO[VP_MODE_FF], VERT_BIT_MAT_ALL,
-            _NEW_MATERIAL, GL_LIGHTING_BIT,
-            VBO_MATERIAL_SHIFT, &data, &color0_changed);
+            _NEW_CURRENT_ATTRIB | _NEW_LIGHT, VBO_MATERIAL_SHIFT, &data);
 
-   if (color0_changed && ctx->Light.ColorMaterialEnabled) {
+   /* Colormaterial -- this kindof sucks.
+    */
+   if (ctx->Light.ColorMaterialEnabled) {
       _mesa_update_color_material(ctx, ctx->Current.Attrib[VBO_ATTRIB_COLOR0]);
    }
 
@@ -223,30 +210,10 @@ vbo_save_playback_vertex_list(struct gl_context *ctx, void *data)
       assert(ctx->NewState == 0);
 
       if (node->vertex_count > 0) {
-         bool draw_using_merged_prim = (ctx->Const.AllowIncorrectPrimitiveId ||
-                                        ctx->_PrimitiveIDIsUnused) &&
-                                       node->merged.num_draws;
-         if (!draw_using_merged_prim) {
-            ctx->Driver.Draw(ctx, node->prims, node->prim_count,
-                             NULL, true,
-                             false, 0, node->min_index, node->max_index, 1, 0);
-         } else {
-            struct pipe_draw_info *info = (struct pipe_draw_info *) &node->merged.info;
-            info->vertices_per_patch = ctx->TessCtrlProgram.patch_vertices;
-            void *gl_bo = info->index.gl_bo;
-            if (node->merged.mode) {
-               ctx->Driver.DrawGalliumComplex(ctx, info,
-                                              node->merged.start_count,
-                                              node->merged.mode,
-                                              NULL,
-                                              node->merged.num_draws);
-            } else {
-               ctx->Driver.DrawGallium(ctx, info,
-                                       node->merged.start_count,
-                                       node->merged.num_draws);
-            }
-            info->index.gl_bo = gl_bo;
-         }
+         GLuint min_index = _vbo_save_get_min_index(node);
+         GLuint max_index = _vbo_save_get_max_index(node);
+         ctx->Driver.Draw(ctx, node->prims, node->prim_count, NULL, GL_TRUE,
+                          min_index, max_index, 1, 0, NULL, 0);
       }
    }
 

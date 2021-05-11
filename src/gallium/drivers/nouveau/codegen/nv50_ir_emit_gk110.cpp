@@ -1209,20 +1209,11 @@ CodeEmitterGK110::emitSLCT(const CmpInstruction *i)
    }
 }
 
-void
-gk110_selpFlip(const FixupEntry *entry, uint32_t *code, const FixupData& data)
+static void
+selpFlip(const FixupEntry *entry, uint32_t *code, const FixupData& data)
 {
    int loc = entry->loc;
-   bool val = false;
-   switch (entry->ipa) {
-   case 0:
-      val = data.force_persample_interp;
-      break;
-   case 1:
-      val = data.msaa;
-      break;
-   }
-   if (val)
+   if (data.force_persample_interp)
       code[loc + 1] |= 1 << 13;
    else
       code[loc + 1] &= ~(1 << 13);
@@ -1235,8 +1226,8 @@ void CodeEmitterGK110::emitSELP(const Instruction *i)
    if (i->src(2).mod & Modifier(NV50_IR_MOD_NOT))
       code[1] |= 1 << 13;
 
-   if (i->subOp >= 1) {
-      addInterp(i->subOp - 1, 0, gk110_selpFlip);
+   if (i->subOp == 1) {
+      addInterp(0, 0, selpFlip);
    }
 }
 
@@ -2051,8 +2042,8 @@ CodeEmitterGK110::emitInterpMode(const Instruction *i)
    code[1] |= (i->ipa & 0xc) << (19 - 2);
 }
 
-void
-gk110_interpApply(const struct FixupEntry *entry, uint32_t *code, const FixupData& data)
+static void
+interpApply(const FixupEntry *entry, uint32_t *code, const FixupData& data)
 {
    int ipa = entry->ipa;
    int reg = entry->reg;
@@ -2087,10 +2078,10 @@ CodeEmitterGK110::emitINTERP(const Instruction *i)
 
    if (i->op == OP_PINTERP) {
       srcId(i->src(1), 23);
-      addInterp(i->ipa, SDATA(i->src(1)).id, gk110_interpApply);
+      addInterp(i->ipa, SDATA(i->src(1)).id, interpApply);
    } else {
       code[0] |= 0xff << 23;
-      addInterp(i->ipa, 0xff, gk110_interpApply);
+      addInterp(i->ipa, 0xff, interpApply);
    }
 
    srcId(i->src(0).getIndirect(0), 10);

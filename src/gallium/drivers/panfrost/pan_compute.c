@@ -28,9 +28,7 @@
 
 #include "pan_context.h"
 #include "pan_cmdstream.h"
-#include "panfrost-quirks.h"
 #include "pan_bo.h"
-#include "pan_shader.h"
 #include "util/u_memory.h"
 #include "nir_serialize.h"
 
@@ -45,7 +43,6 @@ panfrost_create_compute_state(
         const struct pipe_compute_state *cso)
 {
         struct panfrost_context *ctx = pan_context(pctx);
-        struct panfrost_device *dev = pan_device(pctx->screen);
 
         struct panfrost_shader_variants *so = CALLOC_STRUCT(panfrost_shader_variants);
         so->cbase = *cso;
@@ -62,16 +59,12 @@ panfrost_create_compute_state(
                 const struct pipe_binary_program_header *hdr = cso->prog;
 
                 blob_reader_init(&reader, hdr->blob, hdr->num_bytes);
-
-                const struct nir_shader_compiler_options *options =
-                        pan_shader_get_compiler_options(dev);
-
-                so->cbase.prog = nir_deserialize(NULL, options, &reader);
+                so->cbase.prog = nir_deserialize(NULL, &midgard_nir_options, &reader);
                 so->cbase.ir_type = PIPE_SHADER_IR_NIR;
         }
 
         panfrost_shader_compile(ctx, so->cbase.ir_type, so->cbase.prog,
-                                MESA_SHADER_COMPUTE, v);
+                                MESA_SHADER_COMPUTE, v, NULL);
 
         return so;
 }
@@ -80,7 +73,11 @@ static void
 panfrost_bind_compute_state(struct pipe_context *pipe, void *cso)
 {
         struct panfrost_context *ctx = pan_context(pipe);
-        ctx->shader[PIPE_SHADER_COMPUTE] = cso;
+
+        struct panfrost_shader_variants *variants =
+                (struct panfrost_shader_variants *) cso;
+
+        ctx->shader[PIPE_SHADER_COMPUTE] = variants;
 }
 
 static void
@@ -98,16 +95,14 @@ panfrost_launch_grid(struct pipe_context *pipe,
                 const struct pipe_grid_info *info)
 {
         struct panfrost_context *ctx = pan_context(pipe);
-        struct panfrost_device *dev = pan_device(pipe->screen);
-        struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
 
-        /* TODO: Indirect compute dispatch */
-        assert(!info->indirect);
+        /* TODO: Do we want a special compute-only batch? */
+        struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
 
         ctx->compute_grid = info;
 
-        struct panfrost_ptr t =
-                panfrost_pool_alloc_desc(&batch->pool, COMPUTE_JOB);
+        /* TODO: Stub */
+        struct midgard_payload_vertex_tiler payload;
 
         /* We implement OpenCL inputs as uniforms (or a UBO -- same thing), so
          * reuse the graphics path for this by lowering to Gallium */
@@ -120,46 +115,27 @@ panfrost_launch_grid(struct pipe_context *pipe,
         };
 
         if (info->input)
-                pipe->set_constant_buffer(pipe, PIPE_SHADER_COMPUTE, 0, false, &ubuf);
+                pipe->set_constant_buffer(pipe, PIPE_SHADER_COMPUTE, 0, &ubuf);
+
+        panfrost_vt_init(ctx, PIPE_SHADER_COMPUTE, &payload.prefix, &payload.postfix);
+
+        panfrost_emit_shader_meta(batch, PIPE_SHADER_COMPUTE, &payload.postfix);
+        panfrost_emit_const_buf(batch, PIPE_SHADER_COMPUTE, &payload.postfix);
+        panfrost_emit_shared_memory(batch, info, &payload);
 
         /* Invoke according to the grid info */
 
-        void *invocation =
-                pan_section_ptr(t.cpu, COMPUTE_JOB, INVOCATION);
-        panfrost_pack_work_groups_compute(invocation,
+        panfrost_pack_work_groups_compute(&payload.prefix,
                                           info->grid[0], info->grid[1],
                                           info->grid[2],
                                           info->block[0], info->block[1],
                                           info->block[2],
                                           false);
 
-        pan_section_pack(t.cpu, COMPUTE_JOB, PARAMETERS, cfg) {
-                cfg.job_task_split =
-                        util_logbase2_ceil(info->block[0] + 1) +
-                        util_logbase2_ceil(info->block[1] + 1) +
-                        util_logbase2_ceil(info->block[2] + 1);
-        }
-
-        pan_section_pack(t.cpu, COMPUTE_JOB, DRAW, cfg) {
-                cfg.draw_descriptor_is_64b = true;
-                if (!pan_is_bifrost(dev))
-                        cfg.texture_descriptor_is_64b = true;
-                cfg.state = panfrost_emit_compute_shader_meta(batch, PIPE_SHADER_COMPUTE);
-                cfg.attributes = panfrost_emit_image_attribs(batch, &cfg.attribute_buffers, PIPE_SHADER_COMPUTE);
-                cfg.thread_storage = panfrost_emit_shared_memory(batch, info);
-                cfg.uniform_buffers = panfrost_emit_const_buf(batch,
-                                PIPE_SHADER_COMPUTE, &cfg.push_uniforms);
-                cfg.textures = panfrost_emit_texture_descriptors(batch,
-                                PIPE_SHADER_COMPUTE);
-                cfg.samplers = panfrost_emit_sampler_descriptors(batch,
-                                PIPE_SHADER_COMPUTE);
-        }
-
-        pan_section_pack(t.cpu, COMPUTE_JOB, DRAW_PADDING, cfg);
-
-        panfrost_add_job(&batch->pool, &batch->scoreboard,
-                         MALI_JOB_TYPE_COMPUTE, true, false, 0, 0, &t, true);
-        panfrost_flush_all_batches(ctx);
+        panfrost_new_job(&batch->pool, &batch->scoreboard,
+                        JOB_TYPE_COMPUTE, true, 0, &payload,
+                         sizeof(payload), false);
+        panfrost_flush_all_batches(ctx, 0);
 }
 
 static void
@@ -176,21 +152,7 @@ panfrost_set_global_binding(struct pipe_context *pctx,
                       struct pipe_resource **resources,
                       uint32_t **handles)
 {
-        if (!resources)
-                return;
-
-        struct panfrost_context *ctx = pan_context(pctx);
-        struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
-
-        for (unsigned i = first; i < first + count; ++i) {
-                struct panfrost_resource *rsrc = pan_resource(resources[i]);
-
-                panfrost_batch_add_bo(batch, rsrc->image.data.bo,
-                                      PAN_BO_ACCESS_SHARED | PAN_BO_ACCESS_RW);
-
-                /* The handle points to uint32_t, but space is allocated for 64 bits */
-                memcpy(handles[i], &rsrc->image.data.bo->ptr.gpu, sizeof(mali_ptr));
-        }
+        /* TODO */
 }
 
 static void

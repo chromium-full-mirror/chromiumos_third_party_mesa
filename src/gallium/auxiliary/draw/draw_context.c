@@ -46,7 +46,7 @@
 #include "draw_gs.h"
 #include "draw_tess.h"
 
-#ifdef DRAW_LLVM_AVAILABLE
+#ifdef LLVM_AVAILABLE
 #include "gallivm/lp_bld_init.h"
 #include "gallivm/lp_bld_limits.h"
 #include "draw_llvm.h"
@@ -67,7 +67,7 @@ draw_get_option_use_llvm(void)
 bool
 draw_has_llvm(void)
 {
-#ifdef DRAW_LLVM_AVAILABLE
+#ifdef LLVM_AVAILABLE
    return draw_get_option_use_llvm();
 #else
    return false;
@@ -88,7 +88,7 @@ draw_create_context(struct pipe_context *pipe, void *context,
    /* we need correct cpu caps for disabling denorms in draw_vbo() */
    util_cpu_detect();
 
-#ifdef DRAW_LLVM_AVAILABLE
+#ifdef LLVM_AVAILABLE
    if (try_llvm && draw_get_option_use_llvm()) {
       draw->llvm = draw_llvm_create(draw, (LLVMContextRef)context);
    }
@@ -123,7 +123,7 @@ draw_create(struct pipe_context *pipe)
 }
 
 
-#ifdef DRAW_LLVM_AVAILABLE
+#ifdef LLVM_AVAILABLE
 struct draw_context *
 draw_create_with_llvm_context(struct pipe_context *pipe,
                               void *context)
@@ -200,7 +200,7 @@ void draw_new_instance(struct draw_context *draw)
 void draw_destroy( struct draw_context *draw )
 {
    struct pipe_context *pipe;
-   unsigned i, j, k;
+   unsigned i, j;
 
    if (!draw)
       return;
@@ -211,10 +211,8 @@ void draw_destroy( struct draw_context *draw )
     */
    for (i = 0; i < 2; i++) {
       for (j = 0; j < 2; j++) {
-         for (k = 0; k < 2; k++) {
-            if (draw->rasterizer_no_cull[i][j][k]) {
-               pipe->delete_rasterizer_state(pipe, draw->rasterizer_no_cull[i][j][k]);
-            }
+         if (draw->rasterizer_no_cull[i][j]) {
+            pipe->delete_rasterizer_state(pipe, draw->rasterizer_no_cull[i][j]);
          }
       }
    }
@@ -233,7 +231,7 @@ void draw_destroy( struct draw_context *draw )
    draw_pt_destroy( draw );
    draw_vs_destroy( draw );
    draw_gs_destroy( draw );
-#ifdef DRAW_LLVM_AVAILABLE
+#ifdef LLVM_AVAILABLE
    if (draw->llvm)
       draw_llvm_destroy( draw->llvm );
 #endif
@@ -411,15 +409,13 @@ void draw_set_viewport_states( struct draw_context *draw,
 void
 draw_set_vertex_buffers(struct draw_context *draw,
                         unsigned start_slot, unsigned count,
-                        unsigned unbind_num_trailing_slots,
                         const struct pipe_vertex_buffer *buffers)
 {
    assert(start_slot + count <= PIPE_MAX_ATTRIBS);
 
    util_set_vertex_buffers_count(draw->pt.vertex_buffer,
                                  &draw->pt.nr_vertex_buffers,
-                                 buffers, start_slot, count,
-                                 unbind_num_trailing_slots, false);
+                                 buffers, start_slot, count);
 }
 
 
@@ -995,8 +991,6 @@ draw_current_shader_uses_viewport_index(const struct draw_context *draw)
 {
    if (draw->gs.geometry_shader)
       return draw->gs.geometry_shader->info.writes_viewport_index;
-   else if (draw->tes.tess_eval_shader)
-      return draw->tes.tess_eval_shader->info.writes_viewport_index;
    return draw->vs.vertex_shader->info.writes_viewport_index;
 }
 
@@ -1062,26 +1056,26 @@ draw_current_shader_num_written_culldistances(const struct draw_context *draw)
  */
 void *
 draw_get_rasterizer_no_cull( struct draw_context *draw,
-                             const struct pipe_rasterizer_state *base_rast )
+                             boolean scissor,
+                             boolean flatshade )
 {
-   if (!draw->rasterizer_no_cull[base_rast->scissor][base_rast->flatshade][base_rast->rasterizer_discard]) {
+   if (!draw->rasterizer_no_cull[scissor][flatshade]) {
       /* create now */
       struct pipe_context *pipe = draw->pipe;
       struct pipe_rasterizer_state rast;
 
       memset(&rast, 0, sizeof(rast));
-      rast.scissor = base_rast->scissor;
-      rast.flatshade = base_rast->flatshade;
-      rast.rasterizer_discard = base_rast->rasterizer_discard;
+      rast.scissor = scissor;
+      rast.flatshade = flatshade;
       rast.front_ccw = 1;
       rast.half_pixel_center = draw->rasterizer->half_pixel_center;
       rast.bottom_edge_rule = draw->rasterizer->bottom_edge_rule;
       rast.clip_halfz = draw->rasterizer->clip_halfz;
 
-      draw->rasterizer_no_cull[base_rast->scissor][base_rast->flatshade][base_rast->rasterizer_discard] =
+      draw->rasterizer_no_cull[scissor][flatshade] =
          pipe->create_rasterizer_state(pipe, &rast);
    }
-   return draw->rasterizer_no_cull[base_rast->scissor][base_rast->flatshade][base_rast->rasterizer_discard];
+   return draw->rasterizer_no_cull[scissor][flatshade];
 }
 
 void
@@ -1142,7 +1136,7 @@ draw_set_samplers(struct draw_context *draw,
 
    draw->num_samplers[shader_stage] = num;
 
-#ifdef DRAW_LLVM_AVAILABLE
+#ifdef LLVM_AVAILABLE
    if (draw->llvm)
       draw_llvm_set_sampler_state(draw, shader_stage);
 #endif
@@ -1182,7 +1176,7 @@ draw_set_mapped_texture(struct draw_context *draw,
                         uint32_t img_stride[PIPE_MAX_TEXTURE_LEVELS],
                         uint32_t mip_offsets[PIPE_MAX_TEXTURE_LEVELS])
 {
-#ifdef DRAW_LLVM_AVAILABLE
+#ifdef LLVM_AVAILABLE
    if (draw->llvm)
       draw_llvm_set_mapped_texture(draw,
                                    shader_stage,
@@ -1204,7 +1198,7 @@ draw_set_mapped_image(struct draw_context *draw,
                       uint32_t num_samples,
                       uint32_t sample_stride)
 {
-#ifdef DRAW_LLVM_AVAILABLE
+#ifdef LLVM_AVAILABLE
    if (draw->llvm)
       draw_llvm_set_mapped_image(draw,
                                  shader_stage,
@@ -1243,7 +1237,7 @@ int
 draw_get_shader_param(enum pipe_shader_type shader, enum pipe_shader_cap param)
 {
 
-#ifdef DRAW_LLVM_AVAILABLE
+#ifdef LLVM_AVAILABLE
    if (draw_get_option_use_llvm()) {
       switch(shader) {
       case PIPE_SHADER_VERTEX:

@@ -29,13 +29,9 @@
 #include "util/list.h"
 #include "util/u_transfer.h"
 
-#include "virtio-gpu/virgl_hw.h"
+#include "virgl_hw.h"
 #include "virgl_screen.h"
 #define VR_MAX_TEXTURE_2D_LEVELS 15
-
-#define VIRGL_BLOB_MEM_GUEST 1
-#define VIRGL_BLOB_MEM_HOST3D 2
-#define VIRGL_BLOB_MEM_HOST3D_GUEST 3
 
 struct winsys_handle;
 struct virgl_screen;
@@ -67,7 +63,6 @@ struct virgl_resource {
     * usable.
     */
    unsigned bind_history;
-   uint32_t blob_mem;
 };
 
 struct virgl_transfer {
@@ -110,7 +105,7 @@ static inline struct virgl_transfer *virgl_transfer(struct pipe_transfer *trans)
 void virgl_buffer_init(struct virgl_resource *res);
 
 static inline unsigned pipe_to_virgl_bind(const struct virgl_screen *vs,
-                                          unsigned pbind)
+                                          unsigned pbind, unsigned flags)
 {
    unsigned outbind = 0;
    if (pbind & PIPE_BIND_DEPTH_STENCIL)
@@ -151,19 +146,6 @@ static inline unsigned pipe_to_virgl_bind(const struct virgl_screen *vs,
    assert(!(outbind & VIRGL_BIND_STAGING));
 
    return outbind;
-}
-
-static inline unsigned pipe_to_virgl_flags(const struct virgl_screen *vs,
-                                           unsigned pflags)
-{
-   unsigned out_flags = 0;
-   if (pflags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT)
-      out_flags |= VIRGL_RESOURCE_FLAG_MAP_PERSISTENT;
-
-   if (pflags & PIPE_RESOURCE_FLAG_MAP_COHERENT)
-      out_flags |= VIRGL_RESOURCE_FLAG_MAP_COHERENT;
-
-   return out_flags;
 }
 
 void *

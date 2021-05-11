@@ -169,7 +169,7 @@ static void init_fs_constbuf( void )
 
    {
       ctx->buffer_subdata(ctx, constbuf1,
-                          PIPE_MAP_WRITE,
+                          PIPE_TRANSFER_WRITE,
                           0, sizeof(constants1), constants1);
 
       pipe_set_constant_buffer(ctx,
@@ -178,7 +178,7 @@ static void init_fs_constbuf( void )
    }
    {
       ctx->buffer_subdata(ctx, constbuf2,
-                          PIPE_MAP_WRITE,
+                          PIPE_TRANSFER_WRITE,
                           0, sizeof(constants2), constants2);
 
       pipe_set_constant_buffer(ctx,
@@ -205,11 +205,6 @@ static void set_viewport( float x, float y,
    vp.translate[0] = half_width + x;
    vp.translate[1] = half_height + y;
    vp.translate[2] = half_depth + z;
-
-   vp.swizzle_x = PIPE_VIEWPORT_SWIZZLE_POSITIVE_X;
-   vp.swizzle_y = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Y;
-   vp.swizzle_z = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Z;
-   vp.swizzle_w = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
 
    ctx->set_viewport_states( ctx, 0, 1, &vp );
 }
@@ -252,7 +247,7 @@ static void set_vertices( void )
                                                  vertices);
    }
 
-   ctx->set_vertex_buffers(ctx, 0, 1, 0, false, &vbuf);
+   ctx->set_vertex_buffers(ctx, 0, 1, &vbuf);
 }
 
 static void set_vertex_shader( void )
@@ -333,7 +328,7 @@ static void draw( void )
 
    graw_save_surface_to_file(ctx, surf, NULL);
 
-   screen->flush_frontbuffer(screen, ctx, rttex, 0, 0, window, NULL);
+   screen->flush_frontbuffer(screen, rttex, 0, 0, window, NULL);
 }
 
 #define SIZE 16
@@ -409,7 +404,7 @@ static void init_tex( void )
    ctx->texture_subdata(ctx,
                         samptex,
                         0,
-                        PIPE_MAP_WRITE,
+                        PIPE_TRANSFER_WRITE,
                         &box,
                         tex2d,
                         sizeof tex2d[0],
@@ -423,7 +418,7 @@ static void init_tex( void )
       uint32_t *ptr;
       ptr = pipe_transfer_map(ctx, samptex,
                               0, 0, /* level, layer */
-                              PIPE_MAP_READ,
+                              PIPE_TRANSFER_READ,
                               0, 0, SIZE, SIZE, &t); /* x, y, width, height */
 
       if (memcmp(ptr, tex2d, sizeof tex2d) != 0) {
@@ -445,7 +440,7 @@ static void init_tex( void )
    if (sv == NULL)
       exit(5);
 
-   ctx->set_sampler_views(ctx, PIPE_SHADER_FRAGMENT, 0, 1, 0, &sv);
+   ctx->set_sampler_views(ctx, PIPE_SHADER_FRAGMENT, 0, 1, &sv);
    
 
    memset(&sampler_desc, 0, sizeof sampler_desc);

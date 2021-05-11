@@ -18,24 +18,14 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-bison_command = []
-if yacc_is_bison
-  bison_command = [
-    prog_bison, '-o', '@OUTPUT0@', '-p', 'glcpp_parser_',
-    '--defines=@OUTPUT1@', '@INPUT@',
-  ]
-else
-  bison_command = [
-    prog_bison, '-o', '@OUTPUT0@', '-p', 'glcpp_parser_',
-    '-H', '@OUTPUT1@', '@INPUT@',
-  ]
-endif
-
 glcpp_parse = custom_target(
   'glcpp-parse.[ch]',
   input : 'glcpp-parse.y',
   output : ['glcpp-parse.c', 'glcpp-parse.h'],
-  command : bison_command
+  command : [
+    prog_bison, '-o', '@OUTPUT0@', '-p', 'glcpp_parser_',
+    '--defines=@OUTPUT1@', '@INPUT@',
+  ],
 )
 
 glcpp_lex = custom_target(
@@ -70,7 +60,6 @@ libglcpp_standalone = static_library(
   'glcpp_standalone',
   'pp_standalone_scaffolding.c',
   link_with : libglcpp,
-  dependencies : idep_mesautil,
   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
   c_args : [no_override_init_args, c_msvc_compat_args, _extra_args],
   cpp_args : [cpp_msvc_compat_args, _extra_args],
@@ -81,7 +70,7 @@ libglcpp_standalone = static_library(
 glcpp = executable(
   'glcpp',
   'glcpp.c',
-  dependencies : [dep_m, idep_getopt, idep_mesautil],
+  dependencies : [dep_m, idep_getopt],
   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
   link_with : [libglcpp_standalone, libglsl_util],
   c_args : [no_override_init_args, c_msvc_compat_args],
@@ -92,6 +81,9 @@ glcpp = executable(
 # FIXME: these fail on windows due to whitespace differences
 if with_any_opengl and with_tests and host_machine.system() != 'windows'
   modes = ['unix', 'windows', 'oldmac', 'bizarro']
+  if dep_valgrind.found()
+    modes += ['valgrind']
+  endif
 
   foreach m : modes
     test(
@@ -106,18 +98,4 @@ if with_any_opengl and with_tests and host_machine.system() != 'windows'
       timeout: 60,
     )
   endforeach
-
-  if dep_valgrind.found()
-    test(
-      'glcpp test (valgrind)',
-      prog_python,
-      args : [
-        join_paths(meson.current_source_dir(), 'tests/glcpp_test.py'),
-        glcpp, join_paths(meson.current_source_dir(), 'tests'),
-        '--valgrind',
-      ],
-      suite : ['compiler', 'glcpp'],
-      timeout: 240,
-    )
-  endif
 endif

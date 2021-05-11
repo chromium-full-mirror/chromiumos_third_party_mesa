@@ -609,7 +609,7 @@ inline void SetupRenderBuffers(uint8_t*             pColorBuffer[SWR_NUM_RENDERT
                                uint32_t             colorHotTileMask,
                                RenderOutputBuffers& renderBuffers)
 {
-    unsigned long index;
+    DWORD index;
     while (_BitScanForward(&index, colorHotTileMask))
     {
         assert(index < SWR_NUM_RENDERTARGETS);
@@ -937,7 +937,7 @@ INLINE void OutputMerger8x2(DRAW_CONTEXT*   pDC,
     simdvector blendSrc;
     simdvector blendOut;
 
-    unsigned long rt;
+    DWORD rt;
     while (_BitScanForward(&rt, renderTargetMask))
     {
         renderTargetMask &= ~(1 << rt);
@@ -1250,7 +1250,7 @@ void BackendPixelRate(DRAW_CONTEXT*        pDC,
 
             if (useAlternateOffset)
             {
-                unsigned long rt;
+                DWORD    rt;
                 uint32_t rtMask = state.colorHottileEnable;
                 while (_BitScanForward(&rt, rtMask))
                 {

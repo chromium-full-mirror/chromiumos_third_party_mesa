@@ -65,72 +65,44 @@ stage_to_enum(char *stage)
       return MESA_SHADER_NONE;
 }
 
-static void
-print_usage(char *exec_name, FILE *f)
-{
-   fprintf(f,
-"Usage: %s [options] file\n"
-"Options:\n"
-"  -h  --help              Print this help.\n"
-"  -s, --stage <stage>     Specify the shader stage.  Valid stages are:\n"
-"                          vertex, tess-ctrl, tess-eval, geometry, fragment,\n"
-"                          compute, and kernel (OpenCL-style compute).\n"
-"  -e, --entry <name>      Specify the entry-point name.\n"
-"  -g, --opengl            Use OpenGL environment instead of Vulkan for\n"
-"                          graphics stages.\n"
-   , exec_name);
-}
-
 int main(int argc, char **argv)
 {
    gl_shader_stage shader_stage = MESA_SHADER_FRAGMENT;
    char *entry_point = "main";
    int ch;
-   enum nir_spirv_execution_environment env = NIR_SPIRV_VULKAN;
 
    static struct option long_options[] =
      {
-       {"help",         no_argument, 0, 'h'},
        {"stage",  required_argument, 0, 's'},
        {"entry",  required_argument, 0, 'e'},
-       {"opengl",       no_argument, 0, 'g'},
        {0, 0, 0, 0}
      };
 
-   while ((ch = getopt_long(argc, argv, "hs:e:g", long_options, NULL)) != -1)
+   while ((ch = getopt_long(argc - 1, argv + 1, "s:e:", long_options, NULL)) != -1)
    {
       switch (ch)
       {
-      case 'h':
-         print_usage(argv[0], stdout);
-         return 0;
-      case 's':
-         shader_stage = stage_to_enum(optarg);
-         if (shader_stage == MESA_SHADER_NONE)
-         {
-            fprintf(stderr, "Unknown stage \"%s\"\n", optarg);
-            print_usage(argv[0], stderr);
+         case 's':
+            shader_stage = stage_to_enum(optarg);
+            if (shader_stage == MESA_SHADER_NONE)
+            {
+               fprintf(stderr, "Unknown stage %s\n", optarg);
+               return 1;
+            }
+            break;
+         case 'e':
+            entry_point = optarg;
+            break;
+         default:
+            fprintf(stderr, "Unrecognized option.\n");
             return 1;
-         }
-         break;
-      case 'e':
-         entry_point = optarg;
-         break;
-      case 'g':
-         env = NIR_SPIRV_OPENGL;
-         break;
-      default:
-         fprintf(stderr, "Unrecognized option \"%s\".\n", optarg);
-         print_usage(argv[0], stderr);
-         return 1;
       }
    }
 
-   const char *filename = argv[optind];
-   int fd = open(filename, O_RDONLY);
+   int fd = open(argv[1], O_RDONLY);
    if (fd < 0)
    {
-      fprintf(stderr, "Failed to open %s\n", filename);
+      fprintf(stderr, "Failed to open %s\n", argv[1]);
       return 1;
    }
 
@@ -156,11 +128,7 @@ int main(int argc, char **argv)
 
    glsl_type_singleton_init_or_ref();
 
-   struct spirv_to_nir_options spirv_opts = {
-      .environment = env,
-      .use_deref_buffer_array_length = env == NIR_SPIRV_OPENGL,
-   };
-
+   struct spirv_to_nir_options spirv_opts = {0};
    if (shader_stage == MESA_SHADER_KERNEL) {
       spirv_opts.environment = NIR_SPIRV_OPENCL;
       spirv_opts.caps.address = true;
@@ -169,6 +137,7 @@ int main(int argc, char **argv)
       spirv_opts.caps.int16 = true;
       spirv_opts.caps.int64 = true;
       spirv_opts.caps.kernel = true;
+      spirv_opts.constant_as_global = true;
    }
 
    nir_shader *nir = spirv_to_nir(map, word_count, NULL, 0,

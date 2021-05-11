@@ -47,7 +47,6 @@
 #include "context.h"
 #include "bufferobj.h"
 #include "arrayobj.h"
-#include "draw_validate.h"
 #include "macros.h"
 #include "mtypes.h"
 #include "state.h"
@@ -1011,13 +1010,6 @@ bind_vertex_array(struct gl_context *ctx, GLuint id, bool no_error)
    _mesa_set_draw_vao(ctx, ctx->Array._EmptyVAO, 0);
 
    _mesa_reference_vao(ctx, &ctx->Array.VAO, newObj);
-
-   /* Update the valid-to-render state if binding on unbinding default VAO
-    * if drawing with the default VAO is invalid.
-    */
-   if (ctx->API == API_OPENGL_CORE &&
-       (oldObj == ctx->Array.DefaultVAO) != (newObj == ctx->Array.DefaultVAO))
-      _mesa_update_valid_to_render_state(ctx);
 }
 
 
@@ -1118,12 +1110,13 @@ static void
 gen_vertex_arrays(struct gl_context *ctx, GLsizei n, GLuint *arrays,
                   bool create, const char *func)
 {
+   GLuint first;
    GLint i;
 
    if (!arrays)
       return;
 
-   _mesa_HashFindFreeKeys(ctx->Array.Objects, arrays, n);
+   first = _mesa_HashFindFreeKeyBlock(ctx->Array.Objects, n);
 
    /* For the sake of simplicity we create the array objects in both
     * the Gen* and Create* cases.  The only difference is the value of
@@ -1131,14 +1124,16 @@ gen_vertex_arrays(struct gl_context *ctx, GLsizei n, GLuint *arrays,
     */
    for (i = 0; i < n; i++) {
       struct gl_vertex_array_object *obj;
+      GLuint name = first + i;
 
-      obj = _mesa_new_vao(ctx, arrays[i]);
+      obj = _mesa_new_vao(ctx, name);
       if (!obj) {
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "%s", func);
          return;
       }
       obj->EverBound = create;
-      _mesa_HashInsertLocked(ctx->Array.Objects, obj->Name, obj, true);
+      _mesa_HashInsertLocked(ctx->Array.Objects, obj->Name, obj);
+      arrays[i] = first + i;
    }
 }
 

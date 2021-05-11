@@ -85,6 +85,8 @@ ds_pattern_bitmode(unsigned and_mask, unsigned or_mask, unsigned xor_mask)
 
 aco_ptr<Instruction> create_s_mov(Definition dst, Operand src);
 
+extern uint8_t int8_mul_table[512];
+
 enum sendmsg {
    sendmsg_none = 0,
    _sendmsg_gs = 2,
@@ -117,7 +119,7 @@ public:
    struct Result {
       Instruction *instr;
 
-      Result(Instruction *instr_) : instr(instr_) {}
+      Result(Instruction *instr) : instr(instr) {}
 
       operator Instruction *() const {
          return instr;
@@ -164,8 +166,6 @@ public:
       s_bcnt1_i32 = (unsigned) aco_opcode::s_bcnt1_i32_b64,
       s_bitcmp1 = (unsigned) aco_opcode::s_bitcmp1_b64,
       s_ff1_i32 = (unsigned) aco_opcode::s_ff1_i32_b64,
-      s_flbit_i32 = (unsigned) aco_opcode::s_flbit_i32_b64,
-      s_lshl = (unsigned) aco_opcode::s_lshl_b64,
    };
 
    Program *program;
@@ -253,23 +253,23 @@ public:
    }
 
    Temp tmp(RegClass rc) {
-      return program->allocateTmp(rc);
+      return (Temp){program->allocateId(), rc};
    }
 
    Temp tmp(RegType type, unsigned size) {
-      return tmp(RegClass(type, size));
+      return (Temp){program->allocateId(), RegClass(type, size)};
    }
 
    Definition def(RegClass rc) {
-      return Definition(program->allocateTmp(rc));
+      return Definition((Temp){program->allocateId(), rc});
    }
 
    Definition def(RegType type, unsigned size) {
-      return def(RegClass(type, size));
+      return Definition((Temp){program->allocateId(), RegClass(type, size)});
    }
 
    Definition def(RegClass rc, PhysReg reg) {
-      return Definition(program->allocateId(rc), reg, rc);
+      return Definition(program->allocateId(), reg, rc);
    }
 
    inline aco_opcode w64or32(WaveSpecificOpcode opcode) const {
@@ -309,10 +309,6 @@ public:
          return aco_opcode::s_bitcmp1_b32;
       case s_ff1_i32:
          return aco_opcode::s_ff1_i32_b32;
-      case s_flbit_i32:
-         return aco_opcode::s_flbit_i32_b32;
-      case s_lshl:
-         return aco_opcode::s_lshl_b32;
       default:
          unreachable("Unsupported wave specific opcode.");
       }
@@ -347,22 +343,7 @@ public:
        return def;
    }
 
-   Definition hint_${fixed}(RegClass rc) {
-       return hint_${fixed}(def(rc));
-   }
-
 % endfor
-
-   Operand set16bit(Operand op) {
-       op.set16bit(true);
-       return op;
-   }
-
-   Operand set24bit(Operand op) {
-       op.set24bit(true);
-       return op;
-   }
-
    /* hand-written helpers */
    Temp as_uniform(Op op)
    {
@@ -376,52 +357,18 @@ public:
    Result v_mul_imm(Definition dst, Temp tmp, uint32_t imm, bool bits24=false)
    {
       assert(tmp.type() == RegType::vgpr);
-      bool has_lshl_add = program->chip_class >= GFX9;
-      /* v_mul_lo_u32 has 1.6x the latency of most VALU on GFX10 (8 vs 5 cycles),
-       * compared to 4x the latency on <GFX10. */
-      unsigned mul_cost = program->chip_class >= GFX10 ? 1 : (4 + Operand(imm).isLiteral());
       if (imm == 0) {
-         return copy(dst, Operand(0u));
+         return vop1(aco_opcode::v_mov_b32, dst, Operand(0u));
       } else if (imm == 1) {
          return copy(dst, Operand(tmp));
       } else if (util_is_power_of_two_or_zero(imm)) {
          return vop2(aco_opcode::v_lshlrev_b32, dst, Operand((uint32_t)ffs(imm) - 1u), tmp);
       } else if (bits24) {
         return vop2(aco_opcode::v_mul_u32_u24, dst, Operand(imm), tmp);
-      } else if (util_is_power_of_two_nonzero(imm - 1u)) {
-         return vadd32(dst, vop2(aco_opcode::v_lshlrev_b32, def(v1), Operand((uint32_t)ffs(imm - 1u) - 1u), tmp), tmp);
-      } else if (mul_cost > 2 && util_is_power_of_two_nonzero(imm + 1u)) {
-         return vsub32(dst, vop2(aco_opcode::v_lshlrev_b32, def(v1), Operand((uint32_t)ffs(imm + 1u) - 1u), tmp), tmp);
+      } else {
+        Temp imm_tmp = copy(def(v1), Operand(imm));
+        return vop3(aco_opcode::v_mul_lo_u32, dst, imm_tmp, tmp);
       }
-
-      unsigned instrs_required = util_bitcount(imm);
-      if (!has_lshl_add) {
-         instrs_required = util_bitcount(imm) - (imm & 0x1); /* shifts */
-         instrs_required += util_bitcount(imm) - 1; /* additions */
-      }
-      if (instrs_required < mul_cost) {
-         Result res(NULL);
-         Temp cur;
-         while (imm) {
-            unsigned shift = u_bit_scan(&imm);
-            Definition tmp_dst = imm ? def(v1) : dst;
-
-            if (shift && cur.id())
-               res = vadd32(Definition(tmp_dst), vop2(aco_opcode::v_lshlrev_b32, def(v1), Operand(shift), tmp), cur);
-            else if (shift)
-               res = vop2(aco_opcode::v_lshlrev_b32, Definition(tmp_dst), Operand(shift), tmp);
-            else if (cur.id())
-               res = vadd32(Definition(tmp_dst), tmp, cur);
-            else
-               tmp_dst = Definition(tmp);
-
-            cur = tmp_dst.getTemp();
-         }
-         return res;
-      }
-
-      Temp imm_tmp = copy(def(s1), Operand(imm));
-      return vop3(aco_opcode::v_mul_lo_u32, dst, imm_tmp, tmp);
    }
 
    Result v_mul24_imm(Definition dst, Temp tmp, uint32_t imm)
@@ -429,15 +376,88 @@ public:
       return v_mul_imm(dst, tmp, imm, true);
    }
 
-   Result copy(Definition dst, Op op) {
-      return pseudo(aco_opcode::p_parallelcopy, dst, op);
+   Result copy(Definition dst, Op op_) {
+      Operand op = op_.op;
+      assert(op.bytes() == dst.bytes());
+      if (dst.regClass() == s1 && op.size() == 1 && op.isLiteral()) {
+         uint32_t imm = op.constantValue();
+         if (imm == 0x3e22f983) {
+            if (program->chip_class >= GFX8)
+               op.setFixed(PhysReg{248}); /* it can be an inline constant on GFX8+ */
+         } else if (imm >= 0xffff8000 || imm <= 0x7fff) {
+            return sopk(aco_opcode::s_movk_i32, dst, imm & 0xFFFFu);
+         } else if (util_bitreverse(imm) <= 64 || util_bitreverse(imm) >= 0xFFFFFFF0) {
+            uint32_t rev = util_bitreverse(imm);
+            return dst.regClass() == v1 ?
+                   vop1(aco_opcode::v_bfrev_b32, dst, Operand(rev)) :
+                   sop1(aco_opcode::s_brev_b32, dst, Operand(rev));
+         } else if (imm != 0) {
+            unsigned start = (ffs(imm) - 1) & 0x1f;
+            unsigned size = util_bitcount(imm) & 0x1f;
+            if ((((1u << size) - 1u) << start) == imm)
+                return sop2(aco_opcode::s_bfm_b32, dst, Operand(size), Operand(start));
+         }
+      }
+
+      if (dst.regClass() == s1) {
+        return sop1(aco_opcode::s_mov_b32, dst, op);
+      } else if (dst.regClass() == s2) {
+        return sop1(aco_opcode::s_mov_b64, dst, op);
+      } else if (dst.regClass() == v1 || dst.regClass() == v1.as_linear()) {
+        return vop1(aco_opcode::v_mov_b32, dst, op);
+      } else if (op.bytes() > 2) {
+         return pseudo(aco_opcode::p_create_vector, dst, op);
+      } else if (op.bytes() == 1 && op.isConstant()) {
+        uint8_t val = op.constantValue();
+        Operand op32((uint32_t)val | (val & 0x80u ? 0xffffff00u : 0u));
+        aco_ptr<SDWA_instruction> sdwa;
+        if (op32.isLiteral()) {
+            sdwa.reset(create_instruction<SDWA_instruction>(aco_opcode::v_mul_u32_u24, asSDWA(Format::VOP2), 2, 1));
+            uint32_t a = (uint32_t)int8_mul_table[val * 2];
+            uint32_t b = (uint32_t)int8_mul_table[val * 2 + 1];
+            sdwa->operands[0] = Operand(a | (a & 0x80u ? 0xffffff00u : 0x0u));
+            sdwa->operands[1] = Operand(b | (b & 0x80u ? 0xffffff00u : 0x0u));
+        } else {
+            sdwa.reset(create_instruction<SDWA_instruction>(aco_opcode::v_mov_b32, asSDWA(Format::VOP1), 1, 1));
+            sdwa->operands[0] = op32;
+        }
+        sdwa->definitions[0] = dst;
+        sdwa->sel[0] = sdwa_udword;
+        sdwa->sel[1] = sdwa_udword;
+        sdwa->dst_sel = sdwa_ubyte;
+        sdwa->dst_preserve = true;
+        return insert(std::move(sdwa));
+      } else if (op.bytes() == 2 && op.isConstant() && !op.isLiteral()) {
+        aco_ptr<SDWA_instruction> sdwa{create_instruction<SDWA_instruction>(aco_opcode::v_add_f16, asSDWA(Format::VOP2), 2, 1)};
+        sdwa->operands[0] = op;
+        sdwa->operands[1] = Operand(0u);
+        sdwa->definitions[0] = dst;
+        sdwa->sel[0] = sdwa_uword;
+        sdwa->sel[1] = sdwa_udword;
+        sdwa->dst_sel = dst.bytes() == 1 ? sdwa_ubyte : sdwa_uword;
+        sdwa->dst_preserve = true;
+        return insert(std::move(sdwa));
+      } else if (dst.regClass().is_subdword()) {
+        if (program->chip_class >= GFX8) {
+            aco_ptr<SDWA_instruction> sdwa{create_instruction<SDWA_instruction>(aco_opcode::v_mov_b32, asSDWA(Format::VOP1), 1, 1)};
+            sdwa->operands[0] = op;
+            sdwa->definitions[0] = dst;
+            sdwa->sel[0] = op.bytes() == 1 ? sdwa_ubyte : sdwa_uword;
+            sdwa->dst_sel = dst.bytes() == 1 ? sdwa_ubyte : sdwa_uword;
+            sdwa->dst_preserve = true;
+            return insert(std::move(sdwa));
+        } else {
+            return vop1(aco_opcode::v_mov_b32, dst, op);
+        }
+      } else {
+        unreachable("Unhandled case in bld.copy()");
+      }
    }
 
    Result vadd32(Definition dst, Op a, Op b, bool carry_out=false, Op carry_in=Op(Operand(s2)), bool post_ra=false) {
       if (!b.op.isTemp() || b.op.regClass().type() != RegType::vgpr)
          std::swap(a, b);
-      if (!post_ra && (!b.op.hasRegClass() || b.op.regClass().type() == RegType::sgpr))
-         b = copy(def(v1), b);
+      assert((post_ra || b.op.hasRegClass()) && b.op.regClass().type() == RegType::vgpr);
 
       if (!carry_in.op.isUndefined())
          return vop2(aco_opcode::v_addc_co_u32, Definition(dst), hint_vcc(def(lm)), a, b, carry_in);
@@ -457,8 +477,7 @@ public:
       bool reverse = !b.op.isTemp() || b.op.regClass().type() != RegType::vgpr;
       if (reverse)
          std::swap(a, b);
-      if (!b.op.hasRegClass() || b.op.regClass().type() == RegType::sgpr)
-         b = copy(def(v1), b);
+      assert(b.op.isTemp() && b.op.regClass().type() == RegType::vgpr);
 
       aco_opcode op;
       Temp carry;
@@ -484,7 +503,7 @@ public:
       int num_defs = carry_out ? 2 : 1;
       aco_ptr<Instruction> sub;
       if (vop3)
-        sub.reset(create_instruction<VOP3_instruction>(op, Format::VOP3, num_ops, num_defs));
+        sub.reset(create_instruction<VOP3A_instruction>(op, Format::VOP3B, num_ops, num_defs));
       else
         sub.reset(create_instruction<VOP2_instruction>(op, Format::VOP2, num_ops, num_defs));
       sub->operands[0] = a.op;
@@ -514,7 +533,7 @@ public:
    }
 <%
 import itertools
-formats = [("pseudo", [Format.PSEUDO], 'Pseudo_instruction', list(itertools.product(range(5), range(6))) + [(8, 1), (1, 8)]),
+formats = [("pseudo", [Format.PSEUDO], 'Pseudo_instruction', list(itertools.product(range(5), range(5))) + [(8, 1), (1, 8)]),
            ("sop1", [Format.SOP1], 'SOP1_instruction', [(0, 1), (1, 0), (1, 1), (2, 1), (3, 2)]),
            ("sop2", [Format.SOP2], 'SOP2_instruction', itertools.product([1, 2], [2, 3])),
            ("sopk", [Format.SOPK], 'SOPK_instruction', itertools.product([0, 1, 2], [0, 1])),
@@ -524,25 +543,23 @@ formats = [("pseudo", [Format.PSEUDO], 'Pseudo_instruction', list(itertools.prod
            ("ds", [Format.DS], 'DS_instruction', [(1, 1), (1, 2), (0, 3), (0, 4)]),
            ("mubuf", [Format.MUBUF], 'MUBUF_instruction', [(0, 4), (1, 3)]),
            ("mtbuf", [Format.MTBUF], 'MTBUF_instruction', [(0, 4), (1, 3)]),
-           ("mimg", [Format.MIMG], 'MIMG_instruction', itertools.product([0, 1], [3, 4, 5, 6, 7])),
+           ("mimg", [Format.MIMG], 'MIMG_instruction', [(0, 3), (1, 3)]),
            ("exp", [Format.EXP], 'Export_instruction', [(0, 4)]),
            ("branch", [Format.PSEUDO_BRANCH], 'Pseudo_branch_instruction', itertools.product([1], [0, 1])),
            ("barrier", [Format.PSEUDO_BARRIER], 'Pseudo_barrier_instruction', [(0, 0)]),
            ("reduction", [Format.PSEUDO_REDUCTION], 'Pseudo_reduction_instruction', [(3, 2)]),
-           ("vop1", [Format.VOP1], 'VOP1_instruction', [(0, 0), (1, 1), (2, 2)]),
-           ("vop1_sdwa", [Format.VOP1, Format.SDWA], 'SDWA_instruction', [(1, 1)]),
+           ("vop1", [Format.VOP1], 'VOP1_instruction', [(1, 1), (2, 2)]),
            ("vop2", [Format.VOP2], 'VOP2_instruction', itertools.product([1, 2], [2, 3])),
            ("vop2_sdwa", [Format.VOP2, Format.SDWA], 'SDWA_instruction', itertools.product([1, 2], [2, 3])),
            ("vopc", [Format.VOPC], 'VOPC_instruction', itertools.product([1, 2], [2])),
-           ("vop3", [Format.VOP3], 'VOP3_instruction', [(1, 3), (1, 2), (1, 1), (2, 2)]),
-           ("vop3p", [Format.VOP3P], 'VOP3P_instruction', [(1, 2), (1, 3)]),
+           ("vop3", [Format.VOP3A], 'VOP3A_instruction', [(1, 3), (1, 2), (1, 1), (2, 2)]),
            ("vintrp", [Format.VINTRP], 'Interp_instruction', [(1, 2), (1, 3)]),
            ("vop1_dpp", [Format.VOP1, Format.DPP], 'DPP_instruction', [(1, 1)]),
            ("vop2_dpp", [Format.VOP2, Format.DPP], 'DPP_instruction', itertools.product([1, 2], [2, 3])),
            ("vopc_dpp", [Format.VOPC, Format.DPP], 'DPP_instruction', itertools.product([1, 2], [2])),
-           ("vop1_e64", [Format.VOP1, Format.VOP3], 'VOP3_instruction', itertools.product([1], [1])),
-           ("vop2_e64", [Format.VOP2, Format.VOP3], 'VOP3_instruction', itertools.product([1, 2], [2, 3])),
-           ("vopc_e64", [Format.VOPC, Format.VOP3], 'VOP3_instruction', itertools.product([1, 2], [2])),
+           ("vop1_e64", [Format.VOP1, Format.VOP3A], 'VOP3A_instruction', itertools.product([1], [1])),
+           ("vop2_e64", [Format.VOP2, Format.VOP3A], 'VOP3A_instruction', itertools.product([1, 2], [2, 3])),
+           ("vopc_e64", [Format.VOPC, Format.VOP3A], 'VOP3A_instruction', itertools.product([1, 2], [2])),
            ("flat", [Format.FLAT], 'FLAT_instruction', [(0, 3), (1, 2)]),
            ("global", [Format.GLOBAL], 'FLAT_instruction', [(0, 3), (1, 2)])]
 formats = [(f if len(f) == 5 else f + ('',)) for f in formats]

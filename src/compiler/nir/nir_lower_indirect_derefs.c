@@ -113,9 +113,7 @@ emit_load_store_deref(nir_builder *b, nir_intrinsic_instr *orig_instr,
 
 static bool
 lower_indirect_derefs_block(nir_block *block, nir_builder *b,
-                            nir_variable_mode modes,
-                            uint32_t max_lower_array_len,
-                            bool builtins_only)
+                            nir_variable_mode modes)
 {
    bool progress = false;
 
@@ -135,21 +133,17 @@ lower_indirect_derefs_block(nir_block *block, nir_builder *b,
       nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
 
       /* Walk the deref chain back to the base and look for indirects */
-      uint32_t indirect_array_len = 1;
       bool has_indirect = false;
       nir_deref_instr *base = deref;
       while (base && base->deref_type != nir_deref_type_var) {
-         nir_deref_instr *parent = nir_deref_instr_parent(base);
          if (base->deref_type == nir_deref_type_array &&
-             !nir_src_is_const(base->arr.index)) {
-            indirect_array_len *= glsl_get_length(parent->type);
+             !nir_src_is_const(base->arr.index))
             has_indirect = true;
-         }
 
-         base = parent;
+         base = nir_deref_instr_parent(base);
       }
 
-      if (!has_indirect || !base || indirect_array_len > max_lower_array_len)
+      if (!has_indirect || !base)
          continue;
 
       /* Only lower variables whose mode is in the mask, or compact
@@ -157,10 +151,6 @@ lower_indirect_derefs_block(nir_block *block, nir_builder *b,
        * scalar arrays, so we need to lower them regardless.)
        */
       if (!(modes & base->var->data.mode) && !base->var->data.compact)
-         continue;
-
-      /* built-in's will always start with "gl_" */
-      if (builtins_only && strncmp(base->var->name, "gl_", 3))
          continue;
 
       b->cursor = nir_instr_remove(&intrin->instr);
@@ -177,7 +167,7 @@ lower_indirect_derefs_block(nir_block *block, nir_builder *b,
          nir_ssa_def *result;
          emit_load_store_deref(b, intrin, base, &path.path[1],
                                &result, NULL);
-         nir_ssa_def_rewrite_uses(&intrin->dest.ssa, result);
+         nir_ssa_def_rewrite_uses(&intrin->dest.ssa, nir_src_for_ssa(result));
       }
 
       nir_deref_path_finish(&path);
@@ -189,16 +179,14 @@ lower_indirect_derefs_block(nir_block *block, nir_builder *b,
 }
 
 static bool
-lower_indirects_impl(nir_function_impl *impl, nir_variable_mode modes,
-                     uint32_t max_lower_array_len, bool builtins_only)
+lower_indirects_impl(nir_function_impl *impl, nir_variable_mode modes)
 {
    nir_builder builder;
    nir_builder_init(&builder, impl);
    bool progress = false;
 
    nir_foreach_block_safe(block, impl) {
-      progress |= lower_indirect_derefs_block(block, &builder, modes,
-                                              max_lower_array_len, builtins_only);
+      progress |= lower_indirect_derefs_block(block, &builder, modes);
    }
 
    if (progress)
@@ -215,37 +203,13 @@ lower_indirects_impl(nir_function_impl *impl, nir_variable_mode modes,
  * that does a binary search on the array index.
  */
 bool
-nir_lower_indirect_derefs(nir_shader *shader, nir_variable_mode modes,
-                          uint32_t max_lower_array_len)
+nir_lower_indirect_derefs(nir_shader *shader, nir_variable_mode modes)
 {
    bool progress = false;
 
    nir_foreach_function(function, shader) {
-      if (function->impl) {
-         progress = lower_indirects_impl(function->impl, modes,
-                                         max_lower_array_len, false) || progress;
-      }
-   }
-
-   return progress;
-}
-
-/** Lowers indirect variable loads/stores to direct loads/stores.
- *
- * The pass works by replacing any indirect load or store with an if-ladder
- * that does a binary search on the array index. It only changes uniform variable builtins,
- * e.g., gl_LightSource
- */
-bool
-nir_lower_indirect_builtin_uniform_derefs(nir_shader *shader)
-{
-   bool progress = false;
-
-   nir_foreach_function(function, shader) {
-      if (function->impl) {
-         progress = lower_indirects_impl(function->impl, nir_var_uniform,
-                                         UINT_MAX, true) || progress;
-      }
+      if (function->impl)
+         progress = lower_indirects_impl(function->impl, modes) || progress;
    }
 
    return progress;

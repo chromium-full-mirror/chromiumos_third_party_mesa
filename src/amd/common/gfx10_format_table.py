@@ -96,9 +96,6 @@ HARDCODED = {
 
     'PIPE_FORMAT_BPTC_RGBA_UNORM': hardcoded_format('BC7_UNORM'),
     'PIPE_FORMAT_BPTC_SRGBA': hardcoded_format('BC7_SRGB'),
-
-    'PIPE_FORMAT_R64_UINT': hardcoded_format('32_32_UINT'),
-    'PIPE_FORMAT_R64_SINT': hardcoded_format('32_32_SINT'),
 }
 
 

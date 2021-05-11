@@ -28,7 +28,7 @@ pipe_loader_incs = [
 ]
 
 if (with_gallium_va or with_gallium_vdpau or with_gallium_omx != 'disabled' or
-    with_gallium_xvmc or with_dri or with_gallium_radeonsi)
+    with_gallium_xvmc or with_dri)
   pipe_loader_link_with += libgalliumvl
 else
   pipe_loader_link_with += libgalliumvl_stub
@@ -58,7 +58,6 @@ endif
 
 pipe_loaders = [
   [with_gallium_i915, 'i915', driver_i915, []],
-  [with_gallium_iris, 'iris', [driver_iris, idep_xmlconfig], []],
   [with_gallium_nouveau, 'nouveau', driver_nouveau, []],
   [with_gallium_r300, 'r300', driver_r300, []],
   [with_gallium_r600, 'r600', driver_r600, []],
@@ -74,7 +73,7 @@ foreach x : pipe_loaders
     shared_library(
       'pipe_@0@'.format(x[1]),
       'pipe_@0@.c'.format(x[1]),
-      c_args : [pipe_loader_comp_args, '-DPIPE_LOADER_DYNAMIC=1'],
+      c_args : [pipe_loader_comp_args],
       cpp_args : [pipe_loader_comp_args],
       gnu_symbol_visibility : 'hidden',
       link_args : pipe_loader_link_args,

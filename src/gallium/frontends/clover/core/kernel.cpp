@@ -36,19 +36,6 @@ kernel::kernel(clover::program &prog, const std::string &name,
       if (marg.semantic == module::argument::general)
          _args.emplace_back(argument::create(marg));
    }
-   for (auto &dev : prog.devices()) {
-      auto &m = prog.build(dev).binary;
-      auto msym = find(name_equals(name), m.syms);
-      const auto f = id_type_equals(msym.section, module::section::data_constant);
-      if (!any_of(f, m.secs))
-         continue;
-
-      auto mconst = find(f, m.secs);
-      auto rb = std::make_unique<root_buffer>(prog.context(), std::vector<cl_mem_properties>(),
-                                              CL_MEM_COPY_HOST_PTR | CL_MEM_READ_ONLY,
-                                              mconst.size, mconst.data.data());
-      _constant_buffers.emplace(&dev, std::move(rb));
-   }
 }
 
 template<typename V>
@@ -82,9 +69,7 @@ kernel::launch(command_queue &q,
                                exec.samplers.data());
 
    q.pipe->set_sampler_views(q.pipe, PIPE_SHADER_COMPUTE, 0,
-                             exec.sviews.size(), 0, exec.sviews.data());
-   q.pipe->set_shader_images(q.pipe, PIPE_SHADER_COMPUTE, 0,
-                             exec.iviews.size(), 0, exec.iviews.data());
+                             exec.sviews.size(), exec.sviews.data());
    q.pipe->set_compute_resources(q.pipe, 0, exec.resources.size(),
                                  exec.resources.data());
    q.pipe->set_global_binding(q.pipe, 0, exec.g_buffers.size(),
@@ -101,10 +86,8 @@ kernel::launch(command_queue &q,
 
    q.pipe->set_global_binding(q.pipe, 0, exec.g_buffers.size(), NULL, NULL);
    q.pipe->set_compute_resources(q.pipe, 0, exec.resources.size(), NULL);
-   q.pipe->set_shader_images(q.pipe, PIPE_SHADER_COMPUTE, 0,
-                             0, exec.iviews.size(), NULL);
    q.pipe->set_sampler_views(q.pipe, PIPE_SHADER_COMPUTE, 0,
-                             0, exec.sviews.size(), NULL);
+                             exec.sviews.size(), NULL);
    q.pipe->bind_sampler_states(q.pipe, PIPE_SHADER_COMPUTE, 0,
                                exec.samplers.size(), NULL);
 
@@ -144,7 +127,7 @@ kernel::optimal_block_size(const command_queue &q,
 
 std::vector<size_t>
 kernel::required_block_size() const {
-   return find(name_equals(_name), program().symbols()).reqd_work_group_size;
+   return { 0, 0, 0 };
 }
 
 kernel::argument_range
@@ -157,23 +140,13 @@ kernel::args() const {
    return map(derefs(), _args);
 }
 
-std::vector<clover::module::arg_info>
-kernel::args_infos() {
-   std::vector<clover::module::arg_info> infos;
-   for (auto &marg: find(name_equals(_name), program().symbols()).args)
-      if (marg.semantic == clover::module::argument::general)
-         infos.emplace_back(marg.info);
-
-   return infos;
-}
-
 const module &
 kernel::module(const command_queue &q) const {
    return program().build(q.device()).binary;
 }
 
 kernel::exec_context::exec_context(kernel &kern) :
-   kern(kern), q(NULL), print_handler(), mem_local(0), st(NULL), cs() {
+   kern(kern), q(NULL), mem_local(0), st(NULL), cs() {
 }
 
 kernel::exec_context::~exec_context() {
@@ -190,7 +163,7 @@ kernel::exec_context::bind(intrusive_ptr<command_queue> _q,
    auto &m = kern.program().build(q->device()).binary;
    auto msym = find(name_equals(kern.name()), m.syms);
    auto margs = msym.args;
-   auto msec = find(id_type_equals(msym.section, module::section::text_executable), m.secs);
+   auto msec = find(id_equals(msym.section), m.secs);
    auto explicit_arg = kern._args.begin();
 
    for (auto &marg : margs) {
@@ -244,24 +217,6 @@ kernel::exec_context::bind(intrusive_ptr<command_queue> _q,
          }
          break;
       }
-      case module::argument::constant_buffer: {
-         auto arg = argument::create(marg);
-         cl_mem buf = kern._constant_buffers.at(&q->device()).get();
-         arg->set(q->device().address_bits() / 8, &buf);
-         arg->bind(*this, marg);
-         break;
-      }
-      case module::argument::printf_buffer: {
-         print_handler = printf_handler::create(q, m.printf_infos,
-                                                m.printf_strings_in_buffer,
-                                                q->device().max_printf_buffer_size());
-         cl_mem print_mem = print_handler->get_mem();
-
-         auto arg = argument::create(marg);
-         arg->set(sizeof(cl_mem), &print_mem);
-         arg->bind(*this, marg);
-         break;
-      }
       }
    }
 
@@ -288,16 +243,12 @@ kernel::exec_context::bind(intrusive_ptr<command_queue> _q,
 
 void
 kernel::exec_context::unbind() {
-   if (print_handler)
-      print_handler->print();
-
    for (auto &arg : kern.args())
       arg.unbind(*this);
 
    input.clear();
    samplers.clear();
    sviews.clear();
-   iviews.clear();
    resources.clear();
    g_buffers.clear();
    g_handles.clear();
@@ -395,10 +346,12 @@ kernel::argument::create(const module::argument &marg) {
    case module::argument::constant:
       return std::unique_ptr<kernel::argument>(new constant_argument);
 
-   case module::argument::image_rd:
+   case module::argument::image2d_rd:
+   case module::argument::image3d_rd:
       return std::unique_ptr<kernel::argument>(new image_rd_argument);
 
-   case module::argument::image_wr:
+   case module::argument::image2d_wr:
+   case module::argument::image3d_wr:
       return std::unique_ptr<kernel::argument>(new image_wr_argument);
 
    case module::argument::sampler:
@@ -451,9 +404,6 @@ void
 kernel::scalar_argument::unbind(exec_context &ctx) {
 }
 
-kernel::global_argument::global_argument() : buf(nullptr), svm(nullptr) {
-}
-
 void
 kernel::global_argument::set(size_t size, const void *value) {
    if (size != sizeof(cl_mem))
@@ -477,7 +427,7 @@ kernel::global_argument::bind(exec_context &ctx,
    align(ctx.input, marg.target_align);
 
    if (buf) {
-      const resource &r = buf->resource_in(*ctx.q);
+      const resource &r = buf->resource(*ctx.q);
       ctx.g_handles.push_back(ctx.input.size());
       ctx.g_buffers.push_back(r.pipe);
 
@@ -552,7 +502,7 @@ kernel::constant_argument::bind(exec_context &ctx,
    align(ctx.input, marg.target_align);
 
    if (buf) {
-      resource &r = buf->resource_in(*ctx.q);
+      resource &r = buf->resource(*ctx.q);
       auto v = bytes(ctx.resources.size() << 24 | r.offset[0]);
 
       extend(v, module::argument::zero_ext, marg.target_size);
@@ -570,7 +520,7 @@ kernel::constant_argument::bind(exec_context &ctx,
 void
 kernel::constant_argument::unbind(exec_context &ctx) {
    if (buf)
-      buf->resource_in(*ctx.q).unbind_surface(*ctx.q, st);
+      buf->resource(*ctx.q).unbind_surface(*ctx.q, st);
 }
 
 void
@@ -595,13 +545,13 @@ kernel::image_rd_argument::bind(exec_context &ctx,
    align(ctx.input, marg.target_align);
    insert(ctx.input, v);
 
-   st = img->resource_in(*ctx.q).bind_sampler_view(*ctx.q);
+   st = img->resource(*ctx.q).bind_sampler_view(*ctx.q);
    ctx.sviews.push_back(st);
 }
 
 void
 kernel::image_rd_argument::unbind(exec_context &ctx) {
-   img->resource_in(*ctx.q).unbind_sampler_view(*ctx.q, st);
+   img->resource(*ctx.q).unbind_sampler_view(*ctx.q, st);
 }
 
 void
@@ -619,20 +569,20 @@ kernel::image_wr_argument::set(size_t size, const void *value) {
 void
 kernel::image_wr_argument::bind(exec_context &ctx,
                                 const module::argument &marg) {
-   auto v = bytes(ctx.iviews.size());
+   auto v = bytes(ctx.resources.size());
 
    extend(v, module::argument::zero_ext, marg.target_size);
    byteswap(v, ctx.q->device().endianness());
    align(ctx.input, marg.target_align);
    insert(ctx.input, v);
-   ctx.iviews.push_back(img->resource_in(*ctx.q).create_image_view(*ctx.q));
+
+   st = img->resource(*ctx.q).bind_surface(*ctx.q, true);
+   ctx.resources.push_back(st);
 }
 
 void
 kernel::image_wr_argument::unbind(exec_context &ctx) {
-}
-
-kernel::sampler_argument::sampler_argument() : s(nullptr), st(nullptr) {
+   img->resource(*ctx.q).unbind_surface(*ctx.q, st);
 }
 
 void

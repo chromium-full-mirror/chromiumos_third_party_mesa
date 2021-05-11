@@ -67,7 +67,7 @@ occlusion_resume(struct fd_acc_query *aq, struct fd_batch *batch)
 	OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_COUNT_CONTROL, 1);
 	OUT_RING(ring, A6XX_RB_SAMPLE_COUNT_CONTROL_COPY);
 
-	OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_COUNT_ADDR, 2);
+	OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_COUNT_ADDR_LO, 2);
 	OUT_RELOC(ring, query_sample(aq, start));
 
 	fd6_event_write(batch, ring, ZPASS_DONE, false);
@@ -77,7 +77,6 @@ occlusion_resume(struct fd_acc_query *aq, struct fd_batch *batch)
 
 static void
 occlusion_pause(struct fd_acc_query *aq, struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_ringbuffer *ring = batch->draw;
 
@@ -91,7 +90,7 @@ occlusion_pause(struct fd_acc_query *aq, struct fd_batch *batch)
 	OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_COUNT_CONTROL, 1);
 	OUT_RING(ring, A6XX_RB_SAMPLE_COUNT_CONTROL_COPY);
 
-	OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_COUNT_ADDR, 2);
+	OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_COUNT_ADDR_LO, 2);
 	OUT_RELOC(ring, query_sample(aq, stop));
 
 	fd6_event_write(batch, ring, ZPASS_DONE, false);
@@ -174,7 +173,6 @@ timestamp_resume(struct fd_acc_query *aq, struct fd_batch *batch)
 
 static void
 time_elapsed_pause(struct fd_acc_query *aq, struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_ringbuffer *ring = batch->draw;
 
@@ -203,7 +201,7 @@ timestamp_pause(struct fd_acc_query *aq, struct fd_batch *batch)
 	/* We captured a timestamp in timestamp_resume(), nothing to do here. */
 }
 
-/* timestamp logging for u_trace: */
+/* timestamp logging for fd_log(): */
 static void
 record_timestamp(struct fd_ringbuffer *ring, struct fd_bo *bo, unsigned offset)
 {
@@ -300,23 +298,21 @@ log_counters(struct fd6_primitives_sample *ps)
 	};
 
 	printf("  counter\t\tstart\t\t\tstop\t\t\tdiff\n");
-	for (int i = 0; i < ARRAY_SIZE(labels); i++) {
-		int register_idx = i + (counter_base - REG_A6XX_RBBM_PRIMCTR_0_LO) / 2;
-		printf("  RBBM_PRIMCTR_%d\t0x%016"PRIx64"\t0x%016"PRIx64"\t%"PRIi64"\t%s\n",
-				register_idx,
-				ps->prim_start[i], ps->prim_stop[i], ps->prim_stop[i] - ps->prim_start[i],
-				labels[register_idx]);
+	for (int i = 0; i < counter_count; i++) {
+		printf("  RBBM_PRIMCTR_%d\t0x%016llx\t0x%016llx\t%lld\t%s\n",
+				i + (counter_base - REG_A6XX_RBBM_PRIMCTR_0_LO) / 2,
+				ps->prim_start[i], ps->prim_stop[i], ps->prim_stop[i] - ps->prim_start[i], labels[i]);
 	}
 
 	printf("  so counts\n");
 	for (int i = 0; i < ARRAY_SIZE(ps->start); i++) {
-		printf("  CHANNEL %d emitted\t0x%016"PRIx64"\t0x%016"PRIx64"\t%"PRIi64"\n",
+		printf("  CHANNEL %d emitted\t0x%016llx\t0x%016llx\t%lld\n",
 				i, ps->start[i].generated, ps->stop[i].generated, ps->stop[i].generated - ps->start[i].generated);
-		printf("  CHANNEL %d generated\t0x%016"PRIx64"\t0x%016"PRIx64"\t%"PRIi64"\n",
+		printf("  CHANNEL %d generated\t0x%016llx\t0x%016llx\t%lld\n",
 				i, ps->start[i].emitted, ps->stop[i].emitted, ps->stop[i].emitted - ps->start[i].emitted);
 	}
 
-	printf("generated %"PRIu64", emitted %"PRIu64"\n", ps->result.generated, ps->result.emitted);
+	printf("generated %lld, emitted %lld\n", ps->result.generated, ps->result.emitted);
 }
 
 #else
@@ -333,7 +329,6 @@ log_counters(struct fd6_primitives_sample *ps)
 
 static void
 primitives_generated_resume(struct fd_acc_query *aq, struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_ringbuffer *ring = batch->draw;
 
@@ -341,7 +336,7 @@ primitives_generated_resume(struct fd_acc_query *aq, struct fd_batch *batch)
 
 	OUT_PKT7(ring, CP_REG_TO_MEM, 3);
 	OUT_RING(ring, CP_REG_TO_MEM_0_64B |
-			CP_REG_TO_MEM_0_CNT(counter_count * 2) |
+			CP_REG_TO_MEM_0_CNT(counter_count) |
 			CP_REG_TO_MEM_0_REG(counter_base));
 	primitives_relocw(ring, aq, prim_start);
 
@@ -350,7 +345,6 @@ primitives_generated_resume(struct fd_acc_query *aq, struct fd_batch *batch)
 
 static void
 primitives_generated_pause(struct fd_acc_query *aq, struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_ringbuffer *ring = batch->draw;
 
@@ -359,7 +353,7 @@ primitives_generated_pause(struct fd_acc_query *aq, struct fd_batch *batch)
 	/* snapshot the end values: */
 	OUT_PKT7(ring, CP_REG_TO_MEM, 3);
 	OUT_RING(ring, CP_REG_TO_MEM_0_64B |
-			CP_REG_TO_MEM_0_CNT(counter_count * 2) |
+			CP_REG_TO_MEM_0_CNT(counter_count) |
 			CP_REG_TO_MEM_0_REG(counter_base));
 	primitives_relocw(ring, aq, prim_stop);
 
@@ -396,12 +390,11 @@ static const struct fd_acc_sample_provider primitives_generated = {
 
 static void
 primitives_emitted_resume(struct fd_acc_query *aq, struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_ringbuffer *ring = batch->draw;
 
 	fd_wfi(batch, ring);
-	OUT_PKT4(ring, REG_A6XX_VPC_SO_STREAM_COUNTS, 2);
+	OUT_PKT4(ring, REG_A6XX_VPC_SO_STREAM_COUNTS_LO, 2);
 	primitives_relocw(ring, aq, start[0]);
 
 	fd6_event_write(batch, ring, WRITE_PRIMITIVE_COUNTS, false);
@@ -409,13 +402,12 @@ primitives_emitted_resume(struct fd_acc_query *aq, struct fd_batch *batch)
 
 static void
 primitives_emitted_pause(struct fd_acc_query *aq, struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_ringbuffer *ring = batch->draw;
 
 	fd_wfi(batch, ring);
 
-	OUT_PKT4(ring, REG_A6XX_VPC_SO_STREAM_COUNTS, 2);
+	OUT_PKT4(ring, REG_A6XX_VPC_SO_STREAM_COUNTS_LO, 2);
 	primitives_relocw(ring, aq, stop[0]);
 	fd6_event_write(batch, ring, WRITE_PRIMITIVE_COUNTS, false);
 
@@ -472,7 +464,6 @@ struct fd_batch_query_data {
 
 static void
 perfcntr_resume(struct fd_acc_query *aq, struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_batch_query_data *data = aq->query_data;
 	struct fd_screen *screen = data->screen;
@@ -513,7 +504,6 @@ perfcntr_resume(struct fd_acc_query *aq, struct fd_batch *batch)
 
 static void
 perfcntr_pause(struct fd_acc_query *aq, struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_batch_query_data *data = aq->query_data;
 	struct fd_screen *screen = data->screen;
@@ -601,7 +591,7 @@ fd6_create_batch_query(struct pipe_context *pctx,
 		/* verify valid query_type, ie. is it actually a perfcntr? */
 		if ((query_types[i] < FD_QUERY_FIRST_PERFCNTR) ||
 				(idx >= screen->num_perfcntr_queries)) {
-			mesa_loge("invalid batch query query_type: %u", query_types[i]);
+			debug_printf("invalid batch query query_type: %u\n", query_types[i]);
 			goto error;
 		}
 
@@ -626,7 +616,7 @@ fd6_create_batch_query(struct pipe_context *pctx,
 
 		if (counters_per_group[entry->gid] >=
 				screen->perfcntr_groups[entry->gid].num_counters) {
-			mesa_loge("too many counters for group %u", entry->gid);
+			debug_printf("too many counters for group %u\n", entry->gid);
 			goto error;
 		}
 
@@ -649,12 +639,11 @@ error:
 
 void
 fd6_query_context_init(struct pipe_context *pctx)
-	disable_thread_safety_analysis
 {
 	struct fd_context *ctx = fd_context(pctx);
 
 	ctx->create_query = fd_acc_create_query;
-	ctx->query_update_batch = fd_acc_query_update_batch;
+	ctx->query_set_stage = fd_acc_query_set_stage;
 
 	ctx->record_timestamp = record_timestamp;
 	ctx->ts_to_ns = ticks_to_ns;

@@ -98,10 +98,6 @@ extern struct gl_shader_program *
 _mesa_lookup_shader_program(struct gl_context *ctx, GLuint name);
 
 extern struct gl_shader_program *
-_mesa_lookup_shader_program_err_glthread(struct gl_context *ctx, GLuint name,
-                                         bool glthread, const char *caller);
-
-extern struct gl_shader_program *
 _mesa_lookup_shader_program_err(struct gl_context *ctx, GLuint name,
                                 const char *caller);
 
@@ -207,9 +203,8 @@ _mesa_shader_stage_from_subroutine(GLenum subroutine)
       return MESA_SHADER_TESS_CTRL;
    case GL_TESS_EVALUATION_SUBROUTINE:
       return MESA_SHADER_TESS_EVAL;
-   default:
-      unreachable("not reached");
    }
+   unreachable("not reached");
 }
 
 static inline GLenum
@@ -228,9 +223,13 @@ _mesa_shader_stage_to_subroutine(gl_shader_stage stage)
       return GL_TESS_CONTROL_SUBROUTINE;
    case MESA_SHADER_TESS_EVAL:
       return GL_TESS_EVALUATION_SUBROUTINE;
-   default:
+   case MESA_SHADER_NONE:
+      break;
+   case MESA_SHADER_KERNEL:
       unreachable("not reached");
+      break;
    }
+   unreachable("not reached");
 }
 
 static inline GLenum
@@ -249,9 +248,11 @@ _mesa_shader_stage_to_subroutine_uniform(gl_shader_stage stage)
       return GL_TESS_CONTROL_SUBROUTINE_UNIFORM;
    case MESA_SHADER_TESS_EVAL:
       return GL_TESS_EVALUATION_SUBROUTINE_UNIFORM;
-   default:
-      unreachable("not reached");
+   case MESA_SHADER_NONE:
+   case MESA_SHADER_KERNEL:
+      break;
    }
+   unreachable("not reached");
 }
 
 extern bool

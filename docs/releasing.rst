@@ -35,9 +35,7 @@ Feature releases
 ----------------
 
 -  Available approximately every three months.
--  Feature releases are branched on or around the second Wednesday of
-   January, April, July, and October.
--  Initial time plan available 2-4 weeks before the planned branchpoint
+-  Initial timeplan available 2-4 weeks before the planned branchpoint
    (rc1) on the mesa-announce@ mailing list.
 -  Typically, the final release will happen after 4 candidates.
    Additional ones may be needed in order to resolve blocking
@@ -73,11 +71,11 @@ Commits nominated for the active branch are picked as based on the
 section.
 
 Nominations happen via special tags in the commit messages, and via
-GitLab merge requests against the staging branches. There are special
+gitlab merge requests against the staging branches. There are special
 scripts used to read the tags.
 
 The maintainer should watch or be in contact with the Intel CI team, as
-well as watch the GitLab CI for regressions.
+well as watch the gitlab CI for regressions.
 
 Cherry picking should be done with the '-x' switch (to automatically add
 "cherry picked from ..." to the commit message):
@@ -94,13 +92,13 @@ Following developers have requested permanent exception
 -  *Ilia Mirkin*
 -  *AMD team*
 
-The GitLab CI must pass.
+The gitlab CI must pass.
 
 For Windows related changes, the main contact point is Brian Paul. Jose
 Fonseca can also help as a fallback contact.
 
 For Android related changes, the main contact is Tapani Pälli. Mauro
-Rossi is collaborating with Android-x86 and may provide feedback about
+Rossi is collaborating with android-x86 and may provide feedback about
 the build status in that project.
 
 For MacOSX related changes, Jeremy Huddleston Sequoia is currently a
@@ -131,7 +129,7 @@ good contact point.
 
        ralloc: don't leave out the alignment factor
 
-       Experimentation shows that without alignment factor GCC and Clang choose
+       Experimentation shows that without alignment factor gcc and clang choose
        ...
 
        (cherry picked from commit ff494fe999510ea40e3ed5827e7818550b6de126)
@@ -167,7 +165,7 @@ Making a branchpoint
 --------------------
 
 A branchpoint is made such that new development can continue in parallel
-to stabilization and bugfixing.
+to stabilisation and bugfixing.
 
 .. note::
 
@@ -193,7 +191,7 @@ To setup the branchpoint:
    git push origin X.Y-branchpoint X.Y
 
 Now go to
-`GitLab <https://gitlab.freedesktop.org/mesa/mesa/-/milestones>`__ and
+`gitlab <https://gitlab.freedesktop.org/mesa/mesa/-/milestones>`__ and
 add the new Mesa version X.Y.
 
 Check that there are no distribution breaking changes and revert them if
@@ -219,6 +217,7 @@ Most of the testing should already be done during the
 :ref:`cherry-pick <pickntest>` So we do a quick 'touch test'
 
 -  meson dist
+-  scons (from release tarball)
 -  the produced binaries work
 
 Here is one solution:
@@ -311,8 +310,8 @@ Then run the
    ./bin/post_version.py X.Y.Z
 
 , where X.Y.Z is the version you just made. This will update
-docs/relnotes.rst and docs/release-calendar.csv. It will then generate
-a Git commit automatically. Check that everything looks correct and
+docs/relnotes.rst and docs/release-calendar.rst. It will then generate
+a git commit automatically. Check that everything looks correct and
 push:
 
 ::
@@ -327,7 +326,7 @@ Use the generated template during the releasing process.
 Again, pay attention to add a note to warn about a final release in a
 series, if that is the case.
 
-Update GitLab issues
+Update gitlab issues
 --------------------
 
 Parse through the bug reports as listed in the docs/relnotes/X.Y.Z.rst

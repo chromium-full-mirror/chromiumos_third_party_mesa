@@ -87,12 +87,12 @@ is_phi_src_scalarizable(nir_phi_src *src,
 
       switch (src_intrin->intrinsic) {
       case nir_intrinsic_load_deref: {
-         /* Don't scalarize if we see a load of a local variable because it
-          * might turn into one of the things we can't scalarize.
-          */
          nir_deref_instr *deref = nir_src_as_deref(src_intrin->src[0]);
-         return !nir_deref_mode_may_be(deref, nir_var_function_temp |
-                                              nir_var_shader_temp);
+         return deref->mode == nir_var_shader_in ||
+                deref->mode == nir_var_uniform ||
+                deref->mode == nir_var_mem_ubo ||
+                deref->mode == nir_var_mem_ssbo ||
+                deref->mode == nir_var_mem_global;
       }
 
       case nir_intrinsic_interp_deref_at_centroid:
@@ -103,14 +103,13 @@ is_phi_src_scalarizable(nir_phi_src *src,
       case nir_intrinsic_load_ubo:
       case nir_intrinsic_load_ssbo:
       case nir_intrinsic_load_global:
-      case nir_intrinsic_load_global_constant:
       case nir_intrinsic_load_input:
          return true;
       default:
          break;
       }
    }
-   FALLTHROUGH;
+   /* fallthrough */
 
    default:
       /* We can't scalarize this type of instruction */
@@ -256,7 +255,7 @@ lower_phis_to_scalar_block(nir_block *block,
       nir_instr_insert_after(&last_phi->instr, &vec->instr);
 
       nir_ssa_def_rewrite_uses(&phi->dest.ssa,
-                               &vec->dest.dest.ssa);
+                               nir_src_for_ssa(&vec->dest.dest.ssa));
 
       ralloc_steal(state->dead_ctx, phi);
       nir_instr_remove(&phi->instr);

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python2
 ##########################################################################
 # 
 # Copyright 2008 VMware, Inc.
@@ -27,10 +27,9 @@
 ##########################################################################
 
 
-import io
 import sys
-import xml.parsers.expat as xpat
-import argparse
+import xml.parsers.expat
+import optparse
 
 from model import *
 
@@ -73,7 +72,7 @@ class XmlTokenizer:
         self.character_pos = 0, 0
         self.character_data = ''
         
-        self.parser = xpat.ParserCreate()
+        self.parser = xml.parsers.expat.ParserCreate()
         self.parser.StartElementHandler  = self.handle_element_start
         self.parser.EndElementHandler    = self.handle_element_end
         self.parser.CharacterDataHandler = self.handle_character_data
@@ -113,8 +112,8 @@ class XmlTokenizer:
             data = data.rstrip('\0')
             try:
                 self.parser.Parse(data, self.final)
-            except xpat.ExpatError as e:
-                #if e.code == xpat.errors.XML_ERROR_NO_ELEMENTS:
+            except xml.parsers.expat.ExpatError, e:
+                #if e.code == xml.parsers.expat.errors.XML_ERROR_NO_ELEMENTS:
                 if e.code == 3:
                     pass
                 else:
@@ -206,7 +205,7 @@ class TraceParser(XmlParser):
         attrs = self.element_start('call')
         try:
             no = int(attrs['no'])
-        except KeyError as e:
+        except KeyError:
             self.last_call_no += 1
             no = self.last_call_no
         else:
@@ -353,12 +352,9 @@ class TraceParser(XmlParser):
     
 class TraceDumper(TraceParser):
     
-    def __init__(self, fp, options, outStream = sys.stdout):
+    def __init__(self, fp, outStream = sys.stdout):
         TraceParser.__init__(self, fp)
-        if options.plain:
-            self.formatter = format.Formatter(outStream)
-        else:
-            self.formatter = format.DefaultFormatter(outStream)
+        self.formatter = format.DefaultFormatter(outStream)
         self.pretty_printer = PrettyPrinter(self.formatter)
 
     def handle_call(self, call):
@@ -374,36 +370,29 @@ class Main:
 
     def main(self):
         optparser = self.get_optparser()
-        args = optparser.parse_args()
+        (options, args) = optparser.parse_args(sys.argv[1:])
+    
+        if not args:
+            optparser.error('insufficient number of arguments')
 
-        for fname in args.filename:
-            try:
-                if fname.endswith('.gz'):
-                    from gzip import GzipFile
-                    stream = io.TextIOWrapper(GzipFile(fname, 'rb'))
-                elif fname.endswith('.bz2'):
-                    from bz2 import BZ2File
-                    stream = io.TextIOWrapper(BZ2File(fname, 'rb'))
-                else:
-                    stream = open(fname, 'rt')
-            except Exception as e:
-                print("ERROR: {}".format(str(e)))
-                sys.exit(1)
-
-            self.process_arg(stream, args)
+        for arg in args:
+            if arg.endswith('.gz'):
+                from gzip import GzipFile
+                stream = GzipFile(arg, 'rt')
+            elif arg.endswith('.bz2'):
+                from bz2 import BZ2File
+                stream = BZ2File(arg, 'rU')
+            else:
+                stream = open(arg, 'rt')
+            self.process_arg(stream, options)
 
     def get_optparser(self):
-        optparser = argparse.ArgumentParser(
-            description="Parse and dump Gallium trace(s)")
-        optparser.add_argument("filename", action="extend", nargs="+",
-            type=str, metavar="filename", help="Gallium trace filename (plain or .gz, .bz2)")
-        optparser.add_argument("-p", "--plain",
-            action="store_const", const=True, default=False,
-            dest="plain", help="disable ANSI color etc. formatting")
+        optparser = optparse.OptionParser(
+            usage="\n\t%prog [options] TRACE  [...]")
         return optparser
 
     def process_arg(self, stream, options):
-        parser = TraceDumper(stream, options)
+        parser = TraceDumper(stream)
         parser.parse()
 
 

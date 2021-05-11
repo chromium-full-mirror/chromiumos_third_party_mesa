@@ -1511,7 +1511,7 @@ void GetRenderHotTiles(DRAW_CONTEXT*        pDC,
 template <typename RT>
 INLINE void StepRasterTileX(uint32_t colorHotTileMask, RenderOutputBuffers& buffers)
 {
-    unsigned long rt = 0;
+    DWORD rt = 0;
     while (_BitScanForward(&rt, colorHotTileMask))
     {
         colorHotTileMask &= ~(1 << rt);
@@ -1527,7 +1527,7 @@ INLINE void StepRasterTileY(uint32_t             colorHotTileMask,
                             RenderOutputBuffers& buffers,
                             RenderOutputBuffers& startBufferRow)
 {
-    unsigned long rt = 0;
+    DWORD rt = 0;
     while (_BitScanForward(&rt, colorHotTileMask))
     {
         colorHotTileMask &= ~(1 << rt);

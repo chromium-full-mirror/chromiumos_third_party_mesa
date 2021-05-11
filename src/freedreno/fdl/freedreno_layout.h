@@ -102,7 +102,6 @@ struct fdl_layout {
 	uint32_t ubwc_layer_size; /* in bytes */
 	bool ubwc : 1;
 	bool layer_first : 1;    /* see above description */
-	bool tile_all : 1;
 
 	/* Note that for tiled textures, beyond a certain mipmap level (ie.
 	 * when width is less than block size) things switch to linear.  In
@@ -196,17 +195,14 @@ fdl_ubwc_offset(const struct fdl_layout *layout, unsigned level, unsigned layer)
 	return slice->offset + layer * layout->ubwc_layer_size;
 }
 
-/* Minimum layout width to enable UBWC. */
-#define FDL_MIN_UBWC_WIDTH 16
-
 static inline bool
 fdl_level_linear(const struct fdl_layout *layout, int level)
 {
-	if (layout->tile_all)
+	if (layout->ubwc)
 		return false;
 
 	unsigned w = u_minify(layout->width0, level);
-	if (w < FDL_MIN_UBWC_WIDTH)
+	if (w < 16)
 		return true;
 
 	return false;

@@ -98,8 +98,7 @@ draw_create_vs_llvm(struct draw_context *draw,
       for ir.nir & PIPE_SHADER_IR_NIR here. */
    if (state->ir.nir && state->type == PIPE_SHADER_IR_NIR) {
       vs->base.state.ir.nir = state->ir.nir;
-      nir_shader *nir = (nir_shader *)state->ir.nir;
-      if (!nir->options->lower_uniforms_to_ubo)
+      if (!draw->pipe->screen->get_param(draw->pipe->screen, PIPE_CAP_PACKED_UNIFORMS))
          NIR_PASS_V(state->ir.nir, nir_lower_uniforms_to_ubo, 16);
       nir_tgsi_scan_shader(state->ir.nir, &vs->base.info, true);
    } else {

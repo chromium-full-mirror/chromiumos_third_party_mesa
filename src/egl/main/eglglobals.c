@@ -37,6 +37,7 @@
 #include "eglglobals.h"
 #include "egldevice.h"
 #include "egldisplay.h"
+#include "egldriver.h"
 
 #include "util/macros.h"
 
@@ -88,9 +89,6 @@ struct _egl_global _eglGlobal =
 #ifdef HAVE_X11_PLATFORM
    " EGL_EXT_platform_x11"
    " EGL_KHR_platform_x11"
-#endif
-#ifdef HAVE_XCB_PLATFORM
-   " EGL_MESA_platform_xcb"
 #endif
 #ifdef HAVE_DRM_PLATFORM
    " EGL_MESA_platform_gbm"

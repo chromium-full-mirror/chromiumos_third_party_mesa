@@ -34,7 +34,6 @@
  */
 
 #include "pipe/p_shader_tokens.h"
-#include "util/compiler.h"
 #include "util/u_debug.h"
 #include "util/u_memory.h"
 #include "util/u_math.h"
@@ -231,7 +230,7 @@ coeffs_init_simple(struct lp_build_interp_soa_context *bld,
 
       switch (interp) {
       case LP_INTERP_PERSPECTIVE:
-         FALLTHROUGH;
+         /* fall-through */
 
       case LP_INTERP_LINEAR:
          ptr = LLVMBuildGEP(builder, dadx_ptr, &index, 1, "");
@@ -246,7 +245,7 @@ coeffs_init_simple(struct lp_build_interp_soa_context *bld,
 
          attrib_name(dadxaos, attrib, 0, ".dadxaos");
          attrib_name(dadyaos, attrib, 0, ".dadyaos");
-         FALLTHROUGH;
+         /* fall-through */
 
       case LP_INTERP_CONSTANT:
       case LP_INTERP_FACING:

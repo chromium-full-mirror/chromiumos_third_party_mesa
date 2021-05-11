@@ -179,6 +179,7 @@ CiLib::CiLib(const Client* pClient)
     m_noOfMacroEntries(0),
     m_allowNonDispThickModes(FALSE)
 {
+    m_class = CI_ADDRLIB;
 }
 
 /**
@@ -409,7 +410,7 @@ ChipFamily CiLib::HwlConvertChipFamily(
             family = ADDR_CHIP_FAMILY_VI;
             break;
         default:
-            ADDR_ASSERT(!"No Chip found");
+            ADDR_ASSERT(!"This should be a unexpected Fusion");
             break;
     }
 
@@ -1587,14 +1588,7 @@ VOID CiLib::ReadGbTileMode(
     gbTileMode.val = regValue;
 
     pCfg->type = static_cast<AddrTileType>(gbTileMode.f.micro_tile_mode_new);
-    if (AltTilingEnabled() == TRUE)
-    {
-        pCfg->info.pipeConfig = static_cast<AddrPipeCfg>(gbTileMode.f.alt_pipe_config + 1);
-    }
-    else
-    {
-        pCfg->info.pipeConfig = static_cast<AddrPipeCfg>(gbTileMode.f.pipe_config + 1);
-    }
+    pCfg->info.pipeConfig = static_cast<AddrPipeCfg>(gbTileMode.f.pipe_config + 1);
 
     if (pCfg->type == ADDR_DEPTH_SAMPLE_ORDER)
     {
@@ -1736,19 +1730,10 @@ VOID CiLib::ReadGbMacroTileCfg(
     GB_MACROTILE_MODE gbTileMode;
     gbTileMode.val = regValue;
 
-    if (AltTilingEnabled() == TRUE)
-    {
-        pCfg->bankHeight       = 1 << gbTileMode.f.alt_bank_height;
-        pCfg->banks            = 1 << (gbTileMode.f.alt_num_banks + 1);
-        pCfg->macroAspectRatio = 1 << gbTileMode.f.alt_macro_tile_aspect;
-    }
-    else
-    {
-        pCfg->bankHeight       = 1 << gbTileMode.f.bank_height;
-        pCfg->banks            = 1 << (gbTileMode.f.num_banks + 1);
-        pCfg->macroAspectRatio = 1 << gbTileMode.f.macro_tile_aspect;
-    }
+    pCfg->bankHeight = 1 << gbTileMode.f.bank_height;
     pCfg->bankWidth = 1 << gbTileMode.f.bank_width;
+    pCfg->banks = 1 << (gbTileMode.f.num_banks + 1);
+    pCfg->macroAspectRatio = 1 << gbTileMode.f.macro_tile_aspect;
 }
 
 /**
@@ -2046,7 +2031,6 @@ UINT_64 CiLib::HwlComputeMetadataNibbleAddress(
 
     /// NOTE *2 because we are converting to Nibble address in this step
     UINT_64 metaAddressInPipe = blockInBankpipeWithBankBits * 2 * metadataBitSize / 8;
-
 
     ///--------------------------------------------------------------------------------------------
     /// Reinsert pipe bits back into the final address

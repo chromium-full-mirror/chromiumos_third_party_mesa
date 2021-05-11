@@ -21,6 +21,8 @@
  * SOFTWARE.
  */
 
+#include <err.h>
+
 #include "ir3_assembler.h"
 #include "ir3_shader.h"
 #include "ir3_parser.h"
@@ -47,24 +49,15 @@ ir3_parse_asm(struct ir3_compiler *c, struct ir3_kernel_info *info, FILE *in)
 
 	info->numwg = INVALID_REG;
 
-	/* Provide a default local_size in case the shader doesn't set it, so that
-	 * we don't crash at least.
-	 */
-	v->local_size[0] = v->local_size[1] = v->local_size[2] = 1;
-
 	v->ir = ir3_parse(v, info, in);
 	if (!v->ir)
-		goto error;
+		errx(-1, "parse failed");
 
 	ir3_debug_print(v->ir, "AFTER PARSING");
 
 	v->bin = ir3_shader_assemble(v);
 	if (!v->bin)
-		goto error;
+		errx(-1, "assembler failed");
 
 	return shader;
-
-error:
-	ralloc_free(shader);
-	return NULL;
 }

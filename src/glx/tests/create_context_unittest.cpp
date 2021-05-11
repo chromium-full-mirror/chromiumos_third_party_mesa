@@ -101,15 +101,6 @@ xcb_glx_create_context_attribs_arb_checked(xcb_connection_t *c,
    return cookie;
 }
 
-extern "C" xcb_void_cookie_t
-xcb_glx_destroy_context(xcb_connection_t *c, xcb_glx_context_t context)
-{
-   xcb_void_cookie_t cookie;
-   cookie.sequence = 0xbadc0de;
-
-   return cookie;
-}
-
 extern "C" xcb_generic_error_t *
 xcb_request_check(xcb_connection_t *c, xcb_void_cookie_t cookie)
 {
@@ -130,7 +121,6 @@ __glXSendError(Display * dpy, int_fast8_t errorCode, uint_fast32_t resourceID,
 class glXCreateContextAttribARB_test : public ::testing::Test {
 public:
    virtual void SetUp();
-   virtual void TearDown();
 
    /**
     * Replace the existing screen with a direct-rendering screen
@@ -138,7 +128,6 @@ public:
    void use_direct_rendering_screen();
 
    mock_XDisplay *dpy;
-   GLXContext ctx;
    struct glx_config fbc;
 };
 
@@ -155,19 +144,6 @@ glXCreateContextAttribARB_test::SetUp()
 
    memset(&this->fbc, 0, sizeof(this->fbc));
    this->fbc.fbconfigID = 0xbeefcafe;
-
-   this->ctx = NULL;
-}
-
-void
-glXCreateContextAttribARB_test::TearDown()
-{
-   if (ctx)
-      delete (fake_glx_context *)ctx;
-
-   delete (fake_glx_screen *)psc;
-
-   delete this->dpy;
 }
 
 void
@@ -178,7 +154,7 @@ glXCreateContextAttribARB_test::use_direct_rendering_screen()
 				 psc->scr,
 				 psc->serverGLXexts);
 
-   delete (fake_glx_screen *)psc;
+   delete psc;
    psc = direct_psc;
 }
 
@@ -207,7 +183,7 @@ TEST_F(glXCreateContextAttribARB_test, NULL_fbconfig_returns_None)
 
 TEST_F(glXCreateContextAttribARB_test, NULL_screen_returns_None)
 {
-   delete (fake_glx_screen *)psc;
+   delete psc;
    psc = NULL;
 
    GLXContext ctx =
@@ -225,7 +201,7 @@ TEST_F(glXCreateContextAttribARB_test, NULL_screen_returns_None)
 /*@{*/
 TEST_F(glXCreateContextAttribARB_test, does_send_protocol)
 {
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 			      False, NULL);
 
    EXPECT_TRUE(CreateContextAttribsARB_was_sent);
@@ -233,14 +209,15 @@ TEST_F(glXCreateContextAttribARB_test, does_send_protocol)
 
 TEST_F(glXCreateContextAttribARB_test, sent_correct_context)
 {
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 			      False, NULL);
+
    EXPECT_EQ(99u, req.context);
 }
 
 TEST_F(glXCreateContextAttribARB_test, sent_correct_fbconfig)
 {
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 			      False, NULL);
 
    EXPECT_EQ(0xbeefcafe, req.fbconfig);
@@ -254,18 +231,16 @@ TEST_F(glXCreateContextAttribARB_test, sent_correct_share_list)
 
    ASSERT_NE((GLXContext) 0, share);
 
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, share,
+   glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, share,
 			      False, NULL);
 
    struct glx_context *glx_ctx = (struct glx_context *) share;
    EXPECT_EQ(glx_ctx->xid, req.share_list);
-
-   delete (fake_glx_context *)share;
 }
 
 TEST_F(glXCreateContextAttribARB_test, sent_correct_is_direct_for_indirect_screen_and_direct_set_to_true)
 {
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 			      True, NULL);
 
    EXPECT_FALSE(req.is_direct);
@@ -273,7 +248,7 @@ TEST_F(glXCreateContextAttribARB_test, sent_correct_is_direct_for_indirect_scree
 
 TEST_F(glXCreateContextAttribARB_test, sent_correct_is_direct_for_indirect_screen_and_direct_set_to_false)
 {
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 			      False, NULL);
 
    EXPECT_FALSE(req.is_direct);
@@ -283,7 +258,7 @@ TEST_F(glXCreateContextAttribARB_test, sent_correct_is_direct_for_direct_screen_
 {
    this->use_direct_rendering_screen();
 
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 			      True, NULL);
 
    EXPECT_TRUE(req.is_direct);
@@ -293,7 +268,7 @@ TEST_F(glXCreateContextAttribARB_test, sent_correct_is_direct_for_direct_screen_
 {
    this->use_direct_rendering_screen();
 
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 			      False, NULL);
 
    EXPECT_FALSE(req.is_direct);
@@ -304,7 +279,7 @@ TEST_F(glXCreateContextAttribARB_test, sent_correct_screen)
    this->fbc.screen = 7;
    psc->scr = 7;
 
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 			      False, NULL);
 
    EXPECT_EQ(7u, req.screen);
@@ -327,7 +302,7 @@ TEST_F(glXCreateContextAttribARB_test, sent_correct_num_attribs)
       0, 0
    };
 
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 			      False, attribs);
 
    EXPECT_EQ(4u, req.num_attribs);
@@ -339,7 +314,7 @@ TEST_F(glXCreateContextAttribARB_test, sent_correct_num_attribs_empty_list)
       0,
    };
 
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 			      False, attribs);
 
    EXPECT_EQ(0u, req.num_attribs);
@@ -347,7 +322,7 @@ TEST_F(glXCreateContextAttribARB_test, sent_correct_num_attribs_empty_list)
 
 TEST_F(glXCreateContextAttribARB_test, sent_correct_num_attribs_NULL_list_pointer)
 {
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 			      False, NULL);
 
    EXPECT_EQ(0u, req.num_attribs);
@@ -362,7 +337,7 @@ TEST_F(glXCreateContextAttribARB_test, sent_correct_attrib_list)
       0
    };
 
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 			      False, attribs);
 
    for (unsigned i = 0; i < 6; i++) {
@@ -377,7 +352,8 @@ TEST_F(glXCreateContextAttribARB_test, sent_correct_attrib_list)
 /*@{*/
 TEST_F(glXCreateContextAttribARB_test, correct_context)
 {
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   GLXContext ctx =
+      glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 				 False, NULL);
 
    /* Since the server did not return an error, the GLXContext should not be
@@ -392,7 +368,8 @@ TEST_F(glXCreateContextAttribARB_test, correct_context)
 
 TEST_F(glXCreateContextAttribARB_test, correct_context_xid)
 {
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   GLXContext ctx =
+      glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 				 False, NULL);
 
    /* Since the server did not return an error, the GLXContext should not be
@@ -421,14 +398,12 @@ TEST_F(glXCreateContextAttribARB_test, correct_context_share_xid)
    struct glx_context *share = (struct glx_context *) first;
    struct glx_context *ctx = (struct glx_context *) second;
    EXPECT_EQ(share->xid, ctx->share_xid);
-
-   delete (fake_glx_context *)first;
-   delete (fake_glx_context *)second;
 }
 
 TEST_F(glXCreateContextAttribARB_test, correct_context_isDirect_for_indirect_screen_and_direct_set_to_true)
 {
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   GLXContext ctx =
+      glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 				 True, NULL);
 
    ASSERT_NE((GLXContext) 0, ctx);
@@ -440,7 +415,8 @@ TEST_F(glXCreateContextAttribARB_test, correct_context_isDirect_for_indirect_scr
 
 TEST_F(glXCreateContextAttribARB_test, correct_context_isDirect_for_indirect_screen_and_direct_set_to_false)
 {
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   GLXContext ctx =
+      glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 				 False, NULL);
 
    ASSERT_NE((GLXContext) 0, ctx);
@@ -454,7 +430,8 @@ TEST_F(glXCreateContextAttribARB_test, correct_context_isDirect_for_direct_scree
 {
    this->use_direct_rendering_screen();
 
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   GLXContext ctx =
+      glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 				 True, NULL);
 
    ASSERT_NE((GLXContext) 0, ctx);
@@ -468,7 +445,8 @@ TEST_F(glXCreateContextAttribARB_test, correct_context_isDirect_for_direct_scree
 {
    this->use_direct_rendering_screen();
 
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   GLXContext ctx =
+      glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 				 False, NULL);
 
    ASSERT_NE((GLXContext) 0, ctx);
@@ -480,7 +458,8 @@ TEST_F(glXCreateContextAttribARB_test, correct_context_isDirect_for_direct_scree
 
 TEST_F(glXCreateContextAttribARB_test, correct_indirect_context_client_state_private)
 {
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   GLXContext ctx =
+      glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 				 False, NULL);
 
    ASSERT_NE((GLXContext) 0, ctx);
@@ -494,7 +473,8 @@ TEST_F(glXCreateContextAttribARB_test, correct_indirect_context_client_state_pri
 
 TEST_F(glXCreateContextAttribARB_test, correct_indirect_context_config)
 {
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   GLXContext ctx =
+      glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 				 False, NULL);
 
    ASSERT_NE((GLXContext) 0, ctx);
@@ -509,7 +489,8 @@ TEST_F(glXCreateContextAttribARB_test, correct_context_screen_number)
    this->fbc.screen = 7;
    psc->scr = 7;
 
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   GLXContext ctx =
+      glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 				 False, NULL);
 
    ASSERT_NE((GLXContext) 0, ctx);
@@ -521,7 +502,8 @@ TEST_F(glXCreateContextAttribARB_test, correct_context_screen_number)
 
 TEST_F(glXCreateContextAttribARB_test, correct_context_screen_pointer)
 {
-   ctx = glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
+   GLXContext ctx =
+      glXCreateContextAttribsARB(this->dpy, (GLXFBConfig) &this->fbc, 0,
 				 False, NULL);
 
    ASSERT_NE((GLXContext) 0, ctx);

@@ -30,10 +30,7 @@
 #include "util/u_inlines.h"
 #include "util/u_transfer.h"
 
-static void noop_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info,
-                          const struct pipe_draw_indirect_info *indirect,
-                          const struct pipe_draw_start_count *draws,
-                          unsigned num_draws)
+static void noop_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info)
 {
 }
 
@@ -114,7 +111,6 @@ static struct pipe_surface *noop_create_surface(struct pipe_context *ctx,
 static void noop_set_sampler_views(struct pipe_context *ctx,
                                    enum pipe_shader_type shader,
                                    unsigned start, unsigned count,
-                                   unsigned unbind_num_trailing_slots,
                                    struct pipe_sampler_view **views)
 {
 }
@@ -148,7 +144,7 @@ static void noop_set_scissor_states(struct pipe_context *ctx,
 }
 
 static void noop_set_stencil_ref(struct pipe_context *ctx,
-                                 const struct pipe_stencil_ref state)
+                                 const struct pipe_stencil_ref *state)
 {
 }
 
@@ -166,14 +162,7 @@ static void noop_set_framebuffer_state(struct pipe_context *ctx,
 
 static void noop_set_constant_buffer(struct pipe_context *ctx,
                                      enum pipe_shader_type shader, uint index,
-                                     bool take_ownership,
                                      const struct pipe_constant_buffer *cb)
-{
-}
-
-static void noop_set_inlinable_constants(struct pipe_context *ctx,
-                                         enum pipe_shader_type shader,
-                                         uint num_values, uint32_t *values)
 {
 }
 
@@ -204,8 +193,6 @@ static void noop_delete_state(struct pipe_context *ctx, void *state)
 
 static void noop_set_vertex_buffers(struct pipe_context *ctx,
                                     unsigned start_slot, unsigned count,
-                                    unsigned unbind_num_trailing_slots,
-                                    bool take_ownership,
                                     const struct pipe_vertex_buffer *buffers)
 {
 }
@@ -309,7 +296,6 @@ void noop_init_state_functions(struct pipe_context *ctx)
    ctx->set_blend_color = noop_set_blend_color;
    ctx->set_clip_state = noop_set_clip_state;
    ctx->set_constant_buffer = noop_set_constant_buffer;
-   ctx->set_inlinable_constants = noop_set_inlinable_constants;
    ctx->set_sampler_views = noop_set_sampler_views;
    ctx->set_framebuffer_state = noop_set_framebuffer_state;
    ctx->set_polygon_stipple = noop_set_polygon_stipple;

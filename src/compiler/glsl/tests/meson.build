@@ -18,6 +18,22 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+if with_shader_cache
+  test(
+    'cache_test',
+    executable(
+      'cache_test',
+      'cache_test.c',
+      c_args : [c_msvc_compat_args, no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+      include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_glsl],
+      link_with : [libglsl],
+      dependencies : [dep_clock, dep_thread],
+    ),
+    suite : ['compiler', 'glsl'],
+  )
+endif
+
 test(
   'general_ir_test',
   executable(
@@ -30,7 +46,7 @@ test(
     gnu_symbol_visibility : 'hidden',
     include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_glsl],
     link_with : [libglsl, libglsl_standalone, libglsl_util],
-    dependencies : [dep_clock, dep_thread, idep_gtest, idep_mesautil],
+    dependencies : [dep_clock, dep_thread, idep_gtest],
   ),
   suite : ['compiler', 'glsl'],
 )
@@ -46,7 +62,7 @@ test(
     gnu_symbol_visibility : 'hidden',
     include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_glsl],
     link_with : [libglsl, libglsl_util],
-    dependencies : [dep_thread, idep_gtest, idep_mesautil],
+    dependencies : [dep_thread, idep_gtest],
   ),
   suite : ['compiler', 'glsl'],
 )
@@ -60,7 +76,7 @@ test(
     gnu_symbol_visibility : 'hidden',
     include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_glsl],
     link_with : [libglsl, libglsl_util],
-    dependencies : [dep_thread, idep_gtest, idep_mesautil],
+    dependencies : [dep_thread, idep_gtest],
   ),
   suite : ['compiler', 'glsl'],
 )

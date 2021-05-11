@@ -103,11 +103,9 @@ vec4_vs_visitor::vec4_vs_visitor(const struct brw_compiler *compiler,
                                  struct brw_vs_prog_data *vs_prog_data,
                                  const nir_shader *shader,
                                  void *mem_ctx,
-                                 int shader_time_index,
-                                 bool debug_enabled)
+                                 int shader_time_index)
    : vec4_visitor(compiler, log_data, &key->base.tex, &vs_prog_data->base,
-                  shader, mem_ctx, false /* no_spills */, shader_time_index,
-                  debug_enabled),
+                  shader, mem_ctx, false /* no_spills */, shader_time_index),
      key(key),
      vs_prog_data(vs_prog_data)
 {

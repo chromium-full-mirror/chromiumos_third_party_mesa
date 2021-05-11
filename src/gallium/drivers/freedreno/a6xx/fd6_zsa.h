@@ -36,9 +36,6 @@
 
 #include "fd6_context.h"
 
-#define FD6_ZSA_NO_ALPHA    (1 << 0)
-#define FD6_ZSA_DEPTH_CLAMP (1 << 1)
-
 struct fd6_zsa_stateobj {
 	struct pipe_depth_stencil_alpha_state base;
 
@@ -49,11 +46,11 @@ struct fd6_zsa_stateobj {
 	uint32_t rb_stencilwrmask;
 
 	struct fd6_lrz_state lrz;
-	bool writes_zs;     /* writes depth and/or stencil */
 	bool invalidate_lrz;
 	bool alpha_test;
 
-	struct fd_ringbuffer *stateobj[4];
+	struct fd_ringbuffer *stateobj;
+	struct fd_ringbuffer *stateobj_no_alpha;
 };
 
 static inline struct fd6_zsa_stateobj *
@@ -62,22 +59,10 @@ fd6_zsa_stateobj(struct pipe_depth_stencil_alpha_state *zsa)
 	return (struct fd6_zsa_stateobj *)zsa;
 }
 
-static inline struct fd_ringbuffer *
-fd6_zsa_state(struct fd_context *ctx, bool no_alpha, bool depth_clamp)
-	assert_dt
-{
-	int variant = 0;
-	if (no_alpha)
-		variant |= FD6_ZSA_NO_ALPHA;
-	if (depth_clamp)
-		variant |= FD6_ZSA_DEPTH_CLAMP;
-	return fd6_zsa_stateobj(ctx->zsa)->stateobj[variant];
-}
-
 void * fd6_zsa_state_create(struct pipe_context *pctx,
 		const struct pipe_depth_stencil_alpha_state *cso);
 
-void fd6_zsa_state_delete(struct pipe_context *pctx,
+void fd6_depth_stencil_alpha_state_delete(struct pipe_context *pctx,
 		void *hwcso);
 
 #endif /* FD6_ZSA_H_ */

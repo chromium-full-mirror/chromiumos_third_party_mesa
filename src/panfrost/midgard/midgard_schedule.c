@@ -1,6 +1,5 @@
 /*
  * Copyright (C) 2018-2019 Alyssa Rosenzweig <alyssa@rosenzweig.io>
- * Copyright (C) 2019-2020 Collabora, Ltd.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -116,8 +115,6 @@ mir_create_dependency_graph(midgard_instruction **instructions, unsigned count, 
                 instructions[i]->nr_dependencies = 0;
         }
 
-        unsigned prev_ldst[3] = {~0, ~0, ~0};
-
         /* Populate dependency graph */
         for (signed i = count - 1; i >= 0; --i) {
                 if (instructions[i]->compact_branch)
@@ -133,34 +130,6 @@ mir_create_dependency_graph(midgard_instruction **instructions, unsigned count, 
                                 unsigned readmask = mir_bytemask_of_read_components(instructions[i], src);
                                 add_dependency(last_write, src, readmask, instructions, i);
                         }
-                }
-
-                /* Create a list of dependencies for each type of load/store
-                 * instruction to prevent reordering. */
-                if (instructions[i]->type == TAG_LOAD_STORE_4 &&
-                    load_store_opcode_props[instructions[i]->op].props & LDST_ADDRESS) {
-
-                        unsigned type;
-                        switch (instructions[i]->load_store.arg_1 & 0x3E) {
-                        case LDST_SHARED: type = 0; break;
-                        case LDST_SCRATCH: type = 1; break;
-                        default: type = 2; break;
-                        }
-
-                        unsigned prev = prev_ldst[type];
-
-                        if (prev != ~0) {
-                                BITSET_WORD *dependents = instructions[prev]->dependents;
-
-                                /* Already have the dependency */
-                                if (BITSET_TEST(dependents, i))
-                                        continue;
-
-                                BITSET_SET(dependents, i);
-                                instructions[i]->nr_dependencies++;
-                        }
-
-                        prev_ldst[type] = i;
                 }
 
                 if (dest < node_count) {
@@ -242,9 +211,6 @@ mir_is_scalar(midgard_instruction *ains)
 
         if (ains->src[1] != ~0)
                 could_scalar &= (sz1 == 16) || (sz1 == 32);
-
-        if (midgard_is_integer_out_op(ains->op) && ains->outmod != midgard_outmod_int_wrap)
-                return false;
 
         return could_scalar;
 }
@@ -359,6 +325,7 @@ struct midgard_predicate {
 
         midgard_constants *constants;
         unsigned constant_mask;
+        bool blend_constant;
 
         /* Exclude this destination (if not ~0) */
         unsigned exclude;
@@ -467,6 +434,17 @@ mir_adjust_constants(midgard_instruction *ins,
                 struct midgard_predicate *pred,
                 bool destructive)
 {
+        /* Blend constants dominate */
+        if (ins->has_blend_constant) {
+                if (pred->constant_mask)
+                        return false;
+                else if (destructive) {
+                        pred->blend_constant = true;
+                        pred->constant_mask = 0xffff;
+                        return true;
+                }
+        }
+
         /* No constant, nothing to adjust */
         if (!ins->has_constants)
                 return true;
@@ -673,12 +651,6 @@ mir_choose_instruction(
 
         unsigned max_active = 0;
         unsigned max_distance = 36;
-
-#ifndef NDEBUG
-        /* Force in-order scheduling */
-        if (midgard_debug & MIDGARD_DBG_INORDER)
-                max_distance = 1;
-#endif
 
         BITSET_FOREACH_SET(i, worklist, count) {
                 max_active = MAX2(max_active, i);
@@ -1156,7 +1128,7 @@ mir_schedule_alu(
          * this will be in sadd, we boost this to prevent scheduling csel into
          * smul */
 
-        if (writeout && (branch->constants.u32[0] || ctx->inputs->is_blend)) {
+        if (writeout && (branch->constants.u32[0] || ctx->is_blend)) {
                 sadd = ralloc(ctx, midgard_instruction);
                 *sadd = v_mov(~0, make_compiler_temp(ctx));
                 sadd->unit = UNIT_SADD;
@@ -1165,18 +1137,15 @@ mir_schedule_alu(
                 sadd->inline_constant = branch->constants.u32[0];
                 branch->src[1] = sadd->dest;
                 branch->src_types[1] = sadd->dest_type;
+
+                /* Mask off any conditionals. Could be optimized to just scalar
+                 * conditionals TODO */
+                predicate.no_cond = true;
         }
 
         if (writeout) {
                 /* Propagate up */
                 bundle.last_writeout = branch->last_writeout;
-
-                /* Mask off any conditionals.
-                 * This prevents csel and csel_v being scheduled into smul
-                 * since we might not have room for a conditional in vmul/sadd.
-                 * This is important because both writeout and csel have same-bundle
-                 * requirements on their dependencies. */
-                predicate.no_cond = true;
         }
 
         /* When MRT is in use, writeout loops require r1.w to be filled (with a
@@ -1186,11 +1155,11 @@ mir_schedule_alu(
          * they are paired with MRT or not so they always need this, at least
          * on MFBD GPUs. */
 
-        if (writeout && (ctx->inputs->is_blend || ctx->writeout_branch[1])) {
+        if (writeout && (ctx->is_blend || ctx->writeout_branch[1])) {
                 vadd = ralloc(ctx, midgard_instruction);
                 *vadd = v_mov(~0, make_compiler_temp(ctx));
 
-                if (!ctx->inputs->is_blend) {
+                if (!ctx->is_blend) {
                         vadd->op = midgard_alu_op_iadd;
                         vadd->src[0] = SSA_FIXED_REGISTER(31);
                         vadd->src_types[0] = nir_type_uint32;
@@ -1324,6 +1293,7 @@ mir_schedule_alu(
         mir_update_worklist(worklist, len, instructions, vmul);
         mir_update_worklist(worklist, len, instructions, sadd);
 
+        bundle.has_blend_constant = predicate.blend_constant;
         bundle.has_embedded_constants = predicate.constant_mask != 0;
 
         unsigned padding = 0;
@@ -1402,6 +1372,7 @@ schedule_block(compiler_context *ctx, midgard_block *block)
         util_dynarray_init(&bundles, NULL);
 
         block->quadword_count = 0;
+        unsigned blend_offset = 0;
 
         for (;;) {
                 unsigned tag = mir_choose_bundle(instructions, liveness, worklist, len);
@@ -1417,6 +1388,10 @@ schedule_block(compiler_context *ctx, midgard_block *block)
                         break;
 
                 util_dynarray_append(&bundles, midgard_bundle, bundle);
+
+                if (bundle.has_blend_constant)
+                        blend_offset = block->quadword_count;
+
                 block->quadword_count += midgard_tag_props[bundle.tag].size;
         }
 
@@ -1427,6 +1402,15 @@ schedule_block(compiler_context *ctx, midgard_block *block)
                 util_dynarray_append(&block->bundles, midgard_bundle, *bundle);
         }
         util_dynarray_fini(&bundles);
+
+        /* Blend constant was backwards as well. blend_offset if set is
+         * strictly positive, as an offset of zero would imply constants before
+         * any instructions which is invalid in Midgard. TODO: blend constants
+         * are broken if you spill since then quadword_count becomes invalid
+         * XXX */
+
+        if (blend_offset)
+                ctx->blend_constant_offset = ((ctx->quadword_count + block->quadword_count) - blend_offset - 1) * 0x10;
 
         block->scheduled = true;
         ctx->quadword_count += block->quadword_count;

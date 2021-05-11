@@ -609,10 +609,6 @@ init_source(struct vl_idct *idct, struct vl_idct_buffer *buffer)
    buffer->viewport_mismatch.scale[0] = tex->width0;
    buffer->viewport_mismatch.scale[1] = tex->height0;
    buffer->viewport_mismatch.scale[2] = 1;
-   buffer->viewport_mismatch.swizzle_x = PIPE_VIEWPORT_SWIZZLE_POSITIVE_X;
-   buffer->viewport_mismatch.swizzle_y = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Y;
-   buffer->viewport_mismatch.swizzle_z = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Z;
-   buffer->viewport_mismatch.swizzle_w = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
 
    return true;
 }
@@ -656,10 +652,6 @@ init_intermediate(struct vl_idct *idct, struct vl_idct_buffer *buffer)
    buffer->viewport.scale[0] = tex->width0;
    buffer->viewport.scale[1] = tex->height0;
    buffer->viewport.scale[2] = 1;
-   buffer->viewport.swizzle_x = PIPE_VIEWPORT_SWIZZLE_POSITIVE_X;
-   buffer->viewport.swizzle_y = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Y;
-   buffer->viewport.swizzle_z = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Z;
-   buffer->viewport.swizzle_w = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
 
    return true;
 
@@ -719,8 +711,8 @@ vl_idct_upload_matrix(struct pipe_context *pipe, float scale)
       goto error_matrix;
 
    f = pipe->transfer_map(pipe, matrix, 0,
-                                     PIPE_MAP_WRITE |
-                                     PIPE_MAP_DISCARD_RANGE,
+                                     PIPE_TRANSFER_WRITE |
+                                     PIPE_TRANSFER_DISCARD_RANGE,
                                      &rect, &buf_transfer);
    if (!f)
       goto error_map;
@@ -835,7 +827,7 @@ vl_idct_flush(struct vl_idct *idct, struct vl_idct_buffer *buffer, unsigned num_
    idct->pipe->bind_sampler_states(idct->pipe, PIPE_SHADER_FRAGMENT,
                                    0, 2, idct->samplers);
 
-   idct->pipe->set_sampler_views(idct->pipe, PIPE_SHADER_FRAGMENT, 0, 2, 0,
+   idct->pipe->set_sampler_views(idct->pipe, PIPE_SHADER_FRAGMENT, 0, 2,
                                  buffer->sampler_views.stage[0]);
 
    /* mismatch control */
@@ -863,6 +855,6 @@ vl_idct_prepare_stage2(struct vl_idct *idct, struct vl_idct_buffer *buffer)
    idct->pipe->bind_sampler_states(idct->pipe, PIPE_SHADER_FRAGMENT,
                                    0, 2, idct->samplers);
    idct->pipe->set_sampler_views(idct->pipe, PIPE_SHADER_FRAGMENT,
-                                 0, 2, 0, buffer->sampler_views.stage[1]);
+                                 0, 2, buffer->sampler_views.stage[1]);
 }
 

@@ -85,7 +85,7 @@ drm_shim_device_init(void)
    shim_device.mem_fd = memfd_create("shim mem", MFD_CLOEXEC);
    assert(shim_device.mem_fd != -1);
 
-   ASSERTED int ret = ftruncate(shim_device.mem_fd, SHIM_MEM_SIZE);
+   int ret = ftruncate(shim_device.mem_fd, SHIM_MEM_SIZE);
    assert(ret == 0);
 
    util_vma_heap_init(&shim_device.mem_heap, 4096, SHIM_MEM_SIZE - 4096);
@@ -166,7 +166,6 @@ drm_shim_ioctl_get_cap(int fd, unsigned long request, void *arg)
    switch (gc->capability) {
    case DRM_CAP_PRIME:
    case DRM_CAP_SYNCOBJ:
-   case DRM_CAP_SYNCOBJ_TIMELINE:
       gc->value = 1;
       return 0;
 
@@ -234,7 +233,7 @@ ioctl_fn_t core_ioctls[] = {
 int
 drm_shim_ioctl(int fd, unsigned long request, void *arg)
 {
-   ASSERTED int type = _IOC_TYPE(request);
+   int type = _IOC_TYPE(request);
    int nr = _IOC_NR(request);
 
    assert(type == DRM_IOCTL_BASE);

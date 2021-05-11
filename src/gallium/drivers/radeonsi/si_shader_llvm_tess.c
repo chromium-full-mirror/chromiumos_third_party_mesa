@@ -28,12 +28,12 @@
 
 static LLVMValueRef get_rel_patch_id(struct si_shader_context *ctx)
 {
-   switch (ctx->stage) {
-   case MESA_SHADER_TESS_CTRL:
+   switch (ctx->type) {
+   case PIPE_SHADER_TESS_CTRL:
       return si_unpack_param(ctx, ctx->args.tcs_rel_ids, 0, 8);
 
-   case MESA_SHADER_TESS_EVAL:
-      return ac_get_arg(&ctx->ac, ctx->args.tes_rel_patch_id);
+   case PIPE_SHADER_TESS_EVAL:
+      return ac_get_arg(&ctx->ac, ctx->tes_rel_patch_id);
 
    default:
       assert(0);
@@ -69,7 +69,7 @@ static LLVMValueRef get_tcs_in_patch_stride(struct si_shader_context *ctx)
 
 static unsigned get_tcs_out_vertex_dw_stride_constant(struct si_shader_context *ctx)
 {
-   assert(ctx->stage == MESA_SHADER_TESS_CTRL);
+   assert(ctx->type == PIPE_SHADER_TESS_CTRL);
 
    if (ctx->shader->key.mono.u.ff_tcs_inputs_to_copy)
       return util_last_bit64(ctx->shader->key.mono.u.ff_tcs_inputs_to_copy) * 4;
@@ -90,7 +90,7 @@ static LLVMValueRef get_tcs_out_patch_stride(struct si_shader_context *ctx)
       return si_unpack_param(ctx, ctx->tcs_out_lds_layout, 0, 13);
 
    const struct si_shader_info *info = &ctx->shader->selector->info;
-   unsigned tcs_out_vertices = info->base.tess.tcs_vertices_out;
+   unsigned tcs_out_vertices = info->properties[TGSI_PROPERTY_TCS_VERTICES_OUT];
    unsigned vertex_dw_stride = get_tcs_out_vertex_dw_stride_constant(ctx);
    unsigned num_patch_outputs = util_last_bit64(ctx->shader->selector->patch_outputs_written);
    unsigned patch_dw_stride = tcs_out_vertices * vertex_dw_stride + num_patch_outputs * 4;
@@ -138,27 +138,26 @@ static LLVMValueRef get_tcs_out_current_patch_data_offset(struct si_shader_conte
 static LLVMValueRef get_num_tcs_out_vertices(struct si_shader_context *ctx)
 {
    unsigned tcs_out_vertices =
-      ctx->shader->selector ? ctx->shader->selector->info.base.tess.tcs_vertices_out
+      ctx->shader->selector ? ctx->shader->selector->info.properties[TGSI_PROPERTY_TCS_VERTICES_OUT]
                             : 0;
 
    /* If !tcs_out_vertices, it's either the fixed-func TCS or the TCS epilog. */
-   if (ctx->stage == MESA_SHADER_TESS_CTRL && tcs_out_vertices)
+   if (ctx->type == PIPE_SHADER_TESS_CTRL && tcs_out_vertices)
       return LLVMConstInt(ctx->ac.i32, tcs_out_vertices, 0);
 
-   return LLVMBuildAdd(ctx->ac.builder,
-                       si_unpack_param(ctx, ctx->tcs_offchip_layout, 6, 5), ctx->ac.i32_1, "");
+   return si_unpack_param(ctx, ctx->tcs_offchip_layout, 6, 6);
 }
 
 static LLVMValueRef get_tcs_in_vertex_dw_stride(struct si_shader_context *ctx)
 {
    unsigned stride;
 
-   switch (ctx->stage) {
-   case MESA_SHADER_VERTEX:
+   switch (ctx->type) {
+   case PIPE_SHADER_VERTEX:
       stride = ctx->shader->selector->lshs_vertex_stride / 4;
       return LLVMConstInt(ctx->ac.i32, stride, 0);
 
-   case MESA_SHADER_TESS_CTRL:
+   case PIPE_SHADER_TESS_CTRL:
       if (ctx->screen->info.chip_class >= GFX9 && ctx->shader->is_monolithic) {
          stride = ctx->shader->key.part.tcs.ls->lshs_vertex_stride / 4;
          return LLVMConstInt(ctx->ac.i32, stride, 0);
@@ -174,7 +173,7 @@ static LLVMValueRef get_tcs_in_vertex_dw_stride(struct si_shader_context *ctx)
 static LLVMValueRef
 get_dw_address_from_generic_indices(struct si_shader_context *ctx, LLVMValueRef vertex_dw_stride,
                                     LLVMValueRef base_addr, LLVMValueRef vertex_index,
-                                    LLVMValueRef param_index, ubyte name)
+                                    LLVMValueRef param_index, ubyte name, ubyte index)
 {
    if (vertex_dw_stride) {
       base_addr = ac_build_imad(&ctx->ac, vertex_index, vertex_dw_stride, base_addr);
@@ -184,11 +183,10 @@ get_dw_address_from_generic_indices(struct si_shader_context *ctx, LLVMValueRef 
       base_addr = ac_build_imad(&ctx->ac, param_index, LLVMConstInt(ctx->ac.i32, 4, 0), base_addr);
    }
 
-   int param = name >= VARYING_SLOT_PATCH0 ||
-               name == VARYING_SLOT_TESS_LEVEL_INNER ||
-               name == VARYING_SLOT_TESS_LEVEL_OUTER
-                  ? si_shader_io_get_unique_index_patch(name)
-                  : si_shader_io_get_unique_index(name, false);
+   int param = name == TGSI_SEMANTIC_PATCH || name == TGSI_SEMANTIC_TESSINNER ||
+                     name == TGSI_SEMANTIC_TESSOUTER
+                  ? si_shader_io_get_unique_index_patch(name, index)
+                  : si_shader_io_get_unique_index(name, index, false);
 
    /* Add the base address of the element. */
    return LLVMBuildAdd(ctx->ac.builder, base_addr, LLVMConstInt(ctx->ac.i32, param * 4, 0), "");
@@ -221,7 +219,6 @@ static LLVMValueRef get_tcs_tes_buffer_address(struct si_shader_context *ctx,
 
    vertices_per_patch = get_num_tcs_out_vertices(ctx);
    num_patches = si_unpack_param(ctx, ctx->tcs_offchip_layout, 0, 6);
-   num_patches = LLVMBuildAdd(ctx->ac.builder, num_patches, ctx->ac.i32_1, "");
    total_vertices = LLVMBuildMul(ctx->ac.builder, vertices_per_patch, num_patches, "");
 
    constant16 = LLVMConstInt(ctx->ac.i32, 16, 0);
@@ -237,7 +234,7 @@ static LLVMValueRef get_tcs_tes_buffer_address(struct si_shader_context *ctx,
    base_addr = LLVMBuildMul(ctx->ac.builder, base_addr, constant16, "");
 
    if (!vertex_index) {
-      LLVMValueRef patch_data_offset = si_unpack_param(ctx, ctx->tcs_offchip_layout, 11, 21);
+      LLVMValueRef patch_data_offset = si_unpack_param(ctx, ctx->tcs_offchip_layout, 12, 20);
 
       base_addr = LLVMBuildAdd(ctx->ac.builder, base_addr, patch_data_offset, "");
    }
@@ -247,15 +244,14 @@ static LLVMValueRef get_tcs_tes_buffer_address(struct si_shader_context *ctx,
 static LLVMValueRef get_tcs_tes_buffer_address_from_generic_indices(struct si_shader_context *ctx,
                                                                     LLVMValueRef vertex_index,
                                                                     LLVMValueRef param_index,
-                                                                    ubyte name)
+                                                                    ubyte name, ubyte index)
 {
    unsigned param_index_base;
 
-   param_index_base = name >= VARYING_SLOT_PATCH0 ||
-                      name == VARYING_SLOT_TESS_LEVEL_INNER ||
-                      name == VARYING_SLOT_TESS_LEVEL_OUTER
-                         ? si_shader_io_get_unique_index_patch(name)
-                         : si_shader_io_get_unique_index(name, false);
+   param_index_base = name == TGSI_SEMANTIC_PATCH || name == TGSI_SEMANTIC_TESSINNER ||
+                            name == TGSI_SEMANTIC_TESSOUTER
+                         ? si_shader_io_get_unique_index_patch(name, index)
+                         : si_shader_io_get_unique_index(name, index, false);
 
    if (param_index) {
       param_index = LLVMBuildAdd(ctx->ac.builder, param_index,
@@ -271,22 +267,32 @@ static LLVMValueRef buffer_load(struct si_shader_context *ctx, LLVMTypeRef type,
                                 LLVMValueRef buffer, LLVMValueRef offset, LLVMValueRef base,
                                 bool can_speculate)
 {
-   LLVMValueRef value;
+   LLVMValueRef value, value2;
    LLVMTypeRef vec_type = LLVMVectorType(type, 4);
 
    if (swizzle == ~0) {
-      value = ac_build_buffer_load(&ctx->ac, buffer, 4, NULL, base, offset, 0, type, ac_glc,
+      value = ac_build_buffer_load(&ctx->ac, buffer, 4, NULL, base, offset, 0, ac_glc,
                                    can_speculate, false);
 
       return LLVMBuildBitCast(ctx->ac.builder, value, vec_type, "");
    }
 
-   value = ac_build_buffer_load(&ctx->ac, buffer, 4, NULL, base, offset, 0, type, ac_glc,
+   if (ac_get_type_size(type) != 8) {
+      value = ac_build_buffer_load(&ctx->ac, buffer, 4, NULL, base, offset, 0, ac_glc,
+                                   can_speculate, false);
+
+      value = LLVMBuildBitCast(ctx->ac.builder, value, vec_type, "");
+      return LLVMBuildExtractElement(ctx->ac.builder, value, LLVMConstInt(ctx->ac.i32, swizzle, 0),
+                                     "");
+   }
+
+   value = ac_build_buffer_load(&ctx->ac, buffer, 1, NULL, base, offset, swizzle * 4, ac_glc,
                                 can_speculate, false);
 
-   value = LLVMBuildBitCast(ctx->ac.builder, value, vec_type, "");
-   return LLVMBuildExtractElement(ctx->ac.builder, value, LLVMConstInt(ctx->ac.i32, swizzle, 0),
-                                  "");
+   value2 = ac_build_buffer_load(&ctx->ac, buffer, 1, NULL, base, offset, swizzle * 4 + 4, ac_glc,
+                                 can_speculate, false);
+
+   return si_build_gather_64bit(ctx, type, value, value2);
 }
 
 /**
@@ -310,8 +316,19 @@ static LLVMValueRef lshs_lds_load(struct si_shader_context *ctx, LLVMTypeRef typ
       return ac_build_gather_values(&ctx->ac, values, 4);
    }
 
+   /* Split 64-bit loads. */
+   if (ac_get_type_size(type) == 8) {
+      LLVMValueRef lo, hi;
+
+      lo = lshs_lds_load(ctx, ctx->ac.i32, swizzle, dw_addr);
+      hi = lshs_lds_load(ctx, ctx->ac.i32, swizzle + 1, dw_addr);
+      return si_build_gather_64bit(ctx, type, lo, hi);
+   }
+
    dw_addr = LLVMBuildAdd(ctx->ac.builder, dw_addr, LLVMConstInt(ctx->ac.i32, swizzle, 0), "");
+
    value = ac_lds_load(&ctx->ac, dw_addr);
+
    return LLVMBuildBitCast(ctx->ac.builder, value, type, "");
 }
 
@@ -380,40 +397,28 @@ void si_llvm_preload_tes_rings(struct si_shader_context *ctx)
 
 static LLVMValueRef si_nir_load_tcs_varyings(struct ac_shader_abi *abi, LLVMTypeRef type,
                                              LLVMValueRef vertex_index, LLVMValueRef param_index,
+                                             unsigned const_index, unsigned location,
                                              unsigned driver_location, unsigned component,
-                                             unsigned num_components, bool load_input,
-                                             bool vertex_index_is_invoc_id)
+                                             unsigned num_components, bool is_patch,
+                                             bool is_compact, bool load_input)
 {
    struct si_shader_context *ctx = si_shader_context_from_abi(abi);
    struct si_shader_info *info = &ctx->shader->selector->info;
    LLVMValueRef dw_addr, stride;
-   ubyte semantic;
+   ubyte name, index;
+
+   driver_location = driver_location / 4;
 
    if (load_input) {
-      semantic = info->input_semantic[driver_location];
+      name = info->input_semantic_name[driver_location];
+      index = info->input_semantic_index[driver_location];
    } else {
-      semantic = info->output_semantic[driver_location];
+      name = info->output_semantic_name[driver_location];
+      index = info->output_semantic_index[driver_location];
    }
 
-   /* Load the TCS input from a VGPR if possible. */
-   if (ctx->shader->key.opt.same_patch_vertices &&
-       load_input && vertex_index_is_invoc_id && !param_index) {
-      unsigned func_param = ctx->args.tcs_rel_ids.arg_index + 1 +
-                            si_shader_io_get_unique_index(semantic, false) * 4;
-      LLVMValueRef value[4];
-
-      for (unsigned i = component; i < component + num_components; i++) {
-         value[i] = LLVMGetParam(ctx->main_fn, func_param + i);
-         value[i] = LLVMBuildBitCast(ctx->ac.builder, value[i], type, "");
-      }
-
-      return ac_build_varying_gather_values(&ctx->ac, value, num_components, component);
-   }
-
-   bool is_patch = vertex_index == NULL;
-   assert((semantic >= VARYING_SLOT_PATCH0 ||
-           semantic == VARYING_SLOT_TESS_LEVEL_INNER ||
-           semantic == VARYING_SLOT_TESS_LEVEL_OUTER) == is_patch);
+   assert((name == TGSI_SEMANTIC_PATCH || name == TGSI_SEMANTIC_TESSINNER ||
+           name == TGSI_SEMANTIC_TESSOUTER) == is_patch);
 
    if (load_input) {
       stride = get_tcs_in_vertex_dw_stride(ctx);
@@ -428,109 +433,166 @@ static LLVMValueRef si_nir_load_tcs_varyings(struct ac_shader_abi *abi, LLVMType
       }
    }
 
+   if (!param_index) {
+      param_index = LLVMConstInt(ctx->ac.i32, const_index, 0);
+   }
+
    dw_addr = get_dw_address_from_generic_indices(ctx, stride, dw_addr, vertex_index, param_index,
-                                                 semantic);
+                                                 name, index);
 
    LLVMValueRef value[4];
-   for (unsigned i = component; i < component + num_components; i++)
-      value[i] = lshs_lds_load(ctx, type, i, dw_addr);
+   for (unsigned i = 0; i < num_components; i++) {
+      unsigned offset = i;
+      if (ac_get_type_size(type) == 8)
+         offset *= 2;
+
+      offset += component;
+      value[i + component] = lshs_lds_load(ctx, type, offset, dw_addr);
+   }
 
    return ac_build_varying_gather_values(&ctx->ac, value, num_components, component);
 }
 
 static LLVMValueRef si_nir_load_input_tes(struct ac_shader_abi *abi, LLVMTypeRef type,
                                           LLVMValueRef vertex_index, LLVMValueRef param_index,
+                                          unsigned const_index, unsigned location,
                                           unsigned driver_location, unsigned component,
-                                          unsigned num_components,
-                                          bool load_input, bool vertex_index_is_invoc_id)
+                                          unsigned num_components, bool is_patch, bool is_compact,
+                                          bool load_input)
 {
    struct si_shader_context *ctx = si_shader_context_from_abi(abi);
    struct si_shader_info *info = &ctx->shader->selector->info;
    LLVMValueRef base, addr;
 
-   ubyte semantic = info->input_semantic[driver_location];
+   driver_location = driver_location / 4;
+   ubyte name = info->input_semantic_name[driver_location];
+   ubyte index = info->input_semantic_index[driver_location];
 
-   assert((semantic >= VARYING_SLOT_PATCH0 ||
-           semantic == VARYING_SLOT_TESS_LEVEL_INNER ||
-           semantic == VARYING_SLOT_TESS_LEVEL_OUTER) == (vertex_index == NULL));
+   assert((name == TGSI_SEMANTIC_PATCH || name == TGSI_SEMANTIC_TESSINNER ||
+           name == TGSI_SEMANTIC_TESSOUTER) == is_patch);
 
-   base = ac_get_arg(&ctx->ac, ctx->args.tess_offchip_offset);
+   base = ac_get_arg(&ctx->ac, ctx->tcs_offchip_offset);
+
+   if (!param_index) {
+      param_index = LLVMConstInt(ctx->ac.i32, const_index, 0);
+   }
 
    addr =
-      get_tcs_tes_buffer_address_from_generic_indices(ctx, vertex_index, param_index, semantic);
+      get_tcs_tes_buffer_address_from_generic_indices(ctx, vertex_index, param_index, name, index);
 
    /* TODO: This will generate rather ordinary llvm code, although it
-    * should be easy for the optimizer to fix up. In future we might want
+    * should be easy for the optimiser to fix up. In future we might want
     * to refactor buffer_load().
     */
    LLVMValueRef value[4];
-   for (unsigned i = component; i < component + num_components; i++)
-      value[i] = buffer_load(ctx, type, i, ctx->tess_offchip_ring, base, addr, true);
+   for (unsigned i = 0; i < num_components; i++) {
+      unsigned offset = i;
+      if (ac_get_type_size(type) == 8) {
+         offset *= 2;
+         if (offset == 4) {
+            ubyte name = info->input_semantic_name[driver_location + 1];
+            ubyte index = info->input_semantic_index[driver_location + 1];
+            addr = get_tcs_tes_buffer_address_from_generic_indices(ctx, vertex_index, param_index,
+                                                                   name, index);
+         }
+
+         offset = offset % 4;
+      }
+
+      offset += component;
+      value[i + component] =
+         buffer_load(ctx, type, offset, ctx->tess_offchip_ring, base, addr, true);
+   }
 
    return ac_build_varying_gather_values(&ctx->ac, value, num_components, component);
 }
 
-static void si_nir_store_output_tcs(struct ac_shader_abi *abi,
+static void si_nir_store_output_tcs(struct ac_shader_abi *abi, const struct nir_variable *var,
                                     LLVMValueRef vertex_index, LLVMValueRef param_index,
-                                    LLVMValueRef src, unsigned writemask,
-                                    unsigned component, unsigned location, unsigned driver_location)
+                                    unsigned const_index, LLVMValueRef src, unsigned writemask)
 {
    struct si_shader_context *ctx = si_shader_context_from_abi(abi);
    struct si_shader_info *info = &ctx->shader->selector->info;
+   unsigned component = var->data.location_frac;
+   unsigned driver_location = var->data.driver_location;
    LLVMValueRef dw_addr, stride;
    LLVMValueRef buffer, base, addr;
    LLVMValueRef values[8];
+   bool skip_lds_store;
    bool is_tess_factor = false, is_tess_inner = false;
 
-   ubyte semantic = info->output_semantic[driver_location];
+   if (var->data.compact) {
+      component += const_index;
+      writemask <<= const_index;
+      const_index = 0;
+   }
 
-   const bool is_const = !param_index;
-   const bool is_patch = vertex_index == NULL;
+   driver_location = driver_location / 4;
+   ubyte name = info->output_semantic_name[driver_location];
+   ubyte index = info->output_semantic_index[driver_location];
+
+   bool is_const = !param_index;
+   if (!param_index)
+      param_index = LLVMConstInt(ctx->ac.i32, const_index, 0);
+
+   const bool is_patch = var->data.patch || var->data.location == VARYING_SLOT_TESS_LEVEL_INNER ||
+                         var->data.location == VARYING_SLOT_TESS_LEVEL_OUTER;
 
    /* Invalid SPIR-V can cause this. */
-   if ((semantic >= VARYING_SLOT_PATCH0 || semantic == VARYING_SLOT_TESS_LEVEL_INNER ||
-        semantic == VARYING_SLOT_TESS_LEVEL_OUTER) != is_patch)
+   if ((name == TGSI_SEMANTIC_PATCH || name == TGSI_SEMANTIC_TESSINNER ||
+        name == TGSI_SEMANTIC_TESSOUTER) != is_patch)
       return;
 
    if (!is_patch) {
       stride = get_tcs_out_vertex_dw_stride(ctx);
       dw_addr = get_tcs_out_current_patch_offset(ctx);
       dw_addr = get_dw_address_from_generic_indices(ctx, stride, dw_addr, vertex_index, param_index,
-                                                    semantic);
+                                                    name, index);
+
+      skip_lds_store = !info->reads_pervertex_outputs;
    } else {
       dw_addr = get_tcs_out_current_patch_data_offset(ctx);
       dw_addr = get_dw_address_from_generic_indices(ctx, NULL, dw_addr, vertex_index, param_index,
-                                                    semantic);
+                                                    name, index);
 
-      if (is_const) {
-         int semantic = info->output_semantic[driver_location];
+      skip_lds_store = !info->reads_perpatch_outputs;
+
+      if (is_const && const_index == 0) {
+         int name = info->output_semantic_name[driver_location];
 
          /* Always write tess factors into LDS for the TCS epilog. */
-         if (semantic == VARYING_SLOT_TESS_LEVEL_INNER ||
-             semantic == VARYING_SLOT_TESS_LEVEL_OUTER) {
+         if (name == TGSI_SEMANTIC_TESSINNER || name == TGSI_SEMANTIC_TESSOUTER) {
+            /* The epilog doesn't read LDS if invocation 0 defines tess factors. */
+            skip_lds_store = !info->reads_tessfactor_outputs &&
+                             ctx->shader->selector->info.tessfactors_are_def_in_all_invocs;
             is_tess_factor = true;
-            is_tess_inner = semantic == VARYING_SLOT_TESS_LEVEL_INNER;
+            is_tess_inner = name == TGSI_SEMANTIC_TESSINNER;
          }
       }
    }
 
    buffer = get_tess_ring_descriptor(ctx, TESS_OFFCHIP_RING_TCS);
 
-   base = ac_get_arg(&ctx->ac, ctx->args.tess_offchip_offset);
+   base = ac_get_arg(&ctx->ac, ctx->tcs_offchip_offset);
 
    addr =
-      get_tcs_tes_buffer_address_from_generic_indices(ctx, vertex_index, param_index, semantic);
+      get_tcs_tes_buffer_address_from_generic_indices(ctx, vertex_index, param_index, name, index);
 
-   for (unsigned chan = component; chan < 4; chan++) {
+   for (unsigned chan = component; chan < 8; chan++) {
       if (!(writemask & (1 << chan)))
          continue;
       LLVMValueRef value = ac_llvm_extract_elem(&ctx->ac, src, chan - component);
 
+      unsigned buffer_store_offset = chan % 4;
+      if (chan == 4) {
+         ubyte name = info->output_semantic_name[driver_location + 1];
+         ubyte index = info->output_semantic_index[driver_location + 1];
+         addr = get_tcs_tes_buffer_address_from_generic_indices(ctx, vertex_index, param_index,
+                                                                name, index);
+      }
+
       /* Skip LDS stores if there is no LDS read of this output. */
-      if (info->output_readmask[driver_location] & (1 << chan) ||
-          /* The epilog reads LDS if invocation 0 doesn't define tess factors. */
-          (is_tess_factor &&
-           !ctx->shader->selector->info.tessfactors_are_def_in_all_invocs))
+      if (!skip_lds_store)
          lshs_lds_store(ctx, chan, dw_addr, value);
 
       value = ac_to_integer(&ctx->ac, value);
@@ -538,7 +600,7 @@ static void si_nir_store_output_tcs(struct ac_shader_abi *abi,
 
       if (writemask != 0xF && !is_tess_factor) {
          ac_build_buffer_store_dword(&ctx->ac, buffer, value, 1, addr, base,
-                                     4 * chan, ac_glc);
+                                     4 * buffer_store_offset, ac_glc);
       }
 
       /* Write tess factors into VGPRs for the epilog. */
@@ -562,40 +624,39 @@ static void si_nir_store_output_tcs(struct ac_shader_abi *abi,
 static LLVMValueRef si_load_tess_coord(struct ac_shader_abi *abi)
 {
    struct si_shader_context *ctx = si_shader_context_from_abi(abi);
-   LLVMValueRef coord[4] = {ac_get_arg(&ctx->ac, ctx->args.tes_u),
-                            ac_get_arg(&ctx->ac, ctx->args.tes_v),
+   LLVMValueRef coord[4] = {ac_get_arg(&ctx->ac, ctx->tes_u), ac_get_arg(&ctx->ac, ctx->tes_v),
                             ctx->ac.f32_0, ctx->ac.f32_0};
 
    /* For triangles, the vector should be (u, v, 1-u-v). */
-   if (ctx->shader->selector->info.base.tess.primitive_mode == GL_TRIANGLES) {
+   if (ctx->shader->selector->info.properties[TGSI_PROPERTY_TES_PRIM_MODE] == PIPE_PRIM_TRIANGLES) {
       coord[2] = LLVMBuildFSub(ctx->ac.builder, ctx->ac.f32_1,
                                LLVMBuildFAdd(ctx->ac.builder, coord[0], coord[1], ""), "");
    }
    return ac_build_gather_values(&ctx->ac, coord, 4);
 }
 
-static LLVMValueRef load_tess_level(struct si_shader_context *ctx, unsigned semantic)
+static LLVMValueRef load_tess_level(struct si_shader_context *ctx, unsigned semantic_name)
 {
    LLVMValueRef base, addr;
 
-   int param = si_shader_io_get_unique_index_patch(semantic);
+   int param = si_shader_io_get_unique_index_patch(semantic_name, 0);
 
-   base = ac_get_arg(&ctx->ac, ctx->args.tess_offchip_offset);
+   base = ac_get_arg(&ctx->ac, ctx->tcs_offchip_offset);
    addr = get_tcs_tes_buffer_address(ctx, get_rel_patch_id(ctx), NULL,
                                      LLVMConstInt(ctx->ac.i32, param, 0));
 
    return buffer_load(ctx, ctx->ac.f32, ~0, ctx->tess_offchip_ring, base, addr, true);
 }
 
-static LLVMValueRef load_tess_level_default(struct si_shader_context *ctx, unsigned sysval)
+static LLVMValueRef load_tess_level_default(struct si_shader_context *ctx, unsigned semantic_name)
 {
    LLVMValueRef buf, slot, val[4];
    int i, offset;
 
    slot = LLVMConstInt(ctx->ac.i32, SI_HS_CONST_DEFAULT_TESS_LEVELS, 0);
-   buf = ac_get_arg(&ctx->ac, ctx->internal_bindings);
+   buf = ac_get_arg(&ctx->ac, ctx->rw_buffers);
    buf = ac_build_load_to_sgpr(&ctx->ac, buf, slot);
-   offset = sysval == SYSTEM_VALUE_TESS_LEVEL_INNER_DEFAULT ? 4 : 0;
+   offset = semantic_name == TGSI_SEMANTIC_TESS_DEFAULT_INNER_LEVEL ? 4 : 0;
 
    for (i = 0; i < 4; i++)
       val[i] = si_buffer_load_const(ctx, buf, LLVMConstInt(ctx->ac.i32, (offset + i) * 4, 0));
@@ -606,45 +667,45 @@ static LLVMValueRef si_load_tess_level(struct ac_shader_abi *abi, unsigned varyi
                                        bool load_default_state)
 {
    struct si_shader_context *ctx = si_shader_context_from_abi(abi);
-   unsigned semantic;
+   unsigned semantic_name;
 
    if (load_default_state) {
       switch (varying_id) {
       case VARYING_SLOT_TESS_LEVEL_INNER:
-         semantic = SYSTEM_VALUE_TESS_LEVEL_INNER_DEFAULT;
+         semantic_name = TGSI_SEMANTIC_TESS_DEFAULT_INNER_LEVEL;
          break;
       case VARYING_SLOT_TESS_LEVEL_OUTER:
-         semantic = SYSTEM_VALUE_TESS_LEVEL_OUTER_DEFAULT;
+         semantic_name = TGSI_SEMANTIC_TESS_DEFAULT_OUTER_LEVEL;
          break;
       default:
          unreachable("unknown tess level");
       }
-      return load_tess_level_default(ctx, semantic);
+      return load_tess_level_default(ctx, semantic_name);
    }
 
    switch (varying_id) {
    case VARYING_SLOT_TESS_LEVEL_INNER:
-      semantic = VARYING_SLOT_TESS_LEVEL_INNER;
+      semantic_name = TGSI_SEMANTIC_TESSINNER;
       break;
    case VARYING_SLOT_TESS_LEVEL_OUTER:
-      semantic = VARYING_SLOT_TESS_LEVEL_OUTER;
+      semantic_name = TGSI_SEMANTIC_TESSOUTER;
       break;
    default:
       unreachable("unknown tess level");
    }
 
-   return load_tess_level(ctx, semantic);
+   return load_tess_level(ctx, semantic_name);
 }
 
 static LLVMValueRef si_load_patch_vertices_in(struct ac_shader_abi *abi)
 {
    struct si_shader_context *ctx = si_shader_context_from_abi(abi);
-   if (ctx->stage == MESA_SHADER_TESS_CTRL)
+   if (ctx->type == PIPE_SHADER_TESS_CTRL)
       return si_unpack_param(ctx, ctx->tcs_out_lds_layout, 13, 6);
-   else if (ctx->stage == MESA_SHADER_TESS_EVAL)
+   else if (ctx->type == PIPE_SHADER_TESS_EVAL)
       return get_num_tcs_out_vertices(ctx);
    else
-      unreachable("invalid shader stage for VERTICESIN");
+      unreachable("invalid shader stage for TGSI_SEMANTIC_VERTICESIN");
 }
 
 /**
@@ -659,7 +720,7 @@ static void si_copy_tcs_inputs(struct si_shader_context *ctx)
 
    invocation_id = si_unpack_param(ctx, ctx->args.tcs_rel_ids, 8, 5);
    buffer = get_tess_ring_descriptor(ctx, TESS_OFFCHIP_RING_TCS);
-   buffer_offset = ac_get_arg(&ctx->ac, ctx->args.tess_offchip_offset);
+   buffer_offset = ac_get_arg(&ctx->ac, ctx->tcs_offchip_offset);
 
    lds_vertex_stride = get_tcs_in_vertex_dw_stride(ctx);
    lds_base = get_tcs_in_current_patch_offset(ctx);
@@ -708,17 +769,17 @@ static void si_write_tess_factors(struct si_shader_context *ctx, LLVMValueRef re
 
    /* Determine the layout of one tess factor element in the buffer. */
    switch (shader->key.part.tcs.epilog.prim_mode) {
-   case GL_LINES:
+   case PIPE_PRIM_LINES:
       stride = 2; /* 2 dwords, 1 vec2 store */
       outer_comps = 2;
       inner_comps = 0;
       break;
-   case GL_TRIANGLES:
+   case PIPE_PRIM_TRIANGLES:
       stride = 4; /* 4 dwords, 1 vec4 store */
       outer_comps = 3;
       inner_comps = 1;
       break;
-   case GL_QUADS:
+   case PIPE_PRIM_QUADS:
       stride = 6; /* 6 dwords, 2 stores (vec4 + vec2) */
       outer_comps = 4;
       inner_comps = 2;
@@ -743,8 +804,8 @@ static void si_write_tess_factors(struct si_shader_context *ctx, LLVMValueRef re
       /* Load tess_inner and tess_outer from LDS.
        * Any invocation can write them, so we can't get them from a temporary.
        */
-      tess_inner_index = si_shader_io_get_unique_index_patch(VARYING_SLOT_TESS_LEVEL_INNER);
-      tess_outer_index = si_shader_io_get_unique_index_patch(VARYING_SLOT_TESS_LEVEL_OUTER);
+      tess_inner_index = si_shader_io_get_unique_index_patch(TGSI_SEMANTIC_TESSINNER, 0);
+      tess_outer_index = si_shader_io_get_unique_index_patch(TGSI_SEMANTIC_TESSOUTER, 0);
 
       lds_base = tcs_out_current_patch_data_offset;
       lds_inner = LLVMBuildAdd(ctx->ac.builder, lds_base,
@@ -760,7 +821,7 @@ static void si_write_tess_factors(struct si_shader_context *ctx, LLVMValueRef re
       }
    }
 
-   if (shader->key.part.tcs.epilog.prim_mode == GL_LINES) {
+   if (shader->key.part.tcs.epilog.prim_mode == PIPE_PRIM_LINES) {
       /* For isolines, the hardware expects tess factors in the
        * reverse order from what NIR specifies.
        */
@@ -780,20 +841,22 @@ static void si_write_tess_factors(struct si_shader_context *ctx, LLVMValueRef re
    buffer = get_tess_ring_descriptor(ctx, TCS_FACTOR_RING);
 
    /* Get the offset. */
-   tf_base = ac_get_arg(&ctx->ac, ctx->args.tcs_factor_offset);
+   tf_base = ac_get_arg(&ctx->ac, ctx->tcs_factor_offset);
    byteoffset =
       LLVMBuildMul(ctx->ac.builder, rel_patch_id, LLVMConstInt(ctx->ac.i32, 4 * stride, 0), "");
-   offset = 0;
+
+   ac_build_ifcc(&ctx->ac,
+                 LLVMBuildICmp(ctx->ac.builder, LLVMIntEQ, rel_patch_id, ctx->ac.i32_0, ""), 6504);
 
    /* Store the dynamic HS control word. */
+   offset = 0;
    if (ctx->screen->info.chip_class <= GFX8) {
-      ac_build_ifcc(&ctx->ac,
-                    LLVMBuildICmp(ctx->ac.builder, LLVMIntEQ, rel_patch_id, ctx->ac.i32_0, ""), 6504);
       ac_build_buffer_store_dword(&ctx->ac, buffer, LLVMConstInt(ctx->ac.i32, 0x80000000, 0), 1,
                                   ctx->ac.i32_0, tf_base, offset, ac_glc);
-      ac_build_endif(&ctx->ac, 6504);
       offset += 4;
    }
+
+   ac_build_endif(&ctx->ac, 6504);
 
    /* Store the tessellation factors. */
    ac_build_buffer_store_dword(&ctx->ac, buffer, vec0, MIN2(stride, 4), byteoffset, tf_base, offset,
@@ -810,9 +873,9 @@ static void si_write_tess_factors(struct si_shader_context *ctx, LLVMValueRef re
       unsigned param_outer, param_inner;
 
       buf = get_tess_ring_descriptor(ctx, TESS_OFFCHIP_RING_TCS);
-      base = ac_get_arg(&ctx->ac, ctx->args.tess_offchip_offset);
+      base = ac_get_arg(&ctx->ac, ctx->tcs_offchip_offset);
 
-      param_outer = si_shader_io_get_unique_index_patch(VARYING_SLOT_TESS_LEVEL_OUTER);
+      param_outer = si_shader_io_get_unique_index_patch(TGSI_SEMANTIC_TESSOUTER, 0);
       tf_outer_offset = get_tcs_tes_buffer_address(ctx, rel_patch_id, NULL,
                                                    LLVMConstInt(ctx->ac.i32, param_outer, 0));
 
@@ -824,7 +887,7 @@ static void si_write_tess_factors(struct si_shader_context *ctx, LLVMValueRef re
       ac_build_buffer_store_dword(&ctx->ac, buf, outer_vec, outer_comps, tf_outer_offset, base, 0,
                                   ac_glc);
       if (inner_comps) {
-         param_inner = si_shader_io_get_unique_index_patch(VARYING_SLOT_TESS_LEVEL_INNER);
+         param_inner = si_shader_io_get_unique_index_patch(TGSI_SEMANTIC_TESSINNER, 0);
          tf_inner_offset = get_tcs_tes_buffer_address(ctx, rel_patch_id, NULL,
                                                       LLVMConstInt(ctx->ac.i32, param_inner, 0));
 
@@ -852,7 +915,7 @@ static void si_llvm_emit_tcs_epilogue(struct ac_shader_abi *abi, unsigned max_ou
    invocation_id = si_unpack_param(ctx, ctx->args.tcs_rel_ids, 8, 5);
    tf_lds_offset = get_tcs_out_current_patch_data_offset(ctx);
 
-   if (ctx->screen->info.chip_class >= GFX9 && !ctx->shader->is_monolithic) {
+   if (ctx->screen->info.chip_class >= GFX9) {
       LLVMBasicBlockRef blocks[2] = {LLVMGetInsertBlock(builder), ctx->merged_wrap_if_entry_block};
       LLVMValueRef values[2];
 
@@ -880,15 +943,15 @@ static void si_llvm_emit_tcs_epilogue(struct ac_shader_abi *abi, unsigned max_ou
          si_insert_input_ret(ctx, ret, ctx->tcs_offchip_layout, 8 + GFX9_SGPR_TCS_OFFCHIP_LAYOUT);
       ret = si_insert_input_ret(ctx, ret, ctx->tcs_out_lds_layout, 8 + GFX9_SGPR_TCS_OUT_LAYOUT);
       /* Tess offchip and tess factor offsets are at the beginning. */
-      ret = si_insert_input_ret(ctx, ret, ctx->args.tess_offchip_offset, 2);
-      ret = si_insert_input_ret(ctx, ret, ctx->args.tcs_factor_offset, 4);
+      ret = si_insert_input_ret(ctx, ret, ctx->tcs_offchip_offset, 2);
+      ret = si_insert_input_ret(ctx, ret, ctx->tcs_factor_offset, 4);
       vgpr = 8 + GFX9_SGPR_TCS_OUT_LAYOUT + 1;
    } else {
       ret = si_insert_input_ret(ctx, ret, ctx->tcs_offchip_layout, GFX6_SGPR_TCS_OFFCHIP_LAYOUT);
       ret = si_insert_input_ret(ctx, ret, ctx->tcs_out_lds_layout, GFX6_SGPR_TCS_OUT_LAYOUT);
       /* Tess offchip and tess factor offsets are after user SGPRs. */
-      ret = si_insert_input_ret(ctx, ret, ctx->args.tess_offchip_offset, GFX6_TCS_NUM_USER_SGPR);
-      ret = si_insert_input_ret(ctx, ret, ctx->args.tcs_factor_offset, GFX6_TCS_NUM_USER_SGPR + 1);
+      ret = si_insert_input_ret(ctx, ret, ctx->tcs_offchip_offset, GFX6_TCS_NUM_USER_SGPR);
+      ret = si_insert_input_ret(ctx, ret, ctx->tcs_factor_offset, GFX6_TCS_NUM_USER_SGPR + 1);
       vgpr = GFX6_TCS_NUM_USER_SGPR + 2;
    }
 
@@ -922,19 +985,16 @@ static void si_llvm_emit_tcs_epilogue(struct ac_shader_abi *abi, unsigned max_ou
 /* Pass TCS inputs from LS to TCS on GFX9. */
 static void si_set_ls_return_value_for_tcs(struct si_shader_context *ctx)
 {
-   if (!ctx->shader->is_monolithic)
-      ac_build_endif(&ctx->ac, ctx->merged_wrap_if_label);
-
    LLVMValueRef ret = ctx->return_value;
 
    ret = si_insert_input_ptr(ctx, ret, ctx->other_const_and_shader_buffers, 0);
    ret = si_insert_input_ptr(ctx, ret, ctx->other_samplers_and_images, 1);
-   ret = si_insert_input_ret(ctx, ret, ctx->args.tess_offchip_offset, 2);
-   ret = si_insert_input_ret(ctx, ret, ctx->args.merged_wave_info, 3);
-   ret = si_insert_input_ret(ctx, ret, ctx->args.tcs_factor_offset, 4);
-   ret = si_insert_input_ret(ctx, ret, ctx->args.scratch_offset, 5);
+   ret = si_insert_input_ret(ctx, ret, ctx->tcs_offchip_offset, 2);
+   ret = si_insert_input_ret(ctx, ret, ctx->merged_wave_info, 3);
+   ret = si_insert_input_ret(ctx, ret, ctx->tcs_factor_offset, 4);
+   ret = si_insert_input_ret(ctx, ret, ctx->merged_scratch_offset, 5);
 
-   ret = si_insert_input_ptr(ctx, ret, ctx->internal_bindings, 8 + SI_SGPR_INTERNAL_BINDINGS);
+   ret = si_insert_input_ptr(ctx, ret, ctx->rw_buffers, 8 + SI_SGPR_RW_BUFFERS);
    ret = si_insert_input_ptr(ctx, ret, ctx->bindless_samplers_and_images,
                              8 + SI_SGPR_BINDLESS_SAMPLERS_AND_IMAGES);
 
@@ -960,15 +1020,15 @@ void si_llvm_emit_ls_epilogue(struct ac_shader_abi *abi, unsigned max_outputs, L
    struct si_shader *shader = ctx->shader;
    struct si_shader_info *info = &shader->selector->info;
    unsigned i, chan;
-   LLVMValueRef vertex_id = ac_get_arg(&ctx->ac, ctx->args.vs_rel_patch_id);
+   LLVMValueRef vertex_id = ac_get_arg(&ctx->ac, ctx->rel_auto_id);
    LLVMValueRef vertex_dw_stride = get_tcs_in_vertex_dw_stride(ctx);
    LLVMValueRef base_dw_addr = LLVMBuildMul(ctx->ac.builder, vertex_id, vertex_dw_stride, "");
-   unsigned ret_offset = 8 + GFX9_TCS_NUM_USER_SGPR + 2;
 
    /* Write outputs to LDS. The next shader (TCS aka HS) will read
     * its inputs from it. */
    for (i = 0; i < info->num_outputs; i++) {
-      unsigned semantic = info->output_semantic[i];
+      unsigned name = info->output_semantic_name[i];
+      unsigned index = info->output_semantic_index[i];
 
       /* The ARB_shader_viewport_layer_array spec contains the
        * following issue:
@@ -985,10 +1045,10 @@ void si_llvm_emit_ls_epilogue(struct ac_shader_abi *abi, unsigned max_outputs, L
        *
        * So writes to those outputs in VS-as-LS are simply ignored.
        */
-      if (semantic == VARYING_SLOT_LAYER || semantic == VARYING_SLOT_VIEWPORT)
+      if (name == TGSI_SEMANTIC_LAYER || name == TGSI_SEMANTIC_VIEWPORT_INDEX)
          continue;
 
-      int param = si_shader_io_get_unique_index(semantic, false);
+      int param = si_shader_io_get_unique_index(name, index, false);
       LLVMValueRef dw_addr =
          LLVMBuildAdd(ctx->ac.builder, base_dw_addr, LLVMConstInt(ctx->ac.i32, param * 4, 0), "");
 
@@ -996,16 +1056,8 @@ void si_llvm_emit_ls_epilogue(struct ac_shader_abi *abi, unsigned max_outputs, L
          if (!(info->output_usagemask[i] & (1 << chan)))
             continue;
 
-         LLVMValueRef value = LLVMBuildLoad(ctx->ac.builder, addrs[4 * i + chan], "");
-
-         if (!shader->key.opt.same_patch_vertices ||
-             !(ctx->next_shader_sel->tcs_vgpr_only_inputs & (1ull << semantic)))
-            lshs_lds_store(ctx, chan, dw_addr, value);
-
-         if (shader->key.opt.same_patch_vertices) {
-            ctx->return_value = LLVMBuildInsertValue(ctx->ac.builder, ctx->return_value,
-                                                     value, ret_offset + param * 4 + chan, "");
-         }
+         lshs_lds_store(ctx, chan, dw_addr,
+                        LLVMBuildLoad(ctx->ac.builder, addrs[4 * i + chan], ""));
       }
    }
 
@@ -1024,9 +1076,9 @@ void si_llvm_build_tcs_epilog(struct si_shader_context *ctx, union si_shader_par
    if (ctx->screen->info.chip_class >= GFX9) {
       ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL);
       ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL);
-      ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->args.tess_offchip_offset);
+      ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->tcs_offchip_offset);
       ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL); /* wave info */
-      ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->args.tcs_factor_offset);
+      ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->tcs_factor_offset);
       ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL);
       ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL);
       ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL);
@@ -1050,8 +1102,8 @@ void si_llvm_build_tcs_epilog(struct si_shader_context *ctx, union si_shader_par
       ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL);
       ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->tcs_out_lds_layout);
       ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL);
-      ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->args.tess_offchip_offset);
-      ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->args.tcs_factor_offset);
+      ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->tcs_offchip_offset);
+      ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->tcs_factor_offset);
    }
 
    ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_INT, NULL); /* VGPR gap */

@@ -113,20 +113,25 @@ PValue ValuePool::from_nir(const nir_src& v, unsigned component, unsigned swizzl
          return reg;
    }
 
-   auto literal_val = nir_src_as_const_value(v);
-   if (literal_val) {
-      assert(v.is_ssa);
-      switch (v.ssa->bit_size) {
+
+   auto literal_val = m_literal_constants.find(index);
+   if (literal_val != m_literal_constants.end()) {
+      switch (literal_val->second->def.bit_size) {
       case 1:
-         return PValue(new LiteralValue(literal_val[swizzled].b ? 0xffffffff : 0, component));
+         return PValue(new LiteralValue(literal_val->second->value[swizzled].b ? 0xffffffff : 0, component));
       case 32:
-         return literal(literal_val[swizzled].u32);
+         return literal(literal_val->second->value[swizzled].u32);
       default:
-         sfn_log << SfnLog::reg << "Unsupported bit size " << v.ssa->bit_size
+         sfn_log << SfnLog::reg << "Unsupported bit size " << literal_val->second->def.bit_size
                  << " fall back to 32\n";
-         return PValue(new LiteralValue(literal_val[swizzled].u32, component));
+         return PValue(new LiteralValue(literal_val->second->value[swizzled].u32, component));
       }
    }
+
+   unsigned uindex = (index << 2) + swizzled;
+   auto u = m_uniforms.find(uindex);
+   if (u != m_uniforms.end())
+      return u->second;
 
    return PValue();
 }
@@ -146,27 +151,25 @@ PValue ValuePool::from_nir(const nir_alu_src &v, unsigned component)
    return from_nir(v.src, component, v.swizzle[component]);
 }
 
-PGPRValue ValuePool::get_temp_register(int channel)
+PValue ValuePool::get_temp_register(int channel)
 {
    /* Skip to next register to get the channel we want */
-   if (channel >= 0) {
-      if (next_temp_reg_comp <= channel)
-         next_temp_reg_comp = channel;
-      else
-         next_temp_reg_comp = 4;
-   }
+   if (next_temp_reg_comp <= channel)
+      next_temp_reg_comp = channel;
+   else
+      next_temp_reg_comp = 4;
 
    if (next_temp_reg_comp > 3) {
       current_temp_reg_index = allocate_temp_register();
       next_temp_reg_comp = 0;
    }
-   return std::make_shared<GPRValue>(current_temp_reg_index, next_temp_reg_comp++);
+   return PValue(new GPRValue(current_temp_reg_index, next_temp_reg_comp++));
 }
 
-GPRVector ValuePool::get_temp_vec4(const GPRVector::Swizzle& swizzle)
+GPRVector ValuePool::get_temp_vec4()
 {
    int sel = allocate_temp_register();
-   return GPRVector(sel, swizzle);
+   return GPRVector(sel, {0,1,2,3});
 }
 
 PValue ValuePool::create_register_from_nir_src(const nir_src& src, int comp)
@@ -209,6 +212,12 @@ int ValuePool::lookup_register_index(const nir_src& src) const
    return static_cast<int>(r->second.index);
 }
 
+
+int ValuePool::allocate_component(unsigned index, unsigned comp, bool pre_alloc)
+{
+   assert(comp < 8);
+   return allocate_with_mask(index, 1 << comp, pre_alloc);
+}
 
 int ValuePool::allocate_temp_register()
 {
@@ -365,22 +374,19 @@ unsigned ValuePool::get_ssa_register_index(const nir_ssa_def& ssa) const
 
 unsigned ValuePool::get_local_register_index(const nir_register& reg)
 {
-   unsigned index = reg.index | 0x80000000;
-
-   auto pos = m_ssa_register_map.find(index);
-   if (pos == m_ssa_register_map.end()) {
+   auto pos = m_local_register_map.find(reg.index);
+   if (pos == m_local_register_map.end()) {
       allocate_local_register(reg);
-      pos = m_ssa_register_map.find(index);
-      assert(pos != m_ssa_register_map.end());
+      pos = m_local_register_map.find(reg.index);
+      assert(pos != m_local_register_map.end());
    }
    return pos->second;
 }
 
 unsigned ValuePool::get_local_register_index(const nir_register& reg) const
 {
-   unsigned index = reg.index | 0x80000000;
-   auto pos = m_ssa_register_map.find(index);
-   if (pos == m_ssa_register_map.end()) {
+   auto pos = m_local_register_map.find(reg.index);
+   if (pos == m_local_register_map.end()) {
       sfn_log << SfnLog::err << __func__ << ": local register "
               << reg.index << " lookup failed";
       return -1;
@@ -422,15 +428,13 @@ void ValuePool::allocate_arrays(array_list& arrays)
 
       uint32_t mask = ((1 << a.ncomponents) - 1) << ncomponents;
 
-      PGPRArray array = PGPRArray(new GPRArray(current_index, a.length, mask, ncomponents));
-
-      m_reg_arrays.push_back(array);
+      PValue  array = PValue(new GPRArray(current_index, a.length, mask, ncomponents));
 
       sfn_log << SfnLog::reg << "Add array at "<< current_index
               << " of size " << a.length << " with " << a.ncomponents
               << " components, mask " << mask << "\n";
 
-      m_ssa_register_map[a.index | 0x80000000] = current_index + instance;
+      m_local_register_map[a.index] = current_index + instance;
 
       for (unsigned  i = 0; i < a.ncomponents; ++i)
          m_registers[((current_index  + instance) << 3) + i] = array;
@@ -446,13 +450,13 @@ void ValuePool::allocate_arrays(array_list& arrays)
 void ValuePool::allocate_local_register(const nir_register& reg)
 {
    int index = m_next_register_index++;
-   m_ssa_register_map[reg.index | 0x80000000] = index;
+   m_local_register_map[reg.index] = index;
    allocate_with_mask(index, 0xf, true);
 
    /* Create actual register and map it */;
    for (int i = 0; i < 4; ++i) {
       int k = (index << 3) + i;
-      m_registers[k] = std::make_shared<GPRValue>(index, i);
+      m_registers[k] = PValue(new GPRValue(index, i));
    }
 }
 
@@ -473,6 +477,38 @@ bool ValuePool::create_undef(nir_ssa_undef_instr* instr)
 {
    m_ssa_undef.insert(instr->def.index);
    return true;
+}
+
+bool ValuePool::set_literal_constant(nir_load_const_instr* instr)
+{
+   sfn_log << SfnLog::reg << "Add literal " <<  instr->def.index << "\n";
+   m_literal_constants[instr->def.index] = instr;
+   return true;
+}
+
+const nir_load_const_instr* ValuePool::get_literal_constant(int index)
+{
+   sfn_log << SfnLog::reg << "Try to locate literal " << index  << "...";
+   auto literal = m_literal_constants.find(index);
+   if (literal == m_literal_constants.end()) {
+      sfn_log << SfnLog::reg << " not found\n";
+      return nullptr;
+   }
+   sfn_log << SfnLog::reg << " found\n";
+   return literal->second;
+}
+
+void ValuePool::add_uniform(unsigned index, const PValue& value)
+{
+   sfn_log << SfnLog::reg << "Reserve " << *value << " as " << index << "\n";
+   m_uniforms[index] = value;
+}
+
+PValue ValuePool::uniform(unsigned index)
+{
+   sfn_log << SfnLog::reg << "Search index " << index << "\n";
+   auto i = m_uniforms.find(index);
+   return i == m_uniforms.end() ? PValue() : i->second;
 }
 
 int ValuePool::allocate_with_mask(unsigned index, unsigned mask, bool pre_alloc)

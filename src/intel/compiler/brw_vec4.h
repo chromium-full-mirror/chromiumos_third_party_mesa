@@ -49,8 +49,7 @@ brw_vec4_generate_assembly(const struct brw_compiler *compiler,
                            struct brw_vue_prog_data *prog_data,
                            const struct cfg_t *cfg,
                            const brw::performance &perf,
-                           struct brw_compile_stats *stats,
-                           bool debug_enabled);
+                           struct brw_compile_stats *stats);
 
 #ifdef __cplusplus
 } /* extern "C" */
@@ -72,8 +71,7 @@ public:
                 const nir_shader *shader,
 		void *mem_ctx,
                 bool no_spills,
-                int shader_time_index,
-                bool debug_enabled);
+                int shader_time_index);
 
    dst_reg dst_null_f()
    {
@@ -109,8 +107,10 @@ public:
 
    int first_non_payload_grf;
    unsigned int max_grf;
-   brw_analysis<brw::vec4_live_variables, backend_shader> live_analysis;
-   brw_analysis<brw::performance, vec4_visitor> performance_analysis;
+   BRW_ANALYSIS(live_analysis, brw::vec4_live_variables,
+                backend_shader *) live_analysis;
+   BRW_ANALYSIS(performance_analysis, brw::performance,
+                vec4_visitor *) performance_analysis;
 
    bool need_all_constants_in_pull_buffer;
 
@@ -241,6 +241,7 @@ public:
    void fix_float_operands(src_reg op[3], nir_alu_instr *instr);
 
    src_reg fix_3src_operand(const src_reg &src);
+   src_reg resolve_source_modifiers(const src_reg &src);
 
    vec4_instruction *emit_math(enum opcode opcode, const dst_reg &dst, const src_reg &src0,
                                const src_reg &src1 = src_reg());
@@ -256,7 +257,7 @@ public:
 
    void emit_texture(ir_texture_opcode op,
                      dst_reg dest,
-                     int dest_components,
+                     const glsl_type *dest_type,
                      src_reg coordinate,
                      int coord_components,
                      src_reg shadow_comparator,
@@ -270,7 +271,7 @@ public:
 
    src_reg emit_mcs_fetch(const glsl_type *coordinate_type, src_reg coordinate,
                           src_reg surface);
-   void emit_gfx6_gather_wa(uint8_t wa, dst_reg dst);
+   void emit_gen6_gather_wa(uint8_t wa, dst_reg dst);
 
    void emit_ndc_computation();
    void emit_psiz_and_flags(dst_reg reg);

@@ -4,58 +4,42 @@ bifrost_FILES := \
         bifrost/bifrost_compile.h \
         bifrost/bi_layout.c \
         bifrost/bi_liveness.c \
-        bifrost/bi_lower_swizzle.c \
+        bifrost/bi_lower_combine.c \
+        bifrost/bi_tables.c \
         bifrost/bi_schedule.c \
-        bifrost/bi_scoreboard.c \
+        bifrost/bi_special.c \
         bifrost/bi_pack.c \
         bifrost/bi_print.c \
         bifrost/bi_print.h \
         bifrost/bi_ra.c \
-        bifrost/bi_opt_copy_prop.c \
         bifrost/bi_opt_dce.c \
-        bifrost/bi_opt_push_ubo.c \
         bifrost/bi_quirks.h \
-        bifrost/bi_test_pack.c \
         bifrost/bir.c \
         bifrost/compiler.h \
-        bifrost/cmdline.c
-
-bifrost_disasm_FILES := \
+        bifrost/cmdline.c \
         bifrost/disassemble.c \
-        bifrost/disassemble.h \
-        bifrost/bi_print_common.c \
-        bifrost/bi_print_common.h
+        bifrost/disassemble.h
 
-lib_FILES := \
-        lib/decode_common.c \
-        lib/decode.c \
-        lib/pan_afbc.c \
-        lib/pan_attributes.c \
-        lib/pan_bo.c \
-        lib/pan_bo.h \
-        lib/pan_blend.c \
-        lib/pan_blend.h \
-        lib/pan_blitter.c \
-        lib/pan_blitter.h \
-        lib/pan_device.h \
-        lib/pan_encoder.h \
-        lib/pan_format.c \
-        lib/pan_indirect_draw.c \
-        lib/pan_indirect_draw.h \
-        lib/pan_invocation.c \
-        lib/pan_pool.c \
-        lib/pan_pool.h \
-        lib/pan_props.c \
-        lib/pan_sampler.c \
-        lib/pan_samples.c \
-        lib/pan_shader.c \
-        lib/pan_shader.h \
-        lib/pan_scoreboard.c \
-        lib/pan_scoreboard.h \
-        lib/pan_tiler.c \
-        lib/pan_texture.c \
-        lib/pan_scratch.c \
-        lib/pan_util.h
+encoder_FILES := \
+	encoder/pan_afbc.c \
+        encoder/pan_attributes.c \
+        encoder/pan_bo.c \
+        encoder/pan_bo.h \
+        encoder/pan_blit.c \
+        encoder/pan_device.h \
+        encoder/pan_encoder.h \
+        encoder/pan_format.c \
+        encoder/pan_invocation.c \
+        encoder/pan_pool.c \
+        encoder/pan_pool.h \
+        encoder/pan_props.c \
+        encoder/pan_sampler.c \
+        encoder/pan_scoreboard.c \
+        encoder/pan_scoreboard.h \
+        encoder/pan_tiler.c \
+        encoder/pan_texture.c \
+        encoder/pan_scratch.c \
+        encoder/pan_util.h
 
 midgard_FILES := \
         midgard/compiler.h \
@@ -69,10 +53,8 @@ midgard_FILES := \
         midgard/midgard_emit.c \
         midgard/midgard.h \
         midgard/midgard_liveness.c \
-        midgard/midgard_nir_lower_helper_writes.c \
         midgard/midgard_helper_invocations.c \
         midgard/midgard_nir.h \
-        midgard/midgard_nir_lower_image_bitsize.c \
         midgard/midgard_ops.c \
         midgard/midgard_ops.h \
         midgard/midgard_opt_copy_prop.c \
@@ -87,14 +69,8 @@ midgard_FILES := \
         midgard/mir.c \
         midgard/mir_promote_uniforms.c \
         midgard/mir_squeeze.c \
+        midgard/nir_undef_to_zero.c \
         midgard/nir_fuse_io_16.c \
-
-midgard_disasm_FILES := \
-        midgard/disassemble.c \
-        midgard/disassemble.h \
-        midgard/midgard_ops.c \
-        midgard/midgard_ops.h \
-        midgard/midgard_print_constant.c
 
 shared_FILES := \
         shared/pan_minmax_cache.c \
@@ -102,18 +78,20 @@ shared_FILES := \
         shared/pan_minmax_cache.h \
         shared/pan_tiling.h \
 
+pandecode_FILES := \
+        pandecode/common.c \
+        pandecode/decode.c \
+        pandecode/decode.h \
+        pandecode/pan_pretty_print.c \
+        pandecode/pan_pretty_print.h \
+        pandecode/public.h
+
 util_FILES := \
         util/lcra.c \
         util/lcra.h \
-        util/nir_lower_blend.c \
-        util/nir_lower_blend.h \
         util/nir_mod_helpers.c \
         util/pan_ir.c \
         util/pan_ir.h \
         util/pan_liveness.c \
         util/pan_lower_framebuffer.c \
-        util/pan_lower_helper_invocation.c \
-        util/pan_lower_sample_position.c \
-        util/pan_lower_writeout.c \
-        util/pan_lower_64bit_intrin.c \
         util/pan_sysval.c \

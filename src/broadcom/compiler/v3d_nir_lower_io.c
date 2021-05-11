@@ -73,19 +73,31 @@ static void
 v3d_nir_store_output(nir_builder *b, int base, nir_ssa_def *offset,
                      nir_ssa_def *chan)
 {
+        nir_intrinsic_instr *intr =
+                nir_intrinsic_instr_create(b->shader,
+                                           nir_intrinsic_store_output);
+        nir_ssa_dest_init(&intr->instr, &intr->dest,
+                          1, intr->dest.ssa.bit_size, NULL);
+        intr->num_components = 1;
+
+        intr->src[0] = nir_src_for_ssa(chan);
         if (offset) {
                 /* When generating the VIR instruction, the base and the offset
                  * are just going to get added together with an ADD instruction
                  * so we might as well do the add here at the NIR level instead
                  * and let the constant folding do its magic.
                  */
-                offset = nir_iadd_imm(b, offset, base);
+                intr->src[1] = nir_src_for_ssa(nir_iadd_imm(b, offset, base));
                 base = 0;
         } else {
-                offset = nir_imm_int(b, 0);
+                intr->src[1] = nir_src_for_ssa(nir_imm_int(b, 0));
         }
 
-        nir_store_output(b, chan, offset, .base = base, .write_mask = 0x1, .component = 0);
+        nir_intrinsic_set_base(intr, base);
+        nir_intrinsic_set_write_mask(intr, 0x1);
+        nir_intrinsic_set_component(intr, 0);
+
+        nir_builder_instr_insert(b, &intr->instr);
 }
 
 /* Convert the uniform offset to bytes.  If it happens to be a constant,
@@ -95,12 +107,6 @@ static void
 v3d_nir_lower_uniform(struct v3d_compile *c, nir_builder *b,
                       nir_intrinsic_instr *intr)
 {
-        /* On SPIR-V/Vulkan we are already getting our offsets in
-         * bytes.
-         */
-        if (c->key->environment == V3D_ENVIRONMENT_VULKAN)
-                return;
-
         b->cursor = nir_before_instr(&intr->instr);
 
         nir_intrinsic_set_base(intr, nir_intrinsic_base(intr) * 16);
@@ -112,8 +118,10 @@ v3d_nir_lower_uniform(struct v3d_compile *c, nir_builder *b,
 }
 
 static int
-v3d_varying_slot_vpm_offset(struct v3d_compile *c, unsigned location, unsigned component)
+v3d_varying_slot_vpm_offset(struct v3d_compile *c, nir_variable *var, int chan)
 {
+        int component = var->data.location_frac + chan;
+
         uint32_t num_used_outputs = 0;
         struct v3d_varying_slot *used_outputs = NULL;
         switch (c->s->info.stage) {
@@ -132,7 +140,7 @@ v3d_varying_slot_vpm_offset(struct v3d_compile *c, unsigned location, unsigned c
         for (int i = 0; i < num_used_outputs; i++) {
                 struct v3d_varying_slot slot = used_outputs[i];
 
-                if (v3d_slot_get_slot(slot) == location &&
+                if (v3d_slot_get_slot(slot) == var->data.location &&
                     v3d_slot_get_component(slot) == component) {
                         return i;
                 }
@@ -162,25 +170,38 @@ v3d_nir_lower_vpm_output(struct v3d_compile *c, nir_builder *b,
                         nir_load_var(b, state->gs.output_offset_var) : NULL;
 
         int start_comp = nir_intrinsic_component(intr);
-        unsigned location = nir_intrinsic_io_semantics(intr).location;
         nir_ssa_def *src = nir_ssa_for_src(b, intr->src[0],
                                            intr->num_components);
+        nir_variable *var = NULL;
+        nir_foreach_shader_out_variable(scan_var, c->s) {
+                int components = scan_var->data.compact ?
+                        glsl_get_length(scan_var->type) :
+                        glsl_get_components(scan_var->type);
+                if (scan_var->data.driver_location != nir_intrinsic_base(intr) ||
+                    start_comp < scan_var->data.location_frac ||
+                    start_comp >= scan_var->data.location_frac + components) {
+                        continue;
+                }
+                var = scan_var;
+        }
+        assert(var);
+
         /* Save off the components of the position for the setup of VPM inputs
          * read by fixed function HW.
          */
-        if (location == VARYING_SLOT_POS) {
+        if (var->data.location == VARYING_SLOT_POS) {
                 for (int i = 0; i < intr->num_components; i++) {
                         state->pos[start_comp + i] = nir_channel(b, src, i);
                 }
         }
 
         /* Just psiz to the position in the FF header right now. */
-        if (location == VARYING_SLOT_PSIZ &&
+        if (var->data.location == VARYING_SLOT_PSIZ &&
             state->psiz_vpm_offset != -1) {
                 v3d_nir_store_output(b, state->psiz_vpm_offset, offset_reg, src);
         }
 
-        if (location == VARYING_SLOT_LAYER) {
+        if (var->data.location == VARYING_SLOT_LAYER) {
                 assert(c->s->info.stage == MESA_SHADER_GEOMETRY);
                 nir_ssa_def *header = nir_load_var(b, state->gs.header_var);
                 header = nir_iand(b, header, nir_imm_int(b, 0xff00ffff));
@@ -203,7 +224,13 @@ v3d_nir_lower_vpm_output(struct v3d_compile *c, nir_builder *b,
                  * to 0 in that case (we always allocate tile state for at
                  * least one layer).
                  */
-                nir_ssa_def *fb_layers = nir_load_fb_layers_v3d(b, 32);
+                nir_intrinsic_instr *load =
+                        nir_intrinsic_instr_create(b->shader,
+                                                   nir_intrinsic_load_fb_layers_v3d);
+                nir_ssa_dest_init(&load->instr, &load->dest, 1, 32, NULL);
+                nir_builder_instr_insert(b, &load->instr);
+                nir_ssa_def *fb_layers = &load->dest.ssa;
+
                 nir_ssa_def *cond = nir_ige(b, src, fb_layers);
                 nir_ssa_def *layer_id =
                         nir_bcsel(b, cond,
@@ -219,13 +246,15 @@ v3d_nir_lower_vpm_output(struct v3d_compile *c, nir_builder *b,
          */
         for (int i = 0; i < intr->num_components; i++) {
                 int vpm_offset =
-                        v3d_varying_slot_vpm_offset(c, location, start_comp + i);
-
+                        v3d_varying_slot_vpm_offset(c, var,
+                                                    i +
+                                                    start_comp -
+                                                    var->data.location_frac);
 
                 if (vpm_offset == -1)
                         continue;
 
-                if (nir_src_is_const(intr->src[1]))
+                if (var->data.compact)
                     vpm_offset += nir_src_as_uint(intr->src[1]) * 4;
 
                 BITSET_SET(state->varyings_stored, vpm_offset);
@@ -298,33 +327,6 @@ v3d_nir_lower_end_primitive(struct v3d_compile *c, nir_builder *b,
         nir_instr_remove(&instr->instr);
 }
 
-/* Some vertex attribute formats may require to apply a swizzle but the hardware
- * doesn't provide means to do that, so we need to apply the swizzle in the
- * vertex shader.
- *
- * This is required at least in Vulkan to support madatory vertex attribute
- * format VK_FORMAT_B8G8R8A8_UNORM.
- */
-static void
-v3d_nir_lower_vertex_input(struct v3d_compile *c, nir_builder *b,
-                           nir_intrinsic_instr *instr)
-{
-        assert(c->s->info.stage == MESA_SHADER_VERTEX);
-
-        if (!c->vs_key->va_swap_rb_mask)
-                return;
-
-        const uint32_t location = nir_intrinsic_io_semantics(instr).location;
-
-        if (!(c->vs_key->va_swap_rb_mask & (1 << location)))
-                return;
-
-        assert(instr->num_components == 1);
-        const uint32_t comp = nir_intrinsic_component(instr);
-        if (comp == 0 || comp == 2)
-                nir_intrinsic_set_component(instr, (comp + 2) % 4);
-}
-
 static void
 v3d_nir_lower_io_instr(struct v3d_compile *c, nir_builder *b,
                        struct nir_instr *instr,
@@ -335,11 +337,6 @@ v3d_nir_lower_io_instr(struct v3d_compile *c, nir_builder *b,
         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
 
         switch (intr->intrinsic) {
-        case nir_intrinsic_load_input:
-                if (c->s->info.stage == MESA_SHADER_VERTEX)
-                        v3d_nir_lower_vertex_input(c, b, intr);
-                break;
-
         case nir_intrinsic_load_uniform:
                 v3d_nir_lower_uniform(c, b, intr);
                 break;
@@ -384,10 +381,7 @@ v3d_nir_lower_io_update_output_var_base(struct v3d_compile *c,
                         continue;
                 }
 
-                int vpm_offset =
-                        v3d_varying_slot_vpm_offset(c,
-                                                    var->data.location,
-                                                    var->data.location_frac);
+                int vpm_offset = v3d_varying_slot_vpm_offset(c, var, 0);
                 if (vpm_offset != -1) {
                         var->data.driver_location =
                                 state->varyings_vpm_offset + vpm_offset;
@@ -530,18 +524,7 @@ v3d_nir_emit_ff_vpm_outputs(struct v3d_compile *c, nir_builder *b,
                                 scale = nir_load_viewport_y_scale(b);
                         pos = nir_fmul(b, pos, scale);
                         pos = nir_fmul(b, pos, rcp_wc);
-                        /* Pre-V3D 4.3 hardware has a quirk where it expects XY
-                         * coordinates in .8 fixed-point format, but then it
-                         * will internally round it to .6 fixed-point,
-                         * introducing a double rounding. The double rounding
-                         * can cause very slight differences in triangle
-                         * raterization coverage that can actually be noticed by
-                         * some CTS tests.
-                         *
-                         * The correct fix for this as recommended by Broadcom
-                         * is to convert to .8 fixed-point with ffloor().
-                         */
-                        pos = nir_f2i32(b, nir_ffloor(b, pos));
+                        pos = nir_f2i32(b, nir_fround_even(b, pos));
                         v3d_nir_store_output(b, state->vp_vpm_offset + i,
                                              offset_reg, pos);
                 }

@@ -36,8 +36,7 @@ LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/src/gallium/include \
 	$(MESA_TOP)/src/gallium/auxiliary \
 	$(MESA_TOP)/src/mapi \
-	$(MESA_TOP)/src/mesa \
-	$(call generated-sources-dir-for,STATIC_LIBRARIES,libmesa_git_sha1,,)
+	$(MESA_TOP)/src/mesa
 
 LOCAL_SHARED_LIBRARIES := libz liblog
 

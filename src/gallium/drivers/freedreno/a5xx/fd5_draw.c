@@ -43,7 +43,6 @@
 static void
 draw_impl(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		struct fd5_emit *emit, unsigned index_offset)
-	assert_dt
 {
 	const struct pipe_draw_info *info = emit->info;
 	enum pc_di_primtype primtype = ctx->primtypes[info->mode];
@@ -54,7 +53,7 @@ draw_impl(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		fd5_emit_vertex_bufs(ring, emit);
 
 	OUT_PKT4(ring, REG_A5XX_VFD_INDEX_OFFSET, 2);
-	OUT_RING(ring, info->index_size ? info->index_bias : emit->draw->start); /* VFD_INDEX_OFFSET */
+	OUT_RING(ring, info->index_size ? info->index_bias : info->start); /* VFD_INDEX_OFFSET */
 	OUT_RING(ring, info->start_instance);   /* VFD_INSTANCE_START_OFFSET */
 
 	OUT_PKT4(ring, REG_A5XX_PC_RESTART_INDEX, 1);
@@ -64,71 +63,81 @@ draw_impl(struct fd_context *ctx, struct fd_ringbuffer *ring,
 	fd5_emit_render_cntl(ctx, false, emit->binning_pass);
 	fd5_draw_emit(ctx->batch, ring, primtype,
 			emit->binning_pass ? IGNORE_VISIBILITY : USE_VISIBILITY,
-			info, emit->indirect, emit->draw, index_offset);
+			info, index_offset);
+}
+
+/* fixup dirty shader state in case some "unrelated" (from the state-
+ * tracker's perspective) state change causes us to switch to a
+ * different variant.
+ */
+static void
+fixup_shader_state(struct fd_context *ctx, struct ir3_shader_key *key)
+{
+	struct fd5_context *fd5_ctx = fd5_context(ctx);
+	struct ir3_shader_key *last_key = &fd5_ctx->last_key;
+
+	if (!ir3_shader_key_equal(last_key, key)) {
+		if (ir3_shader_key_changes_fs(last_key, key)) {
+			ctx->dirty_shader[PIPE_SHADER_FRAGMENT] |= FD_DIRTY_SHADER_PROG;
+			ctx->dirty |= FD_DIRTY_PROG;
+		}
+
+		if (ir3_shader_key_changes_vs(last_key, key)) {
+			ctx->dirty_shader[PIPE_SHADER_VERTEX] |= FD_DIRTY_SHADER_PROG;
+			ctx->dirty |= FD_DIRTY_PROG;
+		}
+
+		fd5_ctx->last_key = *key;
+	}
 }
 
 static bool
 fd5_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
-             const struct pipe_draw_indirect_info *indirect,
-             const struct pipe_draw_start_count *draw,
              unsigned index_offset)
-	in_dt
 {
 	struct fd5_context *fd5_ctx = fd5_context(ctx);
 	struct fd5_emit emit = {
 		.debug = &ctx->debug,
 		.vtx  = &ctx->vtx,
+		.prog = &ctx->prog,
 		.info = info,
-		.indirect = indirect,
-		.draw = draw,
 		.key = {
-			.vs = ctx->prog.vs,
-			.fs = ctx->prog.fs,
-			.key = {
-				.rasterflat = ctx->rasterizer->flatshade,
-				.has_per_samp = fd5_ctx->fastc_srgb || fd5_ctx->vastc_srgb,
-				.vastc_srgb = fd5_ctx->vastc_srgb,
-				.fastc_srgb = fd5_ctx->fastc_srgb,
-			},
+			.color_two_side = ctx->rasterizer->light_twoside,
+			.vclamp_color = ctx->rasterizer->clamp_vertex_color,
+			.fclamp_color = ctx->rasterizer->clamp_fragment_color,
+			.rasterflat = ctx->rasterizer->flatshade,
+			.ucp_enables = ctx->rasterizer->clip_plane_enable,
+			.has_per_samp = (fd5_ctx->fsaturate || fd5_ctx->vsaturate ||
+					fd5_ctx->fastc_srgb || fd5_ctx->vastc_srgb),
+			.vsaturate_s = fd5_ctx->vsaturate_s,
+			.vsaturate_t = fd5_ctx->vsaturate_t,
+			.vsaturate_r = fd5_ctx->vsaturate_r,
+			.fsaturate_s = fd5_ctx->fsaturate_s,
+			.fsaturate_t = fd5_ctx->fsaturate_t,
+			.fsaturate_r = fd5_ctx->fsaturate_r,
+			.vastc_srgb = fd5_ctx->vastc_srgb,
+			.fastc_srgb = fd5_ctx->fastc_srgb,
+			.vsamples = ctx->tex[PIPE_SHADER_VERTEX].samples,
+			.fsamples = ctx->tex[PIPE_SHADER_FRAGMENT].samples,
 		},
 		.rasterflat = ctx->rasterizer->flatshade,
 		.sprite_coord_enable = ctx->rasterizer->sprite_coord_enable,
 		.sprite_coord_mode = ctx->rasterizer->sprite_coord_mode,
 	};
 
-	/* Technically a5xx should not require this, but it avoids a crash in
-	 * piglit 'spec@!opengl 1.1@ppgtt_memory_alignment' due to a draw with
-	 * no VBO bound but a VS that expects an input.  The draw is a single
-	 * vertex with PIPE_PRIM_TRIANGLES so the u_trim_pipe_prim() causes it
-	 * to be skipped.
-	 */
-	if (info->mode != PIPE_PRIM_MAX &&
-			!indirect &&
-			!info->primitive_restart &&
-			!u_trim_pipe_prim(info->mode, (unsigned*)&draw->count))
-		return false;
-
-	ir3_fixup_shader_state(&ctx->base, &emit.key.key);
+	fixup_shader_state(ctx, &emit.key);
 
 	unsigned dirty = ctx->dirty;
-
-	emit.prog = fd5_program_state(ir3_cache_lookup(ctx->shader_cache, &emit.key, &ctx->debug));
-
-	/* bail if compile failed: */
-	if (!emit.prog)
-		return false;
-
 	const struct ir3_shader_variant *vp = fd5_emit_get_vp(&emit);
 	const struct ir3_shader_variant *fp = fd5_emit_get_fp(&emit);
 
-	ir3_update_max_tf_vtx(ctx, vp);
+	/* do regular pass first, since that is more likely to fail compiling: */
 
-	/* do regular pass first: */
+	if (!vp || !fp)
+		return false;
 
-	if (unlikely(ctx->stats_users > 0)) {
-		ctx->stats.vs_regs += ir3_shader_halfregs(vp);
-		ctx->stats.fs_regs += ir3_shader_halfregs(fp);
-	}
+	ctx->stats.vs_regs += ir3_shader_halfregs(vp);
+	ctx->stats.fs_regs += ir3_shader_halfregs(fp);
 
 	/* figure out whether we need to disable LRZ write for binning
 	 * pass using draw pass's fp:
@@ -152,7 +161,8 @@ fd5_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 
 		for (unsigned i = 0; i < PIPE_MAX_SO_BUFFERS; i++) {
 			if (emit.streamout_mask & (1 << i)) {
-				fd5_event_write(ctx->batch, ring, FLUSH_SO_0 + i, false);
+				OUT_PKT7(ring, CP_EVENT_WRITE, 1);
+				OUT_RING(ring, FLUSH_SO_0 + i);
 			}
 		}
 	}
@@ -180,7 +190,17 @@ fd5_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 	struct fd_ringbuffer *ring;
 	uint32_t clear = util_pack_z(PIPE_FORMAT_Z16_UNORM, depth);
 
-	ring = fd_batch_get_prologue(batch);
+	// TODO mid-frame clears (ie. app doing crazy stuff)??  Maybe worth
+	// splitting both clear and lrz clear out into their own rb's.  And
+	// just throw away any draws prior to clear.  (Anything not fullscreen
+	// clear, just fallback to generic path that treats it as a normal
+	// draw
+
+	if (!batch->lrz_clear) {
+		batch->lrz_clear = fd_submit_new_ringbuffer(batch->submit, 0x1000, 0);
+	}
+
+	ring = batch->lrz_clear;
 
 	OUT_WFI5(ring);
 
@@ -192,7 +212,7 @@ fd5_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 
 	OUT_PKT4(ring, REG_A5XX_GRAS_SU_CNTL, 1);
 	OUT_RING(ring, A5XX_GRAS_SU_CNTL_LINEHALFWIDTH(0.0) |
-			COND(zsbuf->b.b.nr_samples > 1, A5XX_GRAS_SU_CNTL_MSAA_ENABLE));
+			COND(zsbuf->base.nr_samples > 1, A5XX_GRAS_SU_CNTL_MSAA_ENABLE));
 
 	OUT_PKT4(ring, REG_A5XX_GRAS_CNTL, 1);
 	OUT_RING(ring, 0x00000000);
@@ -241,13 +261,12 @@ fd5_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 	OUT_RING(ring, A5XX_RB_RESOLVE_CNTL_2_X(zsbuf->lrz_width - 1) |
 			A5XX_RB_RESOLVE_CNTL_2_Y(zsbuf->lrz_height - 1));
 
-	fd5_emit_blit(batch, ring);
+	fd5_emit_blit(batch->ctx, ring);
 }
 
 static bool
 fd5_clear(struct fd_context *ctx, unsigned buffers,
 		const union pipe_color_union *color, double depth, unsigned stencil)
-	assert_dt
 {
 	struct fd_ringbuffer *ring = ctx->batch->draw;
 	struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
@@ -314,7 +333,7 @@ fd5_clear(struct fd_context *ctx, unsigned buffers,
 			OUT_RING(ring, uc.ui[2]);  /* RB_CLEAR_COLOR_DW2 */
 			OUT_RING(ring, uc.ui[3]);  /* RB_CLEAR_COLOR_DW3 */
 
-			fd5_emit_blit(ctx->batch, ring);
+			fd5_emit_blit(ctx, ring);
 		}
 	}
 
@@ -339,7 +358,7 @@ fd5_clear(struct fd_context *ctx, unsigned buffers,
 		OUT_PKT4(ring, REG_A5XX_RB_CLEAR_COLOR_DW0, 1);
 		OUT_RING(ring, clear);    /* RB_CLEAR_COLOR_DW0 */
 
-		fd5_emit_blit(ctx->batch, ring);
+		fd5_emit_blit(ctx, ring);
 
 		if (pfb->zsbuf && (buffers & PIPE_CLEAR_DEPTH)) {
 			struct fd_resource *zsbuf = fd_resource(pfb->zsbuf->texture);
@@ -359,7 +378,6 @@ fd5_clear(struct fd_context *ctx, unsigned buffers,
 
 void
 fd5_draw_init(struct pipe_context *pctx)
-	disable_thread_safety_analysis
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->draw_vbo = fd5_draw_vbo;

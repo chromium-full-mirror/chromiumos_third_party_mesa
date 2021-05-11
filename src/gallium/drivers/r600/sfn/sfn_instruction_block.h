@@ -61,11 +61,6 @@ public:
            return m_block_number;
         }
 
-        PInstruction last_instruction();
-
-        bool accept(InstructionVisitor& visitor) override {return visitor.visit(*this);}
-        bool accept(ConstInstructionVisitor& visitor) const override {return visitor.visit(*this);}
-
 private:
         void do_evalue_liveness(LiverangeEvaluator& eval) const override;
         bool is_equal_to(const Instruction& lhs) const override;

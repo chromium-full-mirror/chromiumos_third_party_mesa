@@ -380,12 +380,15 @@ load_text_file(void *ctx, const char *file_name)
 static void
 compile_shader(struct gl_context *ctx, struct gl_shader *shader)
 {
+   struct _mesa_glsl_parse_state *state =
+      new(shader) _mesa_glsl_parse_state(ctx, shader->Stage, shader);
+
    _mesa_glsl_compile_shader(ctx, shader, options->dump_ast,
                              options->dump_hir, true);
 
    /* Print out the resulting IR */
-   if (shader->CompileStatus == COMPILE_SUCCESS && options->dump_lir) {
-      _mesa_print_ir(stdout, shader->ir, NULL);
+   if (!state->error && options->dump_lir) {
+      _mesa_print_ir(stdout, shader->ir, state);
    }
 
    return;
@@ -439,7 +442,6 @@ standalone_compile_shader(const struct standalone_options *_options,
          options->LowerPrecisionInt16 = true;
          options->LowerPrecisionDerivatives = true;
          options->LowerPrecisionConstants = true;
-         options->LowerPrecisionFloat16Uniforms = true;
       }
    }
 
@@ -597,7 +599,7 @@ standalone_compile_shader(const struct standalone_options *_options,
 fail:
    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
       if (whole_program->_LinkedShaders[i])
-         _mesa_delete_linked_shader(ctx, whole_program->_LinkedShaders[i]);
+         ralloc_free(whole_program->_LinkedShaders[i]->Program);
    }
 
    ralloc_free(whole_program);
@@ -609,13 +611,12 @@ standalone_compiler_cleanup(struct gl_shader_program *whole_program)
 {
    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
       if (whole_program->_LinkedShaders[i])
-         _mesa_delete_linked_shader(NULL, whole_program->_LinkedShaders[i]);
+         ralloc_free(whole_program->_LinkedShaders[i]->Program);
    }
 
    delete whole_program->AttributeBindings;
    delete whole_program->FragDataBindings;
    delete whole_program->FragDataIndexBindings;
-   delete whole_program->UniformHash;
 
    ralloc_free(whole_program);
    _mesa_glsl_builtin_functions_decref();

@@ -91,7 +91,6 @@ public:
 
    ImmediateValue *mkImm(float);
    ImmediateValue *mkImm(double);
-   ImmediateValue *mkImm(uint16_t);
    ImmediateValue *mkImm(uint32_t);
    ImmediateValue *mkImm(uint64_t);
 
@@ -99,7 +98,6 @@ public:
 
    Value *loadImm(Value *dst, float);
    Value *loadImm(Value *dst, double);
-   Value *loadImm(Value *dst, uint16_t);
    Value *loadImm(Value *dst, uint32_t);
    Value *loadImm(Value *dst, uint64_t);
 
@@ -139,9 +137,7 @@ public:
    class DataArray
    {
    public:
-      DataArray(BuildUtil *bld) : up(bld), array(0), arrayIdx(0), baseAddr(0),
-         arrayLen(0), baseSym(NULL), vecDim(0), eltSize(0), file(FILE_NULL),
-         regOnly(false) { }
+      DataArray(BuildUtil *bld) : up(bld) { }
 
       void setup(unsigned array, unsigned arrayIdx,
                  uint32_t base, int len, int vecDim, int eltSize,

@@ -168,6 +168,8 @@ wglChoosePixelFormat(
       return 0;
    if (ppfd->dwFlags & PFD_DRAW_TO_BITMAP)
       return 0;
+   if (ppfd->dwFlags & PFD_SUPPORT_GDI)
+      return 0;
    if (!(ppfd->dwFlags & PFD_STEREO_DONTCARE) && (ppfd->dwFlags & PFD_STEREO))
       return 0;
 

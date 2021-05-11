@@ -3,7 +3,7 @@
  * Copyright © 2016 Bas Nieuwenhuizen
  *
  * Based on u_format.h which is:
- * Copyright 2009-2010 VMware, Inc.
+ * Copyright 2009-2010 Vmware, Inc.
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
  * to deal in the Software without restriction, including without limitation
@@ -66,6 +66,14 @@ vk_format_is_compressed(VkFormat format)
 {
    /* this includes 4:2:2 formats, which are compressed formats for vulkan */
    return vk_format_get_blockwidth(format) > 1;
+}
+
+static inline bool
+vk_format_is_depth_or_stencil(VkFormat format)
+{
+   const struct util_format_description *desc = vk_format_description(format);
+
+   return util_format_has_depth(desc) || util_format_has_stencil(desc);
 }
 
 static inline bool

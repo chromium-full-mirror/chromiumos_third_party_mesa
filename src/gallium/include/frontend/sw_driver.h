@@ -16,4 +16,6 @@ struct sw_driver_descriptor
    } winsys[];
 };
 
+extern const struct sw_driver_descriptor swrast_driver_descriptor;
+
 #endif

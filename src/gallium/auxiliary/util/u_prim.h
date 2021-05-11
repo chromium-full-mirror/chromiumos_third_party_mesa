@@ -31,7 +31,6 @@
 
 
 #include "pipe/p_defines.h"
-#include "util/compiler.h"
 #include "util/u_debug.h"
 
 #ifdef __cplusplus
@@ -278,7 +277,7 @@ u_reduced_prims_for_vertices(enum pipe_prim_type primitive, int vertices)
       return u_decomposed_prims_for_vertices(primitive, vertices) * 2;
    case PIPE_PRIM_POLYGON:
       primitive = PIPE_PRIM_TRIANGLE_FAN;
-      FALLTHROUGH;
+      /* fall through */
    default:
       return u_decomposed_prims_for_vertices(primitive, vertices);
    }

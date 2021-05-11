@@ -224,7 +224,7 @@ get_deref_node(nir_deref_instr *deref, struct lower_variables_state *state)
    /* This pass only works on local variables.  Just ignore any derefs with
     * a non-local mode.
     */
-   if (!nir_deref_mode_must_be(deref, nir_var_function_temp))
+   if (deref->mode != nir_var_function_temp)
       return NULL;
 
    struct deref_node *node = get_deref_node_recur(deref, state);
@@ -555,7 +555,7 @@ rename_variables(struct lower_variables_state *state)
          switch (intrin->intrinsic) {
          case nir_intrinsic_load_deref: {
             nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
-            if (!nir_deref_mode_must_be(deref, nir_var_function_temp))
+            if (deref->mode != nir_var_function_temp)
                continue;
 
             struct deref_node *node = get_deref_node(deref, state);
@@ -577,7 +577,7 @@ rename_variables(struct lower_variables_state *state)
                nir_instr_remove(&intrin->instr);
 
                nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                        &undef->def);
+                                        nir_src_for_ssa(&undef->def));
                continue;
             }
 
@@ -602,13 +602,13 @@ rename_variables(struct lower_variables_state *state)
             nir_instr_remove(&intrin->instr);
 
             nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                     &mov->dest.dest.ssa);
+                                     nir_src_for_ssa(&mov->dest.dest.ssa));
             break;
          }
 
          case nir_intrinsic_store_deref: {
             nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
-            if (!nir_deref_mode_must_be(deref, nir_var_function_temp))
+            if (deref->mode != nir_var_function_temp)
                continue;
 
             struct deref_node *node = get_deref_node(deref, state);

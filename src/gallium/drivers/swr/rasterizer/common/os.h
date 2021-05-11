@@ -39,9 +39,7 @@
 #undef NOMINMAX
 #define UNICODE
 #else
-#undef UNICODE
 #include <windows.h>
-#define UNICODE
 #endif
 #include <intrin.h>
 #include <cstdint>
@@ -103,40 +101,6 @@ static inline void AlignedFree(void* p)
 #define BitScanReverseSizeT BitScanReverse
 #define BitScanForwardSizeT BitScanForward
 #define _mm_popcount_sizeT _mm_popcnt_u32
-#endif
-
-#if !defined(_WIN64)
-extern "C" {
-inline unsigned char _BitScanForward64(unsigned long* Index, uint64_t Mask)
-{
-    if (Mask == 0)
-      return 0;
-#ifdef __GNUC__
-    *Index = __builtin_ctzll(Mask);
-#else
-    *Index = 0;
-    for (int i = 0; i < 64; ++ i)
-      if ((1ULL << i) & Mask)
-        *Index = i;
-#endif
-    return 1;
-}
-
-inline unsigned char _BitScanReverse64(unsigned long* Index, uint64_t Mask)
-{
-    if (Mask == 0)
-      return 0;
-#ifdef __GNUC__
-    *Index = 63 - __builtin_clzll(Mask);
-#else
-    *Index = 0;
-    for (int i = 63; i >= 0; -- i)
-      if ((1ULL << i) & Mask)
-        *Index = i;
-#endif
-    return 1;
-}
-}
 #endif
 
 #elif defined(__APPLE__) || defined(FORCE_LINUX) || defined(__linux__) || defined(__gnu_linux__)
@@ -232,37 +196,32 @@ static INLINE void _mm256_storeu2_m128i(__m128i* hi, __m128i* lo, __m256i a)
 #endif
 #endif
 
-inline unsigned char _BitScanForward64(unsigned long* Index, uint64_t Mask)
+inline unsigned char _BitScanForward(unsigned long* Index, unsigned long Mask)
 {
-    if (Mask == 0)
-      return 0;
-    *Index = __builtin_ctzll(Mask);
-    return 1;
-}
-
-inline unsigned char _BitScanForward(unsigned long* Index, uint32_t Mask)
-{
-    if (Mask == 0)
-      return 0;
     *Index = __builtin_ctz(Mask);
-    return 1;
+    return (Mask != 0);
 }
 
-inline unsigned char _BitScanReverse64(unsigned long* Index, uint64_t Mask)
+inline unsigned char _BitScanForward(unsigned int* Index, unsigned int Mask)
 {
-    if (Mask == 0)
-      return 0;
-    *Index = 63 - __builtin_clzll(Mask);
-    return 1;
+    *Index = __builtin_ctz(Mask);
+    return (Mask != 0);
 }
 
-inline unsigned char _BitScanReverse(unsigned long* Index, uint32_t Mask)
+inline unsigned char _BitScanReverse(unsigned long* Index, unsigned long Mask)
 {
-    if (Mask == 0)
-      return 0;
+    *Index = 63 - __builtin_clz(Mask);
+    return (Mask != 0);
+}
+
+inline unsigned char _BitScanReverse(unsigned int* Index, unsigned int Mask)
+{
     *Index = 31 - __builtin_clz(Mask);
-    return 1;
+    return (Mask != 0);
 }
+
+#define _BitScanForward64 _BitScanForward
+#define _BitScanReverse64 _BitScanReverse
 
 inline void* AlignedMalloc(size_t size, size_t alignment)
 {

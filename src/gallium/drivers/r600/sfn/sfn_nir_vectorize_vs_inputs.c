@@ -87,7 +87,7 @@ r600_instr_can_rewrite(nir_instr *instr)
       return false;
 
    nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
-   if (!nir_deref_mode_is(deref, nir_var_shader_in))
+   if (deref->mode != nir_var_shader_in)
       return false;
 
    return r600_variable_can_rewrite(nir_deref_instr_get_variable(deref));
@@ -166,7 +166,7 @@ r600_create_new_load(nir_builder *b, nir_intrinsic_instr *intr, nir_variable *va
    for (unsigned i = 0; i < old_num_comps; ++i)
       channels[i] = comp - var->data.location_frac + i;
    nir_ssa_def *load = nir_swizzle(b, &new_intr->dest.ssa, channels, old_num_comps);
-   nir_ssa_def_rewrite_uses(&intr->dest.ssa, load);
+   nir_ssa_def_rewrite_uses(&intr->dest.ssa, nir_src_for_ssa(load));
 
    /* Remove the old load intrinsic */
    nir_instr_remove(&intr->instr);

@@ -74,17 +74,9 @@ def main():
         with open('{}.expected'.format(file), 'rb') as f:
             expected = f.read().splitlines()
 
-        proc= subprocess.run(
-            runner + ['--just-log', '--version', '150', file],
-            stdout=subprocess.PIPE
-        )
-        if proc.returncode == 255:
-            print("Test returned general error, possibly missing linker")
-            sys.exit(77)
-        elif proc.returncode != 0:
-            print("Test returned error: {}, output:\n{}\n".format(proc.returncode, proc.stdout))
-
-        actual = proc.stdout.splitlines()
+        actual = subprocess.check_output(
+            runner + ['--just-log', '--version', '150', file]
+        ).splitlines()
 
         if actual == expected:
             print('PASS')

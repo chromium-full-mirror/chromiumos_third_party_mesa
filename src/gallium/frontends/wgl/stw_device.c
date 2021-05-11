@@ -81,14 +81,14 @@ get_refresh_rate(void)
 }
 
 static bool
-init_screen(const struct stw_winsys *stw_winsys, HDC hdc)
+init_screen(const struct stw_winsys *stw_winsys)
 {
-   struct pipe_screen *screen = stw_winsys->create_screen(hdc);
+   struct pipe_screen *screen = stw_winsys->create_screen();
    if (!screen)
       return false;
 
    if (stw_winsys->get_adapter_luid)
-      stw_winsys->get_adapter_luid(screen, hdc, &stw_dev->AdapterLuid);
+      stw_winsys->get_adapter_luid(screen, &stw_dev->AdapterLuid);
 
    stw_dev->smapi->screen = screen;
    stw_dev->screen = screen;
@@ -151,13 +151,13 @@ error1:
 }
 
 boolean
-stw_init_screen(HDC hdc)
+stw_init_screen()
 {
    EnterCriticalSection(&stw_dev->screen_mutex);
 
    if (!stw_dev->screen_initialized) {
       stw_dev->screen_initialized = true;
-      if (!init_screen(stw_dev->stw_winsys, hdc)) {
+      if (!init_screen(stw_dev->stw_winsys)) {
          LeaveCriticalSection(&stw_dev->screen_mutex);
          return false;
       }

@@ -163,6 +163,8 @@ main(int argc, char **argv)
          print_usage();
          return 1;
       }
+
+      break;
    }
 
    char *filename = NULL;

@@ -124,14 +124,13 @@ is_stateobj(struct fd_ringbuffer *ring)
 static void
 emit_const_ptrs(struct fd_ringbuffer *ring,
 		const struct ir3_shader_variant *v, uint32_t dst_offset,
-		uint32_t num, struct fd_bo **bos, uint32_t *offsets)
+		uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	unreachable("shouldn't be called on a6xx");
 }
 
 static void
 emit_tess_bos(struct fd_ringbuffer *ring, struct fd6_emit *emit, struct ir3_shader_variant *s)
-	assert_dt
 {
 	struct fd_context *ctx = emit->ctx;
 	const struct ir3_const_state *const_state = ir3_const_state(s);
@@ -158,8 +157,8 @@ emit_stage_tess_consts(struct fd_ringbuffer *ring, struct ir3_shader_variant *v,
 		fd6_emit_const_user(ring, v, regid * 4, num_params, params);
 }
 
-struct fd_ringbuffer *
-fd6_build_tess_consts(struct fd6_emit *emit)
+static void
+emit_tess_consts(struct fd6_emit *emit)
 {
 	struct fd_context *ctx = emit->ctx;
 
@@ -226,7 +225,7 @@ fd6_build_tess_consts(struct fd6_emit *emit)
 		emit_stage_tess_consts(constobj, emit->gs, gs_params, ARRAY_SIZE(gs_params));
 	}
 
-	return constobj;
+	fd6_emit_take_group(emit, constobj, FD6_GROUP_PRIMITIVE_PARAMS, ENABLE_ALL);
 }
 
 static void
@@ -249,16 +248,6 @@ fd6_emit_ubos(struct fd_context *ctx, const struct ir3_shader_variant *v,
 	OUT_RING(ring, CP_LOAD_STATE6_2_EXT_SRC_ADDR_HI(0));
 
 	for (int i = 0; i < num_ubos; i++) {
-		/* NIR constant data is packed into the end of the shader. */
-		if (i == const_state->constant_data_ubo) {
-			int size_vec4s = DIV_ROUND_UP(v->constant_data_size, 16);
-			OUT_RELOC(ring, v->bo,
-					v->info.constant_data_offset,
-					(uint64_t)A6XX_UBO_1_SIZE(size_vec4s) << 32,
-					0);
-			continue;
-		}
-
 		struct pipe_constant_buffer *cb = &constbuf->cb[i];
 
 		/* If we have user pointers (constbuf 0, aka GL uniforms), upload them
@@ -311,8 +300,8 @@ user_consts_cmdstream_size(struct ir3_shader_variant *v)
 	return ubo_state->cmdstream_size;
 }
 
-struct fd_ringbuffer *
-fd6_build_user_consts(struct fd6_emit *emit)
+static void
+emit_user_consts(struct fd6_emit *emit)
 {
 	static const enum pipe_shader_type types[] = {
 			PIPE_SHADER_VERTEX, PIPE_SHADER_TESS_CTRL, PIPE_SHADER_TESS_EVAL,
@@ -340,26 +329,33 @@ fd6_build_user_consts(struct fd6_emit *emit)
 		fd6_emit_ubos(ctx, variants[i], constobj, &ctx->constbuf[types[i]]);
 	}
 
-	return constobj;
+	fd6_emit_take_group(emit, constobj, FD6_GROUP_CONST, ENABLE_ALL);
 }
 
-struct fd_ringbuffer *
-fd6_build_vs_driver_params(struct fd6_emit *emit)
+void
+fd6_emit_consts(struct fd6_emit *emit)
 {
 	struct fd_context *ctx = emit->ctx;
 	struct fd6_context *fd6_ctx = fd6_context(ctx);
-	const struct ir3_shader_variant *vs = emit->vs;
 
-	if (vs->need_driver_params) {
+	if (emit->dirty & (FD_DIRTY_CONST | FD_DIRTY_PROG))
+		emit_user_consts(emit);
+
+	if (emit->key.key.has_gs || emit->key.key.tessellation)
+		emit_tess_consts(emit);
+
+	/* if driver-params are needed, emit each time: */
+	const struct ir3_shader_variant *vs = emit->vs;
+	if (ir3_needs_vs_driver_params(vs)) {
 		struct fd_ringbuffer *dpconstobj = fd_submit_new_ringbuffer(
 				ctx->batch->submit, IR3_DP_VS_COUNT * 4, FD_RINGBUFFER_STREAMING);
-		ir3_emit_vs_driver_params(vs, dpconstobj, ctx, emit->info, emit->indirect, emit->draw);
+		ir3_emit_vs_driver_params(vs, dpconstobj, ctx, emit->info);
+		fd6_emit_take_group(emit, dpconstobj, FD6_GROUP_VS_DRIVER_PARAMS, ENABLE_ALL);
 		fd6_ctx->has_dp_state = true;
-		return dpconstobj;
+	} else if (fd6_ctx->has_dp_state) {
+		fd6_emit_take_group(emit, NULL, FD6_GROUP_VS_DRIVER_PARAMS, ENABLE_ALL);
+		fd6_ctx->has_dp_state = false;
 	}
-
-	fd6_ctx->has_dp_state = false;
-	return NULL;
 }
 
 void

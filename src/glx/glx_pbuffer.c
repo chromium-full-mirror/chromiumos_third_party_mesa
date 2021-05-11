@@ -35,7 +35,6 @@
 #include <X11/extensions/Xext.h>
 #include <assert.h>
 #include <string.h>
-#include <limits.h>
 #include "glxextensions.h"
 
 #ifdef GLX_USE_APPLEGL
@@ -188,14 +187,12 @@ determineTextureFormat(const int *attribs, int numAttribs)
 
    return 0;
 }
-#endif
 
 static GLboolean
 CreateDRIDrawable(Display *dpy, struct glx_config *config,
 		  XID drawable, XID glxdrawable,
 		  const int *attrib_list, size_t num_attribs)
 {
-#ifdef GLX_DIRECT_RENDERING
    struct glx_display *const priv = __glXInitialize(dpy);
    __GLXDRIdrawable *pdraw;
    struct glx_screen *psc;
@@ -223,7 +220,6 @@ CreateDRIDrawable(Display *dpy, struct glx_config *config,
 
    pdraw->textureTarget = determineTextureTarget(attrib_list, num_attribs);
    pdraw->textureFormat = determineTextureFormat(attrib_list, num_attribs);
-#endif
 
    return GL_TRUE;
 }
@@ -231,7 +227,6 @@ CreateDRIDrawable(Display *dpy, struct glx_config *config,
 static void
 DestroyDRIDrawable(Display *dpy, GLXDrawable drawable, int destroy_xdrawable)
 {
-#ifdef GLX_DIRECT_RENDERING
    struct glx_display *const priv = __glXInitialize(dpy);
    __GLXDRIdrawable *pdraw = GetGLXDRIDrawable(dpy, drawable);
    XID xid;
@@ -243,8 +238,24 @@ DestroyDRIDrawable(Display *dpy, GLXDrawable drawable, int destroy_xdrawable)
       if (destroy_xdrawable)
          XFreePixmap(priv->dpy, xid);
    }
-#endif
 }
+
+#else
+
+static GLboolean
+CreateDRIDrawable(Display *dpy, const struct glx_config * fbconfig,
+		  XID drawable, XID glxdrawable,
+		  const int *attrib_list, size_t num_attribs)
+{
+    return GL_TRUE;
+}
+
+static void
+DestroyDRIDrawable(Display *dpy, GLXDrawable drawable, int destroy_xdrawable)
+{
+}
+
+#endif
 
 /**
  * Get a drawable's attribute.
@@ -331,20 +342,6 @@ __glXGetDrawableAttribute(Display * dpy, GLXDrawable drawable,
          *value = psc->driScreen->getBufferAge(pdraw);
 
       return 0;
-   }
-
-   if (pdraw) {
-      if (attribute == GLX_SWAP_INTERVAL_EXT) {
-         *value = pdraw->psc->driScreen->getSwapInterval(pdraw);
-         return 0;
-      } else if (attribute == GLX_MAX_SWAP_INTERVAL_EXT) {
-         *value = INT_MAX;
-         return 0;
-      } else if (attribute == GLX_LATE_SWAPS_TEAR_EXT) {
-         *value = __glXExtensionBitIsEnabled(pdraw->psc,
-                                             EXT_swap_control_tear_bit);
-         return 0;
-      }
    }
 #endif
 
@@ -455,9 +452,6 @@ CreateDrawable(Display *dpy, struct glx_config *config,
    CARD8 opcode;
    GLXDrawable xid;
 
-   if (!config)
-      return None;
-
    i = 0;
    if (attrib_list) {
       while (attrib_list[i * 2] != None)
@@ -549,7 +543,6 @@ CreatePbuffer(Display * dpy, struct glx_config *config,
    unsigned int i;
    Pixmap pixmap;
    GLboolean glx_1_3 = GL_FALSE;
-   int depth = config->rgbBits;
 
    if (priv == NULL)
       return None;
@@ -614,11 +607,8 @@ CreatePbuffer(Display * dpy, struct glx_config *config,
    UnlockDisplay(dpy);
    SyncHandle();
 
-   if (depth == 30)
-      depth = 32;
-
    pixmap = XCreatePixmap(dpy, RootWindow(dpy, config->screen),
-			  width, height, depth);
+			  width, height, config->rgbBits);
 
    if (!CreateDRIDrawable(dpy, config, pixmap, id, attrib_list, i)) {
       CARD32 o = glx_1_3 ? X_GLXDestroyPbuffer : X_GLXvop_DestroyGLXPbufferSGIX;

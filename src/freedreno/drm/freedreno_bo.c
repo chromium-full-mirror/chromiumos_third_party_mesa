@@ -29,7 +29,7 @@
 #include "freedreno_drmif.h"
 #include "freedreno_priv.h"
 
-simple_mtx_t table_lock = _SIMPLE_MTX_INITIALIZER_NP;
+pthread_mutex_t table_lock = PTHREAD_MUTEX_INITIALIZER;
 void bo_del(struct fd_bo *bo);
 
 /* set buffer name, and add to table, call w/ table_lock held: */
@@ -61,8 +61,6 @@ static struct fd_bo * bo_from_handle(struct fd_device *dev,
 {
 	struct fd_bo *bo;
 
-	simple_mtx_assert_locked(&table_lock);
-
 	bo = dev->funcs->bo_from_handle(dev, size, handle);
 	if (!bo) {
 		struct drm_gem_close req = {
@@ -71,7 +69,7 @@ static struct fd_bo * bo_from_handle(struct fd_device *dev,
 		drmIoctl(dev->fd, DRM_IOCTL_GEM_CLOSE, &req);
 		return NULL;
 	}
-	bo->dev = dev;
+	bo->dev = fd_device_ref(dev);
 	bo->size = size;
 	bo->handle = handle;
 	bo->iova = bo->funcs->iova(bo);
@@ -100,9 +98,9 @@ bo_new(struct fd_device *dev, uint32_t size, uint32_t flags,
 	if (ret)
 		return NULL;
 
-	simple_mtx_lock(&table_lock);
+	pthread_mutex_lock(&table_lock);
 	bo = bo_from_handle(dev, size, handle);
-	simple_mtx_unlock(&table_lock);
+	pthread_mutex_unlock(&table_lock);
 
 	VG_BO_ALLOC(bo);
 
@@ -147,7 +145,7 @@ fd_bo_from_handle(struct fd_device *dev, uint32_t handle, uint32_t size)
 {
 	struct fd_bo *bo = NULL;
 
-	simple_mtx_lock(&table_lock);
+	pthread_mutex_lock(&table_lock);
 
 	bo = lookup_bo(dev->handle_table, handle);
 	if (bo)
@@ -158,7 +156,7 @@ fd_bo_from_handle(struct fd_device *dev, uint32_t handle, uint32_t size)
 	VG_BO_ALLOC(bo);
 
 out_unlock:
-	simple_mtx_unlock(&table_lock);
+	pthread_mutex_unlock(&table_lock);
 
 	return bo;
 }
@@ -170,10 +168,10 @@ fd_bo_from_dmabuf(struct fd_device *dev, int fd)
 	uint32_t handle;
 	struct fd_bo *bo;
 
-	simple_mtx_lock(&table_lock);
+	pthread_mutex_lock(&table_lock);
 	ret = drmPrimeFDToHandle(dev->fd, fd, &handle);
 	if (ret) {
-		simple_mtx_unlock(&table_lock);
+		pthread_mutex_unlock(&table_lock);
 		return NULL;
 	}
 
@@ -190,7 +188,7 @@ fd_bo_from_dmabuf(struct fd_device *dev, int fd)
 	VG_BO_ALLOC(bo);
 
 out_unlock:
-	simple_mtx_unlock(&table_lock);
+	pthread_mutex_unlock(&table_lock);
 
 	return bo;
 }
@@ -202,7 +200,7 @@ struct fd_bo * fd_bo_from_name(struct fd_device *dev, uint32_t name)
 	};
 	struct fd_bo *bo;
 
-	simple_mtx_lock(&table_lock);
+	pthread_mutex_lock(&table_lock);
 
 	/* check name table first, to see if bo is already open: */
 	bo = lookup_bo(dev->name_table, name);
@@ -225,7 +223,7 @@ struct fd_bo * fd_bo_from_name(struct fd_device *dev, uint32_t name)
 	}
 
 out_unlock:
-	simple_mtx_unlock(&table_lock);
+	pthread_mutex_unlock(&table_lock);
 
 	return bo;
 }
@@ -253,10 +251,10 @@ void fd_bo_del(struct fd_bo *bo)
 {
 	struct fd_device *dev = bo->dev;
 
-	if (!p_atomic_dec_zero(&bo->refcnt))
+	if (!atomic_dec_and_test(&bo->refcnt))
 		return;
 
-	simple_mtx_lock(&table_lock);
+	pthread_mutex_lock(&table_lock);
 
 	if ((bo->bo_reuse == BO_CACHE) && (fd_bo_cache_free(&dev->bo_cache, bo) == 0))
 		goto out;
@@ -264,17 +262,15 @@ void fd_bo_del(struct fd_bo *bo)
 		goto out;
 
 	bo_del(bo);
-
+	fd_device_del_locked(dev);
 out:
-	simple_mtx_unlock(&table_lock);
+	pthread_mutex_unlock(&table_lock);
 }
 
 /* Called under table_lock */
 void bo_del(struct fd_bo *bo)
 {
 	VG_BO_FREE(bo);
-
-	simple_mtx_assert_locked(&table_lock);
 
 	if (bo->map)
 		os_munmap(bo->map, bo->size);
@@ -309,9 +305,9 @@ int fd_bo_get_name(struct fd_bo *bo, uint32_t *name)
 			return ret;
 		}
 
-		simple_mtx_lock(&table_lock);
+		pthread_mutex_lock(&table_lock);
 		set_name(bo, req.name);
-		simple_mtx_unlock(&table_lock);
+		pthread_mutex_unlock(&table_lock);
 		bo->bo_reuse = NO_CACHE;
 	}
 

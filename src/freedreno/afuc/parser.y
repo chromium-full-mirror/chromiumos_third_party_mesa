@@ -153,15 +153,12 @@ label(const char *str)
 %token <tok> T_OP_BRNE
 %token <tok> T_OP_BREQ
 %token <tok> T_OP_RET
-%token <tok> T_OP_IRET
 %token <tok> T_OP_CALL
 %token <tok> T_OP_JUMP
 %token <tok> T_OP_WAITIN
 %token <tok> T_OP_PREEMPTLEAVE
-%token <tok> T_OP_SETSECURE
 %token <tok> T_LSHIFT
 %token <tok> T_REP
-%token <num> T_XMOV
 
 %type <num> reg
 %type <num> immediate
@@ -183,7 +180,6 @@ instr_or_label:    instr_r
 
 /* instructions that can optionally have (rep) flag: */
 instr_r:           alu_instr
-|                  T_XMOV alu_instr { instr->xmov = $1; }
 |                  config_instr
 
 /* need to special case:
@@ -249,9 +245,7 @@ branch_instr:      branch_op reg ',' T_BIT ',' T_LABEL_REF     { src1($2); bit($
 
 other_instr:       T_OP_CALL T_LABEL_REF { new_instr($1); label($2); }
 |                  T_OP_PREEMPTLEAVE T_LABEL_REF { new_instr($1); label($2); }
-|                  T_OP_SETSECURE reg ',' T_LABEL_REF { new_instr($1); src1($2); label($4); }
 |                  T_OP_RET              { new_instr($1); }
-|                  T_OP_IRET             { new_instr($1); }
 |                  T_OP_JUMP T_LABEL_REF { new_instr($1); label($2); }
 |                  T_OP_WAITIN           { new_instr($1); }
 |                  T_OP_NOP              { new_instr($1); }

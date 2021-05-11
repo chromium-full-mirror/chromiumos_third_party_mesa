@@ -55,12 +55,11 @@ struct Gfx10ChipSettings
         UINT_32 reserved1           : 32;
 
         // Misc configuration bits
-        UINT_32 isDcn20             : 1; // If using DCN2.0
+        UINT_32 isDcn2              : 1;
         UINT_32 supportRbPlus       : 1;
         UINT_32 dsMipmapHtileFix    : 1;
         UINT_32 dccUnsup3DSwDis     : 1;
-        UINT_32                     : 2;
-        UINT_32 reserved2           : 26;
+        UINT_32 reserved2           : 28;
     };
 };
 
@@ -171,32 +170,20 @@ const UINT_32 Gfx10Rsrc3dThick64KBSwModeMask = Gfx10Rsrc3dThickSwModeMask & Gfx1
 const UINT_32 Gfx10MsaaSwModeMask = Gfx10ZSwModeMask |
                                     Gfx10RenderSwModeMask;
 
-const UINT_32 Dcn20NonBpp64SwModeMask = (1u << ADDR_SW_LINEAR)   |
-                                        (1u << ADDR_SW_4KB_S)    |
-                                        (1u << ADDR_SW_64KB_S)   |
-                                        (1u << ADDR_SW_64KB_S_T) |
-                                        (1u << ADDR_SW_4KB_S_X)  |
-                                        (1u << ADDR_SW_64KB_S_X) |
-                                        (1u << ADDR_SW_64KB_R_X);
+const UINT_32 Dcn2NonBpp64SwModeMask = (1u << ADDR_SW_LINEAR)   |
+                                       (1u << ADDR_SW_4KB_S)    |
+                                       (1u << ADDR_SW_64KB_S)   |
+                                       (1u << ADDR_SW_64KB_S_T) |
+                                       (1u << ADDR_SW_4KB_S_X)  |
+                                       (1u << ADDR_SW_64KB_S_X) |
+                                       (1u << ADDR_SW_64KB_R_X);
 
-const UINT_32 Dcn20Bpp64SwModeMask = (1u << ADDR_SW_4KB_D)    |
-                                     (1u << ADDR_SW_64KB_D)   |
-                                     (1u << ADDR_SW_64KB_D_T) |
-                                     (1u << ADDR_SW_4KB_D_X)  |
-                                     (1u << ADDR_SW_64KB_D_X) |
-                                     Dcn20NonBpp64SwModeMask;
-
-const UINT_32 Dcn21NonBpp64SwModeMask = (1u << ADDR_SW_LINEAR)   |
-                                        (1u << ADDR_SW_64KB_S)   |
-                                        (1u << ADDR_SW_64KB_S_T) |
-                                        (1u << ADDR_SW_64KB_S_X) |
-                                        (1u << ADDR_SW_64KB_R_X);
-
-const UINT_32 Dcn21Bpp64SwModeMask = (1u << ADDR_SW_64KB_D)   |
-                                     (1u << ADDR_SW_64KB_D_T) |
-                                     (1u << ADDR_SW_64KB_D_X) |
-                                     Dcn21NonBpp64SwModeMask;
-
+const UINT_32 Dcn2Bpp64SwModeMask = (1u << ADDR_SW_4KB_D)    |
+                                    (1u << ADDR_SW_64KB_D)   |
+                                    (1u << ADDR_SW_64KB_D_T) |
+                                    (1u << ADDR_SW_4KB_D_X)  |
+                                    (1u << ADDR_SW_64KB_D_X) |
+                                    Dcn2NonBpp64SwModeMask;
 /**
 ************************************************************************************************************************
 * @brief This class is the GFX10 specific address library
@@ -274,10 +261,7 @@ protected:
         const ADDR2_COMPUTE_HTILE_COORDFROMADDR_INPUT* pIn,
         ADDR2_COMPUTE_HTILE_COORDFROMADDR_OUTPUT*      pOut);
 
-    virtual ADDR_E_RETURNCODE HwlSupportComputeDccAddrFromCoord(
-        const ADDR2_COMPUTE_DCC_ADDRFROMCOORD_INPUT* pIn);
-
-    virtual VOID HwlComputeDccAddrFromCoord(
+    virtual ADDR_E_RETURNCODE HwlComputeDccAddrFromCoord(
         const ADDR2_COMPUTE_DCC_ADDRFROMCOORD_INPUT* pIn,
         ADDR2_COMPUTE_DCC_ADDRFROMCOORD_OUTPUT*      pOut);
 
@@ -303,10 +287,6 @@ protected:
     virtual ADDR_E_RETURNCODE HwlComputeSubResourceOffsetForSwizzlePattern(
         const ADDR2_COMPUTE_SUBRESOURCE_OFFSET_FORSWIZZLEPATTERN_INPUT* pIn,
         ADDR2_COMPUTE_SUBRESOURCE_OFFSET_FORSWIZZLEPATTERN_OUTPUT*      pOut) const;
-
-    virtual ADDR_E_RETURNCODE HwlComputeNonBlockCompressedView(
-        const ADDR2_COMPUTE_NONBLOCKCOMPRESSEDVIEW_INPUT* pIn,
-        ADDR2_COMPUTE_NONBLOCKCOMPRESSEDVIEW_OUTPUT*      pOut) const;
 
     virtual ADDR_E_RETURNCODE HwlGetPreferredSurfaceSetting(
         const ADDR2_GET_PREFERRED_SURF_SETTING_INPUT* pIn,
@@ -335,7 +315,6 @@ protected:
 
     virtual ChipFamily HwlConvertChipFamily(UINT_32 uChipFamily, UINT_32 uChipRevision);
 
-private:
     // Initialize equation table
     VOID InitEquationTable();
 
@@ -355,7 +334,7 @@ private:
         const ADDR2_COMPUTE_SURFACE_ADDRFROMCOORD_INPUT* pIn,
         ADDR2_COMPUTE_SURFACE_ADDRFROMCOORD_OUTPUT*      pOut) const;
 
-
+private:
     UINT_32 ComputeOffsetFromSwizzlePattern(
         const UINT_64* pPattern,
         UINT_32        numBits,
@@ -372,8 +351,31 @@ private:
 
     ADDR_E_RETURNCODE ComputeStereoInfo(
         const ADDR2_COMPUTE_SURFACE_INFO_INPUT* pIn,
+        UINT_32                                 blkHeight,
         UINT_32*                                pAlignY,
         UINT_32*                                pRightXor) const;
+
+    Dim3d GetDccCompressBlk(
+        AddrResourceType resourceType,
+        AddrSwizzleMode  swizzleMode,
+        UINT_32          bpp) const
+    {
+        UINT_32 index = Log2(bpp >> 3);
+        Dim3d   compressBlkDim;
+
+        if (IsThin(resourceType, swizzleMode))
+        {
+            compressBlkDim.w = Block256_2d[index].w;
+            compressBlkDim.h = Block256_2d[index].h;
+            compressBlkDim.d = 1;
+        }
+        else
+        {
+            compressBlkDim = Block256_3d[index];
+        }
+
+        return compressBlkDim;
+    }
 
     static void GetMipSize(
         UINT_32  mip0Width,
@@ -489,8 +491,6 @@ private:
                (IsTex3d(resourceType) && isDisplay);
 
     }
-
-    UINT_32 GetValidDisplaySwizzleModes(UINT_32 bpp) const;
 
     BOOL_32 IsValidDisplaySwizzleMode(const ADDR2_COMPUTE_SURFACE_INFO_INPUT* pIn) const;
 

@@ -35,9 +35,7 @@
 namespace clover {
    class memory_obj : public ref_counter, public _cl_mem {
    protected:
-      memory_obj(clover::context &ctx,
-                 std::vector<cl_mem_properties> properties,
-                 cl_mem_flags flags,
+      memory_obj(clover::context &ctx, cl_mem_flags flags,
                  size_t size, void *host_ptr);
 
       memory_obj(const memory_obj &obj) = delete;
@@ -51,14 +49,9 @@ namespace clover {
       operator==(const memory_obj &obj) const;
 
       virtual cl_mem_object_type type() const = 0;
-      virtual clover::resource &
-      resource_in(command_queue &q) = 0;
-      virtual clover::resource &
-      resource_undef(command_queue &q) = 0;
-      virtual void resource_out(command_queue &q) = 0;
+      virtual clover::resource &resource(command_queue &q) = 0;
 
       void destroy_notify(std::function<void ()> f);
-      std::vector<cl_mem_properties> properties() const;
       cl_mem_flags flags() const;
       size_t size() const;
       void *host_ptr() const;
@@ -66,7 +59,6 @@ namespace clover {
       const intrusive_ref<clover::context> context;
 
    private:
-      std::vector<cl_mem_properties> _properties;
       cl_mem_flags _flags;
       size_t _size;
       void *_host_ptr;
@@ -78,9 +70,7 @@ namespace clover {
 
    class buffer : public memory_obj {
    protected:
-      buffer(clover::context &ctx,
-             std::vector<cl_mem_properties> properties,
-             cl_mem_flags flags,
+      buffer(clover::context &ctx, cl_mem_flags flags,
              size_t size, void *host_ptr);
 
    public:
@@ -89,22 +79,12 @@ namespace clover {
 
    class root_buffer : public buffer {
    public:
-      root_buffer(clover::context &ctx,
-                  std::vector<cl_mem_properties> properties,
-                  cl_mem_flags flags,
+      root_buffer(clover::context &ctx, cl_mem_flags flags,
                   size_t size, void *host_ptr);
 
-      virtual clover::resource &
-      resource_in(command_queue &q);
-      virtual clover::resource &
-      resource_undef(command_queue &q);
-      virtual void
-      resource_out(command_queue &q);
+      virtual clover::resource &resource(command_queue &q);
 
    private:
-      clover::resource &
-         resource(command_queue &q, const void *data_ptr);
-
       std::map<device *,
                std::unique_ptr<root_resource>> resources;
    };
@@ -114,12 +94,7 @@ namespace clover {
       sub_buffer(root_buffer &parent, cl_mem_flags flags,
                  size_t offset, size_t size);
 
-      virtual clover::resource &
-      resource_in(command_queue &q);
-      virtual clover::resource &
-      resource_undef(command_queue &q);
-      virtual void
-      resource_out(command_queue &q);
+      virtual clover::resource &resource(command_queue &q);
       size_t offset() const;
 
       const intrusive_ref<root_buffer> parent;
@@ -132,15 +107,14 @@ namespace clover {
 
    class image : public memory_obj {
    protected:
-      image(clover::context &ctx,
-            std::vector<cl_mem_properties> properties,
-            cl_mem_flags flags,
+      image(clover::context &ctx, cl_mem_flags flags,
             const cl_image_format *format,
             size_t width, size_t height, size_t depth,
             size_t row_pitch, size_t slice_pitch, size_t size,
             void *host_ptr);
 
    public:
+      virtual clover::resource &resource(command_queue &q);
       cl_image_format format() const;
       size_t width() const;
       size_t height() const;
@@ -148,17 +122,8 @@ namespace clover {
       size_t pixel_size() const;
       size_t row_pitch() const;
       size_t slice_pitch() const;
-      virtual clover::resource &
-      resource_in(command_queue &q);
-      virtual clover::resource &
-      resource_undef(command_queue &q);
-      virtual void
-      resource_out(command_queue &q);
 
    private:
-      clover::resource &
-         resource(command_queue &q, const void *data_ptr);
-
       cl_image_format _format;
       size_t _width;
       size_t _height;
@@ -169,23 +134,9 @@ namespace clover {
                std::unique_ptr<root_resource>> resources;
    };
 
-   class image1d : public image {
-   public:
-      image1d(clover::context &ctx,
-              std::vector<cl_mem_properties> properties,
-              cl_mem_flags flags,
-              const cl_image_format *format,
-              size_t width, size_t row_pitch,
-              void *host_ptr);
-
-      virtual cl_mem_object_type type() const;
-   };
-
    class image2d : public image {
    public:
-      image2d(clover::context &ctx,
-              std::vector<cl_mem_properties> properties,
-              cl_mem_flags flags,
+      image2d(clover::context &ctx, cl_mem_flags flags,
               const cl_image_format *format, size_t width,
               size_t height, size_t row_pitch,
               void *host_ptr);
@@ -195,9 +146,7 @@ namespace clover {
 
    class image3d : public image {
    public:
-      image3d(clover::context &ctx,
-              std::vector<cl_mem_properties> properties,
-              cl_mem_flags flags,
+      image3d(clover::context &ctx, cl_mem_flags flags,
               const cl_image_format *format,
               size_t width, size_t height, size_t depth,
               size_t row_pitch, size_t slice_pitch,

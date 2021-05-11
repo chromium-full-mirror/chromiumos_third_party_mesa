@@ -52,7 +52,7 @@ matching_mov(nir_alu_instr *mov1, nir_ssa_def *ssa)
  * This is a pass for removing phi nodes that look like:
  * a = phi(b, b, b, ...)
  *
- * Note that we can't always ignore undef sources here, or else we may create a
+ * Note that we can't ignore undef sources here, or else we may create a
  * situation where the definition of b isn't dominated by its uses. We're
  * allowed to do this since the definition of b must dominate all of the
  * phi node's predecessors, which means it must dominate the phi node as well
@@ -98,9 +98,6 @@ remove_phis_block(nir_block *block, nir_builder *b)
          if (def == NULL) {
             def  = src->src.ssa;
             mov = get_parent_mov(def);
-         } else if (nir_src_is_undef(src->src) &&
-                    nir_block_dominates(def->parent_instr->block, src->pred)) {
-            /* Ignore this undef source. */
          } else {
             if (src->src.ssa != def && !matching_mov(mov, src->src.ssa)) {
                srcs_same = false;
@@ -132,7 +129,7 @@ remove_phis_block(nir_block *block, nir_builder *b)
       }
 
       assert(phi->dest.is_ssa);
-      nir_ssa_def_rewrite_uses(&phi->dest.ssa, def);
+      nir_ssa_def_rewrite_uses(&phi->dest.ssa, nir_src_for_ssa(def));
       nir_instr_remove(instr);
 
       progress = true;
@@ -155,8 +152,6 @@ nir_opt_remove_phis_impl(nir_function_impl *impl)
    bool progress = false;
    nir_builder bld;
    nir_builder_init(&bld, impl);
-
-   nir_metadata_require(impl, nir_metadata_dominance);
 
    nir_foreach_block(block, impl) {
       progress |= remove_phis_block(block, &bld);

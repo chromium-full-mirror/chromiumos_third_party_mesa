@@ -23,10 +23,7 @@
 
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
 
-#include <xcb/xproto.h>
-#include <xcb/shm.h>
 #include <X11/Xlib.h>
-#include <X11/Xlib-xcb.h>
 #include "glxclient.h"
 #include <dlfcn.h>
 #include "dri_common.h"
@@ -412,25 +409,17 @@ drisw_unbind_context(struct glx_context *context, struct glx_context *new)
 }
 
 static void
-drisw_wait_gl(struct glx_context *context)
-{
-   glFinish();
-}
-
-static void
-drisw_wait_x(struct glx_context *context)
-{
-   XSync(context->currentDpy, False);
-}
-
-static void
-drisw_bind_tex_image(__GLXDRIdrawable *base,
-                     int buffer, const int *attrib_list)
+drisw_bind_tex_image(Display * dpy,
+		    GLXDrawable drawable,
+		    int buffer, const int *attrib_list)
 {
    struct glx_context *gc = __glXGetCurrentContext();
    struct drisw_context *pcp = (struct drisw_context *) gc;
+   __GLXDRIdrawable *base = GetGLXDRIDrawable(dpy, drawable);
    struct drisw_drawable *pdraw = (struct drisw_drawable *) base;
    struct drisw_screen *psc;
+
+   __glXInitialize(dpy);
 
    if (pdraw != NULL) {
       psc = (struct drisw_screen *) base->psc;
@@ -454,14 +443,16 @@ drisw_bind_tex_image(__GLXDRIdrawable *base,
 }
 
 static void
-drisw_release_tex_image(__GLXDRIdrawable *base, int buffer)
+drisw_release_tex_image(Display * dpy, GLXDrawable drawable, int buffer)
 {
    struct glx_context *gc = __glXGetCurrentContext();
    struct drisw_context *pcp = (struct drisw_context *) gc;
+   __GLXDRIdrawable *base = GetGLXDRIDrawable(dpy, drawable);
+   struct glx_display *dpyPriv = __glXInitialize(dpy);
    struct drisw_drawable *pdraw = (struct drisw_drawable *) base;
    struct drisw_screen *psc;
 
-   if (pdraw != NULL) {
+   if (dpyPriv != NULL && pdraw != NULL) {
       psc = (struct drisw_screen *) base->psc;
 
       if (!psc->texBuffer)
@@ -480,9 +471,66 @@ static const struct glx_context_vtable drisw_context_vtable = {
    .destroy             = drisw_destroy_context,
    .bind                = drisw_bind_context,
    .unbind              = drisw_unbind_context,
-   .wait_gl             = drisw_wait_gl,
-   .wait_x              = drisw_wait_x,
+   .wait_gl             = NULL,
+   .wait_x              = NULL,
+   .use_x_font          = DRI_glXUseXFont,
+   .bind_tex_image      = drisw_bind_tex_image,
+   .release_tex_image   = drisw_release_tex_image,
+   .get_proc_address    = NULL,
 };
+
+static struct glx_context *
+drisw_create_context(struct glx_screen *base,
+		     struct glx_config *config_base,
+		     struct glx_context *shareList, int renderType)
+{
+   struct drisw_context *pcp, *pcp_shared;
+   __GLXDRIconfigPrivate *config = (__GLXDRIconfigPrivate *) config_base;
+   struct drisw_screen *psc = (struct drisw_screen *) base;
+   __DRIcontext *shared = NULL;
+
+   if (!psc->base.driScreen)
+      return NULL;
+
+   /* Check the renderType value */
+   if (!validate_renderType_against_config(config_base, renderType))
+       return NULL;
+
+   if (shareList) {
+      /* If the shareList context is not a DRISW context, we cannot possibly
+       * create a DRISW context that shares it.
+       */
+      if (shareList->vtable->destroy != drisw_destroy_context) {
+	 return NULL;
+      }
+
+      pcp_shared = (struct drisw_context *) shareList;
+      shared = pcp_shared->driContext;
+   }
+
+   pcp = calloc(1, sizeof *pcp);
+   if (pcp == NULL)
+      return NULL;
+
+   if (!glx_context_init(&pcp->base, &psc->base, &config->base)) {
+      free(pcp);
+      return NULL;
+   }
+
+   pcp->base.renderType = renderType;
+
+   pcp->driContext =
+      (*psc->core->createNewContext) (psc->driScreen,
+				      config->driConfig, shared, pcp);
+   if (pcp->driContext == NULL) {
+      free(pcp);
+      return NULL;
+   }
+
+   pcp->base.vtable = &drisw_context_vtable;
+
+   return &pcp->base;
+}
 
 static struct glx_context *
 drisw_create_context_attribs(struct glx_screen *base,
@@ -536,13 +584,6 @@ drisw_create_context_attribs(struct glx_screen *base,
       return NULL;
 
    if (shareList) {
-      /* If the shareList context is not a DRISW context, we cannot possibly
-       * create a DRISW context that shares it.
-       */
-      if (shareList->vtable->destroy != drisw_destroy_context) {
-	 return NULL;
-      }
-
       pcp_shared = (struct drisw_context *) shareList;
       shared = pcp_shared->driContext;
    }
@@ -724,18 +765,11 @@ driswDestroyScreen(struct glx_screen *base)
 
 #define SWRAST_DRIVER_NAME "swrast"
 
-static char *
-drisw_get_driver_name(struct glx_screen *glx_screen)
-{
-    return strdup(SWRAST_DRIVER_NAME);
-}
-
 static const struct glx_screen_vtable drisw_screen_vtable = {
-   .create_context         = dri_common_create_context,
+   .create_context         = drisw_create_context,
    .create_context_attribs = drisw_create_context_attribs,
    .query_renderer_integer = drisw_query_renderer_integer,
    .query_renderer_string  = drisw_query_renderer_string,
-   .get_driver_name        = drisw_get_driver_name,
 };
 
 static void
@@ -789,26 +823,27 @@ driswBindExtensions(struct drisw_screen *psc, const __DRIextension **extensions)
 static int
 check_xshm(Display *dpy)
 {
-   xcb_connection_t *c = XGetXCBConnection(dpy);
-   xcb_void_cookie_t cookie;
-   xcb_generic_error_t *error;
-   int ret = True;
+   int (*old_handler)(Display *, XErrorEvent *);
+
    int ignore;
+   XShmSegmentInfo info = { 0, };
 
    if (!XQueryExtension(dpy, "MIT-SHM", &xshm_opcode, &ignore, &ignore))
       return False;
 
-   cookie = xcb_shm_detach_checked(c, 0);
-   if ((error = xcb_request_check(c, cookie))) {
-      /* BadRequest means we're a remote client. If we were local we'd
-       * expect BadValue since 'info' has an invalid segment name.
-       */
-      if (error->error_code == BadRequest)
-         ret = False;
-      free(error);
-   }
+   old_handler = XSetErrorHandler(handle_xerror);
+   XShmDetach(dpy, &info);
+   XSync(dpy, False);
+   (void) XSetErrorHandler(old_handler);
 
-   return ret;
+   /* BadRequest means we're a remote client. If we were local we'd
+    * expect BadValue since 'info' has an invalid segment name.
+    */
+   if (xshm_error == BadRequest)
+      return False;
+
+   xshm_error = 0;
+   return True;
 }
 
 static struct glx_screen *
@@ -893,8 +928,6 @@ driswCreateScreen(int screen, struct glx_display *priv)
    psp->destroyScreen = driswDestroyScreen;
    psp->createDrawable = driswCreateDrawable;
    psp->swapBuffers = driswSwapBuffers;
-   psp->bindTexImage = drisw_bind_tex_image;
-   psp->releaseTexImage = drisw_release_tex_image;
 
    if (psc->copySubBuffer)
       psp->copySubBuffer = driswCopySubBuffer;

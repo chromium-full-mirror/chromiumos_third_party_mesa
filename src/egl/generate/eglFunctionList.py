@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 """
 Contains a list of EGL functions to generate dispatch functions for.
 

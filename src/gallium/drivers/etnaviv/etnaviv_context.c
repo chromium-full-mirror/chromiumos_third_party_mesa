@@ -50,7 +50,6 @@
 #include "pipe/p_state.h"
 #include "util/hash_table.h"
 #include "util/u_blitter.h"
-#include "util/u_draw.h"
 #include "util/u_helpers.h"
 #include "util/u_memory.h"
 #include "util/u_prim.h"
@@ -224,28 +223,17 @@ etna_get_fs(struct etna_context *ctx, struct etna_shader_key key)
 }
 
 static void
-etna_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
-              const struct pipe_draw_indirect_info *indirect,
-              const struct pipe_draw_start_count *draws,
-              unsigned num_draws)
+etna_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
 {
-   if (num_draws > 1) {
-      util_draw_multi(pctx, info, indirect, draws, num_draws);
-      return;
-   }
-
-   if (!indirect && (!draws[0].count || !info->instance_count))
-      return;
-
    struct etna_context *ctx = etna_context(pctx);
    struct etna_screen *screen = ctx->screen;
    struct pipe_framebuffer_state *pfb = &ctx->framebuffer_s;
    uint32_t draw_mode;
    unsigned i;
 
-   if (!indirect &&
+   if (!info->count_from_stream_output && !info->indirect &&
        !info->primitive_restart &&
-       !u_trim_pipe_prim(info->mode, (unsigned*)&draws[0].count))
+       !u_trim_pipe_prim(info->mode, (unsigned*)&info->count))
       return;
 
    if (ctx->vertex_elements == NULL || ctx->vertex_elements->num_elements == 0)
@@ -254,11 +242,11 @@ etna_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    if (!(ctx->prim_hwsupport & (1 << info->mode))) {
       struct primconvert_context *primconvert = ctx->primconvert;
       util_primconvert_save_rasterizer_state(primconvert, ctx->rasterizer);
-      util_primconvert_draw_vbo(primconvert, info, indirect, draws, num_draws);
+      util_primconvert_draw_vbo(primconvert, info);
       return;
    }
 
-   int prims = u_decomposed_prims_for_vertices(info->mode, draws[0].count);
+   int prims = u_decomposed_prims_for_vertices(info->mode, info->count);
    if (unlikely(prims <= 0)) {
       DBG("Invalid draw primitive mode=%i or no primitives to be drawn", info->mode);
       return;
@@ -277,12 +265,12 @@ etna_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    if (info->index_size) {
       indexbuf = info->has_user_indices ? NULL : info->index.resource;
       if (info->has_user_indices &&
-          !util_upload_index_buffer(pctx, info, &draws[0], &indexbuf, &index_offset, 4)) {
+          !util_upload_index_buffer(pctx, info, &indexbuf, &index_offset, 4)) {
          BUG("Index buffer upload failed.");
          return;
       }
       /* Add start to index offset, when rendering indexed */
-      index_offset += draws[0].start * info->index_size;
+      index_offset += info->start * info->index_size;
 
       ctx->index_buffer.FE_INDEX_STREAM_BASE_ADDR.bo = etna_resource(indexbuf)->bo;
       ctx->index_buffer.FE_INDEX_STREAM_BASE_ADDR.offset = index_offset;
@@ -303,8 +291,6 @@ etna_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
    struct etna_shader_key key = {
       .front_ccw = ctx->rasterizer->front_ccw,
-      .sprite_coord_enable = ctx->rasterizer->sprite_coord_enable,
-      .sprite_coord_yinvert = !!ctx->rasterizer->sprite_coord_mode,
    };
 
    if (pfb->cbufs[0])
@@ -341,14 +327,14 @@ etna_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    }
 
    /* Mark constant buffers as being read */
-   u_foreach_bit(i, ctx->constant_buffer[PIPE_SHADER_VERTEX].enabled_mask)
+   foreach_bit(i, ctx->constant_buffer[PIPE_SHADER_VERTEX].enabled_mask)
       resource_read(ctx, ctx->constant_buffer[PIPE_SHADER_VERTEX].cb[i].buffer);
 
-   u_foreach_bit(i, ctx->constant_buffer[PIPE_SHADER_FRAGMENT].enabled_mask)
+   foreach_bit(i, ctx->constant_buffer[PIPE_SHADER_FRAGMENT].enabled_mask)
       resource_read(ctx, ctx->constant_buffer[PIPE_SHADER_FRAGMENT].cb[i].buffer);
 
    /* Mark VBOs as being read */
-   u_foreach_bit(i, ctx->vertex_buffer.enabled_mask) {
+   foreach_bit(i, ctx->vertex_buffer.enabled_mask) {
       assert(!ctx->vertex_buffer.vb[i].is_user_buffer);
       resource_read(ctx, ctx->vertex_buffer.vb[i].buffer.resource);
    }
@@ -369,7 +355,7 @@ etna_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       }
    }
 
-   ctx->stats.prims_generated += u_reduced_prims_for_vertices(info->mode, draws[0].count);
+   ctx->stats.prims_generated += u_reduced_prims_for_vertices(info->mode, info->count);
    ctx->stats.draw_calls++;
 
    /* Update state for this draw operation */
@@ -381,12 +367,12 @@ etna_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    if (screen->specs.halti >= 2) {
       /* On HALTI2+ (GC3000 and higher) only use instanced drawing commands, as the blob does */
       etna_draw_instanced(ctx->stream, info->index_size, draw_mode, info->instance_count,
-         draws[0].count, info->index_size ? info->index_bias : draws[0].start);
+         info->count, info->index_size ? info->index_bias : info->start);
    } else {
       if (info->index_size)
          etna_draw_indexed_primitives(ctx->stream, draw_mode, 0, prims, info->index_bias);
       else
-         etna_draw_primitives(ctx->stream, draw_mode, draws[0].start, prims);
+         etna_draw_primitives(ctx->stream, draw_mode, info->start, prims);
    }
 
    if (DBG_ENABLED(ETNA_DBG_DRAW_STALL)) {
@@ -416,6 +402,9 @@ etna_reset_gpu_state(struct etna_context *ctx)
 
    etna_set_state(stream, VIVS_GL_API_MODE, VIVS_GL_API_MODE_OPENGL);
    etna_set_state(stream, VIVS_GL_VERTEX_ELEMENT_CONFIG, 0x00000001);
+   /* blob sets this to 0x40000031 on GC7000, seems to make no difference,
+    * but keep it in mind if depth behaves strangely. */
+   etna_set_state(stream, VIVS_RA_EARLY_DEPTH, 0x00000031);
    etna_set_state(stream, VIVS_PA_W_CLIP_LIMIT, 0x34000001);
    etna_set_state(stream, VIVS_PA_FLAGS, 0x00000000); /* blob sets ZCONVERT_BYPASS on GC3000+, this messes up z for us */
    etna_set_state(stream, VIVS_PA_VIEWPORT_UNK00A80, 0x38a01404);

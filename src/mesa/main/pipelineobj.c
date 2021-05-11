@@ -34,7 +34,6 @@
 #include <stdbool.h>
 #include "main/glheader.h"
 #include "main/context.h"
-#include "main/draw_validate.h"
 #include "main/enums.h"
 #include "main/hash.h"
 #include "main/mtypes.h"
@@ -107,7 +106,7 @@ _mesa_init_pipeline(struct gl_context *ctx)
  * Callback for deleting a pipeline object.  Called by _mesa_HashDeleteAll().
  */
 static void
-delete_pipelineobj_cb(void *data, void *userData)
+delete_pipelineobj_cb(UNUSED GLuint id, void *data, void *userData)
 {
    struct gl_pipeline_object *obj = (struct gl_pipeline_object *) data;
    struct gl_context *ctx = (struct gl_context *) userData;
@@ -154,7 +153,7 @@ static void
 save_pipeline_object(struct gl_context *ctx, struct gl_pipeline_object *obj)
 {
    if (obj->Name > 0) {
-      _mesa_HashInsertLocked(ctx->Pipeline.Objects, obj->Name, obj, true);
+      _mesa_HashInsertLocked(ctx->Pipeline.Objects, obj->Name, obj);
    }
 }
 
@@ -253,10 +252,7 @@ use_program_stages(struct gl_context *ctx, struct gl_shader_program *shProg,
    if ((stages & GL_COMPUTE_SHADER_BIT) != 0)
       use_program_stage(ctx, GL_COMPUTE_SHADER, shProg, pipe);
 
-   pipe->Validated = pipe->UserValidated = false;
-
-   if (pipe == ctx->_Shader)
-      _mesa_update_valid_to_render_state(ctx);
+   pipe->Validated = false;
 }
 
 void GLAPIENTRY
@@ -411,8 +407,6 @@ active_shader_program(struct gl_context *ctx, GLuint pipeline, GLuint program,
    }
 
    _mesa_reference_shader_program(ctx, &pipe->ActiveProgram, shProg);
-   if (pipe == ctx->_Shader)
-      _mesa_update_valid_to_render_state(ctx);
 }
 
 void GLAPIENTRY
@@ -520,7 +514,7 @@ _mesa_bind_pipeline(struct gl_context *ctx,
     *     considered current."
     */
    if (&ctx->Shader != ctx->_Shader) {
-      FLUSH_VERTICES(ctx, _NEW_PROGRAM | _NEW_PROGRAM_CONSTANTS, 0);
+      FLUSH_VERTICES(ctx, _NEW_PROGRAM | _NEW_PROGRAM_CONSTANTS);
 
       if (pipe != NULL) {
          /* Bound the pipeline to the current program and
@@ -542,8 +536,6 @@ _mesa_bind_pipeline(struct gl_context *ctx,
 
       _mesa_update_vertex_processing_mode(ctx);
       _mesa_update_allow_draw_out_of_order(ctx);
-      _mesa_update_primitive_id_is_unused(ctx);
-      _mesa_update_valid_to_render_state(ctx);
    }
 }
 
@@ -604,17 +596,19 @@ create_program_pipelines(struct gl_context *ctx, GLsizei n, GLuint *pipelines,
                          bool dsa)
 {
    const char *func = dsa ? "glCreateProgramPipelines" : "glGenProgramPipelines";
+   GLuint first;
    GLint i;
 
    if (!pipelines)
       return;
 
-   _mesa_HashFindFreeKeys(ctx->Pipeline.Objects, pipelines, n);
+   first = _mesa_HashFindFreeKeyBlock(ctx->Pipeline.Objects, n);
 
    for (i = 0; i < n; i++) {
       struct gl_pipeline_object *obj;
+      GLuint name = first + i;
 
-      obj = _mesa_new_pipeline_object(ctx, pipelines[i]);
+      obj = _mesa_new_pipeline_object(ctx, name);
       if (!obj) {
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "%s", func);
          return;
@@ -626,6 +620,7 @@ create_program_pipelines(struct gl_context *ctx, GLsizei n, GLuint *pipelines,
       }
 
       save_pipeline_object(ctx, obj);
+      pipelines[i] = first + i;
    }
 }
 
@@ -739,7 +734,7 @@ _mesa_GetProgramPipelineiv(GLuint pipeline, GLenum pname, GLint *params)
          strlen(pipe->InfoLog) + 1 : 0;
       return;
    case GL_VALIDATE_STATUS:
-      *params = pipe->UserValidated;
+      *params = pipe->Validated;
       return;
    case GL_VERTEX_SHADER:
       *params = pipe->CurrentProgram[MESA_SHADER_VERTEX]
@@ -1060,7 +1055,6 @@ _mesa_ValidateProgramPipeline(GLuint pipeline)
    }
 
    _mesa_validate_program_pipeline(ctx, pipe);
-   pipe->UserValidated = pipe->Validated;
 }
 
 void GLAPIENTRY

@@ -39,10 +39,9 @@ vec4_tes_visitor::vec4_tes_visitor(const struct brw_compiler *compiler,
                                   struct brw_tes_prog_data *prog_data,
                                   const nir_shader *shader,
                                   void *mem_ctx,
-                                  int shader_time_index,
-                                  bool debug_enabled)
+                                  int shader_time_index)
    : vec4_visitor(compiler, log_data, &key->base.tex, &prog_data->base,
-                  shader, mem_ctx, false, shader_time_index, debug_enabled)
+                  shader, mem_ctx, false, shader_time_index)
 {
 }
 

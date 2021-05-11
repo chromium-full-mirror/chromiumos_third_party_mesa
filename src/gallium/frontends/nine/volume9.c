@@ -119,7 +119,8 @@ NineVolume9_ctor( struct NineVolume9 *This,
                                                          This->info.bind, FALSE,
                                                          TRUE);
     if (This->info.format != This->format_internal ||
-        /* See surface9.c */
+        /* DYNAMIC Textures requires same stride as ram buffers.
+         * Do not use workaround by default as it eats more virtual space */
         (pParams->device->workarounds.dynamic_texture_workaround &&
          pDesc->Pool == D3DPOOL_DEFAULT && pDesc->Usage & D3DUSAGE_DYNAMIC)) {
         This->stride_internal = nine_format_get_stride(This->format_internal,
@@ -289,13 +290,13 @@ NineVolume9_LockBox( struct NineVolume9 *This,
     }
 
     if (Flags & D3DLOCK_DISCARD) {
-        usage = PIPE_MAP_WRITE | PIPE_MAP_DISCARD_RANGE;
+        usage = PIPE_TRANSFER_WRITE | PIPE_TRANSFER_DISCARD_RANGE;
     } else {
         usage = (Flags & D3DLOCK_READONLY) ?
-            PIPE_MAP_READ : PIPE_MAP_READ_WRITE;
+            PIPE_TRANSFER_READ : PIPE_TRANSFER_READ_WRITE;
     }
     if (Flags & D3DLOCK_DONOTWAIT)
-        usage |= PIPE_MAP_DONTBLOCK;
+        usage |= PIPE_TRANSFER_DONTBLOCK;
 
     if (pBox) {
         user_assert(pBox->Right > pBox->Left, D3DERR_INVALIDCALL);

@@ -19,7 +19,7 @@ SHA256 checksum
 
 ::
 
-    0572dc6015d2e1c50f67823edd16855ae9b6feded0a1470598404e75e64aa092  mesa-20.2.4.tar.xz
+    TBD.
 
 
 New features
@@ -119,7 +119,7 @@ Rhys Perry (7):
 - aco: fix combine_constant_comparison_ordering() NaN check with 16/64-bit
 - aco: disallow various v_add_u32 opts if modifiers are used
 - aco: disable omod if the sign of zeros should be preserved
-- aco: fix fp16 \*0.5 omod
+- aco: fix fp16 *0.5 omod
 
 Suresh Guttula (2):
 

@@ -47,7 +47,7 @@ glXCreateContextAttribsARB(Display *dpy, GLXFBConfig config,
    xcb_generic_error_t *err;
    xcb_void_cookie_t cookie;
    unsigned dummy_err = 0;
-   uint32_t xid, share_xid;
+
 
    if (dpy == NULL || cfg == NULL)
       return NULL;
@@ -90,8 +90,8 @@ glXCreateContextAttribsARB(Display *dpy, GLXFBConfig config,
 #endif
    }
 
-   xid = xcb_generate_id(c);
-   share_xid = (share != NULL) ? share->xid : 0;
+   gc->xid = xcb_generate_id(c);
+   gc->share_xid = (share != NULL) ? share->xid : 0;
 
    /* The manual pages for glXCreateContext and glXCreateNewContext say:
     *
@@ -103,31 +103,21 @@ glXCreateContextAttribsARB(Display *dpy, GLXFBConfig config,
     */
    cookie =
       xcb_glx_create_context_attribs_arb_checked(c,
-						 xid,
+						 gc->xid,
 						 cfg->fbconfigID,
 						 cfg->screen,
-						 share_xid,
-						 gc ? gc->isDirect : direct,
+						 gc->share_xid,
+						 gc->isDirect,
 						 num_attribs,
 						 (const uint32_t *)
 						 attrib_list);
    err = xcb_request_check(c, cookie);
    if (err != NULL) {
-      if (gc)
-         gc->vtable->destroy(gc);
+      gc->vtable->destroy(gc);
       gc = NULL;
 
       __glXSendErrorForXcb(dpy, err);
       free(err);
-   } else if (!gc) {
-      /* the server thought the context description was okay, but we failed
-       * somehow on the client side. clean up the server resource and panic.
-       */
-      xcb_glx_destroy_context(c, xid);
-      __glXSendError(dpy, GLXBadFBConfig, xid, 0, False);
-   } else {
-      gc->xid = xid;
-      gc->share_xid = share_xid;
    }
 
    return (GLXContext) gc;

@@ -66,8 +66,8 @@ output_if_debug(const char *prefixString, const char *outputString,
       else
          debug = 1;
 #else
-      const char *env = getenv("MESA_DEBUG");
-      debug = env && strstr(env, "silent") == NULL;
+      /* in release builds, be silent unless MESA_DEBUG is set */
+      debug = getenv("MESA_DEBUG") != NULL;
 #endif
    }
 
@@ -86,10 +86,7 @@ output_if_debug(const char *prefixString, const char *outputString,
        * visible, so communicate with the debugger instead */
       {
          char buf[4096];
-         if (prefixString)
-            snprintf(buf, sizeof(buf), "%s: %s%s", prefixString, outputString, newline ? "\n" : "");
-         else
-            snprintf(buf, sizeof(buf), "%s%s", outputString, newline ? "\n" : "");
+         snprintf(buf, sizeof(buf), "%s: %s%s", prefixString, outputString, newline ? "\n" : "");
          OutputDebugStringA(buf);
       }
 #endif
@@ -402,7 +399,7 @@ _mesa_log(const char *fmtString, ...)
    va_start(args, fmtString);
    vsnprintf(s, MAX_DEBUG_MESSAGE_LENGTH, fmtString, args);
    va_end(args);
-   output_if_debug(NULL, s, GL_FALSE);
+   output_if_debug("", s, GL_FALSE);
 }
 
 
@@ -431,14 +428,4 @@ _mesa_shader_debug(struct gl_context *ctx, GLenum type, GLuint *id,
       len = MAX_DEBUG_MESSAGE_LENGTH - 1;
 
    _mesa_log_msg(ctx, source, type, *id, severity, len, msg);
-}
-
-/**
- * Set the parameter as the current GL error. Used by glthread.
- */
-void GLAPIENTRY
-_mesa_InternalSetError(GLenum error)
-{
-   GET_CURRENT_CONTEXT(ctx);
-   _mesa_error(ctx, error, "glthread");
 }

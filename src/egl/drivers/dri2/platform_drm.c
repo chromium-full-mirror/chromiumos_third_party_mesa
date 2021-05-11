@@ -138,8 +138,9 @@ dri2_drm_config_is_compatible(struct dri2_egl_display *dri2_dpy,
 }
 
 static _EGLSurface *
-dri2_drm_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
-                               void *native_surface, const EGLint *attrib_list)
+dri2_drm_create_window_surface(const _EGLDriver *drv, _EGLDisplay *disp,
+                               _EGLConfig *conf, void *native_surface,
+                               const EGLint *attrib_list)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_config *dri2_conf = dri2_egl_config(conf);
@@ -147,6 +148,8 @@ dri2_drm_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
    struct gbm_surface *surface = native_surface;
    struct gbm_dri_surface *surf;
    const __DRIconfig *config;
+
+   (void) drv;
 
    dri2_surf = calloc(1, sizeof *dri2_surf);
    if (!dri2_surf) {
@@ -189,8 +192,9 @@ dri2_drm_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
 }
 
 static _EGLSurface *
-dri2_drm_create_pixmap_surface(_EGLDisplay *disp, _EGLConfig *conf,
-                               void *native_window, const EGLint *attrib_list)
+dri2_drm_create_pixmap_surface(const _EGLDriver *drv, _EGLDisplay *disp,
+                               _EGLConfig *conf, void *native_window,
+                               const EGLint *attrib_list)
 {
    /* From the EGL_MESA_platform_gbm spec, version 5:
     *
@@ -203,7 +207,7 @@ dri2_drm_create_pixmap_surface(_EGLDisplay *disp, _EGLConfig *conf,
 }
 
 static EGLBoolean
-dri2_drm_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
+dri2_drm_destroy_surface(const _EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
@@ -251,16 +255,12 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
                                                             surf->base.format,
                                                             surf->base.modifiers,
                                                             surf->base.count);
-      else {
-         unsigned flags = surf->base.flags;
-         if (dri2_surf->base.ProtectedContent)
-            flags |= GBM_BO_USE_PROTECTED;
+      else
          dri2_surf->back->bo = gbm_bo_create(&dri2_dpy->gbm_dri->base,
                                              surf->base.width,
                                              surf->base.height,
                                              surf->base.format,
-                                             flags);
-      }
+                                             surf->base.flags);
 
    }
    if (dri2_surf->back->bo == NULL)
@@ -418,7 +418,7 @@ dri2_drm_flush_front_buffer(__DRIdrawable * driDrawable, void *loaderPrivate)
 }
 
 static EGLBoolean
-dri2_drm_swap_buffers(_EGLDisplay *disp, _EGLSurface *draw)
+dri2_drm_swap_buffers(const _EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *draw)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(draw);
@@ -450,7 +450,8 @@ dri2_drm_swap_buffers(_EGLDisplay *disp, _EGLSurface *draw)
 }
 
 static EGLint
-dri2_drm_query_buffer_age(_EGLDisplay *disp, _EGLSurface *surface)
+dri2_drm_query_buffer_age(const _EGLDriver *drv,
+                          _EGLDisplay *disp, _EGLSurface *surface)
 {
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surface);
 
@@ -489,14 +490,17 @@ dri2_drm_create_image_khr_pixmap(_EGLDisplay *disp, _EGLContext *ctx,
 }
 
 static _EGLImage *
-dri2_drm_create_image_khr(_EGLDisplay *disp, _EGLContext *ctx, EGLenum target,
+dri2_drm_create_image_khr(const _EGLDriver *drv, _EGLDisplay *disp,
+                          _EGLContext *ctx, EGLenum target,
                           EGLClientBuffer buffer, const EGLint *attr_list)
 {
+   (void) drv;
+
    switch (target) {
    case EGL_NATIVE_PIXMAP_KHR:
       return dri2_drm_create_image_khr_pixmap(disp, ctx, buffer, attr_list);
    default:
-      return dri2_create_image_khr(disp, ctx, target, buffer, attr_list);
+      return dri2_create_image_khr(drv, disp, ctx, target, buffer, attr_list);
    }
 }
 
@@ -606,7 +610,7 @@ swrast_get_image(__DRIdrawable *driDrawable,
 }
 
 static EGLBoolean
-drm_add_configs_for_visuals(_EGLDisplay *disp)
+drm_add_configs_for_visuals(const _EGLDriver *drv, _EGLDisplay *disp)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    const struct gbm_dri_visual *visuals = dri2_dpy->gbm_dri->visual_table;
@@ -678,7 +682,7 @@ static const struct dri2_egl_display_vtbl dri2_drm_display_vtbl = {
 };
 
 EGLBoolean
-dri2_initialize_drm(_EGLDisplay *disp)
+dri2_initialize_drm(const _EGLDriver *drv, _EGLDisplay *disp)
 {
    _EGLDevice *dev;
    struct dri2_egl_display *dri2_dpy;
@@ -718,7 +722,7 @@ dri2_initialize_drm(_EGLDisplay *disp)
       goto cleanup;
    }
 
-   dev = _eglAddDevice(dri2_dpy->fd, dri2_dpy->gbm_dri->software);
+   dev = _eglAddDevice(dri2_dpy->fd, disp->Options.ForceSoftware);
    if (!dev) {
       err = "DRI2: failed to find EGLDevice";
       goto cleanup;
@@ -770,7 +774,7 @@ dri2_initialize_drm(_EGLDisplay *disp)
 
    dri2_setup_screen(disp);
 
-   if (!drm_add_configs_for_visuals(disp)) {
+   if (!drm_add_configs_for_visuals(drv, disp)) {
       err = "DRI2: failed to add configs";
       goto cleanup;
    }
@@ -782,7 +786,7 @@ dri2_initialize_drm(_EGLDisplay *disp)
 #ifdef HAVE_WAYLAND_PLATFORM
    dri2_dpy->device_name = loader_get_device_name_for_fd(dri2_dpy->fd);
 #endif
-   dri2_set_WL_bind_wayland_display(disp);
+   dri2_set_WL_bind_wayland_display(drv, disp);
 
    /* Fill vtbl last to prevent accidentally calling virtual function during
     * initialization.

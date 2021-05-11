@@ -3,7 +3,6 @@
 %{
 #include <string.h>
 #include "i965_asm.h"
-#undef ALIGN16
 #include "i965_gram.tab.h"
 
 /* Locations */
@@ -25,7 +24,6 @@ extern char *input_filename;
 %x CHANNEL
 %x REG
 %x DOTSEL
-%x LABEL
 %%
 
  /* eat up single line comment */
@@ -136,7 +134,7 @@ cos 		{ yylval.integer = BRW_MATH_FUNCTION_COS; return COS; }
 exp 		{ yylval.integer = BRW_MATH_FUNCTION_EXP; return EXP; }
 fdiv 		{ yylval.integer = BRW_MATH_FUNCTION_FDIV; return FDIV; }
 inv 		{ yylval.integer = BRW_MATH_FUNCTION_INV; return INV; }
-invm 		{ yylval.integer = GFX8_MATH_FUNCTION_INVM; return INVM; }
+invm 		{ yylval.integer = GEN8_MATH_FUNCTION_INVM; return INVM; }
 intdiv        	{
 		   yylval.integer = BRW_MATH_FUNCTION_INT_DIV_QUOTIENT;
 		   return INTDIV;
@@ -153,7 +151,7 @@ intmod      	{
 log 		{ yylval.integer = BRW_MATH_FUNCTION_LOG; return LOG; }
 pow 		{ yylval.integer = BRW_MATH_FUNCTION_POW; return POW; }
 rsq 		{ yylval.integer = BRW_MATH_FUNCTION_RSQ; return RSQ; }
-rsqrtm       	{ yylval.integer = GFX8_MATH_FUNCTION_RSQRTM; return RSQRTM; }
+rsqrtm       	{ yylval.integer = GEN8_MATH_FUNCTION_RSQRTM; return RSQRTM; }
 sin 		{ yylval.integer = BRW_MATH_FUNCTION_SIN; return SIN; }
 sqrt 		{ yylval.integer = BRW_MATH_FUNCTION_SQRT; return SQRT; }
 sincos       	{ yylval.integer = BRW_MATH_FUNCTION_SINCOS; return SINCOS; }
@@ -369,8 +367,8 @@ sr[0-9]+ 	{ yylval.integer = atoi(yytext + 2); return STATEREG; }
  /* Eat up JIP and UIP token, their values will be parsed
   * in numeric section
   */
-"JIP: "		{ BEGIN(LABEL); }
-"UIP: "		{ BEGIN(LABEL); }
+"JIP: "		{ }
+"UIP: "		{ }
 "Jump: "       	{ }
 "Pop: "		{ }
 [ \t]+ 		{ }
@@ -384,21 +382,6 @@ sr[0-9]+ 	{ yylval.integer = atoi(yytext + 2); return STATEREG; }
 			   yylval.llint = strtoll(yytext, NULL, 10);
 			   return LONG;
 			}
-
- /* jump label target */
-[a-zA-Z_][0-9a-zA-Z_]*":" {
-	yylval.string = ralloc_strdup(p->mem_ctx, yytext);
-	/* Stomp the trailing ':' */
-	yylval.string[yyleng - 1] = '\0';
-	return JUMP_LABEL_TARGET;
-}
-
- /* jump label */
-<LABEL>[a-zA-Z_][0-9a-zA-Z_]* {
-	yylval.string = ralloc_strdup(p->mem_ctx, yytext);
-	BEGIN(INITIAL);
-	return JUMP_LABEL;
-}
 
 \n 	{ yycolumn = 1; }
 

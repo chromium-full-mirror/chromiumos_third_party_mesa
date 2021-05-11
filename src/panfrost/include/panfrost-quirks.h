@@ -45,9 +45,15 @@
 #define MIDGARD_BROKEN_FP16 (1 << 2)
 
 /* What it says on the tin */
+#define IS_BIFROST (1 << 3)
+
+/* What it says on the tin */
 #define HAS_SWIZZLES (1 << 4)
 
-/* bit 5 unused */
+/* Support for setting shader to NULL for masking out colour (while allowing
+ * Z/S updates to proceed) */
+
+#define MIDGARD_SHADERLESS (1 << 5)
 
 /* Whether this GPU lacks support for any typed stores in blend shader,
  * requiring packing instead */
@@ -62,36 +68,26 @@
 /* Has some missing formats for typed loads */
 #define MIDGARD_MISSING_LOADS (1 << 9)
 
-/* Lack support for AFBC */
-#define MIDGARD_NO_AFBC (1 << 10)
-
-/* Does this GPU support anisotropic filtering? */
-#define HAS_ANISOTROPIC (1 << 11)
-
-#define NO_TILE_ENABLE_MAP (1 << 12)
-
 /* Quirk collections common to particular uarchs */
 
 #define MIDGARD_QUIRKS (MIDGARD_BROKEN_FP16 | HAS_SWIZZLES \
                 | MIDGARD_NO_TYPED_BLEND_STORES \
                 | MIDGARD_MISSING_LOADS)
 
-#define BIFROST_QUIRKS NO_BLEND_PACKS
+#define BIFROST_QUIRKS (IS_BIFROST | NO_BLEND_PACKS)
 
 static inline unsigned
-panfrost_get_quirks(unsigned gpu_id, unsigned gpu_revision)
+panfrost_get_quirks(unsigned gpu_id)
 {
         switch (gpu_id) {
         case 0x600:
         case 0x620:
                 return MIDGARD_QUIRKS | MIDGARD_SFBD
                         | MIDGARD_NO_TYPED_BLEND_LOADS
-                        | NO_BLEND_PACKS | MIDGARD_NO_AFBC
-                        | NO_TILE_ENABLE_MAP;
+                        | NO_BLEND_PACKS;
 
         case 0x720:
-                return MIDGARD_QUIRKS | MIDGARD_SFBD | MIDGARD_NO_HIER_TILING
-                        | MIDGARD_NO_AFBC | NO_TILE_ENABLE_MAP;
+                return MIDGARD_QUIRKS | MIDGARD_SFBD | MIDGARD_NO_HIER_TILING;
 
         case 0x820:
         case 0x830:
@@ -100,23 +96,18 @@ panfrost_get_quirks(unsigned gpu_id, unsigned gpu_revision)
         case 0x750:
                 /* Someone should investigate the broken loads? */
                 return MIDGARD_QUIRKS | MIDGARD_NO_TYPED_BLEND_LOADS
-                        | NO_BLEND_PACKS;
+                        | NO_BLEND_PACKS | MIDGARD_SHADERLESS;
 
         case 0x860:
         case 0x880:
-                return MIDGARD_QUIRKS;
+                return MIDGARD_QUIRKS | MIDGARD_SHADERLESS;
 
         case 0x6000: /* G71 */
                 return BIFROST_QUIRKS | HAS_SWIZZLES;
 
-        case 0x6221: /* G72 */
-                /* Anisotropic filtering is supported from r0p3 onwards */
-                return BIFROST_QUIRKS | HAS_SWIZZLES
-                        | (gpu_revision >= 0x30 ? HAS_ANISOTROPIC : 0);
-
         case 0x7093: /* G31 */
         case 0x7212: /* G52 */
-                return BIFROST_QUIRKS | HAS_ANISOTROPIC;
+                return BIFROST_QUIRKS;
 
         default:
                 unreachable("Unknown Panfrost GPU ID");

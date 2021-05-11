@@ -724,7 +724,6 @@ ir_constant::ir_constant(const struct glsl_type *type,
 ir_constant::ir_constant(float16_t f16, unsigned vector_elements)
    : ir_rvalue(ir_type_constant)
 {
-   this->const_elements = NULL;
    assert(vector_elements <= 4);
    this->type = glsl_type::get_instance(GLSL_TYPE_FLOAT16, vector_elements, 1);
    for (unsigned i = 0; i < vector_elements; i++) {
@@ -738,7 +737,6 @@ ir_constant::ir_constant(float16_t f16, unsigned vector_elements)
 ir_constant::ir_constant(float f, unsigned vector_elements)
    : ir_rvalue(ir_type_constant)
 {
-   this->const_elements = NULL;
    assert(vector_elements <= 4);
    this->type = glsl_type::get_instance(GLSL_TYPE_FLOAT, vector_elements, 1);
    for (unsigned i = 0; i < vector_elements; i++) {
@@ -752,7 +750,6 @@ ir_constant::ir_constant(float f, unsigned vector_elements)
 ir_constant::ir_constant(double d, unsigned vector_elements)
    : ir_rvalue(ir_type_constant)
 {
-   this->const_elements = NULL;
    assert(vector_elements <= 4);
    this->type = glsl_type::get_instance(GLSL_TYPE_DOUBLE, vector_elements, 1);
    for (unsigned i = 0; i < vector_elements; i++) {
@@ -766,7 +763,6 @@ ir_constant::ir_constant(double d, unsigned vector_elements)
 ir_constant::ir_constant(int16_t i16, unsigned vector_elements)
    : ir_rvalue(ir_type_constant)
 {
-   this->const_elements = NULL;
    assert(vector_elements <= 4);
    this->type = glsl_type::get_instance(GLSL_TYPE_INT16, vector_elements, 1);
    for (unsigned i = 0; i < vector_elements; i++) {
@@ -780,7 +776,6 @@ ir_constant::ir_constant(int16_t i16, unsigned vector_elements)
 ir_constant::ir_constant(uint16_t u16, unsigned vector_elements)
    : ir_rvalue(ir_type_constant)
 {
-   this->const_elements = NULL;
    assert(vector_elements <= 4);
    this->type = glsl_type::get_instance(GLSL_TYPE_UINT16, vector_elements, 1);
    for (unsigned i = 0; i < vector_elements; i++) {
@@ -794,7 +789,6 @@ ir_constant::ir_constant(uint16_t u16, unsigned vector_elements)
 ir_constant::ir_constant(unsigned int u, unsigned vector_elements)
    : ir_rvalue(ir_type_constant)
 {
-   this->const_elements = NULL;
    assert(vector_elements <= 4);
    this->type = glsl_type::get_instance(GLSL_TYPE_UINT, vector_elements, 1);
    for (unsigned i = 0; i < vector_elements; i++) {
@@ -808,7 +802,6 @@ ir_constant::ir_constant(unsigned int u, unsigned vector_elements)
 ir_constant::ir_constant(int integer, unsigned vector_elements)
    : ir_rvalue(ir_type_constant)
 {
-   this->const_elements = NULL;
    assert(vector_elements <= 4);
    this->type = glsl_type::get_instance(GLSL_TYPE_INT, vector_elements, 1);
    for (unsigned i = 0; i < vector_elements; i++) {
@@ -822,7 +815,6 @@ ir_constant::ir_constant(int integer, unsigned vector_elements)
 ir_constant::ir_constant(uint64_t u64, unsigned vector_elements)
    : ir_rvalue(ir_type_constant)
 {
-   this->const_elements = NULL;
    assert(vector_elements <= 4);
    this->type = glsl_type::get_instance(GLSL_TYPE_UINT64, vector_elements, 1);
    for (unsigned i = 0; i < vector_elements; i++) {
@@ -836,7 +828,6 @@ ir_constant::ir_constant(uint64_t u64, unsigned vector_elements)
 ir_constant::ir_constant(int64_t int64, unsigned vector_elements)
    : ir_rvalue(ir_type_constant)
 {
-   this->const_elements = NULL;
    assert(vector_elements <= 4);
    this->type = glsl_type::get_instance(GLSL_TYPE_INT64, vector_elements, 1);
    for (unsigned i = 0; i < vector_elements; i++) {
@@ -850,7 +841,6 @@ ir_constant::ir_constant(int64_t int64, unsigned vector_elements)
 ir_constant::ir_constant(bool b, unsigned vector_elements)
    : ir_rvalue(ir_type_constant)
 {
-   this->const_elements = NULL;
    assert(vector_elements <= 4);
    this->type = glsl_type::get_instance(GLSL_TYPE_BOOL, vector_elements, 1);
    for (unsigned i = 0; i < vector_elements; i++) {
@@ -866,20 +856,6 @@ ir_constant::ir_constant(const ir_constant *c, unsigned i)
 {
    this->const_elements = NULL;
    this->type = c->type->get_base_type();
-
-   /* Section 5.11 (Out-of-Bounds Accesses) of the GLSL 4.60 spec says:
-    *
-    *    In the subsections described above for array, vector, matrix and
-    *    structure accesses, any out-of-bounds access produced undefined
-    *    behavior....Out-of-bounds reads return undefined values, which
-    *    include values from other variables of the active program or zero.
-    *
-    * GL_KHR_robustness and GL_ARB_robustness encourage us to return zero.
-    */
-   if (i >= c->type->vector_elements) {
-      this->value = { { 0 } };
-      return;
-   }
 
    switch (this->type->base_type) {
    case GLSL_TYPE_UINT16:  this->value.u16[0] = c->value.u16[i]; break;
@@ -1748,7 +1724,7 @@ ir_dereference::is_lvalue(const struct _mesa_glsl_parse_state *state) const
 {
    ir_variable *var = this->variable_referenced();
 
-   /* Every l-value dereference chain eventually ends in a variable.
+   /* Every l-value derference chain eventually ends in a variable.
     */
    if ((var == NULL) || var->data.read_only)
       return false;
@@ -2025,7 +2001,6 @@ ir_variable::ir_variable(const struct glsl_type *type, const char *name,
    this->data.has_initializer = false;
    this->data.is_implicit_initializer = false;
    this->data.is_unmatched_generic_inout = false;
-   this->data.is_xfb = false;
    this->data.is_xfb_only = false;
    this->data.explicit_xfb_buffer = false;
    this->data.explicit_xfb_offset = false;

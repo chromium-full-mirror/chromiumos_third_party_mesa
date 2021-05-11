@@ -32,27 +32,16 @@
 namespace clover {
    namespace compiler {
       static inline module
-      compile_program(const program &prog, const header_map &headers,
+      compile_program(const std::string &source, const header_map &headers,
                       const device &dev, const std::string &opts,
                       std::string &log) {
          switch (dev.ir_format()) {
 #ifdef HAVE_CLOVER_SPIRV
          case PIPE_SHADER_IR_NIR_SERIALIZED:
-            switch (prog.il_type()) {
-            case program::il_type::source:
-               return llvm::compile_to_spirv(prog.source(), headers, dev, opts, log);
-            case program::il_type::spirv:
-               return spirv::compile_program(prog.source(), dev, log);
-            default:
-               unreachable("device with unsupported IL");
-               throw error(CL_INVALID_VALUE);
-            }
+            return llvm::compile_to_spirv(source, headers, dev, opts, log);
 #endif
          case PIPE_SHADER_IR_NATIVE:
-            if (prog.il_type() == program::il_type::source)
-               return llvm::compile_program(prog.source(), headers, dev, opts, log);
-            else
-               throw error(CL_INVALID_VALUE);
+            return llvm::compile_program(source, headers, dev, opts, log);
          default:
             unreachable("device with unsupported IR");
             throw error(CL_INVALID_VALUE);

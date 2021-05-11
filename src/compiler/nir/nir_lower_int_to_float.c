@@ -70,7 +70,7 @@ lower_alu_instr(nir_builder *b, nir_alu_instr *alu)
    case nir_op_ilt: alu->op = nir_op_flt; break;
    case nir_op_ige: alu->op = nir_op_fge; break;
    case nir_op_ieq: alu->op = nir_op_feq; break;
-   case nir_op_ine: alu->op = nir_op_fneu; break;
+   case nir_op_ine: alu->op = nir_op_fne; break;
    case nir_op_ult: alu->op = nir_op_flt; break;
    case nir_op_uge: alu->op = nir_op_fge; break;
 
@@ -108,7 +108,7 @@ lower_alu_instr(nir_builder *b, nir_alu_instr *alu)
 
    if (rep) {
       /* We've emitted a replacement instruction */
-      nir_ssa_def_rewrite_uses(&alu->dest.dest.ssa, rep);
+      nir_ssa_def_rewrite_uses(&alu->dest.dest.ssa, nir_src_for_ssa(rep));
       nir_instr_remove(&alu->instr);
    }
 
