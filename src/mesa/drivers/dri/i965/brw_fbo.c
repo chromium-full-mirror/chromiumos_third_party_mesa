@@ -249,7 +249,7 @@ static mesa_format
 brw_renderbuffer_format(struct gl_context * ctx, GLenum internalFormat)
 {
    struct brw_context *brw = brw_context(ctx);
-   ASSERTED const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   ASSERTED const struct intel_device_info *devinfo = &brw->screen->devinfo;
 
    switch (internalFormat) {
    default:
@@ -647,7 +647,7 @@ static void
 brw_validate_framebuffer(struct gl_context *ctx, struct gl_framebuffer *fb)
 {
    struct brw_context *brw = brw_context(ctx);
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
    struct brw_renderbuffer *depthRb =
       brw_get_renderbuffer(fb, BUFFER_DEPTH);
    struct brw_renderbuffer *stencilRb =
@@ -668,7 +668,7 @@ brw_validate_framebuffer(struct gl_context *ctx, struct gl_framebuffer *fb)
    }
 
    if (depth_mt && stencil_mt) {
-      if (devinfo->gen >= 6) {
+      if (devinfo->ver >= 6) {
          const unsigned d_width = depth_mt->surf.phys_level0_sa.width;
          const unsigned d_height = depth_mt->surf.phys_level0_sa.height;
          const unsigned d_depth = depth_mt->surf.dim == ISL_SURF_DIM_3D ?
@@ -722,8 +722,8 @@ brw_validate_framebuffer(struct gl_context *ctx, struct gl_framebuffer *fb)
                       "instead of S8\n",
                       _mesa_get_format_name(stencil_mt->format));
          }
-         if (devinfo->gen < 7 && !brw_renderbuffer_has_hiz(depthRb)) {
-            /* Before Gen7, separate depth and stencil buffers can be used
+         if (devinfo->ver < 7 && !brw_renderbuffer_has_hiz(depthRb)) {
+            /* Before Gfx7, separate depth and stencil buffers can be used
              * only if HiZ is enabled. From the Sandybridge PRM, Volume 2,
              * Part 1, Bit 3DSTATE_DEPTH_BUFFER.SeparateStencilBufferEnable:
              *     [DevSNB]: This field must be set to the same value (enabled
@@ -895,7 +895,7 @@ brw_blit_framebuffer(struct gl_context *ctx,
                      GLbitfield mask, GLenum filter)
 {
    struct brw_context *brw = brw_context(ctx);
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
 
    /* Page 679 of OpenGL 4.4 spec says:
     *    "Added BlitFramebuffer to commands affected by conditional rendering in
@@ -904,12 +904,12 @@ brw_blit_framebuffer(struct gl_context *ctx,
    if (!_mesa_check_conditional_render(ctx))
       return;
 
-   if (devinfo->gen < 6) {
-      /* On gen4-5, try BLT first.
+   if (devinfo->ver < 6) {
+      /* On gfx4-5, try BLT first.
        *
-       * Gen4-5 have a single ring for both 3D and BLT operations, so there's
-       * no inter-ring synchronization issues like on Gen6+.  It is apparently
-       * faster than using the 3D pipeline.  Original Gen4 also has to rebase
+       * Gfx4-5 have a single ring for both 3D and BLT operations, so there's
+       * no inter-ring synchronization issues like on Gfx6+.  It is apparently
+       * faster than using the 3D pipeline.  Original Gfx4 also has to rebase
        * and copy miptree slices in order to render to unaligned locations.
        */
       mask = brw_blit_framebuffer_with_blitter(ctx, readFb, drawFb,
@@ -937,7 +937,7 @@ brw_blit_framebuffer(struct gl_context *ctx,
    if (mask == 0x0)
       return;
 
-   if (devinfo->gen >= 8 && (mask & GL_STENCIL_BUFFER_BIT)) {
+   if (devinfo->ver >= 8 && (mask & GL_STENCIL_BUFFER_BIT)) {
       assert(!"Invalid blit");
    }
 
@@ -1014,9 +1014,9 @@ brw_cache_sets_clear(struct brw_context *brw)
 static void
 flush_depth_and_render_caches(struct brw_context *brw, struct brw_bo *bo)
 {
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
 
-   if (devinfo->gen >= 6) {
+   if (devinfo->ver >= 6) {
       brw_emit_pipe_control_flush(brw,
                                   PIPE_CONTROL_DEPTH_CACHE_FLUSH |
                                   PIPE_CONTROL_RENDER_TARGET_FLUSH |
@@ -1061,7 +1061,7 @@ brw_cache_flush_for_render(struct brw_context *brw, struct brw_bo *bo,
     *
     * Even though it's not obvious, this can easily happen in practice.
     * Suppose a client is blending on a surface with sRGB encode enabled on
-    * gen9.  This implies that you get AUX_USAGE_CCS_D at best.  If the client
+    * gfx9.  This implies that you get AUX_USAGE_CCS_D at best.  If the client
     * then disables sRGB decode and continues blending we will flip on
     * AUX_USAGE_CCS_E without doing any sort of resolve in-between (this is
     * perfectly valid since CCS_E is a subset of CCS_D).  However, this means
@@ -1135,4 +1135,5 @@ brw_fbo_init(struct brw_context *brw)
                                                _mesa_key_pointer_equal);
    brw->depth_cache = _mesa_set_create(brw->mem_ctx, _mesa_hash_pointer,
                                        _mesa_key_pointer_equal);
+   util_dynarray_init(&brw->batch.exec_fences, NULL);
 }

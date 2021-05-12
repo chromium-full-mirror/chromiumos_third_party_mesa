@@ -41,6 +41,7 @@ struct pipe_screen;
 struct zink_context;
 struct zink_screen;
 struct zink_shader_key;
+struct zink_shader_module;
 struct zink_gfx_program;
 
 struct nir_shader_compiler_options;
@@ -77,6 +78,7 @@ struct zink_shader {
       unsigned char size;
    } bindings[ZINK_DESCRIPTOR_TYPES][32];
    size_t num_bindings[ZINK_DESCRIPTOR_TYPES];
+   unsigned num_texel_buffers;
    uint32_t ubos_used; // bitfield of which ubo indices are used
    uint32_t ssbos_used; // bitfield of which ssbo indices are used
    struct set *programs;
@@ -99,6 +101,9 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
                  const struct pipe_stream_output_info *so_info);
 
 void
+zink_shader_finalize(struct pipe_screen *pscreen, void *nirptr, bool optimize);
+
+void
 zink_shader_free(struct zink_context *ctx, struct zink_shader *shader);
 
 struct zink_shader *
@@ -111,6 +116,4 @@ zink_shader_descriptor_is_buffer(struct zink_shader *zs, enum zink_descriptor_ty
           zs->bindings[type][i].type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
 }
 
-uint32_t
-zink_binding(gl_shader_stage stage, VkDescriptorType type, int index);;
 #endif

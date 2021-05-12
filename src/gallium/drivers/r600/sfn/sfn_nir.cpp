@@ -810,6 +810,7 @@ bool has_saturate(const nir_function *func)
    return false;
 }
 
+extern "C"
 bool r600_lower_to_scalar_instr_filter(const nir_instr *instr, const void *)
 {
    if (instr->type != nir_instr_type_alu)
@@ -863,17 +864,17 @@ int r600_shader_from_nir(struct r600_context *rctx,
 
    NIR_PASS_V(sel->nir, nir_lower_vars_to_ssa);
    NIR_PASS_V(sel->nir, nir_lower_regs_to_ssa);
-   NIR_PASS_V(sel->nir, nir_lower_idiv,
-              sel->nir->info.stage == MESA_SHADER_COMPUTE ?
-                 nir_lower_idiv_precise : nir_lower_idiv_fast);
+   nir_lower_idiv_options idiv_options = {
+      .imprecise_32bit_lowering = sel->nir->info.stage != MESA_SHADER_COMPUTE,
+      .allow_fp16 = true,
+   };
+   NIR_PASS_V(sel->nir, nir_lower_idiv, &idiv_options);
    NIR_PASS_V(sel->nir, r600_lower_alu);
    NIR_PASS_V(sel->nir, nir_lower_phis_to_scalar);
 
    if (lower_64bit)
       NIR_PASS_V(sel->nir, nir_lower_int64);
    while(optimize_once(sel->nir, false));
-
-   NIR_PASS_V(sel->nir, nir_lower_alu_to_scalar, r600_lower_to_scalar_instr_filter, NULL);
 
    NIR_PASS_V(sel->nir, r600_lower_shared_io);
    NIR_PASS_V(sel->nir, r600_nir_lower_atomics);
@@ -995,7 +996,7 @@ int r600_shader_from_nir(struct r600_context *rctx,
    NIR_PASS_V(sh, nir_convert_from_ssa, true);
    NIR_PASS_V(sh, nir_opt_dce);
 
-   if ((rctx->screen->b.debug_flags & DBG_NIR) &&
+   if ((rctx->screen->b.debug_flags & DBG_NIR_PREFERRED) &&
        (rctx->screen->b.debug_flags & DBG_ALL_SHADERS)) {
       fprintf(stderr, "-- NIR --------------------------------------------------------\n");
       struct nir_function *func = (struct nir_function *)exec_list_get_head(&sh->functions);

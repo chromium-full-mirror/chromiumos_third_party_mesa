@@ -160,6 +160,8 @@ void init_program(Program *program, Stage stage, struct radv_shader_info *info,
 
    program->wgp_mode = wgp_mode;
 
+   program->progress = CompilationProgress::after_isel;
+
    program->next_fp_mode.preserve_signed_zero_inf_nan32 = false;
    program->next_fp_mode.preserve_signed_zero_inf_nan16_64 = false;
    program->next_fp_mode.must_flush_denorms32 = false;
@@ -540,6 +542,32 @@ bool wait_imm::empty() const
 {
    return vm == unset_counter && exp == unset_counter &&
           lgkm == unset_counter && vs == unset_counter;
+}
+
+bool should_form_clause(const Instruction *a, const Instruction *b)
+{
+   /* Vertex attribute loads from the same binding likely load from similar addresses */
+   unsigned a_vtx_binding = a->isMUBUF() ? a->mubuf().vtx_binding : (a->isMTBUF() ? a->mtbuf().vtx_binding : 0);
+   unsigned b_vtx_binding = b->isMUBUF() ? b->mubuf().vtx_binding : (b->isMTBUF() ? b->mtbuf().vtx_binding : 0);
+   if (a_vtx_binding && a_vtx_binding == b_vtx_binding)
+      return true;
+
+   if (a->format != b->format)
+      return false;
+
+   /* Assume loads which don't use descriptors might load from similar addresses. */
+   if (a->isFlatLike())
+      return true;
+   if (a->isSMEM() && a->operands[0].bytes() == 8 && b->operands[0].bytes() == 8)
+      return true;
+
+   /* If they load from the same descriptor, assume they might load from similar
+    * addresses.
+    */
+   if (a->isVMEM() || a->isSMEM())
+      return a->operands[0].tempId() == b->operands[0].tempId();
+
+   return false;
 }
 
 }

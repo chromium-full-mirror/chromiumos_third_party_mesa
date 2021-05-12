@@ -84,7 +84,7 @@ struct panfrost_query {
         bool msaa;
 };
 
-struct panfrost_fence {
+struct pipe_fence_handle {
         struct pipe_reference reference;
         uint32_t syncobj;
         bool signaled;
@@ -133,9 +133,16 @@ struct panfrost_context {
         uint64_t tf_prims_generated;
         struct panfrost_query *occlusion_query;
 
+        bool indirect_draw;
+        unsigned drawid;
         unsigned vertex_count;
         unsigned instance_count;
         unsigned offset_start;
+        unsigned base_vertex;
+        unsigned base_instance;
+        mali_ptr first_vertex_sysval_ptr;
+        mali_ptr base_vertex_sysval_ptr;
+        mali_ptr base_instance_sysval_ptr;
         enum pipe_prim_type active_prim;
 
         /* If instancing is enabled, vertex count padded for instance; if
@@ -215,7 +222,9 @@ struct panfrost_shader_state {
         /* GPU-executable memory */
         struct panfrost_bo *bo;
 
+        /* Variants */
         enum pipe_format rt_formats[8];
+        unsigned nr_cbufs;
 };
 
 /* A collection of varyings (the CSO) */
@@ -313,23 +322,6 @@ panfrost_flush(
 
 bool
 panfrost_render_condition_check(struct panfrost_context *ctx);
-
-mali_ptr panfrost_sfbd_fragment(struct panfrost_batch *batch, bool has_draws);
-mali_ptr panfrost_mfbd_fragment(struct panfrost_batch *batch, bool has_draws);
-
-void
-panfrost_attach_mfbd(struct panfrost_batch *batch, unsigned vertex_count);
-
-void
-panfrost_attach_sfbd(struct panfrost_batch *batch, unsigned vertex_count);
-
-void
-panfrost_emit_midg_tiler(struct panfrost_batch *batch,
-                         struct mali_midgard_tiler_packed *tp,
-                         unsigned vertex_count);
-
-mali_ptr
-panfrost_fragment_job(struct panfrost_batch *batch, bool has_draws);
 
 void
 panfrost_shader_compile(struct panfrost_context *ctx,

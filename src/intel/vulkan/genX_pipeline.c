@@ -175,7 +175,7 @@ emit_vertex_input(struct anv_graphics_pipeline *pipeline,
       };
       GENX(VERTEX_ELEMENT_STATE_pack)(NULL, &p[1 + slot * 2], &element);
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       /* On Broadwell and later, we have a separate VF_INSTANCING packet
        * that controls instancing.  On Haswell and prior, that's part of
        * VERTEX_BUFFER_STATE which we emit later.
@@ -210,7 +210,7 @@ emit_vertex_input(struct anv_graphics_pipeline *pipeline,
          .SourceElementFormat = ISL_FORMAT_R32G32_UINT,
          .Component0Control = base_ctrl,
          .Component1Control = base_ctrl,
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
          .Component2Control = VFCOMP_STORE_0,
          .Component3Control = VFCOMP_STORE_0,
 #else
@@ -220,14 +220,14 @@ emit_vertex_input(struct anv_graphics_pipeline *pipeline,
       };
       GENX(VERTEX_ELEMENT_STATE_pack)(NULL, &p[1 + id_slot * 2], &element);
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_VF_INSTANCING), vfi) {
          vfi.VertexElementIndex = id_slot;
       }
 #endif
    }
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_VF_SGVS), sgvs) {
       sgvs.VertexIDEnable              = vs_prog_data->uses_vertexid;
       sgvs.VertexIDComponentNumber     = 2;
@@ -253,7 +253,7 @@ emit_vertex_input(struct anv_graphics_pipeline *pipeline,
                                       &p[1 + drawid_slot * 2],
                                       &element);
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_VF_INSTANCING), vfi) {
          vfi.VertexElementIndex = drawid_slot;
       }
@@ -268,7 +268,7 @@ genX(emit_urb_setup)(struct anv_device *device, struct anv_batch *batch,
                      const unsigned entry_size[4],
                      enum intel_urb_deref_block_size *deref_block_size)
 {
-   const struct gen_device_info *devinfo = &device->info;
+   const struct intel_device_info *devinfo = &device->info;
 
    unsigned entries[4];
    unsigned start[4];
@@ -280,7 +280,7 @@ genX(emit_urb_setup)(struct anv_device *device, struct anv_batch *batch,
                         entry_size, entries, start, deref_block_size,
                         &constrained);
 
-#if GEN_VERSIONx10 == 70
+#if GFX_VERx10 == 70
    /* From the IVB PRM Vol. 2, Part 1, Section 3.2.1:
     *
     *    "A PIPE_CONTROL with Post-Sync Operation set to 1h and a depth stall
@@ -289,7 +289,7 @@ genX(emit_urb_setup)(struct anv_device *device, struct anv_batch *batch,
     *    3DSTATE_SAMPLER_STATE_POINTER_VS command.  Only one PIPE_CONTROL
     *    needs to be sent before any combination of VS associated 3DSTATE."
     */
-   anv_batch_emit(batch, GEN7_PIPE_CONTROL, pc) {
+   anv_batch_emit(batch, GFX7_PIPE_CONTROL, pc) {
       pc.DepthStallEnable  = true;
       pc.PostSyncOperation = WriteImmediateData;
       pc.Address           = device->workaround_address;
@@ -332,7 +332,7 @@ emit_3dstate_sbe(struct anv_graphics_pipeline *pipeline)
 
    if (!anv_pipeline_has_stage(pipeline, MESA_SHADER_FRAGMENT)) {
       anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_SBE), sbe);
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_SBE_SWIZ), sbe);
 #endif
       return;
@@ -349,12 +349,12 @@ emit_3dstate_sbe(struct anv_graphics_pipeline *pipeline)
       .ConstantInterpolationEnable = wm_prog_data->flat_inputs,
    };
 
-#if GEN_GEN >= 9
+#if GFX_VER >= 9
    for (unsigned i = 0; i < 32; i++)
       sbe.AttributeActiveComponentFormat[i] = ACF_XYZW;
 #endif
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    /* On Broadwell, they broke 3DSTATE_SBE into two packets */
    struct GENX(3DSTATE_SBE_SWIZ) swiz = {
       GENX(3DSTATE_SBE_SWIZ_header),
@@ -374,8 +374,12 @@ emit_3dstate_sbe(struct anv_graphics_pipeline *pipeline)
 
       assert(0 <= input_index);
 
-      /* gl_Viewport and gl_Layer are stored in the VUE header */
-      if (attr == VARYING_SLOT_VIEWPORT || attr == VARYING_SLOT_LAYER) {
+      /* gl_Viewport, gl_Layer and FragmentShadingRateKHR are stored in the
+       * VUE header
+       */
+      if (attr == VARYING_SLOT_VIEWPORT ||
+          attr == VARYING_SLOT_LAYER ||
+          attr == VARYING_SLOT_PRIMITIVE_SHADING_RATE) {
          continue;
       }
 
@@ -421,7 +425,7 @@ emit_3dstate_sbe(struct anv_graphics_pipeline *pipeline)
 
    sbe.VertexURBEntryReadOffset = urb_entry_read_offset;
    sbe.VertexURBEntryReadLength = DIV_ROUND_UP(max_source_attr + 1, 2);
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    sbe.ForceVertexURBEntryReadOffset = true;
    sbe.ForceVertexURBEntryReadLength = true;
 #endif
@@ -432,7 +436,7 @@ emit_3dstate_sbe(struct anv_graphics_pipeline *pipeline)
       return;
    GENX(3DSTATE_SBE_pack)(&pipeline->base.batch, dw, &sbe);
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    dw = anv_batch_emit_dwords(&pipeline->base.batch, GENX(3DSTATE_SBE_SWIZ_length));
    if (!dw)
       return;
@@ -526,9 +530,9 @@ anv_raster_polygon_mode(struct anv_graphics_pipeline *pipeline,
    }
 }
 
-#if GEN_GEN <= 7
+#if GFX_VER <= 7
 static uint32_t
-gen7_ms_rast_mode(struct anv_graphics_pipeline *pipeline,
+gfx7_ms_rast_mode(struct anv_graphics_pipeline *pipeline,
                   const VkPipelineInputAssemblyStateCreateInfo *ia_info,
                   const VkPipelineRasterizationStateCreateInfo *rs_info,
                   const VkPipelineMultisampleStateCreateInfo *ms_info)
@@ -558,23 +562,45 @@ gen7_ms_rast_mode(struct anv_graphics_pipeline *pipeline,
 }
 #endif
 
-const uint32_t genX(vk_to_gen_cullmode)[] = {
+static VkProvokingVertexModeEXT
+vk_provoking_vertex_mode(const VkPipelineRasterizationStateCreateInfo *rs_info)
+{
+   const VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *rs_pv_info =
+      vk_find_struct_const(rs_info, PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT);
+
+   return rs_pv_info == NULL ? VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT :
+                               rs_pv_info->provokingVertexMode;
+}
+
+const uint32_t genX(vk_to_intel_cullmode)[] = {
    [VK_CULL_MODE_NONE]                       = CULLMODE_NONE,
    [VK_CULL_MODE_FRONT_BIT]                  = CULLMODE_FRONT,
    [VK_CULL_MODE_BACK_BIT]                   = CULLMODE_BACK,
    [VK_CULL_MODE_FRONT_AND_BACK]             = CULLMODE_BOTH
 };
 
-const uint32_t genX(vk_to_gen_fillmode)[] = {
+const uint32_t genX(vk_to_intel_fillmode)[] = {
    [VK_POLYGON_MODE_FILL]                    = FILL_MODE_SOLID,
    [VK_POLYGON_MODE_LINE]                    = FILL_MODE_WIREFRAME,
    [VK_POLYGON_MODE_POINT]                   = FILL_MODE_POINT,
 };
 
-const uint32_t genX(vk_to_gen_front_face)[] = {
+const uint32_t genX(vk_to_intel_front_face)[] = {
    [VK_FRONT_FACE_COUNTER_CLOCKWISE]         = 1,
    [VK_FRONT_FACE_CLOCKWISE]                 = 0
 };
+
+#if GFX_VER >= 9
+static VkConservativeRasterizationModeEXT
+vk_conservative_rasterization_mode(const VkPipelineRasterizationStateCreateInfo *rs_info)
+{
+   const VkPipelineRasterizationConservativeStateCreateInfoEXT *cr =
+      vk_find_struct_const(rs_info, PIPELINE_RASTERIZATION_CONSERVATIVE_STATE_CREATE_INFO_EXT);
+
+   return cr ? cr->conservativeRasterizationMode :
+               VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT;
+}
+#endif
 
 static void
 emit_rs_state(struct anv_graphics_pipeline *pipeline,
@@ -593,17 +619,31 @@ emit_rs_state(struct anv_graphics_pipeline *pipeline,
 
    sf.ViewportTransformEnable = true;
    sf.StatisticsEnable = true;
-   sf.TriangleStripListProvokingVertexSelect = 0;
-   sf.LineStripListProvokingVertexSelect = 0;
-   sf.TriangleFanProvokingVertexSelect = 1;
    sf.VertexSubPixelPrecisionSelect = _8Bit;
    sf.AALineDistanceMode = true;
 
-#if GEN_VERSIONx10 == 75
+   switch (vk_provoking_vertex_mode(rs_info)) {
+   case VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT:
+      sf.TriangleStripListProvokingVertexSelect = 0;
+      sf.LineStripListProvokingVertexSelect = 0;
+      sf.TriangleFanProvokingVertexSelect = 1;
+      break;
+
+   case VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT:
+      sf.TriangleStripListProvokingVertexSelect = 2;
+      sf.LineStripListProvokingVertexSelect = 1;
+      sf.TriangleFanProvokingVertexSelect = 2;
+      break;
+
+   default:
+      unreachable("Invalid provoking vertex mode");
+   }
+
+#if GFX_VERx10 == 75
    sf.LineStippleEnable = line_info && line_info->stippledLineEnable;
 #endif
 
-#if GEN_GEN >= 12
+#if GFX_VER >= 12
    sf.DerefBlockSize = urb_deref_block_size;
 #endif
 
@@ -617,7 +657,7 @@ emit_rs_state(struct anv_graphics_pipeline *pipeline,
       sf.PointWidth = 1.0;
    }
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    struct GENX(3DSTATE_RASTER) raster = {
       GENX(3DSTATE_RASTER_header),
    };
@@ -633,11 +673,11 @@ emit_rs_state(struct anv_graphics_pipeline *pipeline,
    /* For details on 3DSTATE_RASTER multisample state, see the BSpec table
     * "Multisample Modes State".
     */
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    if (raster_mode == VK_POLYGON_MODE_LINE) {
-      /* Unfortunately, configuring our line rasterization hardware on gen8
+      /* Unfortunately, configuring our line rasterization hardware on gfx8
        * and later is rather painful.  Instead of giving us bits to tell the
-       * hardware what line mode to use like we had on gen7, we now have an
+       * hardware what line mode to use like we had on gfx7, we now have an
        * arcane combination of API Mode and MSAA enable bits which do things
        * in a table which are expected to magically put the hardware into the
        * right mode for your API.  Sadly, Vulkan isn't any of the APIs the
@@ -674,7 +714,7 @@ emit_rs_state(struct anv_graphics_pipeline *pipeline,
    raster.ForceMultisampling = false;
 #else
    raster.MultisampleRasterizationMode =
-      gen7_ms_rast_mode(pipeline, ia_info, rs_info, ms_info);
+      gfx7_ms_rast_mode(pipeline, ia_info, rs_info, ms_info);
 #endif
 
    if (raster_mode == VK_POLYGON_MODE_LINE &&
@@ -683,29 +723,35 @@ emit_rs_state(struct anv_graphics_pipeline *pipeline,
 
    raster.FrontWinding =
       dynamic_states & ANV_CMD_DIRTY_DYNAMIC_FRONT_FACE ?
-         0 : genX(vk_to_gen_front_face)[rs_info->frontFace];
+         0 : genX(vk_to_intel_front_face)[rs_info->frontFace];
    raster.CullMode =
       dynamic_states & ANV_CMD_DIRTY_DYNAMIC_CULL_MODE ?
-         0 : genX(vk_to_gen_cullmode)[rs_info->cullMode];
+         0 : genX(vk_to_intel_cullmode)[rs_info->cullMode];
 
-   raster.FrontFaceFillMode = genX(vk_to_gen_fillmode)[rs_info->polygonMode];
-   raster.BackFaceFillMode = genX(vk_to_gen_fillmode)[rs_info->polygonMode];
+   raster.FrontFaceFillMode = genX(vk_to_intel_fillmode)[rs_info->polygonMode];
+   raster.BackFaceFillMode = genX(vk_to_intel_fillmode)[rs_info->polygonMode];
    raster.ScissorRectangleEnable = true;
 
-#if GEN_GEN >= 9
-   /* GEN9+ splits ViewportZClipTestEnable into near and far enable bits */
+#if GFX_VER >= 9
+   /* GFX9+ splits ViewportZClipTestEnable into near and far enable bits */
    raster.ViewportZFarClipTestEnable = pipeline->depth_clip_enable;
    raster.ViewportZNearClipTestEnable = pipeline->depth_clip_enable;
-#elif GEN_GEN >= 8
+#elif GFX_VER >= 8
    raster.ViewportZClipTestEnable = pipeline->depth_clip_enable;
+#endif
+
+#if GFX_VER >= 9
+   raster.ConservativeRasterizationEnable =
+      vk_conservative_rasterization_mode(rs_info) !=
+         VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT;
 #endif
 
    raster.GlobalDepthOffsetEnableSolid = rs_info->depthBiasEnable;
    raster.GlobalDepthOffsetEnableWireframe = rs_info->depthBiasEnable;
    raster.GlobalDepthOffsetEnablePoint = rs_info->depthBiasEnable;
 
-#if GEN_GEN == 7
-   /* Gen7 requires that we provide the depth format in 3DSTATE_SF so that it
+#if GFX_VER == 7
+   /* Gfx7 requires that we provide the depth format in 3DSTATE_SF so that it
     * can get the depth offsets correct.
     */
    if (subpass->depth_stencil_attachment) {
@@ -723,12 +769,12 @@ emit_rs_state(struct anv_graphics_pipeline *pipeline,
    }
 #endif
 
-#if GEN_GEN >= 8
-   GENX(3DSTATE_SF_pack)(NULL, pipeline->gen8.sf, &sf);
-   GENX(3DSTATE_RASTER_pack)(NULL, pipeline->gen8.raster, &raster);
+#if GFX_VER >= 8
+   GENX(3DSTATE_SF_pack)(NULL, pipeline->gfx8.sf, &sf);
+   GENX(3DSTATE_RASTER_pack)(NULL, pipeline->gfx8.raster, &raster);
 #else
 #  undef raster
-   GENX(3DSTATE_SF_pack)(NULL, &pipeline->gen7.sf, &sf);
+   GENX(3DSTATE_SF_pack)(NULL, &pipeline->gfx7.sf, &sf);
 #endif
 }
 
@@ -737,17 +783,17 @@ emit_ms_state(struct anv_graphics_pipeline *pipeline,
               const VkPipelineMultisampleStateCreateInfo *info,
               uint32_t dynamic_states)
 {
-   /* If the sample locations are dynamic, 3DSTATE_MULTISAMPLE on Gen7/7.5
-    * will be emitted dynamically, so skip it here. On Gen8+
-    * 3DSTATE_SAMPLE_PATTERN will be emitted dynamically, so skip it here.
+   /* Only lookup locations if the extensions is active, otherwise the default
+    * ones will be used either at device initialization time or through
+    * 3DSTATE_MULTISAMPLE on Gfx7/7.5 by passing NULL locations.
     */
-   if (!(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS)) {
-      /* Only lookup locations if the extensions is active, otherwise the
-       * default ones will be used either at device initialization time or
-       * through 3DSTATE_MULTISAMPLE on Gen7/7.5 by passing NULL locations.
+   if (pipeline->base.device->vk.enabled_extensions.EXT_sample_locations) {
+      /* If the sample locations are dynamic, 3DSTATE_MULTISAMPLE on Gfx7/7.5
+       * will be emitted dynamically, so skip it here. On Gfx8+
+       * 3DSTATE_SAMPLE_PATTERN will be emitted dynamically, so skip it here.
        */
-      if (pipeline->base.device->vk.enabled_extensions.EXT_sample_locations) {
-#if GEN_GEN >= 8
+      if (!(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS)) {
+#if GFX_VER >= 8
          genX(emit_sample_pattern)(&pipeline->base.batch,
                                    pipeline->dynamic_state.sample_locations.samples,
                                    pipeline->dynamic_state.sample_locations.locations);
@@ -758,10 +804,10 @@ emit_ms_state(struct anv_graphics_pipeline *pipeline,
                              pipeline->dynamic_state.sample_locations.samples,
                              pipeline->dynamic_state.sample_locations.locations);
    } else {
-      /* On Gen8+ 3DSTATE_MULTISAMPLE does not hold anything we need to modify
+      /* On Gfx8+ 3DSTATE_MULTISAMPLE does not hold anything we need to modify
        * for sample locations, so we don't have to emit it dynamically.
        */
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       genX(emit_multisample)(&pipeline->base.batch,
                              info ? info->rasterizationSamples : 1,
                              NULL);
@@ -774,7 +820,7 @@ emit_ms_state(struct anv_graphics_pipeline *pipeline,
     *
     * 3DSTATE_SAMPLE_MASK.SampleMask is 16 bits.
     */
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    uint32_t sample_mask = 0xffff;
 #else
    uint32_t sample_mask = 0xff;
@@ -786,9 +832,28 @@ emit_ms_state(struct anv_graphics_pipeline *pipeline,
    anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_SAMPLE_MASK), sm) {
       sm.SampleMask = sample_mask;
    }
+
+   pipeline->cps_state = ANV_STATE_NULL;
+#if GFX_VER >= 11
+   if (!(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_SHADING_RATE) &&
+       pipeline->base.device->vk.enabled_extensions.KHR_fragment_shading_rate) {
+#if GFX_VER >= 12
+      struct anv_device *device = pipeline->base.device;
+      const uint32_t num_dwords =
+         GENX(CPS_STATE_length) * 4 * pipeline->dynamic_state.viewport.count;
+      pipeline->cps_state =
+         anv_state_pool_alloc(&device->dynamic_state_pool, num_dwords, 32);
+#endif
+
+      genX(emit_shading_rate)(&pipeline->base.batch,
+                              pipeline,
+                              pipeline->cps_state,
+                              &pipeline->dynamic_state);
+   }
+#endif
 }
 
-static const uint32_t vk_to_gen_logic_op[] = {
+static const uint32_t vk_to_intel_logic_op[] = {
    [VK_LOGIC_OP_COPY]                        = LOGICOP_COPY,
    [VK_LOGIC_OP_CLEAR]                       = LOGICOP_CLEAR,
    [VK_LOGIC_OP_AND]                         = LOGICOP_AND,
@@ -807,7 +872,7 @@ static const uint32_t vk_to_gen_logic_op[] = {
    [VK_LOGIC_OP_SET]                         = LOGICOP_SET,
 };
 
-static const uint32_t vk_to_gen_blend[] = {
+static const uint32_t vk_to_intel_blend[] = {
    [VK_BLEND_FACTOR_ZERO]                    = BLENDFACTOR_ZERO,
    [VK_BLEND_FACTOR_ONE]                     = BLENDFACTOR_ONE,
    [VK_BLEND_FACTOR_SRC_COLOR]               = BLENDFACTOR_SRC_COLOR,
@@ -829,7 +894,7 @@ static const uint32_t vk_to_gen_blend[] = {
    [VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA]    = BLENDFACTOR_INV_SRC1_ALPHA,
 };
 
-static const uint32_t vk_to_gen_blend_op[] = {
+static const uint32_t vk_to_intel_blend_op[] = {
    [VK_BLEND_OP_ADD]                         = BLENDFUNCTION_ADD,
    [VK_BLEND_OP_SUBTRACT]                    = BLENDFUNCTION_SUBTRACT,
    [VK_BLEND_OP_REVERSE_SUBTRACT]            = BLENDFUNCTION_REVERSE_SUBTRACT,
@@ -837,18 +902,18 @@ static const uint32_t vk_to_gen_blend_op[] = {
    [VK_BLEND_OP_MAX]                         = BLENDFUNCTION_MAX,
 };
 
-const uint32_t genX(vk_to_gen_compare_op)[] = {
-   [VK_COMPARE_OP_NEVER]                        = PREFILTEROPNEVER,
-   [VK_COMPARE_OP_LESS]                         = PREFILTEROPLESS,
-   [VK_COMPARE_OP_EQUAL]                        = PREFILTEROPEQUAL,
-   [VK_COMPARE_OP_LESS_OR_EQUAL]                = PREFILTEROPLEQUAL,
-   [VK_COMPARE_OP_GREATER]                      = PREFILTEROPGREATER,
-   [VK_COMPARE_OP_NOT_EQUAL]                    = PREFILTEROPNOTEQUAL,
-   [VK_COMPARE_OP_GREATER_OR_EQUAL]             = PREFILTEROPGEQUAL,
-   [VK_COMPARE_OP_ALWAYS]                       = PREFILTEROPALWAYS,
+const uint32_t genX(vk_to_intel_compare_op)[] = {
+   [VK_COMPARE_OP_NEVER]                        = PREFILTEROP_NEVER,
+   [VK_COMPARE_OP_LESS]                         = PREFILTEROP_LESS,
+   [VK_COMPARE_OP_EQUAL]                        = PREFILTEROP_EQUAL,
+   [VK_COMPARE_OP_LESS_OR_EQUAL]                = PREFILTEROP_LEQUAL,
+   [VK_COMPARE_OP_GREATER]                      = PREFILTEROP_GREATER,
+   [VK_COMPARE_OP_NOT_EQUAL]                    = PREFILTEROP_NOTEQUAL,
+   [VK_COMPARE_OP_GREATER_OR_EQUAL]             = PREFILTEROP_GEQUAL,
+   [VK_COMPARE_OP_ALWAYS]                       = PREFILTEROP_ALWAYS,
 };
 
-const uint32_t genX(vk_to_gen_stencil_op)[] = {
+const uint32_t genX(vk_to_intel_stencil_op)[] = {
    [VK_STENCIL_OP_KEEP]                         = STENCILOP_KEEP,
    [VK_STENCIL_OP_ZERO]                         = STENCILOP_ZERO,
    [VK_STENCIL_OP_REPLACE]                      = STENCILOP_REPLACE,
@@ -859,7 +924,7 @@ const uint32_t genX(vk_to_gen_stencil_op)[] = {
    [VK_STENCIL_OP_DECREMENT_AND_WRAP]           = STENCILOP_DECR,
 };
 
-const uint32_t genX(vk_to_gen_primitive_type)[] = {
+const uint32_t genX(vk_to_intel_primitive_type)[] = {
    [VK_PRIMITIVE_TOPOLOGY_POINT_LIST]                    = _3DPRIM_POINTLIST,
    [VK_PRIMITIVE_TOPOLOGY_LINE_LIST]                     = _3DPRIM_LINELIST,
    [VK_PRIMITIVE_TOPOLOGY_LINE_STRIP]                    = _3DPRIM_LINESTRIP,
@@ -1010,12 +1075,12 @@ emit_ds_state(struct anv_graphics_pipeline *pipeline,
               const struct anv_render_pass *pass,
               const struct anv_subpass *subpass)
 {
-#if GEN_GEN == 7
-#  define depth_stencil_dw pipeline->gen7.depth_stencil_state
-#elif GEN_GEN == 8
-#  define depth_stencil_dw pipeline->gen8.wm_depth_stencil
+#if GFX_VER == 7
+#  define depth_stencil_dw pipeline->gfx7.depth_stencil_state
+#elif GFX_VER == 8
+#  define depth_stencil_dw pipeline->gfx8.wm_depth_stencil
 #else
-#  define depth_stencil_dw pipeline->gen9.wm_depth_stencil
+#  define depth_stencil_dw pipeline->gfx9.wm_depth_stencil
 #endif
 
    if (pCreateInfo == NULL) {
@@ -1048,7 +1113,7 @@ emit_ds_state(struct anv_graphics_pipeline *pipeline,
    bool dynamic_stencil_op =
       dynamic_states & ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP;
 
-#if GEN_GEN <= 7
+#if GFX_VER <= 7
    struct GENX(DEPTH_STENCIL_STATE) depth_stencil = {
 #else
    struct GENX(3DSTATE_WM_DEPTH_STENCIL) depth_stencil = {
@@ -1063,7 +1128,7 @@ emit_ds_state(struct anv_graphics_pipeline *pipeline,
 
       .DepthTestFunction =
          dynamic_states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP ?
-            0 : genX(vk_to_gen_compare_op)[info.depthCompareOp],
+            0 : genX(vk_to_intel_compare_op)[info.depthCompareOp],
 
       .DoubleSidedStencilEnable = true,
 
@@ -1071,14 +1136,14 @@ emit_ds_state(struct anv_graphics_pipeline *pipeline,
          dynamic_states & ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE ?
             0 : info.stencilTestEnable,
 
-      .StencilFailOp = genX(vk_to_gen_stencil_op)[info.front.failOp],
-      .StencilPassDepthPassOp = genX(vk_to_gen_stencil_op)[info.front.passOp],
-      .StencilPassDepthFailOp = genX(vk_to_gen_stencil_op)[info.front.depthFailOp],
-      .StencilTestFunction = genX(vk_to_gen_compare_op)[info.front.compareOp],
-      .BackfaceStencilFailOp = genX(vk_to_gen_stencil_op)[info.back.failOp],
-      .BackfaceStencilPassDepthPassOp = genX(vk_to_gen_stencil_op)[info.back.passOp],
-      .BackfaceStencilPassDepthFailOp = genX(vk_to_gen_stencil_op)[info.back.depthFailOp],
-      .BackfaceStencilTestFunction = genX(vk_to_gen_compare_op)[info.back.compareOp],
+      .StencilFailOp = genX(vk_to_intel_stencil_op)[info.front.failOp],
+      .StencilPassDepthPassOp = genX(vk_to_intel_stencil_op)[info.front.passOp],
+      .StencilPassDepthFailOp = genX(vk_to_intel_stencil_op)[info.front.depthFailOp],
+      .StencilTestFunction = genX(vk_to_intel_compare_op)[info.front.compareOp],
+      .BackfaceStencilFailOp = genX(vk_to_intel_stencil_op)[info.back.failOp],
+      .BackfaceStencilPassDepthPassOp = genX(vk_to_intel_stencil_op)[info.back.passOp],
+      .BackfaceStencilPassDepthFailOp = genX(vk_to_intel_stencil_op)[info.back.depthFailOp],
+      .BackfaceStencilTestFunction = genX(vk_to_intel_compare_op)[info.back.compareOp],
    };
 
    if (dynamic_stencil_op) {
@@ -1092,7 +1157,7 @@ emit_ds_state(struct anv_graphics_pipeline *pipeline,
       depth_stencil.BackfaceStencilTestFunction = 0;
    }
 
-#if GEN_GEN <= 7
+#if GFX_VER <= 7
    GENX(DEPTH_STENCIL_STATE_pack)(NULL, depth_stencil_dw, &depth_stencil);
 #else
    GENX(3DSTATE_WM_DEPTH_STENCIL_pack)(NULL, depth_stencil_dw, &depth_stencil);
@@ -1108,16 +1173,30 @@ is_dual_src_blend_factor(VkBlendFactor factor)
           factor == VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
 }
 
+static inline uint32_t *
+write_disabled_blend(uint32_t *state)
+{
+   struct GENX(BLEND_STATE_ENTRY) entry = {
+      .WriteDisableAlpha = true,
+      .WriteDisableRed = true,
+      .WriteDisableGreen = true,
+      .WriteDisableBlue = true,
+   };
+   GENX(BLEND_STATE_ENTRY_pack)(NULL, state, &entry);
+   return state + GENX(BLEND_STATE_ENTRY_length);
+}
+
 static void
 emit_cb_state(struct anv_graphics_pipeline *pipeline,
               const VkPipelineColorBlendStateCreateInfo *info,
-              const VkPipelineMultisampleStateCreateInfo *ms_info)
+              const VkPipelineMultisampleStateCreateInfo *ms_info,
+              uint32_t dynamic_states)
 {
    struct anv_device *device = pipeline->base.device;
    const struct brw_wm_prog_data *wm_prog_data = get_wm_prog_data(pipeline);
 
    struct GENX(BLEND_STATE) blend_state = {
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       .AlphaToCoverageEnable = ms_info && ms_info->alphaToCoverageEnable,
       .AlphaToOneEnable = ms_info && ms_info->alphaToOneEnable,
 #endif
@@ -1132,13 +1211,23 @@ emit_cb_state(struct anv_graphics_pipeline *pipeline,
 
    const uint32_t num_dwords = GENX(BLEND_STATE_length) +
       GENX(BLEND_STATE_ENTRY_length) * surface_count;
-   pipeline->blend_state =
-      anv_state_pool_alloc(&device->dynamic_state_pool, num_dwords * 4, 64);
+   uint32_t *blend_state_start, *state_pos;
+
+   if (dynamic_states & ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE) {
+      const struct intel_device_info *devinfo = &pipeline->base.device->info;
+      blend_state_start = devinfo->ver >= 8 ?
+         pipeline->gfx8.blend_state : pipeline->gfx7.blend_state;
+      pipeline->blend_state = ANV_STATE_NULL;
+   } else {
+      pipeline->blend_state =
+         anv_state_pool_alloc(&device->dynamic_state_pool, num_dwords * 4, 64);
+      blend_state_start = pipeline->blend_state.map;
+   }
+   state_pos = blend_state_start;
 
    bool has_writeable_rt = false;
-   uint32_t *state_pos = pipeline->blend_state.map;
    state_pos += GENX(BLEND_STATE_length);
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    struct GENX(BLEND_STATE_ENTRY) bs0 = { 0 };
 #endif
    for (unsigned i = 0; i < surface_count; i++) {
@@ -1149,18 +1238,15 @@ emit_cb_state(struct anv_graphics_pipeline *pipeline,
          break;
 
       /* We can have at most 8 attachments */
-      assert(i < 8);
+      assert(i < MAX_RTS);
 
       if (info == NULL || binding->index >= info->attachmentCount) {
-         /* Default everything to disabled */
-         struct GENX(BLEND_STATE_ENTRY) entry = {
-            .WriteDisableAlpha = true,
-            .WriteDisableRed = true,
-            .WriteDisableGreen = true,
-            .WriteDisableBlue = true,
-         };
-         GENX(BLEND_STATE_ENTRY_pack)(NULL, state_pos, &entry);
-         state_pos += GENX(BLEND_STATE_ENTRY_length);
+         state_pos = write_disabled_blend(state_pos);
+         continue;
+      }
+
+      if ((pipeline->dynamic_state.color_writes & (1u << binding->index)) == 0) {
+         state_pos = write_disabled_blend(state_pos);
          continue;
       }
 
@@ -1168,12 +1254,12 @@ emit_cb_state(struct anv_graphics_pipeline *pipeline,
          &info->pAttachments[binding->index];
 
       struct GENX(BLEND_STATE_ENTRY) entry = {
-#if GEN_GEN < 8
+#if GFX_VER < 8
          .AlphaToCoverageEnable = ms_info && ms_info->alphaToCoverageEnable,
          .AlphaToOneEnable = ms_info && ms_info->alphaToOneEnable,
 #endif
          .LogicOpEnable = info->logicOpEnable,
-         .LogicOpFunction = vk_to_gen_logic_op[info->logicOp],
+         .LogicOpFunction = vk_to_intel_logic_op[info->logicOp],
          /* Vulkan specification 1.2.168, VkLogicOp:
           *
           *   "Logical operations are controlled by the logicOpEnable and
@@ -1193,12 +1279,12 @@ emit_cb_state(struct anv_graphics_pipeline *pipeline,
          .ColorClampRange = COLORCLAMP_RTFORMAT,
          .PreBlendColorClampEnable = true,
          .PostBlendColorClampEnable = true,
-         .SourceBlendFactor = vk_to_gen_blend[a->srcColorBlendFactor],
-         .DestinationBlendFactor = vk_to_gen_blend[a->dstColorBlendFactor],
-         .ColorBlendFunction = vk_to_gen_blend_op[a->colorBlendOp],
-         .SourceAlphaBlendFactor = vk_to_gen_blend[a->srcAlphaBlendFactor],
-         .DestinationAlphaBlendFactor = vk_to_gen_blend[a->dstAlphaBlendFactor],
-         .AlphaBlendFunction = vk_to_gen_blend_op[a->alphaBlendOp],
+         .SourceBlendFactor = vk_to_intel_blend[a->srcColorBlendFactor],
+         .DestinationBlendFactor = vk_to_intel_blend[a->dstColorBlendFactor],
+         .ColorBlendFunction = vk_to_intel_blend_op[a->colorBlendOp],
+         .SourceAlphaBlendFactor = vk_to_intel_blend[a->srcAlphaBlendFactor],
+         .DestinationAlphaBlendFactor = vk_to_intel_blend[a->dstAlphaBlendFactor],
+         .AlphaBlendFunction = vk_to_intel_blend_op[a->alphaBlendOp],
          .WriteDisableAlpha = !(a->colorWriteMask & VK_COLOR_COMPONENT_A_BIT),
          .WriteDisableRed = !(a->colorWriteMask & VK_COLOR_COMPONENT_R_BIT),
          .WriteDisableGreen = !(a->colorWriteMask & VK_COLOR_COMPONENT_G_BIT),
@@ -1208,7 +1294,7 @@ emit_cb_state(struct anv_graphics_pipeline *pipeline,
       if (a->srcColorBlendFactor != a->srcAlphaBlendFactor ||
           a->dstColorBlendFactor != a->dstAlphaBlendFactor ||
           a->colorBlendOp != a->alphaBlendOp) {
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
          blend_state.IndependentAlphaBlendEnable = true;
 #else
          entry.IndependentAlphaBlendEnable = true;
@@ -1260,36 +1346,45 @@ emit_cb_state(struct anv_graphics_pipeline *pipeline,
       }
       GENX(BLEND_STATE_ENTRY_pack)(NULL, state_pos, &entry);
       state_pos += GENX(BLEND_STATE_ENTRY_length);
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       if (i == 0)
          bs0 = entry;
 #endif
    }
 
-#if GEN_GEN >= 8
-   anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_PS_BLEND), blend) {
-      blend.AlphaToCoverageEnable         = blend_state.AlphaToCoverageEnable;
-      blend.HasWriteableRT                = has_writeable_rt;
-      blend.ColorBufferBlendEnable        = bs0.ColorBufferBlendEnable;
-      blend.SourceAlphaBlendFactor        = bs0.SourceAlphaBlendFactor;
-      blend.DestinationAlphaBlendFactor   = bs0.DestinationAlphaBlendFactor;
-      blend.SourceBlendFactor             = bs0.SourceBlendFactor;
-      blend.DestinationBlendFactor        = bs0.DestinationBlendFactor;
-      blend.AlphaTestEnable               = false;
-      blend.IndependentAlphaBlendEnable   =
-         blend_state.IndependentAlphaBlendEnable;
+#if GFX_VER >= 8
+   struct GENX(3DSTATE_PS_BLEND) blend = {
+      GENX(3DSTATE_PS_BLEND_header),
+   };
+   blend.AlphaToCoverageEnable         = blend_state.AlphaToCoverageEnable;
+   blend.HasWriteableRT                = has_writeable_rt;
+   blend.ColorBufferBlendEnable        = bs0.ColorBufferBlendEnable;
+   blend.SourceAlphaBlendFactor        = bs0.SourceAlphaBlendFactor;
+   blend.DestinationAlphaBlendFactor   = bs0.DestinationAlphaBlendFactor;
+   blend.SourceBlendFactor             = bs0.SourceBlendFactor;
+   blend.DestinationBlendFactor        = bs0.DestinationBlendFactor;
+   blend.AlphaTestEnable               = false;
+   blend.IndependentAlphaBlendEnable   = blend_state.IndependentAlphaBlendEnable;
+
+   if (dynamic_states & ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE) {
+      GENX(3DSTATE_PS_BLEND_pack)(NULL, pipeline->gfx8.ps_blend, &blend);
+   } else {
+      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_PS_BLEND), _blend)
+         _blend = blend;
    }
 #else
    (void)has_writeable_rt;
 #endif
 
-   GENX(BLEND_STATE_pack)(NULL, pipeline->blend_state.map, &blend_state);
+   GENX(BLEND_STATE_pack)(NULL, blend_state_start, &blend_state);
 
-   anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_BLEND_STATE_POINTERS), bsp) {
-      bsp.BlendStatePointer      = pipeline->blend_state.offset;
-#if GEN_GEN >= 8
-      bsp.BlendStatePointerValid = true;
+   if (!(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE)) {
+      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_BLEND_STATE_POINTERS), bsp) {
+         bsp.BlendStatePointer      = pipeline->blend_state.offset;
+#if GFX_VER >= 8
+         bsp.BlendStatePointerValid = true;
 #endif
+      }
    }
 }
 
@@ -1321,14 +1416,27 @@ emit_3dstate_clip(struct anv_graphics_pipeline *pipeline,
       anv_raster_polygon_mode(pipeline, ia_info, rs_info);
    clip.ViewportXYClipTestEnable = (raster_mode == VK_POLYGON_MODE_FILL);
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    clip.VertexSubPixelPrecisionSelect = _8Bit;
 #endif
    clip.ClipMode = CLIPMODE_NORMAL;
 
-   clip.TriangleStripListProvokingVertexSelect = 0;
-   clip.LineStripListProvokingVertexSelect     = 0;
-   clip.TriangleFanProvokingVertexSelect       = 1;
+   switch (vk_provoking_vertex_mode(rs_info)) {
+   case VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT:
+      clip.TriangleStripListProvokingVertexSelect = 0;
+      clip.LineStripListProvokingVertexSelect = 0;
+      clip.TriangleFanProvokingVertexSelect = 1;
+      break;
+
+   case VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT:
+      clip.TriangleStripListProvokingVertexSelect = 2;
+      clip.LineStripListProvokingVertexSelect = 1;
+      clip.TriangleFanProvokingVertexSelect = 2;
+      break;
+
+   default:
+      unreachable("Invalid provoking vertex mode");
+   }
 
    clip.MinimumPointWidth = 0.125;
    clip.MaximumPointWidth = 255.875;
@@ -1358,9 +1466,9 @@ emit_3dstate_clip(struct anv_graphics_pipeline *pipeline,
    clip.ForceZeroRTAIndexEnable =
       !(last->vue_map.slots_valid & VARYING_BIT_LAYER);
 
-#if GEN_GEN == 7
-   clip.FrontWinding            = genX(vk_to_gen_front_face)[rs_info->frontFace];
-   clip.CullMode                = genX(vk_to_gen_cullmode)[rs_info->cullMode];
+#if GFX_VER == 7
+   clip.FrontWinding            = genX(vk_to_intel_front_face)[rs_info->frontFace];
+   clip.CullMode                = genX(vk_to_intel_cullmode)[rs_info->cullMode];
    clip.ViewportZClipTestEnable = pipeline->depth_clip_enable;
    clip.UserClipDistanceClipTestEnableBitmask = last->clip_distance_mask;
    clip.UserClipDistanceCullTestEnableBitmask = last->cull_distance_mask;
@@ -1370,7 +1478,7 @@ emit_3dstate_clip(struct anv_graphics_pipeline *pipeline,
        BRW_BARYCENTRIC_NONPERSPECTIVE_BITS) != 0 : 0;
 #endif
 
-   GENX(3DSTATE_CLIP_pack)(NULL, pipeline->gen7.clip, &clip);
+   GENX(3DSTATE_CLIP_pack)(NULL, pipeline->gfx7.clip, &clip);
 }
 
 static void
@@ -1396,23 +1504,36 @@ emit_3dstate_streamout(struct anv_graphics_pipeline *pipeline,
          so.SOFunctionEnable = true;
          so.SOStatisticsEnable = true;
 
+         switch (vk_provoking_vertex_mode(rs_info)) {
+         case VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT:
+            so.ReorderMode = LEADING;
+            break;
+
+         case VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT:
+            so.ReorderMode = TRAILING;
+            break;
+
+         default:
+            unreachable("Invalid provoking vertex mode");
+         }
+
          const VkPipelineRasterizationStateStreamCreateInfoEXT *stream_info =
             vk_find_struct_const(rs_info, PIPELINE_RASTERIZATION_STATE_STREAM_CREATE_INFO_EXT);
          so.RenderStreamSelect = stream_info ?
                                  stream_info->rasterizationStream : 0;
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
          so.Buffer0SurfacePitch = xfb_info->buffers[0].stride;
          so.Buffer1SurfacePitch = xfb_info->buffers[1].stride;
          so.Buffer2SurfacePitch = xfb_info->buffers[2].stride;
          so.Buffer3SurfacePitch = xfb_info->buffers[3].stride;
 #else
-         pipeline->gen7.xfb_bo_pitch[0] = xfb_info->buffers[0].stride;
-         pipeline->gen7.xfb_bo_pitch[1] = xfb_info->buffers[1].stride;
-         pipeline->gen7.xfb_bo_pitch[2] = xfb_info->buffers[2].stride;
-         pipeline->gen7.xfb_bo_pitch[3] = xfb_info->buffers[3].stride;
+         pipeline->gfx7.xfb_bo_pitch[0] = xfb_info->buffers[0].stride;
+         pipeline->gfx7.xfb_bo_pitch[1] = xfb_info->buffers[1].stride;
+         pipeline->gfx7.xfb_bo_pitch[2] = xfb_info->buffers[2].stride;
+         pipeline->gfx7.xfb_bo_pitch[3] = xfb_info->buffers[3].stride;
 
-         /* On Gen7, the SO buffer enables live in 3DSTATE_STREAMOUT which
+         /* On Gfx7, the SO buffer enables live in 3DSTATE_STREAMOUT which
           * is a bit inconvenient because we don't know what buffers will
           * actually be enabled until draw time.  We do our best here by
           * setting them based on buffers_written and we disable them
@@ -1473,12 +1594,16 @@ emit_3dstate_streamout(struct anv_graphics_pipeline *pipeline,
 
          int varying = output->location;
          uint8_t component_mask = output->component_mask;
-         /* VARYING_SLOT_PSIZ contains three scalar fields packed together:
-          * - VARYING_SLOT_LAYER    in VARYING_SLOT_PSIZ.y
-          * - VARYING_SLOT_VIEWPORT in VARYING_SLOT_PSIZ.z
-          * - VARYING_SLOT_PSIZ     in VARYING_SLOT_PSIZ.w
+         /* VARYING_SLOT_PSIZ contains four scalar fields packed together:
+          * - VARYING_SLOT_PRIMITIVE_SHADING_RATE in VARYING_SLOT_PSIZ.x
+          * - VARYING_SLOT_LAYER                  in VARYING_SLOT_PSIZ.y
+          * - VARYING_SLOT_VIEWPORT               in VARYING_SLOT_PSIZ.z
+          * - VARYING_SLOT_PSIZ                   in VARYING_SLOT_PSIZ.w
           */
-         if (varying == VARYING_SLOT_LAYER) {
+         if (varying == VARYING_SLOT_PRIMITIVE_SHADING_RATE) {
+            varying = VARYING_SLOT_PSIZ;
+            component_mask = 1 << 0; // SO_DECL_COMPMASK_X
+         } else if (varying == VARYING_SLOT_LAYER) {
             varying = VARYING_SLOT_PSIZ;
             component_mask = 1 << 1; // SO_DECL_COMPMASK_Y
          } else if (varying == VARYING_SLOT_VIEWPORT) {
@@ -1577,7 +1702,7 @@ get_scratch_space(const struct anv_shader_bin *bin)
 static void
 emit_3dstate_vs(struct anv_graphics_pipeline *pipeline)
 {
-   const struct gen_device_info *devinfo = &pipeline->base.device->info;
+   const struct intel_device_info *devinfo = &pipeline->base.device->info;
    const struct brw_vs_prog_data *vs_prog_data = get_vs_prog_data(pipeline);
    const struct anv_shader_bin *vs_bin =
       pipeline->shaders[MESA_SHADER_VERTEX];
@@ -1588,29 +1713,29 @@ emit_3dstate_vs(struct anv_graphics_pipeline *pipeline)
       vs.Enable               = true;
       vs.StatisticsEnable     = true;
       vs.KernelStartPointer   = vs_bin->kernel.offset;
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       vs.SIMD8DispatchEnable  =
          vs_prog_data->base.dispatch_mode == DISPATCH_MODE_SIMD8;
 #endif
 
       assert(!vs_prog_data->base.base.use_alt_mode);
-#if GEN_GEN < 11
+#if GFX_VER < 11
       vs.SingleVertexDispatch       = false;
 #endif
       vs.VectorMaskEnable           = false;
-      /* WA_1606682166:
+      /* Wa_1606682166:
        * Incorrect TDL's SSP address shift in SARB for 16:6 & 18:8 modes.
        * Disable the Sampler state prefetch functionality in the SARB by
        * programming 0xB000[30] to '1'.
        */
-      vs.SamplerCount               = GEN_GEN == 11 ? 0 : get_sampler_count(vs_bin);
+      vs.SamplerCount               = GFX_VER == 11 ? 0 : get_sampler_count(vs_bin);
       vs.BindingTableEntryCount     = vs_bin->bind_map.surface_count;
       vs.FloatingPointMode          = IEEE754;
       vs.IllegalOpcodeExceptionEnable = false;
       vs.SoftwareExceptionEnable    = false;
       vs.MaximumNumberofThreads     = devinfo->max_vs_threads - 1;
 
-      if (GEN_GEN == 9 && devinfo->gt == 4 &&
+      if (GFX_VER == 9 && devinfo->gt == 4 &&
           anv_pipeline_has_stage(pipeline, MESA_SHADER_TESS_EVAL)) {
          /* On Sky Lake GT4, we have experienced some hangs related to the VS
           * cache and tessellation.  It is unknown exactly what is happening
@@ -1619,7 +1744,7 @@ emit_3dstate_vs(struct anv_graphics_pipeline *pipeline)
           * which the VUE handle reference count would overflow resulting in
           * internal reference counting bugs.  My (Jason's) best guess is that
           * this bug cropped back up on SKL GT4 when we suddenly had more
-          * threads in play than any previous gen9 hardware.
+          * threads in play than any previous gfx9 hardware.
           *
           * What we do know for sure is that setting this bit when
           * tessellation shaders are in use fixes a GPU hang in Batman: Arkham
@@ -1637,7 +1762,7 @@ emit_3dstate_vs(struct anv_graphics_pipeline *pipeline)
       vs.DispatchGRFStartRegisterForURBData =
          vs_prog_data->base.base.dispatch_grf_start_reg;
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       vs.UserClipDistanceClipTestEnableBitmask =
          vs_prog_data->base.clip_distance_mask;
       vs.UserClipDistanceCullTestEnableBitmask =
@@ -1661,7 +1786,7 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
       return;
    }
 
-   const struct gen_device_info *devinfo = &pipeline->base.device->info;
+   const struct intel_device_info *devinfo = &pipeline->base.device->info;
    const struct anv_shader_bin *tcs_bin =
       pipeline->shaders[MESA_SHADER_TESS_CTRL];
    const struct anv_shader_bin *tes_bin =
@@ -1674,12 +1799,12 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
       hs.Enable = true;
       hs.StatisticsEnable = true;
       hs.KernelStartPointer = tcs_bin->kernel.offset;
-      /* WA_1606682166 */
-      hs.SamplerCount = GEN_GEN == 11 ? 0 : get_sampler_count(tcs_bin);
+      /* Wa_1606682166 */
+      hs.SamplerCount = GFX_VER == 11 ? 0 : get_sampler_count(tcs_bin);
       hs.BindingTableEntryCount = tcs_bin->bind_map.surface_count;
 
-#if GEN_GEN >= 12
-      /* GEN:BUG:1604578095:
+#if GFX_VER >= 12
+      /* Wa_1604578095:
        *
        *    Hang occurs when the number of max threads is less than 2 times
        *    the number of instance count. The number of max threads must be
@@ -1696,7 +1821,7 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
       hs.VertexURBEntryReadOffset = 0;
       hs.DispatchGRFStartRegisterForURBData =
          tcs_prog_data->base.base.dispatch_grf_start_reg & 0x1f;
-#if GEN_GEN >= 12
+#if GFX_VER >= 12
       hs.DispatchGRFStartRegisterForURBData5 =
          tcs_prog_data->base.base.dispatch_grf_start_reg >> 5;
 #endif
@@ -1706,14 +1831,14 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
       hs.ScratchSpaceBasePointer =
          get_scratch_address(&pipeline->base, MESA_SHADER_TESS_CTRL, tcs_bin);
 
-#if GEN_GEN == 12
+#if GFX_VER == 12
       /*  Patch Count threshold specifies the maximum number of patches that
        *  will be accumulated before a thread dispatch is forced.
        */
       hs.PatchCountThreshold = tcs_prog_data->patch_count_threshold;
 #endif
 
-#if GEN_GEN >= 9
+#if GFX_VER >= 9
       hs.DispatchMode = tcs_prog_data->base.dispatch_mode;
       hs.IncludePrimitiveID = tcs_prog_data->include_primitive_id;
 #endif
@@ -1752,8 +1877,8 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
       ds.Enable = true;
       ds.StatisticsEnable = true;
       ds.KernelStartPointer = tes_bin->kernel.offset;
-      /* WA_1606682166 */
-      ds.SamplerCount = GEN_GEN == 11 ? 0 : get_sampler_count(tes_bin);
+      /* Wa_1606682166 */
+      ds.SamplerCount = GFX_VER == 11 ? 0 : get_sampler_count(tes_bin);
       ds.BindingTableEntryCount = tes_bin->bind_map.surface_count;
       ds.MaximumNumberofThreads = devinfo->max_tes_threads - 1;
 
@@ -1765,8 +1890,8 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
       ds.DispatchGRFStartRegisterForURBData =
          tes_prog_data->base.base.dispatch_grf_start_reg;
 
-#if GEN_GEN >= 8
-#if GEN_GEN < 11
+#if GFX_VER >= 8
+#if GFX_VER < 11
       ds.DispatchMode =
          tes_prog_data->base.dispatch_mode == DISPATCH_MODE_SIMD8 ?
             DISPATCH_MODE_SIMD8_SINGLE_PATCH :
@@ -1791,7 +1916,7 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
 static void
 emit_3dstate_gs(struct anv_graphics_pipeline *pipeline)
 {
-   const struct gen_device_info *devinfo = &pipeline->base.device->info;
+   const struct intel_device_info *devinfo = &pipeline->base.device->info;
    const struct anv_shader_bin *gs_bin =
       pipeline->shaders[MESA_SHADER_GEOMETRY];
 
@@ -1810,13 +1935,13 @@ emit_3dstate_gs(struct anv_graphics_pipeline *pipeline)
 
       gs.SingleProgramFlow       = false;
       gs.VectorMaskEnable        = false;
-      /* WA_1606682166 */
-      gs.SamplerCount            = GEN_GEN == 11 ? 0 : get_sampler_count(gs_bin);
+      /* Wa_1606682166 */
+      gs.SamplerCount            = GFX_VER == 11 ? 0 : get_sampler_count(gs_bin);
       gs.BindingTableEntryCount  = gs_bin->bind_map.surface_count;
       gs.IncludeVertexHandles    = gs_prog_data->base.include_vue_handles;
       gs.IncludePrimitiveID      = gs_prog_data->include_primitive_id;
 
-      if (GEN_GEN == 8) {
+      if (GFX_VER == 8) {
          /* Broadwell is weird.  It needs us to divide by 2. */
          gs.MaximumNumberofThreads = devinfo->max_gs_threads / 2 - 1;
       } else {
@@ -1831,7 +1956,7 @@ emit_3dstate_gs(struct anv_graphics_pipeline *pipeline)
       gs.InstanceControl         = MAX2(gs_prog_data->invocations, 1) - 1;
       gs.ReorderMode             = TRAILING;
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       gs.ExpectedVertexCount     = gs_prog_data->vertices_in;
       gs.StaticOutput            = gs_prog_data->static_vertex_count >= 0;
       gs.StaticOutputVertexCount = gs_prog_data->static_vertex_count >= 0 ?
@@ -1843,7 +1968,7 @@ emit_3dstate_gs(struct anv_graphics_pipeline *pipeline)
       gs.DispatchGRFStartRegisterForURBData =
          gs_prog_data->base.base.dispatch_grf_start_reg;
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       gs.UserClipDistanceClipTestEnableBitmask =
          gs_prog_data->base.clip_distance_mask;
       gs.UserClipDistanceCullTestEnableBitmask =
@@ -1863,6 +1988,9 @@ has_color_buffer_write_enabled(const struct anv_graphics_pipeline *pipeline,
    const struct anv_shader_bin *shader_bin =
       pipeline->shaders[MESA_SHADER_FRAGMENT];
    if (!shader_bin)
+      return false;
+
+   if (!pipeline->dynamic_state.color_writes)
       return false;
 
    const struct anv_pipeline_bind_map *bind_map = &shader_bin->bind_map;
@@ -1888,87 +2016,110 @@ emit_3dstate_wm(struct anv_graphics_pipeline *pipeline, struct anv_subpass *subp
                 const VkPipelineRasterizationStateCreateInfo *raster,
                 const VkPipelineColorBlendStateCreateInfo *blend,
                 const VkPipelineMultisampleStateCreateInfo *multisample,
-                const VkPipelineRasterizationLineStateCreateInfoEXT *line)
+                const VkPipelineRasterizationLineStateCreateInfoEXT *line,
+                const uint32_t dynamic_states)
 {
    const struct brw_wm_prog_data *wm_prog_data = get_wm_prog_data(pipeline);
 
-   anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_WM), wm) {
-      wm.StatisticsEnable                    = true;
-      wm.LineEndCapAntialiasingRegionWidth   = _05pixels;
-      wm.LineAntialiasingRegionWidth         = _10pixels;
-      wm.PointRasterizationRule              = RASTRULE_UPPER_RIGHT;
+   struct GENX(3DSTATE_WM) wm = {
+      GENX(3DSTATE_WM_header),
+   };
+   wm.StatisticsEnable                    = true;
+   wm.LineEndCapAntialiasingRegionWidth   = _05pixels;
+   wm.LineAntialiasingRegionWidth         = _10pixels;
+   wm.PointRasterizationRule              = RASTRULE_UPPER_RIGHT;
 
-      if (anv_pipeline_has_stage(pipeline, MESA_SHADER_FRAGMENT)) {
-         if (wm_prog_data->early_fragment_tests) {
+   if (anv_pipeline_has_stage(pipeline, MESA_SHADER_FRAGMENT)) {
+      if (wm_prog_data->early_fragment_tests) {
             wm.EarlyDepthStencilControl         = EDSC_PREPS;
-         } else if (wm_prog_data->has_side_effects) {
-            wm.EarlyDepthStencilControl         = EDSC_PSEXEC;
-         } else {
-            wm.EarlyDepthStencilControl         = EDSC_NORMAL;
-         }
-
-#if GEN_GEN >= 8
-         /* Gen8 hardware tries to compute ThreadDispatchEnable for us but
-          * doesn't take into account KillPixels when no depth or stencil
-          * writes are enabled.  In order for occlusion queries to work
-          * correctly with no attachments, we need to force-enable PS thread
-          * dispatch.
-          *
-          * The BDW docs are pretty clear that that this bit isn't validated
-          * and probably shouldn't be used in production:
-          *
-          *    "This must always be set to Normal. This field should not be
-          *    tested for functional validation."
-          *
-          * Unfortunately, however, the other mechanism we have for doing this
-          * is 3DSTATE_PS_EXTRA::PixelShaderHasUAV which causes hangs on BDW.
-          * Given two bad options, we choose the one which works.
-          */
-         if ((wm_prog_data->has_side_effects || wm_prog_data->uses_kill) &&
-             !has_color_buffer_write_enabled(pipeline, blend))
-            wm.ForceThreadDispatchEnable = ForceON;
-#endif
-
-         wm.BarycentricInterpolationMode =
-            wm_prog_data->barycentric_interp_modes;
-
-#if GEN_GEN < 8
-         wm.PixelShaderComputedDepthMode  = wm_prog_data->computed_depth_mode;
-         wm.PixelShaderUsesSourceDepth    = wm_prog_data->uses_src_depth;
-         wm.PixelShaderUsesSourceW        = wm_prog_data->uses_src_w;
-         wm.PixelShaderUsesInputCoverageMask = wm_prog_data->uses_sample_mask;
-
-         /* If the subpass has a depth or stencil self-dependency, then we
-          * need to force the hardware to do the depth/stencil write *after*
-          * fragment shader execution.  Otherwise, the writes may hit memory
-          * before we get around to fetching from the input attachment and we
-          * may get the depth or stencil value from the current draw rather
-          * than the previous one.
-          */
-         wm.PixelShaderKillsPixel         = subpass->has_ds_self_dep ||
-                                            wm_prog_data->uses_kill;
-
-         if (wm.PixelShaderComputedDepthMode != PSCDEPTH_OFF ||
-             wm_prog_data->has_side_effects ||
-             wm.PixelShaderKillsPixel ||
-             has_color_buffer_write_enabled(pipeline, blend))
-            wm.ThreadDispatchEnable = true;
-
-         if (multisample && multisample->rasterizationSamples > 1) {
-            if (wm_prog_data->persample_dispatch) {
-               wm.MultisampleDispatchMode = MSDISPMODE_PERSAMPLE;
-            } else {
-               wm.MultisampleDispatchMode = MSDISPMODE_PERPIXEL;
-            }
-         } else {
-            wm.MultisampleDispatchMode = MSDISPMODE_PERSAMPLE;
-         }
-         wm.MultisampleRasterizationMode =
-            gen7_ms_rast_mode(pipeline, ia, raster, multisample);
-#endif
-
-         wm.LineStippleEnable = line && line->stippledLineEnable;
+      } else if (wm_prog_data->has_side_effects) {
+         wm.EarlyDepthStencilControl         = EDSC_PSEXEC;
+      } else {
+         wm.EarlyDepthStencilControl         = EDSC_NORMAL;
       }
+
+#if GFX_VER >= 8
+      /* Gen8 hardware tries to compute ThreadDispatchEnable for us but
+       * doesn't take into account KillPixels when no depth or stencil
+       * writes are enabled.  In order for occlusion queries to work
+       * correctly with no attachments, we need to force-enable PS thread
+       * dispatch.
+       *
+       * The BDW docs are pretty clear that that this bit isn't validated
+       * and probably shouldn't be used in production:
+       *
+       *    "This must always be set to Normal. This field should not be
+       *    tested for functional validation."
+       *
+       * Unfortunately, however, the other mechanism we have for doing this
+       * is 3DSTATE_PS_EXTRA::PixelShaderHasUAV which causes hangs on BDW.
+       * Given two bad options, we choose the one which works.
+       */
+      pipeline->force_fragment_thread_dispatch =
+         wm_prog_data->has_side_effects ||
+         wm_prog_data->uses_kill;
+
+      if (pipeline->force_fragment_thread_dispatch ||
+          !has_color_buffer_write_enabled(pipeline, blend)) {
+         /* Only set this value in non dynamic mode. */
+         wm.ForceThreadDispatchEnable =
+            !(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE) ? ForceON : 0;
+      }
+#endif
+
+      wm.BarycentricInterpolationMode =
+         wm_prog_data->barycentric_interp_modes;
+
+#if GFX_VER < 8
+      wm.PixelShaderComputedDepthMode  = wm_prog_data->computed_depth_mode;
+      wm.PixelShaderUsesSourceDepth    = wm_prog_data->uses_src_depth;
+      wm.PixelShaderUsesSourceW        = wm_prog_data->uses_src_w;
+      wm.PixelShaderUsesInputCoverageMask = wm_prog_data->uses_sample_mask;
+
+      /* If the subpass has a depth or stencil self-dependency, then we
+       * need to force the hardware to do the depth/stencil write *after*
+       * fragment shader execution.  Otherwise, the writes may hit memory
+       * before we get around to fetching from the input attachment and we
+       * may get the depth or stencil value from the current draw rather
+       * than the previous one.
+       */
+      wm.PixelShaderKillsPixel         = subpass->has_ds_self_dep ||
+                                         wm_prog_data->uses_kill;
+
+      pipeline->force_fragment_thread_dispatch =
+         wm.PixelShaderComputedDepthMode != PSCDEPTH_OFF ||
+         wm_prog_data->has_side_effects ||
+         wm.PixelShaderKillsPixel;
+
+      if (pipeline->force_fragment_thread_dispatch ||
+          has_color_buffer_write_enabled(pipeline, blend)) {
+         /* Only set this value in non dynamic mode. */
+         wm.ThreadDispatchEnable = !(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE);
+      }
+
+      if (multisample && multisample->rasterizationSamples > 1) {
+         if (wm_prog_data->persample_dispatch) {
+            wm.MultisampleDispatchMode = MSDISPMODE_PERSAMPLE;
+         } else {
+            wm.MultisampleDispatchMode = MSDISPMODE_PERPIXEL;
+         }
+      } else {
+         wm.MultisampleDispatchMode = MSDISPMODE_PERSAMPLE;
+      }
+      wm.MultisampleRasterizationMode =
+         gfx7_ms_rast_mode(pipeline, ia, raster, multisample);
+#endif
+
+      wm.LineStippleEnable = line && line->stippledLineEnable;
+   }
+
+   if (dynamic_states & ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE) {
+      const struct intel_device_info *devinfo = &pipeline->base.device->info;
+      uint32_t *dws = devinfo->ver >= 8 ? pipeline->gfx8.wm : pipeline->gfx7.wm;
+      GENX(3DSTATE_WM_pack)(NULL, dws, &wm);
+   } else {
+      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_WM), _wm)
+         _wm = wm;
    }
 }
 
@@ -1977,14 +2128,15 @@ emit_3dstate_ps(struct anv_graphics_pipeline *pipeline,
                 const VkPipelineColorBlendStateCreateInfo *blend,
                 const VkPipelineMultisampleStateCreateInfo *multisample)
 {
-   UNUSED const struct gen_device_info *devinfo = &pipeline->base.device->info;
+   UNUSED const struct intel_device_info *devinfo =
+      &pipeline->base.device->info;
    const struct anv_shader_bin *fs_bin =
       pipeline->shaders[MESA_SHADER_FRAGMENT];
 
    if (!anv_pipeline_has_stage(pipeline, MESA_SHADER_FRAGMENT)) {
       anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_PS), ps) {
-#if GEN_GEN == 7
-         /* Even if no fragments are ever dispatched, gen7 hardware hangs if
+#if GFX_VER == 7
+         /* Even if no fragments are ever dispatched, gfx7 hardware hangs if
           * we don't at least set the maximum number of threads.
           */
          ps.MaximumNumberofThreads = devinfo->max_wm_threads - 1;
@@ -1995,7 +2147,7 @@ emit_3dstate_ps(struct anv_graphics_pipeline *pipeline,
 
    const struct brw_wm_prog_data *wm_prog_data = get_wm_prog_data(pipeline);
 
-#if GEN_GEN < 8
+#if GFX_VER < 8
    /* The hardware wedges if you have this bit set but don't turn on any dual
     * source blend factors.
     */
@@ -2030,7 +2182,7 @@ emit_3dstate_ps(struct anv_graphics_pipeline *pipeline,
        * Since 16x MSAA is first introduced on SKL, we don't need to apply
        * the workaround on any older hardware.
        */
-      if (GEN_GEN >= 9 && !wm_prog_data->persample_dispatch &&
+      if (GFX_VER >= 9 && !wm_prog_data->persample_dispatch &&
           multisample && multisample->rasterizationSamples == 16) {
          assert(ps._8PixelDispatchEnable || ps._16PixelDispatchEnable);
          ps._32PixelDispatchEnable = false;
@@ -2044,30 +2196,30 @@ emit_3dstate_ps(struct anv_graphics_pipeline *pipeline,
                                brw_wm_prog_data_prog_offset(wm_prog_data, ps, 2);
 
       ps.SingleProgramFlow          = false;
-      ps.VectorMaskEnable           = GEN_GEN >= 8;
-      /* WA_1606682166 */
-      ps.SamplerCount               = GEN_GEN == 11 ? 0 : get_sampler_count(fs_bin);
+      ps.VectorMaskEnable           = GFX_VER >= 8;
+      /* Wa_1606682166 */
+      ps.SamplerCount               = GFX_VER == 11 ? 0 : get_sampler_count(fs_bin);
       ps.BindingTableEntryCount     = fs_bin->bind_map.surface_count;
       ps.PushConstantEnable         = wm_prog_data->base.nr_params > 0 ||
                                       wm_prog_data->base.ubo_ranges[0].length;
       ps.PositionXYOffsetSelect     = wm_prog_data->uses_pos_offset ?
                                       POSOFFSET_SAMPLE: POSOFFSET_NONE;
-#if GEN_GEN < 8
+#if GFX_VER < 8
       ps.AttributeEnable            = wm_prog_data->num_varying_inputs > 0;
       ps.oMaskPresenttoRenderTarget = wm_prog_data->uses_omask;
       ps.DualSourceBlendEnable      = dual_src_blend;
 #endif
 
-#if GEN_VERSIONx10 == 75
+#if GFX_VERx10 == 75
       /* Haswell requires the sample mask to be set in this packet as well
        * as in 3DSTATE_SAMPLE_MASK; the values should match.
        */
       ps.SampleMask                 = 0xff;
 #endif
 
-#if GEN_GEN >= 9
+#if GFX_VER >= 9
       ps.MaximumNumberofThreadsPerPSD  = 64 - 1;
-#elif GEN_GEN >= 8
+#elif GFX_VER >= 8
       ps.MaximumNumberofThreadsPerPSD  = 64 - 2;
 #else
       ps.MaximumNumberofThreads        = devinfo->max_wm_threads - 1;
@@ -2086,10 +2238,11 @@ emit_3dstate_ps(struct anv_graphics_pipeline *pipeline,
    }
 }
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
 static void
 emit_3dstate_ps_extra(struct anv_graphics_pipeline *pipeline,
-                      struct anv_subpass *subpass)
+                      struct anv_subpass *subpass,
+                      const VkPipelineRasterizationStateCreateInfo *rs_info)
 {
    const struct brw_wm_prog_data *wm_prog_data = get_wm_prog_data(pipeline);
 
@@ -2116,19 +2269,28 @@ emit_3dstate_ps_extra(struct anv_graphics_pipeline *pipeline,
       ps.PixelShaderKillsPixel         = subpass->has_ds_self_dep ||
                                          wm_prog_data->uses_kill;
 
-#if GEN_GEN >= 9
+#if GFX_VER >= 9
       ps.PixelShaderComputesStencil = wm_prog_data->computed_stencil;
       ps.PixelShaderPullsBary    = wm_prog_data->pulls_bary;
 
-      ps.InputCoverageMaskState  = ICMS_NONE;
-      if (wm_prog_data->uses_sample_mask) {
-         if (wm_prog_data->post_depth_coverage)
-            ps.InputCoverageMaskState  = ICMS_DEPTH_COVERAGE;
-         else
-            ps.InputCoverageMaskState  = ICMS_INNER_CONSERVATIVE;
-      }
+      ps.InputCoverageMaskState = ICMS_NONE;
+      assert(!wm_prog_data->inner_coverage); /* Not available in SPIR-V */
+      if (!wm_prog_data->uses_sample_mask)
+         ps.InputCoverageMaskState = ICMS_NONE;
+      else if (wm_prog_data->per_coarse_pixel_dispatch)
+         ps.InputCoverageMaskState  = ICMS_NORMAL;
+      else if (wm_prog_data->post_depth_coverage)
+         ps.InputCoverageMaskState = ICMS_DEPTH_COVERAGE;
+      else
+         ps.InputCoverageMaskState = ICMS_NORMAL;
 #else
       ps.PixelShaderUsesInputCoverageMask = wm_prog_data->uses_sample_mask;
+#endif
+
+#if GFX_VER >= 11
+      ps.PixelShaderRequiresSourceDepthandorWPlaneCoefficients =
+         wm_prog_data->uses_depth_w_coefficients;
+      ps.PixelShaderIsPerCoarsePixel = wm_prog_data->per_coarse_pixel_dispatch;
 #endif
    }
 }
@@ -2163,7 +2325,7 @@ compute_kill_pixel(struct anv_graphics_pipeline *pipeline,
    const struct brw_wm_prog_data *wm_prog_data = get_wm_prog_data(pipeline);
 
    /* This computes the KillPixel portion of the computation for whether or
-    * not we want to enable the PMA fix on gen8 or gen9.  It's given by this
+    * not we want to enable the PMA fix on gfx8 or gfx9.  It's given by this
     * chunk of the giant formula:
     *
     *    (3DSTATE_PS_EXTRA::PixelShaderKillsPixels ||
@@ -2182,7 +2344,7 @@ compute_kill_pixel(struct anv_graphics_pipeline *pipeline,
       (ms_info && ms_info->alphaToCoverageEnable);
 }
 
-#if GEN_GEN == 12
+#if GFX_VER == 12
 static void
 emit_3dstate_primitive_replication(struct anv_graphics_pipeline *pipeline)
 {
@@ -2286,7 +2448,7 @@ genX(graphics_pipeline_create)(
                            urb_deref_block_size);
    emit_ms_state(pipeline, ms_info, dynamic_states);
    emit_ds_state(pipeline, ds_info, dynamic_states, pass, subpass);
-   emit_cb_state(pipeline, cb_info, ms_info);
+   emit_cb_state(pipeline, cb_info, ms_info, dynamic_states);
    compute_kill_pixel(pipeline, ms_info, subpass);
 
    emit_3dstate_clip(pipeline,
@@ -2296,12 +2458,12 @@ genX(graphics_pipeline_create)(
                      dynamic_states);
    emit_3dstate_streamout(pipeline, pCreateInfo->pRasterizationState);
 
-#if GEN_GEN == 12
+#if GFX_VER == 12
    emit_3dstate_primitive_replication(pipeline);
 #endif
 
 #if 0
-   /* From gen7_vs_state.c */
+   /* From gfx7_vs_state.c */
 
    /**
     * From Graphics BSpec: 3D-Media-GPGPU Engine > 3D Pipeline Stages >
@@ -2316,7 +2478,7 @@ genX(graphics_pipeline_create)(
     * Stall" bit set.
     */
    if (!device->info.is_haswell && !device->info.is_baytrail)
-      gen7_emit_vs_workaround_flush(brw);
+      gfx7_emit_vs_workaround_flush(brw);
 #endif
 
    emit_3dstate_vs(pipeline);
@@ -2326,10 +2488,11 @@ genX(graphics_pipeline_create)(
    emit_3dstate_wm(pipeline, subpass,
                    pCreateInfo->pInputAssemblyState,
                    pCreateInfo->pRasterizationState,
-                   cb_info, ms_info, line_info);
+                   cb_info, ms_info, line_info, dynamic_states);
    emit_3dstate_ps(pipeline, cb_info, ms_info);
-#if GEN_GEN >= 8
-   emit_3dstate_ps_extra(pipeline, subpass);
+#if GFX_VER >= 8
+   emit_3dstate_ps_extra(pipeline, subpass,
+                         pCreateInfo->pRasterizationState);
 
    if (!(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY))
       emit_3dstate_vf_topology(pipeline);
@@ -2341,7 +2504,7 @@ genX(graphics_pipeline_create)(
    return pipeline->base.batch.status;
 }
 
-#if GEN_VERSIONx10 >= 125
+#if GFX_VERx10 >= 125
 
 static void
 emit_compute_state(struct anv_compute_pipeline *pipeline,
@@ -2349,72 +2512,67 @@ emit_compute_state(struct anv_compute_pipeline *pipeline,
 {
    const struct brw_cs_prog_data *cs_prog_data = get_cs_prog_data(pipeline);
    anv_pipeline_setup_l3_config(&pipeline->base, cs_prog_data->base.total_shared > 0);
-
-   const struct anv_cs_parameters cs_params = anv_cs_parameters(pipeline);
-   pipeline->cs_right_mask = brw_cs_right_mask(cs_params.group_size, cs_params.simd_size);
 
    const uint32_t subslices = MAX2(device->physical->subslice_total, 1);
 
    const UNUSED struct anv_shader_bin *cs_bin = pipeline->cs;
-   const struct gen_device_info *devinfo = &device->info;
+   const struct intel_device_info *devinfo = &device->info;
 
    anv_batch_emit(&pipeline->base.batch, GENX(CFE_STATE), cfe) {
       cfe.MaximumNumberofThreads =
          devinfo->max_cs_threads * subslices - 1;
-      /* TODO: Enable gen12-hp scratch support*/
+      /* TODO: Enable gfx12-hp scratch support*/
       assert(get_scratch_space(cs_bin) == 0);
    }
 }
 
-#else /* #if GEN_VERSIONx10 >= 125 */
+#else /* #if GFX_VERx10 >= 125 */
 
 static void
 emit_compute_state(struct anv_compute_pipeline *pipeline,
                    const struct anv_device *device)
 {
+   const struct intel_device_info *devinfo = &device->info;
    const struct brw_cs_prog_data *cs_prog_data = get_cs_prog_data(pipeline);
 
    anv_pipeline_setup_l3_config(&pipeline->base, cs_prog_data->base.total_shared > 0);
 
-   const struct anv_cs_parameters cs_params = anv_cs_parameters(pipeline);
-
-   pipeline->cs_right_mask = brw_cs_right_mask(cs_params.group_size, cs_params.simd_size);
-
+   const struct brw_cs_dispatch_info dispatch =
+      brw_cs_get_dispatch_info(devinfo, cs_prog_data, NULL);
    const uint32_t vfe_curbe_allocation =
-      ALIGN(cs_prog_data->push.per_thread.regs * cs_params.threads +
+      ALIGN(cs_prog_data->push.per_thread.regs * dispatch.threads +
             cs_prog_data->push.cross_thread.regs, 2);
 
    const uint32_t subslices = MAX2(device->physical->subslice_total, 1);
 
    const struct anv_shader_bin *cs_bin = pipeline->cs;
-   const struct gen_device_info *devinfo = &device->info;
 
    anv_batch_emit(&pipeline->base.batch, GENX(MEDIA_VFE_STATE), vfe) {
-#if GEN_GEN > 7
+#if GFX_VER > 7
       vfe.StackSize              = 0;
 #else
       vfe.GPGPUMode              = true;
 #endif
       vfe.MaximumNumberofThreads =
          devinfo->max_cs_threads * subslices - 1;
-      vfe.NumberofURBEntries     = GEN_GEN <= 7 ? 0 : 2;
-#if GEN_GEN < 11
+      vfe.NumberofURBEntries     = GFX_VER <= 7 ? 0 : 2;
+#if GFX_VER < 11
       vfe.ResetGatewayTimer      = true;
 #endif
-#if GEN_GEN <= 8
+#if GFX_VER <= 8
       vfe.BypassGatewayControl   = true;
 #endif
-      vfe.URBEntryAllocationSize = GEN_GEN <= 7 ? 0 : 2;
+      vfe.URBEntryAllocationSize = GFX_VER <= 7 ? 0 : 2;
       vfe.CURBEAllocationSize    = vfe_curbe_allocation;
 
       if (cs_bin->prog_data->total_scratch) {
-         if (GEN_GEN >= 8) {
+         if (GFX_VER >= 8) {
             /* Broadwell's Per Thread Scratch Space is in the range [0, 11]
              * where 0 = 1k, 1 = 2k, 2 = 4k, ..., 11 = 2M.
              */
             vfe.PerThreadScratchSpace =
                ffs(cs_bin->prog_data->total_scratch) - 11;
-         } else if (GEN_VERSIONx10 == 75) {
+         } else if (GFX_VERx10 == 75) {
             /* Haswell's Per Thread Scratch Space is in the range [0, 10]
              * where 0 = 2k, 1 = 4k, 2 = 8k, ..., 10 = 2M.
              */
@@ -2435,32 +2593,32 @@ emit_compute_state(struct anv_compute_pipeline *pipeline,
    struct GENX(INTERFACE_DESCRIPTOR_DATA) desc = {
       .KernelStartPointer     =
          cs_bin->kernel.offset +
-         brw_cs_prog_data_prog_offset(cs_prog_data, cs_params.simd_size),
+         brw_cs_prog_data_prog_offset(cs_prog_data, dispatch.simd_size),
 
-      /* WA_1606682166 */
-      .SamplerCount           = GEN_GEN == 11 ? 0 : get_sampler_count(cs_bin),
+      /* Wa_1606682166 */
+      .SamplerCount           = GFX_VER == 11 ? 0 : get_sampler_count(cs_bin),
       /* We add 1 because the CS indirect parameters buffer isn't accounted
        * for in bind_map.surface_count.
        */
       .BindingTableEntryCount = 1 + MIN2(cs_bin->bind_map.surface_count, 30),
       .BarrierEnable          = cs_prog_data->uses_barrier,
       .SharedLocalMemorySize  =
-         encode_slm_size(GEN_GEN, cs_prog_data->base.total_shared),
+         encode_slm_size(GFX_VER, cs_prog_data->base.total_shared),
 
-#if GEN_VERSIONx10 != 75
+#if GFX_VERx10 != 75
       .ConstantURBEntryReadOffset = 0,
 #endif
       .ConstantURBEntryReadLength = cs_prog_data->push.per_thread.regs,
-#if GEN_VERSIONx10 >= 75
+#if GFX_VERx10 >= 75
       .CrossThreadConstantDataReadLength =
          cs_prog_data->push.cross_thread.regs,
 #endif
-#if GEN_GEN >= 12
+#if GFX_VER >= 12
       /* TODO: Check if we are missing workarounds and enable mid-thread
        * preemption.
        *
        * We still have issues with mid-thread preemption (it was already
-       * disabled by the kernel on gen11, due to missing workarounds). It's
+       * disabled by the kernel on gfx11, due to missing workarounds). It's
        * possible that we are just missing some workarounds, and could enable
        * it later, but for now let's disable it to fix a GPU in compute in Car
        * Chase (and possibly more).
@@ -2468,14 +2626,14 @@ emit_compute_state(struct anv_compute_pipeline *pipeline,
       .ThreadPreemptionDisable = true,
 #endif
 
-      .NumberofThreadsinGPGPUThreadGroup = cs_params.threads,
+      .NumberofThreadsinGPGPUThreadGroup = dispatch.threads,
    };
    GENX(INTERFACE_DESCRIPTOR_DATA_pack)(NULL,
                                         pipeline->interface_descriptor_data,
                                         &desc);
 }
 
-#endif /* #if GEN_VERSIONx10 >= 125 */
+#endif /* #if GFX_VERx10 >= 125 */
 
 static VkResult
 compute_pipeline_create(

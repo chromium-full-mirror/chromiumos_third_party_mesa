@@ -141,17 +141,17 @@ COMPILER_FILES = \
 	compiler/brw_vec4_vs.h \
 	compiler/brw_vue_map.c \
 	compiler/brw_wm_iz.cpp \
-	compiler/gen6_gs_visitor.cpp \
-	compiler/gen6_gs_visitor.h
+	compiler/gfx6_gs_visitor.cpp \
+	compiler/gfx6_gs_visitor.h
 
 COMPILER_GENERATED_FILES = \
 	compiler/brw_nir_trig_workarounds.c
 
 DEV_FILES = \
-	dev/gen_debug.c \
-	dev/gen_debug.h \
-	dev/gen_device_info.c \
-	dev/gen_device_info.h
+	dev/intel_debug.c \
+	dev/intel_debug.h \
+	dev/intel_device_info.c \
+	dev/intel_device_info.h
 
 GENXML_XML_FILES = \
 	genxml/gen4.xml \
@@ -194,55 +194,55 @@ ISL_FILES = \
 	isl/isl_priv.h \
 	isl/isl_storage_image.c
 
-ISL_GEN4_FILES = \
-	isl/isl_gen4.c \
-	isl/isl_gen4.h \
+ISL_GFX4_FILES = \
+	isl/isl_gfx4.c \
+	isl/isl_gfx4.h \
 	isl/isl_emit_depth_stencil.c \
 	isl/isl_surface_state.c
 
-ISL_GEN5_FILES = \
+ISL_GFX5_FILES = \
 	isl/isl_emit_depth_stencil.c \
 	isl/isl_surface_state.c
 
-ISL_GEN6_FILES = \
-	isl/isl_gen6.c \
-	isl/isl_gen6.h \
+ISL_GFX6_FILES = \
+	isl/isl_gfx6.c \
+	isl/isl_gfx6.h \
 	isl/isl_emit_depth_stencil.c \
 	isl/isl_surface_state.c
 
-ISL_GEN7_FILES = \
-	isl/isl_gen7.c \
-	isl/isl_gen7.h \
+ISL_GFX7_FILES = \
+	isl/isl_gfx7.c \
+	isl/isl_gfx7.h \
 	isl/isl_emit_depth_stencil.c \
 	isl/isl_surface_state.c
 
-ISL_GEN75_FILES = \
+ISL_GFX75_FILES = \
 	isl/isl_emit_depth_stencil.c \
 	isl/isl_surface_state.c
 
-ISL_GEN8_FILES = \
-	isl/isl_gen8.c \
-	isl/isl_gen8.h \
+ISL_GFX8_FILES = \
+	isl/isl_gfx8.c \
+	isl/isl_gfx8.h \
 	isl/isl_emit_depth_stencil.c \
 	isl/isl_surface_state.c
 
-ISL_GEN9_FILES = \
-	isl/isl_gen9.c \
-	isl/isl_gen9.h \
+ISL_GFX9_FILES = \
+	isl/isl_gfx9.c \
+	isl/isl_gfx9.h \
 	isl/isl_emit_depth_stencil.c \
 	isl/isl_surface_state.c
 
-ISL_GEN11_FILES = \
+ISL_GFX11_FILES = \
 	isl/isl_emit_depth_stencil.c \
 	isl/isl_surface_state.c
 
-ISL_GEN12_FILES = \
-	isl/isl_gen12.c \
-	isl/isl_gen12.h \
+ISL_GFX12_FILES = \
+	isl/isl_gfx12.c \
+	isl/isl_gfx12.h \
 	isl/isl_emit_depth_stencil.c \
 	isl/isl_surface_state.c
 
-ISL_GEN125_FILES = \
+ISL_GFX125_FILES = \
 	isl/isl_emit_depth_stencil.c \
 	isl/isl_surface_state.c
 
@@ -269,7 +269,6 @@ VULKAN_FILES := \
 	vulkan/anv_formats.c \
 	vulkan/anv_genX.h \
 	vulkan/anv_image.c \
-	vulkan/anv_intel.c \
 	vulkan/anv_measure.c \
 	vulkan/anv_measure.h \
 	vulkan/anv_nir.h \
@@ -321,35 +320,35 @@ VULKAN_GENX_FILES := \
 	vulkan/genX_query.c \
 	vulkan/genX_state.c
 
-VULKAN_GEN7_FILES := \
-	vulkan/gen7_cmd_buffer.c \
+VULKAN_GFX7_FILES := \
+	vulkan/gfx7_cmd_buffer.c \
 	$(VULKAN_GENX_FILES)
 
-VULKAN_GEN75_FILES := \
-	vulkan/gen7_cmd_buffer.c \
+VULKAN_GFX75_FILES := \
+	vulkan/gfx7_cmd_buffer.c \
 	$(VULKAN_GENX_FILES)
 
-VULKAN_GEN8_FILES := \
-	vulkan/gen8_cmd_buffer.c \
+VULKAN_GFX8_FILES := \
+	vulkan/gfx8_cmd_buffer.c \
 	$(VULKAN_GENX_FILES)
 
-VULKAN_GEN9_FILES := \
-	vulkan/gen8_cmd_buffer.c \
+VULKAN_GFX9_FILES := \
+	vulkan/gfx8_cmd_buffer.c \
 	$(VULKAN_GENX_FILES)
 
-VULKAN_GEN11_FILES := \
-	vulkan/gen8_cmd_buffer.c \
+VULKAN_GFX11_FILES := \
+	vulkan/gfx8_cmd_buffer.c \
 	$(VULKAN_GENX_FILES)
 
-VULKAN_GEN12_FILES := \
-	vulkan/gen8_cmd_buffer.c \
+VULKAN_GFX12_FILES := \
+	vulkan/gfx8_cmd_buffer.c \
 	$(VULKAN_GENX_FILES)
 
-VULKAN_GEN125_FILES := \
-	vulkan/gen8_cmd_buffer.c \
+VULKAN_GFX125_FILES := \
+	vulkan/gfx8_cmd_buffer.c \
 	$(VULKAN_GENX_FILES)
 
-GEN_PERF_XML_FILES = \
+INTEL_PERF_XML_FILES = \
 	perf/oa-hsw.xml \
 	perf/oa-bdw.xml \
 	perf/oa-chv.xml \
@@ -370,15 +369,15 @@ GEN_PERF_XML_FILES = \
 	perf/oa-dg1.xml \
 	perf/oa-adl.xml
 
-GEN_PERF_FILES = \
-	perf/gen_perf.c \
-	perf/gen_perf.h \
-	perf/gen_perf_mdapi.c \
-	perf/gen_perf_mdapi.h \
-	perf/gen_perf_private.h \
-	perf/gen_perf_query.h \
-	perf/gen_perf_query.c
+INTEL_PERF_FILES = \
+	perf/intel_perf.c \
+	perf/intel_perf.h \
+	perf/intel_perf_mdapi.c \
+	perf/intel_perf_mdapi.h \
+	perf/intel_perf_private.h \
+	perf/intel_perf_query.h \
+	perf/intel_perf_query.c
 
-GEN_PERF_GENERATED_FILES = \
-	perf/gen_perf_metrics.c \
-	perf/gen_perf_metrics.h
+INTEL_PERF_GENERATED_FILES = \
+	perf/intel_perf_metrics.c \
+	perf/intel_perf_metrics.h

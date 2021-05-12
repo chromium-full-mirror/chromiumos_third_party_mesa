@@ -636,7 +636,7 @@ static void radeon_winsys_destroy(struct radeon_winsys *rws)
 
    _mesa_hash_table_destroy(ws->bo_names, NULL);
    _mesa_hash_table_destroy(ws->bo_handles, NULL);
-   _mesa_hash_table_u64_destroy(ws->bo_vas, NULL);
+   _mesa_hash_table_u64_destroy(ws->bo_vas);
    mtx_destroy(&ws->bo_handles_mutex);
    mtx_destroy(&ws->vm32.mutex);
    mtx_destroy(&ws->vm64.mutex);
@@ -851,7 +851,7 @@ radeon_drm_winsys_create(int fd, const struct pipe_screen_config *config,
 
    pb_cache_init(&ws->bo_cache, RADEON_MAX_CACHED_HEAPS,
                  500000, ws->check_vm ? 1.0f : 2.0f, 0,
-                 MIN2(ws->info.vram_size, ws->info.gart_size),
+                 MIN2(ws->info.vram_size, ws->info.gart_size), NULL,
                  radeon_bo_destroy,
                  radeon_bo_can_reclaim);
 

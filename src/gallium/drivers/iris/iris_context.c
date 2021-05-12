@@ -37,19 +37,6 @@
 #include "common/intel_sample_positions.h"
 
 /**
- * For debugging purposes, this returns a time in seconds.
- */
-double
-get_time(void)
-{
-   struct timespec tp;
-
-   clock_gettime(CLOCK_MONOTONIC, &tp);
-
-   return tp.tv_sec + tp.tv_nsec / 1000000000.0;
-}
-
-/**
  * The pipe->set_debug_callback() driver hook.
  */
 static void
@@ -230,6 +217,8 @@ iris_destroy_context(struct pipe_context *ctx)
 
    if (ctx->stream_uploader)
       u_upload_destroy(ctx->stream_uploader);
+   if (ctx->const_uploader)
+      u_upload_destroy(ctx->const_uploader);
 
    clear_dirty_dmabuf_set(ice);
 
@@ -254,21 +243,21 @@ iris_destroy_context(struct pipe_context *ctx)
 }
 
 #define genX_call(devinfo, func, ...)             \
-   switch ((devinfo)->genx10) {                   \
+   switch ((devinfo)->verx10) {                   \
    case 125:                                      \
-      gen125_##func(__VA_ARGS__);                 \
+      gfx125_##func(__VA_ARGS__);                 \
       break;                                      \
    case 120:                                      \
-      gen12_##func(__VA_ARGS__);                  \
+      gfx12_##func(__VA_ARGS__);                  \
       break;                                      \
    case 110:                                      \
-      gen11_##func(__VA_ARGS__);                  \
+      gfx11_##func(__VA_ARGS__);                  \
       break;                                      \
    case 90:                                       \
-      gen9_##func(__VA_ARGS__);                   \
+      gfx9_##func(__VA_ARGS__);                   \
       break;                                      \
    case 80:                                       \
-      gen8_##func(__VA_ARGS__);                   \
+      gfx8_##func(__VA_ARGS__);                   \
       break;                                      \
    default:                                       \
       unreachable("Unknown hardware generation"); \
@@ -283,7 +272,7 @@ struct pipe_context *
 iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
 {
    struct iris_screen *screen = (struct iris_screen*)pscreen;
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    struct iris_context *ice = rzalloc(NULL, struct iris_context);
 
    if (!ice)
@@ -299,7 +288,14 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
       free(ctx);
       return NULL;
    }
-   ctx->const_uploader = ctx->stream_uploader;
+   ctx->const_uploader = u_upload_create(ctx, 1024 * 1024,
+                                         PIPE_BIND_CONSTANT_BUFFER,
+                                         PIPE_USAGE_IMMUTABLE, 0);
+   if (!ctx->const_uploader) {
+      u_upload_destroy(ctx->stream_uploader);
+      free(ctx);
+      return NULL;
+   }
 
    if (!create_dirty_dmabuf_set(ice)) {
       ralloc_free(ice);
@@ -328,14 +324,14 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
    slab_create_child(&ice->transfer_pool_unsync, &screen->transfer_pool);
 
    ice->state.surface_uploader =
-      u_upload_create(ctx, 16384, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
+      u_upload_create(ctx, 64 * 1024, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
                       IRIS_RESOURCE_FLAG_SURFACE_MEMZONE);
    ice->state.dynamic_uploader =
-      u_upload_create(ctx, 16384, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
+      u_upload_create(ctx, 64 * 1024, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
                       IRIS_RESOURCE_FLAG_DYNAMIC_MEMZONE);
 
    ice->query_buffer_uploader =
-      u_upload_create(ctx, 4096, PIPE_BIND_CUSTOM, PIPE_USAGE_STAGING,
+      u_upload_create(ctx, 16 * 1024, PIPE_BIND_CUSTOM, PIPE_USAGE_STAGING,
                       0);
 
    genX_call(devinfo, init_state, ice);

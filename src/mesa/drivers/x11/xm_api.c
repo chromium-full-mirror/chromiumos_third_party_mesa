@@ -662,13 +662,13 @@ xmesa_color_to_pixel(struct gl_context *ctx,
       case PF_8A8R8G8B:
          return PACK_8A8R8G8B( r, g, b, a );
       case PF_8R8G8B:
-         /* fall through */
+         FALLTHROUGH;
       case PF_8R8G8B24:
          return PACK_8R8G8B( r, g, b );
       case PF_5R6G5B:
          return PACK_5R6G5B( r, g, b );
       case PF_Dither_True:
-         /* fall through */
+         FALLTHROUGH;
       case PF_Dither_5R6G5B:
          {
             unsigned long p;
@@ -847,19 +847,15 @@ XMesaVisual XMesaCreateVisual( XMesaDisplay *display,
       alpha_bits = v->mesa_visual.alphaBits;
    }
 
-   if (!_mesa_initialize_visual(&v->mesa_visual,
-                                db_flag, stereo_flag,
-                                red_bits, green_bits,
-                                blue_bits, alpha_bits,
-                                depth_size,
-                                stencil_size,
-                                accum_red_size, accum_green_size,
-                                accum_blue_size, accum_alpha_size,
-                                0)) {
-      free(v->visinfo);
-      free(v);
-      return NULL;
-   }
+   _mesa_initialize_visual(&v->mesa_visual,
+                           db_flag, stereo_flag,
+                           red_bits, green_bits,
+                           blue_bits, alpha_bits,
+                           depth_size,
+                           stencil_size,
+                           accum_red_size, accum_green_size,
+                           accum_blue_size, accum_alpha_size,
+                           0);
 
    /* XXX minor hack */
    v->mesa_visual.level = level;
@@ -1586,7 +1582,7 @@ unsigned long XMesaDitherColor( XMesaContext xmesa, GLint x, GLint y,
       case PF_5R6G5B:
          return PACK_5R6G5B( r, g, b );
       case PF_Dither_5R6G5B:
-         /* fall through */
+         FALLTHROUGH;
       case PF_Dither_True:
          {
             unsigned long p;

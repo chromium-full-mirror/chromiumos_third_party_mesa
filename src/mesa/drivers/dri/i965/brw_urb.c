@@ -47,7 +47,7 @@
  * Manages the division of the URB space between the various fixed-function
  * units.
  *
- * See the Thread Initiation Management section of the GEN4 B-Spec, and
+ * See the Thread Initiation Management section of the GFX4 B-Spec, and
  * the individual *_STATE structures for restrictions on numbers of
  * entries and threads.
  */
@@ -116,7 +116,7 @@ void
 brw_calculate_urb_fence(struct brw_context *brw, unsigned csize,
                         unsigned vsize, unsigned sfsize)
 {
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
 
    if (csize < limits[CS].min_entry_size)
       csize = limits[CS].min_entry_size;
@@ -147,7 +147,7 @@ brw_calculate_urb_fence(struct brw_context *brw, unsigned csize,
 
       brw->urb.constrained = 0;
 
-      if (devinfo->gen == 5) {
+      if (devinfo->ver == 5) {
          brw->urb.nr_vs_entries = 128;
          brw->urb.nr_sf_entries = 48;
          if (check_urb_layout(brw)) {

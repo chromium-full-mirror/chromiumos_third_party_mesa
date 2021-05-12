@@ -313,9 +313,8 @@ osmesa_choose_format(GLenum format, GLenum type)
          return PIPE_FORMAT_NONE;
       return PIPE_FORMAT_B5G6R5_UNORM;
    default:
-      ; /* fall-through */
+      return PIPE_FORMAT_NONE;
    }
-   return PIPE_FORMAT_NONE;
 }
 
 
@@ -339,7 +338,6 @@ osmesa_init_st_visual(struct st_visual *vis,
    vis->depth_stencil_format = ds_format;
    vis->accum_format = accum_format;
    vis->samples = 1;
-   vis->render_buffer = ST_ATTACHMENT_FRONT_LEFT;
 }
 
 
@@ -890,7 +888,7 @@ OSMesaGetIntegerv(GLint pname, GLint *value)
       *value = osmesa->y_up;
       return;
    case OSMESA_MAX_WIDTH:
-      /* fall-through */
+      FALLTHROUGH;
    case OSMESA_MAX_HEIGHT:
       {
          struct pipe_screen *screen = get_st_manager()->screen;

@@ -83,14 +83,14 @@ brw_miptree_create_for_teximage(struct brw_context *brw,
    case GL_TEXTURE_3D:
       depth = old_mt ? get_base_dim(old_depth, depth, level) :
                        depth << level;
-      /* Fall through */
+      FALLTHROUGH;
    case GL_TEXTURE_2D:
    case GL_TEXTURE_2D_ARRAY:
    case GL_TEXTURE_CUBE_MAP:
    case GL_TEXTURE_CUBE_MAP_ARRAY:
       height = old_mt ? get_base_dim(old_height, height, level) :
                         height << level;
-      /* Fall through */
+      FALLTHROUGH;
    case GL_TEXTURE_1D:
    case GL_TEXTURE_1D_ARRAY:
       width = old_mt ? get_base_dim(old_width, width, level) :
@@ -184,7 +184,7 @@ brw_texsubimage_tiled_memcpy(struct gl_context * ctx,
                              const struct gl_pixelstore_attrib *packing)
 {
    struct brw_context *brw = brw_context(ctx);
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
    struct brw_texture_image *image = brw_texture_image(texImage);
    int src_pitch;
 
@@ -240,13 +240,13 @@ brw_texsubimage_tiled_memcpy(struct gl_context * ctx,
 
    /* linear_to_tiled() assumes that if the object is swizzled, it is using
     * I915_BIT6_SWIZZLE_9_10 for X and I915_BIT6_SWIZZLE_9 for Y.  This is only
-    * true on gen5 and above.
+    * true on gfx5 and above.
     *
-    * The killer on top is that some gen4 have an L-shaped swizzle mode, where
+    * The killer on top is that some gfx4 have an L-shaped swizzle mode, where
     * parts of the memory aren't swizzled at all. Userspace just can't handle
     * that.
     */
-   if (devinfo->gen < 5 && brw->has_swizzling)
+   if (devinfo->ver < 5 && brw->has_swizzling)
       return false;
 
    int level = texImage->Level + texImage->TexObject->Attrib.MinLevel;
@@ -732,7 +732,7 @@ brw_gettexsubimage_tiled_memcpy(struct gl_context *ctx,
                                 const struct gl_pixelstore_attrib *packing)
 {
    struct brw_context *brw = brw_context(ctx);
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
    struct brw_texture_image *image = brw_texture_image(texImage);
    int dst_pitch;
 
@@ -792,13 +792,13 @@ brw_gettexsubimage_tiled_memcpy(struct gl_context *ctx,
 
    /* tiled_to_linear() assumes that if the object is swizzled, it is using
     * I915_BIT6_SWIZZLE_9_10 for X and I915_BIT6_SWIZZLE_9 for Y.  This is only
-    * true on gen5 and above.
+    * true on gfx5 and above.
     *
-    * The killer on top is that some gen4 have an L-shaped swizzle mode, where
+    * The killer on top is that some gfx4 have an L-shaped swizzle mode, where
     * parts of the memory aren't swizzled at all. Userspace just can't handle
     * that.
     */
-   if (devinfo->gen < 5 && brw->has_swizzling)
+   if (devinfo->ver < 5 && brw->has_swizzling)
       return false;
 
    int level = texImage->Level + texImage->TexObject->Attrib.MinLevel;
@@ -970,8 +970,10 @@ brw_compressedtexsubimage(struct gl_context *ctx, GLuint dims,
    bool is_linear_astc = _mesa_is_astc_format(gl_format) &&
                         !_mesa_is_srgb_format(gl_format);
    struct brw_context *brw = (struct brw_context*) ctx;
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
-   if (devinfo->gen == 9 && !gen_device_info_is_9lp(devinfo) && is_linear_astc)
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
+   if (devinfo->ver == 9 &&
+       !intel_device_info_is_9lp(devinfo) &&
+       is_linear_astc)
       flush_astc_denorms(ctx, dims, texImage,
                          xoffset, yoffset, zoffset,
                          width, height, depth);

@@ -30,7 +30,7 @@
 
 void
 intel_batch_decode_ctx_init(struct intel_batch_decode_ctx *ctx,
-                            const struct gen_device_info *devinfo,
+                            const struct intel_device_info *devinfo,
                             FILE *fp, enum intel_batch_decode_flags flags,
                             const char *xml_path,
                             struct intel_batch_decode_bo (*get_bo)(void *,
@@ -65,7 +65,7 @@ intel_batch_decode_ctx_finish(struct intel_batch_decode_ctx *ctx)
 
 #define CSI "\e["
 #define RED_COLOR    CSI "31m"
-#define BLUE_HEADER  CSI "0;44m"
+#define BLUE_HEADER  CSI "0;44m" CSI "1;37m"
 #define GREEN_HEADER CSI "1;42m"
 #define NORMAL       CSI "0m"
 
@@ -390,8 +390,10 @@ handle_interface_descriptor_data(struct intel_batch_decode_ctx *ctx,
    ctx_disassemble_program(ctx, ksp, "compute shader");
    fprintf(ctx->fp, "\n");
 
-   dump_samplers(ctx, sampler_offset, sampler_count);
-   dump_binding_table(ctx, binding_table_offset, binding_entry_count);
+   if (sampler_count)
+      dump_samplers(ctx, sampler_offset, sampler_count);
+   if (binding_entry_count)
+      dump_binding_table(ctx, binding_table_offset, binding_entry_count);
 }
 
 static void
@@ -572,7 +574,7 @@ decode_single_ksp(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
    struct intel_group *inst = intel_ctx_find_instruction(ctx, p);
 
    uint64_t ksp = 0;
-   bool is_simd8 = ctx->devinfo.gen >= 11; /* vertex shaders on Gen8+ only */
+   bool is_simd8 = ctx->devinfo.ver >= 11; /* vertex shaders on Gfx8+ only */
    bool is_enabled = true;
 
    struct intel_field_iterator iter;
@@ -749,7 +751,7 @@ decode_3dstate_constant(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
 }
 
 static void
-decode_gen6_3dstate_binding_table_pointers(struct intel_batch_decode_ctx *ctx,
+decode_gfx4_3dstate_binding_table_pointers(struct intel_batch_decode_ctx *ctx,
                                            const uint32_t *p)
 {
    fprintf(ctx->fp, "VS Binding Table:\n");
@@ -758,8 +760,17 @@ decode_gen6_3dstate_binding_table_pointers(struct intel_batch_decode_ctx *ctx,
    fprintf(ctx->fp, "GS Binding Table:\n");
    dump_binding_table(ctx, p[2], -1);
 
-   fprintf(ctx->fp, "PS Binding Table:\n");
-   dump_binding_table(ctx, p[3], -1);
+   if (ctx->devinfo.ver < 6) {
+      fprintf(ctx->fp, "CLIP Binding Table:\n");
+      dump_binding_table(ctx, p[3], -1);
+      fprintf(ctx->fp, "SF Binding Table:\n");
+      dump_binding_table(ctx, p[4], -1);
+      fprintf(ctx->fp, "PS Binding Table:\n");
+      dump_binding_table(ctx, p[5], -1);
+   } else {
+      fprintf(ctx->fp, "PS Binding Table:\n");
+      dump_binding_table(ctx, p[3], -1);
+   }
 }
 
 static void
@@ -777,7 +788,7 @@ decode_3dstate_sampler_state_pointers(struct intel_batch_decode_ctx *ctx,
 }
 
 static void
-decode_3dstate_sampler_state_pointers_gen6(struct intel_batch_decode_ctx *ctx,
+decode_3dstate_sampler_state_pointers_gfx6(struct intel_batch_decode_ctx *ctx,
                                            const uint32_t *p)
 {
    dump_samplers(ctx, p[1], 1);
@@ -968,6 +979,26 @@ decode_vs_state(struct intel_batch_decode_ctx *ctx, uint32_t offset)
    ctx_print_group(ctx, strct, offset, bind_bo.map);
 }
 
+static void
+decode_gs_state(struct intel_batch_decode_ctx *ctx, uint32_t offset)
+{
+   struct intel_group *strct =
+      intel_spec_find_struct(ctx->spec, "GS_STATE");
+   if (strct == NULL) {
+      fprintf(ctx->fp, "did not find GS_STATE info\n");
+      return;
+   }
+
+   struct intel_batch_decode_bo bind_bo =
+      ctx_get_bo(ctx, true, offset);
+
+   if (bind_bo.map == NULL) {
+      fprintf(ctx->fp, " gs state unavailable\n");
+      return;
+   }
+
+   ctx_print_group(ctx, strct, offset, bind_bo.map);
+}
 
 static void
 decode_clip_state(struct intel_batch_decode_ctx *ctx, uint32_t offset)
@@ -1103,6 +1134,10 @@ decode_pipelined_pointers(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
 {
    fprintf(ctx->fp, "VS State Table:\n");
    decode_vs_state(ctx, p[1]);
+   if (p[2] & 1) {
+      fprintf(ctx->fp, "GS State Table:\n");
+      decode_gs_state(ctx, p[2] & ~1);
+   }
    fprintf(ctx->fp, "Clip State Table:\n");
    decode_clip_state(ctx, p[3] & ~1);
    fprintf(ctx->fp, "SF State Table:\n");
@@ -1111,6 +1146,12 @@ decode_pipelined_pointers(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
    decode_wm_state(ctx, p[5]);
    fprintf(ctx->fp, "CC State Table:\n");
    decode_cc_state(ctx, p[6]);
+}
+
+static void
+decode_cps_pointers(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
+{
+   decode_dynamic_state_pointers(ctx, "CPS_STATE", p, 1);
 }
 
 struct custom_decoder {
@@ -1136,7 +1177,7 @@ struct custom_decoder {
    { "3DSTATE_CONSTANT_DS", decode_3dstate_constant },
    { "3DSTATE_CONSTANT_ALL", decode_3dstate_constant_all },
 
-   { "3DSTATE_BINDING_TABLE_POINTERS", decode_gen6_3dstate_binding_table_pointers },
+   { "3DSTATE_BINDING_TABLE_POINTERS", decode_gfx4_3dstate_binding_table_pointers },
    { "3DSTATE_BINDING_TABLE_POINTERS_VS", decode_3dstate_binding_table_pointers },
    { "3DSTATE_BINDING_TABLE_POINTERS_HS", decode_3dstate_binding_table_pointers },
    { "3DSTATE_BINDING_TABLE_POINTERS_DS", decode_3dstate_binding_table_pointers },
@@ -1148,7 +1189,7 @@ struct custom_decoder {
    { "3DSTATE_SAMPLER_STATE_POINTERS_DS", decode_3dstate_sampler_state_pointers },
    { "3DSTATE_SAMPLER_STATE_POINTERS_GS", decode_3dstate_sampler_state_pointers },
    { "3DSTATE_SAMPLER_STATE_POINTERS_PS", decode_3dstate_sampler_state_pointers },
-   { "3DSTATE_SAMPLER_STATE_POINTERS", decode_3dstate_sampler_state_pointers_gen6 },
+   { "3DSTATE_SAMPLER_STATE_POINTERS", decode_3dstate_sampler_state_pointers_gfx6 },
 
    { "3DSTATE_VIEWPORT_STATE_POINTERS_CC", decode_3dstate_viewport_state_pointers_cc },
    { "3DSTATE_VIEWPORT_STATE_POINTERS_SF_CLIP", decode_3dstate_viewport_state_pointers_sf_clip },
@@ -1157,7 +1198,8 @@ struct custom_decoder {
    { "3DSTATE_SCISSOR_STATE_POINTERS", decode_3dstate_scissor_state_pointers },
    { "3DSTATE_SLICE_TABLE_STATE_POINTERS", decode_3dstate_slice_table_state_pointers },
    { "MI_LOAD_REGISTER_IMM", decode_load_register_imm },
-   { "3DSTATE_PIPELINED_POINTERS", decode_pipelined_pointers }
+   { "3DSTATE_PIPELINED_POINTERS", decode_pipelined_pointers },
+   { "3DSTATE_CPS_POINTERS", decode_cps_pointers },
 };
 
 void

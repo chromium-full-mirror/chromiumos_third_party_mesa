@@ -31,9 +31,11 @@ struct zink_context;
 
 #define ZINK_RESOURCE_USAGE_STREAMOUT (1 << 10) //much greater than ZINK_DESCRIPTOR_TYPES
 
+#include "util/simple_mtx.h"
 #include "util/u_transfer.h"
 #include "util/u_range.h"
 #include "util/u_dynarray.h"
+#include "util/u_threaded_context.h"
 
 #include "zink_batch.h"
 #include "zink_descriptors.h"
@@ -71,14 +73,14 @@ struct zink_resource_object {
 
    struct zink_batch_usage reads;
    struct zink_batch_usage writes;
-   unsigned map_count;
    void *map;
    bool is_buffer;
    bool host_visible;
+   bool coherent;
 };
 
 struct zink_resource {
-   struct pipe_resource base;
+   struct threaded_resource base;
 
    enum pipe_format internal_format:16;
 
@@ -86,6 +88,9 @@ struct zink_resource {
    VkAccessFlags access;
 
    struct zink_resource_object *obj;
+   struct zink_resource_object *scanout_obj; //TODO: remove for wsi
+   bool scanout_obj_init;
+   bool scanout_dirty;
    union {
       struct util_range valid_buffer_range;
       struct {
@@ -93,8 +98,12 @@ struct zink_resource {
          VkImageLayout layout;
          VkImageAspectFlags aspect;
          bool optimal_tiling;
+         uint32_t sampler_binds[PIPE_SHADER_TYPES];
+         uint16_t image_bind_count[2]; //gfx, compute
       };
    };
+   uint16_t write_bind_count[2]; //gfx, compute
+   uint16_t bind_count[2]; //gfx, compute
 
    struct sw_displaytarget *dt;
    unsigned dt_stride;
@@ -104,9 +113,10 @@ struct zink_resource {
 };
 
 struct zink_transfer {
-   struct pipe_transfer base;
+   struct threaded_transfer base;
    struct pipe_resource *staging_res;
    unsigned offset;
+   unsigned depthPitch;
 };
 
 static inline struct zink_resource *
@@ -133,11 +143,7 @@ bool
 zink_resource_has_usage(struct zink_resource *res, enum zink_resource_access usage);
 
 bool
-zink_resource_has_usage_for_id(struct zink_resource *res, uint32_t id);
-
-void
-zink_resource_desc_set_add(struct zink_resource *res, struct zink_descriptor_set *zds, unsigned idx);
-
+zink_resource_has_curr_read_usage(struct zink_context *ctx, struct zink_resource *res);
 
 void
 zink_destroy_resource_object(struct zink_screen *screen, struct zink_resource_object *resource_object);

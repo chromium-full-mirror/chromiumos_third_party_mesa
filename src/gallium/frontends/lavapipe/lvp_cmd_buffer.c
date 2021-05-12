@@ -23,6 +23,7 @@
 
 #include "lvp_private.h"
 #include "pipe/p_context.h"
+#include "vk_util.h"
 
 static VkResult lvp_create_cmd_buffer(
    struct lvp_device *                         device,
@@ -339,7 +340,7 @@ state_setup_attachments(struct lvp_attachment_state *attachments,
          }
       }
       attachments[i].pending_clear_aspects = clear_aspects;
-      if (clear_values)
+      if (clear_aspects)
          attachments[i].clear_value = clear_values[i];
    }
 }
@@ -352,8 +353,14 @@ VKAPI_ATTR void VKAPI_CALL lvp_CmdBeginRenderPass2(
    LVP_FROM_HANDLE(lvp_cmd_buffer, cmd_buffer, commandBuffer);
    LVP_FROM_HANDLE(lvp_render_pass, pass, pRenderPassBeginInfo->renderPass);
    LVP_FROM_HANDLE(lvp_framebuffer, framebuffer, pRenderPassBeginInfo->framebuffer);
+   const struct VkRenderPassAttachmentBeginInfo *attachment_info =
+      vk_find_struct_const(pRenderPassBeginInfo->pNext,
+                           RENDER_PASS_ATTACHMENT_BEGIN_INFO);
    struct lvp_cmd_buffer_entry *cmd;
    uint32_t cmd_size = pass->attachment_count * sizeof(struct lvp_attachment_state);
+
+   if (attachment_info)
+      cmd_size += attachment_info->attachmentCount * sizeof(struct lvp_image_view *);
 
    cmd = cmd_buf_entry_alloc_size(cmd_buffer, cmd_size, LVP_CMD_BEGIN_RENDER_PASS);
    if (!cmd)
@@ -364,6 +371,13 @@ VKAPI_ATTR void VKAPI_CALL lvp_CmdBeginRenderPass2(
    cmd->u.begin_render_pass.render_area = pRenderPassBeginInfo->renderArea;
 
    cmd->u.begin_render_pass.attachments = (struct lvp_attachment_state *)(cmd + 1);
+   cmd->u.begin_render_pass.imageless_views = NULL;
+   if (attachment_info) {
+      cmd->u.begin_render_pass.imageless_views = (struct lvp_image_view **)(cmd->u.begin_render_pass.attachments + pass->attachment_count);
+      for (unsigned i = 0; i < attachment_info->attachmentCount; i++)
+         cmd->u.begin_render_pass.imageless_views[i] = lvp_image_view_from_handle(attachment_info->pAttachments[i]);
+   }
+
    state_setup_attachments(cmd->u.begin_render_pass.attachments, pass, pRenderPassBeginInfo->pClearValues);
 
    cmd_buf_queue(cmd_buffer, cmd);
@@ -393,31 +407,8 @@ VKAPI_ATTR void VKAPI_CALL lvp_CmdBindVertexBuffers(
    const VkBuffer*                             pBuffers,
    const VkDeviceSize*                         pOffsets)
 {
-   LVP_FROM_HANDLE(lvp_cmd_buffer, cmd_buffer, commandBuffer);
-   struct lvp_cmd_buffer_entry *cmd;
-   struct lvp_buffer **buffers;
-   VkDeviceSize *offsets;
-   int i;
-   uint32_t cmd_size = bindingCount * sizeof(struct lvp_buffer *) + bindingCount * sizeof(VkDeviceSize);
-
-   cmd = cmd_buf_entry_alloc_size(cmd_buffer, cmd_size, LVP_CMD_BIND_VERTEX_BUFFERS);
-   if (!cmd)
-      return;
-
-   cmd->u.vertex_buffers.first = firstBinding;
-   cmd->u.vertex_buffers.binding_count = bindingCount;
-
-   buffers = (struct lvp_buffer **)(cmd + 1);
-   offsets = (VkDeviceSize *)(buffers + bindingCount);
-   for (i = 0; i < bindingCount; i++) {
-      buffers[i] = lvp_buffer_from_handle(pBuffers[i]);
-      offsets[i] = pOffsets[i];
-   }
-   cmd->u.vertex_buffers.buffers = buffers;
-   cmd->u.vertex_buffers.offsets = offsets;
-   cmd->u.vertex_buffers.strides = NULL;
-
-   cmd_buf_queue(cmd_buffer, cmd);
+   lvp_CmdBindVertexBuffers2EXT(commandBuffer, firstBinding,
+      bindingCount, pBuffers, pOffsets, NULL, NULL);
 }
 
 VKAPI_ATTR void VKAPI_CALL lvp_CmdBindPipeline(
@@ -493,7 +484,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_CmdDraw(
    LVP_FROM_HANDLE(lvp_cmd_buffer, cmd_buffer, commandBuffer);
    struct lvp_cmd_buffer_entry *cmd;
 
-   uint32_t cmd_size = sizeof(struct pipe_draw_start_count);
+   uint32_t cmd_size = sizeof(struct pipe_draw_start_count_bias);
    cmd = cmd_buf_entry_alloc_size(cmd_buffer, cmd_size, LVP_CMD_DRAW);
    if (!cmd)
       return;
@@ -745,17 +736,17 @@ VKAPI_ATTR void VKAPI_CALL lvp_CmdDrawIndexed(
    LVP_FROM_HANDLE(lvp_cmd_buffer, cmd_buffer, commandBuffer);
    struct lvp_cmd_buffer_entry *cmd;
 
-   uint32_t cmd_size = sizeof(struct pipe_draw_start_count);
+   uint32_t cmd_size = sizeof(struct pipe_draw_start_count_bias);
    cmd = cmd_buf_entry_alloc_size(cmd_buffer, cmd_size, LVP_CMD_DRAW_INDEXED);
    if (!cmd)
       return;
 
    cmd->u.draw_indexed.instance_count = instanceCount;
-   cmd->u.draw_indexed.vertex_offset = vertexOffset;
    cmd->u.draw_indexed.first_instance = firstInstance;
    cmd->u.draw_indexed.draw_count = 1;
    cmd->u.draw_indexed.draws[0].start = firstIndex;
    cmd->u.draw_indexed.draws[0].count = indexCount;
+   cmd->u.draw_indexed.draws[0].index_bias = vertexOffset;
    cmd->u.draw_indexed.calc_start = true;
 
    cmd_buf_queue(cmd_buffer, cmd);
@@ -1690,7 +1681,10 @@ VKAPI_ATTR void VKAPI_CALL lvp_CmdBindTransformFeedbackBuffersEXT(
    for (unsigned i = 0; i < bindingCount; i++) {
       cmd->u.bind_transform_feedback_buffers.buffers[i] = lvp_buffer_from_handle(pBuffers[i]);
       cmd->u.bind_transform_feedback_buffers.offsets[i] = pOffsets[i];
-      cmd->u.bind_transform_feedback_buffers.sizes[i] = pSizes[i];
+      if (pSizes && pSizes[i] != VK_WHOLE_SIZE)
+         cmd->u.bind_transform_feedback_buffers.sizes[i] = pSizes[i];
+      else
+         cmd->u.bind_transform_feedback_buffers.sizes[i] = cmd->u.bind_transform_feedback_buffers.buffers[i]->size - pOffsets[i];
    }
    cmd_buf_queue(cmd_buffer, cmd);
 }
@@ -1718,7 +1712,10 @@ VKAPI_ATTR void VKAPI_CALL lvp_CmdBeginTransformFeedbackEXT(
    cmd->u.begin_transform_feedback.counter_buffer_offsets = (VkDeviceSize *)(cmd->u.begin_transform_feedback.counter_buffers + counterBufferCount);
 
    for (unsigned i = 0; i < counterBufferCount; i++) {
-      cmd->u.begin_transform_feedback.counter_buffers[i] = lvp_buffer_from_handle(pCounterBuffers[i]);
+      if (pCounterBuffers)
+         cmd->u.begin_transform_feedback.counter_buffers[i] = lvp_buffer_from_handle(pCounterBuffers[i]);
+      else
+         cmd->u.begin_transform_feedback.counter_buffers[i] = NULL;
       if (pCounterBufferOffsets)
          cmd->u.begin_transform_feedback.counter_buffer_offsets[i] = pCounterBufferOffsets[i];
       else
@@ -1750,7 +1747,10 @@ VKAPI_ATTR void VKAPI_CALL lvp_CmdEndTransformFeedbackEXT(
    cmd->u.begin_transform_feedback.counter_buffer_offsets = (VkDeviceSize *)(cmd->u.begin_transform_feedback.counter_buffers + counterBufferCount);
 
    for (unsigned i = 0; i < counterBufferCount; i++) {
-      cmd->u.begin_transform_feedback.counter_buffers[i] = lvp_buffer_from_handle(pCounterBuffers[i]);
+      if (pCounterBuffers)
+         cmd->u.begin_transform_feedback.counter_buffers[i] = lvp_buffer_from_handle(pCounterBuffers[i]);
+      else
+         cmd->u.begin_transform_feedback.counter_buffers[i] = NULL;
       if (pCounterBufferOffsets)
          cmd->u.begin_transform_feedback.counter_buffer_offsets[i] = pCounterBufferOffsets[i];
       else
@@ -1947,7 +1947,8 @@ VKAPI_ATTR void VKAPI_CALL lvp_CmdBindVertexBuffers2EXT(
    VkDeviceSize *sizes;
    VkDeviceSize *strides;
    int i;
-   uint32_t cmd_size = bindingCount * sizeof(struct lvp_buffer *) + bindingCount * 3 * sizeof(VkDeviceSize);
+   uint32_t array_count = pStrides ? 3 : 2;
+   uint32_t cmd_size = bindingCount * sizeof(struct lvp_buffer *) + bindingCount * array_count * sizeof(VkDeviceSize);
 
    cmd = cmd_buf_entry_alloc_size(cmd_buffer, cmd_size, LVP_CMD_BIND_VERTEX_BUFFERS);
    if (!cmd)
@@ -1967,12 +1968,14 @@ VKAPI_ATTR void VKAPI_CALL lvp_CmdBindVertexBuffers2EXT(
          sizes[i] = pSizes[i];
       else
          sizes[i] = 0;
-      strides[i] = pStrides[i];
+
+      if (pStrides)
+         strides[i] = pStrides[i];
    }
    cmd->u.vertex_buffers.buffers = buffers;
    cmd->u.vertex_buffers.offsets = offsets;
    cmd->u.vertex_buffers.sizes = sizes;
-   cmd->u.vertex_buffers.strides = strides;
+   cmd->u.vertex_buffers.strides = pStrides ? strides : NULL;
 
    cmd_buf_queue(cmd_buffer, cmd);
 }

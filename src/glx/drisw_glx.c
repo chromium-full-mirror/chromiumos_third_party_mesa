@@ -424,17 +424,13 @@ drisw_wait_x(struct glx_context *context)
 }
 
 static void
-drisw_bind_tex_image(Display * dpy,
-		    GLXDrawable drawable,
-		    int buffer, const int *attrib_list)
+drisw_bind_tex_image(__GLXDRIdrawable *base,
+                     int buffer, const int *attrib_list)
 {
    struct glx_context *gc = __glXGetCurrentContext();
    struct drisw_context *pcp = (struct drisw_context *) gc;
-   __GLXDRIdrawable *base = GetGLXDRIDrawable(dpy, drawable);
    struct drisw_drawable *pdraw = (struct drisw_drawable *) base;
    struct drisw_screen *psc;
-
-   __glXInitialize(dpy);
 
    if (pdraw != NULL) {
       psc = (struct drisw_screen *) base->psc;
@@ -458,16 +454,14 @@ drisw_bind_tex_image(Display * dpy,
 }
 
 static void
-drisw_release_tex_image(Display * dpy, GLXDrawable drawable, int buffer)
+drisw_release_tex_image(__GLXDRIdrawable *base, int buffer)
 {
    struct glx_context *gc = __glXGetCurrentContext();
    struct drisw_context *pcp = (struct drisw_context *) gc;
-   __GLXDRIdrawable *base = GetGLXDRIDrawable(dpy, drawable);
-   struct glx_display *dpyPriv = __glXInitialize(dpy);
    struct drisw_drawable *pdraw = (struct drisw_drawable *) base;
    struct drisw_screen *psc;
 
-   if (dpyPriv != NULL && pdraw != NULL) {
+   if (pdraw != NULL) {
       psc = (struct drisw_screen *) base->psc;
 
       if (!psc->texBuffer)
@@ -488,8 +482,6 @@ static const struct glx_context_vtable drisw_context_vtable = {
    .unbind              = drisw_unbind_context,
    .wait_gl             = drisw_wait_gl,
    .wait_x              = drisw_wait_x,
-   .bind_tex_image      = drisw_bind_tex_image,
-   .release_tex_image   = drisw_release_tex_image,
 };
 
 static struct glx_context *
@@ -756,6 +748,7 @@ driswBindExtensions(struct drisw_screen *psc, const __DRIextension **extensions)
    if (psc->swrast->base.version >= 3) {
       __glXEnableDirectExtension(&psc->base, "GLX_ARB_create_context");
       __glXEnableDirectExtension(&psc->base, "GLX_ARB_create_context_profile");
+      __glXEnableDirectExtension(&psc->base, "GLX_EXT_no_config_context");
 
       /* DRISW version >= 2 implies support for OpenGL ES.
        */
@@ -791,6 +784,10 @@ driswBindExtensions(struct drisw_screen *psc, const __DRIextension **extensions)
 	  __glXEnableDirectExtension(&psc->base,
 				     "GLX_ARB_context_flush_control");
       }
+
+      if (strcmp(extensions[i]->name, __DRI2_NO_ERROR) == 0)
+         __glXEnableDirectExtension(&psc->base,
+                                    "GLX_ARB_create_context_no_error");
    }
 }
 
@@ -901,6 +898,8 @@ driswCreateScreen(int screen, struct glx_display *priv)
    psp->destroyScreen = driswDestroyScreen;
    psp->createDrawable = driswCreateDrawable;
    psp->swapBuffers = driswSwapBuffers;
+   psp->bindTexImage = drisw_bind_tex_image;
+   psp->releaseTexImage = drisw_release_tex_image;
 
    if (psc->copySubBuffer)
       psp->copySubBuffer = driswCopySubBuffer;

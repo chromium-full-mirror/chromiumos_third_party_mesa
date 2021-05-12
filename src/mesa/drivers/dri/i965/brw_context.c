@@ -46,6 +46,7 @@
 #include "main/stencil.h"
 #include "main/state.h"
 #include "main/spirv_extensions.h"
+#include "main/externalobjects.h"
 
 #include "vbo/vbo.h"
 
@@ -79,6 +80,7 @@
 #include "isl/isl.h"
 
 #include "common/intel_defines.h"
+#include "common/intel_uuid.h"
 
 #include "compiler/spirv/nir_spirv.h"
 /***************************************
@@ -104,7 +106,7 @@ const char *
 brw_get_renderer_string(const struct brw_screen *screen)
 {
    static char buf[128];
-   const char *name = gen_get_device_name(screen->deviceID);
+   const char *name = intel_get_device_name(screen->deviceID);
 
    if (!name)
       name = "Intel Unknown";
@@ -155,6 +157,29 @@ brw_set_background_context(struct gl_context *ctx,
     * backgroundCallable is not NULL.
     */
    backgroundCallable->setBackgroundContext(driContext->loaderPrivate);
+}
+
+static void
+brw_delete_memoryobj(struct gl_context *ctx, struct gl_memory_object *memObj)
+{
+   struct brw_memory_object *memory_object = brw_memory_object(memObj);
+   brw_bo_unreference(memory_object->bo);
+   _mesa_delete_memory_object(ctx, memObj);
+}
+
+static void
+brw_import_memoryobj_fd(struct gl_context *ctx,
+                       struct gl_memory_object *obj,
+                       GLuint64 size,
+                       int fd)
+{
+   struct brw_context *brw = brw_context(ctx);
+   struct brw_memory_object *memory_object = brw_memory_object(obj);
+
+   memory_object->bo = brw_bo_gem_create_from_prime(brw->bufmgr, fd);
+   brw_bo_reference(memory_object->bo);
+   assert(memory_object->bo->size >= size);
+   close(fd);
 }
 
 static void
@@ -324,10 +349,33 @@ brw_finish(struct gl_context * ctx)
 }
 
 static void
+brw_get_device_uuid(struct gl_context *ctx, char *uuid)
+{
+   struct brw_context *brw = brw_context(ctx);
+   struct brw_screen *screen = brw->screen;
+
+   assert(GL_UUID_SIZE_EXT >= PIPE_UUID_SIZE);
+   memset(uuid, 0, GL_UUID_SIZE_EXT);
+   intel_uuid_compute_device_id((uint8_t *)uuid, &screen->isl_dev, PIPE_UUID_SIZE);
+}
+
+
+static void
+brw_get_driver_uuid(struct gl_context *ctx, char *uuid)
+{
+   struct brw_context *brw = brw_context(ctx);
+   struct brw_screen *screen = brw->screen;
+
+   assert(GL_UUID_SIZE_EXT >= PIPE_UUID_SIZE);
+   memset(uuid, 0, GL_UUID_SIZE_EXT);
+   intel_uuid_compute_driver_id((uint8_t *)uuid, &screen->devinfo, PIPE_UUID_SIZE);
+}
+
+static void
 brw_init_driver_functions(struct brw_context *brw,
                           struct dd_function_table *functions)
 {
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
 
    _mesa_init_driver_functions(functions);
 
@@ -361,12 +409,12 @@ brw_init_driver_functions(struct brw_context *brw,
 
    brw_init_frag_prog_functions(functions);
    brw_init_common_queryobj_functions(functions);
-   if (devinfo->gen >= 8 || devinfo->is_haswell)
+   if (devinfo->ver >= 8 || devinfo->is_haswell)
       hsw_init_queryobj_functions(functions);
-   else if (devinfo->gen >= 6)
-      gen6_init_queryobj_functions(functions);
+   else if (devinfo->ver >= 6)
+      gfx6_init_queryobj_functions(functions);
    else
-      gen4_init_queryobj_functions(functions);
+      gfx4_init_queryobj_functions(functions);
    brw_init_compute_functions(functions);
    brw_init_conditional_render_functions(functions);
 
@@ -381,11 +429,11 @@ brw_init_driver_functions(struct brw_context *brw,
       functions->EndTransformFeedback = hsw_end_transform_feedback;
       functions->PauseTransformFeedback = hsw_pause_transform_feedback;
       functions->ResumeTransformFeedback = hsw_resume_transform_feedback;
-   } else if (devinfo->gen >= 7) {
-      functions->BeginTransformFeedback = gen7_begin_transform_feedback;
-      functions->EndTransformFeedback = gen7_end_transform_feedback;
-      functions->PauseTransformFeedback = gen7_pause_transform_feedback;
-      functions->ResumeTransformFeedback = gen7_resume_transform_feedback;
+   } else if (devinfo->ver >= 7) {
+      functions->BeginTransformFeedback = gfx7_begin_transform_feedback;
+      functions->EndTransformFeedback = gfx7_end_transform_feedback;
+      functions->PauseTransformFeedback = gfx7_pause_transform_feedback;
+      functions->ResumeTransformFeedback = gfx7_resume_transform_feedback;
       functions->GetTransformFeedbackVertexCount =
          brw_get_transform_feedback_vertex_count;
    } else {
@@ -397,8 +445,8 @@ brw_init_driver_functions(struct brw_context *brw,
          brw_get_transform_feedback_vertex_count;
    }
 
-   if (devinfo->gen >= 6)
-      functions->GetSamplePosition = gen6_get_sample_position;
+   if (devinfo->ver >= 6)
+      functions->GetSamplePosition = gfx6_get_sample_position;
 
    /* GL_ARB_get_program_binary */
    brw_program_binary_init(brw->screen->deviceID);
@@ -412,44 +460,49 @@ brw_init_driver_functions(struct brw_context *brw,
    }
 
    functions->SetBackgroundContext = brw_set_background_context;
+
+   functions->DeleteMemoryObject = brw_delete_memoryobj;
+   functions->ImportMemoryObjectFd = brw_import_memoryobj_fd;
+   functions->GetDeviceUuid = brw_get_device_uuid;
+   functions->GetDriverUuid = brw_get_driver_uuid;
 }
 
 static void
 brw_initialize_spirv_supported_capabilities(struct brw_context *brw)
 {
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
    struct gl_context *ctx = &brw->ctx;
 
-   /* The following SPIR-V capabilities are only supported on gen7+. In theory
-    * you should enable the extension only on gen7+, but just in case let's
+   /* The following SPIR-V capabilities are only supported on gfx7+. In theory
+    * you should enable the extension only on gfx7+, but just in case let's
     * assert it.
     */
-   assert(devinfo->gen >= 7);
+   assert(devinfo->ver >= 7);
 
-   ctx->Const.SpirVCapabilities.atomic_storage = devinfo->gen >= 7;
+   ctx->Const.SpirVCapabilities.atomic_storage = devinfo->ver >= 7;
    ctx->Const.SpirVCapabilities.draw_parameters = true;
-   ctx->Const.SpirVCapabilities.float64 = devinfo->gen >= 8;
-   ctx->Const.SpirVCapabilities.geometry_streams = devinfo->gen >= 7;
+   ctx->Const.SpirVCapabilities.float64 = devinfo->ver >= 8;
+   ctx->Const.SpirVCapabilities.geometry_streams = devinfo->ver >= 7;
    ctx->Const.SpirVCapabilities.image_write_without_format = true;
-   ctx->Const.SpirVCapabilities.int64 = devinfo->gen >= 8;
+   ctx->Const.SpirVCapabilities.int64 = devinfo->ver >= 8;
    ctx->Const.SpirVCapabilities.tessellation = true;
-   ctx->Const.SpirVCapabilities.transform_feedback = devinfo->gen >= 7;
+   ctx->Const.SpirVCapabilities.transform_feedback = devinfo->ver >= 7;
    ctx->Const.SpirVCapabilities.variable_pointers = true;
-   ctx->Const.SpirVCapabilities.integer_functions2 = devinfo->gen >= 8;
+   ctx->Const.SpirVCapabilities.integer_functions2 = devinfo->ver >= 8;
 }
 
 static void
 brw_initialize_context_constants(struct brw_context *brw)
 {
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
    struct gl_context *ctx = &brw->ctx;
    const struct brw_compiler *compiler = brw->screen->compiler;
 
    const bool stage_exists[MESA_SHADER_STAGES] = {
       [MESA_SHADER_VERTEX] = true,
-      [MESA_SHADER_TESS_CTRL] = devinfo->gen >= 7,
-      [MESA_SHADER_TESS_EVAL] = devinfo->gen >= 7,
-      [MESA_SHADER_GEOMETRY] = devinfo->gen >= 6,
+      [MESA_SHADER_TESS_CTRL] = devinfo->ver >= 7,
+      [MESA_SHADER_TESS_EVAL] = devinfo->ver >= 7,
+      [MESA_SHADER_GEOMETRY] = devinfo->ver >= 6,
       [MESA_SHADER_FRAGMENT] = true,
       [MESA_SHADER_COMPUTE] =
          (_mesa_is_desktop_gl(ctx) &&
@@ -465,7 +518,7 @@ brw_initialize_context_constants(struct brw_context *brw)
    }
 
    unsigned max_samplers =
-      devinfo->gen >= 8 || devinfo->is_haswell ? BRW_MAX_TEX_UNIT : 16;
+      devinfo->ver >= 8 || devinfo->is_haswell ? BRW_MAX_TEX_UNIT : 16;
 
    ctx->Const.MaxDualSourceDrawBuffers = 1;
    ctx->Const.MaxDrawBuffers = BRW_MAX_DRAW_BUFFERS;
@@ -491,7 +544,7 @@ brw_initialize_context_constants(struct brw_context *brw)
 
    ctx->Const.MaxTextureCoordUnits = 8; /* Mesa limit */
    ctx->Const.MaxImageUnits = MAX_IMAGE_UNITS;
-   if (devinfo->gen >= 7) {
+   if (devinfo->ver >= 7) {
       ctx->Const.MaxRenderbufferSize = 16384;
       ctx->Const.MaxTextureSize = 16384;
       ctx->Const.MaxCubeTextureLevels = 15; /* 16384 */
@@ -501,17 +554,17 @@ brw_initialize_context_constants(struct brw_context *brw)
       ctx->Const.MaxCubeTextureLevels = 14; /* 8192 */
    }
    ctx->Const.Max3DTextureLevels = 12; /* 2048 */
-   ctx->Const.MaxArrayTextureLayers = devinfo->gen >= 7 ? 2048 : 512;
+   ctx->Const.MaxArrayTextureLayers = devinfo->ver >= 7 ? 2048 : 512;
    ctx->Const.MaxTextureMbytes = 1536;
-   ctx->Const.MaxTextureRectSize = devinfo->gen >= 7 ? 16384 : 8192;
+   ctx->Const.MaxTextureRectSize = devinfo->ver >= 7 ? 16384 : 8192;
    ctx->Const.MaxTextureMaxAnisotropy = 16.0;
    ctx->Const.MaxTextureLodBias = 15.0;
    ctx->Const.StripTextureBorder = true;
-   if (devinfo->gen >= 7) {
+   if (devinfo->ver >= 7) {
       ctx->Const.MaxProgramTextureGatherComponents = 4;
       ctx->Const.MinProgramTextureGatherOffset = -32;
       ctx->Const.MaxProgramTextureGatherOffset = 31;
-   } else if (devinfo->gen == 6) {
+   } else if (devinfo->ver == 6) {
       ctx->Const.MaxProgramTextureGatherComponents = 1;
       ctx->Const.MinProgramTextureGatherOffset = -8;
       ctx->Const.MaxProgramTextureGatherOffset = 7;
@@ -557,7 +610,7 @@ brw_initialize_context_constants(struct brw_context *brw)
     */
    ctx->Const.MaxTransformFeedbackBuffers = BRW_MAX_SOL_BUFFERS;
 
-   /* On Gen6, in the worst case, we use up one binding table entry per
+   /* On Gfx6, in the worst case, we use up one binding table entry per
     * transform feedback component (see comments above the definition of
     * BRW_MAX_SOL_BINDINGS, in brw_context.h), so we need to advertise a value
     * for MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS equal to
@@ -602,7 +655,7 @@ brw_initialize_context_constants(struct brw_context *brw)
 
    ctx->Const.MinLineWidth = 1.0;
    ctx->Const.MinLineWidthAA = 1.0;
-   if (devinfo->gen >= 6) {
+   if (devinfo->ver >= 6) {
       ctx->Const.MaxLineWidth = 7.375;
       ctx->Const.MaxLineWidthAA = 7.375;
       ctx->Const.LineWidthGranularity = 0.125;
@@ -625,7 +678,7 @@ brw_initialize_context_constants(struct brw_context *brw)
    ctx->Const.MaxPointSizeAA = 255.0;
    ctx->Const.PointSizeGranularity = 1.0;
 
-   if (devinfo->gen >= 5 || devinfo->is_g4x)
+   if (devinfo->ver >= 5 || devinfo->is_g4x)
       ctx->Const.MaxClipPlanes = 8;
 
    ctx->Const.GLSLFragCoordIsSysVal = true;
@@ -675,12 +728,12 @@ brw_initialize_context_constants(struct brw_context *brw)
    ctx->Const.Program[MESA_SHADER_VERTEX].HighInt = ctx->Const.Program[MESA_SHADER_VERTEX].LowInt;
    ctx->Const.Program[MESA_SHADER_VERTEX].MediumInt = ctx->Const.Program[MESA_SHADER_VERTEX].LowInt;
 
-   /* Gen6 converts quads to polygon in beginning of 3D pipeline,
+   /* Gfx6 converts quads to polygon in beginning of 3D pipeline,
     * but we're not sure how it's actually done for vertex order,
     * that affect provoking vertex decision. Always use last vertex
     * convention for quad primitive which works as expected for now.
     */
-   if (devinfo->gen >= 6)
+   if (devinfo->ver >= 6)
       ctx->Const.QuadsFollowProvokingVertexConvention = false;
 
    ctx->Const.NativeIntegers = true;
@@ -703,7 +756,7 @@ brw_initialize_context_constants(struct brw_context *brw)
     */
    ctx->Const.UniformBooleanTrue = ~0;
 
-   /* From the gen4 PRM, volume 4 page 127:
+   /* From the gfx4 PRM, volume 4 page 127:
     *
     *     "For SURFTYPE_BUFFER non-rendertarget surfaces, this field specifies
     *      the base address of the first element of the surface, computed in
@@ -728,7 +781,7 @@ brw_initialize_context_constants(struct brw_context *brw)
    ctx->Const.TextureBufferOffsetAlignment = 16;
    ctx->Const.MaxTextureBufferSize = 128 * 1024 * 1024;
 
-   if (devinfo->gen >= 6) {
+   if (devinfo->ver >= 6) {
       ctx->Const.MaxVarying = 32;
       ctx->Const.Program[MESA_SHADER_VERTEX].MaxOutputComponents = 128;
       ctx->Const.Program[MESA_SHADER_GEOMETRY].MaxInputComponents =
@@ -747,14 +800,14 @@ brw_initialize_context_constants(struct brw_context *brw)
          brw->screen->compiler->glsl_compiler_options[i];
    }
 
-   if (devinfo->gen >= 7) {
+   if (devinfo->ver >= 7) {
       ctx->Const.MaxViewportWidth = 32768;
       ctx->Const.MaxViewportHeight = 32768;
    }
 
    /* ARB_viewport_array, OES_viewport_array */
-   if (devinfo->gen >= 6) {
-      ctx->Const.MaxViewports = GEN6_NUM_VIEWPORTS;
+   if (devinfo->ver >= 6) {
+      ctx->Const.MaxViewports = GFX6_NUM_VIEWPORTS;
       ctx->Const.ViewportSubpixelBits = 8;
 
       /* Cast to float before negating because MaxViewportWidth is unsigned.
@@ -764,7 +817,7 @@ brw_initialize_context_constants(struct brw_context *brw)
    }
 
    /* ARB_gpu_shader5 */
-   if (devinfo->gen >= 7)
+   if (devinfo->ver >= 7)
       ctx->Const.MaxVertexStreams = MIN2(4, MAX_VERTEX_STREAMS);
 
    /* ARB_framebuffer_no_attachments */
@@ -789,7 +842,7 @@ brw_initialize_context_constants(struct brw_context *brw)
     *
     * [1] glsl-1.40/uniform_buffer/vs-float-array-variable-index.shader_test
     */
-   if (devinfo->gen >= 7)
+   if (devinfo->ver >= 7)
       ctx->Const.UseSTD430AsDefaultPacking = true;
 
    if (!(ctx->Const.ContextFlags & GL_CONTEXT_FLAG_DEBUG_BIT))
@@ -804,7 +857,7 @@ brw_initialize_cs_context_constants(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    const struct brw_screen *screen = brw->screen;
-   struct gen_device_info *devinfo = &brw->screen->devinfo;
+   struct intel_device_info *devinfo = &brw->screen->devinfo;
 
    /* FINISHME: Do this for all platforms that the kernel supports */
    if (devinfo->is_cherryview &&
@@ -835,7 +888,7 @@ brw_initialize_cs_context_constants(struct brw_context *brw)
    ctx->Const.MaxComputeSharedMemorySize = 64 * 1024;
 
    /* Constants used for ARB_compute_variable_group_size. */
-   if (devinfo->gen >= 7) {
+   if (devinfo->ver >= 7) {
       assert(max_invocations >= 512);
       ctx->Const.MaxComputeVariableGroupSize[0] = max_invocations;
       ctx->Const.MaxComputeVariableGroupSize[1] = max_invocations;
@@ -854,14 +907,14 @@ brw_initialize_cs_context_constants(struct brw_context *brw)
 static void
 brw_process_driconf_options(struct brw_context *brw)
 {
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
    struct gl_context *ctx = &brw->ctx;
    const driOptionCache *const options = &brw->screen->optionCache;
 
    if (INTEL_DEBUG & DEBUG_NO_HIZ) {
        brw->has_hiz = false;
-       /* On gen6, you can only do separate stencil with HIZ. */
-       if (devinfo->gen == 6)
+       /* On gfx6, you can only do separate stencil with HIZ. */
+       if (devinfo->ver == 6)
           brw->has_separate_stencil = false;
    }
 
@@ -938,7 +991,7 @@ brw_create_context(gl_api api,
 {
    struct gl_context *shareCtx = (struct gl_context *) sharedContextPrivate;
    struct brw_screen *screen = driContextPriv->driScreenPriv->driverPrivate;
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    struct dd_function_table functions;
 
    /* Only allow the __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS flag if the kernel
@@ -974,7 +1027,7 @@ brw_create_context(gl_api api,
       return false;
    }
    brw->mem_ctx = ralloc_context(NULL);
-   brw->perf_ctx = gen_perf_new_context(brw->mem_ctx);
+   brw->perf_ctx = intel_perf_new_context(brw->mem_ctx);
 
    driContextPriv->driverPrivate = brw;
    brw->driContext = driContextPriv;
@@ -1020,7 +1073,7 @@ brw_create_context(gl_api api,
 
    /* Initialize the software rasterizer and helper modules.
     *
-    * As of GL 3.1 core, the gen4+ driver doesn't need the swrast context for
+    * As of GL 3.1 core, the gfx4+ driver doesn't need the swrast context for
     * software fallbacks (which we have to support on legacy GL to do weird
     * glDrawPixels(), glBitmap(), and other functions).
     */
@@ -1065,7 +1118,7 @@ brw_create_context(gl_api api,
     * and also allows us to reduce how much state we have to emit.
     */
    brw->hw_ctx = brw_create_hw_context(brw->bufmgr);
-   if (!brw->hw_ctx && devinfo->gen >= 6) {
+   if (!brw->hw_ctx && devinfo->ver >= 6) {
       fprintf(stderr, "Failed to create hardware context.\n");
       brw_destroy_context(driContextPriv);
       return false;
@@ -1111,7 +1164,7 @@ brw_create_context(gl_api api,
 
    brw->urb.size = devinfo->urb.size;
 
-   if (devinfo->gen == 6)
+   if (devinfo->ver == 6)
       brw->urb.gs_present = false;
 
    brw->prim_restart.in_progress = false;
@@ -1392,9 +1445,9 @@ void
 brw_resolve_for_dri2_flush(struct brw_context *brw,
                            __DRIdrawable *drawable)
 {
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
 
-   if (devinfo->gen < 6) {
+   if (devinfo->ver < 6) {
       /* MSAA and fast color clear are not supported, so don't waste time
        * checking whether a resolve is needed.
        */
@@ -1607,7 +1660,7 @@ brw_query_dri2_buffers(struct brw_context *brw,
    __DRIscreen *dri_screen = brw->screen->driScrnPriv;
    struct gl_framebuffer *fb = drawable->driverPrivate;
    int i = 0;
-   unsigned attachments[8];
+   unsigned attachments[__DRI_BUFFER_COUNT];
 
    struct brw_renderbuffer *front_rb;
    struct brw_renderbuffer *back_rb;

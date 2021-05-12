@@ -30,7 +30,8 @@ static bool
 bi_is_copy(bi_instr *ins)
 {
         return (ins->op == BI_OPCODE_MOV_I32) && bi_is_ssa(ins->dest[0])
-                && (bi_is_ssa(ins->src[0]) || ins->src[0].type == BI_INDEX_FAU);
+                && (bi_is_ssa(ins->src[0]) || ins->src[0].type == BI_INDEX_FAU
+                                || ins->src[0].type == BI_INDEX_CONSTANT);
 }
 
 static inline unsigned
@@ -40,24 +41,48 @@ bi_word_node(bi_index idx)
         return (idx.value << 2) | idx.offset;
 }
 
-bool
+static bool
+bi_reads_fau(bi_instr *ins)
+{
+        bi_foreach_src(ins, s) {
+                if (ins->src[s].type == BI_INDEX_FAU)
+                        return true;
+        }
+
+        return false;
+}
+
+void
 bi_opt_copy_prop(bi_context *ctx)
 {
-        bool progress = false;
-
         bi_index *replacement = calloc(sizeof(bi_index), ((ctx->ssa_alloc + 1) << 2));
 
         bi_foreach_instr_global_safe(ctx, ins) {
-                if (bi_is_copy(ins))
-                        replacement[bi_word_node(ins->dest[0])] = ins->src[0];
+                if (bi_is_copy(ins)) {
+                        bi_index replace = ins->src[0];
+
+                        /* Peek through one layer so copyprop converges in one
+                         * iteration for chained moves */
+                        if (bi_is_ssa(replace)) {
+                                bi_index chained = replacement[bi_word_node(replace)];
+
+                                if (!bi_is_null(chained))
+                                        replace = chained;
+                        }
+
+                        replacement[bi_word_node(ins->dest[0])] = replace;
+                }
 
                 bi_foreach_src(ins, s) {
                         bi_index use = ins->src[s];
 
                         if (use.type != BI_INDEX_NORMAL || use.reg) continue;
-                        if (bi_count_read_registers(ins, s) != 1) continue;
+                        if (s == 0 && bi_opcode_props[ins->op].sr_read) continue;
 
                         bi_index repl = replacement[bi_word_node(use)];
+
+                        if (repl.type == BI_INDEX_CONSTANT && bi_reads_fau(ins))
+                                continue;
 
                         if (!bi_is_null(repl))
                                 ins->src[s] = bi_replace_index(ins->src[s], repl);
@@ -65,5 +90,4 @@ bi_opt_copy_prop(bi_context *ctx)
         }
 
         free(replacement);
-        return progress;
 }

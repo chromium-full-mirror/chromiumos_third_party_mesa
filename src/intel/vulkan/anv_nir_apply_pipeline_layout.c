@@ -1184,10 +1184,10 @@ build_def_array_select(nir_builder *b, nir_ssa_def **srcs, nir_ssa_def *idx,
 }
 
 static void
-lower_gen7_tex_swizzle(nir_builder *b, nir_tex_instr *tex, unsigned plane,
+lower_gfx7_tex_swizzle(nir_builder *b, nir_tex_instr *tex, unsigned plane,
                        struct apply_pipeline_layout_state *state)
 {
-   assert(state->pdevice->info.gen == 7 && !state->pdevice->info.is_haswell);
+   assert(state->pdevice->info.ver == 7 && !state->pdevice->info.is_haswell);
    if (tex->sampler_dim == GLSL_SAMPLER_DIM_BUF ||
        nir_tex_instr_is_query(tex) ||
        tex->op == nir_texop_tg4 || /* We can't swizzle TG4 */
@@ -1259,8 +1259,8 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
    /* On Ivy Bridge and Bay Trail, we have to swizzle in the shader.  Do this
     * before we lower the derefs away so we can still find the descriptor.
     */
-   if (state->pdevice->info.gen == 7 && !state->pdevice->info.is_haswell)
-      lower_gen7_tex_swizzle(b, tex, plane, state);
+   if (state->pdevice->info.ver == 7 && !state->pdevice->info.is_haswell)
+      lower_gfx7_tex_swizzle(b, tex, plane, state);
 
    b->cursor = nir_before_instr(&tex->instr);
 

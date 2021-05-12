@@ -912,8 +912,7 @@ intelCreateBuffer(__DRIscreen * driScrnPriv,
                                   false, /* never sw depth */
                                   false, /* never sw stencil */
                                   mesaVis->accumRedBits > 0,
-                                  false, /* never sw alpha */
-                                  false  /* never sw aux */ );
+                                  false /* never sw alpha */);
    driDrawPriv->driverPrivate = fb;
 
    return true;
@@ -1067,7 +1066,7 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
                                      num_depth_stencil_bits,
                                      back_buffer_modes, 2,
                                      singlesample_samples, 1,
-                                     false, false, false);
+                                     false, false);
       configs = driConcatConfigs(configs, new_configs);
    }
 
@@ -1089,7 +1088,7 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
                                      depth_bits, stencil_bits, 1,
                                      back_buffer_modes, 1,
                                      singlesample_samples, 1,
-                                     true, false, false);
+                                     true, false);
       configs = driConcatConfigs(configs, new_configs);
    }
 
@@ -1267,6 +1266,13 @@ static const __DRIextension *i915_driver_extensions[] = {
 };
 
 PUBLIC const __DRIextension **__driDriverGetExtensions_i915(void)
+{
+   globalDriverAPI = &i915_driver_api;
+
+   return i915_driver_extensions;
+}
+
+PUBLIC const __DRIextension **__driDriverGetExtensions_i830(void)
 {
    globalDriverAPI = &i915_driver_api;
 

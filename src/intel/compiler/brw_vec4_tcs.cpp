@@ -30,7 +30,7 @@
 #include "brw_nir.h"
 #include "brw_vec4_tcs.h"
 #include "brw_fs.h"
-#include "dev/gen_debug.h"
+#include "dev/intel_debug.h"
 
 namespace brw {
 
@@ -41,11 +41,10 @@ vec4_tcs_visitor::vec4_tcs_visitor(const struct brw_compiler *compiler,
                                    const nir_shader *nir,
                                    void *mem_ctx,
                                    int shader_time_index,
-                                   bool debug_enabled,
-                                   const struct brw_vue_map *input_vue_map)
+                                   bool debug_enabled)
    : vec4_visitor(compiler, log_data, &key->base.tex, &prog_data->base,
                   nir, mem_ctx, false, shader_time_index, debug_enabled),
-     input_vue_map(input_vue_map), key(key)
+     key(key)
 {
 }
 
@@ -105,7 +104,7 @@ vec4_tcs_visitor::emit_thread_end()
       emit(BRW_OPCODE_ENDIF);
    }
 
-   if (devinfo->gen == 7) {
+   if (devinfo->ver == 7) {
       struct brw_tcs_prog_data *tcs_prog_data =
          (struct brw_tcs_prog_data *) prog_data;
 
@@ -366,7 +365,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
                 struct brw_compile_stats *stats,
                 char **error_str)
 {
-   const struct gen_device_info *devinfo = compiler->devinfo;
+   const struct intel_device_info *devinfo = compiler->devinfo;
    struct brw_vue_prog_data *vue_prog_data = &prog_data->base;
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_TESS_CTRL];
    const bool debug_enabled = INTEL_DEBUG & DEBUG_TCS;
@@ -391,7 +390,8 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    if (key->quads_workaround)
       brw_nir_apply_tcs_quads_workaround(nir);
 
-   brw_postprocess_nir(nir, compiler, is_scalar, debug_enabled);
+   brw_postprocess_nir(nir, compiler, is_scalar, debug_enabled,
+                       key->base.robust_buffer_access);
 
    bool has_primitive_id =
       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_PRIMITIVE_ID);
@@ -399,11 +399,11 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    prog_data->patch_count_threshold = brw::get_patch_count_threshold(key->input_vertices);
 
    if (compiler->use_tcs_8_patch &&
-       nir->info.tess.tcs_vertices_out <= (devinfo->gen >= 12 ? 32 : 16) &&
-       2 + has_primitive_id + key->input_vertices <= (devinfo->gen >= 12 ? 63 : 31)) {
+       nir->info.tess.tcs_vertices_out <= (devinfo->ver >= 12 ? 32 : 16) &&
+       2 + has_primitive_id + key->input_vertices <= (devinfo->ver >= 12 ? 63 : 31)) {
       /* 3DSTATE_HS imposes two constraints on using 8_PATCH mode. First, the
        * "Instance" field limits the number of output vertices to [1, 16] on
-       * gen11 and below, or [1, 32] on gen12 and above. Secondly, the
+       * gfx11 and below, or [1, 32] on gfx12 and above. Secondly, the
        * "Dispatch GRF Start Register for URB Data" field is limited to [0,
        * 31] - which imposes a limit on the input vertices.
        */
@@ -438,7 +438,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
                         num_per_vertex_slots * 16;
 
    assert(output_size_bytes >= 1);
-   if (output_size_bytes > GEN7_MAX_HS_URB_ENTRY_SIZE_BYTES)
+   if (output_size_bytes > GFX7_MAX_HS_URB_ENTRY_SIZE_BYTES)
       return NULL;
 
    /* URB entry sizes are stored as a multiple of 64 bytes. */
@@ -460,7 +460,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    if (is_scalar) {
       fs_visitor v(compiler, log_data, mem_ctx, &key->base,
                    &prog_data->base.base, nir, 8,
-                   shader_time_index, debug_enabled, &input_vue_map);
+                   shader_time_index, debug_enabled);
       if (!v.run_tcs()) {
          if (error_str)
             *error_str = ralloc_strdup(mem_ctx, v.fail_msg);
@@ -488,7 +488,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    } else {
       brw::vec4_tcs_visitor v(compiler, log_data, key, prog_data,
                               nir, mem_ctx, shader_time_index,
-                              debug_enabled, &input_vue_map);
+                              debug_enabled);
       if (!v.run()) {
          if (error_str)
             *error_str = ralloc_strdup(mem_ctx, v.fail_msg);

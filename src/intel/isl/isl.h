@@ -43,6 +43,7 @@
 #include <stdint.h>
 
 #include "c99_compat.h"
+#include "util/compiler.h"
 #include "util/macros.h"
 #include "util/format/u_format.h"
 
@@ -50,23 +51,23 @@
 extern "C" {
 #endif
 
-struct gen_device_info;
+struct intel_device_info;
 struct brw_image_param;
 
-#ifndef ISL_DEV_GEN
+#ifndef ISL_GFX_VER
 /**
  * @brief Get the hardware generation of isl_device.
  *
  * You can define this as a compile-time constant in the CFLAGS. For example,
- * `gcc -DISL_DEV_GEN(dev)=9 ...`.
+ * `gcc -DISL_GFX_VER(dev)=9 ...`.
  */
-#define ISL_DEV_GEN(__dev) ((__dev)->info->gen)
-#define ISL_DEV_GENX10(__dev) ((__dev)->info->genx10)
-#define ISL_DEV_GEN_SANITIZE(__dev)
+#define ISL_GFX_VER(__dev) ((__dev)->info->ver)
+#define ISL_GFX_VERX10(__dev) ((__dev)->info->verx10)
+#define ISL_GFX_VER_SANITIZE(__dev)
 #else
-#define ISL_DEV_GEN_SANITIZE(__dev) \
-   (assert(ISL_DEV_GEN(__dev) == (__dev)->info->gen) && \
-           ISL_DEV_GENX10(__dev) == (__dev)->info->genx10))
+#define ISL_GFX_VER_SANITIZE(__dev) \
+   (assert(ISL_GFX_VER(__dev) == (__dev)->info->ver) && \
+           ISL_GFX_VERX10(__dev) == (__dev)->info->verx10))
 #endif
 
 #ifndef ISL_DEV_IS_G4X
@@ -78,7 +79,7 @@ struct brw_image_param;
  * @brief Get the hardware generation of isl_device.
  *
  * You can define this as a compile-time constant in the CFLAGS. For example,
- * `gcc -DISL_DEV_GEN(dev)=9 ...`.
+ * `gcc -DISL_GFX_VER(dev)=9 ...`.
  */
 #define ISL_DEV_IS_HASWELL(__dev) ((__dev)->info->is_haswell)
 #endif
@@ -388,20 +389,20 @@ enum isl_format {
    ISL_FORMAT_MCS_4X,
    ISL_FORMAT_MCS_8X,
    ISL_FORMAT_MCS_16X,
-   ISL_FORMAT_GEN7_CCS_32BPP_X,
-   ISL_FORMAT_GEN7_CCS_64BPP_X,
-   ISL_FORMAT_GEN7_CCS_128BPP_X,
-   ISL_FORMAT_GEN7_CCS_32BPP_Y,
-   ISL_FORMAT_GEN7_CCS_64BPP_Y,
-   ISL_FORMAT_GEN7_CCS_128BPP_Y,
-   ISL_FORMAT_GEN9_CCS_32BPP,
-   ISL_FORMAT_GEN9_CCS_64BPP,
-   ISL_FORMAT_GEN9_CCS_128BPP,
-   ISL_FORMAT_GEN12_CCS_8BPP_Y0,
-   ISL_FORMAT_GEN12_CCS_16BPP_Y0,
-   ISL_FORMAT_GEN12_CCS_32BPP_Y0,
-   ISL_FORMAT_GEN12_CCS_64BPP_Y0,
-   ISL_FORMAT_GEN12_CCS_128BPP_Y0,
+   ISL_FORMAT_GFX7_CCS_32BPP_X,
+   ISL_FORMAT_GFX7_CCS_64BPP_X,
+   ISL_FORMAT_GFX7_CCS_128BPP_X,
+   ISL_FORMAT_GFX7_CCS_32BPP_Y,
+   ISL_FORMAT_GFX7_CCS_64BPP_Y,
+   ISL_FORMAT_GFX7_CCS_128BPP_Y,
+   ISL_FORMAT_GFX9_CCS_32BPP,
+   ISL_FORMAT_GFX9_CCS_64BPP,
+   ISL_FORMAT_GFX9_CCS_128BPP,
+   ISL_FORMAT_GFX12_CCS_8BPP_Y0,
+   ISL_FORMAT_GFX12_CCS_16BPP_Y0,
+   ISL_FORMAT_GFX12_CCS_32BPP_Y0,
+   ISL_FORMAT_GFX12_CCS_64BPP_Y0,
+   ISL_FORMAT_GFX12_CCS_128BPP_Y0,
 
    /* An upper bound on the supported format enumerations */
    ISL_NUM_FORMATS,
@@ -478,7 +479,7 @@ enum isl_tiling {
    ISL_TILING_Ys, /**< Standard 64K tiling. The 's' means "sixty-four". */
    ISL_TILING_HIZ, /**< Tiling format for HiZ surfaces */
    ISL_TILING_CCS, /**< Tiling format for CCS surfaces */
-   ISL_TILING_GEN12_CCS, /**< Tiling format for Gen12 CCS surfaces */
+   ISL_TILING_GFX12_CCS, /**< Tiling format for Gfx12 CCS surfaces */
 };
 
 /**
@@ -494,7 +495,7 @@ typedef uint32_t isl_tiling_flags_t;
 #define ISL_TILING_Ys_BIT                 (1u << ISL_TILING_Ys)
 #define ISL_TILING_HIZ_BIT                (1u << ISL_TILING_HIZ)
 #define ISL_TILING_CCS_BIT                (1u << ISL_TILING_CCS)
-#define ISL_TILING_GEN12_CCS_BIT          (1u << ISL_TILING_GEN12_CCS)
+#define ISL_TILING_GFX12_CCS_BIT          (1u << ISL_TILING_GFX12_CCS)
 #define ISL_TILING_ANY_MASK               (~0u)
 #define ISL_TILING_NON_LINEAR_MASK        (~ISL_TILING_LINEAR_BIT)
 
@@ -536,7 +537,7 @@ enum isl_dim_layout {
     *
     * @invariant isl_surf::phys_level0_sa::depth == 1
     */
-   ISL_DIM_LAYOUT_GEN4_2D,
+   ISL_DIM_LAYOUT_GFX4_2D,
 
    /**
     * For details, see the G35 PRM >> Volume 1: Graphics Core >> Section
@@ -544,12 +545,12 @@ enum isl_dim_layout {
     *
     * @invariant isl_surf::phys_level0_sa::array_len == 1
     */
-   ISL_DIM_LAYOUT_GEN4_3D,
+   ISL_DIM_LAYOUT_GFX4_3D,
 
    /**
     * Special layout used for HiZ and stencil on Sandy Bridge to work around
-    * the hardware's lack of mipmap support.  On gen6, HiZ and stencil buffers
-    * work the same as on gen7+ except that they don't technically support
+    * the hardware's lack of mipmap support.  On gfx6, HiZ and stencil buffers
+    * work the same as on gfx7+ except that they don't technically support
     * mipmapping.  That does not, however, stop us from doing it.  As far as
     * Sandy Bridge hardware is concerned, HiZ and stencil always operates on a
     * single miplevel 2D (possibly array) image.  The dimensions of that image
@@ -584,13 +585,13 @@ enum isl_dim_layout {
     *   |    | +-+
     *   +----+
     */
-   ISL_DIM_LAYOUT_GEN6_STENCIL_HIZ,
+   ISL_DIM_LAYOUT_GFX6_STENCIL_HIZ,
 
    /**
     * For details, see the Skylake BSpec >> Memory Views >> Common Surface
     * Formats >> Surface Layout and Tiling >> » 1D Surfaces.
     */
-   ISL_DIM_LAYOUT_GEN9_1D,
+   ISL_DIM_LAYOUT_GFX9_1D,
 };
 
 enum isl_aux_usage {
@@ -619,11 +620,11 @@ enum isl_aux_usage {
    ISL_AUX_USAGE_CCS_E,
 
    /** The auxiliary surface provides full lossless color compression on
-    *  Gen12.
+    *  Gfx12.
     *
     * @invariant isl_surf::samples == 1
     */
-   ISL_AUX_USAGE_GEN12_CCS_E,
+   ISL_AUX_USAGE_GFX12_CCS_E,
 
    /** The auxiliary surface provides full lossless media color compression
     *
@@ -660,7 +661,7 @@ enum isl_aux_usage {
    /** The auxiliary surface is an MCS and CCS is also enabled
     *
     * In this mode, we have fused MCS+CCS compression where the MCS is used
-    * for fast-clears and "identical samples" compression just like on Gen7-11
+    * for fast-clears and "identical samples" compression just like on Gfx7-11
     * but each plane is then CCS compressed.
     *
     * @invariant isl_surf::samples > 1
@@ -678,7 +679,7 @@ enum isl_aux_usage {
  * Enum for keeping track of the state an auxiliary compressed surface.
  *
  * For any given auxiliary surface compression format (HiZ, CCS, or MCS), any
- * given slice (lod + array layer) can be in one of the six states described
+ * given slice (lod + array layer) can be in one of the seven states described
  * by this enum.  Draw and resolve operations may cause the slice to change
  * from one state to another.  The six valid states are:
  *
@@ -1039,7 +1040,7 @@ typedef enum {
 } isl_memcpy_type;
 
 struct isl_device {
-   const struct gen_device_info *info;
+   const struct intel_device_info *info;
    bool use_separate_stencil;
    bool has_bit6_swizzling;
 
@@ -1418,7 +1419,7 @@ struct isl_surf_fill_state_info {
    uint64_t clear_address;
 
    /**
-    * Surface write disables for gen4-5
+    * Surface write disables for gfx4-5
     */
    isl_channel_mask_t write_disables;
 
@@ -1524,7 +1525,7 @@ extern const struct isl_format_layout isl_format_layouts[];
 
 void
 isl_device_init(struct isl_device *dev,
-                const struct gen_device_info *info,
+                const struct intel_device_info *info,
                 bool has_bit6_swizzling);
 
 isl_sample_count_mask_t ATTRIBUTE_CONST
@@ -1548,28 +1549,28 @@ isl_format_get_name(enum isl_format fmt)
 
 enum isl_format isl_format_for_pipe_format(enum pipe_format pf);
 
-bool isl_format_supports_rendering(const struct gen_device_info *devinfo,
+bool isl_format_supports_rendering(const struct intel_device_info *devinfo,
                                    enum isl_format format);
-bool isl_format_supports_alpha_blending(const struct gen_device_info *devinfo,
+bool isl_format_supports_alpha_blending(const struct intel_device_info *devinfo,
                                         enum isl_format format);
-bool isl_format_supports_sampling(const struct gen_device_info *devinfo,
+bool isl_format_supports_sampling(const struct intel_device_info *devinfo,
                                   enum isl_format format);
-bool isl_format_supports_filtering(const struct gen_device_info *devinfo,
+bool isl_format_supports_filtering(const struct intel_device_info *devinfo,
                                    enum isl_format format);
-bool isl_format_supports_vertex_fetch(const struct gen_device_info *devinfo,
+bool isl_format_supports_vertex_fetch(const struct intel_device_info *devinfo,
                                       enum isl_format format);
-bool isl_format_supports_typed_writes(const struct gen_device_info *devinfo,
+bool isl_format_supports_typed_writes(const struct intel_device_info *devinfo,
                                       enum isl_format format);
-bool isl_format_supports_typed_reads(const struct gen_device_info *devinfo,
+bool isl_format_supports_typed_reads(const struct intel_device_info *devinfo,
                                      enum isl_format format);
-bool isl_format_supports_ccs_d(const struct gen_device_info *devinfo,
+bool isl_format_supports_ccs_d(const struct intel_device_info *devinfo,
                                enum isl_format format);
-bool isl_format_supports_ccs_e(const struct gen_device_info *devinfo,
+bool isl_format_supports_ccs_e(const struct intel_device_info *devinfo,
                                enum isl_format format);
-bool isl_format_supports_multisampling(const struct gen_device_info *devinfo,
+bool isl_format_supports_multisampling(const struct intel_device_info *devinfo,
                                        enum isl_format format);
 
-bool isl_formats_are_ccs_e_compatible(const struct gen_device_info *devinfo,
+bool isl_formats_are_ccs_e_compatible(const struct intel_device_info *devinfo,
                                       enum isl_format format1,
                                       enum isl_format format2);
 uint8_t isl_format_get_aux_map_encoding(enum isl_format format);
@@ -1722,14 +1723,14 @@ void isl_color_value_unpack(union isl_color_value *value,
 bool isl_is_storage_image_format(enum isl_format fmt);
 
 enum isl_format
-isl_lower_storage_image_format(const struct gen_device_info *devinfo,
+isl_lower_storage_image_format(const struct intel_device_info *devinfo,
                                enum isl_format fmt);
 
 /* Returns true if this hardware supports typed load/store on a format with
  * the same size as the given format.
  */
 bool
-isl_has_matching_typed_storage_image_format(const struct gen_device_info *devinfo,
+isl_has_matching_typed_storage_image_format(const struct intel_device_info *devinfo,
                                             enum isl_format fmt);
 
 static inline enum isl_tiling
@@ -1828,7 +1829,7 @@ isl_aux_usage_has_ccs(enum isl_aux_usage usage)
 {
    return usage == ISL_AUX_USAGE_CCS_D ||
           usage == ISL_AUX_USAGE_CCS_E ||
-          usage == ISL_AUX_USAGE_GEN12_CCS_E ||
+          usage == ISL_AUX_USAGE_GFX12_CCS_E ||
           usage == ISL_AUX_USAGE_MC ||
           usage == ISL_AUX_USAGE_HIZ_CCS_WT ||
           usage == ISL_AUX_USAGE_HIZ_CCS ||
@@ -1898,7 +1899,7 @@ isl_drm_modifier_get_default_aux_state(uint64_t modifier)
       return ISL_AUX_STATE_AUX_INVALID;
 
    assert(mod_info->aux_usage == ISL_AUX_USAGE_CCS_E ||
-          mod_info->aux_usage == ISL_AUX_USAGE_GEN12_CCS_E ||
+          mod_info->aux_usage == ISL_AUX_USAGE_GFX12_CCS_E ||
           mod_info->aux_usage == ISL_AUX_USAGE_MC);
    return mod_info->supports_clear_color ? ISL_AUX_STATE_COMPRESSED_CLEAR :
                                            ISL_AUX_STATE_COMPRESSED_NO_CLEAR;
@@ -1913,7 +1914,7 @@ isl_drm_modifier_get_default_aux_state(uint64_t modifier)
  * such as VkImageDrmFormatModifierListCreateInfoEXT.
  */
 uint32_t
-isl_drm_modifier_get_score(const struct gen_device_info *devinfo,
+isl_drm_modifier_get_score(const struct intel_device_info *devinfo,
                            uint64_t modifier);
 
 struct isl_extent2d ATTRIBUTE_CONST
@@ -2017,7 +2018,7 @@ isl_swizzle_is_identity(struct isl_swizzle swizzle)
 }
 
 bool
-isl_swizzle_supports_rendering(const struct gen_device_info *devinfo,
+isl_swizzle_supports_rendering(const struct intel_device_info *devinfo,
                                struct isl_swizzle swizzle);
 
 struct isl_swizzle

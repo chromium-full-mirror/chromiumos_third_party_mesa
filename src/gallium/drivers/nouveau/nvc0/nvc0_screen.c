@@ -413,6 +413,7 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_BLEND_EQUATION_ADVANCED:
    case PIPE_CAP_NO_CLIP_ON_COPY_TEX:
    case PIPE_CAP_DEVICE_PROTECTED_CONTENT:
+   case PIPE_CAP_SAMPLER_REDUCTION_MINMAX_ARB:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:
@@ -437,7 +438,7 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
          debug_printf("%s: unhandled cap %d\n", __func__, param);
          debug_cap_printed[param] = true;
       }
-      /* fallthrough */
+      FALLTHROUGH;
    /* caps where we want the default value */
    case PIPE_CAP_DMABUF:
    case PIPE_CAP_ESSL_FEATURE_LEVEL:
@@ -528,6 +529,7 @@ nvc0_screen_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_INT64_ATOMICS:
    case PIPE_SHADER_CAP_FP16:
    case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+   case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
    case PIPE_SHADER_CAP_INT16:
    case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
@@ -621,13 +623,10 @@ nvc0_screen_get_compute_param(struct pipe_screen *pscreen,
       switch (obj_class) {
       case GM200_COMPUTE_CLASS:
          RET((uint64_t []) { 96 << 10 });
-         break;
       case GM107_COMPUTE_CLASS:
          RET((uint64_t []) { 64 << 10 });
-         break;
       default:
          RET((uint64_t []) { 48 << 10 });
-         break;
       }
    case PIPE_COMPUTE_CAP_MAX_PRIVATE_SIZE: /* l[] */
       RET((uint64_t []) { 512 << 10 });

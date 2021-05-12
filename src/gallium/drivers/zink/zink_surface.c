@@ -34,13 +34,14 @@
 VkImageViewCreateInfo
 create_ivci(struct zink_screen *screen,
             struct zink_resource *res,
-            const struct pipe_surface *templ)
+            const struct pipe_surface *templ,
+            enum pipe_texture_target target)
 {
    VkImageViewCreateInfo ivci = {};
    ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
    ivci.image = res->obj->image;
 
-   switch (res->base.target) {
+   switch (target) {
    case PIPE_TEXTURE_1D:
       ivci.viewType = VK_IMAGE_VIEW_TYPE_1D;
       break;
@@ -67,7 +68,7 @@ create_ivci(struct zink_screen *screen,
       break;
 
    case PIPE_TEXTURE_3D:
-      ivci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+      ivci.viewType = VK_IMAGE_VIEW_TYPE_3D;
       break;
 
    default:
@@ -88,7 +89,7 @@ create_ivci(struct zink_screen *screen,
    ivci.subresourceRange.levelCount = 1;
    ivci.subresourceRange.baseArrayLayer = templ->u.tex.first_layer;
    ivci.subresourceRange.layerCount = 1 + templ->u.tex.last_layer - templ->u.tex.first_layer;
-   ivci.viewType = zink_surface_clamp_viewtype(ivci.viewType, templ->u.tex.first_layer, templ->u.tex.last_layer, res->base.array_size);
+   ivci.viewType = zink_surface_clamp_viewtype(ivci.viewType, templ->u.tex.first_layer, templ->u.tex.last_layer, res->base.b.array_size);
 
    return ivci;
 }
@@ -175,7 +176,9 @@ zink_create_surface(struct pipe_context *pctx,
 {
 
    VkImageViewCreateInfo ivci = create_ivci(zink_screen(pctx->screen),
-                                            zink_resource(pres), templ);
+                                            zink_resource(pres), templ, pres->target);
+   if (pres->target == PIPE_TEXTURE_3D)
+      ivci.viewType = VK_IMAGE_VIEW_TYPE_2D;
 
    return zink_get_surface(zink_context(pctx), pres, templ, &ivci);
 }
@@ -246,7 +249,7 @@ zink_rebind_surface(struct zink_context *ctx, struct pipe_surface **psurface)
    if (surface->simage_view)
       return false;
    VkImageViewCreateInfo ivci = create_ivci(screen,
-                                            zink_resource((*psurface)->texture), (*psurface));
+                                            zink_resource((*psurface)->texture), (*psurface), surface->base.texture->target);
    uint32_t hash = hash_ivci(&ivci);
 
    simple_mtx_lock(&screen->surface_mtx);

@@ -56,6 +56,8 @@ enum {
         PAN_SYSVAL_SAMPLE_POSITIONS = 11,
         PAN_SYSVAL_MULTISAMPLED = 12,
         PAN_SYSVAL_RT_CONVERSION = 13,
+        PAN_SYSVAL_VERTEX_INSTANCE_OFFSETS = 14,
+        PAN_SYSVAL_DRAWID = 15,
 };
 
 #define PAN_TXS_SYSVAL_ID(texidx, dim, is_array)          \
@@ -122,7 +124,6 @@ struct panfrost_compile_inputs {
         struct {
                 unsigned rt;
                 unsigned nr_samples;
-                float constants[4];
                 uint64_t bifrost_blend_desc;
         } blend;
         unsigned sysval_ubo;
@@ -130,6 +131,7 @@ struct panfrost_compile_inputs {
         bool no_ubo_to_push;
 
         enum pipe_format rt_formats[8];
+        unsigned nr_cbufs;
 };
 
 struct pan_shader_varying {
@@ -144,6 +146,7 @@ struct bifrost_shader_blend_info {
 
 struct bifrost_shader_info {
         struct bifrost_shader_blend_info blend[8];
+        nir_alu_type blend_src1_type;
         bool wait_6, wait_7;
 };
 
@@ -175,6 +178,7 @@ struct pan_shader_info {
                         bool sample_shading;
                         bool early_fragment_tests;
                         BITSET_WORD outputs_read;
+                        BITSET_WORD outputs_written;
                 } fs;
 
                 struct {

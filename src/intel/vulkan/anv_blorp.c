@@ -96,27 +96,27 @@ anv_device_init_blorp(struct anv_device *device)
    device->blorp.compiler = device->physical->compiler;
    device->blorp.lookup_shader = lookup_blorp_shader;
    device->blorp.upload_shader = upload_blorp_shader;
-   switch (device->info.genx10) {
+   switch (device->info.verx10) {
    case 70:
-      device->blorp.exec = gen7_blorp_exec;
+      device->blorp.exec = gfx7_blorp_exec;
       break;
    case 75:
-      device->blorp.exec = gen75_blorp_exec;
+      device->blorp.exec = gfx75_blorp_exec;
       break;
    case 80:
-      device->blorp.exec = gen8_blorp_exec;
+      device->blorp.exec = gfx8_blorp_exec;
       break;
    case 90:
-      device->blorp.exec = gen9_blorp_exec;
+      device->blorp.exec = gfx9_blorp_exec;
       break;
    case 110:
-      device->blorp.exec = gen11_blorp_exec;
+      device->blorp.exec = gfx11_blorp_exec;
       break;
    case 120:
-      device->blorp.exec = gen12_blorp_exec;
+      device->blorp.exec = gfx12_blorp_exec;
       break;
    case 125:
-      device->blorp.exec = gen125_blorp_exec;
+      device->blorp.exec = gfx125_blorp_exec;
       break;
    default:
       unreachable("Unknown hardware generation");
@@ -257,22 +257,12 @@ get_blorp_surf_for_anv_image(const struct anv_device *device,
             anv_image_get_clear_color_addr(device, image, aspect);
          blorp_surf->clear_color_addr = anv_to_blorp_address(clear_color_addr);
       } else if (aspect & VK_IMAGE_ASPECT_DEPTH_BIT) {
-         if (device->info.gen >= 10) {
-            /* Vulkan always clears to 1.0. On gen < 10, we set that directly
-             * in the state packet. For gen >= 10, must provide the clear
-             * value in a buffer. We have a single global buffer that stores
-             * the 1.0 value.
-             */
-            const struct anv_address clear_color_addr = (struct anv_address) {
-               .bo = device->hiz_clear_bo,
-            };
-            blorp_surf->clear_color_addr =
-               anv_to_blorp_address(clear_color_addr);
-         } else {
-            blorp_surf->clear_color = (union isl_color_value) {
-               .f32 = { ANV_HZ_FC_VAL },
-            };
-         }
+         const struct anv_address clear_color_addr =
+            anv_image_get_clear_color_addr(device, image, aspect);
+         blorp_surf->clear_color_addr = anv_to_blorp_address(clear_color_addr);
+         blorp_surf->clear_color = (union isl_color_value) {
+            .f32 = { ANV_HZ_FC_VAL },
+         };
       }
    }
 }
@@ -1626,7 +1616,6 @@ anv_image_clear_depth_stencil(struct anv_cmd_buffer *cmd_buffer,
                                    image, VK_IMAGE_ASPECT_DEPTH_BIT,
                                    0, ANV_IMAGE_LAYOUT_EXPLICIT_AUX,
                                    depth_aux_usage, &depth);
-      depth.clear_color.f32[0] = ANV_HZ_FC_VAL;
    }
 
    struct blorp_surf stencil = {};
@@ -1703,7 +1692,6 @@ anv_image_hiz_op(struct anv_cmd_buffer *cmd_buffer,
                                 image, VK_IMAGE_ASPECT_DEPTH_BIT,
                                 0, ANV_IMAGE_LAYOUT_EXPLICIT_AUX,
                                 image->planes[plane].aux_usage, &surf);
-   surf.clear_color.f32[0] = ANV_HZ_FC_VAL;
 
    blorp_hiz_op(&batch, &surf, level, base_layer, layer_count, hiz_op);
 
@@ -1734,7 +1722,6 @@ anv_image_hiz_clear(struct anv_cmd_buffer *cmd_buffer,
                                    image, VK_IMAGE_ASPECT_DEPTH_BIT,
                                    0, ANV_IMAGE_LAYOUT_EXPLICIT_AUX,
                                    image->planes[plane].aux_usage, &depth);
-      depth.clear_color.f32[0] = ANV_HZ_FC_VAL;
    }
 
    struct blorp_surf stencil = {};

@@ -39,13 +39,13 @@ brw_generate_mipmap(struct gl_context *ctx, GLenum target,
                     struct gl_texture_object *tex_obj)
 {
    struct brw_context *brw = brw_context(ctx);
-   struct gen_device_info *devinfo = &brw->screen->devinfo;
+   struct intel_device_info *devinfo = &brw->screen->devinfo;
    struct brw_texture_object *intel_obj = brw_texture_object(tex_obj);
    const unsigned base_level = tex_obj->Attrib.BaseLevel;
    unsigned last_level, first_layer, last_layer;
 
-   /* Blorp doesn't handle combined depth/stencil surfaces on Gen4-5 yet. */
-   if (devinfo->gen <= 5 &&
+   /* Blorp doesn't handle combined depth/stencil surfaces on Gfx4-5 yet. */
+   if (devinfo->ver <= 5 &&
        (tex_obj->Image[0][base_level]->_BaseFormat == GL_DEPTH_COMPONENT ||
         tex_obj->Image[0][base_level]->_BaseFormat == GL_DEPTH_STENCIL)) {
       _mesa_meta_GenerateMipmap(ctx, target, tex_obj);

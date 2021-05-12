@@ -28,6 +28,7 @@
 
 #include "util/u_dynarray.h"
 #include "pipe/p_state.h"
+#include "pan_cs.h"
 #include "pan_pool.h"
 #include "pan_resource.h"
 #include "pan_scoreboard.h"
@@ -63,6 +64,9 @@ struct panfrost_batch {
 
         /* Buffers read */
         unsigned read;
+
+        /* Buffers needing resolve to memory */
+        unsigned resolve;
 
         /* Packed clear values, indexed by both render target as well as word.
          * Essentially, a single pixel is packed, with some padding to bring it
@@ -108,23 +112,27 @@ struct panfrost_batch {
         /* Shared memory BO bound to the batch, or NULL if none bound yet */
         struct panfrost_bo *shared_memory;
 
-        /* Tiler heap BO bound to the batch, or NULL if none bound yet */
-        struct panfrost_bo *tiler_heap;
-
-        /* Dummy tiler BO bound to the batch, or NULL if none bound yet */
-        struct panfrost_bo *tiler_dummy;
-
         /* Framebuffer descriptor. */
         struct panfrost_ptr framebuffer;
 
-        /* Bifrost tiler meta descriptor. */
-        mali_ptr tiler_meta;
+        /* Thread local storage descriptor. */
+        struct panfrost_ptr tls;
+
+        /* Tiler context */
+        struct pan_tiler_context tiler_ctx;
 
         /* Output sync object. Only valid when submitted is true. */
         struct panfrost_batch_fence *out_sync;
 
         /* Batch dependencies */
         struct util_dynarray dependencies;
+
+        /* Indirect draw data */
+        struct panfrost_ptr indirect_draw_ctx;
+        unsigned indirect_draw_job_id;
+
+        /* Keep the num_work_groups sysval around for indirect dispatch */
+        mali_ptr num_wg_sysval[3];
 };
 
 /* Functions for managing the above */
@@ -136,10 +144,17 @@ void
 panfrost_batch_fence_reference(struct panfrost_batch_fence *batch);
 
 struct panfrost_batch *
+panfrost_get_fresh_batch(struct panfrost_context *ctx,
+                         const struct pipe_framebuffer_state *key);
+
+struct panfrost_batch *
 panfrost_get_batch_for_fbo(struct panfrost_context *ctx);
 
 struct panfrost_batch *
 panfrost_get_fresh_batch_for_fbo(struct panfrost_context *ctx);
+
+void
+panfrost_freeze_batch(struct panfrost_batch *batch);
 
 void
 panfrost_batch_init(struct panfrost_context *ctx);
@@ -147,6 +162,9 @@ panfrost_batch_init(struct panfrost_context *ctx);
 void
 panfrost_batch_add_bo(struct panfrost_batch *batch, struct panfrost_bo *bo,
                       uint32_t flags);
+
+void
+panfrost_batch_add_fbo_bos(struct panfrost_batch *batch);
 
 struct panfrost_bo *
 panfrost_batch_create_bo(struct panfrost_batch *batch, size_t size,
@@ -175,12 +193,6 @@ panfrost_batch_get_scratchpad(struct panfrost_batch *batch, unsigned size, unsig
 struct panfrost_bo *
 panfrost_batch_get_shared_memory(struct panfrost_batch *batch, unsigned size, unsigned workgroup_count);
 
-mali_ptr
-panfrost_batch_get_polygon_list(struct panfrost_batch *batch, unsigned size);
-
-struct panfrost_bo *
-panfrost_batch_get_tiler_dummy(struct panfrost_batch *batch);
-
 void
 panfrost_batch_clear(struct panfrost_batch *batch,
                      unsigned buffers,
@@ -201,6 +213,6 @@ mali_ptr
 panfrost_batch_get_bifrost_tiler(struct panfrost_batch *batch, unsigned vertex_count);
 
 mali_ptr
-panfrost_batch_reserve_framebuffer(struct panfrost_batch *batch);
+panfrost_batch_reserve_tls(struct panfrost_batch *batch, bool compute);
 
 #endif

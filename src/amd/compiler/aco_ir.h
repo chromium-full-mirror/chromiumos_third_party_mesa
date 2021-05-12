@@ -1392,7 +1392,8 @@ struct MUBUF_instruction : public Instruction {
    uint16_t offset : 12; /* Unsigned byte offset - 12 bit */
    uint16_t swizzled : 1;
    uint16_t padding0 : 2;
-   uint16_t padding1;
+   uint16_t vtx_binding : 6; /* 0 if this is not a vertex attribute load */
+   uint16_t padding1 : 10;
 };
 static_assert(sizeof(MUBUF_instruction) == sizeof(Instruction) + 8, "Unexpected padding");
 
@@ -1415,7 +1416,8 @@ struct MTBUF_instruction : public Instruction {
    uint16_t slc : 1; /* system level coherent */
    uint16_t tfe : 1; /* texture fail enable */
    uint16_t disable_wqm : 1; /* Require an exec mask without helper invocations */
-   uint16_t padding : 10;
+   uint16_t vtx_binding : 6; /* 0 if this is not a vertex attribute load */
+   uint16_t padding : 4;
    uint16_t offset; /* Unsigned byte offset - 12 bit */
 };
 static_assert(sizeof(MTBUF_instruction) == sizeof(Instruction) + 8, "Unexpected padding");
@@ -1617,6 +1619,8 @@ bool needs_exec_mask(const Instruction* instr);
 uint32_t get_reduction_identity(ReduceOp op, unsigned idx);
 
 unsigned get_mimg_nsa_dwords(const Instruction *instr);
+
+bool should_form_clause(const Instruction *a, const Instruction *b);
 
 enum block_kind {
    /* uniform indicates that leaving this block,
@@ -1859,6 +1863,12 @@ struct DeviceInfo {
    bool sram_ecc_enabled = false;
 };
 
+enum class CompilationProgress {
+   after_isel,
+   after_spilling,
+   after_ra,
+};
+
 class Program final {
 public:
    std::vector<Block> blocks;
@@ -1888,6 +1898,8 @@ public:
 
    bool needs_vcc = false;
    bool needs_flat_scr = false;
+
+   CompilationProgress progress;
 
    bool collect_statistics = false;
    uint32_t statistics[num_statistics];
@@ -1927,6 +1939,9 @@ public:
    {
       return allocationID;
    }
+
+   friend void reindex_ssa(Program* program);
+   friend void reindex_ssa(Program* program, std::vector<IDSet>& live_out);
 
    Block* create_and_insert_block() {
       Block block;

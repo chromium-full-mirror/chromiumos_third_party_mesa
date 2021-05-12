@@ -76,6 +76,15 @@ zink_create_vertex_elements_state(struct pipe_context *pctx,
 
    ves->hw_state.num_bindings = num_bindings;
    ves->hw_state.num_attribs = num_elements;
+   for (int i = 0; i < num_bindings; ++i) {
+      ves->hw_state.bindings[i].binding = ves->bindings[i].binding;
+      ves->hw_state.bindings[i].inputRate = ves->bindings[i].inputRate;
+      if (ves->divisor[i]) {
+         ves->hw_state.divisors[ves->hw_state.divisors_present].divisor = ves->divisor[i];
+         ves->hw_state.divisors[ves->hw_state.divisors_present].binding = ves->bindings[i].binding;
+         ves->hw_state.divisors_present++;
+      }
+   }
    return ves;
 }
 
@@ -86,20 +95,10 @@ zink_bind_vertex_elements_state(struct pipe_context *pctx,
    struct zink_context *ctx = zink_context(pctx);
    struct zink_gfx_pipeline_state *state = &ctx->gfx_pipeline_state;
    ctx->element_state = cso;
-   state->dirty = true;
-   state->divisors_present = 0;
    if (cso) {
+      if (state->element_state != &ctx->element_state->hw_state)
+         state->vertex_state_dirty = true;
       state->element_state = &ctx->element_state->hw_state;
-      struct zink_vertex_elements_state *ves = cso;
-      for (int i = 0; i < state->element_state->num_bindings; ++i) {
-         state->bindings[i].binding = ves->bindings[i].binding;
-         state->bindings[i].inputRate = ves->bindings[i].inputRate;
-         if (ves->divisor[i]) {
-            state->divisors[state->divisors_present].divisor = ves->divisor[i];
-            state->divisors[state->divisors_present].binding = state->bindings[i].binding;
-            state->divisors_present++;
-         }
-      }
    } else
      state->element_state = NULL;
 }
@@ -243,7 +242,7 @@ zink_create_blend_state(struct pipe_context *pctx,
 
    cso->need_blend_constants = false;
 
-   for (int i = 0; i < PIPE_MAX_COLOR_BUFS; ++i) {
+   for (int i = 0; i < blend_state->max_rt + 1; ++i) {
       const struct pipe_rt_blend_state *rt = blend_state->rt;
       if (blend_state->independent_blend_enable)
          rt = blend_state->rt + i;
@@ -392,7 +391,7 @@ zink_bind_depth_stencil_alpha_state(struct pipe_context *pctx, void *cso)
       struct zink_gfx_pipeline_state *state = &ctx->gfx_pipeline_state;
       if (state->depth_stencil_alpha_state != &ctx->dsa_state->hw_state) {
          state->depth_stencil_alpha_state = &ctx->dsa_state->hw_state;
-         state->dirty = true;
+         state->dirty |= !zink_screen(pctx->screen)->info.have_EXT_extended_dynamic_state;
       }
    }
 }
@@ -438,6 +437,7 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
    state->hw_state.depth_clamp = rs_state->depth_clip_near == 0;
    state->hw_state.rasterizer_discard = rs_state->rasterizer_discard;
    state->hw_state.force_persample_interp = rs_state->force_persample_interp;
+   state->hw_state.pv_mode = rs_state->flatshade_first ? VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT : VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT;
 
    assert(rs_state->fill_front <= PIPE_POLYGON_MODE_POINT);
    if (rs_state->fill_back != rs_state->fill_front)
@@ -445,9 +445,9 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
    state->hw_state.polygon_mode = (VkPolygonMode)rs_state->fill_front; // same values
    state->hw_state.cull_mode = (VkCullModeFlags)rs_state->cull_face; // same bits
 
-   state->hw_state.front_face = rs_state->front_ccw ?
-                                VK_FRONT_FACE_COUNTER_CLOCKWISE :
-                                VK_FRONT_FACE_CLOCKWISE;
+   state->front_face = rs_state->front_ccw ?
+                       VK_FRONT_FACE_COUNTER_CLOCKWISE :
+                       VK_FRONT_FACE_CLOCKWISE;
 
    state->offset_point = rs_state->offset_point;
    state->offset_line = rs_state->offset_line;
@@ -467,12 +467,19 @@ static void
 zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
 {
    struct zink_context *ctx = zink_context(pctx);
+   struct zink_screen *screen = zink_screen(pctx->screen);
    bool clip_halfz = ctx->rast_state ? ctx->rast_state->base.clip_halfz : false;
    bool point_quad_rasterization = ctx->rast_state ? ctx->rast_state->base.point_quad_rasterization : false;
    ctx->rast_state = cso;
 
    if (ctx->rast_state) {
       if (ctx->gfx_pipeline_state.rast_state != &ctx->rast_state->hw_state) {
+         if (screen->info.have_EXT_provoking_vertex &&
+             (!ctx->gfx_pipeline_state.rast_state ||
+              ctx->gfx_pipeline_state.rast_state->pv_mode != ctx->rast_state->hw_state.pv_mode) &&
+             /* without this prop, change in pv mode requires new rp */
+             !screen->info.pv_props.provokingVertexModePerPipeline)
+            zink_batch_no_rp(ctx);
          ctx->gfx_pipeline_state.rast_state = &ctx->rast_state->hw_state;
          ctx->gfx_pipeline_state.dirty = true;
       }
@@ -480,6 +487,10 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
       if (clip_halfz != ctx->rast_state->base.clip_halfz)
          ctx->last_vertex_stage_dirty = true;
 
+      if (ctx->gfx_pipeline_state.front_face != ctx->rast_state->front_face) {
+         ctx->gfx_pipeline_state.front_face = ctx->rast_state->front_face;
+         ctx->gfx_pipeline_state.dirty |= !zink_screen(pctx->screen)->info.have_EXT_extended_dynamic_state;
+      }
       if (ctx->line_width != ctx->rast_state->line_width) {
          ctx->line_width = ctx->rast_state->line_width;
          ctx->gfx_pipeline_state.dirty = true;

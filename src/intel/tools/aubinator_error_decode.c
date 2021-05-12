@@ -39,13 +39,8 @@
 #include <zlib.h>
 
 #include "common/intel_decoder.h"
-#include "dev/gen_debug.h"
+#include "dev/intel_debug.h"
 #include "util/macros.h"
-
-#define CSI "\e["
-#define BLUE_HEADER  CSI "0;44m"
-#define GREEN_HEADER CSI "1;42m"
-#define NORMAL       CSI "0m"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -165,7 +160,7 @@ register_name_from_ring(const struct ring_register_mapping *mapping,
 }
 
 static const char *
-instdone_register_for_ring(const struct gen_device_info *devinfo,
+instdone_register_for_ring(const struct intel_device_info *devinfo,
                            const char *ring_name)
 {
    enum drm_i915_gem_engine_class class;
@@ -177,7 +172,7 @@ instdone_register_for_ring(const struct gen_device_info *devinfo,
 
    switch (class) {
    case I915_ENGINE_CLASS_RENDER:
-      if (devinfo->gen == 6)
+      if (devinfo->ver == 6)
          return "INSTDONE_2";
       else
          return "INSTDONE_1";
@@ -206,7 +201,7 @@ instdone_register_for_ring(const struct gen_device_info *devinfo,
 }
 
 static void
-print_pgtbl_err(unsigned int reg, struct gen_device_info *devinfo)
+print_pgtbl_err(unsigned int reg, struct intel_device_info *devinfo)
 {
    if (reg & (1 << 26))
       printf("    Invalid Sampler Cache GTT entry\n");
@@ -237,7 +232,7 @@ print_pgtbl_err(unsigned int reg, struct gen_device_info *devinfo)
 }
 
 static void
-print_snb_fence(struct gen_device_info *devinfo, uint64_t fence)
+print_snb_fence(struct intel_device_info *devinfo, uint64_t fence)
 {
    printf("    %svalid, %c-tiled, pitch: %i, start: 0x%08x, size: %u\n",
           fence & 1 ? "" : "in",
@@ -248,7 +243,7 @@ print_snb_fence(struct gen_device_info *devinfo, uint64_t fence)
 }
 
 static void
-print_i965_fence(struct gen_device_info *devinfo, uint64_t fence)
+print_i965_fence(struct intel_device_info *devinfo, uint64_t fence)
 {
    printf("    %svalid, %c-tiled, pitch: %i, start: 0x%08x, size: %u\n",
           fence & 1 ? "" : "in",
@@ -259,21 +254,21 @@ print_i965_fence(struct gen_device_info *devinfo, uint64_t fence)
 }
 
 static void
-print_fence(struct gen_device_info *devinfo, uint64_t fence)
+print_fence(struct intel_device_info *devinfo, uint64_t fence)
 {
-   if (devinfo->gen == 6 || devinfo->gen == 7) {
+   if (devinfo->ver == 6 || devinfo->ver == 7) {
       return print_snb_fence(devinfo, fence);
-   } else if (devinfo->gen == 4 || devinfo->gen == 5) {
+   } else if (devinfo->ver == 4 || devinfo->ver == 5) {
       return print_i965_fence(devinfo, fence);
    }
 }
 
 static void
-print_fault_data(struct gen_device_info *devinfo, uint32_t data1, uint32_t data0)
+print_fault_data(struct intel_device_info *devinfo, uint32_t data1, uint32_t data0)
 {
    uint64_t address;
 
-   if (devinfo->gen < 8)
+   if (devinfo->ver < 8)
       return;
 
    address = ((uint64_t)(data0) << 12) | ((uint64_t)data1 & 0xf) << 44;
@@ -394,7 +389,7 @@ static int qsort_hw_context_first(const void *a, const void *b)
 }
 
 static struct intel_batch_decode_bo
-get_gen_batch_bo(void *user_data, bool ppgtt, uint64_t address)
+get_intel_batch_bo(void *user_data, bool ppgtt, uint64_t address)
 {
    for (int s = 0; s < num_sections; s++) {
       if (sections[s].gtt_offset <= address &&
@@ -422,7 +417,7 @@ read_data_file(FILE *file)
    uint32_t ring_head = UINT32_MAX, ring_tail = UINT32_MAX;
    bool ring_wraps = false;
    char *ring_name = NULL;
-   struct gen_device_info devinfo;
+   struct intel_device_info devinfo;
 
    while (getline(&line, &line_size, file) > 0) {
       char *new_ring_name = NULL;
@@ -507,12 +502,12 @@ read_data_file(FILE *file)
                matched = sscanf(pci_id_start, "PCI ID: 0x%04x\n", &reg);
          }
          if (matched == 1) {
-            if (!gen_get_device_info_from_pci_id(reg, &devinfo)) {
+            if (!intel_get_device_info_from_pci_id(reg, &devinfo)) {
                printf("Unable to identify devid=%x\n", reg);
                exit(EXIT_FAILURE);
             }
 
-            printf("Detected GEN%i chipset\n", devinfo.gen);
+            printf("Detected GEN%i chipset\n", devinfo.ver);
 
             if (xml_path == NULL)
                spec = intel_spec_load(&devinfo);
@@ -640,10 +635,10 @@ read_data_file(FILE *file)
       if (sections[s].dword_count * 4 > intel_debug_identifier_size() &&
           memcmp(sections[s].data, intel_debug_identifier(),
                  intel_debug_identifier_size()) == 0) {
-         const struct gen_debug_block_driver *driver_desc =
+         const struct intel_debug_block_driver *driver_desc =
             intel_debug_get_identifier_block(sections[s].data,
                                              sections[s].dword_count * 4,
-                                             GEN_DEBUG_BLOCK_TYPE_DRIVER);
+                                             INTEL_DEBUG_BLOCK_TYPE_DRIVER);
          if (driver_desc) {
             printf("Driver identifier: %s\n",
                    (const char *) driver_desc->description);
@@ -663,7 +658,7 @@ read_data_file(FILE *file)
 
    struct intel_batch_decode_ctx batch_ctx;
    intel_batch_decode_ctx_init(&batch_ctx, &devinfo, stdout, batch_flags,
-                               xml_path, get_gen_batch_bo, NULL, NULL);
+                               xml_path, get_intel_batch_bo, NULL, NULL);
 
 
    for (int s = 0; s < num_sections; s++) {

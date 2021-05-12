@@ -161,7 +161,7 @@ EXT(ARB_texture_env_combine                 , ARB_texture_env_combine           
 EXT(ARB_texture_env_crossbar                , ARB_texture_env_crossbar               , GLL,  x ,  x ,  x , 2001)
 EXT(ARB_texture_env_dot3                    , ARB_texture_env_dot3                   , GLL,  x ,  x ,  x , 2001)
 EXT(ARB_texture_filter_anisotropic          , ARB_texture_filter_anisotropic         , GLL, GLC,  x ,  x , 2017)
-EXT(ARB_texture_filter_minmax               , EXT_texture_filter_minmax              , GLL, GLC,  x ,  x , 2015)
+EXT(ARB_texture_filter_minmax               , ARB_texture_filter_minmax              , GLL, GLC,  x ,  x , 2015)
 EXT(ARB_texture_float                       , ARB_texture_float                      , GLL, GLC,  x ,  x , 2004)
 EXT(ARB_texture_gather                      , ARB_texture_gather                     , GLL, GLC,  x ,  x , 2009)
 EXT(ARB_texture_mirror_clamp_to_edge        , ARB_texture_mirror_clamp_to_edge       , GLL, GLC,  x ,  x , 2013)
@@ -367,6 +367,7 @@ EXT(KHR_texture_compression_astc_hdr        , KHR_texture_compression_astc_hdr  
 EXT(KHR_texture_compression_astc_ldr        , KHR_texture_compression_astc_ldr       , GLL, GLC,  x , ES2, 2012)
 EXT(KHR_texture_compression_astc_sliced_3d  , KHR_texture_compression_astc_sliced_3d , GLL, GLC,  x , ES2, 2015)
 
+EXT(MESA_bgra                               , dummy_true                             ,  x ,  x ,  x , ES2, 2021)
 EXT(MESA_framebuffer_flip_y                 , MESA_framebuffer_flip_y                ,  43,  43,  x ,  30, 2018)
 EXT(MESA_pack_invert                        , dummy_true                             , GLL, GLC,  x ,  x , 2002)
 EXT(MESA_shader_integer_functions           , MESA_shader_integer_functions          , GLL, GLC,  x ,  30, 2016)

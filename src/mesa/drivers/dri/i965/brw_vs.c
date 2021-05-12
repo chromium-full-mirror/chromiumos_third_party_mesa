@@ -73,14 +73,14 @@ static GLbitfield64
 brw_vs_outputs_written(struct brw_context *brw, struct brw_vs_prog_key *key,
                        GLbitfield64 user_varyings)
 {
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
    GLbitfield64 outputs_written = user_varyings;
 
    if (key->copy_edgeflag) {
       outputs_written |= BITFIELD64_BIT(VARYING_SLOT_EDGE);
    }
 
-   if (devinfo->gen < 6) {
+   if (devinfo->ver < 6) {
       /* Put dummy slots into the VUE for the SF to put the replaced
        * point sprite coords in.  We shouldn't need these dummy slots,
        * which take up precious URB space, but it would mean that the SF
@@ -117,7 +117,7 @@ brw_codegen_vs_prog(struct brw_context *brw,
                     struct brw_vs_prog_key *key)
 {
    const struct brw_compiler *compiler = brw->screen->compiler;
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
    const GLuint *program;
    struct brw_vs_prog_data prog_data;
    struct brw_stage_prog_data *stage_prog_data = &prog_data.base.base;
@@ -177,7 +177,7 @@ brw_codegen_vs_prog(struct brw_context *brw,
    }
 
 
-   /* Emit GEN4 code.
+   /* Emit GFX4 code.
     */
    struct brw_compile_vs_params params = {
       .nir = nir,
@@ -257,7 +257,7 @@ brw_vs_populate_key(struct brw_context *brw,
    /* BRW_NEW_VERTEX_PROGRAM */
    struct gl_program *prog = brw->programs[MESA_SHADER_VERTEX];
    struct brw_program *vp = (struct brw_program *) prog;
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
 
    memset(key, 0, sizeof(*key));
 
@@ -275,7 +275,7 @@ brw_vs_populate_key(struct brw_context *brw,
          util_logbase2(ctx->Transform.ClipPlanesEnabled) + 1;
    }
 
-   if (devinfo->gen < 6) {
+   if (devinfo->ver < 6) {
       /* _NEW_POLYGON */
       key->copy_edgeflag = (ctx->Polygon.FrontMode != GL_FILL ||
                             ctx->Polygon.BackMode != GL_FILL);
@@ -294,7 +294,7 @@ brw_vs_populate_key(struct brw_context *brw,
    }
 
    /* BRW_NEW_VS_ATTRIB_WORKAROUNDS */
-   if (devinfo->gen < 8 && !devinfo->is_haswell) {
+   if (devinfo->ver < 8 && !devinfo->is_haswell) {
       memcpy(key->gl_attrib_wa_flags, brw->vb.attrib_wa_flags,
              sizeof(brw->vb.attrib_wa_flags));
    }
@@ -333,7 +333,7 @@ brw_vs_populate_default_key(const struct brw_compiler *compiler,
                             struct brw_vs_prog_key *key,
                             struct gl_program *prog)
 {
-   const struct gen_device_info *devinfo = compiler->devinfo;
+   const struct intel_device_info *devinfo = compiler->devinfo;
    struct brw_program *bvp = brw_program(prog);
 
    memset(key, 0, sizeof(*key));

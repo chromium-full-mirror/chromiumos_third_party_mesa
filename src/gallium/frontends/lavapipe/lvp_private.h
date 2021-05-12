@@ -53,6 +53,7 @@ typedef uint32_t xcb_window_t;
 #include "vk_instance.h"
 #include "vk_physical_device.h"
 #include "vk_shader_module.h"
+#include "vk_util.h"
 
 #include "wsi_common.h"
 
@@ -118,19 +119,6 @@ void __lvp_finishme(const char *file, int line, const char *format, ...)
       lvp_finishme("stub %s", __func__); \
       return; \
    } while (0)
-
-static inline gl_shader_stage
-vk_to_mesa_shader_stage(VkShaderStageFlagBits vk_stage)
-{
-   assert(__builtin_popcount(vk_stage) == 1);
-   return ffs(vk_stage) - 1;
-}
-
-static inline VkShaderStageFlagBits
-mesa_to_vk_shader_stage(gl_shader_stage mesa_stage)
-{
-   return (1 << mesa_stage);
-}
 
 #define LVP_STAGE_MASK ((1 << MESA_SHADER_STAGES) - 1)
 
@@ -221,6 +209,8 @@ struct lvp_image {
    VkImageType type;
    VkDeviceSize size;
    uint32_t alignment;
+   struct pipe_memory_allocation *pmem;
+   unsigned memory_offset;
    struct pipe_resource *bo;
 };
 
@@ -313,12 +303,15 @@ struct lvp_render_pass {
    uint32_t                                     subpass_count;
    struct lvp_subpass_attachment *              subpass_attachments;
    struct lvp_render_pass_attachment *          attachments;
+   bool has_color_attachment;
+   bool has_zs_attachment;
    struct lvp_subpass                           subpasses[0];
 };
 
 struct lvp_sampler {
    struct vk_object_base base;
    VkSamplerCreateInfo create_info;
+   union pipe_color_union border_color;
    VkSamplerReductionMode reduction_mode;
    uint32_t state[4];
 };
@@ -329,6 +322,7 @@ struct lvp_framebuffer {
    uint32_t                                     height;
    uint32_t                                     layers;
 
+   bool                                         imageless;
    uint32_t                                     attachment_count;
    struct lvp_image_view *                      attachments[0];
 };
@@ -483,11 +477,12 @@ struct lvp_pipeline {
    void *shader_cso[PIPE_SHADER_TYPES];
    VkGraphicsPipelineCreateInfo graphics_create_info;
    VkComputePipelineCreateInfo compute_create_info;
+   bool provoking_vertex_last;
 };
 
 struct lvp_event {
    struct vk_object_base base;
-   uint64_t event_storage;
+   volatile uint64_t event_storage;
 };
 
 struct lvp_fence {
@@ -750,16 +745,15 @@ struct lvp_cmd_draw {
    uint32_t instance_count;
    uint32_t first_instance;
    uint32_t draw_count;
-   struct pipe_draw_start_count draws[0];
+   struct pipe_draw_start_count_bias draws[0];
 };
 
 struct lvp_cmd_draw_indexed {
    uint32_t instance_count;
-   uint32_t vertex_offset;
    uint32_t first_instance;
    bool calc_start;
    uint32_t draw_count;
-   struct pipe_draw_start_count draws[0];
+   struct pipe_draw_start_count_bias draws[0];
 };
 
 struct lvp_cmd_draw_indirect {
@@ -937,6 +931,7 @@ struct lvp_cmd_begin_render_pass {
    struct lvp_render_pass *render_pass;
    VkRect2D render_area;
    struct lvp_attachment_state *attachments;
+   struct lvp_image_view **imageless_views;
 };
 
 struct lvp_cmd_next_subpass {
@@ -1114,6 +1109,8 @@ VkResult lvp_execute_cmds(struct lvp_device *device,
                           struct lvp_fence *fence,
                           struct lvp_cmd_buffer *cmd_buffer);
 
+struct lvp_image *lvp_swapchain_get_image(VkSwapchainKHR swapchain,
+					  uint32_t index);
 enum pipe_format vk_format_to_pipe(VkFormat format);
 
 static inline VkImageAspectFlags

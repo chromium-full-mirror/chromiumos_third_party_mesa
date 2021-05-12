@@ -25,7 +25,7 @@
 #define BRW_COMPILER_H
 
 #include <stdio.h>
-#include "dev/gen_device_info.h"
+#include "dev/intel_device_info.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
 #include "util/ralloc.h"
@@ -41,7 +41,7 @@ struct brw_program;
 typedef struct nir_shader nir_shader;
 
 struct brw_compiler {
-   const struct gen_device_info *devinfo;
+   const struct intel_device_info *devinfo;
 
    struct {
       struct ra_regs *regs;
@@ -179,7 +179,7 @@ brw_shader_stage_is_bindless(gl_shader_stage stage)
  *  @{
  */
 
-enum PACKED gen6_gather_sampler_wa {
+enum PACKED gfx6_gather_sampler_wa {
    WA_SIGN = 1,      /* whether we need to sign extend */
    WA_8BIT = 2,      /* if we have an 8bit format needing wa */
    WA_16BIT = 4,     /* if we have a 16bit format needing wa */
@@ -216,7 +216,7 @@ struct brw_sampler_prog_key_data {
    /**
     * For Sandybridge, which shader w/a we need for gather quirks.
     */
-   enum gen6_gather_sampler_wa gen6_gather_wa[MAX_SAMPLERS];
+   enum gfx6_gather_sampler_wa gfx6_gather_wa[MAX_SAMPLERS];
 
    /**
     * Texture units that have a YUV image bound.
@@ -256,6 +256,8 @@ struct brw_base_prog_key {
    enum brw_subgroup_size_type subgroup_size_type;
 
    struct brw_sampler_prog_key_data tex;
+
+   bool robust_buffer_access;
 };
 
 /**
@@ -277,6 +279,31 @@ struct brw_base_prog_key {
  */
 #define MAX_GL_VERT_ATTRIB     VERT_ATTRIB_MAX
 #define MAX_VK_VERT_ATTRIB     (VERT_ATTRIB_GENERIC0 + 28)
+
+/**
+ * Max number of binding table entries used for stream output.
+ *
+ * From the OpenGL 3.0 spec, table 6.44 (Transform Feedback State), the
+ * minimum value of MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS is 64.
+ *
+ * On Gfx6, the size of transform feedback data is limited not by the number
+ * of components but by the number of binding table entries we set aside.  We
+ * use one binding table entry for a float, one entry for a vector, and one
+ * entry per matrix column.  Since the only way we can communicate our
+ * transform feedback capabilities to the client is via
+ * MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS, we need to plan for the
+ * worst case, in which all the varyings are floats, so we use up one binding
+ * table entry per component.  Therefore we need to set aside at least 64
+ * binding table entries for use by transform feedback.
+ *
+ * Note: since we don't currently pack varyings, it is currently impossible
+ * for the client to actually use up all of these binding table entries--if
+ * all of their varyings were floats, they would run out of varying slots and
+ * fail to link.  But that's a bug, so it seems prudent to go ahead and
+ * allocate the number of binding table entries we will need once the bug is
+ * fixed.
+ */
+#define BRW_MAX_SOL_BINDINGS 64
 
 /** The program key for Vertex Shaders. */
 struct brw_vs_prog_key {
@@ -310,7 +337,7 @@ struct brw_vs_prog_key {
    unsigned nr_userclip_plane_consts:4;
 
    /**
-    * For pre-Gen6 hardware, a bitfield indicating which texture coordinates
+    * For pre-Gfx6 hardware, a bitfield indicating which texture coordinates
     * are going to be replaced with point coordinates (as a consequence of a
     * call to glTexEnvi(GL_POINT_SPRITE, GL_COORD_REPLACE, GL_TRUE)).  Because
     * our SF thread requires exact matching between VS outputs and FS inputs,
@@ -477,10 +504,11 @@ struct brw_wm_prog_key {
    bool force_dual_color_blend:1;
    bool coherent_fb_fetch:1;
    bool ignore_sample_mask_out:1;
+   bool coarse_pixel:1;
 
    uint8_t color_outputs_valid;
    uint64_t input_slots_valid;
-   GLenum alpha_test_func;          /* < For Gen4/5 MRT alpha test */
+   GLenum alpha_test_func;          /* < For Gfx4/5 MRT alpha test */
    float alpha_test_ref;
 };
 
@@ -490,6 +518,37 @@ struct brw_cs_prog_key {
 
 struct brw_bs_prog_key {
    struct brw_base_prog_key base;
+};
+
+struct brw_ff_gs_prog_key {
+   uint64_t attrs;
+
+   /**
+    * Hardware primitive type being drawn, e.g. _3DPRIM_TRILIST.
+    */
+   unsigned primitive:8;
+
+   unsigned pv_first:1;
+   unsigned need_gs_prog:1;
+
+   /**
+    * Number of varyings that are output to transform feedback.
+    */
+   unsigned num_transform_feedback_bindings:7; /* 0-BRW_MAX_SOL_BINDINGS */
+
+   /**
+    * Map from the index of a transform feedback binding table entry to the
+    * gl_varying_slot that should be streamed out through that binding table
+    * entry.
+    */
+   unsigned char transform_feedback_bindings[BRW_MAX_SOL_BINDINGS];
+
+   /**
+    * Map from the index of a transform feedback binding table entry to the
+    * swizzles that should be used when streaming out data through that
+    * binding table entry.
+    */
+   unsigned char transform_feedback_swizzles[BRW_MAX_SOL_BINDINGS];
 };
 
 /* brw_any_prog_key is any of the keys that map to an API stage */
@@ -550,34 +609,9 @@ struct brw_image_param {
 #define BRW_MAX_DRAW_BUFFERS 8
 
 /**
- * Max number of binding table entries used for stream output.
- *
- * From the OpenGL 3.0 spec, table 6.44 (Transform Feedback State), the
- * minimum value of MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS is 64.
- *
- * On Gen6, the size of transform feedback data is limited not by the number
- * of components but by the number of binding table entries we set aside.  We
- * use one binding table entry for a float, one entry for a vector, and one
- * entry per matrix column.  Since the only way we can communicate our
- * transform feedback capabilities to the client is via
- * MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS, we need to plan for the
- * worst case, in which all the varyings are floats, so we use up one binding
- * table entry per component.  Therefore we need to set aside at least 64
- * binding table entries for use by transform feedback.
- *
- * Note: since we don't currently pack varyings, it is currently impossible
- * for the client to actually use up all of these binding table entries--if
- * all of their varyings were floats, they would run out of varying slots and
- * fail to link.  But that's a bug, so it seems prudent to go ahead and
- * allocate the number of binding table entries we will need once the bug is
- * fixed.
+ * Binding table index for the first gfx6 SOL binding.
  */
-#define BRW_MAX_SOL_BINDINGS 64
-
-/**
- * Binding table index for the first gen6 SOL binding.
- */
-#define BRW_GEN6_SOL_BINDING_START 0
+#define BRW_GFX6_SOL_BINDING_START 0
 
 /**
  * Stride in bytes between shader_time entries.
@@ -842,6 +876,7 @@ struct brw_wm_prog_data {
    bool uses_kill;
    bool uses_src_depth;
    bool uses_src_w;
+   bool uses_depth_w_coefficients;
    bool uses_sample_mask;
    bool has_render_target_reads;
    bool has_side_effects;
@@ -851,8 +886,13 @@ struct brw_wm_prog_data {
    bool contains_noperspective_varying;
 
    /**
+    * Shader is ran at the coarse pixel shading dispatch rate (3DSTATE_CPS).
+    */
+   bool per_coarse_pixel_dispatch;
+
+   /**
     * Mask of which interpolation modes are required by the fragment shader.
-    * Used in hardware setup on gen6+.
+    * Used in hardware setup on gfx6+.
     */
    uint32_t barycentric_interp_modes;
 
@@ -868,7 +908,7 @@ struct brw_wm_prog_data {
    uint64_t inputs;
 
    /* Mapping of VUE slots to interpolation modes.
-    * Used by the Gen4-5 clip/sf/wm stages.
+    * Used by the Gfx4-5 clip/sf/wm stages.
     */
    unsigned char interp_mode[65]; /* BRW_VARYING_SLOT_COUNT */
 
@@ -1032,6 +1072,17 @@ struct brw_bs_prog_data {
    uint32_t stack_size;
 };
 
+struct brw_ff_gs_prog_data {
+   unsigned urb_read_length;
+   unsigned total_grf;
+
+   /**
+    * Gfx6 transform feedback: Amount by which the streaming vertex buffer
+    * indices should be incremented each time the GS is invoked.
+    */
+   unsigned svbi_postincrement_value;
+};
+
 /**
  * Enum representing the i965-specific vertex results that don't correspond
  * exactly to any element of gl_varying_slot.  The values of this enum are
@@ -1054,8 +1105,8 @@ typedef enum
 /**
  * We always program SF to start reading at an offset of 1 (2 varying slots)
  * from the start of the vertex URB entry.  This causes it to skip:
- * - VARYING_SLOT_PSIZ and BRW_VARYING_SLOT_NDC on gen4-5
- * - VARYING_SLOT_PSIZ and VARYING_SLOT_POS on gen6+
+ * - VARYING_SLOT_PSIZ and BRW_VARYING_SLOT_NDC on gfx4-5
+ * - VARYING_SLOT_PSIZ and VARYING_SLOT_POS on gfx6+
  */
 #define BRW_SF_URB_ENTRY_READ_OFFSET 1
 
@@ -1153,7 +1204,7 @@ GLuint brw_varying_to_offset(const struct brw_vue_map *vue_map, GLuint varying)
    return brw_vue_slot_to_offset(vue_map->varying_to_slot[varying]);
 }
 
-void brw_compute_vue_map(const struct gen_device_info *devinfo,
+void brw_compute_vue_map(const struct intel_device_info *devinfo,
                          struct brw_vue_map *vue_map,
                          uint64_t slots_valid,
                          bool separate_shader,
@@ -1288,9 +1339,9 @@ struct brw_gs_prog_data
    unsigned control_data_header_size_hwords;
 
    /**
-    * Format of the control data (either GEN7_GS_CONTROL_DATA_FORMAT_GSCTL_SID
+    * Format of the control data (either GFX7_GS_CONTROL_DATA_FORMAT_GSCTL_SID
     * if the control data is StreamID bits, or
-    * GEN7_GS_CONTROL_DATA_FORMAT_GSCTL_CUT if the control data is cut bits).
+    * GFX7_GS_CONTROL_DATA_FORMAT_GSCTL_CUT if the control data is cut bits).
     * Ignored if control_data_header_size is 0.
     */
    unsigned control_data_format;
@@ -1305,25 +1356,25 @@ struct brw_gs_prog_data
    int invocations;
 
    /**
-    * Gen6: Provoking vertex convention for odd-numbered triangles
+    * Gfx6: Provoking vertex convention for odd-numbered triangles
     * in tristrips.
     */
    GLuint pv_first:1;
 
    /**
-    * Gen6: Number of varyings that are output to transform feedback.
+    * Gfx6: Number of varyings that are output to transform feedback.
     */
    GLuint num_transform_feedback_bindings:7; /* 0-BRW_MAX_SOL_BINDINGS */
 
    /**
-    * Gen6: Map from the index of a transform feedback binding table entry to the
+    * Gfx6: Map from the index of a transform feedback binding table entry to the
     * gl_varying_slot that should be streamed out through that binding table
     * entry.
     */
    unsigned char transform_feedback_bindings[64 /* BRW_MAX_SOL_BINDINGS */];
 
    /**
-    * Gen6: Map from the index of a transform feedback binding table entry to the
+    * Gfx6: Map from the index of a transform feedback binding table entry to the
     * swizzles that should be used when streaming out data through that
     * binding table entry.
     */
@@ -1411,7 +1462,7 @@ struct brw_compile_stats {
 /** @} */
 
 struct brw_compiler *
-brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo);
+brw_compiler_create(void *mem_ctx, const struct intel_device_info *devinfo);
 
 /**
  * Returns a compiler configuration for use with disk shader cache
@@ -1633,6 +1684,19 @@ brw_compile_bs(const struct brw_compiler *compiler, void *log_data,
                struct brw_compile_stats *stats,
                char **error_str);
 
+/**
+ * Compile a fixed function geometry shader.
+ *
+ * Returns the final assembly and the program's size.
+ */
+const unsigned *
+brw_compile_ff_gs_prog(struct brw_compiler *compiler,
+		       void *mem_ctx,
+		       const struct brw_ff_gs_prog_key *key,
+		       struct brw_ff_gs_prog_data *prog_data,
+		       struct brw_vue_map *vue_map,
+		       unsigned *final_assembly_size);
+
 void brw_debug_key_recompile(const struct brw_compiler *c, void *log,
                              gl_shader_stage stage,
                              const struct brw_base_prog_key *old_key,
@@ -1642,7 +1706,7 @@ void brw_debug_key_recompile(const struct brw_compiler *c, void *log,
  * and also have a Gen-dependent minimum value if not zero.
  */
 static inline uint32_t
-calculate_gen_slm_size(unsigned gen, uint32_t bytes)
+intel_calculate_slm_size(unsigned gen, uint32_t bytes)
 {
    assert(bytes <= 64 * 1024);
    if (bytes > 0)
@@ -1661,13 +1725,13 @@ encode_slm_size(unsigned gen, uint32_t bytes)
     *
     * Size   | 0 kB | 1 kB | 2 kB | 4 kB | 8 kB | 16 kB | 32 kB | 64 kB |
     * -------------------------------------------------------------------
-    * Gen7-8 |    0 | none | none |    1 |    2 |     4 |     8 |    16 |
+    * Gfx7-8 |    0 | none | none |    1 |    2 |     4 |     8 |    16 |
     * -------------------------------------------------------------------
-    * Gen9+  |    0 |    1 |    2 |    3 |    4 |     5 |     6 |     7 |
+    * Gfx9+  |    0 |    1 |    2 |    3 |    4 |     5 |     6 |     7 |
     */
 
    if (bytes > 0) {
-      slm_size = calculate_gen_slm_size(gen, bytes);
+      slm_size = intel_calculate_slm_size(gen, bytes);
       assert(util_is_power_of_two_nonzero(slm_size));
 
       if (gen >= 9) {
@@ -1676,7 +1740,7 @@ encode_slm_size(unsigned gen, uint32_t bytes)
          slm_size = ffs(slm_size) - 10;
       } else {
          assert(slm_size >= 4096);
-         /* Convert to the pre-Gen9 representation. */
+         /* Convert to the pre-Gfx9 representation. */
          slm_size = slm_size / 4096;
       }
    }
@@ -1688,30 +1752,35 @@ unsigned
 brw_cs_push_const_total_size(const struct brw_cs_prog_data *cs_prog_data,
                              unsigned threads);
 
-unsigned
-brw_cs_simd_size_for_group_size(const struct gen_device_info *devinfo,
-                                const struct brw_cs_prog_data *cs_prog_data,
-                                unsigned group_size);
-
 void
-brw_write_shader_relocs(const struct gen_device_info *devinfo,
+brw_write_shader_relocs(const struct intel_device_info *devinfo,
                         void *program,
                         const struct brw_stage_prog_data *prog_data,
                         struct brw_shader_reloc_value *values,
                         unsigned num_values);
 
+struct brw_cs_dispatch_info {
+   uint32_t group_size;
+   uint32_t simd_size;
+   uint32_t threads;
+
+   /* RightExecutionMask field used in GPGPU_WALKER. */
+   uint32_t right_mask;
+};
+
 /**
- * Calculate the RightExecutionMask field used in GPGPU_WALKER.
+ * Get the dispatch information for a shader to be used with GPGPU_WALKER and
+ * similar instructions.
+ *
+ * If override_local_size is not NULL, it must to point to a 3-element that
+ * will override the value from prog_data->local_size.  This is used by
+ * ARB_compute_variable_group_size, where the size is set only at dispatch
+ * time (so prog_data is outdated).
  */
-static inline unsigned
-brw_cs_right_mask(unsigned group_size, unsigned simd_size)
-{
-   const uint32_t remainder = group_size & (simd_size - 1);
-   if (remainder > 0)
-      return ~0u >> (32 - remainder);
-   else
-      return ~0u >> (32 - simd_size);
-}
+struct brw_cs_dispatch_info
+brw_cs_get_dispatch_info(const struct intel_device_info *devinfo,
+                         const struct brw_cs_prog_data *prog_data,
+                         const unsigned *override_local_size);
 
 /**
  * Return true if the given shader stage is dispatched contiguously by the
@@ -1720,7 +1789,7 @@ brw_cs_right_mask(unsigned group_size, unsigned simd_size)
  * '2^n - 1' for some n.
  */
 static inline bool
-brw_stage_has_packed_dispatch(ASSERTED const struct gen_device_info *devinfo,
+brw_stage_has_packed_dispatch(ASSERTED const struct intel_device_info *devinfo,
                               gl_shader_stage stage,
                               const struct brw_stage_prog_data *prog_data)
 {
@@ -1729,7 +1798,7 @@ brw_stage_has_packed_dispatch(ASSERTED const struct gen_device_info *devinfo,
     * to do a full test run with brw_fs_test_dispatch_packing() hooked up to
     * the NIR front-end before changing this assertion.
     */
-   assert(devinfo->gen <= 12);
+   assert(devinfo->ver <= 12);
 
    switch (stage) {
    case MESA_SHADER_FRAGMENT: {

@@ -82,6 +82,36 @@ ac_nir_lower_gs_inputs_to_mem(nir_shader *shader,
                               enum chip_class chip_class,
                               unsigned num_reserved_es_outputs);
 
+bool
+ac_nir_lower_indirect_derefs(nir_shader *shader,
+                             enum chip_class chip_class);
+
+typedef struct
+{
+   bool can_cull;
+   bool passthrough;
+} ac_nir_ngg_config;
+
+ac_nir_ngg_config
+ac_nir_lower_ngg_nogs(nir_shader *shader,
+                      unsigned max_num_es_vertices,
+                      unsigned num_vertices_per_primitive,
+                      unsigned max_workgroup_size,
+                      unsigned wave_size,
+                      bool consider_culling,
+                      bool consider_passthrough,
+                      bool export_prim_id,
+                      bool provoking_vtx_last);
+
+void
+ac_nir_lower_ngg_gs(nir_shader *shader,
+                    unsigned wave_size,
+                    unsigned max_workgroup_size,
+                    unsigned esgs_ring_lds_bytes,
+                    unsigned gs_out_vtx_bytes,
+                    unsigned gs_total_out_vtx_bytes,
+                    bool provoking_vtx_last);
+
 #ifdef __cplusplus
 }
 #endif

@@ -39,7 +39,6 @@ files_i965 = files(
   'brw_draw.h',
   'brw_draw_upload.c',
   'brw_ff_gs.c',
-  'brw_ff_gs_emit.c',
   'brw_ff_gs.h',
   'brw_formatquery.c',
   'brw_generate_mipmap.c',
@@ -81,19 +80,19 @@ files_i965 = files(
   'brw_wm.c',
   'brw_wm.h',
   'brw_wm_surface_state.c',
-  'gen4_blorp_exec.h',
-  'gen6_clip_state.c',
-  'gen6_constant_state.c',
-  'gen6_multisample_state.c',
-  'gen6_queryobj.c',
-  'gen6_sampler_state.c',
-  'gen6_sol.c',
-  'gen6_urb.c',
-  'gen7_l3_state.c',
-  'gen7_sol_state.c',
-  'gen7_urb.c',
-  'gen8_depth_state.c',
-  'gen8_multisample_state.c',
+  'gfx4_blorp_exec.h',
+  'gfx6_clip_state.c',
+  'gfx6_constant_state.c',
+  'gfx6_multisample_state.c',
+  'gfx6_queryobj.c',
+  'gfx6_sampler_state.c',
+  'gfx6_sol.c',
+  'gfx6_urb.c',
+  'gfx7_l3_state.c',
+  'gfx7_sol_state.c',
+  'gfx7_urb.c',
+  'gfx8_depth_state.c',
+  'gfx8_multisample_state.c',
   'hsw_queryobj.c',
   'hsw_sol.c',
   'brw_batch.c',
@@ -130,16 +129,16 @@ files_i965 = files(
   'libdrm_macros.h',
 )
 
-i965_gen_libs = []
+i965_per_hw_ver_libs = []
 foreach v : ['40', '45', '50', '60', '70', '75', '80', '90', '110']
-  i965_gen_libs += static_library(
-    'i965_gen@0@'.format(v),
+  i965_per_hw_ver_libs += static_library(
+    'i965_per_hw_ver@0@'.format(v),
     ['genX_blorp_exec.c', 'genX_boilerplate.h', 'genX_pipe_control.c',
      'genX_state_upload.c', gen_xml_pack],
     include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_intel, inc_dri_common],
     c_args : [
       no_override_init_args, c_sse2_args,
-      '-DGEN_VERSIONx10=@0@'.format(v),
+      '-DGFX_VERx10=@0@'.format(v),
     ],
     gnu_symbol_visibility : 'hidden',
     dependencies : [dep_libdrm, idep_nir_headers, idep_mesautil],
@@ -157,7 +156,7 @@ libi965 = static_library(
   cpp_args : [c_sse2_args],
   gnu_symbol_visibility : 'hidden',
   link_with : [
-    i965_gen_libs, libintel_dev, libisl, libintel_compiler, libblorp,
+    i965_per_hw_ver_libs, libintel_dev, libisl, libintel_compiler, libblorp,
     libintel_perf
   ],
   dependencies : [

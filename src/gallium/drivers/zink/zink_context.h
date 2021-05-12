@@ -38,6 +38,7 @@
 #include "pipe/p_context.h"
 #include "pipe/p_state.h"
 #include "util/u_rect.h"
+#include "util/u_threaded_context.h"
 
 #include "util/slab.h"
 #include "util/list.h"
@@ -124,15 +125,16 @@ struct zink_viewport_state {
 };
 
 
-/* hashes of all the named types in a given state */
-struct zink_descriptor_state {
-   bool valid[ZINK_DESCRIPTOR_TYPES];
-   uint32_t state[ZINK_DESCRIPTOR_TYPES];
+union zink_descriptor_surface {
+   struct zink_surface *surface;
+   struct zink_buffer_view *bufferview;
 };
 
 struct zink_context {
    struct pipe_context base;
+   struct threaded_context *tc;
    struct slab_child_pool transfer_pool;
+   struct slab_child_pool transfer_pool_unsync;
    struct blitter_context *blitter;
 
    struct pipe_device_reset_callback reset;
@@ -141,11 +143,16 @@ struct zink_context {
 
    uint32_t curr_batch; //the current batch id
    struct zink_batch batch;
+   simple_mtx_t batch_mtx;
    struct zink_fence *last_fence; //the last command buffer submitted
-   VkQueue queue; //gfx+compute
    struct hash_table batch_states; //submitted batch states
    struct util_dynarray free_batch_states; //unused batch states
    VkDeviceSize resource_size; //the accumulated size of resources in submitted buffers
+
+   unsigned shader_has_inlinable_uniforms_mask;
+   unsigned inlinable_uniforms_dirty_mask;
+   unsigned inlinable_uniforms_valid_mask;
+   uint32_t inlinable_uniforms[PIPE_SHADER_TYPES][MAX_INLINABLE_UNIFORMS];
 
    struct pipe_constant_buffer ubos[PIPE_SHADER_TYPES][PIPE_MAX_CONSTANT_BUFFERS];
    struct pipe_shader_buffer ssbos[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_BUFFERS];
@@ -158,15 +165,15 @@ struct zink_context {
    struct zink_rasterizer_state *rast_state;
    struct zink_depth_stencil_alpha_state *dsa_state;
 
+   struct hash_table desc_set_layouts[ZINK_DESCRIPTOR_TYPES];
+
    struct zink_shader *gfx_stages[ZINK_SHADER_COUNT];
    struct zink_gfx_pipeline_state gfx_pipeline_state;
    enum pipe_prim_type gfx_prim_mode;
    struct hash_table *program_cache;
    struct zink_gfx_program *curr_program;
 
-   struct zink_descriptor_state gfx_descriptor_states[ZINK_SHADER_COUNT]; // keep incremental hashes here
-   struct zink_descriptor_state descriptor_states[2]; // gfx, compute
-   struct hash_table *descriptor_pools[ZINK_DESCRIPTOR_TYPES];
+   struct zink_descriptor_data *dd;
 
    struct zink_shader *compute_stage;
    struct zink_compute_pipeline_state compute_pipeline_state;
@@ -177,6 +184,7 @@ struct zink_context {
    bool last_vertex_stage_dirty;
 
    struct hash_table *render_pass_cache;
+   bool new_swapchain;
 
    struct primconvert_context *primconvert;
 
@@ -187,10 +195,7 @@ struct zink_context {
    struct pipe_vertex_buffer vertex_buffers[PIPE_MAX_ATTRIBS];
 
    void *sampler_states[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
-   VkSampler samplers[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
-   unsigned num_samplers[PIPE_SHADER_TYPES];
    struct pipe_sampler_view *sampler_views[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
-   unsigned num_sampler_views[PIPE_SHADER_TYPES];
 
    struct zink_viewport_state vp_state;
 
@@ -221,11 +226,35 @@ struct zink_context {
    struct pipe_resource *dummy_xfb_buffer;
    struct pipe_resource *null_buffers[5]; /* used to create zink_framebuffer->null_surface, one buffer per samplecount */
 
+   struct {
+      /* descriptor info */
+      VkDescriptorBufferInfo ubos[PIPE_SHADER_TYPES][PIPE_MAX_CONSTANT_BUFFERS];
+      uint32_t push_valid;
+      uint8_t num_ubos[PIPE_SHADER_TYPES];
+
+      VkDescriptorBufferInfo ssbos[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_BUFFERS];
+      uint8_t num_ssbos[PIPE_SHADER_TYPES];
+
+      VkDescriptorImageInfo textures[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
+      VkBufferView tbos[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
+      uint8_t num_samplers[PIPE_SHADER_TYPES];
+      uint8_t num_sampler_views[PIPE_SHADER_TYPES];
+
+      VkDescriptorImageInfo images[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_IMAGES];
+      VkBufferView texel_images[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_IMAGES];
+      uint8_t num_images[PIPE_SHADER_TYPES];
+
+      struct zink_resource *descriptor_res[ZINK_DESCRIPTOR_TYPES][PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
+      union zink_descriptor_surface sampler_surfaces[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
+      union zink_descriptor_surface image_surfaces[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_IMAGES];
+   } di;
+
    uint32_t num_so_targets;
    struct pipe_stream_output_target *so_targets[PIPE_MAX_SO_OUTPUTS];
    bool dirty_so_targets;
    bool xfb_barrier;
    bool first_frame_done;
+   bool have_timelines;
 };
 
 static inline struct zink_context *
@@ -253,6 +282,9 @@ zink_fence_wait(struct pipe_context *ctx);
 
 void
 zink_wait_on_batch(struct zink_context *ctx, uint32_t batch_id);
+
+bool
+zink_check_batch_completion(struct zink_context *ctx, uint32_t batch_id);
 
 void
 zink_flush_queue(struct zink_context *ctx);
@@ -329,8 +361,9 @@ zink_rebind_framebuffer(struct zink_context *ctx, struct zink_resource *res);
 void
 zink_draw_vbo(struct pipe_context *pctx,
               const struct pipe_draw_info *dinfo,
+              unsigned drawid_offset,
               const struct pipe_draw_indirect_info *indirect,
-              const struct pipe_draw_start_count *draws,
+              const struct pipe_draw_start_count_bias *draws,
               unsigned num_draws);
 
 void
@@ -363,15 +396,5 @@ zink_buffer_view_reference(struct zink_screen *screen,
       zink_destroy_buffer_view(screen, old_dst);
    if (dst) *dst = src;
 }
-
-void
-zink_context_update_descriptor_states(struct zink_context *ctx, bool is_compute);
-void
-zink_context_invalidate_descriptor_state(struct zink_context *ctx, enum pipe_shader_type shader, enum zink_descriptor_type type);
-
-uint32_t
-zink_get_sampler_view_hash(struct zink_context *ctx, struct zink_sampler_view *sampler_view, bool is_buffer);
-uint32_t
-zink_get_image_view_hash(struct zink_context *ctx, struct zink_image_view *image_view, bool is_buffer);
 
 #endif

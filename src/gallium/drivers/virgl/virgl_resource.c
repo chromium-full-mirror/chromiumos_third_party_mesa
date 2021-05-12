@@ -400,7 +400,7 @@ virgl_resource_transfer_map(struct pipe_context *ctx,
          break;
       }
       vws->resource_reference(vws, &trans->hw_res, vres->hw_res);
-      /* fall through */
+      FALLTHROUGH;
    case VIRGL_TRANSFER_MAP_HW_RES:
       trans->hw_res_map = vws->resource_map(vws, vres->hw_res);
       if (trans->hw_res_map)
@@ -574,6 +574,13 @@ static struct pipe_resource *virgl_resource_from_handle(struct pipe_screen *scre
                                                       &plane_offset,
                                                       &modifier,
                                                       &res->blob_mem);
+
+   /* do not use winsys returns for guest storage info of classic resource */
+   if (!res->blob_mem) {
+      winsys_stride = 0;
+      plane_offset = 0;
+      modifier = 0;
+   }
 
    virgl_resource_layout(&res->u.b, &res->metadata, plane, winsys_stride,
                          plane_offset, modifier);

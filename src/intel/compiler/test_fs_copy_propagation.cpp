@@ -34,7 +34,7 @@ class copy_propagation_test : public ::testing::Test {
 
 public:
    struct brw_compiler *compiler;
-   struct gen_device_info *devinfo;
+   struct intel_device_info *devinfo;
    void *ctx;
    struct brw_wm_prog_data *prog_data;
    struct gl_shader_program *shader_prog;
@@ -57,7 +57,7 @@ void copy_propagation_test::SetUp()
 {
    ctx = ralloc_context(NULL);
    compiler = rzalloc(ctx, struct brw_compiler);
-   devinfo = rzalloc(ctx, struct gen_device_info);
+   devinfo = rzalloc(ctx, struct intel_device_info);
    compiler->devinfo = devinfo;
 
    prog_data = ralloc(ctx, struct brw_wm_prog_data);
@@ -66,8 +66,8 @@ void copy_propagation_test::SetUp()
 
    v = new copy_propagation_fs_visitor(compiler, ctx, prog_data, shader);
 
-   devinfo->gen = 4;
-   devinfo->genx10 = devinfo->gen * 10;
+   devinfo->ver = 4;
+   devinfo->verx10 = devinfo->ver * 10;
 }
 
 void copy_propagation_test::TearDown()

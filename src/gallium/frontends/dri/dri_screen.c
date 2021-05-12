@@ -105,6 +105,8 @@ dri_fill_st_options(struct dri_screen *screen)
       driQueryOptionb(optionCache, "force_gl_names_reuse");
    options->transcode_etc =
       driQueryOptionb(optionCache, "transcode_etc");
+   options->transcode_astc =
+      driQueryOptionb(optionCache, "transcode_astc");
 
    char *vendor_str = driQueryOptionstr(optionCache, "force_gl_vendor");
    /* not an empty string */
@@ -320,7 +322,7 @@ dri_fill_in_modes(struct dri_screen *screen)
                                         depth_buffer_factor, back_buffer_modes,
                                         ARRAY_SIZE(back_buffer_modes),
                                         msaa_modes, 1,
-                                        GL_TRUE, !mixed_color_depth, GL_FALSE);
+                                        GL_TRUE, !mixed_color_depth);
          configs = driConcatConfigs(configs, new_configs);
 
          /* Multi-sample configs without an accumulation buffer. */
@@ -330,7 +332,7 @@ dri_fill_in_modes(struct dri_screen *screen)
                                            depth_buffer_factor, back_buffer_modes,
                                            ARRAY_SIZE(back_buffer_modes),
                                            msaa_modes+1, num_msaa_modes-1,
-                                           GL_FALSE, !mixed_color_depth, GL_FALSE);
+                                           GL_FALSE, !mixed_color_depth);
             configs = driConcatConfigs(configs, new_configs);
          }
       }
@@ -354,10 +356,8 @@ dri_fill_st_visual(struct st_visual *stvis,
 {
    memset(stvis, 0, sizeof(*stvis));
 
-   if (!mode) {
-      stvis->no_config = true;
+   if (!mode)
       return;
-   }
 
    /* Deduce the color format. */
    switch (mode->redMask) {
@@ -425,7 +425,7 @@ dri_fill_st_visual(struct st_visual *stvis,
       return;
    }
 
-   if (mode->sampleBuffers) {
+   if (mode->samples > 0) {
       stvis->samples = mode->samples;
    }
 
@@ -457,10 +457,8 @@ dri_fill_st_visual(struct st_visual *stvis,
       PIPE_FORMAT_R16G16B16A16_SNORM : PIPE_FORMAT_NONE;
 
    stvis->buffer_mask |= ST_ATTACHMENT_FRONT_LEFT_MASK;
-   stvis->render_buffer = ST_ATTACHMENT_FRONT_LEFT;
    if (mode->doubleBufferMode) {
       stvis->buffer_mask |= ST_ATTACHMENT_BACK_LEFT_MASK;
-      stvis->render_buffer = ST_ATTACHMENT_BACK_LEFT;
    }
    if (mode->stereoMode) {
       stvis->buffer_mask |= ST_ATTACHMENT_FRONT_RIGHT_MASK;

@@ -115,7 +115,7 @@ bool VertexStageExportForFS::do_store_output(const store_loc& store_info, nir_in
    case VARYING_SLOT_PSIZ:
       m_proc.sh_info().vs_out_point_size = 1;
       m_proc.sh_info().vs_out_misc_write = 1;
-      /* fallthrough */
+      FALLTHROUGH;
    case VARYING_SLOT_POS:
       return emit_varying_pos(store_info, instr);
    case VARYING_SLOT_EDGE: {
@@ -186,7 +186,7 @@ bool VertexStageExportForFS::emit_varying_pos(const store_loc &store_info, nir_i
       m_proc.emit_instruction(op1_flt_to_int, value.reg_i(1), {value.reg_i(1)}, {alu_write, alu_last_instr});
       m_proc.sh_info().output[store_info.driver_location].write_mask = 0xf;
    }
-      /* fallthrough */
+      FALLTHROUGH;
    case VARYING_SLOT_PSIZ:
    case VARYING_SLOT_LAYER:
       export_slot = 1;
@@ -288,13 +288,16 @@ void VertexStageWithOutputInfo::scan_store_output(nir_intrinsic_instr* instr)
    auto index = nir_src_as_const_value(instr->src[1]);
    assert(index);
 
+   unsigned noutputs = driver_location + index->u32 + 1;
+   if (m_proc.sh_info().noutput < noutputs)
+      m_proc.sh_info().noutput = noutputs;
+
    r600_shader_io& io = m_proc.sh_info().output[driver_location + index->u32];
    auto semantic = r600_get_varying_semantic(location + index->u32);
    io.name = semantic.first;
    io.sid = semantic.second;
    m_proc.evaluate_spi_sid(io);
    io.write_mask = nir_intrinsic_write_mask(instr);
-   ++m_proc.sh_info().noutput;
 
    if (location == VARYING_SLOT_PSIZ ||
        location == VARYING_SLOT_EDGE ||

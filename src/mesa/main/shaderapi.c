@@ -2050,7 +2050,7 @@ shader_source(struct gl_context *ctx, GLuint shaderObj, GLsizei count,
       if (!sh)
          return;
 
-      if (string == NULL) {
+      if (string == NULL || count < 0) {
          _mesa_error(ctx, GL_INVALID_VALUE, "glShaderSourceARB");
          return;
       }
@@ -2058,11 +2058,15 @@ shader_source(struct gl_context *ctx, GLuint shaderObj, GLsizei count,
       sh = _mesa_lookup_shader(ctx, shaderObj);
    }
 
+   /* Return silently the spec doesn't define this as an error */
+   if (count == 0)
+      return;
+
    /*
     * This array holds offsets of where the appropriate string ends, thus the
     * last element will be set to the total length of the source code.
     */
-   offsets = malloc(count * sizeof(GLint));
+   offsets = calloc(count, sizeof(GLint));
    if (offsets == NULL) {
       _mesa_error(ctx, GL_OUT_OF_MEMORY, "glShaderSourceARB");
       return;
@@ -2623,7 +2627,7 @@ _mesa_copy_linked_program_data(const struct gl_shader_program *src,
       break;
    }
    case MESA_SHADER_COMPUTE: {
-      dst->info.cs.shared_size = src->Comp.SharedSize;
+      dst->info.shared_size = src->Comp.SharedSize;
       break;
    }
    default:

@@ -407,8 +407,14 @@ st_UnmapTextureImage(struct gl_context *ctx,
                                         transfer->box.height,
                                         texImage->TexFormat,
                                         bgra);
+            } else if (_mesa_is_format_astc_2d(texImage->TexFormat)) {
+               _mesa_unpack_astc_2d_ldr(tmp, transfer->box.width * 4,
+                                        itransfer->temp_data,
+                                        itransfer->temp_stride,
+                                        transfer->box.width,
+                                        transfer->box.height,
+                                        texImage->TexFormat);
             } else {
-               /* TODO: We could transcode ASTC too. */
                unreachable("unexpected format for a compressed format fallback");
             }
 
@@ -3048,6 +3054,8 @@ st_texture_storage(struct gl_context *ctx,
                                    width, height, depth,
                                    &ptWidth, &ptHeight, &ptDepth, &ptLayers);
 
+   pipe_resource_reference(&stObj->pt, NULL);
+
    if (smObj) {
       stObj->pt = st_texture_create_from_memory(st,
                                                 smObj,
@@ -3156,7 +3164,7 @@ st_TestProxyTexImage(struct gl_context *ctx, GLenum target,
       }
       else {
          /* assume a full set of mipmaps */
-         pt.last_level = util_logbase2(MAX3(width, height, depth));
+         pt.last_level = util_logbase2(MAX4(width, height, depth, 0));
       }
 
       return st->screen->can_create_resource(st->screen, &pt);
