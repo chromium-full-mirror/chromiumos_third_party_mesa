@@ -103,11 +103,14 @@ void _mesa_hash_table_remove_key(struct hash_table *ht,
 
 struct hash_entry *_mesa_hash_table_next_entry(struct hash_table *ht,
                                                struct hash_entry *entry);
+struct hash_entry *_mesa_hash_table_next_entry_unsafe(const struct hash_table *ht,
+                                               struct hash_entry *entry);
 struct hash_entry *
 _mesa_hash_table_random_entry(struct hash_table *ht,
                               bool (*predicate)(struct hash_entry *entry));
 
 uint32_t _mesa_hash_data(const void *data, size_t size);
+uint32_t _mesa_hash_data_with_seed(const void *data, size_t size, uint32_t seed);
 
 uint32_t _mesa_hash_int(const void *key);
 uint32_t _mesa_hash_uint(const void *key);
@@ -124,6 +127,8 @@ bool _mesa_key_pointer_equal(const void *a, const void *b);
 struct hash_table *
 _mesa_pointer_hash_table_create(void *mem_ctx);
 
+bool
+_mesa_hash_table_reserve(struct hash_table *ht, unsigned size);
 /**
  * This foreach function is safe against deletion (which just replaces
  * an entry's data with the deleted marker), but not against insertion
@@ -133,6 +138,15 @@ _mesa_pointer_hash_table_create(void *mem_ctx);
    for (struct hash_entry *entry = _mesa_hash_table_next_entry(ht, NULL);  \
         entry != NULL;                                                     \
         entry = _mesa_hash_table_next_entry(ht, entry))
+/**
+ * This foreach function destroys the table as it iterates.
+ * It is not safe to use when inserting or removing entries.
+ */
+#define hash_table_foreach_remove(ht, entry)                                      \
+   for (struct hash_entry *entry = _mesa_hash_table_next_entry_unsafe(ht, NULL);  \
+        (ht)->entries;                                                     \
+        entry->hash = 0, entry->key = (void*)NULL, entry->data = NULL,      \
+        (ht)->entries--, entry = _mesa_hash_table_next_entry_unsafe(ht, entry))
 
 static inline void
 hash_table_call_foreach(struct hash_table *ht,

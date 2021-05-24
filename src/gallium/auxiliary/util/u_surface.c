@@ -145,6 +145,12 @@ util_fill_rect(ubyte * dst,
          dst += dst_stride;
       }
       break;
+   case 8:
+      for (i = 0; i < height; i++) {
+         util_memset64(dst, ((uint64_t *)uc)[0], width);
+         dst += dst_stride;
+      }
+      break;
    default:
       for (i = 0; i < height; i++) {
          ubyte *row = dst;
@@ -285,7 +291,7 @@ util_resource_copy_region(struct pipe_context *pipe,
    src_map = pipe->transfer_map(pipe,
                                 src,
                                 src_level,
-                                PIPE_TRANSFER_READ,
+                                PIPE_MAP_READ,
                                 &src_box, &src_trans);
    assert(src_map);
    if (!src_map) {
@@ -295,8 +301,8 @@ util_resource_copy_region(struct pipe_context *pipe,
    dst_map = pipe->transfer_map(pipe,
                                 dst,
                                 dst_level,
-                                PIPE_TRANSFER_WRITE |
-                                PIPE_TRANSFER_DISCARD_RANGE, &dst_box,
+                                PIPE_MAP_WRITE |
+                                PIPE_MAP_DISCARD_RANGE, &dst_box,
                                 &dst_trans);
    assert(dst_map);
    if (!dst_map) {
@@ -358,7 +364,7 @@ util_clear_color_texture(struct pipe_context *pipe,
    dst_map = pipe_transfer_map_3d(pipe,
                                   texture,
                                   level,
-                                  PIPE_TRANSFER_WRITE,
+                                  PIPE_MAP_WRITE,
                                   dstx, dsty, dstz,
                                   width, height, depth,
                                   &dst_trans);
@@ -410,7 +416,7 @@ util_clear_render_target(struct pipe_context *pipe,
       dst_map = pipe_transfer_map(pipe,
                                   dst->texture,
                                   0, 0,
-                                  PIPE_TRANSFER_WRITE,
+                                  PIPE_MAP_WRITE,
                                   dx, 0, w, 1,
                                   &dst_trans);
       if (dst_map) {
@@ -489,9 +495,7 @@ util_fill_zs_rect(ubyte *dst_map,
    case 8:
       if (!need_rmw) {
          for (i = 0; i < height; i++) {
-            uint64_t *row = (uint64_t *)dst_map;
-            for (j = 0; j < width; j++)
-               *row++ = zstencil;
+            util_memset64(dst_map, zstencil, width);
             dst_map += dst_stride;
          }
       }
@@ -561,8 +565,8 @@ util_clear_depth_stencil_texture(struct pipe_context *pipe,
    dst_map = pipe_transfer_map_3d(pipe,
                                   texture,
                                   level,
-                                  (need_rmw ? PIPE_TRANSFER_READ_WRITE :
-                                              PIPE_TRANSFER_WRITE),
+                                  (need_rmw ? PIPE_MAP_READ_WRITE :
+                                              PIPE_MAP_WRITE),
                                   dstx, dsty, dstz,
                                   width, height, depth, &dst_trans);
    assert(dst_map);
@@ -765,7 +769,8 @@ util_can_blit_via_copy_region(const struct pipe_blit_info *blit,
        blit->filter != PIPE_TEX_FILTER_NEAREST ||
        blit->scissor_enable ||
        blit->num_window_rectangles > 0 ||
-       blit->alpha_blend) {
+       blit->alpha_blend ||
+       blit->render_condition_enable) {
       return FALSE;
    }
 

@@ -1,15 +1,15 @@
 Bare-metal CI
 =============
 
-The bare-metal scripts run on a system with gitlab-runner and docker,
+The bare-metal scripts run on a system with gitlab-runner and Docker,
 connected to potentially multiple bare-metal boards that run tests of
 Mesa.  Currently only "fastboot" and "ChromeOS Servo" devices are
 supported.
 
 In comparison with LAVA, this doesn't involve maintaining a separate
-webservice with its own job scheduler and replicating jobs between the
-two.  It also places more of the board support in git, instead of
-webservice configuration.  On the other hand, the serial interactions
+web service with its own job scheduler and replicating jobs between the
+two.  It also places more of the board support in Git, instead of
+web service configuration.  On the other hand, the serial interactions
 and bootloader support are more primitive.
 
 Requirements (fastboot)
@@ -29,7 +29,7 @@ gitlab-runner system, since the initramfs is what contains the Mesa
 testing payload.
 
 The boards should have networking, so that we can extract the dEQP .xml
-results to artifacts on gitlab.
+results to artifacts on GitLab.
 
 Requirements (servo)
 --------------------
@@ -42,8 +42,8 @@ at /tftp in the container.
 
 Since we're going the TFTP route, we also use NFS root.  This avoids
 packing the rootfs and sending it to the board as a ramdisk, which
-means we can support larger rootfses (for piglit or tracie testing),
-at the cost of needing more storage on the runner.
+means we can support larger rootfses (for piglit testing), at the cost
+of needing more storage on the runner.
 
 Telling the board about where its TFTP and NFS should come from is
 done using dnsmasq on the runner host.  For example, this snippet in
@@ -71,8 +71,8 @@ call "servo"::
 Setup
 -----
 
-Each board will be registered in fd.o gitlab.  You'll want something
-like this to register a fastboot board:
+Each board will be registered in freedesktop.org GitLab.  You'll want
+something like this to register a fastboot board:
 
 .. code-block:: console
 
@@ -91,8 +91,8 @@ like this to register a fastboot board:
 For a servo board, you'll need to also volume mount the board's NFS
 root dir at /nfs and TFTP kernel directory at /tftp.
 
-The registration token has to come from a fd.o gitlab admin going to
-https://gitlab.freedesktop.org/admin/runners
+The registration token has to come from a freedesktop.org GitLab admin
+going to https://gitlab.freedesktop.org/admin/runners
 
 The name scheme for Google's lab is google-freedreno-boardname-n, and
 our tag is something like google-freedreno-db410c.  The tag is what
@@ -116,12 +116,55 @@ required by your bare-metal script, something like::
 
   [[runners]]
     name = "google-freedreno-db410c-1"
-    environment = ["BM_SERIAL=/dev/ttyDB410c8", "BM_POWERUP=google-power-up.sh 8", "BM_FASTBOOT_SERIAL=15e9e390"]
+    environment = ["BM_SERIAL=/dev/ttyDB410c8", "BM_POWERUP=google-power-up.sh 8", "BM_FASTBOOT_SERIAL=15e9e390", "FDO_CI_CONCURRENT=4"]
+
+The ``FDO_CI_CONCURRENT`` variable should be set to the number of CPU threads on
+the board, which is used for auto-tuning of job parallelism.
 
 If you want to collect the results for fastboot you need to add the following
 two board-specific environment variables ``BM_WEBDAV_IP`` and ``BM_WEBDAV_PORT``.
-These represent the IP address of the docker host and the board specific port number
+These represent the IP address of the Docker host and the board specific port number
 that gets used to start a nginx server.
 
 Once you've updated your runners' configs, restart with ``sudo service
 gitlab-runner restart``
+
+Caching downloads
+-----------------
+
+To improve the runtime for downloading traces during traces job runs, you will
+want a pass-through HTTP cache.  On your runner box, install nginx:
+
+.. code-block:: console
+
+  sudo apt install nginx libnginx-mod-http-lua
+
+Add the server setup files:
+
+.. literalinclude: fdo-cache:
+   :name: /etc/nginx/sites-available/fdo-cache
+
+.. literalinclude: uri-caching.conf:
+   :name: /etc/nginx/sites-available/snippets/uri-caching.conf
+
+Edit the listener addresses in fdo-cache to suit the ethernet interface that
+your devices are on.
+
+Enable the site and restart nginx:
+
+.. code-block:: console
+
+  sudo ln -s /etc/nginx/sites-available/fdo-cache /etc/nginx/sites-enabled/fdo-cache
+  sudo service nginx restart
+
+  # First download will hit the internet
+  wget http://localhost/cache/?uri=https://minio-packet.freedesktop.org/mesa-tracie-public/itoral-gl-terrain-demo/demo.trace
+  # Second download should be cached.
+  wget http://localhost/cache/?uri=https://minio-packet.freedesktop.org/mesa-tracie-public/itoral-gl-terrain-demo/demo.trace
+
+Now, set ``download-url`` in your ``traces-*.yml`` entry to something like
+``http://10.42.0.1:8888/cache/?uri=https://minio-packet.freedesktop.org/mesa-tracie-public``
+and you should have cached downloads for traces.  Add it to
+``FDO_HTTP_CACHE_URI=`` in your ``config.toml`` runner environment lines and you
+can use it for cached artifact downloads instead of going all the way to
+freedesktop.org on each job.

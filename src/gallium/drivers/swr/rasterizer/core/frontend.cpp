@@ -534,7 +534,7 @@ static void StreamOut(
 
     for (uint32_t primIndex = 0; primIndex < numPrims; ++primIndex)
     {
-        DWORD    slot   = 0;
+        unsigned long slot = 0;
         uint64_t soMask = soState.streamMasks[streamIndex];
 
         // Write all entries into primitive data buffer for SOS.
@@ -1856,9 +1856,11 @@ void ProcessDraw(SWR_CONTEXT* pContext, DRAW_CONTEXT* pDC, uint32_t workerId, vo
             vIndex = _simd16_add_epi32(_simd16_set1_epi32(work.startVertexID), vScale);
 
             fetchInfo_lo.xpIndices = pDC->pContext->pfnMakeGfxPtr(GetPrivateState(pDC), &vIndex);
-            fetchInfo_hi.xpIndices = pDC->pContext->pfnMakeGfxPtr(
-                GetPrivateState(pDC),
-                &vIndex + KNOB_SIMD_WIDTH * sizeof(int32_t)); // 1/2 of KNOB_SIMD16_WIDTH
+
+            int32_t* sysAddr = reinterpret_cast<int32_t*>(&vIndex);
+            sysAddr += KNOB_SIMD_WIDTH; // 1/2 of KNOB_SIMD16_WIDTH
+
+            fetchInfo_hi.xpIndices = pDC->pContext->pfnMakeGfxPtr(GetPrivateState(pDC), sysAddr);
         }
 
         fetchInfo_lo.CurInstance = instanceNum;

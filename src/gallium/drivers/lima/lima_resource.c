@@ -351,8 +351,26 @@ lima_resource_from_handle(struct pipe_screen *pscreen,
       stride = util_format_get_stride(pres->format, width);
       size = util_format_get_2d_size(pres->format, stride, height);
 
-      if (res->levels[0].stride != stride || res->bo->size < size) {
-         debug_error("import buffer not properly aligned\n");
+      if (res->tiled && res->levels[0].stride != stride) {
+         fprintf(stderr, "tiled imported buffer has mismatching stride: %d (BO) != %d (expected)",
+                     res->levels[0].stride, stride);
+         goto err_out;
+      }
+
+      if (!res->tiled && (res->levels[0].stride % 8)) {
+         fprintf(stderr, "linear imported buffer stride is not aligned to 8 bytes: %d\n",
+                 res->levels[0].stride);
+      }
+
+      if (!res->tiled && res->levels[0].stride < stride) {
+         fprintf(stderr, "linear imported buffer stride is smaller than minimal: %d (BO) < %d (min)",
+                 res->levels[0].stride, stride);
+         goto err_out;
+      }
+
+      if (res->bo->size < size) {
+         fprintf(stderr, "imported bo size is smaller than expected: %d (BO) < %d (expected)\n",
+                 res->bo->size, size);
          goto err_out;
       }
 
@@ -360,6 +378,18 @@ lima_resource_from_handle(struct pipe_screen *pscreen,
    }
    else
       res->levels[0].width = pres->width0;
+
+   if (screen->ro) {
+      /* Make sure that renderonly has a handle to our buffer in the
+       * display's fd, so that a later renderonly_get_handle()
+       * returns correct handles or GEM names.
+       */
+      res->scanout =
+         renderonly_create_gpu_import_for_resource(pres,
+                                                   screen->ro,
+                                                   NULL);
+      /* ignore failiure to allow importing non-displayable buffer */
+   }
 
    return pres;
 
@@ -549,6 +579,7 @@ lima_transfer_map(struct pipe_context *pctx,
                   const struct pipe_box *box,
                   struct pipe_transfer **pptrans)
 {
+   struct lima_screen *screen = lima_screen(pres->screen);
    struct lima_context *ctx = lima_context(pctx);
    struct lima_resource *res = lima_resource(pres);
    struct lima_bo *bo = res->bo;
@@ -558,19 +589,36 @@ lima_transfer_map(struct pipe_context *pctx,
    /* No direct mappings of tiled, since we need to manually
     * tile/untile.
     */
-   if (res->tiled && (usage & PIPE_TRANSFER_MAP_DIRECTLY))
+   if (res->tiled && (usage & PIPE_MAP_DIRECTLY))
       return NULL;
 
-   /* use once buffers are made sure to not read/write overlapped
-    * range, so no need to sync */
-   if (pres->usage != PIPE_USAGE_STREAM) {
-      if (usage & PIPE_TRANSFER_READ_WRITE) {
-         lima_flush_job_accessing_bo(ctx, bo, usage & PIPE_TRANSFER_WRITE);
+   /* bo might be in use in a previous stream draw. Allocate a new
+    * one for the resource to avoid overwriting data in use. */
+   if (usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) {
+      struct lima_bo *new_bo;
+      assert(res->bo && res->bo->size);
 
-         unsigned op = usage & PIPE_TRANSFER_WRITE ?
-            LIMA_GEM_WAIT_WRITE : LIMA_GEM_WAIT_READ;
-         lima_bo_wait(bo, op, PIPE_TIMEOUT_INFINITE);
-      }
+      new_bo = lima_bo_create(screen, res->bo->size, res->bo->flags);
+      if (!new_bo)
+         return NULL;
+
+      lima_bo_unreference(res->bo);
+      res->bo = new_bo;
+
+      if (pres->bind & PIPE_BIND_VERTEX_BUFFER)
+         ctx->dirty |= LIMA_CONTEXT_DIRTY_VERTEX_BUFF;
+
+      bo = res->bo;
+   }
+   else if (!(usage & PIPE_MAP_UNSYNCHRONIZED) &&
+            (usage & PIPE_MAP_READ_WRITE)) {
+      /* use once buffers are made sure to not read/write overlapped
+       * range, so no need to sync */
+      lima_flush_job_accessing_bo(ctx, bo, usage & PIPE_MAP_WRITE);
+
+      unsigned op = usage & PIPE_MAP_WRITE ?
+         LIMA_GEM_WAIT_WRITE : LIMA_GEM_WAIT_READ;
+      lima_bo_wait(bo, op, PIPE_TIMEOUT_INFINITE);
    }
 
    if (!lima_bo_map(bo))
@@ -596,7 +644,7 @@ lima_transfer_map(struct pipe_context *pctx,
 
       trans->staging = malloc(ptrans->stride * ptrans->box.height * ptrans->box.depth);
 
-      if (usage & PIPE_TRANSFER_READ) {
+      if (usage & PIPE_MAP_READ) {
          unsigned i;
          for (i = 0; i < ptrans->box.depth; i++)
             panfrost_load_tiled_image(
@@ -611,15 +659,15 @@ lima_transfer_map(struct pipe_context *pctx,
 
       return trans->staging;
    } else {
-      unsigned dpw = PIPE_TRANSFER_MAP_DIRECTLY | PIPE_TRANSFER_WRITE |
-                     PIPE_TRANSFER_PERSISTENT;
+      unsigned dpw = PIPE_MAP_DIRECTLY | PIPE_MAP_WRITE |
+                     PIPE_MAP_PERSISTENT;
       if ((usage & dpw) == dpw && res->index_cache)
          return NULL;
 
       ptrans->stride = res->levels[level].stride;
       ptrans->layer_stride = res->levels[level].layer_stride;
 
-      if ((usage & PIPE_TRANSFER_WRITE) && (usage & PIPE_TRANSFER_MAP_DIRECTLY))
+      if ((usage & PIPE_MAP_WRITE) && (usage & PIPE_MAP_DIRECTLY))
          panfrost_minmax_cache_invalidate(res->index_cache, ptrans);
 
       return bo->map + res->levels[level].offset +
@@ -642,7 +690,6 @@ static void
 lima_transfer_unmap_inner(struct lima_context *ctx,
                           struct pipe_transfer *ptrans)
 {
-
    struct lima_resource *res = lima_resource(ptrans->resource);
    struct lima_transfer *trans = lima_transfer(ptrans);
    struct lima_bo *bo = res->bo;
@@ -650,7 +697,7 @@ lima_transfer_unmap_inner(struct lima_context *ctx,
 
    if (trans->staging) {
       pres = &res->base;
-      if (trans->base.usage & PIPE_TRANSFER_WRITE) {
+      if (trans->base.usage & PIPE_MAP_WRITE) {
          unsigned i;
          for (i = 0; i < trans->base.box.depth; i++)
             panfrost_store_tiled_image(
@@ -689,8 +736,8 @@ lima_util_blitter_save_states(struct lima_context *ctx)
    util_blitter_save_depth_stencil_alpha(ctx->blitter, (void *)ctx->zsa);
    util_blitter_save_stencil_ref(ctx->blitter, &ctx->stencil_ref);
    util_blitter_save_rasterizer(ctx->blitter, (void *)ctx->rasterizer);
-   util_blitter_save_fragment_shader(ctx->blitter, ctx->fs);
-   util_blitter_save_vertex_shader(ctx->blitter, ctx->vs);
+   util_blitter_save_fragment_shader(ctx->blitter, ctx->uncomp_fs);
+   util_blitter_save_vertex_shader(ctx->blitter, ctx->uncomp_vs);
    util_blitter_save_viewport(ctx->blitter,
                               &ctx->viewport.transform);
    util_blitter_save_scissor(ctx->blitter, &ctx->scissor);
@@ -761,12 +808,12 @@ lima_texture_subdata(struct pipe_context *pctx,
       return;
    }
 
-   assert(!(usage & PIPE_TRANSFER_READ));
+   assert(!(usage & PIPE_MAP_READ));
 
    struct lima_transfer t = {
       .base = {
          .resource = prsc,
-         .usage = PIPE_TRANSFER_WRITE,
+         .usage = PIPE_MAP_WRITE,
          .level = level,
          .box = *box,
          .stride = stride,

@@ -159,7 +159,10 @@ vlVaGetConfigAttributes(VADriverContextP ctx, VAProfile profile, VAEntrypoint en
             value = VA_RC_CQP | VA_RC_CBR | VA_RC_VBR;
             break;
          case VAConfigAttribEncPackedHeaders:
-            value = 0;
+            value = VA_ENC_PACKED_HEADER_NONE;
+            if (u_reduce_video_profile(ProfileToPipe(profile)) == PIPE_VIDEO_FORMAT_MPEG4_AVC ||
+                u_reduce_video_profile(ProfileToPipe(profile)) == PIPE_VIDEO_FORMAT_HEVC)
+               value |= VA_ENC_PACKED_HEADER_SEQUENCE;
             break;
          case VAConfigAttribEncMaxRefFrames:
             value = 1;
@@ -299,11 +302,11 @@ vlVaCreateConfig(VADriverContextP ctx, VAProfile profile, VAEntrypoint entrypoin
       }
       if (attrib_list[i].type == VAConfigAttribRateControl) {
          if (attrib_list[i].value == VA_RC_CBR)
-            config->rc = PIPE_H264_ENC_RATE_CONTROL_METHOD_CONSTANT;
+            config->rc = PIPE_H2645_ENC_RATE_CONTROL_METHOD_CONSTANT;
          else if (attrib_list[i].value == VA_RC_VBR)
-            config->rc = PIPE_H264_ENC_RATE_CONTROL_METHOD_VARIABLE;
+            config->rc = PIPE_H2645_ENC_RATE_CONTROL_METHOD_VARIABLE;
          else if (attrib_list[i].value == VA_RC_CQP)
-            config->rc = PIPE_H264_ENC_RATE_CONTROL_METHOD_DISABLE;
+            config->rc = PIPE_H2645_ENC_RATE_CONTROL_METHOD_DISABLE;
          else {
             FREE(config);
             return VA_STATUS_ERROR_INVALID_VALUE;

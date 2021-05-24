@@ -38,7 +38,9 @@ GPRValue::GPRValue(uint32_t sel, uint32_t chan, int base_offset):
    Value(Value::gpr, chan),
    m_sel(sel),
    m_base_offset(base_offset),
-   m_input(false)
+   m_input(false),
+   m_pin_to_channel(false),
+   m_keep_alive(false)
 {
 }
 
@@ -46,7 +48,9 @@ GPRValue::GPRValue(uint32_t sel, uint32_t chan):
    Value(Value::gpr, chan),
    m_sel(sel),
    m_base_offset(0),
-   m_input(false)
+   m_input(false),
+   m_pin_to_channel(false),
+   m_keep_alive(false)
 {
 }
 
@@ -275,8 +279,16 @@ GPRArray::GPRArray(int base, int size, int mask, int frac):
    m_values.resize(size);
    for (int i = 0; i < size; ++i) {
       for (int j = 0; j < 4; ++j) {
-         if (mask & (1 << j))
-            m_values[i].set_reg_i(j, PValue(new GPRValue(base + i, j)));
+         if (mask & (1 << j)) {
+            auto gpr = new GPRValue(base + i, j);
+            /* If we want to use sb, we have to keep arrays
+             * alife for the whole shader range, otherwise the sb scheduler
+             * thinks is not capable to rename non-array uses of these registers */
+            gpr->set_as_input();
+            gpr->set_keep_alive();
+            m_values[i].set_reg_i(j, PValue(gpr));
+
+         }
       }
    }
 }

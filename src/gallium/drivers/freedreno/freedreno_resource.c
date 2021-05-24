@@ -34,6 +34,8 @@
 #include "util/set.h"
 #include "util/u_drm.h"
 
+#include "decode/util.h"
+
 #include "freedreno_resource.h"
 #include "freedreno_batch_cache.h"
 #include "freedreno_blitter.h"
@@ -66,8 +68,9 @@
  */
 static void
 rebind_resource_in_ctx(struct fd_context *ctx, struct fd_resource *rsc)
+	assert_dt
 {
-	struct pipe_resource *prsc = &rsc->base;
+	struct pipe_resource *prsc = &rsc->b.b;
 
 	if (ctx->rebind_resource)
 		ctx->rebind_resource(ctx, rsc);
@@ -77,7 +80,7 @@ rebind_resource_in_ctx(struct fd_context *ctx, struct fd_resource *rsc)
 		struct fd_vertexbuf_stateobj *vb = &ctx->vtx.vertexbuf;
 		for (unsigned i = 0; i < vb->count && !(ctx->dirty & FD_DIRTY_VTXBUF); i++) {
 			if (vb->vb[i].buffer.resource == prsc)
-				ctx->dirty |= FD_DIRTY_VTXBUF;
+				fd_context_dirty(ctx, FD_DIRTY_VTXBUF);
 		}
 	}
 
@@ -98,8 +101,7 @@ rebind_resource_in_ctx(struct fd_context *ctx, struct fd_resource *rsc)
 			const unsigned num_ubos = util_last_bit(cb->enabled_mask);
 			for (unsigned i = 1; i < num_ubos; i++) {
 				if (cb->cb[i].buffer == prsc) {
-					ctx->dirty_shader[stage] |= FD_DIRTY_SHADER_CONST;
-					ctx->dirty |= FD_DIRTY_CONST;
+					fd_context_dirty_shader(ctx, stage, FD_DIRTY_SHADER_CONST);
 					break;
 				}
 			}
@@ -111,8 +113,7 @@ rebind_resource_in_ctx(struct fd_context *ctx, struct fd_resource *rsc)
 			struct fd_texture_stateobj *tex = &ctx->tex[stage];
 			for (unsigned i = 0; i < tex->num_textures; i++) {
 				if (tex->textures[i] && (tex->textures[i]->texture == prsc)) {
-					ctx->dirty_shader[stage] |= FD_DIRTY_SHADER_TEX;
-					ctx->dirty |= FD_DIRTY_TEX;
+					fd_context_dirty_shader(ctx, stage, FD_DIRTY_SHADER_TEX);
 					break;
 				}
 			}
@@ -125,8 +126,7 @@ rebind_resource_in_ctx(struct fd_context *ctx, struct fd_resource *rsc)
 			const unsigned num_images = util_last_bit(si->enabled_mask);
 			for (unsigned i = 0; i < num_images; i++) {
 				if (si->si[i].resource == prsc) {
-					ctx->dirty_shader[stage] |= FD_DIRTY_SHADER_IMAGE;
-					ctx->dirty |= FD_DIRTY_IMAGE;
+					fd_context_dirty_shader(ctx, stage, FD_DIRTY_SHADER_IMAGE);
 					break;
 				}
 			}
@@ -139,8 +139,7 @@ rebind_resource_in_ctx(struct fd_context *ctx, struct fd_resource *rsc)
 			const unsigned num_ssbos = util_last_bit(sb->enabled_mask);
 			for (unsigned i = 0; i < num_ssbos; i++) {
 				if (sb->sb[i].buffer == prsc) {
-					ctx->dirty_shader[stage] |= FD_DIRTY_SHADER_SSBO;
-					ctx->dirty |= FD_DIRTY_SSBO;
+					fd_context_dirty_shader(ctx, stage, FD_DIRTY_SHADER_SSBO);
 					break;
 				}
 			}
@@ -150,8 +149,9 @@ rebind_resource_in_ctx(struct fd_context *ctx, struct fd_resource *rsc)
 
 static void
 rebind_resource(struct fd_resource *rsc)
+	assert_dt
 {
-	struct fd_screen *screen = fd_screen(rsc->base.screen);
+	struct fd_screen *screen = fd_screen(rsc->b.b.screen);
 
 	fd_screen_lock(screen);
 	fd_resource_lock(rsc);
@@ -164,11 +164,37 @@ rebind_resource(struct fd_resource *rsc)
 	fd_screen_unlock(screen);
 }
 
+static inline void
+fd_resource_set_bo(struct fd_resource *rsc, struct fd_bo *bo)
+{
+	struct fd_screen *screen = fd_screen(rsc->b.b.screen);
+
+	rsc->bo = bo;
+	rsc->seqno = p_atomic_inc_return(&screen->rsc_seqno);
+}
+
+int
+__fd_resource_wait(struct fd_context *ctx, struct fd_resource *rsc,
+		unsigned op, const char *func)
+{
+	if (op & DRM_FREEDRENO_PREP_NOSYNC)
+		return fd_bo_cpu_prep(rsc->bo, ctx->pipe, op);
+
+	int ret;
+
+	perf_time_ctx(ctx, 10000, "%s: a busy \"%"PRSC_FMT"\" BO stalled",
+				func, PRSC_ARGS(&rsc->b.b)) {
+		ret = fd_bo_cpu_prep(rsc->bo, ctx->pipe, op);
+	}
+
+	return ret;
+}
+
 static void
 realloc_bo(struct fd_resource *rsc, uint32_t size)
 {
-	struct pipe_resource *prsc = &rsc->base;
-	struct fd_screen *screen = fd_screen(rsc->base.screen);
+	struct pipe_resource *prsc = &rsc->b.b;
+	struct fd_screen *screen = fd_screen(rsc->b.b.screen);
 	uint32_t flags = DRM_FREEDRENO_GEM_CACHE_WCOMBINE |
 			DRM_FREEDRENO_GEM_TYPE_KMEM |
 			COND(prsc->bind & PIPE_BIND_SCANOUT, DRM_FREEDRENO_GEM_SCANOUT);
@@ -181,8 +207,9 @@ realloc_bo(struct fd_resource *rsc, uint32_t size)
 	if (rsc->bo)
 		fd_bo_del(rsc->bo);
 
-	rsc->bo = fd_bo_new(screen->dev, size, flags, "%ux%ux%u@%u:%x",
+	struct fd_bo *bo = fd_bo_new(screen->dev, size, flags, "%ux%ux%u@%u:%x",
 			prsc->width0, prsc->height0, prsc->depth0, rsc->layout.cpp, prsc->bind);
+	fd_resource_set_bo(rsc, bo);
 
 	/* Zero out the UBWC area on allocation.  This fixes intermittent failures
 	 * with UBWC, which I suspect are due to the HW having a hard time
@@ -192,17 +219,16 @@ realloc_bo(struct fd_resource *rsc, uint32_t size)
 	 * around the issue, but any memset value seems to.
 	 */
 	if (rsc->layout.ubwc) {
-		void *buf = fd_bo_map(rsc->bo);
-		memset(buf, 0, rsc->layout.slices[0].offset);
+		rsc->needs_ubwc_clear = true;
 	}
 
-	rsc->seqno = p_atomic_inc_return(&screen->rsc_seqno);
 	util_range_set_empty(&rsc->valid_buffer_range);
 	fd_bc_invalidate_resource(rsc, true);
 }
 
 static void
 do_blit(struct fd_context *ctx, const struct pipe_blit_info *blit, bool fallback)
+	assert_dt
 {
 	struct pipe_context *pctx = &ctx->base;
 
@@ -214,6 +240,54 @@ do_blit(struct fd_context *ctx, const struct pipe_blit_info *blit, bool fallback
 				blit->dst.box.y, blit->dst.box.z,
 				blit->src.resource, blit->src.level, &blit->src.box);
 	}
+}
+
+/**
+ * Replace the storage of dst with src.  This is only used by TC in the
+ * DISCARD_WHOLE_RESOURCE path, and src is a freshly allocated buffer.
+ */
+void
+fd_replace_buffer_storage(struct pipe_context *pctx, struct pipe_resource *pdst,
+		struct pipe_resource *psrc)
+{
+	struct fd_context  *ctx = fd_context(pctx);
+	struct fd_resource *dst = fd_resource(pdst);
+	struct fd_resource *src = fd_resource(psrc);
+
+	DBG("pdst=%p, psrc=%p", pdst, psrc);
+
+	/* This should only be called with buffers.. which side-steps some tricker
+	 * cases, like a rsc that is in a batch-cache key...
+	 */
+	assert(pdst->target == PIPE_BUFFER);
+	assert(psrc->target == PIPE_BUFFER);
+	assert(dst->track->bc_batch_mask == 0);
+	assert(src->track->bc_batch_mask == 0);
+	assert(src->track->batch_mask == 0);
+	assert(src->track->write_batch == NULL);
+	assert(memcmp(&dst->layout, &src->layout, sizeof(dst->layout)) == 0);
+
+	/* get rid of any references that batch-cache might have to us (which
+	 * should empty/destroy rsc->batches hashset)
+	 *
+	 * Note that we aren't actually destroying dst, but we are replacing
+	 * it's storage so we want to go thru the same motions of decoupling
+	 * it's batch connections.
+	 */
+	fd_bc_invalidate_resource(dst, true);
+	rebind_resource(dst);
+
+	fd_screen_lock(ctx->screen);
+
+	fd_bo_del(dst->bo);
+	dst->bo = fd_bo_ref(src->bo);
+
+	fd_resource_tracking_reference(&dst->track, src->track);
+	src->is_replacement = true;
+
+	dst->seqno = p_atomic_inc_return(&ctx->screen->rsc_seqno);
+
+	fd_screen_unlock(ctx->screen);
 }
 
 static void
@@ -228,9 +302,10 @@ flush_resource(struct fd_context *ctx, struct fd_resource *rsc, unsigned usage);
 static bool
 fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 		unsigned level, const struct pipe_box *box, uint64_t modifier)
+	assert_dt
 {
 	struct pipe_context *pctx = &ctx->base;
-	struct pipe_resource *prsc = &rsc->base;
+	struct pipe_resource *prsc = &rsc->b.b;
 	bool fallback = false;
 
 	if (prsc->next)
@@ -248,7 +323,7 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 	 * since that defeats the purpose of shadowing, but this is a
 	 * case where we'd have to flush anyways.
 	 */
-	if (rsc->write_batch == ctx->batch)
+	if (rsc->track->write_batch == ctx->batch)
 		flush_resource(ctx, rsc, 0);
 
 	/* TODO: somehow munge dimensions and format to copy unsupported
@@ -299,12 +374,11 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 	 */
 	struct fd_resource *shadow = fd_resource(pshadow);
 
-	DBG("shadow: %p (%d) -> %p (%d)\n", rsc, rsc->base.reference.count,
-			shadow, shadow->base.reference.count);
+	DBG("shadow: %p (%d, %p) -> %p (%d, %p)", rsc, rsc->b.b.reference.count, rsc->track,
+			shadow, shadow->b.b.reference.count, shadow->track);
 
 	/* TODO valid_buffer_range?? */
-	swap(rsc->bo,        shadow->bo);
-	swap(rsc->write_batch,   shadow->write_batch);
+	swap(rsc->bo,     shadow->bo);
 	swap(rsc->layout, shadow->layout);
 	rsc->seqno = p_atomic_inc_return(&ctx->screen->rsc_seqno);
 
@@ -312,14 +386,14 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 	 * by any batches, but the existing rsc (probably) is.  We need to
 	 * transfer those references over:
 	 */
-	debug_assert(shadow->batch_mask == 0);
+	debug_assert(shadow->track->batch_mask == 0);
 	struct fd_batch *batch;
-	foreach_batch(batch, &ctx->screen->batch_cache, rsc->batch_mask) {
+	foreach_batch (batch, &ctx->screen->batch_cache, rsc->track->batch_mask) {
 		struct set_entry *entry = _mesa_set_search(batch->resources, rsc);
 		_mesa_set_remove(batch->resources, entry);
 		_mesa_set_add(batch->resources, shadow);
 	}
-	swap(rsc->batch_mask, shadow->batch_mask);
+	swap(rsc->track, shadow->track);
 
 	fd_screen_unlock(ctx->screen);
 
@@ -335,6 +409,10 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 		blit.dst.field = (val);      \
 		blit.src.field = (val);      \
 	} while (0)
+
+	/* Disable occlusion queries during shadow blits. */
+	bool saved_active_queries = ctx->active_queries;
+	pctx->set_active_query_state(pctx, false);
 
 	/* blit the other levels in their entirety: */
 	for (unsigned l = 0; l <= prsc->last_level; l++) {
@@ -387,6 +465,8 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 		}
 	}
 
+	pctx->set_active_query_state(pctx, saved_active_queries);
+
 	ctx->in_shadow = false;
 
 	pipe_resource_reference(&pshadow, NULL);
@@ -403,6 +483,8 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 void
 fd_resource_uncompress(struct fd_context *ctx, struct fd_resource *rsc)
 {
+	tc_assert_driver_thread(ctx->tc);
+
 	bool success =
 		fd_try_shadow_resource(ctx, rsc, 0, NULL, FD_FORMAT_MOD_QCOM_TILED);
 
@@ -410,12 +492,23 @@ fd_resource_uncompress(struct fd_context *ctx, struct fd_resource *rsc)
 	debug_assert(success);
 }
 
+/**
+ * Debug helper to hexdump a resource.
+ */
+void
+fd_resource_dump(struct fd_resource *rsc, const char *name)
+{
+	fd_bo_cpu_prep(rsc->bo, NULL, DRM_FREEDRENO_PREP_READ);
+	printf("%s: \n", name);
+	dump_hex(fd_bo_map(rsc->bo), fd_bo_size(rsc->bo));
+}
+
 static struct fd_resource *
 fd_alloc_staging(struct fd_context *ctx, struct fd_resource *rsc,
 		unsigned level, const struct pipe_box *box)
 {
 	struct pipe_context *pctx = &ctx->base;
-	struct pipe_resource tmpl = rsc->base;
+	struct pipe_resource tmpl = rsc->b.b;
 
 	tmpl.width0  = box->width;
 	tmpl.height0 = box->height;
@@ -433,6 +526,7 @@ fd_alloc_staging(struct fd_context *ctx, struct fd_resource *rsc,
 	}
 	tmpl.last_level = 0;
 	tmpl.bind |= PIPE_BIND_LINEAR;
+	tmpl.usage = PIPE_USAGE_STAGING;
 
 	struct pipe_resource *pstaging =
 		pctx->screen->resource_create(pctx->screen, &tmpl);
@@ -444,14 +538,15 @@ fd_alloc_staging(struct fd_context *ctx, struct fd_resource *rsc,
 
 static void
 fd_blit_from_staging(struct fd_context *ctx, struct fd_transfer *trans)
+	assert_dt
 {
-	struct pipe_resource *dst = trans->base.resource;
+	struct pipe_resource *dst = trans->b.b.resource;
 	struct pipe_blit_info blit = {};
 
 	blit.dst.resource = dst;
 	blit.dst.format   = dst->format;
-	blit.dst.level    = trans->base.level;
-	blit.dst.box      = trans->base.box;
+	blit.dst.level    = trans->b.b.level;
+	blit.dst.box      = trans->b.b.box;
 	blit.src.resource = trans->staging_prsc;
 	blit.src.format   = trans->staging_prsc->format;
 	blit.src.level    = 0;
@@ -464,14 +559,15 @@ fd_blit_from_staging(struct fd_context *ctx, struct fd_transfer *trans)
 
 static void
 fd_blit_to_staging(struct fd_context *ctx, struct fd_transfer *trans)
+	assert_dt
 {
-	struct pipe_resource *src = trans->base.resource;
+	struct pipe_resource *src = trans->b.b.resource;
 	struct pipe_blit_info blit = {};
 
 	blit.src.resource = src;
 	blit.src.format   = src->format;
-	blit.src.level    = trans->base.level;
-	blit.src.box      = trans->base.box;
+	blit.src.level    = trans->b.b.level;
+	blit.src.box      = trans->b.b.box;
 	blit.dst.resource = trans->staging_prsc;
 	blit.dst.format   = trans->staging_prsc->format;
 	blit.dst.level    = 0;
@@ -489,21 +585,22 @@ static void fd_resource_transfer_flush_region(struct pipe_context *pctx,
 	struct fd_resource *rsc = fd_resource(ptrans->resource);
 
 	if (ptrans->resource->target == PIPE_BUFFER)
-		util_range_add(&rsc->base, &rsc->valid_buffer_range,
+		util_range_add(&rsc->b.b, &rsc->valid_buffer_range,
 					   ptrans->box.x + box->x,
 					   ptrans->box.x + box->x + box->width);
 }
 
 static void
 flush_resource(struct fd_context *ctx, struct fd_resource *rsc, unsigned usage)
+	assert_dt
 {
 	struct fd_batch *write_batch = NULL;
 
 	fd_screen_lock(ctx->screen);
-	fd_batch_reference_locked(&write_batch, rsc->write_batch);
+	fd_batch_reference_locked(&write_batch, rsc->track->write_batch);
 	fd_screen_unlock(ctx->screen);
 
-	if (usage & PIPE_TRANSFER_WRITE) {
+	if (usage & PIPE_MAP_WRITE) {
 		struct fd_batch *batch, *batches[32] = {};
 		uint32_t batch_mask;
 
@@ -513,7 +610,7 @@ flush_resource(struct fd_context *ctx, struct fd_resource *rsc, unsigned usage)
 		 * we must first grab references under a lock, then flush.
 		 */
 		fd_screen_lock(ctx->screen);
-		batch_mask = rsc->batch_mask;
+		batch_mask = rsc->track->batch_mask;
 		foreach_batch(batch, &ctx->screen->batch_cache, batch_mask)
 			fd_batch_reference_locked(&batches[batch->idx], batch);
 		fd_screen_unlock(ctx->screen);
@@ -524,87 +621,128 @@ flush_resource(struct fd_context *ctx, struct fd_resource *rsc, unsigned usage)
 		foreach_batch(batch, &ctx->screen->batch_cache, batch_mask) {
 			fd_batch_reference(&batches[batch->idx], NULL);
 		}
-		assert(rsc->batch_mask == 0);
+		assert(rsc->track->batch_mask == 0);
 	} else if (write_batch) {
 		fd_batch_flush(write_batch);
 	}
 
 	fd_batch_reference(&write_batch, NULL);
 
-	assert(!rsc->write_batch);
+	assert(!rsc->track->write_batch);
 }
 
 static void
 fd_flush_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
+	in_dt
 {
-	flush_resource(fd_context(pctx), fd_resource(prsc), PIPE_TRANSFER_READ);
+	flush_resource(fd_context(pctx), fd_resource(prsc), PIPE_MAP_READ);
 }
 
 static void
 fd_resource_transfer_unmap(struct pipe_context *pctx,
 		struct pipe_transfer *ptrans)
+	in_dt  /* TODO for threaded-ctx we'll need to split out unsynchronized path */
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct fd_resource *rsc = fd_resource(ptrans->resource);
 	struct fd_transfer *trans = fd_transfer(ptrans);
 
 	if (trans->staging_prsc) {
-		if (ptrans->usage & PIPE_TRANSFER_WRITE)
+		if (ptrans->usage & PIPE_MAP_WRITE)
 			fd_blit_from_staging(ctx, trans);
 		pipe_resource_reference(&trans->staging_prsc, NULL);
 	}
 
-	if (!(ptrans->usage & PIPE_TRANSFER_UNSYNCHRONIZED)) {
+	if (!(ptrans->usage & PIPE_MAP_UNSYNCHRONIZED)) {
 		fd_bo_cpu_fini(rsc->bo);
 	}
 
-	util_range_add(&rsc->base, &rsc->valid_buffer_range,
+	util_range_add(&rsc->b.b, &rsc->valid_buffer_range,
 				   ptrans->box.x,
 				   ptrans->box.x + ptrans->box.width);
 
 	pipe_resource_reference(&ptrans->resource, NULL);
+
+	assert(trans->b.staging == NULL); /* for threaded context only */
+
+	/* Don't use pool_transfers_unsync. We are always in the driver
+	 * thread. Freeing an object into a different pool is allowed.
+	 */
 	slab_free(&ctx->transfer_pool, ptrans);
 }
 
+static unsigned
+translate_usage(unsigned usage)
+{
+	uint32_t op = 0;
+
+	if (usage & PIPE_MAP_READ)
+		op |= DRM_FREEDRENO_PREP_READ;
+
+	if (usage & PIPE_MAP_WRITE)
+		op |= DRM_FREEDRENO_PREP_WRITE;
+
+	return op;
+}
+
+static void
+invalidate_resource(struct fd_resource *rsc, unsigned usage)
+	assert_dt
+{
+	bool needs_flush = pending(rsc, !!(usage & PIPE_MAP_WRITE));
+	unsigned op = translate_usage(usage);
+
+	if (needs_flush || fd_resource_busy(rsc, op)) {
+		rebind_resource(rsc);
+		realloc_bo(rsc, fd_bo_size(rsc->bo));
+	} else {
+		util_range_set_empty(&rsc->valid_buffer_range);
+	}
+}
+
 static void *
-fd_resource_transfer_map(struct pipe_context *pctx,
+resource_transfer_map_unsync(struct pipe_context *pctx,
 		struct pipe_resource *prsc,
 		unsigned level, unsigned usage,
 		const struct pipe_box *box,
-		struct pipe_transfer **pptrans)
+		struct fd_transfer *trans)
+{
+	struct fd_resource *rsc = fd_resource(prsc);
+	enum pipe_format format = prsc->format;
+	uint32_t offset;
+	char *buf;
+
+	buf = fd_bo_map(rsc->bo);
+	offset =
+		box->y / util_format_get_blockheight(format) * trans->b.b.stride +
+		box->x / util_format_get_blockwidth(format) * rsc->layout.cpp +
+		fd_resource_offset(rsc, level, box->z);
+
+	if (usage & PIPE_MAP_WRITE)
+		rsc->valid = true;
+
+	return buf + offset;
+}
+
+/**
+ * Note, with threaded_context, resource_transfer_map() is only called
+ * in driver thread, but resource_transfer_map_unsync() can be called in
+ * either driver or frontend thread.
+ */
+static void *
+resource_transfer_map(struct pipe_context *pctx,
+		struct pipe_resource *prsc,
+		unsigned level, unsigned usage,
+		const struct pipe_box *box,
+		struct fd_transfer *trans)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct fd_resource *rsc = fd_resource(prsc);
-	struct fd_transfer *trans;
-	struct pipe_transfer *ptrans;
-	enum pipe_format format = prsc->format;
-	uint32_t op = 0;
-	uint32_t offset;
 	char *buf;
 	int ret = 0;
 
-	DBG("prsc=%p, level=%u, usage=%x, box=%dx%d+%d,%d", prsc, level, usage,
-		box->width, box->height, box->x, box->y);
-
-	if ((usage & PIPE_TRANSFER_MAP_DIRECTLY) && rsc->layout.tile_mode) {
-		DBG("CANNOT MAP DIRECTLY!\n");
-		return NULL;
-	}
-
-	ptrans = slab_alloc(&ctx->transfer_pool);
-	if (!ptrans)
-		return NULL;
-
-	/* slab_alloc_st() doesn't zero: */
-	trans = fd_transfer(ptrans);
-	memset(trans, 0, sizeof(*trans));
-
-	pipe_resource_reference(&ptrans->resource, prsc);
-	ptrans->level = level;
-	ptrans->usage = usage;
-	ptrans->box = *box;
-	ptrans->stride = fd_resource_pitch(rsc, level);
-	ptrans->layer_stride = fd_resource_layer_stride(rsc, level);
+	tc_assert_driver_thread(ctx->tc);
 
 	/* we always need a staging texture for tiled buffers:
 	 *
@@ -615,28 +753,26 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 	if (rsc->layout.tile_mode) {
 		struct fd_resource *staging_rsc;
 
+		assert(prsc->target != PIPE_BUFFER);
+
 		staging_rsc = fd_alloc_staging(ctx, rsc, level, box);
 		if (staging_rsc) {
-			// TODO for PIPE_TRANSFER_READ, need to do untiling blit..
-			trans->staging_prsc = &staging_rsc->base;
-			trans->base.stride = fd_resource_pitch(staging_rsc, 0);
-			trans->base.layer_stride = fd_resource_layer_stride(staging_rsc, 0);
+			trans->staging_prsc = &staging_rsc->b.b;
+			trans->b.b.stride = fd_resource_pitch(staging_rsc, 0);
+			trans->b.b.layer_stride = fd_resource_layer_stride(staging_rsc, 0);
 			trans->staging_box = *box;
 			trans->staging_box.x = 0;
 			trans->staging_box.y = 0;
 			trans->staging_box.z = 0;
 
-			if (usage & PIPE_TRANSFER_READ) {
+			if (usage & PIPE_MAP_READ) {
 				fd_blit_to_staging(ctx, trans);
 
-				fd_bo_cpu_prep(staging_rsc->bo, ctx->pipe,
+				fd_resource_wait(ctx, staging_rsc,
 						DRM_FREEDRENO_PREP_READ);
 			}
 
 			buf = fd_bo_map(staging_rsc->bo);
-			offset = 0;
-
-			*pptrans = ptrans;
 
 			ctx->stats.staging_uploads++;
 
@@ -644,42 +780,24 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 		}
 	}
 
-	if (ctx->in_shadow && !(usage & PIPE_TRANSFER_READ))
-		usage |= PIPE_TRANSFER_UNSYNCHRONIZED;
-
-	if (usage & PIPE_TRANSFER_READ)
-		op |= DRM_FREEDRENO_PREP_READ;
-
-	if (usage & PIPE_TRANSFER_WRITE)
-		op |= DRM_FREEDRENO_PREP_WRITE;
-
-	bool needs_flush = pending(rsc, !!(usage & PIPE_TRANSFER_WRITE));
-
-	if (usage & PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE) {
-		if (needs_flush || fd_resource_busy(rsc, op)) {
-			rebind_resource(rsc);
-			realloc_bo(rsc, fd_bo_size(rsc->bo));
-		}
-	} else if ((usage & PIPE_TRANSFER_WRITE) &&
-			   prsc->target == PIPE_BUFFER &&
-			   !util_ranges_intersect(&rsc->valid_buffer_range,
-									  box->x, box->x + box->width)) {
-		/* We are trying to write to a previously uninitialized range. No need
-		 * to wait.
-		 */
-	} else if (!(usage & PIPE_TRANSFER_UNSYNCHRONIZED)) {
+	if (usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) {
+		invalidate_resource(rsc, usage);
+	} else {
 		struct fd_batch *write_batch = NULL;
 
 		/* hold a reference, so it doesn't disappear under us: */
-		fd_context_lock(ctx);
-		fd_batch_reference_locked(&write_batch, rsc->write_batch);
-		fd_context_unlock(ctx);
+		fd_screen_lock(ctx->screen);
+		fd_batch_reference_locked(&write_batch, rsc->track->write_batch);
+		fd_screen_unlock(ctx->screen);
 
-		if ((usage & PIPE_TRANSFER_WRITE) && write_batch &&
+		if ((usage & PIPE_MAP_WRITE) && write_batch &&
 				write_batch->back_blit) {
 			/* if only thing pending is a back-blit, we can discard it: */
 			fd_batch_reset(write_batch);
 		}
+
+		unsigned op = translate_usage(usage);
+		bool needs_flush = pending(rsc, !!(usage & PIPE_MAP_WRITE));
 
 		/* If the GPU is writing to the resource, or if it is reading from the
 		 * resource and we're trying to write to it, flush the renders.
@@ -693,8 +811,10 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 		 * ie. we only *don't* want to go down this path if the blit
 		 * will trigger a flush!
 		 */
-		if (ctx->screen->reorder && busy && !(usage & PIPE_TRANSFER_READ) &&
-				(usage & PIPE_TRANSFER_DISCARD_RANGE)) {
+		if (ctx->screen->reorder && busy && !(usage & PIPE_MAP_READ) &&
+				(usage & PIPE_MAP_DISCARD_RANGE)) {
+			assert(!(usage & TC_TRANSFER_MAP_NO_INVALIDATE));
+
 			/* try shadowing only if it avoids a flush, otherwise staging would
 			 * be better:
 			 */
@@ -717,18 +837,15 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 				 */
 				staging_rsc = fd_alloc_staging(ctx, rsc, level, box);
 				if (staging_rsc) {
-					trans->staging_prsc = &staging_rsc->base;
-					trans->base.stride = fd_resource_pitch(staging_rsc, 0);
-					trans->base.layer_stride =
+					trans->staging_prsc = &staging_rsc->b.b;
+					trans->b.b.stride = fd_resource_pitch(staging_rsc, 0);
+					trans->b.b.layer_stride =
 						fd_resource_layer_stride(staging_rsc, 0);
 					trans->staging_box = *box;
 					trans->staging_box.x = 0;
 					trans->staging_box.y = 0;
 					trans->staging_box.z = 0;
 					buf = fd_bo_map(staging_rsc->bo);
-					offset = 0;
-
-					*pptrans = ptrans;
 
 					fd_batch_reference(&write_batch, NULL);
 
@@ -751,28 +868,105 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 		 * completed.
 		 */
 		if (busy) {
-			ret = fd_bo_cpu_prep(rsc->bo, ctx->pipe, op);
+			ret = fd_resource_wait(ctx, rsc, op);
 			if (ret)
-				goto fail;
+				return NULL;
 		}
 	}
 
-	buf = fd_bo_map(rsc->bo);
-	offset =
-		box->y / util_format_get_blockheight(format) * ptrans->stride +
-		box->x / util_format_get_blockwidth(format) * rsc->layout.cpp +
-		fd_resource_offset(rsc, level, box->z);
+	return resource_transfer_map_unsync(pctx, prsc, level, usage, box, trans);
+}
 
-	if (usage & PIPE_TRANSFER_WRITE)
-		rsc->valid = true;
+static unsigned
+improve_transfer_map_usage(struct fd_context *ctx, struct fd_resource *rsc,
+		unsigned usage, const struct pipe_box *box)
+	/* Not *strictly* true, but the access to things that must only be in driver-
+	 * thread are protected by !(usage & TC_TRANSFER_MAP_THREADED_UNSYNC):
+	 */
+	in_dt
+{
+	if (usage & TC_TRANSFER_MAP_NO_INVALIDATE) {
+		usage &= ~PIPE_MAP_DISCARD_WHOLE_RESOURCE;
+		usage &= ~PIPE_MAP_DISCARD_RANGE;
+	}
 
-	*pptrans = ptrans;
+	if (usage & TC_TRANSFER_MAP_THREADED_UNSYNC)
+		usage |= PIPE_MAP_UNSYNCHRONIZED;
 
-	return buf + offset;
+	if (!(usage & (TC_TRANSFER_MAP_NO_INFER_UNSYNCHRONIZED |
+			PIPE_MAP_UNSYNCHRONIZED))) {
+		if (ctx->in_shadow && !(usage & PIPE_MAP_READ)) {
+			usage |= PIPE_MAP_UNSYNCHRONIZED;
+		} else if ((usage & PIPE_MAP_WRITE) &&
+				   (rsc->b.b.target == PIPE_BUFFER) &&
+				   !util_ranges_intersect(&rsc->valid_buffer_range,
+										  box->x, box->x + box->width)) {
+			/* We are trying to write to a previously uninitialized range. No need
+			 * to synchronize.
+			 */
+			usage |= PIPE_MAP_UNSYNCHRONIZED;
+		}
+	}
 
-fail:
-	fd_resource_transfer_unmap(pctx, ptrans);
-	return NULL;
+	return usage;
+}
+
+static void *
+fd_resource_transfer_map(struct pipe_context *pctx,
+		struct pipe_resource *prsc,
+		unsigned level, unsigned usage,
+		const struct pipe_box *box,
+		struct pipe_transfer **pptrans)
+{
+	struct fd_context *ctx = fd_context(pctx);
+	struct fd_resource *rsc = fd_resource(prsc);
+	struct fd_transfer *trans;
+	struct pipe_transfer *ptrans;
+
+	DBG("prsc=%p, level=%u, usage=%x, box=%dx%d+%d,%d", prsc, level, usage,
+		box->width, box->height, box->x, box->y);
+
+	if ((usage & PIPE_MAP_DIRECTLY) && rsc->layout.tile_mode) {
+		DBG("CANNOT MAP DIRECTLY!\n");
+		return NULL;
+	}
+
+	if (usage & TC_TRANSFER_MAP_THREADED_UNSYNC) {
+		ptrans = slab_alloc(&ctx->transfer_pool_unsync);
+	} else {
+		ptrans = slab_alloc(&ctx->transfer_pool);
+	}
+
+	if (!ptrans)
+		return NULL;
+
+	/* slab_alloc_st() doesn't zero: */
+	trans = fd_transfer(ptrans);
+	memset(trans, 0, sizeof(*trans));
+
+	usage = improve_transfer_map_usage(ctx, rsc, usage, box);
+
+	pipe_resource_reference(&ptrans->resource, prsc);
+	ptrans->level = level;
+	ptrans->usage = usage;
+	ptrans->box = *box;
+	ptrans->stride = fd_resource_pitch(rsc, level);
+	ptrans->layer_stride = fd_resource_layer_stride(rsc, level);
+
+	void *ret;
+	if (usage & PIPE_MAP_UNSYNCHRONIZED) {
+		ret = resource_transfer_map_unsync(pctx, prsc, level, usage, box, trans);
+	} else {
+		ret = resource_transfer_map(pctx, prsc, level, usage, box, trans);
+	}
+
+	if (ret) {
+		*pptrans = ptrans;
+	} else {
+		fd_resource_transfer_unmap(pctx, ptrans);
+	}
+
+	return ret;
 }
 
 static void
@@ -780,14 +974,22 @@ fd_resource_destroy(struct pipe_screen *pscreen,
 		struct pipe_resource *prsc)
 {
 	struct fd_resource *rsc = fd_resource(prsc);
-	fd_bc_invalidate_resource(rsc, true);
+
+	if (!rsc->is_replacement)
+		fd_bc_invalidate_resource(rsc, true);
 	if (rsc->bo)
 		fd_bo_del(rsc->bo);
+	if (rsc->lrz)
+		fd_bo_del(rsc->lrz);
 	if (rsc->scanout)
 		renderonly_scanout_destroy(rsc->scanout, fd_screen(pscreen)->ro);
 
+	threaded_resource_deinit(prsc);
+
 	util_range_destroy(&rsc->valid_buffer_range);
 	simple_mtx_destroy(&rsc->lock);
+	fd_resource_tracking_reference(&rsc->track, NULL);
+
 	FREE(rsc);
 }
 
@@ -813,7 +1015,11 @@ fd_resource_get_handle(struct pipe_screen *pscreen,
 {
 	struct fd_resource *rsc = fd_resource(prsc);
 
+	rsc->b.is_shared = true;
+
 	handle->modifier = fd_resource_modifier(rsc);
+
+	DBG("%"PRSC_FMT", modifier=%"PRIx64, PRSC_ARGS(prsc), handle->modifier);
 
 	return fd_screen_bo_get_handle(pscreen, rsc->bo, rsc->scanout,
 			fd_resource_pitch(rsc, 0), handle);
@@ -850,13 +1056,45 @@ fd_resource_layout_init(struct pipe_resource *prsc)
 	layout->cpp_shift = ffs(layout->cpp) - 1;
 }
 
+static struct fd_resource *
+alloc_resource_struct(struct pipe_screen *pscreen, const struct pipe_resource *tmpl)
+{
+	struct fd_resource *rsc = CALLOC_STRUCT(fd_resource);
+
+	if (!rsc)
+		return NULL;
+
+	struct pipe_resource *prsc = &rsc->b.b;
+	*prsc = *tmpl;
+
+	pipe_reference_init(&prsc->reference, 1);
+	prsc->screen = pscreen;
+
+	util_range_init(&rsc->valid_buffer_range);
+	simple_mtx_init(&rsc->lock, mtx_plain);
+
+	rsc->track = CALLOC_STRUCT(fd_resource_tracking);
+	if (!rsc->track) {
+		free(rsc);
+		return NULL;
+	}
+
+	pipe_reference_init(&rsc->track->reference, 1);
+
+	return rsc;
+}
+
 /**
- * Create a new texture object, using the given template info.
+ * Helper that allocates a resource and resolves its layout (but doesn't
+ * allocate its bo).
+ *
+ * It returns a pipe_resource (as fd_resource_create_with_modifiers()
+ * would do), and also bo's minimum required size as an output argument.
  */
 static struct pipe_resource *
-fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
+fd_resource_allocate_and_resolve(struct pipe_screen *pscreen,
 		const struct pipe_resource *tmpl,
-		const uint64_t *modifiers, int count)
+		const uint64_t *modifiers, int count, uint32_t *psize)
 {
 	struct fd_screen *screen = fd_screen(pscreen);
 	struct fd_resource *rsc;
@@ -864,52 +1102,19 @@ fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
 	enum pipe_format format = tmpl->format;
 	uint32_t size;
 
-	/* when using kmsro, scanout buffers are allocated on the display device
-	 * create_with_modifiers() doesn't give us usage flags, so we have to
-	 * assume that all calls with modifiers are scanout-possible
-	 */
-	if (screen->ro &&
-		((tmpl->bind & PIPE_BIND_SCANOUT) ||
-		 !(count == 1 && modifiers[0] == DRM_FORMAT_MOD_INVALID))) {
-		struct pipe_resource scanout_templat = *tmpl;
-		struct renderonly_scanout *scanout;
-		struct winsys_handle handle;
-
-		/* note: alignment is wrong for a6xx */
-		scanout_templat.width0 = align(tmpl->width0, screen->gmem_alignw);
-
-		scanout = renderonly_scanout_for_resource(&scanout_templat,
-												  screen->ro, &handle);
-		if (!scanout)
-			return NULL;
-
-		renderonly_scanout_destroy(scanout, screen->ro);
-
-		assert(handle.type == WINSYS_HANDLE_TYPE_FD);
-		rsc = fd_resource(pscreen->resource_from_handle(pscreen, tmpl,
-														&handle,
-														PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE));
-		close(handle.handle);
-		if (!rsc)
-			return NULL;
-
-		return &rsc->base;
-	}
-
-	rsc = CALLOC_STRUCT(fd_resource);
-	prsc = &rsc->base;
-
-	DBG("%p: target=%d, format=%s, %ux%ux%u, array_size=%u, last_level=%u, "
-			"nr_samples=%u, usage=%u, bind=%x, flags=%x", prsc,
-			tmpl->target, util_format_name(format),
-			tmpl->width0, tmpl->height0, tmpl->depth0,
-			tmpl->array_size, tmpl->last_level, tmpl->nr_samples,
-			tmpl->usage, tmpl->bind, tmpl->flags);
-
+	rsc = alloc_resource_struct(pscreen, tmpl);
 	if (!rsc)
 		return NULL;
 
-	*prsc = *tmpl;
+	prsc = &rsc->b.b;
+
+	DBG("%"PRSC_FMT, PRSC_ARGS(prsc));
+
+	threaded_resource_init(prsc);
+
+	if (tmpl->bind & PIPE_BIND_SHARED)
+		rsc->b.is_shared = true;
+
 	fd_resource_layout_init(prsc);
 
 #define LINEAR \
@@ -918,10 +1123,15 @@ fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
 	 PIPE_BIND_DISPLAY_TARGET)
 
 	bool linear = drm_find_modifier(DRM_FORMAT_MOD_LINEAR, modifiers, count);
-	if (tmpl->bind & LINEAR)
+	if (linear) {
+		perf_debug("%"PRSC_FMT": linear: DRM_FORMAT_MOD_LINEAR requested!", PRSC_ARGS(prsc));
+	} else if (tmpl->bind & LINEAR) {
+		if (tmpl->usage != PIPE_USAGE_STAGING)
+			perf_debug("%"PRSC_FMT": linear: LINEAR bind requested!", PRSC_ARGS(prsc));
 		linear = true;
+	}
 
-	if (fd_mesa_debug & FD_DBG_NOTILE)
+	if (FD_DBG(NOTILE))
 		linear = true;
 
 	/* Normally, for non-shared buffers, allow buffer compression if
@@ -932,29 +1142,30 @@ fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
 	 * except we don't have a format modifier for tiled.  (We probably
 	 * should.)
 	 */
-	bool allow_ubwc = drm_find_modifier(DRM_FORMAT_MOD_INVALID, modifiers, count);
-	if (tmpl->bind & PIPE_BIND_SHARED) {
-		allow_ubwc = drm_find_modifier(DRM_FORMAT_MOD_QCOM_COMPRESSED, modifiers, count);
+	bool allow_ubwc = false;
+	if (!linear) {
+		allow_ubwc = drm_find_modifier(DRM_FORMAT_MOD_INVALID, modifiers, count);
 		if (!allow_ubwc) {
-			linear = true;
+			perf_debug("%"PRSC_FMT": not UBWC: DRM_FORMAT_MOD_INVALID not requested!",
+					PRSC_ARGS(prsc));
+		}
+		if (tmpl->bind & PIPE_BIND_SHARED) {
+			allow_ubwc = drm_find_modifier(DRM_FORMAT_MOD_QCOM_COMPRESSED, modifiers, count);
+			if (!allow_ubwc) {
+				perf_debug("%"PRSC_FMT": not UBWC: shared and DRM_FORMAT_MOD_QCOM_COMPRESSED not requested!",
+						PRSC_ARGS(prsc));
+				linear = true;
+			}
 		}
 	}
 
-	allow_ubwc &= !(fd_mesa_debug & FD_DBG_NOUBWC);
-
-	pipe_reference_init(&prsc->reference, 1);
-
-	prsc->screen = pscreen;
+	allow_ubwc &= !FD_DBG(NOUBWC);
 
 	if (screen->tile_mode &&
 			(tmpl->target != PIPE_BUFFER) &&
 			!linear) {
 		rsc->layout.tile_mode = screen->tile_mode(prsc);
 	}
-
-	util_range_init(&rsc->valid_buffer_range);
-
-	simple_mtx_init(&rsc->lock, mtx_plain);
 
 	rsc->internal_format = format;
 
@@ -974,6 +1185,7 @@ fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
 	if (size == 0) {
 		/* note, semi-intention == instead of & */
 		debug_assert(prsc->bind == PIPE_BIND_QUERY_BUFFER);
+		*psize = 0;
 		return prsc;
 	}
 
@@ -983,8 +1195,65 @@ fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
 		size = rsc->layout.layer_size * prsc->array_size;
 	}
 
-	if (fd_mesa_debug & FD_DBG_LAYOUT)
+	if (FD_DBG(LAYOUT))
 		fdl_dump_layout(&rsc->layout);
+
+	/* Hand out the resolved size. */
+	if (psize)
+		*psize = size;
+
+	return prsc;
+}
+
+/**
+ * Create a new texture object, using the given template info.
+ */
+static struct pipe_resource *
+fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
+		const struct pipe_resource *tmpl,
+		const uint64_t *modifiers, int count)
+{
+	struct fd_screen *screen = fd_screen(pscreen);
+	struct fd_resource *rsc;
+	struct pipe_resource *prsc;
+	uint32_t size;
+
+	/* when using kmsro, scanout buffers are allocated on the display device
+	 * create_with_modifiers() doesn't give us usage flags, so we have to
+	 * assume that all calls with modifiers are scanout-possible
+	 */
+	if (screen->ro &&
+		((tmpl->bind & PIPE_BIND_SCANOUT) ||
+		 !(count == 1 && modifiers[0] == DRM_FORMAT_MOD_INVALID))) {
+		struct pipe_resource scanout_templat = *tmpl;
+		struct renderonly_scanout *scanout;
+		struct winsys_handle handle;
+
+		/* note: alignment is wrong for a6xx */
+		scanout_templat.width0 = align(tmpl->width0, screen->info.gmem_align_w);
+
+		scanout = renderonly_scanout_for_resource(&scanout_templat,
+												  screen->ro, &handle);
+		if (!scanout)
+			return NULL;
+
+		renderonly_scanout_destroy(scanout, screen->ro);
+
+		assert(handle.type == WINSYS_HANDLE_TYPE_FD);
+		rsc = fd_resource(pscreen->resource_from_handle(pscreen, tmpl,
+														&handle,
+														PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE));
+		close(handle.handle);
+		if (!rsc)
+			return NULL;
+
+		return &rsc->b.b;
+	}
+
+	prsc = fd_resource_allocate_and_resolve(pscreen, tmpl, modifiers, count, &size);
+	if (!prsc)
+		return NULL;
+	rsc = fd_resource(prsc);
 
 	realloc_bo(rsc, size);
 	if (!rsc->bo)
@@ -1015,49 +1284,40 @@ fd_resource_from_handle(struct pipe_screen *pscreen,
 		struct winsys_handle *handle, unsigned usage)
 {
 	struct fd_screen *screen = fd_screen(pscreen);
-	struct fd_resource *rsc = CALLOC_STRUCT(fd_resource);
+	struct fd_resource *rsc = alloc_resource_struct(pscreen, tmpl);
 
 	if (!rsc)
 		return NULL;
 
 	struct fdl_slice *slice = fd_resource_slice(rsc, 0);
-	struct pipe_resource *prsc = &rsc->base;
+	struct pipe_resource *prsc = &rsc->b.b;
 
-	DBG("target=%d, format=%s, %ux%ux%u, array_size=%u, last_level=%u, "
-			"nr_samples=%u, usage=%u, bind=%x, flags=%x",
-			tmpl->target, util_format_name(tmpl->format),
-			tmpl->width0, tmpl->height0, tmpl->depth0,
-			tmpl->array_size, tmpl->last_level, tmpl->nr_samples,
-			tmpl->usage, tmpl->bind, tmpl->flags);
+	DBG("%"PRSC_FMT", modifier=%"PRIx64, PRSC_ARGS(prsc), handle->modifier);
 
-	*prsc = *tmpl;
+	threaded_resource_init(prsc);
+	rsc->b.is_shared = true;
+
 	fd_resource_layout_init(prsc);
 
-	pipe_reference_init(&prsc->reference, 1);
-
-	prsc->screen = pscreen;
-
-	util_range_init(&rsc->valid_buffer_range);
-
-	simple_mtx_init(&rsc->lock, mtx_plain);
-
-	rsc->bo = fd_screen_bo_from_handle(pscreen, handle);
-	if (!rsc->bo)
+	struct fd_bo *bo = fd_screen_bo_from_handle(pscreen, handle);
+	if (!bo)
 		goto fail;
+
+	fd_resource_set_bo(rsc, bo);
 
 	rsc->internal_format = tmpl->format;
 	rsc->layout.pitch0 = handle->stride;
 	slice->offset = handle->offset;
 	slice->size0 = handle->stride * prsc->height0;
 
-	/* use a pitchalign of gmem_alignw pixels, because GMEM resolve for
+	/* use a pitchalign of gmem_align_w pixels, because GMEM resolve for
 	 * lower alignments is not implemented (but possible for a6xx at least)
 	 *
 	 * for UBWC-enabled resources, layout_resource_for_modifier will further
 	 * validate the pitch and set the right pitchalign
 	 */
 	rsc->layout.pitchalign =
-		fdl_cpp_shift(&rsc->layout) + util_logbase2(screen->gmem_alignw);
+		fdl_cpp_shift(&rsc->layout) + util_logbase2(screen->info.gmem_align_w);
 
 	/* apply the minimum pitchalign (note: actually 4 for a3xx but doesn't matter) */
 	if (is_a6xx(screen) || is_a5xx(screen))
@@ -1110,31 +1370,32 @@ fd_render_condition_check(struct pipe_context *pctx)
 
 static void
 fd_invalidate_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct fd_resource *rsc = fd_resource(prsc);
 
-	/*
-	 * TODO I guess we could track that the resource is invalidated and
-	 * use that as a hint to realloc rather than stall in _transfer_map(),
-	 * even in the non-DISCARD_WHOLE_RESOURCE case?
-	 *
-	 * Note: we set dirty bits to trigger invalidate logic fd_draw_vbo
-	 */
+	if (prsc->target == PIPE_BUFFER) {
+		/* Handle the glInvalidateBufferData() case:
+		 */
+		invalidate_resource(rsc, PIPE_MAP_READ | PIPE_MAP_WRITE);
+	} else if (rsc->track->write_batch) {
+		/* Handle the glInvalidateFramebuffer() case, telling us that
+		 * we can skip resolve.
+		 */
 
-	if (rsc->write_batch) {
-		struct fd_batch *batch = rsc->write_batch;
+		struct fd_batch *batch = rsc->track->write_batch;
 		struct pipe_framebuffer_state *pfb = &batch->framebuffer;
 
 		if (pfb->zsbuf && pfb->zsbuf->texture == prsc) {
 			batch->resolve &= ~(FD_BUFFER_DEPTH | FD_BUFFER_STENCIL);
-			ctx->dirty |= FD_DIRTY_ZSA;
+			fd_context_dirty(ctx, FD_DIRTY_ZSA);
 		}
 
 		for (unsigned i = 0; i < pfb->nr_cbufs; i++) {
 			if (pfb->cbufs[i] && pfb->cbufs[i]->texture == prsc) {
 				batch->resolve &= ~(PIPE_CLEAR_COLOR0 << i);
-				ctx->dirty |= FD_DIRTY_FRAMEBUFFER;
+				fd_context_dirty(ctx, FD_DIRTY_FRAMEBUFFER);
 			}
 		}
 	}
@@ -1160,7 +1421,7 @@ fd_resource_get_stencil(struct pipe_resource *prsc)
 {
 	struct fd_resource *rsc = fd_resource(prsc);
 	if (rsc->stencil)
-		return &rsc->stencil->base;
+		return &rsc->stencil->b.b;
 	return NULL;
 }
 
@@ -1196,6 +1457,83 @@ fd_layout_resource_for_modifier(struct fd_resource *rsc, uint64_t modifier)
 	}
 }
 
+static struct pipe_resource *
+fd_resource_from_memobj(struct pipe_screen *pscreen,
+						const struct pipe_resource *tmpl,
+						struct pipe_memory_object *pmemobj,
+						uint64_t offset)
+{
+	struct fd_screen *screen = fd_screen(pscreen);
+	struct fd_memory_object *memobj = fd_memory_object(pmemobj);
+	struct pipe_resource *prsc;
+	struct fd_resource *rsc;
+	uint32_t size;
+	assert(memobj->bo);
+
+	/* We shouldn't get a scanout buffer here. */
+	assert(!(tmpl->bind & PIPE_BIND_SCANOUT));
+
+	uint64_t modifiers = DRM_FORMAT_MOD_INVALID;
+	if (tmpl->bind & PIPE_BIND_LINEAR) {
+		modifiers = DRM_FORMAT_MOD_LINEAR;
+	} else if (is_a6xx(screen) && tmpl->width0 >= FDL_MIN_UBWC_WIDTH) {
+		modifiers = DRM_FORMAT_MOD_QCOM_COMPRESSED;
+	}
+
+	/* Allocate new pipe resource. */
+	prsc = fd_resource_allocate_and_resolve(pscreen, tmpl, &modifiers, 1, &size);
+	if (!prsc)
+		return NULL;
+	rsc = fd_resource(prsc);
+	rsc->b.is_shared = true;
+
+	/* bo's size has to be large enough, otherwise cleanup resource and fail
+	 * gracefully.
+	 */
+	if (fd_bo_size(memobj->bo) < size) {
+		fd_resource_destroy(pscreen, prsc);
+		return NULL;
+	}
+
+	/* Share the bo with the memory object. */
+	fd_resource_set_bo(rsc, fd_bo_ref(memobj->bo));
+
+	return prsc;
+}
+
+static struct pipe_memory_object *
+fd_memobj_create_from_handle(struct pipe_screen *pscreen,
+							 struct winsys_handle *whandle,
+							 bool dedicated)
+{
+	struct fd_memory_object *memobj = CALLOC_STRUCT(fd_memory_object);
+	if (!memobj)
+		return NULL;
+
+	struct fd_bo *bo = fd_screen_bo_from_handle(pscreen, whandle);
+	if (!bo) {
+		free(memobj);
+		return NULL;
+	}
+
+	memobj->b.dedicated = dedicated;
+	memobj->bo = bo;
+
+	return &memobj->b;
+}
+
+static void
+fd_memobj_destroy(struct pipe_screen *pscreen,
+		struct pipe_memory_object *pmemobj)
+{
+	struct fd_memory_object *memobj = fd_memory_object(pmemobj);
+
+	assert(memobj->bo);
+	fd_bo_del(memobj->bo);
+
+	free(pmemobj);
+}
+
 void
 fd_resource_screen_init(struct pipe_screen *pscreen)
 {
@@ -1220,6 +1558,11 @@ fd_resource_screen_init(struct pipe_screen *pscreen)
 		screen->supported_modifiers = supported_modifiers;
 		screen->num_supported_modifiers = ARRAY_SIZE(supported_modifiers);
 	}
+
+	/* GL_EXT_memory_object */
+	pscreen->memobj_create_from_handle = fd_memobj_create_from_handle;
+	pscreen->memobj_destroy = fd_memobj_destroy;
+	pscreen->resource_from_memobj = fd_resource_from_memobj;
 }
 
 static void
@@ -1268,6 +1611,7 @@ fd_get_sample_position(struct pipe_context *context,
 
 static void
 fd_blit_pipe(struct pipe_context *pctx, const struct pipe_blit_info *blit_info)
+	in_dt
 {
 	/* wrap fd_blit to return void */
 	fd_blit(pctx, blit_info);

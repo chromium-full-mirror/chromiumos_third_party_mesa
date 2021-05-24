@@ -22,7 +22,6 @@
 
 #include "anv_private.h"
 #include "wsi_common.h"
-#include "vk_format_info.h"
 #include "vk_util.h"
 #include "wsi_common_display.h"
 
@@ -185,7 +184,7 @@ anv_CreateDisplayPlaneSurfaceKHR(
    if (allocator)
      alloc = allocator;
    else
-     alloc = &instance->alloc;
+     alloc = &instance->vk.alloc;
 
    return wsi_create_display_surface(_instance, alloc, create_info, surface);
 }
@@ -266,7 +265,8 @@ anv_RegisterDeviceEventEXT(VkDevice _device,
                                    &device->physical->wsi_device,
                                    device_event_info,
                                    allocator,
-                                   &fence->permanent.fence_wsi);
+                                   &fence->permanent.fence_wsi,
+                                   -1);
    if (ret == VK_SUCCESS)
       *_fence = anv_fence_to_handle(fence);
    else
@@ -294,7 +294,7 @@ anv_RegisterDisplayEventEXT(VkDevice _device,
 
    ret = wsi_register_display_event(
       _device, &device->physical->wsi_device,
-      display, display_event_info, allocator, &(fence->permanent.fence_wsi));
+      display, display_event_info, allocator, &fence->permanent.fence_wsi, -1);
 
    if (ret == VK_SUCCESS)
       *_fence = anv_fence_to_handle(fence);

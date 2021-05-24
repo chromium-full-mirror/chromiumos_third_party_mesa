@@ -13,28 +13,32 @@ STABLE_EPHEMERAL=" \
       libgbm-dev \
       libgles2-mesa-dev \
       liblz4-dev \
-      libpng-dev \
+      libpciaccess-dev \
+      libudev-dev \
       libvulkan-dev \
+      libwaffle-dev \
+      libwayland-dev \
+      libx11-xcb-dev \
       libxcb-ewmh-dev \
+      libxcb-keysyms1-dev \
       libxkbcommon-dev \
       libxrandr-dev \
       libxrender-dev \
       libzstd-dev \
       meson \
       p7zip \
+      patch \
       pkg-config \
       python3-distutils \
       wget \
+      xz-utils \
       "
 
-# Unfortunately, gfxreconstruct needs the -dev packages:
-# https://github.com/LunarG/gfxreconstruct/issues/402
 apt-get install -y --no-remove \
-      libwayland-dev \
-      libx11-xcb-dev \
-      libxcb-keysyms1-dev \
-      libxcb1-dev \
-      $STABLE_EPHEMERAL
+      $STABLE_EPHEMERAL \
+      libxcb-shm0 \
+      python3-lxml \
+      python3-simplejson
 
 # We need multiarch for Wine
 dpkg --add-architecture i386
@@ -75,7 +79,7 @@ rm crashdialog.reg
 # system.reg file, which fails.
 # Just giving it a bit more of time for it to be created solves the
 # problem ...
-test -f  "${WINEPREFIX}/system.reg" || sleep 2
+while ! test -f  "${WINEPREFIX}/system.reg"; do sleep 1; done
 
 wget "https://github.com/doitsujin/dxvk/releases/download/v${DXVK_VERSION}/dxvk-${DXVK_VERSION}.tar.gz"
 tar xzpf dxvk-"${DXVK_VERSION}".tar.gz
@@ -107,25 +111,24 @@ wine \
 
 . .gitlab-ci/container/container_pre_build.sh
 
-############### Build dEQP runner
+############### Build piglit
 
-. .gitlab-ci/build-cts-runner.sh
+PIGLIT_BUILD_TARGETS="piglit_replayer" . .gitlab-ci/container/build-piglit.sh
 
 ############### Build Fossilize
 
-. .gitlab-ci/build-fossilize.sh
+. .gitlab-ci/container/build-fossilize.sh
 
 ############### Build dEQP VK
-
-. .gitlab-ci/build-deqp-vk.sh
+. .gitlab-ci/container/build-deqp.sh
 
 ############### Build gfxreconstruct
 
-. .gitlab-ci/build-gfxreconstruct.sh
+. .gitlab-ci/container/build-gfxreconstruct.sh
 
-############### Build VulkanTools
+############### Build libdrm
 
-. .gitlab-ci/build-vulkantools.sh
+. .gitlab-ci/container/build-libdrm.sh
 
 ############### Uninstall the build software
 

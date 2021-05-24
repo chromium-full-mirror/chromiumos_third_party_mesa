@@ -41,10 +41,12 @@
 
 static void
 fd5_context_destroy(struct pipe_context *pctx)
+	in_dt
 {
 	struct fd5_context *fd5_ctx = fd5_context(fd_context(pctx));
 
 	u_upload_destroy(fd5_ctx->border_color_uploader);
+	pipe_resource_reference(&fd5_ctx->border_color_buf, NULL);
 
 	fd_context_destroy(pctx);
 
@@ -69,6 +71,7 @@ static const uint8_t primtypes[] = {
 
 struct pipe_context *
 fd5_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
+	disable_thread_safety_analysis
 {
 	struct fd_screen *screen = fd_screen(pscreen);
 	struct fd5_context *fd5_ctx = CALLOC_STRUCT(fd5_context);
@@ -82,6 +85,7 @@ fd5_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
 	fd5_ctx->base.dev = fd_device_ref(screen->dev);
 	fd5_ctx->base.screen = fd_screen(pscreen);
+	fd5_ctx->base.last.key = &fd5_ctx->last_key;
 
 	pctx->destroy = fd5_context_destroy;
 	pctx->create_blend_state = fd5_blend_state_create;
@@ -95,7 +99,7 @@ fd5_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 	fd5_prog_init(pctx);
 	fd5_emit_init(pctx);
 
-	if (!(fd_mesa_debug & FD_DBG_NOBLIT))
+	if (!FD_DBG(NOBLIT))
 		fd5_ctx->base.blit = fd5_blitter_blit;
 
 	pctx = fd_context_init(&fd5_ctx->base, pscreen, primtypes, priv, flags);

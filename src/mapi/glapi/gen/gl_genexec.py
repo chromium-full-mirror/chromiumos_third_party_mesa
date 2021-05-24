@@ -48,7 +48,6 @@ header = """/**
 
 
 #include "main/accum.h"
-#include "main/api_loopback.h"
 #include "main/api_exec.h"
 #include "main/arbprogram.h"
 #include "main/atifragshader.h"
@@ -150,8 +149,6 @@ _mesa_initialize_exec_table(struct gl_context *ctx)
    assert(exec != NULL);
 
    assert(ctx->Version > 0);
-
-   _mesa_initialize_exec_dispatch(ctx, exec);
 """
 
 

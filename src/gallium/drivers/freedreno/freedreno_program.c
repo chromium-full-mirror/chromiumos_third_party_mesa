@@ -27,52 +27,70 @@
 #include "tgsi/tgsi_text.h"
 #include "tgsi/tgsi_ureg.h"
 
+#include "util/u_simple_shaders.h"
+
 #include "freedreno_program.h"
 #include "freedreno_context.h"
 
 static void
+update_bound_stage(struct fd_context *ctx, enum pipe_shader_type shader, bool bound)
+	assert_dt
+{
+	if (bound) {
+		ctx->bound_shader_stages |= BIT(shader);
+	} else {
+		ctx->bound_shader_stages &= ~BIT(shader);
+	}
+}
+
+static void
 fd_vs_state_bind(struct pipe_context *pctx, void *hwcso)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->prog.vs = hwcso;
-	ctx->dirty_shader[PIPE_SHADER_VERTEX] |= FD_DIRTY_SHADER_PROG;
-	ctx->dirty |= FD_DIRTY_PROG;
+	fd_context_dirty_shader(ctx, PIPE_SHADER_VERTEX, FD_DIRTY_SHADER_PROG);
+	update_bound_stage(ctx, PIPE_SHADER_VERTEX, !!hwcso);
 }
 
 static void
 fd_tcs_state_bind(struct pipe_context *pctx, void *hwcso)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->prog.hs = hwcso;
-	ctx->dirty_shader[PIPE_SHADER_TESS_CTRL] |= FD_DIRTY_SHADER_PROG;
-	ctx->dirty |= FD_DIRTY_PROG;
+	fd_context_dirty_shader(ctx, PIPE_SHADER_TESS_CTRL, FD_DIRTY_SHADER_PROG);
+	update_bound_stage(ctx, PIPE_SHADER_TESS_CTRL, !!hwcso);
 }
 
 static void
 fd_tes_state_bind(struct pipe_context *pctx, void *hwcso)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->prog.ds = hwcso;
-	ctx->dirty_shader[PIPE_SHADER_TESS_EVAL] |= FD_DIRTY_SHADER_PROG;
-	ctx->dirty |= FD_DIRTY_PROG;
+	fd_context_dirty_shader(ctx, PIPE_SHADER_TESS_EVAL, FD_DIRTY_SHADER_PROG);
+	update_bound_stage(ctx, PIPE_SHADER_TESS_EVAL, !!hwcso);
 }
 
 static void
 fd_gs_state_bind(struct pipe_context *pctx, void *hwcso)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->prog.gs = hwcso;
-	ctx->dirty_shader[PIPE_SHADER_GEOMETRY] |= FD_DIRTY_SHADER_PROG;
-	ctx->dirty |= FD_DIRTY_PROG;
+	fd_context_dirty_shader(ctx, PIPE_SHADER_GEOMETRY, FD_DIRTY_SHADER_PROG);
+	update_bound_stage(ctx, PIPE_SHADER_GEOMETRY, !!hwcso);
 }
 
 static void
 fd_fs_state_bind(struct pipe_context *pctx, void *hwcso)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->prog.fs = hwcso;
-	ctx->dirty_shader[PIPE_SHADER_FRAGMENT] |= FD_DIRTY_SHADER_PROG;
-	ctx->dirty |= FD_DIRTY_PROG;
+	fd_context_dirty_shader(ctx, PIPE_SHADER_FRAGMENT, FD_DIRTY_SHADER_PROG);
+	update_bound_stage(ctx, PIPE_SHADER_FRAGMENT, !!hwcso);
 }
 
 static const char *solid_fs =
@@ -188,6 +206,12 @@ void fd_prog_init(struct pipe_context *pctx)
 	ctx->solid_prog.fs = assemble_tgsi(pctx, solid_fs, true);
 	ctx->solid_prog.vs = assemble_tgsi(pctx, solid_vs, false);
 
+	if (ctx->screen->gpu_id >= 600) {
+		ctx->solid_layered_prog.fs = assemble_tgsi(pctx, solid_fs, true);
+		ctx->solid_layered_prog.vs =
+			util_make_layered_clear_vertex_shader(pctx);
+	}
+
 	if (ctx->screen->gpu_id >= 500)
 		return;
 
@@ -215,6 +239,12 @@ void fd_prog_fini(struct pipe_context *pctx)
 
 	pctx->delete_vs_state(pctx, ctx->solid_prog.vs);
 	pctx->delete_fs_state(pctx, ctx->solid_prog.fs);
+
+	if (ctx->screen->gpu_id >= 600) {
+		pctx->delete_vs_state(pctx, ctx->solid_layered_prog.vs);
+		pctx->delete_fs_state(pctx, ctx->solid_layered_prog.fs);
+	}
+
 	if (ctx->screen->gpu_id >= 500)
 		return;
 

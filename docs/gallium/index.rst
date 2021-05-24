@@ -14,8 +14,8 @@ Contents:
    format
    context
    cso
+   buffermapping
    distro
-   drivers
    postprocess
    glossary
 

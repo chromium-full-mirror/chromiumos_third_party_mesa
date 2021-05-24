@@ -30,9 +30,12 @@
 #include "drm/freedreno_drmif.h"
 #include "drm/freedreno_ringbuffer.h"
 #include "perfcntrs/freedreno_perfcntr.h"
+#include "common/freedreno_dev_info.h"
 
 #include "pipe/p_screen.h"
+#include "util/debug.h"
 #include "util/u_memory.h"
+#include "util/u_queue.h"
 #include "util/slab.h"
 #include "util/simple_mtx.h"
 #include "renderonly/renderonly.h"
@@ -42,6 +45,18 @@
 #include "freedreno_util.h"
 
 struct fd_bo;
+
+/* Potential reasons for needing to skip bypass path and use GMEM, the
+ * generation backend can override this with screen->gmem_reason_mask
+ */
+enum fd_gmem_reason {
+	FD_GMEM_CLEARS_DEPTH_STENCIL = BIT(0),
+	FD_GMEM_DEPTH_ENABLED        = BIT(1),
+	FD_GMEM_STENCIL_ENABLED      = BIT(2),
+	FD_GMEM_BLEND_ENABLED        = BIT(3),
+	FD_GMEM_LOGICOP_ENABLED      = BIT(4),
+	FD_GMEM_FB_READ              = BIT(5),
+};
 
 struct fd_screen {
 	struct pipe_screen base;
@@ -70,12 +85,17 @@ struct fd_screen {
 	uint32_t max_freq;
 	uint32_t ram_size;
 	uint32_t max_rts;        /* max # of render targets */
-	uint32_t gmem_alignw, gmem_alignh; /* gmem load/store granularity */
-	uint32_t tile_alignw, tile_alignh; /* alignment for tile sizes */
-	uint32_t num_vsc_pipes;
 	uint32_t priority_mask;
 	bool has_timestamp;
 	bool has_robustness;
+	bool has_syncobj;
+
+	struct freedreno_dev_info info;
+
+	/* Bitmask of gmem_reasons that do not force GMEM path over bypass
+	 * for current generation.
+	 */
+	enum fd_gmem_reason gmem_reason_mask;
 
 	unsigned num_perfcntr_groups;
 	const struct fd_perfcntr_group *perfcntr_groups;
@@ -85,6 +105,7 @@ struct fd_screen {
 	struct pipe_driver_query_info *perfcntr_queries;
 
 	void *compiler;          /* currently unused for a2xx */
+	struct util_queue compile_queue; /* currently unused for a2xx */
 
 	struct fd_device *dev;
 
@@ -114,6 +135,7 @@ struct fd_screen {
 	bool reorder;
 
 	uint16_t rsc_seqno;
+	uint16_t ctx_seqno;
 
 	unsigned num_supported_modifiers;
 	const uint64_t *supported_modifiers;

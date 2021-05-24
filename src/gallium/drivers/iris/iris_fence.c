@@ -29,7 +29,7 @@
 #include "drm-uapi/sync_file.h"
 #include "util/u_debug.h"
 #include "util/u_inlines.h"
-#include "intel/common/gen_gem.h"
+#include "intel/common/intel_gem.h"
 
 #include "iris_batch.h"
 #include "iris_bufmgr.h"
@@ -44,7 +44,7 @@ gem_syncobj_create(int fd, uint32_t flags)
       .flags = flags,
    };
 
-   gen_ioctl(fd, DRM_IOCTL_SYNCOBJ_CREATE, &args);
+   intel_ioctl(fd, DRM_IOCTL_SYNCOBJ_CREATE, &args);
 
    return args.handle;
 }
@@ -56,7 +56,7 @@ gem_syncobj_destroy(int fd, uint32_t handle)
       .handle = handle,
    };
 
-   gen_ioctl(fd, DRM_IOCTL_SYNCOBJ_DESTROY, &args);
+   intel_ioctl(fd, DRM_IOCTL_SYNCOBJ_DESTROY, &args);
 }
 
 /**
@@ -207,7 +207,7 @@ iris_wait_syncobj(struct pipe_screen *p_screen,
       .count_handles = 1,
       .timeout_nsec = timeout_nsec,
    };
-   return gen_ioctl(screen->fd, DRM_IOCTL_SYNCOBJ_WAIT, &args);
+   return intel_ioctl(screen->fd, DRM_IOCTL_SYNCOBJ_WAIT, &args);
 }
 
 #define CSI "\e["
@@ -246,6 +246,10 @@ iris_fence_flush(struct pipe_context *ctx,
    if (!deferred) {
       for (unsigned i = 0; i < IRIS_BATCH_COUNT; i++)
          iris_batch_flush(&ice->batches[i]);
+   }
+
+   if (flags & PIPE_FLUSH_END_OF_FRAME) {
+      iris_measure_frame_end(ice);
    }
 
    if (!out_fence)
@@ -362,6 +366,8 @@ iris_fence_finish(struct pipe_screen *p_screen,
                   struct pipe_fence_handle *fence,
                   uint64_t timeout)
 {
+   ctx = threaded_context_unwrap_sync(ctx);
+
    struct iris_context *ice = (struct iris_context *)ctx;
    struct iris_screen *screen = (struct iris_screen *)p_screen;
 
@@ -420,7 +426,7 @@ iris_fence_finish(struct pipe_screen *p_screen,
       args.flags |= DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT;
    }
 
-   return gen_ioctl(screen->fd, DRM_IOCTL_SYNCOBJ_WAIT, &args) == 0;
+   return intel_ioctl(screen->fd, DRM_IOCTL_SYNCOBJ_WAIT, &args) == 0;
 }
 
 static int
@@ -438,7 +444,7 @@ sync_merge_fd(int sync_fd, int new_fd)
       .fence = -1,
    };
 
-   gen_ioctl(sync_fd, SYNC_IOC_MERGE, &args);
+   intel_ioctl(sync_fd, SYNC_IOC_MERGE, &args);
    close(new_fd);
    close(sync_fd);
 
@@ -468,7 +474,7 @@ iris_fence_get_fd(struct pipe_screen *p_screen,
          .fd = -1,
       };
 
-      gen_ioctl(screen->fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &args);
+      intel_ioctl(screen->fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &args);
       fd = sync_merge_fd(fd, args.fd);
    }
 
@@ -483,7 +489,7 @@ iris_fence_get_fd(struct pipe_screen *p_screen,
       };
 
       args.handle = gem_syncobj_create(screen->fd, DRM_SYNCOBJ_CREATE_SIGNALED);
-      gen_ioctl(screen->fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &args);
+      intel_ioctl(screen->fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &args);
       gem_syncobj_destroy(screen->fd, args.handle);
       return args.fd;
    }
@@ -497,18 +503,23 @@ iris_fence_create_fd(struct pipe_context *ctx,
                      int fd,
                      enum pipe_fd_type type)
 {
-   assert(type == PIPE_FD_TYPE_NATIVE_SYNC);
+   assert(type == PIPE_FD_TYPE_NATIVE_SYNC || type == PIPE_FD_TYPE_SYNCOBJ);
 
    struct iris_screen *screen = (struct iris_screen *)ctx->screen;
    struct drm_syncobj_handle args = {
-      .handle = gem_syncobj_create(screen->fd, DRM_SYNCOBJ_CREATE_SIGNALED),
-      .flags = DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_IMPORT_SYNC_FILE,
       .fd = fd,
    };
-   if (gen_ioctl(screen->fd, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &args) == -1) {
+
+   if (type == PIPE_FD_TYPE_NATIVE_SYNC) {
+      args.flags = DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_IMPORT_SYNC_FILE;
+      args.handle = gem_syncobj_create(screen->fd, DRM_SYNCOBJ_CREATE_SIGNALED);
+   }
+
+   if (intel_ioctl(screen->fd, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &args) == -1) {
       fprintf(stderr, "DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE failed: %s\n",
               strerror(errno));
-      gem_syncobj_destroy(screen->fd, args.handle);
+      if (type == PIPE_FD_TYPE_NATIVE_SYNC)
+         gem_syncobj_destroy(screen->fd, args.handle);
       *out = NULL;
       return;
    }
@@ -553,6 +564,30 @@ iris_fence_create_fd(struct pipe_context *ctx,
    *out = fence;
 }
 
+static void
+iris_fence_signal(struct pipe_context *ctx,
+                  struct pipe_fence_handle *fence)
+{
+   struct iris_context *ice = (struct iris_context *)ctx;
+
+   if (ctx == fence->unflushed_ctx)
+      return;
+
+   for (unsigned b = 0; b < IRIS_BATCH_COUNT; b++) {
+      for (unsigned i = 0; i < ARRAY_SIZE(fence->fine); i++) {
+         struct iris_fine_fence *fine = fence->fine[i];
+
+         /* already signaled fence skipped */
+         if (iris_fine_fence_signaled(fine))
+            continue;
+
+         ice->batches[b].contains_fence_signal = true;
+         iris_batch_add_syncobj(&ice->batches[b], fine->syncobj,
+                                I915_EXEC_FENCE_SIGNAL);
+      }
+   }
+}
+
 void
 iris_init_screen_fence_functions(struct pipe_screen *screen)
 {
@@ -567,4 +602,5 @@ iris_init_context_fence_functions(struct pipe_context *ctx)
    ctx->flush = iris_fence_flush;
    ctx->create_fence_fd = iris_fence_create_fd;
    ctx->fence_server_sync = iris_fence_await;
+   ctx->fence_server_signal = iris_fence_signal;
 }

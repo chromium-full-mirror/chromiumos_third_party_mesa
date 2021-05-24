@@ -53,12 +53,15 @@ lower_alu_instr(nir_alu_instr *alu)
    case nir_op_vec2:
    case nir_op_vec3:
    case nir_op_vec4:
+   case nir_op_vec5:
    case nir_op_vec8:
    case nir_op_vec16:
    case nir_op_inot:
    case nir_op_iand:
    case nir_op_ior:
    case nir_op_ixor:
+      if (alu->dest.dest.ssa.bit_size != 1)
+         return false;
       /* These we expect to have booleans but the opcode doesn't change */
       break;
 
@@ -77,7 +80,7 @@ lower_alu_instr(nir_alu_instr *alu)
    case nir_op_flt: alu->op = nir_op_flt32; break;
    case nir_op_fge: alu->op = nir_op_fge32; break;
    case nir_op_feq: alu->op = nir_op_feq32; break;
-   case nir_op_fne: alu->op = nir_op_fne32; break;
+   case nir_op_fneu: alu->op = nir_op_fneu32; break;
    case nir_op_ilt: alu->op = nir_op_ilt32; break;
    case nir_op_ige: alu->op = nir_op_ige32; break;
    case nir_op_ieq: alu->op = nir_op_ieq32; break;
@@ -114,6 +117,18 @@ lower_alu_instr(nir_alu_instr *alu)
 }
 
 static bool
+lower_tex_instr(nir_tex_instr *tex)
+{
+   bool progress = false;
+   rewrite_1bit_ssa_def_to_32bit(&tex->dest.ssa, &progress);
+   if (tex->dest_type == nir_type_bool1) {
+      tex->dest_type = nir_type_bool32;
+      progress = true;
+   }
+   return progress;
+}
+
+static bool
 nir_lower_bool_to_int32_impl(nir_function_impl *impl)
 {
    bool progress = false;
@@ -140,9 +155,12 @@ nir_lower_bool_to_int32_impl(nir_function_impl *impl)
          case nir_instr_type_intrinsic:
          case nir_instr_type_ssa_undef:
          case nir_instr_type_phi:
-         case nir_instr_type_tex:
             nir_foreach_ssa_def(instr, rewrite_1bit_ssa_def_to_32bit,
                                 &progress);
+            break;
+
+         case nir_instr_type_tex:
+            progress |= lower_tex_instr(nir_instr_as_tex(instr));
             break;
 
          default:

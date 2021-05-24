@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2019-2020 Collabora, Ltd.
  * Copyright (C) 2019 Alyssa Rosenzweig <alyssa@rosenzweig.io>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -71,10 +72,6 @@ typedef struct midgard_branch {
         };
 } midgard_branch;
 
-#define PAN_WRITEOUT_C 1
-#define PAN_WRITEOUT_Z 2
-#define PAN_WRITEOUT_S 4
-
 /* Generic in-memory data type repesenting a single logical instruction, rather
  * than a single instruction group. This is the preferred form for code gen.
  * Multiple midgard_insturctions will later be combined during scheduling,
@@ -140,7 +137,6 @@ typedef struct midgard_instruction {
         bool has_constants;
         midgard_constants constants;
         uint16_t inline_constant;
-        bool has_blend_constant;
         bool has_inline_constant;
 
         bool compact_branch;
@@ -221,7 +217,6 @@ typedef struct midgard_bundle {
         int control;
         bool has_embedded_constants;
         midgard_constants constants;
-        bool has_blend_constant;
         bool last_writeout;
 } midgard_bundle;
 
@@ -238,27 +233,22 @@ enum midgard_rt_id {
         MIDGARD_NUM_RTS,
 };
 
+#define MIDGARD_MAX_SAMPLE_ITER 16
+
 typedef struct compiler_context {
+        const struct panfrost_compile_inputs *inputs;
         nir_shader *nir;
+        struct pan_shader_info *info;
         gl_shader_stage stage;
 
-        /* Is internally a blend shader? Depends on stage == FRAGMENT */
-        bool is_blend;
-
-        /* Render target number for a keyed blend shader. Depends on is_blend */
-        unsigned blend_rt;
+        /* Number of samples for a keyed blend shader. Depends on is_blend */
+        unsigned blend_sample_iterations;
 
         /* Index to precolour to r0 for an input blend colour */
         unsigned blend_input;
 
         /* Index to precolour to r2 for a dual-source blend colour */
         unsigned blend_src1;
-
-        /* Tracking for blend constant patching */
-        int blend_constant_offset;
-
-        /* Number of bytes used for Thread Local Storage */
-        unsigned tls_size;
 
         /* Count of spills and fills for shaderdb */
         unsigned spills;
@@ -299,18 +289,8 @@ typedef struct compiler_context {
         /* Set of NIR indices that were already emitted as outmods */
         BITSET_WORD *already_emitted;
 
-        /* Just the count of the max register used. Higher count => higher
-         * register pressure */
-        int work_registers;
-
-        /* The number of uniforms allowable for the fast path */
-        int uniform_cutoff;
-
         /* Count of instructions emitted from NIR overall, across all blocks */
         int instruction_count;
-
-        /* Alpha ref value passed in */
-        float alpha_ref;
 
         unsigned quadword_count;
 
@@ -321,9 +301,9 @@ typedef struct compiler_context {
         uint32_t quirks;
 
         /* Writeout instructions for each render target */
-        midgard_instruction *writeout_branch[MIDGARD_NUM_RTS];
+        midgard_instruction *writeout_branch[MIDGARD_NUM_RTS][MIDGARD_MAX_SAMPLE_ITER];
 
-        struct panfrost_sysvals sysvals;
+        struct hash_table_u64 *sysval_to_id;
 } compiler_context;
 
 /* Per-block live_in/live_out */
@@ -536,7 +516,12 @@ void mir_insert_instruction_after_scheduled(compiler_context *ctx, midgard_block
 void mir_flip(midgard_instruction *ins);
 void mir_compute_temp_count(compiler_context *ctx);
 
-void mir_set_offset(compiler_context *ctx, midgard_instruction *ins, nir_src *offset, bool is_shared);
+#define LDST_GLOBAL 0x3E
+#define LDST_SHARED 0x2E
+#define LDST_SCRATCH 0x2A
+
+void mir_set_offset(compiler_context *ctx, midgard_instruction *ins, nir_src *offset, unsigned seg);
+void mir_set_ubo_offset(midgard_instruction *ins, nir_src *src, unsigned bias);
 
 /* 'Intrinsic' move for aliasing */
 
@@ -585,7 +570,7 @@ v_load_store_scratch(
                 .dest = ~0,
                 .src = { ~0, ~0, ~0, ~0 },
                 .swizzle = SWIZZLE_IDENTITY_4,
-                .op = is_store ? midgard_op_st_int4 : midgard_op_ld_int4,
+                .op = is_store ? midgard_op_st_u128 : midgard_op_ld_u128,
                 .load_store = {
                         /* For register spilling - to thread local storage */
                         .arg_1 = 0xEA,
@@ -664,11 +649,9 @@ void emit_binary_bundle(
         struct util_dynarray *emission,
         int next_tag);
 
-bool
-nir_undef_to_zero(nir_shader *shader);
 bool nir_fuse_io_16(nir_shader *shader);
 
-void midgard_nir_lod_errata(nir_shader *shader);
+bool midgard_nir_lod_errata(nir_shader *shader);
 
 unsigned midgard_get_first_tag_from_block(compiler_context *ctx, unsigned block_idx);
 
