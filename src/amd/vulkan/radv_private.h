@@ -1794,6 +1794,8 @@ uint32_t radv_translate_tex_numformat(VkFormat format, const struct util_format_
                                       int first_non_void);
 bool radv_format_pack_clear_color(VkFormat format, uint32_t clear_vals[2],
                                   VkClearColorValue *value);
+bool radv_is_storage_image_format_supported(struct radv_physical_device *physical_device,
+                                            VkFormat format);
 bool radv_is_colorbuffer_format_supported(const struct radv_physical_device *pdevice,
                                           VkFormat format, bool *blendable);
 bool radv_dcc_formats_compatible(VkFormat format1, VkFormat format2);
@@ -2175,6 +2177,7 @@ bool radv_android_gralloc_supports_format(VkFormat format, VkImageUsageFlagBits 
 
 struct radv_image_view_extra_create_info {
    bool disable_compression;
+   bool enable_compression;
 };
 
 void radv_image_view_init(struct radv_image_view *view, struct radv_device *device,
