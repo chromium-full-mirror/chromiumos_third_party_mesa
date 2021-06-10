@@ -198,7 +198,7 @@ VkResult genX(CreateQueryPool)(
    if (pdevice->supports_48bit_addresses)
       bo_flags |= EXEC_OBJECT_SUPPORTS_48B_ADDRESS;
 
-   if (pdevice->use_softpin)
+   if (anv_use_softpin(pdevice))
       bo_flags |= EXEC_OBJECT_PINNED;
 
    if (pdevice->has_exec_async)
@@ -1448,7 +1448,7 @@ void genX(CmdCopyQueryPoolResults)(
 
       case VK_QUERY_TYPE_TIMESTAMP:
          result = mi_mem64(anv_address_add(query_addr, 8));
-         gpu_write_query_result(&b, dest_addr, flags, 0, result);
+         gpu_write_query_result(&b, dest_addr, flags, idx++, result);
          break;
 
 #if GFX_VER >= 8

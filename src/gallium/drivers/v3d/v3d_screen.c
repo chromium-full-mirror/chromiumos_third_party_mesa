@@ -629,9 +629,9 @@ v3d_screen_is_format_supported(struct pipe_screen *pscreen,
         }
 
         if ((usage & PIPE_BIND_INDEX_BUFFER) &&
-            !(format == PIPE_FORMAT_I8_UINT ||
-              format == PIPE_FORMAT_I16_UINT ||
-              format == PIPE_FORMAT_I32_UINT)) {
+            !(format == PIPE_FORMAT_R8_UINT ||
+              format == PIPE_FORMAT_R16_UINT ||
+              format == PIPE_FORMAT_R32_UINT)) {
                 return false;
         }
 
@@ -643,6 +643,8 @@ static const nir_shader_compiler_options v3d_nir_options = {
         .lower_all_io_to_temps = true,
         .lower_extract_byte = true,
         .lower_extract_word = true,
+        .lower_insert_byte = true,
+        .lower_insert_word = true,
         .lower_bitfield_insert_to_shifts = true,
         .lower_bitfield_extract_to_shifts = true,
         .lower_bitfield_reverse = true,

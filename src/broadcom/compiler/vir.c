@@ -804,9 +804,9 @@ v3d_cs_set_prog_data(struct v3d_compile *c,
 {
         prog_data->shared_size = c->s->info.shared_size;
 
-        prog_data->local_size[0] = c->s->info.cs.local_size[0];
-        prog_data->local_size[1] = c->s->info.cs.local_size[1];
-        prog_data->local_size[2] = c->s->info.cs.local_size[2];
+        prog_data->local_size[0] = c->s->info.workgroup_size[0];
+        prog_data->local_size[1] = c->s->info.workgroup_size[1];
+        prog_data->local_size[2] = c->s->info.workgroup_size[2];
 }
 
 static void
@@ -1410,12 +1410,13 @@ v3d_attempt_compile(struct v3d_compile *c)
 
         if (c->key->robust_buffer_access) {
            /* v3d_nir_lower_robust_buffer_access assumes constant buffer
-            * indices on ubo/ssbo intrinsics so run a copy propagation pass
-            * before we run the lowering to warrant this. We also want to run
-            * the lowering before v3d_optimize to clean-up redundant
-            * get_buffer_size calls produced in the pass.
+            * indices on ubo/ssbo intrinsics so run copy propagation and
+            * constant folding passes before we run the lowering to warrant
+            * this. We also want to run the lowering before v3d_optimize to
+            * clean-up redundant get_buffer_size calls produced in the pass.
             */
            NIR_PASS_V(c->s, nir_copy_prop);
+           NIR_PASS_V(c->s, nir_opt_constant_folding);
            NIR_PASS_V(c->s, v3d_nir_lower_robust_buffer_access, c);
         }
 

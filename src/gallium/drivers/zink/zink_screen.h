@@ -27,6 +27,7 @@
 #include "zink_device_info.h"
 #include "zink_instance.h"
 
+#include "util/u_idalloc.h"
 #include "pipe/p_screen.h"
 #include "util/slab.h"
 #include "compiler/nir/nir.h"
@@ -43,6 +44,13 @@
 
 extern uint32_t zink_debug;
 struct hash_table;
+
+struct zink_batch_state;
+struct zink_context;
+struct zink_descriptor_layout_key;
+struct zink_program;
+struct zink_shader;
+enum zink_descriptor_type;
 
 #define ZINK_DEBUG_NIR 0x1
 #define ZINK_DEBUG_SPIRV 0x2
@@ -85,7 +93,8 @@ struct zink_screen {
    struct zink_instance_info instance_info;
 
    VkPhysicalDevice pdev;
-   uint32_t vk_version;
+   uint32_t vk_version, spirv_version;
+   struct util_idalloc_mt buffer_ids;
 
    struct zink_device_info info;
    struct nir_shader_compiler_options nir_options;
@@ -117,6 +126,24 @@ struct zink_screen {
    PFN_vkWaitSemaphores vk_WaitSemaphores;
 
    PFN_vkGetDescriptorSetLayoutSupport vk_GetDescriptorSetLayoutSupport;
+   PFN_vkCmdPushDescriptorSetKHR vk_CmdPushDescriptorSetKHR;
+   PFN_vkCreateDescriptorUpdateTemplate vk_CreateDescriptorUpdateTemplate;
+   PFN_vkDestroyDescriptorUpdateTemplate vk_DestroyDescriptorUpdateTemplate;
+   PFN_vkUpdateDescriptorSetWithTemplate vk_UpdateDescriptorSetWithTemplate;
+   PFN_vkCmdPushDescriptorSetWithTemplateKHR vk_CmdPushDescriptorSetWithTemplateKHR;
+   bool (*descriptor_program_init)(struct zink_context *ctx, struct zink_program *pg);
+   void (*descriptor_program_deinit)(struct zink_screen *screen, struct zink_program *pg);
+   void (*descriptors_update)(struct zink_context *ctx, bool is_compute);
+   void (*context_update_descriptor_states)(struct zink_context *ctx, bool is_compute);
+   void (*context_invalidate_descriptor_state)(struct zink_context *ctx, enum pipe_shader_type shader,
+                                               enum zink_descriptor_type type,
+                                               unsigned start, unsigned count);
+   bool (*batch_descriptor_init)(struct zink_screen *screen, struct zink_batch_state *bs);
+   void (*batch_descriptor_reset)(struct zink_screen *screen, struct zink_batch_state *bs);
+   void (*batch_descriptor_deinit)(struct zink_screen *screen, struct zink_batch_state *bs);
+   bool (*descriptors_init)(struct zink_context *ctx);
+   void (*descriptors_deinit)(struct zink_context *ctx);
+   bool lazy_descriptors;
 
    PFN_vkGetMemoryFdKHR vk_GetMemoryFdKHR;
    PFN_vkCmdBeginConditionalRenderingEXT vk_CmdBeginConditionalRenderingEXT;
@@ -145,6 +172,7 @@ struct zink_screen {
 
    PFN_vkCreateDebugUtilsMessengerEXT vk_CreateDebugUtilsMessengerEXT;
    PFN_vkDestroyDebugUtilsMessengerEXT vk_DestroyDebugUtilsMessengerEXT;
+   PFN_vkCmdInsertDebugUtilsLabelEXT vk_CmdInsertDebugUtilsLabelEXT;
 
 #if defined(MVK_VERSION)
    PFN_vkGetMoltenVKConfigurationMVK vk_GetMoltenVKConfigurationMVK;
@@ -174,6 +202,7 @@ struct zink_screen {
 
    PFN_vkGetPhysicalDeviceMultisamplePropertiesEXT vk_GetPhysicalDeviceMultisamplePropertiesEXT;
    PFN_vkCmdSetSampleLocationsEXT vk_CmdSetSampleLocationsEXT;
+   VkExtent2D maxSampleLocationGridSize[5];
 };
 
 
@@ -248,6 +277,9 @@ VkFormat
 zink_get_format(struct zink_screen *screen, enum pipe_format format);
 
 bool
+zink_screen_timeline_wait(struct zink_screen *screen, uint32_t batch_id, uint64_t timeout);
+
+bool
 zink_is_depth_format_supported(struct zink_screen *screen, VkFormat format);
 
 #define GET_PROC_ADDR(x) do {                                               \
@@ -279,4 +311,6 @@ zink_is_depth_format_supported(struct zink_screen *screen, VkFormat format);
 void
 zink_screen_update_pipeline_cache(struct zink_screen *screen);
 
+void
+zink_screen_init_descriptor_funcs(struct zink_screen *screen, bool fallback);
 #endif

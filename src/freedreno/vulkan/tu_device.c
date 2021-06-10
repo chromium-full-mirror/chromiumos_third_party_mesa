@@ -177,6 +177,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .EXT_shader_stencil_export = true,
       .EXT_shader_viewport_index_layer = true,
       .EXT_vertex_attribute_divisor = true,
+      .EXT_provoking_vertex = true,
 #ifdef ANDROID
       .ANDROID_native_buffer = true,
 #endif
@@ -272,38 +273,6 @@ tu_physical_device_finish(struct tu_physical_device *device)
    vk_physical_device_finish(&device->vk);
 }
 
-static VKAPI_ATTR void *
-default_alloc_func(void *pUserData,
-                   size_t size,
-                   size_t align,
-                   VkSystemAllocationScope allocationScope)
-{
-   return malloc(size);
-}
-
-static VKAPI_ATTR void *
-default_realloc_func(void *pUserData,
-                     void *pOriginal,
-                     size_t size,
-                     size_t align,
-                     VkSystemAllocationScope allocationScope)
-{
-   return realloc(pOriginal, size);
-}
-
-static VKAPI_ATTR void
-default_free_func(void *pUserData, void *pMemory)
-{
-   free(pMemory);
-}
-
-static const VkAllocationCallbacks default_alloc = {
-   .pUserData = NULL,
-   .pfnAllocation = default_alloc_func,
-   .pfnReallocation = default_realloc_func,
-   .pfnFree = default_free_func,
-};
-
 static const struct debug_control tu_debug_options[] = {
    { "startup", TU_DEBUG_STARTUP },
    { "nir", TU_DEBUG_NIR },
@@ -335,7 +304,7 @@ tu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
 
    if (pAllocator == NULL)
-      pAllocator = &default_alloc;
+      pAllocator = vk_default_allocator();
 
    instance = vk_zalloc(pAllocator, sizeof(*instance), 8,
                         VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
@@ -766,6 +735,13 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          features->timelineSemaphore = true;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT: {
+         VkPhysicalDeviceProvokingVertexFeaturesEXT *features =
+            (VkPhysicalDeviceProvokingVertexFeaturesEXT *)ext;
+         features->provokingVertexLast = true;
+         features->transformFeedbackPreservesProvokingVertex = true;
+         break;
+      }
 
       default:
          break;
@@ -1091,6 +1067,13 @@ tu_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          props->maxTimelineSemaphoreValueDifference = UINT64_MAX;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_PROPERTIES_EXT: {
+         VkPhysicalDeviceProvokingVertexPropertiesEXT *properties =
+            (VkPhysicalDeviceProvokingVertexPropertiesEXT *)ext;
+         properties->provokingVertexModePerPipeline = true;
+         properties->transformFeedbackPreservesTriangleFanProvokingVertex = false;
+         break;
+      }
       default:
          break;
       }
@@ -1357,7 +1340,8 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    if (custom_border_colors)
       global_size += TU_BORDER_COLOR_COUNT * sizeof(struct bcolor_entry);
 
-   result = tu_bo_init_new(device, &device->global_bo, global_size, false);
+   result = tu_bo_init_new(device, &device->global_bo, global_size,
+                           TU_BO_ALLOC_NO_FLAGS);
    if (result != VK_SUCCESS) {
       vk_startup_errorf(device->instance, result, "BO init");
       goto fail_global_bo;
@@ -1588,7 +1572,8 @@ tu_get_scratch_bo(struct tu_device *dev, uint64_t size, struct tu_bo **bo)
    }
 
    unsigned bo_size = 1ull << size_log2;
-   VkResult result = tu_bo_init_new(dev, &dev->scratch_bos[index].bo, bo_size, false);
+   VkResult result = tu_bo_init_new(dev, &dev->scratch_bos[index].bo, bo_size,
+                                    TU_BO_ALLOC_NO_FLAGS);
    if (result != VK_SUCCESS) {
       mtx_unlock(&dev->scratch_bos[index].construct_mtx);
       return result;
@@ -1778,7 +1763,8 @@ tu_AllocateMemory(VkDevice _device,
       }
    } else {
       result =
-         tu_bo_init_new(device, &mem->bo, pAllocateInfo->allocationSize, false);
+         tu_bo_init_new(device, &mem->bo, pAllocateInfo->allocationSize,
+                        TU_BO_ALLOC_NO_FLAGS);
    }
 
 
@@ -2005,7 +1991,8 @@ tu_CreateEvent(VkDevice _device,
    if (!event)
       return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   VkResult result = tu_bo_init_new(device, &event->bo, 0x1000, false);
+   VkResult result = tu_bo_init_new(device, &event->bo, 0x1000,
+                                    TU_BO_ALLOC_NO_FLAGS);
    if (result != VK_SUCCESS)
       goto fail_alloc;
 

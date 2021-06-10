@@ -1053,6 +1053,7 @@ static void visit_load_const(struct lp_build_nir_context *bld_base,
    struct lp_build_context *int_bld = get_int_bld(bld_base, true, instr->def.bit_size);
    for (unsigned i = 0; i < instr->def.num_components; i++)
       result[i] = lp_build_const_int_vec(bld_base->base.gallivm, int_bld->type, instr->def.bit_size == 32 ? instr->value[i].u32 : instr->value[i].u64);
+   memset(&result[instr->def.num_components], 0, NIR_MAX_VEC_COMPONENTS - instr->def.num_components);
    assign_ssa_dest(bld_base, &instr->def, result);
 }
 
@@ -1689,13 +1690,13 @@ static void visit_intrinsic(struct lp_build_nir_context *bld_base,
    case nir_intrinsic_load_base_instance:
    case nir_intrinsic_load_base_vertex:
    case nir_intrinsic_load_first_vertex:
-   case nir_intrinsic_load_work_group_id:
+   case nir_intrinsic_load_workgroup_id:
    case nir_intrinsic_load_local_invocation_id:
-   case nir_intrinsic_load_num_work_groups:
+   case nir_intrinsic_load_num_workgroups:
    case nir_intrinsic_load_invocation_id:
    case nir_intrinsic_load_front_face:
    case nir_intrinsic_load_draw_id:
-   case nir_intrinsic_load_local_group_size:
+   case nir_intrinsic_load_workgroup_size:
    case nir_intrinsic_load_work_dim:
    case nir_intrinsic_load_tess_coord:
    case nir_intrinsic_load_tess_level_outer:
@@ -2120,6 +2121,7 @@ static void visit_ssa_undef(struct lp_build_nir_context *bld_base,
    struct lp_build_context *undef_bld = get_int_bld(bld_base, true, instr->def.bit_size);
    for (unsigned i = 0; i < num_components; i++)
       undef[i] = LLVMGetUndef(undef_bld->vec_type);
+   memset(&undef[num_components], 0, NIR_MAX_VEC_COMPONENTS - num_components);
    assign_ssa_dest(bld_base, &instr->def, undef);
 }
 

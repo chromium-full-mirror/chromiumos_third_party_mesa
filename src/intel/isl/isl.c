@@ -266,7 +266,7 @@ isl_device_init(struct isl_device *dev,
       dev->ds.hiz_offset = 0;
    }
 
-   if (ISL_GFX_VER(dev) >= 12) {
+   if (ISL_GFX_VERX10(dev) == 120) {
       dev->ds.size += GFX12_MI_LOAD_REGISTER_IMM_length * 4 * 2;
    }
 
@@ -1466,9 +1466,12 @@ isl_calc_row_pitch_alignment(const struct isl_device *dev,
     * PRI_STRIDE Stride (p1254):
     *
     *    "When using linear memory, this must be at least 64 byte aligned."
+    *
+    * However, when displaying on NVIDIA and recent AMD GPUs via PRIME,
+    * we need a larger pitch of 256 bytes.  We do that just in case.
     */
    if (surf_info->usage & ISL_SURF_USAGE_DISPLAY_BIT)
-      alignment = isl_align(alignment, 64);
+      alignment = isl_align(alignment, 256);
 
    return alignment;
 }
@@ -1971,6 +1974,11 @@ isl_surf_supports_ccs(const struct isl_device *dev,
    if (ISL_GFX_VER(dev) <= 6)
       return false;
 
+   /* Wa_22011186057: Disable compression on ADL-P A0 */
+   if (dev->info->is_alderlake && dev->info->gt == 2 &&
+       dev->info->revision == 0)
+      return false;
+
    if (surf->usage & ISL_SURF_USAGE_DISABLE_AUX_BIT)
       return false;
 
@@ -2116,6 +2124,11 @@ isl_surf_get_ccs_surf(const struct isl_device *dev,
       return false;
 
    if (ISL_GFX_VER(dev) >= 12) {
+      /* With depth surfaces, HIZ is required for CCS. */
+      if (surf->usage & ISL_SURF_USAGE_DEPTH_BIT &&
+          aux_surf->tiling != ISL_TILING_HIZ)
+         return false;
+
       enum isl_format ccs_format;
       switch (isl_format_get_layout(surf->format)->bpb) {
       case 8:     ccs_format = ISL_FORMAT_GFX12_CCS_8BPP_Y0;    break;
@@ -2262,10 +2275,10 @@ isl_buffer_fill_state_s(const struct isl_device *dev, void *state,
 }
 
 void
-isl_null_fill_state(const struct isl_device *dev, void *state,
-                    struct isl_extent3d size)
+isl_null_fill_state_s(const struct isl_device *dev, void *state,
+                      const struct isl_null_fill_state_info *restrict info)
 {
-   isl_genX_call(dev, null_fill_state, state, size);
+   isl_genX_call(dev, null_fill_state, state, info);
 }
 
 void

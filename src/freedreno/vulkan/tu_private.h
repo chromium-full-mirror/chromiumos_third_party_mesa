@@ -423,8 +423,16 @@ tu_device_is_lost(struct tu_device *device)
 VkResult
 tu_device_submit_deferred_locked(struct tu_device *dev);
 
+enum tu_bo_alloc_flags
+{
+   TU_BO_ALLOC_NO_FLAGS = 0,
+   TU_BO_ALLOC_ALLOW_DUMP = 1 << 0,
+   TU_BO_ALLOC_GPU_READ_ONLY = 1 << 1,
+};
+
 VkResult
-tu_bo_init_new(struct tu_device *dev, struct tu_bo *bo, uint64_t size, bool dump);
+tu_bo_init_new(struct tu_device *dev, struct tu_bo *bo, uint64_t size,
+               enum tu_bo_alloc_flags flags);
 VkResult
 tu_bo_init_dmabuf(struct tu_device *dev,
                   struct tu_bo *bo,
@@ -862,6 +870,7 @@ struct tu_lrz_pipeline
    uint32_t force_disable_mask;
    bool fs_has_kill;
    bool force_late_z;
+   bool early_fragment_tests;
 };
 
 struct tu_lrz_state
@@ -1101,6 +1110,9 @@ struct tu_pipeline
 
    struct tu_cs cs;
 
+   /* Separate BO for private memory since it should GPU writable */
+   struct tu_bo pvtmem_bo;
+
    struct tu_pipeline_layout *layout;
 
    bool need_indirect_descriptor_sets;
@@ -1160,6 +1172,8 @@ struct tu_pipeline
    {
       uint32_t local_size[3];
    } compute;
+
+   bool provoking_vertex_last;
 
    struct tu_lrz_pipeline lrz;
 

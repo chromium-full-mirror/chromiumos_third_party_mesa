@@ -81,7 +81,7 @@
     - changes:
         *gallium_core_file_list
       when: on_success
-    - changes:
+    - changes: &softpipe_file_list
       - src/gallium/drivers/softpipe/**/*
       - src/gallium/winsys/sw/**/*
       when: on_success
@@ -167,7 +167,32 @@
       when: on_success
     - when: never
 
-.panfrost-rules:
+.panfrost-midgard-rules:
+  stage: arm
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes: &panfrost_gallium_file_list
+      - src/gallium/drivers/panfrost/**/*
+      - src/gallium/winsys/panfrost/**/*
+      when: on_success
+    - changes: &panfrost_common_file_list
+      - src/panfrost/include/*
+      - src/panfrost/lib/*
+      - src/panfrost/shared/*
+      - src/panfrost/util/*
+      when: on_success
+    - changes:
+      - src/panfrost/midgard/**/*
+      when: on_success
+    - when: never
+
+.panfrost-bifrost-rules:
   stage: arm
   rules:
     - *ignore_scheduled_pipelines
@@ -178,9 +203,13 @@
         *gallium_core_file_list
       when: on_success
     - changes:
-      - src/gallium/drivers/panfrost/**/*
-      - src/gallium/winsys/panfrost/**/*
-      - src/panfrost/**/*
+        *panfrost_common_file_list
+      when: on_success
+    - changes:
+        *panfrost_gallium_file_list
+      when: on_success
+    - changes:
+      - src/panfrost/bifrost/**/*
       when: on_success
     - when: never
 
@@ -253,12 +282,13 @@
     - when: never
 
 .radv-rules:
+  stage: amd
   rules:
     - *ignore_scheduled_pipelines
     - changes:
         *mesa_core_file_list
       when: on_success
-    - changes:
+    - changes: &radv_file_list
       - src/amd/**/*
       - src/vulkan/**/*
       when: on_success
@@ -277,7 +307,7 @@
     - changes:
         *llvmpipe_file_list
       when: on_success
-    - changes:
+    - changes: &virgl_file_list
       - src/gallium/drivers/virgl/**/*
       - src/gallium/winsys/virgl/**/*
       when: on_success
@@ -293,7 +323,7 @@
     - changes:
         *gallium_core_file_list
       when: on_success
-    - changes:
+    - changes: &radeonsi_file_list
       - src/gallium/drivers/radeonsi/**/*
       - src/gallium/winsys/amdgpu/**/*
       - src/amd/*
@@ -301,6 +331,23 @@
       - src/amd/common/**/*
       - src/amd/llvm/**/*
       - src/amd/registers/**/*
+      when: on_success
+    - when: never
+
+.i915g-rules:
+  stage: intel
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes:
+      - src/gallium/drivers/i915/**/*
+      - src/gallium/winsys/i915/**/*
+      - src/intel/**/*
       when: on_success
     - when: never
 
@@ -317,6 +364,21 @@
     - changes:
       - src/gallium/drivers/iris/**/*
       - src/gallium/winsys/iris/**/*
+      - src/intel/**/*
+      when: on_success
+    - when: never
+
+.anv-rules:
+  stage: intel
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *vulkan_file_list
+      when: on_success
+    - changes:
       - src/intel/**/*
       when: on_success
     - when: never
@@ -380,7 +442,67 @@
     - changes:
         *lavapipe_file_list
       when: on_success
-    - changes:
+    - changes: &zink_file_list
       - src/gallium/drivers/zink/**/*
+      when: on_success
+    - when: never
+
+# Rules for unusual architectures that only build a subset of drivers
+.ppc64el-rules:
+   rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes:
+        *softpipe_file_list
+      when: on_success
+    - changes:
+        *llvmpipe_file_list
+      when: on_success
+    - changes:
+        *lavapipe_file_list
+      when: on_success
+    - changes:
+        *radv_file_list
+      when: on_success
+    - changes:
+        *radeonsi_file_list
+      when: on_success
+    - changes:
+        *zink_file_list
+      when: on_success
+    - changes:
+        *virgl_file_list
+      when: on_success
+    - changes:
+      - src/gallium/drivers/nouveau/**/*
+      - src/gallium/winsys/nouveau/**/*
+      when: on_success
+    - when: never
+
+.s390x-rules:
+   rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes:
+        *softpipe_file_list
+      when: on_success
+    - changes:
+        *llvmpipe_file_list
+      when: on_success
+    - changes:
+        *lavapipe_file_list
+      when: on_success
+    - changes:
+        *zink_file_list
       when: on_success
     - when: never

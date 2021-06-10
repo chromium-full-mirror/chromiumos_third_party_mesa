@@ -42,6 +42,61 @@
 #include "asahi/lib/agx_pack.h"
 #include "asahi/lib/agx_formats.h"
 
+static struct pipe_stream_output_target *
+agx_create_stream_output_target(struct pipe_context *pctx,
+                                struct pipe_resource *prsc,
+                                unsigned buffer_offset,
+                                unsigned buffer_size)
+{
+   struct pipe_stream_output_target *target;
+
+   target = &rzalloc(pctx, struct agx_streamout_target)->base;
+
+   if (!target)
+      return NULL;
+
+   pipe_reference_init(&target->reference, 1);
+   pipe_resource_reference(&target->buffer, prsc);
+
+   target->context = pctx;
+   target->buffer_offset = buffer_offset;
+   target->buffer_size = buffer_size;
+
+   return target;
+}
+
+static void
+agx_stream_output_target_destroy(struct pipe_context *pctx,
+                                 struct pipe_stream_output_target *target)
+{
+   pipe_resource_reference(&target->buffer, NULL);
+   ralloc_free(target);
+}
+
+static void
+agx_set_stream_output_targets(struct pipe_context *pctx,
+                              unsigned num_targets,
+                              struct pipe_stream_output_target **targets,
+                              const unsigned *offsets)
+{
+   struct agx_context *ctx = agx_context(pctx);
+   struct agx_streamout *so = &ctx->streamout;
+
+   assert(num_targets <= ARRAY_SIZE(so->targets));
+
+   for (unsigned i = 0; i < num_targets; i++) {
+      if (offsets[i] != -1)
+         agx_so_target(targets[i])->offset = offsets[i];
+
+      pipe_so_target_reference(&so->targets[i], targets[i]);
+   }
+
+   for (unsigned i = 0; i < so->num_targets; i++)
+      pipe_so_target_reference(&so->targets[i], NULL);
+
+   so->num_targets = num_targets;
+}
+
 static void
 agx_set_blend_color(struct pipe_context *pctx,
                     const struct pipe_blend_color *state)
@@ -154,12 +209,17 @@ agx_create_rs_state(struct pipe_context *ctx,
    struct agx_rasterizer *so = CALLOC_STRUCT(agx_rasterizer);
    so->base = *cso;
 
+   /* Line width is packed in a 4:4 fixed point format */
+   unsigned line_width_fixed = ((unsigned) (cso->line_width * 16.0f)) - 1;
+
+   /* Clamp to maximum line width */
+   so->line_width = MIN2(line_width_fixed, 0xFF);
+
    agx_pack(so->cull, CULL, cfg) {
-      /* TODO: debug culling */
       cfg.cull_front = cso->cull_face & PIPE_FACE_FRONT;
       cfg.cull_back = cso->cull_face & PIPE_FACE_BACK;
       cfg.front_face_ccw = cso->front_ccw;
-      //    cfg.depth_clip = cso->depth_clip_near;
+      cfg.depth_clip = cso->depth_clip_near;
       cfg.depth_clamp = !cso->depth_clip_near;
    };
 
@@ -170,7 +230,18 @@ static void
 agx_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
 {
    struct agx_context *ctx = agx_context(pctx);
-   ctx->rast = cso;
+   struct agx_rasterizer *so = cso;
+
+   /* Check if scissor state has changed, since scissor enable is part of the
+    * rasterizer state but everything else needed for scissors is part of
+    * viewport/scissor states */
+   bool scissor_changed = (cso == NULL) || (ctx->rast == NULL) ||
+      (ctx->rast->base.scissor != so->base.scissor);
+
+   ctx->rast = so;
+
+   if (scissor_changed)
+      ctx->dirty |= AGX_DIRTY_SCISSOR;
 }
 
 static enum agx_wrap
@@ -273,12 +344,26 @@ agx_channel_from_pipe(enum pipe_swizzle in)
       return AGX_CHANNEL_0;
 }
 
+static enum agx_layout
+agx_translate_layout(uint64_t modifier)
+{
+   switch (modifier) {
+   case DRM_FORMAT_MOD_APPLE_64X64_MORTON_ORDER:
+      return AGX_LAYOUT_TILED_64X64;
+   case DRM_FORMAT_MOD_LINEAR:
+      return AGX_LAYOUT_LINEAR;
+   default:
+      unreachable("Invalid modifier");
+   }
+}
+
 static struct pipe_sampler_view *
 agx_create_sampler_view(struct pipe_context *pctx,
                         struct pipe_resource *texture,
                         const struct pipe_sampler_view *state)
 {
    struct agx_device *dev = agx_device(pctx->screen);
+   struct agx_resource *rsrc = agx_resource(texture);
    struct agx_sampler_view *so = CALLOC_STRUCT(agx_sampler_view);
 
    if (!so)
@@ -301,19 +386,27 @@ agx_create_sampler_view(struct pipe_context *pctx,
 
    util_format_compose_swizzles(desc->swizzle, view_swizzle, out_swizzle);
 
+   if (state->u.tex.first_level != 0)
+      unreachable("todo: nonzero first level");
+
    /* Pack the descriptor into GPU memory */
    agx_pack(so->desc->ptr.cpu, TEXTURE, cfg) {
-      assert(state->format == PIPE_FORMAT_B8G8R8A8_UNORM); // TODO: format table
-      cfg.format = 0xa22;
+      cfg.layout = agx_translate_layout(rsrc->modifier);
+      cfg.format = agx_pixel_format[state->format].hw;
       cfg.swizzle_r = agx_channel_from_pipe(out_swizzle[0]);
       cfg.swizzle_g = agx_channel_from_pipe(out_swizzle[1]);
       cfg.swizzle_b = agx_channel_from_pipe(out_swizzle[2]);
       cfg.swizzle_a = agx_channel_from_pipe(out_swizzle[3]);
       cfg.width = texture->width0;
       cfg.height = texture->height0;
+      cfg.levels = state->u.tex.last_level + 1;
       cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
-      cfg.unk_1 = agx_resource(texture)->bo->ptr.gpu;
-      cfg.unk_2 = 0x20000;
+      cfg.unk_1 = rsrc->bo->ptr.gpu;
+      cfg.unk_2 = false;
+
+      cfg.stride = (rsrc->modifier == DRM_FORMAT_MOD_LINEAR) ?
+         (rsrc->slices[0].line_stride - 16) :
+         AGX_RT_STRIDE_TILED;
    }
 
    /* Initialize base object */
@@ -407,11 +500,18 @@ agx_set_sample_mask(struct pipe_context *pipe, unsigned sample_mask)
 }
 
 static void
-agx_set_scissor_states(struct pipe_context *ctx,
+agx_set_scissor_states(struct pipe_context *pctx,
                        unsigned start_slot,
                        unsigned num_scissors,
-                       const struct pipe_scissor_state *state)
+                       const struct pipe_scissor_state *scissor)
 {
+   struct agx_context *ctx = agx_context(pctx);
+
+   assert(start_slot == 0 && "no geometry shaders");
+   assert(num_scissors == 1 && "no geometry shaders");
+
+   ctx->scissor = *scissor;
+   ctx->dirty |= AGX_DIRTY_SCISSOR;
 }
 
 static void
@@ -431,30 +531,81 @@ agx_set_viewport_states(struct pipe_context *pctx,
    assert(start_slot == 0 && "no geometry shaders");
    assert(num_viewports == 1 && "no geometry shaders");
 
-   if (!vp)
-      return;
+   ctx->dirty |= AGX_DIRTY_VIEWPORT;
+   ctx->viewport = *vp;
+}
 
-   float vp_minx = vp->translate[0] - fabsf(vp->scale[0]);
-   float vp_maxx = vp->translate[0] + fabsf(vp->scale[0]);
-   float vp_miny = vp->translate[1] - fabsf(vp->scale[1]);
-   float vp_maxy = vp->translate[1] + fabsf(vp->scale[1]);
+struct agx_viewport_scissor {
+   uint64_t viewport;
+   unsigned scissor;
+};
 
-   float near_z, far_z;
-   util_viewport_zmin_zmax(vp, false, &near_z, &far_z);
+static struct agx_viewport_scissor
+agx_upload_viewport_scissor(struct agx_pool *pool,
+                            struct agx_batch *batch,
+                            const struct pipe_viewport_state *vp,
+                            const struct pipe_scissor_state *ss)
+{
+   struct agx_ptr T = agx_pool_alloc_aligned(pool, AGX_VIEWPORT_LENGTH, 64);
 
-   agx_pack(ctx->viewport, VIEWPORT, cfg) {
-      cfg.min_tile_x = vp_minx / 32;
-      cfg.min_tile_y = vp_miny / 32;
-      cfg.max_tile_x = MAX2(ceilf(vp_maxx / 32.0), 1.0);
-      cfg.max_tile_y = MAX2(ceilf(vp_maxy / 32.0), 1.0);
+   float trans_x = vp->translate[0], trans_y = vp->translate[1];
+   float abs_scale_x = fabsf(vp->scale[0]), abs_scale_y = fabsf(vp->scale[1]);
+
+   /* Calculate the extent of the viewport. Note if a particular dimension of
+    * the viewport is an odd number of pixels, both the translate and the scale
+    * will have a fractional part of 0.5, so adding and subtracting them yields
+    * an integer. Therefore we don't need to round explicitly */
+   unsigned minx = CLAMP((int) (trans_x - abs_scale_x), 0, batch->width);
+   unsigned miny = CLAMP((int) (trans_y - abs_scale_y), 0, batch->height);
+   unsigned maxx = CLAMP((int) (trans_x + abs_scale_x), 0, batch->width);
+   unsigned maxy = CLAMP((int) (trans_y + abs_scale_y), 0, batch->height);
+
+   if (ss) {
+      minx = MAX2(ss->minx, minx);
+      miny = MAX2(ss->miny, miny);
+      maxx = MIN2(ss->maxx, maxx);
+      maxy = MIN2(ss->maxy, maxy);
+   }
+
+   assert(maxx > minx && maxy > miny);
+
+   float minz, maxz;
+   util_viewport_zmin_zmax(vp, false, &minz, &maxz);
+
+   agx_pack(T.cpu, VIEWPORT, cfg) {
+      cfg.min_tile_x = minx / 32;
+      cfg.min_tile_y = miny / 32;
+      cfg.max_tile_x = DIV_ROUND_UP(maxx, 32);
+      cfg.max_tile_y = DIV_ROUND_UP(maxy, 32);
       cfg.clip_tile = true;
 
       cfg.translate_x = vp->translate[0];
       cfg.translate_y = vp->translate[1];
       cfg.scale_x = vp->scale[0];
       cfg.scale_y = vp->scale[1];
-      cfg.near_z = near_z;
-      cfg.z_range = far_z - near_z;
+
+      /* Assumes [0, 1] clip coordinates. If half-z is not in use, lower_half_z
+       * is called to ensure this works. */
+      cfg.translate_z = minz;
+      cfg.scale_z = maxz - minz;
+   };
+
+   /* Allocate a new scissor descriptor */
+   struct agx_scissor_packed *ptr = batch->scissor.bo->ptr.cpu;
+   unsigned index = (batch->scissor.count++);
+
+   agx_pack(ptr + index, SCISSOR, cfg) {
+      cfg.min_x = minx;
+      cfg.min_y = miny;
+      cfg.min_z = minz;
+      cfg.max_x = maxx;
+      cfg.max_y = maxy;
+      cfg.max_z = maxz;
+   }
+
+   return (struct agx_viewport_scissor) {
+      .viewport = T.gpu,
+      .scissor = index
    };
 }
 
@@ -475,21 +626,28 @@ agx_set_framebuffer_state(struct pipe_context *pctx,
    ctx->batch->height = state->height;
    ctx->batch->nr_cbufs = state->nr_cbufs;
    ctx->batch->cbufs[0] = state->cbufs[0];
+   ctx->dirty = ~0;
 
    for (unsigned i = 0; i < state->nr_cbufs; ++i) {
       struct pipe_surface *surf = state->cbufs[i];
       struct agx_resource *tex = agx_resource(surf->texture);
+      const struct util_format_description *desc =
+         util_format_description(surf->format);
+
       agx_pack(ctx->render_target[i], RENDER_TARGET, cfg) {
-         assert(surf->format == PIPE_FORMAT_B8G8R8A8_UNORM); // TODO: format table
-         cfg.format = 0xa22;
-         cfg.swizzle_r = AGX_CHANNEL_B;
-         cfg.swizzle_g = AGX_CHANNEL_G;
-         cfg.swizzle_b = AGX_CHANNEL_R;
-         cfg.swizzle_a = AGX_CHANNEL_A;
+         cfg.layout = agx_translate_layout(tex->modifier);
+         cfg.format = agx_pixel_format[surf->format].hw;
+         cfg.swizzle_r = agx_channel_from_pipe(desc->swizzle[0]);
+         cfg.swizzle_g = agx_channel_from_pipe(desc->swizzle[1]);
+         cfg.swizzle_b = agx_channel_from_pipe(desc->swizzle[2]);
+         cfg.swizzle_a = agx_channel_from_pipe(desc->swizzle[3]);
          cfg.width = state->width;
          cfg.height = state->height;
          cfg.buffer = tex->bo->ptr.gpu;
-         cfg.unk_100 = 0x1000000;
+
+         cfg.stride = (tex->modifier == DRM_FORMAT_MOD_LINEAR) ?
+            (tex->slices[0].line_stride - 4) :
+            AGX_RT_STRIDE_TILED;
       };
    }
 }
@@ -724,7 +882,8 @@ static bool
 agx_update_vs(struct agx_context *ctx)
 {
    struct agx_vs_shader_key key = {
-      .num_vbufs = util_last_bit(ctx->vb_mask)
+      .num_vbufs = util_last_bit(ctx->vb_mask),
+      .clip_halfz = ctx->rast->base.clip_halfz,
    };
 
    memcpy(key.attributes, ctx->attributes,
@@ -1021,13 +1180,21 @@ static uint64_t
 demo_rasterizer(struct agx_context *ctx, struct agx_pool *pool)
 {
    struct agx_ptr t = agx_pool_alloc_aligned(pool, AGX_RASTERIZER_LENGTH, 64);
+   struct agx_rasterizer *rast = ctx->rast;
 
    agx_pack(t.cpu, RASTERIZER, cfg) {
       cfg.front.depth_function = ctx->zs.z_func;
       cfg.back.depth_function = ctx->zs.z_func;
 
+      cfg.front.line_width = cfg.back.line_width = rast->line_width;
+
       cfg.front.disable_depth_write = ctx->zs.disable_z_write;
       cfg.back.disable_depth_write = ctx->zs.disable_z_write;
+
+      /* Always enable scissoring so we may scissor to the viewport (TODO:
+       * optimize this out if the viewport is the default and the app does not
+       * use the scissor test) */
+      cfg.scissor_enable = true;
    };
 
    return t.gpu;
@@ -1068,13 +1235,15 @@ demo_unk12(struct agx_pool *pool)
 }
 
 static uint64_t
-demo_unk14(struct agx_pool *pool)
+agx_set_scissor_index(struct agx_pool *pool, unsigned index)
 {
-   uint32_t unk[] = {
-      0x100, 0x0,
+   struct agx_ptr T = agx_pool_alloc_aligned(pool, AGX_SET_SCISSOR_LENGTH, 64);
+
+   agx_pack(T.cpu, SET_SCISSOR, cfg) {
+      cfg.index = index;
    };
 
-   return agx_pool_upload(pool, unk, sizeof(unk));
+   return T.gpu;
 }
 
 static void
@@ -1115,10 +1284,18 @@ agx_encode_state(struct agx_context *ctx, uint8_t *out,
    agx_push_record(&out, 4, demo_linkage(ctx->vs, pool));
    agx_push_record(&out, 7, demo_rasterizer(ctx, pool));
    agx_push_record(&out, 5, demo_unk11(pool, is_lines, reads_tib));
-   agx_push_record(&out, 10, agx_pool_upload(pool, ctx->viewport, sizeof(ctx->viewport)));
+
+   if (ctx->dirty & (AGX_DIRTY_VIEWPORT | AGX_DIRTY_SCISSOR)) {
+      struct agx_viewport_scissor vps = agx_upload_viewport_scissor(pool,
+            ctx->batch, &ctx->viewport,
+            ctx->rast->base.scissor ? &ctx->scissor : NULL);
+
+      agx_push_record(&out, 10, vps.viewport);
+      agx_push_record(&out, 2, agx_set_scissor_index(pool, vps.scissor));
+   }
+
    agx_push_record(&out, 3, demo_unk12(pool));
    agx_push_record(&out, 2, agx_pool_upload(pool, ctx->rast->cull, sizeof(ctx->rast->cull)));
-   agx_push_record(&out, 2, demo_unk14(pool));
 
    return (out - 1); // XXX: alignment fixup, or something
 }
@@ -1159,6 +1336,15 @@ agx_index_buffer_ptr(struct agx_batch *batch,
    }
 }
 
+static bool
+agx_scissor_culls_everything(struct agx_context *ctx)
+{
+        const struct pipe_scissor_state ss = ctx->scissor;
+
+        return ctx->rast->base.scissor &&
+		((ss.minx == ss.maxx) || (ss.miny == ss.maxy));
+}
+
 static void
 agx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
              unsigned drawid_offset,
@@ -1178,6 +1364,9 @@ agx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
    struct agx_context *ctx = agx_context(pctx);
    struct agx_batch *batch = ctx->batch;
+
+   if (agx_scissor_culls_everything(ctx))
+	   return;
 
    /* TODO: masks */
    ctx->batch->draw |= ~0;
@@ -1237,6 +1426,7 @@ agx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    }
 
    batch->encoder_current = out;
+   ctx->dirty = 0;
 }
 
 void agx_init_state_functions(struct pipe_context *ctx);
@@ -1281,4 +1471,7 @@ agx_init_state_functions(struct pipe_context *ctx)
    ctx->sampler_view_destroy = agx_sampler_view_destroy;
    ctx->surface_destroy = agx_surface_destroy;
    ctx->draw_vbo = agx_draw_vbo;
+   ctx->create_stream_output_target = agx_create_stream_output_target;
+   ctx->stream_output_target_destroy = agx_stream_output_target_destroy;
+   ctx->set_stream_output_targets = agx_set_stream_output_targets;
 }

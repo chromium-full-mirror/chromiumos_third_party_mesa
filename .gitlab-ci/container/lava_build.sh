@@ -33,6 +33,7 @@ if [[ "$DEBIAN_ARCH" = "arm64" ]]; then
     DEVICE_TREES+=" arch/arm64/boot/dts/qcom/apq8016-sbc.dtb"
     DEVICE_TREES+=" arch/arm64/boot/dts/qcom/apq8096-db820c.dtb"
     DEVICE_TREES+=" arch/arm64/boot/dts/amlogic/meson-g12b-a311d-khadas-vim3.dtb"
+    DEVICE_TREES+=" arch/arm64/boot/dts/mediatek/mt8183-kukui-jacuzzi-juniper-sku16.dtb"
     KERNEL_IMAGE_NAME="Image"
 elif [[ "$DEBIAN_ARCH" = "armhf" ]]; then
     GCC_ARCH="arm-linux-gnueabihf"
@@ -77,6 +78,7 @@ apt-get install -y --no-remove \
                    libegl1-mesa-dev \
                    libgbm-dev \
                    libgles2-mesa-dev \
+                   libpng-dev \
                    libssl-dev \
                    libudev-dev \
                    libvulkan-dev \
@@ -98,6 +100,7 @@ if [[ "$DEBIAN_ARCH" = "armhf" ]]; then
                        libelf-dev:armhf \
                        libgbm-dev:armhf \
                        libgles2-mesa-dev:armhf \
+                       libpng-dev:armhf \
                        libudev-dev:armhf \
                        libvulkan-dev:armhf \
                        libwaffle-dev:armhf \
@@ -110,6 +113,13 @@ fi
 ############### Building
 STRIP_CMD="${GCC_ARCH}-strip"
 mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}
+
+
+############### Build apitrace
+. .gitlab-ci/container/build-apitrace.sh
+mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/apitrace
+mv /apitrace/build /lava-files/rootfs-${DEBIAN_ARCH}/apitrace
+rm -rf /apitrace
 
 
 ############### Build dEQP runner
@@ -134,54 +144,8 @@ mv /piglit /lava-files/rootfs-${DEBIAN_ARCH}/.
 EXTRA_MESON_ARGS+=" -D prefix=/libdrm"
 . .gitlab-ci/container/build-libdrm.sh
 
-
-############### Cross-build kernel
-mkdir -p kernel
-wget -qO- ${KERNEL_URL} | tar -xj --strip-components=1 -C kernel
-pushd kernel
-
-# The kernel doesn't like the gold linker (or the old lld in our debians).
-# Sneak in some override symlinks during kernel build until we can update
-# debian (they'll get blown away by the rm of the kernel dir at the end).
-mkdir -p ld-links
-for i in /usr/bin/*-ld /usr/bin/ld; do
-    i=`basename $i`
-    ln -sf /usr/bin/$i.bfd ld-links/$i
-done
-export PATH=`pwd`/ld-links:$PATH
-
-export LOCALVERSION="`basename $KERNEL_URL`"
-./scripts/kconfig/merge_config.sh ${DEFCONFIG} ../.gitlab-ci/container/${KERNEL_ARCH}.config
-make ${KERNEL_IMAGE_NAME}
-for image in ${KERNEL_IMAGE_NAME}; do
-    cp arch/${KERNEL_ARCH}/boot/${image} /lava-files/.
-done
-
-if [[ -n ${DEVICE_TREES} ]]; then
-    make dtbs
-    cp ${DEVICE_TREES} /lava-files/.
-fi
-
-if [[ ${DEBIAN_ARCH} = "amd64" ]]; then
-    make modules
-    INSTALL_MOD_PATH=/lava-files/rootfs-${DEBIAN_ARCH}/ make modules_install
-fi
-
-if [[ ${DEBIAN_ARCH} = "arm64" ]]; then
-    make Image.lzma
-    mkimage \
-        -f auto \
-        -A arm \
-        -O linux \
-        -d arch/arm64/boot/Image.lzma \
-        -C lzma\
-        -b arch/arm64/boot/dts/qcom/sdm845-cheza-r3.dtb \
-        /lava-files/cheza-kernel
-    KERNEL_IMAGE_NAME+=" cheza-kernel"
-fi
-
-popd
-rm -rf kernel
+############### Build kernel
+. .gitlab-ci/container/build-kernel.sh
 
 ############### Delete rust, since the tests won't be compiling anything.
 rm -rf /root/.cargo

@@ -327,6 +327,7 @@ struct radv_instance {
    bool enable_mrt_output_nan_fixup;
    bool disable_tc_compat_htile_in_general;
    bool disable_shrink_image_store;
+   bool absolute_depth_bias;
 };
 
 VkResult radv_init_wsi(struct radv_physical_device *physical_device);
@@ -755,7 +756,6 @@ struct radv_device {
    struct radeon_cmdbuf *empty_cs[RADV_MAX_QUEUE_FAMILIES];
 
    bool pbb_allowed;
-   bool dfsm_allowed;
    uint32_t tess_offchip_block_dw_size;
    uint32_t scratch_waves;
    uint32_t dispatch_initiator;
@@ -1338,6 +1338,7 @@ struct radv_cmd_state {
    struct radv_pipeline *emitted_pipeline;
    struct radv_pipeline *compute_pipeline;
    struct radv_pipeline *emitted_compute_pipeline;
+   struct radv_pipeline *rt_pipeline; /* emitted = emitted_compute_pipeline */
    struct radv_framebuffer *framebuffer;
    struct radv_render_pass *pass;
    const struct radv_subpass *subpass;
@@ -1397,6 +1398,9 @@ struct radv_cmd_state {
    enum rgp_flush_bits sqtt_flush_bits;
 
    uint8_t cb_mip[MAX_RTS];
+
+   /* Whether DRAW_{INDEX}_INDIRECT_MULTI is emitted. */
+   bool uses_draw_indirect_multi;
 };
 
 struct radv_cmd_pool {
@@ -1604,9 +1608,15 @@ radv_emit_shader_pointer(struct radv_device *device, struct radeon_cmdbuf *cs, u
 static inline struct radv_descriptor_state *
 radv_get_descriptors_state(struct radv_cmd_buffer *cmd_buffer, VkPipelineBindPoint bind_point)
 {
-   assert(bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS ||
-          bind_point == VK_PIPELINE_BIND_POINT_COMPUTE);
-   return &cmd_buffer->descriptors[bind_point];
+   switch (bind_point) {
+   case VK_PIPELINE_BIND_POINT_GRAPHICS:
+   case VK_PIPELINE_BIND_POINT_COMPUTE:
+      return &cmd_buffer->descriptors[bind_point];
+   case VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR:
+      return &cmd_buffer->descriptors[2];
+   default:
+      unreachable("Unhandled bind point");
+   }
 }
 
 /*
@@ -1678,7 +1688,6 @@ struct radv_ia_multi_vgt_param_helpers {
 
 struct radv_binning_state {
    uint32_t pa_sc_binner_cntl_0;
-   uint32_t db_dfsm_control;
 };
 
 #define SI_GS_PER_ES 128
@@ -1702,7 +1711,7 @@ struct radv_pipeline {
    uint32_t binding_stride[MAX_VBS];
 
    uint8_t attrib_bindings[MAX_VERTEX_ATTRIBS];
-   uint16_t attrib_ends[MAX_VERTEX_ATTRIBS];
+   uint32_t attrib_ends[MAX_VERTEX_ATTRIBS];
 
    bool use_per_attribute_vb_descs;
    uint32_t vb_desc_usage_mask;
@@ -1733,6 +1742,9 @@ struct radv_pipeline {
          /* Used for rbplus */
          uint32_t col_format;
          uint32_t cb_target_mask;
+
+         /* Whether the pipeline uses NGG (GFX10+). */
+         bool is_ngg;
       } graphics;
    };
 
@@ -1757,8 +1769,6 @@ radv_pipeline_has_tess(const struct radv_pipeline *pipeline)
 {
    return pipeline->shaders[MESA_SHADER_TESS_CTRL] ? true : false;
 }
-
-bool radv_pipeline_has_ngg(const struct radv_pipeline *pipeline);
 
 bool radv_pipeline_has_ngg_passthrough(const struct radv_pipeline *pipeline);
 
@@ -1880,10 +1890,12 @@ bool radv_layout_is_htile_compressed(const struct radv_device *device,
                                      bool in_render_loop, unsigned queue_mask);
 
 bool radv_layout_can_fast_clear(const struct radv_device *device, const struct radv_image *image,
-                                VkImageLayout layout, bool in_render_loop, unsigned queue_mask);
+                                unsigned level, VkImageLayout layout, bool in_render_loop,
+                                unsigned queue_mask);
 
 bool radv_layout_dcc_compressed(const struct radv_device *device, const struct radv_image *image,
-                                VkImageLayout layout, bool in_render_loop, unsigned queue_mask);
+                                unsigned level, VkImageLayout layout, bool in_render_loop,
+                                unsigned queue_mask);
 
 bool radv_layout_fmask_compressed(const struct radv_device *device, const struct radv_image *image,
                                   VkImageLayout layout, unsigned queue_mask);

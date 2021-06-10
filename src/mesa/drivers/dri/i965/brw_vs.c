@@ -142,8 +142,10 @@ brw_codegen_vs_prog(struct brw_context *brw,
       brw_nir_setup_glsl_uniforms(mem_ctx, nir, &vp->program,
                                   &prog_data.base.base,
                                   compiler->scalar_stage[MESA_SHADER_VERTEX]);
-      brw_nir_analyze_ubo_ranges(compiler, nir, key,
-                                 prog_data.base.base.ubo_ranges);
+      if (brw->can_push_ubos) {
+         brw_nir_analyze_ubo_ranges(compiler, nir, key,
+                                    prog_data.base.base.ubo_ranges);
+      }
    } else {
       brw_nir_setup_arb_uniforms(mem_ctx, nir, &vp->program,
                                  &prog_data.base.base);
@@ -294,7 +296,7 @@ brw_vs_populate_key(struct brw_context *brw,
    }
 
    /* BRW_NEW_VS_ATTRIB_WORKAROUNDS */
-   if (devinfo->ver < 8 && !devinfo->is_haswell) {
+   if (devinfo->verx10 <= 70) {
       memcpy(key->gl_attrib_wa_flags, brw->vb.attrib_wa_flags,
              sizeof(brw->vb.attrib_wa_flags));
    }

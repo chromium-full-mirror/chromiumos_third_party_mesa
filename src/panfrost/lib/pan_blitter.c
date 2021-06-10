@@ -281,7 +281,7 @@ pan_blitter_emit_rsd(const struct panfrost_device *dev,
         for (unsigned i = 0; i < rt_count; i++) {
                 if (rts[i]) {
                         tex_count++;
-                        if (rts[i]->image->layout.nr_samples > 1)
+                        if (rts[i]->nr_samples > 1)
                                 ms = true;
                 }
         }
@@ -468,6 +468,14 @@ pan_blitter_get_blit_shader(struct panfrost_device *dev,
                 default: unreachable("Invalid dim\n");
                 }
 
+                coord_comps = MAX2(coord_comps,
+                                   (key->surfaces[i].dim ? : 3) +
+                                   (key->surfaces[i].array ? 1 : 0));
+                first = false;
+
+                if (sig_offset >= sizeof(sig))
+                        continue;
+
                 sig_offset += snprintf(sig + sig_offset, sizeof(sig) - sig_offset,
                                        "%s[%s;%s;%s%s;src_samples=%d,dst_samples=%d]",
                                        first ? "" : ",",
@@ -476,10 +484,6 @@ pan_blitter_get_blit_shader(struct panfrost_device *dev,
                                        key->surfaces[i].array ? "[]" : "",
                                        key->surfaces[i].src_samples,
                                        key->surfaces[i].dst_samples);
-                first = false;
-                coord_comps = MAX2(coord_comps,
-                                   (key->surfaces[i].dim ? : 3) +
-                                   (key->surfaces[i].array ? 1 : 0));
         }
 
         nir_builder b =
@@ -1141,7 +1145,7 @@ pan_preload_emit_midgard_tiler_job(struct pan_pool *desc_pool,
                                       MIDGARD_TILER_JOB,
                                       INVOCATION);
         panfrost_pack_work_groups_compute(invoc, 1, 4,
-                                          1, 1, 1, 1, true);
+                                          1, 1, 1, 1, true, false);
 
         panfrost_add_job(desc_pool, scoreboard, MALI_JOB_TYPE_TILER,
                          false, false, 0, 0, &job, true);
@@ -1176,7 +1180,7 @@ pan_blit_emit_midgard_tiler_job(struct pan_pool *desc_pool,
                                       MIDGARD_TILER_JOB,
                                       INVOCATION);
         panfrost_pack_work_groups_compute(invoc, 1, 4,
-                                          1, 1, 1, 1, true);
+                                          1, 1, 1, 1, true, false);
 
         panfrost_add_job(desc_pool, scoreboard, MALI_JOB_TYPE_TILER,
                          false, false, 0, 0, &job, false);
@@ -1212,7 +1216,7 @@ pan_blit_emit_bifrost_tiler_job(struct pan_pool *desc_pool,
                                       BIFROST_TILER_JOB,
                                       INVOCATION);
         panfrost_pack_work_groups_compute(invoc, 1, 4,
-                                          1, 1, 1, 1, true);
+                                          1, 1, 1, 1, true, false);
 
         pan_section_pack(job.cpu, BIFROST_TILER_JOB, PADDING, cfg);
         pan_section_pack(job.cpu, BIFROST_TILER_JOB, TILER, cfg) {
@@ -1244,13 +1248,12 @@ pan_preload_emit_bifrost_pre_frame_dcd(struct pan_pool *desc_pool,
         /* If CRC data is currently invalid and this batch will make it valid,
          * write even clean tiles to make sure CRC data is updated. */
         if (crc_rt >= 0) {
-                unsigned level = fb->rts[crc_rt].view->first_level;
-                bool valid = fb->rts[crc_rt].state->slices[level].crc_valid;
+                bool *valid = fb->rts[crc_rt].crc_valid;
                 bool full = !fb->extent.minx && !fb->extent.miny &&
                         fb->extent.maxx == (fb->width - 1) &&
                         fb->extent.maxy == (fb->height - 1);
 
-                if (full && !valid)
+                if (full && !(*valid))
                         always_write = true;
         }
 
@@ -1344,7 +1347,7 @@ pan_blit_ctx_init(struct panfrost_device *dev,
                   struct pan_blit_context *ctx)
 {
         memset(ctx, 0, sizeof(*ctx));
-        panfrost_pool_init(&ctx->pool, NULL, dev, 0, false);
+        panfrost_pool_init(&ctx->pool, NULL, dev, 0, 65536, "Blitter pool", false, true);
 
         ctx->z_scale = (float)(info->dst.end.z - info->dst.start.z + 1) /
                        (info->src.end.z - info->src.start.z + 1);
@@ -1595,11 +1598,11 @@ pan_blitter_init(struct panfrost_device *dev)
                 _mesa_hash_table_create(NULL, pan_blit_blend_shader_key_hash,
                                         pan_blit_blend_shader_key_equal);
         panfrost_pool_init(&dev->blitter.shaders.pool, NULL, dev,
-                           PAN_BO_EXECUTE, false);
+                           PAN_BO_EXECUTE, 4096, "Blitter shaders", false, true);
         pthread_mutex_init(&dev->blitter.shaders.lock, NULL);
         pan_blitter_prefill_blit_shader_cache(dev);
 
-        panfrost_pool_init(&dev->blitter.rsds.pool, NULL, dev, 0, false);
+        panfrost_pool_init(&dev->blitter.rsds.pool, NULL, dev, 0, 65536, "Blitter RSDs", false, true);
         dev->blitter.rsds.rsds =
                 _mesa_hash_table_create(NULL, pan_blit_rsd_key_hash,
                                         pan_blit_rsd_key_equal);

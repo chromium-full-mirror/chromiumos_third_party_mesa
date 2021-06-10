@@ -33,6 +33,7 @@
 #include "util/u_inlines.h"
 #include "util/u_rect.h"
 #include "util/u_surface.h"
+#include "util/u_helpers.h"
 
 static inline bool
 check_3d_layers(struct pipe_surface *psurf)
@@ -221,6 +222,10 @@ zink_clear(struct pipe_context *pctx,
             clear->color.color = *pcolor;
             clear->color.srgb = psurf->format != psurf->texture->format &&
                                 !util_format_is_srgb(psurf->format) && util_format_is_srgb(psurf->texture->format);
+            if (zink_fb_clear_first_needs_explicit(fb_clear))
+               ctx->rp_clears_enabled &= ~(PIPE_CLEAR_COLOR0 << i);
+            else
+               ctx->rp_clears_enabled |= PIPE_CLEAR_COLOR0 << i;
          }
       }
    }
@@ -238,6 +243,10 @@ zink_clear(struct pipe_context *pctx,
       if (buffers & PIPE_CLEAR_STENCIL)
          clear->zs.stencil = stencil;
       clear->zs.bits |= (buffers & PIPE_CLEAR_DEPTHSTENCIL);
+      if (zink_fb_clear_first_needs_explicit(fb_clear))
+         ctx->rp_clears_enabled &= ~PIPE_CLEAR_DEPTHSTENCIL;
+      else
+         ctx->rp_clears_enabled |= (buffers & PIPE_CLEAR_DEPTHSTENCIL);
    }
 }
 
@@ -426,6 +435,9 @@ zink_clear_buffer(struct pipe_context *pctx,
    struct zink_context *ctx = zink_context(pctx);
    struct zink_resource *res = zink_resource(pres);
 
+   uint32_t clamped;
+   if (util_lower_clearsize_to_dword(clear_value, &clear_value_size, &clamped))
+      clear_value = &clamped;
    if (offset % 4 == 0 && size % 4 == 0 && clear_value_size == sizeof(uint32_t)) {
       /*
          - dstOffset is the byte offset into the buffer at which to start filling,
@@ -540,10 +552,13 @@ void
 zink_fb_clear_reset(struct zink_context *ctx, unsigned i)
 {
    util_dynarray_fini(&ctx->fb_clears[i].clears);
-   if (i == PIPE_MAX_COLOR_BUFS)
+   if (i == PIPE_MAX_COLOR_BUFS) {
       ctx->clears_enabled &= ~PIPE_CLEAR_DEPTHSTENCIL;
-   else
+      ctx->rp_clears_enabled &= ~PIPE_CLEAR_DEPTHSTENCIL;
+   } else {
       ctx->clears_enabled &= ~(PIPE_CLEAR_COLOR0 << i);
+      ctx->rp_clears_enabled &= ~(PIPE_CLEAR_COLOR0 << i);
+   }
 }
 
 void

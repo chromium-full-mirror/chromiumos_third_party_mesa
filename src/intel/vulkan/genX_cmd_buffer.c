@@ -35,6 +35,8 @@
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
 
+#include "nir/nir_xfb_info.h"
+
 /* We reserve :
  *    - GPR 14 for secondary command buffer returns
  *    - GPR 15 for conditional rendering
@@ -130,7 +132,7 @@ genX(cmd_buffer_emit_state_base_address)(struct anv_cmd_buffer *cmd_buffer)
        */
       sba.GeneralStateBufferSize       = 0xfffff;
       sba.IndirectObjectBufferSize     = 0xfffff;
-      if (device->physical->use_softpin) {
+      if (anv_use_softpin(device->physical)) {
          /* With softpin, we use fixed addresses so we actually know how big
           * our base addresses are.
           */
@@ -163,7 +165,7 @@ genX(cmd_buffer_emit_state_base_address)(struct anv_cmd_buffer *cmd_buffer)
       sba.InstructionAccessUpperBoundModifyEnable = true;
 #  endif
 #  if (GFX_VER >= 9)
-      if (cmd_buffer->device->physical->use_softpin) {
+      if (anv_use_softpin(device->physical)) {
          sba.BindlessSurfaceStateBaseAddress = (struct anv_address) {
             .bo = device->surface_state_pool.block_pool.bo,
             .offset = 0,
@@ -241,13 +243,21 @@ static void
 add_surface_reloc(struct anv_cmd_buffer *cmd_buffer,
                   struct anv_state state, struct anv_address addr)
 {
-   const struct isl_device *isl_dev = &cmd_buffer->device->isl_dev;
+   VkResult result;
 
-   VkResult result =
-      anv_reloc_list_add(&cmd_buffer->surface_relocs, &cmd_buffer->pool->alloc,
-                         state.offset + isl_dev->ss.addr_offset,
-                         addr.bo, addr.offset, NULL);
-   if (result != VK_SUCCESS)
+   if (anv_use_softpin(cmd_buffer->device->physical)) {
+      result = anv_reloc_list_add_bo(&cmd_buffer->surface_relocs,
+                                     &cmd_buffer->pool->alloc,
+                                     addr.bo);
+   } else {
+      const struct isl_device *isl_dev = &cmd_buffer->device->isl_dev;
+      result = anv_reloc_list_add(&cmd_buffer->surface_relocs,
+                                  &cmd_buffer->pool->alloc,
+                                  state.offset + isl_dev->ss.addr_offset,
+                                  addr.bo, addr.offset, NULL);
+   }
+
+   if (unlikely(result != VK_SUCCESS))
       anv_batch_set_error(&cmd_buffer->batch, result);
 }
 
@@ -521,7 +531,7 @@ anv_image_init_aux_tt(struct anv_cmd_buffer *cmd_buffer,
          aux_entry_map = intel_aux_map_get_entry(cmd_buffer->device->aux_map_ctx,
                                                  address, &aux_entry_addr64);
 
-         assert(cmd_buffer->device->physical->use_softpin);
+         assert(anv_use_softpin(cmd_buffer->device->physical));
          struct anv_address aux_entry_address = {
             .bo = NULL,
             .offset = aux_entry_addr64,
@@ -2540,7 +2550,7 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
     * softpin then we always keep all user-allocated memory objects resident.
     */
    const bool need_client_mem_relocs =
-      !cmd_buffer->device->physical->use_softpin;
+      !anv_use_softpin(cmd_buffer->device->physical);
    struct anv_push_constants *push = &pipe_state->push_constants;
 
    for (uint32_t s = 0; s < map->surface_count; s++) {
@@ -2987,7 +2997,7 @@ cmd_buffer_emit_descriptor_pointers(struct anv_cmd_buffer *cmd_buffer,
 
 static struct anv_address
 get_push_range_address(struct anv_cmd_buffer *cmd_buffer,
-                       gl_shader_stage stage,
+                       const struct anv_shader_bin *shader,
                        const struct anv_push_range *range)
 {
    struct anv_cmd_graphics_state *gfx_state = &cmd_buffer->state.gfx;
@@ -3012,6 +3022,13 @@ get_push_range_address(struct anv_cmd_buffer *cmd_buffer,
          .offset = gfx_state->base.push_constants_state.offset,
       };
    }
+
+   case ANV_DESCRIPTOR_SET_SHADER_CONSTANTS:
+      return (struct anv_address) {
+         .bo = cmd_buffer->device->instruction_state_pool.block_pool.bo,
+         .offset = shader->kernel.offset +
+                   shader->prog_data->const_data_offset,
+      };
 
    default: {
       assert(range->set < MAX_SETS);
@@ -3058,10 +3075,10 @@ get_push_range_address(struct anv_cmd_buffer *cmd_buffer,
  */
 static uint32_t
 get_push_range_bound_size(struct anv_cmd_buffer *cmd_buffer,
-                          gl_shader_stage stage,
+                          const struct anv_shader_bin *shader,
                           const struct anv_push_range *range)
 {
-   assert(stage != MESA_SHADER_COMPUTE);
+   assert(shader->stage != MESA_SHADER_COMPUTE);
    const struct anv_cmd_graphics_state *gfx_state = &cmd_buffer->state.gfx;
    switch (range->set) {
    case ANV_DESCRIPTOR_SET_DESCRIPTORS: {
@@ -3074,6 +3091,9 @@ get_push_range_bound_size(struct anv_cmd_buffer *cmd_buffer,
 
    case ANV_DESCRIPTOR_SET_PUSH_CONSTANTS:
       return (range->start + range->length) * 32;
+
+   case ANV_DESCRIPTOR_SET_SHADER_CONSTANTS:
+      return ALIGN(shader->prog_data->const_data_size, ANV_UBO_ALIGNMENT);
 
    default: {
       assert(range->set < MAX_SETS);
@@ -3287,8 +3307,8 @@ cmd_buffer_flush_push_constants(struct anv_cmd_buffer *cmd_buffer,
          if (!anv_pipeline_has_stage(pipeline, stage))
             continue;
 
-         const struct anv_pipeline_bind_map *bind_map =
-            &pipeline->shaders[stage]->bind_map;
+         const struct anv_shader_bin *shader = pipeline->shaders[stage];
+         const struct anv_pipeline_bind_map *bind_map = &shader->bind_map;
          struct anv_push_constants *push = &gfx_state->base.push_constants;
 
          push->push_reg_mask[stage] = 0;
@@ -3302,7 +3322,7 @@ cmd_buffer_flush_push_constants(struct anv_cmd_buffer *cmd_buffer,
                continue;
 
             unsigned bound_size =
-               get_push_range_bound_size(cmd_buffer, stage, range);
+               get_push_range_bound_size(cmd_buffer, shader, range);
             if (bound_size >= range->start * 32) {
                unsigned bound_regs =
                   MIN2(DIV_ROUND_UP(bound_size, 32) - range->start,
@@ -3332,8 +3352,8 @@ cmd_buffer_flush_push_constants(struct anv_cmd_buffer *cmd_buffer,
 
       struct anv_address buffers[4] = {};
       if (anv_pipeline_has_stage(pipeline, stage)) {
-         const struct anv_pipeline_bind_map *bind_map =
-            &pipeline->shaders[stage]->bind_map;
+         const struct anv_shader_bin *shader = pipeline->shaders[stage];
+         const struct anv_pipeline_bind_map *bind_map = &shader->bind_map;
 
          /* We have to gather buffer addresses as a second step because the
           * loop above puts data into the push constant area and the call to
@@ -3347,7 +3367,7 @@ cmd_buffer_flush_push_constants(struct anv_cmd_buffer *cmd_buffer,
             if (range->length == 0)
                break;
 
-            buffers[i] = get_push_range_address(cmd_buffer, stage, range);
+            buffers[i] = get_push_range_address(cmd_buffer, shader, range);
             max_push_range = MAX2(max_push_range, range->length);
             buffer_count++;
          }
@@ -3426,6 +3446,28 @@ cmd_buffer_emit_clip(struct anv_cmd_buffer *cmd_buffer)
    GENX(3DSTATE_CLIP_pack)(NULL, dwords, &clip);
    anv_batch_emit_merge(&cmd_buffer->batch, dwords,
                         pipeline->gfx7.clip);
+}
+
+static void
+cmd_buffer_emit_streamout(struct anv_cmd_buffer *cmd_buffer)
+{
+   const struct anv_dynamic_state *d = &cmd_buffer->state.gfx.dynamic;
+   struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
+
+#if GFX_VER == 7
+#  define streamout_state_dw pipeline->gfx7.streamout_state
+#else
+#  define streamout_state_dw pipeline->gfx8.streamout_state
+#endif
+
+   uint32_t dwords[GENX(3DSTATE_STREAMOUT_length)];
+
+   struct GENX(3DSTATE_STREAMOUT) so = {
+      GENX(3DSTATE_STREAMOUT_header),
+      .RenderingDisable = d->raster_discard,
+   };
+   GENX(3DSTATE_STREAMOUT_pack)(NULL, dwords, &so);
+   anv_batch_emit_merge(&cmd_buffer->batch, dwords, streamout_state_dw);
 }
 
 void
@@ -3648,6 +3690,9 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
       cmd_buffer_emit_descriptor_pointers(cmd_buffer, dirty);
 
    cmd_buffer_emit_clip(cmd_buffer);
+
+   if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_DYNAMIC_RASTERIZER_DISCARD_ENABLE)
+      cmd_buffer_emit_streamout(cmd_buffer);
 
    if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_DYNAMIC_VIEWPORT)
       gfx8_cmd_buffer_emit_viewport(cmd_buffer);
@@ -5008,7 +5053,7 @@ genX(cmd_buffer_set_binding_for_gfx8_vb_flush)(struct anv_cmd_buffer *cmd_buffer
                                                uint32_t vb_size)
 {
    if (GFX_VER < 8 || GFX_VER > 9 ||
-       !cmd_buffer->device->physical->use_softpin)
+       !anv_use_softpin(cmd_buffer->device->physical))
       return;
 
    struct anv_vb_cache_range *bound, *dirty;
@@ -5056,7 +5101,7 @@ genX(cmd_buffer_update_dirty_vbs_for_gfx8_vb_flush)(struct anv_cmd_buffer *cmd_b
                                                     uint64_t vb_used)
 {
    if (GFX_VER < 8 || GFX_VER > 9 ||
-       !cmd_buffer->device->physical->use_softpin)
+       !anv_use_softpin(cmd_buffer->device->physical))
       return;
 
    if (access_type == RANDOM) {
@@ -5611,7 +5656,7 @@ cmd_buffer_begin_subpass(struct anv_cmd_buffer *cmd_buffer,
 
    isl_null_fill_state(&cmd_buffer->device->isl_dev,
                        cmd_state->null_surface_state.map,
-                       isl_extent3d(fb->width, fb->height, fb->layers));
+                       .size = isl_extent3d(fb->width, fb->height, fb->layers));
 
    for (uint32_t i = 0; i < subpass->attachment_count; ++i) {
       const uint32_t att = subpass->attachments[i].attachment;
@@ -5695,7 +5740,7 @@ cmd_buffer_begin_subpass(struct anv_cmd_buffer *cmd_buffer,
       ANV_PIPE_STALL_AT_SCOREBOARD_BIT;
 #endif
 
-#if GFX_VER == 12
+#if GFX_VERx10 == 120
    /* Wa_14010455700
     *
     * ISL will change some CHICKEN registers depending on the depth surface

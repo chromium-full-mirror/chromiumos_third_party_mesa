@@ -74,13 +74,6 @@ struct zink_descriptor_state_key {
    uint32_t state[ZINK_SHADER_COUNT];
 };
 
-struct zink_descriptor_barrier {
-   struct zink_resource *res;
-   VkImageLayout layout;
-   VkAccessFlags access;
-   VkPipelineStageFlagBits stage;
-};
-
 struct zink_descriptor_layout_key {
    unsigned num_descriptors;
    VkDescriptorSetLayoutBinding *bindings;
@@ -92,54 +85,10 @@ struct zink_descriptor_pool_key {
    VkDescriptorPoolSize *sizes;
 };
 
-struct zink_descriptor_pool {
-   struct pipe_reference reference;
-   enum zink_descriptor_type type;
-   struct hash_table *desc_sets;
-   struct hash_table *free_desc_sets;
-   struct util_dynarray alloc_desc_sets;
-   VkDescriptorPool descpool;
-   struct zink_descriptor_pool_key key;
-   unsigned num_resources;
-   unsigned num_sets_allocated;
-   simple_mtx_t mtx;
-};
-
-struct zink_descriptor_set {
-   struct zink_descriptor_pool *pool;
-   struct pipe_reference reference; //incremented for batch usage
-   VkDescriptorSet desc_set;
-   uint32_t hash;
-   bool invalid;
-   bool punted;
-   bool recycled;
-   struct zink_descriptor_state_key key;
-   struct util_dynarray barriers;
-   struct zink_batch_usage batch_uses;
-#ifndef NDEBUG
-   /* for extra debug asserts */
-   unsigned num_resources;
-#endif
-   union {
-      struct zink_resource_object **res_objs;
-      struct zink_image_view **image_views;
-      struct {
-         struct zink_sampler_view **sampler_views;
-         struct zink_sampler_state **sampler_states;
-      };
-   };
-};
-
-
 struct zink_descriptor_reference {
    void **ref;
    bool *invalid;
 };
-void
-zink_descriptor_set_refs_clear(struct zink_descriptor_refs *refs, void *ptr);
-
-void
-zink_descriptor_set_recycle(struct zink_descriptor_set *zds);
 
 bool
 zink_descriptor_layouts_init(struct zink_context *ctx);
@@ -147,10 +96,31 @@ zink_descriptor_layouts_init(struct zink_context *ctx);
 void
 zink_descriptor_layouts_deinit(struct zink_context *ctx);
 
+uint32_t
+zink_get_sampler_view_hash(struct zink_context *ctx, struct zink_sampler_view *sampler_view, bool is_buffer);
+uint32_t
+zink_get_image_view_hash(struct zink_context *ctx, struct zink_image_view *image_view, bool is_buffer);
 bool
-zink_descriptor_program_init(struct zink_context *ctx,
-                       struct zink_shader *stages[ZINK_SHADER_COUNT],
-                       struct zink_program *pg);
+zink_descriptor_util_alloc_sets(struct zink_screen *screen, VkDescriptorSetLayout dsl, VkDescriptorPool pool, VkDescriptorSet *sets, unsigned num_sets);
+VkDescriptorSetLayout
+zink_descriptor_util_layout_get(struct zink_context *ctx, enum zink_descriptor_type type,
+                      VkDescriptorSetLayoutBinding *bindings, unsigned num_bindings,
+                      struct zink_descriptor_layout_key **layout_key);
+struct zink_resource *
+zink_get_resource_for_descriptor(struct zink_context *ctx, enum zink_descriptor_type type, enum pipe_shader_type shader, int idx);
+
+/* these two can't be called in lazy mode */
+void
+zink_descriptor_set_refs_clear(struct zink_descriptor_refs *refs, void *ptr);
+void
+zink_descriptor_set_recycle(struct zink_descriptor_set *zds);
+
+
+
+
+
+bool
+zink_descriptor_program_init(struct zink_context *ctx, struct zink_program *pg);
 
 void
 zink_descriptor_program_deinit(struct zink_screen *screen, struct zink_program *pg);
@@ -169,9 +139,44 @@ zink_get_image_view_hash(struct zink_context *ctx, struct zink_image_view *image
 struct zink_resource *
 zink_get_resource_for_descriptor(struct zink_context *ctx, enum zink_descriptor_type type, enum pipe_shader_type shader, int idx);
 
+void
+zink_batch_descriptor_deinit(struct zink_screen *screen, struct zink_batch_state *bs);
+void
+zink_batch_descriptor_reset(struct zink_screen *screen, struct zink_batch_state *bs);
+bool
+zink_batch_descriptor_init(struct zink_screen *screen, struct zink_batch_state *bs);
+
 bool
 zink_descriptors_init(struct zink_context *ctx);
 
 void
 zink_descriptors_deinit(struct zink_context *ctx);
+
+//LAZY
+bool
+zink_descriptor_program_init_lazy(struct zink_context *ctx, struct zink_program *pg);
+
+void
+zink_descriptor_program_deinit_lazy(struct zink_screen *screen, struct zink_program *pg);
+
+void
+zink_descriptors_update_lazy(struct zink_context *ctx, bool is_compute);
+
+
+void
+zink_context_invalidate_descriptor_state_lazy(struct zink_context *ctx, enum pipe_shader_type shader, enum zink_descriptor_type type, unsigned, unsigned);
+
+void
+zink_batch_descriptor_deinit_lazy(struct zink_screen *screen, struct zink_batch_state *bs);
+void
+zink_batch_descriptor_reset_lazy(struct zink_screen *screen, struct zink_batch_state *bs);
+bool
+zink_batch_descriptor_init_lazy(struct zink_screen *screen, struct zink_batch_state *bs);
+
+bool
+zink_descriptors_init_lazy(struct zink_context *ctx);
+
+void
+zink_descriptors_deinit_lazy(struct zink_context *ctx);
+
 #endif

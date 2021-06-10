@@ -167,6 +167,7 @@ enum radv_ud_index {
    AC_UD_VS_MAX_UD,
    AC_UD_PS_MAX_UD,
    AC_UD_CS_GRID_SIZE = AC_UD_SHADER_START,
+   AC_UD_CS_SBT_DESCRIPTORS,
    AC_UD_CS_MAX_UD,
    AC_UD_GS_MAX_UD,
    AC_UD_TCS_MAX_UD,
@@ -335,6 +336,8 @@ struct radv_shader_info {
       bool uses_thread_id[3];
       bool uses_local_invocation_idx;
       unsigned block_size[3];
+
+      bool uses_sbt;
    } cs;
    struct {
       uint64_t tes_inputs_read;
@@ -467,7 +470,7 @@ unsigned radv_get_max_workgroup_size(enum chip_class chip_class, gl_shader_stage
 const char *radv_get_shader_name(struct radv_shader_info *info, gl_shader_stage stage);
 
 bool radv_can_dump_shader(struct radv_device *device, struct vk_shader_module *module,
-                          bool is_gs_copy_shader);
+                          bool meta_shader);
 
 bool radv_can_dump_shader_stats(struct radv_device *device, struct vk_shader_module *module);
 

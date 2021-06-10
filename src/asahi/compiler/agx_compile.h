@@ -116,6 +116,9 @@ struct agx_vs_shader_key {
    unsigned vbuf_strides[AGX_MAX_VBUFS];
 
    struct agx_attribute attributes[AGX_MAX_ATTRIBS];
+
+   /* Set to true for clip coordinates to range [0, 1] instead of [-1, 1] */
+   bool clip_halfz : 1;
 };
 
 struct agx_fs_shader_key {
@@ -152,6 +155,8 @@ static const nir_shader_compiler_options agx_nir_options = {
    .lower_fsign = true,
    .lower_rotate = true,
    .lower_pack_split = true,
+   .lower_insert_byte = true,
+   .lower_insert_word = true,
    .lower_uniforms_to_ubo = true,
    .lower_cs_local_index_from_id = true,
 

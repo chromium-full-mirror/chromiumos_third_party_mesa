@@ -142,12 +142,18 @@ struct pan_shader_varying {
 struct bifrost_shader_blend_info {
         nir_alu_type type;
         uint32_t return_offset;
+
+        /* mali_bifrost_register_file_format corresponding to nir_alu_type */
+        unsigned format;
 };
 
 struct bifrost_shader_info {
         struct bifrost_shader_blend_info blend[8];
         nir_alu_type blend_src1_type;
         bool wait_6, wait_7;
+
+        /* Packed, preloaded message descriptors */
+        uint16_t messages[2];
 };
 
 struct midgard_shader_info {
@@ -177,6 +183,7 @@ struct pan_shader_info {
                         bool reads_helper_invocation;
                         bool sample_shading;
                         bool early_fragment_tests;
+                        bool can_early_z, can_fpk;
                         BITSET_WORD outputs_read;
                         BITSET_WORD outputs_written;
                 } fs;
@@ -186,6 +193,7 @@ struct pan_shader_info {
                 } vs;
         };
 
+        bool separable;
         bool contains_barrier;
         bool writes_global;
         uint64_t outputs_written;

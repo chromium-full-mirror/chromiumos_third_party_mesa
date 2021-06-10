@@ -1270,6 +1270,16 @@ static void si_emit_draw_packets(struct si_context *sctx, const struct pipe_draw
                   sctx->last_base_vertex = draws[num_draws - 1].index_bias;
             } else {
                /* DrawID and BaseVertex are constant. */
+               if (GFX_VERSION == GFX10) {
+                  /* GFX10 has a bug that consecutive draw packets with NOT_EOP must not have
+                   * count == 0 in the last draw (which doesn't set NOT_EOP).
+                   *
+                   * So remove all trailing draws with count == 0.
+                   */
+                  while (num_draws > 1 && !draws[num_draws - 1].count)
+                     num_draws--;
+               }
+
                for (unsigned i = 0; i < num_draws; i++) {
                   uint64_t va = index_va + draws[i].start * index_size;
 
@@ -2054,8 +2064,12 @@ static void si_draw_vbo(struct pipe_context *ctx,
          /* Use NGG fast launch for certain primitive types.
           * A draw must have at least 1 full primitive.
           * The fast launch doesn't work with tessellation.
+          *
+          * Small instances (including small draws) don't perform well with fast launch.
+          * It's better to use normal launch with NOT_EOP for small draws, and it's
+          * always better to use normal launch for small instances.
           */
-         if (!HAS_TESS && ngg_culling && min_direct_count >= 3 &&
+         if (!HAS_TESS && ngg_culling && min_direct_count >= 64 &&
              !(sctx->screen->debug_flags & DBG(NO_FAST_LAUNCH))) {
             if (prim == PIPE_PRIM_TRIANGLES && !index_size) {
                ngg_culling |= SI_NGG_CULL_GS_FAST_LAUNCH_TRI_LIST;
@@ -2063,12 +2077,10 @@ static void si_draw_vbo(struct pipe_context *ctx,
                if (!index_size) {
                   ngg_culling |= SI_NGG_CULL_GS_FAST_LAUNCH_TRI_STRIP;
                } else if (!primitive_restart) {
-#if 0 /* It's disabled because this hangs: AMD_DEBUG=nggc torcs */
                   ngg_culling |= SI_NGG_CULL_GS_FAST_LAUNCH_TRI_STRIP |
                                  SI_NGG_CULL_GS_FAST_LAUNCH_INDEX_SIZE_PACKED(MIN2(index_size, 3));
                   /* The index buffer will be emulated. */
                   index_size = 0;
-#endif
                }
             }
          }

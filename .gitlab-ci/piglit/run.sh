@@ -3,6 +3,7 @@
 set -ex
 
 INSTALL=$(realpath -s "$PWD"/install)
+MINIO_ARGS="--credentials=/tmp/.minio_credentials"
 
 RESULTS=$(realpath -s "$PWD"/results)
 mkdir -p "$RESULTS"
@@ -15,7 +16,22 @@ export __LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$INSTALL/lib/"
 
 # Sanity check to ensure that our environment is sufficient to make our tests
 # run against the Mesa built by CI, rather than any installed distro version.
-MESA_VERSION=$(cat "$INSTALL/VERSION" | sed 's/\./\\./g')
+MESA_VERSION=$(head -1 "$INSTALL/VERSION" | sed 's/\./\\./g')
+
+print_red() {
+    RED='\033[0;31m'
+    NC='\033[0m' # No Color
+    printf "${RED}"
+    "$@"
+    printf "${NC}"
+}
+
+# wrapper to supress +x to avoid spamming the log
+quiet() {
+    set +x
+    "$@"
+    set -x
+}
 
 if [ "$VK_DRIVER" ]; then
 
@@ -40,18 +56,23 @@ if [ "$VK_DRIVER" ]; then
 
     SANITY_MESA_VERSION_CMD="vulkaninfo"
 
+    HANG_DETECTION_CMD="/parallel-deqp-runner/build/bin/hang-detection"
+
 
     # Set up the Window System Interface (WSI)
 
-    # IMPORTANT:
-    #
-    # Nothing to do here.
-    #
-    # Run vulkan against the host's running X server (xvfb doesn't
-    # have DRI3 support).
-    # Set the DISPLAY env variable in each gitlab-runner's
-    # configuration file:
-    # https://docs.gitlab.com/runner/configuration/advanced-configuration.html#the-runners-section
+    if [ ${TEST_START_XORG:-0} -eq 1 ]; then
+        "$INSTALL"/common/start-x.sh "$INSTALL"
+        export DISPLAY=:0
+    else
+        # Run vulkan against the host's running X server (xvfb doesn't
+        # have DRI3 support).
+        # Set the DISPLAY env variable in each gitlab-runner's
+        # configuration file:
+        # https://docs.gitlab.com/runner/configuration/advanced-configuration.html#the-runners-section
+        quiet printf "%s%s\n" "Running against the hosts' X server. " \
+              "DISPLAY is \"$DISPLAY\"."
+    fi
 else
 
     ### GL/ES ###
@@ -66,6 +87,8 @@ else
     fi
 
     SANITY_MESA_VERSION_CMD="wflinfo"
+
+    HANG_DETECTION_CMD=""
 
 
     # Set up the platform windowing system.
@@ -120,21 +143,6 @@ if [ -n "$CI_NODE_INDEX" ]; then
     USE_CASELIST=1
 fi
 
-print_red() {
-    RED='\033[0;31m'
-    NC='\033[0m' # No Color
-    printf "${RED}"
-    "$@"
-    printf "${NC}"
-}
-
-# wrapper to supress +x to avoid spamming the log
-quiet() {
-    set +x
-    "$@"
-    set -x
-}
-
 replay_minio_upload_images() {
     find "$RESULTS/$__PREFIX" -type f -name "*.png" -printf "%P\n" \
         | while read -r line; do
@@ -146,7 +154,7 @@ replay_minio_upload_images() {
             fi
             __MINIO_PATH="$PIGLIT_REPLAY_REFERENCE_IMAGES_BASE_URL"
             __DESTINATION_FILE_PATH="${line##*-}"
-            if ci-fairy minio ls "minio://${MINIO_HOST}${__MINIO_PATH}/${__DESTINATION_FILE_PATH}" 2>/dev/null; then
+            if wget -q --method=HEAD "${MINIO_HOST}${__MINIO_PATH}/${__DESTINATION_FILE_PATH}" 2>/dev/null; then
                 continue
             fi
         else
@@ -166,14 +174,16 @@ replay_minio_upload_images() {
                 -i "$RESULTS"/junit.xml
         fi
 
-        ci-fairy minio cp "$RESULTS/$__PREFIX/$line" \
+        ci-fairy minio cp $MINIO_ARGS "$RESULTS/$__PREFIX/$line" \
             "minio://${MINIO_HOST}${__MINIO_PATH}/${__DESTINATION_FILE_PATH}"
     done
 }
 
 SANITY_MESA_VERSION_CMD="$SANITY_MESA_VERSION_CMD | tee /tmp/version.txt | grep \"Mesa $MESA_VERSION\(\s\|$\)\""
 
-rm -rf results
+if [ -d results ]; then
+    cd results && rm -rf ..?* .[!.]* *
+fi
 cd /piglit
 
 if [ -n "$USE_CASELIST" ]; then
@@ -194,7 +204,7 @@ PIGLIT_TESTS=$(printf "%s" "$PIGLIT_TESTS")
 
 PIGLIT_CMD="./piglit run --timeout 300 -j${FDO_CI_CONCURRENT:-4} $PIGLIT_OPTIONS $PIGLIT_TESTS $PIGLIT_PROFILES "$(/usr/bin/printf "%q" "$RESULTS")
 
-RUN_CMD="export LD_LIBRARY_PATH=$__LD_LIBRARY_PATH; $SANITY_MESA_VERSION_CMD && $PIGLIT_CMD"
+RUN_CMD="export LD_LIBRARY_PATH=$__LD_LIBRARY_PATH; $SANITY_MESA_VERSION_CMD && $HANG_DETECTION_CMD $PIGLIT_CMD"
 
 if [ "$RUN_CMD_WRAPPER" ]; then
     RUN_CMD="set +e; $RUN_CMD_WRAPPER "$(/usr/bin/printf "%q" "$RUN_CMD")"; set -e"
@@ -227,13 +237,15 @@ mkdir -p .gitlab-ci/piglit
 if [ "x$PIGLIT_PROFILES" = "xreplay" ] \
        && [ ${PIGLIT_REPLAY_UPLOAD_TO_MINIO:-0} -eq 1 ]; then
 
-    ci-fairy minio login $CI_JOB_JWT
+    ci-fairy minio login $MINIO_ARGS $CI_JOB_JWT
 
     __PREFIX="trace/$PIGLIT_REPLAY_DEVICE_NAME"
     __MINIO_PATH="$PIGLIT_REPLAY_ARTIFACTS_BASE_URL"
     __MINIO_TRACES_PREFIX="traces"
 
-    quiet replay_minio_upload_images
+    if [ "x$PIGLIT_REPLAY_SUBCOMMAND" != "xprofile" ]; then
+        quiet replay_minio_upload_images
+    fi
 fi
 
 if [ -n "$USE_CASELIST" ]; then

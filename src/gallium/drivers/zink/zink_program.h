@@ -77,10 +77,10 @@ struct zink_program {
    bool is_compute;
 
    struct zink_program_descriptor_data *dd;
-   bool has_descriptors;
 
    VkPipelineLayout layout;
    VkDescriptorSetLayout dsl[ZINK_DESCRIPTOR_TYPES];
+   unsigned num_dsl;
 };
 
 struct zink_gfx_program {
@@ -206,6 +206,9 @@ zink_compute_program_reference(struct zink_screen *screen,
    return ret;
 }
 
+VkPipelineLayout
+zink_pipeline_layout_create(struct zink_screen *screen, struct zink_program *pg);
+
 void
 zink_program_update_compute_pipeline_state(struct zink_context *ctx, struct zink_compute_program *comp, const uint block[3]);
 
@@ -213,5 +216,11 @@ VkPipeline
 zink_get_compute_pipeline(struct zink_screen *screen,
                       struct zink_compute_program *comp,
                       struct zink_compute_pipeline_state *state);
+
+static inline bool
+zink_program_has_descriptors(const struct zink_program *pg)
+{
+   return pg->dsl[0] || pg->dsl[1] || pg->dsl[2] || pg->dsl[3];
+}
 
 #endif

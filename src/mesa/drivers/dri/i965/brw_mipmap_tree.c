@@ -1488,7 +1488,7 @@ brw_miptree_level_enable_hiz(struct brw_context *brw,
    assert(mt->aux_buf);
    assert(mt->surf.size_B > 0);
 
-   if (devinfo->ver >= 8 || devinfo->is_haswell) {
+   if (devinfo->verx10 >= 75) {
       uint32_t width = minify(mt->surf.phys_level0_sa.width, level);
       uint32_t height = minify(mt->surf.phys_level0_sa.height, level);
 
@@ -1896,7 +1896,7 @@ can_texture_with_ccs(struct brw_context *brw,
    if (!format_ccs_e_compat_with_miptree(&brw->screen->devinfo,
                                          mt, view_format)) {
       perf_debug("Incompatible sampling format (%s) for rbc (%s)\n",
-                 isl_format_get_layout(view_format)->name,
+                 isl_format_get_name(view_format),
                  _mesa_get_format_name(mt->format));
       return false;
    }

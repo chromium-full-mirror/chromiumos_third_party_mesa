@@ -972,6 +972,10 @@ binop("extract_i8", tint, "", "(int8_t)(src0 >> (src1 * 8))")
 binop("extract_u16", tuint, "", "(uint16_t)(src0 >> (src1 * 16))")
 binop("extract_i16", tint, "", "(int16_t)(src0 >> (src1 * 16))")
 
+# Byte/word insertion
+binop("insert_u8", tuint, "", "(src0 & 0xff) << (src1 * 8)")
+binop("insert_u16", tuint, "", "(src0 & 0xffff) << (src1 * 16)")
+
 
 def triop(name, ty, alg_props, const_expr):
    opcode(name, 0, ty, [0, 0, 0], [ty, ty, ty], False, alg_props, const_expr)
@@ -1091,6 +1095,24 @@ if (bits == 0) {
 } else {
    dst = (base << (32 - offset - bits)) >> offset; /* use sign-extending shift */
 }
+""")
+
+triop_horiz("sad_u8x4", 1, 1, 1, 1, """
+uint8_t s0_b0 = (src0.x & 0x000000ff) >> 0;
+uint8_t s0_b1 = (src0.x & 0x0000ff00) >> 8;
+uint8_t s0_b2 = (src0.x & 0x00ff0000) >> 16;
+uint8_t s0_b3 = (src0.x & 0xff000000) >> 24;
+
+uint8_t s1_b0 = (src1.x & 0x000000ff) >> 0;
+uint8_t s1_b1 = (src1.x & 0x0000ff00) >> 8;
+uint8_t s1_b2 = (src1.x & 0x00ff0000) >> 16;
+uint8_t s1_b3 = (src1.x & 0xff000000) >> 24;
+
+dst.x = src2.x +
+        (s0_b0 > s1_b0 ? (s0_b0 - s1_b0) : (s1_b0 - s0_b0)) +
+        (s0_b1 > s1_b1 ? (s0_b1 - s1_b1) : (s1_b1 - s0_b1)) +
+        (s0_b2 > s1_b2 ? (s0_b2 - s1_b2) : (s1_b2 - s0_b2)) +
+        (s0_b3 > s1_b3 ? (s0_b3 - s1_b3) : (s1_b3 - s0_b3));
 """)
 
 # Combines the first component of each input to make a 3-component vector.

@@ -348,9 +348,9 @@ static void handle_compute_pipeline(struct lvp_cmd_buffer_entry *cmd,
 {
    struct lvp_pipeline *pipeline = cmd->u.pipeline.pipeline;
 
-   state->dispatch_info.block[0] = pipeline->pipeline_nir[MESA_SHADER_COMPUTE]->info.cs.local_size[0];
-   state->dispatch_info.block[1] = pipeline->pipeline_nir[MESA_SHADER_COMPUTE]->info.cs.local_size[1];
-   state->dispatch_info.block[2] = pipeline->pipeline_nir[MESA_SHADER_COMPUTE]->info.cs.local_size[2];
+   state->dispatch_info.block[0] = pipeline->pipeline_nir[MESA_SHADER_COMPUTE]->info.workgroup_size[0];
+   state->dispatch_info.block[1] = pipeline->pipeline_nir[MESA_SHADER_COMPUTE]->info.workgroup_size[1];
+   state->dispatch_info.block[2] = pipeline->pipeline_nir[MESA_SHADER_COMPUTE]->info.workgroup_size[2];
    state->pctx->bind_compute_state(state->pctx, pipeline->shader_cso[PIPE_SHADER_COMPUTE]);
 }
 
@@ -855,6 +855,8 @@ static void fill_sampler_view_stage(struct rendering_state *state,
       templ.target = PIPE_TEXTURE_2D;
    if (iv->view_type == VK_IMAGE_VIEW_TYPE_CUBE)
       templ.target = PIPE_TEXTURE_CUBE;
+   if (iv->view_type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
+      templ.target = PIPE_TEXTURE_CUBE_ARRAY;
    templ.u.tex.first_layer = iv->subresourceRange.baseArrayLayer;
    templ.u.tex.last_layer = iv->subresourceRange.baseArrayLayer + lvp_get_layerCount(iv->image, &iv->subresourceRange) - 1;
    templ.u.tex.first_level = iv->subresourceRange.baseMipLevel;
@@ -1822,7 +1824,7 @@ static void handle_copy_image_to_buffer(struct lvp_cmd_buffer_entry *cmd,
       box.height = copycmd->regions[i].imageExtent.height;
       box.depth = copycmd->src->type == VK_IMAGE_TYPE_3D ? copycmd->regions[i].imageExtent.depth : copycmd->regions[i].imageSubresource.layerCount;
 
-      src_data = state->pctx->transfer_map(state->pctx,
+      src_data = state->pctx->texture_map(state->pctx,
                                            copycmd->src->bo,
                                            copycmd->regions[i].imageSubresource.mipLevel,
                                            PIPE_MAP_READ,
@@ -1835,7 +1837,7 @@ static void handle_copy_image_to_buffer(struct lvp_cmd_buffer_entry *cmd,
       dbox.width = copycmd->dst->bo->width0;
       dbox.height = 1;
       dbox.depth = 1;
-      dst_data = state->pctx->transfer_map(state->pctx,
+      dst_data = state->pctx->buffer_map(state->pctx,
                                            copycmd->dst->bo,
                                            0,
                                            PIPE_MAP_WRITE,
@@ -1877,8 +1879,8 @@ static void handle_copy_image_to_buffer(struct lvp_cmd_buffer_entry *cmd,
                        box.depth,
                        src_data, src_t->stride, src_t->layer_stride, 0, 0, 0);
       }
-      state->pctx->transfer_unmap(state->pctx, src_t);
-      state->pctx->transfer_unmap(state->pctx, dst_t);
+      state->pctx->texture_unmap(state->pctx, src_t);
+      state->pctx->buffer_unmap(state->pctx, dst_t);
    }
 }
 
@@ -1901,7 +1903,7 @@ static void handle_copy_buffer_to_image(struct lvp_cmd_buffer_entry *cmd,
       sbox.width = copycmd->src->bo->width0;
       sbox.height = 1;
       sbox.depth = 1;
-      src_data = state->pctx->transfer_map(state->pctx,
+      src_data = state->pctx->buffer_map(state->pctx,
                                            copycmd->src->bo,
                                            0,
                                            PIPE_MAP_READ,
@@ -1916,7 +1918,7 @@ static void handle_copy_buffer_to_image(struct lvp_cmd_buffer_entry *cmd,
       box.height = copycmd->regions[i].imageExtent.height;
       box.depth = copycmd->dst->type == VK_IMAGE_TYPE_3D ? copycmd->regions[i].imageExtent.depth : copycmd->regions[i].imageSubresource.layerCount;
 
-      dst_data = state->pctx->transfer_map(state->pctx,
+      dst_data = state->pctx->texture_map(state->pctx,
                                            copycmd->dst->bo,
                                            copycmd->regions[i].imageSubresource.mipLevel,
                                            PIPE_MAP_WRITE,
@@ -1960,8 +1962,8 @@ static void handle_copy_buffer_to_image(struct lvp_cmd_buffer_entry *cmd,
                        src_data,
                        buffer_row_len, img_stride, 0, 0, 0);
       }
-      state->pctx->transfer_unmap(state->pctx, src_t);
-      state->pctx->transfer_unmap(state->pctx, dst_t);
+      state->pctx->buffer_unmap(state->pctx, src_t);
+      state->pctx->texture_unmap(state->pctx, dst_t);
    }
 }
 
@@ -2129,7 +2131,7 @@ static void handle_update_buffer(struct lvp_cmd_buffer_entry *cmd,
    struct pipe_box box;
 
    u_box_1d(updcmd->offset, updcmd->data_size, &box);
-   dst = state->pctx->transfer_map(state->pctx,
+   dst = state->pctx->buffer_map(state->pctx,
                                    updcmd->buffer->bo,
                                    0,
                                    PIPE_MAP_WRITE,
@@ -2137,7 +2139,7 @@ static void handle_update_buffer(struct lvp_cmd_buffer_entry *cmd,
                                    &dst_t);
 
    memcpy(dst, updcmd->data, updcmd->data_size);
-   state->pctx->transfer_unmap(state->pctx, dst_t);
+   state->pctx->buffer_unmap(state->pctx, dst_t);
 }
 
 static void handle_draw_indexed(struct lvp_cmd_buffer_entry *cmd,
@@ -2418,12 +2420,12 @@ static void handle_copy_query_pool_results(struct lvp_cmd_buffer_entry *cmd,
             box.width = copycmd->stride;
             box.height = 1;
             box.depth = 1;
-            map = state->pctx->transfer_map(state->pctx,
+            map = state->pctx->buffer_map(state->pctx,
                                             copycmd->dst->bo, 0, PIPE_MAP_READ, &box,
                                             &src_t);
 
             memset(map, 0, box.width);
-            state->pctx->transfer_unmap(state->pctx, src_t);
+            state->pctx->buffer_unmap(state->pctx, src_t);
          }
       }
    }
@@ -2928,6 +2930,8 @@ static void lvp_execute_cmd_buffer(struct lvp_cmd_buffer *cmd_buffer,
                                    struct rendering_state *state)
 {
    struct lvp_cmd_buffer_entry *cmd;
+   bool first = true;
+   bool did_flush = false;
 
    LIST_FOR_EACH_ENTRY(cmd, &cmd_buffer->cmds, cmd_link) {
       switch (cmd->cmd_type) {
@@ -3035,8 +3039,14 @@ static void lvp_execute_cmd_buffer(struct lvp_cmd_buffer *cmd_buffer,
          handle_wait_events(cmd, state);
          break;
       case LVP_CMD_PIPELINE_BARRIER:
+         /* skip flushes since every cmdbuf does a flush
+            after iterating its cmds and so this is redundant
+          */
+         if (first || did_flush || cmd->cmd_link.next == &cmd_buffer->cmds)
+            continue;
          handle_pipeline_barrier(cmd, state);
-         break;
+         did_flush = true;
+         continue;
       case LVP_CMD_BEGIN_QUERY:
          maybe_emit_state_for_begin_query(cmd, state);
          handle_begin_query(cmd, state);
@@ -3126,16 +3136,16 @@ static void lvp_execute_cmd_buffer(struct lvp_cmd_buffer *cmd_buffer,
          handle_set_stencil_op(cmd, state);
          break;
       }
+      first = false;
+      did_flush = false;
    }
 }
 
 VkResult lvp_execute_cmds(struct lvp_device *device,
                           struct lvp_queue *queue,
-                          struct lvp_fence *fence,
                           struct lvp_cmd_buffer *cmd_buffer)
 {
    struct rendering_state state;
-   struct pipe_fence_handle *handle = NULL;
    memset(&state, 0, sizeof(state));
    state.pctx = queue->ctx;
    state.blend_dirty = true;
@@ -3145,12 +3155,6 @@ VkResult lvp_execute_cmds(struct lvp_device *device,
    /* create a gallium context */
    lvp_execute_cmd_buffer(cmd_buffer, &state);
 
-   state.pctx->flush(state.pctx, fence ? &handle : NULL, 0);
-   if (fence) {
-      mtx_lock(&device->fence_lock);
-      fence->handle = handle;
-      mtx_unlock(&device->fence_lock);
-   }
    state.start_vb = -1;
    state.num_vb = 0;
    state.pctx->set_vertex_buffers(state.pctx, 0, 0, PIPE_MAX_ATTRIBS, false, NULL);

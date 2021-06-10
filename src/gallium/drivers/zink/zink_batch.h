@@ -49,12 +49,18 @@ struct zink_batch_usage {
    uint32_t usage;
 };
 
+/* not real api don't use */
+bool
+batch_ptr_add_usage(struct zink_batch *batch, struct set *s, void *ptr, struct zink_batch_usage *u);
+
 struct zink_batch_state {
    struct zink_fence fence;
    struct pipe_reference reference;
    struct zink_context *ctx;
    VkCommandPool cmdpool;
    VkCommandBuffer cmdbuf;
+   VkCommandBuffer barrier_cmdbuf;
+   bool has_barriers;
 
    VkQueue queue; //duplicated from batch for threading
    VkSemaphore sem;
@@ -70,17 +76,19 @@ struct zink_batch_state {
 
    struct set *surfaces;
    struct set *bufferviews;
-   struct set *desc_sets;
 
    struct util_dynarray persistent_resources;
    struct util_dynarray zombie_samplers;
 
    struct set *active_queries; /* zink_query objects which were active at some point in this batch */
 
+   struct zink_batch_descriptor_data *dd;
+
    VkDeviceSize resource_size;
 
    bool is_device_lost;
    bool have_timelines;
+   unsigned work_count[2];
 };
 
 struct zink_batch {
@@ -165,9 +173,6 @@ zink_batch_state_reference(struct zink_screen *screen,
       zink_batch_state_destroy(screen, old_dst);
    if (dst) *dst = src;
 }
-
-bool
-zink_batch_add_desc_set(struct zink_batch *batch, struct zink_descriptor_set *zds);
 
 void
 zink_batch_usage_set(struct zink_batch_usage *u, uint32_t batch_id);

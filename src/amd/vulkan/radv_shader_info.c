@@ -158,16 +158,16 @@ gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
    case nir_intrinsic_load_instance_id:
       info->vs.needs_instance_id = true;
       break;
-   case nir_intrinsic_load_num_work_groups:
+   case nir_intrinsic_load_num_workgroups:
       info->cs.uses_grid_size = true;
       break;
    case nir_intrinsic_load_local_invocation_id:
-   case nir_intrinsic_load_work_group_id: {
+   case nir_intrinsic_load_workgroup_id: {
       unsigned mask = nir_ssa_def_components_read(&instr->dest.ssa);
       while (mask) {
          unsigned i = u_bit_scan(&mask);
 
-         if (instr->intrinsic == nir_intrinsic_load_work_group_id)
+         if (instr->intrinsic == nir_intrinsic_load_workgroup_id)
             info->cs.uses_block_id[i] = true;
          else
             info->cs.uses_thread_id[i] = true;
@@ -265,6 +265,9 @@ gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
       break;
    case nir_intrinsic_store_output:
       gather_intrinsic_store_output_info(nir, instr, info);
+      break;
+   case nir_intrinsic_load_sbt_amd:
+      info->cs.uses_sbt = true;
       break;
    default:
       break;
@@ -646,7 +649,7 @@ radv_nir_shader_info_pass(struct radv_device *device, const struct nir_shader *n
    switch (nir->info.stage) {
    case MESA_SHADER_COMPUTE:
       for (int i = 0; i < 3; ++i)
-         info->cs.block_size[i] = nir->info.cs.local_size[i];
+         info->cs.block_size[i] = nir->info.workgroup_size[i];
       break;
    case MESA_SHADER_FRAGMENT:
       info->ps.can_discard = nir->info.fs.uses_discard;

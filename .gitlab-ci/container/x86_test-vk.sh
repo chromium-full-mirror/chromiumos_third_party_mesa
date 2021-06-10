@@ -10,6 +10,8 @@ STABLE_EPHEMERAL=" \
       ccache \
       cmake \
       g++ \
+      g++-mingw-w64-i686-posix \
+      g++-mingw-w64-x86-64-posix \
       glslang-tools \
       libgbm-dev \
       libgles2-mesa-dev \
@@ -27,10 +29,14 @@ STABLE_EPHEMERAL=" \
       libxrender-dev \
       libzstd-dev \
       meson \
+      mingw-w64-i686-dev \
+      mingw-w64-tools \
+      mingw-w64-x86-64-dev \
       p7zip \
       patch \
       pkg-config \
       python3-distutils \
+      unzip \
       wget \
       xz-utils \
       "
@@ -39,7 +45,10 @@ apt-get install -y --no-remove \
       $STABLE_EPHEMERAL \
       libxcb-shm0 \
       python3-lxml \
-      python3-simplejson
+      python3-simplejson \
+      xinit \
+      xserver-xorg-video-amdgpu \
+      xserver-xorg-video-ati
 
 # We need multiarch for Wine
 dpkg --add-architecture i386
@@ -51,18 +60,12 @@ apt-get install -y --no-remove \
       wine32 \
       wine64
 
+function setup_wine() {
+    export WINEDEBUG="-all"
+    export WINEPREFIX="$1"
 
-############### Set up Wine env variables
-
-export WINEDEBUG="-all"
-export WINEPREFIX="/dxvk-wine64"
-
-############### Install DXVK
-
-DXVK_VERSION="1.6"
-
-# We don't want crash dialogs
-cat >crashdialog.reg <<EOF
+    # We don't want crash dialogs
+    cat >crashdialog.reg <<EOF
 Windows Registry Editor Version 5.00
 
 [HKEY_CURRENT_USER\Software\Wine\WineDbg]
@@ -70,17 +73,23 @@ Windows Registry Editor Version 5.00
 
 EOF
 
-# Set the wine prefix and disable the crash dialog
-wine regedit crashdialog.reg
-rm crashdialog.reg
+    # Set the wine prefix and disable the crash dialog
+    wine regedit crashdialog.reg
+    rm crashdialog.reg
 
-# DXVK's setup often fails with:
-# "${WINEPREFIX}: Not a valid wine prefix."
-# and that is just spit because of checking the existance of the
-# system.reg file, which fails.
-# Just giving it a bit more of time for it to be created solves the
-# problem ...
-while ! test -f  "${WINEPREFIX}/system.reg"; do sleep 1; done
+    # An immediate wine command may fail with: "${WINEPREFIX}: Not a
+    # valid wine prefix."  and that is just spit because of checking
+    # the existance of the system.reg file, which fails.  Just giving
+    # it a bit more of time for it to be created solves the problem
+    # ...
+    while ! test -f  "${WINEPREFIX}/system.reg"; do sleep 1; done
+}
+
+############### Install DXVK
+
+DXVK_VERSION="1.8.1"
+
+setup_wine "/dxvk-wine64"
 
 wget "https://github.com/doitsujin/dxvk/releases/download/v${DXVK_VERSION}/dxvk-${DXVK_VERSION}.tar.gz"
 tar xzpf dxvk-"${DXVK_VERSION}".tar.gz
@@ -90,15 +99,15 @@ rm dxvk-"${DXVK_VERSION}".tar.gz
 
 ############### Install Windows' apitrace binaries
 
-APITRACE_VERSION="9.0"
-APITRACE_VERSION_DATE="20191126"
+APITRACE_VERSION="10.0"
+APITRACE_VERSION_DATE=""
 
-wget "https://github.com/apitrace/apitrace/releases/download/${APITRACE_VERSION}/apitrace-${APITRACE_VERSION}.${APITRACE_VERSION_DATE}-win64.7z"
-7zr x "apitrace-${APITRACE_VERSION}.${APITRACE_VERSION_DATE}-win64.7z" \
-      "apitrace-${APITRACE_VERSION}.${APITRACE_VERSION_DATE}-win64/bin/apitrace.exe" \
-      "apitrace-${APITRACE_VERSION}.${APITRACE_VERSION_DATE}-win64/bin/d3dretrace.exe"
-mv "apitrace-${APITRACE_VERSION}.${APITRACE_VERSION_DATE}-win64" /apitrace-msvc-win64
-rm "apitrace-${APITRACE_VERSION}.${APITRACE_VERSION_DATE}-win64.7z"
+wget "https://github.com/apitrace/apitrace/releases/download/${APITRACE_VERSION}/apitrace-${APITRACE_VERSION}${APITRACE_VERSION_DATE}-win64.7z"
+7zr x "apitrace-${APITRACE_VERSION}${APITRACE_VERSION_DATE}-win64.7z" \
+      "apitrace-${APITRACE_VERSION}${APITRACE_VERSION_DATE}-win64/bin/apitrace.exe" \
+      "apitrace-${APITRACE_VERSION}${APITRACE_VERSION_DATE}-win64/bin/d3dretrace.exe"
+mv "apitrace-${APITRACE_VERSION}${APITRACE_VERSION_DATE}-win64" /apitrace-msvc-win64
+rm "apitrace-${APITRACE_VERSION}${APITRACE_VERSION_DATE}-win64.7z"
 
 # Add the apitrace path to the registry
 wine \
@@ -112,6 +121,10 @@ wine \
 
 . .gitlab-ci/container/container_pre_build.sh
 
+############### Build parallel-deqp-runner's hang-detection tool
+
+. .gitlab-ci/container/build-hang-detection.sh
+
 ############### Build piglit
 
 PIGLIT_BUILD_TARGETS="piglit_replayer" . .gitlab-ci/container/build-piglit.sh
@@ -121,11 +134,18 @@ PIGLIT_BUILD_TARGETS="piglit_replayer" . .gitlab-ci/container/build-piglit.sh
 . .gitlab-ci/container/build-fossilize.sh
 
 ############### Build dEQP VK
+
 . .gitlab-ci/container/build-deqp.sh
 
 ############### Build gfxreconstruct
 
 . .gitlab-ci/container/build-gfxreconstruct.sh
+
+############### Build VKD3D-Proton
+
+setup_wine "/vkd3d-proton-wine64"
+
+. .gitlab-ci/container/build-vkd3d-proton.sh
 
 ############### Build libdrm
 

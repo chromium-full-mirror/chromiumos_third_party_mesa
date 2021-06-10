@@ -78,7 +78,7 @@ struct vn_renderer_info {
       uint8_t function;
    } pci;
 
-   bool has_dmabuf_import;
+   bool has_dma_buf_import;
    bool has_cache_management;
    bool has_external_sync;
    bool has_implicit_fencing;
@@ -180,18 +180,16 @@ struct vn_renderer_bo_ops {
       VkExternalMemoryHandleTypeFlags external_handles,
       struct vn_renderer_bo **out_bo);
 
-   VkResult (*create_from_dmabuf)(
-      struct vn_renderer *renderer,
-      VkDeviceSize size,
-      int fd,
-      VkMemoryPropertyFlags flags,
-      VkExternalMemoryHandleTypeFlags external_handles,
-      struct vn_renderer_bo **out_bo);
+   VkResult (*create_from_dma_buf)(struct vn_renderer *renderer,
+                                   VkDeviceSize size,
+                                   int fd,
+                                   VkMemoryPropertyFlags flags,
+                                   struct vn_renderer_bo **out_bo);
 
    bool (*destroy)(struct vn_renderer *renderer, struct vn_renderer_bo *bo);
 
-   int (*export_dmabuf)(struct vn_renderer *renderer,
-                        struct vn_renderer_bo *bo);
+   int (*export_dma_buf)(struct vn_renderer *renderer,
+                         struct vn_renderer_bo *bo);
 
    /* map is not thread-safe */
    void *(*map)(struct vn_renderer *renderer, struct vn_renderer_bo *bo);
@@ -299,7 +297,7 @@ static inline struct vn_renderer_shmem *
 vn_renderer_shmem_ref(struct vn_renderer *renderer,
                       struct vn_renderer_shmem *shmem)
 {
-   const int old =
+   ASSERTED const int old =
       atomic_fetch_add_explicit(&shmem->refcount, 1, memory_order_relaxed);
    assert(old >= 1);
 
@@ -344,17 +342,15 @@ vn_renderer_bo_create_from_device_memory(
 }
 
 static inline VkResult
-vn_renderer_bo_create_from_dmabuf(
-   struct vn_renderer *renderer,
-   VkDeviceSize size,
-   int fd,
-   VkMemoryPropertyFlags flags,
-   VkExternalMemoryHandleTypeFlags external_handles,
-   struct vn_renderer_bo **out_bo)
+vn_renderer_bo_create_from_dma_buf(struct vn_renderer *renderer,
+                                   VkDeviceSize size,
+                                   int fd,
+                                   VkMemoryPropertyFlags flags,
+                                   struct vn_renderer_bo **out_bo)
 {
    struct vn_renderer_bo *bo;
-   VkResult result = renderer->bo_ops.create_from_dmabuf(
-      renderer, size, fd, flags, external_handles, &bo);
+   VkResult result =
+      renderer->bo_ops.create_from_dma_buf(renderer, size, fd, flags, &bo);
    if (result != VK_SUCCESS)
       return result;
 
@@ -369,7 +365,7 @@ vn_renderer_bo_create_from_dmabuf(
 static inline struct vn_renderer_bo *
 vn_renderer_bo_ref(struct vn_renderer *renderer, struct vn_renderer_bo *bo)
 {
-   const int old =
+   ASSERTED const int old =
       atomic_fetch_add_explicit(&bo->refcount, 1, memory_order_relaxed);
    assert(old >= 1);
 
@@ -392,10 +388,10 @@ vn_renderer_bo_unref(struct vn_renderer *renderer, struct vn_renderer_bo *bo)
 }
 
 static inline int
-vn_renderer_bo_export_dmabuf(struct vn_renderer *renderer,
-                             struct vn_renderer_bo *bo)
+vn_renderer_bo_export_dma_buf(struct vn_renderer *renderer,
+                              struct vn_renderer_bo *bo)
 {
-   return renderer->bo_ops.export_dmabuf(renderer, bo);
+   return renderer->bo_ops.export_dma_buf(renderer, bo);
 }
 
 static inline void *

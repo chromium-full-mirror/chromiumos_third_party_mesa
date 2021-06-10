@@ -217,20 +217,7 @@ llvmpipe_displaytarget_layout(struct llvmpipe_screen *screen,
                                           map_front_private,
                                           &lpr->row_stride[0] );
 
-   if (lpr->dt == NULL)
-      return FALSE;
-
-   if (!map_front_private) {
-      void *map = winsys->displaytarget_map(winsys, lpr->dt,
-                                            PIPE_MAP_WRITE);
-
-      if (map)
-         memset(map, 0, height * lpr->row_stride[0]);
-
-      winsys->displaytarget_unmap(winsys, lpr->dt);
-   }
-
-   return TRUE;
+   return lpr->dt != NULL;
 }
 
 
@@ -245,6 +232,7 @@ llvmpipe_resource_create_all(struct pipe_screen *_screen,
       return NULL;
 
    lpr->base = *templat;
+   lpr->screen = screen;
    pipe_reference_init(&lpr->base.reference, 1);
    lpr->base.screen = &screen->base;
 
@@ -399,7 +387,7 @@ llvmpipe_resource_map(struct pipe_resource *resource,
 
    if (lpr->dt) {
       /* display target */
-      struct llvmpipe_screen *screen = llvmpipe_screen(resource->screen);
+      struct llvmpipe_screen *screen = lpr->screen;
       struct sw_winsys *winsys = screen->winsys;
       unsigned dt_usage;
 
@@ -444,7 +432,7 @@ llvmpipe_resource_unmap(struct pipe_resource *resource,
 
    if (lpr->dt) {
       /* display target */
-      struct llvmpipe_screen *lp_screen = llvmpipe_screen(resource->screen);
+      struct llvmpipe_screen *lp_screen = lpr->screen;
       struct sw_winsys *winsys = lp_screen->winsys;
 
       assert(level == 0);
@@ -467,12 +455,13 @@ llvmpipe_resource_data(struct pipe_resource *resource)
 
 
 static struct pipe_resource *
-llvmpipe_resource_from_handle(struct pipe_screen *screen,
+llvmpipe_resource_from_handle(struct pipe_screen *_screen,
                               const struct pipe_resource *template,
                               struct winsys_handle *whandle,
                               unsigned usage)
 {
-   struct sw_winsys *winsys = llvmpipe_screen(screen)->winsys;
+   struct llvmpipe_screen *screen = llvmpipe_screen(_screen);
+   struct sw_winsys *winsys = screen->winsys;
    struct llvmpipe_resource *lpr;
 
    /* XXX Seems like from_handled depth textures doesn't work that well */
@@ -483,8 +472,9 @@ llvmpipe_resource_from_handle(struct pipe_screen *screen,
    }
 
    lpr->base = *template;
+   lpr->screen = screen;
    pipe_reference_init(&lpr->base.reference, 1);
-   lpr->base.screen = screen;
+   lpr->base.screen = _screen;
 
    /*
     * Looks like unaligned displaytargets work just fine,
@@ -746,6 +736,7 @@ llvmpipe_user_buffer_create(struct pipe_screen *screen,
    if (!buffer)
       return NULL;
 
+   buffer->screen = llvmpipe_screen(screen);
    pipe_reference_init(&buffer->base.reference, 1);
    buffer->base.screen = screen;
    buffer->base.format = PIPE_FORMAT_R8_UNORM; /* ?? */
@@ -977,8 +968,10 @@ llvmpipe_init_screen_resource_funcs(struct pipe_screen *screen)
 void
 llvmpipe_init_context_resource_funcs(struct pipe_context *pipe)
 {
-   pipe->transfer_map = llvmpipe_transfer_map;
-   pipe->transfer_unmap = llvmpipe_transfer_unmap;
+   pipe->buffer_map = llvmpipe_transfer_map;
+   pipe->buffer_unmap = llvmpipe_transfer_unmap;
+   pipe->texture_map = llvmpipe_transfer_map;
+   pipe->texture_unmap = llvmpipe_transfer_unmap;
 
    pipe->transfer_flush_region = u_default_transfer_flush_region;
    pipe->buffer_subdata = u_default_buffer_subdata;

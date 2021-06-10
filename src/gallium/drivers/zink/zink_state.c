@@ -96,11 +96,15 @@ zink_bind_vertex_elements_state(struct pipe_context *pctx,
    struct zink_gfx_pipeline_state *state = &ctx->gfx_pipeline_state;
    ctx->element_state = cso;
    if (cso) {
-      if (state->element_state != &ctx->element_state->hw_state)
+      if (state->element_state != &ctx->element_state->hw_state) {
          state->vertex_state_dirty = true;
+         ctx->vertex_buffers_dirty = ctx->element_state->hw_state.num_bindings > 0;
+      }
       state->element_state = &ctx->element_state->hw_state;
-   } else
+   } else {
      state->element_state = NULL;
+     ctx->vertex_buffers_dirty = false;
+   }
 }
 
 static void
@@ -385,6 +389,7 @@ zink_bind_depth_stencil_alpha_state(struct pipe_context *pctx, void *cso)
 {
    struct zink_context *ctx = zink_context(pctx);
 
+   bool prev_zwrite = ctx->dsa_state ? ctx->dsa_state->hw_state.depth_write : false;
    ctx->dsa_state = cso;
 
    if (cso) {
@@ -393,6 +398,10 @@ zink_bind_depth_stencil_alpha_state(struct pipe_context *pctx, void *cso)
          state->depth_stencil_alpha_state = &ctx->dsa_state->hw_state;
          state->dirty |= !zink_screen(pctx->screen)->info.have_EXT_extended_dynamic_state;
       }
+   }
+   if (prev_zwrite != (ctx->dsa_state ? ctx->dsa_state->hw_state.depth_write : false)) {
+      ctx->rp_changed = true;
+      zink_batch_no_rp(ctx);
    }
 }
 
@@ -470,6 +479,7 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
    struct zink_screen *screen = zink_screen(pctx->screen);
    bool clip_halfz = ctx->rast_state ? ctx->rast_state->base.clip_halfz : false;
    bool point_quad_rasterization = ctx->rast_state ? ctx->rast_state->base.point_quad_rasterization : false;
+   bool scissor = ctx->rast_state ? ctx->rast_state->base.scissor : false;
    ctx->rast_state = cso;
 
    if (ctx->rast_state) {
@@ -484,8 +494,10 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
          ctx->gfx_pipeline_state.dirty = true;
       }
 
-      if (clip_halfz != ctx->rast_state->base.clip_halfz)
+      if (clip_halfz != ctx->rast_state->base.clip_halfz) {
          ctx->last_vertex_stage_dirty = true;
+         ctx->vp_state_changed = true;
+      }
 
       if (ctx->gfx_pipeline_state.front_face != ctx->rast_state->front_face) {
          ctx->gfx_pipeline_state.front_face = ctx->rast_state->front_face;
@@ -497,6 +509,8 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
       }
       if (ctx->rast_state->base.point_quad_rasterization != point_quad_rasterization)
          ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_FRAGMENT);
+      if (ctx->rast_state->base.scissor != scissor)
+         ctx->scissor_changed = true;
    }
 }
 

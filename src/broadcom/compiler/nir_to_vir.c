@@ -68,6 +68,39 @@
 #define V3D_TSY_DEC_SEMAPHORE       14
 #define V3D_TSY_SET_QUORUM_FREE_ALL 15
 
+enum v3d_tmu_op_type
+{
+        V3D_TMU_OP_TYPE_REGULAR,
+        V3D_TMU_OP_TYPE_ATOMIC,
+        V3D_TMU_OP_TYPE_CACHE
+};
+
+static enum v3d_tmu_op_type
+v3d_tmu_get_type_from_op(uint32_t tmu_op, bool is_write)
+{
+        switch(tmu_op) {
+        case V3D_TMU_OP_WRITE_ADD_READ_PREFETCH:
+        case V3D_TMU_OP_WRITE_SUB_READ_CLEAR:
+        case V3D_TMU_OP_WRITE_XCHG_READ_FLUSH:
+        case V3D_TMU_OP_WRITE_CMPXCHG_READ_FLUSH:
+        case V3D_TMU_OP_WRITE_UMIN_FULL_L1_CLEAR:
+                return is_write ? V3D_TMU_OP_TYPE_ATOMIC : V3D_TMU_OP_TYPE_CACHE;
+        case V3D_TMU_OP_WRITE_UMAX:
+        case V3D_TMU_OP_WRITE_SMIN:
+        case V3D_TMU_OP_WRITE_SMAX:
+                assert(is_write);
+                FALLTHROUGH;
+        case V3D_TMU_OP_WRITE_AND_READ_INC:
+        case V3D_TMU_OP_WRITE_OR_READ_DEC:
+        case V3D_TMU_OP_WRITE_XOR_READ_NOT:
+                return V3D_TMU_OP_TYPE_ATOMIC;
+        case V3D_TMU_OP_REGULAR:
+                return V3D_TMU_OP_TYPE_REGULAR;
+
+        default:
+                unreachable("Unknown tmu_op\n");
+        }
+}
 static void
 ntq_emit_cf_list(struct v3d_compile *c, struct exec_list *list);
 
@@ -567,11 +600,10 @@ ntq_emit_tmu_general(struct v3d_compile *c, nir_intrinsic_instr *instr,
                                                         &tmu_writes);
                 }
 
-                /* The spec says that for atomics, the TYPE field is
-                 * ignored, but that doesn't seem to be the case for
-                 * CMPXCHG.  Just use the number of tmud writes we did
-                 * to decide the type (or choose "32bit" for atomic
-                 * reads, which has been fine).
+                /* For atomics we use 32bit except for CMPXCHG, that we need
+                 * to use VEC2. For the rest of the cases we use the number of
+                 * tmud writes we did to decide the type. For cache operations
+                 * the type is ignored.
                  */
                 uint32_t config = 0;
                 if (mode == MODE_EMIT) {
@@ -582,6 +614,9 @@ ntq_emit_tmu_general(struct v3d_compile *c, nir_intrinsic_instr *instr,
                                 assert(tmu_writes > 0);
                                 num_components = tmu_writes - 1;
                         }
+                        bool is_atomic =
+                                v3d_tmu_get_type_from_op(tmu_op, !is_load) ==
+                                V3D_TMU_OP_TYPE_ATOMIC;
 
                         uint32_t perquad =
                                 is_load && !vir_in_nonuniform_control_flow(c)
@@ -589,7 +624,9 @@ ntq_emit_tmu_general(struct v3d_compile *c, nir_intrinsic_instr *instr,
                                 : GENERAL_TMU_LOOKUP_PER_PIXEL;
                         config = 0xffffff00 | tmu_op << 3 | perquad;
 
-                        if (num_components == 1) {
+                        if (tmu_op == V3D_TMU_OP_WRITE_CMPXCHG_READ_FLUSH) {
+                                config |= GENERAL_TMU_LOOKUP_TYPE_VEC2;
+                        } else if (is_atomic || num_components == 1) {
                                 config |= GENERAL_TMU_LOOKUP_TYPE_32BIT_UI;
                         } else {
                                 config |= GENERAL_TMU_LOOKUP_TYPE_VEC2 +
@@ -1794,7 +1831,7 @@ v3d_optimize_nir(struct v3d_compile *c, struct nir_shader *s)
 
                 NIR_PASS_V(s, nir_lower_vars_to_ssa);
                 NIR_PASS(progress, s, nir_lower_alu_to_scalar, NULL, NULL);
-                NIR_PASS(progress, s, nir_lower_phis_to_scalar);
+                NIR_PASS(progress, s, nir_lower_phis_to_scalar, false);
                 NIR_PASS(progress, s, nir_copy_prop);
                 NIR_PASS(progress, s, nir_opt_remove_phis);
                 NIR_PASS(progress, s, nir_opt_dce);
@@ -2801,7 +2838,7 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
         case nir_intrinsic_get_ssbo_size:
                 ntq_store_dest(c, &instr->dest, 0,
                                vir_uniform(c, QUNIFORM_GET_SSBO_SIZE,
-                                           nir_src_as_uint(instr->src[0])));
+                                           nir_src_comp_as_uint(instr->src[0], 0)));
                 break;
 
         case nir_intrinsic_get_ubo_size:
@@ -2989,7 +3026,7 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                 vir_emit_thrsw(c);
                 break;
 
-        case nir_intrinsic_load_num_work_groups:
+        case nir_intrinsic_load_num_workgroups:
                 for (int i = 0; i < 3; i++) {
                         ntq_store_dest(c, &instr->dest, i,
                                        vir_uniform(c, QUNIFORM_NUM_WORK_GROUPS,
@@ -3003,17 +3040,31 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                                        vir_uniform_ui(c, 32 - c->local_invocation_index_bits)));
                 break;
 
-        case nir_intrinsic_load_work_group_id:
-                ntq_store_dest(c, &instr->dest, 0,
-                               vir_AND(c, c->cs_payload[0],
-                                       vir_uniform_ui(c, 0xffff)));
-                ntq_store_dest(c, &instr->dest, 1,
-                               vir_SHR(c, c->cs_payload[0],
-                                       vir_uniform_ui(c, 16)));
-                ntq_store_dest(c, &instr->dest, 2,
-                               vir_AND(c, c->cs_payload[1],
-                                       vir_uniform_ui(c, 0xffff)));
+        case nir_intrinsic_load_workgroup_id: {
+                struct qreg x = vir_AND(c, c->cs_payload[0],
+                                         vir_uniform_ui(c, 0xffff));
+
+                struct qreg y = vir_SHR(c, c->cs_payload[0],
+                                         vir_uniform_ui(c, 16));
+
+                struct qreg z = vir_AND(c, c->cs_payload[1],
+                                         vir_uniform_ui(c, 0xffff));
+
+                /* We only support dispatch base in Vulkan */
+                if (c->key->environment == V3D_ENVIRONMENT_VULKAN) {
+                        x = vir_ADD(c, x,
+                                    vir_uniform(c, QUNIFORM_WORK_GROUP_BASE, 0));
+                        y = vir_ADD(c, y,
+                                    vir_uniform(c, QUNIFORM_WORK_GROUP_BASE, 1));
+                        z = vir_ADD(c, z,
+                                    vir_uniform(c, QUNIFORM_WORK_GROUP_BASE, 2));
+                }
+
+                ntq_store_dest(c, &instr->dest, 0, vir_MOV(c, x));
+                ntq_store_dest(c, &instr->dest, 1, vir_MOV(c, y));
+                ntq_store_dest(c, &instr->dest, 2, vir_MOV(c, z));
                 break;
+        }
 
         case nir_intrinsic_load_subgroup_id:
                 ntq_store_dest(c, &instr->dest, 0, vir_EIDX(c));
@@ -3693,9 +3744,9 @@ nir_to_vir(struct v3d_compile *c)
                 /* Set up the division between gl_LocalInvocationIndex and
                  * wg_in_mem in the payload reg.
                  */
-                int wg_size = (c->s->info.cs.local_size[0] *
-                               c->s->info.cs.local_size[1] *
-                               c->s->info.cs.local_size[2]);
+                int wg_size = (c->s->info.workgroup_size[0] *
+                               c->s->info.workgroup_size[1] *
+                               c->s->info.workgroup_size[2]);
                 c->local_invocation_index_bits =
                         ffs(util_next_power_of_two(MAX2(wg_size, 64))) - 1;
                 assert(c->local_invocation_index_bits <= 8);
@@ -3703,9 +3754,9 @@ nir_to_vir(struct v3d_compile *c)
                 if (c->s->info.shared_size) {
                         struct qreg wg_in_mem = vir_SHR(c, c->cs_payload[1],
                                                         vir_uniform_ui(c, 16));
-                        if (c->s->info.cs.local_size[0] != 1 ||
-                            c->s->info.cs.local_size[1] != 1 ||
-                            c->s->info.cs.local_size[2] != 1) {
+                        if (c->s->info.workgroup_size[0] != 1 ||
+                            c->s->info.workgroup_size[1] != 1 ||
+                            c->s->info.workgroup_size[2] != 1) {
                                 int wg_bits = (16 -
                                                c->local_invocation_index_bits);
                                 int wg_mask = (1 << wg_bits) - 1;

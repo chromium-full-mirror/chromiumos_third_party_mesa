@@ -48,7 +48,10 @@ pre_args = [
   '-DPACKAGE_VERSION="@0@"'.format(meson.project_version()),
   '-DPACKAGE_BUGREPORT="https://gitlab.freedesktop.org/mesa/mesa/-/issues"',
 ]
+c_args = []
+cpp_args = []
 
+with_moltenvk_dir = get_option('moltenvk-dir')
 with_vulkan_icd_dir = get_option('vulkan-icd-dir')
 with_tests = get_option('build-tests')
 with_aco_tests = get_option('build-aco-tests')
@@ -454,6 +457,14 @@ if (not ['freebsd', 'openbsd', 'haiku'].contains(host_machine.system()) and
     (not with_platform_windows or not with_shared_glapi))
   pre_args += '-DUSE_ELF_TLS'
   use_elf_tls = true
+
+  if with_platform_android
+    # By default the NDK compiler, at least, emits emutls references instead of
+    # ELF TLS, even when building targeting newer API levels.  Make it actually do
+    # ELF TLS instead.
+    c_args += '-fno-emulated-tls'
+    cpp_args += '-fno-emulated-tls'
+  endif
 endif
 
 if with_glx != 'disabled'
@@ -787,6 +798,12 @@ if with_gallium_st_nine
     error('Using nine with wine requires dri3')
   endif
 endif
+with_gallium_st_d3d10umd =  get_option('gallium-d3d10umd')
+if with_gallium_st_d3d10umd
+  if not with_gallium_softpipe
+    error('The d3d10umd state tracker requires gallium softpipe/llvmpipe.')
+  endif
+endif
 _power8 = get_option('power8')
 if _power8 == 'true'
   _power8 = 'enabled'
@@ -866,7 +883,7 @@ else
   pre_args += '-DEGL_NO_X11'
   gl_pkgconfig_c_flags += '-DEGL_NO_X11'
 endif
-if with_gbm
+if with_gbm and not with_platform_android
   pre_args += '-DHAVE_DRM_PLATFORM'
 endif
 
@@ -1007,10 +1024,8 @@ elif host_machine.system() == 'openbsd'
 endif
 
 # Check for generic C arguments
-c_args = []
 c_msvc_compat_args = []
 no_override_init_args = []
-cpp_args = []
 cpp_msvc_compat_args = []
 if cc.get_id() == 'msvc'
   foreach a : ['/wd4018',  # signed/unsigned mismatch
@@ -1141,30 +1156,30 @@ if host_machine.system() == 'windows'
   endif
 endif
 
-if get_option('sse2') and host_machine.system() == 'windows' and host_machine.cpu_family() == 'x86' and cc.get_id() == 'gcc'
-  # These settings make generated MinGW code match MSVC and follow
-  # GCC advice on https://gcc.gnu.org/wiki/FloatingPointMath#x86note
-  #
-  # NOTE: We need to ensure stack is realigned given that we
-  # produce shared objects, and have no control over the stack
-  # alignment policy of the application. Therefore we need
-  # -mstackrealign or -mincoming-stack-boundary=2.
-  #
-  # XXX: We could have SSE without -mstackrealign if we always used
-  # __attribute__((force_align_arg_pointer)), but that's not
-  # always the case.
-  c_args += ['-msse', '-msse2', '-mfpmath=sse', '-mstackrealign']
-endif
-
 if host_machine.cpu_family().startswith('x86') and cc.get_id() != 'msvc'
   pre_args += '-DUSE_SSE41'
   with_sse41 = true
   sse41_args = ['-msse4.1']
 
-  # GCC on x86 (not x86_64) with -msse* assumes a 16 byte aligned stack, but
-  # that's not guaranteed
   if host_machine.cpu_family() == 'x86'
-    sse41_args += '-mstackrealign'
+    if get_option('sse2')
+      # These settings make generated GCC code match MSVC and follow
+      # GCC advice on https://gcc.gnu.org/wiki/FloatingPointMath#x86note
+      #
+      # NOTE: We need to ensure stack is realigned given that we
+      # produce shared objects, and have no control over the stack
+      # alignment policy of the application. Therefore we need
+      # -mstackrealign or -mincoming-stack-boundary=2.
+      #
+      # XXX: We could have SSE without -mstackrealign if we always used
+      # __attribute__((force_align_arg_pointer)), but that's not
+      # always the case.
+      c_args += ['-msse2', '-mfpmath=sse', '-mstackrealign']
+    else
+      # GCC on x86 (not x86_64) with -msse* assumes a 16 byte aligned stack, but
+      # that's not guaranteed
+      sse41_args += '-mstackrealign'
+    endif
   endif
 else
   with_sse41 = false
@@ -1634,9 +1649,7 @@ if with_llvm
     _rtti = ['ON', 'YES'].contains(dep_llvm.get_variable(cmake : 'LLVM_ENABLE_RTTI', configtool: 'has-rtti'))
   endif
   if not _rtti
-    if with_gallium_nouveau
-      error('The Nouveau driver requires rtti. You either need to turn off nouveau or use an LLVM built with LLVM_ENABLE_RTTI.')
-    elif with_gallium_opencl
+    if with_gallium_opencl
       error('The Clover OpenCL state tracker requires rtti, you need to turn off clover or use an LLVM built with LLVM_ENABLE_RTTI.')
     endif
     if cc.get_id() == 'msvc'
@@ -1790,8 +1803,15 @@ endif
 
 dep_selinux = null_dep
 if get_option('selinux')
+  if get_option('execmem') != true
+    warning('execmem option is disabled, selinux will not be able to use execmem.')
+  endif
   dep_selinux = dependency('libselinux')
   pre_args += '-DMESA_SELINUX'
+endif
+
+if get_option('execmem')
+  pre_args += '-DMESA_EXECMEM'
 endif
 
 _libunwind = get_option('libunwind')
@@ -2120,7 +2140,7 @@ endif
 lines += 'GBM:             ' + (with_gbm ? 'yes' : 'no')
 if with_egl or with_any_vk
   _platforms += 'surfaceless'
-  if with_gbm
+  if with_gbm and not with_platform_android
     _platforms += 'drm'
   endif
   lines += 'EGL/Vulkan/VL platforms:   ' + ' '.join(_platforms)

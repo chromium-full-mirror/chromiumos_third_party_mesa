@@ -163,6 +163,8 @@ fd_screen_destroy(struct pipe_screen *pscreen)
 
    simple_mtx_destroy(&screen->lock);
 
+   util_idalloc_mt_fini(&screen->buffer_ids);
+
    u_transfer_helper_destroy(pscreen->transfer_helper);
 
    if (screen->compiler)
@@ -316,7 +318,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return is_a4xx(screen);
 
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
-      return is_a2xx(screen) ? 64 : 32;
+      return 64;
 
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
@@ -1082,6 +1084,8 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
    fd_bc_init(&screen->batch_cache);
 
    list_inithead(&screen->context_list);
+
+   util_idalloc_mt_init_tc(&screen->buffer_ids);
 
    (void)simple_mtx_init(&screen->lock, mtx_plain);
 

@@ -224,6 +224,11 @@ spec@ext_image_dma_buf_import@ext_image_dma_buf_import-export,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_p010,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_p012,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_p016,Fail
+spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_y210,Fail
+spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_y212,Fail
+spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_y216,Fail
+spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_y412,Fail
+spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_y416,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_uyvy,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_yuyv,Fail
 spec@ext_packed_depth_stencil@fbo-clear-formats,Fail
@@ -331,7 +336,6 @@ wgl@wgl-multi-context-single-window,Fail
 wgl@wgl-multi-window-single-context,Fail
 wgl@wgl-sanity,Fail
 spec@glsl-1.30@execution@clipping@fs-clip-distance-interpolated,Crash
-spec@glsl-1.30@execution@fs-large-local-array-vec2,Crash
-spec@glsl-1.30@execution@fs-large-local-array-vec3,Crash
-spec@glsl-1.30@execution@fs-large-local-array-vec4,Crash
-spec@glsl-1.30@execution@range_analysis_fsat_of_nan,Fail
+spec@glsl-1.30@execution@fs-large-local-array-vec2,Fail
+spec@glsl-1.30@execution@fs-large-local-array-vec3,Fail
+spec@glsl-1.30@execution@fs-large-local-array-vec4,Fail

@@ -1013,6 +1013,8 @@ static void si_bind_rs_state(struct pipe_context *ctx, void *state)
    if (old_rs->multisample_enable != rs->multisample_enable) {
       si_mark_atom_dirty(sctx, &sctx->atoms.s.db_render_state);
 
+      si_mark_atom_dirty(sctx, &sctx->atoms.s.msaa_config);
+
       /* Update the small primitive filter workaround if necessary. */
       if (sctx->screen->info.has_msaa_sample_loc_bug && sctx->framebuffer.nr_samples > 1)
          si_mark_atom_dirty(sctx, &sctx->atoms.s.msaa_sample_locs);
@@ -2232,6 +2234,13 @@ static bool si_is_format_supported(struct pipe_screen *screen, enum pipe_format 
       retval |= si_is_vertex_format_supported(screen, format, PIPE_BIND_VERTEX_BUFFER);
    }
 
+   if (usage & PIPE_BIND_INDEX_BUFFER) {
+      if (format == PIPE_FORMAT_R8_UINT ||
+          format == PIPE_FORMAT_R16_UINT ||
+          format == PIPE_FORMAT_R32_UINT)
+         retval |= PIPE_BIND_INDEX_BUFFER;
+   }
+
    if ((usage & PIPE_BIND_LINEAR) && !util_format_is_compressed(format) &&
        !(usage & PIPE_BIND_DEPTH_STENCIL))
       retval |= PIPE_BIND_LINEAR;
@@ -3274,7 +3283,7 @@ static void si_emit_framebuffer_state(struct si_context *sctx)
    radeon_set_context_reg(cs, R_028208_PA_SC_WINDOW_SCISSOR_BR,
                           S_028208_BR_X(state->width) | S_028208_BR_Y(state->height));
 
-   if (sctx->screen->dfsm_allowed) {
+   if (sctx->screen->dpbb_allowed) {
       radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
       radeon_emit(cs, EVENT_TYPE(V_028A90_BREAK_BATCH) | EVENT_INDEX(0));
    }
@@ -3533,17 +3542,7 @@ static void si_emit_msaa_config(struct si_context *sctx)
    /* R_028A4C_PA_SC_MODE_CNTL_1 */
    radeon_opt_set_context_reg(sctx, R_028A4C_PA_SC_MODE_CNTL_1, SI_TRACKED_PA_SC_MODE_CNTL_1,
                               sc_mode_cntl_1);
-
-   if (radeon_packets_added()) {
-      sctx->context_roll = true;
-
-      /* GFX9: Flush DFSM when the AA mode changes. */
-      if (sctx->screen->dfsm_allowed) {
-         radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
-         radeon_emit(cs, EVENT_TYPE(V_028A90_FLUSH_DFSM) | EVENT_INDEX(0));
-      }
-   }
-   radeon_end();
+   radeon_end_update_context_roll(sctx);
 }
 
 void si_update_ps_iter_samples(struct si_context *sctx)
@@ -5200,6 +5199,12 @@ void si_init_cs_preamble_state(struct si_context *sctx, bool uses_reg_shadowing)
                      S_028034_BR_X(16384) | S_028034_BR_Y(16384));
    }
 
+   if (sctx->chip_class >= GFX10) {
+      si_pm4_set_reg(pm4, R_028038_DB_DFSM_CONTROL,
+                     S_028038_PUNCHOUT_MODE(V_028038_FORCE_OFF) |
+                     S_028038_POPS_DRAIN_PS_ON_OVERLAP(1));
+   }
+
    unsigned cu_mask_ps = 0xffffffff;
 
    /* It's wasteful to enable all CUs for PS if shader arrays have a different
@@ -5330,6 +5335,10 @@ void si_init_cs_preamble_state(struct si_context *sctx, bool uses_reg_shadowing)
       si_pm4_set_reg(pm4, R_030920_VGT_MAX_VTX_INDX, ~0);
       si_pm4_set_reg(pm4, R_030924_VGT_MIN_VTX_INDX, 0);
       si_pm4_set_reg(pm4, R_030928_VGT_INDX_OFFSET, 0);
+
+      si_pm4_set_reg(pm4, R_028060_DB_DFSM_CONTROL,
+                     S_028060_PUNCHOUT_MODE(V_028060_FORCE_OFF) |
+                     S_028060_POPS_DRAIN_PS_ON_OVERLAP(1));
    }
 
    if (sctx->chip_class >= GFX9) {

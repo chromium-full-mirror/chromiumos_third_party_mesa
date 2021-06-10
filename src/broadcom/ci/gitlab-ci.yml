@@ -9,6 +9,7 @@
     BM_ROOTFS: /rootfs-armhf
     GPU_VERSION: vc4-rpi3
     DEQP_EXPECTED_RENDERER: VC4
+    FLAKES_CHANNEL: "#videocore-ci"
   script:
     - ./install/bare-metal/poe-powered.sh
   needs:
@@ -37,14 +38,12 @@ vc4-rpi3-gles2:armhf:
 vc4-rpi3-khr-gles2:armhf:
   extends:
     - .vc4-rpi3-deqp:armhf
-    - .test-manual
   variables:
     DEQP_VER: gles2-khr
 
 vc4-rpi3-egl:armhf:
   extends:
     - .vc4-rpi3-deqp:armhf
-    - .test-manual
   variables:
     BM_START_XORG: 1
     DEQP_VER: egl
@@ -88,6 +87,7 @@ vc4-rpi3-piglit-quick_shader:armhf:
     BM_POE_TIMEOUT: 300
     BM_ROOTFS: /rootfs-armhf
     DEQP_EXPECTED_RENDERER: V3D
+    FLAKES_CHANNEL: "#videocore-ci"
     GPU_VERSION: v3d-rpi4
   script:
     - ./install/bare-metal/poe-powered.sh
@@ -120,28 +120,24 @@ v3d-rpi4-gles2:armhf:
 v3d-rpi4-khr-gles31:armhf:
   extends:
     - .v3d-rpi4-test:armhf
-    - .test-manual
   variables:
     DEQP_VER: gles31-khr
 
 v3d-rpi4-khr-gles3:armhf:
   extends:
     - .v3d-rpi4-test:armhf
-    - .test-manual
   variables:
     DEQP_VER: gles3-khr
 
 v3d-rpi4-khr-gles2:armhf:
   extends:
     - .v3d-rpi4-test:armhf
-    - .test-manual
   variables:
     DEQP_VER: gles2-khr
 
 v3d-rpi4-egl:armhf:
   extends:
     - .v3d-rpi4-test:armhf
-    - .test-manual
   variables:
     BM_START_XORG: 1
     DEQP_VER: egl
@@ -150,7 +146,6 @@ v3d-rpi4-piglit:armhf:
   extends:
     - .piglit-test
     - .v3d-rpi4-test:armhf
-    - .test-manual
   parallel: 3
   variables:
     BARE_METAL_TEST_SCRIPT: "/install/piglit/piglit-runner.sh"
@@ -158,29 +153,30 @@ v3d-rpi4-piglit:armhf:
     PIGLIT_PLATFORM: mixed_glx_egl
     PIGLIT_PROFILES: all
 
-v3dv-rpi4-vk:armhf:
+v3dv-rpi4-vk:arm64:
   extends:
-    - .baremetal-test-armhf
+    - .baremetal-test
     - .use-arm_test
     - .v3dv-rules
   parallel: 6
   variables:
     BARE_METAL_TEST_SCRIPT: "/install/deqp-runner.sh"
-    BM_BOOTFS: /boot/raspberrypi_armhf
+    BM_BOOTFS: /boot/raspberrypi_arm64
     BM_KERNEL_MODULES: v3d,vc4
     BM_POE_TIMEOUT: 300
-    BM_ROOTFS: /rootfs-armhf
-    CPU: arm7hlf
+    BM_ROOTFS: /rootfs-arm64
     DEQP_EXPECTED_RENDERER: "V3D 4.2"
     DEQP_FRACTION: 7
     DEQP_VER: vk
+    FLAKES_CHANNEL: "#videocore-ci"
     GPU_VERSION: v3dv-rpi4
-    VK_CPU: arm7hlf
+    MINIO_ARTIFACT_NAME: mesa-arm64
     VK_DRIVER: broadcom
   script:
     - ./install/bare-metal/poe-powered.sh
   needs:
     - arm_test
-    - meson-armhf
+    - job: meson-arm64
+      artifacts: false
   tags:
     - igalia-rpi4

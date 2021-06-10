@@ -437,7 +437,8 @@ batch_from_key(struct fd_batch_cache *cache, struct fd_batch_key *key,
 
    if (entry) {
       free(key);
-      fd_batch_reference(&batch, (struct fd_batch *)entry->data);
+      fd_batch_reference_locked(&batch, (struct fd_batch *)entry->data);
+      assert(!batch->flushed);
       return batch;
    }
 

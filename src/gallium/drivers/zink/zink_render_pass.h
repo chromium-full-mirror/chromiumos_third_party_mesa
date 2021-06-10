@@ -36,7 +36,10 @@ struct zink_rt_attrib {
   VkSampleCountFlagBits samples;
   bool clear_color;
   bool clear_stencil;
-  bool swapchain;
+  union {
+     bool swapchain;
+     bool needs_write;
+  };
 };
 
 struct zink_render_pass_state {
@@ -45,9 +48,7 @@ struct zink_render_pass_state {
    bool swapchain_init;
    struct zink_rt_attrib rts[PIPE_MAX_COLOR_BUFS + 1];
    unsigned num_rts;
-#ifndef NDEBUG
-   uint32_t clears; //for extra verification
-#endif
+   uint32_t clears; //for extra verification and update flagging
 };
 
 struct zink_render_pass {
@@ -63,4 +64,6 @@ void
 zink_destroy_render_pass(struct zink_screen *screen,
                          struct zink_render_pass *rp);
 
+VkImageLayout
+zink_render_pass_attachment_get_barrier_info(const struct zink_render_pass *rp, unsigned idx, VkPipelineStageFlags *pipeline, VkAccessFlags *access);
 #endif

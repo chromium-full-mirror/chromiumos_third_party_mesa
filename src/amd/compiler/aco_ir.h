@@ -476,6 +476,13 @@ public:
          setFixed(PhysReg{128});
       }
    };
+   explicit Operand(Temp r, PhysReg reg) noexcept
+   {
+      assert(r.id()); /* Don't allow fixing an undef to a register */
+      data_.temp = r;
+      isTemp_ = true;
+      setFixed(reg);
+   };
    explicit Operand(uint8_t v) noexcept
    {
       /* 8-bit constants are only used for copies and copies from any 8-bit
@@ -836,6 +843,11 @@ public:
          return other.isUndefined() && other.regClass() == regClass();
       else
          return other.isTemp() && other.getTemp() == getTemp();
+   }
+
+   constexpr bool operator != (Operand other) const noexcept
+   {
+      return !operator==(other);
    }
 
    constexpr void set16bit(bool flag) noexcept
@@ -1611,7 +1623,7 @@ memory_sync_info get_sync_info(const Instruction* instr);
 bool is_dead(const std::vector<uint16_t>& uses, Instruction *instr);
 
 bool can_use_opsel(chip_class chip, aco_opcode op, int idx, bool high);
-bool can_use_SDWA(chip_class chip, const aco_ptr<Instruction>& instr);
+bool can_use_SDWA(chip_class chip, const aco_ptr<Instruction>& instr, bool pre_ra);
 /* updates "instr" and returns the old instruction (or NULL if no update was needed) */
 aco_ptr<Instruction> convert_to_SDWA(chip_class chip, aco_ptr<Instruction>& instr);
 bool needs_exec_mask(const Instruction* instr);
@@ -1910,6 +1922,8 @@ public:
    unsigned next_uniform_if_depth = 0;
 
    struct {
+      FILE *output = stderr;
+      bool shorten_messages = false;
       void (*func)(void *private_data,
                    enum radv_compiler_debug_level level,
                    const char *message);
@@ -2001,6 +2015,7 @@ void dominator_tree(Program* program);
 void insert_exec_mask(Program *program);
 void value_numbering(Program* program);
 void optimize(Program* program);
+void optimize_postRA(Program* program);
 void setup_reduce_temp(Program* program);
 void lower_to_cssa(Program* program, live& live_vars);
 void register_allocation(Program *program, std::vector<IDSet>& live_out_per_block,
