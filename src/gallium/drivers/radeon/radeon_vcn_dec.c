@@ -1547,12 +1547,12 @@ static struct pb_buffer *rvcn_dec_message_decode(struct radeon_decoder *dec,
       if (dec->stream_type == RDECODE_CODEC_H264_PERF) {
          unsigned ctx_size = calc_ctx_size_h264_perf(dec);
          bool r;
-         if (encrypted) {
+         if (encrypted && dec->tmz_ctx) {
             r = si_vid_create_tmz_buffer(dec->screen, &dec->ctx, ctx_size, PIPE_USAGE_DEFAULT);
          } else {
             r = si_vid_create_buffer(dec->screen, &dec->ctx, ctx_size, PIPE_USAGE_DEFAULT);
          }
-         assert(encrypted == (bool)(dec->ctx.res->flags & RADEON_FLAG_ENCRYPTED));
+         assert((encrypted && dec->tmz_ctx) == (bool)(dec->ctx.res->flags & RADEON_FLAG_ENCRYPTED));
 
          if (!r) {
             RVID_ERR("Can't allocated context buffer.\n");
@@ -1583,7 +1583,7 @@ static struct pb_buffer *rvcn_dec_message_decode(struct radeon_decoder *dec,
          if (dec->base.profile == PIPE_VIDEO_PROFILE_VP9_PROFILE2)
             ctx_size += 8 * 2 * 4096;
 
-         if (encrypted) {
+         if (encrypted && dec->tmz_ctx) {
             r = si_vid_create_tmz_buffer(dec->screen, &dec->ctx, ctx_size, PIPE_USAGE_DEFAULT);
          } else {
             r = si_vid_create_buffer(dec->screen, &dec->ctx, ctx_size, PIPE_USAGE_DEFAULT);
@@ -1608,7 +1608,7 @@ static struct pb_buffer *rvcn_dec_message_decode(struct radeon_decoder *dec,
          else
             ctx_size = calc_ctx_size_h265_main(dec);
 
-         if (encrypted) {
+         if (encrypted && dec->tmz_ctx) {
             r = si_vid_create_tmz_buffer(dec->screen, &dec->ctx, ctx_size, PIPE_USAGE_DEFAULT);
          } else {
             r = si_vid_create_buffer(dec->screen, &dec->ctx, ctx_size, PIPE_USAGE_DEFAULT);
@@ -2489,6 +2489,8 @@ struct pipe_video_codec *radeon_create_decoder(struct pipe_context *context,
       list_inithead(&dec->dpb_ref_list);
       list_inithead(&dec->dpb_unref_list);
    }
+
+   dec->tmz_ctx = sctx->family < CHIP_RENOIR;
 
    return &dec->base;
 
