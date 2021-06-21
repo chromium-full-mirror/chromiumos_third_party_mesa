@@ -1531,10 +1531,10 @@ static struct pb_buffer *rvcn_dec_message_decode(struct radeon_decoder *dec,
                    dec->stream_type == RDECODE_CODEC_AV1 ||
                    dec->base.profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)) ? 64 : 32;
 
-   if (dec->dpb_type != DPB_DYNAMIC_TIER_2) {
+   if (!dec->dpb.res && dec->dpb_type != DPB_DYNAMIC_TIER_2) {
       unsigned dpb_size = calc_dpb_size(dec, db_alignment);
       bool r;
-      if (!dec->dpb.res && dpb_size) {
+      if (dpb_size) {
          if (encrypted) {
             r = si_vid_create_tmz_buffer(dec->screen, &dec->dpb, dpb_size, PIPE_USAGE_DEFAULT);
          } else {
@@ -1546,14 +1546,6 @@ static struct pb_buffer *rvcn_dec_message_decode(struct radeon_decoder *dec,
             return NULL;
          }
          si_vid_clear_buffer(dec->base.context, &dec->dpb);
-      } else if (dec->dpb.res) {
-         if (dpb_size > dec->dpb.res->buf->size) {
-            r = si_vid_resize_buffer(dec->screen, &dec->cs, &dec->dpb, dpb_size);
-            if (!r) {
-               RVID_ERR("Can't resize dpb.\n");
-               return NULL;
-            }
-         }
       }
    }
 
