@@ -35,6 +35,7 @@
 #include "compiler/shader_enums.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
+#include "cso_cache/cso_context.h"
 #include "nir.h"
 
 /* Pre-declarations needed for WSI entrypoints */
@@ -162,6 +163,7 @@ struct lvp_queue {
    VkDeviceQueueCreateFlags flags;
    struct lvp_device *                         device;
    struct pipe_context *ctx;
+   struct cso_context *cso;
    bool shutdown;
    thrd_t exec_thread;
    mtx_t m;
@@ -753,6 +755,7 @@ struct lvp_cmd_draw_indexed {
    uint32_t first_instance;
    bool calc_start;
    uint32_t draw_count;
+   bool vertex_offset_changes;
    struct pipe_draw_start_count_bias draws[0];
 };
 

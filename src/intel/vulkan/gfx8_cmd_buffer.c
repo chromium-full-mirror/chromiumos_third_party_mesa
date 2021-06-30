@@ -420,6 +420,20 @@ genX(cmd_buffer_flush_dynamic_state)(struct anv_cmd_buffer *cmd_buffer)
    struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
    struct anv_dynamic_state *d = &cmd_buffer->state.gfx.dynamic;
 
+   if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY) {
+      uint32_t topology;
+      if (anv_pipeline_has_stage(pipeline, MESA_SHADER_TESS_EVAL))
+         topology = pipeline->topology;
+      else
+         topology = genX(vk_to_intel_primitive_type)[d->primitive_topology];
+
+      cmd_buffer->state.gfx.primitive_topology = topology;
+
+      anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VF_TOPOLOGY), vft) {
+         vft.PrimitiveTopologyType = topology;
+      }
+   }
+
    if (cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_PIPELINE |
                                       ANV_CMD_DIRTY_DYNAMIC_LINE_WIDTH)) {
       uint32_t sf_dw[GENX(3DSTATE_SF_length)];
@@ -443,10 +457,41 @@ genX(cmd_buffer_flush_dynamic_state)(struct anv_cmd_buffer *cmd_buffer)
                                       ANV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS |
                                       ANV_CMD_DIRTY_DYNAMIC_CULL_MODE |
                                       ANV_CMD_DIRTY_DYNAMIC_FRONT_FACE |
-                                      ANV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS_ENABLE)) {
+                                      ANV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS_ENABLE |
+                                      ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY)) {
+      /* Take dynamic primitive topology in to account with
+       *    3DSTATE_RASTER::APIMode
+       *    3DSTATE_RASTER::DXMultisampleRasterizationEnable
+       *    3DSTATE_RASTER::AntialiasingEnable
+       */
+      uint32_t api_mode = 0;
+      bool msaa_raster_enable = false;
+      bool aa_enable = 0;
+
+      if (cmd_buffer->state.gfx.pipeline->dynamic_states &
+          ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY) {
+         VkPrimitiveTopology primitive_topology =
+            cmd_buffer->state.gfx.dynamic.primitive_topology;
+
+         VkPolygonMode dynamic_raster_mode =
+            genX(raster_polygon_mode)(cmd_buffer->state.gfx.pipeline,
+                                      primitive_topology);
+
+         genX(rasterization_mode)(
+            dynamic_raster_mode, pipeline->line_mode, &api_mode,
+            &msaa_raster_enable);
+
+         aa_enable =
+            anv_rasterization_aa_mode(dynamic_raster_mode,
+                                      pipeline->line_mode);
+      }
+
       uint32_t raster_dw[GENX(3DSTATE_RASTER_length)];
       struct GENX(3DSTATE_RASTER) raster = {
          GENX(3DSTATE_RASTER_header),
+         .APIMode = api_mode,
+         .DXMultisampleRasterizationEnable = msaa_raster_enable,
+         .AntialiasingEnable = aa_enable,
          .GlobalDepthOffsetConstant = d->depth_bias.bias,
          .GlobalDepthOffsetScale = d->depth_bias.slope,
          .GlobalDepthOffsetClamp = d->depth_bias.clamp,
@@ -638,21 +683,6 @@ genX(cmd_buffer_flush_dynamic_state)(struct anv_cmd_buffer *cmd_buffer)
       }
    }
 
-   if (cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_PIPELINE |
-                                      ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY)) {
-      uint32_t topology;
-      if (anv_pipeline_has_stage(pipeline, MESA_SHADER_TESS_EVAL))
-         topology = d->primitive_topology;
-      else
-         topology = genX(vk_to_intel_primitive_type)[d->primitive_topology];
-
-      cmd_buffer->state.gfx.primitive_topology = topology;
-
-      anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VF_TOPOLOGY), vft) {
-         vft.PrimitiveTopologyType = topology;
-      }
-   }
-
    if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS) {
       genX(emit_sample_pattern)(&cmd_buffer->batch,
                                 cmd_buffer->state.gfx.dynamic.sample_locations.samples,
@@ -803,6 +833,9 @@ void genX(CmdBindIndexBuffer)(
       ib.MOCS                  = anv_mocs(cmd_buffer->device,
                                           buffer->address.bo,
                                           ISL_SURF_USAGE_INDEX_BUFFER_BIT);
+#if GFX_VER >= 12
+      ib.L3BypassDisable       = true;
+#endif
       ib.BufferStartingAddress = anv_address_add(buffer->address, offset);
       ib.BufferSize            = buffer->size - offset;
    }

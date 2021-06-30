@@ -379,6 +379,10 @@ blorp_fill_vertex_buffer_state(struct GENX(VERTEX_BUFFER_STATE) *vb,
    vb[idx].BufferAccessType = stride > 0 ? VERTEXDATA : INSTANCEDATA;
    vb[idx].MaxIndex = stride > 0 ? size / stride : 0;
 #endif
+
+#if GFX_VER >= 12
+   vb[idx].L3BypassDisable = true;
+#endif
 }
 
 static void
@@ -1075,8 +1079,7 @@ static uint32_t
 blorp_emit_blend_state(struct blorp_batch *batch,
                        const struct blorp_params *params)
 {
-   struct GENX(BLEND_STATE) blend;
-   memset(&blend, 0, sizeof(blend));
+   struct GENX(BLEND_STATE) blend = { };
 
    uint32_t offset;
    int size = GENX(BLEND_STATE_length) * 4;

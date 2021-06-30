@@ -141,11 +141,6 @@ fd_batch_create(struct fd_context *ctx, bool nondraw)
 
    batch_init(batch);
 
-   fd_screen_assert_locked(ctx->screen);
-   if (BATCH_DEBUG) {
-      _mesa_set_add(ctx->screen->live_batches, batch);
-   }
-
    return batch;
 }
 
@@ -305,10 +300,6 @@ __fd_batch_destroy(struct fd_batch *batch)
 
    fd_screen_assert_locked(batch->ctx->screen);
 
-   if (BATCH_DEBUG) {
-      _mesa_set_remove_key(ctx->screen->live_batches, batch);
-   }
-
    fd_bc_invalidate_batch(batch, true);
 
    batch_reset_resources(batch);
@@ -324,6 +315,7 @@ __fd_batch_destroy(struct fd_batch *batch)
 
    simple_mtx_destroy(&batch->submit_lock);
 
+   free(batch->key);
    free(batch);
    fd_screen_lock(ctx->screen);
 }
@@ -548,11 +540,7 @@ fd_batch_check_size(struct fd_batch *batch)
       return;
    }
 
-   if (fd_device_version(batch->ctx->screen->dev) >= FD_VERSION_UNLIMITED_CMDS)
-      return;
-
-   struct fd_ringbuffer *ring = batch->draw;
-   if ((ring->cur - ring->start) > (ring->size / 4 - 0x1000))
+   if (!fd_ringbuffer_check_size(batch->draw))
       fd_batch_flush(batch);
 }
 

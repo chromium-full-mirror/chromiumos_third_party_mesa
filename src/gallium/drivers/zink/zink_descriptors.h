@@ -45,6 +45,7 @@ enum zink_descriptor_type {
    ZINK_DESCRIPTOR_TYPES,
 };
 
+#define ZINK_MAX_DESCRIPTORS_PER_TYPE 32
 
 struct zink_descriptor_refs {
    struct util_dynarray refs;
@@ -55,6 +56,15 @@ struct zink_descriptor_refs {
 struct zink_descriptor_state {
    bool valid[ZINK_DESCRIPTOR_TYPES];
    uint32_t state[ZINK_DESCRIPTOR_TYPES];
+};
+
+enum zink_descriptor_size_index {
+   ZDS_INDEX_UBO,
+   ZDS_INDEX_COMBINED_SAMPLER,
+   ZDS_INDEX_UNIFORM_TEXELS,
+   ZDS_INDEX_STORAGE_BUFFER,
+   ZDS_INDEX_STORAGE_IMAGE,
+   ZDS_INDEX_STORAGE_TEXELS,
 };
 
 struct hash_table;
@@ -77,6 +87,12 @@ struct zink_descriptor_state_key {
 struct zink_descriptor_layout_key {
    unsigned num_descriptors;
    VkDescriptorSetLayoutBinding *bindings;
+   unsigned use_count;
+};
+
+struct zink_descriptor_layout {
+   VkDescriptorSetLayout layout;
+   VkDescriptorUpdateTemplateKHR template;
 };
 
 struct zink_descriptor_pool_key {
@@ -90,6 +106,83 @@ struct zink_descriptor_reference {
    bool *invalid;
 };
 
+
+struct zink_descriptor_data {
+   struct zink_descriptor_state gfx_descriptor_states[ZINK_SHADER_COUNT]; // keep incremental hashes here
+   struct zink_descriptor_state descriptor_states[2]; // gfx, compute
+   struct hash_table *descriptor_pools[ZINK_DESCRIPTOR_TYPES];
+
+   struct zink_descriptor_layout_key *push_layout_keys[2]; //gfx, compute
+   struct zink_descriptor_pool *push_pool[2]; //gfx, compute
+   struct zink_descriptor_layout *push_dsl[2]; //gfx, compute
+   uint8_t last_push_usage[2];
+   bool push_valid[2];
+   uint32_t push_state[2];
+   bool gfx_push_valid[ZINK_SHADER_COUNT];
+   uint32_t gfx_push_state[ZINK_SHADER_COUNT];
+   struct zink_descriptor_set *last_set[2];
+
+   VkDescriptorPool dummy_pool;
+   struct zink_descriptor_layout *dummy_dsl;
+   VkDescriptorSet dummy_set;
+
+   bool changed[2][ZINK_DESCRIPTOR_TYPES + 1];
+   struct zink_program *pg[2]; //gfx, compute
+};
+
+struct zink_program_descriptor_data {
+   uint8_t push_usage;
+   VkDescriptorPoolSize sizes[6]; //zink_descriptor_size_index
+   struct zink_descriptor_layout_key *layout_key[ZINK_DESCRIPTOR_TYPES]; //push set doesn't need one
+   uint8_t binding_usage;
+   struct zink_descriptor_layout *layouts[ZINK_DESCRIPTOR_TYPES + 1];
+   VkDescriptorUpdateTemplateKHR push_template;
+};
+
+struct zink_batch_descriptor_data {
+   struct set *desc_sets;
+};
+
+static inline enum zink_descriptor_size_index
+zink_vktype_to_size_idx(VkDescriptorType type)
+{
+   switch (type) {
+   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+      return ZDS_INDEX_UBO;
+   case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      return ZDS_INDEX_COMBINED_SAMPLER;
+   case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+      return ZDS_INDEX_UNIFORM_TEXELS;
+   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+      return ZDS_INDEX_STORAGE_BUFFER;
+   case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      return ZDS_INDEX_STORAGE_IMAGE;
+   case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+      return ZDS_INDEX_STORAGE_TEXELS;
+   default: break;
+   }
+   unreachable("unknown type");
+}
+
+static inline enum zink_descriptor_size_index
+zink_descriptor_type_to_size_idx(enum zink_descriptor_type type)
+{
+   switch (type) {
+   case ZINK_DESCRIPTOR_TYPE_UBO:
+      return ZDS_INDEX_UBO;
+   case ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW:
+      return ZDS_INDEX_COMBINED_SAMPLER;
+   case ZINK_DESCRIPTOR_TYPE_SSBO:
+      return ZDS_INDEX_STORAGE_BUFFER;
+   case ZINK_DESCRIPTOR_TYPE_IMAGE:
+      return ZDS_INDEX_STORAGE_IMAGE;
+   default: break;
+   }
+   unreachable("unknown type");
+}
+unsigned
+zink_descriptor_program_num_sizes(struct zink_program *pg, enum zink_descriptor_type type);
 bool
 zink_descriptor_layouts_init(struct zink_context *ctx);
 
@@ -102,12 +195,18 @@ uint32_t
 zink_get_image_view_hash(struct zink_context *ctx, struct zink_image_view *image_view, bool is_buffer);
 bool
 zink_descriptor_util_alloc_sets(struct zink_screen *screen, VkDescriptorSetLayout dsl, VkDescriptorPool pool, VkDescriptorSet *sets, unsigned num_sets);
-VkDescriptorSetLayout
+struct zink_descriptor_layout *
 zink_descriptor_util_layout_get(struct zink_context *ctx, enum zink_descriptor_type type,
                       VkDescriptorSetLayoutBinding *bindings, unsigned num_bindings,
                       struct zink_descriptor_layout_key **layout_key);
+bool
+zink_descriptor_util_push_layouts_get(struct zink_context *ctx, struct zink_descriptor_layout **dsls, struct zink_descriptor_layout_key **layout_keys);
+void
+zink_descriptor_util_init_null_set(struct zink_context *ctx, VkDescriptorSet desc_set);
 struct zink_resource *
 zink_get_resource_for_descriptor(struct zink_context *ctx, enum zink_descriptor_type type, enum pipe_shader_type shader, int idx);
+VkImageLayout
+zink_descriptor_util_image_layout_eval(const struct zink_resource *res, bool is_compute);
 
 /* these two can't be called in lazy mode */
 void
@@ -179,4 +278,6 @@ zink_descriptors_init_lazy(struct zink_context *ctx);
 void
 zink_descriptors_deinit_lazy(struct zink_context *ctx);
 
+void
+zink_descriptor_set_update_lazy(struct zink_context *ctx, struct zink_program *pg, enum zink_descriptor_type type, VkDescriptorSet set);
 #endif

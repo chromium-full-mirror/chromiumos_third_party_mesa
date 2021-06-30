@@ -268,6 +268,8 @@ static void
 trace_context_replace_buffer_storage(struct pipe_context *_pipe,
                                      struct pipe_resource *dst,
                                      struct pipe_resource *src,
+                                     unsigned num_rebinds,
+                                     uint32_t rebind_mask,
                                      unsigned delete_buffer_id)
 {
    struct trace_context *tr_ctx = trace_context(_pipe);
@@ -278,10 +280,12 @@ trace_context_replace_buffer_storage(struct pipe_context *_pipe,
    trace_dump_arg(ptr, pipe);
    trace_dump_arg(ptr, dst);
    trace_dump_arg(ptr, src);
+   trace_dump_arg(uint, num_rebinds);
+   trace_dump_arg(uint, rebind_mask);
    trace_dump_arg(uint, delete_buffer_id);
    trace_dump_call_end();
 
-   tr_ctx->replace_buffer_storage(pipe, dst, src, delete_buffer_id);
+   tr_ctx->replace_buffer_storage(pipe, dst, src, num_rebinds, rebind_mask, delete_buffer_id);
 }
 
 static struct pipe_fence_handle *
@@ -1063,7 +1067,7 @@ trace_screen_create(struct pipe_screen *screen)
    const char *driver = debug_get_option("MESA_LOADER_DRIVER_OVERRIDE", NULL);
    if (driver && !strcmp(driver, "zink")) {
       /* the user wants zink: check whether they want to trace zink or lavapipe */
-      bool trace_lavapipe = debug_get_bool_option("ZINK_TRACE_LAVAPIPE", NULL);
+      bool trace_lavapipe = debug_get_bool_option("ZINK_TRACE_LAVAPIPE", false);
       if (!strncmp(screen->get_name(screen), "zink", 4)) {
          /* this is the zink screen: only trace if lavapipe tracing is disabled */
          if (trace_lavapipe)

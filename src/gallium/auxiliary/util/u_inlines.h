@@ -34,6 +34,7 @@
 #include "pipe/p_state.h"
 #include "pipe/p_screen.h"
 #include "util/compiler.h"
+#include "util/format/u_format.h"
 #include "util/u_debug.h"
 #include "util/u_debug_describe.h"
 #include "util/u_debug_refcnt.h"
@@ -161,6 +162,20 @@ pipe_resource_reference(struct pipe_resource **dst, struct pipe_resource *src)
       pipe_resource_destroy(old_dst);
    }
    *dst = src;
+}
+
+/**
+ * Subtract the given number of references.
+ */
+static inline void
+pipe_drop_resource_references(struct pipe_resource *dst, int num_refs)
+{
+   int count = p_atomic_add_return(&dst->reference.count, -num_refs);
+
+   assert(count >= 0);
+   /* Underflows shouldn't happen, but let's be safe. */
+   if (count <= 0)
+      pipe_resource_destroy(dst);
 }
 
 /**
@@ -765,6 +780,52 @@ util_texrange_covers_whole_level(const struct pipe_resource *tex,
           width == u_minify(tex->width0, level) &&
           height == u_minify(tex->height0, level) &&
           depth == util_num_layers(tex, level);
+}
+
+/**
+ * Returns true if the blit will fully initialize all pixels in the resource.
+ */
+static inline bool
+util_blit_covers_whole_resource(const struct pipe_blit_info *info)
+{
+   /* No conditional rendering or scissoring.  (We assume that the caller would
+    * have dropped any redundant scissoring)
+    */
+   if (info->scissor_enable || info->window_rectangle_include || info->render_condition_enable || info->alpha_blend)
+      return false;
+
+   const struct pipe_resource *dst = info->dst.resource;
+   /* A single blit can't initialize a miptree. */
+   if (dst->last_level != 0)
+      return false;
+
+   assert(info->dst.level == 0);
+
+   /* Make sure the dst box covers the whole resource. */
+   if (!(util_texrange_covers_whole_level(dst, 0,
+         0, 0, 0,
+         info->dst.box.width, info->dst.box.height, info->dst.box.depth))) {
+      return false;
+   }
+
+   /* Make sure the mask actually updates all the channels present in the dst format. */
+   if (info->mask & PIPE_MASK_RGBA) {
+      if ((info->mask & PIPE_MASK_RGBA) != PIPE_MASK_RGBA)
+         return false;
+   }
+
+   if (info->mask & PIPE_MASK_ZS) {
+      const struct util_format_description *format_desc = util_format_description(info->dst.format);
+      uint32_t dst_has = 0;
+      if (util_format_has_depth(format_desc))
+         dst_has |= PIPE_MASK_Z;
+      if (util_format_has_stencil(format_desc))
+         dst_has |= PIPE_MASK_S;
+      if (dst_has & ~(info->mask & PIPE_MASK_ZS))
+         return false;
+   }
+
+   return true;
 }
 
 static inline bool

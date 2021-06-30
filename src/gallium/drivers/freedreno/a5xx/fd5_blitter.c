@@ -441,7 +441,9 @@ fd5_blitter_blit(struct fd_context *ctx,
       return false;
    }
 
-   batch = fd_bc_alloc_batch(&ctx->screen->batch_cache, ctx, true);
+   batch = fd_bc_alloc_batch(ctx, true);
+
+   DBG_BLIT(info, batch);
 
    fd_batch_update_queries(batch);
 

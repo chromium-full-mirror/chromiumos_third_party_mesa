@@ -2031,7 +2031,7 @@ void visit_alu_instr(isel_context *ctx, nir_alu_instr *instr)
       }
       break;
    }
-   case nir_op_cube_face_coord: {
+   case nir_op_cube_face_coord_amd: {
       Temp in = get_alu_src(ctx, instr->src[0], 3);
       Temp src[3] = { emit_extract_vector(ctx, in, 0, v1),
                       emit_extract_vector(ctx, in, 1, v1),
@@ -2049,7 +2049,7 @@ void visit_alu_instr(isel_context *ctx, nir_alu_instr *instr)
       bld.pseudo(aco_opcode::p_create_vector, Definition(dst), sc, tc);
       break;
    }
-   case nir_op_cube_face_index: {
+   case nir_op_cube_face_index_amd: {
       Temp in = get_alu_src(ctx, instr->src[0], 3);
       Temp src[3] = { emit_extract_vector(ctx, in, 0, v1),
                       emit_extract_vector(ctx, in, 1, v1),
@@ -4592,23 +4592,25 @@ void visit_load_interpolated_input(isel_context *ctx, nir_intrinsic_instr *instr
 }
 
 bool check_vertex_fetch_size(isel_context *ctx, const ac_data_format_info *vtx_info,
-                             unsigned offset, unsigned stride, unsigned channels)
+                             unsigned offset, unsigned binding_align, unsigned channels)
 {
+   unsigned vertex_byte_size = vtx_info->chan_byte_size * channels;
    if (vtx_info->chan_byte_size != 4 && channels == 3)
       return false;
 
-   /* Always split typed vertex buffer loads on GFX6 and GFX10+ to avoid any
+   /* Split typed vertex buffer loads on GFX6 and GFX10+ to avoid any
     * alignment issues that triggers memory violations and eventually a GPU
     * hang. This can happen if the stride (static or dynamic) is unaligned and
     * also if the VBO offset is aligned to a scalar (eg. stride is 8 and VBO
     * offset is 2 for R16G16B16A16_SNORM).
     */
    return (ctx->options->chip_class >= GFX7 && ctx->options->chip_class <= GFX9) ||
-          (channels == 1);
+          (offset % vertex_byte_size == 0 && MAX2(binding_align, 1) % vertex_byte_size == 0);
 }
 
 uint8_t get_fetch_data_format(isel_context *ctx, const ac_data_format_info *vtx_info,
-                              unsigned offset, unsigned stride, unsigned *channels)
+                              unsigned offset, unsigned *channels, unsigned max_channels,
+                              unsigned binding_align)
 {
    if (!vtx_info->chan_byte_size) {
       *channels = vtx_info->num_channels;
@@ -4616,20 +4618,19 @@ uint8_t get_fetch_data_format(isel_context *ctx, const ac_data_format_info *vtx_
    }
 
    unsigned num_channels = *channels;
-   if (!check_vertex_fetch_size(ctx, vtx_info, offset, stride, *channels)) {
+   if (!check_vertex_fetch_size(ctx, vtx_info, offset, binding_align, *channels)) {
       unsigned new_channels = num_channels + 1;
       /* first, assume more loads is worse and try using a larger data format */
-      while (new_channels <= 4 && !check_vertex_fetch_size(ctx, vtx_info, offset, stride, new_channels)) {
+      while (new_channels <= max_channels &&
+             !check_vertex_fetch_size(ctx, vtx_info, offset, binding_align, new_channels)) {
          new_channels++;
-         /* don't make the attribute potentially out-of-bounds */
-         if (offset + new_channels * vtx_info->chan_byte_size > stride)
-            new_channels = 5;
       }
 
-      if (new_channels == 5) {
+      if (new_channels > max_channels) {
          /* then try decreasing load size (at the cost of more loads) */
          new_channels = *channels;
-         while (new_channels > 1 && !check_vertex_fetch_size(ctx, vtx_info, offset, stride, new_channels))
+         while (new_channels > 1 &&
+                !check_vertex_fetch_size(ctx, vtx_info, offset, binding_align, new_channels))
             new_channels--;
       }
 
@@ -4708,6 +4709,7 @@ void visit_load_input(isel_context *ctx, nir_intrinsic_instr *instr)
       uint32_t attrib_offset = ctx->options->key.vs.vertex_attribute_offsets[location];
       uint32_t attrib_stride = ctx->options->key.vs.vertex_attribute_strides[location];
       unsigned attrib_format = ctx->options->key.vs.vertex_attribute_formats[location];
+      unsigned binding_align = ctx->options->key.vs.vertex_binding_align[attrib_binding];
       enum ac_fetch_format alpha_adjust = ctx->options->key.vs.alpha_adjust[location];
 
       unsigned dfmt = attrib_format & 0xf;
@@ -4776,7 +4778,8 @@ void visit_load_input(isel_context *ctx, nir_intrinsic_instr *instr)
                           vtx_info->chan_byte_size == 4;
          unsigned fetch_dfmt = V_008F0C_BUF_DATA_FORMAT_INVALID;
          if (!use_mubuf) {
-            fetch_dfmt = get_fetch_data_format(ctx, vtx_info, fetch_offset, attrib_stride, &fetch_component);
+            fetch_dfmt = get_fetch_data_format(ctx, vtx_info, fetch_offset, &fetch_component,
+                                               vtx_info->num_channels - channel_start, binding_align);
          } else {
             if (fetch_component == 3 && ctx->options->chip_class == GFX6) {
                /* GFX6 only supports loading vec3 with MTBUF, expand to vec4. */
@@ -11212,7 +11215,9 @@ void ngg_emit_sendmsg_gs_alloc_req(isel_context *ctx, Temp vtx_cnt, Temp prm_cnt
    bld.sopp(aco_opcode::s_sendmsg, bld.m0(tmp), -1, sendmsg_gs_alloc_req);
 
    if (prm_cnt_0.id()) {
-      /* Navi 1x workaround: export a zero-area triangle when GS has no output. */
+      /* Navi 1x workaround: export a triangle with NaN coordinates when GS has no output.
+       * It can't have all-zero positions because that would render an undesired pixel with conservative rasterization.
+       */
       Temp first_lane = bld.sop1(Builder::s_ff1_i32, bld.def(s1), Operand(exec, bld.lm));
       Temp cond = bld.sop2(Builder::s_lshl, bld.def(bld.lm), bld.def(s1, scc),
                            Operand(1u, ctx->program->wave_size == 64), first_lane);
@@ -11223,11 +11228,15 @@ void ngg_emit_sendmsg_gs_alloc_req(isel_context *ctx, Temp vtx_cnt, Temp prm_cnt
       bld.reset(ctx->block);
       ctx->block->kind |= block_kind_export_end;
 
+      /* Use zero: means that it's a triangle whose every vertex index is 0. */
       Temp zero = bld.copy(bld.def(v1), Operand(0u));
+      /* Use NaN for the coordinates, so that the rasterizer allways culls it.  */
+      Temp nan_coord = bld.copy(bld.def(v1), Operand(-1u));
+
       bld.exp(aco_opcode::exp, zero, Operand(v1), Operand(v1), Operand(v1),
         1 /* enabled mask */, V_008DFC_SQ_EXP_PRIM /* dest */,
         false /* compressed */, true /* done */, false /* valid mask */);
-      bld.exp(aco_opcode::exp, zero, zero, zero, zero,
+      bld.exp(aco_opcode::exp, nan_coord, nan_coord, nan_coord, nan_coord,
         0xf /* enabled mask */, V_008DFC_SQ_EXP_POS /* dest */,
         false /* compressed */, true /* done */, true /* valid mask */);
 
@@ -11280,6 +11289,13 @@ void select_program(Program *program,
 
       bool check_merged_wave_info = ctx.tcs_in_out_eq ? i == 0 : (shader_count >= 2 && !empty_shader && !(ngg_gs && i == 1));
       bool endif_merged_wave_info = ctx.tcs_in_out_eq ? i == 1 : (check_merged_wave_info && !(ngg_gs && i == 1));
+
+      if (program->chip_class == GFX10 &&
+          program->stage.hw == HWStage::NGG &&
+          program->stage.num_sw_stages() == 1) {
+         /* Workaround for Navi 1x HW bug to ensure all NGG waves launch before s_sendmsg(GS_ALLOC_REQ). */
+         Builder(ctx.program, ctx.block).sopp(aco_opcode::s_barrier, -1u, 0u);
+      }
 
       if (check_merged_wave_info) {
          Temp cond = merged_wave_info_to_mask(&ctx, i);

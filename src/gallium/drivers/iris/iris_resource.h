@@ -41,9 +41,10 @@ struct iris_format_info {
    struct isl_swizzle swizzle;
 };
 
-#define IRIS_RESOURCE_FLAG_SHADER_MEMZONE  (PIPE_RESOURCE_FLAG_DRV_PRIV << 0)
-#define IRIS_RESOURCE_FLAG_SURFACE_MEMZONE (PIPE_RESOURCE_FLAG_DRV_PRIV << 1)
-#define IRIS_RESOURCE_FLAG_DYNAMIC_MEMZONE (PIPE_RESOURCE_FLAG_DRV_PRIV << 2)
+#define IRIS_RESOURCE_FLAG_SHADER_MEMZONE   (PIPE_RESOURCE_FLAG_DRV_PRIV << 0)
+#define IRIS_RESOURCE_FLAG_SURFACE_MEMZONE  (PIPE_RESOURCE_FLAG_DRV_PRIV << 1)
+#define IRIS_RESOURCE_FLAG_DYNAMIC_MEMZONE  (PIPE_RESOURCE_FLAG_DRV_PRIV << 2)
+#define IRIS_RESOURCE_FLAG_BINDLESS_MEMZONE (PIPE_RESOURCE_FLAG_DRV_PRIV << 3)
 
 /**
  * Resources represent a GPU buffer object or image (mipmap tree).
@@ -330,6 +331,8 @@ iris_resource_get_clear_color(const struct iris_resource *res,
 void iris_replace_buffer_storage(struct pipe_context *ctx,
                                  struct pipe_resource *dst,
                                  struct pipe_resource *src,
+                                 unsigned num_rebinds,
+                                 uint32_t rebind_mask,
                                  uint32_t delete_buffer_id);
 
 
@@ -464,11 +467,6 @@ iris_resource_access_raw(struct iris_context *ice,
                                  ISL_AUX_USAGE_NONE);
    }
 }
-
-enum isl_dim_layout
-iris_get_isl_dim_layout(const struct intel_device_info *devinfo,
-                        enum isl_tiling tiling,
-                        enum pipe_texture_target target);
 
 enum isl_aux_usage iris_resource_texture_aux_usage(struct iris_context *ice,
                                                    const struct iris_resource *res,

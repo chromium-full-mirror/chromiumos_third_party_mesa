@@ -167,7 +167,7 @@ tc_drop_so_target_reference(struct pipe_stream_output_target *dst)
    offsetof(struct pipe_draw_info, min_index)
 
 static void
-tc_batch_execute(void *job, UNUSED int thread_index)
+tc_batch_execute(void *job, UNUSED void *gdata, int thread_index)
 {
    struct tc_batch *batch = job;
    struct pipe_context *pipe = batch->tc->pipe;
@@ -338,7 +338,7 @@ _tc_sync(struct threaded_context *tc, UNUSED const char *info, UNUSED const char
    if (next->num_total_slots) {
       p_atomic_add(&tc->num_direct_slots, next->num_total_slots);
       tc->bytes_mapped_estimate = 0;
-      tc_batch_execute(next, 0);
+      tc_batch_execute(next, NULL, 0);
       tc_begin_next_buffer_list(tc);
       synced = true;
    }
@@ -430,15 +430,15 @@ static bool
 tc_rebind_bindings(uint32_t old_id, uint32_t new_id, uint32_t *bindings,
                    unsigned count)
 {
-   bool rebound = false;
+   unsigned rebind_count = 0;
 
    for (unsigned i = 0; i < count; i++) {
       if (bindings[i] == old_id) {
          bindings[i] = new_id;
-         rebound = true;
+         rebind_count++;
       }
    }
-   return rebound;
+   return rebind_count;
 }
 
 static void
@@ -462,27 +462,35 @@ tc_add_shader_bindings_to_buffer_list(struct threaded_context *tc,
    }
 }
 
-static bool
+static unsigned
 tc_rebind_shader_bindings(struct threaded_context *tc, uint32_t old_id,
-                          uint32_t new_id, enum pipe_shader_type shader)
+                          uint32_t new_id, enum pipe_shader_type shader, uint32_t *rebind_mask)
 {
-   bool rebound = false;
+   unsigned ubo = 0, ssbo = 0, img = 0, sampler = 0;
 
-   rebound |= tc_rebind_bindings(old_id, new_id, tc->const_buffers[shader],
-                                 tc->max_const_buffers);
+   ubo = tc_rebind_bindings(old_id, new_id, tc->const_buffers[shader],
+                            tc->max_const_buffers);
+   if (ubo)
+      *rebind_mask |= BITFIELD_BIT(TC_BINDING_UBO_VS) << shader;
    if (tc->seen_shader_buffers[shader]) {
-      rebound |= tc_rebind_bindings(old_id, new_id, tc->shader_buffers[shader],
-                                    tc->max_shader_buffers);
+      ssbo = tc_rebind_bindings(old_id, new_id, tc->shader_buffers[shader],
+                                tc->max_shader_buffers);
+      if (ssbo)
+         *rebind_mask |= BITFIELD_BIT(TC_BINDING_SSBO_VS) << shader;
    }
    if (tc->seen_image_buffers[shader]) {
-      rebound |= tc_rebind_bindings(old_id, new_id, tc->image_buffers[shader],
-                                    tc->max_images);
+      img = tc_rebind_bindings(old_id, new_id, tc->image_buffers[shader],
+                               tc->max_images);
+      if (img)
+         *rebind_mask |= BITFIELD_BIT(TC_BINDING_IMAGE_VS) << shader;
    }
    if (tc->seen_sampler_buffers[shader]) {
-      rebound |= tc_rebind_bindings(old_id, new_id, tc->sampler_buffers[shader],
-                                    tc->max_samplers);
+      sampler = tc_rebind_bindings(old_id, new_id, tc->sampler_buffers[shader],
+                                   tc->max_samplers);
+      if (sampler)
+         *rebind_mask |= BITFIELD_BIT(TC_BINDING_SAMPLERVIEW_VS) << shader;
    }
-   return rebound;
+   return ubo + ssbo + img + sampler;
 }
 
 /* Add all bound buffers used by VS/TCS/TES/GS/FS to the buffer list.
@@ -524,32 +532,94 @@ tc_add_all_compute_bindings_to_buffer_list(struct threaded_context *tc)
    tc->add_all_compute_bindings_to_buffer_list = false;
 }
 
-static void
-tc_rebind_buffer(struct threaded_context *tc, uint32_t old_id, uint32_t new_id)
+static unsigned
+tc_rebind_buffer(struct threaded_context *tc, uint32_t old_id, uint32_t new_id, uint32_t *rebind_mask)
 {
-   bool rebound = false;
+   unsigned vbo = 0, so = 0;
 
-   rebound |= tc_rebind_bindings(old_id, new_id, tc->vertex_buffers,
-                                 tc->max_vertex_buffers);
+   vbo = tc_rebind_bindings(old_id, new_id, tc->vertex_buffers,
+                            tc->max_vertex_buffers);
+   if (vbo)
+      *rebind_mask |= BITFIELD_BIT(TC_BINDING_VERTEX_BUFFER);
+
    if (tc->seen_streamout_buffers) {
-      rebound |= tc_rebind_bindings(old_id, new_id, tc->streamout_buffers,
-                                    PIPE_MAX_SO_BUFFERS);
+      so = tc_rebind_bindings(old_id, new_id, tc->streamout_buffers,
+                              PIPE_MAX_SO_BUFFERS);
+      if (so)
+         *rebind_mask |= BITFIELD_BIT(TC_BINDING_STREAMOUT_BUFFER);
    }
+   unsigned rebound = vbo + so;
 
-   rebound |= tc_rebind_shader_bindings(tc, old_id, new_id, PIPE_SHADER_VERTEX);
-   rebound |= tc_rebind_shader_bindings(tc, old_id, new_id, PIPE_SHADER_FRAGMENT);
+   rebound += tc_rebind_shader_bindings(tc, old_id, new_id, PIPE_SHADER_VERTEX, rebind_mask);
+   rebound += tc_rebind_shader_bindings(tc, old_id, new_id, PIPE_SHADER_FRAGMENT, rebind_mask);
 
    if (tc->seen_tcs)
-      rebound |= tc_rebind_shader_bindings(tc, old_id, new_id, PIPE_SHADER_TESS_CTRL);
+      rebound += tc_rebind_shader_bindings(tc, old_id, new_id, PIPE_SHADER_TESS_CTRL, rebind_mask);
    if (tc->seen_tes)
-      rebound |= tc_rebind_shader_bindings(tc, old_id, new_id, PIPE_SHADER_TESS_EVAL);
+      rebound += tc_rebind_shader_bindings(tc, old_id, new_id, PIPE_SHADER_TESS_EVAL, rebind_mask);
    if (tc->seen_gs)
-      rebound |= tc_rebind_shader_bindings(tc, old_id, new_id, PIPE_SHADER_GEOMETRY);
+      rebound += tc_rebind_shader_bindings(tc, old_id, new_id, PIPE_SHADER_GEOMETRY, rebind_mask);
 
-   rebound |= tc_rebind_shader_bindings(tc, old_id, new_id, PIPE_SHADER_COMPUTE);
+   rebound += tc_rebind_shader_bindings(tc, old_id, new_id, PIPE_SHADER_COMPUTE, rebind_mask);
 
    if (rebound)
       BITSET_SET(tc->buffer_lists[tc->next_buf_list].buffer_list, new_id & TC_BUFFER_ID_MASK);
+   return rebound;
+}
+
+static bool
+tc_is_buffer_bound_with_mask(uint32_t id, uint32_t *bindings, unsigned binding_mask)
+{
+   while (binding_mask) {
+      if (bindings[u_bit_scan(&binding_mask)] == id)
+         return true;
+   }
+   return false;
+}
+
+static bool
+tc_is_buffer_shader_bound_for_write(struct threaded_context *tc, uint32_t id,
+                                    enum pipe_shader_type shader)
+{
+   if (tc->seen_shader_buffers[shader] &&
+       tc_is_buffer_bound_with_mask(id, tc->shader_buffers[shader],
+                                    tc->shader_buffers_writeable_mask[shader]))
+      return true;
+
+   if (tc->seen_image_buffers[shader] &&
+       tc_is_buffer_bound_with_mask(id, tc->image_buffers[shader],
+                                    tc->image_buffers_writeable_mask[shader]))
+      return true;
+
+   return false;
+}
+
+static bool
+tc_is_buffer_bound_for_write(struct threaded_context *tc, uint32_t id)
+{
+   if (tc->seen_streamout_buffers &&
+       tc_is_buffer_bound_with_mask(id, tc->streamout_buffers,
+                                    BITFIELD_MASK(PIPE_MAX_SO_BUFFERS)))
+      return true;
+
+   if (tc_is_buffer_shader_bound_for_write(tc, id, PIPE_SHADER_VERTEX) ||
+       tc_is_buffer_shader_bound_for_write(tc, id, PIPE_SHADER_FRAGMENT) ||
+       tc_is_buffer_shader_bound_for_write(tc, id, PIPE_SHADER_COMPUTE))
+      return true;
+
+   if (tc->seen_tcs &&
+       tc_is_buffer_shader_bound_for_write(tc, id, PIPE_SHADER_TESS_CTRL))
+      return true;
+
+   if (tc->seen_tes &&
+       tc_is_buffer_shader_bound_for_write(tc, id, PIPE_SHADER_TESS_EVAL))
+      return true;
+
+   if (tc->seen_gs &&
+       tc_is_buffer_shader_bound_for_write(tc, id, PIPE_SHADER_GEOMETRY))
+      return true;
+
+   return false;
 }
 
 static bool
@@ -1352,6 +1422,7 @@ tc_set_shader_images(struct pipe_context *_pipe,
    struct tc_shader_images *p =
       tc_add_slot_based_call(tc, TC_CALL_set_shader_images, tc_shader_images,
                              images ? count : 0);
+   unsigned writable_buffers = 0;
 
    p->shader = shader;
    p->start = start;
@@ -1376,6 +1447,7 @@ tc_set_shader_images(struct pipe_context *_pipe,
                util_range_add(&tres->b, &tres->valid_buffer_range,
                               images[i].u.buf.offset,
                               images[i].u.buf.offset + images[i].u.buf.size);
+               writable_buffers |= BITFIELD_BIT(start + i);
             }
          } else {
             tc_unbind_buffer(&tc->image_buffers[shader][start + i]);
@@ -1393,6 +1465,9 @@ tc_set_shader_images(struct pipe_context *_pipe,
       tc_unbind_buffers(&tc->image_buffers[shader][start],
                         count + unbind_num_trailing_slots);
    }
+
+   tc->image_buffers_writeable_mask[shader] &= ~BITFIELD_RANGE(start, count);
+   tc->image_buffers_writeable_mask[shader] |= writable_buffers << start;
 }
 
 struct tc_shader_buffers {
@@ -1460,9 +1535,11 @@ tc_set_shader_buffers(struct pipe_context *_pipe,
 
             tc_bind_buffer(&tc->shader_buffers[shader][start + i], next, &tres->b);
 
-            util_range_add(&tres->b, &tres->valid_buffer_range,
-                           src->buffer_offset,
-                           src->buffer_offset + src->buffer_size);
+            if (writable_bitmask & BITFIELD_BIT(i)) {
+               util_range_add(&tres->b, &tres->valid_buffer_range,
+                              src->buffer_offset,
+                              src->buffer_offset + src->buffer_size);
+            }
          } else {
             tc_unbind_buffer(&tc->shader_buffers[shader][start + i]);
          }
@@ -1471,6 +1548,9 @@ tc_set_shader_buffers(struct pipe_context *_pipe,
    } else {
       tc_unbind_buffers(&tc->shader_buffers[shader][start], count);
    }
+
+   tc->shader_buffers_writeable_mask[shader] &= ~BITFIELD_RANGE(start, count);
+   tc->shader_buffers_writeable_mask[shader] |= writable_bitmask << start;
 }
 
 struct tc_vertex_buffers {
@@ -1813,6 +1893,8 @@ tc_make_image_handle_resident(struct pipe_context *_pipe, uint64_t handle,
 
 struct tc_replace_buffer_storage {
    struct tc_call_base base;
+   uint16_t num_rebinds;
+   uint32_t rebind_mask;
    uint32_t delete_buffer_id;
    struct pipe_resource *dst;
    struct pipe_resource *src;
@@ -1824,7 +1906,7 @@ tc_call_replace_buffer_storage(struct pipe_context *pipe, void *call, uint64_t *
 {
    struct tc_replace_buffer_storage *p = to_call(call, tc_replace_buffer_storage);
 
-   p->func(pipe, p->dst, p->src, p->delete_buffer_id);
+   p->func(pipe, p->dst, p->src, p->num_rebinds, p->rebind_mask, p->delete_buffer_id);
 
    tc_drop_resource_reference(p->dst);
    tc_drop_resource_reference(p->src);
@@ -1836,8 +1918,17 @@ static bool
 tc_invalidate_buffer(struct threaded_context *tc,
                      struct threaded_resource *tbuf)
 {
-   if (!tc_is_buffer_busy(tc, tbuf, PIPE_MAP_READ_WRITE))
+   if (!tc_is_buffer_busy(tc, tbuf, PIPE_MAP_READ_WRITE)) {
+      /* It's idle, so invalidation would be a no-op, but we can still clear
+       * the valid range because we are technically doing invalidation, but
+       * skipping it because it's useless.
+       *
+       * If the buffer is bound for write, we can't invalidate the range.
+       */
+      if (!tc_is_buffer_bound_for_write(tc, tbuf->buffer_id_unique))
+         util_range_set_empty(&tbuf->valid_buffer_range);
       return true;
+   }
 
    struct pipe_screen *screen = tc->base.screen;
    struct pipe_resource *new_buf;
@@ -1859,14 +1950,7 @@ tc_invalidate_buffer(struct threaded_context *tc,
 
    tbuf->latest = new_buf;
 
-   /* Treat the current buffer as the new buffer. */
-   tc_rebind_buffer(tc, tbuf->buffer_id_unique,
-                    threaded_resource(new_buf)->buffer_id_unique);
-   util_range_set_empty(&tbuf->valid_buffer_range);
-
    uint32_t delete_buffer_id = tbuf->buffer_id_unique;
-   tbuf->buffer_id_unique = threaded_resource(new_buf)->buffer_id_unique;
-   threaded_resource(new_buf)->buffer_id_unique = 0;
 
    /* Enqueue storage replacement of the original buffer. */
    struct tc_replace_buffer_storage *p =
@@ -1877,6 +1961,21 @@ tc_invalidate_buffer(struct threaded_context *tc,
    tc_set_resource_reference(&p->dst, &tbuf->b);
    tc_set_resource_reference(&p->src, new_buf);
    p->delete_buffer_id = delete_buffer_id;
+   p->rebind_mask = 0;
+
+   /* Treat the current buffer as the new buffer. */
+   bool bound_for_write = tc_is_buffer_bound_for_write(tc, tbuf->buffer_id_unique);
+   p->num_rebinds = tc_rebind_buffer(tc, tbuf->buffer_id_unique,
+                                     threaded_resource(new_buf)->buffer_id_unique,
+                                     &p->rebind_mask);
+
+   /* If the buffer is not bound for write, clear the valid range. */
+   if (!bound_for_write)
+      util_range_set_empty(&tbuf->valid_buffer_range);
+
+   tbuf->buffer_id_unique = threaded_resource(new_buf)->buffer_id_unique;
+   threaded_resource(new_buf)->buffer_id_unique = 0;
+
    return true;
 }
 
@@ -2791,7 +2890,7 @@ tc_call_draw_single_drawid(struct pipe_context *pipe, void *call, uint64_t *last
 
    pipe->draw_vbo(pipe, &info->info, info_drawid->drawid_offset, NULL, &draw, 1);
    if (info->info.index_size)
-      pipe_resource_reference(&info->info.index.resource, NULL);
+      tc_drop_resource_reference(info->info.index.resource);
 
    return call_size(tc_draw_single_drawid);
 }
@@ -2870,9 +2969,6 @@ tc_call_draw_single(struct pipe_context *pipe, void *call, uint64_t *last_ptr)
          multi[1].count = next->info.max_index;
          multi[1].index_bias = next->index_bias;
 
-         if (next->info.index_size)
-            tc_drop_resource_reference(next->info.index.resource);
-
          /* Find how many other draws can be merged. */
          next = get_next_call(next, tc_draw_single);
          for (; next != last && is_next_call_a_mergeable_draw(first, next);
@@ -2882,15 +2978,14 @@ tc_call_draw_single(struct pipe_context *pipe, void *call, uint64_t *last_ptr)
             multi[num_draws].count = next->info.max_index;
             multi[num_draws].index_bias = next->index_bias;
             index_bias_varies |= first->index_bias != next->index_bias;
-
-            if (next->info.index_size)
-               tc_drop_resource_reference(next->info.index.resource);
          }
 
          first->info.index_bias_varies = index_bias_varies;
          pipe->draw_vbo(pipe, &first->info, 0, NULL, multi, num_draws);
+
+         /* Since all draws use the same index buffer, drop all references at once. */
          if (first->info.index_size)
-            tc_drop_resource_reference(first->info.index.resource);
+            pipe_drop_resource_references(first->info.index.resource, num_draws);
 
          return call_size(tc_draw_single) * num_draws;
       }
@@ -3881,7 +3976,7 @@ threaded_context_create(struct pipe_context *pipe,
     * from the queue before being executed, so keep one tc_batch slot for that
     * execution. Also, keep one unused slot for an unflushed batch.
     */
-   if (!util_queue_init(&tc->queue, "gdrv", TC_MAX_BATCHES - 2, 1, 0))
+   if (!util_queue_init(&tc->queue, "gdrv", TC_MAX_BATCHES - 2, 1, 0, NULL))
       goto fail;
 
    for (unsigned i = 0; i < TC_MAX_BATCHES; i++) {

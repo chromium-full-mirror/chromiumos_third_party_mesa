@@ -728,8 +728,8 @@ create_ccs_buf_for_image(struct brw_context *brw,
    /* We shouldn't already have a CCS */
    assert(!mt->aux_buf);
 
-   if (!isl_surf_get_ccs_surf(&brw->isl_dev, &mt->surf, &temp_ccs_surf, NULL,
-                              image->aux_pitch))
+   if (!isl_surf_get_ccs_surf(&brw->isl_dev, &mt->surf, NULL,
+                              &temp_ccs_surf, image->aux_pitch))
       return false;
 
    assert(image->aux_offset < image->bo->size);
@@ -1132,7 +1132,7 @@ brw_miptree_get_image_offset(const struct brw_mipmap_tree *mt,
       return;
    }
 
-   uint32_t x_offset_sa, y_offset_sa;
+   uint32_t x_offset_sa, y_offset_sa, z_offset_sa, array_offset;
 
    /* Miptree itself can have an offset only if it represents a single
     * slice in an imported buffer object.
@@ -1150,10 +1150,13 @@ brw_miptree_get_image_offset(const struct brw_mipmap_tree *mt,
    const unsigned z = mt->surf.dim == ISL_SURF_DIM_3D ? slice : 0;
    slice = mt->surf.dim == ISL_SURF_DIM_3D ? 0 : slice;
    isl_surf_get_image_offset_el(&mt->surf, level, slice, z,
-                                &x_offset_sa, &y_offset_sa);
+                                &x_offset_sa, &y_offset_sa,
+                                &z_offset_sa, &array_offset);
 
    *x = x_offset_sa;
    *y = y_offset_sa;
+   assert(z_offset_sa == 0);
+   assert(array_offset == 0);
 }
 
 /**
@@ -1573,7 +1576,7 @@ brw_miptree_alloc_aux(struct brw_context *brw, struct brw_mipmap_tree *mt)
       initial_state = ISL_AUX_STATE_PASS_THROUGH;
       memset_value = 0;
       aux_surf_ok =
-         isl_surf_get_ccs_surf(&brw->isl_dev, &mt->surf, &aux_surf, NULL, 0);
+         isl_surf_get_ccs_surf(&brw->isl_dev, &mt->surf, NULL, &aux_surf, 0);
       break;
 
    default:

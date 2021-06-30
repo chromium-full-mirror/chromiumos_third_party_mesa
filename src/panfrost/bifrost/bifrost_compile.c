@@ -35,6 +35,7 @@
 #include "compiler.h"
 #include "bi_quirks.h"
 #include "bi_builder.h"
+#include "bifrost_nir.h"
 
 static const struct debug_named_value bifrost_debug_options[] = {
         {"msgs",      BIFROST_DBG_MSGS,		"Print debug messages"},
@@ -1784,6 +1785,18 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
                 break;
         }
 
+        case nir_op_fsat_signed_mali: {
+                bi_instr *I = bi_fadd_to(b, sz, dst, s0, bi_negzero(), BI_ROUND_NONE);
+                I->clamp = BI_CLAMP_CLAMP_M1_1;
+                break;
+        }
+
+        case nir_op_fclamp_pos_mali: {
+                bi_instr *I = bi_fadd_to(b, sz, dst, s0, bi_negzero(), BI_ROUND_NONE);
+                I->clamp = BI_CLAMP_CLAMP_0_INF;
+                break;
+        }
+
         case nir_op_fneg:
                 bi_fadd_to(b, sz, dst, bi_neg(s0), bi_negzero(), BI_ROUND_NONE);
                 break;
@@ -2892,9 +2905,6 @@ bi_print_stats(bi_context *ctx, unsigned size, FILE *fp)
                 }
         }
 
-        /* tuples = ((# of instructions) + (# of nops)) / 2 */
-        unsigned nr_nops = (2 * nr_tuples) - nr_ins;
-
         /* In the future, we'll calculate thread count for v7. For now we
          * always use fewer threads than we should (v6 style) due to missing
          * piping, TODO: fix that for a nice perf win */
@@ -2903,13 +2913,13 @@ bi_print_stats(bi_context *ctx, unsigned size, FILE *fp)
         /* Dump stats */
 
         fprintf(stderr, "%s - %s shader: "
-                        "%u inst, %u nops, %u clauses, "
+                        "%u inst, %u tuples, %u clauses, "
                         "%u quadwords, %u threads, %u loops, "
                         "%u:%u spills:fills\n",
                         ctx->nir->info.label ?: "",
                         ctx->inputs->is_blend ? "PAN_SHADER_BLEND" :
                         gl_shader_stage_name(ctx->stage),
-                        nr_ins, nr_nops, nr_clauses,
+                        nr_ins, nr_tuples, nr_clauses,
                         size / 16, nr_threads,
                         ctx->loop_count,
                         ctx->spills, ctx->fills);
@@ -3109,6 +3119,9 @@ bi_optimize_nir(nir_shader *nir, unsigned gpu_id, bool is_blend)
         NIR_PASS(progress, nir, nir_opt_vectorize, bi_vectorize_filter, NULL);
         NIR_PASS(progress, nir, nir_lower_load_const_to_scalar);
         NIR_PASS(progress, nir, nir_opt_dce);
+
+        /* Prepass to simplify instruction selection */
+        NIR_PASS(progress, nir, bifrost_nir_lower_algebraic_late);
 
         /* Backend scheduler is purely local, so do some global optimizations
          * to reduce register pressure. */
@@ -3422,6 +3435,8 @@ bifrost_compile_shader_nir(nir_shader *nir,
         bi_opt_push_ubo(ctx);
         bi_opt_constant_fold(ctx);
         bi_opt_copy_prop(ctx);
+        bi_opt_mod_prop_forward(ctx);
+        bi_opt_mod_prop_backward(ctx);
         bi_opt_dead_code_eliminate(ctx);
 
         bi_foreach_block(ctx, _block) {

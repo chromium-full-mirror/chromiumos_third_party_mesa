@@ -11,12 +11,12 @@
 #include "vn_android.h"
 
 #include <dlfcn.h>
-#include <drm/drm_fourcc.h>
 #include <hardware/gralloc.h>
 #include <hardware/hwvulkan.h>
 #include <vndk/hardware_buffer.h>
 #include <vulkan/vk_icd.h>
 
+#include "drm-uapi/drm_fourcc.h"
 #include "util/libsync.h"
 #include "util/os_file.h"
 
@@ -118,18 +118,6 @@ vn_android_ahb_format_from_vk_format(VkFormat format)
       return AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT;
    case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
       return AHARDWAREBUFFER_FORMAT_R10G10B10A2_UNORM;
-   case VK_FORMAT_D16_UNORM:
-      return AHARDWAREBUFFER_FORMAT_D16_UNORM;
-   case VK_FORMAT_X8_D24_UNORM_PACK32:
-      return AHARDWAREBUFFER_FORMAT_D24_UNORM;
-   case VK_FORMAT_D24_UNORM_S8_UINT:
-      return AHARDWAREBUFFER_FORMAT_D24_UNORM_S8_UINT;
-   case VK_FORMAT_D32_SFLOAT:
-      return AHARDWAREBUFFER_FORMAT_D32_FLOAT;
-   case VK_FORMAT_D32_SFLOAT_S8_UINT:
-      return AHARDWAREBUFFER_FORMAT_D32_FLOAT_S8_UINT;
-   case VK_FORMAT_S8_UINT:
-      return AHARDWAREBUFFER_FORMAT_S8_UINT;
    case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM:
       return AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420;
    default:
@@ -138,37 +126,22 @@ vn_android_ahb_format_from_vk_format(VkFormat format)
 }
 
 VkFormat
-vn_android_ahb_format_to_vk_format(uint32_t format)
+vn_android_drm_format_to_vk_format(uint32_t format)
 {
    switch (format) {
-   case AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM:
-   case AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM:
+   case DRM_FORMAT_ABGR8888:
+   case DRM_FORMAT_XBGR8888:
       return VK_FORMAT_R8G8B8A8_UNORM;
-   case AHARDWAREBUFFER_FORMAT_R8G8B8_UNORM:
+   case DRM_FORMAT_BGR888:
       return VK_FORMAT_R8G8B8_UNORM;
-   case AHARDWAREBUFFER_FORMAT_R5G6B5_UNORM:
+   case DRM_FORMAT_RGB565:
       return VK_FORMAT_R5G6B5_UNORM_PACK16;
-   case AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT:
+   case DRM_FORMAT_ABGR16161616F:
       return VK_FORMAT_R16G16B16A16_SFLOAT;
-   case AHARDWAREBUFFER_FORMAT_R10G10B10A2_UNORM:
+   case DRM_FORMAT_ABGR2101010:
       return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
-   case AHARDWAREBUFFER_FORMAT_D16_UNORM:
-      return VK_FORMAT_D16_UNORM;
-   case AHARDWAREBUFFER_FORMAT_D24_UNORM:
-      return VK_FORMAT_X8_D24_UNORM_PACK32;
-   case AHARDWAREBUFFER_FORMAT_D24_UNORM_S8_UINT:
-      return VK_FORMAT_D24_UNORM_S8_UINT;
-   case AHARDWAREBUFFER_FORMAT_D32_FLOAT:
-      return VK_FORMAT_D32_SFLOAT;
-   case AHARDWAREBUFFER_FORMAT_D32_FLOAT_S8_UINT:
-      return VK_FORMAT_D32_SFLOAT_S8_UINT;
-   case AHARDWAREBUFFER_FORMAT_S8_UINT:
-      return VK_FORMAT_S8_UINT;
-   case AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420:
-   /* XXX Add a gralloc query for the resolved drm format and then map to a
-    * compatiable VkFormat.
-    */
-   case AHARDWAREBUFFER_FORMAT_IMPLEMENTATION_DEFINED:
+   case DRM_FORMAT_YVU420:
+   case DRM_FORMAT_NV12:
       return VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
    default:
       return VK_FORMAT_UNDEFINED;
@@ -233,7 +206,7 @@ vn_GetSwapchainGrallocUsage2ANDROID(
 }
 
 struct cros_gralloc0_buffer_info {
-   uint32_t drm_fourcc; /* ignored */
+   uint32_t drm_fourcc;
    int num_fds;         /* ignored */
    int fds[4];          /* ignored */
    uint64_t modifier;
@@ -242,6 +215,7 @@ struct cros_gralloc0_buffer_info {
 };
 
 struct vn_android_gralloc_buffer_properties {
+   uint32_t drm_fourcc;
    uint64_t modifier;
    uint32_t offset[4];
    uint32_t stride[4];
@@ -283,6 +257,7 @@ vn_android_get_gralloc_buffer_properties(
    if (info.modifier == DRM_FORMAT_MOD_INVALID)
       return false;
 
+   out_props->drm_fourcc = info.drm_fourcc;
    for (uint32_t i = 0; i < 4; i++) {
       out_props->stride[i] = info.stride[i];
       out_props->offset[i] = info.offset[i];
@@ -318,20 +293,9 @@ vn_android_get_modifier_properties(struct vn_device *dev,
                                          &format_prop);
 
    if (!mod_prop_list.drmFormatModifierCount) {
-      /* XXX Remove this fallback after host VK_EXT_image_drm_format_modifier
-       * can properly support VK_FORMAT_G8_B8R8_2PLANE_420_UNORM.
-       */
-      if (format != VK_FORMAT_G8_B8R8_2PLANE_420_UNORM) {
-         vn_log(dev->instance, "No compatible modifier for VkFormat(%u)",
-                format);
-         return VK_ERROR_INVALID_EXTERNAL_HANDLE;
-      }
-
-      out_props->drmFormatModifier = modifier;
-      out_props->drmFormatModifierPlaneCount = 2;
-      out_props->drmFormatModifierTilingFeatures =
-         VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
-      return VK_SUCCESS;
+      vn_log(dev->instance, "No compatible modifier for VkFormat(%u)",
+             format);
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
    }
 
    mod_props = vk_zalloc(
@@ -540,28 +504,86 @@ vn_AcquireImageANDROID(VkDevice device,
                        VkSemaphore semaphore,
                        VkFence fence)
 {
-   /* At this moment, out semaphore and fence are filled with already signaled
-    * payloads, and the native fence fd is waited inside until signaled.
-    */
    struct vn_device *dev = vn_device_from_handle(device);
-   struct vn_semaphore *sem = vn_semaphore_from_handle(semaphore);
-   struct vn_fence *fen = vn_fence_from_handle(fence);
+   VkResult result = VK_SUCCESS;
 
-   if (nativeFenceFd >= 0) {
-      int ret = sync_wait(nativeFenceFd, INT32_MAX);
-      /* Android loader expects the ICD to always close the fd */
-      close(nativeFenceFd);
-      if (ret)
-         return vn_error(dev->instance, VK_ERROR_SURFACE_LOST_KHR);
+   if (dev->instance->experimental.globalFencing == VK_FALSE) {
+      /* Fallback when VkVenusExperimentalFeatures100000MESA::globalFencing is
+       * VK_FALSE, out semaphore and fence are filled with already signaled
+       * payloads, and the native fence fd is waited inside until signaled.
+       */
+      if (nativeFenceFd >= 0) {
+         int ret = sync_wait(nativeFenceFd, -1);
+         /* Android loader expects the ICD to always close the fd */
+         close(nativeFenceFd);
+         if (ret)
+            return vn_error(dev->instance, VK_ERROR_SURFACE_LOST_KHR);
+      }
+
+      if (semaphore != VK_NULL_HANDLE)
+         vn_semaphore_signal_wsi(dev, vn_semaphore_from_handle(semaphore));
+
+      if (fence != VK_NULL_HANDLE)
+         vn_fence_signal_wsi(dev, vn_fence_from_handle(fence));
+
+      return VK_SUCCESS;
    }
 
-   if (sem)
-      vn_semaphore_signal_wsi(dev, sem);
+   int semaphore_fd = -1;
+   int fence_fd = -1;
+   if (nativeFenceFd >= 0) {
+      if (semaphore != VK_NULL_HANDLE && fence != VK_NULL_HANDLE) {
+         semaphore_fd = nativeFenceFd;
+         fence_fd = os_dupfd_cloexec(nativeFenceFd);
+         if (fence_fd < 0) {
+            result = (errno == EMFILE) ? VK_ERROR_TOO_MANY_OBJECTS
+                                       : VK_ERROR_OUT_OF_HOST_MEMORY;
+            close(nativeFenceFd);
+            return vn_error(dev->instance, result);
+         }
+      } else if (semaphore != VK_NULL_HANDLE) {
+         semaphore_fd = nativeFenceFd;
+      } else if (fence != VK_NULL_HANDLE) {
+         fence_fd = nativeFenceFd;
+      } else {
+         close(nativeFenceFd);
+      }
+   }
 
-   if (fen)
-      vn_fence_signal_wsi(dev, fen);
+   if (semaphore != VK_NULL_HANDLE) {
+      const VkImportSemaphoreFdInfoKHR info = {
+         .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
+         .pNext = NULL,
+         .semaphore = semaphore,
+         .flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
+         .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+         .fd = semaphore_fd,
+      };
+      result = vn_ImportSemaphoreFdKHR(device, &info);
+      if (result == VK_SUCCESS)
+         semaphore_fd = -1;
+   }
 
-   return VK_SUCCESS;
+   if (result == VK_SUCCESS && fence != VK_NULL_HANDLE) {
+      const VkImportFenceFdInfoKHR info = {
+         .sType = VK_STRUCTURE_TYPE_IMPORT_FENCE_FD_INFO_KHR,
+         .pNext = NULL,
+         .fence = fence,
+         .flags = VK_FENCE_IMPORT_TEMPORARY_BIT,
+         .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
+         .fd = fence_fd,
+      };
+      result = vn_ImportFenceFdKHR(device, &info);
+      if (result == VK_SUCCESS)
+         fence_fd = -1;
+   }
+
+   if (semaphore_fd >= 0)
+      close(semaphore_fd);
+   if (fence_fd >= 0)
+      close(fence_fd);
+
+   return vn_result(dev->instance, result);
 }
 
 VkResult
@@ -571,28 +593,26 @@ vn_QueueSignalReleaseImageANDROID(VkQueue queue,
                                   VkImage image,
                                   int *pNativeFenceFd)
 {
-   /* At this moment, the wait semaphores are converted to a VkFence via an
-    * empty submit. The VkFence is then waited inside until signaled, and the
-    * out native fence fd is set to -1.
-    */
-   VkResult result = VK_SUCCESS;
    struct vn_queue *que = vn_queue_from_handle(queue);
-   const VkAllocationCallbacks *alloc = &que->device->base.base.alloc;
-   VkDevice device = vn_device_to_handle(que->device);
+   struct vn_device *dev = que->device;
+   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
+   VkDevice device = vn_device_to_handle(dev);
    VkPipelineStageFlags local_stage_masks[8];
    VkPipelineStageFlags *stage_masks = local_stage_masks;
+   VkResult result = VK_SUCCESS;
+   int fd = -1;
 
-   if (waitSemaphoreCount == 0)
-      goto out;
+   if (waitSemaphoreCount == 0) {
+      *pNativeFenceFd = -1;
+      return VK_SUCCESS;
+   }
 
    if (waitSemaphoreCount > ARRAY_SIZE(local_stage_masks)) {
       stage_masks =
-         vk_alloc(alloc, sizeof(VkPipelineStageFlags) * waitSemaphoreCount,
+         vk_alloc(alloc, sizeof(*stage_masks) * waitSemaphoreCount,
                   VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
-      if (!stage_masks) {
-         result = VK_ERROR_OUT_OF_HOST_MEMORY;
-         goto out;
-      }
+      if (!stage_masks)
+         return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
    for (uint32_t i = 0; i < waitSemaphoreCount; i++)
@@ -609,17 +629,44 @@ vn_QueueSignalReleaseImageANDROID(VkQueue queue,
       .signalSemaphoreCount = 0,
       .pSignalSemaphores = NULL,
    };
-   result = vn_QueueSubmit(queue, 1, &submit_info, que->wait_fence);
+   /* XXX When globalFencing is supported, our implementation is not able to
+    * reset the fence during vn_GetFenceFdKHR currently. Thus to ensure proper
+    * host driver behavior, we pass VK_NULL_HANDLE here.
+    */
+   result = vn_QueueSubmit(
+      queue, 1, &submit_info,
+      dev->instance->experimental.globalFencing == VK_TRUE ? VK_NULL_HANDLE
+                                                           : que->wait_fence);
+
+   if (stage_masks != local_stage_masks)
+      vk_free(alloc, stage_masks);
+
    if (result != VK_SUCCESS)
-      goto out;
+      return vn_error(dev->instance, result);
 
-   result =
-      vn_WaitForFences(device, 1, &que->wait_fence, VK_TRUE, UINT64_MAX);
-   vn_ResetFences(device, 1, &que->wait_fence);
+   if (dev->instance->experimental.globalFencing == VK_TRUE) {
+      const VkFenceGetFdInfoKHR fd_info = {
+         .sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR,
+         .pNext = NULL,
+         .fence = que->wait_fence,
+         .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
+      };
+      result = vn_GetFenceFdKHR(device, &fd_info, &fd);
+   } else {
+      result =
+         vn_WaitForFences(device, 1, &que->wait_fence, VK_TRUE, UINT64_MAX);
+      if (result != VK_SUCCESS)
+         return vn_error(dev->instance, result);
 
-out:
-   *pNativeFenceFd = -1;
-   return result;
+      result = vn_ResetFences(device, 1, &que->wait_fence);
+   }
+
+   if (result != VK_SUCCESS)
+      return vn_error(dev->instance, result);
+
+   *pNativeFenceFd = fd;
+
+   return VK_SUCCESS;
 }
 
 static VkResult
@@ -643,26 +690,27 @@ vn_android_get_ahb_format_properties(
       return VK_ERROR_INVALID_EXTERNAL_HANDLE;
    }
 
-   /* We implement AHB extension support with EXT_image_drm_format_modifier.
-    * It requires us to have a compatible VkFormat but not DRM formats. So if
-    * the ahb is not intended for backing a VkBuffer, error out early if the
-    * format is VK_FORMAT_UNDEFINED.
-    */
-   format = vn_android_ahb_format_to_vk_format(desc.format);
-   if (format == VK_FORMAT_UNDEFINED) {
-      if (desc.format != AHARDWAREBUFFER_FORMAT_BLOB) {
-         vn_log(dev->instance, "Unknown AHB format(0x%X)", desc.format);
-         return VK_ERROR_INVALID_EXTERNAL_HANDLE;
-      }
-
-      out_props->format = format;
-      out_props->externalFormat = desc.format;
+   /* Handle the special AHARDWAREBUFFER_FORMAT_BLOB for VkBuffer case. */
+   if (desc.format == AHARDWAREBUFFER_FORMAT_BLOB) {
+      out_props->format = VK_FORMAT_UNDEFINED;
       return VK_SUCCESS;
    }
 
    if (!vn_android_get_gralloc_buffer_properties(
           AHardwareBuffer_getNativeHandle(ahb), &buf_props))
       return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+
+   /* We implement AHB extension support with EXT_image_drm_format_modifier.
+    * It requires us to have a compatible VkFormat but not DRM formats. So if
+    * the ahb is not intended for backing a VkBuffer, error out early if the
+    * format is VK_FORMAT_UNDEFINED.
+    */
+   format = vn_android_drm_format_to_vk_format(buf_props.drm_fourcc);
+   if (format == VK_FORMAT_UNDEFINED) {
+      vn_log(dev->instance, "Unknown drm_fourcc(%u) from AHB format(0x%X)",
+             buf_props.drm_fourcc, desc.format);
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+   }
 
    VkResult result = vn_android_get_modifier_properties(
       dev, format, buf_props.modifier, &dev->base.base.alloc, &mod_props);
@@ -680,7 +728,7 @@ vn_android_get_ahb_format_properties(
       .sType = out_props->sType,
       .pNext = out_props->pNext,
       .format = format,
-      .externalFormat = desc.format,
+      .externalFormat = buf_props.drm_fourcc,
       .formatFeatures = format_features,
       .samplerYcbcrConversionComponents = {
          .r = VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -829,7 +877,7 @@ vn_android_image_from_ahb(struct vn_device *dev,
 
       local_info = *create_info;
       local_info.format =
-         vn_android_ahb_format_to_vk_format(ext_info->externalFormat);
+         vn_android_drm_format_to_vk_format(ext_info->externalFormat);
       create_info = &local_info;
    }
 
@@ -882,8 +930,12 @@ vn_android_device_import_ahb(struct vn_device *dev,
 
       VkMemoryRequirements mem_req;
       vn_GetImageMemoryRequirements(device, dedicated_info->image, &mem_req);
-      if (alloc_size < mem_req.size)
+      if (alloc_size < mem_req.size) {
+         vn_log(dev->instance,
+                "alloc_size(%" PRIu64 ") mem_req.size(%" PRIu64 ")",
+                alloc_size, mem_req.size);
          return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+      }
 
       alloc_size = mem_req.size;
    }
@@ -892,8 +944,12 @@ vn_android_device_import_ahb(struct vn_device *dev,
       VkMemoryRequirements mem_req;
       vn_GetBufferMemoryRequirements(device, dedicated_info->buffer,
                                      &mem_req);
-      if (alloc_size < mem_req.size)
+      if (alloc_size < mem_req.size) {
+         vn_log(dev->instance,
+                "alloc_size(%" PRIu64 ") mem_req.size(%" PRIu64 ")",
+                alloc_size, mem_req.size);
          return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+      }
 
       alloc_size = mem_req.size;
    }
@@ -957,19 +1013,21 @@ vn_android_device_allocate_ahb(struct vn_device *dev,
       height = image_info->extent.height;
       layers = image_info->arrayLayers;
       format = vn_android_ahb_format_from_vk_format(image_info->format);
-      /* TODO Need to further resolve the gralloc usage bits for image format
-       * list info, which might involve disabling compression if there exists
-       * no universally applied compression strategy across the formats.
-       */
       usage = vn_android_get_ahb_usage(image_info->usage, image_info->flags);
    } else {
+      const VkPhysicalDeviceMemoryProperties *mem_props =
+         &dev->physical_device->memory_properties.memoryProperties;
+
+      assert(alloc_info->memoryTypeIndex < mem_props->memoryTypeCount);
+
       width = alloc_info->allocationSize;
       format = AHARDWAREBUFFER_FORMAT_BLOB;
-      /* TODO AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER is not supported by cros
-       * gralloc. So here we work around with CPU usage bits for VkBuffer.
-       */
-      usage = AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN |
-              AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
+      usage = AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER;
+      if (mem_props->memoryTypes[alloc_info->memoryTypeIndex].propertyFlags &
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+         usage |= AHARDWAREBUFFER_USAGE_CPU_READ_RARELY |
+                  AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY;
+      }
    }
 
    ahb = vn_android_ahb_allocate(width, height, layers, format, usage);

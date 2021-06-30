@@ -5,6 +5,7 @@
   variables:
     VK_DRIVER: radeon
     ACO_DEBUG: validateir,validatera
+    MESA_VK_IGNORE_CONFORMANCE_WARNING: 1
 
 radv-navy_flounder-vkd3d-proton:
   extends:
@@ -54,19 +55,23 @@ radv_polaris10_vkcts:
     - polaris10
 
 # Run three jobs in parallel each running 1/30th of the test suite
-radv_stoney_vkcts:amd64:
+.radv_stoney_vkcts:amd64:
   extends:
     - .lava-test:amd64
     - .radv-rules
   parallel: 3
   variables:
-    DEQP_VERSION: vk
-    ENV_VARS: "DEQP_FRACTION=10 DEQP_PARALLEL=4 DEQP_EXPECTED_RENDERER=STONEY"
+    DEQP_VER: vk
+    DEQP_FRACTION: 10
+    DEQP_PARALLEL: 4
+    DEQP_EXPECTED_RENDERER: STONEY
     DEVICE_TYPE: hp-11A-G6-EE-grunt
     DTB: ""
     GPU_VERSION: radv-stoney-aco
     BOOT_METHOD: depthcharge
     KERNEL_IMAGE_TYPE: ""
+    HWCI_KERNEL_MODULES: amdgpu
+    HWCI_FREQ_MAX: "true"
     VK_DRIVER: radeon
   tags:
     - mesa-ci-x86-64-lava-hp-11A-G6-EE-grunt

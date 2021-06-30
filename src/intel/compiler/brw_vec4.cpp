@@ -2902,25 +2902,10 @@ brw_compile_vs(const struct brw_compiler *compiler,
 
    const unsigned *assembly = NULL;
 
-   if (prog_data->base.vue_map.varying_to_slot[VARYING_SLOT_EDGE] != -1) {
-      /* If the output VUE map contains VARYING_SLOT_EDGE then we need to copy
-       * the edge flag from VERT_ATTRIB_EDGEFLAG.  This will be done
-       * automatically by brw_vec4_visitor::emit_urb_slot but we need to
-       * ensure that prog_data->inputs_read is accurate.
-       *
-       * In order to make late NIR passes aware of the change, we actually
-       * whack shader->info.inputs_read instead.  This is safe because we just
-       * made a copy of the shader.
-       */
-      assert(!is_scalar);
-      assert(key->copy_edgeflag);
-      nir->info.inputs_read |= VERT_BIT_EDGEFLAG;
-   }
-
    prog_data->inputs_read = nir->info.inputs_read;
    prog_data->double_inputs_read = nir->info.vs.double_inputs;
 
-   brw_nir_lower_vs_inputs(nir, key->gl_attrib_wa_flags);
+   brw_nir_lower_vs_inputs(nir, params->edgeflag_is_last, key->gl_attrib_wa_flags);
    brw_nir_lower_vue_outputs(nir);
    brw_postprocess_nir(nir, compiler, is_scalar, debug_enabled,
                        key->base.robust_buffer_access);

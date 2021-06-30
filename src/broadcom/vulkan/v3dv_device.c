@@ -34,8 +34,6 @@
 
 #include "common/v3d_debug.h"
 
-#include "broadcom/cle/v3dx_pack.h"
-
 #include "compiler/v3d_compiler.h"
 
 #include "drm-uapi/v3d_drm.h"
@@ -108,6 +106,7 @@ get_device_extensions(const struct v3dv_physical_device *device,
 {
    *ext = (struct vk_device_extension_table) {
       .KHR_bind_memory2                    = true,
+      .KHR_copy_commands2                  = true,
       .KHR_dedicated_allocation            = true,
       .KHR_device_group                    = true,
       .KHR_descriptor_update_template      = true,
@@ -123,6 +122,7 @@ get_device_extensions(const struct v3dv_physical_device *device,
       .KHR_maintenance1                    = true,
       .KHR_maintenance2                    = true,
       .KHR_maintenance3                    = true,
+      .KHR_shader_non_semantic_info        = true,
       .KHR_sampler_mirror_clamp_to_edge    = true,
       .KHR_storage_buffer_storage_class    = true,
       .KHR_uniform_buffer_standard_layout  = true,
@@ -132,6 +132,7 @@ get_device_extensions(const struct v3dv_physical_device *device,
 #endif
       .KHR_variable_pointers               = true,
       .EXT_external_memory_dma_buf         = true,
+      .EXT_index_type_uint8                = true,
       .EXT_private_data                    = true,
    };
 }
@@ -963,7 +964,7 @@ v3dv_GetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice,
       .multiViewport = false,
       .samplerAnisotropy = true,
       .textureCompressionETC2 = true,
-      .textureCompressionASTC_LDR = false,
+      .textureCompressionASTC_LDR = true,
       /* Note that textureCompressionBC requires that the driver support all
        * the BC formats. V3D 4.2 only support the BC1-3, so we can't claim
        * that we support it.
@@ -1010,6 +1011,22 @@ v3dv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
 {
    v3dv_GetPhysicalDeviceFeatures(physicalDevice, &pFeatures->features);
 
+   VkPhysicalDeviceVulkan11Features vk11 = {
+      .storageBuffer16BitAccess = false,
+      .uniformAndStorageBuffer16BitAccess = false,
+      .storagePushConstant16 = false,
+      .storageInputOutput16 = false,
+      .multiview = false,
+      .multiviewGeometryShader = false,
+      .multiviewTessellationShader = false,
+      .variablePointersStorageBuffer = true,
+      /* FIXME: this needs support for non-constant index on UBO/SSBO */
+      .variablePointers = false,
+      .protectedMemory = false,
+      .samplerYcbcrConversion = false,
+      .shaderDrawParameters = false,
+   };
+
    vk_foreach_struct(ext, pFeatures->pNext) {
       switch (ext->sType) {
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFORM_BUFFER_STANDARD_LAYOUT_FEATURES_KHR: {
@@ -1025,15 +1042,60 @@ v3dv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          features->privateData = true;
          break;
       }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES: {
-         VkPhysicalDeviceVariablePointersFeatures *features = (void *) ext;
-         features->variablePointersStorageBuffer = true;
-         /* FIXME: for this we need to support non-constant indexing on
-          * UBO/SSBO.
-          */
-         features->variablePointers = false;
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT: {
+         VkPhysicalDeviceIndexTypeUint8FeaturesEXT *features =
+            (VkPhysicalDeviceIndexTypeUint8FeaturesEXT *)ext;
+         features->indexTypeUint8 = true;
          break;
       }
+
+      /* Vulkan 1.1 */
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES: {
+         VkPhysicalDeviceVulkan11Features *features =
+            (VkPhysicalDeviceVulkan11Features *)ext;
+         memcpy(features, &vk11, sizeof(VkPhysicalDeviceVulkan11Features));
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES: {
+         VkPhysicalDevice16BitStorageFeatures *features = (void *) ext;
+         features->storageBuffer16BitAccess = vk11.storageBuffer16BitAccess;
+         features->uniformAndStorageBuffer16BitAccess =
+            vk11.uniformAndStorageBuffer16BitAccess;
+         features->storagePushConstant16 = vk11.storagePushConstant16;
+         features->storageInputOutput16 = vk11.storageInputOutput16;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES: {
+         VkPhysicalDeviceMultiviewFeatures *features = (void *) ext;
+         features->multiview = vk11.multiview;
+         features->multiviewGeometryShader = vk11.multiviewGeometryShader;
+         features->multiviewTessellationShader = vk11.multiviewTessellationShader;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROTECTED_MEMORY_FEATURES: {
+         VkPhysicalDeviceProtectedMemoryFeatures *features = (void *) ext;
+         features->protectedMemory = vk11.protectedMemory;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES: {
+         VkPhysicalDeviceSamplerYcbcrConversionFeatures *features = (void *) ext;
+         features->samplerYcbcrConversion = vk11.samplerYcbcrConversion;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES: {
+         VkPhysicalDeviceShaderDrawParametersFeatures *features = (void *) ext;
+         features->shaderDrawParameters = vk11.shaderDrawParameters;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES: {
+         VkPhysicalDeviceVariablePointersFeatures *features = (void *) ext;
+         features->variablePointersStorageBuffer =
+            vk11.variablePointersStorageBuffer;
+         features->variablePointers = vk11.variablePointers;
+         break;
+      }
+
       default:
          v3dv_debug_ignored_stype(ext->sType);
          break;
@@ -1291,18 +1353,6 @@ v3dv_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          id_props->deviceLUIDValid = false;
          break;
       }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PCI_BUS_INFO_PROPERTIES_EXT:
-         /* Do nothing, not even logging. This is a non-PCI device, so we will
-          * never provide this extension.
-          */
-         break;
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_POINT_CLIPPING_PROPERTIES: {
-         VkPhysicalDevicePointClippingProperties *props =
-            (VkPhysicalDevicePointClippingProperties *)ext;
-         props->pointClippingBehavior =
-            VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES;
-         break;
-      }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES: {
          VkPhysicalDeviceMaintenance3Properties *props =
             (VkPhysicalDeviceMaintenance3Properties *)ext;
@@ -1318,12 +1368,48 @@ v3dv_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
             (UINT32_MAX - sizeof(struct v3dv_descriptor_set)) /
             sizeof(struct v3dv_descriptor);
          uint32_t max_gpu_descriptors =
-            (UINT32_MAX / v3dv_max_descriptor_bo_size());
+            (UINT32_MAX / v3dv_X(pdevice, max_descriptor_bo_size)());
          props->maxPerSetDescriptors =
             MIN2(max_host_descriptors, max_gpu_descriptors);
 
          /* Minimum required by the spec */
          props->maxMemoryAllocationSize = MAX_MEMORY_ALLOCATION_SIZE;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_PROPERTIES: {
+         VkPhysicalDeviceMultiviewProperties *props =
+            (VkPhysicalDeviceMultiviewProperties *)ext;
+         props->maxMultiviewViewCount = 1;
+         /* This assumes that the multiview implementation uses instancing */
+         props->maxMultiviewInstanceIndex =
+            (UINT32_MAX / props->maxMultiviewViewCount) - 1;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PCI_BUS_INFO_PROPERTIES_EXT:
+         /* Do nothing, not even logging. This is a non-PCI device, so we will
+          * never provide this extension.
+          */
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_POINT_CLIPPING_PROPERTIES: {
+         VkPhysicalDevicePointClippingProperties *props =
+            (VkPhysicalDevicePointClippingProperties *)ext;
+         props->pointClippingBehavior =
+            VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROTECTED_MEMORY_PROPERTIES: {
+         VkPhysicalDeviceProtectedMemoryProperties *props =
+            (VkPhysicalDeviceProtectedMemoryProperties *)ext;
+         props->protectedNoFault = false;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES: {
+         VkPhysicalDeviceSubgroupProperties *props =
+            (VkPhysicalDeviceSubgroupProperties *)ext;
+         props->subgroupSize = V3D_CHANNELS;
+         props->supportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
+         props->supportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT;
+         props->quadOperationsInAllStages = false;
          break;
       }
       default:
@@ -1590,6 +1676,9 @@ v3dv_CreateDevice(VkPhysicalDevice physicalDevice,
       goto fail;
    }
 
+#ifdef DEBUG
+   v3dv_X(device, device_check_prepacked_sizes)();
+#endif
    init_device_meta(device);
    v3dv_bo_cache_init(device);
    v3dv_pipeline_cache_init(&device->default_pipeline_cache, device,
@@ -2215,66 +2304,6 @@ v3dv_DestroyBuffer(VkDevice _device,
    vk_object_free(&device->vk, pAllocator, buffer);
 }
 
-/**
- * This computes the maximum bpp used by any of the render targets used by
- * a particular subpass and checks if any of those render targets are
- * multisampled. If we don't have a subpass (when we are not inside a
- * render pass), then we assume that all framebuffer attachments are used.
- */
-void
-v3dv_framebuffer_compute_internal_bpp_msaa(
-   const struct v3dv_framebuffer *framebuffer,
-   const struct v3dv_subpass *subpass,
-   uint8_t *max_bpp,
-   bool *msaa)
-{
-   STATIC_ASSERT(RENDER_TARGET_MAXIMUM_32BPP == 0);
-   *max_bpp = RENDER_TARGET_MAXIMUM_32BPP;
-   *msaa = false;
-
-   if (subpass) {
-      for (uint32_t i = 0; i < subpass->color_count; i++) {
-         uint32_t att_idx = subpass->color_attachments[i].attachment;
-         if (att_idx == VK_ATTACHMENT_UNUSED)
-            continue;
-
-         const struct v3dv_image_view *att = framebuffer->attachments[att_idx];
-         assert(att);
-
-         if (att->aspects & VK_IMAGE_ASPECT_COLOR_BIT)
-            *max_bpp = MAX2(*max_bpp, att->internal_bpp);
-
-         if (att->image->samples > VK_SAMPLE_COUNT_1_BIT)
-            *msaa = true;
-      }
-
-      if (!*msaa && subpass->ds_attachment.attachment != VK_ATTACHMENT_UNUSED) {
-         const struct v3dv_image_view *att =
-            framebuffer->attachments[subpass->ds_attachment.attachment];
-         assert(att);
-
-         if (att->image->samples > VK_SAMPLE_COUNT_1_BIT)
-            *msaa = true;
-      }
-
-      return;
-   }
-
-   assert(framebuffer->attachment_count <= 4);
-   for (uint32_t i = 0; i < framebuffer->attachment_count; i++) {
-      const struct v3dv_image_view *att = framebuffer->attachments[i];
-      assert(att);
-
-      if (att->aspects & VK_IMAGE_ASPECT_COLOR_BIT)
-         *max_bpp = MAX2(*max_bpp, att->internal_bpp);
-
-      if (att->image->samples > VK_SAMPLE_COUNT_1_BIT)
-         *msaa = true;
-   }
-
-   return;
-}
-
 VKAPI_ATTR VkResult VKAPI_CALL
 v3dv_CreateFramebuffer(VkDevice _device,
                        const VkFramebufferCreateInfo *pCreateInfo,
@@ -2426,100 +2455,6 @@ v3dv_ResetEvent(VkDevice _device, VkEvent _event)
    return VK_SUCCESS;
 }
 
-static const enum V3DX(Wrap_Mode) vk_to_v3d_wrap_mode[] = {
-   [VK_SAMPLER_ADDRESS_MODE_REPEAT]          = V3D_WRAP_MODE_REPEAT,
-   [VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT] = V3D_WRAP_MODE_MIRROR,
-   [VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE]   = V3D_WRAP_MODE_CLAMP,
-   [VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE] = V3D_WRAP_MODE_MIRROR_ONCE,
-   [VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER] = V3D_WRAP_MODE_BORDER,
-};
-
-static const enum V3DX(Compare_Function)
-vk_to_v3d_compare_func[] = {
-   [VK_COMPARE_OP_NEVER]                        = V3D_COMPARE_FUNC_NEVER,
-   [VK_COMPARE_OP_LESS]                         = V3D_COMPARE_FUNC_LESS,
-   [VK_COMPARE_OP_EQUAL]                        = V3D_COMPARE_FUNC_EQUAL,
-   [VK_COMPARE_OP_LESS_OR_EQUAL]                = V3D_COMPARE_FUNC_LEQUAL,
-   [VK_COMPARE_OP_GREATER]                      = V3D_COMPARE_FUNC_GREATER,
-   [VK_COMPARE_OP_NOT_EQUAL]                    = V3D_COMPARE_FUNC_NOTEQUAL,
-   [VK_COMPARE_OP_GREATER_OR_EQUAL]             = V3D_COMPARE_FUNC_GEQUAL,
-   [VK_COMPARE_OP_ALWAYS]                       = V3D_COMPARE_FUNC_ALWAYS,
-};
-
-static void
-pack_sampler_state(struct v3dv_sampler *sampler,
-                   const VkSamplerCreateInfo *pCreateInfo)
-{
-   enum V3DX(Border_Color_Mode) border_color_mode;
-
-   /* For now we only support the preset Vulkan border color modes. If we
-    * want to implement VK_EXT_custom_border_color in the future we would have
-    * to use V3D_BORDER_COLOR_FOLLOWS, and fill up border_color_word_[0/1/2/3]
-    * SAMPLER_STATE.
-    */
-   switch (pCreateInfo->borderColor) {
-   case VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK:
-   case VK_BORDER_COLOR_INT_TRANSPARENT_BLACK:
-      border_color_mode = V3D_BORDER_COLOR_0000;
-      break;
-   case VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK:
-   case VK_BORDER_COLOR_INT_OPAQUE_BLACK:
-      border_color_mode = V3D_BORDER_COLOR_0001;
-      break;
-   case VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE:
-   case VK_BORDER_COLOR_INT_OPAQUE_WHITE:
-      border_color_mode = V3D_BORDER_COLOR_1111;
-      break;
-   default:
-      unreachable("Unknown border color");
-      break;
-   }
-
-   /* For some texture formats, when clamping to transparent black border the
-    * CTS expects alpha to be set to 1 instead of 0, but the border color mode
-    * will take priority over the texture state swizzle, so the only way to
-    * fix that is to apply a swizzle in the shader. Here we keep track of
-    * whether we are activating that mode and we will decide if we need to
-    * activate the texture swizzle lowering in the shader key at compile time
-    * depending on the actual texture format.
-    */
-   if ((pCreateInfo->addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
-        pCreateInfo->addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
-        pCreateInfo->addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER) &&
-       border_color_mode == V3D_BORDER_COLOR_0000) {
-      sampler->clamp_to_transparent_black_border = true;
-   }
-
-   v3dv_pack(sampler->sampler_state, SAMPLER_STATE, s) {
-      if (pCreateInfo->anisotropyEnable) {
-         s.anisotropy_enable = true;
-         if (pCreateInfo->maxAnisotropy > 8)
-            s.maximum_anisotropy = 3;
-         else if (pCreateInfo->maxAnisotropy > 4)
-            s.maximum_anisotropy = 2;
-         else if (pCreateInfo->maxAnisotropy > 2)
-            s.maximum_anisotropy = 1;
-      }
-
-      s.border_color_mode = border_color_mode;
-
-      s.wrap_i_border = false; /* Also hardcoded on v3d */
-      s.wrap_s = vk_to_v3d_wrap_mode[pCreateInfo->addressModeU];
-      s.wrap_t = vk_to_v3d_wrap_mode[pCreateInfo->addressModeV];
-      s.wrap_r = vk_to_v3d_wrap_mode[pCreateInfo->addressModeW];
-      s.fixed_bias = pCreateInfo->mipLodBias;
-      s.max_level_of_detail = MIN2(MAX2(0, pCreateInfo->maxLod), 15);
-      s.min_level_of_detail = MIN2(MAX2(0, pCreateInfo->minLod), 15);
-      s.srgb_disable = 0; /* Not even set by v3d */
-      s.depth_compare_function =
-         vk_to_v3d_compare_func[pCreateInfo->compareEnable ?
-                                pCreateInfo->compareOp : VK_COMPARE_OP_NEVER];
-      s.mip_filter_nearest = pCreateInfo->mipmapMode == VK_SAMPLER_MIPMAP_MODE_NEAREST;
-      s.min_filter_nearest = pCreateInfo->minFilter == VK_FILTER_NEAREST;
-      s.mag_filter_nearest = pCreateInfo->magFilter == VK_FILTER_NEAREST;
-   }
-}
-
 VKAPI_ATTR VkResult VKAPI_CALL
 v3dv_CreateSampler(VkDevice _device,
                  const VkSamplerCreateInfo *pCreateInfo,
@@ -2538,7 +2473,7 @@ v3dv_CreateSampler(VkDevice _device,
 
    sampler->compare_enable = pCreateInfo->compareEnable;
    sampler->unnormalized_coordinates = pCreateInfo->unnormalizedCoordinates;
-   pack_sampler_state(sampler, pCreateInfo);
+   v3dv_X(device, pack_sampler_state)(sampler, pCreateInfo);
 
    *pSampler = v3dv_sampler_to_handle(sampler);
 

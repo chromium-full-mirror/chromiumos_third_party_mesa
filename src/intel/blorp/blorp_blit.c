@@ -1490,7 +1490,8 @@ brw_blorp_get_blit_kernel(struct blorp_batch *batch,
    struct brw_wm_prog_data prog_data;
 
    nir_shader *nir = brw_blorp_build_nir_shader(blorp, mem_ctx, prog_key);
-   nir->info.name = ralloc_strdup(nir, blorp_shader_type_to_name(prog_key->shader_type));
+   nir->info.name =
+      ralloc_strdup(nir, blorp_shader_type_to_name(prog_key->base.shader_type));
 
    struct brw_wm_prog_key wm_key;
    brw_blorp_init_wm_prog_key(&wm_key);
@@ -2194,11 +2195,15 @@ shrink_surface_params(const struct isl_device *dev,
     */
    x_offset_sa = (uint32_t)*x0 * px_size_sa.w + info->tile_x_sa;
    y_offset_sa = (uint32_t)*y0 * px_size_sa.h + info->tile_y_sa;
+   uint32_t tile_z_sa, tile_a;
    isl_tiling_get_intratile_offset_sa(info->surf.tiling,
                                       info->surf.format, info->surf.row_pitch_B,
-                                      x_offset_sa, y_offset_sa,
+                                      info->surf.array_pitch_el_rows,
+                                      x_offset_sa, y_offset_sa, 0, 0,
                                       &byte_offset,
-                                      &info->tile_x_sa, &info->tile_y_sa);
+                                      &info->tile_x_sa, &info->tile_y_sa,
+                                      &tile_z_sa, &tile_a);
+   assert(tile_z_sa == 0 && tile_a == 0);
 
    info->addr.offset += byte_offset;
 
@@ -2360,7 +2365,7 @@ blorp_blit(struct blorp_batch *batch,
       isl_format_get_layout(params.src.view.format);
 
    struct brw_blorp_blit_prog_key wm_prog_key = {
-      .shader_type = BLORP_SHADER_TYPE_BLIT,
+      .base = BRW_BLORP_BASE_KEY_INIT(BLORP_SHADER_TYPE_BLIT),
       .filter = filter,
       .sint32_to_uint = src_fmtl->channels.r.bits == 32 &&
                         isl_format_has_sint_channel(params.src.view.format) &&
@@ -2647,7 +2652,7 @@ blorp_copy(struct blorp_batch *batch,
                                dst_layer, ISL_FORMAT_UNSUPPORTED, true);
 
    struct brw_blorp_blit_prog_key wm_prog_key = {
-      .shader_type = BLORP_SHADER_TYPE_COPY,
+      .base = BRW_BLORP_BASE_KEY_INIT(BLORP_SHADER_TYPE_COPY),
       .filter = BLORP_FILTER_NONE,
       .need_src_offset = src_surf->tile_x_sa || src_surf->tile_y_sa,
       .need_dst_offset = dst_surf->tile_x_sa || dst_surf->tile_y_sa,

@@ -703,21 +703,56 @@ void update_renames(ra_ctx& ctx, RegisterFile& reg_file,
    }
 
    /* allocate id's and rename operands: this is done transparently here */
-   for (std::pair<Operand, Definition>& copy : parallelcopies) {
-      /* the definitions with id are not from this function and already handled */
-      if (copy.second.isTemp())
+   auto it = parallelcopies.begin();
+   while (it != parallelcopies.end()) {
+      if (it->second.isTemp()) {
+         ++it;
+         continue;
+      }
+
+      /* check if we moved a definition: change the register and remove copy */
+      bool is_def = false;
+      for (Definition& def : instr->definitions) {
+         if (def.isTemp() && def.getTemp() == it->first.getTemp()) {
+            // FIXME: ensure that the definition can use this reg
+            def.setFixed(it->second.physReg());
+            reg_file.fill(def);
+            ctx.assignments[def.tempId()].reg = def.physReg();
+            it = parallelcopies.erase(it);
+            is_def = true;
+            break;
+         }
+      }
+      if (is_def)
          continue;
 
-      /* check if we we moved another parallelcopy definition */
+      /* check if we moved another parallelcopy definition */
       for (std::pair<Operand, Definition>& other : parallelcopies) {
          if (!other.second.isTemp())
             continue;
-         if (copy.first.getTemp() == other.second.getTemp()) {
-            copy.first.setTemp(other.first.getTemp());
-            copy.first.setFixed(other.first.physReg());
+         if (it->first.getTemp() == other.second.getTemp()) {
+            other.second.setFixed(it->second.physReg());
+            ctx.assignments[other.second.tempId()].reg = other.second.physReg();
+            it = parallelcopies.erase(it);
+            is_def = true;
+            /* check if we moved an operand, again */
+            bool fill = true;
+            for (Operand& op : instr->operands) {
+               if (op.isTemp() && op.tempId() == other.second.tempId()) {
+                  // FIXME: ensure that the operand can use this reg
+                  op.setFixed(other.second.physReg());
+                  fill = (flags & fill_killed_ops) || !op.isKillBeforeDef();
+               }
+            }
+            if (fill)
+               reg_file.fill(other.second);
+            break;
          }
       }
-      // FIXME: if a definition got moved, change the target location and remove the parallelcopy
+      if (is_def)
+         continue;
+
+      std::pair<Operand, Definition>& copy = *it;
       copy.second.setTemp(ctx.program->allocateTmp(copy.second.regClass()));
       ctx.assignments.emplace_back(copy.second.physReg(), copy.second.regClass());
       assert(ctx.assignments.size() == ctx.program->peekAllocationId());
@@ -754,6 +789,8 @@ void update_renames(ra_ctx& ctx, RegisterFile& reg_file,
 
       if (fill)
          reg_file.fill(copy.second);
+
+      ++it;
    }
 }
 
@@ -1353,6 +1390,8 @@ PhysReg compact_relocate_vars(ra_ctx& ctx, const std::vector<IDAndRegClass>& var
          space_reg = next_reg;
       }
 
+      adjust_max_used_regs(ctx, var.info.rc, next_reg);
+
       next_reg = next_reg.advance(var.info.rc.size() * 4);
    }
 
@@ -1388,6 +1427,59 @@ bool is_mimg_vaddr_intact(ra_ctx& ctx, RegisterFile& reg_file, Instruction *inst
    return true;
 }
 
+std::pair<PhysReg, bool> get_reg_vector(ra_ctx& ctx,
+                                        RegisterFile& reg_file,
+                                        Temp temp,
+                                        aco_ptr<Instruction>& instr)
+{
+   Instruction* vec = ctx.vectors[temp.id()];
+   unsigned first_operand = vec->format == Format::MIMG ? 3 : 0;
+   unsigned our_offset = 0;
+   for (unsigned i = first_operand; i < vec->operands.size(); i++) {
+      Operand& op = vec->operands[i];
+      if (op.isTemp() && op.tempId() == temp.id())
+         break;
+      else
+         our_offset += op.bytes();
+   }
+
+   if (vec->format != Format::MIMG || is_mimg_vaddr_intact(ctx, reg_file, vec)) {
+      unsigned their_offset = 0;
+      /* check for every operand of the vector
+       * - whether the operand is assigned and
+       * - we can use the register relative to that operand
+       */
+      for (unsigned i = first_operand; i < vec->operands.size(); i++) {
+         Operand& op = vec->operands[i];
+         if (op.isTemp() &&
+             op.tempId() != temp.id() &&
+             op.getTemp().type() == temp.type() &&
+             ctx.assignments[op.tempId()].assigned) {
+            PhysReg reg = ctx.assignments[op.tempId()].reg;
+            reg.reg_b += (our_offset - their_offset);
+            if (get_reg_specified(ctx, reg_file, temp.regClass(), instr, reg))
+               return {reg, true};
+         }
+         their_offset += op.bytes();
+      }
+
+      /* We didn't find a register relative to other vector operands.
+       * Try to find new space which fits the whole vector.
+       */
+      RegClass vec_rc = RegClass::get(temp.type(), their_offset);
+      DefInfo info(ctx, ctx.pseudo_dummy, vec_rc, -1);
+      std::pair<PhysReg, bool> res = get_reg_simple(ctx, reg_file, info);
+      PhysReg reg = res.first;
+      if (res.second) {
+         reg.reg_b += our_offset;
+         /* make sure to only use byte offset if the instruction supports it */
+         if (get_reg_specified(ctx, reg_file, temp.regClass(), instr, reg))
+            return {reg, true};
+      }
+   }
+   return {{}, false};
+}
+
 PhysReg get_reg(ra_ctx& ctx,
                 RegisterFile& reg_file,
                 Temp temp,
@@ -1417,50 +1509,15 @@ PhysReg get_reg(ra_ctx& ctx,
          return reg;
    }
 
+   std::pair<PhysReg, bool> res;
+
    if (ctx.vectors.find(temp.id()) != ctx.vectors.end()) {
-      Instruction* vec = ctx.vectors[temp.id()];
-      unsigned first_operand = vec->format == Format::MIMG ? 3 : 0;
-      unsigned byte_offset = 0;
-      for (unsigned i = first_operand; i < vec->operands.size(); i++) {
-         Operand& op = vec->operands[i];
-         if (op.isTemp() && op.tempId() == temp.id())
-            break;
-         else
-            byte_offset += op.bytes();
-      }
-
-      if (vec->format != Format::MIMG || is_mimg_vaddr_intact(ctx, reg_file, vec)) {
-         unsigned k = 0;
-         for (unsigned i = first_operand; i < vec->operands.size(); i++) {
-            Operand& op = vec->operands[i];
-            if (op.isTemp() &&
-                op.tempId() != temp.id() &&
-                op.getTemp().type() == temp.type() &&
-                ctx.assignments[op.tempId()].assigned) {
-               PhysReg reg = ctx.assignments[op.tempId()].reg;
-               reg.reg_b += (byte_offset - k);
-               if (get_reg_specified(ctx, reg_file, temp.regClass(), instr, reg))
-                  return reg;
-            }
-            k += op.bytes();
-         }
-
-         RegClass vec_rc = RegClass::get(temp.type(), k);
-         DefInfo info(ctx, ctx.pseudo_dummy, vec_rc, -1);
-         std::pair<PhysReg, bool> res = get_reg_simple(ctx, reg_file, info);
-         PhysReg reg = res.first;
-         if (res.second) {
-            reg.reg_b += byte_offset;
-            /* make sure to only use byte offset if the instruction supports it */
-            if (get_reg_specified(ctx, reg_file, temp.regClass(), instr, reg))
-               return reg;
-         }
-      }
+      res = get_reg_vector(ctx, reg_file, temp, instr);
+      if (res.second)
+         return res.first;
    }
 
    DefInfo info(ctx, instr, temp.regClass(), operand_index);
-
-   std::pair<PhysReg, bool> res;
 
    if (!ctx.policy.skip_optimistic_path) {
       /* try to find space without live-range splits */
@@ -2055,7 +2112,7 @@ void get_affinities(ra_ctx& ctx, std::vector<IDSet>& live_out_per_block)
             affinity_related.emplace_back(instr->definitions[0].getTemp());
             affinity_related.emplace_back(instr->definitions[0].getTemp());
             for (const Operand& op : instr->operands) {
-               if (op.isTemp() && op.regClass() == instr->definitions[0].regClass()) {
+               if (op.isTemp() && op.isKill() && op.regClass() == instr->definitions[0].regClass()) {
                   affinity_related.emplace_back(op.getTemp());
                   temp_to_phi_ressources[op.tempId()] = phi_ressources.size();
                }
@@ -2095,14 +2152,33 @@ void get_affinities(ra_ctx& ctx, std::vector<IDSet>& live_out_per_block)
                phi_ressources[it->second][0] = def.getTemp();
                /* try to coalesce phi affinities with parallelcopies */
                Operand op = Operand();
-               if (!def.isFixed() && instr->opcode == aco_opcode::p_parallelcopy)
+               switch (instr->opcode) {
+               case aco_opcode::p_parallelcopy:
                   op = instr->operands[i];
-               else if ((instr->opcode == aco_opcode::v_mad_f32 ||
-                        (instr->opcode == aco_opcode::v_fma_f32 && ctx.program->chip_class >= GFX10) ||
-                        instr->opcode == aco_opcode::v_mad_f16 ||
-                        instr->opcode == aco_opcode::v_mad_legacy_f16 ||
-                        (instr->opcode == aco_opcode::v_fma_f16 && ctx.program->chip_class >= GFX10)) && !instr->usesModifiers())
+                  break;
+
+               case aco_opcode::v_interp_p2_f32:
+               case aco_opcode::v_writelane_b32:
+               case aco_opcode::v_writelane_b32_e64:
                   op = instr->operands[2];
+                  break;
+
+               case aco_opcode::v_fma_f32:
+               case aco_opcode::v_fma_f16:
+               case aco_opcode::v_pk_fma_f16:
+                  if (ctx.program->chip_class < GFX10)
+                     continue;
+               FALLTHROUGH;
+               case aco_opcode::v_mad_f32:
+               case aco_opcode::v_mad_f16:
+                  if (instr->usesModifiers())
+                     continue;
+                  op = instr->operands[2];
+                  break;
+
+               default:
+                  continue;
+               }
 
                if (op.isTemp() && op.isFirstKillBeforeDef() && def.regClass() == op.regClass()) {
                   phi_ressources[it->second].emplace_back(op.getTemp());

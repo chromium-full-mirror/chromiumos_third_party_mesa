@@ -73,13 +73,13 @@ struct zink_shader_cache {
 
 struct zink_program {
    struct pipe_reference reference;
-   struct zink_batch_usage batch_uses;
+   struct zink_batch_usage *batch_uses;
    bool is_compute;
 
    struct zink_program_descriptor_data *dd;
 
    VkPipelineLayout layout;
-   VkDescriptorSetLayout dsl[ZINK_DESCRIPTOR_TYPES];
+   VkDescriptorSetLayout dsl[ZINK_DESCRIPTOR_TYPES + 1]; // one for each type + push
    unsigned num_dsl;
 };
 
@@ -127,6 +127,11 @@ zink_desc_type_from_vktype(VkDescriptorType type)
    return 0;
    
 }
+
+void
+zink_delete_shader_state(struct pipe_context *pctx, void *cso);
+void *
+zink_create_gfx_shader_state(struct pipe_context *pctx, const struct pipe_shader_state *shader);
 
 unsigned
 zink_program_num_bindings_typed(const struct zink_program *pg, enum zink_descriptor_type type, bool is_compute);
@@ -220,7 +225,7 @@ zink_get_compute_pipeline(struct zink_screen *screen,
 static inline bool
 zink_program_has_descriptors(const struct zink_program *pg)
 {
-   return pg->dsl[0] || pg->dsl[1] || pg->dsl[2] || pg->dsl[3];
+   return pg->num_dsl > 0;
 }
 
 #endif

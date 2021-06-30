@@ -366,7 +366,8 @@ struct si_texture {
    /* Depth buffer compression and fast clear. */
    float depth_clear_value[RADEON_SURF_MAX_LEVELS];
    uint8_t stencil_clear_value[RADEON_SURF_MAX_LEVELS];
-   uint16_t depth_cleared_level_mask;   /* if it was cleared at least once */
+   uint16_t depth_cleared_level_mask_once; /* if it was cleared at least once */
+   uint16_t depth_cleared_level_mask;     /* track if it was cleared (not 100% accurate) */
    uint16_t stencil_cleared_level_mask; /* if it was cleared at least once */
    uint16_t dirty_level_mask;         /* each bit says if that mipmap is compressed */
    uint16_t stencil_dirty_level_mask; /* each bit says if that mipmap is compressed */
@@ -544,6 +545,7 @@ struct si_screen {
    bool has_out_of_order_rast;
    bool assume_no_z_fights;
    bool commutative_blend_add;
+   bool allow_draw_out_of_order;
    bool dpbb_allowed;
    bool use_ngg;
    bool use_ngg_culling;
@@ -988,16 +990,15 @@ struct si_context {
    uint32_t vram_kb;
    uint32_t gtt_kb;
 
-   /* Compute-based primitive discard. */
-   unsigned prim_discard_vertex_count_threshold;
+   /* NGG streamout. */
    struct pb_buffer *gds;
    struct pb_buffer *gds_oa;
+   /* Compute-based primitive discard. */
+   unsigned prim_discard_vertex_count_threshold;
    struct radeon_cmdbuf prim_discard_compute_cs;
-   unsigned compute_gds_offset;
    struct si_shader *compute_ib_last_shader;
    uint32_t compute_rewind_va;
    unsigned compute_num_prims_in_batch;
-   bool preserve_prim_restart_gds_at_flush;
    /* index_ring is divided into 2 halves for doublebuffering. */
    struct si_resource *index_ring;
    unsigned index_ring_base;        /* offset of a per-IB portion */
@@ -1284,7 +1285,9 @@ struct si_context {
     */
    struct hash_table *dirty_implicit_resources;
 
-   pipe_draw_vbo_func draw_vbo[NUM_GFX_VERSIONS - GFX6][2][2][2][2];
+   pipe_draw_vbo_func draw_vbo[2][2][2][2];
+   /* When b.draw_vbo is a wrapper, real_draw_vbo is the real draw_vbo function */
+   pipe_draw_vbo_func real_draw_vbo;
 
    /* SQTT */
    struct ac_thread_trace_data *thread_trace;
@@ -1322,6 +1325,9 @@ void si_resource_copy_region(struct pipe_context *ctx, struct pipe_resource *dst
 void si_decompress_dcc(struct si_context *sctx, struct si_texture *tex);
 void si_flush_implicit_resources(struct si_context *sctx);
 
+/* si_nir_optim.c */
+bool si_nir_is_output_const_if_tex_is_const(nir_shader *shader, float *in, float *out, int *texunit);
+
 /* si_buffer.c */
 bool si_cs_is_buffer_referenced(struct si_context *sctx, struct pb_buffer *buf,
                                 enum radeon_bo_usage usage);
@@ -1335,7 +1341,8 @@ struct pipe_resource *pipe_aligned_buffer_create(struct pipe_screen *screen, uns
 struct si_resource *si_aligned_buffer_create(struct pipe_screen *screen, unsigned flags,
                                              unsigned usage, unsigned size, unsigned alignment);
 void si_replace_buffer_storage(struct pipe_context *ctx, struct pipe_resource *dst,
-                               struct pipe_resource *src, uint32_t delete_buffer_id);
+                               struct pipe_resource *src, unsigned num_rebinds,
+                               uint32_t rebind_mask, uint32_t delete_buffer_id);
 void si_init_screen_buffer_functions(struct si_screen *sscreen);
 void si_init_buffer_functions(struct si_context *sctx);
 
@@ -1473,10 +1480,16 @@ void si_allocate_gds(struct si_context *ctx);
 void si_set_tracked_regs_to_clear_state(struct si_context *ctx);
 void si_begin_new_gfx_cs(struct si_context *ctx, bool first_cs);
 void si_need_gfx_cs_space(struct si_context *ctx, unsigned num_draws);
+void si_trace_emit(struct si_context *sctx);
+void si_prim_discard_signal_next_compute_ib_start(struct si_context *sctx);
 void si_emit_surface_sync(struct si_context *sctx, struct radeon_cmdbuf *cs,
                           unsigned cp_coher_cntl);
 void gfx10_emit_cache_flush(struct si_context *sctx, struct radeon_cmdbuf *cs);
 void si_emit_cache_flush(struct si_context *sctx, struct radeon_cmdbuf *cs);
+/* Replace the sctx->b.draw_vbo function with a wrapper. This can be use to implement
+ * optimizations without affecting the normal draw_vbo functions perf.
+ */
+void si_install_draw_wrapper(struct si_context *sctx, pipe_draw_vbo_func wrapper);
 
 /* si_gpu_load.c */
 void si_gpu_load_kill_thread(struct si_screen *sscreen);
@@ -1501,14 +1514,14 @@ enum si_prim_discard_outcome
 si_prepare_prim_discard_or_split_draw(struct si_context *sctx, const struct pipe_draw_info *info,
                                       unsigned drawid_offset,
                                       const struct pipe_draw_start_count_bias *draws,
-                                      unsigned num_draws, bool primitive_restart,
-                                      unsigned total_count);
+                                      unsigned num_draws, unsigned total_count);
 void si_compute_signal_gfx(struct si_context *sctx);
 void si_dispatch_prim_discard_cs_and_draw(struct si_context *sctx,
                                           const struct pipe_draw_info *info,
-                                          unsigned count, unsigned index_size,
-                                          unsigned base_vertex, uint64_t input_indexbuf_va,
-                                          unsigned input_indexbuf_max_elements);
+                                          const struct pipe_draw_start_count_bias *draws,
+                                          unsigned num_draws, unsigned index_size,
+                                          unsigned total_count, uint64_t input_indexbuf_va,
+                                          unsigned index_max_size);
 void si_initialize_prim_discard_tunables(struct si_screen *sscreen, bool is_aux_context,
                                          unsigned *prim_discard_vertex_count_threshold,
                                          unsigned *index_ring_size_per_ib);
@@ -2008,12 +2021,25 @@ static inline unsigned si_get_shader_wave_size(struct si_shader *shader)
 
 static inline void si_select_draw_vbo(struct si_context *sctx)
 {
-   sctx->b.draw_vbo = sctx->draw_vbo[sctx->chip_class - GFX6]
-                                    [!!sctx->shader.tes.cso]
-                                    [!!sctx->shader.gs.cso]
-                                    [sctx->ngg]
-                                    [si_compute_prim_discard_enabled(sctx)];
-   assert(sctx->b.draw_vbo);
+   bool has_prim_discard_cs = si_compute_prim_discard_enabled(sctx) &&
+                              !sctx->shader.tes.cso && !sctx->shader.gs.cso;
+   pipe_draw_vbo_func draw_vbo = sctx->draw_vbo[!!sctx->shader.tes.cso]
+                                               [!!sctx->shader.gs.cso]
+                                               [sctx->ngg]
+                                               [has_prim_discard_cs];
+   assert(draw_vbo);
+   if (unlikely(sctx->real_draw_vbo))
+      sctx->real_draw_vbo = draw_vbo;
+   else
+      sctx->b.draw_vbo = draw_vbo;
+
+   if (!has_prim_discard_cs) {
+      /* Reset this to false if prim discard CS is disabled because draw_vbo doesn't reset it. */
+      if (sctx->prim_discard_cs_instancing) {
+         sctx->do_update_shaders = true;
+         sctx->prim_discard_cs_instancing = false;
+      }
+   }
 }
 
 /* Return the number of samples that the rasterizer uses. */

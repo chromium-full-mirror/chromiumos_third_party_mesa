@@ -232,6 +232,9 @@ do_blit(struct fd_context *ctx, const struct pipe_blit_info *blit,
 {
    struct pipe_context *pctx = &ctx->base;
 
+   assert(!ctx->in_blit);
+   ctx->in_blit = true;
+
    /* TODO size threshold too?? */
    if (fallback || !fd_blit(pctx, blit)) {
       /* do blit on cpu: */
@@ -240,6 +243,8 @@ do_blit(struct fd_context *ctx, const struct pipe_blit_info *blit,
                                 blit->dst.box.z, blit->src.resource,
                                 blit->src.level, &blit->src.box);
    }
+
+   ctx->in_blit = false;
 }
 
 /**
@@ -248,7 +253,8 @@ do_blit(struct fd_context *ctx, const struct pipe_blit_info *blit,
  */
 void
 fd_replace_buffer_storage(struct pipe_context *pctx, struct pipe_resource *pdst,
-                          struct pipe_resource *psrc, uint32_t delete_buffer_id)
+                          struct pipe_resource *psrc, unsigned num_rebinds, uint32_t rebind_mask,
+                          uint32_t delete_buffer_id)
 {
    struct fd_context *ctx = fd_context(pctx);
    struct fd_resource *dst = fd_resource(pdst);
@@ -325,6 +331,20 @@ static void flush_resource(struct fd_context *ctx, struct fd_resource *rsc,
                            unsigned usage);
 
 /**
+ * Helper to check if the format is something that we can blit/render
+ * to.. if the format is not renderable, there is no point in trying
+ * to do a staging blit (as it will still end up being a cpu copy)
+ */
+static bool
+is_renderable(struct pipe_resource *prsc)
+{
+   struct pipe_screen *pscreen = prsc->screen;
+   return pscreen->is_format_supported(
+         pscreen, prsc->format, prsc->target, prsc->nr_samples,
+         prsc->nr_storage_samples, PIPE_BIND_RENDER_TARGET);
+}
+
+/**
  * @rsc: the resource to shadow
  * @level: the level to discard (if box != NULL, otherwise ignored)
  * @box: the box to discard (or NULL if none)
@@ -337,10 +357,22 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 {
    struct pipe_context *pctx = &ctx->base;
    struct pipe_resource *prsc = &rsc->b.b;
+   struct fd_screen *screen = fd_screen(pctx->screen);
+   struct fd_batch *batch;
    bool fallback = false;
 
    if (prsc->next)
       return false;
+
+   /* Because IB1 ("gmem") cmdstream is built only when we flush the
+    * batch, we need to flush any batches that reference this rsc as
+    * a render target.  Otherwise the framebuffer state emitted in
+    * IB1 will reference the resources new state, and not the state
+    * at the point in time that the earlier draws referenced it.
+    */
+   foreach_batch (batch, &screen->batch_cache, rsc->track->bc_batch_mask) {
+      fd_batch_flush(batch);
+   }
 
    /* If you have a sequence where there is a single rsc associated
     * with the current render target, and then you end up shadowing
@@ -360,9 +392,7 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
    /* TODO: somehow munge dimensions and format to copy unsupported
     * render target format to something that is supported?
     */
-   if (!pctx->screen->is_format_supported(
-          pctx->screen, prsc->format, prsc->target, prsc->nr_samples,
-          prsc->nr_storage_samples, PIPE_BIND_RENDER_TARGET))
+   if (!is_renderable(prsc))
       fallback = true;
 
    /* do shadowing back-blits on the cpu for buffers: */
@@ -417,7 +447,6 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
     * transfer those references over:
     */
    debug_assert(shadow->track->batch_mask == 0);
-   struct fd_batch *batch;
    foreach_batch (batch, &ctx->screen->batch_cache, rsc->track->batch_mask) {
       struct set_entry *entry = _mesa_set_search(batch->resources, rsc);
       _mesa_set_remove(batch->resources, entry);
@@ -513,12 +542,13 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
  * appears to the gallium frontends as if nothing changed.
  */
 void
-fd_resource_uncompress(struct fd_context *ctx, struct fd_resource *rsc)
+fd_resource_uncompress(struct fd_context *ctx, struct fd_resource *rsc, bool linear)
 {
    tc_assert_driver_thread(ctx->tc);
 
-   bool success =
-      fd_try_shadow_resource(ctx, rsc, 0, NULL, FD_FORMAT_MOD_QCOM_TILED);
+   uint64_t modifier = linear ? DRM_FORMAT_MOD_LINEAR : FD_FORMAT_MOD_QCOM_TILED;
+
+   bool success = fd_try_shadow_resource(ctx, rsc, 0, NULL, modifier);
 
    /* shadow should not fail in any cases where we need to uncompress: */
    debug_assert(success);
@@ -580,6 +610,7 @@ static void
 fd_blit_from_staging(struct fd_context *ctx,
                      struct fd_transfer *trans) assert_dt
 {
+   DBG("");
    struct pipe_resource *dst = trans->b.b.resource;
    struct pipe_blit_info blit = {};
 
@@ -600,6 +631,7 @@ fd_blit_from_staging(struct fd_context *ctx,
 static void
 fd_blit_to_staging(struct fd_context *ctx, struct fd_transfer *trans) assert_dt
 {
+   DBG("");
    struct pipe_resource *src = trans->b.b.resource;
    struct pipe_blit_info blit = {};
 
@@ -634,39 +666,11 @@ static void
 flush_resource(struct fd_context *ctx, struct fd_resource *rsc,
                unsigned usage) assert_dt
 {
-   struct fd_batch *write_batch = NULL;
-
-   fd_screen_lock(ctx->screen);
-   fd_batch_reference_locked(&write_batch, rsc->track->write_batch);
-   fd_screen_unlock(ctx->screen);
-
    if (usage & PIPE_MAP_WRITE) {
-      struct fd_batch *batch, *batches[32] = {};
-      uint32_t batch_mask;
-
-      /* This is a bit awkward, probably a fd_batch_flush_locked()
-       * would make things simpler.. but we need to hold the lock
-       * to iterate the batches which reference this resource.  So
-       * we must first grab references under a lock, then flush.
-       */
-      fd_screen_lock(ctx->screen);
-      batch_mask = rsc->track->batch_mask;
-      foreach_batch (batch, &ctx->screen->batch_cache, batch_mask)
-         fd_batch_reference_locked(&batches[batch->idx], batch);
-      fd_screen_unlock(ctx->screen);
-
-      foreach_batch (batch, &ctx->screen->batch_cache, batch_mask)
-         fd_batch_flush(batch);
-
-      foreach_batch (batch, &ctx->screen->batch_cache, batch_mask) {
-         fd_batch_reference(&batches[batch->idx], NULL);
-      }
-      assert(rsc->track->batch_mask == 0);
-   } else if (write_batch) {
-      fd_batch_flush(write_batch);
+      fd_bc_flush_readers(ctx, rsc);
+   } else {
+      fd_bc_flush_writer(ctx, rsc);
    }
-
-   fd_batch_reference(&write_batch, NULL);
 }
 
 static void
@@ -770,6 +774,13 @@ resource_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
 
    tc_assert_driver_thread(ctx->tc);
 
+   /* Strip the read flag if the buffer has been invalidated (or is freshly
+    * created). Avoids extra staging blits of undefined data on glTexSubImage of
+    * a fresh DEPTH_COMPONENT or STENCIL_INDEX texture being stored as z24s8.
+    */
+   if (!rsc->valid)
+      usage &= ~PIPE_MAP_READ;
+
    /* we always need a staging texture for tiled buffers:
     *
     * TODO we might sometimes want to *also* shadow the resource to avoid
@@ -808,18 +819,6 @@ resource_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
    if (usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) {
       invalidate_resource(rsc, usage);
    } else {
-      struct fd_batch *write_batch = NULL;
-
-      /* hold a reference, so it doesn't disappear under us: */
-      fd_screen_lock(ctx->screen);
-      fd_batch_reference_locked(&write_batch, rsc->track->write_batch);
-      fd_screen_unlock(ctx->screen);
-
-      if ((usage & PIPE_MAP_WRITE) && write_batch && write_batch->back_blit) {
-         /* if only thing pending is a back-blit, we can discard it: */
-         fd_batch_reset(write_batch);
-      }
-
       unsigned op = translate_usage(usage);
       bool needs_flush = pending(rsc, !!(usage & PIPE_MAP_WRITE));
 
@@ -846,7 +845,7 @@ resource_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
             needs_flush = busy = false;
             ctx->stats.shadow_uploads++;
          } else {
-            struct fd_resource *staging_rsc;
+            struct fd_resource *staging_rsc = NULL;
 
             if (needs_flush) {
                flush_resource(ctx, rsc, usage);
@@ -858,7 +857,8 @@ resource_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
              * already had rendering flushed for all tiles.  So we can
              * use a staging buffer to do the upload.
              */
-            staging_rsc = fd_alloc_staging(ctx, rsc, level, box);
+            if (is_renderable(prsc))
+               staging_rsc = fd_alloc_staging(ctx, rsc, level, box);
             if (staging_rsc) {
                trans->staging_prsc = &staging_rsc->b.b;
                trans->b.b.stride = fd_resource_pitch(staging_rsc, 0);
@@ -869,8 +869,6 @@ resource_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
                trans->staging_box.y = 0;
                trans->staging_box.z = 0;
                buf = fd_bo_map(staging_rsc->bo);
-
-               fd_batch_reference(&write_batch, NULL);
 
                ctx->stats.staging_uploads++;
 
@@ -883,8 +881,6 @@ resource_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
          flush_resource(ctx, rsc, usage);
          needs_flush = false;
       }
-
-      fd_batch_reference(&write_batch, NULL);
 
       /* The GPU keeps track of how the various bo's are being used, and
        * will wait if necessary for the proper operation to have
@@ -1384,6 +1380,8 @@ fd_render_condition_check(struct pipe_context *pctx)
 
    if (!ctx->cond_query)
       return true;
+
+   perf_debug("Implementing conditional rendering using a CPU read instaed of HW conditional rendering.");
 
    union pipe_query_result res = {0};
    bool wait = ctx->cond_mode != PIPE_RENDER_COND_NO_WAIT &&

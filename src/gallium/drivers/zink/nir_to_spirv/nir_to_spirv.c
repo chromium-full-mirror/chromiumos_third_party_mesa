@@ -153,7 +153,7 @@ block_label(struct ntv_context *ctx, nir_block *block)
 static void
 emit_access_decorations(struct ntv_context *ctx, nir_variable *var, SpvId var_id)
 {
-    enum gl_access_qualifier access = var->data.access;
+    unsigned access = var->data.access;
     while (access) {
        unsigned bit = u_bit_scan(&access);
        switch (1 << bit) {
@@ -1671,7 +1671,7 @@ emit_alu(struct ntv_context *ctx, nir_alu_instr *alu)
    BUILTIN_UNOP(nir_op_ifind_msb, GLSLstd450FindSMsb)
    BUILTIN_UNOP(nir_op_pack_half_2x16, GLSLstd450PackHalf2x16)
    BUILTIN_UNOP(nir_op_unpack_half_2x16, GLSLstd450UnpackHalf2x16)
-
+   BUILTIN_UNOP(nir_op_pack_64_2x32, GLSLstd450PackDouble2x32)
 #undef BUILTIN_UNOP
 
    case nir_op_frcp:
@@ -3047,7 +3047,7 @@ emit_tex(struct ntv_context *ctx, nir_tex_instr *tex)
    }
 
    if (proj && coord_components > 0) {
-      SpvId constituents[coord_components + 1];
+      SpvId constituents[NIR_MAX_VEC_COMPONENTS + 1];
       if (coord_components == 1)
          constituents[0] = coord;
       else {
@@ -3567,7 +3567,7 @@ nir_to_spirv(struct nir_shader *s, const struct zink_so_info *so_info, uint32_t 
 {
    struct spirv_shader *ret = NULL;
 
-   struct ntv_context ctx = {};
+   struct ntv_context ctx = {0};
    ctx.mem_ctx = ralloc_context(NULL);
    ctx.builder.mem_ctx = ctx.mem_ctx;
    assert(spirv_version >= SPIRV_VERSION(1, 0));

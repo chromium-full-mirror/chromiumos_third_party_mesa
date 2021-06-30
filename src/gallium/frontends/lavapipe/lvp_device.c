@@ -128,6 +128,7 @@ static const struct vk_device_extension_table lvp_device_extensions_supported = 
    .EXT_extended_dynamic_state            = true,
    .EXT_host_query_reset                  = true,
    .EXT_index_type_uint8                  = true,
+   .EXT_multi_draw                        = true,
    .EXT_post_depth_coverage               = true,
    .EXT_private_data                      = true,
    .EXT_sampler_filter_minmax             = true,
@@ -644,6 +645,11 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures2(
          features->transformFeedbackPreservesProvokingVertex = true;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTI_DRAW_FEATURES_EXT: {
+         VkPhysicalDeviceMultiDrawFeaturesEXT *features = (VkPhysicalDeviceMultiDrawFeaturesEXT *)ext;
+         features->multiDraw = true;
+         break;
+      }
       default:
          break;
       }
@@ -968,6 +974,11 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceProperties2(
          properties->transformFeedbackPreservesTriangleFanProvokingVertex = true;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTI_DRAW_PROPERTIES_EXT: {
+         VkPhysicalDeviceMultiDrawPropertiesEXT *props = (VkPhysicalDeviceMultiDrawPropertiesEXT *)ext;
+         props->maxMultiDrawCount = 2048;
+         break;
+      }
       default:
          break;
       }
@@ -1137,6 +1148,7 @@ lvp_queue_init(struct lvp_device *device, struct lvp_queue *queue)
 
    queue->flags = 0;
    queue->ctx = device->pscreen->context_create(device->pscreen, NULL, PIPE_CONTEXT_ROBUST_BUFFER_ACCESS);
+   queue->cso = cso_create_context(queue->ctx, CSO_NO_VBUF);
    list_inithead(&queue->workqueue);
    p_atomic_set(&queue->count, 0);
    mtx_init(&queue->m, mtx_plain);
@@ -1158,6 +1170,7 @@ lvp_queue_finish(struct lvp_queue *queue)
 
    cnd_destroy(&queue->new_work);
    mtx_destroy(&queue->m);
+   cso_destroy_context(queue->cso);
    queue->ctx->destroy(queue->ctx);
 }
 

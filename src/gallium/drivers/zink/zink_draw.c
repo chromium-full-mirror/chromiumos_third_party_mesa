@@ -7,7 +7,6 @@
 #include "zink_state.h"
 #include "zink_surface.h"
 
-#include "indices/u_primconvert.h"
 #include "tgsi/tgsi_from_mesa.h"
 #include "util/hash_table.h"
 #include "util/u_debug.h"
@@ -67,9 +66,9 @@ zink_emit_stream_output_targets(struct pipe_context *pctx)
    struct zink_context *ctx = zink_context(pctx);
    struct zink_screen *screen = zink_screen(pctx->screen);
    struct zink_batch *batch = &ctx->batch;
-   VkBuffer buffers[PIPE_MAX_SO_OUTPUTS] = {};
-   VkDeviceSize buffer_offsets[PIPE_MAX_SO_OUTPUTS] = {};
-   VkDeviceSize buffer_sizes[PIPE_MAX_SO_OUTPUTS] = {};
+   VkBuffer buffers[PIPE_MAX_SO_OUTPUTS] = {0};
+   VkDeviceSize buffer_offsets[PIPE_MAX_SO_OUTPUTS] = {0};
+   VkDeviceSize buffer_sizes[PIPE_MAX_SO_OUTPUTS] = {0};
 
    for (unsigned i = 0; i < ctx->num_so_targets; i++) {
       struct zink_so_target *t = (struct zink_so_target *)ctx->so_targets[i];
@@ -95,7 +94,7 @@ zink_emit_stream_output_targets(struct pipe_context *pctx)
                      t->base.buffer_offset + t->base.buffer_size);
    }
 
-   screen->vk_CmdBindTransformFeedbackBuffersEXT(batch->state->cmdbuf, 0, ctx->num_so_targets,
+   screen->vk.CmdBindTransformFeedbackBuffersEXT(batch->state->cmdbuf, 0, ctx->num_so_targets,
                                                  buffers, buffer_offsets,
                                                  buffer_sizes);
    ctx->dirty_so_targets = false;
@@ -151,7 +150,7 @@ zink_bind_vertex_buffers(struct zink_batch *batch, struct zink_context *ctx)
    }
 
    if (screen->info.have_EXT_extended_dynamic_state)
-      screen->vk_CmdBindVertexBuffers2EXT(batch->state->cmdbuf, 0,
+      screen->vk.CmdBindVertexBuffers2EXT(batch->state->cmdbuf, 0,
                                           elems->hw_state.num_bindings,
                                           buffers, buffer_offsets, NULL, buffer_strides);
    else
@@ -161,38 +160,30 @@ zink_bind_vertex_buffers(struct zink_batch *batch, struct zink_context *ctx)
    ctx->vertex_buffers_dirty = false;
 }
 
-static struct zink_compute_program *
-get_compute_program(struct zink_context *ctx)
+static void
+update_compute_program(struct zink_context *ctx)
 {
    unsigned bits = 1 << PIPE_SHADER_COMPUTE;
-   ctx->dirty_shader_stages |= ctx->inlinable_uniforms_dirty_mask &
-                               ctx->inlinable_uniforms_valid_mask &
-                               ctx->shader_has_inlinable_uniforms_mask & bits;
    if (ctx->dirty_shader_stages & bits) {
+      struct zink_compute_program *comp = NULL;
       struct hash_entry *entry = _mesa_hash_table_search(ctx->compute_program_cache,
                                                          &ctx->compute_stage->shader_id);
       if (!entry) {
-         struct zink_compute_program *comp;
          comp = zink_create_compute_program(ctx, ctx->compute_stage);
          entry = _mesa_hash_table_insert(ctx->compute_program_cache, &comp->shader->shader_id, comp);
-         if (!entry)
-            return NULL;
       }
-      if (ctx->curr_compute != entry->data) {
+      comp = entry ? entry->data : NULL;
+      if (comp && comp != ctx->curr_compute) {
          ctx->compute_pipeline_state.dirty = true;
-         zink_batch_reference_program(&ctx->batch, entry->data);
+         zink_batch_reference_program(&ctx->batch, &comp->base);
       }
-      ctx->curr_compute = entry->data;
+      ctx->curr_compute = comp;
       ctx->dirty_shader_stages &= bits;
-      ctx->inlinable_uniforms_dirty_mask &= bits;
    }
-
-   assert(ctx->curr_compute);
-   return ctx->curr_compute;
 }
 
-static struct zink_gfx_program *
-get_gfx_program(struct zink_context *ctx)
+static void
+update_gfx_program(struct zink_context *ctx)
 {
    if (ctx->last_vertex_stage_dirty) {
       if (ctx->gfx_stages[PIPE_SHADER_GEOMETRY])
@@ -204,32 +195,24 @@ get_gfx_program(struct zink_context *ctx)
       ctx->last_vertex_stage_dirty = false;
    }
    unsigned bits = u_bit_consecutive(PIPE_SHADER_VERTEX, 5);
-   ctx->dirty_shader_stages |= ctx->inlinable_uniforms_dirty_mask &
-                               ctx->inlinable_uniforms_valid_mask &
-                               ctx->shader_has_inlinable_uniforms_mask & bits;
    if (ctx->dirty_shader_stages & bits) {
+      struct zink_gfx_program *prog = NULL;
       struct hash_entry *entry = _mesa_hash_table_search(ctx->program_cache,
                                                          ctx->gfx_stages);
       if (entry)
          zink_update_gfx_program(ctx, entry->data);
       else {
-         struct zink_gfx_program *prog;
          prog = zink_create_gfx_program(ctx, ctx->gfx_stages);
          entry = _mesa_hash_table_insert(ctx->program_cache, prog->shaders, prog);
-         if (!entry)
-            return NULL;
       }
-      if (ctx->curr_program != entry->data) {
+      prog = entry ? entry->data : NULL;
+      if (prog && prog != ctx->curr_program) {
          ctx->gfx_pipeline_state.combined_dirty = true;
-         zink_batch_reference_program(&ctx->batch, entry->data);
+         zink_batch_reference_program(&ctx->batch, &prog->base);
       }
-      ctx->curr_program = entry->data;
+      ctx->curr_program = prog;
       ctx->dirty_shader_stages &= ~bits;
-      ctx->inlinable_uniforms_dirty_mask &= ~bits;
    }
-
-   assert(ctx->curr_program);
-   return ctx->curr_program;
 }
 
 static bool
@@ -249,12 +232,6 @@ line_width_needed(enum pipe_prim_type reduced_prim,
    default:
       unreachable("unexpected reduced prim");
    }
-}
-
-static inline bool
-restart_supported(enum pipe_prim_type mode)
-{
-    return mode == PIPE_PRIM_LINE_STRIP || mode == PIPE_PRIM_TRIANGLE_STRIP || mode == PIPE_PRIM_TRIANGLE_FAN;
 }
 
 ALWAYS_INLINE static void
@@ -313,10 +290,17 @@ draw_indexed(struct zink_context *ctx,
    } else {
       if (needs_drawid)
          update_drawid(ctx, draw_id);
-      for (unsigned i = 0; i < num_draws; i++)
-         vkCmdDrawIndexed(cmdbuf,
-            draws[i].count, dinfo->instance_count,
-            draws[i].start, draws[i].index_bias, dinfo->start_instance);
+      if (zink_screen(ctx->base.screen)->info.have_EXT_multi_draw)
+         zink_screen(ctx->base.screen)->vk.CmdDrawMultiIndexedEXT(cmdbuf, num_draws, (VkMultiDrawIndexedInfoEXT*)draws,
+                                                                   dinfo->instance_count,
+                                                                   dinfo->start_instance, sizeof(struct pipe_draw_start_count_bias),
+                                                                   dinfo->index_bias_varies ? NULL : &draws[0].index_bias);
+      else {
+         for (unsigned i = 0; i < num_draws; i++)
+            vkCmdDrawIndexed(cmdbuf,
+               draws[i].count, dinfo->instance_count,
+               draws[i].start, draws[i].index_bias, dinfo->start_instance);
+      }
    }
 }
 
@@ -338,8 +322,15 @@ draw(struct zink_context *ctx,
    } else {
       if (needs_drawid)
          update_drawid(ctx, draw_id);
-      for (unsigned i = 0; i < num_draws; i++)
-         vkCmdDraw(cmdbuf, draws[i].count, dinfo->instance_count, draws[i].start, dinfo->start_instance);
+      if (zink_screen(ctx->base.screen)->info.have_EXT_multi_draw)
+         zink_screen(ctx->base.screen)->vk.CmdDrawMultiEXT(cmdbuf, num_draws, (VkMultiDrawInfoEXT*)draws,
+                                                            dinfo->instance_count, dinfo->start_instance,
+                                                            sizeof(struct pipe_draw_start_count_bias));
+      else {
+         for (unsigned i = 0; i < num_draws; i++)
+            vkCmdDraw(cmdbuf, draws[i].count, dinfo->instance_count, draws[i].start, dinfo->start_instance);
+
+      }
    }
 }
 
@@ -379,16 +370,15 @@ update_barriers(struct zink_context *ctx, bool is_compute)
          else {
             u_foreach_bit(stage, res->bind_history) {
                if ((1 << stage) != ZINK_RESOURCE_USAGE_STREAMOUT)
-                  pipeline |= zink_pipeline_flags_from_stage(zink_shader_stage(stage));
+                  pipeline |= zink_pipeline_flags_from_pipe_stage(stage);
             }
          }
          if (res->base.b.target == PIPE_BUFFER)
             zink_resource_buffer_barrier(ctx, NULL, res, access, pipeline);
          else {
-            VkImageLayout layout = res->image_bind_count[is_compute] ? VK_IMAGE_LAYOUT_GENERAL :
-                                   res->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) ?
-                                   VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            zink_resource_image_barrier(ctx, NULL, res, layout, access, pipeline);
+            VkImageLayout layout = zink_descriptor_util_image_layout_eval(res, is_compute);
+            if (layout != res->layout)
+               zink_resource_image_barrier(ctx, NULL, res, layout, access, pipeline);
          }
          /* always barrier on draw if this resource has either multiple image write binds or
           * image write binds and image read binds
@@ -410,13 +400,11 @@ zink_draw_vbo(struct pipe_context *pctx,
               const struct pipe_draw_start_count_bias *draws,
               unsigned num_draws)
 {
-   if (!dindirect && (!draws[0].count || !dinfo->instance_count))
-      return;
-
    struct zink_context *ctx = zink_context(pctx);
    struct zink_screen *screen = zink_screen(pctx->screen);
    struct zink_rasterizer_state *rast_state = ctx->rast_state;
    struct zink_depth_stencil_alpha_state *dsa_state = ctx->dsa_state;
+   struct zink_batch *batch = &ctx->batch;
    struct zink_so_target *so_target =
       dindirect && dindirect->count_from_stream_output ?
          zink_so_target(dindirect->count_from_stream_output) : NULL;
@@ -426,19 +414,6 @@ zink_draw_vbo(struct pipe_context *pctx,
 
    update_barriers(ctx, false);
 
-   if (dinfo->primitive_restart && !restart_supported(dinfo->mode)) {
-       util_draw_vbo_without_prim_restart(pctx, dinfo, drawid_offset, dindirect, &draws[0]);
-       return;
-   }
-   if (dinfo->mode == PIPE_PRIM_QUADS ||
-       dinfo->mode == PIPE_PRIM_QUAD_STRIP ||
-       dinfo->mode == PIPE_PRIM_POLYGON ||
-       (dinfo->mode == PIPE_PRIM_TRIANGLE_FAN && !screen->have_triangle_fans) ||
-       dinfo->mode == PIPE_PRIM_LINE_LOOP) {
-      util_primconvert_save_rasterizer_state(ctx->primconvert, &rast_state->base);
-      util_primconvert_draw_vbo(ctx->primconvert, dinfo, drawid_offset, dindirect, draws, num_draws);
-      return;
-   }
    if (ctx->gfx_pipeline_state.vertices_per_patch != dinfo->vertices_per_patch)
       ctx->gfx_pipeline_state.dirty = true;
    bool drawid_broken = ctx->drawid_broken;
@@ -453,13 +428,11 @@ zink_draw_vbo(struct pipe_context *pctx,
          ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_FRAGMENT);
    }
    ctx->gfx_prim_mode = dinfo->mode;
-   struct zink_gfx_program *gfx_program = get_gfx_program(ctx);
-   if (!gfx_program)
-      return;
+   update_gfx_program(ctx);
 
-   if (ctx->gfx_pipeline_state.primitive_restart != !!dinfo->primitive_restart)
+   if (ctx->gfx_pipeline_state.primitive_restart != dinfo->primitive_restart)
       ctx->gfx_pipeline_state.dirty = true;
-   ctx->gfx_pipeline_state.primitive_restart = !!dinfo->primitive_restart;
+   ctx->gfx_pipeline_state.primitive_restart = dinfo->primitive_restart;
 
    enum pipe_prim_type reduced_prim = u_reduced_prim(dinfo->mode);
 
@@ -484,20 +457,13 @@ zink_draw_vbo(struct pipe_context *pctx,
    unsigned index_offset = 0;
    struct pipe_resource *index_buffer = NULL;
    if (dinfo->index_size > 0) {
-       uint32_t restart_index = util_prim_restart_index_from_size(dinfo->index_size);
-       if ((dinfo->primitive_restart && (dinfo->restart_index != restart_index)) ||
-           (!screen->info.have_EXT_index_type_uint8 && dinfo->index_size == 1)) {
-          util_translate_prim_restart_ib(pctx, dinfo, dindirect, &draws[0], &index_buffer);
-          need_index_buffer_unref = true;
-       } else {
-          if (dinfo->has_user_indices) {
-             if (!util_upload_index_buffer(pctx, dinfo, &draws[0], &index_buffer, &index_offset, 4)) {
-                debug_printf("util_upload_index_buffer() failed\n");
-                return;
-             }
-          } else
-             index_buffer = dinfo->index.resource;
-       }
+       if (dinfo->has_user_indices) {
+          if (!util_upload_index_buffer(pctx, dinfo, &draws[0], &index_buffer, &index_offset, 4)) {
+             debug_printf("util_upload_index_buffer() failed\n");
+             return;
+          }
+       } else
+          index_buffer = dinfo->index.resource;
    }
    if (ctx->xfb_barrier)
       zink_emit_xfb_counter_barrier(ctx);
@@ -527,16 +493,16 @@ zink_draw_vbo(struct pipe_context *pctx,
       }
    }
 
-   if (zink_program_has_descriptors(&gfx_program->base))
+   if (zink_program_has_descriptors(&ctx->curr_program->base))
       screen->descriptors_update(ctx, false);
 
    if (ctx->descriptor_refs_dirty[0])
       zink_update_descriptor_refs(ctx, false);
 
-   struct zink_batch *batch = zink_batch_rp(ctx);
+   batch = zink_batch_rp(ctx);
 
    VkPipeline prev_pipeline = ctx->gfx_pipeline_state.pipeline;
-   VkPipeline pipeline = zink_get_gfx_pipeline(ctx, gfx_program,
+   VkPipeline pipeline = zink_get_gfx_pipeline(ctx, ctx->curr_program,
                                                &ctx->gfx_pipeline_state,
                                                dinfo->mode);
    bool pipeline_changed = prev_pipeline != pipeline || ctx->pipeline_changed[0];
@@ -559,7 +525,7 @@ zink_draw_vbo(struct pipe_context *pctx,
          viewports[i] = viewport;
       }
       if (screen->info.have_EXT_extended_dynamic_state)
-         screen->vk_CmdSetViewportWithCountEXT(batch->state->cmdbuf, ctx->vp_state.num_viewports, viewports);
+         screen->vk.CmdSetViewportWithCountEXT(batch->state->cmdbuf, ctx->vp_state.num_viewports, viewports);
       else
          vkCmdSetViewport(batch->state->cmdbuf, 0, ctx->vp_state.num_viewports, viewports);
    }
@@ -581,7 +547,7 @@ zink_draw_vbo(struct pipe_context *pctx,
          }
       }
       if (screen->info.have_EXT_extended_dynamic_state)
-         screen->vk_CmdSetScissorWithCountEXT(batch->state->cmdbuf, ctx->vp_state.num_viewports, scissors);
+         screen->vk.CmdSetScissorWithCountEXT(batch->state->cmdbuf, ctx->vp_state.num_viewports, scissors);
       else
          vkCmdSetScissor(batch->state->cmdbuf, 0, ctx->vp_state.num_viewports, scissors);
    }
@@ -595,66 +561,69 @@ zink_draw_vbo(struct pipe_context *pctx,
          debug_printf("BUG: wide lines not supported, needs fallback!");
    }
 
-   if (dsa_state->base.stencil[0].enabled) {
-      if (dsa_state->base.stencil[1].enabled) {
-         vkCmdSetStencilReference(batch->state->cmdbuf, VK_STENCIL_FACE_FRONT_BIT,
-                                  ctx->stencil_ref.ref_value[0]);
-         vkCmdSetStencilReference(batch->state->cmdbuf, VK_STENCIL_FACE_BACK_BIT,
-                                  ctx->stencil_ref.ref_value[1]);
-      } else
-         vkCmdSetStencilReference(batch->state->cmdbuf,
-                                  VK_STENCIL_FACE_FRONT_AND_BACK,
-                                  ctx->stencil_ref.ref_value[0]);
+   if (ctx->stencil_ref_changed) {
+      vkCmdSetStencilReference(batch->state->cmdbuf, VK_STENCIL_FACE_FRONT_BIT,
+                               ctx->stencil_ref.ref_value[0]);
+      vkCmdSetStencilReference(batch->state->cmdbuf, VK_STENCIL_FACE_BACK_BIT,
+                               ctx->stencil_ref.ref_value[1]);
+      ctx->stencil_ref_changed = false;
    }
 
-   if (screen->info.have_EXT_extended_dynamic_state) {
-      screen->vk_CmdSetDepthBoundsTestEnableEXT(batch->state->cmdbuf, dsa_state->hw_state.depth_bounds_test);
-      if (dsa_state->hw_state.depth_bounds_test)
-         vkCmdSetDepthBounds(batch->state->cmdbuf,
-                             dsa_state->hw_state.min_depth_bounds,
-                             dsa_state->hw_state.max_depth_bounds);
-      screen->vk_CmdSetDepthTestEnableEXT(batch->state->cmdbuf, dsa_state->hw_state.depth_test);
-      if (dsa_state->hw_state.depth_test)
-         screen->vk_CmdSetDepthCompareOpEXT(batch->state->cmdbuf, dsa_state->hw_state.depth_compare_op);
-      screen->vk_CmdSetDepthWriteEnableEXT(batch->state->cmdbuf, dsa_state->hw_state.depth_write);
-      screen->vk_CmdSetStencilTestEnableEXT(batch->state->cmdbuf, dsa_state->hw_state.stencil_test);
-      if (dsa_state->hw_state.stencil_test) {
-         screen->vk_CmdSetStencilOpEXT(batch->state->cmdbuf, VK_STENCIL_FACE_FRONT_BIT,
-                                       dsa_state->hw_state.stencil_front.failOp,
-                                       dsa_state->hw_state.stencil_front.passOp,
-                                       dsa_state->hw_state.stencil_front.depthFailOp,
-                                       dsa_state->hw_state.stencil_front.compareOp);
-         screen->vk_CmdSetStencilOpEXT(batch->state->cmdbuf, VK_STENCIL_FACE_BACK_BIT,
-                                       dsa_state->hw_state.stencil_back.failOp,
-                                       dsa_state->hw_state.stencil_back.passOp,
-                                       dsa_state->hw_state.stencil_back.depthFailOp,
-                                       dsa_state->hw_state.stencil_back.compareOp);
-      }
-      if (dsa_state->base.stencil[0].enabled) {
-         if (dsa_state->base.stencil[1].enabled) {
-            vkCmdSetStencilWriteMask(batch->state->cmdbuf, VK_STENCIL_FACE_FRONT_BIT, dsa_state->hw_state.stencil_front.writeMask);
-            vkCmdSetStencilWriteMask(batch->state->cmdbuf, VK_STENCIL_FACE_BACK_BIT, dsa_state->hw_state.stencil_back.writeMask);
-            vkCmdSetStencilCompareMask(batch->state->cmdbuf, VK_STENCIL_FACE_FRONT_BIT, dsa_state->hw_state.stencil_front.compareMask);
-            vkCmdSetStencilCompareMask(batch->state->cmdbuf, VK_STENCIL_FACE_BACK_BIT, dsa_state->hw_state.stencil_back.compareMask);
-         } else {
-            vkCmdSetStencilWriteMask(batch->state->cmdbuf, VK_STENCIL_FACE_FRONT_AND_BACK, dsa_state->hw_state.stencil_front.writeMask);
-            vkCmdSetStencilCompareMask(batch->state->cmdbuf, VK_STENCIL_FACE_FRONT_AND_BACK, dsa_state->hw_state.stencil_front.compareMask);
+   if (pipeline_changed || ctx->dsa_state_changed) {
+      if (screen->info.have_EXT_extended_dynamic_state) {
+         screen->vk.CmdSetDepthBoundsTestEnableEXT(batch->state->cmdbuf, dsa_state->hw_state.depth_bounds_test);
+         if (dsa_state->hw_state.depth_bounds_test)
+            vkCmdSetDepthBounds(batch->state->cmdbuf,
+                                dsa_state->hw_state.min_depth_bounds,
+                                dsa_state->hw_state.max_depth_bounds);
+         screen->vk.CmdSetDepthTestEnableEXT(batch->state->cmdbuf, dsa_state->hw_state.depth_test);
+         if (dsa_state->hw_state.depth_test)
+            screen->vk.CmdSetDepthCompareOpEXT(batch->state->cmdbuf, dsa_state->hw_state.depth_compare_op);
+         screen->vk.CmdSetDepthWriteEnableEXT(batch->state->cmdbuf, dsa_state->hw_state.depth_write);
+         screen->vk.CmdSetStencilTestEnableEXT(batch->state->cmdbuf, dsa_state->hw_state.stencil_test);
+         if (dsa_state->hw_state.stencil_test) {
+            screen->vk.CmdSetStencilOpEXT(batch->state->cmdbuf, VK_STENCIL_FACE_FRONT_BIT,
+                                          dsa_state->hw_state.stencil_front.failOp,
+                                          dsa_state->hw_state.stencil_front.passOp,
+                                          dsa_state->hw_state.stencil_front.depthFailOp,
+                                          dsa_state->hw_state.stencil_front.compareOp);
+            screen->vk.CmdSetStencilOpEXT(batch->state->cmdbuf, VK_STENCIL_FACE_BACK_BIT,
+                                          dsa_state->hw_state.stencil_back.failOp,
+                                          dsa_state->hw_state.stencil_back.passOp,
+                                          dsa_state->hw_state.stencil_back.depthFailOp,
+                                          dsa_state->hw_state.stencil_back.compareOp);
+         }
+         if (dsa_state->base.stencil[0].enabled) {
+            if (dsa_state->base.stencil[1].enabled) {
+               vkCmdSetStencilWriteMask(batch->state->cmdbuf, VK_STENCIL_FACE_FRONT_BIT, dsa_state->hw_state.stencil_front.writeMask);
+               vkCmdSetStencilWriteMask(batch->state->cmdbuf, VK_STENCIL_FACE_BACK_BIT, dsa_state->hw_state.stencil_back.writeMask);
+               vkCmdSetStencilCompareMask(batch->state->cmdbuf, VK_STENCIL_FACE_FRONT_BIT, dsa_state->hw_state.stencil_front.compareMask);
+               vkCmdSetStencilCompareMask(batch->state->cmdbuf, VK_STENCIL_FACE_BACK_BIT, dsa_state->hw_state.stencil_back.compareMask);
+            } else {
+               vkCmdSetStencilWriteMask(batch->state->cmdbuf, VK_STENCIL_FACE_FRONT_AND_BACK, dsa_state->hw_state.stencil_front.writeMask);
+               vkCmdSetStencilCompareMask(batch->state->cmdbuf, VK_STENCIL_FACE_FRONT_AND_BACK, dsa_state->hw_state.stencil_front.compareMask);
+            }
          }
       }
-      screen->vk_CmdSetFrontFaceEXT(batch->state->cmdbuf, ctx->gfx_pipeline_state.front_face);
-
-      if (ctx->sample_locations_changed) {
-         VkSampleLocationsInfoEXT loc;
-         zink_init_vk_sample_locations(ctx, &loc);
-         screen->vk_CmdSetSampleLocationsEXT(batch->state->cmdbuf, &loc);
-      }
-      ctx->sample_locations_changed = false;
+      ctx->dsa_state_changed = false;
    }
 
-   if (depth_bias)
-      vkCmdSetDepthBias(batch->state->cmdbuf, rast_state->offset_units, rast_state->offset_clamp, rast_state->offset_scale);
-   else
-      vkCmdSetDepthBias(batch->state->cmdbuf, 0.0f, 0.0f, 0.0f);
+   if (pipeline_changed || ctx->rast_state_changed) {
+      if (screen->info.have_EXT_extended_dynamic_state)
+         screen->vk.CmdSetFrontFaceEXT(batch->state->cmdbuf, ctx->gfx_pipeline_state.front_face);
+      if (depth_bias)
+         vkCmdSetDepthBias(batch->state->cmdbuf, rast_state->offset_units, rast_state->offset_clamp, rast_state->offset_scale);
+      else
+         vkCmdSetDepthBias(batch->state->cmdbuf, 0.0f, 0.0f, 0.0f);
+      ctx->rast_state_changed = false;
+   }
+
+   if (ctx->sample_locations_changed) {
+      VkSampleLocationsInfoEXT loc;
+      zink_init_vk_sample_locations(ctx, &loc);
+      screen->vk.CmdSetSampleLocationsEXT(batch->state->cmdbuf, &loc);
+   }
+   ctx->sample_locations_changed = false;
 
    if (ctx->gfx_pipeline_state.blend_state->need_blend_constants)
       vkCmdSetBlendConstants(batch->state->cmdbuf, ctx->blend_constants);
@@ -664,12 +633,12 @@ zink_draw_vbo(struct pipe_context *pctx,
 
    if (BITSET_TEST(ctx->gfx_stages[PIPE_SHADER_VERTEX]->nir->info.system_values_read, SYSTEM_VALUE_BASE_VERTEX)) {
       unsigned draw_mode_is_indexed = dinfo->index_size > 0;
-      vkCmdPushConstants(batch->state->cmdbuf, gfx_program->base.layout, VK_SHADER_STAGE_VERTEX_BIT,
+      vkCmdPushConstants(batch->state->cmdbuf, ctx->curr_program->base.layout, VK_SHADER_STAGE_VERTEX_BIT,
                          offsetof(struct zink_gfx_push_constant, draw_mode_is_indexed), sizeof(unsigned),
                          &draw_mode_is_indexed);
    }
-   if (gfx_program->shaders[PIPE_SHADER_TESS_CTRL] && gfx_program->shaders[PIPE_SHADER_TESS_CTRL]->is_generated)
-      vkCmdPushConstants(batch->state->cmdbuf, gfx_program->base.layout, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+   if (ctx->curr_program->shaders[PIPE_SHADER_TESS_CTRL] && ctx->curr_program->shaders[PIPE_SHADER_TESS_CTRL]->is_generated)
+      vkCmdPushConstants(batch->state->cmdbuf, ctx->curr_program->base.layout, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                          offsetof(struct zink_gfx_push_constant, default_inner_level), sizeof(float) * 6,
                          &ctx->tess_levels[0]);
 
@@ -688,14 +657,14 @@ zink_draw_vbo(struct pipe_context *pctx,
             }
          }
       }
-      screen->vk_CmdBeginTransformFeedbackEXT(batch->state->cmdbuf, 0, ctx->num_so_targets, counter_buffers, counter_buffer_offsets);
+      screen->vk.CmdBeginTransformFeedbackEXT(batch->state->cmdbuf, 0, ctx->num_so_targets, counter_buffers, counter_buffer_offsets);
    }
 
    ctx->pipeline_changed[0] = false;
 
    unsigned draw_id = drawid_offset;
    bool needs_drawid = ctx->drawid_broken;
-   batch->state->work_count[0] += num_draws;
+   batch->state->draw_count += num_draws;
    if (dinfo->index_size > 0) {
       VkIndexType index_type;
       unsigned index_size = dinfo->index_size;
@@ -728,7 +697,7 @@ zink_draw_vbo(struct pipe_context *pctx,
          if (dindirect->indirect_draw_count) {
              struct zink_resource *indirect_draw_count = zink_resource(dindirect->indirect_draw_count);
              zink_batch_reference_resource_rw(batch, indirect_draw_count, false);
-             screen->vk_CmdDrawIndexedIndirectCount(batch->state->cmdbuf, indirect->obj->buffer, dindirect->offset,
+             screen->vk.CmdDrawIndexedIndirectCount(batch->state->cmdbuf, indirect->obj->buffer, dindirect->offset,
                                            indirect_draw_count->obj->buffer, dindirect->indirect_draw_count_offset,
                                            dindirect->draw_count, dindirect->stride);
          } else
@@ -745,7 +714,7 @@ zink_draw_vbo(struct pipe_context *pctx,
             update_drawid(ctx, draw_id);
          zink_batch_reference_resource_rw(batch, zink_resource(so_target->base.buffer), false);
          zink_batch_reference_resource_rw(batch, zink_resource(so_target->counter_buffer), true);
-         screen->vk_CmdDrawIndirectByteCountEXT(batch->state->cmdbuf, dinfo->instance_count, dinfo->start_instance,
+         screen->vk.CmdDrawIndirectByteCountEXT(batch->state->cmdbuf, dinfo->instance_count, dinfo->start_instance,
                                        zink_resource(so_target->counter_buffer)->obj->buffer, so_target->counter_buffer_offset, 0,
                                        MIN2(so_target->stride, screen->info.tf_props.maxTransformFeedbackBufferDataStride));
       } else if (dindirect && dindirect->buffer) {
@@ -757,7 +726,7 @@ zink_draw_vbo(struct pipe_context *pctx,
          if (dindirect->indirect_draw_count) {
              struct zink_resource *indirect_draw_count = zink_resource(dindirect->indirect_draw_count);
              zink_batch_reference_resource_rw(batch, indirect_draw_count, false);
-             screen->vk_CmdDrawIndirectCount(batch->state->cmdbuf, indirect->obj->buffer, dindirect->offset,
+             screen->vk.CmdDrawIndirectCount(batch->state->cmdbuf, indirect->obj->buffer, dindirect->offset,
                                            indirect_draw_count->obj->buffer, dindirect->indirect_draw_count_offset,
                                            dindirect->draw_count, dindirect->stride);
          } else
@@ -779,7 +748,7 @@ zink_draw_vbo(struct pipe_context *pctx,
             t->counter_buffer_valid = true;
          }
       }
-      screen->vk_CmdEndTransformFeedbackEXT(batch->state->cmdbuf, 0, ctx->num_so_targets, counter_buffers, counter_buffer_offsets);
+      screen->vk.CmdEndTransformFeedbackEXT(batch->state->cmdbuf, 0, ctx->num_so_targets, counter_buffers, counter_buffer_offsets);
    }
    batch->has_work = true;
    /* check memory usage and flush/stall as needed to avoid oom */
@@ -795,16 +764,14 @@ zink_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
 
    update_barriers(ctx, true);
 
-   struct zink_compute_program *comp_program = get_compute_program(ctx);
-   if (!comp_program)
-      return;
+   update_compute_program(ctx);
 
-   zink_program_update_compute_pipeline_state(ctx, comp_program, info->block);
+   zink_program_update_compute_pipeline_state(ctx, ctx->curr_compute, info->block);
    VkPipeline prev_pipeline = ctx->compute_pipeline_state.pipeline;
-   VkPipeline pipeline = zink_get_compute_pipeline(screen, comp_program,
+   VkPipeline pipeline = zink_get_compute_pipeline(screen, ctx->curr_compute,
                                                &ctx->compute_pipeline_state);
 
-   if (zink_program_has_descriptors(&comp_program->base))
+   if (zink_program_has_descriptors(&ctx->curr_compute->base))
       screen->descriptors_update(ctx, true);
 
    if (ctx->descriptor_refs_dirty[1])
@@ -814,12 +781,12 @@ zink_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
       vkCmdBindPipeline(batch->state->cmdbuf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
    ctx->pipeline_changed[1] = false;
 
-   if (BITSET_TEST(comp_program->shader->nir->info.system_values_read, SYSTEM_VALUE_WORK_DIM))
-      vkCmdPushConstants(batch->state->cmdbuf, comp_program->base.layout, VK_SHADER_STAGE_COMPUTE_BIT,
+   if (BITSET_TEST(ctx->curr_compute->shader->nir->info.system_values_read, SYSTEM_VALUE_WORK_DIM))
+      vkCmdPushConstants(batch->state->cmdbuf, ctx->curr_compute->base.layout, VK_SHADER_STAGE_COMPUTE_BIT,
                          offsetof(struct zink_cs_push_constant, work_dim), sizeof(uint32_t),
                          &info->work_dim);
 
-   batch->state->work_count[1]++;
+   batch->state->compute_count++;
    if (info->indirect) {
       vkCmdDispatchIndirect(batch->state->cmdbuf, zink_resource(info->indirect)->obj->buffer, info->indirect_offset);
       zink_batch_reference_resource_rw(batch, zink_resource(info->indirect), false);

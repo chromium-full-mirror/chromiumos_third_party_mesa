@@ -342,42 +342,49 @@ tu6_emit_xs_config(struct tu_cs *cs,
       uint16_t reg_sp_xs_config;
       uint16_t reg_hlsq_xs_ctrl;
       uint16_t reg_sp_xs_first_exec_offset;
+      uint16_t reg_sp_xs_pvt_mem_hw_stack_offset;
    } xs_config[] = {
       [MESA_SHADER_VERTEX] = {
          REG_A6XX_SP_VS_CTRL_REG0,
          REG_A6XX_SP_VS_CONFIG,
          REG_A6XX_HLSQ_VS_CNTL,
          REG_A6XX_SP_VS_OBJ_FIRST_EXEC_OFFSET,
+         REG_A6XX_SP_VS_PVT_MEM_HW_STACK_OFFSET,
       },
       [MESA_SHADER_TESS_CTRL] = {
          REG_A6XX_SP_HS_CTRL_REG0,
          REG_A6XX_SP_HS_CONFIG,
          REG_A6XX_HLSQ_HS_CNTL,
          REG_A6XX_SP_HS_OBJ_FIRST_EXEC_OFFSET,
+         REG_A6XX_SP_HS_PVT_MEM_HW_STACK_OFFSET,
       },
       [MESA_SHADER_TESS_EVAL] = {
          REG_A6XX_SP_DS_CTRL_REG0,
          REG_A6XX_SP_DS_CONFIG,
          REG_A6XX_HLSQ_DS_CNTL,
          REG_A6XX_SP_DS_OBJ_FIRST_EXEC_OFFSET,
+         REG_A6XX_SP_DS_PVT_MEM_HW_STACK_OFFSET,
       },
       [MESA_SHADER_GEOMETRY] = {
          REG_A6XX_SP_GS_CTRL_REG0,
          REG_A6XX_SP_GS_CONFIG,
          REG_A6XX_HLSQ_GS_CNTL,
          REG_A6XX_SP_GS_OBJ_FIRST_EXEC_OFFSET,
+         REG_A6XX_SP_GS_PVT_MEM_HW_STACK_OFFSET,
       },
       [MESA_SHADER_FRAGMENT] = {
          REG_A6XX_SP_FS_CTRL_REG0,
          REG_A6XX_SP_FS_CONFIG,
          REG_A6XX_HLSQ_FS_CNTL,
          REG_A6XX_SP_FS_OBJ_FIRST_EXEC_OFFSET,
+         REG_A6XX_SP_FS_PVT_MEM_HW_STACK_OFFSET,
       },
       [MESA_SHADER_COMPUTE] = {
          REG_A6XX_SP_CS_CTRL_REG0,
          REG_A6XX_SP_CS_CONFIG,
          REG_A6XX_HLSQ_CS_CNTL,
          REG_A6XX_SP_CS_OBJ_FIRST_EXEC_OFFSET,
+         REG_A6XX_SP_CS_PVT_MEM_HW_STACK_OFFSET,
       },
    };
    const struct xs_config *cfg = &xs_config[stage];
@@ -481,6 +488,9 @@ tu6_emit_xs_config(struct tu_cs *cs,
    tu_cs_emit_qw(cs, pvtmem->iova);
    tu_cs_emit(cs, A6XX_SP_VS_PVT_MEM_SIZE_TOTALPVTMEMSIZE(pvtmem->per_sp_size) |
                   COND(pvtmem->per_wave, A6XX_SP_VS_PVT_MEM_SIZE_PERWAVEMEMLAYOUT));
+
+   tu_cs_emit_pkt4(cs, cfg->reg_sp_xs_pvt_mem_hw_stack_offset, 1);
+   tu_cs_emit(cs, A6XX_SP_VS_PVT_MEM_HW_STACK_OFFSET_OFFSET(pvtmem->per_sp_size));
 
    tu_cs_emit_pkt7(cs, tu6_stage2opcode(stage), 3);
    tu_cs_emit(cs, CP_LOAD_STATE6_0_DST_OFF(0) |
@@ -3043,7 +3053,7 @@ tu_graphics_pipeline_create(VkDevice device,
    return result;
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 tu_CreateGraphicsPipelines(VkDevice device,
                            VkPipelineCache pipelineCache,
                            uint32_t count,
@@ -3157,7 +3167,7 @@ fail:
    return result;
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 tu_CreateComputePipelines(VkDevice device,
                           VkPipelineCache pipelineCache,
                           uint32_t count,
@@ -3178,7 +3188,7 @@ tu_CreateComputePipelines(VkDevice device,
    return final_result;
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 tu_DestroyPipeline(VkDevice _device,
                    VkPipeline _pipeline,
                    const VkAllocationCallbacks *pAllocator)
@@ -3208,7 +3218,7 @@ tu_pipeline_get_executable(struct tu_pipeline *pipeline, uint32_t index)
       &pipeline->executables, struct tu_pipeline_executable, index);
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 tu_GetPipelineExecutablePropertiesKHR(
       VkDevice _device,
       const VkPipelineInfoKHR* pPipelineInfo,
@@ -3239,7 +3249,7 @@ tu_GetPipelineExecutablePropertiesKHR(
    return vk_outarray_status(&out);
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 tu_GetPipelineExecutableStatisticsKHR(
       VkDevice _device,
       const VkPipelineExecutableInfoKHR* pExecutableInfo,
@@ -3374,7 +3384,7 @@ write_ir_text(VkPipelineExecutableInternalRepresentationKHR* ir,
    return true;
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 tu_GetPipelineExecutableInternalRepresentationsKHR(
     VkDevice _device,
     const VkPipelineExecutableInfoKHR* pExecutableInfo,

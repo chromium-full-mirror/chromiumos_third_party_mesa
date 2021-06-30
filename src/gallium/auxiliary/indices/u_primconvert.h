@@ -37,6 +37,7 @@ struct primconvert_context;
 
 struct primconvert_config {
    uint32_t primtypes_mask;
+   uint32_t restart_primtypes_mask;
    bool fixed_prim_restart;
 };
 
@@ -49,6 +50,8 @@ void util_primconvert_destroy(struct primconvert_context *pc);
 void util_primconvert_save_rasterizer_state(struct primconvert_context *pc,
                                             const struct pipe_rasterizer_state
                                             *rast);
+void
+util_primconvert_save_flatshade_first(struct primconvert_context *pc, bool flatshade_first);
 void util_primconvert_draw_vbo(struct primconvert_context *pc,
                                const struct pipe_draw_info *info,
                                unsigned drawid_offset,

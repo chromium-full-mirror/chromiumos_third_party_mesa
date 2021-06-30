@@ -41,12 +41,6 @@
 extern "C" {
 #endif
 
-#ifdef DEBUG
-#define BATCH_DEBUG FD_DBG(MSGS)
-#else
-#define BATCH_DEBUG 0
-#endif
-
 struct fd_resource;
 struct fd_batch_key;
 struct fd_batch_result;
@@ -100,8 +94,6 @@ struct fd_batch {
    bool nondraw : 1;
    bool needs_flush : 1;
    bool flushed : 1;
-   bool blit : 1;
-   bool back_blit : 1;    /* only blit so far is resource shadowing back-blit */
    bool tessellation : 1; /* tessellation used in batch */
 
    /* Keep track if WAIT_FOR_IDLE is needed for registers we need
@@ -258,7 +250,7 @@ struct fd_batch {
    struct set *resources;
 
    /** key in batch-cache (if not null): */
-   const struct fd_batch_key *key;
+   struct fd_batch_key *key;
    uint32_t hash;
 
    /** set of dependent batches.. holds refs to dependent batches: */
