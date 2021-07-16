@@ -37,6 +37,7 @@
 #include "frontend/sw_winsys.h"
 #include "gallium/auxiliary/util/u_transfer.h"
 #include "gallium/auxiliary/util/u_surface.h"
+#include "gallium/auxiliary/util/u_framebuffer.h"
 #include "agx_public.h"
 #include "agx_state.h"
 #include "magic.h"
@@ -48,6 +49,7 @@
 static const struct debug_named_value agx_debug_options[] = {
    {"trace",     AGX_DBG_TRACE,    "Trace the command stream"},
    {"deqp",      AGX_DBG_DEQP,     "Hacks for dEQP"},
+   {"no16",      AGX_DBG_NO16,     "Disable 16-bit support"},
    DEBUG_NAMED_VALUE_END
 };
 
@@ -284,6 +286,8 @@ agx_transfer_map(struct pipe_context *pctx,
 
    if (ctx->batch->cbufs[0] && resource == ctx->batch->cbufs[0]->texture)
       pctx->flush(pctx, NULL, 0);
+   if (ctx->batch->zsbuf && resource == ctx->batch->zsbuf->texture)
+      pctx->flush(pctx, NULL, 0);
 
    struct agx_transfer *transfer = CALLOC_STRUCT(agx_transfer);
    transfer->base.level = level;
@@ -378,13 +382,6 @@ agx_clear(struct pipe_context *pctx, unsigned buffers, const struct pipe_scissor
    memcpy(ctx->batch->clear_color, color->f, sizeof(color->f));
 }
 
-static void
-agx_blit(struct pipe_context *ctx,
-         const struct pipe_blit_info *info)
-{
-   unreachable("todo: blits");
-}
-
 
 static void
 agx_flush_resource(struct pipe_context *ctx,
@@ -414,26 +411,37 @@ agx_flush(struct pipe_context *pctx,
       return;
 
    /* Finalize the encoder */
-   uint8_t stop[] = {
-      0x00, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, // Stop
-   };
-
+   uint8_t stop[5 + 64] = { 0x00, 0x00, 0x00, 0xc0, 0x00 };
    memcpy(ctx->batch->encoder_current, stop, sizeof(stop));
 
    /* Emit the commandbuffer */
-
-   uint16_t clear_colour[4] = {
-      _mesa_float_to_half(ctx->batch->clear_color[0]),
-      _mesa_float_to_half(ctx->batch->clear_color[1]),
-      _mesa_float_to_half(ctx->batch->clear_color[2]),
-      _mesa_float_to_half(ctx->batch->clear_color[3])
-   };
+   uint64_t pipeline_clear = 0;
+   bool clear_pipeline_textures = false;
 
    struct agx_device *dev = agx_device(pctx->screen);
-   uint64_t pipeline_clear =
-      agx_build_clear_pipeline(ctx,
+
+   if (ctx->batch->clear & PIPE_CLEAR_COLOR0) {
+      uint16_t clear_colour[4] = {
+         _mesa_float_to_half(ctx->batch->clear_color[0]),
+         _mesa_float_to_half(ctx->batch->clear_color[1]),
+         _mesa_float_to_half(ctx->batch->clear_color[2]),
+         _mesa_float_to_half(ctx->batch->clear_color[3])
+      };
+
+
+      pipeline_clear = agx_build_clear_pipeline(ctx,
                                dev->internal.clear,
                                agx_pool_upload(&ctx->batch->pool, clear_colour, sizeof(clear_colour)));
+   } else {
+      enum pipe_format fmt = ctx->batch->cbufs[0]->format;
+      enum agx_format internal = agx_pixel_format[fmt].internal;
+      uint32_t shader = dev->reload.format[internal];
+
+      pipeline_clear = agx_build_reload_pipeline(ctx, shader,
+                               ctx->batch->cbufs[0]);
+
+      clear_pipeline_textures = true;
+   }
 
    uint64_t pipeline_store =
       agx_build_store_pipeline(ctx,
@@ -448,6 +456,12 @@ agx_flush(struct pipe_context *pctx,
    struct agx_resource *rt0 = agx_resource(ctx->batch->cbufs[0]->texture);
    BITSET_SET(rt0->data_valid, 0);
 
+   struct agx_resource *zbuf = ctx->batch->zsbuf ?
+      agx_resource(ctx->batch->zsbuf->texture) : NULL;
+
+   if (zbuf)
+      BITSET_SET(zbuf->data_valid, 0);
+
    /* BO list for a given batch consists of:
     *  - BOs for the batch's framebuffer surfaces
     *  - BOs for the batch's pools
@@ -460,6 +474,7 @@ agx_flush(struct pipe_context *pctx,
    agx_batch_add_bo(batch, batch->encoder);
    agx_batch_add_bo(batch, batch->scissor.bo);
    agx_batch_add_bo(batch, dev->internal.bo);
+   agx_batch_add_bo(batch, dev->reload.bo);
 
    for (unsigned i = 0; i < batch->nr_cbufs; ++i) {
       struct pipe_surface *surf = batch->cbufs[i];
@@ -468,8 +483,11 @@ agx_flush(struct pipe_context *pctx,
       agx_batch_add_bo(batch, rsrc->bo);
    }
 
-   if (batch->zsbuf)
-      unreachable("todo: zsbuf");
+   if (batch->zsbuf) {
+      struct pipe_surface *surf = batch->zsbuf;
+      struct agx_resource *rsrc = agx_resource(surf->texture);
+      agx_batch_add_bo(batch, rsrc->bo);
+   }
 
    unsigned handle_count =
       BITSET_COUNT(batch->bo_list) +
@@ -492,23 +510,28 @@ agx_flush(struct pipe_context *pctx,
    /* Size calculation should've been exact */
    assert(handle_i == handle_count);
 
-   /* Generate the mapping table from the BO list */
-   demo_mem_map(dev->memmap.ptr.cpu, dev->memmap.size, handles, handle_count,
-                0xDEADBEEF, 0xCAFECAFE);
+   unsigned cmdbuf_id = agx_get_global_id(dev);
+   unsigned encoder_id = agx_get_global_id(dev);
 
-   free(handles);
-
-   demo_cmdbuf(dev->cmdbuf.ptr.cpu,
+   unsigned cmdbuf_size = demo_cmdbuf(dev->cmdbuf.ptr.cpu,
                dev->cmdbuf.size,
                &ctx->batch->pool,
                ctx->batch->encoder->ptr.gpu,
+               encoder_id,
                ctx->batch->scissor.bo->ptr.gpu,
                ctx->batch->width,
                ctx->batch->height,
                pipeline_null.gpu,
                pipeline_clear,
                pipeline_store,
-               rt0->bo->ptr.gpu);
+               rt0->bo->ptr.gpu,
+               clear_pipeline_textures);
+
+   /* Generate the mapping table from the BO list */
+   demo_mem_map(dev->memmap.ptr.cpu, dev->memmap.size, handles, handle_count,
+                cmdbuf_id, encoder_id, cmdbuf_size);
+
+   free(handles);
 
    agx_submit_cmdbuf(dev, dev->cmdbuf.handle, dev->memmap.handle, dev->queue.id);
 
@@ -532,10 +555,17 @@ agx_flush(struct pipe_context *pctx,
 }
 
 static void
-agx_destroy_context(struct pipe_context *ctx)
+agx_destroy_context(struct pipe_context *pctx)
 {
-   if (ctx->stream_uploader)
-      u_upload_destroy(ctx->stream_uploader);
+   struct agx_context *ctx = agx_context(pctx);
+
+   if (pctx->stream_uploader)
+      u_upload_destroy(pctx->stream_uploader);
+
+   if (ctx->blitter)
+      util_blitter_destroy(ctx->blitter);
+
+   util_unreference_framebuffer_state(&ctx->framebuffer);
 
    FREE(ctx);
 }
@@ -598,6 +628,9 @@ agx_create_context(struct pipe_screen *screen,
    pctx->texture_subdata = u_default_texture_subdata;
    pctx->invalidate_resource = agx_invalidate_resource;
    agx_init_state_functions(pctx);
+
+
+   ctx->blitter = util_blitter_create(pctx);
 
    return pctx;
 }
@@ -747,10 +780,11 @@ agx_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
    case PIPE_CAP_TGSI_TEXCOORD:
    case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
    case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
-   case PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL:
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
       return true;
+   case PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL:
+      return false;
 
    case PIPE_CAP_MAX_VERTEX_ELEMENT_SRC_OFFSET:
       return 0xffff;
@@ -802,7 +836,7 @@ agx_get_paramf(struct pipe_screen* pscreen,
 
    case PIPE_CAPF_MAX_POINT_WIDTH:
    case PIPE_CAPF_MAX_POINT_WIDTH_AA:
-      return 1024.0;
+      return 511.95f;
 
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
       return 16.0;
@@ -827,6 +861,7 @@ agx_get_shader_param(struct pipe_screen* pscreen,
                      enum pipe_shader_cap param)
 {
    bool is_deqp = agx_device(pscreen)->debug & AGX_DBG_DEQP;
+   bool is_no16 = agx_device(pscreen)->debug & AGX_DBG_NO16;
 
    if (shader != PIPE_SHADER_VERTEX &&
        shader != PIPE_SHADER_FRAGMENT)
@@ -871,13 +906,15 @@ agx_get_shader_param(struct pipe_screen* pscreen,
    case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
       return is_deqp;
 
-   case PIPE_SHADER_CAP_FP16:
    case PIPE_SHADER_CAP_INTEGERS:
+      return true;
+
+   case PIPE_SHADER_CAP_FP16:
    case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
    case PIPE_SHADER_CAP_FP16_DERIVATIVES:
    case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
    case PIPE_SHADER_CAP_INT16:
-      return 1;
+      return !is_no16;
 
    case PIPE_SHADER_CAP_INT64_ATOMICS:
    case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:

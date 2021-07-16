@@ -327,6 +327,7 @@ typedef struct {
                 enum bi_clamp clamp;
                 bool saturate;
                 bool not_result;
+                unsigned dest_mod;
         };
 
         /* Immediates. All seen alone in an instruction, except for varying/texture
@@ -364,11 +365,6 @@ typedef struct {
                 bool format; /* LEA_TEX */
 
                 struct {
-                        bool skip; /* VAR_TEX, TEXS, TEXC */
-                        bool lod_mode; /* TEXS */
-                };
-
-                struct {
                         enum bi_special special; /* FADD_RSCALE, FMA_RSCALE */
                         enum bi_round round; /* FMA, converts, FADD, _RSCALE, etc */
                 };
@@ -390,10 +386,15 @@ typedef struct {
                 };
 
                 struct {
-                        enum bi_sample sample; /* LD_VAR */
-                        enum bi_update update; /* LD_VAR */
+                        enum bi_sample sample; /* VAR_TEX, LD_VAR */
+                        enum bi_update update; /* VAR_TEX, LD_VAR */
                         enum bi_varying_name varying_name; /* LD_VAR_SPECIAL */
+                        bool skip; /* VAR_TEX, TEXS, TEXC */
+                        bool lod_mode; /* VAR_TEX, TEXS, implicitly for TEXC */
                 };
+
+                /* Maximum size, for hashing */
+                unsigned flags[5];
 
                 struct {
                         enum bi_subgroup subgroup; /* WMASK, CLPER */
@@ -516,6 +517,9 @@ typedef struct {
         /* Unique in a clause */
         enum bifrost_message_type message_type;
         bi_instr *message;
+
+        /* Discard helper threads */
+        bool td;
 } bi_clause;
 
 typedef struct bi_block {
@@ -527,6 +531,9 @@ typedef struct bi_block {
 
         /* Post-RA liveness */
         uint64_t reg_live_in, reg_live_out;
+
+        /* Flags available for pass-internal use */
+        uint8_t pass_flags;
 } bi_block;
 
 typedef struct {
@@ -552,6 +559,9 @@ typedef struct {
 
        /* Analysis results */
        bool has_liveness;
+
+       /* Mask of UBOs that need to be uploaded */
+       uint32_t ubo_mask;
 
        /* Stats for shader-db */
        unsigned instruction_count;
@@ -715,10 +725,14 @@ bi_node_to_index(unsigned node, unsigned node_count)
         bi_foreach_block(ctx, v_block) \
                 bi_foreach_instr_in_block_safe((bi_block *) v_block, v)
 
+#define bi_foreach_instr_global_rev_safe(ctx, v) \
+        bi_foreach_block_rev(ctx, v_block) \
+                bi_foreach_instr_in_block_rev_safe((bi_block *) v_block, v)
+
 #define bi_foreach_instr_in_tuple(tuple, v) \
-        for (bi_instr *v = tuple->fma ?: tuple->add; \
+        for (bi_instr *v = (tuple)->fma ?: (tuple)->add; \
                         v != NULL; \
-                        v = (v == tuple->add) ? NULL : tuple->add)
+                        v = (v == (tuple)->add) ? NULL : (tuple)->add)
 
 /* Based on set_foreach, expanded with automatic type casts */
 
@@ -764,6 +778,7 @@ pan_next_block(pan_block *block)
 bool bi_has_arg(bi_instr *ins, bi_index arg);
 unsigned bi_count_read_registers(bi_instr *ins, unsigned src);
 unsigned bi_count_write_registers(bi_instr *ins, unsigned dest);
+bool bi_is_regfmt_16(enum bi_register_format fmt);
 unsigned bi_writemask(bi_instr *ins, unsigned dest);
 bi_clause * bi_next_clause(bi_context *ctx, pan_block *block, bi_clause *clause);
 bool bi_side_effects(enum bi_opcode op);
@@ -777,7 +792,10 @@ void bi_print_shader(bi_context *ctx, FILE *fp);
 
 /* BIR passes */
 
+void bi_analyze_helper_terminate(bi_context *ctx);
+void bi_analyze_helper_requirements(bi_context *ctx);
 void bi_opt_copy_prop(bi_context *ctx);
+void bi_opt_cse(bi_context *ctx);
 void bi_opt_mod_prop_forward(bi_context *ctx);
 void bi_opt_mod_prop_backward(bi_context *ctx);
 void bi_opt_dead_code_eliminate(bi_context *ctx);
@@ -900,13 +918,17 @@ bi_after_instr(bi_instr *instr)
  * in which case there must exist a nonempty penultimate tuple */
 
 ATTRIBUTE_RETURNS_NONNULL static inline bi_instr *
-bi_first_instr_in_clause(bi_clause *clause)
+bi_first_instr_in_tuple(bi_tuple *tuple)
 {
-        bi_tuple tuple = clause->tuples[0];
-        bi_instr *instr = tuple.fma ?: tuple.add;
-
+        bi_instr *instr = tuple->fma ?: tuple->add;
         assert(instr != NULL);
         return instr;
+}
+
+ATTRIBUTE_RETURNS_NONNULL static inline bi_instr *
+bi_first_instr_in_clause(bi_clause *clause)
+{
+        return bi_first_instr_in_tuple(&clause->tuples[0]);
 }
 
 ATTRIBUTE_RETURNS_NONNULL static inline bi_instr *
@@ -944,6 +966,12 @@ static inline bi_cursor
 bi_before_clause(bi_clause *clause)
 {
     return bi_before_instr(bi_first_instr_in_clause(clause));
+}
+
+static inline bi_cursor
+bi_before_tuple(bi_tuple *tuple)
+{
+    return bi_before_instr(bi_first_instr_in_tuple(tuple));
 }
 
 static inline bi_cursor

@@ -840,14 +840,11 @@ panfrost_ptr_map(struct pipe_context *pctx,
 
                 assert(transfer->staging.rsrc != NULL);
 
-                /* TODO: Eliminate this flush. It's only there to determine if
-                 * we're initialized or not, when the initialization could come
-                 * from a pending batch XXX */
-                panfrost_flush_batches_accessing_bo(ctx, rsrc->image.data.bo, true);
+                bool valid = BITSET_TEST(rsrc->valid.data, level);
 
-                if ((usage & PIPE_MAP_READ) && BITSET_TEST(rsrc->valid.data, level)) {
+                if ((usage & PIPE_MAP_READ) && (valid || rsrc->track.writer)) {
                         pan_blit_to_staging(pctx, transfer);
-                        panfrost_flush_batches_accessing_bo(ctx, staging->image.data.bo, true);
+                        panfrost_flush_writer(ctx, staging, "AFBC read staging blit");
                         panfrost_bo_wait(staging->image.data.bo, INT64_MAX, false);
                 }
 
@@ -869,14 +866,14 @@ panfrost_ptr_map(struct pipe_context *pctx,
             (usage & PIPE_MAP_WRITE) &&
             !(resource->target == PIPE_BUFFER
               && !util_ranges_intersect(&rsrc->valid_buffer_range, box->x, box->x + box->width)) &&
-            panfrost_pending_batches_access_bo(ctx, bo)) {
+            BITSET_COUNT(rsrc->track.users) != 0) {
 
                 /* When a resource to be modified is already being used by a
                  * pending batch, it is often faster to copy the whole BO than
                  * to flush and split the frame in two.
                  */
 
-                panfrost_flush_batches_accessing_bo(ctx, bo, false);
+                panfrost_flush_writer(ctx, rsrc, "Shadow resource creation");
                 panfrost_bo_wait(bo, INT64_MAX, false);
 
                 create_new_bo = true;
@@ -888,7 +885,7 @@ panfrost_ptr_map(struct pipe_context *pctx,
                  * not ready yet (still accessed by one of the already flushed
                  * batches), we try to allocate a new one to avoid waiting.
                  */
-                if (panfrost_pending_batches_access_bo(ctx, bo) ||
+                if (BITSET_COUNT(rsrc->track.users) ||
                     !panfrost_bo_wait(bo, 0, true)) {
                         /* We want the BO to be MMAPed. */
                         uint32_t flags = bo->flags & ~PAN_BO_DELAY_MMAP;
@@ -919,7 +916,8 @@ panfrost_ptr_map(struct pipe_context *pctx,
                                 /* Allocation failed or was impossible, let's
                                  * fall back on a flush+wait.
                                  */
-                                panfrost_flush_batches_accessing_bo(ctx, bo, true);
+                                panfrost_flush_batches_accessing_rsrc(ctx, rsrc,
+                                                "Resource access with high memory pressure");
                                 panfrost_bo_wait(bo, INT64_MAX, true);
                         }
                 }
@@ -929,10 +927,10 @@ panfrost_ptr_map(struct pipe_context *pctx,
                 /* No flush for writes to uninitialized */
         } else if (!(usage & PIPE_MAP_UNSYNCHRONIZED)) {
                 if (usage & PIPE_MAP_WRITE) {
-                        panfrost_flush_batches_accessing_bo(ctx, bo, true);
+                        panfrost_flush_batches_accessing_rsrc(ctx, rsrc, "Synchronized write");
                         panfrost_bo_wait(bo, INT64_MAX, true);
                 } else if (usage & PIPE_MAP_READ) {
-                        panfrost_flush_batches_accessing_bo(ctx, bo, false);
+                        panfrost_flush_writer(ctx, rsrc, "Synchronized read");
                         panfrost_bo_wait(bo, INT64_MAX, false);
                 }
         }
@@ -989,9 +987,11 @@ panfrost_ptr_map(struct pipe_context *pctx,
 void
 pan_resource_modifier_convert(struct panfrost_context *ctx,
                               struct panfrost_resource *rsrc,
-                              uint64_t modifier)
+                              uint64_t modifier, const char *reason)
 {
         assert(!rsrc->modifier_constant);
+
+        perf_debug_ctx(ctx, "Disabling AFBC with a blit. Reason: %s", reason);
 
         struct pipe_resource *tmp_prsrc =
                 panfrost_resource_create_with_modifier(
@@ -1036,7 +1036,8 @@ pan_resource_modifier_convert(struct panfrost_context *ctx,
 }
 
 static bool
-panfrost_should_linear_convert(struct panfrost_resource *prsrc,
+panfrost_should_linear_convert(struct panfrost_device *dev,
+                               struct panfrost_resource *prsrc,
                                struct pipe_transfer *transfer)
 {
         if (prsrc->modifier_constant)
@@ -1064,7 +1065,12 @@ panfrost_should_linear_convert(struct panfrost_resource *prsrc,
         if (entire_overwrite)
                 ++prsrc->modifier_updates;
 
-        return prsrc->modifier_updates >= LAYOUT_CONVERT_THRESHOLD;
+        if (prsrc->modifier_updates >= LAYOUT_CONVERT_THRESHOLD) {
+                perf_debug(dev, "Transitioning to linear due to streaming usage");
+                return true;
+        } else {
+                return false;
+        }
 }
 
 static void
@@ -1087,7 +1093,7 @@ panfrost_ptr_unmap(struct pipe_context *pctx,
 
         if (trans->staging.rsrc) {
                 if (transfer->usage & PIPE_MAP_WRITE) {
-                        if (panfrost_should_linear_convert(prsrc, transfer)) {
+                        if (panfrost_should_linear_convert(dev, prsrc, transfer)) {
 
                                 panfrost_bo_unreference(prsrc->image.data.bo);
                                 if (prsrc->image.crc.bo)
@@ -1100,7 +1106,9 @@ panfrost_ptr_unmap(struct pipe_context *pctx,
                                 panfrost_bo_reference(prsrc->image.data.bo);
                         } else {
                                 pan_blit_from_staging(pctx, trans);
-                                panfrost_flush_batches_accessing_bo(pan_context(pctx), pan_resource(trans->staging.rsrc)->image.data.bo, true);
+                                panfrost_flush_batches_accessing_rsrc(pan_context(pctx),
+                                                pan_resource(trans->staging.rsrc),
+                                                "AFBC write staging blit");
                         }
                 }
 
@@ -1117,7 +1125,7 @@ panfrost_ptr_unmap(struct pipe_context *pctx,
                         if (prsrc->image.layout.modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED) {
                                 assert(transfer->box.depth == 1);
 
-                                if (panfrost_should_linear_convert(prsrc, transfer)) {
+                                if (panfrost_should_linear_convert(dev, prsrc, transfer)) {
                                         panfrost_resource_setup(dev, prsrc, DRM_FORMAT_MOD_LINEAR,
                                                                 prsrc->image.layout.format);
                                         if (prsrc->image.layout.data_size > bo->size) {

@@ -378,6 +378,7 @@ namespace {
       case BRW_OPCODE_MOV:
       case BRW_OPCODE_CMP:
       case BRW_OPCODE_ADD:
+      case BRW_OPCODE_ADD3:
       case BRW_OPCODE_MUL:
       case SHADER_OPCODE_MOV_RELOC_IMM:
       case VEC4_OPCODE_MOV_FOR_SCRATCH:
@@ -1106,6 +1107,7 @@ namespace {
                                      10 /* XXX */, 100 /* XXX */, 0, 0,
                                      0, 0);
 
+            case LSC_OP_FENCE:
             case LSC_OP_ATOMIC_INC:
             case LSC_OP_ATOMIC_DEC:
             case LSC_OP_ATOMIC_LOAD:

@@ -34,7 +34,6 @@
 #include "pan_blend_cso.h"
 #include "pan_encoder.h"
 #include "pan_texture.h"
-#include "midgard_pack.h"
 
 #include "pipe/p_compiler.h"
 #include "pipe/p_config.h"
@@ -83,7 +82,6 @@ enum pan_dirty_shader {
 struct panfrost_constant_buffer {
         struct pipe_constant_buffer cb[PIPE_MAX_CONSTANT_BUFFERS];
         uint32_t enabled_mask;
-        uint32_t dirty_mask;
 };
 
 struct panfrost_query {
@@ -98,7 +96,7 @@ struct panfrost_query {
         };
 
         /* Memory for the GPU to writeback the value of the query */
-        struct panfrost_bo *bo;
+        struct pipe_resource *rsrc;
 
         /* Whether an occlusion query is for a MSAA framebuffer */
         bool msaa;
@@ -120,8 +118,6 @@ struct panfrost_streamout {
         unsigned num_targets;
 };
 
-#define PAN_MAX_BATCHES 32
-
 struct panfrost_context {
         /* Gallium context */
         struct pipe_context base;
@@ -133,7 +129,7 @@ struct panfrost_context {
         enum pan_dirty_shader dirty_shader[PIPE_SHADER_TYPES];
 
         /* Unowned pools, so manage yourself. */
-        struct pan_pool descs, shaders;
+        struct panfrost_pool descs, shaders;
 
         /* Sync obj used to keep track of in-flight jobs. */
         uint32_t syncobj;
@@ -148,9 +144,6 @@ struct panfrost_context {
 
         /* Bound job batch */
         struct panfrost_batch *batch;
-
-        /* panfrost_bo -> panfrost_bo_access */
-        struct hash_table *accessed_bos;
 
         /* Within a launch_grid call.. */
         const struct pipe_grid_info *compute_grid;
@@ -264,7 +257,7 @@ struct panfrost_shader_state {
         bool compiled;
 
         /* Respectively, shader binary and Renderer State Descriptor */
-        struct pan_pool_ref bin, state;
+        struct panfrost_pool_ref bin, state;
 
         /* For fragment shaders, a prepared (but not uploaded RSD) */
         struct mali_renderer_state_packed partial_rsd;
@@ -348,7 +341,7 @@ struct panfrost_sampler_state {
 
 struct panfrost_sampler_view {
         struct pipe_sampler_view base;
-        struct pan_pool_ref state;
+        struct panfrost_pool_ref state;
         struct mali_bifrost_texture_packed bifrost_descriptor;
         mali_ptr texture_bo;
         uint64_t modifier;
@@ -398,8 +391,8 @@ panfrost_render_condition_check(struct panfrost_context *ctx);
 
 void
 panfrost_shader_compile(struct pipe_screen *pscreen,
-                        struct pan_pool *shader_pool,
-                        struct pan_pool *desc_pool,
+                        struct panfrost_pool *shader_pool,
+                        struct panfrost_pool *desc_pool,
                         enum pipe_shader_ir ir_type,
                         const void *ir,
                         gl_shader_stage stage,
@@ -442,5 +435,8 @@ panfrost_clean_state_3d(struct panfrost_context *ctx)
                         ctx->dirty_shader[i] = 0;
         }
 }
+
+void
+panfrost_cmdstream_context_init(struct pipe_context *pipe);
 
 #endif

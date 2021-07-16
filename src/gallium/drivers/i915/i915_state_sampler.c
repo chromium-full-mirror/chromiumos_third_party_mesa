@@ -57,11 +57,6 @@
  * changes.
  */
 
-static void update_map(struct i915_context *i915, uint32_t unit,
-                       const struct i915_texture *tex,
-                       const struct i915_sampler_state *sampler,
-                       const struct pipe_sampler_view *view, uint32_t state[3]);
-
 /***********************************************************************
  * Samplers
  */
@@ -90,19 +85,52 @@ update_sampler(struct i915_context *i915, uint32_t unit,
       state[0] |= SS2_COLORSPACE_CONVERSION;
 
    if (pt->format == PIPE_FORMAT_B8G8R8A8_SRGB ||
-       pt->format == PIPE_FORMAT_L8_SRGB)
+       pt->format == PIPE_FORMAT_L8_SRGB) {
       state[0] |= SS2_REVERSE_GAMMA_ENABLE;
+   }
 
-      /* 3D textures don't seem to respect the border color.
-       * Fallback if there's ever a danger that they might refer to
-       * it.
-       *
-       * Effectively this means fallback on 3D clamp or
-       * clamp_to_border.
-       *
-       * XXX: Check if this is true on i945.
-       * XXX: Check if this bug got fixed in release silicon.
-       */
+   /* There is no HW support for 1D textures, so we just make them 2D textures
+    * with h=1, but that means we need to make the Y coordinate not contribute
+    * to bringing any border color in.  Clearing it sets it to WRAP.
+    */
+   if (pt->target == PIPE_TEXTURE_1D) {
+      state[1] &= ~SS3_TCY_ADDR_MODE_MASK;
+   }
+
+   /* The GLES2 spec says textures are incomplete (return 0,0,0,1) if:
+    *
+    * "A cube map sampler is called, any of the corresponding texture images are
+    * non-power-of-two images, and either the texture wrap mode is not
+    * CLAMP_TO_EDGE, or the minification filter is neither NEAREST nor LINEAR."
+    *
+    * while the i915 spec says:
+    *
+    * "When using cube map texture coordinates, only TEXCOORDMODE_CLAMP and *
+    *  TEXCOORDMODE_CUBE settings are valid, and each TC component must have the
+    *  same Address Control mode. TEXCOORDMODE_CUBE is not valid unless the
+    *  width and height of the cube map are power-of-2."
+    *
+    * We don't expose support for the seamless cube map extension, so always use
+    * edge clamping.
+    */
+   if (pt->target == PIPE_TEXTURE_CUBE) {
+      state[1] &= ~(SS3_TCX_ADDR_MODE_MASK | SS3_TCY_ADDR_MODE_MASK |
+                    SS3_TCZ_ADDR_MODE_MASK);
+      state[1] |= (TEXCOORDMODE_CLAMP_EDGE << SS3_TCX_ADDR_MODE_SHIFT);
+      state[1] |= (TEXCOORDMODE_CLAMP_EDGE << SS3_TCY_ADDR_MODE_SHIFT);
+      state[1] |= (TEXCOORDMODE_CLAMP_EDGE << SS3_TCZ_ADDR_MODE_SHIFT);
+   }
+
+   /* 3D textures don't seem to respect the border color.
+    * Fallback if there's ever a danger that they might refer to
+    * it.
+    *
+    * Effectively this means fallback on 3D clamp or
+    * clamp_to_border.
+    *
+    * XXX: Check if this is true on i945.
+    * XXX: Check if this bug got fixed in release silicon.
+    */
 #if 0
    {
       const unsigned ws = sampler->templ->wrap_s;
@@ -138,48 +166,11 @@ update_sampler(struct i915_context *i915, uint32_t unit,
    state[1] |= (unit << SS3_TEXTUREMAP_INDEX_SHIFT);
 }
 
-static void
-update_samplers(struct i915_context *i915)
-{
-   uint32_t unit;
-
-   i915->current.sampler_enable_nr = 0;
-   i915->current.sampler_enable_flags = 0x0;
-
-   for (unit = 0;
-        unit < i915->num_fragment_sampler_views && unit < i915->num_samplers;
-        unit++) {
-      /* determine unit enable/disable by looking for a bound texture */
-      /* could also examine the fragment program? */
-      if (i915->fragment_sampler_views[unit]) {
-         struct i915_texture *texture =
-            i915_texture(i915->fragment_sampler_views[unit]->texture);
-
-         update_sampler(i915, unit,
-                        i915->fragment_sampler[unit],   /* sampler state */
-                        texture,                        /* texture */
-                        i915->current.sampler[unit]);   /* the result */
-         update_map(i915, unit, texture,                /* texture */
-                    i915->fragment_sampler[unit],       /* sampler state */
-                    i915->fragment_sampler_views[unit], /* sampler view */
-                    i915->current.texbuffer[unit]);     /* the result */
-
-         i915->current.sampler_enable_nr++;
-         i915->current.sampler_enable_flags |= (1 << unit);
-      }
-   }
-
-   i915->hardware_dirty |= I915_HW_SAMPLER | I915_HW_MAP;
-}
-
-struct i915_tracked_state i915_hw_samplers = {
-   "samplers", update_samplers, I915_NEW_SAMPLER | I915_NEW_SAMPLER_VIEW};
-
 /***********************************************************************
  * Sampler views
  */
 
-static uint
+static uint32_t
 translate_texture_format(enum pipe_format pipeFormat,
                          const struct pipe_sampler_view *view)
 {
@@ -347,9 +338,12 @@ update_map(struct i915_context *i915, uint32_t unit,
 }
 
 static void
-update_maps(struct i915_context *i915)
+update_samplers(struct i915_context *i915)
 {
    uint32_t unit;
+
+   i915->current.sampler_enable_nr = 0;
+   i915->current.sampler_enable_flags = 0x0;
 
    for (unit = 0;
         unit < i915->num_fragment_sampler_views && unit < i915->num_samplers;
@@ -360,15 +354,22 @@ update_maps(struct i915_context *i915)
          struct i915_texture *texture =
             i915_texture(i915->fragment_sampler_views[unit]->texture);
 
+         update_sampler(i915, unit,
+                        i915->fragment_sampler[unit],   /* sampler state */
+                        texture,                        /* texture */
+                        i915->current.sampler[unit]);   /* the result */
          update_map(i915, unit, texture,                /* texture */
                     i915->fragment_sampler[unit],       /* sampler state */
                     i915->fragment_sampler_views[unit], /* sampler view */
-                    i915->current.texbuffer[unit]);
+                    i915->current.texbuffer[unit]);     /* the result */
+
+         i915->current.sampler_enable_nr++;
+         i915->current.sampler_enable_flags |= (1 << unit);
       }
    }
 
-   i915->hardware_dirty |= I915_HW_MAP;
+   i915->hardware_dirty |= I915_HW_SAMPLER | I915_HW_MAP;
 }
 
-struct i915_tracked_state i915_hw_sampler_views = {"sampler_views", update_maps,
-                                                   I915_NEW_SAMPLER_VIEW};
+struct i915_tracked_state i915_hw_samplers = {
+   "samplers", update_samplers, I915_NEW_SAMPLER | I915_NEW_SAMPLER_VIEW};

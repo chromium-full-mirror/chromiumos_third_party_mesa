@@ -46,6 +46,10 @@
 
 #include <vulkan/vulkan.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct blitter_context;
 struct list_head;
 
@@ -170,6 +174,7 @@ struct zink_context {
    bool pipeline_changed[2]; //gfx, compute
 
    struct zink_shader *gfx_stages[ZINK_SHADER_COUNT];
+   struct zink_shader *last_vertex_stage;
    struct zink_gfx_pipeline_state gfx_pipeline_state;
    enum pipe_prim_type gfx_prim_mode;
    struct hash_table *program_cache;
@@ -439,4 +444,9 @@ zink_pipeline_flags_from_pipe_stage(enum pipe_shader_type pstage)
       unreachable("unknown shader stage");
    }
 }
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif

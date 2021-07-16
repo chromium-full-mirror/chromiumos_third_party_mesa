@@ -144,13 +144,10 @@ static const char *
 iris_get_name(struct pipe_screen *pscreen)
 {
    struct iris_screen *screen = (struct iris_screen *)pscreen;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    static char buf[128];
-   const char *name = intel_get_device_name(screen->pci_id);
 
-   if (!name)
-      name = "Intel Unknown";
-
-   snprintf(buf, sizeof(buf), "Mesa %s", name);
+   snprintf(buf, sizeof(buf), "Mesa %s", devinfo->name);
    return buf;
 }
 
@@ -300,14 +297,7 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
       return IRIS_MAP_BUFFER_ALIGNMENT;
    case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
-      /* Choose a cacheline (64 bytes) so that we can safely have the CPU and
-       * GPU writing the same SSBO on non-coherent systems (Atom CPUs).  With
-       * UBOs, the GPU never writes, so there's no problem.  For an SSBO, the
-       * GPU and the CPU can be updating disjoint regions of the buffer
-       * simultaneously and that will break if the regions overlap the same
-       * cacheline.
-       */
-      return 64;
+      return 4;
    case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
       return 1 << 27;
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
@@ -526,9 +516,7 @@ iris_get_compute_param(struct pipe_screen *pscreen,
    struct iris_screen *screen = (struct iris_screen *)pscreen;
    const struct intel_device_info *devinfo = &screen->devinfo;
 
-   /* Limit max_threads to 64 for the GPGPU_WALKER command. */
-   const unsigned max_threads = MIN2(64, devinfo->max_cs_threads);
-   const uint32_t max_invocations = 32 * max_threads;
+   const uint32_t max_invocations = 32 * devinfo->max_cs_workgroup_threads;
 
 #define RET(x) do {                  \
    if (ret)                          \
