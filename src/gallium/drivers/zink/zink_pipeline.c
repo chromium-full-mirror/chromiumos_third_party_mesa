@@ -145,6 +145,24 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
       rast_state.pNext = &pv_state;
    }
 
+   VkPipelineRasterizationLineStateCreateInfoEXT rast_line_state;
+   if (screen->info.have_EXT_line_rasterization) {
+      rast_line_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT;
+      rast_line_state.pNext = rast_state.pNext;
+      rast_line_state.lineRasterizationMode = state->rast_state->line_mode;
+
+      if (state->rast_state->line_stipple_pattern != UINT16_MAX) {
+         rast_line_state.stippledLineEnable = VK_TRUE;
+         rast_line_state.lineStippleFactor = state->rast_state->line_stipple_factor + 1;
+         rast_line_state.lineStipplePattern = state->rast_state->line_stipple_pattern;
+      } else {
+         rast_line_state.stippledLineEnable = VK_FALSE;
+         rast_line_state.lineStippleFactor = 0;
+         rast_line_state.lineStipplePattern = 0;
+      }
+      rast_state.pNext = &rast_line_state;
+   }
+
    VkPipelineDepthStencilStateCreateInfo depth_stencil_state = {0};
    depth_stencil_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
    depth_stencil_state.depthTestEnable = state->depth_stencil_alpha_state->depth_test;
@@ -233,11 +251,12 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    pci.stageCount = num_stages;
 
    VkPipeline pipeline;
-   if (vkCreateGraphicsPipelines(screen->dev, screen->pipeline_cache, 1, &pci,
+   if (vkCreateGraphicsPipelines(screen->dev, prog->base.pipeline_cache, 1, &pci,
                                  NULL, &pipeline) != VK_SUCCESS) {
       debug_printf("vkCreateGraphicsPipelines failed\n");
       return VK_NULL_HANDLE;
    }
+   zink_screen_update_pipeline_cache(screen, &prog->base);
 
    return pipeline;
 }
@@ -274,11 +293,12 @@ zink_create_compute_pipeline(struct zink_screen *screen, struct zink_compute_pro
    pci.stage = stage;
 
    VkPipeline pipeline;
-   if (vkCreateComputePipelines(screen->dev, screen->pipeline_cache, 1, &pci,
+   if (vkCreateComputePipelines(screen->dev, comp->base.pipeline_cache, 1, &pci,
                                  NULL, &pipeline) != VK_SUCCESS) {
       debug_printf("vkCreateComputePipelines failed\n");
       return VK_NULL_HANDLE;
    }
+   zink_screen_update_pipeline_cache(screen, &comp->base);
 
    return pipeline;
 }

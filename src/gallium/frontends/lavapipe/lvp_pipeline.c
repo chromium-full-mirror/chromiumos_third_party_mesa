@@ -272,12 +272,15 @@ deep_copy_graphics_create_info(void *mem_ctx,
    dst->pStages = stages;
 
    /* pVertexInputState */
-   vertex_input = ralloc(mem_ctx, VkPipelineVertexInputStateCreateInfo);
-   result = deep_copy_vertex_input_state(mem_ctx, vertex_input,
-                                         src->pVertexInputState);
-   if (result != VK_SUCCESS)
-      return result;
-   dst->pVertexInputState = vertex_input;
+   if (!dynamic_state_contains(src->pDynamicState, VK_DYNAMIC_STATE_VERTEX_INPUT_EXT)) {
+      vertex_input = ralloc(mem_ctx, VkPipelineVertexInputStateCreateInfo);
+      result = deep_copy_vertex_input_state(mem_ctx, vertex_input,
+                                            src->pVertexInputState);
+      if (result != VK_SUCCESS)
+         return result;
+      dst->pVertexInputState = vertex_input;
+   } else
+      dst->pVertexInputState = NULL;
 
    /* pInputAssemblyState */
    LVP_PIPELINE_DUP(dst->pInputAssemblyState,
@@ -296,7 +299,8 @@ deep_copy_graphics_create_info(void *mem_ctx,
    }
 
    /* pViewportState */
-   bool rasterization_disabled = src->pRasterizationState->rasterizerDiscardEnable;
+   bool rasterization_disabled = !dynamic_state_contains(src->pDynamicState, VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT) &&
+                                 src->pRasterizationState->rasterizerDiscardEnable;
    if (src->pViewportState && !rasterization_disabled) {
       VkPipelineViewportStateCreateInfo *viewport_state;
       viewport_state = ralloc(mem_ctx, VkPipelineViewportStateCreateInfo);
@@ -487,7 +491,6 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
          .stencil_export = true,
          .post_depth_coverage = true,
          .transform_feedback = true,
-         .geometry_streams = true,
          .device_group = true,
          .draw_parameters = true,
          .shader_viewport_index_layer = true,
@@ -803,6 +806,23 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
                            PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT);
    pipeline->provoking_vertex_last = pv_state && pv_state->provokingVertexMode == VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT;
 
+   const VkPipelineRasterizationLineStateCreateInfoEXT *line_state =
+      vk_find_struct_const(pCreateInfo->pRasterizationState,
+                           PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT);
+   if (line_state) {
+      /* always draw bresenham if !smooth */
+      pipeline->line_stipple_enable = line_state->stippledLineEnable;
+      pipeline->line_smooth = line_state->lineRasterizationMode == VK_LINE_RASTERIZATION_MODE_RECTANGULAR_SMOOTH_EXT;
+      pipeline->disable_multisample = line_state->lineRasterizationMode == VK_LINE_RASTERIZATION_MODE_BRESENHAM_EXT ||
+                                      line_state->lineRasterizationMode == VK_LINE_RASTERIZATION_MODE_RECTANGULAR_SMOOTH_EXT;
+      pipeline->line_rectangular = line_state->lineRasterizationMode != VK_LINE_RASTERIZATION_MODE_BRESENHAM_EXT;
+      if (!dynamic_state_contains(pipeline->graphics_create_info.pDynamicState, VK_DYNAMIC_STATE_LINE_STIPPLE_EXT)) {
+         pipeline->line_stipple_factor = line_state->lineStippleFactor - 1;
+         pipeline->line_stipple_pattern = line_state->lineStipplePattern;
+      }
+   } else
+      pipeline->line_rectangular = true;
+
 
    for (uint32_t i = 0; i < pCreateInfo->stageCount; i++) {
       VK_FROM_HANDLE(vk_shader_module, module,
@@ -831,6 +851,9 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
       if (!domain_origin_state || domain_origin_state->domainOrigin == VK_TESSELLATION_DOMAIN_ORIGIN_UPPER_LEFT)
          pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL]->info.tess.ccw = !pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL]->info.tess.ccw;
    }
+
+   pipeline->gs_output_lines = pipeline->pipeline_nir[MESA_SHADER_GEOMETRY] &&
+                               pipeline->pipeline_nir[MESA_SHADER_GEOMETRY]->info.gs.output_primitive == GL_LINES;
 
 
    bool has_fragment_shader = false;

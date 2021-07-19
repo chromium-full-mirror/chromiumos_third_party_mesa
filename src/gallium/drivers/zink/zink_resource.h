@@ -68,6 +68,7 @@ struct zink_resource_object {
    VkBuffer sbuffer;
    bool storage_init; //layout was set for image
    bool transfer_dst;
+   VkImageAspectFlags modifier_aspect;
 
    VkDeviceMemory mem;
    uint32_t mem_hash;
@@ -105,18 +106,20 @@ struct zink_resource {
       struct {
          struct util_range valid_buffer_range;
          uint16_t vbo_bind_count;
-         uint16_t ubo_bind_count[2];
+         uint8_t ubo_bind_count[2];
+         uint32_t ubo_bind_mask[PIPE_SHADER_TYPES];
+         uint32_t ssbo_bind_mask[PIPE_SHADER_TYPES];
       };
       struct {
          VkFormat format;
          VkImageLayout layout;
          VkImageAspectFlags aspect;
          bool optimal_tiling;
-         uint32_t sampler_binds[PIPE_SHADER_TYPES];
          uint8_t fb_binds;
-         uint16_t image_bind_count[2]; //gfx, compute
       };
    };
+   uint32_t sampler_binds[PIPE_SHADER_TYPES];
+   uint16_t image_bind_count[2]; //gfx, compute
    uint16_t write_bind_count[2]; //gfx, compute
    uint16_t bind_count[2]; //gfx, compute
 
@@ -125,6 +128,9 @@ struct zink_resource {
 
    uint32_t bind_history; // enum zink_descriptor_type bitmask
    uint32_t bind_stages;
+
+   uint8_t modifiers_count;
+   uint64_t *modifiers;
 };
 
 struct zink_transfer {

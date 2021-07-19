@@ -728,9 +728,6 @@ typedef struct nir_register {
    /** generic register index. */
    unsigned index;
 
-   /** only for debug purposes, can be NULL */
-   const char *name;
-
    /** set of nir_srcs where this register is used (read from) */
    struct list_head uses;
 
@@ -806,9 +803,6 @@ nir_instr_is_last(const nir_instr *instr)
 }
 
 typedef struct nir_ssa_def {
-   /** for debugging only, can be NULL */
-   const char* name;
-
    /** Instruction which produces this SSA value. */
    nir_instr *parent_instr;
 
@@ -3439,6 +3433,9 @@ typedef struct nir_shader_compiler_options {
    /* Lowers when rotate instruction is not supported */
    bool lower_rotate;
 
+   /** Backend supports ternary addition */
+   bool has_iadd3;
+
    /**
     * Backend supports imul24, and would like to use it (when possible)
     * for address/offset calculation.  If true, driver should call
@@ -3951,6 +3948,8 @@ nir_instr_remove(nir_instr *instr)
    return cursor;
 }
 
+nir_cursor nir_instr_free_and_dce(nir_instr *instr);
+
 /** @} */
 
 nir_ssa_def *nir_instr_ssa_def(nir_instr *instr);
@@ -4018,8 +4017,7 @@ void nir_ssa_dest_init(nir_instr *instr, nir_dest *dest,
                        unsigned num_components, unsigned bit_size,
                        const char *name);
 void nir_ssa_def_init(nir_instr *instr, nir_ssa_def *def,
-                      unsigned num_components, unsigned bit_size,
-                      const char *name);
+                      unsigned num_components, unsigned bit_size);
 static inline void
 nir_ssa_dest_init_for_type(nir_instr *instr, nir_dest *dest,
                            const struct glsl_type *type,
@@ -4311,6 +4309,10 @@ typedef nir_ssa_def *(*nir_lower_instr_cb)(struct nir_builder *,
  * lowered.)  If the instruction is dead after the lowering is complete, it
  * will be removed.  If new instructions are added, the lowering callback will
  * also be called on them in case multiple lowerings are required.
+ *
+ * If the callback indicates that the original instruction is replaced (either
+ * through a new SSA def or NIR_LOWER_INSTR_PROGRESS_REPLACE), then the
+ * instruction is removed along with any now-dead SSA defs it used.
  *
  * The metadata for the nir_function_impl will also be updated.  If any blocks
  * are added (they cannot be removed), dominance and block indices will be
@@ -4720,9 +4722,10 @@ bool nir_lower_is_helper_invocation(nir_shader *shader);
 typedef struct nir_lower_subgroups_options {
    uint8_t subgroup_size;
    uint8_t ballot_bit_size;
+   uint8_t ballot_components;
    bool lower_to_scalar:1;
    bool lower_vote_trivial:1;
-   bool lower_vote_eq_to_ballot:1;
+   bool lower_vote_eq:1;
    bool lower_subgroup_masks:1;
    bool lower_shuffle:1;
    bool lower_shuffle_to_32bit:1;
@@ -4731,6 +4734,7 @@ typedef struct nir_lower_subgroups_options {
    bool lower_quad_broadcast_dynamic:1;
    bool lower_quad_broadcast_dynamic_to_const:1;
    bool lower_elect:1;
+   bool lower_read_invocation_to_cond:1;
 } nir_lower_subgroups_options;
 
 bool nir_lower_subgroups(nir_shader *shader,

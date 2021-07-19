@@ -11,7 +11,6 @@ shaders@glsl-sin,Fail
 shaders@glsl-uniform-interstage-limits@520 vs- 1 fs,Fail
 shaders@glsl-uniform-interstage-limits@subdivide 5,Fail
 shaders@glsl-uniform-interstage-limits@subdivide 5- statechanges,Fail
-shaders@glsl-vs-point-size,Fail
 shaders@ssa@fs-if-def-else-break,Fail
 shaders@ssa@fs-lost-copy-problem,Fail
 shaders@ssa@fs-swap-problem,Fail
@@ -141,17 +140,10 @@ spec@!opengl 1.2@texwrap 3d proj@GL_RGBA8- NPOT- projected,Fail
 spec@!opengl 1.2@texwrap 3d proj bordercolor,Fail
 spec@!opengl 1.2@texwrap 3d proj bordercolor@GL_RGBA8- projected- border color only,Fail
 spec@!opengl 1.4@gl-1.4-polygon-offset,Fail
-
-# 1D textures are treated as 2D, but we don't force
-# the Y clamp to repeat or edge, so you get interpolation, and we get
-# different undefined values in the y coordinate in the new shader.
-spec@!opengl 1.4@gl-1.4-tex1d-2dborder,Fail
-
 spec@!opengl 1.4@tex-miplevel-selection,Fail
 spec@!opengl 1.4@tex-miplevel-selection-lod,Fail
 spec@!opengl 1.4@tex-miplevel-selection-lod-bias,Fail
 spec@!opengl 1.5@depth-tex-compare,Fail
-spec@!opengl 2.0@gl-2.0-two-sided-stencil,Fail
 spec@!opengl 2.0@max-samplers,Fail
 spec@!opengl 2.0@max-samplers border,Fail
 spec@!opengl 2.0@occlusion-query-discard,Fail
@@ -277,7 +269,6 @@ spec@arb_pixel_buffer_object@texsubimage pbo,Fail
 spec@arb_point_parameters@arb_point_parameters-point-attenuation,Crash
 
 spec@arb_point_parameters@arb_point_parameters-point-attenuation@Aliased combinations,Fail
-spec@arb_point_parameters@arb_point_parameters-point-attenuation@Antialiased combinations,Fail
 spec@arb_provoking_vertex@arb-provoking-vertex-render,Fail
 spec@arb_sampler_objects@gl_ext_texture_srgb_decode,Fail
 spec@arb_shader_texture_lod@execution@glsl-fs-texturelod-01,Fail
@@ -423,21 +414,12 @@ spec@ext_framebuffer_object@getteximage-formats init-by-rendering,Crash
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-export,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-export-tex,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-intel_external_sampler_only,Fail
-spec@ext_image_dma_buf_import@ext_image_dma_buf_import-invalid_attributes,Fail
-spec@ext_image_dma_buf_import@ext_image_dma_buf_import-invalid_hints,Fail
-spec@ext_image_dma_buf_import@ext_image_dma_buf_import-missing_attributes,Fail
-spec@ext_image_dma_buf_import@ext_image_dma_buf_import-ownership_transfer,Fail
-spec@ext_image_dma_buf_import@ext_image_dma_buf_import-refcount,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-reimport-bug,Fail
-spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_argb8888,Fail
-spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_ayuv,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_nv12,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_p010,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_p012,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_p016,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_uyvy,Fail
-spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_xrgb8888,Fail
-spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_xyuv,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_y210,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_y212,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_y216,Fail
@@ -448,7 +430,6 @@ spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_yuv420,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_yuyv,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_yvu420,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-transcode-nv12-as-r8-gr88,Fail
-spec@ext_image_dma_buf_import@ext_image_dma_buf_import-unsupported_format,Fail
 spec@ext_occlusion_query_boolean@any-samples,Fail
 spec@ext_packed_depth_stencil@depth_stencil texture,Fail
 spec@ext_packed_depth_stencil@fbo-clear-formats,Fail
@@ -491,7 +472,6 @@ spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SLUMINANCE_
 spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB- border color only,Fail
 spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB_ALPHA- border color only,Fail
 spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB_S3TC_DXT1_EXT- border color only,Fail
-spec@glsl-1.10@execution@built-in-functions@fs-atan-vec2-vec2,Fail
 spec@glsl-1.10@execution@built-in-functions@fs-atan-vec3-vec3,Fail
 spec@glsl-1.10@execution@built-in-functions@fs-atan-vec4-vec4,Fail
 spec@glsl-1.10@execution@built-in-functions@fs-cos-float,Fail
@@ -743,6 +723,7 @@ spec@glsl-1.10@execution@loops@glsl-fs-unroll-side-effect,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d-01,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d-03,Fail
+spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d-04,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d-07,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d-08,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d-bias,Fail

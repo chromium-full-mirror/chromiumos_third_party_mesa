@@ -55,6 +55,7 @@ typedef uint32_t xcb_window_t;
 #include "vk_physical_device.h"
 #include "vk_shader_module.h"
 #include "vk_util.h"
+#include "vk_format.h"
 
 #include "wsi_common.h"
 
@@ -479,6 +480,13 @@ struct lvp_pipeline {
    void *shader_cso[PIPE_SHADER_TYPES];
    VkGraphicsPipelineCreateInfo graphics_create_info;
    VkComputePipelineCreateInfo compute_create_info;
+   uint32_t line_stipple_factor;
+   uint16_t line_stipple_pattern;
+   bool line_stipple_enable;
+   bool line_smooth;
+   bool disable_multisample;
+   bool line_rectangular;
+   bool gs_output_lines;
    bool provoking_vertex_last;
 };
 
@@ -666,6 +674,7 @@ enum lvp_cmds {
    LVP_CMD_DRAW_INDIRECT_BYTE_COUNT,
    LVP_CMD_BEGIN_CONDITIONAL_RENDERING,
    LVP_CMD_END_CONDITIONAL_RENDERING,
+   LVP_CMD_SET_VERTEX_INPUT,
    LVP_CMD_SET_CULL_MODE,
    LVP_CMD_SET_FRONT_FACE,
    LVP_CMD_SET_PRIMITIVE_TOPOLOGY,
@@ -675,6 +684,12 @@ enum lvp_cmds {
    LVP_CMD_SET_DEPTH_BOUNDS_TEST_ENABLE,
    LVP_CMD_SET_STENCIL_TEST_ENABLE,
    LVP_CMD_SET_STENCIL_OP,
+   LVP_CMD_SET_LINE_STIPPLE,
+   LVP_CMD_SET_DEPTH_BIAS_ENABLE,
+   LVP_CMD_SET_LOGIC_OP,
+   LVP_CMD_SET_PATCH_CONTROL_POINTS,
+   LVP_CMD_SET_PRIMITIVE_RESTART_ENABLE,
+   LVP_CMD_SET_RASTERIZER_DISCARD_ENABLE,
 };
 
 struct lvp_cmd_bind_pipeline {
@@ -1008,6 +1023,14 @@ struct lvp_cmd_begin_conditional_rendering {
    bool inverted;
 };
 
+struct lvp_cmd_set_vertex_input {
+    uint32_t binding_count;
+    uint32_t attr_count;
+    uint8_t data[0];
+    //VkVertexInputBindingDescription2EXT bindings[binding_count];
+    //VkVertexInputAttributeDescription2EXT attrs[attr_count];
+};
+
 struct lvp_cmd_set_cull_mode {
    VkCullModeFlags cull_mode;
 };
@@ -1046,6 +1069,31 @@ struct lvp_cmd_set_stencil_op {
    VkStencilOp pass_op;
    VkStencilOp depth_fail_op;
    VkCompareOp compare_op;
+};
+
+struct lvp_cmd_set_line_stipple {
+   uint32_t line_stipple_factor;
+   uint16_t line_stipple_pattern;
+};
+
+struct lvp_cmd_set_depth_bias_enable {
+   bool enable;
+};
+
+struct lvp_cmd_set_logic_op {
+   VkLogicOp op;
+};
+
+struct lvp_cmd_set_patch_control_points {
+   uint32_t vertices_per_patch;
+};
+
+struct lvp_cmd_set_primitive_restart_enable {
+   bool enable;
+};
+
+struct lvp_cmd_set_rasterizer_discard_enable {
+   bool enable;
 };
 
 struct lvp_cmd_buffer_entry {
@@ -1095,6 +1143,7 @@ struct lvp_cmd_buffer_entry {
       struct lvp_cmd_end_transform_feedback end_transform_feedback;
       struct lvp_cmd_draw_indirect_byte_count draw_indirect_byte_count;
       struct lvp_cmd_begin_conditional_rendering begin_conditional_rendering;
+      struct lvp_cmd_set_vertex_input set_vertex_input;
       struct lvp_cmd_set_cull_mode set_cull_mode;
       struct lvp_cmd_set_front_face set_front_face;
       struct lvp_cmd_set_primitive_topology set_primitive_topology;
@@ -1104,6 +1153,12 @@ struct lvp_cmd_buffer_entry {
       struct lvp_cmd_set_depth_bounds_test_enable set_depth_bounds_test_enable;
       struct lvp_cmd_set_stencil_test_enable set_stencil_test_enable;
       struct lvp_cmd_set_stencil_op set_stencil_op;
+      struct lvp_cmd_set_line_stipple set_line_stipple;
+      struct lvp_cmd_set_depth_bias_enable set_depth_bias_enable;
+      struct lvp_cmd_set_logic_op set_logic_op;
+      struct lvp_cmd_set_patch_control_points set_patch_control_points;
+      struct lvp_cmd_set_primitive_restart_enable set_primitive_restart_enable;
+      struct lvp_cmd_set_rasterizer_discard_enable set_rasterizer_discard_enable;
    } u;
 };
 
@@ -1113,31 +1168,39 @@ VkResult lvp_execute_cmds(struct lvp_device *device,
 
 struct lvp_image *lvp_swapchain_get_image(VkSwapchainKHR swapchain,
 					  uint32_t index);
-enum pipe_format vk_format_to_pipe(VkFormat format);
 
-static inline VkImageAspectFlags
-vk_format_aspects(VkFormat format)
+static inline enum pipe_format
+lvp_vk_format_to_pipe_format(VkFormat format)
 {
-   switch (format) {
-   case VK_FORMAT_UNDEFINED:
-      return 0;
+   /* Some formats cause problems with CTS right now.*/
+   if (format == VK_FORMAT_R4G4B4A4_UNORM_PACK16 ||
+       format == VK_FORMAT_A4R4G4B4_UNORM_PACK16_EXT || /* VK_EXT_4444_formats */
+       format == VK_FORMAT_A4B4G4R4_UNORM_PACK16_EXT || /* VK_EXT_4444_formats */
+       format == VK_FORMAT_R5G5B5A1_UNORM_PACK16 ||
+       format == VK_FORMAT_R8_SRGB ||
+       format == VK_FORMAT_R8G8_SRGB ||
+       format == VK_FORMAT_R64G64B64A64_SFLOAT ||
+       format == VK_FORMAT_R64_SFLOAT ||
+       format == VK_FORMAT_R64G64_SFLOAT ||
+       format == VK_FORMAT_R64G64B64_SFLOAT ||
+       format == VK_FORMAT_A2R10G10B10_SINT_PACK32 ||
+       format == VK_FORMAT_A2B10G10R10_SINT_PACK32 ||
+       format == VK_FORMAT_G8B8G8R8_422_UNORM ||
+       format == VK_FORMAT_B8G8R8G8_422_UNORM ||
+       format == VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM ||
+       format == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ||
+       format == VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM ||
+       format == VK_FORMAT_G8_B8R8_2PLANE_422_UNORM ||
+       format == VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM ||
+       format == VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM ||
+       format == VK_FORMAT_G16_B16R16_2PLANE_420_UNORM ||
+       format == VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM ||
+       format == VK_FORMAT_G16_B16R16_2PLANE_422_UNORM ||
+       format == VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM ||
+       format == VK_FORMAT_D16_UNORM_S8_UINT)
+      return PIPE_FORMAT_NONE;
 
-   case VK_FORMAT_S8_UINT:
-      return VK_IMAGE_ASPECT_STENCIL_BIT;
-
-   case VK_FORMAT_D16_UNORM_S8_UINT:
-   case VK_FORMAT_D24_UNORM_S8_UINT:
-   case VK_FORMAT_D32_SFLOAT_S8_UINT:
-      return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-
-   case VK_FORMAT_D16_UNORM:
-   case VK_FORMAT_X8_D24_UNORM_PACK32:
-   case VK_FORMAT_D32_SFLOAT:
-      return VK_IMAGE_ASPECT_DEPTH_BIT;
-
-   default:
-      return VK_IMAGE_ASPECT_COLOR_BIT;
-   }
+   return vk_format_to_pipe_format(format);
 }
 
 #ifdef __cplusplus

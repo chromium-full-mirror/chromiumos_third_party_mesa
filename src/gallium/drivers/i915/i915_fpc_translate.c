@@ -119,7 +119,7 @@ i915_program_error(struct i915_fp_compile *p, const char *msg, ...)
    p->error = 1;
 }
 
-static uint
+static uint32_t
 get_mapping(struct i915_fragment_shader *fs, int unit)
 {
    int i;
@@ -139,7 +139,7 @@ get_mapping(struct i915_fragment_shader *fs, int unit)
  * Construct a ureg for the given source register.  Will emit
  * constants, apply swizzling and negation as needed.
  */
-static uint
+static uint32_t
 src_vector(struct i915_fp_compile *p,
            const struct i915_full_src_register *source,
            struct i915_fragment_shader *fs)
@@ -248,7 +248,7 @@ src_vector(struct i915_fp_compile *p,
 /**
  * Construct a ureg for a destination register.
  */
-static uint
+static uint32_t
 get_result_vector(struct i915_fp_compile *p,
                   const struct i915_full_dst_register *dest)
 {
@@ -277,7 +277,7 @@ get_result_vector(struct i915_fp_compile *p,
 /**
  * Compute flags for saturation and writemask.
  */
-static uint
+static uint32_t
 get_result_flags(const struct i915_full_instruction *inst)
 {
    const uint32_t writeMask = inst->Dst[0].Register.WriteMask;
@@ -301,7 +301,7 @@ get_result_flags(const struct i915_full_instruction *inst)
 /**
  * Convert TGSI_TEXTURE_x token to DO_SAMPLE_TYPE_x token
  */
-static uint
+static uint32_t
 translate_tex_src_target(struct i915_fp_compile *p, uint32_t tex)
 {
    switch (tex) {
@@ -335,7 +335,7 @@ translate_tex_src_target(struct i915_fp_compile *p, uint32_t tex)
 /**
  * Return the number of coords needed to access a given TGSI_TEXTURE_*
  */
-uint
+uint32_t
 i915_num_coords(uint32_t tex)
 {
    switch (tex) {
@@ -708,10 +708,10 @@ i915_translate_instruction(struct i915_fp_compile *p,
       i915_emit_arith(p, A0_SGE, tmp, A0_DEST_CHANNEL_ALL, 0, src0, src1, 0);
 
       i915_emit_arith(p, A0_SGE, get_result_vector(p, &inst->Dst[0]),
-                      A0_DEST_CHANNEL_ALL, 0, src1, src0, 0);
+                      get_result_flags(inst), 0, src1, src0, 0);
 
       i915_emit_arith(p, A0_MUL, get_result_vector(p, &inst->Dst[0]),
-                      A0_DEST_CHANNEL_ALL, 0,
+                      get_result_flags(inst), 0,
                       get_result_vector(p, &inst->Dst[0]), tmp, 0);
 
       break;
@@ -775,10 +775,10 @@ i915_translate_instruction(struct i915_fp_compile *p,
       i915_emit_arith(p, A0_SLT, tmp, A0_DEST_CHANNEL_ALL, 0, src0, src1, 0);
 
       i915_emit_arith(p, A0_SLT, get_result_vector(p, &inst->Dst[0]),
-                      A0_DEST_CHANNEL_ALL, 0, src1, src0, 0);
+                      get_result_flags(inst), 0, src1, src0, 0);
 
       i915_emit_arith(p, A0_ADD, get_result_vector(p, &inst->Dst[0]),
-                      A0_DEST_CHANNEL_ALL, 0,
+                      get_result_flags(inst), 0,
                       get_result_vector(p, &inst->Dst[0]), tmp, 0);
       break;
 
@@ -791,11 +791,11 @@ i915_translate_instruction(struct i915_fp_compile *p,
                       swizzle(src0, ZERO, ZERO, ZERO, ZERO), 0);
 
       i915_emit_arith(p, A0_SLT, get_result_vector(p, &inst->Dst[0]),
-                      A0_DEST_CHANNEL_ALL, 0,
+                      get_result_flags(inst), 0,
                       swizzle(src0, ZERO, ZERO, ZERO, ZERO), src0, 0);
 
       i915_emit_arith(
-         p, A0_ADD, get_result_vector(p, &inst->Dst[0]), A0_DEST_CHANNEL_ALL, 0,
+         p, A0_ADD, get_result_vector(p, &inst->Dst[0]), get_result_flags(inst), 0,
          get_result_vector(p, &inst->Dst[0]), negate(tmp, 1, 1, 1, 1), 0);
       break;
 
@@ -1026,9 +1026,10 @@ i915_fini_compile(struct i915_context *i915, struct i915_fp_compile *p)
       assert(!ifs->program);
 
       ifs->program_len = decl_size + program_size;
-      ifs->program = (uint32_t *)MALLOC(ifs->program_len * sizeof(uint));
-      memcpy(ifs->program, p->declarations, decl_size * sizeof(uint));
-      memcpy(&ifs->program[decl_size], p->program, program_size * sizeof(uint));
+      ifs->program = (uint32_t *)MALLOC(ifs->program_len * sizeof(uint32_t));
+      memcpy(ifs->program, p->declarations, decl_size * sizeof(uint32_t));
+      memcpy(&ifs->program[decl_size], p->program,
+             program_size * sizeof(uint32_t));
    }
 
    /* Release the compilation struct:

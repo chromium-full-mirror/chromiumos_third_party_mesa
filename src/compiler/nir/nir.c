@@ -28,6 +28,7 @@
 #include "nir.h"
 #include "nir_builder.h"
 #include "nir_control_flow_private.h"
+#include "nir_worklist.h"
 #include "util/half_float.h"
 #include <limits.h>
 #include <assert.h>
@@ -139,7 +140,6 @@ reg_create(void *mem_ctx, struct exec_list *list)
    reg->num_components = 0;
    reg->bit_size = 32;
    reg->num_array_elems = 0;
-   reg->name = NULL;
 
    exec_list_push_tail(list, &reg->node);
 
@@ -620,7 +620,7 @@ nir_load_const_instr_create(nir_shader *shader, unsigned num_components,
       rzalloc_size(shader, sizeof(*instr) + num_components * sizeof(*instr->value));
    instr_init(&instr->instr, nir_instr_type_load_const);
 
-   nir_ssa_def_init(&instr->instr, &instr->def, num_components, bit_size, NULL);
+   nir_ssa_def_init(&instr->instr, &instr->def, num_components, bit_size);
 
    return instr;
 }
@@ -768,7 +768,7 @@ nir_ssa_undef_instr_create(nir_shader *shader,
    nir_ssa_undef_instr *instr = ralloc(shader, nir_ssa_undef_instr);
    instr_init(&instr->instr, nir_instr_type_ssa_undef);
 
-   nir_ssa_def_init(&instr->instr, &instr->def, num_components, bit_size, NULL);
+   nir_ssa_def_init(&instr->instr, &instr->def, num_components, bit_size);
 
    return instr;
 }
@@ -1067,6 +1067,79 @@ void nir_instr_remove_v(nir_instr *instr)
       nir_jump_instr *jump_instr = nir_instr_as_jump(instr);
       nir_handle_remove_jump(instr->block, jump_instr->type);
    }
+}
+
+static bool nir_instr_free_and_dce_live_cb(nir_ssa_def *def, void *state)
+{
+   bool *live = state;
+
+   if (!nir_ssa_def_is_unused(def)) {
+      *live = true;
+      return false;
+   } else {
+      return true;
+   }
+}
+
+static bool nir_instr_free_and_dce_is_live(nir_instr *instr)
+{
+   /* Note: don't have to worry about jumps because they don't have dests to
+    * become unused.
+    */
+   if (instr->type == nir_instr_type_intrinsic) {
+      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+      const nir_intrinsic_info *info = &nir_intrinsic_infos[intr->intrinsic];
+      if (!(info->flags & NIR_INTRINSIC_CAN_ELIMINATE))
+         return true;
+   }
+
+   bool live = false;
+   nir_foreach_ssa_def(instr, nir_instr_free_and_dce_live_cb, &live);
+   return live;
+}
+
+/**
+ * Frees an instruction and any SSA defs that it used that are now dead,
+ * returning a nir_cursor where the instruction previously was.
+ */
+nir_cursor
+nir_instr_free_and_dce(nir_instr *instr)
+{
+   nir_instr_worklist *worklist = nir_instr_worklist_create();
+
+   nir_instr_worklist_add_ssa_srcs(worklist, instr);
+   nir_cursor c = nir_instr_remove(instr);
+
+   struct exec_list to_free;
+   exec_list_make_empty(&to_free);
+
+   nir_instr *dce_instr;
+   while ((dce_instr = nir_instr_worklist_pop_head(worklist))) {
+      if (!nir_instr_free_and_dce_is_live(dce_instr)) {
+         nir_instr_worklist_add_ssa_srcs(worklist, dce_instr);
+
+         /* If we're removing the instr where our cursor is, then we have to
+          * point the cursor elsewhere.
+          */
+         if ((c.option == nir_cursor_before_instr ||
+              c.option == nir_cursor_after_instr) &&
+             c.instr == dce_instr)
+            c = nir_instr_remove(dce_instr);
+         else
+            nir_instr_remove(dce_instr);
+         exec_list_push_tail(&to_free, &dce_instr->node);
+      }
+   }
+
+   struct exec_node *node;
+   while ((node = exec_list_pop_head(&to_free))) {
+      nir_instr *removed_instr = exec_node_data(nir_instr, node, node);
+      ralloc_free(removed_instr);
+   }
+
+   nir_instr_worklist_destroy(worklist);
+
+   return c;
 }
 
 /*@}*/
@@ -1383,9 +1456,8 @@ nir_instr_rewrite_dest(nir_instr *instr, nir_dest *dest, nir_dest new_dest)
 void
 nir_ssa_def_init(nir_instr *instr, nir_ssa_def *def,
                  unsigned num_components,
-                 unsigned bit_size, const char *name)
+                 unsigned bit_size)
 {
-   def->name = ralloc_strdup(instr, name);
    def->parent_instr = instr;
    list_inithead(&def->uses);
    list_inithead(&def->if_uses);
@@ -1412,7 +1484,7 @@ nir_ssa_dest_init(nir_instr *instr, nir_dest *dest,
                  const char *name)
 {
    dest->is_ssa = true;
-   nir_ssa_def_init(instr, &dest->ssa, num_components, bit_size, name);
+   nir_ssa_def_init(instr, &dest->ssa, num_components, bit_size);
 }
 
 void
@@ -1933,7 +2005,7 @@ nir_function_impl_lower_instructions(nir_function_impl *impl,
             nir_if_rewrite_condition(use_src->parent_if, new_src);
 
          if (nir_ssa_def_is_unused(old_def)) {
-            iter = nir_instr_remove(instr);
+            iter = nir_instr_free_and_dce(instr);
          } else {
             iter = nir_after_instr(instr);
          }
@@ -1947,7 +2019,7 @@ nir_function_impl_lower_instructions(nir_function_impl *impl,
          if (new_def == NIR_LOWER_INSTR_PROGRESS_REPLACE) {
             /* Only instructions without a return value can be removed like this */
             assert(!old_def);
-            iter = nir_instr_remove(instr);
+            iter = nir_instr_free_and_dce(instr);
             progress = true;
          } else
             iter = nir_after_instr(instr);

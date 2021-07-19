@@ -79,6 +79,7 @@ if with_tools.contains('all')
 endif
 with_clc = false
 
+with_any_vulkan_layers = get_option('vulkan-layers').length() != 0
 with_intel_tools = with_tools.contains('intel') or with_tools.contains('intel-ui')
 with_imgui = with_intel_tools or with_vulkan_overlay_layer
 
@@ -89,6 +90,11 @@ endif
 dri_search_path = get_option('dri-search-path')
 if dri_search_path == ''
   dri_search_path = dri_drivers_path
+endif
+
+gbm_backends_path = get_option('gbm-backends-path')
+if gbm_backends_path == ''
+  gbm_backends_path = join_paths(get_option('prefix'), get_option('libdir'), 'gbm')
 endif
 
 with_gles1 = get_option('gles1')
@@ -1492,7 +1498,7 @@ dep_libdrm_radeon = null_dep
 dep_libdrm_nouveau = null_dep
 dep_libdrm_intel = null_dep
 
-_drm_amdgpu_ver = '2.4.105'
+_drm_amdgpu_ver = '2.4.107'
 _drm_radeon_ver = '2.4.71'
 _drm_nouveau_ver = '2.4.102'
 _drm_intel_ver = '2.4.75'
@@ -2161,7 +2167,6 @@ if with_egl
   endif
   lines += 'EGL drivers:     ' + ' '.join(egl_drivers)
 endif
-lines += 'GBM:             ' + (with_gbm ? 'yes' : 'no')
 if with_egl or with_any_vk
   _platforms += 'surfaceless'
   if with_gbm and not with_platform_android
@@ -2169,11 +2174,18 @@ if with_egl or with_any_vk
   endif
   lines += 'EGL/Vulkan/VL platforms:   ' + ' '.join(_platforms)
 endif
+lines += 'GBM:             ' + (with_gbm ? 'yes' : 'no')
+if with_gbm
+  lines += 'GBM backends path: ' + gbm_backends_path
+endif
 
 lines += ''
 if with_any_vk
   lines += 'Vulkan drivers:  ' + ' '.join(_vulkan_drivers)
   lines += 'Vulkan ICD dir:  ' + with_vulkan_icd_dir
+  if with_any_vulkan_layers
+    lines += 'Vulkan layers:   ' + ' '.join(get_option('vulkan-layers'))
+  endif
 else
   lines += 'Vulkan drivers:  no'
 endif

@@ -421,6 +421,19 @@ struct v3d_fs_key {
         uint32_t point_sprite_mask;
 
         struct pipe_rt_blend_state blend;
+
+        /* If the fragment shader reads gl_PrimitiveID then we have 2 scenarios:
+         *
+         * - If there is a geometry shader, then gl_PrimitiveID must be written
+         *   by it and the fragment shader loads it as a regular explicit input
+         *   varying. This is the only valid use case in GLES 3.1.
+         *
+         * - If there is not a geometry shader (allowed since GLES 3.2 and
+         *   Vulkan 1.0), then gl_PrimitiveID must be implicitly written by
+         *   hardware and is considered an implicit input varying in the
+         *   fragment shader.
+         */
+        bool has_gs;
 };
 
 struct v3d_gs_key {
@@ -636,6 +649,9 @@ struct v3d_compile {
         bool writes_z;
         bool uses_implicit_point_line_varyings;
 
+        /* True if a fragment shader reads gl_PrimitiveID */
+        bool fs_uses_primitive_id;
+
         /* If the fragment shader does anything that requires to force
          * per-sample MSAA, such as reading gl_SampleID.
          */
@@ -701,7 +717,7 @@ struct v3d_compile {
         struct qreg execute;
         bool in_control_flow;
 
-        struct qreg line_x, point_x, point_y;
+        struct qreg line_x, point_x, point_y, primitive_id;
 
         /**
          * Instance ID, which comes in before the vertex attribute payload if
@@ -918,10 +934,15 @@ struct v3d_gs_prog_data {
 
         /* Number of GS invocations */
         uint8_t num_invocations;
+
+        bool writes_psiz;
 };
 
 struct v3d_fs_prog_data {
         struct v3d_prog_data base;
+
+        /* Whether the program reads gl_PrimitiveID */
+        bool uses_pid;
 
         struct v3d_varying_slot input_slots[V3D_MAX_FS_INPUTS];
 
@@ -953,6 +974,25 @@ struct v3d_compute_prog_data {
         /* If the shader uses subgroup functionality */
         bool has_subgroups;
 };
+
+struct vpm_config {
+   uint32_t As;
+   uint32_t Vc;
+   uint32_t Gs;
+   uint32_t Gd;
+   uint32_t Gv;
+   uint32_t Ve;
+   uint32_t gs_width;
+};
+
+bool
+v3d_compute_vpm_config(struct v3d_device_info *devinfo,
+                       struct v3d_vs_prog_data *vs_bin,
+                       struct v3d_vs_prog_data *vs,
+                       struct v3d_gs_prog_data *gs_bin,
+                       struct v3d_gs_prog_data *gs,
+                       struct vpm_config *vpm_cfg_bin,
+                       struct vpm_config *vpm_cfg);
 
 static inline bool
 vir_has_uniform(struct qinst *inst)

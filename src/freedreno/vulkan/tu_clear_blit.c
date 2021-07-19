@@ -469,16 +469,20 @@ r3d_common(struct tu_cmd_buffer *cmd, struct tu_cs *cs, bool blit, uint32_t num_
          .gfx_bindless = 0x1f,
          .cs_bindless = 0x1f));
 
+   tu6_emit_xs_config(cs, MESA_SHADER_VERTEX, &vs);
+   tu6_emit_xs_config(cs, MESA_SHADER_TESS_CTRL, NULL);
+   tu6_emit_xs_config(cs, MESA_SHADER_TESS_EVAL, NULL);
+   tu6_emit_xs_config(cs, MESA_SHADER_GEOMETRY, NULL);
+   tu6_emit_xs_config(cs, MESA_SHADER_FRAGMENT, &fs);
+
    struct tu_pvtmem_config pvtmem = {};
-   tu6_emit_xs_config(cs, MESA_SHADER_VERTEX, &vs, &pvtmem, global_iova(cmd, shaders[GLOBAL_SH_VS]));
-   tu6_emit_xs_config(cs, MESA_SHADER_TESS_CTRL, NULL, &pvtmem, 0);
-   tu6_emit_xs_config(cs, MESA_SHADER_TESS_EVAL, NULL, &pvtmem, 0);
-   tu6_emit_xs_config(cs, MESA_SHADER_GEOMETRY, NULL, &pvtmem, 0);
-   tu6_emit_xs_config(cs, MESA_SHADER_FRAGMENT, &fs, &pvtmem, global_iova(cmd, shaders[fs_id]));
+   tu6_emit_xs(cs, MESA_SHADER_VERTEX, &vs, &pvtmem, global_iova(cmd, shaders[GLOBAL_SH_VS]));
+   tu6_emit_xs(cs, MESA_SHADER_FRAGMENT, &fs, &pvtmem, global_iova(cmd, shaders[fs_id]));
 
    tu_cs_emit_regs(cs, A6XX_PC_PRIMITIVE_CNTL_0());
    tu_cs_emit_regs(cs, A6XX_VFD_CONTROL_0());
 
+   if (cmd->device->physical_device->info->a6xx.has_cp_reg_write) {
    /* Copy what the blob does here. This will emit an extra 0x3f
     * CP_EVENT_WRITE when multiview is disabled. I'm not exactly sure what
     * this is working around yet.
@@ -487,9 +491,12 @@ r3d_common(struct tu_cmd_buffer *cmd, struct tu_cs *cs, bool blit, uint32_t num_
    tu_cs_emit(cs, CP_REG_WRITE_0_TRACKER(UNK_EVENT_WRITE));
    tu_cs_emit(cs, REG_A6XX_PC_MULTIVIEW_CNTL);
    tu_cs_emit(cs, 0);
+   } else {
+      tu_cs_emit_regs(cs, A6XX_PC_MULTIVIEW_CNTL());
+   }
    tu_cs_emit_regs(cs, A6XX_VFD_MULTIVIEW_CNTL());
 
-   tu6_emit_vpc(cs, &vs, NULL, NULL, NULL, &fs, 0, false);
+   tu6_emit_vpc(cs, &vs, NULL, NULL, NULL, &fs, 0);
 
    /* REPL_MODE for varying with RECTLIST (2 vertices only) */
    tu_cs_emit_regs(cs, A6XX_VPC_VARYING_INTERP_MODE(0, 0));
@@ -1713,7 +1720,7 @@ tu_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
    TU_FROM_HANDLE(tu_buffer, buffer, dstBuffer);
 
    struct tu_cs_memory tmp;
-   VkResult result = tu_cs_alloc(&cmd->sub_cs, DIV_ROUND_UP(dataSize, 64), 64, &tmp);
+   VkResult result = tu_cs_alloc(&cmd->sub_cs, DIV_ROUND_UP(dataSize, 64), 64 / 4, &tmp);
    if (result != VK_SUCCESS) {
       cmd->record_result = result;
       return;
@@ -2594,9 +2601,9 @@ tu_store_gmem_attachment(struct tu_cmd_buffer *cmd,
       y2 != iview->extent.height || iview->need_y2_align;
 
    bool unaligned =
-      x1 % phys_dev->info.gmem_align_w ||
-      (x2 % phys_dev->info.gmem_align_w && x2 != iview->extent.width) ||
-      y1 % phys_dev->info.gmem_align_h || (y2 % phys_dev->info.gmem_align_h && need_y2_align);
+      x1 % phys_dev->info->gmem_align_w ||
+      (x2 % phys_dev->info->gmem_align_w && x2 != iview->extent.width) ||
+      y1 % phys_dev->info->gmem_align_h || (y2 % phys_dev->info->gmem_align_h && need_y2_align);
 
    /* D32_SFLOAT_S8_UINT is quite special format: it has two planes,
     * one for depth and other for stencil. When resolving a MSAA
