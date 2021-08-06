@@ -441,37 +441,9 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
    assert(module->size % 4 == 0);
 
    uint32_t num_spec_entries = 0;
-   struct nir_spirv_specialization *spec_entries = NULL;
-   if (spec_info && spec_info->mapEntryCount > 0) {
-      num_spec_entries = spec_info->mapEntryCount;
-      spec_entries = calloc(num_spec_entries, sizeof(*spec_entries));
-      for (uint32_t i = 0; i < num_spec_entries; i++) {
-         VkSpecializationMapEntry entry = spec_info->pMapEntries[i];
-         const void *data =
-            (char *)spec_info->pData + entry.offset;
-         assert((const char *)((char *)data + entry.size) <=
-                (char *)spec_info->pData + spec_info->dataSize);
+   struct nir_spirv_specialization *spec_entries =
+      vk_spec_info_to_nir_spirv(spec_info, &num_spec_entries);
 
-         spec_entries[i].id = entry.constantID;
-         switch (entry.size) {
-         case 8:
-            spec_entries[i].value.u64 = *(const uint64_t *)data;
-            break;
-         case 4:
-            spec_entries[i].value.u32 = *(const uint32_t *)data;
-            break;
-         case 2:
-            spec_entries[i].value.u16 = *(const uint16_t *)data;
-            break;
-         case 1:
-            spec_entries[i].value.u8 = *(const uint8_t *)data;
-            break;
-         default:
-            assert(!"Invalid spec constant size");
-            break;
-         }
-      }
-   }
    struct lvp_device *pdevice = pipeline->device;
    const struct spirv_to_nir_options spirv_options = {
       .environment = NIR_SPIRV_VULKAN,
@@ -816,12 +788,29 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
       pipeline->disable_multisample = line_state->lineRasterizationMode == VK_LINE_RASTERIZATION_MODE_BRESENHAM_EXT ||
                                       line_state->lineRasterizationMode == VK_LINE_RASTERIZATION_MODE_RECTANGULAR_SMOOTH_EXT;
       pipeline->line_rectangular = line_state->lineRasterizationMode != VK_LINE_RASTERIZATION_MODE_BRESENHAM_EXT;
-      if (!dynamic_state_contains(pipeline->graphics_create_info.pDynamicState, VK_DYNAMIC_STATE_LINE_STIPPLE_EXT)) {
-         pipeline->line_stipple_factor = line_state->lineStippleFactor - 1;
-         pipeline->line_stipple_pattern = line_state->lineStipplePattern;
+      if (pipeline->line_stipple_enable) {
+         if (!dynamic_state_contains(pipeline->graphics_create_info.pDynamicState, VK_DYNAMIC_STATE_LINE_STIPPLE_EXT)) {
+            pipeline->line_stipple_factor = line_state->lineStippleFactor - 1;
+            pipeline->line_stipple_pattern = line_state->lineStipplePattern;
+         } else {
+            pipeline->line_stipple_factor = 0;
+            pipeline->line_stipple_pattern = UINT16_MAX;
+         }
       }
    } else
       pipeline->line_rectangular = true;
+
+   if (!dynamic_state_contains(pipeline->graphics_create_info.pDynamicState, VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT)) {
+      const VkPipelineColorWriteCreateInfoEXT *cw_state =
+         vk_find_struct_const(pCreateInfo->pColorBlendState, PIPELINE_COLOR_WRITE_CREATE_INFO_EXT);
+      if (cw_state) {
+         for (unsigned i = 0; i < cw_state->attachmentCount; i++)
+            if (!cw_state->pColorWriteEnables[i]) {
+               VkPipelineColorBlendAttachmentState *att = (void*)&pipeline->graphics_create_info.pColorBlendState->pAttachments[i];
+               att->colorWriteMask = 0;
+            }
+      }
+   }
 
 
    for (uint32_t i = 0; i < pCreateInfo->stageCount; i++) {

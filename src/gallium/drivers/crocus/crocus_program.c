@@ -1074,10 +1074,10 @@ crocus_debug_recompile(struct crocus_context *ice,
    if (!info)
       return;
 
-   c->shader_perf_log(&ice->dbg, "Recompiling %s shader for program %s: %s\n",
-                      _mesa_shader_stage_to_string(info->stage),
-                      info->name ? info->name : "(no identifier)",
-                      info->label ? info->label : "");
+   brw_shader_perf_log(c, &ice->dbg, "Recompiling %s shader for program %s: %s\n",
+                       _mesa_shader_stage_to_string(info->stage),
+                       info->name ? info->name : "(no identifier)",
+                       info->label ? info->label : "");
 
    const void *old_key =
       crocus_find_previous_compile(ice, info->stage, key->program_string_id);
@@ -1988,6 +1988,8 @@ update_last_vue_map(struct crocus_context *ice,
 
    if (changed_slots || (old_map && old_map->separate != vue_map->separate)) {
       ice->state.dirty |= CROCUS_DIRTY_GEN7_SBE;
+      if (devinfo->ver < 6)
+         ice->state.dirty |= CROCUS_DIRTY_GEN4_FF_GS_PROG;
       ice->state.stage_dirty |= CROCUS_STAGE_DIRTY_UNCOMPILED_FS;
    }
 
@@ -2696,7 +2698,7 @@ crocus_create_uncompiled_shader(struct pipe_context *ctx,
 
    brw_preprocess_nir(screen->compiler, nir, NULL);
 
-   NIR_PASS_V(nir, brw_nir_lower_image_load_store, devinfo, false);
+   NIR_PASS_V(nir, brw_nir_lower_storage_image, devinfo, false);
    NIR_PASS_V(nir, crocus_lower_storage_image_derefs);
 
    nir_sweep(nir);

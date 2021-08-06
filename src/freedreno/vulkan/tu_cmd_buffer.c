@@ -540,6 +540,9 @@ use_sysmem_rendering(struct tu_cmd_buffer *cmd)
    if (cmd->state.has_tess)
       return true;
 
+   if (cmd->state.disable_gmem)
+      return true;
+
    return false;
 }
 
@@ -681,7 +684,7 @@ tu6_emit_tile_store(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
    }
 }
 
-static void
+void
 tu_disable_draw_states(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
 {
    tu_cs_emit_pkt7(cs, CP_SET_DRAW_STATE, 3);
@@ -1166,7 +1169,7 @@ static void
 tu6_sysmem_render_end(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
 {
    /* Do any resolves of the last subpass. These are handled in the
-    * tile_store_ib in the gmem path.
+    * tile_store_cs in the gmem path.
     */
    tu6_emit_sysmem_resolves(cmd, cs, cmd->state.subpass);
 
@@ -1239,7 +1242,7 @@ tu6_render_tile(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
       tu_cs_emit(cs, A6XX_CP_SET_MARKER_0_MODE(RM6_ENDVIS));
    }
 
-   tu_cs_emit_ib(cs, &cmd->state.tile_store_ib);
+   tu_cs_emit_call(cs, &cmd->tile_store_cs);
 
    tu_cs_sanity_check(cs);
 }
@@ -1296,25 +1299,6 @@ tu_cmd_render_sysmem(struct tu_cmd_buffer *cmd)
    tu6_sysmem_render_end(cmd, &cmd->cs);
 }
 
-static void
-tu_cmd_prepare_tile_store_ib(struct tu_cmd_buffer *cmd)
-{
-   const uint32_t tile_store_space = 7 + (35 * 2) * cmd->state.pass->attachment_count;
-   struct tu_cs sub_cs;
-
-   VkResult result =
-      tu_cs_begin_sub_stream(&cmd->sub_cs, tile_store_space, &sub_cs);
-   if (result != VK_SUCCESS) {
-      cmd->record_result = result;
-      return;
-   }
-
-   /* emit to tile-store sub_cs */
-   tu6_emit_tile_store(cmd, &sub_cs);
-
-   cmd->state.tile_store_ib = tu_cs_end_sub_stream(&cmd->sub_cs, &sub_cs);
-}
-
 static VkResult
 tu_create_cmd_buffer(struct tu_device *device,
                      struct tu_cmd_pool *pool,
@@ -1346,6 +1330,7 @@ tu_create_cmd_buffer(struct tu_device *device,
 
    tu_cs_init(&cmd_buffer->cs, device, TU_CS_MODE_GROW, 4096);
    tu_cs_init(&cmd_buffer->draw_cs, device, TU_CS_MODE_GROW, 4096);
+   tu_cs_init(&cmd_buffer->tile_store_cs, device, TU_CS_MODE_GROW, 2048);
    tu_cs_init(&cmd_buffer->draw_epilogue_cs, device, TU_CS_MODE_GROW, 4096);
    tu_cs_init(&cmd_buffer->sub_cs, device, TU_CS_MODE_SUB_STREAM, 2048);
 
@@ -1361,6 +1346,7 @@ tu_cmd_buffer_destroy(struct tu_cmd_buffer *cmd_buffer)
 
    tu_cs_finish(&cmd_buffer->cs);
    tu_cs_finish(&cmd_buffer->draw_cs);
+   tu_cs_finish(&cmd_buffer->tile_store_cs);
    tu_cs_finish(&cmd_buffer->draw_epilogue_cs);
    tu_cs_finish(&cmd_buffer->sub_cs);
 
@@ -1374,6 +1360,7 @@ tu_reset_cmd_buffer(struct tu_cmd_buffer *cmd_buffer)
 
    tu_cs_reset(&cmd_buffer->cs);
    tu_cs_reset(&cmd_buffer->draw_cs);
+   tu_cs_reset(&cmd_buffer->tile_store_cs);
    tu_cs_reset(&cmd_buffer->draw_epilogue_cs);
    tu_cs_reset(&cmd_buffer->sub_cs);
 
@@ -1507,6 +1494,7 @@ tu_BeginCommandBuffer(VkCommandBuffer commandBuffer,
 
    tu_cs_begin(&cmd_buffer->cs);
    tu_cs_begin(&cmd_buffer->draw_cs);
+   tu_cs_begin(&cmd_buffer->tile_store_cs);
    tu_cs_begin(&cmd_buffer->draw_epilogue_cs);
 
    /* setup initial configuration into command buffer */
@@ -2048,6 +2036,7 @@ tu_EndCommandBuffer(VkCommandBuffer commandBuffer)
 
    tu_cs_end(&cmd_buffer->cs);
    tu_cs_end(&cmd_buffer->draw_cs);
+   tu_cs_end(&cmd_buffer->tile_store_cs);
    tu_cs_end(&cmd_buffer->draw_epilogue_cs);
 
    cmd_buffer->status = TU_CMD_BUFFER_STATUS_EXECUTABLE;
@@ -2766,6 +2755,8 @@ tu_CmdExecuteCommands(VkCommandBuffer commandBuffer,
             cmd->state.has_tess = true;
          if (secondary->state.has_subpass_predication)
             cmd->state.has_subpass_predication = true;
+         if (secondary->state.disable_gmem)
+            cmd->state.disable_gmem = true;
       } else {
          assert(tu_cs_is_empty(&secondary->draw_cs));
          assert(tu_cs_is_empty(&secondary->draw_epilogue_cs));
@@ -2923,8 +2914,6 @@ tu_CmdBeginRenderPass2(VkCommandBuffer commandBuffer,
    cmd->state.subpass = pass->subpasses;
    cmd->state.framebuffer = fb;
    cmd->state.render_area = pRenderPassBegin->renderArea;
-
-   tu_cmd_prepare_tile_store_ib(cmd);
 
    /* Note: because this is external, any flushes will happen before draw_cs
     * gets called. However deferred flushes could have to happen later as part
@@ -4360,7 +4349,10 @@ tu_CmdEndRenderPass2(VkCommandBuffer commandBuffer,
 {
    TU_FROM_HANDLE(tu_cmd_buffer, cmd_buffer, commandBuffer);
 
+   tu6_emit_tile_store(cmd_buffer, &cmd_buffer->tile_store_cs);
+
    tu_cs_end(&cmd_buffer->draw_cs);
+   tu_cs_end(&cmd_buffer->tile_store_cs);
    tu_cs_end(&cmd_buffer->draw_epilogue_cs);
 
    if (use_sysmem_rendering(cmd_buffer))
@@ -4368,10 +4360,9 @@ tu_CmdEndRenderPass2(VkCommandBuffer commandBuffer,
    else
       tu_cmd_render_tiles(cmd_buffer);
 
-   /* outside of renderpasses we assume all draw states are disabled
-    * we can do this in the main cs because no resolve/store commands
-    * should use a draw command (TODO: this will change if unaligned
-    * GMEM stores are supported)
+   /* Outside of renderpasses we assume all draw states are disabled. We do
+    * this outside the draw CS for the normal case where 3d gmem stores aren't
+    * used.
     */
    tu_disable_draw_states(cmd_buffer, &cmd_buffer->cs);
 
@@ -4379,6 +4370,8 @@ tu_CmdEndRenderPass2(VkCommandBuffer commandBuffer,
       rendered */
    tu_cs_discard_entries(&cmd_buffer->draw_cs);
    tu_cs_begin(&cmd_buffer->draw_cs);
+   tu_cs_discard_entries(&cmd_buffer->tile_store_cs);
+   tu_cs_begin(&cmd_buffer->tile_store_cs);
    tu_cs_discard_entries(&cmd_buffer->draw_epilogue_cs);
    tu_cs_begin(&cmd_buffer->draw_epilogue_cs);
 
@@ -4391,6 +4384,7 @@ tu_CmdEndRenderPass2(VkCommandBuffer commandBuffer,
    cmd_buffer->state.framebuffer = NULL;
    cmd_buffer->state.has_tess = false;
    cmd_buffer->state.has_subpass_predication = false;
+   cmd_buffer->state.disable_gmem = false;
 
    /* LRZ is not valid next time we use it */
    cmd_buffer->state.lrz.valid = false;
@@ -4402,6 +4396,7 @@ struct tu_barrier_info
    uint32_t eventCount;
    const VkEvent *pEvents;
    VkPipelineStageFlags srcStageMask;
+   VkPipelineStageFlags dstStageMask;
 };
 
 static void
@@ -4417,6 +4412,39 @@ tu_barrier(struct tu_cmd_buffer *cmd,
    struct tu_cs *cs = cmd->state.pass ? &cmd->draw_cs : &cmd->cs;
    VkAccessFlags srcAccessMask = 0;
    VkAccessFlags dstAccessMask = 0;
+
+   if (cmd->state.pass) {
+      const VkPipelineStageFlags framebuffer_space_stages =
+         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+      /* We cannot have non-by-region "fb-space to fb-space" barriers.
+       *
+       * From the Vulkan 1.2.185 spec, section 7.6.1 "Subpass Self-dependency":
+       *
+       *    If the source and destination stage masks both include
+       *    framebuffer-space stages, then dependencyFlags must include
+       *    VK_DEPENDENCY_BY_REGION_BIT.
+       *    [...]
+       *    Each of the synchronization scopes and access scopes of a
+       *    vkCmdPipelineBarrier2KHR or vkCmdPipelineBarrier command inside
+       *    a render pass instance must be a subset of the scopes of one of
+       *    the self-dependencies for the current subpass.
+       *
+       *    If the self-dependency has VK_DEPENDENCY_BY_REGION_BIT or
+       *    VK_DEPENDENCY_VIEW_LOCAL_BIT set, then so must the pipeline barrier.
+       *
+       * By-region barriers are ok for gmem. All other barriers would involve
+       * vtx stages which are NOT ok for gmem rendering.
+       * See dep_invalid_for_gmem().
+       */
+      if ((info->srcStageMask & ~framebuffer_space_stages) ||
+          (info->dstStageMask & ~framebuffer_space_stages)) {
+         cmd->state.disable_gmem = true;
+      }
+   }
 
    for (uint32_t i = 0; i < memoryBarrierCount; i++) {
       srcAccessMask |= pMemoryBarriers[i].srcAccessMask;
@@ -4490,6 +4518,7 @@ tu_CmdPipelineBarrier(VkCommandBuffer commandBuffer,
    info.eventCount = 0;
    info.pEvents = NULL;
    info.srcStageMask = srcStageMask;
+   info.dstStageMask = dstStageMask;
 
    tu_barrier(cmd_buffer, memoryBarrierCount, pMemoryBarriers,
               bufferMemoryBarrierCount, pBufferMemoryBarriers,
@@ -4567,7 +4596,8 @@ tu_CmdWaitEvents(VkCommandBuffer commandBuffer,
 
    info.eventCount = eventCount;
    info.pEvents = pEvents;
-   info.srcStageMask = 0;
+   info.srcStageMask = srcStageMask;
+   info.dstStageMask = dstStageMask;
 
    tu_barrier(cmd, memoryBarrierCount, pMemoryBarriers,
               bufferMemoryBarrierCount, pBufferMemoryBarriers,

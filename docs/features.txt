@@ -235,11 +235,9 @@ GL 4.6, GLSL 4.60 -- all DONE: radeonsi, zink
   GL_ARB_shader_draw_parameters                         DONE (i965, llvmpipe, nvc0)
   GL_ARB_shader_group_vote                              DONE (i965, nvc0, llvmpipe)
   GL_ARB_spirv_extensions                               DONE (i965/gen7+, llvmpipe)
-  GL_ARB_texture_filter_anisotropic                     DONE (etnaviv/HALTI0, freedreno, i965, nv50, nvc0, r600, softpipe (*), llvmpipe (*), d3d12, virgl)
+  GL_ARB_texture_filter_anisotropic                     DONE (etnaviv/HALTI0, freedreno, i965, nv50, nvc0, r600, softpipe, llvmpipe, d3d12, virgl)
   GL_ARB_transform_feedback_overflow_query              DONE (i965/gen6+, nvc0, llvmpipe, softpipe, virgl)
   GL_KHR_no_error                                       DONE (all drivers)
-
-(*) softpipe and llvmpipe advertise 16x anisotropy but simply ignore the setting
 
 These are the extensions cherry-picked to make GLES 3.1
 GLES3.1, GLSL ES 3.1 -- all DONE: i965/hsw+, nvc0, r600, radeonsi, virgl, v3d, softpipe, llvmpipe, zink, panfrost
@@ -308,7 +306,7 @@ Khronos, ARB, and OES extensions that are not part of any OpenGL or OpenGL ES ve
   GL_ARB_robustness_isolation                           not started
   GL_ARB_sample_locations                               DONE (nvc0, zink)
   GL_ARB_seamless_cubemap_per_texture                   DONE (etnaviv/SEAMLESS_CUBE_MAP, freedreno, i965, nvc0, r600, radeonsi, softpipe, swr, virgl)
-  GL_ARB_shader_ballot                                  DONE (i965/gen8+, nvc0, radeonsi)
+  GL_ARB_shader_ballot                                  DONE (i965/gen8+, nvc0, radeonsi, zink)
   GL_ARB_shader_clock                                   DONE (i965/gen7+, nv50, nvc0, r600, radeonsi, virgl, zink)
   GL_ARB_shader_stencil_export                          DONE (i965/gen9+, r600, radeonsi, softpipe, llvmpipe, swr, virgl, panfrost, zink)
   GL_ARB_shader_viewport_layer_array                    DONE (i965/gen6+, nvc0, radeonsi, zink)
@@ -462,7 +460,7 @@ Vulkan 1.2 -- all DONE: anv, vn
   VK_KHR_shader_float_controls                          DONE (anv/gen8+, radv, tu, vn)
   VK_KHR_shader_subgroup_extended_types                 DONE (anv/gen8+, radv, vn)
   VK_KHR_spirv_1_4                                      DONE (anv, radv, tu, vn)
-  VK_KHR_timeline_semaphore                             DONE (anv, radv, tu, vn)
+  VK_KHR_timeline_semaphore                             DONE (anv, lvp, radv, tu, vn)
   VK_KHR_uniform_buffer_standard_layout                 DONE (anv, lvp, radv, v3dv, vn)
   VK_KHR_vulkan_memory_model                            DONE (anv, radv, tu, vn)
   VK_EXT_descriptor_indexing                            DONE (anv/gen9+, radv, tu, vn)
@@ -510,10 +508,10 @@ Khronos extensions that are not part of any Vulkan version:
   VK_KHR_zero_initialize_workgroup_memory               DONE (anv, radv)
   VK_EXT_4444_formats                                   DONE (anv, radv, tu)
   VK_EXT_calibrated_timestamps                          DONE (anv, lvp, radv)
-  VK_EXT_color_write_enable                             DONE (anv)
+  VK_EXT_color_write_enable                             DONE (anv, lvp)
   VK_EXT_conditional_rendering                          DONE (anv, lvp, radv, tu)
   VK_EXT_conservative_rasterization                     DONE (anv/gen9+, radv)
-  VK_EXT_custom_border_color                            DONE (anv, lvp, radv, tu)
+  VK_EXT_custom_border_color                            DONE (anv, lvp, radv, tu, v3dv)
   VK_EXT_debug_marker                                   DONE (radv)
   VK_EXT_depth_clip_enable                              DONE (anv, radv, tu)
   VK_EXT_depth_range_unrestricted                       DONE (radv)
@@ -535,7 +533,7 @@ Khronos extensions that are not part of any Vulkan version:
   VK_EXT_memory_priority                                DONE (radv)
   VK_EXT_multi_draw                                     DONE (anv, lvp, radv)
   VK_EXT_pci_bus_info                                   DONE (anv, radv)
-  VK_EXT_physical_device_drm                            DONE (anv, radv)
+  VK_EXT_physical_device_drm                            DONE (anv, radv, v3dv)
   VK_EXT_pipeline_creation_cache_control                DONE (anv, radv)
   VK_EXT_pipeline_creation_feedback                     DONE (anv, radv)
   VK_EXT_post_depth_coverage                            DONE (anv/gfx10+, lvp, radv)
@@ -545,6 +543,7 @@ Khronos extensions that are not part of any Vulkan version:
   VK_EXT_robustness2                                    DONE (anv, radv, tu)
   VK_EXT_sample_locations                               DONE (anv, radv/gfx9-, tu/a650)
   VK_EXT_shader_atomic_float                            DONE (anv, radv)
+  VK_EXT_shader_atomic_float2                           DONE (anv/gen9+, radv)
   VK_EXT_shader_demote_to_helper_invocation             DONE (anv, radv, tu)
   VK_EXT_shader_image_atomic_int64                      DONE (radv)
   VK_EXT_shader_stencil_export                          DONE (anv/gen9+, lvp, radv, tu)
@@ -564,6 +563,7 @@ Khronos extensions that are not part of any Vulkan version:
   VK_IMG_filter_cubic                                   DONE (tu/a650)
   VK_NV_compute_shader_derivatives                      DONE (anv, radv)
   VK_EXT_acquire_drm_display                            DONE (radv, anv)
+  VK_VALVE_mutable_descriptor_type                      DONE (radv, tu)
 
 
 OpenCL 1.0 -- all DONE:

@@ -118,6 +118,15 @@ struct v3dv_physical_device {
    int32_t display_fd;
    int32_t master_fd;
 
+   /* We need these because it is not clear how to detect
+    * valid devids in a portable way
+     */
+   bool has_primary;
+   bool has_render;
+
+   dev_t primary_devid;
+   dev_t render_devid;
+
    uint8_t driver_build_sha1[20];
    uint8_t pipeline_cache_uuid[VK_UUID_SIZE];
    uint8_t device_uuid[VK_UUID_SIZE];
@@ -265,6 +274,7 @@ struct v3dv_pipeline_key {
    } color_fmt[V3D_MAX_DRAW_BUFFERS];
    uint8_t f32_color_rb;
    uint32_t va_swap_rb_mask;
+   bool has_multiview;
 };
 
 struct v3dv_pipeline_cache_stats {
@@ -641,12 +651,27 @@ struct v3dv_subpass {
     */
    bool do_depth_clear_with_draw;
    bool do_stencil_clear_with_draw;
+
+   /* Multiview */
+   uint32_t view_mask;
 };
 
 struct v3dv_render_pass_attachment {
    VkAttachmentDescription desc;
+
    uint32_t first_subpass;
    uint32_t last_subpass;
+
+   /* When multiview is enabled, we no longer care about when a particular
+    * attachment is first or last used in a render pass, since not all views
+    * in the attachment will meet that criteria. Instead, we need to track
+    * each individual view (layer) in each attachment and emit our stores,
+    * loads and clears accordingly.
+    */
+   struct {
+      uint32_t first_subpass;
+      uint32_t last_subpass;
+   } views[MAX_MULTIVIEW_VIEW_COUNT];
 
    /* If this is a multismapled attachment that is going to be resolved,
     * whether we can use the TLB resolve on store.
@@ -656,6 +681,8 @@ struct v3dv_render_pass_attachment {
 
 struct v3dv_render_pass {
    struct vk_object_base base;
+
+   bool multiview_enabled;
 
    uint32_t attachment_count;
    struct v3dv_render_pass_attachment *attachments;
@@ -792,6 +819,7 @@ enum v3dv_cmd_dirty_bits {
    V3DV_CMD_DIRTY_OCCLUSION_QUERY           = 1 << 13,
    V3DV_CMD_DIRTY_DEPTH_BIAS                = 1 << 14,
    V3DV_CMD_DIRTY_LINE_WIDTH                = 1 << 15,
+   V3DV_CMD_DIRTY_VIEW_INDEX                = 1 << 16,
 };
 
 struct v3dv_dynamic_state {
@@ -868,6 +896,9 @@ struct v3dv_reset_query_cpu_job_info {
 struct v3dv_end_query_cpu_job_info {
    struct v3dv_query_pool *pool;
    uint32_t query;
+
+   /* This is one unless multiview is used */
+   uint32_t count;
 };
 
 struct v3dv_copy_query_results_cpu_job_info {
@@ -919,6 +950,9 @@ struct v3dv_csd_indirect_cpu_job_info {
 struct v3dv_timestamp_query_cpu_job_info {
    struct v3dv_query_pool *pool;
    uint32_t query;
+
+   /* This is one unless multiview is used */
+   uint32_t count;
 };
 
 struct v3dv_job {
@@ -1132,6 +1166,9 @@ struct v3dv_cmd_buffer_state {
       struct v3dv_cl_reloc gs;
       struct v3dv_cl_reloc fs;
    } uniforms;
+
+   /* Current view index for multiview rendering */
+   uint32_t view_index;
 
    /* Used to flag OOM conditions during command buffer recording */
    bool oom;

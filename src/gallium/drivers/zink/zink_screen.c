@@ -409,6 +409,9 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_POINT_SPRITE:
       return 1;
 
+   case PIPE_CAP_TGSI_BALLOT:
+      return screen->vk_version >= VK_MAKE_VERSION(1,2,0) && screen->info.props11.subgroupSize <= 64;
+
    case PIPE_CAP_SAMPLE_SHADING:
       return screen->info.feats.features.sampleRateShading;
 
@@ -1084,12 +1087,14 @@ zink_destroy_screen(struct pipe_screen *pscreen)
    }
 #endif
    disk_cache_destroy(screen->disk_cache);
-   simple_mtx_lock(&screen->mem_cache_mtx);
-   hash_table_foreach(screen->resource_mem_cache, he)
-      resource_cache_entry_destroy(screen, he);
-   _mesa_hash_table_destroy(screen->resource_mem_cache, NULL);
-   simple_mtx_unlock(&screen->mem_cache_mtx);
-   simple_mtx_destroy(&screen->mem_cache_mtx);
+
+   for (uint32_t i = 0; i < screen->info.mem_props.memoryHeapCount; ++i) {
+      simple_mtx_lock(&screen->mem[i].mem_cache_mtx);
+      hash_table_foreach(&screen->mem[i].resource_mem_cache, he)
+         resource_cache_entry_destroy(screen, he);
+      simple_mtx_unlock(&screen->mem[i].mem_cache_mtx);
+      simple_mtx_destroy(&screen->mem[i].mem_cache_mtx);
+   }
 
    util_live_shader_cache_deinit(&screen->shaders);
 
@@ -1645,12 +1650,12 @@ zink_query_memory_info(struct pipe_screen *pscreen, struct pipe_memory_info *inf
       for (unsigned i = 0; i < mem.memoryProperties.memoryHeapCount; i++) {
          if (mem.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
             /* VRAM */
-            info->total_device_memory = mem.memoryProperties.memoryHeaps[i].size / 1024;
-            info->avail_device_memory = (budget.heapBudget[i] - budget.heapUsage[i]) / 1024;
-         } else if (mem.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+            info->total_device_memory += mem.memoryProperties.memoryHeaps[i].size / 1024;
+            info->avail_device_memory += (budget.heapBudget[i] - budget.heapUsage[i]) / 1024;
+         } else {
             /* GART */
-            info->total_staging_memory = mem.memoryProperties.memoryHeaps[i].size / 1024;
-            info->avail_staging_memory = (budget.heapBudget[i] - budget.heapUsage[i]) / 1024;
+            info->total_staging_memory += mem.memoryProperties.memoryHeaps[i].size / 1024;
+            info->avail_staging_memory += (budget.heapBudget[i] - budget.heapUsage[i]) / 1024;
          }
       }
       /* evictions not yet supported in vulkan */
@@ -1658,14 +1663,14 @@ zink_query_memory_info(struct pipe_screen *pscreen, struct pipe_memory_info *inf
       for (unsigned i = 0; i < screen->info.mem_props.memoryHeapCount; i++) {
          if (screen->info.mem_props.memoryHeaps[i].flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
             /* VRAM */
-            info->total_device_memory = screen->info.mem_props.memoryHeaps[i].size / 1024;
+            info->total_device_memory += screen->info.mem_props.memoryHeaps[i].size / 1024;
             /* free real estate! */
-            info->avail_device_memory = info->total_device_memory;
-         } else if (screen->info.mem_props.memoryHeaps[i].flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+            info->avail_device_memory += info->total_device_memory;
+         } else {
             /* GART */
-            info->total_staging_memory = screen->info.mem_props.memoryHeaps[i].size / 1024;
+            info->total_staging_memory += screen->info.mem_props.memoryHeaps[i].size / 1024;
             /* free real estate! */
-            info->avail_staging_memory = info->total_staging_memory;
+            info->avail_staging_memory += info->total_staging_memory;
          }
       }
    }
@@ -1897,15 +1902,22 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    slab_create_parent(&screen->transfer_pool, sizeof(struct zink_transfer), 16);
 
 #if WITH_XMLCONFIG
-   if (config)
+   if (config) {
+      driParseConfigFiles(config->options, config->options_info, 0, "zink",
+                          NULL, NULL, NULL, 0, NULL, 0);
       screen->driconf.dual_color_blend_by_location = driQueryOptionb(config->options, "dual_color_blend_by_location");
       //screen->driconf.inline_uniforms = driQueryOptionb(config->options, "radeonsi_inline_uniforms");
+   }
 #endif
    screen->driconf.inline_uniforms = debug_get_bool_option("ZINK_INLINE_UNIFORMS", false);
 
    screen->total_video_mem = get_video_mem(screen);
+   screen->clamp_video_mem = screen->total_video_mem * 0.8;
    if (!os_get_total_physical_memory(&screen->total_mem))
       goto fail;
+
+   if (debug_get_bool_option("ZINK_NO_TIMELINES", false))
+      screen->info.have_KHR_timeline_semaphore = false;
    if (screen->info.have_KHR_timeline_semaphore)
       zink_screen_init_semaphore(screen);
 

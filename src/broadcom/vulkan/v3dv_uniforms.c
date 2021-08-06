@@ -401,6 +401,7 @@ v3dv_write_uniforms_wg_offsets(struct v3dv_cmd_buffer *cmd_buffer,
 
    struct v3dv_job *job = cmd_buffer->state.job;
    assert(job);
+   assert(job->cmd_buffer == cmd_buffer);
 
    struct texture_bo_list tex_bos = { 0 };
    struct state_bo_list state_bos = { 0 };
@@ -505,16 +506,28 @@ v3dv_write_uniforms_wg_offsets(struct v3dv_cmd_buffer *cmd_buffer,
        * is only for sanityzing the shader and it only affects the specific case
        * of secondary command buffers without framebuffer info available it
        * might not be worth the trouble.
+       *
+       * With multiview the number of layers is dictated by the view mask
+       * and not by the framebuffer layers. We do set the job's frame tiling
+       * information correctly from the view mask in that case, however,
+       * secondary command buffers may not have valid frame tiling data,
+       * so when multiview is enabled, we always set the number of layers
+       * from the subpass view mask.
        */
       case QUNIFORM_FB_LAYERS: {
+         const struct v3dv_cmd_buffer_state *state = &job->cmd_buffer->state;
+         const uint32_t view_mask =
+            state->pass->subpasses[state->subpass_idx].view_mask;
+
          uint32_t num_layers;
-         if (job->frame_tiling.layers != 0) {
+         if (view_mask != 0) {
+            num_layers = util_last_bit(view_mask);
+         } else if (job->frame_tiling.layers != 0) {
             num_layers = job->frame_tiling.layers;
-         } else if (job->cmd_buffer &&
-                  job->cmd_buffer->state.framebuffer) {
-            num_layers = job->cmd_buffer->state.framebuffer->layers;
+         } else if (cmd_buffer->state.framebuffer) {
+            num_layers = cmd_buffer->state.framebuffer->layers;
          } else {
-            assert(job->cmd_buffer->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+            assert(cmd_buffer->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
             num_layers = 2048;
 #if DEBUG
             fprintf(stderr, "Skipping gl_LayerID shader sanity check for "
@@ -524,6 +537,10 @@ v3dv_write_uniforms_wg_offsets(struct v3dv_cmd_buffer *cmd_buffer,
          cl_aligned_u32(&uniforms, num_layers);
          break;
       }
+
+      case QUNIFORM_VIEW_INDEX:
+         cl_aligned_u32(&uniforms, job->cmd_buffer->state.view_index);
+         break;
 
       case QUNIFORM_NUM_WORK_GROUPS:
          assert(job->type == V3DV_JOB_TYPE_GPU_CSD);

@@ -51,19 +51,23 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
                          struct zink_gfx_pipeline_state *state,
                          VkPrimitiveTopology primitive_topology)
 {
-   VkPipelineVertexInputStateCreateInfo vertex_input_state = {0};
-   vertex_input_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-   vertex_input_state.pVertexBindingDescriptions = state->element_state->bindings;
-   vertex_input_state.vertexBindingDescriptionCount = state->element_state->num_bindings;
-   vertex_input_state.pVertexAttributeDescriptions = state->element_state->attribs;
-   vertex_input_state.vertexAttributeDescriptionCount = state->element_state->num_attribs;
+   VkPipelineVertexInputStateCreateInfo vertex_input_state;
+   if (!screen->info.have_EXT_vertex_input_dynamic_state) {
+      memset(&vertex_input_state, 0, sizeof(vertex_input_state));
+      vertex_input_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+      vertex_input_state.pVertexBindingDescriptions = state->element_state->b.bindings;
+      vertex_input_state.vertexBindingDescriptionCount = state->element_state->num_bindings;
+      vertex_input_state.pVertexAttributeDescriptions = state->element_state->attribs;
+      vertex_input_state.vertexAttributeDescriptionCount = state->element_state->num_attribs;
+   }
 
-   VkPipelineVertexInputDivisorStateCreateInfoEXT vdiv_state = {0};
-   if (state->element_state->divisors_present) {
+   VkPipelineVertexInputDivisorStateCreateInfoEXT vdiv_state;
+   if (!screen->info.have_EXT_vertex_input_dynamic_state && state->element_state->b.divisors_present) {
+       memset(&vdiv_state, 0, sizeof(vdiv_state));
        vertex_input_state.pNext = &vdiv_state;
        vdiv_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT;
-       vdiv_state.vertexBindingDivisorCount = state->element_state->divisors_present;
-       vdiv_state.pVertexBindingDivisors = state->element_state->divisors;
+       vdiv_state.vertexBindingDivisorCount = state->element_state->b.divisors_present;
+       vdiv_state.pVertexBindingDivisors = state->element_state->b.divisors;
    }
 
    VkPipelineInputAssemblyStateCreateInfo primitive_state = {0};
@@ -145,24 +149,6 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
       rast_state.pNext = &pv_state;
    }
 
-   VkPipelineRasterizationLineStateCreateInfoEXT rast_line_state;
-   if (screen->info.have_EXT_line_rasterization) {
-      rast_line_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT;
-      rast_line_state.pNext = rast_state.pNext;
-      rast_line_state.lineRasterizationMode = state->rast_state->line_mode;
-
-      if (state->rast_state->line_stipple_pattern != UINT16_MAX) {
-         rast_line_state.stippledLineEnable = VK_TRUE;
-         rast_line_state.lineStippleFactor = state->rast_state->line_stipple_factor + 1;
-         rast_line_state.lineStipplePattern = state->rast_state->line_stipple_pattern;
-      } else {
-         rast_line_state.stippledLineEnable = VK_FALSE;
-         rast_line_state.lineStippleFactor = 0;
-         rast_line_state.lineStipplePattern = 0;
-      }
-      rast_state.pNext = &rast_line_state;
-   }
-
    VkPipelineDepthStencilStateCreateInfo depth_stencil_state = {0};
    depth_stencil_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
    depth_stencil_state.depthTestEnable = state->depth_stencil_alpha_state->depth_test;
@@ -202,6 +188,23 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VIEWPORT;
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_SCISSOR;
    }
+   if (screen->info.have_EXT_vertex_input_dynamic_state) {
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
+   }
+
+   VkPipelineRasterizationLineStateCreateInfoEXT rast_line_state;
+   if (screen->info.have_EXT_line_rasterization) {
+      rast_line_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT;
+      rast_line_state.pNext = rast_state.pNext;
+      rast_line_state.stippledLineEnable = VK_FALSE;
+      rast_line_state.lineRasterizationMode = state->rast_state->line_mode;
+
+      if (state->rast_state->line_stipple_enable) {
+         dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_LINE_STIPPLE_EXT;
+         rast_line_state.stippledLineEnable = VK_TRUE;
+      }
+      rast_state.pNext = &rast_line_state;
+   }
 
    VkPipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo = {0};
    pipelineDynamicStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
@@ -212,7 +215,8 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
    pci.layout = prog->base.layout;
    pci.renderPass = state->render_pass->render_pass;
-   pci.pVertexInputState = &vertex_input_state;
+   if (!screen->info.have_EXT_vertex_input_dynamic_state)
+      pci.pVertexInputState = &vertex_input_state;
    pci.pInputAssemblyState = &primitive_state;
    pci.pRasterizationState = &rast_state;
    pci.pColorBlendState = &blend_state;

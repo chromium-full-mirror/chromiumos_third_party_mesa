@@ -183,6 +183,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .ANDROID_native_buffer = true,
 #endif
       .IMG_filter_cubic = device->info->a6xx.has_tex_filter_cubic,
+      .VALVE_mutable_descriptor_type = true,
    };
 }
 
@@ -192,15 +193,15 @@ tu_physical_device_init(struct tu_physical_device *device,
 {
    VkResult result = VK_SUCCESS;
 
-   device->name = fd_dev_name(device->gpu_id);
+   device->name = fd_dev_name(&device->dev_id);
 
-   const struct fd_dev_info *info = fd_dev_info(device->gpu_id);
+   const struct fd_dev_info *info = fd_dev_info(&device->dev_id);
    if (!info) {
       result = vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
                                  "device %s is unsupported", device->name);
       return result;
    }
-   switch (device->gpu_id / 100) {
+   switch (fd_dev_gen(&device->dev_id)) {
    case 6:
       device->info = info;
       device->ccu_offset_bypass = device->info->num_ccu * A6XX_CCU_DEPTH_SIZE;
@@ -212,7 +213,7 @@ tu_physical_device_init(struct tu_physical_device *device,
                                  "device %s is unsupported", device->name);
       return result;
    }
-   if (tu_device_get_cache_uuid(device->gpu_id, device->cache_uuid)) {
+   if (tu_device_get_cache_uuid(fd_dev_gpu_id(&device->dev_id), device->cache_uuid)) {
       result = vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
                                  "cannot generate UUID");
       return result;
@@ -228,7 +229,7 @@ tu_physical_device_init(struct tu_physical_device *device,
    vk_warn_non_conformant_implementation("tu");
 
    fd_get_driver_uuid(device->driver_uuid);
-   fd_get_device_uuid(device->device_uuid, device->gpu_id);
+   fd_get_device_uuid(device->device_uuid, &device->dev_id);
 
    struct vk_device_extension_table supported_extensions;
    get_device_extensions(device, &supported_extensions);
@@ -739,6 +740,12 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          features->transformFeedbackPreservesProvokingVertex = true;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_VALVE: {
+         VkPhysicalDeviceMutableDescriptorTypeFeaturesVALVE *features =
+            (VkPhysicalDeviceMutableDescriptorTypeFeaturesVALVE *)ext;
+         features->mutableDescriptorType = true;
+         break;
+      }
 
       default:
          break;
@@ -817,7 +824,7 @@ tu_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
       .maxComputeSharedMemorySize = 32768,
       .maxComputeWorkGroupCount = { 65535, 65535, 65535 },
       .maxComputeWorkGroupInvocations = 2048,
-      .maxComputeWorkGroupSize = { 2048, 2048, 2048 },
+      .maxComputeWorkGroupSize = { 1024, 1024, 1024 },
       .subPixelPrecisionBits = 8,
       .subTexelPrecisionBits = 8,
       .mipmapPrecisionBits = 8,
@@ -1021,9 +1028,9 @@ tu_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          props->maxPerStageUpdateAfterBindResources = max_descriptor_set_size;
          props->maxDescriptorSetUpdateAfterBindSamplers = max_descriptor_set_size;
          props->maxDescriptorSetUpdateAfterBindUniformBuffers = max_descriptor_set_size;
-         props->maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = MAX_DYNAMIC_BUFFERS / 2;
+         props->maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = MAX_DYNAMIC_UNIFORM_BUFFERS;
          props->maxDescriptorSetUpdateAfterBindStorageBuffers = max_descriptor_set_size;
-         props->maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = MAX_DYNAMIC_BUFFERS / 2;
+         props->maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = MAX_DYNAMIC_STORAGE_BUFFERS;
          props->maxDescriptorSetUpdateAfterBindSampledImages = max_descriptor_set_size;
          props->maxDescriptorSetUpdateAfterBindStorageImages = max_descriptor_set_size;
          props->maxDescriptorSetUpdateAfterBindInputAttachments = max_descriptor_set_size;
@@ -1321,7 +1328,7 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
       }
    }
 
-   device->compiler = ir3_compiler_create(NULL, physical_device->gpu_id,
+   device->compiler = ir3_compiler_create(NULL, &physical_device->dev_id,
                                           robust_buffer_access2);
    if (!device->compiler) {
       result = vk_startup_errorf(physical_device->instance,
@@ -1339,7 +1346,7 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
       global_size += TU_BORDER_COLOR_COUNT * sizeof(struct bcolor_entry);
 
    result = tu_bo_init_new(device, &device->global_bo, global_size,
-                           TU_BO_ALLOC_NO_FLAGS);
+                           TU_BO_ALLOC_ALLOW_DUMP);
    if (result != VK_SUCCESS) {
       vk_startup_errorf(device->instance, result, "BO init");
       goto fail_global_bo;
@@ -1352,7 +1359,7 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    }
 
    struct tu6_global *global = device->global_bo.map;
-   tu_init_clear_blit_shaders(device->global_bo.map);
+   tu_init_clear_blit_shaders(device);
    global->predicate = 0;
    tu6_pack_border_color(&global->bcolor_builtin[VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK],
                          &(VkClearColorValue) {}, false);
@@ -1467,6 +1474,7 @@ fail_perfcntrs_pass_entries_alloc:
 fail_perfcntrs_pass_alloc:
    tu_DestroyPipelineCache(tu_device_to_handle(device), pc, NULL);
 fail_pipeline_cache:
+   tu_destroy_clear_blit_shaders(device);
 fail_global_bo_map:
    tu_bo_finish(device, &device->global_bo);
 
@@ -1505,6 +1513,8 @@ tu_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
       if (device->scratch_bos[i].initialized)
          tu_bo_finish(device, &device->scratch_bos[i].bo);
    }
+
+   tu_destroy_clear_blit_shaders(device);
 
    ir3_compiler_destroy(device->compiler);
 

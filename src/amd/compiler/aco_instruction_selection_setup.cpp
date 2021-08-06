@@ -720,6 +720,8 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_ssbo_atomic_xor:
                case nir_intrinsic_ssbo_atomic_exchange:
                case nir_intrinsic_ssbo_atomic_comp_swap:
+               case nir_intrinsic_ssbo_atomic_fmin:
+               case nir_intrinsic_ssbo_atomic_fmax:
                case nir_intrinsic_global_atomic_add:
                case nir_intrinsic_global_atomic_imin:
                case nir_intrinsic_global_atomic_umin:
@@ -730,6 +732,8 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_global_atomic_xor:
                case nir_intrinsic_global_atomic_exchange:
                case nir_intrinsic_global_atomic_comp_swap:
+               case nir_intrinsic_global_atomic_fmin:
+               case nir_intrinsic_global_atomic_fmax:
                case nir_intrinsic_image_deref_atomic_add:
                case nir_intrinsic_image_deref_atomic_umin:
                case nir_intrinsic_image_deref_atomic_imin:
@@ -740,6 +744,8 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_image_deref_atomic_xor:
                case nir_intrinsic_image_deref_atomic_exchange:
                case nir_intrinsic_image_deref_atomic_comp_swap:
+               case nir_intrinsic_image_deref_atomic_fmin:
+               case nir_intrinsic_image_deref_atomic_fmax:
                case nir_intrinsic_image_deref_size:
                case nir_intrinsic_shared_atomic_add:
                case nir_intrinsic_shared_atomic_imin:
@@ -752,13 +758,15 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_shared_atomic_exchange:
                case nir_intrinsic_shared_atomic_comp_swap:
                case nir_intrinsic_shared_atomic_fadd:
+               case nir_intrinsic_shared_atomic_fmin:
+               case nir_intrinsic_shared_atomic_fmax:
                case nir_intrinsic_load_scratch:
                case nir_intrinsic_load_invocation_id:
                case nir_intrinsic_load_primitive_id:
                case nir_intrinsic_load_buffer_amd:
                case nir_intrinsic_load_tess_rel_patch_id_amd:
                case nir_intrinsic_load_gs_vertex_offset_amd:
-               case nir_intrinsic_load_initial_edgeflag_amd:
+               case nir_intrinsic_load_initial_edgeflags_amd:
                case nir_intrinsic_load_packed_passthrough_primitive_amd:
                case nir_intrinsic_gds_atomic_add_amd:
                case nir_intrinsic_load_sbt_amd:

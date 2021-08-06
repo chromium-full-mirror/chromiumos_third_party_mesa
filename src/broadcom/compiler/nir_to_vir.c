@@ -1877,9 +1877,7 @@ v3d_optimize_nir(struct v3d_compile *c, struct nir_shader *s)
                 if (c && !c->disable_loop_unrolling &&
                     s->options->max_unroll_iterations > 0) {
                        bool local_progress = false;
-                       NIR_PASS(local_progress, s, nir_opt_loop_unroll,
-                                nir_var_shader_in |
-                                nir_var_function_temp);
+                       NIR_PASS(local_progress, s, nir_opt_loop_unroll);
                        c->unrolled_any_loops |= local_progress;
                        progress |= local_progress;
                 }
@@ -3291,6 +3289,11 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                 unreachable("Should have been lowered");
                 break;
 
+        case nir_intrinsic_load_view_index:
+                ntq_store_dest(c, &instr->dest, 0,
+                               vir_uniform(c, QUNIFORM_VIEW_INDEX, 0));
+                break;
+
         default:
                 fprintf(stderr, "Unknown intrinsic: ");
                 nir_print_instr(&instr->instr, stderr);
@@ -3601,6 +3604,10 @@ ntq_emit_instr(struct v3d_compile *c, nir_instr *instr)
                 break;
 
         case nir_instr_type_jump:
+                /* Always flush TMU before jumping to another block, for the
+                 * same reasons as in ntq_emit_block.
+                 */
+                ntq_flush_tmu(c);
                 if (vir_in_nonuniform_control_flow(c))
                         ntq_emit_jump(c, nir_instr_as_jump(instr));
                 else

@@ -690,7 +690,10 @@ zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, nir_shad
    }
 
    /* TODO: use a separate mem ctx here for ralloc */
-   if (zs->nir->info.stage < MESA_SHADER_FRAGMENT) {
+   switch (zs->nir->info.stage) {
+   case MESA_SHADER_VERTEX:
+   case MESA_SHADER_TESS_EVAL:
+   case MESA_SHADER_GEOMETRY:
       if (zink_vs_key(key)->last_vertex_stage) {
          if (zs->streamout.have_xfb)
             streamout = &zs->streamout;
@@ -702,7 +705,8 @@ zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, nir_shad
             NIR_PASS_V(nir, lower_drawid);
          }
       }
-   } else if (zs->nir->info.stage == MESA_SHADER_FRAGMENT) {
+      break;
+   case MESA_SHADER_FRAGMENT:
       if (!zink_fs_key(key)->samples &&
           nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK)) {
          /* VK will always use gl_SampleMask[] values even if sample count is 0,
@@ -723,6 +727,8 @@ zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, nir_shad
          NIR_PASS_V(nir, nir_lower_texcoord_replace, zink_fs_key(key)->coord_replace_bits,
                     false, zink_fs_key(key)->coord_replace_yinvert);
       }
+      break;
+   default: break;
    }
    NIR_PASS_V(nir, nir_convert_from_ssa, true);
 
@@ -844,7 +850,7 @@ unbreak_bos(nir_shader *shader)
       const struct glsl_type *type = glsl_without_array(var->type);
       if (type_is_counter(type))
          continue;
-      unsigned size = glsl_count_attribute_slots(type, false);
+      unsigned size = glsl_count_attribute_slots(glsl_type_is_array(var->type) ? var->type : type, false);
       if (var->data.mode == nir_var_mem_ubo)
          max_ubo_size = MAX2(max_ubo_size, size);
       else
@@ -932,6 +938,7 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
    bool have_psiz = false;
 
    ret->programs = _mesa_pointer_set_create(NULL);
+   simple_mtx_init(&ret->lock, mtx_plain);
 
    nir_variable_mode indirect_derefs_modes = nir_var_function_temp;
    if (nir->info.stage == MESA_SHADER_TESS_CTRL ||
@@ -955,6 +962,17 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
    NIR_PASS_V(nir, lower_work_dim);
    NIR_PASS_V(nir, nir_lower_regs_to_ssa);
    NIR_PASS_V(nir, lower_baseinstance);
+
+   {
+      nir_lower_subgroups_options subgroup_options = {0};
+      subgroup_options.lower_to_scalar = true;
+      subgroup_options.subgroup_size = screen->info.props11.subgroupSize;
+      subgroup_options.ballot_bit_size = 32;
+      subgroup_options.ballot_components = 4;
+      subgroup_options.lower_subgroup_masks = true;
+      NIR_PASS_V(nir, nir_lower_subgroups, &subgroup_options);
+   }
+
    optimize_nir(nir);
    NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
    NIR_PASS_V(nir, lower_discard_if);
@@ -1123,6 +1141,7 @@ zink_shader_tcs_create(struct zink_context *ctx, struct zink_shader *vs)
    unsigned vertices_per_patch = ctx->gfx_pipeline_state.vertices_per_patch;
    struct zink_shader *ret = CALLOC_STRUCT(zink_shader);
    ret->programs = _mesa_pointer_set_create(NULL);
+   simple_mtx_init(&ret->lock, mtx_plain);
 
    nir_shader *nir = nir_shader_create(NULL, MESA_SHADER_TESS_CTRL, &zink_screen(ctx->base.screen)->nir_options, NULL);
    nir_function *fn = nir_function_create(nir, "main");

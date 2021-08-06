@@ -181,7 +181,7 @@ radv_optimize_nir(const struct radv_device *device, struct nir_shader *shader,
       NIR_PASS(progress, shader, nir_opt_shrink_vectors,
                !device->instance->disable_shrink_image_store);
       if (shader->options->max_unroll_iterations) {
-         NIR_PASS(progress, shader, nir_opt_loop_unroll, 0);
+         NIR_PASS(progress, shader, nir_opt_loop_unroll);
       }
    } while (progress && !optimize_conservatively);
 
@@ -461,37 +461,8 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
          radv_print_spirv(module->data, module->size, stderr);
 
       uint32_t num_spec_entries = 0;
-      struct nir_spirv_specialization *spec_entries = NULL;
-      if (spec_info && spec_info->mapEntryCount > 0) {
-         num_spec_entries = spec_info->mapEntryCount;
-         spec_entries = calloc(num_spec_entries, sizeof(*spec_entries));
-         for (uint32_t i = 0; i < num_spec_entries; i++) {
-            VkSpecializationMapEntry entry = spec_info->pMapEntries[i];
-            const void *data = (uint8_t *)spec_info->pData + entry.offset;
-            assert((uint8_t *)data + entry.size <=
-                   (uint8_t *)spec_info->pData + spec_info->dataSize);
-
-            spec_entries[i].id = spec_info->pMapEntries[i].constantID;
-            switch (entry.size) {
-            case 8:
-               memcpy(&spec_entries[i].value.u64, data, sizeof(uint64_t));
-               break;
-            case 4:
-               memcpy(&spec_entries[i].value.u32, data, sizeof(uint32_t));
-               break;
-            case 2:
-               memcpy(&spec_entries[i].value.u16, data, sizeof(uint16_t));
-               break;
-            case 1:
-               memcpy(&spec_entries[i].value.u8, data, sizeof(uint8_t));
-               break;
-            default:
-               assert(!"Invalid spec constant size");
-               break;
-            }
-         }
-      }
-
+      struct nir_spirv_specialization *spec_entries =
+         vk_spec_info_to_nir_spirv(spec_info, &num_spec_entries);
       struct radv_shader_debug_data spirv_debug_data = {
          .device = device,
          .module = module,
@@ -516,7 +487,9 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
                .float_controls = true,
                .float16 = device->physical_device->rad_info.has_packed_math_16bit,
                .float32_atomic_add = true,
+               .float32_atomic_min_max = true,
                .float64 = true,
+               .float64_atomic_min_max = true,
                .geometry_streams = true,
                .image_atomic_int64 = true,
                .image_ms_array = true,
@@ -673,9 +646,16 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
    static const nir_lower_tex_options tex_options = {
       .lower_txp = ~0,
       .lower_tg4_offsets = true,
+      .lower_txs_cube_array = true,
    };
 
    nir_lower_tex(nir, &tex_options);
+
+   static const nir_lower_image_options image_options = {
+      .lower_cube_size = true,
+   };
+
+   nir_lower_image(nir, &image_options);
 
    nir_lower_vars_to_ssa(nir);
 

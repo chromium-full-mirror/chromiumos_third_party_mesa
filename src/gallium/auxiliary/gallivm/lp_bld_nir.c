@@ -673,6 +673,9 @@ static LLVMValueRef do_alu_action(struct lp_build_nir_context *bld_base,
          result = LLVMBuildTrunc(builder, result, bld_base->uint_bld.vec_type, "");
       break;
    }
+   case nir_op_fisfinite32:
+      result = lp_build_isfinite(get_flt_bld(bld_base, src_bit_size[0]), src[0]);
+      break;
    case nir_op_flog2:
       result = lp_build_log2_safe(&bld_base->base, src[0]);
       break;
@@ -1021,7 +1024,7 @@ static void visit_alu(struct lp_build_nir_context *bld_base, const nir_alu_instr
          result[i] = cast_type(bld_base, src[i], nir_op_infos[instr->op].input_types[i], src_bit_size[i]);
       }
    } else if (instr->op == nir_op_fsum4 || instr->op == nir_op_fsum3 || instr->op == nir_op_fsum2) {
-      for (unsigned c = 0; c < nir_src_num_components(instr->src[0].src); c++) {
+      for (unsigned c = 0; c < nir_op_infos[instr->op].input_sizes[0]; c++) {
          LLVMValueRef temp_chan = LLVMBuildExtractValue(gallivm->builder,
                                                           src[0], c, "");
          temp_chan = cast_type(bld_base, temp_chan, nir_op_infos[instr->op].input_types[0], src_bit_size[0]);
@@ -1916,7 +1919,7 @@ static void visit_tex(struct lp_build_nir_context *bld_base, nir_tex_instr *inst
    LLVMBuilderRef builder = gallivm->builder;
    LLVMValueRef coords[5];
    LLVMValueRef offsets[3] = { NULL };
-   LLVMValueRef explicit_lod = NULL, projector = NULL, ms_index = NULL;
+   LLVMValueRef explicit_lod = NULL, ms_index = NULL;
    struct lp_sampler_params params;
    struct lp_derivatives derivs;
    unsigned sample_key = 0;
@@ -1962,9 +1965,6 @@ static void visit_tex(struct lp_build_nir_context *bld_base, nir_tex_instr *inst
          break;
       case nir_tex_src_sampler_deref:
          sampler_deref_instr = nir_src_as_deref(instr->src[i].src);
-         break;
-      case nir_tex_src_projector:
-         projector = lp_build_rcp(&bld_base->base, cast_type(bld_base, get_src(bld_base, instr->src[i].src), nir_type_float, 32));
          break;
       case nir_tex_src_comparator:
          sample_key |= LP_SAMPLER_SHADOW;
@@ -2066,13 +2066,6 @@ static void visit_tex(struct lp_build_nir_context *bld_base, nir_tex_instr *inst
       coords[1] = coord_undef;
    }
 
-   if (projector) {
-      for (unsigned chan = 0; chan < instr->coord_components; ++chan)
-         coords[chan] = lp_build_mul(&bld_base->base, coords[chan], projector);
-      if (sample_key & LP_SAMPLER_SHADOW)
-         coords[4] = lp_build_mul(&bld_base->base, coords[4], projector);
-   }
-
    uint32_t samp_base_index = 0, tex_base_index = 0;
    if (!sampler_deref_instr) {
       int samp_src_index = nir_tex_instr_src_index(instr, nir_tex_src_sampler_handle);
@@ -2109,6 +2102,7 @@ static void visit_tex(struct lp_build_nir_context *bld_base, nir_tex_instr *inst
    params.texel = texel;
    params.lod = explicit_lod;
    params.ms_index = ms_index;
+   params.aniso_filter_table = bld_base->aniso_filter_table;
    bld_base->tex(bld_base, &params);
    assign_dest(bld_base, &instr->dest, texel);
 }
@@ -2336,6 +2330,7 @@ void lp_build_opt_nir(struct nir_shader *nir)
 
    static const struct nir_lower_tex_options lower_tex_options = {
       .lower_tg4_offsets = true,
+      .lower_txp = ~0u,
    };
    NIR_PASS_V(nir, nir_lower_tex, &lower_tex_options);
    NIR_PASS_V(nir, nir_lower_frexp);
@@ -2348,7 +2343,7 @@ void lp_build_opt_nir(struct nir_shader *nir)
       NIR_PASS(progress, nir, nir_opt_algebraic);
       NIR_PASS(progress, nir, nir_lower_pack);
 
-      nir_lower_tex_options options = { .lower_tex_without_implicit_lod = true };
+      nir_lower_tex_options options = { 0, };
       NIR_PASS_V(nir, nir_lower_tex, &options);
 
       const nir_lower_subgroups_options subgroups_options = {

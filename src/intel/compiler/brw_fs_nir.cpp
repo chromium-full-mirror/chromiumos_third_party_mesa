@@ -359,6 +359,7 @@ fs_visitor::nir_emit_if(nir_if *if_stmt)
    if (cond != NULL && cond->op == nir_op_inot) {
       invert = true;
       cond_reg = get_nir_src(cond->src[0].src);
+      cond_reg = offset(cond_reg, bld, cond->src[0].swizzle[0]);
    } else {
       invert = false;
       cond_reg = get_nir_src(if_stmt->condition);
@@ -4190,6 +4191,9 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
 
    case nir_intrinsic_image_size:
    case nir_intrinsic_bindless_image_size: {
+      /* Cube image sizes should have previously been lowered to a 2D array */
+      assert(nir_intrinsic_image_dim(instr) != GLSL_SAMPLER_DIM_CUBE);
+
       /* Unlike the [un]typed load and store opcodes, the TXS that this turns
        * into will handle the binding table index for us in the geneerator.
        * Incidentally, this means that we can handle bindless with exactly the
@@ -4221,14 +4225,8 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
       inst->size_written = 4 * REG_SIZE;
 
       for (unsigned c = 0; c < instr->dest.ssa.num_components; ++c) {
-         if (c == 2 && nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_CUBE) {
-            bld.emit(SHADER_OPCODE_INT_QUOTIENT,
-                     offset(retype(dest, tmp.type), bld, c),
-                     component(offset(tmp, ubld, c), 0), brw_imm_ud(6));
-         } else {
-            bld.MOV(offset(retype(dest, tmp.type), bld, c),
-                    component(offset(tmp, ubld, c), 0));
-         }
+         bld.MOV(offset(retype(dest, tmp.type), bld, c),
+                 component(offset(tmp, ubld, c), 0));
       }
       break;
    }
@@ -5882,7 +5880,7 @@ fs_visitor::nir_emit_texture(const fs_builder &bld, nir_tex_instr *instr)
          switch (instr->op) {
          case nir_texop_txf:
          case nir_texop_txf_ms:
-         case nir_texop_txf_ms_mcs:
+         case nir_texop_txf_ms_mcs_intel:
          case nir_texop_samples_identical:
             srcs[TEX_LOGICAL_SRC_COORDINATE] = retype(src, BRW_REGISTER_TYPE_D);
             break;
@@ -5971,7 +5969,7 @@ fs_visitor::nir_emit_texture(const fs_builder &bld, nir_tex_instr *instr)
          srcs[TEX_LOGICAL_SRC_SAMPLER_HANDLE] = bld.emit_uniformize(src);
          break;
 
-      case nir_tex_src_ms_mcs:
+      case nir_tex_src_ms_mcs_intel:
          assert(instr->op == nir_texop_txf_ms);
          srcs[TEX_LOGICAL_SRC_MCS] = retype(src, BRW_REGISTER_TYPE_D);
          break;
@@ -6033,7 +6031,7 @@ fs_visitor::nir_emit_texture(const fs_builder &bld, nir_tex_instr *instr)
       else
          opcode = SHADER_OPCODE_TXF_CMS_LOGICAL;
       break;
-   case nir_texop_txf_ms_mcs:
+   case nir_texop_txf_ms_mcs_intel:
       opcode = SHADER_OPCODE_TXF_MCS_LOGICAL;
       break;
    case nir_texop_query_levels:

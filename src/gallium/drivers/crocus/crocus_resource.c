@@ -1542,12 +1542,17 @@ crocus_map_direct(struct crocus_transfer *map)
       const unsigned cpp = fmtl->bpb / 8;
       unsigned x0_el, y0_el;
 
+      assert(box->x % fmtl->bw == 0);
+      assert(box->y % fmtl->bh == 0);
       get_image_offset_el(surf, xfer->level, box->z, &x0_el, &y0_el);
+
+      x0_el += box->x / fmtl->bw;
+      y0_el += box->y / fmtl->bh;
 
       xfer->stride = isl_surf_get_row_pitch_B(surf);
       xfer->layer_stride = isl_surf_get_array_pitch(surf);
 
-      map->ptr = ptr + (y0_el + box->y) * xfer->stride + (x0_el + box->x) * cpp;
+      map->ptr = ptr + y0_el * xfer->stride + x0_el * cpp;
    }
 }
 
@@ -1577,6 +1582,7 @@ crocus_transfer_map(struct pipe_context *ctx,
    struct crocus_context *ice = (struct crocus_context *)ctx;
    struct crocus_resource *res = (struct crocus_resource *)resource;
    struct isl_surf *surf = &res->surf;
+   struct crocus_screen *screen = (struct crocus_screen *)ctx->screen;
 
    if (usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) {
       /* Replace the backing storage with a fresh buffer for non-async maps */
@@ -1690,7 +1696,7 @@ crocus_transfer_map(struct pipe_context *ctx,
       if (surf->tiling == ISL_TILING_W) {
          /* TODO: Teach crocus_map_tiled_memcpy about W-tiling... */
          crocus_map_s8(map);
-      } else if (surf->tiling != ISL_TILING_LINEAR) {
+      } else if (surf->tiling != ISL_TILING_LINEAR && screen->devinfo.ver > 4) {
          crocus_map_tiled_memcpy(map);
       } else {
          crocus_map_direct(map);

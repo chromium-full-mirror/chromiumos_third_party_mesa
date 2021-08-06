@@ -85,7 +85,7 @@ static const driOptionDescription anv_dri_options[] = {
 #endif
 
 static void
-compiler_debug_log(void *data, const char *fmt, ...)
+compiler_debug_log(void *data, UNUSED unsigned *id, const char *fmt, ...)
 {
    char str[MAX_DEBUG_MESSAGE_LENGTH];
    struct anv_device *device = (struct anv_device *)data;
@@ -105,7 +105,7 @@ compiler_debug_log(void *data, const char *fmt, ...)
 }
 
 static void
-compiler_perf_log(void *data, const char *fmt, ...)
+compiler_perf_log(UNUSED void *data, UNUSED unsigned *id, const char *fmt, ...)
 {
    va_list args;
    va_start(args, fmt);
@@ -303,6 +303,7 @@ get_device_extensions(const struct anv_physical_device *device,
       .EXT_scalar_block_layout               = true,
       .EXT_separate_stencil_usage            = true,
       .EXT_shader_atomic_float               = true,
+      .EXT_shader_atomic_float2              = device->info.ver >= 9,
       .EXT_shader_demote_to_helper_invocation = true,
       .EXT_shader_stencil_export             = device->info.ver >= 9,
       .EXT_shader_subgroup_ballot            = true,
@@ -810,12 +811,17 @@ anv_physical_device_try_create(struct anv_instance *instance,
       goto fail_alloc;
    }
 
+   if (!anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_FENCE_ARRAY)) {
+      result = vk_errorfi(device->instance, NULL,
+                          VK_ERROR_INITIALIZATION_FAILED,
+                          "kernel missing syncobj support");
+      goto fail_base;
+   }
+
    device->has_exec_async = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_ASYNC);
    device->has_exec_capture = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_CAPTURE);
    device->has_exec_fence = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_FENCE);
-   device->has_syncobj = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_FENCE_ARRAY);
-   device->has_syncobj_wait = device->has_syncobj &&
-                              anv_gem_supports_syncobj_wait(fd);
+   device->has_syncobj_wait = anv_gem_supports_syncobj_wait(fd);
    device->has_syncobj_wait_available =
       anv_gem_get_drm_cap(fd, DRM_CAP_SYNCOBJ_TIMELINE) != 0;
 
@@ -1030,7 +1036,7 @@ anv_init_dri_options(struct anv_instance *instance)
    driParseOptionInfo(&instance->available_dri_options, anv_dri_options,
                       ARRAY_SIZE(anv_dri_options));
    driParseConfigFiles(&instance->dri_options,
-                       &instance->available_dri_options, 0, "anv", NULL,
+                       &instance->available_dri_options, 0, "anv", NULL, NULL,
                        instance->vk.app_info.app_name,
                        instance->vk.app_info.app_version,
                        instance->vk.app_info.engine_name,
@@ -1514,7 +1520,9 @@ void anv_GetPhysicalDeviceFeatures2(
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR: {
          VkPhysicalDeviceFragmentShadingRateFeaturesKHR *features =
             (VkPhysicalDeviceFragmentShadingRateFeaturesKHR *)ext;
+         features->attachmentFragmentShadingRate = false;
          features->pipelineFragmentShadingRate = true;
+         features->primitiveFragmentShadingRate = false;
          break;
       }
 
@@ -1662,6 +1670,23 @@ void anv_GetPhysicalDeviceFeatures2(
          features->shaderImageFloat32AtomicAdd =   false;
          features->sparseImageFloat32Atomics =     false;
          features->sparseImageFloat32AtomicAdd =   false;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_2_FEATURES_EXT: {
+         VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT *features = (void *)ext;
+         features->shaderBufferFloat16Atomics      = false;
+         features->shaderBufferFloat16AtomicAdd    = false;
+         features->shaderBufferFloat16AtomicMinMax = false;
+         features->shaderBufferFloat32AtomicMinMax = pdevice->info.ver >= 9;
+         features->shaderBufferFloat64AtomicMinMax = false;
+         features->shaderSharedFloat16Atomics      = false;
+         features->shaderSharedFloat16AtomicAdd    = false;
+         features->shaderSharedFloat16AtomicMinMax = false;
+         features->shaderSharedFloat32AtomicMinMax = pdevice->info.ver >= 9;
+         features->shaderSharedFloat64AtomicMinMax = false;
+         features->shaderImageFloat32AtomicMinMax  = false;
+         features->sparseImageFloat32AtomicMinMax  = false;
          break;
       }
 
@@ -2316,12 +2341,12 @@ void anv_GetPhysicalDeviceProperties2(
          props->maxFragmentShadingRateAttachmentTexelSize = (VkExtent2D) { 0, 0 };
          props->maxFragmentShadingRateAttachmentTexelSizeAspectRatio = 0;
 
-         props->primitiveFragmentShadingRateWithMultipleViewports = pdevice->info.ver >= 12;
+         props->primitiveFragmentShadingRateWithMultipleViewports = false;
          props->layeredShadingRateAttachments = false;
-         props->fragmentShadingRateNonTrivialCombinerOps = true;
+         props->fragmentShadingRateNonTrivialCombinerOps = false;
          props->maxFragmentSize = (VkExtent2D) { 4, 4 };
          props->maxFragmentSizeAspectRatio = 4;
-         props->maxFragmentShadingRateCoverageSamples = 4 * 4;
+         props->maxFragmentShadingRateCoverageSamples = 4 * 4 * 16;
          props->maxFragmentShadingRateRasterizationSamples = VK_SAMPLE_COUNT_16_BIT;
          props->fragmentShadingRateWithShaderDepthStencilWrites = false;
          props->fragmentShadingRateWithSampleMask = true;
@@ -4925,7 +4950,11 @@ VkResult anv_GetPhysicalDeviceFragmentShadingRatesKHR(
 
    for (uint32_t x = 4; x >= 1; x /= 2) {
        for (uint32_t y = 4; y >= 1; y /= 2) {
-         append_rate(sample_counts, x, y);
+          /* For size {1, 1}, the sample count must be ~0 */
+          if (x == 1 && y == 1)
+             append_rate(~0, x, y);
+          else
+             append_rate(sample_counts, x, y);
       }
    }
 

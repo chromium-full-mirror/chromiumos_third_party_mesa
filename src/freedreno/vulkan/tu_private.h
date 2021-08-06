@@ -204,12 +204,12 @@ struct tu_physical_device
    int local_fd;
    int master_fd;
 
-   unsigned gpu_id;
    uint32_t gmem_size;
    uint64_t gmem_base;
    uint32_t ccu_offset_gmem;
    uint32_t ccu_offset_bypass;
 
+   struct fd_dev_id dev_id;
    const struct fd_dev_info *info;
 
    int msm_major_version;
@@ -315,9 +315,11 @@ struct tu_bo
 };
 
 enum global_shader {
-   GLOBAL_SH_VS,
+   GLOBAL_SH_VS_BLIT,
+   GLOBAL_SH_VS_CLEAR,
    GLOBAL_SH_FS_BLIT,
    GLOBAL_SH_FS_BLIT_ZSCALE,
+   GLOBAL_SH_FS_COPY_MS,
    GLOBAL_SH_FS_CLEAR0,
    GLOBAL_SH_FS_CLEAR_MAX = GLOBAL_SH_FS_CLEAR0 + MAX_RTS,
    GLOBAL_SH_COUNT,
@@ -326,11 +328,13 @@ enum global_shader {
 #define TU_BORDER_COLOR_COUNT 4096
 #define TU_BORDER_COLOR_BUILTIN 6
 
+#define TU_BLIT_SHADER_SIZE 1024
+
 /* This struct defines the layout of the global_bo */
 struct tu6_global
 {
-   /* clear/blit shaders, all <= 16 instrs (16 instr = 1 instrlen unit) */
-   instr_t shaders[GLOBAL_SH_COUNT][16];
+   /* clear/blit shaders */
+   uint32_t shaders[TU_BLIT_SHADER_SIZE];
 
    uint32_t seqno_dummy;          /* dummy seqno for CP_EVENT_WRITE */
    uint32_t _pad0;
@@ -353,8 +357,6 @@ struct tu6_global
 };
 #define gb_offset(member) offsetof(struct tu6_global, member)
 #define global_iova(cmd, member) ((cmd)->device->global_bo.iova + gb_offset(member))
-
-void tu_init_clear_blit_shaders(struct tu6_global *global);
 
 /* extra space in vsc draw/prim streams */
 #define VSC_PAD 0x40
@@ -389,6 +391,9 @@ struct tu_device
 
    struct tu_bo global_bo;
 
+   struct ir3_shader_variant *global_shaders[GLOBAL_SH_COUNT];
+   uint64_t global_shader_va[GLOBAL_SH_COUNT];
+
    uint32_t vsc_draw_strm_pitch;
    uint32_t vsc_prim_strm_pitch;
    BITSET_DECLARE(custom_border_color, TU_BORDER_COLOR_COUNT);
@@ -419,6 +424,10 @@ struct tu_device
    } gralloc_type;
 #endif
 };
+
+void tu_init_clear_blit_shaders(struct tu_device *dev);
+
+void tu_destroy_clear_blit_shaders(struct tu_device *dev);
 
 VkResult _tu_device_set_lost(struct tu_device *device,
                              const char *msg, ...) PRINTFLIKE(2, 3);
@@ -626,6 +635,7 @@ struct tu_descriptor_pool
    uint8_t *host_memory_base;
    uint8_t *host_memory_ptr;
    uint8_t *host_memory_end;
+   uint8_t *host_bo;
 
    uint32_t entry_count;
    uint32_t max_entry_count;
@@ -964,12 +974,11 @@ struct tu_cmd_state
    const struct tu_framebuffer *framebuffer;
    VkRect2D render_area;
 
-   struct tu_cs_entry tile_store_ib;
-
    bool xfb_used;
    bool has_tess;
    bool has_subpass_predication;
    bool predication_active;
+   bool disable_gmem;
 
    struct tu_lrz_state lrz;
 
@@ -1023,6 +1032,7 @@ struct tu_cmd_buffer
 
    struct tu_cs cs;
    struct tu_cs draw_cs;
+   struct tu_cs tile_store_cs;
    struct tu_cs draw_epilogue_cs;
    struct tu_cs sub_cs;
 
@@ -1228,6 +1238,8 @@ void tu6_emit_msaa(struct tu_cs *cs, VkSampleCountFlagBits samples);
 void tu6_emit_window_scissor(struct tu_cs *cs, uint32_t x1, uint32_t y1, uint32_t x2, uint32_t y2);
 
 void tu6_emit_window_offset(struct tu_cs *cs, uint32_t x1, uint32_t y1);
+
+void tu_disable_draw_states(struct tu_cmd_buffer *cmd, struct tu_cs *cs);
 
 struct tu_pvtmem_config {
    uint64_t iova;

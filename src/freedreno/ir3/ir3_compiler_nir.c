@@ -1312,7 +1312,7 @@ emit_control_barrier(struct ir3_context *ctx)
    struct ir3_block *b = ctx->block;
    struct ir3_instruction *barrier = ir3_BAR(b);
    barrier->cat7.g = true;
-   if (ctx->compiler->gpu_id < 600)
+   if (ctx->compiler->gen < 6)
       barrier->cat7.l = true;
    barrier->flags = IR3_INSTR_SS | IR3_INSTR_SY;
    barrier->barrier_class = IR3_BARRIER_EVERYTHING;
@@ -1361,7 +1361,7 @@ emit_intrinsic_barrier(struct ir3_context *ctx, nir_intrinsic_instr *intr)
             barrier->cat7.g = true;
          }
 
-         if (ctx->compiler->gpu_id > 600) {
+         if (ctx->compiler->gen >= 6) {
             if (modes & nir_var_mem_ssbo) {
                barrier->cat7.l = true;
             }
@@ -1407,7 +1407,7 @@ emit_intrinsic_barrier(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    case nir_intrinsic_memory_barrier_buffer:
       barrier = ir3_FENCE(b);
       barrier->cat7.g = true;
-      if (ctx->compiler->gpu_id > 600)
+      if (ctx->compiler->gen >= 6)
          barrier->cat7.l = true;
       barrier->cat7.r = true;
       barrier->cat7.w = true;
@@ -1425,7 +1425,7 @@ emit_intrinsic_barrier(struct ir3_context *ctx, nir_intrinsic_instr *intr)
       break;
    case nir_intrinsic_memory_barrier_shared:
       barrier = ir3_FENCE(b);
-      if (ctx->compiler->gpu_id < 600)
+      if (ctx->compiler->gen < 6)
          barrier->cat7.l = true;
       barrier->cat7.r = true;
       barrier->cat7.w = true;
@@ -1564,14 +1564,14 @@ emit_intrinsic_barycentric(struct ir3_context *ctx, nir_intrinsic_instr *intr,
          sysval = SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL;
          break;
       case SYSTEM_VALUE_BARYCENTRIC_PERSP_CENTROID:
-         if (ctx->compiler->gpu_id < 600)
+         if (ctx->compiler->gen < 6)
             sysval = SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL;
          break;
       case SYSTEM_VALUE_BARYCENTRIC_LINEAR_SAMPLE:
          sysval = SYSTEM_VALUE_BARYCENTRIC_LINEAR_PIXEL;
          break;
       case SYSTEM_VALUE_BARYCENTRIC_LINEAR_CENTROID:
-         if (ctx->compiler->gpu_id < 600)
+         if (ctx->compiler->gen < 6)
             sysval = SYSTEM_VALUE_BARYCENTRIC_LINEAR_PIXEL;
          break;
       default:
@@ -1703,7 +1703,15 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
       dst[0] = ctx->tcs_header;
       break;
 
+   case nir_intrinsic_load_rel_patch_id_ir3:
+      dst[0] = ctx->rel_patch_id;
+      break;
+
    case nir_intrinsic_load_primitive_id:
+      if (!ctx->primitive_id) {
+         ctx->primitive_id =
+            create_sysval_input(ctx, SYSTEM_VALUE_PRIMITIVE_ID, 0x1);
+      }
       dst[0] = ctx->primitive_id;
       break;
 
@@ -3281,7 +3289,7 @@ emit_function(struct ir3_context *ctx, nir_function_impl *impl)
     * out, we guarantee that all exit paths flow into the stream-
     * out instructions.
     */
-   if ((ctx->compiler->gpu_id < 500) &&
+   if ((ctx->compiler->gen < 5) &&
        (ctx->so->shader->stream_output.num_outputs > 0) &&
        !ctx->so->binning_pass) {
       debug_assert(ctx->so->type == MESA_SHADER_VERTEX);
@@ -3734,6 +3742,8 @@ emit_instructions(struct ir3_context *ctx)
       if (has_tess) {
          ctx->tcs_header =
             create_sysval_input(ctx, SYSTEM_VALUE_TCS_HEADER_IR3, 0x1);
+         ctx->rel_patch_id =
+            create_sysval_input(ctx, SYSTEM_VALUE_REL_PATCH_ID_IR3, 0x1);
          ctx->primitive_id =
             create_sysval_input(ctx, SYSTEM_VALUE_PRIMITIVE_ID, 0x1);
       } else if (has_gs) {
@@ -3746,21 +3756,22 @@ emit_instructions(struct ir3_context *ctx)
    case MESA_SHADER_TESS_CTRL:
       ctx->tcs_header =
          create_sysval_input(ctx, SYSTEM_VALUE_TCS_HEADER_IR3, 0x1);
-      ctx->primitive_id =
-         create_sysval_input(ctx, SYSTEM_VALUE_PRIMITIVE_ID, 0x1);
+      ctx->rel_patch_id =
+         create_sysval_input(ctx, SYSTEM_VALUE_REL_PATCH_ID_IR3, 0x1);
       break;
    case MESA_SHADER_TESS_EVAL:
-      if (has_gs)
+      if (has_gs) {
          ctx->gs_header =
             create_sysval_input(ctx, SYSTEM_VALUE_GS_HEADER_IR3, 0x1);
-      ctx->primitive_id =
-         create_sysval_input(ctx, SYSTEM_VALUE_PRIMITIVE_ID, 0x1);
+         ctx->primitive_id =
+            create_sysval_input(ctx, SYSTEM_VALUE_PRIMITIVE_ID, 0x1);
+      }
+      ctx->rel_patch_id =
+         create_sysval_input(ctx, SYSTEM_VALUE_REL_PATCH_ID_IR3, 0x1);
       break;
    case MESA_SHADER_GEOMETRY:
       ctx->gs_header =
          create_sysval_input(ctx, SYSTEM_VALUE_GS_HEADER_IR3, 0x1);
-      ctx->primitive_id =
-         create_sysval_input(ctx, SYSTEM_VALUE_PRIMITIVE_ID, 0x1);
       break;
    default:
       break;
@@ -3828,7 +3839,8 @@ static bool
 output_slot_used_for_binning(gl_varying_slot slot)
 {
    return slot == VARYING_SLOT_POS || slot == VARYING_SLOT_PSIZ ||
-          slot == VARYING_SLOT_CLIP_DIST0 || slot == VARYING_SLOT_CLIP_DIST1;
+          slot == VARYING_SLOT_CLIP_DIST0 || slot == VARYING_SLOT_CLIP_DIST1 ||
+          slot == VARYING_SLOT_VIEWPORT;
 }
 
 static struct ir3_instruction *
@@ -3985,6 +3997,19 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
          struct ir3_instruction *out = ir3_collect(ctx, ctx->primitive_id);
          outputs[outputs_count] = out;
          outidxs[outputs_count] = n;
+         if (so->type == MESA_SHADER_VERTEX && ctx->rel_patch_id)
+            regids[outputs_count] = regid(0, 2);
+         else
+            regids[outputs_count] = regid(0, 1);
+         outputs_count++;
+      }
+
+      if (so->type == MESA_SHADER_VERTEX && ctx->rel_patch_id) {
+         unsigned n = so->outputs_count++;
+         so->outputs[n].slot = VARYING_SLOT_REL_PATCH_ID_IR3;
+         struct ir3_instruction *out = ir3_collect(ctx, ctx->rel_patch_id);
+         outputs[outputs_count] = out;
+         outidxs[outputs_count] = n;
          regids[outputs_count] = regid(0, 1);
          outputs_count++;
       }
@@ -4078,7 +4103,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
        * need to make sure not to remove any inputs that are used by
        * the nonbinning VS.
        */
-      if (ctx->compiler->gpu_id >= 600 && so->binning_pass &&
+      if (ctx->compiler->gen >= 6 && so->binning_pass &&
           so->type == MESA_SHADER_VERTEX) {
          for (int i = 0; i < ctx->ninputs; i++) {
             struct ir3_instruction *in = ctx->inputs[i];
@@ -4115,7 +4140,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
       array_insert(ctx->block, ctx->block->keeps, end);
 
       /* at this point, for binning pass, throw away unneeded outputs: */
-      if (so->binning_pass && (ctx->compiler->gpu_id < 600))
+      if (so->binning_pass && (ctx->compiler->gen < 6))
          fixup_binning_pass(ctx, end);
    }
 
@@ -4138,7 +4163,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
     * that the uniform/constant layout for BS and VS matches, so that
     * we can re-use same VS_CONST state group.
     */
-   if (so->binning_pass && (ctx->compiler->gpu_id >= 600)) {
+   if (so->binning_pass && (ctx->compiler->gen >= 6)) {
       fixup_binning_pass(ctx, find_end(ctx->so->ir));
       /* cleanup the result of removing unneeded outputs: */
       while (IR3_PASS(ir, ir3_dce, so)) {
@@ -4170,7 +4195,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
     *
     * Note that VS inputs are expected to be full precision.
     */
-   bool pre_assign_inputs = (ir->compiler->gpu_id >= 600) &&
+   bool pre_assign_inputs = (ir->compiler->gen >= 6) &&
                             (ir->type == MESA_SHADER_VERTEX) &&
                             so->binning_pass;
 
@@ -4187,7 +4212,9 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
        */
 
       ctx->tcs_header->dsts[0]->num = regid(0, 0);
-      ctx->primitive_id->dsts[0]->num = regid(0, 1);
+      ctx->rel_patch_id->dsts[0]->num = regid(0, 1);
+      if (ctx->primitive_id)
+         ctx->primitive_id->dsts[0]->num = regid(0, 2);
    } else if (ctx->gs_header) {
       /* We need to have these values in the same registers between producer
        * (VS or DS) and GS since the producer chains to GS and doesn't get
@@ -4195,7 +4222,8 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
        */
 
       ctx->gs_header->dsts[0]->num = regid(0, 0);
-      ctx->primitive_id->dsts[0]->num = regid(0, 1);
+      if (ctx->primitive_id)
+         ctx->primitive_id->dsts[0]->num = regid(0, 1);
    } else if (so->num_sampler_prefetch) {
       assert(so->type == MESA_SHADER_FRAGMENT);
       int idx = 0;

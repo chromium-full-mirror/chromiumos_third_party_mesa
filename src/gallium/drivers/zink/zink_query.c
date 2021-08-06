@@ -428,10 +428,13 @@ get_query_result(struct pipe_context *pctx,
 {
    struct zink_screen *screen = zink_screen(pctx->screen);
    struct zink_query *query = (struct zink_query *)q;
-   unsigned flags = PIPE_MAP_READ;
+   unsigned flags = PIPE_MAP_READ | PIPE_MAP_ONCE;
 
    if (!wait)
       flags |= PIPE_MAP_DONTBLOCK;
+   if (query->base.flushed)
+      /* this is not a context-safe operation; ensure map doesn't use slab alloc */
+      flags |= PIPE_MAP_THREAD_SAFE | PIPE_MAP_UNSYNCHRONIZED;
 
    util_query_clear_result(result, query->type);
 
@@ -784,7 +787,10 @@ zink_get_query_result(struct pipe_context *pctx,
          pctx->flush(pctx, NULL, 0);
       if (!wait)
          return false;
-   }
+   } else if (!threaded_query(q)->flushed &&
+              /* timeline drivers can wait during buffer map */
+              !zink_screen(pctx->screen)->info.have_KHR_timeline_semaphore)
+      zink_batch_usage_check_completion(ctx, query->batch_id);
 
    return get_query_result(pctx, q, wait, result);
 }

@@ -107,7 +107,7 @@ else
 
             LD_LIBRARY_PATH="$__LD_LIBRARY_PATH" \
             GALLIUM_DRIVER=llvmpipe \
-            GALLIVM_PERF="nopt,no_filter_hacks" \
+            GALLIVM_PERF="nopt" \
             VTEST_USE_EGL_SURFACELESS=1 \
             VTEST_USE_GLES=1 \
             virgl_test_server >"$RESULTS"/vtest-log.txt 2>&1 &
@@ -212,6 +212,10 @@ fi
 
 FAILURE_MESSAGE=$(printf "%s" "Unexpected change in results:")
 
+if [ "x$PIGLIT_PROFILES" = "xreplay" ]; then
+    ci-fairy minio login $MINIO_ARGS $CI_JOB_JWT
+fi
+
 eval $RUN_CMD
 
 if [ $? -ne 0 ]; then
@@ -236,8 +240,6 @@ mkdir -p .gitlab-ci/piglit
 
 if [ "x$PIGLIT_PROFILES" = "xreplay" ] \
        && [ ${PIGLIT_REPLAY_UPLOAD_TO_MINIO:-0} -eq 1 ]; then
-
-    ci-fairy minio login $MINIO_ARGS $CI_JOB_JWT
 
     __PREFIX="trace/$PIGLIT_REPLAY_DEVICE_NAME"
     __MINIO_PATH="$PIGLIT_REPLAY_ARTIFACTS_BASE_URL"

@@ -715,9 +715,9 @@ fs_visitor::limit_dispatch_width(unsigned n, const char *msg)
       fail("%s", msg);
    } else {
       max_dispatch_width = MIN2(max_dispatch_width, n);
-      compiler->shader_perf_log(log_data,
-                                "Shader dispatch width limited to SIMD%d: %s",
-                                n, msg);
+      brw_shader_perf_log(compiler, log_data,
+                          "Shader dispatch width limited to SIMD%d: %s",
+                          n, msg);
    }
 }
 
@@ -2656,16 +2656,23 @@ fs_visitor::assign_constant_locations()
    /* Now that we know how many regular uniforms we'll push, reduce the
     * UBO push ranges so we don't exceed the 3DSTATE_CONSTANT limits.
     */
+   /* For gen4/5:
+    * Only allow 16 registers (128 uniform components) as push constants.
+    *
+    * If changing this value, note the limitation about total_regs in
+    * brw_curbe.c/crocus_state.c
+    */
+   const unsigned max_push_length = compiler->devinfo->ver < 6 ? 16 : 64;
    unsigned push_length = DIV_ROUND_UP(stage_prog_data->nr_params, 8);
    for (int i = 0; i < 4; i++) {
       struct brw_ubo_range *range = &prog_data->ubo_ranges[i];
 
-      if (push_length + range->length > 64)
-         range->length = 64 - push_length;
+      if (push_length + range->length > max_push_length)
+         range->length = max_push_length - push_length;
 
       push_length += range->length;
    }
-   assert(push_length <= 64);
+   assert(push_length <= max_push_length);
 }
 
 bool
@@ -7322,6 +7329,7 @@ get_lowered_simd_width(const struct intel_device_info *devinfo,
    case BRW_OPCODE_SAD2:
    case BRW_OPCODE_MAD:
    case BRW_OPCODE_LRP:
+   case BRW_OPCODE_ADD3:
    case FS_OPCODE_PACK:
    case SHADER_OPCODE_SEL_EXEC:
    case SHADER_OPCODE_CLUSTER_BROADCAST:
@@ -8876,11 +8884,11 @@ fs_visitor::allocate_registers(bool allow_spilling)
       fail("Failure to register allocate.  Reduce number of "
            "live scalar values to avoid this.");
    } else if (spilled_any_registers) {
-      compiler->shader_perf_log(log_data,
-                                "%s shader triggered register spilling.  "
-                                "Try reducing the number of live scalar "
-                                "values to improve performance.\n",
-                                stage_name);
+      brw_shader_perf_log(compiler, log_data,
+                          "%s shader triggered register spilling.  "
+                          "Try reducing the number of live scalar "
+                          "values to improve performance.\n",
+                          stage_name);
    }
 
    /* This must come after all optimization and register allocation, since
@@ -9775,9 +9783,9 @@ brw_compile_fs(const struct brw_compiler *compiler,
                            debug_enabled);
       v16->import_uniforms(v8);
       if (!v16->run_fs(allow_spilling, params->use_rep_send)) {
-         compiler->shader_perf_log(params->log_data,
-                                   "SIMD16 shader failed to compile: %s",
-                                   v16->fail_msg);
+         brw_shader_perf_log(compiler, params->log_data,
+                             "SIMD16 shader failed to compile: %s",
+                             v16->fail_msg);
       } else {
          simd16_cfg = v16->cfg;
          prog_data->dispatch_grf_start_reg_16 = v16->payload.num_regs;
@@ -9803,14 +9811,15 @@ brw_compile_fs(const struct brw_compiler *compiler,
                            debug_enabled);
       v32->import_uniforms(v8);
       if (!v32->run_fs(allow_spilling, false)) {
-         compiler->shader_perf_log(params->log_data,
-                                   "SIMD32 shader failed to compile: %s",
-                                   v32->fail_msg);
+         brw_shader_perf_log(compiler, params->log_data,
+                             "SIMD32 shader failed to compile: %s",
+                             v32->fail_msg);
       } else {
          const performance &perf = v32->performance_analysis.require();
 
          if (!(INTEL_DEBUG & DEBUG_DO32) && throughput >= perf.throughput) {
-            compiler->shader_perf_log(params->log_data, "SIMD32 shader inefficient\n");
+            brw_shader_perf_log(compiler, params->log_data,
+                                "SIMD32 shader inefficient\n");
          } else {
             simd32_cfg = v32->cfg;
             prog_data->dispatch_grf_start_reg_32 = v32->payload.num_regs;
@@ -10166,9 +10175,9 @@ brw_compile_cs(const struct brw_compiler *compiler,
 
       const bool allow_spilling = generate_all || v == NULL;
       if (!v16->run_cs(allow_spilling)) {
-         compiler->shader_perf_log(params->log_data,
-                                   "SIMD16 shader failed to compile: %s",
-                                   v16->fail_msg);
+         brw_shader_perf_log(compiler, params->log_data,
+                             "SIMD16 shader failed to compile: %s",
+                             v16->fail_msg);
          if (!v) {
             assert(v8 == NULL);
             params->error_str = ralloc_asprintf(
@@ -10214,9 +10223,9 @@ brw_compile_cs(const struct brw_compiler *compiler,
 
       const bool allow_spilling = generate_all || v == NULL;
       if (!v32->run_cs(allow_spilling)) {
-         compiler->shader_perf_log(params->log_data,
-                                   "SIMD32 shader failed to compile: %s",
-                                   v32->fail_msg);
+         brw_shader_perf_log(compiler, params->log_data,
+                             "SIMD32 shader failed to compile: %s",
+                             v32->fail_msg);
          if (!v) {
             assert(v8 == NULL);
             assert(v16 == NULL);
@@ -10410,9 +10419,9 @@ compile_single_bs(const struct brw_compiler *compiler, void *log_data,
                            16, -1 /* shader time */, debug_enabled);
       const bool allow_spilling = (v == NULL);
       if (!v16->run_bs(allow_spilling)) {
-         compiler->shader_perf_log(log_data,
-                                   "SIMD16 shader failed to compile: %s",
-                                   v16->fail_msg);
+         brw_shader_perf_log(compiler, log_data,
+                             "SIMD16 shader failed to compile: %s",
+                             v16->fail_msg);
          if (v == NULL) {
             assert(v8 == NULL);
             if (error_str) {

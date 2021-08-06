@@ -596,7 +596,7 @@ void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool first)
       NIR_PASS(progress, nir, nir_opt_undef);
       NIR_PASS(progress, nir, nir_opt_conditional_discard);
       if (nir->options->max_unroll_iterations) {
-         NIR_PASS(progress, nir, nir_opt_loop_unroll, 0);
+         NIR_PASS(progress, nir, nir_opt_loop_unroll);
       }
 
       if (nir->info.stage == MESA_SHADER_FRAGMENT)
@@ -815,8 +815,14 @@ static void si_lower_nir(struct si_screen *sscreen, struct nir_shader *nir)
 
    static const struct nir_lower_tex_options lower_tex_options = {
       .lower_txp = ~0u,
+      .lower_txs_cube_array = true,
    };
    NIR_PASS_V(nir, nir_lower_tex, &lower_tex_options);
+
+   static const struct nir_lower_image_options lower_image_options = {
+      .lower_cube_size = true,
+   };
+   NIR_PASS_V(nir, nir_lower_image, &lower_image_options);
 
    const nir_lower_subgroups_options subgroups_options = {
       .subgroup_size = 64,
@@ -831,7 +837,8 @@ static void si_lower_nir(struct si_screen *sscreen, struct nir_shader *nir)
    NIR_PASS_V(nir, nir_lower_subgroups, &subgroups_options);
 
    NIR_PASS_V(nir, nir_lower_discard_or_demote,
-              sscreen->debug_flags & DBG(FS_CORRECT_DERIVS_AFTER_KILL));
+              (sscreen->debug_flags & DBG(FS_CORRECT_DERIVS_AFTER_KILL)) ||
+               nir->info.is_arb_asm);
 
    /* Lower load constants to scalar and then clean up the mess */
    NIR_PASS_V(nir, nir_lower_load_const_to_scalar);

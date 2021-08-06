@@ -36,8 +36,7 @@ zink_reset_batch_state(struct zink_context *ctx, struct zink_batch_state *bs)
    /* unref all used resources */
    set_foreach_remove(bs->resources, entry) {
       struct zink_resource_object *obj = (struct zink_resource_object *)entry->key;
-      zink_batch_usage_unset(&obj->reads, bs);
-      zink_batch_usage_unset(&obj->writes, bs);
+      zink_resource_object_usage_unset(obj, bs);
       zink_resource_object_reference(screen, &obj, NULL);
    }
 
@@ -89,7 +88,6 @@ zink_reset_batch_state(struct zink_context *ctx, struct zink_batch_state *bs)
 
    pipe_resource_reference(&bs->flush_res, NULL);
 
-   ctx->resource_size -= bs->resource_size;
    bs->resource_size = 0;
 
    /* only reset submitted here so that tc fence desync can pick up the 'completed' flag
@@ -103,7 +101,6 @@ zink_reset_batch_state(struct zink_context *ctx, struct zink_batch_state *bs)
    bs->submit_count++;
    bs->fence.batch_id = 0;
    bs->usage.usage = 0;
-   bs->draw_count = bs->compute_count = 0;
 }
 
 void
@@ -551,8 +548,23 @@ zink_end_batch(struct zink_context *ctx, struct zink_batch *batch)
 
    struct zink_screen *screen = zink_screen(ctx->base.screen);
 
-   ctx->resource_size += batch->state->resource_size;
    ctx->last_fence = &batch->state->fence;
+   if (ctx->oom_flush || _mesa_hash_table_num_entries(&ctx->batch_states) > 10) {
+      simple_mtx_lock(&ctx->batch_mtx);
+      hash_table_foreach(&ctx->batch_states, he) {
+         struct zink_fence *fence = he->data;
+         struct zink_batch_state *bs = he->data;
+         if (zink_check_batch_completion(ctx, fence->batch_id, true)) {
+            zink_reset_batch_state(ctx, he->data);
+            _mesa_hash_table_remove(&ctx->batch_states, he);
+            util_dynarray_append(&ctx->free_batch_states, struct zink_batch_state *, bs);
+         }
+      }
+      simple_mtx_unlock(&ctx->batch_mtx);
+      if (_mesa_hash_table_num_entries(&ctx->batch_states) > 50)
+         ctx->oom_flush = true;
+   }
+   batch->work_count = 0;
 
    if (screen->device_lost)
       return;
@@ -571,13 +583,9 @@ zink_end_batch(struct zink_context *ctx, struct zink_batch *batch)
 void
 zink_batch_resource_usage_set(struct zink_batch *batch, struct zink_resource *res, bool write)
 {
-   if (write) {
-      zink_batch_usage_set(&res->obj->writes, batch->state);
-      if (res->scanout_obj)
-         batch->state->scanout_flush = true;
-   } else {
-      zink_batch_usage_set(&res->obj->reads, batch->state);
-   }
+   zink_resource_usage_set(res, batch->state, write);
+   if (write && res->scanout_obj)
+      batch->state->scanout_flush = true;
    /* multiple array entries are fine */
    if (!res->obj->coherent && res->obj->persistent_maps)
       util_dynarray_append(&batch->state->persistent_resources, struct zink_resource_object*, res->obj);
@@ -604,6 +612,16 @@ batch_ptr_add_usage(struct zink_batch *batch, struct set *s, void *ptr)
    return !found;
 }
 
+ALWAYS_INLINE static void
+check_oom_flush(struct zink_context *ctx, const struct zink_batch *batch)
+{
+   const VkDeviceSize resource_size = batch->state->resource_size;
+   if (resource_size >= zink_screen(ctx->base.screen)->clamp_video_mem) {
+       ctx->oom_flush = true;
+       ctx->oom_stall = true;
+    }
+}
+
 void
 zink_batch_reference_resource(struct zink_batch *batch, struct zink_resource *res)
 {
@@ -611,6 +629,7 @@ zink_batch_reference_resource(struct zink_batch *batch, struct zink_resource *re
       return;
    pipe_reference(NULL, &res->obj->reference);
    batch->state->resource_size += res->obj->size;
+   check_oom_flush(batch->state->ctx, batch);
    batch->has_work = true;
 }
 
@@ -620,6 +639,7 @@ zink_batch_reference_resource_move(struct zink_batch *batch, struct zink_resourc
    if (!batch_ptr_add_usage(batch, batch->state->resources, res->obj))
       return;
    batch->state->resource_size += res->obj->size;
+   check_oom_flush(batch->state->ctx, batch);
    batch->has_work = true;
 }
 
@@ -685,13 +705,24 @@ zink_batch_reference_image_view(struct zink_batch *batch,
 }
 
 bool
+zink_screen_usage_check_completion(struct zink_screen *screen, const struct zink_batch_usage *u)
+{
+   if (!zink_batch_usage_exists(u))
+      return true;
+   if (zink_batch_usage_is_unflushed(u))
+      return false;
+
+   return zink_screen_batch_id_wait(screen, u->usage, 0);
+}
+
+bool
 zink_batch_usage_check_completion(struct zink_context *ctx, const struct zink_batch_usage *u)
 {
    if (!zink_batch_usage_exists(u))
       return true;
    if (zink_batch_usage_is_unflushed(u))
       return false;
-   return zink_check_batch_completion(ctx, u->usage);
+   return zink_check_batch_completion(ctx, u->usage, false);
 }
 
 void
