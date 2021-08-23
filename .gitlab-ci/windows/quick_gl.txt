@@ -149,7 +149,6 @@ spec/!opengl 1.1/polygon-mode-offset/config 4: expected white pixel on left edge
 spec/!opengl 1.1/polygon-mode-offset/config 4: expected white pixel on right edge: fail
 spec/!opengl 1.1/polygon-mode-offset/config 4: expected white pixel on top edge: fail
 spec/!opengl 1.1/polygon-offset: fail
-spec/!opengl 1.1/ppgtt_memory_alignment: fail
 spec/!opengl 1.1/read-front clear-front-first samples=16: skip
 spec/!opengl 1.1/read-front clear-front-first samples=2: skip
 spec/!opengl 1.1/read-front clear-front-first samples=32: skip
@@ -4563,8 +4562,6 @@ spec/glsl-1.30/execution/tex-miplevel-selection texturegrad cubearray: skip
 spec/glsl-1.30/execution/tex-miplevel-selection texturelod cubearray: skip
 spec/glsl-1.30/execution/tex-miplevel-selection textureoffset 2darrayshadow: skip
 spec/glsl-1.50/built-in constants compatibility: skip
-spec/glsl-1.50/execution/geometry/primitive-id-restart gl_line_loop ffs: fail
-spec/glsl-1.50/execution/geometry/primitive-id-restart gl_line_loop other: fail
 spec/glsl-1.50/execution/geometry/primitive-types gl_triangle_strip: fail
 spec/glsl-1.50/execution/geometry/primitive-types gl_triangle_strip_adjacency: fail
 spec/glsl-1.50/execution/geometry/tri-strip-ordering-with-prim-restart gl_triangle_strip ffs: fail
@@ -4754,8 +4751,8 @@ wgl/wgl-sanity: skip
 summary:
        name:  results
        ----  --------
-       pass:    13298
-       fail:      539
+       pass:    13301
+       fail:      536
       crash:       68
        skip:     4126
     timeout:        0

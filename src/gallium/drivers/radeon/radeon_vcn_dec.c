@@ -198,6 +198,10 @@ static rvcn_dec_message_hevc_t get_h265_msg(struct radeon_decoder *dec,
       result.sps_info_flags |= 1 << 9;
    if (pic->UseRefPicList == true)
       result.sps_info_flags |= 1 << 10;
+   if (pic->UseStRpsBits == true && pic->pps->st_rps_bits != 0) {
+      result.sps_info_flags |= 1 << 11;
+      result.st_rps_bits = pic->pps->st_rps_bits;
+  }
 
    result.chroma_format = pic->pps->sps->chroma_format_idc;
    result.bit_depth_luma_minus8 = pic->pps->sps->bit_depth_luma_minus8;
@@ -1642,10 +1646,15 @@ static struct pb_buffer *rvcn_dec_message_decode(struct radeon_decoder *dec,
    decode->db_surf_tile_config = 0;
 
    decode->dt_pitch = luma->surface.u.gfx9.surf_pitch * luma->surface.blk_w;
-   decode->dt_uv_pitch = decode->dt_pitch / 2;
+   decode->dt_uv_pitch = chroma->surface.u.gfx9.surf_pitch * chroma->surface.blk_w;
+
+   if (luma->surface.meta_offset) {
+      RVID_ERR("DCC surfaces not supported.\n");
+      return NULL;
+   }
 
    decode->dt_tiling_mode = 0;
-   decode->dt_swizzle_mode = RDECODE_SW_MODE_LINEAR;
+   decode->dt_swizzle_mode = luma->surface.u.gfx9.swizzle_mode;
    decode->dt_array_mode = RDECODE_ARRAY_MODE_LINEAR;
    decode->dt_field_mode = ((struct vl_video_buffer *)target)->base.interlaced;
    decode->dt_surf_tile_config = 0;
@@ -1663,7 +1672,7 @@ static struct pb_buffer *rvcn_dec_message_decode(struct radeon_decoder *dec,
       decode->dt_chroma_bottom_offset = decode->dt_chroma_top_offset;
    }
    if (dec->stream_type == RDECODE_CODEC_AV1)
-      decode->db_pitch_uv = decode->db_pitch /  2;
+      decode->db_pitch_uv = chroma->surface.u.gfx9.surf_pitch * chroma->surface.blk_w;
 
    if (encrypted) {
       assert(sscreen->info.has_tmz_support);
@@ -2458,7 +2467,9 @@ struct pipe_video_codec *radeon_create_decoder(struct pipe_context *context,
    case CHIP_SIENNA_CICHLID:
    case CHIP_NAVY_FLOUNDER:
    case CHIP_DIMGREY_CAVEFISH:
+   case CHIP_BEIGE_GOBY:
    case CHIP_VANGOGH:
+   case CHIP_YELLOW_CARP:
       dec->reg.data0 = RDECODE_VCN2_5_GPCOM_VCPU_DATA0;
       dec->reg.data1 = RDECODE_VCN2_5_GPCOM_VCPU_DATA1;
       dec->reg.cmd = RDECODE_VCN2_5_GPCOM_VCPU_CMD;

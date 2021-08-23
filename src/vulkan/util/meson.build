@@ -40,6 +40,7 @@ vk_extensions_gen = files('vk_extensions_gen.py')
 vk_icd_gen = files('vk_icd_gen.py')
 
 files_vulkan_util = files(
+  'vk_alloc.c',
   'vk_alloc.h',
   'vk_cmd_copy.c',
   'vk_debug_report.c',
@@ -125,7 +126,10 @@ idep_vulkan_util_headers = declare_dependency(
   include_directories : include_directories('.')
 )
 
-if with_platform_windows
+# This is likely a bug in the Meson VS backend, as MSVC with ninja works fine.
+# See this discussion here:
+# https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/10506 
+if get_option('backend').startswith('vs')
   idep_vulkan_util = declare_dependency(
     link_with : libvulkan_util,
     dependencies : idep_vulkan_util_headers

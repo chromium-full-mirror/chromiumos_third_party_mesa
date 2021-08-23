@@ -25,7 +25,7 @@
  * IN THE SOFTWARE.
  */
 
-#include "drm-uapi/drm_fourcc.h"
+#include "ac_drm_fourcc.h"
 #include "util/debug.h"
 #include "util/u_atomic.h"
 #include "vulkan/util/vk_format.h"
@@ -276,27 +276,17 @@ radv_use_dcc_for_image(struct radv_device *device, const struct radv_image *imag
 bool
 radv_image_use_dcc_image_stores(const struct radv_device *device, const struct radv_image *image)
 {
-   /*
-    * TODO: Enable on more HW. DIMGREY and VANGOGH need a workaround and
-    * we need more perf analysis.
-    * https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/6796#note_643853
-    */
-   return device->physical_device->rad_info.chip_class == GFX10 ||
-          (device->physical_device->rad_info.chip_class == GFX10_3 &&
-           (device->instance->perftest_flags & RADV_PERFTEST_DCC_STORES) &&
-           !device->physical_device->use_llvm);
+   return device->physical_device->rad_info.chip_class >= GFX10;
 }
 
 /*
  * Whether to use a predicate to determine whether DCC is in a compressed
  * state. This can be used to avoid decompressing an image multiple times.
- *
- * This function assumes the image uses DCC compression.
  */
 bool
 radv_image_use_dcc_predication(const struct radv_device *device, const struct radv_image *image)
 {
-   return !radv_image_use_dcc_image_stores(device, image);
+   return radv_image_has_dcc(image) && !radv_image_use_dcc_image_stores(device, image);
 }
 
 static inline bool
@@ -335,11 +325,6 @@ radv_use_tc_compat_cmask_for_image(struct radv_device *device, struct radv_image
       return false;
 
    if (device->instance->debug_flags & RADV_DEBUG_NO_TC_COMPAT_CMASK)
-      return false;
-
-   /* TODO: Enable TC-compat CMASK on GFX8-9. */
-   if (device->physical_device->rad_info.chip_class < GFX10 &&
-       !(device->instance->perftest_flags & RADV_PERFTEST_TC_COMPAT_CMASK))
       return false;
 
    if (image->usage & VK_IMAGE_USAGE_STORAGE_BIT)
@@ -824,29 +809,29 @@ radv_tex_dim(VkImageType image_type, VkImageViewType view_type, unsigned nr_laye
 }
 
 static unsigned
-gfx9_border_color_swizzle(const enum pipe_swizzle swizzle[4])
+gfx9_border_color_swizzle(const struct util_format_description *desc)
 {
    unsigned bc_swizzle = V_008F20_BC_SWIZZLE_XYZW;
 
-   if (swizzle[3] == PIPE_SWIZZLE_X) {
+   if (desc->swizzle[3] == PIPE_SWIZZLE_X) {
       /* For the pre-defined border color values (white, opaque
        * black, transparent black), the only thing that matters is
        * that the alpha channel winds up in the correct place
        * (because the RGB channels are all the same) so either of
        * these enumerations will work.
        */
-      if (swizzle[2] == PIPE_SWIZZLE_Y)
+      if (desc->swizzle[2] == PIPE_SWIZZLE_Y)
          bc_swizzle = V_008F20_BC_SWIZZLE_WZYX;
       else
          bc_swizzle = V_008F20_BC_SWIZZLE_WXYZ;
-   } else if (swizzle[0] == PIPE_SWIZZLE_X) {
-      if (swizzle[1] == PIPE_SWIZZLE_Y)
+   } else if (desc->swizzle[0] == PIPE_SWIZZLE_X) {
+      if (desc->swizzle[1] == PIPE_SWIZZLE_Y)
          bc_swizzle = V_008F20_BC_SWIZZLE_XYZW;
       else
          bc_swizzle = V_008F20_BC_SWIZZLE_XWYZ;
-   } else if (swizzle[1] == PIPE_SWIZZLE_X) {
+   } else if (desc->swizzle[1] == PIPE_SWIZZLE_X) {
       bc_swizzle = V_008F20_BC_SWIZZLE_YXWZ;
-   } else if (swizzle[2] == PIPE_SWIZZLE_X) {
+   } else if (desc->swizzle[2] == PIPE_SWIZZLE_X) {
       bc_swizzle = V_008F20_BC_SWIZZLE_ZYXW;
    }
 
@@ -906,7 +891,7 @@ gfx10_make_texture_descriptor(struct radv_device *device, struct radv_image *ima
               S_00A00C_BASE_LEVEL(image->info.samples > 1 ? 0 : first_level) |
               S_00A00C_LAST_LEVEL(image->info.samples > 1 ? util_logbase2(image->info.samples)
                                                           : last_level) |
-              S_00A00C_BC_SWIZZLE(gfx9_border_color_swizzle(swizzle)) | S_00A00C_TYPE(type);
+              S_00A00C_BC_SWIZZLE(gfx9_border_color_swizzle(desc)) | S_00A00C_TYPE(type);
    /* Depth is the the last accessible layer on gfx9+. The hw doesn't need
     * to know the total number of layers.
     */
@@ -926,6 +911,10 @@ gfx10_make_texture_descriptor(struct radv_device *device, struct radv_image *ima
                   S_00A018_ALPHA_IS_ON_MSB(vi_alpha_is_on_msb(device, vk_format));
    }
 
+   if (radv_image_get_iterate256(device, image)) {
+      state[6] |= S_00A018_ITERATE_256(1);
+   }
+
    /* Initialize the sampler view for FMASK. */
    if (fmask_state) {
       if (radv_image_has_fmask(image)) {
@@ -939,13 +928,13 @@ gfx10_make_texture_descriptor(struct radv_device *device, struct radv_image *ima
 
          switch (image->info.samples) {
          case 2:
-            format = V_008F0C_IMG_FORMAT_FMASK8_S2_F2;
+            format = V_008F0C_GFX10_FORMAT_FMASK8_S2_F2;
             break;
          case 4:
-            format = V_008F0C_IMG_FORMAT_FMASK8_S4_F4;
+            format = V_008F0C_GFX10_FORMAT_FMASK8_S4_F4;
             break;
          case 8:
-            format = V_008F0C_IMG_FORMAT_FMASK32_S8_F8;
+            format = V_008F0C_GFX10_FORMAT_FMASK32_S8_F8;
             break;
          default:
             unreachable("invalid nr_samples");
@@ -1047,7 +1036,7 @@ si_make_texture_descriptor(struct radv_device *device, struct radv_image *image,
    state[7] = 0;
 
    if (device->physical_device->rad_info.chip_class == GFX9) {
-      unsigned bc_swizzle = gfx9_border_color_swizzle(swizzle);
+      unsigned bc_swizzle = gfx9_border_color_swizzle(desc);
 
       /* Depth is the last accessible layer on Gfx9.
        * The hw doesn't need to know the total number of layers.
@@ -1310,6 +1299,79 @@ radv_image_alloc_values(const struct radv_device *device, struct radv_image *ima
    }
 }
 
+/* Determine if the image is affected by the pipe misaligned metadata issue
+ * which requires to invalidate L2.
+ */
+static bool
+radv_image_is_pipe_misaligned(const struct radv_device *device, const struct radv_image *image)
+{
+   struct radeon_info *rad_info = &device->physical_device->rad_info;
+   int log2_samples = util_logbase2(image->info.samples);
+
+   assert(rad_info->chip_class >= GFX10);
+
+   for (unsigned i = 0; i < image->plane_count; ++i) {
+      VkFormat fmt = vk_format_get_plane_format(image->vk_format, i);
+      int log2_bpp = util_logbase2(vk_format_get_blocksize(fmt));
+      int log2_bpp_and_samples;
+
+      if (rad_info->chip_class >= GFX10_3) {
+         log2_bpp_and_samples = log2_bpp + log2_samples;
+      } else {
+         if (vk_format_has_depth(image->vk_format) && image->info.array_size >= 8) {
+            log2_bpp = 2;
+         }
+
+         log2_bpp_and_samples = MIN2(6, log2_bpp + log2_samples);
+      }
+
+      int num_pipes = G_0098F8_NUM_PIPES(rad_info->gb_addr_config);
+      int overlap = MAX2(0, log2_bpp_and_samples + num_pipes - 8);
+
+      if (vk_format_has_depth(image->vk_format)) {
+         if (radv_image_is_tc_compat_htile(image) && overlap) {
+            return true;
+         }
+      } else {
+         int max_compressed_frags = G_0098F8_MAX_COMPRESSED_FRAGS(rad_info->gb_addr_config);
+         int log2_samples_frag_diff = MAX2(0, log2_samples - max_compressed_frags);
+         int samples_overlap = MIN2(log2_samples, overlap);
+
+         /* TODO: It shouldn't be necessary if the image has DCC but
+          * not readable by shader.
+          */
+         if ((radv_image_has_dcc(image) || radv_image_is_tc_compat_cmask(image)) &&
+             (samples_overlap > log2_samples_frag_diff)) {
+            return true;
+         }
+      }
+   }
+
+   return false;
+}
+
+static bool
+radv_image_is_l2_coherent(const struct radv_device *device, const struct radv_image *image)
+{
+   if (device->physical_device->rad_info.chip_class >= GFX10) {
+      return !device->physical_device->rad_info.tcc_rb_non_coherent &&
+             !radv_image_is_pipe_misaligned(device, image);
+   } else if (device->physical_device->rad_info.chip_class == GFX9) {
+      if (image->info.samples == 1 &&
+          (image->usage &
+           (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) &&
+          !vk_format_has_stencil(image->vk_format)) {
+         /* Single-sample color and single-sample depth
+          * (not stencil) are coherent with shaders on
+          * GFX9.
+          */
+         return true;
+      }
+   }
+
+   return false;
+}
+
 static void
 radv_image_reset_layout(struct radv_image *image)
 {
@@ -1392,7 +1454,7 @@ radv_image_create_layout(struct radv_device *device, struct radv_image_create_in
          offset = mod_info->pPlaneLayouts[plane].offset;
          stride = mod_info->pPlaneLayouts[plane].rowPitch / image->planes[plane].surface.bpe;
       } else {
-         offset = align(image->size, 1 << image->planes[plane].surface.alignment_log2);
+         offset = align64(image->size, 1 << image->planes[plane].surface.alignment_log2);
          stride = 0; /* 0 means no override */
       }
 
@@ -1638,13 +1700,15 @@ radv_image_create(VkDevice _device, const struct radv_image_create_info *create_
       image->size = align64(image->size, image->alignment);
       image->offset = 0;
 
-      image->bo = device->ws->buffer_create(device->ws, image->size, image->alignment, 0,
-                                            RADEON_FLAG_VIRTUAL, RADV_BO_PRIORITY_VIRTUAL);
-      if (!image->bo) {
+      result =
+         device->ws->buffer_create(device->ws, image->size, image->alignment, 0,
+                                   RADEON_FLAG_VIRTUAL, RADV_BO_PRIORITY_VIRTUAL, 0, &image->bo);
+      if (result != VK_SUCCESS) {
          radv_destroy_image(device, alloc, image);
-         return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+         return vk_error(device->instance, result);
       }
    }
+   image->l2_coherent = radv_image_is_l2_coherent(device, image);
 
    if (device->instance->debug_flags & RADV_DEBUG_IMG) {
       radv_image_print_info(device, image);
@@ -1781,6 +1845,7 @@ radv_image_view_init(struct radv_image_view *iview, struct radv_device *device,
 {
    RADV_FROM_HANDLE(radv_image, image, pCreateInfo->image);
    const VkImageSubresourceRange *range = &pCreateInfo->subresourceRange;
+   uint32_t plane_count = 1;
 
    switch (image->type) {
    case VK_IMAGE_TYPE_1D:
@@ -1796,13 +1861,9 @@ radv_image_view_init(struct radv_image_view *iview, struct radv_device *device,
       unreachable("bad VkImageType");
    }
    iview->image = image;
-   iview->bo = image->bo;
    iview->type = pCreateInfo->viewType;
    iview->plane_id = radv_plane_from_aspect(pCreateInfo->subresourceRange.aspectMask);
    iview->aspect_mask = pCreateInfo->subresourceRange.aspectMask;
-   iview->multiple_planes = vk_format_get_plane_count(image->vk_format) > 1 &&
-                            iview->aspect_mask == VK_IMAGE_ASPECT_COLOR_BIT;
-
    iview->base_layer = range->baseArrayLayer;
    iview->layer_count = radv_get_layerCount(image, range);
    iview->base_mip = range->baseMipLevel;
@@ -1898,10 +1959,14 @@ radv_image_view_init(struct radv_image_view *iview, struct radv_device *device,
 
    iview->support_fast_clear = radv_image_view_can_fast_clear(device, iview);
 
+   if (vk_format_get_plane_count(image->vk_format) > 1 &&
+       iview->aspect_mask == VK_IMAGE_ASPECT_COLOR_BIT) {
+      plane_count = vk_format_get_plane_count(iview->vk_format);
+   }
+
    bool disable_compression = extra_create_info ? extra_create_info->disable_compression : false;
    bool enable_compression = extra_create_info ? extra_create_info->enable_compression : false;
-   for (unsigned i = 0;
-        i < (iview->multiple_planes ? vk_format_get_plane_count(image->vk_format) : 1); ++i) {
+   for (unsigned i = 0; i < plane_count; ++i) {
       VkFormat format = vk_format_get_plane_format(iview->vk_format, i);
       radv_image_view_make_descriptor(iview, device, format, &pCreateInfo->components, false,
                                       disable_compression, enable_compression, iview->plane_id + i,
@@ -1962,10 +2027,11 @@ radv_layout_is_htile_compressed(const struct radv_device *device, const struct r
 
 bool
 radv_layout_can_fast_clear(const struct radv_device *device, const struct radv_image *image,
-                           VkImageLayout layout, bool in_render_loop, unsigned queue_mask)
+                           unsigned level, VkImageLayout layout, bool in_render_loop,
+                           unsigned queue_mask)
 {
-   if (radv_image_has_dcc(image) &&
-       !radv_layout_dcc_compressed(device, image, layout, in_render_loop, queue_mask))
+   if (radv_dcc_enabled(image, level) &&
+       !radv_layout_dcc_compressed(device, image, level, layout, in_render_loop, queue_mask))
       return false;
 
    if (!(image->usage & RADV_IMAGE_USAGE_WRITE_BITS))
@@ -1977,27 +2043,44 @@ radv_layout_can_fast_clear(const struct radv_device *device, const struct radv_i
 
 bool
 radv_layout_dcc_compressed(const struct radv_device *device, const struct radv_image *image,
-                           VkImageLayout layout, bool in_render_loop, unsigned queue_mask)
+                           unsigned level, VkImageLayout layout, bool in_render_loop,
+                           unsigned queue_mask)
 {
-   /* If the image is read-only, we can always just keep it compressed */
-   if (!(image->usage & RADV_IMAGE_USAGE_WRITE_BITS) && radv_image_has_dcc(image))
+   if (!radv_dcc_enabled(image, level))
       return false;
+
+   if (image->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT && queue_mask & (1u << RADV_QUEUE_FOREIGN))
+      return true;
+
+   /* If the image is read-only, we can always just keep it compressed */
+   if (!(image->usage & RADV_IMAGE_USAGE_WRITE_BITS))
+      return true;
 
    /* Don't compress compute transfer dst when image stores are not supported. */
    if ((layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL || layout == VK_IMAGE_LAYOUT_GENERAL) &&
        (queue_mask & (1u << RADV_QUEUE_COMPUTE)) && !radv_image_use_dcc_image_stores(device, image))
       return false;
 
-   return radv_image_has_dcc(image) && (device->physical_device->rad_info.chip_class >= GFX10 ||
-                                        layout != VK_IMAGE_LAYOUT_GENERAL);
+   return device->physical_device->rad_info.chip_class >= GFX10 || layout != VK_IMAGE_LAYOUT_GENERAL;
 }
 
 bool
 radv_layout_fmask_compressed(const struct radv_device *device, const struct radv_image *image,
                              VkImageLayout layout, unsigned queue_mask)
 {
-   return radv_image_has_fmask(image) && layout != VK_IMAGE_LAYOUT_GENERAL &&
-          queue_mask == (1u << RADV_QUEUE_GENERAL);
+   if (!radv_image_has_fmask(image))
+      return false;
+
+   /* Don't compress compute transfer dst because image stores ignore FMASK and it needs to be
+    * expanded before.
+    */
+   if ((layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL || layout == VK_IMAGE_LAYOUT_GENERAL) &&
+       (queue_mask & (1u << RADV_QUEUE_COMPUTE)))
+      return false;
+
+   /* Only compress concurrent images if TC-compat CMASK is enabled (no FMASK decompression). */
+   return layout != VK_IMAGE_LAYOUT_GENERAL &&
+          (queue_mask == (1u << RADV_QUEUE_GENERAL) || radv_image_is_tc_compat_cmask(image));
 }
 
 unsigned

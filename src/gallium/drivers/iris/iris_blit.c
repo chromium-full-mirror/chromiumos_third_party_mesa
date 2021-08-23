@@ -284,7 +284,7 @@ tex_cache_flush_hack(struct iris_batch *batch,
                      enum isl_format view_format,
                      enum isl_format surf_format)
 {
-   const struct gen_device_info *devinfo = &batch->screen->devinfo;
+   const struct intel_device_info *devinfo = &batch->screen->devinfo;
 
    /* The WaSamplerCacheFlushBetweenRedescribedSurfaceReads workaround says:
     *
@@ -351,7 +351,7 @@ iris_blit(struct pipe_context *ctx, const struct pipe_blit_info *info)
 {
    struct iris_context *ice = (void *) ctx;
    struct iris_screen *screen = (struct iris_screen *)ctx->screen;
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    struct iris_batch *batch = &ice->batches[IRIS_BATCH_RENDER];
    enum blorp_batch_flags blorp_flags = 0;
 
@@ -552,7 +552,7 @@ get_copy_region_aux_settings(struct iris_context *ice,
                              bool is_render_target)
 {
    struct iris_screen *screen = (void *) ice->ctx.screen;
-   struct gen_device_info *devinfo = &screen->devinfo;
+   struct intel_device_info *devinfo = &screen->devinfo;
 
    switch (res->aux.usage) {
    case ISL_AUX_USAGE_HIZ:
@@ -571,6 +571,13 @@ get_copy_region_aux_settings(struct iris_context *ice,
       break;
    case ISL_AUX_USAGE_MCS:
    case ISL_AUX_USAGE_MCS_CCS:
+      if (!is_render_target &&
+          !iris_can_sample_mcs_with_clear(devinfo, res)) {
+         *out_aux_usage = res->aux.usage;
+         *out_clear_supported = false;
+         break;
+      }
+      FALLTHROUGH;
    case ISL_AUX_USAGE_CCS_E:
    case ISL_AUX_USAGE_GFX12_CCS_E:
       *out_aux_usage = res->aux.usage;
@@ -745,7 +752,8 @@ iris_resource_copy_region(struct pipe_context *ctx,
 
    /* Use MI_COPY_MEM_MEM for tiny (<= 16 byte, % 4) buffer copies. */
    if (p_src->target == PIPE_BUFFER && p_dst->target == PIPE_BUFFER &&
-       (src_box->width % 4 == 0) && src_box->width <= 16) {
+       dstx % 4 == 0 && src_box->x % 4 == 0 &&
+       src_box->width % 4 == 0 && src_box->width <= 16) {
       struct iris_bo *dst_bo = iris_resource_bo(p_dst);
       batch = get_preferred_batch(ice, dst_bo);
       iris_batch_maybe_flush(batch, 24 + 5 * (src_box->width / 4));
