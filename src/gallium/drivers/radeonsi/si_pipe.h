@@ -301,7 +301,6 @@ struct si_resource {
    enum radeon_bo_domain domains:8;
    enum radeon_bo_flag flags:16;
    unsigned bind_history;
-   int max_forced_staging_uploads;
 
    /* The buffer range which is initialized (with a write transfer,
     * streamout, DMA, or as a random access target). The rest of
@@ -959,7 +958,7 @@ struct si_context {
    void *cs_clear_render_target_1d_array;
    void *cs_clear_12bytes_buffer;
    void *cs_dcc_decompress;
-   void *cs_dcc_retile;
+   void *cs_dcc_retile[32];
    void *cs_fmask_expand[3][2]; /* [log2(samples)-1][is_array] */
    struct si_screen *screen;
    struct pipe_debug_callback debug;
@@ -1075,6 +1074,7 @@ struct si_context {
    bool compute_image_sgprs_dirty;
    bool vs_uses_base_instance;
    bool vs_uses_draw_id;
+   uint8_t patch_vertices;
 
    /* shader descriptors */
    struct si_descriptors descriptors[SI_NUM_DESCS];

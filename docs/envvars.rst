@@ -236,8 +236,8 @@ i945/i965 driver environment variables (non-Gallium)
 ----------------------------------------------------
 
 :envvar:`INTEL_NO_HW`
-   if set to 1, prevents batches from being submitted to the hardware.
-   This is useful for debugging hangs, etc.
+   if set to 1, true or yes, prevents batches from being submitted to the
+   hardware. This is useful for debugging hangs, etc.
 :envvar:`INTEL_DEBUG`
    a comma-separated list of named flags, which do various things:
 
@@ -364,6 +364,13 @@ Radeon driver environment variables (radeon, r200, and r300g)
 
 :envvar:`RADEON_NO_TCL`
    if set, disable hardware-accelerated Transform/Clip/Lighting.
+
+DRI environment variables
+-------------------------
+
+:envvar:`DRI_NO_MSAA`
+   disable MSAA for GLX/EGL MSAA visuals
+
 
 EGL environment variables
 -------------------------

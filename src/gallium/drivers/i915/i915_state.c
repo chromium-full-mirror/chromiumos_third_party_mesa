@@ -546,7 +546,11 @@ i915_create_fs_state(struct pipe_context *pipe,
    ifs->draw_data = draw_create_fragment_shader(i915->draw, templ);
 
    if (templ->type == PIPE_SHADER_IR_NIR) {
-      ifs->state.tokens = nir_to_tgsi(templ->ir.nir, pipe->screen);
+      nir_shader *s = templ->ir.nir;
+
+      NIR_PASS_V(s, i915_nir_lower_sincos);
+
+      ifs->state.tokens = nir_to_tgsi(s, pipe->screen);
    } else {
       assert(templ->type == PIPE_SHADER_IR_TGSI);
       /* we need to keep a local copy of the tokens */
@@ -710,6 +714,7 @@ static void
 i915_set_sampler_views(struct pipe_context *pipe, enum pipe_shader_type shader,
                        unsigned start, unsigned num,
                        unsigned unbind_num_trailing_slots,
+                       bool take_ownership,
                        struct pipe_sampler_view **views)
 {
    if (shader != PIPE_SHADER_FRAGMENT) {
@@ -728,11 +733,23 @@ i915_set_sampler_views(struct pipe_context *pipe, enum pipe_shader_type shader,
    /* Check for no-op */
    if (views && num == i915->num_fragment_sampler_views &&
        !memcmp(i915->fragment_sampler_views, views,
-               num * sizeof(struct pipe_sampler_view *)))
+               num * sizeof(struct pipe_sampler_view *))) {
+      if (take_ownership) {
+         for (unsigned i = 0; i < num; i++) {
+            struct pipe_sampler_view *view = views[i];
+            pipe_sampler_view_reference(&view, NULL);
+         }
+      }
       return;
+   }
 
    for (i = 0; i < num; i++) {
-      pipe_sampler_view_reference(&i915->fragment_sampler_views[i], views[i]);
+      if (take_ownership) {
+         pipe_sampler_view_reference(&i915->fragment_sampler_views[i], NULL);
+         i915->fragment_sampler_views[i] = views[i];
+      } else {
+         pipe_sampler_view_reference(&i915->fragment_sampler_views[i], views[i]);
+      }
    }
 
    for (i = num; i < i915->num_fragment_sampler_views; i++)
@@ -811,6 +828,8 @@ i915_set_framebuffer_state(struct pipe_context *pipe,
       pipe_surface_reference(&i915->framebuffer.cbufs[0], NULL);
    }
    pipe_surface_reference(&i915->framebuffer.zsbuf, fb->zsbuf);
+   if (fb->zsbuf)
+      draw_set_zs_format(i915->draw, fb->zsbuf->format);
 
    i915->dirty |= I915_NEW_FRAMEBUFFER;
 }

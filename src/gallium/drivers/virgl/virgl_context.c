@@ -1015,6 +1015,7 @@ static void virgl_set_sampler_views(struct pipe_context *ctx,
                                    unsigned start_slot,
                                    unsigned num_views,
                                    unsigned unbind_num_trailing_slots,
+                                   bool take_ownership,
                                    struct pipe_sampler_view **views)
 {
    struct virgl_context *vctx = virgl_context(ctx);
@@ -1028,7 +1029,12 @@ static void virgl_set_sampler_views(struct pipe_context *ctx,
          struct virgl_resource *res = virgl_resource(views[i]->texture);
          res->bind_history |= PIPE_BIND_SAMPLER_VIEW;
 
-         pipe_sampler_view_reference(&binding->views[idx], views[i]);
+         if (take_ownership) {
+            pipe_sampler_view_reference(&binding->views[idx], NULL);
+            binding->views[idx] = views[i];
+         } else {
+            pipe_sampler_view_reference(&binding->views[idx], views[i]);
+         }
          binding->view_enabled_mask |= 1 << idx;
       } else {
          pipe_sampler_view_reference(&binding->views[idx], NULL);
@@ -1041,7 +1047,7 @@ static void virgl_set_sampler_views(struct pipe_context *ctx,
 
    if (unbind_num_trailing_slots) {
       virgl_set_sampler_views(ctx, shader_type, start_slot + num_views,
-                              unbind_num_trailing_slots, 0, NULL);
+                              unbind_num_trailing_slots, 0, false, NULL);
    }
 }
 
@@ -1155,6 +1161,13 @@ static void virgl_set_tess_state(struct pipe_context *ctx,
    if (!rs->caps.caps.v1.bset.has_tessellation_shaders)
       return;
    virgl_encode_set_tess_state(vctx, default_outer_level, default_inner_level);
+}
+
+static void virgl_set_patch_vertices(struct pipe_context *ctx, uint8_t patch_vertices)
+{
+   struct virgl_context *vctx = virgl_context(ctx);
+
+   vctx->patch_vertices = patch_vertices;
 }
 
 static void virgl_resource_copy_region(struct pipe_context *ctx,
@@ -1540,6 +1553,7 @@ struct pipe_context *virgl_context_create(struct pipe_screen *pscreen,
    vctx->base.set_constant_buffer = virgl_set_constant_buffer;
 
    vctx->base.set_tess_state = virgl_set_tess_state;
+   vctx->base.set_patch_vertices = virgl_set_patch_vertices;
    vctx->base.create_vs_state = virgl_create_vs_state;
    vctx->base.create_tcs_state = virgl_create_tcs_state;
    vctx->base.create_tes_state = virgl_create_tes_state;

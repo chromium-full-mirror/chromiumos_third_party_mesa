@@ -25,11 +25,11 @@
     - .iris-test
     - .test-manual-mr
   variables:
-    DEVICE_TYPE: hp-x360-12b-n4000-octopus
+    DEVICE_TYPE: hp-x360-12b-ca0010nr-n4020-octopus
     GPU_VERSION: iris-glk
     DEQP_EXPECTED_RENDERER: GLK
   tags:
-    - mesa-ci-x86-64-lava-hp-x360-12b-n4000-octopus
+    - mesa-ci-x86-64-lava-hp-x360-12b-ca0010nr-n4020-octopus
 
 .iris-amly-test:
   extends:
@@ -50,6 +50,26 @@
     DEQP_EXPECTED_RENDERER: KBL
   tags:
     - mesa-ci-x86-64-lava-hp-x360-14-G1-sona
+
+.iris-whl-test:
+  extends:
+    - .iris-test
+  variables:
+    DEVICE_TYPE: dell-latitude-5400-4305U-sarien
+    GPU_VERSION: iris-whl
+    DEQP_EXPECTED_RENDERER: WHL
+  tags:
+    - mesa-ci-x86-64-lava-dell-latitude-5400-4305U-sarien
+
+.iris-cml-test:
+  extends:
+    - .iris-test
+  variables:
+    DEVICE_TYPE: asus-C436FA-Flip-hatch
+    GPU_VERSION: iris-cml
+    DEQP_EXPECTED_RENDERER: CML
+  tags:
+    - mesa-ci-x86-64-lava-asus-C436FA-flip-hatch
 
 iris-apl-gles2:
   extends:
@@ -218,3 +238,79 @@ iris-kbl-traces:
     - .iris-kbl-test
     - .iris-traces
     - .test-manual-mr
+
+iris-whl-traces:
+  variables:
+    GPU_VERSION: intel-whl
+  extends:
+    - .iris-whl-test
+    - .iris-traces
+    - .test-manual-mr
+
+iris-cml-traces:
+  variables:
+    GPU_VERSION: intel-cml
+  extends:
+    - .iris-cml-test
+    - .iris-traces
+    - .test-manual-mr
+
+.profile-traces:
+  extends:
+    - .iris-traces
+    - .iris-rules-performance
+  variables:
+    PIGLIT_REPLAY_SUBCOMMAND: "profile"
+    PIGLIT_REPLAY_EXTRA_ARGS: "--db-path ${CI_PROJECT_DIR}/replayer-db/"
+    # More than this can hit OOM due to BOs leaked during the replay of the last frame
+    PIGLIT_REPLAY_LOOP_TIMES: 150
+    # We don't want for more than one workload to be submitted to the GPU at a time
+    FDO_CI_CONCURRENT: 1
+    # So we aren't capped by VSync by the X server
+    EGL_PLATFORM: surfaceless
+    GIT_STRATEGY: none
+    HWCI_FREQ_MAX: 1
+    LAVA_TAGS: "cbg-0"
+  allow_failure: true
+
+iris-apl-traces-performance:
+  extends:
+    - .iris-apl-test
+    - .profile-traces
+  variables:
+    GPU_VERSION: intel-apl
+
+iris-glk-traces-performance:
+  extends:
+    - .iris-glk-test
+    - .profile-traces
+  variables:
+    GPU_VERSION: intel-glk
+
+iris-amly-traces-performance:
+  extends:
+    - .iris-amly-test
+    - .profile-traces
+  variables:
+    GPU_VERSION: intel-amly
+
+iris-kbl-traces-performance:
+  extends:
+    - .iris-kbl-test
+    - .profile-traces
+  variables:
+    GPU_VERSION: intel-kbl
+
+iris-whl-traces-performance:
+  extends:
+    - .iris-whl-test
+    - .profile-traces
+  variables:
+    GPU_VERSION: intel-whl
+
+iris-cml-traces-performance:
+  extends:
+    - .iris-cml-test
+    - .profile-traces
+  variables:
+    GPU_VERSION: intel-cml

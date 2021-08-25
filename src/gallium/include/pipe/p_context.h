@@ -446,11 +446,17 @@ struct pipe_context {
                              enum pipe_shader_type shader,
                              unsigned start_slot, unsigned num_views,
                              unsigned unbind_num_trailing_slots,
+                             bool take_ownership,
                              struct pipe_sampler_view **views);
 
    void (*set_tess_state)(struct pipe_context *,
                           const float default_outer_level[4],
                           const float default_inner_level[2]);
+
+   /**
+    * Set the number of vertices per input patch for tessellation.
+    */
+   void (*set_patch_vertices)(struct pipe_context *ctx, uint8_t patch_vertices);
 
    /**
     * Sets the debug callback. If the pointer is null, then no callback is

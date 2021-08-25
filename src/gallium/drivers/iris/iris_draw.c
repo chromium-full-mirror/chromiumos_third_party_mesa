@@ -81,8 +81,8 @@ iris_update_draw_info(struct iris_context *ice,
    }
 
    if (info->mode == PIPE_PRIM_PATCHES &&
-       ice->state.vertices_per_patch != info->vertices_per_patch) {
-      ice->state.vertices_per_patch = info->vertices_per_patch;
+       ice->state.vertices_per_patch != ice->state.patch_vertices) {
+      ice->state.vertices_per_patch = ice->state.patch_vertices;
       ice->state.dirty |= IRIS_DIRTY_VF_TOPOLOGY;
 
       /* 8_PATCH TCS needs this for key->input_vertices */
@@ -349,7 +349,7 @@ iris_update_grid_size_resource(struct iris_context *ice,
    state_ref->offset +=
       iris_bo_offset_from_base_address(iris_resource_bo(state_ref->res));
    isl_buffer_fill_state(&screen->isl_dev, surf_map,
-                         .address = grid_ref->offset + grid_bo->gtt_offset,
+                         .address = grid_ref->offset + grid_bo->address,
                          .size_B = sizeof(grid->grid),
                          .format = ISL_FORMAT_RAW,
                          .stride_B = 1,

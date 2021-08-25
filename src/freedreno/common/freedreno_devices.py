@@ -109,8 +109,7 @@ class A6xxGPUInfo(GPUInfo):
        duplication of parameters that are unique to the sub-generation.
     """
     def __init__(self, template, num_sp_cores, num_ccu,
-                 RB_UNKNOWN_8E04_blit, PC_UNKNOWN_9805,
-                 SP_UNKNOWN_A0F8):
+                 RB_UNKNOWN_8E04_blit, PC_POWER_CNTL):
         super().__init__(gmem_align_w = 16, gmem_align_h = 4,
                          tile_align_w = 32, tile_align_h = 32,
                          tile_max_w   = 1024, # max_bitfield_val(5, 0, 5)
@@ -129,8 +128,7 @@ class A6xxGPUInfo(GPUInfo):
 
         # Various "magic" register values:
         self.a6xx.magic.RB_UNKNOWN_8E04_blit = RB_UNKNOWN_8E04_blit
-        self.a6xx.magic.PC_UNKNOWN_9805 = PC_UNKNOWN_9805
-        self.a6xx.magic.SP_UNKNOWN_A0F8 = SP_UNKNOWN_A0F8
+        self.a6xx.magic.PC_POWER_CNTL = PC_POWER_CNTL
 
         # Things that earlier gens have and later gens remove, provide
         # defaults here and let them be overridden by sub-gen template:
@@ -202,6 +200,7 @@ a6xx_gen1 = dict(
         reg_size_vec4 = 96,
         ccu_cntl_gmem_unk2 = True,
         indirect_draw_wfm_quirk = True,
+        depth_bounds_require_depth_test_quirk = True,
     )
 
 # a640, a680:
@@ -211,6 +210,7 @@ a6xx_gen2 = dict(
         supports_multiview_mask = True,
         has_z24uint_s8uint = True,
         indirect_draw_wfm_quirk = True,
+        depth_bounds_require_depth_test_quirk = True, # TODO: check if true
     )
 
 # a650:
@@ -223,9 +223,10 @@ a6xx_gen3 = dict(
         storage_16bit = True,
         has_tex_filter_cubic = True,
         has_sample_locations = True,
+        has_ccu_flush_bug = True,
     )
 
-# a635, a650:
+# a635, a660:
 a6xx_gen4 = dict(
         fibers_per_sp = 128 * 2 * 16,
         reg_size_vec4 = 64,
@@ -237,6 +238,7 @@ a6xx_gen4 = dict(
         has_sample_locations = True,
         has_cp_reg_write = False,
         has_8bpp_ubwc = False,
+        has_lpac = True,
     )
 
 add_gpus([
@@ -247,8 +249,7 @@ add_gpus([
         num_sp_cores = 1,
         num_ccu = 1,
         RB_UNKNOWN_8E04_blit = 0x00100000,
-        PC_UNKNOWN_9805 = 0,
-        SP_UNKNOWN_A0F8 = 0,
+        PC_POWER_CNTL = 0,
     ))
 
 add_gpus([
@@ -258,8 +259,7 @@ add_gpus([
         num_sp_cores = 2,
         num_ccu = 2,
         RB_UNKNOWN_8E04_blit = 0x01000000,
-        PC_UNKNOWN_9805 = 1,
-        SP_UNKNOWN_A0F8 = 1,
+        PC_POWER_CNTL = 1,
     ))
 
 add_gpus([
@@ -269,8 +269,17 @@ add_gpus([
         num_sp_cores = 2,
         num_ccu = 2,
         RB_UNKNOWN_8E04_blit = 0x00100000,
-        PC_UNKNOWN_9805 = 1,
-        SP_UNKNOWN_A0F8 = 1,
+        PC_POWER_CNTL = 1,
+    ))
+
+add_gpus([
+        GPUId(680),
+    ], A6xxGPUInfo(
+        a6xx_gen2,
+        num_sp_cores = 4,
+        num_ccu = 4,
+        RB_UNKNOWN_8E04_blit = 0x04100000,
+        PC_POWER_CNTL = 3,
     ))
 
 add_gpus([
@@ -280,8 +289,7 @@ add_gpus([
         num_sp_cores = 3,
         num_ccu = 3,
         RB_UNKNOWN_8E04_blit = 0x04100000,
-        PC_UNKNOWN_9805 = 2,
-        SP_UNKNOWN_A0F8 = 2,
+        PC_POWER_CNTL = 2,
     ))
 
 add_gpus([
@@ -291,8 +299,7 @@ add_gpus([
         num_sp_cores = 2,
         num_ccu = 2,
         RB_UNKNOWN_8E04_blit = 0x00100000,
-        PC_UNKNOWN_9805 = 1,
-        SP_UNKNOWN_A0F8 = 1,
+        PC_POWER_CNTL = 1,
     ))
 
 add_gpus([
@@ -302,8 +309,7 @@ add_gpus([
         num_sp_cores = 3,
         num_ccu = 3,
         RB_UNKNOWN_8E04_blit = 0x04100000,
-        PC_UNKNOWN_9805 = 2,
-        SP_UNKNOWN_A0F8 = 2,
+        PC_POWER_CNTL = 2,
     ))
 
 template = """\

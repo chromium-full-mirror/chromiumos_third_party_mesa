@@ -31,7 +31,6 @@
 #include "util/u_memory.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
-#include "indices/u_primconvert.h"
 #include "gallium/auxiliary/util/u_blend.h"
 
 #include "panfrost-quirks.h"
@@ -236,6 +235,7 @@ panfrost_emit_blend(struct panfrost_batch *batch, void *rts, mali_ptr *blend_sha
         unsigned rt_count = batch->key.nr_cbufs;
         struct panfrost_context *ctx = batch->ctx;
         const struct panfrost_blend_state *so = ctx->blend;
+        bool dithered = so->base.dither;
 
         /* Always have at least one render target for depth-only passes */
         for (unsigned i = 0; i < MAX2(rt_count, 1); ++i) {
@@ -262,7 +262,7 @@ panfrost_emit_blend(struct panfrost_batch *batch, void *rts, mali_ptr *blend_sha
                 pan_pack(packed, BLEND, cfg) {
                         cfg.srgb = util_format_is_srgb(format);
                         cfg.load_destination = info.load_dest;
-                        cfg.round_to_fb_precision = !ctx->blend->base.dither;
+                        cfg.round_to_fb_precision = !dithered;
                         cfg.alpha_to_one = ctx->blend->base.alpha_to_one;
 #if PAN_ARCH >= 6
                         cfg.bifrost.constant = pack_blend_constant(format, cons);
@@ -317,7 +317,7 @@ panfrost_emit_blend(struct panfrost_batch *batch, void *rts, mali_ptr *blend_sha
                                  */
                                 cfg.fixed_function.num_comps = 4;
                                 cfg.fixed_function.conversion.memory_format =
-                                        panfrost_format_to_bifrost_blend(dev, format);
+                                        panfrost_format_to_bifrost_blend(dev, format, dithered);
                                 cfg.fixed_function.conversion.register_format =
                                         fs->info.bifrost.blend[i].format;
                                 cfg.fixed_function.rt = i;
@@ -360,21 +360,6 @@ pan_merge_empty_fs(struct mali_renderer_state_packed *rsd)
         pan_merge((*rsd), empty_rsd, RENDERER_STATE);
 }
 
-#if PAN_ARCH == 5
-/* Get the last blend shader, for an erratum workaround */
-
-static mali_ptr
-panfrost_last_nonnull(mali_ptr *ptrs, unsigned count)
-{
-        for (signed i = ((signed) count - 1); i >= 0; --i) {
-                if (ptrs[i])
-                        return ptrs[i];
-        }
-
-        return 0;
-}
-#endif
-
 static void
 panfrost_prepare_fs_state(struct panfrost_context *ctx,
                           mali_ptr *blend_shaders,
@@ -387,7 +372,13 @@ panfrost_prepare_fs_state(struct panfrost_context *ctx,
         bool alpha_to_coverage = ctx->blend->base.alpha_to_coverage;
         bool msaa = rast->multisample;
 
-        UNUSED unsigned rt_count = ctx->pipe_framebuffer.nr_cbufs;
+        unsigned rt_count = ctx->pipe_framebuffer.nr_cbufs;
+
+        bool has_blend_shader = false;
+
+        for (unsigned c = 0; c < rt_count; ++c)
+                has_blend_shader |= (blend_shaders[c] != 0);
+
         pan_pack(rsd, RENDERER_STATE, cfg) {
                 if (panfrost_fs_required(fs, so, &ctx->pipe_framebuffer, zsa)) {
 #if PAN_ARCH >= 6
@@ -406,11 +397,6 @@ panfrost_prepare_fs_state(struct panfrost_context *ctx,
                         cfg.properties.midgard.force_early_z =
                                 fs->info.fs.can_early_z && !alpha_to_coverage &&
                                 ((enum mali_func) zsa->base.alpha_func == MALI_FUNC_ALWAYS);
-
-                        bool has_blend_shader = false;
-
-                        for (unsigned c = 0; c < rt_count; ++c)
-                                has_blend_shader |= (blend_shaders[c] != 0);
 
                         /* TODO: Reduce this limit? */
                         if (has_blend_shader)
@@ -466,6 +452,18 @@ panfrost_prepare_fs_state(struct panfrost_context *ctx,
 
                 cfg.multisample_misc.evaluate_per_sample =
                         msaa && (ctx->min_samples > 1);
+
+#if PAN_ARCH >= 6
+                /* MSAA blend shaders need to pass their sample ID to
+                 * LD_TILE/ST_TILE, so we must preload it. Additionally, we
+                 * need per-sample shading for the blend shader, accomplished
+                 * by forcing per-sample shading for the whole program. */
+
+                if (msaa && has_blend_shader) {
+                        cfg.multisample_misc.evaluate_per_sample = true;
+                        cfg.preload.fragment.sample_mask_id = true;
+                }
+#endif
 
                 cfg.stencil_mask_misc.alpha_to_coverage = alpha_to_coverage;
                 cfg.depth_units = rast->offset_units * 2.0f;
@@ -557,7 +555,7 @@ panfrost_emit_frag_shader_meta(struct panfrost_batch *batch)
                                              PAN_DESC_ARRAY(rt_count, BLEND));
 #endif
 
-        mali_ptr blend_shaders[PIPE_MAX_COLOR_BUFS];
+        mali_ptr blend_shaders[PIPE_MAX_COLOR_BUFS] = { 0 };
         unsigned shader_offset = 0;
         struct panfrost_bo *shader_bo = NULL;
 
@@ -884,7 +882,7 @@ panfrost_upload_rt_conversion_sysval(struct panfrost_batch *batch,
         if (rt < batch->key.nr_cbufs && batch->key.cbufs[rt]) {
                 enum pipe_format format = batch->key.cbufs[rt]->format;
                 uniform->u[0] =
-                        pan_blend_get_bifrost_desc(dev, format, rt, size) >> 32;
+                        pan_blend_get_bifrost_desc(dev, format, rt, size, false) >> 32;
         } else {
                 pan_pack(&uniform->u[0], BIFROST_INTERNAL_CONVERSION, cfg)
                         cfg.memory_format = dev->formats[PIPE_FORMAT_NONE].hw;
@@ -2690,6 +2688,7 @@ panfrost_draw_emit_tiler(struct panfrost_batch *batch,
                 cfg.address = panfrost_batch_get_bifrost_tiler(batch, ~0);
         }
 
+        pan_section_pack(job, TILER_JOB, PADDING, cfg);
         pan_section_pack(job, TILER_JOB, DRAW_PADDING, cfg);
 #endif
 
@@ -2750,18 +2749,6 @@ panfrost_direct_draw(struct panfrost_batch *batch,
                 return;
 
         struct panfrost_context *ctx = batch->ctx;
-
-        /* Fallback for unsupported modes */
-        if (!(ctx->draw_modes & BITFIELD_BIT(info->mode))) {
-                if (draw->count < 4) {
-                        /* Degenerate case? */
-                        return;
-                }
-
-                util_primconvert_save_rasterizer_state(ctx->primconvert, &ctx->rasterizer->base);
-                util_primconvert_draw_vbo(ctx->primconvert, info, drawid_offset, NULL, draw, 1);
-                return;
-        }
 
         /* Take into account a negative bias */
         ctx->indirect_draw = false;
@@ -2864,7 +2851,6 @@ panfrost_indirect_draw(struct panfrost_batch *batch,
         /* TODO: Increment transform feedback offsets */
         assert(ctx->streamout.num_targets == 0);
 
-        assert(ctx->draw_modes & (1 << info->mode));
         ctx->active_prim = info->mode;
         ctx->drawid = drawid_offset;
         ctx->indirect_draw = true;
@@ -2996,8 +2982,8 @@ panfrost_draw_vbo(struct pipe_context *pipe,
         if (!panfrost_render_condition_check(ctx))
                 return;
 
-        /* Emulate indirect draws when debugging */
-        if (dev->debug & PAN_DBG_NOINDIRECT && indirect && indirect->buffer) {
+        /* Emulate indirect draws unless we're using the experimental path */
+        if (!(dev->debug & PAN_DBG_INDIRECT) && indirect && indirect->buffer) {
                 assert(num_draws == 1);
                 util_draw_indirect(pipe, info, indirect);
                 return;
@@ -3434,6 +3420,7 @@ panfrost_create_blend_state(struct pipe_context *pipe,
 
                 /* Determine some common properties */
                 unsigned constant_mask = pan_blend_constant_mask(equation);
+                const bool supports_2src = pan_blend_supports_2src(PAN_ARCH);
                 so->info[c] = (struct pan_blend_info) {
                         .no_colour = (equation.color_mask == 0),
                         .opaque = pan_blend_is_opaque(equation),
@@ -3445,7 +3432,8 @@ panfrost_create_blend_state(struct pipe_context *pipe,
 
                         /* Could this possibly be fixed-function? */
                         .fixed_function = !blend->logicop_enable &&
-                                pan_blend_can_fixed_function(equation) &&
+                                pan_blend_can_fixed_function(equation,
+                                                             supports_2src) &&
                                 (!constant_mask ||
                                  pan_blend_supports_constant(PAN_ARCH, c))
                 };
@@ -3460,8 +3448,7 @@ panfrost_create_blend_state(struct pipe_context *pipe,
                 /* Converting equations to Mali style is expensive, do it at
                  * CSO create time instead of draw-time */
                 if (so->info[c].fixed_function) {
-                        pan_pack(&so->equation[c], BLEND_EQUATION, cfg)
-                                pan_blend_to_fixed_function_equation(equation, &cfg);
+                        so->equation[c] = pan_pack_blend(equation);
                 }
         }
 

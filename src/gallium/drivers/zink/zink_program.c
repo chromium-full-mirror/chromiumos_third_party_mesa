@@ -280,7 +280,7 @@ update_shader_modules(struct zink_context *ctx, struct zink_gfx_program *prog)
 {
    bool hash_changed = false;
    bool default_variants = true;
-   bool first = !!prog->modules[PIPE_SHADER_VERTEX];
+   bool first = !prog->modules[PIPE_SHADER_VERTEX];
    u_foreach_bit(pstage, ctx->dirty_shader_stages & prog->stages_present) {
       assert(prog->shaders[pstage]);
       struct zink_shader_module *zm = get_shader_module_for_stage(ctx, prog->shaders[pstage], prog);
@@ -332,7 +332,7 @@ equals_gfx_pipeline_state(const void *a, const void *b)
       if (sa->front_face != sb->front_face)
          return false;
       if (!!sa->depth_stencil_alpha_state != !!sb->depth_stencil_alpha_state ||
-          (sa && sb && memcmp(sa->depth_stencil_alpha_state, sb->depth_stencil_alpha_state, sizeof(struct zink_depth_stencil_alpha_hw_state))))
+          memcmp(sa->depth_stencil_alpha_state, sb->depth_stencil_alpha_state, sizeof(struct zink_depth_stencil_alpha_hw_state)))
          return false;
    }
    return !memcmp(sa->modules, sb->modules, sizeof(sa->modules)) &&
@@ -825,7 +825,7 @@ zink_get_gfx_pipeline(struct zink_context *ctx,
       memcpy(&pc_entry->state, state, sizeof(*state));
       pc_entry->pipeline = pipeline;
 
-      entry = _mesa_hash_table_insert_pre_hashed(prog->pipelines[vkmode], state->final_hash, state, pc_entry);
+      entry = _mesa_hash_table_insert_pre_hashed(prog->pipelines[vkmode], state->final_hash, pc_entry, pc_entry);
       assert(entry);
    }
 
@@ -864,7 +864,7 @@ zink_get_compute_pipeline(struct zink_screen *screen,
       memcpy(&pc_entry->state, state, sizeof(*state));
       pc_entry->pipeline = pipeline;
 
-      entry = _mesa_hash_table_insert_pre_hashed(comp->pipelines, state->hash, state, pc_entry);
+      entry = _mesa_hash_table_insert_pre_hashed(comp->pipelines, state->hash, pc_entry, pc_entry);
       assert(entry);
    }
 
@@ -878,12 +878,26 @@ bind_stage(struct zink_context *ctx, enum pipe_shader_type stage,
            struct zink_shader *shader)
 {
    if (stage == PIPE_SHADER_COMPUTE) {
+      if (shader && shader != ctx->compute_stage) {
+         struct hash_entry *entry = _mesa_hash_table_search(ctx->compute_program_cache, shader);
+         if (entry) {
+            ctx->compute_pipeline_state.dirty = true;
+            ctx->curr_compute = entry->data;
+         } else
+            ctx->dirty_shader_stages |= 1 << stage;
+      } else if (!shader)
+         ctx->curr_compute = NULL;
       ctx->compute_stage = shader;
-      if (shader)
-         zink_select_launch_grid(ctx);
-   } else
+      zink_select_launch_grid(ctx);
+   } else {
       ctx->gfx_stages[stage] = shader;
-   ctx->dirty_shader_stages |= 1 << stage;
+      ctx->gfx_pipeline_state.combined_dirty = true;
+      if (!shader) {
+         ctx->gfx_pipeline_state.modules[stage] = VK_NULL_HANDLE;
+         ctx->curr_program = NULL;
+      }
+      ctx->dirty_shader_stages |= 1 << stage;
+   }
    if (shader && shader->nir->info.num_inlinable_uniforms)
       ctx->shader_has_inlinable_uniforms_mask |= 1 << stage;
    else

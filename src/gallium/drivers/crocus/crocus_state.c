@@ -2026,6 +2026,9 @@ crocus_create_rasterizer_state(struct pipe_context *ctx,
       sf.LineEndCapAntialiasingRegionWidth =
          state->line_smooth ? _10pixels : _05pixels;
       sf.LastPixelEnable = state->line_last_pixel;
+#if GFX_VER <= 7
+      sf.AntialiasingEnable = state->line_smooth;
+#endif
 #if GFX_VER == 8
       struct crocus_screen *screen = (struct crocus_screen *)ctx->screen;
       if (screen->devinfo.is_cherryview)
@@ -2908,7 +2911,8 @@ crocus_create_surface(struct pipe_context *ctx,
          crocus_resource_finish_aux_import(&screen->base, res);
 
       memcpy(&surf->surf, &res->surf, sizeof(surf->surf));
-      uint32_t temp_offset, temp_x, temp_y;
+      uint64_t temp_offset;
+      uint32_t temp_x, temp_y;
 
       isl_surf_get_image_offset_B_tile_sa(&res->surf, tmpl->u.tex.level,
                                           res->base.b.target == PIPE_TEXTURE_3D ? 0 : tmpl->u.tex.first_layer,
@@ -2954,7 +2958,8 @@ crocus_create_surface(struct pipe_context *ctx,
    /* TODO: compressed pbo uploads aren't working here */
    return NULL;
 
-   uint32_t offset_B = 0, tile_x_sa = 0, tile_y_sa = 0;
+   uint64_t offset_B = 0;
+   uint32_t tile_x_sa = 0, tile_y_sa = 0;
 
    if (view->base_level > 0) {
       /* We can't rely on the hardware's miplevel selection with such
@@ -3143,6 +3148,7 @@ crocus_set_sampler_views(struct pipe_context *ctx,
                          enum pipe_shader_type p_stage,
                          unsigned start, unsigned count,
                          unsigned unbind_num_trailing_slots,
+                         bool take_ownership,
                          struct pipe_sampler_view **views)
 {
    struct crocus_context *ice = (struct crocus_context *) ctx;
@@ -3153,8 +3159,16 @@ crocus_set_sampler_views(struct pipe_context *ctx,
 
    for (unsigned i = 0; i < count; i++) {
       struct pipe_sampler_view *pview = views ? views[i] : NULL;
-      pipe_sampler_view_reference((struct pipe_sampler_view **)
-                                  &shs->textures[start + i], pview);
+
+      if (take_ownership) {
+         pipe_sampler_view_reference((struct pipe_sampler_view **)
+                                     &shs->textures[start + i], NULL);
+         shs->textures[start + i] = (struct crocus_sampler_view *)pview;
+      } else {
+         pipe_sampler_view_reference((struct pipe_sampler_view **)
+                                     &shs->textures[start + i], pview);
+      }
+
       struct crocus_sampler_view *view = (void *) pview;
       if (view) {
          view->res->bind_history |= PIPE_BIND_SAMPLER_VIEW;
@@ -3190,6 +3204,14 @@ crocus_set_tess_state(struct pipe_context *ctx,
 
    ice->state.stage_dirty |= CROCUS_STAGE_DIRTY_CONSTANTS_TCS;
    shs->sysvals_need_upload = true;
+}
+
+static void
+crocus_set_patch_vertices(struct pipe_context *ctx, uint8_t patch_vertices)
+{
+   struct crocus_context *ice = (struct crocus_context *) ctx;
+
+   ice->state.patch_vertices = patch_vertices;
 }
 
 static void
@@ -4774,7 +4796,7 @@ crocus_populate_fs_key(const struct crocus_context *ice,
 
    uint32_t line_aa = BRW_WM_AA_NEVER;
    if (rast->cso.line_smooth) {
-      int reduced_prim = u_reduced_prim(ice->state.prim_mode);
+      int reduced_prim = ice->state.reduced_prim_mode;
       if (reduced_prim == PIPE_PRIM_LINES)
          line_aa = BRW_WM_AA_ALWAYS;
       else if (reduced_prim == PIPE_PRIM_TRIANGLES) {
@@ -4939,7 +4961,7 @@ emit_surface_state(struct crocus_batch *batch,
                    struct crocus_resource *res,
                    const struct isl_surf *in_surf,
                    bool adjust_surf,
-                   struct isl_view *view,
+                   struct isl_view *in_view,
                    bool writeable,
                    enum isl_aux_usage aux_usage,
                    bool blend_enable,
@@ -4950,29 +4972,31 @@ emit_surface_state(struct crocus_batch *batch,
    const struct intel_device_info *devinfo = &batch->screen->devinfo;
    struct isl_device *isl_dev = &batch->screen->isl_dev;
    uint32_t reloc = RELOC_32BIT;
-   uint32_t offset = res->offset, tile_x_sa = 0, tile_y_sa = 0;
+   uint64_t offset_B = res->offset;
+   uint32_t tile_x_sa = 0, tile_y_sa = 0;
 
    if (writeable)
       reloc |= RELOC_WRITE;
 
    struct isl_surf surf = *in_surf;
+   struct isl_view view = *in_view;
    if (adjust_surf) {
-      if (res->base.b.target == PIPE_TEXTURE_3D && view->array_len == 1) {
+      if (res->base.b.target == PIPE_TEXTURE_3D && view.array_len == 1) {
          isl_surf_get_image_surf(isl_dev, in_surf,
-                                 view->base_level, 0,
-                                 view->base_array_layer,
-                                 &surf, &offset,
+                                 view.base_level, 0,
+                                 view.base_array_layer,
+                                 &surf, &offset_B,
                                  &tile_x_sa, &tile_y_sa);
-         view->base_array_layer = 0;
-         view->base_level = 0;
+         view.base_array_layer = 0;
+         view.base_level = 0;
       } else if (res->base.b.target == PIPE_TEXTURE_CUBE && devinfo->ver == 4) {
          isl_surf_get_image_surf(isl_dev, in_surf,
-                                 view->base_level, view->base_array_layer,
+                                 view.base_level, view.base_array_layer,
                                  0,
-                                 &surf, &offset,
+                                 &surf, &offset_B,
                                  &tile_x_sa, &tile_y_sa);
-         view->base_array_layer = 0;
-         view->base_level = 0;
+         view.base_array_layer = 0;
+         view.base_level = 0;
       } else if (res->base.b.target == PIPE_TEXTURE_1D_ARRAY)
          surf.dim = ISL_SURF_DIM_2D;
    }
@@ -4991,10 +5015,10 @@ emit_surface_state(struct crocus_batch *batch,
 
    isl_surf_fill_state(isl_dev, surf_state,
                        .surf = &surf,
-                       .view = view,
+                       .view = &view,
                        .address = crocus_state_reloc(batch,
                                                      addr_offset + isl_dev->ss.addr_offset,
-                                                     res->bo, offset, reloc),
+                                                     res->bo, offset_B, reloc),
                        .aux_surf = aux_surf,
                        .aux_usage = aux_usage,
                        .aux_address = aux_offset,
@@ -7016,11 +7040,15 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
          sf.DestinationOriginHorizontalBias = 0.5;
          sf.DestinationOriginVerticalBias = 0.5;
 
+	 sf.LineEndCapAntialiasingRegionWidth =
+            cso_state->line_smooth ? _10pixels : _05pixels;
          sf.LastPixelEnable = cso_state->line_last_pixel;
+         sf.AntialiasingEnable = cso_state->line_smooth;
+
          sf.LineWidth = get_line_width(cso_state);
          sf.PointWidth = cso_state->point_size;
          sf.PointWidthSource = cso_state->point_size_per_vertex ? Vertex : State;
-#if GFX_VERx10 == 45 || GFX_VER >= 5
+#if GFX_VERx10 >= 45
          sf.AALineDistanceMode = AALINEDISTANCE_TRUE;
 #endif
          sf.ViewportTransformEnable = true;
@@ -7419,7 +7447,7 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
             if (crocus_resource_level_has_hiz(zres, view.base_level)) {
                info.hiz_usage = zres->aux.usage;
                info.hiz_surf = &zres->aux.surf;
-               uint32_t hiz_offset = 0;
+               uint64_t hiz_offset = 0;
 
 #if GFX_VER == 6
                /* HiZ surfaces on Sandy Bridge technically don't support
@@ -7444,7 +7472,7 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
             info.stencil_aux_usage = sres->aux.usage;
             info.stencil_surf = &sres->surf;
 
-            uint32_t stencil_offset = 0;
+            uint64_t stencil_offset = 0;
 #if GFX_VER == 6
             /* Stencil surfaces on Sandy Bridge technically don't support
              * mip-mapping.  However, we can fake it by offsetting to the
@@ -7486,7 +7514,7 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
    if (dirty & CROCUS_DIRTY_GEN8_VF_TOPOLOGY) {
       crocus_emit_cmd(batch, GENX(3DSTATE_VF_TOPOLOGY), topo) {
          topo.PrimitiveTopologyType =
-            translate_prim_type(draw->mode, draw->vertices_per_patch);
+            translate_prim_type(draw->mode, ice->state.patch_vertices);
       }
    }
 #endif
@@ -7953,7 +7981,7 @@ crocus_upload_render_state(struct crocus_context *ice,
       prim.PredicateEnable = use_predicate;
 #endif
 
-      prim.PrimitiveTopologyType = translate_prim_type(ice->state.prim_mode, draw->vertices_per_patch);
+      prim.PrimitiveTopologyType = translate_prim_type(ice->state.prim_mode, ice->state.patch_vertices);
       if (indirect) {
          // XXX Probably have to do something for gen6 here?
 #if GFX_VER >= 7
@@ -9202,6 +9230,7 @@ genX(crocus_init_state)(struct crocus_context *ice)
    ctx->set_shader_images = crocus_set_shader_images;
    ctx->set_sampler_views = crocus_set_sampler_views;
    ctx->set_tess_state = crocus_set_tess_state;
+   ctx->set_patch_vertices = crocus_set_patch_vertices;
    ctx->set_framebuffer_state = crocus_set_framebuffer_state;
    ctx->set_polygon_stipple = crocus_set_polygon_stipple;
    ctx->set_sample_mask = crocus_set_sample_mask;
@@ -9230,6 +9259,7 @@ genX(crocus_init_state)(struct crocus_context *ice)
    ice->state.sample_mask = 0xff;
    ice->state.num_viewports = 1;
    ice->state.prim_mode = PIPE_PRIM_MAX;
+   ice->state.reduced_prim_mode = PIPE_PRIM_MAX;
    ice->state.genx = calloc(1, sizeof(struct crocus_genx_state));
    ice->draw.derived_params.drawid = -1;
 

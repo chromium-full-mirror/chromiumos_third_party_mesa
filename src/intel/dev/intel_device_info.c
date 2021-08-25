@@ -31,6 +31,7 @@
 #include "compiler/shader_enums.h"
 #include "intel/common/intel_gem.h"
 #include "util/bitscan.h"
+#include "util/debug.h"
 #include "util/log.h"
 #include "util/macros.h"
 
@@ -65,6 +66,7 @@ static const struct {
    { "rkl", 0x4c8a },
    { "dg1", 0x4905 },
    { "adl", 0x4680 },
+   { "sg1", 0x4907 },
 };
 
 /**
@@ -994,7 +996,7 @@ static const struct intel_device_info intel_device_info_adl_gt2 = {
    .is_alderlake = true,
 };
 
-#define GFX12_DG1_FEATURES                      \
+#define GFX12_DG1_SG1_FEATURES                  \
    GFX12_GT_FEATURES(2),                        \
    .is_dg1 = true,                              \
    .has_llc = false,                            \
@@ -1002,8 +1004,12 @@ static const struct intel_device_info intel_device_info_adl_gt2 = {
    .urb.size = 768,                             \
    .simulator_id = 30
 
-UNUSED static const struct intel_device_info intel_device_info_dg1 = {
-   GFX12_DG1_FEATURES,
+static const struct intel_device_info intel_device_info_dg1 = {
+   GFX12_DG1_SG1_FEATURES,
+};
+
+static const struct intel_device_info intel_device_info_sg1 = {
+   GFX12_DG1_SG1_FEATURES,
 };
 
 static void
@@ -1490,7 +1496,7 @@ intel_get_device_info_from_fd(int fd, struct intel_device_info *devinfo)
          return false;
       if (!intel_get_device_info_from_pci_id(devid, devinfo))
          return false;
-      devinfo->no_hw = false;
+      devinfo->no_hw = env_var_as_boolean("INTEL_NO_HW", false);
    }
 
    if (devinfo->ver == 10) {

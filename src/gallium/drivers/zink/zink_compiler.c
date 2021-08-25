@@ -76,8 +76,13 @@ reads_work_dim(nir_shader *shader)
 }
 
 static bool
-lower_discard_if_instr(nir_intrinsic_instr *instr, nir_builder *b)
+lower_discard_if_instr(nir_builder *b, nir_instr *instr_, UNUSED void *cb_data)
 {
+   if (instr_->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *instr = nir_instr_as_intrinsic(instr_);
+
    if (instr->intrinsic == nir_intrinsic_discard_if) {
       b->cursor = nir_before_instr(&instr->instr);
 
@@ -137,26 +142,10 @@ lower_discard_if_instr(nir_intrinsic_instr *instr, nir_builder *b)
 static bool
 lower_discard_if(nir_shader *shader)
 {
-   bool progress = false;
-
-   nir_foreach_function(function, shader) {
-      if (function->impl) {
-         nir_builder builder;
-         nir_builder_init(&builder, function->impl);
-         nir_foreach_block(block, function->impl) {
-            nir_foreach_instr_safe(instr, block) {
-               if (instr->type == nir_instr_type_intrinsic)
-                  progress |= lower_discard_if_instr(
-                                                  nir_instr_as_intrinsic(instr),
-                                                  &builder);
-            }
-         }
-
-         nir_metadata_preserve(function->impl, nir_metadata_dominance);
-      }
-   }
-
-   return progress;
+   return nir_shader_instructions_pass(shader,
+                                       lower_discard_if_instr,
+                                       nir_metadata_dominance,
+                                       NULL);
 }
 
 static bool
@@ -1054,7 +1043,7 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
 }
 
 void
-zink_shader_finalize(struct pipe_screen *pscreen, void *nirptr, bool optimize)
+zink_shader_finalize(struct pipe_screen *pscreen, void *nirptr)
 {
    struct zink_screen *screen = zink_screen(pscreen);
    nir_shader *nir = nirptr;
@@ -1084,28 +1073,18 @@ zink_shader_free(struct zink_context *ctx, struct zink_shader *shader)
          struct zink_compute_program *comp = (void*)entry->key;
          _mesa_hash_table_remove_key(ctx->compute_program_cache, comp->shader);
          comp->shader = NULL;
-         bool in_use = comp == ctx->curr_compute;
-         if (in_use)
-            ctx->compute_stage = NULL;
-         if (zink_compute_program_reference(screen, &comp, NULL) && in_use)
-            ctx->curr_compute = NULL;
+         zink_compute_program_reference(screen, &comp, NULL);
       } else {
          struct zink_gfx_program *prog = (void*)entry->key;
          enum pipe_shader_type pstage = pipe_shader_type_from_mesa(shader->nir->info.stage);
          assert(pstage < ZINK_SHADER_COUNT);
-         bool in_use = prog == ctx->curr_program;
          if (shader->nir->info.stage != MESA_SHADER_TESS_CTRL || !shader->is_generated)
             _mesa_hash_table_remove_key(ctx->program_cache, prog->shaders);
          prog->shaders[pstage] = NULL;
          if (shader->nir->info.stage == MESA_SHADER_TESS_EVAL && shader->generated)
             /* automatically destroy generated tcs shaders when tes is destroyed */
             zink_shader_free(ctx, shader->generated);
-         if (in_use) {
-            ctx->gfx_pipeline_state.modules[pstage] = VK_NULL_HANDLE;
-            ctx->gfx_stages[pstage] = NULL;
-         }
-         if (zink_gfx_program_reference(screen, &prog, NULL) && in_use)
-            ctx->curr_program = NULL;
+         zink_gfx_program_reference(screen, &prog, NULL);
       }
    }
    _mesa_set_destroy(shader->programs, NULL);

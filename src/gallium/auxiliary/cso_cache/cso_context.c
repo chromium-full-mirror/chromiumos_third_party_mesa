@@ -339,7 +339,7 @@ void cso_unbind_context(struct cso_context *ctx)
                ctx->pipe->bind_sampler_states(ctx->pipe, sh, 0, maxsam, zeros);
             }
             if (maxview > 0) {
-               ctx->pipe->set_sampler_views(ctx->pipe, sh, 0, maxview, 0, views);
+               ctx->pipe->set_sampler_views(ctx->pipe, sh, 0, maxview, 0, false, views);
             }
             if (maxssbo > 0) {
                ctx->pipe->set_shader_buffers(ctx->pipe, sh, 0, maxssbo, ssbos, 0);
@@ -386,6 +386,14 @@ void cso_unbind_context(struct cso_context *ctx)
 
    memset(&ctx->samplers, 0, sizeof(ctx->samplers));
    memset(&ctx->nr_so_targets, 0, offsetof(struct cso_context, cache) - offsetof(struct cso_context, nr_so_targets));
+   ctx->sample_mask = ~0;
+   /*
+    * If the cso context is reused (with the same pipe context),
+    * need to really make sure the context state doesn't get out of sync.
+    */
+   ctx->pipe->set_sample_mask(ctx->pipe, ctx->sample_mask);
+   if (ctx->pipe->set_min_samples)
+      ctx->pipe->set_min_samples(ctx->pipe, ctx->min_samples);
 }
 
 /**

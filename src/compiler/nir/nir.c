@@ -749,6 +749,28 @@ nir_phi_instr_create(nir_shader *shader)
    return instr;
 }
 
+/**
+ * Adds a new source to a NIR instruction.
+ *
+ * Note that this does not update the def/use relationship for src, assuming
+ * that the instr is not in the shader.  If it is, you have to do:
+ *
+ * list_addtail(&phi_src->src.use_link, &src.ssa->uses);
+ */
+nir_phi_src *
+nir_phi_instr_add_src(nir_phi_instr *instr, nir_block *pred, nir_src src)
+{
+   nir_phi_src *phi_src;
+
+   phi_src = rzalloc(instr, nir_phi_src);
+   phi_src->pred = pred;
+   phi_src->src = src;
+   phi_src->src.parent_instr = &instr->instr;
+   exec_list_push_tail(&instr->srcs, &phi_src->node);
+
+   return phi_src;
+}
+
 nir_parallel_copy_instr *
 nir_parallel_copy_instr_create(nir_shader *shader)
 {
@@ -1333,11 +1355,17 @@ nir_src_is_dynamically_uniform(nir_src src)
    if (src.ssa->parent_instr->type == nir_instr_type_load_const)
       return true;
 
-   /* As are uniform variables */
    if (src.ssa->parent_instr->type == nir_instr_type_intrinsic) {
       nir_intrinsic_instr *intr = nir_instr_as_intrinsic(src.ssa->parent_instr);
+      /* As are uniform variables */
       if (intr->intrinsic == nir_intrinsic_load_uniform &&
           nir_src_is_dynamically_uniform(intr->src[0]))
+         return true;
+      /* Push constant loads always use uniform offsets. */
+      if (intr->intrinsic == nir_intrinsic_load_push_constant)
+         return true;
+      if (intr->intrinsic == nir_intrinsic_load_deref &&
+          nir_deref_mode_is(nir_src_as_deref(intr->src[0]), nir_var_mem_push_const))
          return true;
    }
 

@@ -1106,6 +1106,7 @@ ALU2(DP4)
 ALU2(DPH)
 ALU2(DP3)
 ALU2(DP2)
+ALU3(DP4A)
 ALU3(MAD)
 ALU3F(LRP)
 ALU1(BFREV)
@@ -3251,7 +3252,7 @@ gfx12_set_memory_fence_message(struct brw_codegen *p,
    enum lsc_flush_type flush_type = LSC_FLUSH_TYPE_NONE;
 
    if (sfid == GFX12_SFID_TGM) {
-      scope = LSC_FENCE_GPU;
+      scope = LSC_FENCE_TILE;
       flush_type = LSC_FLUSH_TYPE_EVICT;
    }
 

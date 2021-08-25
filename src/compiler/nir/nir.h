@@ -2939,6 +2939,21 @@ nir_block_ends_in_jump(nir_block *block)
 }
 
 static inline bool
+nir_block_ends_in_return_or_halt(nir_block *block)
+{
+   if (exec_list_is_empty(&block->instr_list))
+      return false;
+
+   nir_instr *instr = nir_block_last_instr(block);
+   if (instr->type != nir_instr_type_jump)
+      return false;
+
+   nir_jump_instr *jump_instr = nir_instr_as_jump(instr);
+   return jump_instr->type == nir_jump_return ||
+          jump_instr->type == nir_jump_halt;
+}
+
+static inline bool
 nir_block_ends_in_break(nir_block *block)
 {
    if (exec_list_is_empty(&block->instr_list))
@@ -3017,6 +3032,17 @@ typedef struct {
 } nir_loop_terminator;
 
 typedef struct {
+   /* Induction variable. */
+   nir_ssa_def *def;
+
+   /* Init statement with only uniform. */
+   nir_src *init_src;
+
+   /* Update statement with only uniform. */
+   nir_alu_src *update_src;
+} nir_loop_induction_variable;
+
+typedef struct {
    /* Estimated cost (in number of instructions) of the loop */
    unsigned instr_cost;
 
@@ -3042,6 +3068,10 @@ typedef struct {
 
    /* A list of loop_terminators terminating this loop. */
    struct list_head loop_terminator_list;
+
+   /* array of induction variables for this loop */
+   nir_loop_induction_variable *induction_vars;
+   unsigned num_induction_vars;
 } nir_loop_info;
 
 typedef enum {
@@ -3666,9 +3696,18 @@ typedef struct nir_shader_compiler_options {
     * iadd(x, ineg(y)). If true, driver should call nir_opt_algebraic_late(). */
    bool has_isub;
 
+   /** Backend supports pack_32_4x8 or pack_32_4x8_split. */
+   bool has_pack_32_4x8;
+
    /** Backend supports txs, if not nir_lower_tex(..) uses txs-free variants
     * for rect texture lowering. */
    bool has_txs;
+
+   /** Backend supports sdot_4x8 and udot_4x8 opcodes. */
+   bool has_dot_4x8;
+
+   /** Backend supports sudot_4x8 opcodes. */
+   bool has_sudot_4x8;
 
    /* Whether to generate only scoped_barrier intrinsics instead of the set of
     * memory and control barrier intrinsics based on GLSL.
@@ -3685,8 +3724,11 @@ typedef struct nir_shader_compiler_options {
     */
    bool intel_vec4;
 
-   /** Lower nir_op_ibfe and nir_op_ubfe that have two constant sources. */
-   bool lower_bfe_with_two_constants;
+   /**
+    * For most Intel GPUs, all ternary operations such as FMA and BFE cannot
+    * have immediates, so two to three instructions may eventually be needed.
+    */
+   bool avoid_ternary_with_two_constants;
 
    /** Whether 8-bit ALU is supported. */
    bool support_8bit_alu;
@@ -3887,6 +3929,7 @@ nir_call_instr *nir_call_instr_create(nir_shader *shader,
 nir_tex_instr *nir_tex_instr_create(nir_shader *shader, unsigned num_srcs);
 
 nir_phi_instr *nir_phi_instr_create(nir_shader *shader);
+nir_phi_src *nir_phi_instr_add_src(nir_phi_instr *instr, nir_block *pred, nir_src src);
 
 nir_parallel_copy_instr *nir_parallel_copy_instr_create(nir_shader *shader);
 
@@ -5443,6 +5486,8 @@ bool nir_opt_deref_impl(nir_function_impl *impl);
 bool nir_opt_deref(nir_shader *shader);
 
 bool nir_opt_find_array_copies(nir_shader *shader);
+
+bool nir_opt_fragdepth(nir_shader *shader);
 
 bool nir_opt_gcm(nir_shader *shader, bool value_number);
 

@@ -56,6 +56,10 @@ zink_reset_batch_state(struct zink_context *ctx, struct zink_batch_state *bs)
       zink_buffer_view_reference(screen, &buffer_view, NULL);
    }
 
+   util_dynarray_foreach(&bs->dead_framebuffers, struct zink_framebuffer*, fb) {
+      zink_framebuffer_reference(screen, fb, NULL);
+   }
+   util_dynarray_clear(&bs->dead_framebuffers);
    util_dynarray_foreach(&bs->zombie_samplers, VkSampler, samp) {
       vkDestroySampler(screen->dev, *samp, NULL);
    }
@@ -69,21 +73,11 @@ zink_reset_batch_state(struct zink_context *ctx, struct zink_batch_state *bs)
       zink_batch_usage_unset(&pg->batch_uses, bs);
       if (pg->is_compute) {
          struct zink_compute_program *comp = (struct zink_compute_program*)pg;
-         bool in_use = comp == ctx->curr_compute;
-         if (zink_compute_program_reference(screen, &comp, NULL) && in_use)
-            ctx->curr_compute = NULL;
+         zink_compute_program_reference(screen, &comp, NULL);
       } else {
          struct zink_gfx_program *prog = (struct zink_gfx_program*)pg;
-         bool in_use = prog == ctx->curr_program;
-         if (zink_gfx_program_reference(screen, &prog, NULL) && in_use)
-            ctx->curr_program = NULL;
+         zink_gfx_program_reference(screen, &prog, NULL);
       }
-   }
-
-   set_foreach(bs->fbs, entry) {
-      struct zink_framebuffer *fb = (void*)entry->key;
-      zink_framebuffer_reference(screen, &fb, NULL);
-      _mesa_set_remove(bs->fbs, entry);
    }
 
    pipe_resource_reference(&bs->flush_res, NULL);
@@ -145,8 +139,8 @@ zink_batch_state_destroy(struct zink_screen *screen, struct zink_batch_state *bs
    if (bs->cmdpool)
       vkDestroyCommandPool(screen->dev, bs->cmdpool, NULL);
 
-   _mesa_set_destroy(bs->fbs, NULL);
    util_dynarray_fini(&bs->zombie_samplers);
+   util_dynarray_fini(&bs->dead_framebuffers);
    _mesa_set_destroy(bs->surfaces, NULL);
    _mesa_set_destroy(bs->bufferviews, NULL);
    _mesa_set_destroy(bs->programs, NULL);
@@ -188,13 +182,13 @@ create_batch_state(struct zink_context *ctx)
    bs->ctx = ctx;
    pipe_reference_init(&bs->reference, 1);
 
-   SET_CREATE_OR_FAIL(bs->fbs);
    SET_CREATE_OR_FAIL(bs->resources);
    SET_CREATE_OR_FAIL(bs->surfaces);
    SET_CREATE_OR_FAIL(bs->bufferviews);
    SET_CREATE_OR_FAIL(bs->programs);
    SET_CREATE_OR_FAIL(bs->active_queries);
    util_dynarray_init(&bs->zombie_samplers, NULL);
+   util_dynarray_init(&bs->dead_framebuffers, NULL);
    util_dynarray_init(&bs->persistent_resources, NULL);
 
    cnd_init(&bs->usage.flush);
@@ -368,7 +362,7 @@ submit_queue(void *data, void *gdata, int thread_index)
 
    if (bs->flush_res && screen->needs_mesa_flush_wsi) {
       struct zink_resource *flush_res = zink_resource(bs->flush_res);
-      mem_signal.memory = flush_res->scanout_obj ? flush_res->scanout_obj->mem : flush_res->obj->mem;
+      mem_signal.memory = zink_bo_get_mem(flush_res->scanout_obj ? flush_res->scanout_obj->bo : flush_res->obj->bo);
       si.pNext = &mem_signal;
    }
 
@@ -670,16 +664,6 @@ zink_batch_reference_sampler_view(struct zink_batch *batch,
       zink_batch_reference_bufferview(batch, sv->buffer_view);
    else
       zink_batch_reference_surface(batch, sv->image_view);
-}
-
-void
-zink_batch_reference_framebuffer(struct zink_batch *batch,
-                                 struct zink_framebuffer *fb)
-{
-   bool found;
-   _mesa_set_search_or_add(batch->state->fbs, fb, &found);
-   if (!found)
-      pipe_reference(NULL, &fb->reference);
 }
 
 void

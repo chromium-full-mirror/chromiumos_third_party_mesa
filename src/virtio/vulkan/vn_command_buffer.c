@@ -474,6 +474,11 @@ vn_DestroyCommandPool(VkDevice device,
 
    alloc = pAllocator ? pAllocator : &pool->allocator;
 
+   /* We must emit vkDestroyCommandPool before freeing the command buffers in
+    * pool->command_buffers.  Otherwise, another thread might reuse their
+    * object ids while they still refer to the command buffers in the
+    * renderer.
+    */
    vn_async_vkDestroyCommandPool(dev->instance, device, commandPool, NULL);
 
    list_for_each_entry_safe(struct vn_command_buffer, cmd,
@@ -537,6 +542,7 @@ vn_AllocateCommandBuffers(VkDevice device,
             cmd = vn_command_buffer_from_handle(pCommandBuffers[j]);
             vn_cs_encoder_fini(&cmd->cs);
             list_del(&cmd->head);
+            vn_object_base_fini(&cmd->base);
             vk_free(alloc, cmd);
          }
          memset(pCommandBuffers, 0,

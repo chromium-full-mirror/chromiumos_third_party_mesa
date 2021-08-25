@@ -87,6 +87,7 @@ struct pan_blit_blend_shader_key {
         nir_alu_type type;
         unsigned rt : 3;
         unsigned nr_samples : 5;
+        unsigned pad : 24;
 };
 
 struct pan_blit_blend_shader_data {
@@ -113,23 +114,25 @@ struct pan_blit_rsd_data {
 static void
 pan_blitter_prepare_midgard_rsd(const struct panfrost_device *dev,
                                 const struct pan_image_view **rts,
-                                mali_ptr *blend_shaders, bool zs,
-                                struct MALI_RENDERER_STATE *rsd)
+                                mali_ptr *blend_shaders, unsigned rt_count,
+                                bool zs, struct MALI_RENDERER_STATE *rsd)
 {
-        mali_ptr blend_shader = blend_shaders ? blend_shaders[0] : 0;
+        mali_ptr blend_shader = blend_shaders ?
+                panfrost_last_nonnull(blend_shaders, rt_count) : 0;
 
         rsd->properties.midgard.work_register_count = 4;
         rsd->properties.midgard.force_early_z = !zs;
         rsd->stencil_mask_misc.alpha_test_compare_function = MALI_FUNC_ALWAYS;
-        if (!(dev->quirks & MIDGARD_SFBD)) {
-                rsd->sfbd_blend_shader = blend_shader;
+
+        /* Set even on v5 for erratum workaround */
+        rsd->sfbd_blend_shader = blend_shader;
+
+        if (!(dev->quirks & MIDGARD_SFBD))
                 return;
-        }
 
         rsd->stencil_mask_misc.sfbd_write_enable = true;
         rsd->stencil_mask_misc.sfbd_dither_disable = true;
         rsd->multisample_misc.sfbd_blend_shader = !!blend_shader;
-        rsd->sfbd_blend_shader = blend_shader;
         if (rsd->multisample_misc.sfbd_blend_shader)
                 return;
 
@@ -168,10 +171,13 @@ pan_blitter_prepare_bifrost_rsd(const struct panfrost_device *dev,
         /* We can only allow blit shader fragments to kill if they write all
          * colour outputs. This is true for our colour (non-Z/S) blit shaders,
          * but obviously not true for Z/S shaders. However, blit shaders
-         * otherwise lack side effects, so other fragments may kill them. */
+         * otherwise lack side effects, so other fragments may kill them.
+         * However, while shaders writing Z/S can normally be killed, on v6
+         * for frame shaders it can cause GPU timeouts, so only allow colour
+         * blit shaders to be killed. */
 
         rsd->properties.bifrost.allow_forward_pixel_to_kill = !zs;
-        rsd->properties.bifrost.allow_forward_pixel_to_be_killed = true;
+        rsd->properties.bifrost.allow_forward_pixel_to_be_killed = (dev->arch >= 7) || !zs;
 
         rsd->preload.fragment.coverage = true;
         rsd->preload.fragment.sample_mask_id = ms;
@@ -228,7 +234,7 @@ pan_blitter_emit_bifrost_blend(const struct panfrost_device *dev,
                 if (!iview) {
                         cfg.enable = false;
                         cfg.bifrost.internal.mode = MALI_BIFROST_BLEND_MODE_OFF;
-                        return;
+                        continue;
                 }
 
                 nir_alu_type type = blit_shader->key.surfaces[rt].type;
@@ -255,7 +261,7 @@ pan_blitter_emit_bifrost_blend(const struct panfrost_device *dev,
                         cfg.bifrost.equation.color_mask = 0xf;
                         cfg.bifrost.internal.fixed_function.num_comps = 4;
                         cfg.bifrost.internal.fixed_function.conversion.memory_format =
-                                panfrost_format_to_bifrost_blend(dev, iview->format);
+                                panfrost_format_to_bifrost_blend(dev, iview->format, false);
                         cfg.bifrost.internal.fixed_function.conversion.register_format =
                                 blit_type_to_reg_fmt(type);
 
@@ -331,8 +337,8 @@ pan_blitter_emit_rsd(const struct panfrost_device *dev,
                         pan_blitter_prepare_bifrost_rsd(dev, zs, ms, &cfg);
                 } else {
                         pan_blitter_prepare_midgard_rsd(dev, rts,
-                                                        blend_shaders, zs,
-                                                        &cfg);
+                                                        blend_shaders,
+                                                        rt_count, zs, &cfg);
                 }
         }
 

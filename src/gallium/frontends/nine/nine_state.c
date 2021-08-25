@@ -841,14 +841,13 @@ update_vertex_elements(struct NineDevice9 *device)
     unsigned n, b, i;
     int index;
     char vdecl_index_map[16]; /* vs->num_inputs <= 16 */
-    char used_streams[device->caps.MaxStreams];
+    uint16_t used_streams = 0;
     int dummy_vbo_stream = -1;
     BOOL need_dummy_vbo = FALSE;
     struct cso_velems_state ve;
 
     context->stream_usage_mask = 0;
     memset(vdecl_index_map, -1, 16);
-    memset(used_streams, 0, device->caps.MaxStreams);
     vs = context->programmable_vs ? context->vs : device->ff.vs;
 
     if (vdecl) {
@@ -859,7 +858,7 @@ update_vertex_elements(struct NineDevice9 *device)
             for (i = 0; i < vdecl->nelems; i++) {
                 if (vdecl->usage_map[i] == vs->input_map[n].ndecl) {
                     vdecl_index_map[n] = i;
-                    used_streams[vdecl->elems[i].vertex_buffer_index] = 1;
+                    used_streams |= BITFIELD_BIT(vdecl->elems[i].vertex_buffer_index);
                     break;
                 }
             }
@@ -873,11 +872,9 @@ update_vertex_elements(struct NineDevice9 *device)
     }
 
     if (need_dummy_vbo) {
-        for (i = 0; i < device->caps.MaxStreams; i++ ) {
-            if (!used_streams[i]) {
-                dummy_vbo_stream = i;
+        u_foreach_bit(bit, BITFIELD_MASK(device->caps.MaxStreams) & ~used_streams) {
+                dummy_vbo_stream = bit;
                 break;
-            }
         }
     }
     /* there are less vertex shader inputs than stream slots,
@@ -1039,7 +1036,8 @@ update_textures_and_samplers(struct NineDevice9 *device)
        view[i] = NULL;
 
     pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, num_textures,
-                            num_textures < context->enabled_sampler_count_ps ? context->enabled_sampler_count_ps - num_textures : 0, view);
+                            num_textures < context->enabled_sampler_count_ps ? context->enabled_sampler_count_ps - num_textures : 0,
+                            false, view);
     context->enabled_sampler_count_ps = num_textures;
 
     if (commit_samplers)
@@ -1083,7 +1081,8 @@ update_textures_and_samplers(struct NineDevice9 *device)
        view[i] = NULL;
 
     pipe->set_sampler_views(pipe, PIPE_SHADER_VERTEX, 0, num_textures,
-                            num_textures < context->enabled_sampler_count_vs ? context->enabled_sampler_count_vs - num_textures : 0, view);
+                            num_textures < context->enabled_sampler_count_vs ? context->enabled_sampler_count_vs - num_textures : 0,
+                            false, view);
     context->enabled_sampler_count_vs = num_textures;
 
     if (commit_samplers)
@@ -2369,6 +2368,9 @@ init_draw_info(struct pipe_draw_info *info,
         info->instance_count = MAX2(dev->context.stream_freq[0] & 0x7FFFFF, 1);
     info->primitive_restart = FALSE;
     info->has_user_indices = FALSE;
+    info->take_index_buffer_ownership = FALSE;
+    info->index_bias_varies = FALSE;
+    info->increment_draw_id = FALSE;
     info->restart_index = 0;
 }
 
@@ -2965,8 +2967,10 @@ nine_context_clear(struct NineDevice9 *device)
     context->enabled_sampler_count_vs = 0;
     context->enabled_sampler_count_ps = 0;
 
-    pipe->set_sampler_views(pipe, PIPE_SHADER_VERTEX, 0, 0, NINE_MAX_SAMPLERS_VS, NULL);
-    pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 0, NINE_MAX_SAMPLERS_PS, NULL);
+    pipe->set_sampler_views(pipe, PIPE_SHADER_VERTEX, 0, 0,
+                            NINE_MAX_SAMPLERS_VS, false, NULL);
+    pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 0,
+                            NINE_MAX_SAMPLERS_PS, false, NULL);
 
     pipe->set_vertex_buffers(pipe, 0, 0, device->caps.MaxStreams, false, NULL);
 

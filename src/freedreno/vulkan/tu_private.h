@@ -234,6 +234,8 @@ enum tu_debug_flags
    TU_DEBUG_NOMULTIPOS = 1 << 7,
    TU_DEBUG_NOLRZ = 1 << 8,
    TU_DEBUG_PERFC = 1 << 9,
+   TU_DEBUG_FLUSHALL = 1 << 10,
+   TU_DEBUG_SYNCDRAW = 1 << 11,
 };
 
 struct tu_instance
@@ -500,9 +502,11 @@ enum tu_dynamic_state
    TU_DYNAMIC_STATE_RB_DEPTH_CNTL,
    TU_DYNAMIC_STATE_RB_STENCIL_CNTL,
    TU_DYNAMIC_STATE_VB_STRIDE,
+   TU_DYNAMIC_STATE_RASTERIZER_DISCARD,
    TU_DYNAMIC_STATE_COUNT,
    /* no associated draw state: */
    TU_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY = TU_DYNAMIC_STATE_COUNT,
+   TU_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE,
    /* re-use the line width enum as it uses GRAS_SU_CNTL: */
    TU_DYNAMIC_STATE_GRAS_SU_CNTL = VK_DYNAMIC_STATE_LINE_WIDTH,
 };
@@ -722,8 +726,9 @@ enum tu_cmd_dirty_bits
    TU_CMD_DIRTY_SHADER_CONSTS = BIT(7),
    TU_CMD_DIRTY_LRZ = BIT(8),
    TU_CMD_DIRTY_VS_PARAMS = BIT(9),
+   TU_CMD_DIRTY_RASTERIZER_DISCARD = BIT(10),
    /* all draw states were disabled and need to be re-enabled: */
-   TU_CMD_DIRTY_DRAW_STATE = BIT(10)
+   TU_CMD_DIRTY_DRAW_STATE = BIT(11)
 };
 
 /* There are only three cache domains we have to care about: the CCU, or
@@ -758,41 +763,23 @@ enum tu_cmd_access_mask {
     * the location of a cache entry in CCU, to avoid conflicts. We assume that
     * any access in a renderpass after or before an access by a transfer needs
     * a flush/invalidate, and use the _INCOHERENT variants to represent access
-    * by a transfer.
+    * by a renderpass.
     */
    TU_ACCESS_CCU_COLOR_INCOHERENT_READ = 1 << 6,
    TU_ACCESS_CCU_COLOR_INCOHERENT_WRITE = 1 << 7,
    TU_ACCESS_CCU_DEPTH_INCOHERENT_READ = 1 << 8,
    TU_ACCESS_CCU_DEPTH_INCOHERENT_WRITE = 1 << 9,
 
-   /* Accesses by the host */
-   TU_ACCESS_HOST_READ = 1 << 10,
-   TU_ACCESS_HOST_WRITE = 1 << 11,
-
-   /* Accesses by a GPU engine which bypasses any cache. e.g. writes via
-    * CP_EVENT_WRITE::BLIT and the CP are SYSMEM_WRITE.
+   /* Accesses which bypasses any cache. e.g. writes via the host,
+    * CP_EVENT_WRITE::BLIT, and the CP are SYSMEM_WRITE.
     */
-   TU_ACCESS_SYSMEM_READ = 1 << 12,
-   TU_ACCESS_SYSMEM_WRITE = 1 << 13,
-
-   /* Set if a WFI is required. This can be required for:
-    * - 2D engine which (on some models) doesn't wait for flushes to complete
-    *   before starting
-    * - CP draw indirect opcodes, where we need to wait for any flushes to
-    *   complete but the CP implicitly waits for WFI's to complete and
-    *   therefore we only need a WFI after the flushes.
-    */
-   TU_ACCESS_WFI_READ = 1 << 14,
-
-   /* Set if a CP_WAIT_FOR_ME is required due to the data being read by the CP
-    * without it waiting for any WFI.
-    */
-   TU_ACCESS_WFM_READ = 1 << 15,
+   TU_ACCESS_SYSMEM_READ = 1 << 10,
+   TU_ACCESS_SYSMEM_WRITE = 1 << 11,
 
    /* Memory writes from the CP start in-order with draws and event writes,
     * but execute asynchronously and hence need a CP_WAIT_MEM_WRITES if read.
     */
-   TU_ACCESS_CP_WRITE = 1 << 16,
+   TU_ACCESS_CP_WRITE = 1 << 12,
 
    TU_ACCESS_READ =
       TU_ACCESS_UCHE_READ |
@@ -800,10 +787,7 @@ enum tu_cmd_access_mask {
       TU_ACCESS_CCU_DEPTH_READ |
       TU_ACCESS_CCU_COLOR_INCOHERENT_READ |
       TU_ACCESS_CCU_DEPTH_INCOHERENT_READ |
-      TU_ACCESS_HOST_READ |
-      TU_ACCESS_SYSMEM_READ |
-      TU_ACCESS_WFI_READ |
-      TU_ACCESS_WFM_READ,
+      TU_ACCESS_SYSMEM_READ,
 
    TU_ACCESS_WRITE =
       TU_ACCESS_UCHE_WRITE |
@@ -811,13 +795,63 @@ enum tu_cmd_access_mask {
       TU_ACCESS_CCU_COLOR_INCOHERENT_WRITE |
       TU_ACCESS_CCU_DEPTH_WRITE |
       TU_ACCESS_CCU_DEPTH_INCOHERENT_WRITE |
-      TU_ACCESS_HOST_WRITE |
       TU_ACCESS_SYSMEM_WRITE |
       TU_ACCESS_CP_WRITE,
 
    TU_ACCESS_ALL =
       TU_ACCESS_READ |
       TU_ACCESS_WRITE,
+};
+
+/* Starting with a6xx, the pipeline is split into several "clusters" (really
+ * pipeline stages). Each stage has its own pair of register banks and can
+ * switch them independently, so that earlier stages can run ahead of later
+ * ones. e.g. the FS of draw N and the VS of draw N + 1 can be executing at
+ * the same time.
+ *
+ * As a result of this, we need to insert a WFI when an earlier stage depends
+ * on the result of a later stage. CP_DRAW_* and CP_BLIT will wait for any
+ * pending WFI's to complete before starting, and usually before reading
+ * indirect params even, so a WFI also acts as a full "pipeline stall".
+ *
+ * Note, the names of the stages come from CLUSTER_* in devcoredump. We
+ * include all the stages for completeness, even ones which do not read/write
+ * anything.
+ */
+
+enum tu_stage {
+   /* This doesn't correspond to a cluster, but we need it for tracking
+    * indirect draw parameter reads etc.
+    */
+   TU_STAGE_CP,
+
+   /* - Fetch index buffer
+    * - Fetch vertex attributes, dispatch VS
+    */
+   TU_STAGE_FE,
+
+   /* Execute all geometry stages (VS thru GS) */
+   TU_STAGE_SP_VS,
+
+   /* Write to VPC, do primitive assembly. */
+   TU_STAGE_PC_VS,
+
+   /* Rasterization. RB_DEPTH_BUFFER_BASE only exists in CLUSTER_PS according
+    * to devcoredump so presumably this stage stalls for TU_STAGE_PS when
+    * early depth testing is enabled before dispatching fragments? However
+    * GRAS reads and writes LRZ directly.
+    */
+   TU_STAGE_GRAS,
+
+   /* Execute FS */
+   TU_STAGE_SP_PS,
+
+   /* - Fragment tests
+    * - Write color/depth
+    * - Streamout writes (???)
+    * - Varying interpolation (???)
+    */
+   TU_STAGE_PS,
 };
 
 enum tu_cmd_flush_bits {
@@ -840,18 +874,10 @@ enum tu_cmd_flush_bits {
        */
       TU_CMD_FLAG_WAIT_MEM_WRITES,
 
-   TU_CMD_FLAG_GPU_INVALIDATE =
+   TU_CMD_FLAG_ALL_INVALIDATE =
       TU_CMD_FLAG_CCU_INVALIDATE_DEPTH |
       TU_CMD_FLAG_CCU_INVALIDATE_COLOR |
       TU_CMD_FLAG_CACHE_INVALIDATE,
-
-   TU_CMD_FLAG_ALL_INVALIDATE =
-      TU_CMD_FLAG_GPU_INVALIDATE |
-      /* Treat the CP as a sort of "cache" which may need to be "invalidated"
-       * via waiting for UCHE/CCU flushes to land with WFI/WFM.
-       */
-      TU_CMD_FLAG_WAIT_FOR_IDLE |
-      TU_CMD_FLAG_WAIT_FOR_ME,
 };
 
 /* Changing the CCU from sysmem mode to gmem mode or vice-versa is pretty
@@ -937,7 +963,9 @@ struct tu_cmd_state
    uint32_t dynamic_stencil_ref;
 
    uint32_t gras_su_cntl, rb_depth_cntl, rb_stencil_cntl;
+   uint32_t pc_raster_cntl, vpc_unknown_9107;
    enum pc_di_primtype primtype;
+   bool primitive_restart_enable;
 
    /* saved states to re-emit in TU_CMD_DIRTY_DRAW_STATE case */
    struct tu_draw_state dynamic_state[TU_DYNAMIC_STATE_COUNT];
@@ -1160,6 +1188,8 @@ struct tu_pipeline
    uint32_t gras_su_cntl, gras_su_cntl_mask;
    uint32_t rb_depth_cntl, rb_depth_cntl_mask;
    uint32_t rb_stencil_cntl, rb_stencil_cntl_mask;
+   uint32_t pc_raster_cntl, pc_raster_cntl_mask;
+   uint32_t vpc_unknown_9107, vpc_unknown_9107_mask;
    uint32_t stencil_wrmask;
 
    bool rb_depth_cntl_disable;
@@ -1240,6 +1270,9 @@ void tu6_emit_window_scissor(struct tu_cs *cs, uint32_t x1, uint32_t y1, uint32_
 void tu6_emit_window_offset(struct tu_cs *cs, uint32_t x1, uint32_t y1);
 
 void tu_disable_draw_states(struct tu_cmd_buffer *cmd, struct tu_cs *cs);
+
+void tu6_apply_depth_bounds_workaround(struct tu_device *device,
+                                       uint32_t *rb_depth_cntl);
 
 struct tu_pvtmem_config {
    uint64_t iova;
@@ -1534,6 +1567,7 @@ tu_framebuffer_tiling_config(struct tu_framebuffer *fb,
 
 struct tu_subpass_barrier {
    VkPipelineStageFlags src_stage_mask;
+   VkPipelineStageFlags dst_stage_mask;
    VkAccessFlags src_access_mask;
    VkAccessFlags dst_access_mask;
    bool incoherent_ccu_color, incoherent_ccu_depth;
@@ -1542,6 +1576,12 @@ struct tu_subpass_barrier {
 struct tu_subpass_attachment
 {
    uint32_t attachment;
+
+   /* For input attachments, true if it needs to be patched to refer to GMEM
+    * in GMEM mode. This is false if it hasn't already been written as an
+    * attachment.
+    */
+   bool patch_input_gmem;
 };
 
 struct tu_subpass
@@ -1550,6 +1590,13 @@ struct tu_subpass
    uint32_t color_count;
    uint32_t resolve_count;
    bool resolve_depth_stencil;
+
+   /* True if there is any feedback loop at all. */
+   bool feedback;
+
+   /* True if we must invalidate UCHE thanks to a feedback loop. */
+   bool feedback_invalidate;
+
    struct tu_subpass_attachment *input_attachments;
    struct tu_subpass_attachment *color_attachments;
    struct tu_subpass_attachment *resolve_attachments;

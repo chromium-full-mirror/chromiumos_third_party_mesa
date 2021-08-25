@@ -41,7 +41,6 @@
 #include "crocus_context.h"
 #include "crocus_defines.h"
 #include "util/u_prim_restart.h"
-#include "indices/u_primconvert.h"
 #include "util/u_prim.h"
 
 static bool
@@ -139,11 +138,18 @@ crocus_update_draw_info(struct crocus_context *ice,
    if (ice->state.prim_mode != mode) {
       ice->state.prim_mode = mode;
 
+      enum pipe_prim_type reduced = u_reduced_prim(mode);
+      if (ice->state.reduced_prim_mode != reduced) {
+         if (screen->devinfo.ver < 6)
+            ice->state.dirty |= CROCUS_DIRTY_GEN4_CLIP_PROG | CROCUS_DIRTY_GEN4_SF_PROG;
+         /* if the reduced prim changes the WM needs updating. */
+         ice->state.stage_dirty |= CROCUS_STAGE_DIRTY_UNCOMPILED_FS;
+         ice->state.reduced_prim_mode = reduced;
+      }
+
       if (screen->devinfo.ver == 8)
          ice->state.dirty |= CROCUS_DIRTY_GEN8_VF_TOPOLOGY;
 
-      if (screen->devinfo.ver < 6)
-         ice->state.dirty |= CROCUS_DIRTY_GEN4_CLIP_PROG | CROCUS_DIRTY_GEN4_SF_PROG;
       if (screen->devinfo.ver <= 6)
          ice->state.dirty |= CROCUS_DIRTY_GEN4_FF_GS_PROG;
 
@@ -159,8 +165,8 @@ crocus_update_draw_info(struct crocus_context *ice,
    }
 
    if (info->mode == PIPE_PRIM_PATCHES &&
-       ice->state.vertices_per_patch != info->vertices_per_patch) {
-      ice->state.vertices_per_patch = info->vertices_per_patch;
+       ice->state.vertices_per_patch != ice->state.patch_vertices) {
+      ice->state.vertices_per_patch = ice->state.patch_vertices;
 
       if (screen->devinfo.ver == 8)
          ice->state.dirty |= CROCUS_DIRTY_GEN8_VF_TOPOLOGY;

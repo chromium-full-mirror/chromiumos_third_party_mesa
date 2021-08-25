@@ -48,8 +48,14 @@ struct panfrost_resource {
         } damage;
 
         struct {
-                struct panfrost_batch *writer;
-                BITSET_DECLARE(users, PAN_MAX_BATCHES);
+                /** Number of batches accessing this resource. Used to check if
+                 * a resource is in use. */
+                _Atomic unsigned nr_users;
+
+                /** Number of batches writing this resource. Note that only one
+                 * batch per context may write a resource, so this is the
+                 * number of contexts that have an active writer. */
+                _Atomic unsigned nr_writers;
         } track;
 
         struct renderonly_scanout *scanout;
@@ -112,6 +118,8 @@ panfrost_get_afbc_pointers(struct panfrost_resource *rsrc,
                            mali_ptr *header, mali_ptr *body);
 
 void panfrost_resource_screen_init(struct pipe_screen *screen);
+
+void panfrost_resource_screen_destroy(struct pipe_screen *screen);
 
 void panfrost_resource_context_init(struct pipe_context *pctx);
 

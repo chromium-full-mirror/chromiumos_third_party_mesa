@@ -1421,13 +1421,7 @@ visit_alu_instr(isel_context* ctx, nir_alu_instr* instr)
    }
    case nir_op_inot: {
       Temp src = get_alu_src(ctx, instr->src[0]);
-      if (instr->dest.dest.ssa.bit_size == 1) {
-         assert(src.regClass() == bld.lm);
-         assert(dst.regClass() == bld.lm);
-         /* Don't use s_andn2 here, this allows the optimizer to make a better decision */
-         Temp tmp = bld.sop1(Builder::s_not, bld.def(bld.lm), bld.def(s1, scc), src);
-         bld.sop2(Builder::s_and, Definition(dst), bld.def(s1, scc), tmp, Operand(exec, bld.lm));
-      } else if (dst.regClass() == v1 || dst.regClass() == v2b || dst.regClass() == v1b) {
+      if (dst.regClass() == v1 || dst.regClass() == v2b || dst.regClass() == v1b) {
          emit_vop1_instruction(ctx, instr, aco_opcode::v_not_b32, dst);
       } else if (dst.regClass() == v2) {
          Temp lo = bld.tmp(v1), hi = bld.tmp(v1);
@@ -4838,7 +4832,7 @@ visit_load_interpolated_input(isel_context* ctx, nir_intrinsic_instr* instr)
       aco_ptr<Pseudo_instruction> vec(create_instruction<Pseudo_instruction>(
          aco_opcode::p_create_vector, Format::PSEUDO, instr->dest.ssa.num_components, 1));
       for (unsigned i = 0; i < instr->dest.ssa.num_components; i++) {
-         Temp tmp = ctx->program->allocateTmp(v1);
+         Temp tmp = ctx->program->allocateTmp(instr->dest.ssa.bit_size == 16 ? v2b : v1);
          emit_interp_instr(ctx, idx, component + i, coords, tmp, prim_mask);
          vec->operands[i] = Operand(tmp);
       }
@@ -5202,16 +5196,17 @@ visit_load_input(isel_context* ctx, nir_intrinsic_instr* instr)
          }
       }
 
-      if (dst.size() == 1) {
+      if (instr->dest.ssa.num_components == 1) {
          bld.vintrp(aco_opcode::v_interp_mov_f32, Definition(dst), Operand::c32(vertex_id),
                     bld.m0(prim_mask), idx, component);
       } else {
          aco_ptr<Pseudo_instruction> vec{create_instruction<Pseudo_instruction>(
-            aco_opcode::p_create_vector, Format::PSEUDO, dst.size(), 1)};
-         for (unsigned i = 0; i < dst.size(); i++)
-            vec->operands[i] =
-               bld.vintrp(aco_opcode::v_interp_mov_f32, bld.def(v1), Operand::c32(vertex_id),
-                          bld.m0(prim_mask), idx, component + i);
+            aco_opcode::p_create_vector, Format::PSEUDO, instr->dest.ssa.num_components, 1)};
+         for (unsigned i = 0; i < instr->dest.ssa.num_components; i++) {
+            vec->operands[i] = bld.vintrp(
+               aco_opcode::v_interp_mov_f32, bld.def(instr->dest.ssa.bit_size == 16 ? v2b : v1),
+               Operand::c32(vertex_id), bld.m0(prim_mask), idx, component + i);
+         }
          vec->definitions[0] = Definition(dst);
          bld.insert(std::move(vec));
       }

@@ -1081,6 +1081,29 @@ tc_set_tess_state(struct pipe_context *_pipe,
    memcpy(p + 4, default_inner_level, 2 * sizeof(float));
 }
 
+struct tc_patch_vertices {
+   struct tc_call_base base;
+   ubyte patch_vertices;
+};
+
+static uint16_t
+tc_call_set_patch_vertices(struct pipe_context *pipe, void *call, uint64_t *last)
+{
+   uint8_t patch_vertices = to_call(call, tc_patch_vertices)->patch_vertices;
+
+   pipe->set_patch_vertices(pipe, patch_vertices);
+   return call_size(tc_patch_vertices);
+}
+
+static void
+tc_set_patch_vertices(struct pipe_context *_pipe, uint8_t patch_vertices)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+
+   tc_add_call(tc, TC_CALL_set_patch_vertices,
+               tc_patch_vertices)->patch_vertices = patch_vertices;
+}
+
 struct tc_constant_buffer_base {
    struct tc_call_base base;
    ubyte shader, index;
@@ -1322,13 +1345,9 @@ static uint16_t
 tc_call_set_sampler_views(struct pipe_context *pipe, void *call, uint64_t *last)
 {
    struct tc_sampler_views *p = (struct tc_sampler_views *)call;
-   unsigned count = p->count;
 
    pipe->set_sampler_views(pipe, p->shader, p->start, p->count,
-                           p->unbind_num_trailing_slots, p->slot);
-   for (unsigned i = 0; i < count; i++)
-      tc_drop_sampler_view_reference(p->slot[i]);
-
+                           p->unbind_num_trailing_slots, true, p->slot);
    return p->base.num_slots;
 }
 
@@ -1336,7 +1355,7 @@ static void
 tc_set_sampler_views(struct pipe_context *_pipe,
                      enum pipe_shader_type shader,
                      unsigned start, unsigned count,
-                     unsigned unbind_num_trailing_slots,
+                     unsigned unbind_num_trailing_slots, bool take_ownership,
                      struct pipe_sampler_view **views)
 {
    if (!count && !unbind_num_trailing_slots)
@@ -1356,15 +1375,28 @@ tc_set_sampler_views(struct pipe_context *_pipe,
       p->count = count;
       p->unbind_num_trailing_slots = unbind_num_trailing_slots;
 
-      for (unsigned i = 0; i < count; i++) {
-         p->slot[i] = NULL;
-         pipe_sampler_view_reference(&p->slot[i], views[i]);
+      if (take_ownership) {
+         memcpy(p->slot, views, sizeof(*views) * count);
 
-         if (views[i] && views[i]->target == PIPE_BUFFER) {
-            tc_bind_buffer(&tc->sampler_buffers[shader][start + i], next,
-                           views[i]->texture);
-         } else {
-            tc_unbind_buffer(&tc->sampler_buffers[shader][start + i]);
+         for (unsigned i = 0; i < count; i++) {
+            if (views[i] && views[i]->target == PIPE_BUFFER) {
+               tc_bind_buffer(&tc->sampler_buffers[shader][start + i], next,
+                              views[i]->texture);
+            } else {
+               tc_unbind_buffer(&tc->sampler_buffers[shader][start + i]);
+            }
+         }
+      } else {
+         for (unsigned i = 0; i < count; i++) {
+            p->slot[i] = NULL;
+            pipe_sampler_view_reference(&p->slot[i], views[i]);
+
+            if (views[i] && views[i]->target == PIPE_BUFFER) {
+               tc_bind_buffer(&tc->sampler_buffers[shader][start + i], next,
+                              views[i]->texture);
+            } else {
+               tc_unbind_buffer(&tc->sampler_buffers[shader][start + i]);
+            }
          }
       }
 
@@ -1996,11 +2028,8 @@ tc_improve_map_buffer_flags(struct threaded_context *tc,
    if (usage & (PIPE_MAP_DISCARD_RANGE |
                 PIPE_MAP_DISCARD_WHOLE_RESOURCE) &&
        !(usage & PIPE_MAP_PERSISTENT) &&
-       /* Try not to decrement the counter if it's not positive. Still racy,
-        * but it makes it harder to wrap the counter from INT_MIN to INT_MAX. */
-       tres->max_forced_staging_uploads > 0 &&
-       tc->use_forced_staging_uploads &&
-       p_atomic_dec_return(&tres->max_forced_staging_uploads) >= 0) {
+       tres->b.flags & PIPE_RESOURCE_FLAG_DONT_MAP_DIRECTLY &&
+       tc->use_forced_staging_uploads) {
       usage &= ~(PIPE_MAP_DISCARD_WHOLE_RESOURCE |
                  PIPE_MAP_UNSYNCHRONIZED);
 
@@ -2905,12 +2934,10 @@ simplify_draw_info(struct pipe_draw_info *info)
    info->index_bounds_valid = false;
    info->take_index_buffer_ownership = false;
    info->index_bias_varies = false;
+   info->_pad = 0;
 
    /* This shouldn't be set when merging single draws. */
    info->increment_draw_id = false;
-
-   if (info->mode != PIPE_PRIM_PATCHES)
-      info->vertices_per_patch = 0;
 
    if (info->index_size) {
       if (!info->primitive_restart)
@@ -4142,6 +4169,7 @@ threaded_context_create(struct pipe_context *pipe,
    CTX_INIT(set_window_rectangles);
    CTX_INIT(set_sampler_views);
    CTX_INIT(set_tess_state);
+   CTX_INIT(set_patch_vertices);
    CTX_INIT(set_shader_buffers);
    CTX_INIT(set_shader_images);
    CTX_INIT(set_vertex_buffers);
