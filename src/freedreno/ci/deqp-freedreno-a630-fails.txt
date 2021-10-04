@@ -20,16 +20,10 @@ KHR-GLES31.core.gpu_shader5.fma_precision_vec2,Fail
 KHR-GLES31.core.gpu_shader5.fma_precision_vec3,Fail
 KHR-GLES31.core.gpu_shader5.fma_precision_vec4,Fail
 
-# "Got red: 1, expected 0.00392157, at (1, 0)"
-KHR-GLES31.core.compute_shader.resource-image,Fail
-
 # Lots of errors like "[279] Check failed. Received: [3,0,0,2] instead of: [5,0,0,2]"
 KHR-GLES31.core.geometry_shader.layered_framebuffer.depth_support,Fail
 
 KHR-GLES31.core.geometry_shader.layered_framebuffer.stencil_support,Fail
-
-# " [31] Check failed. Received: [3,0,0,2] instead of: [5,0,0,2]"
-KHR-GLES31.core.shader_image_load_store.basic-glsl-misc-fs,Fail
 
 # " Pixel data comparison failed; expected: (0.1, 0.2, 0.3, 0.4) rendered: (0, 0, 0, 0) epsilon: 0.00392157
 #   Pixel data comparison failed at esextcTessellationShaderPoints.cpp:597"
@@ -68,34 +62,10 @@ dEQP-VK.api.info.image_format_properties.2d.optimal.g8_b8_r8_3plane_420_unorm,Fa
 # ERROR: VK_FORMAT_G8_B8R8_2PLANE_420_UNORM must support VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_TRANSFER_SRC_BIT|VK_FORMAT_FEATURE_TRANSFER_DST_BIT|VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT
 dEQP-VK.api.info.image_format_properties.2d.optimal.g8_b8r8_2plane_420_unorm,Fail
 
-# "Mismatch between VkPhysicalDeviceProtectedMemoryProperties at vktApiFeatureInfo.cpp:4208"
-dEQP-VK.api.info.get_physical_device_properties2.properties,Fail
-
-# "deqp-vk: ../src/freedreno/vulkan/tu_cs.h:186: tu_cs_reserve: Assertion `tu_cs_get_space(cs) >= reserved_size' failed."
-# https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/8841
-dEQP-VK.spirv_assembly.instruction.compute.opphi.wide,Crash
-
-# " deqp-vk: ../src/freedreno/ir3/ir3_ra.c:526: ra_file_insert: Assertion `interval->physreg_end <= file->size' failed."
-# also https://gitlab.freedesktop.org/mesa/mesa/-/issues/5163
-dEQP-VK.spirv_assembly.instruction.compute.spirv_ids_abuse.lots_ids,Crash
-dEQP-VK.spirv_assembly.instruction.graphics.spirv_ids_abuse.lots_ids_frag,Crash
-dEQP-VK.spirv_assembly.instruction.graphics.spirv_ids_abuse.lots_ids_geom,Crash
-dEQP-VK.spirv_assembly.instruction.graphics.spirv_ids_abuse.lots_ids_tessc,Crash
-dEQP-VK.spirv_assembly.instruction.graphics.spirv_ids_abuse.lots_ids_tesse,Crash
-dEQP-VK.spirv_assembly.instruction.graphics.spirv_ids_abuse.lots_ids_vert,Crash
-
 # Fails when TU_DEBUG=forcebin is set
 dEQP-VK.spirv_assembly.instruction.graphics.variable_pointers.graphics.writes_single_buffer_geom,Fail
 dEQP-VK.spirv_assembly.instruction.graphics.variable_pointers.graphics.writes_two_buffers_geom,Fail
 dEQP-VK.spirv_assembly.instruction.graphics.variable_pointers.graphics.writes_two_buffers_vert,Fail
-
-dEQP-VK.texture.filtering.2d.formats.d24_unorm_s8_uint_stencil.nearest,Fail
-dEQP-VK.texture.filtering.2d_array.formats.d24_unorm_s8_uint_stencil.d24_unorm_s8_uint_stencil_nearest,Fail
-dEQP-VK.texture.filtering.cube.formats.d24_unorm_s8_uint_stencil.nearest,Fail
-dEQP-VK.texture.filtering.unnormal.formats.d24_unorm_s8_uint_stencil.nearest,Fail
-
-# Broken on all drivers: https://gitlab.freedesktop.org/mesa/mesa/-/issues/4582
-dEQP-VK.wsi.display_control.register_device_event,Fail
 
 # https://gitlab.khronos.org/Tracker/vk-gl-cts/-/issues/3052
 # fixed by https://gerrit.khronos.org/c/vk-gl-cts/+/7837

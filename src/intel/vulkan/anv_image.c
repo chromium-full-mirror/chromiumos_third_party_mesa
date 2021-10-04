@@ -537,17 +537,18 @@ add_aux_surface_if_supported(struct anv_device *device,
       }
 
       if (device->info.ver == 7) {
-         anv_perf_warn(device, &image->vk.base, "Implement gfx7 HiZ");
+         anv_perf_warn(VK_LOG_OBJS(&image->vk.base), "Implement gfx7 HiZ");
          return VK_SUCCESS;
       }
 
       if (image->vk.mip_levels > 1) {
-         anv_perf_warn(device, &image->vk.base, "Enable multi-LOD HiZ");
+         anv_perf_warn(VK_LOG_OBJS(&image->vk.base), "Enable multi-LOD HiZ");
          return VK_SUCCESS;
       }
 
       if (device->info.ver == 8 && image->vk.samples > 1) {
-         anv_perf_warn(device, &image->vk.base, "Enable gfx8 multisampled HiZ");
+         anv_perf_warn(VK_LOG_OBJS(&image->vk.base),
+                       "Enable gfx8 multisampled HiZ");
          return VK_SUCCESS;
       }
 
@@ -557,7 +558,9 @@ add_aux_surface_if_supported(struct anv_device *device,
       ok = isl_surf_get_hiz_surf(&device->isl_dev,
                                  &image->planes[plane].primary_surface.isl,
                                  &image->planes[plane].aux_surface.isl);
-      assert(ok);
+      if (!ok)
+         return VK_SUCCESS;
+
       if (!isl_surf_supports_ccs(&device->isl_dev,
                                  &image->planes[plane].primary_surface.isl,
                                  &image->planes[plane].aux_surface.isl)) {
@@ -627,7 +630,7 @@ add_aux_surface_if_supported(struct anv_device *device,
           * CCS for this case, we currently don't have things hooked up to get
           * it working.
           */
-         anv_perf_warn(device, &image->vk.base,
+         anv_perf_warn(VK_LOG_OBJS(&image->vk.base),
                        "This image format doesn't support rendering. "
                        "Not allocating an CCS buffer.");
          return VK_SUCCESS;
@@ -640,7 +643,7 @@ add_aux_surface_if_supported(struct anv_device *device,
           * slice unfortunately. Disable CCS until anv gains more clear color
           * tracking abilities.
           */
-         anv_perf_warn(device, &image->vk.base,
+         anv_perf_warn(VK_LOG_OBJS(&image->vk.base),
                        "HW may put fast-clear blocks on more slices than SW "
                        "currently tracks. Not allocating a CCS buffer.");
          return VK_SUCCESS;
@@ -674,7 +677,7 @@ add_aux_surface_if_supported(struct anv_device *device,
           */
          image->planes[plane].aux_usage = ISL_AUX_USAGE_CCS_E;
       } else if (device->info.ver >= 12) {
-         anv_perf_warn(device, &image->vk.base,
+         anv_perf_warn(VK_LOG_OBJS(&image->vk.base),
                        "The CCS_D aux mode is not yet handled on "
                        "Gfx12+. Not allocating a CCS buffer.");
          image->planes[plane].aux_surface.isl.size_B = 0;
@@ -1273,6 +1276,7 @@ anv_image_create(VkDevice _device,
       anv_image_create_usage(pCreateInfo, image->vk.stencil_usage);
 
    if (pCreateInfo->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
+      assert(!image->vk.wsi_legacy_scanout);
       mod_explicit_info =
          vk_find_struct_const(pCreateInfo->pNext,
                               IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT);

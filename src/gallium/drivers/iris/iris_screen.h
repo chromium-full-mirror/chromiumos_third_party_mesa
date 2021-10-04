@@ -185,8 +185,6 @@ struct iris_screen {
    unsigned kernel_features;
 #define KERNEL_HAS_WAIT_FOR_SUBMIT (1<<0)
 
-   unsigned subslice_total;
-
    uint64_t aperture_bytes;
 
    /**
@@ -223,6 +221,9 @@ struct iris_screen {
    struct disk_cache *disk_cache;
 
    struct intel_measure_device measure;
+
+   /** Every screen on a bufmgr has an unique ID assigned by the bufmgr. */
+   int id;
 };
 
 struct pipe_screen *

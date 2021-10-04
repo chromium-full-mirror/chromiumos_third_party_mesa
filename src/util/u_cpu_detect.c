@@ -497,8 +497,7 @@ get_cpu_topology(void)
        *
        * Loop over all possible CPUs even though some may be offline.
        */
-      for (unsigned i = 0; i < util_cpu_caps.max_cpus && i < UTIL_MAX_CPUS;
-           i++) {
+      for (int16_t i = 0; i < util_cpu_caps.max_cpus && i < UTIL_MAX_CPUS; i++) {
          uint32_t cpu_bit = 1u << (i % 32);
 
          mask[i / 32] = cpu_bit;
@@ -709,6 +708,9 @@ util_cpu_detect_once(void)
          case 0x19:
             util_cpu_caps.family = CPU_AMD_ZEN3;
             break;
+         default:
+            if (util_cpu_caps.x86_cpu_type > 0x19)
+               util_cpu_caps.family = CPU_AMD_ZEN_NEXT;
          }
 
          /* general feature flags */
@@ -849,6 +851,8 @@ util_cpu_detect_once(void)
       printf("util_cpu_caps.has_avx512bw = %u\n", util_cpu_caps.has_avx512bw);
       printf("util_cpu_caps.has_avx512vl = %u\n", util_cpu_caps.has_avx512vl);
       printf("util_cpu_caps.has_avx512vbmi = %u\n", util_cpu_caps.has_avx512vbmi);
+      printf("util_cpu_caps.num_L3_caches = %u\n", util_cpu_caps.num_L3_caches);
+      printf("util_cpu_caps.num_cpu_mask_bits = %u\n", util_cpu_caps.num_cpu_mask_bits);
    }
 }
 

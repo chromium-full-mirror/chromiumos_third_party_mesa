@@ -53,6 +53,7 @@
 #include "util/macros.h"
 #include "util/u_atomic.h"
 #include "util/u_dynarray.h"
+#include "util/perf/u_trace.h"
 #include "vk_alloc.h"
 #include "vk_debug_report.h"
 #include "vk_device.h"
@@ -75,6 +76,7 @@
 
 #include "tu_descriptor_set.h"
 #include "tu_util.h"
+#include "tu_perfetto.h"
 
 /* Pre-declarations needed for WSI entrypoints */
 struct wl_surface;
@@ -90,6 +92,8 @@ typedef uint32_t xcb_window_t;
 #include "tu_entrypoints.h"
 
 #include "vk_format.h"
+#include "vk_command_buffer.h"
+#include "vk_queue.h"
 
 #define MAX_VBS 32
 #define MAX_VERTEX_ATTRIBS 32
@@ -291,15 +295,13 @@ struct tu_pipeline_key
 #define TU_MAX_QUEUE_FAMILIES 1
 
 struct tu_syncobj;
+struct tu_u_trace_syncobj;
 
 struct tu_queue
 {
-   struct vk_object_base base;
+   struct vk_queue vk;
 
    struct tu_device *device;
-   uint32_t queue_family_index;
-   int queue_idx;
-   VkDeviceQueueCreateFlags flags;
 
    uint32_t msm_queue_id;
    int fence;
@@ -425,6 +427,14 @@ struct tu_device
       TU_GRALLOC_OTHER,
    } gralloc_type;
 #endif
+
+   uint32_t submit_count;
+
+   struct u_trace_context trace_context;
+
+   #ifdef HAVE_PERFETTO
+   struct tu_perfetto_state perfetto;
+   #endif
 };
 
 void tu_init_clear_blit_shaders(struct tu_device *dev);
@@ -444,6 +454,12 @@ tu_device_is_lost(struct tu_device *device)
 
 VkResult
 tu_device_submit_deferred_locked(struct tu_device *dev);
+
+VkResult
+tu_device_wait_u_trace(struct tu_device *dev, struct tu_u_trace_syncobj *syncobj);
+
+uint64_t
+tu_device_ticks_to_ns(struct tu_device *dev, uint64_t ts);
 
 enum tu_bo_alloc_flags
 {
@@ -932,7 +948,6 @@ struct tu_lrz_state
 };
 
 struct tu_vs_params {
-   uint32_t params_offset;
    uint32_t vertex_offset;
    uint32_t first_instance;
 };
@@ -1036,12 +1051,16 @@ enum tu_cmd_buffer_status
 
 struct tu_cmd_buffer
 {
-   struct vk_object_base base;
+   struct vk_command_buffer vk;
 
    struct tu_device *device;
 
    struct tu_cmd_pool *pool;
    struct list_head pool_link;
+
+   struct u_trace trace;
+   struct u_trace_iterator trace_renderpass_start;
+   struct u_trace_iterator trace_renderpass_end;
 
    VkCommandBufferUsageFlags usage_flags;
    VkCommandBufferLevel level;
@@ -1693,6 +1712,10 @@ VkResult
 tu_enumerate_devices(struct tu_instance *instance);
 
 int
+tu_drm_get_timestamp(struct tu_physical_device *device,
+                     uint64_t *ts);
+
+int
 tu_drm_submitqueue_new(const struct tu_device *dev,
                        int priority,
                        uint32_t *queue_id);
@@ -1706,60 +1729,87 @@ tu_signal_fences(struct tu_device *device, struct tu_syncobj *fence1, struct tu_
 int
 tu_syncobj_to_fd(struct tu_device *device, struct tu_syncobj *sync);
 
-#define TU_DEFINE_HANDLE_CASTS(__tu_type, __VkType)                          \
-                                                                             \
-   static inline struct __tu_type *__tu_type##_from_handle(__VkType _handle) \
-   {                                                                         \
-      return (struct __tu_type *) _handle;                                   \
-   }                                                                         \
-                                                                             \
-   static inline __VkType __tu_type##_to_handle(struct __tu_type *_obj)      \
-   {                                                                         \
-      return (__VkType) _obj;                                                \
-   }
 
-#define TU_DEFINE_NONDISP_HANDLE_CASTS(__tu_type, __VkType)                  \
-                                                                             \
-   static inline struct __tu_type *__tu_type##_from_handle(__VkType _handle) \
-   {                                                                         \
-      return (struct __tu_type *) (uintptr_t) _handle;                       \
-   }                                                                         \
-                                                                             \
-   static inline __VkType __tu_type##_to_handle(struct __tu_type *_obj)      \
-   {                                                                         \
-      return (__VkType)(uintptr_t) _obj;                                     \
-   }
+void
+tu_copy_timestamp_buffer(struct u_trace_context *utctx, void *cmdstream,
+                         void *ts_from, uint32_t from_offset,
+                         void *ts_to, uint32_t to_offset,
+                         uint32_t count);
+
+
+VkResult
+tu_create_copy_timestamp_cs(struct tu_cmd_buffer *cmdbuf, struct tu_cs** cs,
+                            struct u_trace **trace_copy);
+
+struct tu_u_trace_cmd_data
+{
+   struct tu_cs *timestamp_copy_cs;
+   struct u_trace *trace;
+};
+
+void
+tu_u_trace_cmd_data_finish(struct tu_device *device,
+                           struct tu_u_trace_cmd_data *trace_data,
+                           uint32_t entry_count);
+
+struct tu_u_trace_flush_data
+{
+   uint32_t submission_id;
+   struct tu_u_trace_syncobj *syncobj;
+   uint32_t trace_count;
+   struct tu_u_trace_cmd_data *cmd_trace_data;
+};
 
 #define TU_FROM_HANDLE(__tu_type, __name, __handle)                          \
-   struct __tu_type *__name = __tu_type##_from_handle(__handle)
+   VK_FROM_HANDLE(__tu_type, __name, __handle)
 
-TU_DEFINE_HANDLE_CASTS(tu_cmd_buffer, VkCommandBuffer)
-TU_DEFINE_HANDLE_CASTS(tu_device, VkDevice)
-TU_DEFINE_HANDLE_CASTS(tu_instance, VkInstance)
-TU_DEFINE_HANDLE_CASTS(tu_physical_device, VkPhysicalDevice)
-TU_DEFINE_HANDLE_CASTS(tu_queue, VkQueue)
+VK_DEFINE_HANDLE_CASTS(tu_cmd_buffer, vk.base, VkCommandBuffer,
+                       VK_OBJECT_TYPE_COMMAND_BUFFER)
+VK_DEFINE_HANDLE_CASTS(tu_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
+VK_DEFINE_HANDLE_CASTS(tu_instance, vk.base, VkInstance,
+                       VK_OBJECT_TYPE_INSTANCE)
+VK_DEFINE_HANDLE_CASTS(tu_physical_device, vk.base, VkPhysicalDevice,
+                       VK_OBJECT_TYPE_PHYSICAL_DEVICE)
+VK_DEFINE_HANDLE_CASTS(tu_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
 
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_cmd_pool, VkCommandPool)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_buffer, VkBuffer)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_buffer_view, VkBufferView)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_descriptor_pool, VkDescriptorPool)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_descriptor_set, VkDescriptorSet)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_descriptor_set_layout,
-                               VkDescriptorSetLayout)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_descriptor_update_template,
-                               VkDescriptorUpdateTemplate)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_device_memory, VkDeviceMemory)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_event, VkEvent)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_framebuffer, VkFramebuffer)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_image, VkImage)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_image_view, VkImageView);
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_pipeline_cache, VkPipelineCache)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_pipeline, VkPipeline)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_pipeline_layout, VkPipelineLayout)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_query_pool, VkQueryPool)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_render_pass, VkRenderPass)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_sampler, VkSampler)
-TU_DEFINE_NONDISP_HANDLE_CASTS(tu_sampler_ycbcr_conversion, VkSamplerYcbcrConversion)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_cmd_pool, base, VkCommandPool,
+                               VK_OBJECT_TYPE_COMMAND_POOL)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_buffer, base, VkBuffer,
+                               VK_OBJECT_TYPE_BUFFER)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_buffer_view, base, VkBufferView,
+                               VK_OBJECT_TYPE_BUFFER_VIEW)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_descriptor_pool, base, VkDescriptorPool,
+                               VK_OBJECT_TYPE_DESCRIPTOR_POOL)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_descriptor_set, base, VkDescriptorSet,
+                               VK_OBJECT_TYPE_DESCRIPTOR_SET)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_descriptor_set_layout, base,
+                               VkDescriptorSetLayout,
+                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_descriptor_update_template, base,
+                               VkDescriptorUpdateTemplate,
+                               VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_device_memory, base, VkDeviceMemory,
+                               VK_OBJECT_TYPE_DEVICE_MEMORY)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_event, base, VkEvent, VK_OBJECT_TYPE_EVENT)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_framebuffer, base, VkFramebuffer,
+                               VK_OBJECT_TYPE_FRAMEBUFFER)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_image, base, VkImage, VK_OBJECT_TYPE_IMAGE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_image_view, base, VkImageView,
+                               VK_OBJECT_TYPE_IMAGE_VIEW);
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_pipeline_cache, base, VkPipelineCache,
+                               VK_OBJECT_TYPE_PIPELINE_CACHE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_pipeline, base, VkPipeline,
+                               VK_OBJECT_TYPE_PIPELINE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_pipeline_layout, base, VkPipelineLayout,
+                               VK_OBJECT_TYPE_PIPELINE_LAYOUT)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_query_pool, base, VkQueryPool,
+                               VK_OBJECT_TYPE_QUERY_POOL)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_render_pass, base, VkRenderPass,
+                               VK_OBJECT_TYPE_RENDER_PASS)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_sampler, base, VkSampler,
+                               VK_OBJECT_TYPE_SAMPLER)
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_sampler_ycbcr_conversion, base, VkSamplerYcbcrConversion,
+                               VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION)
 
 /* for TU_FROM_HANDLE with both VkFence and VkSemaphore: */
 #define tu_syncobj_from_handle(x) ((struct tu_syncobj*) (uintptr_t) (x))

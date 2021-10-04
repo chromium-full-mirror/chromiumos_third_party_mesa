@@ -318,8 +318,10 @@ finish_meta_clear_dcc_comp_to_single_state(struct radv_device *device)
 {
    struct radv_meta_state *state = &device->meta_state;
 
-   radv_DestroyPipeline(radv_device_to_handle(device), state->clear_dcc_comp_to_single_pipeline,
-                        &state->alloc);
+   for (uint32_t i = 0; i < 2; i++) {
+      radv_DestroyPipeline(radv_device_to_handle(device),
+                           state->clear_dcc_comp_to_single_pipeline[i], &state->alloc);
+   }
    radv_DestroyPipelineLayout(radv_device_to_handle(device), state->clear_dcc_comp_to_single_p_layout,
                               &state->alloc);
    radv_DestroyDescriptorSetLayout(radv_device_to_handle(device), state->clear_dcc_comp_to_single_ds_layout,
@@ -399,11 +401,7 @@ emit_color_clear(struct radv_cmd_buffer *cmd_buffer, const VkClearAttachment *cl
 
    samples_log2 = ffs(samples) - 1;
    fs_key = radv_format_meta_fs_key(device, format);
-
-   if (fs_key == -1) {
-      radv_finishme("color clears incomplete");
-      return;
-   }
+   assert(fs_key != -1);
 
    if (device->meta_state.clear[samples_log2].render_pass[fs_key] == VK_NULL_HANDLE) {
       VkResult ret =
@@ -426,10 +424,7 @@ emit_color_clear(struct radv_cmd_buffer *cmd_buffer, const VkClearAttachment *cl
    }
 
    pipeline = device->meta_state.clear[samples_log2].color_pipelines[fs_key];
-   if (!pipeline) {
-      radv_finishme("color clears incomplete");
-      return;
-   }
+
    assert(samples_log2 < ARRAY_SIZE(device->meta_state.clear));
    assert(pipeline);
    assert(clear_att->aspectMask == VK_IMAGE_ASPECT_COLOR_BIT);
@@ -831,12 +826,13 @@ clear_htile_mask(struct radv_cmd_buffer *cmd_buffer, const struct radv_image *im
    struct radv_meta_state *state = &device->meta_state;
    uint64_t block_count = round_up_u64(size, 1024);
    struct radv_meta_saved_state saved_state;
+   struct radv_buffer dst_buffer;
 
    radv_meta_save(
       &saved_state, cmd_buffer,
       RADV_META_SAVE_COMPUTE_PIPELINE | RADV_META_SAVE_CONSTANTS | RADV_META_SAVE_DESCRIPTORS);
 
-   struct radv_buffer dst_buffer = {.bo = bo, .offset = offset, .size = size};
+   radv_buffer_init(&dst_buffer, device, bo, size, offset);
 
    radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_COMPUTE,
                         state->clear_htile_mask_pipeline);
@@ -864,9 +860,11 @@ clear_htile_mask(struct radv_cmd_buffer *cmd_buffer, const struct radv_image *im
 
    radv_CmdDispatch(radv_cmd_buffer_to_handle(cmd_buffer), block_count, 1, 1);
 
+   radv_buffer_finish(&dst_buffer);
+
    radv_meta_restore(&saved_state, cmd_buffer);
 
-   return RADV_CMD_FLAG_CS_PARTIAL_FLUSH | RADV_CMD_FLAG_INV_VCACHE |
+   return RADV_CMD_FLAG_CS_PARTIAL_FLUSH |
           radv_src_access_flush(cmd_buffer, VK_ACCESS_SHADER_WRITE_BIT, image);
 }
 
@@ -1154,13 +1152,18 @@ fail:
    return result;
 }
 
+/* Clear DCC using comp-to-single by storing the clear value at the beginning of every 256B block.
+ * For MSAA images, clearing the first sample should be enough as long as CMASK is also cleared.
+ */
 static nir_shader *
-build_clear_dcc_comp_to_single_shader()
+build_clear_dcc_comp_to_single_shader(bool is_msaa)
 {
-   const struct glsl_type *img_type = glsl_image_type(GLSL_SAMPLER_DIM_2D, true, GLSL_TYPE_FLOAT);
+   enum glsl_sampler_dim dim = is_msaa ? GLSL_SAMPLER_DIM_MS : GLSL_SAMPLER_DIM_2D;
+   const struct glsl_type *img_type = glsl_image_type(dim, true, GLSL_TYPE_FLOAT);
 
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_COMPUTE, NULL, "meta_clear_dcc_comp_to_single");
+      nir_builder_init_simple_shader(MESA_SHADER_COMPUTE, NULL, "meta_clear_dcc_comp_to_single-%s",
+                                     is_msaa ? "multisampled" : "singlesampled");
    b.shader->info.workgroup_size[0] = 8;
    b.shader->info.workgroup_size[1] = 8;
    b.shader->info.workgroup_size[2] = 1;
@@ -1197,19 +1200,20 @@ build_clear_dcc_comp_to_single_shader()
                                     nir_channel(&b, clear_values, 1));
 
    /* Store the clear color values. */
+   nir_ssa_def *sample_id = is_msaa ? nir_imm_int(&b, 0) : nir_ssa_undef(&b, 1, 32);
    nir_image_deref_store(&b, &nir_build_deref_var(&b, output_img)->dest.ssa, coord,
-                         nir_imm_int(&b, 0), data, nir_imm_int(&b, 0),
-                         .image_dim = GLSL_SAMPLER_DIM_2D, .image_array = true);
+                         sample_id, data, nir_imm_int(&b, 0),
+                         .image_dim = dim, .image_array = true);
 
    return b.shader;
 }
 
 static VkResult
-create_dcc_comp_to_single_pipeline(struct radv_device *device, VkPipeline *pipeline)
+create_dcc_comp_to_single_pipeline(struct radv_device *device, bool is_msaa, VkPipeline *pipeline)
 {
    struct radv_meta_state *state = &device->meta_state;
    VkResult result;
-   nir_shader *cs = build_clear_dcc_comp_to_single_shader();
+   nir_shader *cs = build_clear_dcc_comp_to_single_shader(is_msaa);
 
    VkPipelineShaderStageCreateInfo shader_stage = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -1275,9 +1279,12 @@ init_meta_clear_dcc_comp_to_single_state(struct radv_device *device)
    if (result != VK_SUCCESS)
       goto fail;
 
-   result = create_dcc_comp_to_single_pipeline(device, &state->clear_dcc_comp_to_single_pipeline);
-   if (result != VK_SUCCESS)
-      goto fail;
+   for (uint32_t i = 0; i < 2; i++) {
+      result = create_dcc_comp_to_single_pipeline(device, !!i,
+                                                  &state->clear_dcc_comp_to_single_pipeline[i]);
+      if (result != VK_SUCCESS)
+         goto fail;
+   }
 
 fail:
    return result;
@@ -1520,6 +1527,7 @@ radv_clear_dcc_comp_to_single(struct radv_cmd_buffer *cmd_buffer,
    unsigned bytes_per_pixel = vk_format_get_blocksize(image->vk_format);
    unsigned layer_count = radv_get_layerCount(image, range);
    struct radv_meta_saved_state saved_state;
+   bool is_msaa = image->info.samples > 1;
    struct radv_image_view iview;
    VkFormat format;
 
@@ -1547,7 +1555,7 @@ radv_clear_dcc_comp_to_single(struct radv_cmd_buffer *cmd_buffer,
       &saved_state, cmd_buffer,
       RADV_META_SAVE_DESCRIPTORS | RADV_META_SAVE_COMPUTE_PIPELINE | RADV_META_SAVE_CONSTANTS);
 
-   VkPipeline pipeline = device->meta_state.clear_dcc_comp_to_single_pipeline;
+   VkPipeline pipeline = device->meta_state.clear_dcc_comp_to_single_pipeline[is_msaa];
 
    radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_COMPUTE,
                         pipeline);
@@ -1612,6 +1620,8 @@ radv_clear_dcc_comp_to_single(struct radv_cmd_buffer *cmd_buffer,
                             VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, constants);
 
       radv_unaligned_dispatch(cmd_buffer, dcc_width, dcc_height, layer_count);
+
+      radv_image_view_finish(&iview);
    }
 
    radv_meta_restore(&saved_state, cmd_buffer);
@@ -2110,7 +2120,8 @@ radv_cmd_buffer_clear_subpass(struct radv_cmd_buffer *cmd_buffer)
 static void
 radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer, struct radv_image *image,
                        VkImageLayout image_layout, const VkImageSubresourceRange *range,
-                       VkFormat format, int level, int layer, const VkClearValue *clear_val)
+                       VkFormat format, int level, unsigned layer_count,
+                       const VkClearValue *clear_val)
 {
    VkDevice device_h = radv_device_to_handle(cmd_buffer->device);
    struct radv_image_view iview;
@@ -2126,8 +2137,8 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer, struct radv_image *im
                            .subresourceRange = {.aspectMask = range->aspectMask,
                                                 .baseMipLevel = range->baseMipLevel + level,
                                                 .levelCount = 1,
-                                                .baseArrayLayer = range->baseArrayLayer + layer,
-                                                .layerCount = 1},
+                                                .baseArrayLayer = range->baseArrayLayer,
+                                                .layerCount = layer_count},
                         },
                         NULL);
 
@@ -2142,7 +2153,7 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer, struct radv_image *im
                                     },
                                  .width = width,
                                  .height = height,
-                                 .layers = 1},
+                                 .layers = layer_count},
       &cmd_buffer->pool->alloc, &fb);
 
    VkAttachmentDescription2 att_desc = {
@@ -2247,12 +2258,13 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer, struct radv_image *im
             .offset = {0, 0},
             .extent = {width, height},
          },
-      .baseArrayLayer = range->baseArrayLayer,
-      .layerCount = 1, /* FINISHME: clear multi-layer framebuffer */
+      .baseArrayLayer = 0,
+      .layerCount = layer_count,
    };
 
    emit_clear(cmd_buffer, &clear_att, &clear_rect, NULL, NULL, 0, false);
 
+   radv_image_view_finish(&iview);
    radv_cmd_buffer_end_render_pass(cmd_buffer);
    radv_DestroyRenderPass(device_h, pass, &cmd_buffer->pool->alloc);
    radv_DestroyFramebuffer(device_h, fb, &cmd_buffer->pool->alloc);
@@ -2267,6 +2279,7 @@ radv_fast_clear_range(struct radv_cmd_buffer *cmd_buffer, struct radv_image *ima
                       const VkImageSubresourceRange *range, const VkClearValue *clear_val)
 {
    struct radv_image_view iview;
+   bool fast_cleared = false;
 
    radv_image_view_init(&iview, cmd_buffer->device,
                         &(VkImageViewCreateInfo){
@@ -2310,18 +2323,19 @@ radv_fast_clear_range(struct radv_cmd_buffer *cmd_buffer, struct radv_image *ima
                                     clear_att.clearValue.color, 0)) {
          radv_fast_clear_color(cmd_buffer, &iview, &clear_att, clear_att.colorAttachment, NULL,
                                NULL);
-         return true;
+         fast_cleared = true;
       }
    } else {
       if (radv_can_fast_clear_depth(cmd_buffer, &iview, image_layout, in_render_loop,
                                     range->aspectMask, &clear_rect,
                                     clear_att.clearValue.depthStencil, 0)) {
          radv_fast_clear_depth(cmd_buffer, &iview, &clear_att, NULL, NULL);
-         return true;
+         fast_cleared = true;
       }
    }
 
-   return false;
+   radv_image_view_finish(&iview);
+   return fast_cleared;
 }
 
 static void
@@ -2386,9 +2400,9 @@ radv_cmd_clear_image(struct radv_cmd_buffer *cmd_buffer, struct radv_image *imag
          const uint32_t layer_count = image->type == VK_IMAGE_TYPE_3D
                                          ? radv_minify(image->info.depth, range->baseMipLevel + l)
                                          : radv_get_layerCount(image, range);
-         for (uint32_t s = 0; s < layer_count; ++s) {
 
-            if (cs) {
+         if (cs) {
+            for (uint32_t s = 0; s < layer_count; ++s) {
                struct radv_meta_blit2d_surf surf;
                surf.format = format;
                surf.image = image;
@@ -2397,11 +2411,11 @@ radv_cmd_clear_image(struct radv_cmd_buffer *cmd_buffer, struct radv_image *imag
                surf.aspect_mask = range->aspectMask;
                surf.disable_compression = disable_compression;
                radv_meta_clear_image_cs(cmd_buffer, &surf, &internal_clear_value.color);
-            } else {
-               assert(!disable_compression);
-               radv_clear_image_layer(cmd_buffer, image, image_layout, range, format, l, s,
-                                      &internal_clear_value);
             }
+         } else {
+            assert(!disable_compression);
+            radv_clear_image_layer(cmd_buffer, image, image_layout, range, format, l, layer_count,
+                                   &internal_clear_value);
          }
       }
    }

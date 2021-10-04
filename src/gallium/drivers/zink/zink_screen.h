@@ -64,6 +64,7 @@ enum zink_descriptor_type;
 enum zink_descriptor_mode {
    ZINK_DESCRIPTOR_MODE_AUTO,
    ZINK_DESCRIPTOR_MODE_LAZY,
+   ZINK_DESCRIPTOR_MODE_NOFALLBACK,
    ZINK_DESCRIPTOR_MODE_NOTEMPLATES,
 };
 
@@ -85,13 +86,10 @@ struct zink_screen {
 
    bool device_lost;
    struct sw_winsys *winsys;
+   int drm_fd;
 
    struct hash_table framebuffer_cache;
    simple_mtx_t framebuffer_mtx;
-   struct hash_table surface_cache;
-   simple_mtx_t surface_mtx;
-   struct hash_table bufferview_cache;
-   simple_mtx_t bufferview_mtx;
 
    struct slab_parent_pool transfer_pool;
    struct disk_cache *disk_cache;
@@ -109,6 +107,7 @@ struct zink_screen {
       uint32_t next_bo_unique_id;
    } pb;
    uint8_t heap_map[VK_MAX_MEMORY_TYPES];
+   bool resizable_bar;
 
    uint64_t total_video_mem;
    uint64_t clamp_video_mem;
@@ -240,6 +239,9 @@ struct mem_cache_entry {
    void *map;
 };
 
+#define VKCTX(fn) zink_screen(ctx->base.screen)->vk.fn
+#define VKSCR(fn) screen->vk.fn
+
 VkFormat
 zink_get_format(struct zink_screen *screen, enum pipe_format format);
 
@@ -265,4 +267,16 @@ zink_screen_init_descriptor_funcs(struct zink_screen *screen, bool fallback);
 
 void
 zink_stub_function_not_loaded(void);
+
+#define warn_missing_feature(feat) \
+   do { \
+      static bool warned = false; \
+      if (!warned) { \
+         fprintf(stderr, "WARNING: Incorrect rendering will happen, " \
+                         "because the Vulkan device doesn't support " \
+                         "the %s feature\n", feat); \
+         warned = true; \
+      } \
+   } while (0)
+
 #endif

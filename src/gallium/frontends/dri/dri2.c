@@ -1536,16 +1536,24 @@ dri2_query_dma_buf_modifiers(__DRIscreen *_screen, int fourcc, int max,
 
    format = map->pipe_format;
 
+   bool native_sampling = pscreen->is_format_supported(pscreen, format, screen->target, 0, 0,
+                                                       PIPE_BIND_SAMPLER_VIEW);
    if (pscreen->is_format_supported(pscreen, format, screen->target, 0, 0,
-                                     PIPE_BIND_RENDER_TARGET) ||
-        pscreen->is_format_supported(pscreen, format, screen->target, 0, 0,
-                                     PIPE_BIND_SAMPLER_VIEW) ||
-        dri2_yuv_dma_buf_supported(screen, map)) {
-      if (pscreen->query_dmabuf_modifiers != NULL)
+                                    PIPE_BIND_RENDER_TARGET) ||
+       native_sampling ||
+       dri2_yuv_dma_buf_supported(screen, map))  {
+      if (pscreen->query_dmabuf_modifiers != NULL) {
          pscreen->query_dmabuf_modifiers(pscreen, format, max, modifiers,
                                          external_only, count);
-      else
+         if (!native_sampling && external_only) {
+            /* To support it using YUV lowering, we need it to be samplerExternalOES.
+             */
+            for (int i = 0; i < *count; i++)
+               external_only[i] = true;
+         }
+      } else {
          *count = 0;
+      }
       return true;
    }
    return false;
@@ -2350,6 +2358,15 @@ dri2_init_screen(__DRIscreen * sPriv)
    screen->broken_invalidate = !sPriv->dri2.useInvalidate;
    screen->lookup_egl_image = dri2_lookup_egl_image;
 
+   const __DRIimageLookupExtension *loader = sPriv->dri2.image;
+   if (loader &&
+       loader->base.version >= 2 &&
+       loader->validateEGLImage &&
+       loader->lookupEGLImageValidated) {
+      screen->validate_egl_image = dri2_validate_egl_image;
+      screen->lookup_egl_image_validated = dri2_lookup_egl_image_validated;
+   }
+
    return configs;
 
 destroy_screen:
@@ -2403,6 +2420,15 @@ dri_kms_init_screen(__DRIscreen * sPriv)
    screen->auto_fake_front = dri_with_format(sPriv);
    screen->broken_invalidate = !sPriv->dri2.useInvalidate;
    screen->lookup_egl_image = dri2_lookup_egl_image;
+
+   const __DRIimageLookupExtension *loader = sPriv->dri2.image;
+   if (loader &&
+       loader->base.version >= 2 &&
+       loader->validateEGLImage &&
+       loader->lookupEGLImageValidated) {
+      screen->validate_egl_image = dri2_validate_egl_image;
+      screen->lookup_egl_image_validated = dri2_lookup_egl_image_validated;
+   }
 
    return configs;
 

@@ -29,6 +29,7 @@
 #include <stdint.h>
 
 #include "util/macros.h"
+#include "compiler/shader_enums.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,6 +51,7 @@ struct intel_device_info
    /* Driver internal numbers used to differentiate platforms. */
    int ver;
    int verx10;
+   int display_ver;
    int revision;
    int gt;
 
@@ -69,6 +71,7 @@ struct intel_device_info
    bool is_rocketlake;
    bool is_dg1;
    bool is_alderlake;
+   bool is_dg2;
 
    bool has_hiz_and_separate_stencil;
    bool must_use_separate_stencil;
@@ -167,6 +170,12 @@ struct intel_device_info
                           DIV_ROUND_UP(INTEL_DEVICE_MAX_SUBSLICES, 8)];
 
    /**
+    * The number of enabled subslices (considering fusing). For exactly which
+    * subslices are enabled, see subslice_masks[].
+    */
+   unsigned subslice_total;
+
+   /**
     * An array of bit mask of EUs available, use eu_slice_stride &
     * eu_subslice_stride to access this array.
     */
@@ -225,6 +234,13 @@ struct intel_device_info
     */
    unsigned max_cs_workgroup_threads;
 
+   /**
+    * The maximum number of potential scratch ids. Due to hardware
+    * implementation details, the range of scratch ids may be larger than the
+    * number of subslices.
+    */
+   unsigned max_scratch_ids[MESA_SHADER_STAGES];
+
    struct {
       /**
        * Fixed size of the URB.
@@ -248,6 +264,12 @@ struct intel_device_info
        */
       unsigned max_entries[4];
    } urb;
+
+   /* Maximum size in Kb that can be allocated to constants in the URB, this
+    * is usually divided among the stages for implementing push constants.
+    * See 3DSTATE_PUSH_CONSTANT_ALLOC_*.
+    */
+   unsigned max_constant_urb_size_kb;
 
    /**
     * Size of the command streamer prefetch. This is important to know for
@@ -330,17 +352,6 @@ intel_device_info_eu_available(const struct intel_device_info *devinfo,
       subslice * devinfo->eu_subslice_stride;
 
    return (devinfo->eu_masks[subslice_offset + eu / 8] & (1U << eu % 8)) != 0;
-}
-
-static inline uint32_t
-intel_device_info_subslice_total(const struct intel_device_info *devinfo)
-{
-   uint32_t total = 0;
-
-   for (uint32_t i = 0; i < devinfo->num_slices; i++)
-      total += __builtin_popcount(devinfo->subslice_masks[i]);
-
-   return total;
 }
 
 static inline uint32_t

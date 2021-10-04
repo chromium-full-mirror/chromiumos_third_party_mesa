@@ -475,7 +475,7 @@ fs_inst::can_do_cmod()
     * equality with a 32-bit value.  See piglit fs-op-neg-uvec4.
     */
    for (unsigned i = 0; i < sources; i++) {
-      if (type_is_unsigned_int(src[i].type) && src[i].negate)
+      if (brw_reg_type_is_unsigned_integer(src[i].type) && src[i].negate)
          return false;
    }
 
@@ -884,6 +884,7 @@ fs_inst::components_read(unsigned i) const
 
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL:
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT64_LOGICAL:
       assert(src[2].file == IMM);
       if (i == 1) {
          /* Data source */
@@ -4871,6 +4872,20 @@ lower_fb_read_logical_send(const fs_builder &bld, fs_inst *inst)
       }
    }
 
+   /* BSpec 12470 (Gfx8-11), BSpec 47842 (Gfx12+) :
+    *
+    *   "Must be zero for Render Target Read message."
+    *
+    * For bits :
+    *   - 14 : Stencil Present to Render Target
+    *   - 13 : Source Depth Present to Render Target
+    *   - 12 : oMask to Render Target
+    *   - 11 : Source0 Alpha Present to Render Target
+    */
+   ubld.group(1, 0).AND(component(header, 0),
+                        component(header, 0),
+                        brw_imm_ud(~INTEL_MASK(14, 11)));
+
    inst->resize_sources(1);
    inst->src[0] = header;
    inst->opcode = FS_OPCODE_FB_READ;
@@ -5949,6 +5964,8 @@ brw_atomic_op_to_lsc_fatomic_op(uint32_t aop)
       return LSC_OP_ATOMIC_FMIN;
    case BRW_AOP_FCMPWR:
       return LSC_OP_ATOMIC_FCMPXCHG;
+   case BRW_AOP_FADD:
+      return LSC_OP_ATOMIC_FADD;
    default:
       unreachable("Unsupported float atomic opcode");
    }
@@ -5987,7 +6004,8 @@ lower_lsc_surface_logical_send(const fs_builder &bld, fs_inst *inst)
 
    /* Calculate the total number of components of the payload. */
    const unsigned addr_sz = inst->components_read(SURFACE_LOGICAL_SRC_ADDRESS);
-   const unsigned src_sz = inst->components_read(SURFACE_LOGICAL_SRC_DATA);
+   const unsigned src_comps = inst->components_read(SURFACE_LOGICAL_SRC_DATA);
+   const unsigned src_sz = type_sz(src.type);
 
    const bool has_side_effects = inst->has_side_effects();
 
@@ -5995,8 +6013,8 @@ lower_lsc_surface_logical_send(const fs_builder &bld, fs_inst *inst)
    fs_reg payload, payload2;
    payload = bld.move_to_vgrf(addr, addr_sz);
    if (src.file != BAD_FILE) {
-      payload2 = bld.move_to_vgrf(src, src_sz);
-      ex_mlen = src_sz * (inst->exec_size / 8);
+      payload2 = bld.move_to_vgrf(src, src_comps);
+      ex_mlen = (src_comps * src_sz * inst->exec_size) / REG_SIZE;
    }
 
    /* Predicate the instruction on the sample mask if needed */
@@ -6054,7 +6072,8 @@ lower_lsc_surface_logical_send(const fs_builder &bld, fs_inst *inst)
       inst->desc = lsc_msg_desc(devinfo, opcode, inst->exec_size,
                                 surf_type, LSC_ADDR_SIZE_A32,
                                 1 /* num_coordinates */,
-                                LSC_DATA_SIZE_D32, 1 /* num_channels */,
+                                lsc_bits_to_data_size(src_sz * 8),
+                                1 /* num_channels */,
                                 false /* transpose */,
                                 LSC_CACHE_STORE_L1UC_L3WB,
                                 !inst->dst.is_null());
@@ -6282,6 +6301,7 @@ lower_lsc_a64_logical_send(const fs_builder &bld, fs_inst *inst)
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL: {
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL:
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT64_LOGICAL:
       /* Bspec: Atomic instruction -> Cache section:
        *
        *    Atomic messages are always forced to "un-cacheable" in the L1
@@ -6917,6 +6937,7 @@ fs_visitor::lower_logical_sends()
       case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL:
       case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL:
       case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
+      case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT64_LOGICAL:
          if (devinfo->has_lsc) {
             lower_lsc_a64_logical_send(ibld, inst);
             break;
@@ -7544,6 +7565,7 @@ get_lowered_simd_width(const struct intel_device_info *devinfo,
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL:
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL:
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT64_LOGICAL:
       return 8;
 
    case SHADER_OPCODE_URB_READ_SIMD8:
@@ -10087,7 +10109,8 @@ brw_compile_cs(const struct brw_compiler *compiler,
    struct brw_cs_prog_data *prog_data = params->prog_data;
    int shader_time_index = params->shader_time ? params->shader_time_index : -1;
 
-   const bool debug_enabled = INTEL_DEBUG & DEBUG_CS;
+   const bool debug_enabled =
+      INTEL_DEBUG & (params->debug_flag ? params->debug_flag : DEBUG_CS);
 
    prog_data->base.stage = MESA_SHADER_COMPUTE;
    prog_data->base.total_shared = nir->info.shared_size;
@@ -10119,12 +10142,21 @@ brw_compile_cs(const struct brw_compiler *compiler,
       max_dispatch_width = 32;
    }
 
+   unsigned required_dispatch_width = 0;
    if ((int)key->base.subgroup_size_type >= (int)BRW_SUBGROUP_SIZE_REQUIRE_8) {
       /* These enum values are expressly chosen to be equal to the subgroup
        * size that they require.
        */
-      const unsigned required_dispatch_width =
-         (unsigned)key->base.subgroup_size_type;
+      required_dispatch_width = (unsigned)key->base.subgroup_size_type;
+   }
+
+   if (nir->info.cs.subgroup_size > 0) {
+      assert(required_dispatch_width == 0 ||
+             required_dispatch_width == nir->info.cs.subgroup_size);
+      required_dispatch_width = nir->info.cs.subgroup_size;
+   }
+
+   if (required_dispatch_width > 0) {
       assert(required_dispatch_width == 8 ||
              required_dispatch_width == 16 ||
              required_dispatch_width == 32);
@@ -10399,7 +10431,7 @@ compile_single_bs(const struct brw_compiler *compiler, void *log_data,
    bool has_spilled = false;
 
    uint8_t simd_size = 0;
-   if (likely(!(INTEL_DEBUG & DEBUG_NO8))) {
+   if (!(INTEL_DEBUG & DEBUG_NO8)) {
       v8 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
                           &prog_data->base, shader,
                           8, -1 /* shader time */, debug_enabled);
@@ -10417,7 +10449,7 @@ compile_single_bs(const struct brw_compiler *compiler, void *log_data,
       }
    }
 
-   if (!has_spilled && likely(!(INTEL_DEBUG & DEBUG_NO16))) {
+   if (!has_spilled && !(INTEL_DEBUG & DEBUG_NO16)) {
       v16 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
                            &prog_data->base, shader,
                            16, -1 /* shader time */, debug_enabled);

@@ -145,8 +145,10 @@ get_device_extensions(const struct v3dv_physical_device *device,
       .EXT_index_type_uint8                = true,
       .EXT_physical_device_drm             = true,
       .EXT_pipeline_creation_cache_control = true,
+      .EXT_pipeline_creation_feedback      = true,
       .EXT_private_data                    = true,
       .EXT_provoking_vertex                = true,
+      .EXT_vertex_attribute_divisor        = true,
    };
 }
 
@@ -1124,6 +1126,14 @@ v3dv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT: {
+         VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT *features =
+            (void *) ext;
+         features->vertexAttributeInstanceRateDivisor = true;
+         features->vertexAttributeInstanceRateZeroDivisor = false;
+         break;
+      }
+
       /* Vulkan 1.1 */
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES: {
          VkPhysicalDeviceVulkan11Features *features =
@@ -1229,7 +1239,12 @@ v3dv_physical_device_device_id(struct v3dv_physical_device *dev)
 
    return devid;
 #else
-   return dev->devinfo.ver;
+   switch (dev->devinfo.ver) {
+   case 42:
+      return 0xBE485FD3; /* Broadcom deviceID for 2711 */
+   default:
+      unreachable("Unsupported V3D version");
+   }
 #endif
 }
 
@@ -1251,7 +1266,7 @@ v3dv_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
 
    const uint32_t v3d_coord_shift = 6;
 
-   const uint32_t v3d_point_line_granularity = 2.0f / (1 << v3d_coord_shift);
+   const float v3d_point_line_granularity = 2.0f / (1 << v3d_coord_shift);
    const uint32_t max_fb_size = 4096;
 
    const VkSampleCountFlags supported_sample_counts =
@@ -1430,6 +1445,12 @@ v3dv_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          props->provokingVertexModePerPipeline = true;
          /* FIXME: update when supporting EXT_transform_feedback */
          props->transformFeedbackPreservesTriangleFanProvokingVertex = false;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT: {
+         VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT *props =
+            (VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT *)ext;
+         props->maxVertexAttribDivisor = 0xffff;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES: {
@@ -1655,11 +1676,15 @@ v3dv_EnumerateDeviceLayerProperties(VkPhysicalDevice physicalDevice,
 }
 
 static VkResult
-queue_init(struct v3dv_device *device, struct v3dv_queue *queue)
+queue_init(struct v3dv_device *device, struct v3dv_queue *queue,
+           const VkDeviceQueueCreateInfo *create_info,
+           uint32_t index_in_family)
 {
-   vk_object_base_init(&device->vk, &queue->base, VK_OBJECT_TYPE_QUEUE);
+   VkResult result = vk_queue_init(&queue->vk, &device->vk, create_info,
+                                   index_in_family);
+   if (result != VK_SUCCESS)
+      return result;
    queue->device = device;
-   queue->flags = 0;
    queue->noop_job = NULL;
    list_inithead(&queue->submit_wait_list);
    pthread_mutex_init(&queue->mutex, NULL);
@@ -1669,7 +1694,7 @@ queue_init(struct v3dv_device *device, struct v3dv_queue *queue)
 static void
 queue_finish(struct v3dv_queue *queue)
 {
-   vk_object_base_finish(&queue->base);
+   vk_queue_finish(&queue->vk);
    assert(list_is_empty(&queue->submit_wait_list));
    if (queue->noop_job)
       v3dv_job_destroy(queue->noop_job);
@@ -1707,19 +1732,6 @@ v3dv_CreateDevice(VkPhysicalDevice physicalDevice,
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
 
-   /* Check enabled features */
-   if (pCreateInfo->pEnabledFeatures) {
-      VkPhysicalDeviceFeatures supported_features;
-      v3dv_GetPhysicalDeviceFeatures(physicalDevice, &supported_features);
-      VkBool32 *supported_feature = (VkBool32 *)&supported_features;
-      VkBool32 *enabled_feature = (VkBool32 *)pCreateInfo->pEnabledFeatures;
-      unsigned num_features = sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
-      for (uint32_t i = 0; i < num_features; i++) {
-         if (enabled_feature[i] && !supported_feature[i])
-            return vk_error(instance, VK_ERROR_FEATURE_NOT_PRESENT);
-      }
-   }
-
    /* Check requested queues (we only expose one queue ) */
    assert(pCreateInfo->queueCreateInfoCount == 1);
    for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; i++) {
@@ -1755,19 +1767,30 @@ v3dv_CreateDevice(VkPhysicalDevice physicalDevice,
 
    pthread_mutex_init(&device->mutex, NULL);
 
-   result = queue_init(device, &device->queue);
+   result = queue_init(device, &device->queue,
+                       pCreateInfo->pQueueCreateInfos, 0);
    if (result != VK_SUCCESS)
       goto fail;
 
    device->devinfo = physical_device->devinfo;
 
-   if (pCreateInfo->pEnabledFeatures) {
+   /* Vulkan 1.1 and VK_KHR_get_physical_device_properties2 added
+    * VkPhysicalDeviceFeatures2 which can be used in the pNext chain of
+    * vkDeviceCreateInfo, in which case it should be used instead of
+    * pEnabledFeatures.
+    */
+   const VkPhysicalDeviceFeatures2 *features2 =
+      vk_find_struct_const(pCreateInfo->pNext, PHYSICAL_DEVICE_FEATURES_2);
+   if (features2) {
+      memcpy(&device->features, &features2->features,
+             sizeof(device->features));
+   } else  if (pCreateInfo->pEnabledFeatures) {
       memcpy(&device->features, pCreateInfo->pEnabledFeatures,
              sizeof(device->features));
-
-      if (device->features.robustBufferAccess)
-         perf_debug("Device created with Robust Buffer Access enabled.\n");
    }
+
+   if (device->features.robustBufferAccess)
+      perf_debug("Device created with Robust Buffer Access enabled.\n");
 
    int ret = drmSyncobjCreate(physical_device->render_fd,
                               DRM_SYNCOBJ_CREATE_SIGNALED,
@@ -1823,20 +1846,6 @@ v3dv_DestroyDevice(VkDevice _device,
 
    vk_device_finish(&device->vk);
    vk_free2(&device->vk.alloc, pAllocator, device);
-}
-
-VKAPI_ATTR void VKAPI_CALL
-v3dv_GetDeviceQueue(VkDevice _device,
-                    uint32_t queueFamilyIndex,
-                    uint32_t queueIndex,
-                    VkQueue *pQueue)
-{
-   V3DV_FROM_HANDLE(v3dv_device, device, _device);
-
-   assert(queueIndex == 0);
-   assert(queueFamilyIndex == 0);
-
-   *pQueue = v3dv_queue_to_handle(&device->queue);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -2239,8 +2248,8 @@ v3dv_GetImageMemoryRequirements2(VkDevice device,
       case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS: {
          VkMemoryDedicatedRequirements *req =
             (VkMemoryDedicatedRequirements *) ext;
-         req->requiresDedicatedAllocation = image->external;
-         req->prefersDedicatedAllocation = image->external;
+         req->requiresDedicatedAllocation = image->vk.external_handle_types != 0;
+         req->prefersDedicatedAllocation = image->vk.external_handle_types != 0;
          break;
       }
       default:
@@ -2433,7 +2442,7 @@ v3dv_CreateFramebuffer(VkDevice _device,
    for (uint32_t i = 0; i < pCreateInfo->attachmentCount; i++) {
       framebuffer->attachments[i] =
          v3dv_image_view_from_handle(pCreateInfo->pAttachments[i]);
-      if (framebuffer->attachments[i]->aspects & VK_IMAGE_ASPECT_COLOR_BIT)
+      if (framebuffer->attachments[i]->vk.aspects & VK_IMAGE_ASPECT_COLOR_BIT)
          framebuffer->color_attachment_count++;
    }
 

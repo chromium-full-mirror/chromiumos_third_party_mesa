@@ -2104,6 +2104,13 @@ void gfx6_math(struct brw_codegen *p,
       assert(src1.type != BRW_REGISTER_TYPE_F);
       assert(src1.file == BRW_GENERAL_REGISTER_FILE ||
              (devinfo->ver >= 8 && src1.file == BRW_IMMEDIATE_VALUE));
+      /* From BSpec 6647/47428 "[Instruction] Extended Math Function":
+       *     INT DIV function does not support source modifiers.
+       */
+      assert(!src0.negate);
+      assert(!src0.abs);
+      assert(!src1.negate);
+      assert(!src1.abs);
    } else {
       assert(src0.type == BRW_REGISTER_TYPE_F ||
              (src0.type == BRW_REGISTER_TYPE_HF && devinfo->ver >= 9));
@@ -3248,17 +3255,22 @@ gfx12_set_memory_fence_message(struct brw_codegen *p,
 
    brw_inst_set_sfid(p->devinfo, insn, sfid);
 
-   enum lsc_fence_scope scope = LSC_FENCE_THREADGROUP;
-   enum lsc_flush_type flush_type = LSC_FLUSH_TYPE_NONE;
+   if (sfid == BRW_SFID_URB) {
+      brw_set_desc(p, insn, brw_urb_fence_desc(p->devinfo) |
+                            brw_message_desc(p->devinfo, mlen, rlen, false));
+   } else {
+      enum lsc_fence_scope scope = LSC_FENCE_THREADGROUP;
+      enum lsc_flush_type flush_type = LSC_FLUSH_TYPE_NONE;
 
-   if (sfid == GFX12_SFID_TGM) {
-      scope = LSC_FENCE_TILE;
-      flush_type = LSC_FLUSH_TYPE_EVICT;
+      if (sfid == GFX12_SFID_TGM) {
+         scope = LSC_FENCE_TILE;
+         flush_type = LSC_FLUSH_TYPE_EVICT;
+      }
+
+      brw_set_desc(p, insn, lsc_fence_msg_desc(p->devinfo, scope,
+                                               flush_type, false) |
+                            brw_message_desc(p->devinfo, mlen, rlen, false));
    }
-
-   brw_set_desc(p, insn, lsc_fence_msg_desc(p->devinfo, scope,
-                                            flush_type, false) |
-                         brw_message_desc(p->devinfo, mlen, rlen, false));
 }
 
 void

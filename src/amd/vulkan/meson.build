@@ -39,6 +39,7 @@ libradv_files = files(
   'winsys/null/radv_null_winsys.c',
   'winsys/null/radv_null_winsys_public.h',
   'radv_acceleration_structure.c',
+  'radv_acceleration_structure.h',
   'radv_android.c',
   'radv_cmd_buffer.c',
   'radv_cs.h',
@@ -49,7 +50,6 @@ libradv_files = files(
   'radv_descriptor_set.h',
   'radv_formats.c',
   'radv_image.c',
-  'radv_llvm_helper.cpp',
   'radv_meta.c',
   'radv_meta.h',
   'radv_meta_blit.c',
@@ -67,17 +67,16 @@ libradv_files = files(
   'radv_meta_resolve_cs.c',
   'radv_meta_resolve_fs.c',
   'radv_nir_lower_ycbcr_textures.c',
-  'radv_nir_to_llvm.c',
   'radv_pass.c',
   'radv_pipeline.c',
   'radv_pipeline_cache.c',
+  'radv_pipeline_rt.c',
   'radv_private.h',
   'radv_radeon_winsys.h',
   'radv_shader.c',
   'radv_shader.h',
   'radv_shader_args.c',
   'radv_shader_args.h',
-  'radv_shader_helper.h',
   'radv_shader_info.c',
   'radv_sqtt.c',
   'radv_query.c',
@@ -98,6 +97,14 @@ if not with_platform_windows
     'winsys/amdgpu/radv_amdgpu_winsys.c',
     'winsys/amdgpu/radv_amdgpu_winsys.h',
     'winsys/amdgpu/radv_amdgpu_winsys_public.h',
+  )
+endif
+
+if with_llvm
+  libradv_files += files(
+    'radv_llvm_helper.cpp',
+    'radv_llvm_helper.h',
+    'radv_nir_to_llvm.c',
   )
 endif
 

@@ -62,6 +62,7 @@ enum {
    RADV_DEBUG_NO_DISPLAY_DCC = 1ull << 31,
    RADV_DEBUG_NO_TC_COMPAT_CMASK = 1ull << 32,
    RADV_DEBUG_NO_VRS_FLAT_SHADING = 1ull << 33,
+   RADV_DEBUG_NO_ATOC_DITHERING = 1ull << 34,
 };
 
 enum {
@@ -75,6 +76,7 @@ enum {
    RADV_PERFTEST_SAM = 1u << 7,
    RADV_PERFTEST_RT = 1u << 8,
    RADV_PERFTEST_NGGC = 1u << 9,
+   RADV_PERFTEST_FORCE_EMULATE_RT = 1u << 10,
 };
 
 bool radv_init_trace(struct radv_device *device);

@@ -550,7 +550,7 @@ read_src(read_ctx *ctx, nir_src *src, void *mem_ctx)
       src->reg.reg = read_lookup_object(ctx, header.any.object_idx);
       src->reg.base_offset = blob_read_uint32(ctx->blob);
       if (header.any.is_indirect) {
-         src->reg.indirect = ralloc(mem_ctx, nir_src);
+         src->reg.indirect = malloc(sizeof(nir_src));
          read_src(ctx, src->reg.indirect, mem_ctx);
       } else {
          src->reg.indirect = NULL;
@@ -770,7 +770,7 @@ read_dest(read_ctx *ctx, nir_dest *dst, nir_instr *instr,
       dst->reg.reg = read_object(ctx);
       dst->reg.base_offset = blob_read_uint32(ctx->blob);
       if (dest.reg.is_indirect) {
-         dst->reg.indirect = ralloc(instr, nir_src);
+         dst->reg.indirect = malloc(sizeof(nir_src));
          read_src(ctx, dst->reg.indirect, instr);
       }
    }
@@ -1810,6 +1810,7 @@ static void
 write_if(write_ctx *ctx, nir_if *nif)
 {
    write_src(ctx, &nif->condition);
+   blob_write_uint8(ctx->blob, nif->control);
 
    write_cf_list(ctx, &nif->then_list);
    write_cf_list(ctx, &nif->else_list);
@@ -1821,6 +1822,7 @@ read_if(read_ctx *ctx, struct exec_list *cf_list)
    nir_if *nif = nir_if_create(ctx->nir);
 
    read_src(ctx, &nif->condition, nif);
+   nif->control = blob_read_uint8(ctx->blob);
 
    nir_cf_node_insert_end(cf_list, &nif->cf_node);
 
@@ -1831,6 +1833,7 @@ read_if(read_ctx *ctx, struct exec_list *cf_list)
 static void
 write_loop(write_ctx *ctx, nir_loop *loop)
 {
+   blob_write_uint8(ctx->blob, loop->control);
    write_cf_list(ctx, &loop->body);
 }
 
@@ -1841,6 +1844,7 @@ read_loop(read_ctx *ctx, struct exec_list *cf_list)
 
    nir_cf_node_insert_end(cf_list, &loop->cf_node);
 
+   loop->control = blob_read_uint8(ctx->blob);
    read_cf_list(ctx, &loop->body);
 }
 

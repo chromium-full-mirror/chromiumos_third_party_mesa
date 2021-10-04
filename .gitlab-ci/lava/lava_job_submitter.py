@@ -34,8 +34,22 @@ import urllib.parse
 import xmlrpc
 import yaml
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from lavacli.utils import loader
+
+# Timeout in minutes to decide if the device from the dispatched LAVA job has
+# hung or not due to the lack of new log output.
+DEVICE_HANGING_TIMEOUT_MIN = 5
+
+# How many seconds the script should wait before try a new polling iteration to
+# check if the dispatched LAVA job is running or waiting in the job queue.
+WAIT_FOR_DEVICE_POLLING_TIME_SEC = 10
+
+# How many seconds to wait between log output LAVA RPC calls.
+LOG_POLLING_TIME_SEC = 5
+
+# How many retries should be made when a timeout happen.
+NUMBER_OF_RETRIES_TIMEOUT_DETECTION = 2
 
 
 def print_log(msg):
@@ -112,7 +126,7 @@ def generate_lava_yaml(args):
             'format': 'Lava-Test Test Definition 1.0',
           },
           'parse': {
-            'pattern': 'hwci: (?P<test_case_id>\S*):\s+(?P<result>(pass|fail))'
+            'pattern': r'hwci: (?P<test_case_id>\S*):\s+(?P<result>(pass|fail))'
           },
           'run': {
           },
@@ -210,19 +224,44 @@ def get_job_results(proxy, job_id, test_suite, test_case):
 
     return True
 
+def wait_until_job_is_started(proxy, job_id):
+    print_log(f"Waiting for job {job_id} to start.")
+    current_state = "Submitted"
+    waiting_states = ["Submitted", "Scheduling", "Scheduled"]
+    while current_state in waiting_states:
+        job_state = _call_proxy(proxy.scheduler.job_state, job_id)
+        current_state = job_state["job_state"]
+
+        time.sleep(WAIT_FOR_DEVICE_POLLING_TIME_SEC)
+    print_log(f"Job {job_id} started.")
 
 def follow_job_execution(proxy, job_id):
     line_count = 0
     finished = False
+    last_time_logs = datetime.now()
     while not finished:
         (finished, data) = _call_proxy(proxy.scheduler.jobs.logs, job_id, line_count)
         logs = yaml.load(str(data), Loader=loader(False))
         if logs:
+            # Reset the timeout
+            last_time_logs = datetime.now()
             for line in logs:
                 print("{} {}".format(line["dt"], line["msg"]))
 
             line_count += len(logs)
 
+        else:
+            time_limit = timedelta(minutes=DEVICE_HANGING_TIMEOUT_MIN)
+            if datetime.now() - last_time_logs > time_limit:
+                print_log("LAVA job {} doesn't advance (machine got hung?). Retry.".format(job_id))
+                return False
+
+        # `proxy.scheduler.jobs.logs` does not block, even when there is no
+        # new log to be fetched. To avoid dosing the LAVA dispatcher
+        # machine, let's add a sleep to save them some stamina.
+        time.sleep(LOG_POLLING_TIME_SEC)
+
+    return True
 
 def show_job_data(proxy, job_id):
     show = _call_proxy(proxy.scheduler.jobs.show, job_id)
@@ -257,13 +296,22 @@ def main(args):
         print("LAVA job definition validated successfully")
         return
 
+    retry_count = NUMBER_OF_RETRIES_TIMEOUT_DETECTION
 
-    while True:
+    while retry_count >= 0:
         job_id = submit_job(proxy, yaml_file)
 
         print_log("LAVA job id: {}".format(job_id))
 
-        follow_job_execution(proxy, job_id)
+        wait_until_job_is_started(proxy, job_id)
+
+        if not follow_job_execution(proxy, job_id):
+            print_log(f"Job {job_id} has timed out. Cancelling it.")
+            # Cancel the job as it is considered unreachable by Mesa CI.
+            proxy.scheduler.jobs.cancel(job_id)
+
+            retry_count -= 1
+            continue
 
         show_job_data(proxy, job_id)
 

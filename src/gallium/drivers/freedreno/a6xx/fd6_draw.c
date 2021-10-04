@@ -143,7 +143,7 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
       .ctx = ctx,
       .vtx = &ctx->vtx,
       .info = info,
-		.drawid_offset = drawid_offset,
+      .drawid_offset = drawid_offset,
       .indirect = indirect,
       .draw = draw,
       .key = {
@@ -236,7 +236,7 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
    struct fd_ringbuffer *ring = ctx->batch->draw;
 
    struct CP_DRAW_INDX_OFFSET_0 draw0 = {
-      .prim_type = ctx->primtypes[info->mode],
+      .prim_type = ctx->screen->primtypes[info->mode],
       .vis_cull = USE_VISIBILITY,
       .gs_enable = !!emit.key.gs,
    };
@@ -373,7 +373,7 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 }
 
 static void
-fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
+fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth) assert_dt
 {
    struct fd_ringbuffer *ring;
    struct fd_screen *screen = batch->ctx->screen;
@@ -432,6 +432,7 @@ fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 
    fd6_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
    fd6_event_write(batch, ring, PC_CCU_INVALIDATE_COLOR, false);
+   fd_wfi(batch, ring);
 
    OUT_PKT4(ring, REG_A6XX_RB_2D_SRC_SOLID_C0, 4);
    OUT_RING(ring, fui(depth));
@@ -477,6 +478,7 @@ fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
    fd6_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
    fd6_event_write(batch, ring, PC_CCU_FLUSH_DEPTH_TS, true);
    fd6_event_write(batch, ring, CACHE_FLUSH_TS, true);
+   fd_wfi(batch, ring);
 
    fd6_cache_inv(batch, ring);
 }

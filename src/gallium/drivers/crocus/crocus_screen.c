@@ -694,7 +694,7 @@ crocus_shader_perf_log(void *data, unsigned *id, const char *fmt, ...)
    va_list args;
    va_start(args, fmt);
 
-   if (unlikely(INTEL_DEBUG & DEBUG_PERF)) {
+   if (INTEL_DEBUG & DEBUG_PERF) {
       va_list args_copy;
       va_copy(args_copy, args);
       vfprintf(stderr, fmt, args_copy);
@@ -812,9 +812,6 @@ crocus_screen_create(int fd, const struct pipe_screen_config *config)
 
    slab_create_parent(&screen->transfer_pool,
                       sizeof(struct crocus_transfer), 64);
-
-   screen->subslice_total = intel_device_info_subslice_total(&screen->devinfo);
-   assert(screen->subslice_total >= 1);
 
    struct pipe_screen *pscreen = &screen->base;
 

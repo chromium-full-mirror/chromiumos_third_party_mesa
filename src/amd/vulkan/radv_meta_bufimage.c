@@ -1462,6 +1462,9 @@ radv_meta_image_to_buffer(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_b
 
       radv_unaligned_dispatch(cmd_buffer, rects[r].width, rects[r].height, 1);
    }
+
+   radv_image_view_finish(&src_view);
+   radv_buffer_view_finish(&dst_view);
 }
 
 static void
@@ -1537,6 +1540,8 @@ radv_meta_buffer_to_image_cs_r32g32b32(struct radv_cmd_buffer *cmd_buffer,
       radv_unaligned_dispatch(cmd_buffer, rects[r].width, rects[r].height, 1);
    }
 
+   radv_buffer_view_finish(&src_view);
+   radv_buffer_view_finish(&dst_view);
    radv_DestroyBuffer(radv_device_to_handle(device), buffer, NULL);
 }
 
@@ -1611,6 +1616,9 @@ radv_meta_buffer_to_image_cs(struct radv_cmd_buffer *cmd_buffer,
 
       radv_unaligned_dispatch(cmd_buffer, rects[r].width, rects[r].height, 1);
    }
+
+   radv_image_view_finish(&dst_view);
+   radv_buffer_view_finish(&src_view);
 }
 
 static void
@@ -1689,6 +1697,8 @@ radv_meta_image_to_image_cs_r32g32b32(struct radv_cmd_buffer *cmd_buffer,
       radv_unaligned_dispatch(cmd_buffer, rects[r].width, rects[r].height, 1);
    }
 
+   radv_buffer_view_finish(&src_view);
+   radv_buffer_view_finish(&dst_view);
    radv_DestroyBuffer(radv_device_to_handle(device), src_buffer, NULL);
    radv_DestroyBuffer(radv_device_to_handle(device), dst_buffer, NULL);
 }
@@ -1775,6 +1785,9 @@ radv_meta_image_to_image_cs(struct radv_cmd_buffer *cmd_buffer, struct radv_meta
 
          radv_unaligned_dispatch(cmd_buffer, rects[r].width, rects[r].height, 1);
       }
+
+      radv_image_view_finish(&src_view);
+      radv_image_view_finish(&dst_view);
    }
 }
 
@@ -1836,6 +1849,7 @@ radv_meta_clear_image_cs_r32g32b32(struct radv_cmd_buffer *cmd_buffer,
 
    radv_unaligned_dispatch(cmd_buffer, dst->image->info.width, dst->image->info.height, 1);
 
+   radv_buffer_view_finish(&dst_view);
    radv_DestroyBuffer(radv_device_to_handle(device), buffer, NULL);
 }
 
@@ -1902,4 +1916,6 @@ radv_meta_clear_image_cs(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_bl
                          push_constants);
 
    radv_unaligned_dispatch(cmd_buffer, dst->image->info.width, dst->image->info.height, 1);
+
+   radv_image_view_finish(&dst_iview);
 }

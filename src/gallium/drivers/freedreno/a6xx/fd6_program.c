@@ -152,6 +152,35 @@ fd6_emit_shader(struct fd_context *ctx, struct fd_ringbuffer *ring,
    OUT_RELOC(ring, so->bo, 0, 0, 0);
 }
 
+/**
+ * Build a pre-baked state-obj to disable SO, so that we aren't dynamically
+ * building this at draw time whenever we transition from SO enabled->disabled
+ */
+static void
+setup_stream_out_disable(struct fd_context *ctx)
+{
+   unsigned sizedw = 4;
+
+   if (ctx->screen->info->a6xx.tess_use_shared)
+      sizedw += 2;
+
+   struct fd_ringbuffer *ring =
+      fd_ringbuffer_new_object(ctx->pipe, (1 + sizedw) * 4);
+
+   OUT_PKT7(ring, CP_CONTEXT_REG_BUNCH, sizedw);
+   OUT_RING(ring, REG_A6XX_VPC_SO_CNTL);
+   OUT_RING(ring, 0);
+   OUT_RING(ring, REG_A6XX_VPC_SO_STREAM_CNTL);
+   OUT_RING(ring, 0);
+
+   if (ctx->screen->info->a6xx.tess_use_shared) {
+      OUT_RING(ring, REG_A6XX_PC_SO_STREAM_CNTL);
+      OUT_RING(ring, 0);
+   }
+
+   fd6_context(ctx)->streamout_disable_stateobj = ring;
+}
+
 static void
 setup_stream_out(struct fd_context *ctx, struct fd6_program_state *state,
                  const struct ir3_shader_variant *v,
@@ -364,10 +393,10 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
    layer_regid = ir3_find_output_regid(vs, VARYING_SLOT_LAYER);
    vertex_regid = ir3_find_sysval_regid(vs, SYSTEM_VALUE_VERTEX_ID);
    instance_regid = ir3_find_sysval_regid(vs, SYSTEM_VALUE_INSTANCE_ID);
-   if (gs)
-      vs_primitive_regid = ir3_find_sysval_regid(gs, SYSTEM_VALUE_PRIMITIVE_ID);
-   else if (hs)
+   if (hs)
       vs_primitive_regid = ir3_find_sysval_regid(hs, SYSTEM_VALUE_PRIMITIVE_ID);
+   else if (gs)
+      vs_primitive_regid = ir3_find_sysval_regid(gs, SYSTEM_VALUE_PRIMITIVE_ID);
    else
       vs_primitive_regid = regid(63, 0);
 
@@ -568,6 +597,9 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
     */
    if (do_streamout && !binning_pass) {
       setup_stream_out(ctx, state, last_shader, &l);
+
+      if (!fd6_context(ctx)->streamout_disable_stateobj)
+         setup_stream_out_disable(ctx);
    }
 
    debug_assert(l.cnt <= 32);
@@ -802,10 +834,6 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
       else
          need_size = true;
    }
-   if (VALIDREG(ij_regid[IJ_LINEAR_PIXEL]))
-      need_size = true;
-
-   /* XXX: enable bits for linear centroid and linear sample bary */
 
    OUT_PKT4(ring, REG_A6XX_GRAS_CNTL, 1);
    OUT_RING(
@@ -814,8 +842,12 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
          CONDREG(ij_regid[IJ_PERSP_CENTROID],
                  A6XX_GRAS_CNTL_IJ_PERSP_CENTROID) |
          CONDREG(ij_regid[IJ_PERSP_SAMPLE], A6XX_GRAS_CNTL_IJ_PERSP_SAMPLE) |
-         COND(need_size, A6XX_GRAS_CNTL_SIZE) |
-         COND(need_size_persamp, A6XX_GRAS_CNTL_SIZE_PERSAMP) |
+         CONDREG(ij_regid[IJ_LINEAR_PIXEL], A6XX_GRAS_CNTL_IJ_LINEAR_PIXEL) |
+         CONDREG(ij_regid[IJ_LINEAR_CENTROID],
+                 A6XX_GRAS_CNTL_IJ_LINEAR_CENTROID) |
+         CONDREG(ij_regid[IJ_LINEAR_SAMPLE], A6XX_GRAS_CNTL_IJ_LINEAR_SAMPLE) |
+         COND(need_size, A6XX_GRAS_CNTL_IJ_LINEAR_PIXEL) |
+         COND(need_size_persamp, A6XX_GRAS_CNTL_IJ_LINEAR_SAMPLE) |
          COND(fs->fragcoord_compmask != 0,
               A6XX_GRAS_CNTL_COORD_MASK(fs->fragcoord_compmask)));
 
@@ -828,9 +860,15 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
                  A6XX_RB_RENDER_CONTROL0_IJ_PERSP_CENTROID) |
          CONDREG(ij_regid[IJ_PERSP_SAMPLE],
                  A6XX_RB_RENDER_CONTROL0_IJ_PERSP_SAMPLE) |
-         COND(need_size, A6XX_RB_RENDER_CONTROL0_SIZE) |
+         CONDREG(ij_regid[IJ_LINEAR_PIXEL],
+              A6XX_RB_RENDER_CONTROL0_IJ_LINEAR_PIXEL) |
+         CONDREG(ij_regid[IJ_LINEAR_CENTROID],
+                 A6XX_RB_RENDER_CONTROL0_IJ_LINEAR_CENTROID) |
+         CONDREG(ij_regid[IJ_LINEAR_SAMPLE],
+                 A6XX_RB_RENDER_CONTROL0_IJ_LINEAR_SAMPLE) |
+         COND(need_size, A6XX_RB_RENDER_CONTROL0_IJ_LINEAR_PIXEL) |
          COND(enable_varyings, A6XX_RB_RENDER_CONTROL0_UNK10) |
-         COND(need_size_persamp, A6XX_RB_RENDER_CONTROL0_SIZE_PERSAMP) |
+         COND(need_size_persamp, A6XX_RB_RENDER_CONTROL0_IJ_LINEAR_SAMPLE) |
          COND(fs->fragcoord_compmask != 0,
               A6XX_RB_RENDER_CONTROL0_COORD_MASK(fs->fragcoord_compmask)));
 

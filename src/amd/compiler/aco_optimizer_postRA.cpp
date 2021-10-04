@@ -110,9 +110,10 @@ save_reg_writes(pr_opt_ctx& ctx, aco_ptr<Instruction>& instr)
       if (def.regClass().is_subdword())
          idx = clobbered;
 
+      assert((r + dw_size) <= max_reg_cnt);
       assert(def.size() == dw_size || def.regClass().is_subdword());
-      std::fill(&ctx.instr_idx_by_regs[ctx.current_block->index][r],
-                &ctx.instr_idx_by_regs[ctx.current_block->index][r + dw_size], idx);
+      std::fill(ctx.instr_idx_by_regs[ctx.current_block->index].begin() + r,
+                ctx.instr_idx_by_regs[ctx.current_block->index].begin() + r + dw_size, idx);
    }
 }
 
@@ -120,12 +121,14 @@ Idx
 last_writer_idx(pr_opt_ctx& ctx, PhysReg physReg, RegClass rc)
 {
    /* Verify that all of the operand's registers are written by the same instruction. */
+   assert(physReg.reg() < max_reg_cnt);
    Idx instr_idx = ctx.instr_idx_by_regs[ctx.current_block->index][physReg.reg()];
    unsigned dw_size = DIV_ROUND_UP(rc.bytes(), 4u);
    unsigned r = physReg.reg();
-   bool all_same = std::all_of(&ctx.instr_idx_by_regs[ctx.current_block->index][r],
-                               &ctx.instr_idx_by_regs[ctx.current_block->index][r + dw_size],
-                               [instr_idx](Idx i) { return i == instr_idx; });
+   bool all_same =
+      std::all_of(ctx.instr_idx_by_regs[ctx.current_block->index].begin() + r,
+                  ctx.instr_idx_by_regs[ctx.current_block->index].begin() + r + dw_size,
+                  [instr_idx](Idx i) { return i == instr_idx; });
 
    return all_same ? instr_idx : written_by_multiple_instrs;
 }
@@ -136,6 +139,7 @@ last_writer_idx(pr_opt_ctx& ctx, const Operand& op)
    if (op.isConstant() || op.isUndefined())
       return const_or_undef;
 
+   assert(op.physReg().reg() < max_reg_cnt);
    Idx instr_idx = ctx.instr_idx_by_regs[ctx.current_block->index][op.physReg().reg()];
 
 #ifndef NDEBUG

@@ -200,8 +200,11 @@ panfrost_get_blend(struct panfrost_batch *batch, unsigned rti, struct panfrost_b
 
         pthread_mutex_lock(&dev->blend_shaders.lock);
         struct pan_blend_shader_variant *shader =
-                pan_blend_get_shader_locked(dev, &pan_blend,
-                                col0_type, col1_type, rti);
+                pan_screen(ctx->base.screen)->vtbl.get_blend_shader(dev,
+                                                                    &pan_blend,
+                                                                    col0_type,
+                                                                    col1_type,
+                                                                    rti);
 
         /* Size check and upload */
         unsigned offset = *shader_offset;
@@ -654,18 +657,6 @@ panfrost_set_sampler_views(
 }
 
 static void
-panfrost_sampler_view_destroy(
-        struct pipe_context *pctx,
-        struct pipe_sampler_view *pview)
-{
-        struct panfrost_sampler_view *view = (struct panfrost_sampler_view *) pview;
-
-        pipe_resource_reference(&pview->texture, NULL);
-        panfrost_bo_unreference(view->state.bo);
-        ralloc_free(view);
-}
-
-static void
 panfrost_set_shader_buffers(
         struct pipe_context *pctx,
         enum pipe_shader_type shader,
@@ -1065,7 +1056,6 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
         gallium->set_stencil_ref = panfrost_set_stencil_ref;
 
         gallium->set_sampler_views = panfrost_set_sampler_views;
-        gallium->sampler_view_destroy = panfrost_sampler_view_destroy;
 
         gallium->bind_rasterizer_state = panfrost_bind_rasterizer_state;
         gallium->delete_rasterizer_state = panfrost_generic_cso_delete;

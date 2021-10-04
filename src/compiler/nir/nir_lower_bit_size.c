@@ -38,7 +38,7 @@ static nir_ssa_def *convert_to_bit_size(nir_builder *bld, nir_ssa_def *src,
    if ((type & (nir_type_uint | nir_type_int)) && bit_size == 32 &&
        alu && (alu->op == nir_op_b2i8 || alu->op == nir_op_b2i16)) {
       nir_alu_instr *instr = nir_alu_instr_create(bld->shader, nir_op_b2i32);
-      nir_alu_src_copy(&instr->src[0], &alu->src[0], instr);
+      nir_alu_src_copy(&instr->src[0], &alu->src[0]);
       return nir_builder_alu_instr_finish_and_insert(bld, instr);
    }
 
@@ -74,7 +74,7 @@ lower_alu_instr(nir_builder *bld, nir_alu_instr *alu, unsigned bit_size)
    nir_ssa_def *lowered_dst = NULL;
    if (op == nir_op_imul_high || op == nir_op_umul_high) {
       assert(dst_bit_size * 2 <= bit_size);
-      nir_ssa_def *lowered_dst = nir_imul(bld, srcs[0], srcs[1]);
+      lowered_dst = nir_imul(bld, srcs[0], srcs[1]);
       if (nir_op_infos[op].output_type & nir_type_uint)
          lowered_dst = nir_ushr_imm(bld, lowered_dst, dst_bit_size);
       else

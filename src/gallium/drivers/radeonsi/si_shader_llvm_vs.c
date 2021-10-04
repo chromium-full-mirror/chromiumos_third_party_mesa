@@ -26,6 +26,7 @@
 #include "si_shader_internal.h"
 #include "sid.h"
 #include "util/u_memory.h"
+#include "ac_exp_param.h"
 
 static LLVMValueRef unpack_sint16(struct si_shader_context *ctx, LLVMValueRef i32, unsigned index)
 {
@@ -107,7 +108,7 @@ static void load_input_vs(struct si_shader_context *ctx, unsigned input_index, L
     * ... which is what we must prevent at all cost.
     */
    const bool can_speculate = false;
-   unsigned bit_size = info->input_fp16_lo_hi_valid[input_index] & 0x1 ? 16 : 32;
+   unsigned bit_size = info->input[input_index].fp16_lo_hi_valid & 0x1 ? 16 : 32;
    LLVMTypeRef int_type = bit_size == 16 ? ctx->ac.i16 : ctx->ac.i32;
    LLVMTypeRef float_type = bit_size == 16 ? ctx->ac.f16 : ctx->ac.f32;
    unsigned num_vbos_in_user_sgprs = ctx->shader->selector->num_vbos_in_user_sgprs;
@@ -157,7 +158,7 @@ static void load_input_vs(struct si_shader_context *ctx, unsigned input_index, L
       return;
    }
 
-   unsigned required_channels = util_last_bit(info->input_usage_mask[input_index]);
+   unsigned required_channels = util_last_bit(info->input[input_index].usage_mask);
    if (required_channels == 0) {
       for (unsigned i = 0; i < 4; ++i)
          out[i] = LLVMGetUndef(ctx->ac.f32);
@@ -252,18 +253,19 @@ static void load_input_vs(struct si_shader_context *ctx, unsigned input_index, L
       out[i] = ac_to_float(&ctx->ac, fetches[i]);
 }
 
-void si_llvm_load_vs_inputs(struct si_shader_context *ctx, struct nir_shader *nir)
+static LLVMValueRef si_load_vs_input(struct ac_shader_abi *abi, unsigned driver_location,
+                                     unsigned component, unsigned num_components,
+                                     unsigned vertex_index, LLVMTypeRef type)
 {
-   const struct si_shader_info *info = &ctx->shader->selector->info;
+   struct si_shader_context *ctx = si_shader_context_from_abi(abi);
+   LLVMValueRef values[4];
 
-   for (unsigned i = 0; i < info->num_inputs; i++) {
-      LLVMValueRef values[4];
+   load_input_vs(ctx, driver_location, values);
 
-      load_input_vs(ctx, i, values);
+   for (unsigned i = 0; i < 4; i++)
+      values[i] = LLVMBuildBitCast(ctx->ac.builder, values[i], type, "");
 
-      for (unsigned chan = 0; chan < 4; chan++)
-         ctx->inputs[i * 4 + chan] = ac_to_integer(&ctx->ac, values[chan]);
-   }
+   return ac_build_varying_gather_values(&ctx->ac, values, num_components, component);
 }
 
 void si_llvm_streamout_store_output(struct si_shader_context *ctx, LLVMValueRef const *so_buffers,
@@ -450,6 +452,9 @@ static void si_prepare_param_exports(struct si_shader_context *ctx,
 {
    struct si_shader *shader = ctx->shader;
    unsigned param_count = 0;
+
+   memset(shader->info.vs_output_param_offset, AC_EXP_PARAM_DEFAULT_VAL_0000,
+          sizeof(shader->info.vs_output_param_offset));
 
    for (unsigned i = 0; i < noutput; i++) {
       unsigned semantic = outputs[i].semantic;
@@ -752,15 +757,16 @@ void si_llvm_build_vs_exports(struct si_shader_context *ctx,
       ac_build_export(&ctx->ac, &param_exports[i]);
 }
 
-void si_llvm_emit_vs_epilogue(struct ac_shader_abi *abi, unsigned max_outputs, LLVMValueRef *addrs)
+void si_llvm_emit_vs_epilogue(struct ac_shader_abi *abi)
 {
    struct si_shader_context *ctx = si_shader_context_from_abi(abi);
    struct si_shader_info *info = &ctx->shader->selector->info;
    struct si_shader_output_values *outputs = NULL;
+   LLVMValueRef *addrs = abi->outputs;
    int i, j;
 
    assert(!ctx->shader->is_gs_copy_shader);
-   assert(info->num_outputs <= max_outputs);
+   assert(info->num_outputs <= AC_LLVM_MAX_OUTPUTS);
 
    outputs = MALLOC((info->num_outputs + 1) * sizeof(outputs[0]));
 
@@ -789,32 +795,6 @@ void si_llvm_emit_vs_epilogue(struct ac_shader_abi *abi, unsigned max_outputs, L
 
    si_llvm_build_vs_exports(ctx, outputs, i);
    FREE(outputs);
-}
-
-static void si_llvm_emit_prim_discard_cs_epilogue(struct ac_shader_abi *abi, unsigned max_outputs,
-                                                  LLVMValueRef *addrs)
-{
-   struct si_shader_context *ctx = si_shader_context_from_abi(abi);
-   struct si_shader_info *info = &ctx->shader->selector->info;
-   LLVMValueRef pos[4] = {};
-
-   assert(info->num_outputs <= max_outputs);
-
-   for (unsigned i = 0; i < info->num_outputs; i++) {
-      if (info->output_semantic[i] != VARYING_SLOT_POS)
-         continue;
-
-      for (unsigned chan = 0; chan < 4; chan++)
-         pos[chan] = LLVMBuildLoad(ctx->ac.builder, addrs[4 * i + chan], "");
-      break;
-   }
-   assert(pos[0] != NULL);
-
-   /* Return the position output. */
-   LLVMValueRef ret = ctx->return_value;
-   for (unsigned chan = 0; chan < 4; chan++)
-      ret = LLVMBuildInsertValue(ctx->ac.builder, ret, pos[chan], chan, "");
-   ctx->return_value = ret;
 }
 
 /**
@@ -1023,16 +1003,6 @@ void si_llvm_build_vs_prolog(struct si_shader_context *ctx, union si_shader_part
    ctx->abi.vertex_id = input_vgprs[vertex_id_vgpr];
    ctx->abi.instance_id = input_vgprs[instance_id_vgpr];
 
-   /* InstanceID = VertexID >> 16;
-    * VertexID   = VertexID & 0xffff;
-    */
-   if (key->vs_prolog.states.unpack_instance_id_from_vertex_id) {
-      ctx->abi.instance_id =
-         LLVMBuildLShr(ctx->ac.builder, ctx->abi.vertex_id, LLVMConstInt(ctx->ac.i32, 16, 0), "");
-      ctx->abi.vertex_id = LLVMBuildAnd(ctx->ac.builder, ctx->abi.vertex_id,
-                                        LLVMConstInt(ctx->ac.i32, 0xffff, 0), "");
-   }
-
    /* Copy inputs to outputs. This should be no-op, as the registers match,
     * but it will prevent the compiler from overwriting them unintentionally.
     */
@@ -1129,8 +1099,6 @@ void si_llvm_init_vs_callbacks(struct si_shader_context *ctx, bool ngg_cull_shad
       ctx->abi.emit_outputs = si_llvm_emit_ls_epilogue;
    else if (shader->key.as_es)
       ctx->abi.emit_outputs = si_llvm_emit_es_epilogue;
-   else if (shader->key.opt.vs_as_prim_discard_cs)
-      ctx->abi.emit_outputs = si_llvm_emit_prim_discard_cs_epilogue;
    else if (ngg_cull_shader)
       ctx->abi.emit_outputs = gfx10_emit_ngg_culling_epilogue;
    else if (shader->key.as_ngg)
@@ -1139,4 +1107,5 @@ void si_llvm_init_vs_callbacks(struct si_shader_context *ctx, bool ngg_cull_shad
       ctx->abi.emit_outputs = si_llvm_emit_vs_epilogue;
 
    ctx->abi.load_base_vertex = get_base_vertex;
+   ctx->abi.load_inputs = si_load_vs_input;
 }

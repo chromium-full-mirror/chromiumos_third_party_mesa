@@ -331,6 +331,8 @@ brw_instruction_name(const struct intel_device_info *devinfo, enum opcode op)
       return "a64_untyped_atomic_float16_logical";
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
       return "a64_untyped_atomic_float32_logical";
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT64_LOGICAL:
+      return "a64_untyped_atomic_float64_logical";
    case SHADER_OPCODE_TYPED_ATOMIC_LOGICAL:
       return "typed_atomic_logical";
    case SHADER_OPCODE_TYPED_SURFACE_READ_LOGICAL:
@@ -974,6 +976,8 @@ backend_instruction::can_do_source_mods() const
    case SHADER_OPCODE_CLUSTER_BROADCAST:
    case SHADER_OPCODE_MOV_INDIRECT:
    case SHADER_OPCODE_SHUFFLE:
+   case SHADER_OPCODE_INT_QUOTIENT:
+   case SHADER_OPCODE_INT_REMAINDER:
       return false;
    default:
       return true;
@@ -1120,6 +1124,7 @@ backend_instruction::has_side_effects() const
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL:
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL:
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
+   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT64_LOGICAL:
    case SHADER_OPCODE_BYTE_SCATTERED_WRITE_LOGICAL:
    case SHADER_OPCODE_DWORD_SCATTERED_WRITE_LOGICAL:
    case SHADER_OPCODE_TYPED_ATOMIC_LOGICAL:

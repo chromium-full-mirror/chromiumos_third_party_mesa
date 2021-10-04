@@ -58,6 +58,7 @@ enum {
         PAN_SYSVAL_RT_CONVERSION = 13,
         PAN_SYSVAL_VERTEX_INSTANCE_OFFSETS = 14,
         PAN_SYSVAL_DRAWID = 15,
+        PAN_SYSVAL_BLEND_CONSTANTS = 16,
 };
 
 #define PAN_TXS_SYSVAL_ID(texidx, dim, is_array)          \
@@ -131,7 +132,15 @@ struct panfrost_compile_inputs {
         bool no_ubo_to_push;
 
         enum pipe_format rt_formats[8];
+        uint8_t raw_fmt_mask;
         unsigned nr_cbufs;
+
+        union {
+                struct {
+                        bool static_rt_conv;
+                        uint32_t rt_conv[8];
+                } bifrost;
+        };
 };
 
 struct pan_shader_varying {

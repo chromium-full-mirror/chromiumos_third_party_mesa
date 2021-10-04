@@ -61,7 +61,6 @@ batch_ptr_add_usage(struct zink_batch *batch, struct set *s, void *ptr);
 
 struct zink_batch_state {
    struct zink_fence fence;
-   struct pipe_reference reference;
 
    struct zink_batch_usage usage;
    struct zink_context *ctx;
@@ -81,6 +80,9 @@ struct zink_batch_state {
    struct set *resources;
    struct set *surfaces;
    struct set *bufferviews;
+
+   struct util_dynarray unref_resources;
+   struct util_dynarray bindless_releases[2];
 
    struct util_dynarray persistent_resources;
    struct util_dynarray zombie_samplers;
@@ -109,6 +111,7 @@ struct zink_batch {
    unsigned work_count;
 
    bool has_work;
+   bool last_was_compute;
    bool in_rp; //renderpass is currently active
 };
 
@@ -174,19 +177,6 @@ zink_batch_reference_surface(struct zink_batch *batch, struct zink_surface *surf
 
 void
 debug_describe_zink_batch_state(char *buf, const struct zink_batch_state *ptr);
-
-static inline void
-zink_batch_state_reference(struct zink_screen *screen,
-                           struct zink_batch_state **dst,
-                           struct zink_batch_state *src)
-{
-   struct zink_batch_state *old_dst = dst ? *dst : NULL;
-
-   if (pipe_reference_described(old_dst ? &old_dst->reference : NULL, src ? &src->reference : NULL,
-                                (debug_reference_descriptor)debug_describe_zink_batch_state))
-      zink_batch_state_destroy(screen, old_dst);
-   if (dst) *dst = src;
-}
 
 static inline bool
 zink_batch_usage_is_unflushed(const struct zink_batch_usage *u)

@@ -95,6 +95,7 @@ static const driOptionDescription brw_driconf[] = {
    DRI_CONF_SECTION_MISCELLANEOUS
       DRI_CONF_GLSL_ZERO_INIT(false)
       DRI_CONF_VS_POSITION_ALWAYS_INVARIANT(false)
+      DRI_CONF_VS_POSITION_ALWAYS_PRECISE(false)
       DRI_CONF_ALLOW_RGB10_CONFIGS(false)
       DRI_CONF_ALLOW_RGB565_CONFIGS(true)
       DRI_CONF_ALLOW_FP16_CONFIGS(false)
@@ -2164,7 +2165,8 @@ brw_allowed_format(__DRIscreen *dri_screen, mesa_format format)
    if (!allow_rgba_ordering &&
        (format == MESA_FORMAT_R8G8B8A8_UNORM ||
         format == MESA_FORMAT_R8G8B8X8_UNORM ||
-        format == MESA_FORMAT_R8G8B8A8_SRGB))
+        format == MESA_FORMAT_R8G8B8A8_SRGB ||
+        format == MESA_FORMAT_R8G8B8X8_SRGB))
       return false;
 
     /* Shall we expose 10 bpc formats? */
@@ -2228,11 +2230,11 @@ brw_screen_make_configs(__DRIscreen *dri_screen)
 
       /* Required by Android, for HAL_PIXEL_FORMAT_RGBA_8888. */
       MESA_FORMAT_R8G8B8A8_UNORM,
+      MESA_FORMAT_R8G8B8A8_SRGB,
 
       /* Required by Android, for HAL_PIXEL_FORMAT_RGBX_8888. */
       MESA_FORMAT_R8G8B8X8_UNORM,
-
-      MESA_FORMAT_R8G8B8A8_SRGB,
+      MESA_FORMAT_R8G8B8X8_SRGB,
    };
 
    /* __DRI_ATTRIB_SWAP_COPY is not supported due to page flipping. */
@@ -2610,9 +2612,6 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
    isl_device_init(&screen->isl_dev, &screen->devinfo,
                    screen->hw_has_swizzling);
 
-   /* GENs prior to 8 do not support EU/Subslice info */
-   screen->subslice_total = intel_device_info_subslice_total(devinfo);
-
    /* Gfx7-7.5 kernel requirements / command parser saga:
     *
     * - pre-v3.16:
@@ -2805,6 +2804,7 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
       !(screen->kernel_features & KERNEL_ALLOWS_CONTEXT_ISOLATION);
 
    screen->compiler->glsl_compiler_options[MESA_SHADER_VERTEX].PositionAlwaysInvariant = driQueryOptionb(&screen->optionCache, "vs_position_always_invariant");
+   screen->compiler->glsl_compiler_options[MESA_SHADER_TESS_EVAL].PositionAlwaysPrecise = driQueryOptionb(&screen->optionCache, "vs_position_always_precise");
 
    screen->compiler->supports_pull_constants = true;
    screen->compiler->compact_params = true;

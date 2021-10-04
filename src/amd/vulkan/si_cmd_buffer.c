@@ -109,12 +109,12 @@ si_emit_compute(struct radv_device *device, struct radeon_cmdbuf *cs)
    }
 
    if (device->physical_device->rad_info.chip_class >= GFX10) {
-      radeon_set_sh_reg(cs, R_00B890_COMPUTE_USER_ACCUM_0, 0);
-      radeon_set_sh_reg(cs, R_00B894_COMPUTE_USER_ACCUM_1, 0);
-      radeon_set_sh_reg(cs, R_00B898_COMPUTE_USER_ACCUM_2, 0);
-      radeon_set_sh_reg(cs, R_00B89C_COMPUTE_USER_ACCUM_3, 0);
-      radeon_set_sh_reg(cs, R_00B8A0_COMPUTE_PGM_RSRC3, 0);
-      radeon_set_sh_reg(cs, R_00B9F4_COMPUTE_DISPATCH_TUNNEL, 0);
+      radeon_set_sh_reg_seq(cs, R_00B890_COMPUTE_USER_ACCUM_0, 5);
+      radeon_emit(cs, 0); /* R_00B890_COMPUTE_USER_ACCUM_0 */
+      radeon_emit(cs, 0); /* R_00B894_COMPUTE_USER_ACCUM_1 */
+      radeon_emit(cs, 0); /* R_00B898_COMPUTE_USER_ACCUM_2 */
+      radeon_emit(cs, 0); /* R_00B89C_COMPUTE_USER_ACCUM_3 */
+      radeon_emit(cs, 0); /* R_00B8A0_COMPUTE_PGM_RSRC3 */
    }
 
    /* This register has been moved to R_00CD20_COMPUTE_MAX_WAVE_ID
@@ -369,6 +369,15 @@ si_emit_graphics(struct radv_device *device, struct radeon_cmdbuf *cs)
       radeon_set_context_reg(cs, R_028C50_PA_SC_NGG_MODE_CNTL, S_028C50_MAX_DEALLOCS_IN_WAVE(512));
       radeon_set_context_reg(cs, R_028C58_VGT_VERTEX_REUSE_BLOCK_CNTL, 14);
 
+      /* Vulkan doesn't support user edge flags and it also doesn't
+       * need to prevent drawing lines on internal edges of
+       * decomposed primitives (such as quads) with polygon mode = lines.
+       */
+      unsigned vertex_reuse_depth = physical_device->rad_info.chip_class >= GFX10_3 ? 30 : 0;
+      radeon_set_context_reg(cs, R_028838_PA_CL_NGG_CNTL,
+                             S_028838_INDEX_BUF_EDGE_FLAG_ENA(0) |
+                             S_028838_VERTEX_REUSE_DEPTH(vertex_reuse_depth));
+
       /* Enable CMASK/FMASK/HTILE/DCC caching in L2 for small chips. */
       unsigned meta_write_policy, meta_read_policy;
 
@@ -399,22 +408,26 @@ si_emit_graphics(struct radv_device *device, struct radeon_cmdbuf *cs)
             S_028410_COLOR_RD_POLICY(V_028410_CACHE_NOA));
       radeon_set_context_reg(cs, R_028428_CB_COVERAGE_OUT_CONTROL, 0);
 
-      radeon_set_sh_reg(cs, R_00B0C8_SPI_SHADER_USER_ACCUM_PS_0, 0);
-      radeon_set_sh_reg(cs, R_00B0CC_SPI_SHADER_USER_ACCUM_PS_1, 0);
-      radeon_set_sh_reg(cs, R_00B0D0_SPI_SHADER_USER_ACCUM_PS_2, 0);
-      radeon_set_sh_reg(cs, R_00B0D4_SPI_SHADER_USER_ACCUM_PS_3, 0);
-      radeon_set_sh_reg(cs, R_00B1C8_SPI_SHADER_USER_ACCUM_VS_0, 0);
-      radeon_set_sh_reg(cs, R_00B1CC_SPI_SHADER_USER_ACCUM_VS_1, 0);
-      radeon_set_sh_reg(cs, R_00B1D0_SPI_SHADER_USER_ACCUM_VS_2, 0);
-      radeon_set_sh_reg(cs, R_00B1D4_SPI_SHADER_USER_ACCUM_VS_3, 0);
-      radeon_set_sh_reg(cs, R_00B2C8_SPI_SHADER_USER_ACCUM_ESGS_0, 0);
-      radeon_set_sh_reg(cs, R_00B2CC_SPI_SHADER_USER_ACCUM_ESGS_1, 0);
-      radeon_set_sh_reg(cs, R_00B2D0_SPI_SHADER_USER_ACCUM_ESGS_2, 0);
-      radeon_set_sh_reg(cs, R_00B2D4_SPI_SHADER_USER_ACCUM_ESGS_3, 0);
-      radeon_set_sh_reg(cs, R_00B4C8_SPI_SHADER_USER_ACCUM_LSHS_0, 0);
-      radeon_set_sh_reg(cs, R_00B4CC_SPI_SHADER_USER_ACCUM_LSHS_1, 0);
-      radeon_set_sh_reg(cs, R_00B4D0_SPI_SHADER_USER_ACCUM_LSHS_2, 0);
-      radeon_set_sh_reg(cs, R_00B4D4_SPI_SHADER_USER_ACCUM_LSHS_3, 0);
+      radeon_set_sh_reg_seq(cs, R_00B0C8_SPI_SHADER_USER_ACCUM_PS_0, 4);
+      radeon_emit(cs, 0); /* R_00B0C8_SPI_SHADER_USER_ACCUM_PS_0 */
+      radeon_emit(cs, 0); /* R_00B0CC_SPI_SHADER_USER_ACCUM_PS_1 */
+      radeon_emit(cs, 0); /* R_00B0D0_SPI_SHADER_USER_ACCUM_PS_2 */
+      radeon_emit(cs, 0); /* R_00B0D4_SPI_SHADER_USER_ACCUM_PS_3 */
+      radeon_set_sh_reg_seq(cs, R_00B1C8_SPI_SHADER_USER_ACCUM_VS_0, 4);
+      radeon_emit(cs, 0); /* R_00B1C8_SPI_SHADER_USER_ACCUM_VS_0 */
+      radeon_emit(cs, 0); /* R_00B1CC_SPI_SHADER_USER_ACCUM_VS_1 */
+      radeon_emit(cs, 0); /* R_00B1D0_SPI_SHADER_USER_ACCUM_VS_2 */
+      radeon_emit(cs, 0); /* R_00B1D4_SPI_SHADER_USER_ACCUM_VS_3 */
+      radeon_set_sh_reg_seq(cs, R_00B2C8_SPI_SHADER_USER_ACCUM_ESGS_0, 4);
+      radeon_emit(cs, 0); /* R_00B2C8_SPI_SHADER_USER_ACCUM_ESGS_0 */
+      radeon_emit(cs, 0); /* R_00B2CC_SPI_SHADER_USER_ACCUM_ESGS_1 */
+      radeon_emit(cs, 0); /* R_00B2D0_SPI_SHADER_USER_ACCUM_ESGS_2 */
+      radeon_emit(cs, 0); /* R_00B2D4_SPI_SHADER_USER_ACCUM_ESGS_3 */
+      radeon_set_sh_reg_seq(cs, R_00B4C8_SPI_SHADER_USER_ACCUM_LSHS_0, 4);
+      radeon_emit(cs, 0); /* R_00B4C8_SPI_SHADER_USER_ACCUM_LSHS_0 */
+      radeon_emit(cs, 0); /* R_00B4CC_SPI_SHADER_USER_ACCUM_LSHS_1 */
+      radeon_emit(cs, 0); /* R_00B4D0_SPI_SHADER_USER_ACCUM_LSHS_2 */
+      radeon_emit(cs, 0); /* R_00B4D4_SPI_SHADER_USER_ACCUM_LSHS_3 */
 
       radeon_set_sh_reg(cs, R_00B0C0_SPI_SHADER_REQ_CTRL_PS,
                         S_00B0C0_SOFT_GROUPING_EN(1) | S_00B0C0_NUMBER_OF_REQUESTS_PER_CU(4 - 1));
@@ -535,6 +548,11 @@ si_emit_graphics(struct radv_device *device, struct radeon_cmdbuf *cs)
          radeon_emit(cs, tma_va >> 40);
       }
    }
+
+   /* The DX10 diamond test is unnecessary with Vulkan and it decreases line rasterization
+    * performance.
+    */
+   radeon_set_context_reg(cs, R_028BDC_PA_SC_LINE_CNTL, 0);
 
    si_emit_compute(device, cs);
 }

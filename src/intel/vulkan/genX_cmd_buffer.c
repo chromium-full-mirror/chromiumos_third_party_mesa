@@ -72,11 +72,18 @@ convert_pc_to_bits(struct GENX(PIPE_CONTROL) *pc) {
 }
 
 #define anv_debug_dump_pc(pc) \
-   if (unlikely(INTEL_DEBUG & DEBUG_PIPE_CONTROL)) { \
+   if (INTEL_DEBUG & DEBUG_PIPE_CONTROL) { \
       fputs("pc: emit PC=( ", stderr); \
       anv_dump_pipe_bits(convert_pc_to_bits(&(pc))); \
       fprintf(stderr, ") reason: %s\n", __FUNCTION__); \
    }
+
+static bool
+is_render_queue_cmd_buffer(const struct anv_cmd_buffer *cmd_buffer)
+{
+   struct anv_queue_family *queue_family = cmd_buffer->pool->queue_family;
+   return (queue_family->queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
+}
 
 void
 genX(cmd_buffer_emit_state_base_address)(struct anv_cmd_buffer *cmd_buffer)
@@ -401,7 +408,7 @@ anv_can_fast_clear_color_view(struct anv_device * device,
    if (isl_color_value_requires_conversion(clear_color,
                                            &iview->image->planes[0].primary_surface.isl,
                                            &iview->planes[0].isl)) {
-      anv_perf_warn(device, &iview->vk.base,
+      anv_perf_warn(VK_LOG_OBJS(&iview->vk.base),
                     "Cannot fast-clear to colors which would require "
                     "format conversion on resolve");
       return false;
@@ -416,7 +423,7 @@ anv_can_fast_clear_color_view(struct anv_device * device,
     */
    if (iview->planes[0].isl.base_level > 0 ||
        iview->planes[0].isl.base_array_layer > 0) {
-      anv_perf_warn(device, &iview->image->vk.base,
+      anv_perf_warn(VK_LOG_OBJS(&iview->image->vk.base),
                     "Rendering with multi-lod or multi-layer framebuffer "
                     "with LOAD_OP_LOAD and baseMipLevel > 0 or "
                     "baseArrayLayer > 0.  Not fast clearing.");
@@ -424,7 +431,7 @@ anv_can_fast_clear_color_view(struct anv_device * device,
    }
 
    if (num_layers > 1) {
-      anv_perf_warn(device, &iview->image->vk.base,
+      anv_perf_warn(VK_LOG_OBJS(&iview->image->vk.base),
                     "Rendering to a multi-layer framebuffer with "
                     "LOAD_OP_CLEAR.  Only fast-clearing the first slice");
    }
@@ -1385,7 +1392,7 @@ transition_color_buffer(struct anv_cmd_buffer *cmd_buffer,
          }
       } else {
          if (image->vk.samples == 4 || image->vk.samples == 16) {
-            anv_perf_warn(cmd_buffer->device, &image->vk.base,
+            anv_perf_warn(VK_LOG_OBJS(&image->vk.base),
                           "Doing a potentially unnecessary fast-clear to "
                           "define an MCS buffer.");
          }
@@ -1607,7 +1614,6 @@ genX(cmd_buffer_setup_attachments)(struct anv_cmd_buffer *cmd_buffer,
             att_state->clear_value = begin->pClearValues[i];
 
          struct anv_image_view *iview = state->attachments[i].image_view;
-         anv_assert(iview->vk.format == pass_att->format);
 
          const uint32_t num_layers = iview->planes[0].isl.array_len;
          att_state->pending_clear_views = (1 << num_layers) - 1;
@@ -2488,6 +2494,8 @@ void genX(CmdPipelineBarrier)(
 static void
 cmd_buffer_alloc_push_constants(struct anv_cmd_buffer *cmd_buffer)
 {
+   assert(anv_pipeline_is_primitive(cmd_buffer->state.gfx.pipeline));
+
    VkShaderStageFlags stages =
       cmd_buffer->state.gfx.pipeline->active_stages;
 
@@ -2501,13 +2509,8 @@ cmd_buffer_alloc_push_constants(struct anv_cmd_buffer *cmd_buffer)
    if (stages == cmd_buffer->state.gfx.push_constant_stages)
       return;
 
-#if GFX_VER >= 8
-   const unsigned push_constant_kb = 32;
-#elif GFX_VERx10 == 75
-   const unsigned push_constant_kb = cmd_buffer->device->info.gt == 3 ? 32 : 16;
-#else
-   const unsigned push_constant_kb = 16;
-#endif
+   const unsigned push_constant_kb =
+      cmd_buffer->device->info.max_constant_urb_size_kb;
 
    const unsigned num_stages =
       util_bitcount(stages & VK_SHADER_STAGE_ALL_GRAPHICS);
@@ -3486,12 +3489,14 @@ cmd_buffer_emit_clip(struct anv_cmd_buffer *cmd_buffer)
    uint32_t dwords[GENX(3DSTATE_CLIP_length)];
 
    struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
-   const struct brw_vue_prog_data *last =
-      anv_pipeline_get_last_vue_prog_data(pipeline);
-   if (last->vue_map.slots_valid & VARYING_BIT_VIEWPORT) {
-      clip.MaximumVPIndex =
-         cmd_buffer->state.gfx.dynamic.viewport.count > 0 ?
-         cmd_buffer->state.gfx.dynamic.viewport.count - 1 : 0;
+   if (anv_pipeline_is_primitive(pipeline)) {
+      const struct brw_vue_prog_data *last =
+         anv_pipeline_get_last_vue_prog_data(pipeline);
+      if (last->vue_map.slots_valid & VARYING_BIT_VIEWPORT) {
+         clip.MaximumVPIndex =
+            cmd_buffer->state.gfx.dynamic.viewport.count > 0 ?
+            cmd_buffer->state.gfx.dynamic.viewport.count - 1 : 0;
+      }
    }
 
    GENX(3DSTATE_CLIP_pack)(NULL, dwords, &clip);
@@ -4890,7 +4895,7 @@ emit_compute_walker(struct anv_cmd_buffer *cmd_buffer,
          .NumberofThreadsinGPGPUThreadGroup = dispatch.threads,
          .SharedLocalMemorySize = encode_slm_size(GFX_VER,
                                                   prog_data->base.total_shared),
-         .BarrierEnable = prog_data->uses_barrier,
+         .NumberOfBarriers = prog_data->uses_barrier,
       };
    }
 }
@@ -5401,11 +5406,9 @@ genX(flush_pipeline_select)(struct anv_cmd_buffer *cmd_buffer,
        * GPGPU and 3D are back-to-back and this seems to fix it.  We don't
        * really know why.
        */
-      const uint32_t subslices =
-         MAX2(cmd_buffer->device->physical->subslice_total, 1);
       anv_batch_emit(&cmd_buffer->batch, GENX(MEDIA_VFE_STATE), vfe) {
          vfe.MaximumNumberofThreads =
-            devinfo->max_cs_threads * subslices - 1;
+            devinfo->max_cs_threads * devinfo->subslice_total - 1;
          vfe.NumberofURBEntries     = 2;
          vfe.URBEntryAllocationSize = 2;
       }
@@ -6723,6 +6726,12 @@ void genX(CmdBeginRenderPass2)(
    ANV_FROM_HANDLE(anv_render_pass, pass, pRenderPassBeginInfo->renderPass);
    ANV_FROM_HANDLE(anv_framebuffer, framebuffer, pRenderPassBeginInfo->framebuffer);
    VkResult result;
+
+   if (!is_render_queue_cmd_buffer(cmd_buffer)) {
+      assert(!"Trying to start a render pass on non-render queue!");
+      anv_batch_set_error(&cmd_buffer->batch, VK_ERROR_UNKNOWN);
+      return;
+   }
 
    cmd_buffer->state.framebuffer = framebuffer;
    cmd_buffer->state.pass = pass;

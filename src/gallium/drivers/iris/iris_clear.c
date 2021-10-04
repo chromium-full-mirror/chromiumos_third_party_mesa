@@ -375,7 +375,6 @@ clear_color(struct iris_context *ice,
       return;
    }
 
-   bool color_write_disable[4] = { false, false, false, false };
    enum isl_aux_usage aux_usage =
       iris_resource_render_aux_usage(ice, res, level, format, false);
 
@@ -399,7 +398,7 @@ clear_color(struct iris_context *ice,
    blorp_clear(&blorp_batch, &surf, format, swizzle,
                level, box->z, box->depth, box->x, box->y,
                box->x + box->width, box->y + box->height,
-               color, color_write_disable);
+               color, 0 /* color_write_disable */);
 
    blorp_batch_finish(&blorp_batch);
    iris_batch_sync_region_end(batch);
@@ -704,11 +703,7 @@ iris_clear_texture(struct pipe_context *ctx,
 {
    struct iris_context *ice = (void *) ctx;
    struct iris_screen *screen = (void *) ctx->screen;
-   struct iris_resource *res = (void *) p_res;
    const struct intel_device_info *devinfo = &screen->devinfo;
-
-   if (iris_resource_unfinished_aux_import(res))
-      iris_resource_finish_aux_import(ctx->screen, res);
 
    if (util_format_is_depth_or_stencil(p_res->format)) {
       const struct util_format_unpack_description *unpack =

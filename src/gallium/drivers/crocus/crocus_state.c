@@ -771,12 +771,12 @@ crocus_calculate_urb_fence(struct crocus_batch *batch, unsigned csize,
             exit(1);
          }
 
-         if (unlikely(INTEL_DEBUG & (DEBUG_URB|DEBUG_PERF)))
+         if (INTEL_DEBUG & (DEBUG_URB|DEBUG_PERF))
             fprintf(stderr, "URB CONSTRAINED\n");
       }
 
 done:
-      if (unlikely(INTEL_DEBUG & DEBUG_URB))
+      if (INTEL_DEBUG & DEBUG_URB)
          fprintf(stderr,
                  "URB fence: %d ..VS.. %d ..GS.. %d ..CLP.. %d ..SF.. %d ..CS.. %d\n",
                  ice->urb.vs_start,
@@ -1197,7 +1197,7 @@ emit_l3_state(struct crocus_batch *batch, bool compute)
       compute ? batch->screen->l3_config_cs : batch->screen->l3_config_3d;
 
    setup_l3_config(batch, cfg);
-   if (unlikely(INTEL_DEBUG & DEBUG_L3)) {
+   if (INTEL_DEBUG & DEBUG_L3) {
       intel_dump_l3_config(cfg, stderr);
    }
 }
@@ -1321,13 +1321,8 @@ emit_pipeline_select(struct crocus_batch *batch, uint32_t pipeline)
 static void
 crocus_alloc_push_constants(struct crocus_batch *batch)
 {
-#if GFX_VERx10 == 75
-   const unsigned push_constant_kb = batch->screen->devinfo.gt == 3 ? 32 : 16;
-#elif GFX_VER == 8
-   const unsigned push_constant_kb = 32;
-#else
-   const unsigned push_constant_kb = 16;
-#endif
+   const unsigned push_constant_kb =
+      batch->screen->devinfo.max_constant_urb_size_kb;
    unsigned size_per_stage = push_constant_kb / 5;
 
    /* For now, we set a static partitioning of the push constant area,
@@ -6809,6 +6804,22 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
 
       emit_push_constant_packets(ice, batch, MESA_SHADER_GEOMETRY, &push_bos);
 #endif
+#if GFX_VERx10 == 70
+   /**
+    * From Graphics BSpec: 3D-Media-GPGPU Engine > 3D Pipeline Stages >
+    * Geometry > Geometry Shader > State:
+    *
+    *     "Note: Because of corruption in IVB:GT2, software needs to flush the
+    *     whole fixed function pipeline when the GS enable changes value in
+    *     the 3DSTATE_GS."
+    *
+    * The hardware architects have clarified that in this context "flush the
+    * whole fixed function pipeline" means to emit a PIPE_CONTROL with the "CS
+    * Stall" bit set.
+    */
+   if (batch->screen->devinfo.gt == 2 && ice->state.gs_enabled != active)
+      gen7_emit_cs_stall_flush(batch);
+#endif
 #if GFX_VER >= 6
       crocus_emit_cmd(batch, GENX(3DSTATE_GS), gs)
 #else
@@ -6954,6 +6965,7 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
          gs.MaximumVPIndex = ice->state.num_viewports - 1;
 #endif
       }
+      ice->state.gs_enabled = active;
    }
 
 #if GFX_VER >= 7
@@ -8075,12 +8087,12 @@ crocus_upload_compute_state(struct crocus_context *ice,
          }
 
          vfe.MaximumNumberofThreads =
-            devinfo->max_cs_threads * screen->subslice_total - 1;
+            devinfo->max_cs_threads * devinfo->subslice_total - 1;
          vfe.ResetGatewayTimer =
             Resettingrelativetimerandlatchingtheglobaltimestamp;
          vfe.BypassGatewayControl = true;
 #if GFX_VER == 7
-         vfe.GPGPUMode = 1;
+         vfe.GPGPUMode = true;
 #endif
 #if GFX_VER == 8
          vfe.BypassGatewayControl = true;

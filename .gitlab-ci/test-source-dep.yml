@@ -151,6 +151,8 @@
 .freedreno-rules:
   stage: freedreno
   rules:
+    - if: '$FD_FARM == "offline"'
+      when: never
     - *ignore_scheduled_pipelines
     - changes:
         *mesa_core_file_list
@@ -176,6 +178,8 @@
 .freedreno-rules-restricted:
   stage: freedreno
   rules:
+    - if: '$FD_FARM == "offline"'
+      when: never
     # If the triggerer has access to the restricted traces and if it is pre-merge
     - if: '($GITLAB_USER_LOGIN !~ "/^(robclark|anholt|flto|cwabbott0|Danil|tomeu)$/") &&
            ($GITLAB_USER_LOGIN != "marge-bot" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME)'
@@ -200,6 +204,8 @@
 .freedreno-rules-performance:
   stage: freedreno
   rules:
+    - if: '$FD_FARM == "offline"'
+      when: never
     - *ignore_scheduled_pipelines
     # Run only on pre-merge pipelines from Marge
     - if: '$GITLAB_USER_LOGIN != "marge-bot" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
@@ -233,6 +239,7 @@
       - src/gallium/winsys/panfrost/**/*
       when: on_success
     - changes: &panfrost_common_file_list
+      - src/panfrost/ci/*
       - src/panfrost/include/*
       - src/panfrost/lib/*
       - src/panfrost/shared/*
@@ -258,6 +265,12 @@
       when: on_success
     - changes:
         *panfrost_gallium_file_list
+      when: on_success
+    - changes:
+        *vulkan_file_list
+      when: on_success
+    - changes: &panfrost_vulkan_file_list
+      - src/panfrost/vulkan/*
       when: on_success
     - changes:
       - src/panfrost/bifrost/**/*
@@ -521,6 +534,26 @@
         *vulkan_file_list
       when: on_success
     - changes: *d3d12_file_list
+      when: on_success
+    - when: never
+
+.etnaviv-rules:
+  stage: etnaviv
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes:
+      - src/etnaviv/**/*
+      - src/gallium/drivers/etnaviv/**/*
+      - src/gallium/winsys/etnaviv/**/*
+      - src/gallium/auxiliary/renderonly/**/*
+      - src/gallium/winsys/kmsro/**/*
+      - src/gallium/winsys/etnaviv/**/*
       when: on_success
     - when: never
 

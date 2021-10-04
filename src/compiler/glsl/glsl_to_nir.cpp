@@ -256,6 +256,7 @@ glsl_to_nir(struct gl_context *ctx,
    if (shader->info.stage == MESA_SHADER_FRAGMENT) {
       shader->info.fs.pixel_center_integer = sh->Program->info.fs.pixel_center_integer;
       shader->info.fs.origin_upper_left = sh->Program->info.fs.origin_upper_left;
+      shader->info.fs.advanced_blend_modes = sh->Program->info.fs.advanced_blend_modes;
    }
 
    return shader;
@@ -1634,7 +1635,7 @@ nir_visitor::visit(ir_call *ir)
          nir_ssa_def *val = evaluate_rvalue(param_rvalue);
          nir_src src = nir_src_for_ssa(val);
 
-         nir_src_copy(&call->params[i], &src, call);
+         nir_src_copy(&call->params[i], &src);
       } else if (sig_param->data.mode == ir_var_function_inout) {
          unreachable("unimplemented: inout parameters");
       }
