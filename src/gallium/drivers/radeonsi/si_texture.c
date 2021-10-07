@@ -232,6 +232,9 @@ static int si_init_surface(struct si_screen *sscreen, struct radeon_surf *surfac
          break;
 
       case GFX9:
+         /* DCC clear for 4x and 8x MSAA textures unimplemented. */
+         if (sscreen->info.family == CHIP_RAVEN && ptex->nr_storage_samples >= 2 && bpe < 4)
+            flags |= RADEON_SURF_DISABLE_DCC;
          break;
 
       case GFX10:
