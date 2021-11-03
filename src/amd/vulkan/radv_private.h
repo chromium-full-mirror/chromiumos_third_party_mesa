@@ -676,6 +676,12 @@ struct radv_meta_state {
       VkPipelineLayout internal_p_layout;
       VkPipeline internal_pipeline;
    } accel_struct_build;
+
+   struct {
+      VkDescriptorSetLayout ds_layout;
+      VkPipelineLayout p_layout;
+      VkPipeline pipeline;
+   } etc_decode;
 };
 
 /* queue types */
