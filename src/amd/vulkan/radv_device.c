@@ -644,6 +644,8 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
 
    device->use_llvm = instance->debug_flags & RADV_DEBUG_LLVM;
 
+   device->emulate_etc2 = false;
+
    snprintf(device->name, sizeof(device->name), "AMD RADV %s%s", device->rad_info.name,
             radv_get_compiler_string(device));
 
@@ -1111,7 +1113,7 @@ radv_GetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice, VkPhysicalDevice
       .alphaToOne = false,
       .multiViewport = true,
       .samplerAnisotropy = true,
-      .textureCompressionETC2 = radv_device_supports_etc(pdevice),
+      .textureCompressionETC2 = radv_device_supports_etc(pdevice) || pdevice->emulate_etc2,
       .textureCompressionASTC_LDR = false,
       .textureCompressionBC = true,
       .occlusionQueryPrecise = true,
