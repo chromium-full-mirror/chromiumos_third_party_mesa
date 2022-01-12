@@ -8,7 +8,7 @@ pushd /platform/crosvm
 git checkout "$CROSVM_VERSION"
 git submodule update --init
 
-VIRGLRENDERER_VERSION=2a5fb800c6b0ce15ad37c2c698635e3e2d27b37c
+VIRGLRENDERER_VERSION=e420a5aab92de8fb42fad50762f0ac3b5fcb3bfb
 pushd third_party/virglrenderer
 git checkout "$VIRGLRENDERER_VERSION"
 meson build/ $EXTRA_MESON_ARGS
