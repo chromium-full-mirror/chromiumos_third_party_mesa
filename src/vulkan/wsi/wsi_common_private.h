@@ -24,7 +24,7 @@
 #define WSI_COMMON_PRIVATE_H
 
 #include "wsi_common.h"
-#include "vulkan/util/vk_object.h"
+#include "vulkan/runtime/vk_object.h"
 
 struct wsi_image {
    VkImage image;
@@ -52,10 +52,18 @@ struct wsi_swapchain {
    VkDevice device;
    VkAllocationCallbacks alloc;
    VkFence* fences;
+   VkSemaphore* prime_blit_semaphores;
    VkPresentModeKHR present_mode;
    uint32_t image_count;
 
    bool use_prime_blit;
+
+   /* If the driver wants to use a special queue to execute the prime blit,
+    * it'll implement the wsi_device::get_prime_blit_queue callback.
+    * The created queue will be stored here and will be used to execute the
+    * prime blit instead of using the present queue.
+    */
+   VkQueue prime_blit_queue;
 
    /* Command pools, one per queue family */
    VkCommandPool *cmd_pools;
@@ -80,7 +88,8 @@ wsi_swapchain_init(const struct wsi_device *wsi,
                    struct wsi_swapchain *chain,
                    VkDevice device,
                    const VkSwapchainCreateInfoKHR *pCreateInfo,
-                   const VkAllocationCallbacks *pAllocator);
+                   const VkAllocationCallbacks *pAllocator,
+                   bool use_prime_blit);
 
 enum VkPresentModeKHR
 wsi_swapchain_get_present_mode(struct wsi_device *wsi,
@@ -166,6 +175,10 @@ wsi_display_init_wsi(struct wsi_device *wsi_device,
 void
 wsi_display_finish_wsi(struct wsi_device *wsi_device,
                        const VkAllocationCallbacks *alloc);
+
+void
+wsi_display_setup_syncobj_fd(struct wsi_device *wsi_device,
+                             int fd);
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(wsi_swapchain, base, VkSwapchainKHR,
                                VK_OBJECT_TYPE_SWAPCHAIN_KHR)

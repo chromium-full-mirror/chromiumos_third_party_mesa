@@ -71,7 +71,7 @@ struct brw_image_param;
 #endif
 
 #ifndef ISL_DEV_IS_G4X
-#define ISL_DEV_IS_G4X(__dev) ((__dev)->info->is_g4x)
+#define ISL_DEV_IS_G4X(__dev) ((__dev)->info->platform == INTEL_PLATFORM_G4X)
 #endif
 
 #ifndef ISL_DEV_IS_HASWELL
@@ -81,11 +81,11 @@ struct brw_image_param;
  * You can define this as a compile-time constant in the CFLAGS. For example,
  * `gcc -DISL_GFX_VER(dev)=9 ...`.
  */
-#define ISL_DEV_IS_HASWELL(__dev) ((__dev)->info->is_haswell)
+#define ISL_DEV_IS_HASWELL(__dev) ((__dev)->info->platform == INTEL_PLATFORM_HSW)
 #endif
 
 #ifndef ISL_DEV_IS_BAYTRAIL
-#define ISL_DEV_IS_BAYTRAIL(__dev) ((__dev)->info->is_baytrail)
+#define ISL_DEV_IS_BAYTRAIL(__dev) ((__dev)->info->platform == INTEL_PLATFORM_BYT)
 #endif
 
 #ifndef ISL_DEV_USE_SEPARATE_STENCIL
@@ -385,6 +385,7 @@ enum isl_format {
 
    /* Formats for auxiliary surfaces */
    ISL_FORMAT_HIZ,
+   ISL_FORMAT_GFX125_HIZ,
    ISL_FORMAT_MCS_2X,
    ISL_FORMAT_MCS_4X,
    ISL_FORMAT_MCS_8X,
@@ -1255,6 +1256,8 @@ struct isl_device {
       uint8_t clear_value_offset;
    } ss;
 
+   uint64_t max_buffer_size;
+
    /**
     * Describes the layout of the depth/stencil/hiz commands as emitted by
     * isl_emit_depth_stencil_hiz.
@@ -1270,6 +1273,8 @@ struct isl_device {
       uint32_t internal;
       uint32_t external;
       uint32_t l1_hdc_l3_llc;
+      uint32_t blitter_src;
+      uint32_t blitter_dst;
    } mocs;
 };
 
@@ -1764,8 +1769,7 @@ extern const uint16_t isl_format_name_offsets[];
 
 void
 isl_device_init(struct isl_device *dev,
-                const struct intel_device_info *info,
-                bool has_bit6_swizzling);
+                const struct intel_device_info *info);
 
 isl_sample_count_mask_t ATTRIBUTE_CONST
 isl_device_get_sample_counts(struct isl_device *dev);
@@ -1818,6 +1822,7 @@ bool isl_formats_are_ccs_e_compatible(const struct intel_device_info *devinfo,
                                       enum isl_format format1,
                                       enum isl_format format2);
 uint8_t isl_format_get_aux_map_encoding(enum isl_format format);
+uint8_t isl_get_render_compression_format(enum isl_format format);
 
 bool isl_format_has_unorm_channel(enum isl_format fmt) ATTRIBUTE_CONST;
 bool isl_format_has_snorm_channel(enum isl_format fmt) ATTRIBUTE_CONST;
@@ -1896,6 +1901,14 @@ isl_format_is_mcs(enum isl_format fmt)
    const struct isl_format_layout *fmtl = isl_format_get_layout(fmt);
 
    return fmtl->txc == ISL_TXC_MCS;
+}
+
+static inline bool
+isl_format_is_hiz(enum isl_format fmt)
+{
+   const struct isl_format_layout *fmtl = isl_format_get_layout(fmt);
+
+   return fmtl->txc == ISL_TXC_HIZ;
 }
 
 static inline bool
@@ -2015,7 +2028,7 @@ isl_tiling_is_std_y(enum isl_tiling tiling)
 uint32_t
 isl_tiling_to_i915_tiling(enum isl_tiling tiling);
 
-enum isl_tiling 
+enum isl_tiling
 isl_tiling_from_i915_tiling(uint32_t tiling);
 
 /**
@@ -2864,6 +2877,10 @@ isl_get_tile_masks(enum isl_tiling tiling, uint32_t cpp,
    *mask_x = tile_w_bytes / cpp - 1;
    *mask_y = tile_h - 1;
 }
+
+const char *
+isl_aux_op_to_name(enum isl_aux_op op);
+
 #ifdef __cplusplus
 }
 #endif

@@ -69,6 +69,13 @@ panvk_spirv_to_nir(const void *code,
    assert(nir->info.stage == stage);
    nir_validate_shader(nir, "after spirv_to_nir");
 
+   const struct nir_lower_sysvals_to_varyings_options sysvals_to_varyings = {
+      .frag_coord = PAN_ARCH <= 5,
+      .point_coord = PAN_ARCH <= 5,
+      .front_face = PAN_ARCH <= 5,
+   };
+   NIR_PASS_V(nir, nir_lower_sysvals_to_varyings, &sysvals_to_varyings);
+
    return nir;
 }
 
@@ -462,6 +469,7 @@ panvk_per_arch(shader_create)(struct panvk_device *dev,
    struct panfrost_compile_inputs inputs = {
       .gpu_id = pdev->gpu_id,
       .no_ubo_to_push = true,
+      .no_idvs = true, /* TODO */
       .sysval_ubo = sysval_ubo,
    };
 

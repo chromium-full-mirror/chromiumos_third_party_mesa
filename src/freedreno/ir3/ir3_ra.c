@@ -538,8 +538,6 @@ ra_file_init(struct ra_file *file)
       BITSET_SET(file->available_to_evict, i);
    }
 
-   file->start = 0;
-
    rb_tree_init(&file->reg_ctx.intervals);
    rb_tree_init(&file->physreg_intervals);
 
@@ -720,6 +718,10 @@ ra_push_interval(struct ra_ctx *ctx, struct ra_file *file,
    interval->physreg_start = dst;
    interval->physreg_end = dst + removed->size;
 
+   assert(interval->physreg_end <= file->size);
+   if (interval->interval.reg->flags & IR3_REG_HALF)
+      assert(interval->physreg_end <= RA_HALF_SIZE);
+
    ir3_reg_interval_reinsert(&file->reg_ctx, &interval->interval);
 }
 
@@ -759,8 +761,13 @@ try_evict_regs(struct ra_ctx *ctx, struct ra_file *file,
    memcpy(available_to_evict, file->available_to_evict,
           sizeof(available_to_evict));
 
-   for (unsigned i = 0; i < reg_size(reg); i++)
+   BITSET_DECLARE(available, RA_MAX_FILE_SIZE);
+   memcpy(available, file->available, sizeof(available));
+
+   for (unsigned i = 0; i < reg_size(reg); i++) {
       BITSET_CLEAR(available_to_evict, physreg + i);
+      BITSET_CLEAR(available, physreg + i);
+   }
 
    unsigned eviction_count = 0;
    /* Iterate over each range conflicting with physreg */
@@ -777,10 +784,12 @@ try_evict_regs(struct ra_ctx *ctx, struct ra_file *file,
          return false;
       }
 
+      unsigned conflicting_file_size =
+         reg_file_size(file, conflicting->interval.reg);
       unsigned avail_start, avail_end;
       bool evicted = false;
       BITSET_FOREACH_RANGE (avail_start, avail_end, available_to_evict,
-                            reg_file_size(file, conflicting->interval.reg)) {
+                            conflicting_file_size) {
          unsigned size = avail_end - avail_start;
 
          /* non-half registers must be aligned */
@@ -801,6 +810,68 @@ try_evict_regs(struct ra_ctx *ctx, struct ra_file *file,
             evicted = true;
             break;
          }
+      }
+
+      if (evicted)
+         continue;
+
+      /* If we couldn't evict this range, we may be able to swap it with a
+       * killed range to acheive the same effect.
+       */
+      foreach_interval (killed, file) {
+         if (!killed->is_killed)
+            continue;
+
+         if (killed->physreg_end - killed->physreg_start !=
+             conflicting->physreg_end - conflicting->physreg_start)
+            continue;
+
+         if (killed->physreg_end > conflicting_file_size ||
+             conflicting->physreg_end > reg_file_size(file, killed->interval.reg))
+            continue;
+
+         /* We can't swap the killed range if it partially/fully overlaps the
+          * space we're trying to allocate or (in speculative mode) if it's
+          * already been swapped and will overlap when we actually evict.
+          */
+         bool killed_available = true;
+         for (unsigned i = killed->physreg_start; i < killed->physreg_end; i++) {
+            if (!BITSET_TEST(available, i)) {
+               killed_available = false;
+               break;
+            }
+         }
+         
+         if (!killed_available)
+            continue;
+
+         /* Check for alignment if one is a full reg */
+         if ((!(killed->interval.reg->flags & IR3_REG_HALF) ||
+              !(conflicting->interval.reg->flags & IR3_REG_HALF)) &&
+             (killed->physreg_start % 2 != 0 ||
+              conflicting->physreg_start % 2 != 0))
+            continue;
+
+         for (unsigned i = killed->physreg_start; i < killed->physreg_end; i++) {
+            BITSET_CLEAR(available, i);
+         }
+         /* Because this will generate swaps instead of moves, multiply the
+          * cost by 2.
+          */
+         eviction_count += (killed->physreg_end - killed->physreg_start) * 2;
+         if (!speculative) {
+            physreg_t killed_start = killed->physreg_start,
+                      conflicting_start = conflicting->physreg_start;
+            struct ra_removed_interval killed_removed =
+               ra_pop_interval(ctx, file, killed);
+            struct ra_removed_interval conflicting_removed =
+               ra_pop_interval(ctx, file, conflicting);
+            ra_push_interval(ctx, file, &killed_removed, conflicting_start);
+            ra_push_interval(ctx, file, &conflicting_removed, killed_start);
+         }
+
+         evicted = true;
+         break;
       }
 
       if (!evicted)
@@ -901,9 +972,9 @@ compress_regs_left(struct ra_ctx *ctx, struct ra_file *file, unsigned size,
       assert(!interval->frozen);
 
       /* Killed sources don't count because they go at the end and can
-       * overlap the register we're trying to add.
+       * overlap the register we're trying to add, unless it's a source.
        */
-      if (!interval->is_killed && !is_source) {
+      if (!interval->is_killed || is_source) {
          removed_size += interval->physreg_end - interval->physreg_start;
          if (interval->interval.reg->flags & IR3_REG_HALF) {
             removed_half_size += interval->physreg_end -
@@ -970,12 +1041,16 @@ compress_regs_left(struct ra_ctx *ctx, struct ra_file *file, unsigned size,
 }
 
 static void
-update_affinity(struct ir3_register *reg, physreg_t physreg)
+update_affinity(struct ra_file *file, struct ir3_register *reg,
+                physreg_t physreg)
 {
    if (!reg->merge_set || reg->merge_set->preferred_reg != (physreg_t)~0)
       return;
 
    if (physreg < reg->merge_set_offset)
+      return;
+
+   if ((physreg - reg->merge_set_offset + reg->merge_set->size) > file->size)
       return;
 
    reg->merge_set->preferred_reg = physreg - reg->merge_set_offset;
@@ -1170,8 +1245,9 @@ static void
 allocate_dst_fixed(struct ra_ctx *ctx, struct ir3_register *dst,
                    physreg_t physreg)
 {
+   struct ra_file *file = ra_get_file(ctx, dst);
    struct ra_interval *interval = &ctx->intervals[dst->name];
-   update_affinity(dst, physreg);
+   update_affinity(file, dst, physreg);
 
    ra_interval_init(interval, dst);
    interval->physreg_start = physreg;
@@ -2136,6 +2212,54 @@ calc_min_limit_pressure(struct ir3_shader_variant *v,
    ralloc_free(ctx);
 }
 
+/*
+ * If barriers are used, it must be possible for all waves in the workgroup
+ * to execute concurrently. Thus we may have to reduce the registers limit.
+ */
+static void
+calc_limit_pressure_for_cs_with_barrier(struct ir3_shader_variant *v,
+                                        struct ir3_pressure *limit_pressure)
+{
+   const struct ir3_compiler *compiler = v->shader->compiler;
+
+   unsigned threads_per_wg;
+   if (v->local_size_variable) {
+      /* We have to expect the worst case. */
+      threads_per_wg = compiler->max_variable_workgroup_size;
+   } else {
+      threads_per_wg = v->local_size[0] * v->local_size[1] * v->local_size[2];
+   }
+
+   /* The register file is grouped into reg_size_vec4 number of parts.
+    * Each part has enough registers to add a single vec4 register to
+    * each thread of a single-sized wave-pair. With double threadsize
+    * each wave-pair would consume two parts of the register file to get
+    * a single vec4 for a thread. The more active wave-pairs the less
+    * parts each could get.
+    */
+
+   bool double_threadsize = ir3_should_double_threadsize(v, 0);
+   unsigned waves_per_wg = DIV_ROUND_UP(
+      threads_per_wg, compiler->threadsize_base * (double_threadsize ? 2 : 1) *
+                         compiler->wave_granularity);
+
+   uint32_t vec4_regs_per_thread =
+      compiler->reg_size_vec4 / (waves_per_wg * (double_threadsize ? 2 : 1));
+   assert(vec4_regs_per_thread > 0);
+
+   uint32_t half_regs_per_thread = vec4_regs_per_thread * 4 * 2;
+
+   if (limit_pressure->full > half_regs_per_thread) {
+      if (v->mergedregs) {
+         limit_pressure->full = half_regs_per_thread;
+      } else {
+         /* TODO: Handle !mergedregs case, probably we would have to do this
+          * after the first register pressure pass.
+          */
+      }
+   }
+}
+
 int
 ir3_ra(struct ir3_shader_variant *v)
 {
@@ -2162,11 +2286,23 @@ ir3_ra(struct ir3_shader_variant *v)
    d("\thalf: %u", max_pressure.half);
    d("\tshared: %u", max_pressure.shared);
 
-   /* TODO: calculate half/full limit correctly for CS with barrier */
    struct ir3_pressure limit_pressure;
    limit_pressure.full = RA_FULL_SIZE;
    limit_pressure.half = RA_HALF_SIZE;
    limit_pressure.shared = RA_SHARED_SIZE;
+
+   if (gl_shader_stage_is_compute(v->type) && v->has_barrier) {
+      calc_limit_pressure_for_cs_with_barrier(v, &limit_pressure);
+   }
+
+   /* If the user forces a doubled threadsize, we may have to lower the limit
+    * because on some gens the register file is not big enough to hold a
+    * double-size wave with all 48 registers in use.
+    */
+   if (v->shader->real_wavesize == IR3_DOUBLE_ONLY) {
+      limit_pressure.full =
+         MAX2(limit_pressure.full, ctx->compiler->reg_size_vec4 / 2 * 16);
+   }
 
    /* If requested, lower the limit so that spilling happens more often. */
    if (ir3_shader_debug & IR3_DBG_SPILLALL)
@@ -2205,6 +2341,8 @@ ir3_ra(struct ir3_shader_variant *v)
       ctx->half.size = RA_HALF_SIZE;
 
    ctx->shared.size = RA_SHARED_SIZE;
+
+   ctx->full.start = ctx->half.start = ctx->shared.start = 0;
 
    foreach_block (block, &v->ir->block_list)
       handle_block(ctx, block);

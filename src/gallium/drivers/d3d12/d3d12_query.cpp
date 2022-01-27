@@ -29,10 +29,12 @@
 #include "util/u_dump.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
+#include "util/u_threaded_context.h"
 
 #include <dxguids/dxguids.h>
 
 struct d3d12_query {
+   struct threaded_query base;
    enum pipe_query_type type;
 
    ID3D12QueryHeap *query_heap;
@@ -117,9 +119,12 @@ d3d12_create_query(struct pipe_context *pctx,
    query->num_queries = 16;
 
    /* With timer queries we want a few more queries, especially since we need two slots
-    * per query for TIME_ELAPSED queries */
-   if (unlikely(query->d3d12qtype == D3D12_QUERY_TYPE_TIMESTAMP))
+    * per query for TIME_ELAPSED queries
+    * For TIMESTAMP, we don't need more than one slot, since there's nothing to accumulate */
+   if (unlikely(query_type == PIPE_QUERY_TIME_ELAPSED))
       query->num_queries = 64;
+   else if (query_type == PIPE_QUERY_TIMESTAMP)
+      query->num_queries = 1;
 
    query->curr_query = 0;
 
@@ -156,7 +161,7 @@ d3d12_destroy_query(struct pipe_context *pctx,
                     struct pipe_query *q)
 {
    struct d3d12_query *query = (struct d3d12_query *)q;
-   pipe_resource *predicate = &query->predicate->base;
+   pipe_resource *predicate = &query->predicate->base.b;
    if (query->subquery)
       d3d12_destroy_query(pctx, (struct pipe_query *)query->subquery);
    pipe_resource_reference(&predicate, NULL);
@@ -186,7 +191,7 @@ accumulate_result(struct d3d12_context *ctx, struct d3d12_query *q,
    D3D12_QUERY_DATA_PIPELINE_STATISTICS *results_stats = (D3D12_QUERY_DATA_PIPELINE_STATISTICS *)results;
    D3D12_QUERY_DATA_SO_STATISTICS *results_so = (D3D12_QUERY_DATA_SO_STATISTICS *)results;
 
-   util_query_clear_result(result, q->type);
+   memset(result, 0, sizeof(*result));
    for (unsigned i = 0; i < q->curr_query; ++i) {
       switch (q->type) {
       case PIPE_QUERY_OCCLUSION_PREDICATE:
@@ -357,6 +362,10 @@ end_query(struct d3d12_context *ctx, struct d3d12_query *q)
    if (q->subquery)
       end_query(ctx, q->subquery);
 
+   /* For TIMESTAMP, there's only one slot */
+   if (q->type == PIPE_QUERY_TIMESTAMP)
+      q->curr_query = 0;
+
    /* With QUERY_TIME_ELAPSED we have recorded one value at
     * (2 * q->curr_query), and now we record a value at (2 * q->curr_query + 1)
     * and when resolving the query we subtract the latter from the former */
@@ -373,7 +382,7 @@ end_query(struct d3d12_context *ctx, struct d3d12_query *q)
                                   resolve_count, d3d12_res, offset);
 
    d3d12_batch_reference_object(batch, q->query_heap);
-   d3d12_batch_reference_resource(batch, res);
+   d3d12_batch_reference_resource(batch, res, true);
 
    assert(q->curr_query < q->num_queries);
    q->curr_query++;
@@ -494,13 +503,20 @@ d3d12_render_condition(struct pipe_context *pctx,
    d3d12_apply_resource_states(ctx);
 
    ctx->current_predication = query->predicate;
+   ctx->predication_condition = condition;
+   d3d12_enable_predication(ctx);
+}
+
+void
+d3d12_enable_predication(struct d3d12_context *ctx)
+{
    /* documentation of ID3D12GraphicsCommandList::SetPredication method:
-    * "resource manipulation commands are _not_ actually performed
-    *  if the resulting predicate data of the predicate is equal to
-    *  the operation specified."
-    */
-   ctx->cmdlist->SetPredication(d3d12_resource_resource(query->predicate), 0,
-                                condition ? D3D12_PREDICATION_OP_NOT_EQUAL_ZERO :
+      * "resource manipulation commands are _not_ actually performed
+      *  if the resulting predicate data of the predicate is equal to
+      *  the operation specified."
+      */
+   ctx->cmdlist->SetPredication(d3d12_resource_resource(ctx->current_predication), 0,
+                                ctx->predication_condition ? D3D12_PREDICATION_OP_NOT_EQUAL_ZERO :
                                 D3D12_PREDICATION_OP_EQUAL_ZERO);
 }
 

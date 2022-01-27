@@ -16,7 +16,6 @@ glx/glx-multithread-makecurrent-1: skip
 glx/glx-multithread-makecurrent-2: skip
 glx/glx-multithread-makecurrent-3: skip
 glx/glx-multithread-makecurrent-4: skip
-glx/glx-query-drawable-glx_fbconfig_id-window: fail
 glx/glx-swap-copy: fail
 glx/glx-swap-event_async: skip
 glx/glx-swap-event_event: skip
@@ -510,6 +509,7 @@ spec/arb_bindless_texture/execution/samplers/fs-struct-non-const-index: skip
 spec/arb_bindless_texture/execution/samplers/sampler-in-struct: skip
 spec/arb_bindless_texture/execution/samplers/sampler-vertex-attrib-input-output: skip
 spec/arb_bindless_texture/execution/samplers/sampler-vertex-uniform-input-output: skip
+spec/arb_bindless_texture/execution/samplers/ubo-binding-samplers-conflict: skip
 spec/arb_bindless_texture/execution/samplers/ubo-named-block: skip
 spec/arb_bindless_texture/handles: skip
 spec/arb_bindless_texture/illegal: skip
@@ -543,6 +543,7 @@ spec/arb_buffer_storage/bufferstorage-persistent_gles3 read coherent client-stor
 spec/arb_clear_texture/arb_clear_texture-multisample: skip
 spec/arb_color_buffer_float/gl_rgba8_snorm-render: fail
 spec/arb_color_buffer_float/gl_rgba8_snorm-render-fog: fail
+spec/arb_compute_shader/compute-and-render-bug-109630: skip
 spec/arb_compute_shader/execution/min-dvec4-double-large-group-size: skip
 spec/arb_compute_variable_group_size/errors: skip
 spec/arb_compute_variable_group_size/execution/basic-local-size: skip
@@ -2623,7 +2624,6 @@ spec/ext_texture_compression_latc/texwrap formats bordercolor/gl_compressed_sign
 spec/ext_texture_compression_latc/texwrap formats/gl_compressed_signed_luminance_alpha_latc2_ext: fail
 spec/ext_texture_compression_latc/texwrap formats/gl_compressed_signed_luminance_alpha_latc2_ext, npot: fail
 spec/ext_texture_compression_latc/texwrap formats/gl_compressed_signed_luminance_alpha_latc2_ext, swizzled: fail
-spec/ext_texture_integer/fbo-integer: fail
 spec/ext_texture_integer/multisample-formats 16 gl_ext_texture_integer: skip
 spec/ext_texture_integer/multisample-formats 2 gl_ext_texture_integer: skip
 spec/ext_texture_integer/multisample-formats 32 gl_ext_texture_integer: skip

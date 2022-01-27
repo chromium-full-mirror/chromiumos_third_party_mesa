@@ -162,7 +162,7 @@ pipe_bind_to_isl_usage(unsigned bindings)
    if (bindings & (PIPE_BIND_SHADER_IMAGE | PIPE_BIND_SHADER_BUFFER))
       usage |= ISL_SURF_USAGE_STORAGE_BIT;
 
-   if (bindings & PIPE_BIND_DISPLAY_TARGET)
+   if (bindings & PIPE_BIND_SCANOUT)
       usage |= ISL_SURF_USAGE_DISPLAY_BIT;
    return usage;
 }
@@ -253,6 +253,15 @@ crocus_resource_configure_main(const struct crocus_screen *screen,
 
    if (!isl_surf_init_s(&screen->isl_dev, &res->surf, &init_info))
       return false;
+
+   /*
+    * Don't create staging surfaces that will use > half the aperture
+    * since staging implies you are sending to another resource,
+    * which there is no way to fit both into aperture.
+    */
+   if (templ->usage == PIPE_USAGE_STAGING)
+      if (res->surf.size_B > screen->aperture_threshold / 2)
+         return false;
 
    res->internal_format = templ->format;
 
@@ -356,7 +365,7 @@ crocus_alloc_resource(struct pipe_screen *pscreen,
    res->base.b.screen = pscreen;
    res->orig_screen = crocus_pscreen_ref(pscreen);
    pipe_reference_init(&res->base.b.reference, 1);
-   threaded_resource_init(&res->base.b);
+   threaded_resource_init(&res->base.b, false, 0);
 
    if (templ->target == PIPE_BUFFER)
       util_range_init(&res->valid_buffer_range);
@@ -368,7 +377,7 @@ unsigned
 crocus_get_num_logical_layers(const struct crocus_resource *res, unsigned level)
 {
    if (res->surf.dim == ISL_SURF_DIM_3D)
-      return minify(res->surf.logical_level0_px.depth, level);
+      return u_minify(res->surf.logical_level0_px.depth, level);
    else
       return res->surf.logical_level0_px.array_len;
 }
@@ -434,11 +443,11 @@ crocus_resource_configure_aux(struct crocus_screen *screen,
       isl_surf_get_mcs_surf(&screen->isl_dev, &res->surf, &res->aux.surf);
 
    const bool has_hiz = devinfo->ver >= 6 && !res->mod_info &&
-      !(INTEL_DEBUG & DEBUG_NO_HIZ) &&
+      !INTEL_DEBUG(DEBUG_NO_HIZ) &&
       isl_surf_get_hiz_surf(&screen->isl_dev, &res->surf, &res->aux.surf);
 
    const bool has_ccs =
-      ((devinfo->ver >= 7 && !res->mod_info && !(INTEL_DEBUG & DEBUG_NO_RBC)) ||
+      ((devinfo->ver >= 7 && !res->mod_info && !INTEL_DEBUG(DEBUG_NO_RBC)) ||
        (res->mod_info && res->mod_info->aux_usage != ISL_AUX_USAGE_NONE)) &&
       isl_surf_get_ccs_surf(&screen->isl_dev, &res->surf, NULL,
                             &res->aux.surf, 0);
@@ -688,9 +697,10 @@ crocus_resource_create_with_modifiers(struct pipe_screen *pscreen,
        devinfo->ver < 6)
       return NULL;
 
-   UNUSED const bool isl_surf_created_successfully =
+   const bool isl_surf_created_successfully =
       crocus_resource_configure_main(screen, res, templ, modifier, 0);
-   assert(isl_surf_created_successfully);
+   if (!isl_surf_created_successfully)
+      return NULL;
 
    const char *name = "miptree";
 
@@ -1643,7 +1653,7 @@ crocus_transfer_map(struct pipe_context *ctx,
    memset(map, 0, sizeof(*map));
    map->dbg = &ice->dbg;
 
-   map->has_swizzling = ((struct crocus_screen *)ctx->screen)->has_swizzling;
+   map->has_swizzling = screen->devinfo.has_bit6_swizzle;
    pipe_resource_reference(&xfer->resource, resource);
    xfer->level = level;
    xfer->usage = usage;

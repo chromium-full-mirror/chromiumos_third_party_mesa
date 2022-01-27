@@ -30,7 +30,6 @@
 #include "program/program.h"
 #include "program/prog_statevars.h"
 #include "program/prog_parameter.h"
-#include "program/ir_to_mesa.h"
 #include "main/context.h"
 #include "main/mtypes.h"
 #include "main/errors.h"
@@ -74,7 +73,7 @@ st_nir_fixup_varying_slots(struct st_context *st, nir_shader *shader,
    assert(!st->allow_st_finalize_nir_twice);
 
    nir_foreach_variable_with_modes(var, shader, mode) {
-      if (var->data.location >= VARYING_SLOT_VAR0) {
+      if (var->data.location >= VARYING_SLOT_VAR0 && var->data.location < VARYING_SLOT_PATCH0) {
          var->data.location += 9;
       } else if (var->data.location == VARYING_SLOT_PNTC) {
          var->data.location = VARYING_SLOT_VAR8;
@@ -204,7 +203,8 @@ st_nir_assign_uniform_locations(struct gl_context *ctx,
    int shaderidx = 0;
    int imageidx = 0;
 
-   nir_foreach_uniform_variable(uniform, nir) {
+   nir_foreach_variable_with_modes(uniform, nir, nir_var_uniform |
+                                                 nir_var_image) {
       int loc;
 
       const struct glsl_type *type = glsl_without_array(uniform->type);
@@ -218,9 +218,6 @@ st_nir_assign_uniform_locations(struct gl_context *ctx,
          }
       } else if (uniform->state_slots) {
          const gl_state_index16 *const stateTokens = uniform->state_slots[0].tokens;
-         /* This state reference has already been setup by ir_to_mesa, but we'll
-          * get the same index back here.
-          */
 
          unsigned comps;
          if (glsl_type_is_struct_or_ifc(type)) {
@@ -378,7 +375,13 @@ st_nir_preprocess(struct st_context *st, struct gl_program *prog,
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
    if (!st->ctx->SoftFP64 && ((nir->info.bit_sizes_int | nir->info.bit_sizes_float) & 64) &&
        (options->lower_doubles_options & nir_lower_fp64_full_software) != 0) {
-      st->ctx->SoftFP64 = glsl_float64_funcs_to_nir(st->ctx, options);
+
+      /* It's not possible to use float64 on GLSL ES, so don't bother trying to
+       * build the support code.  The support code depends on higher versions of
+       * desktop GLSL, so it will fail to compile (below) anyway.
+       */
+      if (_mesa_is_desktop_gl(st->ctx) && st->ctx->Const.GLSLVersion >= 400)
+         st->ctx->SoftFP64 = glsl_float64_funcs_to_nir(st->ctx, options);
    }
 
    /* ES has strict SSO validation rules for shader IO matching so we can't
@@ -740,13 +743,12 @@ st_link_nir(struct gl_context *ctx,
       const nir_shader_compiler_options *options =
          st->ctx->Const.ShaderCompilerOptions[shader->Stage].NirOptions;
       struct gl_program *prog = shader->Program;
-      struct st_program *stp = (struct st_program *)prog;
 
       _mesa_copy_linked_program_data(shader_program, shader);
 
       assert(!prog->nir);
-      stp->shader_program = shader_program;
-      stp->state.type = PIPE_SHADER_IR_NIR;
+      prog->shader_program = shader_program;
+      prog->state.type = PIPE_SHADER_IR_NIR;
 
       /* Parameters will be filled during NIR linking. */
       prog->Parameters = _mesa_new_parameter_list();
@@ -765,9 +767,12 @@ st_link_nir(struct gl_context *ctx,
             _mesa_log("\n\n");
          }
 
-         prog->nir = glsl_to_nir(st->ctx, shader_program, shader->Stage, options);
-         st_nir_preprocess(st, prog, shader_program, shader->Stage);
+         prog->nir = glsl_to_nir(&st->ctx->Const, shader_program, shader->Stage, options);
       }
+
+      memcpy(prog->nir->info.source_sha1, shader->linked_source_sha1,
+             SHA1_DIGEST_LENGTH);
+      st_nir_preprocess(st, prog, shader_program, shader->Stage);
 
       if (options->lower_to_scalar) {
          NIR_PASS_V(shader->Program->nir, nir_lower_load_const_to_scalar);
@@ -775,28 +780,6 @@ st_link_nir(struct gl_context *ctx,
    }
 
    st_lower_patch_vertices_in(shader_program);
-
-   /* For SPIR-V, we have to perform the NIR linking before applying
-    * st_nir_preprocess.
-    */
-   if (shader_program->data->spirv) {
-      static const gl_nir_linker_options opts = {
-         true /*fill_parameters */
-      };
-      if (!gl_nir_link_spirv(ctx, shader_program, &opts))
-         return GL_FALSE;
-
-      nir_build_program_resource_list(ctx, shader_program, true);
-
-      for (unsigned i = 0; i < num_shaders; i++) {
-         struct gl_linked_shader *shader = linked_shader[i];
-         struct gl_program *prog = shader->Program;
-
-         prog->ExternalSamplersUsed = gl_external_samplers(prog);
-         _mesa_update_shader_textures_used(shader_program, prog);
-         st_nir_preprocess(st, prog, shader_program, shader->Stage);
-      }
-   }
 
    /* Linking the stages in the opposite order (from fragment to vertex)
     * ensures that inter-shader outputs written to in an earlier stage
@@ -814,18 +797,26 @@ st_link_nir(struct gl_context *ctx,
    if (num_shaders == 1)
       st_nir_opts(linked_shader[0]->Program->nir);
 
-   if (!shader_program->data->spirv) {
-      if (!gl_nir_link_glsl(ctx, shader_program))
+   if (shader_program->data->spirv) {
+      static const gl_nir_linker_options opts = {
+         true /*fill_parameters */
+      };
+      if (!gl_nir_link_spirv(&ctx->Const, shader_program, &opts))
          return GL_FALSE;
-
-      for (unsigned i = 0; i < num_shaders; i++) {
-         struct gl_program *prog = linked_shader[i]->Program;
-         prog->ExternalSamplersUsed = gl_external_samplers(prog);
-         _mesa_update_shader_textures_used(shader_program, prog);
-      }
-
-      nir_build_program_resource_list(ctx, shader_program, false);
+   } else {
+      if (!gl_nir_link_glsl(&ctx->Const, &ctx->Extensions,
+                            shader_program))
+         return GL_FALSE;
    }
+
+   for (unsigned i = 0; i < num_shaders; i++) {
+      struct gl_program *prog = linked_shader[i]->Program;
+      prog->ExternalSamplersUsed = gl_external_samplers(prog);
+      _mesa_update_shader_textures_used(shader_program, prog);
+   }
+
+   nir_build_program_resource_list(&ctx->Const, shader_program,
+                                   shader_program->data->spirv);
 
    for (unsigned i = 0; i < num_shaders; i++) {
       struct gl_linked_shader *shader = linked_shader[i];
@@ -916,7 +907,6 @@ st_link_nir(struct gl_context *ctx,
    for (unsigned i = 0; i < num_shaders; i++) {
       struct gl_linked_shader *shader = linked_shader[i];
       struct gl_program *prog = shader->Program;
-      struct st_program *stp = st_program(prog);
 
       /* Make sure that prog->info is in sync with nir->info, but st/mesa
        * expects some of the values to be from before lowering.
@@ -933,7 +923,7 @@ st_link_nir(struct gl_context *ctx,
 
       /* Initialize st_vertex_program members. */
       if (shader->Stage == MESA_SHADER_VERTEX)
-         st_prepare_vertex_program(stp, NULL);
+         st_prepare_vertex_program(prog, NULL);
 
       /* Get pipe_stream_output_info. */
       if (shader->Stage == MESA_SHADER_VERTEX ||
@@ -943,7 +933,7 @@ st_link_nir(struct gl_context *ctx,
 
       st_store_ir_in_disk_cache(st, prog, true);
 
-      st_release_variants(st, stp);
+      st_release_variants(st, prog);
       st_finalize_program(st, prog);
 
       /* The GLSL IR won't be needed anymore. */

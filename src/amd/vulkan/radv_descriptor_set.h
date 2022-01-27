@@ -26,7 +26,7 @@
 
 #include "radv_constants.h"
 
-#include "vulkan/util/vk_object.h"
+#include "vulkan/runtime/vk_object.h"
 
 #include <vulkan/vulkan.h>
 
@@ -89,7 +89,9 @@ struct radv_pipeline_layout {
    struct {
       struct radv_descriptor_set_layout *layout;
       uint32_t size;
-      uint32_t dynamic_offset_start;
+      uint16_t dynamic_offset_start;
+      uint16_t dynamic_offset_count;
+      VkShaderStageFlags dynamic_offset_stages;
    } set[MAX_SETS];
 
    uint32_t num_sets;

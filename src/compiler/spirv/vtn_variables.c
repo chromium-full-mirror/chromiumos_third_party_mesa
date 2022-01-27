@@ -518,7 +518,7 @@ _vtn_local_load_store(struct vtn_builder *b, bool load, nir_deref_instr *deref,
 nir_deref_instr *
 vtn_nir_deref(struct vtn_builder *b, uint32_t id)
 {
-   struct vtn_pointer *ptr = vtn_value(b, id, vtn_value_type_pointer)->pointer;
+   struct vtn_pointer *ptr = vtn_pointer(b, id);
    return vtn_pointer_to_deref(b, ptr);
 }
 
@@ -597,7 +597,8 @@ _vtn_variable_load_store(struct vtn_builder *b, bool load,
                          enum gl_access_qualifier access,
                          struct vtn_ssa_value **inout)
 {
-   if (ptr->mode == vtn_variable_mode_uniform) {
+   if (ptr->mode == vtn_variable_mode_uniform ||
+       ptr->mode == vtn_variable_mode_image) {
       if (ptr->type->base_type == vtn_base_type_image ||
           ptr->type->base_type == vtn_base_type_sampler) {
          /* See also our handling of OpTypeSampler and OpTypeImage */
@@ -836,6 +837,7 @@ vtn_get_builtin_location(struct vtn_builder *b,
       set_mode_system_value(b, mode);
       break;
    case SpvBuiltInLayer:
+   case SpvBuiltInLayerPerViewNV:
       *location = VARYING_SLOT_LAYER;
       if (b->shader->info.stage == MESA_SHADER_FRAGMENT)
          *mode = nir_var_shader_in;
@@ -863,6 +865,11 @@ vtn_get_builtin_location(struct vtn_builder *b,
       else
          vtn_fail("invalid stage for SpvBuiltInViewportIndex");
       break;
+   case SpvBuiltInViewportMaskNV:
+   case SpvBuiltInViewportMaskPerViewNV:
+      *location = VARYING_SLOT_VIEWPORT_MASK;
+      *mode = nir_var_shader_out;
+      break;
    case SpvBuiltInTessLevelOuter:
       *location = VARYING_SLOT_TESS_LEVEL_OUTER;
       break;
@@ -879,16 +886,13 @@ vtn_get_builtin_location(struct vtn_builder *b,
       break;
    case SpvBuiltInFragCoord:
       vtn_assert(*mode == nir_var_shader_in);
-      if (b->options && b->options->frag_coord_is_sysval) {
-         *mode = nir_var_system_value;
-         *location = SYSTEM_VALUE_FRAG_COORD;
-      } else {
-         *location = VARYING_SLOT_POS;
-      }
+      *mode = nir_var_system_value;
+      *location = SYSTEM_VALUE_FRAG_COORD;
       break;
    case SpvBuiltInPointCoord:
-      *location = VARYING_SLOT_PNTC;
       vtn_assert(*mode == nir_var_shader_in);
+      set_mode_system_value(b, mode);
+      *location = SYSTEM_VALUE_POINT_COORD;
       break;
    case SpvBuiltInFrontFacing:
       *location = SYSTEM_VALUE_FRONT_FACE;
@@ -1121,7 +1125,8 @@ vtn_get_builtin_location(struct vtn_builder *b,
       break;
    case SpvBuiltInPrimitiveShadingRateKHR:
       if (b->shader->info.stage == MESA_SHADER_VERTEX ||
-          b->shader->info.stage == MESA_SHADER_GEOMETRY) {
+          b->shader->info.stage == MESA_SHADER_GEOMETRY ||
+          b->shader->info.stage == MESA_SHADER_MESH) {
          *location = VARYING_SLOT_PRIMITIVE_SHADING_RATE;
          *mode = nir_var_shader_out;
       } else {
@@ -1136,6 +1141,14 @@ vtn_get_builtin_location(struct vtn_builder *b,
       break;
    case SpvBuiltInTaskCountNV:
       *location = VARYING_SLOT_TASK_COUNT;
+      break;
+   case SpvBuiltInMeshViewCountNV:
+      *location = SYSTEM_VALUE_MESH_VIEW_COUNT;
+      set_mode_system_value(b, mode);
+      break;
+   case SpvBuiltInMeshViewIndicesNV:
+      *location = SYSTEM_VALUE_MESH_VIEW_INDICES;
+      set_mode_system_value(b, mode);
       break;
    default:
       vtn_fail("Unsupported builtin: %s (%u)",
@@ -1209,7 +1222,9 @@ apply_var_decoration(struct vtn_builder *b,
       case SpvBuiltInTessLevelOuter:
       case SpvBuiltInTessLevelInner:
       case SpvBuiltInClipDistance:
+      case SpvBuiltInClipDistancePerViewNV:
       case SpvBuiltInCullDistance:
+      case SpvBuiltInCullDistancePerViewNV:
          var_data->compact = true;
          break;
       default:
@@ -1331,18 +1346,8 @@ gather_var_kind_cb(struct vtn_builder *b, struct vtn_value *val, int member,
    case SpvDecorationPerPrimitiveNV:
       vtn_var->var->data.per_primitive = true;
       break;
-   case SpvDecorationBuiltIn:
-      if (b->shader->info.stage == MESA_SHADER_MESH) {
-         SpvBuiltIn builtin = dec->operands[0];
-         switch (builtin) {
-         case SpvBuiltInPrimitiveIndicesNV:
-            vtn_var->var->data.per_primitive = true;
-            break;
-         default:
-            /* Nothing to do. */
-            break;
-         }
-      }
+   case SpvDecorationPerViewNV:
+      vtn_var->var->data.per_view = true;
       break;
    default:
       /* Nothing to do. */
@@ -1418,7 +1423,8 @@ var_decoration_cb(struct vtn_builder *b, struct vtn_value *val, int member,
       } else if (vtn_var->mode == vtn_variable_mode_call_data ||
                  vtn_var->mode == vtn_variable_mode_ray_payload) {
          /* This location is fine as-is */
-      } else if (vtn_var->mode != vtn_variable_mode_uniform) {
+      } else if (vtn_var->mode != vtn_variable_mode_uniform &&
+                 vtn_var->mode != vtn_variable_mode_image) {
          vtn_warn("Location must be on input, output, uniform, sampler or "
                   "image variable");
          return;
@@ -1501,7 +1507,19 @@ vtn_storage_class_to_mode(struct vtn_builder *b,
       nir_mode = nir_var_mem_global;
       break;
    case SpvStorageClassUniformConstant:
-      if (b->shader->info.stage == MESA_SHADER_KERNEL) {
+      /* interface_type is only NULL when OpTypeForwardPointer is used and
+       * OpTypeForwardPointer can only be used for struct types, not images or
+       * acceleration structures.
+       */
+      if (interface_type)
+         interface_type = vtn_type_without_array(interface_type);
+
+      if (interface_type &&
+          interface_type->base_type == vtn_base_type_image &&
+          glsl_type_is_image(interface_type->glsl_image)) {
+         mode = vtn_variable_mode_image;
+         nir_mode = nir_var_image;
+      } else if (b->shader->info.stage == MESA_SHADER_KERNEL) {
          mode = vtn_variable_mode_constant;
          nir_mode = nir_var_mem_constant;
       } else {
@@ -1510,7 +1528,6 @@ vtn_storage_class_to_mode(struct vtn_builder *b,
           * storage class.
           */
          assert(interface_type != NULL);
-         interface_type = vtn_type_without_array(interface_type);
          if (interface_type->base_type == vtn_base_type_accel_struct) {
             mode = vtn_variable_mode_accel_struct;
             nir_mode = nir_var_uniform;
@@ -1554,7 +1571,7 @@ vtn_storage_class_to_mode(struct vtn_builder *b,
       break;
    case SpvStorageClassImage:
       mode = vtn_variable_mode_image;
-      nir_mode = nir_var_mem_ubo;
+      nir_mode = nir_var_image;
       break;
    case SpvStorageClassCallableDataKHR:
       mode = vtn_variable_mode_call_data;
@@ -1794,6 +1811,12 @@ vtn_get_call_payload_for_location(struct vtn_builder *b, uint32_t location_id)
             "or RayPayloadKHR and location %d", location);
 }
 
+static bool
+vtn_type_is_ray_query(struct vtn_type *type)
+{
+   return vtn_type_without_array(type)->base_type == vtn_base_type_ray_query;
+}
+
 static void
 vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
                     struct vtn_type *ptr_type, SpvStorageClass storage_class,
@@ -1836,7 +1859,10 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
       break;
 
    case vtn_variable_mode_image:
-      vtn_fail("Cannot create a variable with the Image storage class");
+      if (storage_class == SpvStorageClassImage)
+         vtn_fail("Cannot create a variable with the Image storage class");
+      else
+         vtn_assert(storage_class == SpvStorageClassUniformConstant);
       break;
 
    case vtn_variable_mode_phys_ssbo:
@@ -1869,6 +1895,7 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
    case vtn_variable_mode_constant:
    case vtn_variable_mode_call_data:
    case vtn_variable_mode_call_data_in:
+   case vtn_variable_mode_image:
    case vtn_variable_mode_ray_payload:
    case vtn_variable_mode_ray_payload_in:
    case vtn_variable_mode_hit_attrib:
@@ -1886,6 +1913,7 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
 
       var->var->data.mode = nir_mode;
       var->var->data.location = -1;
+      var->var->data.ray_query = vtn_type_is_ray_query(var->type);
       var->var->interface_type = NULL;
       break;
 
@@ -2009,7 +2037,6 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
       break;
    }
 
-   case vtn_variable_mode_image:
    case vtn_variable_mode_phys_ssbo:
    case vtn_variable_mode_generic:
       unreachable("Should have been caught before");
@@ -2108,6 +2135,7 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
    }
 
    if (var->mode == vtn_variable_mode_uniform ||
+       var->mode == vtn_variable_mode_image ||
        var->mode == vtn_variable_mode_ssbo) {
       /* SSBOs and images are assumed to not alias in the Simple, GLSL and Vulkan memory models */
       var->var->data.access |= b->mem_model != SpvMemoryModelOpenCL ? ACCESS_RESTRICT : 0;
@@ -2126,6 +2154,7 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
    }
 
    if (var->mode == vtn_variable_mode_uniform ||
+       var->mode == vtn_variable_mode_image ||
        var->mode == vtn_variable_mode_ubo ||
        var->mode == vtn_variable_mode_ssbo ||
        var->mode == vtn_variable_mode_atomic_counter) {
@@ -2420,8 +2449,8 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
       }
 
       struct vtn_type *ptr_type = vtn_get_type(b, w[1]);
-      struct vtn_pointer *base =
-         vtn_value(b, w[3], vtn_value_type_pointer)->pointer;
+
+      struct vtn_pointer *base = vtn_pointer(b, w[3]);
 
       /* Workaround for https://gitlab.freedesktop.org/mesa/mesa/-/issues/3406 */
       access |= base->access & ACCESS_NON_UNIFORM;
@@ -2434,10 +2463,10 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
    }
 
    case SpvOpCopyMemory: {
-      struct vtn_value *dest_val = vtn_value(b, w[1], vtn_value_type_pointer);
-      struct vtn_value *src_val = vtn_value(b, w[2], vtn_value_type_pointer);
-      struct vtn_pointer *dest = dest_val->pointer;
-      struct vtn_pointer *src = src_val->pointer;
+      struct vtn_value *dest_val = vtn_pointer_value(b, w[1]);
+      struct vtn_value *src_val = vtn_pointer_value(b, w[2]);
+      struct vtn_pointer *dest = vtn_value_to_pointer(b, dest_val);
+      struct vtn_pointer *src = vtn_value_to_pointer(b, src_val);
 
       vtn_assert_types_equal(b, opcode, dest_val->type->deref,
                                         src_val->type->deref);
@@ -2466,11 +2495,11 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
    }
 
    case SpvOpCopyMemorySized: {
-      struct vtn_value *dest_val = vtn_value(b, w[1], vtn_value_type_pointer);
-      struct vtn_value *src_val = vtn_value(b, w[2], vtn_value_type_pointer);
+      struct vtn_value *dest_val = vtn_pointer_value(b, w[1]);
+      struct vtn_value *src_val = vtn_pointer_value(b, w[2]);
       nir_ssa_def *size = vtn_get_nir_ssa(b, w[3]);
-      struct vtn_pointer *dest = dest_val->pointer;
-      struct vtn_pointer *src = src_val->pointer;
+      struct vtn_pointer *dest = vtn_value_to_pointer(b, dest_val);
+      struct vtn_pointer *src = vtn_value_to_pointer(b, src_val);
 
       unsigned idx = 4, dest_alignment, src_alignment;
       SpvMemoryAccessMask dest_access, src_access;
@@ -2501,7 +2530,7 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
    case SpvOpLoad: {
       struct vtn_type *res_type = vtn_get_type(b, w[1]);
       struct vtn_value *src_val = vtn_value(b, w[3], vtn_value_type_pointer);
-      struct vtn_pointer *src = src_val->pointer;
+      struct vtn_pointer *src = vtn_value_to_pointer(b, src_val);
 
       vtn_assert_types_equal(b, opcode, res_type, src_val->type->deref);
 
@@ -2518,8 +2547,8 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
    }
 
    case SpvOpStore: {
-      struct vtn_value *dest_val = vtn_value(b, w[1], vtn_value_type_pointer);
-      struct vtn_pointer *dest = dest_val->pointer;
+      struct vtn_value *dest_val = vtn_pointer_value(b, w[1]);
+      struct vtn_pointer *dest = vtn_value_to_pointer(b, dest_val);
       struct vtn_value *src_val = vtn_untyped_value(b, w[2]);
 
       /* OpStore requires us to actually have a storage type */
@@ -2561,8 +2590,7 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
    }
 
    case SpvOpArrayLength: {
-      struct vtn_pointer *ptr =
-         vtn_value(b, w[3], vtn_value_type_pointer)->pointer;
+      struct vtn_pointer *ptr = vtn_pointer(b, w[3]);
       const uint32_t field = w[4];
 
       vtn_fail_if(ptr->type->base_type != vtn_base_type_struct,

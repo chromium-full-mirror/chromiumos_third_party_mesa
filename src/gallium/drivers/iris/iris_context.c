@@ -33,6 +33,7 @@
 #include "iris_context.h"
 #include "iris_resource.h"
 #include "iris_screen.h"
+#include "iris_utrace.h"
 #include "common/intel_defines.h"
 #include "common/intel_sample_positions.h"
 
@@ -70,6 +71,8 @@ iris_lost_context_state(struct iris_batch *batch)
       batch->screen->vtbl.init_render_context(batch);
    } else if (batch->name == IRIS_BATCH_COMPUTE) {
       batch->screen->vtbl.init_compute_context(batch);
+   } else if (batch->name == IRIS_BATCH_BLITTER) {
+      /* No state to set up */
    } else {
       unreachable("unhandled batch reset");
    }
@@ -208,7 +211,6 @@ iris_flush_dirty_dmabufs(struct iris_context *ice)
    clear_dirty_dmabuf_set(ice);
 }
 
-
 /**
  * Destroy a context, freeing any associated memory.
  */
@@ -240,9 +242,10 @@ iris_destroy_context(struct pipe_context *ctx)
    u_upload_destroy(ice->state.dynamic_uploader);
    u_upload_destroy(ice->query_buffer_uploader);
 
-   iris_batch_free(&ice->batches[IRIS_BATCH_RENDER]);
-   iris_batch_free(&ice->batches[IRIS_BATCH_COMPUTE]);
+   iris_destroy_batches(ice);
    iris_destroy_binder(&ice->state.binder);
+
+   iris_utrace_fini(ice);
 
    slab_destroy_child(&ice->transfer_pool);
    slab_destroy_child(&ice->transfer_pool_unsync);
@@ -359,12 +362,13 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
    if (flags & PIPE_CONTEXT_LOW_PRIORITY)
       priority = INTEL_CONTEXT_LOW_PRIORITY;
 
-   if (INTEL_DEBUG & DEBUG_BATCH)
+   if (INTEL_DEBUG(DEBUG_BATCH))
       ice->state.sizes = _mesa_hash_table_u64_create(ice);
 
-   for (int i = 0; i < IRIS_BATCH_COUNT; i++) {
-      iris_init_batch(ice, (enum iris_batch_name) i, priority);
-   }
+   /* Do this before initializing the batches */
+   iris_utrace_init(ice);
+
+   iris_init_batches(ice, priority);
 
    screen->vtbl.init_render_context(&ice->batches[IRIS_BATCH_RENDER]);
    screen->vtbl.init_compute_context(&ice->batches[IRIS_BATCH_COMPUTE]);
@@ -379,8 +383,5 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
    return threaded_context_create(ctx, &screen->transfer_pool,
                                   iris_replace_buffer_storage,
                                   NULL, /* TODO: asynchronous flushes? */
-                                  NULL,
-                                  false,
-                                  false,
                                   &ice->thrctx);
 }

@@ -271,7 +271,7 @@ static VkResult anv_create_cmd_buffer(
    cmd_buffer = vk_alloc2(&device->vk.alloc, &pool->alloc, sizeof(*cmd_buffer),
                           8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (cmd_buffer == NULL)
-      return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(pool, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    result = vk_command_buffer_init(&cmd_buffer->vk, &device->vk);
    if (result != VK_SUCCESS)
@@ -301,6 +301,8 @@ static VkResult anv_create_cmd_buffer(
    list_addtail(&cmd_buffer->pool_link, &pool->cmd_buffers);
 
    anv_measure_init(cmd_buffer);
+
+   u_trace_init(&cmd_buffer->trace, &device->ds.trace_context);
 
    *pCommandBuffer = anv_cmd_buffer_to_handle(cmd_buffer);
 
@@ -343,6 +345,8 @@ VkResult anv_AllocateCommandBuffers(
 static void
 anv_cmd_buffer_destroy(struct anv_cmd_buffer *cmd_buffer)
 {
+   u_trace_fini(&cmd_buffer->trace);
+
    anv_measure_destroy(cmd_buffer);
 
    list_del(&cmd_buffer->pool_link);
@@ -401,6 +405,10 @@ anv_cmd_buffer_reset(struct anv_cmd_buffer *cmd_buffer)
                          &cmd_buffer->device->general_state_pool, 16384);
 
    anv_measure_reset(cmd_buffer);
+
+   u_trace_fini(&cmd_buffer->trace);
+   u_trace_init(&cmd_buffer->trace, &cmd_buffer->device->ds.trace_context);
+
    return VK_SUCCESS;
 }
 
@@ -1268,7 +1276,7 @@ VkResult anv_CreateCommandPool(
    pool = vk_object_alloc(&device->vk, pAllocator, sizeof(*pool),
                           VK_OBJECT_TYPE_COMMAND_POOL);
    if (pool == NULL)
-      return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    assert(pCreateInfo->queueFamilyIndex < device->physical->queue.family_count);
    pool->queue_family =

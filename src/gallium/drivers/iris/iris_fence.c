@@ -147,7 +147,7 @@ clear_stale_syncobjs(struct iris_batch *batch)
                                           struct drm_i915_gem_exec_fence));
 
    /* Skip the first syncobj, as it's the signalling one. */
-   for (int i = n - 1; i > 1; i--) {
+   for (int i = n - 1; i > 0; i--) {
       struct iris_syncobj **syncobj =
          util_dynarray_element(&batch->syncobjs, struct iris_syncobj *, i);
       struct drm_i915_gem_exec_fence *fence =
@@ -252,11 +252,11 @@ iris_fence_flush(struct pipe_context *ctx,
    if (flags & PIPE_FLUSH_END_OF_FRAME) {
       ice->frame++;
 
-      if (INTEL_DEBUG & DEBUG_SUBMIT) {
+      if (INTEL_DEBUG(DEBUG_SUBMIT)) {
          fprintf(stderr, "%s ::: FRAME %-10u (ctx %p)%-35c%s\n",
-                 (INTEL_DEBUG & DEBUG_COLOR) ? BLUE_HEADER : "",
+                 INTEL_DEBUG(DEBUG_COLOR) ? BLUE_HEADER : "",
                  ice->frame, ctx, ' ',
-                 (INTEL_DEBUG & DEBUG_COLOR) ? NORMAL : "");
+                 INTEL_DEBUG(DEBUG_COLOR) ? NORMAL : "");
       }
    }
 
@@ -270,6 +270,9 @@ iris_fence_flush(struct pipe_context *ctx,
    if (flags & PIPE_FLUSH_END_OF_FRAME) {
       iris_measure_frame_end(ice);
    }
+
+   u_trace_context_process(&ice->ds.trace_context,
+                           flags & PIPE_FLUSH_END_OF_FRAME);
 
    if (!out_fence)
       return;

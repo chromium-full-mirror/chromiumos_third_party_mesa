@@ -63,10 +63,14 @@ radv_mutable_descriptor_type_size_alignment(const VkMutableDescriptorTypeListVAL
       case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
       case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
       case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
          size = 16;
          align = 16;
          break;
       case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+         size = 32;
+         align = 32;
+         break;
       case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
          size = 64;
          align = 32;
@@ -84,7 +88,7 @@ radv_mutable_descriptor_type_size_alignment(const VkMutableDescriptorTypeListVAL
    return true;
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 radv_CreateDescriptorSetLayout(VkDevice _device, const VkDescriptorSetLayoutCreateInfo *pCreateInfo,
                                const VkAllocationCallbacks *pAllocator,
                                VkDescriptorSetLayout *pSetLayout)
@@ -133,7 +137,7 @@ radv_CreateDescriptorSetLayout(VkDevice _device, const VkDescriptorSetLayoutCrea
    set_layout =
       vk_zalloc2(&device->vk.alloc, pAllocator, size, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!set_layout)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &set_layout->base, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT);
 
@@ -163,7 +167,7 @@ radv_CreateDescriptorSetLayout(VkDevice _device, const VkDescriptorSetLayoutCrea
    if (result != VK_SUCCESS) {
       vk_object_base_finish(&set_layout->base);
       vk_free2(&device->vk.alloc, pAllocator, set_layout);
-      return vk_error(device->instance, result);
+      return vk_error(device, result);
    }
 
    set_layout->binding_count = num_bindings;
@@ -219,6 +223,10 @@ radv_CreateDescriptorSetLayout(VkDevice _device, const VkDescriptorSetLayoutCrea
          alignment = 16;
          break;
       case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+         set_layout->binding[b].size = 32;
+         binding_buffer_count = 1;
+         alignment = 32;
+         break;
       case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
       case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
          /* main descriptor + fmask descriptor */
@@ -328,7 +336,7 @@ radv_CreateDescriptorSetLayout(VkDevice _device, const VkDescriptorSetLayoutCrea
    return VK_SUCCESS;
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 radv_DestroyDescriptorSetLayout(VkDevice _device, VkDescriptorSetLayout _set_layout,
                                 const VkAllocationCallbacks *pAllocator)
 {
@@ -342,7 +350,7 @@ radv_DestroyDescriptorSetLayout(VkDevice _device, VkDescriptorSetLayout _set_lay
    vk_free2(&device->vk.alloc, pAllocator, set_layout);
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 radv_GetDescriptorSetLayoutSupport(VkDevice device,
                                    const VkDescriptorSetLayoutCreateInfo *pCreateInfo,
                                    VkDescriptorSetLayoutSupport *pSupport)
@@ -385,6 +393,9 @@ radv_GetDescriptorSetLayoutSupport(VkDevice device,
          descriptor_alignment = 16;
          break;
       case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+         descriptor_size = 32;
+         descriptor_alignment = 32;
+         break;
       case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
       case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
          descriptor_size = 64;
@@ -456,7 +467,7 @@ radv_GetDescriptorSetLayoutSupport(VkDevice device,
  * just multiple descriptor set layouts pasted together.
  */
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 radv_CreatePipelineLayout(VkDevice _device, const VkPipelineLayoutCreateInfo *pCreateInfo,
                           const VkAllocationCallbacks *pAllocator,
                           VkPipelineLayout *pPipelineLayout)
@@ -470,7 +481,7 @@ radv_CreatePipelineLayout(VkDevice _device, const VkPipelineLayoutCreateInfo *pC
    layout = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*layout), 8,
                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (layout == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &layout->base, VK_OBJECT_TYPE_PIPELINE_LAYOUT);
 
@@ -485,11 +496,16 @@ radv_CreatePipelineLayout(VkDevice _device, const VkPipelineLayoutCreateInfo *pC
       layout->set[set].layout = set_layout;
 
       layout->set[set].dynamic_offset_start = dynamic_offset_count;
+      layout->set[set].dynamic_offset_count = 0;
+      layout->set[set].dynamic_offset_stages = 0;
 
       for (uint32_t b = 0; b < set_layout->binding_count; b++) {
-         dynamic_offset_count += set_layout->binding[b].array_size * set_layout->binding[b].dynamic_offset_count;
-         dynamic_shader_stages |= set_layout->dynamic_shader_stages;
+         layout->set[set].dynamic_offset_count +=
+            set_layout->binding[b].array_size * set_layout->binding[b].dynamic_offset_count;
+         layout->set[set].dynamic_offset_stages |= set_layout->dynamic_shader_stages;
       }
+      dynamic_offset_count += layout->set[set].dynamic_offset_count;
+      dynamic_shader_stages |= layout->set[set].dynamic_offset_stages;
 
       /* Hash the entire set layout except for the vk_object_base. The
        * rest of the set layout is carefully constructed to not have
@@ -515,7 +531,7 @@ radv_CreatePipelineLayout(VkDevice _device, const VkPipelineLayoutCreateInfo *pC
    return VK_SUCCESS;
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 radv_DestroyPipelineLayout(VkDevice _device, VkPipelineLayout _pipelineLayout,
                            const VkAllocationCallbacks *pAllocator)
 {
@@ -553,7 +569,7 @@ radv_descriptor_set_create(struct radv_device *device, struct radv_descriptor_po
 
    if (pool->host_memory_base) {
       if (pool->host_memory_end - pool->host_memory_ptr < mem_size)
-         return vk_error(device->instance, VK_ERROR_OUT_OF_POOL_MEMORY);
+         return VK_ERROR_OUT_OF_POOL_MEMORY;
 
       set = (struct radv_descriptor_set *)pool->host_memory_ptr;
       pool->host_memory_ptr += mem_size;
@@ -562,7 +578,7 @@ radv_descriptor_set_create(struct radv_device *device, struct radv_descriptor_po
       set = vk_alloc2(&device->vk.alloc, NULL, mem_size, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 
       if (!set)
-         return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
    memset(set, 0, mem_size);
@@ -590,7 +606,7 @@ radv_descriptor_set_create(struct radv_device *device, struct radv_descriptor_po
 
    if (!pool->host_memory_base && pool->entry_count == pool->max_entry_count) {
       vk_free2(&device->vk.alloc, NULL, set);
-      return vk_error(device->instance, VK_ERROR_OUT_OF_POOL_MEMORY);
+      return VK_ERROR_OUT_OF_POOL_MEMORY;
    }
 
    /* try to allocate linearly first, so that we don't spend
@@ -619,7 +635,7 @@ radv_descriptor_set_create(struct radv_device *device, struct radv_descriptor_po
 
       if (pool->size - offset < layout_size) {
          vk_free2(&device->vk.alloc, NULL, set);
-         return vk_error(device->instance, VK_ERROR_OUT_OF_POOL_MEMORY);
+         return VK_ERROR_OUT_OF_POOL_MEMORY;
       }
       set->header.bo = pool->bo;
       set->header.mapped_ptr = (uint32_t *)(pool->mapped_ptr + offset);
@@ -631,7 +647,7 @@ radv_descriptor_set_create(struct radv_device *device, struct radv_descriptor_po
       pool->entries[index].set = set;
       pool->entry_count++;
    } else
-      return vk_error(device->instance, VK_ERROR_OUT_OF_POOL_MEMORY);
+      return VK_ERROR_OUT_OF_POOL_MEMORY;
 
    if (layout->has_immutable_samplers) {
       for (unsigned i = 0; i < layout->binding_count; ++i) {
@@ -694,7 +710,7 @@ radv_destroy_descriptor_pool(struct radv_device *device, const VkAllocationCallb
    vk_free2(&device->vk.alloc, pAllocator, pool);
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 radv_CreateDescriptorPool(VkDevice _device, const VkDescriptorPoolCreateInfo *pCreateInfo,
                           const VkAllocationCallbacks *pAllocator,
                           VkDescriptorPool *pDescriptorPool)
@@ -710,9 +726,9 @@ radv_CreateDescriptorPool(VkDevice _device, const VkDescriptorPoolCreateInfo *pC
    vk_foreach_struct(ext, pCreateInfo->pNext)
    {
       switch (ext->sType) {
-      case VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_INLINE_UNIFORM_BLOCK_CREATE_INFO_EXT: {
-         const struct VkDescriptorPoolInlineUniformBlockCreateInfoEXT *info =
-            (const struct VkDescriptorPoolInlineUniformBlockCreateInfoEXT *)ext;
+      case VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_INLINE_UNIFORM_BLOCK_CREATE_INFO: {
+         const VkDescriptorPoolInlineUniformBlockCreateInfo *info =
+            (const VkDescriptorPoolInlineUniformBlockCreateInfo *)ext;
          /* the sizes are 4 aligned, and we need to align to at
           * most 32, which needs at most 28 bytes extra per
           * binding. */
@@ -739,11 +755,11 @@ radv_CreateDescriptorPool(VkDevice _device, const VkDescriptorPoolCreateInfo *pC
       case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
       case VK_DESCRIPTOR_TYPE_SAMPLER:
       case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
          /* 32 as we may need to align for images */
          bo_size += 32 * pCreateInfo->pPoolSizes[i].descriptorCount;
          break;
       case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
       case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
          bo_size += 64 * pCreateInfo->pPoolSizes[i].descriptorCount;
          break;
@@ -787,7 +803,7 @@ radv_CreateDescriptorPool(VkDevice _device, const VkDescriptorPoolCreateInfo *pC
 
    pool = vk_alloc2(&device->vk.alloc, pAllocator, size, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!pool)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    memset(pool, 0, sizeof(*pool));
 
@@ -807,19 +823,19 @@ radv_CreateDescriptorPool(VkDevice _device, const VkDescriptorPoolCreateInfo *pC
             RADV_BO_PRIORITY_DESCRIPTOR, 0, &pool->bo);
          if (result != VK_SUCCESS) {
             radv_destroy_descriptor_pool(device, pAllocator, pool);
-            return vk_error(device->instance, result);
+            return vk_error(device, result);
          }
          pool->mapped_ptr = (uint8_t *)device->ws->buffer_map(pool->bo);
          if (!pool->mapped_ptr) {
             radv_destroy_descriptor_pool(device, pAllocator, pool);
-            return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+            return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
          }
       } else {
          pool->host_bo =
             vk_alloc2(&device->vk.alloc, pAllocator, bo_size, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
          if (!pool->host_bo) {
             radv_destroy_descriptor_pool(device, pAllocator, pool);
-            return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
          }
          pool->mapped_ptr = pool->host_bo;
       }
@@ -831,7 +847,7 @@ radv_CreateDescriptorPool(VkDevice _device, const VkDescriptorPoolCreateInfo *pC
    return VK_SUCCESS;
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 radv_DestroyDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
                            const VkAllocationCallbacks *pAllocator)
 {
@@ -844,7 +860,7 @@ radv_DestroyDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
    radv_destroy_descriptor_pool(device, pAllocator, pool);
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 radv_ResetDescriptorPool(VkDevice _device, VkDescriptorPool descriptorPool,
                          VkDescriptorPoolResetFlags flags)
 {
@@ -864,7 +880,7 @@ radv_ResetDescriptorPool(VkDevice _device, VkDescriptorPool descriptorPool,
    return VK_SUCCESS;
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 radv_AllocateDescriptorSets(VkDevice _device, const VkDescriptorSetAllocateInfo *pAllocateInfo,
                             VkDescriptorSet *pDescriptorSets)
 {
@@ -909,7 +925,7 @@ radv_AllocateDescriptorSets(VkDevice _device, const VkDescriptorSetAllocateInfo 
    return result;
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 radv_FreeDescriptorSets(VkDevice _device, VkDescriptorPool descriptorPool, uint32_t count,
                         const VkDescriptorSet *pDescriptorSets)
 {
@@ -925,7 +941,7 @@ radv_FreeDescriptorSets(VkDevice _device, VkDescriptorPool descriptorPool, uint3
    return VK_SUCCESS;
 }
 
-static void
+static ALWAYS_INLINE void
 write_texel_buffer_descriptor(struct radv_device *device, struct radv_cmd_buffer *cmd_buffer,
                               unsigned *dst, struct radeon_winsys_bo **buffer_list,
                               const VkBufferView _buffer_view)
@@ -947,7 +963,7 @@ write_texel_buffer_descriptor(struct radv_device *device, struct radv_cmd_buffer
       *buffer_list = buffer_view->bo;
 }
 
-static void
+static ALWAYS_INLINE void
 write_buffer_descriptor(struct radv_device *device, struct radv_cmd_buffer *cmd_buffer,
                         unsigned *dst, struct radeon_winsys_bo **buffer_list,
                         const VkDescriptorBufferInfo *buffer_info)
@@ -999,17 +1015,17 @@ write_buffer_descriptor(struct radv_device *device, struct radv_cmd_buffer *cmd_
       *buffer_list = buffer->bo;
 }
 
-static void
+static ALWAYS_INLINE void
 write_block_descriptor(struct radv_device *device, struct radv_cmd_buffer *cmd_buffer, void *dst,
                        const VkWriteDescriptorSet *writeset)
 {
-   const VkWriteDescriptorSetInlineUniformBlockEXT *inline_ub =
-      vk_find_struct_const(writeset->pNext, WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK_EXT);
+   const VkWriteDescriptorSetInlineUniformBlock *inline_ub =
+      vk_find_struct_const(writeset->pNext, WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK);
 
    memcpy(dst, inline_ub->pData, inline_ub->dataSize);
 }
 
-static void
+static ALWAYS_INLINE void
 write_dynamic_buffer_descriptor(struct radv_device *device, struct radv_descriptor_range *range,
                                 struct radeon_winsys_bo **buffer_list,
                                 const VkDescriptorBufferInfo *buffer_info)
@@ -1044,7 +1060,7 @@ write_dynamic_buffer_descriptor(struct radv_device *device, struct radv_descript
    *buffer_list = buffer->bo;
 }
 
-static void
+static ALWAYS_INLINE void
 write_image_descriptor(struct radv_device *device, struct radv_cmd_buffer *cmd_buffer,
                        unsigned size, unsigned *dst, struct radeon_winsys_bo **buffer_list,
                        VkDescriptorType descriptor_type, const VkDescriptorImageInfo *image_info)
@@ -1074,24 +1090,23 @@ write_image_descriptor(struct radv_device *device, struct radv_cmd_buffer *cmd_b
       *buffer_list = iview->image->bo;
 }
 
-static void
+static ALWAYS_INLINE void
 write_combined_image_sampler_descriptor(struct radv_device *device,
                                         struct radv_cmd_buffer *cmd_buffer, unsigned sampler_offset,
                                         unsigned *dst, struct radeon_winsys_bo **buffer_list,
                                         VkDescriptorType descriptor_type,
                                         const VkDescriptorImageInfo *image_info, bool has_sampler)
 {
-   RADV_FROM_HANDLE(radv_sampler, sampler, image_info->sampler);
-
    write_image_descriptor(device, cmd_buffer, sampler_offset, dst, buffer_list, descriptor_type,
                           image_info);
    /* copy over sampler state */
    if (has_sampler) {
+      RADV_FROM_HANDLE(radv_sampler, sampler, image_info->sampler);
       memcpy(dst + sampler_offset / sizeof(*dst), sampler->state, 16);
    }
 }
 
-static void
+static ALWAYS_INLINE void
 write_sampler_descriptor(struct radv_device *device, unsigned *dst,
                          const VkDescriptorImageInfo *image_info)
 {
@@ -1100,7 +1115,7 @@ write_sampler_descriptor(struct radv_device *device, unsigned *dst,
    memcpy(dst, sampler->state, 16);
 }
 
-static void
+static ALWAYS_INLINE void
 write_accel_struct(void *ptr, VkAccelerationStructureKHR _accel_struct)
 {
    RADV_FROM_HANDLE(radv_acceleration_structure, accel_struct, _accel_struct);
@@ -1108,12 +1123,12 @@ write_accel_struct(void *ptr, VkAccelerationStructureKHR _accel_struct)
    memcpy(ptr, &va, sizeof(va));
 }
 
-void
-radv_update_descriptor_sets(struct radv_device *device, struct radv_cmd_buffer *cmd_buffer,
-                            VkDescriptorSet dstSetOverride, uint32_t descriptorWriteCount,
-                            const VkWriteDescriptorSet *pDescriptorWrites,
-                            uint32_t descriptorCopyCount,
-                            const VkCopyDescriptorSet *pDescriptorCopies)
+static ALWAYS_INLINE void
+radv_update_descriptor_sets_impl(struct radv_device *device, struct radv_cmd_buffer *cmd_buffer,
+                                 VkDescriptorSet dstSetOverride, uint32_t descriptorWriteCount,
+                                 const VkWriteDescriptorSet *pDescriptorWrites,
+                                 uint32_t descriptorCopyCount,
+                                 const VkCopyDescriptorSet *pDescriptorCopies)
 {
    uint32_t i, j;
    for (i = 0; i < descriptorWriteCount; i++) {
@@ -1170,8 +1185,11 @@ radv_update_descriptor_sets(struct radv_device *device, struct radv_cmd_buffer *
             write_texel_buffer_descriptor(device, cmd_buffer, ptr, buffer_list,
                                           writeset->pTexelBufferView[j]);
             break;
-         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+            write_image_descriptor(device, cmd_buffer, 32, ptr, buffer_list,
+                                   writeset->descriptorType, writeset->pImageInfo + j);
+            break;
+         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
          case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
             write_image_descriptor(device, cmd_buffer, 64, ptr, buffer_list,
                                    writeset->descriptorType, writeset->pImageInfo + j);
@@ -1265,15 +1283,17 @@ radv_update_descriptor_sets(struct radv_device *device, struct radv_cmd_buffer *
          dst_ptr += dst_binding_layout->size / 4;
 
          if (src_binding_layout->type != VK_DESCRIPTOR_TYPE_SAMPLER &&
-             src_binding_layout->type != VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
-            /* Sampler descriptors don't have a buffer list. */
+             dst_binding_layout->type != VK_DESCRIPTOR_TYPE_SAMPLER &&
+             src_binding_layout->type != VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR &&
+             dst_binding_layout->type != VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
+            /* Sampler/acceleration structure descriptors don't have a buffer list. */
             dst_buffer_list[j] = src_buffer_list[j];
          }
       }
    }
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 radv_UpdateDescriptorSets(VkDevice _device, uint32_t descriptorWriteCount,
                           const VkWriteDescriptorSet *pDescriptorWrites,
                           uint32_t descriptorCopyCount,
@@ -1281,27 +1301,40 @@ radv_UpdateDescriptorSets(VkDevice _device, uint32_t descriptorWriteCount,
 {
    RADV_FROM_HANDLE(radv_device, device, _device);
 
-   radv_update_descriptor_sets(device, NULL, VK_NULL_HANDLE, descriptorWriteCount,
-                               pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
+   radv_update_descriptor_sets_impl(device, NULL, VK_NULL_HANDLE, descriptorWriteCount,
+                                    pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
 }
 
-VkResult
+void
+radv_cmd_update_descriptor_sets(struct radv_device *device, struct radv_cmd_buffer *cmd_buffer,
+                                VkDescriptorSet dstSetOverride, uint32_t descriptorWriteCount,
+                                const VkWriteDescriptorSet *pDescriptorWrites,
+                                uint32_t descriptorCopyCount,
+                                const VkCopyDescriptorSet *pDescriptorCopies)
+{
+   /* Assume cmd_buffer != NULL to optimize out cmd_buffer checks in generic code above. */
+   assume(cmd_buffer != NULL);
+   radv_update_descriptor_sets_impl(device, cmd_buffer, dstSetOverride, descriptorWriteCount,
+                                    pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
 radv_CreateDescriptorUpdateTemplate(VkDevice _device,
                                     const VkDescriptorUpdateTemplateCreateInfo *pCreateInfo,
                                     const VkAllocationCallbacks *pAllocator,
                                     VkDescriptorUpdateTemplate *pDescriptorUpdateTemplate)
 {
    RADV_FROM_HANDLE(radv_device, device, _device);
-   RADV_FROM_HANDLE(radv_descriptor_set_layout, set_layout, pCreateInfo->descriptorSetLayout);
    const uint32_t entry_count = pCreateInfo->descriptorUpdateEntryCount;
    const size_t size = sizeof(struct radv_descriptor_update_template) +
                        sizeof(struct radv_descriptor_update_template_entry) * entry_count;
+   struct radv_descriptor_set_layout *set_layout = NULL;
    struct radv_descriptor_update_template *templ;
    uint32_t i;
 
    templ = vk_alloc2(&device->vk.alloc, pAllocator, size, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!templ)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &templ->base, VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE);
 
@@ -1317,6 +1350,9 @@ radv_CreateDescriptorUpdateTemplate(VkDevice _device,
       set_layout = pipeline_layout->set[pCreateInfo->set].layout;
 
       templ->bind_point = pCreateInfo->pipelineBindPoint;
+   } else {
+      assert(pCreateInfo->templateType == VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET);
+      set_layout = radv_descriptor_set_layout_from_handle(pCreateInfo->descriptorSetLayout);
    }
 
    for (i = 0; i < entry_count; i++) {
@@ -1380,7 +1416,7 @@ radv_CreateDescriptorUpdateTemplate(VkDevice _device,
    return VK_SUCCESS;
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 radv_DestroyDescriptorUpdateTemplate(VkDevice _device,
                                      VkDescriptorUpdateTemplate descriptorUpdateTemplate,
                                      const VkAllocationCallbacks *pAllocator)
@@ -1395,12 +1431,12 @@ radv_DestroyDescriptorUpdateTemplate(VkDevice _device,
    vk_free2(&device->vk.alloc, pAllocator, templ);
 }
 
-void
-radv_update_descriptor_set_with_template(struct radv_device *device,
-                                         struct radv_cmd_buffer *cmd_buffer,
-                                         struct radv_descriptor_set *set,
-                                         VkDescriptorUpdateTemplate descriptorUpdateTemplate,
-                                         const void *pData)
+static ALWAYS_INLINE void
+radv_update_descriptor_set_with_template_impl(struct radv_device *device,
+                                              struct radv_cmd_buffer *cmd_buffer,
+                                              struct radv_descriptor_set *set,
+                                              VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+                                              const void *pData)
 {
    RADV_FROM_HANDLE(radv_descriptor_update_template, templ, descriptorUpdateTemplate);
    uint32_t i;
@@ -1437,8 +1473,12 @@ radv_update_descriptor_set_with_template(struct radv_device *device,
             write_texel_buffer_descriptor(device, cmd_buffer, pDst, buffer_list,
                                           *(VkBufferView *)pSrc);
             break;
-         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+            write_image_descriptor(device, cmd_buffer, 32, pDst, buffer_list,
+                                   templ->entry[i].descriptor_type,
+                                   (struct VkDescriptorImageInfo *)pSrc);
+            break;
+         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
          case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
             write_image_descriptor(device, cmd_buffer, 64, pDst, buffer_list,
                                    templ->entry[i].descriptor_type,
@@ -1474,6 +1514,18 @@ radv_update_descriptor_set_with_template(struct radv_device *device,
 }
 
 void
+radv_cmd_update_descriptor_set_with_template(struct radv_device *device,
+                                             struct radv_cmd_buffer *cmd_buffer,
+                                             struct radv_descriptor_set *set,
+                                             VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+                                             const void *pData)
+{
+   /* Assume cmd_buffer != NULL to optimize out cmd_buffer checks in generic code above. */
+   assume(cmd_buffer != NULL);
+   radv_update_descriptor_set_with_template_impl(device, cmd_buffer, set, descriptorUpdateTemplate, pData);
+}
+
+VKAPI_ATTR void VKAPI_CALL
 radv_UpdateDescriptorSetWithTemplate(VkDevice _device, VkDescriptorSet descriptorSet,
                                      VkDescriptorUpdateTemplate descriptorUpdateTemplate,
                                      const void *pData)
@@ -1481,10 +1533,10 @@ radv_UpdateDescriptorSetWithTemplate(VkDevice _device, VkDescriptorSet descripto
    RADV_FROM_HANDLE(radv_device, device, _device);
    RADV_FROM_HANDLE(radv_descriptor_set, set, descriptorSet);
 
-   radv_update_descriptor_set_with_template(device, NULL, set, descriptorUpdateTemplate, pData);
+   radv_update_descriptor_set_with_template_impl(device, NULL, set, descriptorUpdateTemplate, pData);
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 radv_CreateSamplerYcbcrConversion(VkDevice _device,
                                   const VkSamplerYcbcrConversionCreateInfo *pCreateInfo,
                                   const VkAllocationCallbacks *pAllocator,
@@ -1497,7 +1549,7 @@ radv_CreateSamplerYcbcrConversion(VkDevice _device,
                            VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 
    if (conversion == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &conversion->base, VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION);
 
@@ -1513,7 +1565,7 @@ radv_CreateSamplerYcbcrConversion(VkDevice _device,
    return VK_SUCCESS;
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 radv_DestroySamplerYcbcrConversion(VkDevice _device, VkSamplerYcbcrConversion ycbcrConversion,
                                    const VkAllocationCallbacks *pAllocator)
 {

@@ -180,6 +180,19 @@ struct pipe_screen {
 					   void *priv, unsigned flags);
 
    /**
+    * Check if the given image copy will be faster on compute
+    * \param cpu If true, this is checking against CPU fallback,
+    *            otherwise the copy will be on GFX
+    */
+   bool (*is_compute_copy_faster)( struct pipe_screen *,
+                                   enum pipe_format src_format,
+                                   enum pipe_format dst_format,
+                                   unsigned width,
+                                   unsigned height,
+                                   unsigned depth,
+                                   bool cpu );
+
+   /**
     * Check if the given pipe_format is supported as a texture or
     * drawing surface.
     * \param bindings  bitmask of PIPE_BIND_*
@@ -562,6 +575,27 @@ struct pipe_screen {
                        struct pipe_memory_allocation *);
 
    /**
+    * Allocate fd-based memory to be bound to resources.
+    */
+   struct pipe_memory_allocation *(*allocate_memory_fd)(struct pipe_screen *screen,
+                                                        uint64_t size,
+                                                        int *fd);
+
+   /**
+    * Import memory from an fd-handle.
+    */
+   bool (*import_memory_fd)(struct pipe_screen *screen,
+                            int fd,
+                            struct pipe_memory_allocation **pmem,
+                            uint64_t *size);
+
+   /**
+    * Free previously allocated fd-based memory.
+    */
+   void (*free_memory_fd)(struct pipe_screen *screen,
+                          struct pipe_memory_allocation *pmem);
+
+   /**
     * Bind memory to a resource.
     */
    bool (*resource_bind_backing)(struct pipe_screen *screen,
@@ -618,6 +652,23 @@ struct pipe_screen {
    unsigned int (*get_dmabuf_modifier_planes)(struct pipe_screen *screen,
                                               uint64_t modifier,
                                               enum pipe_format format);
+
+   /**
+    * Get supported page sizes for sparse texture.
+    *
+    * \p size is the array size of \p x, \p y and \p z.
+    *
+    * \p offset sets an offset into the possible format page size array,
+    *  used to pick a specific xyz size combination.
+    *
+    * \return Number of supported page sizes, 0 means not support.
+    */
+   int (*get_sparse_texture_virtual_page_size)(struct pipe_screen *screen,
+                                               enum pipe_texture_target target,
+                                               bool multi_sample,
+                                               enum pipe_format format,
+                                               unsigned offset, unsigned size,
+                                               int *x, int *y, int *z);
 
    /**
     * Vertex state CSO functions for precomputing vertex and index buffer

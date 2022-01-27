@@ -39,14 +39,17 @@
 #include <xf86drm.h>
 #include "drm-uapi/drm_fourcc.h"
 #include "util/hash_table.h"
+#include "util/os_time.h"
 #include "util/u_debug.h"
 #include "util/u_thread.h"
 #include "util/xmlconfig.h"
 
+#include "vk_instance.h"
+#include "vk_physical_device.h"
 #include "vk_util.h"
 #include "vk_enum_to_str.h"
+#include "wsi_common_entrypoints.h"
 #include "wsi_common_private.h"
-#include "wsi_common_x11.h"
 #include "wsi_common_queue.h"
 
 #ifdef HAVE_SYS_SHM_H
@@ -174,7 +177,7 @@ static struct wsi_x11_connection *
 wsi_x11_connection_create(struct wsi_device *wsi_dev,
                           xcb_connection_t *conn)
 {
-   xcb_query_extension_cookie_t dri3_cookie, pres_cookie, randr_cookie, amd_cookie, nv_cookie, shm_cookie;
+   xcb_query_extension_cookie_t dri3_cookie, pres_cookie, randr_cookie, amd_cookie, nv_cookie, shm_cookie, sync_cookie;
    xcb_query_extension_reply_t *dri3_reply, *pres_reply, *randr_reply, *amd_reply, *nv_reply, *shm_reply = NULL;
    bool has_dri3_v1_2 = false;
    bool has_present_v1_2 = false;
@@ -185,6 +188,7 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
    if (!wsi_conn)
       return NULL;
 
+   sync_cookie = xcb_query_extension(conn, 4, "SYNC");
    dri3_cookie = xcb_query_extension(conn, 4, "DRI3");
    pres_cookie = xcb_query_extension(conn, 7, "Present");
    randr_cookie = xcb_query_extension(conn, 5, "RANDR");
@@ -204,6 +208,7 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
    amd_cookie = xcb_query_extension(conn, 11, "ATIFGLRXDRI");
    nv_cookie = xcb_query_extension(conn, 10, "NV-CONTROL");
 
+   xcb_discard_reply(conn, sync_cookie.sequence);
    dri3_reply = xcb_query_extension_reply(conn, dri3_cookie, NULL);
    pres_reply = xcb_query_extension_reply(conn, pres_cookie, NULL);
    randr_reply = xcb_query_extension_reply(conn, randr_cookie, NULL);
@@ -354,9 +359,15 @@ wsi_x11_get_connection(struct wsi_device *wsi_dev,
    return entry->data;
 }
 
-static const VkFormat formats[] = {
-   VK_FORMAT_B8G8R8A8_SRGB,
-   VK_FORMAT_B8G8R8A8_UNORM,
+struct surface_format {
+   VkFormat format;
+   unsigned bits_per_rgb;
+};
+
+static const struct surface_format formats[] = {
+   { VK_FORMAT_B8G8R8A8_SRGB,             8 },
+   { VK_FORMAT_B8G8R8A8_UNORM,            8 },
+   { VK_FORMAT_A2R10G10B10_UNORM_PACK32, 10 },
 };
 
 static const VkPresentModeKHR present_modes[] = {
@@ -404,8 +415,7 @@ screen_get_visualtype(xcb_screen_t *screen, xcb_visualid_t visual_id,
 }
 
 static xcb_visualtype_t *
-connection_get_visualtype(xcb_connection_t *conn, xcb_visualid_t visual_id,
-                          unsigned *depth)
+connection_get_visualtype(xcb_connection_t *conn, xcb_visualid_t visual_id)
 {
    xcb_screen_iterator_t screen_iter =
       xcb_setup_roots_iterator(xcb_get_setup(conn));
@@ -415,7 +425,7 @@ connection_get_visualtype(xcb_connection_t *conn, xcb_visualid_t visual_id,
     */
    for (; screen_iter.rem; xcb_screen_next (&screen_iter)) {
       xcb_visualtype_t *visual = screen_get_visualtype(screen_iter.data,
-                                                       visual_id, depth);
+                                                       visual_id, NULL);
       if (visual)
          return visual;
    }
@@ -468,12 +478,23 @@ visual_has_alpha(xcb_visualtype_t *visual, unsigned depth)
    return (all_mask & ~rgb_mask) != 0;
 }
 
-VkBool32 wsi_get_physical_device_xcb_presentation_support(
-    struct wsi_device *wsi_device,
-    uint32_t                                    queueFamilyIndex,
-    xcb_connection_t*                           connection,
-    xcb_visualid_t                              visual_id)
+static bool
+visual_supported(xcb_visualtype_t *visual)
 {
+   if (!visual)
+      return false;
+
+   return visual->bits_per_rgb_value == 8 || visual->bits_per_rgb_value == 10;
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL
+wsi_GetPhysicalDeviceXcbPresentationSupportKHR(VkPhysicalDevice physicalDevice,
+                                               uint32_t queueFamilyIndex,
+                                               xcb_connection_t *connection,
+                                               xcb_visualid_t visual_id)
+{
+   VK_FROM_HANDLE(vk_physical_device, pdevice, physicalDevice);
+   struct wsi_device *wsi_device = pdevice->wsi_device;
    struct wsi_x11_connection *wsi_conn =
       wsi_x11_get_connection(wsi_device, connection);
 
@@ -485,14 +506,22 @@ VkBool32 wsi_get_physical_device_xcb_presentation_support(
          return false;
    }
 
-   unsigned visual_depth;
-   if (!connection_get_visualtype(connection, visual_id, &visual_depth))
-      return false;
-
-   if (visual_depth != 24 && visual_depth != 32)
+   if (!visual_supported(connection_get_visualtype(connection, visual_id)))
       return false;
 
    return true;
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL
+wsi_GetPhysicalDeviceXlibPresentationSupportKHR(VkPhysicalDevice physicalDevice,
+                                                uint32_t queueFamilyIndex,
+                                                Display *dpy,
+                                                VisualID visualID)
+{
+   return wsi_GetPhysicalDeviceXcbPresentationSupportKHR(physicalDevice,
+                                                         queueFamilyIndex,
+                                                         XGetXCBConnection(dpy),
+                                                         visualID);
 }
 
 static xcb_connection_t*
@@ -534,13 +563,7 @@ x11_surface_get_support(VkIcdSurfaceBase *icd_surface,
       }
    }
 
-   unsigned visual_depth;
-   if (!get_visualtype_for_window(conn, window, &visual_depth)) {
-      *pSupported = false;
-      return VK_SUCCESS;
-   }
-
-   if (visual_depth != 24 && visual_depth != 32) {
+   if (!visual_supported(get_visualtype_for_window(conn, window, NULL))) {
       *pSupported = false;
       return VK_SUCCESS;
    }
@@ -631,7 +654,8 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
       VK_IMAGE_USAGE_SAMPLED_BIT |
       VK_IMAGE_USAGE_TRANSFER_DST_BIT |
       VK_IMAGE_USAGE_STORAGE_BIT |
-      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+      VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
 
    return VK_SUCCESS;
 }
@@ -668,13 +692,24 @@ x11_surface_get_capabilities2(VkIcdSurfaceBase *icd_surface,
    return result;
 }
 
-static void
-get_sorted_vk_formats(struct wsi_device *wsi_device, VkFormat *sorted_formats)
+static bool
+get_sorted_vk_formats(VkIcdSurfaceBase *surface, struct wsi_device *wsi_device,
+                      VkFormat *sorted_formats, unsigned *count)
 {
-   memcpy(sorted_formats, formats, sizeof(formats));
+   xcb_connection_t *conn = x11_surface_get_connection(surface);
+   xcb_window_t window = x11_surface_get_window(surface);
+   xcb_visualtype_t *visual = get_visualtype_for_window(conn, window, NULL);
+   if (!visual)
+      return false;
+
+   *count = 0;
+   for (unsigned i = 0; i < ARRAY_SIZE(formats); i++) {
+      if (formats[i].bits_per_rgb == visual->bits_per_rgb_value)
+         sorted_formats[(*count)++] = formats[i].format;
+   }
 
    if (wsi_device->force_bgra8_unorm_first) {
-      for (unsigned i = 0; i < ARRAY_SIZE(formats); i++) {
+      for (unsigned i = 0; i < *count; i++) {
          if (sorted_formats[i] == VK_FORMAT_B8G8R8A8_UNORM) {
             sorted_formats[i] = sorted_formats[0];
             sorted_formats[0] = VK_FORMAT_B8G8R8A8_UNORM;
@@ -682,6 +717,8 @@ get_sorted_vk_formats(struct wsi_device *wsi_device, VkFormat *sorted_formats)
          }
       }
    }
+
+   return true;
 }
 
 static VkResult
@@ -692,10 +729,12 @@ x11_surface_get_formats(VkIcdSurfaceBase *surface,
 {
    VK_OUTARRAY_MAKE(out, pSurfaceFormats, pSurfaceFormatCount);
 
+   unsigned count;
    VkFormat sorted_formats[ARRAY_SIZE(formats)];
-   get_sorted_vk_formats(wsi_device, sorted_formats);
+   if (!get_sorted_vk_formats(surface, wsi_device, sorted_formats, &count))
+      return VK_ERROR_SURFACE_LOST_KHR;
 
-   for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
+   for (unsigned i = 0; i < count; i++) {
       vk_outarray_append(&out, f) {
          f->format = sorted_formats[i];
          f->colorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
@@ -714,10 +753,12 @@ x11_surface_get_formats2(VkIcdSurfaceBase *surface,
 {
    VK_OUTARRAY_MAKE(out, pSurfaceFormats, pSurfaceFormatCount);
 
+   unsigned count;
    VkFormat sorted_formats[ARRAY_SIZE(formats)];
-   get_sorted_vk_formats(wsi_device, sorted_formats);
+   if (!get_sorted_vk_formats(surface, wsi_device, sorted_formats, &count))
+      return VK_ERROR_SURFACE_LOST_KHR;
 
-   for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
+   for (unsigned i = 0; i < count; i++) {
       vk_outarray_append(&out, f) {
          assert(f->sType == VK_STRUCTURE_TYPE_SURFACE_FORMAT_2_KHR);
          f->surfaceFormat.format = sorted_formats[i];
@@ -775,14 +816,19 @@ x11_surface_get_present_rectangles(VkIcdSurfaceBase *icd_surface,
    return vk_outarray_status(&out);
 }
 
-VkResult wsi_create_xcb_surface(const VkAllocationCallbacks *pAllocator,
-				const VkXcbSurfaceCreateInfoKHR *pCreateInfo,
-				VkSurfaceKHR *pSurface)
+VKAPI_ATTR VkResult VKAPI_CALL
+wsi_CreateXcbSurfaceKHR(VkInstance _instance,
+                        const VkXcbSurfaceCreateInfoKHR *pCreateInfo,
+                        const VkAllocationCallbacks *pAllocator,
+                        VkSurfaceKHR *pSurface)
 {
+   VK_FROM_HANDLE(vk_instance, instance, _instance);
    VkIcdSurfaceXcb *surface;
 
-   surface = vk_alloc(pAllocator, sizeof *surface, 8,
-                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR);
+
+   surface = vk_alloc2(&instance->alloc, pAllocator, sizeof *surface, 8,
+                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (surface == NULL)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
@@ -794,14 +840,19 @@ VkResult wsi_create_xcb_surface(const VkAllocationCallbacks *pAllocator,
    return VK_SUCCESS;
 }
 
-VkResult wsi_create_xlib_surface(const VkAllocationCallbacks *pAllocator,
-				 const VkXlibSurfaceCreateInfoKHR *pCreateInfo,
-				 VkSurfaceKHR *pSurface)
+VKAPI_ATTR VkResult VKAPI_CALL
+wsi_CreateXlibSurfaceKHR(VkInstance _instance,
+                         const VkXlibSurfaceCreateInfoKHR *pCreateInfo,
+                         const VkAllocationCallbacks *pAllocator,
+                         VkSurfaceKHR *pSurface)
 {
+   VK_FROM_HANDLE(vk_instance, instance, _instance);
    VkIcdSurfaceXlib *surface;
 
-   surface = vk_alloc(pAllocator, sizeof *surface, 8,
-                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR);
+
+   surface = vk_alloc2(&instance->alloc, pAllocator, sizeof *surface, 8,
+                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (surface == NULL)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
@@ -1001,7 +1052,7 @@ x11_handle_dri3_present_event(struct x11_swapchain *chain,
 
 static uint64_t wsi_get_absolute_timeout(uint64_t timeout)
 {
-   uint64_t current_time = wsi_common_get_current_time();
+   uint64_t current_time = os_time_get_nano();
 
    timeout = MIN2(UINT64_MAX - current_time, timeout);
 
@@ -1052,7 +1103,7 @@ x11_acquire_next_image_poll_x11(struct x11_swapchain *chain,
             /* If a non-special event happens, the fd will still
              * poll. So recalculate the timeout now just in case.
              */
-            uint64_t current_time = wsi_common_get_current_time();
+            uint64_t current_time = os_time_get_nano();
             if (atimeout > current_time)
                timeout = atimeout - current_time;
             else
@@ -1512,7 +1563,7 @@ x11_image_finish(struct x11_swapchain *chain,
 {
    xcb_void_cookie_t cookie;
 
-   if (!chain->base.wsi->sw) {
+   if (!chain->base.wsi->sw || chain->has_mit_shm) {
       cookie = xcb_sync_destroy_fence(chain->conn, image->sync_fence);
       xcb_discard_reply(chain->conn, cookie.sequence);
       xshmfence_unmap_shm(image->shm_fence);
@@ -1712,8 +1763,13 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    if (chain == NULL)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
+   bool use_prime_blit = false;
+   if (!wsi_device->sw)
+      if (!wsi_x11_check_dri3_compatible(wsi_device, conn))
+         use_prime_blit = true;
+
    result = wsi_swapchain_init(wsi_device, &chain->base, device,
-                               pCreateInfo, pAllocator);
+                               pCreateInfo, pAllocator, use_prime_blit);
    if (result != VK_SUCCESS)
       goto fail_alloc;
 
@@ -1748,10 +1804,6 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
     * reallocated.
     */
    chain->copy_is_suboptimal = false;
-
-   if (!wsi_device->sw)
-      if (!wsi_x11_check_dri3_compatible(wsi_device, conn))
-         chain->base.use_prime_blit = true;
 
    chain->event_id = xcb_generate_id(chain->conn);
    xcb_present_select_input(chain->conn, chain->event_id, chain->window,

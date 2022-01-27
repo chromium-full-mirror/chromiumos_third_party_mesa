@@ -49,17 +49,25 @@ VkPipeline
 zink_create_gfx_pipeline(struct zink_screen *screen,
                          struct zink_gfx_program *prog,
                          struct zink_gfx_pipeline_state *state,
+                         const uint8_t *binding_map,
                          VkPrimitiveTopology primitive_topology)
 {
    struct zink_rasterizer_hw_state *hw_rast_state = (void*)state;
    VkPipelineVertexInputStateCreateInfo vertex_input_state;
-   if (!screen->info.have_EXT_vertex_input_dynamic_state) {
+   if (!screen->info.have_EXT_vertex_input_dynamic_state || !state->element_state->num_attribs) {
       memset(&vertex_input_state, 0, sizeof(vertex_input_state));
       vertex_input_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
       vertex_input_state.pVertexBindingDescriptions = state->element_state->b.bindings;
       vertex_input_state.vertexBindingDescriptionCount = state->element_state->num_bindings;
       vertex_input_state.pVertexAttributeDescriptions = state->element_state->attribs;
       vertex_input_state.vertexAttributeDescriptionCount = state->element_state->num_attribs;
+      if (!screen->info.have_EXT_extended_dynamic_state) {
+         for (int i = 0; i < state->element_state->num_bindings; ++i) {
+            const unsigned buffer_id = binding_map[i];
+            VkVertexInputBindingDescription *binding = &state->element_state->b.bindings[i];
+            binding->stride = state->vertex_strides[buffer_id];
+         }
+      }
    }
 
    VkPipelineVertexInputDivisorStateCreateInfoEXT vdiv_state;
@@ -201,10 +209,12 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VIEWPORT;
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_SCISSOR;
    }
-   if (screen->info.have_EXT_vertex_input_dynamic_state)
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
-   else if (screen->info.have_EXT_extended_dynamic_state)
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT;
+   if (state->element_state->num_attribs) {
+      if (screen->info.have_EXT_vertex_input_dynamic_state)
+         dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
+      else if (screen->info.have_EXT_extended_dynamic_state)
+         dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT;
+   }
    if (screen->info.have_EXT_extended_dynamic_state2)
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT;
 
@@ -231,7 +241,7 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
    pci.layout = prog->base.layout;
    pci.renderPass = state->render_pass->render_pass;
-   if (!screen->info.have_EXT_vertex_input_dynamic_state)
+   if (!screen->info.have_EXT_vertex_input_dynamic_state || !state->element_state->num_attribs)
       pci.pVertexInputState = &vertex_input_state;
    pci.pInputAssemblyState = &primitive_state;
    pci.pRasterizationState = &rast_state;

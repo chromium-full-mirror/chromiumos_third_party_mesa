@@ -65,7 +65,7 @@ init()
 }
 
 void
-init_program(Program* program, Stage stage, struct radv_shader_info* info,
+init_program(Program* program, Stage stage, const struct radv_shader_info* info,
              enum chip_class chip_class, enum radeon_family family, bool wgp_mode,
              ac_shader_config* config)
 {
@@ -148,6 +148,7 @@ init_program(Program* program, Stage stage, struct radv_shader_info* info,
    if (program->family == CHIP_TAHITI || program->family == CHIP_CARRIZO ||
        program->family == CHIP_HAWAII)
       program->dev.has_fast_fma32 = true;
+   program->dev.has_mac_legacy32 = program->chip_class <= GFX7 || program->chip_class >= GFX10;
 
    program->wgp_mode = wgp_mode;
 
@@ -187,7 +188,7 @@ can_use_SDWA(chip_class chip, const aco_ptr<Instruction>& instr, bool pre_ra)
    if (!instr->isVALU())
       return false;
 
-   if (chip < GFX8 || instr->isDPP())
+   if (chip < GFX8 || instr->isDPP() || instr->isVOP3P())
       return false;
 
    if (instr->isSDWA())
@@ -292,12 +293,12 @@ convert_to_SDWA(chip_class chip, aco_ptr<Instruction>& instr)
 }
 
 bool
-can_use_DPP(const aco_ptr<Instruction>& instr, bool pre_ra)
+can_use_DPP(const aco_ptr<Instruction>& instr, bool pre_ra, bool dpp8)
 {
    assert(instr->isVALU() && !instr->operands.empty());
 
    if (instr->isDPP())
-      return true;
+      return instr->isDPP8() == dpp8;
 
    if (instr->operands.size() && instr->operands[0].isLiteral())
       return false;
@@ -316,7 +317,11 @@ can_use_DPP(const aco_ptr<Instruction>& instr, bool pre_ra)
       const VOP3_instruction* vop3 = &instr->vop3();
       if (vop3->clamp || vop3->omod || vop3->opsel)
          return false;
+      if (dpp8)
+         return false;
       if (instr->format == Format::VOP3)
+         return false;
+      if (instr->operands.size() > 1 && !instr->operands[1].isOfType(RegType::vgpr))
          return false;
    }
 
@@ -329,29 +334,39 @@ can_use_DPP(const aco_ptr<Instruction>& instr, bool pre_ra)
 }
 
 aco_ptr<Instruction>
-convert_to_DPP(aco_ptr<Instruction>& instr)
+convert_to_DPP(aco_ptr<Instruction>& instr, bool dpp8)
 {
    if (instr->isDPP())
       return NULL;
 
    aco_ptr<Instruction> tmp = std::move(instr);
-   Format format =
-      (Format)(((uint32_t)tmp->format & ~(uint32_t)Format::VOP3) | (uint32_t)Format::DPP);
-   instr.reset(create_instruction<DPP_instruction>(tmp->opcode, format, tmp->operands.size(),
-                                                   tmp->definitions.size()));
+   Format format = (Format)(((uint32_t)tmp->format & ~(uint32_t)Format::VOP3) |
+                            (dpp8 ? (uint32_t)Format::DPP8 : (uint32_t)Format::DPP16));
+   if (dpp8)
+      instr.reset(create_instruction<DPP8_instruction>(tmp->opcode, format, tmp->operands.size(),
+                                                       tmp->definitions.size()));
+   else
+      instr.reset(create_instruction<DPP16_instruction>(tmp->opcode, format, tmp->operands.size(),
+                                                        tmp->definitions.size()));
    std::copy(tmp->operands.cbegin(), tmp->operands.cend(), instr->operands.begin());
    for (unsigned i = 0; i < instr->definitions.size(); i++)
       instr->definitions[i] = tmp->definitions[i];
 
-   DPP_instruction* dpp = &instr->dpp();
-   dpp->dpp_ctrl = dpp_quad_perm(0, 1, 2, 3);
-   dpp->row_mask = 0xf;
-   dpp->bank_mask = 0xf;
+   if (dpp8) {
+      DPP8_instruction* dpp = &instr->dpp8();
+      for (unsigned i = 0; i < 8; i++)
+         dpp->lane_sel[i] = i;
+   } else {
+      DPP16_instruction* dpp = &instr->dpp16();
+      dpp->dpp_ctrl = dpp_quad_perm(0, 1, 2, 3);
+      dpp->row_mask = 0xf;
+      dpp->bank_mask = 0xf;
 
-   if (tmp->isVOP3()) {
-      const VOP3_instruction* vop3 = &tmp->vop3();
-      memcpy(dpp->neg, vop3->neg, sizeof(dpp->neg));
-      memcpy(dpp->abs, vop3->abs, sizeof(dpp->abs));
+      if (tmp->isVOP3()) {
+         const VOP3_instruction* vop3 = &tmp->vop3();
+         memcpy(dpp->neg, vop3->neg, sizeof(dpp->neg));
+         memcpy(dpp->abs, vop3->abs, sizeof(dpp->abs));
+      }
    }
 
    if (instr->isVOPC() || instr->definitions.size() > 1)
@@ -525,12 +540,18 @@ get_reduction_identity(ReduceOp op, unsigned idx)
 bool
 needs_exec_mask(const Instruction* instr)
 {
-   if (instr->isSALU() || instr->isBranch())
+   if (instr->isVALU()) {
+      return instr->opcode != aco_opcode::v_readlane_b32 &&
+             instr->opcode != aco_opcode::v_readlane_b32_e64 &&
+             instr->opcode != aco_opcode::v_writelane_b32 &&
+             instr->opcode != aco_opcode::v_writelane_b32_e64;
+   }
+
+   if (instr->isVMEM() || instr->isFlatLike())
+      return true;
+
+   if (instr->isSALU() || instr->isBranch() || instr->isSMEM() || instr->isBarrier())
       return instr->reads_exec();
-   if (instr->isSMEM())
-      return false;
-   if (instr->isBarrier())
-      return false;
 
    if (instr->isPseudo()) {
       switch (instr->opcode) {
@@ -543,21 +564,15 @@ needs_exec_mask(const Instruction* instr)
             if (def.getTemp().type() == RegType::vgpr)
                return true;
          }
-         return false;
+         return instr->reads_exec();
       case aco_opcode::p_spill:
       case aco_opcode::p_reload:
       case aco_opcode::p_logical_start:
       case aco_opcode::p_logical_end:
-      case aco_opcode::p_startpgm: return false;
+      case aco_opcode::p_startpgm: return instr->reads_exec();
       default: break;
       }
    }
-
-   if (instr->opcode == aco_opcode::v_readlane_b32 ||
-       instr->opcode == aco_opcode::v_readlane_b32_e64 ||
-       instr->opcode == aco_opcode::v_writelane_b32 ||
-       instr->opcode == aco_opcode::v_writelane_b32_e64)
-      return false;
 
    return true;
 }

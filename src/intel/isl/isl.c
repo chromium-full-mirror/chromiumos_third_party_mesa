@@ -99,7 +99,35 @@ static void
 isl_device_setup_mocs(struct isl_device *dev)
 {
    if (dev->info->ver >= 12) {
-      if (dev->info->is_dg1) {
+      if (intel_device_info_is_dg2(dev->info)) {
+         /* L3CC=WB; BSpec: 45101 */
+         dev->mocs.internal = 3 << 1;
+         dev->mocs.external = 3 << 1;
+
+         /* XY_BLOCK_COPY_BLT MOCS fields have programming notes which say:
+          *
+          *    "Destination MOCS value, which is used to program MOCS index
+          *     for writing to memory, should select a MOCS register having
+          *     "L3 Cacheability Control" programmed as uncacheable(UC) and
+          *     "Global GO" parameter set as GOMemory (pushes GO point to
+          *     memory). The MOCS Register may have L3 Lookup programmed as
+          *     UCL3LKDIS for better efficiency."
+          *
+          * The GO:Memory setting requires us to use MOCS 1 or 2.  MOCS 2
+          * has LKUP set to 0 and is marked "Non-Coherent", which we assume
+          * is probably the "better efficiency" they mention...
+          *
+          *   "Source MOCS value, which is used to program MOCS index for
+          *    reading from memory, should select a MOCS register having
+          *    "L3 Cacheability Control" programmed as uncacheable(UC).
+          *    The MOCS Register may have L3 Lookup programmed as UCL3LKDIS
+          *    for better efficiency."
+          *
+          * Any MOCS except 3 should work.  We use MOCS 2...
+          */
+         dev->mocs.blitter_dst = 2 << 1;
+         dev->mocs.blitter_src = 2 << 1;
+      } else if (dev->info->platform == INTEL_PLATFORM_DG1) {
          /* L3CC=WB */
          dev->mocs.internal = 5 << 1;
          /* Displayables on DG1 are free to cache in L3 since L3 is transient
@@ -134,7 +162,7 @@ isl_device_setup_mocs(struct isl_device *dev)
        */
       dev->mocs.internal = 0x78;
    } else if (dev->info->ver >= 7) {
-      if (dev->info->is_haswell) {
+      if (dev->info->platform == INTEL_PLATFORM_HSW) {
          /* MEMORY_OBJECT_CONTROL_STATE:
           * .LLCeLLCCacheabilityControlLLCCC             = 0,
           * .L3CacheabilityControlL3CC                   = 1,
@@ -166,7 +194,7 @@ isl_mocs(const struct isl_device *dev, isl_surf_usage_flags_t usage,
    if (external)
       return dev->mocs.external;
 
-   if (dev->info->ver >= 12 && !dev->info->is_dg1) {
+   if (dev->info->verx10 == 120 && dev->info->platform != INTEL_PLATFORM_DG1) {
       if (usage & ISL_SURF_USAGE_STAGING_BIT)
          return dev->mocs.internal;
 
@@ -189,15 +217,14 @@ isl_mocs(const struct isl_device *dev, isl_surf_usage_flags_t usage,
 
 void
 isl_device_init(struct isl_device *dev,
-                const struct intel_device_info *info,
-                bool has_bit6_swizzling)
+                const struct intel_device_info *info)
 {
    /* Gfx8+ don't have bit6 swizzling, ensure callsite is not confused. */
-   assert(!(has_bit6_swizzling && info->ver >= 8));
+   assert(!(info->has_bit6_swizzle && info->ver >= 8));
 
    dev->info = info;
    dev->use_separate_stencil = ISL_GFX_VER(dev) >= 6;
-   dev->has_bit6_swizzling = has_bit6_swizzling;
+   dev->has_bit6_swizzling = info->has_bit6_swizzle;
 
    /* The ISL_DEV macros may be defined in the CFLAGS, thus hardcoding some
     * device properties at buildtime. Verify that the macros with the device
@@ -263,6 +290,21 @@ isl_device_init(struct isl_device *dev,
    } else {
       dev->ds.stencil_offset = 0;
       dev->ds.hiz_offset = 0;
+   }
+
+   if (ISL_GFX_VER(dev) >= 7) {
+      /* From the IVB PRM, SURFACE_STATE::Height,
+       *
+       *    For typed buffer and structured buffer surfaces, the number
+       *    of entries in the buffer ranges from 1 to 2^27. For raw buffer
+       *    surfaces, the number of entries in the buffer is the number of bytes
+       *    which can range from 1 to 2^30.
+       *
+       * This limit is only concerned with raw buffers.
+       */
+      dev->max_buffer_size = 1ull << 30;
+   } else {
+      dev->max_buffer_size = 1ull << 27;
    }
 
    isl_device_setup_mocs(dev);
@@ -447,9 +489,9 @@ isl_tiling_get_info(enum isl_tiling tiling,
       break;
 
    case ISL_TILING_HIZ:
-      /* HiZ buffers are required to have ISL_FORMAT_HIZ which is an 8x4
-       * 128bpb format.  The tiling has the same physical dimensions as
-       * Y-tiling but actually has two HiZ columns per Y-tiled column.
+      /* HiZ buffers are required to have a 128bpb HiZ format. The tiling has
+       * the same physical dimensions as Y-tiling but actually has two HiZ
+       * columns per Y-tiled column.
        */
       assert(bs == 16);
       logical_el = isl_extent4d(16, 16, 1, 1);
@@ -573,7 +615,7 @@ isl_surf_choose_tiling(const struct isl_device *dev,
 
    /* HiZ surfaces always use the HiZ tiling */
    if (info->usage & ISL_SURF_USAGE_HIZ_BIT) {
-      assert(info->format == ISL_FORMAT_HIZ);
+      assert(isl_format_is_hiz(info->format));
       assert(tiling_flags == ISL_TILING_HIZ_BIT);
       *tiling = isl_tiling_flag_to_enum(tiling_flags);
       return true;
@@ -810,8 +852,6 @@ isl_choose_image_alignment_el(const struct isl_device *dev,
 {
    const struct isl_format_layout *fmtl = isl_format_get_layout(info->format);
    if (fmtl->txc == ISL_TXC_MCS) {
-      assert(tiling == ISL_TILING_Y0);
-
       /*
        * IvyBrigde PRM Vol 2, Part 1, "11.7 MCS Buffer for Render Target(s)":
        *
@@ -823,7 +863,7 @@ isl_choose_image_alignment_el(const struct isl_device *dev,
        */
       *image_align_el = isl_extent3d(4, 4, 1);
       return;
-   } else if (info->format == ISL_FORMAT_HIZ) {
+   } else if (fmtl->txc == ISL_TXC_HIZ) {
       assert(ISL_GFX_VER(dev) >= 6);
       if (ISL_GFX_VER(dev) == 6) {
          /* HiZ surfaces on Sandy Bridge are packed tightly. */
@@ -834,11 +874,42 @@ isl_choose_image_alignment_el(const struct isl_device *dev,
           */
          *image_align_el = isl_extent3d(2, 2, 1);
       } else {
-         /* On gfx12+, HiZ surfaces are always aligned to 16x16 pixels in the
-          * primary surface which works out to 2x4 HiZ elments.
-          * TODO: Verify
+         /* We choose the alignments based on the docs and what we've seen on
+          * prior platforms. From the TGL PRM Vol. 9, "Hierarchical Depth
+          * Buffer":
+          *
+          *    The height and width of the hierarchical depth buffer that must
+          *    be allocated are computed by the following formulas, where HZ
+          *    is the hierarchical depth buffer and Z is the depth buffer. The
+          *    Z_Height, Z_Width, and Z_Depth values given in these formulas
+          *    are those present in 3DSTATE_DEPTH_BUFFER incremented by one.
+          *
+          * The note about 3DSTATE_DEPTH_BUFFER tells us that the dimensions
+          * in the following formula refers to the base level. The key formula
+          * for the horizontal alignment is:
+          *
+          *    HZ_Width (bytes) [=]
+          *    ceiling(Z_Width / 16) * 16
+          *
+          * This type of formula is used when sizing compression blocks. So,
+          * the docs seem to say that the HiZ format has a block width of 16,
+          * and thus, the surface has a minimum horizontal alignment of 16
+          * pixels. This formula hasn't changed from prior platforms (where
+          * we've chosen a horizontal alignment of 16), so we should be on the
+          * right track. As for the vertical alignment, we're told:
+          *
+          *    To compute the minimum QPitch for the HZ surface, the height of
+          *    each LOD in pixels is determined using the equations for hL in
+          *    the GPU Overview volume, using a vertical alignment j=16.
+          *
+          * We're not calculating the QPitch right now, but the vertical
+          * alignment is plainly given as 16 rows in the depth buffer.
+          *
+          * As a result, we believe that HiZ surfaces are aligned to 16x16
+          * pixels in the primary surface. We divide this area by the HiZ
+          * block dimensions to get the alignment in terms of HiZ blocks.
           */
-         *image_align_el = isl_extent3d(2, 4, 1);
+         *image_align_el = isl_extent3d(16 / fmtl->bw, 16 / fmtl->bh, 1);
       }
       return;
    }
@@ -911,7 +982,7 @@ isl_surf_choose_dim_layout(const struct isl_device *dev,
           *
           * The cube face textures are stored in the same way as 3D surfaces
           * are stored (see section 6.17.5 for details).  For cube surfaces,
-          * however, the depth is equal to the number of faces (always 6) and 
+          * however, the depth is equal to the number of faces (always 6) and
           * is not reduced for each MIP.
           */
          if (ISL_GFX_VER(dev) == 4 && (usage & ISL_SURF_USAGE_CUBE_BIT))
@@ -1562,10 +1633,20 @@ isl_calc_row_pitch_alignment(const struct isl_device *dev,
     *    "When using linear memory, this must be at least 64 byte aligned."
     *
     * However, when displaying on NVIDIA and recent AMD GPUs via PRIME,
-    * we need a larger pitch of 256 bytes.  We do that just in case.
+    * we need a larger pitch of 256 bytes.
+    *
+    * If the ISL caller didn't specify a row_pitch_B, then we should assume
+    * the NVIDIA/AMD requirements. Otherwise, if we have a specified
+    * row_pitch_B, this is probably because the caller is trying to import a
+    * buffer. In that case we limit the minimum row pitch to the Intel HW
+    * requirement.
     */
-   if (surf_info->usage & ISL_SURF_USAGE_DISPLAY_BIT)
-      alignment = isl_align(alignment, 256);
+   if (surf_info->usage & ISL_SURF_USAGE_DISPLAY_BIT) {
+      if (surf_info->row_pitch_B == 0)
+         alignment = isl_align(alignment, 256);
+      else
+         alignment = isl_align(alignment, 64);
+   }
 
    return alignment;
 }
@@ -1839,15 +1920,15 @@ isl_surf_init_s(const struct isl_device *dev,
       if (tiling == ISL_TILING_GFX12_CCS)
          base_alignment_B = MAX(base_alignment_B, 4096);
 
-      /* Gfx12+ requires that images be 64K-aligned if they're going to used
-       * with CCS.  This is because the Aux translation table maps main
-       * surface addresses to aux addresses at a 64K (in the main surface)
-       * granularity.  Because we don't know for sure in ISL if a surface will
-       * use CCS, we have to guess based on the DISABLE_AUX usage bit.  The
-       * one thing we do know is that we haven't enable CCS on linear images
-       * yet so we can avoid the extra alignment there.
+      /* Platforms using an aux map require that images be 64K-aligned if
+       * they're going to used with CCS. This is because the Aux translation
+       * table maps main surface addresses to aux addresses at a 64K (in the
+       * main surface) granularity. Because we don't know for sure in ISL if
+       * a surface will use CCS, we have to guess based on the DISABLE_AUX
+       * usage bit. The one thing we do know is that we haven't enable CCS on
+       * linear images yet so we can avoid the extra alignment there.
        */
-      if (ISL_GFX_VER(dev) >= 12 &&
+      if (dev->info->has_aux_map &&
           !(info->usage & ISL_SURF_USAGE_DISABLE_AUX_BIT)) {
          base_alignment_B = MAX(base_alignment_B, 64 * 1024);
       }
@@ -1919,35 +2000,24 @@ isl_surf_get_hiz_surf(const struct isl_device *dev,
                       const struct isl_surf *surf,
                       struct isl_surf *hiz_surf)
 {
-   assert(ISL_GFX_VER(dev) >= 5 && ISL_DEV_USE_SEPARATE_STENCIL(dev));
+   /* HiZ support does not exist prior to Gfx5 */
+   if (ISL_GFX_VER(dev) < 5)
+      return false;
 
    if (!isl_surf_usage_is_depth(surf->usage))
       return false;
 
-   /* HiZ only works with Y-tiled depth buffers */
-   if (!isl_tiling_is_any_y(surf->tiling))
+   /* From the Sandy Bridge PRM, Vol 2 Part 1,
+    * 3DSTATE_DEPTH_BUFFER::Hierarchical Depth Buffer Enable,
+    *
+    *    If this field is enabled, the Surface Format of the depth buffer
+    *    cannot be D32_FLOAT_S8X24_UINT or D24_UNORM_S8_UINT. Use of stencil
+    *    requires the separate stencil buffer.
+    *
+    * On SNB+, HiZ can't be used with combined depth-stencil buffers.
+    */
+   if (isl_surf_usage_is_stencil(surf->usage))
       return false;
-
-   /* On SNB+, compressed depth buffers cannot be interleaved with stencil. */
-   switch (surf->format) {
-   case ISL_FORMAT_R24_UNORM_X8_TYPELESS:
-      if (isl_surf_usage_is_depth_and_stencil(surf->usage)) {
-         assert(ISL_GFX_VER(dev) == 5);
-         unreachable("This should work, but is untested");
-      }
-      FALLTHROUGH;
-   case ISL_FORMAT_R16_UNORM:
-   case ISL_FORMAT_R32_FLOAT:
-      break;
-   case ISL_FORMAT_R32_FLOAT_X8X24_TYPELESS:
-      if (ISL_GFX_VER(dev) == 5) {
-         assert(isl_surf_usage_is_depth_and_stencil(surf->usage));
-         unreachable("This should work, but is untested");
-      }
-      FALLTHROUGH;
-   default:
-      return false;
-   }
 
    /* Multisampled depth is always interleaved */
    assert(surf->msaa_layout == ISL_MSAA_LAYOUT_NONE ||
@@ -1970,35 +2040,9 @@ isl_surf_get_hiz_surf(const struct isl_device *dev,
     *    Z_Width must be multiplied by 4 before being applied to the table
     *    below if Number of Multisamples is set to NUMSAMPLES_8."
     *
-    * In the Sky Lake PRM, the second paragraph is replaced with this:
-    *
-    *    "The Z_Height and Z_Width values must equal those present in
-    *    3DSTATE_DEPTH_BUFFER incremented by one."
-    *
-    * In other words, on Sandy Bridge through Broadwell, each 128-bit HiZ
-    * block corresponds to a region of 8x4 samples in the primary depth
-    * surface.  On Sky Lake, on the other hand, each HiZ block corresponds to
-    * a region of 8x4 pixels in the primary depth surface regardless of the
-    * number of samples.  The dimensions of a HiZ block in both pixels and
-    * samples are given in the table below:
-    *
-    *                    | SNB - BDW |     SKL+
-    *              ------+-----------+-------------
-    *                1x  |  8 x 4 sa |   8 x 4 sa
-    *               MSAA |  8 x 4 px |   8 x 4 px
-    *              ------+-----------+-------------
-    *                2x  |  8 x 4 sa |  16 x 4 sa
-    *               MSAA |  4 x 4 px |   8 x 4 px
-    *              ------+-----------+-------------
-    *                4x  |  8 x 4 sa |  16 x 8 sa
-    *               MSAA |  4 x 2 px |   8 x 4 px
-    *              ------+-----------+-------------
-    *                8x  |  8 x 4 sa |  32 x 8 sa
-    *               MSAA |  2 x 2 px |   8 x 4 px
-    *              ------+-----------+-------------
-    *               16x  |    N/A    | 32 x 16 sa
-    *               MSAA |    N/A    |  8 x  4 px
-    *              ------+-----------+-------------
+    * In the Sky Lake PRM, the second paragraph is gone.  This means that,
+    * from Sandy Bridge through Broadwell, HiZ compresses samples in the
+    * primary depth surface.  On Sky Lake and onward, HiZ compresses pixels.
     *
     * There are a number of different ways that this discrepency could be
     * handled.  The way we have chosen is to simply make MSAA HiZ have the
@@ -2010,9 +2054,12 @@ isl_surf_get_hiz_surf(const struct isl_device *dev,
     */
    const unsigned samples = ISL_GFX_VER(dev) >= 9 ? 1 : surf->samples;
 
+   const enum isl_format format =
+      ISL_GFX_VERX10(dev) >= 125 ? ISL_FORMAT_GFX125_HIZ : ISL_FORMAT_HIZ;
+
    return isl_surf_init(dev, hiz_surf,
                         .dim = surf->dim,
-                        .format = ISL_FORMAT_HIZ,
+                        .format = format,
                         .width = surf->logical_level0_px.width,
                         .height = surf->logical_level0_px.height,
                         .depth = surf->logical_level0_px.depth,
@@ -2032,38 +2079,12 @@ isl_surf_get_mcs_surf(const struct isl_device *dev,
    if (surf->msaa_layout != ISL_MSAA_LAYOUT_ARRAY)
       return false;
 
-   if (mcs_surf->size_B > 0)
-      return false;
-
    /* The following are true of all multisampled surfaces */
    assert(surf->samples > 1);
    assert(surf->dim == ISL_SURF_DIM_2D);
    assert(surf->levels == 1);
    assert(surf->logical_level0_px.depth == 1);
-
-   /* From the Ivy Bridge PRM, Vol4 Part1 p77 ("MCS Enable"):
-    *
-    *   This field must be set to 0 for all SINT MSRTs when all RT channels
-    *   are not written
-    *
-    * In practice this means that we have to disable MCS for all signed
-    * integer MSAA buffers.  The alternative, to disable MCS only when one
-    * of the render target channels is disabled, is impractical because it
-    * would require converting between CMS and UMS MSAA layouts on the fly,
-    * which is expensive.
-    */
-   if (ISL_GFX_VER(dev) == 7 && isl_format_has_sint_channel(surf->format))
-      return false;
-
-   /* The "Auxiliary Surface Pitch" field in RENDER_SURFACE_STATE is only 9
-    * bits which means the maximum pitch of a compression surface is 512
-    * tiles or 64KB (since MCS is always Y-tiled).  Since a 16x MCS buffer is
-    * 64bpp, this gives us a maximum width of 8192 pixels.  We can create
-    * larger multisampled surfaces, we just can't compress them.   For 2x, 4x,
-    * and 8x, we have enough room for the full 16k supported by the hardware.
-    */
-   if (surf->samples == 16 && surf->logical_level0_px.width > 8192)
-      return false;
+   assert(isl_format_supports_multisampling(dev->info, surf->format));
 
    enum isl_format mcs_format;
    switch (surf->samples) {
@@ -2085,7 +2106,7 @@ isl_surf_get_mcs_surf(const struct isl_device *dev,
                         .array_len = surf->logical_level0_px.array_len,
                         .samples = 1, /* MCS surfaces are really single-sampled */
                         .usage = ISL_SURF_USAGE_MCS_BIT,
-                        .tiling_flags = ISL_TILING_Y0_BIT);
+                        .tiling_flags = ISL_TILING_ANY_MASK);
 }
 
 bool
@@ -2093,22 +2114,11 @@ isl_surf_supports_ccs(const struct isl_device *dev,
                       const struct isl_surf *surf,
                       const struct isl_surf *hiz_or_mcs_surf)
 {
-   /* CCS support does not exist prior to Gfx7 */
-   if (ISL_GFX_VER(dev) <= 6)
-      return false;
-
-   /* Wa_22011186057: Disable compression on ADL-P A0 */
-   if (dev->info->is_alderlake && dev->info->gt == 2 &&
-       dev->info->revision == 0)
-      return false;
-
    if (surf->usage & ISL_SURF_USAGE_DISABLE_AUX_BIT)
       return false;
 
-   if (isl_format_is_compressed(surf->format))
-      return false;
-
-   if (!isl_is_pow2(isl_format_get_layout(surf->format)->bpb))
+   if (!isl_format_supports_ccs_d(dev->info, surf->format) &&
+       !isl_format_supports_ccs_e(dev->info, surf->format))
       return false;
 
    /* From the Ivy Bridge PRM, Vol2 Part1 11.7 "MCS Buffer for Render
@@ -2150,7 +2160,7 @@ isl_surf_supports_ccs(const struct isl_device *dev,
 
          assert(hiz_surf->usage & ISL_SURF_USAGE_HIZ_BIT);
          assert(hiz_surf->tiling == ISL_TILING_HIZ);
-         assert(hiz_surf->format == ISL_FORMAT_HIZ);
+         assert(isl_format_is_hiz(hiz_surf->format));
       } else if (surf->samples > 1) {
          const struct isl_surf *mcs_surf = hiz_or_mcs_surf;
 
@@ -2159,7 +2169,6 @@ isl_surf_supports_ccs(const struct isl_device *dev,
             return false;
 
          assert(mcs_surf->usage & ISL_SURF_USAGE_MCS_BIT);
-         assert(isl_tiling_is_any_y(mcs_surf->tiling));
          assert(isl_format_is_mcs(mcs_surf->format));
       } else {
          /* Single-sampled color can't have MCS or HiZ */
@@ -2232,15 +2241,6 @@ isl_surf_supports_ccs(const struct isl_device *dev,
        */
       if (ISL_GFX_VER(dev) <= 7 &&
           (surf->levels > 1 || surf->logical_level0_px.array_len > 1))
-         return false;
-
-      /* From the Ivy Bridge PRM, Vol2 Part1 11.7 "MCS Buffer for Render
-       * Target(s)", beneath the "Fast Color Clear" bullet (p326):
-       *
-       *     - MCS buffer for non-MSRT is supported only for RT formats 32bpp,
-       *       64bpp, and 128bpp.
-       */
-      if (isl_format_get_layout(surf->format)->bpb < 32)
          return false;
 
       /* From the Skylake documentation, it is made clear that X-tiling is no
@@ -2414,7 +2414,7 @@ void
 isl_null_fill_state_s(const struct isl_device *dev, void *state,
                       const struct isl_null_fill_state_info *restrict info)
 {
-   isl_genX_call(dev, null_fill_state, state, info);
+   isl_genX_call(dev, null_fill_state, dev, state, info);
 }
 
 void
@@ -3170,7 +3170,7 @@ bool
 isl_swizzle_supports_rendering(const struct intel_device_info *devinfo,
                                struct isl_swizzle swizzle)
 {
-   if (devinfo->is_haswell) {
+   if (devinfo->platform == INTEL_PLATFORM_HSW) {
       /* From the Haswell PRM,
        * RENDER_SURFACE_STATE::Shader Channel Select Red
        *
@@ -3383,4 +3383,118 @@ isl_format_get_aux_map_encoding(enum isl_format format)
       unreachable("Unsupported aux-map format!");
       return 0;
    }
+}
+
+/*
+ * Returns compression format encoding for Unified Lossless Compression
+ */
+uint8_t
+isl_get_render_compression_format(enum isl_format format)
+{
+   /* From the Bspec, Enumeration_RenderCompressionFormat section (53726): */
+   switch(format) {
+   case ISL_FORMAT_R32G32B32A32_FLOAT:
+   case ISL_FORMAT_R32G32B32X32_FLOAT:
+   case ISL_FORMAT_R32G32B32A32_SINT:
+      return 0x0;
+   case ISL_FORMAT_R32G32B32A32_UINT:
+      return 0x1;
+   case ISL_FORMAT_R32G32_FLOAT:
+   case ISL_FORMAT_R32G32_SINT:
+      return 0x2;
+   case ISL_FORMAT_R32G32_UINT:
+      return 0x3;
+   case ISL_FORMAT_R16G16B16A16_UNORM:
+   case ISL_FORMAT_R16G16B16X16_UNORM:
+   case ISL_FORMAT_R16G16B16A16_UINT:
+      return 0x4;
+   case ISL_FORMAT_R16G16B16A16_SNORM:
+   case ISL_FORMAT_R16G16B16A16_SINT:
+   case ISL_FORMAT_R16G16B16A16_FLOAT:
+   case ISL_FORMAT_R16G16B16X16_FLOAT:
+      return 0x5;
+   case ISL_FORMAT_R16G16_UNORM:
+   case ISL_FORMAT_R16G16_UINT:
+      return 0x6;
+   case ISL_FORMAT_R16G16_SNORM:
+   case ISL_FORMAT_R16G16_SINT:
+   case ISL_FORMAT_R16G16_FLOAT:
+      return 0x7;
+   case ISL_FORMAT_B8G8R8A8_UNORM:
+   case ISL_FORMAT_B8G8R8X8_UNORM:
+   case ISL_FORMAT_B8G8R8A8_UNORM_SRGB:
+   case ISL_FORMAT_B8G8R8X8_UNORM_SRGB:
+   case ISL_FORMAT_R8G8B8A8_UNORM:
+   case ISL_FORMAT_R8G8B8X8_UNORM:
+   case ISL_FORMAT_R8G8B8A8_UNORM_SRGB:
+   case ISL_FORMAT_R8G8B8X8_UNORM_SRGB:
+   case ISL_FORMAT_R8G8B8A8_UINT:
+      return 0x8;
+   case ISL_FORMAT_R8G8B8A8_SNORM:
+   case ISL_FORMAT_R8G8B8A8_SINT:
+      return 0x9;
+   case ISL_FORMAT_B5G6R5_UNORM:
+   case ISL_FORMAT_B5G6R5_UNORM_SRGB:
+   case ISL_FORMAT_B5G5R5A1_UNORM:
+   case ISL_FORMAT_B5G5R5A1_UNORM_SRGB:
+   case ISL_FORMAT_B4G4R4A4_UNORM:
+   case ISL_FORMAT_B4G4R4A4_UNORM_SRGB:
+   case ISL_FORMAT_B5G5R5X1_UNORM:
+   case ISL_FORMAT_B5G5R5X1_UNORM_SRGB:
+   case ISL_FORMAT_A1B5G5R5_UNORM:
+   case ISL_FORMAT_A4B4G4R4_UNORM:
+   case ISL_FORMAT_R8G8_UNORM:
+   case ISL_FORMAT_R8G8_UINT:
+      return 0xA;
+   case ISL_FORMAT_R8G8_SNORM:
+   case ISL_FORMAT_R8G8_SINT:
+      return 0xB;
+   case ISL_FORMAT_R10G10B10A2_UNORM:
+   case ISL_FORMAT_R10G10B10A2_UNORM_SRGB:
+   case ISL_FORMAT_R10G10B10_FLOAT_A2_UNORM:
+   case ISL_FORMAT_R10G10B10A2_UINT:
+   case ISL_FORMAT_B10G10R10A2_UNORM:
+   case ISL_FORMAT_B10G10R10X2_UNORM:
+   case ISL_FORMAT_B10G10R10A2_UNORM_SRGB:
+      return 0xC;
+   case ISL_FORMAT_R11G11B10_FLOAT:
+      return 0xD;
+   case ISL_FORMAT_R32_SINT:
+   case ISL_FORMAT_R32_FLOAT:
+      return 0x10;
+   case ISL_FORMAT_R32_UINT:
+   case ISL_FORMAT_R24_UNORM_X8_TYPELESS:
+      return 0x11;
+   case ISL_FORMAT_R16_UNORM:
+   case ISL_FORMAT_R16_UINT:
+      return 0x14;
+   case ISL_FORMAT_R16_SNORM:
+   case ISL_FORMAT_R16_SINT:
+   case ISL_FORMAT_R16_FLOAT:
+      return 0x15;
+   case ISL_FORMAT_R8_UNORM:
+   case ISL_FORMAT_R8_UINT:
+   case ISL_FORMAT_A8_UNORM:
+      return 0x18;
+   case ISL_FORMAT_R8_SNORM:
+   case ISL_FORMAT_R8_SINT:
+      return 0x19;
+   default:
+      unreachable("Unsupported render compression format!");
+      return 0;
+   }
+}
+
+const char *
+isl_aux_op_to_name(enum isl_aux_op op)
+{
+   static const char *names[] = {
+      [ISL_AUX_OP_NONE]            = "none",
+      [ISL_AUX_OP_FAST_CLEAR]      = "fast-clear",
+      [ISL_AUX_OP_FULL_RESOLVE]    = "full-resolve",
+      [ISL_AUX_OP_PARTIAL_RESOLVE] = "partial-resolve",
+      [ISL_AUX_OP_AMBIGUATE]       = "ambiguate",
+   };
+   assert(op < ARRAY_SIZE(names));
+   return names[op];
 }

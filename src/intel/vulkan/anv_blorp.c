@@ -92,7 +92,12 @@ upload_blorp_shader(struct blorp_batch *batch, uint32_t stage,
 void
 anv_device_init_blorp(struct anv_device *device)
 {
-   blorp_init(&device->blorp, device, &device->isl_dev);
+   const struct intel_device_info *devinfo = &device->info;
+   const struct blorp_config config = {
+      .use_mesh_shading = devinfo->has_mesh_shading,
+   };
+
+   blorp_init(&device->blorp, device, &device->isl_dev, &config);
    device->blorp.compiler = device->physical->compiler;
    device->blorp.lookup_shader = lookup_blorp_shader;
    device->blorp.upload_shader = upload_blorp_shader;
@@ -156,22 +161,7 @@ get_blorp_surf_for_anv_buffer(struct anv_device *device,
                               struct blorp_surf *blorp_surf,
                               struct isl_surf *isl_surf)
 {
-   const struct isl_format_layout *fmtl =
-      isl_format_get_layout(format);
    bool ok UNUSED;
-
-   /* ASTC is the only format which doesn't support linear layouts.
-    * Create an equivalently sized surface with ISL to get around this.
-    */
-   if (fmtl->txc == ISL_TXC_ASTC) {
-      /* Use an equivalently sized format */
-      format = ISL_FORMAT_R32G32B32A32_UINT;
-      assert(fmtl->bpb == isl_format_get_layout(format)->bpb);
-
-      /* Shrink the dimensions for the new format */
-      width = DIV_ROUND_UP(width, fmtl->bw);
-      height = DIV_ROUND_UP(height, fmtl->bh);
-   }
 
    *blorp_surf = (struct blorp_surf) {
       .surf = isl_surf,
@@ -541,10 +531,8 @@ copy_buffer_to_image(struct anv_cmd_buffer *cmd_buffer,
       buffer_row_pitch;
 
    /* Some formats have additional restrictions which may cause ISL to
-    * fail to create a surface for us.  Some examples include:
-    *
-    *    1. ASTC formats are not allowed to be LINEAR and must be tiled
-    *    2. YCbCr formats have to have 2-pixel aligned strides
+    * fail to create a surface for us.  For example, YCbCr formats
+    * have to have 2-pixel aligned strides.
     *
     * To avoid these issues, we always bind the buffer as if it's a
     * "normal" format like RGBA32_UINT.  Since we're using blorp_copy,
@@ -1677,7 +1665,6 @@ anv_image_clear_depth_stencil(struct anv_cmd_buffer *cmd_buffer,
     */
    anv_add_pending_pipe_bits(cmd_buffer,
                              ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
-                             ANV_PIPE_TILE_CACHE_FLUSH_BIT |
                              ANV_PIPE_END_OF_PIPE_SYNC_BIT,
                              "after clear DS");
 
@@ -1785,6 +1772,25 @@ anv_image_hiz_clear(struct anv_cmd_buffer *cmd_buffer,
                              ANV_PIPE_DEPTH_STALL_BIT,
                              "before clear hiz");
 
+   if ((aspects & VK_IMAGE_ASPECT_DEPTH_BIT) &&
+       depth.aux_usage == ISL_AUX_USAGE_HIZ_CCS_WT) {
+      /* From Bspec 47010 (Depth Buffer Clear):
+       *
+       *    Since the fast clear cycles to CCS are not cached in TileCache,
+       *    any previous depth buffer writes to overlapping pixels must be
+       *    flushed out of TileCache before a succeeding Depth Buffer Clear.
+       *    This restriction only applies to Depth Buffer with write-thru
+       *    enabled, since fast clears to CCS only occur for write-thru mode.
+       *
+       * There may have been a write to this depth buffer. Flush it from the
+       * tile cache just in case.
+       */
+      anv_add_pending_pipe_bits(cmd_buffer,
+                                ANV_PIPE_DEPTH_CACHE_FLUSH_BIT |
+                                ANV_PIPE_TILE_CACHE_FLUSH_BIT,
+                                "before clear hiz_ccs_wt");
+   }
+
    blorp_hiz_clear_depth_stencil(&batch, &depth, &stencil,
                                  level, base_layer, layer_count,
                                  area.offset.x, area.offset.y,
@@ -1835,6 +1841,7 @@ anv_image_mcs_op(struct anv_cmd_buffer *cmd_buffer,
    /* Multisampling with multi-planar formats is not supported */
    assert(image->n_planes == 1);
 
+   const struct intel_device_info *devinfo = &cmd_buffer->device->info;
    struct blorp_batch batch;
    anv_blorp_batch_init(cmd_buffer, &batch,
                         BLORP_BATCH_PREDICATE_ENABLE * predicate +
@@ -1871,6 +1878,11 @@ anv_image_mcs_op(struct anv_cmd_buffer *cmd_buffer,
    anv_add_pending_pipe_bits(cmd_buffer,
                              ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
                              ANV_PIPE_TILE_CACHE_FLUSH_BIT |
+                             (devinfo->verx10 == 120 ?
+                                ANV_PIPE_DEPTH_STALL_BIT : 0) |
+                             (devinfo->verx10 == 125 ?
+                                ANV_PIPE_HDC_PIPELINE_FLUSH_BIT : 0) |
+                             ANV_PIPE_PSS_STALL_SYNC_BIT |
                              ANV_PIPE_END_OF_PIPE_SYNC_BIT,
                              "before fast clear mcs");
 
@@ -1892,6 +1904,10 @@ anv_image_mcs_op(struct anv_cmd_buffer *cmd_buffer,
 
    anv_add_pending_pipe_bits(cmd_buffer,
                              ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
+                             (devinfo->verx10 == 120 ?
+                                ANV_PIPE_TILE_CACHE_FLUSH_BIT |
+                                ANV_PIPE_DEPTH_STALL_BIT : 0) |
+                             ANV_PIPE_PSS_STALL_SYNC_BIT |
                              ANV_PIPE_END_OF_PIPE_SYNC_BIT,
                              "after fast clear mcs");
 
@@ -1916,6 +1932,7 @@ anv_image_ccs_op(struct anv_cmd_buffer *cmd_buffer,
           anv_image_aux_layers(image, aspect, level));
 
    const uint32_t plane = anv_image_aspect_to_plane(image, aspect);
+   const struct intel_device_info *devinfo = &cmd_buffer->device->info;
 
    struct blorp_batch batch;
    anv_blorp_batch_init(cmd_buffer, &batch,
@@ -1957,6 +1974,11 @@ anv_image_ccs_op(struct anv_cmd_buffer *cmd_buffer,
    anv_add_pending_pipe_bits(cmd_buffer,
                              ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
                              ANV_PIPE_TILE_CACHE_FLUSH_BIT |
+                             (devinfo->verx10 == 120 ?
+                                ANV_PIPE_DEPTH_STALL_BIT : 0) |
+                             (devinfo->verx10 == 125 ?
+                                ANV_PIPE_HDC_PIPELINE_FLUSH_BIT : 0) |
+                             ANV_PIPE_PSS_STALL_SYNC_BIT |
                              ANV_PIPE_END_OF_PIPE_SYNC_BIT,
                              "before fast clear ccs");
 
@@ -1983,6 +2005,10 @@ anv_image_ccs_op(struct anv_cmd_buffer *cmd_buffer,
 
    anv_add_pending_pipe_bits(cmd_buffer,
                              ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
+                             (devinfo->verx10 == 120 ?
+                                ANV_PIPE_TILE_CACHE_FLUSH_BIT |
+                                ANV_PIPE_DEPTH_STALL_BIT : 0) |
+                             ANV_PIPE_PSS_STALL_SYNC_BIT |
                              ANV_PIPE_END_OF_PIPE_SYNC_BIT,
                              "after fast clear ccs");
 

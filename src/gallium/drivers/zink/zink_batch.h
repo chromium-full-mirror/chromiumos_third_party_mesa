@@ -61,12 +61,16 @@ batch_ptr_add_usage(struct zink_batch *batch, struct set *s, void *ptr);
 
 struct zink_batch_state {
    struct zink_fence fence;
+   struct zink_batch_state *next;
 
    struct zink_batch_usage usage;
    struct zink_context *ctx;
    VkCommandPool cmdpool;
    VkCommandBuffer cmdbuf;
    VkCommandBuffer barrier_cmdbuf;
+   VkSemaphore signal_semaphore; //external signal semaphore
+   struct util_dynarray wait_semaphores; //external wait semaphores
+   struct util_dynarray wait_semaphore_stages; //external wait semaphores
 
    VkQueue queue; //duplicated from batch for threading
    VkSemaphore sem;

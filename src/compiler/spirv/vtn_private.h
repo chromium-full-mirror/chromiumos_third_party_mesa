@@ -336,6 +336,7 @@ enum vtn_base_type {
    vtn_base_type_sampler,
    vtn_base_type_sampled_image,
    vtn_base_type_accel_struct,
+   vtn_base_type_ray_query,
    vtn_base_type_function,
    vtn_base_type_event,
 };
@@ -624,14 +625,23 @@ struct vtn_value {
 
 #define VTN_DEC_DECORATION -1
 #define VTN_DEC_EXECUTION_MODE -2
+#define VTN_DEC_STRUCT_MEMBER_NAME0 -3
 #define VTN_DEC_STRUCT_MEMBER0 0
 
 struct vtn_decoration {
    struct vtn_decoration *next;
 
-   /* Specifies how to apply this decoration.  Negative values represent a
-    * decoration or execution mode. (See the VTN_DEC_ #defines above.)
-    * Non-negative values specify that it applies to a structure member.
+   /* Different kinds of decorations are stored in a value,
+      the scope defines what decoration it refers to:
+
+      - VTN_DEC_DECORATION:
+            decoration associated with the value
+      - VTN_DEC_EXECUTION_MODE:
+            an execution mode associated with an entrypoint value
+      - VTN_DEC_STRUCT_MEMBER0 + m:
+            decoration associated with member m of a struct value
+      - VTN_DEC_STRUCT_MEMBER_NAME0 - m:
+            name of m'th member of a struct value
     */
    int scope;
 
@@ -641,6 +651,7 @@ struct vtn_decoration {
    union {
       SpvDecoration decoration;
       SpvExecutionMode exec_mode;
+      const char *member_name;
    };
 };
 
@@ -737,6 +748,10 @@ struct vtn_pointer *
 vtn_pointer_from_ssa(struct vtn_builder *b, nir_ssa_def *ssa,
                      struct vtn_type *ptr_type);
 
+struct vtn_ssa_value *
+vtn_const_ssa_value(struct vtn_builder *b, nir_constant *constant,
+                    const struct glsl_type *type);
+
 static inline struct vtn_value *
 vtn_untyped_value(struct vtn_builder *b, uint32_t value_id)
 {
@@ -785,6 +800,35 @@ vtn_value(struct vtn_builder *b, uint32_t value_id,
    vtn_fail_if(val->value_type != value_type,
                "SPIR-V id %u is the wrong kind of value", value_id);
    return val;
+}
+
+static inline struct vtn_value *
+vtn_pointer_value(struct vtn_builder *b, uint32_t value_id)
+{
+   struct vtn_value *val = vtn_untyped_value(b, value_id);
+   vtn_fail_if(val->value_type != vtn_value_type_pointer &&
+               !val->is_null_constant,
+               "SPIR-V id %u is the wrong kind of value", value_id);
+   return val;
+}
+
+static inline struct vtn_pointer *
+vtn_value_to_pointer(struct vtn_builder *b, struct vtn_value *value)
+{
+   if (value->is_null_constant) {
+      vtn_assert(glsl_type_is_vector_or_scalar(value->type->type));
+      nir_ssa_def *const_ssa =
+         vtn_const_ssa_value(b, value->constant, value->type->type)->def;
+      return vtn_pointer_from_ssa(b, const_ssa, value->type);
+   }
+   vtn_assert(value->value_type == vtn_value_type_pointer);
+   return value->pointer;
+}
+
+static inline struct vtn_pointer *
+vtn_pointer(struct vtn_builder *b, uint32_t value_id)
+{
+   return vtn_value_to_pointer(b, vtn_pointer_value(b, value_id));
 }
 
 bool

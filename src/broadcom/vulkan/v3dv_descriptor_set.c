@@ -218,35 +218,6 @@ v3dv_descriptor_map_get_sampler_state(struct v3dv_device *device,
    return reloc;
 }
 
-const struct v3dv_format*
-v3dv_descriptor_map_get_texture_format(struct v3dv_descriptor_state *descriptor_state,
-                                       struct v3dv_descriptor_map *map,
-                                       struct v3dv_pipeline_layout *pipeline_layout,
-                                       uint32_t index,
-                                       VkFormat *out_vk_format)
-{
-   struct v3dv_descriptor *descriptor =
-      v3dv_descriptor_map_get_descriptor(descriptor_state, map,
-                                         pipeline_layout, index, NULL);
-
-   switch (descriptor->type) {
-   case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-   case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-      assert(descriptor->buffer_view);
-      *out_vk_format = descriptor->buffer_view->vk_format;
-      return descriptor->buffer_view->format;
-   case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-   case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-   case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-   case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-      assert(descriptor->image_view);
-      *out_vk_format = descriptor->image_view->vk.format;
-      return descriptor->image_view->format;
-   default:
-      unreachable("descriptor type doesn't has a texture format");
-   }
-}
-
 struct v3dv_bo*
 v3dv_descriptor_map_get_texture_bo(struct v3dv_descriptor_state *descriptor_state,
                                    struct v3dv_descriptor_map *map,
@@ -326,7 +297,7 @@ v3dv_CreatePipelineLayout(VkDevice _device,
    layout = vk_object_zalloc(&device->vk, pAllocator, sizeof(*layout),
                              VK_OBJECT_TYPE_PIPELINE_LAYOUT);
    if (layout == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    layout->num_sets = pCreateInfo->setLayoutCount;
 
@@ -433,7 +404,7 @@ v3dv_CreateDescriptorPool(VkDevice _device,
                            VK_OBJECT_TYPE_DESCRIPTOR_POOL);
 
    if (!pool)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    if (!(pCreateInfo->flags & VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT)) {
       pool->host_memory_base = (uint8_t*)pool + sizeof(struct v3dv_descriptor_pool);
@@ -463,7 +434,7 @@ v3dv_CreateDescriptorPool(VkDevice _device,
 
  out_of_device_memory:
    vk_object_free(&device->vk, pAllocator, pool);
-   return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 }
 
 static void
@@ -583,7 +554,7 @@ v3dv_CreateDescriptorSetLayout(VkDevice _device,
                                  VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT);
 
    if (!set_layout)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    /* We just allocate all the immutable samplers at the end of the struct */
    struct v3dv_sampler *samplers = (void*) &set_layout->binding[num_bindings];
@@ -595,7 +566,7 @@ v3dv_CreateDescriptorSetLayout(VkDevice _device,
                                                pCreateInfo->bindingCount, &bindings);
    if (result != VK_SUCCESS) {
       vk_object_free(&device->vk, pAllocator, set_layout);
-      return vk_error(device->instance, result);
+      return vk_error(device, result);
    }
 
    memset(set_layout->binding, 0,
@@ -697,7 +668,7 @@ out_of_pool_memory(const struct v3dv_device *device,
     * by allocating a new pool, so they don't point to real issues.
     */
    if (!pool->is_driver_internal)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_POOL_MEMORY)
+      return vk_error(device, VK_ERROR_OUT_OF_POOL_MEMORY);
    else
       return VK_ERROR_OUT_OF_POOL_MEMORY;
 }
@@ -726,7 +697,7 @@ descriptor_set_create(struct v3dv_device *device,
                              VK_OBJECT_TYPE_DESCRIPTOR_SET);
 
       if (!set)
-         return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
    set->pool = pool;
@@ -1142,7 +1113,7 @@ v3dv_CreateDescriptorUpdateTemplate(
    template = vk_object_alloc(&device->vk, pAllocator, size,
                               VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE);
    if (template == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    template->bind_point = pCreateInfo->pipelineBindPoint;
 

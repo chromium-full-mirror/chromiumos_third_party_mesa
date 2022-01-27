@@ -14,7 +14,6 @@ glx/glx-multithread-makecurrent-2: skip
 glx/glx-multithread-makecurrent-3: skip
 glx/glx-multithread-makecurrent-4: skip
 glx/glx-multithread-texture: fail
-glx/glx-query-drawable-glx_fbconfig_id-window: fail
 glx/glx-swap-copy: fail
 glx/glx-swap-event_async: skip
 glx/glx-swap-event_event: skip
@@ -264,7 +263,6 @@ spec/arb_depth_buffer_float/depthstencil-render-miplevels 585 d=z32f_s8_s=z24_s8
 spec/arb_depth_buffer_float/depthstencil-render-miplevels 585 d=z32f_s=z24_s8: skip
 spec/arb_depth_buffer_float/depthstencil-render-miplevels 585 s=z24_s8_d=z32f: skip
 spec/arb_depth_buffer_float/depthstencil-render-miplevels 585 s=z24_s8_d=z32f_s8: skip
-spec/arb_direct_state_access/gettextureimage-formats: crash
 spec/arb_fragment_program/fp-indirections: skip
 spec/arb_fragment_shader_interlock/arb_fragment_shader_interlock-image-load-store: skip
 spec/arb_framebuffer_no_attachments/arb_framebuffer_no_attachments-params/dsa: skip
@@ -620,7 +618,6 @@ spec/ext_direct_state_access/named-buffers 15/flushmappednamedbufferrangeext: sk
 spec/ext_direct_state_access/named-buffers 15/mapnamedbufferext: skip
 spec/ext_direct_state_access/named-buffers 15/mapnamedbufferrangeext: skip
 spec/ext_direct_state_access/named-buffers 15/namedcopybuffersubdataext: skip
-spec/ext_external_objects/memory-object-api-errors: skip
 spec/ext_external_objects/semaphore-api-errors: skip
 spec/ext_external_objects/vk-buf-exchange: skip
 spec/ext_external_objects/vk-depth-display: skip
@@ -634,7 +631,6 @@ spec/ext_external_objects/vk-semaphores-2: skip
 spec/ext_external_objects/vk-stencil-display: skip
 spec/ext_external_objects/vk-vert-buf-reuse: skip
 spec/ext_external_objects/vk-vert-buf-update-errors: skip
-spec/ext_external_objects_fd/memory-object-api-errors: skip
 spec/ext_external_objects_fd/semaphore-api-errors: skip
 spec/ext_framebuffer_blit/fbo-blit-check-limits: fail
 spec/ext_framebuffer_multisample/accuracy 16 color: skip
@@ -1269,7 +1265,6 @@ spec/ext_texture_array/copyteximage 2d_array samples=16: skip
 spec/ext_texture_array/copyteximage 2d_array samples=32: skip
 spec/ext_texture_array/copyteximage 2d_array samples=6: skip
 spec/ext_texture_array/copyteximage 2d_array samples=8: skip
-spec/ext_texture_integer/fbo-integer: fail
 spec/ext_texture_integer/multisample-formats 16 gl_ext_texture_integer: skip
 spec/ext_texture_integer/multisample-formats 32 gl_ext_texture_integer: skip
 spec/ext_texture_integer/multisample-formats 6 gl_ext_texture_integer: skip

@@ -117,7 +117,7 @@ struct PACKED perf_query_slot {
    query_iova(struct occlusion_query_slot, pool, query, field)
 
 #define pipeline_stat_query_iova(pool, query, field)                 \
-   pool->bo.iova + pool->stride * query +                            \
+   pool->bo.iova + pool->stride * (query) +                            \
    offsetof(struct pipeline_stat_query_slot, field)
 
 #define primitive_query_iova(pool, query, field, i)                  \
@@ -125,9 +125,9 @@ struct PACKED perf_query_slot {
    offsetof(struct primitive_slot_value, values[i])
 
 #define perf_query_iova(pool, query, field, i)                          \
-   pool->bo.iova + pool->stride * query +                             \
+   pool->bo.iova + pool->stride * (query) +                             \
    sizeof(struct query_slot) +                                   \
-   sizeof(struct perfcntr_query_slot) * i +                          \
+   sizeof(struct perfcntr_query_slot) * (i) +                          \
    offsetof(struct perfcntr_query_slot, field)
 
 #define query_available_iova(pool, query)                            \
@@ -135,11 +135,11 @@ struct PACKED perf_query_slot {
 
 #define query_result_iova(pool, query, type, i)                            \
    pool->bo.iova + pool->stride * (query) +                          \
-   sizeof(struct query_slot) + sizeof(type) * i
+   sizeof(struct query_slot) + sizeof(type) * (i)
 
 #define query_result_addr(pool, query, type, i)                            \
-   pool->bo.map + pool->stride * query +                             \
-   sizeof(struct query_slot) + sizeof(type) * i
+   pool->bo.map + pool->stride * (query) +                             \
+   sizeof(struct query_slot) + sizeof(type) * (i)
 
 #define query_is_available(slot) slot->available
 
@@ -265,7 +265,7 @@ tu_CreateQueryPool(VkDevice _device,
          vk_object_alloc(&device->vk, pAllocator, pool_size,
                          VK_OBJECT_TYPE_QUERY_POOL);
    if (!pool)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    if (pCreateInfo->queryType == VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR) {
       pool->perf_group = fd_perfcntrs(&device->physical_device->dev_id,
@@ -426,7 +426,7 @@ wait_for_available(struct tu_device *device, struct tu_query_pool *pool,
       if (query_is_available(slot))
          return VK_SUCCESS;
    }
-   return vk_error(device->instance, VK_TIMEOUT);
+   return vk_error(device, VK_TIMEOUT);
 }
 
 /* Writes a query value to a buffer from the CPU. */
@@ -541,7 +541,7 @@ tu_GetQueryPoolResults(VkDevice _device,
    TU_FROM_HANDLE(tu_query_pool, pool, queryPool);
    assert(firstQuery + queryCount <= pool->size);
 
-   if (tu_device_is_lost(device))
+   if (vk_device_is_lost(&device->vk))
       return VK_ERROR_DEVICE_LOST;
 
    switch (pool->type) {

@@ -645,7 +645,8 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
                 if (dev->debug & PAN_DBG_TRACE)
                         pandecode_jc(submit.jc, dev->gpu_id);
 
-                if (dev->debug & PAN_DBG_SYNC)
+                /* Jobs won't be complete if blackhole rendering, that's ok */
+                if (!ctx->is_noop && dev->debug & PAN_DBG_SYNC)
                         pandecode_abort_on_fault(submit.jc, dev->gpu_id);
         }
 
@@ -899,4 +900,18 @@ panfrost_batch_union_scissor(struct panfrost_batch *batch,
         batch->miny = MIN2(batch->miny, miny);
         batch->maxx = MAX2(batch->maxx, maxx);
         batch->maxy = MAX2(batch->maxy, maxy);
+}
+
+/**
+ * Checks if rasterization should be skipped. If not, a TILER job must be
+ * created for each draw, or the IDVS flow must be used.
+ */
+bool
+panfrost_batch_skip_rasterization(struct panfrost_batch *batch)
+{
+        struct panfrost_context *ctx = batch->ctx;
+        struct pipe_rasterizer_state *rast = (void *) ctx->rasterizer;
+
+        return (rast->rasterizer_discard ||
+                batch->scissor_culls_everything);
 }

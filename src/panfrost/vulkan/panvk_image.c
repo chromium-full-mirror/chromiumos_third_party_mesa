@@ -84,7 +84,7 @@ panvk_image_create(VkDevice _device,
    image = vk_object_zalloc(&device->vk, alloc, sizeof(*image),
                             VK_OBJECT_TYPE_IMAGE);
    if (!image)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    image->type = pCreateInfo->imageType;
 
@@ -183,7 +183,7 @@ panvk_image_select_mod(VkDevice _device,
    if (pCreateInfo->samples > 1)
       return DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED;
 
-   if (pdev->quirks & MIDGARD_NO_AFBC)
+   if (!pdev->has_afbc)
       return DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED;
 
    /* Only a small selection of formats are AFBC'able */

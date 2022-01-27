@@ -1,17 +1,10 @@
-VK_EXT_color_write_enable on lavapipe
-GL_ARB_texture_filter_anisotropic in llvmpipe
-Anisotropic texture filtering in lavapipe
-VK_EXT_shader_atomic_float2 on Intel and RADV.
-VK_KHR_timeline_semaphore on lavapipe
-VK_EXT_external_memory_host on lavapipe
-GL_AMD_pinned_memory on llvmpipe
-GL 4.5 compatibility on llvmpipe
-VK_EXT_primitive_topology_list_restart on RADV and lavapipe.
-ES 3.2 on zink
-VK_KHR_depth_stencil_resolve on lavapipe
-VK_KHR_shader_integer_dot_product on RADV.
-OpenGL FP16 support on llvmpipe
-VK_KHR_shader_float16_int8 on lavapipe
-VK_KHR_shader_subgroup_extended_types on lavapipe
-VK_KHR_spirv_1_4 on lavapipe
-Experimental raytracing support on RADV
+lavapipe,radv,anv KHR_dynamic_rendering
+radv EXT_image_view_min_lod
+VK_KHR_synchronization2 on RADV.
+OpenSWR has been moved to the Amber branch
+radeonsi, zink ARB_sparse_texture
+d3d12 GLES3.1 (shader storage buffers, images, compute, indirect draw, draw params, ARB_framebuffer_no_attachments, ARB_sample_shading, and GLSL400)
+radeonsi, zink ARB_sparse_texture2
+zink EXT_memory_object, EXT_memory_object_fd, EXT_semaphore, EXT_semaphore_fd
+anv VK_VALVE_mutable_descriptor_type
+Vulkan 1.3 on RADV.

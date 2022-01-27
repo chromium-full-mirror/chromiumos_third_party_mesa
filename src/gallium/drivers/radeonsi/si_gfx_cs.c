@@ -196,15 +196,15 @@ static void si_begin_gfx_cs_debug(struct si_context *ctx)
    si_trace_emit(ctx);
 
    radeon_add_to_buffer_list(ctx, &ctx->gfx_cs, ctx->current_saved_cs->trace_buf,
-                             RADEON_USAGE_READWRITE, RADEON_PRIO_TRACE);
+                             RADEON_USAGE_READWRITE | RADEON_PRIO_FENCE_TRACE);
 }
 
 static void si_add_gds_to_buffer_list(struct si_context *sctx)
 {
    if (sctx->gds) {
-      sctx->ws->cs_add_buffer(&sctx->gfx_cs, sctx->gds, RADEON_USAGE_READWRITE, 0, 0);
+      sctx->ws->cs_add_buffer(&sctx->gfx_cs, sctx->gds, RADEON_USAGE_READWRITE, 0);
       if (sctx->gds_oa) {
-         sctx->ws->cs_add_buffer(&sctx->gfx_cs, sctx->gds_oa, RADEON_USAGE_READWRITE, 0, 0);
+         sctx->ws->cs_add_buffer(&sctx->gfx_cs, sctx->gds_oa, RADEON_USAGE_READWRITE, 0);
       }
    }
 }
@@ -247,8 +247,7 @@ void si_set_tracked_regs_to_clear_state(struct si_context *ctx)
    ctx->tracked_regs.reg_value[SI_TRACKED_PA_SC_MODE_CNTL_1] = 0x00000000;
    ctx->tracked_regs.reg_value[SI_TRACKED_PA_SU_PRIM_FILTER_CNTL] = 0;
    ctx->tracked_regs.reg_value[SI_TRACKED_PA_SU_SMALL_PRIM_FILTER_CNTL] = 0x00000000;
-   ctx->tracked_regs.reg_value[SI_TRACKED_PA_CL_VS_OUT_CNTL__VS] = 0x00000000;
-   ctx->tracked_regs.reg_value[SI_TRACKED_PA_CL_VS_OUT_CNTL__CL] = 0x00000000;
+   ctx->tracked_regs.reg_value[SI_TRACKED_PA_CL_VS_OUT_CNTL] = 0x00000000;
    ctx->tracked_regs.reg_value[SI_TRACKED_PA_CL_CLIP_CNTL] = 0x00090000;
    ctx->tracked_regs.reg_value[SI_TRACKED_PA_SC_BINNER_CNTL_0] = 0x00000003;
    ctx->tracked_regs.reg_value[SI_TRACKED_DB_VRS_OVERRIDE_CNTL] = 0x00000000;
@@ -388,12 +387,11 @@ void si_begin_new_gfx_cs(struct si_context *ctx, bool first_cs)
 
    if (ctx->border_color_buffer) {
       radeon_add_to_buffer_list(ctx, &ctx->gfx_cs, ctx->border_color_buffer,
-                                RADEON_USAGE_READ, RADEON_PRIO_BORDER_COLORS);
+                                RADEON_USAGE_READ | RADEON_PRIO_BORDER_COLORS);
    }
    if (ctx->shadowed_regs) {
       radeon_add_to_buffer_list(ctx, &ctx->gfx_cs, ctx->shadowed_regs,
-                                RADEON_USAGE_READWRITE,
-                                RADEON_PRIO_DESCRIPTORS);
+                                RADEON_USAGE_READWRITE | RADEON_PRIO_DESCRIPTORS);
    }
 
    si_add_all_descriptors_to_bo_list(ctx);
@@ -411,7 +409,7 @@ void si_begin_new_gfx_cs(struct si_context *ctx, bool first_cs)
    if (ctx->tess_rings) {
       radeon_add_to_buffer_list(ctx, &ctx->gfx_cs,
                                 unlikely(is_secure) ? si_resource(ctx->tess_rings_tmz) : si_resource(ctx->tess_rings),
-                                RADEON_USAGE_READWRITE, RADEON_PRIO_SHADER_RINGS);
+                                RADEON_USAGE_READWRITE | RADEON_PRIO_SHADER_RINGS);
    }
 
    /* set all valid group as dirty so they get reemited on

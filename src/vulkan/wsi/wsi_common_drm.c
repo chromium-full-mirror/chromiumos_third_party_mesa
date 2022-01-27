@@ -22,6 +22,7 @@
  */
 
 #include "wsi_common_private.h"
+#include "wsi_common_drm.h"
 #include "util/macros.h"
 #include "util/os_file.h"
 #include "util/xmlconfig.h"
@@ -33,6 +34,30 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <xf86drm.h>
+
+bool
+wsi_common_drm_devices_equal(int fd_a, int fd_b)
+{
+   drmDevicePtr device_a, device_b;
+   int ret;
+
+   ret = drmGetDevice2(fd_a, 0, &device_a);
+   if (ret)
+      return false;
+
+   ret = drmGetDevice2(fd_b, 0, &device_b);
+   if (ret) {
+      drmFreeDevice(&device_a);
+      return false;
+   }
+
+   bool result = drmDevicesEqual(device_a, device_b);
+
+   drmFreeDevice(&device_a);
+   drmFreeDevice(&device_b);
+
+   return result;
+}
 
 bool
 wsi_device_matches_drm_fd(const struct wsi_device *wsi, int drm_fd)
@@ -120,9 +145,15 @@ wsi_create_native_image(const struct wsi_swapchain *chain,
    struct wsi_image_create_info image_wsi_info = {
       .sType = VK_STRUCTURE_TYPE_WSI_IMAGE_CREATE_INFO_MESA,
    };
+   VkExternalMemoryImageCreateInfo ext_mem_image_create_info = {
+      .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+      .pNext = &image_wsi_info,
+      .handleTypes = wsi->sw ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT :
+      VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+   };
    VkImageCreateInfo image_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-      .pNext = &image_wsi_info,
+      .pNext = &ext_mem_image_create_info,
       .flags = 0,
       .imageType = VK_IMAGE_TYPE_2D,
       .format = pCreateInfo->imageFormat,
@@ -319,7 +350,8 @@ wsi_create_native_image(const struct wsi_swapchain *chain,
    const VkExportMemoryAllocateInfo memory_export_info = {
       .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
       .pNext = &memory_wsi_info,
-      .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+      .handleTypes = wsi->sw ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT :
+      VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
    };
    const VkMemoryDedicatedAllocateInfo memory_dedicated_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
@@ -331,6 +363,7 @@ wsi_create_native_image(const struct wsi_swapchain *chain,
       .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
       .pNext = &memory_dedicated_info,
       .pHostPointer = sw_host_ptr,
+      .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
    };
    const VkMemoryAllocateInfo memory_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -582,7 +615,8 @@ wsi_create_prime_image(const struct wsi_swapchain *chain,
       goto fail;
    }
 
-   for (uint32_t i = 0; i < wsi->queue_family_count; i++) {
+   int cmd_buffer_count = chain->prime_blit_queue != VK_NULL_HANDLE ? 1 : wsi->queue_family_count;
+   for (uint32_t i = 0; i < cmd_buffer_count; i++) {
       const VkCommandBufferAllocateInfo cmd_buffer_info = {
          .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
          .pNext = NULL,

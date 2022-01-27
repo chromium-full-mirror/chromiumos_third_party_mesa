@@ -468,7 +468,7 @@ panvk_draw_prepare_fs_rsd(struct panvk_cmd_buffer *cmdbuf,
 
       void *bd = rsd.cpu + pan_size(RENDERER_STATE);
       for (unsigned i = 0; i < pipeline->blend.state.rt_count; i++) {
-         if (pipeline->blend.constant[i].index != ~0) {
+         if (pipeline->blend.constant[i].index != (uint8_t)~0) {
             struct mali_blend_packed bd_dyn;
             struct mali_blend_packed *bd_templ =
                (struct mali_blend_packed *)&pipeline->blend.bd_template[i];
@@ -1010,7 +1010,7 @@ panvk_create_cmdbuf(struct panvk_device *device,
    cmdbuf = vk_zalloc(&device->vk.alloc, sizeof(*cmdbuf),
                       8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!cmdbuf)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    VkResult result = vk_command_buffer_init(&cmdbuf->vk, &device->vk);
    if (result != VK_SUCCESS) {

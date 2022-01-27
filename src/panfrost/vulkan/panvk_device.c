@@ -175,6 +175,9 @@ panvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    vk_instance_dispatch_table_from_entrypoints(&dispatch_table,
                                                &panvk_instance_entrypoints,
                                                true);
+   vk_instance_dispatch_table_from_entrypoints(&dispatch_table,
+                                               &wsi_instance_entrypoints,
+                                               false);
    result = vk_instance_init(&instance->vk,
                              &panvk_instance_extensions,
                              &dispatch_table,
@@ -279,6 +282,9 @@ panvk_physical_device_init(struct panvk_physical_device *device,
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
                                                       &panvk_physical_device_entrypoints,
                                                       true);
+   vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
+                                                      &wsi_physical_device_entrypoints,
+                                                      false);
 
    result = vk_physical_device_init(&device->vk, &instance->vk,
                                     &supported_extensions,
@@ -308,7 +314,7 @@ panvk_physical_device_init(struct panvk_physical_device *device,
    panfrost_open_device(NULL, fd, &device->pdev);
    fd = -1;
 
-   if (device->pdev.quirks & MIDGARD_SFBD) {
+   if (device->pdev.arch < 5) {
       result = vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
                          "%s not supported",
                          panfrost_model_name(device->pdev.gpu_id));
@@ -767,7 +773,7 @@ panvk_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
       .maxFragmentInputComponents = 128,
       .maxFragmentOutputAttachments = 8,
       .maxFragmentDualSrcAttachments = 1,
-      .maxFragmentCombinedOutputResources = 8,
+      .maxFragmentCombinedOutputResources = MAX_RTS + max_descriptor_set_size * 2,
       .maxComputeSharedMemorySize = 32768,
       .maxComputeWorkGroupCount = { 65535, 65535, 65535 },
       .maxComputeWorkGroupInvocations = 2048,
@@ -951,7 +957,7 @@ panvk_CreateDevice(VkPhysicalDevice physicalDevice,
    device = vk_zalloc2(&physical_device->instance->vk.alloc, pAllocator,
                        sizeof(*device), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
    if (!device)
-      return vk_error(physical_device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(physical_device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    const struct vk_device_entrypoint_table *dev_entrypoints;
    struct vk_device_dispatch_table dispatch_table;
@@ -976,11 +982,14 @@ panvk_CreateDevice(VkPhysicalDevice physicalDevice,
    vk_device_dispatch_table_from_entrypoints(&dispatch_table,
                                              &panvk_device_entrypoints,
                                              false);
+   vk_device_dispatch_table_from_entrypoints(&dispatch_table,
+                                             &wsi_device_entrypoints,
+                                             false);
    result = vk_device_init(&device->vk, &physical_device->vk, &dispatch_table,
                            pCreateInfo, pAllocator);
    if (result != VK_SUCCESS) {
       vk_free(&device->vk.alloc, device);
-      return vk_errorf(physical_device->instance, result, "vk_device_init failed");
+      return result;
    }
 
    device->instance = physical_device->instance;
@@ -1111,6 +1120,23 @@ vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName)
    return panvk_GetInstanceProcAddr(instance, pName);
 }
 
+/* With version 4+ of the loader interface the ICD should expose
+ * vk_icdGetPhysicalDeviceProcAddr()
+ */
+PUBLIC
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+vk_icdGetPhysicalDeviceProcAddr(VkInstance  _instance,
+                                const char* pName);
+
+PFN_vkVoidFunction
+vk_icdGetPhysicalDeviceProcAddr(VkInstance  _instance,
+                                const char* pName)
+{
+   VK_FROM_HANDLE(panvk_instance, instance, _instance);
+
+   return vk_instance_get_physical_device_proc_addr(&instance->vk, pName);
+}
+
 VkResult
 panvk_AllocateMemory(VkDevice _device,
                      const VkMemoryAllocateInfo *pAllocateInfo,
@@ -1131,7 +1157,7 @@ panvk_AllocateMemory(VkDevice _device,
    mem = vk_object_alloc(&device->vk, pAllocator, sizeof(*mem),
                          VK_OBJECT_TYPE_DEVICE_MEMORY);
    if (mem == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    const VkImportMemoryFdInfoKHR *fd_info =
       vk_find_struct_const(pAllocateInfo->pNext,
@@ -1208,7 +1234,7 @@ panvk_MapMemory(VkDevice _device,
       return VK_SUCCESS;
    }
 
-   return vk_error(device->instance, VK_ERROR_MEMORY_MAP_FAILED);
+   return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
 }
 
 void
@@ -1406,7 +1432,7 @@ panvk_CreateEvent(VkDevice _device,
       vk_object_zalloc(&device->vk, pAllocator, sizeof(*event),
                        VK_OBJECT_TYPE_EVENT);
    if (!event)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    struct drm_syncobj_create create = {
       .flags = 0,
@@ -1525,7 +1551,7 @@ panvk_CreateBuffer(VkDevice _device,
    buffer = vk_object_alloc(&device->vk, pAllocator, sizeof(*buffer),
                             VK_OBJECT_TYPE_BUFFER);
    if (buffer == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    buffer->size = pCreateInfo->size;
    buffer->usage = pCreateInfo->usage;
@@ -1566,7 +1592,7 @@ panvk_CreateFramebuffer(VkDevice _device,
    framebuffer = vk_object_alloc(&device->vk, pAllocator, size,
                                  VK_OBJECT_TYPE_FRAMEBUFFER);
    if (framebuffer == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    framebuffer->attachment_count = pCreateInfo->attachmentCount;
    framebuffer->width = pCreateInfo->width;
@@ -1648,8 +1674,17 @@ vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t *pSupportedVersion)
     *        - The ICD must implement vkCreate{PLATFORM}SurfaceKHR(),
     *          vkDestroySurfaceKHR(), and other API which uses VKSurfaceKHR,
     *          because the loader no longer does so.
+    *
+    *    - Loader interface v4 differs from v3 in:
+    *        - The ICD must implement vk_icdGetPhysicalDeviceProcAddr().
+    * 
+    *    - Loader interface v5 differs from v4 in:
+    *        - The ICD must support 1.1 and must not return 
+    *          VK_ERROR_INCOMPATIBLE_DRIVER from vkCreateInstance() unless a
+    *          Vulkan Loader with interface v4 or smaller is being used and the
+    *          application provides an API version that is greater than 1.0.
     */
-   *pSupportedVersion = MIN2(*pSupportedVersion, 3u);
+   *pSupportedVersion = MIN2(*pSupportedVersion, 5u);
    return VK_SUCCESS;
 }
 
@@ -1669,7 +1704,7 @@ panvk_GetMemoryFdKHR(VkDevice _device,
 
    int prime_fd = panfrost_bo_export(memory->bo);
    if (prime_fd < 0)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
    *pFd = prime_fd;
    return VK_SUCCESS;

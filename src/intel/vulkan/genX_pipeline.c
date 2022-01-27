@@ -1523,6 +1523,118 @@ emit_3dstate_streamout(struct anv_graphics_pipeline *pipeline,
    else
       xfb_info = pipeline->shaders[MESA_SHADER_VERTEX]->xfb_info;
 
+   if (xfb_info) {
+      struct GENX(SO_DECL) so_decl[MAX_XFB_STREAMS][128];
+      int next_offset[MAX_XFB_BUFFERS] = {0, 0, 0, 0};
+      int decls[MAX_XFB_STREAMS] = {0, 0, 0, 0};
+
+      memset(so_decl, 0, sizeof(so_decl));
+
+      for (unsigned i = 0; i < xfb_info->output_count; i++) {
+         const nir_xfb_output_info *output = &xfb_info->outputs[i];
+         unsigned buffer = output->buffer;
+         unsigned stream = xfb_info->buffer_to_stream[buffer];
+
+         /* Our hardware is unusual in that it requires us to program SO_DECLs
+          * for fake "hole" components, rather than simply taking the offset
+          * for each real varying.  Each hole can have size 1, 2, 3, or 4; we
+          * program as many size = 4 holes as we can, then a final hole to
+          * accommodate the final 1, 2, or 3 remaining.
+          */
+         int hole_dwords = (output->offset - next_offset[buffer]) / 4;
+         while (hole_dwords > 0) {
+            so_decl[stream][decls[stream]++] = (struct GENX(SO_DECL)) {
+               .HoleFlag = 1,
+               .OutputBufferSlot = buffer,
+               .ComponentMask = (1 << MIN2(hole_dwords, 4)) - 1,
+            };
+            hole_dwords -= 4;
+         }
+
+         int varying = output->location;
+         uint8_t component_mask = output->component_mask;
+         /* VARYING_SLOT_PSIZ contains four scalar fields packed together:
+          * - VARYING_SLOT_PRIMITIVE_SHADING_RATE in VARYING_SLOT_PSIZ.x
+          * - VARYING_SLOT_LAYER                  in VARYING_SLOT_PSIZ.y
+          * - VARYING_SLOT_VIEWPORT               in VARYING_SLOT_PSIZ.z
+          * - VARYING_SLOT_PSIZ                   in VARYING_SLOT_PSIZ.w
+          */
+         if (varying == VARYING_SLOT_PRIMITIVE_SHADING_RATE) {
+            varying = VARYING_SLOT_PSIZ;
+            component_mask = 1 << 0; // SO_DECL_COMPMASK_X
+         } else if (varying == VARYING_SLOT_LAYER) {
+            varying = VARYING_SLOT_PSIZ;
+            component_mask = 1 << 1; // SO_DECL_COMPMASK_Y
+         } else if (varying == VARYING_SLOT_VIEWPORT) {
+            varying = VARYING_SLOT_PSIZ;
+            component_mask = 1 << 2; // SO_DECL_COMPMASK_Z
+         } else if (varying == VARYING_SLOT_PSIZ) {
+            component_mask = 1 << 3; // SO_DECL_COMPMASK_W
+         }
+
+         next_offset[buffer] = output->offset +
+                               __builtin_popcount(component_mask) * 4;
+
+         const int slot = vue_map->varying_to_slot[varying];
+         if (slot < 0) {
+            /* This can happen if the shader never writes to the varying.
+             * Insert a hole instead of actual varying data.
+             */
+            so_decl[stream][decls[stream]++] = (struct GENX(SO_DECL)) {
+               .HoleFlag = true,
+               .OutputBufferSlot = buffer,
+               .ComponentMask = component_mask,
+            };
+         } else {
+            so_decl[stream][decls[stream]++] = (struct GENX(SO_DECL)) {
+               .OutputBufferSlot = buffer,
+               .RegisterIndex = slot,
+               .ComponentMask = component_mask,
+            };
+         }
+      }
+
+      int max_decls = 0;
+      for (unsigned s = 0; s < MAX_XFB_STREAMS; s++)
+         max_decls = MAX2(max_decls, decls[s]);
+
+      uint8_t sbs[MAX_XFB_STREAMS] = { };
+      for (unsigned b = 0; b < MAX_XFB_BUFFERS; b++) {
+         if (xfb_info->buffers_written & (1 << b))
+            sbs[xfb_info->buffer_to_stream[b]] |= 1 << b;
+      }
+
+      /* Wa_16011773973:
+       * If SOL is enabled and SO_DECL state has to be programmed,
+       *    1. Send 3D State SOL state with SOL disabled
+       *    2. Send SO_DECL NP state
+       *    3. Send 3D State SOL with SOL Enabled
+       */
+      if (intel_device_info_is_dg2(&pipeline->base.device->info))
+         anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_STREAMOUT), so);
+
+      uint32_t *dw = anv_batch_emitn(&pipeline->base.batch, 3 + 2 * max_decls,
+                                     GENX(3DSTATE_SO_DECL_LIST),
+                                     .StreamtoBufferSelects0 = sbs[0],
+                                     .StreamtoBufferSelects1 = sbs[1],
+                                     .StreamtoBufferSelects2 = sbs[2],
+                                     .StreamtoBufferSelects3 = sbs[3],
+                                     .NumEntries0 = decls[0],
+                                     .NumEntries1 = decls[1],
+                                     .NumEntries2 = decls[2],
+                                     .NumEntries3 = decls[3]);
+
+      for (int i = 0; i < max_decls; i++) {
+         GENX(SO_DECL_ENTRY_pack)(NULL, dw + 3 + i * 2,
+            &(struct GENX(SO_DECL_ENTRY)) {
+               .Stream0Decl = so_decl[0][i],
+               .Stream1Decl = so_decl[1][i],
+               .Stream2Decl = so_decl[2][i],
+               .Stream3Decl = so_decl[3][i],
+            });
+      }
+   }
+
 #if GFX_VER == 7
 #  define streamout_state_dw pipeline->gfx7.streamout_state
 #else
@@ -1605,109 +1717,6 @@ emit_3dstate_streamout(struct anv_graphics_pipeline *pipeline,
       anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_STREAMOUT), _so)
          _so = so;
    }
-
-   if (xfb_info) {
-      struct GENX(SO_DECL) so_decl[MAX_XFB_STREAMS][128];
-      int next_offset[MAX_XFB_BUFFERS] = {0, 0, 0, 0};
-      int decls[MAX_XFB_STREAMS] = {0, 0, 0, 0};
-
-      memset(so_decl, 0, sizeof(so_decl));
-
-      for (unsigned i = 0; i < xfb_info->output_count; i++) {
-         const nir_xfb_output_info *output = &xfb_info->outputs[i];
-         unsigned buffer = output->buffer;
-         unsigned stream = xfb_info->buffer_to_stream[buffer];
-
-         /* Our hardware is unusual in that it requires us to program SO_DECLs
-          * for fake "hole" components, rather than simply taking the offset
-          * for each real varying.  Each hole can have size 1, 2, 3, or 4; we
-          * program as many size = 4 holes as we can, then a final hole to
-          * accommodate the final 1, 2, or 3 remaining.
-          */
-         int hole_dwords = (output->offset - next_offset[buffer]) / 4;
-         while (hole_dwords > 0) {
-            so_decl[stream][decls[stream]++] = (struct GENX(SO_DECL)) {
-               .HoleFlag = 1,
-               .OutputBufferSlot = buffer,
-               .ComponentMask = (1 << MIN2(hole_dwords, 4)) - 1,
-            };
-            hole_dwords -= 4;
-         }
-
-         int varying = output->location;
-         uint8_t component_mask = output->component_mask;
-         /* VARYING_SLOT_PSIZ contains four scalar fields packed together:
-          * - VARYING_SLOT_PRIMITIVE_SHADING_RATE in VARYING_SLOT_PSIZ.x
-          * - VARYING_SLOT_LAYER                  in VARYING_SLOT_PSIZ.y
-          * - VARYING_SLOT_VIEWPORT               in VARYING_SLOT_PSIZ.z
-          * - VARYING_SLOT_PSIZ                   in VARYING_SLOT_PSIZ.w
-          */
-         if (varying == VARYING_SLOT_PRIMITIVE_SHADING_RATE) {
-            varying = VARYING_SLOT_PSIZ;
-            component_mask = 1 << 0; // SO_DECL_COMPMASK_X
-         } else if (varying == VARYING_SLOT_LAYER) {
-            varying = VARYING_SLOT_PSIZ;
-            component_mask = 1 << 1; // SO_DECL_COMPMASK_Y
-         } else if (varying == VARYING_SLOT_VIEWPORT) {
-            varying = VARYING_SLOT_PSIZ;
-            component_mask = 1 << 2; // SO_DECL_COMPMASK_Z
-         } else if (varying == VARYING_SLOT_PSIZ) {
-            component_mask = 1 << 3; // SO_DECL_COMPMASK_W
-         }
-
-         next_offset[buffer] = output->offset +
-                               __builtin_popcount(component_mask) * 4;
-
-         const int slot = vue_map->varying_to_slot[varying];
-         if (slot < 0) {
-            /* This can happen if the shader never writes to the varying.
-             * Insert a hole instead of actual varying data.
-             */
-            so_decl[stream][decls[stream]++] = (struct GENX(SO_DECL)) {
-               .HoleFlag = true,
-               .OutputBufferSlot = buffer,
-               .ComponentMask = component_mask,
-            };
-         } else {
-            so_decl[stream][decls[stream]++] = (struct GENX(SO_DECL)) {
-               .OutputBufferSlot = buffer,
-               .RegisterIndex = slot,
-               .ComponentMask = component_mask,
-            };
-         }
-      }
-
-      int max_decls = 0;
-      for (unsigned s = 0; s < MAX_XFB_STREAMS; s++)
-         max_decls = MAX2(max_decls, decls[s]);
-
-      uint8_t sbs[MAX_XFB_STREAMS] = { };
-      for (unsigned b = 0; b < MAX_XFB_BUFFERS; b++) {
-         if (xfb_info->buffers_written & (1 << b))
-            sbs[xfb_info->buffer_to_stream[b]] |= 1 << b;
-      }
-
-      uint32_t *dw = anv_batch_emitn(&pipeline->base.batch, 3 + 2 * max_decls,
-                                     GENX(3DSTATE_SO_DECL_LIST),
-                                     .StreamtoBufferSelects0 = sbs[0],
-                                     .StreamtoBufferSelects1 = sbs[1],
-                                     .StreamtoBufferSelects2 = sbs[2],
-                                     .StreamtoBufferSelects3 = sbs[3],
-                                     .NumEntries0 = decls[0],
-                                     .NumEntries1 = decls[1],
-                                     .NumEntries2 = decls[2],
-                                     .NumEntries3 = decls[3]);
-
-      for (int i = 0; i < max_decls; i++) {
-         GENX(SO_DECL_ENTRY_pack)(NULL, dw + 3 + i * 2,
-            &(struct GENX(SO_DECL_ENTRY)) {
-               .Stream0Decl = so_decl[0][i],
-               .Stream1Decl = so_decl[1][i],
-               .Stream2Decl = so_decl[2][i],
-               .Stream3Decl = so_decl[3][i],
-            });
-      }
-   }
 }
 
 static uint32_t
@@ -1743,8 +1752,18 @@ get_scratch_space(const struct anv_shader_bin *bin)
 
 static UNUSED uint32_t
 get_scratch_surf(struct anv_pipeline *pipeline,
+                 gl_shader_stage stage,
                  const struct anv_shader_bin *bin)
 {
+   if (bin->prog_data->total_scratch == 0)
+      return 0;
+
+   struct anv_bo *bo =
+      anv_scratch_pool_alloc(pipeline->device,
+                             &pipeline->device->scratch_pool,
+                             stage, bin->prog_data->total_scratch);
+   anv_reloc_list_add_bo(pipeline->batch.relocs,
+                         pipeline->batch.alloc, bo);
    return anv_scratch_pool_get_surf(pipeline->device,
                                     &pipeline->device->scratch_pool,
                                     bin->prog_data->total_scratch) >> 4;
@@ -1821,7 +1840,8 @@ emit_3dstate_vs(struct anv_graphics_pipeline *pipeline)
 #endif
 
 #if GFX_VERx10 >= 125
-      vs.ScratchSpaceBuffer = get_scratch_surf(&pipeline->base, vs_bin);
+      vs.ScratchSpaceBuffer =
+         get_scratch_surf(&pipeline->base, MESA_SHADER_VERTEX, vs_bin);
 #else
       vs.PerThreadScratchSpace   = get_scratch_space(vs_bin);
       vs.ScratchSpaceBasePointer =
@@ -1882,7 +1902,8 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
 #endif
 
 #if GFX_VERx10 >= 125
-      hs.ScratchSpaceBuffer = get_scratch_surf(&pipeline->base, tcs_bin);
+      hs.ScratchSpaceBuffer =
+         get_scratch_surf(&pipeline->base, MESA_SHADER_TESS_CTRL, tcs_bin);
 #else
       hs.PerThreadScratchSpace = get_scratch_space(tcs_bin);
       hs.ScratchSpaceBasePointer =
@@ -1929,6 +1950,16 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
       te.TEEnable = true;
       te.MaximumTessellationFactorOdd = 63.0;
       te.MaximumTessellationFactorNotOdd = 64.0;
+#if GFX_VERx10 >= 125
+      te.TessellationDistributionMode = TEDMODE_RR_FREE;
+      te.TessellationDistributionLevel = TEDLEVEL_PATCH;
+      /* 64_TRIANGLES */
+      te.SmallPatchThreshold = 3;
+      /* 1K_TRIANGLES */
+      te.TargetBlockSize = 8;
+      /* 1K_TRIANGLES */
+      te.LocalBOPAccumulatorThreshold = 1;
+#endif
    }
 
    anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_DS), ds) {
@@ -1965,8 +1996,12 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
          tes_prog_data->base.cull_distance_mask;
 #endif
 
+#if GFX_VER >= 12
+      ds.PrimitiveIDNotRequired = !tes_prog_data->include_primitive_id;
+#endif
 #if GFX_VERx10 >= 125
-      ds.ScratchSpaceBuffer = get_scratch_surf(&pipeline->base, tes_bin);
+      ds.ScratchSpaceBuffer =
+         get_scratch_surf(&pipeline->base, MESA_SHADER_TESS_EVAL, tes_bin);
 #else
       ds.PerThreadScratchSpace = get_scratch_space(tes_bin);
       ds.ScratchSpaceBasePointer =
@@ -2012,7 +2047,6 @@ emit_3dstate_gs(struct anv_graphics_pipeline *pipeline)
 
       gs.OutputVertexSize        = gs_prog_data->output_vertex_size_hwords * 2 - 1;
       gs.OutputTopology          = gs_prog_data->output_topology;
-      gs.VertexURBEntryReadLength = gs_prog_data->base.urb_read_length;
       gs.ControlDataFormat       = gs_prog_data->control_data_format;
       gs.ControlDataHeaderSize   = gs_prog_data->control_data_header_size_hwords;
       gs.InstanceControl         = MAX2(gs_prog_data->invocations, 1) - 1;
@@ -2038,7 +2072,8 @@ emit_3dstate_gs(struct anv_graphics_pipeline *pipeline)
 #endif
 
 #if GFX_VERx10 >= 125
-      gs.ScratchSpaceBuffer = get_scratch_surf(&pipeline->base, gs_bin);
+      gs.ScratchSpaceBuffer =
+         get_scratch_surf(&pipeline->base, MESA_SHADER_GEOMETRY, gs_bin);
 #else
       gs.PerThreadScratchSpace   = get_scratch_space(gs_bin);
       gs.ScratchSpaceBasePointer =
@@ -2294,10 +2329,9 @@ emit_3dstate_ps(struct anv_graphics_pipeline *pipeline,
       ps.SampleMask                 = 0xff;
 #endif
 
-#if GFX_VER >= 9
-      ps.MaximumNumberofThreadsPerPSD  = 64 - 1;
-#elif GFX_VER >= 8
-      ps.MaximumNumberofThreadsPerPSD  = 64 - 2;
+#if GFX_VER >= 8
+      ps.MaximumNumberofThreadsPerPSD =
+         devinfo->max_threads_per_psd - (GFX_VER == 8 ? 2 : 1);
 #else
       ps.MaximumNumberofThreads        = devinfo->max_wm_threads - 1;
 #endif
@@ -2310,7 +2344,8 @@ emit_3dstate_ps(struct anv_graphics_pipeline *pipeline,
          brw_wm_prog_data_dispatch_grf_start_reg(wm_prog_data, ps, 2);
 
 #if GFX_VERx10 >= 125
-      ps.ScratchSpaceBuffer = get_scratch_surf(&pipeline->base, fs_bin);
+      ps.ScratchSpaceBuffer =
+         get_scratch_surf(&pipeline->base, MESA_SHADER_FRAGMENT, fs_bin);
 #else
       ps.PerThreadScratchSpace   = get_scratch_space(fs_bin);
       ps.ScratchSpaceBasePointer =
@@ -2460,8 +2495,6 @@ genX(graphics_pipeline_create)(
     VkPipeline*                                 pPipeline)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
-   ANV_FROM_HANDLE(anv_render_pass, pass, pCreateInfo->renderPass);
-   struct anv_subpass *subpass = &pass->subpasses[pCreateInfo->subpass];
    struct anv_graphics_pipeline *pipeline;
    VkResult result;
 
@@ -2474,7 +2507,7 @@ genX(graphics_pipeline_create)(
    pipeline = vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8,
                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pipeline == NULL)
-      return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    result = anv_graphics_pipeline_init(pipeline, device, cache,
                                        pCreateInfo, pAllocator);
@@ -2484,6 +2517,9 @@ genX(graphics_pipeline_create)(
          *pPipeline = VK_NULL_HANDLE;
       return result;
    }
+
+   struct anv_render_pass *pass = pipeline->pass;
+   struct anv_subpass *subpass = pipeline->subpass;
 
    /* Information on which states are considered dynamic. */
    const VkPipelineDynamicStateCreateInfo *dyn_info =
@@ -2557,7 +2593,7 @@ genX(graphics_pipeline_create)(
     * whole fixed function pipeline" means to emit a PIPE_CONTROL with the "CS
     * Stall" bit set.
     */
-   if (!device->info.is_haswell && !device->info.is_baytrail)
+   if (device->info.platform == INTEL_PLATFORM_IVB)
       gfx7_emit_vs_workaround_flush(brw);
 #endif
 
@@ -2611,7 +2647,8 @@ emit_compute_state(struct anv_compute_pipeline *pipeline,
    anv_batch_emit(&pipeline->base.batch, GENX(CFE_STATE), cfe) {
       cfe.MaximumNumberofThreads =
          devinfo->max_cs_threads * devinfo->subslice_total - 1;
-      cfe.ScratchSpaceBuffer = get_scratch_surf(&pipeline->base, cs_bin);
+      cfe.ScratchSpaceBuffer =
+         get_scratch_surf(&pipeline->base, MESA_SHADER_COMPUTE, cs_bin);
    }
 }
 
@@ -2743,7 +2780,7 @@ compute_pipeline_create(
    pipeline = vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8,
                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pipeline == NULL)
-      return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    result = anv_pipeline_init(&pipeline->base, device,
                               ANV_PIPELINE_COMPUTE, pCreateInfo->flags,
@@ -2890,7 +2927,7 @@ ray_tracing_pipeline_create(
    VK_MULTIALLOC_DECL(&ma, struct anv_rt_shader_group, groups, pCreateInfo->groupCount);
    if (!vk_multialloc_zalloc2(&ma, &device->vk.alloc, pAllocator,
                               VK_SYSTEM_ALLOCATION_SCOPE_DEVICE))
-      return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    result = anv_pipeline_init(&pipeline->base, device,
                               ANV_PIPELINE_RAY_TRACING, pCreateInfo->flags,

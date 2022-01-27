@@ -669,6 +669,20 @@ if (nir_is_rounding_mode_rtz(execution_mode, bit_size)) {
    dst = src0 * src1;
 }
 """)
+
+# Unlike fmul, anything (even infinity or NaN) multiplied by zero is always zero.
+# fmulz(0.0, inf) and fmulz(0.0, nan) must be +/-0.0, even if
+# SIGNED_ZERO_INF_NAN_PRESERVE is not used. If SIGNED_ZERO_INF_NAN_PRESERVE is used, then
+# the result must be a positive zero if either operand is zero.
+binop("fmulz", tfloat32, _2src_commutative + associative, """
+if (src0 == 0.0 || src1 == 0.0)
+   dst = 0.0;
+else if (nir_is_rounding_mode_rtz(execution_mode, 32))
+   dst = _mesa_double_to_float_rtz((double)src0 * (double)src1);
+else
+   dst = src0 * src1;
+""")
+
 # low 32-bits of signed/unsigned integer multiply
 binop("imul", tint, _2src_commutative + associative, """
    /* Use 64-bit multiplies to prevent overflow of signed arithmetic */
@@ -960,6 +974,19 @@ if (nir_is_rounding_mode_rtz(execution_mode, bit_size)) {
 }
 """)
 
+# Unlike ffma, anything (even infinity or NaN) multiplied by zero is always zero.
+# ffmaz(0.0, inf, src2) and ffmaz(0.0, nan, src2) must be +/-0.0 + src2, even if
+# SIGNED_ZERO_INF_NAN_PRESERVE is not used. If SIGNED_ZERO_INF_NAN_PRESERVE is used, then
+# the result must be a positive zero plus src2 if either src0 or src1 is zero.
+triop("ffmaz", tfloat32, _2src_commutative, """
+if (src0 == 0.0 || src1 == 0.0)
+   dst = 0.0 + src2;
+else if (nir_is_rounding_mode_rtz(execution_mode, 32))
+   dst = _mesa_float_fma_rtz(src0, src1, src2);
+else
+   dst = fmaf(src0, src1, src2);
+""")
+
 triop("flrp", tfloat, "", "src0 * (1 - src2) + src1 * src2")
 
 # Ternary addition
@@ -1056,7 +1083,7 @@ if (bits == 0) {
 } else if (offset < 0 || bits < 0 || offset + bits > 32) {
    dst = 0;
 } else {
-   dst = (base << (32 - offset - bits)) >> offset; /* use sign-extending shift */
+   dst = (base << (32 - offset - bits)) >> (32 - bits); /* use sign-extending shift */
 }
 """)
 
@@ -1307,6 +1334,10 @@ for (int i = 0; i < 32; i += 8) {
 # Mali-specific opcodes
 unop("fsat_signed_mali", tfloat, ("fmin(fmax(src0, -1.0), 1.0)"))
 unop("fclamp_pos_mali", tfloat, ("fmax(src0, 0.0)"))
+
+# Magnitude equal to fddx/y, sign undefined. Derivative of a constant is zero.
+unop("fddx_must_abs_mali", tfloat, "0.0")
+unop("fddy_must_abs_mali", tfloat, "0.0")
 
 # DXIL specific double [un]pack
 # DXIL doesn't support generic [un]pack instructions, so we want those

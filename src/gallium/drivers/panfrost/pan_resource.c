@@ -135,8 +135,21 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
                              unsigned usage)
 {
         struct panfrost_device *dev = pan_device(pscreen);
-        struct panfrost_resource *rsrc = (struct panfrost_resource *) pt;
-        struct renderonly_scanout *scanout = rsrc->scanout;
+        struct panfrost_resource *rsrc;
+        struct renderonly_scanout *scanout;
+        struct pipe_resource *cur = pt;
+
+        /* Even though panfrost doesn't support multi-planar formats, we
+         * can get here through GBM, which does. Walk the list of planes
+         * to find the right one.
+         */
+        for (int i = 0; i < handle->plane; i++) {
+                cur = cur->next;
+                if (!cur)
+                        return false;
+        }
+        rsrc = pan_resource(cur);
+        scanout = rsrc->scanout;
 
         handle->modifier = rsrc->image.layout.modifier;
         rsrc->modifier_constant = true;
@@ -191,6 +204,8 @@ panfrost_resource_get_param(struct pipe_screen *pscreen,
                             unsigned usage, uint64_t *value)
 {
         struct panfrost_resource *rsrc = (struct panfrost_resource *) prsc;
+        struct pipe_resource *cur;
+        unsigned count;
 
         switch (param) {
         case PIPE_RESOURCE_PARAM_STRIDE:
@@ -201,6 +216,16 @@ panfrost_resource_get_param(struct pipe_screen *pscreen,
                 return true;
         case PIPE_RESOURCE_PARAM_MODIFIER:
                 *value = rsrc->image.layout.modifier;
+                return true;
+        case PIPE_RESOURCE_PARAM_NPLANES:
+                /* Panfrost doesn't directly support multi-planar formats,
+                 * but we should still handle this case for gbm users
+                 * that might want to use resources shared with panfrost
+                 * on video processing hardware that does.
+                 */
+                for (count = 0, cur = prsc; cur; cur = cur->next)
+                        count++;
+                *value = count;
                 return true;
         default:
                 return false;
@@ -218,7 +243,10 @@ panfrost_create_surface(struct pipe_context *pipe,
                         struct pipe_resource *pt,
                         const struct pipe_surface *surf_tmpl)
 {
+        struct panfrost_context *ctx = pan_context(pipe);
         struct pipe_surface *ps = NULL;
+
+        pan_legalize_afbc_format(ctx, pan_resource(pt), surf_tmpl->format);
 
         ps = CALLOC_STRUCT(pipe_surface);
 
@@ -355,8 +383,8 @@ panfrost_should_afbc(struct panfrost_device *dev,
         if (pres->base.bind & ~valid_binding)
                 return false;
 
-        /* AFBC introduced with Mali T760 */
-        if (dev->quirks & MIDGARD_NO_AFBC)
+        /* AFBC support is optional */
+        if (!dev->has_afbc)
                 return false;
 
         /* AFBC<-->staging is expensive */
@@ -545,8 +573,12 @@ panfrost_resource_set_damage_region(struct pipe_screen *screen,
         struct pipe_scissor_state *damage_extent = &pres->damage.extent;
         unsigned int i;
 
-        if (!pan_is_bifrost(dev) && !(dev->quirks & NO_TILE_ENABLE_MAP) &&
-            nrects > 1) {
+        /* Partial updates are implemented with a tile enable map only on v5.
+         * Later architectures have a more efficient method of implementing
+         * partial updates (frame shaders), while earlier architectures lack
+         * tile enable maps altogether.
+         */
+        if (dev->arch == 5 && nrects > 1) {
                 if (!pres->damage.tile_map.data) {
                         pres->damage.tile_map.stride =
                                 ALIGN_POT(DIV_ROUND_UP(res->width0, 32 * 8), 64);
@@ -836,7 +868,8 @@ panfrost_ptr_map(struct pipe_context *pctx,
         struct panfrost_context *ctx = pan_context(pctx);
         struct panfrost_device *dev = pan_device(pctx->screen);
         struct panfrost_resource *rsrc = pan_resource(resource);
-        int bytes_per_pixel = util_format_get_blocksize(rsrc->image.layout.format);
+        enum pipe_format format = rsrc->image.layout.format;
+        int bytes_per_block = util_format_get_blocksize(format);
         struct panfrost_bo *bo = rsrc->image.data.bo;
 
         /* Can't map tiled/compressed directly */
@@ -967,9 +1000,17 @@ panfrost_ptr_map(struct pipe_context *pctx,
                 }
         }
 
+        /* For access to compressed textures, we want the (x, y, w, h)
+         * region-of-interest in blocks, not pixels. Then we compute the stride
+         * between rows of blocks as the width in blocks times the width per
+         * block, etc.
+         */
+        struct pipe_box box_blocks;
+        u_box_pixels_to_blocks(&box_blocks, box, format);
+
         if (rsrc->image.layout.modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED) {
-                transfer->base.stride = box->width * bytes_per_pixel;
-                transfer->base.layer_stride = transfer->base.stride * box->height;
+                transfer->base.stride = box_blocks.width * bytes_per_block;
+                transfer->base.layer_stride = transfer->base.stride * box_blocks.height;
                 transfer->map = ralloc_size(transfer, transfer->base.layer_stride * box->depth);
                 assert(box->depth == 1);
 
@@ -1010,9 +1051,9 @@ panfrost_ptr_map(struct pipe_context *pctx,
 
                 return bo->ptr.cpu
                        + rsrc->image.layout.slices[level].offset
-                       + transfer->base.box.z * transfer->base.layer_stride
-                       + transfer->base.box.y * rsrc->image.layout.slices[level].line_stride
-                       + transfer->base.box.x * bytes_per_pixel;
+                       + box->z * transfer->base.layer_stride
+                       + box_blocks.y * rsrc->image.layout.slices[level].line_stride
+                       + box_blocks.x * bytes_per_block;
         }
 }
 
@@ -1065,6 +1106,29 @@ pan_resource_modifier_convert(struct panfrost_context *ctx,
         panfrost_resource_setup(pan_device(ctx->base.screen), rsrc, modifier,
                                 blit.dst.format);
         pipe_resource_reference(&tmp_prsrc, NULL);
+}
+
+/* Validate that an AFBC resource may be used as a particular format. If it may
+ * not, decompress it on the fly. Failure to do so can produce wrong results or
+ * invalid data faults when sampling or rendering to AFBC */
+
+void
+pan_legalize_afbc_format(struct panfrost_context *ctx,
+                         struct panfrost_resource *rsrc,
+                         enum pipe_format format)
+{
+        struct panfrost_device *dev = pan_device(ctx->base.screen);
+
+        if (!drm_is_afbc(rsrc->image.layout.modifier))
+                return;
+
+        if (panfrost_afbc_format(dev, pan_blit_format(rsrc->base.format)) ==
+            panfrost_afbc_format(dev, pan_blit_format(format)))
+                return;
+
+        pan_resource_modifier_convert(ctx, rsrc,
+                        DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED,
+                        "Reinterpreting AFBC surface as incompatible format");
 }
 
 static bool

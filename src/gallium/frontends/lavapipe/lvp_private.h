@@ -55,6 +55,8 @@ typedef uint32_t xcb_window_t;
 #include "lvp_entrypoints.h"
 #include "vk_device.h"
 #include "vk_instance.h"
+#include "vk_image.h"
+#include "vk_log.h"
 #include "vk_physical_device.h"
 #include "vk_shader_module.h"
 #include "vk_util.h"
@@ -96,19 +98,7 @@ bool lvp_device_entrypoint_is_enabled(int index, uint32_t core_version,
                                        const struct vk_instance_extension_table *instance,
                                        const struct vk_device_extension_table *device);
 
-
-/* Whenever we generate an error, pass it through this function. Useful for
- * debugging, where we can break on it. Only call at error site, not when
- * propagating errors. Might be useful to plug in a stack trace here.
- */
-
-struct lvp_instance;
-VkResult __vk_errorf(struct lvp_instance *instance, VkResult error, const char *file, int line, const char *format, ...);
-
 #define LVP_DEBUG_ALL_ENTRYPOINTS (1 << 0)
-
-#define vk_error(instance, error) __vk_errorf(instance, error, __FILE__, __LINE__, NULL);
-#define vk_errorf(instance, error, format, ...) __vk_errorf(instance, error, __FILE__, __LINE__, format, ## __VA_ARGS__);
 
 void __lvp_finishme(const char *file, int line, const char *format, ...)
    lvp_printflike(3, 4);
@@ -215,18 +205,24 @@ struct lvp_device {
 
 void lvp_device_get_cache_uuid(void *uuid);
 
+enum lvp_device_memory_type {
+   LVP_DEVICE_MEMORY_TYPE_DEFAULT,
+   LVP_DEVICE_MEMORY_TYPE_USER_PTR,
+   LVP_DEVICE_MEMORY_TYPE_OPAQUE_FD,
+};
+
 struct lvp_device_memory {
    struct vk_object_base base;
    struct pipe_memory_allocation *pmem;
    uint32_t                                     type_index;
    VkDeviceSize                                 map_size;
    void *                                       map;
-   bool is_user_ptr;
+   enum lvp_device_memory_type memory_type;
+   int                                          backed_fd;
 };
 
 struct lvp_image {
-   struct vk_object_base base;
-   VkImageType type;
+   struct vk_image vk;
    VkDeviceSize size;
    uint32_t alignment;
    struct pipe_memory_allocation *pmem;
@@ -263,48 +259,29 @@ struct lvp_image_view {
    struct pipe_surface *surface; /* have we created a pipe surface for this? */
 };
 
-struct lvp_subpass_attachment {
-   uint32_t         attachment;
-   VkImageLayout    layout;
-   bool             in_render_loop;
+struct lvp_render_pass_attachment {
+   uint32_t                                     attachment; //index
+   VkFormat                                     format;
+   uint32_t                                     samples;
+   VkAttachmentLoadOp                           load_op;
+   VkAttachmentLoadOp                           stencil_load_op;
 };
 
 struct lvp_subpass {
-   uint32_t                                     attachment_count;
-   struct lvp_subpass_attachment *             attachments;
-
    uint32_t                                     input_count;
    uint32_t                                     color_count;
-   struct lvp_subpass_attachment *              input_attachments;
-   struct lvp_subpass_attachment *              color_attachments;
-   struct lvp_subpass_attachment *              resolve_attachments;
-   struct lvp_subpass_attachment *              depth_stencil_attachment;
-   struct lvp_subpass_attachment *              ds_resolve_attachment;
+   struct lvp_render_pass_attachment **         input_attachments;
+   struct lvp_render_pass_attachment **         color_attachments;
+   struct lvp_render_pass_attachment **         resolve_attachments;
+   struct lvp_render_pass_attachment **         depth_stencil_attachment;
+   struct lvp_render_pass_attachment **         ds_resolve_attachment;
    VkResolveModeFlagBits                        depth_resolve_mode;
    VkResolveModeFlagBits                        stencil_resolve_mode;
 
    /** Subpass has at least one color resolve attachment */
    bool                                         has_color_resolve;
 
-   /** Subpass has at least one color attachment */
-   bool                                         has_color_att;
-
-   VkSampleCountFlagBits                        max_sample_count;
-
    uint32_t                                     view_mask;
-};
-
-struct lvp_render_pass_attachment {
-   VkFormat                                     format;
-   uint32_t                                     samples;
-   VkAttachmentLoadOp                           load_op;
-   VkAttachmentLoadOp                           stencil_load_op;
-   VkImageLayout                                initial_layout;
-   VkImageLayout                                final_layout;
-
-   /* The subpass id in which the attachment will be used first/last. */
-   uint32_t                                     first_subpass_idx;
-   uint32_t                                     last_subpass_idx;
 };
 
 struct lvp_render_pass {
@@ -465,7 +442,6 @@ struct lvp_pipeline_layout {
    struct vk_object_base base;
    struct {
       struct lvp_descriptor_set_layout *layout;
-      uint32_t dynamic_offset_start;
    } set[MAX_SETS];
 
    uint32_t num_sets;
@@ -623,7 +599,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_device_memory, base, VkDeviceMemory,
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_event, base, VkEvent, VK_OBJECT_TYPE_EVENT)
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_framebuffer, base, VkFramebuffer,
                                VK_OBJECT_TYPE_FRAMEBUFFER)
-VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_image, base, VkImage, VK_OBJECT_TYPE_IMAGE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_image, vk.base, VkImage, VK_OBJECT_TYPE_IMAGE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_image_view, base, VkImageView,
                                VK_OBJECT_TYPE_IMAGE_VIEW);
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_pipeline_cache, base, VkPipelineCache,
@@ -675,8 +651,6 @@ lvp_vk_format_to_pipe_format(VkFormat format)
 {
    /* Some formats cause problems with CTS right now.*/
    if (format == VK_FORMAT_R4G4B4A4_UNORM_PACK16 ||
-       format == VK_FORMAT_A4R4G4B4_UNORM_PACK16_EXT || /* VK_EXT_4444_formats */
-       format == VK_FORMAT_A4B4G4R4_UNORM_PACK16_EXT || /* VK_EXT_4444_formats */
        format == VK_FORMAT_R5G5B5A1_UNORM_PACK16 ||
        format == VK_FORMAT_R8_SRGB ||
        format == VK_FORMAT_R8G8_SRGB ||

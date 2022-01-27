@@ -29,6 +29,35 @@
 #include "util/u_dynarray.h"
 #include "util/hash_table.h"
 
+/* Indices for named (non-XFB) varyings that are present. These are packed
+ * tightly so they correspond to a bitfield present (P) indexed by (1 <<
+ * PAN_VARY_*). This has the nice property that you can lookup the buffer index
+ * of a given special field given a shift S by:
+ *
+ *      idx = popcount(P & ((1 << S) - 1))
+ *
+ * That is... look at all of the varyings that come earlier and count them, the
+ * count is the new index since plus one. Likewise, the total number of special
+ * buffers required is simply popcount(P)
+ */
+
+enum pan_special_varying {
+        PAN_VARY_GENERAL = 0,
+        PAN_VARY_POSITION = 1,
+        PAN_VARY_PSIZ = 2,
+        PAN_VARY_PNTCOORD = 3,
+        PAN_VARY_FACE = 4,
+        PAN_VARY_FRAGCOORD = 5,
+
+        /* Keep last */
+        PAN_VARY_MAX,
+};
+
+/* Maximum number of attribute descriptors required for varyings. These include
+ * up to MAX_VARYING source level varyings plus a descriptor each non-GENERAL
+ * special varying */
+#define PAN_MAX_VARYINGS (MAX_VARYING + PAN_VARY_MAX - 1)
+
 /* Define the general compiler entry point */
 
 #define MAX_SYSVAL_COUNT 32
@@ -129,6 +158,7 @@ struct panfrost_compile_inputs {
         } blend;
         unsigned sysval_ubo;
         bool shaderdb;
+        bool no_idvs;
         bool no_ubo_to_push;
 
         enum pipe_format rt_formats[8];
@@ -175,6 +205,9 @@ struct pan_shader_info {
         unsigned tls_size;
         unsigned wls_size;
 
+        /* Bit mask of preloaded registers */
+        uint64_t preload;
+
         union {
                 struct {
                         bool reads_frag_coord;
@@ -186,10 +219,6 @@ struct pan_shader_info {
                         bool writes_stencil;
                         bool writes_coverage;
                         bool sidefx;
-                        bool reads_sample_id;
-                        bool reads_sample_pos;
-                        bool reads_sample_mask_in;
-                        bool reads_helper_invocation;
                         bool sample_shading;
                         bool early_fragment_tests;
                         bool can_early_z, can_fpk;
@@ -199,6 +228,27 @@ struct pan_shader_info {
 
                 struct {
                         bool writes_point_size;
+
+                        /* Set if Index-Driven Vertex Shading is in use */
+                        bool idvs;
+
+                        /* If IDVS is used, whether a varying shader is used */
+                        bool secondary_enable;
+
+                        /* If a varying shader is used, the varying shader's
+                         * offset in the program binary
+                         */
+                        unsigned secondary_offset;
+
+                        /* If IDVS is in use, number of work registers used by
+                         * the varying shader
+                         */
+                        unsigned secondary_work_reg_count;
+
+                        /* If IDVS is in use, bit mask of preloaded registers
+                         * used by the varying shader
+                         */
+                        uint64_t secondary_preload;
                 } vs;
         };
 
@@ -214,9 +264,9 @@ struct pan_shader_info {
 
         struct {
                 unsigned input_count;
-                struct pan_shader_varying input[MAX_VARYING];
+                struct pan_shader_varying input[PAN_MAX_VARYINGS];
                 unsigned output_count;
-                struct pan_shader_varying output[MAX_VARYING];
+                struct pan_shader_varying output[PAN_MAX_VARYINGS];
         } varyings;
 
         struct panfrost_sysvals sysvals;
@@ -348,8 +398,8 @@ bool pan_has_dest_mod(nir_dest **dest, nir_op op);
 #define PAN_WRITEOUT_C 1
 #define PAN_WRITEOUT_Z 2
 #define PAN_WRITEOUT_S 4
+#define PAN_WRITEOUT_2 8
 
-bool pan_nir_reorder_writeout(nir_shader *nir);
 bool pan_nir_lower_zs_store(nir_shader *nir);
 
 bool pan_nir_lower_64bit_intrin(nir_shader *shader);

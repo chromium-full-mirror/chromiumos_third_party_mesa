@@ -149,10 +149,10 @@ tu_CreateDescriptorSetLayout(
       immutable_sampler_count * sizeof(struct tu_sampler) +
       ycbcr_sampler_count * sizeof(struct tu_sampler_ycbcr_conversion);
 
-   set_layout = vk_object_zalloc(&device->vk, pAllocator, size,
+   set_layout = vk_object_zalloc(&device->vk, NULL, size,
                                  VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT);
    if (!set_layout)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    set_layout->flags = pCreateInfo->flags;
 
@@ -166,9 +166,10 @@ tu_CreateDescriptorSetLayout(
       pCreateInfo->pBindings, pCreateInfo->bindingCount, &bindings);
    if (result != VK_SUCCESS) {
       vk_object_free(&device->vk, pAllocator, set_layout);
-      return vk_error(device->instance, result);
+      return vk_error(device, result);
    }
 
+   set_layout->ref_cnt = 1;
    set_layout->binding_count = num_bindings;
    set_layout->shader_stages = 0;
    set_layout->has_immutable_samplers = false;
@@ -277,7 +278,15 @@ tu_DestroyDescriptorSetLayout(VkDevice _device,
    if (!set_layout)
       return;
 
-   vk_object_free(&device->vk, pAllocator, set_layout);
+   tu_descriptor_set_layout_unref(device, set_layout);
+}
+
+void
+tu_descriptor_set_layout_destroy(struct tu_device *device,
+                                 struct tu_descriptor_set_layout *layout)
+{
+   assert(layout->ref_cnt == 0);
+   vk_object_free(&device->vk, NULL, layout);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -388,7 +397,7 @@ tu_CreatePipelineLayout(VkDevice _device,
    layout = vk_object_alloc(&device->vk, pAllocator, sizeof(*layout),
                             VK_OBJECT_TYPE_PIPELINE_LAYOUT);
    if (layout == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    layout->num_sets = pCreateInfo->setLayoutCount;
    layout->dynamic_offset_count = 0;
@@ -399,6 +408,8 @@ tu_CreatePipelineLayout(VkDevice _device,
       TU_FROM_HANDLE(tu_descriptor_set_layout, set_layout,
                      pCreateInfo->pSetLayouts[set]);
       layout->set[set].layout = set_layout;
+      tu_descriptor_set_layout_ref(set_layout);
+
       layout->set[set].dynamic_offset_start = dynamic_offset_count;
       dynamic_offset_count += set_layout->dynamic_offset_count;
    }
@@ -429,6 +440,9 @@ tu_DestroyPipelineLayout(VkDevice _device,
    if (!pipeline_layout)
       return;
 
+   for (uint32_t i = 0; i < pipeline_layout->num_sets; i++)
+      tu_descriptor_set_layout_unref(device, pipeline_layout->set[i].layout);
+
    vk_object_free(&device->vk, pAllocator, pipeline_layout);
 }
 
@@ -437,7 +451,7 @@ tu_DestroyPipelineLayout(VkDevice _device,
 static VkResult
 tu_descriptor_set_create(struct tu_device *device,
             struct tu_descriptor_pool *pool,
-            const struct tu_descriptor_set_layout *layout,
+            struct tu_descriptor_set_layout *layout,
             const uint32_t *variable_count,
             struct tu_descriptor_set **out_set)
 {
@@ -448,7 +462,7 @@ tu_descriptor_set_create(struct tu_device *device,
 
    if (pool->host_memory_base) {
       if (pool->host_memory_end - pool->host_memory_ptr < mem_size)
-         return vk_error(device->instance, VK_ERROR_OUT_OF_POOL_MEMORY);
+         return vk_error(device, VK_ERROR_OUT_OF_POOL_MEMORY);
 
       set = (struct tu_descriptor_set*)pool->host_memory_ptr;
       pool->host_memory_ptr += mem_size;
@@ -457,7 +471,7 @@ tu_descriptor_set_create(struct tu_device *device,
                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 
       if (!set)
-         return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
    memset(set, 0, mem_size);
@@ -482,7 +496,7 @@ tu_descriptor_set_create(struct tu_device *device,
 
       if (!pool->host_memory_base && pool->entry_count == pool->max_entry_count) {
          vk_object_free(&device->vk, NULL, set);
-         return vk_error(device->instance, VK_ERROR_OUT_OF_POOL_MEMORY);
+         return vk_error(device, VK_ERROR_OUT_OF_POOL_MEMORY);
       }
 
       /* try to allocate linearly first, so that we don't spend
@@ -511,7 +525,7 @@ tu_descriptor_set_create(struct tu_device *device,
 
          if (pool->size - offset < layout_size) {
             vk_object_free(&device->vk, NULL, set);
-            return vk_error(device->instance, VK_ERROR_OUT_OF_POOL_MEMORY);
+            return vk_error(device, VK_ERROR_OUT_OF_POOL_MEMORY);
          }
 
          set->mapped_ptr = (uint32_t*)(pool_base(pool) + offset);
@@ -524,7 +538,7 @@ tu_descriptor_set_create(struct tu_device *device,
          pool->entries[index].set = set;
          pool->entry_count++;
       } else
-         return vk_error(device->instance, VK_ERROR_OUT_OF_POOL_MEMORY);
+         return vk_error(device, VK_ERROR_OUT_OF_POOL_MEMORY);
    }
 
    if (layout->has_immutable_samplers) {
@@ -546,6 +560,8 @@ tu_descriptor_set_create(struct tu_device *device,
          }
       }
    }
+
+   tu_descriptor_set_layout_ref(layout);
 
    *out_set = set;
    return VK_SUCCESS;
@@ -635,7 +651,7 @@ tu_CreateDescriptorPool(VkDevice _device,
    pool = vk_object_zalloc(&device->vk, pAllocator, size,
                           VK_OBJECT_TYPE_DESCRIPTOR_POOL);
    if (!pool)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    if (!(pCreateInfo->flags & VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT)) {
       pool->host_memory_base = (uint8_t*)pool + sizeof(struct tu_descriptor_pool);
@@ -685,6 +701,10 @@ tu_DestroyDescriptorPool(VkDevice _device,
    if (!pool)
       return;
 
+   for(int i = 0; i < pool->entry_count; ++i) {
+      tu_descriptor_set_layout_unref(device, pool->entries[i].set->layout);
+   }
+
    if (!pool->host_memory_base) {
       for(int i = 0; i < pool->entry_count; ++i) {
          tu_descriptor_set_destroy(device, pool, pool->entries[i].set, false);
@@ -708,6 +728,10 @@ tu_ResetDescriptorPool(VkDevice _device,
 {
    TU_FROM_HANDLE(tu_device, device, _device);
    TU_FROM_HANDLE(tu_descriptor_pool, pool, descriptorPool);
+
+   for(int i = 0; i < pool->entry_count; ++i) {
+      tu_descriptor_set_layout_unref(device, pool->entries[i].set->layout);
+   }
 
    if (!pool->host_memory_base) {
       for(int i = 0; i < pool->entry_count; ++i) {
@@ -781,6 +805,9 @@ tu_FreeDescriptorSets(VkDevice _device,
 
    for (uint32_t i = 0; i < count; i++) {
       TU_FROM_HANDLE(tu_descriptor_set, set, pDescriptorSets[i]);
+
+      if (set)
+         tu_descriptor_set_layout_unref(device, set->layout);
 
       if (set && !pool->host_memory_base)
          tu_descriptor_set_destroy(device, pool, set, true);
@@ -875,9 +902,9 @@ write_image_descriptor(uint32_t *dst,
    TU_FROM_HANDLE(tu_image_view, iview, image_info->imageView);
 
    if (descriptor_type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
-      memcpy(dst, iview->storage_descriptor, sizeof(iview->storage_descriptor));
+      memcpy(dst, iview->view.storage_descriptor, sizeof(iview->view.storage_descriptor));
    } else {
-      memcpy(dst, iview->descriptor, sizeof(iview->descriptor));
+      memcpy(dst, iview->view.descriptor, sizeof(iview->view.descriptor));
    }
 }
 
@@ -1073,7 +1100,7 @@ tu_CreateDescriptorUpdateTemplate(
    templ = vk_object_alloc(&device->vk, pAllocator, size,
                            VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE);
    if (!templ)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    templ->entry_count = entry_count;
 
@@ -1253,7 +1280,7 @@ tu_CreateSamplerYcbcrConversion(
    conversion = vk_object_alloc(&device->vk, pAllocator, sizeof(*conversion),
                                 VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION);
    if (!conversion)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    conversion->format = pCreateInfo->format;
    conversion->ycbcr_model = pCreateInfo->ycbcrModel;

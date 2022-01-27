@@ -160,7 +160,12 @@ typedef void (*pipe_draw_vbo_func)(struct pipe_context *pipe,
                                    const struct pipe_draw_indirect_info *indirect,
                                    const struct pipe_draw_start_count_bias *draws,
                                    unsigned num_draws);
-
+typedef void (*pipe_draw_vertex_state_func)(struct pipe_context *ctx,
+                                            struct pipe_vertex_state *vstate,
+                                            uint32_t partial_velem_mask,
+                                            struct pipe_draw_vertex_state_info info,
+                                            const struct pipe_draw_start_count_bias *draws,
+                                            unsigned num_draws);
 typedef void (*pipe_launch_grid_func)(struct pipe_context *pipe, const struct pipe_grid_info *info);
 
 typedef enum {
@@ -171,17 +176,9 @@ typedef enum {
 typedef enum {
    ZINK_NO_DYNAMIC_STATE,
    ZINK_DYNAMIC_STATE,
-} zink_dynamic_state;
-
-typedef enum {
-   ZINK_NO_DYNAMIC_STATE2,
    ZINK_DYNAMIC_STATE2,
-} zink_dynamic_state2;
-
-typedef enum {
-   ZINK_NO_DYNAMIC_VERTEX_INPUT,
    ZINK_DYNAMIC_VERTEX_INPUT,
-} zink_dynamic_vertex_input;
+} zink_dynamic_state;
 
 struct zink_context {
    struct pipe_context base;
@@ -191,16 +188,16 @@ struct zink_context {
    struct blitter_context *blitter;
 
    pipe_draw_vbo_func draw_vbo[2]; //batch changed
+   pipe_draw_vertex_state_func draw_state[2]; //batch changed
    pipe_launch_grid_func launch_grid[2]; //batch changed
 
    struct pipe_device_reset_callback reset;
 
-   uint32_t curr_batch; //the current batch id
-
    simple_mtx_t batch_mtx;
    struct zink_fence *deferred_fence;
    struct zink_fence *last_fence; //the last command buffer submitted
-   struct hash_table batch_states; //submitted batch states
+   struct zink_batch_state *batch_states; //list of submitted batch states: ordered by increasing timeline id
+   unsigned batch_states_count; //number of states in `batch_states`
    struct util_dynarray free_batch_states; //unused batch states
    bool oom_flush;
    bool oom_stall;
@@ -208,7 +205,6 @@ struct zink_context {
 
    unsigned shader_has_inlinable_uniforms_mask;
    unsigned inlinable_uniforms_valid_mask;
-   uint32_t compute_inlinable_uniforms[MAX_INLINABLE_UNIFORMS];
 
    struct pipe_constant_buffer ubos[PIPE_SHADER_TYPES][PIPE_MAX_CONSTANT_BUFFERS];
    struct pipe_shader_buffer ssbos[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_BUFFERS];
@@ -225,6 +221,7 @@ struct zink_context {
    struct zink_depth_stencil_alpha_state *dsa_state;
 
    struct hash_table desc_set_layouts[ZINK_DESCRIPTOR_TYPES];
+   struct set desc_pool_keys[ZINK_DESCRIPTOR_TYPES];
    bool pipeline_changed[2]; //gfx, compute
 
    struct zink_shader *gfx_stages[ZINK_SHADER_COUNT];
@@ -262,8 +259,6 @@ struct zink_context {
    uint16_t rp_clears_enabled;
    uint16_t fbfetch_outputs;
 
-   VkBuffer vbufs[PIPE_MAX_ATTRIBS];
-   unsigned vbuf_offsets[PIPE_MAX_ATTRIBS];
    struct pipe_vertex_buffer vertex_buffers[PIPE_MAX_ATTRIBS];
    bool vertex_buffers_dirty;
 
@@ -400,8 +395,6 @@ zink_resource_access_is_write(VkAccessFlags flags);
 
 void
 zink_resource_buffer_barrier(struct zink_context *ctx, struct zink_resource *res, VkAccessFlags flags, VkPipelineStageFlags pipeline);
-void
-zink_fake_buffer_barrier(struct zink_resource *res, VkAccessFlags flags, VkPipelineStageFlags pipeline);
 bool
 zink_resource_image_needs_barrier(struct zink_resource *res, VkImageLayout new_layout, VkAccessFlags flags, VkPipelineStageFlags pipeline);
 bool

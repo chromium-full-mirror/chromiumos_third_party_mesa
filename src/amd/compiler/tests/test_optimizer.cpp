@@ -954,13 +954,14 @@ BEGIN_TEST(optimize.denorm_propagation)
 END_TEST
 
 BEGIN_TEST(optimizer.dpp)
-   //>> v1: %a, v1: %b, s2: %c = p_startpgm
-   if (!setup_cs("v1 v1 s2", GFX10_3))
+   //>> v1: %a, v1: %b, s2: %c, s1: %d = p_startpgm
+   if (!setup_cs("v1 v1 s2 s1", GFX10_3))
       return;
 
    Operand a(inputs[0]);
    Operand b(inputs[1]);
    Operand c(inputs[2]);
+   Operand d(inputs[3]);
 
    /* basic optimization */
    //! v1: %res0 = v_add_f32 %a, %b row_mirror bound_ctrl:1
@@ -987,7 +988,7 @@ BEGIN_TEST(optimizer.dpp)
    //! v1: %res3 = v_add_f32 -%a, %b row_mirror bound_ctrl:1
    //! p_unit_test 3, %res3
    auto tmp3 = bld.vop1_dpp(aco_opcode::v_mov_b32, bld.def(v1), a, dpp_row_mirror);
-   tmp3.instr->dpp().neg[0] = true;
+   tmp3.instr->dpp16().neg[0] = true;
    Temp res3 = bld.vop2(aco_opcode::v_add_f32, bld.def(v1), tmp3, b);
    writeout(3, res3);
 
@@ -1009,7 +1010,7 @@ BEGIN_TEST(optimizer.dpp)
    //! v1: %res6 = v_add_f32 |%a|, %b row_mirror bound_ctrl:1
    //! p_unit_test 6, %res6
    auto tmp6 = bld.vop1_dpp(aco_opcode::v_mov_b32, bld.def(v1), a, dpp_row_mirror);
-   tmp6.instr->dpp().neg[0] = true;
+   tmp6.instr->dpp16().neg[0] = true;
    auto res6 = bld.vop2_e64(aco_opcode::v_add_f32, bld.def(v1), tmp6, b);
    res6.instr->vop3().abs[0] = true;
    writeout(6, res6);
@@ -1027,6 +1028,21 @@ BEGIN_TEST(optimizer.dpp)
    Temp tmp8 = bld.vop1_dpp(aco_opcode::v_mov_b32, bld.def(v1), a, dpp_row_mirror);
    Temp res8 = bld.vop2(aco_opcode::v_cndmask_b32, bld.def(v1), tmp8, b, c);
    writeout(8, res8);
+
+   /* sgprs */
+   //! v1: %tmp9 = v_mov_b32 %a row_mirror bound_ctrl:1
+   //! v1: %res9 = v_add_f32 %tmp9, %d
+   //! p_unit_test 9, %res9
+   Temp tmp9 = bld.vop1_dpp(aco_opcode::v_mov_b32, bld.def(v1), a, dpp_row_mirror);
+   Temp res9 = bld.vop2_e64(aco_opcode::v_add_f32, bld.def(v1), tmp9, d);
+   writeout(9, res9);
+
+   //! v1: %tmp10 = v_mov_b32 %a row_mirror bound_ctrl:1
+   //! v1: %res10 = v_add_f32 %d, %tmp10
+   //! p_unit_test 10, %res10
+   Temp tmp10 = bld.vop1_dpp(aco_opcode::v_mov_b32, bld.def(v1), a, dpp_row_mirror);
+   Temp res10 = bld.vop2(aco_opcode::v_add_f32, bld.def(v1), d, tmp10);
+   writeout(10, res10);
 
    finish_opt_test();
 END_TEST

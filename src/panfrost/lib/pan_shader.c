@@ -92,7 +92,7 @@ collect_varyings(nir_shader *s, nir_variable_mode varying_mode,
 {
         *varying_count = 0;
 
-        unsigned comps[MAX_VARYING] = { 0 };
+        unsigned comps[PAN_MAX_VARYINGS] = { 0 };
 
         nir_foreach_variable_with_modes(var, s, varying_mode) {
                 unsigned loc = var->data.driver_location;
@@ -142,6 +142,7 @@ collect_varyings(nir_shader *s, nir_variable_mode varying_mode,
                 assert(format != PIPE_FORMAT_NONE);
 
                 for (int c = 0; c < sz; ++c) {
+                        assert(loc + c < PAN_MAX_VARYINGS);
                         varyings[loc + c].location = var->data.location + c;
                         varyings[loc + c].format = format;
                 }
@@ -273,14 +274,6 @@ GENX(pan_shader_compile)(nir_shader *s,
                 info->fs.reads_face =
                         (s->info.inputs_read & (1 << VARYING_SLOT_FACE)) ||
                         BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_FRONT_FACE);
-                info->fs.reads_sample_id =
-                        BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_SAMPLE_ID);
-                info->fs.reads_sample_pos =
-                        BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS);
-                info->fs.reads_sample_mask_in =
-                        BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_SAMPLE_MASK_IN);
-                info->fs.reads_helper_invocation =
-                        BITSET_TEST(s->info.system_values_read, SYSTEM_VALUE_HELPER_INVOCATION);
                 collect_varyings(s, nir_var_shader_in, info->varyings.input,
                                  &info->varyings.input_count);
                 break;

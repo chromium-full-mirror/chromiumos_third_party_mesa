@@ -152,28 +152,6 @@
    radeon_emit(value); \
 } while (0)
 
-#define radeon_set_context_reg_rmw(reg, value, mask) do { \
-   SI_CHECK_SHADOWED_REGS(reg, 1); \
-   assert((reg) >= SI_CONTEXT_REG_OFFSET); \
-   radeon_emit(PKT3(PKT3_CONTEXT_REG_RMW, 2, 0)); \
-   radeon_emit(((reg) - SI_CONTEXT_REG_OFFSET) >> 2); \
-   radeon_emit(mask); \
-   radeon_emit(value); \
-} while (0)
-
-/* Emit PKT3_CONTEXT_REG_RMW if the register value is different. */
-#define radeon_opt_set_context_reg_rmw(sctx, offset, reg, val, mask) do { \
-   unsigned __value = (val); \
-   assert((__value & ~mask) == 0); \
-   __value &= mask; \
-   if (((sctx->tracked_regs.reg_saved >> (reg)) & 0x1) != 0x1 || \
-       sctx->tracked_regs.reg_value[reg] != __value) { \
-      radeon_set_context_reg_rmw(offset, __value, mask); \
-      sctx->tracked_regs.reg_saved |= 0x1ull << (reg); \
-      sctx->tracked_regs.reg_value[reg] = __value; \
-   } \
-} while (0)
-
 /* Emit PKT3_SET_CONTEXT_REG if the register value is different. */
 #define radeon_opt_set_context_reg(sctx, offset, reg, val) do { \
    unsigned __value = val; \
@@ -300,6 +278,15 @@
    radeon_set_sh_reg_seq(sh_offset, 1); \
    radeon_emit_32bit_pointer(sctx->screen, (desc)->gpu_address); \
 } while (0)
+
+/* Wrappers that are only used when they are passed as function pointers. */
+static inline void radeon_set_sh_reg_func(struct radeon_cmdbuf *cs, unsigned reg_offset,
+                                          uint32_t value)
+{
+   radeon_begin(cs);
+   radeon_set_sh_reg(reg_offset, value);
+   radeon_end();
+}
 
 /* This should be evaluated at compile time if all parameters are constants. */
 static ALWAYS_INLINE unsigned

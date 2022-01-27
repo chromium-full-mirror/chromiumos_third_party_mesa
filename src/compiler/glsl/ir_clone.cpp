@@ -210,7 +210,7 @@ ir_dereference_record::clone(void *mem_ctx, struct hash_table *ht) const
 ir_texture *
 ir_texture::clone(void *mem_ctx, struct hash_table *ht) const
 {
-   ir_texture *new_tex = new(mem_ctx) ir_texture(this->op);
+   ir_texture *new_tex = new(mem_ctx) ir_texture(this->op, this->is_sparse);
    new_tex->type = this->type;
 
    new_tex->sampler = this->sampler->clone(mem_ctx, ht);
@@ -354,6 +354,7 @@ ir_constant::clone(void *mem_ctx, struct hash_table *ht) const
    case GLSL_TYPE_UINT8:
    case GLSL_TYPE_INT8:
    case GLSL_TYPE_SAMPLER:
+   case GLSL_TYPE_TEXTURE:
    case GLSL_TYPE_IMAGE:
       return new(mem_ctx) ir_constant(this->type, &this->value);
 

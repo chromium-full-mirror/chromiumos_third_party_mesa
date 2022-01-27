@@ -330,6 +330,7 @@ struct radeon_surf {
    /* Not supported yet for depth + stencil. */
    uint16_t prt_tile_width;
    uint16_t prt_tile_height;
+   uint16_t prt_tile_depth;
 
    /* Tile swizzle can be OR'd with low bits of the BASE_256B address.
     * The value is the same for all mipmap levels. Supported tile modes:
@@ -455,6 +456,8 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
 bool ac_modifier_has_dcc(uint64_t modifier);
 bool ac_modifier_has_dcc_retile(uint64_t modifier);
 bool ac_modifier_supports_dcc_image_stores(uint64_t modifier);
+void ac_modifier_max_extent(const struct radeon_info *info,
+                            uint64_t modifier, uint32_t *width, uint32_t *height);
 
 unsigned ac_surface_get_nplanes(const struct radeon_surf *surf);
 uint64_t ac_surface_get_plane_offset(enum chip_class chip_class,
@@ -462,7 +465,7 @@ uint64_t ac_surface_get_plane_offset(enum chip_class chip_class,
                                      unsigned plane, unsigned layer);
 uint64_t ac_surface_get_plane_stride(enum chip_class chip_class,
                                      const struct radeon_surf *surf,
-                                     unsigned plane);
+                                     unsigned plane, unsigned level);
 /* Of the whole miplevel, not an individual layer */
 uint64_t ac_surface_get_plane_size(const struct radeon_surf *surf,
                                    unsigned plane);

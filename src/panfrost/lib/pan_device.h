@@ -88,7 +88,8 @@ enum pan_indirect_draw_flags {
         PAN_INDIRECT_DRAW_HAS_PSIZ = 1 << 2,
         PAN_INDIRECT_DRAW_PRIMITIVE_RESTART = 1 << 3,
         PAN_INDIRECT_DRAW_UPDATE_PRIM_SIZE = 1 << 4,
-        PAN_INDIRECT_DRAW_LAST_FLAG = PAN_INDIRECT_DRAW_UPDATE_PRIM_SIZE,
+        PAN_INDIRECT_DRAW_IDVS = 1 << 5,
+        PAN_INDIRECT_DRAW_LAST_FLAG = PAN_INDIRECT_DRAW_IDVS,
         PAN_INDIRECT_DRAW_FLAGS_MASK = (PAN_INDIRECT_DRAW_LAST_FLAG << 1) - 1,
         PAN_INDIRECT_DRAW_MIN_MAX_SEARCH_1B_INDEX = PAN_INDIRECT_DRAW_LAST_FLAG << 1,
         PAN_INDIRECT_DRAW_MIN_MAX_SEARCH_2B_INDEX,
@@ -160,6 +161,7 @@ struct panfrost_device {
         unsigned thread_tls_alloc;
         struct panfrost_tiler_features tiler_features;
         unsigned quirks;
+        bool has_afbc;
 
         /* Table of formats, indexed by a PIPE format */
         const struct panfrost_format *formats;

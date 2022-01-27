@@ -202,12 +202,18 @@
 #include "util/u_thread.h"
 #include "util/slab.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct threaded_context;
 struct tc_unflushed_batch_token;
 
 /* 0 = disabled, 1 = assertions, 2 = printfs, 3 = logging */
 #define TC_DEBUG 0
 
+/* This is an internal flag not sent to the driver. */
+#define TC_TRANSFER_MAP_UPLOAD_CPU_STORAGE   (1u << 28)
 /* These are map flags sent to drivers. */
 /* Never infer whether it's safe to use unsychronized mappings: */
 #define TC_TRANSFER_MAP_NO_INFER_UNSYNCHRONIZED (1u << 29)
@@ -313,6 +319,13 @@ struct threaded_resource {
     */
    struct pipe_resource *latest;
 
+   /* Optional CPU storage of the buffer. When we get partial glBufferSubData(implemented by
+    * copy_buffer) + glDrawElements, we don't want to drain the gfx pipeline before executing
+    * the copy. For ideal pipelining, we upload to this CPU storage and then reallocate
+    * the GPU storage completely and reupload everything without copy_buffer.
+    */
+   void *cpu_storage;
+
    /* The buffer range which is initialized (with a write transfer, streamout,
     * or writable shader resources). The remainder of the buffer is considered
     * invalid and can be mapped unsynchronized.
@@ -360,6 +373,8 @@ struct threaded_transfer {
     * the base instance. Initially it's set to &b.resource->valid_buffer_range.
     */
    struct util_range *valid_buffer_range;
+
+   bool cpu_storage_mapped;
 };
 
 struct threaded_query {
@@ -408,13 +423,29 @@ struct tc_buffer_list {
    BITSET_DECLARE(buffer_list, TC_BUFFER_ID_MASK + 1);
 };
 
+/**
+ * Optional TC parameters/callbacks.
+ */
+struct threaded_context_options {
+   tc_create_fence_func create_fence;
+   tc_is_resource_busy is_resource_busy;
+   bool driver_calls_flush_notify;
+
+   /**
+    * If true, ctx->get_device_reset_status() will be called without
+    * synchronizing with driver thread.  Drivers can enable this to avoid
+    * TC syncs if their implementation of get_device_reset_status() is
+    * safe to call without synchronizing with driver thread.
+    */
+   bool unsynchronized_get_device_reset_status;
+};
+
 struct threaded_context {
    struct pipe_context base;
    struct pipe_context *pipe;
    struct slab_child_pool pool_transfers;
    tc_replace_buffer_storage_func replace_buffer_storage;
-   tc_create_fence_func create_fence;
-   tc_is_resource_busy is_resource_busy;
+   struct threaded_context_options options;
    unsigned map_buffer_alignment;
    unsigned ubo_alignment;
 
@@ -425,18 +456,9 @@ struct threaded_context {
    unsigned num_direct_slots;
    unsigned num_syncs;
 
-   bool driver_calls_flush_notify;
    bool use_forced_staging_uploads;
    bool add_all_gfx_bindings_to_buffer_list;
    bool add_all_compute_bindings_to_buffer_list;
-
-   /**
-    * If true, ctx->get_device_reset_status() will be called without
-    * synchronizing with driver thread.  Drivers can enable this to avoid
-    * TC syncs if their implementation of get_device_reset_status() is
-    * safe to call without synchronizing with driver thread.
-    */
-   bool unsynchronized_get_device_reset_status;
 
    /* Estimation of how much vram/gtt bytes are mmap'd in
     * the current tc_batch.
@@ -496,7 +518,8 @@ struct threaded_context {
    struct tc_buffer_list buffer_lists[TC_MAX_BUFFER_LISTS];
 };
 
-void threaded_resource_init(struct pipe_resource *res);
+void threaded_resource_init(struct pipe_resource *res, bool allow_cpu_storage,
+                            unsigned map_buffer_alignment);
 void threaded_resource_deinit(struct pipe_resource *res);
 struct pipe_context *threaded_context_unwrap_sync(struct pipe_context *pipe);
 void tc_driver_internal_flush_notify(struct threaded_context *tc);
@@ -505,10 +528,7 @@ struct pipe_context *
 threaded_context_create(struct pipe_context *pipe,
                         struct slab_parent_pool *parent_transfer_pool,
                         tc_replace_buffer_storage_func replace_buffer,
-                        tc_create_fence_func create_fence,
-                        tc_is_resource_busy is_resource_busy,
-                        bool driver_calls_flush_notify,
-                        bool unsynchronized_get_device_reset_status,
+                        const struct threaded_context_options *options,
                         struct threaded_context **out);
 
 void
@@ -574,5 +594,26 @@ tc_assert_driver_thread(struct threaded_context *tc)
    assert(util_thread_id_equal(tc->driver_thread, util_get_thread_id()));
 #endif
 }
+
+/**
+ * This is called before GPU stores to disable the CPU storage because
+ * the CPU storage doesn't mirror the GPU storage.
+ *
+ * Drivers should also call it before exporting a DMABUF of a buffer.
+ */
+static inline void
+tc_buffer_disable_cpu_storage(struct pipe_resource *buf)
+{
+   struct threaded_resource *tres = threaded_resource(buf);
+
+   if (tres->cpu_storage) {
+      free(tres->cpu_storage);
+      tres->cpu_storage = NULL;
+   }
+}
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

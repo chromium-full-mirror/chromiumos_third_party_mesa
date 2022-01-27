@@ -116,7 +116,8 @@ validate_ir(Program* program)
          /* check base format */
          Format base_format = instr->format;
          base_format = (Format)((uint32_t)base_format & ~(uint32_t)Format::SDWA);
-         base_format = (Format)((uint32_t)base_format & ~(uint32_t)Format::DPP);
+         base_format = (Format)((uint32_t)base_format & ~(uint32_t)Format::DPP16);
+         base_format = (Format)((uint32_t)base_format & ~(uint32_t)Format::DPP8);
          if ((uint32_t)base_format & (uint32_t)Format::VOP1)
             base_format = Format::VOP1;
          else if ((uint32_t)base_format & (uint32_t)Format::VOP2)
@@ -235,6 +236,16 @@ validate_ir(Program* program)
             if (instr->definitions[0].regClass().is_subdword() && !instr->definitions[0].isFixed())
                check((vop3.opsel & (1 << 3)) == 0, "Unexpected opsel for sub-dword definition",
                      instr.get());
+         } else if (instr->isVOP3P()) {
+            VOP3P_instruction& vop3p = instr->vop3p();
+            for (unsigned i = 0; i < instr->operands.size(); i++) {
+               if (instr->operands[i].hasRegClass() &&
+                   instr->operands[i].regClass().is_subdword() && !instr->operands[i].isFixed())
+                  check((vop3p.opsel_lo & (1 << i)) == 0 && (vop3p.opsel_hi & (1 << i)) == 0,
+                        "Unexpected opsel for subdword operand", instr.get());
+            }
+            check(instr->definitions[0].regClass() == v1, "VOP3P must have v1 definition",
+                  instr.get());
          }
 
          /* check for undefs */
@@ -256,8 +267,8 @@ validate_ir(Program* program)
          /* check subdword definitions */
          for (unsigned i = 0; i < instr->definitions.size(); i++) {
             if (instr->definitions[i].regClass().is_subdword())
-               check(instr->isPseudo() || instr->definitions[i].bytes() <= 4,
-                     "Only Pseudo instructions can write subdword registers larger than 4 bytes",
+               check(instr->definitions[i].bytes() <= 4 || instr->isPseudo() || instr->isVMEM(),
+                     "Only Pseudo and VMEM instructions can write subdword registers > 4 bytes",
                      instr.get());
          }
 
@@ -542,6 +553,36 @@ validate_ir(Program* program)
                      (instr->operands[3].isTemp() &&
                       instr->operands[3].regClass().type() == RegType::vgpr),
                   "VMEM write data must be vgpr", instr.get());
+
+            const bool d16 = instr->opcode == aco_opcode::buffer_load_dword || // FIXME: used to spill subdword variables
+                             instr->opcode == aco_opcode::buffer_load_ubyte ||
+                             instr->opcode == aco_opcode::buffer_load_sbyte ||
+                             instr->opcode == aco_opcode::buffer_load_ushort ||
+                             instr->opcode == aco_opcode::buffer_load_sshort ||
+                             instr->opcode == aco_opcode::buffer_load_ubyte_d16 ||
+                             instr->opcode == aco_opcode::buffer_load_ubyte_d16_hi ||
+                             instr->opcode == aco_opcode::buffer_load_sbyte_d16 ||
+                             instr->opcode == aco_opcode::buffer_load_sbyte_d16_hi ||
+                             instr->opcode == aco_opcode::buffer_load_short_d16 ||
+                             instr->opcode == aco_opcode::buffer_load_short_d16_hi ||
+                             instr->opcode == aco_opcode::buffer_load_format_d16_x ||
+                             instr->opcode == aco_opcode::buffer_load_format_d16_hi_x ||
+                             instr->opcode == aco_opcode::buffer_load_format_d16_xy ||
+                             instr->opcode == aco_opcode::buffer_load_format_d16_xyz ||
+                             instr->opcode == aco_opcode::buffer_load_format_d16_xyzw ||
+                             instr->opcode == aco_opcode::tbuffer_load_format_d16_x ||
+                             instr->opcode == aco_opcode::tbuffer_load_format_d16_xy ||
+                             instr->opcode == aco_opcode::tbuffer_load_format_d16_xyz ||
+                             instr->opcode == aco_opcode::tbuffer_load_format_d16_xyzw;
+            if (instr->definitions.size()) {
+               check(instr->definitions[0].isTemp() &&
+                        instr->definitions[0].regClass().type() == RegType::vgpr,
+                     "VMEM definitions[0] (VDATA) must be VGPR", instr.get());
+               check(d16 || !instr->definitions[0].regClass().is_subdword(),
+                     "Only D16 opcodes can load subdword values.", instr.get());
+               check(instr->definitions[0].bytes() <= 8 || !d16,
+                     "D16 opcodes can only load up to 8 bytes.", instr.get());
+            }
             break;
          }
          case Format::MIMG: {
@@ -575,10 +616,16 @@ validate_ir(Program* program)
                         instr.get());
                }
             }
-            check(instr->definitions.empty() ||
-                     (instr->definitions[0].isTemp() &&
-                      instr->definitions[0].regClass().type() == RegType::vgpr),
-                  "MIMG definitions[0] (VDATA) must be VGPR", instr.get());
+
+            if (instr->definitions.size()) {
+               check(instr->definitions[0].isTemp() &&
+                        instr->definitions[0].regClass().type() == RegType::vgpr,
+                     "MIMG definitions[0] (VDATA) must be VGPR", instr.get());
+               check(instr->mimg().d16 || !instr->definitions[0].regClass().is_subdword(),
+                     "Only D16 MIMG instructions can load subdword values.", instr.get());
+               check(instr->definitions[0].bytes() <= 8 || !instr->mimg().d16,
+                     "D16 MIMG instructions can only load up to 8 bytes.", instr.get());
+            }
             break;
          }
          case Format::DS: {
@@ -670,6 +717,7 @@ struct Assignment {
    Location defloc;
    Location firstloc;
    PhysReg reg;
+   bool valid;
 };
 
 bool
@@ -720,6 +768,9 @@ validate_subdword_operand(chip_class chip, const aco_ptr<Instruction>& instr, un
    if (instr->isSDWA())
       return byte + instr->sdwa().sel[index].offset() + instr->sdwa().sel[index].size() <= 4 &&
              byte % instr->sdwa().sel[index].size() == 0;
+   if (instr->isVOP3P())
+      return ((instr->vop3p().opsel_lo >> index) & 1) == (byte >> 1) &&
+             ((instr->vop3p().opsel_hi >> index) & 1) == (byte >> 1);
    if (byte == 2 && can_use_opsel(chip, instr->opcode, index, 1))
       return true;
 
@@ -743,6 +794,7 @@ validate_subdword_operand(chip_class chip, const aco_ptr<Instruction>& instr, un
       break;
    case aco_opcode::buffer_store_byte_d16_hi:
    case aco_opcode::buffer_store_short_d16_hi:
+   case aco_opcode::buffer_store_format_d16_hi_x:
       if (byte == 2 && index == 3)
          return true;
       break;
@@ -777,7 +829,9 @@ validate_subdword_definition(chip_class chip, const aco_ptr<Instruction>& instr)
 
    switch (instr->opcode) {
    case aco_opcode::buffer_load_ubyte_d16_hi:
+   case aco_opcode::buffer_load_sbyte_d16_hi:
    case aco_opcode::buffer_load_short_d16_hi:
+   case aco_opcode::buffer_load_format_d16_hi_x:
    case aco_opcode::flat_load_ubyte_d16_hi:
    case aco_opcode::flat_load_short_d16_hi:
    case aco_opcode::scratch_load_ubyte_d16_hi:
@@ -811,9 +865,17 @@ get_subdword_bytes_written(Program* program, const aco_ptr<Instruction>& instr, 
       return 4;
    }
 
+   if (instr->isMIMG()) {
+      assert(instr->mimg().d16);
+      return program->dev.sram_ecc_enabled ? def.size() * 4u : def.bytes();
+   }
+
    switch (instr->opcode) {
    case aco_opcode::buffer_load_ubyte_d16:
+   case aco_opcode::buffer_load_sbyte_d16:
    case aco_opcode::buffer_load_short_d16:
+   case aco_opcode::buffer_load_format_d16_x:
+   case aco_opcode::tbuffer_load_format_d16_x:
    case aco_opcode::flat_load_ubyte_d16:
    case aco_opcode::flat_load_short_d16:
    case aco_opcode::scratch_load_ubyte_d16:
@@ -823,7 +885,9 @@ get_subdword_bytes_written(Program* program, const aco_ptr<Instruction>& instr, 
    case aco_opcode::ds_read_u8_d16:
    case aco_opcode::ds_read_u16_d16:
    case aco_opcode::buffer_load_ubyte_d16_hi:
+   case aco_opcode::buffer_load_sbyte_d16_hi:
    case aco_opcode::buffer_load_short_d16_hi:
+   case aco_opcode::buffer_load_format_d16_hi_x:
    case aco_opcode::flat_load_ubyte_d16_hi:
    case aco_opcode::flat_load_short_d16_hi:
    case aco_opcode::scratch_load_ubyte_d16_hi:
@@ -832,6 +896,8 @@ get_subdword_bytes_written(Program* program, const aco_ptr<Instruction>& instr, 
    case aco_opcode::global_load_short_d16_hi:
    case aco_opcode::ds_read_u8_d16_hi:
    case aco_opcode::ds_read_u16_d16_hi: return program->dev.sram_ecc_enabled ? 4 : 2;
+   case aco_opcode::buffer_load_format_d16_xyz:
+   case aco_opcode::tbuffer_load_format_d16_xyz: return program->dev.sram_ecc_enabled ? 8 : 6;
    default: return def.size() * 4;
    }
 }
@@ -849,7 +915,7 @@ validate_ra(Program* program)
    std::vector<std::vector<Temp>> phi_sgpr_ops(program->blocks.size());
    uint16_t sgpr_limit = get_addr_sgpr_from_waves(program, program->num_waves);
 
-   std::map<unsigned, Assignment> assignments;
+   std::vector<Assignment> assignments(program->peekAllocationId());
    for (Block& block : program->blocks) {
       Location loc;
       loc.block = &block;
@@ -870,16 +936,16 @@ validate_ra(Program* program)
                continue;
             if (!op.isFixed())
                err |= ra_fail(program, loc, Location(), "Operand %d is not assigned a register", i);
-            if (assignments.count(op.tempId()) && assignments[op.tempId()].reg != op.physReg())
+            if (assignments[op.tempId()].valid && assignments[op.tempId()].reg != op.physReg())
                err |=
-                  ra_fail(program, loc, assignments.at(op.tempId()).firstloc,
+                  ra_fail(program, loc, assignments[op.tempId()].firstloc,
                           "Operand %d has an inconsistent register assignment with instruction", i);
             if ((op.getTemp().type() == RegType::vgpr &&
                  op.physReg().reg_b + op.bytes() > (256 + program->config->num_vgprs) * 4) ||
                 (op.getTemp().type() == RegType::sgpr &&
                  op.physReg() + op.size() > program->config->num_sgprs &&
                  op.physReg() < sgpr_limit))
-               err |= ra_fail(program, loc, assignments.at(op.tempId()).firstloc,
+               err |= ra_fail(program, loc, assignments[op.tempId()].firstloc,
                               "Operand %d has an out-of-bounds register assignment", i);
             if (op.physReg() == vcc && !program->needs_vcc)
                err |= ra_fail(program, loc, Location(),
@@ -889,8 +955,10 @@ validate_ra(Program* program)
                err |= ra_fail(program, loc, Location(), "Operand %d not aligned correctly", i);
             if (!assignments[op.tempId()].firstloc.block)
                assignments[op.tempId()].firstloc = loc;
-            if (!assignments[op.tempId()].defloc.block)
+            if (!assignments[op.tempId()].defloc.block) {
                assignments[op.tempId()].reg = op.physReg();
+               assignments[op.tempId()].valid = true;
+            }
          }
 
          for (unsigned i = 0; i < instr->definitions.size(); i++) {
@@ -901,14 +969,14 @@ validate_ra(Program* program)
                err |=
                   ra_fail(program, loc, Location(), "Definition %d is not assigned a register", i);
             if (assignments[def.tempId()].defloc.block)
-               err |= ra_fail(program, loc, assignments.at(def.tempId()).defloc,
+               err |= ra_fail(program, loc, assignments[def.tempId()].defloc,
                               "Temporary %%%d also defined by instruction", def.tempId());
             if ((def.getTemp().type() == RegType::vgpr &&
                  def.physReg().reg_b + def.bytes() > (256 + program->config->num_vgprs) * 4) ||
                 (def.getTemp().type() == RegType::sgpr &&
                  def.physReg() + def.size() > program->config->num_sgprs &&
                  def.physReg() < sgpr_limit))
-               err |= ra_fail(program, loc, assignments.at(def.tempId()).firstloc,
+               err |= ra_fail(program, loc, assignments[def.tempId()].firstloc,
                               "Definition %d has an out-of-bounds register assignment", i);
             if (def.physReg() == vcc && !program->needs_vcc)
                err |= ra_fail(program, loc, Location(),
@@ -920,6 +988,7 @@ validate_ra(Program* program)
                assignments[def.tempId()].firstloc = loc;
             assignments[def.tempId()].defloc = loc;
             assignments[def.tempId()].reg = def.physReg();
+            assignments[def.tempId()].valid = true;
          }
       }
    }
@@ -931,23 +1000,22 @@ validate_ra(Program* program)
       std::array<unsigned, 2048> regs; /* register file in bytes */
       regs.fill(0);
 
-      std::set<Temp> live;
-      for (unsigned id : live_vars.live_out[block.index])
-         live.insert(Temp(id, program->temp_rc[id]));
+      IDSet live = live_vars.live_out[block.index];
       /* remove killed p_phi sgpr operands */
       for (Temp tmp : phi_sgpr_ops[block.index])
-         live.erase(tmp);
+         live.erase(tmp.id());
 
       /* check live out */
-      for (Temp tmp : live) {
-         PhysReg reg = assignments.at(tmp.id()).reg;
+      for (unsigned id : live) {
+         Temp tmp(id, program->temp_rc[id]);
+         PhysReg reg = assignments[id].reg;
          for (unsigned i = 0; i < tmp.bytes(); i++) {
             if (regs[reg.reg_b + i]) {
                err |= ra_fail(program, loc, Location(),
                               "Assignment of element %d of %%%d already taken by %%%d in live-out",
-                              i, tmp.id(), regs[reg.reg_b + i]);
+                              i, id, regs[reg.reg_b + i]);
             }
-            regs[reg.reg_b + i] = tmp.id();
+            regs[reg.reg_b + i] = id;
          }
       }
       regs.fill(0);
@@ -958,7 +1026,7 @@ validate_ra(Program* program)
          /* check killed p_phi sgpr operands */
          if (instr->opcode == aco_opcode::p_logical_end) {
             for (Temp tmp : phi_sgpr_ops[block.index]) {
-               PhysReg reg = assignments.at(tmp.id()).reg;
+               PhysReg reg = assignments[tmp.id()].reg;
                for (unsigned i = 0; i < tmp.bytes(); i++) {
                   if (regs[reg.reg_b + i])
                      err |= ra_fail(
@@ -966,14 +1034,14 @@ validate_ra(Program* program)
                         "Assignment of element %d of %%%d already taken by %%%d in live-out", i,
                         tmp.id(), regs[reg.reg_b + i]);
                }
-               live.emplace(tmp);
+               live.insert(tmp.id());
             }
          }
 
          for (const Definition& def : instr->definitions) {
             if (!def.isTemp())
                continue;
-            live.erase(def.getTemp());
+            live.erase(def.tempId());
          }
 
          /* don't count phi operands as live-in, since they are actually
@@ -982,15 +1050,16 @@ validate_ra(Program* program)
             for (const Operand& op : instr->operands) {
                if (!op.isTemp())
                   continue;
-               live.insert(op.getTemp());
+               live.insert(op.tempId());
             }
          }
       }
 
-      for (Temp tmp : live) {
-         PhysReg reg = assignments.at(tmp.id()).reg;
+      for (unsigned id : live) {
+         Temp tmp(id, program->temp_rc[id]);
+         PhysReg reg = assignments[id].reg;
          for (unsigned i = 0; i < tmp.bytes(); i++)
-            regs[reg.reg_b + i] = tmp.id();
+            regs[reg.reg_b + i] = id;
       }
 
       for (aco_ptr<Instruction>& instr : block.instructions) {
@@ -999,7 +1068,7 @@ validate_ra(Program* program)
          /* remove killed p_phi operands from regs */
          if (instr->opcode == aco_opcode::p_logical_end) {
             for (Temp tmp : phi_sgpr_ops[block.index]) {
-               PhysReg reg = assignments.at(tmp.id()).reg;
+               PhysReg reg = assignments[tmp.id()].reg;
                for (unsigned i = 0; i < tmp.bytes(); i++)
                   regs[reg.reg_b + i] = 0;
             }
@@ -1021,11 +1090,11 @@ validate_ra(Program* program)
             if (!def.isTemp())
                continue;
             Temp tmp = def.getTemp();
-            PhysReg reg = assignments.at(tmp.id()).reg;
+            PhysReg reg = assignments[tmp.id()].reg;
             for (unsigned j = 0; j < tmp.bytes(); j++) {
                if (regs[reg.reg_b + j])
                   err |= ra_fail(
-                     program, loc, assignments.at(regs[reg.reg_b + j]).defloc,
+                     program, loc, assignments[regs[reg.reg_b + j]].defloc,
                      "Assignment of element %d of %%%d already taken by %%%d from instruction", i,
                      tmp.id(), regs[reg.reg_b + j]);
                regs[reg.reg_b + j] = tmp.id();
@@ -1037,7 +1106,7 @@ validate_ra(Program* program)
                for (unsigned j = reg.byte() & ~(written - 1); j < written; j++) {
                   unsigned written_reg = reg.reg() * 4u + j;
                   if (regs[written_reg] && regs[written_reg] != def.tempId())
-                     err |= ra_fail(program, loc, assignments.at(regs[written_reg]).defloc,
+                     err |= ra_fail(program, loc, assignments[regs[written_reg]].defloc,
                                     "Assignment of element %d of %%%d overwrites the full register "
                                     "taken by %%%d from instruction",
                                     i, tmp.id(), regs[written_reg]);

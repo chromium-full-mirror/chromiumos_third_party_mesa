@@ -207,9 +207,6 @@ iris_disk_cache_retrieve(struct iris_screen *screen,
    }
 
    prog_data->param = NULL;
-   prog_data->pull_param = NULL;
-   assert(prog_data->nr_pull_params == 0);
-
    if (prog_data->nr_params) {
       prog_data->param = ralloc_array(NULL, uint32_t, prog_data->nr_params);
       blob_copy_bytes(&blob, prog_data->param,
@@ -265,7 +262,7 @@ void
 iris_disk_cache_init(struct iris_screen *screen)
 {
 #ifdef ENABLE_SHADER_CACHE
-   if (INTEL_DEBUG & DEBUG_DISK_CACHE_DISABLE_MASK)
+   if (INTEL_DEBUG(DEBUG_DISK_CACHE_DISABLE_MASK))
       return;
 
    /* array length = print length + nul char + 1 extra to verify it's unused */

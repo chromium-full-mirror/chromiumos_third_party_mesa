@@ -98,8 +98,8 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         /* Our GL 3.x implementation is WIP */
         bool is_gl3 = dev->debug & (PAN_DBG_GL3 | PAN_DBG_DEQP);
 
-        /* Don't expose MRT related CAPs on GPUs that don't implement them */
-        bool has_mrt = !(dev->quirks & MIDGARD_SFBD);
+        /* Native MRT is introduced with v5 */
+        bool has_mrt = (dev->arch >= 5);
 
         /* Only kernel drivers >= 1.1 can allocate HEAP BOs */
         bool has_heap = dev->kernel_version->version_major > 1 ||
@@ -224,12 +224,12 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return MAX_MIP_LEVELS;
 
         case PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT:
-                /* Hardware is natively upper left */
+        case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
+                /* Hardware is upper left. Pixel center at (0.5, 0.5) */
                 return 0;
 
         case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
         case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
-        case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
         case PIPE_CAP_TGSI_TEXCOORD:
                 return 1;
 
@@ -246,7 +246,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_MAX_VERTEX_ELEMENT_SRC_OFFSET:
                 return 0xffff;
 
-        case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
+        case PIPE_CAP_TEXTURE_TRANSFER_MODES:
                 return 0;
 
         case PIPE_CAP_ENDIANNESS:
@@ -279,7 +279,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return 4;
 
         case PIPE_CAP_MAX_VARYINGS:
-                return PIPE_MAX_ATTRIBS;
+                /* Return the GLSL maximum. The internal maximum
+                 * PAN_MAX_VARYINGS accommodates internal varyings. */
+                return MAX_VARYING;
 
         /* Removed in v6 (Bifrost) */
         case PIPE_CAP_ALPHA_TEST:
@@ -319,6 +321,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
                 return modes;
         }
+
+        case PIPE_CAP_IMAGE_STORE_FORMATTED:
+                return 1;
 
         default:
                 return u_pipe_screen_get_param_defaults(screen, param);
@@ -454,16 +459,26 @@ static float
 panfrost_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
 {
         switch (param) {
+        case PIPE_CAPF_MIN_LINE_WIDTH:
+        case PIPE_CAPF_MIN_LINE_WIDTH_AA:
+        case PIPE_CAPF_MIN_POINT_SIZE:
+        case PIPE_CAPF_MIN_POINT_SIZE_AA:
+           return 1;
+
+        case PIPE_CAPF_POINT_SIZE_GRANULARITY:
+        case PIPE_CAPF_LINE_WIDTH_GRANULARITY:
+           return 0.1;
+
         case PIPE_CAPF_MAX_LINE_WIDTH:
 
         FALLTHROUGH;
         case PIPE_CAPF_MAX_LINE_WIDTH_AA:
                 return 255.0; /* arbitrary */
 
-        case PIPE_CAPF_MAX_POINT_WIDTH:
+        case PIPE_CAPF_MAX_POINT_SIZE:
 
         FALLTHROUGH;
-        case PIPE_CAPF_MAX_POINT_WIDTH_AA:
+        case PIPE_CAPF_MAX_POINT_SIZE_AA:
                 return 1024.0;
 
         case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
@@ -536,7 +551,7 @@ panfrost_is_format_supported( struct pipe_screen *screen,
                 return false;
 
         /* Z16 causes dEQP failures on t720 */
-        if (format == PIPE_FORMAT_Z16_UNORM && dev->quirks & MIDGARD_SFBD)
+        if (format == PIPE_FORMAT_Z16_UNORM && dev->arch <= 4)
                 return false;
 
         /* Check we support the format with the given bind */
@@ -572,11 +587,8 @@ panfrost_walk_dmabuf_modifiers(struct pipe_screen *screen,
 {
         /* Query AFBC status */
         struct panfrost_device *dev = pan_device(screen);
-        bool afbc = panfrost_format_supports_afbc(dev, format);
+        bool afbc = dev->has_afbc && panfrost_format_supports_afbc(dev, format);
         bool ytr = panfrost_afbc_can_ytr(format);
-
-        /* Don't advertise AFBC before T760 */
-        afbc &= !(dev->quirks & MIDGARD_NO_AFBC);
 
         unsigned count = 0;
 
@@ -840,17 +852,7 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         panfrost_open_device(screen, fd, dev);
 
         if (dev->debug & PAN_DBG_NO_AFBC)
-                dev->quirks |= MIDGARD_NO_AFBC;
-
-        /* XXX: AFBC is currently broken on Bifrost in a few different ways
-         *
-         *  - Preload is broken if the effective tile size is not 16x16
-         *  - Some systems lack AFBC but we need kernel changes to know that
-         */
-        if (dev->arch == 7)
-                dev->quirks |= MIDGARD_NO_AFBC;
-
-        dev->ro = ro;
+                dev->has_afbc = false;
 
         /* Check if we're loading against a supported GPU model. */
 
@@ -861,6 +863,7 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         case 0x860: /* T860 */
         case 0x6221: /* G72 */
         case 0x7093: /* G31 */
+        case 0x7211: /* G76 */
         case 0x7212: /* G52 */
         case 0x7402: /* G52r1 */
                 break;
@@ -870,6 +873,8 @@ panfrost_create_screen(int fd, struct renderonly *ro)
                 panfrost_destroy_screen(&(screen->base));
                 return NULL;
         }
+
+        dev->ro = ro;
 
         screen->base.destroy = panfrost_destroy_screen;
 
