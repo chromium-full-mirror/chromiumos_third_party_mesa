@@ -595,7 +595,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .EXT_descriptor_indexing = true,
       .EXT_discard_rectangles = true,
 #ifdef VK_USE_PLATFORM_DISPLAY_KHR
-      .EXT_display_control = true,
+      .EXT_display_control = false,
 #endif
       .EXT_extended_dynamic_state = true,
       .EXT_extended_dynamic_state2 = true,
