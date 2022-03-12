@@ -2158,10 +2158,8 @@ v3d_optimize_nir(struct v3d_compile *c, struct nir_shader *s)
 
         nir_move_options sink_opts =
                 nir_move_const_undef | nir_move_comparisons | nir_move_copies |
-                nir_move_load_ubo;
+                nir_move_load_ubo | nir_move_load_ssbo | nir_move_load_uniform;
         NIR_PASS(progress, s, nir_opt_sink, sink_opts);
-
-        NIR_PASS(progress, s, nir_opt_move, nir_move_load_ubo);
 }
 
 static int
@@ -3003,8 +3001,11 @@ emit_ldunifa(struct v3d_compile *c, struct qreg *result)
 }
 
 static bool
-ntq_emit_load_ubo_unifa(struct v3d_compile *c, nir_intrinsic_instr *instr)
+ntq_emit_load_unifa(struct v3d_compile *c, nir_intrinsic_instr *instr)
 {
+        assert(instr->intrinsic == nir_intrinsic_load_ubo ||
+               instr->intrinsic == nir_intrinsic_load_ssbo);
+
         /* Every ldunifa auto-increments the unifa address by 4 bytes, so our
          * current unifa offset is 4 bytes ahead of the offset of the last load.
          */
@@ -3013,6 +3014,11 @@ ntq_emit_load_ubo_unifa(struct v3d_compile *c, nir_intrinsic_instr *instr)
 
         /* We can only use unifa if the offset is uniform */
         if (nir_src_is_divergent(instr->src[1]))
+                return false;
+
+        /* We can only use unifa with SSBOs if they are read-only */
+        bool is_ubo = instr->intrinsic == nir_intrinsic_load_ubo;
+        if (!is_ubo && !(nir_intrinsic_access(instr) & ACCESS_NON_WRITEABLE))
                 return false;
 
         /* ldunifa is a 32-bit load instruction so we can only use it with
@@ -3034,7 +3040,7 @@ ntq_emit_load_ubo_unifa(struct v3d_compile *c, nir_intrinsic_instr *instr)
                          * alignment and skip over unused elements in result.
                          */
                         value_skips = (const_offset % 4) / (bit_size / 8);
-                        const_offset &= ~0xf;
+                        const_offset &= ~0x3;
                 }
         }
 
@@ -3046,11 +3052,11 @@ ntq_emit_load_ubo_unifa(struct v3d_compile *c, nir_intrinsic_instr *instr)
          * shifted up by 1 (0 is gallium's constant buffer 0).
          */
         uint32_t index = nir_src_as_uint(instr->src[0]);
-        if (c->key->environment == V3D_ENVIRONMENT_OPENGL)
+        if (is_ubo && c->key->environment == V3D_ENVIRONMENT_OPENGL)
                 index++;
 
         /* We can only keep track of the last unifa address we used with
-         * constant offset loads. If the new load targets the same UBO and
+         * constant offset loads. If the new load targets the same buffer and
          * is close enough to the previous load, we can skip the unifa register
          * write by emitting dummy ldunifa instructions to update the unifa
          * address.
@@ -3060,6 +3066,7 @@ ntq_emit_load_ubo_unifa(struct v3d_compile *c, nir_intrinsic_instr *instr)
         if (dynamic_src) {
                 c->current_unifa_block = NULL;
         } else if (c->cur_block == c->current_unifa_block &&
+                   c->current_unifa_is_ubo == is_ubo &&
                    c->current_unifa_index == index &&
                    c->current_unifa_offset <= const_offset &&
                    c->current_unifa_offset + max_unifa_skip_dist >= const_offset) {
@@ -3067,18 +3074,25 @@ ntq_emit_load_ubo_unifa(struct v3d_compile *c, nir_intrinsic_instr *instr)
                 ldunifa_skips = (const_offset - c->current_unifa_offset) / 4;
         } else {
                 c->current_unifa_block = c->cur_block;
+                c->current_unifa_is_ubo = is_ubo;
                 c->current_unifa_index = index;
                 c->current_unifa_offset = const_offset;
         }
 
         if (!skip_unifa) {
-                struct qreg base_offset =
+                struct qreg base_offset = is_ubo ?
                         vir_uniform(c, QUNIFORM_UBO_ADDR,
-                                    v3d_unit_data_create(index, const_offset));
+                                    v3d_unit_data_create(index, const_offset)) :
+                        vir_uniform(c, QUNIFORM_SSBO_OFFSET, index);
 
                 struct qreg unifa = vir_reg(QFILE_MAGIC, V3D_QPU_WADDR_UNIFA);
                 if (!dynamic_src) {
-                        vir_MOV_dest(c, unifa, base_offset);
+                        if (is_ubo) {
+                                vir_MOV_dest(c, unifa, base_offset);
+                        } else {
+                                vir_ADD_dest(c, unifa, base_offset,
+                                             vir_uniform_ui(c, const_offset));
+                        }
                 } else {
                         vir_ADD_dest(c, unifa, base_offset,
                                      ntq_get_src(c, instr->src[1], 0));
@@ -3185,8 +3199,11 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                 break;
 
         case nir_intrinsic_load_ubo:
-                if (!ntq_emit_load_ubo_unifa(c, instr))
+        case nir_intrinsic_load_ssbo:
+                if (!ntq_emit_load_unifa(c, instr)) {
                         ntq_emit_tmu_general(c, instr, false);
+                        c->has_general_tmu_load = true;
+                }
                 break;
 
         case nir_intrinsic_ssbo_atomic_add:
@@ -3199,7 +3216,6 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
         case nir_intrinsic_ssbo_atomic_xor:
         case nir_intrinsic_ssbo_atomic_exchange:
         case nir_intrinsic_ssbo_atomic_comp_swap:
-        case nir_intrinsic_load_ssbo:
         case nir_intrinsic_store_ssbo:
                 ntq_emit_tmu_general(c, instr, false);
                 break;
@@ -3214,14 +3230,17 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
         case nir_intrinsic_shared_atomic_xor:
         case nir_intrinsic_shared_atomic_exchange:
         case nir_intrinsic_shared_atomic_comp_swap:
-        case nir_intrinsic_load_shared:
         case nir_intrinsic_store_shared:
-        case nir_intrinsic_load_scratch:
         case nir_intrinsic_store_scratch:
                 ntq_emit_tmu_general(c, instr, true);
                 break;
 
-        case nir_intrinsic_image_load:
+        case nir_intrinsic_load_scratch:
+        case nir_intrinsic_load_shared:
+                ntq_emit_tmu_general(c, instr, true);
+                c->has_general_tmu_load = true;
+                break;
+
         case nir_intrinsic_image_store:
         case nir_intrinsic_image_atomic_add:
         case nir_intrinsic_image_atomic_imin:
@@ -3234,6 +3253,15 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
         case nir_intrinsic_image_atomic_exchange:
         case nir_intrinsic_image_atomic_comp_swap:
                 v3d40_vir_emit_image_load_store(c, instr);
+                break;
+
+        case nir_intrinsic_image_load:
+                v3d40_vir_emit_image_load_store(c, instr);
+                /* Not really a general TMU load, but we only use this flag
+                 * for NIR scheduling and we do schedule these under the same
+                 * policy as general TMU.
+                 */
+                c->has_general_tmu_load = true;
                 break;
 
         case nir_intrinsic_get_ssbo_size:
@@ -4455,13 +4483,11 @@ v3d_nir_to_vir(struct v3d_compile *c)
         int min_threads = (c->devinfo->ver >= 41) ? 2 : 1;
         struct qpu_reg *temp_registers;
         while (true) {
-                bool spilled;
-                temp_registers = v3d_register_allocate(c, &spilled);
-                if (spilled)
-                        continue;
-
-                if (temp_registers)
+                temp_registers = v3d_register_allocate(c);
+                if (temp_registers) {
+                        assert(c->spills + c->fills <= c->max_tmu_spills);
                         break;
+                }
 
                 if (c->threads == min_threads &&
                     (V3D_DEBUG & V3D_DEBUG_RA)) {
@@ -4483,16 +4509,18 @@ v3d_nir_to_vir(struct v3d_compile *c)
                 if (c->threads <= MAX2(c->min_threads_for_reg_alloc, min_threads)) {
                         if (V3D_DEBUG & V3D_DEBUG_PERF) {
                                 fprintf(stderr,
-                                        "Failed to register allocate %s at "
-                                        "%d threads.\n", vir_get_stage_name(c),
-                                        c->threads);
+                                        "Failed to register allocate %s "
+                                        "prog %d/%d at %d threads.\n",
+                                        vir_get_stage_name(c),
+                                        c->program_id, c->variant_id, c->threads);
                         }
                         c->compilation_result =
                                 V3D_COMPILATION_FAILED_REGISTER_ALLOCATION;
                         return;
                 }
 
-                c->spill_count = 0;
+                c->spills = 0;
+                c->fills = 0;
                 c->threads /= 2;
 
                 if (c->threads == 1)

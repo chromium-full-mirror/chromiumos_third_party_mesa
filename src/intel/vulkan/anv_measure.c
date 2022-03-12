@@ -108,7 +108,7 @@ anv_measure_init(struct anv_cmd_buffer *cmd_buffer)
    const size_t batch_bytes = sizeof(struct anv_measure_batch) +
       config->batch_size * sizeof(struct intel_measure_snapshot);
    struct anv_measure_batch * measure =
-      vk_alloc(&cmd_buffer->pool->alloc,
+      vk_alloc(&cmd_buffer->vk.pool->alloc,
                batch_bytes, 8,
                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 
@@ -147,7 +147,7 @@ anv_measure_start_snapshot(struct anv_cmd_buffer *cmd_buffer,
    uintptr_t framebuffer = (uintptr_t)cmd_buffer->state.framebuffer;
 
    if (!measure->base.framebuffer &&
-       cmd_buffer->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY)
+       cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY)
       /* secondary command buffer inherited the framebuffer from the primary */
       measure->base.framebuffer = framebuffer;
 
@@ -363,7 +363,7 @@ anv_measure_destroy(struct anv_cmd_buffer *cmd_buffer)
    intel_measure_gather(&physical->measure_device, &physical->info);
 
    anv_device_release_bo(device, measure->bo);
-   vk_free(&cmd_buffer->pool->alloc, measure);
+   vk_free(&cmd_buffer->vk.pool->alloc, measure);
    cmd_buffer->measure = NULL;
 }
 
@@ -426,7 +426,7 @@ _anv_measure_submit(struct anv_cmd_buffer *cmd_buffer)
  *  Hook for the start of a frame.
  */
 void
-anv_measure_acquire(struct anv_device *device)
+_anv_measure_acquire(struct anv_device *device)
 {
    struct intel_measure_config *config = config_from_device(device);
    struct intel_measure_device *measure_device = &device->physical->measure_device;

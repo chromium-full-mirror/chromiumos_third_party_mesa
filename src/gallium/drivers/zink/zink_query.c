@@ -48,6 +48,7 @@ struct zink_query {
    struct list_head stats_list; /* when active, statistics queries are added to ctx->primitives_generated_queries */
    bool have_gs[NUM_QUERIES]; /* geometry shaders use GEOMETRY_SHADER_PRIMITIVES_BIT */
    bool have_xfb[NUM_QUERIES]; /* xfb was active during this query */
+   bool has_draws; /* have_gs and have_xfb are valid for idx=curr_query */
 
    struct zink_batch_usage *batch_id; //batch that the query was started in
 
@@ -520,14 +521,14 @@ force_cpu_read(struct zink_context *ctx, struct pipe_query *pquery, enum pipe_qu
          u32 = result.b;
       else
          u32 = MIN2(limit, result.u64);
-      pipe_buffer_write(pctx, pres, offset, result_size, &u32);
+      tc_buffer_write(pctx, pres, offset, result_size, &u32);
    } else {
       uint64_t u64;
       if (is_bool_query(query))
          u64 = result.b;
       else
          u64 = result.u64;
-      pipe_buffer_write(pctx, pres, offset, result_size, &u64);
+      tc_buffer_write(pctx, pres, offset, result_size, &u64);
    }
 }
 
@@ -716,6 +717,7 @@ update_query_id(struct zink_context *ctx, struct zink_query *q)
       q->needs_reset = true;
    }
    ctx->batch.has_work = true;
+   q->has_draws = false;
 
    if (ctx->batch.in_rp)
       q->needs_update = true;
@@ -818,29 +820,35 @@ zink_get_query_result(struct pipe_context *pctx,
    return get_query_result(pctx, q, wait, result);
 }
 
+static void
+suspend_query(struct zink_context *ctx, struct zink_query *query)
+{
+   /* if a query isn't active here then we don't need to reactivate it on the next batch */
+   if (query->active && !is_time_query(query))
+      end_query(ctx, &ctx->batch, query);
+   if (query->needs_update)
+      update_qbo(ctx, query);
+   /* do an implicit copy+reset if:
+    * - query is being read from and >50% of pool is used
+    * - >90% of pool is used
+    *
+    * this avoids overflow
+    */
+   if ((query->last_start && query->curr_query > NUM_QUERIES / 2) || (query->curr_query > NUM_QUERIES * 0.9))
+      reset_pool(ctx, &ctx->batch, query);
+}
+
 void
 zink_suspend_queries(struct zink_context *ctx, struct zink_batch *batch)
 {
    set_foreach(batch->state->active_queries, entry) {
       struct zink_query *query = (void*)entry->key;
-      /* if a query isn't active here then we don't need to reactivate it on the next batch */
-      if (query->active && !is_time_query(query)) {
-         end_query(ctx, batch, query);
+      if (query->active && !is_time_query(query))
          /* the fence is going to steal the set off the batch, so we have to copy
           * the active queries onto a list
           */
          list_addtail(&query->active_list, &ctx->suspended_queries);
-      }
-      if (query->needs_update)
-         update_qbo(ctx, query);
-      /* do an implicit copy+reset if:
-       * - query is being read from and >50% of pool is used
-       * - >90% of pool is used
-       *
-       * this avoids overflow
-       */
-      if ((query->last_start && query->curr_query > NUM_QUERIES / 2) || (query->curr_query > NUM_QUERIES * 0.9))
-         reset_pool(ctx, batch, query);
+      suspend_query(ctx, query);
    }
 }
 
@@ -861,8 +869,18 @@ zink_query_update_gs_states(struct zink_context *ctx)
    LIST_FOR_EACH_ENTRY(query, &ctx->primitives_generated_queries, stats_list) {
       assert(query->curr_query < ARRAY_SIZE(query->have_gs));
       assert(query->active);
-      query->have_gs[query->curr_query] = !!ctx->gfx_stages[PIPE_SHADER_GEOMETRY];
-      query->have_xfb[query->curr_query] = !!ctx->num_so_targets;
+      bool have_gs = !!ctx->gfx_stages[PIPE_SHADER_GEOMETRY];
+      bool have_xfb = !!ctx->num_so_targets;
+      if (query->has_draws) {
+         if (query->have_gs[query->curr_query] != have_gs ||
+             query->have_xfb[query->curr_query] != have_xfb) {
+            suspend_query(ctx, query);
+            begin_query(ctx, &ctx->batch, query);
+         }
+      }
+      query->have_gs[query->curr_query] = have_gs;
+      query->have_xfb[query->curr_query] = have_xfb;
+      query->has_draws = true;
    }
 }
 
@@ -882,7 +900,7 @@ zink_set_active_query_state(struct pipe_context *pctx, bool enable)
 void
 zink_start_conditional_render(struct zink_context *ctx)
 {
-   if (unlikely(!zink_screen(ctx->base.screen)->info.have_EXT_conditional_rendering))
+   if (unlikely(!zink_screen(ctx->base.screen)->info.have_EXT_conditional_rendering) || ctx->render_condition.active)
       return;
    struct zink_batch *batch = &ctx->batch;
    VkConditionalRenderingFlagsEXT begin_flags = 0;
@@ -894,6 +912,7 @@ zink_start_conditional_render(struct zink_context *ctx)
    begin_info.flags = begin_flags;
    VKCTX(CmdBeginConditionalRenderingEXT)(batch->state->cmdbuf, &begin_info);
    zink_batch_reference_resource_rw(batch, ctx->render_condition.query->predicate, false);
+   ctx->render_condition.active = true;
 }
 
 void
@@ -901,9 +920,10 @@ zink_stop_conditional_render(struct zink_context *ctx)
 {
    struct zink_batch *batch = &ctx->batch;
    zink_clear_apply_conditionals(ctx);
-   if (unlikely(!zink_screen(ctx->base.screen)->info.have_EXT_conditional_rendering))
+   if (unlikely(!zink_screen(ctx->base.screen)->info.have_EXT_conditional_rendering) || !ctx->render_condition.active)
       return;
    VKCTX(CmdEndConditionalRenderingEXT)(batch->state->cmdbuf);
+   ctx->render_condition.active = false;
 }
 
 bool
@@ -935,8 +955,7 @@ zink_render_condition(struct pipe_context *pctx,
       /* force conditional clears if they exist */
       if (ctx->clears_enabled && !ctx->batch.in_rp)
          zink_batch_rp(ctx);
-      if (ctx->batch.in_rp)
-         zink_stop_conditional_render(ctx);
+      zink_stop_conditional_render(ctx);
       ctx->render_condition_active = false;
       ctx->render_condition.query = NULL;
       return;
@@ -967,6 +986,7 @@ zink_render_condition(struct pipe_context *pctx,
          /* these need special handling */
          force_cpu_read(ctx, pquery, PIPE_QUERY_TYPE_U32, &res->base.b, 0);
       }
+      zink_resource_buffer_barrier(ctx, res, VK_ACCESS_CONDITIONAL_RENDERING_READ_BIT_EXT, VK_PIPELINE_STAGE_CONDITIONAL_RENDERING_BIT_EXT);
       query->predicate_dirty = false;
    }
    ctx->render_condition.inverted = condition;
@@ -979,7 +999,7 @@ zink_render_condition(struct pipe_context *pctx,
 static void
 zink_get_query_result_resource(struct pipe_context *pctx,
                                struct pipe_query *pquery,
-                               bool wait,
+                               enum pipe_query_flags flags,
                                enum pipe_query_value_type result_type,
                                int index,
                                struct pipe_resource *pres,
@@ -1009,7 +1029,7 @@ zink_get_query_result_resource(struct pipe_context *pctx,
          uint64_t u64[4] = {0};
          if (VKCTX(GetQueryPoolResults)(screen->dev, query->query_pool, query_id, 1, sizeof(u64), u64,
                                    0, size_flags | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT | flag) == VK_SUCCESS) {
-            pipe_buffer_write(pctx, pres, offset, result_size, (unsigned char*)u64 + src_offset);
+            tc_buffer_write(pctx, pres, offset, result_size, (unsigned char*)u64 + src_offset);
             return;
          }
       }

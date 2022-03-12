@@ -1,5 +1,5 @@
 /*
- * Copyright © 2021 Raspberry Pi
+ * Copyright © 2021 Raspberry Pi Ltd
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -200,7 +200,6 @@ cmd_buffer_render_pass_emit_loads(struct v3dv_cmd_buffer *cmd_buffer,
                                   uint32_t layer)
 {
    const struct v3dv_cmd_buffer_state *state = &cmd_buffer->state;
-   const struct v3dv_framebuffer *framebuffer = state->framebuffer;
    const struct v3dv_render_pass *pass = state->pass;
    const struct v3dv_subpass *subpass = &pass->subpasses[state->subpass_idx];
 
@@ -242,7 +241,8 @@ cmd_buffer_render_pass_emit_loads(struct v3dv_cmd_buffer *cmd_buffer,
                                          first_subpass,
                                          attachment->desc.loadOp);
       if (needs_load) {
-         struct v3dv_image_view *iview = framebuffer->attachments[attachment_idx];
+         struct v3dv_image_view *iview =
+            state->attachments[attachment_idx].image_view;
          cmd_buffer_render_pass_emit_load(cmd_buffer, cl, iview,
                                           layer, RENDER_TARGET_0 + i);
       }
@@ -274,7 +274,7 @@ cmd_buffer_render_pass_emit_loads(struct v3dv_cmd_buffer *cmd_buffer,
 
       if (needs_depth_load || needs_stencil_load) {
          struct v3dv_image_view *iview =
-            framebuffer->attachments[ds_attachment_idx];
+            state->attachments[ds_attachment_idx].image_view;
          /* From the Vulkan spec:
           *
           *   "When an image view of a depth/stencil image is used as a
@@ -305,7 +305,7 @@ cmd_buffer_render_pass_emit_store(struct v3dv_cmd_buffer *cmd_buffer,
                                   bool is_multisample_resolve)
 {
    const struct v3dv_image_view *iview =
-      cmd_buffer->state.framebuffer->attachments[attachment_idx];
+      cmd_buffer->state.attachments[attachment_idx].image_view;
    const struct v3dv_image *image = (struct v3dv_image *) iview->vk.image;
    const struct v3d_resource_slice *slice =
       &image->slices[iview->vk.base_mip_level];
@@ -501,6 +501,31 @@ cmd_buffer_render_pass_emit_stores(struct v3dv_cmd_buffer *cmd_buffer,
                            ds_last_subpass,
                            ds_attachment->desc.stencilStoreOp);
 
+      /* If we have a resolve, handle it before storing the tile */
+      const struct v3dv_cmd_buffer_attachment_state *ds_att_state =
+         &state->attachments[ds_attachment_idx];
+      if (ds_att_state->use_tlb_resolve) {
+         assert(ds_att_state->has_resolve);
+         assert(subpass->resolve_depth || subpass->resolve_stencil);
+         const uint32_t resolve_attachment_idx =
+            subpass->ds_resolve_attachment.attachment;
+         assert(resolve_attachment_idx != VK_ATTACHMENT_UNUSED);
+
+         const uint32_t zs_buffer =
+            v3dv_zs_buffer(subpass->resolve_depth, subpass->resolve_stencil);
+         cmd_buffer_render_pass_emit_store(cmd_buffer, cl,
+                                           resolve_attachment_idx, layer,
+                                           zs_buffer,
+                                           false, false);
+         has_stores = true;
+      } else if (ds_att_state->has_resolve) {
+         /* If we can't use the TLB to implement the resolve we will need to
+          * store the attachment so we can implement it later using a blit.
+          */
+         needs_depth_store = subpass->resolve_depth;
+         needs_stencil_store = subpass->resolve_stencil;
+      }
+
       /* GFXH-1689: The per-buffer store command's clear buffer bit is broken
        * for depth/stencil.
        *
@@ -577,15 +602,16 @@ cmd_buffer_render_pass_emit_stores(struct v3dv_cmd_buffer *cmd_buffer,
        * color attachment store below, since the clear happens after the
        * store is completed.
        *
-       * If the attachment doesn't support TLB resolves then we will have to
-       * fallback to doing the resolve in a shader separately after this
-       * job, so we will need to store the multisampled sttachment even if that
-       * wansn't requested by the client.
+       * If the attachment doesn't support TLB resolves (or the render area
+       * is not aligned to tile boundaries) then we will have to fallback to
+       * doing the resolve in a shader separately after this job, so we will
+       * need to store the multisampled attachment even if that wasn't
+       * requested by the client.
        */
-      const bool needs_resolve =
-         subpass->resolve_attachments &&
-         subpass->resolve_attachments[i].attachment != VK_ATTACHMENT_UNUSED;
-      if (needs_resolve && attachment->use_tlb_resolve) {
+      const struct v3dv_cmd_buffer_attachment_state *att_state =
+         &state->attachments[attachment_idx];
+      if (att_state->use_tlb_resolve) {
+         assert(att_state->has_resolve);
          const uint32_t resolve_attachment_idx =
             subpass->resolve_attachments[i].attachment;
          cmd_buffer_render_pass_emit_store(cmd_buffer, cl,
@@ -593,7 +619,7 @@ cmd_buffer_render_pass_emit_stores(struct v3dv_cmd_buffer *cmd_buffer,
                                            RENDER_TARGET_0 + i,
                                            false, true);
          has_stores = true;
-      } else if (needs_resolve) {
+      } else if (att_state->has_resolve) {
          needs_store = true;
       }
 
@@ -768,7 +794,7 @@ v3dX(cmd_buffer_emit_render_pass_rcl)(struct v3dv_cmd_buffer *cmd_buffer)
     * buffer.
     */
    if (!framebuffer) {
-      assert(cmd_buffer->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+      assert(cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
       return;
    }
 
@@ -803,7 +829,7 @@ v3dX(cmd_buffer_emit_render_pass_rcl)(struct v3dv_cmd_buffer *cmd_buffer)
 
       if (ds_attachment_idx != VK_ATTACHMENT_UNUSED) {
          const struct v3dv_image_view *iview =
-            framebuffer->attachments[ds_attachment_idx];
+            state->attachments[ds_attachment_idx].image_view;
          config.internal_depth_type = iview->internal_type;
 
          set_rcl_early_z_config(job,
@@ -837,7 +863,8 @@ v3dX(cmd_buffer_emit_render_pass_rcl)(struct v3dv_cmd_buffer *cmd_buffer)
             check_needs_store(state,
                               ds_aspects & VK_IMAGE_ASPECT_DEPTH_BIT,
                               ds_attachment->last_subpass,
-                              ds_attachment->desc.storeOp);
+                              ds_attachment->desc.storeOp) ||
+                              subpass->resolve_depth;
 
          do_early_zs_clear = needs_depth_clear && !needs_depth_store;
          if (do_early_zs_clear &&
@@ -852,7 +879,8 @@ v3dX(cmd_buffer_emit_render_pass_rcl)(struct v3dv_cmd_buffer *cmd_buffer)
                check_needs_store(state,
                                  ds_aspects & VK_IMAGE_ASPECT_STENCIL_BIT,
                                  ds_attachment->last_subpass,
-                                 ds_attachment->desc.stencilStoreOp);
+                                 ds_attachment->desc.stencilStoreOp) ||
+                                 subpass->resolve_stencil;
 
             do_early_zs_clear = !needs_stencil_load && !needs_stencil_store;
          }
@@ -875,7 +903,7 @@ v3dX(cmd_buffer_emit_render_pass_rcl)(struct v3dv_cmd_buffer *cmd_buffer)
          continue;
 
       struct v3dv_image_view *iview =
-         state->framebuffer->attachments[attachment_idx];
+         state->attachments[attachment_idx].image_view;
 
       const struct v3dv_image *image = (struct v3dv_image *) iview->vk.image;
       const struct v3d_resource_slice *slice =
@@ -1432,7 +1460,7 @@ job_update_ez_state(struct v3dv_job *job,
          struct v3dv_framebuffer *fb = state->framebuffer;
 
          if (!fb) {
-            assert(cmd_buffer->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+            assert(cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
             perf_debug("Loading depth aspect in a secondary command buffer "
                        "without framebuffer info disables early-z tests.\n");
             job->first_ez_state = V3D_EZ_DISABLED;
@@ -2292,16 +2320,16 @@ v3dX(cmd_buffer_render_pass_setup_render_target)(struct v3dv_cmd_buffer *cmd_buf
    if (attachment_idx == VK_ATTACHMENT_UNUSED)
       return;
 
-   const struct v3dv_framebuffer *framebuffer = state->framebuffer;
-   assert(attachment_idx < framebuffer->attachment_count);
-   struct v3dv_image_view *iview = framebuffer->attachments[attachment_idx];
+   assert(attachment_idx < state->framebuffer->attachment_count &&
+          attachment_idx < state->attachment_alloc_count);
+   struct v3dv_image_view *iview = state->attachments[attachment_idx].image_view;
    assert(iview->vk.aspects & VK_IMAGE_ASPECT_COLOR_BIT);
 
    *rt_bpp = iview->internal_bpp;
    *rt_type = iview->internal_type;
-   if (vk_format_is_int(iview->vk.format))
+   if (vk_format_is_int(iview->vk.view_format))
       *rt_clamp = V3D_RENDER_TARGET_CLAMP_INT;
-   else if (vk_format_is_srgb(iview->vk.format))
+   else if (vk_format_is_srgb(iview->vk.view_format))
       *rt_clamp = V3D_RENDER_TARGET_CLAMP_NORM;
    else
       *rt_clamp = V3D_RENDER_TARGET_CLAMP_NONE;

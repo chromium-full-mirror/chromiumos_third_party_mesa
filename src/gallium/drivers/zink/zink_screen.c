@@ -206,7 +206,7 @@ zink_screen_update_pipeline_cache(struct zink_screen *screen, struct zink_progra
    if (!screen->disk_cache)
       return;
 
-   util_queue_add_job(&screen->cache_put_thread, pg, NULL, cache_put_job, NULL, 0);
+   util_queue_add_job(&screen->cache_put_thread, pg, &pg->cache_fence, cache_put_job, NULL, 0);
 }
 
 static void
@@ -388,6 +388,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_PREFER_REAL_BUFFER_IN_CONSTBUF0:
    case PIPE_CAP_PACKED_UNIFORMS:
    case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
+   case PIPE_CAP_CULL_DISTANCE_NOCOMBINE:
       return 1;
 
    case PIPE_CAP_DRAW_VERTEX_STATE:
@@ -468,7 +469,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 1;
 
    case PIPE_CAP_TGSI_BALLOT:
-      return screen->vk_version >= VK_MAKE_VERSION(1,2,0) && screen->info.props11.subgroupSize <= 64;
+      return screen->info.have_vulkan12 && screen->info.have_EXT_shader_subgroup_ballot && screen->info.props11.subgroupSize <= 64;
 
    case PIPE_CAP_SAMPLE_SHADING:
       return screen->info.feats.features.sampleRateShading;
@@ -676,6 +677,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SPARSE_TEXTURE_FULL_ARRAY_CUBE_MIPMAPS:
       return screen->info.feats.features.sparseResidencyImage2D ? 1 : 0;
    case PIPE_CAP_QUERY_SPARSE_TEXTURE_RESIDENCY:
+   case PIPE_CAP_CLAMP_SPARSE_TEXTURE_LOD:
       return screen->info.feats.features.sparseResidency2Samples ? 1 : 0;
 
    case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
@@ -923,19 +925,21 @@ zink_get_shader_param(struct pipe_screen *pscreen,
       return 1;
 
    case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
+   case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
       return 1;
 
    case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
-   case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
    case PIPE_SHADER_CAP_SUBROUTINES:
    case PIPE_SHADER_CAP_INT64_ATOMICS:
    case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
       return 0; /* not implemented */
 
    case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
-      return screen->info.feats11.uniformAndStorageBuffer16BitAccess ||
-             (screen->info.have_KHR_16bit_storage && screen->info.storage_16bit_feats.uniformAndStorageBuffer16BitAccess);
+      //enabling this breaks GTF-GL46.gtf21.GL2Tests.glGetUniform.glGetUniform
+      //return screen->info.feats11.uniformAndStorageBuffer16BitAccess ||
+             //(screen->info.have_KHR_16bit_storage && screen->info.storage_16bit_feats.uniformAndStorageBuffer16BitAccess);
+      return 0;
    case PIPE_SHADER_CAP_FP16_DERIVATIVES:
       return 0; //spirv requires 32bit derivative srcs and dests
    case PIPE_SHADER_CAP_FP16:
@@ -1008,8 +1012,9 @@ zink_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
-   case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
       return 0; /* not implemented */
+   case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+      return 1;
    }
 
    /* should only get here on unhandled cases */
@@ -1379,6 +1384,8 @@ emulate_x8(enum pipe_format format)
 
    case PIPE_FORMAT_B8G8R8X8_SRGB:
       return PIPE_FORMAT_B8G8R8A8_SRGB;
+   case PIPE_FORMAT_R8G8B8X8_SRGB:
+      return PIPE_FORMAT_R8G8B8A8_SRGB;
 
    case PIPE_FORMAT_R8G8B8X8_SINT:
       return PIPE_FORMAT_R8G8B8A8_SINT;
@@ -1610,7 +1617,8 @@ check_device_needs_mesa_wsi(struct zink_screen *screen)
        screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_RADV_KHR
       ) {
       screen->needs_mesa_wsi = true;
-   } else if (screen->info.driver_props.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA_KHR)
+   } else if (screen->info.driver_props.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA_KHR ||
+              screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS)
       screen->needs_mesa_flush_wsi = true;
 
 }

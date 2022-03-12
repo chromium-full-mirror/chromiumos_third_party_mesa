@@ -34,6 +34,7 @@ if [[ "$DEBIAN_ARCH" = "arm64" ]]; then
     DEVICE_TREES+=" arch/arm64/boot/dts/qcom/apq8096-db820c.dtb"
     DEVICE_TREES+=" arch/arm64/boot/dts/amlogic/meson-g12b-a311d-khadas-vim3.dtb"
     DEVICE_TREES+=" arch/arm64/boot/dts/mediatek/mt8183-kukui-jacuzzi-juniper-sku16.dtb"
+    DEVICE_TREES+=" arch/arm64/boot/dts/nvidia/tegra210-p3450-0000.dtb"
     DEVICE_TREES+=" arch/arm64/boot/dts/qcom/sc7180-trogdor-lazor-limozeen-nots.dtb"
     KERNEL_IMAGE_NAME="Image"
 elif [[ "$DEBIAN_ARCH" = "armhf" ]]; then
@@ -76,12 +77,14 @@ apt-get install -y --no-remove \
                    ${ARCH_PACKAGES} \
                    automake \
                    bc \
+                   clang \
                    cmake \
                    debootstrap \
                    git \
                    glslang-tools \
                    libdrm-dev \
                    libegl1-mesa-dev \
+                   libxext-dev \
                    libfontconfig-dev \
                    libgbm-dev \
                    libgl-dev \

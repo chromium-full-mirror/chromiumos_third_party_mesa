@@ -43,6 +43,7 @@
 #include "util/format/u_format_zs.h"
 #include "util/ptralloc.h"
 
+#include "vk_cmd_enqueue_entrypoints.h"
 #include "vk_util.h"
 
 #define VK_PROTOTYPES
@@ -100,6 +101,9 @@ struct rendering_state {
 
    int num_viewports;
    struct pipe_viewport_state viewports[16];
+   struct {
+      float min, max;
+   } depth[16];
 
    uint8_t patch_vertices;
    ubyte index_size;
@@ -175,6 +179,19 @@ assert_subresource_layers(const struct pipe_resource *pres, const VkImageSubreso
       assert(offsets[1].z == 1);
    }
 #endif
+}
+
+static void finish_fence(struct rendering_state *state)
+{
+   struct pipe_fence_handle *handle = NULL;
+
+   state->pctx->flush(state->pctx, &handle, 0);
+
+   state->pctx->screen->fence_finish(state->pctx->screen,
+                                     NULL,
+                                     handle, PIPE_TIMEOUT_INFINITE);
+   state->pctx->screen->fence_reference(state->pctx->screen,
+                                        &handle, NULL);
 }
 
 static void emit_compute_state(struct rendering_state *state)
@@ -319,7 +336,7 @@ static void emit_state(struct rendering_state *state)
       if (state->sb_dirty[sh]) {
          state->pctx->set_shader_buffers(state->pctx, sh,
                                          0, state->num_shader_buffers[sh],
-                                         state->sb[sh], 0);
+                                         state->sb[sh], (1 << state->num_shader_buffers[sh]) - 1);
       }
    }
 
@@ -371,23 +388,36 @@ static void handle_compute_pipeline(struct vk_cmd_queue_entry *cmd,
 }
 
 static void
-get_viewport_xform(const VkViewport *viewport,
-                   float scale[3], float translate[3])
+set_viewport_depth_xform(struct rendering_state *state, unsigned idx)
+{
+   double n = state->depth[idx].min;
+   double f = state->depth[idx].max;
+
+   if (!state->rs_state.clip_halfz) {
+      state->viewports[idx].scale[2] = 0.5 * (f - n);
+      state->viewports[idx].translate[2] = 0.5 * (n + f);
+   } else {
+      state->viewports[idx].scale[2] = (f - n);
+      state->viewports[idx].translate[2] = n;
+   }
+}
+
+static void
+get_viewport_xform(struct rendering_state *state,
+                   const VkViewport *viewport,
+                   unsigned idx)
 {
    float x = viewport->x;
    float y = viewport->y;
    float half_width = 0.5f * viewport->width;
    float half_height = 0.5f * viewport->height;
-   double n = viewport->minDepth;
-   double f = viewport->maxDepth;
 
-   scale[0] = half_width;
-   translate[0] = half_width + x;
-   scale[1] = half_height;
-   translate[1] = half_height + y;
+   state->viewports[idx].scale[0] = half_width;
+   state->viewports[idx].translate[0] = half_width + x;
+   state->viewports[idx].scale[1] = half_height;
+   state->viewports[idx].translate[1] = half_height + y;
 
-   scale[2] = (f - n);
-   translate[2] = n;
+   memcpy(&state->depth[idx].min, &viewport->minDepth, sizeof(float) * 2);
 }
 
 /* enum re-indexing:
@@ -458,6 +488,7 @@ static void handle_graphics_pipeline(struct vk_cmd_queue_entry *cmd,
    LVP_FROM_HANDLE(lvp_pipeline, pipeline, cmd->u.bind_pipeline.pipeline);
    bool dynamic_states[VK_DYNAMIC_STATE_STENCIL_REFERENCE+32];
    unsigned fb_samples = 0;
+   bool clip_halfz = state->rs_state.clip_halfz;
 
    memset(dynamic_states, 0, sizeof(dynamic_states));
    if (pipeline->graphics_create_info.pDynamicState)
@@ -545,7 +576,6 @@ static void handle_graphics_pipeline(struct vk_cmd_queue_entry *cmd,
       state->rs_state.point_size_per_vertex = true;
       state->rs_state.flatshade_first = !pipeline->provoking_vertex_last;
       state->rs_state.point_quad_rasterization = true;
-      state->rs_state.clip_halfz = true;
       state->rs_state.half_pixel_center = true;
       state->rs_state.scissor = true;
       state->rs_state.no_ms_sample_mask_out = true;
@@ -571,40 +601,6 @@ static void handle_graphics_pipeline(struct vk_cmd_queue_entry *cmd,
 
       if (!dynamic_states[conv_dynamic_state_idx(VK_DYNAMIC_STATE_FRONT_FACE_EXT)])
          state->rs_state.front_ccw = (rsc->frontFace == VK_FRONT_FACE_COUNTER_CLOCKWISE);
-      state->rs_dirty = true;
-   }
-
-   state->disable_multisample = pipeline->disable_multisample;
-   if (pipeline->graphics_create_info.pMultisampleState) {
-      const VkPipelineMultisampleStateCreateInfo *ms = pipeline->graphics_create_info.pMultisampleState;
-      state->rs_state.multisample = ms->rasterizationSamples > 1;
-      state->sample_mask = ms->pSampleMask ? ms->pSampleMask[0] : 0xffffffff;
-      state->blend_state.alpha_to_coverage = ms->alphaToCoverageEnable;
-      state->blend_state.alpha_to_one = ms->alphaToOneEnable;
-      state->blend_dirty = true;
-      state->rs_dirty = true;
-      state->min_samples = 1;
-      state->sample_mask_dirty = true;
-      fb_samples = ms->rasterizationSamples;
-      if (ms->sampleShadingEnable) {
-         state->min_samples = ceil(ms->rasterizationSamples * ms->minSampleShading);
-         if (state->min_samples > 1)
-            state->min_samples = ms->rasterizationSamples;
-         if (state->min_samples < 1)
-            state->min_samples = 1;
-      }
-      if (pipeline->force_min_sample)
-         state->min_samples = ms->rasterizationSamples;
-      state->min_samples_dirty = true;
-   } else {
-      state->rs_state.multisample = false;
-      state->sample_mask_dirty = state->sample_mask != 0xffffffff;
-      state->sample_mask = 0xffffffff;
-      state->min_samples_dirty = state->min_samples;
-      state->min_samples = 0;
-      state->blend_dirty |= state->blend_state.alpha_to_coverage || state->blend_state.alpha_to_one;
-      state->blend_state.alpha_to_coverage = false;
-      state->blend_state.alpha_to_one = false;
       state->rs_dirty = true;
    }
 
@@ -711,6 +707,40 @@ static void handle_graphics_pipeline(struct vk_cmd_queue_entry *cmd,
       state->blend_dirty = true;
    }
 
+   state->disable_multisample = pipeline->disable_multisample;
+   if (pipeline->graphics_create_info.pMultisampleState) {
+      const VkPipelineMultisampleStateCreateInfo *ms = pipeline->graphics_create_info.pMultisampleState;
+      state->rs_state.multisample = ms->rasterizationSamples > 1;
+      state->sample_mask = ms->pSampleMask ? ms->pSampleMask[0] : 0xffffffff;
+      state->blend_state.alpha_to_coverage = ms->alphaToCoverageEnable;
+      state->blend_state.alpha_to_one = ms->alphaToOneEnable;
+      state->blend_dirty = true;
+      state->rs_dirty = true;
+      state->min_samples = 1;
+      state->sample_mask_dirty = true;
+      fb_samples = ms->rasterizationSamples;
+      if (ms->sampleShadingEnable) {
+         state->min_samples = ceil(ms->rasterizationSamples * ms->minSampleShading);
+         if (state->min_samples > 1)
+            state->min_samples = ms->rasterizationSamples;
+         if (state->min_samples < 1)
+            state->min_samples = 1;
+      }
+      if (pipeline->force_min_sample)
+         state->min_samples = ms->rasterizationSamples;
+      state->min_samples_dirty = true;
+   } else {
+      state->rs_state.multisample = false;
+      state->sample_mask_dirty = state->sample_mask != 0xffffffff;
+      state->sample_mask = 0xffffffff;
+      state->min_samples_dirty = state->min_samples;
+      state->min_samples = 0;
+      state->blend_dirty |= state->blend_state.alpha_to_coverage || state->blend_state.alpha_to_one;
+      state->blend_state.alpha_to_coverage = false;
+      state->blend_state.alpha_to_one = false;
+      state->rs_dirty = true;
+   }
+
    if (!dynamic_states[conv_dynamic_state_idx(VK_DYNAMIC_STATE_VERTEX_INPUT_EXT)]) {
       const VkPipelineVertexInputStateCreateInfo *vi = pipeline->graphics_create_info.pVertexInputState;
       int i;
@@ -791,6 +821,12 @@ static void handle_graphics_pipeline(struct vk_cmd_queue_entry *cmd,
    } else
       state->patch_vertices = 0;
 
+   bool halfz_changed = false;
+   if (!pipeline->negative_one_to_one != clip_halfz) {
+      state->rs_state.clip_halfz = !pipeline->negative_one_to_one;
+      halfz_changed = state->rs_dirty = true;
+   }
+
    if (pipeline->graphics_create_info.pViewportState) {
       const VkPipelineViewportStateCreateInfo *vpi= pipeline->graphics_create_info.pViewportState;
       int i;
@@ -806,8 +842,16 @@ static void handle_graphics_pipeline(struct vk_cmd_queue_entry *cmd,
 
       if (!dynamic_states[VK_DYNAMIC_STATE_VIEWPORT] &&
           !dynamic_states[conv_dynamic_state_idx(VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT_EXT)]) {
-         for (i = 0; i < vpi->viewportCount; i++)
-            get_viewport_xform(&vpi->pViewports[i], state->viewports[i].scale, state->viewports[i].translate);
+         for (i = 0; i < vpi->viewportCount; i++) {
+            get_viewport_xform(state, &vpi->pViewports[i], i);
+            set_viewport_depth_xform(state, i);
+         }
+         state->vp_dirty = true;
+      } else if (halfz_changed) {
+         /* handle dynamic state: convert from one transform to the other */
+         unsigned num_viewports = dynamic_states[VK_DYNAMIC_STATE_VIEWPORT] ? vpi->viewportCount : state->num_viewports;
+         for (i = 0; i < num_viewports; i++)
+            set_viewport_depth_xform(state, i);
          state->vp_dirty = true;
       }
       if (!dynamic_states[VK_DYNAMIC_STATE_SCISSOR] &&
@@ -1012,8 +1056,6 @@ static void fill_sampler_view_stage(struct rendering_state *state,
    */
    if (iv->subresourceRange.aspectMask == VK_IMAGE_ASPECT_DEPTH_BIT ||
        iv->subresourceRange.aspectMask == VK_IMAGE_ASPECT_STENCIL_BIT) {
-      if (templ.swizzle_a == PIPE_SWIZZLE_X)
-         templ.swizzle_r = PIPE_SWIZZLE_X;
       fix_depth_swizzle(templ.swizzle_r);
       fix_depth_swizzle(templ.swizzle_g);
       fix_depth_swizzle(templ.swizzle_b);
@@ -1093,8 +1135,11 @@ static void fill_image_view_stage(struct rendering_state *state,
       state->iv[p_stage][idx].u.tex.last_layer = iv->subresourceRange.baseArrayLayer + lvp_get_layerCount(iv->image, &iv->subresourceRange) - 1;
    }
    state->iv[p_stage][idx].u.tex.level = iv->subresourceRange.baseMipLevel;
+   state->iv[p_stage][idx].access = PIPE_IMAGE_ACCESS_READ_WRITE;
+   state->iv[p_stage][idx].shader_access = PIPE_IMAGE_ACCESS_READ_WRITE;
    if (state->num_shader_images[p_stage] <= idx)
       state->num_shader_images[p_stage] = idx + 1;
+
    state->iv_dirty[p_stage] = true;
 }
 
@@ -1247,18 +1292,18 @@ static void handle_compute_descriptor_sets(struct vk_cmd_queue_entry *cmd,
                                            struct rendering_state *state)
 {
    struct vk_cmd_bind_descriptor_sets *bds = &cmd->u.bind_descriptor_sets;
-   struct lvp_descriptor_set_layout **set_layout = cmd->driver_data;
+   LVP_FROM_HANDLE(lvp_pipeline_layout, layout, bds->layout);
    int i;
 
    for (i = 0; i < bds->first_set; i++) {
-      increment_dyn_info(dyn_info, set_layout[i], false);
+      increment_dyn_info(dyn_info, layout->set[i].layout, false);
    }
    for (i = 0; i < bds->descriptor_set_count; i++) {
       const struct lvp_descriptor_set *set = lvp_descriptor_set_from_handle(bds->descriptor_sets[i]);
 
       if (set->layout->shader_stages & VK_SHADER_STAGE_COMPUTE_BIT)
          handle_set_stage(state, dyn_info, set, MESA_SHADER_COMPUTE, PIPE_SHADER_COMPUTE);
-      increment_dyn_info(dyn_info, set_layout[bds->first_set + i], true);
+      increment_dyn_info(dyn_info, layout->set[bds->first_set + i].layout, true);
    }
 }
 
@@ -1266,7 +1311,7 @@ static void handle_descriptor_sets(struct vk_cmd_queue_entry *cmd,
                                    struct rendering_state *state)
 {
    struct vk_cmd_bind_descriptor_sets *bds = &cmd->u.bind_descriptor_sets;
-   struct lvp_descriptor_set_layout **set_layout = cmd->driver_data;
+   LVP_FROM_HANDLE(lvp_pipeline_layout, layout, bds->layout);
    int i;
    struct dyn_info dyn_info;
 
@@ -1281,7 +1326,7 @@ static void handle_descriptor_sets(struct vk_cmd_queue_entry *cmd,
    }
 
    for (i = 0; i < bds->first_set; i++) {
-      increment_dyn_info(&dyn_info, set_layout[i], false);
+      increment_dyn_info(&dyn_info, layout->set[i].layout, false);
    }
 
    for (i = 0; i < bds->descriptor_set_count; i++) {
@@ -1308,7 +1353,7 @@ static void handle_descriptor_sets(struct vk_cmd_queue_entry *cmd,
       if (set->layout->shader_stages & VK_SHADER_STAGE_FRAGMENT_BIT)
          handle_set_stage(state, &dyn_info, set, MESA_SHADER_FRAGMENT, PIPE_SHADER_FRAGMENT);
 
-      increment_dyn_info(&dyn_info, set_layout[bds->first_set + i], true);
+      increment_dyn_info(&dyn_info, layout->set[bds->first_set + i].layout, true);
    }
 }
 
@@ -1867,8 +1912,8 @@ static void handle_begin_rendering(struct vk_cmd_queue_entry *cmd,
       return;
    }
    bool has_ds = !!info->pDepthAttachment + !!info->pStencilAttachment;
-   struct lvp_render_pass_attachment *resolve_attachments = num_resolves ? &attachments[subpass->color_count + has_ds] : NULL;
-   struct lvp_render_pass_attachment **resolve_attachment_refs = num_resolves ? &attachment_refs[subpass->color_count + has_ds] : NULL;
+   struct lvp_render_pass_attachment *resolve_attachments = num_resolves ? &attachments[info->colorAttachmentCount + has_ds] : NULL;
+   struct lvp_render_pass_attachment **resolve_attachment_refs = num_resolves ? &attachment_refs[info->colorAttachmentCount + has_ds] : NULL;
    subpass->color_count = info->colorAttachmentCount;
 
    subpass->view_mask = info->viewMask;
@@ -2076,7 +2121,8 @@ static void set_viewport(unsigned first_viewport, unsigned viewport_count,
    for (i = 0; i < viewport_count; i++) {
       int idx = i + base;
       const VkViewport *vp = &viewports[i];
-      get_viewport_xform(vp, state->viewports[idx].scale, state->viewports[idx].translate);
+      get_viewport_xform(state, vp, idx);
+      set_viewport_depth_xform(state, idx);
    }
    state->vp_dirty = true;
 }
@@ -2322,8 +2368,6 @@ static void handle_copy_image_to_buffer2(struct vk_cmd_queue_entry *cmd,
    struct pipe_transfer *src_t, *dst_t;
    ubyte *src_data, *dst_data;
 
-   state->pctx->flush(state->pctx, NULL, 0);
-
    for (i = 0; i < copycmd->regionCount; i++) {
 
       box.x = copycmd->pRegions[i].imageOffset.x;
@@ -2402,8 +2446,6 @@ static void handle_copy_buffer_to_image(struct vk_cmd_queue_entry *cmd,
    struct pipe_box box, sbox;
    struct pipe_transfer *src_t, *dst_t;
    void *src_data, *dst_data;
-
-   state->pctx->flush(state->pctx, NULL, 0);
 
    for (i = 0; i < copycmd->regionCount; i++) {
 
@@ -2485,8 +2527,6 @@ static void handle_copy_image(struct vk_cmd_queue_entry *cmd,
    LVP_FROM_HANDLE(lvp_image, src_image, copycmd->srcImage);
    LVP_FROM_HANDLE(lvp_image, dst_image, copycmd->dstImage);
 
-   state->pctx->flush(state->pctx, NULL, 0);
-
    for (i = 0; i < copycmd->regionCount; i++) {
       struct pipe_box src_box;
       src_box.x = copycmd->pRegions[i].srcOffset.x;
@@ -2541,7 +2581,6 @@ static void handle_blit_image(struct vk_cmd_queue_entry *cmd,
 
    memset(&info, 0, sizeof(info));
 
-   state->pctx->flush(state->pctx, NULL, 0);
    info.src.resource = src_image->bo;
    info.dst.resource = dst_image->bo;
    info.src.format = src_image->bo->format;
@@ -2876,6 +2915,7 @@ static void handle_event_reset(struct vk_cmd_queue_entry *cmd,
 static void handle_wait_events(struct vk_cmd_queue_entry *cmd,
                                struct rendering_state *state)
 {
+   finish_fence(state);
    for (unsigned i = 0; i < cmd->u.wait_events.event_count; i++) {
       LVP_FROM_HANDLE(lvp_event, event, cmd->u.wait_events.events[i]);
 
@@ -2886,8 +2926,7 @@ static void handle_wait_events(struct vk_cmd_queue_entry *cmd,
 static void handle_pipeline_barrier(struct vk_cmd_queue_entry *cmd,
                                     struct rendering_state *state)
 {
-   /* why hello nail, I'm a hammer. - TODO */
-   state->pctx->flush(state->pctx, NULL, 0);
+   finish_fence(state);
 }
 
 static void handle_begin_query(struct vk_cmd_queue_entry *cmd,
@@ -2987,25 +3026,34 @@ static void handle_copy_query_pool_results(struct vk_cmd_queue_entry *cmd,
 {
    struct vk_cmd_copy_query_pool_results *copycmd = &cmd->u.copy_query_pool_results;
    LVP_FROM_HANDLE(lvp_query_pool, pool, copycmd->query_pool);
+   enum pipe_query_flags flags = (copycmd->flags & VK_QUERY_RESULT_WAIT_BIT) ? PIPE_QUERY_WAIT : 0;
 
+   if (copycmd->flags & VK_QUERY_RESULT_PARTIAL_BIT)
+      flags |= PIPE_QUERY_PARTIAL;
+   unsigned result_size = copycmd->flags & VK_QUERY_RESULT_64_BIT ? 8 : 4;
    for (unsigned i = copycmd->first_query; i < copycmd->first_query + copycmd->query_count; i++) {
       unsigned offset = copycmd->dst_offset + lvp_buffer_from_handle(copycmd->dst_buffer)->offset + (copycmd->stride * (i - copycmd->first_query));
       if (pool->queries[i]) {
-         if (copycmd->flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT)
+         unsigned num_results = 0;
+         if (copycmd->flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) {
+            if (pool->type == VK_QUERY_TYPE_PIPELINE_STATISTICS) {
+               num_results = util_bitcount(pool->pipeline_stats);
+            } else
+               num_results = 1;
             state->pctx->get_query_result_resource(state->pctx,
                                                    pool->queries[i],
-                                                   copycmd->flags & VK_QUERY_RESULT_WAIT_BIT,
+                                                   flags,
                                                    copycmd->flags & VK_QUERY_RESULT_64_BIT ? PIPE_QUERY_TYPE_U64 : PIPE_QUERY_TYPE_U32,
                                                    -1,
                                                    lvp_buffer_from_handle(copycmd->dst_buffer)->bo,
-                                                   offset + (copycmd->flags & VK_QUERY_RESULT_64_BIT ? 8 : 4));
+                                                   offset + num_results * result_size);
+         }
          if (pool->type == VK_QUERY_TYPE_PIPELINE_STATISTICS) {
-            unsigned num_results = 0;
-            unsigned result_size = copycmd->flags & VK_QUERY_RESULT_64_BIT ? 8 : 4;
+            num_results = 0;
             u_foreach_bit(bit, pool->pipeline_stats)
                state->pctx->get_query_result_resource(state->pctx,
                                                       pool->queries[i],
-                                                      copycmd->flags & VK_QUERY_RESULT_WAIT_BIT,
+                                                      flags,
                                                       copycmd->flags & VK_QUERY_RESULT_64_BIT ? PIPE_QUERY_TYPE_U64 : PIPE_QUERY_TYPE_U32,
                                                       bit,
                                                       lvp_buffer_from_handle(copycmd->dst_buffer)->bo,
@@ -3013,7 +3061,7 @@ static void handle_copy_query_pool_results(struct vk_cmd_queue_entry *cmd,
          } else {
             state->pctx->get_query_result_resource(state->pctx,
                                                    pool->queries[i],
-                                                   copycmd->flags & VK_QUERY_RESULT_WAIT_BIT,
+                                                   flags,
                                                    copycmd->flags & VK_QUERY_RESULT_64_BIT ? PIPE_QUERY_TYPE_U64 : PIPE_QUERY_TYPE_U32,
                                                    0,
                                                    lvp_buffer_from_handle(copycmd->dst_buffer)->bo,
@@ -3041,43 +3089,13 @@ static void handle_copy_query_pool_results(struct vk_cmd_queue_entry *cmd,
    }
 }
 
-static void pack_clear_color(enum pipe_format pformat, VkClearColorValue *in_val, uint32_t col_val[4])
-{
-   const struct util_format_description *desc = util_format_description(pformat);
-   col_val[0] = col_val[1] = col_val[2] = col_val[3] = 0;
-   for (unsigned c = 0; c < 4; c++) {
-      if (desc->swizzle[c] >= 4)
-         continue;
-      const struct util_format_channel_description *channel = &desc->channel[desc->swizzle[c]];
-      if (channel->size == 32) {
-         col_val[c] = in_val->uint32[c];
-         continue;
-      }
-      if (channel->pure_integer) {
-         uint64_t v = in_val->uint32[c] & ((1u << channel->size) - 1);
-         switch (channel->size) {
-         case 2:
-         case 8:
-         case 10:
-            col_val[0] |= (v << channel->shift);
-            break;
-         case 16:
-            col_val[c / 2] |= (v << (16 * (c % 2)));
-            break;
-         }
-      } else {
-         util_pack_color(in_val->float32, pformat, (union util_color *)col_val);
-         break;
-      }
-   }
-}
-
 static void handle_clear_color_image(struct vk_cmd_queue_entry *cmd,
                                      struct rendering_state *state)
 {
    LVP_FROM_HANDLE(lvp_image, image, cmd->u.clear_color_image.image);
-   uint32_t col_val[4];
-   pack_clear_color(image->bo->format, cmd->u.clear_color_image.color, col_val);
+   union util_color uc;
+   uint32_t *col_val = uc.ui;
+   util_pack_color_union(image->bo->format, &uc, (void*)cmd->u.clear_color_image.color);
    for (unsigned i = 0; i < cmd->u.clear_color_image.range_count; i++) {
       VkImageSubresourceRange *range = &cmd->u.clear_color_image.ranges[i];
       struct pipe_box box;
@@ -3184,6 +3202,8 @@ static void handle_clear_attachments(struct vk_cmd_queue_entry *cmd,
 
          VkClearRect *rect = &cmd->u.clear_attachments.rects[r];
          /* avoid crashing on spec violations */
+         rect->rect.offset.x = MAX2(rect->rect.offset.x, 0);
+         rect->rect.offset.y = MAX2(rect->rect.offset.y, 0);
          rect->rect.extent.width = MIN2(rect->rect.extent.width, state->framebuffer.width - rect->rect.offset.x);
          rect->rect.extent.height = MIN2(rect->rect.extent.height, state->framebuffer.height - rect->rect.offset.y);
          if (subpass->view_mask) {
@@ -3212,7 +3232,6 @@ static void handle_resolve_image(struct vk_cmd_queue_entry *cmd,
 
    memset(&info, 0, sizeof(info));
 
-   state->pctx->flush(state->pctx, NULL, 0);
    info.src.resource = src_image->bo;
    info.dst.resource = dst_image->bo;
    info.src.format = src_image->bo->format;
@@ -3830,6 +3849,106 @@ static void handle_set_color_write_enable(struct vk_cmd_queue_entry *cmd,
    state->color_write_disables = disable_mask;
 }
 
+void lvp_add_enqueue_cmd_entrypoints(struct vk_device_dispatch_table *disp)
+{
+   struct vk_device_dispatch_table cmd_enqueue_dispatch;
+   vk_device_dispatch_table_from_entrypoints(&cmd_enqueue_dispatch,
+      &vk_cmd_enqueue_device_entrypoints, true);
+
+#define ENQUEUE_CMD(CmdName) \
+   assert(cmd_enqueue_dispatch.CmdName != NULL); \
+   disp->CmdName = cmd_enqueue_dispatch.CmdName;
+
+   /* This list needs to match what's in lvp_execute_cmd_buffer exactly */
+   ENQUEUE_CMD(CmdBindPipeline)
+   ENQUEUE_CMD(CmdSetViewport)
+   ENQUEUE_CMD(CmdSetViewportWithCount)
+   ENQUEUE_CMD(CmdSetScissor)
+   ENQUEUE_CMD(CmdSetScissorWithCount)
+   ENQUEUE_CMD(CmdSetLineWidth)
+   ENQUEUE_CMD(CmdSetDepthBias)
+   ENQUEUE_CMD(CmdSetBlendConstants)
+   ENQUEUE_CMD(CmdSetDepthBounds)
+   ENQUEUE_CMD(CmdSetStencilCompareMask)
+   ENQUEUE_CMD(CmdSetStencilWriteMask)
+   ENQUEUE_CMD(CmdSetStencilReference)
+   ENQUEUE_CMD(CmdBindDescriptorSets)
+   ENQUEUE_CMD(CmdBindIndexBuffer)
+   ENQUEUE_CMD(CmdBindVertexBuffers)
+   ENQUEUE_CMD(CmdBindVertexBuffers2)
+   ENQUEUE_CMD(CmdDraw)
+   ENQUEUE_CMD(CmdDrawMultiEXT)
+   ENQUEUE_CMD(CmdDrawIndexed)
+   ENQUEUE_CMD(CmdDrawIndirect)
+   ENQUEUE_CMD(CmdDrawIndexedIndirect)
+   ENQUEUE_CMD(CmdDrawMultiIndexedEXT)
+   ENQUEUE_CMD(CmdDispatch)
+   ENQUEUE_CMD(CmdDispatchBase)
+   ENQUEUE_CMD(CmdDispatchIndirect)
+   ENQUEUE_CMD(CmdCopyBuffer2)
+   ENQUEUE_CMD(CmdCopyImage2)
+   ENQUEUE_CMD(CmdBlitImage2)
+   ENQUEUE_CMD(CmdCopyBufferToImage2)
+   ENQUEUE_CMD(CmdCopyImageToBuffer2)
+   ENQUEUE_CMD(CmdUpdateBuffer)
+   ENQUEUE_CMD(CmdFillBuffer)
+   ENQUEUE_CMD(CmdClearColorImage)
+   ENQUEUE_CMD(CmdClearDepthStencilImage)
+   ENQUEUE_CMD(CmdClearAttachments)
+   ENQUEUE_CMD(CmdResolveImage2)
+   ENQUEUE_CMD(CmdSetEvent)
+   ENQUEUE_CMD(CmdResetEvent)
+   ENQUEUE_CMD(CmdWaitEvents)
+   ENQUEUE_CMD(CmdPipelineBarrier)
+   ENQUEUE_CMD(CmdBeginQueryIndexedEXT)
+   ENQUEUE_CMD(CmdEndQueryIndexedEXT)
+   ENQUEUE_CMD(CmdBeginQuery)
+   ENQUEUE_CMD(CmdEndQuery)
+   ENQUEUE_CMD(CmdResetQueryPool)
+   ENQUEUE_CMD(CmdWriteTimestamp)
+   ENQUEUE_CMD(CmdCopyQueryPoolResults)
+   ENQUEUE_CMD(CmdPushConstants)
+   ENQUEUE_CMD(CmdBeginRenderPass)
+   ENQUEUE_CMD(CmdBeginRenderPass2)
+   ENQUEUE_CMD(CmdNextSubpass)
+   ENQUEUE_CMD(CmdNextSubpass2)
+   ENQUEUE_CMD(CmdEndRenderPass)
+   ENQUEUE_CMD(CmdEndRenderPass2)
+   ENQUEUE_CMD(CmdExecuteCommands)
+   ENQUEUE_CMD(CmdDrawIndirectCount)
+   ENQUEUE_CMD(CmdDrawIndexedIndirectCount)
+   ENQUEUE_CMD(CmdPushDescriptorSetKHR)
+//   ENQUEUE_CMD(CmdPushDescriptorSetWithTemplateKHR)
+   ENQUEUE_CMD(CmdBindTransformFeedbackBuffersEXT)
+   ENQUEUE_CMD(CmdBeginTransformFeedbackEXT)
+   ENQUEUE_CMD(CmdEndTransformFeedbackEXT)
+   ENQUEUE_CMD(CmdDrawIndirectByteCountEXT)
+   ENQUEUE_CMD(CmdBeginConditionalRenderingEXT)
+   ENQUEUE_CMD(CmdEndConditionalRenderingEXT)
+   ENQUEUE_CMD(CmdSetVertexInputEXT)
+   ENQUEUE_CMD(CmdSetCullMode)
+   ENQUEUE_CMD(CmdSetFrontFace)
+   ENQUEUE_CMD(CmdSetPrimitiveTopology)
+   ENQUEUE_CMD(CmdSetDepthTestEnable)
+   ENQUEUE_CMD(CmdSetDepthWriteEnable)
+   ENQUEUE_CMD(CmdSetDepthCompareOp)
+   ENQUEUE_CMD(CmdSetDepthBoundsTestEnable)
+   ENQUEUE_CMD(CmdSetStencilTestEnable)
+   ENQUEUE_CMD(CmdSetStencilOp)
+   ENQUEUE_CMD(CmdSetLineStippleEXT)
+   ENQUEUE_CMD(CmdSetDepthBiasEnable)
+   ENQUEUE_CMD(CmdSetLogicOpEXT)
+   ENQUEUE_CMD(CmdSetPatchControlPointsEXT)
+   ENQUEUE_CMD(CmdSetPrimitiveRestartEnable)
+   ENQUEUE_CMD(CmdSetRasterizerDiscardEnable)
+   ENQUEUE_CMD(CmdSetColorWriteEnableEXT)
+   ENQUEUE_CMD(CmdBeginRendering)
+   ENQUEUE_CMD(CmdEndRendering)
+   ENQUEUE_CMD(CmdSetDeviceMask)
+
+#undef ENQUEUE_CMD
+}
+
 static void lvp_execute_cmd_buffer(struct lvp_cmd_buffer *cmd_buffer,
                                    struct rendering_state *state)
 {
@@ -3837,7 +3956,7 @@ static void lvp_execute_cmd_buffer(struct lvp_cmd_buffer *cmd_buffer,
    bool first = true;
    bool did_flush = false;
 
-   LIST_FOR_EACH_ENTRY(cmd, &cmd_buffer->queue.cmds, cmd_link) {
+   LIST_FOR_EACH_ENTRY(cmd, &cmd_buffer->vk.cmd_queue.cmds, cmd_link) {
       switch (cmd->type) {
       case VK_CMD_BIND_PIPELINE:
          handle_pipeline(cmd, state);
@@ -3969,7 +4088,7 @@ static void lvp_execute_cmd_buffer(struct lvp_cmd_buffer *cmd_buffer,
          /* skip flushes since every cmdbuf does a flush
             after iterating its cmds and so this is redundant
           */
-         if (first || did_flush || cmd->cmd_link.next == &cmd_buffer->queue.cmds)
+         if (first || did_flush || cmd->cmd_link.next == &cmd_buffer->vk.cmd_queue.cmds)
             continue;
          handle_pipeline_barrier(cmd, state);
          did_flush = true;
@@ -4122,33 +4241,51 @@ VkResult lvp_execute_cmds(struct lvp_device *device,
                           struct lvp_queue *queue,
                           struct lvp_cmd_buffer *cmd_buffer)
 {
-   struct rendering_state state;
-   memset(&state, 0, sizeof(state));
-   state.pctx = queue->ctx;
-   state.cso = queue->cso;
-   state.blend_dirty = true;
-   state.dsa_dirty = true;
-   state.rs_dirty = true;
-   state.vp_dirty = true;
+   struct rendering_state *state = queue->state;
+   memset(state, 0, sizeof(*state));
+   state->pctx = queue->ctx;
+   state->cso = queue->cso;
+   state->blend_dirty = true;
+   state->dsa_dirty = true;
+   state->rs_dirty = true;
+   state->vp_dirty = true;
    for (enum pipe_shader_type s = PIPE_SHADER_VERTEX; s < PIPE_SHADER_TYPES; s++) {
       for (unsigned i = 0; i < PIPE_MAX_SAMPLERS; i++)
-         state.cso_ss_ptr[s][i] = &state.ss[s][i];
+         state->cso_ss_ptr[s][i] = &state->ss[s][i];
    }
    /* create a gallium context */
-   lvp_execute_cmd_buffer(cmd_buffer, &state);
+   lvp_execute_cmd_buffer(cmd_buffer, state);
 
-   state.start_vb = -1;
-   state.num_vb = 0;
+   state->start_vb = -1;
+   state->num_vb = 0;
    cso_unbind_context(queue->cso);
    for (unsigned i = 0; i < PIPE_MAX_SO_BUFFERS; i++) {
-      if (state.so_targets[i]) {
-         state.pctx->stream_output_target_destroy(state.pctx, state.so_targets[i]);
+      if (state->so_targets[i]) {
+         state->pctx->stream_output_target_destroy(state->pctx, state->so_targets[i]);
       }
    }
 
-   free(state.imageless_views);
-   free(state.pending_clear_aspects);
-   free(state.cleared_views);
-   free(state.attachments);
+   for (enum pipe_shader_type s = PIPE_SHADER_VERTEX; s < PIPE_SHADER_TYPES; s++) {
+      for (unsigned i = 0; i < PIPE_MAX_SAMPLERS; i++) {
+         if (state->sv[s][i])
+            pipe_sampler_view_reference(&state->sv[s][i], NULL);
+      }
+   }
+
+   for (unsigned i = 0; i < PIPE_MAX_SAMPLERS; i++) {
+      if (state->cso_ss_ptr[PIPE_SHADER_COMPUTE][i])
+         state->pctx->delete_sampler_state(state->pctx, state->ss_cso[PIPE_SHADER_COMPUTE][i]);
+   }
+
+   free(state->imageless_views);
+   free(state->pending_clear_aspects);
+   free(state->cleared_views);
+   free(state->attachments);
    return VK_SUCCESS;
+}
+
+size_t
+lvp_get_rendering_state_size(void)
+{
+   return sizeof(struct rendering_state);
 }

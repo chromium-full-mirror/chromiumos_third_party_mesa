@@ -28,6 +28,7 @@
 
 #include "vk_alloc.h"
 #include "vk_command_buffer.h"
+#include "vk_command_pool.h"
 #include "vk_common_entrypoints.h"
 #include "vk_device.h"
 #include "vk_fence.h"
@@ -662,6 +663,7 @@ vk_queue_submit(struct vk_queue *queue,
                      info->command_buffers[i].commandBuffer);
       assert(info->command_buffers[i].deviceMask == 0 ||
              info->command_buffers[i].deviceMask == 1);
+      assert(cmd_buffer->pool->queue_family_index == queue->queue_family_index);
       submit->command_buffers[i] = cmd_buffer;
    }
 
@@ -1158,10 +1160,36 @@ vk_common_QueueBindSparse(VkQueue _queue,
    for (uint32_t i = 0; i < bindInfoCount; i++) {
       const VkTimelineSemaphoreSubmitInfo *timeline_info =
          vk_find_struct_const(pBindInfo[i].pNext, TIMELINE_SEMAPHORE_SUBMIT_INFO);
-      const uint64_t *wait_values = timeline_info &&
-         timeline_info->waitSemaphoreValueCount ? timeline_info->pWaitSemaphoreValues : NULL;
-      const uint64_t *signal_values = timeline_info &&
-         timeline_info->signalSemaphoreValueCount ? timeline_info->pSignalSemaphoreValues : NULL;
+      const uint64_t *wait_values = NULL;
+      const uint64_t *signal_values = NULL;
+
+      if (timeline_info && timeline_info->waitSemaphoreValueCount) {
+         /* From the Vulkan 1.3.204 spec:
+          *
+          *    VUID-VkBindSparseInfo-pNext-03248
+          *
+          *    "If the pNext chain of this structure includes a VkTimelineSemaphoreSubmitInfo structure
+          *    and any element of pSignalSemaphores was created with a VkSemaphoreType of
+          *    VK_SEMAPHORE_TYPE_TIMELINE, then its signalSemaphoreValueCount member must equal
+          *    signalSemaphoreCount"
+          */
+         assert(timeline_info->waitSemaphoreValueCount == pBindInfo[i].waitSemaphoreCount);
+         wait_values = timeline_info->pWaitSemaphoreValues;
+      }
+
+      if (timeline_info && timeline_info->signalSemaphoreValueCount) {
+         /* From the Vulkan 1.3.204 spec:
+          *
+          * VUID-VkBindSparseInfo-pNext-03247
+          *
+          *    "If the pNext chain of this structure includes a VkTimelineSemaphoreSubmitInfo structure
+          *    and any element of pWaitSemaphores was created with a VkSemaphoreType of
+          *    VK_SEMAPHORE_TYPE_TIMELINE, then its waitSemaphoreValueCount member must equal
+          *    waitSemaphoreCount"
+          */
+         assert(timeline_info->signalSemaphoreValueCount == pBindInfo[i].signalSemaphoreCount);
+         signal_values = timeline_info->pSignalSemaphoreValues;
+      }
 
       STACK_ARRAY(VkSemaphoreSubmitInfoKHR, wait_semaphore_infos,
                   pBindInfo[i].waitSemaphoreCount);

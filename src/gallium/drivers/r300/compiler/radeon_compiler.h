@@ -23,10 +23,11 @@
 #ifndef RADEON_COMPILER_H
 #define RADEON_COMPILER_H
 
+#include <stdbool.h>
+
 #include "memory_pool.h"
 #include "radeon_code.h"
 #include "radeon_program.h"
-#include "radeon_emulate_loops.h"
 
 #define RC_DBG_LOG        (1 << 0)
 
@@ -55,6 +56,7 @@ struct radeon_compiler {
 	unsigned has_presub:1;
 	unsigned has_omod:1;
 	unsigned disable_optimizations:1;
+	unsigned needs_trig_input_transform:1;
 	unsigned max_temp_regs;
 	unsigned max_constants;
 	int max_alu_insts;
@@ -70,8 +72,6 @@ struct radeon_compiler {
 	/*@{*/
 	const struct rc_swizzle_caps * SwizzleCaps;
 	/*@}*/
-
-	struct emulate_loop_state loop_state;
 };
 
 void rc_init(struct radeon_compiler * c, const struct rc_regalloc_state *rs);
@@ -152,16 +152,18 @@ struct rc_program_stats {
 	unsigned num_tex_insts;
 	unsigned num_rgb_insts;
 	unsigned num_alpha_insts;
+	unsigned num_pred_insts;
 	unsigned num_presub_ops;
 	unsigned num_temp_regs;
 	unsigned num_omod_ops;
 	unsigned num_inline_literals;
+	unsigned num_loops;
 };
 
 void rc_get_stats(struct radeon_compiler *c, struct rc_program_stats *s);
 
 /* Executes a list of compiler passes given in the parameter 'list'. */
-void rc_run_compiler_passes(struct radeon_compiler *c, struct radeon_compiler_pass *list);
+bool rc_run_compiler_passes(struct radeon_compiler *c, struct radeon_compiler_pass *list);
 void rc_run_compiler(struct radeon_compiler *c, struct radeon_compiler_pass *list);
 void rc_validate_final_shader(struct radeon_compiler *c, void *user);
 

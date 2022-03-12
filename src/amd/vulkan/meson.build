@@ -92,6 +92,10 @@ libradv_files = files(
   'vk_format.h',
 )
 
+files_drirc = files('00-radv-defaults.conf')
+
+install_data(files_drirc, install_dir : join_paths(get_option('datadir'), 'drirc.d'))
+
 if not with_platform_windows
   libradv_files += files(
     'winsys/amdgpu/radv_amdgpu_bo.c',
@@ -213,3 +217,20 @@ radeon_icd = custom_target(
   install : true,
 )
 
+if meson.version().version_compare('>= 0.58')
+  _dev_icdname = 'radeon_devenv_icd.@0@.json'.format(host_machine.cpu())
+  custom_target(
+    'radeon_devenv_icd',
+    input : [vk_icd_gen, vk_api_xml],
+    output : _dev_icdname,
+    command : [
+      prog_python, '@INPUT0@',
+      '--api-version', '1.3', '--xml', '@INPUT1@',
+      '--lib-path', meson.current_build_dir() / icd_file_name,
+      '--out', '@OUTPUT@',
+    ],
+    build_by_default : true,
+  )
+
+  devenv.append('VK_ICD_FILENAMES', meson.current_build_dir() / _dev_icdname)
+endif

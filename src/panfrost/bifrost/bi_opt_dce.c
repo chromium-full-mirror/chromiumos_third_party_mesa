@@ -160,6 +160,9 @@ bi_opt_dce_post_ra(bi_context *ctx)
                 uint64_t live = block->reg_live_out;
 
                 bi_foreach_instr_in_block_rev(block, ins) {
+                        if (ins->op == BI_OPCODE_DTSEL_IMM)
+                                ins->dest[0] = bi_null();
+
                         bi_foreach_dest(ins, d) {
                                 if (ins->dest[d].type != BI_INDEX_REGISTER)
                                         continue;
@@ -168,6 +171,7 @@ bi_opt_dce_post_ra(bi_context *ctx)
                                 unsigned reg = ins->dest[d].value;
                                 uint64_t mask = (BITFIELD64_MASK(nr) << reg);
                                 bool cullable = (ins->op != BI_OPCODE_BLEND);
+                                cullable &= !bi_opcode_props[ins->op].sr_write;
 
                                 if (!(live & mask) && cullable)
                                         ins->dest[d] = bi_null();

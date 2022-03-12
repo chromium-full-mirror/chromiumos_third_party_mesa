@@ -200,7 +200,7 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_QUERY_TIME_ELAPSED:
       return 1;
    case PIPE_CAP_TGSI_TEXCOORD:
-      return 0;
+      return vscreen->caps.caps.v2.host_feature_check_version >= 8;
    case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
       return VIRGL_MAP_BUFFER_ALIGNMENT;
    case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
@@ -551,14 +551,14 @@ has_format_bit(struct virgl_supported_format_mask *mask,
 
 bool
 virgl_has_readback_format(struct pipe_screen *screen,
-                          enum virgl_formats fmt)
+                          enum virgl_formats fmt, bool allow_tweak)
 {
    struct virgl_screen *vscreen = virgl_screen(screen);
    if (has_format_bit(&vscreen->caps.caps.v2.supported_readback_formats,
                          fmt))
       return true;
 
-   if (fmt == VIRGL_FORMAT_L8_SRGB && vscreen->tweak_l8_srgb_readback) {
+   if (allow_tweak && fmt == VIRGL_FORMAT_L8_SRGB && vscreen->tweak_l8_srgb_readback) {
       return true;
    }
 
@@ -635,6 +635,15 @@ virgl_format_check_bitmask(enum pipe_format format,
    return false;
 }
 
+bool virgl_has_scanout_format(struct virgl_screen *vscreen,
+                              enum pipe_format format,
+                              bool may_emulate_bgra)
+{
+   return  virgl_format_check_bitmask(format,
+                                      vscreen->caps.caps.v2.scanout.bitmask,
+                                      may_emulate_bgra);
+}
+
 /**
  * Query format support for creating a texture, drawing surface, etc.
  * \param format  the format to test
@@ -690,6 +699,11 @@ virgl_is_format_supported( struct pipe_screen *screen,
       }
 
       if (sample_count > caps->v1.max_samples)
+         return false;
+
+      if (caps->v2.host_feature_check_version >= 9 &&
+          !has_format_bit(&caps->v2.supported_multisample_formats,
+                          pipe_to_virgl_format(format)))
          return false;
    }
 

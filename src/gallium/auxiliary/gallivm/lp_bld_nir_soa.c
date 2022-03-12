@@ -1028,6 +1028,17 @@ static void emit_load_ubo(struct lp_build_nir_context *bld_base,
    }
 }
 
+static void
+emit_load_const(struct lp_build_nir_context *bld_base,
+                const nir_load_const_instr *instr,
+                LLVMValueRef outval[NIR_MAX_VEC_COMPONENTS])
+{
+   struct lp_build_context *int_bld = get_int_bld(bld_base, true, instr->def.bit_size);
+   for (unsigned i = 0; i < instr->def.num_components; i++)
+     outval[i] = lp_build_const_int_vec(bld_base->base.gallivm, int_bld->type, instr->def.bit_size == 32 ? instr->value[i].u32 : instr->value[i].u64);
+   memset(&outval[instr->def.num_components], 0, NIR_MAX_VEC_COMPONENTS - instr->def.num_components);
+}
+
 
 static void emit_load_mem(struct lp_build_nir_context *bld_base,
                           unsigned nc,
@@ -1438,6 +1449,7 @@ static void emit_tex(struct lp_build_nir_context *bld_base,
 {
    struct lp_build_nir_soa_context *bld = (struct lp_build_nir_soa_context *)bld_base;
    struct gallivm_state *gallivm = bld_base->base.gallivm;
+   LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 
    params->type = bld_base->base.type;
    params->context_ptr = bld->context_ptr;
@@ -1491,10 +1503,25 @@ static void emit_tex(struct lp_build_nir_context *bld_base,
       return;
    }
 
-   if (params->texture_index_offset)
-      params->texture_index_offset = LLVMBuildExtractElement(bld_base->base.gallivm->builder,
-                                                             params->texture_index_offset,
-                                                             lp_build_const_int32(bld_base->base.gallivm, 0), "");
+   if (params->texture_index_offset) {
+      struct lp_build_loop_state loop_state;
+      LLVMValueRef exec_mask = mask_vec(bld_base);
+      LLVMValueRef outer_cond = LLVMBuildICmp(builder, LLVMIntNE, exec_mask, bld_base->uint_bld.zero, "");
+      LLVMValueRef res_store = lp_build_alloca(gallivm, bld_base->uint_bld.elem_type, "");
+      lp_build_loop_begin(&loop_state, gallivm, lp_build_const_int32(gallivm, 0));
+      LLVMValueRef if_cond = LLVMBuildExtractElement(gallivm->builder, outer_cond, loop_state.counter, "");
+
+      struct lp_build_if_state ifthen;
+      lp_build_if(&ifthen, gallivm, if_cond);
+      LLVMValueRef value_ptr = LLVMBuildExtractElement(gallivm->builder, params->texture_index_offset,
+                                                       loop_state.counter, "");
+      LLVMBuildStore(builder, value_ptr, res_store);
+      lp_build_endif(&ifthen);
+      lp_build_loop_end_cond(&loop_state, lp_build_const_int32(gallivm, bld_base->uint_bld.type.length),
+                             NULL, LLVMIntUGE);
+      LLVMValueRef idx_val = LLVMBuildLoad(builder, res_store, "");
+      params->texture_index_offset = idx_val;
+   }
 
    params->type = bld_base->base.type;
    bld->sampler->emit_tex_sample(bld->sampler,
@@ -2506,6 +2533,7 @@ void lp_build_nir_soa(struct gallivm_state *gallivm,
    bld.bld_base.interp_at = emit_interp_at;
    bld.bld_base.load_scratch = emit_load_scratch;
    bld.bld_base.store_scratch = emit_store_scratch;
+   bld.bld_base.load_const = emit_load_const;
 
    bld.mask = params->mask;
    bld.inputs = params->inputs;

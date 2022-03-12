@@ -698,6 +698,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(ARB_shading_language_include),
    EXT(ARB_shading_language_packing),
    EXT(ARB_sparse_texture2),
+   EXT(ARB_sparse_texture_clamp),
    EXT(ARB_tessellation_shader),
    EXT(ARB_texture_cube_map_array),
    EXT(ARB_texture_gather),
@@ -1830,6 +1831,7 @@ set_shader_inout_layout(struct gl_shader *shader,
       }
       break;
    case MESA_SHADER_TESS_EVAL:
+      shader->OES_tessellation_point_size_enable = state->OES_tessellation_point_size_enable || state->EXT_tessellation_point_size_enable;
       shader->info.TessEval._PrimitiveMode = TESS_PRIMITIVE_UNSPECIFIED;
       if (state->in_qualifier->flags.q.prim_type) {
          switch (state->in_qualifier->prim_type) {
@@ -1858,6 +1860,7 @@ set_shader_inout_layout(struct gl_shader *shader,
          shader->info.TessEval.PointMode = state->in_qualifier->point_mode;
       break;
    case MESA_SHADER_GEOMETRY:
+      shader->OES_geometry_point_size_enable = state->OES_geometry_point_size_enable || state->EXT_geometry_point_size_enable;
       shader->info.Geom.VerticesOut = -1;
       if (state->out_qualifier->flags.q.max_vertices) {
          unsigned qual_max_vertices;

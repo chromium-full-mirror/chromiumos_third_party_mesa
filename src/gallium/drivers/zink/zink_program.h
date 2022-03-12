@@ -272,6 +272,23 @@ zink_compute_program_reference(struct zink_context *ctx,
    return ret;
 }
 
+static inline bool
+zink_program_reference(struct zink_context *ctx,
+                       struct zink_program **dst,
+                       struct zink_program *src)
+{
+   struct zink_program *pg = src ? src : dst ? *dst : NULL;
+   if (!pg)
+      return false;
+   if (pg->is_compute) {
+      struct zink_compute_program *comp = (struct zink_compute_program*)pg;
+      return zink_compute_program_reference(ctx, &comp, NULL);
+   } else {
+      struct zink_gfx_program *prog = (struct zink_gfx_program*)pg;
+      return zink_gfx_program_reference(ctx, &prog, NULL);
+   }
+}
+
 VkPipelineLayout
 zink_pipeline_layout_create(struct zink_screen *screen, struct zink_program *pg, uint32_t *compat);
 
@@ -301,6 +318,23 @@ static inline const struct zink_fs_key *
 zink_get_fs_key(struct zink_context *ctx)
 {
    return (const struct zink_fs_key *)&ctx->gfx_pipeline_state.shader_keys.key[PIPE_SHADER_FRAGMENT];
+}
+
+static inline bool
+zink_set_tcs_key_patches(struct zink_context *ctx, uint8_t patch_vertices)
+{
+   struct zink_tcs_key *tcs = (struct zink_tcs_key*)&ctx->gfx_pipeline_state.shader_keys.key[PIPE_SHADER_TESS_CTRL];
+   if (tcs->patch_vertices == patch_vertices)
+      return false;
+   ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_TESS_CTRL);
+   tcs->patch_vertices = patch_vertices;
+   return true;
+}
+
+static inline const struct zink_tcs_key *
+zink_get_tcs_key(struct zink_context *ctx)
+{
+   return (const struct zink_tcs_key *)&ctx->gfx_pipeline_state.shader_keys.key[PIPE_SHADER_TESS_CTRL];
 }
 
 void

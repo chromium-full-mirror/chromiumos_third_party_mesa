@@ -27,7 +27,6 @@
 #include "d3d12_batch.h"
 #include "d3d12_descriptor_pool.h"
 #include "d3d12_pipeline_state.h"
-#include "d3d12_nir_lower_texcmp.h"
 
 #include "dxil_nir_lower_int_samplers.h"
 
@@ -79,7 +78,7 @@ enum d3d12_shader_dirty_flags
                              D3D12_DIRTY_FRAMEBUFFER | D3D12_DIRTY_SAMPLE_MASK | \
                              D3D12_DIRTY_VERTEX_ELEMENTS | D3D12_DIRTY_PRIM_MODE | \
                              D3D12_DIRTY_SHADER | D3D12_DIRTY_ROOT_SIGNATURE | \
-                             D3D12_DIRTY_STRIP_CUT_VALUE)
+                             D3D12_DIRTY_STRIP_CUT_VALUE | D3D12_DIRTY_STREAM_OUTPUT)
 #define D3D12_DIRTY_COMPUTE_PSO (D3D12_DIRTY_COMPUTE_SHADER | D3D12_DIRTY_COMPUTE_ROOT_SIGNATURE)
 
 #define D3D12_DIRTY_COMPUTE_MASK (D3D12_DIRTY_COMPUTE_SHADER | D3D12_DIRTY_COMPUTE_ROOT_SIGNATURE)
@@ -143,7 +142,6 @@ struct d3d12_stream_output_target {
    struct pipe_stream_output_target base;
    struct pipe_resource *fill_buffer;
    unsigned fill_buffer_offset;
-   uint64_t cached_filled_size;
 };
 
 struct d3d12_shader_state {
@@ -236,10 +234,9 @@ struct d3d12_context {
    unsigned cmdlist_dirty;
    ID3D12PipelineState *current_gfx_pso;
    ID3D12PipelineState *current_compute_pso;
-   bool reverse_depth_range;
+   uint16_t reverse_depth_range;
 
-   ID3D12Fence *cmdqueue_fence;
-   uint64_t fence_value;
+   uint64_t submit_id;
    ID3D12GraphicsCommandList *cmdlist;
 
    struct list_head active_queries;
@@ -326,7 +323,7 @@ d3d12_transition_subresources_state(struct d3d12_context *ctx,
                                     d3d12_bind_invalidate_option bind_invalidate);
 
 void
-d3d12_apply_resource_states(struct d3d12_context* ctx);
+d3d12_apply_resource_states(struct d3d12_context* ctx, bool is_implicit_dispatch);
 
 void
 d3d12_draw_vbo(struct pipe_context *pctx,

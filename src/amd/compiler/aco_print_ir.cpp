@@ -219,6 +219,8 @@ print_storage(storage_class storage, FILE* output)
       printed += fprintf(output, "%simage", printed ? "," : "");
    if (storage & storage_shared)
       printed += fprintf(output, "%sshared", printed ? "," : "");
+   if (storage & storage_task_payload)
+      printed += fprintf(output, "%stask_payload", printed ? "," : "");
    if (storage & storage_vmem_output)
       printed += fprintf(output, "%svmem_output", printed ? "," : "");
    if (storage & storage_scratch)
@@ -744,20 +746,16 @@ print_block_kind(uint16_t kind, FILE* output)
       fprintf(output, "break, ");
    if (kind & block_kind_continue_or_break)
       fprintf(output, "continue_or_break, ");
-   if (kind & block_kind_discard)
-      fprintf(output, "discard, ");
    if (kind & block_kind_branch)
       fprintf(output, "branch, ");
    if (kind & block_kind_merge)
       fprintf(output, "merge, ");
    if (kind & block_kind_invert)
       fprintf(output, "invert, ");
-   if (kind & block_kind_uses_discard_if)
-      fprintf(output, "discard_if, ");
+   if (kind & block_kind_uses_discard)
+      fprintf(output, "discard, ");
    if (kind & block_kind_needs_lowering)
       fprintf(output, "needs_lowering, ");
-   if (kind & block_kind_uses_demote)
-      fprintf(output, "uses_demote, ");
    if (kind & block_kind_export_end)
       fprintf(output, "export_end, ");
 }

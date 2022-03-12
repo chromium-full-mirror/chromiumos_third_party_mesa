@@ -50,6 +50,7 @@
 #include "util/macros.h"
 #include "vk_alloc.h"
 #include "vk_command_buffer.h"
+#include "vk_command_pool.h"
 #include "vk_device.h"
 #include "vk_instance.h"
 #include "vk_log.h"
@@ -344,14 +345,25 @@ struct panvk_descriptor {
    };
 };
 
+struct panvk_buffer_desc {
+   struct panvk_buffer *buffer;
+   VkDeviceSize offset;
+   VkDeviceSize size;
+};
+
 struct panvk_descriptor_set {
    struct vk_object_base base;
    struct panvk_descriptor_pool *pool;
    const struct panvk_descriptor_set_layout *layout;
    struct panvk_descriptor *descs;
+   struct panvk_buffer_desc *ssbos;
+   struct panvk_buffer_desc *dyn_ssbos;
    void *ubos;
+   struct panvk_buffer_desc *dyn_ubos;
    void *samplers;
    void *textures;
+   void *img_attrib_bufs;
+   uint32_t *img_fmts;
 };
 
 #define MAX_SETS 4
@@ -369,13 +381,11 @@ struct panvk_descriptor_set_binding_layout {
          unsigned sampler_idx;
          unsigned tex_idx;
       };
-      struct {
-         union {
-            unsigned ssbo_idx;
-            unsigned ubo_idx;
-         };
-         unsigned dynoffset_idx;
-      };
+      unsigned ssbo_idx;
+      unsigned dyn_ssbo_idx;
+      unsigned ubo_idx;
+      unsigned dyn_ubo_idx;
+      unsigned img_idx;
    };
 
    /* Shader stages affected by this set+binding */
@@ -397,8 +407,10 @@ struct panvk_descriptor_set_layout {
    unsigned num_samplers;
    unsigned num_textures;
    unsigned num_ubos;
+   unsigned num_dyn_ubos;
    unsigned num_ssbos;
-   unsigned num_dynoffsets;
+   unsigned num_dyn_ssbos;
+   unsigned num_imgs;
 
    /* Number of bindings in this descriptor set */
    uint32_t binding_count;
@@ -414,17 +426,26 @@ struct panvk_pipeline_layout {
    unsigned num_samplers;
    unsigned num_textures;
    unsigned num_ubos;
+   unsigned num_dyn_ubos;
    unsigned num_ssbos;
-   unsigned num_dynoffsets;
+   unsigned num_dyn_ssbos;
+   uint32_t num_imgs;
    uint32_t num_sets;
+
+   struct {
+      uint32_t size;
+      unsigned ubo_idx;
+   } push_constants;
 
    struct {
       struct panvk_descriptor_set_layout *layout;
       unsigned sampler_offset;
       unsigned tex_offset;
       unsigned ubo_offset;
+      unsigned dyn_ubo_offset;
       unsigned ssbo_offset;
-      unsigned dynoffset_offset;
+      unsigned dyn_ssbo_offset;
+      unsigned img_offset;
    } sets[MAX_SETS];
 };
 
@@ -472,18 +493,26 @@ enum panvk_dynamic_state_bits {
    PANVK_DYNAMIC_STENCIL_WRITE_MASK = 1 << 7,
    PANVK_DYNAMIC_STENCIL_REFERENCE = 1 << 8,
    PANVK_DYNAMIC_DISCARD_RECTANGLE = 1 << 9,
-   PANVK_DYNAMIC_ALL = (1 << 10) - 1,
+   PANVK_DYNAMIC_SSBO = 1 << 10,
+   PANVK_DYNAMIC_ALL = (1 << 11) - 1,
 };
 
 struct panvk_descriptor_state {
+   uint32_t dirty;
+   const struct panvk_descriptor_set *sets[MAX_SETS];
    struct {
-      const struct panvk_descriptor_set *set;
-      struct panfrost_ptr dynoffsets;
-   } sets[MAX_SETS];
+      struct panvk_buffer_desc ubos[MAX_DYNAMIC_UNIFORM_BUFFERS];
+      struct panvk_buffer_desc ssbos[MAX_DYNAMIC_STORAGE_BUFFERS];
+   } dyn;
    mali_ptr sysvals[MESA_SHADER_STAGES];
    mali_ptr ubos;
    mali_ptr textures;
    mali_ptr samplers;
+   mali_ptr push_constants;
+   mali_ptr vs_attribs;
+   mali_ptr vs_attrib_bufs;
+   mali_ptr non_vs_attribs;
+   mali_ptr non_vs_attrib_bufs;
 };
 
 #define INVOCATION_DESC_WORDS 2
@@ -502,10 +531,10 @@ struct panvk_draw_info {
    struct {
       mali_ptr varyings;
       mali_ptr attributes;
+      mali_ptr attribute_bufs;
       mali_ptr push_constants;
    } stages[MESA_SHADER_STAGES];
    mali_ptr varying_bufs;
-   mali_ptr attribute_bufs;
    mali_ptr textures;
    mali_ptr samplers;
    mali_ptr ubos;
@@ -523,6 +552,17 @@ struct panvk_draw_info {
       struct panfrost_ptr vertex;
       struct panfrost_ptr tiler;
    } jobs;
+};
+
+struct panvk_dispatch_info {
+   struct pan_compute_dim wg_count;
+   mali_ptr attributes;
+   mali_ptr attribute_bufs;
+   mali_ptr tsd;
+   mali_ptr ubos;
+   mali_ptr push_uniforms;
+   mali_ptr textures;
+   mali_ptr samplers;
 };
 
 struct panvk_attrib_info {
@@ -576,8 +616,6 @@ struct panvk_cmd_state {
    struct {
       struct panvk_attrib_buf bufs[MAX_VBS];
       unsigned count;
-      mali_ptr attribs;
-      mali_ptr attrib_bufs;
    } vb;
 
    /* Index buffer */
@@ -603,6 +641,10 @@ struct panvk_cmd_state {
       bool crc_valid[MAX_RTS];
    } fb;
 
+   struct {
+      struct pan_compute_dim wg_count;
+   } compute;
+
    const struct panvk_render_pass *pass;
    const struct panvk_subpass *subpass;
    const struct panvk_framebuffer *framebuffer;
@@ -618,11 +660,9 @@ struct panvk_cmd_state {
 };
 
 struct panvk_cmd_pool {
-   struct vk_object_base base;
-   VkAllocationCallbacks alloc;
+   struct vk_command_pool vk;
    struct list_head active_cmd_buffers;
    struct list_head free_cmd_buffers;
-   uint32_t queue_family_index;
    struct panvk_bo_pool desc_bo_pool;
    struct panvk_bo_pool varying_bo_pool;
    struct panvk_bo_pool tls_bo_pool;
@@ -654,7 +694,6 @@ struct panvk_cmd_buffer {
    struct list_head batches;
 
    VkCommandBufferUsageFlags usage_flags;
-   VkCommandBufferLevel level;
    enum panvk_cmd_buffer_status status;
 
    struct panvk_cmd_state state;
@@ -712,6 +751,8 @@ struct panvk_shader {
    struct pan_shader_info info;
    struct util_dynarray binary;
    unsigned sysval_ubo;
+   struct pan_compute_dim local_size;
+   bool has_img_access;
 };
 
 struct panvk_shader *
@@ -757,6 +798,9 @@ struct panvk_pipeline {
    mali_ptr vpd;
    mali_ptr rsds[MESA_SHADER_STAGES];
 
+   /* shader stage bit is set of the stage accesses storage images */
+   uint32_t img_access_mask;
+
    unsigned num_ubos;
    unsigned num_sysvals;
 
@@ -778,6 +822,10 @@ struct panvk_pipeline {
       bool dynamic_rsd;
       uint8_t rt_mask;
    } fs;
+
+   struct {
+      struct pan_compute_dim local_size;
+   } cs;
 
    struct {
       unsigned topology;
@@ -909,6 +957,7 @@ unsigned
 panvk_image_get_total_size(const struct panvk_image *image);
 
 #define TEXTURE_DESC_WORDS 8
+#define ATTRIB_BUF_DESC_WORDS 4
 
 struct panvk_image_view {
    struct vk_object_base base;
@@ -918,6 +967,7 @@ struct panvk_image_view {
    struct panfrost_bo *bo;
    struct {
       uint32_t tex[TEXTURE_DESC_WORDS];
+      uint32_t img_attrib_buf[ATTRIB_BUF_DESC_WORDS * 2];
    } descs;
 };
 
@@ -1006,7 +1056,7 @@ VK_DEFINE_HANDLE_CASTS(panvk_instance, vk.base, VkInstance, VK_OBJECT_TYPE_INSTA
 VK_DEFINE_HANDLE_CASTS(panvk_physical_device, vk.base, VkPhysicalDevice, VK_OBJECT_TYPE_PHYSICAL_DEVICE)
 VK_DEFINE_HANDLE_CASTS(panvk_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
 
-VK_DEFINE_NONDISP_HANDLE_CASTS(panvk_cmd_pool, base, VkCommandPool, VK_OBJECT_TYPE_COMMAND_POOL)
+VK_DEFINE_NONDISP_HANDLE_CASTS(panvk_cmd_pool, vk.base, VkCommandPool, VK_OBJECT_TYPE_COMMAND_POOL)
 VK_DEFINE_NONDISP_HANDLE_CASTS(panvk_buffer, base, VkBuffer, VK_OBJECT_TYPE_BUFFER)
 VK_DEFINE_NONDISP_HANDLE_CASTS(panvk_buffer_view, base, VkBufferView, VK_OBJECT_TYPE_BUFFER_VIEW)
 VK_DEFINE_NONDISP_HANDLE_CASTS(panvk_descriptor_pool, base, VkDescriptorPool, VK_OBJECT_TYPE_DESCRIPTOR_POOL)

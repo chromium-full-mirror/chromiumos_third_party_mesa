@@ -1014,7 +1014,9 @@ static struct si_texture *si_texture_create_object(struct pipe_screen *screen,
       resource->gpu_address = plane0->buffer.gpu_address;
    } else if (!(surface->flags & RADEON_SURF_IMPORTED)) {
       if (base->flags & PIPE_RESOURCE_FLAG_SPARSE)
-         resource->b.b.flags |= SI_RESOURCE_FLAG_UNMAPPABLE;
+         resource->b.b.flags |= PIPE_RESOURCE_FLAG_UNMAPPABLE;
+      if (base->bind & PIPE_BIND_PRIME_BLIT_DST)
+         resource->b.b.flags |= SI_RESOURCE_FLAG_UNCACHED;
 
       /* Create the backing buffer. */
       si_init_resource_fields(sscreen, resource, alloc_size, alignment);
@@ -1647,7 +1649,7 @@ static struct pipe_resource *si_texture_from_handle(struct pipe_screen *screen,
 
    buf = sscreen->ws->buffer_from_handle(sscreen->ws, whandle,
                                          sscreen->info.max_alignment,
-                                         templ->bind & PIPE_BIND_DRI_PRIME);
+                                         templ->bind & PIPE_BIND_PRIME_BLIT_DST);
    if (!buf)
       return NULL;
 
@@ -1715,6 +1717,7 @@ bool si_init_flushed_depth_texture(struct pipe_context *ctx, struct pipe_resourc
    resource.array_size = texture->array_size;
    resource.last_level = texture->last_level;
    resource.nr_samples = texture->nr_samples;
+   resource.nr_storage_samples = texture->nr_storage_samples;
    resource.usage = PIPE_USAGE_DEFAULT;
    resource.bind = texture->bind & ~PIPE_BIND_DEPTH_STENCIL;
    resource.flags = texture->flags | SI_RESOURCE_FLAG_FLUSHED_DEPTH;
@@ -1812,6 +1815,7 @@ static void *si_texture_transfer_map(struct pipe_context *ctx, struct pipe_resou
    char *map;
    bool use_staging_texture = tex->buffer.flags & RADEON_FLAG_ENCRYPTED;
 
+   assert(texture->target != PIPE_BUFFER);
    assert(!(texture->flags & SI_RESOURCE_FLAG_FORCE_LINEAR));
    assert(box->width && box->height && box->depth);
 
@@ -2226,8 +2230,7 @@ static struct pipe_resource *si_resource_from_memobj(struct pipe_screen *screen,
    struct pipe_resource *res;
 
    if (templ->target == PIPE_BUFFER)
-      res = si_buffer_from_winsys_buffer(screen, templ, memobj->buf,
-                                         memobj->b.dedicated);
+      res = si_buffer_from_winsys_buffer(screen, templ, memobj->buf, offset);
    else
       res = si_texture_from_winsys_buffer(sscreen, templ, memobj->buf,
                                           memobj->stride,

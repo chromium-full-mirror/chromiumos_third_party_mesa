@@ -140,6 +140,7 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_TGSI_TEXCOORD:
         case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
         case PIPE_CAP_SAMPLER_VIEW_TARGET:
+        case PIPE_CAP_ANISOTROPIC_FILTER:
                 return 1;
 
         case PIPE_CAP_TEXTURE_QUERY_LOD:
@@ -320,7 +321,7 @@ v3d_screen_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
                 return V3D_MAX_POINT_SIZE;
 
         case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
-                return 0.0f;
+                return 16.0f;
         case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
                 return 16.0f;
 
@@ -694,7 +695,7 @@ static const nir_shader_compiler_options v3d_nir_options = {
         .lower_bitfield_extract_to_shifts = true,
         .lower_bitfield_reverse = true,
         .lower_bit_count = true,
-        .lower_cs_local_id_from_index = true,
+        .lower_cs_local_id_to_index = true,
         .lower_ffract = true,
         .lower_fmod = true,
         .lower_pack_unorm_2x16 = true,

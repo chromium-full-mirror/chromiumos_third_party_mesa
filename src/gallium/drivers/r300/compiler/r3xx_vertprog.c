@@ -33,7 +33,6 @@
 #include "radeon_program_alu.h"
 #include "radeon_swizzle.h"
 #include "radeon_emulate_branches.h"
-#include "radeon_emulate_loops.h"
 #include "radeon_remove_constants.h"
 
 #include "util/compiler.h"
@@ -688,10 +687,10 @@ static int transform_nonnative_modifiers(
 			new_inst->U.I.SrcReg[1] = inst->U.I.SrcReg[i];
 			new_inst->U.I.SrcReg[1].Negate ^= RC_MASK_XYZW;
 
-			memset(&inst->U.I.SrcReg[i], 0, sizeof(inst->U.I.SrcReg[i]));
 			inst->U.I.SrcReg[i].File = RC_FILE_TEMPORARY;
 			inst->U.I.SrcReg[i].Index = temp;
 			inst->U.I.SrcReg[i].Swizzle = RC_SWIZZLE_XYZW;
+			inst->U.I.SrcReg[i].RelAddr = 0;
 		}
 	}
 	return 1;
@@ -769,18 +768,6 @@ static void rc_vs_add_artificial_outputs(struct radeon_compiler *c, void *user)
 
 			compiler->Base.Program.OutputsWritten |= 1U << i;
 		}
-	}
-}
-
-static void dataflow_outputs_mark_used(void * userdata, void * data,
-		void (*callback)(void *, unsigned int, unsigned int))
-{
-	struct r300_vertex_program_compiler * c = userdata;
-	int i;
-
-	for(i = 0; i < 32; ++i) {
-		if (c->RequiredOutputs & (1U << i))
-			callback(data, i, RC_MASK_XYZW);
 	}
 }
 
@@ -909,7 +896,7 @@ void r3xx_compile_vertex_program(struct r300_vertex_program_compiler *c)
 		{"native rewrite",		1, is_r500,	rc_local_transform,		alu_rewrite_r500},
 		{"native rewrite",		1, !is_r500,	rc_local_transform,		alu_rewrite_r300},
 		{"emulate modifiers",		1, !is_r500,	rc_local_transform,		emulate_modifiers},
-		{"deadcode",			1, opt,		rc_dataflow_deadcode,		dataflow_outputs_mark_used},
+		{"deadcode",			1, opt,		rc_dataflow_deadcode,		NULL},
 		{"dataflow optimize",		1, opt,		rc_optimize,			NULL},
 		/* This pass must be done after optimizations. */
 		{"source conflict resolve",	1, 1,		rc_local_transform,		resolve_src_conflicts},

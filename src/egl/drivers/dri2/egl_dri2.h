@@ -226,7 +226,6 @@ struct dri2_egl_display
    const __DRItexBufferExtension *tex_buffer;
    const __DRIimageExtension *image;
    const __DRIrobustnessExtension *robustness;
-   const __DRInoErrorExtension *no_error;
    const __DRI2configQueryExtension *config;
    const __DRI2fenceExtension *fence;
    const __DRI2bufferDamageExtension *buffer_damage;
@@ -365,6 +364,10 @@ struct dri2_egl_surface
 #ifdef HAVE_ANDROID_PLATFORM
    struct ANativeWindow *window;
    struct ANativeWindowBuffer *buffer;
+
+   /* in-fence associated with buffer, -1 once passed down to dri layer: */
+   int in_fence_fd;
+
    __DRIimage *dri_image_back;
    __DRIimage *dri_image_front;
 

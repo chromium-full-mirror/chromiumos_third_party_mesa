@@ -28,7 +28,6 @@
 #include "util/macros.h"
 #include "util/u_math.h"
 #include "pan_texture.h"
-#include "panfrost-quirks.h"
 
 #ifndef PAN_ARCH
 
@@ -379,6 +378,7 @@ panfrost_astc_dim_3d(unsigned dim)
         default: unreachable("Invalid ASTC dimension");
         }
 }
+#endif
 
 /* Texture addresses are tagged with information about compressed formats.
  * AFBC uses a bit for whether the colorspace transform is enabled (RGB and
@@ -390,6 +390,7 @@ panfrost_compression_tag(const struct util_format_description *desc,
                          enum mali_texture_dimension dim,
                          uint64_t modifier)
 {
+#if PAN_ARCH >= 5 && PAN_ARCH <= 8
         if (drm_is_afbc(modifier)) {
                 unsigned flags = (modifier & AFBC_FORMAT_MOD_YTR) ?
                                  MALI_AFBC_SURFACE_FLAG_YTR : 0;
@@ -424,11 +425,12 @@ panfrost_compression_tag(const struct util_format_description *desc,
                         return (panfrost_astc_dim_2d(desc->block.height) << 3) |
                                 panfrost_astc_dim_2d(desc->block.width);
                 }
-        } else {
-                return 0;
         }
-}
 #endif
+
+        /* Tags are not otherwise used */
+        return 0;
+}
 
 /* Cubemaps have 6 faces as "layers" in between each actual layer. We
  * need to fix this up. TODO: logic wrong in the asserted out cases ...
@@ -447,14 +449,13 @@ panfrost_adjust_cube_dimensions(
         assert((*first_layer == *last_layer) || (*first_face == 0 && *last_face == 5));
 }
 
-/* Following the texture descriptor is a number of pointers. How many? */
+/* Following the texture descriptor is a number of descriptors. How many? */
 
 static unsigned
 panfrost_texture_num_elements(
                 unsigned first_level, unsigned last_level,
                 unsigned first_layer, unsigned last_layer,
-                unsigned nr_samples,
-                bool is_cube, bool manual_stride)
+                unsigned nr_samples, bool is_cube)
 {
         unsigned first_face  = 0, last_face = 0;
 
@@ -466,12 +467,8 @@ panfrost_texture_num_elements(
         unsigned levels = 1 + last_level - first_level;
         unsigned layers = 1 + last_layer - first_layer;
         unsigned faces  = 1 + last_face  - first_face;
-        unsigned num_elements = levels * layers * faces * MAX2(nr_samples, 1);
 
-        if (manual_stride)
-                num_elements *= 2;
-
-        return num_elements;
+        return levels * layers * faces * MAX2(nr_samples, 1);
 }
 
 /* Conservative estimate of the size of the texture payload a priori.
@@ -483,18 +480,20 @@ panfrost_texture_num_elements(
 unsigned
 GENX(panfrost_estimate_texture_payload_size)(const struct pan_image_view *iview)
 {
-        /* Assume worst case */
-        unsigned manual_stride = PAN_ARCH >= 6 ||
-                                 (iview->image->layout.modifier == DRM_FORMAT_MOD_LINEAR);
+#if PAN_ARCH >= 9
+        size_t element_size = pan_size(PLANE);
+#else
+        /* Assume worst case. Overestimates on Midgard, but that's ok. */
+        size_t element_size = pan_size(SURFACE_WITH_STRIDE);
+#endif
 
         unsigned elements =
                 panfrost_texture_num_elements(iview->first_level, iview->last_level,
                                               iview->first_layer, iview->last_layer,
                                               iview->image->layout.nr_samples,
-                                              iview->dim == MALI_TEXTURE_DIMENSION_CUBE,
-                                              manual_stride);
+                                              iview->dim == MALI_TEXTURE_DIMENSION_CUBE);
 
-        return sizeof(mali_ptr) * elements;
+        return element_size * elements;
 }
 
 struct panfrost_surface_iter {
@@ -607,15 +606,14 @@ panfrost_emit_texture_payload(const struct pan_image_view *iview,
                 base += iview->buf.offset;
         }
 
-#if PAN_ARCH >= 5
         /* panfrost_compression_tag() wants the dimension of the resource, not the
          * one of the image view (those might differ).
          */
         base |= panfrost_compression_tag(desc, layout->dim, layout->modifier);
-#else
-        assert(!drm_is_afbc(layout->modifier) && "no AFBC on v4");
-        assert(desc->layout != UTIL_FORMAT_LAYOUT_ASTC && "no ASTC on v4");
-#endif
+
+        /* v4 does not support compression */
+        assert(PAN_ARCH >= 5 || !drm_is_afbc(layout->modifier));
+        assert(PAN_ARCH >= 5 || desc->layout != UTIL_FORMAT_LAYOUT_ASTC);
 
         /* Inject the addresses in, interleaving array indices, mip levels,
          * cube faces, and strides in that order */
@@ -770,8 +768,14 @@ GENX(panfrost_new_texture)(const struct panfrost_device *dev,
                 else
                         cfg.sample_count = layout->nr_samples;
                 cfg.swizzle = swizzle;
+#if PAN_ARCH >= 9
+                cfg.texel_interleave =
+                        (layout->modifier != DRM_FORMAT_MOD_LINEAR) ||
+                        util_format_is_compressed(format);
+#else
                 cfg.texel_ordering =
                         panfrost_modifier_to_layout(layout->modifier);
+#endif
                 cfg.levels = iview->last_level - iview->first_level + 1;
                 cfg.array_size = array_size;
 

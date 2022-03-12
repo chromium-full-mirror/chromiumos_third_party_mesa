@@ -39,7 +39,7 @@ intel_icd = custom_target(
   output : 'intel_icd.@0@.json'.format(host_machine.cpu()),
   command : [
     prog_python, '@INPUT0@',
-    '--api-version', '1.2', '--xml', '@INPUT1@',
+    '--api-version', '1.3', '--xml', '@INPUT1@',
     '--lib-path', join_paths(get_option('prefix'), get_option('libdir'),
                              'libvulkan_intel.so'),
     '--out', '@OUTPUT@',
@@ -48,6 +48,24 @@ intel_icd = custom_target(
   install_dir : with_vulkan_icd_dir,
   install : true,
 )
+
+if meson.version().version_compare('>= 0.58')
+  _dev_icdname = 'intel_devenv_icd.@0@.json'.format(host_machine.cpu())
+  custom_target(
+    'intel_devenv_icd',
+    input : [vk_icd_gen, vk_api_xml],
+    output : _dev_icdname,
+    command : [
+      prog_python, '@INPUT0@',
+      '--api-version', '1.3', '--xml', '@INPUT1@',
+      '--lib-path', meson.current_build_dir() / 'libvulkan_intel.so',
+      '--out', '@OUTPUT@',
+    ],
+    build_by_default : true,
+  )
+
+  devenv.append('VK_ICD_FILENAMES', meson.current_build_dir() / _dev_icdname)
+endif
 
 libanv_per_hw_ver_libs = []
 anv_per_hw_ver_files = files(

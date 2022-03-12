@@ -51,6 +51,7 @@
 #include "util/list.h"
 #include "util/log.h"
 #include "util/macros.h"
+#include "util/sparse_array.h"
 #include "util/u_atomic.h"
 #include "util/u_dynarray.h"
 #include "util/xmlconfig.h"
@@ -77,6 +78,7 @@
 #include "perfcntrs/freedreno_perfcntr.h"
 
 #include "tu_descriptor_set.h"
+#include "tu_autotune.h"
 #include "tu_util.h"
 #include "tu_perfetto.h"
 
@@ -96,6 +98,7 @@ typedef uint32_t xcb_window_t;
 #include "vk_format.h"
 #include "vk_image.h"
 #include "vk_command_buffer.h"
+#include "vk_command_pool.h"
 #include "vk_queue.h"
 #include "vk_object.h"
 #include "vk_sync.h"
@@ -212,7 +215,13 @@ struct tu_physical_device
    struct wsi_device wsi_device;
 
    int local_fd;
+   bool has_local;
+   int64_t local_major;
+   int64_t local_minor;
    int master_fd;
+   bool has_master;
+   int64_t master_major;
+   int64_t master_minor;
 
    uint32_t gmem_size;
    uint64_t gmem_base;
@@ -251,6 +260,8 @@ enum tu_debug_flags
    TU_DEBUG_FLUSHALL = 1 << 10,
    TU_DEBUG_SYNCDRAW = 1 << 11,
    TU_DEBUG_DONT_CARE_AS_LOAD = 1 << 12,
+   TU_DEBUG_GMEM = 1 << 13,
+   TU_DEBUG_RAST_ORDER = 1 << 14,
 };
 
 struct tu_instance
@@ -353,6 +364,13 @@ struct tu_bo
    uint64_t size;
    uint64_t iova;
    void *map;
+
+#ifndef TU_USE_KGSL
+   int32_t refcnt;
+   uint32_t bo_list_idx;
+#endif
+
+   bool implicit_sync : 1;
 };
 
 enum global_shader {
@@ -393,11 +411,14 @@ struct tu6_global
 
    ALIGN16 uint32_t cs_indirect_xyz[3];
 
+   /* To know when renderpass stats for autotune are valid */
+   volatile uint32_t autotune_fence;
+
    /* note: larger global bo will be used for customBorderColors */
    struct bcolor_entry bcolor_builtin[TU_BORDER_COLOR_BUILTIN], bcolor[];
 };
 #define gb_offset(member) offsetof(struct tu6_global, member)
-#define global_iova(cmd, member) ((cmd)->device->global_bo.iova + gb_offset(member))
+#define global_iova(cmd, member) ((cmd)->device->global_bo->iova + gb_offset(member))
 
 /* extra space in vsc draw/prim streams */
 #define VSC_PAD 0x40
@@ -424,19 +445,21 @@ struct tu_device
     * should be impossible to go beyond 48 bits.
     */
    struct {
-      struct tu_bo bo;
+      struct tu_bo *bo;
       mtx_t construct_mtx;
       bool initialized;
    } scratch_bos[48 - MIN_SCRATCH_BO_SIZE_LOG2];
 
-   struct tu_bo global_bo;
+   struct tu_bo *global_bo;
+
+   uint32_t implicit_sync_bo_count;
 
    /* the blob seems to always use 8K factor and 128K param sizes, copy them */
 #define TU_TESS_FACTOR_SIZE (8 * 1024)
 #define TU_TESS_PARAM_SIZE (128 * 1024)
 #define TU_TESS_BO_SIZE (TU_TESS_FACTOR_SIZE + TU_TESS_PARAM_SIZE)
    /* Lazily allocated, protected by the device mutex. */
-   struct tu_bo tess_bo;
+   struct tu_bo *tess_bo;
 
    struct ir3_shader_variant *global_shaders[GLOBAL_SH_COUNT];
    uint64_t global_shader_va[GLOBAL_SH_COUNT];
@@ -449,9 +472,27 @@ struct tu_device
    /* bo list for submits: */
    struct drm_msm_gem_submit_bo *bo_list;
    /* map bo handles to bo list index: */
-   uint32_t *bo_idx;
-   uint32_t bo_count, bo_list_size, bo_idx_size;
+   uint32_t bo_count, bo_list_size;
    mtx_t bo_mutex;
+   /* protects imported BOs creation/freeing */
+   struct u_rwlock dma_bo_lock;
+
+   /* This array holds all our 'struct tu_bo' allocations. We use this
+    * so we can add a refcount to our BOs and check if a particular BO
+    * was already allocated in this device using its GEM handle. This is
+    * necessary to properly manage BO imports, because the kernel doesn't
+    * refcount the underlying BO memory.
+    *
+    * Specifically, when self-importing (i.e. importing a BO into the same
+    * device that created it), the kernel will give us the same BO handle
+    * for both BOs and we must only free it once when  both references are
+    * freed. Otherwise, if we are not self-importing, we get two different BO
+    * handles, and we want to free each one individually.
+    *
+    * The BOs in this map all have a refcnt with the reference counter and
+    * only self-imported BOs will ever have a refcnt > 1.
+    */
+   struct util_sparse_array bo_map;
 
    /* Command streams to set pass index to a scratch reg */
    struct tu_cs *perfcntrs_pass_cs;
@@ -461,6 +502,8 @@ struct tu_device
     * new submit is executed. */
    pthread_cond_t timeline_cond;
    pthread_mutex_t submit_mutex;
+
+   struct tu_autotune autotune;
 
 #ifdef ANDROID
    const void *gralloc;
@@ -501,11 +544,11 @@ enum tu_bo_alloc_flags
 };
 
 VkResult
-tu_bo_init_new(struct tu_device *dev, struct tu_bo *bo, uint64_t size,
+tu_bo_init_new(struct tu_device *dev, struct tu_bo **bo, uint64_t size,
                enum tu_bo_alloc_flags flags);
 VkResult
 tu_bo_init_dmabuf(struct tu_device *dev,
-                  struct tu_bo *bo,
+                  struct tu_bo **bo,
                   uint64_t size,
                   int fd);
 int
@@ -514,6 +557,12 @@ void
 tu_bo_finish(struct tu_device *dev, struct tu_bo *bo);
 VkResult
 tu_bo_map(struct tu_device *dev, struct tu_bo *bo);
+
+static inline struct tu_bo *
+tu_device_lookup_bo(struct tu_device *device, uint32_t handle)
+{
+   return (struct tu_bo *) util_sparse_array_get(&device->bo_map, handle);
+}
 
 /* Get a scratch bo for use inside a command buffer. This will always return
  * the same bo given the same size or similar sizes, so only one scratch bo
@@ -576,8 +625,9 @@ enum tu_draw_state_group_id
    TU_DRAW_STATE_VS_PARAMS,
    TU_DRAW_STATE_INPUT_ATTACHMENTS_GMEM,
    TU_DRAW_STATE_INPUT_ATTACHMENTS_SYSMEM,
-   TU_DRAW_STATE_LRZ,
-   TU_DRAW_STATE_DEPTH_PLANE,
+   TU_DRAW_STATE_LRZ_AND_DEPTH_PLANE,
+   TU_DRAW_STATE_PRIM_MODE_GMEM,
+   TU_DRAW_STATE_PRIM_MODE_SYSMEM,
 
    /* dynamic state related draw states */
    TU_DRAW_STATE_DYNAMIC,
@@ -645,7 +695,7 @@ struct tu_device_memory
 {
    struct vk_object_base base;
 
-   struct tu_bo bo;
+   struct tu_bo *bo;
 };
 
 struct tu_descriptor_range
@@ -657,6 +707,9 @@ struct tu_descriptor_range
 struct tu_descriptor_set
 {
    struct vk_object_base base;
+
+   /* Link to descriptor pool's desc_sets list . */
+   struct list_head pool_link;
 
    struct tu_descriptor_set_layout *layout;
    struct tu_descriptor_pool *pool;
@@ -679,7 +732,7 @@ struct tu_descriptor_pool
 {
    struct vk_object_base base;
 
-   struct tu_bo bo;
+   struct tu_bo *bo;
    uint64_t current_offset;
    uint64_t size;
 
@@ -687,6 +740,8 @@ struct tu_descriptor_pool
    uint8_t *host_memory_ptr;
    uint8_t *host_memory_end;
    uint8_t *host_bo;
+
+   struct list_head desc_sets;
 
    uint32_t entry_count;
    uint32_t max_entry_count;
@@ -739,14 +794,8 @@ struct tu_buffer
    VkBufferCreateFlags flags;
 
    struct tu_bo *bo;
-   VkDeviceSize bo_offset;
+   uint64_t iova;
 };
-
-static inline uint64_t
-tu_buffer_iova(struct tu_buffer *buffer)
-{
-   return buffer->bo->iova + buffer->bo_offset;
-}
 
 const char *
 tu_get_debug_option_name(int id);
@@ -774,8 +823,9 @@ enum tu_cmd_dirty_bits
    TU_CMD_DIRTY_LRZ = BIT(8),
    TU_CMD_DIRTY_VS_PARAMS = BIT(9),
    TU_CMD_DIRTY_RASTERIZER_DISCARD = BIT(10),
+   TU_CMD_DIRTY_VIEWPORTS = BIT(11),
    /* all draw states were disabled and need to be re-enabled: */
-   TU_CMD_DIRTY_DRAW_STATE = BIT(11)
+   TU_CMD_DIRTY_DRAW_STATE = BIT(12)
 };
 
 /* There are only three cache domains we have to care about: the CCU, or
@@ -974,7 +1024,6 @@ struct tu_lrz_state
    /* Depth/Stencil image currently on use to do LRZ */
    struct tu_image *image;
    bool valid : 1;
-   struct tu_draw_state state;
    enum tu_lrz_direction prev_direction;
 };
 
@@ -1057,22 +1106,50 @@ struct tu_cmd_state
    bool predication_active;
    bool disable_gmem;
    enum a5xx_line_mode line_mode;
+   bool z_negative_one_to_one;
+
+   uint32_t drawcall_count;
+
+   /* A calculated "draw cost" value for renderpass, which tries to
+    * estimate the bandwidth-per-sample of all the draws according
+    * to:
+    *
+    *    foreach_draw (...) {
+    *      cost += num_frag_outputs;
+    *      if (blend_enabled)
+    *        cost += num_blend_enabled;
+    *      if (depth_test_enabled)
+    *        cost++;
+    *      if (depth_write_enabled)
+    *        cost++;
+    *    }
+    *
+    * The idea is that each sample-passed minimally does one write
+    * per MRT.  If blend is enabled, the hw will additionally do
+    * a framebuffer read per sample-passed (for each MRT with blend
+    * enabled).  If depth-test is enabled, the hw will additionally
+    * a depth buffer read.  If depth-write is enable, the hw will
+    * additionally do a depth buffer write.
+    *
+    * This does ignore depth buffer traffic for samples which do not
+    * pass do to depth-test fail, and some other details.  But it is
+    * just intended to be a rough estimate that is easy to calculate.
+    */
+   uint32_t total_drawcalls_cost;
 
    struct tu_lrz_state lrz;
 
-   struct tu_draw_state depth_plane_state;
+   struct tu_draw_state lrz_and_depth_plane_state;
 
    struct tu_vs_params last_vs_params;
 };
 
 struct tu_cmd_pool
 {
-   struct vk_object_base base;
+   struct vk_command_pool vk;
 
-   VkAllocationCallbacks alloc;
    struct list_head cmd_buffers;
    struct list_head free_cmd_buffers;
-   uint32_t queue_family_index;
 };
 
 enum tu_cmd_buffer_status
@@ -1097,8 +1174,10 @@ struct tu_cmd_buffer
    struct u_trace_iterator trace_renderpass_start;
    struct u_trace_iterator trace_renderpass_end;
 
+   struct list_head renderpass_autotune_results;
+   struct tu_autotune_results_buffer* autotune_buffer;
+
    VkCommandBufferUsageFlags usage_flags;
-   VkCommandBufferLevel level;
    enum tu_cmd_buffer_status status;
 
    struct tu_cmd_state state;
@@ -1158,7 +1237,7 @@ tu_get_descriptors_state(struct tu_cmd_buffer *cmd_buffer,
 struct tu_event
 {
    struct vk_object_base base;
-   struct tu_bo bo;
+   struct tu_bo *bo;
 };
 
 struct tu_push_constant_range
@@ -1225,7 +1304,7 @@ struct tu_pipeline
    struct tu_cs cs;
 
    /* Separate BO for private memory since it should GPU writable */
-   struct tu_bo pvtmem_bo;
+   struct tu_bo *pvtmem_bo;
 
    struct tu_pipeline_layout *layout;
 
@@ -1253,6 +1332,7 @@ struct tu_pipeline
 
    /* draw states for the pipeline */
    struct tu_draw_state load_state, rast_state, blend_state;
+   struct tu_draw_state prim_order_state_sysmem, prim_order_state_gmem;
 
    /* for vertex buffers state */
    uint32_t num_vbs;
@@ -1295,13 +1375,23 @@ struct tu_pipeline
 
    struct tu_lrz_pipeline lrz;
 
+   /* In other words - framebuffer fetch support */
+   bool raster_order_attachment_access;
+   bool subpass_feedback_loop_ds;
+
+   bool z_negative_one_to_one;
+
+   /* Base drawcall cost for sysmem vs gmem autotuner */
+   uint8_t drawcall_base_cost;
+
    void *executables_mem_ctx;
    /* tu_pipeline_executable */
    struct util_dynarray executables;
 };
 
 void
-tu6_emit_viewport(struct tu_cs *cs, const VkViewport *viewport, uint32_t num_viewport);
+tu6_emit_viewport(struct tu_cs *cs, const VkViewport *viewport, uint32_t num_viewport,
+                  bool z_negative_one_to_one);
 
 void
 tu6_emit_scissor(struct tu_cs *cs, const VkRect2D *scs, uint32_t scissor_count);
@@ -1446,7 +1536,7 @@ struct tu_image
 
    /* Set when bound */
    struct tu_bo *bo;
-   VkDeviceSize bo_offset;
+   uint64_t iova;
 
    uint32_t lrz_height;
    uint32_t lrz_pitch;
@@ -1626,11 +1716,14 @@ struct tu_subpass
    uint32_t resolve_count;
    bool resolve_depth_stencil;
 
-   /* True if there is any feedback loop at all. */
-   bool feedback;
+   bool feedback_loop_color;
+   bool feedback_loop_ds;
 
    /* True if we must invalidate UCHE thanks to a feedback loop. */
    bool feedback_invalidate;
+
+   /* In other words - framebuffer fetch support */
+   bool raster_order_attachment_access;
 
    struct tu_subpass_attachment *input_attachments;
    struct tu_subpass_attachment *color_attachments;
@@ -1694,7 +1787,7 @@ struct tu_query_pool
    uint32_t stride;
    uint64_t size;
    uint32_t pipeline_statistics;
-   struct tu_bo bo;
+   struct tu_bo *bo;
 
    /* For performance query */
    const struct fd_perfcntr_group *perf_group;
@@ -1728,8 +1821,12 @@ VkResult
 tu_enumerate_devices(struct tu_instance *instance);
 
 int
-tu_drm_get_timestamp(struct tu_physical_device *device,
-                     uint64_t *ts);
+tu_device_get_gpu_timestamp(struct tu_device *dev,
+                            uint64_t *ts);
+
+int
+tu_device_get_suspend_count(struct tu_device *dev,
+                            uint64_t *suspend_count);
 
 int
 tu_drm_submitqueue_new(const struct tu_device *dev,
@@ -1759,24 +1856,40 @@ VkResult
 tu_create_copy_timestamp_cs(struct tu_cmd_buffer *cmdbuf, struct tu_cs** cs,
                             struct u_trace **trace_copy);
 
+/* If we copy trace and timestamps we will have to free them. */
 struct tu_u_trace_cmd_data
 {
    struct tu_cs *timestamp_copy_cs;
    struct u_trace *trace;
 };
 
-void
-tu_u_trace_cmd_data_finish(struct tu_device *device,
-                           struct tu_u_trace_cmd_data *trace_data,
-                           uint32_t entry_count);
-
-struct tu_u_trace_flush_data
+/* Data necessary to retrieve timestamps and clean all
+ * associated resources afterwards.
+ */
+struct tu_u_trace_submission_data
 {
    uint32_t submission_id;
+   /* We have to know when timestamps are available,
+    * this sync object indicates it.
+    */
    struct tu_u_trace_syncobj *syncobj;
-   uint32_t trace_count;
+
+   uint32_t cmd_buffer_count;
+   uint32_t last_buffer_with_tracepoints;
    struct tu_u_trace_cmd_data *cmd_trace_data;
 };
+
+VkResult
+tu_u_trace_submission_data_create(
+   struct tu_device *device,
+   struct tu_cmd_buffer **cmd_buffers,
+   uint32_t cmd_buffer_count,
+   struct tu_u_trace_submission_data **submission_data);
+
+void
+tu_u_trace_submission_data_finish(
+   struct tu_device *device,
+   struct tu_u_trace_submission_data *submission_data);
 
 #define TU_FROM_HANDLE(__tu_type, __name, __handle)                          \
    VK_FROM_HANDLE(__tu_type, __name, __handle)
@@ -1790,7 +1903,7 @@ VK_DEFINE_HANDLE_CASTS(tu_physical_device, vk.base, VkPhysicalDevice,
                        VK_OBJECT_TYPE_PHYSICAL_DEVICE)
 VK_DEFINE_HANDLE_CASTS(tu_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
 
-VK_DEFINE_NONDISP_HANDLE_CASTS(tu_cmd_pool, base, VkCommandPool,
+VK_DEFINE_NONDISP_HANDLE_CASTS(tu_cmd_pool, vk.base, VkCommandPool,
                                VK_OBJECT_TYPE_COMMAND_POOL)
 VK_DEFINE_NONDISP_HANDLE_CASTS(tu_buffer, base, VkBuffer,
                                VK_OBJECT_TYPE_BUFFER)

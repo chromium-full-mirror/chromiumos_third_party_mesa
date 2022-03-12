@@ -133,11 +133,11 @@ extern "C" {
 #define SI_RESOURCE_FLAG_FLUSHED_DEPTH     (PIPE_RESOURCE_FLAG_DRV_PRIV << 1)
 #define SI_RESOURCE_FLAG_FORCE_MSAA_TILING (PIPE_RESOURCE_FLAG_DRV_PRIV << 2)
 #define SI_RESOURCE_FLAG_DISABLE_DCC       (PIPE_RESOURCE_FLAG_DRV_PRIV << 3)
-#define SI_RESOURCE_FLAG_UNMAPPABLE        (PIPE_RESOURCE_FLAG_DRV_PRIV << 4)
+#define SI_RESOURCE_FLAG_DRIVER_INTERNAL   (PIPE_RESOURCE_FLAG_DRV_PRIV << 4)
 #define SI_RESOURCE_FLAG_READ_ONLY         (PIPE_RESOURCE_FLAG_DRV_PRIV << 5)
 #define SI_RESOURCE_FLAG_32BIT             (PIPE_RESOURCE_FLAG_DRV_PRIV << 6)
 #define SI_RESOURCE_FLAG_CLEAR             (PIPE_RESOURCE_FLAG_DRV_PRIV << 7)
-/* gap */
+#define SI_RESOURCE_AUX_PLANE              (PIPE_RESOURCE_FLAG_DRV_PRIV << 8)
 /* Set a micro tile mode: */
 #define SI_RESOURCE_FLAG_FORCE_MICRO_TILE_MODE (PIPE_RESOURCE_FLAG_DRV_PRIV << 9)
 #define SI_RESOURCE_FLAG_MICRO_TILE_MODE_SHIFT (util_logbase2(PIPE_RESOURCE_FLAG_DRV_PRIV) + 10)
@@ -146,8 +146,6 @@ extern "C" {
 #define SI_RESOURCE_FLAG_MICRO_TILE_MODE_GET(x)                                                    \
    (((x) >> SI_RESOURCE_FLAG_MICRO_TILE_MODE_SHIFT) & 0x3)
 #define SI_RESOURCE_FLAG_UNCACHED          (PIPE_RESOURCE_FLAG_DRV_PRIV << 12)
-#define SI_RESOURCE_FLAG_DRIVER_INTERNAL   (PIPE_RESOURCE_FLAG_DRV_PRIV << 13)
-#define SI_RESOURCE_AUX_PLANE              (PIPE_RESOURCE_FLAG_DRV_PRIV << 14)
 
 enum si_has_gs {
    GS_OFF,
@@ -222,6 +220,9 @@ enum
    DBG_RESERVE_VMID,
    DBG_SHADOW_REGS,
    DBG_NO_FAST_DISPLAY_LIST,
+
+   /* Multimedia options: */
+   DBG_NO_EFC,
 
    /* 3D engine options: */
    DBG_NO_GFX,
@@ -1146,7 +1147,6 @@ struct si_context {
    unsigned last_prim;
    unsigned last_multi_vgt_param;
    unsigned last_gs_out_prim;
-   int last_binning_enabled;
    unsigned current_vs_state;
    unsigned last_vs_state;
    enum pipe_prim_type current_rast_prim; /* primitive type after TES, GS */
@@ -1334,6 +1334,10 @@ struct pipe_resource *pipe_aligned_buffer_create(struct pipe_screen *screen, uns
                                                  unsigned usage, unsigned size, unsigned alignment);
 struct si_resource *si_aligned_buffer_create(struct pipe_screen *screen, unsigned flags,
                                              unsigned usage, unsigned size, unsigned alignment);
+struct pipe_resource *si_buffer_from_winsys_buffer(struct pipe_screen *screen,
+                                                   const struct pipe_resource *templ,
+                                                   struct pb_buffer *imported_buf,
+                                                   uint64_t offset);
 void si_replace_buffer_storage(struct pipe_context *ctx, struct pipe_resource *dst,
                                struct pipe_resource *src, unsigned num_rebinds,
                                uint32_t rebind_mask, uint32_t delete_buffer_id);
@@ -2037,11 +2041,6 @@ static inline unsigned si_num_vbos_in_user_sgprs(struct si_screen *sscreen)
 
 #define PRINT_ERR(fmt, args...)                                                                    \
    fprintf(stderr, "EE %s:%d %s - " fmt, __FILE__, __LINE__, __func__, ##args)
-
-struct pipe_resource *si_buffer_from_winsys_buffer(struct pipe_screen *screen,
-                                                   const struct pipe_resource *templ,
-                                                   struct pb_buffer *imported_buf,
-                                                   bool dedicated);
 
 #ifdef __cplusplus
 }

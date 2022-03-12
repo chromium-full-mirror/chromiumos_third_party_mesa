@@ -152,6 +152,12 @@ struct ir3_register {
        * corner cases such as destinations of atomic instructions.
        */
       IR3_REG_UNUSED = 0x40000,
+
+      /* "Early-clobber" on a destination means that the destination is
+       * (potentially) written before any sources are read and therefore
+       * interferes with the sources of the instruction.
+       */
+      IR3_REG_EARLY_CLOBBER = 0x80000,
    } flags;
 
    unsigned name;
@@ -232,6 +238,22 @@ struct ir3_register {
       }                                                                        \
       arr[arr##_count++] = __VA_ARGS__;                                        \
    } while (0)
+
+typedef enum {
+   REDUCE_OP_ADD_U,
+   REDUCE_OP_ADD_F,
+   REDUCE_OP_MUL_U,
+   REDUCE_OP_MUL_F,
+   REDUCE_OP_MIN_U,
+   REDUCE_OP_MIN_S,
+   REDUCE_OP_MIN_F,
+   REDUCE_OP_MAX_U,
+   REDUCE_OP_MAX_S,
+   REDUCE_OP_MAX_F,
+   REDUCE_OP_AND_B,
+   REDUCE_OP_OR_B,
+   REDUCE_OP_XOR_B,
+} reduce_op_t;
 
 struct ir3_instruction {
    struct ir3_block *block;
@@ -318,6 +340,7 @@ struct ir3_instruction {
       struct {
          type_t src_type, dst_type;
          round_t round;
+         reduce_op_t reduce_op;
       } cat1;
       struct {
          enum {
@@ -338,6 +361,7 @@ struct ir3_instruction {
             IR3_SRC_PACKED_LOW = 0,
             IR3_SRC_PACKED_HIGH = 1,
          } packed;
+         bool swapped;
       } cat3;
       struct {
          unsigned samp, tex;
@@ -506,6 +530,11 @@ struct ir3 {
     * patched in (for astc-srgb workaround):
     */
    DECLARE_ARRAY(struct ir3_instruction *, astc_srgb);
+
+   /* Track tg4 instructions which need texture state patched in (for tg4
+    * swizzling workaround):
+    */
+   DECLARE_ARRAY(struct ir3_instruction *, tg4);
 
    /* List of blocks: */
    struct list_head block_list;
@@ -885,6 +914,7 @@ is_subgroup_cond_mov_macro(struct ir3_instruction *instr)
    case OPC_READ_COND_MACRO:
    case OPC_READ_FIRST_MACRO:
    case OPC_SWZ_SHARED_MACRO:
+   case OPC_SCAN_MACRO:
       return true;
    default:
       return false;
@@ -2008,8 +2038,6 @@ ir3_NOP(struct ir3_block *block)
    return ir3_instr_create(block, OPC_NOP, 0, 0);
 }
 
-#define IR3_INSTR_0 0
-
 /* clang-format off */
 #define __INSTR0(flag, name, opc)                                              \
 static inline struct ir3_instruction *ir3_##name(struct ir3_block *block)      \
@@ -2491,6 +2519,21 @@ regmask_or(regmask_t *dst, regmask_t *a, regmask_t *b)
       dst->mask[i] = a->mask[i] | b->mask[i];
 }
 
+static inline void
+regmask_or_shared(regmask_t *dst, regmask_t *a, regmask_t *b)
+{
+   regmaskstate_t shared_mask;
+   BITSET_ZERO(shared_mask);
+
+   if (b->mergedregs) {
+      BITSET_SET_RANGE(shared_mask, 2 * 4 * 48, 2 * 4 * 56 - 1);
+   } else {
+      BITSET_SET_RANGE(shared_mask, 4 * 48, 4 * 56 - 1);
+   }
+
+   for (unsigned i = 0; i < ARRAY_SIZE(dst->mask); i++)
+      dst->mask[i] = a->mask[i] | (b->mask[i] & shared_mask[i]);
+}
 
 static inline void
 regmask_set(regmask_t *regmask, struct ir3_register *reg)

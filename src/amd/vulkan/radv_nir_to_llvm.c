@@ -603,48 +603,6 @@ radv_get_sampler_desc(struct ac_shader_abi *abi, unsigned descriptor_set, unsign
    return descriptor;
 }
 
-/* For 2_10_10_10 formats the alpha is handled as unsigned by pre-vega HW.
- * so we may need to fix it up. */
-static LLVMValueRef
-adjust_vertex_fetch_alpha(struct radv_shader_context *ctx, unsigned adjustment, LLVMValueRef alpha)
-{
-   if (adjustment == ALPHA_ADJUST_NONE)
-      return alpha;
-
-   LLVMValueRef c30 = LLVMConstInt(ctx->ac.i32, 30, 0);
-
-   alpha = LLVMBuildBitCast(ctx->ac.builder, alpha, ctx->ac.f32, "");
-
-   if (adjustment == ALPHA_ADJUST_SSCALED)
-      alpha = LLVMBuildFPToUI(ctx->ac.builder, alpha, ctx->ac.i32, "");
-   else
-      alpha = ac_to_integer(&ctx->ac, alpha);
-
-   /* For the integer-like cases, do a natural sign extension.
-    *
-    * For the SNORM case, the values are 0.0, 0.333, 0.666, 1.0
-    * and happen to contain 0, 1, 2, 3 as the two LSBs of the
-    * exponent.
-    */
-   alpha =
-      LLVMBuildShl(ctx->ac.builder, alpha,
-                   adjustment == ALPHA_ADJUST_SNORM ? LLVMConstInt(ctx->ac.i32, 7, 0) : c30, "");
-   alpha = LLVMBuildAShr(ctx->ac.builder, alpha, c30, "");
-
-   /* Convert back to the right type. */
-   if (adjustment == ALPHA_ADJUST_SNORM) {
-      LLVMValueRef clamp;
-      LLVMValueRef neg_one = LLVMConstReal(ctx->ac.f32, -1.0);
-      alpha = LLVMBuildSIToFP(ctx->ac.builder, alpha, ctx->ac.f32, "");
-      clamp = LLVMBuildFCmp(ctx->ac.builder, LLVMRealULT, alpha, neg_one, "");
-      alpha = LLVMBuildSelect(ctx->ac.builder, clamp, neg_one, alpha, "");
-   } else if (adjustment == ALPHA_ADJUST_SSCALED) {
-      alpha = LLVMBuildSIToFP(ctx->ac.builder, alpha, ctx->ac.f32, "");
-   }
-
-   return LLVMBuildBitCast(ctx->ac.builder, alpha, ctx->ac.i32, "");
-}
-
 static LLVMValueRef
 radv_fixup_vertex_input_fetches(struct radv_shader_context *ctx, LLVMValueRef value,
                                 unsigned num_channels, bool is_float)
@@ -723,12 +681,6 @@ load_vs_input(struct radv_shader_context *ctx, unsigned driver_location, LLVMTyp
    unsigned attrib_binding = ctx->options->key.vs.vertex_attribute_bindings[attrib_index];
    unsigned attrib_offset = ctx->options->key.vs.vertex_attribute_offsets[attrib_index];
    unsigned attrib_stride = ctx->options->key.vs.vertex_attribute_strides[attrib_index];
-   unsigned alpha_adjust = ctx->options->key.vs.vertex_alpha_adjust[attrib_index];
-
-   if (ctx->options->key.vs.vertex_post_shuffle & (1 << attrib_index)) {
-      /* Always load, at least, 3 channels for formats that need to be shuffled because X<->Z. */
-      num_channels = MAX2(num_channels, 3);
-   }
 
    unsigned desc_index =
       ctx->shader_info->vs.use_per_attribute_vb_descs ? attrib_index : attrib_binding;
@@ -782,16 +734,6 @@ load_vs_input(struct radv_shader_context *ctx, unsigned driver_location, LLVMTyp
          ctx->ac.i32_0, ctx->ac.i32_0, num_channels, data_format, num_format, 0, true);
    }
 
-   if (ctx->options->key.vs.vertex_post_shuffle & (1 << attrib_index)) {
-      LLVMValueRef c[4];
-      c[0] = ac_llvm_extract_elem(&ctx->ac, input, 2);
-      c[1] = ac_llvm_extract_elem(&ctx->ac, input, 1);
-      c[2] = ac_llvm_extract_elem(&ctx->ac, input, 0);
-      c[3] = ac_llvm_extract_elem(&ctx->ac, input, 3);
-
-      input = ac_build_gather_values(&ctx->ac, c, 4);
-   }
-
    input = radv_fixup_vertex_input_fetches(ctx, input, num_channels, is_float);
 
    for (unsigned chan = 0; chan < 4; chan++) {
@@ -802,8 +744,6 @@ load_vs_input(struct radv_shader_context *ctx, unsigned driver_location, LLVMTyp
          out[chan] = LLVMBuildFPTrunc(ctx->ac.builder, out[chan], ctx->ac.f16, "");
       }
    }
-
-   out[3] = adjust_vertex_fetch_alpha(ctx, alpha_adjust, out[3]);
 
    for (unsigned chan = 0; chan < 4; chan++) {
       out[chan] = ac_to_integer(&ctx->ac, out[chan]);
@@ -1257,13 +1197,10 @@ radv_llvm_export_vs(struct radv_shader_context *ctx, struct radv_shader_output_v
       pos_args[0].out[3] = ctx->ac.f32_1; /* W */
    }
 
-   bool writes_primitive_shading_rate = outinfo->writes_primitive_shading_rate ||
-                                        ctx->options->force_vrs_rates;
-
    if (outinfo->writes_pointsize || outinfo->writes_layer || outinfo->writes_layer ||
-       outinfo->writes_viewport_index || writes_primitive_shading_rate) {
+       outinfo->writes_viewport_index || outinfo->writes_primitive_shading_rate) {
       pos_args[1].enabled_channels = ((outinfo->writes_pointsize == true ? 1 : 0) |
-                                      (writes_primitive_shading_rate == true ? 2 : 0) |
+                                      (outinfo->writes_primitive_shading_rate == true ? 2 : 0) |
                                       (outinfo->writes_layer == true ? 4 : 0));
       pos_args[1].valid_mask = 0;
       pos_args[1].done = 0;
@@ -1298,27 +1235,6 @@ radv_llvm_export_vs(struct radv_shader_context *ctx, struct radv_shader_output_v
 
       if (outinfo->writes_primitive_shading_rate) {
          pos_args[1].out[1] = primitive_shading_rate;
-      } else if (ctx->options->force_vrs_rates) {
-         /* Bits [2:3] = VRS rate X
-          * Bits [4:5] = VRS rate Y
-          *
-          * The range is [-2, 1]. Values:
-          *   1: 2x coarser shading rate in that direction.
-          *   0: normal shading rate
-          *  -1: 2x finer shading rate (sample shading, not directional)
-          *  -2: 4x finer shading rate (sample shading, not directional)
-          *
-          * Sample shading can't go above 8 samples, so both numbers can't be -2 at the same time.
-          */
-         LLVMValueRef rates = LLVMConstInt(ctx->ac.i32, ctx->options->force_vrs_rates, false);
-         LLVMValueRef cond;
-         LLVMValueRef v;
-
-         /* If Pos.W != 1 (typical for non-GUI elements), use 2x2 coarse shading. */
-         cond = LLVMBuildFCmp(ctx->ac.builder, LLVMRealUNE, pos_args[0].out[3], ctx->ac.f32_1, "");
-         v = LLVMBuildSelect(ctx->ac.builder, cond, rates, ctx->ac.i32_0, "");
-
-         pos_args[1].out[1] = ac_to_float(&ctx->ac, v);
       }
    }
 

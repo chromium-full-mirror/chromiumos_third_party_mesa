@@ -21,6 +21,7 @@
  * IN THE SOFTWARE.
  */
 
+#include "vk_common_entrypoints.h"
 #include "radv_private.h"
 #include "radv_shader.h"
 
@@ -148,10 +149,10 @@ radv_describe_begin_cmd_buffer(struct radv_cmd_buffer *cmd_buffer)
    marker.cb_id = 0;
    marker.device_id_low = device_id;
    marker.device_id_high = device_id >> 32;
-   marker.queue = cmd_buffer->queue_family_index;
+   marker.queue = cmd_buffer->qf;
    marker.queue_flags = VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT | VK_QUEUE_SPARSE_BINDING_BIT;
 
-   if (cmd_buffer->queue_family_index == RADV_QUEUE_GENERAL)
+   if (cmd_buffer->qf == RADV_QUEUE_GENERAL)
       marker.queue_flags |= VK_QUEUE_GRAPHICS_BIT;
 
    radv_emit_thread_trace_userdata(cmd_buffer->device, cs, &marker, sizeof(marker) / 4);
@@ -805,6 +806,35 @@ sqtt_DebugMarkerSetObjectTagEXT(VkDevice device, const VkDebugMarkerObjectTagInf
 {
    /* no-op */
    return VK_SUCCESS;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+sqtt_CmdBeginDebugUtilsLabelEXT(VkCommandBuffer commandBuffer,
+                                const VkDebugUtilsLabelEXT *pLabelInfo)
+{
+   RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   radv_write_user_event_marker(cmd_buffer, UserEventPush, pLabelInfo->pLabelName);
+
+   vk_common_CmdBeginDebugUtilsLabelEXT(commandBuffer, pLabelInfo);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+sqtt_CmdEndDebugUtilsLabelEXT(VkCommandBuffer commandBuffer)
+{
+   RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   radv_write_user_event_marker(cmd_buffer, UserEventPop, NULL);
+
+   vk_common_CmdEndDebugUtilsLabelEXT(commandBuffer);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+sqtt_CmdInsertDebugUtilsLabelEXT(VkCommandBuffer commandBuffer,
+                                 const VkDebugUtilsLabelEXT *pLabelInfo)
+{
+   RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   radv_write_user_event_marker(cmd_buffer, UserEventTrigger, pLabelInfo->pLabelName);
+
+   vk_common_CmdInsertDebugUtilsLabelEXT(commandBuffer, pLabelInfo);
 }
 
 /* Pipelines */

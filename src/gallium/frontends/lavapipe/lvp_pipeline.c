@@ -369,7 +369,7 @@ deep_copy_graphics_create_info(void *mem_ctx,
 
    /* pDepthStencilState */
    if (src->pDepthStencilState && !rasterization_disabled &&
-       (pass ? pass->has_zs_attachment : (rp_info->depthAttachmentFormat || rp_info->stencilAttachmentFormat))) {
+       (pass ? pass->subpasses[src->subpass].has_zs_attachment : (rp_info->depthAttachmentFormat || rp_info->stencilAttachmentFormat))) {
       LVP_PIPELINE_DUP(dst->pDepthStencilState,
                        src->pDepthStencilState,
                        VkPipelineDepthStencilStateCreateInfo,
@@ -379,7 +379,7 @@ deep_copy_graphics_create_info(void *mem_ctx,
 
    /* pColorBlendState */
    if (src->pColorBlendState && !rasterization_disabled &&
-       (pass ? pass->has_color_attachment : rp_info->colorAttachmentCount)) {
+       (pass ? pass->subpasses[src->subpass].has_color_attachment : rp_info->colorAttachmentCount)) {
       VkPipelineColorBlendStateCreateInfo*    cb_state;
 
       cb_state = ralloc(mem_ctx, VkPipelineColorBlendStateCreateInfo);
@@ -458,6 +458,107 @@ shared_var_info(const struct glsl_type *type, unsigned *size, unsigned *align)
    unsigned length = glsl_get_vector_elements(type);
    *size = comp_size * length,
       *align = comp_size;
+}
+
+static void
+set_image_access(struct lvp_pipeline *pipeline, nir_shader *nir,
+                   nir_intrinsic_instr *instr,
+                   bool reads, bool writes)
+{
+   nir_variable *var = nir_intrinsic_get_var(instr, 0);
+   const unsigned size = glsl_type_is_array(var->type) ? glsl_get_aoa_size(var->type) : 1;
+   unsigned mask = ((1ull << MAX2(size, 1)) - 1) << var->data.binding;
+
+   nir->info.images_used |= mask;
+   if (reads)
+      pipeline->access[nir->info.stage].images_read |= mask;
+   if (writes)
+      pipeline->access[nir->info.stage].images_written |= mask;
+}
+
+static void
+set_buffer_access(struct lvp_pipeline *pipeline, nir_shader *nir,
+                    nir_intrinsic_instr *instr)
+{
+   nir_variable *var = nir_intrinsic_get_var(instr, 0);
+   if (!var) {
+      nir_deref_instr *deref = nir_instr_as_deref(instr->src[0].ssa->parent_instr);
+      if (deref->modes != nir_var_mem_ssbo)
+         return;
+      nir_binding b = nir_chase_binding(instr->src[0]);
+      var = nir_get_binding_variable(nir, b);
+      if (!var)
+         return;
+   }
+   if (var->data.mode != nir_var_mem_ssbo)
+      return;
+   /* Structs have been lowered already, so get_aoa_size is sufficient. */
+   const unsigned size = glsl_type_is_array(var->type) ? glsl_get_aoa_size(var->type) : 1;
+   unsigned mask = ((1ull << MAX2(size, 1)) - 1) << var->data.binding;
+
+   pipeline->access[nir->info.stage].buffers_written |= mask;
+}
+
+static void
+scan_intrinsic(struct lvp_pipeline *pipeline, nir_shader *nir, nir_intrinsic_instr *instr)
+{
+   switch (instr->intrinsic) {
+   case nir_intrinsic_image_deref_sparse_load:
+   case nir_intrinsic_image_deref_load:
+   case nir_intrinsic_image_deref_size:
+   case nir_intrinsic_image_deref_samples:
+      set_image_access(pipeline, nir, instr, true, false);
+      break;
+   case nir_intrinsic_image_deref_store:
+      set_image_access(pipeline, nir, instr, false, true);
+      break;
+   case nir_intrinsic_image_deref_atomic_add:
+   case nir_intrinsic_image_deref_atomic_imin:
+   case nir_intrinsic_image_deref_atomic_umin:
+   case nir_intrinsic_image_deref_atomic_imax:
+   case nir_intrinsic_image_deref_atomic_umax:
+   case nir_intrinsic_image_deref_atomic_and:
+   case nir_intrinsic_image_deref_atomic_or:
+   case nir_intrinsic_image_deref_atomic_xor:
+   case nir_intrinsic_image_deref_atomic_exchange:
+   case nir_intrinsic_image_deref_atomic_comp_swap:
+   case nir_intrinsic_image_deref_atomic_fadd:
+      set_image_access(pipeline, nir, instr, true, true);
+      break;
+   case nir_intrinsic_deref_atomic_add:
+   case nir_intrinsic_deref_atomic_and:
+   case nir_intrinsic_deref_atomic_comp_swap:
+   case nir_intrinsic_deref_atomic_exchange:
+   case nir_intrinsic_deref_atomic_fadd:
+   case nir_intrinsic_deref_atomic_fcomp_swap:
+   case nir_intrinsic_deref_atomic_fmax:
+   case nir_intrinsic_deref_atomic_fmin:
+   case nir_intrinsic_deref_atomic_imax:
+   case nir_intrinsic_deref_atomic_imin:
+   case nir_intrinsic_deref_atomic_or:
+   case nir_intrinsic_deref_atomic_umax:
+   case nir_intrinsic_deref_atomic_umin:
+   case nir_intrinsic_deref_atomic_xor:
+   case nir_intrinsic_store_deref:
+      set_buffer_access(pipeline, nir, instr);
+      break;
+   default: break;
+   }
+}
+
+static void
+scan_pipeline_info(struct lvp_pipeline *pipeline, nir_shader *nir)
+{
+   nir_foreach_function(function, nir) {
+      if (function->impl)
+         nir_foreach_block(block, function->impl) {
+            nir_foreach_instr(instr, block) {
+               if (instr->type == nir_instr_type_intrinsic)
+                  scan_intrinsic(pipeline, nir, nir_instr_as_intrinsic(instr));
+            }
+         }
+   }
+
 }
 
 static void
@@ -566,6 +667,8 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
    NIR_PASS_V(nir, nir_remove_dead_variables,
               nir_var_uniform | nir_var_image, NULL);
 
+   scan_pipeline_info(pipeline, nir);
+
    lvp_lower_pipeline_layout(pipeline->device, pipeline->layout, nir);
 
    NIR_PASS_V(nir, nir_lower_io_to_temporaries, nir_shader_get_entrypoint(nir), true, true);
@@ -605,6 +708,8 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
       NIR_PASS(progress, nir, nir_shrink_vec_array_vars, nir_var_function_temp);
       NIR_PASS(progress, nir, nir_opt_deref);
       NIR_PASS(progress, nir, nir_lower_vars_to_ssa);
+
+      NIR_PASS(progress, nir, nir_opt_copy_prop_vars);
 
       NIR_PASS(progress, nir, nir_copy_prop);
       NIR_PASS(progress, nir, nir_opt_dce);
@@ -815,6 +920,16 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
    /* recreate createinfo */
    deep_copy_graphics_create_info(pipeline->mem_ctx, &pipeline->graphics_create_info, pCreateInfo);
    pipeline->is_compute_pipeline = false;
+
+   if (pipeline->graphics_create_info.pViewportState) {
+      /* if pViewportState is null, it means rasterization is discarded,
+       * so this is ignored
+       */
+      const VkPipelineViewportDepthClipControlCreateInfoEXT *ccontrol = vk_find_struct_const(pCreateInfo->pViewportState,
+                                                                                             PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT);
+      if (ccontrol)
+         pipeline->negative_one_to_one = !!ccontrol->negativeOneToOne;
+   }
 
    const VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *pv_state =
       vk_find_struct_const(pCreateInfo->pRasterizationState,

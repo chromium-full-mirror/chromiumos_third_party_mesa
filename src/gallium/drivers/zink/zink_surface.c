@@ -98,6 +98,8 @@ create_ivci(struct zink_screen *screen,
    ivci.subresourceRange.levelCount = 1;
    ivci.subresourceRange.baseArrayLayer = templ->u.tex.first_layer;
    ivci.subresourceRange.layerCount = 1 + templ->u.tex.last_layer - templ->u.tex.first_layer;
+   assert(ivci.viewType != VK_IMAGE_VIEW_TYPE_3D || ivci.subresourceRange.baseArrayLayer == 0);
+   assert(ivci.viewType != VK_IMAGE_VIEW_TYPE_3D || ivci.subresourceRange.layerCount == 1);
    ivci.viewType = zink_surface_clamp_viewtype(ivci.viewType, templ->u.tex.first_layer, templ->u.tex.last_layer, res->base.b.array_size);
 
    return ivci;
@@ -106,8 +108,9 @@ create_ivci(struct zink_screen *screen,
 static void
 init_surface_info(struct zink_surface *surface, struct zink_resource *res, VkImageViewCreateInfo *ivci)
 {
+   VkImageViewUsageCreateInfo *usage_info = (VkImageViewUsageCreateInfo *)ivci->pNext;
    surface->info.flags = res->obj->vkflags;
-   surface->info.usage = res->obj->vkusage;
+   surface->info.usage = usage_info ? usage_info->usage : res->obj->vkusage;
    surface->info.width = surface->base.width;
    surface->info.height = surface->base.height;
    surface->info.layerCount = ivci->subresourceRange.layerCount;
@@ -128,6 +131,19 @@ create_surface(struct pipe_context *pctx,
    struct zink_surface *surface = CALLOC_STRUCT(zink_surface);
    if (!surface)
       return NULL;
+
+   VkImageViewUsageCreateInfo usage_info;
+   usage_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO;
+   usage_info.pNext = NULL;
+   VkFormatFeatureFlags feats = res->optimal_tiling ?
+                                screen->format_props[templ->format].optimalTilingFeatures :
+                                screen->format_props[templ->format].linearTilingFeatures;
+   VkImageUsageFlags attachment = (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+   usage_info.usage = res->obj->vkusage & ~attachment;
+   if ((res->obj->vkusage & attachment) &&
+       !(feats & (VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
+      ivci->pNext = &usage_info;
+   }
 
    pipe_resource_reference(&surface->base.texture, pres);
    pipe_reference_init(&surface->base.reference, 1);
@@ -214,11 +230,11 @@ zink_create_surface(struct pipe_context *pctx,
                     struct pipe_resource *pres,
                     const struct pipe_surface *templ)
 {
-
-   VkImageViewCreateInfo ivci = create_ivci(zink_screen(pctx->screen),
-                                            zink_resource(pres), templ, pres->target);
-   if (pres->target == PIPE_TEXTURE_3D)
-      ivci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+   struct zink_resource *res = zink_resource(pres);
+   bool is_array = templ->u.tex.last_layer != templ->u.tex.first_layer;
+   enum pipe_texture_target target_2d[] = {PIPE_TEXTURE_2D, PIPE_TEXTURE_2D_ARRAY};
+   VkImageViewCreateInfo ivci = create_ivci(zink_screen(pctx->screen), res, templ,
+                                            pres->target == PIPE_TEXTURE_3D ? target_2d[is_array] : pres->target);
 
    struct pipe_surface *psurf = zink_get_surface(zink_context(pctx), pres, templ, &ivci);
    if (!psurf)

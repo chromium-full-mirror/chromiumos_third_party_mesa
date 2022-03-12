@@ -1059,7 +1059,9 @@ static const struct intel_device_info intel_device_info_sg1 = {
    XEHP_FEATURES(0, 1, 0),                                      \
    .num_subslices = dual_subslices(1),                          \
    .has_lsc = true,                                             \
-   .apply_hwconfig = true
+   .apply_hwconfig = true,                                      \
+   .has_coarse_pixel_primitive_and_cb = true,                   \
+   .has_mesh_shading = true
 
 UNUSED static const struct intel_device_info intel_device_info_dg2_g10 = {
    DG2_FEATURES,
@@ -1862,8 +1864,11 @@ intel_get_device_info_from_fd(int fd, struct intel_device_info *devinfo)
    }
 
    /* remaining initializion queries the kernel for device info */
-   if (devinfo->no_hw)
+   if (devinfo->no_hw) {
+      /* Provide some sensible values for NO_HW. */
+      devinfo->gtt_size = 2ull * 1024 * 1024 * 1024;
       return true;
+   }
 
    int timestamp_frequency;
    if (getparam(fd, I915_PARAM_CS_TIMESTAMP_FREQUENCY,

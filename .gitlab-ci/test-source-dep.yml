@@ -41,6 +41,7 @@
       - src/mesa/vbo/**/*
       - src/mesa/x86/**/*
       - src/mesa/x86-64/**/*
+      - src/tool/**/*
       - src/util/**/*
 
 .vulkan-rules:
@@ -149,6 +150,8 @@
   rules:
     - if: '$FD_FARM == "offline"'
       when: never
+    - if: '$COLLABORA_FARM == "offline" && $RUNNER_TAG =~ /^mesa-ci-x86-64-lava-/'
+      when: never
     - *ignore_scheduled_pipelines
     - changes:
         *mesa_core_file_list
@@ -176,9 +179,11 @@
   rules:
     - if: '$FD_FARM == "offline"'
       when: never
+    - if: '$COLLABORA_FARM == "offline" && $RUNNER_TAG =~ /^mesa-ci-x86-64-lava-/'
+      when: never
     # If the triggerer has access to the restricted traces and if it is pre-merge
     - if: '($GITLAB_USER_LOGIN !~ "/^(robclark|anholt|flto|cwabbott0|Danil|tomeu)$/") &&
-           ($GITLAB_USER_LOGIN != "marge-bot" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME)'
+           ($GITLAB_USER_LOGIN != "marge-bot" || $CI_COMMIT_BRANCH)'
       when: never
     - *ignore_scheduled_pipelines
     - changes:
@@ -202,9 +207,11 @@
   rules:
     - if: '$FD_FARM == "offline"'
       when: never
+    - if: '$COLLABORA_FARM == "offline" && $RUNNER_TAG =~ /^mesa-ci-x86-64-lava-/'
+      when: never
     - *ignore_scheduled_pipelines
     # Run only on pre-merge pipelines from Marge
-    - if: '$GITLAB_USER_LOGIN != "marge-bot" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+    - if: '$GITLAB_USER_LOGIN != "marge-bot" || $CI_COMMIT_BRANCH'
       when: never
     - changes:
         *mesa_core_file_list
@@ -220,10 +227,30 @@
       when: manual
     - when: never
 
+.nouveau-rules:
+  stage: nouveau
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes:
+      - src/nouveau/**/*
+      - src/gallium/drivers/nouveau/**/*
+      - src/gallium/winsys/kmsro/**/*
+      - src/gallium/winsys/nouveau/**/*
+      when: on_success
+    - when: never
+
 .panfrost-midgard-rules:
   stage: arm
   rules:
     - *ignore_scheduled_pipelines
+    - if: '$COLLABORA_FARM == "offline" && $RUNNER_TAG =~ /^mesa-ci-x86-64-lava-/'
+      when: never
     - changes:
         *mesa_core_file_list
       when: on_success
@@ -250,6 +277,8 @@
   stage: arm
   rules:
     - *ignore_scheduled_pipelines
+    - if: '$COLLABORA_FARM == "offline" && $RUNNER_TAG =~ /^mesa-ci-x86-64-lava-/'
+      when: never
     - changes:
         *mesa_core_file_list
       when: on_success
@@ -345,6 +374,8 @@
   stage: amd
   rules:
     - *ignore_scheduled_pipelines
+    - if: '$COLLABORA_FARM == "offline" && $RUNNER_TAG =~ /^mesa-ci-x86-64-lava-/'
+      when: never
     - changes:
         *mesa_core_file_list
       when: on_success
@@ -377,6 +408,8 @@
   stage: amd
   rules:
     - *ignore_scheduled_pipelines
+    - if: '$COLLABORA_FARM == "offline" && $RUNNER_TAG =~ /^mesa-ci-x86-64-lava-/'
+      when: never
     - changes:
         *mesa_core_file_list
       when: on_success
@@ -398,6 +431,8 @@
   stage: amd
   rules:
     - *ignore_scheduled_pipelines
+    - if: '$COLLABORA_FARM == "offline" && $RUNNER_TAG =~ /^mesa-ci-x86-64-lava-/'
+      when: never
     - changes:
         *mesa_core_file_list
       when: on_success
@@ -451,6 +486,8 @@
   stage: intel
   rules:
     - *ignore_scheduled_pipelines
+    - if: '$COLLABORA_FARM == "offline" && $RUNNER_TAG =~ /^mesa-ci-x86-64-lava-/'
+      when: never
     - changes:
         *mesa_core_file_list
       when: on_success
@@ -470,8 +507,10 @@
   stage: intel
   rules:
     - *ignore_scheduled_pipelines
+    - if: '$COLLABORA_FARM == "offline" && $RUNNER_TAG =~ /^mesa-ci-x86-64-lava-/'
+      when: never
     # Run only on pre-merge pipelines from Marge
-    - if: '$GITLAB_USER_LOGIN != "marge-bot" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+    - if: '$GITLAB_USER_LOGIN != "marge-bot" || $CI_COMMIT_BRANCH'
       when: never
     - changes:
         *mesa_core_file_list
@@ -488,6 +527,8 @@
   stage: intel
   rules:
     - *ignore_scheduled_pipelines
+    - if: '$COLLABORA_FARM == "offline" && $RUNNER_TAG =~ /^mesa-ci-x86-64-lava-/'
+      when: never
     - changes:
         *mesa_core_file_list
       when: on_success

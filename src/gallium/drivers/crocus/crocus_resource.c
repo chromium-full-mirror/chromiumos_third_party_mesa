@@ -365,7 +365,7 @@ crocus_alloc_resource(struct pipe_screen *pscreen,
    res->base.b.screen = pscreen;
    res->orig_screen = crocus_pscreen_ref(pscreen);
    pipe_reference_init(&res->base.b.reference, 1);
-   threaded_resource_init(&res->base.b, false, 0);
+   threaded_resource_init(&res->base.b, false);
 
    if (templ->target == PIPE_BUFFER)
       util_range_init(&res->valid_buffer_range);
@@ -707,6 +707,10 @@ crocus_resource_create_with_modifiers(struct pipe_screen *pscreen,
    unsigned int flags = 0;
    if (templ->usage == PIPE_USAGE_STAGING)
       flags |= BO_ALLOC_COHERENT;
+
+   /* Scanout buffers need to be WC. */
+   if (templ->bind & PIPE_BIND_SCANOUT)
+      flags |= BO_ALLOC_SCANOUT;
 
    uint64_t aux_size = 0;
    uint32_t aux_preferred_alloc_flags;

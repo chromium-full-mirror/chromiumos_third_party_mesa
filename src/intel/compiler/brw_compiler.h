@@ -138,9 +138,9 @@ brw_shader_stage_is_bindless(gl_shader_stage stage)
 }
 
 static inline bool
-brw_shader_stage_is_mesh(gl_shader_stage stage)
+brw_shader_stage_requires_bindless_resources(gl_shader_stage stage)
 {
-   return stage == MESA_SHADER_TASK || stage == MESA_SHADER_MESH;
+   return brw_shader_stage_is_bindless(stage) || gl_shader_stage_is_mesh(stage);
 }
 
 /**
@@ -768,6 +768,9 @@ struct brw_stage_prog_data {
 
    /** Does this program pull from any UBO or other constant buffers? */
    bool has_ubo_pull;
+
+   /** How many ray queries objects in this shader. */
+   unsigned ray_queries;
 
    /**
     * Register where the thread expects to find input data from the URB
@@ -1440,6 +1443,8 @@ struct brw_mesh_prog_data {
    struct brw_cs_prog_data base;
    struct brw_mue_map map;
 
+   uint32_t clip_distance_mask;
+   uint32_t cull_distance_mask;
    uint16_t primitive_type;
 
    enum brw_mesh_index_format index_format;
@@ -1985,7 +1990,7 @@ static inline int
 brw_compute_first_urb_slot_required(uint64_t inputs_read,
                                     const struct brw_vue_map *prev_stage_vue_map)
 {
-   if ((inputs_read & (VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT)) == 0) {
+   if ((inputs_read & (VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT | VARYING_BIT_PRIMITIVE_SHADING_RATE)) == 0) {
       for (int i = 0; i < prev_stage_vue_map->num_slots; i++) {
          int varying = prev_stage_vue_map->slot_to_varying[i];
          if (varying > 0 && (inputs_read & BITFIELD64_BIT(varying)) != 0)
@@ -1995,6 +2000,33 @@ brw_compute_first_urb_slot_required(uint64_t inputs_read,
 
    return 0;
 }
+
+/* From InlineData in 3DSTATE_TASK_SHADER_DATA and 3DSTATE_MESH_SHADER_DATA. */
+#define BRW_TASK_MESH_INLINE_DATA_SIZE_DW 8
+
+/* InlineData[0-1] is used for Vulkan descriptor. */
+#define BRW_TASK_MESH_PUSH_CONSTANTS_START_DW 2
+
+#define BRW_TASK_MESH_PUSH_CONSTANTS_SIZE_DW \
+   (BRW_TASK_MESH_INLINE_DATA_SIZE_DW - BRW_TASK_MESH_PUSH_CONSTANTS_START_DW)
+
+/**
+ * This enum is used as the base indice of the nir_load_topology_id_intel
+ * intrinsic. This is used to return different values based on some aspect of
+ * the topology of the device.
+ */
+enum brw_topology_id
+{
+   /* A value based of the DSS identifier the shader is currently running on.
+    * Be mindful that the DSS ID can be higher than the total number of DSS on
+    * the device. This is because of the fusing that can occur on different
+    * parts.
+    */
+   BRW_TOPOLOGY_ID_DSS,
+
+   /* A value composed of EU ID, thread ID & SIMD lane ID. */
+   BRW_TOPOLOGY_ID_EU_THREAD_SIMD,
+};
 
 #ifdef __cplusplus
 } /* extern "C" */

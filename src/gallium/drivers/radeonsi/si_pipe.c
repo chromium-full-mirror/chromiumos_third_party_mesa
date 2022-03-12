@@ -34,6 +34,7 @@
 #include "si_shader_internal.h"
 #include "sid.h"
 #include "ac_shadowed_regs.h"
+#include "compiler/nir/nir.h"
 #include "util/disk_cache.h"
 #include "util/u_cpu_detect.h"
 #include "util/u_log.h"
@@ -90,6 +91,9 @@ static const struct debug_named_value radeonsi_debug_options[] = {
    {"reserve_vmid", DBG(RESERVE_VMID), "Force VMID reservation per context."},
    {"shadowregs", DBG(SHADOW_REGS), "Enable CP register shadowing."},
    {"nofastdlist", DBG(NO_FAST_DISPLAY_LIST), "Disable fast display lists"},
+
+   /* Multimedia options: */
+   { "noefc", DBG(NO_EFC), "Disable hardware based encoder colour format conversion."},
 
    /* 3D engine options: */
    {"nogfx", DBG(NO_GFX), "Disable graphics. Only multimedia compute paths can be used."},
@@ -486,10 +490,6 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
       sctx->eop_bug_scratch = si_aligned_buffer_create(
          &sscreen->b, SI_RESOURCE_FLAG_DRIVER_INTERNAL,
          PIPE_USAGE_DEFAULT, 16 * sscreen->info.max_render_backends, 256);
-      if (sctx->screen->info.has_tmz_support)
-         sctx->eop_bug_scratch_tmz = si_aligned_buffer_create(
-            &sscreen->b, PIPE_RESOURCE_FLAG_ENCRYPTED | SI_RESOURCE_FLAG_DRIVER_INTERNAL,
-            PIPE_USAGE_DEFAULT, 16 * sscreen->info.max_render_backends, 256);
       if (!sctx->eop_bug_scratch)
          goto fail;
    }
@@ -653,22 +653,11 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
    if (sctx->chip_class >= GFX9) {
       sctx->wait_mem_scratch =
            si_aligned_buffer_create(screen,
-                                    SI_RESOURCE_FLAG_UNMAPPABLE | SI_RESOURCE_FLAG_DRIVER_INTERNAL,
+                                    PIPE_RESOURCE_FLAG_UNMAPPABLE | SI_RESOURCE_FLAG_DRIVER_INTERNAL,
                                     PIPE_USAGE_DEFAULT, 8,
                                     sscreen->info.tcc_cache_line_size);
       if (!sctx->wait_mem_scratch)
          goto fail;
-
-      if (sscreen->info.has_tmz_support) {
-         sctx->wait_mem_scratch_tmz =
-              si_aligned_buffer_create(screen,
-                                       SI_RESOURCE_FLAG_UNMAPPABLE | SI_RESOURCE_FLAG_DRIVER_INTERNAL |
-                                       PIPE_RESOURCE_FLAG_ENCRYPTED,
-                                       PIPE_USAGE_DEFAULT, 8,
-                                       sscreen->info.tcc_cache_line_size);
-         if (!sctx->wait_mem_scratch_tmz)
-            goto fail;
-      }
    }
 
    /* GFX7 cannot unbind a constant buffer (S_BUFFER_LOAD doesn't skip loads
@@ -708,10 +697,6 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
     * sctx->scratch_waves must be >= the maximum possible size of
     * 1 threadgroup, so that the hw doesn't hang from being unable
     * to start any.
-    *
-    * The recommended value is 4 per CU at most. Higher numbers don't
-    * bring much benefit, but they still occupy chip resources (think
-    * async compute). I've seen ~2% performance difference between 4 and 32.
     */
    sctx->scratch_waves =
       MAX2(32 * sscreen->info.num_good_compute_units, max_threads_per_block / 64);
@@ -1182,6 +1167,18 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
       num_comp_lo_threads = 1;
    }
 
+#ifndef NDEBUG
+   nir_process_debug_variable();
+
+   /* Use a single compilation thread if NIR printing is enabled to avoid
+    * multiple shaders being printed at the same time.
+    */
+   if (NIR_DEBUG(PRINT)) {
+      num_comp_hi_threads = 1;
+      num_comp_lo_threads = 1;
+   }
+#endif
+
    num_comp_hi_threads = MIN2(num_comp_hi_threads, ARRAY_SIZE(sscreen->compiler));
    num_comp_lo_threads = MIN2(num_comp_lo_threads, ARRAY_SIZE(sscreen->compiler_lowp));
 
@@ -1243,7 +1240,7 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
       offchip_granularity = V_03093C_X_8K_DWORDS;
    }
 
-   sscreen->tess_factor_ring_size = 32768 * sscreen->info.max_se;
+   sscreen->tess_factor_ring_size = 48 * 1024 * sscreen->info.max_se;
    sscreen->tess_offchip_ring_size = max_offchip_buffers * sscreen->tess_offchip_block_dw_size * 4;
 
    if (sscreen->info.chip_class >= GFX10_3) {

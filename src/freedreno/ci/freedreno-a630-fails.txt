@@ -2,16 +2,6 @@
 # Broken in VK-GL-CTS e5c45899ed7e90fb616ccd1d3c66e6eded120684
 KHR-GL33.cull_distance.coverage,Fail
 
-# Framework bug, missing getProcAddress method.
-# https://gerrit.khronos.org/c/vk-gl-cts/+/8405
-KHR-GL33.transform_feedback.capture_vertex_interleaved_test,Fail
-KHR-GL33.transform_feedback.capture_vertex_separate_test,Fail
-KHR-GL33.transform_feedback.discard_vertex_test,Fail
-KHR-GL33.transform_feedback.draw_xfb_instanced_test,Crash
-KHR-GL33.transform_feedback.draw_xfb_stream_instanced_test,Crash
-KHR-GL33.transform_feedback.query_vertex_interleaved_test,Fail
-KHR-GL33.transform_feedback.query_vertex_separate_test,Fail
-
 # Lots of errors like "[279] Check failed. Received: [3,0,0,2] instead of: [5,0,0,2]"
 KHR-GLES31.core.geometry_shader.layered_framebuffer.depth_support,Fail
 
@@ -41,9 +31,21 @@ bypass-dEQP-GLES31.functional.blend_equation_advanced.msaa.overlay,Fail
 bypass-dEQP-GLES31.functional.blend_equation_advanced.msaa.screen,Fail
 bypass-dEQP-GLES31.functional.blend_equation_advanced.msaa.softlight,Fail
 
+# Missing 16-bit storage access at vktAmberTestCase.cpp:422 (InternalError)
+dEQP-VK.glsl.builtin.precision_fp16_storage16b.determinant.compute.mat3,Fail
+dEQP-VK.glsl.builtin.precision_fp16_storage16b.determinant.compute.mat4,Fail
+dEQP-VK.glsl.builtin.precision_fp16_storage16b.inverse.compute.mat3,Fail
+dEQP-VK.glsl.builtin.precision_fp16_storage16b.inverse.compute.mat4,Fail
+
+# https://gitlab.khronos.org/Tracker/vk-gl-cts/-/issues/3505
+dEQP-VK.subgroups.multiple_dispatches.uniform_subgroup_size,Fail
+
+# Showed up with VK-GL-CTS 1.3.1.0:
+spill-dEQP-VK.graphicsfuzz.cov-function-two-loops-limit-using-arguments-array-element-copies,Fail
+
 # Fails when TU_DEBUG=forcebin is set
-dEQP-VK.spirv_assembly.instruction.graphics.variable_pointers.graphics.writes_two_buffers_geom,Fail
-dEQP-VK.spirv_assembly.instruction.graphics.variable_pointers.graphics.writes_two_buffers_vert,Fail
+gmem-dEQP-VK.spirv_assembly.instruction.graphics.variable_pointers.graphics.writes_two_buffers_geom,Fail
+gmem-dEQP-VK.spirv_assembly.instruction.graphics.variable_pointers.graphics.writes_two_buffers_vert,Fail
 
 glx@glx_arb_create_context_es2_profile@invalid opengl es version,Fail
 glx@glx_arb_create_context_no_error@no error,Fail
@@ -64,6 +66,9 @@ glx@glx-visuals-depth -pixmap,Crash
 glx@glx-visuals-stencil -pixmap,Crash
 shaders@glsl-fs-fogscale,Fail
 shaders@glsl-fs-fogscale@gs-out and fs,Fail
+
+# "../src/freedreno/ir3/ir3_shader.h:968:ir3_link_add: Assertion `i < ARRAY_SIZE(l->var)' failed."
+shaders@glsl-max-varyings >max_varying_components,Crash
 
 # "MESA: error: unknown vertex shader output name: VARYING_SLOT_EDGE
 #  gl-2.0-edgeflag: ../src/freedreno/ir3/ir3_context.c:411: ir3_context_error: Assertion `!""' failed."
@@ -231,8 +236,6 @@ spec@arb_texture_rg@texwrap formats-int bordercolor-swizzled@GL_RG32UI- swizzled
 spec@arb_texture_rg@texwrap formats-int bordercolor-swizzled@GL_RG8I- swizzled- border color only,Fail
 spec@arb_texture_rg@texwrap formats-int bordercolor-swizzled@GL_RG8UI- swizzled- border color only,Fail
 
-spec@arb_texture_view@rendering-layers-image,Fail
-spec@arb_texture_view@rendering-layers-image@layers rendering of image1DArray,Fail
 spec@arb_timer_query@timestamp-get,Fail
 
 # "Expected 1 primitives written, got 0"
@@ -382,10 +385,8 @@ spec@glsl-1.50@execution@compatibility@clipping@vs-gs-clip-vertex-equal-to-posit
 spec@glsl-1.50@execution@compatibility@clipping@vs-gs-clip-vertex-homogeneity,Crash
 spec@glsl-1.50@execution@compatibility@clipping@vs-gs-clip-vertex-primitives-triangle-strip,Crash
 
-# "src/freedreno/ir3/ir3_shader.h:864:ir3_find_output: Assertion `0' failed."
-# Reading undefined vertex outputs should be undefined, not crash.
-spec@glsl-1.50@execution@compatibility@gs-clamp-vertex-color,Crash
-spec@glsl-1.50@execution@compatibility@gs-ff-frag,Crash
+spec@glsl-1.50@execution@compatibility@gs-clamp-vertex-color,Fail
+spec@glsl-1.50@execution@compatibility@gs-ff-frag,Fail
 
 spec@glsl-1.50@execution@compatibility@gs-texcoord-array-2,Fail
 spec@glsl-1.50@execution@compatibility@gs-texcoord-array,Fail
@@ -546,37 +547,65 @@ spec@!opengl 1.4@gl-1.4-polygon-offset,Fail
 spec@!opengl 2.0@gl-2.0-edgeflag,Crash
 spec@!opengl 2.0@gl-2.0-edgeflag-immediate,Crash
 
-# "../src/freedreno/ir3/ir3_shader.h:843:ir3_find_output: Assertion `0' failed."
-spec@!opengl 2.0@vertex-program-two-side back2,Crash
+# "src/freedreno/ir3/ir3_nir_lower_tess.c:111: shader_io_get_unique_index: Assertion `!"illegal slot in get unique index\n"'"
 spec@!opengl 2.0@vertex-program-two-side back back2,Crash
+
+spec@!opengl 2.0@vertex-program-two-side back front2 back2,Fail
+spec@!opengl 2.0@vertex-program-two-side back front2 back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side back front2,Fail
+spec@!opengl 2.0@vertex-program-two-side back front2@gs-out and fs,Fail
 spec@!opengl 2.0@vertex-program-two-side back,Crash
-spec@!opengl 2.0@vertex-program-two-side back front2 back2,Crash
-spec@!opengl 2.0@vertex-program-two-side back front2,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled back2,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled back back2,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled back,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled back front2 back2,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled back front2,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled front2 back2,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled front2,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled front back2,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled front back back2,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled front back,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled front back front2 back2,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled front back front2,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled front,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled front front2 back2,Crash
-spec@!opengl 2.0@vertex-program-two-side enabled front front2,Crash
-spec@!opengl 2.0@vertex-program-two-side front2 back2,Crash
-spec@!opengl 2.0@vertex-program-two-side front2,Crash
-spec@!opengl 2.0@vertex-program-two-side front back2,Crash
-spec@!opengl 2.0@vertex-program-two-side front back back2,Crash
-spec@!opengl 2.0@vertex-program-two-side front back,Crash
-spec@!opengl 2.0@vertex-program-two-side front back front2 back2,Crash
-spec@!opengl 2.0@vertex-program-two-side front back front2,Crash
-spec@!opengl 2.0@vertex-program-two-side front,Crash
-spec@!opengl 2.0@vertex-program-two-side front front2 back2,Crash
-spec@!opengl 2.0@vertex-program-two-side front front2,Crash
+spec@!opengl 2.0@vertex-program-two-side back2,Crash
+spec@!opengl 2.0@vertex-program-two-side enabled back back2,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled back back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled back front2 back2,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled back front2 back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled back front2,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled back front2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled back,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled back@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled back2,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front back back2,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front back back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front back front2 back2,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front back front2 back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front back front2,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front back front2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front back,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front back@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front back2,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front front2 back2,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front front2 back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front front2,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front front2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front2 back2,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front2 back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front2,Fail
+spec@!opengl 2.0@vertex-program-two-side enabled front2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side front back back2,Fail
+spec@!opengl 2.0@vertex-program-two-side front back back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side front back front2 back2,Fail
+spec@!opengl 2.0@vertex-program-two-side front back front2 back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side front back front2,Fail
+spec@!opengl 2.0@vertex-program-two-side front back front2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side front back,Fail
+spec@!opengl 2.0@vertex-program-two-side front back@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side front back2,Fail
+spec@!opengl 2.0@vertex-program-two-side front back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side front front2 back2,Fail
+spec@!opengl 2.0@vertex-program-two-side front front2 back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side front front2,Fail
+spec@!opengl 2.0@vertex-program-two-side front front2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side front,Fail
+spec@!opengl 2.0@vertex-program-two-side front@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side front2 back2,Fail
+spec@!opengl 2.0@vertex-program-two-side front2 back2@gs-out and fs,Fail
+spec@!opengl 2.0@vertex-program-two-side front2,Fail
+spec@!opengl 2.0@vertex-program-two-side front2@gs-out and fs,Fail
 
 spec@!opengl 2.1@pbo,Fail
 spec@!opengl 2.1@pbo@test_polygon_stip,Fail

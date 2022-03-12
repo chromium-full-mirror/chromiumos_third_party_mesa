@@ -33,7 +33,6 @@
 #include "pipe/p_state.h"
 #include "gallium/auxiliary/util/u_blend.h"
 
-#include "panfrost-quirks.h"
 #include "genxml/gen_macros.h"
 
 #include "pan_pool.h"
@@ -305,7 +304,8 @@ panfrost_emit_blend(struct panfrost_batch *batch, void *rts, mali_ptr *blend_sha
                         cfg.round_to_fb_precision = !dithered;
                         cfg.alpha_to_one = ctx->blend->base.alpha_to_one;
 #if PAN_ARCH >= 6
-                        cfg.constant = pack_blend_constant(format, cons);
+                        if (!blend_shaders[i])
+                                cfg.constant = pack_blend_constant(format, cons);
 #else
                         cfg.blend_shader = (blend_shaders[i] != 0);
 
@@ -337,14 +337,17 @@ panfrost_emit_blend(struct panfrost_batch *batch, void *rts, mali_ptr *blend_sha
                                         (blend_shaders[i] & (0xffffffffull << 32)) ==
                                         (fs->bin.gpu & (0xffffffffull << 32)));
 
-                        unsigned ret_offset = fs->info.bifrost.blend[i].return_offset;
-                        assert(!(ret_offset & 0x7));
-
                         pan_pack(&packed->opaque[2], INTERNAL_BLEND, cfg) {
                                 cfg.mode = MALI_BLEND_MODE_SHADER;
                                 cfg.shader.pc = (u32) blend_shaders[i];
+
+#if PAN_ARCH <= 7
+                                unsigned ret_offset = fs->info.bifrost.blend[i].return_offset;
+                                assert(!(ret_offset & 0x7));
+
                                 cfg.shader.return_value = ret_offset ?
                                         fs->bin.gpu + ret_offset : 0;
+#endif
                         }
                 } else {
                         pan_pack(&packed->opaque[2], INTERNAL_BLEND, cfg) {
@@ -1374,6 +1377,12 @@ panfrost_emit_texture_descriptors(struct panfrost_batch *batch,
 
         for (int i = 0; i < ctx->sampler_view_count[stage]; ++i) {
                 struct panfrost_sampler_view *view = ctx->sampler_views[stage][i];
+
+                if (!view) {
+                        memset(&out[i], 0, sizeof(out[i]));
+                        continue;
+                }
+
                 struct pipe_sampler_view *pview = &view->base;
                 struct panfrost_resource *rsrc = pan_resource(pview->texture);
 
@@ -1386,10 +1395,13 @@ panfrost_emit_texture_descriptors(struct panfrost_batch *batch,
 
         return T.gpu;
 #else
-        uint64_t trampolines[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+        uint64_t trampolines[PIPE_MAX_SHADER_SAMPLER_VIEWS] = { 0 };
 
         for (int i = 0; i < ctx->sampler_view_count[stage]; ++i) {
                 struct panfrost_sampler_view *view = ctx->sampler_views[stage][i];
+
+                if (!view)
+                        continue;
 
                 panfrost_update_sampler_view(view, &ctx->base);
 
@@ -1418,8 +1430,11 @@ panfrost_emit_sampler_descriptors(struct panfrost_batch *batch,
                                           SAMPLER);
         struct mali_sampler_packed *out = (struct mali_sampler_packed *) T.cpu;
 
-        for (unsigned i = 0; i < ctx->sampler_count[stage]; ++i)
-                out[i] = ctx->samplers[stage][i]->hw;
+        for (unsigned i = 0; i < ctx->sampler_count[stage]; ++i) {
+                struct panfrost_sampler_state *st = ctx->samplers[stage][i];
+
+                out[i] = st ? st->hw : (struct mali_sampler_packed){0};
+        }
 
         return T.gpu;
 }
@@ -2395,9 +2410,9 @@ panfrost_initialize_surface(struct panfrost_batch *batch,
         }
 }
 
-/* Generate a fragment job. This should be called once per frame. (According to
- * presentations, this is supposed to correspond to eglSwapBuffers) */
-
+/* Generate a fragment job. This should be called once per frame. (Usually,
+ * this corresponds to eglSwapBuffers or one of glFlush, glFinish)
+ */
 static mali_ptr
 emit_fragment_job(struct panfrost_batch *batch, const struct pan_fb_info *pfb)
 {
@@ -2752,10 +2767,6 @@ panfrost_draw_emit_tiler(struct panfrost_batch *batch,
 
         section = pan_section_ptr(job, TILER_JOB, DRAW);
         pan_pack(section, DRAW, cfg) {
-                cfg.four_components_per_vertex = true;
-                cfg.draw_descriptor_is_64b = true;
-                cfg.front_face_ccw = rast->front_ccw;
-
                 /*
                  * From the Gallium documentation,
                  * pipe_rasterizer_state::cull_face "indicates which faces of
@@ -2766,6 +2777,7 @@ panfrost_draw_emit_tiler(struct panfrost_batch *batch,
                  */
                 cfg.cull_front_face = polygon && (rast->cull_face & PIPE_FACE_FRONT);
                 cfg.cull_back_face = polygon && (rast->cull_face & PIPE_FACE_BACK);
+                cfg.front_face_ccw = rast->front_ccw;
                 cfg.position = pos;
                 cfg.state = batch->rsd[PIPE_SHADER_FRAGMENT];
                 cfg.attributes = batch->attribs[PIPE_SHADER_FRAGMENT];
@@ -3612,7 +3624,7 @@ panfrost_create_blend_state(struct pipe_context *pipe,
 }
 
 static void
-prepare_rsd(struct panfrost_shader_state *state,
+prepare_shader(struct panfrost_shader_state *state,
             struct panfrost_pool *pool, bool upload)
 {
         struct mali_renderer_state_packed *out =
@@ -3738,7 +3750,7 @@ batch_get_polygon_list(struct panfrost_batch *batch)
                 /* Create the BO as invisible if we can. In the non-hierarchical tiler case,
                  * we need to write the polygon list manually because there's not WRITE_VALUE
                  * job in the chain (maybe we should add one...). */
-                bool init_polygon_list = !has_draws && (dev->quirks & MIDGARD_NO_HIER_TILING);
+                bool init_polygon_list = !has_draws && dev->model->quirks.no_hierarchical_tiling;
                 batch->tiler_ctx.midgard.polygon_list =
                         panfrost_batch_create_bo(batch, size,
                                                  init_polygon_list ? 0 : PAN_BO_INVISIBLE,
@@ -3780,7 +3792,7 @@ GENX(panfrost_cmdstream_screen_init)(struct panfrost_screen *screen)
 {
         struct panfrost_device *dev = &screen->dev;
 
-        screen->vtbl.prepare_rsd = prepare_rsd;
+        screen->vtbl.prepare_shader = prepare_shader;
         screen->vtbl.emit_tls    = emit_tls;
         screen->vtbl.emit_fbd    = emit_fbd;
         screen->vtbl.emit_fragment_job = emit_fragment_job;

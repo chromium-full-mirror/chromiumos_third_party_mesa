@@ -28,7 +28,6 @@
 
 #include "vk_util.h"
 
-#include "panfrost-quirks.h"
 #include "pan_cs.h"
 #include "pan_encoder.h"
 #include "pan_pool.h"
@@ -203,11 +202,6 @@ panvk_per_arch(emit_varying_bufs)(const struct panvk_varyings_info *varyings,
       if (varyings->buf_mask & (1 << i))
          panvk_emit_varying_buf(varyings, i, buf++);
    }
-
-   /* We need an empty entry to stop prefetching on Bifrost */
-#if PAN_ARCH >= 6
-   memset(buf, 0, sizeof(*buf));
-#endif
 }
 
 static void
@@ -269,11 +263,6 @@ panvk_per_arch(emit_attrib_bufs)(const struct panvk_attribs_info *info,
 
    for (unsigned i = 0; i < info->buf_count; i++)
       panvk_emit_attrib_buf(info, draw, bufs, buf_count, i, buf++);
-
-   /* A NULL entry is needed to stop prefecting on Bifrost */
-#if PAN_ARCH >= 6
-   memset(buf, 0, sizeof(*buf));
-#endif
 }
 
 void
@@ -353,23 +342,31 @@ panvk_per_arch(emit_ubos)(const struct panvk_pipeline *pipeline,
    for (unsigned i = 0; i < ARRAY_SIZE(state->sets); i++) {
       const struct panvk_descriptor_set_layout *set_layout =
          pipeline->layout->sets[i].layout;
-      const struct panvk_descriptor_set *set = state->sets[i].set;
+      const struct panvk_descriptor_set *set = state->sets[i];
       unsigned offset = pipeline->layout->sets[i].ubo_offset;
 
       if (!set_layout)
          continue;
 
       if (!set) {
-         unsigned num_ubos = (set_layout->num_dynoffsets != 0) + set_layout->num_ubos;
-         memset(&ubos[offset], 0, num_ubos * sizeof(*ubos));
+         memset(&ubos[offset], 0, set_layout->num_ubos * sizeof(*ubos));
       } else {
          memcpy(&ubos[offset], set->ubos, set_layout->num_ubos * sizeof(*ubos));
-         if (set_layout->num_dynoffsets) {
-            panvk_per_arch(emit_ubo)(state->sets[i].dynoffsets.gpu,
-                                     set->layout->num_dynoffsets * sizeof(uint32_t),
-                                     &ubos[offset + set_layout->num_ubos]);
-         }
       }
+   }
+
+   unsigned offset = pipeline->layout->num_ubos;
+   for (unsigned i = 0; i < pipeline->layout->num_dyn_ubos; i++) {
+      const struct panvk_buffer_desc *bdesc = &state->dyn.ubos[i];
+      size_t size = (bdesc->size == VK_WHOLE_SIZE && bdesc->buffer) ?
+                    (bdesc->buffer->bo->size - bdesc->offset) :
+                    bdesc->size;
+      mali_ptr address = bdesc->buffer ? bdesc->buffer->bo->ptr.gpu + bdesc->offset : 0;
+
+      if (size)
+         panvk_per_arch(emit_ubo)(address, size, &ubos[offset + i]);
+      else
+         memset(&ubos[offset + i], 0, sizeof(*ubos));
    }
 
    for (unsigned i = 0; i < ARRAY_SIZE(pipeline->sysvals); i++) {
@@ -379,6 +376,12 @@ panvk_per_arch(emit_ubos)(const struct panvk_pipeline *pipeline,
       panvk_per_arch(emit_ubo)(pipeline->sysvals[i].ubo ? : state->sysvals[i],
                                pipeline->sysvals[i].ids.sysval_count * 16,
                                &ubos[pipeline->sysvals[i].ubo_idx]);
+   }
+
+   if (pipeline->layout->push_constants.size) {
+      panvk_per_arch(emit_ubo)(state->push_constants,
+                               ALIGN_POT(pipeline->layout->push_constants.size, 16),
+                               &ubos[pipeline->layout->push_constants.ubo_idx]);
    }
 }
 
@@ -399,7 +402,7 @@ panvk_per_arch(emit_vertex_job)(const struct panvk_pipeline *pipeline,
       cfg.draw_descriptor_is_64b = true;
       cfg.state = pipeline->rsds[MESA_SHADER_VERTEX];
       cfg.attributes = draw->stages[MESA_SHADER_VERTEX].attributes;
-      cfg.attribute_buffers = draw->attribute_bufs;
+      cfg.attribute_buffers = draw->stages[MESA_SHADER_VERTEX].attribute_bufs;
       cfg.varyings = draw->stages[MESA_SHADER_VERTEX].varyings;
       cfg.varying_buffers = draw->varying_bufs;
       cfg.thread_storage = draw->tls;
@@ -410,6 +413,39 @@ panvk_per_arch(emit_vertex_job)(const struct panvk_pipeline *pipeline,
       cfg.push_uniforms = draw->stages[PIPE_SHADER_VERTEX].push_constants;
       cfg.textures = draw->textures;
       cfg.samplers = draw->samplers;
+   }
+}
+
+void
+panvk_per_arch(emit_compute_job)(const struct panvk_pipeline *pipeline,
+                                 const struct panvk_dispatch_info *dispatch,
+                                 void *job)
+{
+   panfrost_pack_work_groups_compute(pan_section_ptr(job, COMPUTE_JOB, INVOCATION),
+                                     dispatch->wg_count.x,
+                                     dispatch->wg_count.y,
+                                     dispatch->wg_count.z,
+                                     pipeline->cs.local_size.x,
+                                     pipeline->cs.local_size.y,
+                                     pipeline->cs.local_size.z,
+                                     false, false);
+
+   pan_section_pack(job, COMPUTE_JOB, PARAMETERS, cfg) {
+      cfg.job_task_split =
+         util_logbase2_ceil(pipeline->cs.local_size.x + 1) +
+         util_logbase2_ceil(pipeline->cs.local_size.y + 1) +
+         util_logbase2_ceil(pipeline->cs.local_size.z + 1);
+   }
+
+   pan_section_pack(job, COMPUTE_JOB, DRAW, cfg) {
+      cfg.state = pipeline->rsds[MESA_SHADER_COMPUTE];
+      cfg.attributes = dispatch->attributes;
+      cfg.attribute_buffers = dispatch->attribute_bufs;
+      cfg.thread_storage = dispatch->tsd;
+      cfg.uniform_buffers = dispatch->ubos;
+      cfg.push_uniforms = dispatch->push_uniforms;
+      cfg.textures = dispatch->textures;
+      cfg.samplers = dispatch->samplers;
    }
 }
 
@@ -452,15 +488,13 @@ panvk_emit_tiler_dcd(const struct panvk_pipeline *pipeline,
                      void *dcd)
 {
    pan_pack(dcd, DRAW, cfg) {
-      cfg.four_components_per_vertex = true;
-      cfg.draw_descriptor_is_64b = true;
       cfg.front_face_ccw = pipeline->rast.front_ccw;
       cfg.cull_front_face = pipeline->rast.cull_front_face;
       cfg.cull_back_face = pipeline->rast.cull_back_face;
       cfg.position = draw->position;
       cfg.state = draw->fs_rsd;
       cfg.attributes = draw->stages[MESA_SHADER_FRAGMENT].attributes;
-      cfg.attribute_buffers = draw->attribute_bufs;
+      cfg.attribute_buffers = draw->stages[MESA_SHADER_FRAGMENT].attribute_bufs;
       cfg.viewport = draw->viewport;
       cfg.varyings = draw->stages[MESA_SHADER_FRAGMENT].varyings;
       cfg.varying_buffers = cfg.varyings ? draw->varying_bufs : 0;

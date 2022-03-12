@@ -680,6 +680,8 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
    bool point_quad_rasterization = ctx->rast_state ? ctx->rast_state->base.point_quad_rasterization : false;
    bool scissor = ctx->rast_state ? ctx->rast_state->base.scissor : false;
    bool pv_last = ctx->rast_state ? ctx->rast_state->hw_state.pv_last : false;
+   bool force_persample_interp = ctx->rast_state ? ctx->rast_state->hw_state.force_persample_interp : false;
+   bool clip_halfz = ctx->rast_state ? ctx->rast_state->hw_state.clip_halfz : false;
    ctx->rast_state = cso;
 
    if (ctx->rast_state) {
@@ -695,8 +697,11 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
       ctx->gfx_pipeline_state.dirty = true;
       ctx->rast_state_changed = true;
 
-      if (zink_get_last_vertex_key(ctx)->clip_halfz != ctx->rast_state->base.clip_halfz) {
-         zink_set_last_vertex_key(ctx)->clip_halfz = ctx->rast_state->base.clip_halfz;
+      if (clip_halfz != ctx->rast_state->base.clip_halfz) {
+         if (screen->info.have_EXT_depth_clip_control)
+            ctx->gfx_pipeline_state.dirty = true;
+         else
+            zink_set_last_vertex_key(ctx)->clip_halfz = ctx->rast_state->base.clip_halfz;
          ctx->vp_state_changed = true;
       }
 
@@ -708,6 +713,9 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
          zink_set_fs_point_coord_key(ctx);
       if (ctx->rast_state->base.scissor != scissor)
          ctx->scissor_changed = true;
+
+      if (ctx->rast_state->base.force_persample_interp != force_persample_interp)
+         zink_set_fs_key(ctx)->force_persample_interp = ctx->rast_state->base.force_persample_interp;
    }
 }
 

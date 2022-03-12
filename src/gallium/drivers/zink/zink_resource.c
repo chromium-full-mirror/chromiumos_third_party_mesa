@@ -93,14 +93,12 @@ void
 zink_destroy_resource_object(struct zink_screen *screen, struct zink_resource_object *obj)
 {
    if (obj->is_buffer) {
-      util_dynarray_foreach(&obj->tmp, VkBuffer, buffer)
-         VKSCR(DestroyBuffer)(screen->dev, *buffer, NULL);
       VKSCR(DestroyBuffer)(screen->dev, obj->buffer, NULL);
+      VKSCR(DestroyBuffer)(screen->dev, obj->storage_buffer, NULL);
    } else {
       VKSCR(DestroyImage)(screen->dev, obj->image, NULL);
    }
 
-   util_dynarray_fini(&obj->tmp);
    zink_descriptor_set_refs_clear(&obj->desc_set_refs, obj);
    zink_bo_unref(screen, obj->bo);
    FREE(obj);
@@ -173,6 +171,9 @@ create_bci(struct zink_screen *screen, const struct pipe_resource *templ, unsign
 
    if (bind & PIPE_BIND_SHADER_IMAGE)
       bci.usage |= VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
+
+   if (bind & PIPE_BIND_QUERY_BUFFER)
+      bci.usage |= VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT;
 
    if (templ->flags & PIPE_RESOURCE_FLAG_SPARSE)
       bci.flags |= VK_BUFFER_CREATE_SPARSE_BINDING_BIT;
@@ -253,7 +254,8 @@ get_image_usage_for_feats(struct zink_screen *screen, VkFormatFeatureFlags feats
          usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
          if ((bind & (PIPE_BIND_LINEAR | PIPE_BIND_SHARED)) != (PIPE_BIND_LINEAR | PIPE_BIND_SHARED))
             usage |= VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
-      } else if (!(bind & ZINK_BIND_VIDEO))
+      } else if (templ->nr_samples)
+         /* this can't be populated, so we can't do it */
          return 0;
    }
 
@@ -501,11 +503,14 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
       }
    }
 
+   /* we may export WINSYS_HANDLE_TYPE_FD handle which is dma-buf */
+   if (shared && screen->info.have_EXT_external_memory_dma_buf)
+      export_types |= VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
    /* TODO: remove linear for wsi */
    bool scanout = templ->bind & PIPE_BIND_SCANOUT;
 
    pipe_reference_init(&obj->reference, 1);
-   util_dynarray_init(&obj->tmp, NULL);
    util_dynarray_init(&obj->desc_set_refs.refs, NULL);
    if (templ->target == PIPE_BUFFER) {
       VkBufferCreateInfo bci = create_bci(screen, templ, templ->bind);
@@ -513,6 +518,14 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
       if (VKSCR(CreateBuffer)(screen->dev, &bci, NULL, &obj->buffer) != VK_SUCCESS) {
          debug_printf("vkCreateBuffer failed\n");
          goto fail1;
+      }
+
+      if (!(templ->bind & PIPE_BIND_SHADER_IMAGE)) {
+         bci.usage |= VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
+         if (VKSCR(CreateBuffer)(screen->dev, &bci, NULL, &obj->storage_buffer) != VK_SUCCESS) {
+            debug_printf("vkCreateBuffer failed\n");
+            goto fail2;
+         }
       }
 
       VKSCR(GetBufferMemoryRequirements)(screen->dev, obj->buffer, &reqs);
@@ -590,11 +603,10 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
       struct wsi_image_create_info image_wsi_info = {
          VK_STRUCTURE_TYPE_WSI_IMAGE_CREATE_INFO_MESA,
          NULL,
-         .scanout = true,
+         .scanout = scanout && ici.tiling != VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
       };
 
-      if ((screen->needs_mesa_wsi || screen->needs_mesa_flush_wsi) && scanout &&
-          ici.tiling != VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
+      if ((screen->needs_mesa_wsi || screen->needs_mesa_flush_wsi) && scanout) {
          image_wsi_info.pNext = ici.pNext;
          ici.pNext = &image_wsi_info;
       }
@@ -824,9 +836,12 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
    }
 
    if (templ->target == PIPE_BUFFER) {
-      if (!(templ->flags & PIPE_RESOURCE_FLAG_SPARSE))
+      if (!(templ->flags & PIPE_RESOURCE_FLAG_SPARSE)) {
          if (VKSCR(BindBufferMemory)(screen->dev, obj->buffer, zink_bo_get_mem(obj->bo), obj->offset) != VK_SUCCESS)
             goto fail3;
+         if (obj->storage_buffer && VKSCR(BindBufferMemory)(screen->dev, obj->storage_buffer, zink_bo_get_mem(obj->bo), obj->offset) != VK_SUCCESS)
+            goto fail3;
+      }
    } else {
       if (num_planes > 1) {
          VkBindImageMemoryInfo infos[3];
@@ -857,9 +872,10 @@ fail3:
    zink_bo_unref(screen, obj->bo);
 
 fail2:
-   if (templ->target == PIPE_BUFFER)
+   if (templ->target == PIPE_BUFFER) {
       VKSCR(DestroyBuffer)(screen->dev, obj->buffer, NULL);
-   else
+      VKSCR(DestroyBuffer)(screen->dev, obj->storage_buffer, NULL);
+   } else
       VKSCR(DestroyImage)(screen->dev, obj->image, NULL);
 fail1:
    FREE(obj);
@@ -888,7 +904,7 @@ resource_create(struct pipe_screen *pscreen,
 
    res->base.b = *templ;
 
-   threaded_resource_init(&res->base.b, false, 0);
+   threaded_resource_init(&res->base.b, false);
    pipe_reference_init(&res->base.b.reference, 1);
    res->base.b.screen = pscreen;
 
@@ -913,10 +929,9 @@ resource_create(struct pipe_screen *pscreen,
    }
 
    res->internal_format = templ->format;
-   if (templ->flags & PIPE_RESOURCE_FLAG_SPARSE)
-      res->base.b.bind |= PIPE_BIND_SHADER_IMAGE;
    if (templ->target == PIPE_BUFFER) {
       util_range_init(&res->valid_buffer_range);
+      res->base.b.bind |= PIPE_BIND_SHADER_IMAGE;
       if (!screen->resizable_bar && templ->width0 >= 8196) {
          /* We don't want to evict buffers from VRAM by mapping them for CPU access,
           * because they might never be moved back again. If a buffer is large enough,
@@ -928,6 +943,8 @@ resource_create(struct pipe_screen *pscreen,
          res->base.b.flags |= PIPE_RESOURCE_FLAG_DONT_MAP_DIRECTLY;
       }
    } else {
+      if (templ->flags & PIPE_RESOURCE_FLAG_SPARSE)
+         res->base.b.bind |= PIPE_BIND_SHADER_IMAGE;
       if (templ->flags & PIPE_RESOURCE_FLAG_SPARSE) {
          uint32_t count = 1;
          VKSCR(GetImageSparseMemoryRequirements)(screen->dev, res->obj->image, &count, &res->sparse);
@@ -1025,7 +1042,7 @@ zink_resource_get_param(struct pipe_screen *pscreen, struct pipe_context *pctx,
    switch (param) {
    case PIPE_RESOURCE_PARAM_NPLANES:
       if (screen->info.have_EXT_image_drm_format_modifier)
-         *value = pscreen->get_dmabuf_modifier_planes(pscreen, res->obj->modifier, pres->format);
+         *value = pscreen->get_dmabuf_modifier_planes(pscreen, obj->modifier, pres->format);
       else
          *value = 1;
       break;
@@ -1055,7 +1072,7 @@ zink_resource_get_param(struct pipe_screen *pscreen, struct pipe_context *pctx,
    }
 
    case PIPE_RESOURCE_PARAM_MODIFIER: {
-      *value = res->obj->modifier;
+      *value = obj->modifier;
       break;
    }
 
@@ -1773,28 +1790,6 @@ zink_resource_get_separate_stencil(struct pipe_resource *pres)
 
 }
 
-VkBuffer
-zink_resource_tmp_buffer(struct zink_screen *screen, struct zink_resource *res, unsigned offset_add, unsigned add_binds, unsigned *offset_out)
-{
-   VkBufferCreateInfo bci = create_bci(screen, &res->base.b, res->base.b.bind | add_binds);
-   VkDeviceSize size = bci.size - offset_add;
-   VkDeviceSize offset = offset_add;
-   if (offset_add) {
-      assert(bci.size > offset_add);
-
-      align_offset_size(res->obj->alignment, &offset, &size, bci.size);
-   }
-   bci.size = size;
-
-   VkBuffer buffer;
-   if (VKSCR(CreateBuffer)(screen->dev, &bci, NULL, &buffer) != VK_SUCCESS)
-      return VK_NULL_HANDLE;
-   VKSCR(BindBufferMemory)(screen->dev, buffer, zink_bo_get_mem(res->obj->bo), res->obj->offset + offset);
-   if (offset_out)
-      *offset_out = offset_add - offset;
-   return buffer;
-}
-
 bool
 zink_resource_object_init_storage(struct zink_context *ctx, struct zink_resource *res)
 {
@@ -1803,15 +1798,7 @@ zink_resource_object_init_storage(struct zink_context *ctx, struct zink_resource
    if (res->base.b.bind & PIPE_BIND_SHADER_IMAGE)
       return true;
    if (res->obj->is_buffer) {
-      if (res->base.b.bind & PIPE_BIND_SHADER_IMAGE)
-         return true;
-
-      VkBuffer buffer = zink_resource_tmp_buffer(screen, res, 0, PIPE_BIND_SHADER_IMAGE, NULL);
-      if (!buffer)
-         return false;
-      util_dynarray_append(&res->obj->tmp, VkBuffer, res->obj->buffer);
-      res->obj->buffer = buffer;
-      res->base.b.bind |= PIPE_BIND_SHADER_IMAGE;
+      unreachable("zink: all buffers should have this bit");
    } else {
       zink_fb_clears_apply_region(ctx, &res->base.b, (struct u_rect){0, res->base.b.width0, 0, res->base.b.height0});
       zink_resource_image_barrier(ctx, res, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, 0);

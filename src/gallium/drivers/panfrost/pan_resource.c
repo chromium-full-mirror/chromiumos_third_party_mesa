@@ -50,7 +50,6 @@
 #include "pan_util.h"
 #include "pan_tiling.h"
 #include "decode.h"
-#include "panfrost-quirks.h"
 
 static bool
 panfrost_should_checksum(const struct panfrost_device *dev, const struct panfrost_resource *pres);
@@ -154,46 +153,25 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
         handle->modifier = rsrc->image.layout.modifier;
         rsrc->modifier_constant = true;
 
-        if (handle->type == WINSYS_HANDLE_TYPE_SHARED) {
-                return false;
+        if (handle->type == WINSYS_HANDLE_TYPE_KMS && dev->ro) {
+                return renderonly_get_handle(scanout, handle);
         } else if (handle->type == WINSYS_HANDLE_TYPE_KMS) {
-                if (dev->ro) {
-                        return renderonly_get_handle(scanout, handle);
-                } else {
-                        handle->handle = rsrc->image.data.bo->gem_handle;
-                        handle->stride = rsrc->image.layout.slices[0].line_stride;
-                        handle->offset = rsrc->image.layout.slices[0].offset;
-                        return true;
-                }
+                handle->handle = rsrc->image.data.bo->gem_handle;
         } else if (handle->type == WINSYS_HANDLE_TYPE_FD) {
-                if (scanout) {
-                        struct drm_prime_handle args = {
-                                .handle = scanout->handle,
-                                .flags = DRM_CLOEXEC,
-                        };
+                int fd = panfrost_bo_export(rsrc->image.data.bo);
 
-                        int ret = drmIoctl(dev->ro->kms_fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &args);
-                        if (ret == -1)
-                                return false;
+                if (fd < 0)
+                        return false;
 
-                        handle->stride = scanout->stride;
-                        handle->handle = args.fd;
-
-                        return true;
-                } else {
-                        int fd = panfrost_bo_export(rsrc->image.data.bo);
-
-                        if (fd < 0)
-                                return false;
-
-                        handle->handle = fd;
-                        handle->stride = rsrc->image.layout.slices[0].line_stride;
-                        handle->offset = rsrc->image.layout.slices[0].offset;
-                        return true;
-                }
+                handle->handle = fd;
+        } else {
+                /* Other handle types not supported */
+                return false;
         }
 
-        return false;
+        handle->stride = rsrc->image.layout.slices[0].line_stride;
+        handle->offset = rsrc->image.layout.slices[0].offset;
+        return true;
 }
 
 static bool
@@ -946,6 +924,9 @@ panfrost_ptr_map(struct pipe_context *pctx,
         }
 
         if (create_new_bo) {
+                /* Make sure we re-emit any descriptors using this resource */
+                panfrost_dirty_state_all(ctx);
+
                 /* If the BO is used by one of the pending batches or if it's
                  * not ready yet (still accessed by one of the already flushed
                  * batches), we try to allocate a new one to avoid waiting.
@@ -971,6 +952,12 @@ panfrost_ptr_map(struct pipe_context *pctx,
 
                                 panfrost_bo_unreference(bo);
                                 rsrc->image.data.bo = newbo;
+
+                                /* Swapping out the BO will invalidate batches
+                                 * accessing this resource, flush them but do
+                                 * not wait for them.
+                                 */
+                                panfrost_flush_batches_accessing_rsrc(ctx, rsrc, "Resource shadowing");
 
 	                        if (!copy_resource &&
                                     drm_is_afbc(rsrc->image.layout.modifier))

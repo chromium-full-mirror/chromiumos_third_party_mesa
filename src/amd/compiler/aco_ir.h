@@ -138,9 +138,10 @@ enum storage_class : uint8_t {
    storage_image = 0x4,
    storage_shared = 0x8,       /* or TCS output */
    storage_vmem_output = 0x10, /* GS or TCS output stores using VMEM */
-   storage_scratch = 0x20,
-   storage_vgpr_spill = 0x40,
-   storage_count = 8,
+   storage_task_payload = 0x20,/* Task-Mesh payload */
+   storage_scratch = 0x40,
+   storage_vgpr_spill = 0x80,
+   storage_count = 8, /* not counting storage_none */
 };
 
 enum memory_semantics : uint8_t {
@@ -1811,13 +1812,11 @@ enum block_kind {
    block_kind_continue = 1 << 5,
    block_kind_break = 1 << 6,
    block_kind_continue_or_break = 1 << 7,
-   block_kind_discard = 1 << 8,
-   block_kind_branch = 1 << 9,
-   block_kind_merge = 1 << 10,
-   block_kind_invert = 1 << 11,
-   block_kind_uses_discard_if = 1 << 12,
+   block_kind_branch = 1 << 8,
+   block_kind_merge = 1 << 9,
+   block_kind_invert = 1 << 10,
+   block_kind_uses_discard = 1 << 12,
    block_kind_needs_lowering = 1 << 13,
-   block_kind_uses_demote = 1 << 14,
    block_kind_export_end = 1 << 15,
 };
 

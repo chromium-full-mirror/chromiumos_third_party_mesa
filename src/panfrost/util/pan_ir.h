@@ -29,6 +29,24 @@
 #include "util/u_dynarray.h"
 #include "util/hash_table.h"
 
+/* On Valhall, the driver gives the hardware a table of resource tables.
+ * Resources are addressed as the index of the table together with the index of
+ * the resource within the table. For simplicity, we put one type of resource
+ * in each table and fix the numbering of the tables.
+ *
+ * This numbering is arbitrary. It is a software ABI between the
+ * Gallium driver and the Valhall compiler.
+ */
+enum pan_resource_table {
+        PAN_TABLE_UBO = 0,
+        PAN_TABLE_ATTRIBUTE,
+        PAN_TABLE_ATTRIBUTE_BUFFER,
+        PAN_TABLE_SAMPLER,
+        PAN_TABLE_TEXTURE,
+
+        PAN_NUM_RESOURCE_TABLES
+};
+
 /* Indices for named (non-XFB) varyings that are present. These are packed
  * tightly so they correspond to a bitfield present (P) indexed by (1 <<
  * PAN_VARY_*). This has the nice property that you can lookup the buffer index
@@ -112,11 +130,17 @@ struct panfrost_sysvals {
         unsigned sysval_count;
 };
 
-/* Technically Midgard could go up to 92 in a pathological case but we don't
- * take advantage of that. Likewise Bifrost's FAU encoding can address 128
- * words but actual implementations (G72, G76) are capped at 64 */
-
-#define PAN_MAX_PUSH 64
+/* Architecturally, Bifrost/Valhall can address 128 FAU slots of 64-bits each.
+ * In practice, the maximum number of FAU slots is limited by implementation.
+ * All known Bifrost and Valhall devices limit to 64 FAU slots. Therefore the
+ * maximum number of 32-bit words is 128, since there are 2 words per FAU slot.
+ *
+ * Midgard can push at most 92 words, so this bound suffices. The Midgard
+ * compiler pushes less than this, as Midgard uses register-mapped uniforms
+ * instead of FAU, preventing large numbers of uniforms to be pushed for
+ * nontrivial programs.
+ */
+#define PAN_MAX_PUSH 128
 
 /* Architectural invariants (Midgard and Bifrost): UBO must be <= 2^16 bytes so
  * an offset to a word must be < 2^16. There are less than 2^8 UBOs */
@@ -186,13 +210,38 @@ struct bifrost_shader_blend_info {
         unsigned format;
 };
 
+/*
+ * Unpacked form of a v7 message preload descriptor, produced by the compiler's
+ * message preload optimization. By splitting out this struct, the compiler does
+ * not need to know about data structure packing, avoiding a dependency on
+ * GenXML.
+ */
+struct bifrost_message_preload {
+        /* Whether to preload this message */
+        bool enabled;
+
+        /* Varying to load from */
+        unsigned varying_index;
+
+        /* Register type, FP32 otherwise */
+        bool fp16;
+
+        /* Number of components, ignored if texturing */
+        unsigned num_components;
+
+        /* If texture is set, performs a texture instruction according to
+         * sampler_index, skip, and zero_lod. If texture is unset, only the
+         * varying load is performed.
+         */
+        bool texture, skip, zero_lod;
+        unsigned sampler_index;
+};
+
 struct bifrost_shader_info {
         struct bifrost_shader_blend_info blend[8];
         nir_alu_type blend_src1_type;
         bool wait_6, wait_7;
-
-        /* Packed, preloaded message descriptors */
-        uint16_t messages[2];
+        struct bifrost_message_preload messages[2];
 };
 
 struct midgard_shader_info {
@@ -213,7 +262,6 @@ struct pan_shader_info {
                         bool reads_frag_coord;
                         bool reads_point_coord;
                         bool reads_face;
-                        bool helper_invocations;
                         bool can_discard;
                         bool writes_depth;
                         bool writes_stencil;
@@ -252,8 +300,13 @@ struct pan_shader_info {
                 } vs;
         };
 
-        bool separable;
+        /* Does the shader contains a barrier? or (for fragment shaders) does it
+         * require helper invocations, which demand the same ordering guarantees
+         * of the hardware? These notions are unified in the hardware, so we
+         * unify them here as well.
+         */
         bool contains_barrier;
+        bool separable;
         bool writes_global;
         uint64_t outputs_written;
 

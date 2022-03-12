@@ -226,6 +226,9 @@ struct iris_bufmgr {
    uint64_t vma_min_align;
    struct iris_memregion vram, sys;
 
+   /* Used only when use_global_vm is true. */
+   uint32_t global_vm_id;
+
    int next_screen_id;
 
    bool has_llc:1;
@@ -234,10 +237,13 @@ struct iris_bufmgr {
    bool has_tiling_uapi:1;
    bool has_userptr_probe:1;
    bool bo_reuse:1;
+   bool use_global_vm:1;
 
    struct intel_aux_map_context *aux_map_ctx;
 
    struct pb_slabs bo_slabs[NUM_SLAB_ALLOCATORS];
+
+   struct iris_border_color_pool border_color_pool;
 };
 
 static simple_mtx_t global_bufmgr_list_mutex = _SIMPLE_MTX_INITIALIZER_NP;
@@ -386,16 +392,14 @@ vma_alloc(struct iris_bufmgr *bufmgr,
           uint64_t size,
           uint64_t alignment)
 {
+   simple_mtx_assert_locked(&bufmgr->lock);
+
    /* Force minimum alignment based on device requirements */
    assert((alignment & (alignment - 1)) == 0);
    alignment = MAX2(alignment, bufmgr->vma_min_align);
 
    if (memzone == IRIS_MEMZONE_BORDER_COLOR_POOL)
       return IRIS_BORDER_COLOR_POOL_ADDRESS;
-
-   /* The binder handles its own allocations.  Return non-zero here. */
-   if (memzone == IRIS_MEMZONE_BINDER)
-      return IRIS_MEMZONE_BINDER_START;
 
    uint64_t addr =
       util_vma_heap_alloc(&bufmgr->vma_allocator[memzone], size, alignment);
@@ -411,6 +415,8 @@ vma_free(struct iris_bufmgr *bufmgr,
          uint64_t address,
          uint64_t size)
 {
+   simple_mtx_assert_locked(&bufmgr->lock);
+
    if (address == IRIS_BORDER_COLOR_POOL_ADDRESS)
       return;
 
@@ -421,10 +427,6 @@ vma_free(struct iris_bufmgr *bufmgr,
       return;
 
    enum iris_memory_zone memzone = iris_memzone_for_address(address);
-
-   /* The binder handles its own allocations. */
-   if (memzone == IRIS_MEMZONE_BINDER)
-      return;
 
    assert(memzone < ARRAY_SIZE(bufmgr->vma_allocator));
 
@@ -873,6 +875,8 @@ alloc_bo_from_cache(struct iris_bufmgr *bufmgr,
 
    struct iris_bo *bo = NULL;
 
+   simple_mtx_assert_locked(&bufmgr->lock);
+
    list_for_each_entry_safe(struct iris_bo, cur, &bucket->head, head) {
       assert(iris_bo_is_real(cur));
 
@@ -1145,7 +1149,9 @@ iris_bo_alloc(struct iris_bufmgr *bufmgr,
    return bo;
 
 err_free:
+   simple_mtx_lock(&bufmgr->lock);
    bo_free(bo);
+   simple_mtx_unlock(&bufmgr->lock);
    return NULL;
 }
 
@@ -1250,8 +1256,11 @@ iris_bo_gem_create_from_name(struct iris_bufmgr *bufmgr,
       goto out;
 
    bo = bo_calloc();
-   if (!bo)
+   if (!bo) {
+      struct drm_gem_close close = { .handle = open_arg.handle, };
+      intel_ioctl(bufmgr->fd, DRM_IOCTL_GEM_CLOSE, &close);
       goto out;
+   }
 
    p_atomic_set(&bo->refcount, 1);
 
@@ -1265,6 +1274,12 @@ iris_bo_gem_create_from_name(struct iris_bufmgr *bufmgr,
    bo->real.mmap_mode = IRIS_MMAP_NONE;
    bo->real.kflags = EXEC_OBJECT_SUPPORTS_48B_ADDRESS | EXEC_OBJECT_PINNED;
    bo->address = vma_alloc(bufmgr, IRIS_MEMZONE_OTHER, bo->size, 1);
+
+   if (bo->address == 0ull) {
+      bo_free(bo);
+      bo = NULL;
+      goto out;
+   }
 
    _mesa_hash_table_insert(bufmgr->handle_table, &bo->gem_handle, bo);
    _mesa_hash_table_insert(bufmgr->name_table, &bo->real.global_name, bo);
@@ -1281,6 +1296,7 @@ bo_close(struct iris_bo *bo)
 {
    struct iris_bufmgr *bufmgr = bo->bufmgr;
 
+   simple_mtx_assert_locked(&bufmgr->lock);
    assert(iris_bo_is_real(bo));
 
    if (iris_bo_is_external(bo)) {
@@ -1338,6 +1354,7 @@ bo_free(struct iris_bo *bo)
 {
    struct iris_bufmgr *bufmgr = bo->bufmgr;
 
+   simple_mtx_assert_locked(&bufmgr->lock);
    assert(iris_bo_is_real(bo));
 
    if (!bo->real.userptr && bo->real.map)
@@ -1358,6 +1375,8 @@ static void
 cleanup_bo_cache(struct iris_bufmgr *bufmgr, time_t time)
 {
    int i;
+
+   simple_mtx_assert_locked(&bufmgr->lock);
 
    if (bufmgr->time == time)
       return;
@@ -1714,6 +1733,8 @@ iris_bo_wait(struct iris_bo *bo, int64_t timeout_ns)
 static void
 iris_bufmgr_destroy(struct iris_bufmgr *bufmgr)
 {
+   iris_destroy_border_color_pool(&bufmgr->border_color_pool);
+
    /* Free aux-map buffers */
    intel_aux_map_finish(bufmgr->aux_map_ctx);
 
@@ -1725,6 +1746,7 @@ iris_bufmgr_destroy(struct iris_bufmgr *bufmgr)
          pb_slabs_deinit(&bufmgr->bo_slabs[i]);
    }
 
+   simple_mtx_lock(&bufmgr->lock);
    /* Free any cached buffer objects we were going to reuse */
    for (int i = 0; i < bufmgr->num_buckets; i++) {
       struct bo_cache_bucket *bucket = &bufmgr->cache_bucket[i];
@@ -1765,12 +1787,12 @@ iris_bufmgr_destroy(struct iris_bufmgr *bufmgr)
    _mesa_hash_table_destroy(bufmgr->name_table, NULL);
    _mesa_hash_table_destroy(bufmgr->handle_table, NULL);
 
-   for (int z = 0; z < IRIS_MEMZONE_COUNT; z++) {
-      if (z != IRIS_MEMZONE_BINDER)
+   for (int z = 0; z < IRIS_MEMZONE_COUNT; z++)
          util_vma_heap_finish(&bufmgr->vma_allocator[z]);
-   }
 
    close(bufmgr->fd);
+
+   simple_mtx_unlock(&bufmgr->lock);
 
    simple_mtx_destroy(&bufmgr->lock);
    simple_mtx_destroy(&bufmgr->bo_deps_lock);
@@ -1879,6 +1901,7 @@ iris_bo_import_dmabuf(struct iris_bufmgr *bufmgr, int prime_fd)
    bo->real.imported = true;
    bo->real.mmap_mode = IRIS_MMAP_NONE;
    bo->real.kflags = EXEC_OBJECT_SUPPORTS_48B_ADDRESS | EXEC_OBJECT_PINNED;
+   bo->gem_handle = handle;
 
    /* From the Bspec, Memory Compression - Gfx12:
     *
@@ -1890,10 +1913,14 @@ iris_bo_import_dmabuf(struct iris_bufmgr *bufmgr, int prime_fd)
     * in case. We always align to 64KB even on platforms where we don't need
     * to, because it's a fairly reasonable thing to do anyway.
     */
-   bo->address =
-      vma_alloc(bufmgr, IRIS_MEMZONE_OTHER, bo->size, 64 * 1024);
+   bo->address = vma_alloc(bufmgr, IRIS_MEMZONE_OTHER, bo->size, 64 * 1024);
 
-   bo->gem_handle = handle;
+   if (bo->address == 0ull) {
+      bo_free(bo);
+      bo = NULL;
+      goto out;
+   }
+
    _mesa_hash_table_insert(bufmgr->handle_table, &bo->gem_handle, bo);
 
 out:
@@ -1904,11 +1931,14 @@ out:
 static void
 iris_bo_mark_exported_locked(struct iris_bo *bo)
 {
+   struct iris_bufmgr *bufmgr = bo->bufmgr;
+
    /* We cannot export suballocated BOs. */
    assert(iris_bo_is_real(bo));
+   simple_mtx_assert_locked(&bufmgr->lock);
 
    if (!iris_bo_is_external(bo))
-      _mesa_hash_table_insert(bo->bufmgr->handle_table, &bo->gem_handle, bo);
+      _mesa_hash_table_insert(bufmgr->handle_table, &bo->gem_handle, bo);
 
    if (!bo->real.exported) {
       /* If a BO is going to be used externally, it could be sent to the
@@ -2130,6 +2160,24 @@ iris_hw_context_set_unrecoverable(struct iris_bufmgr *bufmgr,
    intel_ioctl(bufmgr->fd, DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM, &p);
 }
 
+void
+iris_hw_context_set_vm_id(struct iris_bufmgr *bufmgr, uint32_t ctx_id)
+{
+   if (!bufmgr->use_global_vm)
+      return;
+
+   struct drm_i915_gem_context_param p = {
+      .ctx_id = ctx_id,
+      .param = I915_CONTEXT_PARAM_VM,
+      .value = bufmgr->global_vm_id,
+   };
+   int ret = intel_ioctl(bufmgr->fd, DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM, &p);
+   if (ret != 0) {
+      DBG("DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM failed: %s\n",
+          strerror(errno));
+   }
+}
+
 uint32_t
 iris_create_hw_context(struct iris_bufmgr *bufmgr)
 {
@@ -2141,6 +2189,7 @@ iris_create_hw_context(struct iris_bufmgr *bufmgr)
    }
 
    iris_hw_context_set_unrecoverable(bufmgr, create.ctx_id);
+   iris_hw_context_set_vm_id(bufmgr, create.ctx_id);
 
    return create.ctx_id;
 }
@@ -2223,10 +2272,21 @@ intel_aux_map_buffer_alloc(void *driver_ctx, uint32_t size)
    size = MAX2(ALIGN(size, page_size), page_size);
 
    struct iris_bo *bo = alloc_fresh_bo(bufmgr, size, 0);
+   if (!bo) {
+      free(buf);
+      return NULL;
+   }
 
    simple_mtx_lock(&bufmgr->lock);
+
    bo->address = vma_alloc(bufmgr, IRIS_MEMZONE_OTHER, bo->size, 64 * 1024);
-   assert(bo->address != 0ull);
+   if (bo->address == 0ull) {
+      free(buf);
+      bo_free(bo);
+      simple_mtx_unlock(&bufmgr->lock);
+      return NULL;
+   }
+
    simple_mtx_unlock(&bufmgr->lock);
 
    bo->name = "aux-map";
@@ -2297,6 +2357,23 @@ iris_bufmgr_query_meminfo(struct iris_bufmgr *bufmgr)
    return true;
 }
 
+static void
+iris_bufmgr_init_global_vm(int fd, struct iris_bufmgr *bufmgr)
+{
+   struct drm_i915_gem_context_param gcp = {
+      .ctx_id = 0,
+      .param = I915_CONTEXT_PARAM_VM,
+   };
+
+   if (intel_ioctl(fd, DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM, &gcp)) {
+      bufmgr->use_global_vm = false;
+      bufmgr->global_vm_id = 0;
+   } else {
+      bufmgr->use_global_vm = true;
+      bufmgr->global_vm_id = gcp.value;
+   }
+}
+
 /**
  * Initializes the GEM buffer manager, which uses the kernel to allocate, map,
  * and manage map buffer objections.
@@ -2329,6 +2406,8 @@ iris_bufmgr_create(struct intel_device_info *devinfo, int fd, bool bo_reuse)
    simple_mtx_init(&bufmgr->lock, mtx_plain);
    simple_mtx_init(&bufmgr->bo_deps_lock, mtx_plain);
 
+   iris_bufmgr_init_global_vm(fd, bufmgr);
+
    list_inithead(&bufmgr->zombie_list);
 
    bufmgr->has_llc = devinfo->has_llc;
@@ -2349,12 +2428,13 @@ iris_bufmgr_create(struct intel_device_info *devinfo, int fd, bool bo_reuse)
 
    util_vma_heap_init(&bufmgr->vma_allocator[IRIS_MEMZONE_SHADER],
                       PAGE_SIZE, _4GB_minus_1 - PAGE_SIZE);
+   util_vma_heap_init(&bufmgr->vma_allocator[IRIS_MEMZONE_BINDER],
+                      IRIS_MEMZONE_BINDER_START, IRIS_BINDER_ZONE_SIZE);
    util_vma_heap_init(&bufmgr->vma_allocator[IRIS_MEMZONE_BINDLESS],
                       IRIS_MEMZONE_BINDLESS_START, IRIS_BINDLESS_SIZE);
    util_vma_heap_init(&bufmgr->vma_allocator[IRIS_MEMZONE_SURFACE],
-                      IRIS_MEMZONE_SURFACE_START,
-                      _4GB_minus_1 - IRIS_MAX_BINDERS * IRIS_BINDER_SIZE -
-                     IRIS_BINDLESS_SIZE);
+                      IRIS_MEMZONE_SURFACE_START, _4GB_minus_1 -
+                      IRIS_BINDER_ZONE_SIZE - IRIS_BINDLESS_SIZE);
    /* TODO: Why does limiting to 2GB help some state items on gfx12?
     *  - CC Viewport Pointer
     *  - Blend State Pointer
@@ -2413,6 +2493,8 @@ iris_bufmgr_create(struct intel_device_info *devinfo, int fd, bool bo_reuse)
                                                devinfo);
       assert(bufmgr->aux_map_ctx);
    }
+
+   iris_init_border_color_pool(bufmgr, &bufmgr->border_color_pool);
 
    return bufmgr;
 }
@@ -2496,4 +2578,10 @@ simple_mtx_t *
 iris_bufmgr_get_bo_deps_lock(struct iris_bufmgr *bufmgr)
 {
    return &bufmgr->bo_deps_lock;
+}
+
+struct iris_border_color_pool *
+iris_bufmgr_get_border_color_pool(struct iris_bufmgr *bufmgr)
+{
+   return &bufmgr->border_color_pool;
 }

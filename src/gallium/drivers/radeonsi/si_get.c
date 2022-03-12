@@ -234,8 +234,8 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
    case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
-      /* Align it down to 256 bytes. I've chosen the number randomly. */
-      return ROUND_DOWN_TO(MIN2(sscreen->info.max_alloc_size, INT_MAX), 256);
+      /* Allow max 512 MB to pass CTS with a 32-bit build. */
+      return MIN2(sscreen->info.max_alloc_size, 512 * 1024 * 1024);
    case PIPE_CAP_MAX_TEXTURE_MB:
       return sscreen->info.max_alloc_size / (1024 * 1024);
 
@@ -327,6 +327,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
          si_get_param(pscreen, PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS) : 0;
    case PIPE_CAP_SPARSE_TEXTURE_FULL_ARRAY_CUBE_MIPMAPS:
    case PIPE_CAP_QUERY_SPARSE_TEXTURE_RESIDENCY:
+   case PIPE_CAP_CLAMP_SPARSE_TEXTURE_LOD:
       return enable_sparse;
 
    /* Viewports and render targets. */
@@ -592,6 +593,10 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
             return 4;
          else
             return 0;
+      case PIPE_VIDEO_CAP_EFC_SUPPORTED:
+         return ((sscreen->info.family >= CHIP_RENOIR) &&
+                 (sscreen->info.family < CHIP_SIENNA_CICHLID) &&
+                 !(sscreen->debug_flags & DBG(NO_EFC)));
       default:
          return 0;
       }
@@ -1071,8 +1076,8 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
       .has_udot_4x8 = sscreen->info.has_accelerated_dot_product,
       .has_dot_2x16 = sscreen->info.has_accelerated_dot_product,
       .optimize_sample_mask_in = true,
-      .max_unroll_iterations = 128,
-      .max_unroll_iterations_aggressive = 128,
+      .max_unroll_iterations = LLVM_VERSION_MAJOR >= 13 ? 128 : 32,
+      .max_unroll_iterations_aggressive = LLVM_VERSION_MAJOR >= 13 ? 128 : 32,
       .use_interpolated_input_intrinsics = true,
       .lower_uniforms_to_ubo = true,
       .support_16bit_alu = sscreen->options.fp16,
@@ -1084,6 +1089,21 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
          nir_pack_varying_interp_loc_center |
          nir_pack_varying_interp_loc_sample |
          nir_pack_varying_interp_loc_centroid,
+      .lower_io_variables = true,
+      .lower_fs_color_inputs = true,
+      /* HW supports indirect indexing for: | Enabled in driver
+       * -------------------------------------------------------
+       * TCS inputs                         | Yes
+       * TES inputs                         | Yes
+       * GS inputs                          | No
+       * -------------------------------------------------------
+       * VS outputs before TCS              | No
+       * TCS outputs                        | Yes
+       * VS/TES outputs before GS           | No
+       */
+      .support_indirect_inputs = BITFIELD_BIT(MESA_SHADER_TESS_CTRL) |
+                                 BITFIELD_BIT(MESA_SHADER_TESS_EVAL),
+      .support_indirect_outputs = BITFIELD_BIT(MESA_SHADER_TESS_CTRL),
    };
    sscreen->nir_options = nir_options;
 }

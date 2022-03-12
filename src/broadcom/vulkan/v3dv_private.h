@@ -1,5 +1,5 @@
 /*
- * Copyright © 2019 Raspberry Pi
+ * Copyright © 2019 Raspberry Pi Ltd
  *
  * based in part on anv driver which is:
  * Copyright © 2015 Intel Corporation
@@ -46,6 +46,7 @@
 #include "vk_util.h"
 
 #include "vk_command_buffer.h"
+#include "vk_command_pool.h"
 #include "vk_queue.h"
 
 #include <xf86drm.h>
@@ -697,6 +698,8 @@ struct v3dv_subpass {
    struct v3dv_subpass_attachment *resolve_attachments;
 
    struct v3dv_subpass_attachment ds_attachment;
+   struct v3dv_subpass_attachment ds_resolve_attachment;
+   bool resolve_depth, resolve_stencil;
 
    /* If we need to emit the clear of the depth/stencil attachment using a
     * a draw call instead of using the TLB (GFXH-1461).
@@ -725,10 +728,11 @@ struct v3dv_render_pass_attachment {
       uint32_t last_subpass;
    } views[MAX_MULTIVIEW_VIEW_COUNT];
 
-   /* If this is a multismapled attachment that is going to be resolved,
-    * whether we can use the TLB resolve on store.
+   /* If this is a multisampled attachment that is going to be resolved,
+    * whether we may be able to use the TLB hardware resolve based on the
+    * attachment format.
     */
-   bool use_tlb_resolve;
+   bool try_tlb_resolve;
 };
 
 struct v3dv_render_pass {
@@ -765,6 +769,11 @@ struct v3dv_framebuffer {
 
    uint32_t attachment_count;
    uint32_t color_attachment_count;
+
+   /* Notice that elements in 'attachments' will be NULL if the framebuffer
+    * was created imageless. The driver is expected to access attachment info
+    * from the command buffer state instead.
+    */
    struct v3dv_image_view *attachments[0];
 };
 
@@ -785,10 +794,6 @@ struct v3dv_frame_tiling {
    uint32_t frame_width_in_supertiles;
    uint32_t frame_height_in_supertiles;
 };
-
-void v3dv_framebuffer_compute_internal_bpp_msaa(const struct v3dv_framebuffer *framebuffer,
-                                                const struct v3dv_subpass *subpass,
-                                                uint8_t *max_bpp, bool *msaa);
 
 bool v3dv_subpass_area_is_tile_aligned(struct v3dv_device *device,
                                        const VkRect2D *area,
@@ -811,13 +816,6 @@ v3dv_do_double_initial_tile_clear(const struct v3dv_frame_tiling *tiling)
            tiling->layers > 1);
 }
 
-struct v3dv_cmd_pool {
-   struct vk_object_base base;
-
-   VkAllocationCallbacks alloc;
-   struct list_head cmd_buffers;
-};
-
 enum v3dv_cmd_buffer_status {
    V3DV_CMD_BUFFER_STATUS_NEW           = 0,
    V3DV_CMD_BUFFER_STATUS_INITIALIZED   = 1,
@@ -839,6 +837,19 @@ struct v3dv_cmd_buffer_attachment_state {
 
    /* The hardware clear value */
    union v3dv_clear_value clear_value;
+
+   /* The underlying image view (from the framebuffer or, if imageless
+    * framebuffer is used, from VkRenderPassAttachmentBeginInfo.
+    */
+   struct v3dv_image_view *image_view;
+
+   /* If this is a multisampled attachment with a resolve operation. */
+   bool has_resolve;
+
+   /* If this is a multisampled attachment with a resolve operation,
+    * whether we can use the TLB for the resolve.
+    */
+   bool use_tlb_resolve;
 };
 
 struct v3dv_viewport_state {
@@ -1003,9 +1014,6 @@ struct v3dv_event_wait_cpu_job_info {
    /* List of events to wait on */
    uint32_t event_count;
    struct v3dv_event **events;
-
-   /* Whether any postponed jobs after the wait should wait on semaphores */
-   struct v3dv_submit_info_semaphores *sems_info;
 };
 
 struct v3dv_copy_buffer_to_image_cpu_job_info {
@@ -1133,6 +1141,13 @@ struct v3dv_job {
       uint32_t wg_base[3];
       struct drm_v3d_submit_csd submit;
    } csd;
+};
+
+struct v3dv_wait_thread_info {
+   struct v3dv_job *job;
+
+   /* Semaphores info for any postponed jobs after a wait event */
+   struct v3dv_submit_info_semaphores *sems_info;
 };
 
 void v3dv_job_init(struct v3dv_job *job,
@@ -1393,9 +1408,6 @@ struct v3dv_cmd_buffer {
 
    struct v3dv_device *device;
 
-   struct v3dv_cmd_pool *pool;
-   struct list_head pool_link;
-
    /* Used at submit time to link command buffers in the submission that have
     * spawned wait threads, so we can then wait on all of them to complete
     * before we process any signal sempahores or fences.
@@ -1403,7 +1415,6 @@ struct v3dv_cmd_buffer {
    struct list_head list_link;
 
    VkCommandBufferUsageFlags usage_flags;
-   VkCommandBufferLevel level;
 
    enum v3dv_cmd_buffer_status status;
 
@@ -2137,8 +2148,6 @@ VK_DEFINE_HANDLE_CASTS(v3dv_physical_device, vk.base, VkPhysicalDevice,
                        VK_OBJECT_TYPE_PHYSICAL_DEVICE)
 VK_DEFINE_HANDLE_CASTS(v3dv_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
 
-VK_DEFINE_NONDISP_HANDLE_CASTS(v3dv_cmd_pool, base, VkCommandPool,
-                               VK_OBJECT_TYPE_COMMAND_POOL)
 VK_DEFINE_NONDISP_HANDLE_CASTS(v3dv_buffer, base, VkBuffer,
                                VK_OBJECT_TYPE_BUFFER)
 VK_DEFINE_NONDISP_HANDLE_CASTS(v3dv_buffer_view, base, VkBufferView,

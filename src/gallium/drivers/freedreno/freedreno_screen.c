@@ -73,10 +73,10 @@ static const struct debug_named_value fd_debug_options[] = {
    {"ddraw",     FD_DBG_DDRAW,    "Mark all state dirty after draw"},
    {"noscis",    FD_DBG_NOSCIS,   "Disable scissor optimization"},
    {"direct",    FD_DBG_DIRECT,   "Force inline (SS_DIRECT) state loads"},
-   {"nobypass",  FD_DBG_NOBYPASS, "Disable GMEM bypass"},
+   {"gmem",      FD_DBG_GMEM,     "Use gmem rendering when it is permitted"},
    {"perf",      FD_DBG_PERF,     "Enable performance warnings"},
    {"nobin",     FD_DBG_NOBIN,    "Disable hw binning"},
-   {"nogmem",    FD_DBG_NOGMEM,   "Disable GMEM rendering (bypass only)"},
+   {"sysmem",    FD_DBG_SYSMEM,   "Use sysmem only rendering (no tiling)"},
    {"serialc",   FD_DBG_SERIALC,"Disable asynchronous shader compile"},
    {"shaderdb",  FD_DBG_SHADERDB, "Enable shaderdb output"},
    {"flush",     FD_DBG_FLUSH,    "Force flush after every draw"},
@@ -334,7 +334,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
          return 120;
 
    case PIPE_CAP_ESSL_FEATURE_LEVEL:
-      if (is_a5xx(screen) || is_a6xx(screen))
+      if (is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen))
          return 320;
       if (is_ir3(screen))
          return 300;
@@ -344,6 +344,8 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       if (is_a6xx(screen))
          return 64;
       if (is_a5xx(screen))
+         return 4;
+      if (is_a4xx(screen))
          return 4;
       return 0;
 
@@ -681,7 +683,7 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
       return 32;
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
-      if (is_a5xx(screen) || is_a6xx(screen)) {
+      if (is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen)) {
          /* a5xx (and a4xx for that matter) has one state-block
           * for compute-shader SSBO's and another that is shared
           * by VS/HS/DS/GS/FS..  so to simplify things for now

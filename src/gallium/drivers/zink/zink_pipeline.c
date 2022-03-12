@@ -132,18 +132,31 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
          warn_missing_feature("alphaToOne");
       ms_state.alphaToOneEnable = state->blend_state->alpha_to_one;
    }
-   ms_state.pSampleMask = state->sample_mask ? &state->sample_mask : NULL;
+   /* "If pSampleMask is NULL, it is treated as if the mask has all bits set to 1."
+    * - Chapter 27. Rasterization
+    * 
+    * thus it never makes sense to leave this as NULL since gallium will provide correct
+    * data here as long as sample_mask is initialized on context creation
+    */
+   ms_state.pSampleMask = &state->sample_mask;
    if (hw_rast_state->force_persample_interp) {
       ms_state.sampleShadingEnable = VK_TRUE;
       ms_state.minSampleShading = 1.0;
    }
 
    VkPipelineViewportStateCreateInfo viewport_state = {0};
+   VkPipelineViewportDepthClipControlCreateInfoEXT clip = {
+      VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT,
+      NULL,
+      VK_TRUE
+   };
    viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
    viewport_state.viewportCount = screen->info.have_EXT_extended_dynamic_state ? 0 : state->dyn_state1.num_viewports;
    viewport_state.pViewports = NULL;
    viewport_state.scissorCount = screen->info.have_EXT_extended_dynamic_state ? 0 : state->dyn_state1.num_viewports;
    viewport_state.pScissors = NULL;
+   if (screen->info.have_EXT_depth_clip_control && !hw_rast_state->clip_halfz)
+      viewport_state.pNext = &clip;
 
    VkPipelineRasterizationStateCreateInfo rast_state = {0};
    rast_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;

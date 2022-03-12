@@ -29,12 +29,12 @@
 #include "panvk_private.h"
 
 #include "nir_builder.h"
+#include "nir_deref.h"
 #include "nir_lower_blend.h"
 #include "nir_conversion_builder.h"
 #include "spirv/nir_spirv.h"
 #include "util/mesa-sha1.h"
 
-#include "panfrost-quirks.h"
 #include "pan_shader.h"
 #include "util/pan_lower_framebuffer.h"
 
@@ -82,6 +82,7 @@ panvk_spirv_to_nir(const void *code,
 struct panvk_lower_misc_ctx {
    struct panvk_shader *shader;
    const struct panvk_pipeline_layout *layout;
+   bool has_img_access;
 };
 
 static unsigned
@@ -151,13 +152,19 @@ lower_vulkan_resource_index(nir_builder *b, nir_intrinsic_instr *intr,
    unsigned base;
 
    switch (binding_layout->type) {
-   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
       base = binding_layout->ubo_idx + ctx->layout->sets[set].ubo_offset;
       break;
-   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+      base = binding_layout->dyn_ubo_idx + ctx->layout->num_ubos +
+             ctx->layout->sets[set].dyn_ubo_offset;
+      break;
    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
       base = binding_layout->ssbo_idx + ctx->layout->sets[set].ssbo_offset;
+      break;
+   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+      base = binding_layout->dyn_ssbo_idx + ctx->layout->num_ssbos +
+             ctx->layout->sets[set].dyn_ssbo_offset;
       break;
    default:
       unreachable("Invalid descriptor type");
@@ -182,9 +189,40 @@ lower_load_vulkan_descriptor(nir_builder *b, nir_intrinsic_instr *intrin)
    nir_instr_remove(&intrin->instr);
 }
 
+static void
+type_size_align_1(const struct glsl_type *type, unsigned *size, unsigned *align)
+{
+   unsigned s;
+
+   if (glsl_type_is_array(type))
+      s = glsl_get_aoa_size(type);
+   else
+      s = 1;
+
+   *size = s;
+   *align = s;
+}
+
+static nir_ssa_def *
+get_img_index(nir_builder *b, nir_deref_instr *deref,
+              const struct panvk_lower_misc_ctx *ctx)
+{
+   nir_variable *var = nir_deref_instr_get_variable(deref);
+   unsigned set = var->data.descriptor_set;
+   unsigned binding = var->data.binding;
+   const struct panvk_descriptor_set_binding_layout *bind_layout =
+      &ctx->layout->sets[set].layout->bindings[binding];
+   assert(bind_layout->type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
+          bind_layout->type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
+          bind_layout->type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER);
+
+   return nir_iadd_imm(b, nir_build_deref_offset(b, deref, type_size_align_1),
+                       bind_layout->img_idx + ctx->layout->sets[set].img_offset);
+}
+
 static bool
 lower_intrinsic(nir_builder *b, nir_intrinsic_instr *intr,
-                const struct panvk_lower_misc_ctx *ctx)
+                struct panvk_lower_misc_ctx *ctx)
 {
    switch (intr->intrinsic) {
    case nir_intrinsic_vulkan_resource_index:
@@ -193,6 +231,15 @@ lower_intrinsic(nir_builder *b, nir_intrinsic_instr *intr,
    case nir_intrinsic_load_vulkan_descriptor:
       lower_load_vulkan_descriptor(b, intr);
       return true;
+   case nir_intrinsic_image_deref_store:
+   case nir_intrinsic_image_deref_load: {
+      nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
+
+      b->cursor = nir_before_instr(&intr->instr);
+      nir_rewrite_image_intrinsic(intr, get_img_index(b, deref, ctx), false);
+      ctx->has_img_access = true;
+      return true;
+   }
    default:
       return false;
    }
@@ -204,7 +251,7 @@ panvk_lower_misc_instr(nir_builder *b,
                        nir_instr *instr,
                        void *data)
 {
-   const struct panvk_lower_misc_ctx *ctx = data;
+   struct panvk_lower_misc_ctx *ctx = data;
 
    switch (instr->type) {
    case nir_instr_type_tex:
@@ -433,6 +480,33 @@ panvk_lower_blend(struct panfrost_device *pdev,
    }
 }
 
+static bool
+panvk_lower_load_push_constant(nir_builder *b, nir_instr *instr, void *data)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   if (intr->intrinsic != nir_intrinsic_load_push_constant)
+      return false;
+
+   const struct panvk_pipeline_layout *layout = data;
+
+   b->cursor = nir_before_instr(instr);
+   nir_ssa_def *ubo_load =
+      nir_load_ubo(b, nir_dest_num_components(intr->dest),
+                   nir_dest_bit_size(intr->dest),
+                   nir_imm_int(b, layout->push_constants.ubo_idx),
+                   intr->src[0].ssa,
+                   .align_mul = nir_dest_bit_size(intr->dest) / 8,
+                   .align_offset = 0,
+                   .range_base = nir_intrinsic_base(intr),
+                   .range = nir_intrinsic_range(intr));
+   nir_ssa_def_rewrite_uses(&intr->dest.ssa, ubo_load);
+   nir_instr_remove(instr);
+   return true;
+}
+
 struct panvk_shader *
 panvk_per_arch(shader_create)(struct panvk_device *dev,
                               gl_shader_stage stage,
@@ -514,6 +588,14 @@ panvk_per_arch(shader_create)(struct panvk_device *dev,
    NIR_PASS_V(nir, nir_lower_explicit_io,
               nir_var_mem_ubo | nir_var_mem_ssbo,
               nir_address_format_32bit_index_offset);
+   NIR_PASS_V(nir, nir_lower_explicit_io,
+              nir_var_mem_push_const,
+              nir_address_format_32bit_offset);
+   NIR_PASS_V(nir, nir_shader_instructions_pass,
+              panvk_lower_load_push_constant,
+              nir_metadata_block_index |
+              nir_metadata_dominance,
+              (void *)layout);
 
    nir_assign_io_var_locations(nir, nir_var_shader_in, &nir->num_inputs, stage);
    nir_assign_io_var_locations(nir, nir_var_shader_out, &nir->num_outputs, stage);
@@ -529,6 +611,7 @@ panvk_per_arch(shader_create)(struct panvk_device *dev,
       .layout = layout,
    }; 
    NIR_PASS_V(nir, panvk_lower_misc, &ctx);
+   shader->has_img_access = ctx.has_img_access;
 
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
    if (unlikely(dev->physical_device->instance->debug_flags & PANVK_DEBUG_NIR)) {
@@ -543,8 +626,13 @@ panvk_per_arch(shader_create)(struct panvk_device *dev,
       shader->info.sysvals.sysval_count ? sysval_ubo + 1 : layout->num_ubos;
    shader->info.sampler_count = layout->num_samplers;
    shader->info.texture_count = layout->num_textures;
+   if (ctx.has_img_access)
+      shader->info.attribute_count += layout->num_imgs;
 
    shader->sysval_ubo = sysval_ubo;
+   shader->local_size.x = nir->info.workgroup_size[0];
+   shader->local_size.y = nir->info.workgroup_size[1];
+   shader->local_size.z = nir->info.workgroup_size[2];
 
    ralloc_free(nir);
 

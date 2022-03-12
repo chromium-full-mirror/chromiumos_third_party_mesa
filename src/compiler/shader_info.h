@@ -34,6 +34,7 @@
 extern "C" {
 #endif
 
+#define MAX_XFB_BUFFERS        4
 #define MAX_INLINABLE_UNIFORMS 4
 
 struct spirv_supported_capabilities {
@@ -216,6 +217,11 @@ typedef struct shader_info {
    unsigned shared_size;
 
    /**
+    * Size of task payload variables accessed by task/mesh shaders.
+    */
+   unsigned task_payload_size;
+
+   /**
     * Number of ray tracing queries in the shader (counts all elements of all
     * variables).
     */
@@ -225,6 +231,9 @@ typedef struct shader_info {
     * Local workgroup size used by compute/task/mesh shaders.
     */
    uint16_t workgroup_size[3];
+
+   /* Transform feedback buffer strides in dwords, max. 1K - 4. */
+   uint8_t xfb_stride[MAX_XFB_BUFFERS];
 
    uint16_t inlinable_uniform_dw_offsets[MAX_INLINABLE_UNIFORMS];
    uint8_t num_inlinable_uniforms:4;

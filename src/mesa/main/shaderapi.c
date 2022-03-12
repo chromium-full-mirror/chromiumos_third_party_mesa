@@ -155,6 +155,14 @@ _mesa_get_shader_flags(void)
    return flags;
 }
 
+#define ANDROID_SHADER_CAPTURE 0
+
+#if ANDROID_SHADER_CAPTURE
+#include "util/u_process.h"
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
+
 /**
  * Memoized version of getenv("MESA_SHADER_CAPTURE_PATH").
  */
@@ -167,6 +175,15 @@ _mesa_get_shader_capture_path(void)
    if (!read_env_var) {
       path = getenv("MESA_SHADER_CAPTURE_PATH");
       read_env_var = true;
+
+#if ANDROID_SHADER_CAPTURE
+      if (!path) {
+         char *p;
+         asprintf(&p, "/data/shaders/%s", util_get_process_name());
+         mkdir(p, 0755);
+         path = p;
+      }
+#endif
    }
 
    return path;
@@ -1203,7 +1220,7 @@ _mesa_compile_shader(struct gl_context *ctx, struct gl_shader *sh)
       if (ctx->_Shader->Flags & GLSL_DUMP) {
          _mesa_log("GLSL source for %s shader %d:\n",
                  _mesa_shader_stage_to_string(sh->Stage), sh->Name);
-         _mesa_log("%s\n", sh->Source);
+         _mesa_log_direct(sh->Source);
       }
 
       ensure_builtin_types(ctx);

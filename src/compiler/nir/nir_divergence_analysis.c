@@ -156,6 +156,7 @@ visit_intrinsic(nir_shader *shader, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_cull_any_enabled_amd:
    case nir_intrinsic_load_cull_small_prim_precision_amd:
    case nir_intrinsic_load_user_data_amd:
+   case nir_intrinsic_load_force_vrs_rates_amd:
    case nir_intrinsic_load_tess_level_inner_default:
    case nir_intrinsic_load_tess_level_outer_default:
       is_divergent = false;
@@ -263,6 +264,7 @@ visit_intrinsic(nir_shader *shader, nir_intrinsic_instr *instr)
          assert(stage == MESA_SHADER_TESS_CTRL);
       break;
 
+   case nir_intrinsic_load_workgroup_index:
    case nir_intrinsic_load_workgroup_id:
       assert(gl_shader_stage_uses_workgroup(stage));
       if (stage == MESA_SHADER_COMPUTE)

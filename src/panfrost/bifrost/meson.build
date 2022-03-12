@@ -33,6 +33,7 @@ libpanfrost_bifrost_files = files(
   'bi_opt_dce.c',
   'bi_opt_cse.c',
   'bi_opt_push_ubo.c',
+  'bi_opt_message_preload.c',
   'bi_opt_mod_props.c',
   'bi_opt_dual_tex.c',
   'bi_pack.c',
@@ -117,7 +118,7 @@ bifrost_nir_algebraic_c = custom_target(
     '-p', join_paths(meson.source_root(), 'src/compiler/nir/'),
   ],
   capture : true,
-  depend_files : nir_algebraic_py,
+  depend_files : nir_algebraic_depends,
 )
 
 libpanfrost_bifrost_disasm = static_library(
@@ -150,6 +151,7 @@ if with_tests
       files(
         'test/test-constant-fold.cpp',
         'test/test-dual-texture.cpp',
+        'test/test-message-preload.cpp',
 	'test/test-optimizer.cpp',
 	'test/test-pack-formats.cpp',
 	'test/test-packing.cpp',

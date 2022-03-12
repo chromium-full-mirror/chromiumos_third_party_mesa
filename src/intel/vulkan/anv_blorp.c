@@ -92,9 +92,8 @@ upload_blorp_shader(struct blorp_batch *batch, uint32_t stage,
 void
 anv_device_init_blorp(struct anv_device *device)
 {
-   const struct intel_device_info *devinfo = &device->info;
    const struct blorp_config config = {
-      .use_mesh_shading = devinfo->has_mesh_shading,
+      .use_mesh_shading = device->physical->vk.supported_extensions.NV_mesh_shader,
    };
 
    blorp_init(&device->blorp, device, &device->isl_dev, &config);
@@ -138,8 +137,8 @@ static void
 anv_blorp_batch_init(struct anv_cmd_buffer *cmd_buffer,
                      struct blorp_batch *batch, enum blorp_batch_flags flags)
 {
-   if (!(cmd_buffer->pool->queue_family->queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
-      assert(cmd_buffer->pool->queue_family->queueFlags & VK_QUEUE_COMPUTE_BIT);
+   if (!(cmd_buffer->queue_family->queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+      assert(cmd_buffer->queue_family->queueFlags & VK_QUEUE_COMPUTE_BIT);
       flags |= BLORP_BATCH_USE_COMPUTE;
    }
 
@@ -1404,7 +1403,6 @@ anv_image_msaa_resolve(struct anv_cmd_buffer *cmd_buffer,
    assert(src_image->vk.samples > 1);
    assert(dst_image->vk.image_type == VK_IMAGE_TYPE_2D);
    assert(dst_image->vk.samples == 1);
-   assert(src_image->n_planes == dst_image->n_planes);
 
    struct blorp_surf src_surf, dst_surf;
    get_blorp_surf_for_anv_image(cmd_buffer->device, src_image, aspect,

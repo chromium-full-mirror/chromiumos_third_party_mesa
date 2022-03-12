@@ -1026,6 +1026,9 @@ int radeonTransformTrigScale(struct radeon_compiler* c,
 	    inst->U.I.Opcode != RC_OPCODE_SIN)
 		return 0;
 
+	if (!c->needs_trig_input_transform)
+		return 1;
+
 	temp = rc_find_free_temporary(c);
 	constant = rc_constants_add_immediate_scalar(&c->Program.Constants, RCP_2PI, &constant_swizzle);
 
@@ -1054,6 +1057,9 @@ int r300_transform_trig_scale_vertex(struct radeon_compiler *c,
 	if (inst->U.I.Opcode != RC_OPCODE_COS &&
 	    inst->U.I.Opcode != RC_OPCODE_SIN)
 		return 0;
+
+	if (!c->needs_trig_input_transform)
+		return 1;
 
 	/* Repeat x in the range [-PI, PI]:
 	 *

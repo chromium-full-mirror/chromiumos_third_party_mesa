@@ -27,31 +27,15 @@
 
 #include <gtest/gtest.h>
 
-#define CASE(instr, expected) do { \
-   bi_builder *A = bit_builder(mem_ctx); \
-   bi_builder *B = bit_builder(mem_ctx); \
-   { \
-      bi_builder *b = A; \
-      instr; \
-   } \
-   { \
-      bi_builder *b = B; \
-      expected; \
-   } \
-   bi_opt_mod_prop_forward(A->shader); \
-   bi_opt_mod_prop_backward(A->shader); \
-   bi_opt_dead_code_eliminate(A->shader); \
-   if (!bit_shader_equal(A->shader, B->shader)) { \
-      ADD_FAILURE(); \
-      fprintf(stderr, "Optimization produce unexpected result"); \
-      fprintf(stderr, "  Actual:\n"); \
-      bi_print_shader(A->shader, stderr); \
-      fprintf(stderr, "Expected:\n"); \
-      bi_print_shader(B->shader, stderr); \
-      fprintf(stderr, "\n"); \
-   } \
-} while(0)
+static void
+bi_optimizer(bi_context *ctx)
+{
+   bi_opt_mod_prop_forward(ctx);
+   bi_opt_mod_prop_backward(ctx);
+   bi_opt_dead_code_eliminate(ctx);
+}
 
+#define CASE(instr, expected) INSTRUCTION_CASE(instr, expected, bi_optimizer)
 #define NEGCASE(instr) CASE(instr, instr)
 
 class Optimizer : public testing::Test {
@@ -105,6 +89,78 @@ TEST_F(Optimizer, FusedFABSNEGForFP16)
 
    CASE(bi_fmin_v2f16_to(b, reg, bi_fabsneg_v2f16(b, negabsx), bi_neg(y)),
         bi_fmin_v2f16_to(b, reg, negabsx, bi_neg(y)));
+}
+
+TEST_F(Optimizer, FuseFADD_F32WithEqualSourcesAbsAbsAndClamp)
+{
+   CASE({
+         bi_instr *I = bi_fadd_f32_to(b, reg, bi_fabsneg_f32(b, bi_abs(x)), bi_abs(x), BI_ROUND_NONE);
+         I->clamp = BI_CLAMP_CLAMP_0_1;
+   }, {
+         bi_instr *I = bi_fadd_f32_to(b, reg, bi_abs(x), bi_abs(x), BI_ROUND_NONE);
+         I->clamp = BI_CLAMP_CLAMP_0_1;
+   });
+
+   CASE({
+         bi_instr *I = bi_fadd_f32_to(b, reg, bi_abs(x), bi_fabsneg_f32(b, bi_abs(x)), BI_ROUND_NONE);
+         I->clamp = BI_CLAMP_CLAMP_0_1;
+   }, {
+         bi_instr *I = bi_fadd_f32_to(b, reg, bi_abs(x), bi_abs(x), BI_ROUND_NONE);
+         I->clamp = BI_CLAMP_CLAMP_0_1;
+   });
+
+   CASE({
+         bi_instr *I = bi_fclamp_f32_to(b, reg, bi_fadd_f32(b, bi_abs(x), bi_abs(x), BI_ROUND_NONE));
+         I->clamp = BI_CLAMP_CLAMP_0_INF;
+   }, {
+         bi_instr *I = bi_fadd_f32_to(b, reg, bi_abs(x), bi_abs(x), BI_ROUND_NONE);
+         I->clamp = BI_CLAMP_CLAMP_0_INF;
+   });
+}
+
+TEST_F(Optimizer, FuseFADD_V2F16WithDifferentSourcesAbsAbsAndClamp)
+{
+   CASE({
+         bi_instr *I = bi_fadd_v2f16_to(b, reg, bi_fabsneg_v2f16(b, bi_abs(x)), bi_abs(y), BI_ROUND_NONE);
+         I->clamp = BI_CLAMP_CLAMP_0_1;
+   }, {
+         bi_instr *I = bi_fadd_v2f16_to(b, reg, bi_abs(x), bi_abs(y), BI_ROUND_NONE);
+         I->clamp = BI_CLAMP_CLAMP_0_1;
+   });
+
+   CASE({
+         bi_instr *I = bi_fadd_v2f16_to(b, reg, bi_abs(x), bi_fabsneg_v2f16(b, bi_abs(y)), BI_ROUND_NONE);
+         I->clamp = BI_CLAMP_CLAMP_0_1;
+   }, {
+         bi_instr *I = bi_fadd_v2f16_to(b, reg, bi_abs(x), bi_abs(y), BI_ROUND_NONE);
+         I->clamp = BI_CLAMP_CLAMP_0_1;
+   });
+
+   CASE({
+         bi_instr *I = bi_fclamp_v2f16_to(b, reg, bi_fadd_v2f16(b, bi_abs(x), bi_abs(y), BI_ROUND_NONE));
+         I->clamp = BI_CLAMP_CLAMP_0_INF;
+   }, {
+         bi_instr *I = bi_fadd_v2f16_to(b, reg, bi_abs(x), bi_abs(y), BI_ROUND_NONE);
+         I->clamp = BI_CLAMP_CLAMP_0_INF;
+   });
+}
+
+TEST_F(Optimizer, AvoidFADD_V2F16WithEqualSourcesAbsAbsAndClamp)
+{
+   NEGCASE({
+         bi_instr *I = bi_fadd_v2f16_to(b, reg, bi_fabsneg_v2f16(b, bi_abs(x)), bi_abs(x), BI_ROUND_NONE);
+         I->clamp = BI_CLAMP_CLAMP_0_1;
+   });
+
+   NEGCASE({
+         bi_instr *I = bi_fadd_v2f16_to(b, reg, bi_abs(x), bi_fabsneg_v2f16(b, bi_abs(x)), BI_ROUND_NONE);
+         I->clamp = BI_CLAMP_CLAMP_0_1;
+   });
+
+   NEGCASE({
+      bi_instr *I = bi_fclamp_v2f16_to(b, reg, bi_fadd_v2f16(b, bi_abs(x), bi_abs(x), BI_ROUND_NONE));
+      I->clamp = BI_CLAMP_CLAMP_0_INF;
+   });
 }
 
 TEST_F(Optimizer, SwizzlesComposedForFP16)

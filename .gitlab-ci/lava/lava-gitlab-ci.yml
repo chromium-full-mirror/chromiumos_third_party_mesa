@@ -28,6 +28,8 @@
       - results/
     exclude:
       - results/*.shader_cache
+  tags:
+    - $RUNNER_TAG
   after_script:
     - wget -q "https://${JOB_RESULTS_PATH}" -O- | tar -xz
 
@@ -85,7 +87,7 @@
 
 .lava-traces-base:
   variables:
-    HWCI_TEST_SCRIPT: "/install/piglit/run.sh"
+    HWCI_TEST_SCRIPT: "/install/piglit/piglit-traces.sh"
   artifacts:
     reports:
       junit: results/junit.xml

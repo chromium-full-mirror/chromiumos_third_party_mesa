@@ -104,6 +104,8 @@
  *    TC_TRANSFER_MAP_NO_INVALIDATE into transfer_map and buffer_subdata to
  *    indicate this. Ignoring the flag will lead to failures.
  *    The threaded context uses its own buffer invalidation mechanism.
+ *    Do NOT use pipe_buffer_write, as this may trigger invalidation;
+ *    use tc_buffer_write instead.
  *
  * 4) PIPE_MAP_ONCE can no longer be used to infer that a buffer will not be mapped
  *    a second time before it is unmapped.
@@ -197,6 +199,7 @@
 #include "pipe/p_state.h"
 #include "util/bitset.h"
 #include "util/u_inlines.h"
+#include "util/u_memory.h"
 #include "util/u_queue.h"
 #include "util/u_range.h"
 #include "util/u_thread.h"
@@ -341,8 +344,9 @@ struct threaded_resource {
 
    /* Drivers are required to update this for shared resources and user
     * pointers. */
-   bool	is_shared;
+   bool is_shared;
    bool is_user_ptr;
+   bool allow_cpu_storage;
 
    /* Unique buffer ID. Drivers must set it to non-zero for buffers and it must
     * be unique. Textures must set 0. Low bits are used as a hash of the ID.
@@ -518,8 +522,7 @@ struct threaded_context {
    struct tc_buffer_list buffer_lists[TC_MAX_BUFFER_LISTS];
 };
 
-void threaded_resource_init(struct pipe_resource *res, bool allow_cpu_storage,
-                            unsigned map_buffer_alignment);
+void threaded_resource_init(struct pipe_resource *res, bool allow_cpu_storage);
 void threaded_resource_deinit(struct pipe_resource *res);
 struct pipe_context *threaded_context_unwrap_sync(struct pipe_context *pipe);
 void tc_driver_internal_flush_notify(struct threaded_context *tc);
@@ -607,9 +610,20 @@ tc_buffer_disable_cpu_storage(struct pipe_resource *buf)
    struct threaded_resource *tres = threaded_resource(buf);
 
    if (tres->cpu_storage) {
-      free(tres->cpu_storage);
+      align_free(tres->cpu_storage);
       tres->cpu_storage = NULL;
    }
+   tres->allow_cpu_storage = false;
+}
+
+static inline void
+tc_buffer_write(struct pipe_context *pipe,
+                struct pipe_resource *buf,
+                unsigned offset,
+                unsigned size,
+                const void *data)
+{
+   pipe->buffer_subdata(pipe, buf, PIPE_MAP_WRITE | TC_TRANSFER_MAP_NO_INVALIDATE, offset, size, data);
 }
 
 #ifdef __cplusplus

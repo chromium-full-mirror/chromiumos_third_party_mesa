@@ -324,7 +324,7 @@ trace_context_get_query_result(struct pipe_context *_pipe,
 static void
 trace_context_get_query_result_resource(struct pipe_context *_pipe,
                                         struct pipe_query *_query,
-                                        bool wait,
+                                        enum pipe_query_flags flags,
                                         enum pipe_query_value_type result_type,
                                         int index,
                                         struct pipe_resource *resource,
@@ -339,7 +339,7 @@ trace_context_get_query_result_resource(struct pipe_context *_pipe,
 
    trace_dump_arg(ptr, pipe);
    trace_dump_arg(ptr, query);
-   trace_dump_arg(bool, wait);
+   trace_dump_arg(query_flags, flags);
    trace_dump_arg(uint, result_type);
    trace_dump_arg(uint, index);
    trace_dump_arg(ptr, resource);
@@ -350,7 +350,7 @@ trace_context_get_query_result_resource(struct pipe_context *_pipe,
 
    trace_dump_call_end();
 
-   pipe->get_query_result_resource(pipe, query, wait, result_type, index, resource, offset);
+   pipe->get_query_result_resource(pipe, query, flags, result_type, index, resource, offset);
 }
 
 
@@ -1411,12 +1411,10 @@ trace_context_clear(struct pipe_context *_pipe,
    trace_dump_arg_begin("scissor_state");
    trace_dump_scissor_state(scissor_state);
    trace_dump_arg_end();
-   trace_dump_arg_begin("color");
    if (color)
-      trace_dump_array(float, color->f, 4);
+      trace_dump_arg_array(uint, color->ui, 4);
    else
       trace_dump_null();
-   trace_dump_arg_end();
    trace_dump_arg(float, depth);
    trace_dump_arg(uint, stencil);
 
@@ -1443,7 +1441,7 @@ trace_context_clear_render_target(struct pipe_context *_pipe,
 
    trace_dump_arg(ptr, pipe);
    trace_dump_arg(ptr, dst);
-   trace_dump_arg_array(float, color->f, 4);
+   trace_dump_arg_array(uint, color->ui, 4);
    trace_dump_arg(uint, dstx);
    trace_dump_arg(uint, dsty);
    trace_dump_arg(uint, width);
@@ -1525,18 +1523,31 @@ trace_context_clear_texture(struct pipe_context *_pipe,
                             const void *data)
 {
    struct trace_context *tr_ctx = trace_context(_pipe);
+   const struct util_format_description *desc = util_format_description(res->format);
    struct pipe_context *pipe = tr_ctx->pipe;
-
+   union pipe_color_union color;
+   float depth = 0.0f;
+   uint8_t stencil = 0;
 
    trace_dump_call_begin("pipe_context", "clear_texture");
-
    trace_dump_arg(ptr, pipe);
    trace_dump_arg(ptr, res);
    trace_dump_arg(uint, level);
    trace_dump_arg_begin("box");
    trace_dump_box(box);
    trace_dump_arg_end();
-   trace_dump_arg(ptr, data);
+   if (util_format_has_depth(desc)) {
+      util_format_unpack_z_float(res->format, &depth, data, 1);
+      trace_dump_arg(float, depth);
+   }
+   if (util_format_has_stencil(desc)) {
+      util_format_unpack_s_8uint(res->format, &stencil, data, 1);
+      trace_dump_arg(uint, stencil);
+   }
+   if (!util_format_is_depth_or_stencil(res->format)) {
+      util_format_unpack_rgba(res->format, color.ui, data, 1);
+      trace_dump_arg_array(uint, color.ui, 4);
+   }
 
    pipe->clear_texture(pipe, res, level, box, data);
 
@@ -2265,7 +2276,7 @@ trace_context_create(struct trace_screen *tr_scr,
    if (!trace_enabled())
       goto error1;
 
-   tr_ctx = ralloc(NULL, struct trace_context);
+   tr_ctx = rzalloc(NULL, struct trace_context);
    if (!tr_ctx)
       goto error1;
 

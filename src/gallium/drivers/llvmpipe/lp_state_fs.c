@@ -301,6 +301,7 @@ generate_quad_mask(struct gallivm_state *gallivm,
 #define LATE_DEPTH_TEST   0x2
 #define EARLY_DEPTH_WRITE 0x4
 #define LATE_DEPTH_WRITE  0x8
+#define EARLY_DEPTH_TEST_INFERRED  0x10 //only with EARLY_DEPTH_TEST
 
 static int
 find_output_by_semantic( const struct tgsi_shader_info *info,
@@ -637,10 +638,10 @@ generate_fs_loop(struct gallivm_state *gallivm,
                                              key->stencil[1].writemask)))
                depth_mode = LATE_DEPTH_TEST | LATE_DEPTH_WRITE;
             else
-               depth_mode = EARLY_DEPTH_TEST | LATE_DEPTH_WRITE;
+               depth_mode = EARLY_DEPTH_TEST | LATE_DEPTH_WRITE | EARLY_DEPTH_TEST_INFERRED;
          }
          else
-            depth_mode = EARLY_DEPTH_TEST | EARLY_DEPTH_WRITE;
+            depth_mode = EARLY_DEPTH_TEST | EARLY_DEPTH_WRITE | EARLY_DEPTH_TEST_INFERRED;
       }
       else {
          depth_mode = LATE_DEPTH_TEST | LATE_DEPTH_WRITE;
@@ -1146,8 +1147,10 @@ generate_fs_loop(struct gallivm_state *gallivm,
       if (key->min_samples == 1)
          s_mask = LLVMBuildAnd(builder, s_mask, lp_build_mask_value(&mask), "");
 
-      /* if the shader writes sample mask use that */
-      if (shader->info.base.writes_samplemask) {
+      /* if the shader writes sample mask use that,
+       * but only if this isn't genuine early-depth to avoid breaking occlusion query */
+      if (shader->info.base.writes_samplemask &&
+          (!(depth_mode & EARLY_DEPTH_TEST) || (depth_mode & (EARLY_DEPTH_TEST_INFERRED)))) {
          LLVMValueRef out_smask_idx = LLVMBuildShl(builder, lp_build_const_int32(gallivm, 1), sample_loop_state.counter, "");
          out_smask_idx = lp_build_broadcast(gallivm, int_vec_type, out_smask_idx);
          LLVMValueRef output_smask = LLVMBuildLoad(builder, out_sample_mask_storage, "");
@@ -1262,6 +1265,23 @@ generate_fs_loop(struct gallivm_state *gallivm,
       lp_build_occlusion_count(gallivm, type,
                                key->multisample ? s_mask : lp_build_mask_value(&mask), counter);
    }
+
+   /* if this is genuine early-depth in the shader, write samplemask now
+    * after occlusion count has been updated
+    */
+   if (key->multisample && shader->info.base.writes_samplemask &&
+       (depth_mode & (EARLY_DEPTH_TEST_INFERRED | EARLY_DEPTH_TEST)) == EARLY_DEPTH_TEST) {
+      /* if the shader writes sample mask use that */
+         LLVMValueRef out_smask_idx = LLVMBuildShl(builder, lp_build_const_int32(gallivm, 1), sample_loop_state.counter, "");
+         out_smask_idx = lp_build_broadcast(gallivm, int_vec_type, out_smask_idx);
+         LLVMValueRef output_smask = LLVMBuildLoad(builder, out_sample_mask_storage, "");
+         LLVMValueRef smask_bit = LLVMBuildAnd(builder, output_smask, out_smask_idx, "");
+         LLVMValueRef cmp = LLVMBuildICmp(builder, LLVMIntNE, smask_bit, lp_build_const_int_vec(gallivm, int_type, 0), "");
+         smask_bit = LLVMBuildSExt(builder, cmp, int_vec_type, "");
+
+         s_mask = LLVMBuildAnd(builder, s_mask, smask_bit, "");
+   }
+
 
    if (key->multisample) {
       /* store the sample mask for this loop */
@@ -1700,6 +1720,7 @@ scale_bits(struct gallivm_state *gallivm,
 
             result = lp_build_unsigned_norm_to_float(gallivm, src_bits, flt_type, src);
             result = lp_build_clamped_float_to_unsigned_norm(gallivm, flt_type, dst_bits, result);
+            result = LLVMBuildTrunc(gallivm->builder, result, lp_build_int_vec_type(gallivm, src_type), "");
             return result;
          }
 
@@ -3877,7 +3898,7 @@ llvmpipe_create_fs_state(struct pipe_context *pipe,
    if (templ->type == PIPE_SHADER_IR_TGSI)
      llvmpipe_fs_analyse(shader, templ->tokens);
    else
-     shader->kind = LP_FS_KIND_GENERAL;
+     llvmpipe_fs_analyse_nir(shader);
 
    return shader;
 }
@@ -4041,6 +4062,12 @@ llvmpipe_set_shader_buffers(struct pipe_context *pipe,
 
       util_copy_shader_buffer(&llvmpipe->ssbos[shader][i], buffer);
 
+      if (buffer && buffer->buffer) {
+         boolean read_only = !(writable_bitmask & (1 << idx));
+         llvmpipe_flush_resource(pipe, buffer->buffer, 0, read_only, false,
+                                 false, "buffer");
+      }
+
       if (shader == PIPE_SHADER_VERTEX ||
           shader == PIPE_SHADER_GEOMETRY ||
           shader == PIPE_SHADER_TESS_CTRL ||
@@ -4056,6 +4083,8 @@ llvmpipe_set_shader_buffers(struct pipe_context *pipe,
       } else if (shader == PIPE_SHADER_COMPUTE) {
 	 llvmpipe->cs_dirty |= LP_CSNEW_SSBOS;
       } else if (shader == PIPE_SHADER_FRAGMENT) {
+         llvmpipe->fs_ssbo_write_mask &= ~(((1 << count) - 1) << start_slot);
+         llvmpipe->fs_ssbo_write_mask |= writable_bitmask << start_slot;
          llvmpipe->dirty |= LP_NEW_FS_SSBOS;
       }
    }
@@ -4075,6 +4104,12 @@ llvmpipe_set_shader_images(struct pipe_context *pipe,
       const struct pipe_image_view *image = images ? &images[idx] : NULL;
 
       util_copy_image_view(&llvmpipe->images[shader][i], image);
+
+      if (image && image->resource) {
+         bool read_only = !(image->access & PIPE_IMAGE_ACCESS_WRITE);
+         llvmpipe_flush_resource(pipe, image->resource, 0, read_only, false,
+                                 false, "image");
+      }
    }
 
    llvmpipe->num_images[shader] = start_slot + count;

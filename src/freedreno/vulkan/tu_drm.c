@@ -29,9 +29,17 @@
 #include <sys/mman.h>
 #include <xf86drm.h>
 
+#ifdef MAJOR_IN_MKDEV
+#include <sys/mkdev.h>
+#endif
+#ifdef MAJOR_IN_SYSMACROS
+#include <sys/sysmacros.h>
+#endif
+
 #include "vk_util.h"
 
 #include "drm-uapi/msm_drm.h"
+#include "util/debug.h"
 #include "util/timespec.h"
 #include "util/os_time.h"
 #include "util/perf/u_trace.h"
@@ -43,7 +51,7 @@
 struct tu_queue_submit
 {
    struct vk_queue_submit *vk_submit;
-   struct tu_u_trace_cmd_data *cmd_buffer_trace_data;
+   struct tu_u_trace_submission_data *u_trace_submission_data;
 
    struct drm_msm_gem_submit_cmd *cmds;
    struct drm_msm_gem_submit_syncobj *in_syncobjs;
@@ -53,6 +61,8 @@ struct tu_queue_submit
    uint32_t nr_out_syncobjs;
    uint32_t entry_count;
    uint32_t perf_pass_index;
+
+   bool     autotune_fence;
 };
 
 struct tu_u_trace_syncobj
@@ -115,9 +125,16 @@ tu_drm_get_gmem_base(const struct tu_physical_device *dev, uint64_t *base)
 }
 
 int
-tu_drm_get_timestamp(struct tu_physical_device *device, uint64_t *ts)
+tu_device_get_gpu_timestamp(struct tu_device *dev, uint64_t *ts)
 {
-   return tu_drm_get_param(device, MSM_PARAM_TIMESTAMP, ts);
+   return tu_drm_get_param(dev->physical_device, MSM_PARAM_TIMESTAMP, ts);
+}
+
+int
+tu_device_get_suspend_count(struct tu_device *dev, uint64_t *suspend_count)
+{
+   int ret = tu_drm_get_param(dev->physical_device, MSM_PARAM_SUSPENDS, suspend_count);
+   return ret;
 }
 
 int
@@ -186,12 +203,6 @@ tu_bo_init(struct tu_device *dev,
       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
    }
 
-   *bo = (struct tu_bo) {
-      .gem_handle = gem_handle,
-      .size = size,
-      .iova = iova,
-   };
-
    mtx_lock(&dev->bo_mutex);
    uint32_t idx = dev->bo_count++;
 
@@ -208,39 +219,32 @@ tu_bo_init(struct tu_device *dev,
       dev->bo_list_size = new_len;
    }
 
-   /* grow the "bo idx" list (maps gem handles to index in the bo list) */
-   if (bo->gem_handle >= dev->bo_idx_size) {
-      uint32_t new_len = bo->gem_handle + 256;
-      uint32_t *new_ptr =
-         vk_realloc(&dev->vk.alloc, dev->bo_idx, new_len * sizeof(*dev->bo_idx),
-                    8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
-      if (!new_ptr)
-         goto fail_bo_idx;
-
-      dev->bo_idx = new_ptr;
-      dev->bo_idx_size = new_len;
-   }
-
-   dev->bo_idx[bo->gem_handle] = idx;
    dev->bo_list[idx] = (struct drm_msm_gem_submit_bo) {
       .flags = MSM_SUBMIT_BO_READ | MSM_SUBMIT_BO_WRITE |
                COND(dump, MSM_SUBMIT_BO_DUMP),
       .handle = gem_handle,
       .presumed = iova,
    };
+
+   *bo = (struct tu_bo) {
+      .gem_handle = gem_handle,
+      .size = size,
+      .iova = iova,
+      .refcnt = 1,
+      .bo_list_idx = idx,
+   };
+
    mtx_unlock(&dev->bo_mutex);
 
    return VK_SUCCESS;
 
-fail_bo_idx:
-   vk_free(&dev->vk.alloc, dev->bo_list);
 fail_bo_list:
    tu_gem_close(dev, gem_handle);
    return VK_ERROR_OUT_OF_HOST_MEMORY;
 }
 
 VkResult
-tu_bo_init_new(struct tu_device *dev, struct tu_bo *bo, uint64_t size,
+tu_bo_init_new(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
                enum tu_bo_alloc_flags flags)
 {
    /* TODO: Choose better flags. As of 2018-11-12, freedreno/drm/msm_bo.c
@@ -259,12 +263,23 @@ tu_bo_init_new(struct tu_device *dev, struct tu_bo *bo, uint64_t size,
    if (ret)
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
-   return tu_bo_init(dev, bo, req.handle, size, flags & TU_BO_ALLOC_ALLOW_DUMP);
+   struct tu_bo* bo = tu_device_lookup_bo(dev, req.handle);
+   assert(bo && bo->gem_handle == 0);
+
+   VkResult result =
+      tu_bo_init(dev, bo, req.handle, size, flags & TU_BO_ALLOC_ALLOW_DUMP);
+
+   if (result != VK_SUCCESS)
+      memset(bo, 0, sizeof(*bo));
+   else
+      *out_bo = bo;
+
+   return result;
 }
 
 VkResult
 tu_bo_init_dmabuf(struct tu_device *dev,
-                  struct tu_bo *bo,
+                  struct tu_bo **out_bo,
                   uint64_t size,
                   int prime_fd)
 {
@@ -274,13 +289,42 @@ tu_bo_init_dmabuf(struct tu_device *dev,
    if (real_size < 0 || (uint64_t) real_size < size)
       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
 
+   /* Importing the same dmabuf several times would yield the same
+    * gem_handle. Thus there could be a race when destroying
+    * BO and importing the same dmabuf from different threads.
+    * We must not permit the creation of dmabuf BO and its release
+    * to happen in parallel.
+    */
+   u_rwlock_wrlock(&dev->dma_bo_lock);
+
    uint32_t gem_handle;
    int ret = drmPrimeFDToHandle(dev->fd, prime_fd,
                                 &gem_handle);
-   if (ret)
+   if (ret) {
+      u_rwlock_wrunlock(&dev->dma_bo_lock);
       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+   }
 
-   return tu_bo_init(dev, bo, gem_handle, size, false);
+   struct tu_bo* bo = tu_device_lookup_bo(dev, gem_handle);
+
+   if (bo->refcnt != 0) {
+      p_atomic_inc(&bo->refcnt);
+      u_rwlock_wrunlock(&dev->dma_bo_lock);
+
+      *out_bo = bo;
+      return VK_SUCCESS;
+   }
+
+   VkResult result = tu_bo_init(dev, bo, gem_handle, size, false);
+
+   if (result != VK_SUCCESS)
+      memset(bo, 0, sizeof(*bo));
+   else
+      *out_bo = bo;
+
+   u_rwlock_wrunlock(&dev->dma_bo_lock);
+
+   return result;
 }
 
 int
@@ -318,17 +362,38 @@ tu_bo_finish(struct tu_device *dev, struct tu_bo *bo)
 {
    assert(bo->gem_handle);
 
+   u_rwlock_rdlock(&dev->dma_bo_lock);
+
+   if (!p_atomic_dec_zero(&bo->refcnt)) {
+      u_rwlock_rdunlock(&dev->dma_bo_lock);
+      return;
+   }
+
    if (bo->map)
       munmap(bo->map, bo->size);
 
    mtx_lock(&dev->bo_mutex);
-   uint32_t idx = dev->bo_idx[bo->gem_handle];
    dev->bo_count--;
-   dev->bo_list[idx] = dev->bo_list[dev->bo_count];
-   dev->bo_idx[dev->bo_list[idx].handle] = idx;
+   dev->bo_list[bo->bo_list_idx] = dev->bo_list[dev->bo_count];
+
+   struct tu_bo* exchanging_bo = tu_device_lookup_bo(dev, dev->bo_list[bo->bo_list_idx].handle);
+   exchanging_bo->bo_list_idx = bo->bo_list_idx;
+
+   if (bo->implicit_sync)
+      dev->implicit_sync_bo_count--;
+
    mtx_unlock(&dev->bo_mutex);
 
-   tu_gem_close(dev, bo->gem_handle);
+   /* Our BO structs are stored in a sparse array in the physical device,
+    * so we don't want to free the BO pointer, instead we want to reset it
+    * to 0, to signal that array entry as being free.
+    */
+   uint32_t gem_handle = bo->gem_handle;
+   memset(bo, 0, sizeof(*bo));
+
+   tu_gem_close(dev, gem_handle);
+
+   u_rwlock_rdunlock(&dev->dma_bo_lock);
 }
 
 extern const struct vk_sync_type tu_timeline_sync_type;
@@ -551,6 +616,7 @@ tu_drm_device_init(struct tu_physical_device *device,
                    struct tu_instance *instance,
                    drmDevicePtr drm_device)
 {
+   const char *primary_path = drm_device->nodes[DRM_NODE_PRIMARY];
    const char *path = drm_device->nodes[DRM_NODE_RENDER];
    VkResult result = VK_SUCCESS;
    drmVersionPtr version;
@@ -607,8 +673,7 @@ tu_drm_device_init(struct tu_physical_device *device,
    device->instance = instance;
 
    if (instance->vk.enabled_extensions.KHR_display) {
-      master_fd =
-         open(drm_device->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
+      master_fd = open(primary_path, O_RDWR | O_CLOEXEC);
       if (master_fd >= 0) {
          /* TODO: free master_fd is accel is not working? */
       }
@@ -634,10 +699,33 @@ tu_drm_device_init(struct tu_physical_device *device,
                                 "could not get GMEM size");
       goto fail;
    }
+   device->gmem_size = env_var_as_unsigned("TU_GMEM", device->gmem_size);
 
    if (tu_drm_get_gmem_base(device, &device->gmem_base)) {
       result = vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
                                  "could not get GMEM size");
+      goto fail;
+   }
+
+   struct stat st;
+
+   if (stat(primary_path, &st) == 0) {
+      device->has_master = true;
+      device->master_major = major(st.st_rdev);
+      device->master_minor = minor(st.st_rdev);
+   } else {
+      device->has_master = false;
+      device->master_major = 0;
+      device->master_minor = 0;
+   }
+
+   if (stat(path, &st) == 0) {
+      device->has_local = true;
+      device->local_major = major(st.st_rdev);
+      device->local_minor = minor(st.st_rdev);
+   } else {
+      result = vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                         "failed to stat DRM render node %s", path);
       goto fail;
    }
 
@@ -739,7 +827,13 @@ tu_queue_submit_create_locked(struct tu_queue *queue,
       }
    }
 
+
    memset(new_submit, 0, sizeof(struct tu_queue_submit));
+
+   new_submit->autotune_fence =
+      tu_autotune_submit_requires_fence(cmd_buffers, vk_submit->command_buffer_count);
+   if (new_submit->autotune_fence)
+      entry_count++;
 
    new_submit->cmds = vk_zalloc(&queue->device->vk.alloc,
          entry_count * sizeof(*new_submit->cmds), 8,
@@ -751,35 +845,14 @@ tu_queue_submit_create_locked(struct tu_queue *queue,
    }
 
    if (has_trace_points) {
-      new_submit->cmd_buffer_trace_data = vk_zalloc(&queue->device->vk.alloc,
-            vk_submit->command_buffer_count * sizeof(struct tu_u_trace_cmd_data),
-            8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+      result =
+         tu_u_trace_submission_data_create(
+            queue->device, cmd_buffers,
+            vk_submit->command_buffer_count,
+            &new_submit->u_trace_submission_data);
 
-      if (new_submit->cmd_buffer_trace_data == NULL) {
-         result = vk_error(queue, VK_ERROR_OUT_OF_HOST_MEMORY);
-         goto fail_cmd_trace_data;
-      }
-
-      for (uint32_t i = 0; i < vk_submit->command_buffer_count; ++i) {
-         struct tu_cmd_buffer *cmdbuf = cmd_buffers[i];
-
-         if (!(cmdbuf->usage_flags & VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT) &&
-             u_trace_has_points(&cmdbuf->trace)) {
-            /* A single command buffer could be submitted several times, but we
-             * already backed timestamp iova addresses and trace points are
-             * single-use. Therefor we have to copy trace points and create
-             * a new timestamp buffer on every submit of reusable command buffer.
-             */
-            if (tu_create_copy_timestamp_cs(cmdbuf,
-                  &new_submit->cmd_buffer_trace_data[i].timestamp_copy_cs,
-                  &new_submit->cmd_buffer_trace_data[i].trace) != VK_SUCCESS) {
-               result = vk_error(queue, VK_ERROR_OUT_OF_HOST_MEMORY);
-               goto fail_copy_timestamp_cs;
-            }
-            assert(new_submit->cmd_buffer_trace_data[i].timestamp_copy_cs->entry_count == 1);
-         } else {
-            new_submit->cmd_buffer_trace_data[i].trace = &cmdbuf->trace;
-         }
+      if (result != VK_SUCCESS) {
+         goto fail_u_trace_submission_data;
       }
    }
 
@@ -814,12 +887,10 @@ tu_queue_submit_create_locked(struct tu_queue *queue,
 fail_out_syncobjs:
    vk_free(&queue->device->vk.alloc, new_submit->in_syncobjs);
 fail_in_syncobjs:
-   if (new_submit->cmd_buffer_trace_data)
-      tu_u_trace_cmd_data_finish(queue->device, new_submit->cmd_buffer_trace_data,
-                                 new_submit->vk_submit->command_buffer_count);
-fail_copy_timestamp_cs:
-   vk_free(&queue->device->vk.alloc, new_submit->cmd_buffer_trace_data);
-fail_cmd_trace_data:
+   if (new_submit->u_trace_submission_data)
+      tu_u_trace_submission_data_finish(queue->device,
+                                        new_submit->u_trace_submission_data);
+fail_u_trace_submission_data:
    vk_free(&queue->device->vk.alloc, new_submit->cmds);
 fail_cmds:
    return result;
@@ -834,9 +905,25 @@ tu_queue_submit_finish(struct tu_queue *queue, struct tu_queue_submit *submit)
 }
 
 static void
-tu_queue_build_msm_gem_submit_cmds(struct tu_queue *queue,
-                                   struct tu_queue_submit *submit)
+tu_fill_msm_gem_submit(struct tu_device *dev,
+                       struct drm_msm_gem_submit_cmd *cmd,
+                       struct tu_cs_entry *cs_entry)
 {
+   cmd->type = MSM_SUBMIT_CMD_BUF;
+   cmd->submit_idx = cs_entry->bo->bo_list_idx;
+   cmd->submit_offset = cs_entry->offset;
+   cmd->size = cs_entry->size;
+   cmd->pad = 0;
+   cmd->nr_relocs = 0;
+   cmd->relocs = 0;
+}
+
+static void
+tu_queue_build_msm_gem_submit_cmds(struct tu_queue *queue,
+                                   struct tu_queue_submit *submit,
+                                   struct tu_cs *autotune_cs)
+{
+   struct tu_device *dev = queue->device;
    struct drm_msm_gem_submit_cmd *cmds = submit->cmds;
 
    struct vk_command_buffer **vk_cmd_buffers = submit->vk_submit->command_buffers;
@@ -852,43 +939,26 @@ tu_queue_build_msm_gem_submit_cmds(struct tu_queue *queue,
          struct tu_cs_entry *perf_cs_entry =
             &dev->perfcntrs_pass_cs_entries[submit->perf_pass_index];
 
-         cmds[entry_idx].type = MSM_SUBMIT_CMD_BUF;
-         cmds[entry_idx].submit_idx =
-            dev->bo_idx[perf_cs_entry->bo->gem_handle];
-         cmds[entry_idx].submit_offset = perf_cs_entry->offset;
-         cmds[entry_idx].size = perf_cs_entry->size;
-         cmds[entry_idx].pad = 0;
-         cmds[entry_idx].nr_relocs = 0;
-         cmds[entry_idx++].relocs = 0;
+         tu_fill_msm_gem_submit(dev, &cmds[entry_idx], perf_cs_entry);
       }
 
       for (unsigned i = 0; i < cs->entry_count; ++i, ++entry_idx) {
-         cmds[entry_idx].type = MSM_SUBMIT_CMD_BUF;
-         cmds[entry_idx].submit_idx =
-            dev->bo_idx[cs->entries[i].bo->gem_handle];
-         cmds[entry_idx].submit_offset = cs->entries[i].offset;
-         cmds[entry_idx].size = cs->entries[i].size;
-         cmds[entry_idx].pad = 0;
-         cmds[entry_idx].nr_relocs = 0;
-         cmds[entry_idx].relocs = 0;
+         tu_fill_msm_gem_submit(dev, &cmds[entry_idx], &cs->entries[i]);
       }
 
-      if (submit->cmd_buffer_trace_data) {
-         struct tu_cs *ts_cs = submit->cmd_buffer_trace_data[j].timestamp_copy_cs;
+      if (submit->u_trace_submission_data) {
+         struct tu_cs *ts_cs =
+            submit->u_trace_submission_data->cmd_trace_data[j].timestamp_copy_cs;
          if (ts_cs) {
-            cmds[entry_idx].type = MSM_SUBMIT_CMD_BUF;
-            cmds[entry_idx].submit_idx =
-               queue->device->bo_idx[ts_cs->entries[0].bo->gem_handle];
-
-            assert(cmds[entry_idx].submit_idx < queue->device->bo_count);
-
-            cmds[entry_idx].submit_offset = ts_cs->entries[0].offset;
-            cmds[entry_idx].size = ts_cs->entries[0].size;
-            cmds[entry_idx].pad = 0;
-            cmds[entry_idx].nr_relocs = 0;
-            cmds[entry_idx++].relocs = 0;
+            tu_fill_msm_gem_submit(dev, &cmds[entry_idx], &ts_cs->entries[0]);
          }
       }
+   }
+
+   if (autotune_cs) {
+      assert(autotune_cs->entry_count == 1);
+      tu_fill_msm_gem_submit(dev, &cmds[entry_idx], &autotune_cs->entries[0]);
+      entry_idx++;
    }
 }
 
@@ -897,9 +967,14 @@ tu_queue_submit_locked(struct tu_queue *queue, struct tu_queue_submit *submit)
 {
    queue->device->submit_count++;
 
-#if HAVE_PERFETTO
-   tu_perfetto_submit(queue->device, queue->device->submit_count);
-#endif
+   struct tu_cs *autotune_cs = NULL;
+   if (submit->autotune_fence) {
+      struct tu_cmd_buffer **cmd_buffers = (void *)submit->vk_submit->command_buffers;
+      autotune_cs = tu_autotune_on_submit(queue->device,
+                                          &queue->device->autotune,
+                                          cmd_buffers,
+                                          submit->vk_submit->command_buffer_count);
+   }
 
    uint32_t flags = MSM_PIPE_3D0;
 
@@ -911,11 +986,14 @@ tu_queue_submit_locked(struct tu_queue *queue, struct tu_queue_submit *submit)
 
    mtx_lock(&queue->device->bo_mutex);
 
+   if (queue->device->implicit_sync_bo_count == 0)
+      flags |= MSM_SUBMIT_NO_IMPLICIT;
+
    /* drm_msm_gem_submit_cmd requires index of bo which could change at any
     * time when bo_mutex is not locked. So we build submit cmds here the real
     * place to submit.
     */
-   tu_queue_build_msm_gem_submit_cmds(queue, submit);
+   tu_queue_build_msm_gem_submit_cmds(queue, submit, autotune_cs);
 
    struct drm_msm_gem_submit req = {
       .flags = flags,
@@ -940,24 +1018,33 @@ tu_queue_submit_locked(struct tu_queue *queue, struct tu_queue_submit *submit)
    if (ret)
       return vk_device_set_lost(&queue->device->vk, "submit failed: %m");
 
-   if (submit->cmd_buffer_trace_data) {
-      struct tu_u_trace_flush_data *flush_data =
-         vk_alloc(&queue->device->vk.alloc, sizeof(struct tu_u_trace_flush_data),
-               8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
-      flush_data->submission_id = queue->device->submit_count;
-      flush_data->syncobj =
+#if HAVE_PERFETTO
+   tu_perfetto_submit(queue->device, queue->device->submit_count);
+#endif
+
+   if (submit->u_trace_submission_data) {
+      struct tu_u_trace_submission_data *submission_data =
+         submit->u_trace_submission_data;
+      submission_data->submission_id = queue->device->submit_count;
+      /* We have to allocate it here since it is different between drm/kgsl */
+      submission_data->syncobj =
          vk_alloc(&queue->device->vk.alloc, sizeof(struct tu_u_trace_syncobj),
                8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
-      flush_data->syncobj->fence = req.fence;
-      flush_data->syncobj->msm_queue_id = queue->msm_queue_id;
+      submission_data->syncobj->fence = req.fence;
+      submission_data->syncobj->msm_queue_id = queue->msm_queue_id;
 
-      flush_data->cmd_trace_data = submit->cmd_buffer_trace_data;
-      flush_data->trace_count = submit->vk_submit->command_buffer_count;
-      submit->cmd_buffer_trace_data = NULL;
+      submit->u_trace_submission_data = NULL;
 
       for (uint32_t i = 0; i < submit->vk_submit->command_buffer_count; i++) {
-         bool free_data = i == (submit->vk_submit->command_buffer_count - 1);
-         u_trace_flush(flush_data->cmd_trace_data[i].trace, flush_data, free_data);
+         bool free_data = i == submission_data->last_buffer_with_tracepoints;
+         if (submission_data->cmd_trace_data[i].trace)
+            u_trace_flush(submission_data->cmd_trace_data[i].trace,
+                          submission_data, free_data);
+
+         if (!submission_data->cmd_trace_data[i].timestamp_copy_cs) {
+            /* u_trace is owned by cmd_buffer */
+            submission_data->cmd_trace_data[i].trace = NULL;
+         }
       }
    }
 
@@ -1074,6 +1161,8 @@ tu_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
 
    if (ret != VK_SUCCESS)
        return ret;
+
+   u_trace_context_process(&queue->device->trace_context, true);
 
    return VK_SUCCESS;
 }

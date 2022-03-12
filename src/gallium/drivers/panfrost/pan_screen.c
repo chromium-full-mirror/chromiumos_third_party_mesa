@@ -52,7 +52,6 @@
 #include "decode.h"
 
 #include "pan_context.h"
-#include "panfrost-quirks.h"
 
 static const struct debug_named_value panfrost_debug_options[] = {
         {"perf",      PAN_DBG_PERF,     "Enable performance warnings"},
@@ -69,13 +68,14 @@ static const struct debug_named_value panfrost_debug_options[] = {
         {"indirect",  PAN_DBG_INDIRECT, "Use experimental compute kernel for indirect draws"},
         {"linear",    PAN_DBG_LINEAR,   "Force linear textures"},
         {"nocache",   PAN_DBG_NO_CACHE, "Disable BO cache"},
+        {"dump",      PAN_DBG_DUMP,     "Dump all graphics memory"},
         DEBUG_NAMED_VALUE_END
 };
 
 static const char *
 panfrost_get_name(struct pipe_screen *screen)
 {
-        return panfrost_model_name(pan_device(screen)->gpu_id);
+        return pan_device(screen)->model->name;
 }
 
 static const char *
@@ -121,6 +121,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_SAMPLE_SHADING:
         case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
         case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
+        case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
                 return 1;
 
         case PIPE_CAP_MAX_RENDER_TARGETS:
@@ -137,7 +138,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return true;
 
         case PIPE_CAP_ANISOTROPIC_FILTER:
-                return !!(dev->quirks & HAS_ANISOTROPIC);
+                return dev->revision >= dev->model->min_rev_anisotropic;
 
         /* Compile side is done for Bifrost, Midgard TODO. Needs some kernel
          * work to turn on, since CYCLE_COUNT_START needs to be issued. In
@@ -237,7 +238,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
         case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
         case PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL:
-                return pan_is_bifrost(dev);
+                return dev->arch >= 6;
 
         case PIPE_CAP_SEAMLESS_CUBE_MAP:
         case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
@@ -467,19 +468,13 @@ panfrost_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
 
         case PIPE_CAPF_POINT_SIZE_GRANULARITY:
         case PIPE_CAPF_LINE_WIDTH_GRANULARITY:
-           return 0.1;
+           return 0.0625;
 
         case PIPE_CAPF_MAX_LINE_WIDTH:
-
-        FALLTHROUGH;
         case PIPE_CAPF_MAX_LINE_WIDTH_AA:
-                return 255.0; /* arbitrary */
-
         case PIPE_CAPF_MAX_POINT_SIZE:
-
-        FALLTHROUGH;
         case PIPE_CAPF_MAX_POINT_SIZE_AA:
-                return 1024.0;
+                return 4095.9375;
 
         case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
                 return 16.0;
@@ -854,21 +849,8 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         if (dev->debug & PAN_DBG_NO_AFBC)
                 dev->has_afbc = false;
 
-        /* Check if we're loading against a supported GPU model. */
-
-        switch (dev->gpu_id) {
-        case 0x720: /* T720 */
-        case 0x750: /* T760 */
-        case 0x820: /* T820 */
-        case 0x860: /* T860 */
-        case 0x6221: /* G72 */
-        case 0x7093: /* G31 */
-        case 0x7211: /* G76 */
-        case 0x7212: /* G52 */
-        case 0x7402: /* G52r1 */
-                break;
-        default:
-                /* Fail to load against untested models */
+        /* Bail early on unsupported hardware */
+        if (dev->model == NULL) {
                 debug_printf("panfrost: Unsupported model %X", dev->gpu_id);
                 panfrost_destroy_screen(&(screen->base));
                 return NULL;

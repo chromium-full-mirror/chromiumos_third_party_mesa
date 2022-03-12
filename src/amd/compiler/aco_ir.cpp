@@ -289,6 +289,8 @@ convert_to_SDWA(chip_class chip, aco_ptr<Instruction>& instr)
    if (instr->operands.size() >= 3)
       instr->operands[2].setFixed(vcc);
 
+   instr->pass_flags = tmp->pass_flags;
+
    return tmp;
 }
 
@@ -374,6 +376,8 @@ convert_to_DPP(aco_ptr<Instruction>& instr, bool dpp8)
 
    if (instr->operands.size() >= 3)
       instr->operands[2].setFixed(vcc);
+
+   instr->pass_flags = tmp->pass_flags;
 
    return tmp;
 }
@@ -567,6 +571,7 @@ needs_exec_mask(const Instruction* instr)
          return instr->reads_exec();
       case aco_opcode::p_spill:
       case aco_opcode::p_reload:
+      case aco_opcode::p_end_linear_vgpr:
       case aco_opcode::p_logical_start:
       case aco_opcode::p_logical_end:
       case aco_opcode::p_startpgm: return instr->reads_exec();

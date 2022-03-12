@@ -83,7 +83,7 @@ iris_lost_context_state(struct iris_batch *batch)
    memset(&ice->shaders.urb, 0, sizeof(ice->shaders.urb));
    memset(ice->state.last_block, 0, sizeof(ice->state.last_block));
    memset(ice->state.last_grid, 0, sizeof(ice->state.last_grid));
-   batch->last_surface_base_address = ~0ull;
+   batch->last_binder_address = ~0ull;
    batch->last_aux_map_state = 0;
    batch->screen->vtbl.lost_genx_state(ice, batch);
 }
@@ -98,12 +98,12 @@ iris_get_device_reset_status(struct pipe_context *ctx)
    /* Check the reset status of each batch's hardware context, and take the
     * worst status (if one was guilty, proclaim guilt).
     */
-   for (int i = 0; i < IRIS_BATCH_COUNT; i++) {
+   iris_foreach_batch(ice, batch) {
       /* This will also recreate the hardware contexts as necessary, so any
        * future queries will show no resets.  We only want to report once.
        */
       enum pipe_reset_status batch_reset =
-         iris_batch_check_for_reset(&ice->batches[i]);
+         iris_batch_check_for_reset(batch);
 
       if (batch_reset == PIPE_NO_RESET)
          continue;
@@ -233,7 +233,6 @@ iris_destroy_context(struct pipe_context *ctx)
       pipe_resource_reference(&ice->shaders.scratch_surfs[i].res, NULL);
 
    iris_destroy_program_cache(ice);
-   iris_destroy_border_color_pool(ice);
    if (screen->measure.config)
       iris_destroy_ctx_measure(ice);
 
@@ -329,7 +328,6 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
    iris_init_perfquery_functions(ctx);
 
    iris_init_program_cache(ice);
-   iris_init_border_color_pool(ice);
    iris_init_binder(ice);
 
    slab_create_child(&ice->transfer_pool, &screen->transfer_pool);

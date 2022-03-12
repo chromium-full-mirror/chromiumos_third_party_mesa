@@ -134,10 +134,6 @@ KHR-GLES3.packed_pixels.varied_rectangle.rgba32f,Fail
 KHR-GLES3.packed_pixels.varied_rectangle.rgba32i,Fail
 KHR-GLES3.packed_pixels.varied_rectangle.rgba32ui,Fail
 
-# The next fail was found during kernel v5.16 uprev pipelines. It was happening
-# before the kernel uprev.
-KHR-GLES31.core.shader_storage_buffer_object.basic-stdLayout_UBO_SSBO-case2-cs,Fail
-
 glx@glx-make-current,Crash
 glx@glx-multi-window-single-context,Fail
 glx@glx-swap-pixmap-bad,Fail
@@ -310,6 +306,18 @@ spec@ext_render_snorm@render@format 0x8f94 read fail,Fail
 spec@ext_render_snorm@render@format 0x8f95 read fail,Fail
 spec@ext_render_snorm@render@format 0x8f97 read fail,Fail
 spec@ext_transform_feedback2@draw-auto,Fail
+
+# Probably regressed with !14643
+spec@ext_transform_feedback@builtin-varyings gl_clipdistance,Fail
+spec@ext_transform_feedback@builtin-varyings gl_clipdistance[1]-no-subscript,Fail
+spec@ext_transform_feedback@builtin-varyings gl_clipdistance[2]-no-subscript,Fail
+spec@ext_transform_feedback@builtin-varyings gl_clipdistance[3]-no-subscript,Fail
+spec@ext_transform_feedback@builtin-varyings gl_clipdistance[4]-no-subscript,Fail
+spec@ext_transform_feedback@builtin-varyings gl_clipdistance[5]-no-subscript,Fail
+spec@ext_transform_feedback@builtin-varyings gl_clipdistance[6]-no-subscript,Fail
+spec@ext_transform_feedback@builtin-varyings gl_clipdistance[7]-no-subscript,Fail
+spec@ext_transform_feedback@builtin-varyings gl_clipdistance[8]-no-subscript,Fail
+
 spec@ext_transform_feedback@generatemipmap prims_generated,Fail
 spec@ext_transform_feedback@immediate-reuse,Fail
 spec@ext_transform_feedback@immediate-reuse-index-buffer,Fail
@@ -364,6 +372,11 @@ spec@ext_transform_feedback@tessellation triangles wireframe,Fail
 # MESA: error: ir3_ra() failed!
 spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-giant-temp-array,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-vs-giant-temp-array,Fail
+
+# Probably regressed with !14643
+spec@glsl-1.20@execution@clipping@fixed-clip-enables,Fail
+spec@glsl-1.20@execution@clipping@vs-clip-vertex-enables,Fail
+spec@glsl-1.30@execution@clipping@vs-clip-distance-enables,Fail
 
 spec@glsl-1.30@execution@texelfetch fs sampler3d 1x129x9-98x129x9,Fail
 spec@glsl-1.30@execution@texelfetch fs sampler3d 98x129x1-98x129x9,Fail

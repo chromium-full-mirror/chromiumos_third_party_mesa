@@ -84,15 +84,6 @@
       unreachable("Unknown hardware generation");       \
    }
 
-static void
-crocus_flush_frontbuffer(struct pipe_screen *_screen,
-                         struct pipe_context *_pipe,
-                         struct pipe_resource *resource,
-                         unsigned level, unsigned layer,
-                         void *context_private, struct pipe_box *box)
-{
-}
-
 static const char *
 crocus_get_vendor(struct pipe_screen *pscreen)
 {
@@ -282,6 +273,7 @@ crocus_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return BRW_MAX_SOL_BINDINGS / CROCUS_MAX_SOL_BUFFERS;
    case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
       return BRW_MAX_SOL_BINDINGS;
+   case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
    case PIPE_CAP_GLSL_FEATURE_LEVEL: {
       if (devinfo->verx10 >= 75)
          return 460;
@@ -291,8 +283,6 @@ crocus_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
          return 330;
       return 140;
    }
-   case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
-      return 140;
    case PIPE_CAP_CLIP_PLANES:
       if (devinfo->verx10 < 45)
          return 6;
@@ -815,7 +805,6 @@ crocus_screen_create(int fd, const struct pipe_screen_config *config)
    pscreen->get_disk_shader_cache = crocus_get_disk_shader_cache;
    pscreen->is_format_supported = crocus_is_format_supported;
    pscreen->context_create = crocus_create_context;
-   pscreen->flush_frontbuffer = crocus_flush_frontbuffer;
    pscreen->get_timestamp = crocus_get_timestamp;
    pscreen->query_memory_info = crocus_query_memory_info;
    pscreen->get_driver_query_group_info = crocus_get_monitor_group_info;

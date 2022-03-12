@@ -481,7 +481,7 @@ tu_render_pass_check_feedback_loop(struct tu_render_pass *pass)
             continue;
          for (unsigned k = 0; k < subpass->input_count; k++) {
             if (subpass->input_attachments[k].attachment == a) {
-               subpass->feedback = true;
+               subpass->feedback_loop_color = true;
                break;
             }
          }
@@ -491,7 +491,7 @@ tu_render_pass_check_feedback_loop(struct tu_render_pass *pass)
          for (unsigned k = 0; k < subpass->input_count; k++) {
             if (subpass->input_attachments[k].attachment ==
                 subpass->depth_stencil_attachment.attachment) {
-               subpass->feedback = true;
+               subpass->feedback_loop_ds = true;
                break;
             }
          }
@@ -749,6 +749,13 @@ tu_CreateRenderPass2(VkDevice _device,
       subpass->resolve_depth_stencil = is_depth_stencil_resolve_enabled(ds_resolve);
       subpass->samples = 0;
       subpass->srgb_cntl = 0;
+
+      const VkSubpassDescriptionFlagBits raster_order_access_bits =
+         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_ARM |
+         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_BIT_ARM |
+         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_STENCIL_ACCESS_BIT_ARM;
+
+      subpass->raster_order_attachment_access = desc->flags & raster_order_access_bits;
 
       subpass->multiview_mask = desc->viewMask;
 

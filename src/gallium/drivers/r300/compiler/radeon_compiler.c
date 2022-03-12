@@ -25,6 +25,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "util/u_debug.h"
 #include "pipe/p_state.h"
@@ -349,8 +350,16 @@ void rc_get_stats(struct radeon_compiler *c, struct rc_program_stats *s)
 			}
 			info = rc_get_opcode_info(tmp->U.P.RGB.Opcode);
 		}
-		if (info->IsFlowControl)
+		if (info->IsFlowControl) {
 			s->num_fc_insts++;
+			if (info->Opcode == RC_OPCODE_BGNLOOP)
+				s->num_loops++;
+		}
+		/* VS flow control was already translated to the predicate instructions */
+		if (c->type == RC_VERTEX_PROGRAM)
+			if (strstr(info->Name, "PRED") != NULL)
+				s->num_pred_insts++;
+
 		if (info->HasTexture)
 			s->num_tex_insts++;
 		s->num_insts++;
@@ -370,10 +379,10 @@ static void print_stats(struct radeon_compiler * c)
 	 * only the FS has, becasue shader-db's report.py wants all shaders to
 	 * have the same set.
 	 */
-	pipe_debug_message(c->debug, SHADER_INFO, "%s shader: %d inst, %d vinst, %d sinst, %d flowcontrol, %d tex, %d presub, %d omod, %d temps, %d consts, %d lits",
+	pipe_debug_message(c->debug, SHADER_INFO, "%s shader: %u inst, %u vinst, %u sinst, %u predicate, %u flowcontrol, %u loops, %u tex, %u presub, %u omod, %u temps, %u consts, %u lits",
 	                   c->type == RC_VERTEX_PROGRAM ? "VS" : "FS",
-	                   s.num_insts, s.num_rgb_insts, s.num_alpha_insts,
-	                   s.num_fc_insts, s.num_tex_insts, s.num_presub_ops,
+	                   s.num_insts, s.num_rgb_insts, s.num_alpha_insts, s.num_pred_insts,
+	                   s.num_fc_insts, s.num_loops, s.num_tex_insts, s.num_presub_ops,
 	                   s.num_omod_ops, s.num_temp_regs, s.num_consts, s.num_inline_literals);
 }
 
@@ -382,14 +391,14 @@ static const char *shader_name[RC_NUM_PROGRAM_TYPES] = {
 	"Fragment Program"
 };
 
-void rc_run_compiler_passes(struct radeon_compiler *c, struct radeon_compiler_pass *list)
+bool rc_run_compiler_passes(struct radeon_compiler *c, struct radeon_compiler_pass *list)
 {
 	for (unsigned i = 0; list[i].name; i++) {
 		if (list[i].predicate) {
 			list[i].run(c, list[i].user);
 
 			if (c->Error)
-				return;
+				return false;
 
 			if ((c->Debug & RC_DBG_LOG) && list[i].dump) {
 				fprintf(stderr, "%s: after '%s'\n", shader_name[c->type], list[i].name);
@@ -397,6 +406,7 @@ void rc_run_compiler_passes(struct radeon_compiler *c, struct radeon_compiler_pa
 			}
 		}
 	}
+	return true;
 }
 
 /* Executes a list of compiler passes given in the parameter 'list'. */
@@ -407,9 +417,9 @@ void rc_run_compiler(struct radeon_compiler *c, struct radeon_compiler_pass *lis
 		rc_print_program(&c->Program);
 	}
 
-	rc_run_compiler_passes(c, list);
-
-	print_stats(c);
+	if(rc_run_compiler_passes(c, list)) {
+		print_stats(c);
+	}
 }
 
 void rc_validate_final_shader(struct radeon_compiler *c, void *user)

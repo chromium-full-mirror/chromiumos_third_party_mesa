@@ -515,7 +515,8 @@ enum pipe_flush_flags
 #define PIPE_BIND_LINEAR      (1 << 21)
 #define PIPE_BIND_PROTECTED   (1 << 22) /* Resource will be protected/encrypted */
 #define PIPE_BIND_SAMPLER_REDUCTION_MINMAX (1 << 23) /* PIPE_CAP_SAMPLER_REDUCTION_MINMAX */
-#define PIPE_BIND_DRI_PRIME   (1 << 24)
+/* Resource is the DRI_PRIME blit destination. Only set on on the render GPU. */
+#define PIPE_BIND_PRIME_BLIT_DST (1 << 24)
 
 
 /**
@@ -529,7 +530,8 @@ enum pipe_flush_flags
 #define PIPE_RESOURCE_FLAG_ENCRYPTED             (1 << 5)
 #define PIPE_RESOURCE_FLAG_DONT_OVER_ALLOCATE    (1 << 6)
 #define PIPE_RESOURCE_FLAG_DONT_MAP_DIRECTLY     (1 << 7) /* for small visible VRAM */
-#define PIPE_RESOURCE_FLAG_DRV_PRIV    (1 << 8) /* driver/winsys private */
+#define PIPE_RESOURCE_FLAG_UNMAPPABLE            (1 << 8) /* implies staging transfers due to VK interop */
+#define PIPE_RESOURCE_FLAG_DRV_PRIV              (1 << 9) /* driver/winsys private */
 #define PIPE_RESOURCE_FLAG_FRONTEND_PRIV         (1 << 24) /* gallium frontend private */
 
 /**
@@ -874,6 +876,7 @@ enum pipe_cap
    PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT,
    PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR,
    PIPE_CAP_CULL_DISTANCE,
+   PIPE_CAP_CULL_DISTANCE_NOCOMBINE,
    PIPE_CAP_TGSI_VOTE,
    PIPE_CAP_MAX_WINDOW_RECTANGLES,
    PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED,
@@ -1004,6 +1007,7 @@ enum pipe_cap
    PIPE_CAP_MAX_SPARSE_ARRAY_TEXTURE_LAYERS,
    PIPE_CAP_SPARSE_TEXTURE_FULL_ARRAY_CUBE_MIPMAPS,
    PIPE_CAP_QUERY_SPARSE_TEXTURE_RESIDENCY,
+   PIPE_CAP_CLAMP_SPARSE_TEXTURE_LOD,
 
    PIPE_CAP_LAST,
    /* XXX do not add caps after PIPE_CAP_LAST! */
@@ -1281,6 +1285,12 @@ enum pipe_query_value_type
    PIPE_QUERY_TYPE_U32,
    PIPE_QUERY_TYPE_I64,
    PIPE_QUERY_TYPE_U64,
+};
+
+enum pipe_query_flags
+{
+   PIPE_QUERY_WAIT = (1 << 0),
+   PIPE_QUERY_PARTIAL = (1 << 1),
 };
 
 union pipe_color_union

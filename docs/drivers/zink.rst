@@ -58,7 +58,7 @@ OpenGL 3.0
 ^^^^^^^^^^
 
 
-For OpenGL 3.0 support, the following additional requirements needs to be
+For OpenGL 3.0 support, the following additional requirements must be
 supported:
 
 * ``VkPhysicalDeviceFeatures``:
@@ -93,7 +93,7 @@ verified:
 OpenGL 3.3
 ^^^^^^^^^^
 
-For OpenGL 3.3 support, the following additional requirements needs to be
+For OpenGL 3.3 support, the following additional requirements must be
 supported, although some of these might not actually get verified:
 
 * ``VkPhysicalDeviceFeatures``:
@@ -107,7 +107,7 @@ supported, although some of these might not actually get verified:
 OpenGL 4.0
 ^^^^^^^^^^
 
-For OpenGL 4.0 support, the following additional requirements needs to be
+For OpenGL 4.0 support, the following additional requirements must be
 supported:
 
 * ``VkPhysicalDeviceFeatures``:
@@ -129,16 +129,22 @@ supported:
 OpenGL 4.1
 ^^^^^^^^^^
 
-For OpenGL 4.1 support, the following additional ``VkPhysicalDeviceLimits``
-are required:
+For OpenGL 4.1 support, the following additional requirements must be
+supported:
 
-* ``maxImageDimension2D`` ≥ 16384
-* ``maxViewports`` ≥ 16
+* ``VkPhysicalDeviceFeatures``:
+
+  * ``multiViewport``
+
+* ``VkPhysicalDeviceLimits``
+
+  * ``maxImageDimension2D`` ≥ 16384
+  * ``maxViewports`` ≥ 16
 
 OpenGL 4.2
 ^^^^^^^^^^
 
-For OpenGL 4.2 support, the following additional requirements needs to be
+For OpenGL 4.2 support, the following additional requirements must be
 supported:
 
 * ``VkPhysicalDeviceLimits``:
@@ -171,13 +177,12 @@ supported:
 OpenGL 4.3
 ^^^^^^^^^^
 
-For OpenGL 4.3 support, the following additional requirements needs to be
+For OpenGL 4.3 support, the following additional requirements must be
 supported:
 
 * ``VkPhysicalDeviceFeatures``:
 
   * ``robustBufferAccess``
-  * ``multiViewport``
 
 * Formats requiring ``VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT``:
 
@@ -192,7 +197,7 @@ supported:
 OpenGL 4.4
 ^^^^^^^^^^
 
-For OpenGL 4.4 support, the following additional requirements needs to be
+For OpenGL 4.4 support, the following additional requirements must be
 supported:
 
 * Formats requiring ``VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT``:

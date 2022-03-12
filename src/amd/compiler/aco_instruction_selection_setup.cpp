@@ -515,6 +515,10 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_op_i2f32:
                case nir_op_i2f64:
                case nir_op_pack_half_2x16_split:
+               case nir_op_pack_unorm_2x16:
+               case nir_op_pack_snorm_2x16:
+               case nir_op_pack_uint_2x16:
+               case nir_op_pack_sint_2x16:
                case nir_op_unpack_half_2x16_split_x:
                case nir_op_unpack_half_2x16_split_y:
                case nir_op_fddx:
@@ -626,7 +630,8 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_load_viewport_x_scale:
                case nir_intrinsic_load_viewport_y_scale:
                case nir_intrinsic_load_viewport_x_offset:
-               case nir_intrinsic_load_viewport_y_offset: type = RegType::sgpr; break;
+               case nir_intrinsic_load_viewport_y_offset:
+               case nir_intrinsic_load_force_vrs_rates_amd: type = RegType::sgpr; break;
                case nir_intrinsic_load_sample_id:
                case nir_intrinsic_load_sample_mask_in:
                case nir_intrinsic_load_input:

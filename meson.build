@@ -73,6 +73,7 @@ with_tools = get_option('tools')
 if with_tools.contains('all')
   with_tools = [
     'drm-shim',
+    'dlclose-skip',
     'etnaviv',
     'freedreno',
     'glsl',
@@ -1566,7 +1567,7 @@ dep_libdrm_radeon = null_dep
 dep_libdrm_nouveau = null_dep
 dep_libdrm_intel = null_dep
 
-_drm_amdgpu_ver = '2.4.109'
+_drm_amdgpu_ver = '2.4.110'
 _drm_radeon_ver = '2.4.71'
 _drm_nouveau_ver = '2.4.102'
 _drm_intel_ver = '2.4.75'
@@ -2166,9 +2167,15 @@ endif
 # as GCC LTO drops them. See: https://bugs.freedesktop.org/show_bug.cgi?id=109391
 gcc_lto_quirk = (cc.get_id() == 'gcc') ? ['-fno-lto'] : []
 
+devenv = environment()
+
 subdir('include')
 subdir('bin')
 subdir('src')
+
+if meson.version().version_compare('>= 0.58')
+  meson.add_devenv(devenv)
+endif
 
 lines = ['',
   'prefix:          ' + get_option('prefix'),

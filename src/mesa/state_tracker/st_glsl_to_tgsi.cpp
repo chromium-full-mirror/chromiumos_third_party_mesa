@@ -3387,18 +3387,13 @@ glsl_to_tgsi_visitor::visit(ir_assignment *ir)
    assert(l.file != PROGRAM_UNDEFINED);
    assert(r.file != PROGRAM_UNDEFINED);
 
-   if (ir->condition) {
-      const bool switch_order = this->process_move_condition(ir->condition);
-      st_src_reg condition = this->result;
-
-      emit_block_mov(ir, ir->lhs->type, &l, &r, &condition, switch_order);
-   } else if (ir->rhs->as_expression() &&
-              this->instructions.get_tail() &&
-              ir->rhs == ((glsl_to_tgsi_instruction *)this->instructions.get_tail())->ir &&
-              !((glsl_to_tgsi_instruction *)this->instructions.get_tail())->is_64bit_expanded &&
-              type_size(ir->lhs->type) == 1 &&
-              !ir->lhs->type->is_64bit() &&
-              l.writemask == ((glsl_to_tgsi_instruction *)this->instructions.get_tail())->dst[0].writemask) {
+   if (ir->rhs->as_expression() &&
+       this->instructions.get_tail() &&
+       ir->rhs == ((glsl_to_tgsi_instruction *)this->instructions.get_tail())->ir &&
+       !((glsl_to_tgsi_instruction *)this->instructions.get_tail())->is_64bit_expanded &&
+       type_size(ir->lhs->type) == 1 &&
+       !ir->lhs->type->is_64bit() &&
+       l.writemask == ((glsl_to_tgsi_instruction *)this->instructions.get_tail())->dst[0].writemask) {
       /* To avoid emitting an extra MOV when assigning an expression to a
        * variable, emit the last instruction of the expression again, but
        * replace the destination register with the target of the assignment.

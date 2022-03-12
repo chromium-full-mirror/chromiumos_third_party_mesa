@@ -67,8 +67,11 @@
 
 #if __has_attribute(cleanup) && __has_attribute(unused)
 
+#define VN_TRACE_SCOPE_VAR_CONCAT(name, suffix) name##suffix
+#define VN_TRACE_SCOPE_VAR(suffix)                                           \
+   VN_TRACE_SCOPE_VAR_CONCAT(_vn_trace_scope_, suffix)
 #define VN_TRACE_SCOPE(name)                                                 \
-   int _vn_trace_scope_##__LINE__                                            \
+   int VN_TRACE_SCOPE_VAR(__LINE__)                                          \
       __attribute__((cleanup(vn_trace_scope_end), unused)) =                 \
          vn_trace_scope_begin(name)
 
@@ -134,6 +137,7 @@ enum vn_debug {
    VN_DEBUG_RESULT = 1ull << 1,
    VN_DEBUG_VTEST = 1ull << 2,
    VN_DEBUG_WSI = 1ull << 3,
+   VN_DEBUG_NO_ABORT = 1ull << 4,
 };
 
 typedef uint64_t vn_object_id;

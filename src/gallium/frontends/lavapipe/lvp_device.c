@@ -25,6 +25,7 @@
 
 #include "pipe-loader/pipe_loader.h"
 #include "git_sha1.h"
+#include "vk_cmd_enqueue_entrypoints.h"
 #include "vk_util.h"
 #include "pipe/p_config.h"
 #include "pipe/p_defines.h"
@@ -131,6 +132,7 @@ static const struct vk_device_extension_table lvp_device_extensions_supported = 
    .EXT_color_write_enable                = true,
    .EXT_conditional_rendering             = true,
    .EXT_depth_clip_enable                 = true,
+   .EXT_depth_clip_control                = true,
    .EXT_extended_dynamic_state            = true,
    .EXT_extended_dynamic_state2           = true,
    .EXT_external_memory_host              = true,
@@ -154,6 +156,29 @@ static const struct vk_device_extension_table lvp_device_extensions_supported = 
    .GOOGLE_decorate_string                = true,
    .GOOGLE_hlsl_functionality1            = true,
 };
+
+static int
+min_vertex_pipeline_param(struct pipe_screen *pscreen, enum pipe_shader_cap param)
+{
+   int val = INT_MAX;
+   for (int i = 0; i < PIPE_SHADER_COMPUTE; ++i) {
+      if (i == PIPE_SHADER_FRAGMENT ||
+          !pscreen->get_shader_param(pscreen, i,
+                                     PIPE_SHADER_CAP_MAX_INSTRUCTIONS))
+         continue;
+
+      val = MAX2(val, pscreen->get_shader_param(pscreen, i, param));
+   }
+   return val;
+}
+
+static int
+min_shader_param(struct pipe_screen *pscreen, enum pipe_shader_cap param)
+{
+   return MIN3(min_vertex_pipeline_param(pscreen, param),
+               pscreen->get_shader_param(pscreen, PIPE_SHADER_FRAGMENT, param),
+               pscreen->get_shader_param(pscreen, PIPE_SHADER_COMPUTE, param));
+}
 
 static VkResult VKAPI_CALL
 lvp_physical_device_init(struct lvp_physical_device *device,
@@ -181,6 +206,136 @@ lvp_physical_device_init(struct lvp_physical_device *device,
 
    device->max_images = device->pscreen->get_shader_param(device->pscreen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_MAX_SHADER_IMAGES);
    device->vk.supported_extensions = lvp_device_extensions_supported;
+
+   VkSampleCountFlags sample_counts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
+
+   uint64_t grid_size[3], block_size[3];
+   uint64_t max_threads_per_block, max_local_size;
+
+   device->pscreen->get_compute_param(device->pscreen, PIPE_SHADER_IR_NIR,
+                                       PIPE_COMPUTE_CAP_MAX_GRID_SIZE, grid_size);
+   device->pscreen->get_compute_param(device->pscreen, PIPE_SHADER_IR_NIR,
+                                       PIPE_COMPUTE_CAP_MAX_BLOCK_SIZE, block_size);
+   device->pscreen->get_compute_param(device->pscreen, PIPE_SHADER_IR_NIR,
+                                       PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK,
+                                       &max_threads_per_block);
+   device->pscreen->get_compute_param(device->pscreen, PIPE_SHADER_IR_NIR,
+                                       PIPE_COMPUTE_CAP_MAX_LOCAL_SIZE,
+                                       &max_local_size);
+
+   const uint64_t max_render_targets = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_RENDER_TARGETS);
+   device->device_limits = (VkPhysicalDeviceLimits) {
+      .maxImageDimension1D                      = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_2D_SIZE),
+      .maxImageDimension2D                      = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_2D_SIZE),
+      .maxImageDimension3D                      = (1 << device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_3D_LEVELS)),
+      .maxImageDimensionCube                    = (1 << device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS)),
+      .maxImageArrayLayers                      = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS),
+      .maxTexelBufferElements                   = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE),
+      .maxUniformBufferRange                    = min_shader_param(device->pscreen, PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE),
+      .maxStorageBufferRange                    = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_SHADER_BUFFER_SIZE),
+      .maxPushConstantsSize                     = MAX_PUSH_CONSTANTS_SIZE,
+      .maxMemoryAllocationCount                 = UINT32_MAX,
+      .maxSamplerAllocationCount                = 32 * 1024,
+      .bufferImageGranularity                   = 64, /* A cache line */
+      .sparseAddressSpaceSize                   = 0,
+      .maxBoundDescriptorSets                   = MAX_SETS,
+      .maxPerStageDescriptorSamplers            = min_shader_param(device->pscreen, PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS),
+      .maxPerStageDescriptorUniformBuffers      = min_shader_param(device->pscreen, PIPE_SHADER_CAP_MAX_CONST_BUFFERS) - 1,
+      .maxPerStageDescriptorStorageBuffers      = min_shader_param(device->pscreen, PIPE_SHADER_CAP_MAX_SHADER_BUFFERS),
+      .maxPerStageDescriptorSampledImages       = min_shader_param(device->pscreen, PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS),
+      .maxPerStageDescriptorStorageImages       = min_shader_param(device->pscreen, PIPE_SHADER_CAP_MAX_SHADER_IMAGES),
+      .maxPerStageDescriptorInputAttachments    = 8,
+      .maxPerStageResources                     = 128,
+      .maxDescriptorSetSamplers                 = 32 * 1024,
+      .maxDescriptorSetUniformBuffers           = 256,
+      .maxDescriptorSetUniformBuffersDynamic    = 256,
+      .maxDescriptorSetStorageBuffers           = 256,
+      .maxDescriptorSetStorageBuffersDynamic    = 256,
+      .maxDescriptorSetSampledImages            = 256,
+      .maxDescriptorSetStorageImages            = 256,
+      .maxDescriptorSetInputAttachments         = 256,
+      .maxVertexInputAttributes                 = 32,
+      .maxVertexInputBindings                   = 32,
+      .maxVertexInputAttributeOffset            = 2047,
+      .maxVertexInputBindingStride              = 2048,
+      .maxVertexOutputComponents                = 128,
+      .maxTessellationGenerationLevel           = 64,
+      .maxTessellationPatchSize                 = 32,
+      .maxTessellationControlPerVertexInputComponents = 128,
+      .maxTessellationControlPerVertexOutputComponents = 128,
+      .maxTessellationControlPerPatchOutputComponents = 128,
+      .maxTessellationControlTotalOutputComponents = 4096,
+      .maxTessellationEvaluationInputComponents = 128,
+      .maxTessellationEvaluationOutputComponents = 128,
+      .maxGeometryShaderInvocations             = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_GS_INVOCATIONS),
+      .maxGeometryInputComponents               = 64,
+      .maxGeometryOutputComponents              = 128,
+      .maxGeometryOutputVertices                = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_GEOMETRY_OUTPUT_VERTICES),
+      .maxGeometryTotalOutputComponents         = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS),
+      .maxFragmentInputComponents               = 128,
+      .maxFragmentOutputAttachments             = 8,
+      .maxFragmentDualSrcAttachments            = 2,
+      .maxFragmentCombinedOutputResources       = max_render_targets +
+                                                  device->pscreen->get_shader_param(device->pscreen, PIPE_SHADER_FRAGMENT,
+                                                     PIPE_SHADER_CAP_MAX_SHADER_BUFFERS) +
+                                                  device->pscreen->get_shader_param(device->pscreen, PIPE_SHADER_FRAGMENT,
+                                                     PIPE_SHADER_CAP_MAX_SHADER_IMAGES),
+      .maxComputeSharedMemorySize               = max_local_size,
+      .maxComputeWorkGroupCount                 = { grid_size[0], grid_size[1], grid_size[2] },
+      .maxComputeWorkGroupInvocations           = max_threads_per_block,
+      .maxComputeWorkGroupSize                  = { block_size[0], block_size[1], block_size[2] },
+      .subPixelPrecisionBits                    = device->pscreen->get_param(device->pscreen, PIPE_CAP_RASTERIZER_SUBPIXEL_BITS),
+      .subTexelPrecisionBits                    = 8,
+      .mipmapPrecisionBits                      = 4,
+      .maxDrawIndexedIndexValue                 = UINT32_MAX,
+      .maxDrawIndirectCount                     = UINT32_MAX,
+      .maxSamplerLodBias                        = 16,
+      .maxSamplerAnisotropy                     = 16,
+      .maxViewports                             = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_VIEWPORTS),
+      .maxViewportDimensions                    = { (1 << 14), (1 << 14) },
+      .viewportBoundsRange                      = { -32768.0, 32768.0 },
+      .viewportSubPixelBits                     = device->pscreen->get_param(device->pscreen, PIPE_CAP_VIEWPORT_SUBPIXEL_BITS),
+      .minMemoryMapAlignment                    = device->pscreen->get_param(device->pscreen, PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT),
+      .minTexelBufferOffsetAlignment            = device->pscreen->get_param(device->pscreen, PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT),
+      .minUniformBufferOffsetAlignment          = device->pscreen->get_param(device->pscreen, PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT),
+      .minStorageBufferOffsetAlignment          = device->pscreen->get_param(device->pscreen, PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT),
+      .minTexelOffset                           = device->pscreen->get_param(device->pscreen, PIPE_CAP_MIN_TEXEL_OFFSET),
+      .maxTexelOffset                           = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXEL_OFFSET),
+      .minTexelGatherOffset                     = device->pscreen->get_param(device->pscreen, PIPE_CAP_MIN_TEXTURE_GATHER_OFFSET),
+      .maxTexelGatherOffset                     = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_GATHER_OFFSET),
+      .minInterpolationOffset                   = -2, /* FIXME */
+      .maxInterpolationOffset                   = 2, /* FIXME */
+      .subPixelInterpolationOffsetBits          = 8, /* FIXME */
+      .maxFramebufferWidth                      = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_2D_SIZE),
+      .maxFramebufferHeight                     = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_2D_SIZE),
+      .maxFramebufferLayers                     = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS),
+      .framebufferColorSampleCounts             = sample_counts,
+      .framebufferDepthSampleCounts             = sample_counts,
+      .framebufferStencilSampleCounts           = sample_counts,
+      .framebufferNoAttachmentsSampleCounts     = sample_counts,
+      .maxColorAttachments                      = max_render_targets,
+      .sampledImageColorSampleCounts            = sample_counts,
+      .sampledImageIntegerSampleCounts          = sample_counts,
+      .sampledImageDepthSampleCounts            = sample_counts,
+      .sampledImageStencilSampleCounts          = sample_counts,
+      .storageImageSampleCounts                 = sample_counts,
+      .maxSampleMaskWords                       = 1,
+      .timestampComputeAndGraphics              = true,
+      .timestampPeriod                          = 1,
+      .maxClipDistances                         = 8,
+      .maxCullDistances                         = 8,
+      .maxCombinedClipAndCullDistances          = 8,
+      .discreteQueuePriorities                  = 2,
+      .pointSizeRange                           = { 0.0, device->pscreen->get_paramf(device->pscreen, PIPE_CAPF_MAX_POINT_SIZE) },
+      .lineWidthRange                           = { 1.0, device->pscreen->get_paramf(device->pscreen, PIPE_CAPF_MAX_LINE_WIDTH) },
+      .pointSizeGranularity                     = (1.0 / 8.0),
+      .lineWidthGranularity                     = 1.0 / 128.0,
+      .strictLines                              = true,
+      .standardSampleLocations                  = true,
+      .optimalBufferCopyOffsetAlignment         = 128,
+      .optimalBufferCopyRowPitchAlignment       = 128,
+      .nonCoherentAtomSize                      = 64,
+   };
    result = lvp_init_wsi(device);
    if (result != VK_SUCCESS) {
       vk_physical_device_finish(&device->vk);
@@ -368,29 +523,6 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_EnumeratePhysicalDeviceGroups(
    }
 
    return vk_outarray_status(&out);
-}
-
-static int
-min_vertex_pipeline_param(struct pipe_screen *pscreen, enum pipe_shader_cap param)
-{
-   int val = INT_MAX;
-   for (int i = 0; i < PIPE_SHADER_COMPUTE; ++i) {
-      if (i == PIPE_SHADER_FRAGMENT ||
-          !pscreen->get_shader_param(pscreen, i,
-                                     PIPE_SHADER_CAP_MAX_INSTRUCTIONS))
-         continue;
-
-      val = MAX2(val, pscreen->get_shader_param(pscreen, i, param));
-   }
-   return val;
-}
-
-static int
-min_shader_param(struct pipe_screen *pscreen, enum pipe_shader_cap param)
-{
-   return MIN3(min_vertex_pipeline_param(pscreen, param),
-               pscreen->get_shader_param(pscreen, PIPE_SHADER_FRAGMENT, param),
-               pscreen->get_shader_param(pscreen, PIPE_SHADER_COMPUTE, param));
 }
 
 VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures(
@@ -592,6 +724,13 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures2(
          features->vertexInputDynamicState = true;
          break;
       }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT: {
+         VkPhysicalDeviceDepthClipControlFeaturesEXT *features =
+            (VkPhysicalDeviceDepthClipControlFeaturesEXT *)ext;
+         features->depthClipControl = true;
+         break;
+      }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT: {
          VkPhysicalDeviceTransformFeedbackFeaturesEXT *features =
             (VkPhysicalDeviceTransformFeedbackFeaturesEXT*)ext;
@@ -690,144 +829,13 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceProperties(VkPhysicalDevice phys
 {
    LVP_FROM_HANDLE(lvp_physical_device, pdevice, physicalDevice);
 
-   VkSampleCountFlags sample_counts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
-
-   uint64_t grid_size[3], block_size[3];
-   uint64_t max_threads_per_block, max_local_size;
-
-   pdevice->pscreen->get_compute_param(pdevice->pscreen, PIPE_SHADER_IR_NIR,
-                                       PIPE_COMPUTE_CAP_MAX_GRID_SIZE, grid_size);
-   pdevice->pscreen->get_compute_param(pdevice->pscreen, PIPE_SHADER_IR_NIR,
-                                       PIPE_COMPUTE_CAP_MAX_BLOCK_SIZE, block_size);
-   pdevice->pscreen->get_compute_param(pdevice->pscreen, PIPE_SHADER_IR_NIR,
-                                       PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK,
-                                       &max_threads_per_block);
-   pdevice->pscreen->get_compute_param(pdevice->pscreen, PIPE_SHADER_IR_NIR,
-                                       PIPE_COMPUTE_CAP_MAX_LOCAL_SIZE,
-                                       &max_local_size);
-
-   const uint64_t max_render_targets = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_RENDER_TARGETS);
-
-   VkPhysicalDeviceLimits limits = {
-      .maxImageDimension1D                      = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_TEXTURE_2D_SIZE),
-      .maxImageDimension2D                      = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_TEXTURE_2D_SIZE),
-      .maxImageDimension3D                      = (1 << pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_TEXTURE_3D_LEVELS)),
-      .maxImageDimensionCube                    = (1 << pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS)),
-      .maxImageArrayLayers                      = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS),
-      .maxTexelBufferElements                   = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE),
-      .maxUniformBufferRange                    = min_shader_param(pdevice->pscreen, PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE),
-      .maxStorageBufferRange                    = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_SHADER_BUFFER_SIZE),
-      .maxPushConstantsSize                     = MAX_PUSH_CONSTANTS_SIZE,
-      .maxMemoryAllocationCount                 = UINT32_MAX,
-      .maxSamplerAllocationCount                = 32 * 1024,
-      .bufferImageGranularity                   = 64, /* A cache line */
-      .sparseAddressSpaceSize                   = 0,
-      .maxBoundDescriptorSets                   = MAX_SETS,
-      .maxPerStageDescriptorSamplers            = min_shader_param(pdevice->pscreen, PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS),
-      .maxPerStageDescriptorUniformBuffers      = min_shader_param(pdevice->pscreen, PIPE_SHADER_CAP_MAX_CONST_BUFFERS) - 1,
-      .maxPerStageDescriptorStorageBuffers      = min_shader_param(pdevice->pscreen, PIPE_SHADER_CAP_MAX_SHADER_BUFFERS),
-      .maxPerStageDescriptorSampledImages       = min_shader_param(pdevice->pscreen, PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS),
-      .maxPerStageDescriptorStorageImages       = min_shader_param(pdevice->pscreen, PIPE_SHADER_CAP_MAX_SHADER_IMAGES),
-      .maxPerStageDescriptorInputAttachments    = 8,
-      .maxPerStageResources                     = 128,
-      .maxDescriptorSetSamplers                 = 32 * 1024,
-      .maxDescriptorSetUniformBuffers           = 256,
-      .maxDescriptorSetUniformBuffersDynamic    = 256,
-      .maxDescriptorSetStorageBuffers           = 256,
-      .maxDescriptorSetStorageBuffersDynamic    = 256,
-      .maxDescriptorSetSampledImages            = 256,
-      .maxDescriptorSetStorageImages            = 256,
-      .maxDescriptorSetInputAttachments         = 256,
-      .maxVertexInputAttributes                 = 32,
-      .maxVertexInputBindings                   = 32,
-      .maxVertexInputAttributeOffset            = 2047,
-      .maxVertexInputBindingStride              = 2048,
-      .maxVertexOutputComponents                = 128,
-      .maxTessellationGenerationLevel           = 64,
-      .maxTessellationPatchSize                 = 32,
-      .maxTessellationControlPerVertexInputComponents = 128,
-      .maxTessellationControlPerVertexOutputComponents = 128,
-      .maxTessellationControlPerPatchOutputComponents = 128,
-      .maxTessellationControlTotalOutputComponents = 4096,
-      .maxTessellationEvaluationInputComponents = 128,
-      .maxTessellationEvaluationOutputComponents = 128,
-      .maxGeometryShaderInvocations             = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_GS_INVOCATIONS),
-      .maxGeometryInputComponents               = 64,
-      .maxGeometryOutputComponents              = 128,
-      .maxGeometryOutputVertices                = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_GEOMETRY_OUTPUT_VERTICES),
-      .maxGeometryTotalOutputComponents         = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS),
-      .maxFragmentInputComponents               = 128,
-      .maxFragmentOutputAttachments             = 8,
-      .maxFragmentDualSrcAttachments            = 2,
-      .maxFragmentCombinedOutputResources       = max_render_targets +
-                                                  pdevice->pscreen->get_shader_param(pdevice->pscreen, PIPE_SHADER_FRAGMENT,
-                                                     PIPE_SHADER_CAP_MAX_SHADER_BUFFERS) +
-                                                  pdevice->pscreen->get_shader_param(pdevice->pscreen, PIPE_SHADER_FRAGMENT,
-                                                     PIPE_SHADER_CAP_MAX_SHADER_IMAGES),
-      .maxComputeSharedMemorySize               = max_local_size,
-      .maxComputeWorkGroupCount                 = { grid_size[0], grid_size[1], grid_size[2] },
-      .maxComputeWorkGroupInvocations           = max_threads_per_block,
-      .maxComputeWorkGroupSize                  = { block_size[0], block_size[1], block_size[2] },
-      .subPixelPrecisionBits                    = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_RASTERIZER_SUBPIXEL_BITS),
-      .subTexelPrecisionBits                    = 8,
-      .mipmapPrecisionBits                      = 4,
-      .maxDrawIndexedIndexValue                 = UINT32_MAX,
-      .maxDrawIndirectCount                     = UINT32_MAX,
-      .maxSamplerLodBias                        = 16,
-      .maxSamplerAnisotropy                     = 16,
-      .maxViewports                             = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_VIEWPORTS),
-      .maxViewportDimensions                    = { (1 << 14), (1 << 14) },
-      .viewportBoundsRange                      = { -32768.0, 32768.0 },
-      .viewportSubPixelBits                     = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_VIEWPORT_SUBPIXEL_BITS),
-      .minMemoryMapAlignment                    = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT),
-      .minTexelBufferOffsetAlignment            = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT),
-      .minUniformBufferOffsetAlignment          = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT),
-      .minStorageBufferOffsetAlignment          = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT),
-      .minTexelOffset                           = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MIN_TEXEL_OFFSET),
-      .maxTexelOffset                           = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_TEXEL_OFFSET),
-      .minTexelGatherOffset                     = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MIN_TEXTURE_GATHER_OFFSET),
-      .maxTexelGatherOffset                     = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_TEXTURE_GATHER_OFFSET),
-      .minInterpolationOffset                   = -2, /* FIXME */
-      .maxInterpolationOffset                   = 2, /* FIXME */
-      .subPixelInterpolationOffsetBits          = 8, /* FIXME */
-      .maxFramebufferWidth                      = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_TEXTURE_2D_SIZE),
-      .maxFramebufferHeight                     = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_TEXTURE_2D_SIZE),
-      .maxFramebufferLayers                     = pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS),
-      .framebufferColorSampleCounts             = sample_counts,
-      .framebufferDepthSampleCounts             = sample_counts,
-      .framebufferStencilSampleCounts           = sample_counts,
-      .framebufferNoAttachmentsSampleCounts     = sample_counts,
-      .maxColorAttachments                      = max_render_targets,
-      .sampledImageColorSampleCounts            = sample_counts,
-      .sampledImageIntegerSampleCounts          = sample_counts,
-      .sampledImageDepthSampleCounts            = sample_counts,
-      .sampledImageStencilSampleCounts          = sample_counts,
-      .storageImageSampleCounts                 = sample_counts,
-      .maxSampleMaskWords                       = 1,
-      .timestampComputeAndGraphics              = true,
-      .timestampPeriod                          = 1,
-      .maxClipDistances                         = 8,
-      .maxCullDistances                         = 8,
-      .maxCombinedClipAndCullDistances          = 8,
-      .discreteQueuePriorities                  = 2,
-      .pointSizeRange                           = { 0.0, pdevice->pscreen->get_paramf(pdevice->pscreen, PIPE_CAPF_MAX_POINT_SIZE) },
-      .lineWidthRange                           = { 1.0, pdevice->pscreen->get_paramf(pdevice->pscreen, PIPE_CAPF_MAX_LINE_WIDTH) },
-      .pointSizeGranularity                     = (1.0 / 8.0),
-      .lineWidthGranularity                     = 1.0 / 128.0,
-      .strictLines                              = true,
-      .standardSampleLocations                  = true,
-      .optimalBufferCopyOffsetAlignment         = 128,
-      .optimalBufferCopyRowPitchAlignment       = 128,
-      .nonCoherentAtomSize                      = 64,
-   };
-
    *pProperties = (VkPhysicalDeviceProperties) {
       .apiVersion = LVP_API_VERSION,
       .driverVersion = 1,
       .vendorID = VK_VENDOR_ID_MESA,
       .deviceID = 0,
       .deviceType = VK_PHYSICAL_DEVICE_TYPE_CPU,
-      .limits = limits,
+      .limits = pdevice->device_limits,
       .sparseProperties = {0},
    };
 
@@ -843,8 +851,8 @@ lvp_get_physical_device_properties_1_1(struct lvp_physical_device *pdevice,
 {
    assert(p->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES);
 
-   memset(p->deviceUUID, 0, VK_UUID_SIZE);
-   memset(p->driverUUID, 0, VK_UUID_SIZE);
+   pdevice->pscreen->get_device_uuid(pdevice->pscreen, (char*)(p->deviceUUID));
+   pdevice->pscreen->get_driver_uuid(pdevice->pscreen, (char*)(p->driverUUID));
    memset(p->deviceLUID, 0, VK_LUID_SIZE);
    /* The LUID is for Windows. */
    p->deviceLUIDValid = false;
@@ -1181,16 +1189,27 @@ set_last_fence(struct lvp_device *device, struct pipe_fence_handle *handle, uint
 
 static void
 thread_flush(struct lvp_device *device, struct lvp_fence *fence, uint64_t timeline,
+             unsigned num_signal_semaphores, struct lvp_semaphore **semaphores,
              unsigned num_timelines, struct lvp_semaphore_timeline **timelines)
 {
    struct pipe_fence_handle *handle = NULL;
    device->queue.ctx->flush(device->queue.ctx, &handle, 0);
    if (fence)
-      fence->handle = handle;
+      device->pscreen->fence_reference(device->pscreen, &fence->handle, handle);
+   for (unsigned i = 0; i < num_signal_semaphores; i++) {
+      struct lvp_semaphore *sema = semaphores[i];
+      if (!sema->is_timeline) {
+         simple_mtx_lock(&sema->lock);
+         device->pscreen->fence_reference(device->pscreen, &sema->handle, handle);
+         simple_mtx_unlock(&sema->lock);
+      }
+   }
    set_last_fence(device, handle, timeline);
    /* this is the array of signaling timeline semaphore links */
    for (unsigned i = 0; i < num_timelines; i++)
-      timelines[i]->fence = handle;
+      device->pscreen->fence_reference(device->pscreen, &timelines[i]->fence, handle);
+
+   device->pscreen->fence_reference(device->pscreen, &handle, NULL);
 }
 
 /* get a new timeline link for creating a new signal event
@@ -1222,7 +1241,8 @@ get_semaphore_link(struct lvp_semaphore *sema)
  * sema->lock MUST be locked before calling
  */
 static void
-prune_semaphore_links(struct lvp_semaphore *sema, uint64_t timeline)
+prune_semaphore_links(struct lvp_device *device,
+                      struct lvp_semaphore *sema, uint64_t timeline)
 {
    if (!timeline)
       /* zero isn't a valid id to prune with */
@@ -1237,7 +1257,7 @@ prune_semaphore_links(struct lvp_semaphore *sema, uint64_t timeline)
       util_dynarray_append(&sema->links, struct lvp_semaphore_timeline*, tl);
       tl = tl->next;
       cur->next = NULL;
-      cur->fence = NULL;
+      device->pscreen->fence_reference(device->pscreen, &cur->fence, NULL);
    }
    /* this is now the current timeline link */
    sema->timeline = tl;
@@ -1291,6 +1311,18 @@ static VkResult wait_semaphores(struct lvp_device *device,
          }
          const uint64_t waitval = pWaitInfo->pValues[i];
          LVP_FROM_HANDLE(lvp_semaphore, sema, pWaitInfo->pSemaphores[i]);
+
+         if (!sema->is_timeline) {
+            simple_mtx_lock(&sema->lock);
+            if (sema->handle) {
+               if (device->pscreen->fence_finish(device->pscreen, NULL, sema->handle, wait_interval)) {
+                  tl_array[i].done = true;
+                  num_remaining--;
+               }
+            }
+            simple_mtx_unlock(&sema->lock);
+            continue;
+         }
          if (sema->current >= waitval) {
             tl_array[i].done = true;
             num_remaining--;
@@ -1300,7 +1332,7 @@ static VkResult wait_semaphores(struct lvp_device *device,
             /* no timeline link was available yet: try to find one */
             simple_mtx_lock(&sema->lock);
             /* always prune first to update current timeline id */
-            prune_semaphore_links(sema, device->queue.last_finished);
+            prune_semaphore_links(device, sema, device->queue.last_finished);
             tl_array[i].tl = find_semaphore_timeline(sema, waitval);
             if (timeout && !tl_array[i].tl) {
                /* still no timeline link available:
@@ -1343,8 +1375,13 @@ void
 queue_thread_noop(void *data, void *gdata, int thread_index)
 {
    struct lvp_device *device = gdata;
-   struct lvp_fence *fence = data;
-   thread_flush(device, fence, fence->timeline, 0, NULL);
+   struct lvp_queue_noop *noop = data;
+
+   struct lvp_fence *fence = noop->fence;
+   struct lvp_semaphore *semaphore = noop->sema;
+
+   thread_flush(device, fence, fence ? fence->timeline : 0, semaphore ? 1 : 0, &semaphore, 0, NULL);
+   free(noop);
 }
 
 static void
@@ -1370,7 +1407,7 @@ queue_thread(void *data, void *gdata, int thread_index)
       lvp_execute_cmds(queue->device, queue, task->cmd_buffers[i]);
    }
 
-   thread_flush(device, task->fence, task->timeline, task->timeline_count, task->timelines);
+   thread_flush(device, task->fence, task->timeline, task->signal_count, task->signals, task->timeline_count, task->timelines);
    free(task);
 }
 
@@ -1409,6 +1446,23 @@ lvp_queue_finish(struct lvp_queue *queue)
    vk_queue_finish(&queue->vk);
 }
 
+static void
+ref_pipeline_layout(struct vk_device *vk_device, VkPipelineLayout _layout)
+{
+   LVP_FROM_HANDLE(lvp_pipeline_layout, layout, _layout);
+
+   lvp_pipeline_layout_ref(layout);
+}
+
+static void
+unref_pipeline_layout(struct vk_device *vk_device, VkPipelineLayout _layout)
+{
+   struct lvp_device *device = container_of(vk_device, struct lvp_device, vk);
+   LVP_FROM_HANDLE(lvp_pipeline_layout, layout, _layout);
+
+   lvp_pipeline_layout_unref(device, layout);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDevice(
    VkPhysicalDevice                            physicalDevice,
    const VkDeviceCreateInfo*                   pCreateInfo,
@@ -1423,15 +1477,19 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDevice(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
 
+   size_t state_size = lvp_get_rendering_state_size();
    device = vk_zalloc2(&physical_device->vk.instance->alloc, pAllocator,
-                       sizeof(*device), 8,
+                       sizeof(*device) + state_size, 8,
                        VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
    if (!device)
       return vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
+   device->queue.state = device + 1;
+
    struct vk_device_dispatch_table dispatch_table;
    vk_device_dispatch_table_from_entrypoints(&dispatch_table,
       &lvp_device_entrypoints, true);
+   lvp_add_enqueue_cmd_entrypoints(&dispatch_table);
    vk_device_dispatch_table_from_entrypoints(&dispatch_table,
       &wsi_device_entrypoints, false);
    VkResult result = vk_device_init(&device->vk,
@@ -1445,6 +1503,9 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDevice(
 
    device->instance = (struct lvp_instance *)physical_device->vk.instance;
    device->physical_device = physical_device;
+
+   device->vk.ref_pipeline_layout = ref_pipeline_layout;
+   device->vk.unref_pipeline_layout = unref_pipeline_layout;
 
    device->pscreen = physical_device->pscreen;
 
@@ -1525,16 +1586,18 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_QueueSubmit(
       uint64_t timeline = ++queue->timeline;
       struct lvp_queue_work *task = malloc(sizeof(struct lvp_queue_work) +
                                            pSubmits[i].commandBufferCount * sizeof(struct lvp_cmd_buffer *) +
-                                           pSubmits[i].signalSemaphoreCount * sizeof(struct lvp_semaphore_timeline*) +
+                                           pSubmits[i].signalSemaphoreCount * (sizeof(struct lvp_semaphore_timeline*) + sizeof(struct lvp_semaphore *)) +
                                            pSubmits[i].waitSemaphoreCount * (sizeof(VkSemaphore) + sizeof(uint64_t)));
       task->cmd_buffer_count = pSubmits[i].commandBufferCount;
       task->timeline_count = pSubmits[i].signalSemaphoreCount;
+      task->signal_count = pSubmits[i].signalSemaphoreCount;
       task->wait_count = pSubmits[i].waitSemaphoreCount;
       task->fence = fence;
       task->timeline = timeline;
       task->cmd_buffers = (struct lvp_cmd_buffer **)(task + 1);
       task->timelines = (struct lvp_semaphore_timeline**)((uint8_t*)task->cmd_buffers + pSubmits[i].commandBufferCount * sizeof(struct lvp_cmd_buffer *));
-      task->waits = (VkSemaphore*)((uint8_t*)task->timelines + pSubmits[i].signalSemaphoreCount * sizeof(struct lvp_semaphore_timeline *));
+      task->signals = (struct lvp_semaphore **)((uint8_t*)task->timelines + pSubmits[i].signalSemaphoreCount * sizeof(struct lvp_semaphore_timeline *));
+      task->waits = (VkSemaphore*)((uint8_t*)task->signals + pSubmits[i].signalSemaphoreCount * sizeof(struct lvp_semaphore *));
       task->wait_vals = (uint64_t*)((uint8_t*)task->waits + pSubmits[i].waitSemaphoreCount * sizeof(VkSemaphore));
 
       unsigned c = 0;
@@ -1545,14 +1608,14 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_QueueSubmit(
       unsigned s = 0;
       for (unsigned j = 0; j < pSubmits[i].signalSemaphoreCount; j++) {
          LVP_FROM_HANDLE(lvp_semaphore, sema, pSubmits[i].pSignalSemaphores[j]);
+         task->signals[j] = sema;
          if (!sema->is_timeline) {
-            /* non-timeline semaphores never matter to lavapipe */
             task->timeline_count--;
             continue;
          }
          simple_mtx_lock(&sema->lock);
          /* always prune first to make links available and update timeline id */
-         prune_semaphore_links(sema, queue->last_finished);
+         prune_semaphore_links(queue->device, sema, queue->last_finished);
          if (sema->current < info->pSignalSemaphoreValues[j]) {
             /* only signal semaphores if the new id is >= the current one */
             struct lvp_semaphore_timeline *tl = get_semaphore_link(sema);
@@ -1568,13 +1631,14 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_QueueSubmit(
       for (unsigned j = 0; j < pSubmits[i].waitSemaphoreCount; j++) {
          LVP_FROM_HANDLE(lvp_semaphore, sema, pSubmits[i].pWaitSemaphores[j]);
          if (!sema->is_timeline) {
-            /* non-timeline semaphores never matter to lavapipe */
-            task->wait_count--;
+            task->waits[w] = pSubmits[i].pWaitSemaphores[j];
+            task->wait_vals[w] = 0;
+            w++;
             continue;
          }
          simple_mtx_lock(&sema->lock);
          /* always prune first to update timeline id */
-         prune_semaphore_links(sema, queue->last_finished);
+         prune_semaphore_links(queue->device, sema, queue->last_finished);
          if (info->pWaitSemaphoreValues[j] &&
              pSubmits[i].pWaitDstStageMask && pSubmits[i].pWaitDstStageMask[j] &&
              sema->current < info->pWaitSemaphoreValues[j]) {
@@ -1602,9 +1666,13 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_QueueSubmit(
    if (!submitCount && fence) {
       /* special case where a fence is created to use as a synchronization point */
       fence->timeline = p_atomic_inc_return(&queue->timeline);
-      util_queue_add_job(&queue->queue, fence, &fence->fence, queue_thread_noop, NULL, 0);
+      struct lvp_queue_noop *noop = malloc(sizeof(struct lvp_queue_noop));
+      if (!noop)
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      noop->fence = fence;
+      noop->sema = NULL;
+      util_queue_add_job(&queue->queue, noop, &fence->fence, queue_thread_noop, NULL, 0);
    }
-
    return VK_SUCCESS;
 }
 
@@ -2239,8 +2307,10 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_WaitForFences(
       if (!util_queue_fence_wait_timeout(&fence->fence, abs_timeout))
          return VK_TIMEOUT;
 
-      int64_t time_ns = os_time_get_nano();
-      timeout = abs_timeout > time_ns ? abs_timeout - time_ns : 0;
+      if (timeout != OS_TIMEOUT_INFINITE) {
+         int64_t time_ns = os_time_get_nano();
+         timeout = abs_timeout > time_ns ? abs_timeout - time_ns : 0;
+      }
    }
 
    if (!fence->handle ||
@@ -2275,13 +2345,15 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateSemaphore(
 
    const VkSemaphoreTypeCreateInfo *info = vk_find_struct_const(pCreateInfo->pNext, SEMAPHORE_TYPE_CREATE_INFO);
    sema->is_timeline = info && info->semaphoreType == VK_SEMAPHORE_TYPE_TIMELINE;
+   simple_mtx_init(&sema->lock, mtx_plain);
+   sema->handle = NULL;
    if (sema->is_timeline) {
       sema->is_timeline = true;
       sema->timeline = NULL;
       sema->current = info->initialValue;
       sema->mem = ralloc_context(NULL);
       util_dynarray_init(&sema->links, sema->mem);
-      simple_mtx_init(&sema->lock, mtx_plain);
+
       mtx_init(&sema->submit_lock, mtx_plain);
       cnd_init(&sema->submit);
    }
@@ -2307,6 +2379,8 @@ VKAPI_ATTR void VKAPI_CALL lvp_DestroySemaphore(
       mtx_destroy(&sema->submit_lock);
       cnd_destroy(&sema->submit);
    }
+   if (sema->handle)
+      device->pscreen->fence_reference(device->pscreen, &sema->handle, NULL);
    vk_object_base_finish(&sema->base);
    vk_free2(&device->vk.alloc, pAllocator, sema);
 }
@@ -2329,7 +2403,7 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_GetSemaphoreCounterValue(
    LVP_FROM_HANDLE(lvp_device, device, _device);
    LVP_FROM_HANDLE(lvp_semaphore, sema, _semaphore);
    simple_mtx_lock(&sema->lock);
-   prune_semaphore_links(sema, device->queue.last_finished);
+   prune_semaphore_links(device, sema, device->queue.last_finished);
    *pValue = sema->current;
    simple_mtx_unlock(&sema->lock);
    return VK_SUCCESS;
@@ -2347,7 +2421,7 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_SignalSemaphore(
       sema->current = pSignalInfo->value;
    cnd_broadcast(&sema->submit);
    simple_mtx_lock(&sema->lock);
-   prune_semaphore_links(sema, device->queue.last_finished);
+   prune_semaphore_links(device, sema, device->queue.last_finished);
    simple_mtx_unlock(&sema->lock);
    return VK_SUCCESS;
 }

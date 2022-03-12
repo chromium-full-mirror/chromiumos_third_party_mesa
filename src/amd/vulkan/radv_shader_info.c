@@ -298,6 +298,9 @@ gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
    case nir_intrinsic_load_sbt_amd:
       info->cs.uses_sbt = true;
       break;
+   case nir_intrinsic_load_force_vrs_rates_amd:
+      info->force_vrs_per_vertex = true;
+      break;
    default:
       break;
    }
@@ -678,15 +681,10 @@ radv_nir_shader_info_pass(struct radv_device *device, const struct nir_shader *n
             outinfo->writes_layer = true;
       }
 
-      /* VS/TES/GS: shading rate is per-vertex, MS: it's per-primitive. */
-      bool force_vrs_per_vertex =
-         device->force_vrs != RADV_FORCE_VRS_NONE && nir->info.stage != MESA_SHADER_MESH;
-      bool writes_primitive_shading_rate =
-         outinfo->writes_primitive_shading_rate || force_vrs_per_vertex;
       int pos_written = 0x1;
 
       if (outinfo->writes_pointsize || outinfo->writes_viewport_index || outinfo->writes_layer ||
-          writes_primitive_shading_rate)
+          outinfo->writes_primitive_shading_rate)
          pos_written |= 1 << 1;
 
       unsigned num_clip_distances = util_bitcount(outinfo->clip_dist_mask);

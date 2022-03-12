@@ -100,7 +100,7 @@ struct ttn_compile {
 #define ttn_channel(b, src, swiz) \
    nir_channel(b, src, TGSI_SWIZZLE_##swiz)
 
-gl_varying_slot
+static gl_varying_slot
 tgsi_varying_semantic_to_slot(unsigned semantic, unsigned index)
 {
    switch (semantic) {
@@ -2324,6 +2324,7 @@ ttn_compile_init(const void *tgsi_tokens,
    s->info.num_ubos = util_last_bit(scan.const_buffers_declared >> 1);
    s->info.num_images = util_last_bit(scan.images_declared);
    s->info.num_textures = util_last_bit(scan.samplers_declared);
+   s->info.internal = false;
 
    for (unsigned i = 0; i < TGSI_PROPERTY_COUNT; i++) {
       unsigned value = scan.properties[i];

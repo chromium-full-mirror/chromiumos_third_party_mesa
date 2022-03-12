@@ -349,6 +349,15 @@ void ir_print_visitor::visit(ir_texture *ir)
       }
    }
 
+   if (ir->op == ir_tex || ir->op == ir_txb || ir->op == ir_txd) {
+      if (ir->clamp) {
+         fprintf(f, " ");
+         ir->clamp->accept(this);
+      } else {
+         fprintf(f, " ()");
+      }
+   }
+
    fprintf(f, " ");
    switch (ir->op)
    {
@@ -434,9 +443,6 @@ void ir_print_visitor::visit(ir_dereference_record *ir)
 void ir_print_visitor::visit(ir_assignment *ir)
 {
    fprintf(f, "(assign ");
-
-   if (ir->condition)
-      ir->condition->accept(this);
 
    char mask[5];
    unsigned j = 0;

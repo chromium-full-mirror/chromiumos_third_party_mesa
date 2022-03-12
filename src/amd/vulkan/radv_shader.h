@@ -60,6 +60,8 @@ struct radv_pipeline_key {
    uint32_t optimisations_disabled : 1;
    uint32_t invariant_geom : 1;
    uint32_t use_ngg : 1;
+   uint32_t adjust_frag_coord_z : 1;
+   uint32_t disable_aniso_single_level : 1;
 
    struct {
       uint32_t instance_rate_inputs;
@@ -84,12 +86,14 @@ struct radv_pipeline_key {
       uint32_t col_format;
       uint32_t is_int8;
       uint32_t is_int10;
+      uint32_t cb_target_mask;
       uint8_t log2_ps_iter_samples;
       uint8_t num_samples;
+      bool mrt0_is_dual_src;
 
       bool lower_discard_to_demote;
       bool enable_mrt_output_nan_fixup;
-      uint8_t force_vrs;
+      bool force_vrs_enabled;
    } ps;
 
    struct {
@@ -127,7 +131,6 @@ struct radv_nir_compiler_options {
    enum chip_class chip_class;
    const struct radeon_info *info;
    uint32_t address32_hi;
-   uint8_t force_vrs_rates;
 
    struct {
       void (*func)(void *private_data, enum radv_compiler_debug_level level, const char *message);
@@ -145,7 +148,8 @@ enum radv_ud_index {
    AC_UD_NGG_GS_STATE = 6,
    AC_UD_NGG_CULLING_SETTINGS = 7,
    AC_UD_NGG_VIEWPORT = 8,
-   AC_UD_SHADER_START = 9,
+   AC_UD_FORCE_VRS_RATES = 9,
+   AC_UD_SHADER_START = 10,
    AC_UD_VS_VERTEX_BUFFERS = AC_UD_SHADER_START,
    AC_UD_VS_BASE_VERTEX_START_INSTANCE,
    AC_UD_VS_PROLOG_INPUTS,
@@ -250,6 +254,7 @@ struct radv_shader_info {
    uint32_t num_lds_blocks_when_not_culling;
    uint32_t num_tess_patches;
    unsigned workgroup_size;
+   bool force_vrs_per_vertex;
    struct {
       uint8_t input_usage_mask[RADV_VERT_ATTRIB_MAX];
       uint8_t output_usage_mask[VARYING_SLOT_VAR31 + 1];
@@ -484,6 +489,11 @@ struct radv_shader {
    uint32_t *statistics;
 };
 
+struct radv_trap_handler_shader {
+   struct radeon_winsys_bo *bo;
+   union radv_shader_arena_block *alloc;
+};
+
 struct radv_shader_prolog {
    struct radeon_winsys_bo *bo;
    union radv_shader_arena_block *alloc;
@@ -495,8 +505,7 @@ struct radv_shader_prolog {
    char *disasm_string;
 };
 
-void radv_optimize_nir(const struct radv_device *device, struct nir_shader *shader,
-                       bool optimize_conservatively, bool allow_copies);
+void radv_optimize_nir(struct nir_shader *shader, bool optimize_conservatively, bool allow_copies);
 void radv_optimize_nir_algebraic(nir_shader *shader, bool opt_offsets);
 bool radv_nir_lower_ycbcr_textures(nir_shader *shader, const struct radv_pipeline_layout *layout);
 
@@ -543,7 +552,10 @@ radv_create_gs_copy_shader(struct radv_device *device, struct nir_shader *nir,
                            bool multiview, bool keep_shader_info, bool keep_statistic_info,
                            bool disable_optimizations);
 
-struct radv_shader *radv_create_trap_handler_shader(struct radv_device *device);
+struct radv_trap_handler_shader *radv_create_trap_handler_shader(struct radv_device *device);
+uint64_t radv_trap_handler_shader_get_va(const struct radv_trap_handler_shader *trap);
+void radv_trap_handler_shader_destroy(struct radv_device *device,
+                                      struct radv_trap_handler_shader *trap);
 
 struct radv_shader_prolog *radv_create_vs_prolog(struct radv_device *device,
                                                  const struct radv_vs_prolog_key *key);
@@ -662,5 +674,7 @@ bool radv_consider_culling(struct radv_device *device, struct nir_shader *nir,
                            const struct radv_shader_info *info);
 
 void radv_get_nir_options(struct radv_physical_device *device);
+
+bool radv_force_primitive_shading_rate(nir_shader *nir, struct radv_device *device);
 
 #endif

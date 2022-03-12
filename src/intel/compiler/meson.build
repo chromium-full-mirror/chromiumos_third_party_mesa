@@ -87,9 +87,11 @@ libintel_compiler_files = files(
   'brw_nir_lower_alpha_to_coverage.c',
   'brw_nir_lower_intersection_shader.c',
   'brw_nir_lower_mem_access_bit_sizes.c',
+  'brw_nir_lower_ray_queries.c',
   'brw_nir_lower_rt_intrinsics.c',
   'brw_nir_lower_scoped_barriers.c',
   'brw_nir_lower_shader_calls.c',
+  'brw_nir_lower_shading_rate_output.c',
   'brw_nir_lower_storage_image.c',
   'brw_nir_opt_peephole_ffma.c',
   'brw_nir_rt.h',
@@ -146,7 +148,7 @@ brw_nir_trig = custom_target(
     prog_python, '@INPUT@',
     '-p', join_paths(meson.source_root(), 'src/compiler/nir/'),
   ],
-  depend_files : nir_algebraic_py,
+  depend_files : nir_algebraic_depends,
   capture : true,
 )
 

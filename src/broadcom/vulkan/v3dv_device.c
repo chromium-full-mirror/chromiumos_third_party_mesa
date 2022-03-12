@@ -1,5 +1,5 @@
 /*
- * Copyright © 2019 Raspberry Pi
+ * Copyright © 2019 Raspberry Pi Ltd
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -125,6 +125,7 @@ get_device_extensions(const struct v3dv_physical_device *device,
       .KHR_device_group                    = true,
       .KHR_driver_properties               = true,
       .KHR_descriptor_update_template      = true,
+      .KHR_depth_stencil_resolve           = true,
       .KHR_external_fence                  = true,
       .KHR_external_fence_fd               = true,
       .KHR_external_memory                 = true,
@@ -133,6 +134,7 @@ get_device_extensions(const struct v3dv_physical_device *device,
       .KHR_external_semaphore_fd           = true,
       .KHR_get_memory_requirements2        = true,
       .KHR_image_format_list               = true,
+      .KHR_imageless_framebuffer           = true,
       .KHR_relaxed_block_layout            = true,
       .KHR_maintenance1                    = true,
       .KHR_maintenance2                    = true,
@@ -1084,8 +1086,19 @@ v3dv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
    v3dv_GetPhysicalDeviceFeatures(physicalDevice, &pFeatures->features);
 
    VkPhysicalDeviceVulkan12Features vk12 = {
-      .storageBuffer8BitAccess = true,
+      .hostQueryReset = true,
       .uniformAndStorageBuffer8BitAccess = true,
+      .uniformBufferStandardLayout = true,
+      /* V3D 4.2 wraps TMU vector accesses to 16-byte boundaries, so loads and
+       * stores of vectors that cross these boundaries would not work correcly
+       * with scalarBlockLayout and would need to be split into smaller vectors
+       * (and/or scalars) that don't cross these boundaries. For load/stores
+       * with dynamic offsets where we can't identify if the offset is
+       * problematic, we would always have to scalarize. Overall, this would
+       * not lead to best performance so let's just not support it.
+       */
+      .scalarBlockLayout = false,
+      .storageBuffer8BitAccess = true,
       .storagePushConstant8 = true,
    };
 
@@ -1123,10 +1136,10 @@ v3dv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          break;
       }
 
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFORM_BUFFER_STANDARD_LAYOUT_FEATURES_KHR: {
-         VkPhysicalDeviceUniformBufferStandardLayoutFeaturesKHR *features =
-            (VkPhysicalDeviceUniformBufferStandardLayoutFeaturesKHR *)ext;
-         features->uniformBufferStandardLayout = true;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES_KHR: {
+         VkPhysicalDeviceImagelessFramebufferFeatures *features =
+            (VkPhysicalDeviceImagelessFramebufferFeatures *)ext;
+         features->imagelessFramebuffer = true;
          break;
       }
 
@@ -1172,11 +1185,33 @@ v3dv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          break;
       }
 
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES: {
-         VkPhysicalDeviceHostQueryResetFeatures *features =
-            (void *) ext;
+      /* Vulkan 1.2 */
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES: {
+         VkPhysicalDevice8BitStorageFeatures *features = (void *) ext;
+         features->storageBuffer8BitAccess = vk12.storageBuffer8BitAccess;
+         features->uniformAndStorageBuffer8BitAccess =
+            vk12.uniformAndStorageBuffer8BitAccess;
+         features->storagePushConstant8 = vk12.storagePushConstant8;
+         break;
+      }
 
-         features->hostQueryReset = true;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES: {
+         VkPhysicalDeviceHostQueryResetFeatures *features = (void *) ext;
+         features->hostQueryReset = vk12.hostQueryReset;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES_EXT: {
+         VkPhysicalDeviceScalarBlockLayoutFeaturesEXT *features =
+            (void *) ext;
+         features->scalarBlockLayout = vk12.scalarBlockLayout;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFORM_BUFFER_STANDARD_LAYOUT_FEATURES_KHR: {
+         VkPhysicalDeviceUniformBufferStandardLayoutFeaturesKHR *features =
+            (VkPhysicalDeviceUniformBufferStandardLayoutFeaturesKHR *)ext;
+         features->uniformBufferStandardLayout = vk12.uniformBufferStandardLayout;
          break;
       }
 
@@ -1185,14 +1220,6 @@ v3dv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          VkPhysicalDeviceVulkan11Features *features =
             (VkPhysicalDeviceVulkan11Features *)ext;
          memcpy(features, &vk11, sizeof(VkPhysicalDeviceVulkan11Features));
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES: {
-         VkPhysicalDevice8BitStorageFeatures *features = (void *) ext;
-         features->storageBuffer8BitAccess = vk12.storageBuffer8BitAccess;
-         features->uniformAndStorageBuffer8BitAccess =
-            vk12.uniformAndStorageBuffer8BitAccess;
-         features->storagePushConstant8 = vk12.storagePushConstant8;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES: {
@@ -1491,6 +1518,30 @@ v3dv_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          VkPhysicalDeviceCustomBorderColorPropertiesEXT *props =
             (VkPhysicalDeviceCustomBorderColorPropertiesEXT *)ext;
          props->maxCustomBorderColorSamplers = V3D_MAX_TEXTURE_SAMPLERS;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES: {
+         VkPhysicalDeviceDepthStencilResolveProperties *props =
+            (VkPhysicalDeviceDepthStencilResolveProperties *)ext;
+         props->supportedDepthResolveModes = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+         props->supportedStencilResolveModes = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+         /* FIXME: if we want to support independentResolveNone then we would
+          * need to honor attachment load operations on resolve attachments,
+          * which we currently ignore because the resolve makes them irrelevant,
+          * as it unconditionally writes all pixels in the render area. However,
+          * with independentResolveNone, it is possible to have one aspect of a
+          * D/S resolve attachment stay unresolved, in which case the attachment
+          * load operation is relevant.
+          *
+          * NOTE: implementing attachment load for resolve attachments isn't
+          * immediately trivial because these attachments are not part of the
+          * framebuffer and therefore we can't use the same mechanism we use
+          * for framebuffer attachments. Instead, we should probably have to
+          * emit a meta operation for that right at the start of the render
+          * pass (or subpass).
+          */
+         props->independentResolveNone = false;
+         props->independentResolve = false;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES: {
@@ -2503,13 +2554,25 @@ v3dv_CreateFramebuffer(VkDevice _device,
    framebuffer->layers = pCreateInfo->layers;
    framebuffer->has_edge_padding = true;
 
+   const VkFramebufferAttachmentsCreateInfo *imageless =
+      vk_find_struct_const(pCreateInfo->pNext,
+      FRAMEBUFFER_ATTACHMENTS_CREATE_INFO);
+
    framebuffer->attachment_count = pCreateInfo->attachmentCount;
    framebuffer->color_attachment_count = 0;
-   for (uint32_t i = 0; i < pCreateInfo->attachmentCount; i++) {
-      framebuffer->attachments[i] =
-         v3dv_image_view_from_handle(pCreateInfo->pAttachments[i]);
-      if (framebuffer->attachments[i]->vk.aspects & VK_IMAGE_ASPECT_COLOR_BIT)
-         framebuffer->color_attachment_count++;
+   for (uint32_t i = 0; i < framebuffer->attachment_count; i++) {
+      if (!imageless) {
+         framebuffer->attachments[i] =
+            v3dv_image_view_from_handle(pCreateInfo->pAttachments[i]);
+         if (framebuffer->attachments[i]->vk.aspects & VK_IMAGE_ASPECT_COLOR_BIT)
+            framebuffer->color_attachment_count++;
+      } else {
+         assert(i < imageless->attachmentImageInfoCount);
+         if (imageless->pAttachmentImageInfos[i].usage &
+             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
+            framebuffer->color_attachment_count++;
+         }
+      }
    }
 
    *pFramebuffer = v3dv_framebuffer_to_handle(framebuffer);

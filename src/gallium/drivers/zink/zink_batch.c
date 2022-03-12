@@ -84,13 +84,7 @@ zink_reset_batch_state(struct zink_context *ctx, struct zink_batch_state *bs)
    set_foreach_remove(bs->programs, entry) {
       struct zink_program *pg = (struct zink_program*)entry->key;
       zink_batch_usage_unset(&pg->batch_uses, bs);
-      if (pg->is_compute) {
-         struct zink_compute_program *comp = (struct zink_compute_program*)pg;
-         zink_compute_program_reference(ctx, &comp, NULL);
-      } else {
-         struct zink_gfx_program *prog = (struct zink_gfx_program*)pg;
-         zink_gfx_program_reference(ctx, &prog, NULL);
-      }
+      zink_program_reference(ctx, &pg, NULL);
    }
 
    pipe_resource_reference(&bs->flush_res, NULL);
@@ -389,12 +383,14 @@ submit_queue(void *data, void *gdata, int thread_index)
    signals[0] = bs->signal_semaphore;
    si.pSignalSemaphores = signals;
    VkTimelineSemaphoreSubmitInfo tsi = {0};
+   uint64_t signal_values[2] = {0};
    if (bs->have_timelines) {
       tsi.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
       si.pNext = &tsi;
-      tsi.signalSemaphoreValueCount = 1;
-      tsi.pSignalSemaphoreValues = &batch_id;
+      tsi.pSignalSemaphoreValues = signal_values;
+      signal_values[si.signalSemaphoreCount] = batch_id;
       signals[si.signalSemaphoreCount++] = screen->sem;
+      tsi.signalSemaphoreValueCount = si.signalSemaphoreCount;
    }
 
    struct wsi_memory_signal_submit_info mem_signal = {

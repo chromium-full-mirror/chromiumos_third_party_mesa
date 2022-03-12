@@ -113,7 +113,7 @@ static const nir_shader_compiler_options options = {
    .has_fsub = true,
    .has_isub = true,
    .lower_wpos_pntc = true,
-   .lower_cs_local_index_from_id = true,
+   .lower_cs_local_index_to_id = true,
 
    /* Only needed for the spirv_to_nir() pass done in ir3_cmdline.c
     * but that should be harmless for GL since 64b is not
@@ -172,7 +172,7 @@ static const nir_shader_compiler_options options_a6xx = {
    .max_unroll_iterations = 32,
    .force_indirect_unrolling = nir_var_all,
    .lower_wpos_pntc = true,
-   .lower_cs_local_index_from_id = true,
+   .lower_cs_local_index_to_id = true,
 
    /* Only needed for the spirv_to_nir() pass done in ir3_cmdline.c
     * but that should be harmless for GL since 64b is not
@@ -309,6 +309,7 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
    }
 
    compiler->bool_type = (compiler->gen >= 5) ? TYPE_U16 : TYPE_U32;
+   compiler->has_shared_regfile = compiler->gen >= 5;
 
    if (compiler->gen >= 6) {
       compiler->nir_options = options_a6xx;

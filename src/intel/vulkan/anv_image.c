@@ -216,6 +216,9 @@ choose_isl_surf_usage(VkImageCreateFlags vk_create_flags,
    if (vk_usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
       isl_usage |= ISL_SURF_USAGE_RENDER_TARGET_BIT;
 
+   if (vk_usage & VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR)
+      isl_usage |= ISL_SURF_USAGE_CPB_BIT;
+
    if (vk_create_flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
       isl_usage |= ISL_SURF_USAGE_CUBE_BIT;
 
@@ -684,19 +687,6 @@ add_aux_surface_if_supported(struct anv_device *device,
          return VK_SUCCESS;
       }
 
-      if (!isl_format_supports_rendering(&device->info,
-                                         plane_format.isl_format)) {
-         /* Disable CCS because it is not useful (we can't render to the image
-          * with CCS enabled).  While it may be technically possible to enable
-          * CCS for this case, we currently don't have things hooked up to get
-          * it working.
-          */
-         anv_perf_warn(VK_LOG_OBJS(&image->vk.base),
-                       "This image format doesn't support rendering. "
-                       "Not allocating an CCS buffer.");
-         return VK_SUCCESS;
-      }
-
       if (INTEL_DEBUG(DEBUG_NO_RBC))
          return VK_SUCCESS;
 
@@ -848,6 +838,16 @@ memory_range_is_aligned(struct anv_image_memory_range memory_range)
 {
    return anv_is_aligned(memory_range.offset, memory_range.alignment);
 }
+
+static bool MUST_CHECK
+memory_ranges_equal(struct anv_image_memory_range a,
+                    struct anv_image_memory_range b)
+{
+   return a.binding == b.binding &&
+          a.offset == b.offset &&
+          a.size == b.size &&
+          a.alignment == b.alignment;
+}
 #endif
 
 struct check_memory_range_params {
@@ -916,9 +916,10 @@ check_memory_bindings(const struct anv_device *device,
          : ANV_IMAGE_MEMORY_BINDING_MAIN;
 
       /* Aliasing is incompatible with the private binding because it does not
-       * live in a VkDeviceMemory.
+       * live in a VkDeviceMemory.  The one exception is swapchain images.
        */
       assert(!(image->vk.create_flags & VK_IMAGE_CREATE_ALIAS_BIT) ||
+             image->from_wsi ||
              image->bindings[ANV_IMAGE_MEMORY_BINDING_PRIVATE].memory_range.size == 0);
 
       /* Check primary surface */
@@ -1072,12 +1073,9 @@ add_all_surfaces_implicit_layout(
    const VkImageFormatListCreateInfo *format_list_info,
    uint32_t stride,
    isl_tiling_flags_t isl_tiling_flags,
-   const struct anv_image_create_info *create_info)
+   isl_surf_usage_flags_t isl_extra_usage_flags)
 {
-   assert(create_info);
    const struct intel_device_info *devinfo = &device->info;
-   isl_surf_usage_flags_t isl_extra_usage_flags =
-      create_info->isl_extra_usage_flags;
    VkResult result;
 
    u_foreach_bit(b, image->vk.aspects) {
@@ -1214,18 +1212,7 @@ add_all_surfaces_explicit_layout(
       if (result != VK_SUCCESS)
          return result;
 
-      if (!mod_has_aux) {
-         /* Even though the modifier does not support aux, try to create
-          * a driver-private aux to improve performance.
-          */
-         result = add_aux_surface_if_supported(device, image, plane,
-                                               format_plane,
-                                               format_list_info,
-                                               ANV_OFFSET_IMPLICIT, 0,
-                                               isl_extra_usage_flags);
-         if (result != VK_SUCCESS)
-            return result;
-      } else {
+      if (mod_has_aux) {
          const VkSubresourceLayout *aux_layout = &drm_info->pPlaneLayouts[1];
          result = add_aux_surface_if_supported(device, image, plane,
                                                format_plane,
@@ -1379,7 +1366,7 @@ anv_image_init(struct anv_device *device, struct anv_image *image,
    } else {
       r = add_all_surfaces_implicit_layout(device, image, fmt_list, 0,
                                            isl_tiling_flags,
-                                           create_info);
+                                           create_info->isl_extra_usage_flags);
    }
 
    if (r != VK_SUCCESS)
@@ -1433,53 +1420,6 @@ anv_swapchain_get_image(VkSwapchainKHR swapchain,
 }
 
 static VkResult
-anv_image_init_from_swapchain(struct anv_device *device,
-                              struct anv_image *image,
-                              const VkImageCreateInfo *pCreateInfo,
-                              const VkImageSwapchainCreateInfoKHR *swapchain_info)
-{
-   struct anv_image *swapchain_image = anv_swapchain_get_image(swapchain_info->swapchain, 0);
-   assert(swapchain_image);
-
-   VkImageCreateInfo local_create_info = *pCreateInfo;
-   local_create_info.pNext = NULL;
-
-   /* Added by wsi code. */
-   local_create_info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-
-   /* The spec requires TILING_OPTIMAL as input, but the swapchain image may
-    * privately use a different tiling.  See spec anchor
-    * #swapchain-wsi-image-create-info .
-    */
-   assert(local_create_info.tiling == VK_IMAGE_TILING_OPTIMAL);
-   local_create_info.tiling = swapchain_image->vk.tiling;
-
-   VkImageDrmFormatModifierListCreateInfoEXT local_modifier_info = {
-      .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT,
-      .drmFormatModifierCount = 1,
-      .pDrmFormatModifiers = &swapchain_image->vk.drm_format_mod,
-   };
-
-   if (swapchain_image->vk.drm_format_mod != DRM_FORMAT_MOD_INVALID)
-      __vk_append_struct(&local_create_info, &local_modifier_info);
-
-   assert(swapchain_image->vk.image_type == local_create_info.imageType);
-   assert(swapchain_image->vk.format == local_create_info.format);
-   assert(swapchain_image->vk.extent.width == local_create_info.extent.width);
-   assert(swapchain_image->vk.extent.height == local_create_info.extent.height);
-   assert(swapchain_image->vk.extent.depth == local_create_info.extent.depth);
-   assert(swapchain_image->vk.array_layers == local_create_info.arrayLayers);
-   assert(swapchain_image->vk.samples == local_create_info.samples);
-   assert(swapchain_image->vk.tiling == local_create_info.tiling);
-   assert(swapchain_image->vk.usage == local_create_info.usage);
-
-   return anv_image_init(device, image,
-      &(struct anv_image_create_info) {
-         .vk_info = &local_create_info,
-      });
-}
-
-static VkResult
 anv_image_init_from_create_info(struct anv_device *device,
                                 struct anv_image *image,
                                 const VkImageCreateInfo *pCreateInfo)
@@ -1490,23 +1430,23 @@ anv_image_init_from_create_info(struct anv_device *device,
       return anv_image_init_from_gralloc(device, image, pCreateInfo,
                                          gralloc_info);
 
-#ifndef VK_USE_PLATFORM_ANDROID_KHR
-   /* Ignore swapchain creation info on Android. Since we don't have an
-    * implementation in Mesa, we're guaranteed to access an Android object
-    * incorrectly.
-    */
-   const VkImageSwapchainCreateInfoKHR *swapchain_info =
-      vk_find_struct_const(pCreateInfo->pNext, IMAGE_SWAPCHAIN_CREATE_INFO_KHR);
-   if (swapchain_info && swapchain_info->swapchain != VK_NULL_HANDLE) {
-      return anv_image_init_from_swapchain(device, image, pCreateInfo,
-                                           swapchain_info);
-   }
-#endif
+   struct anv_image_create_info create_info = {
+      .vk_info = pCreateInfo,
+   };
 
-   return anv_image_init(device, image,
-                         &(struct anv_image_create_info) {
-                            .vk_info = pCreateInfo,
-                         });
+   /* For dmabuf imports, configure the primary surface without support for
+    * compression if the modifier doesn't specify it. This helps to create
+    * VkImages with memory requirements that are compatible with the buffers
+    * apps provide.
+    */
+   const struct VkImageDrmFormatModifierExplicitCreateInfoEXT *mod_explicit_info =
+      vk_find_struct_const(pCreateInfo->pNext,
+                           IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT);
+   if (mod_explicit_info &&
+       !isl_drm_modifier_has_aux(mod_explicit_info->drmFormatModifier))
+      create_info.isl_extra_usage_flags |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
+
+   return anv_image_init(device, image, &create_info);
 }
 
 VkResult anv_CreateImage(
@@ -1516,6 +1456,21 @@ VkResult anv_CreateImage(
     VkImage*                                    pImage)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
+
+#ifndef VK_USE_PLATFORM_ANDROID_KHR
+   /* Ignore swapchain creation info on Android. Since we don't have an
+    * implementation in Mesa, we're guaranteed to access an Android object
+    * incorrectly.
+    */
+   const VkImageSwapchainCreateInfoKHR *swapchain_info =
+      vk_find_struct_const(pCreateInfo->pNext, IMAGE_SWAPCHAIN_CREATE_INFO_KHR);
+   if (swapchain_info && swapchain_info->swapchain != VK_NULL_HANDLE) {
+      return wsi_common_create_swapchain_image(&device->physical->wsi_device,
+                                               pCreateInfo,
+                                               swapchain_info->swapchain,
+                                               pImage);
+   }
+#endif
 
    struct anv_image *image =
       vk_object_zalloc(&device->vk, pAllocator, sizeof(*image),
@@ -1601,13 +1556,9 @@ resolve_ahw_image(struct anv_device *device,
    uint32_t stride = desc.stride *
                      (isl_format_get_layout(isl_fmt)->bpb / 8);
 
-   struct anv_image_create_info create_info = {
-      .isl_extra_usage_flags = ISL_SURF_USAGE_DISABLE_AUX_BIT,
-   };
-
    result = add_all_surfaces_implicit_layout(device, image, NULL, stride,
                                              isl_tiling_flags,
-                                             &create_info);
+                                             ISL_SURF_USAGE_DISABLE_AUX_BIT);
    assert(result == VK_SUCCESS);
 #endif
 }
@@ -1818,8 +1769,11 @@ VkResult anv_BindImageMemory2(
             assert(image->vk.aspects == swapchain_image->vk.aspects);
             assert(mem == NULL);
 
-            for (int j = 0; j < ARRAY_SIZE(image->bindings); ++j)
+            for (int j = 0; j < ARRAY_SIZE(image->bindings); ++j) {
+               assert(memory_ranges_equal(image->bindings[j].memory_range,
+                                          swapchain_image->bindings[j].memory_range));
                image->bindings[j].address = swapchain_image->bindings[j].address;
+            }
 
             /* We must bump the private binding's bo's refcount because, unlike the other
              * bindings, its lifetime is not application-managed.
@@ -1873,9 +1827,27 @@ VkResult anv_BindImageMemory2(
          const struct anv_bo *bo =
             image->bindings[binding].address.bo;
 
-         if (bo && !bo->has_implicit_ccs &&
-             device->physical->has_implicit_ccs)
+         if (!bo || bo->has_implicit_ccs)
+            continue;
+
+         if (!device->physical->has_implicit_ccs)
+            continue;
+
+         if (!isl_aux_usage_has_ccs(image->planes[p].aux_usage))
+            continue;
+
+         anv_perf_warn(VK_LOG_OBJS(&image->vk.base),
+                       "BO lacks implicit CCS. Disabling the CCS aux usage.");
+
+         if (image->planes[p].aux_surface.memory_range.size > 0) {
+            assert(image->planes[p].aux_usage == ISL_AUX_USAGE_HIZ_CCS ||
+                   image->planes[p].aux_usage == ISL_AUX_USAGE_HIZ_CCS_WT);
+            image->planes[p].aux_usage = ISL_AUX_USAGE_HIZ;
+         } else {
+            assert(image->planes[p].aux_usage == ISL_AUX_USAGE_CCS_E ||
+                   image->planes[p].aux_usage == ISL_AUX_USAGE_STC_CCS);
             image->planes[p].aux_usage = ISL_AUX_USAGE_NONE;
+         }
       }
    }
 
@@ -2603,8 +2575,8 @@ anv_CreateImageView(VkDevice _device,
    /* Format is undefined, this can happen when using external formats. Set
     * view format from the passed conversion info.
     */
-   if (iview->vk.format == VK_FORMAT_UNDEFINED && conv_format)
-      iview->vk.format = conv_format->vk_format;
+   if (iview->vk.view_format == VK_FORMAT_UNDEFINED && conv_format)
+      iview->vk.view_format = conv_format->vk_format;
 
    /* Now go through the underlying image selected planes and map them to
     * planes in the image view.
@@ -2615,7 +2587,7 @@ anv_CreateImageView(VkDevice _device,
       const uint32_t vplane =
          anv_aspect_to_plane(iview->vk.aspects, 1UL << iaspect_bit);
       struct anv_format_plane format;
-      format = anv_get_format_plane(&device->info, iview->vk.format,
+      format = anv_get_format_plane(&device->info, iview->vk.view_format,
                                     vplane, image->vk.tiling);
 
       iview->planes[vplane].image_plane = iplane;

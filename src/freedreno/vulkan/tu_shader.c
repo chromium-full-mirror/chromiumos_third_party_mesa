@@ -82,12 +82,10 @@ tu_spirv_to_nir(struct tu_device *dev,
          .subgroup_ballot = true,
          .subgroup_vote = true,
          .subgroup_quad = true,
+         .subgroup_shuffle = true,
+         .subgroup_arithmetic = true,
          .physical_storage_buffer_address = true,
       },
-   };
-
-   const struct nir_lower_compute_system_values_options compute_sysval_options = {
-      .has_base_workgroup_id = true,
    };
 
    const nir_shader_compiler_options *nir_options =
@@ -157,7 +155,6 @@ tu_spirv_to_nir(struct tu_device *dev,
    NIR_PASS_V(nir, nir_lower_is_helper_invocation);
 
    NIR_PASS_V(nir, nir_lower_system_values);
-   NIR_PASS_V(nir, nir_lower_compute_system_values, &compute_sysval_options);
 
    NIR_PASS_V(nir, nir_lower_clip_cull_distance_arrays);
 
@@ -719,6 +716,11 @@ tu_shader_create(struct tu_device *dev,
    if (!shader)
       return NULL;
 
+   NIR_PASS_V(nir, nir_opt_access, &(nir_opt_access_options) {
+               .is_vulkan = true,
+               .infer_non_readable = true,
+             });
+
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       NIR_PASS_V(nir, nir_lower_input_attachments,
                  &(nir_input_attachment_options) {
@@ -762,6 +764,22 @@ tu_shader_create(struct tu_device *dev,
       NIR_PASS_V(nir, nir_lower_explicit_io,
                  nir_var_mem_shared,
                  nir_address_format_32bit_offset);
+
+      if (nir->info.zero_initialize_shared_memory && nir->info.shared_size > 0) {
+         const unsigned chunk_size = 16; /* max single store size */
+         /* Shared memory is allocated in 1024b chunks in HW, but the zero-init
+          * extension only requires us to initialize the memory that the shader
+          * is allocated at the API level, and it's up to the user to ensure
+          * that accesses are limited to those bounds.
+          */
+         const unsigned shared_size = ALIGN(nir->info.shared_size, chunk_size);
+         NIR_PASS_V(nir, nir_zero_initialize_shared_memory, shared_size, chunk_size);
+      }
+
+      const struct nir_lower_compute_system_values_options compute_sysval_options = {
+         .has_base_workgroup_id = true,
+      };
+      NIR_PASS_V(nir, nir_lower_compute_system_values, &compute_sysval_options);
    }
 
    nir_assign_io_var_locations(nir, nir_var_shader_in, &nir->num_inputs, nir->info.stage);

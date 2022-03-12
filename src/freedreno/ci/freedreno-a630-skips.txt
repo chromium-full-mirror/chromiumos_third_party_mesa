@@ -6,6 +6,8 @@
 # "it's slow but would pass/fail/crash within a couple of minutes" skips should go.
 
 # Timeouts in CI even after 5 minutes
+dEQP-VK.tessellation.invariance.inner_triangle_set.quads_equal_spacing
+dEQP-VK.tessellation.invariance.inner_triangle_set.triangles_fractional_even_spacing
 dEQP-VK.tessellation.invariance.outer_edge_division.quads_equal_spacing
 dEQP-VK.tessellation.invariance.outer_edge_division.quads_fractional_even_spacing
 dEQP-VK.tessellation.invariance.outer_edge_division.quads_fractional_odd_spacing
@@ -22,6 +24,9 @@ dEQP-VK.ubo.random.all_shared_buffer.48
 
 # Still running after 3 hours, time is spent in batch_draw_tracking().
 KHR-GLES31.core.shader_image_load_store.basic-allFormats-store-fs
+
+# 60s timeout
+KHR-GLES31.core.tessellation_shader.tessellation_control_to_tessellation_evaluation.gl_MaxPatchVertices_Position_PointSize
 
 # causes a hangcheck timeout on a630:
 # msm ae00000.mdss: [drm:hangcheck_handler] *ERROR* A630: hangcheck detected gpu lockup rb 0!

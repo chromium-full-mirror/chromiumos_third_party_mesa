@@ -1,5 +1,5 @@
 /*
- * Copyright © 2019 Raspberry Pi
+ * Copyright © 2019 Raspberry Pi Ltd
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -204,7 +204,7 @@ const nir_shader_compiler_options v3dv_nir_options = {
    .lower_bitfield_extract_to_shifts = true,
    .lower_bitfield_reverse = true,
    .lower_bit_count = true,
-   .lower_cs_local_id_from_index = true,
+   .lower_cs_local_id_to_index = true,
    .lower_ffract = true,
    .lower_fmod = true,
    .lower_pack_unorm_2x16 = true,

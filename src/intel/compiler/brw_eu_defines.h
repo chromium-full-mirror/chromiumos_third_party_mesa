@@ -806,9 +806,10 @@ enum opcode {
    TES_OPCODE_CREATE_INPUT_READ_HEADER,
    TES_OPCODE_ADD_INDIRECT_URB_OFFSET,
 
-   SHADER_OPCODE_GET_DSS_ID,
    SHADER_OPCODE_BTD_SPAWN_LOGICAL,
    SHADER_OPCODE_BTD_RETIRE_LOGICAL,
+
+   SHADER_OPCODE_READ_SR_REG,
 
    RT_OPCODE_TRACE_RAY_LOGICAL,
 };
@@ -937,6 +938,34 @@ enum surface_logical_srcs {
    SURFACE_LOGICAL_SRC_ALLOW_SAMPLE_MASK,
 
    SURFACE_LOGICAL_NUM_SRCS
+};
+
+enum a64_logical_srcs {
+   /** Address the A64 message operates on */
+   A64_LOGICAL_ADDRESS,
+   /** Source for the operation (unused of LOAD ops) */
+   A64_LOGICAL_SRC,
+   /** Per-opcode immediate argument. Number of dwords, bit size, or atomic op. */
+   A64_LOGICAL_ARG,
+   /**
+    * Some instructions do want to run on helper lanes (like ray queries).
+    */
+   A64_LOGICAL_ENABLE_HELPERS,
+
+   A64_LOGICAL_NUM_SRCS
+};
+
+enum rt_logical_srcs {
+   /** Address of the globals */
+   RT_LOGICAL_SRC_GLOBALS,
+   /** Level at which the tracing should start */
+   RT_LOGICAL_SRC_BVH_LEVEL,
+   /** Type of tracing operation */
+   RT_LOGICAL_SRC_TRACE_RAY_CONTROL,
+   /** Synchronous tracing (ray query) */
+   RT_LOGICAL_SRC_SYNCHRONOUS,
+
+   RT_LOGICAL_NUM_SRCS
 };
 
 #ifdef __cplusplus

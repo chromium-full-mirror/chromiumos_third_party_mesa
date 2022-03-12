@@ -20,6 +20,8 @@
 
 nir_depends = files('nir_opcodes.py', 'nir_intrinsics.py')
 
+nir_algebraic_depends = files('nir_opcodes.py', 'nir_algebraic.py')
+
 nir_builder_opcodes_h = custom_target(
   'nir_builder_opcodes.h',
   input : 'nir_builder_opcodes_h.py',
@@ -62,7 +64,7 @@ nir_opt_algebraic_c = custom_target(
   output : 'nir_opt_algebraic.c',
   command : [prog_python, '@INPUT@'],
   capture : true,
-  depend_files : files('nir_algebraic.py'),
+  depend_files : nir_algebraic_depends,
 )
 
 nir_intrinsics_h = custom_target(
@@ -143,6 +145,7 @@ files_libnir = files(
   'nir_lower_clip_halfz.c',
   'nir_lower_convert_alu_types.c',
   'nir_lower_variable_initializers.c',
+  'nir_lower_discard_if.c',
   'nir_lower_discard_or_demote.c',
   'nir_lower_double_ops.c',
   'nir_lower_drawpixels.c',
@@ -193,6 +196,7 @@ files_libnir = files(
   'nir_lower_ssbo.c',
   'nir_lower_subgroups.c',
   'nir_lower_system_values.c',
+  'nir_lower_tex_shadow.c',
   'nir_lower_tex.c',
   'nir_lower_texcoord_replace.c',
   'nir_lower_to_source_mods.c',
@@ -243,6 +247,7 @@ files_libnir = files(
   'nir_opt_ray_queries.c',
   'nir_opt_rematerialize_compares.c',
   'nir_opt_remove_phis.c',
+  'nir_opt_shrink_stores.c',
   'nir_opt_shrink_vectors.c',
   'nir_opt_sink.c',
   'nir_opt_trivial_continues.c',
@@ -368,8 +373,6 @@ idep_nir = declare_dependency(
   dependencies : [idep_nir_headers, idep_mesautil],
   link_with : _libnir,
 )
-
-nir_algebraic_py = files('nir_algebraic.py')
 
 if with_tests
   test(

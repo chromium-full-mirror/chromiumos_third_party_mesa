@@ -41,6 +41,7 @@
 #include "program/programopt.h"
 
 #include "compiler/glsl/gl_nir.h"
+#include "compiler/glsl/gl_nir_linker.h"
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_serialize.h"
 #include "draw/draw_context.h"
@@ -386,7 +387,7 @@ st_prog_to_nir_postprocess(struct st_context *st, nir_shader *nir,
 
    /* Optimise NIR */
    NIR_PASS_V(nir, nir_opt_constant_folding);
-   st_nir_opts(nir);
+   gl_nir_opts(nir);
    st_finalize_nir_before_variants(nir);
 
    if (st->allow_st_finalize_nir_twice) {
@@ -471,6 +472,12 @@ st_translate_stream_output_info(struct gl_program *prog)
    memset(output_mapping, 0, sizeof(output_mapping));
 
    for (unsigned attr = 0; attr < VARYING_SLOT_MAX; attr++) {
+      /* this output was added by mesa/st and should not be tracked for xfb:
+       * drivers must check var->data.explicit_location to find the original output
+       * and only emit that one for xfb
+       */
+      if (prog->skip_pointsize_xfb && attr == VARYING_SLOT_PSIZ)
+         continue;
       if (prog->info.outputs_written & BITFIELD64_BIT(attr))
          output_mapping[attr] = num_outputs++;
    }
@@ -791,29 +798,25 @@ st_create_common_variant(struct st_context *st,
 
       if (key->export_point_size) {
          /* if flag is set, shader must export psiz */
-         nir_shader *nir = state.ir.nir;
-         /* avoid clobbering existing psiz output */
-         if (!(nir->info.outputs_written & BITFIELD64_BIT(VARYING_SLOT_PSIZ))) {
-            _mesa_add_state_reference(params, point_size_state);
-            NIR_PASS_V(state.ir.nir, nir_lower_point_size_mov,
-                       point_size_state);
+         _mesa_add_state_reference(params, point_size_state);
+         NIR_PASS_V(state.ir.nir, nir_lower_point_size_mov,
+                    point_size_state);
 
-            switch (prog->info.stage) {
-            case MESA_SHADER_VERTEX:
-               prog->affected_states |= ST_NEW_VS_CONSTANTS;
-               break;
-            case MESA_SHADER_TESS_EVAL:
-               prog->affected_states |= ST_NEW_TES_CONSTANTS;
-               break;
-            case MESA_SHADER_GEOMETRY:
-               prog->affected_states |= ST_NEW_GS_CONSTANTS;
-               break;
-            default:
-               unreachable("bad shader stage");
-            }
-
-            finalize = true;
+         switch (prog->info.stage) {
+         case MESA_SHADER_VERTEX:
+            prog->affected_states |= ST_NEW_VS_CONSTANTS;
+            break;
+         case MESA_SHADER_TESS_EVAL:
+            prog->affected_states |= ST_NEW_TES_CONSTANTS;
+            break;
+         case MESA_SHADER_GEOMETRY:
+            prog->affected_states |= ST_NEW_GS_CONSTANTS;
+            break;
+         default:
+            unreachable("bad shader stage");
          }
+
+         finalize = true;
       }
 
       if (key->lower_ucp) {
@@ -1926,6 +1929,35 @@ st_destroy_program_variants(struct st_context *st)
                   destroy_shader_program_variants_cb, st);
 }
 
+bool
+st_can_add_pointsize_to_program(struct st_context *st, struct gl_program *prog)
+{
+   nir_shader *nir = prog->nir;
+   if (!nir)
+      return true; //fixedfunction
+   assert(nir->info.stage == MESA_SHADER_VERTEX ||
+          nir->info.stage == MESA_SHADER_TESS_EVAL ||
+          nir->info.stage == MESA_SHADER_GEOMETRY);
+   unsigned max_components = nir->info.stage == MESA_SHADER_GEOMETRY ?
+                             st->ctx->Const.MaxGeometryTotalOutputComponents :
+                             st->ctx->Const.Program[nir->info.stage].MaxOutputComponents * 4;
+   unsigned num_components = 0;
+   unsigned needed_components = nir->info.stage == MESA_SHADER_GEOMETRY ? nir->info.gs.vertices_out : 1;
+   u_foreach_bit64(loc, nir->info.outputs_written) {
+      nir_variable *var = NULL;
+      unsigned location = loc; //can't modify bit iterator
+      while (!var)
+         var = nir_find_variable_with_location(nir, nir_var_shader_out, location--);
+      assert(var);
+      num_components += glsl_count_dword_slots(var->type, false);
+   }
+   /* Ensure that there is enough attribute space to emit at least one primitive */
+   if (nir->info.stage == MESA_SHADER_GEOMETRY)
+      num_components *= nir->info.gs.vertices_out;
+
+   return num_components + needed_components <= max_components;
+}
+
 static bool
 is_last_vertex_stage(struct gl_context *ctx, struct gl_program *prog)
 {
@@ -1985,8 +2017,11 @@ st_precompile_shader_variant(struct st_context *st,
       if (prog->Target == GL_VERTEX_PROGRAM_ARB ||
           prog->Target == GL_TESS_EVALUATION_PROGRAM_NV ||
           prog->Target == GL_GEOMETRY_PROGRAM_NV) {
-         if (st->ctx->API == API_OPENGLES2 || !st->ctx->VertexProgram.PointSizeEnabled)
-            key.export_point_size = st->lower_point_size && is_last_vertex_stage(st->ctx, prog);
+         if (st->lower_point_size &&
+             !st->ctx->VertexProgram.PointSizeEnabled &&
+             st_can_add_pointsize_to_program(st, prog))
+            key.export_point_size = is_last_vertex_stage(st->ctx, prog) &&
+                                    (!prog->nir || !nir_find_variable_with_location(prog->nir, nir_var_shader_out, VARYING_SLOT_PSIZ));
       }
       key.st = st->has_shareable_shaders ? NULL : st;
       st_get_common_variant(st, prog, &key);

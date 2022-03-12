@@ -375,8 +375,8 @@ radv_pick_resolve_method_images(struct radv_device *device, struct radv_image *s
                                 enum radv_resolve_method *method)
 
 {
-   uint32_t queue_mask = radv_image_queue_family_mask(dest_image, cmd_buffer->queue_family_index,
-                                                      cmd_buffer->queue_family_index);
+   uint32_t queue_mask = radv_image_queue_family_mask(dest_image, cmd_buffer->qf,
+                                                      cmd_buffer->qf);
 
    if (vk_format_is_color(src_format)) {
       /* Using the fragment resolve path is currently a hint to
@@ -490,8 +490,8 @@ radv_meta_resolve_hardware_image(struct radv_cmd_buffer *cmd_buffer, struct radv
    const struct VkOffset3D dstOffset =
       radv_sanitize_image_offset(dst_image->type, region->dstOffset);
 
-   uint32_t queue_mask = radv_image_queue_family_mask(dst_image, cmd_buffer->queue_family_index,
-                                                      cmd_buffer->queue_family_index);
+   uint32_t queue_mask = radv_image_queue_family_mask(dst_image, cmd_buffer->qf,
+                                                      cmd_buffer->qf);
 
    if (radv_layout_dcc_compressed(cmd_buffer->device, dst_image, region->dstSubresource.mipLevel,
                                   dst_image_layout, false, queue_mask)) {
@@ -564,7 +564,7 @@ radv_meta_resolve_hardware_image(struct radv_cmd_buffer *cmd_buffer, struct radv
             .width = radv_minify(dst_image->info.width, region->dstSubresource.mipLevel),
             .height = radv_minify(dst_image->info.height, region->dstSubresource.mipLevel),
             .layers = 1},
-         &cmd_buffer->pool->alloc, &fb_h);
+         &cmd_buffer->pool->vk.alloc, &fb_h);
 
       radv_cmd_buffer_begin_render_pass(cmd_buffer,
                                         &(VkRenderPassBeginInfo){
@@ -602,7 +602,7 @@ radv_meta_resolve_hardware_image(struct radv_cmd_buffer *cmd_buffer, struct radv
 
       radv_image_view_finish(&src_iview);
       radv_image_view_finish(&dst_iview);
-      radv_DestroyFramebuffer(radv_device_to_handle(device), fb_h, &cmd_buffer->pool->alloc);
+      radv_DestroyFramebuffer(radv_device_to_handle(device), fb_h, &cmd_buffer->pool->vk.alloc);
    }
 
    radv_meta_restore(&saved_state, cmd_buffer);
@@ -693,8 +693,8 @@ radv_cmd_buffer_resolve_subpass_hw(struct radv_cmd_buffer *cmd_buffer)
       struct radv_image *dst_img = dest_iview->image;
       VkImageLayout dst_image_layout = cmd_buffer->state.attachments[dest_att.attachment].current_layout;
 
-      uint32_t queue_mask = radv_image_queue_family_mask(dst_img, cmd_buffer->queue_family_index,
-                                                         cmd_buffer->queue_family_index);
+      uint32_t queue_mask = radv_image_queue_family_mask(dst_img, cmd_buffer->qf,
+                                                         cmd_buffer->qf);
 
       if (radv_layout_dcc_compressed(cmd_buffer->device, dst_img, dest_iview->base_mip,
                                      dst_image_layout, false, queue_mask)) {

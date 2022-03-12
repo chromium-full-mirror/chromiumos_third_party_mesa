@@ -215,6 +215,8 @@ update_gfx_program(struct zink_context *ctx)
          prog = (struct zink_gfx_program*)entry->data;
          u_foreach_bit(stage, prog->stages_present & ~ctx->dirty_shader_stages)
             ctx->gfx_pipeline_state.modules[stage] = prog->modules[stage]->shader;
+         /* ensure variants are always updated if keys have changed since last use */
+         ctx->dirty_shader_stages |= prog->stages_present;
       } else {
          ctx->dirty_shader_stages |= bits;
          prog = zink_create_gfx_program(ctx, ctx->gfx_stages, ctx->gfx_pipeline_state.vertices_per_patch + 1);
@@ -396,6 +398,8 @@ update_barriers(struct zink_context *ctx, bool is_compute)
                   access |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
                   pipeline |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
                   bind_count -= util_bitcount(res->vbo_bind_mask);
+                  if (res->write_bind_count[is_compute])
+                     pipeline |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
                }
                bind_count -= res->so_bind_count;
             }
@@ -405,10 +409,12 @@ update_barriers(struct zink_context *ctx, bool is_compute)
          if (is_compute)
             pipeline = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
          else if (!pipeline) {
-            if (res->ubo_bind_count[0])
-               pipeline |= find_pipeline_bits(res->ubo_bind_mask);
-            if (!pipeline)
-               pipeline |= find_pipeline_bits(res->ssbo_bind_mask);
+            if (res->obj->is_buffer) {
+               if (res->ubo_bind_count[0])
+                  pipeline |= find_pipeline_bits(res->ubo_bind_mask);
+               if (!pipeline)
+                  pipeline |= find_pipeline_bits(res->ssbo_bind_mask);
+            }
             if (!pipeline)
                pipeline |= find_pipeline_bits(res->sampler_binds);
             if (!pipeline) //must be a shader image
@@ -485,6 +491,9 @@ zink_draw(struct pipe_context *pctx,
           struct pipe_vertex_state *vstate,
           uint32_t partial_velem_mask)
 {
+   if (!dindirect && (!draws[0].count || !dinfo->instance_count))
+      return;
+
    struct zink_context *ctx = zink_context(pctx);
    struct zink_screen *screen = zink_screen(pctx->screen);
    struct zink_rasterizer_state *rast_state = ctx->rast_state;
@@ -557,15 +566,14 @@ zink_draw(struct pipe_context *pctx,
 
    barrier_draw_buffers(ctx, dinfo, dindirect, index_buffer);
 
-   if (BATCH_CHANGED)
-      zink_update_descriptor_refs(ctx, false);
+   zink_query_update_gs_states(ctx);
 
    zink_batch_rp(ctx);
 
+   if (BATCH_CHANGED)
+      zink_update_descriptor_refs(ctx, false);
+
    /* these must be after renderpass start to avoid issues with recursion */
-   uint8_t vertices_per_patch = ctx->gfx_pipeline_state.patch_vertices ? ctx->gfx_pipeline_state.patch_vertices - 1 : 0;
-   if (ctx->gfx_pipeline_state.vertices_per_patch != vertices_per_patch)
-      ctx->gfx_pipeline_state.dirty = true;
    bool drawid_broken = false;
    if (reads_drawid && (!dindirect || !dindirect->buffer))
       drawid_broken = (drawid_offset != 0 ||
@@ -573,7 +581,6 @@ zink_draw(struct pipe_context *pctx,
                       (HAS_MULTIDRAW && num_draws > 1 && !dinfo->increment_draw_id));
    if (drawid_broken != zink_get_last_vertex_key(ctx)->push_drawid)
       zink_set_last_vertex_key(ctx)->push_drawid = drawid_broken;
-   ctx->gfx_pipeline_state.vertices_per_patch = vertices_per_patch;
    if (mode_changed) {
       bool points_changed = false;
       if (mode == PIPE_PRIM_POINTS) {
@@ -763,8 +770,6 @@ zink_draw(struct pipe_context *pctx,
    else if (BATCH_CHANGED || ctx->vertex_buffers_dirty)
       zink_bind_vertex_buffers<DYNAMIC_STATE>(batch, ctx);
 
-   zink_query_update_gs_states(ctx);
-
    if (BATCH_CHANGED) {
       ctx->pipeline_changed[0] = false;
       zink_select_draw_vbo(ctx);
@@ -793,10 +798,11 @@ zink_draw(struct pipe_context *pctx,
                          offsetof(struct zink_gfx_push_constant, draw_mode_is_indexed), sizeof(unsigned),
                          &draw_mode_is_indexed);
    }
-   if (ctx->curr_program->shaders[PIPE_SHADER_TESS_CTRL] && ctx->curr_program->shaders[PIPE_SHADER_TESS_CTRL]->is_generated)
+   if (ctx->curr_program->shaders[PIPE_SHADER_TESS_CTRL] && ctx->curr_program->shaders[PIPE_SHADER_TESS_CTRL]->is_generated) {
       VKCTX(CmdPushConstants)(batch->state->cmdbuf, ctx->curr_program->base.layout, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                          offsetof(struct zink_gfx_push_constant, default_inner_level), sizeof(float) * 6,
                          &ctx->tess_levels[0]);
+   }
 
    if (have_streamout) {
       for (unsigned i = 0; i < ctx->num_so_targets; i++) {
@@ -939,6 +945,9 @@ zink_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
    struct zink_context *ctx = zink_context(pctx);
    struct zink_screen *screen = zink_screen(pctx->screen);
    struct zink_batch *batch = &ctx->batch;
+
+   if (ctx->render_condition_active)
+      zink_start_conditional_render(ctx);
 
    update_barriers(ctx, true);
    if (ctx->memory_barrier)

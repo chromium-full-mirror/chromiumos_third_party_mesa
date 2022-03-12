@@ -224,6 +224,10 @@ glsl_to_nir(const struct gl_constants *consts,
    v2.run(sh->ir);
    visit_exec_list(sh->ir, &v1);
 
+   /* The GLSL IR won't be needed anymore. */
+   ralloc_free(sh->ir);
+   sh->ir = NULL;
+
    nir_validate_shader(shader, "after glsl to nir, before function inline");
 
    /* We have to lower away local constant initializers right before we
@@ -1718,15 +1722,9 @@ nir_visitor::visit(ir_assignment *ir)
       nir_deref_instr *rhs = evaluate_deref(ir->rhs);
       enum gl_access_qualifier lhs_qualifiers = deref_get_qualifier(lhs);
       enum gl_access_qualifier rhs_qualifiers = deref_get_qualifier(rhs);
-      if (ir->condition) {
-         nir_push_if(&b, evaluate_rvalue(ir->condition));
-         nir_copy_deref_with_access(&b, lhs, rhs, lhs_qualifiers,
-                                    rhs_qualifiers);
-         nir_pop_if(&b, NULL);
-      } else {
-         nir_copy_deref_with_access(&b, lhs, rhs, lhs_qualifiers,
-                                    rhs_qualifiers);
-      }
+
+      nir_copy_deref_with_access(&b, lhs, rhs, lhs_qualifiers,
+                                 rhs_qualifiers);
       return;
    }
 
@@ -1763,15 +1761,9 @@ nir_visitor::visit(ir_assignment *ir)
    }
 
    enum gl_access_qualifier qualifiers = deref_get_qualifier(lhs_deref);
-   if (ir->condition) {
-      nir_push_if(&b, evaluate_rvalue(ir->condition));
-      nir_store_deref_with_access(&b, lhs_deref, src, write_mask,
-                                  qualifiers);
-      nir_pop_if(&b, NULL);
-   } else {
-      nir_store_deref_with_access(&b, lhs_deref, src, write_mask,
-                                  qualifiers);
-   }
+
+   nir_store_deref_with_access(&b, lhs_deref, src, write_mask,
+                               qualifiers);
 }
 
 /*
@@ -2473,6 +2465,8 @@ nir_visitor::visit(ir_texture *ir)
    /* offsets are constants we store inside nir_tex_intrs.offsets */
    if (ir->offset != NULL && !ir->offset->type->is_array())
       num_srcs++;
+   if (ir->clamp != NULL)
+      num_srcs++;
 
    /* Add one for the texture deref */
    num_srcs += 2;
@@ -2554,6 +2548,13 @@ nir_visitor::visit(ir_texture *ir)
          instr->src[src_number].src_type = nir_tex_src_offset;
          src_number++;
       }
+   }
+
+   if (ir->clamp) {
+      instr->src[src_number].src =
+         nir_src_for_ssa(evaluate_rvalue(ir->clamp));
+      instr->src[src_number].src_type = nir_tex_src_min_lod;
+      src_number++;
    }
 
    switch (ir->op) {

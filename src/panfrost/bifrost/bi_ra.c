@@ -246,6 +246,12 @@ bi_mark_interference(bi_block *block, struct lcra_state *l, uint8_t *live, uint6
                                                         bi_writemask(ins, d), i, live[i]);
                                 }
                         }
+
+                        unsigned node_first = bi_get_node(ins->dest[0]);
+                        if (d == 1 && node_first < node_count) {
+                                lcra_add_node_interference(l, node, bi_writemask(ins, 1),
+                                                           node_first, bi_writemask(ins, 0));
+                        }
                 }
 
                 /* Valhall needs >= 64-bit staging reads to be pair-aligned */
@@ -492,7 +498,7 @@ bi_spill_register(bi_context *ctx, bi_index index, uint32_t offset)
 
                         b.cursor = bi_after_instr(I);
                         bi_index loc = bi_imm_u32(offset + 4 * extra);
-                        bi_store(&b, bits, tmp, loc, bi_zero(), BI_SEG_TL);
+                        bi_store(&b, bits, tmp, loc, bi_zero(), BI_SEG_TL, 0);
 
                         ctx->spills++;
                         channels = MAX2(channels, extra + count);
@@ -506,7 +512,8 @@ bi_spill_register(bi_context *ctx, bi_index index, uint32_t offset)
                         bi_rewrite_index_src_single(I, index, tmp);
 
                         bi_instr *ld = bi_load_to(&b, bits, tmp,
-                                        bi_imm_u32(offset), bi_zero(), BI_SEG_TL);
+                                        bi_imm_u32(offset), bi_zero(), BI_SEG_TL,
+                                        0);
                         ld->no_spill = true;
                         ctx->fills++;
                 }
@@ -526,8 +533,8 @@ bi_register_allocate(bi_context *ctx)
         /* Number of bytes of memory we've spilled into */
         unsigned spill_count = ctx->info.tls_size;
 
-        /* Try with reduced register pressure to improve thread count on v7 */
-        if (ctx->arch == 7) {
+        /* Try with reduced register pressure to improve thread count */
+        if (ctx->arch >= 7) {
                 bi_invalidate_liveness(ctx);
                 l = bi_allocate_registers(ctx, &success, false);
 

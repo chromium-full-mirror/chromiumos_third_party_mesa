@@ -269,6 +269,7 @@ vk_image_view_init(struct vk_device *device,
    image_view->create_flags = pCreateInfo->flags;
    image_view->image = image;
    image_view->view_type = pCreateInfo->viewType;
+   image_view->format = pCreateInfo->format;
 
    switch (image_view->view_type) {
    case VK_IMAGE_VIEW_TYPE_1D:
@@ -366,11 +367,11 @@ vk_image_view_init(struct vk_device *device,
     *    conversion."
     */
    if (image_view->aspects == VK_IMAGE_ASPECT_STENCIL_BIT) {
-      image_view->format = vk_format_stencil_only(pCreateInfo->format);
+      image_view->view_format = vk_format_stencil_only(pCreateInfo->format);
    } else if (image_view->aspects == VK_IMAGE_ASPECT_DEPTH_BIT) {
-      image_view->format = vk_format_depth_only(pCreateInfo->format);
+      image_view->view_format = vk_format_depth_only(pCreateInfo->format);
    } else {
-      image_view->format = pCreateInfo->format;
+      image_view->view_format = pCreateInfo->format;
    }
 
    image_view->swizzle = (VkComponentMapping) {

@@ -83,6 +83,7 @@ Linux, FreeBSD, and other operating systems.
    :caption: Drivers
    :hidden:
 
+   drivers/anv
    drivers/d3d12
    drivers/freedreno
    drivers/lima
@@ -92,6 +93,7 @@ Linux, FreeBSD, and other operating systems.
    drivers/v3d
    drivers/vc4
    drivers/venus
+   drivers/virgl
    drivers/zink
 
 .. toctree::

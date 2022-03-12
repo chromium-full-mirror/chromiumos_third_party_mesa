@@ -327,6 +327,8 @@ files_libgallium = files(
   'nir/nir_to_tgsi.h',
   'nir/nir_draw_helpers.c',
   'nir/nir_draw_helpers.h',
+  'nir/nir_helpers.c',
+  'nir/nir_helpers.h',
 )
 
 if dep_libdrm.found()
@@ -381,6 +383,7 @@ if draw_with_llvm
     'gallivm/lp_bld_misc.h',
     'gallivm/lp_bld_nir.h',
     'gallivm/lp_bld_nir.c',
+    'gallivm/lp_bld_nir_aos.c',
     'gallivm/lp_bld_nir_soa.c',
     'gallivm/lp_bld_pack.c',
     'gallivm/lp_bld_pack.h',

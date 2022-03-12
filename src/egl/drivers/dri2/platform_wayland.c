@@ -256,6 +256,7 @@ wl_buffer_release(void *data, struct wl_buffer *buffer)
       wl_buffer_destroy(buffer);
       dri2_surf->color_buffers[i].wl_release = false;
       dri2_surf->color_buffers[i].wl_buffer = NULL;
+      dri2_surf->color_buffers[i].age = 0;
    }
 
    dri2_surf->color_buffers[i].locked = false;
@@ -863,6 +864,7 @@ dri2_wl_release_buffers(struct dri2_egl_surface *dri2_surf)
       dri2_surf->color_buffers[i].dri_image = NULL;
       dri2_surf->color_buffers[i].linear_copy = NULL;
       dri2_surf->color_buffers[i].data = NULL;
+      dri2_surf->color_buffers[i].age = 0;
    }
 
    if (dri2_dpy->dri2)
@@ -1145,6 +1147,7 @@ update_buffers(struct dri2_egl_surface *dri2_surf)
          dri2_surf->color_buffers[i].wl_buffer = NULL;
          dri2_surf->color_buffers[i].dri_image = NULL;
          dri2_surf->color_buffers[i].linear_copy = NULL;
+         dri2_surf->color_buffers[i].age = 0;
       }
    }
 
@@ -1169,7 +1172,7 @@ dri2_wl_get_buffers_with_format(__DRIdrawable * driDrawable,
    struct dri2_egl_surface *dri2_surf = loaderPrivate;
    int i, j;
 
-   if (update_buffers(dri2_surf) < 0)
+   if (update_buffers_if_needed(dri2_surf) < 0)
       return NULL;
 
    for (i = 0, j = 0; i < 2 * count; i += 2, j++) {
@@ -1248,7 +1251,7 @@ image_get_buffers(__DRIdrawable *driDrawable,
 {
    struct dri2_egl_surface *dri2_surf = loaderPrivate;
 
-   if (update_buffers(dri2_surf) < 0)
+   if (update_buffers_if_needed(dri2_surf) < 0)
       return 0;
 
    buffers->image_mask = __DRI_IMAGE_BUFFER_BACK;
@@ -2042,11 +2045,12 @@ dri2_initialize_wayland_drm(_EGLDisplay *disp)
    if (!dri2_dpy)
       return _eglError(EGL_BAD_ALLOC, "eglInitialize");
 
+   dri2_dpy->fd = -1;
+   disp->DriverData = (void *) dri2_dpy;
+
    if (dri2_wl_formats_init(&dri2_dpy->formats) < 0)
       goto cleanup;
 
-   dri2_dpy->fd = -1;
-   disp->DriverData = (void *) dri2_dpy;
    if (disp->PlatformDisplay == NULL) {
       dri2_dpy->wl_dpy = wl_display_connect(NULL);
       if (dri2_dpy->wl_dpy == NULL)
@@ -2342,6 +2346,7 @@ swrast_update_buffers(struct dri2_egl_surface *dri2_surf)
                 dri2_surf->color_buffers[i].data_size);
          dri2_surf->color_buffers[i].wl_buffer = NULL;
          dri2_surf->color_buffers[i].data = NULL;
+         dri2_surf->color_buffers[i].age = 0;
       }
    }
 
@@ -2600,11 +2605,12 @@ dri2_initialize_wayland_swrast(_EGLDisplay *disp)
    if (!dri2_dpy)
       return _eglError(EGL_BAD_ALLOC, "eglInitialize");
 
+   dri2_dpy->fd = -1;
+   disp->DriverData = (void *) dri2_dpy;
+
    if (dri2_wl_formats_init(&dri2_dpy->formats) < 0)
       goto cleanup;
 
-   dri2_dpy->fd = -1;
-   disp->DriverData = (void *) dri2_dpy;
    if (disp->PlatformDisplay == NULL) {
       dri2_dpy->wl_dpy = wl_display_connect(NULL);
       if (dri2_dpy->wl_dpy == NULL)

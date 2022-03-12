@@ -62,8 +62,8 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDescriptorSetLayout(
                  num_bindings * sizeof(set_layout->binding[0]) +
                  immutable_sampler_count * sizeof(struct lvp_sampler *);
 
-   set_layout = vk_zalloc2(&device->vk.alloc, pAllocator, size, 8,
-                           VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   set_layout = vk_zalloc(&device->vk.alloc, size, 8,
+                          VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
    if (!set_layout)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -74,7 +74,6 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDescriptorSetLayout(
    struct lvp_sampler **samplers =
       (struct lvp_sampler **)&set_layout->binding[num_bindings];
 
-   set_layout->alloc = pAllocator;
    set_layout->binding_count = num_bindings;
    set_layout->shader_stages = 0;
    set_layout->size = 0;
@@ -85,7 +84,7 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDescriptorSetLayout(
                                                &bindings);
    if (result != VK_SUCCESS) {
       vk_object_base_finish(&set_layout->base);
-      vk_free2(&device->vk.alloc, pAllocator, set_layout);
+      vk_free(&device->vk.alloc, set_layout);
       return vk_error(device, result);
    }
 
@@ -172,6 +171,37 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDescriptorSetLayout(
       set_layout->shader_stages |= binding->stageFlags;
    }
 
+#ifndef NDEBUG
+   /* this otherwise crashes later and is annoying to track down */
+   unsigned array[] = {
+      VK_SHADER_STAGE_VERTEX_BIT,
+      VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+      VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+      VK_SHADER_STAGE_GEOMETRY_BIT,
+      VK_SHADER_STAGE_FRAGMENT_BIT,
+      VK_SHADER_STAGE_COMPUTE_BIT,
+   };
+   for (unsigned i = 0; i <= MESA_SHADER_COMPUTE; i++) {
+      uint16_t const_buffer_count = 0;
+      uint16_t shader_buffer_count = 0;
+      uint16_t sampler_count = 0;
+      uint16_t sampler_view_count = 0;
+      uint16_t image_count = 0;
+      if (set_layout->shader_stages & array[i]) {
+         const_buffer_count += set_layout->stage[i].const_buffer_count;
+         shader_buffer_count += set_layout->stage[i].shader_buffer_count;
+         sampler_count += set_layout->stage[i].sampler_count;
+         sampler_view_count += set_layout->stage[i].sampler_view_count;
+         image_count += set_layout->stage[i].image_count;
+      }
+      assert(const_buffer_count <= device->physical_device->device_limits.maxPerStageDescriptorUniformBuffers);
+      assert(shader_buffer_count <= device->physical_device->device_limits.maxPerStageDescriptorStorageBuffers);
+      assert(sampler_count <= device->physical_device->device_limits.maxPerStageDescriptorSamplers);
+      assert(sampler_view_count <= device->physical_device->device_limits.maxPerStageDescriptorSampledImages);
+      assert(image_count <= device->physical_device->device_limits.maxPerStageDescriptorStorageImages);
+   }
+#endif
+
    free(bindings);
 
    set_layout->dynamic_offset_count = dynamic_offset_count;
@@ -187,7 +217,7 @@ lvp_descriptor_set_layout_destroy(struct lvp_device *device,
 {
    assert(layout->ref_cnt == 0);
    vk_object_base_finish(&layout->base);
-   vk_free2(&device->vk.alloc, layout->alloc, layout);
+   vk_free(&device->vk.alloc, layout);
 }
 
 VKAPI_ATTR void VKAPI_CALL lvp_DestroyDescriptorSetLayout(
@@ -215,13 +245,14 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreatePipelineLayout(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
 
-   layout = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*layout), 8,
-                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   layout = vk_alloc(&device->vk.alloc, sizeof(*layout), 8,
+                     VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
    if (layout == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &layout->base,
                        VK_OBJECT_TYPE_PIPELINE_LAYOUT);
+   layout->ref_cnt = 1;
    layout->num_sets = pCreateInfo->setLayoutCount;
 
    for (uint32_t set = 0; set < pCreateInfo->setLayoutCount; set++) {
@@ -230,6 +261,39 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreatePipelineLayout(
       layout->set[set].layout = set_layout;
       lvp_descriptor_set_layout_ref(set_layout);
    }
+
+#ifndef NDEBUG
+   /* this otherwise crashes later and is annoying to track down */
+   unsigned array[] = {
+      VK_SHADER_STAGE_VERTEX_BIT,
+      VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+      VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+      VK_SHADER_STAGE_GEOMETRY_BIT,
+      VK_SHADER_STAGE_FRAGMENT_BIT,
+      VK_SHADER_STAGE_COMPUTE_BIT,
+   };
+   for (unsigned i = 0; i <= MESA_SHADER_COMPUTE; i++) {
+      uint16_t const_buffer_count = 0;
+      uint16_t shader_buffer_count = 0;
+      uint16_t sampler_count = 0;
+      uint16_t sampler_view_count = 0;
+      uint16_t image_count = 0;
+      for (unsigned j = 0; j < layout->num_sets; j++) {
+         if (layout->set[j].layout->shader_stages & array[i]) {
+            const_buffer_count += layout->set[j].layout->stage[i].const_buffer_count;
+            shader_buffer_count += layout->set[j].layout->stage[i].shader_buffer_count;
+            sampler_count += layout->set[j].layout->stage[i].sampler_count;
+            sampler_view_count += layout->set[j].layout->stage[i].sampler_view_count;
+            image_count += layout->set[j].layout->stage[i].image_count;
+         }
+      }
+      assert(const_buffer_count <= device->physical_device->device_limits.maxPerStageDescriptorUniformBuffers);
+      assert(shader_buffer_count <= device->physical_device->device_limits.maxPerStageDescriptorStorageBuffers);
+      assert(sampler_count <= device->physical_device->device_limits.maxPerStageDescriptorSamplers);
+      assert(sampler_view_count <= device->physical_device->device_limits.maxPerStageDescriptorSampledImages);
+      assert(image_count <= device->physical_device->device_limits.maxPerStageDescriptorStorageImages);
+   }
+#endif
 
    layout->push_constant_size = 0;
    for (unsigned i = 0; i < pCreateInfo->pushConstantRangeCount; ++i) {
@@ -243,6 +307,18 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreatePipelineLayout(
    return VK_SUCCESS;
 }
 
+void lvp_pipeline_layout_destroy(struct lvp_device *device,
+                                 struct lvp_pipeline_layout *pipeline_layout)
+{
+   assert(pipeline_layout->ref_cnt == 0);
+
+   for (uint32_t i = 0; i < pipeline_layout->num_sets; i++)
+      lvp_descriptor_set_layout_unref(device, pipeline_layout->set[i].layout);
+
+   vk_object_base_finish(&pipeline_layout->base);
+   vk_free(&device->vk.alloc, pipeline_layout);
+}
+
 VKAPI_ATTR void VKAPI_CALL lvp_DestroyPipelineLayout(
     VkDevice                                    _device,
     VkPipelineLayout                            _pipelineLayout,
@@ -253,11 +329,8 @@ VKAPI_ATTR void VKAPI_CALL lvp_DestroyPipelineLayout(
 
    if (!_pipelineLayout)
      return;
-   for (uint32_t i = 0; i < pipeline_layout->num_sets; i++)
-      lvp_descriptor_set_layout_unref(device, pipeline_layout->set[i].layout);
 
-   vk_object_base_finish(&pipeline_layout->base);
-   vk_free2(&device->vk.alloc, pAllocator, pipeline_layout);
+   lvp_pipeline_layout_unref(device, pipeline_layout);
 }
 
 VkResult

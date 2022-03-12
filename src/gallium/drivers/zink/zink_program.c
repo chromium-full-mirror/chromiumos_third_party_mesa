@@ -116,7 +116,12 @@ get_shader_module_for_stage(struct zink_context *ctx, struct zink_screen *screen
       if (!zm) {
          return NULL;
       }
-      mod = zink_shader_compile(screen, zs, prog->nir[stage], key);
+      if (zs->is_generated && zs->spirv) {
+         assert(ctx); //TODO async
+         mod = zink_shader_tcs_compile(screen, zs, zink_get_tcs_key(ctx)->patch_vertices);
+      } else {
+         mod = zink_shader_compile(screen, zs, prog->nir[stage], key);
+      }
       if (!mod) {
          FREE(zm);
          return NULL;
@@ -124,11 +129,20 @@ get_shader_module_for_stage(struct zink_context *ctx, struct zink_screen *screen
       zm->shader = mod;
       list_inithead(&zm->list);
       zm->num_uniforms = base_size;
-      zm->key_size = key->size;
-      memcpy(zm->key, key, key->size);
+      if (pstage != PIPE_SHADER_TESS_CTRL || zs->is_generated) {
+         /* non-generated tcs won't use the shader key */
+         zm->key_size = key->size;
+         memcpy(zm->key, key, key->size);
+      } else {
+         zm->key_size = 0;
+         memset(zm->key, 0, key->size);
+      }
       if (base_size)
          memcpy(zm->key + key->size, &key->base, base_size * sizeof(uint32_t));
-      zm->hash = shader_module_hash(zm);
+      if (zs->is_generated)
+         zm->hash = zink_get_tcs_key(ctx)->patch_vertices;
+      else
+         zm->hash = shader_module_hash(zm);
       zm->default_variant = !base_size && list_is_empty(&prog->shader_cache[pstage][0]);
       if (base_size)
          prog->inlined_variant_count[pstage]++;
@@ -643,6 +657,7 @@ zink_destroy_gfx_program(struct zink_context *ctx,
                          struct zink_gfx_program *prog)
 {
    struct zink_screen *screen = zink_screen(ctx->base.screen);
+   util_queue_fence_wait(&prog->base.cache_fence);
    if (prog->base.layout)
       VKSCR(DestroyPipelineLayout)(screen->dev, prog->base.layout, NULL);
 
@@ -688,6 +703,7 @@ zink_destroy_compute_program(struct zink_context *ctx,
                              struct zink_compute_program *comp)
 {
    struct zink_screen *screen = zink_screen(ctx->base.screen);
+   util_queue_fence_wait(&comp->base.cache_fence);
    if (comp->base.layout)
       VKSCR(DestroyPipelineLayout)(screen->dev, comp->base.layout, NULL);
 

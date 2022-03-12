@@ -218,9 +218,12 @@ def parse_asm(line):
         die_if(any([x[0] != 'r' for x in parts]), f'Expected registers, got {op}')
         regs = [parse_int(x[1:], 0, 63) for x in parts]
 
+        extended_write = "staging_register_write_count" in [x.name for x in ins.modifiers] and sr.write
+        max_sr_count = 8 if extended_write else 7
+
         sr_count = len(regs)
         die_if(sr_count < 1, f'Expected staging register, got {op}')
-        die_if(sr_count > 7, f'Too many staging registers {sr_count}')
+        die_if(sr_count > max_sr_count, f'Too many staging registers {sr_count}')
 
         base = regs[0]
         die_if(any([reg != (base + i) for i, reg in enumerate(regs)]),
@@ -229,9 +232,13 @@ def parse_asm(line):
                 'Consecutive staging registers must be aligned to a register pair')
 
         if sr.count == 0:
-            modifier_map["staging_register_count"] = sr_count
+            if "staging_register_write_count" in [x.name for x in ins.modifiers] and sr.write:
+                modifier_map["staging_register_write_count"] = sr_count - 1
+            else:
+                assert "staging_register_count" in [x.name for x in ins.modifiers]
+                modifier_map["staging_register_count"] = sr_count
         else:
-            die_if(sr_count != sr.count, f"Expected 4 staging registers, got {sr_count}")
+            die_if(sr_count != sr.count, f"Expected {sr.count} staging registers, got {sr_count}")
 
         encoded |= ((sr.encoded_flags | base) << sr.start)
     operands = operands[len(ins.staging):]
@@ -260,6 +267,11 @@ def parse_asm(line):
             # Encode the modifier
             if mod in src.offset and src.bits[mod] == 1:
                 encoded |= (1 << src.offset[mod])
+            elif src.halfswizzle and mod in enums[f'half_swizzles_{src.size}_bit'].bare_values:
+                die_if(swizzled, "Multiple swizzles specified")
+                swizzled = True
+                val = enums[f'half_swizzles_{src.size}_bit'].bare_values.index(mod)
+                encoded |= (val << src.offset['widen'])
             elif mod in enums[f'swizzles_{src.size}_bit'].bare_values and (src.widen or src.lanes):
                 die_if(swizzled, "Multiple swizzles specified")
                 swizzled = True
@@ -270,6 +282,11 @@ def parse_asm(line):
                 swizzled = True
                 val = enums[f'lane_{src.size}_bit'].bare_values.index(mod)
                 encoded |= (val << src.offset['lane'])
+            elif src.combine and mod in enums['combine'].bare_values:
+                die_if(swizzled, "Multiple swizzles specified")
+                swizzled = True
+                val = enums['combine'].bare_values.index(mod)
+                encoded |= (val << src.offset['combine'])
             elif src.size == 32 and mod in enums['widen'].bare_values:
                 die_if(not src.swizzle, "Instruction doesn't take widens")
                 die_if(swizzled, "Multiple swizzles specified")
@@ -288,6 +305,12 @@ def parse_asm(line):
                 swizzled = True
                 val = enums['lane_8_bit'].bare_values.index(mod)
                 encoded |= (val << src.lane)
+            elif mod in enums['lanes_8_bit'].bare_values:
+                die_if(not src.lanes, "Instruction doesn't take a lane")
+                die_if(swizzled, "Multiple swizzles specified")
+                swizzled = True
+                val = enums['lanes_8_bit'].bare_values.index(mod)
+                encoded |= (val << src.offset['widen'])
             else:
                 die(f"Unknown modifier {mod}")
 

@@ -32,6 +32,8 @@
 #include "msm_kgsl.h"
 #include "vk_util.h"
 
+#include "util/debug.h"
+
 struct tu_syncobj {
    struct vk_object_base base;
    uint32_t timestamp;
@@ -81,7 +83,7 @@ tu_drm_submitqueue_close(const struct tu_device *dev, uint32_t queue_id)
 }
 
 VkResult
-tu_bo_init_new(struct tu_device *dev, struct tu_bo *bo, uint64_t size,
+tu_bo_init_new(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
                enum tu_bo_alloc_flags flags)
 {
    struct kgsl_gpumem_alloc_id req = {
@@ -100,18 +102,23 @@ tu_bo_init_new(struct tu_device *dev, struct tu_bo *bo, uint64_t size,
                        "GPUMEM_ALLOC_ID failed (%s)", strerror(errno));
    }
 
+   struct tu_bo* bo = tu_device_lookup_bo(dev, req.id);
+   assert(bo && bo->gem_handle == 0);
+
    *bo = (struct tu_bo) {
       .gem_handle = req.id,
       .size = req.mmapsize,
       .iova = req.gpuaddr,
    };
 
+   *out_bo = bo;
+
    return VK_SUCCESS;
 }
 
 VkResult
 tu_bo_init_dmabuf(struct tu_device *dev,
-                  struct tu_bo *bo,
+                  struct tu_bo **out_bo,
                   uint64_t size,
                   int fd)
 {
@@ -142,11 +149,16 @@ tu_bo_init_dmabuf(struct tu_device *dev,
       return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
                        "Failed to get dma-buf info (%s)\n", strerror(errno));
 
+   struct tu_bo* bo = tu_device_lookup_bo(dev, req.id);
+   assert(bo && bo->gem_handle == 0);
+
    *bo = (struct tu_bo) {
       .gem_handle = req.id,
       .size = info_req.size,
       .iova = info_req.gpuaddr,
    };
+
+   *out_bo = bo;
 
    return VK_SUCCESS;
 }
@@ -187,6 +199,9 @@ tu_bo_finish(struct tu_device *dev, struct tu_bo *bo)
    struct kgsl_gpumem_free_id req = {
       .id = bo->gem_handle
    };
+
+   /* Tell sparse array that entry is free */
+   memset(bo, 0, sizeof(*bo));
 
    safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
 }
@@ -244,7 +259,7 @@ tu_enumerate_devices(struct tu_instance *instance)
       ((info.chip_id >> 16) & 0xff) * 10 +
       ((info.chip_id >>  8) & 0xff);
    device->dev_id.chip_id = info.chip_id;
-   device->gmem_size = info.gmem_sizebytes;
+   device->gmem_size = env_var_as_unsigned("TU_GMEM", info.gmem_sizebytes);
    device->gmem_base = gmem_iova;
 
    device->heap.size = tu_get_system_heap_size();
@@ -358,6 +373,10 @@ tu_QueueSubmit(VkQueue _queue,
             entry_count++;
       }
 
+      struct tu_cmd_buffer **cmd_buffers = (void *)submit->pCommandBuffers;
+      if (tu_autotune_submit_requires_fence(cmd_buffers, submit->commandBufferCount))
+         entry_count++;
+
       max_entry_count = MAX2(max_entry_count, entry_count);
    }
 
@@ -402,6 +421,22 @@ tu_QueueSubmit(VkQueue _queue,
                .id = cs->entries[k].bo->gem_handle,
             };
          }
+      }
+
+      struct tu_cmd_buffer **cmd_buffers = (void *)submit->pCommandBuffers;
+      if (tu_autotune_submit_requires_fence(cmd_buffers, submit->commandBufferCount)) {
+         struct tu_cs *autotune_cs =
+            tu_autotune_on_submit(queue->device,
+                                  &queue->device->autotune,
+                                  cmd_buffers,
+                                  submit->commandBufferCount);
+         cmds[entry_idx++] = (struct kgsl_command_object) {
+            .offset = autotune_cs->entries[0].offset,
+            .gpuaddr = autotune_cs->entries[0].bo->iova,
+            .size = autotune_cs->entries[0].size,
+            .flags = KGSL_CMDLIST_IB,
+            .id = autotune_cs->entries[0].bo->gem_handle,
+         };
       }
 
       struct tu_syncobj s = sync_merge(submit->pWaitSemaphores,
@@ -657,9 +692,17 @@ tu_device_wait_u_trace(struct tu_device *dev, struct tu_u_trace_syncobj *syncobj
 }
 
 int
-tu_drm_get_timestamp(struct tu_physical_device *device, uint64_t *ts)
+tu_device_get_gpu_timestamp(struct tu_device *dev, uint64_t *ts)
 {
-   tu_finishme("tu_drm_get_timestamp");
+   tu_finishme("tu_device_get_gpu_timestamp");
+   return 0;
+}
+
+int
+tu_device_get_suspend_count(struct tu_device *dev, uint64_t *suspend_count)
+{
+   /* kgsl doesn't have a way to get it */
+   *suspend_count = 0;
    return 0;
 }
 

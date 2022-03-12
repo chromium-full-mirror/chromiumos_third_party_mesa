@@ -27,7 +27,6 @@
 
 #include "util/macros.h"
 
-#include "panfrost-quirks.h"
 
 #include "pan_cs.h"
 #include "pan_encoder.h"
@@ -498,7 +497,7 @@ pan_emit_midgard_tiler(const struct panfrost_device *dev,
                        const struct pan_tiler_context *tiler_ctx,
                        void *out)
 {
-        bool hierarchy = !(dev->quirks & MIDGARD_NO_HIER_TILING);
+        bool hierarchy = !dev->model->quirks.no_hierarchical_tiling;
 
         assert(tiler_ctx->midgard.polygon_list->ptr.gpu);
 
@@ -609,12 +608,12 @@ pan_force_clean_write(const struct pan_fb_info *fb, unsigned tile_size)
 
 #endif
 
-static unsigned
-pan_emit_mfbd(const struct panfrost_device *dev,
-              const struct pan_fb_info *fb,
-              const struct pan_tls_info *tls,
-              const struct pan_tiler_context *tiler_ctx,
-              void *out)
+unsigned
+GENX(pan_emit_fbd)(const struct panfrost_device *dev,
+                   const struct pan_fb_info *fb,
+                   const struct pan_tls_info *tls,
+                   const struct pan_tiler_context *tiler_ctx,
+                   void *out)
 {
         unsigned tags = MALI_FBD_TAG_IS_MFBD;
         void *fbd = out;
@@ -719,27 +718,15 @@ pan_emit_mfbd(const struct panfrost_device *dev,
         return tags;
 }
 #else /* PAN_ARCH == 4 */
-static void
-pan_emit_sfbd_tiler(const struct panfrost_device *dev,
-                    const struct pan_fb_info *fb,
-                    const struct pan_tiler_context *ctx,
-                    void *fbd)
+unsigned
+GENX(pan_emit_fbd)(const struct panfrost_device *dev,
+                   const struct pan_fb_info *fb,
+                   const struct pan_tls_info *tls,
+                   const struct pan_tiler_context *tiler_ctx,
+                   void *fbd)
 {
-       pan_emit_midgard_tiler(dev, fb, ctx,
-                              pan_section_ptr(fbd, FRAMEBUFFER, TILER));
+        assert(fb->rt_count <= 1);
 
-        /* All weights set to 0, nothing to do here */
-        pan_section_pack(fbd, FRAMEBUFFER, PADDING_1, padding);
-        pan_section_pack(fbd, FRAMEBUFFER, TILER_WEIGHTS, w);
-}
-
-static void
-pan_emit_sfbd(const struct panfrost_device *dev,
-              const struct pan_fb_info *fb,
-              const struct pan_tls_info *tls,
-              const struct pan_tiler_context *tiler_ctx,
-              void *fbd)
-{
         GENX(pan_emit_tls)(tls,
                            pan_section_ptr(fbd, FRAMEBUFFER,
                                            LOCAL_STORAGE));
@@ -835,26 +822,18 @@ pan_emit_sfbd(const struct panfrost_device *dev,
                 if (fb->rt_count)
                         cfg.msaa = mali_sampling_mode(fb->rts[0].view);
         }
-        pan_emit_sfbd_tiler(dev, fb, tiler_ctx, fbd);
-        pan_section_pack(fbd, FRAMEBUFFER, PADDING_2, padding);
-}
-#endif
 
-unsigned
-GENX(pan_emit_fbd)(const struct panfrost_device *dev,
-                   const struct pan_fb_info *fb,
-                   const struct pan_tls_info *tls,
-                   const struct pan_tiler_context *tiler_ctx,
-                   void *out)
-{
-#if PAN_ARCH == 4
-        assert(fb->rt_count <= 1);
-        pan_emit_sfbd(dev, fb, tls, tiler_ctx, out);
+        pan_emit_midgard_tiler(dev, fb, tiler_ctx,
+                               pan_section_ptr(fbd, FRAMEBUFFER, TILER));
+
+        /* All weights set to 0, nothing to do here */
+        pan_section_pack(fbd, FRAMEBUFFER, TILER_WEIGHTS, w);
+
+        pan_section_pack(fbd, FRAMEBUFFER, PADDING_1, padding);
+        pan_section_pack(fbd, FRAMEBUFFER, PADDING_2, padding);
         return 0;
-#else
-        return pan_emit_mfbd(dev, fb, tls, tiler_ctx, out);
-#endif
 }
+#endif
 
 #if PAN_ARCH >= 6
 void

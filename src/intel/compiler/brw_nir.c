@@ -22,6 +22,7 @@
  */
 
 #include "brw_nir.h"
+#include "brw_nir_rt.h"
 #include "brw_shader.h"
 #include "dev/intel_debug.h"
 #include "compiler/glsl_types.h"
@@ -547,10 +548,13 @@ brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
       OPT(nir_opt_dead_write_vars);
       OPT(nir_opt_combine_stores, nir_var_all);
 
+      OPT(nir_opt_ray_queries);
+
       if (is_scalar) {
          OPT(nir_lower_alu_to_scalar, NULL, NULL);
       } else {
-         OPT(nir_opt_shrink_vectors, true);
+         OPT(nir_opt_shrink_stores, true);
+         OPT(nir_opt_shrink_vectors);
       }
 
       OPT(nir_copy_prop);
@@ -861,7 +865,7 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
       .ballot_components = 1,
       .lower_to_scalar = true,
       .lower_vote_trivial = !is_scalar,
-      .lower_shuffle = true,
+      .lower_relative_shuffle = true,
       .lower_quad_broadcast_dynamic = true,
       .lower_elect = true,
    };
@@ -908,6 +912,25 @@ void
 brw_nir_link_shaders(const struct brw_compiler *compiler,
                      nir_shader *producer, nir_shader *consumer)
 {
+   if (producer->info.stage == MESA_SHADER_MESH &&
+       consumer->info.stage == MESA_SHADER_FRAGMENT) {
+      /* gl_MeshPerPrimitiveNV[].gl_ViewportIndex, gl_PrimitiveID and gl_Layer
+       * are per primitive, but fragment shader does not have them marked as
+       * such. Add the annotation here.
+       */
+      nir_foreach_shader_in_variable(var, consumer) {
+         switch (var->data.location) {
+            case VARYING_SLOT_LAYER:
+            case VARYING_SLOT_PRIMITIVE_ID:
+            case VARYING_SLOT_VIEWPORT:
+               var->data.per_primitive = 1;
+               break;
+            default:
+               continue;
+         }
+      }
+   }
+
    nir_lower_io_arrays_to_elements(producer, consumer);
    nir_validate_shader(producer, "after nir_lower_io_arrays_to_elements");
    nir_validate_shader(consumer, "after nir_lower_io_arrays_to_elements");
@@ -1109,6 +1132,9 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
       };
       OPT(nir_lower_idiv, &options);
    }
+
+   if (gl_shader_stage_can_set_fragment_shading_rate(nir->info.stage))
+      brw_nir_lower_shading_rate_output(nir);
 
    brw_nir_optimize(nir, compiler, is_scalar, false);
 

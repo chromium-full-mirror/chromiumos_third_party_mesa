@@ -374,6 +374,12 @@ anv_block_pool_init(struct anv_block_pool *pool,
 {
    VkResult result;
 
+   if (device->info.verx10 >= 125) {
+      /* Make sure VMA addresses are 2MiB aligned for the block pool */
+      assert(anv_is_aligned(start_address, 2 * 1024 * 1024));
+      assert(anv_is_aligned(initial_size, 2 * 1024 * 1024));
+   }
+
    pool->name = name;
    pool->device = device;
    pool->use_relocations = anv_use_relocations(device->physical);
@@ -838,9 +844,13 @@ anv_state_pool_init(struct anv_state_pool *pool,
    /* We don't want to ever see signed overflow */
    assert(start_offset < INT32_MAX - (int32_t)BLOCK_POOL_MEMFD_SIZE);
 
+   uint32_t initial_size = block_size * 16;
+   if (device->info.verx10 >= 125)
+      initial_size = MAX2(initial_size, 2 * 1024 * 1024);
+
    VkResult result = anv_block_pool_init(&pool->block_pool, device, name,
                                          base_address + start_offset,
-                                         block_size * 16);
+                                         initial_size);
    if (result != VK_SUCCESS)
       return result;
 
@@ -1691,9 +1701,7 @@ anv_device_alloc_bo(struct anv_device *device,
       uint32_t nregions = 0;
 
       if (alloc_flags & ANV_BO_ALLOC_LOCAL_MEM) {
-         /* For vram allocation, still use system memory as a fallback. */
          regions[nregions++] = device->physical->vram.region;
-         regions[nregions++] = device->physical->sys.region;
       } else {
          regions[nregions++] = device->physical->sys.region;
       }
@@ -1718,7 +1726,8 @@ anv_device_alloc_bo(struct anv_device *device,
       .is_external = (alloc_flags & ANV_BO_ALLOC_EXTERNAL),
       .has_client_visible_address =
          (alloc_flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0,
-      .has_implicit_ccs = ccs_size > 0,
+      .has_implicit_ccs = ccs_size > 0 || (device->info.verx10 >= 125 &&
+         (alloc_flags & ANV_BO_ALLOC_LOCAL_MEM)),
    };
 
    if (alloc_flags & ANV_BO_ALLOC_MAPPED) {
