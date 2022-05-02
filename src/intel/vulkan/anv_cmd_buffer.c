@@ -199,10 +199,9 @@ anv_dynamic_state_copy(struct anv_dynamic_state *dest,
    ANV_CMP_COPY(logic_op, ANV_CMD_DIRTY_DYNAMIC_LOGIC_OP);
 
    if (copy_mask & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS) {
-      dest->sample_locations.samples = src->sample_locations.samples;
       typed_memcpy(dest->sample_locations.locations,
                    src->sample_locations.locations,
-                   dest->sample_locations.samples);
+                   ARRAY_SIZE(src->sample_locations.locations));
       changed |= ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS;
    }
 
@@ -250,8 +249,6 @@ anv_cmd_state_finish(struct anv_cmd_buffer *cmd_buffer)
 
    anv_cmd_pipeline_state_finish(cmd_buffer, &state->gfx.base);
    anv_cmd_pipeline_state_finish(cmd_buffer, &state->compute.base);
-
-   vk_free(&cmd_buffer->vk.pool->alloc, state->attachments);
 }
 
 static void
@@ -618,7 +615,7 @@ void anv_CmdBindPipeline(
    }
 
    default:
-      assert(!"invalid bind point");
+      unreachable("invalid bind point");
       break;
    }
 
@@ -626,7 +623,7 @@ void anv_CmdBindPipeline(
       anv_cmd_buffer_set_ray_query_buffer(cmd_buffer, state, pipeline, stages);
 }
 
-void anv_CmdSetRasterizerDiscardEnableEXT(
+void anv_CmdSetRasterizerDiscardEnable(
     VkCommandBuffer                             commandBuffer,
     VkBool32                                    rasterizerDiscardEnable)
 {
@@ -637,7 +634,7 @@ void anv_CmdSetRasterizerDiscardEnableEXT(
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_RASTERIZER_DISCARD_ENABLE;
 }
 
-void anv_CmdSetDepthBiasEnableEXT(
+void anv_CmdSetDepthBiasEnable(
     VkCommandBuffer                             commandBuffer,
     VkBool32                                    depthBiasEnable)
 {
@@ -648,7 +645,7 @@ void anv_CmdSetDepthBiasEnableEXT(
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS_ENABLE;
 }
 
-void anv_CmdSetPrimitiveRestartEnableEXT(
+void anv_CmdSetPrimitiveRestartEnable(
     VkCommandBuffer                             commandBuffer,
     VkBool32                                    primitiveRestartEnable)
 {
@@ -696,7 +693,7 @@ void anv_CmdSetViewport(
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_VIEWPORT;
 }
 
-void anv_CmdSetViewportWithCountEXT(
+void anv_CmdSetViewportWithCount(
    VkCommandBuffer                              commandBuffer,
    uint32_t                                     viewportCount,
    const VkViewport*                            pViewports)
@@ -729,7 +726,7 @@ void anv_CmdSetScissor(
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_SCISSOR;
 }
 
-void anv_CmdSetScissorWithCountEXT(
+void anv_CmdSetScissorWithCount(
    VkCommandBuffer                              commandBuffer,
    uint32_t                                     scissorCount,
    const VkRect2D*                              pScissors)
@@ -744,7 +741,7 @@ void anv_CmdSetScissorWithCountEXT(
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_SCISSOR;
 }
 
-void anv_CmdSetPrimitiveTopologyEXT(
+void anv_CmdSetPrimitiveTopology(
    VkCommandBuffer                              commandBuffer,
    VkPrimitiveTopology                          primitiveTopology)
 {
@@ -859,7 +856,6 @@ void anv_CmdSetSampleLocationsEXT(
    struct anv_dynamic_state *dyn_state = &cmd_buffer->state.gfx.dynamic;
    uint32_t samples = pSampleLocationsInfo->sampleLocationsPerPixel;
 
-   dyn_state->sample_locations.samples = samples;
    typed_memcpy(dyn_state->sample_locations.locations,
                 pSampleLocationsInfo->pSampleLocations, samples);
 
@@ -879,7 +875,7 @@ void anv_CmdSetLineStippleEXT(
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE;
 }
 
-void anv_CmdSetCullModeEXT(
+void anv_CmdSetCullMode(
    VkCommandBuffer                              commandBuffer,
    VkCullModeFlags                              cullMode)
 {
@@ -890,7 +886,7 @@ void anv_CmdSetCullModeEXT(
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_CULL_MODE;
 }
 
-void anv_CmdSetFrontFaceEXT(
+void anv_CmdSetFrontFace(
    VkCommandBuffer                              commandBuffer,
    VkFrontFace                                  frontFace)
 {
@@ -901,7 +897,7 @@ void anv_CmdSetFrontFaceEXT(
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_FRONT_FACE;
 }
 
-void anv_CmdSetDepthTestEnableEXT(
+void anv_CmdSetDepthTestEnable(
    VkCommandBuffer                              commandBuffer,
    VkBool32                                     depthTestEnable)
 
@@ -913,7 +909,7 @@ void anv_CmdSetDepthTestEnableEXT(
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_DEPTH_TEST_ENABLE;
 }
 
-void anv_CmdSetDepthWriteEnableEXT(
+void anv_CmdSetDepthWriteEnable(
    VkCommandBuffer                              commandBuffer,
    VkBool32                                     depthWriteEnable)
 {
@@ -924,7 +920,7 @@ void anv_CmdSetDepthWriteEnableEXT(
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_DEPTH_WRITE_ENABLE;
 }
 
-void anv_CmdSetDepthCompareOpEXT(
+void anv_CmdSetDepthCompareOp(
    VkCommandBuffer                              commandBuffer,
    VkCompareOp                                  depthCompareOp)
 {
@@ -935,7 +931,7 @@ void anv_CmdSetDepthCompareOpEXT(
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP;
 }
 
-void anv_CmdSetDepthBoundsTestEnableEXT(
+void anv_CmdSetDepthBoundsTestEnable(
    VkCommandBuffer                              commandBuffer,
    VkBool32                                     depthBoundsTestEnable)
 {
@@ -946,7 +942,7 @@ void anv_CmdSetDepthBoundsTestEnableEXT(
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE;
 }
 
-void anv_CmdSetStencilTestEnableEXT(
+void anv_CmdSetStencilTestEnable(
    VkCommandBuffer                              commandBuffer,
    VkBool32                                     stencilTestEnable)
 {
@@ -957,7 +953,7 @@ void anv_CmdSetStencilTestEnableEXT(
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE;
 }
 
-void anv_CmdSetStencilOpEXT(
+void anv_CmdSetStencilOp(
    VkCommandBuffer                              commandBuffer,
    VkStencilFaceFlags                           faceMask,
    VkStencilOp                                  failOp,
@@ -1133,7 +1129,7 @@ void anv_CmdBindDescriptorSets(
    }
 }
 
-void anv_CmdBindVertexBuffers2EXT(
+void anv_CmdBindVertexBuffers2(
    VkCommandBuffer                              commandBuffer,
    uint32_t                                     firstBinding,
    uint32_t                                     bindingCount,
@@ -1170,9 +1166,9 @@ void anv_CmdBindVertexBuffers(
     const VkBuffer*                             pBuffers,
     const VkDeviceSize*                         pOffsets)
 {
-   return anv_CmdBindVertexBuffers2EXT(commandBuffer, firstBinding,
-                                       bindingCount, pBuffers, pOffsets,
-                                       NULL, NULL);
+   return anv_CmdBindVertexBuffers2(commandBuffer, firstBinding,
+                                    bindingCount, pBuffers, pOffsets,
+                                    NULL, NULL);
 }
 
 void anv_CmdBindTransformFeedbackBuffersEXT(
@@ -1365,64 +1361,6 @@ void anv_CmdPushConstants(
    }
 
    cmd_buffer->state.push_constants_dirty |= stageFlags;
-}
-
-/**
- * Return NULL if the current subpass has no color attachment.
- */
-const struct anv_image_view *
-anv_cmd_buffer_get_first_color_view(const struct anv_cmd_buffer *cmd_buffer)
-{
-   const struct anv_subpass *subpass = cmd_buffer->state.subpass;
-
-   if (subpass->color_count == 0)
-      return NULL;
-
-   const struct anv_image_view *iview =
-      cmd_buffer->state.attachments[subpass->color_attachments[0].attachment].image_view;
-
-   assert(iview->vk.aspects & VK_IMAGE_ASPECT_COLOR_BIT);
-
-   return iview;
-}
-
-/**
- * Return NULL if the current subpass has no depthstencil attachment.
- */
-const struct anv_image_view *
-anv_cmd_buffer_get_depth_stencil_view(const struct anv_cmd_buffer *cmd_buffer)
-{
-   const struct anv_subpass *subpass = cmd_buffer->state.subpass;
-
-   if (subpass->depth_stencil_attachment == NULL)
-      return NULL;
-
-   const struct anv_image_view *iview =
-      cmd_buffer->state.attachments[subpass->depth_stencil_attachment->attachment].image_view;
-
-   assert(iview->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT |
-                               VK_IMAGE_ASPECT_STENCIL_BIT));
-
-   return iview;
-}
-
-/**
- * Return NULL if the current subpass has no fragment shading rate attachment.
- */
-const struct anv_image_view *
-anv_cmd_buffer_get_fsr_view(const struct anv_cmd_buffer *cmd_buffer)
-{
-   const struct anv_subpass *subpass = cmd_buffer->state.subpass;
-
-   if (subpass->fsr_attachment == NULL)
-      return NULL;
-
-   const struct anv_image_view *iview =
-      cmd_buffer->state.attachments[subpass->fsr_attachment->attachment].image_view;
-
-   assert(iview->image->vk.usage & VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR);
-
-   return iview;
 }
 
 static struct anv_descriptor_set *
@@ -1660,9 +1598,16 @@ void anv_CmdSetColorWriteEnableEXT(
 
    assert(attachmentCount <= MAX_RTS);
 
-   uint8_t color_writes = 0;
-   for (uint32_t i = 0; i < attachmentCount; i++)
-      color_writes |= pColorWriteEnables[i] ? (1 << i) : 0;
+   /* Keep the existing values outside the color attachments count of the
+    * current pipeline.
+    */
+   uint8_t color_writes = cmd_buffer->state.gfx.dynamic.color_writes;
+   for (uint32_t i = 0; i < attachmentCount; i++) {
+      if (pColorWriteEnables[i])
+         color_writes |= BITFIELD_BIT(i);
+      else
+         color_writes &= ~BITFIELD_BIT(i);
+   }
 
    if (cmd_buffer->state.gfx.dynamic.color_writes != color_writes) {
       cmd_buffer->state.gfx.dynamic.color_writes = color_writes;

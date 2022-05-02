@@ -39,6 +39,7 @@
 #include "tgsi/tgsi_ureg.h"
 
 #include "nir.h"
+#include "nir/nir_to_tgsi.h"
 #include "nir/nir_to_tgsi_info.h"
 #include "tgsi/tgsi_from_mesa.h"
 
@@ -867,17 +868,63 @@ static inline void r600_shader_selector_key(const struct pipe_context *ctx,
 	}
 }
 
+static void
+r600_shader_precompile_key(const struct pipe_context *ctx,
+			   const struct r600_pipe_shader_selector *sel,
+			   union r600_shader_key *key)
+{
+	memset(key, 0, sizeof(*key));
+
+	switch (sel->type) {
+	case PIPE_SHADER_VERTEX:
+	case PIPE_SHADER_TESS_EVAL:
+		/* Assume no tess or GS for setting .as_es.  In order to
+		 * precompile with es, we'd need the other shaders we're linked
+		 * with (see the link_shader screen method)
+		 */
+		break;
+
+	case PIPE_SHADER_GEOMETRY:
+		break;
+
+	case PIPE_SHADER_FRAGMENT:
+		key->ps.image_size_const_offset = sel->info.file_max[TGSI_FILE_IMAGE];
+
+		/* This is used for gl_FragColor output expansion to the number
+		 * of color buffers bound, but also with sb it'll drop outputs
+		 * to unused cbufs.
+		 */
+		key->ps.nr_cbufs = sel->info.file_max[TGSI_FILE_OUTPUT] + 1;
+		break;
+
+	case PIPE_SHADER_TESS_CTRL:
+		/* Prim mode comes from the TES, but we need some valid value. */
+		key->tcs.prim_mode = PIPE_PRIM_TRIANGLES;
+		break;
+
+	case PIPE_SHADER_COMPUTE:
+		break;
+
+	default:
+		unreachable("bad shader stage");
+		break;
+	}
+}
+
 /* Select the hw shader variant depending on the current state.
  * (*dirty) is set to 1 if current variant was changed */
 int r600_shader_select(struct pipe_context *ctx,
         struct r600_pipe_shader_selector* sel,
-        bool *dirty)
+        bool *dirty, bool precompile)
 {
 	union r600_shader_key key;
 	struct r600_pipe_shader * shader = NULL;
 	int r;
 
-	r600_shader_selector_key(ctx, sel, &key);
+	if (precompile)
+		r600_shader_precompile_key(ctx, sel, &key);
+	else
+		r600_shader_selector_key(ctx, sel, &key);
 
 	/* Check if we don't need to change anything.
 	 * This path is also used for most shaders that don't need multiple
@@ -915,15 +962,6 @@ int r600_shader_select(struct pipe_context *ctx,
 			return r;
 		}
 
-		/* We don't know the value of nr_ps_max_color_exports until we built
-		 * at least one variant, so we may need to recompute the key after
-		 * building first variant. */
-		if (sel->type == PIPE_SHADER_FRAGMENT &&
-				sel->num_shaders == 0) {
-			sel->nr_ps_max_color_exports = shader->shader.nr_ps_max_color_exports;
-			r600_shader_selector_key(ctx, sel, &key);
-		}
-
 		memcpy(&shader->key, &key, sizeof(key));
 		sel->num_shaders++;
 	}
@@ -942,15 +980,25 @@ struct r600_pipe_shader_selector *r600_create_shader_state_tokens(struct pipe_co
 								  unsigned pipe_shader_type)
 {
 	struct r600_pipe_shader_selector *sel = CALLOC_STRUCT(r600_pipe_shader_selector);
+	struct r600_screen *rscreen = (struct r600_screen *)ctx->screen;
 
 	sel->type = pipe_shader_type;
 	if (ir == PIPE_SHADER_IR_TGSI) {
 		sel->tokens = tgsi_dup_tokens((const struct tgsi_token *)prog);
 		tgsi_scan_shader(sel->tokens, &sel->info);
 	} else if (ir == PIPE_SHADER_IR_NIR){
-		sel->nir = nir_shader_clone(NULL, (const nir_shader *)prog);
-		nir_tgsi_scan_shader(sel->nir, &sel->info, true);
+		nir_shader *s = (nir_shader *)prog;
+
+		if (!(rscreen->b.debug_flags & DBG_NIR_PREFERRED)) {
+			sel->tokens = (void *)nir_to_tgsi(s, ctx->screen);
+			ir = PIPE_SHADER_IR_TGSI;
+			tgsi_scan_shader(sel->tokens, &sel->info);
+		} else {
+			sel->nir = nir_shader_clone(NULL, s);
+			nir_tgsi_scan_shader(sel->nir, &sel->info, true);
+		}
 	}
+	sel->ir_type = ir;
 	return sel;
 }
 
@@ -968,7 +1016,6 @@ static void *r600_create_shader_state(struct pipe_context *ctx,
 	} else
 		assert(0 && "Unknown shader type\n");
 	
-	sel->ir_type = state->type;
 	sel->so = state->stream_output;
 
 	switch (pipe_shader_type) {
@@ -1005,6 +1052,12 @@ static void *r600_create_shader_state(struct pipe_context *ctx,
 	default:
 		break;
 	}
+
+	/* Precompile the shader with the expected shader key, to reduce jank at
+	 * draw time. Also produces output for shader-db.
+	 */
+	bool dirty;
+	r600_shader_select(ctx, sel, &dirty, true);
 
 	return sel;
 }
@@ -1780,7 +1833,7 @@ void r600_setup_scratch_buffers(struct r600_context *rctx) {
 }
 
 #define SELECT_SHADER_OR_FAIL(x) do {					\
-		r600_shader_select(ctx, rctx->x##_shader, &x##_dirty);	\
+		r600_shader_select(ctx, rctx->x##_shader, &x##_dirty, false);	\
 		if (unlikely(!rctx->x##_shader->current))		\
 			return false;					\
 	} while(0)
@@ -1918,6 +1971,18 @@ static bool r600_update_derived_state(struct r600_context *rctx)
 		rctx->rasterizer->sprite_coord_enable != rctx->ps_shader->current->sprite_coord_enable ||
 		rctx->rasterizer->flatshade != rctx->ps_shader->current->flatshade)) {
 
+		bool msaa = rctx->framebuffer.nr_samples > 1 && rctx->ps_iter_samples > 0;
+		if (unlikely(rctx->ps_shader &&
+				((rctx->rasterizer->sprite_coord_enable != rctx->ps_shader->current->sprite_coord_enable) ||
+				 (rctx->rasterizer->flatshade != rctx->ps_shader->current->flatshade) ||
+				 (msaa != rctx->ps_shader->current->msaa)))) {
+
+			if (rctx->b.chip_class >= EVERGREEN)
+				evergreen_update_ps_state(ctx, rctx->ps_shader->current);
+			else
+				r600_update_ps_state(ctx, rctx->ps_shader->current);
+		}
+
 		if (rctx->cb_misc_state.nr_ps_color_outputs != rctx->ps_shader->current->nr_ps_color_outputs ||
 		    rctx->cb_misc_state.ps_color_export_mask != rctx->ps_shader->current->ps_color_export_mask) {
 			rctx->cb_misc_state.nr_ps_color_outputs = rctx->ps_shader->current->nr_ps_color_outputs;
@@ -1932,16 +1997,6 @@ static bool r600_update_derived_state(struct r600_context *rctx)
 				rctx->cb_misc_state.multiwrite = multiwrite;
 				r600_mark_atom_dirty(rctx, &rctx->cb_misc_state.atom);
 			}
-		}
-
-		if (unlikely(!ps_dirty && rctx->ps_shader && rctx->rasterizer &&
-				((rctx->rasterizer->sprite_coord_enable != rctx->ps_shader->current->sprite_coord_enable) ||
-						(rctx->rasterizer->flatshade != rctx->ps_shader->current->flatshade)))) {
-
-			if (rctx->b.chip_class >= EVERGREEN)
-				evergreen_update_ps_state(ctx, rctx->ps_shader->current);
-			else
-				r600_update_ps_state(ctx, rctx->ps_shader->current);
 		}
 
 		r600_mark_atom_dirty(rctx, &rctx->shader_stages.atom);

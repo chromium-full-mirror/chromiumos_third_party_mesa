@@ -109,6 +109,7 @@ tu_bo_init_new(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
       .gem_handle = req.id,
       .size = req.mmapsize,
       .iova = req.gpuaddr,
+      .refcnt = 1,
    };
 
    *out_bo = bo;
@@ -156,6 +157,7 @@ tu_bo_init_dmabuf(struct tu_device *dev,
       .gem_handle = req.id,
       .size = info_req.size,
       .iova = info_req.gpuaddr,
+      .refcnt = 1,
    };
 
    *out_bo = bo;
@@ -192,6 +194,9 @@ void
 tu_bo_finish(struct tu_device *dev, struct tu_bo *bo)
 {
    assert(bo->gem_handle);
+
+   if (!p_atomic_dec_zero(&bo->refcnt))
+      return;
 
    if (bo->map)
       munmap(bo->map, bo->size);
@@ -356,6 +361,11 @@ tu_QueueSubmit(VkQueue _queue,
    TU_FROM_HANDLE(tu_queue, queue, _queue);
    TU_FROM_HANDLE(tu_syncobj, fence, _fence);
    VkResult result = VK_SUCCESS;
+
+   if (unlikely(queue->device->physical_device->instance->debug_flags &
+                 TU_DEBUG_LOG_SKIP_GMEM_OPS)) {
+      tu_dbg_log_gmem_load_store_skips(queue->device);
+   }
 
    uint32_t max_entry_count = 0;
    for (uint32_t i = 0; i < submitCount; ++i) {
@@ -704,6 +714,33 @@ tu_device_get_suspend_count(struct tu_device *dev, uint64_t *suspend_count)
    /* kgsl doesn't have a way to get it */
    *suspend_count = 0;
    return 0;
+}
+
+VkResult
+tu_device_check_status(struct vk_device *vk_device)
+{
+   struct tu_device *device = container_of(vk_device, struct tu_device, vk);
+
+   for (unsigned i = 0; i < TU_MAX_QUEUE_FAMILIES; i++) {
+      for (unsigned q = 0; q < device->queue_count[i]; q++) {
+         /* KGSL's KGSL_PROP_GPU_RESET_STAT takes the u32 msm_queue_id and returns a
+         * KGSL_CTX_STAT_* for the worst reset that happened since the last time it
+         * was queried on that queue.
+         */
+         uint32_t value = device->queues[i][q].msm_queue_id;
+         VkResult status = get_kgsl_prop(device->fd, KGSL_PROP_GPU_RESET_STAT,
+                                       &value, sizeof(value));
+         if (status != VK_SUCCESS)
+            return vk_device_set_lost(&device->vk, "Failed to get GPU reset status");
+
+         if (value != KGSL_CTX_STAT_NO_ERROR &&
+            value != KGSL_CTX_STAT_INNOCENT_CONTEXT_RESET_EXT) {
+            return vk_device_set_lost(&device->vk, "GPU faulted or hung");
+         }
+      }
+   }
+
+   return VK_SUCCESS;
 }
 
 #ifdef ANDROID

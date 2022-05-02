@@ -106,8 +106,13 @@ static void
 print_ssa_def(nir_ssa_def *def, print_state *state)
 {
    FILE *fp = state->fp;
-   fprintf(fp, "%s %u ssa_%u", sizes[def->num_components], def->bit_size,
-           def->index);
+
+   const char *divergence = "";
+   if (state->shader->info.divergence_analysis_run)
+      divergence = def->divergent ? "div " : "con ";
+
+   fprintf(fp, "%s %2u %sssa_%u", sizes[def->num_components], def->bit_size,
+           divergence, def->index);
 }
 
 static void
@@ -561,6 +566,8 @@ get_variable_mode_str(nir_variable_mode mode, bool want_local_global_mode)
    case nir_var_mem_task_payload:
       return "task_payload";
    default:
+      if (mode && (mode & nir_var_mem_generic) == mode)
+         return "generic";
       return "";
    }
 }
@@ -1599,6 +1606,10 @@ print_function_impl(nir_function_impl *impl, print_state *state)
    fprintf(fp, "\nimpl %s ", impl->function->name);
 
    fprintf(fp, "{\n");
+
+   if (impl->preamble) {
+      fprintf(fp, "\tpreamble %s\n", impl->preamble->name);
+   }
 
    nir_foreach_function_temp_variable(var, impl) {
       fprintf(fp, "\t");

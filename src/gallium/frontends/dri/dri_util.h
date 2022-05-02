@@ -55,6 +55,7 @@
 
 #include <GL/gl.h>
 #include <GL/internal/dri_interface.h>
+#include "kopper_interface.h"
 #include "main/menums.h"
 #include "main/formats.h"
 #include "util/xmlconfig.h"
@@ -69,6 +70,7 @@ struct gl_context;
 extern const __DRIcoreExtension driCoreExtension;
 extern const __DRIswrastExtension driSWRastExtension;
 extern const __DRIdri2Extension driDRI2Extension;
+extern const __DRIdri2Extension swkmsDRI2Extension;
 extern const __DRI2configQueryExtension dri2ConfigQueryExtension;
 extern const __DRIcopySubBufferExtension driCopySubBufferExtension;
 extern const __DRI2flushControlExtension dri2FlushControlExtension;
@@ -116,24 +118,11 @@ struct __DriverContextConfig {
  *
  * Each DRI driver must have one of these structures with all the pointers set
  * to appropriate functions within the driver.
- * 
- * When glXCreateContext() is called, for example, it'll call a helper function
- * dri_util.c which in turn will jump through the \a CreateContext pointer in
- * this structure.
  */
 struct __DriverAPIRec {
     const __DRIconfig **(*InitScreen) (__DRIscreen * priv);
 
     void (*DestroyScreen)(__DRIscreen *driScrnPriv);
-
-    GLboolean (*CreateContext)(gl_api api,
-                               const struct gl_config *glVis,
-                               __DRIcontext *driContextPriv,
-                               const struct __DriverContextConfig *ctx_config,
-                               unsigned *error,
-                               void *sharedContextPrivate);
-
-    void (*DestroyContext)(__DRIcontext *driContextPriv);
 
     GLboolean (*CreateBuffer)(__DRIscreen *driScrnPriv,
                               __DRIdrawable *driDrawPriv,
@@ -143,12 +132,6 @@ struct __DriverAPIRec {
     void (*DestroyBuffer)(__DRIdrawable *driDrawPriv);
 
     void (*SwapBuffers)(__DRIdrawable *driDrawPriv);
-
-    GLboolean (*MakeCurrent)(__DRIcontext *driContextPriv,
-                             __DRIdrawable *driDrawPriv,
-                             __DRIdrawable *driReadPriv);
-
-    GLboolean (*UnbindContext)(__DRIcontext *driContextPriv);
 
     __DRIbuffer *(*AllocateBuffer) (__DRIscreen *screenPrivate,
                                     unsigned int attachment,
@@ -160,9 +143,6 @@ struct __DriverAPIRec {
     void (*CopySubBuffer)(__DRIdrawable *driDrawPriv, int x, int y,
                           int w, int h);
 };
-
-extern const struct __DriverAPIRec driDriverAPI;
-extern const struct __DriverAPIRec *globalDriverAPI;
 
 /**
  * Per-screen private driver information.
@@ -206,6 +186,7 @@ struct __DRIscreenRec {
     const __DRIextension **extensions;
 
     const __DRIswrastLoaderExtension *swrast_loader;
+    const __DRIkopperLoaderExtension *kopper_loader;
 
     struct {
 	/* Flag to indicate that this is a DRI2 screen.  Many of the above

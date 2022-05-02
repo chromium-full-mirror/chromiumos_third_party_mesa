@@ -124,6 +124,13 @@ collect_varyings(nir_shader *s, nir_variable_mode varying_mode,
                 if (PAN_ARCH >= 6 && var->data.interpolation == INTERP_MODE_FLAT)
                         type = nir_type_uint;
 
+                /* Point size is handled specially on Valhall (with malloc
+                 * IDVS).. probably though this entire linker should be bypassed
+                 * for Valhall in the future.
+                 */
+                if (PAN_ARCH >= 9 && var->data.location == VARYING_SLOT_PSIZ)
+                        continue;
+
                 /* Demote to fp16 where possible. int16 varyings are TODO as the hw
                  * will saturate instead of wrap which is not conformant, so we need to
                  * insert i2i16/u2u16 instructions before the st_vary_32i/32u to get
@@ -207,6 +214,7 @@ GENX(pan_shader_compile)(nir_shader *s,
         switch (info->stage) {
         case MESA_SHADER_VERTEX:
                 info->attribute_count = util_bitcount64(s->info.inputs_read);
+                info->attributes_read = s->info.inputs_read;
 
 #if PAN_ARCH <= 5
                 bool vertex_id = BITSET_TEST(s->info.system_values_read,

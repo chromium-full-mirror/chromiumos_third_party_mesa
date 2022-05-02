@@ -2429,6 +2429,7 @@
       <opt>rtz</opt>
       <opt>rtna</opt>
     </mod>
+    <mod name="ftz" start="9" size="1" opt="ftz" pseudo="true"/>
     <derived start="6" size="1">
       <and>
         <eq left="abs0" right="#none"/>
@@ -3870,6 +3871,7 @@
       <opt>h0</opt>
       <opt>h1</opt>
     </mod>
+    <mod name="ftz" start="9" size="1" opt="ftz" pseudo="true"/>
   </ins>
 
   <ins name="+F16_TO_S32">
@@ -6376,7 +6378,7 @@
     </mod>
   </ins>
 
-  <ins name="+LD_TILE" staging="w=vecsize" mask="0xff800" exact="0xcb000" message="tile">
+  <ins name="+LD_TILE" staging="w=format" mask="0xff800" exact="0xcb000" message="tile">
     <src start="0"/>
     <src start="3"/>
     <src start="6" mask="0xf7"/>
@@ -7709,6 +7711,12 @@
       <opt>v3</opt>
       <opt>v4</opt>
     </mod>
+    <mod name="register_format" size="3" pseudo="true">
+      <opt>f32</opt>
+      <opt>f16</opt>
+      <opt>u32</opt>
+      <opt>s32</opt>
+    </mod>
   </ins>
 
   <ins name="+SWZ.v2i16" mask="0xfffc8" exact="0x3d948">
@@ -7932,6 +7940,7 @@
       <opt>rtz</opt>
       <opt>rtna</opt>
     </mod>
+    <mod name="ftz" start="9" size="1" opt="ftz" pseudo="true"/>
     <derived start="6" size="1">
       <and>
         <eq left="abs0" right="#none"/>
@@ -8233,8 +8242,48 @@
     <mod name="preserve_null" size="1" opt="preserve_null"/>
   </ins>
 
-  <!-- Scheduler lowered to *ATOM_C.i32/+ATOM_CX -->
-  <ins name="+PATOM_C.i32" pseudo="true" staging="rw=sr_count" message="atomic">
+  <!-- Scheduler lowered to *ATOM_C.i32/+ATOM_CX. Real Valhall instructions. -->
+  <ins name="+ATOM_RETURN.i32" pseudo="true" staging="rw=sr_count" message="atomic">
+    <src start="0"/>
+    <src start="3"/>
+    <mod name="atom_opc" start="9" size="5">
+      <reserved/>
+      <reserved/>
+      <opt>aadd</opt>
+      <reserved/>
+      <reserved/>
+      <reserved/>
+      <reserved/>
+      <reserved/>
+      <opt>asmin</opt>
+      <opt>asmax</opt>
+      <opt>aumin</opt>
+      <opt>aumax</opt>
+      <opt>aand</opt>
+      <opt>aor</opt>
+      <opt>axor</opt>
+      <opt>axchg</opt> <!-- For Valhall -->
+      <opt>acmpxchg</opt> <!-- For Valhall -->
+    </mod>
+    <!-- not actually encoded, but used for IR -->
+    <immediate name="sr_count" size="4" pseudo="true"/>
+  </ins>
+
+  <ins name="+ATOM1_RETURN.i32" pseudo="true" staging="w=sr_count" message="atomic">
+    <src start="0"/>
+    <src start="3"/>
+    <mod name="atom_opc" start="6" size="3">
+      <opt>ainc</opt>
+      <opt>adec</opt>
+      <opt>aumax1</opt>
+      <opt>asmax1</opt>
+      <opt>aor1</opt>
+    </mod>
+    <!-- not actually encoded, but used for IR -->
+    <immediate name="sr_count" size="4" pseudo="true"/>
+  </ins>
+
+  <ins name="+ATOM.i32" pseudo="true" staging="r=sr_count" message="atomic">
     <src start="0"/>
     <src start="3"/>
     <mod name="atom_opc" start="9" size="4">
@@ -8253,20 +8302,6 @@
       <opt>aand</opt>
       <opt>aor</opt>
       <opt>axor</opt>
-    </mod>
-    <!-- not actually encoded, but used for IR -->
-    <immediate name="sr_count" size="4" pseudo="true"/>
-  </ins>
-
-  <ins name="+PATOM_C1.i32" pseudo="true" staging="w=sr_count" message="atomic">
-    <src start="0"/>
-    <src start="3"/>
-    <mod name="atom_opc" start="6" size="3">
-      <opt>ainc</opt>
-      <opt>adec</opt>
-      <opt>aumax1</opt>
-      <opt>asmax1</opt>
-      <opt>aor1</opt>
     </mod>
     <!-- not actually encoded, but used for IR -->
     <immediate name="sr_count" size="4" pseudo="true"/>
@@ -8403,7 +8438,7 @@
       <opt>3d</opt>
       <opt>cube</opt>
     </mod>
-    <mod name="write_mask" start="9" size="2">
+    <mod name="write_mask" start="9" size="4">
       <opt>none</opt>
       <opt>r</opt>
       <opt>g</opt>
@@ -8451,7 +8486,7 @@
       <opt>3d</opt>
       <opt>cube</opt>
     </mod>
-    <mod name="write_mask" start="9" size="2">
+    <mod name="write_mask" start="9" size="4">
       <opt>none</opt>
       <opt>r</opt>
       <opt>g</opt>
@@ -8485,6 +8520,7 @@
     <immediate name="sr_count" size="4" pseudo="true"/>
     <mod name="texel_offset" start="9" size="1" opt="texel_offset"/>
     <mod name="skip" start="9" size="1" opt="skip"/>
+    <mod name="shadow" start="9" size="1" opt="shadow"/>
     <mod name="array_enable" start="9" size="1" opt="array_enable"/>
     <mod name="integer_coordinates" start="9" size="1" opt="integer_coordinates"/>
     <mod name="fetch_component" start="9" size="2">
@@ -8499,7 +8535,7 @@
       <opt>3d</opt>
       <opt>cube</opt>
     </mod>
-    <mod name="write_mask" start="9" size="2">
+    <mod name="write_mask" start="9" size="4">
       <opt>none</opt>
       <opt>r</opt>
       <opt>g</opt>
@@ -8566,9 +8602,69 @@
     </mod>
   </ins>
 
+  <ins name="+LD_VAR_BUF.f32" staging="w=format" message="varying" pseudo="true">
+    <src start="0"/>
+    <src start="1"/>
+    <mod name="vecsize" start="8" size="2">
+      <opt>none</opt>
+      <opt>v2</opt>
+      <opt>v3</opt>
+      <opt>v4</opt>
+    </mod>
+    <mod name="update" size="2">
+      <opt>store</opt>
+      <opt>retrieve</opt>
+      <opt>conditional</opt>
+      <opt>clobber</opt>
+    </mod>
+    <mod name="register_format" size="2">
+      <opt>f32</opt>
+      <opt>f16</opt>
+      <opt>u32</opt>
+      <opt>u16</opt>
+    </mod>
+    <mod name="sample" size="3">
+      <opt>center</opt>
+      <opt>centroid</opt>
+      <opt>sample</opt>
+      <opt>explicit</opt>
+      <opt>none</opt>
+    </mod>
+  </ins>
+
   <ins name="+LD_VAR_BUF_IMM.f16" staging="w=format" message="varying" pseudo="true">
     <src start="0"/>
     <immediate name="index" start="3" size="5"/>
+    <mod name="vecsize" start="8" size="2">
+      <opt>none</opt>
+      <opt>v2</opt>
+      <opt>v3</opt>
+      <opt>v4</opt>
+    </mod>
+    <mod name="update" size="2">
+      <opt>store</opt>
+      <opt>retrieve</opt>
+      <opt>conditional</opt>
+      <opt>clobber</opt>
+    </mod>
+    <mod name="register_format" size="2">
+      <opt>f32</opt>
+      <opt>f16</opt>
+      <opt>u32</opt>
+      <opt>u16</opt>
+    </mod>
+    <mod name="sample" size="3">
+      <opt>center</opt>
+      <opt>centroid</opt>
+      <opt>sample</opt>
+      <opt>explicit</opt>
+      <opt>none</opt>
+    </mod>
+  </ins>
+
+  <ins name="+LD_VAR_BUF.f16" staging="w=format" message="varying" pseudo="true">
+    <src start="0"/>
+    <src start="1"/>
     <mod name="vecsize" start="8" size="2">
       <opt>none</opt>
       <opt>v2</opt>
@@ -8678,6 +8774,52 @@
     <mod name="cmpf" size="1">
       <opt>eq</opt>
       <opt>ne</opt>
+    </mod>
+  </ins>
+
+  <ins name="+LD_TEX" pseudo="true" staging="w=format" message="attribute">
+    <src start="0"/>
+    <src start="3"/>
+    <src start="6"/>
+    <mod name="register_format" size="4">
+      <opt>f16</opt>
+      <opt>f32</opt>
+      <opt>s32</opt>
+      <opt>u32</opt>
+      <opt>s16</opt>
+      <opt>u16</opt>
+      <opt>f64</opt>
+      <opt>i64</opt>
+      <opt>auto</opt>
+    </mod>
+    <mod name="vecsize" start="11" size="2">
+      <opt>none</opt>
+      <opt>v2</opt>
+      <opt>v3</opt>
+      <opt>v4</opt>
+    </mod>
+  </ins>
+
+  <ins name="+LD_TEX_IMM" pseudo="true" staging="w=format" message="attribute">
+    <src start="0"/>
+    <src start="3"/>
+    <immediate name="texture_index" start="6" size="4"/>
+    <mod name="register_format" size="4">
+      <opt>f16</opt>
+      <opt>f32</opt>
+      <opt>s32</opt>
+      <opt>u32</opt>
+      <opt>s16</opt>
+      <opt>u16</opt>
+      <opt>f64</opt>
+      <opt>i64</opt>
+      <opt>auto</opt>
+    </mod>
+    <mod name="vecsize" start="11" size="2">
+      <opt>none</opt>
+      <opt>v2</opt>
+      <opt>v3</opt>
+      <opt>v4</opt>
     </mod>
   </ins>
 

@@ -31,7 +31,6 @@
 #include "util/u_cpu_detect.h"
 #include "util/u_debug.h"
 #include "util/u_memory.h"
-#include "util/simple_list.h"
 #include "util/os_time.h"
 #include "lp_bld.h"
 #include "lp_bld_debug.h"
@@ -429,8 +428,6 @@ lp_build_init(void)
    gallivm_perf = debug_get_flags_option("GALLIVM_PERF", lp_bld_perf_flags, 0 );
 
    lp_set_target_options();
-
-   util_cpu_detect();
 
    /* For simulating less capable machines */
 #ifdef DEBUG

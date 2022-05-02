@@ -337,8 +337,8 @@ struct blitter_context *util_blitter_create(struct pipe_context *pipe)
    }
 
    ctx->has_layered =
-      pipe->screen->get_param(pipe->screen, PIPE_CAP_TGSI_INSTANCEID) &&
-      pipe->screen->get_param(pipe->screen, PIPE_CAP_TGSI_VS_LAYER_VIEWPORT);
+      pipe->screen->get_param(pipe->screen, PIPE_CAP_VS_INSTANCEID) &&
+      pipe->screen->get_param(pipe->screen, PIPE_CAP_VS_LAYER_VIEWPORT);
 
    /* set invariant vertex coordinates */
    for (i = 0; i < 4; i++) {
@@ -2937,8 +2937,8 @@ util_blitter_stencil_fallback(struct blitter_context *blitter,
 
    /* set a framebuffer state */
    struct pipe_framebuffer_state fb_state = { 0 };
-   fb_state.width = dstbox->width;
-   fb_state.height = dstbox->height;
+   fb_state.width = dstbox->x + dstbox->width;
+   fb_state.height = dstbox->y + dstbox->height;
    fb_state.zsbuf = dst_view;
    pipe->set_framebuffer_state(pipe, &fb_state);
    pipe->set_sample_mask(pipe, ~0);

@@ -8,12 +8,14 @@
     GPU_VERSION: lvp
     VK_DRIVER: lvp
     DEQP_EXPECTED_RENDERER: llvmpipe
+    LVP_POISON_MEMORY: "1"
 
 lavapipe:
   tags:
     - mesa-swrast
   variables:
     DEQP_SUITE: lvp
+    MESA_VK_IGNORE_CONFORMANCE_WARNING: 1
   stage: software-renderer
   extends:
     - .lavapipe-test

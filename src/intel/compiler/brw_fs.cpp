@@ -1058,6 +1058,7 @@ fs_inst::flags_written(const intel_device_info *devinfo) const
        opcode == FS_OPCODE_FB_WRITE) {
       return flag_mask(this, 1);
    } else if (opcode == SHADER_OPCODE_FIND_LIVE_CHANNEL ||
+              opcode == SHADER_OPCODE_FIND_LAST_LIVE_CHANNEL ||
               opcode == FS_OPCODE_LOAD_LIVE_CHANNELS) {
       return flag_mask(this, 32);
    } else {
@@ -1590,9 +1591,9 @@ fs_visitor::assign_curb_setup()
    prog_data->curb_read_length = uniform_push_length + ubo_push_length;
 
    uint64_t used = 0;
+   bool is_compute = gl_shader_stage_is_compute(stage);
 
-   if (stage == MESA_SHADER_COMPUTE &&
-       brw_cs_prog_data(prog_data)->uses_inline_data) {
+   if (is_compute && brw_cs_prog_data(prog_data)->uses_inline_data) {
       /* With COMPUTE_WALKER, we can push up to one register worth of data via
        * the inline data parameter in the COMPUTE_WALKER command itself.
        *
@@ -1600,7 +1601,7 @@ fs_visitor::assign_curb_setup()
        */
       assert(devinfo->verx10 >= 125);
       assert(uniform_push_length <= 1);
-   } else if (stage == MESA_SHADER_COMPUTE && devinfo->verx10 >= 125) {
+   } else if (is_compute && devinfo->verx10 >= 125) {
       fs_builder ubld = bld.exec_all().group(8, 0).at(
          cfg->first_block(), cfg->first_block()->start());
 
@@ -5214,9 +5215,22 @@ lower_sampler_logical_send_gfx7(const fs_builder &bld, fs_inst *inst, opcode op,
 
    if (min_lod.file != BAD_FILE) {
       /* Account for all of the missing coordinate sources */
-      length += 4 - coord_components;
-      if (op == SHADER_OPCODE_TXD)
-         length += (3 - grad_components) * 2;
+      if (op == SHADER_OPCODE_TXD && devinfo->verx10 >= 125) {
+         /* On DG2 and newer platforms, sample_d can only be used with 1D and
+          * 2D surfaces, so the maximum number of gradient components is 2.
+          * In spite of this limitation, the Bspec lists a mysterious R
+          * component before the min_lod, so the maximum coordinate components
+          * is 3.
+          *
+          * Wa_1209978020
+          */
+         length += 3 - coord_components;
+         length += (2 - grad_components) * 2;
+      } else {
+         length += 4 - coord_components;
+         if (op == SHADER_OPCODE_TXD)
+            length += (3 - grad_components) * 2;
+      }
 
       bld.MOV(sources[length++], min_lod);
    }
@@ -5475,6 +5489,33 @@ emit_predicate_on_sample_mask(const fs_builder &bld, fs_inst *inst)
       inst->flag_subreg = subreg;
       inst->predicate = BRW_PREDICATE_NORMAL;
       inst->predicate_inverse = false;
+   }
+}
+
+void
+fs_visitor::emit_is_helper_invocation(fs_reg result)
+{
+   /* Unlike the regular gl_HelperInvocation, that is defined at dispatch,
+    * the helperInvocationEXT() (aka SpvOpIsHelperInvocationEXT) takes into
+    * consideration demoted invocations.
+    */
+   result.type = BRW_REGISTER_TYPE_UD;
+
+   bld.MOV(result, brw_imm_ud(0));
+
+   /* See sample_mask_reg() for why we split SIMD32 into SIMD16 here. */
+   unsigned width = bld.dispatch_width();
+   for (unsigned i = 0; i < DIV_ROUND_UP(width, 16); i++) {
+      const fs_builder b = bld.group(MIN2(width, 16), i);
+
+      fs_inst *mov = b.MOV(offset(result, b, i), brw_imm_ud(~0));
+
+      /* The at() ensures that any code emitted to get the predicate happens
+       * before the mov right above.  This is not an issue elsewhere because
+       * lowering code already set up the builder this way.
+       */
+      emit_predicate_on_sample_mask(b.at(NULL, mov), mov);
+      mov->predicate_inverse = true;
    }
 }
 
@@ -5785,11 +5826,11 @@ lower_surface_logical_send(const fs_builder &bld, fs_inst *inst)
    inst->sfid = sfid;
    setup_surface_descriptors(bld, inst, desc, surface, surface_handle);
 
+   inst->resize_sources(4);
+
    /* Finally, the payload */
    inst->src[2] = payload;
    inst->src[3] = payload2;
-
-   inst->resize_sources(4);
 }
 
 static enum lsc_opcode
@@ -6012,11 +6053,11 @@ lower_lsc_surface_logical_send(const fs_builder &bld, fs_inst *inst)
    inst->send_has_side_effects = has_side_effects;
    inst->send_is_volatile = !has_side_effects;
 
+   inst->resize_sources(4);
+
    /* Finally, the payload */
    inst->src[2] = payload;
    inst->src[3] = payload2;
-
-   inst->resize_sources(4);
 }
 
 static void
@@ -6082,10 +6123,10 @@ lower_surface_block_logical_send(const fs_builder &bld, fs_inst *inst)
                                                     arg.ud, write);
    setup_surface_descriptors(bld, inst, desc, surface, surface_handle);
 
+   inst->resize_sources(4);
+
    inst->src[2] = header;
    inst->src[3] = data;
-
-   inst->resize_sources(4);
 }
 
 static fs_reg
@@ -8618,6 +8659,75 @@ fs_visitor::fixup_3src_null_dest()
                           DEPENDENCY_VARIABLES);
 }
 
+static bool
+needs_dummy_fence(const intel_device_info *devinfo, fs_inst *inst)
+{
+   /* This workaround is about making sure that any instruction writing
+    * through UGM has completed before we hit EOT.
+    *
+    * The workaround talks about UGM writes or atomic message but what is
+    * important is anything that hasn't completed. Usually any SEND
+    * instruction that has a destination register will be read by something
+    * else so we don't need to care about those as they will be synchronized
+    * by other parts of the shader or optimized away. What is left are
+    * instructions that don't have a destination register.
+    */
+   if (inst->sfid != GFX12_SFID_UGM)
+      return false;
+
+   return inst->dst.file == BAD_FILE;
+}
+
+/* Wa_22013689345
+ *
+ * We need to emit UGM fence message before EOT, if shader has any UGM write
+ * or atomic message.
+ *
+ * TODO/FINISHME: According to Curro we could avoid the fence in some cases.
+ *                We probably need a better criteria in needs_dummy_fence().
+ */
+void
+fs_visitor::emit_dummy_memory_fence_before_eot()
+{
+   bool progress = false;
+   bool has_ugm_write_or_atomic = false;
+
+   if (!intel_device_info_is_dg2(devinfo))
+      return;
+
+   foreach_block_and_inst_safe (block, fs_inst, inst, cfg) {
+      if (!inst->eot) {
+         if (needs_dummy_fence(devinfo, inst))
+            has_ugm_write_or_atomic = true;
+         continue;
+      }
+
+      if (!has_ugm_write_or_atomic)
+         break;
+
+      const fs_builder ibld(this, block, inst);
+      const fs_builder ubld = ibld.exec_all().group(1, 0);
+
+      fs_reg dst = ubld.vgrf(BRW_REGISTER_TYPE_UD);
+      fs_inst *dummy_fence = ubld.emit(SHADER_OPCODE_MEMORY_FENCE,
+                                       dst, brw_vec8_grf(0, 0),
+                                       /* commit enable */ brw_imm_ud(1),
+                                       /* bti */ brw_imm_ud(0));
+      dummy_fence->sfid = GFX12_SFID_UGM;
+      dummy_fence->desc = lsc_fence_msg_desc(devinfo, LSC_FENCE_TILE,
+                                             LSC_FLUSH_TYPE_NONE_6, false);
+      ubld.emit(FS_OPCODE_SCHEDULING_FENCE, ubld.null_reg_ud(), dst);
+      progress = true;
+      /* TODO: remove this break if we ever have shader with multiple EOT. */
+      break;
+   }
+
+   if (progress) {
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS |
+                          DEPENDENCY_VARIABLES);
+   }
+}
+
 /**
  * Find the first instruction in the program that might start a region of
  * divergent control flow due to a HALT jump.  There is no
@@ -8871,7 +8981,7 @@ fs_visitor::allocate_registers(bool allow_spilling)
       prog_data->total_scratch = MAX2(brw_get_scratch_size(last_scratch),
                                       prog_data->total_scratch);
 
-      if (stage == MESA_SHADER_COMPUTE || stage == MESA_SHADER_KERNEL) {
+      if (gl_shader_stage_is_compute(stage)) {
          if (devinfo->platform == INTEL_PLATFORM_HSW) {
             /* According to the MEDIA_VFE_STATE's "Per Thread Scratch Space"
              * field documentation, Haswell supports a minimum of 2kB of
@@ -8927,6 +9037,7 @@ fs_visitor::run_vs()
    assign_vs_urb_setup();
 
    fixup_3src_null_dest();
+   emit_dummy_memory_fence_before_eot();
    allocate_registers(true /* allow_spilling */);
 
    return !failed;
@@ -9049,6 +9160,7 @@ fs_visitor::run_tcs()
    assign_tcs_urb_setup();
 
    fixup_3src_null_dest();
+   emit_dummy_memory_fence_before_eot();
    allocate_registers(true /* allow_spilling */);
 
    return !failed;
@@ -9077,6 +9189,7 @@ fs_visitor::run_tes()
    assign_tes_urb_setup();
 
    fixup_3src_null_dest();
+   emit_dummy_memory_fence_before_eot();
    allocate_registers(true /* allow_spilling */);
 
    return !failed;
@@ -9120,6 +9233,7 @@ fs_visitor::run_gs()
    assign_gs_urb_setup();
 
    fixup_3src_null_dest();
+   emit_dummy_memory_fence_before_eot();
    allocate_registers(true /* allow_spilling */);
 
    return !failed;
@@ -9220,6 +9334,7 @@ fs_visitor::run_fs(bool allow_spilling, bool do_rep_send)
       assign_urb_setup();
 
       fixup_3src_null_dest();
+      emit_dummy_memory_fence_before_eot();
 
       allocate_registers(allow_spilling);
    }
@@ -9230,7 +9345,7 @@ fs_visitor::run_fs(bool allow_spilling, bool do_rep_send)
 bool
 fs_visitor::run_cs(bool allow_spilling)
 {
-   assert(stage == MESA_SHADER_COMPUTE || stage == MESA_SHADER_KERNEL);
+   assert(gl_shader_stage_is_compute(stage));
 
    setup_cs_payload();
 
@@ -9255,6 +9370,7 @@ fs_visitor::run_cs(bool allow_spilling)
    assign_curb_setup();
 
    fixup_3src_null_dest();
+   emit_dummy_memory_fence_before_eot();
    allocate_registers(allow_spilling);
 
    return !failed;
@@ -9283,6 +9399,7 @@ fs_visitor::run_bs(bool allow_spilling)
    assign_curb_setup();
 
    fixup_3src_null_dest();
+   emit_dummy_memory_fence_before_eot();
    allocate_registers(allow_spilling);
 
    return !failed;
@@ -9327,6 +9444,7 @@ fs_visitor::run_task(bool allow_spilling)
    assign_curb_setup();
 
    fixup_3src_null_dest();
+   emit_dummy_memory_fence_before_eot();
    allocate_registers(allow_spilling);
 
    return !failed;
@@ -9371,6 +9489,7 @@ fs_visitor::run_mesh(bool allow_spilling)
    assign_curb_setup();
 
    fixup_3src_null_dest();
+   emit_dummy_memory_fence_before_eot();
    allocate_registers(allow_spilling);
 
    return !failed;
@@ -9616,7 +9735,8 @@ brw_nir_populate_wm_prog_data(const nir_shader *shader,
     * so the shader definitely kills pixels.
     */
    prog_data->uses_kill = shader->info.fs.uses_discard ||
-      key->emit_alpha_test;
+                          shader->info.fs.uses_demote ||
+                          key->emit_alpha_test;
    prog_data->uses_omask = !key->ignore_sample_mask_out &&
       (shader->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK));
    prog_data->computed_depth_mode = computed_depth_mode(shader);

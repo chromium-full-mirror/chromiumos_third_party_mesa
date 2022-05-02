@@ -235,7 +235,7 @@ validate_instr(struct ir3_validate_ctx *ctx, struct ir3_instruction *instr)
                  instr->opc == OPC_READ_FIRST_MACRO ||
                  instr->opc == OPC_READ_COND_MACRO) {
          /* nothing yet */
-      } else if (instr->opc == OPC_ELECT_MACRO) {
+      } else if (instr->opc == OPC_ELECT_MACRO || instr->opc == OPC_SHPS_MACRO) {
          validate_assert(ctx, instr->dsts_count == 1);
          validate_assert(ctx, !(instr->dsts[0]->flags & IR3_REG_SHARED));
       } else if (instr->opc == OPC_SCAN_MACRO) {
@@ -345,6 +345,14 @@ validate_instr(struct ir3_validate_ctx *ctx, struct ir3_instruction *instr)
       case OPC_GETSPID:
       case OPC_GETWID:
          validate_reg_size(ctx, instr->dsts[0], instr->cat6.type);
+         break;
+      case OPC_STC:
+         validate_reg_size(ctx, instr->srcs[0], instr->cat6.type);
+         validate_assert(ctx, !(instr->srcs[1]->flags & IR3_REG_HALF));
+         break;
+      case OPC_LDC_K:
+         validate_assert(ctx, !(instr->srcs[0]->flags & IR3_REG_HALF));
+         validate_assert(ctx, !(instr->srcs[1]->flags & IR3_REG_HALF));
          break;
       default:
          validate_reg_size(ctx, instr->dsts[0], instr->cat6.type);

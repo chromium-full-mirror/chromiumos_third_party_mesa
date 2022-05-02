@@ -15,6 +15,8 @@
 #include "util/debug.h"
 #include "util/log.h"
 #include "util/os_misc.h"
+#include "util/u_debug.h"
+#include "venus-protocol/vn_protocol_driver_info.h"
 #include "vk_enum_to_str.h"
 
 static const struct debug_control vn_debug_options[] = {
@@ -26,19 +28,33 @@ static const struct debug_control vn_debug_options[] = {
    { NULL, 0 },
 };
 
-uint64_t vn_debug;
+static const struct debug_control vn_perf_options[] = {
+   { "no_async_set_alloc", VN_PERF_NO_ASYNC_SET_ALLOC },
+   { "no_async_buffer_create", VN_PERF_NO_ASYNC_BUFFER_CREATE },
+   { "no_async_queue_submit", VN_PERF_NO_ASYNC_QUEUE_SUBMIT },
+   { NULL, 0 },
+};
+
+struct vn_env vn_env;
 
 static void
-vn_debug_init_once(void)
+vn_env_init_once(void)
 {
-   vn_debug = parse_debug_string(os_get_option("VN_DEBUG"), vn_debug_options);
+   vn_env.debug =
+      parse_debug_string(os_get_option("VN_DEBUG"), vn_debug_options);
+   vn_env.perf =
+      parse_debug_string(os_get_option("VN_PERF"), vn_perf_options);
+   vn_env.draw_cmd_batch_limit =
+      debug_get_num_option("VN_DRAW_CMD_BATCH_LIMIT", UINT32_MAX);
+   if (!vn_env.draw_cmd_batch_limit)
+      vn_env.draw_cmd_batch_limit = UINT32_MAX;
 }
 
 void
-vn_debug_init(void)
+vn_env_init(void)
 {
    static once_flag once = ONCE_FLAG_INIT;
-   call_once(&once, vn_debug_init_once);
+   call_once(&once, vn_env_init_once);
 }
 
 void
@@ -68,6 +84,13 @@ vn_log_result(struct vn_instance *instance,
 {
    vn_log(instance, "%s: %s", where, vk_Result_to_str(result));
    return result;
+}
+
+uint32_t
+vn_extension_get_spec_version(const char *name)
+{
+   const int32_t index = vn_info_extension_index(name);
+   return index >= 0 ? vn_info_extension_get(index)->spec_version : 0;
 }
 
 void

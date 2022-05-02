@@ -26,9 +26,7 @@
 #include "si_pipe.h"
 
 #include "driver_ddebug/dd_util.h"
-#include "gallium/winsys/amdgpu/drm/amdgpu_public.h"
-#include "gallium/winsys/radeon/drm/radeon_drm_public.h"
-#include "radeon/radeon_uvd.h"
+#include "radeon_uvd.h"
 #include "si_compute.h"
 #include "si_public.h"
 #include "si_shader_internal.h"
@@ -63,7 +61,6 @@ static const struct debug_named_value radeonsi_debug_options[] = {
    {"preoptir", DBG(PREOPT_IR), "Print the LLVM IR before initial optimizations"},
 
    /* Shader compiler options the shader cache should be aware of: */
-   {"gisel", DBG(GISEL), "Enable LLVM global instruction selector."},
    {"w32ge", DBG(W32_GE), "Use Wave32 for vertex, tessellation, and geometry shaders."},
    {"w32ps", DBG(W32_PS), "Use Wave32 for pixel shaders."},
    {"w32psdiscard", DBG(W32_PS_DISCARD), "Use Wave32 for pixel shaders even if they contain discard and LLVM is buggy."},
@@ -137,7 +134,7 @@ static const struct debug_named_value test_options[] = {
    DEBUG_NAMED_VALUE_END /* must be last */
 };
 
-void si_init_compiler(struct si_screen *sscreen, struct ac_llvm_compiler *compiler)
+bool si_init_compiler(struct si_screen *sscreen, struct ac_llvm_compiler *compiler)
 {
    /* Only create the less-optimizing version of the compiler on APUs
     * predating Ryzen (Raven). */
@@ -145,16 +142,19 @@ void si_init_compiler(struct si_screen *sscreen, struct ac_llvm_compiler *compil
       !sscreen->info.has_dedicated_vram && sscreen->info.chip_class <= GFX8;
 
    enum ac_target_machine_options tm_options =
-      (sscreen->debug_flags & DBG(GISEL) ? AC_TM_ENABLE_GLOBAL_ISEL : 0) |
       (sscreen->debug_flags & DBG(CHECK_IR) ? AC_TM_CHECK_IR : 0) |
       (create_low_opt_compiler ? AC_TM_CREATE_LOW_OPT : 0);
 
    ac_init_llvm_once();
-   ac_init_llvm_compiler(compiler, sscreen->info.family, tm_options);
-   compiler->passes = ac_create_llvm_passes(compiler->tm);
 
+   if (!ac_init_llvm_compiler(compiler, sscreen->info.family, tm_options))
+      return false;
+
+   compiler->passes = ac_create_llvm_passes(compiler->tm);
    if (compiler->low_opt_tm)
       compiler->low_opt_passes = ac_create_llvm_passes(compiler->low_opt_tm);
+
+   return true;
 }
 
 void si_init_aux_async_compute_ctx(struct si_screen *sscreen)
@@ -258,10 +258,10 @@ static void si_destroy_context(struct pipe_context *context)
       sctx->b.delete_compute_state(&sctx->b, sctx->cs_clear_buffer_rmw);
    if (sctx->cs_copy_buffer)
       sctx->b.delete_compute_state(&sctx->b, sctx->cs_copy_buffer);
-   if (sctx->cs_copy_image)
-      sctx->b.delete_compute_state(&sctx->b, sctx->cs_copy_image);
-   if (sctx->cs_copy_image_1d_array)
-      sctx->b.delete_compute_state(&sctx->b, sctx->cs_copy_image_1d_array);
+   if (sctx->cs_copy_image_1D)
+      sctx->b.delete_compute_state(&sctx->b, sctx->cs_copy_image_1D);
+   if (sctx->cs_copy_image_2D)
+      sctx->b.delete_compute_state(&sctx->b, sctx->cs_copy_image_2D);
    if (sctx->cs_clear_render_target)
       sctx->b.delete_compute_state(&sctx->b, sctx->cs_clear_render_target);
    if (sctx->cs_clear_render_target_1d_array)
@@ -406,7 +406,7 @@ static void si_emit_string_marker(struct pipe_context *ctx, const char *string, 
       u_log_printf(sctx->log, "\nString marker: %*s\n", len, string);
 }
 
-static void si_set_debug_callback(struct pipe_context *ctx, const struct pipe_debug_callback *cb)
+static void si_set_debug_callback(struct pipe_context *ctx, const struct util_debug_callback *cb)
 {
    struct si_context *sctx = (struct si_context *)ctx;
    struct si_screen *screen = sctx->screen;
@@ -686,21 +686,6 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
       si_set_internal_const_buffer(sctx, SI_PS_CONST_SAMPLE_POSITIONS, &sctx->null_const_buf);
    }
 
-   uint64_t max_threads_per_block;
-   screen->get_compute_param(screen, PIPE_SHADER_IR_NIR, PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK,
-                             &max_threads_per_block);
-
-   /* The maximum number of scratch waves. Scratch space isn't divided
-    * evenly between CUs. The number is only a function of the number of CUs.
-    * We can decrease the constant to decrease the scratch buffer size.
-    *
-    * sctx->scratch_waves must be >= the maximum possible size of
-    * 1 threadgroup, so that the hw doesn't hang from being unable
-    * to start any.
-    */
-   sctx->scratch_waves =
-      MAX2(32 * sscreen->info.num_good_compute_units, max_threads_per_block / 64);
-
    /* Bindless handles. */
    sctx->tex_handles = _mesa_hash_table_create(NULL, _mesa_hash_pointer, _mesa_key_pointer_equal);
    sctx->img_handles = _mesa_hash_table_create(NULL, _mesa_hash_pointer, _mesa_key_pointer_equal);
@@ -824,7 +809,12 @@ static struct pipe_context *si_pipe_create_context(struct pipe_screen *screen, v
    ctx = si_create_context(screen, flags);
 
    if (ctx && sscreen->info.chip_class >= GFX9 && sscreen->debug_flags & DBG(SQTT)) {
-      if (!si_init_thread_trace((struct si_context *)ctx)) {
+      if (ac_check_profile_state(&sscreen->info)) {
+         fprintf(stderr, "radeonsi: Canceling RGP trace request as a hang condition has been "
+                         "detected. Force the GPU into a profiling mode with e.g. "
+                         "\"echo profile_peak  > "
+                         "/sys/class/drm/card0/device/power_dpm_force_performance_level\"\n");
+      } else if (!si_init_thread_trace((struct si_context *)ctx)) {
          FREE(ctx);
          return NULL;
       }
@@ -1091,6 +1081,15 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
       return NULL;
    }
 
+   /* Initialize just one compiler instance to check for errors. The other compiler instances are
+    * initialized on demand.
+    */
+   if (!si_init_compiler(sscreen, &sscreen->compiler[0])) {
+      /* The callee prints the error message. */
+      FREE(sscreen);
+      return NULL;
+   }
+
    util_idalloc_mt_init_tc(&sscreen->buffer_ids);
 
    /* Set functions first. */
@@ -1268,12 +1267,6 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
 
    sscreen->has_out_of_order_rast =
       sscreen->info.has_out_of_order_rast && !(sscreen->debug_flags & DBG(NO_OUT_OF_ORDER));
-   sscreen->assume_no_z_fights = driQueryOptionb(config->options, "radeonsi_assume_no_z_fights") ||
-                                 driQueryOptionb(config->options, "allow_draw_out_of_order");
-   sscreen->commutative_blend_add =
-      driQueryOptionb(config->options, "radeonsi_commutative_blend_add") ||
-      driQueryOptionb(config->options, "allow_draw_out_of_order");
-   sscreen->allow_draw_out_of_order = driQueryOptionb(config->options, "allow_draw_out_of_order");
 
    sscreen->use_ngg = !(sscreen->debug_flags & DBG(NO_NGG)) &&
                       sscreen->info.chip_class >= GFX10 &&

@@ -342,6 +342,7 @@ enum pipe_control_flags
    PIPE_CONTROL_TILE_CACHE_FLUSH                = (1 << 25),
    PIPE_CONTROL_FLUSH_HDC                       = (1 << 26),
    PIPE_CONTROL_PSS_STALL_SYNC                  = (1 << 27),
+   PIPE_CONTROL_L3_READ_ONLY_CACHE_INVALIDATE   = (1 << 28),
 };
 
 #define PIPE_CONTROL_CACHE_FLUSH_BITS \
@@ -356,6 +357,10 @@ enum pipe_control_flags
     PIPE_CONTROL_VF_CACHE_INVALIDATE |      \
     PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE | \
     PIPE_CONTROL_INSTRUCTION_INVALIDATE)
+
+#define PIPE_CONTROL_L3_RO_INVALIDATE_BITS       \
+   (PIPE_CONTROL_L3_READ_ONLY_CACHE_INVALIDATE | \
+    PIPE_CONTROL_CONST_CACHE_INVALIDATE)
 
 enum iris_predicate_state {
    /* The first two states are used if we can determine whether to draw
@@ -582,7 +587,7 @@ struct iris_context {
    struct threaded_context *thrctx;
 
    /** A debug callback for KHR_debug output. */
-   struct pipe_debug_callback dbg;
+   struct util_debug_callback dbg;
 
    /** A device reset status callback for notifying that the GPU is hosed. */
    struct pipe_device_reset_callback reset;
@@ -836,7 +841,7 @@ struct iris_context {
    if (INTEL_DEBUG(DEBUG_PERF))                        \
       dbg_printf(__VA_ARGS__);                         \
    if (unlikely(dbg))                                  \
-      pipe_debug_message(dbg, PERF_INFO, __VA_ARGS__); \
+      util_debug_message(dbg, PERF_INFO, __VA_ARGS__); \
 } while(0)
 
 struct pipe_context *

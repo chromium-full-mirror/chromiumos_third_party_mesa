@@ -28,7 +28,6 @@
 #include "util/format/u_format.h"
 #include "util/u_memory.h"
 #include "util/hash_table.h"
-#include "util/simple_list.h"
 
 #include "tr_dump.h"
 #include "tr_dump_defines.h"
@@ -668,6 +667,32 @@ trace_screen_resource_create(struct pipe_screen *_screen,
 }
 
 static struct pipe_resource *
+trace_screen_resource_create_drawable(struct pipe_screen *_screen,
+                                      const struct pipe_resource *templat,
+                                      const void *loader_data)
+{
+   struct trace_screen *tr_scr = trace_screen(_screen);
+   struct pipe_screen *screen = tr_scr->screen;
+   struct pipe_resource *result;
+
+   trace_dump_call_begin("pipe_screen", "resource_create_drawable");
+
+   trace_dump_arg(ptr, screen);
+   trace_dump_arg(resource_template, templat);
+   trace_dump_arg(ptr, loader_data);
+
+   result = screen->resource_create_drawable(screen, templat, loader_data);
+
+   trace_dump_ret(ptr, result);
+
+   trace_dump_call_end();
+
+   if (result)
+      result->screen = _screen;
+   return result;
+}
+
+static struct pipe_resource *
 trace_screen_resource_create_with_modifiers(struct pipe_screen *_screen, const struct pipe_resource *templat,
                                             const uint64_t *modifiers, int modifiers_count)
 {
@@ -1158,12 +1183,22 @@ trace_screen_get_sparse_texture_virtual_page_size(struct pipe_screen *_screen,
    trace_dump_arg(format, format);
    trace_dump_arg(uint, offset);
    trace_dump_arg(uint, size);
-   trace_dump_arg(ptr, x);
-   trace_dump_arg(ptr, y);
-   trace_dump_arg(ptr, z);
 
    int ret = screen->get_sparse_texture_virtual_page_size(screen, target, multi_sample,
                                                           format, offset, size, x, y, z);
+
+   if (x)
+      trace_dump_arg(uint, *x);
+   else
+      trace_dump_arg(ptr, x);
+   if (y)
+      trace_dump_arg(uint, *y);
+   else
+      trace_dump_arg(ptr, y);
+   if (z)
+      trace_dump_arg(uint, *z);
+   else
+      trace_dump_arg(ptr, z);
 
    trace_dump_ret(int, ret);
 
@@ -1238,7 +1273,6 @@ trace_screen_create(struct pipe_screen *screen)
 {
    struct trace_screen *tr_scr;
 
-#ifdef ZINK_WITH_SWRAST_VK
    /* if zink+lavapipe is enabled, ensure that only one driver is traced */
    const char *driver = debug_get_option("MESA_LOADER_DRIVER_OVERRIDE", NULL);
    if (driver && !strcmp(driver, "zink")) {
@@ -1254,7 +1288,7 @@ trace_screen_create(struct pipe_screen *screen)
             return screen;
       }
    }
-#endif
+
    if (!trace_enabled())
       goto error1;
 
@@ -1283,6 +1317,7 @@ trace_screen_create(struct pipe_screen *screen)
    tr_scr->base.resource_create = trace_screen_resource_create;
    SCR_INIT(resource_create_with_modifiers);
    tr_scr->base.resource_create_unbacked = trace_screen_resource_create_unbacked;
+   SCR_INIT(resource_create_drawable);
    tr_scr->base.resource_bind_backing = trace_screen_resource_bind_backing;
    tr_scr->base.resource_from_handle = trace_screen_resource_from_handle;
    tr_scr->base.allocate_memory = trace_screen_allocate_memory;
@@ -1344,4 +1379,13 @@ trace_screen(struct pipe_screen *screen)
    assert(screen);
    assert(screen->destroy == trace_screen_destroy);
    return (struct trace_screen *)screen;
+}
+
+struct pipe_screen *
+trace_screen_unwrap(struct pipe_screen *_screen)
+{
+   if (_screen->destroy != trace_screen_destroy)
+      return _screen;
+   struct trace_screen *tr_scr = trace_screen(_screen);
+   return tr_scr->screen;
 }

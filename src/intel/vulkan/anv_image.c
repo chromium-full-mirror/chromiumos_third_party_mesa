@@ -360,7 +360,8 @@ anv_image_plane_needs_shadow_surface(const struct intel_device_info *devinfo,
 
    if (devinfo->ver <= 7 &&
        plane_format.aspect == VK_IMAGE_ASPECT_STENCIL_BIT &&
-       (vk_plane_usage & VK_IMAGE_USAGE_SAMPLED_BIT)) {
+       (vk_plane_usage & (VK_IMAGE_USAGE_SAMPLED_BIT |
+                          VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT))) {
       /* gfx7 can't sample from W-tiled surfaces. */
       return true;
    }
@@ -657,7 +658,7 @@ add_aux_surface_if_supported(struct anv_device *device,
          return add_aux_state_tracking_buffer(device, image, plane);
    } else if (aspect == VK_IMAGE_ASPECT_STENCIL_BIT) {
 
-      if (INTEL_DEBUG(DEBUG_NO_RBC))
+      if (INTEL_DEBUG(DEBUG_NO_CCS))
          return VK_SUCCESS;
 
       if (!isl_surf_supports_ccs(&device->isl_dev,
@@ -687,7 +688,7 @@ add_aux_surface_if_supported(struct anv_device *device,
          return VK_SUCCESS;
       }
 
-      if (INTEL_DEBUG(DEBUG_NO_RBC))
+      if (INTEL_DEBUG(DEBUG_NO_CCS))
          return VK_SUCCESS;
 
       ok = isl_surf_get_ccs_surf(&device->isl_dev,
@@ -919,7 +920,6 @@ check_memory_bindings(const struct anv_device *device,
        * live in a VkDeviceMemory.  The one exception is swapchain images.
        */
       assert(!(image->vk.create_flags & VK_IMAGE_CREATE_ALIAS_BIT) ||
-             image->from_wsi ||
              image->bindings[ANV_IMAGE_MEMORY_BINDING_PRIVATE].memory_range.size == 0);
 
       /* Check primary surface */
@@ -2040,20 +2040,6 @@ anv_layout_to_aux_state(const struct intel_device_info * const devinfo,
    bool aux_supported = true;
    bool clear_supported = isl_aux_usage_has_fast_clears(aux_usage);
 
-   const struct isl_format_layout *fmtl =
-      isl_format_get_layout(image->planes[plane].primary_surface.isl.format);
-
-   /* Disabling CCS for the following case avoids failures in:
-    *    - dEQP-VK.drm_format_modifiers.export_import.*
-    *    - dEQP-VK.synchronization*
-    */
-   if (usage & (VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                VK_IMAGE_USAGE_TRANSFER_SRC_BIT) && fmtl->bpb <= 16 &&
-       aux_usage == ISL_AUX_USAGE_CCS_E && devinfo->ver >= 12) {
-      aux_supported = false;
-      clear_supported = false;
-   }
-
    if ((usage & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT) && !read_only) {
       /* This image could be used as both an input attachment and a render
        * target (depth, stencil, or color) at the same time and this can cause
@@ -2618,9 +2604,8 @@ anv_CreateImageView(VkDevice _device,
          iview->planes[vplane].isl.usage = 0;
       }
 
-      if (iview->vk.usage & VK_IMAGE_USAGE_SAMPLED_BIT ||
-          (iview->vk.usage & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT &&
-           !(iview->vk.aspects & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV))) {
+      if (iview->vk.usage & (VK_IMAGE_USAGE_SAMPLED_BIT |
+                             VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT)) {
          iview->planes[vplane].optimal_sampler_surface_state.state = alloc_surface_state(device);
          iview->planes[vplane].general_sampler_surface_state.state = alloc_surface_state(device);
 

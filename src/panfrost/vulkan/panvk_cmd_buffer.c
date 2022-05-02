@@ -49,7 +49,8 @@ panvk_CmdBindVertexBuffers(VkCommandBuffer commandBuffer,
    for (uint32_t i = 0; i < bindingCount; i++) {
       struct panvk_buffer *buf = panvk_buffer_from_handle(pBuffers[i]);
 
-      cmdbuf->state.vb.bufs[firstBinding + i].address = buf->bo->ptr.gpu + pOffsets[i];
+      cmdbuf->state.vb.bufs[firstBinding + i].address =
+        buf->bo->ptr.gpu + buf->bo_offset + pOffsets[i];
       cmdbuf->state.vb.bufs[firstBinding + i].size = buf->size - pOffsets[i];
    }
 
@@ -63,7 +64,27 @@ panvk_CmdBindIndexBuffer(VkCommandBuffer commandBuffer,
                          VkDeviceSize offset,
                          VkIndexType indexType)
 {
-   panvk_stub();
+   VK_FROM_HANDLE(panvk_cmd_buffer, cmdbuf, commandBuffer);
+   VK_FROM_HANDLE(panvk_buffer, buf, buffer);
+
+   cmdbuf->state.ib.buffer = buf;
+   cmdbuf->state.ib.offset = offset;
+   switch (indexType) {
+   case VK_INDEX_TYPE_UINT16:
+      cmdbuf->state.ib.index_size = 16;
+      break;
+   case VK_INDEX_TYPE_UINT32:
+      cmdbuf->state.ib.index_size = 32;
+      break;
+   case VK_INDEX_TYPE_NONE_KHR:
+      cmdbuf->state.ib.index_size = 0;
+      break;
+   case VK_INDEX_TYPE_UINT8_EXT:
+      cmdbuf->state.ib.index_size = 8;
+      break;
+   default:
+      unreachable("Invalid index type\n");
+   }
 }
 
 void
@@ -318,14 +339,6 @@ panvk_CmdSetStencilReference(VkCommandBuffer commandBuffer,
    cmdbuf->state.fs_rsd = 0;
 }
 
-void
-panvk_CmdExecuteCommands(VkCommandBuffer commandBuffer,
-                         uint32_t commandBufferCount,
-                         const VkCommandBuffer *pCmdBuffers)
-{
-   panvk_stub();
-}
-
 VkResult
 panvk_CreateCommandPool(VkDevice _device,
                         const VkCommandPoolCreateInfo *pCreateInfo,
@@ -528,17 +541,6 @@ panvk_cmd_open_batch(struct panvk_cmd_buffer *cmdbuf)
                                    VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
    assert(cmdbuf->state.batch);
    return cmdbuf->state.batch;
-}
-
-void
-panvk_CmdDrawIndexed(VkCommandBuffer commandBuffer,
-                     uint32_t indexCount,
-                     uint32_t instanceCount,
-                     uint32_t firstIndex,
-                     int32_t vertexOffset,
-                     uint32_t firstInstance)
-{
-   panvk_stub();
 }
 
 void

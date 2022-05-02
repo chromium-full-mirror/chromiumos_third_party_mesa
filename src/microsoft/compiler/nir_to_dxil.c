@@ -482,6 +482,7 @@ struct ntd_context {
 
    struct dxil_func_def *main_func_def;
    struct dxil_func_def *tess_ctrl_patch_constant_func_def;
+   unsigned unnamed_ubo_count;
 };
 
 static const char*
@@ -945,7 +946,7 @@ emit_srv(struct ntd_context *ctx, nir_variable *var, unsigned count)
    }
    const struct dxil_type *res_type_as_type = dxil_module_get_res_type(&ctx->mod, res_kind, comp_type, false /* readwrite */);
 
-   if (count > 1)
+   if (glsl_type_is_array(var->type))
       res_type_as_type = dxil_module_get_array_type(&ctx->mod, res_type_as_type, count);
 
    const struct dxil_mdnode *srv_meta = emit_srv_metadata(&ctx->mod, res_type_as_type, var->name,
@@ -1177,12 +1178,15 @@ static bool
 emit_cbv(struct ntd_context *ctx, unsigned binding, unsigned space,
          unsigned size, unsigned count, char *name)
 {
+   assert(count != 0);
+
    unsigned idx = util_dynarray_num_elements(&ctx->cbv_metadata_nodes, const struct dxil_mdnode *);
 
    const struct dxil_type *float32 = dxil_module_get_float_type(&ctx->mod, 32);
    const struct dxil_type *array_type = dxil_module_get_array_type(&ctx->mod, float32, size);
    const struct dxil_type *buffer_type = dxil_module_get_struct_type(&ctx->mod, name,
                                                                      &array_type, 1);
+   // All ubo[1]s should have been lowered to ubo with static indexing
    const struct dxil_type *final_type = count != 1 ? dxil_module_get_array_type(&ctx->mod, buffer_type, count) : buffer_type;
    resource_array_layout layout = {idx, binding, count, space};
    const struct dxil_mdnode *cbv_meta = emit_cbv_metadata(&ctx->mod, final_type,
@@ -1203,7 +1207,17 @@ emit_ubo_var(struct ntd_context *ctx, nir_variable *var)
    unsigned count = 1;
    if (glsl_type_is_array(var->type))
       count = glsl_get_length(var->type);
-   return emit_cbv(ctx, var->data.binding, var->data.descriptor_set, get_dword_size(var->type), count, var->name);
+
+   char *name = var->name;
+   char temp_name[30];
+   if (name && strlen(name) == 0) {
+      snprintf(temp_name, sizeof(temp_name), "__unnamed_ubo_%d",
+               ctx->unnamed_ubo_count++);
+      name = temp_name;
+   }
+
+   return emit_cbv(ctx, var->data.binding, var->data.descriptor_set,
+                   get_dword_size(var->type), count, name);
 }
 
 static bool
@@ -1215,7 +1229,7 @@ emit_sampler(struct ntd_context *ctx, nir_variable *var, unsigned count)
    const struct dxil_type *int32_type = dxil_module_get_int_type(&ctx->mod, 32);
    const struct dxil_type *sampler_type = dxil_module_get_struct_type(&ctx->mod, "struct.SamplerState", &int32_type, 1);
 
-   if (count > 1)
+   if (glsl_type_is_array(var->type))
       sampler_type = dxil_module_get_array_type(&ctx->mod, sampler_type, count);
 
    const struct dxil_mdnode *sampler_meta = emit_sampler_metadata(&ctx->mod, sampler_type, var, &layout);
@@ -4434,25 +4448,32 @@ emit_phi(struct ntd_context *ctx, nir_phi_instr *instr)
    return true;
 }
 
-static void
+static bool
 fixup_phi(struct ntd_context *ctx, nir_phi_instr *instr,
           struct phi_block *vphi)
 {
-   const struct dxil_value *values[128];
-   unsigned blocks[128];
+   const struct dxil_value *values[16];
+   unsigned blocks[16];
    for (unsigned i = 0; i < vphi->num_components; ++i) {
       size_t num_incoming = 0;
       nir_foreach_phi_src(src, instr) {
          assert(src->src.is_ssa);
          const struct dxil_value *val = get_src_ssa(ctx, src->src.ssa, i);
-         assert(num_incoming < ARRAY_SIZE(values));
          values[num_incoming] = val;
-         assert(num_incoming < ARRAY_SIZE(blocks));
          blocks[num_incoming] = src->pred->index;
          ++num_incoming;
+         if (num_incoming == ARRAY_SIZE(values)) {
+            if (!dxil_phi_add_incoming(vphi->comp[i], values, blocks,
+                                       num_incoming))
+               return false;
+            num_incoming = 0;
+         }
       }
-      dxil_phi_set_incoming(vphi->comp[i], values, blocks, num_incoming);
+      if (num_incoming > 0 && !dxil_phi_add_incoming(vphi->comp[i], values,
+                                                     blocks, num_incoming))
+         return false;
    }
+   return true;
 }
 
 static unsigned
@@ -5207,8 +5228,9 @@ emit_function(struct ntd_context *ctx, nir_function *func)
       return false;
 
    hash_table_foreach(ctx->phis, entry) {
-      fixup_phi(ctx, (nir_phi_instr *)entry->key,
-         (struct phi_block *)entry->data);
+      if (!fixup_phi(ctx, (nir_phi_instr *)entry->key,
+                     (struct phi_block *)entry->data))
+         return false;
    }
 
    if (!dxil_emit_ret_void(&ctx->mod))
@@ -5585,6 +5607,28 @@ allocate_sysvalues(struct ntd_context *ctx)
       driver_location++;
    nir_foreach_variable_with_modes(var, ctx->shader, nir_var_system_value)
       driver_location++;
+
+   if (ctx->shader->info.stage == MESA_SHADER_FRAGMENT &&
+       ctx->shader->info.inputs_read &&
+       !BITSET_TEST(ctx->shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_ID)) {
+      bool need_sample_id = true;
+
+      /* "var->data.sample = true" sometimes just mean, "I want per-sample
+       * shading", which explains why we can end up with vars having flat
+       * interpolation with the per-sample bit set. If there's only such
+       * type of variables, we need to tell DXIL that we read SV_SampleIndex
+       * to make DXIL validation happy.
+       */
+      nir_foreach_variable_with_modes(var, ctx->shader, nir_var_shader_in) {
+         if (!var->data.sample || var->data.interpolation != INTERP_MODE_FLAT) {
+            need_sample_id = false;
+            break;
+         }
+      }
+
+      if (need_sample_id)
+         BITSET_SET(ctx->shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_ID);
+   }
 
    for (unsigned i = 0; i < ARRAY_SIZE(possible_sysvalues); ++i) {
       struct sysvalue_name *info = &possible_sysvalues[i];

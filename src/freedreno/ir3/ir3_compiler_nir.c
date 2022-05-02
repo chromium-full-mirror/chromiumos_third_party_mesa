@@ -899,6 +899,32 @@ emit_intrinsic_load_ubo_ldc(struct ir3_context *ctx, nir_intrinsic_instr *intr,
    ir3_split_dest(b, dst, ldc, 0, ncomp);
 }
 
+static void
+emit_intrinsic_copy_ubo_to_uniform(struct ir3_context *ctx,
+                                   nir_intrinsic_instr *intr)
+{
+   struct ir3_block *b = ctx->block;
+
+   unsigned base = nir_intrinsic_base(intr);
+   unsigned size = nir_intrinsic_range(intr);
+
+   struct ir3_instruction *addr1 = ir3_get_addr1(ctx, base);
+
+   struct ir3_instruction *offset = ir3_get_src(ctx, &intr->src[1])[0];
+   struct ir3_instruction *idx = ir3_get_src(ctx, &intr->src[0])[0];
+   struct ir3_instruction *ldc = ir3_LDC_K(b, idx, 0, offset, 0);
+   ldc->cat6.iim_val = size;
+   ldc->barrier_class = ldc->barrier_conflict = IR3_BARRIER_CONST_W;
+
+   ir3_handle_bindless_cat6(ldc, intr->src[0]);
+   if (ldc->flags & IR3_INSTR_B)
+      ctx->so->bindless_ubo = true;
+
+   ir3_instr_set_address(ldc, addr1);
+
+   array_insert(b, b->keeps, ldc);
+}
+
 /* handles direct/indirect UBO reads: */
 static void
 emit_intrinsic_load_ubo(struct ir3_context *ctx, nir_intrinsic_instr *intr,
@@ -1313,11 +1339,11 @@ struct tex_src_info {
  * to handle with the image_mapping table..
  */
 static struct tex_src_info
-get_image_samp_tex_src(struct ir3_context *ctx, nir_intrinsic_instr *intr)
+get_image_ssbo_samp_tex_src(struct ir3_context *ctx, nir_src *src)
 {
    struct ir3_block *b = ctx->block;
    struct tex_src_info info = {0};
-   nir_intrinsic_instr *bindless_tex = ir3_bindless_resource(intr->src[0]);
+   nir_intrinsic_instr *bindless_tex = ir3_bindless_resource(*src);
 
    if (bindless_tex) {
       /* Bindless case */
@@ -1351,13 +1377,13 @@ get_image_samp_tex_src(struct ir3_context *ctx, nir_intrinsic_instr *intr)
          /* Note: the indirect source is now a vec2 instead of hvec2 */
          struct ir3_instruction *texture, *sampler;
 
-         texture = ir3_get_src(ctx, &intr->src[0])[0];
+         texture = ir3_get_src(ctx, src)[0];
          sampler = create_immed(b, 0);
          info.samp_tex = ir3_collect(b, texture, sampler);
       }
    } else {
       info.flags |= IR3_INSTR_S2EN;
-      unsigned slot = nir_src_as_uint(intr->src[0]);
+      unsigned slot = nir_src_as_uint(*src);
       unsigned tex_idx = ir3_image_to_tex(&ctx->so->image_mapping, slot);
       struct ir3_instruction *texture, *sampler;
 
@@ -1379,7 +1405,7 @@ emit_sam(struct ir3_context *ctx, opc_t opc, struct tex_src_info info,
    if (info.flags & IR3_INSTR_A1EN) {
       addr = ir3_get_addr1(ctx, info.a1_val);
    }
-   sam = ir3_SAM(ctx->block, opc, type, 0b1111, info.flags, info.samp_tex, src0,
+   sam = ir3_SAM(ctx->block, opc, type, wrmask, info.flags, info.samp_tex, src0,
                  src1);
    if (info.flags & IR3_INSTR_A1EN) {
       ir3_instr_set_address(sam, addr);
@@ -1416,7 +1442,7 @@ emit_intrinsic_load_image(struct ir3_context *ctx, nir_intrinsic_instr *intr,
    }
 
    struct ir3_block *b = ctx->block;
-   struct tex_src_info info = get_image_samp_tex_src(ctx, intr);
+   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0]);
    struct ir3_instruction *sam;
    struct ir3_instruction *const *src0 = ir3_get_src(ctx, &intr->src[1]);
    struct ir3_instruction *coords[4];
@@ -1458,7 +1484,7 @@ emit_intrinsic_image_size_tex(struct ir3_context *ctx,
                               struct ir3_instruction **dst)
 {
    struct ir3_block *b = ctx->block;
-   struct tex_src_info info = get_image_samp_tex_src(ctx, intr);
+   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0]);
    struct ir3_instruction *sam, *lod;
    unsigned flags, ncoords = ir3_get_image_coords(intr, &flags);
    type_t dst_type = nir_dest_bit_size(intr->dest) == 16 ? TYPE_U16 : TYPE_U32;
@@ -1492,6 +1518,38 @@ emit_intrinsic_image_size_tex(struct ir3_context *ctx,
          dst[ncoords - 1] = ir3_MOV(b, tmp[3], TYPE_U32);
       }
    }
+}
+
+/* src[] = { buffer_index, offset }. No const_index */
+static void
+emit_intrinsic_load_ssbo(struct ir3_context *ctx,
+                         nir_intrinsic_instr *intr,
+                         struct ir3_instruction **dst)
+{
+   /* Note: isam currently can't handle vectorized loads/stores */
+   if (!(nir_intrinsic_access(intr) & ACCESS_CAN_REORDER) ||
+       !ir3_bindless_resource(intr->src[0]) ||
+       intr->dest.ssa.num_components > 1) {
+      ctx->funcs->emit_intrinsic_load_ssbo(ctx, intr, dst);
+      return;
+   }
+
+   struct ir3_block *b = ctx->block;
+   struct ir3_instruction *offset = ir3_get_src(ctx, &intr->src[2])[0];
+   struct ir3_instruction *coords = ir3_collect(b, offset, create_immed(b, 0));
+   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0]);
+
+   unsigned num_components = intr->dest.ssa.num_components;
+   struct ir3_instruction *sam =
+      emit_sam(ctx, OPC_ISAM, info, utype_for_size(intr->dest.ssa.bit_size),
+               MASK(num_components), coords, NULL);
+
+   ir3_handle_nonuniform(sam, intr);
+
+   sam->barrier_class = IR3_BARRIER_BUFFER_R;
+   sam->barrier_conflict = IR3_BARRIER_BUFFER_W;
+
+   ir3_split_dest(b, dst, sam, 0, num_components);
 }
 
 static void
@@ -1793,7 +1851,7 @@ static struct ir3_instruction *
 get_frag_coord(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 {
    if (!ctx->frag_coord) {
-      struct ir3_block *b = ctx->in_block;
+      struct ir3_block *b = ir3_after_preamble(ctx->ir);
       struct ir3_instruction *xyzw[4];
       struct ir3_instruction *hw_frag_coord;
 
@@ -2012,7 +2070,9 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
           * addr reg value can be:
           */
          ctx->so->constlen =
-            MAX2(ctx->so->constlen, const_state->ubo_state.size / 16);
+            MAX2(ctx->so->constlen,
+                 ctx->so->shader->num_reserved_user_consts +
+                 const_state->ubo_state.size / 16);
       }
       break;
 
@@ -2094,6 +2154,9 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    case nir_intrinsic_load_ubo_vec4:
       emit_intrinsic_load_ubo_ldc(ctx, intr, dst);
       break;
+   case nir_intrinsic_copy_ubo_to_uniform_ir3:
+      emit_intrinsic_copy_ubo_to_uniform(ctx, intr);
+      break;
    case nir_intrinsic_load_frag_coord:
       ir3_split_dest(b, dst, get_frag_coord(ctx, intr), 0, 4);
       break;
@@ -2134,7 +2197,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
     * dword-offset in the last source.
     */
    case nir_intrinsic_load_ssbo_ir3:
-      ctx->funcs->emit_intrinsic_load_ssbo(ctx, intr, dst);
+      emit_intrinsic_load_ssbo(ctx, intr, dst);
       break;
    case nir_intrinsic_store_ssbo_ir3:
       if ((ctx->so->type == MESA_SHADER_FRAGMENT) &&
@@ -2470,6 +2533,10 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
        */
       ctx->max_stack = MAX2(ctx->max_stack, ctx->stack + 1);
       break;
+   case nir_intrinsic_preamble_start_ir3:
+      dst[0] = ir3_SHPS_MACRO(ctx->block);
+      ctx->max_stack = MAX2(ctx->max_stack, ctx->stack + 1);
+      break;
 
    case nir_intrinsic_read_invocation_cond_ir3: {
       struct ir3_instruction *src = ir3_get_src(ctx, &intr->src[0])[0];
@@ -2573,6 +2640,41 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
       dst[0] = emit_intrinsic_reduce(ctx, intr);
       break;
 
+   case nir_intrinsic_preamble_end_ir3: {
+      struct ir3_instruction *instr = ir3_SHPE(ctx->block);
+      instr->barrier_class = instr->barrier_conflict = IR3_BARRIER_CONST_W;
+      array_insert(b, b->keeps, instr);
+      break;
+   }
+   case nir_intrinsic_store_uniform_ir3: {
+      unsigned components = nir_src_num_components(intr->src[0]);
+      unsigned dst = nir_intrinsic_base(intr);
+      unsigned dst_lo = dst & 0xff;
+      unsigned dst_hi = dst >> 8;
+
+      struct ir3_instruction *src =
+         ir3_create_collect(b, ir3_get_src(ctx, &intr->src[0]), components);
+      struct ir3_instruction *a1 = NULL;
+      if (dst_hi) {
+         /* Encode only the high part of the destination in a1.x to increase the
+          * chance that we can reuse the a1.x value in subsequent stc
+          * instructions.
+          */
+         a1 = ir3_get_addr1(ctx, dst_hi << 8);
+      }
+
+      struct ir3_instruction *stc =
+         ir3_STC(ctx->block, create_immed(b, dst_lo),  0, src, 0);
+      stc->cat6.iim_val = components;
+      stc->cat6.type = TYPE_U32;
+      stc->barrier_conflict = IR3_BARRIER_CONST_W;
+      if (a1) {
+         ir3_instr_set_address(stc, a1);
+         stc->flags |= IR3_INSTR_A1EN;
+      }
+      array_insert(b, b->keeps, stc);
+      break;
+   }
    default:
       ir3_context_error(ctx, "Unhandled intrinsic type: %s\n",
                         nir_intrinsic_infos[intr->intrinsic].name);
@@ -3098,7 +3200,7 @@ emit_tex(struct ir3_context *ctx, nir_tex_instr *tex)
 
       compile_assert(ctx, tex->src[idx].src.is_ssa);
 
-      sam = ir3_SAM(b, opc, type, MASK(ncomp), 0, NULL,
+      sam = ir3_SAM(ctx->in_block, opc, type, MASK(ncomp), 0, NULL,
                     get_barycentric(ctx, IJ_PERSP_PIXEL), 0);
       sam->prefetch.input_offset = ir3_nir_coord_offset(tex->src[idx].src.ssa);
       /* make sure not to add irrelevant flags like S2EN */
@@ -3525,6 +3627,14 @@ emit_if(struct ir3_context *ctx, nir_if *nif)
               condition->block == ctx->block) {
       ctx->block->condition = NULL;
       ctx->block->brtype = IR3_BRANCH_GETONE;
+   } else if (condition->opc == OPC_SHPS_MACRO &&
+              condition->block == ctx->block) {
+      /* TODO: technically this only works if the block is the only user of the
+       * shps, but we only use it in very constrained scenarios so this should
+       * be ok.
+       */
+      ctx->block->condition = NULL;
+      ctx->block->brtype = IR3_BRANCH_SHPS;
    } else {
       ctx->block->condition = ir3_get_predicate(ctx, condition);
       ctx->block->brtype = IR3_BRANCH_COND;
@@ -4508,7 +4618,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 
    ir = so->ir = ctx->ir;
 
-   if (so->type == MESA_SHADER_COMPUTE) {
+   if (gl_shader_stage_is_compute(so->type)) {
       so->local_size[0] = ctx->s->info.workgroup_size[0];
       so->local_size[1] = ctx->s->info.workgroup_size[1];
       so->local_size[2] = ctx->s->info.workgroup_size[2];

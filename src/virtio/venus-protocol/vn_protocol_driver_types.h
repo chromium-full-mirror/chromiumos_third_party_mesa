@@ -8,6 +8,7 @@
 #ifndef VN_PROTOCOL_DRIVER_TYPES_H
 #define VN_PROTOCOL_DRIVER_TYPES_H
 
+#include "vn_protocol_driver_cs.h"
 #include "vn_protocol_driver_defines.h"
 
 /* uint64_t */
@@ -1925,6 +1926,27 @@ vn_encode_VkDescriptorBindingFlagBits(struct vn_cs_encoder *enc, const VkDescrip
 
 static inline void
 vn_decode_VkDescriptorBindingFlagBits(struct vn_cs_decoder *dec, VkDescriptorBindingFlagBits *val)
+{
+    vn_decode_int32_t(dec, (int32_t *)val);
+}
+
+/* enum VkConditionalRenderingFlagBitsEXT */
+
+static inline size_t
+vn_sizeof_VkConditionalRenderingFlagBitsEXT(const VkConditionalRenderingFlagBitsEXT *val)
+{
+    assert(sizeof(*val) == sizeof(int32_t));
+    return vn_sizeof_int32_t((const int32_t *)val);
+}
+
+static inline void
+vn_encode_VkConditionalRenderingFlagBitsEXT(struct vn_cs_encoder *enc, const VkConditionalRenderingFlagBitsEXT *val)
+{
+    vn_encode_int32_t(enc, (const int32_t *)val);
+}
+
+static inline void
+vn_decode_VkConditionalRenderingFlagBitsEXT(struct vn_cs_decoder *dec, VkConditionalRenderingFlagBitsEXT *val)
 {
     vn_decode_int32_t(dec, (int32_t *)val);
 }

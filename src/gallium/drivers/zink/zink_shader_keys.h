@@ -61,6 +61,7 @@ struct zink_fs_key {
    bool samples;
    bool force_dual_color_blend;
    bool force_persample_interp;
+   bool fbfetch_ms;
 };
 
 struct zink_tcs_key {
@@ -68,6 +69,7 @@ struct zink_tcs_key {
 };
 
 struct zink_shader_key_base {
+   uint32_t nonseamless_cube_mask;
    uint32_t inlined_uniform_values[MAX_INLINABLE_UNIFORMS];
 };
 

@@ -42,69 +42,29 @@ static const uint32_t va_immediates[32] = {
 % endfor
 };
 
-/* Byte 7 has instruction metadata, analogous to Bifrost's clause header */
-struct va_metadata {
-	bool opcode_high : 1;
-    unsigned immediate_mode : 2;
-    unsigned action : 3;
-	bool do_action : 1;
-	bool unk3 : 1;
-} __attribute__((packed));
-
 static inline void
-va_print_metadata(FILE *fp, uint8_t meta)
-{
-	struct va_metadata m;
-	memcpy(&m, &meta, 1);
-
-    fputs(valhall_immediate_mode[m.immediate_mode], fp);
-
-	if (m.do_action) {
-        fputs(valhall_action[m.action], fp);
-	} else if (m.action) {
-		fprintf(fp, ".wait%s%s%s",
-				m.action & (1 << 0) ? "0" : "",
-				m.action & (1 << 1) ? "1" : "",
-				m.action & (1 << 2) ? "2" : "");
-	}
-
-	if (m.unk3)
-		fprintf(fp, ".unk3");
-}
-
-static inline void
-va_print_src(FILE *fp, uint8_t src, unsigned imm_mode)
+va_print_src(FILE *fp, uint8_t src, unsigned fau_page)
 {
 	unsigned type = (src >> 6);
 	unsigned value = (src & 0x3F);
 
 	if (type == VA_SRC_IMM_TYPE) {
         if (value >= 32) {
-            if (imm_mode == 0) {
-                if (value >= 0x30)
-                    fprintf(fp, "blend_descriptor_%u_%c", (value - 0x30) >> 1, value & 1 ? 'y' : 'x');
-                else if (value == 0x2A)
-                    fprintf(fp, "atest_datum");
-                else
-                    fprintf(fp, "unk:%X", value);
-            } else if (imm_mode == 1) {
-                if (value < 0x28)
-                    fputs(valhall_thread_storage_pointers[value - 0x20] + 1, fp);
-                else
-                    fprintf(fp, "unk:%X", value);
-            } else if (imm_mode == 3) {
-                if (value < 0x40)
-                    fputs(valhall_thread_identification[value - 0x20] + 1, fp);
-                else
-                    fprintf(fp, "unk:%X", value);
-            } else {
-                    fprintf(fp, "unk:%X", value);
-            }
+            if (fau_page == 0)
+                fputs(valhall_fau_special_page_0[(value - 0x20) >> 1] + 1, fp);
+            else if (fau_page == 1)
+                fputs(valhall_fau_special_page_1[(value - 0x20) >> 1] + 1, fp);
+            else if (fau_page == 3)
+                fputs(valhall_fau_special_page_3[(value - 0x20) >> 1] + 1, fp);
+            else
+                fprintf(fp, "reserved_page2");
+
+            fprintf(fp, ".w%u", value & 1);
         } else {
             fprintf(fp, "0x%X", va_immediates[value]);
         }
 	} else if (type == VA_SRC_UNIFORM_TYPE) {
-		fprintf(fp, "u%u", value);
+		fprintf(fp, "u%u", value | (fau_page << 6));
 	} else {
 		bool discard = (type & 1);
 		fprintf(fp, "%sr%u", discard ? "`" : "", value);
@@ -112,7 +72,7 @@ va_print_src(FILE *fp, uint8_t src, unsigned imm_mode)
 }
 
 static inline void
-va_print_float_src(FILE *fp, uint8_t src, unsigned imm_mode, bool neg, bool abs)
+va_print_float_src(FILE *fp, uint8_t src, unsigned fau_page, bool neg, bool abs)
 {
 	unsigned type = (src >> 6);
 	unsigned value = (src & 0x3F);
@@ -121,7 +81,7 @@ va_print_float_src(FILE *fp, uint8_t src, unsigned imm_mode, bool neg, bool abs)
         assert(value < 32 && "overflow in LUT");
         fprintf(fp, "0x%X", va_immediates[value]);
 	} else {
-        va_print_src(fp, src, imm_mode);
+        va_print_src(fp, src, fau_page);
     }
 
 	if (neg)
@@ -135,7 +95,7 @@ void
 va_disasm_instr(FILE *fp, uint64_t instr)
 {
    unsigned primary_opc = (instr >> 48) & MASK(9);
-   unsigned imm_mode = (instr >> 57) & MASK(2);
+   unsigned fau_page = (instr >> 57) & MASK(2);
    unsigned secondary_opc = 0;
 
    switch (primary_opc) {
@@ -157,7 +117,7 @@ va_disasm_instr(FILE *fp, uint64_t instr)
 % endif
             fputs("${op.name}", fp);
 % for mod in op.modifiers:
-% if mod.name not in ["left", "staging_register_count", "staging_register_write_count"]:
+% if mod.name not in ["left", "memory_width", "descriptor_type", "staging_register_count", "staging_register_write_count"]:
 % if mod.is_enum:
             fputs(valhall_${safe_name(mod.enum)}[(instr >> ${mod.start}) & ${hex((1 << mod.size) - 1)}], fp);
 % else:
@@ -165,8 +125,8 @@ va_disasm_instr(FILE *fp, uint64_t instr)
 % endif
 % endif
 % endfor
-            va_print_metadata(fp, instr >> 56);
-            fputs(" ", fp);
+            assert((instr & (1ull << 63)) == 0 /* reserved */);
+            fprintf(fp, "%s ", valhall_flow[instr >> 59]);
 % if len(op.dests) > 0:
 <% no_comma = False %>
             va_print_dest(fp, (instr >> 40), true);
@@ -188,8 +148,9 @@ va_disasm_instr(FILE *fp, uint64_t instr)
         assert(0)
 %>
 //            assert(((instr >> ${sr.start}) & 0xC0) == ${sr.encoded_flags});
+            fprintf(fp, "@");
             for (unsigned i = 0; i < ${sr_count}; ++i) {
-                fprintf(fp, "%sr%u", (i == 0) ? "@" : ":",
+                fprintf(fp, "%sr%u", (i == 0) ? "" : ":",
                         (uint32_t) (((instr >> ${sr.start}) & 0x3F) + i));
             }
 % endfor
@@ -199,13 +160,13 @@ va_disasm_instr(FILE *fp, uint64_t instr)
 % endif
 <% no_comma = False %>
 % if src.absneg:
-            va_print_float_src(fp, instr >> ${8 * i}, imm_mode,
+            va_print_float_src(fp, instr >> ${src.start}, fau_page,
                     instr & BIT(${src.offset['neg']}),
                     instr & BIT(${src.offset['abs']}));
 % elif src.is_float:
-            va_print_float_src(fp, instr >> ${8 * i}, imm_mode, false, false);
+            va_print_float_src(fp, instr >> ${src.start}, fau_page, false, false);
 % else:
-            va_print_src(fp, instr >> ${8 * i}, imm_mode);
+            va_print_src(fp, instr >> ${src.start}, fau_page);
 % endif
 % if src.swizzle:
 % if src.size == 32:

@@ -52,6 +52,7 @@ enum
 #define AC_WAIT_LGKM   (1 << 0) /* LDS, GDS, constant, message */
 #define AC_WAIT_VLOAD  (1 << 1) /* VMEM load/sample instructions */
 #define AC_WAIT_VSTORE (1 << 2) /* VMEM store instructions */
+#define AC_WAIT_EXP    (1 << 3) /* EXP instructions */
 
 struct ac_llvm_flow;
 struct ac_llvm_compiler;
@@ -192,7 +193,7 @@ LLVMValueRef ac_build_varying_gather_values(struct ac_llvm_context *ctx, LLVMVal
                                             unsigned value_count, unsigned component);
 
 LLVMValueRef ac_build_gather_values_extended(struct ac_llvm_context *ctx, LLVMValueRef *values,
-                                             unsigned value_count, unsigned value_stride, bool load,
+                                             unsigned value_count, unsigned value_stride,
                                              bool always_vector);
 LLVMValueRef ac_build_gather_values(struct ac_llvm_context *ctx, LLVMValueRef *values,
                                     unsigned value_count);
@@ -255,40 +256,34 @@ LLVMValueRef ac_build_load_to_sgpr_uint_wraparound(struct ac_llvm_context *ctx,
 
 void ac_build_buffer_store_dword(struct ac_llvm_context *ctx, LLVMValueRef rsrc, LLVMValueRef vdata,
                                  LLVMValueRef vindex, LLVMValueRef voffset, LLVMValueRef soffset,
-                                 unsigned inst_offset, unsigned cache_policy);
+                                 unsigned cache_policy);
 
 void ac_build_buffer_store_format(struct ac_llvm_context *ctx, LLVMValueRef rsrc, LLVMValueRef data,
                                   LLVMValueRef vindex, LLVMValueRef voffset, unsigned cache_policy);
 
 LLVMValueRef ac_build_buffer_load(struct ac_llvm_context *ctx, LLVMValueRef rsrc, int num_channels,
                                   LLVMValueRef vindex, LLVMValueRef voffset, LLVMValueRef soffset,
-                                  unsigned inst_offset, LLVMTypeRef channel_type,
-                                  unsigned cache_policy, bool can_speculate, bool allow_smem);
+                                  LLVMTypeRef channel_type, unsigned cache_policy,
+                                  bool can_speculate, bool allow_smem);
 
 LLVMValueRef ac_build_buffer_load_format(struct ac_llvm_context *ctx, LLVMValueRef rsrc,
                                          LLVMValueRef vindex, LLVMValueRef voffset,
                                          unsigned num_channels, unsigned cache_policy,
                                          bool can_speculate, bool d16, bool tfe);
 
-LLVMValueRef ac_build_tbuffer_load_short(struct ac_llvm_context *ctx, LLVMValueRef rsrc,
-                                         LLVMValueRef voffset, LLVMValueRef soffset,
-                                         LLVMValueRef immoffset, unsigned cache_policy);
-
-LLVMValueRef ac_build_tbuffer_load_byte(struct ac_llvm_context *ctx, LLVMValueRef rsrc,
+LLVMValueRef ac_build_buffer_load_short(struct ac_llvm_context *ctx, LLVMValueRef rsrc,
                                         LLVMValueRef voffset, LLVMValueRef soffset,
-                                        LLVMValueRef immoffset, unsigned cache_policy);
+                                        unsigned cache_policy);
+
+LLVMValueRef ac_build_buffer_load_byte(struct ac_llvm_context *ctx, LLVMValueRef rsrc,
+                                       LLVMValueRef voffset, LLVMValueRef soffset,
+                                       unsigned cache_policy);
 
 LLVMValueRef ac_build_struct_tbuffer_load(struct ac_llvm_context *ctx, LLVMValueRef rsrc,
                                           LLVMValueRef vindex, LLVMValueRef voffset,
-                                          LLVMValueRef soffset, LLVMValueRef immoffset,
-                                          unsigned num_channels, unsigned dfmt, unsigned nfmt,
-                                          unsigned cache_policy, bool can_speculate);
-
-LLVMValueRef ac_build_raw_tbuffer_load(struct ac_llvm_context *ctx, LLVMValueRef rsrc,
-                                       LLVMValueRef voffset, LLVMValueRef soffset,
-                                       LLVMValueRef immoffset, unsigned num_channels, unsigned dfmt,
-                                       unsigned nfmt, unsigned cache_policy, bool can_speculate);
-
+                                          LLVMValueRef soffset, unsigned num_channels,
+                                          unsigned dfmt, unsigned nfmt, unsigned cache_policy,
+                                          bool can_speculate);
 
 LLVMValueRef ac_build_opencoded_load_format(struct ac_llvm_context *ctx, unsigned log_size,
                                             unsigned num_channels, unsigned format, bool reverse,
@@ -297,23 +292,12 @@ LLVMValueRef ac_build_opencoded_load_format(struct ac_llvm_context *ctx, unsigne
                                             LLVMValueRef soffset, unsigned cache_policy,
                                             bool can_speculate);
 
-void ac_build_tbuffer_store_short(struct ac_llvm_context *ctx, LLVMValueRef rsrc,
-                                  LLVMValueRef vdata, LLVMValueRef voffset, LLVMValueRef soffset,
-                                  unsigned cache_policy);
+void ac_build_buffer_store_short(struct ac_llvm_context *ctx, LLVMValueRef rsrc,
+                                 LLVMValueRef vdata, LLVMValueRef voffset, LLVMValueRef soffset,
+                                 unsigned cache_policy);
 
-void ac_build_tbuffer_store_byte(struct ac_llvm_context *ctx, LLVMValueRef rsrc, LLVMValueRef vdata,
-                                 LLVMValueRef voffset, LLVMValueRef soffset, unsigned cache_policy);
-
-void ac_build_struct_tbuffer_store(struct ac_llvm_context *ctx, LLVMValueRef rsrc,
-                                   LLVMValueRef vdata, LLVMValueRef vindex, LLVMValueRef voffset,
-                                   LLVMValueRef soffset, LLVMValueRef immoffset,
-                                   unsigned num_channels, unsigned dfmt, unsigned nfmt,
-                                   unsigned cache_policy);
-
-void ac_build_raw_tbuffer_store(struct ac_llvm_context *ctx, LLVMValueRef rsrc, LLVMValueRef vdata,
-                                LLVMValueRef voffset, LLVMValueRef soffset, LLVMValueRef immoffset,
-                                unsigned num_channels, unsigned dfmt, unsigned nfmt,
-                                unsigned cache_policy);
+void ac_build_buffer_store_byte(struct ac_llvm_context *ctx, LLVMValueRef rsrc, LLVMValueRef vdata,
+                                LLVMValueRef voffset, LLVMValueRef soffset, unsigned cache_policy);
 
 void ac_set_range_metadata(struct ac_llvm_context *ctx, LLVMValueRef value, unsigned lo,
                            unsigned hi);
@@ -460,9 +444,6 @@ LLVMValueRef ac_build_fsat(struct ac_llvm_context *ctx, LLVMValueRef src,
 
 LLVMValueRef ac_build_bitfield_reverse(struct ac_llvm_context *ctx, LLVMValueRef src0);
 
-void ac_optimize_vs_outputs(struct ac_llvm_context *ac, LLVMValueRef main_fn,
-                            uint8_t *vs_output_param_offset, uint32_t num_outputs,
-                            uint32_t skip_output_mask, uint8_t *num_param_exports);
 void ac_init_exec_full_mask(struct ac_llvm_context *ctx);
 
 void ac_declare_lds_as_pointer(struct ac_llvm_context *ac);

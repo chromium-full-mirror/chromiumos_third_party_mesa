@@ -941,11 +941,11 @@ static const __DRIdri2LoaderExtension dri2LoaderExtension_old = {
    .getBuffersWithFormat    = NULL,
 };
 
-static const __DRIuseInvalidateExtension dri2UseInvalidate = {
+const __DRIuseInvalidateExtension dri2UseInvalidate = {
    .base = { __DRI_USE_INVALIDATE, 1 }
 };
 
-static const __DRIbackgroundCallableExtension driBackgroundCallable = {
+const __DRIbackgroundCallableExtension driBackgroundCallable = {
    .base = { __DRI_BACKGROUND_CALLABLE, 2 },
 
    .setBackgroundContext    = driSetBackgroundContext,
@@ -1229,7 +1229,7 @@ dri2CreateScreen(int screen, struct glx_display * priv)
    }
 
    if (psc->driScreen == NULL) {
-      ErrorMessageF("failed to create dri screen\n");
+      ErrorMessageF("glx: failed to create dri2 screen\n");
       goto handle_error;
    }
 

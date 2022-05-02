@@ -197,6 +197,9 @@ vn_buffer_cache_get_memory_requirements(
    const VkBufferCreateInfo *create_info,
    struct vn_buffer_memory_requirements *out)
 {
+   if (VN_PERF(NO_ASYNC_BUFFER_CREATE))
+      return false;
+
    if (create_info->size > cache->max_buffer_size)
       return false;
 
@@ -376,16 +379,6 @@ vn_GetBufferOpaqueCaptureAddress(VkDevice device,
 }
 
 void
-vn_GetBufferMemoryRequirements(VkDevice device,
-                               VkBuffer buffer,
-                               VkMemoryRequirements *pMemoryRequirements)
-{
-   const struct vn_buffer *buf = vn_buffer_from_handle(buffer);
-
-   *pMemoryRequirements = buf->requirements.memory.memoryRequirements;
-}
-
-void
 vn_GetBufferMemoryRequirements2(VkDevice device,
                                 const VkBufferMemoryRequirementsInfo2 *pInfo,
                                 VkMemoryRequirements2 *pMemoryRequirements)
@@ -414,26 +407,6 @@ vn_GetBufferMemoryRequirements2(VkDevice device,
       }
       u.pnext = u.pnext->pNext;
    }
-}
-
-VkResult
-vn_BindBufferMemory(VkDevice device,
-                    VkBuffer buffer,
-                    VkDeviceMemory memory,
-                    VkDeviceSize memoryOffset)
-{
-   struct vn_device *dev = vn_device_from_handle(device);
-   struct vn_device_memory *mem = vn_device_memory_from_handle(memory);
-
-   if (mem->base_memory) {
-      memory = vn_device_memory_to_handle(mem->base_memory);
-      memoryOffset += mem->base_offset;
-   }
-
-   vn_async_vkBindBufferMemory(dev->instance, device, buffer, memory,
-                               memoryOffset);
-
-   return VK_SUCCESS;
 }
 
 VkResult

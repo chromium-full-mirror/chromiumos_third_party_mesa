@@ -395,20 +395,9 @@ static void si_blend_check_commutativity(struct si_screen *sscreen, struct si_st
       (1u << PIPE_BLENDFACTOR_INV_CONST_ALPHA) | (1u << PIPE_BLENDFACTOR_INV_SRC1_COLOR) |
       (1u << PIPE_BLENDFACTOR_INV_SRC1_ALPHA);
 
-   if (dst == PIPE_BLENDFACTOR_ONE && (src_allowed & (1u << src))) {
-      /* Addition is commutative, but floating point addition isn't
-       * associative: subtle changes can be introduced via different
-       * rounding.
-       *
-       * Out-of-order is also non-deterministic, which means that
-       * this breaks OpenGL invariance requirements. So only enable
-       * out-of-order additive blending if explicitly allowed by a
-       * setting.
-       */
-      if (func == PIPE_BLEND_MAX || func == PIPE_BLEND_MIN ||
-          (func == PIPE_BLEND_ADD && sscreen->commutative_blend_add))
-         blend->commutative_4bit |= chanmask;
-   }
+   if (dst == PIPE_BLENDFACTOR_ONE && (src_allowed & (1u << src)) &&
+       (func == PIPE_BLEND_MAX || func == PIPE_BLEND_MIN))
+      blend->commutative_4bit |= chanmask;
 }
 
 /**
@@ -832,11 +821,11 @@ static void si_emit_clip_regs(struct si_context *sctx)
    struct si_shader_selector *vs_sel = vs->selector;
    struct si_shader_info *info = &vs_sel->info;
    struct si_state_rasterizer *rs = sctx->queued.named.rasterizer;
-   bool window_space = info->stage == MESA_SHADER_VERTEX ?
+   bool window_space = vs_sel->stage == MESA_SHADER_VERTEX ?
                           info->base.vs.window_space_position : 0;
-   unsigned clipdist_mask = vs_sel->clipdist_mask;
-   unsigned ucp_mask = clipdist_mask ? 0 : rs->clip_plane_enable & SIX_BITS;
-   unsigned culldist_mask = vs_sel->culldist_mask;
+   unsigned clipdist_mask = vs_sel->info.clipdist_mask;
+   unsigned ucp_mask = clipdist_mask ? 0 : rs->clip_plane_enable & SI_USER_CLIP_PLANE_MASK;
+   unsigned culldist_mask = vs_sel->info.culldist_mask;
 
    /* Clip distances on points have no effect, so need to be implemented
     * as cull distances. This applies for the clipvertex case as well.
@@ -1050,6 +1039,28 @@ static void *si_create_rs_state(struct pipe_context *ctx, const struct pipe_rast
                      S_028814_KEEP_TOGETHER_ENABLE(sscreen->info.chip_class >= GFX10 ?
                                                       polygon_mode_enabled ||
                                                       rs->perpendicular_end_caps : 0));
+
+   if (state->bottom_edge_rule) {
+      /* OpenGL windows should set this. */
+      si_pm4_set_reg(pm4, R_028230_PA_SC_EDGERULE,
+                     S_028230_ER_TRI(0xA) |
+                     S_028230_ER_POINT(0x5) |
+                     S_028230_ER_RECT(0x9) |
+                     S_028230_ER_LINE_LR(0x29) |
+                     S_028230_ER_LINE_RL(0x29) |
+                     S_028230_ER_LINE_TB(0xA) |
+                     S_028230_ER_LINE_BT(0xA));
+   } else {
+      /* OpenGL FBOs and Direct3D should set this. */
+      si_pm4_set_reg(pm4, R_028230_PA_SC_EDGERULE,
+                     S_028230_ER_TRI(0xA) |
+                     S_028230_ER_POINT(0xA) |
+                     S_028230_ER_RECT(0xA) |
+                     S_028230_ER_LINE_LR(0x1A) |
+                     S_028230_ER_LINE_RL(0x26) |
+                     S_028230_ER_LINE_TB(0xA) |
+                     S_028230_ER_LINE_BT(0xA));
+   }
 
    if (!rs->uses_poly_offset)
       return rs;
@@ -1273,7 +1284,6 @@ static bool si_order_invariant_stencil_state(const struct pipe_stencil_state *st
 static void *si_create_dsa_state(struct pipe_context *ctx,
                                  const struct pipe_depth_stencil_alpha_state *state)
 {
-   struct si_context *sctx = (struct si_context *)ctx;
    struct si_state_dsa *dsa = CALLOC_STRUCT(si_state_dsa);
    struct si_pm4_state *pm4 = &dsa->pm4;
    unsigned db_depth_control;
@@ -1361,12 +1371,6 @@ static void *si_create_dsa_state(struct pipe_context *ctx,
    dsa->order_invariance[0].pass_set =
       !dsa->depth_write_enabled ||
       (state->depth_func == PIPE_FUNC_ALWAYS || state->depth_func == PIPE_FUNC_NEVER);
-
-   dsa->order_invariance[1].pass_last = sctx->screen->assume_no_z_fights &&
-                                        !dsa->stencil_write_enabled && dsa->depth_write_enabled &&
-                                        zfunc_is_ordered;
-   dsa->order_invariance[0].pass_last =
-      sctx->screen->assume_no_z_fights && dsa->depth_write_enabled && zfunc_is_ordered;
 
    return dsa;
 }
@@ -3517,8 +3521,7 @@ static bool si_out_of_order_rasterization(struct si_context *sctx)
       return false;
 
    struct si_dsa_order_invariance dsa_order_invariant = {.zs = true,
-                                                         .pass_set = true,
-                                                         .pass_last = false};
+                                                         .pass_set = true};
 
    if (sctx->framebuffer.state.zsbuf) {
       struct si_texture *zstex = (struct si_texture *)sctx->framebuffer.state.zsbuf->texture;
@@ -3552,10 +3555,8 @@ static bool si_out_of_order_rasterization(struct si_context *sctx)
          return false;
    }
 
-   if (colormask & ~blendmask) {
-      if (!dsa_order_invariant.pass_last)
-         return false;
-   }
+   if (colormask & ~blendmask)
+      return false;
 
    return true;
 }
@@ -5406,11 +5407,6 @@ void si_init_cs_preamble_state(struct si_context *sctx, bool uses_reg_shadowing)
       si_pm4_set_reg(pm4, R_028A1C_VGT_HOS_MIN_TESS_LEVEL, fui(0));
 
    if (!has_clear_state) {
-      si_pm4_set_reg(pm4, R_028230_PA_SC_EDGERULE,
-                     S_028230_ER_TRI(0xA) | S_028230_ER_POINT(0xA) | S_028230_ER_RECT(0xA) |
-                        /* Required by DX10_DIAMOND_TEST_ENA: */
-                        S_028230_ER_LINE_LR(0x1A) | S_028230_ER_LINE_RL(0x26) |
-                        S_028230_ER_LINE_TB(0xA) | S_028230_ER_LINE_BT(0xA));
       si_pm4_set_reg(pm4, R_028820_PA_CL_NANINF_CNTL, 0);
       si_pm4_set_reg(pm4, R_028AC0_DB_SRESULTS_COMPARE_STATE0, 0x0);
       si_pm4_set_reg(pm4, R_028AC4_DB_SRESULTS_COMPARE_STATE1, 0x0);
@@ -5429,6 +5425,14 @@ void si_init_cs_preamble_state(struct si_context *sctx, bool uses_reg_shadowing)
    if (sctx->chip_class == GFX6) {
       si_pm4_set_reg(pm4, R_008A14_PA_CL_ENHANCE,
                      S_008A14_NUM_CLIP_SEQ(3) | S_008A14_CLIP_VTX_REORDER_ENA(1));
+   }
+
+   if (sctx->chip_class >= GFX7) {
+      si_pm4_set_reg(pm4, R_030A00_PA_SU_LINE_STIPPLE_VALUE, 0);
+      si_pm4_set_reg(pm4, R_030A04_PA_SC_LINE_STIPPLE_STATE, 0);
+   } else {
+      si_pm4_set_reg(pm4, R_008A60_PA_SU_LINE_STIPPLE_VALUE, 0);
+      si_pm4_set_reg(pm4, R_008B10_PA_SC_LINE_STIPPLE_STATE, 0);
    }
 
    if (sctx->chip_class <= GFX7 || !has_clear_state) {

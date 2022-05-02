@@ -1642,12 +1642,20 @@ glsl_to_tgsi_visitor::visit_expression(ir_expression* ir, st_src_reg *op)
       vector_elements = MAX2(vector_elements,
                              ir->operands[1]->type->vector_elements);
    }
+   /* Swizzle the single scalar argument of an otherwise vector 3-operand instr
+    * (lrp for mix(), csel, etc.).
+    */
    if (ir->operands[2] &&
        ir->operands[2]->type->vector_elements != vector_elements) {
-      /* This can happen with ir_triop_lrp, i.e. glsl mix */
-      assert(ir->operands[2]->type->vector_elements == 1);
-      uint16_t swizzle_x = GET_SWZ(op[2].swizzle, 0);
-      op[2].swizzle = MAKE_SWIZZLE4(swizzle_x, swizzle_x,
+      int i;
+      if (ir->operands[0]->type->vector_elements == 1) {
+         i = 0;
+      } else {
+         assert(ir->operands[2]->type->vector_elements == 1);
+         i = 2;
+      }
+      uint16_t swizzle_x = GET_SWZ(op[i].swizzle, 0);
+      op[i].swizzle = MAKE_SWIZZLE4(swizzle_x, swizzle_x,
                                     swizzle_x, swizzle_x);
    }
 
@@ -6638,10 +6646,10 @@ emit_wpos(struct st_context *st,
     */
    if (program->info.fs.origin_upper_left) {
       /* Fragment shader wants origin in upper-left */
-      if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT)) {
+      if (pscreen->get_param(pscreen, PIPE_CAP_FS_COORD_ORIGIN_UPPER_LEFT)) {
          /* the driver supports upper-left origin */
       }
-      else if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT)) {
+      else if (pscreen->get_param(pscreen, PIPE_CAP_FS_COORD_ORIGIN_LOWER_LEFT)) {
          /* the driver supports lower-left origin, need to invert Y */
          ureg_property(ureg, TGSI_PROPERTY_FS_COORD_ORIGIN,
                        TGSI_FS_COORD_ORIGIN_LOWER_LEFT);
@@ -6652,11 +6660,11 @@ emit_wpos(struct st_context *st,
    }
    else {
       /* Fragment shader wants origin in lower-left */
-      if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT))
+      if (pscreen->get_param(pscreen, PIPE_CAP_FS_COORD_ORIGIN_LOWER_LEFT))
          /* the driver supports lower-left origin */
          ureg_property(ureg, TGSI_PROPERTY_FS_COORD_ORIGIN,
                        TGSI_FS_COORD_ORIGIN_LOWER_LEFT);
-      else if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT))
+      else if (pscreen->get_param(pscreen, PIPE_CAP_FS_COORD_ORIGIN_UPPER_LEFT))
          /* the driver supports upper-left origin, need to invert Y */
          invert = TRUE;
       else
@@ -6665,13 +6673,13 @@ emit_wpos(struct st_context *st,
 
    if (program->info.fs.pixel_center_integer) {
       /* Fragment shader wants pixel center integer */
-      if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER)) {
+      if (pscreen->get_param(pscreen, PIPE_CAP_FS_COORD_PIXEL_CENTER_INTEGER)) {
          /* the driver supports pixel center integer */
          adjY[1] = 1.0f;
          ureg_property(ureg, TGSI_PROPERTY_FS_COORD_PIXEL_CENTER,
                        TGSI_FS_COORD_PIXEL_CENTER_INTEGER);
       }
-      else if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER)) {
+      else if (pscreen->get_param(pscreen, PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER)) {
          /* the driver supports pixel center half integer, need to bias X,Y */
          adjX = -0.5f;
          adjY[0] = -0.5f;
@@ -6682,10 +6690,10 @@ emit_wpos(struct st_context *st,
    }
    else {
       /* Fragment shader wants pixel center half integer */
-      if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER)) {
+      if (pscreen->get_param(pscreen, PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER)) {
          /* the driver supports pixel center half integer */
       }
-      else if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER)) {
+      else if (pscreen->get_param(pscreen, PIPE_CAP_FS_COORD_PIXEL_CENTER_INTEGER)) {
          /* the driver supports pixel center integer, need to bias X,Y */
          adjX = adjY[0] = adjY[1] = 0.5f;
          ureg_property(ureg, TGSI_PROPERTY_FS_COORD_PIXEL_CENTER,
@@ -7264,7 +7272,7 @@ get_mesa_program_tgsi(struct gl_context *ctx,
                                          prog->Parameters);
 
    /* Remove reads from output registers. */
-   if (!pscreen->get_param(pscreen, PIPE_CAP_TGSI_CAN_READ_OUTPUTS))
+   if (!pscreen->get_param(pscreen, PIPE_CAP_SHADER_CAN_READ_OUTPUTS))
       lower_output_reads(shader->Stage, shader->ir);
 
    /* Emit intermediate IR for main(). */

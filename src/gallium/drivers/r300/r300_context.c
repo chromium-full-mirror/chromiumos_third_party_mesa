@@ -24,7 +24,6 @@
 
 #include "util/u_memory.h"
 #include "util/u_sampler.h"
-#include "util/simple_list.h"
 #include "util/u_upload_mgr.h"
 #include "util/os_time.h"
 #include "vl/vl_decoder.h"
@@ -370,7 +369,7 @@ static void r300_init_states(struct pipe_context *pipe)
 
 static void
 r300_set_debug_callback(struct pipe_context *context,
-                        const struct pipe_debug_callback *cb)
+                        const struct util_debug_callback *cb)
 {
     struct r300_context *r300 = r300_context(context);
 
@@ -442,7 +441,9 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
                                      PIPE_BIND_CUSTOM, PIPE_USAGE_STREAM, 0);
     r300->context.stream_uploader = u_upload_create(&r300->context, 1024 * 1024,
                                                     0, PIPE_USAGE_STREAM, 0);
-    r300->context.const_uploader = r300->context.stream_uploader;
+    r300->context.const_uploader = u_upload_create(&r300->context, 1024 * 1024,
+                                                   PIPE_BIND_CONSTANT_BUFFER,
+                                                   PIPE_USAGE_STREAM, 0);
 
     r300->blitter = util_blitter_create(&r300->context);
     if (r300->blitter == NULL)

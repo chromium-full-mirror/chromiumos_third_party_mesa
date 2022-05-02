@@ -68,6 +68,7 @@ struct zink_shader_module {
    VkShaderModule shader;
    uint32_t hash;
    bool default_variant;
+   bool has_nonseamless;
    uint8_t num_uniforms;
    uint8_t key_size;
    uint8_t key[0]; /* | key | uniforms | */
@@ -104,7 +105,7 @@ struct zink_gfx_program {
 
    struct zink_shader *last_vertex_stage;
 
-   struct list_head shader_cache[ZINK_SHADER_COUNT][2]; //normal, inline uniforms
+   struct list_head shader_cache[ZINK_SHADER_COUNT][2][2]; //normal, nonseamless cubes, inline uniforms
    unsigned inlined_variant_count[ZINK_SHADER_COUNT];
 
    struct zink_shader *shaders[ZINK_SHADER_COUNT];
@@ -119,7 +120,7 @@ struct zink_compute_program {
    struct zink_shader_module *curr;
 
    struct zink_shader_module *module; //base
-   struct list_head shader_cache; //inline uniforms
+   struct list_head shader_cache[2]; //nonseamless cubes, inline uniforms
    unsigned inlined_variant_count;
 
    struct zink_shader *shader;
@@ -378,6 +379,9 @@ zink_set_fs_point_coord_key(struct zink_context *ctx)
       zink_set_fs_key(ctx)->coord_replace_yinvert = coord_replace_yinvert;
    }
 }
+
+bool
+zink_set_rasterizer_discard(struct zink_context *ctx, bool disable);
 
 #ifdef __cplusplus
 }

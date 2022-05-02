@@ -30,6 +30,7 @@
 #define LP_STATE_FS_H_
 
 
+#include "util/list.h"
 #include "pipe/p_compiler.h"
 #include "pipe/p_state.h"
 #include "tgsi/tgsi_scan.h" /* for tgsi_shader_info */
@@ -145,14 +146,14 @@ static inline struct lp_image_static_state *
 lp_fs_variant_key_images(struct lp_fragment_shader_variant_key *key)
 {
    return (struct lp_image_static_state *)
-      &(lp_fs_variant_key_samplers(key)[key->nr_samplers]);
+      &(lp_fs_variant_key_samplers(key)[MAX2(key->nr_samplers, key->nr_sampler_views)]);
 }
 
 /** doubly-linked list item */
 struct lp_fs_variant_list_item
 {
+   struct list_head list;
    struct lp_fragment_shader_variant *base;
-   struct lp_fs_variant_list_item *next, *prev;
 };
 
 

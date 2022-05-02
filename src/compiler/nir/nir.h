@@ -125,6 +125,13 @@ nir_num_components_valid(unsigned num_components)
            num_components == 16;
 }
 
+static inline nir_component_mask_t
+nir_component_mask(unsigned num_components)
+{
+   assert(nir_num_components_valid(num_components));
+   return (1u << num_components) - 1;
+}
+
 void
 nir_process_debug_variable(void);
 
@@ -2942,6 +2949,13 @@ typedef struct {
    /** pointer to the function of which this is an implementation */
    struct nir_function *function;
 
+   /**
+    * For entrypoints, a pointer to a nir_function_impl which runs before
+    * it, once per draw or dispatch, communicating via store_preamble and
+    * load_preamble intrinsics. If NULL then there is no preamble.
+    */
+   struct nir_function *preamble;
+
    struct exec_list body; /** < list of nir_cf_node */
 
    nir_block *end_block;
@@ -3114,6 +3128,7 @@ typedef struct nir_function {
    nir_function_impl *impl;
 
    bool is_entrypoint;
+   bool is_preamble;
 } nir_function;
 
 typedef enum {
@@ -3139,6 +3154,8 @@ typedef enum {
    nir_lower_scan_reduce_bitwise64 = (1 << 17),
    nir_lower_scan_reduce_iadd64 = (1 << 18),
    nir_lower_vote_ieq64 = (1 << 19),
+   nir_lower_usub_sat64 = (1 << 20),
+   nir_lower_iadd_sat64 = (1 << 21),
 } nir_lower_int64_options;
 
 typedef enum {
@@ -3276,6 +3293,14 @@ typedef struct nir_shader_compiler_options {
 
    bool lower_ftrunc;
 
+   /** Lowers fround_even to ffract+feq+csel.
+    *
+    * Not correct in that it doesn't correctly handle the "_even" part of the
+    * rounding, but good enough for DX9 array indexing handling on DX9-class
+    * hardware.
+    */
+   bool lower_fround_even;
+
    bool lower_ldexp;
 
    bool lower_pack_half_2x16;
@@ -3379,18 +3404,8 @@ typedef struct nir_shader_compiler_options {
     *
     * If this flag is set, the lowering will be applied to all bit-sizes of
     * these instructions.
-    *
-    * \sa ::lower_usub_sat64
     */
    bool lower_uadd_sat;
-
-   /**
-    * Set if only 64-bit nir_op_usub_sat should be lowered to simple
-    * arithmetic.
-    *
-    * \sa ::lower_add_sat
-    */
-   bool lower_usub_sat64;
 
    /**
     * Set if nir_op_iadd_sat and nir_op_isub_sat should be lowered to simple
@@ -3570,6 +3585,15 @@ typedef struct nir_shader_compiler_options {
     */
    uint8_t support_indirect_inputs;
    uint8_t support_indirect_outputs;
+
+   /**
+    * Remove varying loaded from uniform, let fragment shader load the
+    * uniform directly. GPU passing varying by memory can benifit from it
+    * for sure; but GPU passing varying by on chip resource may not.
+    * Because it saves on chip resource but may increase memory pressure when
+    * fragment task is far more than vertex one, so better left it disabled.
+    */
+   bool lower_varying_from_uniform;
 } nir_shader_compiler_options;
 
 typedef struct nir_shader {
@@ -3597,6 +3621,9 @@ typedef struct nir_shader {
     */
    unsigned num_inputs, num_uniforms, num_outputs;
 
+   /** Size in bytes of required implicitly bound global memory */
+   unsigned global_mem_size;
+
    /** Size in bytes of required scratch space */
    unsigned scratch_size;
 
@@ -3620,7 +3647,7 @@ typedef struct nir_shader {
    foreach_list_typed(nir_function, func, node, &(shader)->functions)
 
 static inline nir_function_impl *
-nir_shader_get_entrypoint(nir_shader *shader)
+nir_shader_get_entrypoint(const nir_shader *shader)
 {
    nir_function *func = NULL;
 
@@ -4033,7 +4060,7 @@ NIR_SRC_AS_(intrinsic, nir_intrinsic_instr,
             nir_instr_type_intrinsic, nir_instr_as_intrinsic)
 NIR_SRC_AS_(deref, nir_deref_instr, nir_instr_type_deref, nir_instr_as_deref)
 
-bool nir_src_is_dynamically_uniform(nir_src src);
+bool nir_src_is_always_uniform(nir_src src);
 bool nir_srcs_equal(nir_src src1, nir_src src2);
 bool nir_instrs_equal(const nir_instr *instr1, const nir_instr *instr2);
 
@@ -4196,6 +4223,10 @@ char *nir_shader_as_str_annotated(nir_shader *nir, struct hash_table *annotation
 
 /** Shallow clone of a single instruction. */
 nir_instr *nir_instr_clone(nir_shader *s, const nir_instr *orig);
+
+/** Clone a single instruction, including a remap table to rewrite sources. */
+nir_instr *nir_instr_clone_deep(nir_shader *s, const nir_instr *orig,
+                                struct hash_table *remap_table);
 
 /** Shallow clone of a single ALU instruction. */
 nir_alu_instr *nir_alu_instr_clone(nir_shader *s, const nir_alu_instr *orig);
@@ -4706,6 +4737,8 @@ bool nir_lower_alu(nir_shader *shader);
 bool nir_lower_flrp(nir_shader *shader, unsigned lowering_mask,
                     bool always_precise);
 
+bool nir_scale_fdiv(nir_shader *shader);
+
 bool nir_lower_alu_to_scalar(nir_shader *shader, nir_instr_filter_cb cb, const void *data);
 bool nir_lower_bool_to_bitsize(nir_shader *shader);
 bool nir_lower_bool_to_float(nir_shader *shader);
@@ -4798,6 +4831,11 @@ typedef struct nir_lower_tex_options {
     * sampler types a texture projector is lowered.
     */
    unsigned lower_txp;
+
+   /**
+    * If true, lower texture projector for any array sampler dims
+    */
+   bool lower_txp_array;
 
    /**
     * If true, lower away nir_tex_src_offset for all texelfetch instructions.
@@ -4895,6 +4933,11 @@ typedef struct nir_lower_tex_options {
    bool lower_txd_3d;
 
    /**
+    * If true, lower nir_texop_txd any array surfaces with nir_texop_txl.
+    */
+   bool lower_txd_array;
+
+   /**
     * If true, lower nir_texop_txd on shadow samplers (except cube maps)
     * with nir_texop_txl. Notice that cube map shadow samplers are lowered
     * with lower_txd_cube_map.
@@ -4978,6 +5021,12 @@ typedef struct nir_lower_tex_options {
     * absolute values of derivatives is 0 for all coordinates.
     */
    bool lower_lod_zero_width;
+
+   /* Turns nir_op_tex and other ops with an implicit derivative, in stages
+    * without implicit derivatives (like the vertex shader) to have an explicit
+    * LOD with a value of 0.
+    */
+   bool lower_invalid_implicit_lod;
 
    /**
     * Payload data to be sent to callback / filter functions.
@@ -5161,6 +5210,8 @@ bool nir_lower_bit_size(nir_shader *shader,
                         void *callback_data);
 bool nir_lower_64bit_phis(nir_shader *shader);
 
+bool nir_split_64bit_vec3_and_vec4(nir_shader *shader);
+
 nir_lower_int64_options nir_lower_int64_op_to_options_mask(nir_op opcode);
 bool nir_lower_int64(nir_shader *shader);
 
@@ -5176,7 +5227,7 @@ bool nir_force_mediump_io(nir_shader *nir, nir_variable_mode modes,
                           nir_alu_type types);
 bool nir_unpack_16bit_varying_slots(nir_shader *nir, nir_variable_mode modes);
 bool nir_fold_16bit_sampler_conversions(nir_shader *nir,
-                                        unsigned tex_src_types);
+                                        unsigned tex_src_types, uint32_t sampler_dims);
 
 typedef struct {
    bool legalize_type;         /* whether this src should be legalized */
@@ -5400,6 +5451,7 @@ typedef struct {
    nir_variable_mode modes;
    nir_variable_mode robust_modes;
    void *cb_data;
+   bool has_shared2_amd;
 } nir_load_store_vectorize_options;
 
 bool nir_opt_load_store_vectorize(nir_shader *shader, const nir_load_store_vectorize_options *options);
@@ -5473,6 +5525,53 @@ typedef enum {
    nir_ray_query_value_world_ray_direction,
    nir_ray_query_value_world_ray_origin,
 } nir_ray_query_value;
+
+typedef struct {
+   /* True if gl_DrawID is considered uniform, i.e. if the preamble is run
+    * at least once per "internal" draw rather than per user-visible draw.
+    */
+   bool drawid_uniform;
+
+   /* True if the subgroup size is uniform. */
+   bool subgroup_size_uniform;
+
+   /* size/align for load/store_preamble. */
+   void (*def_size)(nir_ssa_def *def, unsigned *size, unsigned *align);
+
+   /* Total available size for load/store_preamble storage, in units
+    * determined by def_size.
+    */
+   unsigned preamble_storage_size;
+
+   /* Give the cost for an instruction. nir_opt_preamble will prioritize
+    * instructions with higher costs. Instructions with cost 0 may still be
+    * lifted, but only when required to lift other instructions with non-0
+    * cost (e.g. a load_const source of an expression).
+    */
+   float (*instr_cost_cb)(nir_instr *instr, const void *data);
+
+   /* Give the cost of rewriting the instruction to use load_preamble. This
+    * may happen from inserting move instructions, etc. If the benefit doesn't
+    * exceed the cost here then we won't rewrite it.
+    */
+   float (*rewrite_cost_cb)(nir_ssa_def *def, const void *data);
+
+   /* Instructions whose definitions should not be rewritten. These could
+    * still be moved to the preamble, but they shouldn't be the root of a
+    * replacement expression. Instructions with cost 0 and derefs are
+    * automatically included by the pass.
+    */
+   nir_instr_filter_cb avoid_instr_cb;
+
+   const void *cb_data;
+} nir_opt_preamble_options;
+
+bool
+nir_opt_preamble(nir_shader *shader,
+                 const nir_opt_preamble_options *options,
+                 unsigned *size);
+
+nir_function_impl *nir_shader_get_preamble(nir_shader *shader);
 
 #include "nir_inline_helpers.h"
 

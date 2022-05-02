@@ -62,6 +62,7 @@ static const nir_shader_compiler_options vs_nir_options = {
    .lower_insert_byte = true,
    .lower_insert_word = true,
    .force_indirect_unrolling = (nir_var_shader_in | nir_var_shader_out | nir_var_function_temp),
+   .lower_varying_from_uniform = true,
 };
 
 static const nir_shader_compiler_options fs_nir_options = {
@@ -82,6 +83,7 @@ static const nir_shader_compiler_options fs_nir_options = {
    .lower_bitops = true,
    .lower_vector_cmp = true,
    .force_indirect_unrolling = (nir_var_shader_in | nir_var_shader_out | nir_var_function_temp),
+   .lower_varying_from_uniform = true,
 };
 
 const void *
@@ -285,6 +287,7 @@ lima_fs_compile_shader(struct lima_context *ctx,
 
    struct nir_lower_tex_options tex_options = {
       .swizzle_result = ~0u,
+      .lower_invalid_implicit_lod = true,
    };
 
    for (int i = 0; i < ARRAY_SIZE(key->tex); i++) {

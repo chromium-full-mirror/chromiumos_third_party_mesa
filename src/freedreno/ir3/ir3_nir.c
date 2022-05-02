@@ -81,8 +81,6 @@ ir3_optimize_loop(struct ir3_compiler *compiler, nir_shader *s)
       progress = false;
 
       OPT_V(s, nir_lower_vars_to_ssa);
-      progress |= OPT(s, nir_opt_copy_prop_vars);
-      progress |= OPT(s, nir_opt_dead_write_vars);
       progress |= OPT(s, nir_lower_alu_to_scalar, NULL, NULL);
       progress |= OPT(s, nir_lower_phis_to_scalar, false);
 
@@ -90,6 +88,11 @@ ir3_optimize_loop(struct ir3_compiler *compiler, nir_shader *s)
       progress |= OPT(s, nir_opt_deref);
       progress |= OPT(s, nir_opt_dce);
       progress |= OPT(s, nir_opt_cse);
+
+      progress |= OPT(s, nir_opt_find_array_copies);
+      progress |= OPT(s, nir_opt_copy_prop_vars);
+      progress |= OPT(s, nir_opt_dead_write_vars);
+
       static int gcm = -1;
       if (gcm == -1)
          gcm = env_var_as_unsigned("GCM", 0);
@@ -165,6 +168,8 @@ ir3_optimize_loop(struct ir3_compiler *compiler, nir_shader *s)
       progress |= OPT(s, nir_opt_remove_phis);
       progress |= OPT(s, nir_opt_undef);
    } while (progress);
+
+   OPT(s, nir_lower_var_copies);
 }
 
 static bool
@@ -265,6 +270,7 @@ ir3_finalize_nir(struct ir3_compiler *compiler, nir_shader *s)
    struct nir_lower_tex_options tex_options = {
       .lower_rect = 0,
       .lower_tg4_offsets = true,
+      .lower_invalid_implicit_lod = true,
    };
 
    if (compiler->gen >= 4) {
@@ -640,10 +646,27 @@ ir3_nir_lower_variant(struct ir3_shader_variant *so, nir_shader *s)
    progress |= OPT(s, ir3_nir_lower_64b_undef);
    progress |= OPT(s, nir_lower_int64);
 
+   /* Cleanup code leftover from lowering passes before opt_preamble */
+   if (progress) {
+      progress |= OPT(s, nir_opt_constant_folding);
+   }
+
+   /* Do the preamble before analysing UBO ranges, because it's usually
+    * higher-value and because it can result in eliminating some indirect UBO
+    * accesses where otherwise we'd have to push the whole range. However we
+    * have to lower the preamble after UBO lowering so that UBO lowering can
+    * insert instructions in the preamble to push UBOs.
+    */
+   if (so->shader->compiler->has_preamble &&
+       !(ir3_shader_debug & IR3_DBG_NOPREAMBLE))
+      progress |= OPT(s, ir3_nir_opt_preamble, so);
+
    if (!so->binning_pass)
       OPT_V(s, ir3_nir_analyze_ubo_ranges, so);
 
    progress |= OPT(s, ir3_nir_lower_ubo_loads, so);
+
+   progress |= OPT(s, ir3_nir_lower_preamble, so);
 
    OPT_V(s, nir_lower_amul, ir3_glsl_type_size);
 
@@ -825,7 +848,9 @@ ir3_setup_const_state(nir_shader *nir, struct ir3_shader_variant *v,
    const_state->num_ubos = nir->info.num_ubos;
 
    debug_assert((const_state->ubo_state.size % 16) == 0);
-   unsigned constoff = const_state->ubo_state.size / 16;
+   unsigned constoff = v->shader->num_reserved_user_consts +
+      const_state->ubo_state.size / 16 +
+      const_state->preamble_size;
    unsigned ptrsz = ir3_pointer_size(compiler);
 
    if (const_state->num_ubos > 0) {

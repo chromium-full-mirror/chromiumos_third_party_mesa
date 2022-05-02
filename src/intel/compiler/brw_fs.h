@@ -136,6 +136,7 @@ public:
    void setup_cs_payload();
    bool fixup_sends_duplicate_payload();
    void fixup_3src_null_dest();
+   void emit_dummy_memory_fence_before_eot();
    bool fixup_nomask_control_flow();
    void assign_curb_setup();
    void assign_urb_setup();
@@ -202,6 +203,7 @@ public:
    void emit_dummy_fs();
    void emit_repclear_shader();
    void emit_fragcoord_interpolation(fs_reg wpos);
+   void emit_is_helper_invocation(fs_reg result);
    fs_reg emit_frontfacing_interpolation();
    fs_reg emit_samplepos_setup();
    fs_reg emit_sampleid_setup();

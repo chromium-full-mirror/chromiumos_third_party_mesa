@@ -409,6 +409,7 @@ nir_intrinsic_writes_external_memory(const nir_intrinsic_instr *instr)
    case nir_intrinsic_ssbo_atomic_xor_ir3:
    case nir_intrinsic_store_global:
    case nir_intrinsic_store_global_ir3:
+   case nir_intrinsic_store_global_amd:
    case nir_intrinsic_store_ssbo:
    case nir_intrinsic_store_ssbo_ir3:
       return true;
@@ -652,6 +653,21 @@ gather_intrinsic_info(nir_intrinsic_instr *instr, nir_shader *shader,
    case nir_intrinsic_load_user_data_amd:
    case nir_intrinsic_load_view_index:
    case nir_intrinsic_load_barycentric_model:
+   case nir_intrinsic_load_ray_launch_id:
+   case nir_intrinsic_load_ray_launch_size:
+   case nir_intrinsic_load_ray_world_origin:
+   case nir_intrinsic_load_ray_world_direction:
+   case nir_intrinsic_load_ray_object_origin:
+   case nir_intrinsic_load_ray_object_direction:
+   case nir_intrinsic_load_ray_t_min:
+   case nir_intrinsic_load_ray_t_max:
+   case nir_intrinsic_load_ray_object_to_world:
+   case nir_intrinsic_load_ray_world_to_object:
+   case nir_intrinsic_load_ray_hit_kind:
+   case nir_intrinsic_load_ray_flags:
+   case nir_intrinsic_load_ray_geometry_index:
+   case nir_intrinsic_load_ray_instance_custom_index:
+   case nir_intrinsic_load_mesh_view_count:
    case nir_intrinsic_load_gs_header_ir3:
    case nir_intrinsic_load_tcs_header_ir3:
       BITSET_SET(shader->info.system_values_read,

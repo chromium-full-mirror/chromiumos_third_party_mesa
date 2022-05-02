@@ -67,6 +67,7 @@
 #define AMDGPU_INFO_MEMORY 0x19
 #define AMDGPU_INFO_VIDEO_CAPS_DECODE 0
 #define AMDGPU_INFO_VIDEO_CAPS_ENCODE 1
+#define AMDGPU_INFO_FW_GFX_MEC 0x08
 struct drm_amdgpu_heap_info {
    uint64_t total_heap_size;
 };
@@ -605,13 +606,6 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
       return false;
    }
 
-   r = amdgpu_query_firmware_version(dev, AMDGPU_INFO_FW_GFX_CE, 0, 0, &info->ce_fw_version,
-                                     &info->ce_fw_feature);
-   if (r) {
-      fprintf(stderr, "amdgpu: amdgpu_query_firmware_version(ce) failed.\n");
-      return false;
-   }
-
    r = amdgpu_query_firmware_version(dev, AMDGPU_INFO_FW_UVD, 0, 0, &uvd_version, &uvd_feature);
    if (r) {
       fprintf(stderr, "amdgpu: amdgpu_query_firmware_version(uvd) failed.\n");
@@ -699,8 +693,6 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
 
    /* Add some margin of error, though this shouldn't be needed in theory. */
    info->all_vram_visible = info->vram_size * 0.9 < info->vram_vis_size;
-
-   util_cpu_detect();
 
    /* Set chip identification. */
    info->pci_id = amdinfo->asic_id; /* TODO: is this correct? */
@@ -832,14 +824,11 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
 
    info->vram_type = amdinfo->vram_type;
    info->vram_bit_width = amdinfo->vram_bit_width;
-   info->ce_ram_size = amdinfo->ce_ram_size;
 
    /* Set which chips have uncached device memory. */
    info->has_l2_uncached = info->chip_class >= GFX9;
 
    /* Set hardware information. */
-   info->gds_size = gds.gds_total_size;
-   info->gds_gfx_partition_size = gds.gds_gfx_partition_size;
    /* convert the shader/memory clocks from KHz to MHz */
    info->max_shader_clock = amdinfo->max_engine_clk / 1000;
    info->max_memory_clock = amdinfo->max_memory_clk / 1000;
@@ -1171,15 +1160,12 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
 
    if ((info->drm_minor >= 31 && (info->family == CHIP_RAVEN || info->family == CHIP_RAVEN2 ||
                                   info->family == CHIP_RENOIR)) ||
-       (info->drm_minor >= 34 && (info->family == CHIP_NAVI12 || info->family == CHIP_NAVI14)) ||
        info->chip_class >= GFX10_3) {
       if (info->max_render_backends == 1)
          info->use_display_dcc_unaligned = true;
       else
          info->use_display_dcc_with_retile_blit = true;
    }
-
-   info->has_gds_ordered_append = info->chip_class >= GFX7 && info->drm_minor >= 29;
 
    info->has_stable_pstate = info->drm_minor >= 45;
 
@@ -1250,6 +1236,13 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
    info->has_3d_cube_border_color_mipmap = info->has_graphics || info->family == CHIP_ARCTURUS;
    info->never_stop_sq_perf_counters = info->chip_class == GFX10 ||
                                        info->chip_class == GFX10_3;
+   info->has_sqtt_rb_harvest_bug = (info->family == CHIP_DIMGREY_CAVEFISH ||
+                                    info->family == CHIP_BEIGE_GOBY ||
+                                    info->family == CHIP_YELLOW_CARP ||
+                                    info->family == CHIP_VANGOGH) &&
+                                   util_bitcount(info->enabled_rb_mask) !=
+                                   info->max_render_backends;
+
    info->max_sgpr_alloc = info->family == CHIP_TONGA || info->family == CHIP_ICELAND ? 96 : 104;
 
    if (!info->has_graphics && info->family >= CHIP_ALDEBARAN) {
@@ -1265,6 +1258,15 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
    info->num_physical_wave64_vgprs_per_simd = info->chip_class >= GFX10 ? 512 : 256;
    info->num_simd_per_compute_unit = info->chip_class >= GFX10 ? 2 : 4;
 
+   /* The maximum number of scratch waves. The number is only a function of the number of CUs.
+    * It should be large enough to hold at least 1 threadgroup. Use the minimum per-SA CU count.
+    *
+    * We can decrease the number to make it fit into the infinity cache.
+    */
+   const unsigned max_waves_per_tg = 32; /* 1024 threads in Wave32 */
+   info->max_scratch_waves = MAX2(32 * info->min_good_cu_per_sa * info->max_sa_per_se * info->num_se,
+                                  max_waves_per_tg);
+
    set_custom_cu_en_mask(info);
 
    const char *ib_filename = debug_get_option("AMD_PARSE_IB", NULL);
@@ -1272,13 +1274,18 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
 	   FILE *f = fopen(ib_filename, "r");
 	   if (f) {
 		   fseek(f, 0, SEEK_END);
-		   int size = ftell(f);
+         size_t size = ftell(f);
 		   uint32_t *ib = (uint32_t *)malloc(size);
 		   fseek(f, 0, SEEK_SET);
-		   fread(ib, 1, size, f);
-		   fclose(f);
+         size_t n_read = fread(ib, 1, size, f);
+         fclose(f);
 
-		   ac_parse_ib(stdout, ib, size / 4, NULL, 0, "IB", info->chip_class, NULL, NULL);
+         if (n_read != size) {
+            fprintf(stderr, "failed to read %zu bytes from '%s'\n", size, ib_filename);
+            exit(1);
+         }
+
+         ac_parse_ib(stdout, ib, size / 4, NULL, 0, "IB", info->chip_class, NULL, NULL);
 		   free(ib);
 		   exit(0);
 	   }
@@ -1358,6 +1365,7 @@ void ac_print_gpu_info(struct radeon_info *info, FILE *f)
    fprintf(f, "    has_32bit_predication = %i\n", info->has_32bit_predication);
    fprintf(f, "    has_3d_cube_border_color_mipmap = %i\n", info->has_3d_cube_border_color_mipmap);
    fprintf(f, "    never_stop_sq_perf_counters = %i\n", info->never_stop_sq_perf_counters);
+   fprintf(f, "    has_sqtt_rb_harvest_bug = %i\n", info->has_sqtt_rb_harvest_bug);
 
    fprintf(f, "Display features:\n");
    fprintf(f, "    use_display_dcc_unaligned = %u\n", info->use_display_dcc_unaligned);
@@ -1371,8 +1379,6 @@ void ac_print_gpu_info(struct radeon_info *info, FILE *f)
    fprintf(f, "    vram_vis_size = %i MB\n", (int)DIV_ROUND_UP(info->vram_vis_size, 1024 * 1024));
    fprintf(f, "    vram_type = %i\n", info->vram_type);
    fprintf(f, "    vram_bit_width = %i\n", info->vram_bit_width);
-   fprintf(f, "    gds_size = %u kB\n", info->gds_size / 1024);
-   fprintf(f, "    gds_gfx_partition_size = %u kB\n", info->gds_gfx_partition_size / 1024);
    fprintf(f, "    max_alloc_size = %i MB\n", (int)DIV_ROUND_UP(info->max_alloc_size, 1024 * 1024));
    fprintf(f, "    min_alloc_size = %u\n", info->min_alloc_size);
    fprintf(f, "    address32_hi = 0x%x\n", info->address32_hi);
@@ -1388,7 +1394,6 @@ void ac_print_gpu_info(struct radeon_info *info, FILE *f)
    fprintf(f, "    lds_alloc_granularity = %i\n", info->lds_alloc_granularity);
    fprintf(f, "    lds_encode_granularity = %i\n", info->lds_encode_granularity);
    fprintf(f, "    max_memory_clock = %i MHz\n", info->max_memory_clock);
-   fprintf(f, "    ce_ram_size = %i\n", info->ce_ram_size);
    fprintf(f, "    l1_cache_size = %i\n", info->l1_cache_size);
    fprintf(f, "    l2_cache_size = %i\n", info->l2_cache_size);
 
@@ -1401,8 +1406,6 @@ void ac_print_gpu_info(struct radeon_info *info, FILE *f)
    fprintf(f, "    mec_fw_feature = %i\n", info->mec_fw_feature);
    fprintf(f, "    pfp_fw_version = %i\n", info->pfp_fw_version);
    fprintf(f, "    pfp_fw_feature = %i\n", info->pfp_fw_feature);
-   fprintf(f, "    ce_fw_version = %i\n", info->ce_fw_version);
-   fprintf(f, "    ce_fw_feature = %i\n", info->ce_fw_feature);
 
    fprintf(f, "Multimedia info:\n");
    fprintf(f, "    uvd_decode = %u\n", info->has_video_hw.uvd_decode);
@@ -1435,7 +1438,6 @@ void ac_print_gpu_info(struct radeon_info *info, FILE *f)
    fprintf(f, "    has_sparse_vm_mappings = %u\n", info->has_sparse_vm_mappings);
    fprintf(f, "    has_2d_tiling = %u\n", info->has_2d_tiling);
    fprintf(f, "    has_read_registers_query = %u\n", info->has_read_registers_query);
-   fprintf(f, "    has_gds_ordered_append = %u\n", info->has_gds_ordered_append);
    fprintf(f, "    has_stable_pstate = %u\n", info->has_stable_pstate);
    fprintf(f, "    has_scheduled_fence_dependency = %u\n", info->has_scheduled_fence_dependency);
    fprintf(f, "    mid_command_buffer_preemption_enabled = %u\n",
@@ -1469,6 +1471,7 @@ void ac_print_gpu_info(struct radeon_info *info, FILE *f)
    fprintf(f, "    min_wave64_vgpr_alloc = %i\n", info->min_wave64_vgpr_alloc);
    fprintf(f, "    max_vgpr_alloc = %i\n", info->max_vgpr_alloc);
    fprintf(f, "    wave64_vgpr_alloc_granularity = %i\n", info->wave64_vgpr_alloc_granularity);
+   fprintf(f, "    max_scratch_waves = %i\n", info->max_scratch_waves);
 
    fprintf(f, "Render backend info:\n");
    fprintf(f, "    pa_sc_tile_steering_override = 0x%x\n", info->pa_sc_tile_steering_override);

@@ -424,7 +424,7 @@ static int gpir_glsl_type_size(enum glsl_base_type type)
 }
 
 static void gpir_print_shader_db(struct nir_shader *nir, gpir_compiler *comp,
-                                 struct pipe_debug_callback *debug)
+                                 struct util_debug_callback *debug)
 {
    const struct shader_info *info = &nir->info;
    char *shaderdb;
@@ -440,12 +440,12 @@ static void gpir_print_shader_db(struct nir_shader *nir, gpir_compiler *comp,
    if (lima_debug & LIMA_DEBUG_SHADERDB)
       fprintf(stderr, "SHADER-DB: %s\n", shaderdb);
 
-   pipe_debug_message(debug, SHADER_INFO, "%s", shaderdb);
+   util_debug_message(debug, SHADER_INFO, "%s", shaderdb);
    free(shaderdb);
 }
 
 bool gpir_compile_nir(struct lima_vs_compiled_shader *prog, struct nir_shader *nir,
-                      struct pipe_debug_callback *debug)
+                      struct util_debug_callback *debug)
 {
    nir_function_impl *func = nir_shader_get_entrypoint(nir);
    gpir_compiler *comp = gpir_compiler_create(prog, func->reg_alloc, func->ssa_alloc);

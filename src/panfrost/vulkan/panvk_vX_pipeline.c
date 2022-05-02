@@ -162,6 +162,12 @@ static VkResult
 panvk_pipeline_builder_upload_shaders(struct panvk_pipeline_builder *builder,
                                       struct panvk_pipeline *pipeline)
 {
+   /* In some cases, the optimized shader is empty. Don't bother allocating
+    * anything in this case.
+    */
+   if (builder->shader_total_size == 0)
+      return VK_SUCCESS;
+
    struct panfrost_bo *bin_bo =
       panfrost_bo_create(&builder->device->physical_device->pdev,
                          builder->shader_total_size, PAN_BO_EXECUTE,
@@ -243,6 +249,9 @@ panvk_pipeline_builder_alloc_static_state_bo(struct panvk_pipeline_builder *buil
             break;
          case PAN_SYSVAL_SSBO:
             pipeline->sysvals[i].dirty_mask |= PANVK_DYNAMIC_SSBO;
+            break;
+         case PAN_SYSVAL_VERTEX_INSTANCE_OFFSETS:
+            pipeline->sysvals[i].dirty_mask |= PANVK_DYNAMIC_VERTEX_INSTANCE_OFFSETS;
             break;
          default:
             break;
@@ -332,8 +341,13 @@ panvk_pipeline_builder_init_shaders(struct panvk_pipeline_builder *builder,
       if (i == MESA_SHADER_VERTEX && shader->info.vs.writes_point_size)
          pipeline->ia.writes_point_size = true;
 
-      mali_ptr shader_ptr = pipeline->binary_bo->ptr.gpu +
-                            builder->stages[i].shader_offset;
+      mali_ptr shader_ptr = 0;
+
+      /* Handle empty shaders gracefully */
+      if (util_dynarray_num_elements(&builder->shaders[i]->binary, uint8_t)) {
+         shader_ptr = pipeline->binary_bo->ptr.gpu +
+                      builder->stages[i].shader_offset;
+      }
 
       void *rsd = pipeline->state_bo->ptr.cpu + builder->stages[i].rsd_offset;
       mali_ptr gpu_rsd = pipeline->state_bo->ptr.gpu + builder->stages[i].rsd_offset;
@@ -685,6 +699,9 @@ static void
 panvk_pipeline_builder_parse_zs(struct panvk_pipeline_builder *builder,
                                 struct panvk_pipeline *pipeline)
 {
+   if (!builder->use_depth_stencil_attachment)
+      return;
+
    pipeline->zs.z_test = builder->create_info.gfx->pDepthStencilState->depthTestEnable;
    pipeline->zs.z_write = builder->create_info.gfx->pDepthStencilState->depthWriteEnable;
    pipeline->zs.z_compare_func =
@@ -733,6 +750,7 @@ panvk_pipeline_builder_parse_rast(struct panvk_pipeline_builder *builder,
    pipeline->rast.front_ccw = builder->create_info.gfx->pRasterizationState->frontFace == VK_FRONT_FACE_COUNTER_CLOCKWISE;
    pipeline->rast.cull_front_face = builder->create_info.gfx->pRasterizationState->cullMode & VK_CULL_MODE_FRONT_BIT;
    pipeline->rast.cull_back_face = builder->create_info.gfx->pRasterizationState->cullMode & VK_CULL_MODE_BACK_BIT;
+   pipeline->rast.line_width = builder->create_info.gfx->pRasterizationState->lineWidth;
 }
 
 static bool
@@ -869,25 +887,45 @@ panvk_pipeline_builder_parse_vertex_input(struct panvk_pipeline_builder *builder
    const VkPipelineVertexInputStateCreateInfo *info =
       builder->create_info.gfx->pVertexInputState;
 
+   const VkPipelineVertexInputDivisorStateCreateInfoEXT *div_info =
+      vk_find_struct_const(info->pNext,
+                           PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT);
+
    for (unsigned i = 0; i < info->vertexBindingDescriptionCount; i++) {
       const VkVertexInputBindingDescription *desc =
          &info->pVertexBindingDescriptions[i];
       attribs->buf_count = MAX2(desc->binding + 1, attribs->buf_count);
       attribs->buf[desc->binding].stride = desc->stride;
+      attribs->buf[desc->binding].per_instance =
+         desc->inputRate == VK_VERTEX_INPUT_RATE_INSTANCE;
+      attribs->buf[desc->binding].instance_divisor = 1;
       attribs->buf[desc->binding].special = false;
    }
 
-   for (unsigned i = 0; i < info->vertexAttributeDescriptionCount; i++) {
-      const VkVertexInputAttributeDescription *desc =
-         &info->pVertexAttributeDescriptions[i];
-      attribs->attrib[desc->location].buf = desc->binding;
-      attribs->attrib[desc->location].format =
-         vk_format_to_pipe_format(desc->format);
-      attribs->attrib[desc->location].offset = desc->offset;
+   if (div_info) {
+      for (unsigned i = 0; i < div_info->vertexBindingDivisorCount; i++) {
+         const VkVertexInputBindingDivisorDescriptionEXT *div =
+            &div_info->pVertexBindingDivisors[i];
+         attribs->buf[div->binding].instance_divisor = div->divisor;
+      }
    }
 
    const struct pan_shader_info *vs =
       &builder->shaders[MESA_SHADER_VERTEX]->info;
+
+   for (unsigned i = 0; i < info->vertexAttributeDescriptionCount; i++) {
+      const VkVertexInputAttributeDescription *desc =
+         &info->pVertexAttributeDescriptions[i];
+
+      unsigned attrib = desc->location + VERT_ATTRIB_GENERIC0;
+      unsigned slot = util_bitcount64(vs->attributes_read &
+                                      BITFIELD64_MASK(attrib));
+
+      attribs->attrib[slot].buf = desc->binding;
+      attribs->attrib[slot].format =
+         vk_format_to_pipe_format(desc->format);
+      attribs->attrib[slot].offset = desc->offset;
+   }
 
    if (vs->attribute_count >= PAN_VERTEX_ID) {
       attribs->buf[attribs->buf_count].special = true;

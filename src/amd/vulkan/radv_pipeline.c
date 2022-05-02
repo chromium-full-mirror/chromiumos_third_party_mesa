@@ -37,6 +37,7 @@
 #include "radv_meta.h"
 #include "radv_private.h"
 #include "radv_shader.h"
+#include "radv_shader_args.h"
 #include "vk_util.h"
 
 #include "util/debug.h"
@@ -59,6 +60,7 @@ struct radv_blend_state {
    uint32_t spi_shader_col_format;
    uint32_t col_format_is_int8;
    uint32_t col_format_is_int10;
+   uint32_t col_format_is_float32;
    uint32_t cb_shader_mask;
    uint32_t db_alpha_to_mask;
 
@@ -87,57 +89,58 @@ struct radv_dsa_order_invariance {
 };
 
 static bool
-radv_is_state_dynamic(const VkGraphicsPipelineCreateInfo *pCreateInfo, VkDynamicState state)
+radv_is_raster_enabled(const struct radv_pipeline *pipeline,
+                       const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
-   if (pCreateInfo->pDynamicState) {
-      uint32_t count = pCreateInfo->pDynamicState->dynamicStateCount;
-      for (uint32_t i = 0; i < count; i++) {
-         if (pCreateInfo->pDynamicState->pDynamicStates[i] == state)
-            return true;
-      }
-   }
+   return !pCreateInfo->pRasterizationState->rasterizerDiscardEnable ||
+          (pipeline->graphics.dynamic_states & RADV_DYNAMIC_RASTERIZER_DISCARD_ENABLE);
+}
 
-   return false;
+static bool
+radv_is_vrs_enabled(const struct radv_pipeline *pipeline,
+                    const VkGraphicsPipelineCreateInfo *pCreateInfo)
+{
+   return vk_find_struct_const(pCreateInfo->pNext, PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR) ||
+          (pipeline->graphics.dynamic_states & RADV_DYNAMIC_FRAGMENT_SHADING_RATE);
 }
 
 static const VkPipelineMultisampleStateCreateInfo *
-radv_pipeline_get_multisample_state(const VkGraphicsPipelineCreateInfo *pCreateInfo)
+radv_pipeline_get_multisample_state(const struct radv_pipeline *pipeline,
+                                    const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
-   if (!pCreateInfo->pRasterizationState->rasterizerDiscardEnable ||
-       radv_is_state_dynamic(pCreateInfo, VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT))
+   if (radv_is_raster_enabled(pipeline, pCreateInfo))
       return pCreateInfo->pMultisampleState;
    return NULL;
 }
 
 static const VkPipelineTessellationStateCreateInfo *
-radv_pipeline_get_tessellation_state(const VkGraphicsPipelineCreateInfo *pCreateInfo)
+radv_pipeline_get_tessellation_state(const struct radv_pipeline *pipeline,
+                                     const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
-   for (uint32_t i = 0; i < pCreateInfo->stageCount; i++) {
-      if (pCreateInfo->pStages[i].stage == VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT ||
-          pCreateInfo->pStages[i].stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT) {
-         return pCreateInfo->pTessellationState;
-      }
-   }
+   const VkShaderStageFlagBits tess_stages = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+                                             VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+
+   if ((pipeline->active_stages & tess_stages) == tess_stages)
+      return pCreateInfo->pTessellationState;
    return NULL;
 }
 
 static bool
 radv_pipeline_has_ds_attachments(const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
-   const VkPipelineRenderingCreateInfoKHR *render_create_info =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO_KHR);
-   return render_create_info &&
-          (render_create_info->depthAttachmentFormat != VK_FORMAT_UNDEFINED ||
+   const VkPipelineRenderingCreateInfo *render_create_info =
+      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO);
+   return (render_create_info->depthAttachmentFormat != VK_FORMAT_UNDEFINED ||
            render_create_info->stencilAttachmentFormat != VK_FORMAT_UNDEFINED);
 }
 
 static const VkPipelineDepthStencilStateCreateInfo *
-radv_pipeline_get_depth_stencil_state(const VkGraphicsPipelineCreateInfo *pCreateInfo)
+radv_pipeline_get_depth_stencil_state(const struct radv_pipeline *pipeline,
+                                      const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    bool has_ds_att = radv_pipeline_has_ds_attachments(pCreateInfo);
 
-   if ((!pCreateInfo->pRasterizationState->rasterizerDiscardEnable && has_ds_att) ||
-       radv_is_state_dynamic(pCreateInfo, VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT))
+   if (radv_is_raster_enabled(pipeline, pCreateInfo) && has_ds_att)
       return pCreateInfo->pDepthStencilState;
    return NULL;
 }
@@ -145,26 +148,24 @@ radv_pipeline_get_depth_stencil_state(const VkGraphicsPipelineCreateInfo *pCreat
 static bool
 radv_pipeline_has_color_attachments(const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
-   const VkPipelineRenderingCreateInfoKHR *render_create_info =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO_KHR);
+   const VkPipelineRenderingCreateInfo *render_create_info =
+      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO);
 
-   if (render_create_info) {
-      for (uint32_t i = 0; i < render_create_info->colorAttachmentCount; ++i) {
-         if (render_create_info->pColorAttachmentFormats[i] != VK_FORMAT_UNDEFINED)
-            return true;
-      }
+   for (uint32_t i = 0; i < render_create_info->colorAttachmentCount; ++i) {
+      if (render_create_info->pColorAttachmentFormats[i] != VK_FORMAT_UNDEFINED)
+         return true;
    }
 
    return false;
 }
 
 static const VkPipelineColorBlendStateCreateInfo *
-radv_pipeline_get_color_blend_state(const VkGraphicsPipelineCreateInfo *pCreateInfo)
+radv_pipeline_get_color_blend_state(const struct radv_pipeline *pipeline,
+                                    const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    bool has_color_att = radv_pipeline_has_color_attachments(pCreateInfo);
 
-   if ((!pCreateInfo->pRasterizationState->rasterizerDiscardEnable && has_color_att) ||
-       radv_is_state_dynamic(pCreateInfo, VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT))
+   if (radv_is_raster_enabled(pipeline, pCreateInfo) && has_color_att)
       return pCreateInfo->pColorBlendState;
    return NULL;
 }
@@ -239,6 +240,11 @@ radv_pipeline_destroy(struct radv_device *device, struct radv_pipeline *pipeline
       free(pipeline->compute.rt_stack_sizes);
    } else if (pipeline->type == RADV_PIPELINE_LIBRARY) {
       free(pipeline->library.groups);
+      for (uint32_t i = 0; i < pipeline->library.stage_count; i++) {
+         RADV_FROM_HANDLE(vk_shader_module, module, pipeline->library.stages[i].module);
+         vk_object_base_finish(&module->base);
+         ralloc_free(module);
+      }
       free(pipeline->library.stages);
    }
 
@@ -529,37 +535,47 @@ format_is_int10(VkFormat format)
    return false;
 }
 
+static bool
+format_is_float32(VkFormat format)
+{
+   const struct util_format_description *desc = vk_format_description(format);
+   int channel = vk_format_get_first_non_void_channel(format);
+
+   return channel >= 0 &&
+          desc->channel[channel].type == UTIL_FORMAT_TYPE_FLOAT && desc->channel[channel].size == 32;
+}
+
 static void
 radv_pipeline_compute_spi_color_formats(const struct radv_pipeline *pipeline,
                                         const VkGraphicsPipelineCreateInfo *pCreateInfo,
                                         struct radv_blend_state *blend)
 {
-   const VkPipelineRenderingCreateInfoKHR *render_create_info =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO_KHR);
-   unsigned col_format = 0, is_int8 = 0, is_int10 = 0;
+   const VkPipelineRenderingCreateInfo *render_create_info =
+      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO);
+   unsigned col_format = 0, is_int8 = 0, is_int10 = 0, is_float32 = 0;
    unsigned num_targets;
 
-   if (render_create_info) {
-      for (unsigned i = 0; i < render_create_info->colorAttachmentCount; ++i) {
-         unsigned cf;
-         VkFormat fmt = render_create_info->pColorAttachmentFormats[i];
+   for (unsigned i = 0; i < render_create_info->colorAttachmentCount; ++i) {
+      unsigned cf;
+      VkFormat fmt = render_create_info->pColorAttachmentFormats[i];
 
-         if (fmt == VK_FORMAT_UNDEFINED || !(blend->cb_target_mask & (0xfu << (i * 4)))) {
-            cf = V_028714_SPI_SHADER_ZERO;
-         } else {
-            bool blend_enable = blend->blend_enable_4bit & (0xfu << (i * 4));
+      if (fmt == VK_FORMAT_UNDEFINED || !(blend->cb_target_mask & (0xfu << (i * 4)))) {
+         cf = V_028714_SPI_SHADER_ZERO;
+      } else {
+         bool blend_enable = blend->blend_enable_4bit & (0xfu << (i * 4));
 
-            cf = radv_choose_spi_color_format(pipeline->device, fmt, blend_enable,
-                                              blend->need_src_alpha & (1 << i));
+         cf = radv_choose_spi_color_format(pipeline->device, fmt, blend_enable,
+                                           blend->need_src_alpha & (1 << i));
 
-            if (format_is_int8(fmt))
-               is_int8 |= 1 << i;
-            if (format_is_int10(fmt))
-               is_int10 |= 1 << i;
-         }
-
-         col_format |= cf << (4 * i);
+         if (format_is_int8(fmt))
+            is_int8 |= 1 << i;
+         if (format_is_int10(fmt))
+            is_int10 |= 1 << i;
+         if (format_is_float32(fmt))
+            is_float32 |= 1 << i;
       }
+
+      col_format |= cf << (4 * i);
    }
 
    if (!(col_format & 0xf) && blend->need_src_alpha & (1 << 0)) {
@@ -592,6 +608,7 @@ radv_pipeline_compute_spi_color_formats(const struct radv_pipeline *pipeline,
    blend->spi_shader_col_format = col_format;
    blend->col_format_is_int8 = is_int8;
    blend->col_format_is_int10 = is_int10;
+   blend->col_format_is_float32 = is_float32;
 }
 
 /*
@@ -670,9 +687,9 @@ radv_pipeline_init_blend_state(struct radv_pipeline *pipeline,
                                const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    const VkPipelineColorBlendStateCreateInfo *vkblend =
-      radv_pipeline_get_color_blend_state(pCreateInfo);
+      radv_pipeline_get_color_blend_state(pipeline, pCreateInfo);
    const VkPipelineMultisampleStateCreateInfo *vkms =
-      radv_pipeline_get_multisample_state(pCreateInfo);
+      radv_pipeline_get_multisample_state(pipeline, pCreateInfo);
    struct radv_blend_state blend = {0};
    unsigned cb_color_control = 0;
    int i;
@@ -866,9 +883,9 @@ radv_pipeline_color_samples(const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    const VkAttachmentSampleCountInfoAMD *sample_info =
       vk_find_struct_const(pCreateInfo->pNext, ATTACHMENT_SAMPLE_COUNT_INFO_AMD);
-   const VkPipelineRenderingCreateInfoKHR *render_create_info =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO_KHR);
-   if (sample_info && render_create_info && sample_info->colorAttachmentCount > 0) {
+   const VkPipelineRenderingCreateInfo *render_create_info =
+      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO);
+   if (sample_info && sample_info->colorAttachmentCount > 0) {
       unsigned samples = 1;
       for (uint32_t i = 0; i < sample_info->colorAttachmentCount; ++i) {
          if (render_create_info->pColorAttachmentFormats[i] != VK_FORMAT_UNDEFINED) {
@@ -886,11 +903,8 @@ radv_pipeline_depth_samples(const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    const VkAttachmentSampleCountInfoAMD *sample_info =
       vk_find_struct_const(pCreateInfo->pNext, ATTACHMENT_SAMPLE_COUNT_INFO_AMD);
-   const VkPipelineRenderingCreateInfoKHR *render_create_info =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO_KHR);
-   if (sample_info && render_create_info) {
-      if (render_create_info->depthAttachmentFormat != VK_FORMAT_UNDEFINED ||
-          render_create_info->stencilAttachmentFormat != VK_FORMAT_UNDEFINED) {
+   if (sample_info) {
+      if (radv_pipeline_has_ds_attachments(pCreateInfo)) {
          return sample_info->depthStencilAttachmentSamples;
       }
    }
@@ -969,20 +983,13 @@ radv_order_invariant_stencil_state(const VkStencilOpState *state)
 }
 
 static bool
-radv_pipeline_has_dynamic_ds_states(const VkGraphicsPipelineCreateInfo *pCreateInfo)
+radv_pipeline_has_dynamic_ds_states(const struct radv_pipeline *pipeline)
 {
-   VkDynamicState ds_states[] = {
-      VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT,
-      VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT,  VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT,
-      VK_DYNAMIC_STATE_STENCIL_OP_EXT,
-   };
-
-   for (uint32_t i = 0; i < ARRAY_SIZE(ds_states); i++) {
-      if (radv_is_state_dynamic(pCreateInfo, ds_states[i]))
-         return true;
-   }
-
-   return false;
+   return !!(pipeline->graphics.dynamic_states & (RADV_DYNAMIC_DEPTH_TEST_ENABLE |
+                                                  RADV_DYNAMIC_DEPTH_WRITE_ENABLE |
+                                                  RADV_DYNAMIC_DEPTH_COMPARE_OP |
+                                                  RADV_DYNAMIC_STENCIL_TEST_ENABLE |
+                                                  RADV_DYNAMIC_STENCIL_OP));
 }
 
 static bool
@@ -990,12 +997,12 @@ radv_pipeline_out_of_order_rast(struct radv_pipeline *pipeline,
                                 const struct radv_blend_state *blend,
                                 const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
-   const VkPipelineRenderingCreateInfoKHR *render_create_info =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO_KHR);
+   const VkPipelineRenderingCreateInfo *render_create_info =
+      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO);
    const VkPipelineDepthStencilStateCreateInfo *vkds =
-      radv_pipeline_get_depth_stencil_state(pCreateInfo);
+      radv_pipeline_get_depth_stencil_state(pipeline, pCreateInfo);
    const VkPipelineColorBlendStateCreateInfo *vkblend =
-      radv_pipeline_get_color_blend_state(pCreateInfo);
+      radv_pipeline_get_color_blend_state(pipeline, pCreateInfo);
    unsigned colormask = blend->cb_target_enabled_4bit;
 
    if (!pipeline->device->physical_device->out_of_order_rast_allowed)
@@ -1009,15 +1016,14 @@ radv_pipeline_out_of_order_rast(struct radv_pipeline *pipeline,
     * enabled because the driver can't update out-of-order rasterization
     * dynamically.
     */
-   if (radv_pipeline_has_dynamic_ds_states(pCreateInfo))
+   if (radv_pipeline_has_dynamic_ds_states(pipeline))
       return false;
 
    /* Default depth/stencil invariance when no attachment is bound. */
    struct radv_dsa_order_invariance dsa_order_invariant = {.zs = true, .pass_set = true};
 
    if (vkds) {
-      bool has_stencil =
-         render_create_info && render_create_info->stencilAttachmentFormat != VK_FORMAT_UNDEFINED;
+      bool has_stencil = render_create_info->stencilAttachmentFormat != VK_FORMAT_UNDEFINED;
       struct radv_dsa_order_invariance order_invariance[2];
       struct radv_shader *ps = pipeline->shaders[MESA_SHADER_FRAGMENT];
 
@@ -1103,7 +1109,7 @@ radv_pipeline_init_multisample_state(struct radv_pipeline *pipeline,
                                      const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    const VkPipelineMultisampleStateCreateInfo *vkms =
-      radv_pipeline_get_multisample_state(pCreateInfo);
+      radv_pipeline_get_multisample_state(pipeline, pCreateInfo);
    struct radv_multisample_state *ms = &pipeline->graphics.ms;
    unsigned num_tile_pipes = pipeline->device->physical_device->rad_info.num_tile_pipes;
    const VkConservativeRasterizationModeEXT mode =
@@ -1230,7 +1236,7 @@ gfx103_pipeline_init_vrs_state(struct radv_pipeline *pipeline,
                                const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    const VkPipelineMultisampleStateCreateInfo *vkms =
-      radv_pipeline_get_multisample_state(pCreateInfo);
+      radv_pipeline_get_multisample_state(pipeline, pCreateInfo);
    struct radv_shader *ps = pipeline->shaders[MESA_SHADER_FRAGMENT];
    struct radv_multisample_state *ms = &pipeline->graphics.ms;
    struct radv_vrs_state *vrs = &pipeline->graphics.vrs;
@@ -1260,21 +1266,21 @@ gfx103_pipeline_init_vrs_state(struct radv_pipeline *pipeline,
 }
 
 static bool
-radv_prim_can_use_guardband(enum VkPrimitiveTopology topology)
+radv_prim_can_use_guardband(uint32_t topology)
 {
    switch (topology) {
-   case VK_PRIMITIVE_TOPOLOGY_POINT_LIST:
-   case VK_PRIMITIVE_TOPOLOGY_LINE_LIST:
-   case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP:
-   case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY:
-   case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY:
+   case V_008958_DI_PT_POINTLIST:
+   case V_008958_DI_PT_LINELIST:
+   case V_008958_DI_PT_LINESTRIP:
+   case V_008958_DI_PT_LINELIST_ADJ:
+   case V_008958_DI_PT_LINESTRIP_ADJ:
       return false;
-   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:
-   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP:
-   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN:
-   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY:
-   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY:
-   case VK_PRIMITIVE_TOPOLOGY_PATCH_LIST:
+   case V_008958_DI_PT_TRILIST:
+   case V_008958_DI_PT_TRISTRIP:
+   case V_008958_DI_PT_TRIFAN:
+   case V_008958_DI_PT_TRILIST_ADJ:
+   case V_008958_DI_PT_TRISTRIP_ADJ:
+   case V_008958_DI_PT_PATCH:
       return true;
    default:
       unreachable("unhandled primitive type");
@@ -1323,10 +1329,10 @@ radv_dynamic_state_mask(VkDynamicState state)
 {
    switch (state) {
    case VK_DYNAMIC_STATE_VIEWPORT:
-   case VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT_EXT:
+   case VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT:
       return RADV_DYNAMIC_VIEWPORT;
    case VK_DYNAMIC_STATE_SCISSOR:
-   case VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT_EXT:
+   case VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT:
       return RADV_DYNAMIC_SCISSOR;
    case VK_DYNAMIC_STATE_LINE_WIDTH:
       return RADV_DYNAMIC_LINE_WIDTH;
@@ -1348,37 +1354,37 @@ radv_dynamic_state_mask(VkDynamicState state)
       return RADV_DYNAMIC_SAMPLE_LOCATIONS;
    case VK_DYNAMIC_STATE_LINE_STIPPLE_EXT:
       return RADV_DYNAMIC_LINE_STIPPLE;
-   case VK_DYNAMIC_STATE_CULL_MODE_EXT:
+   case VK_DYNAMIC_STATE_CULL_MODE:
       return RADV_DYNAMIC_CULL_MODE;
-   case VK_DYNAMIC_STATE_FRONT_FACE_EXT:
+   case VK_DYNAMIC_STATE_FRONT_FACE:
       return RADV_DYNAMIC_FRONT_FACE;
-   case VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT:
+   case VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY:
       return RADV_DYNAMIC_PRIMITIVE_TOPOLOGY;
-   case VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT:
+   case VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE:
       return RADV_DYNAMIC_DEPTH_TEST_ENABLE;
-   case VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT:
+   case VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE:
       return RADV_DYNAMIC_DEPTH_WRITE_ENABLE;
-   case VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT:
+   case VK_DYNAMIC_STATE_DEPTH_COMPARE_OP:
       return RADV_DYNAMIC_DEPTH_COMPARE_OP;
-   case VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE_EXT:
+   case VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE:
       return RADV_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE;
-   case VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT:
+   case VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE:
       return RADV_DYNAMIC_STENCIL_TEST_ENABLE;
-   case VK_DYNAMIC_STATE_STENCIL_OP_EXT:
+   case VK_DYNAMIC_STATE_STENCIL_OP:
       return RADV_DYNAMIC_STENCIL_OP;
-   case VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT:
+   case VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE:
       return RADV_DYNAMIC_VERTEX_INPUT_BINDING_STRIDE;
    case VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR:
       return RADV_DYNAMIC_FRAGMENT_SHADING_RATE;
    case VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT:
       return RADV_DYNAMIC_PATCH_CONTROL_POINTS;
-   case VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT:
+   case VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE:
       return RADV_DYNAMIC_RASTERIZER_DISCARD_ENABLE;
-   case VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT:
+   case VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE:
       return RADV_DYNAMIC_DEPTH_BIAS_ENABLE;
    case VK_DYNAMIC_STATE_LOGIC_OP_EXT:
       return RADV_DYNAMIC_LOGIC_OP;
-   case VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT:
+   case VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE:
       return RADV_DYNAMIC_PRIMITIVE_RESTART_ENABLE;
    case VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT:
       return RADV_DYNAMIC_COLOR_WRITE_ENABLE;
@@ -1390,10 +1396,11 @@ radv_dynamic_state_mask(VkDynamicState state)
 }
 
 static bool
-radv_pipeline_is_blend_enabled(const VkGraphicsPipelineCreateInfo *pCreateInfo)
+radv_pipeline_is_blend_enabled(const struct radv_pipeline *pipeline,
+                               const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    const VkPipelineColorBlendStateCreateInfo *vkblend =
-      radv_pipeline_get_color_blend_state(pCreateInfo);
+      radv_pipeline_get_color_blend_state(pipeline, pCreateInfo);
 
    assert(vkblend);
 
@@ -1410,14 +1417,12 @@ radv_pipeline_needed_dynamic_state(const struct radv_pipeline *pipeline,
                                    const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    bool has_color_att = radv_pipeline_has_color_attachments(pCreateInfo);
-   bool has_static_rasterizer_discard =
-      pCreateInfo->pRasterizationState->rasterizerDiscardEnable &&
-      !radv_is_state_dynamic(pCreateInfo, VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT);
+   bool raster_enabled = radv_is_raster_enabled(pipeline, pCreateInfo);
    uint64_t states = RADV_DYNAMIC_ALL;
 
    /* Disable dynamic states that are useless to mesh shading. */
    if (radv_pipeline_has_mesh(pipeline)) {
-      if (has_static_rasterizer_discard)
+      if (!raster_enabled)
          return RADV_DYNAMIC_RASTERIZER_DISCARD_ENABLE;
 
       states &= ~(RADV_DYNAMIC_VERTEX_INPUT | RADV_DYNAMIC_VERTEX_INPUT_BINDING_STRIDE |
@@ -1429,24 +1434,24 @@ radv_pipeline_needed_dynamic_state(const struct radv_pipeline *pipeline,
     * except primitive topology, primitive restart enable, vertex
     * binding stride and rasterization discard itself.
     */
-   if (has_static_rasterizer_discard) {
+   if (!raster_enabled) {
       return RADV_DYNAMIC_PRIMITIVE_TOPOLOGY | RADV_DYNAMIC_VERTEX_INPUT_BINDING_STRIDE |
              RADV_DYNAMIC_PRIMITIVE_RESTART_ENABLE | RADV_DYNAMIC_RASTERIZER_DISCARD_ENABLE |
              RADV_DYNAMIC_VERTEX_INPUT;
    }
 
    if (!pCreateInfo->pRasterizationState->depthBiasEnable &&
-       !radv_is_state_dynamic(pCreateInfo, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT))
+       !(pipeline->graphics.dynamic_states & RADV_DYNAMIC_DEPTH_BIAS_ENABLE))
       states &= ~RADV_DYNAMIC_DEPTH_BIAS;
 
    if (!pCreateInfo->pDepthStencilState ||
        (!pCreateInfo->pDepthStencilState->depthBoundsTestEnable &&
-        !radv_is_state_dynamic(pCreateInfo, VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE_EXT)))
+        !(pipeline->graphics.dynamic_states & RADV_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE)))
       states &= ~RADV_DYNAMIC_DEPTH_BOUNDS;
 
    if (!pCreateInfo->pDepthStencilState ||
        (!pCreateInfo->pDepthStencilState->stencilTestEnable &&
-        !radv_is_state_dynamic(pCreateInfo, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT)))
+        !(pipeline->graphics.dynamic_states & RADV_DYNAMIC_STENCIL_TEST_ENABLE)))
       states &= ~(RADV_DYNAMIC_STENCIL_COMPARE_MASK | RADV_DYNAMIC_STENCIL_WRITE_MASK |
                   RADV_DYNAMIC_STENCIL_REFERENCE);
 
@@ -1467,12 +1472,10 @@ radv_pipeline_needed_dynamic_state(const struct radv_pipeline *pipeline,
          states &= ~RADV_DYNAMIC_LINE_STIPPLE;
    }
 
-   if (!vk_find_struct_const(pCreateInfo->pNext,
-                             PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR) &&
-       !radv_is_state_dynamic(pCreateInfo, VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR))
+   if (!radv_is_vrs_enabled(pipeline, pCreateInfo))
       states &= ~RADV_DYNAMIC_FRAGMENT_SHADING_RATE;
 
-   if (!has_color_att || !radv_pipeline_is_blend_enabled(pCreateInfo))
+   if (!has_color_att || !radv_pipeline_is_blend_enabled(pipeline, pCreateInfo))
       states &= ~RADV_DYNAMIC_BLEND_CONSTANTS;
 
    if (!has_color_att)
@@ -1562,15 +1565,137 @@ radv_compute_ia_multi_vgt_param_helpers(struct radv_pipeline *pipeline)
    return ia_multi_vgt_param;
 }
 
+static uint32_t
+radv_get_attrib_stride(const VkPipelineVertexInputStateCreateInfo *vi, uint32_t attrib_binding)
+{
+   for (uint32_t i = 0; i < vi->vertexBindingDescriptionCount; i++) {
+      const VkVertexInputBindingDescription *input_binding = &vi->pVertexBindingDescriptions[i];
+
+      if (input_binding->binding == attrib_binding)
+         return input_binding->stride;
+   }
+
+   return 0;
+}
+
+static struct radv_vertex_input_info
+radv_pipeline_init_vertex_input_interface(struct radv_pipeline *pipeline,
+                                          const VkGraphicsPipelineCreateInfo *pCreateInfo)
+{
+   const VkPipelineVertexInputStateCreateInfo *vi = pCreateInfo->pVertexInputState;
+   const VkPipelineInputAssemblyStateCreateInfo *ia = pCreateInfo->pInputAssemblyState;
+   struct radv_vertex_input_info vi_info = {0};
+
+   /* Vertex input interface structs have to be ignored if the pipeline includes a mesh shader. */
+   if (pipeline->active_stages & VK_SHADER_STAGE_MESH_BIT_NV)
+      return vi_info;
+
+   if (!(pipeline->graphics.dynamic_states & RADV_DYNAMIC_VERTEX_INPUT)) {
+      /* Vertex input */
+      const VkPipelineVertexInputDivisorStateCreateInfoEXT *divisor_state =
+         vk_find_struct_const(vi->pNext, PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT);
+
+      uint32_t binding_input_rate = 0;
+      uint32_t instance_rate_divisors[MAX_VERTEX_ATTRIBS];
+      for (unsigned i = 0; i < vi->vertexBindingDescriptionCount; ++i) {
+         const VkVertexInputBindingDescription *desc = &vi->pVertexBindingDescriptions[i];
+
+         if (desc->inputRate) {
+            unsigned binding = vi->pVertexBindingDescriptions[i].binding;
+            binding_input_rate |= 1u << binding;
+            instance_rate_divisors[binding] = 1;
+         }
+
+         vi_info.binding_stride[desc->binding] = desc->stride;
+      }
+
+      if (divisor_state) {
+         for (unsigned i = 0; i < divisor_state->vertexBindingDivisorCount; ++i) {
+            instance_rate_divisors[divisor_state->pVertexBindingDivisors[i].binding] =
+               divisor_state->pVertexBindingDivisors[i].divisor;
+         }
+      }
+
+      for (unsigned i = 0; i < vi->vertexAttributeDescriptionCount; ++i) {
+         const VkVertexInputAttributeDescription *desc = &vi->pVertexAttributeDescriptions[i];
+         const struct util_format_description *format_desc;
+         unsigned location = desc->location;
+         unsigned binding = desc->binding;
+         unsigned num_format, data_format;
+         bool post_shuffle;
+
+         if (binding_input_rate & (1u << binding)) {
+            vi_info.instance_rate_inputs |= 1u << location;
+            vi_info.instance_rate_divisors[location] = instance_rate_divisors[binding];
+         }
+
+         format_desc = vk_format_description(desc->format);
+         radv_translate_vertex_format(pipeline->device->physical_device, desc->format, format_desc,
+                                      &data_format, &num_format, &post_shuffle,
+                                      &vi_info.vertex_alpha_adjust[location]);
+
+         vi_info.vertex_attribute_formats[location] = data_format | (num_format << 4);
+         vi_info.vertex_attribute_bindings[location] = desc->binding;
+         vi_info.vertex_attribute_offsets[location] = desc->offset;
+
+         const struct ac_data_format_info *dfmt_info = ac_get_data_format_info(data_format);
+         unsigned attrib_align =
+            dfmt_info->chan_byte_size ? dfmt_info->chan_byte_size : dfmt_info->element_size;
+
+         /* If desc->offset is misaligned, then the buffer offset must be too. Just
+          * skip updating vertex_binding_align in this case.
+          */
+         if (desc->offset % attrib_align == 0)
+            vi_info.vertex_binding_align[desc->binding] =
+               MAX2(vi_info.vertex_binding_align[desc->binding], attrib_align);
+
+         if (!(pipeline->graphics.dynamic_states & RADV_DYNAMIC_VERTEX_INPUT_BINDING_STRIDE)) {
+            /* From the Vulkan spec 1.2.157:
+             *
+             * "If the bound pipeline state object was created
+             *  with the
+             *  VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE
+             *  dynamic state enabled then pStrides[i] specifies
+             *  the distance in bytes between two consecutive
+             *  elements within the corresponding buffer. In this
+             *  case the VkVertexInputBindingDescription::stride
+             *  state from the pipeline state object is ignored."
+             *
+             * Make sure the vertex attribute stride is zero to
+             * avoid computing a wrong offset if it's initialized
+             * to something else than zero.
+             */
+            vi_info.vertex_attribute_strides[location] = radv_get_attrib_stride(vi, desc->binding);
+         }
+
+         if (post_shuffle)
+            vi_info.vertex_post_shuffle |= 1 << location;
+
+         uint32_t end = desc->offset + vk_format_get_blocksize(desc->format);
+         vi_info.attrib_ends[desc->location] = end;
+         if (vi_info.binding_stride[desc->binding])
+            vi_info.attrib_index_offset[desc->location] =
+               desc->offset / vi_info.binding_stride[desc->binding];
+         vi_info.attrib_bindings[desc->location] = desc->binding;
+      }
+   }
+
+   /* Input assembly */
+   vi_info.primitive_topology = si_translate_prim(ia->topology);
+   vi_info.primitive_restart_enable = !!ia->primitiveRestartEnable;
+
+   return vi_info;
+}
+
 static void
 radv_pipeline_init_input_assembly_state(struct radv_pipeline *pipeline,
-                                        const VkGraphicsPipelineCreateInfo *pCreateInfo)
+                                        const VkGraphicsPipelineCreateInfo *pCreateInfo,
+                                        const struct radv_vertex_input_info *vi_info)
 {
-   const VkPipelineInputAssemblyStateCreateInfo *ia_state = pCreateInfo->pInputAssemblyState;
    struct radv_shader *tes = pipeline->shaders[MESA_SHADER_TESS_EVAL];
    struct radv_shader *gs = pipeline->shaders[MESA_SHADER_GEOMETRY];
 
-   pipeline->graphics.can_use_guardband = radv_prim_can_use_guardband(ia_state->topology);
+   pipeline->graphics.can_use_guardband = radv_prim_can_use_guardband(vi_info->primitive_topology);
 
    if (radv_pipeline_has_gs(pipeline)) {
       if (si_conv_gl_prim_to_gs_out(gs->info.gs.output_prim) == V_028A6C_TRISTRIP)
@@ -1586,7 +1711,8 @@ radv_pipeline_init_input_assembly_state(struct radv_pipeline *pipeline,
 
 static void
 radv_pipeline_init_dynamic_state(struct radv_pipeline *pipeline,
-                                 const VkGraphicsPipelineCreateInfo *pCreateInfo)
+                                 const VkGraphicsPipelineCreateInfo *pCreateInfo,
+                                 const struct radv_vertex_input_info *vi_info)
 {
    uint64_t needed_states = radv_pipeline_needed_dynamic_state(pipeline, pCreateInfo);
    uint64_t states = needed_states;
@@ -1594,12 +1720,7 @@ radv_pipeline_init_dynamic_state(struct radv_pipeline *pipeline,
    pipeline->dynamic_state = default_dynamic_state;
    pipeline->graphics.needed_dynamic_state = needed_states;
 
-   if (pCreateInfo->pDynamicState) {
-      /* Remove all of the states that are marked as dynamic */
-      uint32_t count = pCreateInfo->pDynamicState->dynamicStateCount;
-      for (uint32_t s = 0; s < count; s++)
-         states &= ~radv_dynamic_state_mask(pCreateInfo->pDynamicState->pDynamicStates[s]);
-   }
+   states &= ~pipeline->graphics.dynamic_states;
 
    struct radv_dynamic_state *dynamic = &pipeline->dynamic_state;
 
@@ -1656,7 +1777,7 @@ radv_pipeline_init_dynamic_state(struct radv_pipeline *pipeline,
    }
 
    if (states & RADV_DYNAMIC_PRIMITIVE_TOPOLOGY) {
-      dynamic->primitive_topology = si_translate_prim(pCreateInfo->pInputAssemblyState->topology);
+      dynamic->primitive_topology = vi_info->primitive_topology;
    }
 
    /* If there is no depthstencil attachment, then don't read
@@ -1784,8 +1905,7 @@ radv_pipeline_init_dynamic_state(struct radv_pipeline *pipeline,
    }
 
    if (states & RADV_DYNAMIC_PRIMITIVE_RESTART_ENABLE) {
-      dynamic->primitive_restart_enable =
-         !!pCreateInfo->pInputAssemblyState->primitiveRestartEnable;
+      dynamic->primitive_restart_enable = vi_info->primitive_restart_enable;
    }
 
    if (states & RADV_DYNAMIC_RASTERIZER_DISCARD_ENABLE) {
@@ -1858,7 +1978,7 @@ radv_pipeline_init_raster_state(struct radv_pipeline *pipeline,
    }
 
    pipeline->graphics.pa_cl_clip_cntl =
-      S_028810_DX_CLIP_SPACE_DEF(1) | // vulkan uses DX conventions.
+      S_028810_DX_CLIP_SPACE_DEF(!pipeline->graphics.negative_one_to_one) |
       S_028810_ZCLIP_NEAR_DISABLE(depth_clip_disable ? 1 : 0) |
       S_028810_ZCLIP_FAR_DISABLE(depth_clip_disable ? 1 : 0) |
       S_028810_DX_RASTERIZATION_KILL(raster_info->rasterizerDiscardEnable ? 1 : 0) |
@@ -1869,22 +1989,35 @@ radv_pipeline_init_raster_state(struct radv_pipeline *pipeline,
          VK_CONSERVATIVE_RASTERIZATION_MODE_OVERESTIMATE_EXT;
 }
 
+static void
+radv_pipeline_init_viewport_state(struct radv_pipeline *pipeline,
+                                  const VkGraphicsPipelineCreateInfo *pCreateInfo)
+{
+   if (!radv_is_raster_enabled(pipeline, pCreateInfo))
+      return;
+
+   const VkPipelineViewportDepthClipControlCreateInfoEXT *depth_clip_control =
+      vk_find_struct_const(pCreateInfo->pViewportState->pNext,
+                           PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT);
+   if (depth_clip_control) {
+      pipeline->graphics.negative_one_to_one = !!depth_clip_control->negativeOneToOne;
+   }
+}
+
 static struct radv_depth_stencil_state
 radv_pipeline_init_depth_stencil_state(struct radv_pipeline *pipeline,
                                        const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    const VkPipelineDepthStencilStateCreateInfo *ds_info =
-      radv_pipeline_get_depth_stencil_state(pCreateInfo);
-   const VkPipelineRenderingCreateInfoKHR *render_create_info =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO_KHR);
+      radv_pipeline_get_depth_stencil_state(pipeline, pCreateInfo);
+   const VkPipelineRenderingCreateInfo *render_create_info =
+      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO);
    struct radv_shader *ps = pipeline->shaders[MESA_SHADER_FRAGMENT];
    struct radv_depth_stencil_state ds_state = {0};
    uint32_t db_depth_control = 0;
 
-   bool has_depth_attachment =
-      render_create_info && render_create_info->depthAttachmentFormat != VK_FORMAT_UNDEFINED;
-   bool has_stencil_attachment =
-      render_create_info && render_create_info->stencilAttachmentFormat != VK_FORMAT_UNDEFINED;
+   bool has_depth_attachment = render_create_info->depthAttachmentFormat != VK_FORMAT_UNDEFINED;
+   bool has_stencil_attachment = render_create_info->stencilAttachmentFormat != VK_FORMAT_UNDEFINED;
 
    if (ds_info) {
       if (has_depth_attachment) {
@@ -1933,24 +2066,24 @@ radv_pipeline_init_depth_stencil_state(struct radv_pipeline *pipeline,
 
 static void
 gfx9_get_gs_info(const struct radv_pipeline_key *key, const struct radv_pipeline *pipeline,
-                 nir_shader **nir, struct radv_shader_info *infos, struct gfx9_gs_info *out)
+                 struct radv_pipeline_stage *stages, struct gfx9_gs_info *out)
 {
-   struct radv_shader_info *gs_info = &infos[MESA_SHADER_GEOMETRY];
+   struct radv_shader_info *gs_info = &stages[MESA_SHADER_GEOMETRY].info;
    struct radv_es_output_info *es_info;
-   bool has_tess = !!nir[MESA_SHADER_TESS_CTRL];
+   bool has_tess = !!stages[MESA_SHADER_TESS_CTRL].nir;
    if (pipeline->device->physical_device->rad_info.chip_class >= GFX9)
       es_info = has_tess ? &gs_info->tes.es_info : &gs_info->vs.es_info;
    else
-      es_info = has_tess ? &infos[MESA_SHADER_TESS_EVAL].tes.es_info
-                         : &infos[MESA_SHADER_VERTEX].vs.es_info;
+      es_info = has_tess ? &stages[MESA_SHADER_TESS_EVAL].info.tes.es_info
+                         : &stages[MESA_SHADER_VERTEX].info.vs.es_info;
 
    unsigned gs_num_invocations = MAX2(gs_info->gs.invocations, 1);
    bool uses_adjacency;
    switch (key->vs.topology) {
-   case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY:
-   case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY:
-   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY:
-   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY:
+   case V_008958_DI_PT_LINELIST_ADJ:
+   case V_008958_DI_PT_LINESTRIP_ADJ:
+   case V_008958_DI_PT_TRILIST_ADJ:
+   case V_008958_DI_PT_TRISTRIP_ADJ:
       uses_adjacency = true;
       break;
    default:
@@ -2049,10 +2182,10 @@ gfx9_get_gs_info(const struct radv_pipeline_key *key, const struct radv_pipeline
    gl_shader_stage es_stage = has_tess ? MESA_SHADER_TESS_EVAL : MESA_SHADER_VERTEX;
    unsigned workgroup_size =
       ac_compute_esgs_workgroup_size(
-         pipeline->device->physical_device->rad_info.chip_class, infos[es_stage].wave_size,
+         pipeline->device->physical_device->rad_info.chip_class, stages[es_stage].info.wave_size,
          es_verts_per_subgroup, gs_inst_prims_in_subgroup);
-   infos[es_stage].workgroup_size = workgroup_size;
-   infos[MESA_SHADER_GEOMETRY].workgroup_size = workgroup_size;
+   stages[es_stage].info.workgroup_size = workgroup_size;
+   stages[MESA_SHADER_GEOMETRY].info.workgroup_size = workgroup_size;
 }
 
 static void
@@ -2066,16 +2199,16 @@ clamp_gsprims_to_esverts(unsigned *max_gsprims, unsigned max_esverts, unsigned m
 }
 
 static unsigned
-radv_get_num_input_vertices(nir_shader **nir)
+radv_get_num_input_vertices(const struct radv_pipeline_stage *stages)
 {
-   if (nir[MESA_SHADER_GEOMETRY]) {
-      nir_shader *gs = nir[MESA_SHADER_GEOMETRY];
+   if (stages[MESA_SHADER_GEOMETRY].nir) {
+      nir_shader *gs = stages[MESA_SHADER_GEOMETRY].nir;
 
       return gs->info.gs.vertices_in;
    }
 
-   if (nir[MESA_SHADER_TESS_CTRL]) {
-      nir_shader *tes = nir[MESA_SHADER_TESS_EVAL];
+   if (stages[MESA_SHADER_TESS_CTRL].nir) {
+      nir_shader *tes = stages[MESA_SHADER_TESS_EVAL].nir;
 
       if (tes->info.tess.point_mode)
          return 1;
@@ -2096,7 +2229,7 @@ gfx10_emit_ge_pc_alloc(struct radeon_cmdbuf *cs, enum chip_class chip_class, uin
 }
 
 static void
-gfx10_get_ngg_ms_info(nir_shader ** nir, struct radv_shader_info *infos, struct gfx10_ngg_info *ngg)
+gfx10_get_ngg_ms_info(struct radv_pipeline_stage *stage, struct gfx10_ngg_info *ngg)
 {
    /* Special case for mesh shader workgroups.
     *
@@ -2124,7 +2257,7 @@ gfx10_get_ngg_ms_info(nir_shader ** nir, struct radv_shader_info *infos, struct 
     * - with GS_FAST_LAUNCH=1 every lane's VGPRs are initialized to the same input vertex index
     *
     */
-   nir_shader *ms = nir[MESA_SHADER_MESH];
+   nir_shader *ms = stage->nir;
 
    ngg->enable_vertex_grouping = true;
    ngg->esgs_ring_size = 1;
@@ -2143,26 +2276,26 @@ gfx10_get_ngg_ms_info(nir_shader ** nir, struct radv_shader_info *infos, struct 
    unsigned api_workgroup_size =
       ac_compute_cs_workgroup_size(ms->info.workgroup_size, false, UINT32_MAX);
 
-   infos[MESA_SHADER_MESH].workgroup_size = MAX2(min_ngg_workgroup_size, api_workgroup_size);
+   stage->info.workgroup_size = MAX2(min_ngg_workgroup_size, api_workgroup_size);
 }
 
 static void
 gfx10_get_ngg_info(const struct radv_pipeline_key *key, struct radv_pipeline *pipeline,
-                   nir_shader **nir, struct radv_shader_info *infos, struct gfx10_ngg_info *ngg)
+                   struct radv_pipeline_stage *stages, struct gfx10_ngg_info *ngg)
 {
-   struct radv_shader_info *gs_info = &infos[MESA_SHADER_GEOMETRY];
+   struct radv_shader_info *gs_info = &stages[MESA_SHADER_GEOMETRY].info;
    struct radv_es_output_info *es_info =
-      nir[MESA_SHADER_TESS_CTRL] ? &gs_info->tes.es_info : &gs_info->vs.es_info;
-   unsigned gs_type = nir[MESA_SHADER_GEOMETRY] ? MESA_SHADER_GEOMETRY : MESA_SHADER_VERTEX;
-   unsigned max_verts_per_prim = radv_get_num_input_vertices(nir);
+      stages[MESA_SHADER_TESS_CTRL].nir ? &gs_info->tes.es_info : &gs_info->vs.es_info;
+   unsigned gs_type = stages[MESA_SHADER_GEOMETRY].nir ? MESA_SHADER_GEOMETRY : MESA_SHADER_VERTEX;
+   unsigned max_verts_per_prim = radv_get_num_input_vertices(stages);
    unsigned min_verts_per_prim = gs_type == MESA_SHADER_GEOMETRY ? max_verts_per_prim : 1;
-   unsigned gs_num_invocations = nir[MESA_SHADER_GEOMETRY] ? MAX2(gs_info->gs.invocations, 1) : 1;
+   unsigned gs_num_invocations = stages[MESA_SHADER_GEOMETRY].nir ? MAX2(gs_info->gs.invocations, 1) : 1;
    bool uses_adjacency;
    switch (key->vs.topology) {
-   case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY:
-   case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY:
-   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY:
-   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY:
+   case V_008958_DI_PT_LINELIST_ADJ:
+   case V_008958_DI_PT_LINESTRIP_ADJ:
+   case V_008958_DI_PT_TRILIST_ADJ:
+   case V_008958_DI_PT_TRISTRIP_ADJ:
       uses_adjacency = true;
       break;
    default:
@@ -2221,9 +2354,9 @@ gfx10_get_ngg_info(const struct radv_pipeline_key *key, struct radv_pipeline *pi
    } else {
       /* VS and TES. */
       /* LDS size for passing data from GS to ES. */
-      struct radv_streamout_info *so_info = nir[MESA_SHADER_TESS_CTRL]
-                                               ? &infos[MESA_SHADER_TESS_EVAL].so
-                                               : &infos[MESA_SHADER_VERTEX].so;
+      struct radv_streamout_info *so_info = stages[MESA_SHADER_TESS_CTRL].nir
+                                               ? &stages[MESA_SHADER_TESS_EVAL].info.so
+                                               : &stages[MESA_SHADER_VERTEX].info.so;
 
       if (so_info->num_outputs)
          esvert_lds_size = 4 * so_info->num_outputs + 1;
@@ -2232,7 +2365,7 @@ gfx10_get_ngg_info(const struct radv_pipeline_key *key, struct radv_pipeline *pi
        * corresponding to the ES thread of the provoking vertex. All
        * ES threads load and export PrimitiveID for their thread.
        */
-      if (!nir[MESA_SHADER_TESS_CTRL] && infos[MESA_SHADER_VERTEX].vs.outinfo.export_prim_id)
+      if (!stages[MESA_SHADER_TESS_CTRL].nir && stages[MESA_SHADER_VERTEX].info.vs.outinfo.export_prim_id)
          esvert_lds_size = MAX2(esvert_lds_size, 1);
    }
 
@@ -2276,8 +2409,8 @@ gfx10_get_ngg_info(const struct radv_pipeline_key *key, struct radv_pipeline *pi
       if (gs_type == MESA_SHADER_GEOMETRY) {
          wavesize = gs_info->wave_size;
       } else {
-         wavesize = nir[MESA_SHADER_TESS_CTRL] ? infos[MESA_SHADER_TESS_EVAL].wave_size
-                                               : infos[MESA_SHADER_VERTEX].wave_size;
+         wavesize = stages[MESA_SHADER_TESS_CTRL].nir ? stages[MESA_SHADER_TESS_EVAL].info.wave_size
+                                                      : stages[MESA_SHADER_VERTEX].info.wave_size;
       }
 
       do {
@@ -2368,12 +2501,12 @@ gfx10_get_ngg_info(const struct radv_pipeline_key *key, struct radv_pipeline *pi
 
    assert(ngg->hw_max_esverts >= min_esverts); /* HW limitation */
 
-   gl_shader_stage es_stage = nir[MESA_SHADER_TESS_CTRL] ? MESA_SHADER_TESS_EVAL : MESA_SHADER_VERTEX;
+   gl_shader_stage es_stage = stages[MESA_SHADER_TESS_CTRL].nir ? MESA_SHADER_TESS_EVAL : MESA_SHADER_VERTEX;
    unsigned workgroup_size =
       ac_compute_ngg_workgroup_size(
          max_esverts, max_gsprims * gs_num_invocations, max_out_vertices, prim_amp_factor);
-   infos[MESA_SHADER_GEOMETRY].workgroup_size = workgroup_size;
-   infos[es_stage].workgroup_size = workgroup_size;
+   stages[MESA_SHADER_GEOMETRY].info.workgroup_size = workgroup_size;
+   stages[es_stage].info.workgroup_size = workgroup_size;
 }
 
 static void
@@ -2495,39 +2628,110 @@ radv_lower_viewport_to_zero(nir_shader *nir)
    return false;
 }
 
+static nir_variable *
+find_layer_out_var(nir_shader *nir)
+{
+   nir_variable *var = nir_find_variable_with_location(nir, nir_var_shader_out, VARYING_SLOT_LAYER);
+   if (var != NULL)
+      return var;
+
+   var = nir_variable_create(nir, nir_var_shader_out, glsl_int_type(), "layer id");
+   var->data.per_primitive = nir->info.stage == MESA_SHADER_MESH;
+   var->data.location = VARYING_SLOT_LAYER;
+   var->data.interpolation = INTERP_MODE_NONE;
+
+   return var;
+}
+
+static bool
+radv_lower_multiview(nir_shader *nir)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   bool progress = false;
+
+   nir_builder b;
+   nir_builder_init(&b, impl);
+
+   /* Iterate in reverse order since there should be only one deref store to POS after
+    * lower_io_to_temporaries for vertex shaders and inject the layer there. For geometry shaders,
+    * the layer is injected right before every emit_vertex_with_counter.
+    */
+   nir_variable *layer = NULL;
+   nir_foreach_block_reverse(block, impl) {
+      nir_foreach_instr_reverse(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+
+         if (nir->info.stage == MESA_SHADER_GEOMETRY) {
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_emit_vertex_with_counter)
+               continue;
+
+            b.cursor = nir_before_instr(instr);
+         } else {
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_store_deref)
+               continue;
+
+            nir_variable *var = nir_intrinsic_get_var(intr, 0);
+            if (var->data.mode != nir_var_shader_out || var->data.location != VARYING_SLOT_POS)
+               continue;
+
+            b.cursor = nir_after_instr(instr);
+         }
+
+         if (!layer)
+            layer = find_layer_out_var(nir);
+
+         nir_store_var(&b, layer, nir_load_view_index(&b), 1);
+
+         /* Update outputs_written to reflect that the pass added a new output. */
+         nir->info.outputs_written |= BITFIELD64_BIT(VARYING_SLOT_LAYER);
+         if (nir->info.stage == MESA_SHADER_MESH)
+            nir->info.per_primitive_outputs |= BITFIELD64_BIT(VARYING_SLOT_LAYER);
+
+         progress = true;
+         if (nir->info.stage == MESA_SHADER_VERTEX)
+            return progress;
+      }
+   }
+
+   return progress;
+}
+
 static void
 radv_link_shaders(struct radv_pipeline *pipeline,
                   const struct radv_pipeline_key *pipeline_key,
-                  nir_shader **shaders,
+                  const struct radv_pipeline_stage *stages,
                   bool optimize_conservatively)
 {
    nir_shader *ordered_shaders[MESA_VULKAN_SHADER_STAGES];
    int shader_count = 0;
 
-   if (shaders[MESA_SHADER_FRAGMENT]) {
-      ordered_shaders[shader_count++] = shaders[MESA_SHADER_FRAGMENT];
+   if (stages[MESA_SHADER_FRAGMENT].nir) {
+      ordered_shaders[shader_count++] = stages[MESA_SHADER_FRAGMENT].nir;
    }
-   if (shaders[MESA_SHADER_GEOMETRY]) {
-      ordered_shaders[shader_count++] = shaders[MESA_SHADER_GEOMETRY];
+   if (stages[MESA_SHADER_GEOMETRY].nir) {
+      ordered_shaders[shader_count++] = stages[MESA_SHADER_GEOMETRY].nir;
    }
-   if (shaders[MESA_SHADER_TESS_EVAL]) {
-      ordered_shaders[shader_count++] = shaders[MESA_SHADER_TESS_EVAL];
+   if (stages[MESA_SHADER_TESS_EVAL].nir) {
+      ordered_shaders[shader_count++] = stages[MESA_SHADER_TESS_EVAL].nir;
    }
-   if (shaders[MESA_SHADER_TESS_CTRL]) {
-      ordered_shaders[shader_count++] = shaders[MESA_SHADER_TESS_CTRL];
+   if (stages[MESA_SHADER_TESS_CTRL].nir) {
+      ordered_shaders[shader_count++] = stages[MESA_SHADER_TESS_CTRL].nir;
    }
-   if (shaders[MESA_SHADER_VERTEX]) {
-      ordered_shaders[shader_count++] = shaders[MESA_SHADER_VERTEX];
+   if (stages[MESA_SHADER_VERTEX].nir) {
+      ordered_shaders[shader_count++] = stages[MESA_SHADER_VERTEX].nir;
    }
-   if (shaders[MESA_SHADER_MESH]) {
-      ordered_shaders[shader_count++] = shaders[MESA_SHADER_MESH];
+   if (stages[MESA_SHADER_MESH].nir) {
+      ordered_shaders[shader_count++] = stages[MESA_SHADER_MESH].nir;
    }
-   if (shaders[MESA_SHADER_COMPUTE]) {
-      ordered_shaders[shader_count++] = shaders[MESA_SHADER_COMPUTE];
+   if (stages[MESA_SHADER_COMPUTE].nir) {
+      ordered_shaders[shader_count++] = stages[MESA_SHADER_COMPUTE].nir;
    }
 
-   if (shaders[MESA_SHADER_MESH] && shaders[MESA_SHADER_FRAGMENT]) {
-      nir_shader *ps = shaders[MESA_SHADER_FRAGMENT];
+   if (stages[MESA_SHADER_MESH].nir && stages[MESA_SHADER_FRAGMENT].nir) {
+      nir_shader *ps = stages[MESA_SHADER_FRAGMENT].nir;
 
       nir_foreach_shader_in_variable(var, ps) {
          /* These variables are per-primitive when used with a mesh shader. */
@@ -2538,8 +2742,8 @@ radv_link_shaders(struct radv_pipeline *pipeline,
       }
    }
 
-   bool has_geom_tess = shaders[MESA_SHADER_GEOMETRY] || shaders[MESA_SHADER_TESS_CTRL];
-   bool merged_gs = shaders[MESA_SHADER_GEOMETRY] &&
+   bool has_geom_tess = stages[MESA_SHADER_GEOMETRY].nir || stages[MESA_SHADER_TESS_CTRL].nir;
+   bool merged_gs = stages[MESA_SHADER_GEOMETRY].nir &&
                     pipeline->device->physical_device->rad_info.chip_class >= GFX9;
 
    if (!optimize_conservatively && shader_count > 1) {
@@ -2598,7 +2802,7 @@ radv_link_shaders(struct radv_pipeline *pipeline,
 
    if (!optimize_conservatively) {
       bool uses_xfb = pipeline->graphics.last_vgt_api_stage != -1 &&
-                      radv_nir_stage_uses_xfb(shaders[pipeline->graphics.last_vgt_api_stage]);
+                      radv_nir_stage_uses_xfb(stages[pipeline->graphics.last_vgt_api_stage].nir);
 
       for (unsigned i = 0; i < shader_count; ++i) {
          shader_info *info = &ordered_shaders[i]->info;
@@ -2644,7 +2848,7 @@ radv_link_shaders(struct radv_pipeline *pipeline,
             ordered_shaders[i - 1]->info.inputs_read & VARYING_BIT_PSIZ;
          bool topology_uses_psiz =
             info->stage == pipeline->graphics.last_vgt_api_stage &&
-            ((info->stage == MESA_SHADER_VERTEX && pipeline_key->vs.topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST) ||
+            ((info->stage == MESA_SHADER_VERTEX && pipeline_key->vs.topology == V_008958_DI_PT_POINTLIST) ||
              (info->stage == MESA_SHADER_TESS_EVAL && info->tess.point_mode) ||
              (info->stage == MESA_SHADER_GEOMETRY && info->gs.output_primitive == SHADER_PRIM_POINTS) ||
              (info->stage == MESA_SHADER_MESH && info->mesh.primitive_type == SHADER_PRIM_POINTS));
@@ -2666,10 +2870,18 @@ radv_link_shaders(struct radv_pipeline *pipeline,
    }
 
    /* Lower the viewport index to zero when the last vertex stage doesn't export it. */
-   if (shaders[MESA_SHADER_FRAGMENT] &&
-       (shaders[MESA_SHADER_FRAGMENT]->info.inputs_read & VARYING_BIT_VIEWPORT) &&
-       !(shaders[pipeline->graphics.last_vgt_api_stage]->info.outputs_written & VARYING_BIT_VIEWPORT)) {
-      radv_lower_viewport_to_zero(shaders[MESA_SHADER_FRAGMENT]);
+   if (stages[MESA_SHADER_FRAGMENT].nir &&
+       (stages[MESA_SHADER_FRAGMENT].nir->info.inputs_read & VARYING_BIT_VIEWPORT) &&
+       !(stages[pipeline->graphics.last_vgt_api_stage].nir->info.outputs_written & VARYING_BIT_VIEWPORT)) {
+      radv_lower_viewport_to_zero(stages[MESA_SHADER_FRAGMENT].nir);
+   }
+
+   /* Export the layer in the last VGT stage if multiview is used. */
+   if (pipeline_key->has_multiview_view_index && pipeline->graphics.last_vgt_api_stage != -1 &&
+       !(stages[pipeline->graphics.last_vgt_api_stage].nir->info.outputs_written &
+         VARYING_BIT_LAYER)) {
+      nir_shader *last_vgt_shader = stages[pipeline->graphics.last_vgt_api_stage].nir;
+      radv_lower_multiview(last_vgt_shader);
    }
 
    for (int i = 1; !optimize_conservatively && (i < shader_count); ++i) {
@@ -2723,18 +2935,17 @@ radv_link_shaders(struct radv_pipeline *pipeline,
 }
 
 static void
-radv_set_driver_locations(struct radv_pipeline *pipeline, nir_shader **shaders,
-                          struct radv_shader_info infos[MESA_VULKAN_SHADER_STAGES])
+radv_set_driver_locations(struct radv_pipeline *pipeline, struct radv_pipeline_stage *stages)
 {
-   if (shaders[MESA_SHADER_FRAGMENT]) {
-      nir_foreach_shader_out_variable(var, shaders[MESA_SHADER_FRAGMENT])
+   if (stages[MESA_SHADER_FRAGMENT].nir) {
+      nir_foreach_shader_out_variable(var, stages[MESA_SHADER_FRAGMENT].nir)
       {
          var->data.driver_location = var->data.location + var->data.index;
       }
    }
 
-   if (shaders[MESA_SHADER_MESH]) {
-      nir_shader *ms = shaders[MESA_SHADER_MESH];
+   if (stages[MESA_SHADER_MESH].nir) {
+      nir_shader *ms = stages[MESA_SHADER_MESH].nir;
 
       /* Mesh shader output driver locations are set separately for per-vertex
        * and per-primitive outputs, because they are stored in separate LDS regions.
@@ -2746,7 +2957,7 @@ radv_set_driver_locations(struct radv_pipeline *pipeline, nir_shader **shaders,
       uint64_t per_primitive_mask =
          ms->info.per_primitive_outputs & ms->info.outputs_written & ~special_mask;
 
-      nir_foreach_shader_out_variable(var, shaders[MESA_SHADER_MESH])
+      nir_foreach_shader_out_variable(var, stages[MESA_SHADER_MESH].nir)
       {
          /* NV_mesh_shader:
           * These are not real outputs of the shader and require special handling.
@@ -2767,11 +2978,11 @@ radv_set_driver_locations(struct radv_pipeline *pipeline, nir_shader **shaders,
       return;
    }
 
-   if (!shaders[MESA_SHADER_VERTEX])
+   if (!stages[MESA_SHADER_VERTEX].nir)
       return;
 
-   bool has_tess = shaders[MESA_SHADER_TESS_CTRL];
-   bool has_gs = shaders[MESA_SHADER_GEOMETRY];
+   bool has_tess = stages[MESA_SHADER_TESS_CTRL].nir;
+   bool has_gs = stages[MESA_SHADER_GEOMETRY].nir;
 
    /* Merged stage for VS and TES */
    unsigned vs_info_idx = MESA_SHADER_VERTEX;
@@ -2783,189 +2994,115 @@ radv_set_driver_locations(struct radv_pipeline *pipeline, nir_shader **shaders,
       tes_info_idx = has_gs ? MESA_SHADER_GEOMETRY : MESA_SHADER_TESS_EVAL;
    }
 
-   nir_foreach_shader_in_variable (var, shaders[MESA_SHADER_VERTEX]) {
+   nir_foreach_shader_in_variable (var, stages[MESA_SHADER_VERTEX].nir) {
       var->data.driver_location = var->data.location;
    }
 
    if (has_tess) {
       nir_linked_io_var_info vs2tcs = nir_assign_linked_io_var_locations(
-         shaders[MESA_SHADER_VERTEX], shaders[MESA_SHADER_TESS_CTRL]);
+         stages[MESA_SHADER_VERTEX].nir, stages[MESA_SHADER_TESS_CTRL].nir);
       nir_linked_io_var_info tcs2tes = nir_assign_linked_io_var_locations(
-         shaders[MESA_SHADER_TESS_CTRL], shaders[MESA_SHADER_TESS_EVAL]);
+         stages[MESA_SHADER_TESS_CTRL].nir, stages[MESA_SHADER_TESS_EVAL].nir);
 
-      infos[MESA_SHADER_VERTEX].vs.num_linked_outputs = vs2tcs.num_linked_io_vars;
-      infos[MESA_SHADER_TESS_CTRL].tcs.num_linked_inputs = vs2tcs.num_linked_io_vars;
-      infos[MESA_SHADER_TESS_CTRL].tcs.num_linked_outputs = tcs2tes.num_linked_io_vars;
-      infos[MESA_SHADER_TESS_CTRL].tcs.num_linked_patch_outputs = tcs2tes.num_linked_patch_io_vars;
-      infos[MESA_SHADER_TESS_EVAL].tes.num_linked_inputs = tcs2tes.num_linked_io_vars;
-      infos[MESA_SHADER_TESS_EVAL].tes.num_linked_patch_inputs = tcs2tes.num_linked_patch_io_vars;
+      stages[MESA_SHADER_VERTEX].info.vs.num_linked_outputs = vs2tcs.num_linked_io_vars;
+      stages[MESA_SHADER_TESS_CTRL].info.tcs.num_linked_inputs = vs2tcs.num_linked_io_vars;
+      stages[MESA_SHADER_TESS_CTRL].info.tcs.num_linked_outputs = tcs2tes.num_linked_io_vars;
+      stages[MESA_SHADER_TESS_CTRL].info.tcs.num_linked_patch_outputs = tcs2tes.num_linked_patch_io_vars;
+      stages[MESA_SHADER_TESS_EVAL].info.tes.num_linked_inputs = tcs2tes.num_linked_io_vars;
+      stages[MESA_SHADER_TESS_EVAL].info.tes.num_linked_patch_inputs = tcs2tes.num_linked_patch_io_vars;
 
       /* Copy data to merged stage */
-      infos[vs_info_idx].vs.num_linked_outputs = vs2tcs.num_linked_io_vars;
-      infos[tes_info_idx].tes.num_linked_inputs = tcs2tes.num_linked_io_vars;
-      infos[tes_info_idx].tes.num_linked_patch_inputs = tcs2tes.num_linked_patch_io_vars;
+      stages[vs_info_idx].info.vs.num_linked_outputs = vs2tcs.num_linked_io_vars;
+      stages[tes_info_idx].info.tes.num_linked_inputs = tcs2tes.num_linked_io_vars;
+      stages[tes_info_idx].info.tes.num_linked_patch_inputs = tcs2tes.num_linked_patch_io_vars;
 
       if (has_gs) {
          nir_linked_io_var_info tes2gs = nir_assign_linked_io_var_locations(
-            shaders[MESA_SHADER_TESS_EVAL], shaders[MESA_SHADER_GEOMETRY]);
+            stages[MESA_SHADER_TESS_EVAL].nir, stages[MESA_SHADER_GEOMETRY].nir);
 
-         infos[MESA_SHADER_TESS_EVAL].tes.num_linked_outputs = tes2gs.num_linked_io_vars;
-         infos[MESA_SHADER_GEOMETRY].gs.num_linked_inputs = tes2gs.num_linked_io_vars;
+         stages[MESA_SHADER_TESS_EVAL].info.tes.num_linked_outputs = tes2gs.num_linked_io_vars;
+         stages[MESA_SHADER_GEOMETRY].info.gs.num_linked_inputs = tes2gs.num_linked_io_vars;
 
          /* Copy data to merged stage */
-         infos[tes_info_idx].tes.num_linked_outputs = tes2gs.num_linked_io_vars;
+         stages[tes_info_idx].info.tes.num_linked_outputs = tes2gs.num_linked_io_vars;
       }
    } else if (has_gs) {
       nir_linked_io_var_info vs2gs = nir_assign_linked_io_var_locations(
-         shaders[MESA_SHADER_VERTEX], shaders[MESA_SHADER_GEOMETRY]);
+         stages[MESA_SHADER_VERTEX].nir, stages[MESA_SHADER_GEOMETRY].nir);
 
-      infos[MESA_SHADER_VERTEX].vs.num_linked_outputs = vs2gs.num_linked_io_vars;
-      infos[MESA_SHADER_GEOMETRY].gs.num_linked_inputs = vs2gs.num_linked_io_vars;
+      stages[MESA_SHADER_VERTEX].info.vs.num_linked_outputs = vs2gs.num_linked_io_vars;
+      stages[MESA_SHADER_GEOMETRY].info.gs.num_linked_inputs = vs2gs.num_linked_io_vars;
 
       /* Copy data to merged stage */
-      infos[vs_info_idx].vs.num_linked_outputs = vs2gs.num_linked_io_vars;
+      stages[vs_info_idx].info.vs.num_linked_outputs = vs2gs.num_linked_io_vars;
    }
 
    assert(pipeline->graphics.last_vgt_api_stage != MESA_SHADER_NONE);
-   nir_foreach_shader_out_variable(var, shaders[pipeline->graphics.last_vgt_api_stage])
+   nir_foreach_shader_out_variable(var, stages[pipeline->graphics.last_vgt_api_stage].nir)
    {
       var->data.driver_location = var->data.location;
    }
 }
 
-static uint32_t
-radv_get_attrib_stride(const VkPipelineVertexInputStateCreateInfo *input_state,
-                       uint32_t attrib_binding)
+static struct radv_pipeline_key
+radv_generate_pipeline_key(const struct radv_pipeline *pipeline, VkPipelineCreateFlags flags)
 {
-   for (uint32_t i = 0; i < input_state->vertexBindingDescriptionCount; i++) {
-      const VkVertexInputBindingDescription *input_binding =
-         &input_state->pVertexBindingDescriptions[i];
+   struct radv_device *device = pipeline->device;
+   struct radv_pipeline_key key;
 
-      if (input_binding->binding == attrib_binding)
-         return input_binding->stride;
-   }
+   memset(&key, 0, sizeof(key));
 
-   return 0;
+   if (flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT)
+      key.optimisations_disabled = 1;
+
+   key.disable_aniso_single_level = device->instance->disable_aniso_single_level &&
+                                    device->physical_device->rad_info.chip_class < GFX8;
+
+   return key;
 }
 
 static struct radv_pipeline_key
 radv_generate_graphics_pipeline_key(const struct radv_pipeline *pipeline,
                                     const VkGraphicsPipelineCreateInfo *pCreateInfo,
+                                    const struct radv_vertex_input_info *vi_info,
                                     const struct radv_blend_state *blend)
 {
-   const VkPipelineRenderingCreateInfoKHR *render_create_info =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO_KHR);
-   bool uses_dynamic_stride = false;
+   struct radv_device *device = pipeline->device;
+   const VkPipelineRenderingCreateInfo *render_create_info =
+      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO);
 
-   struct radv_pipeline_key key;
-   memset(&key, 0, sizeof(key));
+   struct radv_pipeline_key key = radv_generate_pipeline_key(pipeline, pCreateInfo->flags);
 
-   if (pCreateInfo->flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT)
-      key.optimisations_disabled = 1;
+   key.has_multiview_view_index = !!render_create_info->viewMask;
 
-   key.has_multiview_view_index = render_create_info && !!render_create_info->viewMask;
-
-   if (pCreateInfo->pDynamicState) {
-      uint32_t count = pCreateInfo->pDynamicState->dynamicStateCount;
-      for (uint32_t i = 0; i < count; i++) {
-         if (pCreateInfo->pDynamicState->pDynamicStates[i] == VK_DYNAMIC_STATE_VERTEX_INPUT_EXT) {
-            key.vs.dynamic_input_state = true;
-            /* we don't care about use_dynamic_stride in this case */
-            break;
-         } else if (pCreateInfo->pDynamicState->pDynamicStates[i] ==
-                    VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT) {
-            uses_dynamic_stride = true;
-         }
-      }
+   if (pipeline->graphics.dynamic_states & RADV_DYNAMIC_VERTEX_INPUT) {
+      key.vs.dynamic_input_state = true;
    }
 
-   if (!key.vs.dynamic_input_state && pCreateInfo->pVertexInputState) {
-      const VkPipelineVertexInputStateCreateInfo *input_state = pCreateInfo->pVertexInputState;
-      const VkPipelineVertexInputDivisorStateCreateInfoEXT *divisor_state = vk_find_struct_const(
-         input_state->pNext, PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT);
+   /* Vertex input state */
+   key.vs.instance_rate_inputs = vi_info->instance_rate_inputs;
+   key.vs.vertex_post_shuffle = vi_info->vertex_post_shuffle;
 
-      uint32_t binding_input_rate = 0;
-      uint32_t instance_rate_divisors[MAX_VERTEX_ATTRIBS];
-      for (unsigned i = 0; i < input_state->vertexBindingDescriptionCount; ++i) {
-         if (input_state->pVertexBindingDescriptions[i].inputRate) {
-            unsigned binding = input_state->pVertexBindingDescriptions[i].binding;
-            binding_input_rate |= 1u << binding;
-            instance_rate_divisors[binding] = 1;
-         }
-      }
-      if (divisor_state) {
-         for (unsigned i = 0; i < divisor_state->vertexBindingDivisorCount; ++i) {
-            instance_rate_divisors[divisor_state->pVertexBindingDivisors[i].binding] =
-               divisor_state->pVertexBindingDivisors[i].divisor;
-         }
-      }
+   for (uint32_t i = 0; i < MAX_VERTEX_ATTRIBS; i++) {
+      key.vs.instance_rate_divisors[i] = vi_info->instance_rate_divisors[i];
+      key.vs.vertex_attribute_formats[i] = vi_info->vertex_attribute_formats[i];
+      key.vs.vertex_attribute_bindings[i] = vi_info->vertex_attribute_bindings[i];
+      key.vs.vertex_attribute_offsets[i] = vi_info->vertex_attribute_offsets[i];
+      key.vs.vertex_attribute_strides[i] = vi_info->vertex_attribute_strides[i];
+      key.vs.vertex_alpha_adjust[i] = vi_info->vertex_alpha_adjust[i];
+   }
 
-      for (unsigned i = 0; i < input_state->vertexAttributeDescriptionCount; ++i) {
-         const VkVertexInputAttributeDescription *desc =
-            &input_state->pVertexAttributeDescriptions[i];
-         const struct util_format_description *format_desc;
-         unsigned location = desc->location;
-         unsigned binding = desc->binding;
-         unsigned num_format, data_format;
-         bool post_shuffle;
-
-         if (binding_input_rate & (1u << binding)) {
-            key.vs.instance_rate_inputs |= 1u << location;
-            key.vs.instance_rate_divisors[location] = instance_rate_divisors[binding];
-         }
-
-         format_desc = vk_format_description(desc->format);
-         radv_translate_vertex_format(pipeline->device->physical_device, desc->format, format_desc,
-                                      &data_format, &num_format, &post_shuffle,
-                                      &key.vs.vertex_alpha_adjust[location]);
-
-         key.vs.vertex_attribute_formats[location] = data_format | (num_format << 4);
-         key.vs.vertex_attribute_bindings[location] = desc->binding;
-         key.vs.vertex_attribute_offsets[location] = desc->offset;
-
-         const struct ac_data_format_info *dfmt_info = ac_get_data_format_info(data_format);
-         unsigned attrib_align =
-            dfmt_info->chan_byte_size ? dfmt_info->chan_byte_size : dfmt_info->element_size;
-
-         /* If desc->offset is misaligned, then the buffer offset must be too. Just
-          * skip updating vertex_binding_align in this case.
-          */
-         if (desc->offset % attrib_align == 0)
-            key.vs.vertex_binding_align[desc->binding] =
-               MAX2(key.vs.vertex_binding_align[desc->binding], attrib_align);
-
-         if (!uses_dynamic_stride) {
-            /* From the Vulkan spec 1.2.157:
-             *
-             * "If the bound pipeline state object was created
-             *  with the
-             *  VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT
-             *  dynamic state enabled then pStrides[i] specifies
-             *  the distance in bytes between two consecutive
-             *  elements within the corresponding buffer. In this
-             *  case the VkVertexInputBindingDescription::stride
-             *  state from the pipeline state object is ignored."
-             *
-             * Make sure the vertex attribute stride is zero to
-             * avoid computing a wrong offset if it's initialized
-             * to something else than zero.
-             */
-            key.vs.vertex_attribute_strides[location] =
-               radv_get_attrib_stride(input_state, desc->binding);
-         }
-
-         if (post_shuffle)
-            key.vs.vertex_post_shuffle |= 1 << location;
-      }
+   for (uint32_t i = 0; i < MAX_VBS; i++) {
+      key.vs.vertex_binding_align[i] = vi_info->vertex_binding_align[i];
    }
 
    const VkPipelineTessellationStateCreateInfo *tess =
-      radv_pipeline_get_tessellation_state(pCreateInfo);
+      radv_pipeline_get_tessellation_state(pipeline, pCreateInfo);
    if (tess)
       key.tcs.tess_input_vertices = tess->patchControlPoints;
 
    const VkPipelineMultisampleStateCreateInfo *vkms =
-      radv_pipeline_get_multisample_state(pCreateInfo);
+      radv_pipeline_get_multisample_state(pipeline, pCreateInfo);
    if (vkms && vkms->rasterizationSamples > 1) {
       uint32_t num_samples = vkms->rasterizationSamples;
       uint32_t ps_iter_samples = radv_pipeline_get_ps_iter_samples(pCreateInfo);
@@ -2981,9 +3118,9 @@ radv_generate_graphics_pipeline_key(const struct radv_pipeline *pipeline,
       key.ps.is_int10 = blend->col_format_is_int10;
    }
 
-   if (pipeline->device->physical_device->rad_info.chip_class >= GFX10) {
-      key.vs.topology = pCreateInfo->pInputAssemblyState ? pCreateInfo->pInputAssemblyState->topology : 0;
+   key.vs.topology = vi_info->primitive_topology;
 
+   if (pipeline->device->physical_device->rad_info.chip_class >= GFX10) {
       const VkPipelineRasterizationStateCreateInfo *raster_info = pCreateInfo->pRasterizationState;
       const VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *provoking_vtx_info =
          vk_find_struct_const(raster_info->pNext,
@@ -2998,7 +3135,7 @@ radv_generate_graphics_pipeline_key(const struct radv_pipeline *pipeline,
       key.ps.lower_discard_to_demote = true;
 
    if (pipeline->device->instance->enable_mrt_output_nan_fixup)
-      key.ps.enable_mrt_output_nan_fixup = true;
+      key.ps.enable_mrt_output_nan_fixup = blend->col_format_is_float32;
 
 
    key.ps.force_vrs_enabled = pipeline->device->force_vrs_enabled;
@@ -3007,16 +3144,22 @@ radv_generate_graphics_pipeline_key(const struct radv_pipeline *pipeline,
       key.invariant_geom = true;
 
    key.use_ngg = pipeline->device->physical_device->use_ngg;
-   key.adjust_frag_coord_z = pipeline->device->adjust_frag_coord_z;
-   key.disable_aniso_single_level = pipeline->device->instance->disable_aniso_single_level &&
-                                    pipeline->device->physical_device->rad_info.chip_class < GFX8;
+
+   if ((radv_is_vrs_enabled(pipeline, pCreateInfo) || device->force_vrs_enabled) &&
+       (device->physical_device->rad_info.family == CHIP_SIENNA_CICHLID ||
+        device->physical_device->rad_info.family == CHIP_NAVY_FLOUNDER ||
+        device->physical_device->rad_info.family == CHIP_VANGOGH))
+      key.adjust_frag_coord_z = true;
+
+   if (device->instance->disable_sinking_load_input_fs)
+      key.disable_sinking_load_input_fs = true;
 
    return key;
 }
 
 static uint8_t
-radv_get_wave_size(struct radv_device *device, const VkPipelineShaderStageCreateInfo *pStage,
-                   gl_shader_stage stage, const struct radv_shader_info *info)
+radv_get_wave_size(struct radv_device *device,  gl_shader_stage stage,
+                   const struct radv_shader_info *info)
 {
    if (stage == MESA_SHADER_GEOMETRY && !info->is_ngg)
       return 64;
@@ -3029,8 +3172,8 @@ radv_get_wave_size(struct radv_device *device, const VkPipelineShaderStageCreate
 }
 
 static uint8_t
-radv_get_ballot_bit_size(struct radv_device *device, const VkPipelineShaderStageCreateInfo *pStage,
-                         gl_shader_stage stage, const struct radv_shader_info *info)
+radv_get_ballot_bit_size(struct radv_device *device, gl_shader_stage stage,
+                         const struct radv_shader_info *info)
 {
    if (stage == MESA_SHADER_COMPUTE && info->cs.subgroup_size)
       return info->cs.subgroup_size;
@@ -3040,7 +3183,7 @@ radv_get_ballot_bit_size(struct radv_device *device, const VkPipelineShaderStage
 static void
 radv_determine_ngg_settings(struct radv_pipeline *pipeline,
                             const struct radv_pipeline_key *pipeline_key,
-                            struct radv_shader_info *infos, nir_shader **nir)
+                            struct radv_pipeline_stage *stages)
 {
    struct radv_device *device = pipeline->device;
 
@@ -3048,105 +3191,105 @@ radv_determine_ngg_settings(struct radv_pipeline *pipeline,
    if (pipeline->graphics.last_vgt_api_stage == MESA_SHADER_VERTEX ||
        pipeline->graphics.last_vgt_api_stage == MESA_SHADER_TESS_EVAL) {
       uint64_t ps_inputs_read =
-         nir[MESA_SHADER_FRAGMENT] ? nir[MESA_SHADER_FRAGMENT]->info.inputs_read : 0;
+         stages[MESA_SHADER_FRAGMENT].nir ? stages[MESA_SHADER_FRAGMENT].nir->info.inputs_read : 0;
       gl_shader_stage es_stage = pipeline->graphics.last_vgt_api_stage;
 
       unsigned num_vertices_per_prim = si_conv_prim_to_gs_out(pipeline_key->vs.topology) + 1;
       if (es_stage == MESA_SHADER_TESS_EVAL)
-         num_vertices_per_prim = nir[es_stage]->info.tess.point_mode                      ? 1
-                                 : nir[es_stage]->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES ? 2
+         num_vertices_per_prim = stages[es_stage].nir->info.tess.point_mode                      ? 1
+                                 : stages[es_stage].nir->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES ? 2
                                                                                           : 3;
 
-      infos[es_stage].has_ngg_culling = radv_consider_culling(
-         device, nir[es_stage], ps_inputs_read, num_vertices_per_prim, &infos[es_stage]);
+      stages[es_stage].info.has_ngg_culling = radv_consider_culling(
+         device, stages[es_stage].nir, ps_inputs_read, num_vertices_per_prim, &stages[es_stage].info);
 
-      nir_function_impl *impl = nir_shader_get_entrypoint(nir[es_stage]);
-      infos[es_stage].has_ngg_early_prim_export = exec_list_is_singular(&impl->body);
+      nir_function_impl *impl = nir_shader_get_entrypoint(stages[es_stage].nir);
+      stages[es_stage].info.has_ngg_early_prim_export = exec_list_is_singular(&impl->body);
 
       /* Invocations that process an input vertex */
-      const struct gfx10_ngg_info *ngg_info = &infos[es_stage].ngg_info;
+      const struct gfx10_ngg_info *ngg_info = &stages[es_stage].info.ngg_info;
       unsigned max_vtx_in = MIN2(256, ngg_info->enable_vertex_grouping ? ngg_info->hw_max_esverts : num_vertices_per_prim * ngg_info->max_gsprims);
 
       unsigned lds_bytes_if_culling_off = 0;
       /* We need LDS space when VS needs to export the primitive ID. */
-      if (es_stage == MESA_SHADER_VERTEX && infos[es_stage].vs.outinfo.export_prim_id)
+      if (es_stage == MESA_SHADER_VERTEX && stages[es_stage].info.vs.outinfo.export_prim_id)
          lds_bytes_if_culling_off = max_vtx_in * 4u;
-      infos[es_stage].num_lds_blocks_when_not_culling =
+      stages[es_stage].info.num_lds_blocks_when_not_culling =
          DIV_ROUND_UP(lds_bytes_if_culling_off,
                       device->physical_device->rad_info.lds_encode_granularity);
 
       /* NGG passthrough mode should be disabled when culling and when the vertex shader exports the
        * primitive ID.
        */
-      infos[es_stage].is_ngg_passthrough = infos[es_stage].is_ngg_passthrough &&
-                                           !infos[es_stage].has_ngg_culling &&
-                                           !(es_stage == MESA_SHADER_VERTEX &&
-                                             infos[es_stage].vs.outinfo.export_prim_id);
+      stages[es_stage].info.is_ngg_passthrough = stages[es_stage].info.is_ngg_passthrough &&
+                                                !stages[es_stage].info.has_ngg_culling &&
+                                                 !(es_stage == MESA_SHADER_VERTEX &&
+                                                   stages[es_stage].info.vs.outinfo.export_prim_id);
    }
 }
 
 static void
 radv_fill_shader_info(struct radv_pipeline *pipeline,
                       struct radv_pipeline_layout *pipeline_layout,
-                      const VkPipelineShaderStageCreateInfo **pStages,
                       const struct radv_pipeline_key *pipeline_key,
-                      struct radv_shader_info *infos, nir_shader **nir)
+                      struct radv_pipeline_stage *stages)
 {
    struct radv_device *device = pipeline->device;
    unsigned active_stages = 0;
    unsigned filled_stages = 0;
 
    for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; i++) {
-      if (nir[i])
+      if (stages[i].nir)
          active_stages |= (1 << i);
    }
 
-   if (nir[MESA_SHADER_TESS_CTRL]) {
-      infos[MESA_SHADER_VERTEX].vs.as_ls = true;
+   if (stages[MESA_SHADER_TESS_CTRL].nir) {
+      stages[MESA_SHADER_VERTEX].info.vs.as_ls = true;
    }
 
-   if (nir[MESA_SHADER_GEOMETRY]) {
-      if (nir[MESA_SHADER_TESS_CTRL])
-         infos[MESA_SHADER_TESS_EVAL].tes.as_es = true;
+   if (stages[MESA_SHADER_GEOMETRY].nir) {
+      if (stages[MESA_SHADER_TESS_CTRL].nir)
+         stages[MESA_SHADER_TESS_EVAL].info.tes.as_es = true;
       else
-         infos[MESA_SHADER_VERTEX].vs.as_es = true;
+         stages[MESA_SHADER_VERTEX].info.vs.as_es = true;
    }
 
    if (pipeline_key->use_ngg) {
-      if (nir[MESA_SHADER_TESS_CTRL]) {
-         infos[MESA_SHADER_TESS_EVAL].is_ngg = true;
-      } else if (nir[MESA_SHADER_VERTEX]) {
-         infos[MESA_SHADER_VERTEX].is_ngg = true;
-      } else if (nir[MESA_SHADER_MESH]) {
-         infos[MESA_SHADER_MESH].is_ngg = true;
+      if (stages[MESA_SHADER_TESS_CTRL].nir) {
+         stages[MESA_SHADER_TESS_EVAL].info.is_ngg = true;
+      } else if (stages[MESA_SHADER_VERTEX].nir) {
+         stages[MESA_SHADER_VERTEX].info.is_ngg = true;
+      } else if (stages[MESA_SHADER_MESH].nir) {
+         stages[MESA_SHADER_MESH].info.is_ngg = true;
       }
 
-      if (nir[MESA_SHADER_TESS_CTRL] && nir[MESA_SHADER_GEOMETRY] &&
-          nir[MESA_SHADER_GEOMETRY]->info.gs.invocations *
-                nir[MESA_SHADER_GEOMETRY]->info.gs.vertices_out >
+      if (stages[MESA_SHADER_TESS_CTRL].nir && stages[MESA_SHADER_GEOMETRY].nir &&
+          stages[MESA_SHADER_GEOMETRY].nir->info.gs.invocations *
+                stages[MESA_SHADER_GEOMETRY].nir->info.gs.vertices_out >
              256) {
          /* Fallback to the legacy path if tessellation is
           * enabled with extreme geometry because
           * EN_MAX_VERT_OUT_PER_GS_INSTANCE doesn't work and it
           * might hang.
           */
-         infos[MESA_SHADER_TESS_EVAL].is_ngg = false;
+         stages[MESA_SHADER_TESS_EVAL].info.is_ngg = false;
       }
 
       gl_shader_stage last_xfb_stage = MESA_SHADER_VERTEX;
 
       for (int i = MESA_SHADER_VERTEX; i <= MESA_SHADER_GEOMETRY; i++) {
-         if (nir[i])
+         if (stages[i].nir)
             last_xfb_stage = i;
       }
 
-      bool uses_xfb = nir[last_xfb_stage] && radv_nir_stage_uses_xfb(nir[last_xfb_stage]);
+      bool uses_xfb = stages[last_xfb_stage].nir &&
+                      radv_nir_stage_uses_xfb(stages[last_xfb_stage].nir);
 
       if (!device->physical_device->use_ngg_streamout && uses_xfb) {
-         if (nir[MESA_SHADER_TESS_CTRL])
-           infos[MESA_SHADER_TESS_EVAL].is_ngg = false;
+         if (stages[MESA_SHADER_TESS_CTRL].nir)
+           stages[MESA_SHADER_TESS_EVAL].info.is_ngg = false;
          else
-           infos[MESA_SHADER_VERTEX].is_ngg = false;
+           stages[MESA_SHADER_VERTEX].info.is_ngg = false;
       }
 
       /* Determine if the pipeline is eligible for the NGG passthrough
@@ -3154,22 +3297,22 @@ radv_fill_shader_info(struct radv_pipeline *pipeline,
        * streamout or for vertex shaders that export the primitive ID
        * (this is checked later because we don't have the info here.)
        */
-      if (!nir[MESA_SHADER_GEOMETRY] && !uses_xfb) {
-         if (nir[MESA_SHADER_TESS_CTRL] && infos[MESA_SHADER_TESS_EVAL].is_ngg) {
-            infos[MESA_SHADER_TESS_EVAL].is_ngg_passthrough = true;
-         } else if (nir[MESA_SHADER_VERTEX] && infos[MESA_SHADER_VERTEX].is_ngg) {
-            infos[MESA_SHADER_VERTEX].is_ngg_passthrough = true;
+      if (!stages[MESA_SHADER_GEOMETRY].nir && !uses_xfb) {
+         if (stages[MESA_SHADER_TESS_CTRL].nir && stages[MESA_SHADER_TESS_EVAL].info.is_ngg) {
+            stages[MESA_SHADER_TESS_EVAL].info.is_ngg_passthrough = true;
+         } else if (stages[MESA_SHADER_VERTEX].nir && stages[MESA_SHADER_VERTEX].info.is_ngg) {
+            stages[MESA_SHADER_VERTEX].info.is_ngg_passthrough = true;
          }
       }
    }
 
-   if (nir[MESA_SHADER_FRAGMENT]) {
-      radv_nir_shader_info_init(&infos[MESA_SHADER_FRAGMENT]);
-      radv_nir_shader_info_pass(pipeline->device, nir[MESA_SHADER_FRAGMENT], pipeline_layout,
-                                pipeline_key, &infos[MESA_SHADER_FRAGMENT]);
+   if (stages[MESA_SHADER_FRAGMENT].nir) {
+      radv_nir_shader_info_init(&stages[MESA_SHADER_FRAGMENT].info);
+      radv_nir_shader_info_pass(pipeline->device, stages[MESA_SHADER_FRAGMENT].nir, pipeline_layout,
+                                pipeline_key, &stages[MESA_SHADER_FRAGMENT].info);
 
       assert(pipeline->graphics.last_vgt_api_stage != MESA_SHADER_NONE);
-      struct radv_shader_info *pre_ps_info = &infos[pipeline->graphics.last_vgt_api_stage];
+      struct radv_shader_info *pre_ps_info = &stages[pipeline->graphics.last_vgt_api_stage].info;
       struct radv_vs_output_info *outinfo = NULL;
       if (pipeline->graphics.last_vgt_api_stage == MESA_SHADER_VERTEX ||
           pipeline->graphics.last_vgt_api_stage == MESA_SHADER_GEOMETRY) {
@@ -3181,8 +3324,8 @@ radv_fill_shader_info(struct radv_pipeline *pipeline,
       }
 
       /* Add PS input requirements to the output of the pre-PS stage. */
-      bool ps_prim_id_in = infos[MESA_SHADER_FRAGMENT].ps.prim_id_input;
-      bool ps_clip_dists_in = !!infos[MESA_SHADER_FRAGMENT].ps.num_input_clips_culls;
+      bool ps_prim_id_in = stages[MESA_SHADER_FRAGMENT].info.ps.prim_id_input;
+      bool ps_clip_dists_in = !!stages[MESA_SHADER_FRAGMENT].info.ps.num_input_clips_culls;
 
       assert(outinfo);
       outinfo->export_clip_dists |= ps_clip_dists_in;
@@ -3197,17 +3340,17 @@ radv_fill_shader_info(struct radv_pipeline *pipeline,
    }
 
    if (pipeline->device->physical_device->rad_info.chip_class >= GFX9 &&
-       nir[MESA_SHADER_TESS_CTRL]) {
-      struct nir_shader *combined_nir[] = {nir[MESA_SHADER_VERTEX], nir[MESA_SHADER_TESS_CTRL]};
+       stages[MESA_SHADER_TESS_CTRL].nir) {
+      struct nir_shader *combined_nir[] = {stages[MESA_SHADER_VERTEX].nir, stages[MESA_SHADER_TESS_CTRL].nir};
 
-      radv_nir_shader_info_init(&infos[MESA_SHADER_TESS_CTRL]);
+      radv_nir_shader_info_init(&stages[MESA_SHADER_TESS_CTRL].info);
 
       /* Copy data to merged stage. */
-      infos[MESA_SHADER_TESS_CTRL].vs.as_ls = true;
+      stages[MESA_SHADER_TESS_CTRL].info.vs.as_ls = true;
 
       for (int i = 0; i < 2; i++) {
          radv_nir_shader_info_pass(pipeline->device, combined_nir[i], pipeline_layout, pipeline_key,
-                                   &infos[MESA_SHADER_TESS_CTRL]);
+                                   &stages[MESA_SHADER_TESS_CTRL].info);
       }
 
       filled_stages |= (1 << MESA_SHADER_VERTEX);
@@ -3215,25 +3358,25 @@ radv_fill_shader_info(struct radv_pipeline *pipeline,
    }
 
    if (pipeline->device->physical_device->rad_info.chip_class >= GFX9 &&
-       nir[MESA_SHADER_GEOMETRY]) {
+       stages[MESA_SHADER_GEOMETRY].nir) {
       gl_shader_stage pre_stage =
-         nir[MESA_SHADER_TESS_EVAL] ? MESA_SHADER_TESS_EVAL : MESA_SHADER_VERTEX;
-      struct nir_shader *combined_nir[] = {nir[pre_stage], nir[MESA_SHADER_GEOMETRY]};
+         stages[MESA_SHADER_TESS_EVAL].nir ? MESA_SHADER_TESS_EVAL : MESA_SHADER_VERTEX;
+      struct nir_shader *combined_nir[] = {stages[pre_stage].nir, stages[MESA_SHADER_GEOMETRY].nir};
 
-      radv_nir_shader_info_init(&infos[MESA_SHADER_GEOMETRY]);
+      radv_nir_shader_info_init(&stages[MESA_SHADER_GEOMETRY].info);
 
       /* Copy data to merged stage. */
       if (pre_stage == MESA_SHADER_VERTEX) {
-         infos[MESA_SHADER_GEOMETRY].vs.as_es = infos[MESA_SHADER_VERTEX].vs.as_es;
+         stages[MESA_SHADER_GEOMETRY].info.vs.as_es = stages[MESA_SHADER_VERTEX].info.vs.as_es;
       } else {
-         infos[MESA_SHADER_GEOMETRY].tes.as_es = infos[MESA_SHADER_TESS_EVAL].tes.as_es;
+         stages[MESA_SHADER_GEOMETRY].info.tes.as_es = stages[MESA_SHADER_TESS_EVAL].info.tes.as_es;
       }
-      infos[MESA_SHADER_GEOMETRY].is_ngg = infos[pre_stage].is_ngg;
-      infos[MESA_SHADER_GEOMETRY].gs.es_type = pre_stage;
+      stages[MESA_SHADER_GEOMETRY].info.is_ngg = stages[pre_stage].info.is_ngg;
+      stages[MESA_SHADER_GEOMETRY].info.gs.es_type = pre_stage;
 
       for (int i = 0; i < 2; i++) {
          radv_nir_shader_info_pass(pipeline->device, combined_nir[i], pipeline_layout, pipeline_key,
-                                   &infos[MESA_SHADER_GEOMETRY]);
+                                   &stages[MESA_SHADER_GEOMETRY].info);
       }
 
       filled_stages |= (1 << pre_stage);
@@ -3243,11 +3386,12 @@ radv_fill_shader_info(struct radv_pipeline *pipeline,
    active_stages ^= filled_stages;
    while (active_stages) {
       int i = u_bit_scan(&active_stages);
-      radv_nir_shader_info_init(&infos[i]);
-      radv_nir_shader_info_pass(pipeline->device, nir[i], pipeline_layout, pipeline_key, &infos[i]);
+      radv_nir_shader_info_init(&stages[i].info);
+      radv_nir_shader_info_pass(pipeline->device, stages[i].nir, pipeline_layout, pipeline_key,
+                                &stages[i].info);
    }
 
-   if (nir[MESA_SHADER_COMPUTE]) {
+   if (stages[MESA_SHADER_COMPUTE].nir) {
       unsigned subgroup_size = pipeline_key->cs.compute_subgroup_size;
       unsigned req_subgroup_size = subgroup_size;
       bool require_full_subgroups = pipeline_key->cs.require_full_subgroups;
@@ -3255,15 +3399,15 @@ radv_fill_shader_info(struct radv_pipeline *pipeline,
       if (!subgroup_size)
          subgroup_size = device->physical_device->cs_wave_size;
 
-      unsigned local_size = nir[MESA_SHADER_COMPUTE]->info.workgroup_size[0] *
-                            nir[MESA_SHADER_COMPUTE]->info.workgroup_size[1] *
-                            nir[MESA_SHADER_COMPUTE]->info.workgroup_size[2];
+      unsigned local_size = stages[MESA_SHADER_COMPUTE].nir->info.workgroup_size[0] *
+                            stages[MESA_SHADER_COMPUTE].nir->info.workgroup_size[1] *
+                            stages[MESA_SHADER_COMPUTE].nir->info.workgroup_size[2];
 
       /* Games don't always request full subgroups when they should,
        * which can cause bugs if cswave32 is enabled.
        */
       if (device->physical_device->cs_wave_size == 32 &&
-          nir[MESA_SHADER_COMPUTE]->info.cs.uses_wide_subgroup_intrinsics && !req_subgroup_size &&
+          stages[MESA_SHADER_COMPUTE].nir->info.cs.uses_wide_subgroup_intrinsics && !req_subgroup_size &&
           local_size % RADV_SUBGROUP_SIZE == 0)
          require_full_subgroups = true;
 
@@ -3272,28 +3416,81 @@ radv_fill_shader_info(struct radv_pipeline *pipeline,
          subgroup_size = RADV_SUBGROUP_SIZE;
       }
 
-      infos[MESA_SHADER_COMPUTE].cs.subgroup_size = subgroup_size;
+      stages[MESA_SHADER_COMPUTE].info.cs.subgroup_size = subgroup_size;
    }
 
    for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; i++) {
-      if (nir[i]) {
-         infos[i].wave_size = radv_get_wave_size(pipeline->device, pStages[i], i, &infos[i]);
-         infos[i].ballot_bit_size =
-            radv_get_ballot_bit_size(pipeline->device, pStages[i], i, &infos[i]);
+      if (stages[i].nir) {
+         stages[i].info.wave_size = radv_get_wave_size(pipeline->device, i, &stages[i].info);
+         stages[i].info.ballot_bit_size = radv_get_ballot_bit_size(pipeline->device, i, &stages[i].info);
       }
    }
 
    /* PS always operates without workgroups. */
-   if (nir[MESA_SHADER_FRAGMENT])
-      infos[MESA_SHADER_FRAGMENT].workgroup_size = infos[MESA_SHADER_FRAGMENT].wave_size;
+   if (stages[MESA_SHADER_FRAGMENT].nir)
+      stages[MESA_SHADER_FRAGMENT].info.workgroup_size = stages[MESA_SHADER_FRAGMENT].info.wave_size;
 
-   if (nir[MESA_SHADER_COMPUTE]) {
+   if (stages[MESA_SHADER_COMPUTE].nir) {
       /* Variable workgroup size is not supported by Vulkan. */
-      assert(!nir[MESA_SHADER_COMPUTE]->info.workgroup_size_variable);
+      assert(!stages[MESA_SHADER_COMPUTE].nir->info.workgroup_size_variable);
 
-      infos[MESA_SHADER_COMPUTE].workgroup_size =
+      stages[MESA_SHADER_COMPUTE].info.workgroup_size =
          ac_compute_cs_workgroup_size(
-            nir[MESA_SHADER_COMPUTE]->info.workgroup_size, false, UINT32_MAX);
+            stages[MESA_SHADER_COMPUTE].nir->info.workgroup_size, false, UINT32_MAX);
+   }
+}
+
+static void
+radv_declare_pipeline_args(struct radv_device *device, struct radv_pipeline_stage *stages,
+                           const struct radv_pipeline_key *pipeline_key)
+{
+   enum chip_class chip_class = device->physical_device->rad_info.chip_class;
+   unsigned active_stages = 0;
+
+   for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; i++) {
+      if (stages[i].nir)
+         active_stages |= (1 << i);
+   }
+
+   for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; ++i) {
+      stages[i].args.is_gs_copy_shader = false;
+      stages[i].args.explicit_scratch_args = !radv_use_llvm_for_stage(device, i);
+      stages[i].args.remap_spi_ps_input = !radv_use_llvm_for_stage(device, i);
+      stages[i].args.load_grid_size_from_user_sgpr = device->load_grid_size_from_user_sgpr;
+   }
+
+   if (chip_class >= GFX9 && stages[MESA_SHADER_TESS_CTRL].nir) {
+      radv_declare_shader_args(chip_class, pipeline_key, &stages[MESA_SHADER_TESS_CTRL].info,
+                               MESA_SHADER_TESS_CTRL, true, MESA_SHADER_VERTEX,
+                               &stages[MESA_SHADER_TESS_CTRL].args);
+      stages[MESA_SHADER_TESS_CTRL].info.user_sgprs_locs = stages[MESA_SHADER_TESS_CTRL].args.user_sgprs_locs;
+      stages[MESA_SHADER_TESS_CTRL].info.inline_push_constant_mask =
+         stages[MESA_SHADER_TESS_CTRL].args.ac.inline_push_const_mask;
+
+      stages[MESA_SHADER_VERTEX].args = stages[MESA_SHADER_TESS_CTRL].args;
+      active_stages &= ~(1 << MESA_SHADER_VERTEX);
+      active_stages &= ~(1 << MESA_SHADER_TESS_CTRL);
+   }
+
+   if (chip_class >= GFX9 && stages[MESA_SHADER_GEOMETRY].nir) {
+      gl_shader_stage pre_stage =
+         stages[MESA_SHADER_TESS_EVAL].nir ? MESA_SHADER_TESS_EVAL : MESA_SHADER_VERTEX;
+      radv_declare_shader_args(chip_class, pipeline_key, &stages[MESA_SHADER_GEOMETRY].info,
+                               MESA_SHADER_GEOMETRY, true, pre_stage, &stages[MESA_SHADER_GEOMETRY].args);
+      stages[MESA_SHADER_GEOMETRY].info.user_sgprs_locs = stages[MESA_SHADER_GEOMETRY].args.user_sgprs_locs;
+      stages[MESA_SHADER_GEOMETRY].info.inline_push_constant_mask =
+         stages[MESA_SHADER_GEOMETRY].args.ac.inline_push_const_mask;
+
+      stages[pre_stage].args = stages[MESA_SHADER_GEOMETRY].args;
+      active_stages &= ~(1 << pre_stage);
+      active_stages &= ~(1 << MESA_SHADER_GEOMETRY);
+   }
+
+   u_foreach_bit(i, active_stages) {
+      radv_declare_shader_args(chip_class, pipeline_key, &stages[i].info, i, false, MESA_SHADER_VERTEX,
+                               &stages[i].args);
+      stages[i].info.user_sgprs_locs = stages[i].args.user_sgprs_locs;
+      stages[i].info.inline_push_constant_mask = stages[i].args.ac.inline_push_const_mask;
    }
 }
 
@@ -3342,43 +3539,44 @@ merge_tess_info(struct shader_info *tes_info, struct shader_info *tcs_info)
 }
 
 static void
-gather_tess_info(struct radv_device *device, nir_shader **nir, struct radv_shader_info *infos,
+gather_tess_info(struct radv_device *device, struct radv_pipeline_stage *stages,
                  const struct radv_pipeline_key *pipeline_key)
 {
-   merge_tess_info(&nir[MESA_SHADER_TESS_EVAL]->info, &nir[MESA_SHADER_TESS_CTRL]->info);
+   merge_tess_info(&stages[MESA_SHADER_TESS_EVAL].nir->info,
+                   &stages[MESA_SHADER_TESS_CTRL].nir->info);
 
    unsigned tess_in_patch_size = pipeline_key->tcs.tess_input_vertices;
-   unsigned tess_out_patch_size = nir[MESA_SHADER_TESS_CTRL]->info.tess.tcs_vertices_out;
+   unsigned tess_out_patch_size = stages[MESA_SHADER_TESS_CTRL].nir->info.tess.tcs_vertices_out;
 
    /* Number of tessellation patches per workgroup processed by the current pipeline. */
    unsigned num_patches = get_tcs_num_patches(
       tess_in_patch_size, tess_out_patch_size,
-      infos[MESA_SHADER_TESS_CTRL].tcs.num_linked_inputs,
-      infos[MESA_SHADER_TESS_CTRL].tcs.num_linked_outputs,
-      infos[MESA_SHADER_TESS_CTRL].tcs.num_linked_patch_outputs, device->tess_offchip_block_dw_size,
+      stages[MESA_SHADER_TESS_CTRL].info.tcs.num_linked_inputs,
+      stages[MESA_SHADER_TESS_CTRL].info.tcs.num_linked_outputs,
+      stages[MESA_SHADER_TESS_CTRL].info.tcs.num_linked_patch_outputs, device->tess_offchip_block_dw_size,
       device->physical_device->rad_info.chip_class, device->physical_device->rad_info.family);
 
    /* LDS size used by VS+TCS for storing TCS inputs and outputs. */
    unsigned tcs_lds_size = calculate_tess_lds_size(
       device->physical_device->rad_info.chip_class, tess_in_patch_size, tess_out_patch_size,
-      infos[MESA_SHADER_TESS_CTRL].tcs.num_linked_inputs, num_patches,
-      infos[MESA_SHADER_TESS_CTRL].tcs.num_linked_outputs,
-      infos[MESA_SHADER_TESS_CTRL].tcs.num_linked_patch_outputs);
+      stages[MESA_SHADER_TESS_CTRL].info.tcs.num_linked_inputs, num_patches,
+      stages[MESA_SHADER_TESS_CTRL].info.tcs.num_linked_outputs,
+      stages[MESA_SHADER_TESS_CTRL].info.tcs.num_linked_patch_outputs);
 
-   infos[MESA_SHADER_TESS_CTRL].num_tess_patches = num_patches;
-   infos[MESA_SHADER_TESS_CTRL].tcs.num_lds_blocks = tcs_lds_size;
-   infos[MESA_SHADER_TESS_CTRL].tcs.tes_reads_tess_factors =
-      !!(nir[MESA_SHADER_TESS_EVAL]->info.inputs_read &
+   stages[MESA_SHADER_TESS_CTRL].info.num_tess_patches = num_patches;
+   stages[MESA_SHADER_TESS_CTRL].info.tcs.num_lds_blocks = tcs_lds_size;
+   stages[MESA_SHADER_TESS_CTRL].info.tcs.tes_reads_tess_factors =
+      !!(stages[MESA_SHADER_TESS_EVAL].nir->info.inputs_read &
          (VARYING_BIT_TESS_LEVEL_INNER | VARYING_BIT_TESS_LEVEL_OUTER));
-   infos[MESA_SHADER_TESS_CTRL].tcs.tes_inputs_read = nir[MESA_SHADER_TESS_EVAL]->info.inputs_read;
-   infos[MESA_SHADER_TESS_CTRL].tcs.tes_patch_inputs_read =
-      nir[MESA_SHADER_TESS_EVAL]->info.patch_inputs_read;
+   stages[MESA_SHADER_TESS_CTRL].info.tcs.tes_inputs_read = stages[MESA_SHADER_TESS_EVAL].nir->info.inputs_read;
+   stages[MESA_SHADER_TESS_CTRL].info.tcs.tes_patch_inputs_read =
+      stages[MESA_SHADER_TESS_EVAL].nir->info.patch_inputs_read;
 
-   infos[MESA_SHADER_TESS_EVAL].num_tess_patches = num_patches;
-   infos[MESA_SHADER_GEOMETRY].num_tess_patches = num_patches;
-   infos[MESA_SHADER_VERTEX].num_tess_patches = num_patches;
-   infos[MESA_SHADER_TESS_CTRL].tcs.tcs_vertices_out = tess_out_patch_size;
-   infos[MESA_SHADER_VERTEX].tcs.tcs_vertices_out = tess_out_patch_size;
+   stages[MESA_SHADER_TESS_EVAL].info.num_tess_patches = num_patches;
+   stages[MESA_SHADER_GEOMETRY].info.num_tess_patches = num_patches;
+   stages[MESA_SHADER_VERTEX].info.num_tess_patches = num_patches;
+   stages[MESA_SHADER_TESS_CTRL].info.tcs.tcs_vertices_out = tess_out_patch_size;
+   stages[MESA_SHADER_VERTEX].info.tcs.tcs_vertices_out = tess_out_patch_size;
 
    if (!radv_use_llvm_for_stage(device, MESA_SHADER_VERTEX)) {
       /* When the number of TCS input and output vertices are the same (typically 3):
@@ -3390,70 +3588,31 @@ gather_tess_info(struct radv_device *device, nir_shader **nir, struct radv_shade
        * involve different float modes for the same block and our optimizer
        * doesn't handle a instruction dominating another with a different mode.
        */
-      infos[MESA_SHADER_VERTEX].vs.tcs_in_out_eq =
+      stages[MESA_SHADER_VERTEX].info.vs.tcs_in_out_eq =
          device->physical_device->rad_info.chip_class >= GFX9 &&
          tess_in_patch_size == tess_out_patch_size &&
-         nir[MESA_SHADER_VERTEX]->info.float_controls_execution_mode ==
-            nir[MESA_SHADER_TESS_CTRL]->info.float_controls_execution_mode;
+         stages[MESA_SHADER_VERTEX].nir->info.float_controls_execution_mode ==
+            stages[MESA_SHADER_TESS_CTRL].nir->info.float_controls_execution_mode;
 
-      if (infos[MESA_SHADER_VERTEX].vs.tcs_in_out_eq)
-         infos[MESA_SHADER_VERTEX].vs.tcs_temp_only_input_mask =
-            nir[MESA_SHADER_TESS_CTRL]->info.inputs_read &
-            nir[MESA_SHADER_VERTEX]->info.outputs_written &
-            ~nir[MESA_SHADER_TESS_CTRL]->info.tess.tcs_cross_invocation_inputs_read &
-            ~nir[MESA_SHADER_TESS_CTRL]->info.inputs_read_indirectly &
-            ~nir[MESA_SHADER_VERTEX]->info.outputs_accessed_indirectly;
+      if (stages[MESA_SHADER_VERTEX].info.vs.tcs_in_out_eq)
+         stages[MESA_SHADER_VERTEX].info.vs.tcs_temp_only_input_mask =
+            stages[MESA_SHADER_TESS_CTRL].nir->info.inputs_read &
+            stages[MESA_SHADER_VERTEX].nir->info.outputs_written &
+            ~stages[MESA_SHADER_TESS_CTRL].nir->info.tess.tcs_cross_invocation_inputs_read &
+            ~stages[MESA_SHADER_TESS_CTRL].nir->info.inputs_read_indirectly &
+            ~stages[MESA_SHADER_VERTEX].nir->info.outputs_accessed_indirectly;
 
       /* Copy data to TCS so it can be accessed by the backend if they are merged. */
-      infos[MESA_SHADER_TESS_CTRL].vs.tcs_in_out_eq = infos[MESA_SHADER_VERTEX].vs.tcs_in_out_eq;
-      infos[MESA_SHADER_TESS_CTRL].vs.tcs_temp_only_input_mask =
-         infos[MESA_SHADER_VERTEX].vs.tcs_temp_only_input_mask;
+      stages[MESA_SHADER_TESS_CTRL].info.vs.tcs_in_out_eq = stages[MESA_SHADER_VERTEX].info.vs.tcs_in_out_eq;
+      stages[MESA_SHADER_TESS_CTRL].info.vs.tcs_temp_only_input_mask =
+         stages[MESA_SHADER_VERTEX].info.vs.tcs_temp_only_input_mask;
    }
 
    for (gl_shader_stage s = MESA_SHADER_VERTEX; s <= MESA_SHADER_TESS_CTRL; ++s)
-      infos[s].workgroup_size =
+      stages[s].info.workgroup_size =
          ac_compute_lshs_workgroup_size(
             device->physical_device->rad_info.chip_class, s,
             num_patches, tess_in_patch_size, tess_out_patch_size);
-}
-
-static void
-radv_init_feedback(const VkPipelineCreationFeedbackCreateInfoEXT *ext)
-{
-   if (!ext)
-      return;
-
-   if (ext->pPipelineCreationFeedback) {
-      ext->pPipelineCreationFeedback->flags = 0;
-      ext->pPipelineCreationFeedback->duration = 0;
-   }
-
-   for (unsigned i = 0; i < ext->pipelineStageCreationFeedbackCount; ++i) {
-      ext->pPipelineStageCreationFeedbacks[i].flags = 0;
-      ext->pPipelineStageCreationFeedbacks[i].duration = 0;
-   }
-}
-
-static void
-radv_start_feedback(VkPipelineCreationFeedback *feedback)
-{
-   if (!feedback)
-      return;
-
-   feedback->duration -= radv_get_current_time();
-   feedback->flags = VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT;
-}
-
-static void
-radv_stop_feedback(VkPipelineCreationFeedback *feedback, bool cache_hit)
-{
-   if (!feedback)
-      return;
-
-   feedback->duration += radv_get_current_time();
-   feedback->flags =
-      VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT |
-      (cache_hit ? VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT : 0);
 }
 
 static bool
@@ -3601,6 +3760,8 @@ opt_vectorize_callback(const nir_instr *instr, void *_)
    case nir_op_fmin:
    case nir_op_fmax:
    case nir_op_iadd:
+   case nir_op_iadd_sat:
+   case nir_op_uadd_sat:
    case nir_op_isub:
    case nir_op_imul:
    case nir_op_imin:
@@ -3680,7 +3841,8 @@ radv_upload_shaders(struct radv_device *device, struct radv_pipeline *pipeline,
 }
 
 static bool
-radv_consider_force_vrs(const struct radv_pipeline *pipeline, bool noop_fs, nir_shader **nir)
+radv_consider_force_vrs(const struct radv_pipeline *pipeline, bool noop_fs,
+                        const struct radv_pipeline_stage *stages)
 {
    struct radv_device *device = pipeline->device;
 
@@ -3692,7 +3854,7 @@ radv_consider_force_vrs(const struct radv_pipeline *pipeline, bool noop_fs, nir_
        pipeline->graphics.last_vgt_api_stage != MESA_SHADER_GEOMETRY)
       return false;
 
-   nir_shader *last_vgt_shader = nir[pipeline->graphics.last_vgt_api_stage];
+   nir_shader *last_vgt_shader = stages[pipeline->graphics.last_vgt_api_stage].nir;
    if (last_vgt_shader->info.outputs_written & BITFIELD64_BIT(VARYING_SLOT_PRIMITIVE_SHADING_RATE))
       return false;
 
@@ -3701,8 +3863,9 @@ radv_consider_force_vrs(const struct radv_pipeline *pipeline, bool noop_fs, nir_
       return false;
 
    /* Do not enable if the PS uses gl_FragCoord because it breaks postprocessing in some games. */
-   if (nir[MESA_SHADER_FRAGMENT] &&
-       BITSET_TEST(nir[MESA_SHADER_FRAGMENT]->info.system_values_read, SYSTEM_VALUE_FRAG_COORD)) {
+   nir_shader *fs_shader = stages[MESA_SHADER_FRAGMENT].nir;
+   if (fs_shader &&
+       BITSET_TEST(fs_shader->info.system_values_read, SYSTEM_VALUE_FRAG_COORD)) {
       return false;
    }
 
@@ -3724,7 +3887,7 @@ radv_adjust_vertex_fetch_alpha(nir_builder *b,
     */
    unsigned offset = alpha_adjust == ALPHA_ADJUST_SNORM ? 23u : 0u;
 
-   alpha = nir_ibfe(b, alpha, nir_imm_int(b, offset), nir_imm_int(b, 2u));
+   alpha = nir_ibfe_imm(b, alpha, offset, 2u);
 
    /* Convert back to the right type. */
    if (alpha_adjust == ALPHA_ADJUST_SNORM) {
@@ -3821,23 +3984,240 @@ radv_lower_vs_input(nir_shader *nir, const struct radv_pipeline_key *pipeline_ke
    return progress;
 }
 
+static bool
+radv_lower_fs_output(nir_shader *nir, const struct radv_pipeline_key *pipeline_key)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   bool progress = false;
+
+   nir_builder b;
+   nir_builder_init(&b, impl);
+
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+
+         nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+         if (intrin->intrinsic != nir_intrinsic_store_output)
+            continue;
+
+         int slot = nir_intrinsic_base(intrin) - FRAG_RESULT_DATA0;
+         if (slot < 0)
+            continue;
+
+         unsigned write_mask = nir_intrinsic_write_mask(intrin);
+         unsigned col_format = (pipeline_key->ps.col_format >> (4 * slot)) & 0xf;
+         bool is_int8 = (pipeline_key->ps.is_int8 >> slot) & 1;
+         bool is_int10 = (pipeline_key->ps.is_int10 >> slot) & 1;
+         bool enable_mrt_output_nan_fixup = (pipeline_key->ps.enable_mrt_output_nan_fixup >> slot) & 1;
+         bool is_16bit = intrin->src[0].ssa->bit_size == 16;
+
+         if (col_format == V_028714_SPI_SHADER_ZERO)
+            continue;
+
+         b.cursor = nir_before_instr(instr);
+         nir_ssa_def *values[4];
+
+         /* Extract the export values. */
+         for (unsigned i = 0; i < 4; i++) {
+            if (write_mask & (1 << i)) {
+               values[i] = nir_channel(&b, intrin->src[0].ssa, i);
+            } else {
+               values[i] = nir_ssa_undef(&b, 1, 32);
+            }
+         }
+
+         /* Replace NaN by zero (for 32-bit float formats) to fix game bugs if requested. */
+         if (enable_mrt_output_nan_fixup && !nir->info.internal && !is_16bit) {
+            u_foreach_bit(i, write_mask) {
+               const bool save_exact = b.exact;
+
+               b.exact = true;
+               nir_ssa_def *isnan = nir_fneu(&b, values[i], values[i]);
+               b.exact = save_exact;
+
+               values[i] = nir_bcsel(&b, isnan, nir_imm_zero(&b, 1, 32), values[i]);
+            }
+         }
+
+         if (col_format == V_028714_SPI_SHADER_FP16_ABGR ||
+             col_format == V_028714_SPI_SHADER_UNORM16_ABGR ||
+             col_format == V_028714_SPI_SHADER_SNORM16_ABGR ||
+             col_format == V_028714_SPI_SHADER_UINT16_ABGR ||
+             col_format == V_028714_SPI_SHADER_SINT16_ABGR) {
+            /* Convert and/or clamp the export values. */
+            switch (col_format) {
+            case V_028714_SPI_SHADER_UINT16_ABGR: {
+               unsigned max_rgb = is_int8 ? 255 : is_int10 ? 1023 : 0;
+               u_foreach_bit(i, write_mask) {
+                  if (is_int8 || is_int10) {
+                     values[i] = nir_umin(&b, values[i], i == 3 && is_int10 ? nir_imm_int(&b, 3u)
+                                                                            : nir_imm_int(&b, max_rgb));
+                  } else if (is_16bit) {
+                     values[i] = nir_u2u32(&b, values[i]);
+                  }
+               }
+               break;
+            }
+            case V_028714_SPI_SHADER_SINT16_ABGR: {
+               unsigned max_rgb = is_int8 ? 127 : is_int10 ? 511 : 0;
+               unsigned min_rgb = is_int8 ? -128 : is_int10 ? -512 : 0;
+               u_foreach_bit(i, write_mask) {
+                  if (is_int8 || is_int10) {
+                     values[i] = nir_imin(&b, values[i], i == 3 && is_int10 ? nir_imm_int(&b, 1u)
+                                                                            : nir_imm_int(&b, max_rgb));
+                     values[i] = nir_imax(&b, values[i], i == 3 && is_int10 ? nir_imm_int(&b, -2u)
+                                                                            : nir_imm_int(&b, min_rgb));
+                  } else if (is_16bit) {
+                     values[i] = nir_i2i32(&b, values[i]);
+                  }
+               }
+               break;
+            }
+            case V_028714_SPI_SHADER_UNORM16_ABGR:
+            case V_028714_SPI_SHADER_SNORM16_ABGR:
+               u_foreach_bit(i, write_mask) {
+                  if (is_16bit) {
+                     values[i] = nir_f2f32(&b, values[i]);
+                  }
+               }
+               break;
+            default:
+               break;
+            }
+
+            /* Only nir_pack_32_2x16_split needs 16-bit inputs. */
+            bool input_16_bit = col_format == V_028714_SPI_SHADER_FP16_ABGR && is_16bit;
+            unsigned new_write_mask = 0;
+
+            /* Pack the export values. */
+            for (unsigned i = 0; i < 2; i++) {
+               bool enabled = (write_mask >> (i * 2)) & 0x3;
+
+               if (!enabled) {
+                  values[i] = nir_ssa_undef(&b, 1, 32);
+                  continue;
+               }
+
+               nir_ssa_def *src0 = values[i * 2];
+               nir_ssa_def *src1 = values[i * 2 + 1];
+
+               if (!(write_mask & (1 << (i * 2))))
+                  src0 = nir_imm_zero(&b, 1, input_16_bit ? 16 : 32);
+               if (!(write_mask & (1 << (i * 2 + 1))))
+                  src1 = nir_imm_zero(&b, 1, input_16_bit ? 16 : 32);
+
+               if (col_format == V_028714_SPI_SHADER_FP16_ABGR) {
+                  if (is_16bit) {
+                     values[i] = nir_pack_32_2x16_split(&b, src0, src1);
+                  } else {
+                     values[i] = nir_pack_half_2x16_split(&b, src0, src1);
+                  }
+               } else if (col_format == V_028714_SPI_SHADER_UNORM16_ABGR) {
+                  values[i] = nir_pack_unorm_2x16(&b, nir_vec2(&b, src0, src1));
+               } else if (col_format == V_028714_SPI_SHADER_SNORM16_ABGR) {
+                  values[i] = nir_pack_snorm_2x16(&b, nir_vec2(&b, src0, src1));
+               } else if (col_format == V_028714_SPI_SHADER_UINT16_ABGR) {
+                  values[i] = nir_pack_uint_2x16(&b, nir_vec2(&b, src0, src1));
+               } else if (col_format == V_028714_SPI_SHADER_SINT16_ABGR) {
+                  values[i] = nir_pack_sint_2x16(&b, nir_vec2(&b, src0, src1));
+               }
+
+               new_write_mask |= 1 << i;
+            }
+
+            /* Update the write mask for compressed outputs. */
+            nir_intrinsic_set_write_mask(intrin, new_write_mask);
+            intrin->num_components = util_last_bit(new_write_mask);
+         }
+
+         nir_ssa_def *new_src = nir_vec(&b, values, intrin->num_components);
+
+         nir_instr_rewrite_src(&intrin->instr, &intrin->src[0], nir_src_for_ssa(new_src));
+
+         progress = true;
+      }
+   }
+
+   return progress;
+}
+
+static void
+radv_pipeline_hash_shader(const unsigned char *spirv_sha1, const uint32_t spirv_sha1_size,
+                          const char *entrypoint, gl_shader_stage stage,
+                          const VkSpecializationInfo *spec_info, unsigned char *sha1_out)
+{
+   struct mesa_sha1 ctx;
+   _mesa_sha1_init(&ctx);
+
+   _mesa_sha1_update(&ctx, spirv_sha1, spirv_sha1_size);
+   _mesa_sha1_update(&ctx, entrypoint, strlen(entrypoint));
+   if (spec_info) {
+      _mesa_sha1_update(&ctx, spec_info->pMapEntries,
+                        spec_info->mapEntryCount * sizeof(*spec_info->pMapEntries));
+      _mesa_sha1_update(&ctx, spec_info->pData, spec_info->dataSize);
+   }
+
+   _mesa_sha1_final(&ctx, sha1_out);
+}
+
+void
+radv_pipeline_stage_init(const VkPipelineShaderStageCreateInfo *sinfo,
+                         struct radv_pipeline_stage *out_stage, gl_shader_stage stage)
+{
+   const VkShaderModuleCreateInfo *minfo =
+      vk_find_struct_const(sinfo->pNext, SHADER_MODULE_CREATE_INFO);
+
+   if (sinfo->module == VK_NULL_HANDLE && !minfo)
+      return;
+
+   memset(out_stage, 0, sizeof(*out_stage));
+
+   out_stage->stage = stage;
+   out_stage->entrypoint = sinfo->pName;
+   out_stage->spec_info = sinfo->pSpecializationInfo;
+   out_stage->feedback.flags = VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT;
+
+   if (sinfo->module != VK_NULL_HANDLE) {
+      struct vk_shader_module *module = vk_shader_module_from_handle(sinfo->module);
+
+      out_stage->spirv.data = module->data;
+      out_stage->spirv.size = module->size;
+      out_stage->spirv.object = &module->base;
+
+      if (module->nir) {
+         out_stage->internal_nir = module->nir;
+         _mesa_sha1_compute(module->nir->info.name, strlen(module->nir->info.name),
+                            out_stage->spirv.sha1);
+      } else {
+         assert(sizeof(out_stage->spirv.sha1) == sizeof(module->sha1));
+         memcpy(out_stage->spirv.sha1, module->sha1, sizeof(out_stage->spirv.sha1));
+      }
+   } else {
+      out_stage->spirv.data = (const char *) minfo->pCode;
+      out_stage->spirv.size = minfo->codeSize;
+      _mesa_sha1_compute(out_stage->spirv.data, out_stage->spirv.size, out_stage->spirv.sha1);
+   }
+
+   radv_pipeline_hash_shader(out_stage->spirv.sha1, sizeof(out_stage->spirv.sha1),
+                             out_stage->entrypoint, stage, out_stage->spec_info,
+                             out_stage->shader_sha1);
+}
+
 VkResult
 radv_create_shaders(struct radv_pipeline *pipeline, struct radv_pipeline_layout *pipeline_layout,
                     struct radv_device *device, struct radv_pipeline_cache *cache,
                     const struct radv_pipeline_key *pipeline_key,
-                    const VkPipelineShaderStageCreateInfo **pStages,
+                    const VkPipelineShaderStageCreateInfo *pStages,
+                    uint32_t stageCount,
                     const VkPipelineCreateFlags flags, const uint8_t *custom_hash,
-                    VkPipelineCreationFeedback *pipeline_feedback,
-                    VkPipelineCreationFeedback **stage_feedbacks)
+                    const VkPipelineCreationFeedbackCreateInfo *creation_feedback)
 {
    struct vk_shader_module fs_m = {0};
-   struct vk_shader_module *modules[MESA_VULKAN_SHADER_STAGES] = {
-      0,
-   };
-   nir_shader *nir[MESA_VULKAN_SHADER_STAGES] = {0};
+   const char *noop_fs_entrypoint = "noop_fs";
    struct radv_shader_binary *binaries[MESA_VULKAN_SHADER_STAGES] = {NULL};
    struct radv_shader_binary *gs_copy_binary = NULL;
-   struct radv_shader_info infos[MESA_VULKAN_SHADER_STAGES] = {0};
    unsigned char hash[20];
    bool keep_executable_info =
       (flags & VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR) ||
@@ -3848,40 +4228,47 @@ radv_create_shaders(struct radv_pipeline *pipeline, struct radv_pipeline_layout 
    struct radv_pipeline_shader_stack_size **stack_sizes =
       pipeline->type == RADV_PIPELINE_COMPUTE ? &pipeline->compute.rt_stack_sizes : NULL;
    uint32_t *num_stack_sizes = stack_sizes ? &pipeline->compute.group_count : NULL;
+   struct radv_pipeline_stage stages[MESA_VULKAN_SHADER_STAGES] = {0};
+   VkPipelineCreationFeedbackEXT pipeline_feedback = {
+      .flags = VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT,
+   };
    bool noop_fs = false;
+   VkResult result = VK_SUCCESS;
 
-   radv_start_feedback(pipeline_feedback);
+   int64_t pipeline_start = os_time_get_nano();
 
-   for (unsigned i = 0; i < MESA_VULKAN_SHADER_STAGES; ++i) {
-      if (pStages[i]) {
-         modules[i] = vk_shader_module_from_handle(pStages[i]->module);
-         if (modules[i]->nir)
-            _mesa_sha1_compute(modules[i]->nir->info.name, strlen(modules[i]->nir->info.name),
-                               modules[i]->sha1);
+   for (uint32_t i = 0; i < stageCount; i++) {
+      const VkPipelineShaderStageCreateInfo *sinfo = &pStages[i];
+      gl_shader_stage stage = vk_to_mesa_shader_stage(sinfo->stage);
 
-         pipeline->active_stages |= mesa_to_vk_shader_stage(i);
-         if (i < MESA_SHADER_FRAGMENT || i == MESA_SHADER_MESH)
-            pipeline->graphics.last_vgt_api_stage = i;
-      }
+      radv_pipeline_stage_init(sinfo, &stages[stage], stage);
+   }
+
+   for (unsigned s = 0; s < MESA_VULKAN_SHADER_STAGES; s++) {
+      if (!stages[s].entrypoint)
+         continue;
+
+      if (stages[s].stage < MESA_SHADER_FRAGMENT || stages[s].stage == MESA_SHADER_MESH)
+         pipeline->graphics.last_vgt_api_stage = stages[s].stage;
    }
 
    ASSERTED bool primitive_shading =
-      modules[MESA_SHADER_VERTEX] || modules[MESA_SHADER_TESS_CTRL] ||
-      modules[MESA_SHADER_TESS_EVAL] || modules[MESA_SHADER_GEOMETRY];
+      stages[MESA_SHADER_VERTEX].entrypoint || stages[MESA_SHADER_TESS_CTRL].entrypoint ||
+      stages[MESA_SHADER_TESS_EVAL].entrypoint || stages[MESA_SHADER_GEOMETRY].entrypoint;
    ASSERTED bool mesh_shading =
-      modules[MESA_SHADER_MESH];
+      stages[MESA_SHADER_MESH].entrypoint;
 
    /* Primitive and mesh shading must not be mixed in the same pipeline. */
    assert(!primitive_shading || !mesh_shading);
    /* Mesh shaders are mandatory in mesh shading pipelines. */
-   assert(mesh_shading == !!modules[MESA_SHADER_MESH]);
+   assert(mesh_shading == !!stages[MESA_SHADER_MESH].entrypoint);
    /* Mesh shaders always need NGG. */
    assert(!mesh_shading || pipeline_key->use_ngg);
 
    if (custom_hash)
       memcpy(hash, custom_hash, 20);
    else {
-      radv_hash_shaders(hash, pStages, pipeline_layout, pipeline_key,
+      radv_hash_shaders(hash, stages, pipeline_layout, pipeline_key,
                         radv_get_hash_flags(device, keep_statistic_info));
    }
 
@@ -3892,115 +4279,136 @@ radv_create_shaders(struct radv_pipeline *pipeline, struct radv_pipeline_layout 
        radv_create_shaders_from_pipeline_cache(device, cache, hash, pipeline,
                                                stack_sizes, num_stack_sizes,
                                                &found_in_application_cache)) {
-      radv_stop_feedback(pipeline_feedback, found_in_application_cache);
-      return VK_SUCCESS;
+      if (found_in_application_cache)
+         pipeline_feedback.flags |= VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT;
+      result = VK_SUCCESS;
+      goto done;
    }
 
    if (flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) {
-      radv_stop_feedback(pipeline_feedback, found_in_application_cache);
-      return VK_PIPELINE_COMPILE_REQUIRED;
+      if (found_in_application_cache)
+         pipeline_feedback.flags |= VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT;
+      result = VK_PIPELINE_COMPILE_REQUIRED;
+      goto done;
    }
 
-   if (!modules[MESA_SHADER_FRAGMENT] && !modules[MESA_SHADER_COMPUTE]) {
-      nir_builder fs_b = radv_meta_init_shader(MESA_SHADER_FRAGMENT, "noop_fs");
-      fs_m = vk_shader_module_from_nir(fs_b.shader);
-      modules[MESA_SHADER_FRAGMENT] = &fs_m;
+   if (!stages[MESA_SHADER_FRAGMENT].entrypoint && !stages[MESA_SHADER_COMPUTE].entrypoint) {
+      nir_builder fs_b = radv_meta_init_shader(device, MESA_SHADER_FRAGMENT, "noop_fs");
+
+      stages[MESA_SHADER_FRAGMENT] = (struct radv_pipeline_stage) {
+         .stage = MESA_SHADER_FRAGMENT,
+         .internal_nir = fs_b.shader,
+         .entrypoint = noop_fs_entrypoint,
+         .feedback = {
+            .flags = VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT,
+         },
+      };
+
       noop_fs = true;
    }
 
-   for (unsigned i = 0; i < MESA_VULKAN_SHADER_STAGES; ++i) {
-      const VkPipelineShaderStageCreateInfo *stage = pStages[i];
-
-      if (!modules[i])
+   for (unsigned s = 0; s < MESA_VULKAN_SHADER_STAGES; s++) {
+      if (!stages[s].entrypoint)
          continue;
 
-      radv_start_feedback(stage_feedbacks[i]);
+      int64_t stage_start = os_time_get_nano();
 
-      nir[i] = radv_shader_compile_to_nir(device, modules[i], stage ? stage->pName : "main", i,
-                                          stage ? stage->pSpecializationInfo : NULL,
-                                          pipeline_layout, pipeline_key);
+      stages[s].nir = radv_shader_compile_to_nir(device, &stages[s], pipeline_key);
 
-      radv_stop_feedback(stage_feedbacks[i], false);
+      stages[s].feedback.duration += os_time_get_nano() - stage_start;
    }
 
    /* Force per-vertex VRS. */
-   if (radv_consider_force_vrs(pipeline, noop_fs, nir)) {
+   if (radv_consider_force_vrs(pipeline, noop_fs, stages)) {
       assert(pipeline->graphics.last_vgt_api_stage == MESA_SHADER_VERTEX ||
              pipeline->graphics.last_vgt_api_stage == MESA_SHADER_GEOMETRY);
-      nir_shader *last_vgt_shader = nir[pipeline->graphics.last_vgt_api_stage];
+      nir_shader *last_vgt_shader = stages[pipeline->graphics.last_vgt_api_stage].nir;
       NIR_PASS_V(last_vgt_shader, radv_force_primitive_shading_rate, device);
    }
 
    bool optimize_conservatively = pipeline_key->optimisations_disabled;
 
-   radv_link_shaders(pipeline, pipeline_key, nir, optimize_conservatively);
-   radv_set_driver_locations(pipeline, nir, infos);
+   radv_link_shaders(pipeline, pipeline_key, stages, optimize_conservatively);
+   radv_set_driver_locations(pipeline, stages);
 
    for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; ++i) {
-      if (nir[i]) {
-         radv_start_feedback(stage_feedbacks[i]);
-         radv_optimize_nir(nir[i], optimize_conservatively, false);
+      if (stages[i].nir) {
+         int64_t stage_start = os_time_get_nano();
+
+         radv_optimize_nir(stages[i].nir, optimize_conservatively, false);
 
          /* Gather info again, information such as outputs_read can be out-of-date. */
-         nir_shader_gather_info(nir[i], nir_shader_get_entrypoint(nir[i]));
-         radv_lower_io(device, nir[i]);
+         nir_shader_gather_info(stages[i].nir, nir_shader_get_entrypoint(stages[i].nir));
+         radv_lower_io(device, stages[i].nir);
 
-         radv_stop_feedback(stage_feedbacks[i], false);
+         stages[i].feedback.duration += os_time_get_nano() - stage_start;
       }
    }
 
-   if (nir[MESA_SHADER_TESS_CTRL]) {
-      nir_lower_patch_vertices(nir[MESA_SHADER_TESS_EVAL],
-                               nir[MESA_SHADER_TESS_CTRL]->info.tess.tcs_vertices_out, NULL);
-      gather_tess_info(device, nir, infos, pipeline_key);
+   if (stages[MESA_SHADER_TESS_CTRL].nir) {
+      nir_lower_patch_vertices(stages[MESA_SHADER_TESS_EVAL].nir,
+                               stages[MESA_SHADER_TESS_CTRL].nir->info.tess.tcs_vertices_out, NULL);
+      gather_tess_info(device, stages, pipeline_key);
    }
 
-   if (nir[MESA_SHADER_VERTEX]) {
-      NIR_PASS_V(nir[MESA_SHADER_VERTEX], radv_lower_vs_input, pipeline_key);
+   if (stages[MESA_SHADER_VERTEX].nir) {
+      NIR_PASS_V(stages[MESA_SHADER_VERTEX].nir, radv_lower_vs_input, pipeline_key);
    }
 
-   radv_fill_shader_info(pipeline, pipeline_layout, pStages, pipeline_key, infos, nir);
+   if (stages[MESA_SHADER_FRAGMENT].nir && !radv_use_llvm_for_stage(device, MESA_SHADER_FRAGMENT)) {
+      /* TODO: Convert the LLVM backend. */
+      NIR_PASS_V(stages[MESA_SHADER_FRAGMENT].nir, radv_lower_fs_output, pipeline_key);
+   }
 
-   bool pipeline_has_ngg = (nir[MESA_SHADER_VERTEX] && infos[MESA_SHADER_VERTEX].is_ngg) ||
-                           (nir[MESA_SHADER_TESS_EVAL] && infos[MESA_SHADER_TESS_EVAL].is_ngg) ||
-                           (nir[MESA_SHADER_MESH] && infos[MESA_SHADER_MESH].is_ngg);
+   radv_fill_shader_info(pipeline, pipeline_layout, pipeline_key, stages);
+
+   bool pipeline_has_ngg = (stages[MESA_SHADER_VERTEX].nir && stages[MESA_SHADER_VERTEX].info.is_ngg) ||
+                           (stages[MESA_SHADER_TESS_EVAL].nir && stages[MESA_SHADER_TESS_EVAL].info.is_ngg) ||
+                           (stages[MESA_SHADER_MESH].nir && stages[MESA_SHADER_MESH].info.is_ngg);
 
    if (pipeline_has_ngg) {
       struct gfx10_ngg_info *ngg_info;
 
-      if (nir[MESA_SHADER_GEOMETRY])
-         ngg_info = &infos[MESA_SHADER_GEOMETRY].ngg_info;
-      else if (nir[MESA_SHADER_TESS_CTRL])
-         ngg_info = &infos[MESA_SHADER_TESS_EVAL].ngg_info;
-      else if (nir[MESA_SHADER_VERTEX])
-         ngg_info = &infos[MESA_SHADER_VERTEX].ngg_info;
-      else if (nir[MESA_SHADER_MESH])
-         ngg_info = &infos[MESA_SHADER_MESH].ngg_info;
+      if (stages[MESA_SHADER_GEOMETRY].nir)
+         ngg_info = &stages[MESA_SHADER_GEOMETRY].info.ngg_info;
+      else if (stages[MESA_SHADER_TESS_CTRL].nir)
+         ngg_info = &stages[MESA_SHADER_TESS_EVAL].info.ngg_info;
+      else if (stages[MESA_SHADER_VERTEX].nir)
+         ngg_info = &stages[MESA_SHADER_VERTEX].info.ngg_info;
+      else if (stages[MESA_SHADER_MESH].nir)
+         ngg_info = &stages[MESA_SHADER_MESH].info.ngg_info;
       else
          unreachable("Missing NGG shader stage.");
 
       if (pipeline->graphics.last_vgt_api_stage == MESA_SHADER_MESH)
-         gfx10_get_ngg_ms_info(nir, infos, ngg_info);
+         gfx10_get_ngg_ms_info(&stages[MESA_SHADER_MESH], ngg_info);
       else
-         gfx10_get_ngg_info(pipeline_key, pipeline, nir, infos, ngg_info);
-   } else if (nir[MESA_SHADER_GEOMETRY]) {
-      struct gfx9_gs_info *gs_info = &infos[MESA_SHADER_GEOMETRY].gs_ring_info;
+         gfx10_get_ngg_info(pipeline_key, pipeline, stages, ngg_info);
+   } else if (stages[MESA_SHADER_GEOMETRY].nir) {
+      struct gfx9_gs_info *gs_info = &stages[MESA_SHADER_GEOMETRY].info.gs_ring_info;
 
-      gfx9_get_gs_info(pipeline_key, pipeline, nir, infos, gs_info);
+      gfx9_get_gs_info(pipeline_key, pipeline, stages, gs_info);
    } else {
       gl_shader_stage hw_vs_api_stage =
-         nir[MESA_SHADER_TESS_EVAL] ? MESA_SHADER_TESS_EVAL : MESA_SHADER_VERTEX;
-      infos[hw_vs_api_stage].workgroup_size = infos[hw_vs_api_stage].wave_size;
+         stages[MESA_SHADER_TESS_EVAL].nir ? MESA_SHADER_TESS_EVAL : MESA_SHADER_VERTEX;
+      stages[hw_vs_api_stage].info.workgroup_size = stages[hw_vs_api_stage].info.wave_size;
    }
 
-   radv_determine_ngg_settings(pipeline, pipeline_key, infos, nir);
+   radv_determine_ngg_settings(pipeline, pipeline_key, stages);
+
+   radv_declare_pipeline_args(device, stages, pipeline_key);
+
+   if (stages[MESA_SHADER_FRAGMENT].nir) {
+      NIR_PASS_V(stages[MESA_SHADER_FRAGMENT].nir, radv_lower_fs_intrinsics,
+                 &stages[MESA_SHADER_FRAGMENT], pipeline_key);
+   }
 
    for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; ++i) {
-      if (nir[i]) {
-         radv_start_feedback(stage_feedbacks[i]);
+      if (stages[i].nir) {
+         int64_t stage_start = os_time_get_nano();
 
          /* Wave and workgroup size should already be filled. */
-         assert(infos[i].wave_size && infos[i].workgroup_size);
+         assert(stages[i].info.wave_size && stages[i].info.workgroup_size);
 
          if (!radv_use_llvm_for_stage(device, i)) {
             nir_lower_non_uniform_access_options options = {
@@ -4009,175 +4417,232 @@ radv_create_shaders(struct radv_pipeline *pipeline, struct radv_pipeline_layout 
                .callback = &non_uniform_access_callback,
                .callback_data = NULL,
             };
-            NIR_PASS_V(nir[i], nir_lower_non_uniform_access, &options);
+            NIR_PASS_V(stages[i].nir, nir_lower_non_uniform_access, &options);
          }
-         NIR_PASS_V(nir[i], nir_lower_memory_model);
-
-         bool lower_to_scalar = false;
+         NIR_PASS_V(stages[i].nir, nir_lower_memory_model);
 
          nir_load_store_vectorize_options vectorize_opts = {
             .modes = nir_var_mem_ssbo | nir_var_mem_ubo | nir_var_mem_push_const |
                      nir_var_mem_shared | nir_var_mem_global,
             .callback = mem_vectorize_callback,
             .robust_modes = 0,
+            /* On GFX6, read2/write2 is out-of-bounds if the offset register is negative, even if
+             * the final offset is not.
+             */
+            .has_shared2_amd = device->physical_device->rad_info.chip_class >= GFX7,
          };
 
          if (device->robust_buffer_access2) {
             vectorize_opts.robust_modes =
-               nir_var_mem_ubo | nir_var_mem_ssbo | nir_var_mem_global | nir_var_mem_push_const;
+               nir_var_mem_ubo | nir_var_mem_ssbo | nir_var_mem_push_const;
          }
 
-         if (nir_opt_load_store_vectorize(nir[i], &vectorize_opts)) {
-            NIR_PASS_V(nir[i], nir_copy_prop);
-            nir_opt_shrink_stores(nir[i], !device->instance->disable_shrink_image_store);
-            lower_to_scalar = true;
+         if (nir_opt_load_store_vectorize(stages[i].nir, &vectorize_opts)) {
+            NIR_PASS_V(stages[i].nir, nir_copy_prop);
+            nir_opt_shrink_stores(stages[i].nir, !device->instance->disable_shrink_image_store);
 
             /* Gather info again, to update whether 8/16-bit are used. */
-            nir_shader_gather_info(nir[i], nir_shader_get_entrypoint(nir[i]));
+            nir_shader_gather_info(stages[i].nir, nir_shader_get_entrypoint(stages[i].nir));
          }
 
-         nir_opt_shrink_vectors(nir[i]);
+         struct radv_shader_info *info = &stages[i].info;
+         if (pipeline->device->physical_device->rad_info.chip_class >= GFX9) {
+            if (i == MESA_SHADER_VERTEX && stages[MESA_SHADER_TESS_CTRL].nir)
+               info = &stages[MESA_SHADER_TESS_CTRL].info;
+            else if (i == MESA_SHADER_VERTEX && stages[MESA_SHADER_GEOMETRY].nir)
+               info = &stages[MESA_SHADER_GEOMETRY].info;
+            else if (i == MESA_SHADER_TESS_EVAL && stages[MESA_SHADER_GEOMETRY].nir)
+               info = &stages[MESA_SHADER_GEOMETRY].info;
+         }
+         NIR_PASS_V(stages[i].nir, radv_nir_lower_ycbcr_textures, pipeline_layout);
+         NIR_PASS_V(stages[i].nir, radv_nir_apply_pipeline_layout, device, pipeline_layout, info,
+                    &stages[i].args);
 
-         if (lower_to_scalar)
-            nir_lower_alu_to_scalar(nir[i], NULL, NULL);
+         nir_opt_shrink_vectors(stages[i].nir);
+
+         nir_lower_alu_to_scalar(stages[i].nir, NULL, NULL);
 
          /* lower ALU operations */
-         nir_lower_int64(nir[i]);
+         nir_lower_int64(stages[i].nir);
 
-         nir_opt_idiv_const(nir[i], 8);
+         nir_opt_idiv_const(stages[i].nir, 8);
 
-         nir_lower_idiv(nir[i],
+         nir_lower_idiv(stages[i].nir,
                         &(nir_lower_idiv_options){
                            .imprecise_32bit_lowering = false,
                            .allow_fp16 = device->physical_device->rad_info.chip_class >= GFX9,
                         });
 
-         nir_opt_sink(nir[i], nir_move_load_input | nir_move_const_undef | nir_move_copies);
-         nir_opt_move(nir[i], nir_move_load_input | nir_move_const_undef | nir_move_copies);
+         nir_move_options sink_opts = nir_move_const_undef | nir_move_copies;
+         if (i != MESA_SHADER_FRAGMENT || !pipeline_key->disable_sinking_load_input_fs)
+            sink_opts |= nir_move_load_input;
+
+         nir_opt_sink(stages[i].nir, sink_opts);
+         nir_opt_move(stages[i].nir, nir_move_load_input | nir_move_const_undef | nir_move_copies);
 
          /* Lower I/O intrinsics to memory instructions. */
-         bool io_to_mem = radv_lower_io_to_mem(device, nir[i], &infos[i], pipeline_key);
+         bool io_to_mem = radv_lower_io_to_mem(device, &stages[i], pipeline_key);
          bool lowered_ngg = pipeline_has_ngg && i == pipeline->graphics.last_vgt_api_stage &&
                             !radv_use_llvm_for_stage(device, i);
          if (lowered_ngg)
-            radv_lower_ngg(device, nir[i], &infos[i], pipeline_key);
+            radv_lower_ngg(device, &stages[i], pipeline_key);
 
-         radv_optimize_nir_algebraic(nir[i], io_to_mem || lowered_ngg || i == MESA_SHADER_COMPUTE);
+         ac_nir_lower_global_access(stages[i].nir);
 
-         if (nir[i]->info.bit_sizes_int & (8 | 16)) {
+         radv_optimize_nir_algebraic(stages[i].nir, io_to_mem || lowered_ngg || i == MESA_SHADER_COMPUTE);
+
+         if (stages[i].nir->info.bit_sizes_int & (8 | 16)) {
             if (device->physical_device->rad_info.chip_class >= GFX8) {
-               nir_convert_to_lcssa(nir[i], true, true);
-               nir_divergence_analysis(nir[i]);
+               nir_convert_to_lcssa(stages[i].nir, true, true);
+               nir_divergence_analysis(stages[i].nir);
             }
 
-            if (nir_lower_bit_size(nir[i], lower_bit_size_callback, device)) {
-               NIR_PASS_V(nir[i], nir_opt_constant_folding);
-               NIR_PASS_V(nir[i], nir_opt_dce);
+            if (nir_lower_bit_size(stages[i].nir, lower_bit_size_callback, device)) {
+               NIR_PASS_V(stages[i].nir, nir_opt_constant_folding);
+               NIR_PASS_V(stages[i].nir, nir_opt_dce);
             }
 
             if (device->physical_device->rad_info.chip_class >= GFX8)
-               nir_opt_remove_phis(nir[i]); /* cleanup LCSSA phis */
+               nir_opt_remove_phis(stages[i].nir); /* cleanup LCSSA phis */
          }
-         if (((nir[i]->info.bit_sizes_int | nir[i]->info.bit_sizes_float) & 16) &&
+         if (((stages[i].nir->info.bit_sizes_int | stages[i].nir->info.bit_sizes_float) & 16) &&
              device->physical_device->rad_info.chip_class >= GFX9) {
+            uint32_t sampler_dims = UINT32_MAX;
+            /* Skip because AMD doesn't support 16-bit types with these. */
+            sampler_dims &= ~BITFIELD_BIT(GLSL_SAMPLER_DIM_CUBE);
             // TODO: also optimize the tex srcs. see radeonSI for reference */
             /* Skip if there are potentially conflicting rounding modes */
-            if (!nir_has_any_rounding_mode_enabled(nir[i]->info.float_controls_execution_mode))
-               NIR_PASS_V(nir[i], nir_fold_16bit_sampler_conversions, 0);
+            if (!nir_has_any_rounding_mode_enabled(stages[i].nir->info.float_controls_execution_mode))
+               NIR_PASS_V(stages[i].nir, nir_fold_16bit_sampler_conversions, 0, sampler_dims);
 
-            NIR_PASS_V(nir[i], nir_opt_vectorize, opt_vectorize_callback, NULL);
+            NIR_PASS_V(stages[i].nir, nir_opt_vectorize, opt_vectorize_callback, NULL);
           }
 
          /* cleanup passes */
-         nir_lower_load_const_to_scalar(nir[i]);
+         nir_lower_load_const_to_scalar(stages[i].nir);
+
+         sink_opts |= nir_move_comparisons | nir_move_load_ubo | nir_move_load_ssbo;
+         nir_opt_sink(stages[i].nir, sink_opts);
+
          nir_move_options move_opts = nir_move_const_undef | nir_move_load_ubo |
                                       nir_move_load_input | nir_move_comparisons | nir_move_copies;
-         nir_opt_sink(nir[i], move_opts | nir_move_load_ssbo);
-         nir_opt_move(nir[i], move_opts);
+         nir_opt_move(stages[i].nir, move_opts);
 
-         radv_stop_feedback(stage_feedbacks[i], false);
+         stages[i].feedback.duration += os_time_get_nano() - stage_start;
       }
    }
 
    for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; ++i) {
-      if (radv_can_dump_shader(device, modules[i], false))
-         nir_print_shader(nir[i], stderr);
+      if (stages[i].nir) {
+         if (radv_can_dump_shader(device, stages[i].nir, false))
+            nir_print_shader(stages[i].nir, stderr);
+      }
    }
 
-   if (modules[MESA_SHADER_GEOMETRY] && !pipeline_has_ngg) {
+   if (stages[MESA_SHADER_GEOMETRY].nir && !pipeline_has_ngg) {
       struct radv_shader_info info = {0};
 
-      if (infos[MESA_SHADER_GEOMETRY].vs.outinfo.export_clip_dists)
+      if (stages[MESA_SHADER_GEOMETRY].info.vs.outinfo.export_clip_dists)
          info.vs.outinfo.export_clip_dists = true;
 
-      radv_nir_shader_info_pass(device, nir[MESA_SHADER_GEOMETRY], pipeline_layout, pipeline_key,
+      radv_nir_shader_info_pass(device, stages[MESA_SHADER_GEOMETRY].nir, pipeline_layout, pipeline_key,
                                 &info);
       info.wave_size = 64; /* Wave32 not supported. */
       info.workgroup_size = 64; /* HW VS: separate waves, no workgroups */
       info.ballot_bit_size = 64;
 
+      struct radv_shader_args gs_copy_args = {0};
+      gs_copy_args.is_gs_copy_shader = true;
+      gs_copy_args.explicit_scratch_args = !radv_use_llvm_for_stage(device, MESA_SHADER_VERTEX);
+      radv_declare_shader_args(device->physical_device->rad_info.chip_class, pipeline_key, &info,
+                               MESA_SHADER_VERTEX, false, MESA_SHADER_VERTEX, &gs_copy_args);
+      info.user_sgprs_locs = gs_copy_args.user_sgprs_locs;
+      info.inline_push_constant_mask = gs_copy_args.ac.inline_push_const_mask;
+
       pipeline->gs_copy_shader = radv_create_gs_copy_shader(
-         device, nir[MESA_SHADER_GEOMETRY], &info, &gs_copy_binary, keep_executable_info,
-         keep_statistic_info, pipeline_key->has_multiview_view_index,
-         pipeline_key->optimisations_disabled);
+         device, stages[MESA_SHADER_GEOMETRY].nir, &info, &gs_copy_args, &gs_copy_binary,
+         keep_executable_info, keep_statistic_info, pipeline_key->optimisations_disabled);
    }
 
-   if (nir[MESA_SHADER_FRAGMENT]) {
+   unsigned active_stages = 0;
+   for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; i++) {
+      if (stages[i].nir)
+         active_stages |= (1 << i);
+   }
+
+   if (stages[MESA_SHADER_FRAGMENT].nir) {
       if (!pipeline->shaders[MESA_SHADER_FRAGMENT]) {
-         radv_start_feedback(stage_feedbacks[MESA_SHADER_FRAGMENT]);
+         int64_t stage_start = os_time_get_nano();
 
          pipeline->shaders[MESA_SHADER_FRAGMENT] = radv_shader_compile(
-            device, modules[MESA_SHADER_FRAGMENT], &nir[MESA_SHADER_FRAGMENT], 1, pipeline_layout,
-            pipeline_key, infos + MESA_SHADER_FRAGMENT, keep_executable_info,
-            keep_statistic_info, &binaries[MESA_SHADER_FRAGMENT]);
+            device, &stages[MESA_SHADER_FRAGMENT], &stages[MESA_SHADER_FRAGMENT].nir, 1,
+            pipeline_key, keep_executable_info, keep_statistic_info, &binaries[MESA_SHADER_FRAGMENT]);
 
-         radv_stop_feedback(stage_feedbacks[MESA_SHADER_FRAGMENT], false);
+         stages[MESA_SHADER_FRAGMENT].feedback.duration += os_time_get_nano() - stage_start;
       }
+
+      active_stages &= ~(1 << MESA_SHADER_FRAGMENT);
    }
 
-   if (device->physical_device->rad_info.chip_class >= GFX9 && modules[MESA_SHADER_TESS_CTRL]) {
+   if (device->physical_device->rad_info.chip_class >= GFX9 && stages[MESA_SHADER_TESS_CTRL].nir) {
       if (!pipeline->shaders[MESA_SHADER_TESS_CTRL]) {
-         struct nir_shader *combined_nir[] = {nir[MESA_SHADER_VERTEX], nir[MESA_SHADER_TESS_CTRL]};
-
-         radv_start_feedback(stage_feedbacks[MESA_SHADER_TESS_CTRL]);
+         struct nir_shader *combined_nir[] = {stages[MESA_SHADER_VERTEX].nir, stages[MESA_SHADER_TESS_CTRL].nir};
+         int64_t stage_start = os_time_get_nano();
 
          pipeline->shaders[MESA_SHADER_TESS_CTRL] = radv_shader_compile(
-            device, modules[MESA_SHADER_TESS_CTRL], combined_nir, 2, pipeline_layout, pipeline_key,
-            &infos[MESA_SHADER_TESS_CTRL], keep_executable_info, keep_statistic_info,
-            &binaries[MESA_SHADER_TESS_CTRL]);
+            device, &stages[MESA_SHADER_TESS_CTRL], combined_nir, 2, pipeline_key, keep_executable_info,
+            keep_statistic_info, &binaries[MESA_SHADER_TESS_CTRL]);
 
-         radv_stop_feedback(stage_feedbacks[MESA_SHADER_TESS_CTRL], false);
+         stages[MESA_SHADER_TESS_CTRL].feedback.duration += os_time_get_nano() - stage_start;
       }
-      modules[MESA_SHADER_VERTEX] = NULL;
+
+      active_stages &= ~(1 << MESA_SHADER_VERTEX);
+      active_stages &= ~(1 << MESA_SHADER_TESS_CTRL);
    }
 
-   if (device->physical_device->rad_info.chip_class >= GFX9 && modules[MESA_SHADER_GEOMETRY]) {
+   if (device->physical_device->rad_info.chip_class >= GFX9 && stages[MESA_SHADER_GEOMETRY].nir) {
       gl_shader_stage pre_stage =
-         modules[MESA_SHADER_TESS_EVAL] ? MESA_SHADER_TESS_EVAL : MESA_SHADER_VERTEX;
+         stages[MESA_SHADER_TESS_EVAL].nir ? MESA_SHADER_TESS_EVAL : MESA_SHADER_VERTEX;
       if (!pipeline->shaders[MESA_SHADER_GEOMETRY]) {
-         struct nir_shader *combined_nir[] = {nir[pre_stage], nir[MESA_SHADER_GEOMETRY]};
+         struct nir_shader *combined_nir[] = {stages[pre_stage].nir, stages[MESA_SHADER_GEOMETRY].nir};
 
-         radv_start_feedback(stage_feedbacks[MESA_SHADER_GEOMETRY]);
+         int64_t stage_start = os_time_get_nano();
 
          pipeline->shaders[MESA_SHADER_GEOMETRY] = radv_shader_compile(
-            device, modules[MESA_SHADER_GEOMETRY], combined_nir, 2, pipeline_layout, pipeline_key,
-            &infos[MESA_SHADER_GEOMETRY], keep_executable_info,
+            device, &stages[MESA_SHADER_GEOMETRY], combined_nir, 2, pipeline_key, keep_executable_info,
             keep_statistic_info, &binaries[MESA_SHADER_GEOMETRY]);
 
-         radv_stop_feedback(stage_feedbacks[MESA_SHADER_GEOMETRY], false);
+         stages[MESA_SHADER_GEOMETRY].feedback.duration += os_time_get_nano() - stage_start;
       }
-      modules[pre_stage] = NULL;
+
+      active_stages &= ~(1 << pre_stage);
+      active_stages &= ~(1 << MESA_SHADER_GEOMETRY);
    }
 
-   for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; ++i) {
-      if (modules[i] && !pipeline->shaders[i]) {
-         radv_start_feedback(stage_feedbacks[i]);
+   u_foreach_bit(i, active_stages) {
+      if (!pipeline->shaders[i]) {
+         int64_t stage_start = os_time_get_nano();
 
          pipeline->shaders[i] = radv_shader_compile(
-            device, modules[i], &nir[i], 1, pipeline_layout, pipeline_key, infos + i,
+            device, &stages[i], &stages[i].nir, 1, pipeline_key,
             keep_executable_info, keep_statistic_info, &binaries[i]);
 
-         radv_stop_feedback(stage_feedbacks[i], false);
+         stages[i].feedback.duration += os_time_get_nano() - stage_start;
+      }
+   }
+
+   if (keep_executable_info) {
+      for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; ++i) {
+         struct radv_shader *shader = pipeline->shaders[i];
+         if (!shader)
+            continue;
+
+         if (!stages[i].spirv.size)
+            continue;
+
+         shader->spirv = malloc(stages[i].spirv.size);
+         memcpy(shader->spirv, stages[i].spirv.data, stages[i].spirv.size);
+         shader->spirv_size = stages[i].spirv.size;
       }
    }
 
@@ -4205,20 +4670,32 @@ radv_create_shaders(struct radv_pipeline *pipeline, struct radv_pipeline_layout 
    free(gs_copy_binary);
    for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; ++i) {
       free(binaries[i]);
-      if (nir[i]) {
-         ralloc_free(nir[i]);
-
-         if (radv_can_dump_shader_stats(device, modules[i])) {
+      if (stages[i].nir) {
+         if (radv_can_dump_shader_stats(device, stages[i].nir) && pipeline->shaders[i]) {
             radv_dump_shader_stats(device, pipeline, i, stderr);
          }
+
+         ralloc_free(stages[i].nir);
       }
    }
 
    if (fs_m.nir)
       ralloc_free(fs_m.nir);
 
-   radv_stop_feedback(pipeline_feedback, false);
-   return VK_SUCCESS;
+done:
+   pipeline_feedback.duration = os_time_get_nano() - pipeline_start;
+
+   if (creation_feedback) {
+      *creation_feedback->pPipelineCreationFeedback = pipeline_feedback;
+
+      assert(stageCount == creation_feedback->pipelineStageCreationFeedbackCount);
+      for (uint32_t i = 0; i < stageCount; i++) {
+         gl_shader_stage s = vk_to_mesa_shader_stage(pStages[i].stage);
+         creation_feedback->pPipelineStageCreationFeedbacks[i] = stages[s].feedback;
+      }
+   }
+
+   return result;
 }
 
 static uint32_t
@@ -4499,8 +4976,8 @@ radv_gfx9_compute_bin_size(const struct radv_pipeline *pipeline,
       },
    };
 
-   const VkPipelineRenderingCreateInfoKHR *render_create_info =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO_KHR);
+   const VkPipelineRenderingCreateInfo *render_create_info =
+      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO);
    VkExtent2D extent = {512, 512};
 
    unsigned log_num_rb_per_se =
@@ -4514,7 +4991,7 @@ radv_gfx9_compute_bin_size(const struct radv_pipeline *pipeline,
    unsigned color_bytes_per_pixel = 0;
 
    const VkPipelineColorBlendStateCreateInfo *vkblend =
-      radv_pipeline_get_color_blend_state(pCreateInfo);
+      radv_pipeline_get_color_blend_state(pipeline, pCreateInfo);
    if (vkblend) {
       for (unsigned i = 0; i < render_create_info->colorAttachmentCount; i++) {
          if (!vkblend->pAttachments[i].colorWriteMask)
@@ -4562,8 +5039,8 @@ static VkExtent2D
 radv_gfx10_compute_bin_size(const struct radv_pipeline *pipeline,
                             const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
-   const VkPipelineRenderingCreateInfoKHR *render_create_info =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO_KHR);
+   const VkPipelineRenderingCreateInfo *render_create_info =
+      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO);
    VkExtent2D extent = {512, 512};
 
    const unsigned db_tag_size = 64;
@@ -4591,8 +5068,8 @@ radv_gfx10_compute_bin_size(const struct radv_pipeline *pipeline,
    unsigned fmask_bytes_per_pixel = 0;
 
    const VkPipelineColorBlendStateCreateInfo *vkblend =
-      radv_pipeline_get_color_blend_state(pCreateInfo);
-   if (vkblend && render_create_info) {
+      radv_pipeline_get_color_blend_state(pipeline, pCreateInfo);
+   if (vkblend) {
       for (unsigned i = 0; i < render_create_info->colorAttachmentCount; i++) {
          if (!vkblend->pAttachments[i].colorWriteMask)
             continue;
@@ -4660,13 +5137,13 @@ radv_pipeline_init_disabled_binning_state(struct radv_pipeline *pipeline,
                                   S_028C44_DISABLE_START_OF_PRIM(1);
 
    if (pipeline->device->physical_device->rad_info.chip_class >= GFX10) {
-      const VkPipelineRenderingCreateInfoKHR *render_create_info =
-         vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO_KHR);
+      const VkPipelineRenderingCreateInfo *render_create_info =
+         vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO);
       const VkPipelineColorBlendStateCreateInfo *vkblend =
-         radv_pipeline_get_color_blend_state(pCreateInfo);
+         radv_pipeline_get_color_blend_state(pipeline, pCreateInfo);
       unsigned min_bytes_per_pixel = 0;
 
-      if (vkblend && render_create_info) {
+      if (vkblend) {
          for (unsigned i = 0; i < render_create_info->colorAttachmentCount; i++) {
             if (!vkblend->pAttachments[i].colorWriteMask)
                continue;
@@ -5798,9 +6275,7 @@ gfx103_pipeline_generate_vgt_draw_payload_cntl(struct radeon_cmdbuf *ctx_cs,
 {
    const struct radv_vs_output_info *outinfo = get_vs_output_info(pipeline);
 
-   bool enable_vrs =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR) ||
-      radv_is_state_dynamic(pCreateInfo, VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR);
+   bool enable_vrs = radv_is_vrs_enabled(pipeline, pCreateInfo);
 
    /* Enables the second channel of the primitive export instruction.
     * This channel contains: VRS rate x, y, viewport and layer.
@@ -5838,9 +6313,7 @@ gfx103_pipeline_generate_vrs_state(struct radeon_cmdbuf *ctx_cs,
 {
    uint32_t mode = V_028064_VRS_COMB_MODE_PASSTHRU;
    uint8_t rate_x = 0, rate_y = 0;
-   bool enable_vrs =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR) ||
-      radv_is_state_dynamic(pCreateInfo, VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR);
+   bool enable_vrs = radv_is_vrs_enabled(pipeline, pCreateInfo);
 
    if (!enable_vrs && gfx103_pipeline_vrs_coarse_shading(pipeline)) {
       /* When per-draw VRS is not enabled at all, try enabling VRS coarse shading 2x2 if the driver
@@ -5927,28 +6400,18 @@ radv_pipeline_generate_pm4(struct radv_pipeline *pipeline,
 static void
 radv_pipeline_init_vertex_input_state(struct radv_pipeline *pipeline,
                                       const VkGraphicsPipelineCreateInfo *pCreateInfo,
-                                      const struct radv_pipeline_key *key)
+                                      const struct radv_vertex_input_info *vi_info)
 {
    const struct radv_shader_info *info = &radv_get_shader(pipeline, MESA_SHADER_VERTEX)->info;
-   if (!key->vs.dynamic_input_state) {
-      const VkPipelineVertexInputStateCreateInfo *vi_info = pCreateInfo->pVertexInputState;
 
-      for (uint32_t i = 0; i < vi_info->vertexBindingDescriptionCount; i++) {
-         const VkVertexInputBindingDescription *desc = &vi_info->pVertexBindingDescriptions[i];
+   for (uint32_t i = 0; i < MAX_VERTEX_ATTRIBS; i++) {
+      pipeline->attrib_ends[i] = vi_info->attrib_ends[i];
+      pipeline->attrib_index_offset[i] = vi_info->attrib_index_offset[i];
+      pipeline->attrib_bindings[i] = vi_info->attrib_bindings[i];
+   }
 
-         pipeline->binding_stride[desc->binding] = desc->stride;
-      }
-
-      for (uint32_t i = 0; i < vi_info->vertexAttributeDescriptionCount; i++) {
-         const VkVertexInputAttributeDescription *desc = &vi_info->pVertexAttributeDescriptions[i];
-
-         uint32_t end = desc->offset + vk_format_get_blocksize(desc->format);
-         pipeline->attrib_ends[desc->location] = end;
-         if (pipeline->binding_stride[desc->binding])
-            pipeline->attrib_index_offset[desc->location] =
-               desc->offset / pipeline->binding_stride[desc->binding];
-         pipeline->attrib_bindings[desc->location] = desc->binding;
-      }
+   for (uint32_t i = 0; i < MAX_VBS; i++) {
+      pipeline->binding_stride[i] = vi_info->binding_stride[i];
    }
 
    pipeline->use_per_attribute_vb_descs = info->vs.use_per_attribute_vb_descs;
@@ -6034,6 +6497,7 @@ radv_pipeline_init_shader_stages_state(struct radv_pipeline *pipeline)
 
 static uint32_t
 radv_pipeline_init_vgt_gs_out(struct radv_pipeline *pipeline,
+                              const struct radv_vertex_input_info *vi_info,
                               const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    uint32_t gs_out;
@@ -6052,7 +6516,7 @@ radv_pipeline_init_vgt_gs_out(struct radv_pipeline *pipeline,
       gs_out =
          si_conv_gl_prim_to_gs_out(pipeline->shaders[MESA_SHADER_MESH]->info.ms.output_prim);
    } else {
-      gs_out = si_conv_prim_to_gs_out(pCreateInfo->pInputAssemblyState->topology);
+      gs_out = si_conv_prim_to_gs_out(vi_info->primitive_topology);
    }
 
    return gs_out;
@@ -6066,14 +6530,6 @@ radv_pipeline_init_extra(struct radv_pipeline *pipeline,
                          struct radv_depth_stencil_state *ds_state,
                          uint32_t *vgt_gs_out_prim_type)
 {
-   const VkPipelineRenderingCreateInfoKHR *render_create_info =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_RENDERING_CREATE_INFO_KHR);
-
-   bool has_depth_attachment =
-      render_create_info && render_create_info->depthAttachmentFormat != VK_FORMAT_UNDEFINED;
-   bool has_stencil_attachment =
-      render_create_info && render_create_info->stencilAttachmentFormat != VK_FORMAT_UNDEFINED;
-
    if (extra->custom_blend_mode == V_028808_CB_ELIMINATE_FAST_CLEAR ||
        extra->custom_blend_mode == V_028808_CB_FMASK_DECOMPRESS ||
        extra->custom_blend_mode == V_028808_CB_DCC_DECOMPRESS ||
@@ -6101,7 +6557,7 @@ radv_pipeline_init_extra(struct radv_pipeline *pipeline,
          *vgt_gs_out_prim_type = V_028A6C_RECTLIST;
    }
 
-   if (render_create_info && (has_depth_attachment || has_stencil_attachment)) {
+   if (radv_pipeline_has_ds_attachments(pCreateInfo)) {
       ds_state->db_render_control |= S_028000_DEPTH_CLEAR_ENABLE(extra->db_depth_clear);
       ds_state->db_render_control |= S_028000_STENCIL_CLEAR_ENABLE(extra->db_stencil_clear);
       ds_state->db_render_control |= S_028000_RESUMMARIZE_ENABLE(extra->resummarize_enable);
@@ -6110,51 +6566,66 @@ radv_pipeline_init_extra(struct radv_pipeline *pipeline,
    }
 }
 
+void
+radv_pipeline_init(struct radv_device *device, struct radv_pipeline *pipeline,
+                    enum radv_pipeline_type type)
+{
+   vk_object_base_init(&device->vk, &pipeline->base, VK_OBJECT_TYPE_PIPELINE);
+
+   pipeline->device = device;
+   pipeline->type = type;
+}
+
 static VkResult
-radv_pipeline_init(struct radv_pipeline *pipeline, struct radv_device *device,
-                   struct radv_pipeline_cache *cache,
-                   const VkGraphicsPipelineCreateInfo *pCreateInfo,
-                   const struct radv_graphics_pipeline_create_info *extra)
+radv_graphics_pipeline_init(struct radv_pipeline *pipeline, struct radv_device *device,
+                            struct radv_pipeline_cache *cache,
+                            const VkGraphicsPipelineCreateInfo *pCreateInfo,
+                            const struct radv_graphics_pipeline_create_info *extra)
 {
    RADV_FROM_HANDLE(radv_pipeline_layout, pipeline_layout, pCreateInfo->layout);
    VkResult result;
 
-   pipeline->device = device;
    pipeline->graphics.last_vgt_api_stage = MESA_SHADER_NONE;
+
+   /* Mark all states declared dynamic at pipeline creation. */
+   if (pCreateInfo->pDynamicState) {
+      uint32_t count = pCreateInfo->pDynamicState->dynamicStateCount;
+      for (uint32_t s = 0; s < count; s++) {
+         pipeline->graphics.dynamic_states |=
+            radv_dynamic_state_mask(pCreateInfo->pDynamicState->pDynamicStates[s]);
+      }
+   }
+
+   /* Mark all active stages at pipeline creation. */
+   for (uint32_t i = 0; i < pCreateInfo->stageCount; i++) {
+      const VkPipelineShaderStageCreateInfo *sinfo = &pCreateInfo->pStages[i];
+
+      pipeline->active_stages |= sinfo->stage;
+   }
 
    struct radv_blend_state blend = radv_pipeline_init_blend_state(pipeline, pCreateInfo);
 
-   const VkPipelineCreationFeedbackCreateInfoEXT *creation_feedback =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_CREATION_FEEDBACK_CREATE_INFO_EXT);
-   radv_init_feedback(creation_feedback);
+   struct radv_vertex_input_info vi_info =
+      radv_pipeline_init_vertex_input_interface(pipeline, pCreateInfo);
 
-   VkPipelineCreationFeedback *pipeline_feedback =
-      creation_feedback ? creation_feedback->pPipelineCreationFeedback : NULL;
-
-   const VkPipelineShaderStageCreateInfo *pStages[MESA_VULKAN_SHADER_STAGES] = {
-      0,
-   };
-   VkPipelineCreationFeedback *stage_feedbacks[MESA_VULKAN_SHADER_STAGES] = {0};
-   for (uint32_t i = 0; i < pCreateInfo->stageCount; i++) {
-      gl_shader_stage stage = ffs(pCreateInfo->pStages[i].stage) - 1;
-      pStages[stage] = &pCreateInfo->pStages[i];
-      if (creation_feedback)
-         stage_feedbacks[stage] = &creation_feedback->pPipelineStageCreationFeedbacks[i];
-   }
+   const VkPipelineCreationFeedbackCreateInfo *creation_feedback =
+      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_CREATION_FEEDBACK_CREATE_INFO);
 
    struct radv_pipeline_key key =
-      radv_generate_graphics_pipeline_key(pipeline, pCreateInfo, &blend);
+      radv_generate_graphics_pipeline_key(pipeline, pCreateInfo, &vi_info, &blend);
 
-   result = radv_create_shaders(pipeline, pipeline_layout, device, cache, &key, pStages,
-                                pCreateInfo->flags, NULL, pipeline_feedback, stage_feedbacks);
+   result = radv_create_shaders(pipeline, pipeline_layout, device, cache, &key, pCreateInfo->pStages,
+                                pCreateInfo->stageCount, pCreateInfo->flags, NULL,
+                                creation_feedback);
    if (result != VK_SUCCESS)
       return result;
 
    pipeline->graphics.spi_baryc_cntl = S_0286E0_FRONT_FACE_ALL_BITS(1);
    radv_pipeline_init_multisample_state(pipeline, &blend, pCreateInfo);
    if (!radv_pipeline_has_mesh(pipeline))
-      radv_pipeline_init_input_assembly_state(pipeline, pCreateInfo);
-   radv_pipeline_init_dynamic_state(pipeline, pCreateInfo);
+      radv_pipeline_init_input_assembly_state(pipeline, pCreateInfo, &vi_info);
+   radv_pipeline_init_dynamic_state(pipeline, pCreateInfo, &vi_info);
+   radv_pipeline_init_viewport_state(pipeline, pCreateInfo);
    radv_pipeline_init_raster_state(pipeline, pCreateInfo);
 
    struct radv_depth_stencil_state ds_state =
@@ -6201,9 +6672,9 @@ radv_pipeline_init(struct radv_pipeline *pipeline, struct radv_device *device,
    }
 
    if (!radv_pipeline_has_mesh(pipeline))
-      radv_pipeline_init_vertex_input_state(pipeline, pCreateInfo, &key);
+      radv_pipeline_init_vertex_input_state(pipeline, pCreateInfo, &vi_info);
 
-   uint32_t vgt_gs_out_prim_type = radv_pipeline_init_vgt_gs_out(pipeline, pCreateInfo);
+   uint32_t vgt_gs_out_prim_type = radv_pipeline_init_vgt_gs_out(pipeline, &vi_info, pCreateInfo);
 
    radv_pipeline_init_binning_state(pipeline, pCreateInfo, &blend);
    radv_pipeline_init_shader_stages_state(pipeline);
@@ -6248,10 +6719,9 @@ radv_graphics_pipeline_create_nonlegacy(VkDevice _device, VkPipelineCache _cache
    if (pipeline == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vk_object_base_init(&device->vk, &pipeline->base, VK_OBJECT_TYPE_PIPELINE);
-   pipeline->type = RADV_PIPELINE_GRAPHICS;
+   radv_pipeline_init(device, pipeline, RADV_PIPELINE_GRAPHICS);
 
-   result = radv_pipeline_init(pipeline, device, cache, pCreateInfo, extra);
+   result = radv_graphics_pipeline_init(pipeline, device, cache, pCreateInfo, extra);
    if (result != VK_SUCCESS) {
       radv_pipeline_destroy(device, pipeline, pAllocator);
       return result;
@@ -6272,7 +6742,7 @@ radv_graphics_pipeline_create(VkDevice _device, VkPipelineCache _cache,
 {
    VkGraphicsPipelineCreateInfo create_info = *pCreateInfo;
 
-   VkPipelineRenderingCreateInfoKHR rendering_create_info;
+   VkPipelineRenderingCreateInfo rendering_create_info;
    VkFormat color_formats[MAX_RTS];
    VkAttachmentSampleCountInfoAMD sample_info;
    VkSampleCountFlagBits samples[MAX_RTS];
@@ -6280,7 +6750,7 @@ radv_graphics_pipeline_create(VkDevice _device, VkPipelineCache _cache,
       RADV_FROM_HANDLE(radv_render_pass, pass, pCreateInfo->renderPass);
       struct radv_subpass *subpass = pass->subpasses + pCreateInfo->subpass;
 
-      rendering_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
+      rendering_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
       rendering_create_info.pNext = create_info.pNext;
       create_info.pNext = &rendering_create_info;
 
@@ -6419,11 +6889,7 @@ radv_generate_compute_pipeline_key(struct radv_pipeline *pipeline,
                                    const VkComputePipelineCreateInfo *pCreateInfo)
 {
    const VkPipelineShaderStageCreateInfo *stage = &pCreateInfo->stage;
-   struct radv_pipeline_key key;
-   memset(&key, 0, sizeof(key));
-
-   if (pCreateInfo->flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT)
-      key.optimisations_disabled = 1;
+   struct radv_pipeline_key key = radv_generate_pipeline_key(pipeline, pCreateInfo->flags);
 
    const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *subgroup_size =
       vk_find_struct_const(stage->pNext,
@@ -6436,9 +6902,6 @@ radv_generate_compute_pipeline_key(struct radv_pipeline *pipeline,
    } else if (stage->flags & VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT) {
       key.cs.require_full_subgroups = true;
    }
-
-   key.disable_aniso_single_level = pipeline->device->instance->disable_aniso_single_level &&
-                                    pipeline->device->physical_device->rad_info.chip_class < GFX8;
 
    return key;
 }
@@ -6453,10 +6916,6 @@ radv_compute_pipeline_create(VkDevice _device, VkPipelineCache _cache,
    RADV_FROM_HANDLE(radv_device, device, _device);
    RADV_FROM_HANDLE(radv_pipeline_cache, cache, _cache);
    RADV_FROM_HANDLE(radv_pipeline_layout, pipeline_layout, pCreateInfo->layout);
-   const VkPipelineShaderStageCreateInfo *pStages[MESA_VULKAN_SHADER_STAGES] = {
-      0,
-   };
-   VkPipelineCreationFeedback *stage_feedbacks[MESA_VULKAN_SHADER_STAGES] = {0};
    struct radv_pipeline *pipeline;
    VkResult result;
 
@@ -6467,29 +6926,21 @@ radv_compute_pipeline_create(VkDevice _device, VkPipelineCache _cache,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
-   vk_object_base_init(&device->vk, &pipeline->base, VK_OBJECT_TYPE_PIPELINE);
-   pipeline->type = RADV_PIPELINE_COMPUTE;
+   radv_pipeline_init(device, pipeline, RADV_PIPELINE_COMPUTE);
 
-   pipeline->device = device;
    pipeline->graphics.last_vgt_api_stage = MESA_SHADER_NONE;
    pipeline->compute.rt_stack_sizes = rt_stack_sizes;
    pipeline->compute.group_count = rt_group_count;
 
-   const VkPipelineCreationFeedbackCreateInfoEXT *creation_feedback =
-      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_CREATION_FEEDBACK_CREATE_INFO_EXT);
-   radv_init_feedback(creation_feedback);
+   const VkPipelineCreationFeedbackCreateInfo *creation_feedback =
+      vk_find_struct_const(pCreateInfo->pNext, PIPELINE_CREATION_FEEDBACK_CREATE_INFO);
 
-   VkPipelineCreationFeedback *pipeline_feedback =
-      creation_feedback ? creation_feedback->pPipelineCreationFeedback : NULL;
-   if (creation_feedback)
-      stage_feedbacks[MESA_SHADER_COMPUTE] = &creation_feedback->pPipelineStageCreationFeedbacks[0];
-
-   pStages[MESA_SHADER_COMPUTE] = &pCreateInfo->stage;
+   pipeline->active_stages |= MESA_SHADER_COMPUTE;
 
    struct radv_pipeline_key key = radv_generate_compute_pipeline_key(pipeline, pCreateInfo);
 
-   result = radv_create_shaders(pipeline, pipeline_layout, device, cache, &key, pStages,
-                                pCreateInfo->flags, custom_hash, pipeline_feedback, stage_feedbacks);
+   result = radv_create_shaders(pipeline, pipeline_layout, device, cache, &key, &pCreateInfo->stage,
+                                1, pCreateInfo->flags, custom_hash, creation_feedback);
    if (result != VK_SUCCESS) {
       radv_pipeline_destroy(device, pipeline, pAllocator);
       return result;
@@ -6503,6 +6954,14 @@ radv_compute_pipeline_create(VkDevice _device, VkPipelineCache _cache,
 
    pipeline->push_constant_size = pipeline_layout->push_constant_size;
    pipeline->dynamic_offset_count = pipeline_layout->dynamic_offset_count;
+
+   if (device->physical_device->rad_info.has_cs_regalloc_hang_bug) {
+      struct radv_shader *compute_shader = pipeline->shaders[MESA_SHADER_COMPUTE];
+      unsigned *cs_block_size = compute_shader->info.cs.block_size;
+
+      pipeline->compute.cs_regalloc_hang_bug =
+         cs_block_size[0] * cs_block_size[1] * cs_block_size[2] > 256;
+   }
 
    radv_compute_generate_pm4(pipeline);
 
@@ -6700,6 +7159,14 @@ radv_GetPipelineExecutableStatisticsKHR(VkDevice _device,
    VkPipelineExecutableStatisticKHR *s = pStatistics;
    VkPipelineExecutableStatisticKHR *end = s + (pStatistics ? *pStatisticCount : 0);
    VkResult result = VK_SUCCESS;
+
+   if (s < end) {
+      desc_copy(s->name, "Driver pipeline hash");
+      desc_copy(s->description, "Driver pipeline hash used by RGP");
+      s->format = VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR;
+      s->value.u64 = pipeline->pipeline_hash;
+   }
+   ++s;
 
    if (s < end) {
       desc_copy(s->name, "SGPRs");

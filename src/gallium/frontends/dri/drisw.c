@@ -398,8 +398,8 @@ drisw_allocate_textures(struct dri_context *stctx,
       templ.nr_storage_samples = 0;
 
       if (statts[i] == ST_ATTACHMENT_FRONT_LEFT &&
-          screen->base.screen->resource_create_front &&
-          loader->base.version >= 3) {
+                 screen->base.screen->resource_create_front &&
+                 loader->base.version >= 3) {
          drawable->textures[statts[i]] =
             screen->base.screen->resource_create_front(screen->base.screen, &templ, (const void *)drawable);
       } else
@@ -603,14 +603,15 @@ drisw_create_buffer(__DRIscreen * sPriv,
 const struct __DriverAPIRec galliumsw_driver_api = {
    .InitScreen = drisw_init_screen,
    .DestroyScreen = dri_destroy_screen,
-   .CreateContext = dri_create_context,
-   .DestroyContext = dri_destroy_context,
    .CreateBuffer = drisw_create_buffer,
    .DestroyBuffer = dri_destroy_buffer,
    .SwapBuffers = drisw_swap_buffers,
-   .MakeCurrent = dri_make_current,
-   .UnbindContext = dri_unbind_context,
    .CopySubBuffer = drisw_copy_sub_buffer,
+};
+
+static const struct __DRIDriverVtableExtensionRec galliumsw_vtable = {
+   .base = { __DRI_DRIVER_VTABLE, 1 },
+   .vtable = &galliumsw_driver_api,
 };
 
 /* This is the table of extensions that the loader will dlsym() for. */
@@ -619,6 +620,7 @@ const __DRIextension *galliumsw_driver_extensions[] = {
     &driSWRastExtension.base,
     &driCopySubBufferExtension.base,
     &gallium_config_options.base,
+    &galliumsw_vtable.base,
     NULL
 };
 

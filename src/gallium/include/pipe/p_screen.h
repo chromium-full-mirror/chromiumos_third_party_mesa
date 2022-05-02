@@ -170,6 +170,16 @@ struct pipe_screen {
    uint64_t (*get_timestamp)(struct pipe_screen *);
 
    /**
+    * Return an equivalent canonical format which has the same component sizes
+    * and swizzles as the original, and it is supported by the driver. Gallium
+    * already does a first canonicalization step (see get_canonical_format()
+    * on st_cb_copyimage.c) and it calls this function (if defined) to get an
+    * alternative format if the picked is not supported by the driver.
+    */
+   enum pipe_format (*get_canonical_format)(struct pipe_screen *,
+                                            enum pipe_format format);
+
+   /**
     * Create a context.
     *
     * \param screen      pipe screen
@@ -226,6 +236,10 @@ struct pipe_screen {
     */
    struct pipe_resource * (*resource_create)(struct pipe_screen *,
 					     const struct pipe_resource *templat);
+
+   struct pipe_resource * (*resource_create_drawable)(struct pipe_screen *,
+                                                      const struct pipe_resource *tmpl,
+                                                      const void *loader_private);
 
    struct pipe_resource * (*resource_create_front)(struct pipe_screen *,
                                                    const struct pipe_resource *templat,

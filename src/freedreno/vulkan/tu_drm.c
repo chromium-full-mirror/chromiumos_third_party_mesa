@@ -137,6 +137,23 @@ tu_device_get_suspend_count(struct tu_device *dev, uint64_t *suspend_count)
    return ret;
 }
 
+VkResult
+tu_device_check_status(struct vk_device *vk_device)
+{
+   struct tu_device *device = container_of(vk_device, struct tu_device, vk);
+   struct tu_physical_device *physical_device = device->physical_device;
+
+   uint64_t last_fault_count = physical_device->fault_count;
+   int ret = tu_drm_get_param(physical_device, MSM_PARAM_FAULTS, &physical_device->fault_count);
+   if (ret != 0)
+      return vk_device_set_lost(&device->vk, "error getting GPU fault count: %d", ret);
+
+   if (last_fault_count != physical_device->fault_count)
+      return vk_device_set_lost(&device->vk, "GPU faulted or hung");
+
+   return VK_SUCCESS;
+}
+
 int
 tu_drm_submitqueue_new(const struct tu_device *dev,
                        int priority,
@@ -729,6 +746,13 @@ tu_drm_device_init(struct tu_physical_device *device,
       goto fail;
    }
 
+   int ret = tu_drm_get_param(device, MSM_PARAM_FAULTS, &device->fault_count);
+   if (ret != 0) {
+      result = vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                                 "Failed to get initial fault count: %d", ret);
+      goto fail;
+   }
+
    device->syncobj_type = vk_drm_syncobj_get_type(fd);
    device->timeline_type = vk_sync_timeline_get_type(&tu_timeline_sync_type);
 
@@ -999,7 +1023,7 @@ tu_queue_submit_locked(struct tu_queue *queue, struct tu_queue_submit *submit)
       .flags = flags,
       .queueid = queue->msm_queue_id,
       .bos = (uint64_t)(uintptr_t) queue->device->bo_list,
-      .nr_bos = queue->device->bo_count,
+      .nr_bos = submit->entry_count ? queue->device->bo_count : 0,
       .cmds = (uint64_t)(uintptr_t)submit->cmds,
       .nr_cmds = submit->entry_count,
       .in_syncobjs = (uint64_t)(uintptr_t)submit->in_syncobjs,
@@ -1118,6 +1142,11 @@ tu_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
    uint32_t perf_pass_index = queue->device->perfcntrs_pass_cs ?
                               submit->perf_pass_index : ~0;
    struct tu_queue_submit submit_req;
+
+   if (unlikely(queue->device->physical_device->instance->debug_flags &
+                 TU_DEBUG_LOG_SKIP_GMEM_OPS)) {
+      tu_dbg_log_gmem_load_store_skips(queue->device);
+   }
 
    pthread_mutex_lock(&queue->device->submit_mutex);
 

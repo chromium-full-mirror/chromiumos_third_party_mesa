@@ -111,7 +111,7 @@ static void load_input_vs(struct si_shader_context *ctx, unsigned input_index, L
    unsigned bit_size = info->input[input_index].fp16_lo_hi_valid & 0x1 ? 16 : 32;
    LLVMTypeRef int_type = bit_size == 16 ? ctx->ac.i16 : ctx->ac.i32;
    LLVMTypeRef float_type = bit_size == 16 ? ctx->ac.f16 : ctx->ac.f32;
-   unsigned num_vbos_in_user_sgprs = ctx->shader->selector->num_vbos_in_user_sgprs;
+   unsigned num_vbos_in_user_sgprs = ctx->shader->selector->info.num_vbos_in_user_sgprs;
    union si_vs_fix_fetch fix_fetch;
    LLVMValueRef vb_desc;
    LLVMValueRef vertex_index;
@@ -304,8 +304,9 @@ void si_llvm_streamout_store_output(struct si_shader_context *ctx, LLVMValueRef 
    }
 
    ac_build_buffer_store_dword(&ctx->ac, so_buffers[buf_idx], vdata, NULL,
-                               so_write_offsets[buf_idx], ctx->ac.i32_0, stream_out->dst_offset * 4,
-                               ac_glc | ac_slc);
+                               LLVMBuildAdd(ctx->ac.builder, so_write_offsets[buf_idx],
+                                            LLVMConstInt(ctx->ac.i32, stream_out->dst_offset * 4, 0), ""),
+                               ctx->ac.i32_0, ac_glc | ac_slc);
 }
 
 /**
@@ -315,8 +316,7 @@ void si_llvm_streamout_store_output(struct si_shader_context *ctx, LLVMValueRef 
 void si_llvm_emit_streamout(struct si_shader_context *ctx, struct si_shader_output_values *outputs,
                             unsigned noutput, unsigned stream)
 {
-   struct si_shader_selector *sel = ctx->shader->selector;
-   struct pipe_stream_output_info *so = &sel->so;
+   struct pipe_stream_output_info *so = &ctx->so;
    LLVMBuilderRef builder = ctx->ac.builder;
    int i;
 
@@ -392,7 +392,7 @@ void si_llvm_clipvertex_to_clipdist(struct si_shader_context *ctx,
    LLVMValueRef ptr = ac_get_arg(&ctx->ac, ctx->internal_bindings);
    LLVMValueRef constbuf_index = LLVMConstInt(ctx->ac.i32, SI_VS_CONST_CLIP_PLANES, 0);
    LLVMValueRef const_resource = ac_build_load_to_sgpr(&ctx->ac, ptr, constbuf_index);
-   unsigned clipdist_mask = ctx->shader->selector->clipdist_mask &
+   unsigned clipdist_mask = ctx->shader->selector->info.clipdist_mask &
                             ~ctx->shader->key.ge.opt.kill_clip_distances;
 
    for (reg_index = 0; reg_index < 2; reg_index++) {
@@ -437,61 +437,6 @@ static void si_llvm_init_vs_export_args(struct si_shader_context *ctx, const LLV
    args->compr = false;
 
    memcpy(&args->out[0], values, sizeof(values[0]) * 4);
-}
-
-static void si_prepare_param_exports(struct si_shader_context *ctx,
-                                     const struct si_shader_output_values *outputs, unsigned noutput,
-                                     struct ac_export_args exports[32])
-{
-   struct si_shader *shader = ctx->shader;
-   unsigned param_count = 0;
-
-   memset(shader->info.vs_output_param_offset, AC_EXP_PARAM_DEFAULT_VAL_0000,
-          sizeof(shader->info.vs_output_param_offset));
-
-   for (unsigned i = 0; i < noutput; i++) {
-      unsigned semantic = outputs[i].semantic;
-
-      /* Skip if no channel writes to stream 0. */
-      if (outputs[i].vertex_streams & 0x03 &&
-          outputs[i].vertex_streams & 0x0c &&
-          outputs[i].vertex_streams & 0x30 &&
-          outputs[i].vertex_streams & 0xc0)
-         continue;
-
-      switch (semantic) {
-      case VARYING_SLOT_LAYER:
-      case VARYING_SLOT_VIEWPORT:
-      case VARYING_SLOT_CLIP_DIST0:
-      case VARYING_SLOT_CLIP_DIST1:
-      case VARYING_SLOT_COL0:
-      case VARYING_SLOT_COL1:
-      case VARYING_SLOT_BFC0:
-      case VARYING_SLOT_BFC1:
-      case VARYING_SLOT_PRIMITIVE_ID:
-      case VARYING_SLOT_FOGC:
-         break;
-      default:
-         if ((semantic >= VARYING_SLOT_TEX0 && semantic <= VARYING_SLOT_TEX7) ||
-             semantic >= VARYING_SLOT_VAR0)
-            break;
-         else
-            continue;
-      }
-
-      if ((semantic <= VARYING_SLOT_VAR31 || semantic >= VARYING_SLOT_VAR0_16BIT) &&
-          shader->key.ge.opt.kill_outputs &
-             (1ull << si_shader_io_get_unique_index(semantic, true)))
-         continue;
-
-      si_llvm_init_vs_export_args(ctx, outputs[i].values, V_008DFC_SQ_EXP_PARAM + param_count,
-                                  &exports[param_count]);
-
-      assert(i < ARRAY_SIZE(shader->info.vs_output_param_offset));
-      shader->info.vs_output_param_offset[i] = param_count++;
-   }
-
-   shader->info.nr_param_exports = param_count;
 }
 
 /**
@@ -570,15 +515,12 @@ void si_llvm_build_vs_exports(struct si_shader_context *ctx,
    LLVMValueRef psize_value = NULL, edgeflag_value = NULL, layer_value = NULL,
                 viewport_index_value = NULL;
    unsigned pos_idx, index;
-   unsigned clipdist_mask = (shader->selector->clipdist_mask &
+   unsigned clipdist_mask = (shader->selector->info.clipdist_mask &
                              ~shader->key.ge.opt.kill_clip_distances) |
-                            shader->selector->culldist_mask;
+                            shader->selector->info.culldist_mask;
    int i;
 
    si_vertex_color_clamping(ctx, outputs, noutput);
-
-   struct ac_export_args param_exports[32];
-   si_prepare_param_exports(ctx, outputs, noutput, param_exports);
 
    /* Build position exports. */
    for (i = 0; i < noutput; i++) {
@@ -748,7 +690,23 @@ void si_llvm_build_vs_exports(struct si_shader_context *ctx,
       ac_build_export(&ctx->ac, &pos_args[i]);
    }
 
-   /* Build parameter exports. */
+   /* Build parameter exports. Use 2 loops to export params in ascending order.
+    * 32 is the maximum number of parameter exports.
+    */
+   struct ac_export_args param_exports[32] = {};
+   uint64_t vs_output_param_mask = shader->info.vs_output_param_mask;
+
+   while (vs_output_param_mask) {
+      unsigned i = u_bit_scan64(&vs_output_param_mask);
+      unsigned offset = shader->info.vs_output_param_offset[outputs[i].semantic];
+
+      assert(offset <= AC_EXP_PARAM_OFFSET_31);
+      assert(!param_exports[offset].enabled_channels);
+
+      si_llvm_init_vs_export_args(ctx, outputs[i].values, V_008DFC_SQ_EXP_PARAM + offset,
+                                  &param_exports[offset]);
+   }
+
    for (unsigned i = 0; i < shader->info.nr_param_exports; i++)
       ac_build_export(&ctx->ac, &param_exports[i]);
 }
@@ -775,7 +733,7 @@ void si_llvm_emit_vs_epilogue(struct ac_shader_abi *abi)
       }
    }
 
-   if (!ctx->screen->use_ngg_streamout && ctx->shader->selector->so.num_outputs)
+   if (!ctx->screen->use_ngg_streamout && ctx->so.num_outputs)
       si_llvm_emit_streamout(ctx, outputs, i, 0);
 
    /* Export PrimitiveID. */

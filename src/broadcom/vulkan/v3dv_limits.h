@@ -23,8 +23,6 @@
 #ifndef V3DV_LIMITS_H
 #define V3DV_LIMITS_H
 
-#define NSEC_PER_SEC 1000000000ull
-
 /* From vulkan spec "If the multiple viewports feature is not enabled,
  * scissorCount must be 1", ditto for viewportCount. For now we don't support
  * that feature.
@@ -44,6 +42,7 @@
 #define MAX_INPUT_ATTACHMENTS 4
 
 #define MAX_UNIFORM_BUFFERS 12
+#define MAX_INLINE_UNIFORM_BUFFERS 4
 #define MAX_STORAGE_BUFFERS 8
 
 #define MAX_DYNAMIC_UNIFORM_BUFFERS 8

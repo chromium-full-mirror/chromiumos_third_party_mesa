@@ -113,7 +113,7 @@ static void si_create_compute_state_async(void *job, void *gdata, int thread_ind
    struct si_shader_selector *sel = &program->sel;
    struct si_shader *shader = &program->shader;
    struct ac_llvm_compiler *compiler;
-   struct pipe_debug_callback *debug = &sel->compiler_ctx_state.debug;
+   struct util_debug_callback *debug = &sel->compiler_ctx_state.debug;
    struct si_screen *sscreen = sel->screen;
 
    assert(!debug->debug_message || debug->async);
@@ -125,7 +125,7 @@ static void si_create_compute_state_async(void *job, void *gdata, int thread_ind
       si_init_compiler(sscreen, compiler);
 
    assert(program->ir_type == PIPE_SHADER_IR_NIR);
-   si_nir_scan_shader(sel->nir, &sel->info);
+   si_nir_scan_shader(sscreen, sel->nir, &sel->info);
 
    si_get_active_slot_masks(&sel->info, &sel->active_const_and_shader_buffers,
                             &sel->active_samplers_and_images);
@@ -177,11 +177,11 @@ static void si_create_compute_state_async(void *job, void *gdata, int thread_ind
    if (si_shader_cache_load_shader(sscreen, ir_sha1_cache_key, shader)) {
       simple_mtx_unlock(&sscreen->shader_cache_mutex);
 
-      si_shader_dump_stats_for_shader_db(sscreen, shader, debug);
-      si_shader_dump(sscreen, shader, debug, stderr, true);
-
       if (!si_shader_binary_upload(sscreen, shader, 0))
          program->shader.compilation_failed = true;
+
+      si_shader_dump_stats_for_shader_db(sscreen, shader, debug);
+      si_shader_dump(sscreen, shader, debug, stderr, true);
    } else {
       simple_mtx_unlock(&sscreen->shader_cache_mutex);
 
@@ -231,7 +231,7 @@ static void *si_create_compute_state(struct pipe_context *ctx, const struct pipe
    struct si_shader_selector *sel = &program->sel;
 
    pipe_reference_init(&sel->base.reference, 1);
-   sel->info.stage = MESA_SHADER_COMPUTE;
+   sel->stage = MESA_SHADER_COMPUTE;
    sel->screen = sscreen;
    sel->const_and_shader_buf_descriptors_index =
       si_const_and_shader_buffer_descriptors_idx(PIPE_SHADER_COMPUTE);
@@ -274,8 +274,10 @@ static void *si_create_compute_state(struct pipe_context *ctx, const struct pipe
       const amd_kernel_code_t *code_object = si_compute_get_code_object(program, 0);
       code_object_to_config(code_object, &program->shader.config);
 
+      bool ok = si_shader_binary_upload(sctx->screen, &program->shader, 0);
       si_shader_dump(sctx->screen, &program->shader, &sctx->debug, stderr, true);
-      if (!si_shader_binary_upload(sctx->screen, &program->shader, 0)) {
+
+      if (!ok) {
          fprintf(stderr, "LLVM failed to upload shader\n");
          free((void *)program->shader.binary.elf_buffer);
          FREE(program);
@@ -453,7 +455,7 @@ static bool si_setup_compute_scratch_buffer(struct si_context *sctx, struct si_s
 {
    uint64_t scratch_bo_size, scratch_needed;
    scratch_bo_size = 0;
-   scratch_needed = sctx->max_seen_compute_scratch_bytes_per_wave * sctx->scratch_waves;
+   scratch_needed = sctx->max_seen_compute_scratch_bytes_per_wave * sctx->screen->info.max_scratch_waves;
    if (sctx->compute_scratch_buffer)
       scratch_bo_size = sctx->compute_scratch_buffer->b.b.width0;
 
@@ -524,7 +526,7 @@ static bool si_switch_compute_shader(struct si_context *sctx, struct si_compute 
    }
 
    unsigned tmpring_size;
-   ac_get_scratch_tmpring_size(&sctx->screen->info, sctx->scratch_waves,
+   ac_get_scratch_tmpring_size(&sctx->screen->info, true,
                                config->scratch_bytes_per_wave,
                                &sctx->max_seen_compute_scratch_bytes_per_wave, &tmpring_size);
 
@@ -532,12 +534,6 @@ static bool si_switch_compute_shader(struct si_context *sctx, struct si_compute 
       return false;
 
    if (shader->scratch_bo) {
-      COMPUTE_DBG(sctx->screen,
-                  "Waves: %u; Scratch per wave: %u bytes; "
-                  "Total Scratch: %u bytes\n",
-                  sctx->scratch_waves, config->scratch_bytes_per_wave,
-                  config->scratch_bytes_per_wave * sctx->scratch_waves);
-
       radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, shader->scratch_bo,
                                 RADEON_USAGE_READWRITE | RADEON_PRIO_SCRATCH_BUFFER);
    }

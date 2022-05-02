@@ -2566,6 +2566,10 @@ iris_create_sampler_view(struct pipe_context *ctx,
          isv->view.base_array_layer = 0;
          isv->view.array_len = 1;
       } else {
+#if GFX_VER < 9
+         /* Hardware older than skylake ignores this value */
+         assert(tex->target != PIPE_TEXTURE_3D || !tmpl->u.tex.first_layer);
+#endif
          isv->view.base_array_layer = tmpl->u.tex.first_layer;
          isv->view.array_len =
             tmpl->u.tex.last_layer - tmpl->u.tex.first_layer + 1;
@@ -3016,8 +3020,13 @@ iris_set_global_binding(struct pipe_context *ctx,
       if (resources && resources[i]) {
          pipe_resource_reference(&ice->state.global_bindings[start_slot + i],
                                  resources[i]);
+
          struct iris_resource *res = (void *) resources[i];
-         uint64_t addr = res->bo->address;
+         assert(res->base.b.target == PIPE_BUFFER);
+         util_range_add(&res->base.b, &res->valid_buffer_range,
+                        0, res->base.b.width0);
+
+         uint64_t addr = res->bo->address + res->offset;
          memcpy(handles[i], &addr, sizeof(addr));
       } else {
          pipe_resource_reference(&ice->state.global_bindings[start_slot + i],
@@ -3851,26 +3860,13 @@ iris_set_stream_output_targets(struct pipe_context *ctx,
       if (active) {
          ice->state.dirty |= IRIS_DIRTY_SO_DECL_LIST;
       } else {
-         uint32_t flush = 0;
          for (int i = 0; i < PIPE_MAX_SO_BUFFERS; i++) {
             struct iris_stream_output_target *tgt =
                (void *) ice->state.so_target[i];
-            if (tgt) {
-               struct iris_resource *res = (void *) tgt->base.buffer;
 
-               flush |= iris_flush_bits_for_history(ice, res);
-               iris_dirty_for_history(ice, res);
-            }
+            if (tgt)
+               iris_dirty_for_history(ice, (void *)tgt->base.buffer);
          }
-#if GFX_VER >= 12
-         /* SO draws require flushing of const cache to make SO data
-          * observable when VB/IB are cached in L3.
-          */
-         if (flush & PIPE_CONTROL_VF_CACHE_INVALIDATE)
-            flush |= PIPE_CONTROL_CONST_CACHE_INVALIDATE;
-#endif
-         iris_emit_pipe_control_flush(&ice->batches[IRIS_BATCH_RENDER],
-                                      "make streamout results visible", flush);
       }
    }
 
@@ -4996,15 +4992,15 @@ use_sampler_view(struct iris_context *ice,
 
    if (isv->res->aux.clear_color_bo) {
       iris_use_pinned_bo(batch, isv->res->aux.clear_color_bo,
-                         false, IRIS_DOMAIN_OTHER_READ);
+                         false, IRIS_DOMAIN_SAMPLER_READ);
    }
 
    if (isv->res->aux.bo) {
       iris_use_pinned_bo(batch, isv->res->aux.bo,
-                         false, IRIS_DOMAIN_OTHER_READ);
+                         false, IRIS_DOMAIN_SAMPLER_READ);
    }
 
-   iris_use_pinned_bo(batch, isv->res->bo, false, IRIS_DOMAIN_OTHER_READ);
+   iris_use_pinned_bo(batch, isv->res->bo, false, IRIS_DOMAIN_SAMPLER_READ);
 
    return use_surface_state(batch, &isv->surface_state, aux_usage);
 }
@@ -5098,7 +5094,7 @@ iris_populate_binding_table(struct iris_context *ice,
       struct iris_state_ref *grid_data = &ice->state.grid_size;
       struct iris_state_ref *grid_state = &ice->state.grid_surf_state;
       iris_use_pinned_bo(batch, iris_resource_bo(grid_data->res), false,
-                         IRIS_DOMAIN_OTHER_READ);
+                         IRIS_DOMAIN_PULL_CONSTANT_READ);
       iris_use_pinned_bo(batch, iris_resource_bo(grid_state->res), false,
                          IRIS_DOMAIN_NONE);
       push_bt_entry(grid_state->offset);
@@ -5137,7 +5133,7 @@ iris_populate_binding_table(struct iris_context *ice,
       if (cso_fb->cbufs[i]) {
          addr = use_surface(ice, batch, cso_fb->cbufs[i],
                             false, ice->state.draw_aux_usage[i], true,
-                            IRIS_DOMAIN_OTHER_READ);
+                            IRIS_DOMAIN_SAMPLER_READ);
          push_bt_entry(addr);
       }
    }
@@ -5157,7 +5153,7 @@ iris_populate_binding_table(struct iris_context *ice,
    foreach_surface_used(i, IRIS_SURFACE_GROUP_UBO) {
       uint32_t addr = use_ubo_ssbo(batch, ice, &shs->constbuf[i],
                                    &shs->constbuf_surf_state[i], false,
-                                   IRIS_DOMAIN_OTHER_READ);
+                                   IRIS_DOMAIN_PULL_CONSTANT_READ);
       push_bt_entry(addr);
    }
 
@@ -5199,21 +5195,18 @@ pin_depth_and_stencil_buffers(struct iris_batch *batch,
    iris_get_depth_stencil_resources(zsbuf->texture, &zres, &sres);
 
    if (zres) {
-      const enum iris_domain access = cso_zsa->depth_writes_enabled ?
-         IRIS_DOMAIN_DEPTH_WRITE : IRIS_DOMAIN_OTHER_READ;
       iris_use_pinned_bo(batch, zres->bo, cso_zsa->depth_writes_enabled,
-                         access);
+                         IRIS_DOMAIN_DEPTH_WRITE);
       if (zres->aux.bo) {
          iris_use_pinned_bo(batch, zres->aux.bo,
-                            cso_zsa->depth_writes_enabled, access);
+                            cso_zsa->depth_writes_enabled,
+                            IRIS_DOMAIN_DEPTH_WRITE);
       }
    }
 
    if (sres) {
-      const enum iris_domain access = cso_zsa->stencil_writes_enabled ?
-         IRIS_DOMAIN_DEPTH_WRITE : IRIS_DOMAIN_OTHER_READ;
       iris_use_pinned_bo(batch, sres->bo, cso_zsa->stencil_writes_enabled,
-                         access);
+                         IRIS_DOMAIN_DEPTH_WRITE);
    }
 }
 
@@ -5624,6 +5617,9 @@ setup_constant_buffers(struct iris_context *ice,
 
       assert(cbuf->buffer_offset % 32 == 0);
 
+      if (res)
+         iris_emit_buffer_barrier_for(batch, res->bo, IRIS_DOMAIN_OTHER_READ);
+
       push_bos->buffers[n].length = range->length;
       push_bos->buffers[n].addr =
          res ? ro_bo(res->bo, range->start * 32 + cbuf->buffer_offset)
@@ -5850,7 +5846,7 @@ iris_upload_dirty_render_state(struct iris_context *ice,
          float vp_ymin = viewport_extent(state, 1, -1.0f);
          float vp_ymax = viewport_extent(state, 1,  1.0f);
 
-         intel_calculate_guardband_size(cso_fb->width, cso_fb->height,
+         intel_calculate_guardband_size(0, cso_fb->width, 0, cso_fb->height,
                                         state->scale[0], state->scale[1],
                                         state->translate[0], state->translate[1],
                                         &gb_xmin, &gb_xmax, &gb_ymin, &gb_ymax);
@@ -6222,6 +6218,17 @@ iris_upload_dirty_render_state(struct iris_context *ice,
 
    if (ice->state.streamout_active) {
       if (dirty & IRIS_DIRTY_SO_BUFFERS) {
+         /* Wa_16011411144
+          * SW must insert a PIPE_CONTROL cmd before and after the
+          * 3dstate_so_buffer_index_0/1/2/3 states to ensure so_buffer_index_* state is
+          * not combined with other state changes.
+          */
+         if (intel_device_info_is_dg2(&batch->screen->devinfo)) {
+            iris_emit_pipe_control_flush(batch,
+                                         "SO pre change stall WA",
+                                         PIPE_CONTROL_CS_STALL);
+         }
+
          for (int i = 0; i < 4; i++) {
             struct iris_stream_output_target *tgt =
                (void *) ice->state.so_target[i];
@@ -6250,6 +6257,13 @@ iris_upload_dirty_render_state(struct iris_context *ice,
             } else {
                iris_batch_emit(batch, so_buffers, 4 * dwords);
             }
+         }
+
+         /* Wa_16011411144 */
+         if (intel_device_info_is_dg2(&batch->screen->devinfo)) {
+            iris_emit_pipe_control_flush(batch,
+                                         "SO post change stall WA",
+                                         PIPE_CONTROL_CS_STALL);
          }
       }
 
@@ -6356,6 +6370,8 @@ iris_upload_dirty_render_state(struct iris_context *ice,
             wm.EarlyDepthStencilControl = EDSC_PREPS;
          else if (wm_prog_data->has_side_effects)
             wm.EarlyDepthStencilControl = EDSC_PSEXEC;
+         else
+            wm.EarlyDepthStencilControl = EDSC_NORMAL;
 
          /* We could skip this bit if color writes are enabled. */
          if (wm_prog_data->has_side_effects || wm_prog_data->uses_kill)
@@ -7016,14 +7032,11 @@ iris_upload_render_state(struct iris_context *ice,
    } else if (indirect && indirect->count_from_stream_output) {
       struct iris_stream_output_target *so =
          (void *) indirect->count_from_stream_output;
+      struct iris_bo *so_bo = iris_resource_bo(so->offset.res);
 
-      /* XXX: Replace with actual cache tracking */
-      iris_emit_pipe_control_flush(batch,
-                                   "draw count from stream output stall",
-                                   PIPE_CONTROL_CS_STALL);
+      iris_emit_buffer_barrier_for(batch, so_bo, IRIS_DOMAIN_OTHER_READ);
 
-      struct iris_address addr =
-         ro_bo(iris_resource_bo(so->offset.res), so->offset.offset);
+      struct iris_address addr = ro_bo(so_bo, so->offset.offset);
       struct mi_value offset =
          mi_iadd_imm(&b, mi_mem32(addr), -so->base.buffer_offset);
       mi_store(&b, mi_reg32(_3DPRIM_VERTEX_COUNT),
@@ -7581,6 +7594,8 @@ iris_rebind_buffer(struct iris_context *ice,
 static void
 batch_mark_sync_for_pipe_control(struct iris_batch *batch, uint32_t flags)
 {
+   const struct intel_device_info *devinfo = &batch->screen->devinfo;
+
    iris_batch_sync_boundary(batch);
 
    if ((flags & PIPE_CONTROL_CS_STALL)) {
@@ -7590,8 +7605,24 @@ batch_mark_sync_for_pipe_control(struct iris_batch *batch, uint32_t flags)
       if ((flags & PIPE_CONTROL_DEPTH_CACHE_FLUSH))
          iris_batch_mark_flush_sync(batch, IRIS_DOMAIN_DEPTH_WRITE);
 
-      if ((flags & PIPE_CONTROL_DATA_CACHE_FLUSH))
+      if ((flags & PIPE_CONTROL_TILE_CACHE_FLUSH)) {
+         /* A tile cache flush makes any C/Z data in L3 visible to memory. */
+         const unsigned c = IRIS_DOMAIN_RENDER_WRITE;
+         const unsigned z = IRIS_DOMAIN_DEPTH_WRITE;
+         batch->coherent_seqnos[c][c] = batch->l3_coherent_seqnos[c];
+         batch->coherent_seqnos[z][z] = batch->l3_coherent_seqnos[z];
+      }
+
+      if (flags & (PIPE_CONTROL_FLUSH_HDC | PIPE_CONTROL_DATA_CACHE_FLUSH)) {
+         /* HDC and DC flushes both flush the data cache out to L3 */
          iris_batch_mark_flush_sync(batch, IRIS_DOMAIN_DATA_WRITE);
+      }
+
+      if ((flags & PIPE_CONTROL_DATA_CACHE_FLUSH)) {
+         /* A DC flush also flushes L3 data cache lines out to memory. */
+         const unsigned i = IRIS_DOMAIN_DATA_WRITE;
+         batch->coherent_seqnos[i][i] = batch->l3_coherent_seqnos[i];
+      }
 
       if ((flags & PIPE_CONTROL_FLUSH_ENABLE))
          iris_batch_mark_flush_sync(batch, IRIS_DOMAIN_OTHER_WRITE);
@@ -7599,6 +7630,8 @@ batch_mark_sync_for_pipe_control(struct iris_batch *batch, uint32_t flags)
       if ((flags & (PIPE_CONTROL_CACHE_FLUSH_BITS |
                     PIPE_CONTROL_STALL_AT_SCOREBOARD))) {
          iris_batch_mark_flush_sync(batch, IRIS_DOMAIN_VF_READ);
+         iris_batch_mark_flush_sync(batch, IRIS_DOMAIN_SAMPLER_READ);
+         iris_batch_mark_flush_sync(batch, IRIS_DOMAIN_PULL_CONSTANT_READ);
          iris_batch_mark_flush_sync(batch, IRIS_DOMAIN_OTHER_READ);
       }
    }
@@ -7609,7 +7642,7 @@ batch_mark_sync_for_pipe_control(struct iris_batch *batch, uint32_t flags)
    if ((flags & PIPE_CONTROL_DEPTH_CACHE_FLUSH))
       iris_batch_mark_invalidate_sync(batch, IRIS_DOMAIN_DEPTH_WRITE);
 
-   if ((flags & PIPE_CONTROL_DATA_CACHE_FLUSH))
+   if (flags & (PIPE_CONTROL_FLUSH_HDC | PIPE_CONTROL_DATA_CACHE_FLUSH))
       iris_batch_mark_invalidate_sync(batch, IRIS_DOMAIN_DATA_WRITE);
 
    if ((flags & PIPE_CONTROL_FLUSH_ENABLE))
@@ -7618,9 +7651,37 @@ batch_mark_sync_for_pipe_control(struct iris_batch *batch, uint32_t flags)
    if ((flags & PIPE_CONTROL_VF_CACHE_INVALIDATE))
       iris_batch_mark_invalidate_sync(batch, IRIS_DOMAIN_VF_READ);
 
-   if ((flags & PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE) &&
-       (flags & PIPE_CONTROL_CONST_CACHE_INVALIDATE))
-      iris_batch_mark_invalidate_sync(batch, IRIS_DOMAIN_OTHER_READ);
+   if ((flags & PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE))
+      iris_batch_mark_invalidate_sync(batch, IRIS_DOMAIN_SAMPLER_READ);
+
+   /* Technically, to invalidate IRIS_DOMAIN_PULL_CONSTANT_READ, we need
+    * both "Constant Cache Invalidate" and either "Texture Cache Invalidate"
+    * or "Data Cache Flush" set, depending on the setting of
+    * compiler->indirect_ubos_use_sampler.
+    *
+    * However, "Data Cache Flush" and "Constant Cache Invalidate" will never
+    * appear in the same PIPE_CONTROL command, because one is bottom-of-pipe
+    * while the other is top-of-pipe.  Because we only look at one flush at
+    * a time, we won't see both together.
+    *
+    * To deal with this, we mark it as invalidated when the constant cache
+    * is invalidated, and trust the callers to also flush the other related
+    * cache correctly at the same time.
+    */
+   if ((flags & PIPE_CONTROL_CONST_CACHE_INVALIDATE))
+      iris_batch_mark_invalidate_sync(batch, IRIS_DOMAIN_PULL_CONSTANT_READ);
+
+   /* IRIS_DOMAIN_OTHER_READ no longer uses any caches. */
+
+   if ((flags & PIPE_CONTROL_L3_RO_INVALIDATE_BITS) == PIPE_CONTROL_L3_RO_INVALIDATE_BITS) {
+      /* If we just invalidated the read-only lines of L3, then writes from non-L3-coherent
+       * domains will now be visible to those L3 clients.
+       */
+      for (unsigned i = 0; i < NUM_IRIS_DOMAINS; i++) {
+         if (!iris_domain_is_l3_coherent(devinfo, i))
+            batch->l3_coherent_seqnos[i] = batch->coherent_seqnos[i][i];
+      }
+   }
 }
 
 static unsigned
@@ -7709,6 +7770,18 @@ iris_emit_raw_pipe_control(struct iris_batch *batch,
       return;
    }
 #endif
+
+   /* The "L3 Read Only Cache Invalidation Bit" docs say it "controls the
+    * invalidation of the Geometry streams cached in L3 cache at the top
+    * of the pipe".  In other words, index & vertex data that gets cached
+    * in L3 when VERTEX_BUFFER_STATE::L3BypassDisable is set.
+    *
+    * Normally, invalidating L1/L2 read-only caches also invalidate their
+    * related L3 cachelines, but this isn't the case for the VF cache.
+    * Emulate it by setting the L3 Read Only bit when doing a VF invalidate.
+    */
+   if (flags & PIPE_CONTROL_VF_CACHE_INVALIDATE)
+      flags |= PIPE_CONTROL_L3_READ_ONLY_CACHE_INVALIDATE;
 
    /* Recursive PIPE_CONTROL workarounds --------------------------------
     * (http://knowyourmeme.com/memes/xzibit-yo-dawg)
@@ -8094,11 +8167,8 @@ iris_emit_raw_pipe_control(struct iris_batch *batch,
       pc.StateCacheInvalidationEnable =
          flags & PIPE_CONTROL_STATE_CACHE_INVALIDATE;
 #if GFX_VER >= 12
-      /* Invalidates the L3 cache part in which index & vertex data is loaded
-       * when VERTEX_BUFFER_STATE::L3BypassDisable is set.
-       */
       pc.L3ReadOnlyCacheInvalidationEnable =
-         flags & PIPE_CONTROL_VF_CACHE_INVALIDATE;
+         flags & PIPE_CONTROL_L3_READ_ONLY_CACHE_INVALIDATE;
 #endif
       pc.VFCacheInvalidationEnable = flags & PIPE_CONTROL_VF_CACHE_INVALIDATE;
       pc.ConstantCacheInvalidationEnable =

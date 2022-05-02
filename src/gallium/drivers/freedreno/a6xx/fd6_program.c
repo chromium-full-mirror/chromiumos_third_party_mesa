@@ -114,7 +114,7 @@ fd6_emit_shader(struct fd_context *ctx, struct fd_ringbuffer *ring,
       uint32_t total_size =
          ALIGN(per_fiber_size * fibers_per_sp, 1 << 12) * num_sp_cores;
       ctx->pvtmem[so->pvtmem_per_wave].bo = fd_bo_new(
-         ctx->screen->dev, total_size, 0,
+         ctx->screen->dev, total_size, FD_BO_NOMAP,
          "pvtmem_%s_%d", so->pvtmem_per_wave ? "per_wave" : "per_fiber",
          per_fiber_size);
    } else {
@@ -713,7 +713,6 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
          ring,
          A6XX_SP_DS_CTRL_REG0_FULLREGFOOTPRINT(ds->info.max_reg + 1) |
             A6XX_SP_DS_CTRL_REG0_HALFREGFOOTPRINT(ds->info.max_half_reg + 1) |
-            COND(ds->mergedregs, A6XX_SP_DS_CTRL_REG0_MERGEDREGS) |
             A6XX_SP_DS_CTRL_REG0_BRANCHSTACK(ir3_shader_branchstack_hw(ds)));
 
       fd6_emit_shader(ctx, ring, ds);
@@ -1277,7 +1276,7 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
       fd_screen_lock(screen);
       if (!screen->tess_bo)
          screen->tess_bo =
-            fd_bo_new(screen->dev, FD6_TESS_BO_SIZE, 0, "tessfactor");
+            fd_bo_new(screen->dev, FD6_TESS_BO_SIZE, FD_BO_NOMAP, "tessfactor");
       fd_screen_unlock(screen);
    }
 

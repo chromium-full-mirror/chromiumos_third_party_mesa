@@ -209,7 +209,12 @@ dri2_drawable_get_buffers(struct dri_drawable *drawable,
    return buffers;
 }
 
-static bool
+bool
+dri_image_drawable_get_buffers(struct dri_drawable *drawable,
+                               struct __DRIimageList *images,
+                               const enum st_attachment_type *statts,
+                               unsigned statts_count);
+bool
 dri_image_drawable_get_buffers(struct dri_drawable *drawable,
                                struct __DRIimageList *images,
                                const enum st_attachment_type *statts,
@@ -1864,6 +1869,58 @@ static const __DRIimageExtension dri2ImageExtensionTempl = {
     .createImageWithModifiers2    = NULL,
 };
 
+const __DRIimageExtension driVkImageExtension = {
+    .base = { __DRI_IMAGE, 20 },
+
+    .createImageFromName          = dri2_create_image_from_name,
+    .createImageFromRenderbuffer  = dri2_create_image_from_renderbuffer,
+    .destroyImage                 = dri2_destroy_image,
+    .createImage                  = dri2_create_image,
+    .queryImage                   = dri2_query_image,
+    .dupImage                     = dri2_dup_image,
+    .validateUsage                = dri2_validate_usage,
+    .createImageFromNames         = dri2_from_names,
+    .fromPlanar                   = dri2_from_planar,
+    .createImageFromTexture       = dri2_create_from_texture,
+    .createImageFromFds           = dri2_from_fds,
+    .createImageFromFds2          = dri2_from_fds2,
+    .createImageFromDmaBufs       = dri2_from_dma_bufs,
+    .blitImage                    = dri2_blit_image,
+    .getCapabilities              = dri2_get_capabilities,
+    .mapImage                     = dri2_map_image,
+    .unmapImage                   = dri2_unmap_image,
+    .createImageWithModifiers     = dri2_create_image_with_modifiers,
+    .createImageFromDmaBufs2      = dri2_from_dma_bufs2,
+    .createImageFromDmaBufs3      = dri2_from_dma_bufs3,
+    .queryDmaBufFormats           = dri2_query_dma_buf_formats,
+    .queryDmaBufModifiers         = dri2_query_dma_buf_modifiers,
+    .queryDmaBufFormatModifierAttribs = dri2_query_dma_buf_format_modifier_attribs,
+    .createImageFromRenderbuffer2 = dri2_create_image_from_renderbuffer2,
+    .createImageWithModifiers2    = dri2_create_image_with_modifiers2,
+};
+
+const __DRIimageExtension driVkImageExtensionSw = {
+    .base = { __DRI_IMAGE, 20 },
+
+    .createImageFromName          = dri2_create_image_from_name,
+    .createImageFromRenderbuffer  = dri2_create_image_from_renderbuffer,
+    .destroyImage                 = dri2_destroy_image,
+    .createImage                  = dri2_create_image,
+    .queryImage                   = dri2_query_image,
+    .dupImage                     = dri2_dup_image,
+    .validateUsage                = dri2_validate_usage,
+    .createImageFromNames         = dri2_from_names,
+    .fromPlanar                   = dri2_from_planar,
+    .createImageFromTexture       = dri2_create_from_texture,
+    .createImageFromFds           = dri2_from_fds,
+    .createImageFromFds2          = dri2_from_fds2,
+    .blitImage                    = dri2_blit_image,
+    .getCapabilities              = dri2_get_capabilities,
+    .mapImage                     = dri2_map_image,
+    .unmapImage                   = dri2_unmap_image,
+    .createImageFromRenderbuffer2 = dri2_create_image_from_renderbuffer2,
+};
+
 static const __DRIrobustnessExtension dri2Robustness = {
    .base = { __DRI2_ROBUSTNESS, 1 }
 };
@@ -2537,15 +2594,16 @@ dri2_create_buffer(__DRIscreen * sPriv,
 const struct __DriverAPIRec galliumdrm_driver_api = {
    .InitScreen = dri2_init_screen,
    .DestroyScreen = dri_destroy_screen,
-   .CreateContext = dri_create_context,
-   .DestroyContext = dri_destroy_context,
    .CreateBuffer = dri2_create_buffer,
    .DestroyBuffer = dri_destroy_buffer,
-   .MakeCurrent = dri_make_current,
-   .UnbindContext = dri_unbind_context,
 
    .AllocateBuffer = dri2_allocate_buffer,
    .ReleaseBuffer  = dri2_release_buffer,
+};
+
+static const struct __DRIDriverVtableExtensionRec galliumdrm_vtable = {
+   .base = { __DRI_DRIVER_VTABLE, 1 },
+   .vtable = &galliumdrm_driver_api,
 };
 
 /**
@@ -2558,12 +2616,8 @@ const struct __DriverAPIRec galliumdrm_driver_api = {
 const struct __DriverAPIRec dri_kms_driver_api = {
    .InitScreen = dri_kms_init_screen,
    .DestroyScreen = dri_destroy_screen,
-   .CreateContext = dri_create_context,
-   .DestroyContext = dri_destroy_context,
    .CreateBuffer = dri2_create_buffer,
    .DestroyBuffer = dri_destroy_buffer,
-   .MakeCurrent = dri_make_current,
-   .UnbindContext = dri_unbind_context,
 
    .AllocateBuffer = dri2_allocate_buffer,
    .ReleaseBuffer  = dri2_release_buffer,
@@ -2575,6 +2629,21 @@ const __DRIextension *galliumdrm_driver_extensions[] = {
     &driImageDriverExtension.base,
     &driDRI2Extension.base,
     &gallium_config_options.base,
+    &galliumdrm_vtable.base,
+    NULL
+};
+
+static const struct __DRIDriverVtableExtensionRec dri_kms_vtable = {
+   .base = { __DRI_DRIVER_VTABLE, 1 },
+   .vtable = &dri_kms_driver_api,
+};
+
+const __DRIextension *dri_kms_driver_extensions[] = {
+    &driCoreExtension.base,
+    &driImageDriverExtension.base,
+    &driDRI2Extension.base,
+    &gallium_config_options.base,
+    &dri_kms_vtable.base,
     NULL
 };
 

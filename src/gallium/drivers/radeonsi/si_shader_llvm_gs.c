@@ -22,6 +22,7 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "ac_nir.h"
 #include "si_pipe.h"
 #include "si_shader_internal.h"
 #include "sid.h"
@@ -73,7 +74,7 @@ static LLVMValueRef si_llvm_load_input_gs(struct ac_shader_abi *abi, unsigned in
 
    soffset = LLVMConstInt(ctx->ac.i32, (param * 4 + swizzle) * 256, 0);
 
-   value = ac_build_buffer_load(&ctx->ac, ctx->esgs_ring, 1, ctx->ac.i32_0, vtx_offset, soffset, 0,
+   value = ac_build_buffer_load(&ctx->ac, ctx->esgs_ring, 1, ctx->ac.i32_0, vtx_offset, soffset,
                                 ctx->ac.f32, ac_glc, true, false);
    return LLVMBuildBitCast(ctx->ac.builder, value, type, "");
 }
@@ -140,7 +141,7 @@ void si_llvm_emit_es_epilogue(struct ac_shader_abi *abi)
    int i;
 
    if (ctx->screen->info.chip_class >= GFX9 && info->num_outputs) {
-      unsigned itemsize_dw = es->selector->esgs_itemsize / 4;
+      unsigned itemsize_dw = es->selector->info.esgs_itemsize / 4;
       LLVMValueRef vertex_idx = ac_get_thread_id(&ctx->ac);
       LLVMValueRef wave_idx = si_unpack_param(ctx, ctx->args.merged_wave_info, 24, 4);
       vertex_idx =
@@ -176,9 +177,10 @@ void si_llvm_emit_es_epilogue(struct ac_shader_abi *abi)
             continue;
          }
 
-         ac_build_buffer_store_dword(&ctx->ac, ctx->esgs_ring, out_val, NULL, NULL,
+         ac_build_buffer_store_dword(&ctx->ac, ctx->esgs_ring, out_val, NULL,
+                                     LLVMConstInt(ctx->ac.i32, (4 * param + chan) * 4, 0),
                                      ac_get_arg(&ctx->ac, ctx->args.es2gs_offset),
-                                     (4 * param + chan) * 4, ac_glc | ac_slc | ac_swizzled);
+                                     ac_glc | ac_slc | ac_swizzled);
       }
    }
 
@@ -278,7 +280,7 @@ static void si_llvm_emit_vertex(struct ac_shader_abi *abi, unsigned stream, LLVM
          out_val = ac_to_integer(&ctx->ac, out_val);
 
          ac_build_buffer_store_dword(&ctx->ac, ctx->gsvs_ring[stream], out_val, NULL,
-                                     voffset, soffset, 0, ac_glc | ac_slc | ac_swizzled);
+                                     voffset, soffset, ac_glc | ac_slc | ac_swizzled);
       }
    }
 
@@ -330,6 +332,13 @@ void si_preload_esgs_ring(struct si_shader_context *ctx)
                                                           S_008F0C_ELEMENT_SIZE(1) |
                                                           S_008F0C_INDEX_STRIDE(3) |
                                                           S_008F0C_ADD_TID_ENABLE(1), 0), "");
+
+         /* If MUBUF && ADD_TID_ENABLE, DATA_FORMAT means STRIDE[14:17] on gfx8-9, so set 0. */
+         if (ctx->screen->info.chip_class == GFX8) {
+            desc3 = LLVMBuildAnd(builder, desc3,
+                                 LLVMConstInt(ctx->ac.i32, C_008F0C_DATA_FORMAT, 0), "");
+         }
+
          ctx->esgs_ring = LLVMBuildInsertElement(builder, ctx->esgs_ring, desc1, ctx->ac.i32_1, "");
          ctx->esgs_ring = LLVMBuildInsertElement(builder, ctx->esgs_ring, desc3,
                                                  LLVMConstInt(ctx->ac.i32, 3, 0), "");
@@ -406,8 +415,12 @@ void si_preload_gs_rings(struct si_shader_context *ctx)
          rsrc3 |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
                   S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_DISABLED) | S_008F0C_RESOURCE_LEVEL(1);
       } else {
+         /* If MUBUF && ADD_TID_ENABLE, DATA_FORMAT means STRIDE[14:17] on gfx8-9, so set 0. */
+         unsigned data_format = ctx->ac.chip_class == GFX8 || ctx->ac.chip_class == GFX9 ?
+                                   0 : V_008F0C_BUF_DATA_FORMAT_32;
+
          rsrc3 |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
-                  S_008F0C_DATA_FORMAT(V_008F0C_BUF_DATA_FORMAT_32) |
+                  S_008F0C_DATA_FORMAT(data_format) |
                   S_008F0C_ELEMENT_SIZE(1); /* element_size = 4 (bytes) */
       }
 
@@ -422,7 +435,8 @@ void si_preload_gs_rings(struct si_shader_context *ctx)
 struct si_shader *si_generate_gs_copy_shader(struct si_screen *sscreen,
                                              struct ac_llvm_compiler *compiler,
                                              struct si_shader_selector *gs_selector,
-                                             struct pipe_debug_callback *debug)
+                                             const struct pipe_stream_output_info *so,
+                                             struct util_debug_callback *debug)
 {
    struct si_shader_context ctx;
    struct si_shader *shader;
@@ -443,12 +457,33 @@ struct si_shader *si_generate_gs_copy_shader(struct si_screen *sscreen,
    shader->is_gs_copy_shader = true;
    shader->wave_size = si_determine_wave_size(sscreen, shader);
 
+   STATIC_ASSERT(sizeof(shader->info.vs_output_param_offset[0]) == 1);
+   memset(shader->info.vs_output_param_offset, AC_EXP_PARAM_DEFAULT_VAL_0000,
+          sizeof(shader->info.vs_output_param_offset));
+
+   for (unsigned i = 0; i < gsinfo->num_outputs; i++) {
+      unsigned semantic = gsinfo->output_semantic[i];
+
+      /* Skip if no channel writes to stream 0. */
+      if (!nir_slot_is_varying(semantic) ||
+          (gsinfo->output_streams[i] & 0x03 &&
+           gsinfo->output_streams[i] & 0x0c &&
+           gsinfo->output_streams[i] & 0x30 &&
+           gsinfo->output_streams[i] & 0xc0))
+         continue;
+
+      shader->info.vs_output_param_offset[semantic] = shader->info.nr_param_exports++;
+      shader->info.vs_output_param_mask |= BITFIELD64_BIT(i);
+   }
+
    si_llvm_context_init(&ctx, sscreen, compiler, shader->wave_size);
    ctx.shader = shader;
    ctx.stage = MESA_SHADER_VERTEX;
+   ctx.so = *so;
 
    builder = ctx.ac.builder;
 
+   /* Build the main function. */
    si_llvm_create_main_func(&ctx, false);
 
    LLVMValueRef buf_ptr = ac_get_arg(&ctx.ac, ctx.internal_bindings);
@@ -461,7 +496,7 @@ struct si_shader *si_generate_gs_copy_shader(struct si_screen *sscreen,
    /* Fetch the vertex stream ID.*/
    LLVMValueRef stream_id;
 
-   if (!sscreen->use_ngg_streamout && gs_selector->so.num_outputs)
+   if (!sscreen->use_ngg_streamout && ctx.so.num_outputs)
       stream_id = si_unpack_param(&ctx, ctx.args.streamout_config, 24, 2);
    else
       stream_id = ctx.ac.i32_0;
@@ -485,7 +520,7 @@ struct si_shader *si_generate_gs_copy_shader(struct si_screen *sscreen,
       if (!gsinfo->num_stream_output_components[stream])
          continue;
 
-      if (stream > 0 && !gs_selector->so.num_outputs)
+      if (stream > 0 && !ctx.so.num_outputs)
          continue;
 
       bb = LLVMInsertBasicBlockInContext(ctx.ac.context, end_bb, "out");
@@ -507,13 +542,13 @@ struct si_shader *si_generate_gs_copy_shader(struct si_screen *sscreen,
             offset++;
 
             outputs[i].values[chan] =
-               ac_build_buffer_load(&ctx.ac, ctx.gsvs_ring[0], 1, ctx.ac.i32_0, voffset, soffset, 0,
+               ac_build_buffer_load(&ctx.ac, ctx.gsvs_ring[0], 1, ctx.ac.i32_0, voffset, soffset,
                                     ctx.ac.f32, ac_glc | ac_slc, true, false);
          }
       }
 
       /* Streamout and exports. */
-      if (!sscreen->use_ngg_streamout && gs_selector->so.num_outputs) {
+      if (!sscreen->use_ngg_streamout && ctx.so.num_outputs) {
          si_llvm_emit_streamout(&ctx, outputs, gsinfo->num_outputs, stream);
       }
 
@@ -533,14 +568,13 @@ struct si_shader *si_generate_gs_copy_shader(struct si_screen *sscreen,
    bool ok = false;
    if (si_compile_llvm(sscreen, &ctx.shader->binary, &ctx.shader->config, ctx.compiler, &ctx.ac,
                        debug, MESA_SHADER_GEOMETRY, "GS Copy Shader", false)) {
+      assert(!ctx.shader->config.scratch_bytes_per_wave);
+      if (!ctx.shader->config.scratch_bytes_per_wave)
+         ok = si_shader_binary_upload(sscreen, ctx.shader, 0);
+
       if (si_can_dump_shader(sscreen, MESA_SHADER_GEOMETRY))
          fprintf(stderr, "GS Copy Shader:\n");
       si_shader_dump(sscreen, ctx.shader, debug, stderr, true);
-
-      if (!ctx.shader->config.scratch_bytes_per_wave)
-         ok = si_shader_binary_upload(sscreen, ctx.shader, 0);
-      else
-         ok = true;
    }
 
    si_llvm_dispose(&ctx);

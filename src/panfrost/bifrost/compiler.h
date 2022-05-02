@@ -199,13 +199,6 @@ bi_passthrough(enum bifrost_packed_src value)
         };
 }
 
-/* Read back power-efficent garbage, TODO maybe merge with null? */
-static inline bi_index
-bi_dontcare()
-{
-        return bi_passthrough(BIFROST_SRC_FAU_HI);
-}
-
 /* Extracts a word from a vectored index */
 static inline bi_index
 bi_word(bi_index idx, unsigned component)
@@ -397,6 +390,9 @@ typedef struct {
         enum bi_register_format register_format;
         enum bi_vecsize vecsize;
 
+        /* Flow control associated with a Valhall instruction */
+        uint8_t flow;
+
         /* Can we spill the value written here? Used to prevent
          * useless double fills */
         bool no_spill;
@@ -428,8 +424,6 @@ typedef struct {
                 uint32_t fill;
                 uint32_t index;
                 uint32_t attribute_index;
-                int32_t byte_offset;
-                int32_t branch_offset;
 
                 struct {
                         uint32_t varying_index;
@@ -441,6 +435,14 @@ typedef struct {
                 struct {
                         uint32_t sr_count;
                         uint32_t sr_count_2;
+
+                        union {
+                                /* Atomics effectively require all three */
+                                int32_t byte_offset;
+
+                                /* BLEND requires all three */
+                                int32_t branch_offset;
+                        };
                 };
         };
 
@@ -463,6 +465,7 @@ typedef struct {
                 struct {
                         enum bi_special special; /* FADD_RSCALE, FMA_RSCALE */
                         enum bi_round round; /* FMA, converts, FADD, _RSCALE, etc */
+                        bool ftz; /* Flush-to-zero for F16_TO_F32 */
                 };
 
                 struct {
@@ -633,6 +636,9 @@ typedef struct {
 
         /* Discard helper threads */
         bool td;
+
+        /* Should flush-to-zero mode be enabled for this clause? */
+        bool ftz;
 } bi_clause;
 
 #define BI_NUM_SLOTS 8
@@ -726,6 +732,12 @@ typedef struct {
        unsigned arch;
        enum bi_idvs_mode idvs;
 
+       /* In any graphics shader, whether the "IDVS with memory
+        * allocation" flow is used. This affects how varyings are loaded and
+        * stored. Ignore for compute.
+        */
+       bool malloc_idvs;
+
        /* During NIR->BIR */
        bi_block *current_block;
        bi_block *after_block;
@@ -788,6 +800,31 @@ bi_fau(enum bir_fau value, bool hi)
                 .offset = hi ? 1u : 0u,
                 .type = BI_INDEX_FAU,
         };
+}
+
+/*
+ * Builder for Valhall LUT entries. Generally, constants are modeled with
+ * BI_INDEX_IMMEDIATE in the intermediate representation. This helper is only
+ * necessary for passes running after lowering constants, as well as when
+ * lowering constants.
+ *
+ */
+static inline bi_index
+va_lut(unsigned index)
+{
+        return bi_fau((enum bir_fau) (BIR_FAU_IMMEDIATE | (index >> 1)),
+                      index & 1);
+}
+
+/*
+ * va_lut_zero is like bi_zero but only works on Valhall. It is intended for
+ * use by late passes that run after constants are lowered, specifically
+ * register allocation. bi_zero() is preferred where possible.
+ */
+static inline bi_index
+va_zero_lut()
+{
+        return va_lut(0);
 }
 
 static inline unsigned
@@ -983,7 +1020,7 @@ unsigned bi_count_write_registers(const bi_instr *ins, unsigned dest);
 bool bi_is_regfmt_16(enum bi_register_format fmt);
 unsigned bi_writemask(const bi_instr *ins, unsigned dest);
 bi_clause * bi_next_clause(bi_context *ctx, bi_block *block, bi_clause *clause);
-bool bi_side_effects(enum bi_opcode op);
+bool bi_side_effects(const bi_instr *I);
 bool bi_reconverge_branches(bi_block *block);
 
 void bi_print_instr(const bi_instr *I, FILE *fp);
@@ -1011,6 +1048,7 @@ void bi_lower_swizzle(bi_context *ctx);
 void bi_lower_fau(bi_context *ctx);
 void bi_assign_scoreboard(bi_context *ctx);
 void bi_register_allocate(bi_context *ctx);
+void va_optimize(bi_context *ctx);
 
 void bi_lower_opt_instruction(bi_instr *I);
 
@@ -1063,6 +1101,7 @@ bi_is_terminal_block(bi_block *block)
 
 /* Returns the size of the final clause */
 unsigned bi_pack(bi_context *ctx, struct util_dynarray *emission);
+void bi_pack_valhall(bi_context *ctx, struct util_dynarray *emission);
 
 struct bi_packed_tuple {
         uint64_t lo;
@@ -1270,11 +1309,38 @@ bi_builder_insert(bi_cursor *cursor, bi_instr *I)
     unreachable("Invalid cursor option");
 }
 
+/* Read back power-efficent garbage, TODO maybe merge with null? */
+static inline bi_index
+bi_dontcare(bi_builder *b)
+{
+        if (b->shader->arch >= 9)
+               return bi_zero();
+        else
+               return bi_passthrough(BIFROST_SRC_FAU_HI);
+}
+
 static inline unsigned
 bi_word_node(bi_index idx)
 {
         assert(idx.type == BI_INDEX_NORMAL && !idx.reg);
         return (idx.value << 2) | idx.offset;
+}
+
+/*
+ * Vertex ID and Instance ID are preloaded registers. Where they are preloaded
+ * changed from Bifrost to Valhall. Provide helpers that smooth over the
+ * architectural difference.
+ */
+static inline bi_index
+bi_vertex_id(bi_builder *b)
+{
+        return bi_register((b->shader->arch >= 9) ? 60 : 61);
+}
+
+static inline bi_index
+bi_instance_id(bi_builder *b)
+{
+        return bi_register((b->shader->arch >= 9) ? 61 : 62);
 }
 
 /* NIR passes */

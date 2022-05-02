@@ -15,7 +15,6 @@
 #include "git_sha1.h"
 #include "util/mesa-sha1.h"
 #include "venus-protocol/vn_protocol_driver_device.h"
-#include "venus-protocol/vn_protocol_driver_info.h"
 
 #include "vn_android.h"
 #include "vn_instance.h"
@@ -125,6 +124,9 @@ vn_physical_device_init_features(struct vn_physical_device *physical_dev)
    VN_ADD_EXT_TO_PNEXT(exts->EXT_extended_dynamic_state,
                        feats->extended_dynamic_state,
                        EXTENDED_DYNAMIC_STATE_FEATURES_EXT, features2);
+   VN_ADD_EXT_TO_PNEXT(exts->EXT_extended_dynamic_state2,
+                       feats->extended_dynamic_state_2,
+                       EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT, features2);
    VN_ADD_EXT_TO_PNEXT(exts->EXT_image_robustness, feats->image_robustness,
                        IMAGE_ROBUSTNESS_FEATURES_EXT, features2);
    VN_ADD_EXT_TO_PNEXT(exts->EXT_shader_demote_to_helper_invocation,
@@ -133,11 +135,16 @@ vn_physical_device_init_features(struct vn_physical_device *physical_dev)
                        features2);
 
    /* EXT */
+   VN_ADD_EXT_TO_PNEXT(exts->EXT_conditional_rendering,
+                       feats->conditional_rendering,
+                       CONDITIONAL_RENDERING_FEATURES_EXT, features2);
    VN_ADD_EXT_TO_PNEXT(exts->EXT_custom_border_color,
                        feats->custom_border_color,
                        CUSTOM_BORDER_COLOR_FEATURES_EXT, features2);
    VN_ADD_EXT_TO_PNEXT(exts->EXT_depth_clip_enable, feats->depth_clip_enable,
                        DEPTH_CLIP_ENABLE_FEATURES_EXT, features2);
+   VN_ADD_EXT_TO_PNEXT(exts->EXT_index_type_uint8, feats->index_type_uint8,
+                       INDEX_TYPE_UINT8_FEATURES_EXT, features2);
    VN_ADD_EXT_TO_PNEXT(exts->EXT_line_rasterization,
                        feats->line_rasterization,
                        LINE_RASTERIZATION_FEATURES_EXT, features2);
@@ -940,16 +947,21 @@ vn_physical_device_get_passthrough_extensions(
       /* promoted to VK_VERSION_1_3 */
       .EXT_4444_formats = true,
       .EXT_extended_dynamic_state = true,
+      /* TODO re-enable with fixed extended_dynamic_state.*_raster cts */
+      .EXT_extended_dynamic_state2 = false,
       .EXT_image_robustness = true,
       .EXT_shader_demote_to_helper_invocation = true,
 
       /* EXT */
+      .EXT_calibrated_timestamps = true,
+      .EXT_conditional_rendering = true,
       .EXT_conservative_rasterization = true,
       .EXT_custom_border_color = true,
       .EXT_depth_clip_enable = true,
 #ifndef ANDROID
       .EXT_image_drm_format_modifier = true,
 #endif
+      .EXT_index_type_uint8 = true,
       .EXT_line_rasterization = true,
       .EXT_provoking_vertex = true,
       .EXT_queue_family_foreign = true,
@@ -1045,14 +1057,14 @@ vn_physical_device_init_renderer_extensions(
             continue;
 
          /* check encoder support */
-         const struct vn_info_extension *enc_ext =
-            vn_info_extension_get(props->extensionName);
-         if (!enc_ext)
+         const uint32_t enc_ext_spec_version =
+            vn_extension_get_spec_version(props->extensionName);
+         if (!enc_ext_spec_version)
             continue;
 
          physical_dev->renderer_extensions.extensions[i] = true;
          physical_dev->extension_spec_versions[i] =
-            MIN2(exts[j].specVersion, enc_ext->spec_version);
+            MIN2(exts[j].specVersion, enc_ext_spec_version);
 
          break;
       }
@@ -1421,9 +1433,9 @@ vn_EnumeratePhysicalDevices(VkInstance _instance,
    if (result != VK_SUCCESS)
       return vn_error(instance, result);
 
-   VK_OUTARRAY_MAKE(out, pPhysicalDevices, pPhysicalDeviceCount);
+   VK_OUTARRAY_MAKE_TYPED(VkPhysicalDevice, out, pPhysicalDevices, pPhysicalDeviceCount);
    for (uint32_t i = 0; i < instance->physical_device.device_count; i++) {
-      vk_outarray_append(&out, physical_dev) {
+      vk_outarray_append_typed(VkPhysicalDevice, &out, physical_dev) {
          *physical_dev = vn_physical_device_to_handle(
             &instance->physical_device.devices[i]);
       }
@@ -1445,10 +1457,11 @@ vn_EnumeratePhysicalDeviceGroups(
    if (result != VK_SUCCESS)
       return vn_error(instance, result);
 
-   VK_OUTARRAY_MAKE(out, pPhysicalDeviceGroupProperties,
-                    pPhysicalDeviceGroupCount);
+   VK_OUTARRAY_MAKE_TYPED(VkPhysicalDeviceGroupProperties, out,
+                          pPhysicalDeviceGroupProperties,
+                          pPhysicalDeviceGroupCount);
    for (uint32_t i = 0; i < instance->physical_device.group_count; i++) {
-      vk_outarray_append(&out, props) {
+      vk_outarray_append_typed(VkPhysicalDeviceGroupProperties, &out, props) {
          *props = instance->physical_device.groups[i];
       }
    }
@@ -1468,10 +1481,10 @@ vn_EnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice,
    if (pLayerName)
       return vn_error(physical_dev->instance, VK_ERROR_LAYER_NOT_PRESENT);
 
-   VK_OUTARRAY_MAKE(out, pProperties, pPropertyCount);
+   VK_OUTARRAY_MAKE_TYPED(VkExtensionProperties, out, pProperties, pPropertyCount);
    for (uint32_t i = 0; i < VK_DEVICE_EXTENSION_COUNT; i++) {
       if (physical_dev->base.base.supported_extensions.extensions[i]) {
-         vk_outarray_append(&out, prop) {
+         vk_outarray_append_typed(VkExtensionProperties, &out, prop) {
             *prop = vk_device_extensions[i];
             prop->specVersion = physical_dev->extension_spec_versions[i];
          }
@@ -1488,44 +1501,6 @@ vn_EnumerateDeviceLayerProperties(VkPhysicalDevice physicalDevice,
 {
    *pPropertyCount = 0;
    return VK_SUCCESS;
-}
-
-void
-vn_GetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice,
-                             VkPhysicalDeviceFeatures *pFeatures)
-{
-   struct vn_physical_device *physical_dev =
-      vn_physical_device_from_handle(physicalDevice);
-
-   *pFeatures = physical_dev->features.vulkan_1_0;
-}
-
-void
-vn_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
-                               VkPhysicalDeviceProperties *pProperties)
-{
-   struct vn_physical_device *physical_dev =
-      vn_physical_device_from_handle(physicalDevice);
-
-   *pProperties = physical_dev->properties.vulkan_1_0;
-}
-
-void
-vn_GetPhysicalDeviceQueueFamilyProperties(
-   VkPhysicalDevice physicalDevice,
-   uint32_t *pQueueFamilyPropertyCount,
-   VkQueueFamilyProperties *pQueueFamilyProperties)
-{
-   struct vn_physical_device *physical_dev =
-      vn_physical_device_from_handle(physicalDevice);
-
-   VK_OUTARRAY_MAKE(out, pQueueFamilyProperties, pQueueFamilyPropertyCount);
-   for (uint32_t i = 0; i < physical_dev->queue_family_count; i++) {
-      vk_outarray_append(&out, props) {
-         *props =
-            physical_dev->queue_family_properties[i].queueFamilyProperties;
-      }
-   }
 }
 
 void
@@ -1558,69 +1533,6 @@ vn_physical_device_add_format_properties(
       entry->valid = true;
    }
    simple_mtx_unlock(&physical_dev->format_update_mutex);
-}
-
-void
-vn_GetPhysicalDeviceFormatProperties(VkPhysicalDevice physicalDevice,
-                                     VkFormat format,
-                                     VkFormatProperties *pFormatProperties)
-{
-   struct vn_physical_device *physical_dev =
-      vn_physical_device_from_handle(physicalDevice);
-   struct vn_format_properties_entry *entry =
-      vn_physical_device_get_format_properties(physical_dev, format);
-
-   if (entry->valid) {
-      *pFormatProperties = entry->properties;
-      return;
-   }
-
-   vn_call_vkGetPhysicalDeviceFormatProperties(
-      physical_dev->instance, physicalDevice, format, pFormatProperties);
-
-   vn_physical_device_add_format_properties(physical_dev, entry,
-                                            pFormatProperties);
-}
-
-VkResult
-vn_GetPhysicalDeviceImageFormatProperties(
-   VkPhysicalDevice physicalDevice,
-   VkFormat format,
-   VkImageType type,
-   VkImageTiling tiling,
-   VkImageUsageFlags usage,
-   VkImageCreateFlags flags,
-   VkImageFormatProperties *pImageFormatProperties)
-{
-   struct vn_physical_device *physical_dev =
-      vn_physical_device_from_handle(physicalDevice);
-
-   /* TODO per-device cache */
-   VkResult result = vn_call_vkGetPhysicalDeviceImageFormatProperties(
-      physical_dev->instance, physicalDevice, format, type, tiling, usage,
-      flags, pImageFormatProperties);
-
-   return vn_result(physical_dev->instance, result);
-}
-
-void
-vn_GetPhysicalDeviceSparseImageFormatProperties(
-   VkPhysicalDevice physicalDevice,
-   VkFormat format,
-   VkImageType type,
-   uint32_t samples,
-   VkImageUsageFlags usage,
-   VkImageTiling tiling,
-   uint32_t *pPropertyCount,
-   VkSparseImageFormatProperties *pProperties)
-{
-   struct vn_physical_device *physical_dev =
-      vn_physical_device_from_handle(physicalDevice);
-
-   /* TODO per-device cache */
-   vn_call_vkGetPhysicalDeviceSparseImageFormatProperties(
-      physical_dev->instance, physicalDevice, format, type, samples, usage,
-      tiling, pPropertyCount, pProperties);
 }
 
 void
@@ -1670,13 +1582,17 @@ vn_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
       /* Vulkan 1.3 */
       VkPhysicalDevice4444FormatsFeaturesEXT *argb_4444_formats;
       VkPhysicalDeviceExtendedDynamicStateFeaturesEXT *extended_dynamic_state;
+      VkPhysicalDeviceExtendedDynamicState2FeaturesEXT
+         *extended_dynamic_state2;
       VkPhysicalDeviceImageRobustnessFeaturesEXT *image_robustness;
       VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures
          *shader_demote_to_helper_invocation;
 
       /* EXT */
+      VkPhysicalDeviceConditionalRenderingFeaturesEXT *conditional_rendering;
       VkPhysicalDeviceCustomBorderColorFeaturesEXT *custom_border_color;
       VkPhysicalDeviceDepthClipEnableFeaturesEXT *depth_clip_enable;
+      VkPhysicalDeviceIndexTypeUint8FeaturesEXT *index_type_uint8;
       VkPhysicalDeviceLineRasterizationFeaturesEXT *line_rasterization;
       VkPhysicalDeviceProvokingVertexFeaturesEXT *provoking_vertex;
       VkPhysicalDeviceRobustness2FeaturesEXT *robustness_2;
@@ -1850,6 +1766,9 @@ vn_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT:
          *u.extended_dynamic_state = feats->extended_dynamic_state;
          break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT:
+         *u.extended_dynamic_state2 = feats->extended_dynamic_state_2;
+         break;
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_ROBUSTNESS_FEATURES_EXT:
          *u.image_robustness = feats->image_robustness;
          break;
@@ -1859,11 +1778,17 @@ vn_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          break;
 
       /* EXT */
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT:
+         *u.conditional_rendering = feats->conditional_rendering;
+         break;
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT:
          *u.custom_border_color = feats->custom_border_color;
          break;
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT:
          *u.depth_clip_enable = feats->depth_clip_enable;
+         break;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT:
+         *u.index_type_uint8 = feats->index_type_uint8;
          break;
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT:
          *u.line_rasterization = feats->line_rasterization;
@@ -2142,7 +2067,9 @@ vn_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          }
          break;
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENTATION_PROPERTIES_ANDROID:
-         u.presentation_properties->sharedImage = VK_FALSE;
+         u.presentation_properties->sharedImage =
+            vn_android_gralloc_get_shared_present_usage() ? VK_TRUE
+                                                          : VK_FALSE;
          break;
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_PROPERTIES_EXT:
          *u.provoking_vertex = props->provoking_vertex;
@@ -2174,9 +2101,10 @@ vn_GetPhysicalDeviceQueueFamilyProperties2(
    struct vn_physical_device *physical_dev =
       vn_physical_device_from_handle(physicalDevice);
 
-   VK_OUTARRAY_MAKE(out, pQueueFamilyProperties, pQueueFamilyPropertyCount);
+   VK_OUTARRAY_MAKE_TYPED(VkQueueFamilyProperties2, out,
+                          pQueueFamilyProperties, pQueueFamilyPropertyCount);
    for (uint32_t i = 0; i < physical_dev->queue_family_count; i++) {
-      vk_outarray_append(&out, props) {
+      vk_outarray_append_typed(VkQueueFamilyProperties2, &out, props) {
          *props = physical_dev->queue_family_properties[i];
       }
    }
@@ -2550,4 +2478,17 @@ vn_GetPhysicalDeviceExternalSemaphoreProperties(
       pExternalSemaphoreProperties->exportFromImportedHandleTypes = 0;
       pExternalSemaphoreProperties->externalSemaphoreFeatures = 0;
    }
+}
+
+VkResult
+vn_GetPhysicalDeviceCalibrateableTimeDomainsEXT(
+   VkPhysicalDevice physicalDevice,
+   uint32_t *pTimeDomainCount,
+   VkTimeDomainEXT *pTimeDomains)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   return vn_call_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT(
+      physical_dev->instance, physicalDevice, pTimeDomainCount, pTimeDomains);
 }

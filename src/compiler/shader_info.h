@@ -72,6 +72,7 @@ struct spirv_supported_capabilities {
    bool kernel;
    bool kernel_image;
    bool kernel_image_read_write;
+   bool linkage;
    bool literal_sampler;
    bool mesh_shading_nv;
    bool min_lod;
@@ -253,6 +254,9 @@ typedef struct shader_info {
     * Note that this does not include the "fine" and "coarse" variants.
     */
    bool uses_fddx_fddy:1;
+
+   /** Has divergence analysis ever been run? */
+   bool divergence_analysis_run:1;
 
    /* Bitmask of bit-sizes used with ALU instructions. */
    uint8_t bit_sizes_float;

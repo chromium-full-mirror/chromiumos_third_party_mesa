@@ -91,16 +91,6 @@ dEQP-GLES31.functional.layout_binding.ssbo.fragment_binding_array
 dEQP-GLES3.functional.fbo.blit.conversion.rg8i_to_r16i
 dEQP-GLES3.functional.fbo.blit.conversion.rg8_to_r16f
 
-# Could trip hangcheck timeout
-dEQP-VK.api.command_buffers.record_many_draws_primary_2
-dEQP-VK.api.command_buffers.record_many_draws_secondary_2
-
-# "dEQP-VK.wsi.display_control.register_display_event: vkRegisterDisplayEventEXT returned invalid result (Fail)"
-dEQP-VK.wsi.display_control.register_display_event
-
-# Looks likely to be a hangcheck trigger.
-spill-dEQP-VK.graphicsfuzz.cov-nested-loop-large-array-index-using-vector-components
-
 # First noticed Jun 1 2020 on an innocent branch.
 KHR-GL33.packed_depth_stencil.verify_copy_tex_image.depth32f_stencil8
 
@@ -164,10 +154,6 @@ spec@arb_shader_image_load_store@indexing@Fragment shader/dynamically uniform in
 # Occasionally passes instead of failing
 spec@egl_chromium_sync_control@conformance
 spec@egl_chromium_sync_control@conformance@eglGetSyncValuesCHROMIUM_msc_and_sbc_test
-
-# First appeared on 2021-07-07 in a container uprev, became frequent by
-# 2021-08-04 starting from a pretty clearly unrelated MR
-spec@ext_framebuffer_object@fbo-blending-format-quirks
 
 # Flaky since around 2021-04-21.  First appeared on
 # https://gitlab.freedesktop.org/robclark/mesa/-/jobs/9101752 (fd/go-fast)

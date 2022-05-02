@@ -108,6 +108,13 @@ struct PACKED perf_query_slot {
    struct perfcntr_query_slot perfcntr;
 };
 
+struct PACKED primitives_generated_query_slot {
+   struct query_slot common;
+   uint64_t result;
+   uint64_t begin;
+   uint64_t end;
+};
+
 /* Returns the IOVA of a given uint64_t field in a given slot of a query
  * pool. */
 #define query_iova(type, pool, query, field)                         \
@@ -129,6 +136,9 @@ struct PACKED perf_query_slot {
    sizeof(struct query_slot) +                                   \
    sizeof(struct perfcntr_query_slot) * (i) +                          \
    offsetof(struct perfcntr_query_slot, field)
+
+#define primitives_generated_query_iova(pool, query, field)               \
+   query_iova(struct primitives_generated_query_slot, pool, query, field)
 
 #define query_available_iova(pool, query)                            \
    query_iova(struct query_slot, pool, query, available)
@@ -238,6 +248,9 @@ tu_CreateQueryPool(VkDevice _device,
       break;
    case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
       slot_size = sizeof(struct primitive_query_slot);
+      break;
+   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
+      slot_size = sizeof(struct primitives_generated_query_slot);
       break;
    case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
       perf_query_info =
@@ -364,6 +377,7 @@ get_result_count(struct tu_query_pool *pool)
    /* Occulusion and timestamp queries write one integer value */
    case VK_QUERY_TYPE_OCCLUSION:
    case VK_QUERY_TYPE_TIMESTAMP:
+   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
       return 1;
    /* Transform feedback queries write two integer values */
    case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
@@ -548,6 +562,7 @@ tu_GetQueryPoolResults(VkDevice _device,
    case VK_QUERY_TYPE_OCCLUSION:
    case VK_QUERY_TYPE_TIMESTAMP:
    case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
+   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
    case VK_QUERY_TYPE_PIPELINE_STATISTICS:
    case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR:
       return get_query_pool_results(device, pool, firstQuery, queryCount,
@@ -689,6 +704,7 @@ tu_CmdCopyQueryPoolResults(VkCommandBuffer commandBuffer,
    case VK_QUERY_TYPE_OCCLUSION:
    case VK_QUERY_TYPE_TIMESTAMP:
    case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
+   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
    case VK_QUERY_TYPE_PIPELINE_STATISTICS:
       return emit_copy_query_pool_results(cmdbuf, cs, pool, firstQuery,
                queryCount, buffer, dstOffset, stride, flags);
@@ -749,6 +765,7 @@ tu_CmdResetQueryPool(VkCommandBuffer commandBuffer,
    case VK_QUERY_TYPE_TIMESTAMP:
    case VK_QUERY_TYPE_OCCLUSION:
    case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
+   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
    case VK_QUERY_TYPE_PIPELINE_STATISTICS:
    case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR:
       emit_reset_query_pool(cmdbuf, pool, firstQuery, queryCount);
@@ -857,6 +874,10 @@ emit_begin_perf_query(struct tu_cmd_buffer *cmdbuf,
    struct tu_cs *cs = cmdbuf->state.pass ? &cmdbuf->draw_cs : &cmdbuf->cs;
    uint32_t last_pass = ~0;
 
+   if (cmdbuf->state.pass) {
+      cmdbuf->state.draw_cs_writes_to_cond_pred = true;
+   }
+
    /* Querying perf counters happens in these steps:
     *
     *  0) There's a scratch reg to set a pass index for perf counters query.
@@ -936,6 +957,27 @@ emit_begin_xfb_query(struct tu_cmd_buffer *cmdbuf,
    tu6_emit_event_write(cmdbuf, cs, WRITE_PRIMITIVE_COUNTS);
 }
 
+static void
+emit_begin_prim_generated_query(struct tu_cmd_buffer *cmdbuf,
+                                struct tu_query_pool *pool,
+                                uint32_t query)
+{
+   struct tu_cs *cs = cmdbuf->state.pass ? &cmdbuf->draw_cs : &cmdbuf->cs;
+   uint64_t begin_iova = primitives_generated_query_iova(pool, query, begin);
+
+   tu6_emit_event_write(cmdbuf, cs, START_PRIMITIVE_CTRS);
+   tu6_emit_event_write(cmdbuf, cs, RST_PIX_CNT);
+   tu6_emit_event_write(cmdbuf, cs, TILE_FLUSH);
+
+   tu_cs_emit_wfi(cs);
+
+   tu_cs_emit_pkt7(cs, CP_REG_TO_MEM, 3);
+   tu_cs_emit(cs, CP_REG_TO_MEM_0_REG(REG_A6XX_RBBM_PRIMCTR_7_LO) |
+                  CP_REG_TO_MEM_0_CNT(2) |
+                  CP_REG_TO_MEM_0_64B);
+   tu_cs_emit_qw(cs, begin_iova);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 tu_CmdBeginQuery(VkCommandBuffer commandBuffer,
                  VkQueryPool queryPool,
@@ -956,6 +998,9 @@ tu_CmdBeginQuery(VkCommandBuffer commandBuffer,
       break;
    case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
       emit_begin_xfb_query(cmdbuf, pool, query, 0);
+      break;
+   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
+      emit_begin_prim_generated_query(cmdbuf, pool, query);
       break;
    case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR:
       emit_begin_perf_query(cmdbuf, pool, query);
@@ -984,6 +1029,9 @@ tu_CmdBeginQueryIndexedEXT(VkCommandBuffer commandBuffer,
    switch (pool->type) {
    case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
       emit_begin_xfb_query(cmdbuf, pool, query, index);
+      break;
+   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
+      emit_begin_prim_generated_query(cmdbuf, pool, query);
       break;
    default:
       assert(!"Invalid query type");
@@ -1242,6 +1290,49 @@ emit_end_xfb_query(struct tu_cmd_buffer *cmdbuf,
    tu_cs_emit_qw(cs, 0x1);
 }
 
+static void
+emit_end_prim_generated_query(struct tu_cmd_buffer *cmdbuf,
+                              struct tu_query_pool *pool,
+                              uint32_t query)
+{
+   struct tu_cs *cs = cmdbuf->state.pass ? &cmdbuf->draw_cs : &cmdbuf->cs;
+
+   uint64_t begin_iova = primitives_generated_query_iova(pool, query, begin);
+   uint64_t end_iova = primitives_generated_query_iova(pool, query, end);
+   uint64_t result_iova = primitives_generated_query_iova(pool, query, result);
+   uint64_t available_iova = query_available_iova(pool, query);
+
+   tu6_emit_event_write(cmdbuf, cs, STOP_PRIMITIVE_CTRS);
+   tu6_emit_event_write(cmdbuf, cs, RST_VTX_CNT);
+   tu6_emit_event_write(cmdbuf, cs, STAT_EVENT);
+
+   tu_cs_emit_wfi(cs);
+
+   tu_cs_emit_pkt7(cs, CP_REG_TO_MEM, 3);
+   tu_cs_emit(cs, CP_REG_TO_MEM_0_REG(REG_A6XX_RBBM_PRIMCTR_7_LO) |
+                  CP_REG_TO_MEM_0_CNT(2) |
+                  CP_REG_TO_MEM_0_64B);
+   tu_cs_emit_qw(cs, end_iova);
+
+   tu_cs_emit_pkt7(cs, CP_MEM_TO_MEM, 9);
+   tu_cs_emit(cs, CP_MEM_TO_MEM_0_DOUBLE | CP_MEM_TO_MEM_0_NEG_C |
+                  CP_MEM_TO_MEM_0_WAIT_FOR_MEM_WRITES);
+   tu_cs_emit_qw(cs, result_iova);
+   tu_cs_emit_qw(cs, result_iova);
+   tu_cs_emit_qw(cs, end_iova);
+   tu_cs_emit_qw(cs, begin_iova);
+
+   tu_cs_emit_pkt7(cs, CP_WAIT_MEM_WRITES, 0);
+
+   if (cmdbuf->state.pass)
+      cs = &cmdbuf->draw_epilogue_cs;
+
+   /* Set the availability to 1 */
+   tu_cs_emit_pkt7(cs, CP_MEM_WRITE, 4);
+   tu_cs_emit_qw(cs, available_iova);
+   tu_cs_emit_qw(cs, 0x1);
+}
+
 /* Implement this bit of spec text from section 17.2 "Query Operation":
  *
  *     If queries are used while executing a render pass instance that has
@@ -1296,6 +1387,9 @@ tu_CmdEndQuery(VkCommandBuffer commandBuffer,
    case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
       emit_end_xfb_query(cmdbuf, pool, query, 0);
       break;
+   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
+      emit_end_prim_generated_query(cmdbuf, pool, query);
+      break;
    case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR:
       emit_end_perf_query(cmdbuf, pool, query);
       break;
@@ -1325,6 +1419,9 @@ tu_CmdEndQueryIndexedEXT(VkCommandBuffer commandBuffer,
    case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
       assert(index <= 4);
       emit_end_xfb_query(cmdbuf, pool, query, index);
+      break;
+   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
+      emit_end_prim_generated_query(cmdbuf, pool, query);
       break;
    default:
       assert(!"Invalid query type");
@@ -1424,13 +1521,14 @@ tu_EnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR(
    const struct fd_perfcntr_group *group =
          fd_perfcntrs(&phydev->dev_id, &group_count);
 
-   VK_OUTARRAY_MAKE(out, pCounters, pCounterCount);
-   VK_OUTARRAY_MAKE(out_desc, pCounterDescriptions, &desc_count);
+   VK_OUTARRAY_MAKE_TYPED(VkPerformanceCounterKHR, out, pCounters, pCounterCount);
+   VK_OUTARRAY_MAKE_TYPED(VkPerformanceCounterDescriptionKHR, out_desc,
+                          pCounterDescriptions, &desc_count);
 
    for (int i = 0; i < group_count; i++) {
       for (int j = 0; j < group[i].num_countables; j++) {
 
-         vk_outarray_append(&out, counter) {
+         vk_outarray_append_typed(VkPerformanceCounterKHR, &out, counter) {
             counter->scope = VK_QUERY_SCOPE_COMMAND_BUFFER_KHR;
             counter->unit =
                   fd_perfcntr_type_to_vk_unit[group[i].countables[j].query_type];
@@ -1444,7 +1542,7 @@ tu_EnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR(
             memcpy(counter->uuid, sha1_result, sizeof(counter->uuid));
          }
 
-         vk_outarray_append(&out_desc, desc) {
+         vk_outarray_append_typed(VkPerformanceCounterDescriptionKHR, &out_desc, desc) {
             desc->flags = 0;
 
             snprintf(desc->name, sizeof(desc->name),

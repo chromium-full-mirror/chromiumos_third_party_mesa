@@ -35,20 +35,11 @@
 
 #include "tgsi/tgsi_from_mesa.h"
 
-extern "C" {
-
-/**
- * Link a shader.
- * Called via ctx->Driver.LinkShader()
- * This is a shared function that branches off to either GLSL IR -> TGSI or
- * GLSL IR -> NIR
- */
-GLboolean
-st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
+static GLboolean
+link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
 {
    GLboolean ret;
    struct st_context *sctx = st_context(ctx);
-   struct pipe_context *pctx = sctx->pipe;
    struct pipe_screen *pscreen = sctx->screen;
 
    enum pipe_shader_ir preferred_ir = (enum pipe_shader_ir)
@@ -82,8 +73,9 @@ st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
       /* If there are forms of indirect addressing that the driver
        * cannot handle, perform the lowering pass.
        */
-      if (options->EmitNoIndirectInput || options->EmitNoIndirectOutput ||
-          options->EmitNoIndirectTemp || options->EmitNoIndirectUniform) {
+      if (!use_nir &&
+          (options->EmitNoIndirectInput || options->EmitNoIndirectOutput ||
+           options->EmitNoIndirectTemp || options->EmitNoIndirectUniform)) {
          lower_variable_index_to_cond_assign(stage, ir,
                                              options->EmitNoIndirectInput,
                                              options->EmitNoIndirectOutput,
@@ -93,11 +85,11 @@ st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
 
       enum pipe_shader_type ptarget = pipe_shader_type_from_mesa(stage);
       bool have_dround = pscreen->get_shader_param(pscreen, ptarget,
-                                                   PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED);
+                                                   PIPE_SHADER_CAP_DROUND_SUPPORTED);
       bool have_dfrexp = pscreen->get_shader_param(pscreen, ptarget,
-                                                   PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED);
+                                                   PIPE_SHADER_CAP_DFRACEXP_DLDEXP_SUPPORTED);
       bool have_ldexp = pscreen->get_shader_param(pscreen, ptarget,
-                                                  PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED);
+                                                  PIPE_SHADER_CAP_LDEXP_SUPPORTED);
 
       if (!pscreen->get_param(pscreen, PIPE_CAP_INT64_DIVMOD))
          lower_64bit_integer_instructions(ir, DIV64 | MOD64);
@@ -141,7 +133,6 @@ st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
                          CARRY_TO_ARITH |
                          BORROW_TO_ARITH |
                          (have_dround ? 0 : DOPS_TO_DFRAC) |
-                         (options->EmitNoPow ? POW_TO_EXP2 : 0) |
                          (!ctx->Const.NativeIntegers ? INT_DIV_TO_MUL_RCP : 0) |
                          (options->EmitNoSat ? SAT_TO_CLAMP : 0) |
                          (ctx->Const.ForceGLSLAbsSqrt ? SQRT_TO_ABS_SQRT : 0) |
@@ -162,7 +153,7 @@ st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
 
       do_vec_index_to_cond_assign(ir);
       lower_vector_insert(ir, true);
-      lower_quadop_vector(ir, false);
+      lower_quadop_vector(ir);
       if (options->MaxIfDepth == 0) {
          lower_discard(ir);
       }
@@ -177,6 +168,24 @@ st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
    else
       ret = st_link_tgsi(ctx, prog);
 
+   return ret;
+}
+
+extern "C" {
+
+/**
+ * Link a shader.
+ * Called via ctx->Driver.LinkShader()
+ * This is a shared function that branches off to either GLSL IR -> TGSI or
+ * GLSL IR -> NIR
+ */
+GLboolean
+st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
+{
+   struct pipe_context *pctx = st_context(ctx)->pipe;
+
+   GLboolean ret = link_shader(ctx, prog);
+    
    if (pctx->link_shader) {
       void *driver_handles[PIPE_SHADER_TYPES];
       memset(driver_handles, 0, sizeof(driver_handles));

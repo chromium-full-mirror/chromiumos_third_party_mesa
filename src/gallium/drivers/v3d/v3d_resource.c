@@ -260,14 +260,12 @@ v3d_resource_transfer_map(struct pipe_context *pctx,
 
         v3d_map_usage_prep(pctx, prsc, usage);
 
-        trans = slab_alloc(&v3d->transfer_pool);
+        trans = slab_zalloc(&v3d->transfer_pool);
         if (!trans)
                 return NULL;
 
         /* XXX: Handle DONTBLOCK, DISCARD_RANGE, PERSISTENT, COHERENT. */
 
-        /* slab_alloc_st() doesn't zero: */
-        memset(trans, 0, sizeof(*trans));
         ptrans = &trans->base;
 
         pipe_resource_reference(&ptrans->resource, prsc);
@@ -1181,7 +1179,8 @@ v3d_resource_screen_init(struct pipe_screen *pscreen)
         pscreen->resource_destroy = u_transfer_helper_resource_destroy;
         pscreen->transfer_helper = u_transfer_helper_create(&transfer_vtbl,
                                                             true, false,
-                                                            true, true);
+                                                            true, true,
+                                                            false);
 }
 
 void

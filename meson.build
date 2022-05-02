@@ -84,6 +84,7 @@ if with_tools.contains('all')
     'nouveau',
     'xvmc',
     'asahi',
+    'imagination',
   ]
 endif
 
@@ -230,6 +231,9 @@ with_gallium_lima = gallium_drivers.contains('lima')
 with_gallium_zink = gallium_drivers.contains('zink')
 with_gallium_d3d12 = gallium_drivers.contains('d3d12')
 with_gallium_asahi = gallium_drivers.contains('asahi')
+foreach gallium_driver : gallium_drivers
+  pre_args += '-DHAVE_@0@'.format(gallium_driver.to_upper())
+endforeach
 
 with_gallium = gallium_drivers.length() != 0
 with_gallium_kmsro = with_gallium_v3d or with_gallium_vc4 or with_gallium_etnaviv or with_gallium_panfrost or with_gallium_lima or with_gallium_freedreno
@@ -271,11 +275,15 @@ with_panfrost_vk = _vulkan_drivers.contains('panfrost')
 with_swrast_vk = _vulkan_drivers.contains('swrast')
 with_virtio_vk = _vulkan_drivers.contains('virtio-experimental')
 with_freedreno_kgsl = get_option('freedreno-kgsl')
+with_freedreno_virtio = get_option('freedreno-virtio')
 with_broadcom_vk = _vulkan_drivers.contains('broadcom')
+with_imagination_vk = _vulkan_drivers.contains('imagination-experimental')
+with_imagination_srv = get_option('imagination-srv')
+with_microsoft_vk = _vulkan_drivers.contains('microsoft-experimental')
 with_any_vk = _vulkan_drivers.length() != 0
 
 with_any_broadcom = with_gallium_vc4 or with_gallium_v3d or with_broadcom_vk
-with_any_intel = with_intel_vk or with_gallium_iris or with_gallium_crocus
+with_any_intel = with_intel_vk or with_gallium_iris or with_gallium_crocus or with_intel_tools
 
 if with_swrast_vk and not with_gallium_softpipe
   error('swrast vulkan requires gallium swrast')
@@ -288,7 +296,8 @@ if with_aco_tests and not with_amd_vk
 endif
 
 with_microsoft_clc = get_option('microsoft-clc').enabled()
-with_clc = with_microsoft_clc
+with_intel_clc = get_option('intel-clc').enabled()
+with_clc = with_microsoft_clc or with_intel_clc
 with_libclc = with_clc
 with_spirv_to_dxil = get_option('spirv-to-dxil')
 
@@ -310,6 +319,11 @@ with_vulkan_beta = get_option('vulkan-beta')
 if with_vulkan_beta
   pre_args += '-DVK_ENABLE_BETA_EXTENSIONS'
 endif
+
+_codecs = get_option('video-codecs')
+foreach c : ['vc1dec', 'h264dec', 'h264enc', 'h265dec', 'h265enc']
+   pre_args += '-DVIDEO_CODEC_@0@=@1@'.format(c.to_upper(), _codecs.contains(c).to_int())
+endforeach
 
 _platforms = get_option('platforms')
 if _platforms.contains('auto')
@@ -662,16 +676,16 @@ if with_gallium_zink
 endif
 
 dep_dxheaders = null_dep
-if with_gallium_d3d12 or with_microsoft_clc
+if with_gallium_d3d12 or with_microsoft_clc or with_microsoft_vk
   dep_dxheaders = dependency('directx-headers', required : false)
   if not dep_dxheaders.found()
     dep_dxheaders = dependency('DirectX-Headers', fallback : ['DirectX-Headers', 'dep_dxheaders'],
-      required : with_gallium_d3d12
+      required : with_gallium_d3d12 or with_microsoft_vk
     )
   endif
 endif
 
-if with_vulkan_overlay_layer or with_aco_tests
+if with_vulkan_overlay_layer or with_aco_tests or with_amd_vk
   prog_glslang = find_program('glslangValidator')
 endif
 
@@ -775,10 +789,10 @@ omx_drivers_path = get_option('omx-libs-path')
 if with_gallium_omx != 'disabled'
   # Figure out where to put the omx driver.
   # FIXME: this could all be vastly simplified by adding a 'defined_variable'
-  # argument to meson's get_pkgconfig_variable method.
+  # argument to meson's get_variable method.
   if omx_drivers_path == ''
-    _omx_libdir = dep_omx.get_pkgconfig_variable('libdir')
-    _omx_drivers_dir = dep_omx.get_pkgconfig_variable('pluginsdir')
+    _omx_libdir = dep_omx.get_variable(pkgconfig : 'libdir')
+    _omx_drivers_dir = dep_omx.get_variable(pkgconfig : 'pluginsdir')
     if _omx_libdir == get_option('libdir')
       omx_drivers_path = _omx_drivers_dir
     else
@@ -1045,7 +1059,7 @@ endif
 if with_shader_cache
   shader_cache_max_size = get_option('shader-cache-max-size')
   if shader_cache_max_size != ''
-    pre_args += '-DMESA_GLSL_CACHE_MAX_SIZE="@0@"'.format(shader_cache_max_size)
+    pre_args += '-DMESA_SHADER_CACHE_MAX_SIZE="@0@"'.format(shader_cache_max_size)
   endif
 endif
 
@@ -1096,7 +1110,18 @@ elif host_machine.system() == 'windows'
       '-DNOMINMAX',
     ]
   else
-    pre_args += ['-D__MSVCRT_VERSION__=0x0700']
+    # When the target is not mingw/ucrt
+    # NOTE: clang's stddef.h are conflict with mingw/ucrt's stddef.h
+    # So do not include headers that defined in clang for detecting
+    # _UCRT
+    if cc.compiles('''
+      #include <string.h>
+      #if defined(__MINGW32__) && defined(_UCRT)
+      #error
+      #endif
+      int main(void) { return 0; }''')
+      pre_args += ['-D__MSVCRT_VERSION__=0x0700']
+    endif
   endif
 elif host_machine.system() == 'openbsd'
   pre_args += '-D_ISOC11_SOURCE'
@@ -1147,6 +1172,7 @@ else
     '-fno-common',
     # Clang
     '-Wno-microsoft-enum-value',
+    '-Wno-unused-function',
   ]
   _trial_cpp = [
     '-Werror=return-type',
@@ -1184,6 +1210,14 @@ else
   if cc.has_link_argument('-Wl,--gc-sections')
     _trial_c += ['-ffunction-sections', '-fdata-sections']
     _trial_cpp += ['-ffunction-sections', '-fdata-sections']
+  endif
+
+  # Variables that are only used for assertions are considered unused in release
+  # builds. Don't treat this as an error, since we build with -Werror even for
+  # release in CI.
+  if get_option('buildtype') == 'release'
+    _trial_c += ['-Wno-unused-variable', '-Wno-unused-but-set-variable']
+    _trial_cpp += ['-Wno-unused-variable', '-Wno-unused-but-set-variable']
   endif
 
   c_args += cc.get_supported_arguments(_trial_c)
@@ -1474,7 +1508,7 @@ if not cc.has_function('dlopen')
   dep_dl = cc.find_library('dl', required : host_machine.system() != 'windows')
 endif
 if cc.has_function('dladdr', dependencies : dep_dl)
-  # This is really only required for megadrivers
+  # This is really only required for util/disk_cache.h
   pre_args += '-DHAVE_DLADDR'
 endif
 
@@ -1783,17 +1817,21 @@ dep_clang = null_dep
 if with_clc
   llvm_libdir = dep_llvm.get_variable(cmake : 'LLVM_LIBRARY_DIR', configtool: 'libdir')
 
-  clang_modules = [
-    'clangBasic', 'clangAST', 'clangCodeGen', 'clangLex',
-    'clangDriver', 'clangFrontend', 'clangFrontendTool',
-    'clangHandleCXX', 'clangHandleLLVM', 'clangSerialization',
-    'clangSema', 'clangParse', 'clangEdit', 'clangAnalysis'
-  ]
+  dep_clang = cpp.find_library('clang-cpp', dirs : llvm_libdir, required : false)
 
-  dep_clang = []
-  foreach m : clang_modules
-    dep_clang += cpp.find_library(m, dirs : llvm_libdir, required : true)
-  endforeach
+  if not dep_clang.found()
+    clang_modules = [
+      'clangBasic', 'clangAST', 'clangCodeGen', 'clangLex',
+      'clangDriver', 'clangFrontend', 'clangFrontendTool',
+      'clangHandleCXX', 'clangHandleLLVM', 'clangSerialization',
+      'clangSema', 'clangParse', 'clangEdit', 'clangAnalysis'
+    ]
+
+    dep_clang = []
+    foreach m : clang_modules
+      dep_clang += cpp.find_library(m, dirs : llvm_libdir, required : true)
+    endforeach
+  endif
 endif
 
 # Be explicit about only using this lib on Windows, to avoid picking
@@ -1947,14 +1985,8 @@ if with_osmesa
     osmesa_lib_name = 'OSMesa'
   endif
   osmesa_bits = get_option('osmesa-bits')
-  if osmesa_bits != '8'
-    if with_dri or with_glx != 'disabled'
-      error('OSMesa bits must be 8 if building glx or dri based drivers')
-    endif
-    osmesa_lib_name = osmesa_lib_name + osmesa_bits
-    pre_args += [
-      '-DCHAN_BITS=@0@'.format(osmesa_bits), '-DDEFAULT_SOFTWARE_DEPTH_BITS=31'
-    ]
+  if osmesa_bits != 'unspecified'
+    warning('osmesa-bits option is deprecated and have no effect, please remove it.')
   endif
 endif
 
@@ -1962,7 +1994,7 @@ endif
 
 if with_platform_wayland
   dep_wl_scanner = dependency('wayland-scanner', native: true)
-  prog_wl_scanner = find_program(dep_wl_scanner.get_pkgconfig_variable('wayland_scanner'))
+  prog_wl_scanner = find_program(dep_wl_scanner.get_variable(pkgconfig : 'wayland_scanner'))
   if dep_wl_scanner.version().version_compare('>= 1.15')
     wl_scanner_arg = 'private-code'
   else
@@ -1976,7 +2008,7 @@ if with_platform_wayland
     dep_wayland_egl_headers = dep_wayland_egl.partial_dependency(compile_args : true)
   endif
   wayland_dmabuf_xml = join_paths(
-    dep_wl_protocols.get_pkgconfig_variable('pkgdatadir'), 'unstable',
+    dep_wl_protocols.get_variable(pkgconfig : 'pkgdatadir'), 'unstable',
     'linux-dmabuf', 'linux-dmabuf-unstable-v1.xml'
   )
   pre_args += '-DWL_HIDE_DEPRECATED'
@@ -2240,6 +2272,9 @@ if with_gbm
 endif
 
 lines += ''
+lines += 'Video Codecs: ' + ' '.join(_codecs)
+lines += ''
+
 if with_any_vk
   lines += 'Vulkan drivers:  ' + ' '.join(_vulkan_drivers)
   lines += 'Vulkan ICD dir:  ' + with_vulkan_icd_dir

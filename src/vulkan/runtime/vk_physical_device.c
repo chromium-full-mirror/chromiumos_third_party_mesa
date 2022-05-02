@@ -45,6 +45,9 @@ vk_physical_device_init(struct vk_physical_device *pdevice,
    vk_physical_device_dispatch_table_from_entrypoints(
       &pdevice->dispatch_table, &vk_common_physical_device_entrypoints, false);
 
+   /* TODO */
+   pdevice->disk_cache = NULL;
+
    return VK_SUCCESS;
 }
 
@@ -124,6 +127,37 @@ vk_common_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
    pdevice->dispatch_table.GetPhysicalDeviceProperties2(physicalDevice,
                                                         &props2);
    *pProperties = props2.properties;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+vk_common_GetPhysicalDeviceQueueFamilyProperties(VkPhysicalDevice physicalDevice,
+                                                 uint32_t *pQueueFamilyPropertyCount,
+                                                 VkQueueFamilyProperties *pQueueFamilyProperties)
+{
+   VK_FROM_HANDLE(vk_physical_device, pdevice, physicalDevice);
+
+   if (!pQueueFamilyProperties) {
+      pdevice->dispatch_table.GetPhysicalDeviceQueueFamilyProperties2(physicalDevice,
+                                                                      pQueueFamilyPropertyCount,
+                                                                      NULL);
+      return;
+   }
+
+   STACK_ARRAY(VkQueueFamilyProperties2, props2, *pQueueFamilyPropertyCount);
+
+   for (unsigned i = 0; i < *pQueueFamilyPropertyCount; ++i) {
+      props2[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
+      props2[i].pNext = NULL;
+   }
+
+   pdevice->dispatch_table.GetPhysicalDeviceQueueFamilyProperties2(physicalDevice,
+                                                                   pQueueFamilyPropertyCount,
+                                                                   props2);
+
+   for (unsigned i = 0; i < *pQueueFamilyPropertyCount; ++i)
+      pQueueFamilyProperties[i] = props2[i].queueFamilyProperties;
+
+   STACK_ARRAY_FINISH(props2);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -251,4 +285,15 @@ vk_common_GetPhysicalDeviceSparseImageFormatProperties(VkPhysicalDevice physical
       pProperties[i] = props2[i].properties;
 
    STACK_ARRAY_FINISH(props2);
+}
+
+/* VK_EXT_tooling_info */
+VKAPI_ATTR VkResult VKAPI_CALL
+vk_common_GetPhysicalDeviceToolProperties(VkPhysicalDevice physicalDevice,
+                                          uint32_t *pToolCount,
+                                          VkPhysicalDeviceToolProperties *pToolProperties)
+{
+   VK_OUTARRAY_MAKE_TYPED(VkPhysicalDeviceToolProperties, out, pToolProperties, pToolCount);
+
+   return vk_outarray_status(&out);
 }

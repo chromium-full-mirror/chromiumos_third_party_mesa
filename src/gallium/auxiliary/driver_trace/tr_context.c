@@ -28,7 +28,6 @@
 #include "util/ralloc.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
-#include "util/simple_list.h"
 #include "util/u_framebuffer.h"
 
 #include "pipe/p_format.h"
@@ -1951,7 +1950,7 @@ trace_context_set_context_param(struct pipe_context *_context,
 }
 
 static void
-trace_context_set_debug_callback(struct pipe_context *_context, const struct pipe_debug_callback *cb)
+trace_context_set_debug_callback(struct pipe_context *_context, const struct util_debug_callback *cb)
 {
    struct trace_context *tr_context = trace_context(_context);
    struct pipe_context *context = tr_context->pipe;

@@ -33,6 +33,7 @@
 #include "util/u_threaded_context.h"
 #include "util/u_vertex_state_cache.h"
 #include "ac_sqtt.h"
+#include "ac_spm.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -121,7 +122,6 @@ extern "C" {
 
 #define SI_MAX_BORDER_COLORS              4096
 #define SI_MAX_VIEWPORTS                  16
-#define SIX_BITS                          0x3F
 #define SI_MAP_BUFFER_ALIGNMENT           64
 /* We only support the minimum allowed value (512), so that we can pack a 3D block size
  * in 1 SGPR. */
@@ -192,7 +192,6 @@ enum
 
    /* Shader compiler options the shader cache should be aware of: */
    DBG_FS_CORRECT_DERIVS_AFTER_KILL,
-   DBG_GISEL,
    DBG_W32_GE,
    DBG_W32_PS,
    DBG_W32_PS_DISCARD,
@@ -567,9 +566,6 @@ struct si_screen {
    unsigned pbb_persistent_states_per_bin;
    bool has_draw_indirect_multi;
    bool has_out_of_order_rast;
-   bool assume_no_z_fights;
-   bool commutative_blend_add;
-   bool allow_draw_out_of_order;
    bool dpbb_allowed;
    bool use_ngg;
    bool use_ngg_culling;
@@ -814,7 +810,7 @@ struct si_streamout {
 
    /* External state which comes from the vertex shader,
     * it must be set explicitly when binding a shader. */
-   uint16_t *stride_in_dw;
+   uint8_t *stride_in_dw;
    unsigned enabled_stream_buffers_mask; /* stream0 buffers0-3 in 4 LSB */
 
    /* The state of VGT_STRMOUT_BUFFER_(CONFIG|EN). */
@@ -970,8 +966,8 @@ struct si_context {
    void *cs_clear_buffer;
    void *cs_clear_buffer_rmw;
    void *cs_copy_buffer;
-   void *cs_copy_image;
-   void *cs_copy_image_1d_array;
+   void *cs_copy_image_1D;
+   void *cs_copy_image_2D;
    void *cs_clear_render_target;
    void *cs_clear_render_target_1d_array;
    void *cs_clear_12bytes_buffer;
@@ -979,7 +975,7 @@ struct si_context {
    void *cs_dcc_retile[32];
    void *cs_fmask_expand[3][2]; /* [log2(samples)-1][is_array] */
    struct si_screen *screen;
-   struct pipe_debug_callback debug;
+   struct util_debug_callback debug;
    struct ac_llvm_compiler compiler; /* only non-threaded compilation */
    struct si_shader_ctx_state fixed_func_tcs_shader;
    /* Offset 0: EOP flush number; Offset 4: GDS prim restart counter */
@@ -1157,7 +1153,6 @@ struct si_context {
 
    /* Scratch buffer */
    struct si_resource *scratch_buffer;
-   unsigned scratch_waves;
    unsigned spi_tmpring_size;
    unsigned max_seen_scratch_bytes_per_wave;
    unsigned max_seen_compute_scratch_bytes_per_wave;
@@ -1285,6 +1280,7 @@ struct si_context {
 
    /* SQTT */
    struct ac_thread_trace_data *thread_trace;
+   struct ac_spm_trace_data spm_trace;
    struct pipe_fence_handle *last_sqtt_fence;
    enum rgp_sqtt_marker_event_type sqtt_next_event;
    bool thread_trace_enabled;
@@ -1502,13 +1498,20 @@ void si_emit_initial_compute_regs(struct si_context *sctx, struct radeon_cmdbuf 
 void si_init_compute_functions(struct si_context *sctx);
 
 /* si_pipe.c */
-void si_init_compiler(struct si_screen *sscreen, struct ac_llvm_compiler *compiler);
+bool si_init_compiler(struct si_screen *sscreen, struct ac_llvm_compiler *compiler);
 void si_init_aux_async_compute_ctx(struct si_screen *sscreen);
 
 /* si_perfcounters.c */
 void si_init_perfcounters(struct si_screen *screen);
 void si_destroy_perfcounters(struct si_screen *screen);
 void si_inhibit_clockgating(struct si_context *sctx, struct radeon_cmdbuf *cs, bool inhibit);
+void si_pc_emit_shaders(struct radeon_cmdbuf *cs, unsigned shaders);
+void si_pc_emit_spm_start(struct radeon_cmdbuf *cs);
+void si_pc_emit_spm_stop(struct radeon_cmdbuf *cs, bool never_stop_sq_perf_counters);
+void si_pc_emit_spm_reset(struct radeon_cmdbuf *cs);
+void si_emit_spm_setup(struct si_context *sctx, struct radeon_cmdbuf *cs);
+bool si_spm_init(struct si_context *sctx);
+void si_spm_finish(struct si_context *sctx);
 
 /* si_query.c */
 void si_init_screen_query_functions(struct si_screen *sscreen);
@@ -1517,6 +1520,7 @@ void si_suspend_queries(struct si_context *sctx);
 void si_resume_queries(struct si_context *sctx);
 
 /* si_shaderlib_nir.c */
+void *si_create_copy_image_cs(struct si_context *sctx, bool is_1D);
 void *si_create_dcc_retile_cs(struct si_context *sctx, struct radeon_surf *surf);
 void *gfx9_create_clear_dcc_msaa_cs(struct si_context *sctx, struct si_texture *tex);
 
@@ -1526,9 +1530,7 @@ void *si_get_blitter_vs(struct si_context *sctx, enum blitter_attrib_type type,
 void *si_create_fixed_func_tcs(struct si_context *sctx);
 void *si_create_dma_compute_shader(struct pipe_context *ctx, unsigned num_dwords_per_thread,
                                    bool dst_stream_cache_policy, bool is_copy);
-void *si_create_clear_buffer_rmw_cs(struct pipe_context *ctx);
-void *si_create_copy_image_compute_shader(struct pipe_context *ctx);
-void *si_create_copy_image_compute_shader_1d_array(struct pipe_context *ctx);
+void *si_create_clear_buffer_rmw_cs(struct si_context *sctx);
 void *si_create_dcc_decompress_cs(struct pipe_context *ctx);
 void *si_clear_render_target_shader(struct pipe_context *ctx);
 void *si_clear_render_target_shader_1d_array(struct pipe_context *ctx);
@@ -1732,13 +1734,6 @@ static inline struct si_shader_ctx_state *si_get_vs(struct si_context *sctx)
                            sctx->shader.gs.cso ? GS_ON : GS_OFF);
 }
 
-static inline struct si_shader_info *si_get_vs_info(struct si_context *sctx)
-{
-   struct si_shader_ctx_state *vs = si_get_vs(sctx);
-
-   return vs->cso ? &vs->cso->info : NULL;
-}
-
 static inline bool si_can_dump_shader(struct si_screen *sscreen, gl_shader_stage stage)
 {
    return sscreen->debug_flags & (1 << stage);
@@ -1875,8 +1870,8 @@ static inline unsigned si_get_total_colormask(struct si_context *sctx)
       sctx->framebuffer.colorbuf_enabled_4bit & sctx->queued.named.blend->cb_target_mask;
 
    if (!ps->info.color0_writes_all_cbufs)
-      colormask &= ps->colors_written_4bit;
-   else if (!ps->colors_written_4bit)
+      colormask &= ps->info.colors_written_4bit;
+   else if (!ps->info.colors_written_4bit)
       colormask = 0; /* color0 writes all cbufs, but it's not written */
 
    return colormask;

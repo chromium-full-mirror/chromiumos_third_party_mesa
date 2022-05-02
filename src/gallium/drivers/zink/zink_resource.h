@@ -79,7 +79,21 @@ struct zink_resource_object {
    bool render_target;
    bool is_buffer;
 
+   /* TODO: this should be a union */
    struct zink_bo *bo;
+   // struct {
+   void *dt;
+   uint32_t dt_idx;
+   uint32_t last_dt_idx;
+   VkSemaphore acquire;
+   VkSemaphore present;
+   bool acquired;
+   bool new_dt;
+   bool dt_has_data;
+   bool indefinite_acquire;
+   // }
+
+
    VkDeviceSize offset, size, alignment;
    VkImageCreateFlags vkflags;
    VkImageUsageFlags vkusage;
@@ -98,8 +112,6 @@ struct zink_resource {
    enum pipe_format internal_format:16;
 
    struct zink_resource_object *obj;
-   struct zink_resource_object *scanout_obj; //TODO: remove for wsi
-   bool scanout_obj_init;
    union {
       struct {
          struct util_range valid_buffer_range;
@@ -140,12 +152,13 @@ struct zink_resource {
       };
    };
 
+   bool swapchain;
    bool dmabuf_acquire;
-   struct sw_displaytarget *dt;
    unsigned dt_stride;
 
    uint8_t modifiers_count;
    uint64_t *modifiers;
+   enum pipe_format drm_format;
 };
 
 struct zink_transfer {
@@ -202,6 +215,12 @@ static inline bool
 zink_resource_has_binds(const struct zink_resource *res)
 {
    return res->all_binds > 0;
+}
+
+static inline bool
+zink_is_swapchain(const struct zink_resource *res)
+{
+   return res->swapchain;
 }
 
 #ifndef __cplusplus

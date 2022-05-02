@@ -517,13 +517,15 @@ vir_link_blocks(struct qblock *predecessor, struct qblock *successor)
 }
 
 const struct v3d_compiler *
-v3d_compiler_init(const struct v3d_device_info *devinfo)
+v3d_compiler_init(const struct v3d_device_info *devinfo,
+                  uint32_t max_inline_uniform_buffers)
 {
         struct v3d_compiler *compiler = rzalloc(NULL, struct v3d_compiler);
         if (!compiler)
                 return NULL;
 
         compiler->devinfo = devinfo;
+        compiler->max_inline_uniform_buffers = max_inline_uniform_buffers;
 
         if (!vir_init_reg_sets(compiler)) {
                 ralloc_free(compiler);
@@ -611,6 +613,7 @@ v3d_lower_nir(struct v3d_compile *c)
                 .lower_txp = ~0,
                 /* Apply swizzles to all samplers. */
                 .swizzle_result = ~0,
+                .lower_invalid_implicit_lod = true,
         };
 
         /* Lower the format swizzle and (for 32-bit returns)

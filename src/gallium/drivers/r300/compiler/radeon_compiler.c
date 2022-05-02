@@ -143,35 +143,73 @@ void rc_copy_output(struct radeon_compiler * c, unsigned output, unsigned dup_ou
 {
 	unsigned tempreg = rc_find_free_temporary(c);
 	struct rc_instruction * inst;
+	struct rc_instruction * insert_pos = c->Program.Instructions.Prev;
+	struct rc_instruction * last_write_inst = NULL;
+	unsigned branch_depth = 0;
+	unsigned loop_depth = 0;
+	bool emit_after_control_flow = false;
+	unsigned num_writes = 0;
 
 	for(inst = c->Program.Instructions.Next; inst != &c->Program.Instructions; inst = inst->Next) {
 		const struct rc_opcode_info * opcode = rc_get_opcode_info(inst->U.I.Opcode);
 
+		if (inst->U.I.Opcode == RC_OPCODE_BGNLOOP)
+			loop_depth++;
+		if (inst->U.I.Opcode == RC_OPCODE_IF)
+			branch_depth++;
+		if ((inst->U.I.Opcode == RC_OPCODE_ENDLOOP && loop_depth--) ||
+		    (inst->U.I.Opcode == RC_OPCODE_ENDIF && branch_depth--))
+			if (emit_after_control_flow && loop_depth == 0 && branch_depth == 0) {
+				insert_pos = inst;
+				emit_after_control_flow = false;
+			}
+
 		if (opcode->HasDstReg) {
 			if (inst->U.I.DstReg.File == RC_FILE_OUTPUT && inst->U.I.DstReg.Index == output) {
+				num_writes++;
 				inst->U.I.DstReg.File = RC_FILE_TEMPORARY;
 				inst->U.I.DstReg.Index = tempreg;
+				insert_pos = inst;
+				last_write_inst = inst;
+				if (loop_depth != 0 && branch_depth != 0)
+					emit_after_control_flow = true;
 			}
 		}
 	}
 
-	inst = rc_insert_new_instruction(c, c->Program.Instructions.Prev);
-	inst->U.I.Opcode = RC_OPCODE_MOV;
-	inst->U.I.DstReg.File = RC_FILE_OUTPUT;
-	inst->U.I.DstReg.Index = output;
+	/* If there is only a single write, just duplicate the whole instruction instead.
+	 * We can do this even when the single write was is a control flow.
+	 */
+	if (num_writes == 1) {
+		last_write_inst->U.I.DstReg.File = RC_FILE_OUTPUT;
+		last_write_inst->U.I.DstReg.Index = output;
 
-	inst->U.I.SrcReg[0].File = RC_FILE_TEMPORARY;
-	inst->U.I.SrcReg[0].Index = tempreg;
-	inst->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZW;
+		inst = rc_insert_new_instruction(c, last_write_inst);
+		struct rc_instruction * prev = inst->Prev;
+		struct rc_instruction * next = inst->Next;
+		memcpy(inst, last_write_inst, sizeof(struct rc_instruction));
+		inst->Prev = prev;
+		inst->Next = next;
+		inst->U.I.DstReg.Index = dup_output;
+	} else {
+		inst = rc_insert_new_instruction(c, insert_pos);
+		inst->U.I.Opcode = RC_OPCODE_MOV;
+		inst->U.I.DstReg.File = RC_FILE_OUTPUT;
+		inst->U.I.DstReg.Index = output;
 
-	inst = rc_insert_new_instruction(c, c->Program.Instructions.Prev);
-	inst->U.I.Opcode = RC_OPCODE_MOV;
-	inst->U.I.DstReg.File = RC_FILE_OUTPUT;
-	inst->U.I.DstReg.Index = dup_output;
+		inst->U.I.SrcReg[0].File = RC_FILE_TEMPORARY;
+		inst->U.I.SrcReg[0].Index = tempreg;
+		inst->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZW;
 
-	inst->U.I.SrcReg[0].File = RC_FILE_TEMPORARY;
-	inst->U.I.SrcReg[0].Index = tempreg;
-	inst->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZW;
+		inst = rc_insert_new_instruction(c, inst);
+		inst->U.I.Opcode = RC_OPCODE_MOV;
+		inst->U.I.DstReg.File = RC_FILE_OUTPUT;
+		inst->U.I.DstReg.Index = dup_output;
+
+		inst->U.I.SrcReg[0].File = RC_FILE_TEMPORARY;
+		inst->U.I.SrcReg[0].Index = tempreg;
+		inst->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZW;
+	}
 
 	c->Program.OutputsWritten |= 1U << dup_output;
 }
@@ -379,7 +417,7 @@ static void print_stats(struct radeon_compiler * c)
 	 * only the FS has, becasue shader-db's report.py wants all shaders to
 	 * have the same set.
 	 */
-	pipe_debug_message(c->debug, SHADER_INFO, "%s shader: %u inst, %u vinst, %u sinst, %u predicate, %u flowcontrol, %u loops, %u tex, %u presub, %u omod, %u temps, %u consts, %u lits",
+	util_debug_message(c->debug, SHADER_INFO, "%s shader: %u inst, %u vinst, %u sinst, %u predicate, %u flowcontrol, %u loops, %u tex, %u presub, %u omod, %u temps, %u consts, %u lits",
 	                   c->type == RC_VERTEX_PROGRAM ? "VS" : "FS",
 	                   s.num_insts, s.num_rgb_insts, s.num_alpha_insts, s.num_pred_insts,
 	                   s.num_fc_insts, s.num_loops, s.num_tex_insts, s.num_presub_ops,

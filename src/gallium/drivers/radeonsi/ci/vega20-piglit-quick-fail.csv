@@ -1,5 +1,4 @@
 glx@extension string sanity,Fail
-glx@glx-make-glxdrawable-current,Fail
 spec@!opengl 1.1@windowoverlap,Fail
 spec@arb_shader_clock@execution@clock,Fail
 spec@egl_chromium_sync_control@conformance,Fail
@@ -102,13 +101,9 @@ spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_y210,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_y212,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_y216,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_yuyv,Fail
-spec@ext_transform_feedback@order arrays lines,Fail
-spec@ext_transform_feedback@order arrays points,Fail
-spec@ext_transform_feedback@order arrays triangles,Fail
-spec@ext_transform_feedback@order elements lines,Fail
-spec@ext_transform_feedback@order elements points,Fail
-spec@ext_transform_feedback@order elements triangles,Fail
 spec@glsl-1.20@compiler@invalid-vec4-array-to-vec3-array-conversion.vert,Fail
+spec@glsl-1.30@execution@glsl-fs-continue-in-switch-in-do-while,Fail
+spec@glsl-1.30@execution@glsl-vs-continue-in-switch-in-do-while,Fail
 spec@glsl-1.50@execution@geometry@primitive-types gl_triangle_strip_adjacency,Fail
 spec@glsl-1.50@execution@geometry@tri-strip-ordering-with-prim-restart gl_triangle_strip_adjacency ffs,Fail
 spec@glsl-1.50@execution@geometry@tri-strip-ordering-with-prim-restart gl_triangle_strip_adjacency other,Fail

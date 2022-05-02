@@ -476,7 +476,7 @@ static VkResult device_select_EnumeratePhysicalDevices(VkInstance instance,
    uint32_t selected_physical_device_count = 0;
    const char* selection = getenv("MESA_VK_DEVICE_SELECT");
    VkResult result = info->EnumeratePhysicalDevices(instance, &physical_device_count, NULL);
-   VK_OUTARRAY_MAKE(out, pPhysicalDevices, pPhysicalDeviceCount);
+   VK_OUTARRAY_MAKE_TYPED(VkPhysicalDevice, out, pPhysicalDevices, pPhysicalDeviceCount);
    if (result != VK_SUCCESS)
       return result;
 
@@ -528,8 +528,13 @@ static VkResult device_select_EnumeratePhysicalDevices(VkInstance instance,
 
    assert(result == VK_SUCCESS);
 
+   /* do not give multiple device option to app if force default device */
+   const char *force_default_device = getenv("MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE");
+   if (force_default_device && !strcmp(force_default_device, "1") && selected_physical_device_count != 0)
+      selected_physical_device_count = 1;
+
    for (unsigned i = 0; i < selected_physical_device_count; i++) {
-      vk_outarray_append(&out, ent) {
+      vk_outarray_append_typed(VkPhysicalDevice, &out, ent) {
          *ent = selected_physical_devices[i];
       }
    }
@@ -548,7 +553,7 @@ static VkResult device_select_EnumeratePhysicalDeviceGroups(VkInstance instance,
    uint32_t physical_device_group_count = 0;
    uint32_t selected_physical_device_group_count = 0;
    VkResult result = info->EnumeratePhysicalDeviceGroups(instance, &physical_device_group_count, NULL);
-   VK_OUTARRAY_MAKE(out, pPhysicalDeviceGroups, pPhysicalDeviceGroupCount);
+   VK_OUTARRAY_MAKE_TYPED(VkPhysicalDeviceGroupProperties, out, pPhysicalDeviceGroups, pPhysicalDeviceGroupCount);
 
    if (result != VK_SUCCESS)
       return result;
@@ -592,7 +597,7 @@ static VkResult device_select_EnumeratePhysicalDeviceGroups(VkInstance instance,
    assert(result == VK_SUCCESS);
 
    for (unsigned i = 0; i < selected_physical_device_group_count; i++) {
-      vk_outarray_append(&out, ent) {
+      vk_outarray_append_typed(VkPhysicalDeviceGroupProperties, &out, ent) {
          *ent = selected_physical_device_groups[i];
       }
    }

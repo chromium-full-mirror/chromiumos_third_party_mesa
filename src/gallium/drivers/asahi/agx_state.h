@@ -251,10 +251,21 @@ struct agx_resource {
    struct {
       unsigned offset;
       unsigned line_stride;
+      unsigned size;
    } slices[PIPE_MAX_TEXTURE_LEVELS];
 
    /* Bytes from one miptree to the next */
    unsigned array_stride;
+
+   /* Metal does not support packed depth/stencil formats; presumably AGX does
+    * not either. Instead, we create separate depth and stencil resources,
+    * managed by u_transfer_helper.  We provide the illusion of packed
+    * resources.
+    */
+   struct agx_resource *separate_stencil;
+
+   /* Internal format, since many depth/stencil formats are emulated. */
+   enum pipe_format internal_format;
 };
 
 static inline struct agx_resource *

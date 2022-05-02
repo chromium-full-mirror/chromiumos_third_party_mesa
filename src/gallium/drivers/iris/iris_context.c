@@ -42,7 +42,7 @@
  */
 static void
 iris_set_debug_callback(struct pipe_context *ctx,
-                        const struct pipe_debug_callback *cb)
+                        const struct util_debug_callback *cb)
 {
    struct iris_context *ice = (struct iris_context *)ctx;
    struct iris_screen *screen = (struct iris_screen *)ctx->screen;
@@ -231,6 +231,11 @@ iris_destroy_context(struct pipe_context *ctx)
 
    for (unsigned i = 0; i < ARRAY_SIZE(ice->shaders.scratch_surfs); i++)
       pipe_resource_reference(&ice->shaders.scratch_surfs[i].res, NULL);
+
+   for (unsigned i = 0; i < ARRAY_SIZE(ice->shaders.scratch_bos); i++) {
+      for (unsigned j = 0; j < ARRAY_SIZE(ice->shaders.scratch_bos[i]); j++)
+         iris_bo_unreference(ice->shaders.scratch_bos[i][j]);
+   }
 
    iris_destroy_program_cache(ice);
    if (screen->measure.config)

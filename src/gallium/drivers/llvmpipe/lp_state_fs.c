@@ -1,9 +1,9 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2009 VMware, Inc.
  * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -11,11 +11,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -23,7 +23,7 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
 
 /**
@@ -65,7 +65,6 @@
 #include "util/format/u_format.h"
 #include "util/u_dump.h"
 #include "util/u_string.h"
-#include "util/simple_list.h"
 #include "util/u_dual_blend.h"
 #include "util/u_upload_mgr.h"
 #include "util/os_time.h"
@@ -1950,7 +1949,7 @@ convert_to_blend_type(struct gallivm_state *gallivm,
    src_type.length *= pixels / (src_type.length / mem_type.length);
 
    for (i = 0; i < num_srcs; ++i) {
-      LLVMValueRef chans[4];
+      LLVMValueRef chans;
       LLVMValueRef res = NULL;
 
       dst[i] = LLVMBuildZExt(builder, src[i], lp_build_vec_type(gallivm, src_type), "");
@@ -1961,38 +1960,38 @@ convert_to_blend_type(struct gallivm_state *gallivm,
 #if UTIL_ARCH_LITTLE_ENDIAN
          unsigned from_lsb = j;
 #else
-         unsigned from_lsb = src_fmt->nr_channels - j - 1;
+         unsigned from_lsb = (blend_type.length / pixels) - j - 1;
 #endif
 
          mask = (1 << src_fmt->channel[j].size) - 1;
 
          /* Extract bits from source */
-         chans[j] = LLVMBuildLShr(builder,
-                                  dst[i],
-                                  lp_build_const_int_vec(gallivm, src_type, sa),
-                                  "");
+         chans = LLVMBuildLShr(builder,
+                               dst[i],
+                               lp_build_const_int_vec(gallivm, src_type, sa),
+                               "");
 
-         chans[j] = LLVMBuildAnd(builder,
-                                 chans[j],
-                                 lp_build_const_int_vec(gallivm, src_type, mask),
-                                 "");
+         chans = LLVMBuildAnd(builder,
+                              chans,
+                              lp_build_const_int_vec(gallivm, src_type, mask),
+                              "");
 
          /* Scale bits */
          if (src_type.norm) {
-            chans[j] = scale_bits(gallivm, src_fmt->channel[j].size,
-                                  blend_type.width, chans[j], src_type);
+            chans = scale_bits(gallivm, src_fmt->channel[j].size,
+                               blend_type.width, chans, src_type);
          }
 
          /* Insert bits into correct position */
-         chans[j] = LLVMBuildShl(builder,
-                                 chans[j],
-                                 lp_build_const_int_vec(gallivm, src_type, from_lsb * blend_type.width),
-                                 "");
+         chans = LLVMBuildShl(builder,
+                              chans,
+                              lp_build_const_int_vec(gallivm, src_type, from_lsb * blend_type.width),
+                              "");
 
          if (j == 0) {
-            res = chans[j];
+            res = chans;
          } else {
-            res = LLVMBuildOr(builder, res, chans[j], "");
+            res = LLVMBuildOr(builder, res, chans, "");
          }
       }
 
@@ -2132,7 +2131,7 @@ convert_from_blend_type(struct gallivm_state *gallivm,
    dst_type.length = pixels;
 
    for (i = 0; i < num_srcs; ++i) {
-      LLVMValueRef chans[4];
+      LLVMValueRef chans;
       LLVMValueRef res = NULL;
 
       dst[i] = LLVMBuildBitCast(builder, src[i], lp_build_vec_type(gallivm, src_type), "");
@@ -2144,7 +2143,7 @@ convert_from_blend_type(struct gallivm_state *gallivm,
 #if UTIL_ARCH_LITTLE_ENDIAN
          unsigned from_lsb = j;
 #else
-         unsigned from_lsb = src_fmt->nr_channels - j - 1;
+         unsigned from_lsb = blend_type.length - j - 1;
 #endif
 
          assert(blend_type.width > src_fmt->channel[j].size);
@@ -2154,39 +2153,39 @@ convert_from_blend_type(struct gallivm_state *gallivm,
          }
 
          /* Extract bits */
-         chans[j] = LLVMBuildLShr(builder,
-                                  dst[i],
-                                  lp_build_const_int_vec(gallivm, src_type,
-                                                         from_lsb * blend_type.width),
-                                  "");
+         chans = LLVMBuildLShr(builder,
+                               dst[i],
+                               lp_build_const_int_vec(gallivm, src_type,
+                                                      from_lsb * blend_type.width),
+                               "");
 
-         chans[j] = LLVMBuildAnd(builder,
-                                 chans[j],
-                                 lp_build_const_int_vec(gallivm, src_type, mask),
-                                 "");
+         chans = LLVMBuildAnd(builder,
+                              chans,
+                              lp_build_const_int_vec(gallivm, src_type, mask),
+                              "");
 
          /* Scale down bits */
          if (src_type.norm) {
-            chans[j] = scale_bits(gallivm, blend_type.width,
-                                  src_fmt->channel[j].size, chans[j], src_type);
+            chans = scale_bits(gallivm, blend_type.width,
+                               src_fmt->channel[j].size, chans, src_type);
          } else if (!src_type.floating && sz_a < blend_type.width) {
             LLVMValueRef mask_val = lp_build_const_int_vec(gallivm, src_type, (1UL << sz_a) - 1);
-            LLVMValueRef mask = LLVMBuildICmp(builder, LLVMIntUGT, chans[j], mask_val, "");
-            chans[j] = LLVMBuildSelect(builder, mask, mask_val, chans[j], "");
+            LLVMValueRef mask = LLVMBuildICmp(builder, LLVMIntUGT, chans, mask_val, "");
+            chans = LLVMBuildSelect(builder, mask, mask_val, chans, "");
          }
 
          /* Insert bits */
-         chans[j] = LLVMBuildShl(builder,
-                                 chans[j],
-                                 lp_build_const_int_vec(gallivm, src_type, sa),
-                                 "");
+         chans = LLVMBuildShl(builder,
+                              chans,
+                              lp_build_const_int_vec(gallivm, src_type, sa),
+                              "");
 
          sa += src_fmt->channel[j].size;
 
          if (j == 0) {
-            res = chans[j];
+            res = chans;
          } else {
-            res = LLVMBuildOr(builder, res, chans[j], "");
+            res = LLVMBuildOr(builder, res, chans, "");
          }
       }
 
@@ -3067,7 +3066,7 @@ generate_fragment(struct llvmpipe_context *lp,
    blend_type.width = 8;        /* 8-bit ubyte values */
    blend_type.length = 16;      /* 16 elements per vector */
 
-   /* 
+   /*
     * Generate the function prototype. Any change here must be reflected in
     * lp_jit.h's lp_jit_frag_func function pointer type, and vice-versa.
     */
@@ -3394,6 +3393,9 @@ dump_fs_variant_key(struct lp_fragment_shader_variant_key *key)
    if (key->flatshade) {
       debug_printf("flatshade = 1\n");
    }
+   if (key->depth_clamp)
+      debug_printf("depth_clamp = 1\n");
+
    if (key->multisample) {
       debug_printf("multisample = 1\n");
       debug_printf("coverage samples = %d\n", key->coverage_samples);
@@ -3709,7 +3711,7 @@ generate_variant(struct llvmpipe_context *lp,
    llvmpipe_fs_variant_fastpath(variant);
 
    lp_jit_init_types(variant);
-   
+
    if (variant->jit_function[RAST_EDGE_TEST] == NULL)
       generate_fragment(lp, shader, variant, RAST_EDGE_TEST);
 
@@ -3812,7 +3814,7 @@ llvmpipe_create_fs_state(struct pipe_context *pipe,
 
    pipe_reference_init(&shader->reference, 1);
    shader->no = fs_no++;
-   make_empty_list(&shader->variants);
+   list_inithead(&shader->variants.list);
 
    shader->base.type = templ->type;
    if (templ->type == PIPE_SHADER_IR_TGSI) {
@@ -3942,11 +3944,11 @@ void llvmpipe_remove_shader_variant(struct llvmpipe_context *lp,
    }
 
    /* remove from shader's list */
-   remove_from_list(&variant->list_item_local);
+   list_del(&variant->list_item_local.list);
    variant->shader->variants_cached--;
 
    /* remove from context's list */
-   remove_from_list(&variant->list_item_global);
+   list_del(&variant->list_item_global.list);
    lp->nr_fs_variants--;
    lp->nr_fs_instrs -= variant->nr_instrs;
 }
@@ -3981,17 +3983,14 @@ llvmpipe_delete_fs_state(struct pipe_context *pipe, void *fs)
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
    struct lp_fragment_shader *shader = fs;
-   struct lp_fs_variant_list_item *li;
+   struct lp_fs_variant_list_item *li, *next;
 
    /* Delete all the variants */
-   li = first_elem(&shader->variants);
-   while(!at_end(&shader->variants, li)) {
-      struct lp_fs_variant_list_item *next = next_elem(li);
+   LIST_FOR_EACH_ENTRY_SAFE(li, next, &shader->variants.list, list) {
       struct lp_fragment_shader_variant *variant;
       variant = li->base;
       llvmpipe_remove_shader_variant(llvmpipe, li->base);
       lp_fs_variant_reference(llvmpipe, &variant, NULL);
-      li = next;
    }
 
    lp_fs_reference(llvmpipe, &shader, NULL);
@@ -4314,6 +4313,9 @@ make_variant_key(struct llvmpipe_context *lp,
     */
    key->nr_samplers = shader->info.base.file_max[TGSI_FILE_SAMPLER] + 1;
 
+   if (shader->info.base.file_max[TGSI_FILE_SAMPLER_VIEW] != -1)
+      key->nr_sampler_views = shader->info.base.file_max[TGSI_FILE_SAMPLER_VIEW] + 1;
+
    struct lp_sampler_static_state *fs_sampler;
 
    fs_sampler = lp_fs_variant_key_samplers(key);
@@ -4333,7 +4335,6 @@ make_variant_key(struct llvmpipe_context *lp,
     * if we want to skip the holes here (without rescanning tgsi).
     */
    if (shader->info.base.file_max[TGSI_FILE_SAMPLER_VIEW] != -1) {
-      key->nr_sampler_views = shader->info.base.file_max[TGSI_FILE_SAMPLER_VIEW] + 1;
       for(i = 0; i < key->nr_sampler_views; ++i) {
          /*
           * Note sview may exceed what's representable by file_mask.
@@ -4381,7 +4382,7 @@ make_variant_key(struct llvmpipe_context *lp,
  * Update fragment shader state.  This is called just prior to drawing
  * something when some fragment-related state has changed.
  */
-void 
+void
 llvmpipe_update_fs(struct llvmpipe_context *lp)
 {
    struct lp_fragment_shader *shader = lp->fs;
@@ -4393,20 +4394,18 @@ llvmpipe_update_fs(struct llvmpipe_context *lp)
    key = make_variant_key(lp, shader, store);
 
    /* Search the variants for one which matches the key */
-   li = first_elem(&shader->variants);
-   while(!at_end(&shader->variants, li)) {
+   LIST_FOR_EACH_ENTRY(li, &shader->variants.list, list) {
       if(memcmp(&li->base->key, key, shader->variant_key_size) == 0) {
          variant = li->base;
          break;
       }
-      li = next_elem(li);
    }
 
    if (variant) {
       /* Move this variant to the head of the list to implement LRU
        * deletion of shader's when we have too many.
        */
-      move_to_head(&lp->fs_variants_list, &variant->list_item_global);
+      list_move_to(&variant->list_item_global.list, &lp->fs_variants_list.list);
    }
    else {
       /* variant not found, create it now */
@@ -4444,10 +4443,11 @@ llvmpipe_update_fs(struct llvmpipe_context *lp)
 
          for (i = 0; i < variants_to_cull || lp->nr_fs_instrs >= LP_MAX_SHADER_INSTRUCTIONS; i++) {
             struct lp_fs_variant_list_item *item;
-            if (is_empty_list(&lp->fs_variants_list)) {
+            if (list_is_empty(&lp->fs_variants_list.list)) {
                break;
             }
-            item = last_elem(&lp->fs_variants_list);
+            item = list_last_entry(&lp->fs_variants_list.list,
+                                   struct lp_fs_variant_list_item, list);
             assert(item);
             assert(item->base);
             llvmpipe_remove_shader_variant(lp, item->base);
@@ -4468,8 +4468,8 @@ llvmpipe_update_fs(struct llvmpipe_context *lp)
 
       /* Put the new variant into the list */
       if (variant) {
-         insert_at_head(&shader->variants, &variant->list_item_local);
-         insert_at_head(&lp->fs_variants_list, &variant->list_item_global);
+         list_add(&variant->list_item_local.list, &shader->variants.list);
+         list_add(&variant->list_item_global.list, &lp->fs_variants_list.list);
          lp->nr_fs_variants++;
          lp->nr_fs_instrs += variant->nr_instrs;
          shader->variants_cached++;

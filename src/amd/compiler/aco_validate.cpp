@@ -236,6 +236,12 @@ validate_ir(Program* program)
             if (instr->definitions[0].regClass().is_subdword() && !instr->definitions[0].isFixed())
                check((vop3.opsel & (1 << 3)) == 0, "Unexpected opsel for sub-dword definition",
                      instr.get());
+         } else if (instr->opcode == aco_opcode::v_fma_mixlo_f16 ||
+                    instr->opcode == aco_opcode::v_fma_mixhi_f16 ||
+                    instr->opcode == aco_opcode::v_fma_mix_f32) {
+            check(instr->definitions[0].regClass() ==
+                     (instr->opcode == aco_opcode::v_fma_mix_f32 ? v1 : v2b),
+                  "v_fma_mix_f32/v_fma_mix_f16 must have v1/v2b definition", instr.get());
          } else if (instr->isVOP3P()) {
             VOP3P_instruction& vop3p = instr->vop3p();
             for (unsigned i = 0; i < instr->operands.size(); i++) {
@@ -768,10 +774,14 @@ validate_subdword_operand(chip_class chip, const aco_ptr<Instruction>& instr, un
    if (instr->isSDWA())
       return byte + instr->sdwa().sel[index].offset() + instr->sdwa().sel[index].size() <= 4 &&
              byte % instr->sdwa().sel[index].size() == 0;
-   if (instr->isVOP3P())
+   if (instr->isVOP3P()) {
+      bool fma_mix = instr->opcode == aco_opcode::v_fma_mixlo_f16 ||
+                     instr->opcode == aco_opcode::v_fma_mixhi_f16 ||
+                     instr->opcode == aco_opcode::v_fma_mix_f32;
       return ((instr->vop3p().opsel_lo >> index) & 1) == (byte >> 1) &&
-             ((instr->vop3p().opsel_hi >> index) & 1) == (byte >> 1);
-   if (byte == 2 && can_use_opsel(chip, instr->opcode, index, 1))
+             ((instr->vop3p().opsel_hi >> index) & 1) == (fma_mix || (byte >> 1));
+   }
+   if (byte == 2 && can_use_opsel(chip, instr->opcode, index))
       return true;
 
    switch (instr->opcode) {
@@ -824,7 +834,7 @@ validate_subdword_definition(chip_class chip, const aco_ptr<Instruction>& instr)
    if (instr->isSDWA())
       return byte + instr->sdwa().dst_sel.offset() + instr->sdwa().dst_sel.size() <= 4 &&
              byte % instr->sdwa().dst_sel.size() == 0;
-   if (byte == 2 && can_use_opsel(chip, instr->opcode, -1, 1))
+   if (byte == 2 && can_use_opsel(chip, instr->opcode, -1))
       return true;
 
    switch (instr->opcode) {

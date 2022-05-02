@@ -58,9 +58,9 @@ trap 'exit ${exit_code}' INT TERM
 trap 'exit_code=$?; [ -z "${CROSVM_PID}${SOCAT_PIDS}" ] || kill ${CROSVM_PID} ${SOCAT_PIDS} >/dev/null 2>&1 || true; rm -rf ${VSOCK_TEMP_DIR}' EXIT
 
 # Securely pass the current variables to the crosvm environment
-CI_COMMON="${CI_PROJECT_DIR}"/install/common
 echo "Variables passed through:"
-"${CI_COMMON}"/generate-env.sh | tee ${VSOCK_TEMP_DIR}/crosvm-env.sh
+SCRIPT_DIR=$(readlink -en "${0%/*}")
+${SCRIPT_DIR}/common/generate-env.sh | tee ${VSOCK_TEMP_DIR}/crosvm-env.sh
 
 # Set the crosvm-script as the arguments of the current script
 echo "$@" > ${VSOCK_TEMP_DIR}/crosvm-script.sh
@@ -80,18 +80,23 @@ unset DISPLAY
 unset XDG_RUNTIME_DIR
 
 CROSVM_KERN_ARGS="quiet console=null root=my_root rw rootfstype=virtiofs ip=192.168.30.2::192.168.30.1:255.255.255.0:crosvm:eth0"
-CROSVM_KERN_ARGS="${CROSVM_KERN_ARGS} init=${CI_PROJECT_DIR}/install/crosvm-init.sh -- ${VSOCK_STDOUT} ${VSOCK_STDERR} ${VSOCK_TEMP_DIR}"
+CROSVM_KERN_ARGS="${CROSVM_KERN_ARGS} init=${SCRIPT_DIR}/crosvm-init.sh -- ${VSOCK_STDOUT} ${VSOCK_STDERR} ${VSOCK_TEMP_DIR}"
+
+[ "${CROSVM_GALLIUM_DRIVER}" = "llvmpipe" ] && \
+    CROSVM_LIBGL_ALWAYS_SOFTWARE=true || CROSVM_LIBGL_ALWAYS_SOFTWARE=false
 
 set +e -x
 
-# We aren't testing LLVMPipe here, so we don't need to validate NIR on the host
-NIR_DEBUG="novalidate" LIBGL_ALWAYS_SOFTWARE="true" GALLIUM_DRIVER=${CROSVM_GALLIUM_DRIVER} \
+# We aren't testing the host driver here, so we don't need to validate NIR on the host
+NIR_DEBUG="novalidate" \
+LIBGL_ALWAYS_SOFTWARE=${CROSVM_LIBGL_ALWAYS_SOFTWARE} \
+GALLIUM_DRIVER=${CROSVM_GALLIUM_DRIVER} \
 crosvm run \
     --gpu "${CROSVM_GPU_ARGS}" -m 4096 -c 2 --disable-sandbox \
     --shared-dir /:my_root:type=fs:writeback=true:timeout=60:cache=always \
     --host_ip "192.168.30.1" --netmask "255.255.255.0" --mac "AA:BB:CC:00:00:12" \
     --cid ${VSOCK_CID} -p "${CROSVM_KERN_ARGS}" \
-    /lava-files/bzImage > ${VSOCK_TEMP_DIR}/crosvm 2>&1 &
+    /lava-files/${KERNEL_IMAGE_NAME:-bzImage} > ${VSOCK_TEMP_DIR}/crosvm 2>&1 &
 
 # Wait for crosvm process to terminate
 CROSVM_PID=$!

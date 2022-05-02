@@ -208,6 +208,8 @@ struct vk_image_view {
    /* VK_KHR_maintenance2 */
    VkImageUsageFlags usage;
 };
+VK_DEFINE_NONDISP_HANDLE_CASTS(vk_image_view, base, VkImageView,
+                               VK_OBJECT_TYPE_IMAGE_VIEW);
 
 void vk_image_view_init(struct vk_device *device,
                         struct vk_image_view *image_view,
@@ -221,6 +223,20 @@ void *vk_image_view_create(struct vk_device *device,
 void vk_image_view_destroy(struct vk_device *device,
                            const VkAllocationCallbacks *alloc,
                            struct vk_image_view *image_view);
+
+static inline VkImageSubresourceRange
+vk_image_view_subresource_range(const struct vk_image_view *view)
+{
+   VkImageSubresourceRange range = {
+      .aspectMask = view->aspects,
+      .baseMipLevel = view->base_mip_level,
+      .levelCount = view->level_count,
+      .baseArrayLayer = view->base_array_layer,
+      .layerCount = view->layer_count,
+   };
+
+   return range;
+}
 
 bool vk_image_layout_is_read_only(VkImageLayout layout,
                                   VkImageAspectFlagBits aspect);

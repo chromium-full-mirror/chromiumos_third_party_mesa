@@ -41,7 +41,6 @@ libtu_files = files(
   'tu_descriptor_set.h',
   'tu_formats.c',
   'tu_image.c',
-  'tu_legacy.c',
   'tu_nir_lower_multiview.c',
   'tu_pass.c',
   'tu_pipeline.c',
@@ -49,6 +48,7 @@ libtu_files = files(
   'tu_private.h',
   'tu_query.c',
   'tu_shader.c',
+  'tu_suballoc.c',
   'tu_util.c',
   'tu_util.h',
   'tu_perfetto.h',
@@ -71,7 +71,6 @@ if with_platform_wayland
 endif
 
 if system_has_kms_drm and not with_platform_android
-  libtu_files += files('tu_wsi_display.c')
   tu_wsi = true
 endif
 

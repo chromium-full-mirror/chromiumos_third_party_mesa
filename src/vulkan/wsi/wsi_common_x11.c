@@ -29,6 +29,7 @@
 #include <xcb/shm.h>
 
 #include "util/macros.h"
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -246,7 +247,7 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
 
       ver_cookie = xcb_dri3_query_version(conn, 1, 2);
       ver_reply = xcb_dri3_query_version_reply(conn, ver_cookie, NULL);
-      has_dri3_v1_2 =
+      has_dri3_v1_2 = ver_reply != NULL &&
          (ver_reply->major_version > 1 || ver_reply->minor_version >= 2);
       free(ver_reply);
    }
@@ -745,7 +746,8 @@ x11_surface_get_formats(VkIcdSurfaceBase *surface,
                         uint32_t *pSurfaceFormatCount,
                         VkSurfaceFormatKHR *pSurfaceFormats)
 {
-   VK_OUTARRAY_MAKE(out, pSurfaceFormats, pSurfaceFormatCount);
+   VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormatKHR, out,
+                          pSurfaceFormats, pSurfaceFormatCount);
 
    unsigned count;
    VkFormat sorted_formats[ARRAY_SIZE(formats)];
@@ -753,7 +755,7 @@ x11_surface_get_formats(VkIcdSurfaceBase *surface,
       return VK_ERROR_SURFACE_LOST_KHR;
 
    for (unsigned i = 0; i < count; i++) {
-      vk_outarray_append(&out, f) {
+      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, f) {
          f->format = sorted_formats[i];
          f->colorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
       }
@@ -769,7 +771,8 @@ x11_surface_get_formats2(VkIcdSurfaceBase *surface,
                         uint32_t *pSurfaceFormatCount,
                         VkSurfaceFormat2KHR *pSurfaceFormats)
 {
-   VK_OUTARRAY_MAKE(out, pSurfaceFormats, pSurfaceFormatCount);
+   VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormat2KHR, out,
+                          pSurfaceFormats, pSurfaceFormatCount);
 
    unsigned count;
    VkFormat sorted_formats[ARRAY_SIZE(formats)];
@@ -777,7 +780,7 @@ x11_surface_get_formats2(VkIcdSurfaceBase *surface,
       return VK_ERROR_SURFACE_LOST_KHR;
 
    for (unsigned i = 0; i < count; i++) {
-      vk_outarray_append(&out, f) {
+      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, f) {
          assert(f->sType == VK_STRUCTURE_TYPE_SURFACE_FORMAT_2_KHR);
          f->surfaceFormat.format = sorted_formats[i];
          f->surfaceFormat.colorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
@@ -812,9 +815,9 @@ x11_surface_get_present_rectangles(VkIcdSurfaceBase *icd_surface,
 {
    xcb_connection_t *conn = x11_surface_get_connection(icd_surface);
    xcb_window_t window = x11_surface_get_window(icd_surface);
-   VK_OUTARRAY_MAKE(out, pRects, pRectCount);
+   VK_OUTARRAY_MAKE_TYPED(VkRect2D, out, pRects, pRectCount);
 
-   vk_outarray_append(&out, rect) {
+   vk_outarray_append_typed(VkRect2D, &out, rect) {
       xcb_generic_error_t *err = NULL;
       xcb_get_geometry_cookie_t geom_cookie = xcb_get_geometry(conn, window);
       xcb_get_geometry_reply_t *geom =
@@ -912,7 +915,7 @@ struct x11_swapchain {
    uint64_t                                     send_sbc;
    uint64_t                                     last_present_msc;
    uint32_t                                     stamp;
-   int                                          sent_image_count;
+   atomic_int                                   sent_image_count;
 
    bool                                         has_present_queue;
    bool                                         has_acquire_queue;
@@ -1104,7 +1107,7 @@ x11_acquire_next_image_poll_x11(struct x11_swapchain *chain,
       if (timeout == UINT64_MAX) {
          event = xcb_wait_for_special_event(chain->conn, chain->special_event);
          if (!event)
-            return x11_swapchain_result(chain, VK_ERROR_OUT_OF_DATE_KHR);
+            return x11_swapchain_result(chain, VK_ERROR_SURFACE_LOST_KHR);
       } else {
          event = xcb_poll_for_special_event(chain->conn, chain->special_event);
          if (!event) {
@@ -1463,7 +1466,7 @@ x11_manage_fifo_queues(void *state)
             xcb_generic_event_t *event =
                xcb_wait_for_special_event(chain->conn, chain->special_event);
             if (!event) {
-               result = VK_ERROR_OUT_OF_DATE_KHR;
+               result = VK_ERROR_SURFACE_LOST_KHR;
                goto fail;
             }
 

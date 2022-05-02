@@ -43,6 +43,7 @@ enum pan_resource_table {
         PAN_TABLE_ATTRIBUTE_BUFFER,
         PAN_TABLE_SAMPLER,
         PAN_TABLE_TEXTURE,
+        PAN_TABLE_IMAGE,
 
         PAN_NUM_RESOURCE_TABLES
 };
@@ -277,6 +278,16 @@ struct pan_shader_info {
                 struct {
                         bool writes_point_size;
 
+                        /* If the primary shader writes point size, the Valhall
+                         * driver may need a variant that does not write point
+                         * size. Offset to such a shader in the program binary.
+                         *
+                         * Zero if no such variant is required.
+                         *
+                         * Only used with IDVS on Valhall.
+                         */
+                        unsigned no_psiz_offset;
+
                         /* Set if Index-Driven Vertex Shading is in use */
                         bool idvs;
 
@@ -298,6 +309,15 @@ struct pan_shader_info {
                          */
                         uint64_t secondary_preload;
                 } vs;
+
+                struct {
+                        /* Is it legal to merge workgroups? This is true if the
+                         * shader uses neither barriers nor shared memory.
+                         *
+                         * Used by the Valhall hardware.
+                         */
+                        bool allow_merging_workgroups;
+                } cs;
         };
 
         /* Does the shader contains a barrier? or (for fragment shaders) does it
@@ -314,6 +334,7 @@ struct pan_shader_info {
         unsigned texture_count;
         unsigned ubo_count;
         unsigned attribute_count;
+        unsigned attributes_read;
 
         struct {
                 unsigned input_count;

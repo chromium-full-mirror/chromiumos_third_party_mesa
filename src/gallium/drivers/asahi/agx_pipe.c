@@ -38,6 +38,7 @@
 #include "frontend/winsys_handle.h"
 #include "frontend/sw_winsys.h"
 #include "gallium/auxiliary/util/u_transfer.h"
+#include "gallium/auxiliary/util/u_transfer_helper.h"
 #include "gallium/auxiliary/util/u_surface.h"
 #include "gallium/auxiliary/util/u_framebuffer.h"
 #include "agx_public.h"
@@ -164,6 +165,7 @@ agx_resource_create(struct pipe_screen *screen,
 
    nresource->modifier = agx_select_modifier(nresource);
    nresource->mipmapped = (templ->last_level > 0);
+   nresource->internal_format = nresource->base.format;
 
    unsigned offset = 0;
    unsigned blocksize = util_format_get_blocksize(templ->format);
@@ -186,7 +188,9 @@ agx_resource_create(struct pipe_screen *screen,
       }
 
       nresource->slices[l].offset = offset;
-      offset += ALIGN_POT(nresource->slices[l].line_stride * height, 0x80);
+      nresource->slices[l].size = ALIGN_POT(nresource->slices[l].line_stride * height, 0x80);
+
+      offset += nresource->slices[l].size;
    }
 
    /* Arrays and cubemaps have the entire miptree duplicated and page aligned (16K) */
@@ -385,7 +389,9 @@ agx_clear(struct pipe_context *pctx, unsigned buffers, const struct pipe_scissor
 {
    struct agx_context *ctx = agx_context(pctx);
    ctx->batch->clear |= buffers;
-   memcpy(ctx->batch->clear_color, color->f, sizeof(color->f));
+
+   if (buffers & PIPE_CLEAR_COLOR0)
+      memcpy(ctx->batch->clear_color, color->f, sizeof(color->f));
 }
 
 
@@ -408,10 +414,6 @@ agx_flush(struct pipe_context *pctx,
    if (fence)
       *fence = NULL;
 
-   /* TODO */
-   if (!ctx->batch->cbufs[0])
-      return;
-
    /* Nothing to do */
    if (!(ctx->batch->draw | ctx->batch->clear))
       return;
@@ -426,7 +428,7 @@ agx_flush(struct pipe_context *pctx,
 
    struct agx_device *dev = agx_device(pctx->screen);
 
-   if (ctx->batch->clear & PIPE_CLEAR_COLOR0) {
+   if ((ctx->batch->clear & PIPE_CLEAR_COLOR0) || !ctx->batch->cbufs[0]) {
       uint16_t clear_colour[4] = {
          _mesa_float_to_half(ctx->batch->clear_color[0]),
          _mesa_float_to_half(ctx->batch->clear_color[1]),
@@ -459,14 +461,20 @@ agx_flush(struct pipe_context *pctx,
       agx_pool_alloc_aligned(&ctx->batch->pipeline_pool, 64, 64);
    memset(pipeline_null.cpu, 0, 64);
 
-   struct agx_resource *rt0 = agx_resource(ctx->batch->cbufs[0]->texture);
-   BITSET_SET(rt0->data_valid, 0);
+   for (unsigned i = 0; i < ctx->batch->nr_cbufs; ++i) {
+      struct agx_resource *rt = agx_resource(ctx->batch->cbufs[i]->texture);
+      BITSET_SET(rt->data_valid, 0);
+   }
 
    struct agx_resource *zbuf = ctx->batch->zsbuf ?
       agx_resource(ctx->batch->zsbuf->texture) : NULL;
 
-   if (zbuf)
+   if (zbuf) {
       BITSET_SET(zbuf->data_valid, 0);
+
+      if (zbuf->separate_stencil)
+         BITSET_SET(zbuf->separate_stencil->data_valid, 0);
+   }
 
    /* BO list for a given batch consists of:
     *  - BOs for the batch's framebuffer surfaces
@@ -493,6 +501,9 @@ agx_flush(struct pipe_context *pctx,
       struct pipe_surface *surf = batch->zsbuf;
       struct agx_resource *rsrc = agx_resource(surf->texture);
       agx_batch_add_bo(batch, rsrc->bo);
+
+      if (rsrc->separate_stencil)
+         agx_batch_add_bo(batch, rsrc->separate_stencil->bo);
    }
 
    unsigned handle_count =
@@ -522,16 +533,13 @@ agx_flush(struct pipe_context *pctx,
    unsigned cmdbuf_size = demo_cmdbuf(dev->cmdbuf.ptr.cpu,
                dev->cmdbuf.size,
                &ctx->batch->pool,
+               &ctx->framebuffer,
                ctx->batch->encoder->ptr.gpu,
                encoder_id,
                ctx->batch->scissor.bo->ptr.gpu,
-               ctx->batch->width,
-               ctx->batch->height,
-               util_format_get_blocksize(rt0->base.format),
                pipeline_null.gpu,
                pipeline_clear,
                pipeline_store,
-               rt0->bo->ptr.gpu,
                clear_pipeline_textures);
 
    /* Generate the mapping table from the BO list */
@@ -626,11 +634,13 @@ agx_create_context(struct pipe_screen *screen,
    pctx->end_query = agx_end_query;
    pctx->get_query_result = agx_get_query_result;
    pctx->set_active_query_state = agx_set_active_query_state;
-   pctx->buffer_map = agx_transfer_map;
-   pctx->texture_map = agx_transfer_map;
-   pctx->transfer_flush_region = agx_transfer_flush_region;
-   pctx->buffer_unmap = agx_transfer_unmap;
-   pctx->texture_unmap = agx_transfer_unmap;
+
+   pctx->buffer_map = u_transfer_helper_transfer_map;
+   pctx->buffer_unmap = u_transfer_helper_transfer_unmap;
+   pctx->texture_map = u_transfer_helper_transfer_map;
+   pctx->texture_unmap = u_transfer_helper_transfer_unmap;
+   pctx->transfer_flush_region = u_transfer_helper_transfer_flush_region;
+
    pctx->buffer_subdata = u_default_buffer_subdata;
    pctx->texture_subdata = u_default_texture_subdata;
    pctx->invalidate_resource = agx_invalidate_resource;
@@ -726,12 +736,12 @@ agx_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
    case PIPE_CAP_UMA:
    case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
    case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
-   case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
+   case PIPE_CAP_SHADER_ARRAY_COMPONENTS:
    case PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED:
    case PIPE_CAP_PACKED_UNIFORMS:
       return 1;
 
-   case PIPE_CAP_TGSI_INSTANCEID:
+   case PIPE_CAP_VS_INSTANCEID:
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
    case PIPE_CAP_TEXTURE_MULTISAMPLE:
    case PIPE_CAP_SURFACE_SAMPLE_COUNT:
@@ -779,19 +789,19 @@ agx_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
       return 13;
 
-   case PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT:
+   case PIPE_CAP_FS_COORD_ORIGIN_LOWER_LEFT:
       return 0;
 
-   case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
-   case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
-   case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
+   case PIPE_CAP_FS_COORD_ORIGIN_UPPER_LEFT:
+   case PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
+   case PIPE_CAP_FS_COORD_PIXEL_CENTER_INTEGER:
    case PIPE_CAP_TGSI_TEXCOORD:
-   case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
-   case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
+   case PIPE_CAP_FS_FACE_IS_INTEGER_SYSVAL:
+   case PIPE_CAP_FS_POSITION_IS_SYSVAL:
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
       return true;
-   case PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL:
+   case PIPE_CAP_FS_POINT_IS_SYSVAL:
       return false;
 
    case PIPE_CAP_MAX_VERTEX_ELEMENT_SRC_OFFSET:
@@ -911,7 +921,7 @@ agx_get_shader_param(struct pipe_screen* pscreen,
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
       return 16;
 
-   case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+   case PIPE_SHADER_CAP_CONT_SUPPORTED:
       return 0;
 
    case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
@@ -935,9 +945,9 @@ agx_get_shader_param(struct pipe_screen* pscreen,
       return !is_no16;
 
    case PIPE_SHADER_CAP_INT64_ATOMICS:
-   case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
-   case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
-   case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
+   case PIPE_SHADER_CAP_DROUND_SUPPORTED:
+   case PIPE_SHADER_CAP_DFRACEXP_DLDEXP_SUPPORTED:
+   case PIPE_SHADER_CAP_LDEXP_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       return 0;
@@ -1051,6 +1061,7 @@ agx_get_timestamp(struct pipe_screen *pscreen)
 static void
 agx_destroy_screen(struct pipe_screen *screen)
 {
+   u_transfer_helper_destroy(screen->transfer_helper);
    agx_close_device(agx_device(screen));
    ralloc_free(screen);
 }
@@ -1078,6 +1089,36 @@ agx_get_compiler_options(struct pipe_screen *pscreen,
 {
    return &agx_nir_options;
 }
+
+static void
+agx_resource_set_stencil(struct pipe_resource *prsrc,
+                         struct pipe_resource *stencil)
+{
+   agx_resource(prsrc)->separate_stencil = agx_resource(stencil);
+}
+
+static struct pipe_resource *
+agx_resource_get_stencil(struct pipe_resource *prsrc)
+{
+   return (struct pipe_resource *) agx_resource(prsrc)->separate_stencil;
+}
+
+static enum pipe_format
+agx_resource_get_internal_format(struct pipe_resource *prsrc)
+{
+   return agx_resource(prsrc)->internal_format;
+}
+
+static const struct u_transfer_vtbl transfer_vtbl = {
+   .resource_create          = agx_resource_create,
+   .resource_destroy         = agx_resource_destroy,
+   .transfer_map             = agx_transfer_map,
+   .transfer_unmap           = agx_transfer_unmap,
+   .transfer_flush_region    = agx_transfer_flush_region,
+   .get_internal_format      = agx_resource_get_internal_format,
+   .set_stencil              = agx_resource_set_stencil,
+   .get_stencil              = agx_resource_get_stencil,
+};
 
 struct pipe_screen *
 agx_screen_create(struct sw_winsys *winsys)
@@ -1125,15 +1166,18 @@ agx_screen_create(struct sw_winsys *winsys)
    screen->get_paramf = agx_get_paramf;
    screen->is_format_supported = agx_is_format_supported;
    screen->context_create = agx_create_context;
-   screen->resource_create = agx_resource_create;
    screen->resource_from_handle = agx_resource_from_handle;
    screen->resource_get_handle = agx_resource_get_handle;
-   screen->resource_destroy = agx_resource_destroy;
    screen->flush_frontbuffer = agx_flush_frontbuffer;
    screen->get_timestamp = agx_get_timestamp;
    screen->fence_reference = agx_fence_reference;
    screen->fence_finish = agx_fence_finish;
    screen->get_compiler_options = agx_get_compiler_options;
+
+   screen->resource_create = u_transfer_helper_resource_create;
+   screen->resource_destroy = u_transfer_helper_resource_destroy;
+   screen->transfer_helper = u_transfer_helper_create(&transfer_vtbl,
+                                                      true, true, false, true, false);
 
    agx_internal_shaders(&agx_screen->dev);
 

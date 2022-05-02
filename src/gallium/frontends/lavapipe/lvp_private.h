@@ -34,6 +34,7 @@
 #include "util/u_dynarray.h"
 #include "util/simple_mtx.h"
 #include "util/u_queue.h"
+#include "util/u_upload_mgr.h"
 
 #include "compiler/shader_enums.h"
 #include "pipe/p_screen.h"
@@ -65,6 +66,8 @@ typedef uint32_t xcb_window_t;
 #include "vk_command_buffer.h"
 #include "vk_command_pool.h"
 #include "vk_queue.h"
+#include "vk_sync.h"
+#include "vk_sync_timeline.h"
 
 #include "wsi_common.h"
 
@@ -76,6 +79,8 @@ extern "C" {
 #define MAX_SETS         8
 #define MAX_PUSH_CONSTANTS_SIZE 128
 #define MAX_PUSH_DESCRIPTORS 32
+#define MAX_DESCRIPTOR_UNIFORM_BLOCK_SIZE 4096
+#define MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BLOCKS 8
 
 #ifdef _WIN32
 #define lvp_printflike(a, b)
@@ -134,6 +139,9 @@ struct lvp_physical_device {
    struct pipe_screen *pscreen;
    uint32_t max_images;
 
+   struct vk_sync_timeline_type sync_timeline_type;
+   const struct vk_sync_type *sync_types[3];
+
    VkPhysicalDeviceLimits device_limits;
 
    struct wsi_device                       wsi_device;
@@ -163,35 +171,9 @@ struct lvp_queue {
    struct lvp_device *                         device;
    struct pipe_context *ctx;
    struct cso_context *cso;
-   bool shutdown;
-   uint64_t timeline;
-   struct util_queue queue;
-   simple_mtx_t last_lock;
-   uint64_t last_finished;
-   uint64_t last_fence_timeline;
+   struct u_upload_mgr *uploader;
    struct pipe_fence_handle *last_fence;
-   volatile int count;
    void *state;
-};
-
-struct lvp_semaphore_wait {
-   struct lvp_semaphore *sema;
-   uint64_t wait;
-};
-
-struct lvp_queue_work {
-   struct list_head list;
-   uint32_t cmd_buffer_count;
-   uint32_t timeline_count;
-   uint32_t wait_count;
-   uint32_t signal_count;
-   uint64_t timeline;
-   struct lvp_fence *fence;
-   struct lvp_cmd_buffer **cmd_buffers;
-   struct lvp_semaphore_timeline **timelines;
-   struct lvp_semaphore **signals;
-   VkSemaphore *waits;
-   uint64_t *wait_vals;
 };
 
 struct lvp_pipeline_cache {
@@ -207,6 +189,7 @@ struct lvp_device {
    struct lvp_instance *                       instance;
    struct lvp_physical_device *physical_device;
    struct pipe_screen *pscreen;
+   bool poison_mem;
 };
 
 void lvp_device_get_cache_uuid(void *uuid);
@@ -227,6 +210,29 @@ struct lvp_device_memory {
    int                                          backed_fd;
 };
 
+struct lvp_pipe_sync {
+   struct vk_sync base;
+
+   mtx_t lock;
+   cnd_t changed;
+
+   bool signaled;
+   struct pipe_fence_handle *fence;
+};
+
+extern const struct vk_sync_type lvp_pipe_sync_type;
+
+void lvp_pipe_sync_signal_with_fence(struct lvp_device *device,
+                                     struct lvp_pipe_sync *sync,
+                                     struct pipe_fence_handle *fence);
+
+static inline struct lvp_pipe_sync *
+vk_sync_as_lvp_pipe_sync(struct vk_sync *sync)
+{
+   assert(sync->type == &lvp_pipe_sync_type);
+   return container_of(sync, struct lvp_pipe_sync, base);
+}
+
 struct lvp_image {
    struct vk_image vk;
    VkDeviceSize size;
@@ -236,69 +242,13 @@ struct lvp_image {
    struct pipe_resource *bo;
 };
 
-static inline uint32_t
-lvp_get_layerCount(const struct lvp_image *image,
-                   const VkImageSubresourceRange *range)
-{
-   return range->layerCount == VK_REMAINING_ARRAY_LAYERS ?
-      image->bo->array_size - range->baseArrayLayer : range->layerCount;
-}
-
-static inline uint32_t
-lvp_get_levelCount(const struct lvp_image *image,
-                   const VkImageSubresourceRange *range)
-{
-   return range->levelCount == VK_REMAINING_MIP_LEVELS ?
-      (image->bo->last_level + 1) - range->baseMipLevel : range->levelCount;
-}
-
 struct lvp_image_view {
-   struct vk_object_base base;
+   struct vk_image_view vk;
    const struct lvp_image *image; /**< VkImageViewCreateInfo::image */
 
-   VkImageViewType view_type;
-   VkFormat format;
    enum pipe_format pformat;
-   VkComponentMapping components;
-   VkImageSubresourceRange subresourceRange;
 
    struct pipe_surface *surface; /* have we created a pipe surface for this? */
-};
-
-struct lvp_render_pass_attachment {
-   uint32_t                                     attachment; //index
-   VkFormat                                     format;
-   uint32_t                                     samples;
-   VkAttachmentLoadOp                           load_op;
-   VkAttachmentLoadOp                           stencil_load_op;
-};
-
-struct lvp_subpass {
-   uint32_t                                     input_count;
-   uint32_t                                     color_count;
-   struct lvp_render_pass_attachment **         input_attachments;
-   struct lvp_render_pass_attachment **         color_attachments;
-   struct lvp_render_pass_attachment **         resolve_attachments;
-   struct lvp_render_pass_attachment **         depth_stencil_attachment;
-   struct lvp_render_pass_attachment **         ds_resolve_attachment;
-   VkResolveModeFlagBits                        depth_resolve_mode;
-   VkResolveModeFlagBits                        stencil_resolve_mode;
-
-   /** Subpass has at least one color resolve attachment */
-   bool                                         has_color_resolve;
-   bool has_color_attachment;
-   bool has_zs_attachment;
-
-   uint32_t                                     view_mask;
-};
-
-struct lvp_render_pass {
-   struct vk_object_base                        base;
-   uint32_t                                     attachment_count;
-   uint32_t                                     subpass_count;
-   struct lvp_subpass_attachment *              subpass_attachments;
-   struct lvp_render_pass_attachment *          attachments;
-   struct lvp_subpass                           subpasses[0];
 };
 
 struct lvp_sampler {
@@ -307,17 +257,6 @@ struct lvp_sampler {
    union pipe_color_union border_color;
    VkSamplerReductionMode reduction_mode;
    uint32_t state[4];
-};
-
-struct lvp_framebuffer {
-   struct vk_object_base                        base;
-   uint32_t                                     width;
-   uint32_t                                     height;
-   uint32_t                                     layers;
-
-   bool                                         imageless;
-   uint32_t                                     attachment_count;
-   struct lvp_image_view *                      attachments[0];
 };
 
 struct lvp_descriptor_set_binding_layout {
@@ -334,6 +273,8 @@ struct lvp_descriptor_set_binding_layout {
       int16_t sampler_index;
       int16_t sampler_view_index;
       int16_t image_index;
+      int16_t uniform_block_index;
+      int16_t uniform_block_offset;
    } stage[MESA_SHADER_STAGES];
 
    /* Immutable samplers (or NULL if no immutable samplers) */
@@ -345,6 +286,9 @@ struct lvp_descriptor_set_layout {
 
    /* Descriptor set layouts can be destroyed at almost any time */
    uint32_t ref_cnt;
+   /* add new members after this */
+
+   uint32_t immutable_sampler_count;
 
    /* Number of bindings in this descriptor set */
    uint16_t binding_count;
@@ -361,6 +305,9 @@ struct lvp_descriptor_set_layout {
       uint16_t sampler_count;
       uint16_t sampler_view_count;
       uint16_t image_count;
+      uint16_t uniform_block_count;
+      uint16_t uniform_block_size;
+      uint16_t uniform_block_sizes[MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BLOCKS]; //zero-indexed
    } stage[MESA_SHADER_STAGES];
 
    /* Number of dynamic offsets used by this descriptor set */
@@ -384,7 +331,9 @@ static inline void
 lvp_descriptor_set_layout_unref(struct lvp_device *device,
                                 struct lvp_descriptor_set_layout *layout)
 {
-   assert(layout && layout->ref_cnt >= 1);
+   if (!layout)
+      return;
+   assert(layout->ref_cnt >= 1);
    if (p_atomic_dec_zero(&layout->ref_cnt))
       lvp_descriptor_set_layout_destroy(device, layout);
 }
@@ -401,6 +350,7 @@ union lvp_descriptor_info {
       VkDeviceSize range;
    };
    struct lvp_buffer_view *buffer_view;
+   uint8_t *uniform;
 };
 
 struct lvp_descriptor {
@@ -455,9 +405,13 @@ struct lvp_pipeline_layout {
 
    uint32_t num_sets;
    uint32_t push_constant_size;
+   VkShaderStageFlags push_constant_stages;
    struct {
-      bool has_dynamic_offsets;
+      uint16_t uniform_block_size;
+      uint16_t uniform_block_count;
+      uint16_t uniform_block_sizes[MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BLOCKS * MAX_SETS];
    } stage[MESA_SHADER_STAGES];
+   bool independent_sets;
 };
 
 void lvp_pipeline_layout_destroy(struct lvp_device *device,
@@ -499,6 +453,7 @@ struct lvp_pipeline {
    void *shader_cso[PIPE_SHADER_TYPES];
    VkGraphicsPipelineCreateInfo graphics_create_info;
    VkComputePipelineCreateInfo compute_create_info;
+   VkGraphicsPipelineLibraryFlagsEXT stages;
    uint32_t line_stipple_factor;
    uint16_t line_stipple_pattern;
    bool line_stipple_enable;
@@ -508,45 +463,12 @@ struct lvp_pipeline {
    bool gs_output_lines;
    bool provoking_vertex_last;
    bool negative_one_to_one;
+   bool library;
 };
 
 struct lvp_event {
    struct vk_object_base base;
    volatile uint64_t event_storage;
-};
-
-struct lvp_fence {
-   struct vk_object_base base;
-   uint64_t timeline;
-   struct util_queue_fence fence;
-   struct pipe_fence_handle *handle;
-   bool signalled;
-};
-
-struct lvp_semaphore_timeline {
-   struct lvp_semaphore_timeline *next;
-   uint64_t signal; //api
-   uint64_t timeline; //queue
-   struct pipe_fence_handle *fence;
-};
-
-struct lvp_semaphore {
-   struct vk_object_base base;
-   bool is_timeline;
-   uint64_t current;
-   simple_mtx_t lock;
-   mtx_t submit_lock;
-   cnd_t submit;
-   void *mem;
-   struct util_dynarray links;
-   struct lvp_semaphore_timeline *timeline;
-   struct lvp_semaphore_timeline *latest;
-   struct pipe_fence_handle *handle;
-};
-
-struct lvp_queue_noop {
-   struct lvp_fence *fence;
-   struct lvp_semaphore *sema;
 };
 
 struct lvp_buffer {
@@ -636,10 +558,8 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_descriptor_update_template, base, VkDescripto
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_device_memory, base, VkDeviceMemory,
                                VK_OBJECT_TYPE_DEVICE_MEMORY)
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_event, base, VkEvent, VK_OBJECT_TYPE_EVENT)
-VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_framebuffer, base, VkFramebuffer,
-                               VK_OBJECT_TYPE_FRAMEBUFFER)
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_image, vk.base, VkImage, VK_OBJECT_TYPE_IMAGE)
-VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_image_view, base, VkImageView,
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_image_view, vk.base, VkImageView,
                                VK_OBJECT_TYPE_IMAGE_VIEW);
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_pipeline_cache, base, VkPipelineCache,
                                VK_OBJECT_TYPE_PIPELINE_CACHE)
@@ -649,18 +569,8 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_pipeline_layout, base, VkPipelineLayout,
                                VK_OBJECT_TYPE_PIPELINE_LAYOUT)
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_query_pool, base, VkQueryPool,
                                VK_OBJECT_TYPE_QUERY_POOL)
-VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_render_pass, base, VkRenderPass,
-                               VK_OBJECT_TYPE_RENDER_PASS)
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_sampler, base, VkSampler,
                                VK_OBJECT_TYPE_SAMPLER)
-VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_fence, base, VkFence, VK_OBJECT_TYPE_FENCE);
-VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_semaphore, base, VkSemaphore,
-                               VK_OBJECT_TYPE_SEMAPHORE);
-
-struct lvp_attachment_state {
-   VkImageAspectFlags pending_clear_aspects;
-   VkClearValue clear_value;
-};
 
 struct lvp_write_descriptor {
    uint32_t dst_binding;

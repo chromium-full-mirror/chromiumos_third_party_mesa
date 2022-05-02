@@ -63,6 +63,7 @@ static const driOptionDescription vn_dri_options[] = {
       DRI_CONF_VK_X11_ENSURE_MIN_IMAGE_COUNT(false)
       DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
       DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
+      DRI_CONF_VK_XWAYLAND_WAIT_READY(true)
    DRI_CONF_SECTION_END
    DRI_CONF_SECTION_DEBUG
       DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST(false)
@@ -266,17 +267,16 @@ vn_instance_init_renderer(struct vn_instance *instance)
       return VK_ERROR_INITIALIZATION_FAILED;
    }
 
-   const struct vn_info_extension *ext =
-      vn_info_extension_get("VK_EXT_command_serialization");
+   uint32_t spec_version =
+      vn_extension_get_spec_version("VK_EXT_command_serialization");
    if (renderer_info->vk_ext_command_serialization_spec_version >
-       ext->spec_version) {
-      renderer_info->vk_ext_command_serialization_spec_version =
-         ext->spec_version;
+       spec_version) {
+      renderer_info->vk_ext_command_serialization_spec_version = spec_version;
    }
 
-   ext = vn_info_extension_get("VK_MESA_venus_protocol");
-   if (renderer_info->vk_mesa_venus_protocol_spec_version > ext->spec_version)
-      renderer_info->vk_mesa_venus_protocol_spec_version = ext->spec_version;
+   spec_version = vn_extension_get_spec_version("VK_MESA_venus_protocol");
+   if (renderer_info->vk_mesa_venus_protocol_spec_version > spec_version)
+      renderer_info->vk_mesa_venus_protocol_spec_version = spec_version;
 
    if (VN_DEBUG(INIT)) {
       vn_log(instance, "connected to renderer");
@@ -693,7 +693,7 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    struct vn_instance *instance;
    VkResult result;
 
-   vn_debug_init();
+   vn_env_init();
    vn_trace_init();
 
    instance = vk_zalloc(alloc, sizeof(*instance), VN_DEFAULT_ALIGN,
@@ -731,6 +731,8 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    result = vn_instance_init_renderer(instance);
    if (result != VK_SUCCESS)
       goto fail;
+
+   vn_cs_renderer_protocol_info_init(instance);
 
    vn_renderer_shmem_pool_init(instance->renderer,
                                &instance->reply_shmem_pool, 1u << 20);

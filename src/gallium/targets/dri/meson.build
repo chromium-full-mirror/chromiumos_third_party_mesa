@@ -39,7 +39,7 @@ endif
 
 libgallium_dri = shared_library(
   'gallium_dri',
-  files('target.c', 'megadriver_stub.c'),
+  files('target.c'),
   include_directories : [
     inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_util, inc_gallium_drivers,
     inc_gallium_winsys, include_directories('../../frontends/dri'),
@@ -108,7 +108,9 @@ foreach d : [[with_gallium_kmsro, [
              [with_gallium_r300, 'r300_dri.so'],
              [with_gallium_r600, 'r600_dri.so'],
              [with_gallium_svga, 'vmwgfx_dri.so'],
-             [with_gallium_virgl, 'virtio_gpu_dri.so'],
+             [with_gallium_virgl or
+               (with_gallium_freedreno and with_freedreno_virtio),
+               'virtio_gpu_dri.so'],
              [with_gallium_lima, 'lima_dri.so'],
              [with_gallium_zink, 'zink_dri.so'],
              [with_gallium_d3d12, 'd3d12_dri.so'],

@@ -64,75 +64,105 @@
     <constant desc="Half-float $\pi$">0x42480000</constant>
   </lut>
 
-  <enum name="Action">
+  <enum name="Flow">
     <desc>
-      Every Valhall instruction can perform an action, like wait on dependency
-      slots. A few special actions are available, specified in the instruction
-      metadata from this enum. The `wait0126` action is required to wait on
+      Every Valhall instruction can wait on dependency
+      slots. A few special flows are available, specified in the instruction
+      metadata from this enum. The `wait0126` flow is required to wait on
       dependency slot #6 and should be set on the instruction immediately
-      preceding `ATEST`. The `barrier` action may be set on any instruction for
-      subgroup barriers, and should particularly be set with the `BARRIER`
-      instruction for global barriers. The `td` action only applies to fragment
-      shaders and is used to terminate helper invocations, it should be set as
-      early as possible after helper invocations are no longer needed as
-      determined by data flow analysis. The `return` action is used to terminate
-      the shader, although it may be overloaded by the `BLEND` instruction.
+      preceding `ATEST`. The `wait` flow should be set for barriers.
+      The `discard` flow only applies to fragment shaders and is used to
+      terminate helper invocations, it should be set as early as possible after
+      helper invocations are no longer needed as determined by data flow
+      analysis. The `end` flow is used to terminate the shader, although it
+      may be overloaded by the `BLEND` instruction.
 
-      The `reconverge` action is required on any instruction immediately
+      The `reconverge` flow is required on any instruction immediately
       preceding a possible change to the mask of active threads in a subgroup.
       This includes all divergent branches, but it also includes the final
       instruction at the end of any basic block where the immediate successor
       (fallthrough) is the target of a divergent branch.
     </desc>
-    <value name="Wait on all dependency slots">wait0126</value>
-    <value name="Subgroup barrier">barrier</value>
+    <value name="None" default="true">none</value>
+    <value name="Wait on slot 0">wait0</value>
+    <value name="Wait on slot 1">wait1</value>
+    <value name="Wait on slots 0, 1">wait01</value>
+    <value name="Wait on slot 2">wait2</value>
+    <value name="Wait on slots 0, 2">wait02</value>
+    <value name="Wait on slots 1, 2">wait12</value>
+    <value name="Wait on slots 0, 1, 2">wait012</value>
+    <value name="Wait on slots 0, 1, 2, 6">wait0126</value>
+    <value name="Wait on slots 0, 1, 2, 6, 7">wait</value>
     <value name="Perform branch reconverge">reconverge</value>
     <reserved/>
     <reserved/>
-    <value name="Terminate discarded threads">td</value>
+    <value name="Terminate discarded threads">discard</value>
     <reserved/>
-    <value name="Return from shader">return</value>
+    <value name="Return from shader">end</value>
   </enum>
 
-  <enum name="Immediate mode">
-    <desc>Selects how immediates sources are interpreted.</desc>
-    <value desc="No special immediates" default="true">none</value>
-    <value desc="Thread storage pointers">ts</value>
-    <reserved/>
-    <value desc="Thread identification">id</value>
-  </enum>
-
-  <enum name="Thread storage pointers">
+  <enum name="FAU special page 0">
     <desc>
       Situated between the immediates hard-coded in the hardware and the
       uniforms defined purely in software, Valhall has a some special
       "constants" passing through data structures. These are encoded like the
       table of immediates, as if special constant $i$ were lookup table entry
-      $32 + i$. These special values are selected with the `.ts` modifier.
+      $32 + i$.
     </desc>
     <reserved/>
     <reserved/>
-    <value desc="Thread local storage base pointer (low word)">tls_ptr</value>
-    <value desc="Thread local storage base pointer (high word)">tls_ptr_hi</value>
+    <value desc="Warp ID and warps/core - 1">warp_id</value>
     <reserved/>
+    <value desc="Bounding box maximum X/Y">framebuffer_size</value>
+    <value desc="ATEST datum">atest_datum</value>
+    <value desc="Sample positions">sample</value>
     <reserved/>
-    <value desc="Workgroup local storage base pointer (low word)">wls_ptr</value>
-    <value desc="Workgroup local storage base pointer (high word)">wls_ptr_hi</value>
+    <value desc="Blend descriptor 0">blend_descriptor_0</value>
+    <value desc="Blend descriptor 1">blend_descriptor_1</value>
+    <value desc="Blend descriptor 2">blend_descriptor_2</value>
+    <value desc="Blend descriptor 3">blend_descriptor_3</value>
+    <value desc="Blend descriptor 4">blend_descriptor_4</value>
+    <value desc="Blend descriptor 5">blend_descriptor_5</value>
+    <value desc="Blend descriptor 6">blend_descriptor_6</value>
+    <value desc="Blend descriptor 7">blend_descriptor_7</value>
   </enum>
 
-  <enum name="Thread identification">
+  <enum name="FAU special page 1">
     <desc>
       Situated between the immediates hard-coded in the hardware and the
       uniforms defined purely in software, Valhall has a some special
       "constants" passing through data structures. These are encoded like the
       table of immediates, as if special constant $i$ were lookup table entry
-      $32 + i$. These special values are selected with the `.id` modifier.
+      $32 + i$.
     </desc>
     <reserved/>
+    <value desc="Thread local storage base pointer">thread_local_pointer</value>
+    <reserved/>
+    <value desc="Workgroup local storage base pointer">workgroup_local_pointer</value>
+    <reserved/>
+    <reserved/>
+    <reserved/>
+    <value desc="Shader resource table base pointer">resource_table_pointer</value>
+    <reserved/>
+    <reserved/>
+    <reserved/>
+    <reserved/>
+    <reserved/>
+    <reserved/>
+    <reserved/>
+    <reserved/>
+  </enum>
+
+  <enum name="FAU special page 3">
+    <desc>
+      Situated between the immediates hard-coded in the hardware and the
+      uniforms defined purely in software, Valhall has a some special
+      "constants" passing through data structures. These are encoded like the
+      table of immediates, as if special constant $i$ were lookup table entry
+      $32 + i$.
+    </desc>
     <reserved/>
     <value desc="Lane ID">lane_id</value>
-    <reserved/>
-    <reserved/>
     <reserved/>
     <value desc="Core ID">core_id</value>
     <reserved/>
@@ -146,20 +176,7 @@
     <reserved/>
     <reserved/>
     <reserved/>
-    <reserved/>
-    <reserved/>
-    <reserved/>
-    <reserved/>
-    <reserved/>
-    <reserved/>
-    <reserved/>
-    <reserved/>
-    <reserved/>
-    <reserved/>
-    <reserved/>
-    <reserved/>
     <value desc="Program counter">program_counter</value>
-    <reserved/>
   </enum>
 
   <enum name="Swizzles (8-bit)">
@@ -497,7 +514,7 @@
 
   <enum name="Register format">
     <desc>Format of data loaded to / stored from registers for general memory access.</desc>
-    <reserved/>
+    <value desc="32-bit type based on descriptor format">auto</value>
     <reserved/>
     <value desc="32-bit floats">f32</value>
     <value desc="16-bit floats">f16</value>
@@ -699,6 +716,39 @@
     <value desc="Interpolated 16-bit floats">src_f16</value>
   </enum>
 
+  <enum name="Atomic operation">
+    <desc>
+      Operation performed in a general computational atomic instruction.
+    </desc>
+    <reserved/>
+    <reserved/>
+    <value desc="Add">aadd</value>
+    <reserved/>
+    <reserved/>
+    <reserved/>
+    <reserved/>
+    <reserved/>
+    <value desc="Signed minimum">asmin</value>
+    <value desc="Signed maximum">asmax</value>
+    <value desc="Unsigned minimum">aumin</value>
+    <value desc="Unsigned maximum">aumax</value>
+    <value desc="Bitwise and">aand</value>
+    <value desc="Bitwise or">aor</value>
+    <value desc="Bitwise exclusive-or">axor</value>
+    <value desc="Exchange (must return the value)">axchg</value>
+  </enum>
+
+  <enum name="Atomic operation with 1">
+    <desc>
+      Operation performed in a computational atomic-with-1 instruction.
+    </desc>
+    <value desc="Increment">ainc</value>
+    <value desc="Decrement">adec</value>
+    <value desc="Unsigned maximum with 1">aumax1</value>
+    <value desc="Signed maximum with 1">asmax1</value>
+    <value desc="Set bottom bit">aor1</value>
+  </enum>
+
   <ins name="NOP" title="No operation" dests="0" opcode="0x00" unit="CVT">
     <desc>
       Do nothing. Useful at the start of a block for waiting on slots required
@@ -756,7 +806,7 @@
   <ins name="BARRIER" title="Execution and memory barrier" opcode="0x45" unit="NONE">
     <desc>
       General-purpose barrier. Must use slot #7. Must be paired with a
-      `.barrier` action on the instruction.
+      `.wait` flow on the instruction.
     </desc>
     <slot/>
   </ins>
@@ -823,7 +873,70 @@
     <imm name="index" start="16" size="8"/>
   </group>
 
-  <ins name="LD_ATTR_IMM" title="Load immediate attribute" opcode="0x66" unit="LS">
+  <group name="LD_VAR_BUF" title="Load indirect varying" unit="V">
+    <desc>Interpolates a given varying from hardware buffer</desc>
+    <ins name="LD_VAR_BUF.f32" opcode="0x6C"/>
+    <ins name="LD_VAR_BUF.f16" opcode="0x6D"/>
+    <slot/>
+    <vecsize/>
+    <source_format/>
+    <sample/>
+    <update/>
+    <sr write="true"/>
+    <sr_count/>
+    <src/>
+    <src/>
+  </group>
+
+  <ins name="LD_VAR" title="Load indirect varying" unit="V" opcode="0x64">
+    <desc>Interpolates a given varying from a software buffer</desc>
+    <slot/>
+    <vecsize/>
+    <regfmt/>
+    <sample/>
+    <update/>
+    <sr write="true"/>
+    <sr_count/>
+    <src/>
+    <src>Varying index and table</src>
+  </ins>
+
+  <ins name="LD_VAR_IMM" title="Load immediate varying" unit="V" opcode="0x54">
+    <desc>Interpolates a given varying from a software buffer</desc>
+    <slot/>
+    <vecsize/>
+    <regfmt/>
+    <sample/>
+    <update/>
+    <sr write="true"/>
+    <sr_count/>
+    <src/>
+    <imm name="table" start="8" size="4"/>
+    <imm name="index" start="12" size="8"/>
+  </ins>
+
+  <ins name="LD_VAR_FLAT" title="Load indirect varying" unit="V" opcode="0x55">
+    <desc>Fetches a given varying from a software buffer</desc>
+    <slot/>
+    <vecsize/>
+    <regfmt/>
+    <sr write="true"/>
+    <sr_count/>
+    <src>Varying index and table</src>
+  </ins>
+
+  <ins name="LD_VAR_FLAT_IMM" title="Load immediate varying" unit="V" opcode="0x41">
+    <desc>Fetches a given varying from a software buffer</desc>
+    <slot/>
+    <vecsize/>
+    <regfmt/>
+    <sr write="true"/>
+    <sr_count/>
+    <imm name="table" start="8" size="4"/>
+    <imm name="index" start="12" size="8"/>
+  </ins>
+
+  <ins name="LD_ATTR_IMM" title="Load immediate attribute" opcode="0x66" opcode2="0" unit="LS">
     <desc>
       Load `vecsize` components from the attribute descriptor at entry `index`
       of resource table `table` at index (vertex ID, instance ID), converting
@@ -833,6 +946,7 @@
     <vecsize/>
     <regfmt/>
     <slot/>
+    <mod name="descriptor_type" start="128" size="1" implied="true"/>
     <sr write="true"/>
     <src>Vertex ID</src>
     <src>Instance ID</src>
@@ -840,7 +954,94 @@
     <imm name="table" start="16" size="4"/>
   </ins>
 
-  <ins name="LEA_TEX_IMM" title="Load effective address of image texel" opcode="0x67" unit="LS">
+  <ins name="LD_ATTR" title="Load indirect attribute" opcode="0x76" opcode2="0" unit="LS">
+    <desc>
+      Load `vecsize` components from the attribute descriptor at the specified
+      location at index (vertex ID, instance ID), converting
+      to the specified register format.
+
+      The index must not diverge within a warp.
+    </desc>
+    <sr_count/>
+    <vecsize/>
+    <regfmt/>
+    <slot/>
+    <mod name="descriptor_type" start="128" size="1" implied="true"/>
+    <sr write="true"/>
+    <src>Vertex ID</src>
+    <src>Instance ID</src>
+    <src>Index and table</src>
+  </ins>
+
+  <ins name="LD_TEX_IMM" title="Load immediate texture" opcode="0x66" opcode2="1" unit="LS">
+    <desc>
+      Load `vecsize` components from the texture descriptor at entry `index`
+      of resource table `table`, converting
+      to the specified register format.
+    </desc>
+    <sr_count/>
+    <vecsize/>
+    <regfmt/>
+    <slot/>
+    <mod name="descriptor_type" start="128" size="1" implied="true"/>
+    <sr write="true"/>
+    <src>X/Y coordinates (16:16)</src>
+    <src>Z/W coordinates (16:16)</src>
+    <imm name="index" start="20" size="4"/>
+    <imm name="table" start="16" size="4"/>
+  </ins>
+
+  <ins name="LD_TEX" title="Load indirect texture" opcode="0x76" opcode2="1" unit="LS">
+    <desc>
+      Load `vecsize` components from the texture descriptor at the specified
+      location at index, converting
+      to the specified register format.
+    </desc>
+    <sr_count/>
+    <vecsize/>
+    <regfmt/>
+    <slot/>
+    <mod name="descriptor_type" start="128" size="1" implied="true"/>
+    <sr write="true"/>
+    <src>X/Y coordinates (16:16)</src>
+    <src>Z/W coordinates (16:16)</src>
+    <src>Index and table</src>
+  </ins>
+
+  <ins name="LEA_ATTR_IMM" title="Load effective address of image texel" opcode="0x67" opcode2="0" unit="LS">
+    <desc>
+      Load the effective address of an attribute specified with the
+      given immediate index. Returns three staging register: the low/high
+      32-bits of the address and the internal conversion descriptor.
+    </desc>
+    <vecsize/>
+    <slot/>
+    <sr_count/>
+    <mod name="descriptor_type" start="128" size="1" implied="true"/>
+    <sr write="true"/>
+    <src>Vertex index</src>
+    <src>Instance index</src>
+    <imm name="table" start="16" size="4"/>
+    <imm name="index" start="20" size="4"/>
+  </ins>
+
+  <ins name="LEA_ATTR" title="Load effective address of image texel" opcode="0x77" opcode2="0" unit="LS">
+    <desc>
+      Load the effective address of an attribute specified with the
+      given index. Returns three staging register: the low/high
+      32-bits of the address and the internal conversion descriptor.
+    </desc>
+    <vecsize/>
+    <slot/>
+    <sr_count/>
+    <mod name="descriptor_type" start="128" size="1" implied="true"/>
+    <sr write="true"/>
+    <src>Vertex index</src>
+    <src>Instance index</src>
+    <src>Attribute index and table</src>
+  </ins>
+
+  <ins name="LEA_TEX_IMM" title="Load effective address of image texel" opcode="0x67" opcode2="1" unit="LS">
     <desc>
       Load the effective address of a texel from the image specified with the
       given immediate index. Returns three staging register: the low/high
@@ -854,12 +1055,33 @@
     <vecsize/>
     <slot/>
     <sr_count/>
+    <mod name="descriptor_type" start="128" size="1" implied="true"/>
     <sr write="true"/>
-    <imm name="unk" start="36" size="4"/>
     <src>X/Y coordinates (16:16)</src>
     <src>Z/W coordinates (16:16)</src>
     <imm name="table" start="16" size="4"/>
     <imm name="index" start="20" size="4"/>
+  </ins>
+
+  <ins name="LEA_TEX" title="Load effective address of image texel" opcode="0x77" opcode2="1" unit="LS">
+    <desc>
+      Load the effective address of a texel from the image specified with the
+      given index. Returns three staging register: the low/high
+      32-bits of the address and the internal conversion descriptor. The format
+      of the internal conversion descriptor is compatible with Bifrost but
+      omits the register format, as this is specified with the ST_CVT
+      instruction on Valhall.
+
+      Coordinates are specified as 16-bit integers, packed into 32-bit sources.
+    </desc>
+    <vecsize/>
+    <slot/>
+    <sr_count/>
+    <mod name="descriptor_type" start="128" size="1" implied="true"/>
+    <sr write="true"/>
+    <src>X/Y coordinates (16:16)</src>
+    <src>Z/W coordinates (16:16)</src>
+    <src>Index and table</src>
   </ins>
 
   <ins name="LD_BUFFER.i8" title="Global memory load" opcode="0x6a" opcode2="0" unit="LS">
@@ -998,19 +1220,6 @@
     <src>Mode descriptor</src>
   </ins>
 
-  <ins name="LD_ATTR" title="Load indirect attribute" opcode="0x76" unit="LS">
-    <!-- TODO: for some reason, blob is using index (1<<24)|x for [x] -->
-    <desc>The index must not diverge within a warp.</desc>
-    <sr_count/>
-    <vecsize/>
-    <regfmt/>
-    <slot/>
-    <sr write="true"/>
-    <src>Vertex ID</src>
-    <src>Instance ID</src>
-    <src>Index</src>
-  </ins>
-
   <ins name="LEA_BUF_IMM" title="Load buffer effective address" opcode="0x5E" unit="LS">
     <desc>
       Load effective address of a buffer with an immediate offset added.
@@ -1141,22 +1350,19 @@
     <desc>
       Store to memory with data conversion. The address to store to is given in
       the first source, which must be a 64-bit register (a pair of 32-bit
-      registers). For backwards compatibility with Bifrost, there is a second
-      source which should be the high 32-bits of the register. However, on
-      Valhall the first source is 64-bit so the second source is unused. The
-      third source is the conversion descriptor used for the store.
+      registers). The other source is the conversion descriptor used for the store.
 
       Used with LEA_IMAGE_IMM to implement image stores.
     </desc>
-    <sr read="true"/>
-    <sr_count/>
+    <slot/>
+    <mod name="memory_access" start="37" size="3"/>
     <vecsize/>
     <regfmt/>
-    <slot/>
-    <src>64-bit address to store to (low)</src>
-    <src>64-bit address to store to (high)</src>
+    <sr read="true"/>
+    <sr_count/>
+    <src size="64">64-bit address to store to</src>
+    <imm name="offset" start="8" size="8"/>
     <src>Internal conversion descriptor</src>
-    <imm name="unk" start="36" size="4"/>
   </ins>
 
   <ins name="LD_TILE" title="Load from tilebuffer" opcode="0x78" unit="NONE">
@@ -1167,6 +1373,22 @@
       and internally in blend shaders.
     </desc>
     <sr write="true"/>
+    <sr_count/>
+    <vecsize/>
+    <regfmt/>
+    <slot/>
+    <src>Pixel indices descriptor</src>
+    <src>Coverage mask</src>
+    <src>Conversion descriptor</src>
+  </ins>
+
+  <ins name="ST_TILE" title="Store to tilebuffer" opcode="0x79" unit="NONE">
+    <desc>
+      Store to given render target, specified in the pixel indices descriptor, at
+      a given location and sample, and convert to the format specified in the
+      internal conversion descriptor. Used internally in blend shaders.
+    </desc>
+    <sr read="true"/>
     <sr_count/>
     <vecsize/>
     <regfmt/>
@@ -1194,7 +1416,7 @@
       can never introduce divergence, so `.reconverge` is not required.
 
       In the blend shader path, `BLEND` ignores the specified flow control and
-      does not branch to the specified offset. Instead, execution considers
+      does not branch to the specified offset. Instead, execution continues
       normally with the next instruction. The compiler should insert code for
       calling a blend shader after the `BLEND` instruction unless it is known
       that a blend shader will never be required.
@@ -1203,8 +1425,8 @@
       shaders efficiently and without shader variants.
     </desc>
     <sr read="true"/>
-    <sr write="true" count="1" flags="false"/>
-    <src>Blend descriptor</src>
+    <src size="64">Blend descriptor</src>
+    <src>Sample coverage</src>
     <imm name="target" start="8" size="8"/>
     <slot/>
     <sr_count/>
@@ -1232,10 +1454,12 @@
     </desc>
     <mod name="z" start="25" size="1"/>
     <mod name="stencil" start="24" size="1"/>
-    <dest>Updated coverage mask</dest>
+    <sr write="true">Updated coverage mask</sr>
     <src>Depth value</src>
     <src>Stencil value</src>
     <src>Input coverage mask</src>
+    <sr_count/>
+    <slot/>
   </ins>
 
   <group name="CONVERT" title="Data conversions" dests="1" opcode="0x90" unit="CVT">
@@ -2009,26 +2233,81 @@
     <imm name="constant" start="8" size="32"/>
   </ins>
 
-  <ins name="TODO.ATOM_C1" title="Atomic operations on memory with 1" opcode="0x69" unit="LS">
-    <!-- TODO -->
-    <mod name="i32" start="17" size="1"/>
-    <mod name="unk" start="23" size="1"/>
-    <sr write="true"/>
-    <src/>
-    <imm name="operation" start="24" size="6"/>
-    <sr_count/>
+  <ins name="ATOM1_RETURN.i32" title="Atomic operations on memory with 1" opcode="0x69" opcode2="3" unit="LS">
     <slot/>
+    <sr_count/>
+    <atom_opc_1/>
+    <mod name="memory_width" start="128" size="1" implied="true"/>
+
+    <!-- Optional for ATOM1.i32, in which sr_count must be 0 -->
+    <sr write="true"/>
+    <src size="64">64-bit address to operate on</src>
+    <imm name="offset" start="8" size="8"/>
   </ins>
 
-  <ins name="TODO.ATOM_C" title="Atomic operations on memory" opcode="0x120" unit="LS">
-    <!-- TODO -->
-    <mod name="i32" start="17" size="1"/>
-    <mod name="unk" start="23" size="1"/>
-    <sr read="true" write="true"/>
-    <src/>
-    <imm name="operation" start="24" size="6"/>
-    <sr_count/>
+  <ins name="ATOM1_RETURN.i64" title="Atomic operations on memory with 1" opcode="0x69" opcode2="5" unit="LS">
     <slot/>
+    <sr_count/>
+    <atom_opc_1/>
+    <mod name="memory_width" start="128" size="1" implied="true"/>
+
+    <!-- Optional for ATOM1.i64, in which sr_count must be 0 -->
+    <sr write="true"/>
+    <src size="64">64-bit address to operate on</src>
+    <imm name="offset" start="8" size="8"/>
+  </ins>
+
+  <ins name="ATOM.i32" title="Atomic operations on memory" opcode="0x68" opcode2="3" unit="LS">
+    <slot/>
+    <sr_count/>
+    <atom_opc/>
+    <mod name="memory_width" start="128" size="1" implied="true"/>
+
+    <sr read="true"/>
+    <src size="64">64-bit address to operate on</src>
+    <imm name="offset" start="8" size="8"/>
+  </ins>
+
+  <ins name="ATOM.i64" title="Atomic operations on memory" opcode="0x68" opcode2="5" unit="LS">
+    <slot/>
+    <sr_count/>
+    <atom_opc/>
+    <mod name="memory_width" start="128" size="1" implied="true"/>
+
+    <sr read="true"/>
+    <src size="64">64-bit address to operate on</src>
+    <imm name="offset" start="8" size="8"/>
+  </ins>
+
+  <ins name="ATOM_RETURN.i32" title="Atomic operations on memory" opcode="0x120" opcode2="3" unit="LS">
+    <slot/>
+    <sr_count/>
+    <sr_write_count/>
+
+    <!-- Only valid with .xchg to implement ACMPXCHG -->
+    <mod name="compare" start="26" size="1"/>
+
+    <atom_opc/>
+    <mod name="memory_width" start="128" size="1" implied="true"/>
+
+    <sr write="true" flags="false"/>
+    <sr read="true" flags="rw"/>
+    <src size="64">64-bit address to operate on</src>
+    <imm name="offset" start="8" size="8"/>
+  </ins>
+
+  <ins name="ATOM_RETURN.i64" title="Atomic operations on memory" opcode="0x120" opcode2="5" unit="LS">
+    <slot/>
+    <sr_count/>
+    <sr_write_count/>
+    <mod name="compare" start="26" size="1"/>
+    <atom_opc/>
+    <mod name="memory_width" start="128" size="1" implied="true"/>
+
+    <sr write="true" flags="false"/>
+    <sr read="true" flags="rw"/>
+    <src size="64">64-bit address to operate on</src>
+    <imm name="offset" start="8" size="8"/>
   </ins>
 
   <ins name="TEX_FETCH" title="Texel fetch" opcode="0x125" unit="T">

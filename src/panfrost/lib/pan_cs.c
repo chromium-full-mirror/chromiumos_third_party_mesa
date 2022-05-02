@@ -128,7 +128,9 @@ translate_zs_format(enum pipe_format in)
         case PIPE_FORMAT_Z24_UNORM_S8_UINT: return MALI_ZS_FORMAT_D24S8;
         case PIPE_FORMAT_Z24X8_UNORM: return MALI_ZS_FORMAT_D24X8;
         case PIPE_FORMAT_Z32_FLOAT: return MALI_ZS_FORMAT_D32;
+#if PAN_ARCH <= 7
         case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT: return MALI_ZS_FORMAT_D32_S8X24;
+#endif
         default: unreachable("Unsupported depth/stencil format.");
         }
 }
@@ -139,14 +141,18 @@ translate_s_format(enum pipe_format in)
 {
         switch (in) {
         case PIPE_FORMAT_S8_UINT: return MALI_S_FORMAT_S8;
-        case PIPE_FORMAT_S8_UINT_Z24_UNORM:
-        case PIPE_FORMAT_S8X24_UINT:
-                return MALI_S_FORMAT_S8X24;
         case PIPE_FORMAT_Z24_UNORM_S8_UINT:
         case PIPE_FORMAT_X24S8_UINT:
                 return MALI_S_FORMAT_X24S8;
+
+#if PAN_ARCH <= 7
+        case PIPE_FORMAT_S8_UINT_Z24_UNORM:
+        case PIPE_FORMAT_S8X24_UINT:
+                return MALI_S_FORMAT_S8X24;
         case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
                 return MALI_S_FORMAT_X32_S8X24;
+#endif
+
         default:
                 unreachable("Unsupported stencil format.");
         }
@@ -196,6 +202,7 @@ pan_prepare_zs(const struct pan_fb_info *fb,
         pan_iview_get_surface(zs, 0, 0, 0, &surf);
 
         if (drm_is_afbc(zs->image->layout.modifier)) {
+#if PAN_ARCH <= 8
 #if PAN_ARCH >= 6
                 const struct pan_image_slice_layout *slice = &zs->image->layout.slices[level];
 
@@ -210,6 +217,7 @@ pan_prepare_zs(const struct pan_fb_info *fb,
 
                 ext->zs_afbc_header = surf.afbc.header;
                 ext->zs_afbc_body = surf.afbc.body;
+#endif
         } else {
                 assert(zs->image->layout.modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED ||
                        zs->image->layout.modifier == DRM_FORMAT_MOD_LINEAR);
@@ -436,13 +444,14 @@ pan_prepare_rt(const struct pan_fb_info *fb, unsigned idx,
         pan_iview_get_surface(rt, 0, 0, 0, &surf);
 
         if (drm_is_afbc(rt->image->layout.modifier)) {
+#if PAN_ARCH <= 8
                 const struct pan_image_slice_layout *slice = &rt->image->layout.slices[level];
 
 #if PAN_ARCH >= 6
                 cfg->afbc.row_stride = slice->afbc.row_stride /
                                        AFBC_HEADER_BYTES_PER_TILE;
                 cfg->afbc.afbc_wide_block_enable =
-                        panfrost_block_dim(rt->image->layout.modifier, true, 0) > 16;
+                        panfrost_afbc_is_wide(rt->image->layout.modifier);
 #else
                 cfg->afbc.chunk_size = 9;
                 cfg->afbc.sparse = true;
@@ -454,6 +463,7 @@ pan_prepare_rt(const struct pan_fb_info *fb, unsigned idx,
 
                 if (rt->image->layout.modifier & AFBC_FORMAT_MOD_YTR)
                         cfg->afbc.yuv_transform_enable = true;
+#endif
         } else {
                 assert(rt->image->layout.modifier == DRM_FORMAT_MOD_LINEAR ||
                        rt->image->layout.modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED);
@@ -574,7 +584,7 @@ pan_force_clean_write_rt(const struct pan_image_view *rt, unsigned tile_size)
         if (!drm_is_afbc(rt->image->layout.modifier))
                 return false;
 
-        unsigned superblock = panfrost_block_dim(rt->image->layout.modifier, true, 0);
+        unsigned superblock = panfrost_afbc_superblock_width(rt->image->layout.modifier);
 
         assert(superblock >= 16);
         assert(tile_size <= 16*16);
@@ -861,6 +871,15 @@ GENX(pan_emit_tiler_ctx)(const struct panfrost_device *dev,
         pan_pack(out, TILER_CONTEXT, tiler) {
                 /* TODO: Select hierarchy mask more effectively */
                 tiler.hierarchy_mask = (max_levels >= 8) ? 0xFF : 0x28;
+
+                /* For large framebuffers, disable the smallest bin size to
+                 * avoid pathological tiler memory usage. Required to avoid OOM
+                 * on dEQP-GLES31.functional.fbo.no_attachments.maximums.all on
+                 * Mali-G57.
+                 */
+                if (MAX2(fb_width, fb_height) >= 4096)
+                        tiler.hierarchy_mask &= ~1;
+
                 tiler.fb_width = fb_width;
                 tiler.fb_height = fb_height;
                 tiler.heap = heap;

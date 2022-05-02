@@ -802,20 +802,6 @@ st_create_common_variant(struct st_context *st,
          NIR_PASS_V(state.ir.nir, nir_lower_point_size_mov,
                     point_size_state);
 
-         switch (prog->info.stage) {
-         case MESA_SHADER_VERTEX:
-            prog->affected_states |= ST_NEW_VS_CONSTANTS;
-            break;
-         case MESA_SHADER_TESS_EVAL:
-            prog->affected_states |= ST_NEW_TES_CONSTANTS;
-            break;
-         case MESA_SHADER_GEOMETRY:
-            prog->affected_states |= ST_NEW_GS_CONSTANTS;
-            break;
-         default:
-            unreachable("bad shader stage");
-         }
-
          finalize = true;
       }
 
@@ -1940,52 +1926,20 @@ st_can_add_pointsize_to_program(struct st_context *st, struct gl_program *prog)
           nir->info.stage == MESA_SHADER_GEOMETRY);
    unsigned max_components = nir->info.stage == MESA_SHADER_GEOMETRY ?
                              st->ctx->Const.MaxGeometryTotalOutputComponents :
-                             st->ctx->Const.Program[nir->info.stage].MaxOutputComponents * 4;
+                             st->ctx->Const.Program[nir->info.stage].MaxOutputComponents;
    unsigned num_components = 0;
    unsigned needed_components = nir->info.stage == MESA_SHADER_GEOMETRY ? nir->info.gs.vertices_out : 1;
-   u_foreach_bit64(loc, nir->info.outputs_written) {
-      nir_variable *var = NULL;
-      unsigned location = loc; //can't modify bit iterator
-      while (!var)
-         var = nir_find_variable_with_location(nir, nir_var_shader_out, location--);
-      assert(var);
+   nir_foreach_shader_out_variable(var, nir) {
       num_components += glsl_count_dword_slots(var->type, false);
    }
    /* Ensure that there is enough attribute space to emit at least one primitive */
-   if (nir->info.stage == MESA_SHADER_GEOMETRY)
+   if (nir->info.stage == MESA_SHADER_GEOMETRY) {
+      if (num_components + needed_components > st->ctx->Const.Program[nir->info.stage].MaxOutputComponents)
+         return false;
       num_components *= nir->info.gs.vertices_out;
+   }
 
    return num_components + needed_components <= max_components;
-}
-
-static bool
-is_last_vertex_stage(struct gl_context *ctx, struct gl_program *prog)
-{
-   struct gl_program *last = NULL;
-   /* fixedfunc */
-   if (prog->Id == 0)
-      return true;
-
-   /* shader info accurately set */
-   if (prog->info.next_stage == MESA_SHADER_FRAGMENT)
-      return true;
-   if (prog->info.next_stage != MESA_SHADER_VERTEX)
-      return false;
-
-   /* check bound programs */
-   if (ctx->GeometryProgram._Current)
-      last = ctx->GeometryProgram._Current;
-   else if (ctx->TessEvalProgram._Current)
-      last = ctx->TessEvalProgram._Current;
-   else
-      last = ctx->VertexProgram._Current;
-   if (last)
-      return prog == last;
-
-   /* assume this will be the last vertex stage;
-    * at worst, another variant without psiz is created later
-    */
-   return true;
 }
 
 /**
@@ -2014,15 +1968,6 @@ st_precompile_shader_variant(struct st_context *st,
          key.clamp_color = true;
       }
 
-      if (prog->Target == GL_VERTEX_PROGRAM_ARB ||
-          prog->Target == GL_TESS_EVALUATION_PROGRAM_NV ||
-          prog->Target == GL_GEOMETRY_PROGRAM_NV) {
-         if (st->lower_point_size &&
-             !st->ctx->VertexProgram.PointSizeEnabled &&
-             st_can_add_pointsize_to_program(st, prog))
-            key.export_point_size = is_last_vertex_stage(st->ctx, prog) &&
-                                    (!prog->nir || !nir_find_variable_with_location(prog->nir, nir_var_shader_out, VARYING_SLOT_PSIZ));
-      }
       key.st = st->has_shareable_shaders ? NULL : st;
       st_get_common_variant(st, prog, &key);
       break;
@@ -2118,6 +2063,10 @@ st_program_string_notify( struct gl_context *ctx,
    } else if (target == GL_VERTEX_PROGRAM_ARB) {
       if (!st_translate_vertex_program(st, prog))
          return false;
+      if (st->lower_point_size && st_can_add_pointsize_to_program(st, prog)) {
+         prog->skip_pointsize_xfb = true;
+         NIR_PASS_V(prog->nir, st_nir_add_point_size);
+      }
    } else {
       if (!st_translate_common_program(st, prog))
          return false;

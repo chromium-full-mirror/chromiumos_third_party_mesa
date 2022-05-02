@@ -265,11 +265,11 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_BLEND_EQUATION_SEPARATE: /* req. for GL 1.5 */
       return 1;
 
-   case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
+   case PIPE_CAP_FS_COORD_ORIGIN_UPPER_LEFT:
       return 1;
-   case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
+   case PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
       return sws->have_vgpu10;
-   case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
+   case PIPE_CAP_FS_COORD_PIXEL_CENTER_INTEGER:
       return !sws->have_vgpu10;
 
    case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
@@ -304,7 +304,7 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_INDEP_BLEND_ENABLE:
    case PIPE_CAP_CONDITIONAL_RENDER:
    case PIPE_CAP_QUERY_TIMESTAMP:
-   case PIPE_CAP_TGSI_INSTANCEID:
+   case PIPE_CAP_VS_INSTANCEID:
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_FAKE_SW_MSAA:
@@ -432,7 +432,11 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_VENDOR_ID:
       return 0x15ad; /* VMware Inc. */
    case PIPE_CAP_DEVICE_ID:
-      return 0x0405; /* assume SVGA II */
+      if (sws->device_id) {
+         return sws->device_id;
+      } else {
+         return 0x0405; /* assume SVGA II */
+      }
    case PIPE_CAP_ACCELERATED:
       return 0; /* XXX: */
    case PIPE_CAP_VIDEO_MEMORY:
@@ -514,7 +518,7 @@ vgpu9_get_shader_param(struct pipe_screen *screen,
           * does it is better to defer loop unrolling to the gallium frontend.
           */
          return 0;
-      case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+      case PIPE_SHADER_CAP_CONT_SUPPORTED:
          return 0;
       case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
          return 0;
@@ -540,9 +544,9 @@ vgpu9_get_shader_param(struct pipe_screen *screen,
          return PIPE_SHADER_IR_TGSI;
       case PIPE_SHADER_CAP_SUPPORTED_IRS:
          return 1 << PIPE_SHADER_IR_TGSI;
-      case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
-      case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
-      case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
+      case PIPE_SHADER_CAP_DROUND_SUPPORTED:
+      case PIPE_SHADER_CAP_DFRACEXP_DLDEXP_SUPPORTED:
+      case PIPE_SHADER_CAP_LDEXP_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
@@ -582,7 +586,7 @@ vgpu9_get_shader_param(struct pipe_screen *screen,
       case PIPE_SHADER_CAP_MAX_TEMPS:
          val = get_uint_cap(sws, SVGA3D_DEVCAP_MAX_VERTEX_SHADER_TEMPS, 32);
          return MIN2(val, SVGA3D_TEMPREG_MAX);
-      case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+      case PIPE_SHADER_CAP_CONT_SUPPORTED:
          return 0;
       case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
          return 0;
@@ -611,9 +615,9 @@ vgpu9_get_shader_param(struct pipe_screen *screen,
          return PIPE_SHADER_IR_TGSI;
       case PIPE_SHADER_CAP_SUPPORTED_IRS:
          return 1 << PIPE_SHADER_IR_TGSI;
-      case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
-      case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
-      case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
+      case PIPE_SHADER_CAP_DROUND_SUPPORTED:
+      case PIPE_SHADER_CAP_DFRACEXP_DLDEXP_SUPPORTED:
+      case PIPE_SHADER_CAP_LDEXP_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
@@ -706,7 +710,7 @@ vgpu10_get_shader_param(struct pipe_screen *screen,
    case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
       return TRUE; /* XXX verify */
-   case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+   case PIPE_SHADER_CAP_CONT_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
    case PIPE_SHADER_CAP_SUBROUTINES:
    case PIPE_SHADER_CAP_INTEGERS:
@@ -727,9 +731,9 @@ vgpu10_get_shader_param(struct pipe_screen *screen,
          return 1 << PIPE_SHADER_IR_TGSI;
       else
          return 0;
-   case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
-   case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
-   case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
+   case PIPE_SHADER_CAP_DROUND_SUPPORTED:
+   case PIPE_SHADER_CAP_DFRACEXP_DLDEXP_SUPPORTED:
+   case PIPE_SHADER_CAP_LDEXP_SUPPORTED:
       /* For the above cases, we rely on the GLSL compiler to translate/lower
        * the TGIS instruction into other instructions we do support.
        */

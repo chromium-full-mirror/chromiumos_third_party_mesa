@@ -86,9 +86,7 @@ static LLVMValueRef load_const_buffer_desc_fast_path(struct si_shader_context *c
    return ac_build_gather_values(&ctx->ac, desc_elems, 4);
 }
 
-static LLVMValueRef load_ubo(struct ac_shader_abi *abi,
-                             unsigned desc_set, unsigned binding,
-                             bool valid_binding, LLVMValueRef index)
+static LLVMValueRef load_ubo(struct ac_shader_abi *abi, LLVMValueRef index)
 {
    struct si_shader_context *ctx = si_shader_context_from_abi(abi);
    struct si_shader_selector *sel = ctx->shader->selector;
@@ -282,7 +280,10 @@ static LLVMValueRef si_nir_load_sampler_desc(struct ac_shader_abi *abi, unsigned
    }
 
    unsigned num_slots = image ? ctx->num_images : ctx->num_samplers;
-   assert(const_index < num_slots || dynamic_index);
+
+   /* Redirect invalid resource indices to the first array element. */
+   if (const_index >= num_slots)
+      const_index = base_index;
 
    LLVMValueRef list = ac_get_arg(&ctx->ac, ctx->samplers_and_images);
    LLVMValueRef index = LLVMConstInt(ctx->ac.i32, const_index, false);

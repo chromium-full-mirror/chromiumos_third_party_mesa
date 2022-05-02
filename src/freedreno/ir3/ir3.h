@@ -482,6 +482,7 @@ struct ir3_instruction {
       IR3_BARRIER_ARRAY_W = 1 << 8,
       IR3_BARRIER_PRIVATE_R = 1 << 9,
       IR3_BARRIER_PRIVATE_W = 1 << 10,
+      IR3_BARRIER_CONST_W = 1 << 11,
    } barrier_class,
       barrier_conflict;
 
@@ -581,6 +582,7 @@ enum ir3_branch_type {
    IR3_BRANCH_ANY,    /* subgroupAny(condition) */
    IR3_BRANCH_ALL,    /* subgroupAll(condition) */
    IR3_BRANCH_GETONE, /* subgroupElect() */
+   IR3_BRANCH_SHPS,   /* preamble start */
 };
 
 struct ir3_block {
@@ -657,6 +659,19 @@ static inline struct ir3_block *
 ir3_start_block(struct ir3 *ir)
 {
    return list_first_entry(&ir->block_list, struct ir3_block, node);
+}
+
+static inline struct ir3_block *
+ir3_after_preamble(struct ir3 *ir)
+{
+   struct ir3_block *block = ir3_start_block(ir);
+   /* The preamble will have a usually-empty else branch, and we want to skip
+    * that to get to the block after the preamble.
+    */
+   if (block->brtype == IR3_BRANCH_SHPS)
+      return block->successors[1]->successors[0];
+   else
+      return block;
 }
 
 void ir3_block_add_predecessor(struct ir3_block *block, struct ir3_block *pred);
@@ -2069,21 +2084,23 @@ static inline struct ir3_instruction *ir3_##name(                              \
 #define INSTR1NODST(name) __INSTR1(0, 0, name, OPC_##name)
 
 /* clang-format off */
-#define __INSTR2(flag, name, opc)                                              \
+#define __INSTR2(flag, dst_count, name, opc)                                   \
 static inline struct ir3_instruction *ir3_##name(                              \
    struct ir3_block *block, struct ir3_instruction *a, unsigned aflags,        \
    struct ir3_instruction *b, unsigned bflags)                                 \
 {                                                                              \
-   struct ir3_instruction *instr = ir3_instr_create(block, opc, 1, 2);         \
-   __ssa_dst(instr);                                                           \
+   struct ir3_instruction *instr = ir3_instr_create(block, opc, dst_count, 2); \
+   for (unsigned i = 0; i < dst_count; i++)                                    \
+      __ssa_dst(instr);                                                        \
    __ssa_src(instr, a, aflags);                                                \
    __ssa_src(instr, b, bflags);                                                \
    instr->flags |= flag;                                                       \
    return instr;                                                               \
 }
 /* clang-format on */
-#define INSTR2F(f, name) __INSTR2(IR3_INSTR_##f, name##_##f, OPC_##name)
-#define INSTR2(name)     __INSTR2(0, name, OPC_##name)
+#define INSTR2F(f, name)   __INSTR2(IR3_INSTR_##f, 1, name##_##f, OPC_##name)
+#define INSTR2(name)       __INSTR2(0, 1, name, OPC_##name)
+#define INSTR2NODST(name)  __INSTR2(0, 0, name, OPC_##name)
 
 /* clang-format off */
 #define __INSTR3(flag, dst_count, name, opc)                                   \
@@ -2190,6 +2207,8 @@ INSTR1NODST(PREDT)
 INSTR0(PREDF)
 INSTR0(PREDE)
 INSTR0(GETONE)
+INSTR0(SHPS)
+INSTR0(SHPE)
 
 /* cat1 macros */
 INSTR1(ANY_MACRO)
@@ -2202,6 +2221,15 @@ ir3_ELECT_MACRO(struct ir3_block *block)
 {
    struct ir3_instruction *instr =
       ir3_instr_create(block, OPC_ELECT_MACRO, 1, 0);
+   __ssa_dst(instr);
+   return instr;
+}
+
+static inline struct ir3_instruction *
+ir3_SHPS_MACRO(struct ir3_block *block)
+{
+   struct ir3_instruction *instr =
+      ir3_instr_create(block, OPC_SHPS_MACRO, 1, 0);
    __ssa_dst(instr);
    return instr;
 }
@@ -2361,6 +2389,8 @@ INSTR2(QUAD_SHUFFLE_BRCST)
 INSTR1(QUAD_SHUFFLE_HORIZ)
 INSTR1(QUAD_SHUFFLE_VERT)
 INSTR1(QUAD_SHUFFLE_DIAG)
+INSTR2NODST(LDC_K)
+INSTR2NODST(STC)
 #if GPU >= 600
 INSTR3NODST(STIB);
 INSTR2(LDIB);
