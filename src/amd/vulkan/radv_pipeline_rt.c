@@ -490,6 +490,24 @@ lower_rt_instructions(nir_shader *shader, struct rt_variables *vars, unsigned ca
                nir_ssa_def_rewrite_uses(&intr->dest.ssa, ret);
                break;
             }
+            case nir_intrinsic_load_ray_launch_size: {
+               b_shader.cursor = nir_instr_remove(instr);
+               nir_ssa_def *launch_size_addr =
+                  nir_load_ray_launch_size_addr_amd(&b_shader);
+
+               nir_ssa_def * xy = nir_build_load_smem_amd(
+                  &b_shader, 2, launch_size_addr, nir_imm_int(&b_shader, 0));
+               nir_ssa_def * z = nir_build_load_smem_amd(
+                  &b_shader, 1, launch_size_addr, nir_imm_int(&b_shader, 8));
+
+               nir_ssa_def *xyz[3] = {
+                  nir_channel(&b_shader, xy, 0),
+                  nir_channel(&b_shader, xy, 1),
+                  z,
+               };
+               nir_ssa_def_rewrite_uses(&intr->dest.ssa, nir_vec(&b_shader, xyz, 3));
+               break;
+            }
             case nir_intrinsic_load_ray_t_min: {
                b_shader.cursor = nir_instr_remove(instr);
                nir_ssa_def *ret = nir_load_var(&b_shader, vars->tmin);
@@ -790,7 +808,7 @@ parse_rt_stage(struct radv_device *device, const VkPipelineShaderStageCreateInfo
 
    radv_pipeline_stage_init(sinfo, &rt_stage, vk_to_mesa_shader_stage(sinfo->stage));
 
-   nir_shader *shader = radv_shader_compile_to_nir(device, &rt_stage, &key);
+   nir_shader *shader = radv_shader_spirv_to_nir(device, &rt_stage, &key);
 
    if (shader->info.stage == MESA_SHADER_RAYGEN || shader->info.stage == MESA_SHADER_CLOSEST_HIT ||
        shader->info.stage == MESA_SHADER_CALLABLE || shader->info.stage == MESA_SHADER_MISS) {

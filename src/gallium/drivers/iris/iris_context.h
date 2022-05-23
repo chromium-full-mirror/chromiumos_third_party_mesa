@@ -208,6 +208,7 @@ enum iris_nos_dep {
 
 struct iris_base_prog_key {
    unsigned program_string_id;
+   bool limit_trig_input_range;
 };
 
 /**
@@ -349,6 +350,7 @@ enum pipe_control_flags
    (PIPE_CONTROL_DEPTH_CACHE_FLUSH |  \
     PIPE_CONTROL_DATA_CACHE_FLUSH |   \
     PIPE_CONTROL_TILE_CACHE_FLUSH |   \
+    PIPE_CONTROL_FLUSH_HDC | \
     PIPE_CONTROL_RENDER_TARGET_FLUSH)
 
 #define PIPE_CONTROL_CACHE_INVALIDATE_BITS  \

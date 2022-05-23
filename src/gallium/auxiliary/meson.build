@@ -181,8 +181,6 @@ files_libgallium = files(
   'tgsi/tgsi_dynamic_indexing.c',
   'tgsi/tgsi_exec.c',
   'tgsi/tgsi_exec.h',
-  'tgsi/tgsi_emulate.c',
-  'tgsi/tgsi_emulate.h',
   'tgsi/tgsi_from_mesa.c',
   'tgsi/tgsi_from_mesa.h',
   'tgsi/tgsi_info.c',
@@ -475,6 +473,12 @@ if with_dri2 and with_platform_x11
     ]
     files_libgalliumvlwinsys += files('vl/vl_winsys_dri3.c')
   endif
+endif
+
+if with_glx == 'xlib' or with_glx == 'gallium-xlib'
+  files_libgalliumvlwinsys += files('vl/vl_winsys_xlib_swrast.c')
+else
+  files_libgalliumvlwinsys += files('vl/vl_winsys_dri_vgem.c')
 endif
 
 prog_enums2names = files('driver_trace/enums2names.py')

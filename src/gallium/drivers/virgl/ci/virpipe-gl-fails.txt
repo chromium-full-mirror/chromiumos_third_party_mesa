@@ -104,7 +104,7 @@ glx@glx-visuals-stencil -pixmap,Crash
 glx@glx_arb_create_context_es2_profile@invalid opengl es version,Fail
 
 # "error: incorrect context creation error code"
-glx@glx_arb_create_context_no_error@no error,Fail
+glx@glx_arb_create_context_no_error@no error,Crash
 
 glx@glx_ext_import_context@free context,Fail
 glx@glx_ext_import_context@get context id,Fail
@@ -536,11 +536,20 @@ spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgradcube,Fail
 spec@arb_shader_texture_lod@execution@glsl-fs-shadow2dgradarb-07,Fail
 spec@arb_shader_texture_lod@execution@glsl-fs-shadow2dgradarb-08,Fail
 spec@arb_shader_texture_lod@execution@glsl-fs-shadow2dgradarb-cumulative,Fail
+spec@arb_tessellation_shader@execution@barrier-patch,Fail
 spec@arb_tessellation_shader@execution@double-array-vs-tcs-tes,Fail
 spec@arb_tessellation_shader@execution@double-vs-tcs-tes,Fail
 spec@arb_tessellation_shader@execution@dvec2-vs-tcs-tes,Fail
 spec@arb_tessellation_shader@execution@dvec3-vs-tcs-tes,Fail
 spec@arb_tessellation_shader@execution@gs-primitiveid-instanced,Fail
+spec@arb_tessellation_shader@execution@variable-indexing@tcs-output-array-float-index-rd-after-barrier,Fail
+spec@arb_tessellation_shader@execution@variable-indexing@tcs-output-array-float-index-wr-before-barrier,Fail
+spec@arb_tessellation_shader@execution@variable-indexing@tcs-output-array-vec2-index-rd-after-barrier,Fail
+spec@arb_tessellation_shader@execution@variable-indexing@tcs-output-array-vec2-index-wr-before-barrier,Fail
+spec@arb_tessellation_shader@execution@variable-indexing@tcs-output-array-vec3-index-rd-after-barrier,Fail
+spec@arb_tessellation_shader@execution@variable-indexing@tcs-output-array-vec3-index-wr-before-barrier,Fail
+spec@arb_tessellation_shader@execution@variable-indexing@tcs-output-array-vec4-index-rd-after-barrier,Fail
+spec@arb_tessellation_shader@execution@variable-indexing@tcs-output-array-vec4-index-wr-before-barrier,Fail
 
 # "	intrinsic copy_deref (ssa_2, ssa_3) (dst_access=0, src_access=0)
 #  error: glsl_get_bare_type(dst->type) == glsl_get_bare_type(src->type) (../src/compiler/nir/nir_validate.c:643)"
@@ -867,11 +876,6 @@ spec@glsl-1.10@execution@samplers@glsl-fs-shadow2d-08,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow2d-clamp-z,Fail
 spec@glsl-1.20@compiler@invalid-vec4-array-to-vec3-array-conversion.vert,Fail
 
-# "ERROR - Piglit error: NIR validation failed after nir_lower_locals_to_regs"
-# "ERROR - Piglit error: error: (src->reg.reg->num_array_elems == 0 || src->reg.base_offset < src->reg.reg->num_array_elems) && "definitely out-of-bounds array access" (../src/compiler/nir/nir_validate.c:174)"
-spec@glsl-1.30@execution@fs-large-local-array-out-of-bounds-read,Crash
-spec@glsl-1.30@execution@fs-large-local-array-out-of-bounds-write,Crash
-
 spec@glsl-1.30@execution@vs-isnan-and-more-comparison,Fail
 
 spec@glsl-1.50@execution@primitive-id-no-gs-quad-strip,Fail
@@ -980,9 +984,14 @@ spec@nv_copy_image@nv_copy_image-formats@Source: GL_COMPRESSED_SRGB_S3TC_DXT1_EX
 spec@nv_copy_image@nv_copy_image-formats@Source: GL_DEPTH_COMPONENT24/Destination: GL_DEPTH_COMPONENT24,Fail
 spec@nv_primitive_restart@primitive-restart-draw-mode-polygon,Crash
 spec@nv_primitive_restart@primitive-restart-draw-mode-quad_strip,Crash
-spec@nv_primitive_restart@primitive-restart-draw-mode-quads,Crash
 spec@nv_read_depth@read_depth_gles3,Fail
 spec@oes_egl_image_external_essl3@oes_egl_image_external_essl3,Fail
 spec@oes_egl_image_external_essl3@oes_egl_image_external_essl3@oes_egl_image_external_essl3_imageLoad,Fail
 spec@oes_egl_image_external_essl3@oes_egl_image_external_essl3@oes_egl_image_external_essl3_imageStore,Fail
 spec@oes_shader_io_blocks@compiler@layout-location-aliasing.vert,Fail
+spec@!opengl 1.0@depth-clear-precision-check,Fail
+spec@!opengl 1.0@depth-clear-precision-check@depth32,Fail
+spec@arb_texture_buffer_object@texture-buffer-size-clamp,Crash
+spec@arb_texture_buffer_object@texture-buffer-size-clamp@r8ui_texture_buffer_size_via_image,Fail
+spec@arb_texture_buffer_object@texture-buffer-size-clamp@r8ui_texture_buffer_size_via_sampler,Fail
+spec@arb_texture_buffer_object@texture-buffer-size-clamp@rg8ui_texture_buffer_size_via_sampler,Fail

@@ -159,6 +159,8 @@ tu_emit_cache_flush_ccu(struct tu_cmd_buffer *cmd_buffer,
    enum tu_cmd_flush_bits flushes = cmd_buffer->state.cache.flush_bits;
 
    assert(ccu_state != TU_CMD_CCU_UNKNOWN);
+   /* It's unsafe to flush inside condition because we clear flush_bits */
+   assert(!cs->cond_flags);
 
    /* Changing CCU state must involve invalidating the CCU. In sysmem mode,
     * the CCU may also contain data that we haven't flushed out yet, so we
@@ -667,8 +669,6 @@ tu6_emit_tile_select(struct tu_cmd_buffer *cmd,
    const uint32_t y2 = MIN2(y1 + fb->tile0.height - 1, MAX_VIEWPORT_SIZE - 1);
    tu6_emit_window_scissor(cs, x1, y1, x2, y2);
    tu6_emit_window_offset(cs, x1, y1);
-
-   tu_cs_emit_regs(cs, A6XX_VPC_SO_DISABLE(false));
 
    if (use_hw_binning(cmd)) {
       tu_cs_emit_pkt7(cs, CP_WAIT_FOR_ME, 0);
@@ -1288,9 +1288,6 @@ tu6_sysmem_render_begin(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
 
    tu_emit_cache_flush_ccu(cmd, cs, TU_CMD_CCU_SYSMEM);
 
-   /* enable stream-out, with sysmem there is only one pass: */
-   tu_cs_emit_regs(cs, A6XX_VPC_SO_DISABLE(false));
-
    tu_cs_emit_pkt7(cs, CP_SET_VISIBILITY_OVERRIDE, 1);
    tu_cs_emit(cs, 0x1);
 
@@ -1338,9 +1335,6 @@ tu6_tile_render_begin(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
 
    const struct tu_framebuffer *fb = cmd->state.framebuffer;
    if (use_hw_binning(cmd)) {
-      /* enable stream-out during binning pass: */
-      tu_cs_emit_regs(cs, A6XX_VPC_SO_DISABLE(false));
-
       tu6_emit_bin_size(cs, fb->tile0.width, fb->tile0.height,
                         A6XX_RB_BIN_CONTROL_RENDER_MODE(BINNING_PASS) |
                         A6XX_RB_BIN_CONTROL_LRZ_FEEDBACK_ZMODE_MASK(0x6));
@@ -1348,9 +1342,6 @@ tu6_tile_render_begin(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
       tu6_emit_render_cntl(cmd, cmd->state.subpass, cs, true);
 
       tu6_emit_binning_pass(cmd, cs);
-
-      /* and disable stream-out for draw pass: */
-      tu_cs_emit_regs(cs, A6XX_VPC_SO_DISABLE(true));
 
       tu6_emit_bin_size(cs, fb->tile0.width, fb->tile0.height,
                         A6XX_RB_BIN_CONTROL_FORCE_LRZ_WRITE_DIS |
@@ -1368,9 +1359,6 @@ tu6_tile_render_begin(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
       tu_cs_emit_pkt7(cs, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
       tu_cs_emit(cs, 0x1);
    } else {
-      /* no binning pass, so enable stream-out for draw pass:: */
-      tu_cs_emit_regs(cs, A6XX_VPC_SO_DISABLE(false));
-
       tu6_emit_bin_size(cs, fb->tile0.width, fb->tile0.height,
                         A6XX_RB_BIN_CONTROL_LRZ_FEEDBACK_ZMODE_MASK(0x6));
    }
@@ -2149,6 +2137,8 @@ tu_CmdBeginTransformFeedbackEXT(VkCommandBuffer commandBuffer,
                           CP_COND_REG_EXEC_0_SYSMEM |
                           CP_COND_REG_EXEC_0_BINNING);
 
+   tu_cs_emit_regs(cs, A6XX_VPC_SO_DISABLE(false));
+
    /* TODO: only update offset for active buffers */
    for (uint32_t i = 0; i < IR3_MAX_SO_BUFFERS; i++)
       tu_cs_emit_regs(cs, A6XX_VPC_SO_BUFFER_OFFSET(i, cmd->state.streamout_offset[i]));
@@ -2194,6 +2184,8 @@ tu_CmdEndTransformFeedbackEXT(VkCommandBuffer commandBuffer,
    tu_cond_exec_start(cs, CP_COND_REG_EXEC_0_MODE(RENDER_MODE) |
                           CP_COND_REG_EXEC_0_SYSMEM |
                           CP_COND_REG_EXEC_0_BINNING);
+
+   tu_cs_emit_regs(cs, A6XX_VPC_SO_DISABLE(true));
 
    /* TODO: only flush buffers that need to be flushed */
    for (uint32_t i = 0; i < IR3_MAX_SO_BUFFERS; i++) {
@@ -3474,11 +3466,10 @@ tu_CmdNextSubpass2(VkCommandBuffer commandBuffer,
          if (pass->attachments[a].gmem_offset < 0)
             continue;
 
-         /* TODO:
-          * check if the resolved attachment is needed by later subpasses,
+         /* check if the resolved attachment is needed by later subpasses,
           * if it is, should be doing a GMEM->GMEM resolve instead of GMEM->MEM->GMEM..
           */
-         tu_finishme("missing GMEM->GMEM resolve path\n");
+         perf_debug(cmd->device, "TODO: missing GMEM->GMEM resolve path\n");
          tu_load_gmem_attachment(cmd, cs, a, false, true);
       }
    }
@@ -3709,8 +3700,10 @@ tu6_calculate_lrz_state(struct tu_cmd_buffer *cmd,
        * so if there is a depth write - LRZ must be disabled.
        */
       if (z_write_enable) {
+         perf_debug(cmd->device, "Invalidating LRZ due to ALWAYS/NOT_EQUAL");
          disable_lrz = true;
       } else {
+         perf_debug(cmd->device, "Skipping LRZ due to ALWAYS/NOT_EQUAL");
          temporary_disable_lrz = true;
       }
       break;
@@ -3748,8 +3741,10 @@ tu6_calculate_lrz_state(struct tu_cmd_buffer *cmd,
        lrz_direction != TU_LRZ_UNKNOWN &&
        cmd->state.lrz.prev_direction != lrz_direction) {
       if (z_write_enable) {
+         perf_debug(cmd->device, "Invalidating LRZ due to direction change");
          disable_lrz = true;
       } else {
+         perf_debug(cmd->device, "Skipping LRZ due to direction change");
          temporary_disable_lrz = true;
       }
    }

@@ -86,7 +86,7 @@ panfrost_resource_from_handle(struct pipe_screen *pscreen,
                 PAN_IMAGE_CRC_OOB : PAN_IMAGE_CRC_NONE;
         struct pan_image_explicit_layout explicit_layout = {
                 .offset = whandle->offset,
-                .line_stride = whandle->stride,
+                .row_stride = panfrost_from_legacy_stride(whandle->stride, templat->format, mod)
         };
 
         rsc->image.layout = (struct pan_image_layout) {
@@ -177,7 +177,7 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
                 return false;
         }
 
-        handle->stride = rsrc->image.layout.slices[0].line_stride;
+        handle->stride = panfrost_get_legacy_stride(&rsrc->image.layout, 0);
         handle->offset = rsrc->image.layout.slices[0].offset;
         return true;
 }
@@ -195,7 +195,7 @@ panfrost_resource_get_param(struct pipe_screen *pscreen,
 
         switch (param) {
         case PIPE_RESOURCE_PARAM_STRIDE:
-                *value = rsrc->image.layout.slices[level].line_stride;
+                *value = panfrost_get_legacy_stride(&rsrc->image.layout, level);
                 return true;
         case PIPE_RESOURCE_PARAM_OFFSET:
                 *value = rsrc->image.layout.slices[level].offset;
@@ -876,7 +876,7 @@ panfrost_load_tiled_images(struct panfrost_transfer *transfer,
                 panfrost_load_tiled_image(dst, map, ptrans->box.x,
                                           ptrans->box.y, ptrans->box.width,
                                           ptrans->box.height, ptrans->stride,
-                                          rsrc->image.layout.slices[level].line_stride,
+                                          rsrc->image.layout.slices[level].row_stride,
                                           rsrc->image.layout.format);
         }
 }
@@ -902,7 +902,7 @@ panfrost_store_tiled_images(struct panfrost_transfer *transfer,
                 panfrost_store_tiled_image(map, src,
                                 ptrans->box.x, ptrans->box.y,
                                 ptrans->box.width, ptrans->box.height,
-                                rsrc->image.layout.slices[level].line_stride,
+                                rsrc->image.layout.slices[level].row_stride,
                                 ptrans->stride, rsrc->image.layout.format);
         }
 }
@@ -942,7 +942,7 @@ panfrost_ptr_map(struct pipe_context *pctx,
                 /* Staging resources have one LOD: level 0. Query the strides
                  * on this LOD.
                  */
-                transfer->base.stride = staging->image.layout.slices[0].line_stride;
+                transfer->base.stride = staging->image.layout.slices[0].row_stride;
                 transfer->base.layer_stride =
                         panfrost_get_layer_stride(&staging->image.layout, 0);
 
@@ -1088,7 +1088,7 @@ panfrost_ptr_map(struct pipe_context *pctx,
                 if ((usage & dpw) == dpw && rsrc->index_cache)
                         return NULL;
 
-                transfer->base.stride = rsrc->image.layout.slices[level].line_stride;
+                transfer->base.stride = rsrc->image.layout.slices[level].row_stride;
                 transfer->base.layer_stride =
                         panfrost_get_layer_stride(&rsrc->image.layout, level);
 
@@ -1103,7 +1103,7 @@ panfrost_ptr_map(struct pipe_context *pctx,
                 return bo->ptr.cpu
                        + rsrc->image.layout.slices[level].offset
                        + box->z * transfer->base.layer_stride
-                       + box_blocks.y * rsrc->image.layout.slices[level].line_stride
+                       + box_blocks.y * rsrc->image.layout.slices[level].row_stride
                        + box_blocks.x * bytes_per_block;
         }
 }
@@ -1284,7 +1284,7 @@ panfrost_ptr_unmap(struct pipe_context *pctx,
                                         util_copy_rect(
                                                 bo->ptr.cpu + prsrc->image.layout.slices[0].offset,
                                                 prsrc->base.format,
-                                                prsrc->image.layout.slices[0].line_stride,
+                                                prsrc->image.layout.slices[0].row_stride,
                                                 0, 0,
                                                 transfer->box.width,
                                                 transfer->box.height,

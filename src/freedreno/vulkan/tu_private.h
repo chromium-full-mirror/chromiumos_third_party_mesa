@@ -65,6 +65,7 @@
 #include "vk_log.h"
 #include "vk_physical_device.h"
 #include "vk_shader_module.h"
+#include "vk_pipeline_cache.h"
 #include "wsi_common.h"
 
 #include "ir3/ir3_compiler.h"
@@ -239,11 +240,6 @@ struct tu_physical_device
    /* Address space and global fault count for this local_fd with DRM backend */
    uint64_t fault_count;
 
-   /* This is the drivers on-disk cache used as a fallback as opposed to
-    * the pipeline cache defined by apps.
-    */
-   struct disk_cache *disk_cache;
-
    struct tu_memory_heap heap;
 
    struct vk_sync_type syncobj_type;
@@ -270,6 +266,7 @@ enum tu_debug_flags
    TU_DEBUG_UNALIGNED_STORE = 1 << 15,
    TU_DEBUG_LAYOUT = 1 << 16,
    TU_DEBUG_LOG_SKIP_GMEM_OPS = 1 << 17,
+   TU_DEBUG_PERF = 1 << 18,
 };
 
 struct tu_instance
@@ -520,7 +517,7 @@ struct tu_device
    struct ir3_compiler *compiler;
 
    /* Backup in-memory cache to be used if the app doesn't provide one */
-   struct tu_pipeline_cache *mem_cache;
+   struct vk_pipeline_cache *mem_cache;
 
 #define MIN_SCRATCH_BO_SIZE_LOG2 12 /* A page */
 
@@ -556,7 +553,8 @@ struct tu_device
    /* Lazily allocated, protected by the device mutex. */
    struct tu_bo *tess_bo;
 
-   struct ir3_shader_variant *global_shaders[GLOBAL_SH_COUNT];
+   struct ir3_shader_variant *global_shader_variants[GLOBAL_SH_COUNT];
+   struct ir3_shader *global_shaders[GLOBAL_SH_COUNT];
    uint64_t global_shader_va[GLOBAL_SH_COUNT];
 
    uint32_t vsc_draw_strm_pitch;
@@ -1365,6 +1363,24 @@ struct tu_shader
    bool multi_pos_output;
 };
 
+struct tu_shader_key {
+   unsigned multiview_mask;
+   enum ir3_wavesize_option api_wavesize, real_wavesize;
+};
+
+struct tu_compiled_shaders
+{
+   struct vk_pipeline_cache_object base;
+
+   struct tu_push_constant_range push_consts[MESA_SHADER_STAGES];
+   uint8_t active_desc_sets;
+   bool multi_pos_output;
+
+   struct ir3_shader_variant *variants[MESA_SHADER_STAGES];
+};
+
+extern const struct vk_pipeline_cache_object_ops tu_shaders_ops;
+
 bool
 tu_nir_lower_multiview(nir_shader *nir, uint32_t mask, bool *multi_pos_output,
                        struct tu_device *dev);
@@ -1378,8 +1394,7 @@ tu_spirv_to_nir(struct tu_device *dev,
 struct tu_shader *
 tu_shader_create(struct tu_device *dev,
                  nir_shader *nir,
-                 const VkPipelineShaderStageCreateInfo *stage_info,
-                 unsigned multiview_mask,
+                 const struct tu_shader_key *key,
                  struct tu_pipeline_layout *layout,
                  const VkAllocationCallbacks *alloc);
 

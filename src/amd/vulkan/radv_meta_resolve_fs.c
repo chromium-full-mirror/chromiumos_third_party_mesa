@@ -619,7 +619,7 @@ radv_get_resolve_pipeline(struct radv_cmd_buffer *cmd_buffer, struct radv_image_
                           struct radv_image_view *dst_iview)
 {
    struct radv_device *device = cmd_buffer->device;
-   unsigned fs_key = radv_format_meta_fs_key(cmd_buffer->device, dst_iview->vk_format);
+   unsigned fs_key = radv_format_meta_fs_key(cmd_buffer->device, dst_iview->vk.format);
    const uint32_t samples = src_iview->image->info.samples;
    const uint32_t samples_log2 = ffs(samples) - 1;
    VkPipeline *pipeline;
@@ -815,11 +815,11 @@ radv_meta_resolve_fragment_image(struct radv_cmd_buffer *cmd_buffer, struct radv
    const uint32_t dest_base_layer =
       radv_meta_get_iview_layer(dest_image, &region->dstSubresource, &region->dstOffset);
 
-   const struct VkExtent3D extent = radv_sanitize_image_extent(src_image->type, region->extent);
+   const struct VkExtent3D extent = radv_sanitize_image_extent(src_image->vk.image_type, region->extent);
    const struct VkOffset3D srcOffset =
-      radv_sanitize_image_offset(src_image->type, region->srcOffset);
+      radv_sanitize_image_offset(src_image->vk.image_type, region->srcOffset);
    const struct VkOffset3D dstOffset =
-      radv_sanitize_image_offset(dest_image->type, region->dstOffset);
+      radv_sanitize_image_offset(dest_image->vk.image_type, region->dstOffset);
 
    for (uint32_t layer = 0; layer < region->srcSubresource.layerCount; ++layer) {
 
@@ -829,7 +829,7 @@ radv_meta_resolve_fragment_image(struct radv_cmd_buffer *cmd_buffer, struct radv
                               .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                               .image = radv_image_to_handle(src_image),
                               .viewType = radv_meta_get_view_type(src_image),
-                              .format = src_image->vk_format,
+                              .format = src_image->vk.format,
                               .subresourceRange =
                                  {
                                     .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -839,7 +839,7 @@ radv_meta_resolve_fragment_image(struct radv_cmd_buffer *cmd_buffer, struct radv
                                     .layerCount = 1,
                                  },
                            },
-                           NULL);
+                           0, NULL);
 
       struct radv_image_view dest_iview;
       radv_image_view_init(&dest_iview, cmd_buffer->device,
@@ -847,7 +847,7 @@ radv_meta_resolve_fragment_image(struct radv_cmd_buffer *cmd_buffer, struct radv
                               .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                               .image = radv_image_to_handle(dest_image),
                               .viewType = radv_meta_get_view_type(dest_image),
-                              .format = dest_image->vk_format,
+                              .format = dest_image->vk.format,
                               .subresourceRange =
                                  {
                                     .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -857,7 +857,7 @@ radv_meta_resolve_fragment_image(struct radv_cmd_buffer *cmd_buffer, struct radv
                                     .layerCount = 1,
                                  },
                            },
-                           NULL);
+                           0, NULL);
 
       const VkRenderingAttachmentInfo color_att = {
          .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -997,7 +997,7 @@ radv_depth_stencil_resolve_subpass_fs(struct radv_cmd_buffer *cmd_buffer,
                            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                            .image = radv_image_to_handle(src_image),
                            .viewType = radv_meta_get_view_type(src_image),
-                           .format = src_iview->vk_format,
+                           .format = src_iview->vk.format,
                            .subresourceRange =
                               {
                                  .aspectMask = aspects,
@@ -1007,7 +1007,7 @@ radv_depth_stencil_resolve_subpass_fs(struct radv_cmd_buffer *cmd_buffer,
                                  .layerCount = 1,
                               },
                         },
-                        NULL);
+                        0, NULL);
 
    emit_depth_stencil_resolve(cmd_buffer, &tsrc_iview, dst_iview,
                               &(VkExtent2D){fb->width, fb->height}, aspects, resolve_mode);

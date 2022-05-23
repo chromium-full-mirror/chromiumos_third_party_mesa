@@ -167,8 +167,8 @@ void si_vce_52_get_param(struct rvce_encoder *enc, struct pipe_h264_enc_picture_
    enc->enc_pic.i_remain = pic->i_remain;
    enc->enc_pic.gop_cnt = pic->gop_cnt;
    enc->enc_pic.pic_order_cnt = pic->pic_order_cnt;
-   enc->enc_pic.ref_idx_l0 = pic->ref_idx_l0;
-   enc->enc_pic.ref_idx_l1 = pic->ref_idx_l1;
+   enc->enc_pic.ref_idx_l0 = pic->ref_idx_l0_list[0];
+   enc->enc_pic.ref_idx_l1 = pic->ref_idx_l1_list[0];
    enc->enc_pic.not_referenced = false;
    if (enc->dual_inst)
       enc->enc_pic.addrmode_arraymode_disrdo_distwoinstants = 0x00000201;
@@ -190,7 +190,7 @@ static void create(struct rvce_encoder *enc)
    RVCE_CS(enc->base.width);  // encImageWidth
    RVCE_CS(enc->base.height); // encImageHeight
 
-   if (sscreen->info.chip_class < GFX9) {
+   if (sscreen->info.gfx_level < GFX9) {
       RVCE_CS(enc->luma->u.legacy.level[0].nblk_x * enc->luma->bpe);     // encRefPicLumaPitch
       RVCE_CS(enc->chroma->u.legacy.level[0].nblk_x * enc->chroma->bpe); // encRefPicChromaPitch
       RVCE_CS(align(enc->luma->u.legacy.level[0].nblk_y, 16) / 8);       // encRefYHeightInQw
@@ -261,7 +261,7 @@ static void encode(struct rvce_encoder *enc)
    RVCE_CS(enc->enc_pic.eo.end_of_sequence);
    RVCE_CS(enc->enc_pic.eo.end_of_stream);
 
-   if (sscreen->info.chip_class < GFX9) {
+   if (sscreen->info.gfx_level < GFX9) {
       RVCE_READ(enc->handle, RADEON_DOMAIN_VRAM,
                 (uint64_t)enc->luma->u.legacy.level[0].offset_256B * 256); // inputPictureLumaAddressHi/Lo
       RVCE_READ(enc->handle, RADEON_DOMAIN_VRAM,

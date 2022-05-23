@@ -28,6 +28,7 @@
 #include "d3d12_context.h"
 #include "d3d12_debug.h"
 #include "d3d12_fence.h"
+#include "d3d12_video_screen.h"
 #include "d3d12_format.h"
 #include "d3d12_residency.h"
 #include "d3d12_resource.h"
@@ -254,9 +255,6 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_PCI_FUNCTION:
       return 0; /* TODO: figure these out */
 
-   case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
-      return 0; /* not sure */
-
    case PIPE_CAP_FLATSHADE:
    case PIPE_CAP_ALPHA_TEST:
    case PIPE_CAP_TWO_SIDED_COLOR:
@@ -461,14 +459,10 @@ d3d12_get_shader_param(struct pipe_screen *pscreen,
 
    case PIPE_SHADER_CAP_DROUND_SUPPORTED:
    case PIPE_SHADER_CAP_DFRACEXP_DLDEXP_SUPPORTED:
-   case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
       return 0; /* not implemented */
 
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       return 0; /* no idea */
-
-   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-      return 32; /* arbitrary */
 
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
       return
@@ -487,10 +481,7 @@ d3d12_get_shader_param(struct pipe_screen *pscreen,
           screen->opts.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_3) ?
          PIPE_MAX_SHADER_IMAGES : D3D12_PS_CS_UAV_REGISTER_COUNT;
 
-   case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
-   case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
-      return 0; /* unsure */
-
+   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
    case PIPE_SHADER_CAP_LDEXP_SUPPORTED:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
@@ -746,6 +737,7 @@ d3d12_destroy_screen(struct d3d12_screen *screen)
    slab_destroy_parent(&screen->transfer_pool);
    mtx_destroy(&screen->submit_mutex);
    mtx_destroy(&screen->descriptor_pool_mutex);
+   glsl_type_singleton_decref();
    FREE(screen);
 }
 
@@ -1248,6 +1240,7 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter)
 
    d3d12_screen_fence_init(&screen->base);
    d3d12_screen_resource_init(&screen->base);
+   d3d12_screen_video_init(&screen->base);
    slab_create_parent(&screen->transfer_pool, sizeof(struct d3d12_transfer), 16);
 
    struct pb_desc desc;
@@ -1316,5 +1309,6 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter)
    if (!screen->opts.DoublePrecisionFloatShaderOps)
       screen->nir_options.lower_doubles_options = (nir_lower_doubles_options)~0;
 
+   glsl_type_singleton_init_or_ref();
    return true;
 }

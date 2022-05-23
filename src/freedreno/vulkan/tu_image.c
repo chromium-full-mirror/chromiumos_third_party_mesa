@@ -176,6 +176,9 @@ tu_image_view_init(struct tu_image_view *iview,
    const struct tu_sampler_ycbcr_conversion *conversion = ycbcr_conversion ?
       tu_sampler_ycbcr_conversion_from_handle(ycbcr_conversion->conversion) : NULL;
 
+   const struct VkImageViewMinLodCreateInfoEXT *min_lod =
+      vk_find_struct_const(pCreateInfo->pNext, IMAGE_VIEW_MIN_LOD_CREATE_INFO_EXT);
+
    iview->image = image;
 
    const struct fdl_layout *layouts[3];
@@ -214,6 +217,7 @@ tu_image_view_init(struct tu_image_view *iview,
    args.base_miplevel = range->baseMipLevel;
    args.layer_count = tu_get_layerCount(image, range);
    args.level_count = tu_get_levelCount(image, range);
+   args.min_lod_clamp = min_lod ? min_lod->minLod : 0.f;
    args.format = tu_format_for_aspect(format, aspect_mask);
    vk_component_mapping_to_pipe_swizzle(pCreateInfo->components, args.swiz);
    if (conversion) {
@@ -353,8 +357,7 @@ tu_image_init(struct tu_device *device, struct tu_image *image,
    image->layer_count = pCreateInfo->arrayLayers;
 
    enum a6xx_tile_mode tile_mode = TILE6_3;
-   bool ubwc_enabled =
-      !(device->physical_device->instance->debug_flags & TU_DEBUG_NOUBWC);
+   bool ubwc_enabled = true;
 
    /* use linear tiling if requested */
    if (pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR || modifier == DRM_FORMAT_MOD_LINEAR) {
@@ -446,7 +449,10 @@ tu_image_init(struct tu_device *device, struct tu_image *image,
       ubwc_enabled = false;
 
    /* expect UBWC enabled if we asked for it */
-   assert(modifier != DRM_FORMAT_MOD_QCOM_COMPRESSED || ubwc_enabled);
+   if (modifier == DRM_FORMAT_MOD_QCOM_COMPRESSED)
+      assert(ubwc_enabled);
+   else if (device->physical_device->instance->debug_flags & TU_DEBUG_NOUBWC)
+      ubwc_enabled = false;
 
    /* Non-UBWC tiled R8G8 is probably buggy since media formats are always
     * either linear or UBWC. There is no simple test to reproduce the bug.

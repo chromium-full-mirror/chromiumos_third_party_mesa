@@ -888,7 +888,6 @@ enum pipe_cap
    PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS,
    PIPE_CAP_SHADER_CAN_READ_OUTPUTS,
    PIPE_CAP_NATIVE_FENCE_FD,
-   PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY,
    PIPE_CAP_GLSL_TESS_LEVELS_AS_INPUTS,
    PIPE_CAP_FBFETCH,
    PIPE_CAP_TGSI_MUL_ZERO_WINS,
@@ -942,7 +941,6 @@ enum pipe_cap
    PIPE_CAP_MAX_VARYINGS,
    PIPE_CAP_COMPUTE_GRID_INFO_LAST_BLOCK,
    PIPE_CAP_COMPUTE_SHADER_DERIVATIVES,
-   PIPE_CAP_TGSI_SKIP_SHRINK_IO_ARRAYS,
    PIPE_CAP_IMAGE_LOAD_FORMATTED,
    PIPE_CAP_IMAGE_STORE_FORMATTED,
    PIPE_CAP_THROTTLE,
@@ -1102,14 +1100,11 @@ enum pipe_shader_cap
    PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS,
    PIPE_SHADER_CAP_DROUND_SUPPORTED, /* all rounding modes */
    PIPE_SHADER_CAP_DFRACEXP_DLDEXP_SUPPORTED,
-   PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED,
    PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE,
    PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT,
    PIPE_SHADER_CAP_MAX_SHADER_BUFFERS,
    PIPE_SHADER_CAP_SUPPORTED_IRS,
    PIPE_SHADER_CAP_MAX_SHADER_IMAGES,
-   PIPE_SHADER_CAP_LOWER_IF_THRESHOLD,
-   PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS,
    PIPE_SHADER_CAP_LDEXP_SUPPORTED,
    PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS,
    PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS,
@@ -1215,17 +1210,22 @@ struct pipe_query_data_timestamp_disjoint
  */
 struct pipe_query_data_pipeline_statistics
 {
-   uint64_t ia_vertices;    /**< Num vertices read by the vertex fetcher. */
-   uint64_t ia_primitives;  /**< Num primitives read by the vertex fetcher. */
-   uint64_t vs_invocations; /**< Num vertex shader invocations. */
-   uint64_t gs_invocations; /**< Num geometry shader invocations. */
-   uint64_t gs_primitives;  /**< Num primitives output by a geometry shader. */
-   uint64_t c_invocations;  /**< Num primitives sent to the rasterizer. */
-   uint64_t c_primitives;   /**< Num primitives that were rendered. */
-   uint64_t ps_invocations; /**< Num pixel shader invocations. */
-   uint64_t hs_invocations; /**< Num hull shader invocations. */
-   uint64_t ds_invocations; /**< Num domain shader invocations. */
-   uint64_t cs_invocations; /**< Num compute shader invocations. */
+   union {
+      struct {
+         uint64_t ia_vertices;    /**< Num vertices read by the vertex fetcher. */
+         uint64_t ia_primitives;  /**< Num primitives read by the vertex fetcher. */
+         uint64_t vs_invocations; /**< Num vertex shader invocations. */
+         uint64_t gs_invocations; /**< Num geometry shader invocations. */
+         uint64_t gs_primitives;  /**< Num primitives output by a geometry shader. */
+         uint64_t c_invocations;  /**< Num primitives sent to the rasterizer. */
+         uint64_t c_primitives;   /**< Num primitives that were rendered. */
+         uint64_t ps_invocations; /**< Num pixel shader invocations. */
+         uint64_t hs_invocations; /**< Num hull shader invocations. */
+         uint64_t ds_invocations; /**< Num domain shader invocations. */
+         uint64_t cs_invocations; /**< Num compute shader invocations. */
+      };
+      uint64_t counters[11];
+   };
 };
 
 /**
@@ -1386,6 +1386,7 @@ enum pipe_perf_counter_data_type
 };
 
 #define PIPE_UUID_SIZE 16
+#define PIPE_LUID_SIZE 8
 
 #ifdef PIPE_OS_UNIX
 #define PIPE_MEMORY_FD

@@ -320,6 +320,7 @@ struct v3dv_pipeline_cache_stats {
    uint32_t miss;
    uint32_t hit;
    uint32_t count;
+   uint32_t on_disk_hit;
 };
 
 /* Equivalent to gl_shader_stage, but including the coordinate shaders
@@ -631,6 +632,10 @@ struct v3dv_image_view {
     */
    uint8_t texture_shader_state[2][V3DV_TEXTURE_SHADER_STATE_LENGTH];
 };
+
+VkResult v3dv_create_image_view(struct v3dv_device *device,
+                                const VkImageViewCreateInfo *pCreateInfo,
+                                VkImageView *pView);
 
 uint32_t v3dv_layer_offset(const struct v3dv_image *image, uint32_t level, uint32_t layer);
 
@@ -1116,13 +1121,6 @@ struct v3dv_job {
    } csd;
 };
 
-struct v3dv_wait_thread_info {
-   struct v3dv_job *job;
-
-   /* Semaphores info for any postponed jobs after a wait event */
-   struct v3dv_submit_sync_info *sync_info;
-};
-
 void v3dv_job_init(struct v3dv_job *job,
                    enum v3dv_job_type type,
                    struct v3dv_device *device,
@@ -1160,7 +1158,8 @@ v3dv_cmd_buffer_ensure_array_state(struct v3dv_cmd_buffer *cmd_buffer,
                                    uint32_t *alloc_count,
                                    void **ptr);
 
-void v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer);
+void v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer,
+                                   bool indexed, bool indirect);
 
 /* FIXME: only used on v3dv_cmd_buffer and v3dvx_cmd_buffer, perhaps move to a
  * cmd_buffer specific header?
@@ -1253,7 +1252,8 @@ struct v3dv_cmd_buffer_state {
     * process.
     */
    bool has_barrier;
-   bool has_bcl_barrier;
+   VkAccessFlags bcl_barrier_buffer_access;
+   VkAccessFlags bcl_barrier_image_access;
 
    /* Secondary command buffer state */
    struct {
@@ -1691,6 +1691,8 @@ struct v3dv_pipeline_layout {
 
    uint32_t dynamic_offset_count;
    uint32_t push_constant_size;
+
+   unsigned char sha1[20];
 };
 
 /*
@@ -1835,6 +1837,12 @@ struct v3dv_pipeline_shared_data {
    struct v3dv_bo *assembly_bo;
 };
 
+struct v3dv_pipeline_executable_data {
+   enum broadcom_shader_stage stage;
+   char *nir_str;
+   char *qpu_str;
+};
+
 struct v3dv_pipeline {
    struct vk_object_base base;
 
@@ -1905,7 +1913,7 @@ struct v3dv_pipeline {
 
    struct v3dv_pipeline_shared_data *shared_data;
 
-   /* It is the combined stages sha1, plus the pipeline key sha1. */
+   /* It is the combined stages sha1, layout sha1, plus the pipeline key sha1. */
    unsigned char sha1[20];
 
    /* In general we can reuse v3dv_device->default_attribute_float, so note
@@ -1942,6 +1950,12 @@ struct v3dv_pipeline {
       bool enabled;
       bool is_z16;
    } depth_bias;
+
+   struct {
+      void *mem_ctx;
+      bool has_data;
+      struct util_dynarray data; /* Array of v3dv_pipeline_executable_data */
+   } executables;
 
    /* Packets prepacked during pipeline creation
     */

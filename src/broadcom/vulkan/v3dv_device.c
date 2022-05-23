@@ -137,8 +137,12 @@ get_device_extensions(const struct v3dv_physical_device *device,
       .KHR_maintenance2                    = true,
       .KHR_maintenance3                    = true,
       .KHR_multiview                       = true,
+      .KHR_pipeline_executable_properties  = true,
+      .KHR_separate_depth_stencil_layouts  = true,
+      .KHR_shader_float_controls           = true,
       .KHR_shader_non_semantic_info        = true,
       .KHR_sampler_mirror_clamp_to_edge    = true,
+      .KHR_spirv_1_4                       = true,
       .KHR_storage_buffer_storage_class    = true,
       .KHR_timeline_semaphore              = true,
       .KHR_uniform_buffer_standard_layout  = true,
@@ -162,6 +166,7 @@ get_device_extensions(const struct v3dv_physical_device *device,
       .EXT_pipeline_creation_feedback      = true,
       .EXT_private_data                    = true,
       .EXT_provoking_vertex                = true,
+      .EXT_separate_stencil_usage          = true,
       .EXT_vertex_attribute_divisor        = true,
 #ifdef ANDROID
       .ANDROID_native_buffer               = true,
@@ -1168,6 +1173,21 @@ v3dv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
        * not lead to best performance so let's just not support it.
        */
       .scalarBlockLayout = false,
+      /* This tells applications 2 things:
+       *
+       * 1. If they can select just one aspect for barriers. For us barriers
+       *    decide if we need to split a job and we don't care if it is only
+       *    for one of the aspects of the image or both, so we don't really
+       *    benefit from seeing barriers that select just one aspect.
+       *
+       * 2. If they can program different layouts for each aspect. We
+       *    generally don't care about layouts, so again, we don't get any
+       *    benefits from this to limit the scope of image layout transitions.
+       *
+       * Still, Vulkan 1.2 requires this feature to be supported so we
+       * advertise it even though we don't really take advantage of it.
+       */
+      .separateDepthStencilLayouts = true,
       .storageBuffer8BitAccess = true,
       .storagePushConstant8 = true,
       .imagelessFramebuffer = true,
@@ -1238,6 +1258,13 @@ v3dv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
           VkPhysicalDeviceColorWriteEnableFeaturesEXT *features = (void *) ext;
           features->colorWriteEnable = true;
           break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR: {
+         VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR *features =
+            (VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR *) ext;
+         features->pipelineExecutableInfo = true;
+         break;
       }
 
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT: {
@@ -1532,6 +1559,24 @@ v3dv_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
       .independentResolveNone = false,
       .independentResolve = false,
       .maxTimelineSemaphoreValueDifference = UINT64_MAX,
+
+      .denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL,
+      .roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL,
+      .shaderSignedZeroInfNanPreserveFloat16 = true,
+      .shaderSignedZeroInfNanPreserveFloat32 = true,
+      .shaderSignedZeroInfNanPreserveFloat64 = false,
+      .shaderDenormPreserveFloat16 = true,
+      .shaderDenormPreserveFloat32 = true,
+      .shaderDenormPreserveFloat64 = false,
+      .shaderDenormFlushToZeroFloat16 = false,
+      .shaderDenormFlushToZeroFloat32 = false,
+      .shaderDenormFlushToZeroFloat64 = false,
+      .shaderRoundingModeRTEFloat16 = true,
+      .shaderRoundingModeRTEFloat32 = true,
+      .shaderRoundingModeRTEFloat64 = false,
+      .shaderRoundingModeRTZFloat16 = false,
+      .shaderRoundingModeRTZFloat32 = false,
+      .shaderRoundingModeRTZFloat64 = false,
    };
    memset(vk12.driverName, 0, VK_MAX_DRIVER_NAME_SIZE_KHR);
    snprintf(vk12.driverName, VK_MAX_DRIVER_NAME_SIZE_KHR, "V3DV Mesa");

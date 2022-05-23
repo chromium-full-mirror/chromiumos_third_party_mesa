@@ -295,7 +295,7 @@ struct pipe_video_codec *radeon_uvd_create_encoder(struct pipe_context *context,
    enc->screen = context->screen;
    enc->ws = ws;
 
-   if (!ws->cs_create(&enc->cs, sctx->ctx, RING_UVD_ENC, radeon_uvd_enc_cs_flush, enc, false)) {
+   if (!ws->cs_create(&enc->cs, sctx->ctx, AMD_IP_UVD_ENC, radeon_uvd_enc_cs_flush, enc, false)) {
       RVID_ERR("Can't get command submission context.\n");
       goto error;
    }
@@ -321,7 +321,7 @@ struct pipe_video_codec *radeon_uvd_create_encoder(struct pipe_context *context,
 
    get_buffer(((struct vl_video_buffer *)tmp_buf)->resources[0], NULL, &tmp_surf);
 
-   cpb_size = (sscreen->info.chip_class < GFX9)
+   cpb_size = (sscreen->info.gfx_level < GFX9)
                  ? align(tmp_surf->u.legacy.level[0].nblk_x * tmp_surf->bpe, 128) *
                       align(tmp_surf->u.legacy.level[0].nblk_y, 32)
                  : align(tmp_surf->u.gfx9.surf_pitch * tmp_surf->bpe, 256) *

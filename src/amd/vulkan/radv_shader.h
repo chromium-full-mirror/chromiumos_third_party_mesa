@@ -39,6 +39,8 @@
 #include "vulkan/runtime/vk_shader_module.h"
 #include "vulkan/vulkan.h"
 
+#include "aco_shader_info.h"
+
 #define RADV_VERT_ATTRIB_MAX MAX2(VERT_ATTRIB_MAX, VERT_ATTRIB_GENERIC0 + MAX_VERTEX_ATTRIBS)
 
 struct radv_physical_device;
@@ -46,6 +48,7 @@ struct radv_device;
 struct radv_pipeline;
 struct radv_pipeline_cache;
 struct radv_pipeline_key;
+struct radv_shader_args;
 struct radv_vs_input_state;
 struct radv_shader_args;
 
@@ -64,6 +67,7 @@ struct radv_pipeline_key {
    uint32_t adjust_frag_coord_z : 1;
    uint32_t disable_aniso_single_level : 1;
    uint32_t disable_sinking_load_input_fs : 1;
+   uint32_t image_2d_view_of_3d : 1;
 
    struct {
       uint32_t instance_rate_inputs;
@@ -96,6 +100,9 @@ struct radv_pipeline_key {
       bool lower_discard_to_demote;
       uint8_t enable_mrt_output_nan_fixup;
       bool force_vrs_enabled;
+
+      /* Used to export alpha through MRTZ for alpha-to-coverage (GFX11+). */
+      bool alpha_to_coverage_via_mrtz;
    } ps;
 
    struct {
@@ -105,11 +112,6 @@ struct radv_pipeline_key {
       uint8_t compute_subgroup_size;
       bool require_full_subgroups;
    } cs;
-};
-
-enum radv_compiler_debug_level {
-   RADV_COMPILER_DEBUG_LEVEL_PERFWARN,
-   RADV_COMPILER_DEBUG_LEVEL_ERROR,
 };
 
 struct radv_nir_compiler_options {
@@ -124,12 +126,12 @@ struct radv_nir_compiler_options {
    uint8_t enable_mrt_output_nan_fixup;
    bool wgp_mode;
    enum radeon_family family;
-   enum chip_class chip_class;
-   const struct radeon_info *info;
+   enum amd_gfx_level gfx_level;
    uint32_t address32_hi;
+   bool has_3d_cube_border_color_mipmap;
 
    struct {
-      void (*func)(void *private_data, enum radv_compiler_debug_level level, const char *message);
+      void (*func)(void *private_data, enum aco_compiler_debug_level level, const char *message);
       void *private_data;
    } debug;
 };
@@ -145,7 +147,8 @@ enum radv_ud_index {
    AC_UD_NGG_CULLING_SETTINGS = 7,
    AC_UD_NGG_VIEWPORT = 8,
    AC_UD_FORCE_VRS_RATES = 9,
-   AC_UD_SHADER_START = 10,
+   AC_UD_TASK_RING_ENTRY = 10,
+   AC_UD_SHADER_START = 11,
    AC_UD_VS_VERTEX_BUFFERS = AC_UD_SHADER_START,
    AC_UD_VS_BASE_VERTEX_START_INSTANCE,
    AC_UD_VS_PROLOG_INPUTS,
@@ -153,7 +156,10 @@ enum radv_ud_index {
    AC_UD_PS_MAX_UD,
    AC_UD_CS_GRID_SIZE = AC_UD_SHADER_START,
    AC_UD_CS_SBT_DESCRIPTORS,
-   AC_UD_CS_RAY_LAUNCH_SIZE,
+   AC_UD_CS_RAY_LAUNCH_SIZE_ADDR,
+   AC_UD_CS_TASK_RING_OFFSETS,
+   AC_UD_CS_TASK_DRAW_ID,
+   AC_UD_CS_TASK_IB,
    AC_UD_CS_MAX_UD,
    AC_UD_GS_MAX_UD,
    AC_UD_TCS_MAX_UD,
@@ -201,7 +207,6 @@ struct radv_vs_output_info {
    bool writes_primitive_shading_rate;
    bool writes_primitive_shading_rate_per_primitive;
    bool export_prim_id;
-   bool export_prim_id_per_primitive;
    bool export_clip_dists;
    unsigned pos_exports;
 };
@@ -344,6 +349,7 @@ struct radv_shader_info {
 
       bool uses_sbt;
       bool uses_ray_launch_size;
+      bool uses_task_rings;
    } cs;
    struct {
       uint64_t tes_inputs_read;
@@ -475,7 +481,7 @@ struct radv_shader {
    uint32_t exec_size;
    struct radv_shader_info info;
 
-   /* debug only */
+   /* debug only */
    char *spirv;
    uint32_t spirv_size;
    char *nir_string;
@@ -515,9 +521,13 @@ void radv_nir_apply_pipeline_layout(nir_shader *shader, struct radv_device *devi
 
 struct radv_pipeline_stage;
 
-nir_shader *radv_shader_compile_to_nir(struct radv_device *device,
-                                       const struct radv_pipeline_stage *stage,
-                                       const struct radv_pipeline_key *key);
+nir_shader *radv_shader_spirv_to_nir(struct radv_device *device,
+                                     const struct radv_pipeline_stage *stage,
+                                     const struct radv_pipeline_key *key);
+
+void radv_nir_lower_abi(nir_shader *shader, enum amd_gfx_level gfx_level,
+                        const struct radv_shader_info *info, const struct radv_shader_args *args,
+                        const struct radv_pipeline_key *pl_key, bool use_llvm);
 
 void radv_init_shader_arenas(struct radv_device *device);
 void radv_destroy_shader_arenas(struct radv_device *device);
@@ -537,7 +547,7 @@ struct radv_shader *radv_shader_create(struct radv_device *device,
                                        const struct radv_shader_binary *binary,
                                        bool keep_shader_info, bool from_cache,
                                        const struct radv_shader_args *args);
-struct radv_shader *radv_shader_compile(
+struct radv_shader *radv_shader_nir_to_asm(
    struct radv_device *device, struct radv_pipeline_stage *stage, struct nir_shader *const *shaders,
    int shader_count, const struct radv_pipeline_key *key, bool keep_shader_info, bool keep_statistic_info,
    struct radv_shader_binary **binary_out);
@@ -587,7 +597,7 @@ VkResult radv_dump_shader_stats(struct radv_device *device, struct radv_pipeline
                                 gl_shader_stage stage, FILE *output);
 
 static inline unsigned
-calculate_tess_lds_size(enum chip_class chip_class, unsigned tcs_num_input_vertices,
+calculate_tess_lds_size(enum amd_gfx_level gfx_level, unsigned tcs_num_input_vertices,
                         unsigned tcs_num_output_vertices, unsigned tcs_num_inputs,
                         unsigned tcs_num_patches, unsigned tcs_num_outputs,
                         unsigned tcs_num_patch_outputs)
@@ -604,7 +614,7 @@ calculate_tess_lds_size(enum chip_class chip_class, unsigned tcs_num_input_verti
 
    unsigned lds_size = output_patch0_offset + output_patch_size * tcs_num_patches;
 
-   if (chip_class >= GFX7) {
+   if (gfx_level >= GFX7) {
       assert(lds_size <= 65536);
       lds_size = align(lds_size, 512) / 512;
    } else {
@@ -619,7 +629,7 @@ static inline unsigned
 get_tcs_num_patches(unsigned tcs_num_input_vertices, unsigned tcs_num_output_vertices,
                     unsigned tcs_num_inputs, unsigned tcs_num_outputs,
                     unsigned tcs_num_patch_outputs, unsigned tess_offchip_block_dw_size,
-                    enum chip_class chip_class, enum radeon_family family)
+                    enum amd_gfx_level gfx_level, enum radeon_family family)
 {
    uint32_t input_vertex_size = tcs_num_inputs * 16;
    uint32_t input_patch_size = tcs_num_input_vertices * input_vertex_size;
@@ -642,7 +652,7 @@ get_tcs_num_patches(unsigned tcs_num_input_vertices, unsigned tcs_num_output_ver
     *
     * Test: dEQP-VK.tessellation.shader_input_output.barrier
     */
-   if (chip_class >= GFX7 && family != CHIP_STONEY)
+   if (gfx_level >= GFX7 && family != CHIP_STONEY)
       hardware_lds_size = 65536;
 
    if (input_patch_size + output_patch_size)
@@ -656,7 +666,7 @@ get_tcs_num_patches(unsigned tcs_num_input_vertices, unsigned tcs_num_output_ver
    num_patches = MIN2(num_patches, 40);
 
    /* GFX6 bug workaround - limit LS-HS threadgroups to only one wave. */
-   if (chip_class == GFX6) {
+   if (gfx_level == GFX6) {
       unsigned one_wave = 64 / MAX2(tcs_num_input_vertices, tcs_num_output_vertices);
       num_patches = MIN2(num_patches, one_wave);
    }

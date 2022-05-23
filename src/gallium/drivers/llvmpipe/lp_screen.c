@@ -215,7 +215,7 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return lscreen->use_tgsi ? 330 : 450;
    }
    case PIPE_CAP_COMPUTE:
-      return GALLIVM_HAVE_CORO;
+      return GALLIVM_COROUTINES;
    case PIPE_CAP_USER_VERTEX_BUFFERS:
       return 1;
    case PIPE_CAP_TGSI_TEXCOORD:
@@ -329,7 +329,6 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_PCI_BUS:
    case PIPE_CAP_PCI_DEVICE:
    case PIPE_CAP_PCI_FUNCTION:
-   case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
    case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
       return 0;
 
@@ -394,7 +393,7 @@ llvmpipe_get_shader_param(struct pipe_screen *screen,
    case PIPE_SHADER_TESS_CTRL:
    case PIPE_SHADER_TESS_EVAL:
       /* Tessellation shader needs llvm coroutines support */
-      if (!GALLIVM_HAVE_CORO || lscreen->use_tgsi)
+      if (!GALLIVM_COROUTINES || lscreen->use_tgsi)
          return 0;
       FALLTHROUGH;
    case PIPE_SHADER_VERTEX:
@@ -504,10 +503,10 @@ llvmpipe_get_compute_param(struct pipe_screen *_screen,
       return sizeof(uint64_t);
    case PIPE_COMPUTE_CAP_GRID_DIMENSION:
       if (ret) {
-         uint32_t *grid_dim = ret;
+         uint64_t *grid_dim = ret;
          *grid_dim = 3;
       }
-      return sizeof(uint32_t);
+      return sizeof(uint64_t);
    case PIPE_COMPUTE_CAP_MAX_GLOBAL_SIZE:
       if (ret) {
          uint64_t *max_global_size = ret;

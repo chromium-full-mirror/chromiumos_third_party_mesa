@@ -42,17 +42,9 @@
       dst = temp;                                                \
    } while(0)
 
-VKAPI_ATTR void VKAPI_CALL lvp_DestroyPipeline(
-   VkDevice                                    _device,
-   VkPipeline                                  _pipeline,
-   const VkAllocationCallbacks*                pAllocator)
+void
+lvp_pipeline_destroy(struct lvp_device *device, struct lvp_pipeline *pipeline)
 {
-   LVP_FROM_HANDLE(lvp_device, device, _device);
-   LVP_FROM_HANDLE(lvp_pipeline, pipeline, _pipeline);
-
-   if (!_pipeline)
-      return;
-
    if (pipeline->shader_cso[PIPE_SHADER_VERTEX])
       device->queue.ctx->delete_vs_state(device->queue.ctx, pipeline->shader_cso[PIPE_SHADER_VERTEX]);
    if (pipeline->shader_cso[PIPE_SHADER_FRAGMENT])
@@ -74,7 +66,23 @@ VKAPI_ATTR void VKAPI_CALL lvp_DestroyPipeline(
 
    ralloc_free(pipeline->mem_ctx);
    vk_object_base_finish(&pipeline->base);
-   vk_free2(&device->vk.alloc, pAllocator, pipeline);
+   vk_free(&device->vk.alloc, pipeline);
+}
+
+VKAPI_ATTR void VKAPI_CALL lvp_DestroyPipeline(
+   VkDevice                                    _device,
+   VkPipeline                                  _pipeline,
+   const VkAllocationCallbacks*                pAllocator)
+{
+   LVP_FROM_HANDLE(lvp_device, device, _device);
+   LVP_FROM_HANDLE(lvp_pipeline, pipeline, _pipeline);
+
+   if (!_pipeline)
+      return;
+
+   simple_mtx_lock(&device->queue.pipeline_lock);
+   util_dynarray_append(&device->queue.pipeline_destroys, struct lvp_pipeline*, pipeline);
+   simple_mtx_unlock(&device->queue.pipeline_lock);
 }
 
 static VkResult
@@ -135,17 +143,26 @@ deep_copy_vertex_input_state(void *mem_ctx,
       vk_foreach_struct(ext, src->pNext) {
          switch (ext->sType) {
          case VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT: {
-            VkPipelineVertexInputDivisorStateCreateInfoEXT *ext_src = (VkPipelineVertexInputDivisorStateCreateInfoEXT *)ext;
-            VkPipelineVertexInputDivisorStateCreateInfoEXT *ext_dst = ralloc(mem_ctx, VkPipelineVertexInputDivisorStateCreateInfoEXT);
-
+            const VkPipelineVertexInputDivisorStateCreateInfoEXT *ext_src = (VkPipelineVertexInputDivisorStateCreateInfoEXT *)ext;
+            unsigned n = ext_src->vertexBindingDivisorCount;
+            if (!n)
+               continue;
+            size_t offset = sizeof(VkPipelineVertexInputDivisorStateCreateInfoEXT);
+            char *p = (char *) ralloc_size(mem_ctx, offset + n * sizeof(VkVertexInputBindingDivisorDescriptionEXT));
+            if (!p)
+               return VK_ERROR_OUT_OF_HOST_MEMORY;
+            VkPipelineVertexInputDivisorStateCreateInfoEXT *ext_dst = (VkPipelineVertexInputDivisorStateCreateInfoEXT *)p;
+            VkVertexInputBindingDivisorDescriptionEXT *dst_divisors = (VkVertexInputBindingDivisorDescriptionEXT *)(p + offset);
             ext_dst->sType = ext_src->sType;
-            ext_dst->vertexBindingDivisorCount = ext_src->vertexBindingDivisorCount;
-
-            LVP_PIPELINE_DUP(ext_dst->pVertexBindingDivisors,
-                             ext_src->pVertexBindingDivisors,
-                             VkVertexInputBindingDivisorDescriptionEXT,
-                             ext_src->vertexBindingDivisorCount);
-
+            ext_dst->pNext = NULL;
+            ext_dst->vertexBindingDivisorCount = n;
+            ext_dst->pVertexBindingDivisors = dst_divisors;
+            const VkVertexInputBindingDivisorDescriptionEXT *src_divisors = ext_src->pVertexBindingDivisors;
+            for (unsigned i = 0; i < n; ++i) {
+               uint32_t d = src_divisors[i].divisor;
+               dst_divisors[i].divisor = d ? d : UINT32_MAX;
+               dst_divisors[i].binding = src_divisors[i].binding;
+            }
             dst->pNext = ext_dst;
             break;
          }
@@ -234,7 +251,8 @@ static VkResult
 deep_copy_dynamic_state(void *mem_ctx,
                         VkPipelineDynamicStateCreateInfo *dst,
                         const VkPipelineDynamicStateCreateInfo *src,
-                        VkGraphicsPipelineLibraryFlagsEXT stages)
+                        VkGraphicsPipelineLibraryFlagsEXT stages,
+                        bool has_depth, bool has_stencil)
 {
    dst->sType = src->sType;
    dst->pNext = NULL;
@@ -266,17 +284,21 @@ deep_copy_dynamic_state(void *mem_ctx,
 
       case VK_DYNAMIC_STATE_DEPTH_BIAS:
       case VK_DYNAMIC_STATE_DEPTH_BOUNDS:
-      case VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK:
-      case VK_DYNAMIC_STATE_STENCIL_WRITE_MASK:
-      case VK_DYNAMIC_STATE_STENCIL_REFERENCE:
       case VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT:
       case VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT:
       case VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT:
       case VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE_EXT:
       case VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT:
+         if (has_depth && (stages & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT))
+            states[dst->dynamicStateCount++] = src->pDynamicStates[i];
+         break;
+
+      case VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK:
+      case VK_DYNAMIC_STATE_STENCIL_WRITE_MASK:
+      case VK_DYNAMIC_STATE_STENCIL_REFERENCE:
       case VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT:
       case VK_DYNAMIC_STATE_STENCIL_OP_EXT:
-         if (stages & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT)
+         if (has_stencil && (stages & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT))
             states[dst->dynamicStateCount++] = src->pDynamicStates[i];
          break;
 
@@ -346,6 +368,12 @@ deep_copy_graphics_create_info(void *mem_ctx,
       dst->subpass = src->subpass;
       dst->renderPass = src->renderPass;
       rp_info = vk_get_pipeline_rendering_create_info(src);
+   }
+   bool has_depth = false;
+   bool has_stencil = false;
+   if (rp_info) {
+      has_depth = rp_info->depthAttachmentFormat != VK_FORMAT_UNDEFINED;
+      has_stencil = rp_info->stencilAttachmentFormat != VK_FORMAT_UNDEFINED;
    }
    dst->basePipelineHandle = src->basePipelineHandle;
    dst->basePipelineIndex = src->basePipelineIndex;
@@ -430,14 +458,41 @@ deep_copy_graphics_create_info(void *mem_ctx,
 
    if (shaders & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT) {
       assert(rp_info);
+      bool have_output = (shaders & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT) > 0;
       /* pDepthStencilState */
       if (src->pDepthStencilState && !rasterization_disabled &&
-          (rp_info->depthAttachmentFormat != VK_FORMAT_UNDEFINED ||
-           rp_info->stencilAttachmentFormat != VK_FORMAT_UNDEFINED)) {
+          /*
+             VUID-VkGraphicsPipelineCreateInfo-renderPass-06053
+             * If renderPass is VK_NULL_HANDLE, the pipeline is being created with fragment shader
+               state and fragment output interface state, and either of
+               VkPipelineRenderingCreateInfo::depthAttachmentFormat
+               or
+               VkPipelineRenderingCreateInfo::stencilAttachmentFormat
+               are not VK_FORMAT_UNDEFINED, pDepthStencilState must be a valid pointer to a valid
+               VkPipelineDepthStencilStateCreateInfo structure
+
+             VUID-VkGraphicsPipelineCreateInfo-renderPass-06590
+             * If renderPass is VK_NULL_HANDLE and the pipeline is being created with fragment shader
+               state but not fragment output interface state, pDepthStencilState must be a valid pointer
+               to a valid VkPipelineDepthStencilStateCreateInfo structure
+          */
+          (!have_output || has_depth || has_stencil)) {
          LVP_PIPELINE_DUP(dst->pDepthStencilState,
                           src->pDepthStencilState,
                           VkPipelineDepthStencilStateCreateInfo,
                           1);
+         VkPipelineDepthStencilStateCreateInfo *pDepthStencilState = (void*)dst->pDepthStencilState;
+         if (!has_depth) {
+            pDepthStencilState->depthTestEnable = VK_FALSE;
+            pDepthStencilState->depthWriteEnable = VK_FALSE;
+            pDepthStencilState->depthCompareOp = VK_COMPARE_OP_ALWAYS;
+            pDepthStencilState->depthBoundsTestEnable = VK_FALSE;
+         }
+         if (!has_stencil) {
+            pDepthStencilState->stencilTestEnable = VK_FALSE;
+            memset(&pDepthStencilState->front, 0, sizeof(VkStencilOpState));
+            memset(&pDepthStencilState->back, 0, sizeof(VkStencilOpState));
+         }
       } else
          dst->pDepthStencilState = NULL;
    }
@@ -509,7 +564,7 @@ deep_copy_graphics_create_info(void *mem_ctx,
       }
       if (!dyn_state || !dyn_state->pDynamicStates)
          return VK_ERROR_OUT_OF_HOST_MEMORY;
-      deep_copy_dynamic_state(mem_ctx, dyn_state, src->pDynamicState, shaders);
+      deep_copy_dynamic_state(mem_ctx, dyn_state, src->pDynamicState, shaders, has_depth, has_stencil);
       dst->pDynamicState = dyn_state;
    } else
       dst->pDynamicState = NULL;
@@ -581,7 +636,6 @@ set_image_access(struct lvp_pipeline *pipeline, nir_shader *nir,
    const unsigned size = glsl_type_is_array(var->type) ? glsl_get_aoa_size(var->type) : 1;
    unsigned mask = ((1ull << MAX2(size, 1)) - 1) << var->data.binding;
 
-   nir->info.images_used |= mask;
    if (reads)
       pipeline->access[nir->info.stage].images_read |= mask;
    if (writes)
@@ -849,6 +903,9 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
          .subgroup_basic = true,
          .subgroup_ballot = true,
          .subgroup_quad = true,
+#if LLVM_VERSION_MAJOR >= 10
+         .subgroup_shuffle = true,
+#endif
          .subgroup_vote = true,
          .vk_memory_model = true,
          .vk_memory_model_device_scope = true,
@@ -891,11 +948,13 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
    NIR_PASS_V(nir, nir_opt_deref);
 
    /* Pick off the single entrypoint that we want */
-   foreach_list_typed_safe(nir_function, func, node, &nir->functions) {
-      if (!func->is_entrypoint)
-         exec_node_remove(&func->node);
-   }
-   assert(exec_list_length(&nir->functions) == 1);
+   nir_remove_non_entrypoints(nir);
+
+   struct nir_lower_subgroups_options subgroup_opts = {0};
+   subgroup_opts.lower_quad = true;
+   subgroup_opts.ballot_components = 4;
+   subgroup_opts.ballot_bit_size = 32;
+   NIR_PASS_V(nir, nir_lower_subgroups, &subgroup_opts);
 
    NIR_PASS_V(nir, nir_lower_variable_initializers, ~0);
    NIR_PASS_V(nir, nir_split_var_copies);
@@ -1194,8 +1253,7 @@ static VkResult
 lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
                            struct lvp_device *device,
                            struct lvp_pipeline_cache *cache,
-                           const VkGraphicsPipelineCreateInfo *pCreateInfo,
-                           const VkAllocationCallbacks *alloc)
+                           const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    const VkGraphicsPipelineLibraryCreateInfoEXT *libinfo = vk_find_struct_const(pCreateInfo,
                                                                                 GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT);
@@ -1259,8 +1317,6 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
       }
    }
 
-   if (alloc == NULL)
-      alloc = &device->vk.alloc;
    pipeline->device = device;
 
    for (uint32_t i = 0; i < pCreateInfo->stageCount; i++) {
@@ -1397,7 +1453,6 @@ lvp_graphics_pipeline_create(
    VkDevice _device,
    VkPipelineCache _cache,
    const VkGraphicsPipelineCreateInfo *pCreateInfo,
-   const VkAllocationCallbacks *pAllocator,
    VkPipeline *pPipeline)
 {
    LVP_FROM_HANDLE(lvp_device, device, _device);
@@ -1407,7 +1462,7 @@ lvp_graphics_pipeline_create(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO);
 
-   pipeline = vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8,
+   pipeline = vk_zalloc(&device->vk.alloc, sizeof(*pipeline), 8,
                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pipeline == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -1415,10 +1470,9 @@ lvp_graphics_pipeline_create(
    vk_object_base_init(&device->vk, &pipeline->base,
                        VK_OBJECT_TYPE_PIPELINE);
    uint64_t t0 = os_time_get_nano();
-   result = lvp_graphics_pipeline_init(pipeline, device, cache, pCreateInfo,
-                                       pAllocator);
+   result = lvp_graphics_pipeline_init(pipeline, device, cache, pCreateInfo);
    if (result != VK_SUCCESS) {
-      vk_free2(&device->vk.alloc, pAllocator, pipeline);
+      vk_free(&device->vk.alloc, pipeline);
       return result;
    }
 
@@ -1451,7 +1505,7 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateGraphicsPipelines(
          r = lvp_graphics_pipeline_create(_device,
                                           pipelineCache,
                                           &pCreateInfos[i],
-                                          pAllocator, &pPipelines[i]);
+                                          &pPipelines[i]);
       if (r != VK_SUCCESS) {
          result = r;
          pPipelines[i] = VK_NULL_HANDLE;
@@ -1471,13 +1525,10 @@ static VkResult
 lvp_compute_pipeline_init(struct lvp_pipeline *pipeline,
                           struct lvp_device *device,
                           struct lvp_pipeline_cache *cache,
-                          const VkComputePipelineCreateInfo *pCreateInfo,
-                          const VkAllocationCallbacks *alloc)
+                          const VkComputePipelineCreateInfo *pCreateInfo)
 {
    VK_FROM_HANDLE(vk_shader_module, module,
                    pCreateInfo->stage.module);
-   if (alloc == NULL)
-      alloc = &device->vk.alloc;
    pipeline->device = device;
    pipeline->layout = lvp_pipeline_layout_from_handle(pCreateInfo->layout);
    lvp_pipeline_layout_ref(pipeline->layout);
@@ -1503,7 +1554,6 @@ lvp_compute_pipeline_create(
    VkDevice _device,
    VkPipelineCache _cache,
    const VkComputePipelineCreateInfo *pCreateInfo,
-   const VkAllocationCallbacks *pAllocator,
    VkPipeline *pPipeline)
 {
    LVP_FROM_HANDLE(lvp_device, device, _device);
@@ -1513,7 +1563,7 @@ lvp_compute_pipeline_create(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO);
 
-   pipeline = vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8,
+   pipeline = vk_zalloc(&device->vk.alloc, sizeof(*pipeline), 8,
                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pipeline == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -1521,10 +1571,9 @@ lvp_compute_pipeline_create(
    vk_object_base_init(&device->vk, &pipeline->base,
                        VK_OBJECT_TYPE_PIPELINE);
    uint64_t t0 = os_time_get_nano();
-   result = lvp_compute_pipeline_init(pipeline, device, cache, pCreateInfo,
-                                      pAllocator);
+   result = lvp_compute_pipeline_init(pipeline, device, cache, pCreateInfo);
    if (result != VK_SUCCESS) {
-      vk_free2(&device->vk.alloc, pAllocator, pipeline);
+      vk_free(&device->vk.alloc, pipeline);
       return result;
    }
 
@@ -1557,7 +1606,7 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateComputePipelines(
          r = lvp_compute_pipeline_create(_device,
                                          pipelineCache,
                                          &pCreateInfos[i],
-                                         pAllocator, &pPipelines[i]);
+                                         &pPipelines[i]);
       if (r != VK_SUCCESS) {
          result = r;
          pPipelines[i] = VK_NULL_HANDLE;

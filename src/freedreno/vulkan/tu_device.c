@@ -58,18 +58,29 @@
 
 
 static int
-tu_device_get_cache_uuid(uint16_t family, void *uuid)
+tu_device_get_cache_uuid(struct tu_physical_device *device, void *uuid)
 {
-   uint32_t mesa_timestamp;
-   uint16_t f = family;
+   struct mesa_sha1 ctx;
+   unsigned char sha1[20];
+   /* Note: IR3_SHADER_DEBUG also affects compilation, but it's not
+    * initialized until after compiler creation so we have to add it to the
+    * shader hash instead, since the compiler is only created with the logical
+    * device.
+    */
+   uint64_t driver_flags = device->instance->debug_flags & TU_DEBUG_NOMULTIPOS;
+   uint16_t family = fd_dev_gpu_id(&device->dev_id);
+
    memset(uuid, 0, VK_UUID_SIZE);
-   if (!disk_cache_get_function_timestamp(tu_device_get_cache_uuid,
-                                          &mesa_timestamp))
+   _mesa_sha1_init(&ctx);
+
+   if (!disk_cache_get_function_identifier(tu_device_get_cache_uuid, &ctx))
       return -1;
 
-   memcpy(uuid, &mesa_timestamp, 4);
-   memcpy((char *) uuid + 4, &f, 2);
-   snprintf((char *) uuid + 6, VK_UUID_SIZE - 10, "tu");
+   _mesa_sha1_update(&ctx, &family, sizeof(family));
+   _mesa_sha1_update(&ctx, &driver_flags, sizeof(driver_flags));
+   _mesa_sha1_final(&ctx, sha1);
+
+   memcpy(uuid, sha1, VK_UUID_SIZE);
    return 0;
 }
 
@@ -204,6 +215,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .EXT_subgroup_size_control = true,
       .EXT_image_robustness = true,
       .EXT_primitives_generated_query = true,
+      .EXT_image_view_min_lod = true,
 #ifndef TU_USE_KGSL
       .EXT_physical_device_drm = true,
 #endif
@@ -217,6 +229,11 @@ get_device_extensions(const struct tu_physical_device *device,
       .VALVE_mutable_descriptor_type = true,
    };
 }
+
+static const struct vk_pipeline_cache_object_ops *const cache_import_ops[] = {
+   &tu_shaders_ops,
+   NULL,
+};
 
 VkResult
 tu_physical_device_init(struct tu_physical_device *device,
@@ -257,18 +274,11 @@ tu_physical_device_init(struct tu_physical_device *device,
                                  "device %s is unsupported", device->name);
       goto fail_free_name;
    }
-   if (tu_device_get_cache_uuid(fd_dev_gpu_id(&device->dev_id), device->cache_uuid)) {
+   if (tu_device_get_cache_uuid(device, device->cache_uuid)) {
       result = vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
                                  "cannot generate UUID");
       goto fail_free_name;
    }
-
-   /* The gpu id is already embedded in the uuid so we just pass "tu"
-    * when creating the cache.
-    */
-   char buf[VK_UUID_SIZE * 2 + 1];
-   disk_cache_format_hex_id(buf, device->cache_uuid, VK_UUID_SIZE * 2);
-   device->disk_cache = disk_cache_create(device->name, buf, 0);
 
    fd_get_driver_uuid(device->driver_uuid);
    fd_get_device_uuid(device->device_uuid, &device->dev_id);
@@ -286,21 +296,28 @@ tu_physical_device_init(struct tu_physical_device *device,
                                     &supported_extensions,
                                     &dispatch_table);
    if (result != VK_SUCCESS)
-      goto fail_free_cache;
+      goto fail_free_name;
 
 #if TU_HAS_SURFACE
    result = tu_wsi_init(device);
    if (result != VK_SUCCESS) {
       vk_startup_errorf(instance, result, "WSI init failure");
       vk_physical_device_finish(&device->vk);
-      goto fail_free_cache;
+      goto fail_free_name;
    }
 #endif
 
+   /* The gpu id is already embedded in the uuid so we just pass "tu"
+    * when creating the cache.
+    */
+   char buf[VK_UUID_SIZE * 2 + 1];
+   disk_cache_format_hex_id(buf, device->cache_uuid, VK_UUID_SIZE * 2);
+   device->vk.disk_cache = disk_cache_create(device->name, buf, 0);
+
+   device->vk.pipeline_cache_import_ops = cache_import_ops;
+
    return VK_SUCCESS;
 
-fail_free_cache:
-   disk_cache_destroy(device->disk_cache);
 fail_free_name:
    vk_free(&instance->vk.alloc, (void *)device->name);
    return result;
@@ -313,7 +330,6 @@ tu_physical_device_finish(struct tu_physical_device *device)
    tu_wsi_finish(device);
 #endif
 
-   disk_cache_destroy(device->disk_cache);
    close(device->local_fd);
    if (device->master_fd != -1)
       close(device->master_fd);
@@ -334,6 +350,7 @@ static const struct debug_control tu_debug_options[] = {
    { "noubwc", TU_DEBUG_NOUBWC },
    { "nomultipos", TU_DEBUG_NOMULTIPOS },
    { "nolrz", TU_DEBUG_NOLRZ },
+   { "perf", TU_DEBUG_PERF },
    { "perfc", TU_DEBUG_PERFC },
    { "flushall", TU_DEBUG_FLUSHALL },
    { "syncdraw", TU_DEBUG_SYNCDRAW },
@@ -849,6 +866,12 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          features->primitivesGeneratedQueryWithNonZeroStreams = false;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT: {
+         VkPhysicalDeviceImageViewMinLodFeaturesEXT *features =
+            (VkPhysicalDeviceImageViewMinLodFeaturesEXT *)ext;
+         features->minLod = true;
+         break;
+      }
 
       default:
          break;
@@ -1150,7 +1173,7 @@ tu_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
       .framebufferNoAttachmentsSampleCounts = sample_counts,
       .maxColorAttachments = MAX_RTS,
       .sampledImageColorSampleCounts = sample_counts,
-      .sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT,
+      .sampledImageIntegerSampleCounts = sample_counts,
       .sampledImageDepthSampleCounts = sample_counts,
       .sampledImageStencilSampleCounts = sample_counts,
       .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT,
@@ -1771,6 +1794,7 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
                           &(struct ir3_compiler_options) {
                               .robust_ubo_access = robust_buffer_access2,
                               .push_ubo_with_preamble = true,
+                              .disable_cache = true,
                            });
    if (!device->compiler) {
       result = vk_startup_errorf(physical_device->instance,
@@ -1832,16 +1856,11 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    /* initialize to ones so ffs can be used to find unused slots */
    BITSET_ONES(device->custom_border_color);
 
-   VkPipelineCacheCreateInfo ci;
-   ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-   ci.pNext = NULL;
-   ci.flags = 0;
-   ci.pInitialData = NULL;
-   ci.initialDataSize = 0;
-   VkPipelineCache pc;
-   result =
-      tu_CreatePipelineCache(tu_device_to_handle(device), &ci, NULL, &pc);
-   if (result != VK_SUCCESS) {
+   struct vk_pipeline_cache_create_info pcc_info = { };
+   device->mem_cache = vk_pipeline_cache_create(&device->vk, &pcc_info,
+                                                false);
+   if (!device->mem_cache) {
+      result = VK_ERROR_OUT_OF_HOST_MEMORY;
       vk_startup_errorf(device->instance, result, "create pipeline cache failed");
       goto fail_pipeline_cache;
    }
@@ -1910,8 +1929,6 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    }
    pthread_condattr_destroy(&condattr);
 
-   device->mem_cache = tu_pipeline_cache_from_handle(pc);
-
    result = tu_autotune_init(&device->autotune, device);
    if (result != VK_SUCCESS) {
       goto fail_timeline_cond;
@@ -1940,7 +1957,7 @@ fail_prepare_perfcntrs_pass_cs:
 fail_perfcntrs_pass_entries_alloc:
    free(device->perfcntrs_pass_cs);
 fail_perfcntrs_pass_alloc:
-   tu_DestroyPipelineCache(tu_device_to_handle(device), pc, NULL);
+   vk_pipeline_cache_destroy(device->mem_cache, &device->vk.alloc);
 fail_pipeline_cache:
    tu_destroy_clear_blit_shaders(device);
 fail_global_bo_map:
@@ -1990,8 +2007,7 @@ tu_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
 
    ir3_compiler_destroy(device->compiler);
 
-   VkPipelineCache pc = tu_pipeline_cache_to_handle(device->mem_cache);
-   tu_DestroyPipelineCache(tu_device_to_handle(device), pc, NULL);
+   vk_pipeline_cache_destroy(device->mem_cache, &device->vk.alloc);
 
    if (device->perfcntrs_pass_cs) {
       free(device->perfcntrs_pass_cs_entries);
@@ -2595,7 +2611,8 @@ tu_init_sampler(struct tu_device *device,
    if (pCreateInfo->borderColor == VK_BORDER_COLOR_FLOAT_CUSTOM_EXT ||
        pCreateInfo->borderColor == VK_BORDER_COLOR_INT_CUSTOM_EXT) {
       mtx_lock(&device->mutex);
-      border_color = BITSET_FFS(device->custom_border_color);
+      border_color = BITSET_FFS(device->custom_border_color) - 1;
+      assert(border_color < TU_BORDER_COLOR_COUNT);
       BITSET_CLEAR(device->custom_border_color, border_color);
       mtx_unlock(&device->mutex);
       tu6_pack_border_color(device->global_bo->map + gb_offset(bcolor[border_color]),

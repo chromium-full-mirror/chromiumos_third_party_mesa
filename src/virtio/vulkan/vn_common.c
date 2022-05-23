@@ -19,6 +19,8 @@
 #include "venus-protocol/vn_protocol_driver_info.h"
 #include "vk_enum_to_str.h"
 
+#define VN_RELAX_MIN_BASE_SLEEP_US (10)
+
 static const struct debug_control vn_debug_options[] = {
    { "init", VN_DEBUG_INIT },
    { "result", VN_DEBUG_RESULT },
@@ -48,6 +50,10 @@ vn_env_init_once(void)
       debug_get_num_option("VN_DRAW_CMD_BATCH_LIMIT", UINT32_MAX);
    if (!vn_env.draw_cmd_batch_limit)
       vn_env.draw_cmd_batch_limit = UINT32_MAX;
+   vn_env.relax_base_sleep_us = debug_get_num_option(
+      "VN_RELAX_BASE_SLEEP_US", VN_RELAX_MIN_BASE_SLEEP_US);
+   vn_env.relax_base_sleep_us =
+      MAX2(vn_env.relax_base_sleep_us, VN_RELAX_MIN_BASE_SLEEP_US);
 }
 
 void
@@ -55,6 +61,18 @@ vn_env_init(void)
 {
    static once_flag once = ONCE_FLAG_INIT;
    call_once(&once, vn_env_init_once);
+
+   /* log per VkInstance creation */
+   if (VN_DEBUG(INIT)) {
+      vn_log(NULL,
+             "vn_env is as below:"
+             "\n\tdebug = 0x%" PRIx64 ""
+             "\n\tperf = 0x%" PRIx64 ""
+             "\n\tdraw_cmd_batch_limit = %u"
+             "\n\trelax_base_sleep_us = %u",
+             vn_env.debug, vn_env.perf, vn_env.draw_cmd_batch_limit,
+             vn_env.relax_base_sleep_us);
+   }
 }
 
 void
@@ -101,7 +119,7 @@ vn_relax(uint32_t *iter, const char *reason)
     * keep doubling both sleep length and count.
     */
    const uint32_t busy_wait_order = 4;
-   const uint32_t base_sleep_us = 10;
+   const uint32_t base_sleep_us = vn_env.relax_base_sleep_us;
    const uint32_t warn_order = 12;
    const uint32_t abort_order = 14;
 

@@ -51,6 +51,7 @@ struct radeon_decoder {
    unsigned dpb_size;
    unsigned last_width;
    unsigned last_height;
+   unsigned addr_gfx_mode;
 
    struct pipe_screen *screen;
    struct radeon_winsys *ws;
@@ -61,6 +62,8 @@ struct radeon_decoder {
    uint8_t *it;
    uint8_t *probs;
    void *bs_ptr;
+   rvcn_decode_buffer_t *decode_buffer;
+   bool vcn_dec_sw_ring;
 
    struct rvid_buffer msg_fb_it_probs_buffers[NUM_BUFFERS];
    struct rvid_buffer bs_buffers[NUM_BUFFERS];
@@ -73,6 +76,7 @@ struct radeon_decoder {
    void *render_pic_list[32];
    unsigned h264_valid_ref_num[17];
    unsigned h264_valid_poc_num[34];
+   unsigned av1_version;
    bool show_frame;
    unsigned ref_idx;
    bool tmz_ctx;
@@ -104,6 +108,11 @@ struct radeon_decoder {
 
    void (*send_cmd)(struct radeon_decoder *dec, struct pipe_video_buffer *target,
                     struct pipe_picture_desc *picture);
+   /* Additional contexts for mJPEG */
+   struct radeon_cmdbuf *jcs;
+   struct radeon_winsys_ctx **jctx;
+   unsigned cb_idx;
+   unsigned njctx;
 };
 
 void send_cmd_dec(struct radeon_decoder *dec, struct pipe_video_buffer *target,

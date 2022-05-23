@@ -162,6 +162,37 @@ TEST(BlockSize, AFBCSuperblock64x4)
    EXPECT_TRUE(panfrost_afbc_is_wide(modifier));
 }
 
+TEST(LegacyStride, FromLegacyLinear)
+{
+   EXPECT_EQ(panfrost_from_legacy_stride(1920 * 4, PIPE_FORMAT_R8G8B8A8_UINT, DRM_FORMAT_MOD_LINEAR), 1920 * 4);
+   EXPECT_EQ(panfrost_from_legacy_stride(53, PIPE_FORMAT_R8_SNORM, DRM_FORMAT_MOD_LINEAR), 53);
+   EXPECT_EQ(panfrost_from_legacy_stride(60, PIPE_FORMAT_ETC2_RGB8, DRM_FORMAT_MOD_LINEAR), 60);
+}
+
+TEST(LegacyStride, FromLegacyInterleaved)
+{
+   EXPECT_EQ(panfrost_from_legacy_stride(1920 * 4, PIPE_FORMAT_R8G8B8A8_UINT,
+            DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED),
+            1920 * 4 * 16);
+
+   EXPECT_EQ(panfrost_from_legacy_stride(53, PIPE_FORMAT_R8_SNORM,
+            DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED), 53 * 16);
+
+   EXPECT_EQ(panfrost_from_legacy_stride(60, PIPE_FORMAT_ETC2_RGB8,
+            DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED), 60 * 4);
+}
+
+TEST(LegacyStride, FromLegacyAFBC)
+{
+   uint64_t modifier = DRM_FORMAT_MOD_ARM_AFBC(
+                AFBC_FORMAT_MOD_BLOCK_SIZE_32x8 |
+                AFBC_FORMAT_MOD_SPARSE |
+                AFBC_FORMAT_MOD_YTR);
+
+   EXPECT_EQ(panfrost_from_legacy_stride(1920 * 4, PIPE_FORMAT_R8G8B8A8_UINT, modifier), 60 * 16);
+   EXPECT_EQ(panfrost_from_legacy_stride(64, PIPE_FORMAT_R8_SNORM, modifier), 2 * 16);
+}
+
 /* dEQP-GLES3.functional.texture.format.compressed.etc1_2d_pot */
 TEST(Layout, ImplicitLayoutInterleavedETC2)
 {
@@ -211,9 +242,12 @@ TEST(Layout, ImplicitLayoutInterleavedASTC5x5)
    /* The image is 50x50 pixels, with 5x5 blocks. So it is a 10x10 grid of ASTC
     * blocks. 4x4 tiles of ASTC blocks are u-interleaved, so we have to round up
     * to a 12x12 grid. So we need space for 144 ASTC blocks. Each ASTC block is
-    * 16 bytes (128-bits), so we require 2304 bytes.
+    * 16 bytes (128-bits), so we require 2304 bytes, with a row stride of 12 *
+    * 16 * 4 = 192 bytes.
     */
    EXPECT_EQ(l.slices[0].offset, 0);
+   EXPECT_EQ(l.slices[0].row_stride, 768);
+   EXPECT_EQ(l.slices[0].surface_stride, 2304);
    EXPECT_EQ(l.slices[0].size, 2304);
 }
 
@@ -233,10 +267,12 @@ TEST(Layout, ImplicitLayoutLinearASTC5x5)
    ASSERT_TRUE(pan_image_layout_init(&l, NULL));
 
    /* The image is 50x50 pixels, with 5x5 blocks. So it is a 10x10 grid of ASTC
-    * blocks. Each ASTC block is 16 bytes, so the row stride is 160 bytes.
-    * Rows are cache-line aligned to 192 bytes. There are 10 rows, so we have
+    * blocks. Each ASTC block is 16 bytes, so the row stride is 160 bytes,
+    * rounded up to the cache line (192 bytes).  There are 10 rows, so we have
     * 1920 bytes total.
     */
    EXPECT_EQ(l.slices[0].offset, 0);
+   EXPECT_EQ(l.slices[0].row_stride, 192);
+   EXPECT_EQ(l.slices[0].surface_stride, 1920);
    EXPECT_EQ(l.slices[0].size, 1920);
 }

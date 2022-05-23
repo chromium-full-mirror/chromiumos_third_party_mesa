@@ -68,7 +68,7 @@ files_libradeonsi = files(
   'si_state_shaders.cpp',
   'si_state_streamout.c',
   'si_state_viewport.c',
-  'si_test_blit.c',
+  'si_test_image_copy_region.c',
   'si_test_dma_perf.c',
   'si_texture.c',
   'si_uvd.c',
@@ -94,6 +94,7 @@ files_libradeonsi = files(
   'radeon_vcn_enc_1_2.c',
   'radeon_vcn_enc_2_0.c',
   'radeon_vcn_enc_3_0.c',
+  'radeon_vcn_enc_4_0.c',
   'radeon_video.c',
   'radeon_video.h',
 )
@@ -103,7 +104,7 @@ radeonsi_include_dirs = [inc_src, inc_include, inc_gallium, inc_gallium_aux, inc
 radeonsi_deps = [dep_llvm, dep_clock, dep_libdrm_radeon, idep_nir_headers, idep_amdgfxregs_h, idep_mesautil]
 
 radeonsi_gfx_libs = []
-foreach ver : ['6', '7', '8', '9', '10', '103']
+foreach ver : ['6', '7', '8', '9', '10', '103', '11']
   radeonsi_gfx_libs += static_library(
     'radeonsi_gfx@0@'.format(ver),
     ['si_state_draw.cpp'],

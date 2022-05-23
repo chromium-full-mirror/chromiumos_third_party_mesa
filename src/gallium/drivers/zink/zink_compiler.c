@@ -38,6 +38,9 @@
 
 #include "util/u_memory.h"
 
+#include "compiler/spirv/nir_spirv.h"
+#include "vulkan/util/vk_util.h"
+
 bool
 zink_lower_cubemap_to_array(nir_shader *s, uint32_t nonseamless_cube_mask);
 
@@ -878,6 +881,7 @@ rewrite_bo_access_instr(nir_builder *b, nir_instr *instr, void *data)
    case nir_intrinsic_load_ubo: {
       /* ubo0 can have unaligned 64bit loads, particularly for bindless texture ids */
       bool force_2x32 = intr->intrinsic == nir_intrinsic_load_ubo &&
+                        nir_src_is_const(intr->src[0]) &&
                         nir_src_as_uint(intr->src[0]) == 0 &&
                         nir_dest_bit_size(intr->dest) == 64 &&
                         nir_intrinsic_align_offset(intr) % 8 != 0;
@@ -958,36 +962,52 @@ rewrite_bo_access(nir_shader *shader, struct zink_screen *screen)
 }
 
 struct bo_vars {
-   nir_variable *ubo[PIPE_MAX_CONSTANT_BUFFERS][5];
-   nir_variable *ssbo[PIPE_MAX_CONSTANT_BUFFERS][5];
+   nir_variable *ubo[2][5];
+   nir_variable *ssbo[5];
+   uint32_t first_ubo;
+   uint32_t first_ssbo;
 };
 
 static nir_variable *
-get_bo_var(nir_shader *shader, struct bo_vars *bo, bool ssbo, unsigned idx, unsigned bit_size)
+get_bo_var(nir_shader *shader, struct bo_vars *bo, bool ssbo, nir_src *src, unsigned bit_size)
 {
-   nir_variable *var;
-   nir_variable **arr = (nir_variable**)(ssbo ? bo->ssbo : bo->ubo);
+   nir_variable *var, **ptr;
+   nir_variable **arr = (nir_variable**)bo->ubo;
+   unsigned idx = ssbo || (nir_src_is_const(*src) && !nir_src_as_uint(*src)) ? 0 : 1;
 
-   var = arr[idx * 5 + (bit_size >> 4)];
+   if (ssbo)
+      ptr = &bo->ssbo[bit_size >> 4];
+   else
+      ptr = &arr[idx * 5 + (bit_size >> 4)];
+   var = *ptr;
    if (!var) {
-      arr[idx * 5 + (bit_size >> 4)] = var = nir_variable_clone(arr[idx * 5 + (32 >> 4)], shader);
+      if (ssbo)
+         var = bo->ssbo[32 >> 4];
+      else
+         var = arr[idx * 5 + (32 >> 4)];
+      var = nir_variable_clone(var, shader);
+      *ptr = var;
       nir_shader_add_variable(shader, var);
 
       struct glsl_struct_field *fields = rzalloc_array(shader, struct glsl_struct_field, 2);
       fields[0].name = ralloc_strdup(shader, "base");
       fields[1].name = ralloc_strdup(shader, "unsized");
-      const struct glsl_type *array_type = glsl_get_struct_field(var->type, 0);
+      unsigned array_size = glsl_get_length(var->type);
+      const struct glsl_type *bare_type = glsl_without_array(var->type);
+      const struct glsl_type *array_type = glsl_get_struct_field(bare_type, 0);
+      unsigned length = glsl_get_length(array_type);
       const struct glsl_type *type;
       const struct glsl_type *unsized = glsl_array_type(glsl_uintN_t_type(bit_size), 0, bit_size / 8);
       if (bit_size > 32) {
          assert(bit_size == 64);
-         type = glsl_array_type(glsl_uintN_t_type(bit_size), glsl_get_length(array_type) / 2, bit_size / 8);
+         type = glsl_array_type(glsl_uintN_t_type(bit_size), length / 2, bit_size / 8);
       } else {
-         type = glsl_array_type(glsl_uintN_t_type(bit_size), glsl_get_length(array_type) * (32 / bit_size), bit_size / 8);
+         type = glsl_array_type(glsl_uintN_t_type(bit_size), length * (32 / bit_size), bit_size / 8);
       }
       fields[0].type = type;
       fields[1].type = unsized;
-      var->type = glsl_struct_type(fields, glsl_get_length(var->type), "struct", false);
+      var->type = glsl_array_type(glsl_struct_type(fields, glsl_get_length(bare_type), "struct", false), array_size, 0);
+      var->data.driver_location = idx;
    }
    return var;
 }
@@ -1003,31 +1023,57 @@ remove_bo_access_instr(nir_builder *b, nir_instr *instr, void *data)
    nir_ssa_def *offset = NULL;
    bool is_load = true;
    b->cursor = nir_before_instr(instr);
+   nir_src *src;
+   bool ssbo = true;
    switch (intr->intrinsic) {
+   /* TODO: these should all be rewritten to use deref intrinsics */
+   case nir_intrinsic_ssbo_atomic_add:
+   case nir_intrinsic_ssbo_atomic_umin:
+   case nir_intrinsic_ssbo_atomic_imin:
+   case nir_intrinsic_ssbo_atomic_umax:
+   case nir_intrinsic_ssbo_atomic_imax:
+   case nir_intrinsic_ssbo_atomic_and:
+   case nir_intrinsic_ssbo_atomic_or:
+   case nir_intrinsic_ssbo_atomic_xor:
+   case nir_intrinsic_ssbo_atomic_exchange:
+   case nir_intrinsic_ssbo_atomic_comp_swap:
+      nir_instr_rewrite_src_ssa(instr, &intr->src[0], nir_iadd_imm(b, intr->src[0].ssa, -bo->first_ssbo));
+      return true;
    case nir_intrinsic_store_ssbo:
-      var = get_bo_var(b->shader, bo, true, nir_src_as_uint(intr->src[1]), nir_src_bit_size(intr->src[0]));
+      src = &intr->src[1];
+      var = get_bo_var(b->shader, bo, true, src, nir_src_bit_size(intr->src[0]));
       offset = intr->src[2].ssa;
       is_load = false;
       break;
    case nir_intrinsic_load_ssbo:
-      var = get_bo_var(b->shader, bo, true, nir_src_as_uint(intr->src[0]), nir_dest_bit_size(intr->dest));
+      src = &intr->src[0];
+      var = get_bo_var(b->shader, bo, true, src, nir_dest_bit_size(intr->dest));
       offset = intr->src[1].ssa;
       break;
    case nir_intrinsic_load_ubo:
-      var = get_bo_var(b->shader, bo, false, nir_src_as_uint(intr->src[0]), nir_dest_bit_size(intr->dest));
+      src = &intr->src[0];
+      var = get_bo_var(b->shader, bo, false, src, nir_dest_bit_size(intr->dest));
       offset = intr->src[1].ssa;
+      ssbo = false;
       break;
    default:
       return false;
    }
    assert(var);
    assert(offset);
-   nir_deref_instr *deref_var = nir_build_deref_struct(b, nir_build_deref_var(b, var), 0);
+   nir_deref_instr *deref_var = nir_build_deref_var(b, var);
+   nir_ssa_def *idx = !ssbo && var->data.driver_location ? nir_iadd_imm(b, src->ssa, -1) : src->ssa;
+   if (!ssbo && bo->first_ubo && var->data.driver_location)
+      idx = nir_iadd_imm(b, idx, -bo->first_ubo);
+   else if (ssbo && bo->first_ssbo)
+      idx = nir_iadd_imm(b, idx, -bo->first_ssbo);
+   nir_deref_instr *deref_array = nir_build_deref_array(b, deref_var, idx);
+   nir_deref_instr *deref_struct = nir_build_deref_struct(b, deref_array, 0);
    assert(intr->num_components <= 2);
    if (is_load) {
       nir_ssa_def *result[2];
       for (unsigned i = 0; i < intr->num_components; i++) {
-         nir_deref_instr *deref_arr = nir_build_deref_array(b, deref_var, offset);
+         nir_deref_instr *deref_arr = nir_build_deref_array(b, deref_struct, offset);
          result[i] = nir_load_deref(b, deref_arr);
          if (intr->intrinsic == nir_intrinsic_load_ssbo)
             nir_intrinsic_set_access(nir_instr_as_intrinsic(result[i]->parent_instr), nir_intrinsic_access(intr));
@@ -1036,7 +1082,7 @@ remove_bo_access_instr(nir_builder *b, nir_instr *instr, void *data)
       nir_ssa_def *load = nir_vec(b, result, intr->num_components);
       nir_ssa_def_rewrite_uses(&intr->dest.ssa, load);
    } else {
-      nir_deref_instr *deref_arr = nir_build_deref_array(b, deref_var, offset);
+      nir_deref_instr *deref_arr = nir_build_deref_array(b, deref_struct, offset);
       nir_build_store_deref(b, &deref_arr->dest.ssa, intr->src[0].ssa, BITFIELD_MASK(intr->num_components), nir_intrinsic_access(intr));
    }
    nir_instr_remove(instr);
@@ -1044,17 +1090,23 @@ remove_bo_access_instr(nir_builder *b, nir_instr *instr, void *data)
 }
 
 static bool
-remove_bo_access(nir_shader *shader)
+remove_bo_access(nir_shader *shader, struct zink_shader *zs)
 {
    struct bo_vars bo;
    memset(&bo, 0, sizeof(bo));
+   if (zs->ubos_used)
+      bo.first_ubo = ffs(zs->ubos_used & ~BITFIELD_BIT(0)) - 2;
+   assert(bo.first_ssbo < PIPE_MAX_CONSTANT_BUFFERS);
+   if (zs->ssbos_used)
+      bo.first_ssbo = ffs(zs->ssbos_used) - 1;
+   assert(bo.first_ssbo < PIPE_MAX_SHADER_BUFFERS);
    nir_foreach_variable_with_modes(var, shader, nir_var_mem_ssbo | nir_var_mem_ubo) {
       if (var->data.mode == nir_var_mem_ssbo) {
-         assert(!bo.ssbo[var->data.driver_location][32 >> 4]);
-         bo.ssbo[var->data.driver_location][32 >> 4] = var;
+         assert(!bo.ssbo[32 >> 4]);
+         bo.ssbo[32 >> 4] = var;
       } else {
-         assert(!bo.ubo[var->data.driver_location][32 >> 4]);
-         bo.ubo[var->data.driver_location][32 >> 4] = var;
+         assert(!bo.ubo[!!var->data.driver_location][32 >> 4]);
+         bo.ubo[!!var->data.driver_location][32 >> 4] = var;
       }
    }
    return nir_shader_instructions_pass(shader, remove_bo_access_instr, nir_metadata_dominance, &bo);
@@ -1242,6 +1294,78 @@ zink_shader_spirv_compile(struct zink_screen *screen, struct zink_shader *zs, st
    smci.codeSize = spirv->num_words * sizeof(uint32_t);
    smci.pCode = spirv->words;
 
+#ifndef NDEBUG
+   static const struct spirv_to_nir_options spirv_options = {
+      .environment = NIR_SPIRV_VULKAN,
+      .caps = {
+         .float64 = true,
+         .int16 = true,
+         .int64 = true,
+         .tessellation = true,
+         .float_controls = true,
+         .image_ms_array = true,
+         .image_read_without_format = true,
+         .image_write_without_format = true,
+         .storage_image_ms = true,
+         .geometry_streams = true,
+         .storage_8bit = true,
+         .storage_16bit = true,
+         .variable_pointers = true,
+         .stencil_export = true,
+         .post_depth_coverage = true,
+         .transform_feedback = true,
+         .device_group = true,
+         .draw_parameters = true,
+         .shader_viewport_index_layer = true,
+         .multiview = true,
+         .physical_storage_buffer_address = true,
+         .int64_atomics = true,
+         .subgroup_arithmetic = true,
+         .subgroup_basic = true,
+         .subgroup_ballot = true,
+         .subgroup_quad = true,
+         .subgroup_shuffle = true,
+         .subgroup_vote = true,
+         .vk_memory_model = true,
+         .vk_memory_model_device_scope = true,
+         .int8 = true,
+         .float16 = true,
+         .demote_to_helper_invocation = true,
+         .sparse_residency = true,
+         .min_lod = true,
+      },
+      .ubo_addr_format = nir_address_format_32bit_index_offset,
+      .ssbo_addr_format = nir_address_format_32bit_index_offset,
+      .phys_ssbo_addr_format = nir_address_format_64bit_global,
+      .push_const_addr_format = nir_address_format_logical,
+      .shared_addr_format = nir_address_format_32bit_offset,
+   };
+   uint32_t num_spec_entries = 0;
+   struct nir_spirv_specialization *spec_entries = NULL;
+   VkSpecializationInfo sinfo = {0};
+   VkSpecializationMapEntry me[3];
+   uint32_t size[3] = {1,1,1};
+   if (!zs->nir->info.workgroup_size[0]) {
+      sinfo.mapEntryCount = 3;
+      sinfo.pMapEntries = &me[0];
+      sinfo.dataSize = sizeof(uint32_t) * 3;
+      sinfo.pData = size;
+      uint32_t ids[] = {ZINK_WORKGROUP_SIZE_X, ZINK_WORKGROUP_SIZE_Y, ZINK_WORKGROUP_SIZE_Z};
+      for (int i = 0; i < 3; i++) {
+         me[i].size = sizeof(uint32_t);
+         me[i].constantID = ids[i];
+         me[i].offset = i * sizeof(uint32_t);
+      }
+      spec_entries = vk_spec_info_to_nir_spirv(&sinfo, &num_spec_entries);
+   }
+   nir_shader *nir = spirv_to_nir(spirv->words, spirv->num_words,
+                      spec_entries, num_spec_entries,
+                      zs->nir->info.stage, "main", &spirv_options, &screen->nir_options);
+   assert(nir);
+   ralloc_free(nir);
+   free(spec_entries);
+#endif
+
    VkResult ret = VKSCR(CreateShaderModule)(screen->dev, &smci, NULL, &mod);
    bool success = zink_screen_handle_vkresult(screen, ret);
    assert(success);
@@ -1385,7 +1509,7 @@ zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, nir_shad
    if (screen->driconf.inline_uniforms) {
       NIR_PASS_V(nir, nir_lower_io_to_scalar, nir_var_mem_ubo | nir_var_mem_ssbo | nir_var_mem_shared);
       NIR_PASS_V(nir, rewrite_bo_access, screen);
-      NIR_PASS_V(nir, remove_bo_access);
+      NIR_PASS_V(nir, remove_bo_access, zs);
    }
    if (inlined_uniforms) {
       optimize_nir(nir);
@@ -1435,65 +1559,17 @@ lower_baseinstance(nir_shader *shader)
    return nir_shader_instructions_pass(shader, lower_baseinstance_instr, nir_metadata_dominance, NULL);
 }
 
-bool nir_lower_dynamic_bo_access(nir_shader *shader);
-
 /* gl_nir_lower_buffers makes variables unusable for all UBO/SSBO access
  * so instead we delete all those broken variables and just make new ones
  */
 static bool
-unbreak_bos(nir_shader *shader)
+unbreak_bos(nir_shader *shader, struct zink_shader *zs, bool needs_size)
 {
-   uint32_t ssbo_used = 0;
-   uint32_t ubo_used = 0;
    uint64_t max_ssbo_size = 0;
    uint64_t max_ubo_size = 0;
-   bool ssbo_sizes[PIPE_MAX_SHADER_BUFFERS] = {false};
 
-   if (!shader->info.num_ssbos && !shader->info.num_ubos && !shader->num_uniforms)
+   if (!shader->info.num_ssbos && !shader->info.num_ubos)
       return false;
-   nir_function_impl *impl = nir_shader_get_entrypoint(shader);
-   nir_foreach_block(block, impl) {
-      nir_foreach_instr(instr, block) {
-         if (instr->type != nir_instr_type_intrinsic)
-            continue;
-
-         nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-         switch (intrin->intrinsic) {
-         case nir_intrinsic_store_ssbo:
-            ssbo_used |= BITFIELD_BIT(nir_src_as_uint(intrin->src[1]));
-            break;
-
-         case nir_intrinsic_get_ssbo_size: {
-            uint32_t slot = nir_src_as_uint(intrin->src[0]);
-            ssbo_used |= BITFIELD_BIT(slot);
-            ssbo_sizes[slot] = true;
-            break;
-         }
-         case nir_intrinsic_ssbo_atomic_add:
-         case nir_intrinsic_ssbo_atomic_imin:
-         case nir_intrinsic_ssbo_atomic_umin:
-         case nir_intrinsic_ssbo_atomic_imax:
-         case nir_intrinsic_ssbo_atomic_umax:
-         case nir_intrinsic_ssbo_atomic_and:
-         case nir_intrinsic_ssbo_atomic_or:
-         case nir_intrinsic_ssbo_atomic_xor:
-         case nir_intrinsic_ssbo_atomic_exchange:
-         case nir_intrinsic_ssbo_atomic_comp_swap:
-         case nir_intrinsic_ssbo_atomic_fmin:
-         case nir_intrinsic_ssbo_atomic_fmax:
-         case nir_intrinsic_ssbo_atomic_fcomp_swap:
-         case nir_intrinsic_load_ssbo:
-            ssbo_used |= BITFIELD_BIT(nir_src_as_uint(intrin->src[0]));
-            break;
-         case nir_intrinsic_load_ubo:
-         case nir_intrinsic_load_ubo_vec4:
-            ubo_used |= BITFIELD_BIT(nir_src_as_uint(intrin->src[0]));
-            break;
-         default:
-            break;
-         }
-      }
-   }
 
    nir_foreach_variable_with_modes(var, shader, nir_var_mem_ssbo | nir_var_mem_ubo) {
       const struct glsl_type *type = glsl_without_array(var->type);
@@ -1510,42 +1586,113 @@ unbreak_bos(nir_shader *shader)
    NIR_PASS_V(shader, nir_remove_dead_variables, nir_var_shader_temp, NULL);
    optimize_nir(shader);
 
-   if (!ssbo_used && !ubo_used)
-      return false;
-
    struct glsl_struct_field *fields = rzalloc_array(shader, struct glsl_struct_field, 2);
    fields[0].name = ralloc_strdup(shader, "base");
    fields[1].name = ralloc_strdup(shader, "unsized");
-   if (ubo_used) {
+   if (shader->info.num_ubos) {
       const struct glsl_type *ubo_type = glsl_array_type(glsl_uint_type(), max_ubo_size * 4, 4);
       fields[0].type = ubo_type;
-      u_foreach_bit(slot, ubo_used) {
-         char buf[64];
-         snprintf(buf, sizeof(buf), "ubo_slot_%u", slot);
-         nir_variable *var = nir_variable_create(shader, nir_var_mem_ubo, glsl_struct_type(fields, 1, "struct", false), buf);
+      if (shader->num_uniforms && zs->ubos_used & BITFIELD_BIT(0)) {
+         nir_variable *var = nir_variable_create(shader, nir_var_mem_ubo,
+                                                 glsl_array_type(glsl_struct_type(fields, 1, "struct", false), 1, 0),
+                                                 "uniform_0");
          var->interface_type = var->type;
-         var->data.driver_location = slot;
+         var->data.mode = nir_var_mem_ubo;
+         var->data.driver_location = 0;
+      }
+
+      unsigned num_ubos = shader->info.num_ubos - !!shader->info.first_ubo_is_default_ubo;
+      uint32_t ubos_used = zs->ubos_used & ~BITFIELD_BIT(0);
+      if (num_ubos && ubos_used) {
+         /* shrink array as much as possible */
+         unsigned first_ubo = ffs(ubos_used) - 2;
+         assert(first_ubo < PIPE_MAX_CONSTANT_BUFFERS);
+         num_ubos -= first_ubo;
+         assert(num_ubos);
+         nir_variable *var = nir_variable_create(shader, nir_var_mem_ubo,
+                                   glsl_array_type(glsl_struct_type(fields, 1, "struct", false), num_ubos, 0),
+                                   "ubos");
+         var->interface_type = var->type;
+         var->data.mode = nir_var_mem_ubo;
+         var->data.driver_location = first_ubo + !!shader->info.first_ubo_is_default_ubo;
       }
    }
-   if (ssbo_used) {
+   if (shader->info.num_ssbos && zs->ssbos_used) {
+      /* shrink array as much as possible */
+      unsigned first_ssbo = ffs(zs->ssbos_used) - 1;
+      assert(first_ssbo < PIPE_MAX_SHADER_BUFFERS);
+      unsigned num_ssbos = shader->info.num_ssbos - first_ssbo;
+      assert(num_ssbos);
       const struct glsl_type *ssbo_type = glsl_array_type(glsl_uint_type(), max_ssbo_size * 4, 4);
       const struct glsl_type *unsized = glsl_array_type(glsl_uint_type(), 0, 4);
       fields[0].type = ssbo_type;
-      u_foreach_bit(slot, ssbo_used) {
-         char buf[64];
-         snprintf(buf, sizeof(buf), "ssbo_slot_%u", slot);
-         bool use_runtime = ssbo_sizes[slot] && max_ssbo_size;
-         if (use_runtime)
-            fields[1].type = unsized;
-         else
-            fields[1].type = NULL;
-         nir_variable *var = nir_variable_create(shader, nir_var_mem_ssbo,
-                                                 glsl_struct_type(fields, 1 + use_runtime, "struct", false), buf);
-         var->interface_type = var->type;
-         var->data.driver_location = slot;
-      }
+      fields[1].type = max_ssbo_size ? unsized : NULL;
+      unsigned field_count = max_ssbo_size && needs_size ? 2 : 1;
+      nir_variable *var = nir_variable_create(shader, nir_var_mem_ssbo,
+                                              glsl_array_type(glsl_struct_type(fields, field_count, "struct", false), num_ssbos, 0),
+                                              "ssbos");
+      var->interface_type = var->type;
+      var->data.mode = nir_var_mem_ssbo;
+      var->data.driver_location = first_ssbo;
    }
    return true;
+}
+
+static uint32_t
+get_src_mask(unsigned total, nir_src src)
+{
+   if (nir_src_is_const(src))
+      return BITFIELD_BIT(nir_src_as_uint(src));
+   return BITFIELD_MASK(total);
+}
+
+static bool
+analyze_io(struct zink_shader *zs, nir_shader *shader)
+{
+   bool ret = false;
+   nir_function_impl *impl = nir_shader_get_entrypoint(shader);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+ 
+         nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+         switch (intrin->intrinsic) {
+         case nir_intrinsic_store_ssbo:
+            zs->ssbos_used |= get_src_mask(shader->info.num_ssbos, intrin->src[1]);
+            break;
+ 
+         case nir_intrinsic_get_ssbo_size: {
+            zs->ssbos_used |= get_src_mask(shader->info.num_ssbos, intrin->src[0]);
+            ret = true;
+            break;
+         }
+         case nir_intrinsic_ssbo_atomic_add:
+         case nir_intrinsic_ssbo_atomic_imin:
+         case nir_intrinsic_ssbo_atomic_umin:
+         case nir_intrinsic_ssbo_atomic_imax:
+         case nir_intrinsic_ssbo_atomic_umax:
+         case nir_intrinsic_ssbo_atomic_and:
+         case nir_intrinsic_ssbo_atomic_or:
+         case nir_intrinsic_ssbo_atomic_xor:
+         case nir_intrinsic_ssbo_atomic_exchange:
+         case nir_intrinsic_ssbo_atomic_comp_swap:
+         case nir_intrinsic_ssbo_atomic_fmin:
+         case nir_intrinsic_ssbo_atomic_fmax:
+         case nir_intrinsic_ssbo_atomic_fcomp_swap:
+         case nir_intrinsic_load_ssbo:
+            zs->ssbos_used |= get_src_mask(shader->info.num_ssbos, intrin->src[0]);
+            break;
+         case nir_intrinsic_load_ubo:
+         case nir_intrinsic_load_ubo_vec4:
+            zs->ubos_used |= get_src_mask(shader->info.num_ubos, intrin->src[0]);
+            break;
+         default:
+            break;
+         }
+      }
+   }
+   return ret;
 }
 
 /* this is a "default" bindless texture used if the shader has no texture variables */
@@ -1729,8 +1876,7 @@ zink_binding(gl_shader_stage stage, VkDescriptorType type, int index)
       switch (type) {
       case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
       case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-         assert(index < PIPE_MAX_CONSTANT_BUFFERS);
-         return (stage * PIPE_MAX_CONSTANT_BUFFERS) + index;
+         return stage * 2 + !!index;
 
       case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
       case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
@@ -1738,8 +1884,7 @@ zink_binding(gl_shader_stage stage, VkDescriptorType type, int index)
          return (stage * PIPE_MAX_SAMPLERS) + index;
 
       case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-         assert(index < PIPE_MAX_SHADER_BUFFERS);
-         return (stage * PIPE_MAX_SHADER_BUFFERS) + index;
+         return stage;
 
       case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
       case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
@@ -1843,11 +1988,17 @@ get_shader_base_prim_type(struct nir_shader *nir)
 static bool
 convert_1d_shadow_tex(nir_builder *b, nir_instr *instr, void *data)
 {
+   struct zink_screen *screen = data;
    if (instr->type != nir_instr_type_tex)
       return false;
    nir_tex_instr *tex = nir_instr_as_tex(instr);
    if (tex->sampler_dim != GLSL_SAMPLER_DIM_1D || !tex->is_shadow)
       return false;
+   if (tex->is_sparse && screen->need_2D_sparse) {
+      /* no known case of this exists: only nvidia can hit it, and nothing uses it */
+      mesa_loge("unhandled/unsupported 1D sparse texture!");
+      abort();
+   }
    tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
    b->cursor = nir_before_instr(instr);
    tex->coord_components++;
@@ -1886,7 +2037,7 @@ convert_1d_shadow_tex(nir_builder *b, nir_instr *instr, void *data)
 }
 
 static bool
-lower_1d_shadow(nir_shader *shader)
+lower_1d_shadow(nir_shader *shader, struct zink_screen *screen)
 {
    bool found = false;
    nir_foreach_variable_with_modes(var, shader, nir_var_uniform | nir_var_image) {
@@ -1900,7 +2051,7 @@ lower_1d_shadow(nir_shader *shader)
       found = true;
    }
    if (found)
-      nir_shader_instructions_pass(shader, convert_1d_shadow_tex, nir_metadata_dominance, NULL);
+      nir_shader_instructions_pass(shader, convert_1d_shadow_tex, nir_metadata_dominance, screen);
    return found;
 }
 
@@ -1944,9 +2095,8 @@ scan_nir(struct zink_screen *screen, nir_shader *shader, struct zink_shader *zs)
                 /* Structs have been lowered already, so get_aoa_size is sufficient. */
                 const unsigned size =
                    glsl_type_is_array(var->type) ? glsl_get_aoa_size(var->type) : 1;
-                unsigned mask = ((1ull << MAX2(size, 1)) - 1) << var->data.binding;
-
-                shader->info.images_used |= mask;
+                BITSET_SET_RANGE(shader->info.images_used, var->data.binding,
+                                 var->data.binding + (MAX2(size, 1) - 1));
             }
             if (intr->intrinsic == nir_intrinsic_is_sparse_texels_resident ||
                 intr->intrinsic == nir_intrinsic_image_deref_sparse_load)
@@ -2039,7 +2189,7 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
    NIR_PASS_V(nir, lower_sparse);
 
    if (screen->need_2D_zs)
-      NIR_PASS_V(nir, lower_1d_shadow);
+      NIR_PASS_V(nir, lower_1d_shadow, screen);
 
    {
       nir_lower_subgroups_options subgroup_options = {0};
@@ -2057,12 +2207,13 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
    NIR_PASS_V(nir, nir_lower_fragcolor,
          nir->info.fs.color_is_dual_source ? 1 : 8);
    NIR_PASS_V(nir, lower_64bit_vertex_attribs);
-   NIR_PASS_V(nir, unbreak_bos);
+   bool needs_size = analyze_io(ret, nir);
+   NIR_PASS_V(nir, unbreak_bos, ret, needs_size);
    /* run in compile if there could be inlined uniforms */
    if (!screen->driconf.inline_uniforms) {
       NIR_PASS_V(nir, nir_lower_io_to_scalar, nir_var_mem_ubo | nir_var_mem_ssbo | nir_var_mem_shared);
       NIR_PASS_V(nir, rewrite_bo_access, screen);
-      NIR_PASS_V(nir, remove_bo_access);
+      NIR_PASS_V(nir, remove_bo_access, ret);
    }
 
    if (zink_debug & ZINK_DEBUG_NIR) {
@@ -2109,8 +2260,8 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
             ret->bindings[ztype][ret->num_bindings[ztype]].index = var->data.driver_location;
             ret->bindings[ztype][ret->num_bindings[ztype]].binding = binding;
             ret->bindings[ztype][ret->num_bindings[ztype]].type = vktype;
-            ret->bindings[ztype][ret->num_bindings[ztype]].size = 1;
-            ret->ubos_used |= (1 << ret->bindings[ztype][ret->num_bindings[ztype]].index);
+            ret->bindings[ztype][ret->num_bindings[ztype]].size = glsl_get_length(var->type);
+            assert(ret->bindings[ztype][ret->num_bindings[ztype]].size);
             ret->num_bindings[ztype]++;
          } else if (var->data.mode == nir_var_mem_ssbo) {
             ztype = ZINK_DESCRIPTOR_TYPE_SSBO;
@@ -2119,10 +2270,10 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
                                              VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                              var->data.driver_location);
             ret->bindings[ztype][ret->num_bindings[ztype]].index = var->data.driver_location;
-            ret->ssbos_used |= (1 << ret->bindings[ztype][ret->num_bindings[ztype]].index);
             ret->bindings[ztype][ret->num_bindings[ztype]].binding = var->data.binding;
             ret->bindings[ztype][ret->num_bindings[ztype]].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            ret->bindings[ztype][ret->num_bindings[ztype]].size = 1;
+            ret->bindings[ztype][ret->num_bindings[ztype]].size = glsl_get_length(var->type);
+            assert(ret->bindings[ztype][ret->num_bindings[ztype]].size);
             ret->num_bindings[ztype]++;
          } else {
             assert(var->data.mode == nir_var_uniform ||
@@ -2203,8 +2354,6 @@ zink_shader_finalize(struct pipe_screen *pscreen, void *nirptr)
    if (nir->info.stage == MESA_SHADER_GEOMETRY)
       NIR_PASS_V(nir, nir_lower_gs_intrinsics, nir_lower_gs_intrinsics_per_stream);
    optimize_nir(nir);
-   if (nir->info.num_ubos || nir->info.num_ssbos)
-      NIR_PASS_V(nir, nir_lower_dynamic_bo_access);
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
    if (screen->driconf.inline_uniforms)
       nir_find_inlinable_uniforms(nir);

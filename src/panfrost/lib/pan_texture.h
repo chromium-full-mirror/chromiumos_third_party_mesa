@@ -49,8 +49,17 @@ extern uint64_t pan_best_modifiers[PAN_MODIFIER_COUNT];
 
 struct pan_image_slice_layout {
         unsigned offset;
-        unsigned line_stride;
+
+        /* For AFBC images, the number of bytes between two rows of AFBC
+         * headers.
+         *
+         * For non-AFBC images, the number of bytes between two rows of texels.
+         * For linear images, this will equal the logical stride. For
+         * images that are compressed or interleaved, this will be greater than
+         * the logical stride.
+         */
         unsigned row_stride;
+
         unsigned surface_stride;
 
         struct {
@@ -59,9 +68,6 @@ struct pan_image_slice_layout {
 
                 /* Size of the AFBC body */
                 unsigned body_size;
-
-                /* Stride between two rows of AFBC headers */
-                unsigned row_stride;
 
                 /* Stride between AFBC headers of two consecutive surfaces.
                  * For 3D textures, this must be set to header size since
@@ -222,12 +228,21 @@ struct pan_scoreboard;
 
 struct pan_image_explicit_layout {
         unsigned offset;
-        unsigned line_stride;
+        unsigned row_stride;
 };
 
 bool
 pan_image_layout_init(struct pan_image_layout *layout,
                       const struct pan_image_explicit_layout *explicit_layout);
+
+unsigned
+panfrost_get_legacy_stride(const struct pan_image_layout *layout,
+                           unsigned level);
+
+unsigned
+panfrost_from_legacy_stride(unsigned legacy_stride,
+                            enum pipe_format format,
+                            uint64_t modifier);
 
 struct pan_surface {
         union {

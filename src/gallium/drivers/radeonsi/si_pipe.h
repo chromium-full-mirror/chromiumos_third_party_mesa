@@ -145,7 +145,9 @@ extern "C" {
    (((x)&0x3) << SI_RESOURCE_FLAG_MICRO_TILE_MODE_SHIFT)
 #define SI_RESOURCE_FLAG_MICRO_TILE_MODE_GET(x)                                                    \
    (((x) >> SI_RESOURCE_FLAG_MICRO_TILE_MODE_SHIFT) & 0x3)
-#define SI_RESOURCE_FLAG_UNCACHED          (PIPE_RESOURCE_FLAG_DRV_PRIV << 12)
+#define SI_RESOURCE_FLAG_GL2_BYPASS        (PIPE_RESOURCE_FLAG_DRV_PRIV << 12)
+/* Discard instead of evict. */
+#define SI_RESOURCE_FLAG_DISCARDABLE       (PIPE_RESOURCE_FLAG_DRV_PRIV << 13)
 
 enum si_has_gs {
    GS_OFF,
@@ -162,18 +164,35 @@ enum si_has_ngg {
    NGG_ON,
 };
 
+#define DCC_CODE(x) (((x) << 24) | ((x) << 16) | ((x) << 8) | (x))
+
 enum si_clear_code
 {
-   DCC_CLEAR_COLOR_0000 = 0x00000000,
-   DCC_CLEAR_COLOR_0001 = 0x40404040,
-   DCC_CLEAR_COLOR_1110 = 0x80808080,
-   DCC_CLEAR_COLOR_1111 = 0xC0C0C0C0,
-   DCC_CLEAR_COLOR_REG = 0x20202020,
-   DCC_UNCOMPRESSED = 0xFFFFFFFF,
+   /* Common clear codes. */
+   DCC_CLEAR_0000    = DCC_CODE(0x00), /* all bits are 0 */
+   DCC_UNCOMPRESSED  = DCC_CODE(0xFF),
+
+   GFX8_DCC_CLEAR_0000     = DCC_CLEAR_0000,
+   GFX8_DCC_CLEAR_0001     = DCC_CODE(0x40),
+   GFX8_DCC_CLEAR_1110     = DCC_CODE(0x80),
+   GFX8_DCC_CLEAR_1111     = DCC_CODE(0xC0),
+   GFX8_DCC_CLEAR_REG      = DCC_CODE(0x20),
+   GFX9_DCC_CLEAR_SINGLE   = DCC_CODE(0x10),
+
+   GFX11_DCC_CLEAR_SINGLE     = DCC_CODE(0x01),
+   GFX11_DCC_CLEAR_0000       = DCC_CLEAR_0000, /* all bits are 0 */
+   GFX11_DCC_CLEAR_1111_UNORM = DCC_CODE(0x02), /* all bits are 1 */
+   GFX11_DCC_CLEAR_1111_FP16  = DCC_CODE(0x04), /* all 16-bit words are 0x3c00, max 64bpp */
+   GFX11_DCC_CLEAR_1111_FP32  = DCC_CODE(0x06), /* all 32-bit words are 0x3f800000 */
+   /* Color bits are 0, alpha bits are 1; only 88, 8888, 16161616 with alpha_on_msb=1 */
+   GFX11_DCC_CLEAR_0001_UNORM = DCC_CODE(0x08),
+   /* Color bits are 1, alpha bits are 0, only 88, 8888, 16161616 with alpha_on_msb=1 */
+   GFX11_DCC_CLEAR_1110_UNORM = DCC_CODE(0x0A),
 };
 
-#define SI_IMAGE_ACCESS_DCC_OFF           (1 << 8)
-#define SI_IMAGE_ACCESS_ALLOW_DCC_STORE   (1 << 9)
+#define SI_IMAGE_ACCESS_DCC_OFF              (1 << 8)
+#define SI_IMAGE_ACCESS_ALLOW_DCC_STORE      (1 << 9)
+#define SI_IMAGE_ACCESS_BLOCK_FORMAT_AS_UINT (1 << 10) /* for compressed/subsampled images */
 
 /* Debug flags. */
 enum
@@ -255,7 +274,7 @@ enum
 enum
 {
    /* Tests: */
-   DBG_TEST_BLIT,
+   DBG_TEST_IMAGE_COPY,
    DBG_TEST_VMFAULT_CP,
    DBG_TEST_VMFAULT_SHADER,
    DBG_TEST_DMA_PERF,
@@ -377,7 +396,7 @@ struct si_texture {
    uint64_t cmask_base_address_reg;
    struct si_resource *cmask_buffer;
    unsigned cb_color_info; /* fast clear enable bit */
-   unsigned color_clear_value[2];
+   unsigned color_clear_value[2]; /* not on gfx11 */
    unsigned last_msaa_resolve_target_micro_mode;
    bool swap_rgb_to_bgr_on_next_clear;
    bool swap_rgb_to_bgr;
@@ -555,10 +574,7 @@ struct si_screen {
    unsigned pa_sc_raster_config_1;
    unsigned se_tile_repeat;
    unsigned gs_table_depth;
-   unsigned tess_offchip_block_dw_size;
-   unsigned tess_offchip_ring_size;
-   unsigned tess_factor_ring_size;
-   unsigned vgt_hs_offchip_param;
+   struct ac_hs_info hs;
    unsigned eqaa_force_coverage_samples;
    unsigned eqaa_force_z_samples;
    unsigned eqaa_force_color_samples;
@@ -587,6 +603,8 @@ struct si_screen {
 
    /* Texture filter settings. */
    int force_aniso; /* -1 = disabled */
+
+   unsigned max_texture_buffer_size;
 
    /* Auxiliary context. Mainly used to initialize resources.
     * It must be locked prior to using and flushed before unlocking. */
@@ -690,6 +708,8 @@ struct si_screen {
 
    struct util_idalloc_mt buffer_ids;
    struct util_vertex_state_cache vertex_state_cache;
+
+   struct si_resource *attribute_ring;
 };
 
 struct si_sampler_view {
@@ -699,7 +719,6 @@ struct si_sampler_view {
    uint32_t state[8];
    uint32_t fmask_state[8];
    const struct legacy_surf_level *base_level_info;
-   ubyte base_level;
    ubyte block_width;
    bool is_stencil_sampler;
    bool dcc_incompatible;
@@ -720,7 +739,6 @@ struct si_cs_shader_state {
    struct si_compute *emitted_program;
    unsigned offset;
    bool initialized;
-   bool uses_scratch;
 };
 
 struct si_samplers {
@@ -926,7 +944,7 @@ struct si_context {
    struct pipe_context b; /* base class */
 
    enum radeon_family family;
-   enum chip_class chip_class;
+   enum amd_gfx_level gfx_level;
 
    struct radeon_winsys *ws;
    struct radeon_winsys_ctx *ctx;
@@ -966,8 +984,7 @@ struct si_context {
    void *cs_clear_buffer;
    void *cs_clear_buffer_rmw;
    void *cs_copy_buffer;
-   void *cs_copy_image_1D;
-   void *cs_copy_image_2D;
+   void *cs_copy_image[2][2]; /* [src_is_1d][dst_is_1d] */
    void *cs_clear_render_target;
    void *cs_clear_render_target_1d_array;
    void *cs_clear_12bytes_buffer;
@@ -1035,11 +1052,14 @@ struct si_context {
    struct pipe_scissor_state window_rectangles[4];
 
    /* Precomputed states. */
+   struct si_pm4_state *last_preamble;
    struct si_pm4_state *cs_preamble_state;
-   struct si_pm4_state *cs_preamble_tess_rings;
-   struct si_pm4_state *cs_preamble_tess_rings_tmz;
-   struct si_pm4_state *cs_preamble_gs_rings;
+   struct si_pm4_state *cs_preamble_state_tmz;
+   uint16_t gs_ring_state_dw_offset;
+   uint16_t gs_ring_state_dw_offset_tmz;
    bool cs_preamble_has_vgt_flush;
+   bool cs_preamble_has_vgt_flush_tmz;
+
    struct si_pm4_state *vgt_shader_config[SI_NUM_VGT_STAGES_STATES];
 
    /* shaders */
@@ -1131,6 +1151,7 @@ struct si_context {
 
    /* Emitted draw state. */
    bool ngg : 1;
+   bool disable_instance_packing : 1;
    uint16_t ngg_culling;
    unsigned last_index_size;
    int last_base_vertex;
@@ -1145,6 +1166,8 @@ struct si_context {
    unsigned last_gs_out_prim;
    unsigned current_vs_state;
    unsigned last_vs_state;
+   bool current_gs_stats_counter_emul;
+   bool last_gs_stats_counter_emul;
    enum pipe_prim_type current_rast_prim; /* primitive type after TES, GS */
 
    struct si_small_prim_cull_info last_small_prim_cull_info;
@@ -1195,6 +1218,7 @@ struct si_context {
    bool bindless_descriptors_dirty;
    bool graphics_bindless_pointer_dirty;
    bool compute_bindless_pointer_dirty;
+   bool gs_attribute_ring_pointer_dirty;
 
    /* Allocated bindless handles */
    struct hash_table *tex_handles;
@@ -1248,8 +1272,11 @@ struct si_context {
    int num_occlusion_queries;
    int num_perfect_occlusion_queries;
    int num_pipeline_stat_queries;
+   int num_pipeline_stat_emulated_queries;
    struct list_head active_queries;
    unsigned num_cs_dw_queries_suspend;
+   /* Shared buffer for pipeline stats queries implemented with an atomic op */
+   struct si_resource *pipeline_stats_query_buf;
 
    /* Render condition. */
    struct pipe_query *render_cond;
@@ -1427,8 +1454,6 @@ void si_cp_dma_copy_buffer(struct si_context *sctx, struct pipe_resource *dst,
                            struct pipe_resource *src, uint64_t dst_offset, uint64_t src_offset,
                            unsigned size, unsigned user_flags, enum si_coherency coher,
                            enum si_cache_policy cache_policy);
-void si_cp_dma_prefetch(struct si_context *sctx, struct pipe_resource *buf,
-                        unsigned offset, unsigned size);
 void si_test_gds(struct si_context *sctx);
 void si_cp_write_data(struct si_context *sctx, struct si_resource *buf, unsigned offset,
                       unsigned size, unsigned dst_sel, unsigned engine, const void *data);
@@ -1450,7 +1475,7 @@ void si_log_draw_state(struct si_context *sctx, struct u_log_context *log);
 void si_log_compute_state(struct si_context *sctx, struct u_log_context *log);
 void si_init_debug_functions(struct si_context *sctx);
 void si_check_vm_faults(struct si_context *sctx, struct radeon_saved_cs *saved,
-                        enum ring_type ring);
+                        enum amd_ip_type ring);
 bool si_replace_shader(unsigned num, struct si_shader_binary *binary);
 void si_print_current_ib(struct si_context *sctx, FILE *f);
 
@@ -1507,7 +1532,8 @@ void si_destroy_perfcounters(struct si_screen *screen);
 void si_inhibit_clockgating(struct si_context *sctx, struct radeon_cmdbuf *cs, bool inhibit);
 void si_pc_emit_shaders(struct radeon_cmdbuf *cs, unsigned shaders);
 void si_pc_emit_spm_start(struct radeon_cmdbuf *cs);
-void si_pc_emit_spm_stop(struct radeon_cmdbuf *cs, bool never_stop_sq_perf_counters);
+void si_pc_emit_spm_stop(struct radeon_cmdbuf *cs, bool never_stop_sq_perf_counters,
+                         bool never_send_perfcounter_stop);
 void si_pc_emit_spm_reset(struct radeon_cmdbuf *cs);
 void si_emit_spm_setup(struct si_context *sctx, struct radeon_cmdbuf *cs);
 bool si_spm_init(struct si_context *sctx);
@@ -1520,7 +1546,7 @@ void si_suspend_queries(struct si_context *sctx);
 void si_resume_queries(struct si_context *sctx);
 
 /* si_shaderlib_nir.c */
-void *si_create_copy_image_cs(struct si_context *sctx, bool is_1D);
+void *si_create_copy_image_cs(struct si_context *sctx, bool src_is_1d_array, bool dst_is_1d_array);
 void *si_create_dcc_retile_cs(struct si_context *sctx, struct radeon_surf *surf);
 void *gfx9_create_clear_dcc_msaa_cs(struct si_context *sctx, struct si_texture *tex);
 
@@ -1543,8 +1569,8 @@ void *gfx10_create_sh_query_result_cs(struct si_context *sctx);
 void gfx10_init_query(struct si_context *sctx);
 void gfx10_destroy_query(struct si_context *sctx);
 
-/* si_test_blit.c */
-void si_test_blit(struct si_screen *sscreen);
+/* si_test_image_copy_region.c */
+void si_test_image_copy_region(struct si_screen *sscreen);
 
 /* si_test_clearbuffer.c */
 void si_test_dma_perf(struct si_screen *sscreen);
@@ -1581,11 +1607,8 @@ bool vi_dcc_formats_are_incompatible(struct pipe_resource *tex, unsigned level,
                                      enum pipe_format view_format);
 void vi_disable_dcc_if_incompatible_format(struct si_context *sctx, struct pipe_resource *tex,
                                            unsigned level, enum pipe_format view_format);
-struct pipe_surface *si_create_surface_custom(struct pipe_context *pipe,
-                                              struct pipe_resource *texture,
-                                              const struct pipe_surface *templ, unsigned width0,
-                                              unsigned height0, unsigned width, unsigned height);
-unsigned si_translate_colorswap(enum pipe_format format, bool do_endian_swap);
+unsigned si_translate_colorswap(enum amd_gfx_level gfx_level, enum pipe_format format,
+                                bool do_endian_swap);
 bool si_texture_disable_dcc(struct si_context *sctx, struct si_texture *tex);
 void si_init_screen_texture_functions(struct si_screen *sscreen);
 void si_init_context_texture_functions(struct si_context *sctx);
@@ -1772,12 +1795,12 @@ static inline void si_make_CB_shader_coherent(struct si_context *sctx, unsigned 
    sctx->flags |= SI_CONTEXT_FLUSH_AND_INV_CB | SI_CONTEXT_INV_VCACHE;
    sctx->force_cb_shader_coherent = false;
 
-   if (sctx->chip_class >= GFX10) {
+   if (sctx->gfx_level >= GFX10) {
       if (sctx->screen->info.tcc_rb_non_coherent)
          sctx->flags |= SI_CONTEXT_INV_L2;
       else if (shaders_read_metadata)
          sctx->flags |= SI_CONTEXT_INV_L2_METADATA;
-   } else if (sctx->chip_class == GFX9) {
+   } else if (sctx->gfx_level == GFX9) {
       /* Single-sample color is coherent with shaders on GFX9, but
        * L2 metadata must be flushed if shaders read metadata.
        * (DCC, CMASK).
@@ -1797,12 +1820,12 @@ static inline void si_make_DB_shader_coherent(struct si_context *sctx, unsigned 
 {
    sctx->flags |= SI_CONTEXT_FLUSH_AND_INV_DB | SI_CONTEXT_INV_VCACHE;
 
-   if (sctx->chip_class >= GFX10) {
+   if (sctx->gfx_level >= GFX10) {
       if (sctx->screen->info.tcc_rb_non_coherent)
          sctx->flags |= SI_CONTEXT_INV_L2;
       else if (shaders_read_metadata)
          sctx->flags |= SI_CONTEXT_INV_L2_METADATA;
-   } else if (sctx->chip_class == GFX9) {
+   } else if (sctx->gfx_level == GFX9) {
       /* Single-sample depth (not stencil) is coherent with shaders
        * on GFX9, but L2 metadata must be flushed if shaders read
        * metadata.
@@ -1831,7 +1854,7 @@ static inline bool si_htile_enabled(struct si_texture *tex, unsigned level, unsi
       return false;
 
    struct si_screen *sscreen = (struct si_screen *)tex->buffer.b.b.screen;
-   if (sscreen->info.chip_class >= GFX8) {
+   if (sscreen->info.gfx_level >= GFX8) {
       return level < tex->surface.num_meta_levels;
    } else {
       /* GFX6-7 don't have TC-compatible HTILE, which means they have to run
@@ -2021,17 +2044,17 @@ static inline unsigned si_get_num_coverage_samples(struct si_context *sctx)
 }
 
 static unsigned ALWAYS_INLINE
-si_num_vbos_in_user_sgprs_inline(enum chip_class chip_class)
+si_num_vbos_in_user_sgprs_inline(enum amd_gfx_level gfx_level)
 {
    /* This decreases CPU overhead if all descriptors are in user SGPRs because we don't
     * have to allocate and count references for the upload buffer.
     */
-   return chip_class >= GFX9 ? 5 : 1;
+   return gfx_level >= GFX9 ? 5 : 1;
 }
 
 static inline unsigned si_num_vbos_in_user_sgprs(struct si_screen *sscreen)
 {
-   return si_num_vbos_in_user_sgprs_inline(sscreen->info.chip_class);
+   return si_num_vbos_in_user_sgprs_inline(sscreen->info.gfx_level);
 }
 
 #define PRINT_ERR(fmt, args...)                                                                    \

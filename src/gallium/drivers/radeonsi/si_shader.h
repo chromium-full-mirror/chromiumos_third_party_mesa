@@ -199,13 +199,8 @@ enum
    GFX6_SGPR_TCS_IN_LAYOUT,
    GFX6_TCS_NUM_USER_SGPR,
 
-   /* GFX9: Merged shaders. */
-   /* 2ND_CONST_AND_SHADER_BUFFERS is set in USER_DATA_ADDR_LO (SGPR0). */
-   /* 2ND_SAMPLERS_AND_IMAGES is set in USER_DATA_ADDR_HI (SGPR1). */
-   GFX9_MERGED_NUM_USER_SGPR = SI_VS_NUM_USER_SGPR,
-
    /* GFX9: Merged LS-HS (VS-TCS) only. */
-   GFX9_SGPR_TCS_OFFCHIP_LAYOUT = GFX9_MERGED_NUM_USER_SGPR,
+   GFX9_SGPR_TCS_OFFCHIP_LAYOUT = SI_VS_NUM_USER_SGPR,
    GFX9_SGPR_TCS_OUT_OFFSETS,
    GFX9_SGPR_TCS_OUT_LAYOUT,
    GFX9_TCS_NUM_USER_SGPR,
@@ -215,6 +210,7 @@ enum
    SI_GSCOPY_NUM_USER_SGPR = SI_NUM_VS_STATE_RESOURCE_SGPRS,
 
    GFX9_SGPR_SMALL_PRIM_CULL_INFO = MAX2(SI_VS_NUM_USER_SGPR, SI_TES_NUM_USER_SGPR),
+   GFX9_SGPR_ATTRIBUTE_RING_ADDR,
    GFX9_GS_NUM_USER_SGPR,
 
    /* PS only */
@@ -272,6 +268,8 @@ enum
 #define C_VS_STATE_LS_OUT_PATCH_SIZE          0xFF0007FF
 #define S_VS_STATE_LS_OUT_VERTEX_SIZE(x)      (((unsigned)(x)&0xFF) << 24)
 #define C_VS_STATE_LS_OUT_VERTEX_SIZE         0x00FFFFFF
+#define S_VS_STATE_GS_PIPELINE_STATS_EMU(x)   (((unsigned)(x)&0x1) << 31)
+#define C_VS_STATE_GS_PIPELINE_STATS_EMU      0x7FFFFFFF
 
 enum
 {
@@ -470,8 +468,10 @@ struct si_shader_selector {
    gl_shader_stage stage;
 
    simple_mtx_t mutex;
-   struct si_shader *first_variant; /* immutable after the first variant */
-   struct si_shader *last_variant;  /* mutable */
+   union si_shader_key *keys;
+   unsigned variants_count;
+   unsigned variants_max_count;
+   struct si_shader **variants;
 
    /* The compiled NIR shader without a prolog and/or epilog (not
     * uploaded to a buffer object).
@@ -575,7 +575,9 @@ struct si_ps_epilog_bits {
    unsigned last_cbuf : 3;
    unsigned alpha_func : 3;
    unsigned alpha_to_one : 1;
+   unsigned alpha_to_coverage_via_mrtz : 1;  /* gfx11+ */
    unsigned clamp_color : 1;
+   unsigned dual_src_blend_swizzle : 1;      /* gfx11+ */
 };
 
 union si_shader_part_key {
@@ -596,6 +598,7 @@ union si_shader_part_key {
    struct {
       struct si_tcs_epilog_bits states;
       unsigned wave32 : 1;
+      unsigned noop_s_barrier : 1;
    } tcs_epilog;
    struct {
       struct si_ps_prolog_bits states;
@@ -811,7 +814,6 @@ struct si_shader {
 
    struct si_shader_selector *selector;
    struct si_shader_selector *previous_stage_sel; /* for refcounting */
-   struct si_shader *next_variant;
 
    struct si_shader_part *prolog;
    struct si_shader *previous_stage; /* for GFX9 */

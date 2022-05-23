@@ -30,6 +30,7 @@
 #include "tgsi/tgsi_dump.h"
 #include "tgsi/tgsi_from_mesa.h"
 #include "tgsi/tgsi_info.h"
+#include "tgsi/tgsi_parse.h"
 #include "tgsi/tgsi_ureg.h"
 #include "tgsi/tgsi_util.h"
 #include "util/debug.h"
@@ -3526,6 +3527,9 @@ ntt_fix_nir_options(struct pipe_screen *screen, struct nir_shader *s,
       !screen->get_shader_param(screen, pipe_shader_type_from_mesa(s->info.stage),
                                 PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED);
 
+   bool force_indirect_unrolling_sampler =
+      screen->get_param(screen, PIPE_CAP_GLSL_FEATURE_LEVEL) < 400;
+
    nir_variable_mode no_indirects_mask = ntt_no_indirects_mask(s, screen);
 
    if (!options->lower_extract_byte ||
@@ -3539,7 +3543,8 @@ ntt_fix_nir_options(struct pipe_screen *screen, struct nir_shader *s,
        !options->lower_uniforms_to_ubo ||
        !options->lower_vector_cmp ||
        options->lower_fsqrt != lower_fsqrt ||
-       options->force_indirect_unrolling != no_indirects_mask) {
+       options->force_indirect_unrolling != no_indirects_mask ||
+       force_indirect_unrolling_sampler) {
       nir_shader_compiler_options *new_options = ralloc(s, nir_shader_compiler_options);
       *new_options = *s->options;
 
@@ -3555,6 +3560,7 @@ ntt_fix_nir_options(struct pipe_screen *screen, struct nir_shader *s,
       new_options->lower_vector_cmp = true;
       new_options->lower_fsqrt = lower_fsqrt;
       new_options->force_indirect_unrolling = no_indirects_mask;
+      new_options->force_indirect_unrolling_sampler = force_indirect_unrolling_sampler;
 
       s->options = new_options;
    }
@@ -3913,4 +3919,18 @@ nir_to_tgsi_get_compiler_options(struct pipe_screen *pscreen,
 {
    assert(ir == PIPE_SHADER_IR_NIR);
    return &nir_to_tgsi_compiler_options;
+}
+
+/** Helper for getting TGSI tokens to store for a pipe_shader_state CSO. */
+const void *
+pipe_shader_state_to_tgsi_tokens(struct pipe_screen *screen,
+                                 const struct pipe_shader_state *cso)
+{
+   if (cso->type == PIPE_SHADER_IR_NIR) {
+      return nir_to_tgsi((nir_shader *)cso->ir.nir, screen);
+   } else {
+      assert(cso->type == PIPE_SHADER_IR_TGSI);
+      /* we need to keep a local copy of the tokens */
+      return tgsi_dup_tokens(cso->tokens);
+   }
 }

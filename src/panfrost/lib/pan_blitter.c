@@ -465,7 +465,7 @@ pan_blitter_get_blit_shader(struct panfrost_device *dev,
                 nir_variable_create(b.shader, nir_var_shader_in,
                                     glsl_vector_type(GLSL_TYPE_FLOAT, coord_comps),
                                     "coord");
-        coord_var->data.location = VARYING_SLOT_TEX0;
+        coord_var->data.location = VARYING_SLOT_VAR0;
 
         nir_ssa_def *coord = nir_load_var(&b, coord_var);
 
@@ -604,6 +604,7 @@ pan_blitter_get_blit_shader(struct panfrost_device *dev,
                 .gpu_id = dev->gpu_id,
                 .is_blit = true,
                 .no_idvs = true,
+                .fixed_sysval_ubo = -1,
         };
         struct util_dynarray binary;
 
@@ -618,6 +619,9 @@ pan_blitter_get_blit_shader(struct panfrost_device *dev,
                 BITSET_SET(b.shader->info.textures_used, i);
 
         GENX(pan_shader_compile)(b.shader, &inputs, &binary, &shader->info);
+
+        /* Blit shaders shouldn't have sysvals */
+        assert(shader->info.sysvals.sysval_count == 0);
 
         shader->key = *key;
         shader->address =

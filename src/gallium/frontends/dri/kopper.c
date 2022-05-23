@@ -35,7 +35,6 @@
 #include "driver_trace/tr_screen.h"
 
 #include "dri_screen.h"
-#include "utils.h"
 #include "dri_context.h"
 #include "dri_drawable.h"
 #include "dri_helpers.h"
@@ -98,6 +97,8 @@ static const __DRIrobustnessExtension dri2Robustness = {
    .base = { __DRI2_ROBUSTNESS, 1 }
 };
 
+const __DRIkopperExtension driKopperExtension;
+
 static const __DRIextension *drivk_screen_extensions[] = {
    &driTexBufferExtension.base,
    &dri2RendererQueryExtension.base,
@@ -107,6 +108,7 @@ static const __DRIextension *drivk_screen_extensions[] = {
    &driVkImageExtension.base,
    &dri2FlushControlExtension.base,
    &driVkFlushExtension.base,
+   &driKopperExtension.base,
    NULL
 };
 
@@ -555,6 +557,8 @@ kopper_allocate_textures(struct dri_context *ctx,
             if (drawable->textures[i] && i < ST_ATTACHMENT_DEPTH_STENCIL && !is_pixmap) {
                drawable->textures[i]->width0 = width;
                drawable->textures[i]->height0 = height;
+               /* force all contexts to revalidate framebuffer */
+               p_atomic_inc(&drawable->base.stamp);
             } else
                pipe_resource_reference(&drawable->textures[i], NULL);
             pipe_resource_reference(&drawable->msaa_textures[i], NULL);
@@ -907,7 +911,7 @@ kopperSwapBuffers(__DRIdrawable *dPriv)
       return 0;
 
    drawable->texture_stamp = dPriv->lastStamp - 1;
-   dri_flush(dPriv->driContextPriv, dPriv, __DRI2_FLUSH_DRAWABLE | __DRI2_FLUSH_CONTEXT, __DRI2_THROTTLE_SWAPBUFFER);
+   dri_flush(ctx->cPriv, dPriv, __DRI2_FLUSH_DRAWABLE | __DRI2_FLUSH_CONTEXT, __DRI2_THROTTLE_SWAPBUFFER);
    kopper_copy_to_front(ctx->st->pipe, dPriv, ptex);
    if (kdraw->is_window && !zink_kopper_check(ptex))
       return -1;
@@ -965,11 +969,28 @@ kopperCreateNewDrawable(__DRIscreen *screen,
     return pdraw;
 }
 
+static void
+kopperSetSwapInterval(__DRIdrawable *dPriv, int interval)
+{
+   struct dri_drawable *drawable = dri_drawable(dPriv);
+   struct dri_screen *screen = dri_screen(drawable->sPriv);
+   struct kopper_screen *kscreen = (struct kopper_screen *)screen;
+   struct pipe_screen *pscreen = kscreen->screen;
+   struct pipe_resource *ptex = drawable->textures[ST_ATTACHMENT_BACK_LEFT] ?
+                                drawable->textures[ST_ATTACHMENT_BACK_LEFT] :
+                                drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
+
+   // the conditional is because we can be called before buffer allocation, though
+   // this is almost certainly not the right fix.
+   if (ptex)
+      zink_kopper_set_swap_interval(pscreen, ptex, interval);
+}
 
 const __DRIkopperExtension driKopperExtension = {
    .base = { __DRI_KOPPER, 1 },
    .createNewDrawable          = kopperCreateNewDrawable,
    .swapBuffers                = kopperSwapBuffers,
+   .setSwapInterval            = kopperSetSwapInterval,
 };
 
 const struct __DriverAPIRec galliumvk_driver_api = {

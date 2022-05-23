@@ -132,9 +132,9 @@ struct ac_llvm_context {
    unsigned uniform_md_kind;
    LLVMValueRef empty_md;
 
-   enum chip_class chip_class;
+   enum amd_gfx_level gfx_level;
    enum radeon_family family;
-   const struct radeon_info *info;
+   bool has_3d_cube_border_color_mipmap;
 
    unsigned wave_size;
    unsigned ballot_mask_bits;
@@ -145,8 +145,8 @@ struct ac_llvm_context {
 };
 
 void ac_llvm_context_init(struct ac_llvm_context *ctx, struct ac_llvm_compiler *compiler,
-                          enum chip_class chip_class, enum radeon_family family,
-                          const struct radeon_info *info,
+                          enum amd_gfx_level gfx_level, enum radeon_family family,
+                          bool has_3d_cube_border_color_mipmap,
                           enum ac_float_mode float_mode, unsigned wave_size,
                           unsigned ballot_mask_bits);
 
@@ -175,7 +175,7 @@ void ac_build_type_name_for_intr(LLVMTypeRef type, char *buf, unsigned bufsize);
 LLVMValueRef ac_build_phi(struct ac_llvm_context *ctx, LLVMTypeRef type, unsigned count_incoming,
                           LLVMValueRef *values, LLVMBasicBlockRef *blocks);
 
-void ac_build_s_barrier(struct ac_llvm_context *ctx);
+void ac_build_s_barrier(struct ac_llvm_context *ctx, gl_shader_stage stage);
 void ac_build_optimization_barrier(struct ac_llvm_context *ctx, LLVMValueRef *pgpr, bool sgpr);
 
 LLVMValueRef ac_build_shader_clock(struct ac_llvm_context *ctx, nir_scope scope);
@@ -502,6 +502,7 @@ LLVMValueRef ac_build_reduce(struct ac_llvm_context *ctx, LLVMValueRef src, nir_
  * values across an entire workgroup, while respecting the order of waves.
  */
 struct ac_wg_scan {
+   gl_shader_stage stage;
    bool enable_reduce;
    bool enable_exclusive;
    bool enable_inclusive;
@@ -555,7 +556,8 @@ LLVMValueRef ac_build_atomic_cmp_xchg(struct ac_llvm_context *ctx, LLVMValueRef 
                                       LLVMValueRef cmp, LLVMValueRef val, const char *sync_scope);
 
 void ac_export_mrt_z(struct ac_llvm_context *ctx, LLVMValueRef depth, LLVMValueRef stencil,
-                     LLVMValueRef samplemask, bool is_last, struct ac_export_args *args);
+                     LLVMValueRef samplemask, LLVMValueRef mrt0_alpha, bool is_last,
+                     struct ac_export_args *args);
 
 void ac_build_sendmsg_gs_alloc_req(struct ac_llvm_context *ctx, LLVMValueRef wave_id,
                                    LLVMValueRef vtx_cnt, LLVMValueRef prim_cnt);
@@ -597,6 +599,10 @@ void ac_build_triangle_strip_indices_to_triangle(struct ac_llvm_context *ctx, LL
                                                  LLVMValueRef flatshade_first,
                                                  LLVMValueRef index[3]);
 LLVMValueRef ac_build_is_inf_or_nan(struct ac_llvm_context *ctx, LLVMValueRef a);
+
+void ac_build_dual_src_blend_swizzle(struct ac_llvm_context *ctx,
+                                     struct ac_export_args *mrt0,
+                                     struct ac_export_args *mrt1);
 
 #ifdef __cplusplus
 }

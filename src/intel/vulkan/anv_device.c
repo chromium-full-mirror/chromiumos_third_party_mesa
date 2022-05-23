@@ -74,6 +74,7 @@ static const driOptionDescription anv_dri_options[] = {
    DRI_CONF_SECTION_DEBUG
       DRI_CONF_ALWAYS_FLUSH_CACHE(false)
       DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST(false)
+      DRI_CONF_LIMIT_TRIG_INPUT_RANGE(false)
    DRI_CONF_SECTION_END
 };
 
@@ -1104,6 +1105,8 @@ anv_init_dri_options(struct anv_instance *instance)
 
     instance->assume_full_subgroups =
             driQueryOptionb(&instance->dri_options, "anv_assume_full_subgroups");
+    instance->limit_trig_input_range =
+            driQueryOptionb(&instance->dri_options, "limit_trig_input_range");
 }
 
 VkResult anv_CreateInstance(
@@ -1596,7 +1599,11 @@ void anv_GetPhysicalDeviceFeatures2(
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT: {
          VkPhysicalDeviceLineRasterizationFeaturesEXT *features =
             (VkPhysicalDeviceLineRasterizationFeaturesEXT *)ext;
-         features->rectangularLines = true;
+         /* Rectangular lines must use the strict algorithm, which is not
+          * supported for wide lines prior to ICL.  See rasterization_mode for
+          * details and how the HW states are programmed.
+          */
+         features->rectangularLines = pdevice->info.ver >= 10;
          features->bresenhamLines = true;
          /* Support for Smooth lines with MSAA was removed on gfx11.  From the
           * BSpec section "Multisample ModesState" table for "AA Line Support
@@ -2932,7 +2939,7 @@ anv_device_init_trivial_batch(struct anv_device *device)
    anv_batch_emit(&batch, GFX7_MI_BATCH_BUFFER_END, bbe);
    anv_batch_emit(&batch, GFX7_MI_NOOP, noop);
 
-   if (!device->info.has_llc)
+   if (device->physical->memory.need_clflush)
       intel_clflush_range(batch.start, batch.next - batch.start);
 
    return VK_SUCCESS;
@@ -3121,6 +3128,11 @@ VkResult anv_CreateDevice(
                                   &physical_device->info,
                                   stderr, decode_flags, NULL,
                                   decode_get_bo, NULL, device);
+
+      device->decoder_ctx.dynamic_base = DYNAMIC_STATE_POOL_MIN_ADDRESS;
+      device->decoder_ctx.surface_base = SURFACE_STATE_POOL_MIN_ADDRESS;
+      device->decoder_ctx.instruction_base =
+         INSTRUCTION_STATE_POOL_MIN_ADDRESS;
    }
 
    device->physical = physical_device;

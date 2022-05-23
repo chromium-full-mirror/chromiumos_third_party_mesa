@@ -203,9 +203,6 @@ handle_set_event_cpu_job(struct v3dv_queue *queue, struct v3dv_job *job,
     * So we should wait for all prior work to be completed before signaling
     * the event, this includes all active CPU wait threads spawned for any
     * command buffer submitted *before* this.
-    *
-    * FIXME: we could avoid blocking the main thread for this if we use a
-    *        submission thread.
     */
 
    VkResult result = queue_wait_idle(queue, sync_info);
@@ -662,9 +659,9 @@ handle_cl_job(struct v3dv_queue *queue,
    assert(bo_idx == submit.bo_handle_count);
    submit.bo_handles = (uintptr_t)(void *)bo_handles;
 
-   /* We need a binning sync if we are waiting on a semaphore or if the job
-    * comes after a pipeline barrier that involves geometry stages
-    * (needs_bcl_sync).
+   /* We need a binning sync if we are waiting on a semaphore with a wait stage
+    * that involves the geometry pipeline, or if the job comes after a pipeline
+    * barrier that involves geometry stages (needs_bcl_sync).
     *
     * We need a render sync if the job doesn't need a binning sync but has
     * still been flagged for serialization. It should be noted that RCL jobs
@@ -676,9 +673,20 @@ handle_cl_job(struct v3dv_queue *queue,
     * command buffer after the first job where we should be able to track bcl
     * dependencies strictly through barriers.
     */
-   const bool needs_bcl_sync =
-      sync_info->wait_count > 0 || job->needs_bcl_sync;
-   const bool needs_rcl_sync = job->serialize && !needs_bcl_sync;
+   bool needs_bcl_sync = job->needs_bcl_sync;
+   for (int i = 0; !needs_bcl_sync && i < sync_info->wait_count; i++) {
+      needs_bcl_sync = sync_info->waits[i].stage_mask &
+         (VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT |
+          VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
+          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT |
+          VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
+          VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
+          VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+          VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
+          VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
+          VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT);
+   }
+   bool needs_rcl_sync = job->serialize && !needs_bcl_sync;
 
    /* Replace single semaphore settings whenever our kernel-driver supports
     * multiple semaphores extension.
@@ -874,6 +882,11 @@ queue_create_noop_job(struct v3dv_queue *queue)
 
    v3dv_X(device, job_emit_noop)(queue->noop_job);
 
+   /* We use no-op jobs to signal semaphores/fences. These jobs needs to be
+    * serialized across all hw queues to comply with Vulkan's signal operation
+    * order requirements, which basically require that signal operations occur
+    * in submission order.
+    */
    queue->noop_job->serialize = true;
 
    return VK_SUCCESS;
@@ -914,16 +927,19 @@ v3dv_queue_driver_submit(struct vk_queue *vk_queue,
 
    /* Finish by submitting a no-op job that synchronizes across all queues.
     * This will ensure that the signal semaphores don't get triggered until
-    * all work on any queue completes.
+    * all work on any queue completes. See Vulkan's signal operation order
+    * requirements.
     */
-   if (!queue->noop_job) {
-      result = queue_create_noop_job(queue);
+   if (submit->signal_count > 0) {
+      if (!queue->noop_job) {
+         result = queue_create_noop_job(queue);
+         if (result != VK_SUCCESS)
+            return result;
+      }
+      result = queue_handle_job(queue, queue->noop_job, &sync_info, true);
       if (result != VK_SUCCESS)
          return result;
    }
-   result = queue_handle_job(queue, queue->noop_job, &sync_info, true);
-   if (result != VK_SUCCESS)
-      return result;
 
    process_signals(queue, sync_info.signal_count, sync_info.signals);
 

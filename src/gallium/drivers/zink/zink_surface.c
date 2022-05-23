@@ -46,11 +46,11 @@ create_ivci(struct zink_screen *screen,
 
    switch (target) {
    case PIPE_TEXTURE_1D:
-      ivci.viewType = res->need_2D_zs ? VK_IMAGE_VIEW_TYPE_2D : VK_IMAGE_VIEW_TYPE_1D;
+      ivci.viewType = res->need_2D ? VK_IMAGE_VIEW_TYPE_2D : VK_IMAGE_VIEW_TYPE_1D;
       break;
 
    case PIPE_TEXTURE_1D_ARRAY:
-      ivci.viewType = res->need_2D_zs ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_1D_ARRAY;
+      ivci.viewType = res->need_2D ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_1D_ARRAY;
       break;
 
    case PIPE_TEXTURE_2D:
@@ -145,7 +145,7 @@ create_surface(struct pipe_context *pctx,
    VkFormatFeatureFlags feats = res->optimal_tiling ?
                                 screen->format_props[templ->format].optimalTilingFeatures :
                                 screen->format_props[templ->format].linearTilingFeatures;
-   VkImageUsageFlags attachment = (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+   VkImageUsageFlags attachment = (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
    usage_info.usage = res->obj->vkusage & ~attachment;
    if ((res->obj->vkusage & attachment) &&
        !(feats & (VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
@@ -342,8 +342,8 @@ zink_rebind_surface(struct zink_context *ctx, struct pipe_surface **psurface)
    if (surface->simage_view)
       return false;
    assert(!res->obj->dt);
-   VkImageViewCreateInfo ivci = create_ivci(screen,
-                                            zink_resource((*psurface)->texture), (*psurface), surface->base.texture->target);
+   VkImageViewCreateInfo ivci = surface->ivci;
+   ivci.image = res->obj->image;
    uint32_t hash = hash_ivci(&ivci);
 
    simple_mtx_lock(&res->surface_mtx);
@@ -394,16 +394,18 @@ zink_surface_create_null(struct zink_context *ctx, enum pipe_texture_target targ
    templ.width0 = width;
    templ.height0 = height;
    templ.depth0 = 1;
-   templ.format = PIPE_FORMAT_R8_UINT;
+   templ.format = PIPE_FORMAT_R8G8B8A8_UNORM;
    templ.target = target;
-   templ.bind = PIPE_BIND_RENDER_TARGET;
+   templ.bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
+   if (samples < 2)
+      templ.bind |= PIPE_BIND_SHADER_IMAGE;
    templ.nr_samples = samples;
 
    pres = ctx->base.screen->resource_create(ctx->base.screen, &templ);
    if (!pres)
       return NULL;
 
-   surf_templ.format = PIPE_FORMAT_R8_UINT;
+   surf_templ.format = PIPE_FORMAT_R8G8B8A8_UNORM;
    surf_templ.nr_samples = 0;
    struct pipe_surface *psurf = ctx->base.create_surface(&ctx->base, pres, &surf_templ);
    pipe_resource_reference(&pres, NULL);

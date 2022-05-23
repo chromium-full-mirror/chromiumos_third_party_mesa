@@ -23,6 +23,7 @@
 
 #include "ac_llvm_cull.h"
 #include "si_pipe.h"
+#include "si_query.h"
 #include "si_shader_internal.h"
 #include "sid.h"
 #include "util/u_memory.h"
@@ -68,6 +69,14 @@ static LLVMValueRef ngg_get_query_buf(struct si_shader_context *ctx)
 
    return ac_build_load_to_sgpr(&ctx->ac, buf_ptr,
                                 LLVMConstInt(ctx->ac.i32, SI_GS_QUERY_BUF, false));
+}
+
+static LLVMValueRef ngg_get_emulated_counters_buf(struct si_shader_context *ctx)
+{
+   LLVMValueRef buf_ptr = ac_get_arg(&ctx->ac, ctx->internal_bindings);
+
+   return ac_build_load_to_sgpr(&ctx->ac, buf_ptr,
+                                LLVMConstInt(ctx->ac.i32, SI_GS_QUERY_EMULATED_COUNTERS_BUF, false));
 }
 
 /**
@@ -472,6 +481,7 @@ static void build_streamout(struct si_shader_context *ctx, struct ngg_streamout 
          if (!info->num_stream_output_components[stream])
             continue;
 
+         primemit_scan[stream].stage = ctx->stage;
          primemit_scan[stream].enable_exclusive = true;
          primemit_scan[stream].op = nir_op_iadd;
          primemit_scan[stream].src = nggso->prim_enable[stream];
@@ -490,7 +500,8 @@ static void build_streamout(struct si_shader_context *ctx, struct ngg_streamout 
       }
    }
 
-   ac_build_s_barrier(&ctx->ac);
+   ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+   ac_build_s_barrier(&ctx->ac, ctx->stage);
 
    /* Fetch the per-buffer offsets and per-stream emit counts in all waves. */
    LLVMValueRef wgoffset_dw[4] = {};
@@ -914,14 +925,13 @@ static void cull_primitive(struct si_shader_context *ctx,
  * Also return the position, which is passed to the shader as an input,
  * so that we don't compute it twice.
  */
-void gfx10_emit_ngg_culling_epilogue(struct ac_shader_abi *abi)
+void gfx10_ngg_culling_build_end(struct si_shader_context *ctx)
 {
-   struct si_shader_context *ctx = si_shader_context_from_abi(abi);
    struct si_shader *shader = ctx->shader;
    struct si_shader_selector *sel = shader->selector;
    struct si_shader_info *info = &sel->info;
    LLVMBuilderRef builder = ctx->ac.builder;
-   LLVMValueRef *addrs = abi->outputs;
+   LLVMValueRef *addrs = ctx->abi.outputs;
    unsigned max_waves = DIV_ROUND_UP(ctx->screen->ngg_subgroup_size, ctx->ac.wave_size);
 
    assert(shader->key.ge.opt.ngg_culling);
@@ -1013,7 +1023,9 @@ void gfx10_emit_ngg_culling_epilogue(struct ac_shader_abi *abi)
       builder, packed_data,
       ac_build_gep0(&ctx->ac, es_vtxptr, LLVMConstInt(ctx->ac.i32, lds_packed_data, 0)));
    ac_build_endif(&ctx->ac, ctx->merged_wrap_if_label);
-   ac_build_s_barrier(&ctx->ac);
+
+   ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+   ac_build_s_barrier(&ctx->ac, ctx->stage);
 
    LLVMValueRef tid = ac_get_thread_id(&ctx->ac);
 
@@ -1132,7 +1144,9 @@ void gfx10_emit_ngg_culling_epilogue(struct ac_shader_abi *abi)
       cull_primitive(ctx, pos, clipdist_accepted, gs_accepted, gs_vtxptr);
    }
    ac_build_endif(&ctx->ac, 16002);
-   ac_build_s_barrier(&ctx->ac);
+
+   ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+   ac_build_s_barrier(&ctx->ac, ctx->stage);
 
    gs_accepted = LLVMBuildLoad(builder, gs_accepted, "");
 
@@ -1162,7 +1176,8 @@ void gfx10_emit_ngg_culling_epilogue(struct ac_shader_abi *abi)
    }
    ac_build_endif(&ctx->ac, 16008);
 
-   ac_build_s_barrier(&ctx->ac);
+   ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+   ac_build_s_barrier(&ctx->ac, ctx->stage);
 
    /* Load the vertex masks and compute the new ES thread count. */
    LLVMValueRef new_num_es_threads, prefix_sum, kill_wave;
@@ -1253,7 +1268,9 @@ void gfx10_emit_ngg_culling_epilogue(struct ac_shader_abi *abi)
       ac_build_s_endpgm(&ctx->ac);
    }
    ac_build_endif(&ctx->ac, 19202);
-   ac_build_s_barrier(&ctx->ac);
+
+   ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+   ac_build_s_barrier(&ctx->ac, ctx->stage);
 
    /* Send the final vertex and primitive counts. */
    ac_build_sendmsg_gs_alloc_req(&ctx->ac, get_wave_id_in_tg(ctx), new_num_es_threads,
@@ -1322,6 +1339,8 @@ void gfx10_emit_ngg_culling_epilogue(struct ac_shader_abi *abi)
    ret = LLVMBuildInsertValue(ctx->ac.builder, ret, new_merged_wave_info, 3, "");
    if (ctx->stage == MESA_SHADER_TESS_EVAL)
       ret = si_insert_input_ret(ctx, ret, ctx->args.tess_offchip_offset, 4);
+   if (ctx->ac.gfx_level >= GFX11)
+      ret = si_insert_input_ret(ctx, ret, ctx->args.gs_attr_offset, 5);
 
    ret = si_insert_input_ptr(ctx, ret, ctx->internal_bindings, 8 + SI_SGPR_INTERNAL_BINDINGS);
    ret = si_insert_input_ptr(ctx, ret, ctx->bindless_samplers_and_images,
@@ -1330,6 +1349,8 @@ void gfx10_emit_ngg_culling_epilogue(struct ac_shader_abi *abi)
                              8 + SI_SGPR_CONST_AND_SHADER_BUFFERS);
    ret = si_insert_input_ptr(ctx, ret, ctx->samplers_and_images, 8 + SI_SGPR_SAMPLERS_AND_IMAGES);
    ret = si_insert_input_ptr(ctx, ret, ctx->vs_state_bits, 8 + SI_SGPR_VS_STATE_BITS);
+   if (ctx->ac.gfx_level >= GFX11)
+      ret = si_insert_input_ptr(ctx, ret, ctx->gs_attr_address, 8 + GFX9_SGPR_ATTRIBUTE_RING_ADDR);
 
    if (ctx->stage == MESA_SHADER_VERTEX) {
       ret = si_insert_input_ptr(ctx, ret, ctx->args.base_vertex, 8 + SI_SGPR_BASE_VERTEX);
@@ -1394,23 +1415,24 @@ void gfx10_emit_ngg_culling_epilogue(struct ac_shader_abi *abi)
 
    /* These two also use LDS. */
    if (gfx10_ngg_writes_user_edgeflags(shader) ||
-       (ctx->stage == MESA_SHADER_VERTEX && shader->key.ge.mono.u.vs_export_prim_id))
-      ac_build_s_barrier(&ctx->ac);
+       (ctx->stage == MESA_SHADER_VERTEX && shader->key.ge.mono.u.vs_export_prim_id)) {
+      ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+      ac_build_s_barrier(&ctx->ac, ctx->stage);
+   }
 
    ctx->return_value = ret;
 }
 
 /**
- * Emit the epilogue of an API VS or TES shader compiled as ESGS shader.
+ * Emit the end of an API VS or TES shader compiled as ESGS shader.
  */
-void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi)
+void gfx10_ngg_build_end(struct si_shader_context *ctx)
 {
-   struct si_shader_context *ctx = si_shader_context_from_abi(abi);
    struct si_shader_selector *sel = ctx->shader->selector;
    struct si_shader_info *info = &sel->info;
    struct si_shader_output_values outputs[PIPE_MAX_SHADER_OUTPUTS];
    LLVMBuilderRef builder = ctx->ac.builder;
-   LLVMValueRef *addrs = abi->outputs;
+   LLVMValueRef *addrs = ctx->abi.outputs;
    LLVMValueRef tmp, tmp2;
 
    assert(!ctx->shader->is_gs_copy_shader);
@@ -1498,8 +1520,10 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi)
       assert(!unterminated_es_if_block);
 
       /* Streamout already inserted the barrier, so don't insert it again. */
-      if (!ctx->so.num_outputs)
-         ac_build_s_barrier(&ctx->ac);
+      if (!ctx->so.num_outputs) {
+         ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+         ac_build_s_barrier(&ctx->ac, ctx->stage);
+      }
 
       ac_build_ifcc(&ctx->ac, is_gs_thread, 5400);
       /* Load edge flags from ES threads and store them into VGPRs in GS threads. */
@@ -1522,8 +1546,10 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi)
       assert(!unterminated_es_if_block);
 
       /* Streamout and edge flags use LDS. Make it idle, so that we can reuse it. */
-      if (ctx->so.num_outputs || gfx10_ngg_writes_user_edgeflags(ctx->shader))
-         ac_build_s_barrier(&ctx->ac);
+      if (ctx->so.num_outputs || gfx10_ngg_writes_user_edgeflags(ctx->shader)) {
+         ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+         ac_build_s_barrier(&ctx->ac, ctx->stage);
+      }
 
       ac_build_ifcc(&ctx->ac, is_gs_thread, 5400);
       /* Extract the PROVOKING_VTX_INDEX field. */
@@ -1616,8 +1642,9 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi)
          outputs[i].vertex_streams = 0;
 
          if (ctx->stage == MESA_SHADER_VERTEX) {
-            /* Wait for GS stores to finish. */
-            ac_build_s_barrier(&ctx->ac);
+            /* Wait for LDS stores to finish. */
+            ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+            ac_build_s_barrier(&ctx->ac, ctx->stage);
 
             tmp = ngg_nogs_vertex_ptr(ctx, gfx10_get_thread_id_in_tg(ctx));
             tmp = ac_build_gep0(&ctx->ac, tmp, ctx->ac.i32_0);
@@ -1633,7 +1660,7 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi)
          i++;
       }
 
-      si_llvm_build_vs_exports(ctx, outputs, i);
+      si_llvm_build_vs_exports(ctx, NULL, outputs, i);
    }
    ac_build_endif(&ctx->ac, 6002);
 }
@@ -1655,7 +1682,7 @@ static LLVMValueRef ngg_gs_get_vertex_storage(struct si_shader_context *ctx)
 /**
  * Return a pointer to the LDS storage reserved for the N'th vertex, where N
  * is in emit order; that is:
- * - during the epilogue, N is the threadidx (relative to the entire threadgroup)
+ * - at the shader end, N is the threadidx (relative to the entire threadgroup)
  * - during vertex emit, i.e. while the API GS shader invocation is running,
  *   N = threadidx * gs.vertices_out + emitidx
  *
@@ -1808,7 +1835,7 @@ void gfx10_ngg_gs_emit_vertex(struct si_shader_context *ctx, unsigned stream, LL
    ac_build_endif(&ctx->ac, 9001);
 }
 
-void gfx10_ngg_gs_emit_prologue(struct si_shader_context *ctx)
+void gfx10_ngg_gs_emit_begin(struct si_shader_context *ctx)
 {
    /* Zero out the part of LDS scratch that is used to accumulate the
     * per-stream generated primitive count.
@@ -1826,10 +1853,35 @@ void gfx10_ngg_gs_emit_prologue(struct si_shader_context *ctx)
    }
    ac_build_endif(&ctx->ac, 5090);
 
-   ac_build_s_barrier(&ctx->ac);
+   if (ctx->screen->info.gfx_level < GFX11) {
+      tmp = si_is_gs_thread(ctx);
+      ac_build_ifcc(&ctx->ac, tmp, 15090);
+         {
+            tmp = si_unpack_param(ctx, ctx->vs_state_bits, 31, 1);
+            tmp = LLVMBuildTrunc(builder, tmp, ctx->ac.i1, "");
+            ac_build_ifcc(&ctx->ac, tmp, 5109); /* if (GS_PIPELINE_STATS_EMU) */
+            LLVMValueRef args[] = {
+               ctx->ac.i32_1,
+               ngg_get_emulated_counters_buf(ctx),
+               LLVMConstInt(ctx->ac.i32,
+                            (si_hw_query_dw_offset(PIPE_STAT_QUERY_GS_INVOCATIONS) +
+                                SI_QUERY_STATS_END_OFFSET_DW) * 4,
+                            false),
+               ctx->ac.i32_0,                            /* soffset */
+               ctx->ac.i32_0,                            /* cachepolicy */
+            };
+
+            ac_build_intrinsic(&ctx->ac, "llvm.amdgcn.raw.buffer.atomic.add.i32", ctx->ac.i32, args, 5, 0);
+            ac_build_endif(&ctx->ac, 5109);
+         }
+      ac_build_endif(&ctx->ac, 15090);
+   }
+
+   ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+   ac_build_s_barrier(&ctx->ac, ctx->stage);
 }
 
-void gfx10_ngg_gs_emit_epilogue(struct si_shader_context *ctx)
+void gfx10_ngg_gs_build_end(struct si_shader_context *ctx)
 {
    const struct si_shader_selector *sel = ctx->shader->selector;
    const struct si_shader_info *info = &sel->info;
@@ -1890,7 +1942,8 @@ void gfx10_ngg_gs_emit_epilogue(struct si_shader_context *ctx)
 
    ac_build_endif(&ctx->ac, ctx->merged_wrap_if_label);
 
-   ac_build_s_barrier(&ctx->ac);
+   ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+   ac_build_s_barrier(&ctx->ac, ctx->stage);
 
    const LLVMValueRef tid = gfx10_get_thread_id_in_tg(ctx);
    LLVMValueRef num_emit_threads = ngg_get_prim_cnt(ctx);
@@ -1967,8 +2020,10 @@ void gfx10_ngg_gs_emit_epilogue(struct si_shader_context *ctx)
       LLVMValueRef prim_enable = LLVMBuildAnd(builder, live, is_emit, "");
 
       /* Wait for streamout to finish before we kill primitives. */
-      if (ctx->so.num_outputs)
-         ac_build_s_barrier(&ctx->ac);
+      if (ctx->so.num_outputs) {
+         ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+         ac_build_s_barrier(&ctx->ac, ctx->stage);
+      }
 
       ac_build_ifcc(&ctx->ac, prim_enable, 0);
       {
@@ -2026,7 +2081,9 @@ void gfx10_ngg_gs_emit_epilogue(struct si_shader_context *ctx)
          ac_build_endif(&ctx->ac, 0);
       }
       ac_build_endif(&ctx->ac, 0);
-      ac_build_s_barrier(&ctx->ac);
+
+      ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+      ac_build_s_barrier(&ctx->ac, ctx->stage);
    }
 
    /* Determine vertex liveness. */
@@ -2061,6 +2118,7 @@ void gfx10_ngg_gs_emit_epilogue(struct si_shader_context *ctx)
    /* Inclusive scan addition across the current wave. */
    LLVMValueRef vertlive = LLVMBuildLoad(builder, vertliveptr, "");
    struct ac_wg_scan vertlive_scan = {};
+   vertlive_scan.stage = ctx->stage;
    vertlive_scan.op = nir_op_iadd;
    vertlive_scan.enable_reduce = true;
    vertlive_scan.enable_exclusive = true;
@@ -2094,7 +2152,8 @@ void gfx10_ngg_gs_emit_epilogue(struct si_shader_context *ctx)
    }
    ac_build_endif(&ctx->ac, 5130);
 
-   ac_build_s_barrier(&ctx->ac);
+   ac_build_waitcnt(&ctx->ac, AC_WAIT_LGKM);
+   ac_build_s_barrier(&ctx->ac, ctx->stage);
 
    /* Export primitive data */
    tmp = LLVMBuildICmp(builder, LLVMIntULT, tid, num_emit_threads, "");
@@ -2125,11 +2184,35 @@ void gfx10_ngg_gs_emit_epilogue(struct si_shader_context *ctx)
       }
 
       ac_build_export_prim(&ctx->ac, &prim);
+
+      if (ctx->screen->info.gfx_level < GFX11) {
+         tmp = si_unpack_param(ctx, ctx->vs_state_bits, 31, 1);
+         tmp = LLVMBuildTrunc(builder, tmp, ctx->ac.i1, "");
+         ac_build_ifcc(&ctx->ac, tmp, 5229); /* if (GS_PIPELINE_STATS_EMU) */
+         ac_build_ifcc(&ctx->ac, LLVMBuildNot(builder, prim.isnull, ""), 5237);
+         {
+            LLVMValueRef args[] = {
+               ctx->ac.i32_1,
+               ngg_get_emulated_counters_buf(ctx),
+               LLVMConstInt(ctx->ac.i32,
+                            (si_hw_query_dw_offset(PIPE_STAT_QUERY_GS_PRIMITIVES) +
+                                SI_QUERY_STATS_END_OFFSET_DW) * 4,
+                            false),
+               ctx->ac.i32_0,                            /* soffset */
+               ctx->ac.i32_0,                            /* cachepolicy */
+            };
+
+            ac_build_intrinsic(&ctx->ac, "llvm.amdgcn.raw.buffer.atomic.add.i32", ctx->ac.i32, args, 5, 0);
+         }
+         ac_build_endif(&ctx->ac, 5237);
+         ac_build_endif(&ctx->ac, 5229);
+      }
    }
    ac_build_endif(&ctx->ac, 5140);
 
    /* Export position and parameter data */
-   tmp = LLVMBuildICmp(builder, LLVMIntULT, tid, vertlive_scan.result_reduce, "");
+   LLVMValueRef num_export_threads = vertlive_scan.result_reduce;
+   tmp = LLVMBuildICmp(builder, LLVMIntULT, tid, num_export_threads, "");
    ac_build_ifcc(&ctx->ac, tmp, 5145);
    {
       struct si_shader_output_values outputs[PIPE_MAX_SHADER_OUTPUTS];
@@ -2151,7 +2234,7 @@ void gfx10_ngg_gs_emit_epilogue(struct si_shader_context *ctx)
          }
       }
 
-      si_llvm_build_vs_exports(ctx, outputs, info->num_outputs);
+      si_llvm_build_vs_exports(ctx, num_export_threads, outputs, info->num_outputs);
    }
    ac_build_endif(&ctx->ac, 5145);
 }
@@ -2204,7 +2287,7 @@ bool gfx10_ngg_calculate_subgroup_info(struct si_shader *shader)
 
    /* All these are per subgroup: */
    const unsigned min_esverts =
-      gs_sel->screen->info.chip_class >= GFX10_3 ? 29 : (24 - 1 + max_verts_per_prim);
+      gs_sel->screen->info.gfx_level >= GFX10_3 ? 29 : (24 - 1 + max_verts_per_prim);
    bool max_vert_out_per_gs_instance = false;
    unsigned max_gsprims_base = gs_sel->screen->ngg_subgroup_size; /* default prim group size clamp */
    unsigned max_esverts_base = gs_sel->screen->ngg_subgroup_size;

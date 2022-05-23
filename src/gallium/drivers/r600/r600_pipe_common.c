@@ -217,7 +217,7 @@ static void r600_dma_emit_wait_idle(struct r600_common_context *rctx)
 {
 	struct radeon_cmdbuf *cs = &rctx->dma.cs;
 
-	if (rctx->chip_class >= EVERGREEN)
+	if (rctx->gfx_level >= EVERGREEN)
 		radeon_emit(cs, 0xf0000000); /* NOP */
 	else {
 		/* TODO: R600-R700 should use the FENCE packet.
@@ -428,7 +428,7 @@ static void r600_flush_dma_ring(void *ctx, unsigned flags,
 		 */
 		rctx->ws->fence_wait(rctx->ws, rctx->last_sdma_fence, 800*1000*1000);
 
-		rctx->check_vm_faults(rctx, &saved, RING_DMA);
+		rctx->check_vm_faults(rctx, &saved, AMD_IP_SDMA);
 		radeon_clear_saved_cs(&saved);
 	}
 }
@@ -586,7 +586,7 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	rctx->screen = rscreen;
 	rctx->ws = rscreen->ws;
 	rctx->family = rscreen->family;
-	rctx->chip_class = rscreen->chip_class;
+	rctx->gfx_level = rscreen->gfx_level;
 
 	rctx->b.invalidate_resource = r600_invalidate_resource;
 	rctx->b.resource_commit = r600_resource_commit;
@@ -604,7 +604,7 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	/* evergreen_compute.c has a special codepath for global buffers.
 	 * Everything else can use the direct path.
 	 */
-	if ((rscreen->chip_class == EVERGREEN || rscreen->chip_class == CAYMAN) &&
+	if ((rscreen->gfx_level == EVERGREEN || rscreen->gfx_level == CAYMAN) &&
 	    (context_flags & PIPE_CONTEXT_COMPUTE_ONLY))
 		rctx->b.buffer_subdata = u_default_buffer_subdata;
 	else
@@ -636,8 +636,8 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	if (!rctx->ctx)
 		return false;
 
-	if (rscreen->info.num_rings[RING_DMA] && !(rscreen->debug_flags & DBG_NO_ASYNC_DMA)) {
-		rctx->ws->cs_create(&rctx->dma.cs, rctx->ctx, RING_DMA,
+	if (rscreen->info.ip[AMD_IP_SDMA].num_queues && !(rscreen->debug_flags & DBG_NO_ASYNC_DMA)) {
+		rctx->ws->cs_create(&rctx->dma.cs, rctx->ctx, AMD_IP_SDMA,
                                     r600_flush_dma_ring, rctx, false);
 		rctx->dma.flush = r600_flush_dma_ring;
 	}
@@ -912,7 +912,7 @@ static unsigned get_max_threads_per_block(struct r600_common_screen *screen,
 	if (ir_type != PIPE_SHADER_IR_TGSI &&
 	    ir_type != PIPE_SHADER_IR_NIR)
 		return 256;
-	if (screen->chip_class >= EVERGREEN)
+	if (screen->gfx_level >= EVERGREEN)
 		return 1024;
 	return 256;
 }
@@ -1257,7 +1257,7 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 	r600_init_screen_query_functions(rscreen);
 
 	rscreen->family = rscreen->info.family;
-	rscreen->chip_class = rscreen->info.chip_class;
+	rscreen->gfx_level = rscreen->info.gfx_level;
 	rscreen->debug_flags |= debug_get_flags_option("R600_DEBUG", common_debug_options, 0);
 
 	r600_disk_cache_create(rscreen);
@@ -1281,7 +1281,7 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		printf("pci_id = 0x%x\n", rscreen->info.pci_id);
 		printf("family = %i (%s)\n", rscreen->info.family,
 		       r600_get_family_name(rscreen));
-		printf("chip_class = %i\n", rscreen->info.chip_class);
+		printf("gfx_level = %i\n", rscreen->info.gfx_level);
 		printf("pte_fragment_size = %u\n", rscreen->info.pte_fragment_size);
 		printf("gart_page_size = %u\n", rscreen->info.gart_page_size);
 		printf("gart_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.gart_size, 1024*1024));
@@ -1294,8 +1294,8 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		printf("r600_has_virtual_memory = %i\n", rscreen->info.r600_has_virtual_memory);
 		printf("gfx_ib_pad_with_type2 = %i\n", rscreen->info.gfx_ib_pad_with_type2);
 		printf("uvd_decode = %u\n", rscreen->info.has_video_hw.uvd_decode);
-		printf("num_rings[RING_DMA] = %i\n", rscreen->info.num_rings[RING_DMA]);
-		printf("num_rings[RING_COMPUTE] = %u\n", rscreen->info.num_rings[RING_COMPUTE]);
+		printf("ip[AMD_IP_SDMA] = %i\n", rscreen->info.ip[AMD_IP_SDMA].num_queues);
+		printf("ip[AMD_IP_COMPUTE] = %u\n", rscreen->info.ip[AMD_IP_COMPUTE].num_queues);
 		printf("uvd_fw_version = %u\n", rscreen->info.uvd_fw_version);
 		printf("vce_fw_version = %u\n", rscreen->info.vce_fw_version);
 		printf("me_fw_version = %i\n", rscreen->info.me_fw_version);
@@ -1339,7 +1339,11 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		.lower_insert_byte = true,
 		.lower_insert_word = true,
 		.lower_rotate = true,
-		.max_unroll_iterations = 32,
+		/* due to a bug in the shader compiler, some loops hang
+		 * if they are not unrolled, see:
+		 *    https://bugs.freedesktop.org/show_bug.cgi?id=86720
+		 */
+		.max_unroll_iterations = 255,
 		.lower_interpolate_at = true,
 		.vectorize_io = true,
 		.has_umad24 = true,
@@ -1364,13 +1368,16 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
          * lowered code */
         rscreen->nir_options.lower_fpow = rscreen->debug_flags & DBG_NIR_PREFERRED;
 
-	if (rscreen->info.chip_class < EVERGREEN) {
+        if (rscreen->info.family < CHIP_CEDAR)
+           rscreen->nir_options.force_indirect_unrolling_sampler = true;
+
+	if (rscreen->info.gfx_level < EVERGREEN) {
 		/* Pre-EG doesn't have these ALU ops */
 		rscreen->nir_options.lower_bit_count = true;
 		rscreen->nir_options.lower_bitfield_reverse = true;
 	}
 
-        if (rscreen->info.chip_class < CAYMAN) {
+        if (rscreen->info.gfx_level < CAYMAN) {
            rscreen->nir_options.lower_doubles_options = nir_lower_fp64_full_software;
            rscreen->nir_options.lower_int64_options = ~0;
         } else {

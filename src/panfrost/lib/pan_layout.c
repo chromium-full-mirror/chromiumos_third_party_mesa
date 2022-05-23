@@ -164,6 +164,41 @@ panfrost_get_layer_stride(const struct pan_image_layout *layout,
                 return layout->slices[level].surface_stride;
 }
 
+unsigned
+panfrost_get_legacy_stride(const struct pan_image_layout *layout,
+                           unsigned level)
+{
+        unsigned row_stride = layout->slices[level].row_stride;
+        struct pan_block_size block_size =
+                panfrost_block_size(layout->modifier, layout->format);
+
+        if (drm_is_afbc(layout->modifier)) {
+                unsigned width = u_minify(layout->width, level);
+                width = ALIGN_POT(width, block_size.width);
+
+                return width * util_format_get_blocksize(layout->format);
+        } else {
+                return row_stride / block_size.height;
+        }
+}
+
+unsigned
+panfrost_from_legacy_stride(unsigned legacy_stride,
+                            enum pipe_format format,
+                            uint64_t modifier)
+{
+        struct pan_block_size block_size =
+                panfrost_block_size(modifier, format);
+
+        if (drm_is_afbc(modifier)) {
+                unsigned width = legacy_stride / util_format_get_blocksize(format);
+
+                return (width / block_size.width) * AFBC_HEADER_BYTES_PER_TILE;
+        } else {
+                return legacy_stride * block_size.height;
+        }
+}
+
 /* Computes the offset into a texture at a particular level/face. Add to
  * the base address of a texture to get the address to that level/face */
 
@@ -194,7 +229,7 @@ pan_image_layout_init(struct pan_image_layout *layout,
         if (explicit_layout && (explicit_layout->offset & 63))
                 return false;
 
-        unsigned bytes_per_pixel = util_format_get_blocksize(layout->format);
+        unsigned fmt_blocksize = util_format_get_blocksize(layout->format);
 
         /* MSAA is implemented as a 3D texture with z corresponding to the
          * sample #, horrifyingly enough */
@@ -227,24 +262,20 @@ pan_image_layout_init(struct pan_image_layout *layout,
 
                 slice->offset = offset;
 
-                /* Compute the would-be stride */
-                unsigned stride = bytes_per_pixel * effective_width;
+                unsigned row_stride = fmt_blocksize * effective_width * block_size.height;
 
-                if (explicit_layout) {
+                if (explicit_layout && !afbc) {
                         /* Make sure the explicit stride is valid */
-                        if (explicit_layout->line_stride < stride)
+                        if (explicit_layout->row_stride < row_stride)
                                 return false;
 
-                        stride = explicit_layout->line_stride;
+                        row_stride = explicit_layout->row_stride;
                 } else if (linear) {
                         /* Keep lines alignment on 64 byte for performance */
-                        stride = ALIGN_POT(stride, 64);
+                        row_stride = ALIGN_POT(row_stride, 64);
                 }
 
-                slice->line_stride = stride;
-                slice->row_stride = stride * block_size.height;
-
-                unsigned slice_one_size = slice->line_stride * effective_height;
+                unsigned slice_one_size = row_stride * (effective_height / block_size.height);
 
                 /* Compute AFBC sizes if necessary */
                 if (afbc) {
@@ -252,9 +283,12 @@ pan_image_layout_init(struct pan_image_layout *layout,
                                 panfrost_afbc_header_size(width, height);
 
                         /* Stride between two rows of AFBC headers */
-                        slice->afbc.row_stride =
+                        slice->row_stride =
                                 (effective_width / block_size.width) *
                                 AFBC_HEADER_BYTES_PER_TILE;
+
+                        if (explicit_layout && explicit_layout->row_stride < slice->row_stride)
+                                return false;
 
                         /* AFBC body size */
                         slice->afbc.body_size = slice_one_size;
@@ -273,6 +307,8 @@ pan_image_layout_init(struct pan_image_layout *layout,
                                 slice_one_size += slice->afbc.header_size;
                                 slice->afbc.surface_stride = slice_one_size;
                         }
+                } else {
+                        slice->row_stride = row_stride;
                 }
 
                 unsigned slice_full_size =

@@ -293,11 +293,11 @@ calc_waves_per_workgroup(Program* program)
 uint16_t
 get_extra_sgprs(Program* program)
 {
-   if (program->chip_class >= GFX10) {
+   if (program->gfx_level >= GFX10) {
       assert(!program->needs_flat_scr);
       assert(!program->dev.xnack_enabled);
       return 0;
-   } else if (program->chip_class >= GFX8) {
+   } else if (program->gfx_level >= GFX8) {
       if (program->needs_flat_scr)
          return 6;
       else if (program->dev.xnack_enabled)
@@ -382,7 +382,7 @@ max_suitable_waves(Program* program, uint16_t waves)
        * These limit occupancy the same way as other stages' LDS usage does.
        */
       unsigned lds_bytes_per_interp = 3 * 16;
-      unsigned lds_param_bytes = lds_bytes_per_interp * program->info->ps.num_interp;
+      unsigned lds_param_bytes = lds_bytes_per_interp * program->info.ps.num_interp;
       lds_per_workgroup += align(lds_param_bytes, program->dev.lds_alloc_granule);
    }
    unsigned lds_limit = program->wgp_mode ? program->dev.lds_limit * 2 : program->dev.lds_limit;
@@ -439,7 +439,7 @@ live_var_analysis(Program* program)
    std::vector<PhiInfo> phi_info(program->blocks.size());
    RegisterDemand new_demand;
 
-   program->needs_vcc = program->chip_class >= GFX10;
+   program->needs_vcc = program->gfx_level >= GFX10;
 
    /* this implementation assumes that the block idx corresponds to the block's position in
     * program->blocks vector */

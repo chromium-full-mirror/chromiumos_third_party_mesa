@@ -34,8 +34,10 @@
 #include "pvr_srv_bridge.h"
 #include "pvr_srv_job_compute.h"
 #include "pvr_srv_job_render.h"
+#include "pvr_srv_job_transfer.h"
 #include "pvr_srv_public.h"
-#include "pvr_srv_syncobj.h"
+#include "pvr_srv_sync.h"
+#include "pvr_srv_job_null.h"
 #include "pvr_winsys.h"
 #include "pvr_winsys_helper.h"
 #include "util/log.h"
@@ -413,12 +415,6 @@ static const struct pvr_winsys_ops srv_winsys_ops = {
    .heap_free = pvr_srv_winsys_heap_free,
    .vma_map = pvr_srv_winsys_vma_map,
    .vma_unmap = pvr_srv_winsys_vma_unmap,
-   .syncobj_create = pvr_srv_winsys_syncobj_create,
-   .syncobj_destroy = pvr_srv_winsys_syncobj_destroy,
-   .syncobjs_reset = pvr_srv_winsys_syncobjs_reset,
-   .syncobjs_signal = pvr_srv_winsys_syncobjs_signal,
-   .syncobjs_wait = pvr_srv_winsys_syncobjs_wait,
-   .syncobjs_merge = pvr_srv_winsys_syncobjs_merge,
    .free_list_create = pvr_srv_winsys_free_list_create,
    .free_list_destroy = pvr_srv_winsys_free_list_destroy,
    .render_target_dataset_create = pvr_srv_render_target_dataset_create,
@@ -429,6 +425,9 @@ static const struct pvr_winsys_ops srv_winsys_ops = {
    .compute_ctx_create = pvr_srv_winsys_compute_ctx_create,
    .compute_ctx_destroy = pvr_srv_winsys_compute_ctx_destroy,
    .compute_submit = pvr_srv_winsys_compute_submit,
+   .transfer_ctx_create = pvr_srv_winsys_transfer_ctx_create,
+   .transfer_ctx_destroy = pvr_srv_winsys_transfer_ctx_destroy,
+   .null_job_submit = pvr_srv_winsys_null_job_submit,
 };
 
 static bool pvr_is_driver_compatible(int render_fd)
@@ -441,7 +440,7 @@ static bool pvr_is_driver_compatible(int render_fd)
 
    assert(strcmp(version->name, "pvr") == 0);
 
-   /* Only the 1.14 driver is supported for now. */
+   /* Only the 1.17 driver is supported for now. */
    if (version->version_major != PVR_SRV_VERSION_MAJ ||
        version->version_minor != PVR_SRV_VERSION_MIN) {
       vk_errorf(NULL,
@@ -470,6 +469,10 @@ struct pvr_winsys *pvr_srv_winsys_create(int master_fd,
    if (!pvr_is_driver_compatible(render_fd))
       return NULL;
 
+   result = pvr_srv_init_module(render_fd, PVR_SRVKM_MODULE_TYPE_SERVICES);
+   if (result != VK_SUCCESS)
+      return NULL;
+
    result = pvr_srv_connection_create(render_fd, &bvnc);
    if (result != VK_SUCCESS)
       return NULL;
@@ -486,6 +489,10 @@ struct pvr_winsys *pvr_srv_winsys_create(int master_fd,
    srv_ws->master_fd = master_fd;
    srv_ws->render_fd = render_fd;
    srv_ws->alloc = alloc;
+
+   srv_ws->base.syncobj_type = pvr_srv_sync_type;
+   srv_ws->base.sync_types[0] = &srv_ws->base.syncobj_type;
+   srv_ws->base.sync_types[1] = NULL;
 
    result = pvr_srv_memctx_init(srv_ws);
    if (result != VK_SUCCESS)

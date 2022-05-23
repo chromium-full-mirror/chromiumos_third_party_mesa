@@ -69,7 +69,7 @@ static void si_pc_emit_instance(struct si_context *sctx, int se, int instance)
       value |= S_030800_SE_BROADCAST_WRITES(1);
    }
 
-   if (sctx->chip_class >= GFX10) {
+   if (sctx->gfx_level >= GFX10) {
       /* TODO: Expose counters from each shader array separately if needed. */
       value |= S_030800_SA_BROADCAST_WRITES(1);
    }
@@ -152,8 +152,12 @@ static void si_pc_emit_stop(struct si_context *sctx, struct si_resource *buffer,
    radeon_begin(cs);
    radeon_emit(PKT3(PKT3_EVENT_WRITE, 0, 0));
    radeon_emit(EVENT_TYPE(V_028A90_PERFCOUNTER_SAMPLE) | EVENT_INDEX(0));
-   radeon_emit(PKT3(PKT3_EVENT_WRITE, 0, 0));
-   radeon_emit(EVENT_TYPE(V_028A90_PERFCOUNTER_STOP) | EVENT_INDEX(0));
+
+   if (!sctx->screen->info.never_send_perfcounter_stop) {
+      radeon_emit(PKT3(PKT3_EVENT_WRITE, 0, 0));
+      radeon_emit(EVENT_TYPE(V_028A90_PERFCOUNTER_STOP) | EVENT_INDEX(0));
+   }
+
    radeon_set_uconfig_reg(
       R_036020_CP_PERFMON_CNTL,
       S_036020_PERFMON_STATE(sctx->screen->info.never_stop_sq_perf_counters ?
@@ -179,13 +183,17 @@ void si_pc_emit_spm_start(struct radeon_cmdbuf *cs)
    radeon_end();
 }
 
-void si_pc_emit_spm_stop(struct radeon_cmdbuf *cs, bool never_stop_sq_perf_counters)
+void si_pc_emit_spm_stop(struct radeon_cmdbuf *cs, bool never_stop_sq_perf_counters,
+                         bool never_send_perfcounter_stop)
 {
    radeon_begin(cs);
 
    /* Stop windowed performance counters. */
-   radeon_emit(PKT3(PKT3_EVENT_WRITE, 0, 0));
-   radeon_emit(EVENT_TYPE(V_028A90_PERFCOUNTER_STOP) | EVENT_INDEX(0));
+   if (!never_send_perfcounter_stop) {
+      radeon_emit(PKT3(PKT3_EVENT_WRITE, 0, 0));
+      radeon_emit(EVENT_TYPE(V_028A90_PERFCOUNTER_STOP) | EVENT_INDEX(0));
+   }
+
    radeon_set_sh_reg(R_00B82C_COMPUTE_PERFCOUNT_ENABLE, S_00B82C_PERFCOUNT_ENABLE(0));
 
    /* Stop SPM counters. */
@@ -268,12 +276,15 @@ static void si_pc_query_destroy(struct si_context *sctx, struct si_query *squery
 
 void si_inhibit_clockgating(struct si_context *sctx, struct radeon_cmdbuf *cs, bool inhibit)
 {
+   if (sctx->gfx_level >= GFX11)
+      return;
+
    radeon_begin(&sctx->gfx_cs);
 
-   if (sctx->chip_class >= GFX10) {
+   if (sctx->gfx_level >= GFX10) {
       radeon_set_uconfig_reg(R_037390_RLC_PERFMON_CLK_CNTL,
                              S_037390_PERFMON_CLOCK_STATE(inhibit));
-   } else if (sctx->chip_class >= GFX8) {
+   } else if (sctx->gfx_level >= GFX8) {
       radeon_set_uconfig_reg(R_0372FC_RLC_PERFMON_CLK_CNTL,
                              S_0372FC_PERFMON_CLOCK_STATE(inhibit));
    }
@@ -897,7 +908,7 @@ si_spm_init(struct si_context *sctx)
 
       /* L2 cache hit */
       {GL2C, 0, 0x3},   /* Number of GL2C requests. */
-      {GL2C, 0, info->chip_class >= GFX10_3 ? 0x2b : 0x23},  /* Number of GL2C misses. */
+      {GL2C, 0, info->gfx_level >= GFX10_3 ? 0x2b : 0x23},  /* Number of GL2C misses. */
    };
 
    if (!ac_init_perfcounters(info, false, false, pc))

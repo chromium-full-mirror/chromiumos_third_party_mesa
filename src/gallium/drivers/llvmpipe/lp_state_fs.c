@@ -619,7 +619,8 @@ generate_fs_loop(struct gallivm_state *gallivm,
 
       if (shader->info.base.properties[TGSI_PROPERTY_FS_EARLY_DEPTH_STENCIL])
          depth_mode = EARLY_DEPTH_TEST | EARLY_DEPTH_WRITE;
-      else if (!shader->info.base.writes_z && !shader->info.base.writes_stencil) {
+      else if (!shader->info.base.writes_z && !shader->info.base.writes_stencil &&
+               !shader->info.base.uses_fbfetch) {
          if (shader->info.base.writes_memory)
             depth_mode = LATE_DEPTH_TEST | LATE_DEPTH_WRITE;
          else if (key->alpha.enabled ||
@@ -3172,7 +3173,9 @@ generate_fragment(struct llvmpipe_context *lp,
    }
 
    /* code generated texture sampling */
-   sampler = lp_llvm_sampler_soa_create(lp_fs_variant_key_samplers(key), key->nr_samplers);
+   sampler = lp_llvm_sampler_soa_create(lp_fs_variant_key_samplers(key),
+                                        MAX2(key->nr_samplers,
+                                             key->nr_sampler_views));
    image = lp_llvm_image_soa_create(lp_fs_variant_key_images(key), key->nr_images);
 
    num_fs = 16 / fs_type.length; /* number of loops per 4x4 stamp */

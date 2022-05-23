@@ -1,6 +1,7 @@
 #!/bin/bash
 
 for var in \
+    ACO_DEBUG \
     ASAN_OPTIONS \
     BASE_SYSTEM_FORK_HOST_PREFIX \
     BASE_SYSTEM_MAINLINE_HOST_PREFIX \
@@ -103,6 +104,7 @@ for var in \
     PIGLIT_RESULTS \
     PIGLIT_TESTS \
     PIPELINE_ARTIFACTS_BASE \
+    RADV_PERFTEST \
     SKQP_ASSETS_DIR \
     SKQP_BACKENDS \
     TU_DEBUG \

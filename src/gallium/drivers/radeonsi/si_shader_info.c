@@ -686,6 +686,12 @@ void si_nir_scan_shader(struct si_screen *sscreen, const struct nir_shader *nir,
       info->output_usagemask[info->num_outputs] = 0x1;
    }
 
+   if (nir->info.stage == MESA_SHADER_TESS_EVAL) {
+      /* This is a hack to simplify loading tess levels in TES. */
+      info->input[info->num_inputs].semantic = VARYING_SLOT_TESS_LEVEL_OUTER;
+      info->input[info->num_inputs + 1].semantic = VARYING_SLOT_TESS_LEVEL_INNER;
+   }
+
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       info->allow_flat_shading = !(info->uses_persp_center || info->uses_persp_centroid ||
                                    info->uses_persp_sample || info->uses_linear_center ||
@@ -767,7 +773,7 @@ void si_nir_scan_shader(struct si_screen *sscreen, const struct nir_shader *nir,
    if (nir->info.stage == MESA_SHADER_VERTEX) {
       info->num_vs_inputs =
          nir->info.stage == MESA_SHADER_VERTEX && !info->base.vs.blit_sgprs_amd ? info->num_inputs : 0;
-      unsigned num_vbos_in_sgprs = si_num_vbos_in_user_sgprs_inline(sscreen->info.chip_class);
+      unsigned num_vbos_in_sgprs = si_num_vbos_in_user_sgprs_inline(sscreen->info.gfx_level);
       info->num_vbos_in_user_sgprs = MIN2(info->num_vs_inputs, num_vbos_in_sgprs);
 
       /* The prolog is a no-op if there are no inputs. */
@@ -789,7 +795,7 @@ void si_nir_scan_shader(struct si_screen *sscreen, const struct nir_shader *nir,
       /* For the ESGS ring in LDS, add 1 dword to reduce LDS bank
        * conflicts, i.e. each vertex will start at a different bank.
        */
-      if (sscreen->info.chip_class >= GFX9)
+      if (sscreen->info.gfx_level >= GFX9)
          info->esgs_itemsize += 4;
 
       assert(((info->esgs_itemsize / 4) & C_028AAC_ITEMSIZE) == 0);

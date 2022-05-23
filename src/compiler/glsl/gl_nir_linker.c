@@ -507,6 +507,36 @@ add_interface_variables(const struct gl_constants *consts,
    return false;
 }
 
+bool
+nir_add_packed_var_to_resource_list(const struct gl_constants *consts,
+                                    struct gl_shader_program *shProg,
+                                    struct set *resource_set,
+                                    nir_variable *var,
+                                    unsigned stage, GLenum type)
+{
+   if (!add_shader_variable(consts, shProg, resource_set, 1 << stage,
+                            type, var, var->name, var->type, false,
+                            var->data.location - VARYING_SLOT_VAR0,
+                            inout_has_same_location(var, stage), NULL))
+      return false;
+
+   return true;
+}
+
+/**
+ * Initilise list of program resources that point to resource data.
+ */
+void
+init_program_resource_list(struct gl_shader_program *prog)
+{
+   /* Rebuild resource list. */
+   if (prog->data->ProgramResourceList) {
+      ralloc_free(prog->data->ProgramResourceList);
+      prog->data->ProgramResourceList = NULL;
+      prog->data->NumProgramResourceList = 0;
+   }
+}
+
 /* TODO: as we keep adding features, this method is becoming more and more
  * similar to its GLSL counterpart at linker.cpp. Eventually it would be good
  * to check if they could be refactored, and reduce code duplication somehow
@@ -517,11 +547,8 @@ nir_build_program_resource_list(const struct gl_constants *consts,
                                 bool rebuild_resourse_list)
 {
    /* Rebuild resource list. */
-   if (prog->data->ProgramResourceList && rebuild_resourse_list) {
-      ralloc_free(prog->data->ProgramResourceList);
-      prog->data->ProgramResourceList = NULL;
-      prog->data->NumProgramResourceList = 0;
-   }
+   if (rebuild_resourse_list)
+      init_program_resource_list(prog);
 
    int input_stage = MESA_SHADER_STAGES, output_stage = 0;
 
@@ -751,11 +778,105 @@ check_image_resources(const struct gl_constants *consts,
                          " buffers and fragment outputs\n");
 }
 
+static bool
+is_sampler_array_accessed_indirectly(nir_deref_instr *deref)
+{
+   for (nir_deref_instr *d = deref; d; d = nir_deref_instr_parent(d)) {
+      if (d->deref_type != nir_deref_type_array)
+         continue;
+
+      if (nir_src_is_const(d->arr.index))
+         continue;
+
+      return true;
+   }
+
+   return false;
+}
+
+/**
+ * This check is done to make sure we allow only constant expression
+ * indexing and "constant-index-expression" (indexing with an expression
+ * that includes loop induction variable).
+ */
+static bool
+validate_sampler_array_indexing(const struct gl_constants *consts,
+                                struct gl_shader_program *prog)
+{
+   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
+      if (prog->_LinkedShaders[i] == NULL)
+         continue;
+
+      bool no_dynamic_indexing =
+         consts->ShaderCompilerOptions[i].NirOptions->force_indirect_unrolling_sampler;
+
+      bool uses_indirect_sampler_array_indexing = false;
+      nir_foreach_function(function, prog->_LinkedShaders[i]->Program->nir) {
+         nir_foreach_block(block, function->impl) {
+            nir_foreach_instr(instr, block) {
+               /* Check if a sampler array is accessed indirectly */
+               if (instr->type == nir_instr_type_tex) {
+                  nir_tex_instr *tex_instr = nir_instr_as_tex(instr);
+                  int sampler_idx =
+                     nir_tex_instr_src_index(tex_instr, nir_tex_src_sampler_deref);
+                  if (sampler_idx >= 0) {
+                     nir_deref_instr *deref =
+                        nir_instr_as_deref(tex_instr->src[sampler_idx].src.ssa->parent_instr);
+                     if (is_sampler_array_accessed_indirectly(deref)) {
+                        uses_indirect_sampler_array_indexing = true;
+                        break;
+                     }
+                  }
+               }
+            }
+
+            if (uses_indirect_sampler_array_indexing)
+               break;
+         }
+         if (uses_indirect_sampler_array_indexing)
+            break;
+      }
+
+      if (uses_indirect_sampler_array_indexing) {
+         const char *msg = "sampler arrays indexed with non-constant "
+                           "expressions is forbidden in GLSL %s %u";
+         /* Backend has indicated that it has no dynamic indexing support. */
+         if (no_dynamic_indexing) {
+            linker_error(prog, msg, prog->IsES ? "ES" : "",
+                         prog->data->Version);
+            return false;
+         } else {
+            linker_warning(prog, msg, prog->IsES ? "ES" : "",
+                           prog->data->Version);
+         }
+      }
+   }
+
+   return true;
+}
+
 bool
 gl_nir_link_glsl(const struct gl_constants *consts,
                  const struct gl_extensions *exts,
+                 gl_api api,
                  struct gl_shader_program *prog)
 {
+   if (prog->NumShaders == 0)
+      return true;
+
+   if (!gl_nir_link_varyings(consts, exts, api, prog))
+      return false;
+
+   /* Validation for special cases where we allow sampler array indexing
+    * with loop induction variable. This check emits a warning or error
+    * depending if backend can handle dynamic indexing.
+    */
+   if ((!prog->IsES && prog->data->Version < 130) ||
+       (prog->IsES && prog->data->Version < 300)) {
+      if (!validate_sampler_array_indexing(consts, prog))
+         return false;
+   }
+
    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
       struct gl_linked_shader *shader = prog->_LinkedShaders[i];
       if (shader) {
