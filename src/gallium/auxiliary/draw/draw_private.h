@@ -330,6 +330,7 @@ struct draw_context
       struct draw_geometry_shader *geometry_shader;
       uint num_gs_outputs;  /**< convenience, from geometry_shader */
       uint position_output;
+      uint clipvertex_output;
 
       /** Fields for TGSI interpreter / execution */
       struct {
@@ -358,7 +359,9 @@ struct draw_context
 
    struct {
       struct draw_tess_eval_shader *tess_eval_shader;
+      uint num_tes_outputs;  /**< convenience, from tess_eval_shader */
       uint position_output;
+      uint clipvertex_output;
 
       /** Fields for TGSI interpreter / execution */
       struct {

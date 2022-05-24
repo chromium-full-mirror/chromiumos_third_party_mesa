@@ -858,7 +858,8 @@ analyze_expression(const nir_alu_instr *instr, unsigned src,
       break;
    }
 
-   case nir_op_fmul: {
+   case nir_op_fmul:
+   case nir_op_fmulz: {
       const struct ssa_result_range left =
          analyze_expression(alu, 0, ht, nir_alu_src_type(alu, 0));
       const struct ssa_result_range right =
@@ -878,14 +879,19 @@ analyze_expression(const nir_alu_instr *instr, unsigned src,
       } else
          r.range = fmul_table[left.range][right.range];
 
-      /* Mulitpliation produces NaN for X * NaN and for 0 * ±Inf.  If both
-       * operands are numbers and either both are finite or one is finite and
-       * the other cannot be zero, then the result must be a number.
-       */
-      r.is_a_number = (left.is_a_number && right.is_a_number) &&
-         ((left.is_finite && right.is_finite) ||
-          (!is_not_zero(left.range) && right.is_finite) ||
-          (left.is_finite && !is_not_zero(right.range)));
+      if (alu->op == nir_op_fmul) {
+         /* Mulitpliation produces NaN for X * NaN and for 0 * ±Inf.  If both
+          * operands are numbers and either both are finite or one is finite and
+          * the other cannot be zero, then the result must be a number.
+          */
+         r.is_a_number = (left.is_a_number && right.is_a_number) &&
+            ((left.is_finite && right.is_finite) ||
+             (!is_not_zero(left.range) && right.is_finite) ||
+             (left.is_finite && !is_not_zero(right.range)));
+      } else {
+         /* nir_op_fmulz: unlike nir_op_fmul, 0 * ±Inf is a number. */
+         r.is_a_number = left.is_a_number && right.is_a_number;
+      }
 
       break;
    }
@@ -1292,7 +1298,15 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
       nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(scalar.def->parent_instr);
       switch (intrin->intrinsic) {
       case nir_intrinsic_load_local_invocation_index:
-         if (shader->info.workgroup_size_variable) {
+         /* The local invocation index is used under the hood by RADV for
+          * some non-compute-like shaders (eg. LS and NGG). These technically
+          * run in workgroups on the HW, even though this fact is not exposed
+          * by the API.
+          * They can safely use the same code path here as variable sized
+          * compute-like shader stages.
+          */
+         if (!gl_shader_stage_uses_workgroup(shader->info.stage) ||
+             shader->info.workgroup_size_variable) {
             res = config->max_workgroup_invocations - 1;
          } else {
             res = (shader->info.workgroup_size[0] *
@@ -1457,13 +1471,18 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
       case nir_op_b32csel:
       case nir_op_ubfe:
       case nir_op_bfm:
-      case nir_op_f2u32:
       case nir_op_fmul:
+      case nir_op_fmulz:
+      case nir_op_extract_u8:
+      case nir_op_extract_i8:
+      case nir_op_extract_u16:
+      case nir_op_extract_i16:
          break;
       case nir_op_u2u1:
       case nir_op_u2u8:
       case nir_op_u2u16:
       case nir_op_u2u32:
+      case nir_op_f2u32:
          if (nir_ssa_scalar_chase_alu_src(scalar, 0).def->bit_size > 32) {
             /* If src is >32 bits, return max */
             return max;
@@ -1572,6 +1591,7 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
          }
          break;
       case nir_op_fmul:
+      case nir_op_fmulz:
          /* infinity/NaN starts at 0x7f800000u, negative numbers at 0x80000000 */
          if (src0 < 0x7f800000u && src1 < 0x7f800000u) {
             float src0_f, src1_f;
@@ -1590,6 +1610,18 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
          break;
       case nir_op_sad_u8x4:
          res = src2 + 4 * 255;
+         break;
+      case nir_op_extract_u8:
+         res = MIN2(src0, UINT8_MAX);
+         break;
+      case nir_op_extract_i8:
+         res = (src0 >= 0x80) ? max : MIN2(src0, INT8_MAX);
+         break;
+      case nir_op_extract_u16:
+         res = MIN2(src0, UINT16_MAX);
+         break;
+      case nir_op_extract_i16:
+         res = (src0 >= 0x8000) ? max : MIN2(src0, INT16_MAX);
          break;
       default:
          res = max;

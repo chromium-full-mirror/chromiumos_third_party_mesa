@@ -127,7 +127,9 @@ variables_can_merge(const nir_shader *shader,
    assert(a->data.mode == b->data.mode);
    if (shader->info.stage == MESA_SHADER_FRAGMENT &&
        a->data.mode == nir_var_shader_in &&
-       a->data.interpolation != b->data.interpolation)
+       (a->data.interpolation != b->data.interpolation ||
+        a->data.centroid != b->data.centroid ||
+        a->data.sample != b->data.sample))
       return false;
 
    if (shader->info.stage == MESA_SHADER_FRAGMENT &&
@@ -380,6 +382,24 @@ build_array_deref_of_new_var_flat(nir_shader *shader,
       build_array_index(b, leader, nir_imm_int(b, base), vs_in, per_vertex));
 }
 
+ASSERTED static bool
+nir_shader_can_read_output(const shader_info *info)
+{
+   switch (info->stage) {
+   case MESA_SHADER_TESS_CTRL:
+   case MESA_SHADER_FRAGMENT:
+      return true;
+
+   case MESA_SHADER_TASK:
+   case MESA_SHADER_MESH:
+      /* TODO(mesh): This will not be allowed on EXT. */
+      return true;
+
+   default:
+      return false;
+   }
+}
+
 static bool
 nir_lower_io_to_vector_impl(nir_function_impl *impl, nir_variable_mode modes)
 {
@@ -446,8 +466,7 @@ nir_lower_io_to_vector_impl(nir_function_impl *impl, nir_variable_mode modes)
                break;
 
             if (nir_deref_mode_is(old_deref, nir_var_shader_out))
-               assert(b.shader->info.stage == MESA_SHADER_TESS_CTRL ||
-                      b.shader->info.stage == MESA_SHADER_FRAGMENT);
+               assert(nir_shader_can_read_output(&b.shader->info));
 
             nir_variable *old_var = nir_deref_instr_get_variable(old_deref);
 
@@ -594,7 +613,7 @@ nir_vectorize_tess_levels_impl(nir_function_impl *impl)
    nir_builder_init(&b, impl);
 
    nir_foreach_block(block, impl) {
-      nir_foreach_instr(instr, block) {
+      nir_foreach_instr_safe(instr, block) {
          if (instr->type != nir_instr_type_intrinsic)
             continue;
 
@@ -614,7 +633,8 @@ nir_vectorize_tess_levels_impl(nir_function_impl *impl)
 
          assert(deref->deref_type == nir_deref_type_array);
          assert(nir_src_is_const(deref->arr.index));
-         unsigned index = nir_src_as_uint(deref->arr.index);;
+         unsigned index = nir_src_as_uint(deref->arr.index);
+         unsigned vec_size = glsl_get_vector_elements(var->type);
 
          b.cursor = nir_before_instr(instr);
          nir_ssa_def *new_deref = &nir_build_deref_var(&b, var)->dest.ssa;
@@ -622,7 +642,23 @@ nir_vectorize_tess_levels_impl(nir_function_impl *impl)
 
          nir_deref_instr_remove_if_unused(deref);
 
-         intrin->num_components = glsl_get_vector_elements(var->type);
+         intrin->num_components = vec_size;
+
+         /* Handle out of bounds access. */
+         if (index >= vec_size) {
+            if (intrin->intrinsic == nir_intrinsic_load_deref) {
+               /* Return undef from out of bounds loads. */
+               b.cursor = nir_after_instr(instr);
+               nir_ssa_def *val = &intrin->dest.ssa;
+               nir_ssa_def *u = nir_ssa_undef(&b, val->num_components, val->bit_size);
+               nir_ssa_def_rewrite_uses(val, u);
+            }
+
+            /* Finally, remove the out of bounds access. */
+            nir_instr_remove(instr);
+            progress = true;
+            continue;
+         }
 
          if (intrin->intrinsic == nir_intrinsic_store_deref) {
             nir_intrinsic_set_write_mask(intrin, 1 << index);
@@ -632,6 +668,7 @@ nir_vectorize_tess_levels_impl(nir_function_impl *impl)
          } else {
             b.cursor = nir_after_instr(instr);
             nir_ssa_def *val = &intrin->dest.ssa;
+            val->num_components = intrin->num_components;
             nir_ssa_def *comp = nir_channel(&b, val, index);
             nir_ssa_def_rewrite_uses_after(val, comp, comp->parent_instr);
          }

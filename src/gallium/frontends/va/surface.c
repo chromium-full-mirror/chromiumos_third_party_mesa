@@ -902,10 +902,8 @@ vlVaCreateSurfaces2(VADriverContextP ctx, unsigned int format,
          if (attrib_list[i].value.type != VAGenericValueTypePointer)
             return VA_STATUS_ERROR_INVALID_PARAMETER;
          modifier_list = attrib_list[i].value.value.p;
-         if (modifier_list != NULL) {
-            modifiers = modifier_list->modifiers;
-            modifiers_count = modifier_list->num_modifiers;
-         }
+         modifiers = modifier_list->modifiers;
+         modifiers_count = modifier_list->num_modifiers;
          break;
 #endif
       case VASurfaceAttribUsageHint:
@@ -1235,6 +1233,7 @@ vlVaExportSurfaceHandle(VADriverContextP ctx,
       struct u_rect src_rect, dst_rect;
 
       surf->templat.interlaced = false;
+      surf->obsolete_buf = surf->buffer;
 
       ret = vlVaHandleSurfaceAllocate(drv, surf, &surf->templat, NULL, 0);
       if (ret != VA_STATUS_SUCCESS) {
@@ -1253,7 +1252,8 @@ vlVaExportSurfaceHandle(VADriverContextP ctx,
                                    VL_COMPOSITOR_WEAVE);
 
       interlaced->destroy(interlaced);
-   }
+   } else
+      surf->obsolete_buf = NULL;
 
    surfaces = surf->buffer->get_surfaces(surf->buffer);
 

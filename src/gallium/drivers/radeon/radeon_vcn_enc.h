@@ -71,6 +71,7 @@
 #define RENCODE_DIRECT_OUTPUT_NALU_TYPE_PPS                                         0x00000003
 #define RENCODE_DIRECT_OUTPUT_NALU_TYPE_PREFIX                                      0x00000004
 #define RENCODE_DIRECT_OUTPUT_NALU_TYPE_END_OF_SEQUENCE                             0x00000005
+#define RENCODE_DIRECT_OUTPUT_NALU_TYPE_SEI                                         0x00000006
 
 #define RENCODE_SLICE_HEADER_TEMPLATE_MAX_TEMPLATE_SIZE_IN_DWORDS                   16
 #define RENCODE_SLICE_HEADER_TEMPLATE_MAX_NUM_INSTRUCTIONS                          16
@@ -124,6 +125,8 @@
 
 #define RENCODE_FEEDBACK_BUFFER_MODE_LINEAR                                         0
 #define RENCODE_FEEDBACK_BUFFER_MODE_CIRCULAR                                       1
+
+#define RENCODE_MAX_NUM_TEMPORAL_LAYERS                                             4
 
 #define RADEON_ENC_CS(value) (enc->cs.current.buf[enc->cs.current.cdw++] = (value))
 #define RADEON_ENC_BEGIN(cmd)                                                                      \
@@ -327,6 +330,12 @@ typedef struct rvcn_enc_reconstructed_picture_s {
    uint32_t chroma_offset;
 } rvcn_enc_reconstructed_picture_t;
 
+typedef struct rvcn_enc_picture_info_s
+{
+   bool in_use;
+   uint32_t frame_num;
+} rvcn_enc_picture_info_t;
+
 typedef struct rvcn_enc_pre_encode_input_picture_s {
    union {
       struct {
@@ -440,6 +449,9 @@ struct radeon_enc_pic {
    unsigned bit_depth_chroma_minus8;
    unsigned nal_unit_type;
    unsigned max_num_merge_cand;
+   unsigned temporal_id;
+   unsigned num_temporal_layers;
+   unsigned temporal_layer_pattern_index;
 
    bool not_referenced;
    bool is_idr;
@@ -458,7 +470,7 @@ struct radeon_enc_pic {
    rvcn_enc_h264_spec_misc_t spec_misc;
    rvcn_enc_hevc_spec_misc_t hevc_spec_misc;
    rvcn_enc_rate_ctl_session_init_t rc_session_init;
-   rvcn_enc_rate_ctl_layer_init_t rc_layer_init;
+   rvcn_enc_rate_ctl_layer_init_t rc_layer_init[RENCODE_MAX_NUM_TEMPORAL_LAYERS];
    rvcn_enc_h264_encode_params_t h264_enc_params;
    rvcn_enc_h264_deblocking_filter_t h264_deblock;
    rvcn_enc_hevc_deblocking_filter_t hevc_deblock;
@@ -475,6 +487,7 @@ struct radeon_encoder {
    struct pipe_video_codec base;
 
    void (*begin)(struct radeon_encoder *enc);
+   void (*before_encode)(struct radeon_encoder *enc);
    void (*encode)(struct radeon_encoder *enc);
    void (*destroy)(struct radeon_encoder *enc);
    void (*session_info)(struct radeon_encoder *enc);
@@ -492,6 +505,8 @@ struct radeon_encoder {
    void (*nalu_pps)(struct radeon_encoder *enc);
    void (*nalu_vps)(struct radeon_encoder *enc);
    void (*nalu_aud)(struct radeon_encoder *enc);
+   void (*nalu_sei)(struct radeon_encoder *enc);
+   void (*nalu_prefix)(struct radeon_encoder *enc);
    void (*slice_header)(struct radeon_encoder *enc);
    void (*ctx)(struct radeon_encoder *enc);
    void (*bitstream)(struct radeon_encoder *enc);
@@ -539,15 +554,18 @@ struct radeon_encoder {
    unsigned num_zeros;
    unsigned byte_index;
    unsigned bits_output;
+   unsigned bits_size;
    uint32_t total_task_size;
    uint32_t *p_task_size;
 
    bool emulation_prevention;
    bool need_feedback;
+   unsigned dpb_size;
+   rvcn_enc_picture_info_t dpb[RENCODE_MAX_NUM_RECONSTRUCTED_PICTURES];
 };
 
 void radeon_enc_add_buffer(struct radeon_encoder *enc, struct pb_buffer *buf,
-                           enum radeon_bo_usage usage, enum radeon_bo_domain domain, signed offset);
+                           unsigned usage, enum radeon_bo_domain domain, signed offset);
 
 void radeon_enc_set_emulation_prevention(struct radeon_encoder *enc, bool set);
 

@@ -34,6 +34,36 @@
 #endif
 #include <sys/stat.h>
 
+static void
+radv_suspend_queries(struct radv_cmd_buffer *cmd_buffer)
+{
+   /* Pipeline statistics queries. */
+   if (cmd_buffer->state.active_pipeline_queries > 0) {
+      cmd_buffer->state.flush_bits &= ~RADV_CMD_FLAG_START_PIPELINE_STATS;
+      cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_STOP_PIPELINE_STATS;
+   }
+
+   /* Occlusion queries. */
+   if (cmd_buffer->state.active_occlusion_queries > 0) {
+      radv_set_db_count_control(cmd_buffer, false);
+   }
+}
+
+static void
+radv_resume_queries(struct radv_cmd_buffer *cmd_buffer)
+{
+   /* Pipeline statistics queries. */
+   if (cmd_buffer->state.active_pipeline_queries > 0) {
+      cmd_buffer->state.flush_bits &= ~RADV_CMD_FLAG_STOP_PIPELINE_STATS;
+      cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_START_PIPELINE_STATS;
+   }
+
+   /* Occlusion queries. */
+   if (cmd_buffer->state.active_occlusion_queries > 0) {
+      radv_set_db_count_control(cmd_buffer, true);
+   }
+}
+
 void
 radv_meta_save(struct radv_meta_saved_state *state, struct radv_cmd_buffer *cmd_buffer,
                uint32_t flags)
@@ -56,6 +86,8 @@ radv_meta_save(struct radv_meta_saved_state *state, struct radv_cmd_buffer *cmd_
       /* Save all viewports. */
       state->viewport.count = cmd_buffer->state.dynamic.viewport.count;
       typed_memcpy(state->viewport.viewports, cmd_buffer->state.dynamic.viewport.viewports,
+                   MAX_VIEWPORTS);
+      typed_memcpy(state->viewport.xform, cmd_buffer->state.dynamic.viewport.xform,
                    MAX_VIEWPORTS);
 
       /* Save all scissors. */
@@ -85,6 +117,12 @@ radv_meta_save(struct radv_meta_saved_state *state, struct radv_cmd_buffer *cmd_
       state->stencil_op.back.pass_op = cmd_buffer->state.dynamic.stencil_op.back.pass_op;
       state->stencil_op.back.depth_fail_op =
          cmd_buffer->state.dynamic.stencil_op.back.depth_fail_op;
+
+      state->stencil_write_mask.front = cmd_buffer->state.dynamic.stencil_write_mask.front;
+      state->stencil_write_mask.back = cmd_buffer->state.dynamic.stencil_write_mask.back;
+
+      state->stencil_reference.front = cmd_buffer->state.dynamic.stencil_reference.front;
+      state->stencil_reference.back = cmd_buffer->state.dynamic.stencil_reference.back;
 
       state->fragment_shading_rate.size = cmd_buffer->state.dynamic.fragment_shading_rate.size;
       state->fragment_shading_rate.combiner_ops[0] =
@@ -130,6 +168,8 @@ radv_meta_save(struct radv_meta_saved_state *state, struct radv_cmd_buffer *cmd_
       state->attachments = cmd_buffer->state.attachments;
       state->render_area = cmd_buffer->state.render_area;
    }
+
+   radv_suspend_queries(cmd_buffer);
 }
 
 void
@@ -148,6 +188,8 @@ radv_meta_restore(const struct radv_meta_saved_state *state, struct radv_cmd_buf
       /* Restore all viewports. */
       cmd_buffer->state.dynamic.viewport.count = state->viewport.count;
       typed_memcpy(cmd_buffer->state.dynamic.viewport.viewports, state->viewport.viewports,
+                   MAX_VIEWPORTS);
+      typed_memcpy(cmd_buffer->state.dynamic.viewport.xform, state->viewport.xform,
                    MAX_VIEWPORTS);
 
       /* Restore all scissors. */
@@ -178,6 +220,12 @@ radv_meta_restore(const struct radv_meta_saved_state *state, struct radv_cmd_buf
       cmd_buffer->state.dynamic.stencil_op.back.depth_fail_op =
          state->stencil_op.back.depth_fail_op;
 
+      cmd_buffer->state.dynamic.stencil_write_mask.front = state->stencil_write_mask.front;
+      cmd_buffer->state.dynamic.stencil_write_mask.back = state->stencil_write_mask.back;
+
+      cmd_buffer->state.dynamic.stencil_reference.front = state->stencil_reference.front;
+      cmd_buffer->state.dynamic.stencil_reference.back = state->stencil_reference.back;
+
       cmd_buffer->state.dynamic.fragment_shading_rate.size = state->fragment_shading_rate.size;
       cmd_buffer->state.dynamic.fragment_shading_rate.combiner_ops[0] =
          state->fragment_shading_rate.combiner_ops[0];
@@ -201,6 +249,7 @@ radv_meta_restore(const struct radv_meta_saved_state *state, struct radv_cmd_buf
          RADV_CMD_DIRTY_DYNAMIC_DEPTH_WRITE_ENABLE | RADV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP |
          RADV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE |
          RADV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE | RADV_CMD_DIRTY_DYNAMIC_STENCIL_OP |
+         RADV_CMD_DIRTY_DYNAMIC_STENCIL_WRITE_MASK | RADV_CMD_DIRTY_DYNAMIC_STENCIL_REFERENCE |
          RADV_CMD_DIRTY_DYNAMIC_FRAGMENT_SHADING_RATE | RADV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS_ENABLE |
          RADV_CMD_DIRTY_DYNAMIC_PRIMITIVE_RESTART_ENABLE |
          RADV_CMD_DIRTY_DYNAMIC_RASTERIZER_DISCARD_ENABLE | RADV_CMD_DIRTY_DYNAMIC_LOGIC_OP |
@@ -215,8 +264,10 @@ radv_meta_restore(const struct radv_meta_saved_state *state, struct radv_cmd_buf
    }
 
    if (state->flags & RADV_META_SAVE_COMPUTE_PIPELINE) {
-      radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_COMPUTE,
-                           radv_pipeline_to_handle(state->old_pipeline));
+      if (state->old_pipeline) {
+         radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_COMPUTE,
+                              radv_pipeline_to_handle(state->old_pipeline));
+      }
    }
 
    if (state->flags & RADV_META_SAVE_DESCRIPTORS) {
@@ -242,6 +293,8 @@ radv_meta_restore(const struct radv_meta_saved_state *state, struct radv_cmd_buf
       if (state->subpass)
          cmd_buffer->state.dirty |= RADV_CMD_DIRTY_FRAMEBUFFER;
    }
+
+   radv_resume_queries(cmd_buffer);
 }
 
 VkImageViewType
@@ -284,7 +337,7 @@ radv_meta_get_iview_layer(const struct radv_image *dest_image,
    }
 }
 
-static void *
+static VKAPI_ATTR void * VKAPI_CALL
 meta_alloc(void *_device, size_t size, size_t alignment, VkSystemAllocationScope allocationScope)
 {
    struct radv_device *device = _device;
@@ -292,7 +345,7 @@ meta_alloc(void *_device, size_t size, size_t alignment, VkSystemAllocationScope
                                          VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
 }
 
-static void *
+static VKAPI_ATTR void * VKAPI_CALL
 meta_realloc(void *_device, void *original, size_t size, size_t alignment,
              VkSystemAllocationScope allocationScope)
 {
@@ -301,7 +354,7 @@ meta_realloc(void *_device, void *original, size_t size, size_t alignment,
                                            VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
 }
 
-static void
+static VKAPI_ATTR void VKAPI_CALL
 meta_free(void *_device, void *data)
 {
    struct radv_device *device = _device;
@@ -487,6 +540,10 @@ radv_device_init_meta(struct radv_device *device)
    if (result != VK_SUCCESS)
       goto fail_accel_struct_build;
 
+   result = radv_device_init_meta_fmask_copy_state(device);
+   if (result != VK_SUCCESS)
+      goto fail_fmask_copy;
+
    result = radv_device_init_meta_etc_decode_state(device, on_demand);
    if (result != VK_SUCCESS)
       goto fail_etc_decode;
@@ -494,6 +551,8 @@ radv_device_init_meta(struct radv_device *device)
    return VK_SUCCESS;
 
 fail_etc_decode:
+   radv_device_finish_meta_fmask_copy_state(device);
+fail_fmask_copy:
    radv_device_finish_accel_struct_build_state(device);
 fail_accel_struct_build:
    radv_device_finish_meta_fmask_expand_state(device);
@@ -544,10 +603,29 @@ radv_device_finish_meta(struct radv_device *device)
    radv_device_finish_meta_fmask_expand_state(device);
    radv_device_finish_meta_dcc_retile_state(device);
    radv_device_finish_meta_copy_vrs_htile_state(device);
+   radv_device_finish_meta_fmask_copy_state(device);
 
    radv_store_meta_pipeline(device);
    radv_pipeline_cache_finish(&device->meta_state.cache);
    mtx_destroy(&device->meta_state.mtx);
+}
+
+nir_builder PRINTFLIKE(2, 3) radv_meta_init_shader(gl_shader_stage stage, const char *name, ...)
+{
+   nir_builder b = nir_builder_init_simple_shader(stage, NULL, NULL);
+   if (name) {
+      va_list args;
+      va_start(args, name);
+      b.shader->info.name = ralloc_vasprintf(b.shader, name, args);
+      va_end(args);
+   }
+
+   b.shader->info.internal = true;
+   b.shader->info.workgroup_size[0] = 1;
+   b.shader->info.workgroup_size[1] = 1;
+   b.shader->info.workgroup_size[2] = 1;
+
+   return b;
 }
 
 nir_ssa_def *
@@ -590,7 +668,7 @@ radv_meta_build_nir_vs_generate_vertices(void)
 
    nir_variable *v_position;
 
-   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, NULL, "meta_vs_gen_verts");
+   nir_builder b = radv_meta_init_shader(MESA_SHADER_VERTEX, "meta_vs_gen_verts");
 
    nir_ssa_def *outvec = radv_meta_gen_rect_vertices(&b);
 
@@ -605,9 +683,7 @@ radv_meta_build_nir_vs_generate_vertices(void)
 nir_shader *
 radv_meta_build_nir_fs_noop(void)
 {
-   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, NULL, "meta_noop_fs");
-
-   return b.shader;
+   return radv_meta_init_shader(MESA_SHADER_FRAGMENT, "meta_noop_fs").shader;
 }
 
 void
@@ -709,4 +785,17 @@ get_global_ids(nir_builder *b, unsigned num_components)
       mask);
 
    return nir_iadd(b, nir_imul(b, block_ids, block_size), local_ids);
+}
+
+void
+radv_break_on_count(nir_builder *b, nir_variable *var, nir_ssa_def *count)
+{
+   nir_ssa_def *counter = nir_load_var(b, var);
+
+   nir_push_if(b, nir_uge(b, counter, count));
+   nir_jump(b, nir_jump_break);
+   nir_pop_if(b, NULL);
+
+   counter = nir_iadd(b, counter, nir_imm_int(b, 1));
+   nir_store_var(b, var, counter, 0x1);
 }

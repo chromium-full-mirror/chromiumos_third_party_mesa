@@ -54,7 +54,7 @@
 #include "ast.h"
 #include "compiler/glsl_types.h"
 #include "util/hash_table.h"
-#include "main/mtypes.h"
+#include "main/consts_exts.h"
 #include "main/macros.h"
 #include "main/shaderobj.h"
 #include "ir.h"
@@ -1182,6 +1182,7 @@ do_comparison(void *mem_ctx, int operation, ir_rvalue *op0, ir_rvalue *op1)
    case GLSL_TYPE_ERROR:
    case GLSL_TYPE_VOID:
    case GLSL_TYPE_SAMPLER:
+   case GLSL_TYPE_TEXTURE:
    case GLSL_TYPE_IMAGE:
    case GLSL_TYPE_INTERFACE:
    case GLSL_TYPE_ATOMIC_UINT:
@@ -1703,6 +1704,7 @@ ast_expression::do_hir(exec_list *instructions,
       if ((op[0]->type == glsl_type::error_type ||
            op[1]->type == glsl_type::error_type)) {
          error_emitted = true;
+         result = ir_rvalue::error_value(ctx);
          break;
       }
 
@@ -1740,6 +1742,14 @@ ast_expression::do_hir(exec_list *instructions,
       op[0] = this->subexpressions[0]->hir(instructions, state);
       op[1] = this->subexpressions[1]->hir(instructions, state);
 
+      /* Break out if operand types were not parsed successfully. */
+      if ((op[0]->type == glsl_type::error_type ||
+           op[1]->type == glsl_type::error_type)) {
+         error_emitted = true;
+         result = ir_rvalue::error_value(ctx);
+         break;
+      }
+
       orig_type = op[0]->type;
       type = modulus_result_type(op[0], op[1], state, &loc);
 
@@ -1770,6 +1780,15 @@ ast_expression::do_hir(exec_list *instructions,
       this->subexpressions[0]->set_is_lhs(true);
       op[0] = this->subexpressions[0]->hir(instructions, state);
       op[1] = this->subexpressions[1]->hir(instructions, state);
+
+      /* Break out if operand types were not parsed successfully. */
+      if ((op[0]->type == glsl_type::error_type ||
+           op[1]->type == glsl_type::error_type)) {
+         error_emitted = true;
+         result = ir_rvalue::error_value(ctx);
+         break;
+      }
+
       type = shift_result_type(op[0]->type, op[1]->type, this->oper, state,
                                &loc);
       ir_rvalue *temp_rhs = new(ctx) ir_expression(operations[this->oper],
@@ -1789,6 +1808,14 @@ ast_expression::do_hir(exec_list *instructions,
       this->subexpressions[0]->set_is_lhs(true);
       op[0] = this->subexpressions[0]->hir(instructions, state);
       op[1] = this->subexpressions[1]->hir(instructions, state);
+
+      /* Break out if operand types were not parsed successfully. */
+      if ((op[0]->type == glsl_type::error_type ||
+           op[1]->type == glsl_type::error_type)) {
+         error_emitted = true;
+         result = ir_rvalue::error_value(ctx);
+         break;
+      }
 
       orig_type = op[0]->type;
       type = bit_logic_result_type(op[0], op[1], this->oper, state, &loc);
@@ -2890,11 +2917,11 @@ static bool
 validate_stream_qualifier(YYLTYPE *loc, struct _mesa_glsl_parse_state *state,
                           unsigned stream)
 {
-   if (stream >= state->ctx->Const.MaxVertexStreams) {
+   if (stream >= state->consts->MaxVertexStreams) {
       _mesa_glsl_error(loc, state,
                        "invalid stream specified %d is larger than "
                        "MAX_VERTEX_STREAMS - 1 (%d).",
-                       stream, state->ctx->Const.MaxVertexStreams - 1);
+                       stream, state->consts->MaxVertexStreams - 1);
       return false;
    }
 
@@ -2921,7 +2948,7 @@ apply_explicit_binding(struct _mesa_glsl_parse_state *state,
       return;
    }
 
-   const struct gl_context *const ctx = state->ctx;
+   const struct gl_constants *consts = state->consts;
    unsigned elements = type->is_array() ? type->arrays_of_arrays_size() : 1;
    unsigned max_index = qual_binding + elements - 1;
    const glsl_type *base_type = type->without_array();
@@ -2938,11 +2965,11 @@ apply_explicit_binding(struct _mesa_glsl_parse_state *state,
        * The implementation-dependent maximum is GL_MAX_UNIFORM_BUFFER_BINDINGS.
        */
       if (qual->flags.q.uniform &&
-         max_index >= ctx->Const.MaxUniformBufferBindings) {
+         max_index >= consts->MaxUniformBufferBindings) {
          _mesa_glsl_error(loc, state, "layout(binding = %u) for %d UBOs exceeds "
                           "the maximum number of UBO binding points (%d)",
                           qual_binding, elements,
-                          ctx->Const.MaxUniformBufferBindings);
+                          consts->MaxUniformBufferBindings);
          return;
       }
 
@@ -2956,11 +2983,11 @@ apply_explicit_binding(struct _mesa_glsl_parse_state *state,
        *  be within this range."
        */
       if (qual->flags.q.buffer &&
-         max_index >= ctx->Const.MaxShaderStorageBufferBindings) {
+         max_index >= consts->MaxShaderStorageBufferBindings) {
          _mesa_glsl_error(loc, state, "layout(binding = %u) for %d SSBOs exceeds "
                           "the maximum number of SSBO binding points (%d)",
                           qual_binding, elements,
-                          ctx->Const.MaxShaderStorageBufferBindings);
+                          consts->MaxShaderStorageBufferBindings);
          return;
       }
    } else if (base_type->is_sampler()) {
@@ -2971,7 +2998,7 @@ apply_explicit_binding(struct _mesa_glsl_parse_state *state,
        *  with an array of size N, all elements of the array from binding
        *  through binding + N - 1 must be within this range."
        */
-      unsigned limit = ctx->Const.MaxCombinedTextureImageUnits;
+      unsigned limit = consts->MaxCombinedTextureImageUnits;
 
       if (max_index >= limit) {
          _mesa_glsl_error(loc, state, "layout(binding = %d) for %d samplers "
@@ -2981,23 +3008,23 @@ apply_explicit_binding(struct _mesa_glsl_parse_state *state,
          return;
       }
    } else if (base_type->contains_atomic()) {
-      assert(ctx->Const.MaxAtomicBufferBindings <= MAX_COMBINED_ATOMIC_BUFFERS);
-      if (qual_binding >= ctx->Const.MaxAtomicBufferBindings) {
+      assert(consts->MaxAtomicBufferBindings <= MAX_COMBINED_ATOMIC_BUFFERS);
+      if (qual_binding >= consts->MaxAtomicBufferBindings) {
          _mesa_glsl_error(loc, state, "layout(binding = %d) exceeds the "
                           "maximum number of atomic counter buffer bindings "
                           "(%u)", qual_binding,
-                          ctx->Const.MaxAtomicBufferBindings);
+                          consts->MaxAtomicBufferBindings);
 
          return;
       }
    } else if ((state->is_version(420, 310) ||
                state->ARB_shading_language_420pack_enable) &&
               base_type->is_image()) {
-      assert(ctx->Const.MaxImageUnits <= MAX_IMAGE_UNITS);
-      if (max_index >= ctx->Const.MaxImageUnits) {
+      assert(consts->MaxImageUnits <= MAX_IMAGE_UNITS);
+      if (max_index >= consts->MaxImageUnits) {
          _mesa_glsl_error(loc, state, "Image binding %d exceeds the "
                           "maximum number of image units (%d)", max_index,
-                          ctx->Const.MaxImageUnits);
+                          consts->MaxImageUnits);
          return;
       }
 
@@ -3241,13 +3268,13 @@ apply_explicit_location(const struct ast_type_qualifier *qual,
       if (!state->check_explicit_uniform_location_allowed(loc, var))
          return;
 
-      const struct gl_context *const ctx = state->ctx;
+      const struct gl_constants *consts = state->consts;
       unsigned max_loc = qual_location + var->type->uniform_locations() - 1;
 
-      if (max_loc >= ctx->Const.MaxUserAssignableUniformLocations) {
+      if (max_loc >= consts->MaxUserAssignableUniformLocations) {
          _mesa_glsl_error(loc, state, "location(s) consumed by uniform %s "
                           ">= MAX_UNIFORM_LOCATIONS (%u)", var->name,
-                          ctx->Const.MaxUserAssignableUniformLocations);
+                          consts->MaxUserAssignableUniformLocations);
          return;
       }
 
@@ -3970,9 +3997,9 @@ apply_layout_qualifier_to_variable(const struct ast_type_qualifier *qual,
          _mesa_glsl_error(loc, state, "gl_Layer redeclaration with "
                           "different viewport_relative setting than earlier");
       }
-      state->redeclares_gl_layer = 1;
+      state->redeclares_gl_layer = true;
       if (qual->flags.q.viewport_relative) {
-         state->layer_viewport_relative = 1;
+         state->layer_viewport_relative = true;
       }
    } else if (qual->flags.q.viewport_relative) {
       _mesa_glsl_error(loc, state,
@@ -4196,6 +4223,7 @@ apply_type_qualifier_to_variable(const struct ast_type_qualifier *qual,
       case GLSL_TYPE_INT64:
          break;
       case GLSL_TYPE_SAMPLER:
+      case GLSL_TYPE_TEXTURE:
       case GLSL_TYPE_IMAGE:
          if (state->has_bindless())
             break;
@@ -5406,6 +5434,7 @@ ast_declarator_list::hir(exec_list *instructions,
                error = !state->is_version(410, 0) && !state->ARB_vertex_attrib_64bit_enable;
                break;
             case GLSL_TYPE_SAMPLER:
+            case GLSL_TYPE_TEXTURE:
             case GLSL_TYPE_IMAGE:
                error = !state->has_bindless();
                break;
@@ -6531,8 +6560,8 @@ ast_jump_statement::hir(exec_list *instructions,
          if (state->loop_nesting_ast != NULL &&
              mode == ast_continue && !state->switch_state.is_switch_innermost) {
             if (state->loop_nesting_ast->rest_expression) {
-               state->loop_nesting_ast->rest_expression->hir(instructions,
-                                                             state);
+               clone_ir_list(ctx, instructions,
+                             &state->loop_nesting_ast->rest_instructions);
             }
             if (state->loop_nesting_ast->mode ==
                 ast_iteration_statement::ast_do_while) {
@@ -6780,8 +6809,8 @@ ast_switch_statement::hir(exec_list *instructions,
 
       if (state->loop_nesting_ast != NULL) {
          if (state->loop_nesting_ast->rest_expression) {
-            state->loop_nesting_ast->rest_expression->hir(&irif->then_instructions,
-                                                          state);
+            clone_ir_list(ctx, &irif->then_instructions,
+                          &state->loop_nesting_ast->rest_instructions);
          }
          if (state->loop_nesting_ast->mode ==
              ast_iteration_statement::ast_do_while) {
@@ -6830,8 +6859,11 @@ ir_rvalue *
 ast_switch_body::hir(exec_list *instructions,
                      struct _mesa_glsl_parse_state *state)
 {
-   if (stmts != NULL)
+   if (stmts != NULL) {
+      state->symbols->push_scope();
       stmts->hir(instructions, state);
+      state->symbols->pop_scope();
+   }
 
    /* Switch bodies do not have r-values. */
    return NULL;
@@ -7135,11 +7167,21 @@ ast_iteration_statement::hir(exec_list *instructions,
    if (mode != ast_do_while)
       condition_to_hir(&stmt->body_instructions, state);
 
-   if (body != NULL)
+   if (rest_expression != NULL)
+      rest_expression->hir(&rest_instructions, state);
+
+   if (body != NULL) {
+      if (mode == ast_do_while)
+         state->symbols->push_scope();
+
       body->hir(& stmt->body_instructions, state);
 
+      if (mode == ast_do_while)
+         state->symbols->pop_scope();
+   }
+
    if (rest_expression != NULL)
-      rest_expression->hir(& stmt->body_instructions, state);
+      stmt->body_instructions.append_list(&rest_instructions);
 
    if (mode == ast_do_while)
       condition_to_hir(&stmt->body_instructions, state);
@@ -7189,6 +7231,7 @@ is_valid_default_precision_type(const struct glsl_type *const type)
       /* "int" and "float" are valid, but vectors and matrices are not. */
       return type->vector_elements == 1 && type->matrix_columns == 1;
    case GLSL_TYPE_SAMPLER:
+   case GLSL_TYPE_TEXTURE:
    case GLSL_TYPE_IMAGE:
    case GLSL_TYPE_ATOMIC_UINT:
       return true;
@@ -8765,20 +8808,20 @@ ast_cs_input_layout::hir(exec_list *instructions,
       }
       ralloc_free(local_size_str);
 
-      if (qual_local_size[i] > state->ctx->Const.MaxComputeWorkGroupSize[i]) {
+      if (qual_local_size[i] > state->consts->MaxComputeWorkGroupSize[i]) {
          _mesa_glsl_error(&loc, state,
                           "local_size_%c exceeds MAX_COMPUTE_WORK_GROUP_SIZE"
                           " (%d)", 'x' + i,
-                          state->ctx->Const.MaxComputeWorkGroupSize[i]);
+                          state->consts->MaxComputeWorkGroupSize[i]);
          break;
       }
       total_invocations *= qual_local_size[i];
       if (total_invocations >
-          state->ctx->Const.MaxComputeWorkGroupInvocations) {
+          state->consts->MaxComputeWorkGroupInvocations) {
          _mesa_glsl_error(&loc, state,
                           "product of local_sizes exceeds "
                           "MAX_COMPUTE_WORK_GROUP_INVOCATIONS (%d)",
-                          state->ctx->Const.MaxComputeWorkGroupInvocations);
+                          state->consts->MaxComputeWorkGroupInvocations);
          break;
       }
    }

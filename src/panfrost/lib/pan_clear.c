@@ -23,6 +23,8 @@
  *
  */
 
+#include "genxml/gen_macros.h"
+
 #include <string.h>
 #include "pan_util.h"
 #include "pan_format.h"
@@ -52,26 +54,23 @@ pan_pack_color_32(uint32_t *packed, uint32_t v)
 }
 
 /* For m integer bits and n fractional bits, calculate the conversion factor,
- * multiply the source value, and convert to integer rounding to even */
+ * multiply the source value, and convert to integer rounding to even. When
+ * dithering, the fractional bits are used. When not dithered, only the integer
+ * bits are used and the fractional bits must remain zero. */
 
 static inline uint32_t
-float_to_fixed(float f, unsigned bits_int, unsigned bits_frac)
+float_to_fixed(float f, unsigned bits_int, unsigned bits_frac, bool dither)
 {
-        float factor = ((1 << bits_int) - 1) << bits_frac;
-        return _mesa_roundevenf(f * factor);
-}
+        uint32_t m = (1 << bits_int) - 1;
 
-/* These values are shared across hardware versions. Don't include GenXML. */
-enum mali_color_buffer_internal_format {
-        MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW = 0,
-        MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8 = 1,
-        MALI_COLOR_BUFFER_INTERNAL_FORMAT_R10G10B10A2 = 2,
-        MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A2 = 3,
-        MALI_COLOR_BUFFER_INTERNAL_FORMAT_R4G4B4A4 = 4,
-        MALI_COLOR_BUFFER_INTERNAL_FORMAT_R5G6B5A0 = 5,
-        MALI_COLOR_BUFFER_INTERNAL_FORMAT_R5G5B5A1 = 6,
-        MALI_COLOR_BUFFER_NUM_FORMATS,
-};
+        if (dither) {
+                float factor = m << bits_frac;
+                return _mesa_roundevenf(f * factor);
+        } else {
+                uint32_t v = _mesa_roundevenf(f * (float) m);
+                return v << bits_frac;
+        }
+}
 
 struct mali_tib_layout {
         unsigned int_r, frac_r;
@@ -80,7 +79,7 @@ struct mali_tib_layout {
         unsigned int_a, frac_a;
 };
 
-static const struct mali_tib_layout tib_layouts[MALI_COLOR_BUFFER_NUM_FORMATS] = {
+static const struct mali_tib_layout tib_layouts[] = {
         [MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8] = { 8, 0, 8, 0, 8, 0, 8, 0 },
         [MALI_COLOR_BUFFER_INTERNAL_FORMAT_R10G10B10A2] = { 10, 0, 10, 0, 10, 0, 2, 0 },
         [MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A2] = { 8, 2, 8, 2, 8, 2, 2, 0 },
@@ -116,13 +115,14 @@ pan_pack_raw(uint32_t *packed, const union pipe_color_union *color, enum pipe_fo
 }
 
 void
-pan_pack_color(uint32_t *packed, const union pipe_color_union *color, enum pipe_format format)
+pan_pack_color(uint32_t *packed, const union pipe_color_union *color,
+               enum pipe_format format, bool dithered)
 {
         /* Set of blendable formats is common across versions. TODO: v9 */
         enum mali_color_buffer_internal_format internal =
                 panfrost_blendable_formats_v7[format].internal;
 
-        if (internal == MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW) {
+        if (internal == MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW_VALUE) {
                 pan_pack_raw(packed, color, format);
                 return;
         }
@@ -145,7 +145,7 @@ pan_pack_color(uint32_t *packed, const union pipe_color_union *color, enum pipe_
         }
 
         /* Look up the layout of the tilebuffer */
-        assert(internal < MALI_COLOR_BUFFER_NUM_FORMATS);
+        assert(internal < ARRAY_SIZE(tib_layouts));
         struct mali_tib_layout l = tib_layouts[internal];
 
         unsigned count_r = l.int_r + l.frac_r;
@@ -157,10 +157,10 @@ pan_pack_color(uint32_t *packed, const union pipe_color_union *color, enum pipe_
         assert(count_a == 32);
 
         /* Convert the transformed float colour to the given layout */
-        uint32_t ur = float_to_fixed(r, l.int_r, l.frac_r) << 0;
-        uint32_t ug = float_to_fixed(g, l.int_g, l.frac_g) << count_r;
-        uint32_t ub = float_to_fixed(b, l.int_b, l.frac_b) << count_g;
-        uint32_t ua = float_to_fixed(a, l.int_a, l.frac_a) << count_b;
+        uint32_t ur = float_to_fixed(r, l.int_r, l.frac_r, dithered) << 0;
+        uint32_t ug = float_to_fixed(g, l.int_g, l.frac_g, dithered) << count_r;
+        uint32_t ub = float_to_fixed(b, l.int_b, l.frac_b, dithered) << count_g;
+        uint32_t ua = float_to_fixed(a, l.int_a, l.frac_a, dithered) << count_b;
 
         pan_pack_color_32(packed, ur | ug | ub | ua);
 }

@@ -49,14 +49,12 @@
 #include "pan_resource.h"
 #include "pan_public.h"
 #include "pan_util.h"
-#include "pan_indirect_dispatch.h"
-#include "pan_indirect_draw.h"
 #include "decode.h"
 
 #include "pan_context.h"
-#include "panfrost-quirks.h"
 
 static const struct debug_named_value panfrost_debug_options[] = {
+        {"perf",      PAN_DBG_PERF,     "Enable performance warnings"},
         {"trace",     PAN_DBG_TRACE,    "Trace the command stream"},
         {"deqp",      PAN_DBG_DEQP,     "Hacks for dEQP"},
         {"dirty",     PAN_DBG_DIRTY,    "Always re-emit all state"},
@@ -67,14 +65,16 @@ static const struct debug_named_value panfrost_debug_options[] = {
         {"noafbc",    PAN_DBG_NO_AFBC,  "Disable AFBC support"},
         {"nocrc",     PAN_DBG_NO_CRC,   "Disable transaction elimination"},
         {"msaa16",    PAN_DBG_MSAA16,   "Enable MSAA 8x and 16x support"},
-        {"noindirect", PAN_DBG_NOINDIRECT, "Emulate indirect draws on the CPU"},
+        {"indirect",  PAN_DBG_INDIRECT, "Use experimental compute kernel for indirect draws"},
+        {"linear",    PAN_DBG_LINEAR,   "Force linear textures"},
+        {"nocache",   PAN_DBG_NO_CACHE, "Disable BO cache"},
         DEBUG_NAMED_VALUE_END
 };
 
 static const char *
 panfrost_get_name(struct pipe_screen *screen)
 {
-        return panfrost_model_name(pan_device(screen)->gpu_id);
+        return pan_device(screen)->model->name;
 }
 
 static const char *
@@ -97,8 +97,8 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         /* Our GL 3.x implementation is WIP */
         bool is_gl3 = dev->debug & (PAN_DBG_GL3 | PAN_DBG_DEQP);
 
-        /* Don't expose MRT related CAPs on GPUs that don't implement them */
-        bool has_mrt = !(dev->quirks & MIDGARD_SFBD);
+        /* Native MRT is introduced with v5 */
+        bool has_mrt = (dev->arch >= 5);
 
         /* Only kernel drivers >= 1.1 can allocate HEAP BOs */
         bool has_heap = dev->kernel_version->version_major > 1 ||
@@ -120,6 +120,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_SAMPLE_SHADING:
         case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
         case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
+        case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
                 return 1;
 
         case PIPE_CAP_MAX_RENDER_TARGETS:
@@ -136,7 +137,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return true;
 
         case PIPE_CAP_ANISOTROPIC_FILTER:
-                return !!(dev->quirks & HAS_ANISOTROPIC);
+                return dev->revision >= dev->model->min_rev_anisotropic;
 
         /* Compile side is done for Bifrost, Midgard TODO. Needs some kernel
          * work to turn on, since CYCLE_COUNT_START needs to be issued. In
@@ -152,7 +153,6 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
         case PIPE_CAP_SAMPLER_VIEW_TARGET:
         case PIPE_CAP_TEXTURE_SWIZZLE:
-        case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
         case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
         case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
         case PIPE_CAP_BLEND_EQUATION_SEPARATE:
@@ -216,19 +216,19 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return 1;
 
         case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
-                return 4096;
+                return 1 << (MAX_MIP_LEVELS - 1);
+
         case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
-                return 13;
         case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
-                return 13;
+                return MAX_MIP_LEVELS;
 
         case PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT:
-                /* Hardware is natively upper left */
+        case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
+                /* Hardware is upper left. Pixel center at (0.5, 0.5) */
                 return 0;
 
         case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
         case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
-        case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
         case PIPE_CAP_TGSI_TEXCOORD:
                 return 1;
 
@@ -245,7 +245,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_MAX_VERTEX_ELEMENT_SRC_OFFSET:
                 return 0xffff;
 
-        case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
+        case PIPE_CAP_TEXTURE_TRANSFER_MODES:
                 return 0;
 
         case PIPE_CAP_ENDIANNESS:
@@ -278,9 +278,13 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return 4;
 
         case PIPE_CAP_MAX_VARYINGS:
-                return PIPE_MAX_ATTRIBS;
+                /* Return the GLSL maximum. The internal maximum
+                 * PAN_MAX_VARYINGS accommodates internal varyings. */
+                return MAX_VARYING;
 
         /* Removed in v6 (Bifrost) */
+        case PIPE_CAP_GL_CLAMP:
+        case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
         case PIPE_CAP_ALPHA_TEST:
                 return dev->arch <= 5;
 
@@ -305,6 +309,22 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_START_INSTANCE:
         case PIPE_CAP_DRAW_PARAMETERS:
                 return pan_is_bifrost(dev);
+
+        case PIPE_CAP_SUPPORTED_PRIM_MODES:
+        case PIPE_CAP_SUPPORTED_PRIM_MODES_WITH_RESTART: {
+                /* Mali supports GLES and QUADS. Midgard supports more */
+                uint32_t modes = BITFIELD_MASK(PIPE_PRIM_QUADS + 1);
+
+                if (dev->arch <= 5) {
+                        modes |= BITFIELD_BIT(PIPE_PRIM_QUAD_STRIP);
+                        modes |= BITFIELD_BIT(PIPE_PRIM_POLYGON);
+                }
+
+                return modes;
+        }
+
+        case PIPE_CAP_IMAGE_STORE_FORMATTED:
+                return 1;
 
         default:
                 return u_pipe_screen_get_param_defaults(screen, param);
@@ -440,16 +460,26 @@ static float
 panfrost_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
 {
         switch (param) {
+        case PIPE_CAPF_MIN_LINE_WIDTH:
+        case PIPE_CAPF_MIN_LINE_WIDTH_AA:
+        case PIPE_CAPF_MIN_POINT_SIZE:
+        case PIPE_CAPF_MIN_POINT_SIZE_AA:
+           return 1;
+
+        case PIPE_CAPF_POINT_SIZE_GRANULARITY:
+        case PIPE_CAPF_LINE_WIDTH_GRANULARITY:
+           return 0.1;
+
         case PIPE_CAPF_MAX_LINE_WIDTH:
 
         FALLTHROUGH;
         case PIPE_CAPF_MAX_LINE_WIDTH_AA:
                 return 255.0; /* arbitrary */
 
-        case PIPE_CAPF_MAX_POINT_WIDTH:
+        case PIPE_CAPF_MAX_POINT_SIZE:
 
         FALLTHROUGH;
-        case PIPE_CAPF_MAX_POINT_WIDTH_AA:
+        case PIPE_CAPF_MAX_POINT_SIZE_AA:
                 return 1024.0;
 
         case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
@@ -522,7 +552,7 @@ panfrost_is_format_supported( struct pipe_screen *screen,
                 return false;
 
         /* Z16 causes dEQP failures on t720 */
-        if (format == PIPE_FORMAT_Z16_UNORM && dev->quirks & MIDGARD_SFBD)
+        if (format == PIPE_FORMAT_Z16_UNORM && dev->arch <= 4)
                 return false;
 
         /* Check we support the format with the given bind */
@@ -558,11 +588,8 @@ panfrost_walk_dmabuf_modifiers(struct pipe_screen *screen,
 {
         /* Query AFBC status */
         struct panfrost_device *dev = pan_device(screen);
-        bool afbc = panfrost_format_supports_afbc(dev, format);
+        bool afbc = dev->has_afbc && panfrost_format_supports_afbc(dev, format);
         bool ytr = panfrost_afbc_can_ytr(format);
-
-        /* Don't advertise AFBC before T760 */
-        afbc &= !(dev->quirks & MIDGARD_NO_AFBC);
 
         unsigned count = 0;
 
@@ -692,14 +719,14 @@ panfrost_destroy_screen(struct pipe_screen *pscreen)
         struct panfrost_device *dev = pan_device(pscreen);
         struct panfrost_screen *screen = pan_screen(pscreen);
 
-        pan_indirect_dispatch_cleanup(dev);
-        panfrost_cleanup_indirect_draw_shaders(dev);
+        panfrost_resource_screen_destroy(pscreen);
         panfrost_pool_cleanup(&screen->indirect_draw.bin_pool);
         panfrost_pool_cleanup(&screen->blitter.bin_pool);
         panfrost_pool_cleanup(&screen->blitter.desc_pool);
         pan_blend_shaders_cleanup(dev);
 
-        screen->vtbl.screen_destroy(pscreen);
+        if (screen->vtbl.screen_destroy)
+                screen->vtbl.screen_destroy(pscreen);
 
         if (dev->ro)
                 dev->ro->destroy(dev->ro);
@@ -807,7 +834,7 @@ panfrost_screen_get_compiler_options(struct pipe_screen *pscreen,
                                      enum pipe_shader_ir ir,
                                      enum pipe_shader_type shader)
 {
-        return pan_shader_get_compiler_options(pan_device(pscreen));
+        return pan_screen(pscreen)->vtbl.get_compiler_options();
 }
 
 struct pipe_screen *
@@ -826,40 +853,16 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         panfrost_open_device(screen, fd, dev);
 
         if (dev->debug & PAN_DBG_NO_AFBC)
-                dev->quirks |= MIDGARD_NO_AFBC;
+                dev->has_afbc = false;
 
-        /* XXX: AFBC is currently broken on Bifrost in a few different ways
-         *
-         *  - Preload is broken if the effective tile size is not 16x16
-         *  - Some systems lack AFBC but we need kernel changes to know that
-         */
-        if (dev->arch == 7)
-                dev->quirks |= MIDGARD_NO_AFBC;
-
-        /* XXX: Indirect draws on Midgard need debugging, emulate for now */
-        if (dev->arch < 6)
-                dev->debug |= PAN_DBG_NOINDIRECT;
-
-        dev->ro = ro;
-
-        /* Check if we're loading against a supported GPU model. */
-
-        switch (dev->gpu_id) {
-        case 0x720: /* T720 */
-        case 0x750: /* T760 */
-        case 0x820: /* T820 */
-        case 0x860: /* T860 */
-        case 0x6221: /* G72 */
-        case 0x7093: /* G31 */
-        case 0x7212: /* G52 */
-        case 0x7402: /* G52r1 */
-                break;
-        default:
-                /* Fail to load against untested models */
+        /* Bail early on unsupported hardware */
+        if (dev->model == NULL) {
                 debug_printf("panfrost: Unsupported model %X", dev->gpu_id);
                 panfrost_destroy_screen(&(screen->base));
                 return NULL;
         }
+
+        dev->ro = ro;
 
         screen->base.destroy = panfrost_destroy_screen;
 
@@ -886,13 +889,20 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         panfrost_pool_init(&screen->indirect_draw.bin_pool, NULL, dev,
                            PAN_BO_EXECUTE, 65536, "Indirect draw shaders",
                            false, true);
-        panfrost_init_indirect_draw_shaders(dev, &screen->indirect_draw.bin_pool.base);
-        pan_indirect_dispatch_init(dev);
         panfrost_pool_init(&screen->blitter.bin_pool, NULL, dev, PAN_BO_EXECUTE,
                            4096, "Blitter shaders", false, true);
         panfrost_pool_init(&screen->blitter.desc_pool, NULL, dev, 0, 65536,
                            "Blitter RSDs", false, true);
-        panfrost_cmdstream_screen_init(screen);
+        if (dev->arch == 4)
+                panfrost_cmdstream_screen_init_v4(screen);
+        else if (dev->arch == 5)
+                panfrost_cmdstream_screen_init_v5(screen);
+        else if (dev->arch == 6)
+                panfrost_cmdstream_screen_init_v6(screen);
+        else if (dev->arch == 7)
+                panfrost_cmdstream_screen_init_v7(screen);
+        else
+                unreachable("Unhandled architecture major");
 
         return &screen->base;
 }

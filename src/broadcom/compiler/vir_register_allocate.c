@@ -26,8 +26,6 @@
 #include "common/v3d_device_info.h"
 #include "v3d_compiler.h"
 
-#define QPU_R(i) { .magic = false, .index = i }
-
 #define ACC_INDEX     0
 #define ACC_COUNT     6
 #define PHYS_INDEX    (ACC_INDEX + ACC_COUNT)
@@ -177,7 +175,12 @@ v3d_choose_spill_node(struct v3d_compile *c, struct ra_graph *g,
 void
 v3d_setup_spill_base(struct v3d_compile *c)
 {
-        c->cursor = vir_before_block(vir_entry_block(c));
+        /* Setting up the spill base is done in the entry block; so change
+         * both the current block to emit and the cursor.
+         */
+        struct qblock *current_block = c->cur_block;
+        c->cur_block = vir_entry_block(c);
+        c->cursor = vir_before_block(c->cur_block);
 
         int start_num_temps = c->num_temps;
 
@@ -204,16 +207,16 @@ v3d_setup_spill_base(struct v3d_compile *c)
         for (int i = start_num_temps; i < c->num_temps; i++)
                 BITSET_CLEAR(c->spillable, i);
 
+        /* Restore the current block. */
+        c->cur_block = current_block;
         c->cursor = vir_after_block(c->cur_block);
 }
 
-static void
+static struct qinst *
 v3d_emit_spill_tmua(struct v3d_compile *c, uint32_t spill_offset)
 {
-        vir_ADD_dest(c, vir_reg(QFILE_MAGIC,
-                                V3D_QPU_WADDR_TMUA),
-                     c->spill_base,
-                     vir_uniform_ui(c, spill_offset));
+        return vir_ADD_dest(c, vir_reg(QFILE_MAGIC, V3D_QPU_WADDR_TMUA),
+                            c->spill_base, vir_uniform_ui(c, spill_offset));
 }
 
 
@@ -221,12 +224,17 @@ static void
 v3d_emit_tmu_spill(struct v3d_compile *c, struct qinst *inst,
                    struct qinst *position, uint32_t spill_offset)
 {
+        assert(inst->qpu.type == V3D_QPU_INSTR_TYPE_ALU);
+
         c->cursor = vir_after_inst(position);
         inst->dst = vir_get_temp(c);
-        vir_MOV_dest(c, vir_reg(QFILE_MAGIC,
-                                V3D_QPU_WADDR_TMUD),
-                     inst->dst);
-        v3d_emit_spill_tmua(c, spill_offset);
+        enum v3d_qpu_cond cond = vir_get_cond(inst);
+        struct qinst *tmp =
+                vir_MOV_dest(c, vir_reg(QFILE_MAGIC, V3D_QPU_WADDR_TMUD),
+                             inst->dst);
+        tmp->qpu.flags.mc = cond;
+        tmp = v3d_emit_spill_tmua(c, spill_offset);
+        tmp->qpu.flags.ac = cond;
         vir_emit_thrsw(c);
         vir_TMUWT(c);
         c->spills++;
@@ -251,7 +259,7 @@ v3d_spill_reg(struct v3d_compile *c, int spill_temp)
         }
 
         struct qinst *last_thrsw = c->last_thrsw;
-        assert(!last_thrsw || last_thrsw->is_last_thrsw);
+        assert(last_thrsw && last_thrsw->is_last_thrsw);
 
         int start_num_temps = c->num_temps;
 
@@ -337,29 +345,13 @@ v3d_spill_reg(struct v3d_compile *c, int spill_temp)
                                                                    spill_offset);
                                 }
                         }
-
-                        /* If we didn't have a last-thrsw inserted by nir_to_vir and
-                         * we've been inserting thrsws, then insert a new last_thrsw
-                         * right before we start the vpm/tlb sequence for the last
-                         * thread segment.
-                         */
-                        if (!is_uniform && !last_thrsw && c->last_thrsw &&
-                            (v3d_qpu_writes_vpm(&inst->qpu) ||
-                             v3d_qpu_uses_tlb(&inst->qpu))) {
-                                c->cursor = vir_before_inst(inst);
-                                vir_emit_thrsw(c);
-
-                                last_thrsw = c->last_thrsw;
-                                last_thrsw->is_last_thrsw = true;
-                        }
                 }
         }
 
         /* Make sure c->last_thrsw is the actual last thrsw, not just one we
          * inserted in our most recent unspill.
          */
-        if (last_thrsw)
-                c->last_thrsw = last_thrsw;
+        c->last_thrsw = last_thrsw;
 
         /* Don't allow spilling of our spilling instructions.  There's no way
          * they can help get things colored.

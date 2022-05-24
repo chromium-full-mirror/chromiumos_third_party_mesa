@@ -188,12 +188,12 @@ build_shader(struct radv_device *dev)
    input_img_2d->data.binding = 0;
 
    nir_variable *output_img_2d =
-      nir_variable_create(b.shader, nir_var_uniform, img_type_2d, "out_img_2d");
+      nir_variable_create(b.shader, nir_var_image, img_type_2d, "out_img_2d");
    output_img_2d->data.descriptor_set = 0;
    output_img_2d->data.binding = 1;
 
    nir_variable *output_img_3d =
-      nir_variable_create(b.shader, nir_var_uniform, img_type_3d, "out_img_3d");
+      nir_variable_create(b.shader, nir_var_image, img_type_3d, "out_img_3d");
    output_img_3d->data.descriptor_set = 0;
    output_img_3d->data.binding = 1;
 
@@ -541,12 +541,14 @@ build_shader(struct radv_device *dev)
    nir_push_if(&b, is_3d);
    {
       nir_image_deref_store(&b, &nir_build_deref_var(&b, output_img_3d)->dest.ssa, img_coord,
-                            nir_ssa_undef(&b, 1, 32), outval, nir_imm_int(&b, 0));
+                            nir_ssa_undef(&b, 1, 32), outval, nir_imm_int(&b, 0),
+                            .image_dim = GLSL_SAMPLER_DIM_3D);
    }
    nir_push_else(&b, NULL);
    {
       nir_image_deref_store(&b, &nir_build_deref_var(&b, output_img_2d)->dest.ssa, img_coord,
-                            nir_ssa_undef(&b, 1, 32), outval, nir_imm_int(&b, 0));
+                            nir_ssa_undef(&b, 1, 32), outval, nir_imm_int(&b, 0),
+                            .image_dim = GLSL_SAMPLER_DIM_2D, .image_array = true);
    }
    nir_pop_if(&b, NULL);
    return b.shader;

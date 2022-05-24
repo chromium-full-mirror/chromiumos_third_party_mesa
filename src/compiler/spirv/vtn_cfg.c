@@ -1093,16 +1093,19 @@ vtn_emit_cf_list_structured(struct vtn_builder *b, struct list_head *cf_list,
          const uint32_t *branch = vtn_if->header_block->branch;
          vtn_assert((branch[0] & SpvOpCodeMask) == SpvOpBranchConditional);
 
+         bool sw_break = false;
          /* If both branches are the same, just emit the first block, which is
           * the only one we filled when building the CFG.
           */
          if (branch[2] == branch[3]) {
-            vtn_emit_cf_list_structured(b, &vtn_if->then_body,
-                                        switch_fall_var, has_switch_break, handler);
+            if (vtn_if->then_type == vtn_branch_type_none) {
+               vtn_emit_cf_list_structured(b, &vtn_if->then_body,
+                                           switch_fall_var, &sw_break, handler);
+            } else {
+               vtn_emit_branch(b, vtn_if->then_type, switch_fall_var, &sw_break);
+            }
             break;
          }
-
-         bool sw_break = false;
 
          nir_if *nif =
             nir_push_if(&b->nb, vtn_get_nir_ssa(b, branch[1]));
@@ -1387,6 +1390,8 @@ vtn_function_emit(struct vtn_builder *b, struct vtn_function *func,
    vtn_foreach_instruction(b, func->start_block->label, func->end,
                            vtn_handle_phi_second_pass);
 
+   if (func->nir_func->impl->structured)
+      nir_copy_prop_impl(impl);
    nir_rematerialize_derefs_in_use_blocks_impl(impl);
 
    /*

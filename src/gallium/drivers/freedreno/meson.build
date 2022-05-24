@@ -223,7 +223,7 @@ freedreno_tracepoints = custom_target(
   output: ['freedreno_tracepoints.c', 'freedreno_tracepoints.h'],
   command: [
     prog_python, '@INPUT@',
-    '-p', join_paths(meson.source_root(), 'src/gallium/auxiliary/util/'),
+    '-p', join_paths(meson.source_root(), 'src/util/perf/'),
     '-C', '@OUTPUT0@',
     '-H', '@OUTPUT1@',
   ],
@@ -273,6 +273,7 @@ libfreedreno = static_library(
   cpp_args : [freedreno_cpp_args],
   gnu_symbol_visibility : 'hidden',
   dependencies : libfreedreno_dependencies,
+  override_options : ['cpp_std=c++17'],
 )
 
 driver_freedreno = declare_dependency(
@@ -286,12 +287,15 @@ driver_freedreno = declare_dependency(
     libfreedreno_layout,
     libfreedreno_perfcntrs
   ],
-  dependencies : idep_nir,
+  dependencies : [
+    idep_nir,
+    idep_xmlconfig,
+  ],
 )
 
 ir3_compiler = executable(
   'ir3_compiler',
-  'ir3/ir3_cmdline.c',
+  ['ir3/ir3_cmdline.c', freedreno_xml_header_files],
   include_directories : freedreno_includes,
   dependencies : [
     idep_nir,
@@ -320,6 +324,7 @@ gmemtool = executable(
     idep_nir,
     idep_mesautil,
     idep_u_tracepoints,
+    idep_xmlconfig,
   ],
   link_with : [
     libfreedreno,

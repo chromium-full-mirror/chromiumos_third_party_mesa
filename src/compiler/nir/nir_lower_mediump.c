@@ -437,6 +437,10 @@ nir_fold_16bit_sampler_conversions(nir_shader *nir,
          nir_instr *src;
          nir_alu_instr *src_alu;
 
+         /* Skip sparse residency */
+         if (tex->is_sparse)
+            continue;
+
          /* Skip because AMD doesn't support 16-bit types with these. */
          if ((tex->op == nir_texop_txs ||
               tex->op == nir_texop_query_levels) ||
@@ -456,6 +460,8 @@ nir_fold_16bit_sampler_conversions(nir_shader *nir,
             src_alu = nir_instr_as_alu(src);
             b.cursor = nir_before_instr(src);
 
+            nir_alu_type src_type = nir_tex_instr_src_type(tex, i);
+
             if (src_alu->op == nir_op_mov) {
                assert(!"The IR shouldn't contain any movs to make this pass"
                        " effective.");
@@ -466,8 +472,8 @@ nir_fold_16bit_sampler_conversions(nir_shader *nir,
             if (nir_op_is_vec(src_alu->op)) {
                /* See if the vector is made of f16->f32 opcodes. */
                unsigned num = nir_dest_num_components(src_alu->dest.dest);
-               bool is_f16_to_f32 = true;
-               bool is_u16_to_u32 = true;
+               bool is_f16_to_f32 = src_type == nir_type_float;
+               bool is_u16_to_u32 = src_type & (nir_type_int | nir_type_uint);
 
                for (unsigned comp = 0; comp < num; comp++) {
                   nir_instr *instr = src_alu->src[comp].src.ssa->parent_instr;
@@ -500,9 +506,11 @@ nir_fold_16bit_sampler_conversions(nir_shader *nir,
                nir_instr_rewrite_src_ssa(&tex->instr, &tex->src[i].src,
                                          &new_vec->dest.dest.ssa);
                changed = true;
-            } else if (is_f16_to_f32_conversion(&src_alu->instr) ||
-                       is_u16_to_u32_conversion(&src_alu->instr) ||
-                       is_i16_to_i32_conversion(&src_alu->instr)) {
+            } else if ((is_f16_to_f32_conversion(&src_alu->instr) &&
+                        src_type == nir_type_float) ||
+                       ((is_u16_to_u32_conversion(&src_alu->instr) ||
+                         is_i16_to_i32_conversion(&src_alu->instr)) &&
+                        src_type & (nir_type_int | nir_type_uint))) {
                /* Handle scalar sources. */
                replace_with_mov(&b, &tex->instr, &tex->src[i].src, src_alu);
                changed = true;
@@ -510,22 +518,16 @@ nir_fold_16bit_sampler_conversions(nir_shader *nir,
          }
 
          /* Optimize the destination. */
-         bool is_f16_to_f32 = true;
-         bool is_f32_to_f16 = true;
-         bool is_i16_to_i32 = true;
-         bool is_i32_to_i16 = true; /* same behavior for int and uint */
-         bool is_u16_to_u32 = true;
+         bool is_f32_to_f16 = tex->dest_type & nir_type_float;
+         /* same behavior for int and uint */
+         bool is_i32_to_i16 = tex->dest_type & (nir_type_int | nir_type_uint);
 
          nir_foreach_use(use, &tex->dest.ssa) {
-            is_f16_to_f32 &= is_f16_to_f32_conversion(use->parent_instr);
             is_f32_to_f16 &= is_f32_to_f16_conversion(use->parent_instr);
-            is_i16_to_i32 &= is_i16_to_i32_conversion(use->parent_instr);
             is_i32_to_i16 &= is_i32_to_i16_conversion(use->parent_instr);
-            is_u16_to_u32 &= is_u16_to_u32_conversion(use->parent_instr);
          }
 
-         if (is_f16_to_f32 || is_f32_to_f16 || is_i16_to_i32 ||
-             is_i32_to_i16 || is_u16_to_u32) {
+         if (is_f32_to_f16 || is_i32_to_i16) {
             /* All uses are the same conversions. Replace them with mov. */
             nir_foreach_use(use, &tex->dest.ssa) {
                nir_alu_instr *conv = nir_instr_as_alu(use->parent_instr);

@@ -187,19 +187,8 @@ vc4_resource_transfer_map(struct pipe_context *pctx,
                 if (usage & PIPE_MAP_DIRECTLY)
                         return NULL;
 
-                if (format == PIPE_FORMAT_ETC1_RGB8) {
-                        /* ETC1 is arranged as 64-bit blocks, where each block
-                         * is 4x4 pixels.  Texture tiling operates on the
-                         * 64-bit block the way it would an uncompressed
-                         * pixels.
-                         */
-                        assert(!(ptrans->box.x & 3));
-                        assert(!(ptrans->box.y & 3));
-                        ptrans->box.x >>= 2;
-                        ptrans->box.y >>= 2;
-                        ptrans->box.width = (ptrans->box.width + 3) >> 2;
-                        ptrans->box.height = (ptrans->box.height + 3) >> 2;
-                }
+                /* Our load/store routines work on entire compressed blocks. */
+                u_box_pixels_to_blocks(&ptrans->box, &ptrans->box, format);
 
                 ptrans->stride = ptrans->box.width * rsc->cpp;
                 ptrans->layer_stride = ptrans->stride * ptrans->box.height;
@@ -283,6 +272,15 @@ vc4_resource_destroy(struct pipe_screen *pscreen,
         free(rsc);
 }
 
+static uint64_t
+vc4_resource_modifier(struct vc4_resource *rsc)
+{
+        if (rsc->tiled)
+                return DRM_FORMAT_MOD_BROADCOM_VC4_T_TILED;
+        else
+                return DRM_FORMAT_MOD_LINEAR;
+}
+
 static bool
 vc4_resource_get_handle(struct pipe_screen *pscreen,
                         struct pipe_context *pctx,
@@ -295,17 +293,13 @@ vc4_resource_get_handle(struct pipe_screen *pscreen,
 
         whandle->stride = rsc->slices[0].stride;
         whandle->offset = 0;
+        whandle->modifier = vc4_resource_modifier(rsc);
 
         /* If we're passing some reference to our BO out to some other part of
          * the system, then we can't do any optimizations about only us being
          * the ones seeing it (like BO caching or shadow update avoidance).
          */
         rsc->bo->private = false;
-
-        if (rsc->tiled)
-                whandle->modifier = DRM_FORMAT_MOD_BROADCOM_VC4_T_TILED;
-        else
-                whandle->modifier = DRM_FORMAT_MOD_LINEAR;
 
         switch (whandle->type) {
         case WINSYS_HANDLE_TYPE_SHARED:
@@ -332,6 +326,30 @@ vc4_resource_get_handle(struct pipe_screen *pscreen,
         }
 
         return false;
+}
+
+static bool
+vc4_resource_get_param(struct pipe_screen *pscreen,
+                       struct pipe_context *pctx, struct pipe_resource *prsc,
+                       unsigned plane, unsigned layer, unsigned level,
+                       enum pipe_resource_param param,
+                       unsigned usage, uint64_t *value)
+{
+        struct vc4_resource *rsc = vc4_resource(prsc);
+
+        switch (param) {
+        case PIPE_RESOURCE_PARAM_STRIDE:
+                *value = rsc->slices[level].stride;
+                return true;
+        case PIPE_RESOURCE_PARAM_OFFSET:
+                *value = 0;
+                return true;
+        case PIPE_RESOURCE_PARAM_MODIFIER:
+                *value = vc4_resource_modifier(rsc);
+                return true;
+        default:
+                return false;
+        }
 }
 
 static void
@@ -1119,6 +1137,7 @@ vc4_resource_screen_init(struct pipe_screen *pscreen)
                 vc4_resource_create_with_modifiers;
         pscreen->resource_from_handle = vc4_resource_from_handle;
         pscreen->resource_get_handle = vc4_resource_get_handle;
+        pscreen->resource_get_param = vc4_resource_get_param;
         pscreen->resource_destroy = vc4_resource_destroy;
         pscreen->transfer_helper = u_transfer_helper_create(&transfer_vtbl,
                                                             false, false,
