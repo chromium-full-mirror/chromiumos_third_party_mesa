@@ -26,7 +26,9 @@
 
 #include "util/u_math.h"
 #include "util/macros.h"
+#include "pan_device.h"
 #include "pan_encoder.h"
+#include "panfrost-quirks.h"
 
 /* Mali GPUs are tiled-mode renderers, rather than immediate-mode.
  * Conceptually, the screen is divided into 16x16 tiles. Vertex shaders run.

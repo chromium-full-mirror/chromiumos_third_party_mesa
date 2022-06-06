@@ -22,15 +22,15 @@
  */
 
 #include "anv_private.h"
+#include "anv_measure.h"
 #include "wsi_common.h"
-#include "vk_format_info.h"
 #include "vk_util.h"
 
 static PFN_vkVoidFunction
 anv_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
 {
-   ANV_FROM_HANDLE(anv_physical_device, physical_device, physicalDevice);
-   return anv_lookup_entrypoint(&physical_device->info, pName);
+   ANV_FROM_HANDLE(anv_physical_device, pdevice, physicalDevice);
+   return vk_instance_get_proc_addr_unchecked(&pdevice->instance->vk, pName);
 }
 
 static void
@@ -83,7 +83,7 @@ anv_init_wsi(struct anv_physical_device *physical_device)
    result = wsi_device_init(&physical_device->wsi_device,
                             anv_physical_device_to_handle(physical_device),
                             anv_wsi_proc_addr,
-                            &physical_device->instance->alloc,
+                            &physical_device->instance->vk.alloc,
                             physical_device->master_fd,
                             &physical_device->instance->dri_options,
                             false);
@@ -96,192 +96,17 @@ anv_init_wsi(struct anv_physical_device *physical_device)
    physical_device->wsi_device.signal_fence_for_memory =
       anv_wsi_signal_fence_for_memory;
 
+   physical_device->vk.wsi_device = &physical_device->wsi_device;
+
    return VK_SUCCESS;
 }
 
 void
 anv_finish_wsi(struct anv_physical_device *physical_device)
 {
+   physical_device->vk.wsi_device = NULL;
    wsi_device_finish(&physical_device->wsi_device,
-                     &physical_device->instance->alloc);
-}
-
-void anv_DestroySurfaceKHR(
-    VkInstance                                   _instance,
-    VkSurfaceKHR                                 _surface,
-    const VkAllocationCallbacks*                 pAllocator)
-{
-   ANV_FROM_HANDLE(anv_instance, instance, _instance);
-   ICD_FROM_HANDLE(VkIcdSurfaceBase, surface, _surface);
-
-   if (!surface)
-      return;
-
-   vk_free2(&instance->alloc, pAllocator, surface);
-}
-
-VkResult anv_GetPhysicalDeviceSurfaceSupportKHR(
-    VkPhysicalDevice                            physicalDevice,
-    uint32_t                                    queueFamilyIndex,
-    VkSurfaceKHR                                surface,
-    VkBool32*                                   pSupported)
-{
-   ANV_FROM_HANDLE(anv_physical_device, device, physicalDevice);
-
-   return wsi_common_get_surface_support(&device->wsi_device,
-                                         queueFamilyIndex,
-                                         surface,
-                                         pSupported);
-}
-
-VkResult anv_GetPhysicalDeviceSurfaceCapabilitiesKHR(
-    VkPhysicalDevice                            physicalDevice,
-    VkSurfaceKHR                                surface,
-    VkSurfaceCapabilitiesKHR*                   pSurfaceCapabilities)
-{
-   ANV_FROM_HANDLE(anv_physical_device, device, physicalDevice);
-
-   return wsi_common_get_surface_capabilities(&device->wsi_device,
-                                              surface,
-                                              pSurfaceCapabilities);
-}
-
-VkResult anv_GetPhysicalDeviceSurfaceCapabilities2KHR(
-    VkPhysicalDevice                            physicalDevice,
-    const VkPhysicalDeviceSurfaceInfo2KHR*      pSurfaceInfo,
-    VkSurfaceCapabilities2KHR*                  pSurfaceCapabilities)
-{
-   ANV_FROM_HANDLE(anv_physical_device, device, physicalDevice);
-
-   return wsi_common_get_surface_capabilities2(&device->wsi_device,
-                                               pSurfaceInfo,
-                                               pSurfaceCapabilities);
-}
-
-VkResult anv_GetPhysicalDeviceSurfaceCapabilities2EXT(
- 	VkPhysicalDevice                            physicalDevice,
-	VkSurfaceKHR                                surface,
-	VkSurfaceCapabilities2EXT*                  pSurfaceCapabilities)
-{
-   ANV_FROM_HANDLE(anv_physical_device, device, physicalDevice);
-
-   return wsi_common_get_surface_capabilities2ext(&device->wsi_device,
-                                                  surface,
-                                                  pSurfaceCapabilities);
-}
-
-VkResult anv_GetPhysicalDeviceSurfaceFormatsKHR(
-    VkPhysicalDevice                            physicalDevice,
-    VkSurfaceKHR                                surface,
-    uint32_t*                                   pSurfaceFormatCount,
-    VkSurfaceFormatKHR*                         pSurfaceFormats)
-{
-   ANV_FROM_HANDLE(anv_physical_device, device, physicalDevice);
-
-   return wsi_common_get_surface_formats(&device->wsi_device, surface,
-                                         pSurfaceFormatCount, pSurfaceFormats);
-}
-
-VkResult anv_GetPhysicalDeviceSurfaceFormats2KHR(
-    VkPhysicalDevice                            physicalDevice,
-    const VkPhysicalDeviceSurfaceInfo2KHR*      pSurfaceInfo,
-    uint32_t*                                   pSurfaceFormatCount,
-    VkSurfaceFormat2KHR*                        pSurfaceFormats)
-{
-   ANV_FROM_HANDLE(anv_physical_device, device, physicalDevice);
-
-   return wsi_common_get_surface_formats2(&device->wsi_device, pSurfaceInfo,
-                                          pSurfaceFormatCount, pSurfaceFormats);
-}
-
-VkResult anv_GetPhysicalDeviceSurfacePresentModesKHR(
-    VkPhysicalDevice                            physicalDevice,
-    VkSurfaceKHR                                surface,
-    uint32_t*                                   pPresentModeCount,
-    VkPresentModeKHR*                           pPresentModes)
-{
-   ANV_FROM_HANDLE(anv_physical_device, device, physicalDevice);
-
-   return wsi_common_get_surface_present_modes(&device->wsi_device, surface,
-                                               pPresentModeCount,
-                                               pPresentModes);
-}
-
-VkResult anv_CreateSwapchainKHR(
-    VkDevice                                     _device,
-    const VkSwapchainCreateInfoKHR*              pCreateInfo,
-    const VkAllocationCallbacks*                 pAllocator,
-    VkSwapchainKHR*                              pSwapchain)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   struct wsi_device *wsi_device = &device->physical->wsi_device;
-   const VkAllocationCallbacks *alloc;
-
-   if (pAllocator)
-     alloc = pAllocator;
-   else
-     alloc = &device->vk.alloc;
-
-   return wsi_common_create_swapchain(wsi_device, _device,
-                                      pCreateInfo, alloc, pSwapchain);
-}
-
-void anv_DestroySwapchainKHR(
-    VkDevice                                     _device,
-    VkSwapchainKHR                               swapchain,
-    const VkAllocationCallbacks*                 pAllocator)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   const VkAllocationCallbacks *alloc;
-
-   if (pAllocator)
-     alloc = pAllocator;
-   else
-     alloc = &device->vk.alloc;
-
-   wsi_common_destroy_swapchain(_device, swapchain, alloc);
-}
-
-VkResult anv_GetSwapchainImagesKHR(
-    VkDevice                                     device,
-    VkSwapchainKHR                               swapchain,
-    uint32_t*                                    pSwapchainImageCount,
-    VkImage*                                     pSwapchainImages)
-{
-   return wsi_common_get_images(swapchain,
-                                pSwapchainImageCount,
-                                pSwapchainImages);
-}
-
-VkResult anv_AcquireNextImageKHR(
-    VkDevice                                     device,
-    VkSwapchainKHR                               swapchain,
-    uint64_t                                     timeout,
-    VkSemaphore                                  semaphore,
-    VkFence                                      fence,
-    uint32_t*                                    pImageIndex)
-{
-   VkAcquireNextImageInfoKHR acquire_info = {
-      .sType = VK_STRUCTURE_TYPE_ACQUIRE_NEXT_IMAGE_INFO_KHR,
-      .swapchain = swapchain,
-      .timeout = timeout,
-      .semaphore = semaphore,
-      .fence = fence,
-      .deviceMask = 0,
-   };
-
-   return anv_AcquireNextImage2KHR(device, &acquire_info, pImageIndex);
-}
-
-VkResult anv_AcquireNextImage2KHR(
-    VkDevice                                     _device,
-    const VkAcquireNextImageInfoKHR*             pAcquireInfo,
-    uint32_t*                                    pImageIndex)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-
-   return wsi_common_acquire_next_image2(&device->physical->wsi_device,
-                                         _device, pAcquireInfo, pImageIndex);
+                     &physical_device->instance->vk.alloc);
 }
 
 VkResult anv_QueuePresentKHR(
@@ -294,7 +119,7 @@ VkResult anv_QueuePresentKHR(
    if (device->debug_frame_desc) {
       device->debug_frame_desc->frame_id++;
       if (!device->info.has_llc) {
-         gen_clflush_range(device->debug_frame_desc,
+         intel_clflush_range(device->debug_frame_desc,
                            sizeof(*device->debug_frame_desc));
       }
    }
@@ -304,17 +129,15 @@ VkResult anv_QueuePresentKHR(
       /* Make sure all of the dependency semaphores have materialized when
        * using a threaded submission.
        */
-      ANV_MULTIALLOC(ma);
+      VK_MULTIALLOC(ma);
+      VK_MULTIALLOC_DECL(&ma, uint64_t, values,
+                              pPresentInfo->waitSemaphoreCount);
+      VK_MULTIALLOC_DECL(&ma, uint32_t, syncobjs,
+                              pPresentInfo->waitSemaphoreCount);
 
-      uint64_t *values;
-      uint32_t *syncobjs;
-
-      anv_multialloc_add(&ma, &values, pPresentInfo->waitSemaphoreCount);
-      anv_multialloc_add(&ma, &syncobjs, pPresentInfo->waitSemaphoreCount);
-
-      if (!anv_multialloc_alloc(&ma, &device->vk.alloc,
-                                VK_SYSTEM_ALLOCATION_SCOPE_COMMAND))
-         return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+      if (!vk_multialloc_alloc(&ma, &device->vk.alloc,
+                               VK_SYSTEM_ALLOCATION_SCOPE_COMMAND))
+         return vk_error(queue, VK_ERROR_OUT_OF_HOST_MEMORY);
 
       uint32_t wait_count = 0;
       for (uint32_t i = 0; i < pPresentInfo->waitSemaphoreCount; i++) {
@@ -344,7 +167,7 @@ VkResult anv_QueuePresentKHR(
       vk_free(&device->vk.alloc, values);
 
       if (ret)
-         return vk_error(VK_ERROR_DEVICE_LOST);
+         return vk_error(queue, VK_ERROR_DEVICE_LOST);
    }
 
    VkResult result = wsi_common_queue_present(&device->physical->wsi_device,
@@ -364,39 +187,4 @@ VkResult anv_QueuePresentKHR(
    }
 
    return result;
-}
-
-VkResult anv_GetDeviceGroupPresentCapabilitiesKHR(
-    VkDevice                                    device,
-    VkDeviceGroupPresentCapabilitiesKHR*        pCapabilities)
-{
-   memset(pCapabilities->presentMask, 0,
-          sizeof(pCapabilities->presentMask));
-   pCapabilities->presentMask[0] = 0x1;
-   pCapabilities->modes = VK_DEVICE_GROUP_PRESENT_MODE_LOCAL_BIT_KHR;
-
-   return VK_SUCCESS;
-}
-
-VkResult anv_GetDeviceGroupSurfacePresentModesKHR(
-    VkDevice                                    device,
-    VkSurfaceKHR                                surface,
-    VkDeviceGroupPresentModeFlagsKHR*           pModes)
-{
-   *pModes = VK_DEVICE_GROUP_PRESENT_MODE_LOCAL_BIT_KHR;
-
-   return VK_SUCCESS;
-}
-
-VkResult anv_GetPhysicalDevicePresentRectanglesKHR(
-    VkPhysicalDevice                            physicalDevice,
-    VkSurfaceKHR                                surface,
-    uint32_t*                                   pRectCount,
-    VkRect2D*                                   pRects)
-{
-   ANV_FROM_HANDLE(anv_physical_device, device, physicalDevice);
-
-   return wsi_common_get_present_rectangles(&device->wsi_device,
-                                            surface,
-                                            pRectCount, pRects);
 }

@@ -42,8 +42,16 @@ struct vk_object_base {
    VK_LOADER_DATA _loader_data;
    VkObjectType type;
 
+   struct vk_device *device;
+
+   /* True if this object is fully constructed and visible to the client */
+   bool client_visible;
+
    /* For VK_EXT_private_data */
    struct util_sparse_array private_data;
+
+   /* VK_EXT_debug_utils */
+   char *object_name;
 };
 
 void vk_object_base_init(UNUSED struct vk_device *device,
@@ -66,26 +74,6 @@ vk_object_base_from_u64_handle(uint64_t handle, VkObjectType obj_type)
    return base;
 }
 
-
-struct vk_device {
-   struct vk_object_base base;
-   VkAllocationCallbacks alloc;
-
-   /* For VK_EXT_private_data */
-   uint32_t private_data_next_index;
-
-#ifdef ANDROID
-   mtx_t swapchain_private_mtx;
-   struct hash_table *swapchain_private;
-#endif
-};
-
-void vk_device_init(struct vk_device *device,
-                    const VkDeviceCreateInfo *pCreateInfo,
-                    const VkAllocationCallbacks *instance_alloc,
-                    const VkAllocationCallbacks *device_alloc);
-void vk_device_finish(struct vk_device *device);
-
 #define VK_DEFINE_HANDLE_CASTS(__driver_type, __base, __VkType, __VK_TYPE) \
    static inline struct __driver_type *                                    \
    __driver_type ## _from_handle(__VkType _handle)                         \
@@ -100,6 +88,8 @@ void vk_device_finish(struct vk_device *device);
    __driver_type ## _to_handle(struct __driver_type *_obj)                 \
    {                                                                       \
       vk_object_base_assert_valid(&_obj->__base, __VK_TYPE);               \
+      if (_obj != NULL)                                                    \
+         _obj->__base.client_visible = true;                               \
       return (__VkType) _obj;                                              \
    }
 
@@ -118,6 +108,8 @@ void vk_device_finish(struct vk_device *device);
    __driver_type ## _to_handle(struct __driver_type *_obj)                 \
    {                                                                       \
       vk_object_base_assert_valid(&_obj->__base, __VK_TYPE);               \
+      if (_obj != NULL)                                                    \
+         _obj->__base.client_visible = true;                               \
       return (__VkType)(uintptr_t) _obj;                                   \
    }
 
@@ -136,6 +128,20 @@ vk_object_zalloc(struct vk_device *device,
                 const VkAllocationCallbacks *alloc,
                 size_t size,
                 VkObjectType vk_obj_type);
+
+struct vk_multialloc;
+
+void *
+vk_object_multialloc(struct vk_device *device,
+                     struct vk_multialloc *ma,
+                     const VkAllocationCallbacks *alloc,
+                     VkObjectType vk_obj_type);
+
+void *
+vk_object_multizalloc(struct vk_device *device,
+                      struct vk_multialloc *ma,
+                      const VkAllocationCallbacks *alloc,
+                      VkObjectType vk_obj_type);
 
 void
 vk_object_free(struct vk_device *device,
@@ -172,6 +178,9 @@ vk_object_base_get_private_data(struct vk_device *device,
                                 uint64_t objectHandle,
                                 VkPrivateDataSlotEXT privateDataSlot,
                                 uint64_t *pData);
+
+const char *
+vk_object_base_name(struct vk_object_base *obj);
 
 #ifdef __cplusplus
 }

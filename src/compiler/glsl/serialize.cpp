@@ -1046,6 +1046,7 @@ write_shader_parameters(struct blob *metadata,
    blob_write_uint32(metadata, params->StateFlags);
    blob_write_uint32(metadata, params->UniformBytes);
    blob_write_uint32(metadata, params->FirstStateVarIndex);
+   blob_write_uint32(metadata, params->LastStateVarIndex);
 }
 
 static void
@@ -1082,6 +1083,7 @@ read_shader_parameters(struct blob_reader *metadata,
    params->StateFlags = blob_read_uint32(metadata);
    params->UniformBytes = blob_read_uint32(metadata);
    params->FirstStateVarIndex = blob_read_uint32(metadata);
+   params->LastStateVarIndex = blob_read_uint32(metadata);
 }
 
 static void
@@ -1124,9 +1126,6 @@ write_shader_metadata(struct blob *metadata, gl_linked_shader *shader)
       blob_write_bytes(metadata, &glprog->sh.BindlessImages[i],
                        sizeof(struct gl_bindless_image) - ptr_size);
    }
-
-   blob_write_bytes(metadata, &glprog->sh.fs.BlendSupport,
-                    sizeof(glprog->sh.fs.BlendSupport));
 
    write_shader_parameters(metadata, glprog->Parameters);
 
@@ -1191,9 +1190,6 @@ read_shader_metadata(struct blob_reader *metadata,
                         sizeof(struct gl_bindless_image) - ptr_size);
       }
    }
-
-   blob_copy_bytes(metadata, (uint8_t *) &glprog->sh.fs.BlendSupport,
-                   sizeof(glprog->sh.fs.BlendSupport));
 
    glprog->Parameters = _mesa_new_parameter_list();
    read_shader_parameters(metadata, glprog->Parameters);

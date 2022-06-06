@@ -25,6 +25,7 @@ _dri_link = []
 if with_dri_i915
   subdir('i915')
   _dri_drivers += libi915
+  _dri_link += 'i830_dri.so'
   _dri_link += 'i915_dri.so'
 endif
 if with_dri_i965
@@ -50,7 +51,7 @@ endif
 
 if _dri_drivers != []
   libmesa_dri_drivers = shared_library(
-    'mesa_dri_drivers',
+    '@0@_dri_drivers'.format(glvnd_vendor_name),
     [],
     link_whole : _dri_drivers,
     link_with : [

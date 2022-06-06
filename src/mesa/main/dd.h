@@ -36,6 +36,14 @@
 #include "menums.h"
 #include "compiler/shader_enums.h"
 
+/* Windows winnt.h defines MemoryBarrier as a macro on some platforms,
+ * including as a function-like macro in some cases. That either causes
+ * the table entry below to have a weird name, or fail to compile.
+ */
+#ifdef MemoryBarrier
+#undef MemoryBarrier
+#endif
+
 struct gl_bitmap_atlas;
 struct gl_buffer_object;
 struct gl_context;
@@ -52,12 +60,17 @@ struct gl_texture_image;
 struct gl_texture_object;
 struct gl_memory_info;
 struct gl_transform_feedback_object;
+struct gl_vertex_array_object;
 struct ati_fragment_shader;
 struct util_queue_monitoring;
 struct _mesa_prim;
 struct _mesa_index_buffer;
 struct pipe_draw_info;
-struct pipe_draw_start_count;
+struct pipe_draw_start_count_bias;
+struct pipe_vertex_state;
+struct pipe_draw_vertex_state_info;
+struct pipe_vertex_buffer;
+struct pipe_vertex_element;
 
 /* GL_ARB_vertex_buffer_object */
 /* Modifies GL_MAP_UNSYNCHRONIZED_BIT to allow driver to fail (return
@@ -117,7 +130,7 @@ struct dd_function_table {
    /**
     * This is called whenever glFlush() is called.
     */
-   void (*Flush)( struct gl_context *ctx );
+   void (*Flush)(struct gl_context *ctx, unsigned gallium_flush_flags);
 
    /**
     * Clear the color/depth/stencil/accum buffer(s).
@@ -573,29 +586,24 @@ struct dd_function_table {
     */
    void (*DrawGallium)(struct gl_context *ctx,
                        struct pipe_draw_info *info,
-                       const struct pipe_draw_start_count *draws,
+                       unsigned drawid_offset,
+                       const struct pipe_draw_start_count_bias *draws,
                        unsigned num_draws);
 
    /**
-    * Same as DrawGallium, but base_vertex and mode can also change between draws.
-    *
-    * If index_bias != NULL, index_bias changes for each draw.
-    * If mode != NULL, mode changes for each draw.
-    * At least one of them must be non-NULL.
+    * Same as DrawGallium, but mode can also change between draws.
     *
     * "info" is not const and the following fields can be changed by
     * the callee in addition to the fields listed by DrawGallium:
-    * - info->mode (if mode != NULL)
-    * - info->index_bias (if index_bias != NULL)
+    * - info->mode
     *
     * This function exists to decrease complexity of DrawGallium.
     */
-   void (*DrawGalliumComplex)(struct gl_context *ctx,
-                              struct pipe_draw_info *info,
-                              const struct pipe_draw_start_count *draws,
-                              const unsigned char *mode,
-                              const int *base_vertex,
-                              unsigned num_draws);
+   void (*DrawGalliumMultiMode)(struct gl_context *ctx,
+                                struct pipe_draw_info *info,
+                                const struct pipe_draw_start_count_bias *draws,
+                                const unsigned char *mode,
+                                unsigned num_draws);
 
    /**
     * Draw a primitive, getting the vertex count, instance count, start
@@ -638,8 +646,21 @@ struct dd_function_table {
    void (*DrawTransformFeedback)(struct gl_context *ctx, GLenum mode,
                                  unsigned num_instances, unsigned stream,
                                  struct gl_transform_feedback_object *tfb_vertcount);
+
+   void (*DrawGalliumVertexState)(struct gl_context *ctx,
+                                  struct pipe_vertex_state *state,
+                                  struct pipe_draw_vertex_state_info info,
+                                  const struct pipe_draw_start_count_bias *draws,
+                                  const uint8_t *mode,
+                                  unsigned num_draws,
+                                  bool per_vertex_edgeflags);
    /*@}*/
 
+   struct pipe_vertex_state *
+      (*CreateGalliumVertexState)(struct gl_context *ctx,
+                                  const struct gl_vertex_array_object *vao,
+                                  struct gl_buffer_object *indexbuf,
+                                  uint32_t enabled_attribs);
 
    /**
     * \name State-changing functions.
@@ -943,7 +964,7 @@ struct dd_function_table {
                          struct gl_perf_query_object *obj);
    bool (*IsPerfQueryReady)(struct gl_context *ctx,
                             struct gl_perf_query_object *obj);
-   void (*GetPerfQueryData)(struct gl_context *ctx,
+   bool (*GetPerfQueryData)(struct gl_context *ctx,
                             struct gl_perf_query_object *obj,
                             GLsizei dataSize,
                             GLuint *data,
@@ -1382,6 +1403,8 @@ struct dd_function_table {
                                             struct gl_shader_program *shprog);
 
    void (*PinDriverToL3Cache)(struct gl_context *ctx, unsigned L3_cache);
+
+   GLboolean (*ValidateEGLImage)(struct gl_context *ctx, GLeglImageOES image_handle);
 };
 
 
@@ -1589,6 +1612,18 @@ typedef struct {
    void (GLAPIENTRYP MultiTexCoord3hvNV)( GLenum, const GLhalfNV * );
    void (GLAPIENTRYP MultiTexCoord4hNV)( GLenum, GLhalfNV, GLhalfNV, GLhalfNV, GLhalfNV );
    void (GLAPIENTRYP MultiTexCoord4hvNV)( GLenum, const GLhalfNV * );
+   void (GLAPIENTRYP VertexAttrib1hNV)( GLuint index, GLhalfNV x );
+   void (GLAPIENTRYP VertexAttrib1hvNV)( GLuint index, const GLhalfNV *v );
+   void (GLAPIENTRYP VertexAttrib2hNV)( GLuint index, GLhalfNV x, GLhalfNV y );
+   void (GLAPIENTRYP VertexAttrib2hvNV)( GLuint index, const GLhalfNV *v );
+   void (GLAPIENTRYP VertexAttrib3hNV)( GLuint index, GLhalfNV x, GLhalfNV y, GLhalfNV z );
+   void (GLAPIENTRYP VertexAttrib3hvNV)( GLuint index, const GLhalfNV *v );
+   void (GLAPIENTRYP VertexAttrib4hNV)( GLuint index, GLhalfNV x, GLhalfNV y, GLhalfNV z, GLhalfNV w );
+   void (GLAPIENTRYP VertexAttrib4hvNV)( GLuint index, const GLhalfNV *v );
+   void (GLAPIENTRYP VertexAttribs1hvNV)(GLuint index, GLsizei n, const GLhalfNV *v);
+   void (GLAPIENTRYP VertexAttribs2hvNV)(GLuint index, GLsizei n, const GLhalfNV *v);
+   void (GLAPIENTRYP VertexAttribs3hvNV)(GLuint index, GLsizei n, const GLhalfNV *v);
+   void (GLAPIENTRYP VertexAttribs4hvNV)(GLuint index, GLsizei n, const GLhalfNV *v);
    void (GLAPIENTRYP FogCoordhNV)( GLhalfNV );
    void (GLAPIENTRYP FogCoordhvNV)( const GLhalfNV * );
    void (GLAPIENTRYP SecondaryColor3hNV)( GLhalfNV, GLhalfNV, GLhalfNV );

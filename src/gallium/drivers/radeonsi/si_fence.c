@@ -73,7 +73,9 @@ void si_cp_release_mem(struct si_context *ctx, struct radeon_cmdbuf *cs, unsigne
                  EVENT_INDEX(event == V_028A90_CS_DONE || event == V_028A90_PS_DONE ? 6 : 5) |
                  event_flags;
    unsigned sel = EOP_DST_SEL(dst_sel) | EOP_INT_SEL(int_sel) | EOP_DATA_SEL(data_sel);
-   bool compute_ib = !ctx->has_graphics || cs == &ctx->prim_discard_compute_cs;
+   bool compute_ib = !ctx->has_graphics;
+
+   radeon_begin(cs);
 
    if (ctx->chip_class >= GFX9 || (compute_ib && ctx->chip_class >= GFX7)) {
       /* A ZPASS_DONE or PIXEL_STAT_DUMP_EVENT (of the DB occlusion
@@ -90,24 +92,24 @@ void si_cp_release_mem(struct si_context *ctx, struct radeon_cmdbuf *cs, unsigne
             ctx->eop_bug_scratch_tmz : ctx->eop_bug_scratch;
 
          assert(16 * ctx->screen->info.max_render_backends <= scratch->b.b.width0);
-         radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 2, 0));
-         radeon_emit(cs, EVENT_TYPE(EVENT_TYPE_ZPASS_DONE) | EVENT_INDEX(1));
-         radeon_emit(cs, scratch->gpu_address);
-         radeon_emit(cs, scratch->gpu_address >> 32);
+         radeon_emit(PKT3(PKT3_EVENT_WRITE, 2, 0));
+         radeon_emit(EVENT_TYPE(EVENT_TYPE_ZPASS_DONE) | EVENT_INDEX(1));
+         radeon_emit(scratch->gpu_address);
+         radeon_emit(scratch->gpu_address >> 32);
 
          radeon_add_to_buffer_list(ctx, &ctx->gfx_cs, scratch, RADEON_USAGE_WRITE,
                                    RADEON_PRIO_QUERY);
       }
 
-      radeon_emit(cs, PKT3(PKT3_RELEASE_MEM, ctx->chip_class >= GFX9 ? 6 : 5, 0));
-      radeon_emit(cs, op);
-      radeon_emit(cs, sel);
-      radeon_emit(cs, va);        /* address lo */
-      radeon_emit(cs, va >> 32);  /* address hi */
-      radeon_emit(cs, new_fence); /* immediate data lo */
-      radeon_emit(cs, 0);         /* immediate data hi */
+      radeon_emit(PKT3(PKT3_RELEASE_MEM, ctx->chip_class >= GFX9 ? 6 : 5, 0));
+      radeon_emit(op);
+      radeon_emit(sel);
+      radeon_emit(va);        /* address lo */
+      radeon_emit(va >> 32);  /* address hi */
+      radeon_emit(new_fence); /* immediate data lo */
+      radeon_emit(0);         /* immediate data hi */
       if (ctx->chip_class >= GFX9)
-         radeon_emit(cs, 0); /* unused */
+         radeon_emit(0); /* unused */
    } else {
       if (ctx->chip_class == GFX7 || ctx->chip_class == GFX8) {
          struct si_resource *scratch = ctx->eop_bug_scratch;
@@ -117,24 +119,26 @@ void si_cp_release_mem(struct si_context *ctx, struct radeon_cmdbuf *cs, unsigne
           * (and optional cache flushes executed) before the timestamp
           * is written.
           */
-         radeon_emit(cs, PKT3(PKT3_EVENT_WRITE_EOP, 4, 0));
-         radeon_emit(cs, op);
-         radeon_emit(cs, va);
-         radeon_emit(cs, ((va >> 32) & 0xffff) | sel);
-         radeon_emit(cs, 0); /* immediate data */
-         radeon_emit(cs, 0); /* unused */
+         radeon_emit(PKT3(PKT3_EVENT_WRITE_EOP, 4, 0));
+         radeon_emit(op);
+         radeon_emit(va);
+         radeon_emit(((va >> 32) & 0xffff) | sel);
+         radeon_emit(0); /* immediate data */
+         radeon_emit(0); /* unused */
 
          radeon_add_to_buffer_list(ctx, &ctx->gfx_cs, scratch, RADEON_USAGE_WRITE,
                                    RADEON_PRIO_QUERY);
       }
 
-      radeon_emit(cs, PKT3(PKT3_EVENT_WRITE_EOP, 4, 0));
-      radeon_emit(cs, op);
-      radeon_emit(cs, va);
-      radeon_emit(cs, ((va >> 32) & 0xffff) | sel);
-      radeon_emit(cs, new_fence); /* immediate data */
-      radeon_emit(cs, 0);         /* unused */
+      radeon_emit(PKT3(PKT3_EVENT_WRITE_EOP, 4, 0));
+      radeon_emit(op);
+      radeon_emit(va);
+      radeon_emit(((va >> 32) & 0xffff) | sel);
+      radeon_emit(new_fence); /* immediate data */
+      radeon_emit(0);         /* unused */
    }
+
+   radeon_end();
 
    if (buf) {
       radeon_add_to_buffer_list(ctx, &ctx->gfx_cs, buf, RADEON_USAGE_WRITE, RADEON_PRIO_QUERY);
@@ -154,13 +158,15 @@ unsigned si_cp_write_fence_dwords(struct si_screen *screen)
 void si_cp_wait_mem(struct si_context *ctx, struct radeon_cmdbuf *cs, uint64_t va, uint32_t ref,
                     uint32_t mask, unsigned flags)
 {
-   radeon_emit(cs, PKT3(PKT3_WAIT_REG_MEM, 5, 0));
-   radeon_emit(cs, WAIT_REG_MEM_MEM_SPACE(1) | flags);
-   radeon_emit(cs, va);
-   radeon_emit(cs, va >> 32);
-   radeon_emit(cs, ref);  /* reference value */
-   radeon_emit(cs, mask); /* mask */
-   radeon_emit(cs, 4);    /* poll interval */
+   radeon_begin(cs);
+   radeon_emit(PKT3(PKT3_WAIT_REG_MEM, 5, 0));
+   radeon_emit(WAIT_REG_MEM_MEM_SPACE(1) | flags);
+   radeon_emit(va);
+   radeon_emit(va >> 32);
+   radeon_emit(ref);  /* reference value */
+   radeon_emit(mask); /* mask */
+   radeon_emit(4);    /* poll interval */
+   radeon_end();
 }
 
 static void si_add_fence_dependency(struct si_context *sctx, struct pipe_fence_handle *fence)
@@ -219,7 +225,7 @@ struct pipe_fence_handle *si_create_fence(struct pipe_context *ctx,
 static bool si_fine_fence_signaled(struct radeon_winsys *rws, const struct si_fine_fence *fine)
 {
    char *map =
-      rws->buffer_map(fine->buf->buf, NULL, PIPE_MAP_READ | PIPE_MAP_UNSYNCHRONIZED);
+      rws->buffer_map(rws, fine->buf->buf, NULL, PIPE_MAP_READ | PIPE_MAP_UNSYNCHRONIZED);
    if (!map)
       return false;
 
@@ -464,6 +470,8 @@ static void si_flush_all_queues(struct pipe_context *ctx,
          ws->fence_reference(&gfx_fence, sctx->last_gfx_fence);
       if (!(flags & PIPE_FLUSH_DEFERRED))
          ws->cs_sync_flush(&sctx->gfx_cs);
+
+      tc_driver_internal_flush_notify(sctx->tc);
    } else {
       /* Instead of flushing, create a deferred fence. Constraints:
 		 * - the gallium frontend must allow a deferred flush.

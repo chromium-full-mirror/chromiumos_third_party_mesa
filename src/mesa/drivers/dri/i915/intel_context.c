@@ -72,6 +72,7 @@ i915_get_renderer_string(unsigned deviceID)
    switch (deviceID) {
 #undef CHIPSET
 #define CHIPSET(id, symbol, str) case id: chipset = str; break;
+#include "pci_ids/i830_pci_ids.h"
 #include "pci_ids/i915_pci_ids.h"
    default:
       chipset = "Unknown Intel Chipset";
@@ -110,7 +111,8 @@ intel_flush_front(struct gl_context *ctx)
     __DRIdrawable *driDrawable = driContext->driDrawablePriv;
     __DRIscreen *const screen = intel->intelScreen->driScrnPriv;
 
-    if (intel->front_buffer_dirty && _mesa_is_winsys_fbo(ctx->DrawBuffer)) {
+    if (intel->front_buffer_dirty && ctx->DrawBuffer &&
+        _mesa_is_winsys_fbo(ctx->DrawBuffer)) {
       if (flushFront(screen) &&
           driDrawable &&
           driDrawable->loaderPrivate) {
@@ -354,7 +356,7 @@ _intel_flush(struct gl_context *ctx, const char *file, int line)
 }
 
 static void
-intel_glFlush(struct gl_context *ctx)
+intel_glFlush(struct gl_context *ctx, unsigned gallium_flush_flags)
 {
    struct intel_context *intel = intel_context(ctx);
 
@@ -446,7 +448,7 @@ intelInitContext(struct intel_context *intel,
 	  0, sizeof(ctx->TextureFormatSupported));
 
    driParseConfigFiles(&intel->optionCache, &intelScreen->optionCache,
-                       sPriv->myNum, "i915", NULL, NULL, 0, NULL, 0);
+                       sPriv->myNum, "i915", NULL, NULL, NULL, 0, NULL, 0);
    intel->maxBatchSize = 4096;
 
    /* Estimate the size of the mappable aperture into the GTT.  There's an
@@ -683,7 +685,7 @@ intel_query_dri2_buffers(struct intel_context *intel,
    __DRIscreen *screen = intel->intelScreen->driScrnPriv;
    struct gl_framebuffer *fb = drawable->driverPrivate;
    int i = 0;
-   unsigned attachments[8];
+   unsigned attachments[__DRI_BUFFER_COUNT];
 
    struct intel_renderbuffer *front_rb;
    struct intel_renderbuffer *back_rb;

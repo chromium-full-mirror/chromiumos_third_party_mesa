@@ -113,6 +113,8 @@ nir_lower_ubo_vec4_lower(nir_builder *b, nir_instr *instr, void *data)
                                            intr->dest.ssa.bit_size,
                                            num_components);
 
+   nir_intrinsic_set_access(load, nir_intrinsic_access(intr));
+
    nir_ssa_def *result = &load->dest.ssa;
 
    int align_chan_offset = align_offset / chan_size_bytes;
@@ -132,7 +134,7 @@ nir_lower_ubo_vec4_lower(nir_builder *b, nir_instr *instr, void *data)
 
       result = nir_vector_extract(b, result, component);
    } else if (align_mul == 8 &&
-              align_offset + chan_size_bytes * intr->num_components <= 16) {
+              align_offset + chan_size_bytes * intr->num_components <= 8) {
       /* Special case: Loading small vectors from offset % 8 == 0 can be done
        * with just one load and one bcsel.
        */

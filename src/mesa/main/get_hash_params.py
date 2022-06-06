@@ -387,16 +387,15 @@ descriptor=[
 
 # GL_NV_alpha_to_coverage_dither_control
   [ "ALPHA_TO_COVERAGE_DITHER_MODE_NV", "CONTEXT_ENUM(Multisample.SampleAlphaToCoverageDitherControl ), NO_EXTRA" ],
-
-# GL_EXT_pixel_buffer_object
-  [ "PIXEL_PACK_BUFFER_BINDING_EXT", "LOC_CUSTOM, TYPE_INT, 0, extra_EXT_pixel_buffer_object" ],
-  [ "PIXEL_UNPACK_BUFFER_BINDING_EXT", "LOC_CUSTOM, TYPE_INT, 0, extra_EXT_pixel_buffer_object" ],
 ]},
 
 # GLES3 is not a typo.
 { "apis": ["GL", "GLES", "GLES3", "GL_CORE"], "params": [
 # GL_EXT_texture_lod_bias
   [ "MAX_TEXTURE_LOD_BIAS_EXT", "CONTEXT_FLOAT(Const.MaxTextureLodBias), NO_EXTRA" ],
+
+# GL_ARB_timer_query, GL_EXT_disjoint_timer_query
+  [ "TIMESTAMP", "LOC_CUSTOM, TYPE_INT64, 0, extra_ARB_timer_query_or_EXT_disjoint_timer_query" ],
 ]},
 
 
@@ -458,6 +457,10 @@ descriptor=[
   [ "MIN_PROGRAM_TEXEL_OFFSET", "CONTEXT_INT(Const.MinProgramTexelOffset), extra_GLSL_130_es3_gpushader4" ],
   [ "MAX_PROGRAM_TEXEL_OFFSET", "CONTEXT_INT(Const.MaxProgramTexelOffset), extra_GLSL_130_es3_gpushader4" ],
 
+# GL_EXT_pixel_buffer_object
+  [ "PIXEL_PACK_BUFFER_BINDING_EXT", "LOC_CUSTOM, TYPE_INT, 0, extra_EXT_pixel_buffer_object" ],
+  [ "PIXEL_UNPACK_BUFFER_BINDING_EXT", "LOC_CUSTOM, TYPE_INT, 0, extra_EXT_pixel_buffer_object" ],
+
   # GL_EXT_texture_array
   [ "TEXTURE_BINDING_2D_ARRAY", "LOC_CUSTOM, TYPE_INT, TEXTURE_2D_ARRAY_INDEX, extra_EXT_texture_array_es3" ],
   [ "MAX_ARRAY_TEXTURE_LAYERS_EXT", "CONTEXT_INT(Const.MaxArrayTextureLayers), extra_EXT_texture_array_es3" ],
@@ -505,21 +508,21 @@ descriptor=[
   [ "TEXTURE_BUFFER_OFFSET_ALIGNMENT", "CONTEXT_INT(Const.TextureBufferOffsetAlignment), extra_ARB_texture_buffer_range" ],
 
 # GL_ARB_shader_image_load_store / GLES 3.1
-  [ "MAX_IMAGE_UNITS", "CONTEXT_INT(Const.MaxImageUnits), extra_ARB_shader_image_load_store" ],
-  [ "MAX_VERTEX_IMAGE_UNIFORMS", "CONTEXT_INT(Const.Program[MESA_SHADER_VERTEX].MaxImageUniforms), extra_ARB_shader_image_load_store" ],
-  [ "MAX_FRAGMENT_IMAGE_UNIFORMS", "CONTEXT_INT(Const.Program[MESA_SHADER_FRAGMENT].MaxImageUniforms), extra_ARB_shader_image_load_store" ],
-  [ "MAX_COMBINED_IMAGE_UNIFORMS", "CONTEXT_INT(Const.MaxCombinedImageUniforms), extra_ARB_shader_image_load_store" ],
+  [ "MAX_IMAGE_UNITS", "CONTEXT_INT(Const.MaxImageUnits), extra_ARB_shader_image_load_store_es31" ],
+  [ "MAX_VERTEX_IMAGE_UNIFORMS", "CONTEXT_INT(Const.Program[MESA_SHADER_VERTEX].MaxImageUniforms), extra_ARB_shader_image_load_store_es31" ],
+  [ "MAX_FRAGMENT_IMAGE_UNIFORMS", "CONTEXT_INT(Const.Program[MESA_SHADER_FRAGMENT].MaxImageUniforms), extra_ARB_shader_image_load_store_es31" ],
+  [ "MAX_COMBINED_IMAGE_UNIFORMS", "CONTEXT_INT(Const.MaxCombinedImageUniforms), extra_ARB_shader_image_load_store_es31" ],
 
 # GL_ARB_shader_atomic_counters / GLES 3.1
-  [ "ATOMIC_COUNTER_BUFFER_BINDING", "LOC_CUSTOM, TYPE_INT, 0, extra_ARB_shader_atomic_counters" ],
-  [ "MAX_ATOMIC_COUNTER_BUFFER_BINDINGS", "CONTEXT_INT(Const.MaxAtomicBufferBindings), extra_ARB_shader_atomic_counters" ],
-  [ "MAX_ATOMIC_COUNTER_BUFFER_SIZE", "CONTEXT_INT(Const.MaxAtomicBufferSize), extra_ARB_shader_atomic_counters" ],
-  [ "MAX_VERTEX_ATOMIC_COUNTER_BUFFERS", "CONTEXT_INT(Const.Program[MESA_SHADER_VERTEX].MaxAtomicBuffers), extra_ARB_shader_atomic_counters" ],
-  [ "MAX_VERTEX_ATOMIC_COUNTERS", "CONTEXT_INT(Const.Program[MESA_SHADER_VERTEX].MaxAtomicCounters), extra_ARB_shader_atomic_counters" ],
-  [ "MAX_FRAGMENT_ATOMIC_COUNTER_BUFFERS", "CONTEXT_INT(Const.Program[MESA_SHADER_FRAGMENT].MaxAtomicBuffers), extra_ARB_shader_atomic_counters" ],
-  [ "MAX_FRAGMENT_ATOMIC_COUNTERS", "CONTEXT_INT(Const.Program[MESA_SHADER_FRAGMENT].MaxAtomicCounters), extra_ARB_shader_atomic_counters" ],
-  [ "MAX_COMBINED_ATOMIC_COUNTER_BUFFERS", "CONTEXT_INT(Const.MaxCombinedAtomicBuffers), extra_ARB_shader_atomic_counters" ],
-  [ "MAX_COMBINED_ATOMIC_COUNTERS", "CONTEXT_INT(Const.MaxCombinedAtomicCounters), extra_ARB_shader_atomic_counters" ],
+  [ "ATOMIC_COUNTER_BUFFER_BINDING", "LOC_CUSTOM, TYPE_INT, 0, extra_ARB_shader_atomic_counters_es31" ],
+  [ "MAX_ATOMIC_COUNTER_BUFFER_BINDINGS", "CONTEXT_INT(Const.MaxAtomicBufferBindings), extra_ARB_shader_atomic_counters_es31" ],
+  [ "MAX_ATOMIC_COUNTER_BUFFER_SIZE", "CONTEXT_INT(Const.MaxAtomicBufferSize), extra_ARB_shader_atomic_counters_es31" ],
+  [ "MAX_VERTEX_ATOMIC_COUNTER_BUFFERS", "CONTEXT_INT(Const.Program[MESA_SHADER_VERTEX].MaxAtomicBuffers), extra_ARB_shader_atomic_counters_es31" ],
+  [ "MAX_VERTEX_ATOMIC_COUNTERS", "CONTEXT_INT(Const.Program[MESA_SHADER_VERTEX].MaxAtomicCounters), extra_ARB_shader_atomic_counters_es31" ],
+  [ "MAX_FRAGMENT_ATOMIC_COUNTER_BUFFERS", "CONTEXT_INT(Const.Program[MESA_SHADER_FRAGMENT].MaxAtomicBuffers), extra_ARB_shader_atomic_counters_es31" ],
+  [ "MAX_FRAGMENT_ATOMIC_COUNTERS", "CONTEXT_INT(Const.Program[MESA_SHADER_FRAGMENT].MaxAtomicCounters), extra_ARB_shader_atomic_counters_es31" ],
+  [ "MAX_COMBINED_ATOMIC_COUNTER_BUFFERS", "CONTEXT_INT(Const.MaxCombinedAtomicBuffers), extra_ARB_shader_atomic_counters_es31" ],
+  [ "MAX_COMBINED_ATOMIC_COUNTERS", "CONTEXT_INT(Const.MaxCombinedAtomicCounters), extra_ARB_shader_atomic_counters_es31" ],
 
 # GL_ARB_texture_multisample / GLES 3.1
   [ "TEXTURE_BINDING_2D_MULTISAMPLE", "LOC_CUSTOM, TYPE_INT, TEXTURE_2D_MULTISAMPLE_INDEX, extra_ARB_texture_multisample" ],
@@ -701,7 +704,7 @@ descriptor=[
   [ "ALPHA_SCALE", "CONTEXT_FLOAT(Pixel.AlphaScale), NO_EXTRA" ],
   [ "ATTRIB_STACK_DEPTH", "CONTEXT_INT(AttribStackDepth), NO_EXTRA" ],
   [ "AUTO_NORMAL", "CONTEXT_BOOL(Eval.AutoNormal), NO_EXTRA" ],
-  [ "AUX_BUFFERS", "BUFFER_INT(Visual.numAuxBuffers), NO_EXTRA" ],
+  [ "AUX_BUFFERS", "CONST(0), NO_EXTRA" ],
   [ "BLUE_BIAS", "CONTEXT_FLOAT(Pixel.BlueBias), NO_EXTRA" ],
   [ "BLUE_SCALE", "CONTEXT_FLOAT(Pixel.BlueScale), NO_EXTRA" ],
   [ "CLIENT_ATTRIB_STACK_DEPTH", "CONTEXT_INT(ClientAttribStackDepth), NO_EXTRA" ],
@@ -965,9 +968,6 @@ descriptor=[
 
 # GL 3.2
   [ "CONTEXT_PROFILE_MASK", "CONTEXT_INT(Const.ProfileMask), extra_version_32" ],
-
-# GL_ARB_timer_query
-  [ "TIMESTAMP", "LOC_CUSTOM, TYPE_INT64, 0, extra_ARB_timer_query" ],
 
 # GL_ARB_map_buffer_alignment
   [ "MIN_MAP_BUFFER_ALIGNMENT", "CONTEXT_INT(Const.MinMapBufferAlignment), NO_EXTRA" ],

@@ -48,7 +48,8 @@ typedef enum
 struct stw_winsys_framebuffer
 {
    void
-   (*destroy)(struct stw_winsys_framebuffer *fb);
+   (*destroy)(struct stw_winsys_framebuffer *fb,
+              struct pipe_context *context);
 
    boolean
    (*present)(struct stw_winsys_framebuffer *fb);
@@ -130,8 +131,14 @@ struct stw_winsys
     */
    struct stw_winsys_framebuffer *
    (*create_framebuffer)( struct pipe_screen *screen,
-                          HDC hDC,
+                          HWND hWnd,
                           int iPixelFormat );
+
+   /**
+    * Get the name of the screen that was created
+    */
+   const char *
+   (*get_name)(void);
 };
 
 boolean

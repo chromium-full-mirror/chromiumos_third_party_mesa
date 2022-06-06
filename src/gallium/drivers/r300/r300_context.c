@@ -441,8 +441,8 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
      * dummy texture there. */
     if (!r300->screen->caps.is_r500) {
         struct pipe_resource *tex;
-        struct pipe_resource rtempl = {{0}};
-        struct pipe_sampler_view vtempl = {{0}};
+        struct pipe_resource rtempl = {0};
+        struct pipe_sampler_view vtempl = {0};
 
         rtempl.target = PIPE_TEXTURE_2D;
         rtempl.format = PIPE_FORMAT_I8_UNORM;
@@ -471,7 +471,7 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
         vb.depth0 = 1;
 
         r300->dummy_vb.buffer.resource = screen->resource_create(screen, &vb);
-        r300->context.set_vertex_buffers(&r300->context, 0, 1, &r300->dummy_vb);
+        r300->context.set_vertex_buffers(&r300->context, 0, 1, 0, false, &r300->dummy_vb);
     }
 
     {
