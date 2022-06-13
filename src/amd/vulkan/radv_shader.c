@@ -688,8 +688,10 @@ radv_shader_compile_to_nir(struct radv_device *device, const struct radv_pipelin
        */
       NIR_PASS_V(nir, nir_lower_variable_initializers, nir_var_function_temp);
       NIR_PASS_V(nir, nir_lower_returns);
-      if (nir_inline_functions(nir))
+      if (nir_inline_functions(nir)) {
+         NIR_PASS_V(nir, nir_opt_copy_prop_vars);
          NIR_PASS_V(nir, nir_copy_prop);
+      }
       NIR_PASS_V(nir, nir_opt_deref);
 
       /* Pick off the single entrypoint that we want */
